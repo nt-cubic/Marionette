@@ -96,3 +96,58 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     });
   }
 }
+
+// Every credit-based provider (#3321), not WorkBuddy alone: a plugin's card
+// (Trae CN) gets the same bars; a card with two pools (Qoder's Credits and
+// Add-on credits) shows each on its own, named; a meter in money (Cursor's
+// On-demand) is spent, in its currency, not credits. Every language, at a
+// phone's width.
+const pools = () => [
+  { provider: "trae-cn", name: "Trae CN", plan: "Pro", user: "trae@x", windows: [{ name: "Credits", used: 10, amount: 100, limit: 1000, unit: "credits" }],
+    daily: { since: dayKey(2), days: [{ day: dayKey(0), used: 7 }], window: "Credits" } },
+  { provider: "qoder", name: "Qoder", plan: "Pro", user: "q@x", windows: [{ name: "Credits", used: 10, display: "300 / 3000 credits" }, { name: "Add-on credits", used: 50, display: "50 / 100 credits" }],
+    daily: { since: dayKey(2), days: [{ day: dayKey(0), used: 4 }], window: "Credits" },
+    moreDaily: [{ since: dayKey(2), days: [{ day: dayKey(0), used: 9 }], window: "Add-on credits" }] },
+  { provider: "cursor", name: "Cursor", plan: "Pro", user: "c@x", windows: [{ name: "On-demand", used: 25, display: "$5 / $20" }],
+    daily: { since: dayKey(2), days: [{ day: dayKey(0), used: 2.5 }], window: "On-demand", unit: "usd" } },
+];
+const poolWords = {
+  en: { head: "Credits used per day", spent: "Spent per day", day1: "Today" },
+  zh: { head: "每天用掉的积分", spent: "每天花掉的金额", day1: "今天" },
+  "zh-TW": { head: "每天用掉的積分", spent: "每天花掉的金額", day1: "今天" },
+  ja: { head: "1 日あたりのクレジット使用量", spent: "1 日あたりの支出", day1: "今日" },
+  de: { head: "Verbrauchte Credits pro Tag", spent: "Ausgaben pro Tag", day1: "Heute" },
+};
+for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
+  for (const lang of Object.keys(poolWords)) {
+    const w = poolWords[lang];
+    test(`${engine} ${lang}: every provider's credits a day, pool by pool`, async (t) => {
+      const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+      t.after(() => browser.close());
+      const page = await (await browser.newContext({ viewport: { width: 360, height: 760 }, reducedMotion: "reduce" })).newPage();
+      page.setDefaultTimeout(5000);
+      const errors = [];
+      page.on("pageerror", (e) => errors.push(e.message));
+      await page.route("**/*", async (route) => {
+        if (new URL(route.request().url()).pathname === "/api/usage/quotas") return route.fulfill({ json: pools() });
+        return serve(lang)(route);
+      });
+      await page.goto("http://magpie.test/?view=usage");
+      const today = page.locator("#period .opt").filter({ hasText: new RegExp("^" + w.day1 + "$") });
+      if (await today.count()) await today.first().click();
+      const heads = (name) => page.locator(".subscription-card", { hasText: name }).locator(".credit-days .cd-head span").allTextContents();
+      await page.locator(".subscription-card", { hasText: "Cursor" }).locator(".credit-days").waitFor();
+      assert.deepEqual(await heads("Trae CN"), [w.head]);
+      const q = await heads("Qoder");
+      assert.equal(q.length, 2);
+      assert.ok(q[0].startsWith(w.head + " · ") && q[1].startsWith(w.head + " · ") && q[0] !== q[1], q.join(" | "));
+      assert.deepEqual(await heads("Cursor"), [w.spent]);
+      const spent = await page.locator(".subscription-card", { hasText: "Cursor" }).locator(".credit-days .cd-head b").textContent();
+      assert.match(spent, /2[.,]50/);
+      assert.match(spent, /\$/);
+      const wide = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      assert.ok(wide <= 0, `no page scroll sideways (${wide}px)`);
+      assert.deepEqual(errors, []);
+    });
+  }
+}

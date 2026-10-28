@@ -1152,15 +1152,14 @@
       c.title = (isGit(e.spec) ? t("{head} is the newest commit of {repo}", { head: ck.head || e.head || "", repo: e.spec }) : t("v{v} is the newest on npm", { v: e.version })) + "\n" + t("Last checked {time}", { time: checkedAt() });
       nm.append(c);
     }
-    // the built-in subscriptions moved onto it: taking it away or off
-    // stops them, as there is no built-in to go back to, so the row says
-    // it carries them
+    // built-ins moved onto it, then its other providers if 2+ (#3902)
     const moved = (e.moved || []).map((id) => SUBS.find((x) => x.agent === id)?.name || id);
     const names = moved.join(t(", "));
-    if (moved.length && !e.off) {
+    const all = [...moved, ...e.serves || []];
+    if (all[0] && !e.off) {
       const c = el("span", "pm-chip moved");
-      c.append(el("span", "dot"), el("span", "", t("Serves {names}", { names })));
-      c.title = t("{names} runs on this plugin in place of the built-in", { names });
+      c.append(el("span", "dot"), el("span", "", t("Serves {names}", { names: all.join(t(", ")) })));
+      if (names) c.title = t("{names} runs on this plugin in place of the built-in", { names });
       nm.append(c);
     }
     // gateway middleware runs in magpie's gateway, not as a subscription:

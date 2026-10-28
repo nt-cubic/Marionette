@@ -87,6 +87,7 @@ func runBun(ctx context.Context, bun string, args ...string) ([]byte, error) {
 	defer installMu.Unlock()
 	mendPackageJSON()
 	defer mendPackageJSON()
+	mendDist(ctx, bun)
 	return bunCommand(ctx, bun, Dir(), args...).CombinedOutput()
 }
 
@@ -745,7 +746,9 @@ func install(ctx context.Context, spec string) error {
 	installMu.Lock()
 	pj := filepath.Join(Dir(), "package.json")
 	if _, err := os.Stat(pj); err != nil {
-		if err := os.WriteFile(pj, []byte("{\n  \"name\": \"magpie-plugins\",\n  \"private\": true\n}\n"), 0o644); err != nil {
+		// through temp and rename, as every write of it: a write cut
+		// short would leave bun a package.json it can't read
+		if err := edit.WriteAtomic(pj, []byte("{\n  \"name\": \"magpie-plugins\",\n  \"private\": true\n}\n")); err != nil {
 			installMu.Unlock()
 			return err
 		}
@@ -753,6 +756,7 @@ func install(ctx context.Context, spec string) error {
 	defer installMu.Unlock()
 	mendPackageJSON()
 	defer mendPackageJSON()
+	mendDist(ctx, bun)
 	err = bunAdd(ctx, bun, spec)
 	// a @magpie-community package or version npm doesn't have (a new
 	// one waits for an owner to publish it there) comes from the

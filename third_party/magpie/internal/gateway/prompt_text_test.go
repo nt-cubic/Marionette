@@ -101,20 +101,20 @@ func TestPromptTextKeepsOnlyTheLastBodies(t *testing.T) {
 	var tr trace
 	body := []byte(`{"system":"s","messages":[{"role":"user","content":"hi"}]}`)
 	for id := int64(1); id <= promptBodies+2; id++ {
-		tr.keepBody(id, provider.Anthropic, body)
+		tr.keepBody(id, provider.Anthropic, body, false)
 	}
 	for id := int64(1); id <= promptBodies+2; id++ {
 		if _, ok := tr.keptBodyOf(id); ok != (id > 2) {
 			t.Fatalf("body %d kept %v", id, ok)
 		}
 	}
-	tr.keepBody(100, provider.Anthropic, make([]byte, promptBodyMax+1))
+	tr.keepBody(100, provider.Anthropic, make([]byte, promptBodyMax+1), false)
 	if _, ok := tr.keptBodyOf(100); ok {
 		t.Fatal("kept a body over promptBodyMax")
 	}
 	big := make([]byte, promptBodiesMax/3)
 	for id := int64(200); id < 204; id++ {
-		tr.keepBody(id, provider.Anthropic, big)
+		tr.keepBody(id, provider.Anthropic, big, false)
 	}
 	total := 0
 	for _, b := range tr.bodies {

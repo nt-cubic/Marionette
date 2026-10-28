@@ -64,6 +64,11 @@ type Part struct {
 	// comes only from Google, as gemini_signature.go carries it, and
 	// text's only from a Gemini API (#1445)
 	Signature string
+	// SignedBy is the API that signed a thinking Part (sealAnthropic for
+	// Claude's), empty when it isn't known: only Claude's signature goes
+	// to a Responses client, in its reasoning item's encrypted_content
+	// (claudeseal)
+	SignedBy string
 	// thinking an upstream sealed, as its API wrote it: Anthropic's
 	// redacted_thinking block, a Responses reasoning item with its id,
 	// summary and encrypted_content. Only that API's builder, encoder and
@@ -170,6 +175,13 @@ type Request struct {
 	// Windows with Claude Code in WSL), so the run's own prompt describes
 	// another machine than the one the tools run on (envElsewhereNote).
 	envElsewhere bool
+	// hourMarks has the cache marks magpie adds on Anthropic's Messages
+	// (anthropicBody) last an hour: a Responses client's (Codex's), whose
+	// turns are often more than five minutes apart and whose own vendor
+	// keeps a thread's prompt cached an hour (chatGPTCold). Off when the
+	// client asked prompt_cache_retention "in_memory", or the upstream
+	// turned the ttl away (hourMarksRefused).
+	hourMarks bool
 
 	Model      string
 	System     string
@@ -302,7 +314,7 @@ const (
 	KStart     EventKind = iota // MsgID, Model, Usage (input side)
 	KText                       // Text
 	KThink                      // Text (reasoning)
-	KSig                        // Text (thinking signature)
+	KSig                        // Text (thinking signature), Name the API that signed it if known
 	KToolStart                  // ID, Name
 	KToolArgs                   // Text (partial JSON of the arguments)
 	KStop                       // Stop
@@ -601,9 +613,12 @@ func (c *collector) add(ev Event) {
 		// display is omitted) is a block all the same (#1445)
 		if p := c.open(); p != nil {
 			p.Signature += ev.Text
+			if ev.Name != "" {
+				p.SignedBy = ev.Name
+			}
 		} else if c.fresh {
 			c.closeTool()
-			c.res.Parts = append(c.res.Parts, Part{Kind: Thinking, Signature: ev.Text})
+			c.res.Parts = append(c.res.Parts, Part{Kind: Thinking, Signature: ev.Text, SignedBy: ev.Name})
 		}
 	case KSealed:
 		// a Responses item's summary came before it as reasoning of its
@@ -809,6 +824,12 @@ func effortOf(s string) string {
 		return strings.ToLower(s)
 	case "ultra": // Codex's max, with its own agents to hand work to
 		return "max"
+	}
+	// a vendor's own word for a level (Trae's light, extra_high), which
+	// an agent sends for a model listing it; fitted back to the model's
+	// own word on the way out (fitEffort)
+	if l, ok := catalog.EffortAliases[strings.ToLower(strings.TrimSpace(s))]; ok {
+		return l
 	}
 	return ""
 }

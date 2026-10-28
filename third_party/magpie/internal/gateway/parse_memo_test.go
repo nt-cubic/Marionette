@@ -242,7 +242,10 @@ func TestChatAndMessagesFactsLeaveTheHistory(t *testing.T) {
 		facts := allocated(func() { readFacts(proto, body) })
 		parsed := allocated(func() { _, _ = parse(proto, body) })
 		t.Logf("%s: %d-byte body, facts allocated %d bytes, the whole parse %d", proto, len(body), facts, parsed)
-		if facts*3 > parsed {
+		// Under -race, sync.Pool drops a quarter of what is put in it, and
+		// userSaid's regexps take their backtrackers from one, so a long
+		// conversation's facts make ~2.7 MB more of them (#3956).
+		if !raceOn && facts*3 > parsed {
 			t.Errorf("%s: facts allocated %d bytes, a third or more of the whole parse's %d", proto, facts, parsed)
 		}
 	}

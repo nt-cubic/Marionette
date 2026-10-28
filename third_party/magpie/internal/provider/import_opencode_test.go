@@ -1,9 +1,12 @@
 package provider
 
 import (
+	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"testing"
 	"time"
 )
@@ -201,5 +204,61 @@ func TestImportOpenCodeAuthUnknown(t *testing.T) {
 	t.Cleanup(func() { os.Chmod(dir, 0o700) })
 	if s := openCodeSource(t); !s.Found || s.Error == "" || len(s.Items) != 0 {
 		t.Fatalf("unreadable folder: %+v", s)
+	}
+}
+
+// A vendor's key whose OpenCode id is a provider magpie has a preset for
+// comes in on that preset: the id's host in models.dev's catalog is the
+// preset's own address. Each entry here is api, so a key lands on the
+// preset with no skip, the way openai's or deepseek's does.
+func TestImportOpenCodeVendorPresets(t *testing.T) {
+	home := openCodeHome(t)
+	data := filepath.Join(home, "data")
+	t.Setenv("XDG_DATA_HOME", data)
+	want := map[string]string{
+		"zhipuai":                "zhipu",
+		"zai":                    "zai",
+		"alibaba":                "qwen",
+		"alibaba-cn":             "qwen-cn",
+		"minimax":                "minimax",
+		"modelscope":             "modelscope",
+		"kilo":                   "kilo",
+		"cline-pass":             "clinepass",
+		"kimi-code-plan-cn":      "kimi-code-cn",
+		"kimi-code-plan-global":  "kimi-code",
+		"stepfun-step-plan":      "stepfun-cn",
+		"stepfun-ai-step-plan":   "stepfun",
+		"volcengine-coding-plan": "volcengine",
+		"alibaba-token-plan-cn":  "bailian-token-plan",
+		"tencent-token-plan":     "tencent-cloud",
+	}
+	entries := ""
+	for id := range want {
+		entries += fmt.Sprintf(",\n  %q: {\"type\": \"api\", \"key\": \"sk-oc-%s\"}", id, id)
+	}
+	p := filepath.Join(data, "opencode", "auth.json")
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("{"+entries[1:]+"\n}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	items := itemsOf(t, "opencode")
+	if len(items) != len(want) {
+		t.Fatalf("items: %d, want %d", len(items), len(want))
+	}
+	for _, id := range slices.Sorted(maps.Keys(want)) {
+		it := items[id]
+		if it.Skip != "" {
+			t.Errorf("%s: skipped: %s", id, it.Skip)
+			continue
+		}
+		pr := Preset(want[id])
+		if pr == nil {
+			t.Fatalf("preset %s: none", want[id])
+		}
+		if it.Provider.Preset != pr.ID || it.Provider.Name != pr.Name || it.Provider.Chat != pr.Chat || it.Provider.Key != "sk-oc-"+id {
+			t.Errorf("%s: got %+v, want the %s preset", id, it.Provider, pr.ID)
+		}
 	}
 }

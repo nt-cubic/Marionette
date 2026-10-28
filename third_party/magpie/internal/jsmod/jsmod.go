@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Calcium-Ion/moejs"
+	"github.com/MoeForge/moejs"
 )
 
 // Compile compiles the module in file and the modules it imports, which

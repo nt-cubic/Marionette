@@ -79,6 +79,9 @@ type capHold struct {
 	used      float64
 	back      time.Time
 	noCredits bool
+	// unread: held by a careful provider as its usage can't be told, why
+	// (carefulDoubt), cap then the account's own
+	unread string
 }
 
 // label names a candidate in a call's record: the provider, and the key
@@ -145,6 +148,49 @@ func (c candidate) who() string {
 		return c.p.ID + "#" + provider.KeyID(c.p.Key)
 	}
 	return c.restKey()
+}
+
+// remoteUpstream is, for a remote magpie's model, the provider there that
+// serves it, its id's first part (anthropic of anthropic/claude-…), or a
+// group of the remote's, its whole id; "" for any other provider's model,
+// and for a remote's model named without one. The remote magpie is one
+// key here, but each of its providers is a vendor of its own, with its
+// own cache and its own seals (fremontdango on Discord: a group of one
+// model from two of the remote's providers kept a conversation on the
+// second when the first was resting, as one account, where the same
+// group on the remote moved it as gone).
+func remoteUpstream(p provider.Provider, model string) string {
+	if !p.IsRemoteMagpie() {
+		return ""
+	}
+	if strings.HasPrefix(model, provider.GroupPrefix) {
+		return model
+	}
+	up, _, _ := strings.Cut(model, "/")
+	if up == model {
+		return ""
+	}
+	return up
+}
+
+// vendor is who as the vendor a conversation is with knows it: the key or
+// account, and behind a remote magpie the provider there (remoteUpstream).
+// What a vendor keeps of a conversation — its cache, the reasoning and
+// compactions it sealed — goes by it; what the user limits on the key
+// here — its lanes, requests a minute — still goes by who.
+func (c candidate) vendor() string {
+	if up := remoteUpstream(c.p, c.model); up != "" {
+		return c.who() + ">" + up
+	}
+	return c.who()
+}
+
+// sameVendor says whether c is with the vendor that who, asked for model,
+// was: the same key or account, and behind a remote magpie the same
+// provider there. With no model known (an answer the usage log has) it
+// is the key or account alone.
+func (c candidate) sameVendor(who, model string) bool {
+	return c.who() == who && (model == "" || remoteUpstream(c.p, c.model) == remoteUpstream(c.p, model))
 }
 
 // perKey is a provider once per key it has on, in order — or, for a
@@ -379,9 +425,14 @@ func (s *Server) plan(p provider.Provider, model string, from provider.Protocol)
 		return cs
 	}
 	out := add(p, model, false)
+	if p.CapStop && len(out) == 0 && len(pl.capped)+len(pl.held) > 0 {
+		// every account held at its cap: the user set the provider to end
+		// there (plugins#349), answered 429 rather than sent on
+		return restLast(out, pl)
+	}
 	seen := map[string]bool{p.ID + "/" + model: true}
 	for _, id := range p.Fallback {
-		fp, fm, ok := provider.Resolve(id)
+		fp, fm, ok := provider.ResolveRoute(id)
 		if !ok || seen[fp.ID+"/"+fm] {
 			continue
 		}
@@ -670,8 +721,16 @@ func capHeld(p, acct provider.Provider, model string, now time.Time) *capHold {
 	if !caps.Holds() {
 		return nil
 	}
-	h := allowances(a.UsageAgent())[a.User].CapHeld(model, caps, now)
+	al, known := allowances(a.UsageAgent())[a.User]
+	h := al.CapHeld(model, caps, now)
 	if h == nil {
+		if p.CapCareful {
+			// what can't be told is not spent (plugins#349)
+			if why := carefulDoubt(a, al, known, model, caps, now); why != "" {
+				used, _ := al.For(model, now)
+				return &capHold{cap: capShare(caps), used: used, unread: why}
+			}
+		}
 		return nil
 	}
 	return &capHold{cap: h.Cap, used: h.Used, back: h.Back, noCredits: h.Credits}
@@ -683,6 +742,9 @@ func capHeld(p, acct provider.Provider, model string, now time.Time) *capHold {
 func cappedError(model string, ws []Weighed, now time.Time) (string, time.Time) {
 	held, soonest := heldReasons(ws, now)
 	capped, noCredits := heldBy(ws)
+	if unread(ws) {
+		return fmt.Sprintf("usage cap reached: every account that serves %q is held at the usage cap set on it in magpie, or held as its usage can't be told right now — %s. magpie reads it again at the next request and uses it once it is under its cap; %s, or turn off Check usage near the cap (Providers → the provider's accounts, or magpie provider pool <id> --careful off)", model, strings.Join(held, "; "), heldAdvice(capped, noCredits)), soonest
+	}
 	switch {
 	case !noCredits:
 		return fmt.Sprintf("usage cap reached: every account that serves %q is held at the usage cap set on it in magpie — %s. magpie uses it again once that window renews; %s", model, strings.Join(held, "; "), heldAdvice(capped, noCredits)), soonest
@@ -714,6 +776,9 @@ func heldReasons(ws []Weighed, now time.Time) ([]string, time.Time) {
 		s := fmt.Sprintf("%s (%s) is at %.0f%% of a usage window, past its %d%% cap", w.Name, w.Who, w.Used, w.Capped)
 		if w.NoCredits {
 			s = fmt.Sprintf("%s (%s) has used up a usage window and is set not to spend its credits", w.Name, w.Who)
+		}
+		if w.Unread != "" {
+			s = fmt.Sprintf("%s (%s) is held, as %s and its provider is set to check usage near the cap", w.Name, w.Who, w.Unread)
 		}
 		if w.CapBack != nil {
 			s += ", until " + heldClock(*w.CapBack, now)
@@ -763,6 +828,9 @@ func checkpointCappedRecord(ws []Weighed) string {
 // cappedRecord is the call's record of the same refusal as cappedError,
 // told apart the same way.
 func cappedRecord(ws []Weighed) string {
+	if unread(ws) {
+		return "every account at its usage cap or its usage unread"
+	}
 	switch capped, noCredits := heldBy(ws); {
 	case !noCredits:
 		return "every account at its usage cap"
@@ -770,6 +838,17 @@ func cappedRecord(ws []Weighed) string {
 		return "every account held: set not to spend its credits"
 	}
 	return "every account held: at its usage cap or set not to spend its credits"
+}
+
+// unread says whether one of ws is held as its usage can't be told
+// (carefulDoubt).
+func unread(ws []Weighed) bool {
+	for _, w := range ws {
+		if w.Capped > 0 && w.Unread != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // creditsHeld are those of cs held only as they won't spend their
@@ -807,7 +886,7 @@ func barredOf(cs []candidate, q provider.Provider, fallback bool, from provider.
 		w := weighed(c, q, weighing{}, fallback, from)
 		w.Unlisted, w.Via = true, via
 		if h := c.capped; h != nil {
-			w.Capped, w.Used, w.NoCredits = h.cap, h.used, h.noCredits
+			w.Capped, w.Used, w.NoCredits, w.Unread = h.cap, h.used, h.noCredits, h.unread
 			if !h.back.IsZero() {
 				w.CapBack = &h.back
 			}
@@ -1843,7 +1922,7 @@ func (h *holdWriter) pass() {
 	}
 	dst := h.w.Header()
 	for k, v := range h.header {
-		if k != resetsHeader && k != refusedHeader && k != zdrHeader && k != answeredThereHeader { // magpie's own notes, for restAfter and settle
+		if k != resetsHeader && k != refusedHeader && k != zdrHeader && k != answeredThereHeader && k != keyLimitThereHeader { // magpie's own notes, for restAfter and settle
 			dst[k] = v
 		}
 	}
@@ -1936,7 +2015,9 @@ func (h *holdWriter) cutLoop(b []byte, t loopTrip) (int, error) {
 	} else {
 		io.WriteString(h.w, "\n\n")
 	}
-	streamError(h.w, proto, http.StatusBadGateway, msg)
+	// no model: the reply went ahead under its own id and model, and an
+	// error that starts a message of its own after it is #3792
+	streamError(h.w, proto, "", http.StatusBadGateway, msg)
 	h.looped, h.ended = msg, true
 	h.flush()
 	if h.stop != nil {
@@ -2188,6 +2269,9 @@ var keepHeldAfter = holdLongest
 // a reply: the stream's headers and SSE comments, nothing of the reply.
 type keptAlive struct {
 	proto provider.Protocol
+	// model is the one the agent asked for, which an error sent in the
+	// stream names (streamError, #3728)
+	model string
 	sent  bool      // the stream's 200 and headers went out
 	at    time.Time // the last comment
 	// told is when the agent was last sent anything of a reply, else when
@@ -2248,7 +2332,7 @@ func (h *holdWriter) keepAlive() {
 		}
 		dst := h.w.Header()
 		for k, v := range src {
-			if k != resetsHeader && k != refusedHeader && k != zdrHeader && k != answeredThereHeader && k != "Content-Length" {
+			if k != resetsHeader && k != refusedHeader && k != zdrHeader && k != answeredThereHeader && k != keyLimitThereHeader && k != "Content-Length" {
 				dst[k] = slices.Clone(v)
 			}
 		}
@@ -2400,6 +2484,15 @@ func (h *holdWriter) settle() {
 		h.failure, h.failMsg, h.refused = refusedStatus, msg, true
 		return
 	}
+	if h.status < 400 {
+		// a 200 that is only an error fails as that error's own status
+		// would (errorReply): asked again, or of the next, not handed on
+		// as an answer
+		if status, msg, ok := errorReply(h.held.Bytes()); ok {
+			h.failure, h.failMsg = status, msg
+			return
+		}
+	}
 	if h.alive != nil && h.alive.sent && h.status < 400 && wholeEvents(h.alive.proto, h.held.Bytes()) == nil {
 		// a 200 that is no reply of the protocol's, once the agent has a
 		// stream's headers: it can't go as that stream, so it failed, as
@@ -2465,10 +2558,10 @@ func (h *holdWriter) release() {
 		case h.failure != 0:
 			// a 200 that is no reply of the protocol's (settle)
 			who := cmp.Or(h.header.Get(providerHeader), "the provider")
-			streamError(h.w, h.alive.proto, h.failure, who+" "+h.failMsg)
+			streamError(h.w, h.alive.proto, h.alive.model, h.failure, who+" "+h.failMsg)
 		case h.status >= 400:
 			// an error status, once the agent has a stream: told as its error
-			streamError(h.w, h.alive.proto, h.status, provider.APIError(h.held.Bytes(), http.StatusText(h.status)))
+			streamError(h.w, h.alive.proto, h.alive.model, h.status, provider.APIError(h.held.Bytes(), http.StatusText(h.status)))
 		default:
 			// a reply given whole by a vendor that ignored stream:true,
 			// after the agent was kept alive: sent as the stream it asked
@@ -3308,6 +3401,48 @@ func refusedReply(b []byte) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// errorReply says whether a reply that came whole under a success status
+// is only an error: OpenAI's or Gemini's {"error":{…}}, Anthropic's
+// {"type":"error","error":{…}}, a Responses object whose error is set —
+// with no reply beside it. msg is what it says (provider.APIError), and
+// status what it stands for (streamStatus), as the same error said in a
+// stream is read: a relay that answers OpenAI's TPM limit as a 200 fails
+// as its 429 would, asked again in a moment, not as a reply that went
+// through (monater on Discord).
+func errorReply(body []byte) (status int, msg string, ok bool) {
+	b := bytes.TrimSpace(body)
+	if len(b) == 0 || b[0] != '{' {
+		return 0, "", false
+	}
+	var v struct {
+		Error      json.RawMessage `json:"error"`
+		Choices    []any           `json:"choices"`
+		Content    []any           `json:"content"`
+		Candidates []any           `json:"candidates"`
+		Output     []any           `json:"output"`
+		Status     string          `json:"status"`
+	}
+	if json.Unmarshal(b, &v) != nil || !carries(v.Error) || len(v.Choices)+len(v.Content)+len(v.Candidates) > 0 ||
+		len(v.Output) > 0 && v.Status != "failed" {
+		return 0, "", false
+	}
+	var e struct {
+		Message any `json:"message"`
+		Type    any `json:"type"`
+		Code    any `json:"code"`
+		Status  any `json:"status"`
+	}
+	var said string
+	if json.Unmarshal(v.Error, &said) == nil {
+		if strings.TrimSpace(said) == "" {
+			return 0, "", false
+		}
+	} else if json.Unmarshal(v.Error, &e) != nil || e.Message == nil && e.Type == nil && e.Code == nil && e.Status == nil {
+		return 0, "", false
+	}
+	return streamStatus(string(wordsOf(b))), provider.APIError(b, "the upstream reported an error"), true
 }
 
 // streamStatus is the status an error in a stream stands for, as a vendor

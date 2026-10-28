@@ -66,6 +66,37 @@ func TestUnderTightGCLimitsMemory(t *testing.T) {
 	}
 }
 
+// Two reads under it at once put back what was set before the first, in
+// either order they end: each putting back what it found left the second's
+// 25 when the first ended before it.
+func TestTightGCOverlappingReads(t *testing.T) {
+	defer debug.SetGCPercent(debug.SetGCPercent(100))
+	defer debug.SetMemoryLimit(debug.SetMemoryLimit(math.MaxInt64))
+	for _, firstEndsFirst := range []bool{true, false} {
+		first := tightenGC(true)
+		second := tightenGC(false)
+		if p := gcPercent(); p != tightGCPercent {
+			t.Fatalf("two reads under GOGC=%d, want %d", p, tightGCPercent)
+		}
+		if firstEndsFirst {
+			first()
+		} else {
+			second()
+		}
+		if p := gcPercent(); p != tightGCPercent {
+			t.Errorf("one read still in flight under GOGC=%d, want %d", p, tightGCPercent)
+		}
+		first()
+		second()
+		if p := gcPercent(); p != 100 {
+			t.Errorf("first ends first %v: after both GOGC=%d, want 100", firstEndsFirst, p)
+		}
+		if l := debug.SetMemoryLimit(-1); l != math.MaxInt64 {
+			t.Errorf("first ends first %v: after both the limit is %d", firstEndsFirst, l)
+		}
+	}
+}
+
 // The warm-up's usage read is the one under it, and the warm-up's other
 // reads are not.
 func TestWarmUpTightensOnlyTheUsageRead(t *testing.T) {

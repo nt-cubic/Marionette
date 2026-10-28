@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/net/publicsuffix"
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/settings"
@@ -80,6 +83,12 @@ func Rename(from, to string) error {
 	for j, id := range f.Order {
 		if id == from {
 			f.Order[j] = to
+		}
+	}
+	// a deleted provider merged into it stays merged (MergeDeleted)
+	for j := range f.Deleted {
+		if f.Deleted[j].Into == from {
+			f.Deleted[j].Into = to
 		}
 	}
 	for j := range f.Groups {
@@ -160,6 +169,56 @@ type Gave struct {
 	Until time.Time `json:"until"`
 }
 
+// Deleted is a provider the user deleted (Delete): the calls recorded
+// under its id, and under the ids it had (Was, Gave), until it was
+// deleted are its own, under its id while no other has taken it and
+// under UsageID once one has, never a provider's added later under the
+// same id. cybercaius on Discord: a provider deleted and
+// another added under its id showed as one on the Usage page.
+type Deleted struct {
+	ID   string    `json:"id"`
+	Name string    `json:"name,omitempty"`
+	Icon string    `json:"icon,omitempty"`
+	At   time.Time `json:"at"`
+	Was  []string  `json:"was,omitempty"`
+	Gave []Gave    `json:"gave,omitempty"`
+	// Into is the provider the user merged its calls into on the Usage
+	// page (MergeDeleted): they are listed and counted as that one's,
+	// priced as they were (Renames.Own). Only this record is merged, so
+	// a provider added under its id later keeps its own calls. A provider
+	// deleted under Into after MergedAt ends the merge.
+	Into     string    `json:"into,omitempty"`
+	MergedAt time.Time `json:"mergedAt,omitzero"`
+	// Label is the name the user gave it on the Usage page (NameDeleted),
+	// shown instead of Name.
+	Label string `json:"label,omitempty"`
+}
+
+// Shown is the name the Usage page lists it by: the user's Label, its
+// own name, or its id.
+func (d Deleted) Shown() string {
+	for _, n := range []string{d.Label, d.Name} {
+		if n = strings.TrimSpace(n); n != "" {
+			return n
+		}
+	}
+	return d.ID
+}
+
+// merged is the provider its calls go to now, "" when it is not merged:
+// a provider deleted under Into since the merge ends it, as there is no
+// one to show them under (its own calls are shown as deleted again).
+func (d Deleted) merged(all []Deleted) string {
+	if d.Into == "" || slices.ContainsFunc(all, func(l Deleted) bool { return l.ID == d.Into && l.At.After(d.MergedAt) }) {
+		return ""
+	}
+	return d.Into
+}
+
+// UsageID is the id its calls are counted under: its id and when it was
+// deleted, which no provider can take ("~" is never in one, Slug).
+func (d Deleted) UsageID() string { return d.ID + "~" + d.At.UTC().Format("20060102T150405") }
+
 // Renames say which provider a call recorded under a provider id was
 // made to, as its id is now: a provider renamed takes the calls recorded
 // under the ids it had (Was), and an id another provider took since
@@ -168,6 +227,20 @@ type Gave struct {
 type Renames struct {
 	now  map[string]string
 	gave map[string][]gaveTo
+	// hosts are the providers by the host each is on, for magpie's own
+	// requests to a provider being added, which has no id yet (ProbeOf)
+	hosts map[string]string
+	// sites are the providers by the site (SiteOf) of each host they are
+	// on, "" for a site two are on: a model list asked at a provider's
+	// bare domain before it was saved on its api. subdomain (OnSite)
+	sites map[string]string
+	// gone are the deleted providers by UsageID
+	gone map[string]Deleted
+	// into are the deleted providers merged into another (Deleted.Into),
+	// the id their calls go to otherwise to the provider's; merged is
+	// the other way, each provider's merged ones
+	into   map[string]string
+	merged map[string][]string
 }
 
 type gaveTo struct {
@@ -177,8 +250,30 @@ type gaveTo struct {
 
 // Of is the id the provider a call recorded under id at the time at has
 // now; id itself when it was not renamed. A zero at is before every
-// hand-over.
+// hand-over. A deleted provider the user merged into another is that
+// one (Deleted.Into); Own is the id without the merge, which the call is
+// priced by.
 func (r Renames) Of(id string, at time.Time) string {
+	shown, _ := r.Both(id, at)
+	return shown
+}
+
+// Both is Of, and Own beside it: the provider a call is shown under and
+// the one it is priced as. They differ only for a deleted provider merged
+// into another, whose calls cost what they did before the merge.
+func (r Renames) Both(id string, at time.Time) (shown, own string) {
+	own = r.Own(id, at)
+	if to, ok := r.into[own]; ok {
+		return to, own
+	}
+	return own, own
+}
+
+// Own is Of without merges: the provider the call was made to, by the id
+// it has now, a deleted one by its own (UsageID). What it cost is worked
+// out under it, and what decides by who answered (the gateway's
+// loggedAnswers, window holds) goes by it.
+func (r Renames) Own(id string, at time.Time) string {
 	for _, g := range r.gave[id] {
 		if at.Before(g.Until) {
 			return g.To
@@ -189,6 +284,72 @@ func (r Renames) Of(id string, at time.Time) string {
 	}
 	return id
 }
+
+// ProbeOf is Of for one of magpie's own requests (probelog): one sent
+// while a provider was being added, its Detect or Test before it had an
+// id, is recorded under its host, and is the provider's on that host now.
+// yyddbds on Discord: 大灰狼, on dahuilang.best, was listed twice in the
+// Requests page's providers, once as dahuilang.best for the model lists
+// asked while adding it. A host two providers are on, or none, stays as
+// it is.
+func (r Renames) ProbeOf(id string, at time.Time) string {
+	if to := r.hosts[strings.ToLower(id)]; to != "" {
+		return to
+	}
+	return r.Of(id, at)
+}
+
+// OnHost is whether a provider saved now is on host, one or more.
+func (r Renames) OnHost(host string) bool {
+	_, ok := r.hosts[strings.ToLower(host)]
+	return ok
+}
+
+// OnSite is the provider saved now on a host of host's site (SiteOf),
+// for a probe recorded under a host no provider is on: CyberCaius on
+// Discord, Leee's model list was asked at leee.baby before it was saved
+// on another host of that site, and the Usage page listed leee.baby
+// beside it. on is whether any provider is on that site; id is "" when
+// two are, or host has no site.
+func (r Renames) OnSite(host string) (id string, on bool) {
+	site := SiteOf(host)
+	if site == "" {
+		return "", false
+	}
+	id, on = r.sites[site]
+	return id, on
+}
+
+// SiteOf is the registrable domain of host (a URL's host, with or without
+// its port), lowercased: api.leee.baby:443 is leee.baby. A host on a
+// public suffix's own names (a.vercel.app is vercel.app's tenant a), an
+// address or a name with no suffix (localhost) has none, "".
+func SiteOf(host string) string {
+	h := strings.ToLower(strings.TrimSpace(host))
+	if i := strings.LastIndex(h, ":"); i >= 0 && !strings.Contains(h[i+1:], "]") && strings.Count(h, ":") == 1 {
+		h = h[:i]
+	}
+	h = strings.TrimSuffix(h, ".")
+	if h == "" || strings.ContainsAny(h, ":[]") || net.ParseIP(h) != nil || !strings.Contains(h, ".") {
+		return ""
+	}
+	site, err := publicsuffix.EffectiveTLDPlusOne(h)
+	if err != nil {
+		return ""
+	}
+	return site
+}
+
+// Gone is the deleted provider whose calls are counted under id: its
+// own id while no provider has it, or its UsageID.
+func (r Renames) Gone(id string) (Deleted, bool) {
+	d, ok := r.gone[id]
+	return d, ok
+}
+
+// Merged are the deleted providers merged into id, by the ids Gone
+// knows them by, oldest deleted first.
+func (r Renames) Merged(id string) []string { return r.merged[id] }
 
 // Timed is whether the id's calls go to more than one provider by when
 // they were made, so Of needs each call's time.
@@ -211,11 +372,11 @@ func (r Renames) Each(id string) []string {
 func RenamesOf(now map[string]string) Renames { return Renames{now: now} }
 
 // Empty is whether no id is renamed.
-func (r Renames) Empty() bool { return len(r.now) == 0 && len(r.gave) == 0 }
+func (r Renames) Empty() bool { return len(r.now) == 0 && len(r.gave) == 0 && len(r.into) == 0 }
 
 // Key is r as text, for a cache of what was worked out with it.
 func (r Renames) Key() string {
-	b, _ := json.Marshal([]any{r.now, r.gave})
+	b, _ := json.Marshal([]any{r.now, r.gave, r.into})
 	return string(b)
 }
 
@@ -233,16 +394,53 @@ func UsageRenames() Renames {
 		}
 		return Renames{now: map[string]string{}}
 	}
-	r := renamesOf(f.Providers)
+	r := renamesOf(f.Providers, f.Deleted)
 	lastRenames.Store(&r)
 	return r
 }
 
-func renamesOf(ps []Provider) Renames {
+func renamesOf(ps []Provider, deleted []Deleted) Renames {
 	r := Renames{now: map[string]string{}}
 	held := map[string]bool{}
 	for _, p := range ps {
 		held[p.ID] = true
+	}
+	give := func(id string, until time.Time, to string) {
+		if r.gave == nil {
+			r.gave = map[string][]gaveTo{}
+		}
+		r.gave[id] = append(r.gave[id], gaveTo{until, to})
+	}
+	for i, d := range deleted {
+		// its calls stay under its id until a provider is added under it,
+		// deleted since or there now
+		to := d.ID
+		if held[d.ID] || slices.ContainsFunc(deleted[i+1:], func(l Deleted) bool { return l.ID == d.ID || slices.Contains(l.Was, d.ID) }) {
+			to = d.UsageID()
+		}
+		if r.gone == nil {
+			r.gone = map[string]Deleted{}
+		}
+		r.gone[to] = d
+		if into := d.merged(deleted); into != "" {
+			if r.into == nil {
+				r.into, r.merged = map[string]string{}, map[string][]string{}
+			}
+			r.into[to] = into
+			r.merged[into] = append(r.merged[into], to)
+		}
+		if to != d.ID {
+			give(d.ID, d.At, to)
+		}
+		for _, w := range d.Was {
+			// the subscription's id is the subscription's (Rename)
+			if !subscriptionID(w) {
+				give(w, d.At, to)
+			}
+		}
+		for _, g := range d.Gave {
+			give(g.ID, g.Until, to)
+		}
 	}
 	for _, p := range ps {
 		for _, w := range p.Was {
@@ -252,14 +450,45 @@ func renamesOf(ps []Provider) Renames {
 			}
 		}
 		for _, g := range p.Gave {
-			if r.gave == nil {
-				r.gave = map[string][]gaveTo{}
-			}
-			r.gave[g.ID] = append(r.gave[g.ID], gaveTo{g.Until, p.ID})
+			give(g.ID, g.Until, p.ID)
 		}
 	}
 	for _, gs := range r.gave {
 		slices.SortStableFunc(gs, func(a, b gaveTo) int { return a.Until.Compare(b.Until) })
+	}
+	for _, p := range ps {
+		if p.Hidden {
+			continue
+		}
+		for _, u := range []string{p.Chat, p.Responses, p.Anthropic, p.Gemini, p.Decide} {
+			h := HostOf(u)
+			// a provider's id (one stored by hand can have a dot, b.ai)
+			// is that provider's, never a host's
+			if h == "" || held[h] {
+				continue
+			}
+			if r.hosts == nil {
+				r.hosts = map[string]string{}
+			}
+			if to, ok := r.hosts[h]; ok && to != p.ID {
+				r.hosts[h] = "" // two providers on it: which one is unknown
+				continue
+			}
+			r.hosts[h] = p.ID
+		}
+	}
+	for h, id := range r.hosts {
+		site := SiteOf(h)
+		if site == "" {
+			continue
+		}
+		if r.sites == nil {
+			r.sites = map[string]string{}
+		}
+		if to, ok := r.sites[site]; ok && to != id {
+			id = "" // two providers on it, or a host two are on
+		}
+		r.sites[site] = id
 	}
 	return r
 }
@@ -299,4 +528,65 @@ func FreeID(id string) string { return freeID(id) }
 // Vertex AI's has none of the four: it is asked at its project's address.
 func hasEndpoint(p Provider) bool {
 	return p.Chat != "" || p.Responses != "" || p.Anthropic != "" || p.Gemini != "" || p.Decide != "" || p.IsVertex()
+}
+
+// deletedAt is the index in f.Deleted of the deleted provider whose calls
+// the Usage page lists under id (Renames.Gone).
+func deletedAt(f *file, id string) (int, error) {
+	d, ok := renamesOf(f.Providers, f.Deleted).gone[id]
+	if !ok {
+		return -1, fmt.Errorf("no deleted provider %q", id)
+	}
+	i := slices.IndexFunc(f.Deleted, func(l Deleted) bool { return l.ID == d.ID && l.At.Equal(d.At) })
+	if i < 0 {
+		return -1, fmt.Errorf("no deleted provider %q", id)
+	}
+	return i, nil
+}
+
+// MergeDeleted has the calls of the deleted provider the Usage page lists
+// under id listed and counted as into's, a provider there is now, or, with
+// into "", as its own again (CyberCaius on Discord, who had renamed a
+// provider onto a deleted one's id to see their calls together). Nothing
+// in the usage log is rewritten: the merge is kept on its Deleted record
+// and read through Renames, its calls priced as they were. A provider
+// added later under the deleted one's id is not merged.
+func MergeDeleted(id, into string) error {
+	into = strings.ToLower(strings.TrimSpace(into))
+	f, err := read()
+	if err != nil {
+		return err
+	}
+	i, err := deletedAt(&f, id)
+	if err != nil {
+		return err
+	}
+	d := &f.Deleted[i]
+	if into == "" {
+		d.Into, d.MergedAt = "", time.Time{}
+		return store(f)
+	}
+	if !slices.ContainsFunc(All(), func(p Provider) bool { return p.ID == into }) {
+		return fmt.Errorf("no provider %q to merge into", into)
+	}
+	d.Into, d.MergedAt = into, time.Now()
+	return store(f)
+}
+
+// NameDeleted names the deleted provider the Usage page lists under id
+// as the user wants it shown there; "" shows it by its own name again.
+func NameDeleted(id, name string) error {
+	f, err := read()
+	if err != nil {
+		return err
+	}
+	i, err := deletedAt(&f, id)
+	if err != nil {
+		return err
+	}
+	f.Deleted[i].Label = strings.TrimSpace(name)
+	if f.Deleted[i].Label == f.Deleted[i].Name {
+		f.Deleted[i].Label = ""
+	}
+	return store(f)
 }

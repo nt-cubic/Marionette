@@ -1,9 +1,11 @@
 package source
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -182,3 +184,72 @@ func TestDoFaithful(t *testing.T) {
 type roundTrip func(*http.Request) (*http.Response, error)
 
 func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// The masking models' files, pinned by sha256, have hf-mirror after
+// Hugging Face with the switch off and no MAGPIE_MIRRORS (hh0592821 on
+// Discord: huggingface.co poisoned in China); before it with the switch
+// on, once. Nothing else of Hugging Face's has.
+func TestModelMirrorWithoutTheSwitch(t *testing.T) {
+	t.Setenv("MAGPIE_MIRRORS", "")
+	raw := "https://huggingface.co/QuantumNous/astrlink-guard/resolve/7216b6a/int8/tokenizer.json"
+	mirror := "https://hf-mirror.com/QuantumNous/astrlink-guard/resolve/7216b6a/int8/tokenizer.json"
+	if got := strings.Join(URLs(raw), " "); got != raw+" "+mirror {
+		t.Fatalf("switch off: URLs = %q", got)
+	}
+	for _, other := range []string{
+		"https://huggingface.co/someone/else/resolve/main/x.gguf",
+		"https://huggingface.co/QuantumNous/astrlink-guard/resolve/7216b6a/x?dl=1",
+		"http://huggingface.co/QuantumNous/astrlink-guard/resolve/7216b6a/x",
+	} {
+		if got := URLs(other); len(got) != 1 {
+			t.Errorf("URLs(%s) = %q", other, got)
+		}
+	}
+	chinaOn(t)
+	if got := strings.Join(URLs(raw), " "); got != mirror+" "+raw {
+		t.Fatalf("switch on: URLs = %q", got)
+	}
+}
+
+// Hugging Face's address failing as it does where it is poisoned, the
+// file is asked of hf-mirror.
+func TestModelFallsToTheMirror(t *testing.T) {
+	t.Setenv("MAGPIE_MIRRORS", "")
+	var asked atomic.Int32
+	mirror := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked.Add(1)
+		io.WriteString(w, "model")
+	}))
+	defer mirror.Close()
+	c := mirror.Client()
+	c.Transport = rewrite{base: c.Transport, to: mirror.URL}
+	req, _ := http.NewRequest(http.MethodGet, "https://huggingface.co/QuantumNous/astrlink-guard/resolve/7216b6a/int8/tokenizer.json", nil)
+	resp, err := Do(c, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if b, _ := io.ReadAll(resp.Body); string(b) != "model" || asked.Load() != 1 {
+		t.Fatalf("got %q, mirror asked %d", b, asked.Load())
+	}
+}
+
+// rewrite fails huggingface.co with the certificate hh0592821 saw, and
+// sends hf-mirror.com's requests to to.
+type rewrite struct {
+	base http.RoundTripper
+	to   string
+}
+
+func (rw rewrite) RoundTrip(r *http.Request) (*http.Response, error) {
+	switch r.URL.Host {
+	case "huggingface.co":
+		return nil, errors.New("tls: failed to verify certificate: x509: certificate is valid for *.facebook.com, facebook.com, not huggingface.co")
+	case "hf-mirror.com":
+		u, _ := url.Parse(rw.to + r.URL.Path)
+		r = r.Clone(r.Context())
+		r.URL, r.Host = u, ""
+		return rw.base.RoundTrip(r)
+	}
+	return nil, errors.New("no such host " + r.URL.Host)
+}

@@ -191,6 +191,9 @@ func penguinIn(at place) *Agent {
 		ID: "penguin", Name: "PenguinHarness", Icon: "penguin-color", Bin: "penguin",
 		Aliases: []string{"penguin-harness", "penguinharness"}, Spelled: prefixed,
 		Dir: filepath.Dir(root), Path: path,
+		// the desktop app, on this machine (a distro has none): installed
+		// and not opened yet, it has made no ~/.penguin
+		sign: func() bool { return at.spell == nil && (&Agent{ID: "penguin"}).HasApp() },
 		Sync: func() error {
 			t, err := edit.GetTOMLTable(path, providerTable)
 			if err != nil || t == nil {

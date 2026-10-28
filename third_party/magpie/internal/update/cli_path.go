@@ -50,7 +50,7 @@ type CLI struct {
 	Stuck   string     `json:"stuck,omitempty"`   // translocated, read-only: why it can't be linked from where it is
 	Shells  []CLIShell `json:"shells"`
 	Windows bool       `json:"windows,omitempty"`
-	Shim    string     `json:"shim,omitempty"` // Windows: the magpie.cmd Add writes beside an app not named magpie.exe, which runs it
+	Shim    string     `json:"shim,omitempty"` // Windows: the magpie.cmd Add writes beside an app not named magpie.exe, which runs it, in a build with no magpie.com (com.go)
 }
 
 // cliShell is a shell installed here.
@@ -77,7 +77,7 @@ func ReadCLI() *CLI {
 		return v
 	}
 	v.Exe, v.Stuck = exe, cliStuck()
-	if v.Windows && needsShim(exe) {
+	if v.Windows && comLauncher == nil && needsShim(exe) {
 		v.Shim = filepath.Join(filepath.Dir(exe), shimName)
 	}
 	shells := cliShells()
@@ -94,7 +94,7 @@ func ReadCLI() *CLI {
 	var def []string
 	for i, sh := range shells {
 		s := CLIShell{Name: sh.Name, Default: sh.Default, Known: paths[i] != nil, Command: findCLI(paths[i])}
-		s.Ours = s.Command != "" && (sameFile(s.Command, exe) || shimRuns(s.Command, exe))
+		s.Ours = s.Command != "" && (sameFile(s.Command, exe) || shimRuns(s.Command, exe) || comRuns(s.Command, exe))
 		if p := cliProfile(sh.Name); p != "" {
 			s.Profile = tildeHome(p)
 		}
@@ -209,7 +209,9 @@ var cliStuck = func() string {
 
 func cliNames() []string {
 	if runtime.GOOS == "windows" {
-		return []string{"magpie.exe", "magpie.cmd", "magpie.bat"}
+		// PATHEXT's order: magpie.com, the console program magpie writes
+		// beside the app (com.go), runs before magpie.exe
+		return []string{"magpie.com", "magpie.exe", "magpie.cmd", "magpie.bat"}
 	}
 	return []string{"magpie"}
 }

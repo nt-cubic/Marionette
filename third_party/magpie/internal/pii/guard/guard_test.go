@@ -2,9 +2,12 @@ package guard
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 	"unicode/utf8"
 )
@@ -27,9 +30,15 @@ func TestDecodeBIO(t *testing.T) {
 		tag("I-private_person")}
 	prob := []float64{1, .99, .9, .95, 1, 1, .2, .97, .85, .9, .7}
 	got := decode(toks, lab, prob)
-	want := []Span{{5, 11, "email", .9}, {20, 33, "phone", .85}}
+	want := []Span{{5, 11, "email", .9}, {20, 33, "phone", .85}, {35, 38, "private_person", .7}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("decode = %v, want %v", got, want)
+	}
+	// One under Floor is dropped; masking drops those under the
+	// threshold set, MinScore or the user's, from what is left.
+	prob[10] = Floor - .01
+	if got := decode(toks, lab, prob); !reflect.DeepEqual(got, want[:2]) {
+		t.Fatalf("under Floor: %v", got)
 	}
 	// A B tag right after a span of its kind starts another.
 	lab[3] = tag("B-email")
@@ -86,14 +95,50 @@ func TestModelFinds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// bert.go's own; TestCoreMLMatchesGo holds CoreML to it. CoreML gives
+	// the module path .81, the publisher's fp32 model .785.
+	m.ml = nil
 	text := "联系人：张三，电话 13800138000，邮箱 zhangsan@example.com。\n" +
 		"go 1.26\nrequire github.com/clipperhouse/uax29/v2 v2.2.0\n"
+	// what masking keeps at the publisher's threshold: Find gives down
+	// to Floor (the module path is a common_secret at .79)
 	have := map[string]string{}
 	for _, s := range m.Find(text) {
-		have[text[s.Start:s.End]] = s.Label
+		if s.Score >= MinScore {
+			have[text[s.Start:s.End]] = s.Label
+		}
 	}
 	want := map[string]string{"张三": "private_person", "13800138000": "phone", "zhangsan@example.com": "email"}
 	if !reflect.DeepEqual(have, want) {
 		t.Fatalf("found %v, want %v", have, want)
+	}
+}
+
+// TestWindowsAtOnceReadAsOneByOne: a text of many windows, read with its
+// windows at once, finds what it does read a window at a time.
+func TestWindowsAtOnceReadAsOneByOne(t *testing.T) {
+	m, err := Load(dir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.ml = nil
+	var b strings.Builder
+	for i := range 200 {
+		fmt.Fprintf(&b, "第%d位联系人：张三，电话 138%08d，邮箱 user%d@example.com，住在北京市海淀区中关村大街%d号。\n", i, i*7919, i, i)
+	}
+	text := b.String()
+	if n := len(m.tok.encode(text)); n < 4*window {
+		t.Fatalf("%d tokens, want several windows", n)
+	}
+	was := runtime.GOMAXPROCS(1)
+	one := m.Find(text)
+	runtime.GOMAXPROCS(max(4, was))
+	at := m.Find(text)
+	runtime.GOMAXPROCS(was)
+	if len(one) == 0 {
+		t.Fatal("found nothing")
+	}
+	if !reflect.DeepEqual(at, one) {
+		t.Fatalf("windows at once found %d spans, one by one %d", len(at), len(one))
 	}
 }

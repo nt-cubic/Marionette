@@ -2,7 +2,7 @@
 // Codex's "Codex thread descriptions" (#1198, congee949): Codex's
 // thread_description requests go where this says, apart from the titles'
 // setting. By default the session's model (cybercaius); the app's menu (no native
-// select) offers magpie's models; a pick posts settings/codex-descriptions
+// select) offers Off, as the titles' (cybercaius again), and magpie's models; a pick posts settings/codex-descriptions
 // on its own, the titles' setting untouched, its button shows the choice
 // under a name with no line of its own (as the titles' row, 1ooogle on X),
 // and no click scrolls the Agents page, where Codex's row holds it.
@@ -69,8 +69,8 @@ function server(lang, posted) {
 }
 
 const want = {
-  en: { name: "Codex thread descriptions", own: "Same as the session" },
-  zh: { name: "Codex 会话描述", own: "跟随当前会话" },
+  en: { name: "Codex thread descriptions", own: "Same as the session", off: "Off", offNote: "no description, nothing sent" },
+  zh: { name: "Codex 会话描述", own: "跟随当前会话", off: "关闭", offNote: "不生成描述，不发出请求" },
 };
 const view = (page) => page.locator("#view-agents").evaluate((v) => v.scrollTop);
 
@@ -110,11 +110,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const before = await view(page);
       assert(before > 0, "the agents list must scroll to the row");
 
-      // the app's menu: the session's and magpie's models
+      // the app's menu: the session's, Off and magpie's models
       await pick.click();
       await page.locator("#pop:not([hidden]) #list li").first().waitFor();
       const items = (await page.locator("#list li:not(.group)").allTextContents()).join("|");
-      for (const s of [want[lang].own, "DeepSeek V4 Flash", "cheap"]) assert(items.includes(s), `${s} in ${items}`);
+      for (const s of [want[lang].own, want[lang].off, want[lang].offNote, "DeepSeek V4 Flash", "cheap"]) assert(items.includes(s), `${s} in ${items}`);
       await page.keyboard.press("Escape");
       await page.locator("#pop:not([hidden])").waitFor({ state: "hidden" });
 
@@ -128,6 +128,17 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.waitForTimeout(300);
       assert.equal(await view(page), before, "picking a model scrolled the page");
       assert.equal(await row.locator(".sub").count(), 0);
+
+      // Off, as the titles' has (cybercaius on Discord): the titles' stays
+      await pick.click();
+      await page.locator("#pop:not([hidden]) #list li").first().waitFor();
+      await page.locator("#list li:not(.group)").filter({ hasText: want[lang].offNote }).first().click();
+      await page.locator("#codexDescriptionsPick button", { hasText: want[lang].off }).waitFor();
+      assert.equal((await pick.textContent()).trim(), want[lang].off);
+      assert.deepEqual(posted.at(-1), ["codex-descriptions", { model: "off" }]);
+      assert.equal((await page.locator("#codexTitlesPick button").textContent()).trim(), want[lang].own, "the titles' setting is its own");
+      await page.waitForTimeout(300);
+      assert.equal(await view(page), before, "picking Off scrolled the page");
 
       // and back to the session's
       await pick.click();

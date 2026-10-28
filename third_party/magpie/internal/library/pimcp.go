@@ -97,6 +97,23 @@ var piGlobalRoots = func() []string {
 		"/usr/local/lib/node_modules", "/opt/homebrew/lib/node_modules", "/usr/lib/node_modules")
 }
 
+// wslPiRoots are piGlobalRoots for a Pi in a WSL distro whose home magpie
+// opens at h (\\wsl.localhost\<distro>\home\<user>): the distro's own
+// npm folders, under its root, never this machine's. npm's prefix there is
+// the distro's variable, which isn't read.
+func wslPiRoots(h string) []string {
+	out := []string{filepath.Join(h, ".npm-global", "lib", "node_modules")}
+	lh := linuxHome(h)
+	if lh == "" || !strings.HasSuffix(filepath.ToSlash(h), lh) {
+		return out
+	}
+	root := h[:len(h)-len(lh)]
+	for _, r := range []string{"/usr/local/lib/node_modules", "/usr/lib/node_modules"} {
+		out = append(out, root+filepath.FromSlash(r))
+	}
+	return out
+}
+
 // piPackageName is the package a settings.json packages entry installs, and
 // the version it is pinned to: npm:name@1.2.3, git:host/owner/name@v1.2.3,
 // https://host/owner/name.git, or a folder.
@@ -125,7 +142,11 @@ func piPackageName(spec string) (name, pin string) {
 // #1097, sydney on Discord: a pi-mcp-adapter left there with `packages: []`
 // sent the servers to mcp-adapter.json, which Pi 1.0 never reads); those
 // folders only tell a loaded adapter's version.
-func piDetect(d string) piPlugins {
+func piDetect(d string) piPlugins { return piDetectIn(d, piGlobalRoots()) }
+
+// piDetectIn is piDetect with roots as npm's global folders: this
+// machine's, or a WSL distro's for the Pi there (wslPiRoots).
+func piDetectIn(d string, roots []string) piPlugins {
 	var p piPlugins
 	var settings struct {
 		Packages   []json.RawMessage
@@ -211,7 +232,7 @@ func piDetect(d string) piPlugins {
 	dirs = append(dirs, filepath.Join(d, "npm", "node_modules", "pi-mcp-adapter"))
 	git, _ := filepath.Glob(filepath.Join(d, "git", "*", "*", "pi-mcp-adapter"))
 	dirs = append(dirs, git...)
-	for _, r := range piGlobalRoots() {
+	for _, r := range roots {
 		dirs = append(dirs, filepath.Join(r, "pi-mcp-adapter"))
 	}
 	found := ""
@@ -230,8 +251,8 @@ func piDetect(d string) piPlugins {
 }
 
 // piMCP is the file Pi's MCP servers go in, and the extension Pi reads them
-// through ("" for its own), h being the home, d Pi's agent folder and
-// version the Pi on PATH's:
+// through ("" for its own), h being the home, d Pi's agent folder, version
+// the Pi on PATH's and roots npm's global folders where Pi is (piDetectIn):
 //   - Pi 0.99 or later, or a Pi whose version isn't known, with no MCP
 //     extension loaded and its own MCP on: mcp.json, as Pi has it. With
 //     nothing loaded only Pi's own MCP reads servers, and every Pi since
@@ -245,8 +266,8 @@ func piDetect(d string) piPlugins {
 //     ignored).
 //   - otherwise, as before 0.99 — pi-mcp-adapter, loaded, stands in for
 //     Pi's own MCP (piFiles).
-func piMCP(h, d, version string) (*mcpFile, string) {
-	p := piDetect(d)
+func piMCP(h, d, version string, roots []string) (*mcpFile, string) {
+	p := piDetectIn(d, roots)
 	native := piNative(version) || version == ""
 	if native && !p.adapter && !p.ext && !p.noBuiltin {
 		native, adapter := filepath.Join(d, "mcp.json"), filepath.Join(d, "mcp-adapter.json")

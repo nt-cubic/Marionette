@@ -203,3 +203,41 @@ func TestMergeQuotaHistory(t *testing.T) {
 		t.Error("a broken file merged")
 	}
 }
+
+// max2020 on Discord: an Antigravity card had no curve and no "runs out
+// at this pace" line, as its rows are its pools' windows, which are aside
+// for routing, and its models' own windows are a family's. Each pool's
+// window is kept under its pool's name, as the card's line looks it up;
+// the models' windows still aren't, nor another window set aside.
+func TestQuotaHistoryKeepsAntigravityPools(t *testing.T) {
+	testenv.SetHome(t, t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t0 := time.Date(2026, 10, 27, 8, 0, 0, 0, time.UTC)
+	r5, rw := t0.Add(3*time.Hour), t0.Add(4*24*time.Hour)
+	card := func(gemini float64) []SubscriptionQuota {
+		return []SubscriptionQuota{{Provider: "antigravity", Name: "Antigravity", User: "m@x.com", Windows: []QuotaWindow{
+			{Name: "Gemini 3.8 Flash (Medium)", Model: "gemini-3.8-flash-medium", Family: "Gemini", Pool: "Gemini", Used: gemini, ResetsAt: &r5},
+			{Name: "Claude Sonnet 4.6 (Thinking)", Model: "claude-sonnet-4-6-thinking", Family: "Claude", Pool: "Claude & GPT", Used: 40, ResetsAt: &r5},
+			{Name: "5 hours", Pool: "Gemini", Span: 5 * time.Hour, Aside: true, Used: gemini, ResetsAt: &r5},
+			{Name: "7 days", Pool: "Gemini", Span: 7 * 24 * time.Hour, Aside: true, Used: gemini / 2, ResetsAt: &rw},
+			{Name: "5 hours", Pool: "Claude & GPT", Span: 5 * time.Hour, Aside: true, Used: 40, ResetsAt: &r5},
+			{Name: "Extra", Aside: true, Used: 10, ResetsAt: &rw},
+		}}}
+	}
+	noteQuotaHistory(card(10), t0)
+	noteQuotaHistory(card(30), t0.Add(time.Hour))
+	hs := QuotaHistories(t0.Add(-time.Hour), "", "")
+	if len(hs) != 1 || len(hs[0].Lines) != 3 {
+		t.Fatalf("histories = %+v, want the three pool windows' lines", hs)
+	}
+	five := lineOf(t, hs, "m@x.com", "Gemini · 5 hours")
+	if len(five) != 2 || five[0].Left != 90 || five[1].Left != 70 || five[0].Start == nil || !five[0].Start.Equal(r5.Add(-5*time.Hour)) {
+		t.Errorf("Gemini · 5 hours = %+v", five)
+	}
+	if week := lineOf(t, hs, "m@x.com", "Gemini · 7 days"); len(week) != 2 || week[1].Left != 85 || !week[0].Start.Equal(rw.Add(-7*24*time.Hour)) {
+		t.Errorf("Gemini · 7 days = %+v", week)
+	}
+	if cl := lineOf(t, hs, "m@x.com", "Claude & GPT · 5 hours"); len(cl) != 2 || cl[0].Left != 60 {
+		t.Errorf("Claude & GPT · 5 hours = %+v", cl)
+	}
+}

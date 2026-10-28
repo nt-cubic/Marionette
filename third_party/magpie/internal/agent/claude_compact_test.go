@@ -122,9 +122,23 @@ func TestClaudeCompactAt(t *testing.T) {
 	must(provider.SetCompactAt(400000))
 	must(a.Field("model").Set("v/big"))
 	expect("every model at 400K", "400000")
+	// the Usage page's card reads that as Long conversations, one value
+	// with the agent's settings sheet (7eleven); a provider's own is not it
+	tuned := func() TuneSetting {
+		t.Helper()
+		s, err := TuneRead(home, "claude", TuneCompact, "claude-opus-5-5")
+		must(err)
+		return s
+	}
+	if s := tuned(); s.Value != "400000" || s.Source != TuneLong || s.Locked != "" {
+		t.Fatalf("tune reads magpie's 400K as %+v", s)
+	}
 	must(provider.SetModelCompacts("v", map[string]int{"*": 600000, "flash": 200000}))
 	must(a.Sync())
 	expect("the provider's", "600000")
+	if s := tuned(); s.Locked != claudeCompactEnv || s.Value != "600000" {
+		t.Fatalf("tune reads the provider's 600K as %+v", s)
+	}
 	must(a.Field("model").Set("v/flash[1m]"))
 	expect("the model's own", "200000")
 	must(a.Field("model").Set("v/claude-opus-5-5[1m]"))

@@ -320,7 +320,7 @@ func groupsState() groupsJSON {
 			}
 			of, effort := provider.MemberEffort(id)
 			m.Of, m.Effort = of, effort
-			if p, model, ok := provider.Resolve(of); ok {
+			if p, model, ok := provider.ResolveRoute(of); ok {
 				_, who := onOf(p)
 				m.Ready, m.Provider, m.Name, m.Icon, m.Model, m.On = true, p.ID, p.Name, p.Icon, model, max(len(who), 1)
 				m.CanFast = provider.CanFast(p, model)
@@ -418,7 +418,8 @@ func groupRoutes(mux *http.ServeMux) {
 			}
 			in.ID = body.From
 			if err = provider.SaveGroup(in); err == nil {
-				err = provider.RenameGroup(body.From, to)
+				// the agents on group/<from> move to group/<to>
+				_, err = agent.RenameGroup(body.From, to)
 			}
 		case "delete":
 			if len(body.IDs) > 0 {

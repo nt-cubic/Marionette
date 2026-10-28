@@ -2,6 +2,7 @@ package gui
 
 import (
 	"errors"
+	"slices"
 	"testing"
 )
 
@@ -58,6 +59,38 @@ func TestRenderNodeOpens(t *testing.T) {
 		})
 		if got != c.want {
 			t.Errorf("%s: renderNodeOpens = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// WebKitGTK's web process aborts on any video where autoaudiosink is
+// missing (stock Omarchy: gst-plugins-base and -bad, no -good), so video is
+// off only there; with GStreamer's folder not found, nothing is known and
+// video stays on.
+func TestGstAutodetect(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		files []string
+		want  bool
+	}{
+		{"plugins-good installed", []string{"/usr/lib/gstreamer-1.0/libgstcoreelements.so", "/usr/lib/gstreamer-1.0/libgstautodetect.so"}, true},
+		{"stock omarchy", []string{"/usr/lib/gstreamer-1.0/libgstcoreelements.so", "/usr/lib/gstreamer-1.0/libgsttheora.so"}, false},
+		{"good in a folder the variable names", []string{"/usr/lib/gstreamer-1.0/libgstcoreelements.so", "/opt/gst/libgstautodetect.so"}, true},
+		{"no gstreamer folder found", nil, true},
+	} {
+		have := map[string]bool{}
+		for _, f := range c.files {
+			have[f] = true
+		}
+		if got := gstAutodetect([]string{"/opt/gst", "/usr/lib/gstreamer-1.0"}, func(p string) bool { return have[p] }); got != c.want {
+			t.Errorf("%s: gstAutodetect = %v, want %v", c.name, got, c.want)
+		}
+	}
+	env := map[string]string{"GST_PLUGIN_PATH_1_0": "/opt/gst:/opt/more", "GST_PLUGIN_SYSTEM_PATH": "/sys/gst"}
+	dirs := gstPluginDirs(func(k string) string { return env[k] })
+	for _, d := range []string{"/opt/gst", "/opt/more", "/sys/gst"} {
+		if !slices.Contains(dirs, d) {
+			t.Errorf("gstPluginDirs = %v, missing %s", dirs, d)
 		}
 	}
 }

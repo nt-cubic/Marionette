@@ -347,11 +347,33 @@ func TestCodexDescriptionsSetting(t *testing.T) {
 	if sent.Model != "m1" {
 		t.Errorf("the magpie model was asked for %q", sent.Model)
 	}
+
+	// off (cybercaius on Discord): nothing goes out, on the ChatGPT
+	// backend's path or magpie's own /v1, and Codex gets a finished reply
+	// with no description in it, which it reads as none, as titles' Off
+	save("off")
+	rec = codexDescriptionRequest(t, s)
+	if text, n := outputText(t, rec.Body.String()); rec.Code != 200 || n != 0 || text != "" || chatgptCalls != 1 || f.calls != 1 ||
+		!strings.Contains(rec.Body.String(), `"type":"response.completed"`) {
+		t.Fatalf("off: %d %q, %d items, chatgpt %d, magpie model %d", rec.Code, rec.Body.String(), n, chatgptCalls, f.calls)
+	}
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{"model":"fake/m1","stream":true,"input":"Describe the thread",`+
+		`"text":{"format":{"type":"json_schema","schema":{"type":"object","properties":{"description":{"type":"string","minLength":1}},"required":["description"]}}}}`))
+	req.Header.Set("x-codex-turn-metadata", `{"thread_source":"thread_description"}`)
+	s.Handler().ServeHTTP(rec, req)
+	if text, n := outputText(t, rec.Body.String()); rec.Code != 200 || n != 0 || text != "" || chatgptCalls != 1 || f.calls != 1 {
+		t.Fatalf("off on /v1: %d %q, %d items, chatgpt %d, magpie model %d", rec.Code, rec.Body.String(), n, chatgptCalls, f.calls)
+	}
+
 	var kinds []string
 	for _, u := range usage.Load(time.Time{}) {
 		kinds = append(kinds, u.Provider+":"+u.Kind)
+		if u.Provider == "magpie" && (!u.IsRejected() || u.Status != 200 || !strings.Contains(u.Error, "descriptions are off in Codex's settings on magpie's Agents page")) {
+			t.Errorf("an answered-here description %+v", u)
+		}
 	}
-	want := "openai:thread_description fake:thread_description"
+	want := "openai:thread_description fake:thread_description magpie:thread_description magpie:thread_description"
 	if got := strings.Join(kinds, " "); got != want {
 		t.Errorf("ledger %s\nwant   %s", got, want)
 	}

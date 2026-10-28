@@ -3,7 +3,8 @@
 // terminal opened now runs this app, said for each shell (a dot, no left
 // border), and Add to PATH, which posts /api/cli and shows the answer. On
 // Windows a program not named magpie.exe (the site's portable download,
-// #942) is said to get a magpie.cmd that runs it. A
+// #942) is said to get a magpie.cmd that runs it, and a magpie.com that
+// runs the app is said to run it (#3737). A
 // shell whose PATH lacks the folder has its own button naming its profile,
 // and only that button posts that shell. On Windows PowerShell and cmd are
 // listed, with no profile to write; a translocated app gets no button. No
@@ -21,10 +22,10 @@ const assets = path.resolve(__dirname, "../assets");
 const words = {
   en: { row: "Command line", add: "Add to PATH", none: "can't find the magpie command", ours: "runs this app", fish: "Add to ~/.config/fish/config.fish",
     added: "open a new terminal window", ps: "PowerShell and cmd take up a change in new windows", moved: "moved to Applications",
-    shimTitle: "writes magpie.cmd there, which runs magpie-windows-amd64.exe", shimAdded: "magpie.cmd beside magpie-windows-amd64.exe runs it as magpie", shimRuns: "which runs magpie-windows-amd64.exe" },
+    shimTitle: "writes magpie.cmd there, which runs magpie-windows-amd64.exe", shimAdded: "magpie.cmd beside magpie-windows-amd64.exe runs it as magpie", shimRuns: "which runs magpie-windows-amd64.exe", comRuns: "which runs magpie.exe" },
   zh: { row: "命令行", add: "添加到 PATH", none: "新终端里找不到 magpie 命令", ours: "运行这个 app", fish: "添加到 ~/.config/fish/config.fish",
     added: "新开一个终端窗口", ps: "PowerShell 和 cmd 在新窗口里生效", moved: "移到「应用程序」",
-    shimTitle: "写一个 magpie.cmd 来运行 magpie-windows-amd64.exe", shimAdded: "magpie-windows-amd64.exe 旁边的 magpie.cmd", shimRuns: "它运行 magpie-windows-amd64.exe" },
+    shimTitle: "写一个 magpie.cmd 来运行 magpie-windows-amd64.exe", shimAdded: "magpie-windows-amd64.exe 旁边的 magpie.cmd", shimRuns: "它运行 magpie-windows-amd64.exe", comRuns: "它运行 magpie.exe" },
 };
 
 const EXE = "/Applications/magpie.app/Contents/MacOS/magpie";
@@ -35,7 +36,9 @@ function view(ctl) {
     // magpie.cmd Add writes beside it
     const dir = ctl.portable ? "D:\\portable_app" : "C:\\Users\\u\\AppData\\Local\\magpie";
     const exe = dir + (ctl.portable ? "\\magpie-windows-amd64.exe" : "\\magpie.exe"), shim = ctl.portable ? dir + "\\magpie.cmd" : "";
-    const cmd = ctl.added ? shim || exe : "";
+    // a release build runs as magpie through the magpie.com it writes
+    // beside the app, which a shell waits for (#3737)
+    const cmd = ctl.added ? shim || (ctl.com ? dir + "\\magpie.com" : exe) : "";
     return { exe, ours: ctl.added, command: cmd, dir, windows: true, shim,
       shells: ["PowerShell", "cmd"].map((name, i) => ({ name, default: i === 0, known: true, ours: ctl.added, command: cmd })) };
   }
@@ -176,6 +179,17 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.match(await row.locator(".sub").innerText(), new RegExp(w.shimRuns));
         assert.match(await page.locator("#status").innerText(), new RegExp(w.shimAdded));
         assert.deepEqual(ctl.posts, [{}]);
+        assert.deepEqual(errors, []);
+        await page.context().close();
+      });
+
+      await t.test(lang + ": Windows' magpie.com is said to run the app (#3737)", async () => {
+        const ctl = { posts: [], gets: 0, windows: true, com: true };
+        const errors = [];
+        const { page, row } = await open(browser, lang, ctl, errors);
+        await row.locator("button.cli-add").click();
+        await row.locator(".sub", { hasText: "AppData\\Local\\magpie\\magpie.com" }).waitFor();
+        assert.match(await row.locator(".sub").innerText(), new RegExp(w.comRuns));
         assert.deepEqual(errors, []);
         await page.context().close();
       });

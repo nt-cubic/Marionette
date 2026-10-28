@@ -157,20 +157,38 @@ func NoteRevokedSignIn(ctx context.Context, a *Account, req *http.Request) {
 			return
 		}
 	}
-	why := revokedText(a.User)
+	markRevoked(a.Agent, a.User, m)
+}
+
+// markRevoked marks the account of agent and user revoked for the
+// credential whose mark is m: the gateway passes over it while it has
+// that credential, and its row says to sign in again.
+func markRevoked(agent, user, m string) {
+	why := revokedText(user)
 	revoked.Lock()
 	revokedLoad()
-	k := revokedKey(a.Agent, a.User)
+	k := revokedKey(agent, user)
 	if was, ok := revoked.accounts[k]; ok && was != m {
 		delete(revoked.marks, was) // logins.json keeps one mark an account
 	}
 	revoked.marks[m] = why
 	revoked.accounts[k] = m
 	revoked.Unlock()
-	_ = editSideLogin(a.Agent, a.User, func(ls []savedLogin, i int) ([]savedLogin, error) {
+	_ = editSideLogin(agent, user, func(ls []savedLogin, i int) ([]savedLogin, error) {
 		ls[i].Lapsed, ls[i].Refused = why, revokedPrefix+m
 		return ls, nil
 	})
+}
+
+// bearerMark is credentialMark of a request sent with access token tok,
+// as the gateway and a usage read send a ChatGPT account's.
+func bearerMark(tok string) string {
+	if tok == "" {
+		return ""
+	}
+	h := http.Header{}
+	h.Set("Authorization", "Bearer "+tok)
+	return credentialMark(h)
 }
 
 // ServedSignIn notes a request account a's vendor served: a mark of a

@@ -25,7 +25,8 @@ func observeRequest(r *http.Request, kind string, body []byte) (*http.Request, *
 	if len(observers) == 0 {
 		return r, nil
 	}
-	agent := agentOf(r)
+	// the agent it is recorded as, another magpie's own (callerFrom)
+	agent := callerOf(r).agent
 	q := usage.Request{Header: r.Header, Agent: agent, Session: observedSession(r.Header), Kind: observedKind(agent, kind, body),
 		Plain: local(r) && access.Caller(r.Context()).KeyID == "" && callerOf(r).via == ""}
 	o := &observed{}

@@ -22,7 +22,7 @@ import (
 //
 // Each schema with no type is given the one its values (enum, const,
 // default), keywords (properties: object, items: array, pattern:
-// string …) or branches (anyOf, oneOf, allOf, a local $ref) say, null
+// string …; an object's or array's before its values) or branches (anyOf, oneOf, allOf, a local $ref) say, null
 // left out: Vertex has one type a node, nullable apart. A node whose
 // branches have more than one type, or a $ref or union whose types can't
 // be told, is left as it came: no one type is right for it. One that says
@@ -98,6 +98,14 @@ func collectGeminiUntyped(body []byte, root, node gjson.Result, isRoot bool, ins
 // geminiSchemaType is the one type an untyped schema s is given for
 // Vertex, "" when it is left as it came.
 func geminiSchemaType(root, s gjson.Result, isRoot bool) string {
+	if t := keywordType(s); t == "object" || t == "array" {
+		// properties or items say it before its values do: a schema
+		// with items and a string enum given "string" went to Google
+		// with items on a string, and Antigravity turned the whole turn
+		// away ("properties[display].items: field predicate failed:
+		// $type == Type.ARRAY", ferock on Discord)
+		return t
+	}
 	vals := s.Get("enum").Array()
 	if c := s.Get("const"); c.Exists() {
 		vals = []gjson.Result{c}

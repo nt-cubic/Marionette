@@ -129,8 +129,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       return [went, left, v.scrollTop];
     });
     assert.deepEqual(at, [at[0], at[0], at[0]], "the flick goes all the way and the page stays where it left it");
-    // a tap lifts the finger too, but then clicks: what the click redraws
-    // doesn't scroll the page
+    // a tap lifts the finger too, but then clicks: a scroll by code after it,
+    // as what the click redraws makes, is no flick and is put back. (A run
+    // of scrolls with nothing redrawn is the reader's, a click before it or
+    // not: view-wheel-after-click, #3876.)
     const tap = await page.evaluate(async () => {
       const v = document.querySelector("#view-settings");
       const frame = () => new Promise((r) => requestAnimationFrame(r));
@@ -138,7 +140,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       v.dispatchEvent(new Event("touchstart", { bubbles: true }));
       v.dispatchEvent(new Event("touchend", { bubbles: true }));
       v.querySelector(".row.pref").click();
-      for (let i = 0; i < 5; i++) { v.scrollTop -= 40; await frame(); }
+      v.scrollTop -= 200;
+      await frame();
+      await frame();
       await new Promise((r) => setTimeout(r, 100));
       return [was, v.scrollTop];
     });

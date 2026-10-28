@@ -278,6 +278,13 @@ type subscriptionRun struct {
 	asked    []string
 	parkedAt time.Time
 
+	// started is when it was started, and active when its turn under way
+	// began (r.mu), for `magpie claude-code runs` (claudeRunList)
+	started time.Time
+	active  time.Time
+	// ends is when its timer lets it go (endIn), under r.mu
+	ends time.Time
+
 	// shown is the client's tool calls its last reply made, in the order
 	// the client was told them: a client that names them by ids of its own
 	// (AmpCode) has its results paired with them by position (remap)
@@ -824,7 +831,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	}
 	cmd.Stdout, cmd.Stderr = stdoutW, stderrW
 
-	run := &subscriptionRun{bridge: b, token: token, model: model, cmd: cmd, tmp: tmp, schema: len(req.Format.schema()) > 0, pending: map[string]chan mcpToolResult{}, stdin: stdin, effort: req.Effort, sessions: sessions}
+	run := &subscriptionRun{bridge: b, token: token, model: model, cmd: cmd, tmp: tmp, schema: len(req.Format.schema()) > 0, pending: map[string]chan mcpToolResult{}, stdin: stdin, effort: req.Effort, sessions: sessions, started: time.Now()}
 	run.owner.Store(&owner)
 	run.names = bridgeNames(req.Tools)
 	run.safeguardBeta = req.SafeguardBeta
@@ -836,7 +843,8 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	}
 	// A caller may abandon a turn after receiving tool_use. Do not leave the
 	// parked Claude process and MCP request alive forever.
-	run.timer = time.AfterFunc(30*time.Minute, func() { run.abortFor("it waited as long as it may") })
+	run.timer = time.AfterFunc(runTimeout, func() { run.abortFor("it waited as long as it may") })
+	run.ends = time.Now().Add(runTimeout)
 	segment := run.attach()
 	b.mu.Lock()
 	b.runs[token] = run
@@ -1077,9 +1085,10 @@ func (b *subscriptionBridge) resume(req *Request, owner string) (*subscriptionRu
 	}
 	ch := make(chan Event, 64)
 	run.segment = ch
+	run.active = time.Now()
 	run.turnUUID, run.backKey = turn, key
 	run.mu.Unlock()
-	run.timer.Reset(30 * time.Minute)
+	run.endIn(runTimeout)
 	// a turn the router picked another effort for (#502) goes on in the
 	// same Claude Code, told the level first: it asks the next turn at it
 	// in output_config alone, the conversation it wrote to the cache
@@ -1404,7 +1413,7 @@ func (r *subscriptionRun) ended(req *Request, said, stop string, ok bool) {
 	if !r.bridge.keepIdle(r, key, conv) {
 		return // it ended during its reply (#1667)
 	}
-	r.timer.Reset(idleLongest)
+	r.endIn(idleLongest)
 }
 
 // keepIdle leaves run waiting for the turn after the conversation key
@@ -1781,7 +1790,7 @@ func (r *subscriptionRun) letGo() {
 	r.asked, r.shown, r.parkedAt = nil, nil, time.Time{}
 	clear(r.early)
 	r.mu.Unlock()
-	r.timer.Reset(idleLongest)
+	r.endIn(idleLongest)
 	log.Printf("claude: the turn the client gave up on was taken back; its run waits for the conversation's next turn")
 }
 
@@ -1860,10 +1869,10 @@ func (r *subscriptionRun) park() {
 	case r.timer == nil:
 		return
 	case final:
-		r.timer.Reset(finalGrace)
+		r.endIn(finalGrace)
 		return
 	case r.stdin == nil:
-		r.timer.Reset(parkLongest)
+		r.endIn(parkLongest)
 		return
 	}
 	if why, over := r.oversized(3); over {
@@ -2098,11 +2107,20 @@ func (w *lockedWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// endIn has the run let go in d unless something comes for it first.
+func (r *subscriptionRun) endIn(d time.Duration) {
+	r.mu.Lock()
+	r.ends = time.Now().Add(d)
+	r.mu.Unlock()
+	r.timer.Reset(d)
+}
+
 func (r *subscriptionRun) attach() chan Event {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ch := make(chan Event, 64)
 	r.segment = ch
+	r.active = time.Now()
 	return ch
 }
 
@@ -2506,7 +2524,7 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 						r.emit(Event{Kind: KThink, Text: c.Thinking})
 					}
 					if c.Signature != "" {
-						r.emit(Event{Kind: KSig, Text: c.Signature})
+						r.emit(Event{Kind: KSig, Name: sealAnthropic, Text: c.Signature})
 					}
 				case "text":
 					said(c.Text)
@@ -2585,7 +2603,7 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 			case "thinking_delta":
 				r.emit(Event{Kind: KThink, Text: e.Delta.Thinking})
 			case "signature_delta":
-				r.emit(Event{Kind: KSig, Text: e.Delta.Signature})
+				r.emit(Event{Kind: KSig, Name: sealAnthropic, Text: e.Delta.Signature})
 			case "input_json_delta":
 				if !own[e.Index] {
 					r.emit(Event{Kind: KToolArgs, Text: e.Delta.PartialJSON})
@@ -3565,7 +3583,7 @@ var queuedWait = 2 * time.Second
 // doing what they asked (#1878).
 func (r *subscriptionRun) continueWith(results []Part, said string, tools []bridgeTool) (<-chan Event, error) {
 	if r.timer != nil {
-		r.timer.Reset(30 * time.Minute)
+		r.endIn(runTimeout)
 	}
 	if said != "" {
 		if err := r.queue(said); err != nil {

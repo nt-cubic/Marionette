@@ -1,11 +1,8 @@
 package provider
 
 import (
-	"context"
 	"testing"
 	"time"
-
-	"github.com/yetone/magpie/internal/proc"
 )
 
 // A reply that says the account Codex is signed in to is out has its
@@ -63,57 +60,4 @@ func TestCodexMayBeUsedUpReadsAtOnce(t *testing.T) {
 	codexRecheckEvery = 0
 	CodexMayBeUsedUp("ME@example.com")
 	read("usage_limit_reached")
-}
-
-// The Codex app open when its account ran out is kept till it is opened
-// again (its app-server's pid changes) or the account has room, and may
-// be reopened once for each time the account runs out.
-func TestCodexAppOutEpisode(t *testing.T) {
-	signIn(t)
-	rememberLogins(true)
-	app := new(int)
-	old := listProcesses
-	t.Cleanup(func() {
-		listProcesses = old
-		noteCodexAppOut(false)
-	})
-	listProcesses = func(context.Context) ([]proc.Process, error) {
-		ps := []proc.Process{{PID: 7, Args: "codex"}}
-		if *app > 0 {
-			ps = append(ps, proc.Process{PID: *app, Args: "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex app-server"})
-		}
-		return ps, nil
-	}
-	recheck := func() { codexAppOut.Lock(); codexAppOut.checked = time.Time{}; codexAppOut.Unlock() }
-
-	noteCodexAppOut(true)
-	if got := CodexAppOut(); got != "" || CodexAppReopenOnce() {
-		t.Fatalf("no app open: %q", got)
-	}
-	*app = 60
-	noteCodexAppOut(true)
-	if got := CodexAppOut(); got != "me@example.com" {
-		t.Fatalf("app open as it ran out: %q", got)
-	}
-	if !CodexAppReopenOnce() || CodexAppReopenOnce() {
-		t.Fatal("reopened other than once")
-	}
-	recheck()
-	if got := CodexAppOut(); got != "me@example.com" {
-		t.Fatalf("still the same app: %q", got)
-	}
-	*app = 61
-	recheck()
-	if got := CodexAppOut(); got != "" {
-		t.Fatalf("opened again: %q", got)
-	}
-
-	noteCodexAppOut(true) // out again: a new time, reopened once more
-	if CodexAppOut() == "" || !CodexAppReopenOnce() {
-		t.Fatal("out again: not kept")
-	}
-	noteCodexAppOut(false)
-	if got := CodexAppOut(); got != "" {
-		t.Fatalf("room again: %q", got)
-	}
 }

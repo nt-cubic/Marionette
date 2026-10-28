@@ -55,7 +55,7 @@ func clineFiles() []file {
 			// its title and its fork are in the manifest, beside it
 			m := file{path: filepath.Join(filepath.Dir(p), id+".json")}
 			if stat(&m) {
-				f.manifest = m.path
+				f.w().manifest = m.path
 				f.size += m.size
 				if m.mod.After(f.mod) {
 					f.mod = m.mod
@@ -116,8 +116,8 @@ func parseCline(f file, old *state) *state {
 	var since, start time.Time
 	var m clineManifest
 	hasM := false
-	if f.manifest != "" {
-		if b, err := os.ReadFile(f.manifest); err == nil && json.Unmarshal(b, &m) == nil {
+	if f.m().manifest != "" {
+		if b, err := os.ReadFile(f.m().manifest); err == nil && json.Unmarshal(b, &m) == nil {
 			hasM = true
 			if m.Metadata.Fork != nil {
 				since, _ = time.Parse(time.RFC3339Nano, m.Metadata.Fork.ForkedAt)

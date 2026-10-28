@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -386,10 +387,18 @@ func validPartners(in []Partner) []Partner {
 		for i := range p.Regions {
 			p.Regions[i].Decide = ""
 		}
+		p.SplitAccounts = slices.ContainsFunc(p.Regions, func(r Region) bool { return placeOf(r) == "china" }) &&
+			slices.ContainsFunc(p.Regions, func(r Region) bool { return placeOf(r) == "global" })
 		if p.Chat == "" && p.Responses == "" && p.Anthropic == "" {
-			// the first region is the default, as a built-in preset's is
-			r := p.Regions[0]
+			// the first region is the default, as a built-in preset's is,
+			// unless it is China's or Global's and the user is in the
+			// other (homeRegion): its key page, site and catalog with it
+			r := p.Regions[homeRegion(p.Regions, inMainlandChina())]
 			p.Chat, p.Responses, p.Anthropic = r.Chat, r.Responses, r.Anthropic
+			p.KeysURL, p.Website, p.Catalog = cmp.Or(r.KeysURL, p.KeysURL), cmp.Or(r.Website, p.Website), cmp.Or(r.Catalog, p.Catalog)
+			if r.Website != "" {
+				p.SiteHost = r.SiteHost
+			}
 		}
 		p.Note = p.Notes["en"]
 		if !strings.HasPrefix(p.Icon, "file:") || IconFile(strings.TrimPrefix(p.Icon, "file:")) == "" {
@@ -398,6 +407,66 @@ func validPartners(in []Partner) []Partner {
 		out = append(out, p)
 	}
 	return out
+}
+
+// homeRegion is the region a new provider of a partner starts at: the
+// first, unless the first is China's or Global's and the other is listed
+// too, when it is the one where the user is (inChina, from this
+// computer's time zone). Unknown (0) keeps the first. Kimi Code lists
+// China first, and a user abroad started at a plan that isn't theirs.
+// Only a region named for China or Global counts: "Pay as you go ·
+// China" is another plan, and "Auto" or "Direct" no place.
+func homeRegion(rs []Region, inChina int) int {
+	if len(rs) < 2 || inChina == 0 {
+		return 0
+	}
+	first := placeOf(rs[0])
+	if first == "" {
+		return 0
+	}
+	want := "global"
+	if inChina > 0 {
+		want = "china"
+	}
+	if first == want {
+		return 0
+	}
+	if i := slices.IndexFunc(rs, func(r Region) bool { return placeOf(r) == want }); i > 0 {
+		return i
+	}
+	return 0
+}
+
+// placeOf says whether a region is China's ("china"), Global's ("global")
+// or neither (""), by its id or its name.
+func placeOf(r Region) string {
+	id, name := strings.ToLower(r.ID), strings.ToLower(strings.TrimSpace(r.Name))
+	switch {
+	case id == "cn" || id == "china" || name == "china" || name == "china mainland" || name == "mainland china":
+		return "china"
+	case id == "global" || id == "intl" || name == "global" || name == "international":
+		return "global"
+	}
+	return ""
+}
+
+// inMainlandChina says whether this computer's time zone is mainland
+// China's: 1 it is, -1 it isn't, 0 unknown (no zone could be read). A
+// var, so a test sets where it is.
+var inMainlandChina = func() int { return chinaZone(cmp.Or(LocalZone(), systemZoneName())) }
+
+// chinaZone reads a time zone's name: an IANA name, or Windows' own,
+// whose China Standard Time is Beijing's (Hong Kong's too, which Windows
+// doesn't tell apart). Hong Kong, Macau and Taipei have zones of their
+// own, so they are abroad.
+func chinaZone(name string) int {
+	switch name {
+	case "":
+		return 0
+	case "Asia/Shanghai", "Asia/Urumqi", "Asia/Chongqing", "Asia/Chungking", "Asia/Harbin", "Asia/Kashgar", "PRC", "China Standard Time":
+		return 1
+	}
+	return -1
 }
 
 func checkPartner(p Partner) error {

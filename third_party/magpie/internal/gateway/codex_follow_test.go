@@ -32,22 +32,22 @@ func codexSide(t *testing.T, s *Server, kind, input string) {
 	}
 }
 
-// cybercaius on Discord: with Codex on a model routed through magpie, a
-// subagent its lead put on one of Codex's own models, with no model set
-// for subagents, went to the ChatGPT account. It follows the session now,
-// and the trace says what it asked for.
-func TestCodexSubagentFollowsTheSession(t *testing.T) {
+// mengxiao on Discord: Codex's subagent model left "Same as the lead" in
+// magpie, the user asked the lead for a subagent on GPT-6.1 Terra, and
+// magpie put it on the lead's model all the same. Codex starts a spawn
+// that names no model on its lead's, so a subagent asking for one of
+// Codex's own models under a lead on magpie's was named that model: it
+// goes on it, through the ChatGPT sign-in, and the trace marks no move.
+func TestCodexSubagentKeepsTheModelItWasNamed(t *testing.T) {
 	up, relay, s := codexFollowSetup(t, false)
 	codexSide(t, s, "collab_spawn", plainTask)
-	if got := up.asked(); len(got) != 0 {
+	if got := up.asked(); len(got) != 1 || got[0] != "gpt-5.5" {
 		t.Fatalf("ChatGPT was asked for %v", got)
 	}
-	reqs := relay.requests()
-	if len(reqs) != 2 || modelOf([]byte(reqs[1])) != "gpt-6-astra" {
+	if reqs := relay.requests(); len(reqs) != 1 {
 		t.Fatalf("the relay got %d requests: %v", len(reqs), reqs)
 	}
-	r := lastRoute(s)
-	if r.Subagent == nil || *r.Subagent != (SubagentPick{Asked: "gpt-5.5", To: "third/gpt-6-astra"}) {
+	if r := lastRoute(s); r.Subagent != nil {
 		t.Fatalf("trace: model %q subagent %+v", r.Model, r.Subagent)
 	}
 }
@@ -122,7 +122,7 @@ func codexAppSide(t *testing.T, s *Server, source, session string) {
 // cybercaius on Discord: with the conversation put on one of magpie's
 // models in the Codex app, and nothing in Codex's config, the app's thread
 // titles, descriptions and composer predictions still went to ChatGPT on
-// its own models. They follow the session now, as the subagents do.
+// its own models. They follow the session now, as the memories do.
 func TestCodexAppSideTurnsFollowTheSession(t *testing.T) {
 	up, relay, s := codexFollowSetup(t, false)
 	was := CodexSideModel

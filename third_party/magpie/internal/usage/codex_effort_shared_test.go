@@ -108,11 +108,12 @@ func TestCodexModelEffortAnswersLastWhileBuilding(t *testing.T) {
 // A history that changes between polls, as a working Codex's does, is
 // built into the answer at most once a minute: an ask inside the minute is
 // told the last answer without reading the ledger or the sources' state,
-// and the first ask after it builds the change in.
+// and the first ask after it is told it too while the change is built
+// behind it, for the next ask.
 func TestCodexModelEffortHeldForAMinute(t *testing.T) {
 	now, rollout := effortFixture(t)
-	effortFresh = time.Hour
-	t.Cleanup(func() { effortFresh = 0 })
+	effortFresh, effortBehind = time.Hour, true
+	t.Cleanup(func() { effortFresh, effortBehind = 0, false })
 	var built atomic.Int32
 	effortBuilt = func() { built.Add(1) }
 	t.Cleanup(func() { effortBuilt = nil })
@@ -129,13 +130,43 @@ func TestCodexModelEffortHeldForAMinute(t *testing.T) {
 	codexEffort.Lock()
 	codexEffort.periods[All].at = time.Now().Add(-2 * time.Hour)
 	codexEffort.Unlock()
+	entered, release := make(chan struct{}), make(chan struct{})
+	effortBuilt = func() {
+		built.Add(1)
+		close(entered)
+		<-release
+	}
+	asked := make(chan map[string][]sessions.ModelEffort, 1)
+	go func() { asked <- CodexModelEffort(All) }()
+	<-entered
+	select {
+	case got := <-asked:
+		if got, _ := findModelEffort(got["main-a"], "m", "low"); got.Input != 20 {
+			t.Fatalf("after the minute the ask got %+v, want the last answer", got)
+		}
+	case <-time.After(30 * time.Second):
+		close(release)
+		t.Fatal("after the minute the ask waited for the build")
+	}
+	codexEffort.Lock()
+	building := codexEffort.periods[All].building
+	codexEffort.Unlock()
+	if got, _ := findModelEffort(CodexModelEffort(All)["main-a"], "m", "low"); got.Input != 20 {
+		t.Fatalf("an ask during the build got %+v, want the last answer", got)
+	}
+	close(release)
+	<-building
+	effortBuilt = func() { built.Add(1) }
 	if got, _ := findModelEffort(CodexModelEffort(All)["main-a"], "m", "low"); built.Load() != 2 || got.Input != 2000 {
-		t.Fatalf("after the minute: builds %d, %+v, want 2 and the change", built.Load(), got)
+		t.Fatalf("after the build: builds %d, %+v, want 2 and the change", built.Load(), got)
 	}
 
-	// another home's answer is never held for this one
+	// another home's answer is never held for this one, nor told while
+	// its own is built
 	effortFixture(t)
-	CodexModelEffort(All)
+	if got := CodexModelEffort(All); len(got) == 0 || built.Load() != 3 {
+		t.Fatalf("a new home was told the last one's answer: builds %d, %+v", built.Load(), got)
+	}
 	if n := built.Load(); n != 3 {
 		t.Fatalf("a new home was told the last one's answer: builds %d, want 3", n)
 	}

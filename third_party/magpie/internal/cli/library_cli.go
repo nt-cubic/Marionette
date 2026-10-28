@@ -487,8 +487,11 @@ func rtkCmd(args []string) error {
 			fmt.Println(amber.Render("  RTK "+v.Latest+" is out · waiting for "+v.Waiting), muted.Render("— "+v.Waiting+" has "+v.WaitingHas+" so far, and usually has a release within a few days"))
 		case v.Latest != "" && v.Version != "" && library.RTKNewer(v.Latest, v.Version):
 			up := "update it the way it was installed"
-			if v.Upgrade != "" {
+			switch {
+			case v.Upgrade != "":
 				up = "magpie library rtk upgrade runs: " + v.Upgrade
+			case v.NoUpgrade == "cargo":
+				up = "it was installed with cargo, but magpie can't find cargo: install Rust from https://rustup.rs, or run " + v.Manual
 			}
 			fmt.Println(amber.Render("  RTK "+v.Latest+" is out"), muted.Render("— "+up))
 		case len(args) == 1 && args[0] == "upgrade":

@@ -24,6 +24,8 @@ const expiredBody = `{"error":{"message":"Provided authentication token is expir
 func codexExpiredFakes(t *testing.T, refused func(tok string) (int, string), refuseRefresh bool) (home string, refreshes func() []string, reads func() map[string]int) {
 	t.Helper()
 	home = signIn(t)
+	resetRevoked() // marks are read from this HOME's logins.json
+	t.Cleanup(resetRevoked)
 	rememberLogins(true)
 	codexSignIn(t, home, "work@example.com", "r-work")
 	rememberLogins(true)
@@ -143,7 +145,8 @@ func TestCodexUsageExpiredOnce(t *testing.T) {
 		if e := u["me@example.com"].Error; !strings.Contains(e, "add the account again") {
 			t.Fatalf("saved account: %q", e)
 		}
-		if e := u["work@example.com"].Error; !strings.Contains(e, "codex login") {
+		// signed in again in magpie, not with codex login (charliepu)
+		if e := u["work@example.com"].Error; e != revokedText("work@example.com") {
 			t.Fatalf("Codex's own account: %q", e)
 		}
 		if n := len(refreshes()); n != 2 {
@@ -160,7 +163,8 @@ func TestCodexUsageExpiredOnce(t *testing.T) {
 		_, refreshes, reads := codexExpiredFakes(t, always, false)
 		u := LoginUsage(context.Background(), "codex")
 		for _, user := range []string{"me@example.com", "work@example.com"} {
-			if e := u[user].Error; e != errCodexStillExpired.Error() {
+			// signed out for the refreshed token too (charliepu)
+			if e := u[user].Error; e != revokedText(user) {
 				t.Fatalf("%s: %q", user, e)
 			}
 		}

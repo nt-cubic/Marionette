@@ -190,9 +190,13 @@ func (h *heldWriter) answer(proto provider.Protocol, status int, msg string) boo
 // unroutedHold is one watched request's watch: the route that shows it
 // while it waits, and what ends it.
 type unroutedHold struct {
-	s      *Server
-	r      *http.Request
-	f      *inflight
+	s *Server
+	r *http.Request
+	f *inflight
+	// agent is who it is shown as (callerFrom), read as it comes: the
+	// timers never read its headers, which withCaller and decodedBody
+	// change meanwhile
+	agent  string
 	w      *heldWriter
 	cancel context.CancelCauseFunc
 	asked  atomic.Value // string: the model it asked for, once read
@@ -403,7 +407,7 @@ func (s *Server) watchUnrouted(w http.ResponseWriter, r *http.Request, f *inflig
 		return w, r, func() {}
 	}
 	ctx, cancel := context.WithCancelCause(r.Context())
-	u := &unroutedHold{s: s, f: f, w: newHeldWriter(w), cancel: cancel}
+	u := &unroutedHold{s: s, f: f, w: newHeldWriter(w), cancel: cancel, agent: callerFrom(r).agent}
 	r = r.WithContext(context.WithValue(ctx, unroutedKey{}, u))
 	if r.Body != nil && r.Body != http.NoBody {
 		r.Body = waitedBody{r.Body, u}
@@ -455,7 +459,7 @@ func (u *unroutedHold) show() {
 // showLocked begins the route that shows it; f.mu is held.
 func (u *unroutedHold) showLocked() {
 	asked, _ := u.asked.Load().(string)
-	rt := Route{Time: u.f.start, Agent: callerOf(u.r).agent, Session: u.f.session, Model: asked, Provider: "magpie"}
+	rt := Route{Time: u.f.start, Agent: u.agent, Session: u.f.session, Model: asked, Provider: "magpie"}
 	if rt.Agent == "" {
 		rt.Agent = u.f.agent
 	}

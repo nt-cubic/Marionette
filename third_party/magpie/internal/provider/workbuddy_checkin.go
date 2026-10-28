@@ -107,8 +107,9 @@ type WorkBuddyCheckin struct {
 	Credit  float64   `json:"credit,omitempty"`
 	Streak  int       `json:"streak,omitempty"`
 	Msg     string    `json:"msg,omitempty"`
-	// ValidUntil is a campaign's end, when a successful answer must be
-	// checked again, even if the Beijing day hasn't changed.
+	// ValidUntil is a campaign's end, or when a plugin said its vendor's
+	// day turns (auth.checkin's until), when the answer must be checked
+	// again, even if the Beijing day hasn't changed.
 	ValidUntil time.Time `json:"until,omitzero"`
 	// Offline is a failure that never reached WorkBuddy, and Tries how
 	// many before it the same day did the same.
@@ -182,10 +183,12 @@ func (r WorkBuddyCheckin) Checked() bool {
 	return r.Outcome == CheckinClaimed || r.Outcome == CheckinDone
 }
 
-// settled says whether r answers for day: it is that day's, and not a
-// failure due another try (at now; soon, at once).
+// settled says whether r answers for day: it is that day's, not past
+// ValidUntil (a plugin's vendor whose day turns at another hour said when:
+// Qoder's daily credits open at 10:00 UTC+8, sdytman on Discord), and not
+// a failure due another try (at now; soon, at once).
 func (r WorkBuddyCheckin) settled(day string, now time.Time, soon bool) bool {
-	if r.Day != day {
+	if r.Day != day || !r.ValidUntil.IsZero() && !now.Before(r.ValidUntil) {
 		return false
 	}
 	return r.Outcome != CheckinFailed || !soon && now.Sub(r.At) < r.retryAfter()
@@ -609,10 +612,15 @@ func (l *wbCheckinLoop) tick(ctx context.Context, c checkinRunner) []WorkBuddyCh
 	defer cancel()
 	rs := c.checkinNow(cx, false)
 	for _, r := range rs {
-		if r.Outcome != CheckinFailed {
-			continue
+		due := time.Time{}
+		if r.Outcome == CheckinFailed {
+			due = r.At.Add(r.retryAfter())
 		}
-		if due := r.At.Add(r.retryAfter()); l.again.IsZero() || due.Before(l.again) {
+		// and as the vendor's own day turns, when it said (ValidUntil)
+		if u := r.ValidUntil; u.After(now) && (due.IsZero() || u.Before(due)) {
+			due = u
+		}
+		if !due.IsZero() && (l.again.IsZero() || due.Before(l.again)) {
 			l.again = due
 		}
 	}

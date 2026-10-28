@@ -916,7 +916,7 @@ var errNotSearched = fmt.Errorf("answered without searching the web: %w", errFou
 // searching for its own models is sent none.
 func (s *Server) searchWith(ctx context.Context, p provider.Provider, model, query, effort string) (string, []Hit, error) {
 	body, _ := json.Marshal(searchBody(p, model, query, effort))
-	r, err := http.NewRequestWithContext(magpieChose(ctx), http.MethodPost, "http://magpie/v1/messages", nil)
+	r, err := http.NewRequestWithContext(ownAsk(magpieChose(ctx)), http.MethodPost, "http://magpie/v1/messages", nil)
 	if err != nil {
 		return "", nil, err
 	}
@@ -1242,7 +1242,20 @@ func (s *Server) askTranslated(p provider.Provider, to provider.Protocol, model 
 			}
 			var failed error
 			told := time.Now() // when the reader was last sent anything
+			// the reader hears that the reply goes on while the
+			// provider says nothing at all, as streamTranslated's client
+			// does (keepThroughSilence)
+			var mu sync.Mutex
+			heard, stopKeep := keepThroughSilence(&mu, func() {
+				if failed == nil && time.Since(told) >= keepaliveEvery/2 {
+					failed = send(Event{Kind: KAlive})
+					told = time.Now()
+				}
+			})
 			err := readSSEAlive(rd, func(_, data string) error {
+				mu.Lock()
+				defer mu.Unlock()
+				heard()
 				if err := dec(data, func(ev Event) {
 					if failed == nil {
 						failed = send(ev)
@@ -1253,6 +1266,9 @@ func (s *Server) askTranslated(p provider.Provider, to provider.Protocol, model 
 				}
 				return failed
 			}, func() {
+				mu.Lock()
+				defer mu.Unlock()
+				heard()
 				// a provider still queued or thinking — keepalives,
 				// response.in_progress — is heard from with nothing to
 				// translate: the reader hears that it goes on (#2316)
@@ -1261,6 +1277,7 @@ func (s *Server) askTranslated(p provider.Provider, to provider.Protocol, model 
 					told = time.Now()
 				}
 			})
+			stopKeep()
 			if err != nil && failed == nil && ctx.Err() == nil {
 				send(Event{Kind: KError, Text: p.Name + ": " + err.Error()})
 			}

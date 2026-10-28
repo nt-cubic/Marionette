@@ -75,7 +75,7 @@ func (r *TraceReader) pollOpenCodeDB(path string, bodies bool, budget *int64) ([
 		}
 		snap := r.snapshot(key)
 		v2 := false
-		if _, ok := f.oc.(ocV2DB); ok {
+		if _, ok := f.m().oc.(ocV2DB); ok {
 			v2 = true
 		}
 		if snap.oc == nil || snap.oc.v2 != v2 {
@@ -90,10 +90,10 @@ func (r *TraceReader) pollOpenCodeDB(path string, bodies bool, budget *int64) ([
 		}
 		// A row too large for the retained body window is read as metadata;
 		// body export is bounded independently from traversal progress.
-		more, ok := state.readRows(db, table, kind, f.sid, false, bodies, budget, changed)
+		more, ok := state.readRows(db, table, kind, f.m().sid, false, bodies, budget, changed)
 		pending = pending || more || !ok
 		if !v2 && *budget > 0 {
-			more, ok = state.readRows(db, "part", "''", f.sid, true, bodies, budget, changed)
+			more, ok = state.readRows(db, "part", "''", f.m().sid, true, bodies, budget, changed)
 			pending = pending || more || !ok
 		}
 		// Part-only updates may refer to messages evicted from the body window.
@@ -103,7 +103,7 @@ func (r *TraceReader) pollOpenCodeDB(path string, bodies bool, budget *int64) ([
 				continue
 			}
 			var raw []byte
-			if db.QueryRow(`SELECT CASE WHEN length(data)>8388608 THEN json_remove(data,'$.text','$.content') ELSE data END FROM message WHERE id=? AND session_id=?`, mid, f.sid).Scan(&raw) == nil {
+			if db.QueryRow(`SELECT CASE WHEN length(data)>8388608 THEN json_remove(data,'$.text','$.content') ELSE data END FROM message WHERE id=? AND session_id=?`, mid, f.m().sid).Scan(&raw) == nil {
 				*budget -= int64(len(raw))
 				var doc ocTraceMessage
 				if json.Unmarshal(raw, &doc) == nil {
@@ -134,7 +134,7 @@ func (r *TraceReader) pollOpenCodeDB(path string, bodies bool, budget *int64) ([
 				continue
 			}
 			m.ParentID = user.ID
-			spans := traceOpenCode(f.sid, []ocTraceMessage{user, m}, bodies)
+			spans := traceOpenCode(f.m().sid, []ocTraceMessage{user, m}, bodies)
 			for i, span := range spans {
 				if span.Parent != "" {
 					continue

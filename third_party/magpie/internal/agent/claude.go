@@ -879,8 +879,11 @@ func claudeIn(at place) *Agent {
 		cur := env(claudeCompactEnv)
 		return cur != "" && cur == stashLoad()[compactKey]
 	}
+	// set while the window magpie wrote is Long conversations' (not a
+	// provider's Compact at): tune's card reads it as that one value
+	compactLongKey := at.key("claude.compact_long")
 	dropCompact := func() error {
-		defer forget(compactKey)
+		defer forget(compactKey, compactLongKey)
 		if compactOurs() {
 			return edit.DelJSON(path, "env."+claudeCompactEnv)
 		}
@@ -909,8 +912,9 @@ func claudeIn(at place) *Agent {
 		// model (settings.Compact), none under Full window
 		main := mainModel()
 		n := provider.CompactSet(main)
+		long := false
 		if s := settings.Load(); n == 0 && !claudeModel(main) && !provider.ClaudeGroup(main) {
-			n = s.Compact()
+			n, long = s.Compact(), true
 			// magpie's default gives way to an autoCompactWindow the user
 			// set in Claude Code (/autocompact, its settings), which the env
 			// would take precedence over; one typed in magpie doesn't (#876).
@@ -927,6 +931,11 @@ func claudeIn(at place) *Agent {
 		}
 		w := strconv.Itoa(n)
 		stash(map[string]string{compactKey: w})
+		if long {
+			stash(map[string]string{compactLongKey: "1"})
+		} else {
+			forget(compactLongKey)
+		}
 		if env(claudeCompactEnv) == w {
 			return nil
 		}
@@ -1662,7 +1671,7 @@ func claudeIn(at place) *Agent {
 				}
 				return env(tierEnv(t))
 			}
-			own := claudeOwn(cur["model"], tier)
+			own := claudeOwn(cur["model"], tier, provider.ClaudeCodeModels())
 			for i := range own {
 				own[i].Direct = direct
 			}
@@ -2268,14 +2277,15 @@ func claudeDropModelEffort(path, n string) error {
 	return nil
 }
 
-// claudeOwn is Anthropic's models as Claude Code takes them: only the
-// catalog's; Claude Code's own short aliases are not something any API
-// lists, and a compiled-in copy would just go stale. One the user's
+// claudeOwn is Anthropic's models as Claude Code takes them, ms: the
+// catalog's, and on this computer the ones Anthropic told Claude Code
+// its account has beyond them (provider.ClaudeCodeModels: Claude Mythos
+// 5.1); Claude Code's own short aliases are not something any API lists,
+// and a compiled-in copy would just go stale. One the user's
 // settings.json names (cur: "model": "sonnet") comes first, said as the
 // model it stands for, so the row doesn't show a bare word; tier is the
 // model the user's env gives a tier, "" for none.
-func claudeOwn(cur string, tier func(string) string) []Option {
-	ms := catalog.Provider("anthropic")
+func claudeOwn(cur string, tier func(string) string, ms []catalog.Model) []Option {
 	var own []Option
 	if o, ok := claudeAliasOption(cur, ms, tier); ok {
 		own = append(own, o)
@@ -2569,7 +2579,8 @@ var claudeManaged = func() string {
 // StandIn is the model Claude Code is set to use in place of one it named
 // that magpie doesn't serve: claude-haiku-4-5-… for a title or a small
 // task goes to its haiku tier's model, and a name of no tier to its main
-// model. For Codex, the model it is set to (codexStandIn). "" when the
+// model. For Codex, the model it is set to (codexStandIn), in a WSL
+// distro the distro's config names (wslCodexStandIn). "" when the
 // agent isn't routed through magpie or is neither. For gateway.StandIn.
 func StandIn(agent, model string) string {
 	if agent != "claude" && agent != "codex" {
@@ -2580,7 +2591,11 @@ func StandIn(agent, model string) string {
 		return ""
 	}
 	if agent == "codex" {
-		return codexStandIn(filepath.Join(here(home).codexHome(), "config.toml"))
+		if m := codexStandIn(filepath.Join(here(home).codexHome(), "config.toml")); m != "" || runtime.GOOS != "windows" {
+			return m
+		}
+		// a Codex in a WSL distro is known by the same client
+		return wslCodexStandIn()
 	}
 	if m := claudeStandIn(filepath.Join(here(home).claudeDir(), "settings.json"), model); m != "" || runtime.GOOS != "windows" {
 		return m

@@ -183,3 +183,30 @@ func TestNPMInfoGivesIcon(t *testing.T) {
 		}
 	}
 }
+
+// The update check asks npm now, not what it said within the hour: a
+// community fix published a few minutes after the page last asked reaches
+// a magpie started since at its first look (ysm119 on Discord).
+func TestUpdateCheckAsksNPMNow(t *testing.T) {
+	var version atomic.Value
+	version.Store("1.2.3")
+	fakeNPM(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/downloads/") {
+			w.Write([]byte(`{"downloads":1}`))
+			return
+		}
+		w.Write([]byte(`{"version":"` + version.Load().(string) + `"}`))
+	})
+	ctx := context.Background()
+	pkg := "@magpie-community/opencode-x-auth"
+	if got := Info(ctx, []string{pkg})[pkg].Version; got != "1.2.3" {
+		t.Fatalf("first ask: %q", got)
+	}
+	version.Store("1.2.4")
+	if got := Info(ctx, []string{pkg})[pkg].Version; got != "1.2.3" {
+		t.Fatalf("the page within the hour: %q, want what npm said last", got)
+	}
+	if got := latestOf(ctx, []string{pkg})[pkg]; got != "1.2.4" {
+		t.Fatalf("the update check: %q, want npm's version now", got)
+	}
+}

@@ -30,7 +30,7 @@
 .sm-bar .sm-delete:disabled { opacity: .45; }
 .sm-count { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .sm-check { flex: none; margin: 0; width: 14px; height: 14px; accent-color: var(--accent); }
-.sm-tree { display: flex; flex-direction: column; gap: 8px; }
+.sm-tree { display: flex; flex-direction: column; gap: 8px; container: sm-tree / inline-size; }
 .sm-group .skeleton.sk-line { width: 60%; height: 12px; }
 .sm-select.on { background: var(--pill); color: var(--fg); }
 /* the folders are one list, parted by hairlines, never a card each; the
@@ -85,6 +85,21 @@ body.window .sm-group .row.sm-sess { padding-left: 32px; }
   /* five gaps of 12px left a 420px window's title 90px once the list
      scrolled and its scrollbar took 10px */
   .row.sess.sm-sess { gap: 8px; }
+}
+/* the list's own width, not the window's: beside the sidebar a 780px
+   window left a row's title "7" of its name, its tokens, cost, Resume and
+   Continue in taking the rest (cybercaius on Discord) */
+@container sm-tree (max-width: 700px) {
+  .row.sm-sess .num { display: none; }
+  .row.sm-sess .cost { min-width: 0; }
+  .row.sess.sm-sess { gap: 8px; }
+}
+/* narrower still, the title has the first line to itself and what is done
+   with the session goes under it, on the right */
+@container sm-tree (max-width: 600px) {
+  .row.sess.sm-sess { flex-wrap: wrap; justify-content: flex-end; row-gap: 4px; padding-top: 7px; padding-bottom: 7px; }
+  .row.sm-sess > .who { flex-basis: 100%; }
+  .row.sm-sess:has(> .sm-check) > .who { flex-basis: calc(100% - 22px); }
 }
 @media (max-width: 420px) {
   .sm-head { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; row-gap: 6px; }

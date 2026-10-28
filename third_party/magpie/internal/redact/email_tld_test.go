@@ -38,3 +38,31 @@ func TestEmailNeedsAMailDomain(t *testing.T) {
 		}
 	}
 }
+
+// An address that ends a sentence is masked: the dot after it was a
+// bound character, so "The user's email address is jo@quill.dev." (Claude
+// Code's own line in every request) and "write to me at li.wei@qq.com."
+// went to the vendor as written, the rules masking nothing. A dot that
+// makes the address part of a longer name still keeps it as it is.
+func TestEmailBeforeAFullStop(t *testing.T) {
+	o := Options{Secrets: true, Personal: true}
+	for _, in := range []string{
+		"The user's email address is jo@quill.dev. Use it only to identify the user.",
+		"The user's email address is jo@quill.dev.",
+		"write to me at li.wei@qq.com.",
+		"ask rina.k@fastmail.com... she knows",
+		`{"text":"mail jo@quill.dev.\nthanks"}`,
+	} {
+		if out, n := Mask(in, o); n != 1 || strings.Contains(out, "@") {
+			t.Errorf("%q: %d masked: %q", in, n, out)
+		}
+	}
+	for _, in := range []string{
+		"x@build.io.12 is a version",
+		"a@b.co.x_y",
+	} {
+		if out, n := Mask(in, o); n != 0 {
+			t.Errorf("%q: %d masked: %q", in, n, out)
+		}
+	}
+}

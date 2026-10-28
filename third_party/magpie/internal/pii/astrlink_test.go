@@ -87,7 +87,7 @@ func TestChoose(t *testing.T) {
 		want string
 	}{
 		{"", false, AstrLinkGuard},            // a new user
-		{"", true, PrivacyFilter},             // had Privacy Filter on before there was a choice
+		{"", true, AstrLinkGuard},             // on, Privacy Filter not downloaded
 		{AstrLinkGuard, true, AstrLinkGuard},  // picked
 		{PrivacyFilter, false, PrivacyFilter}, // picked
 		{"something-else", false, AstrLinkGuard},
@@ -96,8 +96,8 @@ func TestChoose(t *testing.T) {
 			t.Errorf("Choose(%q, %v) = %q, want %q", c.name, c.on, got, c.want)
 		}
 	}
-	// Privacy Filter downloaded and turned off: turning the model on
-	// again uses it, rather than download another
+	// Privacy Filter downloaded: turned off, AstrLink Guard is the
+	// default; on, it masks until AstrLink Guard is downloaded
 	os.MkdirAll(dir(), 0o755)
 	os.WriteFile(modelPath(), make([]byte, 1), 0o644)
 	wasSize := modelSize
@@ -105,8 +105,11 @@ func TestChoose(t *testing.T) {
 	defer func() { modelSize = wasSize }()
 	os.MkdirAll(serveDir(), 0o755)
 	os.WriteFile(exe("pf-serve"), []byte("x"), 0o755)
-	if got := Choose("", false); got != PrivacyFilter {
-		t.Errorf("with Privacy Filter on disk, Choose = %q", got)
+	if got := Choose("", false); got != AstrLinkGuard {
+		t.Errorf("with Privacy Filter on disk and off, Choose = %q", got)
+	}
+	if got := Choose("", true); got != PrivacyFilter {
+		t.Errorf("with Privacy Filter on disk and on, Choose = %q", got)
 	}
 }
 

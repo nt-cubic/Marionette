@@ -2,10 +2,12 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -191,5 +193,111 @@ func anotherMagpieAddedByHand(t *testing.T, held bool) {
 	}
 	if asked.Load() != 2 {
 		t.Errorf("Qoder was asked %d times; want twice", asked.Load())
+	}
+}
+
+// The marker comes by wire: the other magpie's keyLimited answers a 429
+// with remoteKeyLimitHeader, and what reaches restAfterMarked here is what
+// the relay kept of the upstream reply. The key's own limit there rests
+// the whole remote, not the model it was asked for — the opposite of that
+// model's own rate limit, which rests it alone
+// (TestRemoteMagpieQuotaRestsTheModel). So asked again, the remote's
+// models are behind the next member, neither of them asked.
+func TestRemoteMagpieKeyLimitRestsTheRemote(t *testing.T) {
+	fresh(t)
+	forgetSinks(t)
+	var mu sync.Mutex
+	var asked []string
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Model string `json:"model"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		asked = append(asked, req.Model)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if req.Model == "glm/glm-5" {
+			// what keyLimited answers with: its 429 names when the key
+			// resets, and marks itself the key's own
+			w.Header().Set(remoteKeyLimitHeader, "2026-10-19T00:00:00Z")
+			w.Header().Set("Retry-After", "60")
+			w.WriteHeader(http.StatusTooManyRequests)
+			io.WriteString(w, `{"error":{"message":"gateway key over its request budget","type":"rate_limit_error"}}`)
+			return
+		}
+		if req.Model == "kimi/kimi-k3" {
+			// that model's own rate limit there, no marker: rests alone
+			w.WriteHeader(http.StatusTooManyRequests)
+			io.WriteString(w, `{"error":{"message":"rate limit exceeded, slow down"}}`)
+			return
+		}
+		io.WriteString(w, `{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"from `+req.Model+`"},"finish_reason":"stop"}]}`)
+	}))
+	t.Cleanup(remote.Close)
+	if err := provider.Save(provider.Provider{ID: "office", Name: "Office", Preset: provider.RemoteMagpiePreset, Key: "k",
+		Chat: remote.URL + "/v1", Models: []string{"glm/glm-5", "kimi/kimi-k3"}}); err != nil {
+		t.Fatal(err)
+	}
+	other := &keyed{}
+	serveOn(t, "other", "ko", []string{"m"}, other)
+	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"office/glm/glm-5", "office/kimi/kimi-k3", "other/m"}, Routing: provider.Ordered}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	// neither of the remote's models answers: the turn goes to the next
+	// member
+	if code, body := postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"hi"}]}`); code != 200 || !strings.Contains(body, "from ko") {
+		t.Fatalf("the remote's key limit and its model's rate limit: %d %s", code, body)
+	}
+	// the key's own limit there rests the remote whole; kimi's own rate
+	// limit rests kimi alone
+	if _, ok := restOf("office"); !ok {
+		t.Errorf("the key's own limit there didn't rest the remote whole: %v", rests())
+	}
+	if r, ok := restOf("office/glm/glm-5"); ok {
+		t.Errorf("the key's own limit rested glm alone: %+v %v", r, rests())
+	}
+	if _, ok := restOf("office/kimi/kimi-k3"); !ok {
+		t.Errorf("kimi's own rate limit there didn't rest kimi alone: %v", rests())
+	}
+	// asked again, the remote sits out whole: neither model is
+	mu.Lock()
+	asked = nil
+	mu.Unlock()
+	if code, body := postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"hi"}]}`); code != 200 || !strings.Contains(body, "from ko") || len(asked) != 0 {
+		t.Fatalf("the remote's models were asked %v after its key limit: %d %s", asked, code, body)
+	}
+}
+
+// The other magpie's key-limit marker is read here, not passed on: a
+// magpie that asks this one would read it as this magpie's own key limit
+// and rest all of this one, every provider behind it, for one key there
+// (#2791). The agent gets the 429 without the marker or magpie's own
+// note of it.
+func TestRemoteMagpieKeyLimitMarkerStaysHere(t *testing.T) {
+	fresh(t)
+	forgetSinks(t)
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(remoteKeyLimitHeader, "2026-10-19T00:00:00Z")
+		w.WriteHeader(http.StatusTooManyRequests)
+		io.WriteString(w, `{"error":{"message":"gateway key over its request budget","type":"rate_limit_error"}}`)
+	}))
+	t.Cleanup(remote.Close)
+	if err := provider.Save(provider.Provider{ID: "office", Name: "Office", Preset: provider.RemoteMagpiePreset, Key: "k",
+		Chat: remote.URL + "/v1", Models: []string{"glm/glm-5"}}); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	New().Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"office/glm/glm-5","messages":[{"role":"user","content":"hi"}]}`)))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	for _, h := range []string{remoteKeyLimitHeader, keyLimitThereHeader} {
+		if v := rec.Header().Get(h); v != "" {
+			t.Errorf("the agent's reply carries %s: %q", h, v)
+		}
 	}
 }

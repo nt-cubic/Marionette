@@ -3,6 +3,7 @@ package gateway
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -178,6 +180,272 @@ func TestHandedOverGatewayFinishesItsStream(t *testing.T) {
 	}
 	if n := upstreamCalls.Load(); n != 6 {
 		t.Fatalf("upstream saw %d calls, want 6", n)
+	}
+}
+
+// quickChat is a fresh HOME whose chat is answered at once ("quick").
+func quickChat(t *testing.T) {
+	t.Helper()
+	fresh(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"quick"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1}}`)
+	}))
+	t.Cleanup(up.Close)
+	if err := provider.Save(provider.Provider{ID: "plan", Name: "Plan", Key: "upstream", Chat: up.URL + "/v1", Models: []string{"m1"}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// handOffSandbox is a gateway serving on a port of its own, its chat
+// answered at once (quickChat), as the magpie to hand off; stop ends it
+// and done says how it ended.
+func handOffSandbox(t *testing.T) (old *Server, addr string, stop context.CancelFunc, done <-chan error) {
+	t.Helper()
+	quickChat(t)
+	t.Setenv("MAGPIE_ADDR", "127.0.0.1:0")
+	old = New()
+	stop, done = listening(t, old)
+	t.Cleanup(stop)
+	addr = old.Addr()
+	t.Setenv("MAGPIE_ADDR", addr) // as settings name it, for a new one
+	return old, addr, stop, done
+}
+
+// chatOn sends the chat request on c, a connection of its own to addr.
+func chatOn(t *testing.T, c net.Conn, addr string) {
+	t.Helper()
+	if _, err := fmt.Fprintf(c, "POST /v1/chat/completions HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", addr, len(chatReq), chatReq); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// answerOn is the reply read on c, or why there was none.
+func answerOn(c net.Conn) (string, error) {
+	c.SetReadDeadline(time.Now().Add(10 * time.Second))
+	r, err := http.ReadResponse(bufio.NewReader(c), nil)
+	if err != nil {
+		return "", err
+	}
+	defer r.Body.Close()
+	b, err := io.ReadAll(r.Body)
+	return r.Status + " " + string(b), err
+}
+
+// A gateway handed off takes no connection from then on, its ctx not
+// ended yet: one made then waits on the socket for the magpie it was
+// handed to, which answers it. The old one took it before, until its end
+// closed its listener, and closed it unanswered when it read the request
+// after that end began (#3568).
+func TestHandedOffGatewayTakesNoNewConnection(t *testing.T) {
+	old, addr, stopOld, oldDone := handOffSandbox(t)
+	defer func() {
+		stopOld()
+		<-oldDone
+	}()
+	f, err := old.ListenerFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.FileListener(f)
+	f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old.HandOff()
+
+	// made before the new one serves: only the old one could take it now
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	chatOn(t, c, addr)
+	Inherit(ln, func() {})
+	next := New()
+	stopNext, nextDone := listening(t, next)
+	defer func() {
+		stopNext()
+		<-nextDone
+	}()
+	if got, err := answerOn(c); err != nil || !strings.HasPrefix(got, "200 ") || !strings.Contains(got, "quick") {
+		t.Fatalf("a request made once the gateway was handed off: %q %v", got, err)
+	}
+	if n := len(old.Recent()); n != 0 {
+		t.Fatalf("the old one answered %d request(s) made once it had handed the gateway off", n)
+	}
+	if n := len(next.Recent()); n != 1 {
+		t.Fatalf("the new one answered %d of the 1 request made once the gateway was handed off", n)
+	}
+}
+
+// A connection the gateway took before it handed off, whose request comes
+// only once its end has begun, is answered there: the end waits for every
+// connection taken to send its first request before Shutdown, which closes
+// one it reads after it began unanswered (#3568). So too for a `make dev`
+// backend ending beside the one started after it (Handover).
+func TestHandedOffGatewayAnswersAConnectionItTook(t *testing.T) {
+	for _, dev := range []bool{false, true} {
+		name := "handed off"
+		if dev {
+			name = "make dev"
+		}
+		t.Run(name, func(t *testing.T) {
+			was := Handover
+			Handover = dev
+			defer func() { Handover = was }()
+			old, addr, stopOld, oldDone := handOffSandbox(t)
+
+			c, err := net.Dial("tcp", addr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			// one made after it, answered: the old one took c first, as it
+			// takes connections in the order they came
+			one := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+			r, err := one.Post("http://"+addr+"/v1/chat/completions", "application/json", strings.NewReader(chatReq))
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.Body.Close()
+			if r.StatusCode != 200 {
+				t.Fatalf("the request after it: %d", r.StatusCode)
+			}
+
+			if !dev {
+				f, err := old.ListenerFile()
+				if err != nil {
+					t.Fatal(err)
+				}
+				ln, err := net.FileListener(f) // the new one's copy, keeping the socket open
+				f.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer ln.Close()
+				old.HandOff()
+			}
+			stopOld()
+			// its agent sends the request late, once the end has begun:
+			// well inside the 5s the end waits for it (unreadWait)
+			time.Sleep(100 * time.Millisecond)
+			chatOn(t, c, addr)
+			if got, err := answerOn(c); err != nil || !strings.HasPrefix(got, "200 ") || !strings.Contains(got, "quick") {
+				t.Fatalf("a request on a connection the old one took, sent once its end began: %q %v", got, err)
+			}
+			// its end follows the answer, not the 5s the wait gives up after
+			// (unreadWait)
+			select {
+			case err := <-oldDone:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("the old one never ended once its connections were answered")
+			}
+			if n := len(old.Recent()); n != 2 {
+				t.Fatalf("the old one answered %d of its 2 requests", n)
+			}
+		})
+	}
+}
+
+// heldListener holds the next connection it takes, once told to, until
+// let go: as a busy machine can hold the goroutine that took one, before
+// net/http notes it.
+type heldListener struct {
+	net.Listener
+	hold atomic.Bool
+	took chan struct{} // closed once it holds one
+	let  chan struct{} // closed to hand it on
+}
+
+func (l *heldListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err == nil && l.hold.Swap(false) {
+		close(l.took)
+		<-l.let
+	}
+	return c, err
+}
+
+// A connection the gateway took just before its end began, which net/http
+// notes only after that (the goroutine that took it was held), is answered
+// there too: the end waits for Serve to return, by when every connection
+// it took is noted. Shutdown marks the server shutting down before it waits
+// for Serve, so a request on one noted after that is closed unanswered.
+// So too for a `make dev` backend ending beside the one started after it.
+func TestHandedOffGatewayAnswersAConnectionNotedLate(t *testing.T) {
+	for _, dev := range []bool{false, true} {
+		name := "handed off"
+		if dev {
+			name = "make dev"
+		}
+		t.Run(name, func(t *testing.T) {
+			was := Handover
+			Handover = dev
+			defer func() { Handover = was }()
+			quickChat(t)
+			tcp, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			addr := tcp.Addr().String()
+			t.Setenv("MAGPIE_ADDR", addr)
+			held := &heldListener{Listener: tcp, took: make(chan struct{}), let: make(chan struct{})}
+			Inherit(held, func() {})
+			old := New()
+			stopOld, oldDone := listening(t, old)
+			t.Cleanup(stopOld)
+			letGo := sync.OnceFunc(func() { close(held.let) })
+			t.Cleanup(letGo)
+
+			held.hold.Store(true)
+			c, err := net.Dial("tcp", addr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			select {
+			case <-held.took:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the gateway never took the connection")
+			}
+			if !dev {
+				f, err := tcp.(*net.TCPListener).File()
+				if err != nil {
+					t.Fatal(err)
+				}
+				ln, err := net.FileListener(f) // the new one's copy, keeping the socket open
+				f.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer ln.Close()
+				old.HandOff()
+			}
+			stopOld()
+			// the end has begun, and would be in Shutdown by now, before
+			// net/http notes the connection and reads its request
+			time.Sleep(100 * time.Millisecond)
+			chatOn(t, c, addr)
+			letGo()
+			if got, err := answerOn(c); err != nil || !strings.HasPrefix(got, "200 ") || !strings.Contains(got, "quick") {
+				t.Fatalf("a request on a connection the old one took, noted once its end began: %q %v", got, err)
+			}
+			select {
+			case err := <-oldDone:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("the old one never ended once its connection was answered")
+			}
+			if n := len(old.Recent()); n != 1 {
+				t.Fatalf("the old one answered %d of its 1 request", n)
+			}
+		})
 	}
 }
 

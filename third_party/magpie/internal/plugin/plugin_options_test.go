@@ -87,6 +87,39 @@ func TestPluginOptions(t *testing.T) {
 	if !OptionOn(s.PluginOptions, "optco", opts[0]) || !OptionOn(s.PluginOptions, "optco", opts[1]) || OptionOn(s.PluginOptions, "optco", opts[2]) {
 		t.Error("OptionOn doesn't take the user's value, else the default")
 	}
+	// a models hook may list by a switch (WorkBuddy's "Free models only",
+	// plugins#430): the providers kept are asked again after a change, so
+	// the list follows the switch without a restart
+	models := func() []string {
+		t.Helper()
+		Cached()
+		Refreshed()
+		for _, p := range Cached() {
+			if p.ID == "optco" {
+				var ids []string
+				for _, m := range p.Models {
+					ids = append(ids, m.ID)
+				}
+				return ids
+			}
+		}
+		t.Fatal("optco isn't listed")
+		return nil
+	}
+	if got := strings.Join(models(), " "); !strings.Contains(got, "beta-model") {
+		t.Errorf("with beta on, optco lists %q, want beta-model", got)
+	}
+	s = settings.Load()
+	s.PluginOptions = map[string]map[string]bool{"optco": {"beta": false}}
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetProviderOptions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(models(), " "); strings.Contains(got, "beta-model") || !strings.Contains(got, "base-model") {
+		t.Errorf("with beta off, optco lists %q, want base-model alone", got)
+	}
 }
 
 func jsonOf(v any) string {

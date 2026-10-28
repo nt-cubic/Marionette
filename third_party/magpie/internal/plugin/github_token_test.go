@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yetone/magpie/internal/ghtoken"
 	"github.com/yetone/magpie/internal/settings"
 )
 
@@ -142,8 +143,9 @@ func TestGitPluginCheckCarriesGitHubToken(t *testing.T) {
 		t.Errorf("secondary limit: %+v %+v", c, c.Limited)
 	}
 
-	// a token GitHub refuses (401), answering without one: the token in
-	// Settings is said, by where it is, not the token
+	// a token GitHub refuses (401): the check goes on without it rather
+	// than failing whole, and the anonymous answer is the one taken. The
+	// Settings says which token to replace (#3926).
 	mu.Lock()
 	answer = func(w http.ResponseWriter, r *http.Request) bool {
 		if r.Header.Get("Authorization") == "" {
@@ -153,10 +155,19 @@ func TestGitPluginCheckCarriesGitHubToken(t *testing.T) {
 		fmt.Fprint(w, `{"message":"Bad credentials"}`)
 		return true
 	}
+	before := len(auth)
 	mu.Unlock()
 	setToken("ghp_settings_refused")
-	if c = check(); c.Limited != nil || !strings.Contains(c.Error, "GitHub refused the GitHub token in Settings") || strings.Contains(c.Error, "ghp_settings_refused") {
+	if c = check(); c.Limited != nil || c.Error != "" || c.Status != "current" {
 		t.Errorf("Settings' token refused: %+v", c)
+	}
+	mu.Lock()
+	if a := auth[before:]; len(a) != 2 || a[0] != "Bearer ghp_settings_refused" || a[1] != "" {
+		t.Errorf("Settings' token refused: GitHub was asked with %q, want the token then none", a)
+	}
+	mu.Unlock()
+	if _, ok := ghtoken.SettingsRefused(); !ok {
+		t.Error("ghtoken.SettingsRefused() says no token of Settings was refused")
 	}
 	setToken("")
 	// one from the environment (till on Discord: a stale GITHUB_TOKEN) is

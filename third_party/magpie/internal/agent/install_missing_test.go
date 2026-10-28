@@ -124,6 +124,13 @@ func TestCLIMissingHermes(t *testing.T) {
 	if h.CLIMissing() {
 		t.Fatal("hermes with its checkout taken for missing")
 	}
+	// connected in the profile `hermes profile use` made sticky: the
+	// checkout is in the root
+	bot := filepath.Join(dir, "profiles", "coder")
+	writeT(t, filepath.Join(bot, "config.yaml"), "model: {}\n")
+	if p := (&Agent{ID: "hermes", Name: "Hermes Agent", Bin: h.Bin, Dir: bot, Path: filepath.Join(bot, "config.yaml")}); p.CLIMissing() {
+		t.Fatal("hermes in a profile, with the root's checkout, taken for missing")
+	}
 	if err := os.RemoveAll(filepath.Join(dir, "hermes-agent")); err != nil {
 		t.Fatal(err)
 	}

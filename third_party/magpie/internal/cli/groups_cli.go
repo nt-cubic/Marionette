@@ -807,10 +807,13 @@ func setGroup(ref string, pairs []string) (provider.Group, error) {
 		return g, err
 	}
 	if to != from {
-		if err := provider.RenameGroup(from, to); err != nil {
+		moved, err := agent.RenameGroup(from, to)
+		if err != nil {
 			return g, err
 		}
-		fmt.Println(amber.Render("!"), "agents set to "+provider.GroupPrefix+from+" need "+provider.GroupPrefix+to+" now")
+		for _, a := range moved {
+			fmt.Println(green.Render("✓"), a+" is on "+provider.GroupPrefix+to+" now")
+		}
 	}
 	return findGroup(to)
 }

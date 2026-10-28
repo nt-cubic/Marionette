@@ -12,11 +12,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/tidwall/gjson"
 
+	"github.com/yetone/magpie/internal/claudeseal"
 	"github.com/yetone/magpie/internal/codexsummary"
 	"github.com/yetone/magpie/internal/filelock"
 	"github.com/yetone/magpie/internal/settings"
@@ -32,10 +35,15 @@ import (
 // local compaction keeps, and what the gateway sends for it anyway, so a
 // rollout so written reads the same through magpie and goes on without it.
 //
-// Only magpie's compaction items change, in whichever line holds them (a
-// response_item, a compacted line's replacement_history); every other
-// line keeps its bytes, and the file its line count, mode and time. A
-// rollout is changed as Codex publishes a compressed one
+// A reasoning item magpie gave Codex with Claude's block in its
+// encrypted_content (claudeseal) is refused the same way; it is written
+// as its summary, as the gateway sends it to OpenAI.
+//
+// Only magpie's compaction items and those reasoning items change, in
+// whichever line holds them (a response_item, a compacted line's
+// replacement_history); every other line keeps its bytes, and the file
+// its line count, mode and time. A rollout is changed as Codex publishes
+// a compressed one
 // (codex-rs/rollout/src/writer_lock.rs, try_acquire_for_publication):
 // under its home's coordination lock, and only when no Codex holds the
 // thread's writer lock, so never under a Codex that has the thread open.
@@ -53,6 +61,9 @@ type codexPortState struct {
 type codexPortHome struct {
 	Since   time.Time `json:"since"`
 	Pending []string  `json:"pending,omitempty"`
+	// Lineage: every fork's place in its parent was looked at once
+	// (repairLineages), after magpie before it moved them
+	Lineage bool `json:"lineage,omitempty"`
 }
 
 // codexPortFirst is the first day magpie wrote a compaction item of its
@@ -69,6 +80,7 @@ func codexPortPath() string { return filepath.Join(settings.Dir(), "codex-portab
 type CodexPort struct {
 	Rewritten []string // rollouts written portable
 	Held      []string // rollouts with magpie's item a Codex holds, left for a later pass
+	Repaired  []string // forks whose place in their parent was set again (repairLineages)
 	Done      bool     // every rollout due was looked at
 }
 
@@ -159,7 +171,12 @@ func PortCodexRollouts(ctx context.Context, home string) (CodexPort, error) {
 			break
 		}
 	}
-	now := codexPortHome{Since: was.Since, Pending: pending}
+	now := codexPortHome{Since: was.Since, Pending: pending, Lineage: was.Lineage}
+	if res.Done && !was.Lineage {
+		fixed, whole := repairLineages(ctx, home)
+		res.Repaired = fixed
+		now.Lineage = whole
+	}
 	if res.Done {
 		now.Since = start
 	} else {
@@ -204,9 +221,26 @@ func codexThreadOf(name string) string {
 
 var magpieMark = []byte(codexsummary.Mark)
 
+// claudeMark begins a reasoning item's encrypted_content carrying Claude's
+// block (claudeseal), which only magpie reads.
+var claudeMark = []byte(claudeseal.Mark)
+
 // portRollout writes the rollout at path portable, if it has magpie's
 // compaction item, and says whether it did.
 func portRollout(ctx context.Context, home, path string) (bool, error) {
+	return editRollout(ctx, home, path, func(line []byte, paged bool) ([]byte, bool) {
+		out, ok := portLine(line)
+		if ok {
+			out, ok = fitLine(line, out, paged)
+		}
+		return out, ok
+	})
+}
+
+// editRollout writes the rollout at path with each line as edit gives it,
+// if edit changed one, and says whether it did; paged is whether the
+// rollout's history is paginated.
+func editRollout(ctx context.Context, home, path string, edit func(line []byte, paged bool) ([]byte, bool)) (bool, error) {
 	thread := codexThreadOf(filepath.Base(path))
 	if thread == "" {
 		return false, nil
@@ -242,13 +276,17 @@ func portRollout(ctx context.Context, home, path string) (bool, error) {
 	bw := bufio.NewWriterSize(w, 64<<10)
 	br := bufio.NewReaderSize(in, 64<<10)
 	changed := false
+	paged, metaSeen := false, false
 	for n := 0; ; n++ {
 		if n%4096 == 0 && ctx.Err() != nil {
 			return false, ctx.Err()
 		}
 		line, err := br.ReadBytes('\n')
 		if len(line) > 0 {
-			out, ok := portLine(line)
+			if !metaSeen && isMetaLine(line) {
+				paged, metaSeen = paginated(line), true
+			}
+			out, ok := edit(line, paged)
 			changed = changed || ok
 			if _, werr := bw.Write(out); werr != nil {
 				return false, werr
@@ -314,6 +352,174 @@ func portRollout(ctx context.Context, home, path string) (bool, error) {
 	return true, nil
 }
 
+// Codex keeps places in a rollout by byte: a fork's or a revert's
+// rollout names where its parent's history ends (session_meta's
+// history_base.end_byte_offset), and Codex's state database where each
+// turn starts and ends and how far it has read (thread_turns,
+// thread_history_projection_state). A rewritten line that is shorter or
+// longer moves every place after it, and a rollout that shrinks leaves
+// them past its end: Codex then won't open the thread ("invalid paginated
+// history lineage …: cutoff byte offset is past the source rollout",
+// xybio on Discord). So a line magpie rewrites keeps its length: a
+// shorter one is padded with spaces after its JSON, which Codex's reader
+// (serde_json) skips, and a longer one, in a rollout whose history is
+// paginated, is not written at all.
+
+// isMetaLine says whether a rollout line is a session_meta.
+func isMetaLine(line []byte) bool {
+	return bytes.Contains(line[:min(len(line), 1024)], cxMeta) && gjson.GetBytes(line, "type").String() == "session_meta"
+}
+
+// paginated says whether a session_meta line's rollout keeps its history
+// paginated, the one whose places Codex keeps by byte.
+func paginated(meta []byte) bool {
+	return gjson.GetBytes(meta, "payload.history_mode").String() == "paginated"
+}
+
+// fitLine is out, a rewrite of line, as long as line: padded with spaces
+// after its JSON when it is shorter (spaces line had there are taken
+// first). One that is longer is out as it is, unless paged: then it is
+// line, and false.
+func fitLine(line, out []byte, paged bool) ([]byte, bool) {
+	body := bytes.TrimRight(line, "\r\n")
+	end := line[len(body):]
+	nb := bytes.TrimRight(bytes.TrimRight(out, "\r\n"), " ")
+	if len(nb) > len(body) {
+		if paged {
+			return line, false
+		}
+		return out, true
+	}
+	fit := make([]byte, 0, len(line))
+	fit = append(fit, nb...)
+	fit = append(fit, bytes.Repeat([]byte{' '}, len(body)-len(nb))...)
+	return append(fit, end...), true
+}
+
+// A fork made before magpie kept a parent's lines whole names a byte in
+// it that a shorter parent no longer ends a line at, or no longer has:
+// Codex refuses to open it. Every line kept its place by count, though,
+// and Codex names each line's ordinal, so repairLineages sets each such
+// place again to where the parent's line before history_base's
+// end_ordinal_exclusive ends now, in the fork's session_meta, which keeps
+// its own length (fitLine). It says which forks it wrote, and whether it
+// looked at every one (none held by a Codex, ctx not done).
+func repairLineages(ctx context.Context, home string) (fixed []string, whole bool) {
+	rollouts := map[string]string{} // rollout id → its file
+	var all []string
+	for _, folder := range []string{"sessions", "archived_sessions"} {
+		filepath.WalkDir(filepath.Join(home, folder), func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !d.Type().IsRegular() {
+				return nil
+			}
+			if id := codexRolloutID(d.Name()); id != "" {
+				rollouts[id] = p
+				all = append(all, p)
+			}
+			return nil
+		})
+	}
+	whole = true
+	known := map[string]map[int64]int64{} // a parent's ordinalEnds
+	for _, p := range all {
+		if ctx.Err() != nil {
+			return fixed, false
+		}
+		meta := firstLine(p)
+		base := gjson.GetBytes(meta, "payload.history_base")
+		if !isMetaLine(meta) || !paginated(meta) || !base.IsObject() {
+			continue
+		}
+		parent, ok := rollouts[strings.ToLower(base.Get("thread_id").String())]
+		n := base.Get("end_ordinal_exclusive").Int()
+		if !ok || n <= 0 {
+			continue
+		}
+		ends, seen := known[parent]
+		if !seen {
+			ends = ordinalEnds(parent)
+			known[parent] = ends
+		}
+		at, ok := ends[n-1]
+		if !ok || at == base.Get("end_byte_offset").Int() {
+			continue
+		}
+		changed, err := editRollout(ctx, home, p, func(line []byte, paged bool) ([]byte, bool) {
+			r := gjson.GetBytes(line, "payload.history_base.end_byte_offset")
+			if !isMetaLine(line) || r.Index <= 0 || r.Type != gjson.Number {
+				return line, false
+			}
+			out := append([]byte{}, line[:r.Index]...)
+			out = strconv.AppendInt(out, at, 10)
+			out = append(out, line[r.Index+len(r.Raw):]...)
+			return fitLine(line, out, true)
+		})
+		switch {
+		case err != nil:
+			whole = false
+			if !errors.Is(err, errRolloutHeld) {
+				log.Printf("codex rollout %s: %v", p, err)
+			}
+		case changed:
+			fixed = append(fixed, p)
+		}
+	}
+	return fixed, whole
+}
+
+// codexRolloutID is the id a rollout's file name gives it: a later
+// rollout of a thread's own, else its thread's.
+func codexRolloutID(name string) string {
+	m := codexRolloutName.FindStringSubmatch(name)
+	if m == nil {
+		return ""
+	}
+	if i := strings.IndexByte(name, '_'); i > 0 {
+		return strings.ToLower(strings.TrimSuffix(strings.TrimSuffix(name[i+1:], zstSuffix), ".jsonl"))
+	}
+	return strings.ToLower(m[1])
+}
+
+// firstLine is a rollout's first line, "" when it can't be read.
+func firstLine(path string) []byte {
+	r, err := openLines(path)
+	if err != nil {
+		return nil
+	}
+	defer r.Close()
+	line, _ := bufio.NewReaderSize(r, 64<<10).ReadBytes('\n')
+	return line
+}
+
+// ordinalEnds is where, in a rollout's lines, each line Codex numbered
+// ends, its newline included, up to the first line without an ordinal
+// (after which there is no telling).
+func ordinalEnds(path string) map[int64]int64 {
+	ends := map[int64]int64{}
+	r, err := openLines(path)
+	if err != nil {
+		return ends
+	}
+	defer r.Close()
+	br := bufio.NewReaderSize(r, 64<<10)
+	var at int64
+	for {
+		line, err := br.ReadBytes('\n')
+		if len(line) == 0 || line[len(line)-1] != '\n' {
+			return ends
+		}
+		at += int64(len(line))
+		o := gjson.GetBytes(line, "ordinal")
+		if o.Type != gjson.Number {
+			return ends
+		}
+		ends[o.Int()] = at
+		if err != nil {
+			return ends
+		}
+	}
+}
+
 // portLine is a rollout line with each of magpie's compaction items in it
 // written as the message it stands for; any other line as it is, byte for
 // byte. One of magpie's items whose summary can't be read is left out of
@@ -321,7 +527,7 @@ func portRollout(ctx context.Context, home, path string) (bool, error) {
 // gateway leaves it out; a line that is one alone stays as it is, as
 // leaving a line out would move every line after it.
 func portLine(line []byte) ([]byte, bool) {
-	if !bytes.Contains(line, magpieMark) {
+	if !bytes.Contains(line, magpieMark) && !bytes.Contains(line, claudeMark) {
 		return line, false
 	}
 	body := bytes.TrimRight(line, "\r\n")
@@ -357,6 +563,16 @@ func portValue(v any) (_ any, changed, drop bool) {
 					return x, false, true
 				}
 				return msg, true, false
+			}
+			return x, false, false
+		}
+		if t, _ := x["type"].(string); t == "reasoning" {
+			// Claude's block magpie gave Codex to carry back: sent to
+			// OpenAI it would be refused as invalid_encrypted_content, so
+			// the item goes as its summary, as magpie sends it to OpenAI
+			if enc, _ := x["encrypted_content"].(string); claudeseal.Is(enc) {
+				delete(x, "encrypted_content")
+				return x, true, false
 			}
 			return x, false, false
 		}

@@ -92,7 +92,9 @@ func TestTUIFetchesSubscriptionModels(t *testing.T) {
 			}
 			m.pk.input.SetValue("gpt-6-luna")
 			m.pk.refilter()
-			if got, _ := m.pk.choice(); got != want {
+			// a row of the list, not the typed text a picker that takes a
+			// value of one's own hands back when no row matches
+			if got, _ := m.pk.choice(); got != want || len(m.pk.match) == 0 {
 				t.Fatalf("the picker hasn't Codex's listed model: got %q, want %q\n%s", got, want, m.View())
 			}
 		})
@@ -154,7 +156,10 @@ func openModelPicker(t *testing.T, m model, view string) (model, string) {
 		m.agents = []*agent.Agent{a}
 		m.reload()
 		m.openFieldPicker()
-		return m, "gpt-6-luna" // Codex's own account: its models bare
+		// Codex has no list of its own here (no models_cache.json), so the
+		// models magpie serves on its ChatGPT account are offered via magpie
+		// (codexViaMagpieFor)
+		return m, "codex/gpt-6-luna"
 	default:
 		m.page = pageGroups
 		m.openMemberPicker(pickMsg{newGroup: "Test"})

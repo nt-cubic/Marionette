@@ -52,7 +52,7 @@ var CodexSideModel func() string
 // models picked beside the ChatGPT sign-in every one of them went to
 // ChatGPT and spent its allowance, and failed with it once it was used up
 // (atom_Ray on X: an hour on a third-party model took 2% of the 5-hour
-// window). Those go on the session's model (session: Server.codexSessionOf),
+// window). Those go on the session's model (session: Server.codexSideSession),
 // as the conversation's turns do; on Codex's own, as Codex sent them.
 func codexSideTo(body []byte, ours bool, session func() string) string {
 	m := modelOf(body)
@@ -66,8 +66,8 @@ func codexSideTo(body []byte, ours bool, session func() string) string {
 }
 
 // codexDescriptionsTo is where a request Codex makes for a thread's
-// description goes. "" leaves the request as Codex sent it; a model's id
-// writes it. A description is not a title: Codex asks for {"description"}
+// description goes. "" leaves the request as Codex sent it; "off" answers
+// it with no description, sent nowhere; a model's id writes it. A description is not a title: Codex asks for {"description"}
 // alone, which the title wrapper cannot answer.
 func codexDescriptionsTo(h http.Header, body []byte, ours bool, session func() string) string {
 	if !isDescriptionKind(requestCallKind(h, requestSessionMetadata(h, body))) {
@@ -193,11 +193,19 @@ func (s *Server) codexTitle(w http.ResponseWriter, r *http.Request, body []byte,
 	writeTitleReply(w, id, out, res.Usage)
 }
 
-// codexDescription answers a thread_description request with the model
-// CodexDescriptions names. The model's text comes back as the
+// codexDescription answers a thread_description request as
+// codexDescriptionsTo says: "off" here, with no description, as titles'
+// Off; a model's id by that model. The model's text comes back as the
 // {"description": ...} its schema asks for; a reply without one fails as a
 // description, not as a title.
 func (s *Server) codexDescription(w http.ResponseWriter, r *http.Request, body []byte, to string) {
+	if to == "off" {
+		// a finished reply with no message: the app's thread_description
+		// helper reads no {"description"} in it as none (an "empty" result,
+		// not an error) and leaves the thread's description as it was
+		s.sentNowhere(w, r, body, "Descriptions off", "Codex descriptions are off in Codex's settings on magpie's Agents page: answered with no description, sent nowhere", nil)
+		return
+	}
 	s.codexShaped(w, r, body, to, "description", true, descriptionJSON, noDescription)
 }
 
@@ -524,7 +532,8 @@ func (s *Server) answeredHere(r *http.Request, from provider.Protocol, body []by
 	kind := requestCallKind(r.Header, metadata)
 	model := modelOf(body)
 	seat := Weighed{ID: "magpie", Provider: "magpie", Name: "magpie", Who: who, Kind: "provider", Model: model}
-	tr := s.trace.beginFor(r, Route{Time: start, Agent: agentOf(r), Session: sessionOf(r.Header), ParentSession: titleParentSession(r.Header, metadata, kind),
+	by := callerOf(r) // as it is recorded: another magpie's agent by its own name
+	tr := s.trace.beginFor(r, Route{Time: start, Agent: by.agent, Session: sessionOf(r.Header), ParentSession: titleParentSession(r.Header, metadata, kind),
 		Kind: kind, Model: model, Provider: "magpie", Order: []Weighed{seat}, Tries: []Try{{ID: seat.ID, Model: model, Start: start}}})
 	write()
 	ms := time.Since(start).Milliseconds()
@@ -533,8 +542,8 @@ func (s *Server) answeredHere(r *http.Request, from provider.Protocol, body []by
 		t.Done, t.Status, t.Error, t.Millis = true, 200, why, ms
 	})
 	s.record(Call{Route: tr.ID, Time: start, From: from, To: from, Model: model, Provider: "magpie",
-		Agent: agentOf(r), Kind: kind, Status: 200, Millis: ms, Error: why})
-	appendUsage(r, usage.Record{RouteID: tr.ID, Time: start, Agent: agentOf(r), Provider: "magpie", Model: model, Requested: model,
+		Agent: by.agent, Via: by.via, Kind: kind, Status: 200, Millis: ms, Error: why})
+	appendUsage(r, usage.Record{RouteID: tr.ID, Time: start, Agent: by.agent, Via: by.via, Provider: "magpie", Model: model, Requested: model,
 		Millis: ms, Status: 200, Rejected: true, Error: why, Session: sessionOf(r.Header), NativeSession: nativeSessionOf(r.Header),
 		Kind: kind, Endpoint: r.URL.Path})
 }

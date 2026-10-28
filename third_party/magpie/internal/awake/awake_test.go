@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yetone/magpie/internal/beat"
 	"github.com/yetone/magpie/internal/filememo"
 )
 
@@ -185,5 +186,67 @@ func TestKeepOffWaitsForTheSetting(t *testing.T) {
 		if time.Now().After(end) {
 			t.Fatal("turning the setting on held nothing")
 		}
+	}
+}
+
+// Turned off, a setting turned on while Keep looks, after the look read it,
+// is looked at again at once, not at the beat after: Keep waits on the
+// Written it took before the look, which that write closes.
+func TestKeepOffSeesAWriteDuringTheLook(t *testing.T) {
+	oldHold := hold
+	defer func() { hold = oldHold }()
+	hold = func(bool) (func(), error) { return func() {}, nil }
+	type write struct{ at, next time.Time }
+	wrote := make(chan write, 1)
+	// when this test's level is asked again: a hold could be taken by a
+	// Keep that another test's failure left running
+	again := make(chan time.Time, 1)
+	var on atomic.Bool
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		Keep(ctx, func() Level {
+			if on.Load() {
+				select {
+				case again <- time.Now():
+				default:
+				}
+				return System
+			}
+			// the beat Keep waits for, turned off (beat.Next: the next
+			// multiple of OthersEvery on the clock), 2s away at least, so
+			// that a look at once has room before it
+			every := filememo.OthersEvery()
+			next := time.Now().Truncate(every).Add(every)
+			if time.Until(next) < 2*time.Second {
+				<-beat.Next(every)
+				next = time.Now().Truncate(every).Add(every)
+			}
+			// the user turns it on just after this read, as settings.save
+			// writes it (filememo.Forget)
+			at := time.Now()
+			on.Store(true)
+			filememo.Forget()
+			wrote <- write{at, next}
+			return Off
+		}, func() State { return State{Busy: true} })
+		close(done)
+	}()
+	defer func() { cancel(); <-done }()
+	var w write
+	select {
+	case w = <-wrote:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Keep never looked at the setting")
+	}
+	select {
+	case at := <-again:
+		// both on the wall clock, as beat.Next goes by it (Truncate drops
+		// the monotonic reading)
+		if !at.Before(w.next) {
+			t.Fatalf("turned on during the look, the setting was looked at again %v after it was written, at the beat (%s), not at once", at.Sub(w.at), w.next.Format(time.TimeOnly))
+		}
+	case <-time.After(time.Until(w.next) + 10*time.Second):
+		t.Fatal("turned on during the look, the setting was never looked at again")
 	}
 }

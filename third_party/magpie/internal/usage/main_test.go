@@ -14,6 +14,6 @@ import (
 // agent (#522), so testenv clears those too. A test's answers are built
 // again as soon as the history changes, unless it holds them (effortFresh).
 func TestMain(m *testing.M) {
-	effortFresh = 0
+	effortFresh, effortBehind = 0, false
 	testenv.Main(m)
 }

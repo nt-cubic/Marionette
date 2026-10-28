@@ -3,7 +3,8 @@
 // model chip's right-click opens a menu, "Test this model", which posts
 // provider/test with that model alone; its dot and title show how it
 // answered, as Test models shows them, a second model's test keeps the
-// first one's result, and the footer says which it was. The right-click
+// first one's result, and the footer says which it was. Test models
+// names the model that failed and its error. The right-click
 // neither picks nor unpicks the chip, and leaves the page where it is; Esc
 // closes the menu. Test models still asks every one. In English and
 // Chinese, Chromium and WebKit.
@@ -55,12 +56,14 @@ const words = {
     bad: "anthropic/claude-opus-4.5 didn't answer: 404 · no such model", ok: "gpt-5.1 answered in 123 ms", okTitle: "Answered in 123 ms",
     okSeconds: "model-c answered in 1.2 s", okSecondsTitle: "Answered in 1.2 s",
     tip: "Right-click to test just this model",
+    allBad: "1 of 3 models didn't answer; anthropic/claude-opus-4.5: 404 · no such model",
   },
   zh: {
     item: "测试此模型", all: "测试模型",
     bad: "anthropic/claude-opus-4.5 没有响应：404 · no such model", ok: "gpt-5.1 在 123 毫秒内响应", okTitle: "123 毫秒内响应",
     okSeconds: "model-c 在 1.2 秒内响应", okSecondsTitle: "1.2 秒内响应",
     tip: "右键可单独测试这个模型",
+    allBad: "3 个模型中有 1 个没有响应；anthropic/claude-opus-4.5：404 · no such model",
   },
 };
 
@@ -148,10 +151,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator(".editor .mfoot").getByRole("button", { name: w.all, exact: true }).click();
       await wait(3);
       assert.deepEqual(asked(tests.at(-1)), { id: "relay", test: IDS });
+      // and says which model failed and why, not only how many (ysm119 on
+      // Discord: "没有响应", the error only in a dot's tooltip)
+      await page.waitForFunction((want) => document.querySelector("#status")?.textContent === want, w.allBad);
 
       const missing = await page.evaluate(() => [
         "Test this model", "Right-click to test just this model", "Right-click a model to test just it",
         "{model} answered in {took}", "{model} didn't answer: {error}", "Answered in {took}",
+        "{n} of {all} models didn't answer; {model}: {error}",
       ].filter((k) => !I18N.zh[k]));
       assert.deepEqual(missing, [], "every string has its Chinese");
       assert.deepEqual(errors, []);

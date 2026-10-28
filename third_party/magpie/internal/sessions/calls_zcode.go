@@ -52,7 +52,7 @@ func zcodeCallFiles() []file {
 		out = openCodeDBFilesIn("zcode", path, db, "COUNT(m.id) + COALESCE(SUM(m.time_updated), 0)")
 	})
 	for i := range out {
-		out[i].oc = nil // the handle is not kept; a read opens it again
+		out[i].w().oc = nil // the handle is not kept; a read opens it again
 	}
 	zcCallList.stamp, zcCallList.files = stamp, out
 	return append([]file(nil), out...)

@@ -106,7 +106,7 @@ func dshFiles() []file {
 			dshHeads[f.path] = h
 		}
 		seen[f.path] = true
-		f.sid = h.ID
+		f.w().sid = h.ID
 		if h.DelegationDepth > 0 {
 			parent[h.ID] = h.ParentSession
 		}
@@ -118,12 +118,12 @@ func dshFiles() []file {
 		}
 	}
 	for i := range out {
-		root := out[i].sid
+		root := out[i].m().sid
 		for n := 0; parent[root] != "" && n < 64; n++ {
 			root = parent[root]
 		}
 		out[i].key = "dsh:" + root
-		out[i].main = parent[out[i].sid] == ""
+		out[i].main = parent[out[i].m().sid] == ""
 	}
 	return out
 }
@@ -133,11 +133,11 @@ func dshFiles() []file {
 // the session's generations and its session.lock. "" when the file isn't
 // in the folder its id names, so a delete never takes another's.
 func dshSessionDir(f file) string {
-	if f.agent != "dsh" || f.sid == "" {
+	if f.agent != "dsh" || f.m().sid == "" {
 		return ""
 	}
 	d := filepath.Dir(f.path)
-	if filepath.Base(d) != dshSegment(f.sid) || filepath.Dir(filepath.Dir(d)) != filepath.Join(DshDir(), "sessions") {
+	if filepath.Base(d) != dshSegment(f.m().sid) || filepath.Dir(filepath.Dir(d)) != filepath.Join(DshDir(), "sessions") {
 		return ""
 	}
 	return d

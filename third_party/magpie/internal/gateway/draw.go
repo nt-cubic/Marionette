@@ -255,6 +255,20 @@ func Drawers(p provider.Provider) []catalog.Model {
 		}
 		return out
 	}
+	if p.IsPlugin() {
+		// a plugin in front of an OpenAI-compatible API: the image models
+		// its list names that draw on the images API, sent through its
+		// fetch under the base its chat goes to (01huadalang on Discord:
+		// the SenseNova plugin's sensenova-u1.5-lite)
+		var out []catalog.Model
+		for _, m := range p.Available() {
+			if catalog.DrawsID(m.ID) && catalog.ImagesAPI(m.ID) && p.PluginOpenAICompatible(m.ID) && p.ModelKind(m.ID) != provider.KindVideo {
+				m.Provider = p.ID
+				out = append(out, m)
+			}
+		}
+		return out
+	}
 	// any other subscription is asked through its agent's own API, which
 	// draws nothing magpie can ask for yet. A Responses-only relay (a Codex
 	// backend such as sub2api) has no chat base but serves the images API
@@ -1241,14 +1255,19 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 			}
 		}
 		// only dall-e gives a URL unless asked; gpt-image turns the field away
-		if strings.Contains(m, "dall-e") {
+		if strings.Contains(m, "dall-e") || senseNovaDrawer(m) {
 			req["response_format"] = "b64_json"
 		}
 		body, _ = json.Marshal(req)
 		ct, url = "application/json", base+"/images/generations"
-	} else if drawsCodex(p) {
-		// ChatGPT's backend takes an edit only as JSON, each image a data URL
+	} else if drawsCodex(p) || senseNovaDrawer(m) {
+		// ChatGPT's backend takes an edit only as JSON, each image a data URL;
+		// so does SenseNova's for its U1 models, which answer in a URL unless
+		// asked for base64
 		req := map[string]any{"model": model, "prompt": d.Prompt, "n": d.N}
+		if senseNovaDrawer(m) {
+			req["response_format"] = "b64_json"
+		}
 		for k, v := range map[string]string{"size": d.Size, "quality": d.Quality, "background": d.Background, "output_format": d.Format} {
 			if v != "" {
 				req[k] = v
@@ -1309,6 +1328,15 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 		return drawn{}, code, err
 	}
 	return readImagesAnswer(p, url, b, code)
+}
+
+// senseNovaDrawer is whether model is one of SenseNova's U1 image models
+// (sensenova-u1.5-lite, sensenova-u1.5-fast), whose /images/edits takes
+// JSON alone, the images as [{"image_url": "data:…"}], and whose answer
+// is a link for 24 hours unless response_format asks for b64_json
+// (lileo0668 on Discord).
+func senseNovaDrawer(model string) bool {
+	return strings.Contains(strings.ToLower(model), "sensenova-u1")
 }
 
 // drawOpenRouterImages asks OpenRouter's dedicated Images API, which accepts

@@ -98,6 +98,13 @@ func TestCodexDescriptionsSetting(t *testing.T) {
 	if code, _ := call("/api/settings/codex-descriptions", `{"model":"nope/x"}`); code < 400 || settings.Load().CodexDescriptions != "fake/m1" {
 		t.Errorf("unknown model: %d %q", code, settings.Load().CodexDescriptions)
 	}
+	// off, as titles' (cybercaius on Discord), kept by another save
+	if code, out := call("/api/settings/codex-descriptions", `{"model":"off"}`); code != 200 || out["codexDescriptions"] != "off" || settings.Load().CodexDescriptions != "off" {
+		t.Errorf("off: %d %v %q", code, out["codexDescriptions"], settings.Load().CodexDescriptions)
+	}
+	if code, _ := call("/api/settings", `{"theme":"light"}`); code != 200 || settings.Load().CodexDescriptions != "off" {
+		t.Errorf("another save (%d) lost off: %q", code, settings.Load().CodexDescriptions)
+	}
 	if code, _ := call("/api/settings/codex-descriptions", `{"model":""}`); code != 200 || settings.Load().CodexDescriptions != "" {
 		t.Errorf("Codex's own: %d %q", code, settings.Load().CodexDescriptions)
 	}

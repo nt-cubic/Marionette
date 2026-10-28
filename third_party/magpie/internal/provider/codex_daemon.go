@@ -177,6 +177,9 @@ func noteCodexSwitch(from, to string) {
 	}
 	noteLeft(&codexDaemonLeft, findCodexDaemon(ps, codexHome()), from, to)
 	noteLeft(&codexAppLeft, findCodexApp(ps), from, to)
+	if codexAppLeft.pid != 0 {
+		codexAppAccountLeft(codexAppLeft.pid)
+	}
 }
 
 // noteLeft updates what is known of the app-server pid, running as Codex's
@@ -258,31 +261,46 @@ func DismissCodexApp() {
 // Codex desktop app runs for itself: 0 when it isn't open. On macOS that
 // is ChatGPT.app's (or Codex.app's) bundled codex, `…/CodexCLI.app/
 // Contents/MacOS/codex [-c k=v…] app-server --analytics-default-enabled …`;
-// on Windows the Store app's `…\WindowsApps\OpenAI.Codex_…\codex.exe
-// app-server`. Not the managed daemon, nor an app-server's helpers or
-// proxy, nor an editor's codex.
+// on Windows the Store app's (OpenAI.Codex, ChatGPT.exe), which copies its
+// codex out of WindowsApps and runs it from %LOCALAPPDATA%:
+// `C:\Users\…\AppData\Local\OpenAI\Codex\bin\<hash>\codex.exe -c … app-server
+// --analytics-default-enabled …` (26.1021 on the Windows box). Not the
+// managed daemon, nor an app-server's helpers or proxy, nor an editor's
+// codex.
 func findCodexApp(ps []proc.Process) int {
 	for _, p := range ps {
-		if isManagedDaemon(p.Args) {
-			continue
+		if isCodexAppServer(p.Args) {
+			return p.PID
 		}
-		// the program's own path: ps leaves a path's spaces unquoted, so
-		// "…/Codex Computer Use.app/Contents/MacOS/…" reads as one named Codex
-		exe, rest := splitExe(p.Args)
-		if !strings.Contains(exe, ".app/Contents/") && !strings.Contains(exe, `\WindowsApps\OpenAI.`) {
-			continue
-		}
-		if base := strings.ToLower(exe[strings.LastIndexAny(exe, `/\`)+1:]); base != "codex" && base != "codex.exe" {
-			continue
-		}
-		f := strings.Fields(rest)
-		i := slices.Index(f, "app-server")
-		if i < 0 || i+1 < len(f) && !strings.HasPrefix(f[i+1], "-") {
-			continue
-		}
-		return p.PID
 	}
 	return 0
+}
+
+// isCodexAppServer is findCodexApp's test of one command line.
+func isCodexAppServer(args string) bool {
+	if isManagedDaemon(args) {
+		return false
+	}
+	// the program's own path: ps leaves a path's spaces unquoted, so
+	// "…/Codex Computer Use.app/Contents/MacOS/…" reads as one named Codex
+	exe, rest := splitExe(args)
+	if !strings.Contains(exe, ".app/Contents/") && !windowsCodexApp(exe) {
+		return false
+	}
+	if base := strings.ToLower(exe[strings.LastIndexAny(exe, `/\`)+1:]); base != "codex" && base != "codex.exe" {
+		return false
+	}
+	f := strings.Fields(rest)
+	i := slices.Index(f, "app-server")
+	return i >= 0 && (i+1 >= len(f) || strings.HasPrefix(f[i+1], "-"))
+}
+
+// windowsCodexApp is whether exe is the Windows Codex app's codex: the one
+// it runs from %LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\, or one in its
+// package under WindowsApps.
+func windowsCodexApp(exe string) bool {
+	e := strings.ToLower(exe)
+	return strings.Contains(e, `\appdata\local\openai\codex\bin\`) || strings.Contains(e, `\windowsapps\openai.`)
 }
 
 // RestartCodexDaemon has Codex restart its app-server, which reads the
@@ -305,7 +323,11 @@ func restartCodexDaemon(ctx context.Context, home string) error {
 	if err != nil {
 		return err
 	}
-	if out, err := cmd.CombinedOutput(); err != nil {
+	// run as its own responsible process: the daemon it leaves running
+	// works in the folder of every codex attached to it, and macOS would
+	// otherwise ask for ~/Desktop and the like in magpie's name
+	// (reformed9448 on Discord)
+	if out, err := proc.CombinedOutputOwn(ctx, cmd); err != nil {
 		if msg := lastLine(out); msg != "" {
 			return errors.New("codex app-server daemon restart: " + msg)
 		}

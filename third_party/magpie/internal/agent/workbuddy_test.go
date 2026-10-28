@@ -126,6 +126,21 @@ func TestWorkBuddyEfforts(t *testing.T) {
 	}
 }
 
+// A model with more than 200K of context gets WorkBuddy's context menu,
+// set to its whole window (xiao9could on X: no context button for Opus).
+func TestWorkBuddyContextChoice(t *testing.T) {
+	e := buddyModel("workbuddy", "claude/claude-opus-5-5", "Opus", 1000000, 128000, true, nil)
+	cw, _ := e["contextWindow"].(map[string]any)
+	if l, _ := cw["supportedLengths"].([]int); len(l) != 2 || l[0] != 200000 || l[1] != 1000000 || cw["defaultLength"] != 1000000 || e["maxInputTokens"] != 1000000 {
+		t.Fatalf("%v", e)
+	}
+	for _, c := range []int{0, 128000, 200000} {
+		if e := buddyModel("workbuddy", "x/y", "Y", c, 0, false, nil); e["contextWindow"] != nil {
+			t.Fatalf("%d: %v", c, e)
+		}
+	}
+}
+
 // WorkBuddy pointed at a magpie on another machine stays there through a
 // sync, with that magpie's key (悠悠哥 on Discord: models moved to the
 // magpie on a NAS were put back on this machine's), while one on this

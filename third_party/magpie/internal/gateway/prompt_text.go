@@ -13,6 +13,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"slices"
 	"strconv"
@@ -37,17 +38,19 @@ type keptBody struct {
 	id   int64
 	from provider.Protocol
 	body []byte
+	// plain: body went unmasked, and is masked when its text is read
+	plain bool
 }
 
 // keepBody keeps a request's masked body for its prompt's text, dropping
 // the oldest past promptBodies or promptBodiesMax.
-func (t *trace) keepBody(id int64, from provider.Protocol, body []byte) {
+func (t *trace) keepBody(id int64, from provider.Protocol, body []byte, plain bool) {
 	if len(body) == 0 || len(body) > promptBodyMax {
 		return
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.bodies = append(t.bodies, keptBody{id: id, from: from, body: body})
+	t.bodies = append(t.bodies, keptBody{id: id, from: from, body: body, plain: plain})
 	total := 0
 	for _, b := range t.bodies {
 		total += len(b.body)
@@ -56,6 +59,17 @@ func (t *trace) keepBody(id int64, from provider.Protocol, body []byte) {
 		total -= len(t.bodies[0].body)
 		t.bodies[0] = keptBody{}
 		t.bodies = t.bodies[1:]
+	}
+}
+
+// maskedBody puts body, masked, in place of route id's plain kept body.
+func (t *trace) maskedBody(id int64, body []byte) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for i := range t.bodies {
+		if t.bodies[i].id == id && t.bodies[i].plain {
+			t.bodies[i].body, t.bodies[i].plain = body, false
+		}
 	}
 }
 
@@ -103,6 +117,14 @@ func (s *Server) PromptText(id int64, kind string, withText bool) (PromptText, b
 	kb, ok := s.trace.keptBodyOf(id)
 	if !ok || !slices.Contains(partOrder, kind) {
 		return PromptText{}, false
+	}
+	if kb.plain {
+		// masked here, not on the request's way (#3973); kept masked for
+		// the next read
+		if kb.body = maskedCopy(context.Background(), kb.body); kb.body == nil {
+			return PromptText{}, false
+		}
+		s.trace.maskedBody(id, kb.body)
 	}
 	b, ok := promptPieces(kb.from, kb.body)
 	if !ok {

@@ -64,7 +64,7 @@ func TestMaskJSONKeepsArgumentsJSON(t *testing.T) {
 	// a Windows path in it goes as before
 	body2 := `{"cwd":"C:\\Users\\rkato\\proj"}`
 	out2, n2 := MaskJSON([]byte(body2), Options{Personal: true, Kinds: map[string]bool{"home": true}})
-	if n2 != 1 || !strings.Contains(string(out2), `C:\\Users\\{{USERNAME_`) {
+	if n2 != 1 || !strings.Contains(string(out2), `C:\\Users\\`+standInOf("rkato")+`\\proj`) {
 		t.Fatalf("%d: %s", n2, out2)
 	}
 }
@@ -233,12 +233,12 @@ func TestMaskJSONArgumentsCutShort(t *testing.T) {
 	// inside it too
 	s := `x\u0040y\nz`
 	found := outsideEscapes(s, []span{
-		{3, 5, "A", ByRule},  // 00 of \u0040: nothing left
-		{1, 7, "B", ByRule},  // the whole \u0040: as it is
-		{0, 4, "C", ByRule},  // ends in it: x
-		{7, 9, "D", ByRule},  // y and the backslash of \n: y
-		{9, 11, "E", ByRule}, // the n of \n and z: z
-		{8, 11, "F", ByRule}, // \nz: as it is
+		{3, 5, "A", ByRule, 0},  // 00 of \u0040: nothing left
+		{1, 7, "B", ByRule, 0},  // the whole \u0040: as it is
+		{0, 4, "C", ByRule, 0},  // ends in it: x
+		{7, 9, "D", ByRule, 0},  // y and the backslash of \n: y
+		{9, 11, "E", ByRule, 0}, // the n of \n and z: z
+		{8, 11, "F", ByRule, 0}, // \nz: as it is
 	})
 	var kept []string
 	for _, f := range found {

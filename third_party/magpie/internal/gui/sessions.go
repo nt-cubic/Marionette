@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/agent"
+	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/sessions"
 	"github.com/yetone/magpie/internal/settings"
@@ -106,6 +107,10 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 		nativeKeys := map[string]bool{}
 		for _, s := range list {
 			nativeKeys[s.Agent+"|"+s.ID] = true
+			// a copy of its conversation is the agent's own too
+			for _, id := range s.Copies {
+				nativeKeys[s.Agent+"|"+id] = true
+			}
 		}
 		gateway := listedGateway(usage.GatewaySessions(time.Time{}, nativeKeys))
 		ext := make([]sessions.ExternalSession, 0, len(gateway))
@@ -535,10 +540,18 @@ func combinedSessionStats(days int) sessions.Stats {
 // page opens on the kept index and not on a first read of them all. Usage ›
 // Requests' whole history is read after it, not beside it on the disk: a
 // first All parsing 12k sessions kept that page a skeleton for 40 s.
+// Once a process: the app's page served to a browser (apppage.go) is a
+// second Handler beside the window's.
 func warmSessions() {
 	if testing.Testing() {
 		return
 	}
+	warmOnce.Do(warmStart)
+}
+
+var warmOnce sync.Once
+
+func warmStart() {
 	go func() {
 		time.Sleep(3 * time.Second)
 		// with few readers, as nobody waits on it yet: after an update
@@ -574,6 +587,10 @@ var warmCodexEffort = func() { usage.CodexModelEffort(usage.All) }
 // the next minutes: a magpie that had just started read ~470 MB for its
 // first two minutes at rest.
 func warmUp(steps ...func()) {
+	// each file read looked at once a second, not for each session or row
+	// that asks: an empty sandbox's warm-up looked at settings.json ~300
+	// times on Windows (#1665); a write still reads the disk (edit.Read)
+	defer filememo.Hold()()
 	for _, step := range steps {
 		step()
 	}
@@ -599,16 +616,56 @@ func warmUp(steps ...func()) {
 // 247–255 MB. Under the limit, 241–251 MB and 211–228 MB, for 1–7 s more
 // CPU in that build.
 func underTightGC(fn func()) {
-	was := debug.SetGCPercent(tightGCPercent)
-	if was < tightGCPercent {
-		debug.SetGCPercent(was)
-	} else {
-		defer debug.SetGCPercent(was)
-	}
-	if limit := heldMemory(); was >= 0 && limit < debug.SetMemoryLimit(-1) {
-		defer debug.SetMemoryLimit(debug.SetMemoryLimit(limit))
-	}
+	defer tightenGC(true)()
 	fn()
+}
+
+// tightGC is what the reads under a tight GC hold: the first to begin sets
+// it, and the last to end puts back what was set before it. Each read
+// putting back what it found let two at once leave GOGC at 25 for good,
+// when the first to begin ended before the second.
+var tightGC struct {
+	sync.Mutex
+	n, limits int   // reads under it, and those of them limited
+	was       int   // GOGC before the first
+	limit     int64 // the memory limit before the first limited one
+	limited   bool  // whether that one set one
+}
+
+// tightenGC begins a read under a tight GC, with the memory limit too when
+// limit is set; undo ends it.
+func tightenGC(limit bool) (undo func()) {
+	tightGC.Lock()
+	defer tightGC.Unlock()
+	if tightGC.n == 0 {
+		was := debug.SetGCPercent(tightGCPercent)
+		if was < tightGCPercent {
+			debug.SetGCPercent(was)
+		}
+		tightGC.was = was
+	}
+	tightGC.n++
+	if limit {
+		if tightGC.limits == 0 {
+			tightGC.limited = false
+			if held := heldMemory(); tightGC.was >= 0 && held < debug.SetMemoryLimit(-1) {
+				tightGC.limit, tightGC.limited = debug.SetMemoryLimit(held), true
+			}
+		}
+		tightGC.limits++
+	}
+	return sync.OnceFunc(func() {
+		tightGC.Lock()
+		defer tightGC.Unlock()
+		if limit {
+			if tightGC.limits--; tightGC.limits == 0 && tightGC.limited {
+				debug.SetMemoryLimit(tightGC.limit)
+			}
+		}
+		if tightGC.n--; tightGC.n == 0 {
+			debug.SetGCPercent(tightGC.was)
+		}
+	})
 }
 
 // heldMemory is what Go holds of the system's memory: all it mapped, less

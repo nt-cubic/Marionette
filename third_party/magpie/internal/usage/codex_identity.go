@@ -216,7 +216,21 @@ func codexChunkResponsePairs(gateways, locals []*rowChunk, duplicateLocal map[ro
 	}
 	lent := lentRows() // picks are looked up by a local's id, not keyed
 	defer lent.release()
+	// a local chunk is read only when one of its ids may be a pick's: on a
+	// page's poll every session file of the period was decoded again for
+	// the few the gateway named
+	picked := make(map[uint64]bool, len(picks))
+	for id := range picks {
+		picked[foldHash(id)] = true
+	}
+	known := chunkIDs(locals, &lent, false)
 	for _, chunk := range locals {
+		if !slices.ContainsFunc(known[chunk].calls, func(call uint64) bool { return picked[call>>foldShift] }) {
+			continue
+		}
+		if pairsOpening != nil {
+			pairsOpening(chunk)
+		}
 		open := lent.of(chunk)
 		for i := range open.Rows {
 			ref := rowRef{chunk, i}
@@ -244,11 +258,10 @@ func codexChunkResponsePairs(gateways, locals []*rowChunk, duplicateLocal map[ro
 	return pairs, compactions
 }
 
-// foldIDs are each chunk's Codex log calls by a hash of their response
-// id, kept by the chunk's serial (foldCodexRows). A page polled while one
-// session was live decoded every session file of the period again to
-// hash the same ids: ~40 MB a poll of today's page, and as much again
-// for Codex's effort.
+// foldIDs are each chunk's calls by a hash of their response id, kept by
+// the chunk's serial (chunkIDs). A page polled while one session was live
+// decoded every session file of the period again to hash the same ids:
+// ~40 MB a poll of today's page, and as much again for Codex's effort.
 var foldIDs struct {
 	sync.Mutex
 	by   map[uint64]*foldedIDs
@@ -256,34 +269,45 @@ var foldIDs struct {
 }
 
 type foldedIDs struct {
-	// each call's hash shifted left by foldIndexBits, and its index in
-	// the bits that frees: calls whose hash is the same are told apart by
-	// their ids after, so a shortened hash only reads a few more rows
+	// each call with a response id: the id's hash shifted left by
+	// foldShift, foldCodexLog when it is a Codex log call, and its index
+	// in the low foldIndexBits. Calls whose hash is the same are told
+	// apart by their ids after, so a shortened hash only reads a few more
+	// rows.
 	calls []uint64
 	turn  uint64 // the fold that used it last
 }
 
-const foldIndexBits = 24
+const (
+	foldIndexBits = 24
+	foldCodexLog  = 1 << foldIndexBits
+	foldShift     = foldIndexBits + 1
+)
 
 var foldSeed = maphash.MakeSeed()
+
+// foldHash is the part of an id's hash a foldedIDs call keeps.
+func foldHash(id string) uint64 { return maphash.String(foldSeed, id) << foldShift >> foldShift }
+
+// pairsOpening, in tests, is told each local chunk
+// codexChunkResponsePairs reads rows of.
+var pairsOpening func(*rowChunk)
 
 // foldKept is how many folds a chunk's ids outlive the last that read
 // them: the page's and Codex effort's are of different chunks.
 const foldKept = 4
 
-// foldHashing, in tests, is told each chunk foldCodexRows reads ids from.
+// foldHashing, in tests, is told each chunk chunkIDs reads ids from.
 var foldHashing func(*rowChunk)
 
-func foldCodexRows(locals []*rowChunk) map[rowRef]bool {
-	// The calls are found by a hash of their response id, not the id: a map
-	// keyed by every Codex call's id held each decoded chunk's strings. Calls
-	// whose hash is the same are told apart by their ids after.
-	first := map[uint64]rowRef{}
-	again := map[uint64][]rowRef{}
-	rows := lentRows() // an id is kept as its hash
-	defer rows.release()
+// chunkIDs are locals' calls as foldIDs keeps them, read from a chunk
+// only when none are kept for its serial. next starts a fold: one that
+// is not is for the same chunks as the fold before it.
+func chunkIDs(locals []*rowChunk, rows *chunkRows, next bool) map[*rowChunk]*foldedIDs {
 	foldIDs.Lock()
-	foldIDs.turn++
+	if next {
+		foldIDs.turn++
+	}
 	turn := foldIDs.turn
 	known := make(map[*rowChunk]*foldedIDs, len(locals))
 	for _, chunk := range locals {
@@ -295,33 +319,67 @@ func foldCodexRows(locals []*rowChunk) map[rowRef]bool {
 	foldIDs.Unlock()
 	var made map[uint64]*foldedIDs
 	for _, chunk := range locals {
-		f := known[chunk]
-		if f == nil {
-			if foldHashing != nil {
-				foldHashing(chunk)
+		if known[chunk] != nil {
+			continue
+		}
+		if foldHashing != nil {
+			foldHashing(chunk)
+		}
+		f := &foldedIDs{turn: turn}
+		open := rows.of(chunk)
+		for i := range open.Rows {
+			id := open.Strings[open.text(&open.Rows[i], rowResponseID)]
+			if id == "" {
+				continue
 			}
-			f = &foldedIDs{turn: turn}
-			open := rows.of(chunk)
-			for i := range open.Rows {
-				id := open.Strings[open.text(&open.Rows[i], rowResponseID)]
-				if id == "" {
-					continue
-				}
-				if row := open.row(i); !isCodexRow(row) || row.Source != "log" {
-					continue
-				}
-				f.calls = append(f.calls, maphash.String(foldSeed, id)<<foldIndexBits|uint64(i))
+			call := foldHash(id)<<foldShift | uint64(i)
+			if row := open.row(i); isCodexRow(row) && row.Source == "log" {
+				call |= foldCodexLog
 			}
-			if chunk.serial != 0 && len(open.Rows) < 1<<foldIndexBits {
-				if made == nil {
-					made = map[uint64]*foldedIDs{}
-				}
-				f.calls = slices.Clip(f.calls)
-				made[chunk.serial] = f
+			f.calls = append(f.calls, call)
+		}
+		known[chunk] = f
+		if chunk.serial != 0 && len(open.Rows) < 1<<foldIndexBits {
+			if made == nil {
+				made = map[uint64]*foldedIDs{}
+			}
+			f.calls = slices.Clip(f.calls)
+			made[chunk.serial] = f
+		}
+	}
+	foldIDs.Lock()
+	if foldIDs.by == nil {
+		foldIDs.by = map[uint64]*foldedIDs{}
+	}
+	for serial, f := range made {
+		foldIDs.by[serial] = f
+	}
+	if next {
+		for serial, f := range foldIDs.by {
+			if f.turn+foldKept < foldIDs.turn {
+				delete(foldIDs.by, serial)
 			}
 		}
-		for _, call := range f.calls {
-			ref, h := rowRef{chunk, int(call & (1<<foldIndexBits - 1))}, call>>foldIndexBits
+	}
+	foldIDs.Unlock()
+	return known
+}
+
+func foldCodexRows(locals []*rowChunk) map[rowRef]bool {
+	// The calls are found by a hash of their response id, not the id: a map
+	// keyed by every Codex call's id held each decoded chunk's strings. Calls
+	// whose hash is the same are told apart by their ids after.
+	first := map[uint64]rowRef{}
+	again := map[uint64][]rowRef{}
+	rows := lentRows() // an id is kept as its hash
+	defer rows.release()
+	known := chunkIDs(locals, &rows, true)
+	for _, chunk := range locals {
+		for _, call := range known[chunk].calls {
+			if call&foldCodexLog == 0 {
+				continue
+			}
+			ref, h := rowRef{chunk, int(call & (1<<foldIndexBits - 1))}, call>>foldShift
 			if f, ok := first[h]; !ok {
 				first[h] = ref
 			} else {
@@ -332,19 +390,6 @@ func foldCodexRows(locals []*rowChunk) map[rowRef]bool {
 			}
 		}
 	}
-	foldIDs.Lock()
-	if foldIDs.by == nil {
-		foldIDs.by = map[uint64]*foldedIDs{}
-	}
-	for serial, f := range made {
-		foldIDs.by[serial] = f
-	}
-	for serial, f := range foldIDs.by {
-		if f.turn+foldKept < foldIDs.turn {
-			delete(foldIDs.by, serial)
-		}
-	}
-	foldIDs.Unlock()
 	var refs []rowRef
 	for _, hashed := range again {
 		refs = append(refs, hashed...)
@@ -473,6 +518,14 @@ type effortEntry struct {
 // own rows and totals are read as they change.
 var effortFresh = time.Minute
 
+// effortBehind: once an answer is past effortFresh and the history
+// changed, the ask that finds it is told it while the next is built behind
+// it. The build is the ledger of all history, and made inside the
+// Sessions page's request it held that poll 0.8 to 1.3 s every minute a
+// Codex or Claude Code was working; the next poll has the change. Only a
+// period's first answer, or one from another home, is waited for.
+var effortBehind = true
+
 // effortBuilt, in tests, is told each time CodexModelEffort reads the ledger.
 var effortBuilt func()
 
@@ -516,9 +569,20 @@ func CodexModelEffort(p Period) map[string][]sessions.ModelEffort {
 	}
 	done := make(chan struct{})
 	e.building = done
+	if effortBehind && e.have && e.root == st.root {
+		value := e.value
+		codexEffort.Unlock()
+		go buildEffort(e, st, p, now, done)
+		return cloneEffort(value)
+	}
 	codexEffort.Unlock()
+	return cloneEffort(buildEffort(e, st, p, now, done))
+}
+
+// buildEffort builds p's answer under st into e, and closes done when it
+// is kept.
+func buildEffort(e *effortEntry, st requestState, p Period, now time.Time, done chan struct{}) (value map[string][]sessions.ModelEffort) {
 	began := time.Now()
-	var value map[string][]sessions.ModelEffort
 	defer func() {
 		codexEffort.Lock()
 		e.building = nil
@@ -535,8 +599,7 @@ func CodexModelEffort(p Period) map[string][]sessions.ModelEffort {
 	if effortBuilt != nil {
 		effortBuilt()
 	}
-	value = codexEffortOfIndex(st, p, now)
-	return cloneEffort(value)
+	return codexEffortOfIndex(st, p, now)
 }
 
 // codexEffortRows are the rows of ledgerOfAt(p, Filter{}, now, reader) that

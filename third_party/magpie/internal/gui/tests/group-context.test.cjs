@@ -3,7 +3,9 @@
 // Discord: a custom length, or the shortest or longest member's). The
 // group editor's "Context" row picks Largest model's (0, as before),
 // Smallest model's (-1, followed as the members change) or Custom, with a
-// box that takes 300k or 1m; its hint says the length agents are told.
+// box that takes 300k or 1m; its hint says the length agents are told,
+// and, when the members' windows differ, which member a longer
+// conversation skips (windy on Discord).
 // In English and Chinese, Chromium and WebKit.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
@@ -95,6 +97,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await row.locator(".opt.on").textContent(), w.largest);
       assert(await row.locator("input").isHidden(), "no box for the largest");
       assert((await hint()).includes(w.n1m), await hint());
+      // the members' windows differ (windy on Discord: a 1M group with a
+      // 128K member): the hint names the smallest and the length past
+      // which a conversation skips it
+      assert((await hint()).includes(w.n128) && (await hint()).includes("DeepSeek · deepseek-flash"), await hint());
       await row.locator(".opt", { hasText: w.smallest }).click();
       assert((await hint()).includes(w.n128), await hint());
       assert.equal((await save()).context, -1);
@@ -127,6 +133,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         "Agents are told its smallest model's window, so they compact before any member would turn the conversation away.",
         "Agents are told {n} tokens, its largest model's; a conversation too long for one member goes on to one with room for it.",
         "Agents are told its largest model's window; a conversation too long for one member goes on to one with room for it.",
+        "Agents are told {n} tokens, its largest model's; a conversation longer than {m} skips {who} for a member with room for it.",
         "{v} is not a length of tokens like 200k or 1m",
       ].filter((k) => !I18N.zh[k]));
       assert.deepEqual(missing, [], "every string has its Chinese");

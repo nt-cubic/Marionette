@@ -316,6 +316,29 @@ func (a Allowance) CapHeld(model string, caps WindowCaps, now time.Time) *CapHol
 	return h
 }
 
+// NearCap says whether an allowance, as last known, has some window
+// counting model within points of its own share of caps (or past it) at
+// now, not renewed since: a careful provider reads such an account again
+// before it is sent a request (Provider.CapCareful). No caps are near
+// nothing.
+func (a Allowance) NearCap(model string, caps WindowCaps, points float64, now time.Time) bool {
+	if !caps.Holds() {
+		return false
+	}
+	model = strings.ToLower(model)
+	for _, l := range a {
+		share, _ := caps.Of(l.Name)
+		if share <= 0 || !l.applies(model) || l.Used < float64(share)-points {
+			continue
+		}
+		if !l.Resets.IsZero() && !l.Resets.After(now) {
+			continue // renewed since it was read
+		}
+		return true
+	}
+	return false
+}
+
 // capReached says whether an account's windows that stop it for every
 // model are, one of them, at or past its own share of caps at now —
 // usedPast at the share, those renewed since they were read left out. No

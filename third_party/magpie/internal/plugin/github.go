@@ -58,14 +58,18 @@ var (
 // kept while its last push stays the same, so asking again costs no more.
 const taggedTTL = 10 * time.Minute
 
-// taggedWait is how long the page waits for GitHub; taggedEach bounds a
-// repository's reads (package.json, npm, its entry file), which go on past
+// taggedSearch bounds each page of GitHub's search: from mainland China
+// a page straight from api.github.com takes about 30s (MYCF711, #3923),
+// and with the search under taggedWait the list was empty there.
+// taggedWait is how long the page then waits for the repositories' reads;
+// taggedEach bounds a repository's reads (package.json, npm, its entry file), which go on past
 // that wait and are kept for the next ask; taggedAtOnce repositories are
 // read at once; and a list that left a repository out for want of an
 // answer is asked again after taggedRetry. Through a proxy far away each
 // read takes a few hundred milliseconds (larchsis on X: a list cut short
 // at the wait was kept ten minutes).
 var (
+	taggedSearch = 60 * time.Second
 	taggedWait   = 8 * time.Second
 	taggedEach   = 20 * time.Second
 	taggedAtOnce = 12
@@ -200,8 +204,6 @@ func TaggedAskAgain() {
 // left out for want of an answer in taggedWait: it is then as last had
 // it, if it had it, and missing counts those last didn't have.
 func askTagged(ctx context.Context, last []Tagged) (l []Tagged, whole bool, missing *TaggedMissing, err error) {
-	c, cancel := context.WithTimeout(ctx, taggedWait)
-	defer cancel()
 	type item struct {
 		FullName      string    `json:"full_name"`
 		HTMLURL       string    `json:"html_url"`
@@ -226,7 +228,9 @@ func askTagged(ctx context.Context, last []Tagged) (l []Tagged, whole bool, miss
 	for page := 1; page*taggedPage <= 1000; page++ {
 		v := url.Values{"q": {"topic:" + Topic + " archived:false fork:false"}, "sort": {"stars"}, "order": {"desc"},
 			"per_page": {strconv.Itoa(taggedPage)}, "page": {strconv.Itoa(page)}}
-		b, err := fetchJSON(c, githubAPI+"/search/repositories?"+v.Encode(), 4<<20)
+		sc, cancel := context.WithTimeout(ctx, taggedSearch)
+		b, err := fetchJSON(sc, githubAPI+"/search/repositories?"+v.Encode(), 4<<20)
+		cancel()
 		if err != nil {
 			return nil, false, nil, err
 		}
@@ -248,6 +252,8 @@ func askTagged(ctx context.Context, last []Tagged) (l []Tagged, whole bool, miss
 			break
 		}
 	}
+	c, cancel := context.WithTimeout(ctx, taggedWait)
+	defer cancel()
 	before := map[string]Tagged{}
 	for _, t := range last {
 		before[strings.ToLower(t.Repo)] = t

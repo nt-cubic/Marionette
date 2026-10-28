@@ -2,6 +2,20 @@
 // field, #2038) and reading them as they stand: its key prompt's check
 // answers with what input.magpie.options says, read when it is asked.
 export const Optco = async (input) => ({
+  // its list goes by a switch, as WorkBuddy's "Free models only" does
+  // (plugins#430): beta-model is listed only while beta is on
+  config: async (cfg) => {
+    cfg.provider ??= {}
+    cfg.provider.optco ??= { name: "Optco", npm: "@ai-sdk/openai-compatible", api: "http://127.0.0.1:9/v1", models: { "base-model": { name: "Base" } } }
+  },
+  provider: {
+    id: "optco",
+    async models(provider) {
+      const out = { ...provider.models }
+      if (input.magpie?.option("optco", "beta")) out["beta-model"] = { ...out["base-model"], id: "beta-model", name: "Beta" }
+      return out
+    },
+  },
   auth: {
     provider: "optco",
     options: [

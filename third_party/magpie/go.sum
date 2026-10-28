@@ -1,7 +1,7 @@
 git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3 h1:N3IGoHHp9pb6mj1cbXbuaSXV/UMKwmbKLf53nQmtqMA=
 git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3/go.mod h1:QtOLZGz8olr4qH2vWK0QH0w0O4T9fEIjMuWpKUsH7nc=
-github.com/Calcium-Ion/moejs v0.1.0-alpha.4 h1:SQOx8HsTzfW8fZgSnR3KQ5IPa49P0klo6pRGCsfYVC4=
-github.com/Calcium-Ion/moejs v0.1.0-alpha.4/go.mod h1:9YqHj36EV7pzV/vlEYSw49f3oggeJFdmqcjM9TmDpHs=
+github.com/MoeForge/moejs v0.1.0-alpha.11 h1:VVDuqn14Dzlhcs17gDp3X43uvKkxi7OK7SZvkd0moEc=
+github.com/MoeForge/moejs v0.1.0-alpha.11/go.mod h1:YG2Y3bZuThN7hkSBext9MHPUPSrAIdpiE+6v+QO+LX0=
 github.com/adrg/xdg v0.5.3 h1:xRnxJXne7+oWDatRhR1JLnvuccuIeCoBu2rtuLqQB78=
 github.com/adrg/xdg v0.5.3/go.mod h1:nlTsY+NNiCBGCK2tpm09vRqfVzrc2fLmXGpBLF0zlTQ=
 github.com/atotto/clipboard v0.1.4 h1:EH0zSVneZPSuFR11BlR9YppQTVDbh5+16AmcJi4g1z4=

@@ -5,13 +5,17 @@
 // Now a card's names take the width the longest needs and the bars what is
 // left, every row's bar starting at the same place; narrow, the names are
 // shortened and a bar is never under 5em.
+// Each row is a grid of its own, not a subgrid of its card (#3955: a
+// subgrid crashed Safari 16's WebKit sizing it, #3731), so no rule of the
+// bars says subgrid, and every row's bar still starts and ends at one x,
+// wide and narrow, in every language.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
 
-const assets = path.resolve(__dirname, "../assets");
+const assets = path.resolve(__dirname, process.env.MAGPIE_SESS_ASSETS || "../assets");
 const iso = (d) => [d.getFullYear(), d.getMonth() + 1, d.getDate()].map((n) => String(n).padStart(2, "0")).join("-");
 const to = new Date(2026, 8, 28);
 const back = (i) => { const d = new Date(to); d.setDate(d.getDate() - i); return d; };
@@ -65,12 +69,32 @@ function serve(lang) {
   };
 }
 
+test("no rule of the sessions bars says subgrid", async () => {
+  const css = await fs.readFile(path.join(assets, "app.css"), "utf8");
+  const bad = [];
+  for (const m of css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (/\.sess-(bars?|skills?)\b/.test(m[1]) && /subgrid/.test(m[2])) bad.push(m[1].trim());
+  }
+  assert.deepEqual(bad, []);
+});
+
+// every row of a card starts its bar at one x and ends it at one x
+function lined(rs) {
+  for (const card of new Set(rs.map((r) => r.card))) {
+    const of = rs.filter((r) => r.card === card);
+    for (const k of ["left", "right"]) {
+      const xs = of.map((r) => Math.round(r[k]));
+      assert.equal(new Set(xs).size, 1, `${card} bars' ${k} at ${xs}`);
+    }
+  }
+}
+
 // each bar row of the four cards: its name's full and shown widths, its bar's
 const rows = (page) => page.evaluate(() => {
   const out = [];
   const pick = (sel, name, track) => document.querySelectorAll(sel).forEach((r) => {
     const n = r.querySelector(name), b = r.querySelector(track).getBoundingClientRect();
-    out.push({ sel, text: n.textContent, full: n.scrollWidth, shown: n.clientWidth, bar: b.width, left: b.left, card: r.closest(".sess-card").id });
+    out.push({ sel, text: n.textContent, full: n.scrollWidth, shown: n.clientWidth, bar: b.width, left: b.left, right: b.right, card: r.closest(".sess-card").id });
   });
   pick("#sessProjects .sess-bar", ".n", ".track");
   pick("#sessModels .sess-bar", ".n", ".track");
@@ -80,7 +104,7 @@ const rows = (page) => page.evaluate(() => {
 });
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
-  for (const lang of ["en", "zh"]) {
+  for (const lang of ["en", "zh", "zh-TW", "ja", "de"]) {
     test(`${engine} ${lang}: the sessions bars' names take the width they need`, async (t) => {
       const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
       const context = await browser.newContext({ viewport: { width: 1600, height: 900 }, reducedMotion: "reduce", timezoneId: "Asia/Shanghai" });
@@ -108,10 +132,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           assert.ok(r.full <= r.shown + 0.5, `${r.sel} "${r.text}" cut short: ${r.full} > ${r.shown}`);
           assert.ok(r.bar >= 60, `${r.sel} "${r.text}" bar ${r.bar}`);
         }
-        for (const card of new Set(rs.map((r) => r.card))) {
-          const lefts = rs.filter((r) => r.card === card).map((r) => Math.round(r.left));
-          assert.equal(new Set(lefts).size, 1, `${card} bars start at ${lefts}`);
-        }
+        lined(rs);
         assert.ok(rs.some((r) => r.text === LONG_DIR.split("/").pop()) && rs.some((r) => r.text === LONG_MODEL));
       });
 
@@ -120,6 +141,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.waitForTimeout(100);
         const rs = await rows(page);
         for (const r of rs) assert.ok(r.bar >= 59, `${r.sel} "${r.text}" bar ${r.bar}`);
+        lined(rs);
         assert.ok(rs.some((r) => r.full > r.shown), "a long name should be shortened at 420 wide");
         // nothing past its card
         const over = await page.evaluate(() => [...document.querySelectorAll("#sessGrid .sess-card")].filter((c) => c.scrollWidth > c.clientWidth + 1).map((c) => c.id));
@@ -129,7 +151,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await t.test("wide again", async () => {
         await page.setViewportSize({ width: 1600, height: 900 });
         await page.waitForTimeout(100);
-        for (const r of await rows(page)) assert.ok(r.full <= r.shown + 0.5, `${r.sel} "${r.text}" cut short`);
+        const rs = await rows(page);
+        for (const r of rs) assert.ok(r.full <= r.shown + 0.5, `${r.sel} "${r.text}" cut short`);
+        lined(rs);
       });
       assert.deepEqual(errors, []);
     });

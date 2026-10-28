@@ -52,7 +52,8 @@ func newBlockPricer(renames provider.Renames, wires map[string]string, price fun
 }
 
 // as is priceRow's answer for a gateway call of these names, prov the
-// id the provider has now (Renames).
+// id the provider has now without a merge (Renames.Own): what it is
+// shown under does not change what it cost.
 func (b *blockPricer) as(prov, model, served, effort string) pricedAs {
 	k := [4]string{prov, model, served, effort}
 	if a, ok := b.by[k]; ok {
@@ -60,7 +61,7 @@ func (b *blockPricer) as(prov, model, served, effort string) pricedAs {
 	}
 	a := pricedAs{provider: prov, flags: swapKnown}
 	sent := provider.SentNameIn(b.wires, prov, model, effort)
-	if served != "" && Swapped(sent, served) && !(SameSpelled(model, served) || ServingName(model, served) || RelayRenamed(model, served)) {
+	if served != "" && Swapped(sent, served) && !(SameSpelled(model, served) || ServingName(model, served) || RelayRenamed(model, served) || ListedAs(prov, model, served)) {
 		a.flags |= 2
 	}
 	if GroupRouted(sent, served) {
@@ -121,15 +122,15 @@ func (b *blockPricer) block(packed *rowChunk) *rowChunk {
 		flags uint16
 		price *catalog.Price
 	}
-	names := map[[5]uint32]ids{}
+	names := map[[6]uint32]ids{}
 	agents := map[uint32][2]uint32{}
-	shapes := map[[2]uint32]ids{}
+	shapes := map[[3]uint32]ids{}
 	// the provider each shape names, as it is now: one an id was given
 	// away from since has its calls told by when each was made, so its
 	// rows take the shape per provider they go to (Renames.Timed)
 	type renamedTo struct {
-		to    uint32
-		timed bool
+		to, own uint32 // shown under, and priced as (Renames.Both)
+		timed   bool
 	}
 	provs := map[uint32]renamedTo{}
 	for i := range c.Rows {
@@ -140,21 +141,23 @@ func (b *blockPricer) block(packed *rowChunk) *rowChunk {
 			id := c.Strings[raw]
 			to = renamedTo{timed: b.renames.Timed(id)}
 			if !to.timed {
-				to.to = intern(b.renames.Of(id, p.Time), raw)
+				shown, own := b.renames.Both(id, p.Time)
+				to.to, to.own = intern(shown, raw), intern(own, raw)
 			}
 			provs[raw] = to
 		}
 		if to.timed {
-			to.to = intern(b.renames.Of(c.Strings[raw], p.Time), raw)
+			shown, own := b.renames.Both(c.Strings[raw], p.Time)
+			to.to, to.own = intern(shown, raw), intern(own, raw)
 		}
-		sk := [2]uint32{p.Shape, to.to}
+		sk := [3]uint32{p.Shape, to.to, to.own}
 		got, ok := shapes[sk]
 		if !ok {
 			t := c.Shapes[p.Shape]
-			k := [5]uint32{t[1], t[5], t[7], t[8], to.to}
+			k := [6]uint32{t[1], t[5], t[7], t[8], to.to, to.own}
 			named, ok := names[k]
 			if !ok {
-				a := b.as(c.Strings[k[4]], c.Strings[k[1]], c.Strings[k[2]], c.Strings[k[3]])
+				a := b.as(c.Strings[k[5]], c.Strings[k[1]], c.Strings[k[2]], c.Strings[k[3]])
 				named = ids{k[4], a.flags, a.price}
 				names[k] = named
 			}

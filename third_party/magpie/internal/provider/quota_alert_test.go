@@ -198,6 +198,36 @@ func TestDueAlertsPoolWindows(t *testing.T) {
 	}
 }
 
+// a pool's weekly window is an aside, but is still told of (#523 told the
+// alerts of it): it renews with much of it left just as any other week
+// does, so its renewal is reminded of too. The pools' 5-hour asides say
+// nothing, as any 5-hour window does (#720: too often to be news).
+func TestDueRemindersPoolWeekly(t *testing.T) {
+	now := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	soon := now.Add(20 * time.Hour)
+	five, week := 5*time.Hour, 7*24*time.Hour
+	qs := []SubscriptionQuota{{Provider: "antigravity", Name: "Antigravity", User: "u@x.com",
+		Windows: []QuotaWindow{
+			{Name: "7 days", Pool: "Gemini", Span: week, Aside: true, Used: 40, ResetsAt: &soon},
+			{Name: "5 hours", Pool: "Gemini", Span: five, Aside: true, Used: 10, ResetsAt: &soon},
+		}}}
+	marks := map[string]alertMark{}
+	got := dueReminders(qs, marks, 24*time.Hour, now)
+	if len(got) != 1 || got[0].Kind != "renews" || got[0].Window != "Gemini · 7 days" || got[0].Used != 40 || !got[0].ResetsAt.Equal(soon) {
+		t.Fatalf("got %+v", got)
+	}
+	// told once: the same run again says nothing
+	if again := dueReminders(qs, marks, 24*time.Hour, now.Add(time.Hour)); len(again) != 0 {
+		t.Fatalf("told twice: %+v", again)
+	}
+	// the week nearly spent: little would be lost, nothing said
+	spent := []SubscriptionQuota{qs[0]}
+	spent[0].Windows = []QuotaWindow{{Name: "7 days", Pool: "Gemini", Span: week, Aside: true, Used: 90, ResetsAt: &soon}}
+	if got := dueReminders(spent, map[string]alertMark{}, 24*time.Hour, now); len(got) != 0 {
+		t.Fatalf("nearly spent: %+v", got)
+	}
+}
+
 // the reset reminder (#720): a long window renewing within the hours set
 // with much of it left, once a run; a 5-hour one, a window nearly used up
 // and one renewing later say nothing; resets running out are told too

@@ -57,7 +57,7 @@ func TestMaskEval(t *testing.T) {
 					asked++
 				}
 			}
-			evalModel(t, rec, em.known)
+			evalModel(t, rec, em.known, pii.Of(em.id).MinScore())
 		})
 	}
 	if os.Getenv("MAGPIE_EVAL_CACHE") != "" && asked == 0 {
@@ -75,7 +75,9 @@ var evalModels = []struct {
 	{pii.AstrLinkGuard, "testdata/eval-astrlink.json", func(v evalValue) string { return v.GuardKnown }},
 }
 
-func evalModel(t *testing.T, rec map[string]recorded, known func(evalValue) string) {
+// evalModel scores the recording rec, keeping what the model was at
+// least min sure of, as masking does at that threshold.
+func evalModel(t *testing.T, rec map[string]recorded, known func(evalValue) string, min float64) {
 	var stale []string
 	for _, c := range evalCases {
 		if r, ok := rec[c.ID]; !ok || r.Text != textHash(c.Text) {
@@ -85,6 +87,17 @@ func evalModel(t *testing.T, rec map[string]recorded, known func(evalValue) stri
 	if len(stale) > 0 {
 		t.Fatalf("the model's recording is not of cases %v; record it again with MAGPIE_EVAL_CACHE (see TestMaskEval)", stale)
 	}
+	kept := map[string]recorded{}
+	for id, r := range rec {
+		fs := []redact.Found{}
+		for _, f := range r.Found {
+			if f.Score >= min {
+				fs = append(fs, f)
+			}
+		}
+		kept[id] = recorded{Text: r.Text, Found: fs}
+	}
+	rec = kept
 	replay := func(texts []string) [][]redact.Found {
 		out := make([][]redact.Found, len(texts))
 		for i, s := range texts {

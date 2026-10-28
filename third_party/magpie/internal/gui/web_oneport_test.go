@@ -98,6 +98,23 @@ func onePortCases(t *testing.T, h http.Handler, reached *bool) {
 	api("by /v1/../api", "GET", "/v1/../api/settings", lo, here)
 	api("by /v1/%2e%2e/api", "GET", "/v1/%2e%2e/api/settings", lo, here)
 	api("by /v1//api", "GET", "/v1//api/settings", lo, here)
+	gw := func(name string, want int, method, target, peer, host, cookie string, hdr ...string) {
+		t.Helper()
+		*reached = false
+		w := onePortCall(t, h, method, target, peer, host, cookie, hdr...)
+		// a 401's refusal for want of a key turns 429 once the process's
+		// failed-key bucket (auththrottle.go) is spent: these are many
+		if w.Code != want && !(want == http.StatusUnauthorized && w.Code == http.StatusTooManyRequests) || *reached {
+			t.Errorf("the gateway %s: %d, want %d (page reached %v): %s", name, w.Code, want, *reached, w.Body.String())
+		}
+	}
+	// A raw TCP forward to the page's port (frp's tcp, ssh -R, socat), or
+	// a proxy that adds no forwarding header, arrives from loopback with
+	// nothing an agent here wouldn't send: no client route there is
+	// answered as local, so with magpie not shared none is answered at all
+	// (reported privately by Coffemon). Browser marks change nothing.
+	forwarded(t, gw, 403, lo)
+
 	// a gateway key is no key to the page
 	key := onePortKey(t)
 	api("with a gateway key", "GET", "/api/settings", lo, here, "Authorization", "Bearer "+key)
@@ -107,22 +124,19 @@ func onePortCases(t *testing.T, h http.Handler, reached *bool) {
 		t.Fatalf("the page's API with its cookie: %d", w.Code)
 	}
 
-	gw := func(name string, want int, method, target, peer, host, cookie string, hdr ...string) {
-		t.Helper()
-		*reached = false
-		w := onePortCall(t, h, method, target, peer, host, cookie, hdr...)
-		if w.Code != want || *reached {
-			t.Errorf("the gateway %s: %d, want %d (page reached %v): %s", name, w.Code, want, *reached, w.Body.String())
-		}
-	}
-	// the gateway's client routes, judged as on its own port
-	gw("for an agent here", 200, "GET", "/v1/models", lo, here, "")
-	gw("from Origin: null", 403, "POST", "/v1/chat/completions", lo, here, "", "Origin", "null")
-	gw("from a foreign Origin", 403, "POST", "/v1/chat/completions", lo, here, "", "Origin", "https://evil.example")
-	gw("under a rebound Host", 403, "GET", "/v1/models", lo, evil, "", chromeMarks...)
-	gw("under a rebound Host, a POST", 403, "POST", "/v1/chat/completions", lo, evil, "", append([]string{"Origin", "http://" + evil}, chromeMarks...)...)
+	// the gateway's client routes, judged as from another machine: shared
+	// now, each needs a gateway key, from loopback too
+	forwarded(t, gw, 401, lo)
+	gw("from loopback with the page's cookie", 401, "GET", "/v1/models", lo, here, onePortWebKey)
+	gw("from loopback with a gateway key", 200, "GET", "/v1/models", lo, here, "", "Authorization", "Bearer "+key)
+	gw("from loopback with a gateway key as x-api-key", 200, "GET", "/v1/models", lo, "127.0.0.1", "", "x-api-key", key)
+	gw("from Origin: null", 401, "POST", "/v1/chat/completions", lo, here, "", "Origin", "null")
+	gw("from a foreign Origin", 401, "POST", "/v1/chat/completions", lo, here, "", "Origin", "https://evil.example")
+	gw("from a foreign Origin with a gateway key", 403, "POST", "/v1/chat/completions", lo, here, "", "Origin", "https://evil.example", "Authorization", "Bearer "+key)
+	gw("under a rebound Host", 401, "GET", "/v1/models", lo, evil, "", chromeMarks...)
+	gw("under a rebound Host, a POST", 401, "POST", "/v1/chat/completions", lo, evil, "", append([]string{"Origin", "http://" + evil}, chromeMarks...)...)
 	// the page's own cookie is no gateway key either
-	gw("under a rebound Host with the page's cookie", 403, "GET", "/v1/models", lo, evil, onePortWebKey, chromeMarks...)
+	gw("under a rebound Host with the page's cookie", 401, "GET", "/v1/models", lo, evil, onePortWebKey, chromeMarks...)
 	gw("through a proxy without a key", 401, "GET", "/v1/models", lo, "magpie.example.com", "", "X-Forwarded-For", "203.0.113.9")
 	gw("through a proxy with the page's cookie", 401, "GET", "/v1/models", lo, "magpie.example.com", onePortWebKey, "X-Forwarded-For", "203.0.113.9")
 	gw("from another machine without a key", 401, "GET", "/v1/models", "10.0.0.5:50001", here, "")
@@ -137,6 +151,29 @@ func onePortCases(t *testing.T, h http.Handler, reached *bool) {
 	}
 	gw("through a proxy, not shared", 403, "GET", "/v1/models", lo, "magpie.example.com", "", "X-Forwarded-For", "203.0.113.9", "Authorization", "Bearer "+key)
 	gw("from another machine, not shared", 403, "GET", "/v1/models", "10.0.0.5:50001", here, "", "Authorization", "Bearer "+key)
+}
+
+// forwarded checks what a request a raw TCP forward or a proxy without
+// forwarding headers passes on to the page's port gets on the client
+// routes, peer on loopback and no key: want, under any Host and whatever a
+// browser's marks say, on the chat, Responses, Messages, model and MCP
+// routes.
+func forwarded(t *testing.T, gw func(string, int, string, string, string, string, string, ...string), want int, peer string) {
+	t.Helper()
+	for _, host := range []string{"127.0.0.1:3430", "127.0.0.1", "localhost:3430", "magpie.example.com"} {
+		gw("forwarded to "+host+": chat completions", want, "POST", "/v1/chat/completions", peer, host, "")
+		gw("forwarded to "+host+": chat completions without /v1", want, "POST", "/chat/completions", peer, host, "")
+		gw("forwarded to "+host+": responses", want, "POST", "/v1/responses", peer, host, "")
+		gw("forwarded to "+host+": messages", want, "POST", "/v1/messages", peer, host, "")
+		gw("forwarded to "+host+": models", want, "GET", "/v1/models", peer, host, "")
+		gw("forwarded to "+host+": Gemini", want, "GET", "/v1beta/models", peer, host, "")
+		gw("forwarded to "+host+": an MCP server", want, "POST", "/mcp/github", peer, host, "")
+		gw("forwarded to "+host+": magpie's web search MCP", want, "POST", "/mcp/magpie/web-search", peer, host, "")
+		gw("forwarded to "+host+": the Codex backend", want, "POST", gateway.CodexPath+"/responses", peer, host, "")
+	}
+	gw("forwarded, a browser's marks", want, "POST", "/v1/chat/completions", peer, "127.0.0.1:3430", "", chromeMarks...)
+	gw("forwarded, a CLI's user agent", want, "POST", "/v1/chat/completions", peer, "127.0.0.1:3430", "", "User-Agent", "claude-cli/2.0.0 (external, cli)")
+	gw("forwarded, an IPv6 loopback peer", want, "POST", "/v1/chat/completions", "[::1]:50001", "[::1]:3430", "")
 }
 
 const onePortWebKey = "0123456789abcdef0123456789abcdef"
@@ -185,4 +222,35 @@ func TestWebAssetsAreNoClientPath(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// An agent here keeps the gateway's own port, key-free from loopback as
+// before; only the page's port judges every client route as from another
+// machine, and MAGPIE_TRUST_PROXY (a proxy that signs its clients in)
+// doesn't make the page's port local again.
+func TestWebOnePortAgentsHereUseTheGatewayPort(t *testing.T) {
+	onePortHome(t)
+	g := gateway.New()
+	prev := served.Swap(g)
+	t.Cleanup(func() { served.Store(prev) })
+	var reached bool
+	page := onePortPage(&reached)
+	if w := onePortCall(t, g.Front(), "GET", "/v1/models", "127.0.0.1:50001", "127.0.0.1:3425", ""); w.Code != 200 {
+		t.Fatalf("an agent here on the gateway's port: %d: %s", w.Code, w.Body.String())
+	}
+	w := onePortCall(t, page, "GET", "/v1/models", "127.0.0.1:50001", "127.0.0.1:3430", "")
+	if w.Code != 403 || !strings.Contains(w.Body.String(), "page port") || !strings.Contains(w.Body.String(), gateway.URL()) {
+		t.Fatalf("an agent here on the page's port, not shared: %d: %s", w.Code, w.Body.String())
+	}
+	t.Setenv("MAGPIE_TRUST_PROXY", "1")
+	if w := onePortCall(t, page, "POST", "/v1/chat/completions", "127.0.0.1:50001", "127.0.0.1:3430", ""); w.Code != 403 {
+		t.Fatalf("with MAGPIE_TRUST_PROXY, the page's port: %d: %s", w.Code, w.Body.String())
+	}
+	key := onePortKey(t)
+	if w := onePortCall(t, page, "POST", "/mcp/magpie/web-search", "127.0.0.1:50001", "127.0.0.1", ""); w.Code != 401 && w.Code != 429 {
+		t.Fatalf("with MAGPIE_TRUST_PROXY, shared, the page's port's MCP without a key: %d: %s", w.Code, w.Body.String())
+	}
+	if w := onePortCall(t, page, "GET", "/v1/models", "127.0.0.1:50001", "127.0.0.1", "", "Authorization", "Bearer "+key); w.Code != 200 {
+		t.Fatalf("the page's port with a gateway key: %d: %s", w.Code, w.Body.String())
+	}
 }

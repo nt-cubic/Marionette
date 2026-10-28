@@ -388,3 +388,107 @@ func TestHoldsPriceTheModelItIsTheSameAs(t *testing.T) {
 		t.Errorf("a model with no Same as was priced: %+v", pr)
 	}
 }
+
+// max2020 on Discord: an Antigravity card told no whole for its windows,
+// not even "not enough data", as its rows are its pools' (Gemini · 5
+// hours, Claude & GPT · 5 hours, their weeks) and a pool's window was
+// never reckoned. A pool's window counts its own models' calls, a model
+// asked for by its family's id (gemini-3.8-flash for the medium level's
+// window) too; a pool read with only its week, whose models were given no
+// pool (a Starter plan), counts the families its name says. The models'
+// own windows are still not told.
+func TestWindowHoldsReckonsAntigravityPools(t *testing.T) {
+	holdsHome(t)
+	now := holdClock(t, time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC))
+	at := func(d time.Duration) *time.Time { x := now.Add(d); return &x }
+	call := func(user string, ago time.Duration, model string, in, out int) Record {
+		return Record{Time: now.Add(-ago), Agent: "pi", Provider: "antigravity", ProviderAccount: user, Status: 200, Model: model, Input: in, Output: out}
+	}
+	for _, r := range []Record{
+		call("m@x.com", 9*24*time.Hour, "gemini-3.8-flash", 1, 1), // the log's first call
+		call("m@x.com", time.Hour, "gemini-3.8-flash", 1000, 1000),
+		call("m@x.com", 2*time.Hour, "claude-sonnet-4-6", 2000, 2000),
+		call("m@x.com", 3*time.Hour, "some-other-model", 50000, 50000), // no pool of the card's
+		call("s@x.com", time.Hour, "gpt-oss-120b", 3000, 1000),
+		call("s@x.com", 2*time.Hour, "gemini-3-flash", 500, 500),
+	} {
+		Append(r)
+	}
+	five, week := 5*time.Hour, 7*24*time.Hour
+	qs := []provider.SubscriptionQuota{
+		{Provider: "antigravity", User: "m@x.com", Windows: []provider.QuotaWindow{
+			{Name: "Gemini 3.8 Flash (Medium)", Model: "gemini-3.8-flash-medium", Family: "Gemini", Pool: "Gemini", Used: 20, ResetsAt: at(2 * time.Hour)},
+			{Name: "Claude Sonnet 4.6", Model: "claude-sonnet-4-6", Family: "Claude", Pool: "Claude & GPT", Used: 25, ResetsAt: at(2 * time.Hour)},
+			{Name: "5 hours", Pool: "Gemini", Span: five, Aside: true, Used: 20, ResetsAt: at(2 * time.Hour)},
+			{Name: "5 hours", Pool: "Claude & GPT", Span: five, Aside: true, Used: 25, ResetsAt: at(2 * time.Hour)},
+		}},
+		{Provider: "antigravity", User: "s@x.com", Windows: []provider.QuotaWindow{
+			{Name: "GPT-OSS 120B (Medium)", Model: "gpt-oss-120b-medium", Family: "GPT-OSS", Used: 50, ResetsAt: at(3 * 24 * time.Hour)},
+			{Name: "Gemini 3 Flash", Model: "gemini-3-flash", Family: "Gemini", Used: 10, ResetsAt: at(3 * 24 * time.Hour)},
+			{Name: "7 days", Pool: "Claude & GPT", Span: week, Aside: true, Used: 50, ResetsAt: at(3 * 24 * time.Hour)},
+		}},
+	}
+	got := WithWindowHolds(qs, now)
+	sonnet := (2000*3 + 2000*15) / 1e6
+	for _, x := range []struct {
+		q, w           int
+		tokens, routed int64
+		cost           float64 // 0: not priced
+	}{
+		{0, 2, 2000 * 5, 2000, 0}, // gemini-3.8-flash has no API price here
+		{0, 3, 4000 * 4, 4000, sonnet * 4},
+		{1, 2, 4000 * 2, 4000, 0},
+	} {
+		w := got[x.q].Windows[x.w]
+		h := w.Holds
+		if h == nil {
+			t.Fatalf("%s · %s of %s: no whole reckoned (why %q)", w.Pool, w.Name, got[x.q].User, w.HoldsWhy)
+		}
+		if h.Tokens != x.tokens || h.Routed.Tokens != x.routed {
+			t.Errorf("%s · %s of %s: %d tokens whole from %d, want %d from %d", w.Pool, w.Name, got[x.q].User, h.Tokens, h.Routed.Tokens, x.tokens, x.routed)
+		}
+		if h.Priced != (x.cost > 0) || !near(h.Cost, x.cost) {
+			t.Errorf("%s · %s of %s: cost %v (priced %v), want %v", w.Pool, w.Name, got[x.q].User, h.Cost, h.Priced, x.cost)
+		}
+	}
+	for _, x := range [][2]int{{0, 0}, {0, 1}, {1, 0}, {1, 1}} {
+		if w := got[x[0]].Windows[x[1]]; w.Holds != nil || w.HoldsWhy != "" {
+			t.Errorf("model window %s: reckoned %+v, why %q", w.Name, w.Holds, w.HoldsWhy)
+		}
+	}
+}
+
+// The ledger prices a call whose own id has no price as the model the
+// reply named (Served, #1498). A window's whole is priced the same way:
+// one such call otherwise has no API price, and that drops the dollar
+// whole for every other call in the window.
+func TestHoldsPriceTheModelTheReplyNamed(t *testing.T) {
+	holdsHome(t)
+	priceOf := apiPricer()
+	named := Record{Provider: "relay", Model: "moonshot-kimi-k3", Served: "gpt-5.5"}
+	if pr := priceOf(named); pr == nil || pr.Input != 1.25 {
+		t.Fatalf("the model the reply named wasn't its API price: %+v", pr)
+	}
+	same := named
+	same.Served = named.Model
+	if pr := priceOf(same); pr != nil {
+		t.Fatalf("a reply that names the same unpriced id was priced: %+v", pr)
+	}
+	own := Record{Provider: "relay", Model: "claude-opus-4-7", Served: "gpt-5.5"}
+	if pr := priceOf(own); pr == nil || pr.Input != 5 {
+		t.Fatalf("the asked model's own price lost: %+v", pr)
+	}
+
+	now := holdClock(t, time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC))
+	reset := now.Add(2 * time.Hour)
+	Append(Record{Time: now.Add(-8 * 24 * time.Hour), Agent: "codex", Provider: "codex", ProviderAccount: "sam@example.com",
+		Model: "gpt-5.5", Input: 1000, Status: 200})
+	Append(Record{Time: now.Add(-time.Hour), Agent: "codex", Provider: "codex", ProviderAccount: "sam@example.com",
+		Model: "moonshot-kimi-k3", Served: "gpt-5.5", Input: 1000, Status: 200})
+	qs := WithWindowHolds([]provider.SubscriptionQuota{{Provider: "codex", User: "sam@example.com", Windows: []provider.QuotaWindow{
+		{Name: "5 hours", Used: 10, ResetsAt: &reset, Span: 5 * time.Hour},
+	}}}, now)
+	if h := qs[0].Windows[0].Holds; h == nil || !h.Priced || h.Cost <= 0 {
+		t.Fatalf("5 hours: %+v, a priced reply left the dollar whole out", h)
+	}
+}

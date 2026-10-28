@@ -87,6 +87,12 @@ func codebuddyMCP(dir string) string {
 	if base == "" {
 		base = home()
 	}
+	return codebuddyMCPIn(dir, base)
+}
+
+// codebuddyMCPIn is codebuddyMCP with base as where .codebuddy.json is
+// beside: a WSL distro's home for the CodeBuddy Code there.
+func codebuddyMCPIn(dir, base string) string {
 	all := []string{filepath.Join(dir, ".mcp.json"), filepath.Join(dir, "mcp.json"), filepath.Join(base, ".codebuddy.json")}
 	for _, p := range all {
 		if _, err := os.Stat(p); err == nil {
@@ -175,7 +181,7 @@ func targetOf(a *agent.Agent) *Target {
 		// Pi 0.99 reads MCP servers itself, from its mcp.json; before it,
 		// and while an MCP extension replaces its own (pi-mcp-adapter,
 		// pi-mcp-extension), each extension reads its own file (pimcp.go)
-		t.MCP, t.MCPVia = piMCP(h, d, piVersion(a))
+		t.MCP, t.MCPVia = piMCP(h, d, piVersion(a), piGlobalRoots())
 		t.Skills = filepath.Join(d, "skills")
 	case "dsh":
 		// DeepSeek Harness reads $DSH_HOME/AGENTS.md and $DSH_HOME/skills;
@@ -597,30 +603,80 @@ func wslTargetOf(a *agent.Agent) *Target {
 	case "claude":
 		d := filepath.Join(h, ".claude")
 		t.Instructions = filepath.Join(d, "CLAUDE.md")
-		t.MCP = &mcpFile{Path: filepath.Join(h, ".claude.json"), Format: fmtClaude, WSL: true, Distro: a.WSL, Home: linuxHome(h)}
+		t.MCP = &mcpFile{Path: filepath.Join(h, ".claude.json"), Format: fmtClaude}
 		t.Skills = filepath.Join(d, "skills")
 		t.Settings = filepath.Join(d, "settings.json")
 	case "codex":
 		d := filepath.Join(h, ".codex")
 		t.Instructions = filepath.Join(d, "AGENTS.md")
 		t.Override = filepath.Join(d, "AGENTS.override.md")
-		t.MCP = &mcpFile{Path: filepath.Join(d, "config.toml"), Format: fmtCodex, WSL: true, Distro: a.WSL, Home: linuxHome(h)}
+		t.MCP = &mcpFile{Path: filepath.Join(d, "config.toml"), Format: fmtCodex}
 		t.Skills = filepath.Join(d, "skills")
 	case "pi":
-		// its MCP servers go where the Pi installed there reads them,
-		// which its version decides (piMCP), and that isn't known here
+		// its MCP servers go where the Pi installed there reads them, as on
+		// this machine (piMCP): its version is what the distro's pi said
+		// at the probe, and its extensions are those its settings.json and
+		// the distro's npm folders have (leokon on Discord: only the
+		// Windows Pi was offered MCP servers)
 		d := filepath.Join(h, ".pi", "agent")
 		t.Instructions = firstThere(d, "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD")
 		t.Override = filepath.Join(d, "AGENTS.override.md")
+		t.MCP, t.MCPVia = piMCP(h, d, piVersion(a), wslPiRoots(h))
 		t.Skills = filepath.Join(d, "skills")
 	case "omo":
 		d := filepath.Join(h, ".omo", "agent")
 		t.Instructions = firstThere(d, "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD")
 		t.Override = filepath.Join(d, "AGENTS.override.md")
-		t.MCP = &mcpFile{Path: filepath.Join(d, "mcp.json"), Format: fmtPiNative, WSL: true, Distro: a.WSL, Home: linuxHome(h)}
+		t.MCP = &mcpFile{Path: filepath.Join(d, "mcp.json"), Format: fmtPiNative}
 		t.Skills = filepath.Join(d, "skills")
+	case "gemini":
+		// as targetOf's, under the distro's home
+		d := filepath.Join(h, ".gemini")
+		t.Instructions = filepath.Join(d, "GEMINI.md")
+		t.MCP = &mcpFile{Path: filepath.Join(d, "settings.json"), Format: fmtGemini}
+		t.Skills = filepath.Join(d, "skills")
+	case "agy":
+		d := filepath.Join(h, ".gemini", "config")
+		t.Instructions = filepath.Join(d, "GEMINI.md")
+		t.MCP = &mcpFile{Path: filepath.Join(d, "mcp_config.json"), Format: fmtAntigravity}
+		t.Skills = filepath.Join(d, "skills")
+	case "crush":
+		// its crush.json is the distro's ~/.config/crush's (agent.crushIn),
+		// CRUSH.md and skills beside it
+		d := filepath.Dir(a.Path)
+		t.Instructions = filepath.Join(d, "CRUSH.md")
+		t.MCP = &mcpFile{Path: a.Path, Format: fmtCrush}
+		t.Skills = filepath.Join(d, "skills")
+		t.SkillsAlso = []string{"claude@" + strings.SplitN(a.ID, "@", 2)[1]}
+	case "cline":
+		// beside its providers.json; the distro's CLINE_MCP_SETTINGS_PATH
+		// isn't read
+		t.MCP = &mcpFile{Path: filepath.Join(filepath.Dir(a.Path), "cline_mcp_settings.json"), Format: fmtCline}
+		t.Skills = filepath.Join(a.Dir, "skills")
+	case "codebuddy":
+		t.MCP = &mcpFile{Path: codebuddyMCPIn(a.Dir, h), Format: fmtClaude}
+		t.Skills = filepath.Join(a.Dir, "skills")
+		t.Instructions = firstThere(a.Dir, "CODEBUDDY.md", "CODEBUDDY.mdc")
+	case "kimi":
+		// its folder is the distro's (agent.kimiDir); the new Kimi Code's
+		// AGENTS.md is in it. The skills it shares with other agents (the
+		// distro's ~/.agents/skills) aren't given here
+		t.MCP = &mcpFile{Path: filepath.Join(a.Dir, "mcp.json"), Format: fmtKimi}
+		if filepath.Base(a.Dir) == ".kimi-code" {
+			t.Instructions = filepath.Join(a.Dir, "AGENTS.md")
+		}
+	case "goose":
+		// its config.yaml is the distro's ~/.config/goose's; the skills it
+		// reads first are the distro's ~/.agents/skills, which aren't
+		// given here
+		t.Instructions = filepath.Join(filepath.Dir(a.Path), ".goosehints")
+		t.MCP = &mcpFile{Path: a.Path, Format: fmtGoose}
 	default:
 		return wslOwnFolder(a)
+	}
+	if t.MCP != nil {
+		// a Windows program isn't given to it (mcpFile.side)
+		t.MCP.WSL, t.MCP.Distro, t.MCP.Home = true, a.WSL, linuxHome(h)
 	}
 	return t
 }

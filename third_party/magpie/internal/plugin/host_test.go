@@ -675,6 +675,62 @@ func TestHostAdmissionLimitFailsTheNewCall(t *testing.T) {
 	}
 }
 
+// TestHostFetchWaitsForAStreamWindow (#3890): a fetch past the budget waits
+// for a window to come free and then runs, rather than failing at once into
+// a local 502 the gateway tries again; it gives up when its request ends or
+// after streamWait.
+func TestHostFetchWaitsForAStreamWindow(t *testing.T) {
+	oldWindow, oldBudget := streamWindow, streamBudget
+	oldReserve, oldWait := rpcReserve, streamWait
+	streamWindow, streamBudget, rpcReserve = 1<<20, 1<<20, 0 // one streaming call
+	t.Cleanup(func() { streamWindow, streamBudget, rpcReserve, streamWait = oldWindow, oldBudget, oldReserve, oldWait })
+
+	f := newFakeHost(t)
+	first, _, err := f.host.begin(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type got struct {
+		id  int64
+		err error
+	}
+	waited := make(chan got, 1)
+	go func() {
+		id, _, err := f.host.beginStream(context.Background())
+		waited <- got{id, err}
+	}()
+	select {
+	case g := <-waited:
+		t.Fatalf("a fetch past the budget = %d, %v, want it waiting", g.id, g.err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	f.host.mu.Lock()
+	c := f.host.calls[first]
+	f.host.mu.Unlock()
+	c.release()
+	if g := <-waited; g.err != nil {
+		t.Fatalf("the waiting fetch, once a window came free: %v", g.err)
+	}
+
+	// the budget is held again: a request that ends gives the wait up
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		_, _, err := f.host.beginStream(ctx)
+		waited <- got{0, err}
+	}()
+	cancel()
+	if g := <-waited; !errors.Is(g.err, context.Canceled) {
+		t.Fatalf("a fetch whose request ended = %v, want canceled", g.err)
+	}
+	streamWait = 10 * time.Millisecond
+	if _, _, err := f.host.beginStream(context.Background()); !errors.Is(err, errTooManyCalls) {
+		t.Fatalf("a fetch past streamWait = %v, want errTooManyCalls", err)
+	}
+	if free := cap(f.host.streams) - len(f.host.streams); free != 0 {
+		t.Fatalf("%d windows free after the waits gave up, want 0 (one held)", free)
+	}
+}
+
 // TestHostCancelAfterHeadStopsTheFetch: a context that ends after the head,
 // with nothing reading or closing the body, still stops the upstream fetch.
 func TestHostCancelAfterHeadStopsTheFetch(t *testing.T) {

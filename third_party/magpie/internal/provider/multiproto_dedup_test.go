@@ -110,8 +110,14 @@ func TestFetchAsksOneListOnceForTwoBasesOfIt(t *testing.T) {
 	asked := map[string]int{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		k := r.URL.Path
+		if r.URL.Query().Has("client_version") {
+			// Codex's own ask of the Responses list (codexEntries),
+			// a request of its own
+			k += "?client_version"
+		}
 		mu.Lock()
-		asked[r.URL.Path]++
+		asked[k]++
 		mu.Unlock()
 		if r.URL.Path != "/v1/models" {
 			http.NotFound(w, r)
@@ -144,7 +150,8 @@ func TestFetchAsksOneListOnceForTwoBasesOfIt(t *testing.T) {
 	}
 	mu.Unlock()
 	// and the same base as Chat and Responses is one list too, the one
-	// case the base string already covered
+	// case the base string already covered; Codex's own ask of the
+	// Responses list is counted apart (#3854)
 	if err := Save(Provider{ID: "one", Name: "One", Chat: srv.URL + "/v1", Responses: srv.URL + "/v1", Key: "sk-p"}); err != nil {
 		t.Fatal(err)
 	}
@@ -162,6 +169,9 @@ func TestFetchAsksOneListOnceForTwoBasesOfIt(t *testing.T) {
 	defer mu.Unlock()
 	if asked["/v1/models"] != 1 {
 		t.Errorf("chat and responses fetched the list %d times, want once", asked["/v1/models"])
+	}
+	if n := asked["/v1/models?client_version"]; n > 1 {
+		t.Errorf("the list asked as Codex asks %d times, want once at most", n)
 	}
 }
 

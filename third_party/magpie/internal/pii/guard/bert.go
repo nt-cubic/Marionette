@@ -207,10 +207,11 @@ func quant(x []float32) (q []uint8, scale float32, zp int32) {
 }
 
 // matmul is x [rows, m.k] quantized, times m: float32(Σ (x-xz)(w-wz)) *
-// (xs*ws), as MatMulInteger, Cast and Mul do it, in out [rows, m.n]. The
+// (xs*ws), as MatMulInteger, Cast and Mul do it, in out [rows, m.n], over
+// t goroutines. The
 // kernels take int8 on both sides, so x's uint8 q goes as q-128, and
 // Σ q·w = Σ (q-128)·w + 128·Σ w.
-func (m *qmat) matmul(x []float32, rows int) []float32 {
+func (m *qmat) matmul(x []float32, rows, t int) []float32 {
 	q, xs, xz := quant(x)
 	s := make([]int8, len(q))
 	xsum := make([]int32, rows)
@@ -224,7 +225,7 @@ func (m *qmat) matmul(x []float32, rows int) []float32 {
 	}
 	out := make([]float32, rows*m.n)
 	groups := (m.n + 3) / 4
-	parallel(groups, func(g0, g1 int) {
+	parallel(t, groups, func(g0, g1 int) {
 		var acc [4]int32
 		for g := g0; g < g1; g++ {
 			c0 := 4 * g
@@ -250,12 +251,13 @@ func (m *qmat) matmul(x []float32, rows int) []float32 {
 	return out
 }
 
-// threads is how many goroutines a matmul is split over.
+// threads is how many goroutines the model reads with: a long text's
+// windows that many at once, or one window's matmuls split over them.
 var threads = max(1, runtime.GOMAXPROCS(0)-1)
 
-// parallel calls f over [0, n) in threads parts at once.
-func parallel(n int, f func(a, b int)) {
-	t := min(threads, n)
+// parallel calls f over [0, n) in t parts at once.
+func parallel(t, n int, f func(a, b int)) {
+	t = min(t, n)
 	if t <= 1 {
 		f(0, n)
 		return
@@ -295,10 +297,17 @@ func layerNorm(x []float32, rows int, w, b []float32) {
 }
 
 // logits are the classifier's scores for each of ids, a sequence of up to
-// maxPos tokens with its <s> and </s>: [len(ids), labels].
-func (nt *net) logits(ids []int) []float32 {
+// maxPos tokens with its <s> and </s>: [len(ids), labels], read over procs
+// goroutines.
+func (nt *net) logits(ids []int, procs int) []float32 {
+	return nt.encode(nt.embed(ids, 0), len(ids), procs)
+}
+
+// embed is the layer-normed embeddings of ids, [len(ids), hidden], in a
+// slice of at least rows rows (the rest zero).
+func (nt *net) embed(ids []int, rows int) []float32 {
 	n := len(ids)
-	x := make([]float32, n*hidden)
+	x := make([]float32, max(n, rows)*hidden)
 	for t, id := range ids {
 		row := x[t*hidden : t*hidden+hidden]
 		w := nt.word[id*hidden : id*hidden+hidden]
@@ -308,20 +317,26 @@ func (nt *net) logits(ids []int) []float32 {
 		}
 	}
 	layerNorm(x, n, nt.embLNw, nt.embLNb)
+	return x
+}
+
+// encode is the classifier's scores for embeddings x of n tokens, over
+// procs goroutines.
+func (nt *net) encode(x []float32, n, procs int) []float32 {
 	for i := range nt.layers {
 		l := &nt.layers[i]
-		qkv := l.qkv.matmul(x, n)
+		qkv := l.qkv.matmul(x, n, procs)
 		for t := 0; t < n; t++ {
 			row := qkv[t*3*hidden : t*3*hidden+3*hidden]
 			for i, b := range l.qkvBias {
 				row[i] += b
 			}
 		}
-		ctx := attention(qkv, n)
-		a := l.attnOut.matmul(ctx, n)
+		ctx := attention(qkv, n, procs)
+		a := l.attnOut.matmul(ctx, n, procs)
 		skipNorm(a, x, n, l.attnBias, l.ln1w, l.ln1b)
 		x = a
-		h := l.up.matmul(x, n)
+		h := l.up.matmul(x, n, procs)
 		for t := 0; t < n; t++ {
 			row := h[t*inter : t*inter+inter]
 			for i, v := range row {
@@ -329,11 +344,11 @@ func (nt *net) logits(ids []int) []float32 {
 				row[i] = gelu(v) * l.smooth[i]
 			}
 		}
-		o := l.down.matmul(h, n)
+		o := l.down.matmul(h, n, procs)
 		skipNorm(o, x, n, l.downBias, l.ln2w, l.ln2b)
 		x = o
 	}
-	out := nt.cls.matmul(x, n)
+	out := nt.cls.matmul(x, n, procs)
 	for t := 0; t < n; t++ {
 		row := out[t*nt.labels : t*nt.labels+nt.labels]
 		for i := range row {
@@ -357,7 +372,8 @@ func skipNorm(out, skip []float32, rows int, bias, w, b []float32) {
 
 // attention is the self-attention of qkv [n, 3*hidden] (Q, K, V side by
 // side, each head's 32 columns together), every token seeing every other.
-func attention(qkv []float32, n int) []float32 {
+// It runs over procs goroutines.
+func attention(qkv []float32, n, procs int) []float32 {
 	const d = hidden / heads
 	scale := float32(1 / math.Sqrt(d))
 	ctx := make([]float32, n*hidden)
@@ -379,7 +395,7 @@ func attention(qkv []float32, n int) []float32 {
 			}
 		}
 	}
-	parallel(heads*n, func(a, b int) {
+	parallel(procs, heads*n, func(a, b int) {
 		p := make([]float32, np)
 		var qs, c [d]float32
 		for j := a; j < b; j++ {

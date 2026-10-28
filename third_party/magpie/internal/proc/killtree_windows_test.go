@@ -2,6 +2,7 @@ package proc
 
 import (
 	"context"
+	"os/exec"
 	"testing"
 	"time"
 
@@ -72,5 +73,52 @@ func TestContextEndKillsWhatTheCommandStarted(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The Codex app's codex.exe app-server, ended by End so the app starts it
+// again, left the MCP servers it ran (node.exe under npx) running with no
+// parent, one set more for every restart (liam_8829, 10-27). End ends what
+// pid started too, and pid still exits 0. cmd.exe running ping stands in
+// for codex.exe and an MCP server.
+func TestEndEndsWhatItStarted(t *testing.T) {
+	cmd := exec.Command("cmd.exe", "/c", "ping -n 60 127.0.0.1 >NUL")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	var kids []uint32
+	for range 100 {
+		if kids = descendants(uint32(cmd.Process.Pid)); len(kids) > 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if len(kids) == 0 {
+		t.Fatal("cmd.exe started no ping")
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		killAll(kids)
+	})
+	if err := End(cmd.Process.Pid); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("cmd.exe ended with %v, want exit code 0", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("cmd.exe not ended 10s after End")
+	}
+	for _, k := range kids {
+		for i := 0; alive(k) && i < 100; i++ {
+			time.Sleep(50 * time.Millisecond)
+		}
+		if alive(k) {
+			t.Errorf("process %d that cmd.exe started still runs after End", k)
+		}
 	}
 }

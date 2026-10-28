@@ -64,7 +64,7 @@ type inflights struct {
 // add counts r in and answers it with its inflight on its context, and the
 // func that counts it out.
 func (l *inflights) add(r *http.Request) (*http.Request, func()) {
-	f := &inflight{agent: agentOf(r), session: sessionOf(r.Header), start: time.Now()}
+	f := &inflight{agent: callerFrom(r).agent, session: sessionOf(r.Header), start: time.Now()}
 	l.mu.Lock()
 	if l.m == nil {
 		l.m = map[int64]*inflight{}

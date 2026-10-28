@@ -193,6 +193,6 @@ func TestAnthropicReplyAfterToolGetsThinking(t *testing.T) {
 		t.Fatalf("%d %s", code, msg)
 	}
 	ms := sentAnthropicMessages(t, withThinkingOnToolTurns([]byte(b)))
-	sameJSON(t, ms[3], `{"role":"assistant","content":[{"type":"thinking","thinking":" "},{"type":"text","text":"Done."}]}`)
+	sameJSON(t, ms[3], `{"role":"assistant","content":[{"type":"thinking","thinking":" ","signature":""},{"type":"text","text":"Done."}]}`)
 	sameJSON(t, ms[5], `{"role":"assistant","content":[{"type":"text","text":"You're welcome."}]}`)
 }

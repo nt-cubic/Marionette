@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -171,5 +172,39 @@ func TestWritten(t *testing.T) {
 	case <-Written():
 		t.Fatal("the next wait is closed already")
 	default:
+	}
+}
+
+// A test that saves inside a synctest bubble writes through Forget too,
+// and neither the channel it closes nor the next one may be the bubble's:
+// the next write from outside the bubble, another bubble's or none's,
+// closing it is a fatal error that took internal/provider's tests down
+// (#3632). Another process's write (wake) is held to the same, each in
+// bubbles of its own, so neither cleans up after the other. Loops
+// waiting outside are still told of a write made in a bubble, two of them
+// on the one wait they share.
+func TestWrittenAcrossBubbles(t *testing.T) {
+	for _, write := range []struct {
+		name string
+		do   func()
+	}{{"Forget", Forget}, {"wake", wake}} {
+		w, also := Written(), Written() // two loops waiting
+		for range 2 {
+			synctest.Test(t, func(t *testing.T) { write.do() })
+		}
+		for _, c := range []<-chan struct{}{w, also} {
+			select {
+			case <-c:
+			default:
+				t.Fatalf("%s in a bubble left a wait taken outside it open", write.name)
+			}
+		}
+		w = Written()
+		write.do()
+		select {
+		case <-w:
+		default:
+			t.Fatalf("not closed by the %s after the bubbles'", write.name)
+		}
 	}
 }

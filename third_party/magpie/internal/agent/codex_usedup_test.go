@@ -200,3 +200,48 @@ func TestCodexOwnModelKeptOnChatGPT(t *testing.T) {
 		t.Fatal("kept on ChatGPT: AppOut")
 	}
 }
+
+// Moved onto magpie on one of Codex's own models while the account is
+// used up, then kept on ChatGPT from the Agents row's takeover line
+// (eddie.zhan on Discord: the Codex app's browser use said it had no
+// permission): Codex goes back on its sign-in at once, on the model it
+// picked, beside it as joined, and no later Sync moves it again.
+func TestCodexOwnModelOutThenKeptOnChatGPT(t *testing.T) {
+	home, read := codexHome(t, `{"tokens":{"access_token":"x","id_token":"x.e30.x"}}`, "model = \"gpt-a\"\n")
+	os.WriteFile(filepath.Join(home, ".codex", "models_cache.json"),
+		[]byte(`{"models":[{"slug":"gpt-a","display_name":"A","priority":1}]}`), 0o644)
+	cx := codex(home)
+	if ok, err := cx.Join(); err != nil || !ok {
+		t.Fatalf("join: %v %v", ok, err)
+	}
+	codexUsedUp = func() bool { return true }
+	t.Cleanup(func() { codexUsedUp = func() bool { return false } })
+	if err := cx.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if !cx.AppOut() {
+		t.Fatalf("used up: not AppOut:\n%s", read())
+	}
+	if err := cx.Field("login").Set("chatgpt"); err != nil {
+		t.Fatal(err)
+	}
+	onSignIn := func(when string) {
+		t.Helper()
+		if cfg := read(); strings.Contains(cfg, "model_provider =") || strings.Contains(cfg, "model_catalog_json") || !strings.Contains(cfg, `model = "gpt-a"`) {
+			t.Fatalf("%s:\n%s", when, cfg)
+		}
+		if cx.AppOut() {
+			t.Fatalf("%s: AppOut", when)
+		}
+	}
+	onSignIn("kept on ChatGPT while used up")
+	if err := cx.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	onSignIn("kept on ChatGPT, synced")
+	codexUsedUp = func() bool { return false }
+	if err := cx.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	onSignIn("kept on ChatGPT, allowance back")
+}

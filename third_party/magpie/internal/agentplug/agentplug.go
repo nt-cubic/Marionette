@@ -49,7 +49,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Calcium-Ion/moejs"
+	"github.com/MoeForge/moejs"
 	"github.com/yetone/magpie/internal/jsmod"
 	"github.com/yetone/magpie/internal/plugin"
 )
@@ -399,20 +399,31 @@ func keys(b []byte) (map[string]any, error) {
 	return out, nil
 }
 
-// limit runs fn, stopping the module once d has passed.
+// afterFunc is time.AfterFunc; a test holds the func it runs.
+var afterFunc = time.AfterFunc
+
+// limit runs fn, stopping the module once d has passed. No interrupt
+// outlives it: moejs keeps one that lands while nothing runs for the next
+// call, whose own limit never fired, so every connect after would fail
+// (#3727). Stop doesn't wait for a timer's func that has begun, so limit
+// does, then clears what it left. A call that finished as its time ran
+// out keeps what it returned.
 func (a *Agent) limit(d time.Duration, fn func() error) error {
-	var fired atomic.Bool
-	t := time.AfterFunc(d, func() {
-		fired.Store(true)
+	interrupted := make(chan struct{})
+	t := afterFunc(d, func() {
+		defer close(interrupted) // after the interrupt: limit clears it once this is closed
 		a.rt.Interrupt(errTimeout)
 	})
 	err := fn()
-	t.Stop()
-	if fired.Load() {
-		a.rt.ClearInterrupt()
+	if t.Stop() {
+		return err
+	}
+	<-interrupted
+	a.rt.ClearInterrupt()
+	if err != nil {
 		return errTimeout
 	}
-	return err
+	return nil
 }
 
 func errText(err error) string {

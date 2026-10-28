@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tidwall/gjson"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/probelog"
@@ -95,6 +96,23 @@ func (p Provider) PluginProvider() string {
 		return ""
 	}
 	return p.Account.plugin.ID
+}
+
+// PluginOpenAICompatible is whether p is a plugin's provider that speaks
+// model on an OpenAI-compatible API (@ai-sdk/openai-compatible), whose
+// other routes, the images API among them, its fetch sends under the same
+// base: SenseNova's plugin at token.sensenova.cn/v1. A plugin of a vendor
+// with an API of its own (Cursor's, Kiro's) speaks another package.
+func (p Provider) PluginOpenAICompatible(model string) bool {
+	if !p.IsPlugin() {
+		return false
+	}
+	pp := *p.Account.plugin
+	if cur, ok := PluginOf(p.ID); ok {
+		pp = cur
+	}
+	m, ok := pluginModel(pp, model)
+	return ok && firstOf(m.NPM, pp.NPM) == "@ai-sdk/openai-compatible"
 }
 
 // PluginOf is the plugin provider magpie's provider id is, when it is one.
@@ -482,7 +500,9 @@ func (p Provider) Origin(ctx context.Context) string {
 			pp = cur
 		}
 		base = pp.API
-		if o, err := plugin.LoaderOptions(ctx, pp.ID, p.Account.pluginKey); err == nil {
+		// the loader may renew the sign-in: through the account's proxy,
+		// as its requests go (#2777)
+		if o, err := plugin.LoaderOptions(p.Via(ctx), pp.ID, p.Account.pluginKey); err == nil {
 			base = firstOf(o.BaseURL, pp.API)
 		}
 	} else {
@@ -662,9 +682,13 @@ func modelAPIID(m plugin.Model) string {
 	return m.ID
 }
 
+// withModel is body asking for model.
 func withModel(body []byte, model string) []byte {
+	if b, ok := replaceModel(body, model); ok {
+		return b
+	}
 	var v map[string]json.RawMessage
-	if json.Unmarshal(body, &v) != nil {
+	if json.Unmarshal(body, &v) != nil || v == nil {
 		return body
 	}
 	v["model"], _ = json.Marshal(model)
@@ -672,6 +696,32 @@ func withModel(body []byte, model string) []byte {
 		return b
 	}
 	return body
+}
+
+// replaceModel is body with its one top-level "model", a string, replaced
+// by model and every other byte as it came; false when body isn't JSON or
+// has no such "model". Decoding a body and marshalling it again to ask
+// a plugin for its model id allocated ten times a 45 MB request (#4004).
+func replaceModel(body []byte, model string) ([]byte, bool) {
+	if !gjson.ValidBytes(body) {
+		return nil, false
+	}
+	n := 0
+	for _, k := range gjson.GetBytes(body, "@keys").Array() {
+		if k.Str == "model" {
+			n++
+		}
+	}
+	was := gjson.GetBytes(body, "model")
+	at := was.Index
+	if n != 1 || was.Type != gjson.String || at <= 0 {
+		return nil, false
+	}
+	name, _ := json.Marshal(model)
+	out := make([]byte, 0, len(body)-len(was.Raw)+len(name))
+	out = append(out, body[:at]...)
+	out = append(out, name...)
+	return append(out, body[at+len(was.Raw):]...), true
 }
 
 func firstOf(ss ...string) string {

@@ -1,6 +1,8 @@
 package steady
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -56,5 +58,22 @@ func TestReadAFileHeldOpen(t *testing.T) {
 	}
 	if _, err := ReadFile(filepath.Join(filepath.Dir(p), "none")); !os.IsNotExist(err) {
 		t.Fatalf("a file not there: %v", err)
+	}
+}
+
+// Windows itself tells a file whose folder isn't there (#1665)
+func TestNoFolderIsPathNotFound(t *testing.T) {
+	looks := 0
+	stat = func(p string) (fs.FileInfo, error) {
+		looks++
+		return os.Stat(p)
+	}
+	defer func() { stat = os.Stat }()
+	if _, err := Stat(filepath.Join(t.TempDir(), "agent", "settings.json")); !errors.Is(err, fs.ErrNotExist) || looks != 1 {
+		t.Fatalf("looked %d times: %v", looks, err)
+	}
+	looks = 0
+	if _, err := Stat(filepath.Join(t.TempDir(), "settings.json")); !errors.Is(err, fs.ErrNotExist) || looks < 2 {
+		t.Fatalf("a file alone not there looked at %d times: %v", looks, err)
 	}
 }

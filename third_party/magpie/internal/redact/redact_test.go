@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/yetone/magpie/internal/claudeseal"
 )
 
 const (
@@ -207,6 +209,21 @@ func TestMaskJSONSignedGoesBackAsWritten(t *testing.T) {
 	}
 }
 
+// Claude's block magpie gave a Responses client to carry back
+// (claudeseal) goes back byte for byte: Claude's own text in it, with the
+// placeholders Claude was sent, is what its signature is checked against.
+func TestMaskJSONKeepsClaudeBlocks(t *testing.T) {
+	o := Options{Secrets: true, Personal: true}
+	const email = "jeremy.zhou@gmail.com"
+	pe, _ := Mask(email, o)
+	sealed := claudeseal.Seal([]byte(`{"type":"thinking","thinking":"Write to ` + pe + `, or call 13800138000.","signature":"Eqk1"}`))
+	body := `{"input":[{"role":"user","content":"I am ` + email + `"},{"type":"reasoning","summary":[{"type":"summary_text","text":"Write to ` + email + `"}],"encrypted_content":"` + sealed + `"}]}`
+	out, _ := MaskJSON([]byte(body), o)
+	if !strings.Contains(string(out), `"`+sealed+`"`) || strings.Contains(string(out), email) {
+		t.Errorf("Claude's block not as it was sent, or a value went out:\n%s", out)
+	}
+}
+
 // An id goes as the vendor gave it, on both sides of what it matches.
 func TestMaskJSONKeepsIDs(t *testing.T) {
 	o := Options{Secrets: true, Personal: true}
@@ -230,7 +247,7 @@ func TestMaskJSONToolArgsMasked(t *testing.T) {
 	for _, c := range []struct{ name, body string }{
 		{"signature key", `{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"send_email","input":{"signature":"Best, Bob","body":"DB_PASSWORD=hunter2abc1 call 13800138000"}}]}]}`},
 		{"id keys", `{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"lookup","input":{"user_id":"DB_PASSWORD=hunter2abc1","phone_id":"13800138000"}}]}]}`},
-		{"gemini args", `{"contents":[{"role":"model","parts":[{"functionCall":{"name":"lookup","args":{"thoughtSignature":"x","customer_id":"13800138000","note":"DB_PASSWORD=hunter2abc1"}}}]}]}`},
+		{"gemini args", `{"contents":[{"role":"model","parts":[{"functionCall":{"name":"lookup","args":{"thoughtSignature":"x","customer_phone":"13800138000","note":"DB_PASSWORD=hunter2abc1"}}}]}]}`},
 		{"text block", `{"messages":[{"role":"user","content":[{"type":"text","text":"DB_PASSWORD=hunter2abc1 call 13800138000","signature":"x"}]}]}`},
 	} {
 		out, _ := MaskJSON([]byte(c.body), o)

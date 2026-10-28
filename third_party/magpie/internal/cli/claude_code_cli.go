@@ -2,7 +2,10 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -17,7 +20,7 @@ import (
 const claudeCodeUsage = "usage: magpie claude-code                  which Claude Code the Claude subscription runs\n" +
 	"       magpie claude-code install [--yes]  download Anthropic's own build of Claude Code for magpie (a server or container without one)\n" +
 	"       magpie claude-code remove           delete the Claude Code magpie downloaded\n" +
-	"       magpie claude-code runs [N|auto]    how many Claude Code processes may run at once (auto: what this machine's memory holds)"
+	"       magpie claude-code runs [N|auto]    the Claude Code processes running for Claude subscriptions, and how many may run at once (auto: what this machine's memory holds)"
 
 // claudeCodeCmd: magpie claude-code [install [--yes]|remove]. A Claude
 // subscription is answered by Claude Code, and signed in to through it; a
@@ -91,18 +94,116 @@ func claudeCodeRuns(args []string) error {
 	if auto > 0 {
 		autoSaid = why
 	}
-	if s.ClaudeRunsMost > 0 {
+	switch {
+	case s.ClaudeRunsMost > 0:
 		fmt.Println(green.Render("●"), s.ClaudeRunsMost, "Claude Code processes may run at once", muted.Render("· your setting"))
 		fmt.Println(muted.Render("  auto would be " + autoSaid + " · magpie claude-code runs auto"))
-		return nil
-	}
-	if auto > 0 {
+	case auto > 0:
 		fmt.Println(green.Render("●"), auto, "Claude Code processes may run at once", muted.Render("· "+why))
-	} else {
+		fmt.Println(muted.Render("  magpie claude-code runs N sets how many"))
+	default:
 		fmt.Println(green.Render("●"), "any number of Claude Code processes may run", muted.Render("· "+autoSaid))
+		fmt.Println(muted.Render("  magpie claude-code runs N sets how many"))
 	}
-	fmt.Println(muted.Render("  magpie claude-code runs N sets how many"))
+	printClaudeRuns()
 	return nil
+}
+
+// printClaudeRuns lists the Claude Code processes the running magpie has
+// for Claude subscriptions (gateway.ClaudeRunsPath), and what they are:
+// each conversation on a Claude account, a subagent's too, is answered by
+// a real Claude Code with magpie's MCP helper beside it, kept for its next
+// turn. A task manager shows them as Claude Code's version and "magpie"
+// (@Candydidi3 on X asked why magpie started so many).
+func printClaudeRuns() {
+	base := claudeCode.gateway()
+	runs, err := fetchClaudeRuns(base)
+	fmt.Println()
+	if err != nil {
+		fmt.Println(muted.Render("  " + err.Error()))
+		return
+	}
+	n := len(runs.Runs)
+	others := max(runs.Live-n, 0)
+	head := fmt.Sprintf("%d Claude Code running for Claude subscription conversations", n)
+	if n == 0 {
+		head = "no Claude Code running for Claude subscription conversations"
+	}
+	if others > 0 {
+		head += fmt.Sprintf(", %d more for a test, warm-up or usage read", others)
+	}
+	fmt.Println(head)
+	now := time.Now()
+	for _, r := range runs.Runs {
+		state := map[string]string{"answering": "answering", "idle": "kept for its next turn", "tools": "waiting on your agent's tools"}[r.State]
+		if state == "" {
+			state = r.State
+		}
+		line := fmt.Sprintf("  pid %-7d %-22s %s %s", r.PID, r.Model, state, runSpan(now.Sub(r.Since)))
+		var tail []string
+		if r.State != "answering" && !r.Ends.IsZero() && r.Ends.After(now) {
+			tail = append(tail, "ends in "+runSpan(r.Ends.Sub(now)))
+		}
+		if r.RSS > 0 {
+			tail = append(tail, bytesSize(uint64(r.RSS)))
+		}
+		if r.Account != "" {
+			tail = append(tail, r.Account)
+		}
+		if len(tail) > 0 {
+			line += muted.Render(" · " + strings.Join(tail, " · "))
+		}
+		fmt.Println(line)
+	}
+	for _, l := range []string{
+		"Each conversation on a Claude account (each subagent too) is answered by Claude Code, which a task",
+		"manager names by its version (2.1.x), with a \"magpie claude-mcp-helper\" beside it for your agent's tools.",
+		fmt.Sprintf("One whose turn is over is kept up to %s for its next (%d at most), so that turn reads the prompt", runSpan(runs.IdleFor), runs.IdleMost),
+		"cache instead of writing it again. magpie ends each by itself; quitting magpie ends them all.",
+	} {
+		fmt.Println(muted.Render("  " + l))
+	}
+}
+
+// runSpan says a duration the way the run list does: 45s, 12m, 1h5m.
+func runSpan(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", max(int(d/time.Second), 0))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d/time.Minute))
+	}
+	h, m := int(d/time.Hour), int(d%time.Hour/time.Minute)
+	if m == 0 {
+		return fmt.Sprintf("%dh", h)
+	}
+	return fmt.Sprintf("%dh%dm", h, m)
+}
+
+// fetchClaudeRuns asks the gateway at base for its Claude Code runs. The
+// error says why there is no list: nothing answers (no magpie running, so
+// no Claude Code of magpie's either), or a magpie too old to tell.
+func fetchClaudeRuns(base string) (gateway.ClaudeRuns, error) {
+	var out gateway.ClaudeRuns
+	c := &http.Client{Timeout: 10 * time.Second}
+	res, err := c.Get(base + gateway.ClaudeRunsPath)
+	if err != nil {
+		return out, fmt.Errorf("no magpie answers at %s, so none of its Claude Code is running", base)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(res.Body, 4<<20))
+	switch {
+	case err != nil:
+		return out, fmt.Errorf("the list of Claude Code processes from %s was cut off: %v", base, err)
+	case res.StatusCode == http.StatusNotFound:
+		return out, fmt.Errorf("the magpie at %s is older than this one and doesn't list its Claude Code processes: update it", base)
+	case res.StatusCode != http.StatusOK:
+		return out, fmt.Errorf("the magpie at %s answered %s: %s", base, res.Status, strings.TrimSpace(string(body)))
+	}
+	if json.Unmarshal(body, &out) != nil || out.Object != "claude-runs" {
+		return out, fmt.Errorf("what %s answered is not a list of Claude Code processes: is it magpie?", base)
+	}
+	return out, nil
 }
 
 // claudeCode is what the command reads of the machine; tests stand in for it.
@@ -111,11 +212,13 @@ var claudeCode = struct {
 	downloaded func() (string, string)
 	latest     func(context.Context) (claudecode.Release, error)
 	install    func(context.Context, claudecode.Release, func(int64)) (string, error)
+	gateway    func() string // the running magpie's gateway, asked for its runs
 }{
 	own:        func() string { return proc.FindTool("claude") },
 	downloaded: claudecode.Downloaded,
 	latest:     claudecode.Latest,
 	install:    claudecode.Install,
+	gateway:    gateway.URL,
 }
 
 func claudeCodeStatus() error {

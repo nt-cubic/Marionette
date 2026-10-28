@@ -22,10 +22,18 @@ func installedShells() []cliShell {
 func cliDir(exe string, _ []string, _ string) string { return filepath.Dir(exe) }
 
 // cliPlace puts dir first in the user's PATH in the registry, where a
-// terminal opened from now on takes it up, and tells Explorer; an app not
-// named magpie.exe gets its magpie.cmd there first (writeShim).
+// terminal opened from now on takes it up, and tells Explorer. The app's
+// magpie.com goes there first (com.go), which a terminal waits for; a
+// build without it gives an app not named magpie.exe a magpie.cmd
+// (writeShim).
 func cliPlace(exe, dir string) error {
-	if _, err := writeShim(exe); err != nil {
+	if comLauncher != nil {
+		if comOwner(exe) {
+			if _, err := writeCom(comLauncher, exe); err != nil {
+				return err
+			}
+		}
+	} else if _, err := writeShim(exe); err != nil {
 		return err
 	}
 	k, err := registry.OpenKey(registry.CURRENT_USER, `Environment`, registry.QUERY_VALUE|registry.SET_VALUE)

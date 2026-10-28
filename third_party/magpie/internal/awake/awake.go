@@ -72,6 +72,8 @@ func Keep(ctx context.Context, level func() Level, state func() State) {
 	defer let()
 	failed := false
 	for {
+		// taken before the look, so a write made during it isn't missed
+		written := filememo.Written()
 		l := level()
 		if l != Off && want(state(), time.Now()) {
 			if release != nil && held != l {
@@ -102,7 +104,7 @@ func Keep(ctx context.Context, level func() Level, state func() State) {
 		// seconds (#3185: these looks woke an idle magpie)
 		every, changed := tick, (<-chan struct{})(nil)
 		if l == Off {
-			every, changed = filememo.OthersEvery(), filememo.Written()
+			every, changed = filememo.OthersEvery(), written
 		}
 		select {
 		case <-ctx.Done():

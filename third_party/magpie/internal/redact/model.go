@@ -13,10 +13,13 @@ import (
 // rules', under the same switches: a name, an address, a phone number, an
 // email or an account number is personal data, a secret is a secret.
 
-// Found is a span the model found in a text: byte offsets, and its label.
+// Found is a span the model found in a text: byte offsets, its label,
+// and how sure the model is of it (0 to 1; masking drops what is under
+// the threshold the user set, internal/masking).
 type Found struct {
 	Start, End int
 	Label      string
+	Score      float64 `json:"score,omitempty"`
 }
 
 // Model finds spans in each of texts, in order. It never fails: one that
@@ -47,7 +50,8 @@ func modelCat(kind string) string {
 // modelSpans are o.found's spans for s that o covers, trimmed of the
 // spaces the model takes in with a word (and a Chinese name of what it
 // ran on into, zhTrim), and with what it gets wrong often left out
-// (modelTakes); and the Chinese names it missed (zhNameSpans).
+// (modelTakes); and the Chinese names it missed (zhNameSpans: only
+// nicknames where the model finds names itself, o.NamesByModel).
 func modelSpans(s string, o Options) []span {
 	if o.Model == nil || !o.covers(catPersonal) && len(o.found[s]) == 0 {
 		return nil
@@ -79,8 +83,8 @@ func modelSpans(s string, o Options) []span {
 		if kind == "PERSON" {
 			a, b = zhTrim(s, a, b)
 		}
-		if a < b && utf8.ValidString(s[a:b]) && modelTakes(kind, s[a:b]) && modelFits(s, a, b, kind) {
-			out = append(out, span{a, b, kind, ByModel})
+		if a < b && utf8.ValidString(s[a:b]) && modelTakes(kind, s[a:b]) && modelFits(s, a, b, kind) && !(kind == "PERSON" && zhWordNotName(s, a, b)) {
+			out = append(out, span{a, b, kind, ByModel, f.Score})
 		}
 	}
 	if o.covers(catPersonal) {
@@ -90,7 +94,7 @@ func modelSpans(s string, o Options) []span {
 				person = append(person, f)
 			}
 		}
-		out = append(out, zhNameSpans(s, person)...)
+		out = append(out, zhNameSpans(s, person, o.NamesByModel)...)
 	}
 	return out
 }
@@ -119,12 +123,15 @@ func modelTakes(kind, v string) bool {
 	case "SECRET":
 		return len(v) >= 8 && !madeID(v) && !namesThing(v)
 	case "PERSON":
+		// (an ordinary Chinese word, 文案 or 关键词, is left where it is
+		// read: zhWordNotName)
 		return utf8.RuneCountInString(v) >= 2 && strings.IndexFunc(v, unicode.IsLetter) >= 0 && !snakeWord(v)
 	case "ACCOUNT":
 		return !madeID(v)
 	case "EMAIL":
 		// as the rule's: a file's name (icon@2x.png) or an example's is no
-		// address, nor a host's name with no @ (eu.stg.acme.io)
+		// address, nor a host's name with no @ (eu.stg.acme.io), nor a
+		// symbol (system@got, foo@@GLIBC_2.2.5): realEmail's mailHost
 		return strings.Contains(v, "@") && realEmail(v)
 	}
 	return true

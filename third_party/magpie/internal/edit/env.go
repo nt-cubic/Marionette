@@ -11,7 +11,7 @@ var envLine = regexp.MustCompile(`^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=
 
 // GetEnvFile reads one key from a dotenv file.
 func GetEnvFile(path, key string) (string, bool) {
-	raw, err := Read(path)
+	raw, err := readHeld(path)
 	if err != nil {
 		return "", false
 	}

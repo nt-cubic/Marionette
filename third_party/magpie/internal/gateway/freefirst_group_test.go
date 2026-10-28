@@ -106,3 +106,76 @@ func TestInOrderStillGoesByTheListOverTheFreeOne(t *testing.T) {
 		}
 	}
 }
+
+// A group in a Free first group that sets no routing of its own is routed
+// as the group it is in, as a provider left on the default is (#3847,
+// mycf_711): its free seat goes first and says Free, and the trace's
+// group in the group says Free first, so the Routing page reads it as
+// such. One that sets its own routing keeps it.
+func TestFreeFirstReachesAGroupInItLeftOnTheDefault(t *testing.T) {
+	fresh(t)
+	vendor := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"ok","choices":[{"message":{"role":"assistant","content":"hi"}}]}`))
+	})
+	serveOn(t, "freev", "sk-free", []string{"m"}, vendor)
+	serveOn(t, "paidv", "sk-paid", []string{"m"}, vendor)
+	liveModels(t, "freev", `{"models":[{"id":"m","free":true}]}`)
+	liveModels(t, "paidv", `{"models":[{"id":"other"},{"id":"m"}]}`)
+	if err := provider.SaveGroup(provider.Group{Name: "Inner", Members: []string{"paidv/m", "freev/m"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.SaveGroup(provider.Group{Name: "Outer", Members: []string{"group/inner"}, Routing: provider.FreeFirst}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	last := func() *Route {
+		code, body := postAs(t, s, "", `{"model":"group/outer","messages":[{"role":"user","content":"x"}]}`)
+		if code != 200 {
+			t.Fatalf("code %d: %s", code, body)
+		}
+		return s.trace.routes[len(s.trace.routes)-1]
+	}
+	r := last()
+	if len(r.Order) != 2 || r.Order[0].Provider != "freev" || !r.Order[0].Free || r.Order[0].Routing != provider.FreeFirst {
+		t.Fatalf("the free seat inside inner: %+v", r.Order)
+	}
+	if r.Order[1].Free || r.Order[1].Routing != provider.FreeFirst {
+		t.Fatalf("the paid seat inside inner: %+v", r.Order[1])
+	}
+	if r.Group == nil || len(r.Group.Subs) != 1 || r.Group.Subs[0].Routing != provider.FreeFirst {
+		t.Fatalf("the trace's group in the group: %+v", r.Group)
+	}
+
+	// inner set In order keeps it: paid first, nobody weighed by Free
+	inner, _, _ := provider.FindGroup("group/inner")
+	inner.Routing = provider.Ordered
+	if err := provider.SaveGroup(inner); err != nil {
+		t.Fatal(err)
+	}
+	r = last()
+	if r.Order[0].Provider != "paidv" || r.Group.Subs[0].Routing != provider.Ordered {
+		t.Fatalf("inner In order: %+v %+v", r.Order, r.Group.Subs)
+	}
+
+	// an In order outer tries inner whole, by inner's own: left on the
+	// default, Smart, as a provider's keys in an In order group are
+	inner.Routing = ""
+	if err := provider.SaveGroup(inner); err != nil {
+		t.Fatal(err)
+	}
+	outer, _, _ := provider.FindGroup("group/outer")
+	outer.Routing = provider.Ordered
+	if err := provider.SaveGroup(outer); err != nil {
+		t.Fatal(err)
+	}
+	r = last()
+	if r.Group.Subs[0].Routing != "" {
+		t.Fatalf("inner in an In order group: %+v", r.Group.Subs)
+	}
+	for _, w := range r.Order {
+		if w.Free {
+			t.Fatalf("a row says Free under In order: %+v", w)
+		}
+	}
+}

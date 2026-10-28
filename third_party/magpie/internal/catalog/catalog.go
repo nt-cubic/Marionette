@@ -4,6 +4,7 @@
 package catalog
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -129,6 +130,44 @@ type Model struct {
 	// doesn't, or didn't say. A plugin's model it says searches by itself
 	// (m.searches) is "native" too.
 	WebSearch string `json:",omitempty"`
+	// Codex, on a model a vendor lists the way Codex's own catalog does
+	// (a sub2api asked with Codex's client_version), is that entry as the
+	// vendor gave it (CodexEntry): Codex is handed it as it is, its
+	// instructions and window and all, rather than an entry magpie made up
+	// from models.dev (ctopsc on Discord). Its context_window,
+	// max_context_window, input_modalities and reasoning levels are read
+	// into the fields above too, so the rest of magpie says what it says.
+	Codex json.RawMessage `json:",omitempty"`
+}
+
+// CodexLevels are the efforts of a Codex catalog entry's
+// supported_reasoning_levels; false when raw is no such entry.
+func CodexLevels(raw json.RawMessage) ([]string, bool) {
+	if len(raw) == 0 || !CodexEntry(raw) {
+		return nil, false
+	}
+	var e struct {
+		Levels any `json:"supported_reasoning_levels"`
+	}
+	json.Unmarshal(raw, &e)
+	return levelsOf(e.Levels), true
+}
+
+// CodexEntry reports whether raw, one row of a model list, is a model as
+// Codex's own catalog lists it (/backend-api/codex/models, codex-rs's
+// ModelInfo): a slug, its reasoning levels, its shell and its
+// instructions. A plain OpenAI list's row has none of them.
+func CodexEntry(raw json.RawMessage) bool {
+	var e struct {
+		Slug         string          `json:"slug"`
+		Levels       json.RawMessage `json:"supported_reasoning_levels"`
+		Shell        json.RawMessage `json:"shell_type"`
+		Instructions json.RawMessage `json:"base_instructions"`
+	}
+	if json.Unmarshal(raw, &e) != nil {
+		return false
+	}
+	return e.Slug != "" && len(e.Levels) > 0 && len(e.Shell) > 0 && len(e.Instructions) > 0
 }
 
 func imageInput(modalities []string) *bool {
@@ -469,6 +508,9 @@ var (
 	// listed are the bare ids of every model models.dev lists, whatever it
 	// says of them: an id listed is never taken for another (renamed)
 	listed map[string]bool
+	// labs are the models models.dev lists under their lab alone
+	// (models.json), by bare id: none of its providers lists them
+	labs map[string]mdModel
 	// canonical are the bare ids of every model models.dev says an entry is
 	// (canonical_model_id, #1520): DeepSeek's deepseek-flash is
 	// deepseek/deepseek-v4.1-flash, the id WorkBuddy and the relays serve it
@@ -602,6 +644,31 @@ func loadGen() (map[string]mdProvider, int) {
 							}
 						}
 					}
+					// and a model no provider lists at all, only its lab
+					// (models.dev's models.json): a gated one, as Claude
+					// Mythos 5.1 is since models.dev took it out of
+					// anthropic's list, that a vendor's own list or the
+					// account's still serves (iebb on Discord). Its lab
+					// file holds what is the model's on every host — name,
+					// window, reply limit, thinking, images — and no
+					// price. One a provider lists keeps its answers.
+					labs = map[string]mdModel{}
+					for id, x := range readLabs() {
+						b := bareID(id)
+						if listed[b] || canonical[b] {
+							continue
+						}
+						if x.ID == "" {
+							x.ID = id
+						}
+						if _, ok := labs[b]; !ok || id < labs[b].ID {
+							labs[b] = x
+						}
+						vote(b, b, "lab:"+id, x)
+					}
+					for b := range labs {
+						listed[b] = true
+					}
 					windows = map[string]int{}
 					for id, by := range sizes {
 						windows[id] = mostGiven(by)
@@ -630,6 +697,7 @@ func loadGen() (map[string]mdProvider, int) {
 							images[id] = true
 						}
 					}
+					labKinEfforts(m)
 					return
 				}
 			}
@@ -647,7 +715,7 @@ func Reset() {
 	loaded = false
 	built = nil
 	gen++
-	mdev, images, windows, outputs, efforts, thinks, names, listed, canonical = nil, nil, nil, nil, nil, nil, nil, nil, nil
+	mdev, images, windows, outputs, efforts, thinks, names, listed, canonical, labs = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
 	loadMu.Unlock()
 	if Forget != nil {
 		Forget()
@@ -704,16 +772,19 @@ func syncLock(ctx context.Context, onlyIfMissing bool) error {
 	if err := os.WriteFile(p, b, 0o644); err != nil {
 		return err
 	}
+	// the lab catalog beside it is best effort: without it the provider
+	// catalog answers alone, and one kept before is kept
+	_ = syncLabs(ctx)
 	Reset()
 	Touched() // names, reasoning levels and context windows may be others
 	return nil
 }
 
 // Stale reports whether no catalog exists or the cache is older than a day
-// (fresh.go).
+// (fresh.go), or magpie's has no lab catalog beside it yet (labs.go).
 func Stale() bool {
 	src := Source()
-	if src == "" {
+	if src == "" || labsMissing() {
 		return true
 	}
 	st, err := os.Stat(src)
@@ -1485,10 +1556,11 @@ func draws(m mdModel) bool {
 // DrawsID is whether a model's id names one that makes images, for a model
 // the catalog doesn't know (one typed in, or a vendor's own list's). Banana
 // is the Nano Banana the Gemini image models are called on a relay, whatever
-// its spelling there (#2071).
+// its spelling there (#2071). SenseNova's U1 models (sensenova-u1.5-lite,
+// -fast) draw only, on its images API (lileo0668 on Discord).
 func DrawsID(id string) bool {
 	id = strings.ToLower(id)
-	for _, w := range []string{"image", "imagen", "imagine", "dall-e", "flux", "seedream", "cogview", "stable-diffusion", "sdxl", "wanx", "kolors", "hidream", "banana"} {
+	for _, w := range []string{"image", "imagen", "imagine", "dall-e", "flux", "seedream", "cogview", "stable-diffusion", "sdxl", "wanx", "kolors", "hidream", "banana", "sensenova-u1"} {
 		if strings.Contains(id, w) {
 			return true
 		}
@@ -1501,7 +1573,7 @@ func DrawsID(id string) bool {
 // gemini-*-image or gpt-5-image, which chat.
 func ImagesAPI(id string) bool {
 	id = strings.ToLower(id)
-	for _, w := range []string{"gpt-image", "chatgpt-image", "dall-e", "imagen", "imagine", "qwen-image", "wanx", "wan2", "seedream", "cogview", "flux", "stable-diffusion", "sdxl", "kolors", "hidream"} {
+	for _, w := range []string{"gpt-image", "chatgpt-image", "dall-e", "imagen", "imagine", "qwen-image", "wanx", "wan2", "seedream", "cogview", "flux", "stable-diffusion", "sdxl", "kolors", "hidream", "sensenova-u1"} {
 		if strings.Contains(id, w) {
 			return true
 		}
@@ -1523,6 +1595,87 @@ func PointsToImagesAPI(text string) bool {
 // images API that names chat completions as where the model draws.
 func PointsToChat(text string) bool {
 	return strings.Contains(strings.ToLower(text), "chat/completions")
+}
+
+// WrongEndpoint recognizes the errors OpenAI-compatible servers give when a
+// model exists but isn't served on the endpoint asked: the gateway asks the
+// model on another API the provider has then, and so does a model's test.
+func WrongEndpoint(status int, body []byte) bool {
+	if status < 400 || status >= 500 {
+		return false
+	}
+	// the words are matched decoded, too (#1669)
+	msg := strings.ToLower(string(Words(body)))
+	for _, phrase := range []string{
+		"not a chat model",
+		"not supported in the v1/chat/completions",
+		"not supported in /v1/chat/completions",
+		"not supported in the v1/responses",
+		"not supported in /v1/responses",
+		"only supported in v1/responses",
+		"only supported in /v1/responses",
+		"use v1/completions",
+		"use /v1/completions",
+		"use v1/responses",
+		"use /v1/responses",
+		"use v1/chat/completions",
+		"use /v1/chat/completions",
+		"not accessible via the", // Copilot
+		"unsupported_api_for_model",
+		// Copilot's /v1/messages, for a model it serves on other APIs
+		// alone (GPT-4.1, Gemini, GPT-5.6: #754); a model it doesn't
+		// serve at all is model_not_supported there
+		"no model endpoints available given user constraints",
+		"is not supported for format",    // OpenCode: "Model grok-4.7 is not supported for format anthropic"
+		"does not support this protocol", // OpenCode, with a key: "Model does not support this protocol"
+		// a relay serving a model with tools on Responses alone (#1308:
+		// "gpt-6.1-sol requires Responses for tool calls; this account
+		// only supports Chat Completions")
+		"requires responses",
+		// a relay that says it in Chinese (#3766, char1eslu: AgentRouter's
+		// "模型 gpt-5.6-sol 不支持 /v1/chat/completions 接口，请改用
+		// /v1/responses（OpenAI Responses API）。")
+		"不支持 /v1/chat/completions 接口",
+		"改用 /v1/responses",
+	} {
+		if strings.Contains(msg, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// Words is an error body as its words are matched: a JSON body that
+// escapes what isn't ASCII as \uXXXX (Python's json.dumps does by default)
+// has its strings decoded and put after it, one to a line, so "用量",
+// "频率" or "将在 … 重置" are read whether the vendor escaped them or not
+// (#1669). Any other body is matched as it is.
+func Words(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`\u`)) {
+		return body
+	}
+	var v any
+	if json.Unmarshal(body, &v) != nil {
+		return body
+	}
+	out := append([]byte(nil), body...)
+	var walk func(any)
+	walk = func(x any) {
+		switch x := x.(type) {
+		case string:
+			out = append(append(out, '\n'), x...)
+		case map[string]any:
+			for _, y := range x {
+				walk(y)
+			}
+		case []any:
+			for _, y := range x {
+				walk(y)
+			}
+		}
+	}
+	walk(v)
+	return out
 }
 
 // Drawers are the models of one models.dev provider that make images,
@@ -1671,21 +1824,37 @@ func MagpieAdded(etag, slug, description string) bool {
 // first.
 var EffortRank = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 
+// EffortAliases are levels some vendors name in words of their own, each
+// with the level of EffortRank's it is: Trae's light and extra_high (its 轻
+// and 极高), which a plugin serving Trae's models (Our Free Model's) lists
+// as they are (nianshou5 on Discord).
+var EffortAliases = map[string]string{"light": "low", "extra_high": "xhigh"}
+
+// EffortLevel is the level of EffortRank's that e names: e itself, or the
+// one a vendor's word for it is (EffortAliases).
+func EffortLevel(e string) string {
+	if l, ok := EffortAliases[strings.ToLower(e)]; ok {
+		return l
+	}
+	return e
+}
+
 // NearestEffort is the level of levels nearest want in EffortRank's order,
 // a tie going up, never "none" unless it is want; want itself when levels
 // are none, hold it, or want is no level EffortRank knows. The gateway
 // fits an effort to a model's levels by it on the way out (fitEffort), and
 // Codex's catalog gives a model the effort set for new sessions by it
 // (codexcat.ModelDefault), so the level a model starts at is the one it
-// would be sent at.
+// would be sent at. A level is placed by the one it names (EffortLevel),
+// so low is a model's light, and a model's levels go in its own words.
 func NearestEffort(want string, levels []string) string {
-	at := slices.Index(EffortRank, want)
+	at := slices.Index(EffortRank, EffortLevel(want))
 	if len(levels) == 0 || at < 0 || slices.Contains(levels, want) {
 		return want
 	}
 	best, dist := want, len(EffortRank)
 	for _, l := range levels {
-		i := slices.Index(EffortRank, l)
+		i := slices.Index(EffortRank, EffortLevel(l))
 		if i < 0 || l == "none" {
 			continue
 		}

@@ -209,7 +209,10 @@ func guardClassifyTurn(texts []string) ([][]redact.Found, error) {
 	out := make([][]redact.Found, len(texts))
 	for i, t := range texts {
 		for _, s := range m.Find(t) {
-			out[i] = append(out[i], redact.Found{Start: s.Start, End: s.End, Label: guardLabel(s.Label)})
+			// the score as the cache file keeps it, so a restart doesn't
+			// move it over or under the threshold
+			out[i] = append(out[i], redact.Found{Start: s.Start, End: s.End, Label: guardLabel(s.Label),
+				Score: float64(float32(s.Score))})
 		}
 	}
 	gsrv.mu.Lock()
@@ -290,6 +293,8 @@ func (guardModel) Supported() bool { return true }
 func (guardModel) Installed() bool { return guardInstalled() }
 
 func (guardModel) Size() int64 { return guardSize() }
+
+func (guardModel) MinScore() float64 { return guard.MinScore }
 
 func (guardModel) Find(ctx context.Context, texts []string) ([][]redact.Found, error) {
 	return guardBackend.find(ctx, texts)

@@ -50,12 +50,22 @@ test("a plugin's words are its own", () => {
     }
   };
   walk(repo);
+  // said as words, not inside longer ones: a comment's "fetchClaudeRuns
+  // asks" doesn't say Library's "Runs as" (#3897)
+  const letter = /[\p{L}\p{N}_]/u;
+  const says = (s, w) => {
+    for (let i = s.indexOf(w); i >= 0; i = s.indexOf(w, i + 1)) {
+      const glued = (letter.test(w[0]) && letter.test(s[i - 1] ?? "")) || (letter.test(w.at(-1)) && letter.test(s[i + w.length] ?? ""));
+      if (!glued) return true;
+    }
+    return false;
+  };
   const shared = [];
   for (const { file, dict } of strings().files.slice(1)) {
     const own = path.join(assets, path.dirname(file)) + path.sep;
     const rest = texts.filter(([p]) => !p.startsWith(own));
     for (const k of Object.keys(dict.zh)) {
-      const at = rest.find(([, s]) => s.includes(k) || s.includes(JSON.stringify(k).slice(1, -1)));
+      const at = rest.find(([, s]) => says(s, k) || says(s, JSON.stringify(k).slice(1, -1)));
       if (at) shared.push(`${file} ${JSON.stringify(k)}: ${path.relative(repo, at[0])} says it too`);
     }
   }

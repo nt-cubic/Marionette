@@ -189,6 +189,71 @@ func TestRelayRefusalSaysWhatItWas(t *testing.T) {
 	}
 }
 
+// A custom Chat relay that serves only some agents' clients, sent
+// WorkBuddy's request with the agent's own User-Agent passed on
+// (maralica on Discord, "magpie-grok"): it is asked for its own model id,
+// never one magpie named, with WorkBuddy's User-Agent as sent, and
+// whatever reason its 403 gives reaches the agent: plain text, JSON, a
+// page with no title, a page's fragment, an XML error.
+func TestChatRelayRefusalSaysWhy(t *testing.T) {
+	const ua = "WorkBuddy/5.9.2 WorkBuddy/5.9.2 CLI/2.165.0"
+	for _, c := range []struct {
+		name, ct, body, want string
+	}{
+		{"text", "text/plain", "only Claude Code and Codex CLI are allowed", "magpie-grok: 403 Forbidden: only Claude Code and Codex CLI are allowed"},
+		{"json", "application/json", `{"error":{"message":"client WorkBuddy is not allowed","type":"forbidden"}}`, "magpie-grok: client WorkBuddy is not allowed"},
+		{"untitled page", "text/html", "<html><body><h1>403</h1><p>only Claude Code &amp; Codex CLI are allowed</p></body></html>", "magpie-grok: 403 Forbidden: a web page, not an API reply: “403 only Claude Code & Codex CLI are allowed”"},
+		{"fragment", "text/html", "<h1>Forbidden</h1>\n<p>client not allowed</p>", "magpie-grok: 403 Forbidden: Forbidden client not allowed"},
+		{"xml", "application/xml", `<?xml version="1.0"?><Error><Code>ClientNotAllowed</Code><Message>client not allowed</Message></Error>`, "magpie-grok: 403 Forbidden: ClientNotAllowed client not allowed"},
+		{"empty", "", "", "magpie-grok: 403 Forbidden: " + provider.NoDetails},
+	} {
+		for _, model := range []string{"magpie-grok/grok-4.7", "group/g"} {
+			t.Run(c.name+" "+model, func(t *testing.T) {
+				fresh(t)
+				var asked, sentUA string
+				relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					b, _ := io.ReadAll(r.Body)
+					var v struct {
+						Model string `json:"model"`
+					}
+					json.Unmarshal(b, &v)
+					asked, sentUA = v.Model, r.Header.Get("User-Agent")
+					if c.ct != "" {
+						w.Header().Set("Content-Type", c.ct)
+					}
+					w.WriteHeader(http.StatusForbidden)
+					io.WriteString(w, c.body)
+				}))
+				t.Cleanup(relay.Close)
+				if err := provider.Save(provider.Provider{ID: "magpie-grok", Name: "magpie-grok", Key: "k", Models: []string{"grok-4.7"}, Chat: relay.URL + "/v1", PassUserAgent: true}); err != nil {
+					t.Fatal(err)
+				}
+				if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"magpie-grok/grok-4.7"}, Routing: provider.Ordered}); err != nil {
+					t.Fatal(err)
+				}
+				rec := httptest.NewRecorder()
+				req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"`+model+`","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+				req.Header.Set("User-Agent", ua)
+				New().Handler().ServeHTTP(rec, req)
+				if asked != "grok-4.7" || sentUA != ua {
+					t.Fatalf("relay asked for %q as %q", asked, sentUA)
+				}
+				var v struct {
+					Error struct {
+						Message string `json:"message"`
+					} `json:"error"`
+				}
+				if rec.Code != http.StatusForbidden || json.Unmarshal(rec.Body.Bytes(), &v) != nil {
+					t.Fatalf("%d %s", rec.Code, rec.Body)
+				}
+				if v.Error.Message != c.want {
+					t.Fatalf("said %q, want %q", v.Error.Message, c.want)
+				}
+			})
+		}
+	}
+}
+
 // The ZCode plugin's answer to the Start Plan's 405 code 3012 (0.1.27 on,
 // plugins#348) is an account ZCode's risk control blocked: it rests two
 // hours as restricted, the account rather than one model, and is lifted

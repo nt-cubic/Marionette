@@ -515,11 +515,18 @@ func TestAPIErrorShapes(t *testing.T) {
 	if !strings.HasPrefix(got, `400 Bad Request: {"code":400`) || !strings.HasSuffix(got, "…") || len([]rune(got)) > 320 {
 		t.Fatal(got)
 	}
-	if got := APIError([]byte("<html><body>bad</body></html>"), "400 Bad Request"); got != "400 Bad Request: a web page, not an API reply" {
+	// a page with no title by its words, other markup by its words too;
+	// markup with none says nothing more than the status
+	if got := APIError([]byte("<html><body>bad</body></html>"), "400 Bad Request"); got != "400 Bad Request: a web page, not an API reply: “bad”" {
 		t.Fatal(got)
 	}
-	// other markup still says nothing worth showing
-	if got := APIError([]byte("<Error><Code>AccessDenied</Code></Error>"), "403 Forbidden"); got != "403 Forbidden" {
+	if got := APIError([]byte("<html><body><script>var x=1</script></body></html>"), "400 Bad Request"); got != "400 Bad Request: a web page, not an API reply" {
+		t.Fatal(got)
+	}
+	if got := APIError([]byte(`<?xml version="1.0"?><Error><Code>AccessDenied</Code></Error>`), "403 Forbidden"); got != "403 Forbidden: AccessDenied" {
+		t.Fatal(got)
+	}
+	if got := APIError([]byte("<Error/>"), "403 Forbidden"); got != "403 Forbidden" {
 		t.Fatal(got)
 	}
 	// Command Code's refusal of a Go plan's key says where it works (#969)

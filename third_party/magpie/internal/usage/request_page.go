@@ -316,6 +316,8 @@ func (c *rowChunk) row(i int) Row {
 	}
 	if r.Swapped && p.Flags&swapKnown == 0 && (SameSpelled(r.Model, r.Served) || ServingName(r.Model, r.Served) || RelayRenamed(r.Model, r.Served)) {
 		r.Swapped = false // kept before a name spelled otherwise, a vendor's serving name or a relay's rename was the same
+	} else if r.Swapped && ListedAs(r.Provider, r.Model, r.Served) {
+		r.Swapped = false // the name the provider's list gives the model asked for
 	}
 	if r.cacheNotCounted() {
 		r.CacheUnknown = true // kept before its plugin said its vendor counts no cache
@@ -860,18 +862,18 @@ func readRequestBlocks(idx *requestIndex, st requestState, p Period, now time.Ti
 	// reader of the session files has a pricer of its own, with its memos.
 	pricers := func() func(Record, string) Row {
 		price := Pricer()
-		swapped := map[[2]string]bool{}
+		swapped := map[[4]string]bool{}
 		return func(r Record, source string) Row {
 			sent := r.Model
 			if source == "" {
-				sent = provider.SentNameIn(cfg.ModelWires, r.Provider, r.Model, r.Effort)
+				sent = provider.SentNameIn(cfg.ModelWires, r.priceID(), r.Model, r.Effort)
 			}
 			row := Row{Record: r, Source: source, Routed: GroupRouted(sent, r.Served)}
 			if r.Served != "" {
-				k := [2]string{sent, r.Served}
+				k := [4]string{r.priceID(), r.Model, sent, r.Served}
 				s, ok := swapped[k]
 				if !ok {
-					s = Swapped(sent, r.Served)
+					s = Swapped(sent, r.Served) && !ListedAs(r.priceID(), r.Model, r.Served)
 					swapped[k] = s
 				}
 				row.Swapped = s
@@ -905,7 +907,7 @@ func readRequestBlocks(idx *requestIndex, st requestState, p Period, now time.Ti
 			gateways = append(gateways, c)
 		}
 	}
-	if c := probeChunk(snapshot.probes, gatewaySince, renames); c != nil {
+	if c := probeChunk(snapshot.probes, gatewaySince, renames, snapshot.hosts); c != nil {
 		gateways = append(gateways, c) // listed, never counted (SourceProbe)
 	}
 	on := map[string]bool{}
@@ -998,7 +1000,7 @@ func readRequestBlocks(idx *requestIndex, st requestState, p Period, now time.Ti
 			for i, call := range d.Calls {
 				r := call.Record
 				r.Computer = ""
-				r.Provider = renames.Of(r.Provider, r.Time)
+				r.renameBy(renames)
 				c.add(priceRow(r, call.Source), "", int64(i), false)
 			}
 			c.Bytes -= int64(32 * len(c.Strings))

@@ -220,6 +220,10 @@ type providerJSON struct {
 	// SwitchOnly: magpie only moves Codex's own sign-in between its
 	// accounts, never routing its requests for failover (#1907)
 	SwitchOnly bool `json:"switchOnly,omitempty"`
+	// CapStop and CapCareful: how its accounts end at their caps
+	// (plugins#349), set on their own with capstop and capcareful
+	CapStop    bool `json:"capStop,omitempty"`
+	CapCareful bool `json:"capCareful,omitempty"`
 	// how many requests each of its keys or accounts has out at once, the
 	// rest queued: the user's (null: not set), and what its plugin says
 	// when the user set none (provider.Concurrency)
@@ -490,9 +494,6 @@ type providersJSON struct {
 	// after Codex was switched to another, until it is quit and opened
 	// again (provider.CodexAppStale)
 	CodexApp string `json:"codexApp,omitempty"`
-	// CodexAppOut is a Codex app left unable to send on its used-up
-	// ChatGPT account until it is opened again (codexAppOutState)
-	CodexAppOut *codexAppOutJSON `json:"codexAppOut,omitempty"`
 	// Plugins are the providers the plugins sign in to, for the add sheet
 	Plugins []pluginSubJSON `json:"plugins"`
 	// OnPlugins are the built-in subscriptions moved onto their plugins,
@@ -599,7 +600,7 @@ func providerInfoWith(p provider.Provider, agents []agentUse, desktop map[string
 		Catalog: p.Catalog, Website: p.Website, KeysURL: p.KeysURL,
 		Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountNames: p.AccountNames, Headers: p.Headers, ExtraBody: p.ExtraBody, Searches: p.Searches, Cline: p.ClinePinnable(), PinUpstream: p.PinUpstream, Unredacted: p.Unredacted, InsecureTLS: p.InsecureTLS, TakesInsecureTLS: p.TakesInsecureTLS(), LimitRestOff: p.LimitRestOff, NativeCompaction: p.NativeCompaction, CarriesCompaction: p.CarriesCompaction(), PassUserAgent: p.PassUserAgent, OwnClient: p.OwnClient(), AuthHeader: p.AuthHeader, BothAuth: p.BothAuth(), BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, BalanceMethod: p.BalanceMethod, ModelsURL: p.ModelsURL,
 		Ready: p.Ready(), Chosen: p.Picks(), Models: []modelJSON{}, Agents: []providerAgent{},
-		Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, Unlisted: p.Unlisted, NoModels: p.ServesNone(), Off: p.Off, Contexts: p.Contexts,
+		Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, CapStop: p.CapStop, CapCareful: p.CapCareful, Unlisted: p.Unlisted, NoModels: p.ServesNone(), Off: p.Off, Contexts: p.Contexts,
 		MaxConcurrency: p.MaxConcurrency, PluginConcurrency: p.PluginConcurrency(), PriceRate: p.PriceRate,
 		AccountConcurrency: p.AccountConcurrency, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM,
 		Outputs: provider.OutputsOf(p.ID), Compacts: provider.CompactsOf(p.ID),
@@ -961,7 +962,6 @@ func providersState() providersJSON {
 	s.Gateway.Archive = archiveState()
 	s.CodexDaemon = provider.CodexDaemonStale()
 	s.CodexApp = provider.CodexAppStale()
-	s.CodexAppOut = codexAppOutState()
 	s.Plugins = pluginSubs()
 	s.Fetching = provider.FetchingNew()
 	return s
@@ -1650,7 +1650,8 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 					in.KeepLogin = old.KeepLogin // set on its own, with keeplogin
 					in.KeepLoginAs = old.KeepLoginAs
 					in.SwitchOnly = old.SwitchOnly
-					in.Off = old.Off // and this with off and on
+					in.CapStop, in.CapCareful = old.CapStop, old.CapCareful // capstop, capcareful
+					in.Off = old.Off                                        // and this with off and on
 					if in.Contexts == nil {
 						in.Contexts = old.Contexts // a save that doesn't say
 					}
@@ -1849,6 +1850,20 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				return
 			}
 			agent.SyncCatalogSoon()
+		case "capstop":
+			// a request ends at the accounts' caps, 429, or goes on to the
+			// fallbacks (plugins#349)
+			if err := provider.SetCapStop(in.ID, in.CapStop); err != nil {
+				fail(rw, err)
+				return
+			}
+		case "capcareful":
+			// usage read again near a cap, an account held while it can't
+			// be (plugins#349)
+			if err := provider.SetCapCareful(in.ID, in.CapCareful); err != nil {
+				fail(rw, err)
+				return
+			}
 		case "affinity":
 			if err := provider.SetAffinity(in.ID, in.Affinity); err != nil {
 				fail(rw, err)
@@ -2266,10 +2281,20 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				return provider.ImportFactoryKeys(ctx, files)
 			}
 		}
-		res, err := imp(ctx, in.Agent, in.Files)
-		if err != nil {
-			fail(rw, err)
-			return
+		// the address a sign-in's browser ended on, pasted here rather than
+		// in the sign-in's Callback URL field, finishes that sign-in: it is
+		// no account file, and never goes to the vendor as a token
+		res, rest := provider.PastedSignIns(in.Files)
+		if len(rest) > 0 {
+			more, err := imp(ctx, in.Agent, rest)
+			if err != nil && len(res) == 0 {
+				fail(rw, err)
+				return
+			}
+			if err != nil {
+				more = []provider.ImportedAccount{{Status: "failed", Error: err.Error()}}
+			}
+			res = append(res, more...)
 		}
 		agent.SyncCatalogSoon()
 		writeJSON(rw, struct {

@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/pii/guard"
 	"github.com/yetone/magpie/internal/redact"
 )
 
@@ -185,6 +186,9 @@ type Model interface {
 	Installed() bool
 	// Size is how much turning it on downloads.
 	Size() int64
+	// MinScore is its default threshold: masking drops what it is less
+	// sure of, unless the user set another.
+	MinScore() float64
 	Find(ctx context.Context, texts []string) ([][]redact.Found, error)
 	Now() Status
 	// Download fetches it in the background and calls done once it is on
@@ -201,6 +205,21 @@ type Model interface {
 // Models are the local models, Privacy Filter first.
 func Models() []Model { return []Model{pfModel{}, guardModel{}} }
 
+// Floor is the lowest threshold a user can set (settings.RedactModelScore):
+// what either model sends is at least this sure. pf-serve's default
+// threshold is 0.5, and AstrLink Guard's Find keeps what is (guard.Floor).
+const Floor = guard.Floor
+
+// Threshold is model m's threshold of those the user set (by model id,
+// settings.RedactModelScore), or its own where none is, or one is out of
+// [Floor, 1).
+func Threshold(set map[string]float64, m Model) float64 {
+	if v, ok := set[m.ID()]; ok && v >= Floor && v < 1 {
+		return v
+	}
+	return m.MinScore()
+}
+
 // Of is the model id names; AstrLink Guard's for an id there's none of.
 func Of(id string) Model {
 	if id == PrivacyFilter {
@@ -210,17 +229,18 @@ func Of(id string) Model {
 }
 
 // Choose is the model masking uses: the one the user picked (name);
-// with none picked, Privacy Filter where it was turned on (on) or
-// downloaded before there was a choice, so its user keeps the model they
-// had and downloads nothing; else AstrLink Guard, a 38 MB download that
-// runs on every CPU and, measured on code (docs/subsystems), masks far
-// fewer ordinary values.
+// with none picked, AstrLink Guard, a 38 MB download that runs on every
+// CPU and, measured on code (docs/subsystems), masks far fewer ordinary
+// values. Only while the model is on (on) and Privacy Filter is on disk
+// but AstrLink Guard isn't is it Privacy Filter, so a user who had it on
+// before there was a choice isn't held back while AstrLink Guard
+// downloads (masking.picked starts that download).
 func Choose(name string, on bool) string {
 	switch name {
 	case PrivacyFilter, AstrLinkGuard:
 		return name
 	}
-	if on || Installed() {
+	if on && !guardInstalled() && Installed() {
 		return PrivacyFilter
 	}
 	return AstrLinkGuard
@@ -233,6 +253,7 @@ func (pfModel) ID() string                 { return PrivacyFilter }
 func (pfModel) Supported() bool            { return Supported() }
 func (pfModel) Installed() bool            { return Installed() }
 func (pfModel) Size() int64                { return Size() }
+func (pfModel) MinScore() float64          { return 0.5 }
 func (pfModel) Now() Status                { return Now() }
 func (pfModel) Download(done func()) error { return Download(done) }
 func (pfModel) Cancel()                    { Cancel() }

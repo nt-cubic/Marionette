@@ -111,6 +111,9 @@ var Vars = []string{
 	// mise's and asdf's folders, whose shims stand for an agent's CLI and
 	// whose installs hold the Node versions it is under
 	"MISE_DATA_DIR", "ASDF_DIR",
+	// cargo's folder, whose bin holds an rtk cargo installed: the Library
+	// finds rtk there and upgrades it with cargo (cargoBins)
+	"CARGO_HOME",
 	// Google Cloud's credentials file and gcloud's folder, which Vertex AI's
 	// tokens are minted from (and Gemini CLI's own, on Vertex AI)
 	"GOOGLE_APPLICATION_CREDENTIALS", "CLOUDSDK_CONFIG",

@@ -142,10 +142,14 @@ func providerFaces(all []provider.Provider) func(id string) Named {
 	for _, p := range all {
 		set[p.ID] = p
 	}
+	renames := provider.UsageRenames()
 	return func(id string) Named {
 		a := Named{ID: id}
 		if p, ok := set[id]; ok && p.Name != "" {
 			a.Name, a.Icon = p.Name, p.Icon
+		} else if d, ok := renames.Gone(id); ok {
+			at := d.At
+			a.Name, a.Icon, a.Deleted = d.Shown(), d.Icon, &at
 		} else if id == usage.UnknownProvider {
 			a.Name = "Local session"
 		} else {
@@ -156,6 +160,13 @@ func providerFaces(all []provider.Provider) func(id string) Named {
 		}
 		if a.Icon == "" {
 			a.Icon = "generic"
+		}
+		// the deleted providers the user merged into it, so the page can
+		// part them again
+		for _, m := range renames.Merged(id) {
+			if d, ok := renames.Gone(m); ok {
+				a.Merged = append(a.Merged, Merged{ID: m, Name: d.Shown()})
+			}
 		}
 		return a
 	}
@@ -275,6 +286,18 @@ type Named struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Icon string `json:"icon"`
+	// Deleted is when the provider was deleted, for one whose calls are
+	// kept apart from a provider's added under its id since
+	Deleted *time.Time `json:"deleted,omitempty"`
+	// Merged are the deleted providers whose calls the user merged into
+	// this one (provider.MergeDeleted), by the ids they are kept apart by
+	Merged []Merged `json:"merged,omitempty"`
+}
+
+// Merged is a deleted provider merged into another.
+type Merged struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // LedgerPage is one page of the ledger: limit rows (100 when none is

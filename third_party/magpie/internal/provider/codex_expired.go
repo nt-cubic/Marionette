@@ -10,6 +10,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -45,12 +46,35 @@ func codexExpired(err error) bool {
 // the token refreshed just for it: nothing magpie holds will do.
 var errCodexStillExpired = errors.New("ChatGPT turned the refreshed sign-in away too; sign in to this account again")
 
+// codexRevoked says err is the backend calling the sign-in itself gone
+// (SignInRevoked: token_revoked, an invalidated oauth token).
+func codexRevoked(err error) bool {
+	var se *accountStatusError
+	return errors.As(err, &se) && SignInRevoked(se.status, se.body)
+}
+
+// codexSignInGone is a usage read turned away for the sign-in itself with
+// a refresh tried for it (charliepu on Discord: an account showing no
+// allowance until it was signed in again): the account is to be marked
+// signed out for tok, the access token turned away, and signed in again
+// in magpie. A refresh refused is told by refreshRefused instead.
+type codexSignInGone struct {
+	tok string
+	err error
+}
+
+func (e *codexSignInGone) Error() string { return e.err.Error() }
+func (e *codexSignInGone) Unwrap() error { return e.err }
+
 // codexWindowsRenewing is codexWindows, read once more with the sign-in
-// renewed when the backend calls token expired. A refresh refused says
-// to sign in again (codexRefresh, savedRefreshFailed).
+// renewed when the backend calls the token expired or the sign-in
+// revoked, as Codex refreshes on a 401. A refresh refused says to sign in
+// again (codexRefresh, savedRefreshFailed); a refreshed token turned away
+// the same is a codexSignInGone. Any other 401, a 403, a 5xx or a network
+// error is returned as it is: what it says of the sign-in is unknown.
 func codexWindowsRenewing(ctx context.Context, tok, accountID string, renew codexRenew) (plan string, out []QuotaWindow, resets *ResetCredits, credits string, held bool, err error) {
 	plan, out, resets, credits, held, err = codexWindows(ctx, tok, accountID)
-	if renew == nil || !codexExpired(err) {
+	if renew == nil || !codexExpired(err) && !codexRevoked(err) {
 		return
 	}
 	fresh, id, rerr := renew(ctx, tok)
@@ -61,10 +85,37 @@ func codexWindowsRenewing(ctx context.Context, tok, accountID string, renew code
 		accountID = id
 	}
 	plan, out, resets, credits, held, err = codexWindows(ctx, fresh, accountID)
-	if codexExpired(err) {
-		err = errCodexStillExpired
+	switch {
+	case codexExpired(err):
+		err = &codexSignInGone{tok: fresh, err: errCodexStillExpired}
+	case codexRevoked(err):
+		err = &codexSignInGone{tok: fresh, err: err}
 	}
 	return
+}
+
+// codexGoneFor is the access token a ChatGPT account's usage read says is
+// signed out for good: one a refreshed read was turned away for, or, for
+// a refresh refused, the token held (heldTok, read again from auth when
+// the refresh came before any read). "" when err says nothing of the
+// sign-in: a failed read is unknown, not signed out.
+func codexGoneFor(err error, heldTok string, auth func() []byte) string {
+	var gone *codexSignInGone
+	if errors.As(err, &gone) {
+		return gone.tok
+	}
+	var refused refreshRefused
+	if !errors.As(err, &refused) {
+		return ""
+	}
+	if heldTok != "" {
+		return heldTok
+	}
+	var a codexAuth
+	if b := auth(); b != nil && json.Unmarshal(b, &a) == nil {
+		return a.Tokens.AccessToken
+	}
+	return ""
 }
 
 // NoteExpiredSignIn renews the ChatGPT sign-in of a, whose request req the
