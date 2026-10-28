@@ -13,7 +13,7 @@ Claude 用 Claude Code，Grok 用 Grok Build，GPT 用 Codex，DeepSeek 用 Deep
   <img src="docs/screenshots/main.png" alt="Marionette 主界面">
 </picture>
 
-`v0.5.2` · Windows 10 / 11 x64 · 单文件便携版，打开即用
+`v0.5.3` · Windows 10 / 11 x64 · 单文件便携版，打开即用
 
 [下载](https://github.com/nt-cubic/Marionette/releases/latest) · [现状与细节](docs/CURRENT.md)
 
