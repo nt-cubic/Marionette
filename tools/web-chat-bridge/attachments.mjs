@@ -104,7 +104,11 @@ function inspectComposer(siteKey, names) {
     }
     return true;
   };
-  const busy = [...scope.querySelectorAll('[role="progressbar"], [aria-busy="true"], [class*="spinner" i], [class*="spin_" i], .ds-loading, .ds-icon-loading, [data-testid*="loading" i], .animate-spin')].some(visible);
+  const attachmentTray = scope.querySelector('[data-composer-attachments]');
+  // ChatGPT keeps a progressbar for both upload and preview processing. Its
+  // presence matters even in a background tab where geometry may be zero.
+  const busy = siteKey === "chatgpt" && !!attachmentTray?.querySelector('[role="progressbar"], [aria-busy="true"]') ||
+    [...scope.querySelectorAll('[role="progressbar"], [aria-busy="true"], [class*="spinner" i], [class*="spin_" i], .ds-loading, .ds-icon-loading, [data-testid*="loading" i], .animate-spin')].some(visible);
   const previews = scope.cloneNode(true);
   // The user's prompt can itself contain filenames or words like "上传失败";
   // those are neither attachment acknowledgements nor upload errors.
@@ -112,6 +116,11 @@ function inspectComposer(siteKey, names) {
   const attributes = [...previews.querySelectorAll('[title], [aria-label], img[alt]')];
   const previewText = [previews.textContent, ...attributes.map(e => [e.title, e.getAttribute("aria-label"), e.getAttribute("alt")].join(" "))].join("\n");
   const seen = names.map(name => previewText.includes(name));
+  // ChatGPT can rename duplicate uploads and image previews need not expose the
+  // original filename. Count its actual attachment cards, scoped to the composer.
+  const attachmentCount = attachmentTray
+    ? attachmentTray.querySelectorAll('.composer-attachment-surface[role="button"]').length
+    : 0;
   const uploadError = /(?:上传失败|解析失败|不支持.{0,30}(?:格式|文件)|超出.{0,30}限制|文件.{0,20}(?:过大|太大)|upload failed|unsupported file|file too large|failed to upload|unable to upload|upload limit)[^\n]{0,100}/i;
   // .ds-message is also used for ordinary conversation bubbles, so those must
   // never be treated as upload errors.
@@ -121,7 +130,7 @@ function inspectComposer(siteKey, names) {
   if (localError) errors.push(localError);
   return {
     inputs: inputs.map(e => ({ accept: e.accept, multiple: e.multiple })),
-    seen, enabled, busy, errors,
+    seen, attachmentCount, enabled, busy, errors, revision: window.__marionetteUploadObserver?.revision || 0,
   };
 }
 
@@ -141,6 +150,9 @@ export async function uploadAttachments(pageRef, siteKey, files, evalJson, cance
   const inspect = () => evalJson(pageRef, `JSON.stringify((${inspectComposer})(${JSON.stringify(siteKey)}, ${JSON.stringify(files.map(f => f.name))}))`);
   let before = await inspect();
   if (before.error) throw new Error(before.error);
+  if (siteKey === "chatgpt" && before.attachmentCount) {
+    throw new Error("网页输入框已有附件，请先在浏览器移除后再发送，避免混入本次消息。");
+  }
   // A failed/cancelled upload must be resolved in the page before another send;
   // otherwise stale attachments could silently accompany a different message.
   const pending = await evalJson(pageRef, `JSON.stringify(window.__marionettePendingUpload || [])`);
@@ -187,7 +199,19 @@ export async function uploadAttachments(pageRef, siteKey, files, evalJson, cance
     for (const [index, paths] of groups) {
       if (paths.length > 1 && !before.inputs[index].multiple) throw new Error("这个网页上传入口一次只能选择一个文件。");
     }
-    await evalJson(pageRef, `(() => { window.__marionettePendingUpload = ${JSON.stringify(files.map(f => f.name))}; return "{}"; })()`);
+    await evalJson(pageRef, `(() => {
+      window.__marionettePendingUpload = ${JSON.stringify(files.map(f => f.name))};
+      if (${JSON.stringify(siteKey)} === "chatgpt") {
+        const state = { revision: 0, listeners: new Set() };
+        state.observer = new MutationObserver(() => {
+          state.revision++;
+          for (const wake of [...state.listeners]) wake();
+        });
+        state.observer.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
+        window.__marionetteUploadObserver = state;
+      }
+      return "{}";
+    })()`);
     for (const [index, paths] of groups) {
       if (cancelled()) return false;
       const marker = randomUUID();
@@ -215,14 +239,40 @@ export async function uploadAttachments(pageRef, siteKey, files, evalJson, cance
       if (status.error) throw new Error(status.error);
       const error = status.errors.find(text => !oldErrors.has(text));
       if (error) throw new Error(`网页附件处理失败：${error.slice(0, 150)}`);
-      if (status.seen.every(Boolean) && status.enabled && !status.busy) {
+      const previewsReady = siteKey === "chatgpt"
+        ? status.attachmentCount === files.length
+        : status.seen.every(Boolean);
+      if (previewsReady && status.enabled && !status.busy) {
+        if (siteKey === "chatgpt") return true;
         readySince ||= Date.now();
         if (Date.now() - readySince >= 1500) return true;
       } else readySince = 0;
-      await new Promise(resolve => setTimeout(resolve, 400));
+      if (siteKey === "chatgpt") {
+        // The revision closes the race between inspection and installing the
+        // waiter. The timeout only permits cancellation and rechecks changes
+        // in visibility that do not produce DOM mutations.
+        await evalJson(pageRef, `new Promise(resolve => {
+          const state = window.__marionetteUploadObserver;
+          if (!state || state.revision !== ${status.revision || 0}) return resolve("{}");
+          let timer;
+          const done = () => { clearTimeout(timer); state.listeners.delete(done); resolve("{}"); };
+          state.listeners.add(done);
+          timer = setTimeout(done, 1000);
+        })`);
+      } else {
+        await new Promise(resolve => setTimeout(resolve, 400));
+      }
     }
     throw new Error("等待附件上传/解析超时，消息未发送。请到浏览器检查附件状态，移除附件并刷新后重试。");
   } finally {
+    if (siteKey === "chatgpt") {
+      await evalJson(pageRef, `(() => {
+        const state = window.__marionetteUploadObserver;
+        if (state) { state.observer.disconnect(); for (const wake of [...state.listeners]) wake(); }
+        delete window.__marionetteUploadObserver;
+        return "{}";
+      })()`).catch(() => {});
+    }
     if (revealed) {
       await evalJson(pageRef, `(() => {
         const editor = document.querySelector('#prompt-textarea, .ProseMirror[contenteditable="true"]');
