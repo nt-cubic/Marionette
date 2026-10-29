@@ -47,9 +47,14 @@ export function isImagePath(path: string): boolean {
 }
 
 /** `file:///D:/x.png` / `file://localhost/C:/x` → filesystem path. */
+export function normalizeWindowsDrivePath(value: string): string {
+  // Some agents add a leading slash to drive paths inside Markdown URLs.
+  return value.replace(/^\/([a-zA-Z]:[\\/])/, "$1");
+}
+
 export function stripFileUri(value: string): string {
   const trimmed = value.trim();
-  if (!/^file:/i.test(trimmed)) return trimmed;
+  if (!/^file:/i.test(trimmed)) return normalizeWindowsDrivePath(trimmed);
   const fromUrl = (url: URL): string => {
     let rest = decodeURIComponent(url.pathname);
     if (url.hostname && url.hostname.toLowerCase() !== "localhost") {
@@ -60,7 +65,7 @@ export function stripFileUri(value: string): string {
     return rest;
   };
   try {
-    return fromUrl(new URL(trimmed));
+    return normalizeWindowsDrivePath(fromUrl(new URL(trimmed)));
   } catch {
     // Non-standard `file://D:/x` (two slashes + drive) — strip manually.
     let rest = trimmed.replace(/^file:\/\//i, "").replace(/^file:/i, "");
@@ -70,7 +75,7 @@ export function stripFileUri(value: string): string {
     } catch {
       // keep the raw remainder
     }
-    return rest;
+    return normalizeWindowsDrivePath(rest);
   }
 }
 
