@@ -6,12 +6,12 @@ import remarkGfm from "remark-gfm";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { isTauriRuntime, readImageDataUrl } from "../lib/api";
 import { copyText } from "../lib/clipboard";
+import { isImagePath } from "../lib/toolBody";
 import { stripFileUri } from "../lib/imageAttachments";
 import { prepareMarkdownForRender } from "../lib/markdownText";
 import { useMathPack } from "../lib/mathPack";
 import { normalizeMathDelimiters, scanRichFeatures } from "../lib/richMarkdown";
 import { resolveToolImagePath } from "../lib/toolBody";
-import { ImageLightbox } from "./ImageLightbox";
 import { linkifyChildren, useLinkMenu } from "./LinkedText";
 import { MdMermaid } from "./MdMermaid";
 import { useShikiHtml } from "./MdShikiCode";
@@ -167,6 +167,10 @@ function decodeLocalTarget(url: string): string {
  */
 function MdLink({ href, children }: { href?: string; children?: ReactNode }) {
   const { openMenu, primaryAction, renderMenu } = useLinkMenu();
+  const imagePath = href ? stripFileUri(href) : "";
+  if (imagePath && isImagePath(imagePath)) {
+    return <PreviewImage src={href} alt={nodeText(children)} />;
+  }
   const target: LinkTarget | null = href
     ? {
         kind: HTTP_URL_RE.test(href) ? "url" : "path",
@@ -248,7 +252,7 @@ function isAbsolutePath(value: string): boolean {
 }
 
 /**
- * Inline image — click opens a dark lightbox (drag to pan, wheel to zoom).
+ * Inline image — click expands it in place inside the reply.
  * Right-click opens the menu (Open with system viewer / Show in Explorer /
  * Copy path). stopPropagation so a click inside a markdown link
  * (`[![alt](img)](url)`) doesn't fire twice.
@@ -261,7 +265,7 @@ function isAbsolutePath(value: string): boolean {
 export function PreviewImage({ src, alt }: { src?: string; alt?: string }) {
   const cwd = useContext(MarkdownImageCwdContext);
   const { openMenu, primaryAction, renderMenu } = useLinkMenu();
-  const [open, setOpen] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const [loaded, setLoaded] = useState<LoadedImage | null>(null);
   const [failed, setFailed] = useState(false);
   const remote = Boolean(
@@ -269,17 +273,19 @@ export function PreviewImage({ src, alt }: { src?: string; alt?: string }) {
       (HTTP_URL_RE.test(src) || src.startsWith("data:") || src.startsWith("blob:")),
   );
   const localPath = src && !remote ? resolveToolImagePath(stripFileUri(src), cwd) : src;
-  const target: LinkTarget | null = localPath
+  const target: LinkTarget | null = src && !/^data:image\//i.test(src)
     ? {
         kind: remote ? "url" : "path",
-        raw: localPath,
+        // Keep exactly what the agent sent for the visible/copyable source.
+        raw: src,
         start: 0,
-        end: localPath.length,
+        end: src.length,
       }
     : null;
+  const caption = imageCaption(alt, src);
 
   useEffect(() => {
-    setOpen(false);
+    setExpanded(false);
     if (!src || remote) {
       setLoaded(null);
       setFailed(false);
@@ -313,72 +319,112 @@ export function PreviewImage({ src, alt }: { src?: string; alt?: string }) {
     };
   }, [localPath, remote, src]);
 
+  useEffect(() => {
+    if (!expanded) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setExpanded(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [expanded]);
+
   const displaySrc = remote ? localPath : loaded?.dataUrl;
   // A near-miss match means the file read is not the path in the reply.
   const shownPath = loaded?.path ?? localPath;
 
   return (
     <>
-      {displaySrc ? (
-        <img
-          src={displaySrc}
-          alt={alt ?? ""}
-          loading="lazy"
-          className="md-body__img"
-          title={shownPath}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            setOpen(true);
-          }}
-          onContextMenu={(event) => {
-            if (!target) return;
-            event.preventDefault();
-            event.stopPropagation();
-            void openMenu(event, target);
-          }}
-        />
-      ) : (
-        <button
-          type="button"
-          className="md-body__img-fallback"
-          title={shownPath}
-          onClick={(event) => {
-            if (!target) return;
-            event.preventDefault();
-            event.stopPropagation();
-            void primaryAction(event, target);
-          }}
-          onContextMenu={(event) => {
-            if (!target) return;
-            event.preventDefault();
-            event.stopPropagation();
-            void openMenu(event, target);
-          }}
-        >
-          <span className="md-body__img-fallback__alt">{alt || "图片"}</span>
-          <span className="md-body__img-fallback__hint">
-            {failed ? "读不到这张图，点开用系统查看器" : "正在读取…"}
-          </span>
-        </button>
-      )}
-      {open && displaySrc ? (
-        <ImageLightbox
-          src={displaySrc}
-          alt={alt}
-          caption={shownPath ?? undefined}
-          onClose={() => setOpen(false)}
-          onContextMenu={(event) => {
-            if (!target) return;
-            event.preventDefault();
-            event.stopPropagation();
-            void openMenu(event, target);
-          }}
-        />
-      ) : null}
+      <figure className={expanded ? "md-image-card is-expanded" : "md-image-card"}>
+        <div className="md-image-card__frame">
+          {displaySrc && !failed ? (
+            <img
+              src={displaySrc}
+              alt={caption}
+              loading="lazy"
+              className={expanded ? "md-body__img is-expanded" : "md-body__img"}
+              title={shownPath}
+              role="button"
+              tabIndex={0}
+              aria-expanded={expanded}
+              aria-label={`${expanded ? "收起" : "放大"}图片：${caption}`}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setExpanded((current) => !current);
+              }}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" && event.key !== " ") return;
+                event.preventDefault();
+                setExpanded((current) => !current);
+              }}
+              onContextMenu={(event) => {
+                if (!target) return;
+                event.preventDefault();
+                event.stopPropagation();
+                void openMenu(event, target);
+              }}
+              onError={() => setFailed(true)}
+            />
+          ) : (
+            <div className="md-image-card__unavailable">
+              <span>{failed ? "图片暂时无法预览" : "正在读取图片…"}</span>
+              {target && (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    void primaryAction(event, target);
+                  }}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    void openMenu(event, target);
+                  }}
+                >
+                  打开原始链接
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+        {caption && (
+          <figcaption className="md-image-card__caption">
+            {target ? (
+              <button
+                type="button"
+                title={src}
+                onClick={(event) => void primaryAction(event, target)}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  void openMenu(event, target);
+                }}
+              >
+                {caption}
+              </button>
+            ) : caption}
+          </figcaption>
+        )}
+      </figure>
       {renderMenu()}
     </>
   );
+}
+
+function imageCaption(alt: string | undefined, src: string | undefined): string {
+  const label = (alt ?? "").trim();
+  if (label && !/^image$/i.test(label)) return label;
+  const source = src ?? "";
+  if (/^data:image\//i.test(source)) {
+    const subtype = source.match(/^data:image\/([\w.+-]+)/i)?.[1]?.replace(/^jpeg$/i, "jpg");
+    return subtype ? `image.${subtype}` : "图片";
+  }
+  const path = stripFileUri(source).split(/[?#]/, 1)[0] ?? "";
+  const name = path.split(/[\\/]/).filter(Boolean).pop() ?? "";
+  if (name && !/^data:/i.test(name)) return name;
+  return label || "图片";
 }
 
 /**
@@ -425,15 +471,15 @@ export const MarkdownBody = memo(function MarkdownBody({ text, className }: Mark
   return (
     <div className={className ? `md-body ${className}` : "md-body"}>
       <ReactMarkdown
-        remarkPlugins={remarkPlugins}
-        rehypePlugins={rehypePlugins}
-        // Default urlTransform kills any href whose "protocol" isn't http(s) —
-        // `file:///D:/x` and even `D:\x` drive paths render as href="". Local
-        // targets are the whole point here, and clicks never navigate the
-        // window (MdLink always preventDefaults and hands off to the OS), so
-        // the sanitizing transform is replaced with a local-target decoder.
-        urlTransform={decodeLocalTarget}
-        components={{
+          remarkPlugins={remarkPlugins}
+          rehypePlugins={rehypePlugins}
+          // Default urlTransform kills any href whose "protocol" isn't http(s) —
+          // `file:///D:/x` and even `D:\x` drive paths render as href="". Local
+          // targets are the whole point here, and clicks never navigate the
+          // window (MdLink always preventDefaults and hands off to the OS), so
+          // the sanitizing transform is replaced with a local-target decoder.
+          urlTransform={decodeLocalTarget}
+          components={{
           // Never let a link navigate the app window — hand it to the OS.
           a: MdLink,
           img: PreviewImage,
@@ -449,13 +495,32 @@ export const MarkdownBody = memo(function MarkdownBody({ text, className }: Mark
             </ol>
           ),
           // Paths / URLs written as prose become clickable too.
-          p: ({ children }) => <p className="md-body__p">{linkifyChildren(children)}</p>,
+          p: ({ children }) => {
+            const plain = typeof children === "string" ? children.trim() : "";
+            // A standalone image path is an image block. Paths embedded in prose
+            // remain ordinary links, and inline/fenced code is never linkified.
+            if (plain && isImagePath(plain)) return <PreviewImage src={plain} />;
+            const childList = Array.isArray(children) ? children : [children];
+            if (
+              childList.some(
+                (child) =>
+                  isValidElement<{ href?: string }>(child) &&
+                  (child.type === PreviewImage ||
+                    (child.type === MdLink &&
+                      typeof child.props.href === "string" &&
+                      isImagePath(stripFileUri(child.props.href)))),
+              )
+            ) {
+              return <div className="md-body__p">{linkifyChildren(children)}</div>;
+            }
+            return <p className="md-body__p">{linkifyChildren(children)}</p>;
+          },
           li: ({ children }) => <li className="md-body__li">{linkifyChildren(children)}</li>,
           td: ({ children }) => <td>{linkifyChildren(children)}</td>,
           pre: ({ children }) => <MdPre>{children}</MdPre>,
           code: ({ children, className: codeClassName }) => {
-            // Fenced blocks are `pre > code` (often `language-*`); inline is
-            // short / single-line — that's where models usually put a path.
+            // Keep code literal: paths in inline/fenced code are examples, not
+            // image references or links to activate.
             const textContent = Array.isArray(children)
               ? children.map(String).join("")
               : typeof children === "string"
@@ -466,13 +531,13 @@ export const MarkdownBody = memo(function MarkdownBody({ text, className }: Mark
             const isInline = !isBlock && textContent.length > 0 && textContent.length < 200;
             return (
               <code className={codeClassName}>
-                {isInline ? linkifyChildren(textContent || children) : children}
+                {isInline ? textContent || children : children}
               </code>
             );
           },
-        }}
-      >
-        {source}
+          }}
+        >
+          {source}
       </ReactMarkdown>
     </div>
   );

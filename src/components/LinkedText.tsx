@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { openExternal, resolveLinkTarget, revealInFileManager, type LinkResolution } from "../lib/api";
+import { normalizeWindowsDrivePath, stripFileUri } from "../lib/imageAttachments";
 import { linkLabel, splitLinkSegments, type LinkTarget } from "../lib/linkTargets";
 
 /**
@@ -43,7 +44,7 @@ export function useLinkMenu() {
   const openMenu = useCallback(
     async (event: { clientX: number; clientY: number }, target: LinkTarget, note = "") => {
       setMenu({ x: event.clientX, y: event.clientY, target, resolution: null, busy: true, note });
-      const resolution = await resolveLinkTarget(target.raw, cwd).catch(() => null);
+      const resolution = await resolveLinkTarget(linkActionPath(target), cwd).catch(() => null);
       setMenu((current) =>
         current && current.target.raw === target.raw
           ? { ...current, resolution, busy: false }
@@ -57,7 +58,7 @@ export function useLinkMenu() {
     async (event: React.MouseEvent, target: LinkTarget) => {
       if (target.kind === "url") {
         try {
-          const result = await openExternal(target.raw, cwd);
+          const result = await openExternal(linkActionPath(target), cwd);
           if (!result?.opened) {
             void openMenu(event, target, result?.message ?? "Could not open this link.");
           }
@@ -66,7 +67,8 @@ export function useLinkMenu() {
         }
         return;
       }
-      const resolution = await resolveLinkTarget(target.raw, cwd).catch(() => null);
+      const actionPath = linkActionPath(target);
+      const resolution = await resolveLinkTarget(actionPath, cwd).catch(() => null);
       // Missing or executable → never guess; show the menu with the reason.
       if (!resolution || resolution.kind === "missing") {
         void openMenu(event, target, "Not found on disk from this project.");
@@ -76,7 +78,7 @@ export function useLinkMenu() {
         void openMenu(event, target, "Executable file — confirm below to launch it.");
         return;
       }
-      const result = await openExternal(target.raw, cwd).catch(() => null);
+      const result = await openExternal(actionPath, cwd).catch(() => null);
       if (!result?.opened) {
         void openMenu(event, target, result?.message ?? "Could not open this item.");
       }
@@ -95,6 +97,13 @@ export function useLinkMenu() {
     ) : null;
 
   return { openMenu, primaryAction, renderMenu };
+}
+
+/** Normalize only for filesystem actions; menus and clipboard retain agent text. */
+function linkActionPath(target: LinkTarget): string {
+  return target.kind === "path"
+    ? normalizeWindowsDrivePath(stripFileUri(target.raw))
+    : target.raw;
 }
 
 export function LinkedText({ text, className }: { text: string; className?: string }): ReactNode {
@@ -197,7 +206,7 @@ function LinkMenu({
         {target.raw}
       </div>
       {isUrl ? (
-        <button type="button" role="menuitem" onClick={() => void run(() => openExternal(target.raw, cwd))}>
+        <button type="button" role="menuitem" onClick={() => void run(() => openExternal(linkActionPath(target), cwd))}>
           Open in browser
         </button>
       ) : (
@@ -207,7 +216,7 @@ function LinkMenu({
             role="menuitem"
             disabled={!exists}
             onClick={() =>
-              void run(() => openExternal(target.raw, cwd, resolution?.risky === true))
+              void run(() => openExternal(linkActionPath(target), cwd, resolution?.risky === true))
             }
           >
             {resolution?.risky ? "Run with default app ⚠" : "Open with default app"}
@@ -216,7 +225,7 @@ function LinkMenu({
             type="button"
             role="menuitem"
             disabled={!exists}
-            onClick={() => void run(() => revealInFileManager(target.raw, cwd))}
+            onClick={() => void run(() => revealInFileManager(linkActionPath(target), cwd))}
           >
             Show in File Explorer
           </button>

@@ -11,6 +11,8 @@
  *   not a wrapped text dump.
  */
 
+import { normalizeWindowsDrivePath } from "./imageAttachments";
+
 const IMAGE_EXTENSION = /\.(?:png|jpe?g|gif|webp|bmp|avif|svg)$/i;
 /** `![alt](target)` — how ACP image blocks are stringified (see acpTranscript). */
 const MARKDOWN_IMAGE = /!\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g;
@@ -41,7 +43,7 @@ export function isImagePath(value: string): boolean {
 export function stripFileUrl(value: string): string {
   const withoutScheme = value.replace(/^file:\/\//i, "");
   // `file:///D:/x.png` arrives as `/D:/x.png` — drop the extra slash before a drive.
-  return withoutScheme.replace(/^\/([A-Za-z]:[\\/])/, "$1");
+  return normalizeWindowsDrivePath(withoutScheme);
 }
 
 /**
@@ -49,7 +51,7 @@ export function stripFileUrl(value: string): string {
  * absolute existing file. Relative paths resolve against the session cwd.
  */
 export function resolveToolImagePath(path: string, cwd?: string | null): string {
-  const value = stripFileUrl(path).trim();
+  const value = normalizeWindowsDrivePath(stripFileUrl(path).trim());
   if (!value) return value;
   if (/^[A-Za-z]:[\\/]/.test(value) || value.startsWith("\\\\") || value.startsWith("/")) {
     return value;
