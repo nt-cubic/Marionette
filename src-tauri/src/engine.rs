@@ -1090,7 +1090,7 @@ fn register_key_providers(exe: &Path) {
     if test_register_hook().is_some() {
         return;
     }
-    let _ = sync_sources_at(exe);
+    let _ = sync_sources_at(exe, false);
     let Some(home) = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
@@ -1244,10 +1244,36 @@ fn provider_id_slug(id: &str) -> String {
     out
 }
 
+/// 厂商 live 清单驱动的来源刷新（`provider refresh` + `models all` 解钉）。
+/// 曾经把发现到的模型清单**钉死**进注册（models=），中央中转（opencode.ai
+/// 的免费池、openrouter 的 :free）上新模型永远进不来，grok 里只剩老快照。
+/// 现在注册不带 models=（新增时 add 自动抓 live 列表），已钉住的来源用
+/// refresh→all 迁移到全量 live 语义。顺序不能反：`models all` 暴露的是
+/// **最近一次抓取**的清单。refresh 失败（中转 /models 不可用）保持旧列表
+/// 不动。手动面板刷新 force=true；引擎拉起等自动链路每来源 6h 一次、
+/// 进程重启后首轮也会刷一次。
+const SOURCE_LIVE_REFRESH_EVERY: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
+
+fn maybe_refresh_source_live(exe: &Path, id: &str, force: bool, changed: &mut bool) {
+    static LAST: OnceLock<Mutex<std::collections::HashMap<String, Instant>>> = OnceLock::new();
+    let Ok(mut last) = LAST.get_or_init(|| Mutex::new(std::collections::HashMap::new())).lock() else { return };
+    let due = force || last.get(id).is_none_or(|t| t.elapsed() >= SOURCE_LIVE_REFRESH_EVERY);
+    if due {
+        last.insert(id.to_string(), Instant::now());
+    }
+    drop(last);
+    if !due { return; }
+    if run_magpie_cli(exe, &["provider", "refresh", id]).is_ok()
+        && run_magpie_cli(exe, &["provider", "models", id, "all"]).is_ok()
+    {
+        *changed = true;
+    }
+}
+
 /// Generic provider definitions discovered in CLI files. A separate ownership
 /// ledger keeps these routes apart from preset registrations and user routes.
 /// Fingerprints stay in memory only; secrets never enter the ledger or logs.
-fn sync_sources_at(exe: &Path) -> Vec<String> {
+fn sync_sources_at(exe: &Path, force_refresh: bool) -> Vec<String> {
     use sha2::{Digest, Sha256};
     static SYNC: OnceLock<Mutex<std::collections::HashMap<String, Vec<u8>>>> = OnceLock::new();
     let Ok(mut fingerprints) = SYNC.get_or_init(|| Mutex::new(std::collections::HashMap::new())).lock() else { return vec!["模型来源同步正忙".into()] };
@@ -1262,11 +1288,15 @@ fn sync_sources_at(exe: &Path) -> Vec<String> {
         if source.view.issue.is_some() { continue; }
         let id=provider_id_slug(&source.view.id);
         let endpoint_key = match source.view.protocol.as_str() { "anthropic" => "anthropic", "responses" => "responses", _ => "url" };
+        // 不带 models=：暴露厂商的 live 模型清单（新免费模型自动进目录）。
+        // 抓不到列表的中转由旧注册的 picks 兜底，refresh 失败时原样保留。
         let mut pairs=vec![format!("{endpoint_key}={}",source.view.endpoint),format!("key={}",source.key),format!("name={}",source.view.label)];
-        pairs.push(format!("models={}",source.view.models.iter().map(|m|m.id.as_str()).collect::<Vec<_>>().join(",")));
         for (k,v) in &source.headers { pairs.push(format!("header.{k}={v}")); }
         let fingerprint=Sha256::digest(pairs.join("\n")).to_vec();
-        if fingerprints.get(&id)==Some(&fingerprint) && ledger.contains(&id) { kept.push(id.clone()); continue; }
+        if fingerprints.get(&id)==Some(&fingerprint) && ledger.contains(&id) {
+            maybe_refresh_source_live(exe, &id, force_refresh, &mut changed);
+            kept.push(id.clone()); continue;
+        }
         let mut args=vec!["provider", "set", id.as_str()];
         args.extend(pairs.iter().map(String::as_str));
         let result=run_magpie_cli(exe,&args).or_else(|_| {
@@ -1276,7 +1306,10 @@ fn sync_sources_at(exe: &Path) -> Vec<String> {
             run_magpie_cli(exe,&args)
         });
         match result {
-            Ok(()) => { fingerprints.insert(id.clone(),fingerprint); kept.push(id.clone()); changed = true; }
+            Ok(()) => {
+                fingerprints.insert(id.clone(),fingerprint); kept.push(id.clone()); changed = true;
+                maybe_refresh_source_live(exe, &id, true, &mut changed);
+            }
             // 种子引擎（精简纯网关）刻意不含 provider CLI——给出可操作指引
             // 而不是含混的"刷新重试"。装上完整引擎后下一轮同步自动补齐。
             Err(error) if error.contains("engine seed") => {
@@ -1309,7 +1342,7 @@ pub fn sync_discovered_sources() -> Vec<String> {
     let exe=exe_path(&dir);
     // Reused user installations are not owned by Marionette.
     if matches!(status(),EngineStatus::Running {reused:true,..}) { return vec!["当前复用外部引擎；发现的 CLI 来源需由 Marionette 自带引擎接入".into()]; }
-    sync_sources_at(&exe)
+    sync_sources_at(&exe, true)
 }
 
 /// Exact account aliases for menu presentation. Compare resolved credentials
