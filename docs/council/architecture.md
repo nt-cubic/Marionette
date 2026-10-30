@@ -1,15 +1,16 @@
-# Council Mode — 架构(M1 定稿)
+# Council Mode — 架构(M1–M3 定稿)
 
-> 状态:M1 已实现(2026-10-31)。对比审计与决策依据见
-> [`architecture-audit.md`](./architecture-audit.md);本文描述**实际落地**
-> 的结构。与代码冲突时以代码为准。
+> 状态:M1(审议)+ M2(执行)+ M3(验证回路)已实现(2026-10-31)。
+> 对比审计与决策依据见 [`architecture-audit.md`](./architecture-audit.md);
+> 本文描述**实际落地**的结构。与代码冲突时以代码为准。
 
 ## 1. 总览
 
 Council 是 Marionette 内建的多模型审议编排器:多个模型各自独立分析
-同一任务、互相质询、修订、由主席综合,最终产出经评审的结构化实施计
-划(Plan Gate)。M1 覆盖「仅审议」全流程;执行(Agent Harness Worker
-经 ACP 落地计划)属 M2。
+同一任务、互相质询、修订、由主席综合,产出经评审的结构化实施计划
+(Plan Gate);用户批准后由真实 coding agent(ACP)按计划落码——并行
+任务用 git worktree 隔离、冲突显式上报;执行完成后跑计划声明的验证
+命令,失败触发主席修订计划的受限修复回路(≤3 次)。
 
 ```
 ┌────────────────────────── 前端 (React) ──────────────────────────┐
@@ -19,11 +20,15 @@ Council 是 Marionette 内建的多模型审议编排器:多个模型各自独�
                     Tauri commands(council_*×9)+ 全局事件
 ┌────────────────────────────────┴──────────────────────────────────┐
 │ src-tauri/src/council/                                           │
-│  orchestrator.rs  run 线程:协议循环 / fan-out / 预算 / 取消       │
+│  orchestrator.rs  run 线程:协议循环 / fan-out / 预算 / 取消 /     │
+│    │              执行-验证-修复回路                                │
 │    ├─ prompts.rs   各阶段 prompt 构造(信息隔离强制点)             │
 │    ├─ worker.rs    ModelClient:EngineClient(引擎 HTTP)/ Mock     │
 │    ├─ state.rs     状态机转移表(硬编码 + 审计)                   │
 │    ├─ store.rs     ~/.marionette/council/runs/{id}/ 持久化        │
+│    ├─ tasks.rs     PlanDoc→任务图(frontier 调度/失败不级联)      │
+│    ├─ executor.rs  执行 harness(ACP 生产 + 脚本测试)+ worktree 合并│
+│    ├─ verify.rs    验证命令执行(超时/输出截断/危险拦截)           │
 │    └─ types.rs     领域类型(spec/消息/状态/计划)                  │
 └───────────────────────────────────────────────────────────────────┘
           复用(不重造):engine.rs(Magpie 网关)、storage::write_atomic、
@@ -162,12 +167,36 @@ paused → paused_from 指向的原状态(或 cancelled)
 | `council_delete_run` | | 运行中拒绝;删目录 |
 | `council_list_models` | ✓ | 引擎目录 + ready 状态(顺带唤醒 5s) |
 
-## 10. M2+ 蓝图(未实现,记录去向)
+## 10. 执行与验证(M2/M3 已实现)
 
-- **执行**:plan.json → TaskGraph(依赖解析 + frontier 调度,参考
-  OmO `scheduler-frontier.ts` 语义)→ 每 task spawn ACP session
-  (`create_child_session` + `start_acp_session`)→ `executing`。
-- **验证**:`plan.verification` 命令逐条执行(独立验证阶段,
-  `verifying`),失败证据回注 targeted revision(≤3 次,验收 §4.3)。
-- **隔离**:重叠修改用 `git worktree add --detach`(git_service 薄
-  封装),交付证据复用 per-turn 快照。
+### 10.1 任务图(`tasks.rs`)
+
+PlanDoc → `TaskProgress` 账本:编译期环检测(只看图内依赖;图外依赖
+由 finalize 收 skipped,不误报环);frontier 调度(依赖全部
+Merged/Completed 即就绪,非严格波次);**失败不级联**——上游失败的
+下游在全部可执行工作结束后统一收 `skipped`,不假成功。
+
+### 10.2 执行(`executor.rs`)
+
+- `TaskHarness` trait:生产 `AcpHarness`(AcpService spawn → prompt →
+  `wait_turn_idle` → stop;成功判据 = turn 完成 + 工作区变更,而非
+  agent 的自述);测试 `ScriptedHarness`(prompt 约定的 WRITE/FAIL 指令)。
+- **隔离(验收 #10)**:ready 批次 >1 且是 git 仓库 → 每任务
+  `git worktree add -b council/<run>/<step>`;完成后按拓扑序**顺序合并**
+  (--no-ff --no-commit,冲突先 `--diff-filter=U` 收集文件再 abort),
+  冲突任务显式 `Failed(冲突文件清单)`,绝不静默覆盖。非 git 目录退
+  化串行 + 显著警告。
+- 恢复:进入 Executing 时把账本里遗留 Running 的任务复位 Pending(其
+  worktree 清理后重跑)。
+
+### 10.3 验证与修复回路(`verify.rs` + orchestrator Verifying 分支)
+
+- 验证命令(`plan.verification`)逐条 `cmd /C` 执行:900s 超时、8KB
+  尾部保留输出、CREATE_NO_WINDOW;**危险模式**(git push/publish/
+  rm -rf/shutdown…)拦截为 needs-human,清单在 Plan Gate 冻结,运行
+  期提示注入无法扩它。
+- 失败 → `Evidence` 消息(逐命令 ✓/✗/⚠)→ 主席 `repair_round_prompt`
+  (只改受影响步骤、无关步骤保持 id 使已完成工作保留)→ 计划版本化
+  (Plan 消息带 repairRound)→ 账本迁移(同 id 同 detail 的 Merged 保
+  留,变更/新增复位)→ Executing 重跑 → 再验证;**上限 3 次**,触顶
+  `Failed`(带证据),不无限自改(验收 #11)。

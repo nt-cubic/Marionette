@@ -44,33 +44,45 @@ Council 视图独立整页(memo-tab-page 模式)。
 - council_and_execution / autonomous 模式批准后同样终止于 completed
   (执行器未接,不伪造 Executing 状态)。
 
-## M2 — 原生 ACP 执行(未开始)
+## M2 — 原生 ACP 执行 ✅(2026-10-31,提交 2a5e918)
 
-1. `council/executor.rs`:PlanDoc → TaskGraph(id/depends_on/owner/
-   status);frontier 调度(依赖就绪即入队)。
-2. 每 task:`storage::create_child_session`(origin:"council")→
-   `acp::start`(cwd = 项目根或专属 worktree)→ prompt 注入
-   (step detail + acceptance + 计划全文摘要)→ 轮询 turn/complete。
-3. `git_service::create_worktree`(薄封装 `git worktree add --detach`);
-   重叠文件集的任务强制隔离(验收 #10)。
-4. 交付证据:复用 `begin/end_workspace_snapshot` per task。
-5. 验收 #10 的测试:两个并行 task 改同一文件 → worktree 隔离下合并
-   冲突显式暴露而非静默覆盖。
+- [x] `tasks.rs`:任务图(环检测/失败不级联 finalize/frontier 就绪)
+- [x] `executor.rs`:`TaskHarness` trait;`AcpHarness`(spawn → prompt →
+      `acp::wait_turn_idle`(新增,200ms 轮询 in-flight 计数)→ stop);
+      产出判据 = turn 完成 + git 变更清单
+- [x] `git_service.rs`:`create_worktree`/`remove_worktree`/
+      `merge_worktree_branch`(--no-ff + 冲突显式收集 + abort 保树干净)
+- [x] 验收 #10 测试:真实 git 临时仓库,两个并行任务写同一文件 →
+      一个 Merged、一个 `Failed(合并冲突: same.txt)`,主树内容单一
+      来源;不同文件并行 → 双双干净合并
+- [x] approve_plan:PlanReady→Executing 唯一入口(approve 命令构造
+      AcpHarness 并拉起执行线程)
+- [x] 前端:执行器配置(agent + cwd)与任务面板(状态/变更数)
+- 注:每步的 session id 形如 `council-<run>-<step>`(不占用对话列表;
+      ACP 事件仍走全局流,可在对话 UI 之外观察)
 
-## M3 — 自治验证回路(未开始)
+## M3 — 自治验证回路 ✅(2026-10-31,提交 3eae54f)
 
-1. `council/verify.rs`:verification 命令逐条跑(std Command,超时,
-   输出截断),证据消息(kind=evidence)回注。
-2. 失败 → targeted revision:失败证据 + 相关 step 回质询(受
-   `repair_limit=3` 约束)→ 更新计划 → 只重跑受影响 task。
-3. AwaitingApproval 用于破坏性验证命令的人工确认。
-4. 验收 #11 测试:注入失败 verification → 断言修订回路触发且 ≤3 次。
+- [x] `verify.rs`:命令执行(cmd /C,900s 超时,8KB 尾部保留输出,
+      CREATE_NO_WINDOW);危险模式(git push/publish/rm -rf/shutdown)
+      拦截为 needs-human——清单在 Plan Gate 冻结,运行期注入无法扩
+- [x] 修复回路:失败 → Evidence 消息 → 主席修订计划(只改受影响
+      步骤)→ 计划版本化(Plan 消息带 repairRound)→ 账本迁移(同 id
+      同 detail 的 Merged 保留)→ 重执行 → 再验证;上限 3 次
+- [x] 验收 #11 测试:端到端(坏产出 → 验证失败 → 修复 1 轮 → 通过 →
+      Completed,verify_attempts == 1)+ 上限(恒败 → 恰 3 次 → Failed)
+- 注:AwaitingApproval 状态保留为 M4 权限场景预留(破坏性命令当前
+      直接拦截而非交互确认——诚实降级,不伪造确认)
 
-## M4 — 生产加固(未开始)
+## M4 — 生产加固(本次范围内完成的部分,2026-10-31)
 
-- 增量事件(消息 diff)、模板保存/加载、成本归因 per member、
-  capability-based 模型推荐(目录 images/context 字段)、
-  Windows 长路径/杀毒扫描下的 store 压测、文档完善。
+- [x] 文档同步(architecture/testing/user-guide/CURRENT/AGENTS 入口)
+- [x] 事件补齐:task/verify/warn 事件进前端时间线
+- [ ] live 引擎冒烟(本机未配置 provider,见 testing.md §5 前置)
+- [ ] 增量事件(现为全量重拉,<百条消息量级可接受)
+- [ ] 模板保存/加载、per-member 成本归因、capability 模型推荐
+- [ ] AwaitingApproval 交互式确认(破坏性验证命令)
+- [ ] Windows 长路径/杀毒下的 store 压测
 
 ## 外部依赖与风险记录
 

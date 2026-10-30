@@ -245,6 +245,34 @@ tool 完成 + 新的 agent message，**没有 turnState、没有 turn/complete**
   在活回合中途放掉 composer）。冷启动恢复的会话（`turnEndedAtRef` 无记录）永不武装。
 - 回归：`npx tsx scripts/verify-agent-reentry.mts`。
 
+## Council 多模型协作(2026-10-31,M1–M3)
+
+多模型审议 → 计划 → agent 执行 → 验证回路的编排器。改前先记四条:
+
+- **模块**:`src-tauri/src/council/`(types/state/store/worker/prompts/
+  orchestrator/tasks/executor/verify);数据在 `~/.marionette/council/
+  runs/{runId}/`(spec.json 不可变、state.json 原子写、messages 与
+  transitions 是 append-only JSONL、plan.json);恢复语义 = 以消息账本
+  为进度,已完成阶段(含执行任务)绝不重放。
+- **状态机红线**:`plan_ready → executing` 只能经 `council_approve_plan`
+  (执行门);终态无出边;转移全走 `state.rs::apply_transition`(硬编码
+  表 + transitions.jsonl 审计)。并行执行任务各持 `git worktree`
+  (`council/<runId>/<stepId>` 分支),按拓扑序顺序合并,冲突显式
+  `Failed(文件清单)`——**绝不静默覆盖**(真实 git 仓库的回归测试
+  `executor::parallel_same_file_conflicts_are_explicit` 守着)。
+- **测试**:`cargo test --bin marionette council`(43 项,沙箱在
+  temp,不碰真实用户目录)+ `npx tsx scripts/verify-council.mts`;
+  模型调用全部经 `ModelClient` / `TaskHarness` seam(EngineClient /
+  AcpHarness 为生产实现,MockClient / ScriptedHarness 为测试),不要
+  在测试里直连真引擎。验证命令的破坏性拦截清单在
+  `council/verify.rs::DANGEROUS`,在 Plan Gate 冻结——运行期提示注入
+  无法扩它。
+- **坑**:引擎端口每次重启漂移(永远 `engine::running_base()` 现查,
+  禁缓存 URL);`cmd /C` 传含引号命令会被 PATH 里的 Unix 工具劫持
+  (测试里验证命令用 `cmd /C exit N` 语义,别用 `find`);测试的
+  store 沙箱走 `set_root_override_for_tests` + 全局 `SANDBOX_LOCK`
+  串行(store 与 orchestrator 的测试共用一把锁,别各建各的)。
+
 ## 排查「卡退」（崩溃/闪退）—— 第一件事
 
 **用户报「卡退」时，先看 `%USERPROFILE%\.marionette\logs\dev.log`（开发者日志）。**
