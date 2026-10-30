@@ -1,14 +1,14 @@
 # Council Mode — 测试与验收
 
-> 状态:M1(2026-10-31)。真模型(live 引擎)冒烟尚未执行——本机
+> 状态:M1–M3(2026-10-31)。真模型(live 引擎)冒烟尚未执行——本机
 > 引擎未配置可用 provider;全部自动化验证在 mock 层完成(验收 #14:
 > mock 与 live 结果明确区分)。
 
 ## 1. 测试入口
 
 ```bash
-# Rust 单测(状态机/协议/恢复/预算/取消/隔离/路由)
-cd src-tauri && cargo test --bin marionette council
+# Rust 单测(状态机/协议/恢复/预算/取消/隔离/执行/验证回路)
+cd src-tauri && cargo test --bin marionette council  # 43 项
 
 # 前端回归(展示逻辑/类型契约)
 npx tsx scripts/verify-council.mts
@@ -47,6 +47,19 @@ cd src-tauri && cargo test --bin marionette
 | `orchestrator::budget_exhaustion_is_terminal` | 请求预算触顶→终态 | §6 |
 | `orchestrator::same_model_two_members_distinct_calls` | 同模型两成员各自调用 | #2 |
 | `orchestrator::parse_plan_accepts_fenced_json` | 计划围栏解析+空步骤拒绝 | — |
+| `tasks::cycle_detection_rejects_circular_plan` | 环/自依赖拒绝;图外依赖不误报 | §4.2 |
+| `tasks::frontier_unlocks_only_when_deps_complete` | frontier 调度语义 | §4.2 |
+| `tasks::failure_does_not_cascade_but_finalizes_skipped` | 失败不级联、收尾 skip | §4.2 |
+| `executor::parallel_same_file_conflicts_are_explicit` | 并行同文件 → 显式冲突,不静默覆盖 | **#10** |
+| `executor::parallel_distinct_files_merge_cleanly` | 并行不同文件 → 干净合并 + 依赖解锁 | §4.2 |
+| `executor::failed_step_skips_downstream` | 步骤失败 → 下游 skip | §4.2 |
+| `executor::step_prompt_contains_plan_and_constraints` | 执行 prompt 自足性 | §4.1 |
+| `verify::success_and_failure_commands` | 命令 exit code 语义 | §4.3 |
+| `verify::timeout_kills_command` | 超时终止 | §4.3 |
+| `verify::dangerous_commands_are_intercepted` | 破坏性命令拦截(词边界不误杀) | §4.4 |
+| `verify::evidence_rendering` | 证据渲染 | §4.3 |
+| `orchestrator::verification_failure_triggers_bounded_repair` | 端到端修复回路(恰 1 轮) | **#11** |
+| `orchestrator::repair_loop_is_bounded` | 恒败 → 恰 3 次 → Failed | **#11** |
 | `types::spec_validation_rejects_bad_input` | 创建期 spec 校验 | — |
 
 ## 3. 前端回归(`scripts/verify-council.mts`,7 项)
@@ -67,13 +80,13 @@ PlanDoc camelCase 契约锁定。
 | 6 | 单 worker 崩溃不毒化 run | ✅ | single_worker_failure_does_not_kill_run |
 | 7 | 重启恢复不重放 | ✅ | resume_does_not_replay_completed_phase |
 | 8 | 取消阻止新调用 | ✅ | cancel_stops_new_calls |
-| 9 | 计划门前无执行 | ✅ | plan_gate_blocks + 状态机表(执行链 M2 启用) |
-| 10 | 并行执行不互相覆盖 | ⏸ M2 | worktree 隔离属执行阶段 |
-| 11 | 验证失败→受限修订 | ⏸ M3 | 验证循环未实现 |
+| 9 | 计划门前无执行 | ✅ | plan_gate_blocks + 状态机表(Executing 唯一入口 = approve_plan) |
+| 10 | 并行执行不互相覆盖 | ✅ mock harness + 真实 git | executor::parallel_same_file_conflicts_are_explicit(真 git worktree) |
+| 11 | 验证失败→受限修订 | ✅ | verification_failure_triggers_bounded_repair + repair_loop_is_bounded |
 | 12 | 既有会话不受影响 | ✅ | npm run verify 全量 + cargo test 全量回归 |
 | 13 | Magpie 配置不变 | ✅ | 只读消费 catalog/completions,零配置写入 |
 | 14 | mock/live 明确区分 | ✅ | ModelClient trait 双实现;live 冒烟未跑(见 §5) |
-| 15 | 认证/预算/权限失败上浮 | ✅ 部分 | 预算终态+worker 错误进消息流;引擎未就绪有引导 |
+| 15 | 认证/预算/权限失败上浮 | ✅ 部分 | 预算终态+worker 错误进消息流;引擎未就绪有引导;危险命令拦截为 needs-human |
 
 ## 5. live 冒烟(未执行,待环境)
 
