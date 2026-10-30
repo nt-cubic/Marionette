@@ -322,6 +322,36 @@ icacls D:\Apps\Marionette /setintegritylevel (OI)(CI)Medium
 - 口径与实测数据另见 `docs/CURRENT.md`「交付卡（每轮改动的口径）」；回归用例
   `npx tsx scripts/verify-turn-delivery.mts` + `cargo test --bin marionette git_service`。
 
+## 资源优化批（2026-10-30：引擎内存 / WebView2 挂起 / dist 瘦身）
+
+体积与内存的**实测账**（完整推导见当日会话，数字按 magpie v0.1.1877）：发布 exe = 引擎
+UPX 载荷 15.4MB（UPX/xz/xz+BCJ 三个压缩器实测打平，**这是熵极限，别再试压缩器**）+
+壳与 dist 的 UPX 压缩。空闲进程树 ≈ 主进程 55.8MB private + WebView2 六进程 ~243MB +
+magpie 120–160MB——前两个是「运行时入场费」，调不掉，能动的杠杆全在本批：
+
+1. **引擎内存**（`engine.rs::spawn_serve`）：注入 `GOMEMLIMIT=128MiB`（Go 软上限，
+   用户自设不覆盖），空闲 private 从 ~160 往 ~100 压；同点 `assign_child_to_kill_job`
+   把 magpie 挂进 **Job Object（kill-on-close）**——崩溃/强杀后不再留孤儿 magpie
+   （实测孤儿各 ~100-160MB 且要几分钟才自退）。沙箱把本进程收编进别的 job 时
+   Assign 会失败，只记 warn 不致命。
+2. **WebView2 挂起**（vendor/wry 补丁 #3/#4，细节 `vendor/wry/MARIONETTE-PATCH.md`）：
+   `set_visible(false)` 追加 `TrySuspend`（隐藏时释放 ~150-250MB renderer 内存）、
+   `set_visible(true)` 与 `focus()` 解除。**红线：tauri 的 `window.hide()/show()` 只走
+   tao 层、不碰 wry 的 set_visible**——所以每条隐藏/唤醒路径都必须**成对**补 webview 级
+   调用：前端 `getCurrentWebview().hide()/show()`（dockMode 兜底 hide、detachedWindow
+   的 `withDetachedWebview`、App 的 merge-back show），Rust `win.as_ref().show()`
+   （shell_integration 二次启动交接）。**漏掉 show 半边 = 唤醒后白屏窗口**，新增加
+   show 路径时先想到这条。capabilities 已加 `core:webview:allow-webview-show/hide`。
+   贴边窄条**永不触发挂起**（窗口停在屏外是 visible，DOM mouseenter 靠它活着）。
+   创建时统一 `MemoryUsageLevel=Low`（逃生门 env `MARIONETTE_WEBVIEW_MEM=NORMAL`）。
+3. **dist 瘦身**（19MB → ~11MB）：`MdShikiCode.tsx` 从全量 `import("shiki")`（317 门
+   语言 12.2MB）换成**精选 36 门语法表 + `createJavaScriptRegexEngine`**（oniguruma
+   wasm 622KB 一并省掉；JS 引擎略慢，但 200ms 防抖 + 120 块缓存兜住）。**加语言 =
+   改 `LANG_LOADERS` 表**（grammar 自带别名 sh/py 免费注册；额外别名进 `LANG_ALIASES`），
+   表外语言回落纯文本，行为与旧版一致。**mermaid 不裁**：v12 的 core 在 parse/render
+   里无条件注册全部图表懒加载器，无官方按需入口，深路径 DIY 对升级太脆——4.6MB
+   mermaid 全家桶保留（UPX 后 ~1MB）。katex/音效不动。
+
 ## DeepSeek Harness 接入（@openma/deepseek-harness-acp，2026-10-19 起）
 
 Marionette 的 DSH agent 走 `@openma/deepseek-harness-acp`（bin `dsh-acp`），不再用停更的社区适配器
