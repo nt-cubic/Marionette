@@ -279,6 +279,7 @@ pub(crate) mod tests {
             member_status: spec.members.iter().map(|m| (m.id.clone(), MemberRuntimeStatus::Idle)).collect(),
             budget_usage: Default::default(),
             tasks: Vec::new(),
+            verify_attempts: 0,
             updated_at: now_millis(),
             error: None,
         };

@@ -178,6 +178,9 @@ pub struct CouncilState {
     /// 执行阶段的任务账目(Executing 起;M1 run 为空数组)。
     #[serde(default)]
     pub tasks: Vec<crate::council::tasks::TaskProgress>,
+    /// 验证-修复回路已用次数(上限 3,任务书 §4.3)。
+    #[serde(default)]
+    pub verify_attempts: u32,
     /// epoch 毫秒。
     pub updated_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]

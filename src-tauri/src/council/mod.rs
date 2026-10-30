@@ -21,4 +21,5 @@ pub mod prompts;
 pub mod state;
 pub mod store;
 pub mod types;
+pub mod verify;
 pub mod worker;
