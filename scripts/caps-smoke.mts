@@ -70,7 +70,9 @@ check("mode chip defaults to build, which is where Grok actually starts", () => 
 
 check("effort survives having no config id, and claims no config id", () => {
   const caps = mergeAcpCapabilities("grok-build", grokLive)!;
-  assert.deepEqual(caps.effortOptions.map((o) => o.id), ["high", "medium", "low"]);
+  // max sits on top for bridged/config.toml models, which carry no live
+  // _meta.reasoningEfforts menu; live menus still win for grok's own models.
+  assert.deepEqual(caps.effortOptions.map((o) => o.id), ["max", "high", "medium", "low"]);
   assert.equal(caps.currentEffortId, "high");
   // Both must stay null: there is no config option, and no 0-1 slider.
   assert.equal(caps.effortConfigId, null);

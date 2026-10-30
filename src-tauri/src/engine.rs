@@ -1154,8 +1154,19 @@ fn register_key_providers(exe: &Path) {
                     Some(&name),
                 );
             }
+            Err(error) if error.contains("no provider") => {
+                // 引擎侧本来就没有这个名字——回收已完成，别留在账本里
+                // 每轮重试（曾以 ~1s 频率刷屏 dev.log）。
+                crate::debug_log::append(
+                    "engine",
+                    "info",
+                    "",
+                    "engine provider reclaim: already absent",
+                    Some(&name),
+                );
+            }
             Err(error) => {
-                // 回收失败留在账本里，下次注册时机重试。
+                // 其它失败留在账本里，下次注册时机重试。
                 crate::debug_log::append(
                     "engine",
                     "warn",
@@ -1209,6 +1220,30 @@ fn register_key_providers(exe: &Path) {
     save_registered_ledger(&ledger_path, &kept_ledger);
 }
 
+/// magpie 的 provider id 只收小写字母、数字和横线——发现来源带着主机名形态的
+/// id（`deepseek.com`、`opencode.ai`、`open.bigmodel.cn`），CLI 直接拒收
+/// （"provider id must be lowercase letters, digits and dashes"），于是
+/// `provider set`（不存在）和 `provider add`（id 非法）两头失败，面板永远
+/// 报"来源注册失败，可刷新重试"。slug 化只动引擎侧 id；`name=` 保留可读标题。
+/// 合法 id 过 slug 是恒等变换，账本无缝延续。
+fn provider_id_slug(id: &str) -> String {
+    let mut out = String::with_capacity(id.len());
+    let mut pending_dash = false;
+    for ch in id.chars() {
+        let lower = ch.to_ascii_lowercase();
+        if lower.is_ascii_lowercase() || lower.is_ascii_digit() {
+            if pending_dash && !out.is_empty() {
+                out.push('-');
+            }
+            pending_dash = false;
+            out.push(lower);
+        } else if !out.is_empty() {
+            pending_dash = true;
+        }
+    }
+    out
+}
+
 /// Generic provider definitions discovered in CLI files. A separate ownership
 /// ledger keeps these routes apart from preset registrations and user routes.
 /// Fingerprints stay in memory only; secrets never enter the ledger or logs.
@@ -1225,13 +1260,13 @@ fn sync_sources_at(exe: &Path) -> Vec<String> {
     let mut changed = false;
     for source in &discovery.sources {
         if source.view.issue.is_some() { continue; }
-        let id=&source.view.id;
+        let id=provider_id_slug(&source.view.id);
         let endpoint_key = match source.view.protocol.as_str() { "anthropic" => "anthropic", "responses" => "responses", _ => "url" };
         let mut pairs=vec![format!("{endpoint_key}={}",source.view.endpoint),format!("key={}",source.key),format!("name={}",source.view.label)];
         pairs.push(format!("models={}",source.view.models.iter().map(|m|m.id.as_str()).collect::<Vec<_>>().join(",")));
         for (k,v) in &source.headers { pairs.push(format!("header.{k}={v}")); }
         let fingerprint=Sha256::digest(pairs.join("\n")).to_vec();
-        if fingerprints.get(id)==Some(&fingerprint) && ledger.contains(id) { kept.push(id.clone()); continue; }
+        if fingerprints.get(&id)==Some(&fingerprint) && ledger.contains(&id) { kept.push(id.clone()); continue; }
         let mut args=vec!["provider", "set", id.as_str()];
         args.extend(pairs.iter().map(String::as_str));
         let result=run_magpie_cli(exe,&args).or_else(|_| {
@@ -1240,8 +1275,16 @@ fn sync_sources_at(exe: &Path) -> Vec<String> {
             args.extend(pairs.iter().map(String::as_str));
             run_magpie_cli(exe,&args)
         });
-        if result.is_ok() { fingerprints.insert(id.clone(),fingerprint); kept.push(id.clone()); changed = true; }
-        else { warnings.push(format!("{} 来源注册失败，可刷新重试",source.view.label)); if ledger.contains(id) {kept.push(id.clone());} }
+        match result {
+            Ok(()) => { fingerprints.insert(id.clone(),fingerprint); kept.push(id.clone()); changed = true; }
+            // 种子引擎（精简纯网关）刻意不含 provider CLI——给出可操作指引
+            // 而不是含混的"刷新重试"。装上完整引擎后下一轮同步自动补齐。
+            Err(error) if error.contains("engine seed") => {
+                warnings.push("引擎种子不含来源注册（provider CLI）——在「模型共享」中把引擎更新到完整版后自动注册".into());
+                if ledger.contains(&id) {kept.push(id.clone());}
+            }
+            Err(_) => { warnings.push(format!("{} 来源注册失败，可刷新重试",source.view.label)); if ledger.contains(&id) {kept.push(id.clone());} }
+        }
     }
     // On unreadable source files retain old routes for retry; do not interpret
     // a parse failure as the user deliberately removing their provider.
@@ -1911,10 +1954,18 @@ fn run_magpie_cli_capture(exe: &Path, args: &[&str]) -> Result<String, String> {
         .output()
         .map_err(|e| format!("启动 magpie CLI 失败: {e}"))?;
     if !output.status.success() {
+        // stderr 一起带上——"no provider x" 这类可判别错误靠它（回收对账
+        // 视"不存在"为已回收），也是注册失败时唯一有诊断价值的输出。
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(format!(
-            "magpie {} 退出码 {:?}",
+            "magpie {} 退出码 {:?}{}",
             args.first().unwrap_or(&""),
-            output.status.code()
+            output.status.code(),
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            },
         ));
     }
     String::from_utf8(output.stdout).map_err(|e| format!("magpie 输出不是 UTF-8: {e}"))

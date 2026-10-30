@@ -62,10 +62,15 @@ const SUPPLEMENTS: Record<string, AcpSupplement> = {
     models: [{ id: "grok-4.5", label: "Grok 4.5" }],
     // Grok advertises the *current model's* levels under
     // `models.availableModels[]._meta.reasoningEfforts` — a custom catalog entry
-    // can list all seven tiers (none … max), grok-4.7 lists four. The three
+    // can list all seven tiers (none … max), grok-4.7 lists four. The four
     // below are only a fallback for a harness build that advertises none, so
-    // `mergeAcpCapabilities` lets the live list win.
+    // `mergeAcpCapabilities` lets the live list win. `max` is here because
+    // bridged models (marionette/*) and grok config.toml [model.*] entries
+    // carry no _meta menu at all — without it those models lose their top tier
+    // even when the upstream accepts it (the Rust side passes unknown levels
+    // through verbatim for menu-less models).
     effortOptions: [
+      { id: "max", label: "Max" },
       { id: "high", label: "High" },
       { id: "medium", label: "Medium" },
       { id: "low", label: "Low" },

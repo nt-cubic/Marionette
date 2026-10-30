@@ -69,6 +69,17 @@ func main() {
 			fmt.Println("magpie", version, "· Marionette engine seed (gateway only)")
 			fmt.Println("usage: magpie [serve]   (env MAGPIE_ADDR=127.0.0.1:<port>)")
 			return
+		case "serve":
+			// the one mode this seed exists for
+		default:
+			// Marionette sometimes drives the engine binary as a CLI
+			// (`provider set/add/rm`…). Those live in internal/cli, which
+			// this seed deliberately excludes — answer with a loud error
+			// and a non-zero exit so the caller fails fast. Falling through
+			// to serve here would instead block the caller forever (it
+			// waits for process exit) and squat the gateway port.
+			fmt.Fprintln(os.Stderr, "magpie:", arg, "is not in the Marionette engine seed — update the engine (Marionette model share) for the full CLI")
+			os.Exit(2)
 		}
 	}
 	if _, err := appdir.CheckEnv(); err != nil {
