@@ -363,6 +363,26 @@ magpie 120–160MB——前两个是「运行时入场费」，调不掉，能�
    `catalog.KeepFresh`+`provider.FetchNew` 仍在）。用户「更新引擎」装完整版后种子让位。
    **0.5.3 起 release exe ≈ 15.9MB**（壳+dist UPX ~4.7 + 种子 12.0）。
 
+## 2026-10-30 修复批（面板可关 / effort 档位 / 来源注册三连）
+
+1. **「模型与来源」面板刷新期间可关闭**（`ModelLibraryDialog.tsx`）：打开即自动刷新
+   （来源扫描+注册可能好几十秒），旧实现 busy 期间禁掉 backdrop/×/取消——像卡死。
+   现在关闭路径永不因 busy 禁用（fetch 继续跑，React 18 卸载后 setState 是无害 no-op）。
+2. **grok-build 档位补 max**（`acpSupplements.ts`）：桥接模型（marionette/*）和 grok
+   config.toml [model.*] 条目没有 `_meta.reasoningEfforts` live 菜单，全走 fallback——
+   旧 fallback 只有 3 档。Rust 侧 `clamp_effort_id` 对无菜单模型**透传**（acp.rs），
+   所以加 max 只需扩 fallback 列表；live 菜单仍然优先，不影响 grok 自家模型。
+3. **Grok `api_backend="messages"` 接入共享**（`model_sources.rs`）：grok 把 Anthropic
+   线协议叫 "messages"，旧映射只认 "anthropic" → 整族模型被跳过。`"anthropic" | "messages"`
+   都归 anthropic 协议，`anthropic=<url>` 的注册形态已实测可用。
+4. **来源注册失败根治**（`engine.rs`）：发现来源带着主机名 id（`deepseek.com`/
+   `opencode.ai`/`open.bigmodel.cn`），magpie CLI 的 provider id 只收小写字母/数字/
+   横线——`provider set`（不存在）与 `provider add`（id 非法）两头失败，面板永远
+   "来源注册失败，可刷新重试"。现在 CLI 前过 `provider_id_slug`（合法 id 恒等，
+   账本无缝）。顺手：`run_magpie_cli` 错误带 stderr；`provider rm` 报 "no provider"
+   视为已回收（曾每秒刷屏 dev.log）；种子引擎拒绝 provider 子命令时给"更新引擎"
+   指引而不是含混重试提示。
+
 ## DeepSeek Harness 接入（@openma/deepseek-harness-acp，2026-10-19 起）
 
 Marionette 的 DSH agent 走 `@openma/deepseek-harness-acp`（bin `dsh-acp`），不再用停更的社区适配器

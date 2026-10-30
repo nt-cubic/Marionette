@@ -64,9 +64,13 @@ export function ModelLibraryDialog({ agents, onClose, onManageSources }: { agent
     catch (e) { setError(String(e)); }
     finally { setBusy(false); }
   }
-  return <div className="project-dialog-backdrop" onClick={busy ? undefined : onClose}>
+  // Closing stays possible while busy: the opening refresh can take a while
+  // (source scans + registrations), and a dialog that can't be dismissed
+  // reads as a hang. The fetch keeps running; a setState after unmount is a
+  // harmless no-op in React 18.
+  return <div className="project-dialog-backdrop" onClick={onClose}>
     <div className="project-dialog model-library-dialog" role="dialog" aria-modal="true" aria-label="模型与来源" onClick={e => e.stopPropagation()}>
-      <div className="project-dialog__header model-library-dialog__header"><span>模型与来源</span><button type="button" className="pill-action pill-action--icon" aria-label="关闭" disabled={busy} onClick={onClose}><X size={16} /></button></div>
+      <div className="project-dialog__header model-library-dialog__header"><span>模型与来源</span><button type="button" className="pill-action pill-action--icon" aria-label="关闭" onClick={onClose}><X size={16} /></button></div>
       <div className="project-dialog__body model-library-dialog__body">
         <p className="model-library-dialog__hint">勾选要显示的模型。同一接口和同一密钥下已配置的模型只列一次，标题注明发现位置。隐藏不会删除配置，也不影响已有会话。</p>
         <div className="model-library-dialog__toolbar"><input type="search" placeholder="搜索来源或模型" aria-label="搜索来源或模型" value={query} onChange={e => setQuery(e.target.value)} /><button type="button" className="project-dialog__cancel" disabled={busy || dirty} title={dirty ? "请先保存显示设置" : "添加或管理来源"} onClick={onManageSources}>管理来源</button><button type="button" className="project-dialog__cancel" disabled={busy} aria-label="重新扫描" title="重新扫描" onClick={() => void refresh()}><RefreshCw size={14} /></button></div>
@@ -131,7 +135,7 @@ export function ModelLibraryDialog({ agents, onClose, onManageSources }: { agent
           </section>;
         })}</div>}
       </div>
-      <div className="project-dialog__actions"><button type="button" className="project-dialog__cancel" disabled={busy} onClick={() => change(DEFAULT_MODEL_PREFERENCES)}>恢复全部显示与默认顺序</button><button type="button" className="project-dialog__cancel" disabled={busy} onClick={onClose}>取消</button><button type="button" className="project-dialog__submit" disabled={busy} onClick={() => void save()}>保存</button></div>
+      <div className="project-dialog__actions"><button type="button" className="project-dialog__cancel" disabled={busy} onClick={() => change(DEFAULT_MODEL_PREFERENCES)}>恢复全部显示与默认顺序</button><button type="button" className="project-dialog__cancel" onClick={onClose}>取消</button><button type="button" className="project-dialog__submit" disabled={busy} onClick={() => void save()}>保存</button></div>
     </div>
   </div>;
 }

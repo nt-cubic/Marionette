@@ -563,7 +563,9 @@ fn discover_at(home: &Path, use_environment: bool) -> Discovery {
                 let protocol = match backend {
                     "" | "chat_completions" => "chat",
                     "responses" => "responses",
-                    "anthropic" => "anthropic",
+                    // grok spells the Anthropic wire protocol "messages"
+                    // (its api_backend vocabulary), not "anthropic".
+                    "anthropic" | "messages" => "anthropic",
                     _ => {
                         out.warnings
                             .push(format!("Grok 模型 {alias} 的协议 {backend} 暂未接入共享"));
