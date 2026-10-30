@@ -382,6 +382,14 @@ magpie 120–160MB——前两个是「运行时入场费」，调不掉，能�
    账本无缝）。顺手：`run_magpie_cli` 错误带 stderr；`provider rm` 报 "no provider"
    视为已回收（曾每秒刷屏 dev.log）；种子引擎拒绝 provider 子命令时给"更新引擎"
    指引而不是含混重试提示。
+5. **来源模型清单 live 化**（`engine.rs`，同日）：旧注册把发现时的模型清单**钉死**
+   （`models=`），中央中转（opencode.ai 免费池、openrouter `:free`）新模型永远
+   进不来——grok 里只剩老快照。现在注册不带 `models=`（add 自动抓厂商 live
+   列表），已钉住的来源经 `provider refresh` → `provider models <id> all` 迁移到
+   全量 live 语义（**顺序不能反**：`all` 暴露的是最近一次抓取的清单；refresh
+   失败保持旧列表）。手动面板刷新全量 force；引擎拉起等自动链路每来源 6h 一
+   次（`maybe_refresh_source_live`，进程重启首轮必刷）。语义均经本地假厂商服务
+   实测（sandbox：钉死 add→refresh 不露新、no-picks add→live 全露、all 解钉）。
 
 ## DeepSeek Harness 接入（@openma/deepseek-harness-acp，2026-10-19 起）
 
