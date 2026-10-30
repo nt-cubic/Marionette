@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { TriangleAlert } from "lucide-react";
 import { DialogShell } from "./DialogShell";
+import { useT } from "../lib/i18n";
 
 type ConfirmDialogProps = {
   /** Dialog title, e.g. "删除对话" */
@@ -26,12 +27,15 @@ export function ConfirmDialog({
   title,
   itemName,
   description,
-  confirmLabel = "删除",
-  cancelLabel = "取消",
+  confirmLabel,
+  cancelLabel,
   danger = true,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
+  const t = useT();
+  const confirmText = confirmLabel ?? t("common.delete");
+  const cancelText = cancelLabel ?? t("common.cancel");
   const cancelRef = useRef<HTMLButtonElement>(null);
 
   // Focus "取消" by default so Enter doesn't accidentally delete.
@@ -83,7 +87,7 @@ export function ConfirmDialog({
             className="project-dialog__cancel"
             onClick={onCancel}
           >
-            {cancelLabel}
+            {cancelText}
           </button>
           <button
             type="button"
@@ -94,7 +98,7 @@ export function ConfirmDialog({
             }
             onClick={onConfirm}
           >
-            {confirmLabel}
+            {confirmText}
           </button>
         </div>
     </DialogShell>

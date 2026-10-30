@@ -30,7 +30,7 @@ import { engineQuota as fetchEngineQuota, type EngineQuotaEntry } from "../lib/a
 import { TELEGRAM_COMMAND_EVENT, telegramRemoteResult, type TelegramCommand } from "../lib/api";
 import { invalidateBridgeModels } from "../lib/bridge";
 import { useLatestCallback } from "../lib/useLatestCallback";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, killAcpTerminal, listAcpTerminals, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, quitApp, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID } from "../lib/api";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, killAcpTerminal, listAcpTerminals, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, quitApp, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, setUiLocale, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID } from "../lib/api";
 import {
   bindDetachedWindowReaper,
   DETACHED_HIDDEN_EVENT,
@@ -222,6 +222,7 @@ import { SplitDropOverlay } from "../components/SplitDropOverlay";
 import { WindowControls } from "../components/WindowControls";
 import { parseAskQuestionPrompt } from "../lib/askQuestion";
 import { initScrollbarAutoHide } from "../lib/scrollbarAutoHide";
+import { applyLocale, getLocale, nextLocale, useLocale, useT } from "../lib/i18n";
 import { nextTheme, parseStoredTheme, themeColorScheme, type ThemeMode } from "../lib/theme";
 
 const LEFT_PANEL_MIN = 180;
@@ -460,6 +461,8 @@ function isChatgptUsageModel(modelId: string | null | undefined): boolean {
 }
 
 export function App() {
+  // UI language: the i18n store owns the truth; `t` re-renders on switch.
+  const t = useT();
   const [availableProjects, setAvailableProjects] = useState<Project[]>(projects);
   const [availableAgents, setAvailableAgents] = useState(agents);
   const [availableSessions, setAvailableSessions] = useState<Session[]>(sessions);
@@ -753,9 +756,8 @@ export function App() {
         [sessionId]: {
           sessionId,
           severity: "warning",
-          title: "Agent 已 60 秒无任何输出",
-          description:
-            "消息已发出,但没有收到任何回传事件。可先点停止再重发;若反复出现,重启该会话或 agent。",
+          title: t("app.silenceTitle"),
+          description: t("app.silenceDesc"),
         },
       }));
     }, 60_000);
@@ -858,8 +860,8 @@ export function App() {
         setAuthHintFor(
           agentId,
           spec.login
-            ? `需要登录 — 点 Sign in，或终端执行 \`${spec.loginCommand}\``
-            : `需要登录 — 终端执行 \`${spec.loginCommand}\``
+            ? t("app.needLoginSignIn", { cmd: spec.loginCommand })
+            : t("app.needLoginTerminal", { cmd: spec.loginCommand })
         );
         return;
       }
@@ -868,8 +870,8 @@ export function App() {
         setAuthHintFor(
           agentId,
           grok
-            ? "版本过低 — 点「更新」运行 `grok update`，完成后新建会话。"
-            : classified.actionHint || "版本过低 — 按提示更新 CLI 后新建会话。",
+            ? t("app.versionTooLowGrok")
+            : classified.actionHint || t("app.versionTooLow"),
           "upgrade"
         );
       }
@@ -1015,6 +1017,12 @@ export function App() {
   useEffect(() => {
     void syncBackgroundMode();
     return subscribeDockPrefs((prefs) => setAutoHideOnClose(prefs.autoHideOnClose));
+  }, []);
+
+  // Mirror the UI language to the Rust side at launch too (first-run
+  // detection happens in JS; every later switch pushes from applyLocale).
+  useEffect(() => {
+    void setUiLocale(getLocale());
   }, []);
 
   // Edge dock stage 3: memo count for the strip's badge (fetch once; the
@@ -1523,7 +1531,7 @@ export function App() {
             assetName: null,
             assetUrl: null,
             notes: null,
-            note: "无法检查更新（非桌面运行时或请求失败）",
+            note: t("app.updateCheckFailed"),
           });
           return;
         }
@@ -1534,9 +1542,9 @@ export function App() {
         // Manual check with no update: brief status banner, auto-dismiss.
         const note =
           info.note ??
-          `已是最新版本 ${info.currentVersion}${
+          `${t("app.upToDate", { version: info.currentVersion })}${
             info.latestVersion && info.latestVersion !== info.currentVersion
-              ? `（远端 ${info.latestVersion}）`
+              ? t("app.upToDateRemote", { version: info.latestVersion })
               : ""
           }`;
         setAppUpdate({
@@ -2182,7 +2190,7 @@ export function App() {
         if (meta && !meta.finished) {
           if (meta.idleTimer) clearTimeout(meta.idleTimer);
           meta.idleTimer = setTimeout(() => {
-            finalizeDelegateChildRef.current(payload.sessionId, "timeout", "600s 无事件");
+            finalizeDelegateChildRef.current(payload.sessionId, "timeout", t("app.noEvents600s"));
           }, DELEGATE_IDLE_TIMEOUT_MS);
         }
       }
@@ -2220,7 +2228,7 @@ export function App() {
             finalizeDelegateChildRef.current(
               payload.sessionId,
               "cancelled",
-              "应用关闭时中断或进程退出",
+              t("app.interruptedOnClose"),
             );
           } else if (payload.kind === "error" || turnStopReason(payload.data) === "error") {
             finalizeDelegateChildRef.current(
@@ -2256,7 +2264,7 @@ export function App() {
         if (title) applyAgentSessionTitle(payload.sessionId, title);
         setSessionNotices((current) => {
           const held = current[payload.sessionId];
-          if (!held || held.title !== "Agent 已退出") return current;
+          if (!held || held.title !== t("app.agentExited")) return current;
           const next = { ...current };
           delete next[payload.sessionId];
           return next;
@@ -2624,7 +2632,9 @@ export function App() {
         }
         setSessionNotices((current) => {
           const held = current[payload.sessionId];
-          if (!held || !held.title.startsWith("正在重试")) return current;
+          // Titles come from acpmeta.* — match both locales' prefixes (notices
+          // can predate a mid-session language switch).
+          if (!held || !(held.title.startsWith("正在重试") || held.title.startsWith("Retrying"))) return current;
           const next = { ...current };
           delete next[payload.sessionId];
           return next;
@@ -2665,8 +2675,8 @@ export function App() {
             [sid]: {
               sessionId: sid,
               severity: "error",
-              title: "Agent 已退出",
-              description: `${detail}。点输入框或发一条消息会重新拉起，也可以开新会话。`,
+              title: t("app.agentExited"),
+              description: t("app.agentExitedDesc", { detail }),
             },
           }));
         }
@@ -2876,7 +2886,7 @@ export function App() {
             (current) =>
               patchPromptEvent(current, requestId, {
                 status: timedOut ? "timeout" : "answered",
-                decisionLabel: timedOut ? "已超时" : "已在其他窗口回复",
+                decisionLabel: timedOut ? t("app.timedOut") : t("app.answeredElsewhere"),
               }),
             { publish: true },
           );
@@ -2934,7 +2944,7 @@ export function App() {
             (current) =>
               patchPromptEvent(current, requestId, {
                 status: timedOut ? "timeout" : "answered",
-                decisionLabel: timedOut ? "已超时" : "已在其他窗口回复",
+                decisionLabel: timedOut ? t("app.timedOut") : t("app.answeredElsewhere"),
               }),
             { publish: true },
           );
@@ -2997,7 +3007,7 @@ export function App() {
             (current) =>
               patchPromptEvent(current, requestId, {
                 status: timedOut ? "timeout" : "answered",
-                decisionLabel: timedOut ? "已超时" : "已在其他窗口回复",
+                decisionLabel: timedOut ? t("app.timedOut") : t("app.answeredElsewhere"),
               }),
             { publish: true },
           );
@@ -3245,7 +3255,7 @@ export function App() {
       const session = sessionsRef.current.find((s) => s.id === sessionId);
       if (!session || !canPark(session)) return;
       const midTurn = session.status === "running" || session.status === "starting";
-      const label = session.label?.trim() || "会话";
+      const label = session.label?.trim() || t("app.sessionFallback");
 
       if (midTurn) {
         streamSuppressedRef.current.add(sessionId);
@@ -3256,7 +3266,7 @@ export function App() {
 
       parkSessionProcess(sessionId, {
         midTurnBanner: midTurn
-          ? `**已挂起。**\n\n${label} 当时正在跑，我中断了它并结束了 agent 进程。说出口的部分留在上面。对话记录都在 —— 下次发消息会自动重新拉起进程，并把这段历史接上去。`
+          ? t("app.parkedBanner", { label })
           : undefined,
         debugSummary: midTurn ? "suspended a working dialog" : "suspended idle dialog",
       });
@@ -3385,7 +3395,7 @@ export function App() {
       // the transcript reloaded) — bail before creating a dialog.
       if (forkCutIndex(events, anchor) < 0) return;
 
-      const label = `${source.label} · 分叉`;
+      const label = t("app.forkLabel", { label: source.label });
       const created =
         source.projectId === CHAT_PROJECT_ID
           ? await createChatSession(source.agentId, label, source.cwd || null)
@@ -3678,8 +3688,8 @@ export function App() {
           agentId,
           probe.message ||
             (spec.login
-              ? `需要登录 — 点 Sign in，或终端执行 \`${spec.loginCommand}\``
-              : `需要登录 — 终端执行 \`${spec.loginCommand}\``)
+              ? t("app.needLoginSignIn", { cmd: spec.loginCommand })
+              : t("app.needLoginTerminal", { cmd: spec.loginCommand }))
         );
       }
       // "unknown" (e.g. CodeBuddy OS-keyring) keeps whatever banner is up.
@@ -3729,8 +3739,8 @@ export function App() {
       setAuthHintFor(
         agentId,
         result?.started
-          ? "已打开 `grok update`。完成后新建会话，新版本才会生效。"
-          : result?.message || "无法启动更新。请在终端执行 `grok update`。",
+          ? t("app.updateLaunched")
+          : result?.message || t("app.updateLaunchFailed"),
         "upgrade"
       );
     },
@@ -4229,6 +4239,7 @@ export function App() {
     return () => window.clearInterval(id);
   }, []);
 
+  const locale = useLocale();
   const backgroundTasks = useMemo(() => {
     void backgroundTick;
     const queuedSends = new Map<string, number>();
@@ -4240,7 +4251,7 @@ export function App() {
     for (const session of availableSessions) {
       sessionLabels.set(session.id, session.label?.trim() || "Session");
       if (queuedSends.has(session.id)) {
-        queuedSendLabels.set(session.id, session.label?.trim() || "排队发送");
+        queuedSendLabels.set(session.id, session.label?.trim() || t("app.queuedSendFallback"));
       }
     }
     const liveSubagents: import("../lib/backgroundTasks").LiveSubagentSnapshot[] = [];
@@ -4280,7 +4291,7 @@ export function App() {
       planSessionId: planApproval?.sessionId,
       sessionLabels,
     });
-  }, [backgroundTick, acpTerminals, availableSessions, currentSessionId, permissionPrompt, askPrompt, planApproval]);
+  }, [backgroundTick, acpTerminals, availableSessions, currentSessionId, permissionPrompt, askPrompt, planApproval, locale]);
 
   const handleKillBackgroundTerminal = useCallback((terminalId: string) => {
     void killAcpTerminal(terminalId).catch(() => undefined);
@@ -4636,7 +4647,7 @@ export function App() {
             ? agentId
             : (availableAgents[0]?.id ?? agents[0]!.id);
         const cwd = defaultFolderPath || (await getDefaultFolder());
-        const session = await createChatSession(resolvedAgentId, "新对话", cwd || null, opts?.origin);
+        const session = await createChatSession(resolvedAgentId, t("app.newConversation"), cwd || null, opts?.origin);
         if (!session) return undefined;
         if (!defaultFolderPath && session.cwd) {
           setDefaultFolderPath(session.cwd);
@@ -5920,13 +5931,13 @@ export function App() {
         setAuthHintFor(
           agentId,
           result?.message ||
-            `无法启动登录。请在终端执行 \`${spec.loginCommand}\`。`
+            t("app.loginLaunchFailed", { cmd: spec.loginCommand })
         );
         return;
       }
       setAuthHintFor(
         agentId,
-        result.message || "请在浏览器/终端完成登录，然后回到这里（会自动检测并重连）。"
+        result.message || t("app.loginPendingHint")
       );
       if (authPollRef.current) {
         clearInterval(authPollRef.current);
@@ -6622,7 +6633,7 @@ export function App() {
       if (!meta || meta.finished) return;
       if (meta.idleTimer) clearTimeout(meta.idleTimer);
       meta.idleTimer = setTimeout(() => {
-        finalizeDelegateChild(childId, "timeout", "600s 无事件");
+        finalizeDelegateChild(childId, "timeout", t("app.noEvents600s"));
       }, DELEGATE_IDLE_TIMEOUT_MS);
     },
     [finalizeDelegateChild],
@@ -6652,7 +6663,7 @@ export function App() {
             agentId,
             status: "failed" as const,
             summary: "",
-            error: `Agent ${agentId} 不可用或非 ACP`,
+            error: t("app.agentUnavailable", { id: agentId }),
             createdAt: new Date().toISOString(),
           },
         ], { publish: true });
@@ -6683,7 +6694,7 @@ export function App() {
               agentId,
               status: "failed" as const,
               summary: "",
-              error: "agent 未安装",
+              error: t("app.agentNotInstalled"),
               createdAt: new Date().toISOString(),
             },
           ], { publish: true });
@@ -6820,7 +6831,7 @@ export function App() {
             agentId: parsed.agentId,
             agentLabel,
             modelId: parsed.modelId,
-            prompt: `（排队中）${parsed.prompt}`,
+            prompt: `${t("app.queuedPromptPrefix")}${parsed.prompt}`,
             createdAt: new Date().toISOString(),
           },
         ], { publish: true });
@@ -6973,7 +6984,7 @@ export function App() {
     });
     scheduledSendsRef.current.set(sid, queue);
     setQueuedStripTick((t) => t + 1);
-    renameSessionFromText(sid, composed || imageAttachments[0]?.name || "定时发送");
+    renameSessionFromText(sid, composed || imageAttachments[0]?.name || t("app.scheduledSend"));
     pushDebug({
       sessionId: sid,
       level: "info",
@@ -6991,13 +7002,13 @@ export function App() {
       .map((f) => `- ${badge(f.changeType)} ${f.path}`)
       .join("\n");
     const parts = [
-      "请整理当前工作区并推送到远端：只提交与本项目相关的改动。",
-      "先审一遍改动列表：构建产物、缓存、密钥、本地配置、日志、依赖目录、临时文件等与项目无关或不该进仓库的内容，写入或更新 `.gitignore`，不要把它们 commit 进去。",
-      "只 stage 真正属于本项目的源码/配置/文档等改动；写清晰的 commit message，完成 commit，再 push。",
-      "不要改业务逻辑代码；若 push 需要设置 upstream，使用合理的 `-u`。拿不准是否该忽略时先问我，不要瞎加。",
+      t("app.commitIntro"),
+      t("app.commitReview"),
+      t("app.commitStage"),
+      t("app.commitGuard"),
     ];
-    if (gitBranch) parts.push(`当前分支：\`${gitBranch}\``);
-    parts.push("", "当前改动文件：", list);
+    if (gitBranch) parts.push(t("app.commitBranch", { branch: gitBranch }));
+    parts.push("", t("app.commitFileList"), list);
     void handleSend(parts.join("\n"));
   };
 
@@ -7511,7 +7522,7 @@ export function App() {
       const messageId = typeof payload.messageId === "number" ? payload.messageId : null;
       const session = sessionsRef.current.find((s) => s.id === sid);
       if (!session) {
-        void telegramAck(false, "会话不存在（可能已被删除）", messageId, sid);
+        void telegramAck(false, t("app.tgSessionMissing"), messageId, sid);
         return;
       }
       // 先把目标切到前台是给用户看的（电脑端能看到手机驱动的对话）；
@@ -7530,7 +7541,7 @@ export function App() {
             sessionsRef.current.find((s) => s.id === sid)?.status === "error";
           void telegramAck(
             !failed,
-            failed ? "发送失败，详情在电脑上看" : null,
+            failed ? t("app.tgSendFailed") : null,
             messageId,
             sid,
           );
@@ -7571,7 +7582,7 @@ export function App() {
               // 的模型/档位），远程选中的项在返回的会话上覆盖落盘。
               const session = await telegramCreateChatSessionRef.current(payload.agentId);
               if (!session) {
-                await telegramRemoteResult("没建成——聊天会话创建失败，详情在电脑上看");
+                await telegramRemoteResult(t("app.tgChatCreateFailed"));
                 return;
               }
               if (modelId || modeId) {
@@ -7595,7 +7606,7 @@ export function App() {
                 );
                 void updateSessionPrefs(session.id, merged).catch(() => undefined);
               }
-              await telegramRemoteResult(`✅ 已新建 · ${session.label}`, session.id);
+              await telegramRemoteResult(t("app.tgCreated", { label: session.label }), session.id);
             } else {
               const session = await telegramCreateProjectSessionRef.current(
                 payload.projectId || "",
@@ -7612,14 +7623,14 @@ export function App() {
                   : null,
               );
               if (!session) {
-                await telegramRemoteResult("没建成——会话创建失败，详情在电脑上看");
+                await telegramRemoteResult(t("app.tgSessionCreateFailed"));
                 return;
               }
-              await telegramRemoteResult(`✅ 已新建 · ${session.label}`, session.id);
+              await telegramRemoteResult(t("app.tgCreated", { label: session.label }), session.id);
             }
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            await telegramRemoteResult(`没建成：${message}`);
+            await telegramRemoteResult(t("app.tgCreateError", { message }));
           }
           return;
         }
@@ -7627,7 +7638,7 @@ export function App() {
           const sid = payload.sessionId;
           const row = sessionsRef.current.find((s) => s.id === sid);
           if (!row) {
-            await telegramRemoteResult("会话不存在（可能已被删除）");
+            await telegramRemoteResult(t("app.tgSessionMissing"));
             return;
           }
           // 偏好先落盘：下一次 performSend 的配置回推会带上它。
@@ -7643,7 +7654,7 @@ export function App() {
             }
           }
           await telegramRemoteResult(
-            `✅ [${row.label}] 模型已切换 · ${payload.modelLabel || payload.modelId}`,
+            t("app.tgModelSwitched", { label: row.label, model: payload.modelLabel || payload.modelId }),
           );
         }
       })();
@@ -8092,7 +8103,7 @@ export function App() {
           onDetailsVisibleChange={setDetailsVisible}
           onSubtaskStop={(childId) => {
             void cancelAcpSession(childId).catch(() => undefined);
-            finalizeDelegateChildRef.current(childId, "cancelled", "用户停止");
+            finalizeDelegateChildRef.current(childId, "cancelled", t("app.stoppedByUser"));
           }}
           onSubtaskQuote={(summary) => {
             const block = `> ${summary.replace(/\n/g, "\n> ").slice(0, 2000)}\n\n`;
@@ -8112,7 +8123,7 @@ export function App() {
             void handleDelegate(session.id, projectId, {
               agentId: startEv.agentId,
               modelId: startEv.modelId,
-              prompt: startEv.prompt.replace(/^（排队中）/, ""),
+              prompt: startEv.prompt.replace(t("app.queuedPromptPrefix"), ""),
             });
           }}
           streamPrompt={{
@@ -8184,21 +8195,21 @@ export function App() {
         {queuedSends.length > 0 && (() => {
           const preview = queuedSends
             .map((q) => (q.composed.length > 36 ? `${q.composed.slice(0, 36)}…` : q.composed))
-            .join("、");
+            .join(t("common.listSep"));
           return (
-            <div className="queued-strip" title="插话 — 打断当前回合后立即发送">
-              <span className="queued-strip__badge">插话 ×{queuedSends.length}</span>
+            <div className="queued-strip" title={t("app.interjectTitle")}>
+              <span className="queued-strip__badge">{t("app.interjectCount", { n: queuedSends.length })}</span>
               <span className="queued-strip__text">{preview}</span>
               <button
                 type="button"
                 className="queued-strip__dismiss"
-                title="取消插话"
+                title={t("app.cancelInterject")}
                 onClick={() => {
                   pendingSendsRef.current.delete(session.id);
                   setQueuedStripTick((t) => t + 1);
                 }}
               >
-                取消
+                {t("common.cancel")}
               </button>
             </div>
           );
@@ -8211,21 +8222,21 @@ export function App() {
           };
           const preview = scheduledSends
             .map((item) => `${fmt(item.atMs)} ${item.composed.length > 28 ? `${item.composed.slice(0, 28)}…` : item.composed}`)
-            .join("、");
+            .join(t("common.listSep"));
           return (
-            <div className="queued-strip" title="定时发送 — 到点自动发出">
-              <span className="queued-strip__badge">定时 ×{scheduledSends.length}</span>
+            <div className="queued-strip" title={t("app.scheduledTitle")}>
+              <span className="queued-strip__badge">{t("app.scheduledCount", { n: scheduledSends.length })}</span>
               <span className="queued-strip__text">{preview}</span>
               <button
                 type="button"
                 className="queued-strip__dismiss"
-                title="取消定时发送"
+                title={t("app.cancelSchedule")}
                 onClick={() => {
                   scheduledSendsRef.current.delete(session.id);
                   setQueuedStripTick((t) => t + 1);
                 }}
               >
-                取消
+                {t("common.cancel")}
               </button>
             </div>
           );
@@ -8463,16 +8474,16 @@ export function App() {
                 ? [
                     {
                       id: "new-session",
-                      label: "在当前项目新建对话",
+                      label: t("palette.newSessionInProject"),
                       hint: availableProjects.find((p) => p.id === currentProjectId)?.name,
                       run: () => void createSessionForProject(currentProjectId),
                     },
                   ]
                 : []),
-              { id: "new-chat", label: "新建聊天", run: () => void handleCreateChatSession() },
+              { id: "new-chat", label: t("palette.newChat"), run: () => void handleCreateChatSession() },
               {
                 id: "add-project",
-                label: "添加项目…",
+                label: t("palette.addProject"),
                 run: () => {
                   setProjectDialogOpen(true);
                   setProjectError("");
@@ -8482,7 +8493,7 @@ export function App() {
                 ? [
                     {
                       id: "reopen-tab",
-                      label: "重新打开刚关闭的标签",
+                      label: t("palette.reopenTab"),
                       hint: "Ctrl Shift T",
                       run: () => {
                         const id = lastClosedTabsRef.current[0];
@@ -8497,12 +8508,12 @@ export function App() {
                 : []),
               {
                 id: "toggle-left",
-                label: leftCollapsed ? "展开左侧栏" : "收起左侧栏",
+                label: leftCollapsed ? t("palette.expandLeft") : t("palette.collapseLeft"),
                 run: () => setLeftCollapsed((value) => !value),
               },
               {
                 id: "theme",
-                label: "切换主题",
+                label: t("palette.toggleTheme"),
                 run: () =>
                   withViewTransition(() => {
                     const next = nextTheme(theme);
@@ -8511,22 +8522,28 @@ export function App() {
                   }),
               },
               {
+                id: "language",
+                // Bilingual label so the entry stays searchable in both locales.
+                label: "切换语言 / Switch language",
+                run: () => void applyLocale(nextLocale(getLocale())),
+              },
+              {
                 id: "dock-edge",
-                label: dockActive ? "解除贴边" : "贴边收起",
-                hint: dockActive ? "恢复普通窗口" : "也可以把窗口拖到屏幕左右边缘",
+                label: dockActive ? t("palette.undock") : t("palette.dockToEdge"),
+                hint: dockActive ? t("palette.undockHint") : t("palette.dockToEdgeHint"),
                 run: shelfStable.onDockToEdge,
               },
               {
                 id: "auto-hide-close",
                 label: autoHideOnClose
-                  ? "关闭窗口时：收起到边缘（点此改为退出）"
-                  : "关闭窗口时：退出（点此改为收起到边缘）",
+                  ? t("palette.closeBehaviorHide")
+                  : t("palette.closeBehaviorExit"),
                 run: shelfStable.onToggleAutoHideClose,
               },
               {
                 id: "quit-app",
-                label: "退出 Marionette",
-                hint: "停止引擎与全部会话",
+                label: t("palette.quitApp"),
+                hint: t("palette.quitAppHint"),
                 run: shelfStable.onQuitApp,
               },
             ]}
@@ -8587,18 +8604,18 @@ export function App() {
                   <button
                     className="editor-tab__select"
                     type="button"
-                    title="收纳盒"
+                    title={t("app.memoBox")}
                     onClick={() => setMemoActive(true)}
                   >
                     <Inbox size={12} />
-                    <span>收纳盒</span>
+                    <span>{t("app.memoBox")}</span>
                     {memoCount > 0 && <b className="editor-tab__memo-count">{memoCount}</b>}
                   </button>
                   <button
                     className="pill-action pill-action--icon pill-action--sm editor-tab__close"
                     type="button"
-                    title="Close 收纳盒"
-                    aria-label="Close 收纳盒"
+                    title={t("app.closeMemoBox")}
+                    aria-label={t("app.closeMemoBox")}
                     onClick={() => {
                       setMemoOpen(false);
                       setMemoActive(false);
@@ -8631,7 +8648,7 @@ export function App() {
               aria-label={leftCollapsed ? "Show projects and sessions" : "Hide projects and sessions"}
               title={
                 leftCollapsed && doneUnreadIds.size > 0
-                  ? "有对话已完成任务 · 打开侧边栏查看"
+                  ? t("app.doneUnreadHint")
                   : leftCollapsed
                     ? "Show projects and sessions"
                     : "Hide projects and sessions"
@@ -8654,7 +8671,7 @@ export function App() {
           {memoActive && !dockActive && !IS_DETACHED_WINDOW ? (
             // 收纳盒 as a tab page: only the conversation-flow column switches
             // (shelf and context panel stay); no composer for this page.
-            <div className="memo-tab-page" aria-label="收纳盒">
+            <div className="memo-tab-page" aria-label={t("app.memoBox")}>
               {renderMemoBox(() => {
                 setMemoOpen(false);
                 setMemoActive(false);
@@ -8796,11 +8813,11 @@ export function App() {
         <div className="update-banner" role="status">
           <span>
             {appUpdate.updateAvailable
-              ? `新版本 ${appUpdate.latestVersion}${
-                  appUpdate.currentVersion ? `（当前 ${appUpdate.currentVersion}）` : ""
+              ? `${t("app.updateNew", { version: appUpdate.latestVersion })}${
+                  appUpdate.currentVersion ? t("app.updateCurrentSuffix", { version: appUpdate.currentVersion }) : ""
                 }`
               : appUpdate.note ||
-                `已是最新版本 ${appUpdate.currentVersion || ""}`.trim()}
+                t("app.upToDate", { version: appUpdate.currentVersion || "" }).trim()}
           </span>
           <div className="update-banner__actions">
             {appUpdate.updateAvailable && appUpdate.releaseUrl && (
@@ -8813,7 +8830,7 @@ export function App() {
                   void openExternal(appUpdate.releaseUrl!);
                 }}
               >
-                说明
+                {t("app.updateDetails")}
               </a>
             )}
             {appUpdate.updateAvailable && (
@@ -8823,7 +8840,7 @@ export function App() {
                 disabled={appUpdateBusy}
                 onClick={handleUpdateAndRelaunch}
               >
-                {appUpdateBusy ? "下载中…" : "下载并重启"}
+                {appUpdateBusy ? t("app.downloading") : t("app.downloadAndRestart")}
               </button>
             )}
             <button
@@ -8832,7 +8849,7 @@ export function App() {
               disabled={appUpdateBusy}
               onClick={() => setAppUpdate(null)}
             >
-              {appUpdate.updateAvailable ? "稍后" : "关闭"}
+              {appUpdate.updateAvailable ? t("app.later") : t("common.close")}
             </button>
           </div>
         </div>
@@ -8842,8 +8859,8 @@ export function App() {
           <div className="project-dialog" role="dialog" aria-modal="true" aria-labelledby="path-grant-title">
             <div className="project-dialog__header">
               <div>
-                <strong id="path-grant-title">项目外路径</strong>
-                <span>需要先授权，agent 才能访问这些文件夹</span>
+                <strong id="path-grant-title">{t("app.pathGrantTitle")}</strong>
+                <span>{t("app.pathGrantSubtitle")}</span>
               </div>
             </div>
             <ul className="path-grant__list">
@@ -8855,9 +8872,9 @@ export function App() {
               ))}
             </ul>
             <p className="path-grant__hint">
-              访问范围在会话启动时就定死了；子 agent 的系统权限弹窗
-              <strong>不会传回 Marionette</strong>，不授权直接发只会卡住。
-              点「授权并发送」会把文件夹记入本项目，并在需要时重连 agent。
+              {t("app.pathGrantHintA")}
+              <strong>{t("app.pathGrantNoRelay")}</strong>
+              {t("app.pathGrantHintB")}
             </p>
             <div className="project-dialog__actions">
               <button
@@ -8866,7 +8883,7 @@ export function App() {
                 disabled={pathGrantBusy}
                 onClick={cancelPathGrant}
               >
-                取消发送
+                {t("app.cancelSend")}
               </button>
               <button
                 type="button"
@@ -8874,7 +8891,7 @@ export function App() {
                 disabled={pathGrantBusy}
                 onClick={() => void resolvePathGrant()}
               >
-                {pathGrantBusy ? "授权中…" : "授权并发送"}
+                {pathGrantBusy ? t("app.authorizing") : t("app.authorizeAndSend")}
               </button>
             </div>
           </div>

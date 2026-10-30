@@ -1388,15 +1388,16 @@ fn read_auth_for_write(path: &std::path::Path) -> Result<serde_json::Map<String,
     if !path.is_file() {
         return Ok(serde_json::Map::new());
     }
-    let text = fs::read_to_string(path).map_err(|e| format!("读取 auth.json 失败: {e}"))?;
+    let text = fs::read_to_string(path).map_err(|e| crate::ts!("读取 auth.json 失败: {e}", "Failed to read auth.json: {e}"))?;
     if text.trim().is_empty() {
         return Ok(serde_json::Map::new());
     }
     match serde_json::from_str::<Value>(&text) {
         Ok(Value::Object(obj)) => Ok(obj),
-        Ok(_) => Err("auth.json 顶层不是 JSON 对象 — 已中止，以免覆盖其中的凭证".to_string()),
-        Err(error) => Err(format!(
-            "auth.json 解析失败（{error}）— 已中止，以免覆盖其他服务商的凭证"
+        Ok(_) => Err(crate::ts!("auth.json 顶层不是 JSON 对象 — 已中止，以免覆盖其中的凭证", "auth.json top level is not a JSON object — aborted to avoid overwriting its credentials")),
+        Err(error) => Err(crate::ts!(
+            "auth.json 解析失败（{error}）— 已中止，以免覆盖其他服务商的凭证",
+            "Failed to parse auth.json ({error}) — aborted to avoid overwriting other providers' credentials"
         )),
     }
 }
@@ -1422,12 +1423,12 @@ fn write_auth_atomic(
     auth: &serde_json::Map<String, Value>,
 ) -> Result<(), String> {
     let json_str = serde_json::to_string_pretty(&Value::Object(auth.clone()))
-        .map_err(|e| format!("序列化 auth.json 失败: {e}"))?;
+        .map_err(|e| crate::ts!("序列化 auth.json 失败: {e}", "Failed to serialize auth.json: {e}"))?;
     let temp_path = temp_sibling(path);
-    fs::write(&temp_path, &json_str).map_err(|e| format!("写入临时文件失败: {e}"))?;
+    fs::write(&temp_path, &json_str).map_err(|e| crate::ts!("写入临时文件失败: {e}", "Failed to write temp file: {e}"))?;
     if let Err(error) = fs::rename(&temp_path, path) {
         let _ = fs::remove_file(&temp_path);
-        return Err(format!("重命名临时文件失败: {error}"));
+        return Err(crate::ts!("重命名临时文件失败: {error}", "Failed to rename temp file: {error}"));
     }
     Ok(())
 }
@@ -1510,8 +1511,9 @@ pub fn write_provider_key_at(
 
     if let Some(existing) = auth.get(provider) {
         if classify_entry(existing) == AuthKind::OAuth && !force {
-            return Err(format!(
-                "`{provider}` 目前是 OAuth 登录。写入 API Key 会覆盖登录凭证，refresh token 无法从本应用恢复。"
+            return Err(crate::ts!(
+                "`{provider}` 目前是 OAuth 登录。写入 API Key 会覆盖登录凭证，refresh token 无法从本应用恢复。",
+                "`{provider}` is currently signed in with OAuth. Writing an API Key would overwrite the login; the refresh token cannot be recovered from this app."
             ));
         }
     }
@@ -1604,9 +1606,9 @@ pub fn upsert_provider_meta(
 ) -> Result<(), String> {
     let id = id.trim().to_ascii_lowercase();
     if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        return Err("Provider id 只能用字母、数字、连字符".into());
+        return Err(crate::ts!("Provider id 只能用字母、数字、连字符", "Provider id may only contain letters, digits, and hyphens"));
     }
-    let path = providers_json_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    let path = providers_json_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Create .marionette failed: {e}"))?;
     }
@@ -1645,7 +1647,7 @@ pub fn upsert_provider_meta(
 /// Remove user catalog meta only (auth.json key is left alone).
 pub fn delete_provider_meta(id: String) -> Result<(), String> {
     let id = id.trim().to_ascii_lowercase();
-    let path = providers_json_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    let path = providers_json_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     if !path.is_file() {
         return Ok(());
     }
@@ -1679,8 +1681,9 @@ pub fn delete_provider_key_at(
         return Err(format!("Provider `{provider}` not found in auth.json"));
     };
     if classify_entry(existing) == AuthKind::OAuth && !force {
-        return Err(format!(
-            "`{provider}` 是 OAuth 登录，删除后只能用 `opencode auth login` 重新登录。"
+        return Err(crate::ts!(
+            "`{provider}` 是 OAuth 登录，删除后只能用 `opencode auth login` 重新登录。",
+            "`{provider}` is an OAuth login; after deleting it you can only sign back in with `opencode auth login`."
         ));
     }
 

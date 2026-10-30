@@ -6,6 +6,7 @@ import {
   type CustomAgentDef,
 } from "../lib/api";
 import type { AgentConfig } from "../lib/types";
+import { useT } from "../lib/i18n";
 
 type CustomAgentDialogProps = {
   agents: AgentConfig[];
@@ -62,6 +63,7 @@ export function CustomAgentDialog({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const t = useT();
   const [manual, setManual] = useState({
     id: "custom-",
     label: "",
@@ -107,20 +109,20 @@ export function CustomAgentDialog({
     const channel = npx ?? uvx;
     if (!channel?.package) {
       setFormError(
-        `${entry.name} 只有 binary 分发，Marionette 不下载安装包。把可执行文件放到 PATH 后用「手动添加」。`,
+        t("customAgent.binaryOnly", { name: entry.name }),
       );
       return;
     }
     let id = safeId(entry.id);
     if (taken(id)) {
       if (builtinIds.has(id)) {
-        setFormError(`${entry.name} 已经是内置 agent（${id}），不用再加。`);
+        setFormError(t("customAgent.builtinAlready", { name: entry.name, id }));
         return;
       }
       id = safeId(`custom-${entry.id}`);
     }
     if (taken(id)) {
-      setFormError(`已经添加过 ${entry.name}。`);
+      setFormError(t("customAgent.alreadyAdded", { name: entry.name }));
       return;
     }
     const cmd = (channel.cmd ?? "").trim() || deriveCommand(channel.package);
@@ -139,7 +141,7 @@ export function CustomAgentDialog({
     setFormError(null);
     try {
       await addCustomAgent(def);
-      onAdded(`已添加「${entry.name}」。`);
+      onAdded(t("customAgent.addedNote", { name: entry.name }));
     } catch (e) {
       setFormError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -150,11 +152,11 @@ export function CustomAgentDialog({
   const addManual = async () => {
     const id = safeId(manual.id);
     if (!id || (taken(id) && builtinIds.has(id))) {
-      setFormError(builtinIds.has(id) ? `id \`${id}\` 已被内置占用` : "id 无效");
+      setFormError(builtinIds.has(id) ? t("customAgent.idTaken", { id }) : t("customAgent.idInvalid"));
       return;
     }
     if (!manual.label.trim() || !manual.command.trim()) {
-      setFormError("显示名称和命令都要填。");
+      setFormError(t("customAgent.needLabelAndCommand"));
       return;
     }
     const args = manual.args
@@ -172,7 +174,7 @@ export function CustomAgentDialog({
         npmPackage: manual.npmPackage.trim() || null,
         note: null,
       });
-      onAdded(`已添加「${manual.label.trim()}」。`);
+      onAdded(t("customAgent.addedNote", { name: manual.label.trim() }));
     } catch (e) {
       setFormError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -188,9 +190,9 @@ export function CustomAgentDialog({
         role="dialog"
         aria-labelledby="custom-agent-title"
       >
-        <h2 id="custom-agent-title">添加自定义 agent</h2>
+        <h2 id="custom-agent-title">{t("customAgent.title")}</h2>
         <p className="custom-agent-dialog__lead">
-          从公开 ACP 注册表挑一个，或手填命令。npx / uvx 可一键装；binary 请自行放到 PATH。
+          {t("customAgent.lead")}
         </p>
         <div className="custom-agent-dialog__tabs">
           <button
@@ -198,14 +200,14 @@ export function CustomAgentDialog({
             className={tab === "registry" ? "is-selected" : ""}
             onClick={() => setTab("registry")}
           >
-            ACP 注册表
+            {t("customAgent.tabRegistry")}
           </button>
           <button
             type="button"
             className={tab === "manual" ? "is-selected" : ""}
             onClick={() => setTab("manual")}
           >
-            手动添加
+            {t("customAgent.tabManual")}
           </button>
         </div>
         {tab === "registry" ? (
@@ -214,19 +216,19 @@ export function CustomAgentDialog({
               className="custom-agent-dialog__search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="搜索名称 / id"
+              placeholder={t("customAgent.searchPlaceholder")}
               autoFocus
             />
             {loadError && (
               <p className="custom-agent-dialog__error">
                 {loadError}{" "}
                 <button type="button" onClick={() => void load()}>
-                  重试
+                  {t("common.retry")}
                 </button>
               </p>
             )}
             {formError && <p className="custom-agent-dialog__error">{formError}</p>}
-            {!catalog && !loadError && <p className="custom-agent-dialog__hint">正在拉取注册表…</p>}
+            {!catalog && !loadError && <p className="custom-agent-dialog__hint">{t("customAgent.fetching")}</p>}
             <div className="custom-agent-dialog__list custom-scrollbar">
               {filtered.map((entry) => {
                 const already = taken(safeId(entry.id)) || taken(safeId(`custom-${entry.id}`));
@@ -251,12 +253,12 @@ export function CustomAgentDialog({
                       {busyId === entry.id
                         ? "…"
                         : builtin
-                          ? "已内置"
+                          ? t("customAgent.builtin")
                           : already
-                            ? "已添加"
+                            ? t("customAgent.added")
                             : entry.installable
-                              ? "添加"
-                              : "无法安装"}
+                              ? t("customAgent.add")
+                              : t("customAgent.cannotInstall")}
                     </button>
                   </div>
                 );
@@ -274,22 +276,22 @@ export function CustomAgentDialog({
               />
             </label>
             <label>
-              显示名称
+              {t("provider.displayName")}
               <input
                 value={manual.label}
                 onChange={(e) => setManual((m) => ({ ...m, label: e.target.value }))}
               />
             </label>
             <label>
-              命令
+              {t("customAgent.command")}
               <input
                 value={manual.command}
                 onChange={(e) => setManual((m) => ({ ...m, command: e.target.value }))}
-                placeholder="PATH 上的可执行文件"
+                placeholder={t("customAgent.commandPlaceholder")}
               />
             </label>
             <label>
-              参数（空格分隔）
+              {t("customAgent.argsLabel")}
               <input
                 value={manual.args}
                 onChange={(e) => setManual((m) => ({ ...m, args: e.target.value }))}
@@ -297,7 +299,7 @@ export function CustomAgentDialog({
               />
             </label>
             <label>
-              npm 包名（可选，有则支持 Install）
+              {t("customAgent.npmPackageLabel")}
               <input
                 value={manual.npmPackage}
                 onChange={(e) => setManual((m) => ({ ...m, npmPackage: e.target.value }))}
@@ -309,13 +311,13 @@ export function CustomAgentDialog({
               disabled={Boolean(busyId)}
               onClick={() => void addManual()}
             >
-              添加
+              {t("customAgent.add")}
             </button>
           </div>
         )}
         <div className="project-dialog__actions">
           <button type="button" className="project-dialog__cancel" onClick={onClose}>
-            关闭
+            {t("common.close")}
           </button>
         </div>
       </div>

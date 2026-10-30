@@ -1,4 +1,5 @@
 import type { SessionEvent } from "./types";
+import { t } from "./i18n";
 import {
   extractAgentTranscript,
   nestedSubagentParentId,
@@ -779,13 +780,13 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
     if (compaction) {
       const how =
         compaction.trigger === "manual"
-          ? "手动"
+          ? t("transcript.compactionManual")
           : compaction.trigger === "auto"
-            ? "自动"
-            : "";
+            ? t("transcript.compactionAuto")
+            : t("transcript.compaction");
       return {
         role: "system",
-        text: `**上下文压缩${how ? `（${how}）` : ""}**\n\n${compaction.summary}`,
+        text: `**${how}**\n\n${compaction.summary}`,
         isDelta: false,
         sessionUpdate,
         messageId,
@@ -874,13 +875,13 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
     if (compaction) {
       const how =
         compaction.trigger === "manual"
-          ? "手动"
+          ? t("transcript.compactionManual")
           : compaction.trigger === "auto"
-            ? "自动"
-            : "";
+            ? t("transcript.compactionAuto")
+            : t("transcript.compaction");
       return {
         role: "system",
-        text: `**上下文压缩${how ? `（${how}）` : ""}**\n\n${compaction.summary}`,
+        text: `**${how}**\n\n${compaction.summary}`,
         isDelta: false,
         sessionUpdate,
         messageId,
@@ -1552,8 +1553,9 @@ export function isAssistantNotice(text: string): boolean {
   return (
     /^\*\*Interrupted\.\*\*/i.test(t) ||
     /^\*\*Retrying/i.test(t) ||
-    /^\*\*上下文压缩/u.test(t) ||
-    /^\*\*已挂起。\*\*/.test(t) ||
+    /^\*\*(?:上下文压缩|Context compacted)/u.test(t) ||
+    // Parked notices are generated per-locale (app.parkedBanner): 已挂起 / Parked.
+    /^\*\*(?:已挂起。|Parked\.)\*\*/.test(t) ||
     /^\*\*The agent did not answer the cancel\.\*\*/i.test(t)
   );
 }

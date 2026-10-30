@@ -190,7 +190,8 @@ function session(partial: Partial<Session> & { id: string }): Session {
   const here = dirname(fileURLToPath(import.meta.url));
   const box = readFileSync(join(here, "../src/components/MemoBox.tsx"), "utf8");
   const css = readFileSync(join(here, "../src/styles/dock.css"), "utf8");
-  check("顶上有写一条输入卡", box.includes("memo-box__compose") && box.includes("写一条，或粘贴链接"));
+  // Compose card copy lives in the i18n fragment since the 2026-10-30 conversion.
+  check("顶上有写一条输入卡", box.includes("memo-box__compose") && box.includes('t("memo.composePlaceholder")'));
   check(
     "四种帖子卡都在",
     ["memo-box__card--text", "memo-box__card--image", "memo-box__card--link", "memo-box__card--file"].every((cls) =>
@@ -198,7 +199,7 @@ function session(partial: Partial<Session> & { id: string }): Session {
     ),
   );
   check("不再渲染 40px 文件行", !box.includes("memo-box__row") && !css.includes(".memo-box__row"));
-  check("Ctrl+Enter 保存写下的内容", box.includes("写下") && box.includes('event.key !== "Enter"'));
+  check("Ctrl+Enter 保存写下的内容", box.includes("memo.composePlaceholder") && box.includes('event.key !== "Enter"'));
   const tabs = readFileSync(join(here, "../src/components/SessionView.tsx"), "utf8");
   check(
     "收纳盒选中时对话标签不再 is-active",

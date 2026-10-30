@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type { LibraryGroup, LibraryRow } from "./modelLibrary";
 
 /**
@@ -32,7 +33,7 @@ export function foldLocalSingleGroups(groups: LibraryGroup[]): MenuGroup[] {
     }
     const row: MenuRow = { ...group.rows[0]!, hint: group.label.trim() };
     if (!local) {
-      local = { key: `local:${group.key}`, label: "本机", rows: [] };
+      local = { key: `local:${group.key}`, label: t("modelMenu.localGroup"), rows: [] };
       out.push(local);
     }
     local.rows.push(row);

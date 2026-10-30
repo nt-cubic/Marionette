@@ -2028,7 +2028,7 @@ impl AcpService {
                             // Web uploads must be all-or-nothing: never send the
                             // text after silently dropping an unreadable image.
                             if local_file_upload {
-                                return Err(format!("图片附件读取失败，消息未发送：{err}"));
+                                return Err(crate::ts!("图片附件读取失败，消息未发送：{err}", "Failed to read an image attachment; message not sent: {err}"));
                             }
                             crate::debug_log::append(
                                 "acp",

@@ -12,6 +12,8 @@ import {
   isImagePath,
   stripFileUri,
 } from "../src/lib/imageAttachments.ts";
+import { imageLinkTarget } from "../src/lib/toolBody.ts";
+import { classifyToolCall, toolMainText, type ToolCallEvent } from "../src/lib/turnActivity.ts";
 
 assert.equal(stripFileUri("file:///D:/shots/a.png"), "D:/shots/a.png");
 assert.equal(stripFileUri("file://localhost/C:/x/y.jpg"), "C:/x/y.jpg");
@@ -19,6 +21,23 @@ assert.equal(stripFileUri("D:\\shots\\a.png"), "D:\\shots\\a.png");
 assert.equal(isImagePath("D:\\shots\\a.png"), true);
 assert.equal(isImagePath("file:///D:/shots/a.webp"), true);
 assert.equal(isImagePath("readme.md"), false);
+
+assert.equal(imageLinkTarget("D:/shots/a.png"), "D:/shots/a.png");
+assert.equal(imageLinkTarget("file:///D:/shots/a.png"), "D:/shots/a.png");
+assert.equal(imageLinkTarget("D:/shots/a.png?raw=1#top"), "D:/shots/a.png");
+assert.equal(imageLinkTarget("https://cdn.example/shot.jpg?w=800"), "https://cdn.example/shot.jpg?w=800");
+assert.equal(imageLinkTarget("https://example.com/docs/page"), null);
+assert.equal(imageLinkTarget("D:/notes/readme.md"), null);
+assert.equal(imageLinkTarget("#section"), null);
+
+const viewImage = {
+  type: "tool_call",
+  toolName: "view image",
+  title: "view image",
+  path: "D:\\shots\\hero.png",
+} as unknown as ToolCallEvent;
+assert.equal(classifyToolCall(viewImage), "read");
+assert.equal(toolMainText(viewImage), "hero.png");
 
 const fromPath = collectToolImageSrcs({ path: "D:\\shots\\hero.png" });
 assert.deepEqual(fromPath, ["D:\\shots\\hero.png"]);

@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type { PlanEntry } from "./acpPlan";
 
 export type TodoStatus = "todo" | "doing" | "done";
@@ -99,22 +100,23 @@ export function absorbPlanIntoTodos(
 }
 
 export function formatTodosForPrompt(items: TodoItem[]): string {
-  if (items.length === 0) return "当前项目任务清单：（空）";
+  if (items.length === 0) return `${t("todos.promptHeader")}${t("todos.promptEmpty")}`;
   const lines = items.map((it, i) => {
     const mark = it.status === "done" ? "x" : it.status === "doing" ? "~" : " ";
     return `${i + 1}. [${mark}] ${it.text}`;
   });
-  return `当前项目任务清单：\n${lines.join("\n")}`;
+  return `${t("todos.promptHeader")}\n${lines.join("\n")}`;
 }
 
 export function formatAiUpdatePrompt(items: TodoItem[]): string {
   return [
-    "这是当前项目的任务清单：",
-    formatTodosForPrompt(items).replace(/^当前项目任务清单：\n?/, "") || "（空）",
+    t("todos.aiPromptIntro"),
+    formatTodosForPrompt(items).replace(new RegExp(`^${t("todos.promptHeader")}\n?`), "") ||
+      t("todos.promptEmpty"),
     "",
-    "请结合我们刚才的进展更新它：标记已完成的、补上新发现的。",
-    "如果你有任务清单工具（TodoWrite / plan），请直接用它输出更新后的完整清单。",
-    "否则请只回一个代码块：",
+    t("todos.aiPromptUpdate"),
+    t("todos.aiPromptUseTool"),
+    t("todos.aiPromptCodeBlock"),
     "",
     "```marionette-todo",
     '[{"text":"…","status":"todo|doing|done"}]',
@@ -140,7 +142,7 @@ export function previewMergeFromAi(
   proposed: Array<{ text: string; status: TodoStatus }>,
 ): TodoMergePreview | { error: string } {
   if (proposed.length > 50) {
-    return { error: "AI 返回条目过多（>50），已拒绝" };
+    return { error: t("todos.tooMany") };
   }
   const now = nowIso();
   const next = items.map((it) => ({ ...it }));

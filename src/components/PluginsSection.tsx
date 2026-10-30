@@ -7,12 +7,14 @@ import {
   type DshPlugin,
 } from "../lib/api";
 import { BADGE_COLORS, BADGE_LABELS, badgeFor } from "../lib/pluginBadges";
+import { useT } from "../lib/i18n";
 
 /**
  * 通用插件面板。清单来自 DSH profile `acp`（`dsh plugin --profile acp`）；
  * 任何 agent 下都显示，便于安装/卸载。徽章标明当前 ACP 会话里是否真正生效。
  */
 export function PluginsSection({ activeAgentId }: { activeAgentId?: string | null }) {
+  const t = useT();
   const [plugins, setPlugins] = useState<DshPlugin[] | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -44,7 +46,7 @@ export function PluginsSection({ activeAgentId }: { activeAgentId?: string | nul
     setOperating(true);
     try {
       const { summary } = await dshPluginAdd(value);
-      setNote(`已安装 ${value}（重启 DSH 会话生效）${summary ? `\n${summary}` : ""}`);
+      setNote(`${t("plugins.installed", { name: value })}${summary ? `\n${summary}` : ""}`);
       setSpec("");
       await refresh();
     } catch (error) {
@@ -58,7 +60,7 @@ export function PluginsSection({ activeAgentId }: { activeAgentId?: string | nul
     setOperating(true);
     try {
       await dshPluginRemove(name);
-      setNote(`已卸载 ${name}（重启 DSH 会话后彻底生效）`);
+      setNote(t("plugins.removed", { name }));
       await refresh();
     } catch (error) {
       setNote(error instanceof Error ? error.message : String(error));
@@ -72,7 +74,7 @@ export function PluginsSection({ activeAgentId }: { activeAgentId?: string | nul
   return (
     <section className="context-card" id="context-plugins">
       <div className="context-card__heading">
-        <span>插件</span>
+        <span>{t("plugins.title")}</span>
         <div className="context-card__heading-actions">
           <button
             className="pill-action pill-action--icon pill-action--sm"

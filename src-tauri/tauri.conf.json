@@ -27,7 +27,7 @@
     "security": {
       "csp": {
         "default-src": "'self'",
-        "img-src": "'self' data: blob: asset: http://asset.localhost https://asset.localhost",
+        "img-src": "'self' data: blob: asset: http: https: http://asset.localhost https://asset.localhost",
         "style-src": "'self' 'unsafe-inline' asset: http://asset.localhost https://asset.localhost",
         "connect-src": "'self' ipc: http://ipc.localhost",
         "script-src": "'self'",

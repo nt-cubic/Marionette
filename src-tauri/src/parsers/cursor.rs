@@ -74,7 +74,7 @@ impl AgentParser for CursorParser {
         // user sees *something* rather than a blank pane.
         Ok(vec![user_event(
             session_id,
-            &format!("（Cursor 会话「{title}」的正文在 store.db 的 protobuf 里，当前只读回看还没解开那份格式。）"),
+            &crate::ts!("（Cursor 会话「{title}」的正文在 store.db 的 protobuf 里，当前只读回看还没解开那份格式。）", "(The body of Cursor session \"{title}\" lives in store.db protobuf; read-only replay has not decoded that format yet.)"),
             json_str(&v, "createdAt").unwrap_or("cursor-0"),
         )])
     }

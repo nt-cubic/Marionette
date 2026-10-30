@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { copyText } from "../lib/clipboard";
+import { useT } from "../lib/i18n";
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
@@ -41,13 +42,14 @@ function preview(value: Json): string {
 }
 
 function CopyValue({ value }: { value: Json }) {
+  const t = useT();
   const [done, setDone] = useState(false);
   return (
     <button
       type="button"
       className="json-tree__copy"
-      title="复制值"
-      aria-label="复制值"
+      title={t("ui.copyValue")}
+      aria-label={t("ui.copyValue")}
       onClick={(event) => {
         event.stopPropagation();
         const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
@@ -71,6 +73,7 @@ function Leaf({ value }: { value: Json }) {
 }
 
 function Node({ name, value, path, depth }: { name: string | null; value: Json; path: string; depth: number }) {
+  const t = useT();
   const branch = value !== null && typeof value === "object";
   const [open, setOpen] = useState(depth < 1);
   const [shown, setShown] = useState(PAGE);
@@ -107,7 +110,7 @@ function Node({ name, value, path, depth }: { name: string | null; value: Json; 
           ))}
           {entries.length > shown && (
             <button type="button" className="json-tree__more" onClick={() => setShown((n) => n + PAGE)}>
-              再显示 {Math.min(PAGE, entries.length - shown)} 项（共 {entries.length}）
+              {t("ui.showMoreItems", { n: Math.min(PAGE, entries.length - shown), total: entries.length })}
             </button>
           )}
         </div>

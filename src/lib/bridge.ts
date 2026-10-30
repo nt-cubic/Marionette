@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import {
   bridgeListModels,
   type BridgeModel,
@@ -92,17 +93,17 @@ export function bridgePresetLabel(preset: string): string {
 
 /** Shared-model group header in the model picker: 「共享 · OPENCODE GO」. */
 export function bridgeGroupTitle(preset: string): string {
-  return `共享 · ${bridgePresetLabel(preset).toUpperCase()}`;
+  return t("bridge.groupTitle", { label: bridgePresetLabel(preset).toUpperCase() });
 }
 
 /** Same header for a source descriptor (label comes from the entry itself). */
 export function bridgeSourceGroupTitle(label: string): string {
-  return `共享 · ${label.toUpperCase()}`;
+  return t("bridge.groupTitle", { label: label.toUpperCase() });
 }
 
 /** Drop the group-title prefix so section headers show only the source name. */
 export function stripBridgeGroupPrefix(title: string): string {
-  return title.replace(/^(?:共享|跨用) · /, "");
+  return title.replace(/^(?:共享|跨用|Shared) · /, "");
 }
 
 /**
@@ -110,11 +111,11 @@ export function stripBridgeGroupPrefix(title: string): string {
  * engine source into per-provider menu groups.
  * Subscription families read as subscriptions; unmapped prefixes show raw.
  */
-const ENGINE_PROVIDER_LABELS: Record<string, string> = {
-  grok: "Grok 订阅",
+const engineProviderLabels = (): Record<string, string> => ({
+  grok: t("bridge.grokSubscription"),
   codex: "ChatGPT",
-  claude: "Claude 订阅",
-  gemini: "Gemini 订阅",
+  claude: t("bridge.claudeSubscription"),
+  gemini: t("bridge.geminiSubscription"),
   copilot: "Copilot",
   "opencode-go": "OpenCode Go",
   deepseek: "DeepSeek",
@@ -124,11 +125,11 @@ const ENGINE_PROVIDER_LABELS: Record<string, string> = {
   kimi: "Kimi",
   openrouter: "OpenRouter",
   xai: "xAI",
-};
+});
 
 /** Friendly label for an engine provider prefix (falls back to the raw id). */
 export function engineProviderLabel(provider: string): string {
-  return ENGINE_PROVIDER_LABELS[provider] ?? provider;
+  return engineProviderLabels()[provider] ?? provider;
 }
 
 /**

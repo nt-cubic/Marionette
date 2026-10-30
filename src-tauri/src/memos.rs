@@ -271,7 +271,7 @@ pub fn memo_save_paths(paths: Vec<String>, source: Option<String>) -> Result<Vec
     let mut latest_err: Option<String> = None;
     for raw in &paths {
         let path = PathBuf::from(raw);
-        let label = source.clone().unwrap_or_else(|| "拖入".to_string());
+        let label = source.clone().unwrap_or_else(|| crate::ts!("拖入", "Dropped in"));
         let result = if path.is_dir() {
             save_one_dir(&path, &label, &created_at)
         } else {

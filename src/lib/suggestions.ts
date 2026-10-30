@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type { SessionEvent, SessionStatus } from "./types";
 
 export type SuggestionSourceId =
@@ -158,10 +159,10 @@ function buildQuestionChips(sentence: string): Suggestion[] {
         {
           id: "q-yes",
           label: clipLabel(action),
-          text: `好，${action}`,
+          text: t("suggestions.yesAction", { action }),
           source: "question",
         },
-        { id: "q-no", label: "不用", text: "不用", source: "question" },
+        { id: "q-no", label: t("suggestions.noThanks"), text: t("suggestions.noThanks"), source: "question" },
       ];
     }
   }
@@ -175,10 +176,10 @@ function buildQuestionChips(sentence: string): Suggestion[] {
         {
           id: "q-yes",
           label: clipLabel(action),
-          text: `好，${action}`,
+          text: t("suggestions.yesAction", { action }),
           source: "question",
         },
-        { id: "q-no", label: "先不用", text: "先不用", source: "question" },
+        { id: "q-no", label: t("suggestions.notNow"), text: t("suggestions.notNow"), source: "question" },
       ];
     }
   }
@@ -191,10 +192,10 @@ function buildQuestionChips(sentence: string): Suggestion[] {
         {
           id: "q-yes",
           label: clipLabel(action),
-          text: `好，${action}`,
+          text: t("suggestions.yesAction", { action }),
           source: "question",
         },
-        { id: "q-no", label: "不用", text: "不用", source: "question" },
+        { id: "q-no", label: t("suggestions.noThanks"), text: t("suggestions.noThanks"), source: "question" },
       ];
     }
   }
@@ -208,10 +209,10 @@ function buildQuestionChips(sentence: string): Suggestion[] {
         {
           id: "q-yes",
           label: clipLabel(action),
-          text: `好，${action}`,
+          text: t("suggestions.yesAction", { action }),
           source: "question",
         },
-        { id: "q-no", label: "不用", text: "不用", source: "question" },
+        { id: "q-no", label: t("suggestions.noThanks"), text: t("suggestions.noThanks"), source: "question" },
       ];
     }
   }
@@ -259,7 +260,7 @@ function buildOptionChips(assistantText: string): Suggestion[] | null {
   return items.slice(0, 3).map((item, i) => ({
     id: `opt-${i}`,
     label: clipLabel(item.text),
-    text: `选 ${item.n}：${item.text}`,
+    text: t("suggestions.pickOption", { n: item.n, text: item.text }),
     source: "options" as const,
   }));
 }
@@ -283,14 +284,14 @@ function buildDropChips(paths: string[]): Suggestion[] {
     const multi: Suggestion[] = [
       {
         id: "drop-multi-1",
-        label: "帮我看看这几个文件",
-        text: "帮我看看这几个文件",
+        label: t("suggestions.dropLookFiles"),
+        text: t("suggestions.dropLookFiles"),
         source: "drop",
       },
       {
         id: "drop-multi-2",
-        label: "对比一下",
-        text: "对比一下",
+        label: t("suggestions.dropCompare"),
+        text: t("suggestions.dropCompare"),
         source: "drop",
       },
     ];
@@ -306,45 +307,125 @@ function buildDropChips(paths: string[]): Suggestion[] {
 
   if (isDirPath(p) && !ext) {
     return [
-      { id: "drop-d1", label: "看看这个目录", text: "看看这个目录", source: "drop" },
-      { id: "drop-d2", label: "梳理一下结构", text: "梳理一下结构", source: "drop" },
+      {
+        id: "drop-d1",
+        label: t("suggestions.dropLookDir"),
+        text: t("suggestions.dropLookDir"),
+        source: "drop",
+      },
+      {
+        id: "drop-d2",
+        label: t("suggestions.dropOutlineDir"),
+        text: t("suggestions.dropOutlineDir"),
+        source: "drop",
+      },
     ];
   }
   if (DOC_EXT.has(ext)) {
     return [
-      { id: "drop-doc1", label: "帮我看看这个文档", text: "帮我看看这个文档", source: "drop" },
-      { id: "drop-doc2", label: "审查一下这份文档", text: "审查一下这份文档", source: "drop" },
-      { id: "drop-doc3", label: "总结要点", text: "总结要点", source: "drop" },
+      {
+        id: "drop-doc1",
+        label: t("suggestions.dropLookDoc"),
+        text: t("suggestions.dropLookDoc"),
+        source: "drop",
+      },
+      {
+        id: "drop-doc2",
+        label: t("suggestions.dropReviewDoc"),
+        text: t("suggestions.dropReviewDoc"),
+        source: "drop",
+      },
+      {
+        id: "drop-doc3",
+        label: t("suggestions.dropSummarizeDoc"),
+        text: t("suggestions.dropSummarizeDoc"),
+        source: "drop",
+      },
     ];
   }
   if (CODE_EXT.has(ext)) {
     return [
-      { id: "drop-code1", label: "帮我看看这个文件", text: "帮我看看这个文件", source: "drop" },
-      { id: "drop-code2", label: "review 一下这段代码", text: "review 一下这段代码", source: "drop" },
-      { id: "drop-code3", label: "解释一下它在干嘛", text: "解释一下它在干嘛", source: "drop" },
+      {
+        id: "drop-code1",
+        label: t("suggestions.dropLookFile"),
+        text: t("suggestions.dropLookFile"),
+        source: "drop",
+      },
+      {
+        id: "drop-code2",
+        label: t("suggestions.dropReviewCode"),
+        text: t("suggestions.dropReviewCode"),
+        source: "drop",
+      },
+      {
+        id: "drop-code3",
+        label: t("suggestions.dropExplainCode"),
+        text: t("suggestions.dropExplainCode"),
+        source: "drop",
+      },
     ];
   }
   if (IMAGE_EXT.has(ext)) {
     return [
-      { id: "drop-img1", label: "看看这张图", text: "看看这张图", source: "drop" },
-      { id: "drop-img2", label: "按这个图实现", text: "按这个图实现", source: "drop" },
-      { id: "drop-img3", label: "找出图里的问题", text: "找出图里的问题", source: "drop" },
+      {
+        id: "drop-img1",
+        label: t("suggestions.dropLookImage"),
+        text: t("suggestions.dropLookImage"),
+        source: "drop",
+      },
+      {
+        id: "drop-img2",
+        label: t("suggestions.dropImplementImage"),
+        text: t("suggestions.dropImplementImage"),
+        source: "drop",
+      },
+      {
+        id: "drop-img3",
+        label: t("suggestions.dropImageIssues"),
+        text: t("suggestions.dropImageIssues"),
+        source: "drop",
+      },
     ];
   }
   if (ext === ".log" || /log|error|crash/i.test(base)) {
     return [
-      { id: "drop-log1", label: "分析这个日志", text: "分析这个日志", source: "drop" },
-      { id: "drop-log2", label: "找出报错原因", text: "找出报错原因", source: "drop" },
+      {
+        id: "drop-log1",
+        label: t("suggestions.dropAnalyzeLog"),
+        text: t("suggestions.dropAnalyzeLog"),
+        source: "drop",
+      },
+      {
+        id: "drop-log2",
+        label: t("suggestions.dropFindErrorCause"),
+        text: t("suggestions.dropFindErrorCause"),
+        source: "drop",
+      },
     ];
   }
   if (CONFIG_EXT.has(ext)) {
     return [
-      { id: "drop-cfg1", label: "看看这个配置", text: "看看这个配置", source: "drop" },
-      { id: "drop-cfg2", label: "检查有没有问题", text: "检查有没有问题", source: "drop" },
+      {
+        id: "drop-cfg1",
+        label: t("suggestions.dropLookConfig"),
+        text: t("suggestions.dropLookConfig"),
+        source: "drop",
+      },
+      {
+        id: "drop-cfg2",
+        label: t("suggestions.dropCheckIssues"),
+        text: t("suggestions.dropCheckIssues"),
+        source: "drop",
+      },
     ];
   }
   return [
-    { id: "drop-unk", label: "帮我看看这个文件", text: "帮我看看这个文件", source: "drop" },
+    {
+      id: "drop-unk",
+      label: t("suggestions.dropLookFile"),
+      text: t("suggestions.dropLookFile"),
+      source: "drop",
+    },
   ];
 }
 
@@ -394,7 +475,9 @@ export function suggestFor(input: SuggestionInput): Suggestion[] {
 
   // Real failure only — single useful action, no "换个思路" filler
   if (turnHadError(events, sessionStatus)) {
-    return [{ id: "err-retry", label: "重试", text: "重试", source: "error" }];
+    return [
+      { id: "err-retry", label: t("common.retry"), text: t("common.retry"), source: "error" },
+    ];
   }
 
   // No edited / idle generics — silence when nothing concrete to suggest

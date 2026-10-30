@@ -1,0 +1,52 @@
+import type { zh } from "./fe-libB.zh";
+
+/** English mirror of the fe-libB fragment. */
+export const en = {
+  "suggestions.yesAction": "Yes, {action}",
+  "suggestions.noThanks": "No thanks",
+  "suggestions.notNow": "Not now",
+  "suggestions.pickOption": "Option {n}: {text}",
+  "suggestions.dropLookFiles": "Take a look at these files",
+  "suggestions.dropCompare": "Compare them",
+  "suggestions.dropLookDir": "Take a look at this directory",
+  "suggestions.dropOutlineDir": "Outline its structure",
+  "suggestions.dropLookDoc": "Take a look at this document",
+  "suggestions.dropReviewDoc": "Review this document",
+  "suggestions.dropSummarizeDoc": "Summarize the key points",
+  "suggestions.dropLookFile": "Take a look at this file",
+  "suggestions.dropReviewCode": "Review this code",
+  "suggestions.dropExplainCode": "Explain what it does",
+  "suggestions.dropLookImage": "Take a look at this image",
+  "suggestions.dropImplementImage": "Implement what's in the image",
+  "suggestions.dropImageIssues": "Find the problems in the image",
+  "suggestions.dropAnalyzeLog": "Analyze this log",
+  "suggestions.dropFindErrorCause": "Find the cause of the error",
+  "suggestions.dropLookConfig": "Take a look at this config",
+  "suggestions.dropCheckIssues": "Check it for issues",
+  "todos.promptHeader": "Current project todo list:",
+  "todos.promptEmpty": "(empty)",
+  "todos.aiPromptIntro": "Here is the current project todo list:",
+  "todos.aiPromptUpdate":
+    "Please update it based on our recent progress: mark completed items and add newly discovered ones.",
+  "todos.aiPromptUseTool":
+    "If you have a todo list tool (TodoWrite / plan), use it to output the complete updated list.",
+  "todos.aiPromptCodeBlock": "Otherwise reply with a single code block:",
+  "todos.tooMany": "Too many items returned by the AI (>50); rejected",
+  "suspend.parkedTitle": "{label} parked — picks up automatically on your next message",
+  "suspend.titleRunning":
+    "Park {label} — interrupt what it is doing and end the process now; picks up automatically on your next message",
+  "suspend.titleStarting":
+    "Park {label} — end the agent process it just started; picks up automatically on your next message",
+  "suspend.titleOther": "Park {label} — end its agent process; picks up automatically on your next message",
+  "stats.secondsCompact": "{n}s",
+  "stats.minutesSecondsCompact": "{m}m {s}s",
+  "modelMenu.localGroup": "Local",
+  "subagents.fallbackTitle": "Subagent",
+  "bridge.groupTitle": "Shared · {label}",
+  "bridge.grokSubscription": "Grok subscription",
+  "bridge.claudeSubscription": "Claude subscription",
+  "bridge.geminiSubscription": "Gemini subscription",
+  "credentials.invalidResult": "Credential scan returned an invalid result",
+  "credentials.unknownFormat": "Credential scan returned an unknown format",
+  "api.newConversation": "New conversation",
+} satisfies Record<keyof typeof zh, string>;

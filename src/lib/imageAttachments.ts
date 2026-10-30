@@ -1,5 +1,7 @@
 /** Image attachments + annotations for Composer pills and You cards. */
 
+import { t } from "./i18n";
+
 export type ImagePointAnnotation = {
   id: string;
   kind: "point";
@@ -173,11 +175,11 @@ export function formatImageMarksForSend(attachments: ImageAttachment[]): string 
       n += 1;
       if (m.kind === "point") {
         blocks.push(
-          `${n}. ${att.name} @ (${m.nx.toFixed(3)}, ${m.ny.toFixed(3)})\n评论：${m.comment.trim()}`,
+          `${n}. ${att.name} @ (${m.nx.toFixed(3)}, ${m.ny.toFixed(3)})\n${t("annotations.commentLine", { comment: m.comment.trim() })}`,
         );
       } else {
         blocks.push(
-          `${n}. ${att.name} rect (${m.nx.toFixed(3)}, ${m.ny.toFixed(3)}, ${m.nw.toFixed(3)}×${m.nh.toFixed(3)})\n评论：${m.comment.trim()}`,
+          `${n}. ${att.name} rect (${m.nx.toFixed(3)}, ${m.ny.toFixed(3)}, ${m.nw.toFixed(3)}×${m.nh.toFixed(3)})\n${t("annotations.commentLine", { comment: m.comment.trim() })}`,
         );
       }
     }

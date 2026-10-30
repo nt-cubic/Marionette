@@ -84,10 +84,10 @@ pub fn restore_turn_files(project_root: &Path, paths: &[String]) -> Result<Resto
         return Err(format!("Not a directory: {}", project_root.display()));
     }
     if paths.is_empty() {
-        return Err("没有可撤销的文件".to_string());
+        return Err(crate::ts!("没有可撤销的文件", "No files to undo"));
     }
     if !has_head(project_root) {
-        return Err("仓库还没有 commit，无法还原到 HEAD".to_string());
+        return Err(crate::ts!("仓库还没有 commit，无法还原到 HEAD", "The repository has no commits yet; cannot restore to HEAD"));
     }
 
     let mut relative = Vec::new();
@@ -132,7 +132,7 @@ pub fn restore_turn_files(project_root: &Path, paths: &[String]) -> Result<Resto
         if abs.is_dir() {
             result
                 .errors
-                .push(format!("{path}: 是目录，未删除"));
+                .push(crate::ts!("{path}: 是目录，未删除", "{path}: is a directory, not deleted"));
             continue;
         }
         if abs.is_file() {

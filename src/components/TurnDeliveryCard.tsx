@@ -10,6 +10,7 @@ import {
 import type { TurnDelivery, TurnDeliveryChangeType, TurnDeliveryFile } from "../lib/turnDelivery";
 import { formatDeliveryHeadline } from "../lib/turnDelivery";
 import { showToast } from "../lib/toast";
+import { useT } from "../lib/i18n";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { UnifiedDiffView } from "./UnifiedDiffView";
 
@@ -70,6 +71,7 @@ function DeliveryFileRow({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [riskyConfirm, setRiskyConfirm] = useState(false);
+  const t = useT();
 
   const canDiff = Boolean(projectId) && projectId !== CHAT_PROJECT_ID && Boolean(file.path);
   const deleted = file.changeType === "deleted";
@@ -83,7 +85,7 @@ function DeliveryFileRow({
         return;
       }
       if (!result.opened) {
-        showToast({ text: result.message ?? "无法打开这个文件。", tone: "error" });
+        showToast({ text: result.message ?? t("turn.openFileFailed"), tone: "error" });
       }
     } catch (err) {
       showToast({ text: err instanceof Error ? err.message : String(err), tone: "error" });
@@ -101,7 +103,7 @@ function DeliveryFileRow({
   useEffect(() => {
     if (!expanded) return;
     if (!projectId || projectId === CHAT_PROJECT_ID || !file.path) {
-      setError("没有项目上下文，无法加载 diff");
+      setError(t("turn.noProjectContext"));
       setLoading(false);
       return;
     }
@@ -112,11 +114,11 @@ function DeliveryFileRow({
     setLoading(true);
     setError(null);
     const timeout = new Promise<never>((_, reject) => {
-      timeoutId = window.setTimeout(() => reject(new Error("Diff 请求超时")), 8000);
+      timeoutId = window.setTimeout(() => reject(new Error(t("turn.diffTimeout"))), 8000);
     });
     void Promise.race([getFileDiff(projectId, file.path), timeout])
       .then((text) => {
-        if (!cancelled) setDiff(text.trim() ? text : "（无差异）");
+        if (!cancelled) setDiff(text.trim() ? text : t("turn.noChanges"));
       })
       .catch((err) => {
         if (!cancelled) {
@@ -136,7 +138,7 @@ function DeliveryFileRow({
 
   const path = splitPath(file.relPath);
   const title =
-    file.touched > 1 ? `${file.path} · 本轮编辑 ${file.touched} 次` : file.path;
+    file.touched > 1 ? t("turn.editedTimes", { path: file.path, n: file.touched }) : file.path;
 
   return (
     <>
@@ -151,7 +153,7 @@ function DeliveryFileRow({
         <button
           type="button"
           className="turn-delivery__main"
-          title={canDiff ? `${title}\n点击查看 diff` : title}
+          title={canDiff ? `${title}\n${t("turn.clickToViewDiff")}` : title}
           onClick={canDiff ? () => setExpanded((value) => !value) : () => void openFile()}
           aria-expanded={canDiff ? expanded : undefined}
         >
@@ -180,8 +182,8 @@ function DeliveryFileRow({
           <button
             type="button"
             className="pill-action pill-action--icon pill-action--sm turn-delivery__action"
-            title={deleted ? "文件已删除，无法打开" : "用默认程序打开"}
-            aria-label={deleted ? "文件已删除，无法打开" : "用默认程序打开"}
+            title={deleted ? t("turn.fileDeleted") : t("turn.openWithDefault")}
+            aria-label={deleted ? t("turn.fileDeleted") : t("turn.openWithDefault")}
             disabled={deleted}
             onClick={() => void openFile()}
           >
@@ -190,8 +192,8 @@ function DeliveryFileRow({
           <button
             type="button"
             className="pill-action pill-action--icon pill-action--sm turn-delivery__action"
-            title={deleted ? "在资源管理器中打开所在文件夹" : "在资源管理器中显示"}
-            aria-label={deleted ? "在资源管理器中打开所在文件夹" : "在资源管理器中显示"}
+            title={deleted ? t("turn.openParentFolder") : t("turn.revealInExplorer")}
+            aria-label={deleted ? t("turn.openParentFolder") : t("turn.revealInExplorer")}
             onClick={() => void reveal()}
           >
             <FolderOpen size={11} />
@@ -200,11 +202,11 @@ function DeliveryFileRow({
       </div>
       {riskyConfirm && (
         <ConfirmDialog
-          title="打开可执行文件"
+          title={t("turn.openExecutableTitle")}
           itemName={file.path}
-          description="这类文件会被系统直接运行。确认要用默认程序打开吗？"
-          confirmLabel="打开"
-          cancelLabel="取消"
+          description={t("turn.openExecutableDesc")}
+          confirmLabel={t("common.open")}
+          cancelLabel={t("common.cancel")}
           onCancel={() => setRiskyConfirm(false)}
           onConfirm={() => {
             setRiskyConfirm(false);
@@ -215,7 +217,7 @@ function DeliveryFileRow({
       {expanded && (
         <div className="turn-delivery__diff">
           {loading && diff === null && (
-            <div className="turn-delivery__diff-note">正在加载 diff…</div>
+            <div className="turn-delivery__diff-note">{t("turn.loadingDiff")}</div>
           )}
           {error && <div className="turn-delivery__diff-note">{error}</div>}
           {diff !== null && (
@@ -257,6 +259,7 @@ export function TurnDeliveryCard({
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const t = useT();
 
   const headline = formatDeliveryHeadline(delivery);
   const fileCount = delivery.files.length;
@@ -272,7 +275,7 @@ export function TurnDeliveryCard({
   const peek =
     peekNames.length === 0
       ? ""
-      : `${peekNames.join("、")}${fileCount > 2 ? ` 等 ${fileCount} 个` : ""}`;
+      : `${peekNames.join(t("turn.nameSeparator"))}${fileCount > 2 ? t("turn.moreCount", { count: fileCount }) : ""}`;
 
   const runUndo = async () => {
     if (!projectId || fileCount === 0) return;
@@ -292,8 +295,8 @@ export function TurnDeliveryCard({
       }
       const reverted = result.restored.length + result.removed.length;
       showToast({
-        text: `已撤销本轮改动 · ${reverted} 个文件`,
-        detail: result.errors.length > 0 ? `${result.errors.length} 个文件没能还原，详情见卡片` : undefined,
+        text: t("turn.undoneToast", { count: reverted }),
+        detail: result.errors.length > 0 ? t("turn.undonePartial", { count: result.errors.length }) : undefined,
         tone: result.errors.length > 0 ? "error" : "ok",
       });
       onUndone?.();
@@ -323,7 +326,7 @@ export function TurnDeliveryCard({
             </span>
             <span className="turn-delivery__headline">
               {headline}
-              {undone ? " · 已撤销" : ""}
+              {undone ? ` · ${t("turn.undone")}` : ""}
             </span>
             {delivery.totalDiff && (delivery.totalDiff.add > 0 || delivery.totalDiff.del > 0) && (
               <span className="turn-delivery__totals">
@@ -346,12 +349,12 @@ export function TurnDeliveryCard({
             <button
               type="button"
               className="turn-delivery__undo"
-              title="撤销本轮对工作区的改动"
+              title={t("turn.undoTitle")}
               disabled={busy}
               onClick={() => setConfirming(true)}
             >
               <Undo2 size={12} strokeWidth={2.25} aria-hidden />
-              撤销
+              {t("turn.undo")}
             </button>
           )}
         </div>
@@ -365,7 +368,7 @@ export function TurnDeliveryCard({
                 ))}
                 {!showAll && fileCount > FILES_SHOWN && (
                   <button type="button" className="turn-delivery__more" onClick={() => setShowAll(true)}>
-                    其余 {fileCount - FILES_SHOWN} 个文件
+                    {t("turn.remainingFiles", { count: fileCount - FILES_SHOWN })}
                   </button>
                 )}
               </div>
@@ -376,11 +379,11 @@ export function TurnDeliveryCard({
       </div>
       {confirming && (
         <ConfirmDialog
-          title="撤销本轮改动"
+          title={t("turn.undoTurnTitle")}
           itemName={headline}
-          description="这些文件会还原到 git HEAD。本轮之后、还没提交的修改也会一起丢掉。"
-          confirmLabel={busy ? "撤销中…" : "撤销"}
-          cancelLabel="取消"
+          description={t("turn.undoTurnDesc")}
+          confirmLabel={busy ? t("turn.undoing") : t("turn.undo")}
+          cancelLabel={t("common.cancel")}
           danger
           onCancel={() => {
             if (!busy) setConfirming(false);

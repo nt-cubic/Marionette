@@ -15,6 +15,8 @@ import {
 } from "../lib/turnActivity";
 import { ClippedBody } from "./ClippedBody";
 import { MarkdownBody } from "./MarkdownBody";
+import { ToolImageThumbs } from "./ToolImageThumbs";
+import { useT } from "../lib/i18n";
 
 function DiffBadge({ diff }: { diff: { add: number; del: number } }) {
   return (
@@ -28,9 +30,11 @@ function DiffBadge({ diff }: { diff: { add: number; del: number } }) {
 function FoldSummary({
   summary,
   liveIcon,
+  cwd,
 }: {
   summary: ActivitySummary;
   liveIcon?: ReactNode;
+  cwd?: string | null;
 }) {
   return (
     <summary className="activity-panel__summary" title={summary.title}>
@@ -44,6 +48,11 @@ function FoldSummary({
         <span className="activity-panel__elapsed">{summary.elapsed}</span>
       ) : null}
       {summary.diff ? <DiffBadge diff={summary.diff} /> : null}
+      <ToolImageThumbs
+        srcs={summary.images}
+        cwd={cwd}
+        className="activity-panel__thumbs"
+      />
       {summary.failed ? <span className="activity-panel__failed">{summary.failed} failed</span> : null}
       {liveIcon}
     </summary>
@@ -55,6 +64,8 @@ type FoldProps = {
   open: boolean;
   live?: boolean;
   liveIcon?: ReactNode;
+  /** Session working directory for relative image paths. */
+  cwd?: string | null;
   onToggle: (open: boolean) => void;
   children: ReactNode;
   trace?: ReactNode;
@@ -83,12 +94,14 @@ export function ActivityPanel({
   open,
   live = false,
   liveIcon,
+  cwd,
   onToggle,
   children,
   trace,
 }: FoldProps) {
+  const t = useT();
   return (
-    <section className={`activity-group${live ? " is-live" : ""}`} aria-label="运行轨迹">
+    <section className={`activity-group${live ? " is-live" : ""}`} aria-label={t("trace.group")}>
       {trace}
       <details
         className={`activity-panel${live ? " is-live" : ""}`}
@@ -99,7 +112,7 @@ export function ActivityPanel({
           onToggle(details.open);
         }}
       >
-        <FoldSummary summary={summary} liveIcon={live ? liveIcon : null} />
+        <FoldSummary summary={summary} liveIcon={live ? liveIcon : null} cwd={cwd} />
         {open ? <div className="activity-panel__body">{children}</div> : null}
       </details>
     </section>
@@ -129,6 +142,7 @@ export function LiveActivityTimeline({
   untilMs?: number;
 }) {
   const [now, setNow] = useState(() => Date.now());
+  const t = useT();
   useEffect(() => {
     if (!live) return;
     const timer = window.setInterval(() => setNow(Date.now()), 500);
@@ -137,8 +151,8 @@ export function LiveActivityTimeline({
   const data = activityTimeline(items, live ? now : undefined, untilMs);
   if (!data) return null;
   return (
-    <div className="activity-trace" role="group" aria-label={live ? "实时轨迹面板" : "运行轨迹面板"}>
-      <div className="activity-trace__heading">轨迹面板</div>
+    <div className="activity-trace" role="group" aria-label={live ? t("trace.livePanel") : t("trace.panel")}>
+      <div className="activity-trace__heading">{t("trace.heading")}</div>
       <ActivityTimeline data={data} />
     </div>
   );
@@ -152,6 +166,7 @@ export function LiveThoughtPreview({
   items: ActivityDetailItem[];
   thinking: boolean;
 }) {
+  const t = useT();
   // Keep the previous text until the next thought has actual content. Empty
   // opening chunks must not blank the preview between two short thoughts.
   let text = "";
@@ -164,8 +179,8 @@ export function LiveThoughtPreview({
   }
   if (!text) return null;
   return (
-    <div className="activity-thought" role="group" aria-label="当前思考预览">
-      <div className="activity-thought__heading">{thinking ? "正在思考" : "最近思考"}</div>
+    <div className="activity-thought" role="group" aria-label={t("trace.thoughtPreview")}>
+      <div className="activity-thought__heading">{thinking ? t("trace.thinkingNow") : t("trace.recentThought")}</div>
       <ClippedBody className="activity-thought__body" maxHeight={72} stickToBottom>
         <MarkdownBody text={text} />
       </ClippedBody>
@@ -179,6 +194,7 @@ export function ActivityKindGroup({
   open,
   live = false,
   liveIcon,
+  cwd,
   onToggle,
   children,
 }: FoldProps) {
@@ -192,7 +208,7 @@ export function ActivityKindGroup({
         onToggle(details.open);
       }}
     >
-      <FoldSummary summary={summary} liveIcon={live ? liveIcon : null} />
+      <FoldSummary summary={summary} liveIcon={live ? liveIcon : null} cwd={cwd} />
       {open ? <div className="activity-kind__body">{children}</div> : null}
     </details>
   );
@@ -212,9 +228,10 @@ export function ActivityTimeline({
   /** Minimum axis span — short runs grow into it instead of stretching. */
   axisFloorMs?: number;
 }) {
+  const t = useT();
   const total = liveAxisMs(data.durationMs, axisFloorMs);
   return (
-    <div className="activity-timeline" role="img" aria-label={`运行时间轨迹，${formatSpanDuration(total)}`}>
+    <div className="activity-timeline" role="img" aria-label={t("trace.timelineLabel", { span: formatSpanDuration(total) })}>
       {data.lanes.map((bucket) => {
         const spans = data.spans.filter((span) => span.bucket === bucket);
         return (

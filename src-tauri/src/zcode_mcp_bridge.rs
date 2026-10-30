@@ -178,10 +178,10 @@ fn merge_zcode_config(
 ) -> Result<(String, BTreeMap<String, Value>, Vec<String>, bool), String> {
     let mut root: Map<String, Value> = match existing {
         Some(text) => serde_json::from_str::<Value>(text)
-            .map_err(|error| format!("config.json 不是合法 JSON（跳过同步）: {error}"))?
+            .map_err(|error| crate::ts!("config.json 不是合法 JSON（跳过同步）: {error}", "config.json is not valid JSON (sync skipped): {error}"))?
             .as_object()
             .cloned()
-            .ok_or_else(|| "config.json 顶层不是 JSON object（跳过同步）".to_string())?,
+            .ok_or_else(|| crate::ts!("config.json 顶层不是 JSON object（跳过同步）", "config.json top level is not a JSON object (sync skipped)"))?,
         None => Map::new(),
     };
     let before = serde_json::to_value(&root).unwrap_or(Value::Null);
@@ -193,7 +193,7 @@ fn merge_zcode_config(
     } else {
         root.remove("mcp")
             .and_then(|value| value.as_object().cloned())
-            .ok_or_else(|| "config.json 的 mcp 键存在但不是 object（跳过同步）".to_string())?
+            .ok_or_else(|| crate::ts!("config.json 的 mcp 键存在但不是 object（跳过同步）", "config.json has an mcp key but it is not an object (sync skipped)"))?
     };
     let mut servers: Map<String, Value> = mcp
         .remove("servers")
@@ -201,7 +201,7 @@ fn merge_zcode_config(
             value
                 .as_object()
                 .cloned()
-                .ok_or_else(|| "config.json 的 mcp.servers 不是 object（跳过同步）".to_string())
+                .ok_or_else(|| crate::ts!("config.json 的 mcp.servers 不是 object（跳过同步）", "config.json mcp.servers is not an object (sync skipped)"))
         })
         .transpose()?
         .unwrap_or_default();
@@ -248,7 +248,7 @@ impl SyncReport {
 /// 幂等；无变更不落盘（zcode 不必重读配置）。记 debug log 供排查。
 pub fn sync(project_roots: &[PathBuf]) -> Result<SyncReport, String> {
     let Some(config_path) = zcode_config_path() else {
-        return Err("无法定位用户目录".to_string());
+        return Err(crate::ts!("无法定位用户目录", "Could not locate the user directory"));
     };
     let sidecar = sidecar_path()?;
 

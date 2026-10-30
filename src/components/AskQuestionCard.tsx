@@ -1,5 +1,6 @@
 import { HelpCircle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useT } from "../lib/i18n";
 
 export type AskQuestionOption = {
   label: string;
@@ -66,6 +67,7 @@ export function AskQuestionCard({
   const total = questions.length;
   const [picks, setPicks] = useState<string[][]>(() => questions.map(() => []));
   const [otherText, setOtherText] = useState<string[]>(() => questions.map(() => ""));
+  const t = useT();
 
   const questionsRef = useRef(questions);
   questionsRef.current = questions;
@@ -132,17 +134,17 @@ export function AskQuestionCard({
           : "ask-card ask-card--composer-slot"
       }
       role="region"
-      aria-label="Agent 需要你选择"
+      aria-label={t("ask.needed")}
       aria-labelledby="ask-card-title"
     >
       <div className="ask-card__header">
         <HelpCircle size={14} aria-hidden />
         <div>
-          <strong id="ask-card-title">Agent 需要你选择</strong>
+          <strong id="ask-card-title">{t("ask.needed")}</strong>
           <span>
-            {prompt.mode ? `模式 · ${prompt.mode}` : "选择题"}
-            {total > 1 ? ` · ${total} 题` : ""}
-            {" · 在卡片上回复 · 输入框已收起"}
+            {prompt.mode ? t("ask.modeLabel", { mode: prompt.mode }) : t("ask.multipleChoice")}
+            {total > 1 ? t("ask.questionCount", { count: total }) : ""}
+            {t("ask.replyOnCard")}
           </span>
         </div>
       </div>
@@ -167,7 +169,7 @@ export function AskQuestionCard({
                 <div className="ask-card__qtext">
                   {q.header ? <span className="ask-card__chip">{q.header}</span> : null}
                   <p className="ask-card__prompt">{q.question}</p>
-                  {multi ? <span className="ask-card__hint">可多选</span> : null}
+                  {multi ? <span className="ask-card__hint">{t("ask.multiHint")}</span> : null}
                 </div>
               </div>
 
@@ -200,7 +202,7 @@ export function AskQuestionCard({
                           <span className="ask-card__option-label">
                             {text}
                             {recommended ? (
-                              <em className="ask-card__rec">荐</em>
+                              <em className="ask-card__rec">{t("ask.recommendedBadge")}</em>
                             ) : null}
                           </span>
                           {opt.description ? (
@@ -214,12 +216,12 @@ export function AskQuestionCard({
               </ul>
 
               <label className="ask-card__other">
-                <span>其他</span>
+                <span>{t("ask.other")}</span>
                 <input
                   type="text"
                   value={other}
                   disabled={busy}
-                  placeholder="可选：自己写答案"
+                  placeholder={t("ask.otherPlaceholder")}
                   onChange={(e) => {
                     const value = e.target.value;
                     setOtherText((prev) => {
@@ -242,7 +244,7 @@ export function AskQuestionCard({
           disabled={busy}
           onClick={onDecline}
         >
-          跳过，让 Agent 自己定
+          {t("ask.skip")}
         </button>
         <button
           type="button"
@@ -250,7 +252,7 @@ export function AskQuestionCard({
           disabled={busy || !allReady}
           onClick={submit}
         >
-          确认选择
+          {t("ask.confirm")}
         </button>
       </div>
     </section>

@@ -180,7 +180,7 @@ pub fn version_info(agent: &AgentConfig, check_registry: bool) -> AgentVersionIn
             installed: Some(env!("CARGO_PKG_VERSION").into()),
             latest: None,
             update_available: false,
-            note: Some("内置网页聊天桥，随 Marionette 更新".into()),
+            note: Some(crate::ts!("内置网页聊天桥，随 Marionette 更新", "Built-in web chat bridge; updates with Marionette")),
         };
     }
     let installed = installed_version(&agent.command);

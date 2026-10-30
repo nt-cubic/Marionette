@@ -1,4 +1,5 @@
 import { agentAuthSpec } from "./agentAuth";
+import { t } from "./i18n";
 
 export type AgentErrorKind =
   | "auth"
@@ -99,12 +100,12 @@ export function classifyAgentError(
   const authHint =
     spec?.errorHint ??
     (opts?.agentId
-      ? `点横幅 Sign in 登录 ${agentLabel}，或在终端运行对应登录命令后新建/重连会话。`
-      : "点横幅 Sign in，或在终端运行该 agent 的登录命令。");
+      ? t("errors.authHintAgent", { agent: agentLabel })
+      : t("errors.authHintGeneric"));
   const isGrok = opts?.agentId === "grok-build" || opts?.agentId === "grok";
   const upgradeHint = isGrok
-    ? "Grok CLI 版本过低。点横幅「更新」运行 `grok update`，完成后新建会话。"
-    : "这个 CLI 版本过低。按提示更新后新建会话。";
+    ? t("errors.upgradeHintGrok")
+    : t("errors.upgradeHintGeneric");
 
   // Before auth: a 426 body can mention `grok update` without being a login failure.
   if (
@@ -114,7 +115,7 @@ export function classifyAgentError(
   ) {
     return {
       kind: "upgrade",
-      title: "需要更新",
+      title: t("errors.upgradeTitle"),
       message,
       actionHint: upgradeHint,
     };
@@ -125,9 +126,9 @@ export function classifyAgentError(
   if (isAuthTransientMessage(message)) {
     return {
       kind: "auth_transient",
-      title: "认证暂时不可用",
+      title: t("errors.authTransientTitle"),
       message,
-      actionHint: "账号仍在登录。点重试，或稍后再发；不必重新 Sign in。",
+      actionHint: t("errors.authTransientHint"),
     };
   }
 
@@ -146,7 +147,7 @@ export function classifyAgentError(
     }
     return {
       kind: "auth",
-      title: "需要登录",
+      title: t("errors.authTitle"),
       message,
       actionHint: hint,
     };
@@ -159,19 +160,18 @@ export function classifyAgentError(
   ) {
     return {
       kind: "command_missing",
-      title: "找不到 Agent 命令",
+      title: t("errors.commandMissingTitle"),
       message,
-      actionHint:
-        "打开 Composer 里的 agent 菜单 — 有已知 npm 包的可点 Install。",
+      actionHint: t("errors.commandMissingHint"),
     };
   }
 
   if (/timeout|timed out|deadline|etimedout/i.test(message)) {
     return {
       kind: "timeout",
-      title: "超时",
+      title: t("errors.timeoutTitle"),
       message,
-      actionHint: "重试一次，或确认 agent 进程仍在响应。",
+      actionHint: t("errors.timeoutHint"),
     };
   }
 
@@ -182,19 +182,18 @@ export function classifyAgentError(
   ) {
     return {
       kind: "model",
-      title: "模型 / 配置不支持",
+      title: t("errors.modelTitle"),
       message,
-      actionHint: "换一个模型，或若该 agent 没有 effort 则清掉 strength。",
+      actionHint: t("errors.modelHint"),
     };
   }
 
   if (/archiv/i.test(lower)) {
     return {
       kind: "archived",
-      title: "会话已归档",
+      title: t("errors.archivedTitle"),
       message,
-      actionHint:
-        "Codex 把这条会话归档了。在终端运行 `codex unarchive <session-id>` 后再重连，或开一个新会话。",
+      actionHint: t("errors.archivedHint"),
     };
   }
 
@@ -205,51 +204,51 @@ export function classifyAgentError(
   ) {
     return {
       kind: "limit",
-      title: "额度用尽",
+      title: t("errors.limitTitle"),
       message,
-      actionHint: "等重置窗口过了再试，或换一个模型 / 账号。",
+      actionHint: t("errors.limitHint"),
     };
   }
 
   if (/network|econnrefused|enotfound|dns|socket|fetch failed|connection refused/i.test(message)) {
     return {
       kind: "network",
-      title: "网络",
+      title: t("errors.networkTitle"),
       message,
-      actionHint: "检查网络、代理与服务商状态后再试。",
+      actionHint: t("errors.networkHint"),
     };
   }
 
   if (/permission|denied|rejected|not allowed/i.test(lower) && !/auth/i.test(lower)) {
     return {
       kind: "permission",
-      title: "权限被拒绝",
+      title: t("errors.permissionTitle"),
       message,
-      actionHint: "在权限弹窗中确认，或检查项目路径是否已授权。",
+      actionHint: t("errors.permissionHint"),
     };
   }
 
   if (isTurnInFlightError(raw)) {
     return {
       kind: "busy",
-      title: "上一条指令还没跑完",
+      title: t("errors.busyTitle"),
       message,
-      actionHint: "等这一轮结束会自动发送；也可点停止（Esc）中断当前回合后再发。",
+      actionHint: t("errors.busyHint"),
     };
   }
 
   if (isSessionNotRunningError(raw)) {
     return {
       kind: "offline",
-      title: "Agent 进程已结束",
+      title: t("errors.offlineTitle"),
       message,
-      actionHint: "点重试会重新拉起进程并把这段历史接上去，不必新开对话。",
+      actionHint: t("errors.offlineHint"),
     };
   }
 
   return {
-    kind: "generic",
-    title: "Agent 错误",
+      kind: "generic",
+      title: t("errors.genericTitle"),
     message,
   };
 }
@@ -328,9 +327,9 @@ function bridgeCredentialHint(message: string, agentLabel: string): string {
   const goKeyExpired =
     /opencode\s*go/i.test(message) && /expired|过期/i.test(message);
   const expiry = goKeyExpired
-    ? "（上游是 OpenCode Go：这把 API Key 已在服务端过期，重新登录不会续期——去 OpenCode Console 换新 Key）"
+    ? t("errors.bridgeGoKeyExpired")
     : "";
-  return `当前模型走 Marionette 模型共享引擎（跨用）${expiry}。这个认证错误出在引擎的上游凭据，不是 ${agentLabel} 登录——在设置的凭据页更新对应渠道的 Key 后重试，或把模型换回 ${agentLabel} 原生渠道。`;
+  return t("errors.bridgeCredentialHint", { agent: agentLabel, expiry });
 }
 
 function openCodeAuthHint(
@@ -341,17 +340,17 @@ function openCodeAuthHint(
   const slash = model.indexOf("/");
   const provider = slash > 0 ? model.slice(0, slash) : "";
   if (provider === "opencode") {
-    return "当前模型是 OpenCode Zen（opencode/…）。点 Sign in 登录 Zen，或把模型换成 opencode-go/…、deepseek/… 这类已有 Key 的渠道。登录完成后会自动重连。";
+    return t("errors.openCodeZenHint");
   }
   if (provider) {
-    return `当前模型走 ${provider}。点 Sign in 登录该渠道，或在 Provider keys 里填 Key。登录完成后会自动重连。`;
+    return t("errors.openCodeProviderHint", { provider });
   }
   return fallback;
 }
 
 function grokApiKeySpawnHint(message: string): string | null {
   if (/auth:\s*apikey/i.test(message) && /auth_kind\s*=\s*none/i.test(message)) {
-    return "当前会话按 API Key 启动但没有可用的 Key。点 Sign in 登录 grok.com（完成后会自动重连），或换一个走 API 的模型。";
+    return t("errors.grokApiKeyHint");
   }
   return null;
 }

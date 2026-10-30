@@ -216,16 +216,16 @@ fn load_settings_at(path: &Path) -> TelegramSettings {
 
 fn save_settings_at(path: &Path, settings: &TelegramSettings) -> Result<(), String> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("创建 .marionette 目录失败: {e}"))?;
+        std::fs::create_dir_all(dir).map_err(|e| crate::ts!("创建 .marionette 目录失败: {e}", "Failed to create the .marionette directory: {e}"))?;
     }
     let body = serde_json::to_string_pretty(settings)
-        .map_err(|e| format!("序列化 telegram.json 失败: {e}"))?;
+        .map_err(|e| crate::ts!("序列化 telegram.json 失败: {e}", "Failed to serialize telegram.json: {e}"))?;
     // 临时兄弟文件 + rename 原子写（同凭据库模式）。
     let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, format!("{body}\n")).map_err(|e| format!("写入临时文件失败: {e}"))?;
+    std::fs::write(&tmp, format!("{body}\n")).map_err(|e| crate::ts!("写入临时文件失败: {e}", "Failed to write the temp file: {e}"))?;
     if let Err(error) = std::fs::rename(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
-        return Err(format!("重命名临时文件失败: {error}"));
+        return Err(crate::ts!("重命名临时文件失败: {error}", "Failed to rename the temp file: {error}"));
     }
     Ok(())
 }
@@ -828,8 +828,9 @@ pub fn observe_ui_event(session_id: &str, kind: &str, method: Option<&str>, data
                 let message = data
                     .get("message")
                     .and_then(Value::as_str)
-                    .unwrap_or("agent 进程退出");
-                push_simple(&live, session_id, "💀", "agent 进程退出", Some(message));
+                    .map(str::to_string)
+                    .unwrap_or_else(|| crate::ts!("agent 进程退出", "agent process exited"));
+                push_simple(&live, session_id, "💀", &crate::ts!("agent 进程退出", "agent process exited"), Some(&message));
             }
             schedule_dashboard(slot);
         }
@@ -1018,10 +1019,10 @@ fn observe_turn_complete(
                 .unwrap_or_else(|| {
                     data.get("message")
                         .and_then(Value::as_str)
-                        .unwrap_or("回合报错")
-                        .to_string()
-                });
-            push_simple(live, session_id, "⚠️", "回合出错", Some(&clip(&message, 600)));
+                        .map(str::to_string)
+                        .unwrap_or_else(|| crate::ts!("回合报错", "Turn failed with an error"))
+                 });
+            push_simple(live, session_id, "⚠️", &crate::ts!("回合出错", "Turn error"), Some(&clip(&message, 600)));
         }
         return;
     }
@@ -1036,7 +1037,7 @@ fn observe_turn_complete(
         Some(elapsed) => format!("[{label}] {icon} {head} · {}", format_duration(elapsed)),
         None => format!("[{label}] {icon} {head}"),
     };
-    let footer = "💬 直接回复这条消息 = 继续这个会话";
+    let footer = &crate::ts!("💬 直接回复这条消息 = 继续这个会话", "💬 Reply directly to this message = continue this session");
     let body = tail.trim();
     if live.prefs.content_preview && !body.is_empty() {
         enqueue_reply_push(live, &header, body, footer, session_id);
@@ -1099,11 +1100,12 @@ fn observe_permission_prompt(
     let title = data
         .get("title")
         .and_then(Value::as_str)
-        .unwrap_or("需要批准");
+        .map(str::to_string)
+        .unwrap_or_else(|| crate::ts!("需要批准", "Needs approval"));
     let detail = data.get("detail").and_then(Value::as_str);
 
     let label = session_label(session_id);
-    let mut text = format!("[{label}] ⏸ 等你批准：{title}");
+    let mut text = crate::ts!("[{label}] ⏸ 等你批准：{title}", "[{label}] ⏸ Waiting on your approval: {title}");
     if let Some(detail) = detail.filter(|d| !d.trim().is_empty()) {
         text.push_str("\n");
         text.push_str(&clip(&render_tool_detail(detail), 800));
@@ -1195,7 +1197,7 @@ fn observe_question_prompt(
 
     match question_push_plan(questions.as_ref()) {
         QuestionPush::Buttons { question, options } => {
-            let text = format!("[{label}] ❓ agent 问你：{question}");
+            let text = crate::ts!("[{label}] ❓ agent 问你：{question}", "[{label}] ❓ The agent asks you: {question}");
             let mut buttons = Vec::new();
             for option_label in options.iter().take(8) {
                 let (button, callback_id, action) = make_button(
@@ -1222,7 +1224,7 @@ fn observe_question_prompt(
                     session_id: session_id.to_string(),
                     request_id: request_id.to_string(),
                 },
-                "跳过",
+                &crate::ts!("跳过", "Skip"),
             );
             buttons.push(button);
             if let Ok(mut inner) = slot.inner.lock() {
@@ -1231,7 +1233,7 @@ fn observe_question_prompt(
             enqueue_send(live, text, buttons, Some(session_id.to_string()), None);
         }
         QuestionPush::TextOnly { body } => {
-            let text = format!("[{label}] ❓ agent 问你（多问题/多选，回电脑答）：\n{body}");
+            let text = crate::ts!("[{label}] ❓ agent 问你（多问题/多选，回电脑答）：\n{body}", "[{label}] ❓ The agent asks you (multi-question/multi-select — answer on the computer):\n{body}");
             enqueue_send(live, text, Vec::new(), Some(session_id.to_string()), None);
         }
     }
@@ -1260,7 +1262,7 @@ fn observe_plan_prompt(slot: &'static Telegram, session_id: &str, data: &Value, 
     let label = session_label(session_id);
     // MarkdownV2 优先渲染（计划正文就是 markdown），纯文本回退体带原文。
     let trimmed = plan.trim();
-    let mut md = format!("[{label}] 📋 计划待审");
+    let mut md = crate::ts!("[{label}] 📋 计划待审", "[{label}] 📋 Plan awaiting review");
     let mut plain = md.clone();
     if live.prefs.content_preview && !trimmed.is_empty() {
         let body = clip(trimmed, 1500);
@@ -1270,7 +1272,7 @@ fn observe_plan_prompt(slot: &'static Telegram, session_id: &str, data: &Value, 
         plain.push_str(&body);
     }
     let mut buttons = Vec::new();
-    for (button_text, decision) in [("✅ 批准", "approve"), ("✏️ 继续改", "request_changes")] {
+    for (button_text, decision) in [(crate::ts!("✅ 批准", "✅ Approve"), "approve"), (crate::ts!("✏️ 继续改", "✏️ Request changes"), "request_changes")] {
         let (button, callback_id, action) = make_button(
             slot,
             CallbackAction::Plan {
@@ -1279,7 +1281,7 @@ fn observe_plan_prompt(slot: &'static Telegram, session_id: &str, data: &Value, 
                 decision: decision.to_string(),
                 decision_label: button_text.to_string(),
             },
-            button_text,
+            &button_text,
         );
         buttons.push(button);
         if let Ok(mut inner) = slot.inner.lock() {
@@ -1323,7 +1325,7 @@ struct DashRow {
 fn render_dashboard(rows: &[DashRow], idle_count: usize) -> String {
     let running = rows.iter().filter(|r| r.state == DashState::Running).count();
     let waiting = rows.iter().filter(|r| r.state == DashState::Waiting).count();
-    let mut head = String::from("📌 Marionette 总控");
+    let mut head = crate::ts!("📌 Marionette 总控", "📌 Marionette Dashboard");
     if running + waiting > 0 {
         head.push_str(&format!(" · ▶{running} ⏸{waiting}"));
     }
@@ -1346,9 +1348,10 @@ fn render_dashboard(rows: &[DashRow], idle_count: usize) -> String {
                     .unwrap_or_else(|| "…".to_string());
                 format!("{marker}▶ [{}]{agent} · {dur}", row.label)
             }
-            DashState::Waiting => format!("{marker}⏸ [{}] · 等你", row.label),
-            DashState::Idle => format!(
+            DashState::Waiting => crate::ts!("{marker}⏸ [{}] · 等你", "{marker}⏸ [{}] · Waiting on you", row.label),
+            DashState::Idle => crate::ts!(
                 "{marker}💤 [{}] · {}前有动静",
+                "{marker}💤 [{}] · Active {} ago",
                 row.label,
                 format_age_short(row.idle_secs)
             ),
@@ -1356,32 +1359,33 @@ fn render_dashboard(rows: &[DashRow], idle_count: usize) -> String {
         lines.push(line);
     }
     if lines.is_empty() {
-        out.push_str("💤 没有会话在跑\n");
+        out.push_str(&crate::ts!("💤 没有会话在跑\n", "💤 No sessions running\n"));
     } else {
         out.push_str(&lines.join("\n"));
         out.push('\n');
     }
     if idle_count > 0 {
-        out.push_str(&format!("\n💤 其余 {idle_count} 个会话空闲"));
+        out.push_str(&crate::ts!("\n💤 其余 {idle_count} 个会话空闲", "\n💤 {idle_count} other sessions idle"));
     }
-    out.push_str("\n💡 点会话名 = 切换绑定 · 📄 = 会话详情 · /status 看全部");
+    out.push_str(&crate::ts!("\n💡 点会话名 = 切换绑定 · 📄 = 会话详情 · /status 看全部", "\n💡 Tap a session name = rebind · 📄 = session details · /status for all"));
     out
 }
 
 /// 纯渲染：/status 全量清单文本。
 fn render_status(rows: &[DashRow], total: usize) -> String {
-    let mut out = format!("📋 会话清单（{}/{}）\n\n", rows.len(), total);
+    let mut out = crate::ts!("📋 会话清单（{}/{}）\n\n", "📋 Sessions ({}/{})\n\n", rows.len(), total);
     let lines: Vec<String> = rows
         .iter()
         .map(|row| {
             let marker = if row.bound { "⏎ " } else { "" };
             let tail = match row.state {
-                DashState::Running => format!(
+                DashState::Running => crate::ts!(
                     "跑了 {}",
+                    "Running for {}",
                     row.elapsed_secs.map(format_duration_secs).unwrap_or_default()
                 ),
-                DashState::Waiting => "等你批准/回答".to_string(),
-                DashState::Idle => format!("{}前有动静", format_age_short(row.idle_secs)),
+                DashState::Waiting => crate::ts!("等你批准/回答", "Waiting on you to approve/answer"),
+                DashState::Idle => crate::ts!("{}前有动静", "Active {} ago", format_age_short(row.idle_secs)),
             };
             let agent = if row.agent.is_empty() {
                 String::new()
@@ -1392,7 +1396,7 @@ fn render_status(rows: &[DashRow], total: usize) -> String {
         })
         .collect();
     out.push_str(&lines.join("\n"));
-    out.push_str("\n\n💬 回复某条通知 = 定向送达；裸发文字 → ⏎ 标记的会话（总控面板上可点选）。");
+    out.push_str(&crate::ts!("\n\n💬 回复某条通知 = 定向送达；裸发文字 → ⏎ 标记的会话（总控面板上可点选）。", "\n\n💬 Reply to a notice = deliver to that session; plain text → the ⏎-marked session (tap to choose on the dashboard)."));
     out
 }
 
@@ -1463,7 +1467,7 @@ fn dashboard_parts(slot: &'static Telegram) -> (String, Vec<Vec<TgButton>>, bool
         keyboard.push(line);
     }
     let (refresh_btn, refresh_id, refresh_action) =
-        make_button(slot, CallbackAction::RefreshDashboard, "🔄 刷新");
+        make_button(slot, CallbackAction::RefreshDashboard, &crate::ts!("🔄 刷新", "🔄 Refresh"));
     actions.push((refresh_btn.clone(), refresh_id, refresh_action));
     keyboard.push(vec![refresh_btn]);
     if let Ok(mut inner) = slot.inner.lock() {
@@ -1502,7 +1506,7 @@ fn session_detail_parts(
 
     let mut actions: Vec<(TgButton, u64, CallbackAction)> = Vec::new();
     let mut keyboard: Vec<Vec<TgButton>> = Vec::new();
-    let (back_btn, back_id, back_action) = make_button(slot, CallbackAction::PanelBack, "⬅ 返回总控");
+    let (back_btn, back_id, back_action) = make_button(slot, CallbackAction::PanelBack, &crate::ts!("⬅ 返回总控", "⬅ Back to dashboard"));
     actions.push((back_btn.clone(), back_id, back_action));
     let mut line = vec![back_btn];
     if row.state != DashState::Idle {
@@ -1512,7 +1516,7 @@ fn session_detail_parts(
                 session_id: session_id.to_string(),
                 label: row.label.clone(),
             },
-            "⏹ 停止",
+            &crate::ts!("⏹ 停止", "⏹ Stop"),
         );
         actions.push((stop_btn.clone(), stop_id, stop_action));
         line.push(stop_btn);
@@ -1524,7 +1528,7 @@ fn session_detail_parts(
             session_id: session_id.to_string(),
             label: row.label.clone(),
         },
-        "⏎ 设为绑定",
+        &crate::ts!("⏎ 设为绑定", "⏎ Set as bound"),
     );
     actions.push((bind_btn.clone(), bind_id, bind_action));
     keyboard.push(vec![bind_btn]);
@@ -1574,24 +1578,25 @@ fn render_session_detail(row: &DashRow, body: &str, body_allowed: bool) -> Strin
         format!(" · {}", row.agent)
     };
     let state_line = match row.state {
-        DashState::Running => format!(
+        DashState::Running => crate::ts!(
             "▶ 跑了 {}",
+            "▶ Running for {}",
             row.elapsed_secs
                 .map(format_duration_secs)
                 .unwrap_or_else(|| "…".to_string())
         ),
-        DashState::Waiting => "⏸ 等你批准/回答".to_string(),
-        DashState::Idle => format!("💤 {}前有动静", format_age_short(row.idle_secs)),
+        DashState::Waiting => crate::ts!("⏸ 等你批准/回答", "⏸ Waiting on you to approve/answer"),
+        DashState::Idle => crate::ts!("💤 {}前有动静", "💤 Active {} ago", format_age_short(row.idle_secs)),
     };
     let mut out = format!("📄 {marker}[{}]{agent} · {state_line}\n\n", row.label);
     if !body_allowed {
-        out.push_str("🔒 内容预览已关闭——正文不出本机（设置里可开）");
+        out.push_str(&crate::ts!("🔒 内容预览已关闭——正文不出本机（设置里可开）", "🔒 Content preview is off — message bodies stay on this computer (enable in settings)"));
     } else if body.trim().is_empty() {
-        out.push_str("（最近一条回复为空——回合还没跑完，或 agent 没有输出文本）");
+        out.push_str(&crate::ts!("（最近一条回复为空——回合还没跑完，或 agent 没有输出文本）", "(last reply is empty — the turn isn't finished, or the agent produced no text)"));
     } else {
         out.push_str(body.trim());
     }
-    out.push_str("\n\n💡 回复任意一条通知 = 定向继续这个会话");
+    out.push_str(&crate::ts!("\n\n💡 回复任意一条通知 = 定向继续这个会话", "\n\n💡 Reply to any notice = continue that session directly"));
     out
 }
 
@@ -1672,13 +1677,13 @@ fn format_duration_secs(secs: u64) -> String {
 /// 闲置年龄（「N前有动静」）：分钟/小时取整即可，秒级精确反而啰嗦。
 fn format_age_short(secs: u64) -> String {
     if secs < 60 {
-        format!("{secs}秒")
+        crate::ts!("{secs}秒", "{secs}s")
     } else if secs < 3600 {
-        format!("{}分钟", secs / 60)
+        crate::ts!("{}分钟", "{}m", secs / 60)
     } else if secs < 86400 {
-        format!("{}小时{}分", secs / 3600, secs % 3600 / 60)
+        crate::ts!("{}小时{}分", "{}h{}m", secs / 3600, secs % 3600 / 60)
     } else {
-        format!("{}天", secs / 86400)
+        crate::ts!("{}天", "{}d", secs / 86400)
     }
 }
 
@@ -1705,7 +1710,7 @@ fn push_simple(live: &LiveConfig, session_id: &str, icon: &str, head: &str, deta
     let label = session_label(session_id);
     let mut text = format!("[{label}] {icon} {head}");
     if let Some(detail) = detail.filter(|d| !d.trim().is_empty()) {
-        text.push('：');
+        text.push_str(&crate::ts!("：", ":"));
         text.push_str(&clip(detail.trim(), 600));
     }
     enqueue_send(live, text, Vec::new(), Some(session_id.to_string()), None);
@@ -1826,10 +1831,11 @@ fn sender_loop(slot: &'static Telegram, rx: std::sync::mpsc::Receiver<Outbound>)
                 reply_to: reply,
             } => {
                 job_text = if ok {
-                    format!("✓ 已送进 [{session_label}]")
+                    crate::ts!("✓ 已送进 [{session_label}]", "✓ Delivered to [{session_label}]")
                 } else {
-                    format!(
+                    crate::ts!(
                         "⚠️ 没送进去（{session_label}）：{}",
+                        "⚠️ Not delivered ({session_label}): {}",
                         clip(&error.unwrap_or_default(), 400)
                     )
                 };
@@ -1945,13 +1951,13 @@ fn deliver_turn_reply(
             plain.push_str("\n\n");
             plain.push_str(footer);
             if truncated {
-                let note = "\n…（正文太长已截断，回电脑看全文）";
-                md.push_str(&md_escape(note));
-                plain.push_str(note);
+                let note = crate::ts!("\n…（正文太长已截断，回电脑看全文）", "\n…(body truncated — see the full text on the computer)");
+                md.push_str(&md_escape(&note));
+                plain.push_str(&note);
             }
         } else {
-            md.push_str(&md_escape("…（接下条）"));
-            plain.push_str("\n…（接下条）");
+            md.push_str(&md_escape(&crate::ts!("…（接下条）", "…(continued next message)")));
+            plain.push_str(&crate::ts!("\n…（接下条）", "\n…(continued next message)"));
         }
         match send_message(live, &md, &[], None, Some("MarkdownV2"), Some(&plain)) {
             Ok(Some(message_id)) => {
@@ -2449,7 +2455,7 @@ fn handle_incoming_message(slot: &'static Telegram, live: &LiveConfig, message: 
                 let Some(session_id) = target else {
                     enqueue_send(
                         live,
-                        "还不知道要切哪个会话——回复它的某条通知再发 /model，或先在总控面板点它的名字绑定。".to_string(),
+                        crate::ts!("还不知道要切哪个会话——回复它的某条通知再发 /model，或先在总控面板点它的名字绑定。", "Not sure which session to switch — reply to one of its notices then /model, or tap its name on the dashboard to bind it first."),
                         Vec::new(),
                         None,
                         message_id,
@@ -2462,10 +2468,10 @@ fn handle_incoming_message(slot: &'static Telegram, live: &LiveConfig, message: 
                 send_resume_menu(slot, live, 0, message_id, None);
             }
             "/help" | "/start" => {
-                enqueue_send(live, HELP_TEXT.to_string(), Vec::new(), None, message_id);
+                enqueue_send(live, help_text(), Vec::new(), None, message_id);
             }
             _ => {
-                enqueue_send(live, HELP_TEXT.to_string(), Vec::new(), None, message_id);
+                enqueue_send(live, help_text(), Vec::new(), None, message_id);
             }
         }
         return;
@@ -2493,7 +2499,7 @@ fn handle_incoming_message(slot: &'static Telegram, live: &LiveConfig, message: 
                 );
                 enqueue_send(
                     live,
-                    "这条被回复的消息太旧（或 Marionette 重启过），认不出它属于哪个会话——改用 /resume 选一个会话再发。".to_string(),
+                    crate::ts!("这条被回复的消息太旧（或 Marionette 重启过），认不出它属于哪个会话——改用 /resume 选一个会话再发。", "This replied-to message is too old (or Marionette restarted), so its session can't be identified — use /resume to pick a session instead."),
                     Vec::new(),
                     None,
                     message_id,
@@ -2511,7 +2517,7 @@ fn handle_incoming_message(slot: &'static Telegram, live: &LiveConfig, message: 
     let Some(session_id) = target else {
         enqueue_send(
             live,
-            "还没有可以投递的会话——先在电脑上开一个对话框，或回复某条通知来指定。".to_string(),
+            crate::ts!("还没有可以投递的会话——先在电脑上开一个对话框，或回复某条通知来指定。", "No session to deliver to yet — open a conversation on the computer first, or reply to a notice to target one."),
             Vec::new(),
             None,
             message_id,
@@ -2544,7 +2550,9 @@ const WIZARD_MAX_PROJECTS: usize = 7;
 /// /new 第 2 步最多列出的 agent 数。
 const WIZARD_MAX_AGENTS: usize = 10;
 
-const HELP_TEXT: &str = "命令：
+fn help_text() -> String {
+    crate::ts!(
+        "命令：
 /new — 新建对话（在哪建 → agent → 模型 → 编辑模式，一步步选）
 /resume — 继续过往会话（列出全部历史对话，点一个直接接着聊）
 /model — 切换模型（回复某条通知 = 切那个会话；裸发 = 切 ⏎ 绑定的会话）
@@ -2552,7 +2560,18 @@ const HELP_TEXT: &str = "命令：
 /help — 本说明
 
 直接发文字 → 送进 ⏎ 当前绑定的会话（总控面板上点会话名切换绑定）；
-回复某条通知 → 定向送达那个会话；点 📄 看会话详情、⏹ 远程停止。";
+回复某条通知 → 定向送达那个会话；点 📄 看会话详情、⏹ 远程停止。",
+        "Commands:
+/new — new conversation (where → agent → model → edit mode, step by step)
+/resume — resume a past session (lists every historical conversation; tap one to keep chatting)
+/model — switch model (reply to a notice = that session; plain send = the ⏎-bound session)
+/status — status list of all sessions
+/help — this help
+
+Plain text → goes to the ⏎ currently bound session (tap a session name on the dashboard to rebind);
+Reply to a notice → delivered to that session; tap 📄 for session details, ⏹ to stop remotely."
+    )
+}
 
 /// storage 的项目清单（侧栏顺序）。绝不能持有 telegram inner 锁时调用。
 fn live_projects(slot: &'static Telegram) -> Vec<(String, String)> {
@@ -2604,7 +2623,7 @@ fn start_new_session_wizard(slot: &'static Telegram, live: &LiveConfig, reply_to
     let total = projects.len();
     let projects: Vec<_> = projects.into_iter().take(WIZARD_MAX_PROJECTS).collect();
 
-    let mut rows: Vec<Vec<(CallbackAction, String)>> = vec![vec![(CallbackAction::NewDestChat, "💬 聊天".into())]];
+    let mut rows: Vec<Vec<(CallbackAction, String)>> = vec![vec![(CallbackAction::NewDestChat, crate::ts!("💬 聊天", "💬 Chat"))]];
     for (id, name) in &projects {
         rows.push(vec![(
             CallbackAction::NewDestProject {
@@ -2614,7 +2633,7 @@ fn start_new_session_wizard(slot: &'static Telegram, live: &LiveConfig, reply_to
             format!("📁 {}", clip(name, 40)),
         )]);
     }
-    rows.push(vec![(CallbackAction::NewCancel, "✖ 取消".into())]);
+    rows.push(vec![(CallbackAction::NewCancel, crate::ts!("✖ 取消", "✖ Cancel"))]);
     let (keyboard, pending) = assemble_keyboard(slot, rows);
 
     // 新 /new 覆盖旧向导（旧按钮按下时按过期处理）。
@@ -2632,11 +2651,11 @@ fn start_new_session_wizard(slot: &'static Telegram, live: &LiveConfig, reply_to
 
     let overflow = total.saturating_sub(projects.len());
     let note = if overflow > 0 {
-        format!("\n（还有 {overflow} 个项目没列出——先在电脑上切过去再 /new，或在聊天区建）")
+        crate::ts!("\n（还有 {overflow} 个项目没列出——先在电脑上切过去再 /new，或在聊天区建）", "\n({overflow} more projects not listed — switch to one on the computer before /new, or create in chat)")
     } else {
         String::new()
     };
-    let text = format!("🆕 新建对话 · 1/4 在哪建？{note}");
+    let text = crate::ts!("🆕 新建对话 · 1/4 在哪建？{note}", "🆕 New conversation · 1/4 Where? {note}");
     let _ = send_message(live, &text, &keyboard, reply_to, None, None);
 }
 
@@ -2658,10 +2677,10 @@ fn send_wizard_agent_step(slot: &'static Telegram, live: &LiveConfig, reply_to: 
             clip(label, 48),
         )]);
     }
-    rows.push(vec![(CallbackAction::NewCancel, "✖ 取消".into())]);
+    rows.push(vec![(CallbackAction::NewCancel, crate::ts!("✖ 取消", "✖ Cancel"))]);
     let (keyboard, pending) = assemble_keyboard(slot, rows);
     register_callbacks(slot, pending);
-    let _ = send_message(live, "🆕 新建对话 · 2/4 用哪个 agent？", &keyboard, reply_to, None, None);
+    let _ = send_message(live, &crate::ts!("🆕 新建对话 · 2/4 用哪个 agent？", "🆕 New conversation · 2/4 Which agent?"), &keyboard, reply_to, None, None);
 }
 
 /// 当前向导快照（dest + agent 都已就绪才返回）。
@@ -2677,7 +2696,7 @@ fn wizard_ready(slot: &'static Telegram) -> Option<(WizardDest, String, String)>
 /// /new 第 3 步：模型清单（agent 任一活跃会话的 caps；没有就跳过）。
 fn send_wizard_model_step(slot: &'static Telegram, live: &LiveConfig, reply_to: Option<i64>) {
     let Some((_dest, agent_id, agent_label)) = wizard_ready(slot) else {
-        let _ = send_message(live, "向导已过期——重新发 /new 开始。", &[], reply_to, None, None);
+        let _ = send_message(live, &crate::ts!("向导已过期——重新发 /new 开始。", "The wizard expired — send /new to start over."), &[], reply_to, None, None);
         return;
     };
     let caps = slot.acp.agent_capability_snapshot(&agent_id);
@@ -2685,8 +2704,9 @@ fn send_wizard_model_step(slot: &'static Telegram, live: &LiveConfig, reply_to: 
         // 无活跃会话拿不到目录：跳过模型与模式，直接创建（前端继承该 agent 最近的选择）。
         let _ = send_message(
             live,
-            &format!(
-                "🆕 {agent_label}：现在没有活跃会话，模型清单拿不到——先沿用默认，建好后可用 /model 切。"
+            &crate::ts!(
+                "🆕 {agent_label}：现在没有活跃会话，模型清单拿不到——先沿用默认，建好后可用 /model 切。",
+                "🆕 {agent_label}: no active session right now, so the model list is unavailable — the default is used for now; switch with /model once created."
             ),
             &[],
             reply_to,
@@ -2710,7 +2730,7 @@ fn send_wizard_model_page(
     host_message: Option<i64>,
 ) {
     let (text, range) = model_page_parts(
-        &format!("🆕 新建对话 · 3/4 {agent_label} 用哪个模型？"),
+        &crate::ts!("🆕 新建对话 · 3/4 {agent_label} 用哪个模型？", "🆕 New conversation · 3/4 Which model for {agent_label}?"),
         &caps.models,
         offset,
     );
@@ -2732,8 +2752,8 @@ fn send_wizard_model_page(
         (None, None) => {}
     }
     rows.push(vec![
-        (CallbackAction::NewModel { model_id: String::new(), model_label: "默认".into() }, "↩ 默认（沿用最近）".into()),
-        (CallbackAction::NewCancel, "✖ 取消".into()),
+        (CallbackAction::NewModel { model_id: String::new(), model_label: crate::ts!("默认", "Default") }, crate::ts!("↩ 默认（沿用最近）", "↩ Default (keep recent)")),
+        (CallbackAction::NewCancel, crate::ts!("✖ 取消", "✖ Cancel")),
     ]);
     let (keyboard, pending) = assemble_keyboard(slot, rows);
     register_callbacks(slot, pending);
@@ -2748,7 +2768,7 @@ fn send_wizard_mode_step(
     model: Option<(String, String)>,
 ) {
     let Some((_, agent_id, agent_label)) = wizard_ready(slot) else {
-        let _ = send_message(live, "向导已过期——重新发 /new 开始。", &[], reply_to, None, None);
+        let _ = send_message(live, &crate::ts!("向导已过期——重新发 /new 开始。", "The wizard expired — send /new to start over."), &[], reply_to, None, None);
         return;
     };
     // 把模型选择记进向导。
@@ -2774,14 +2794,14 @@ fn send_wizard_mode_step(
         )]);
     }
     rows.push(vec![
-        (CallbackAction::NewMode { mode_id: String::new(), mode_label: "默认".into() }, "↩ 不指定".into()),
-        (CallbackAction::NewCancel, "✖ 取消".into()),
+        (CallbackAction::NewMode { mode_id: String::new(), mode_label: crate::ts!("默认", "Default") }, crate::ts!("↩ 不指定", "↩ Unspecified")),
+        (CallbackAction::NewCancel, crate::ts!("✖ 取消", "✖ Cancel")),
     ]);
     let (keyboard, pending) = assemble_keyboard(slot, rows);
     register_callbacks(slot, pending);
     let _ = send_message(
         live,
-        &format!("🆕 新建对话 · 4/4 {agent_label} 用什么编辑模式？"),
+        &crate::ts!("🆕 新建对话 · 4/4 {agent_label} 用什么编辑模式？", "🆕 New conversation · 4/4 Which edit mode for {agent_label}?"),
         &keyboard,
         reply_to,
         None,
@@ -2802,15 +2822,15 @@ fn wizard_finalize(
         .ok()
         .and_then(|mut inner| inner.wizard.take());
     let Some(wizard) = wizard else {
-        let _ = send_message(live, "向导已过期——重新发 /new 开始。", &[], reply_to, None, None);
+        let _ = send_message(live, &crate::ts!("向导已过期——重新发 /new 开始。", "The wizard expired — send /new to start over."), &[], reply_to, None, None);
         return;
     };
     let Some(dest) = wizard.dest else {
-        let _ = send_message(live, "向导状态不完整——重新发 /new 开始。", &[], reply_to, None, None);
+        let _ = send_message(live, &crate::ts!("向导状态不完整——重新发 /new 开始。", "The wizard state is incomplete — send /new to start over."), &[], reply_to, None, None);
         return;
     };
     if wizard.agent_id.is_empty() {
-        let _ = send_message(live, "向导状态不完整——重新发 /new 开始。", &[], reply_to, None, None);
+        let _ = send_message(live, &crate::ts!("向导状态不完整——重新发 /new 开始。", "The wizard state is incomplete — send /new to start over."), &[], reply_to, None, None);
         return;
     }
     let (chat, project_id) = match &dest {
@@ -2818,15 +2838,16 @@ fn wizard_finalize(
         WizardDest::Project { id, .. } => (false, Some(id.clone())),
     };
     let model = wizard.model.flatten();
-    let summary = format!(
+    let summary = crate::ts!(
         "🛠 正在创建：{} · {} · 模型 {} · 模式 {}",
+        "🛠 Creating: {} · {} · model {} · mode {}",
         match &dest {
-            WizardDest::Chat => "聊天".to_string(),
+            WizardDest::Chat => crate::ts!("聊天", "chat"),
             WizardDest::Project { name, .. } => name.clone(),
         },
         wizard.agent_label,
-        model.as_ref().map(|(_, label)| label.clone()).unwrap_or_else(|| "默认".into()),
-        mode.as_ref().map(|(_, label)| label.clone()).unwrap_or_else(|| "默认".into()),
+        model.as_ref().map(|(_, label)| label.clone())        .unwrap_or_else(|| crate::ts!("默认", "Default")),
+        mode.as_ref().map(|(_, label)| label.clone())        .unwrap_or_else(|| crate::ts!("默认", "Default")),
     );
     let _ = send_message(live, &summary, &[], reply_to, None, None);
     let payload_model_id = model.as_ref().map(|(id, _)| id.clone());
@@ -2861,7 +2882,7 @@ fn model_page_parts(
     let end = (start + MODEL_PAGE_SIZE).min(total);
     let page_no = start / MODEL_PAGE_SIZE + 1;
     let pages = total.div_ceil(MODEL_PAGE_SIZE);
-    let text = format!("{title}\n第 {page_no}/{pages} 页 · 共 {total} 个");
+    let text = crate::ts!("{title}\n第 {page_no}/{pages} 页 · 共 {total} 个", "{title}\nPage {page_no}/{pages} · {total} total");
     (text, start..end)
 }
 
@@ -2876,8 +2897,8 @@ fn page_nav(
     Option<(CallbackAction, String)>,
 ) {
     (
-        has_prev.then(|| (prev_action, "◀ 上一页".into())),
-        has_next.then(|| (next_action, "下一页 ▶".into())),
+        has_prev.then(|| (prev_action, crate::ts!("◀ 上一页", "◀ Prev"))),
+        has_next.then(|| (next_action, crate::ts!("下一页 ▶", "Next ▶"))),
     )
 }
 
@@ -2898,8 +2919,9 @@ fn send_model_menu(
     let Some(caps) = caps.filter(|caps| !caps.models.is_empty()) else {
         let _ = send_message(
             live,
-            &format!(
+            &crate::ts!(
                 "[{}] 这个 agent 现在没有活跃会话，拿不到模型清单——先发一条消息把它唤醒，再 /model。",
+                "[{}] has no active session right now, so the model list is unavailable — send it a message to wake it up, then /model.",
                 meta.label
             ),
             &[],
@@ -2910,7 +2932,7 @@ fn send_model_menu(
         return;
     };
     let (text, range) = model_page_parts(
-        &format!("🔀 [{}] 切到哪个模型？", meta.label),
+        &crate::ts!("🔀 [{}] 切到哪个模型？", "🔀 Which model for [{}]?", meta.label),
         &caps.models,
         offset,
     );
@@ -2947,7 +2969,7 @@ fn send_model_menu(
     } else if let Some(nav) = prev.or(next) {
         rows.push(vec![nav]);
     }
-    rows.push(vec![(CallbackAction::DismissMenu, "✖ 关闭".into())]);
+    rows.push(vec![(CallbackAction::DismissMenu, crate::ts!("✖ 关闭", "✖ Close"))]);
     let (keyboard, pending) = assemble_keyboard(slot, rows);
     register_callbacks(slot, pending);
     deliver_menu(live, &text, &keyboard, reply_to, host_message);
@@ -3007,11 +3029,11 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
     };
 
     let Some(data) = callback.get("data").and_then(Value::as_str) else {
-        answer("无法解析按钮");
+        answer(&crate::ts!("无法解析按钮", "Could not parse this button"));
         return;
     };
     let Ok(id) = data.parse::<u64>() else {
-        answer("无法解析按钮");
+        answer(&crate::ts!("无法解析按钮", "Could not parse this button"));
         return;
     };
     let Some(action) = slot
@@ -3020,7 +3042,7 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
         .ok()
         .and_then(|mut inner| inner.callbacks.remove(&id))
     else {
-        answer("这条已处理或已过期");
+        answer(&crate::ts!("这条已处理或已过期", "Already handled or expired"));
         return;
     };
 
@@ -3035,7 +3057,7 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
             .respond_permission(request_id, option_id)
             .map(|_| {
                 emit_resolved(slot, session_id, "permission/resolved", request_id);
-                format!("已选：{option_label}")
+                crate::ts!("已选：{option_label}", "Chosen: {option_label}")
             }),
         CallbackAction::Question {
             session_id,
@@ -3048,7 +3070,7 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
                 .respond_question(request_id, answers, false)
                 .map(|_| {
                     emit_resolved(slot, session_id, "question/resolved", request_id);
-                    format!("已选：{selected}")
+                    crate::ts!("已选：{selected}", "Chosen: {selected}")
                 })
         }
         CallbackAction::QuestionDecline {
@@ -3059,7 +3081,7 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
             .respond_question(request_id, json!([]), true)
             .map(|_| {
                 emit_resolved(slot, session_id, "question/resolved", request_id);
-                "已跳过".to_string()
+                crate::ts!("已跳过", "Skipped")
             }),
         CallbackAction::Plan {
             session_id,
@@ -3078,29 +3100,29 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
                 inner.last_user_session = Some(session_id.clone());
             }
             schedule_dashboard(slot);
-            Ok(format!("⏎ 裸发文字将送进 [{label}]"))
+            Ok(crate::ts!("⏎ 裸发文字将送进 [{label}]", "⏎ Plain text will go to [{label}]"))
         }
         CallbackAction::StopTurn { session_id, label } => slot
             .acp
             .cancel(session_id)
-            .map(|()| format!("⏹ 已请求停止 [{label}]")),
+            .map(|()| crate::ts!("⏹ 已请求停止 [{label}]", "⏹ Stop requested for [{label}]")),
         CallbackAction::ViewSession { session_id, label } => {
             if let Ok(mut inner) = slot.inner.lock() {
                 inner.view = PanelView::Session(session_id.clone());
             }
             schedule_dashboard(slot);
-            Ok(format!("📄 [{label}] 详情"))
+            Ok(crate::ts!("📄 [{label}] 详情", "📄 [{label}] details"))
         }
         CallbackAction::PanelBack => {
             if let Ok(mut inner) = slot.inner.lock() {
                 inner.view = PanelView::Dashboard;
             }
             schedule_dashboard(slot);
-            Ok("已返回总控".to_string())
+            Ok(crate::ts!("已返回总控", "Back to the dashboard"))
         }
         CallbackAction::RefreshDashboard => {
             schedule_dashboard(slot);
-            Ok("已刷新".to_string())
+            Ok(crate::ts!("已刷新", "Refreshed"))
         }
         // ─── /new 向导 ───────────────────────────────────────────────
         CallbackAction::NewDestChat => {
@@ -3116,9 +3138,9 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
             match fresh {
                 Ok(true) => {
                     send_wizard_agent_step(slot, live, None);
-                    Ok("目的地：聊天".into())
+                    Ok(crate::ts!("目的地：聊天", "Destination: chat"))
                 }
-                _ => Err("已过期——重新发 /new 开始".into()),
+                _ => Err(crate::ts!("已过期——重新发 /new 开始", "Expired — send /new to start over").into()),
             }
         }
         CallbackAction::NewDestProject { project_id, project_name } => {
@@ -3137,9 +3159,9 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
             match fresh {
                 Ok(true) => {
                     send_wizard_agent_step(slot, live, None);
-                    Ok(format!("目的地：{project_name}"))
+                    Ok(crate::ts!("目的地：{project_name}", "Destination: {project_name}"))
                 }
-                _ => Err("已过期——重新发 /new 开始".into()),
+                _ => Err(crate::ts!("已过期——重新发 /new 开始", "Expired — send /new to start over").into()),
             }
         }
         CallbackAction::NewAgent { agent_id, agent_label } => {
@@ -3157,9 +3179,9 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
             match fresh {
                 Ok(true) => {
                     send_wizard_model_step(slot, live, None);
-                    Ok(format!("agent：{agent_label}"))
+                    Ok(crate::ts!("agent：{agent_label}", "agent: {agent_label}"))
                 }
-                _ => Err("已过期——重新发 /new 开始".into()),
+                _ => Err(crate::ts!("已过期——重新发 /new 开始", "Expired — send /new to start over").into()),
             }
         }
         CallbackAction::NewModel { model_id, model_label } => {
@@ -3178,12 +3200,12 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
                     };
                     send_wizard_mode_step(slot, live, None, pick);
                     if model_id.is_empty() {
-                        Ok("模型：默认".into())
+                        Ok(crate::ts!("模型：默认", "Model: default"))
                     } else {
-                        Ok(format!("模型：{model_label}"))
+                        Ok(crate::ts!("模型：{model_label}", "Model: {model_label}"))
                     }
                 }
-                _ => Err("已过期——重新发 /new 开始".into()),
+                _ => Err(crate::ts!("已过期——重新发 /new 开始", "Expired — send /new to start over").into()),
             }
         }
         CallbackAction::NewMode { mode_id, mode_label } => {
@@ -3197,19 +3219,19 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
                     };
                     wizard_finalize(slot, live, None, pick);
                     if mode_id.is_empty() {
-                        Ok("模式：默认 · 正在创建…".into())
+                        Ok(crate::ts!("模式：默认 · 正在创建…", "Mode: default · creating…"))
                     } else {
-                        Ok(format!("模式：{mode_label} · 正在创建…"))
+                        Ok(crate::ts!("模式：{mode_label} · 正在创建…", "Mode: {mode_label} · creating…"))
                     }
                 }
-                _ => Err("已过期——重新发 /new 开始".into()),
+                _ => Err(crate::ts!("已过期——重新发 /new 开始", "Expired — send /new to start over").into()),
             }
         }
         CallbackAction::NewCancel => {
             if let Ok(mut inner) = slot.inner.lock() {
                 inner.wizard = None;
             }
-            Ok("已取消".into())
+            Ok(crate::ts!("已取消", "Cancelled"))
         }
         CallbackAction::WizardModelPage { offset } => {
             // 翻页 = 原地重画按下的那条菜单消息。
@@ -3226,30 +3248,30 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
                             send_wizard_model_page(
                                 slot, live, &agent_label, &caps, *offset, None, host,
                             );
-                            Ok(format!("第 {} 项起", offset + 1))
+                            Ok(crate::ts!("第 {} 项起", "From item {}", offset + 1))
                         }
-                        None => Err("模型清单已不可用——重新发 /new 开始".into()),
+                        None => Err(crate::ts!("模型清单已不可用——重新发 /new 开始", "Model list is no longer available — send /new to start over").into()),
                     }
                 }
-                None => Err("已过期——重新发 /new 开始".into()),
+                None => Err(crate::ts!("已过期——重新发 /new 开始", "Expired — send /new to start over").into()),
             }
         }
         CallbackAction::ModelPage { session_id, offset } => {
             let host = callback.pointer("/message/message_id").and_then(Value::as_i64);
             send_model_menu(slot, live, &session_id, *offset, None, host);
-            Ok(format!("第 {} 项起", offset + 1))
+            Ok(crate::ts!("第 {} 项起", "From item {}", offset + 1))
         }
         CallbackAction::ResumeSession { session_id, label } => {
             if let Ok(mut inner) = slot.inner.lock() {
                 inner.last_user_session = Some(session_id.clone());
             }
             schedule_dashboard(slot);
-            Ok(format!("⏎ 已接上 [{label}]，直接发文字继续聊"))
+            Ok(crate::ts!("⏎ 已接上 [{label}]，直接发文字继续聊", "⏎ Attached to [{label}] — send text to keep chatting"))
         }
         CallbackAction::ResumePage { offset } => {
             let host = callback.pointer("/message/message_id").and_then(Value::as_i64);
             send_resume_menu(slot, live, *offset, None, host);
-            Ok(format!("第 {} 项起", offset + 1))
+            Ok(crate::ts!("第 {} 项起", "From item {}", offset + 1))
         }
         CallbackAction::SetModel { session_id, model_id, model_label } => {
             let _ = slot.app.emit_to(
@@ -3262,9 +3284,9 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
                     "modelLabel": model_label,
                 }),
             );
-            Ok(format!("已请求切换 → {model_label}"))
+            Ok(crate::ts!("已请求切换 → {model_label}", "Switch requested → {model_label}"))
         }
-        CallbackAction::DismissMenu => Ok("已关闭".into()),
+        CallbackAction::DismissMenu => Ok(crate::ts!("已关闭", "Closed")),
     };
 
     match result {
@@ -3312,7 +3334,7 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
             );
         }
         Err(error) => {
-            answer(&format!("没成：{}", clip(&error, 160)));
+            answer(&crate::ts!("没成：{}", "Didn't work: {}", clip(&error, 160)));
             log(
                 "warn",
                 "remote resolve failed",
@@ -3410,17 +3432,17 @@ fn verify_token(token: &str) -> Result<String, String> {
         .pointer("/result/username")
         .and_then(Value::as_str)
         .map(str::to_string)
-        .ok_or_else(|| "getMe 响应里没有 username".to_string())
+        .ok_or_else(|| crate::ts!("getMe 响应里没有 username", "getMe response has no username"))
 }
 
 // ─── 纯函数（组消息 / 路由决策 / 解析）─────────────────────────────────────
 
-fn stop_reason_head(reason: &str) -> (&'static str, &'static str) {
+fn stop_reason_head(reason: &str) -> (&'static str, String) {
     match reason {
-        "max_tokens" => ("✂️", "到达长度上限"),
-        "refusal" => ("⚠️", "模型拒答"),
-        "max_turn_requests" => ("⏹", "达到回合上限"),
-        _ => ("✅", "跑完"),
+        "max_tokens" => ("✂️", crate::ts!("到达长度上限", "Length limit reached")),
+        "refusal" => ("⚠️", crate::ts!("模型拒答", "Model refused")),
+        "max_turn_requests" => ("⏹", crate::ts!("达到回合上限", "Turn limit reached")),
+        _ => ("✅", crate::ts!("跑完", "Done")),
     }
 }
 
@@ -3493,7 +3515,7 @@ enum QuestionPush {
 fn question_push_plan(questions: Option<&Vec<Value>>) -> QuestionPush {
     let Some(questions) = questions else {
         return QuestionPush::TextOnly {
-            body: "（问题内容没能解析）".to_string(),
+            body: crate::ts!("（问题内容没能解析）", "(could not parse the question content)"),
         };
     };
     let mut any_multi = false;
@@ -3502,7 +3524,8 @@ fn question_push_plan(questions: Option<&Vec<Value>>) -> QuestionPush {
         let text = question
             .get("question")
             .and_then(Value::as_str)
-            .unwrap_or("请选择");
+            .map(str::to_string)
+            .unwrap_or_else(|| crate::ts!("请选择", "Choose"));
         let multi = question.get("multiSelect").and_then(Value::as_bool) == Some(true)
             || question.get("multi_select").and_then(Value::as_bool) == Some(true);
         any_multi = any_multi || multi;
@@ -3521,7 +3544,7 @@ fn question_push_plan(questions: Option<&Vec<Value>>) -> QuestionPush {
     }
     let Some((question, options)) = parsed.first().cloned() else {
         return QuestionPush::TextOnly {
-            body: "（没有问题）".to_string(),
+            body: crate::ts!("（没有问题）", "(no question)"),
         };
     };
     if parsed.len() == 1 && !any_multi {
@@ -3530,7 +3553,7 @@ fn question_push_plan(questions: Option<&Vec<Value>>) -> QuestionPush {
         }
         // 单问题但没有选项：开放式问题，提示用文字回复。
         return QuestionPush::TextOnly {
-            body: format!("{question}\n（开放式问题：直接回复文字即可送进会话）"),
+            body: crate::ts!("{question}\n（开放式问题：直接回复文字即可送进会话）", "{question}\n(open question: reply with text to send it into the session)"),
         };
     }
     let body = parsed
@@ -3539,7 +3562,7 @@ fn question_push_plan(questions: Option<&Vec<Value>>) -> QuestionPush {
             if options.is_empty() {
                 q.clone()
             } else {
-                format!("{q}\n  选项：{}", options.join(" / "))
+                crate::ts!("{q}\n  选项：{}", "{q}\n  Options: {}", options.join(" / "))
             }
         })
         .collect::<Vec<_>>()
@@ -3917,11 +3940,11 @@ fn clip_utf16(text: &str, max_units: usize) -> String {
 fn format_duration(duration: Duration) -> String {
     let secs = duration.as_secs();
     if secs < 60 {
-        format!("{secs}秒")
+        crate::ts!("{secs}秒", "{secs}s")
     } else if secs < 3600 {
-        format!("{}分{:02}秒", secs / 60, secs % 60)
+        crate::ts!("{}分{:02}秒", "{}m{:02}s", secs / 60, secs % 60)
     } else {
-        format!("{}时{}分", secs / 3600, (secs % 3600) / 60)
+        crate::ts!("{}时{}分", "{}h{}m", secs / 3600, (secs % 3600) / 60)
     }
 }
 
@@ -4025,16 +4048,16 @@ fn send_resume_menu(
 ) {
     let sessions = historical_sessions(slot);
     if sessions.is_empty() {
-        let _ = send_message(live, "还没有任何历史会话。", &[], reply_to, None, None);
+        let _ = send_message(live, &crate::ts!("还没有任何历史会话。", "No past sessions yet."), &[], reply_to, None, None);
         return;
     }
     let offset = offset.min(sessions.len().saturating_sub(1) / RESUME_PAGE_SIZE * RESUME_PAGE_SIZE);
     let end = (offset + RESUME_PAGE_SIZE).min(sessions.len());
     let range = offset..end;
     let total = sessions.len();
-    let mut header = format!("📂 继续哪个会话？({} 个，按最近活跃排序)", total);
+    let mut header = crate::ts!("📂 继续哪个会话？({} 个，按最近活跃排序)", "📂 Which session to continue? ({}, most recently active first)", total);
     if total > RESUME_PAGE_SIZE {
-        header.push_str(&format!("\n第 {}–{} 项", offset + 1, end));
+        header.push_str(&crate::ts!("\n第 {}–{} 项", "\nItems {}–{}", offset + 1, end));
     }
     let mut rows: Vec<Vec<(CallbackAction, String)>> = Vec::new();
     for row in &sessions[range.clone()] {
@@ -4063,7 +4086,7 @@ fn send_resume_menu(
     } else if let Some(nav) = prev.or(next) {
         rows.push(vec![nav]);
     }
-    rows.push(vec![(CallbackAction::DismissMenu, "✖ 关闭".into())]);
+    rows.push(vec![(CallbackAction::DismissMenu, crate::ts!("✖ 关闭", "✖ Close"))]);
     let (keyboard, pending) = assemble_keyboard(slot, rows);
     register_callbacks(slot, pending);
     deliver_menu(live, &header, &keyboard, reply_to, host_message);
@@ -4161,11 +4184,11 @@ pub fn save(patch: TelegramSave) -> Result<TelegramStatus, String> {
     match patch.enabled {
         Some(true) => {
             if settings.token_cipher.is_none() {
-                return Err("还没有填 bot token".to_string());
+                return Err(crate::ts!("还没有填 bot token", "No bot token filled in yet"));
             }
             if settings.chat_id.is_none() {
                 return Err(
-                    "还没配对：先在 Telegram 里给 bot 发一条消息，再回到这里确认".to_string(),
+                    crate::ts!("还没配对：先在 Telegram 里给 bot 发一条消息，再回到这里确认", "Not paired yet: message the bot on Telegram first, then come back here to confirm"),
                 );
             }
             settings.enabled = true;
@@ -4200,7 +4223,7 @@ pub fn accept_pairing() -> Result<TelegramStatus, String> {
         .and_then(|slot| slot.inner.lock().ok())
         .and_then(|mut inner| inner.pending_pairing.take())
         .ok_or_else(|| {
-            "当前没有待确认的配对请求（给 bot 发条消息，等它出现在这里）".to_string()
+            crate::ts!("当前没有待确认的配对请求（给 bot 发条消息，等它出现在这里）", "No pairing request waiting (message the bot and let it show up here)")
         })?;
 
     settings.chat_id = Some(request.chat_id);
@@ -4219,7 +4242,7 @@ pub fn accept_pairing() -> Result<TelegramStatus, String> {
             if live.active() && live.chat_id == Some(request.chat_id) {
                 enqueue_send(
                     &live,
-                    "🎬 配对完成。Marionette 的会话动态会推到这里；直接回复文字即可继续对话，等批准的通知上会有按钮。"
+                    crate::ts!("🎬 配对完成。Marionette 的会话动态会推到这里；直接回复文字即可继续对话，等批准的通知上会有按钮。", "🎬 Paired. Marionette session updates will arrive here; reply with text to continue the conversation — approval notices come with buttons.")
                         .to_string(),
                     Vec::new(),
                     None,
@@ -4267,7 +4290,7 @@ pub fn ack(ok: bool, error: Option<String>, reply_to: Option<i64>, session_id: O
     let label = session_id
         .as_deref()
         .map(session_label)
-        .unwrap_or_else(|| "会话".to_string());
+        .unwrap_or_else(|| crate::ts!("会话", "session"));
     let _ = slot.outbound.send(Outbound::Ack {
         ok,
         error,
@@ -4337,11 +4360,11 @@ fn sync_bot_commands(slot: &'static Telegram) {
     slot.commands_synced.store(true, Ordering::Relaxed);
     std::thread::spawn(move || {
         let commands = json!([
-            { "command": "new", "description": "新建对话（项目/聊天 → agent → 模型 → 模式）" },
-            { "command": "resume", "description": "继续过往会话（选一个直接聊）" },
-            { "command": "model", "description": "切换模型（回复通知=切那个会话）" },
-            { "command": "status", "description": "全部会话的状态清单" },
-            { "command": "help", "description": "命令说明" },
+            { "command": "new", "description": crate::ts!("新建对话（项目/聊天 → agent → 模型 → 模式）", "New conversation (project/chat → agent → model → mode)") },
+            { "command": "resume", "description": crate::ts!("继续过往会话（选一个直接聊）", "Resume a past session (pick one and chat)") },
+            { "command": "model", "description": crate::ts!("切换模型（回复通知=切那个会话）", "Switch model (the reply notice switches that session)") },
+            { "command": "status", "description": crate::ts!("全部会话的状态清单", "Status list of all sessions") },
+            { "command": "help", "description": crate::ts!("命令说明", "Command help") },
         ]);
         match tg_call(
             &token,
@@ -4505,11 +4528,11 @@ mod tests {
 
     #[test]
     fn stop_reason_head_maps_known_reasons() {
-        assert_eq!(stop_reason_head("end_turn"), ("✅", "跑完"));
-        assert_eq!(stop_reason_head("max_tokens"), ("✂️", "到达长度上限"));
-        assert_eq!(stop_reason_head("refusal"), ("⚠️", "模型拒答"));
-        assert_eq!(stop_reason_head("max_turn_requests"), ("⏹", "达到回合上限"));
-        assert_eq!(stop_reason_head("anything-else"), ("✅", "跑完"));
+        assert_eq!(stop_reason_head("end_turn"), ("✅", "跑完".to_string()));
+        assert_eq!(stop_reason_head("max_tokens"), ("✂️", "到达长度上限".to_string()));
+        assert_eq!(stop_reason_head("refusal"), ("⚠️", "模型拒答".to_string()));
+        assert_eq!(stop_reason_head("max_turn_requests"), ("⏹", "达到回合上限".to_string()));
+        assert_eq!(stop_reason_head("anything-else"), ("✅", "跑完".to_string()));
     }
 
     #[test]

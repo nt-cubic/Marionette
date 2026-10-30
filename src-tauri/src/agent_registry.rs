@@ -92,7 +92,7 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
     match agent_id {
         "web-chatgpt" | "web-deepseek" => AgentHarnessMeta {
             id: if agent_id == "web-chatgpt" { "web-chatgpt" } else { "web-deepseek" },
-            label: if agent_id == "web-chatgpt" { "ChatGPT 网页版" } else { "DeepSeek 网页版" },
+            label: if agent_id == "web-chatgpt" { crate::ts!("ChatGPT 网页版", "ChatGPT (web)").leak() } else { crate::ts!("DeepSeek 网页版", "DeepSeek (web)").leak() },
             subagent_transcript: false,
             mcp_wire: McpWirePolicy::SkipForward,
             mcp_wire_label: mcp_label(McpWirePolicy::SkipForward),

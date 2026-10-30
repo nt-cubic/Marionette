@@ -542,3 +542,27 @@ ZCode 官方**没有** ACP（CLI 0.16.x 无 `--acp`，ACP registry 未收录）�
   进去，没装桌面版也会「已就绪」（`commands.rs::zcode_desktop_present` 2026-10-24 改）。
   桥没有本体跑不了第一条 prompt：ACP 只是翻译层，真正的 `zcode app-server` 来自
   桌面版安装里的 `resources\glm\zcode.cjs`。
+
+## i18n（中英双语，2026-10-30 落地）
+
+规范与术语表：`docs/i18n-guide.md` —— **改任何用户可见文案前先读它**。要点与红线：
+
+- **前端**：`src/lib/i18n.ts`（模块级 locale store + `t(key, params)` + `useT()`/
+  `useLocale()`，`useSyncExternalStore` 订阅）。词典在 `src/locales/`：`zh-CN.ts`/`en.ts`
+  合并 `parts/*.{zh,en}.ts` 片段（en `satisfies Record<keyof typeof zh, string>` ——
+  **en 缺键 tsc 直接红**）。偏好键 `marionette-language`（首启按 `navigator.language`
+  自动检测），入口：Ctrl K「切换语言 / Switch language」+ 侧栏底栏 Languages 按钮。
+  **useMemo/useCallback 里算字符串必须把 `locale` 加进依赖数组**，否则切语言不重算
+  （参照 `CommandPalette.tsx` 的 groups memo）。
+- **Rust**：`src-tauri/src/loc.rs` 的 `ts!` 宏就地双语（zh 字面量即 key，两个字面量
+  占位符必须一致；const/static 上下文不能调 `ts!`，要么挪到使用点、要么 fn 化——见
+  `shell_integration.rs::menu_label`、`memory.rs::import_title`）。语言真相在前端，
+  启动时 `loc::init_from_disk()` 读 `~/.marionette/language` 镜像，之后由
+  `set_ui_locale` 命令推送。**模型向文本（memory prompt、transcript_digest、
+  grok_dialect、`<marionette-memory>` 抬头）保持中文，不翻**。
+- **探测串一律双语并集**：`startsWith("正在重试") || startsWith("Retrying")`（App.tsx）、
+  `/^(已挂起|Parked\.|…)/`（sessionHistory.ts）、`includes("注册失败") ||
+  includes("registration failed")`（ModelLibraryDialog）——生成侧的语言取决于生成时刻
+  的 locale，可能与当前 UI 不一致，新探测点照此办理。
+- 回归：`npx tsx scripts/inventory-zh.mts --check`（前端白名单外中文清零；正则密集
+  文件有已知误报）、`npx tsc --noEmit`、`cargo test`（默认 zh，旧断言原样过）。

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Search } from "lucide-react";
+import { useLocale, useT } from "../lib/i18n";
 import type { Project, Session } from "../lib/types";
 
 export type PaletteAction = {
@@ -85,6 +86,8 @@ export function CommandPalette({
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const now = useMemo(() => Date.now(), []);
+  const translate = useT();
+  const locale = useLocale();
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -130,11 +133,12 @@ export function CommandPalette({
       .filter((action) => matchScore(action.label, q) > 0)
       .map((action) => ({ kind: "action", key: `a:${action.id}`, action }));
     return [
-      { title: q ? "对话" : "最近", rows: sessionRows },
-      { title: "项目", rows: projectRows },
-      { title: "操作", rows: actionRows },
+      { title: q ? translate("palette.groupConversations") : translate("palette.groupRecent"), rows: sessionRows },
+      { title: translate("palette.groupProjects"), rows: projectRows },
+      { title: translate("palette.groupActions"), rows: actionRows },
     ].filter((group) => group.rows.length > 0);
-  }, [query, sessions, chatSessions, projects, actions, currentSessionId, projectName]);
+    // `locale` is a dep because translated group titles live in this memo.
+  }, [query, sessions, chatSessions, projects, actions, currentSessionId, projectName, translate, locale]);
 
   const flat = useMemo(() => groups.flatMap((group) => group.rows), [groups]);
   const activeIndex = flat.length === 0 ? -1 : Math.min(active, flat.length - 1);
@@ -170,15 +174,15 @@ export function CommandPalette({
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div className="command-palette" role="dialog" aria-modal="true" aria-label="命令面板">
+      <div className="command-palette" role="dialog" aria-modal="true" aria-label={translate("palette.dialogAria")}>
         <label className="command-palette__search">
           <Search size={14} aria-hidden />
           <input
             ref={inputRef}
             type="text"
             value={query}
-            placeholder="搜索对话、项目或操作…"
-            aria-label="搜索对话、项目或操作"
+            placeholder={translate("palette.searchPlaceholder")}
+            aria-label={translate("palette.searchAria")}
             aria-activedescendant={activeIndex >= 0 ? `palette-row-${activeIndex}` : undefined}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => {
@@ -202,7 +206,7 @@ export function CommandPalette({
           <span className="command-palette__kbd">Esc</span>
         </label>
         <div ref={listRef} className="command-palette__list custom-scrollbar scrollbar-autohide" role="listbox">
-          {flat.length === 0 && <div className="command-palette__empty">没有匹配的对话、项目或操作</div>}
+          {flat.length === 0 && <div className="command-palette__empty">{translate("palette.noMatches")}</div>}
           {groups.map((group) => (
             <div key={group.title} className="command-palette__group">
               <div className="command-palette__label">{group.title}</div>
@@ -238,7 +242,7 @@ export function CommandPalette({
                         />
                         <span className="command-palette__title">{row.session.label}</span>
                         <span className="command-palette__meta">
-                          {[row.chat ? "聊天" : projectName(row.session.projectId), agentLabel(row.session.agentId)]
+                          {[row.chat ? translate("common.chat") : projectName(row.session.projectId), agentLabel(row.session.agentId)]
                             .filter(Boolean)
                             .join(" · ")}
                         </span>
@@ -269,13 +273,13 @@ export function CommandPalette({
         </div>
         <div className="command-palette__foot">
           <span>
-            <b>↑↓</b> 选择
+            <b>↑↓</b> {translate("palette.footSelect")}
           </span>
           <span>
-            <b>Enter</b> 打开
+            <b>Enter</b> {translate("palette.footOpen")}
           </span>
           <span>
-            <b>Ctrl K</b> 随时唤起
+            <b>Ctrl K</b> {translate("palette.footSummon")}
           </span>
         </div>
       </div>

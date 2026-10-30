@@ -10,6 +10,8 @@
  * gentler half of this feature and stays limited to warm, idle dialogs.
  */
 
+import { t } from "./i18n";
+
 /** How long a warm, idle dialog may sit untouched before it is parked. */
 export const SUSPEND_IDLE_MS = 2 * 60 * 60 * 1000;
 
@@ -76,16 +78,16 @@ export function suspendControl(
   if (!canPark(session)) {
     return {
       shown: false,
-      title: `${label} 已挂起 — 下次发消息自动接上`,
+      title: t("suspend.parkedTitle", { label }),
       ariaLabel: `${label} is already parked`,
     };
   }
   const title =
     session.status === "running"
-      ? `挂起 ${label} — 立刻中断它正在做的事并结束进程，下次发消息自动接上`
+      ? t("suspend.titleRunning", { label })
       : session.status === "starting"
-        ? `挂起 ${label} — 结束它刚起来的 agent 进程，下次发消息自动接上`
-        : `挂起 ${label} — 结束它的 agent 进程，下次发消息自动接上`;
+        ? t("suspend.titleStarting", { label })
+        : t("suspend.titleOther", { label });
   return { shown: true, title, ariaLabel: `Suspend ${label}` };
 }
 

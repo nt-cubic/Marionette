@@ -273,7 +273,7 @@ fn recent_asks(events: &[Value], limit: usize) -> Vec<HandoffAsk> {
                                     sel.iter()
                                         .filter_map(Value::as_str)
                                         .collect::<Vec<_>>()
-                                        .join("、")
+                                        .join(&crate::ts!("、", ", "))
                                 })
                                 .unwrap_or_default();
                             Some((truncate(question, 240), truncate(&picked, 240)))

@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { isTauriRuntime, readImageDataUrl } from "../lib/api";
 import { copyText } from "../lib/clipboard";
+import { t, useT } from "../lib/i18n";
 import { isImagePath } from "../lib/toolBody";
 import { stripFileUri } from "../lib/imageAttachments";
 import { prepareMarkdownForRender } from "../lib/markdownText";
@@ -57,16 +58,17 @@ function MdCodeBlock({ children }: { children?: ReactNode }) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(timer.current), []);
+  const t = useT();
   const foldedStyle = foldable && !open ? { maxHeight: `${CODE_FOLDED_LINES * 1.45 + 1.4}em` } : undefined;
   return (
     <div className={`md-code${foldable && !open ? " is-folded" : ""}`}>
       <div className="md-code__bar">
-        <span className="md-code__lang">{[lang, lines > 1 ? `${lines} 行` : ""].filter(Boolean).join(" · ")}</span>
+        <span className="md-code__lang">{[lang, lines > 1 ? t("md.lineCount", { n: lines }) : ""].filter(Boolean).join(" · ")}</span>
         <button
           type="button"
           className={`pill-action pill-action--sm md-code__copy${copied ? " is-copied" : ""}`}
-          title="复制代码"
-          aria-label={copied ? "已复制" : "复制代码"}
+          title={t("md.copyCode")}
+          aria-label={copied ? t("md.copied") : t("md.copyCode")}
           onClick={() => {
             void copyText(text).then((ok) => {
               if (!ok) return;
@@ -90,7 +92,7 @@ function MdCodeBlock({ children }: { children?: ReactNode }) {
       )}
       {foldable && (
         <button type="button" className="md-code__more" onClick={() => setOpen((value) => !value)}>
-          {open ? "收起" : `显示全部 ${lines} 行`}
+          {open ? t("ui.collapse") : t("md.showAllLines", { n: lines })}
         </button>
       )}
     </div>
@@ -333,6 +335,7 @@ export function PreviewImage({ src, alt }: { src?: string; alt?: string }) {
   const displaySrc = remote ? localPath : loaded?.dataUrl;
   // A near-miss match means the file read is not the path in the reply.
   const shownPath = loaded?.path ?? localPath;
+  const t = useT();
 
   return (
     <>
@@ -348,7 +351,7 @@ export function PreviewImage({ src, alt }: { src?: string; alt?: string }) {
               role="button"
               tabIndex={0}
               aria-expanded={expanded}
-              aria-label={`${expanded ? "收起" : "放大"}图片：${caption}`}
+              aria-label={expanded ? t("md.collapseImageAria", { caption }) : t("md.enlargeImageAria", { caption })}
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -369,7 +372,7 @@ export function PreviewImage({ src, alt }: { src?: string; alt?: string }) {
             />
           ) : (
             <div className="md-image-card__unavailable">
-              <span>{failed ? "图片暂时无法预览" : "正在读取图片…"}</span>
+              <span>{failed ? t("md.imageReadFailed") : t("md.imageReading")}</span>
               {target && (
                 <button
                   type="button"
@@ -384,7 +387,7 @@ export function PreviewImage({ src, alt }: { src?: string; alt?: string }) {
                     void openMenu(event, target);
                   }}
                 >
-                  打开原始链接
+                  {t("md.openOriginalLink")}
                 </button>
               )}
             </div>
@@ -419,12 +422,12 @@ function imageCaption(alt: string | undefined, src: string | undefined): string 
   const source = src ?? "";
   if (/^data:image\//i.test(source)) {
     const subtype = source.match(/^data:image\/([\w.+-]+)/i)?.[1]?.replace(/^jpeg$/i, "jpg");
-    return subtype ? `image.${subtype}` : "图片";
+    return subtype ? `image.${subtype}` : t("md.imageFallbackAlt");
   }
   const path = stripFileUri(source).split(/[?#]/, 1)[0] ?? "";
   const name = path.split(/[\\/]/).filter(Boolean).pop() ?? "";
   if (name && !/^data:/i.test(name)) return name;
-  return label || "图片";
+  return label || t("md.imageFallbackAlt");
 }
 
 /**

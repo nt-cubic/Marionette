@@ -16,6 +16,7 @@
 
 import { useSyncExternalStore } from "react";
 import { getDockState, subscribeDockState } from "./dockMode";
+import { t } from "./i18n";
 
 /** Re-render when the window docks/undocks (the state machine owns the truth). */
 export function useDocked(): boolean {
@@ -35,7 +36,7 @@ export function dockFooterHost(): HTMLElement {
     host.id = "dock-footer";
     host.className = "dock-footer";
     host.setAttribute("role", "toolbar");
-    host.setAttribute("aria-label", "侧栏按钮");
+    host.setAttribute("aria-label", t("dock.toolbarAria"));
     document.body.appendChild(host);
   }
   return host;

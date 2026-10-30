@@ -11,6 +11,7 @@ import { isLeaf } from "../lib/splitWorkspace";
 import { PaneSplitter } from "./PaneSplitter";
 import { SessionPane } from "./SessionPane";
 import { SplitDropOverlay } from "./SplitDropOverlay";
+import { t } from "../lib/i18n";
 
 function toRect(dom: DOMRect): RectLike {
   return {
@@ -95,27 +96,27 @@ export function dropKindsEqual(a: DropKind | null, b: DropKind | null): boolean 
 }
 
 export function ghostHintForDrop(drop: DropKind | null, opts?: { atMax?: boolean }): string {
-  if (!drop) return "松开以打开新窗口";
+  if (!drop) return t("split.releaseNewWindow");
   switch (drop.kind) {
     case "split":
       return drop.edge === "left"
-        ? "松开以在左侧分屏"
+        ? t("split.releaseSplitLeft")
         : drop.edge === "right"
-          ? "松开以在右侧分屏"
+          ? t("split.releaseSplitRight")
           : drop.edge === "top"
-            ? "松开以在上方分屏"
-            : "松开以在下方分屏";
+            ? t("split.releaseSplitTop")
+            : t("split.releaseSplitBottom");
     case "activate":
-      return opts?.atMax ? "已达上限，放入此格" : "松开以放入此格";
+      return opts?.atMax ? t("split.atMaxDropHere") : t("split.releaseDropHere");
     case "insert-tab":
-      return "松开以插入此格";
+      return t("split.releaseInsertHere");
     case "detach":
-      return "松开以打开新窗口";
+      return t("split.releaseNewWindow");
     case "cancel":
-      if (drop.reason === "self-split-last-tab") return "不能用唯一标签拆自己";
-      if (drop.reason === "too-narrow") return "此格太小，无法再拆";
-      if (drop.reason === "back-on-source") return "松开以取消";
-      return "松开以取消";
+      if (drop.reason === "self-split-last-tab") return t("split.noSelfSplitLastTab");
+      if (drop.reason === "too-narrow") return t("split.tooNarrowToSplit");
+      if (drop.reason === "back-on-source") return t("split.releaseCancel");
+      return t("split.releaseCancel");
   }
 }
 

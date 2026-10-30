@@ -46,7 +46,7 @@ pub fn agent_with_proxy() -> Result<Agent, String> {
         }
     }
     // Do not fall back to direct traffic or include proxy credentials in errors.
-    let proxy = ureq::Proxy::new(url).map_err(|_| "应用代理地址无效，请检查代理设置".to_string())?;
+    let proxy = ureq::Proxy::new(url).map_err(|_| crate::ts!("应用代理地址无效，请检查代理设置", "The app's proxy URL is invalid; check proxy settings"))?;
     let connector = ureq::native_tls::TlsConnector::new()
         .map_err(|e| format!("TLS init failed (native-tls/schannel): {e}"))?;
     let agent = ureq::AgentBuilder::new()

@@ -1,11 +1,13 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { X } from "lucide-react";
 import { dismissToast, subscribeToasts, type Toast } from "../lib/toast";
+import { useT } from "../lib/i18n";
 
 const VISIBLE = 3;
 
 function ToastItem({ toast, paused, depth }: { toast: Toast; paused: boolean; depth: number }) {
   // Remaining life survives pauses, so hovering never resets the clock.
+  const t = useT();
   const [left, setLeft] = useState(toast.duration);
   useEffect(() => {
     if (paused) return;
@@ -39,7 +41,7 @@ function ToastItem({ toast, paused, depth }: { toast: Toast; paused: boolean; de
           {toast.action.label}
         </button>
       )}
-      <button type="button" className="toast__close" aria-label="关闭" onClick={() => dismissToast(toast.id)}>
+      <button type="button" className="toast__close" aria-label={t("common.close")} onClick={() => dismissToast(toast.id)}>
         <X size={11} />
       </button>
     </div>

@@ -1,12 +1,14 @@
+import { t } from "./i18n";
+
 /** Themes kept in the app: 浅夜 (dim, the default) and 纯白 (white). */
 export const THEME_MODES = ["dim", "white"] as const;
 
 export type ThemeMode = (typeof THEME_MODES)[number];
 
-export const THEME_LABELS: Record<ThemeMode, string> = {
-  dim: "浅夜",
-  white: "纯白",
-};
+/** Localized theme name (see locales/parts/theme.*). */
+export function themeLabel(theme: ThemeMode): string {
+  return t(`theme.${theme}` as const);
+}
 
 export const DEFAULT_THEME: ThemeMode = "dim";
 
@@ -35,5 +37,8 @@ export function themeColorScheme(theme: ThemeMode): "dark" | "light" {
 }
 
 export function themeToggleTitle(theme: ThemeMode): string {
-  return `主题：${THEME_LABELS[theme]}（点击切换到${THEME_LABELS[nextTheme(theme)]}）`;
+  return t("theme.toggleTitle", {
+    current: themeLabel(theme),
+    next: themeLabel(nextTheme(theme)),
+  });
 }

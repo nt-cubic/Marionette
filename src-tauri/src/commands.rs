@@ -419,9 +419,12 @@ fn zcode_runtime_available() -> bool {
         || zcode_desktop_present()
 }
 
-const ZCODE_RUNTIME_GATE_GUIDANCE: &str = "ZCode 需要本机运行时：先安装 ZCode 桌面版\
-（任意目录均可，通过开始菜单/桌面快捷方式自动发现），或自行设置 ZCODE_BIN 指向 zcode.cjs。\
-应用内只能安装 ACP 适配器（翻译层），没有引擎装了也无法使用。";
+fn zcode_runtime_gate_guidance() -> String {
+    crate::ts!(
+        "ZCode 需要本机运行时：先安装 ZCode 桌面版（任意目录均可，通过开始菜单/桌面快捷方式自动发现），或自行设置 ZCODE_BIN 指向 zcode.cjs。应用内只能安装 ACP 适配器（翻译层），没有引擎装了也无法使用。",
+        "ZCode needs a local runtime: install the ZCode desktop app first (any directory works; it is auto-discovered via the Start Menu / desktop shortcut), or set ZCODE_BIN to point to zcode.cjs. The in-app install only adds the ACP adapter (translation layer); without the engine it cannot be used."
+    )
+}
 
 /// Hide the install affordance when a missing local runtime cannot be
 /// npm-installed. Currently only ZCode: the engine ships with the desktop
@@ -433,7 +436,7 @@ fn apply_runtime_gate(
     message: String,
 ) -> (bool, String, Option<String>) {
     if agent_id == "zcode" && !runtime_available {
-        return (false, ZCODE_RUNTIME_GATE_GUIDANCE.to_string(), Some(ZCODE_RUNTIME_GATE_GUIDANCE.to_string()));
+        return (false, zcode_runtime_gate_guidance(), Some(zcode_runtime_gate_guidance()));
     }
     (installable, message, None)
 }
@@ -2534,7 +2537,7 @@ pub fn generate_handoff(
         return crate::handoff::generate_handoff_with_storage(
             &project_id,
             Path::new(&session.cwd),
-            "聊天",
+            &crate::ts!("聊天", "Chat"),
             &session.id,
             &session.label,
             &source_id,
@@ -3419,7 +3422,7 @@ pub fn memory_distill(
         storage.transcript_path_for(&session_id)?
     };
     let digest = crate::memory::transcript_digest(&path)
-        .ok_or_else(|| "会话记录里没有可提炼的文本".to_string())?;
+        .ok_or_else(|| crate::ts!("会话记录里没有可提炼的文本", "No text in the transcript to distill"))?;
     let draft = crate::memory::distill_with_deepseek(&digest)?;
     Ok(serde_json::json!({ "draft": draft }))
 }

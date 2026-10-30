@@ -1,4 +1,5 @@
 import type { SessionEvent } from "./types";
+import { t } from "./i18n";
 
 export type PromptEvent = Extract<SessionEvent, { type: "plan_prompt" | "ask_prompt" }>;
 export type PromptStatus = PromptEvent["status"];
@@ -156,7 +157,7 @@ export function expirePendingPrompts(
       return row;
     }
     changed = true;
-    const label = status === "timeout" ? "已超时" : "已在其他窗口回复";
+    const label = status === "timeout" ? t("asks.timedOut") : t("asks.answeredElsewhere");
     if (row.type === "plan_prompt") {
       return {
         ...row,
@@ -174,16 +175,16 @@ export function planDecisionLabel(
   decision: string | undefined,
   options?: Array<{ optionId: string; name: string }> | null,
 ): string {
-  if (!decision) return "已回复";
+  if (!decision) return t("asks.answered");
   const named = options?.find((o) => o.optionId === decision);
   if (named?.name) return named.name;
   switch (decision) {
     case "approve":
-      return "已批准并执行";
+      return t("asks.approvedExecuted");
     case "request_changes":
-      return "已要求修改";
+      return t("asks.changesRequested");
     case "abandon":
-      return "已放弃计划";
+      return t("asks.planAbandoned");
     default:
       return decision;
   }

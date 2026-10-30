@@ -274,21 +274,21 @@ impl AgentConfig {
             ),
             Self::new(
                 "web-chatgpt",
-                "ChatGPT 网页版",
+                &crate::ts!("ChatGPT 网页版", "ChatGPT (web)"),
                 "node",
                 vec!["chatgpt".into()],
                 "acp",
                 "stdin",
-                AgentInstallSpec::manual("内置网页聊天桥；需要 Node.js 22+ 和 Edge / Chrome，首次使用在浏览器中登录 ChatGPT。"),
+                AgentInstallSpec::manual(&crate::ts!("内置网页聊天桥；需要 Node.js 22+ 和 Edge / Chrome，首次使用在浏览器中登录 ChatGPT。", "Built-in web chat bridge; requires Node.js 22+ and Edge / Chrome; sign in to ChatGPT in the browser on first use.")),
             ),
             Self::new(
                 "web-deepseek",
-                "DeepSeek 网页版",
+                &crate::ts!("DeepSeek 网页版", "DeepSeek (web)"),
                 "node",
                 vec!["deepseek".into()],
                 "acp",
                 "stdin",
-                AgentInstallSpec::manual("内置网页聊天桥；需要 Node.js 22+ 和 Edge / Chrome，首次使用在浏览器中登录 DeepSeek。"),
+                AgentInstallSpec::manual(&crate::ts!("内置网页聊天桥；需要 Node.js 22+ 和 Edge / Chrome，首次使用在浏览器中登录 DeepSeek。", "Built-in web chat bridge; requires Node.js 22+ and Edge / Chrome; sign in to DeepSeek in the browser on first use.")),
             ),
         ]
     }
