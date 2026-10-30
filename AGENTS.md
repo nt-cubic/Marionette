@@ -396,8 +396,23 @@ magpie 120–160MB——前两个是「运行时入场费」，调不掉，能�
 
 **事故定调**：外部 llama 基准吃掉 ~110GB 内存 → 全机缺页风暴，ZCode/浏览器存活、
 Marionette 前端失去响应（点新建对话、点关闭都没反应），Rust watchdog 全程 12s 心跳
-健康、零 panic。**这是韧性差距不是崩溃**——浏览器靠进程隔离 + 流式加载扛住了同样
-的压力，我们的关键路径全是 O(文件)/O(n)。
+健康、零 panic。**当晚实锤的第二个真凶见第 9 条：storage 锁被持锁跑 git 霸占**——
+「点什么都没反应」是它，缺页风暴只是放大器。
+
+**0.「没法新建对话」的真凶（当晚 CDP 实锤的根因链）**：`get_changed_files` 等命令
+**持全局 storage 锁跑 git 子进程**，而 `output_with_kill_timeout` 是「先 try_wait 等
+退出、退出后才读管道」——`git status --porcelain -uall` 在本仓输出 **69.7KB，刚好
+超过 64KB OS 管道缓冲**，子进程写管道阻塞永不退出，父进程干等到 60s 超时杀进程，
+**storage 锁全程被占**；前端 12s 一次的 git 轮询让它几乎永久饿死所有 storage 命令
+（新建对话/会话列表/转录加载）。修法两层：① `output_with_kill_timeout` 双管道并发
+排水（超时路径不 join 读线程——kill 只杀直接子进程，孙进程攥管道句柄，同步等会把
+超时拖成等整棵进程树）；② git/交接类命令锁内只解析路径（复用 `project_root_of`），
+子进程一律锁外跑。**新增加 storage 锁的命令时照这个形状写，别在锁内等任何子进程。**
+连锁修复：`persistableEventsForSession` 的 map 每次重建 `{...event}` → append 快路径
+的「前缀引用全等」判定永不成立 → 截断会话每次 flush 误触发 ensureFullTranscript
+静默补头（`publish:false`）再清 olderHeads——哨兵消失、界面卡尾部。修法：WeakMap
+引用缓存 + 补头 `publish:true` + olderHeads 走 ref+tick（异步派生展示态免疫并发
+更新丢失）。
 
 1. **转录尾部优先加载 + 向上翻页**：`load_transcript` 命令带可选 `tail`（App 用
    `TRANSCRIPT_TAIL_EVENTS=800`）；Rust `load_transcript_window`（storage.rs）tail/range
