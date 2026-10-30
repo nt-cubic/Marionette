@@ -812,6 +812,11 @@ async function handleCloseFromRust(): Promise<void> {
     const docked = await enterDock();
     if (!docked) {
       try {
+        // Webview-level hide first — arms WebView2 suspension for the
+        // background stay (vendor/wry patch); the Rust handoff wake path
+        // shows the webview again before focusing.
+        const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+        await getCurrentWebview().hide();
         await getCurrentWindow().hide(); // stage-0 fallback, awaiting second-launch handoff
       } catch {
         // ignore

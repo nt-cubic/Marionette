@@ -36,6 +36,8 @@
     "core:window:allow-request-user-attention",
     "core:window:allow-set-progress-bar",
     "core:webview:allow-create-webview-window",
-    "core:webview:allow-create-webview"
+    "core:webview:allow-create-webview",
+    "core:webview:allow-webview-show",
+    "core:webview:allow-webview-hide"
   ]
 }

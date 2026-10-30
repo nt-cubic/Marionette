@@ -548,6 +548,18 @@ impl InnerWebView {
       }
     }
 
+    // Marionette: default every webview to the Low memory-usage target
+    // (renderer trims decode caches harder, ~20-40% less webview memory,
+    // designed for webviews that idle most of their life). Opt out with
+    // MARIONETTE_WEBVIEW_MEM=NORMAL if it ever shows up as jank.
+    if std::env::var_os("MARIONETTE_WEBVIEW_MEM").map(|v| v != *"NORMAL").unwrap_or(true) {
+      if let Ok(webview19) = webview.cast::<ICoreWebView2_19>() {
+        let _ = unsafe {
+          webview19.SetMemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL(1))
+        };
+      }
+    }
+
     // Extension loading
     if pl_attrs.browser_extensions_enabled {
       if let Some(extension_path) = pl_attrs.extension_path {
@@ -1485,6 +1497,21 @@ impl InnerWebView {
       );
 
       self.controller.SetIsVisible(visible)?;
+
+      // Marionette: a hidden webview suspends (WebView2 frees most renderer
+      // memory — ~150-250MB while the app sits in background mode); a shown
+      // one resumes. Both arms of this function own the state, so a suspend
+      // can never outlive the next set_visible(true). TrySuspend quietly
+      // fails when the controller is still visible — harmless.
+      if let Ok(wv3) = self.webview.cast::<ICoreWebView2_3>() {
+        if visible {
+          let _ = wv3.Resume();
+        } else {
+          let _ = wv3.TrySuspend(&TrySuspendCompletedHandler::create(Box::new(
+            |_, _| Ok(()),
+          )));
+        }
+      }
     }
 
     Ok(())
@@ -1492,6 +1519,14 @@ impl InnerWebView {
 
   pub fn focus(&self) -> Result<()> {
     unsafe {
+      // Marionette: wake paths (single-instance handoff) may show + focus
+      // without going through set_visible(true) on the webview — make sure
+      // the controller is visible and any suspension is lifted before the
+      // focus moves, or the window appears blank. No-ops when not suspended.
+      let _ = self.controller.SetIsVisible(true);
+      if let Ok(wv3) = self.webview.cast::<ICoreWebView2_3>() {
+        let _ = wv3.Resume();
+      }
       self
         .controller
         .MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)

@@ -456,6 +456,10 @@ pub fn spawn_pending_open_watcher(app: AppHandle) {
             if raw.is_empty() {
                 focus_main_window();
                 if let Some(win) = app.get_webview_window("main") {
+                    // Lift webview suspension (background-mode hidden main
+                    // window) before anything else — a shown window with a
+                    // suspended webview renders blank.
+                    let _ = win.as_ref().show();
                     let _ = win.unminimize();
                     let _ = win.set_focus();
                     let _ = win.show();
@@ -471,6 +475,7 @@ pub fn spawn_pending_open_watcher(app: AppHandle) {
             );
             let _ = app.emit(OPEN_PATH_EVENT, raw);
             if let Some(win) = app.get_webview_window("main") {
+                let _ = win.as_ref().show();
                 let _ = win.unminimize();
                 let _ = win.set_focus();
                 let _ = win.show();

@@ -2015,6 +2015,10 @@ export function App() {
       await hideDetachedWindowForSession(sessionId);
       try {
         const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+        // Lift webview suspension (hidden-in-background main window) before
+        // showing, or the window comes back blank.
+        await getCurrentWebview().show();
         const win = getCurrentWindow();
         await win.show();
         await win.unminimize();
