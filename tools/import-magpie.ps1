@@ -78,10 +78,34 @@ if (Test-Path $notices) {
 # Version stamp consumed by the portable build (engine-embedded/VERSION).
 [IO.File]::WriteAllText((Join-Path $dest 'VERSION'), "$Tag`n")
 
+# ── Marionette engine seed patch ────────────────────────────────────────────
+# The shipped exe embeds a SLIM gateway-only magpie (see tools\magpie-seed\
+# main_seed.go): stock `internal/cli.Main` keeps the whole multi-agent manager
+# reachable from main (58MB raw / 19.6MB UPX at v0.1.1877); the seed main
+# serves only the model-share gateway (~38MB / ~12MB UPX). This script wipes
+# third_party\magpie on every import, so the patch is re-applied here:
+#   1. main_seed.go copied in (build tag `marionette_seed`)
+#   2. stock main.go gets the matching `!marionette_seed` guard
+# build-portable.bat compiles with `-tags "nogui marionette_seed"`. Upstream
+# refactors of the serve path surface as compile errors in main_seed.go —
+# loud, never silent.
+$seedSrc = Join-Path $PSScriptRoot 'magpie-seed\main_seed.go'
+if (-not (Test-Path $seedSrc)) { throw 'tools\magpie-seed\main_seed.go missing — the seed patch cannot be applied' }
+Copy-Item -Force $seedSrc (Join-Path $dest 'main_seed.go')
+$mainGo = Join-Path $dest 'main.go'
+$mainText = [IO.File]::ReadAllText($mainGo)
+if ($mainText -notmatch '(?m)^//go:build !marionette_seed') {
+    [IO.File]::WriteAllText($mainGo, "//go:build !marionette_seed`r`n`r`n" + $mainText)
+    Write-Output '[import] seed patch applied: !marionette_seed guard on main.go + main_seed.go'
+} else {
+    Write-Output '[import] seed patch: main.go already carries the guard (upstream merged it?)'
+}
+
 @(
     "Vendored from https://github.com/yetone/magpie (MIT) at tag $Tag on $(Get-Date -Format yyyy-MM-dd).",
     "Imported by tools\import-magpie.ps1 — default Tag is GitHub latest stable; pass -Tag or MAGPIE_TAG to pin.",
     "Subset only: build inputs for the nogui CLI. Upstream site/, build/, .github/, docs/ are intentionally absent.",
+    "Marionette patch: main_seed.go (build tag marionette_seed) is the slim gateway-only main; import re-applies it. See tools\magpie-seed\main_seed.go.",
     "License: LICENSE (MIT) in this folder."
 ) | Set-Content (Join-Path $dest 'MARIONETTE-VENDOR.md')
 

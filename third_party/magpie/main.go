@@ -1,3 +1,5 @@
+//go:build !marionette_seed
+
 // magpie — one place to pick every agent's model. The commands live in
 // internal/cli; this is only where the binary starts.
 package main

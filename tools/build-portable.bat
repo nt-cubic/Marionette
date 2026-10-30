@@ -265,22 +265,30 @@ if not defined MAG_VER (
   echo  [error] third_party\magpie\VERSION missing - re-run tools\import-magpie.ps1
   exit /b 1
 )
-if not defined UPX_BIN (
+if not exist "third_party\magpie\main_seed.go" (
+  echo  [error] third_party\magpie\main_seed.go missing - re-run tools\import-magpie.ps1 ^(applies the seed patch^)
+  exit /b 1
+)
+if not exist "%UPX_BIN%" (
   echo  [error] embedded magpie needs UPX ^(winget install -e --id UPX.UPX^)
   exit /b 1
 )
 if not exist "src-tauri\engine-embedded" mkdir "src-tauri\engine-embedded"
 pushd "third_party\magpie"
 set "CGO_ENABLED=0"
-"!GO_BIN!" build -tags nogui -trimpath -ldflags "-s -w -X main.version=!MAG_VER!" -o "..\..\src-tauri\engine-embedded\magpie-windows-amd64.exe" .
+rem marionette_seed: slim gateway-only main (tools\magpie-seed\main_seed.go,
+rem applied by import-magpie.ps1). UPX'd payload ~12MB vs full magpie ~19.6MB.
+"!GO_BIN!" build -tags "nogui marionette_seed" -trimpath -ldflags "-s -w -X main.version=!MAG_VER!" -o "..\..\src-tauri\engine-embedded\magpie-windows-amd64.exe" .
 if errorlevel 1 (
   popd
   echo  [hint] module download failures: set GOPROXY=https://goproxy.cn,direct and retry
   exit /b 1
 )
 popd
-rem UPX the engine itself (2026-10-17 measured: 47.9MB -^> ~13.6MB, 5MB better than
-rem gzip and no decode step at runtime - the packed exe self-extracts on launch).
+rem UPX the engine itself (2026-10-30 measured, seed build: raw ~38MB -> ~12MB;
+rem gzip lands ~5MB worse and needs a runtime decode step - the packed exe
+rem self-extracts on launch instead). Full-magpie numbers for reference:
+rem v0.1.1877 raw ~58MB -> ~19.6MB.
 echo  [engine] upx-packing embedded magpie ...
 "!UPX_BIN!" --best --lzma -q "src-tauri\engine-embedded\magpie-windows-amd64.exe"
 if errorlevel 1 (

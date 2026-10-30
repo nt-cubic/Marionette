@@ -351,6 +351,17 @@ magpie 120–160MB——前两个是「运行时入场费」，调不掉，能�
    表外语言回落纯文本，行为与旧版一致。**mermaid 不裁**：v12 的 core 在 parse/render
    里无条件注册全部图表懒加载器，无官方按需入口，深路径 DIY 对升级太脆——4.6MB
    mermaid 全家桶保留（UPX 后 ~1MB）。katex/音效不动。
+4. **引擎种子精简版**（2026-10-30，payload 19.6 → **12.0MB**）：stock magpie 是完整
+   多 agent 管理器，`internal/cli.Main` 让十几个 agent 安装器/TUI/导入器/OAuth 全部
+   从 main 可达（链接器一字节不砍）。`tools/magpie-seed/main_seed.go`（build tag
+   `marionette_seed`）绕过 internal/cli，只挂 **gateway/routing/usage 三个插件**只跑
+   `serve`；`import-magpie.ps1` 每次导入后自动重放补丁（拷 main_seed.go + 给上游
+   main.go 加 `!marionette_seed` guard），`build-portable.bat` 用
+   `-tags "nogui marionette_seed"` 编。**上游重构 serve 路径 = 编译报错（响亮）**。
+   种子刻意不做：agent 管理、`magpie quota --json` CLI（配额走 HTTP
+   `/v1/magpie/quotas` 主路径）、codex 目录保鲜 goroutine（会拖回整个 internal/agent；
+   `catalog.KeepFresh`+`provider.FetchNew` 仍在）。用户「更新引擎」装完整版后种子让位。
+   **0.5.3 起 release exe ≈ 15.9MB**（壳+dist UPX ~4.7 + 种子 12.0）。
 
 ## DeepSeek Harness 接入（@openma/deepseek-harness-acp，2026-10-19 起）
 

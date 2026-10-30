@@ -12,13 +12,14 @@ build = "build.rs"
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
-# SIZE BUDGET (portable Windows x64, 2026-10-30 diet numbers):
+# SIZE BUDGET (portable Windows x64, 2026-10-30 seed numbers):
 #   shell (LTO+strip+opt-z, ring-less TLS): ~5.8 MB
 #   frontend dist (shiki curated 36 langs + JS regex engine): ~11 MB (was 19)
-#   embedded engine (UPX'd magpie, grows with upstream): 1664=15.4MB → 1877=19.6MB
-#   raw release ≈ 36.7 MB → ship after UPX --best --lzma ≈ 23.4 MB.
-#   Engine payload is at its compression entropy floor (UPX == xz == xz+BCJ,
-#   measured) — shrinking further means slimming magpie upstream, not here.
+#   embedded engine seed (slim gateway-only magpie, tools/magpie-seed):
+#     raw ~38 MB → UPX ~12 MB (full magpie would be ~58 → ~19.6)
+#   raw release ≈ 27.7 MB → ship after UPX --best --lzma ≈ 15.9 MB.
+#   The seed payload is at its compression entropy floor (UPX == xz == xz+BCJ,
+#   measured) — it grows with magpie upstream's gateway/provider code only.
 #   Keep TLS as ureq + native-tls (Windows schannel). NEVER reintroduce ring/rustls.
 #   Do NOT add: tokio, zip/tar extractors, reqwest, download caches, extra UI crates.
 #   Agents stay on PATH + npm auto-update — never embed agent binaries.
