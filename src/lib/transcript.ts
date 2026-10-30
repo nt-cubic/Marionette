@@ -20,7 +20,27 @@ export function isPersistableEvent(event: SessionEvent): boolean {
   return PERSISTABLE.has(event.type);
 }
 
+/**
+ * 引用稳定缓存：同一 events 数组（引用相同）+ 同一 sessionId 的二次调用返回
+ * 同一结果数组。下面 map 里的 `{ ...event }` 会重建对象，破坏 rails 落盘的
+ * 「前缀引用全等」纯追加判定——曾经因此 append 快路径永不生效、每次 flush
+ * 都误判为需要全量重写（2026-10-31 实锤）。rails 的更新是不可变替换，数组
+ * 引用一旦变化即重算，缓存天然失效，无脏读风险。
+ */
+const persistableCache = new WeakMap<object, { sessionId: string; result: SessionEvent[] }>();
+
 export function persistableEventsForSession(
+  events: SessionEvent[],
+  sessionId: string,
+): SessionEvent[] {
+  const cached = persistableCache.get(events);
+  if (cached && cached.sessionId === sessionId) return cached.result;
+  const result = computePersistableEvents(events, sessionId);
+  persistableCache.set(events, { sessionId, result });
+  return result;
+}
+
+function computePersistableEvents(
   events: SessionEvent[],
   sessionId: string,
 ): SessionEvent[] {

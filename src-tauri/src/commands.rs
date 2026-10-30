@@ -2558,13 +2558,30 @@ pub fn generate_handoff(
     source_agent_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Option<crate::models::HandoffResult>, String> {
-    let storage = state
-        .storage
-        .lock()
-        .map_err(|_| "Storage lock poisoned".to_string())?;
-    let session = storage
-        .find_session(&session_id)?
-        .ok_or_else(|| format!("Unknown session: {session_id}"))?;
+    // 锁内只取所需数据（会话/项目/聊天根），生成在锁外跑——交接要读整份
+    // 转录再写文件，大转录下持锁数秒（与 git 命令同一教训，2026-10-31）。
+    let (session, chat_root, project) = {
+        let storage = state
+            .storage
+            .lock()
+            .map_err(|_| "Storage lock poisoned".to_string())?;
+        let session = storage
+            .find_session(&session_id)?
+            .ok_or_else(|| format!("Unknown session: {session_id}"))?;
+        let chat_root = storage.chat_data_dir();
+        let project = if project_id == crate::app_paths::CHAT_PROJECT_ID {
+            None
+        } else {
+            Some(
+                storage
+                    .list_projects()?
+                    .into_iter()
+                    .find(|p| p.id == project_id)
+                    .ok_or_else(|| format!("Unknown project: {project_id}"))?,
+            )
+        };
+        (session, chat_root, project)
+    };
 
     let agents = crate::models::AgentConfig::defaults();
     let agent_label = |id: &str| {
@@ -2581,9 +2598,21 @@ pub fn generate_handoff(
     let source_label = agent_label(&source_id);
     let target_label = agent_label(&target_agent_id);
 
-    if project_id == crate::app_paths::CHAT_PROJECT_ID {
-        let chat_root = storage.chat_data_dir();
-        return crate::handoff::generate_handoff_with_storage(
+    if let Some(project) = project {
+        crate::handoff::generate_handoff(
+            &project.id,
+            Path::new(&project.root_path),
+            &project.name,
+            &session.id,
+            &session.label,
+            &source_id,
+            &source_label,
+            &target_agent_id,
+            &target_label,
+            Path::new(&session.transcript_path),
+        )
+    } else {
+        crate::handoff::generate_handoff_with_storage(
             &project_id,
             Path::new(&session.cwd),
             &crate::ts!("聊天", "Chat"),
@@ -2595,27 +2624,8 @@ pub fn generate_handoff(
             &target_label,
             Path::new(&session.transcript_path),
             &chat_root,
-        );
+        )
     }
-
-    let project = storage
-        .list_projects()?
-        .into_iter()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("Unknown project: {project_id}"))?;
-
-    crate::handoff::generate_handoff(
-        &project.id,
-        Path::new(&project.root_path),
-        &project.name,
-        &session.id,
-        &session.label,
-        &source_id,
-        &source_label,
-        &target_agent_id,
-        &target_label,
-        Path::new(&session.transcript_path),
-    )
 }
 
 #[tauri::command(async)]
@@ -2623,16 +2633,11 @@ pub fn get_changed_files(
     project_id: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<crate::models::ChangedFile>, String> {
-    let storage = state
-        .storage
-        .lock()
-        .map_err(|_| "Storage lock poisoned".to_string())?;
-    let project = storage
-        .list_projects()?
-        .into_iter()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("Unknown project: {project_id}"))?;
-    crate::git_service::get_changed_files(Path::new(&project.root_path))
+    // 锁内只解析项目根，git 在锁外跑：曾经持 storage 锁等 `git status` 完成
+    // ——git 一慢（大仓/慢盘/管道死锁，2026-10-31 实锤 69.7KB 输出卡死 60s
+    // 超时全程），新建对话/会话列表这些也要拿锁的命令全部跟着饿死。
+    let root = project_root_of(&project_id, &state)?;
+    crate::git_service::get_changed_files(&root)
 }
 
 #[tauri::command(async)]
@@ -2640,16 +2645,9 @@ pub fn get_current_branch(
     project_id: String,
     state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
-    let storage = state
-        .storage
-        .lock()
-        .map_err(|_| "Storage lock poisoned".to_string())?;
-    let project = storage
-        .list_projects()?
-        .into_iter()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("Unknown project: {project_id}"))?;
-    crate::git_service::get_current_branch(Path::new(&project.root_path))
+    // 同 get_changed_files：git 一律在 storage 锁外执行。
+    let root = project_root_of(&project_id, &state)?;
+    crate::git_service::get_current_branch(&root)
 }
 
 #[tauri::command(async)]
@@ -2658,16 +2656,9 @@ pub fn get_file_diff(
     path: String,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let storage = state
-        .storage
-        .lock()
-        .map_err(|_| "Storage lock poisoned".to_string())?;
-    let project = storage
-        .list_projects()?
-        .into_iter()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("Unknown project: {project_id}"))?;
-    crate::git_service::get_file_diff(Path::new(&project.root_path), &path)
+    // 同 get_changed_files：git 一律在 storage 锁外执行。
+    let root = project_root_of(&project_id, &state)?;
+    crate::git_service::get_file_diff(&root, &path)
 }
 
 #[derive(Debug, serde::Deserialize)]
