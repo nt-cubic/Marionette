@@ -2239,6 +2239,28 @@ impl AcpService {
         );
     }
 
+    /// Council executor 用:该会话是否无进行中的 prompt turn(进程
+    /// 缺席视为空闲——已死无需再等)。
+    pub fn turn_idle(&self, session_id: &str) -> bool {
+        self.process(session_id)
+            .map(|p| p.in_flight_prompt_id.load(Ordering::SeqCst) == 0)
+            .unwrap_or(true)
+    }
+
+    /// 阻塞等待当前 turn 完成(200ms 轮询;超时返回 false)。Council
+    /// 执行器按步等待 agent 回合;复用 in-flight 计数而不是事件订阅,
+    /// 保持 executor 与前端事件管线解耦。
+    pub fn wait_turn_idle(&self, session_id: &str, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            if self.turn_idle(session_id) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        self.turn_idle(session_id)
+    }
+
     fn process(&self, session_id: &str) -> Result<Arc<AcpProcess>, String> {
         self.sessions
             .lock()

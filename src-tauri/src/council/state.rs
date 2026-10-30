@@ -145,6 +145,7 @@ mod tests {
             paused_from: None,
             member_status: HashMap::from([("a".into(), MemberRuntimeStatus::Idle)]),
             budget_usage: Default::default(),
+            tasks: Vec::new(),
             updated_at: 0,
             error: None,
         }

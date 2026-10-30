@@ -420,3 +420,41 @@
   flex: 1 1 auto;
   min-height: 0;
 }
+
+/* ---- 执行任务面板 ---- */
+
+.council-exec-row { display: flex; gap: 8px; }
+.council-exec-row select { flex: 0 0 180px; }
+.council-exec-row input { flex: 1; }
+
+.council-tasks { display: flex; flex-direction: column; gap: 6px; }
+
+.council-task {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  font-size: 12px;
+}
+
+.council-task__id {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--text-dim);
+}
+
+.council-task__title { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.council-task__status { font-size: 11px; color: var(--text-dim); }
+.council-task__status--running { color: #5b9cff; }
+.council-task__status--merged, .council-task__status--completed { color: #46b58a; }
+.council-task__status--failed { color: #e06c5a; }
+.council-task__status--staged { color: #c9a227; }
+
+.council-task__changes { font-size: 11px; color: var(--text-dim); }
