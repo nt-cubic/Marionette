@@ -1,10 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
+import { t } from "./i18n";
 import { normalizeCredentialScan } from "./credentialScan";
 import { agents as mockAgents, projects as mockProjects, sessions as mockSessions, memoryStore as mockMemoryStore, dshPlugins as mockDshPlugins } from "./mockData";
 import type { AgentConfig, AgentCommandStatus, CapabilitySnapshot, Project, ProviderInfo, ProxyConfig, ProxyTestResult, Session, SessionLabelSource } from "./types";
 
 export function isTauriRuntime() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+/** Mirror the UI language to the Rust side (native dialogs, Telegram bot). */
+export async function setUiLocale(lang: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("set_ui_locale", { lang });
 }
 
 export async function listProjects(): Promise<Project[]> {
@@ -340,7 +347,7 @@ export async function createSession(projectId: string, agentId: string, label = 
  *  dialog under the shelf's 收纳盒 group (still a Chat session everywhere else). */
 export async function createChatSession(
   agentId: string,
-  label = "新对话",
+  label = t("api.newConversation"),
   cwd?: string | null,
   origin?: "memo",
 ): Promise<Session | null> {

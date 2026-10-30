@@ -1,6 +1,7 @@
 import { cleanAssistantText, stripSectionMarkers } from "./markdownText";
 import type { SessionEvent } from "./types";
 import { parseWebReply } from "./webReply";
+import { t } from "./i18n";
 
 const PERSISTABLE = new Set([
   "user_message",
@@ -270,7 +271,7 @@ export function parseTranscriptEvents(raw: unknown[]): SessionEvent[] {
             if (!question && options.length === 0) return [];
             return [
               {
-                question: question || "请选择",
+                question: question || t("transcript.pleaseSelect"),
                 ...(typeof q.header === "string" && q.header ? { header: q.header } : {}),
                 ...(q.multiSelect === true || q.multi_select === true
                   ? { multiSelect: true }

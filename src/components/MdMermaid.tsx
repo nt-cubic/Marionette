@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { useT } from "../lib/i18n";
 
 type MermaidApi = typeof import("mermaid").default;
 
@@ -40,6 +41,7 @@ function loadMermaid(): Promise<MermaidApi> {
  * documentElement's data-theme attribute.
  */
 export function MdMermaid({ code }: { code: string }) {
+  const t = useT();
   const [svg, setSvg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const rawId = useId();
@@ -93,7 +95,7 @@ export function MdMermaid({ code }: { code: string }) {
           }
         })
         .catch(() => {
-          if (!cancelled) setError("mermaid 引擎加载失败");
+          if (!cancelled) setError(t("md.mermaidLoadFailed"));
         });
     }, 350);
     return () => {
@@ -108,7 +110,7 @@ export function MdMermaid({ code }: { code: string }) {
   return (
     <div className={`md-mermaid${error ? " md-mermaid--error" : " md-mermaid--pending"}`}>
       <div className="md-mermaid__note">
-        {error ? `mermaid 渲染失败：${error}` : "mermaid 图表 · 等待语法完整"}
+        {error ? t("md.mermaidRenderFailed", { error }) : t("md.mermaidWaiting")}
       </div>
       <pre className="md-mermaid__src">{code}</pre>
     </div>

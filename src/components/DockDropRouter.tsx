@@ -23,6 +23,7 @@ import { isPageDragSource, onDragText } from "../lib/dragText";
 import { dispatchDockDropPaths, dispatchDockDropText } from "../lib/dockDrop";
 import { memoList, memoSavePaths, memoSaveText } from "../lib/memos";
 import { showToast } from "../lib/toast";
+import { useT } from "../lib/i18n";
 import type { DockPage } from "./DockChrome";
 
 type DropZone = "memo" | "chat";
@@ -35,6 +36,7 @@ type Props = {
 };
 
 export function DockDropRouter({ page, hasConversation, onMemoCount }: Props) {
+  const t = useT();
   const [zone, setZone] = useState<DropZone | null>(null);
   const live = useRef({ page, hasConversation, onMemoCount });
   live.current = { page, hasConversation, onMemoCount };
@@ -61,13 +63,13 @@ export function DockDropRouter({ page, hasConversation, onMemoCount }: Props) {
     let armed = false;
 
     const saveMemos = (paths: string[]) => {
-      void memoSavePaths(paths, "拖入")
+      void memoSavePaths(paths, t("memo.sourceDrop"))
         .then((rows) => {
           live.current.onMemoCount(rows.length);
-          showToast({ text: `已存入收纳盒 · ${paths.length} 项` });
+          showToast({ text: t("memo.savedCount", { count: paths.length }) });
         })
         .catch((error) =>
-          showToast({ text: "没能存进收纳盒", detail: String(error), tone: "error" }),
+          showToast({ text: t("memo.saveFailed"), detail: String(error), tone: "error" }),
         );
     };
 
@@ -155,15 +157,15 @@ export function DockDropRouter({ page, hasConversation, onMemoCount }: Props) {
         dispatchDockDropText(text);
         return;
       }
-      void memoSaveText(text, undefined, "拖入")
+      void memoSaveText(text, undefined, t("memo.sourceDrop"))
         .then((saved) => {
           if (!saved) throw new Error("save failed");
           return memoList().then((rows) => {
             live.current.onMemoCount(rows.length);
-            showToast({ text: "已存入收纳盒" });
+            showToast({ text: t("memo.saved") });
           });
         })
-        .catch(() => showToast({ text: "没能存进收纳盒", tone: "error" }));
+        .catch(() => showToast({ text: t("memo.saveFailed"), tone: "error" }));
     })
       .then((dispose) => {
         if (disposed) dispose();
@@ -183,16 +185,16 @@ export function DockDropRouter({ page, hasConversation, onMemoCount }: Props) {
   // No conversation in view (other full pages, or no dialog at all).
   if (page || !hasConversation) {
     return zone === "memo" ? (
-      <div className="dock-drop-veil is-memo is-full">松开 · 存入收纳盒</div>
+      <div className="dock-drop-veil is-memo is-full">{t("memo.dropSave")}</div>
     ) : null;
   }
   return (
     <>
       <div className={zone === "memo" ? "dock-drop-veil is-memo is-hot" : "dock-drop-veil is-memo"}>
-        {zone === "memo" ? "松开 · 存入收纳盒" : "收入收纳盒"}
+        {zone === "memo" ? t("memo.dropSave") : t("memo.dropMemoHint")}
       </div>
       <div className={zone === "chat" ? "dock-drop-veil is-chat is-hot" : "dock-drop-veil is-chat"}>
-        {zone === "chat" ? "松开 · 放入对话输入框" : "放入对话输入框"}
+        {zone === "chat" ? t("memo.dropChatRelease") : t("memo.dropChatHint")}
       </div>
     </>
   );

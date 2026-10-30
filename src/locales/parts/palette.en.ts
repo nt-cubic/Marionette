@@ -1,0 +1,31 @@
+import type { zh } from "./palette.zh";
+
+/** English mirror of the palette fragment. */
+export const en = {
+  "palette.dialogAria": "Command palette",
+  "palette.searchPlaceholder": "Search conversations, projects, or actions…",
+  "palette.searchAria": "Search conversations, projects, or actions",
+  "palette.groupRecent": "Recent",
+  "palette.groupConversations": "Conversations",
+  "palette.groupProjects": "Projects",
+  "palette.groupActions": "Actions",
+  "palette.noMatches": "No matching conversations, projects, or actions",
+  "palette.footSelect": "select",
+  "palette.footOpen": "open",
+  "palette.footSummon": "to summon anytime",
+  "palette.toggleTheme": "Switch theme",
+  "palette.newSessionInProject": "New conversation in current project",
+  "palette.newChat": "New chat",
+  "palette.addProject": "Add project…",
+  "palette.reopenTab": "Reopen the tab just closed",
+  "palette.expandLeft": "Expand the left rail",
+  "palette.collapseLeft": "Collapse the left rail",
+  "palette.undock": "Undock from edge",
+  "palette.undockHint": "Back to a normal window",
+  "palette.dockToEdge": "Dock to screen edge",
+  "palette.dockToEdgeHint": "You can also drag the window to a screen edge",
+  "palette.closeBehaviorHide": "On window close: retract to edge (click to quit instead)",
+  "palette.closeBehaviorExit": "On window close: quit (click to retract instead)",
+  "palette.quitApp": "Quit Marionette",
+  "palette.quitAppHint": "Stops the engine and every session",
+} satisfies Record<keyof typeof zh, string>;

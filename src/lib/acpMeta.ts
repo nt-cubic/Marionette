@@ -1,3 +1,5 @@
+import { t } from "./i18n";
+
 /**
  * Codex / Claude / OpenCode session meta extraction (Codeg-aligned, pure data).
  *
@@ -297,7 +299,11 @@ export function parseCompactionUpdate(update: Record<string, unknown>): Compacti
     (compaction && typeof compaction.summary === "string" && compaction.summary.trim()) ||
     (typeof update.message === "string" && update.message.trim()) ||
     (typeof update.text === "string" && update.text.trim()) ||
-    (trigger === "manual" ? "手动压缩了上下文。" : trigger === "auto" ? "自动压缩了上下文。" : "上下文已压缩。");
+    (trigger === "manual"
+      ? t("acpmeta.compactManual")
+      : trigger === "auto"
+        ? t("acpmeta.compactAuto")
+        : t("acpmeta.compactPlain"));
   return { trigger, summary };
 }
 
@@ -357,7 +363,7 @@ export function parseLiveNotice(update: Record<string, unknown>): SessionNotice 
   if (retry) {
     return {
       severity: "warning",
-      title: retry.httpStatus != null ? `正在重试（HTTP ${retry.httpStatus}）` : "正在重试…",
+      title: retry.httpStatus != null ? t("acpmeta.retryingHttp", { status: retry.httpStatus }) : t("acpmeta.retrying"),
       description: retry.message,
     };
   }

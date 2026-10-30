@@ -1,3 +1,5 @@
+import { t } from "./i18n";
+
 /**
  * 后台任务面板的数据聚合层（纯函数，无 React 依赖）。
  *
@@ -91,9 +93,9 @@ export function summarizeBackgroundTasks(rows: BackgroundTaskRow[]): string {
   const running = backgroundTaskRunningCount(rows);
   const queued = rows.filter((row) => row.state === "queued").length;
   const parts: string[] = [];
-  if (running > 0) parts.push(`${running} 运行中`);
-  if (queued > 0) parts.push(`${queued} 排队`);
-  if (attention > 0) parts.push(`${attention} 需要你`);
+  if (running > 0) parts.push(t("tasks.runningCount", { count: running }));
+  if (queued > 0) parts.push(t("tasks.queuedCount", { count: queued }));
+  if (attention > 0) parts.push(t("tasks.attentionCount", { count: attention }));
   return parts.join(" · ");
 }
 
@@ -148,7 +150,7 @@ export function buildBackgroundTaskRows(input: BuildBackgroundTasksInput): Backg
       kind: "delegate",
       state: "running",
       sessionId: meta.parentId,
-      title: `${meta.agentLabel || "子代理"}${meta.modelId ? ` · ${meta.modelId}` : ""}`,
+      title: `${meta.agentLabel || t("tasks.subagent")}${meta.modelId ? ` · ${meta.modelId}` : ""}`,
       detail: clip(meta.prompt, 64),
       startedAtMs: meta.startedAt || now,
       fromCurrent: input.currentSessionId === meta.parentId,
@@ -160,7 +162,7 @@ export function buildBackgroundTaskRows(input: BuildBackgroundTasksInput): Backg
       kind: "subagent",
       state: "running",
       sessionId: child.sessionId,
-      title: child.title || "子代理",
+      title: child.title || t("tasks.subagent"),
       detail: child.detail,
       startedAtMs: child.startedAtMs || now,
       fromCurrent: input.currentSessionId === child.sessionId,
@@ -175,7 +177,7 @@ export function buildBackgroundTaskRows(input: BuildBackgroundTasksInput): Backg
         kind: "delegate_queued",
         state: "queued",
         sessionId: parentId,
-        title: `${job.agentLabel || "子代理"} · 排队`,
+        title: t("tasks.queuedSubagent", { agent: job.agentLabel || t("tasks.subagent") }),
         detail: clip(job.prompt, 64),
         startedAtMs: now,
         fromCurrent: input.currentSessionId === parentId,
@@ -195,8 +197,8 @@ export function buildBackgroundTaskRows(input: BuildBackgroundTasksInput): Backg
       detail: term.running
         ? undefined
         : exit?.signal
-          ? `信号 ${exit.signal}`
-          : `退出码 ${exit?.exitCode ?? "?"}`,
+          ? t("tasks.signal", { signal: exit.signal })
+          : t("tasks.exitCode", { code: exit?.exitCode ?? "?" }),
       startedAtMs: term.startedAtMs || now,
     });
   }
@@ -209,8 +211,8 @@ export function buildBackgroundTaskRows(input: BuildBackgroundTasksInput): Backg
       kind: "queued",
       state: "queued",
       sessionId,
-      title: input.queuedSendLabels.get(sessionId) || "排队发送",
-      detail: `${count} 条消息等回合结束`,
+      title: input.queuedSendLabels.get(sessionId) || t("tasks.queuedSend"),
+      detail: t("tasks.queuedMessages", { count }),
       startedAtMs: now,
     });
   }
@@ -221,7 +223,7 @@ export function buildBackgroundTaskRows(input: BuildBackgroundTasksInput): Backg
       kind: "scheduled",
       state: "queued",
       sessionId: item.sessionId,
-      title: input.sessionLabels.get(item.sessionId) || "定时发送",
+      title: input.sessionLabels.get(item.sessionId) || t("tasks.scheduledSend"),
       detail: item.preview,
       startedAtMs: item.atMs,
       fromCurrent: input.currentSessionId === item.sessionId,
@@ -232,11 +234,11 @@ export function buildBackgroundTaskRows(input: BuildBackgroundTasksInput): Backg
   const attention: Array<{ sessionId: string | null | undefined; title: string; detail: string }> = [
     {
       sessionId: input.permissionSessionId,
-      title: "等待权限审批",
+      title: t("tasks.permissionApprovalTitle"),
       detail: clip(input.permissionTitle ?? "", 64),
     },
-    { sessionId: input.askSessionId, title: "Agent 有问题要问", detail: "" },
-    { sessionId: input.planSessionId, title: "计划等你批准", detail: "" },
+    { sessionId: input.askSessionId, title: t("tasks.askTitle"), detail: "" },
+    { sessionId: input.planSessionId, title: t("tasks.planApprovalTitle"), detail: "" },
   ];
   for (const item of attention) {
     if (!item.sessionId) continue;

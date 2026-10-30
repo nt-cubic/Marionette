@@ -15,7 +15,11 @@ use tauri::{AppHandle, Emitter, Manager};
 pub const OPEN_PATH_EVENT: &str = "marionette-open-path";
 
 const SHELL_KEY_NAME: &str = "MarionetteOpenHere";
-const MENU_LABEL: &str = "在此处打开 Marionette";
+/// Explorer context-menu label — written to the registry at register time,
+/// so it bakes in the language active when the user registers (2026-10-30 i18n).
+fn menu_label() -> String {
+    crate::ts!("在此处打开 Marionette", "Open Marionette here")
+}
 const PENDING_FILE_NAME: &str = "pending-open-path.txt";
 const INSTANCE_LOCK_NAME: &str = "instance.lock";
 
@@ -309,8 +313,8 @@ fn windows_register_context_menu() -> Result<(), String> {
         r"Software\Classes\Directory\Background\shell",
     ] {
         let key_path = format!(r"{base}\{SHELL_KEY_NAME}");
-        reg_set_string(&key_path, None, MENU_LABEL)?;
-        reg_set_string(&key_path, Some("MUIVerb"), MENU_LABEL)?;
+        reg_set_string(&key_path, None, &menu_label())?;
+        reg_set_string(&key_path, Some("MUIVerb"), &menu_label())?;
         reg_set_string(&key_path, Some("Icon"), &icon)?;
         reg_set_string(&key_path, Some("Position"), "Middle")?;
         let cmd_path = format!(r"{key_path}\command");

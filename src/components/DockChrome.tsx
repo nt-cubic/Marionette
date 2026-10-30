@@ -32,13 +32,14 @@ import {
   toggleDockPinned,
 } from "../lib/dockMode";
 import type { Session } from "../lib/types";
+import { t, useT, type DictKey } from "../lib/i18n";
 
 export type DockPage = "shelf" | "context" | "memo";
 
-const PAGE_TITLES: Record<DockPage, string> = {
-  shelf: "全部对话",
-  context: "用量与项目",
-  memo: "收纳盒",
+const PAGE_TITLES: Record<DockPage, DictKey> = {
+  shelf: "dock.pageShelf",
+  context: "dock.pageContext",
+  memo: "dock.pageMemo",
 };
 
 type Props = {
@@ -83,7 +84,7 @@ function recency(session: Session, nowMs: number): string {
   const ms = lastActiveMs(session);
   if (!ms) return "";
   const min = Math.floor((nowMs - ms) / 60_000);
-  if (min < 1) return "刚刚";
+  if (min < 1) return t("memo.justNow");
   if (min < 60) return `${min}m`;
   const hr = Math.floor(min / 60);
   if (hr < 24) return `${hr}h`;
@@ -113,9 +114,9 @@ function resetLabel(iso?: string | null): string {
   const left = ms - Date.now();
   if (left <= 0) return "";
   const hr = Math.floor(left / 3_600_000);
-  if (hr < 1) return ` · ${Math.max(1, Math.round(left / 60_000))} 分钟后重置`;
-  if (hr < 48) return ` · ${hr} 小时后重置`;
-  return ` · ${Math.round(hr / 24)} 天后重置`;
+  if (hr < 1) return ` · ${t("dock.resetMinutes", { n: Math.max(1, Math.round(left / 60_000)) })}`;
+  if (hr < 48) return ` · ${t("dock.resetHours", { n: hr })}`;
+  return ` · ${t("dock.resetDays", { n: Math.round(hr / 24) })}`;
 }
 
 /** Hover text is the full truth: every window + reset time, then the balance. */
@@ -126,7 +127,7 @@ function quotaTitle(row: EngineQuotaEntry): string {
       const used = usedOf(w);
       return `${w.name}  ${used == null ? "—" : `${Math.round(used)}%`}${resetLabel(w.resetsAt)}`;
     }),
-    ...(row.balance ? [`余额 ${row.balance}`] : []),
+    ...(row.balance ? [t("dock.balanceChip", { balance: row.balance })] : []),
   ].join("\n");
 }
 
@@ -143,6 +144,7 @@ function windowsOf(row: EngineQuotaEntry): Array<{ w: EngineQuotaWindow; used: n
  * live in the hover/usage page; nesting two arcs in 40px read as noise.
  */
 function QuotaMeter({ row, onOpen }: { row: EngineQuotaEntry; onOpen: () => void }) {
+  const t = useT();
   const peak = windowsOf(row)[0]?.used ?? null;
   const name = shortName(row.name);
   return (
@@ -150,7 +152,7 @@ function QuotaMeter({ row, onOpen }: { row: EngineQuotaEntry; onOpen: () => void
       type="button"
       className={`dock-meter ${tone(peak)}`}
       title={quotaTitle(row)}
-      aria-label={`${name} ${peak == null ? "暂无额度数据" : `${Math.round(peak)}%`} · 点开看明细`}
+      aria-label={`${name} ${peak == null ? t("dock.noQuotaData") : `${Math.round(peak)}%`} · ${t("dock.openDetails")}`}
       onClick={onOpen}
     >
       <span className="dock-meter__name">{name}</span>
@@ -163,6 +165,7 @@ function QuotaMeter({ row, onOpen }: { row: EngineQuotaEntry; onOpen: () => void
 }
 
 function QuotaMeters({ rows, onOpen }: { rows: EngineQuotaEntry[]; onOpen: () => void }) {
+  const t = useT();
   const sorted = useMemo(() => {
     const peak = (row: EngineQuotaEntry) => windowsOf(row)[0]?.used ?? -1;
     return [...rows].sort((a, b) => peak(b) - peak(a));
@@ -184,14 +187,14 @@ function QuotaMeters({ rows, onOpen }: { rows: EngineQuotaEntry[]; onOpen: () =>
       )}
       {balances.length > 0 && (
         <div className="dock-balances">
-          <span className="dock-balances__label">余额</span>
+          <span className="dock-balances__label">{t("dock.balanceLabel")}</span>
           {balances.map((row) => (
             <button
               key={`${row.provider}:${row.name}`}
               type="button"
               className="dock-balance"
               title={quotaTitle(row)}
-              aria-label={`${shortName(row.name)} 余额 ${row.balance} · 点开看明细`}
+              aria-label={`${shortName(row.name)} ${t("dock.balanceLabel")} ${row.balance} · ${t("dock.openDetails")}`}
               onClick={onOpen}
             >
               <span>{shortName(row.name)}</span>
@@ -228,6 +231,7 @@ export const DockChrome = memo(function DockChrome({
   onUpdateAndRelaunch,
   splitPaused,
 }: Props) {
+  const t = useT();
   const bandRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const newChatRef = useRef<HTMLDivElement>(null);
@@ -305,16 +309,16 @@ export const DockChrome = memo(function DockChrome({
       <div
         className={page ? "dock-bar is-page" : "dock-bar"}
         onMouseDown={onBarMouseDown}
-        title="拖动顶部可移出贴边"
+        title={t("dock.dragToUndock")}
       >
         {page ? (
           <>
-            <button type="button" className="dock-bar__back" onClick={() => onPage(null)} title="返回 · Esc">
+            <button type="button" className="dock-bar__back" onClick={() => onPage(null)} title={t("dock.backTitle")}>
               <ChevronLeft size={14} />
-              返回
+              {t("dock.back")}
             </button>
             <span className="dock-bar__title">
-              {PAGE_TITLES[page]}
+              {t(PAGE_TITLES[page])}
               {page === "memo" && memoCount > 0 && <small>{memoCount}</small>}
               {page === "shelf" && <small>{totalSessions}</small>}
             </span>
@@ -327,7 +331,7 @@ export const DockChrome = memo(function DockChrome({
         )}
         <span className="dock-bar__spacer" />
         {!page && (
-          <button type="button" className="dock-icon" title="搜索对话与操作 · Ctrl K" aria-label="搜索对话与操作" onClick={onOpenPalette}>
+          <button type="button" className="dock-icon" title={t("dock.searchTitle")} aria-label={t("dock.searchAria")} onClick={onOpenPalette}>
             <Search size={13} />
           </button>
         )}
@@ -335,8 +339,8 @@ export const DockChrome = memo(function DockChrome({
           <button
             type="button"
             className={openMenu === "more" ? "dock-icon is-on" : "dock-icon"}
-            title="更多"
-            aria-label="更多"
+            title={t("dock.more")}
+            aria-label={t("dock.more")}
             aria-haspopup="menu"
             aria-expanded={openMenu === "more"}
             onClick={() => setOpenMenu(openMenu === "more" ? null : "more")}
@@ -357,7 +361,11 @@ export const DockChrome = memo(function DockChrome({
                   else onCheckUpdate();
                 }}
               >
-                {updateAvailable ? `升级到 ${updateLabel ?? "新版本"} 并重启` : updateBusy ? "检查中…" : "检查更新"}
+                {updateAvailable
+                  ? t("dock.updateRelaunch", { label: updateLabel ?? t("dock.newVersion") })
+                  : updateBusy
+                    ? t("dock.checking")
+                    : t("dock.checkUpdate")}
               </button>
               <button
                 type="button"
@@ -367,8 +375,8 @@ export const DockChrome = memo(function DockChrome({
                   onPage("context");
                 }}
               >
-                用量与项目
-                <small>额度 · 改动文件 · 待办</small>
+                {t("dock.pageContext")}
+                <small>{t("dock.contextHint")}</small>
               </button>
               {/* 侧边栏常驻 stays open — the row itself is the feedback. */}
               <button
@@ -378,8 +386,9 @@ export const DockChrome = memo(function DockChrome({
                 className={pinned ? "is-accent" : undefined}
                 onClick={() => setPinned(toggleDockPinned())}
               >
-                侧边栏常驻{pinned ? " · 已开启" : ""}
-                <small>{pinned ? "展开后不再自动收起" : "展开后保持显示，不随鼠标移开收起"}</small>
+                {t("dock.pinnedStrip")}
+                {pinned ? ` · ${t("dock.pinnedOn")}` : ""}
+                <small>{pinned ? t("dock.pinnedHintOn") : t("dock.pinnedHintOff")}</small>
               </button>
               <button
                 type="button"
@@ -389,8 +398,8 @@ export const DockChrome = memo(function DockChrome({
                   onUndock();
                 }}
               >
-                解除贴边
-                <small>恢复普通窗口</small>
+                {t("dock.undock")}
+                <small>{t("dock.undockHint")}</small>
               </button>
               <span className="dock-menu__sep" />
               <button
@@ -402,8 +411,8 @@ export const DockChrome = memo(function DockChrome({
                   onQuit();
                 }}
               >
-                退出 Marionette
-                <small>停止引擎与全部会话</small>
+                {t("dock.quit")}
+                <small>{t("dock.quitHint")}</small>
               </button>
             </div>
           )}
@@ -423,10 +432,10 @@ export const DockChrome = memo(function DockChrome({
             onClick={() => setOpenMenu(openMenu === "new" ? null : "new")}
           >
             <Plus size={13} />
-            新建对话
+            {t("dock.newChat")}
           </button>
           {openMenu === "new" && (
-            <div className="dock-menu dock-menu--left" role="menu" aria-label="新建对话到">
+            <div className="dock-menu dock-menu--left" role="menu" aria-label={t("dock.newChatTo")}>
               <button
                 type="button"
                 role="menuitem"
@@ -435,15 +444,15 @@ export const DockChrome = memo(function DockChrome({
                   onNewChat();
                 }}
               >
-                聊天
-                <small>默认工作文件夹 · 不绑定项目</small>
+                {t("common.chat")}
+                <small>{t("dock.destChatHint")}</small>
               </button>
               {projects.map((project) => (
                 <button
                   key={project.id}
                   type="button"
                   role="menuitem"
-                  title={`在 ${project.name} 里新建会话`}
+                  title={t("dock.newInProject", { name: project.name })}
                   onClick={() => {
                     setOpenMenu(null);
                     onNewChatIn(project.id);
@@ -453,7 +462,7 @@ export const DockChrome = memo(function DockChrome({
                 </button>
               ))}
               {projects.length === 0 && (
-                <span className="dock-menu__hint">还没有项目 · 「全部对话」里可添加</span>
+                <span className="dock-menu__hint">{t("dock.noProjects")}</span>
               )}
               <span className="dock-menu__sep" />
               <button
@@ -464,15 +473,15 @@ export const DockChrome = memo(function DockChrome({
                   onPage("shelf");
                 }}
               >
-                全部对话 ›
-                <small>打开完整列表，用每个项目的 ＋ 新建</small>
+                {t("dock.pageShelf")} ›
+                <small>{t("dock.allChatsHint")}</small>
               </button>
             </div>
           )}
         </div>
-        <button type="button" className="dock-btn" onClick={() => onPage("memo")} title="收纳盒 · 拖入文件 / Ctrl V 粘贴文字与链接">
+        <button type="button" className="dock-btn" onClick={() => onPage("memo")} title={t("dock.memoButtonTitle")}>
           <Archive size={13} />
-          收纳盒
+          {t("dock.pageMemo")}
           {memoCount > 0 && <span className="dock-btn__count">{memoCount > 99 ? "99+" : memoCount}</span>}
         </button>
       </div>
@@ -481,11 +490,15 @@ export const DockChrome = memo(function DockChrome({
 
       <div className="dock-active">
         <div className="dock-active__head">
-          <span>进行中</span>
+          <span>{t("dock.active")}</span>
           <b>{active.filter(isAlive).length}</b>
-          {splitPaused && <span className="dock-active__hint" title="分屏在贴边时暂停，解除贴边后恢复">分屏已暂停</span>}
+          {splitPaused && (
+            <span className="dock-active__hint" title={t("dock.splitPausedTitle")}>
+              {t("dock.splitPaused")}
+            </span>
+          )}
           <button type="button" className="dock-active__all" onClick={() => onPage("shelf")}>
-            全部对话 ›
+            {t("dock.pageShelf")} ›
           </button>
         </div>
         <div className="dock-active__list custom-scrollbar">
@@ -516,13 +529,13 @@ export const DockChrome = memo(function DockChrome({
                   aria-hidden
                 />
                 <span className="dock-active__title">{session.label}</span>
-                <span className="dock-active__time">{alive ? recency(session, now) : "未启动"}</span>
+                <span className="dock-active__time">{alive ? recency(session, now) : t("dock.notStarted")}</span>
                 {alive && (
                   <button
                     type="button"
                     className="dock-active__park"
-                    title={busy ? "停止并挂起" : "挂起（结束进程，下次发消息自动接上）"}
-                    aria-label={`挂起 ${session.label}`}
+                    title={busy ? t("dock.stopAndPark") : t("dock.parkTitle")}
+                    aria-label={t("dock.parkAria", { label: session.label })}
                     onClick={(event) => {
                       event.stopPropagation();
                       onSuspendSession(session.id);
@@ -548,6 +561,7 @@ export const DockChrome = memo(function DockChrome({
  * against the live client rect, see dockMode.ts); release persists the width.
  */
 export const DockResizeGrip = memo(function DockResizeGrip() {
+  const t = useT();
   const [dragging, setDragging] = useState(false);
   const draggingRef = useRef(false);
 
@@ -592,8 +606,8 @@ export const DockResizeGrip = memo(function DockResizeGrip() {
       className={dragging ? "dock-resize-grip is-dragging" : "dock-resize-grip"}
       role="separator"
       aria-orientation="vertical"
-      aria-label="拖动调整侧栏宽度"
-      title="拖动调整侧栏宽度"
+      aria-label={t("dock.resizeAria")}
+      title={t("dock.resizeAria")}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}

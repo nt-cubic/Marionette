@@ -1,5 +1,6 @@
 import type { ClassifiedError } from "../lib/errors";
 import type { SessionNotice } from "../lib/acpMeta";
+import { useT } from "../lib/i18n";
 
 export type SessionNoticeView = SessionNotice & { sessionId: string };
 
@@ -22,6 +23,7 @@ export function ComposerErrorStrip({
   onNewSession,
   onDismiss,
 }: ComposerErrorStripProps) {
+  const t = useT();
   return (
     <div className="composer-error-strip" role="alert">
       <div className="composer-error-strip__copy">
@@ -30,7 +32,7 @@ export function ComposerErrorStrip({
       </div>
       <div className="composer-error-strip__actions">
         <button type="button" onClick={onRetry}>
-          重试
+          {t("common.retry")}
         </button>
         {canSignIn && onSignIn && error.kind === "auth" ? (
           <button type="button" onClick={onSignIn}>
@@ -39,14 +41,14 @@ export function ComposerErrorStrip({
         ) : null}
         {onUpdate && error.kind === "upgrade" ? (
           <button type="button" onClick={onUpdate}>
-            更新
+            {t("composer.update")}
           </button>
         ) : null}
         <button type="button" onClick={onNewSession}>
-          新会话
+          {t("composer.newSession")}
         </button>
         <button type="button" className="composer-error-strip__dismiss" onClick={onDismiss}>
-          关闭
+          {t("common.close")}
         </button>
       </div>
     </div>
@@ -61,6 +63,7 @@ export function SessionNoticeStrip({
   notice: SessionNoticeView;
   onDismiss: () => void;
 }) {
+  const t = useT();
   return (
     <div className={`session-notice session-notice--${notice.severity}`} role="status">
       <div className="session-notice__copy">
@@ -68,7 +71,7 @@ export function SessionNoticeStrip({
         {notice.description ? <span>{notice.description}</span> : null}
       </div>
       <button type="button" className="session-notice__dismiss" onClick={onDismiss}>
-        关闭
+        {t("common.close")}
       </button>
     </div>
   );

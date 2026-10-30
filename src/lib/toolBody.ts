@@ -11,7 +11,7 @@
  *   not a wrapped text dump.
  */
 
-import { normalizeWindowsDrivePath } from "./imageAttachments";
+import { normalizeWindowsDrivePath, stripFileUri } from "./imageAttachments";
 
 const IMAGE_EXTENSION = /\.(?:png|jpe?g|gif|webp|bmp|avif|svg)$/i;
 /** `![alt](target)` — how ACP image blocks are stringified (see acpTranscript). */
@@ -37,6 +37,26 @@ export type ToolBodyParts = {
 
 export function isImagePath(value: string): boolean {
   return IMAGE_EXTENSION.test(value.trim());
+}
+
+/**
+ * Markdown link target that points at a picture, or null for everything else.
+ *
+ * Agents link screenshots instead of embedding them (`[对比](D:/shot.png)`), so
+ * the transcript would otherwise only ever show a green link. Remote URLs keep
+ * their query string; local paths drop `?…`/`#…` before the extension check.
+ */
+export function imageLinkTarget(href: string | null | undefined): string | null {
+  const raw = (href ?? "").trim();
+  if (!raw || raw === "#") return null;
+  const decoded = stripFileUri(raw);
+  if (!decoded) return null;
+  if (/^https?:\/\//i.test(decoded)) {
+    const withoutQuery = decoded.split(/[?#]/, 1)[0] ?? "";
+    return isImagePath(withoutQuery) ? decoded : null;
+  }
+  const local = decoded.split(/[?#]/, 1)[0] ?? "";
+  return local && isImagePath(local) ? local : null;
 }
 
 /** `file:///C:/x.png` → `C:/x.png`; other schemes pass through untouched. */

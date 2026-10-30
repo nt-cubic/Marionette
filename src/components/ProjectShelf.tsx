@@ -1,8 +1,10 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Archive, Bell, BellOff, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, KeyRound, MessageSquare, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, SlidersHorizontal, SunMedium, Trash2, X, Zap } from "lucide-react";
+import { Archive, Bell, BellOff, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, KeyRound, Languages, MessageSquare, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, SlidersHorizontal, SunMedium, Trash2, X, Zap } from "lucide-react";
 // Refresh on a project row folds CLI history into the normal session list.
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
+import { applyLocale, getLocale, localeToggleTitle, nextLocale } from "../lib/i18n";
+import { t, useLocale, useT, type DictKey } from "../lib/i18n";
 import { themeToggleTitle, type ThemeMode } from "../lib/theme";
 import { collapsedShelfSessions, pinStamp, sortSessionsNewestFirst } from "../lib/sessionOrder";
 import { suspendControl } from "../lib/sessionSuspend";
@@ -63,8 +65,8 @@ function memoPerProject<T>(
 
 function magpieCredit(version?: string | null): string {
   const raw = version?.trim();
-  if (!raw) return "由 magpie 强力驱动";
-  return `由 magpie v${raw.replace(/^v/i, "")} 强力驱动`;
+  if (!raw) return t("shelf.poweredBy");
+  return t("shelf.poweredByVersion", { version: raw.replace(/^v/i, "") });
 }
 
 /** Pin toggle shared by project session rows and chat rows. */
@@ -77,7 +79,8 @@ function SessionPinButton({
   className: string;
   onToggle: (next: boolean) => void;
 }) {
-  const name = pinned ? "取消置顶" : "置顶";
+  const t = useT();
+  const name = pinned ? t("shelf.unpin") : t("shelf.pin");
   return (
     <button
       className={pinned ? `${className} is-pinned` : className}
@@ -97,8 +100,9 @@ function SessionPinButton({
 
 /** Always-visible marker so a pinned row reads as pinned without hovering. */
 function PinnedMark({ className }: { className: string }) {
+  const t = useT();
   return (
-    <span className={className} title="已置顶" aria-hidden>
+    <span className={className} title={t("shelf.pinned")} aria-hidden>
       <Pin size={10} />
     </span>
   );
@@ -195,16 +199,16 @@ function sessionIsBusy(status: Session["status"]): boolean {
 
 /** Day bucket for the shelf's group labels; pinned rows keep their own group. */
 function shelfDayLabel(session: Session, nowMs: number): string {
-  if (pinStamp(session) != null) return "置顶";
+  if (pinStamp(session) != null) return t("shelf.pin");
   const ms = Date.parse(session.lastActiveAt);
-  if (!Number.isFinite(ms)) return "更早";
+  if (!Number.isFinite(ms)) return t("common.earlier");
   const start = new Date(nowMs);
   start.setHours(0, 0, 0, 0);
   const today = start.getTime();
-  if (ms >= today) return "今天";
-  if (ms >= today - 86_400_000) return "昨天";
-  if (ms >= today - 6 * 86_400_000) return "本周";
-  return "更早";
+  if (ms >= today) return t("common.today");
+  if (ms >= today - 86_400_000) return t("common.yesterday");
+  if (ms >= today - 6 * 86_400_000) return t("common.thisWeek");
+  return t("common.earlier");
 }
 
 /** First row of each day bucket → its label; only long lists get labels. */
@@ -220,22 +224,22 @@ function shelfDayHeaders(list: Session[], nowMs: number, minRows: number): Map<s
   return heads;
 }
 
-const SESSION_STATUS_WORD: Record<string, string> = {
-  starting: "启动中",
-  running: "运行中",
-  waiting: "等你",
-  exited: "空闲",
-  error: "出错",
+const SESSION_STATUS_WORD: Record<string, DictKey> = {
+  starting: "shelf.starting",
+  running: "shelf.running",
+  waiting: "shelf.waiting",
+  exited: "shelf.idle",
+  error: "shelf.error",
 };
 
 /** Shelf-top filter: which dialogs need a look right now. */
 type ShelfStatusFilter = "running" | "waiting" | "done" | "error";
 
-const SHELF_STATUS_ORDER: { id: ShelfStatusFilter; label: string }[] = [
-  { id: "running", label: "运行中" },
-  { id: "waiting", label: "等你" },
-  { id: "done", label: "已完成" },
-  { id: "error", label: "出错" },
+const SHELF_STATUS_ORDER: { id: ShelfStatusFilter; label: DictKey }[] = [
+  { id: "running", label: "shelf.running" },
+  { id: "waiting", label: "shelf.waiting" },
+  { id: "done", label: "shelf.done" },
+  { id: "error", label: "shelf.error" },
 ];
 
 function sessionMatchesStatus(
@@ -295,6 +299,8 @@ export function ProjectShelf({
   onRefreshExternal,
 }: ProjectShelfProps) {
   const unreadDone = doneUnreadIds ?? EMPTY_DONE_UNREAD;
+  const t = useT();
+  const locale = useLocale();
   /** Collapsed project ids (persisted). Default for unknown ids is expanded. */
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => loadCollapsedProjectIds());
   const [query, setQuery] = useState("");
@@ -353,7 +359,7 @@ export function ProjectShelf({
     if (!onTestProxy) return;
     const url = proxyDraft.url.trim();
     if (!url) {
-      setProxyError("请先填写代理地址");
+      setProxyError(t("shelf.proxyNeedUrlFirst"));
       return;
     }
     setProxyBusy("test");
@@ -361,7 +367,7 @@ export function ProjectShelf({
     setProxyTest(null);
     try {
       const result = await onTestProxy(url);
-      setProxyTest(result ? result.message : "无法测试（非桌面环境）");
+      setProxyTest(result ? result.message : t("shelf.proxyTestUnavailable"));
     } catch (error) {
       setProxyError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -373,7 +379,7 @@ export function ProjectShelf({
     if (!onSaveProxy) return;
     const url = proxyDraft.url.trim();
     if (proxyDraft.enabled && !url) {
-      setProxyError("请填写代理地址");
+      setProxyError(t("shelf.proxyNeedUrl"));
       return;
     }
     setProxyBusy("save");
@@ -462,7 +468,7 @@ export function ProjectShelf({
   const tgSaveToken = async () => {
     const token = tgTokenDraft.trim();
     if (!token) {
-      setTgError("请先粘贴 bot token（找 @BotFather /newbot 要）");
+      setTgError(t("shelf.tgNeedToken"));
       return;
     }
     setTgBusy("save");
@@ -545,7 +551,7 @@ export function ProjectShelf({
     try {
       const info = await engineCheckUpdate();
       if (!info) {
-        setEngineUpdateError("无法检查更新（非桌面运行时）");
+        setEngineUpdateError(t("shelf.updateCheckUnavailable"));
         return;
       }
       setEngineUpdateInfo(info);
@@ -925,6 +931,18 @@ export function ProjectShelf({
     </button>
   );
 
+  const languageButton = (
+    <button
+      className="pill-action pill-action--icon pill-action--sm sidebar-footer__button"
+      type="button"
+      title={localeToggleTitle(getLocale())}
+      aria-label={localeToggleTitle(getLocale())}
+      onClick={() => void applyLocale(nextLocale(getLocale()))}
+    >
+      <Languages size={13} />
+    </button>
+  );
+
   const notifyButton = onToggleDesktopNotify ? (
     <button
       className={
@@ -957,10 +975,10 @@ export function ProjectShelf({
       }
       title={
         proxyConfig?.enabled
-          ? `代理已启用 · ${proxyConfig.url} · 点此修改`
-          : "代理未启用 · 点此配置"
+          ? t("shelf.proxyTitleOn", { url: proxyConfig.url })
+          : t("shelf.proxyTitleOff")
       }
-      aria-label={proxyConfig?.enabled ? "配置代理（已启用）" : "配置代理（未启用）"}
+      aria-label={proxyConfig?.enabled ? t("shelf.proxyAriaOn") : t("shelf.proxyAriaOff")}
       aria-pressed={proxyConfig?.enabled}
       aria-haspopup="dialog"
       aria-expanded={proxyOpen}
@@ -974,23 +992,27 @@ export function ProjectShelf({
   const engineBusyTransient =
     engineState?.state === "downloading" || engineState?.state === "starting";
   const engineStatusLine = (() => {
-    if (!engineState) return "状态未知";
+    if (!engineState) return t("shelf.engineStateUnknown");
     switch (engineState.state) {
       case "running":
-        return `运行中 · 127.0.0.1:${engineState.port}`;
+        return t("shelf.engineRunningAt", { port: engineState.port });
       case "downloading": {
         const { downloaded, total } = engineState;
         const mb = (n: number) => `${(n / 1024 / 1024).toFixed(1)} MB`;
         return total > 0
-          ? `下载中 ${mb(downloaded)} / ${mb(total)}（${Math.min(100, Math.round((downloaded / total) * 100))}%）`
-          : "下载中…";
+          ? t("shelf.engineDownloading", {
+              done: mb(downloaded),
+              total: mb(total),
+              pct: Math.min(100, Math.round((downloaded / total) * 100)),
+            })
+          : t("shelf.downloadingSoon");
       }
       case "starting":
-        return "启动中…";
+        return t("shelf.startingSoon");
       case "failed":
-        return `启动失败：${engineState.error.slice(0, 120)}`;
+        return t("shelf.engineFailedWith", { error: engineState.error.slice(0, 120) });
       default:
-        return "未启动";
+        return t("shelf.engineOff");
     }
   })();
 
@@ -1005,29 +1027,31 @@ export function ProjectShelf({
           : "off";
   const engineHeadline =
     engineTone === "on"
-      ? "运行中"
+      ? t("shelf.running")
       : engineState?.state === "downloading"
-        ? "下载中"
+        ? t("shelf.downloading")
         : engineState?.state === "starting"
-          ? "启动中"
+          ? t("shelf.starting")
           : engineTone === "fail"
-            ? "启动失败"
-            : "未启动";
+            ? t("shelf.engineFailed")
+            : t("shelf.engineOff");
   const engineEntryHint = (() => {
     if (!engineState) return "";
     switch (engineState.state) {
       case "running":
-        return `运行中 · ${engineState.port}`;
+        return t("shelf.engineRunningPort", { port: engineState.port });
       case "downloading":
         return engineState.total > 0
-          ? `下载 ${Math.min(100, Math.round((engineState.downloaded / engineState.total) * 100))}%`
-          : "下载中…";
+          ? t("shelf.engineDownloadPct", {
+              pct: Math.min(100, Math.round((engineState.downloaded / engineState.total) * 100)),
+            })
+          : t("shelf.downloadingSoon");
       case "starting":
-        return "启动中…";
+        return t("shelf.startingSoon");
       case "failed":
-        return "启动失败";
+        return t("shelf.engineFailed");
       default:
-        return "点击启动";
+        return t("shelf.engineClickToStart");
     }
   })();
 
@@ -1036,7 +1060,7 @@ export function ProjectShelf({
       ref={engineBtnRef}
       type="button"
       className={`engine-entry is-${engineTone}${engineOpen ? " is-open" : ""}`}
-      aria-label={`模型共享 · ${engineHeadline}`}
+      aria-label={t("shelf.modelShareStatus", { state: engineHeadline })}
       aria-haspopup="dialog"
       aria-expanded={engineOpen}
       onClick={() => {
@@ -1049,15 +1073,15 @@ export function ProjectShelf({
           void engineEnable().then((snapshot) => {
             if (snapshot) setEngineState(snapshot);
             // The popover may be gone by now; say how the start went.
-            if (snapshot?.state === "running") showToast({ text: "模型共享已启动", tone: "ok" });
+            if (snapshot?.state === "running") showToast({ text: t("shelf.modelShareStarted"), tone: "ok" });
             else if (snapshot === null || snapshot.state === "failed")
-              showToast({ text: "模型共享没能启动", detail: "点左下角「模型共享」查看原因", tone: "error" });
+              showToast({ text: t("shelf.modelShareFailed"), detail: t("shelf.modelShareFailedDetail"), tone: "error" });
           });
         }
       }}
     >
       <Network size={13} aria-hidden className="engine-entry__icon" />
-      <span className="engine-entry__label">模型共享</span>
+      <span className="engine-entry__label">{t("shelf.modelShare")}</span>
       <span className="engine-entry__dot" aria-hidden />
       <span className="engine-entry__hint">{engineEntryHint}</span>
     </button>
@@ -1075,10 +1099,12 @@ export function ProjectShelf({
       }
       title={
         tgActive
-          ? `Telegram 远程已连接${tgState?.botUsername ? ` · @${tgState.botUsername}` : ""} · 点此设置`
-          : "Telegram 远程通知未启用 · 点此设置"
+          ? t("shelf.tgTitleOn", {
+              bot: tgState?.botUsername ? ` · @${tgState.botUsername}` : "",
+            })
+          : t("shelf.tgTitleOff")
       }
-      aria-label={tgActive ? "Telegram 远程（已连接）" : "Telegram 远程（未启用）"}
+      aria-label={tgActive ? t("shelf.tgAriaOn") : t("shelf.tgAriaOff")}
       aria-pressed={tgActive}
       aria-haspopup="dialog"
       aria-expanded={tgOpen}
@@ -1104,6 +1130,7 @@ export function ProjectShelf({
       {gatewayRow}
       <div className="sidebar-footer">
         {themeButton}
+        {languageButton}
         {notifyButton}
         {proxyButton}
         {telegramButton}
@@ -1152,8 +1179,8 @@ export function ProjectShelf({
     const chatDot = (
       <span
         className={`chat-row__dot${busy ? ` is-${session.status}` : doneUnread ? " is-done" : ""}`}
-        title={doneUnread ? "任务已完成" : undefined}
-        aria-label={doneUnread ? "任务已完成" : undefined}
+        title={doneUnread ? t("shelf.taskDone") : undefined}
+        aria-label={doneUnread ? t("shelf.taskDone") : undefined}
         aria-hidden={!doneUnread}
       />
     );
@@ -1231,8 +1258,8 @@ export function ProjectShelf({
             <button
               className="chat-row__action"
               type="button"
-              title="重命名"
-              aria-label="重命名"
+              title={t("shelf.rename")}
+              aria-label={t("shelf.rename")}
               onClick={(event) => {
                 event.stopPropagation();
                 beginRename();
@@ -1245,8 +1272,8 @@ export function ProjectShelf({
             <button
               className="chat-row__action"
               type="button"
-              title="挂起"
-              aria-label="挂起"
+              title={t("shelf.park")}
+              aria-label={t("shelf.park")}
               onClick={(event) => {
                 event.stopPropagation();
                 onSuspendSession(session.id);
@@ -1258,8 +1285,8 @@ export function ProjectShelf({
           <button
             className="chat-row__action chat-row__action--danger"
             type="button"
-            title="删除"
-            aria-label="删除"
+            title={t("common.delete")}
+            aria-label={t("common.delete")}
             onClick={(event) => {
               event.stopPropagation();
               setPendingDelete({ kind: "chat", id: session.id, label: session.label });
@@ -1311,18 +1338,18 @@ export function ProjectShelf({
 
       <div className="project-tree__body">
       {hasStatusCounts && (
-        <div className="shelf-status" role="toolbar" aria-label="按状态筛选对话">
+        <div className="shelf-status" role="toolbar" aria-label={t("shelf.filterByStatus")}>
           {SHELF_STATUS_ORDER.filter(({ id }) => statusCounts[id] > 0).map(({ id, label }) => (
             <button
               key={id}
               type="button"
               className={`shelf-status__chip is-${id}${activeStatusFilter === id ? " is-active" : ""}`}
               aria-pressed={activeStatusFilter === id}
-              title={activeStatusFilter === id ? "显示全部对话" : `只看${label}的对话`}
+              title={activeStatusFilter === id ? t("shelf.showAll") : t("shelf.showOnly", { label: t(label) })}
               onClick={() => setStatusFilter(activeStatusFilter === id ? null : id)}
             >
               <span className="shelf-status__dot" aria-hidden />
-              {label}
+              {t(label)}
               <span className="shelf-status__count">{statusCounts[id]}</span>
             </button>
           ))}
@@ -1331,14 +1358,16 @@ export function ProjectShelf({
       {activeStatusFilter && (
         <div className="shelf-filter-note">
           <span className="shelf-filter-note__text">
-            只显示「{SHELF_STATUS_ORDER.find(({ id }) => id === activeStatusFilter)?.label}」·{" "}
-            {statusCounts[activeStatusFilter]} 个对话
+            {t("shelf.filterNote", {
+              label: t(SHELF_STATUS_ORDER.find(({ id }) => id === activeStatusFilter)!.label),
+              n: statusCounts[activeStatusFilter],
+            })}
           </span>
           <button
             type="button"
             className="shelf-filter-note__clear"
-            title="清除状态筛选，显示全部对话"
-            aria-label="清除状态筛选"
+            title={t("shelf.clearFilterAll")}
+            aria-label={t("shelf.clearFilter")}
             onClick={() => setStatusFilter(null)}
           >
             <X size={12} />
@@ -1356,14 +1385,14 @@ export function ProjectShelf({
         )}
         {noShelfMatch && (
           <div className="project-list__empty">
-            {query.trim() ? `No threads match “${query.trim()}”` : "这一类里没有对话"}
+            {query.trim() ? `No threads match “${query.trim()}”` : t("shelf.noMatchInFilter")}
           </div>
         )}
         {allVisibleProjects.map((project) => {
           const derivedShelf = memoPerProject(
             projectShelfCacheRef.current,
             project.id,
-            [filtered.sessionsByProject, sessions, unreadDone, sessionsExpandedByProject, searching, activeStatusFilter, Math.floor(Date.now() / 60000)],
+            [filtered.sessionsByProject, sessions, unreadDone, sessionsExpandedByProject, searching, activeStatusFilter, Math.floor(Date.now() / 60000), locale],
             () => {
               const rawSessions = activeStatusFilter
                 ? // 状态过滤下取不到 = 没有匹配（项目行置灰、不列会话）；搜索与
@@ -1449,7 +1478,7 @@ export function ProjectShelf({
                   type="button"
                   title={
                     isPinnedHere
-                      ? `${project.rootPath}\n(从资源管理器「在此处打开」)`
+                      ? t("shelf.hereTitle", { path: project.rootPath })
                       : project.rootPath
                   }
                   onClick={() => {
@@ -1463,13 +1492,13 @@ export function ProjectShelf({
                   <span className="project-row__content">
                     <strong>{project.name}</strong>
                     {isPinnedHere && (
-                      <em className="project-row__here-badge" title="当前从资源管理器打开的路径">
-                        此处
+                      <em className="project-row__here-badge" title={t("shelf.hereBadgeTitle")}>
+                        {t("shelf.here")}
                       </em>
                     )}
                     {hasDoneUnread && (
-                      <em className="project-row__done-badge" title="有对话已完成任务">
-                        完成
+                      <em className="project-row__done-badge" title={t("shelf.doneBadgeTitle")}>
+                        {t("shelf.doneBadge")}
                       </em>
                     )}
                   </span>
@@ -1482,7 +1511,7 @@ export function ProjectShelf({
                     <button
                       className="project-row__action"
                       type="button"
-                      title="把这个目录在各 agent 命令行里的对话收进列表"
+                      title={t("shelf.refreshExternal")}
                       aria-label={`Refresh conversations for ${project.name}`}
                       disabled={externalScanning}
                       onClick={(e) => {
@@ -1552,7 +1581,7 @@ export function ProjectShelf({
                     ) : doneUnread ? (
                       <span
                         className="session-row__dot is-done"
-                        aria-label="任务已完成"
+                        aria-label={t("shelf.taskDone")}
                       />
                     ) : (
                       <span
@@ -1646,8 +1675,8 @@ export function ProjectShelf({
                             <button
                               className="session-row__action"
                               type="button"
-                              title="重命名"
-                              aria-label="重命名"
+                              title={t("shelf.rename")}
+                              aria-label={t("shelf.rename")}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 beginRename();
@@ -1660,8 +1689,8 @@ export function ProjectShelf({
                             <button
                               className="session-row__action"
                               type="button"
-                              title="挂起"
-                              aria-label="挂起"
+                              title={t("shelf.park")}
+                              aria-label={t("shelf.park")}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 onSuspendSession(session.id);
@@ -1673,8 +1702,8 @@ export function ProjectShelf({
                           <button
                             className="session-row__action session-row__action--danger"
                             type="button"
-                            title="删除"
-                            aria-label="删除"
+                            title={t("common.delete")}
+                            aria-label={t("common.delete")}
                             onClick={() => {
                               setPendingDelete({ kind: "session", id: session.id, label: session.label });
                             }}
@@ -1739,7 +1768,7 @@ export function ProjectShelf({
       {onOpenMemo && (
         <button className="shelf-memo-entry" type="button" onClick={onOpenMemo}>
           <Archive size={13} aria-hidden />
-          收纳盒
+          {t("shelf.memoBox")}
         </button>
       )}
 
@@ -1748,17 +1777,17 @@ export function ProjectShelf({
         <section className="chat-section">
           <div
             className="chat-section__header"
-            title={defaultFolderPath ? `工作目录：${defaultFolderPath}` : "Chat 工作目录"}
+            title={defaultFolderPath ? t("shelf.chatWorkdir", { path: defaultFolderPath }) : t("shelf.chatWorkdirDefault")}
           >
             <span className="chat-section__title">
               <MessageSquare size={13} aria-hidden />
-              聊天
+              {t("common.chat")}
             </span>
             {onNewChat && (
               <button
                 className="pill-action pill-action--icon pill-action--sm chat-section__new"
                 type="button"
-                title="新建对话"
+                title={t("shelf.newChat")}
                 aria-label="New chat"
                 onClick={() => onNewChat()}
               >
@@ -1772,7 +1801,7 @@ export function ProjectShelf({
             style={{ ["--chat-list-preview" as string]: String(SESSION_LIST_PREVIEW) }}
           >
             {visibleChatSessions.length === 0 && !searching && (
-              <div className="chat-list__empty">暂无对话</div>
+              <div className="chat-list__empty">{t("shelf.noChats")}</div>
             )}
             {sortSessionsNewestFirst(visibleChatSessions).map(renderChatRow)}
           </div>
@@ -1781,16 +1810,16 @@ export function ProjectShelf({
 
       {/* ── 收纳盒 dialogs: conversations grown from memo materials ── */}
       {onChatSessionSelect && visibleMemoSessions.length > 0 && (
-        <section className="chat-section chat-section--memo" aria-label="收纳盒对话">
-          <div className="chat-section__header" title="从收纳盒材料开出的对话">
+        <section className="chat-section chat-section--memo" aria-label={t("shelf.memoChats")}>
+          <div className="chat-section__header" title={t("shelf.memoChatsTitle")}>
             <span className="chat-section__title">
               <Archive size={13} aria-hidden />
-              收纳盒
+              {t("shelf.memoBox")}
             </span>
           </div>
           <div
             className="chat-list custom-scrollbar scrollbar-autohide"
-            aria-label="收纳盒对话"
+            aria-label={t("shelf.memoChats")}
             style={{ ["--chat-list-preview" as string]: String(SESSION_LIST_PREVIEW) }}
           >
             {sortSessionsNewestFirst(visibleMemoSessions).map(renderChatRow)}
@@ -1805,15 +1834,15 @@ export function ProjectShelf({
           ref={proxyPopRef}
           className="proxy-popover"
           role="dialog"
-          aria-label="代理设置"
+          aria-label={t("shelf.proxySettings")}
           style={{ left: proxyAnchor.left, bottom: window.innerHeight - proxyAnchor.top + 6 }}
         >
           <div className="proxy-popover__header">
-            <span className="proxy-popover__title">代理设置</span>
+            <span className="proxy-popover__title">{t("shelf.proxySettings")}</span>
             <button
               type="button"
               className="pill-action pill-action--icon pill-action--sm"
-              aria-label="关闭"
+              aria-label={t("common.close")}
               onClick={() => setProxyOpen(false)}
             >
               <X size={12} />
@@ -1830,11 +1859,11 @@ export function ProjectShelf({
               <span className="proxy-popover__switch-track" />
               <span className="proxy-popover__switch-thumb" />
             </button>
-            <span className="proxy-popover__row-label">启用代理</span>
+            <span className="proxy-popover__row-label">{t("shelf.proxyEnable")}</span>
           </div>
           <div className="proxy-popover__row">
             <label className="proxy-popover__field">
-              <span className="proxy-popover__field-label">代理地址</span>
+              <span className="proxy-popover__field-label">{t("shelf.proxyAddress")}</span>
               <input
                 className="proxy-popover__input"
                 type="text"
@@ -1851,13 +1880,13 @@ export function ProjectShelf({
           </div>
           {proxyTest && <div className="proxy-popover__test is-ok">{proxyTest}</div>}
           {proxyError && <div className="proxy-popover__test is-err">{proxyError}</div>}
-          <div className="proxy-popover__hint">本地地址自动直连；规则/全局由你的代理客户端决定。</div>
+          <div className="proxy-popover__hint">{t("shelf.proxyHint")}</div>
           <div className="proxy-popover__actions">
             <button
               type="button"
               className="pill-action pill-action--icon pill-action--sm"
-              title="测试连接"
-              aria-label="测试连接"
+              title={t("shelf.proxyTest")}
+              aria-label={t("shelf.proxyTest")}
               disabled={proxyBusy !== null || !proxyDraft.enabled}
               onClick={() => void runProxyTest()}
             >
@@ -1866,8 +1895,8 @@ export function ProjectShelf({
             <button
               type="button"
               className="pill-action pill-action--icon pill-action--sm"
-              title="保存设置"
-              aria-label="保存设置"
+              title={t("shelf.proxySave")}
+              aria-label={t("shelf.proxySave")}
               disabled={proxyBusy !== null}
               onClick={() => void saveProxy()}
             >
@@ -1881,15 +1910,15 @@ export function ProjectShelf({
           ref={enginePopRef}
           className="proxy-popover engine-panel"
           role="dialog"
-          aria-label="模型共享"
+          aria-label={t("shelf.modelShare")}
           style={{ left: engineAnchor.left, bottom: window.innerHeight - engineAnchor.top + 6 }}
         >
           <div className="proxy-popover__header">
-            <span className="proxy-popover__title">模型共享</span>
+            <span className="proxy-popover__title">{t("shelf.modelShare")}</span>
             <button
               type="button"
               className="pill-action pill-action--icon pill-action--sm"
-              aria-label="关闭"
+              aria-label={t("common.close")}
               onClick={() => setEngineOpen(false)}
             >
               <X size={12} />
@@ -1908,8 +1937,8 @@ export function ProjectShelf({
             {engineState?.state === "running" && (
               <p className="engine-panel__note">
                 {engineState.reused
-                  ? "复用本机已在运行的实例 · 由它自己的终端管理"
-                  : `magpie ${engineState.version ?? ""} · 已接入的 agent 可直接用共享模型`.replace("  ", " ")}
+                  ? t("shelf.engineReused")
+                  : t("shelf.engineSharedModels", { version: engineState.version ?? "" }).replace("  ", " ")}
               </p>
             )}
             {engineState?.state === "downloading" && (
@@ -1925,19 +1954,19 @@ export function ProjectShelf({
               <p className="engine-panel__error">{engineState.error.slice(0, 240)}</p>
             )}
             {(!engineState || engineState.state === "absent") && (
-              <p className="engine-panel__note">把各家 agent 的模型与密钥汇到一个本地网关，任何已接入的 agent 都能用。</p>
+              <p className="engine-panel__note">{t("shelf.engineIntro")}</p>
             )}
             {engineRunning ? (
               !engineState?.reused && (
                 <button
                   type="button"
                   className="engine-panel__action is-quiet"
-                  title="停止网关进程；正在用共享模型的会话会断流，随时可从左下角再次启动"
+                  title={t("shelf.engineStopTitle")}
                   onClick={() => {
                     void engineStop().then(() => refreshEngine());
                   }}
                 >
-                  停止网关
+                  {t("shelf.engineStop")}
                 </button>
               )
             ) : (
@@ -1952,7 +1981,7 @@ export function ProjectShelf({
                   });
                 }}
               >
-                {engineBusyTransient ? "准备中…" : engineState?.state === "failed" ? "重试启动" : "启动网关"}
+                {engineBusyTransient ? t("shelf.enginePreparing") : engineState?.state === "failed" ? t("shelf.engineRetryStart") : t("shelf.engineStart")}
               </button>
             )}
           </section>
@@ -1960,7 +1989,7 @@ export function ProjectShelf({
           {/* Engine version: where it stands, and how to move it. */}
           <section className="engine-panel__section">
             <div className="engine-panel__section-head">
-              <span>引擎版本</span>
+              <span>{t("shelf.engineVersion")}</span>
               <button
                 type="button"
                 className="engine-panel__link"
@@ -1968,16 +1997,16 @@ export function ProjectShelf({
                 onClick={() => void handleEngineCheckUpdate()}
               >
                 <RefreshCw size={11} aria-hidden className={engineUpdateBusy === "check" ? "is-spinning" : undefined} />
-                {engineUpdateBusy === "check" ? "检查中…" : "检查更新"}
+                {engineUpdateBusy === "check" ? t("shelf.checking") : t("shelf.checkUpdate")}
               </button>
             </div>
             {engineUpdateInfo ? (
               <dl className="engine-panel__kv">
-                <dt>本机</dt>
-                <dd>{engineUpdateInfo.currentVersion ?? "未安装"}</dd>
+                <dt>{t("shelf.engineLocal")}</dt>
+                <dd>{engineUpdateInfo.currentVersion ?? t("shelf.engineNotInstalled")}</dd>
                 {engineUpdateInfo.latestVersion && (
                   <>
-                    <dt>最新</dt>
+                    <dt>{t("shelf.engineLatest")}</dt>
                     <dd className={engineUpdateInfo.updateAvailable ? "is-new" : undefined}>
                       {engineUpdateInfo.latestVersion}
                     </dd>
@@ -1985,13 +2014,13 @@ export function ProjectShelf({
                 )}
                 {engineUpdateInfo.embeddedVersion && (
                   <>
-                    <dt>出厂</dt>
+                    <dt>{t("shelf.engineFactory")}</dt>
                     <dd>{engineUpdateInfo.embeddedVersion}</dd>
                   </>
                 )}
               </dl>
             ) : (
-              <p className="engine-panel__note">可检查 magpie 稳定版更新（约 48 MB）</p>
+              <p className="engine-panel__note">{t("shelf.engineUpdateHint")}</p>
             )}
             {(engineUpdateInfo?.updateAvailable || engineUpdateInfo?.canRestoreFactory) && (
               <div className="engine-panel__row">
@@ -2000,10 +2029,10 @@ export function ProjectShelf({
                     type="button"
                     className="engine-panel__action is-small"
                     disabled={engineUpdateBusy !== null || engineBusyTransient}
-                    title="从 GitHub 下载最新稳定版，成为本机权威引擎"
+                    title={t("shelf.engineUpdateTitle")}
                     onClick={() => void handleEngineUpdate()}
                   >
-                    {engineUpdateBusy === "update" ? "更新中…" : `更新到 ${engineUpdateInfo.latestVersion}`}
+                    {engineUpdateBusy === "update" ? t("shelf.updating") : t("shelf.updateTo", { version: engineUpdateInfo.latestVersion })}
                   </button>
                 )}
                 {engineUpdateInfo?.canRestoreFactory && (
@@ -2011,10 +2040,10 @@ export function ProjectShelf({
                     type="button"
                     className="engine-panel__link"
                     disabled={engineUpdateBusy !== null || engineBusyTransient}
-                    title="用本应用内嵌的出厂 magpie 覆盖本机引擎"
+                    title={t("shelf.engineRestoreTitle")}
                     onClick={() => void handleEngineRestoreFactory()}
                   >
-                    {engineUpdateBusy === "restore" ? "恢复中…" : "恢复出厂引擎"}
+                    {engineUpdateBusy === "restore" ? t("shelf.restoring") : t("shelf.engineRestore")}
                   </button>
                 )}
               </div>
@@ -2037,8 +2066,8 @@ export function ProjectShelf({
               }}
             >
               <SlidersHorizontal size={12} aria-hidden />
-              <span>模型与来源</span>
-              <small>显示和排序</small>
+              <span>{t("shelf.modelsAndSources")}</span>
+              <small>{t("shelf.modelsAndSourcesHint")}</small>
               <ChevronRight size={12} aria-hidden />
             </button>
             <button
@@ -2050,8 +2079,8 @@ export function ProjectShelf({
               }}
             >
               <KeyRound size={12} aria-hidden />
-              <span>密钥与来源</span>
-              <small>添加、扫描</small>
+              <span>{t("shelf.keysAndSources")}</span>
+              <small>{t("shelf.keysAndSourcesHint")}</small>
               <ChevronRight size={12} aria-hidden />
             </button>
           </nav>
@@ -2067,15 +2096,15 @@ export function ProjectShelf({
           ref={tgPopRef}
           className="proxy-popover tg-popover"
           role="dialog"
-          aria-label="Telegram 远程通知"
+          aria-label={t("shelf.tgPanelAria")}
           style={{ left: tgAnchor.left, bottom: window.innerHeight - tgAnchor.top + 6 }}
         >
           <div className="proxy-popover__header">
-            <span className="proxy-popover__title">Telegram 远程</span>
+            <span className="proxy-popover__title">{t("shelf.tgRemote")}</span>
             <button
               type="button"
               className="pill-action pill-action--icon pill-action--sm"
-              aria-label="关闭"
+              aria-label={t("common.close")}
               onClick={() => setTgOpen(false)}
             >
               <X size={12} />
@@ -2091,7 +2120,7 @@ export function ProjectShelf({
                     className="proxy-popover__input"
                     type="text"
                     spellCheck={false}
-                    placeholder="123456:ABC-DEF…（@BotFather /newbot）"
+                    placeholder={t("shelf.tgTokenPlaceholder")}
                     value={tgTokenDraft}
                     onChange={(event) => setTgTokenDraft(event.target.value)}
                     onKeyDown={(event) => {
@@ -2100,16 +2129,13 @@ export function ProjectShelf({
                   />
                 </label>
               </div>
-              <div className="proxy-popover__hint">
-                在 @BotFather 里 /newbot 建个新 bot（一分钟），把 token 粘到这里。token
-                只加密存在本机；之后在 Telegram 里给这个 bot 发条消息即可配对。
-              </div>
+              <div className="proxy-popover__hint">{t("shelf.tgSetupHint")}</div>
               <div className="proxy-popover__actions">
                 <button
                   type="button"
                   className="pill-action pill-action--icon pill-action--sm"
-                  title="校验并保存 token"
-                  aria-label="校验并保存 token"
+                  title={t("shelf.tgSaveToken")}
+                  aria-label={t("shelf.tgSaveToken")}
                   disabled={tgBusy !== null}
                   onClick={() => void tgSaveToken()}
                 >
@@ -2125,8 +2151,10 @@ export function ProjectShelf({
             <>
               <p className="engine-popover__status" data-state={tgState.pendingPairing ? "running" : "unknown"}>
                 {tgState.pendingPairing
-                  ? `配对请求：@${tgState.pendingPairing.username || tgState.pendingPairing.firstName}`
-                  : `已连接 @${tgState.botUsername ?? "bot"}，等你在 Telegram 里给它发第一条消息…`}
+                  ? t("shelf.tgPairRequest", {
+                      user: tgState.pendingPairing.username || tgState.pendingPairing.firstName,
+                    })
+                  : t("shelf.tgWaitingFirstMessage", { bot: tgState.botUsername ?? "bot" })}
               </p>
               {tgState.pendingPairing && (
                 <div className="proxy-popover__actions tg-popover__pair">
@@ -2136,7 +2164,7 @@ export function ProjectShelf({
                     disabled={tgBusy !== null}
                     onClick={() => void tgPair(true)}
                   >
-                    接受
+                    {t("shelf.tgAccept")}
                   </button>
                   <button
                     type="button"
@@ -2144,13 +2172,11 @@ export function ProjectShelf({
                     disabled={tgBusy !== null}
                     onClick={() => void tgPair(false)}
                   >
-                    忽略
+                    {t("shelf.tgIgnore")}
                   </button>
                 </div>
               )}
-              <div className="proxy-popover__hint">
-                bot 收到你的第一条私聊消息后会出现在这里；确认后它只认你这个账号。
-              </div>
+              <div className="proxy-popover__hint">{t("shelf.tgPairHint")}</div>
             </>
           ) : (
             <>
@@ -2169,7 +2195,7 @@ export function ProjectShelf({
                   <span className="proxy-popover__switch-thumb" />
                 </button>
                 <span className="proxy-popover__row-label">
-                  {tgState.enabled ? "已启用" : "已暂停"}
+                  {tgState.enabled ? t("shelf.tgEnabled") : t("shelf.tgPaused")}
                   {tgState.pairedUsername ? ` · @${tgState.pairedUsername}` : ""}
                 </span>
               </div>
@@ -2177,11 +2203,11 @@ export function ProjectShelf({
                 <div className="tg-popover__prefs">
                   {(
                     [
-                      ["notifyTurn", "跑完推送"],
-                      ["notifyWait", "等待推送（含按钮）"],
-                      ["notifyError", "出错推送"],
-                      ["contentPreview", "推送带回复内容"],
-                    ] as [keyof TelegramPrefs, string][]
+                      ["notifyTurn", "shelf.tgNotifyTurn"],
+                      ["notifyWait", "shelf.tgNotifyWait"],
+                      ["notifyError", "shelf.tgNotifyError"],
+                      ["contentPreview", "shelf.tgNotifyPreview"],
+                    ] as [keyof TelegramPrefs, DictKey][]
                   ).map(([key, label]) => {
                     const prefs = tgPrefsDraft ?? tgState.prefs;
                     return (
@@ -2201,15 +2227,13 @@ export function ProjectShelf({
                           <span className="proxy-popover__switch-track" />
                           <span className="proxy-popover__switch-thumb" />
                         </button>
-                        <span className="proxy-popover__row-label">{label}</span>
+                        <span className="proxy-popover__row-label">{t(label)}</span>
                       </div>
                     );
                   })}
                 </div>
               )}
-              <div className="proxy-popover__hint">
-                直接回复推送 = 继续那个会话；裸发文字 = 送进最近活跃的会话。
-              </div>
+              <div className="proxy-popover__hint">{t("shelf.tgReplyHint")}</div>
               <div className="engine-popover__footer">
                 <button
                   type="button"
@@ -2217,17 +2241,15 @@ export function ProjectShelf({
                   disabled={tgBusy !== null}
                   onClick={() => void tgUnpair()}
                 >
-                  <Trash2 size={11} aria-hidden /> 解除配对（保留 token）
+                  <Trash2 size={11} aria-hidden /> {t("shelf.tgUnpair")}
                 </button>
               </div>
             </>
           )}
-          <div className="proxy-popover__hint">
-            Telegram 跟随应用代理设置；启用代理后无需开启 TUN。
-          </div>
+          <div className="proxy-popover__hint">{t("shelf.tgProxyHint")}</div>
           {tgError && <div className="proxy-popover__test is-err">{tgError}</div>}
           {tgState?.lastError && !tgError && (
-            <div className="proxy-popover__test is-err">最近一次发送失败：{tgState.lastError}</div>
+            <div className="proxy-popover__test is-err">{t("shelf.tgLastError", { error: tgState.lastError })}</div>
           )}
         </div>
       )}
@@ -2243,25 +2265,25 @@ export function ProjectShelf({
       <ConfirmDialog
         title={
           pendingDelete.kind === "project"
-            ? "移除项目"
+            ? t("shelf.removeProject")
             : pendingDelete.kind === "chat"
-              ? "删除对话"
+              ? t("shelf.deleteConversation")
               : "Delete session"
         }
         itemName={pendingDelete.label}
         description={
           pendingDelete.kind === "project"
-            ? "仅从列表中移除，不会删除磁盘上的文件。"
+            ? t("shelf.removeProjectDesc")
             : pendingDelete.kind === "chat"
-              ? "这会删除本地对话记录，且无法撤销。"
+              ? t("shelf.deleteConversationDesc")
               : "This removes its local transcript and cannot be undone."
         }
         confirmLabel={
           pendingDelete.kind === "project"
-            ? "移除"
+            ? t("common.remove")
             : pendingDelete.kind === "session"
               ? "Delete"
-              : "删除"
+              : t("common.delete")
         }
         onCancel={() => setPendingDelete(null)}
         onConfirm={() => {
@@ -2286,8 +2308,10 @@ export function ProjectShelf({
               }`}
             >
               {unreadDone.has(hoverCard.session.id) && !sessionIsBusy(hoverCard.session.status)
-                ? "已完成"
-                : SESSION_STATUS_WORD[hoverCard.session.status] ?? hoverCard.session.status}
+                ? t("shelf.done")
+                : SESSION_STATUS_WORD[hoverCard.session.status]
+                  ? t(SESSION_STATUS_WORD[hoverCard.session.status]!)
+                  : hoverCard.session.status}
             </span>
             <span>{agentLabel(hoverCard.session.agentId)}</span>
           </div>
@@ -2298,18 +2322,18 @@ export function ProjectShelf({
           )}
           <div className="shelf-peek__meta">
             {projects.find((p) => p.id === hoverCard.session.projectId)?.name ??
-              (hoverCard.session.origin === "memo" ? "收纳盒" : "聊天")}
-            {hoverCard.session.origin === "import" ? " · 导入" : ""}
+              (hoverCard.session.origin === "memo" ? t("shelf.memoBox") : t("common.chat"))}
+            {hoverCard.session.origin === "import" ? t("shelf.importedSuffix") : ""}
           </div>
           <div className="shelf-peek__meta">
-            开始{" "}
+            {t("shelf.started")}{" "}
             {new Date(hoverCard.session.startedAt).toLocaleString(undefined, {
               month: "numeric",
               day: "numeric",
               hour: "2-digit",
               minute: "2-digit",
             })}
-            {" · "}最近{" "}
+            {" · "}{t("shelf.recent")}{" "}
             {new Date(hoverCard.session.lastActiveAt).toLocaleString(undefined, {
               month: "numeric",
               day: "numeric",
@@ -2317,7 +2341,7 @@ export function ProjectShelf({
               minute: "2-digit",
             })}
           </div>
-          <div className="shelf-peek__meta shelf-peek__hint">双击或铅笔图标重命名 · 右键分屏打开</div>
+          <div className="shelf-peek__meta shelf-peek__hint">{t("shelf.peekHint")}</div>
         </div>
       )}
     {besideMenu && onOpenBeside && (

@@ -1726,6 +1726,50 @@
   max-width: 100%;
 }
 
+/* Claude-style thumbnails on folded rows — the picture is visible before
+   the user expands the tool call or the activity tally. */
+.tool-thumbs {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tool-thumb {
+  display: block;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-soft);
+  overflow: hidden;
+  cursor: zoom-in;
+}
+
+.tool-thumb:hover {
+  border-color: var(--accent);
+}
+
+.tool-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.event-card__thumbs,
+.activity-panel__thumbs {
+  margin-left: auto;
+}
+
+.event-card__thumbs + .event-card__outcome,
+.activity-panel__thumbs + .activity-panel__failed {
+  margin-left: 8px;
+}
+
 .tool-read-images .md-body__img {
   max-width: min(100%, 520px);
   max-height: 360px;

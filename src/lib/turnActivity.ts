@@ -1,5 +1,6 @@
 import type { SessionEvent } from "./types";
 import { isSubagentTool, isToolInProgress } from "./activityHealth";
+import { collectToolImageSrcs } from "./imageAttachments";
 import { normalizeToolName } from "./toolCallNormalize";
 
 /**
@@ -33,7 +34,11 @@ function nameHead(name: string): string {
 function classifyName(name: string): ToolActivityKind {
   if (!name) return "other";
   const key = nameHead(name);
-  if (key === "read" || key.startsWith("read_")) return "read";
+  // `view image` / `view_image` is Codex's picture read — bucket it with reads
+  // so the row says "Read · shot.png" instead of echoing the whole path.
+  if (key === "read" || key.startsWith("read_") || key === "view" || key.startsWith("view_")) {
+    return "read";
+  }
   if (
     key === "edit" ||
     key === "write" ||
@@ -252,6 +257,8 @@ export type ActivitySummary = {
   /** Tool calls in the run that ended `failed` — shown in red, never only as color. */
   failed?: number;
   diff: { add: number; del: number } | null;
+  /** Pictures read in this run — folded rows show tiny thumbnails (max 3). */
+  images?: string[];
 };
 
 export function activityBucket(event: SessionEvent): ActivityKindBucket | null {
@@ -398,6 +405,33 @@ export function kindGroupTitle(group: ActivityKindGroup): string {
   return kindCountPhrase(bucket, items.length);
 }
 
+const IMAGE_HINT = /\.(?:png|jpe?g|gif|webp|bmp|avif|svg)\b/i;
+
+/**
+ * Unique image srcs read by the tools in `items` (collapsed-row thumbnails).
+ *
+ * Skips tools with no direct image path and no image-looking input: parsing
+ * every shell command's JSON on each stream tick would make long runs crawl.
+ */
+function summaryImages(items: ActivityDetailItem[], max = 3): string[] {
+  const srcs: string[] = [];
+  const seen = new Set<string>();
+  for (const item of items) {
+    if (item.event.type !== "tool_call") continue;
+    const event = item.event;
+    const direct = (event.images?.length ?? 0) > 0 || Boolean(event.path);
+    if (!direct && !IMAGE_HINT.test(event.input ?? "")) continue;
+    for (const src of collectToolImageSrcs(event)) {
+      const key = src.replace(/\\/g, "/").toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      srcs.push(src);
+      if (srcs.length >= max) return srcs;
+    }
+  }
+  return srcs;
+}
+
 export function summarizeKindGroup(group: ActivityKindGroup): ActivitySummary {
   const title = kindGroupTitle(group);
   let preview = "";
@@ -413,6 +447,7 @@ export function summarizeKindGroup(group: ActivityKindGroup): ActivitySummary {
     preview,
     failed: countFailed(group.items),
     diff: sumDiffStats(group.items),
+    images: summaryImages(group.items),
   };
 }
 
@@ -484,7 +519,12 @@ export function summarizeActivity(
   const tally = formatActivityTally(items);
   if (live?.type === "thought") {
     // The live thought is already represented in the chart above the tally.
-    return { title: tally || "Thought", preview: "", diff: sumDiffStats(items) };
+    return {
+      title: tally || "Thought",
+      preview: "",
+      diff: sumDiffStats(items),
+      images: summaryImages(items),
+    };
   }
   if (live?.type === "tool_call") {
     const verb = toolKindVerb(classifyToolCall(live));
@@ -493,6 +533,7 @@ export function summarizeActivity(
       title: tally || verb,
       preview: main ? `${verb} ${main}` : verb,
       diff: sumDiffStats(items),
+      images: summaryImages(items),
     };
   }
   const span = activityTimeline(items, undefined, opts?.untilMs);
@@ -502,6 +543,7 @@ export function summarizeActivity(
     elapsed: span && span.durationMs >= 1000 ? formatSpanDuration(span.durationMs) : "",
     failed: countFailed(items),
     diff: sumDiffStats(items),
+    images: summaryImages(items),
   };
 }
 

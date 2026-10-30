@@ -12,13 +12,12 @@ import {
   type MemoryImportSource,
   type MemoryStore,
 } from "../lib/api";
+import { t, useT } from "../lib/i18n";
 
 const SOURCE_LABELS: Record<string, string> = {
   manual: "manual",
   claude: "Claude",
-  "claude-auto": "Claude 记忆",
   codex: "Codex",
-  "codex-mem": "Codex 记忆",
   grok: "Grok",
   opencode: "OpenCode",
   zcode: "ZCode",
@@ -26,6 +25,8 @@ const SOURCE_LABELS: Record<string, string> = {
 };
 
 function sourceLabel(source: string): string {
+  if (source === "claude-auto") return t("memory.claudeMemory");
+  if (source === "codex-mem") return t("memory.codexMemory");
   return SOURCE_LABELS[source] ?? source;
 }
 
@@ -34,6 +35,7 @@ function sourceLabel(source: string): string {
  * 打开即同步各家全局记忆；勾选 = 注入新会话；保留「从会话提炼」。
  */
 export const MemorySection = memo(function MemorySection({ activeSessionId }: { activeSessionId?: string | null }) {
+  const t = useT();
   const [store, setStore] = useState<MemoryStore | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -110,7 +112,7 @@ export const MemorySection = memo(function MemorySection({ activeSessionId }: { 
     if (!draft || !draft.trim()) return;
     const date = new Date().toISOString().slice(0, 10);
     await run(() =>
-      memoryAdd(`会话要点 ${date}`, draft, "session").then(() => undefined),
+      memoryAdd(t("memory.sessionNotesTitle", { date }), draft, "session").then(() => undefined),
     );
     setDraft(null);
   };
@@ -120,7 +122,7 @@ export const MemorySection = memo(function MemorySection({ activeSessionId }: { 
   return (
     <section className="context-card" id="context-memory">
       <div className="context-card__heading">
-        <span>记忆</span>
+        <span>{t("memory.title")}</span>
         <div className="context-card__heading-actions">
           <button
             className="pill-action pill-action--icon pill-action--sm"
@@ -216,7 +218,7 @@ export const MemorySection = memo(function MemorySection({ activeSessionId }: { 
             onClick={() => void handleDistill()}
           >
             <Sparkles size={11} />
-            {draftBusy ? "提炼中…" : "从会话提炼"}
+            {draftBusy ? t("memory.distilling") : t("memory.distill")}
           </button>
         ) : null}
       </div>
@@ -231,7 +233,7 @@ export const MemorySection = memo(function MemorySection({ activeSessionId }: { 
           />
           <div className="panel-form__actions">
             <button className="pill-action" type="button" onClick={() => setDraft(null)}>
-              丢弃
+              {t("memory.discard")}
             </button>
             <button
               className="pill-action"
@@ -239,7 +241,7 @@ export const MemorySection = memo(function MemorySection({ activeSessionId }: { 
               disabled={busy || draft.trim() === "NONE"}
               onClick={() => void handleSaveDraft()}
             >
-              存为记忆
+              {t("memory.saveAsMemory")}
             </button>
           </div>
         </div>
@@ -275,6 +277,7 @@ function MemoryRow({
   onToggle: (enabled: boolean) => void;
   onDelete: () => void;
 }) {
+  const t = useT();
   const editing = editId === entry.id;
   if (editing) {
     return (
@@ -292,10 +295,10 @@ function MemoryRow({
           />
           <div className="panel-form__actions">
             <button className="pill-action" type="button" onClick={onCancelEdit}>
-              取消
+              {t("common.cancel")}
             </button>
             <button className="pill-action" type="button" disabled={busy} onClick={onSaveEdit}>
-              保存
+              {t("common.save")}
             </button>
           </div>
         </div>

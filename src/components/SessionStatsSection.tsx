@@ -11,6 +11,7 @@ import {
   totalTokens,
   type SessionStats,
 } from "../lib/sessionStats";
+import { useT } from "../lib/i18n";
 
 /**
  * Whole-dialog statistics inside the Usage card: two collapsible groups whose
@@ -58,6 +59,7 @@ function StatGroup({
 }
 
 export function SessionStatsSection({ stats }: { stats: SessionStats }) {
+  const t = useT();
   const hasTokens = hasTokenActivity(stats);
   if (stats.steps === 0 && !hasTokens) return null;
 
@@ -66,7 +68,7 @@ export function SessionStatsSection({ stats }: { stats: SessionStats }) {
   const tps = outputTokensPerSecond(stats);
   const tpsText = tps == null ? null : `${live ? "~" : ""}${formatTokensPerSecond(tps)} tok/s`;
   const ttft = averageTtftMs(stats);
-  const counts = `${stats.turns} 轮 ${stats.steps} 步`;
+  const counts = t("stats.turnsSteps", { turns: stats.turns, steps: stats.steps });
   const timeSummary = tpsText == null ? counts : `${counts} · ${tpsText}`;
   // A group with no timed figure would open empty, so it stays a plain reading
   // instead of a disclosure.
@@ -75,16 +77,16 @@ export function SessionStatsSection({ stats }: { stats: SessionStats }) {
 
   const timeRows: StatRow[] = [];
   if (stats.llmMs > 0) {
-    timeRows.push({ label: "模型用时", value: formatDurationCompact(stats.llmMs) });
+    timeRows.push({ label: t("stats.llmTime"), value: formatDurationCompact(stats.llmMs) });
   }
   if (stats.toolMs > 0) {
-    timeRows.push({ label: "工具调用用时", value: formatDurationCompact(stats.toolMs) });
+    timeRows.push({ label: t("stats.toolTime"), value: formatDurationCompact(stats.toolMs) });
   }
   if (ttft != null) {
-    timeRows.push({ label: "首 token 平均（TTFT）", value: formatDurationCompact(ttft) });
+    timeRows.push({ label: t("stats.ttft"), value: formatDurationCompact(ttft) });
   }
   if (tpsText != null) {
-    timeRows.push({ label: "输出速度（TPS）", value: tpsText });
+    timeRows.push({ label: t("stats.tps"), value: tpsText });
   }
 
   const total = totalTokens(stats) + stats.liveOutputTokens;
@@ -92,28 +94,28 @@ export function SessionStatsSection({ stats }: { stats: SessionStats }) {
   const usageSummary =
     cacheHit == null
       ? `${live ? "~" : ""}${formatTokenCount(total)} tok`
-      : `${live ? "~" : ""}${formatTokenCount(total)} tok · 缓存命中 ${cacheHit}%`;
+      : t("stats.tokensWithCacheHit", { tokens: `${live ? "~" : ""}${formatTokenCount(total)}`, pct: cacheHit });
 
   const usageRows: StatRow[] = [];
-  if (cacheHit != null) usageRows.push({ label: "缓存命中", value: `${cacheHit}%` });
+  if (cacheHit != null) usageRows.push({ label: t("stats.cacheHit"), value: `${cacheHit}%` });
   usageRows.push({
-    label: "未缓存输入",
+    label: t("stats.uncachedInput"),
     value: `${formatExactTokenCount(stats.uncachedInputTokens)} tok`,
   });
   usageRows.push({
-    label: "缓存读取",
+    label: t("stats.cacheRead"),
     value: `${formatExactTokenCount(stats.cacheReadTokens)} tok`,
   });
   if (stats.cacheWriteTokens !== 0) {
     usageRows.push({
-      label: "缓存写入",
+      label: t("stats.cacheWrite"),
       value: `${formatExactTokenCount(stats.cacheWriteTokens)} tok`,
     });
   }
-  usageRows.push({ label: "输出", value: `${formatExactTokenCount(stats.outputTokens)} tok` });
+  usageRows.push({ label: t("stats.output"), value: `${formatExactTokenCount(stats.outputTokens)} tok` });
   if (live) {
     usageRows.push({
-      label: "输出（流式中）",
+      label: t("stats.outputStreaming"),
       value: `~${formatExactTokenCount(stats.liveOutputTokens)} tok`,
     });
   }
@@ -121,14 +123,14 @@ export function SessionStatsSection({ stats }: { stats: SessionStats }) {
   return (
     <div className="session-stats">
       {hasTimedFigure ? (
-        <StatGroup name="会话统计" summary={timeSummary} rows={timeRows} />
+        <StatGroup name={t("stats.sessionStats")} summary={timeSummary} rows={timeRows} />
       ) : (
         <div className="session-stats__reading">
-          <span className="session-stats__name">会话统计</span>
+          <span className="session-stats__name">{t("stats.sessionStats")}</span>
           <span className="session-stats__value">{timeSummary}</span>
         </div>
       )}
-      {hasTokens && <StatGroup name="Token 用量" summary={usageSummary} rows={usageRows} />}
+      {hasTokens && <StatGroup name={t("stats.tokenUsage")} summary={usageSummary} rows={usageRows} />}
     </div>
   );
 }

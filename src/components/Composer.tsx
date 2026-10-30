@@ -57,6 +57,7 @@ import {
   invalidateCapsIfAgentUpdated,
 } from "../lib/capabilityCache";
 import { detectCapabilityDrift } from "../lib/capabilityDrift";
+import { t, useT } from "../lib/i18n";
 import { ensureModelSources, expandHiddenProviders, libraryGroups, refreshModelSources, visibleLibraryGroups, useModelLibrary } from "../lib/modelLibrary";
 import { modeTone } from "../lib/modeTone";
 import { DOCK_DROP_PATHS_EVENT, DOCK_DROP_TEXT_EVENT } from "../lib/dockDrop";
@@ -271,10 +272,10 @@ function toDatetimeLocalValue(ms: number): string {
 
 function formatRecentTime(timestamp: number): string {
   const diff = Date.now() - timestamp;
-  if (diff < 60_000) return "刚刚";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
-  return `${Math.floor(diff / 86_400_000)} 天前`;
+  if (diff < 60_000) return t("composer.justNow");
+  if (diff < 3_600_000) return t("common.minutesAgo", { n: Math.floor(diff / 60_000) });
+  if (diff < 86_400_000) return t("common.hoursAgo", { n: Math.floor(diff / 3_600_000) });
+  return t("common.daysAgo", { n: Math.floor(diff / 86_400_000) });
 }
 
 function effortLabel(value: number): string {
@@ -602,6 +603,7 @@ export function Composer({
   onEmptyActivate,
   docked = false,
 }: ComposerProps) {
+  const t = useT();
   /**
    * Offline-first controls: the last catalog this agent advertised, with this
    * dialog's saved model/mode/effort overlaid. Computed once per mount (App
@@ -1229,16 +1231,16 @@ export function Composer({
           ) {
             onRestartAgentSession(
               sessionId,
-              `**已切换到共享模型 ${model.label}。**\n\nagent 进程已用新模型重启，历史保留 —— 下一条消息直接生效。`,
+              t("composer.bridgeSwitchedBanner", { label: model.label }),
             );
-            flash(`已切换到 ${model.label}，下一条消息即生效`);
+            flash(t("composer.bridgeSwitchedFlash", { label: model.label }));
           }
         })
         .catch((error) => {
           setBridgeSelection(prev);
           const msg =
             error instanceof Error ? error.message : typeof error === "string" ? error : "";
-          flash(msg.length > 140 ? `${msg.slice(0, 140)}…` : msg || "绑定共享模型失败");
+          flash(msg.length > 140 ? `${msg.slice(0, 140)}…` : msg || t("composer.bridgeBindFailed"));
         });
     },
     [agent.id, bridgeSelection, flash, onRestartAgentSession, persistPrefs, sessionId],
@@ -1269,7 +1271,7 @@ export function Composer({
           ) {
             onRestartAgentSession(
               sessionId,
-              `**已切回原生模型。**\n\nagent 进程已重启（历史保留），下一条消息直接生效。`,
+              t("composer.nativeSwitchedBanner"),
             );
           }
         })
@@ -1428,7 +1430,7 @@ export function Composer({
         if (msg.includes("does not support reasoning effort")) {
           // grok's per-model gate: Rust just latched the model, so reload caps
           // to drop the Effort control now rather than after the next touch.
-          flash("此模型不支持 Effort 档位写入，已在该模型下停用档位调节");
+          flash(t("composer.effortWriteRejectedFlash"));
           loadCapabilities(sessionId);
         } else {
           // Keep toast short but specific (Claude often rejects wrong effort/mode values).
@@ -2395,7 +2397,7 @@ export function Composer({
     bridgeActive && bridgeSelection && !bridgeStale ? (displayLibraryModel ? `${displayLibraryModel.group.label} · ${displayLibraryModel.row.label}` : bridgeSelection.label) : null;
   const bridgeChipTitle =
     bridgeActive && bridgeSelection && !bridgeStale
-      ? [`共享 · ${bridgeSelection.label}`, bridgeSelection.preset, bridgeSelection.modelId].join("\n")
+      ? [t("composer.bridgeChipTitle", { label: bridgeSelection.label }), bridgeSelection.preset, bridgeSelection.modelId].join("\n")
       : null;
   const displayModeLabel =
     (displayMode && caps?.modes.find((m) => m.id === displayMode)?.label) || displayMode;
@@ -2920,7 +2922,7 @@ export function Composer({
                 <button
                   type="button"
                   className="composer__attachment-main"
-                  title={`${att.path}${att.marks.length ? ` · ${att.marks.length} 条批注` : " · 点击标注"}`}
+                  title={`${att.path}${att.marks.length ? ` · ${t("annotator.marksCount", { count: att.marks.length })}` : ` · ${t("annotator.clickToMark")}`}`}
                   onClick={() => setAnnotatingId(att.id)}
                 >
                   <span className="composer__attachment-name">{att.name}</span>
@@ -2931,8 +2933,8 @@ export function Composer({
                 <button
                   type="button"
                   className="composer__attachment-x"
-                  title="移除"
-                  aria-label={`移除 ${att.name}`}
+                  title={t("common.remove")}
+                  aria-label={t("annotator.removeAttachment", { name: att.name })}
                   onClick={() => {
                     setImageAttachments((cur) => cur.filter((a) => a.id !== att.id));
                     if (annotatingId === att.id) setAnnotatingId(null);
@@ -2971,7 +2973,7 @@ export function Composer({
         )}
         {showDelegateMenu && (
           <div className="composer-slash" role="listbox" aria-label="Delegate to agent">
-            <div className="composer-slash__hint">派给 Agent · 行首 @</div>
+            <div className="composer-slash__hint">{t("composer.delegateHint")}</div>
             {delegateMatches.map((c, i) => (
               <button
                 key={`${c.agentId}:${c.modelId ?? "_"}`}
@@ -2988,8 +2990,8 @@ export function Composer({
                 </span>
                 <span className="composer-slash__desc">
                   {c.modelLabel || c.agentLabel}
-                  {c.recent ? " · 上次用过" : ""}
-                  {c.installed ? " · ✓ 已安装" : " · ⚠ 未安装"}
+                  {c.recent ? ` · ${t("composer.usedRecently")}` : ""}
+                  {c.installed ? ` · ${t("composer.installedMark")}` : ` · ${t("composer.notInstalledMark")}`}
                 </span>
               </button>
             ))}
@@ -3199,18 +3201,18 @@ export function Composer({
                 <button
                   className="composer-dock-hub"
                   type="button"
-                  title="模式 · 权限 · 模型 · Agent"
+                  title={t("composer.hubTitle")}
                   aria-expanded={menu === "hub"}
                   onClick={() => setMenu(menu === "hub" ? null : "hub")}
                 >
                   <SlidersHorizontal size={13} />
                   <span className="composer-dock-hub__label">
-                    {bridgeChipLabel ?? displayModelLabel ?? "模式与模型"}
+                    {bridgeChipLabel ?? displayModelLabel ?? t("composer.modeAndModel")}
                   </span>
                   <ChevronRight size={12} aria-hidden />
                 </button>
                 {menu === "hub" && (
-                  <div className="composer-menu composer-menu--hub" role="menu" aria-label="模式与模型">
+                  <div className="composer-menu composer-menu--hub" role="menu" aria-label={t("composer.modeAndModel")}>
                     {hasModes && displayMode && (
                       <button
                         type="button"
@@ -3218,7 +3220,7 @@ export function Composer({
                         className="composer-menu__hub-row"
                         onClick={() => setMenu("mode")}
                       >
-                        <span className="composer-menu__hub-name">模式</span>
+                        <span className="composer-menu__hub-name">{t("composer.mode")}</span>
                         <span className="composer-menu__hub-value">{displayModeLabel}</span>
                         <ChevronRight size={13} aria-hidden />
                       </button>
@@ -3246,7 +3248,7 @@ export function Composer({
                         <span className="composer-menu__hub-name">
                           {alwaysApproveSpec.onLabel ?? "Always approve"}
                         </span>
-                        <span className="composer-menu__hub-value">{alwaysApprove ? "开" : "关"}</span>
+                        <span className="composer-menu__hub-value">{alwaysApprove ? t("common.on") : t("common.off")}</span>
                         {alwaysApprove ? <Check size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
                       </button>
                     )}
@@ -3257,9 +3259,9 @@ export function Composer({
                         className="composer-menu__hub-row"
                         onClick={() => setMenu("model")}
                       >
-                        <span className="composer-menu__hub-name">模型</span>
+                        <span className="composer-menu__hub-name">{t("composer.model")}</span>
                         <span className="composer-menu__hub-value">
-                          {bridgeChipLabel ?? displayModelLabel ?? "选择模型"}
+                          {bridgeChipLabel ?? displayModelLabel ?? t("composer.chooseModel")}
                         </span>
                         <ChevronRight size={13} aria-hidden />
                       </button>
@@ -3434,21 +3436,21 @@ export function Composer({
                     {!hasModels && showKeyPrompt && (
                       <div className="composer-menu__empty-state">
                         <div className="composer-menu__empty-icon">🔑</div>
-                        <div className="composer-menu__empty-title">还没有配置 API Key</div>
+                        <div className="composer-menu__empty-title">{t("composer.noApiKeyTitle")}</div>
                         <div className="composer-menu__empty-desc">
-                          选择服务商并输入 Key 即可开始使用
+                          {t("composer.noApiKeyDesc")}
                         </div>
                         <button
                           className="composer-menu__add-key-btn"
                           type="button"
                           onClick={() => { setMenu(null); setShowProviderDialog(true); }}
                         >
-                          添加 API Key
+                          {t("composer.addApiKey")}
                         </button>
                       </div>
                     )}
                     {!hasModels && !showKeyPrompt && !hasEffort && (
-                      <div className="composer-menu__empty">这个 agent 没有可切换的模型</div>
+                      <div className="composer-menu__empty">{t("composer.noSwitchableModels")}</div>
                     )}
                         {hasModels && (
                           <>
@@ -3473,7 +3475,7 @@ export function Composer({
                             <div className="composer-menu__scroll">
                               {!modelQuery.trim() && recentModels.length > 0 && (
                                 <div className="composer-menu__recent">
-                                  <span className="composer-menu__label">最近使用</span>
+                                  <span className="composer-menu__label">{t("composer.recentlyUsed")}</span>
                                   {recentModels.map((entry) => {
                                     const model = caps?.models.find((m) => m.id === entry.modelId);
                                     if (!model) return null;
@@ -3515,7 +3517,7 @@ export function Composer({
                                 <span className="composer-menu__divider" />
                               )}
                               {modelGroups.length === 0 && crossSections.customSources.length === 0 && (
-                                <div className="composer-menu__empty">{modelQuery ? `没有匹配“${modelQuery}”的模型` : "没有显示的模型，可在模型共享中调整显示设置"}</div>
+                                <div className="composer-menu__empty">{modelQuery ? t("composer.noModelMatches", { query: modelQuery }) : t("composer.noVisibleModels")}</div>
                               )}
                               {menuGroups.map(group => (
                                 <div className="composer-menu__group" key={group.key}>
@@ -3549,7 +3551,7 @@ export function Composer({
                                       (e.g. openrouter) — custom ids only. */}
                                   {!source.hasPresetModels && (
                                     <div className="composer-menu__bridge-empty">
-                                      {source.label} 没有预置清单，输入模型 id 使用
+                                      {t("composer.sourceNoPresetList", { label: source.label })}
                                     </div>
                                   )}
                                   {bridgeCustomEntryId === source.entryId ? (
@@ -3558,8 +3560,8 @@ export function Composer({
                                         ref={bridgeCustomInputRef}
                                         type="text"
                                         value={bridgeCustomDraft}
-                                        placeholder={`输入模型 id，如 ${source.sampleModelId}`}
-                                        aria-label="输入自定义模型 id"
+                                        placeholder={t("composer.customModelPlaceholder", { sample: source.sampleModelId })}
+                                        aria-label={t("composer.customModelAria")}
                                         onChange={(e) => setBridgeCustomDraft(e.target.value)}
                                         onKeyDown={(e) => {
                                           if (e.key === "Enter" && !e.nativeEvent.isComposing) {
@@ -3578,13 +3580,13 @@ export function Composer({
                                     <button
                                       className="composer-menu__bridge-custom-trigger"
                                       type="button"
-                                      title="输入任意模型 id 绑定到此来源（不限于上方清单）"
+                                      title={t("composer.customModelTitle")}
                                       onClick={() => {
                                         setBridgeCustomEntryId(source.entryId);
                                         setBridgeCustomDraft("");
                                       }}
                                     >
-                                      ＋ 自定义模型
+                                      {t("composer.addCustomModel")}
                                       {crossSections.customSources.length > 1
                                         ? ` · ${source.label}`
                                         : ""}
@@ -3603,19 +3605,19 @@ export function Composer({
                             <button
                               className="composer-menu__add-key-item"
                               type="button"
-                              title="选择要显示的模型、调整分组与顺序"
+                              title={t("composer.configureModelsTitle")}
                               onClick={() => { setMenu(null); setShowModelLibrary(true); }}
                             >
-                              <Settings2 size={13} aria-hidden /> 配置模型与来源…
+                              <Settings2 size={13} aria-hidden /> {t("composer.configureModels")}
                             </button>
                             {usesOpencodeAuth && (
                               <button
                                 className="composer-menu__add-key-item"
                                 type="button"
-                                title="添加或管理 API Key、查看已发现的配置"
+                                title={t("composer.addApiKeyTitle")}
                                 onClick={() => { setMenu(null); setShowProviderDialog(true); }}
                               >
-                                ＋ 添加 API Key…
+                                {t("composer.addApiKeyMenu")}
                               </button>
                             )}
                           </>
@@ -3676,7 +3678,7 @@ export function Composer({
                         )}
                         {effortRejected && hasModels && (
                           <div className="composer-menu__empty">
-                            此模型不支持 Effort 档位调节（agent 侧拒绝写入）
+                            {t("composer.effortNotAdjustable")}
                           </div>
                         )}
                   </div>
@@ -3842,7 +3844,7 @@ export function Composer({
                                 {busyInstall
                                   ? "installing…"
                                   : needsManualSetup
-                                    ? "需本机安装"
+                                    ? t("composer.needsLocalInstall")
                                     : status?.status === "incomplete"
                                       ? "needs CLI"
                                       : "not installed"}
@@ -3889,27 +3891,27 @@ export function Composer({
                                       .join("\n")
                                   : "";
                                 setInstallNote(
-                                  `${candidate.label} 无法在应用内一键安装。\n\n${manualHint}${
-                                    pfLines ? `\n\n环境检查：\n${pfLines}` : ""
-                                  }\n\n装好后请重启 Marionette，再选该 agent。`,
+                                  `${t("composer.manualInstallHead", { label: candidate.label })}\n\n${manualHint}${
+                                    pfLines ? `\n\n${t("composer.envCheckTitle")}\n${pfLines}` : ""
+                                  }\n\n${t("composer.manualInstallTail")}`,
                                 );
                                 void navigator.clipboard?.writeText(manualHint).catch(() => undefined);
                               }}
                             >
-                              如何安装
+                              {t("composer.howToInstall")}
                             </button>
                           )}
                           {!ready && !needsManualSetup && preflightById[candidate.id] && !preflightById[candidate.id]!.passed && (
                             <button
                               className="composer-agent-row__install composer-agent-row__install--manual"
                               type="button"
-                              title="环境检查未通过"
+                              title={t("composer.preflightFailedTitle")}
                               onClick={(event) => {
                                 event.stopPropagation();
                                 const pf = preflightById[candidate.id];
                                 if (!pf) return;
                                 setInstallNote(
-                                  `${pf.agentName} 环境检查：\n` +
+                                  `${t("composer.envCheckFor", { name: pf.agentName })}\n` +
                                     pf.checks
                                       .map(
                                         (c) =>
@@ -3919,20 +3921,20 @@ export function Composer({
                                 );
                               }}
                             >
-                              检查
+                              {t("composer.check")}
                             </button>
                           )}
                           {customAgentIds.has(candidate.id) || candidate.id.startsWith("custom-") || candidate.install.note?.includes("Custom agent") ? (
                             <button
                               className="composer-agent-row__install composer-agent-row__install--manual"
                               type="button"
-                              title="删除自定义 agent"
+                              title={t("composer.deleteCustomAgent")}
                               onClick={(event) => {
                                 event.stopPropagation();
                                 setPendingDeleteAgent({ id: candidate.id, label: candidate.label });
                               }}
                             >
-                              删除
+                              {t("common.delete")}
                             </button>
                           ) : null}
                         </div>
@@ -3943,7 +3945,7 @@ export function Composer({
                     className="composer-menu__add-custom"
                     onClick={() => setShowCustomAgentDialog(true)}
                   >
-                    + 添加自定义 agent
+                    {t("composer.addCustomAgent")}
                   </button>
                   {installNote && <div className="composer-menu__note">{installNote}</div>}
                 </div>
@@ -3965,12 +3967,12 @@ export function Composer({
                 type="button"
                 title={
                   isBusy && (draft.trim() || imageAttachments.length > 0)
-                    ? "打断当前回合并发送"
+                    ? t("composer.interruptAndSendTitle")
                     : isBusy && canCancel
                       ? "Interrupt (or double-press Esc)"
                       : isBusy && !canCancel
                         ? "Agent is busy"
-                        : "Send · 右键：快捷键 / 定时发送"
+                        : t("composer.sendHint")
                 }
                 aria-label={
                   isBusy && (draft.trim() || imageAttachments.length > 0)
@@ -4019,9 +4021,9 @@ export function Composer({
                 <div
                   className="composer-menu composer-menu--send"
                   role="menu"
-                  aria-label="发送选项"
+                  aria-label={t("composer.sendOptions")}
                 >
-                  <div className="composer-menu__label">发送快捷键</div>
+                  <div className="composer-menu__label">{t("composer.sendShortcut")}</div>
                   <button
                     type="button"
                     role="menuitem"
@@ -4031,7 +4033,7 @@ export function Composer({
                       setMenu(null);
                     }}
                   >
-                    Ctrl+Enter 发送
+                    {t("composer.ctrlEnterSend")}
                   </button>
                   <button
                     type="button"
@@ -4042,18 +4044,18 @@ export function Composer({
                       setMenu(null);
                     }}
                   >
-                    Enter 发送
+                    {t("composer.enterSend")}
                   </button>
                   {onScheduleSend && (
                     <>
                       <div className="composer-menu__divider" />
-                      <div className="composer-menu__label">定时发送</div>
+                      <div className="composer-menu__label">{t("composer.scheduleSend")}</div>
                       {(
                         [
-                          [5, "5 分钟后"],
-                          [15, "15 分钟后"],
-                          [30, "30 分钟后"],
-                          [60, "1 小时后"],
+                          [5, t("composer.inMinutes", { count: 5 })],
+                          [15, t("composer.inMinutes", { count: 15 })],
+                          [30, t("composer.inMinutes", { count: 30 })],
+                          [60, t("composer.inHours")],
                         ] as const
                       ).map(([minutes, label]) => (
                         <button
@@ -4072,7 +4074,7 @@ export function Composer({
                       <div className="composer-menu__schedule">
                         <input
                           type="datetime-local"
-                          aria-label="自定义发送时间"
+                          aria-label={t("composer.customSendTime")}
                           min={toDatetimeLocalValue(Date.now() + 60_000)}
                           value={scheduleCustom}
                           onChange={(event) => setScheduleCustom(event.target.value)}
@@ -4093,7 +4095,7 @@ export function Composer({
                             setMenu(null);
                           }}
                         >
-                          指定时间发送
+                          {t("composer.sendAtSpecifiedTime")}
                         </button>
                       </div>
                     </>
@@ -4136,16 +4138,16 @@ export function Composer({
       )}
       {pendingDeleteAgent && (
         <ConfirmDialog
-          title="删除自定义 agent"
+          title={t("composer.deleteCustomAgent")}
           itemName={pendingDeleteAgent.label}
-          description="将从本地 agent 列表中移除，可重新添加。"
+          description={t("composer.deleteCustomAgentDesc")}
           onCancel={() => setPendingDeleteAgent(null)}
           onConfirm={() => {
             const target = pendingDeleteAgent;
             setPendingDeleteAgent(null);
             void removeCustomAgent(target.id)
               .then(async () => {
-                setInstallNote(`已删除 ${target.label}`);
+                setInstallNote(t("composer.agentDeletedNote", { label: target.label }));
                 await onAgentsReload?.();
                 void refreshAgentStatuses();
               })

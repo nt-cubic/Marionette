@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { createPortal } from "react-dom";
 import { Columns2, Rows2 } from "lucide-react";
+import { useT } from "../lib/i18n";
 
 export type OpenBesideEdge = "right" | "bottom";
 
@@ -15,6 +16,7 @@ export function SplitBesideMenu({
   onPick: (edge: OpenBesideEdge) => void;
   onClose: () => void;
 }) {
+  const t = useT();
   useEffect(() => {
     const onDown = () => onClose();
     const onKey = (event: KeyboardEvent) => {
@@ -50,7 +52,7 @@ export function SplitBesideMenu({
         }}
       >
         <Columns2 size={13} aria-hidden />
-        在右侧打开
+        {t("split.openRight")}
       </button>
       <button
         type="button"
@@ -61,7 +63,7 @@ export function SplitBesideMenu({
         }}
       >
         <Rows2 size={13} aria-hidden />
-        在下方打开
+        {t("split.openBottom")}
       </button>
     </div>,
     document.body,

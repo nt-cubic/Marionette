@@ -3,6 +3,8 @@
  * Quote pins are the existing product path; range/line/image kinds land later.
  */
 
+import { t } from "./i18n";
+
 export type Annotation = {
   id: string;
   comment: string;
@@ -69,29 +71,29 @@ export function formatAnnotationsForSend(
     if (a.kind === "quote") {
       const quoted = a.quoted.replace(/\r\n/g, "\n").trim();
       const lines = quoted.split("\n").map((line) => `> ${line}`);
-      return `${n}.\n${lines.join("\n")}\n评论：${comment}`;
+      return `${n}.\n${lines.join("\n")}\n${t("annotations.commentLine", { comment })}`;
     }
     if (a.kind === "range") {
       const quoted = a.quoted.replace(/\r\n/g, "\n").trim();
       const lines = quoted.split("\n").map((line) => `> ${line}`);
-      return `${n}. ${a.filePath}\n${lines.join("\n")}\n评论：${comment}`;
+      return `${n}. ${a.filePath}\n${lines.join("\n")}\n${t("annotations.commentLine", { comment })}`;
     }
     if (a.kind === "line") {
-      const sideLabel = a.side === "new" ? "新" : "旧";
+      const sideLabel = a.side === "new" ? t("annotations.sideNew") : t("annotations.sideOld");
       const quoted = a.quoted.replace(/\r\n/g, "\n").trim();
       const lines = quoted
         ? quoted.split("\n").map((line) => `> ${line}`)
         : [];
-      const head = `${n}. ${a.filePath}:${a.lineNumber}（${sideLabel}）`;
+      const head = `${n}. ${a.filePath}:${a.lineNumber}(${sideLabel})`;
       return lines.length
-        ? `${head}\n${lines.join("\n")}\n评论：${comment}`
-        : `${head}\n评论：${comment}`;
+        ? `${head}\n${lines.join("\n")}\n${t("annotations.commentLine", { comment })}`
+        : `${head}\n${t("annotations.commentLine", { comment })}`;
     }
     if (a.kind === "point") {
-      return `${n}. ${a.imagePath} @ (${a.nx.toFixed(3)}, ${a.ny.toFixed(3)})\n评论：${comment}`;
+      return `${n}. ${a.imagePath} @ (${a.nx.toFixed(3)}, ${a.ny.toFixed(3)})\n${t("annotations.commentLine", { comment })}`;
     }
     // rect
-    return `${n}. ${a.imagePath} rect (${a.nx.toFixed(3)}, ${a.ny.toFixed(3)}, ${a.nw.toFixed(3)}×${a.nh.toFixed(3)})\n评论：${comment}`;
+    return `${n}. ${a.imagePath} rect (${a.nx.toFixed(3)}, ${a.ny.toFixed(3)}, ${a.nw.toFixed(3)}×${a.nh.toFixed(3)})\n${t("annotations.commentLine", { comment })}`;
   });
   const free = freeText.replace(/\r\n/g, "\n").trim();
   if (free) blocks.push(free);

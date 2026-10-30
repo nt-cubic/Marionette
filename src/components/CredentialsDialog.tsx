@@ -16,6 +16,7 @@ import {
   type EngineStatus,
 } from "../lib/api";
 import { BRIDGE_PRESETS, invalidateBridgeModels } from "../lib/bridge";
+import { t, useT, type DictKey } from "../lib/i18n";
 import { refreshModelSources, useModelLibrary } from "../lib/modelLibrary";
 import type { AgentConfig } from "../lib/types";
 import { DialogShell } from "./DialogShell";
@@ -28,18 +29,20 @@ type Props = {
 /** A pending destructive action awaiting a second click (ProviderConfigDialog pattern). */
 type Confirming = { id: string };
 
-const KIND_BADGES: Record<BridgeEntryKind, string> = {
-  "key-plan": "API",
-  subscription: "登录",
-  reference: "外部 API",
+const KIND_BADGES: Record<BridgeEntryKind, DictKey> = {
+  "key-plan": "creds.kindApi",
+  subscription: "creds.kindLogin",
+  reference: "creds.kindExternalApi",
 };
 
 function scanStatusText(source: BridgeScanSource, foundCount: number): string {
   if (source.status === "found") {
-    return foundCount > 0 ? `已发现 ${foundCount} 个来源` : "已发现";
+    return foundCount > 0
+      ? t("creds.scanFoundSome", { count: foundCount })
+      : t("creds.scanFound");
   }
-  if (source.status === "restricted") return "存储方式受限";
-  return "未检测到";
+  if (source.status === "restricted") return t("creds.scanRestricted");
+  return t("creds.scanMissing");
 }
 
 /** One-line engine status text (未安装 / 下载中 x% / 运行中 端口+版本 / 失败原因). */
@@ -48,22 +51,28 @@ function engineStatusText(engine: EngineStatus | null): string {
   switch (engine?.state) {
     case "downloading":
       return engine.total > 0
-        ? `下载中 ${Math.round((engine.downloaded / engine.total) * 100)}%（${mb(
-            engine.downloaded,
-          )} / ${mb(engine.total)}）`
-        : `下载中…（已收 ${mb(engine.downloaded)}）`;
+        ? t("creds.engineDownloadingPct", {
+            pct: Math.round((engine.downloaded / engine.total) * 100),
+            got: mb(engine.downloaded),
+            total: mb(engine.total),
+          })
+        : t("creds.engineDownloading", { got: mb(engine.downloaded) });
     case "starting":
-      return "启动中…（正在拉起本地网关）";
+      return t("creds.engineStarting");
     case "running":
       return engine.reused
-        ? `运行中 · 端口 ${engine.port}（复用本机已装的 magpie${
-            engine.version ? ` · ${engine.version}` : ""
-          }）`
-        : `运行中 · 端口 ${engine.port}${engine.version ? ` · ${engine.version}` : ""}`;
+        ? t("creds.engineRunningReused", {
+            port: engine.port,
+            version: engine.version ? ` · ${engine.version}` : "",
+          })
+        : t("creds.engineRunning", {
+            port: engine.port,
+            version: engine.version ? ` · ${engine.version}` : "",
+          });
     case "failed":
-      return `失败：${engine.error}`;
+      return t("creds.engineFailed", { error: engine.error });
     default:
-      return "未安装（约 48 MB，启用时从 GitHub 下载）";
+      return t("creds.engineMissing");
   }
 }
 
@@ -86,17 +95,18 @@ export function CredentialsDialog({ agents, onClose }: Props) {
   const [error, setError] = useState("");
   const [engine, setEngine] = useState<EngineStatus | null>(null);
   const [checks, setChecks] = useState<Record<string, { state: string; detail?: string }>>({});
+  const t = useT();
 
   const checkSource = async (id: string) => {
-    setChecks(previous => ({ ...previous, [id]: { state: "检测中…" } }));
+    setChecks(previous => ({ ...previous, [id]: { state: t("creds.checking") } }));
     try {
-      if (!isTauriRuntime()) throw new Error("请在桌面应用中检测");
+      if (!isTauriRuntime()) throw new Error(t("creds.checkDesktopOnly"));
       const result = await invoke<{ state: string; detail: string }>("model_library_check_source", { id });
       setChecks(previous => ({ ...previous, [id]: result }));
     } catch (e) {
       setChecks(previous => ({
         ...previous,
-        [id]: { state: "检测失败", detail: e instanceof Error ? e.message : String(e) },
+        [id]: { state: t("creds.checkFailed"), detail: e instanceof Error ? e.message : String(e) },
       }));
     }
   };
@@ -109,7 +119,7 @@ export function CredentialsDialog({ agents, onClose }: Props) {
       const [report, list] = await Promise.all([bridgeScan(), bridgeListEntries(), refreshModelSources()]);
       setScanSources(report?.sources ?? []);
       setEntries([...list, ...(report?.entries ?? []).filter(e => !list.some(own => own.id === e.id))]);
-      if (!report) setError("凭据扫描未能完成，请重新扫描查看结果");
+      if (!report) setError(t("creds.scanIncomplete"));
     } catch (e) { setError(String(e)); }
     finally { setLoaded(true); setScanning(false); }
   }, []);
@@ -176,7 +186,7 @@ export function CredentialsDialog({ agents, onClose }: Props) {
   const handleAdd = async () => {
     const key = apiKey.trim();
     if (!key && preset !== "custom") {
-      setError("请输入 API Key");
+      setError(t("creds.needApiKey"));
       return;
     }
     setSaving(true);
@@ -229,26 +239,26 @@ export function CredentialsDialog({ agents, onClose }: Props) {
     <DialogShell
       className="project-dialog-backdrop"
       dialogClassName="project-dialog provider-dialog credentials-dialog"
-      label="API 与登录凭证"
+      label={t("creds.dialogLabel")}
       onClose={() => {
         if (!busy) onClose();
       }}
     >
-        <div className="project-dialog__header">API 与登录凭证</div>
+        <div className="project-dialog__header">{t("creds.dialogLabel")}</div>
         <div className="project-dialog__body">
           <p className="provider-dialog__lead">
-            管理 API 密钥和已登录账号，自动读取本机 CLI 凭证。
+            {t("creds.lead")}
           </p>
 
           {/* ── Credential list ── */}
           <div className="provider-dialog__section">
             <div className="credentials-dialog__toolbar">
-              <button type="button" className="engine-popover__link" disabled={scanning || busy || Object.values(checks).some(check => check.state === "检测中…")} onClick={() => void load()}>{scanning ? "刷新中…" : "刷新凭证"}</button>
-              <button type="button" className="project-dialog__submit" disabled={busy} onClick={() => setAdding(true)}>＋ 添加 API</button>
+              <button type="button" className="engine-popover__link" disabled={scanning || busy || Object.values(checks).some(check => check.state === t("creds.checking"))} onClick={() => void load()}>{scanning ? t("creds.refreshing") : t("creds.refresh")}</button>
+              <button type="button" className="project-dialog__submit" disabled={busy} onClick={() => setAdding(true)}>{t("creds.addApi")}</button>
             </div>
             <div className="provider-dialog__list">
               {loaded && entries.length === 0 && discoveredSources.length === 0 && (
-                <div className="provider-dialog__empty">还没有任何凭据</div>
+                <div className="provider-dialog__empty">{t("creds.empty")}</div>
               )}
               {entries.map((entry) => {
                 const pendingDelete = confirming?.id === entry.id;
@@ -269,15 +279,15 @@ export function CredentialsDialog({ agents, onClose }: Props) {
                         }
                         aria-hidden
                       />
-                      <span className="credentials-dialog__entry-label">{entry.label.replace("Grok 自定义 channel ", "Grok · ")}</span>
+                      <span className="credentials-dialog__entry-label">{entry.label.replace(t("creds.grokChannelPrefix"), "Grok · ")}</span>
                       <span className="provider-dialog__item-badge provider-dialog__item-badge--muted">
-                        {KIND_BADGES[entry.kind] ?? entry.kind}
+                        {KIND_BADGES[entry.kind] ? t(KIND_BADGES[entry.kind]) : entry.kind}
                       </span>
                     </span>
                     <span className="credentials-dialog__entry-status" title={check?.detail || source?.issue || entry.note || undefined}>
-                      {check?.state || (source?.issue ? "配置待处理" : source ? "未检测" : entry.kind === "subscription" ? "已保存登录态" : "已配置")}
+                      {check?.state || (source?.issue ? t("creds.statusIssuePending") : source ? t("creds.statusUnchecked") : entry.kind === "subscription" ? t("creds.statusSavedLogin") : t("creds.statusConfigured"))}
                     </span>
-                    {source && <button type="button" className="engine-popover__link" disabled={scanning || check?.state === "检测中…"} onClick={() => void checkSource(source.id)}>检测</button>}
+                    {source && <button type="button" className="engine-popover__link" disabled={scanning || check?.state === t("creds.checking")} onClick={() => void checkSource(source.id)}>{t("creds.check")}</button>}
                     {canDelete && (
                       <button
                         className={
@@ -290,37 +300,37 @@ export function CredentialsDialog({ agents, onClose }: Props) {
                         disabled={deleting === entry.id}
                         title={
                           pendingDelete
-                            ? "再次点击确认删除"
-                            : `删除 ${entry.label} 的密钥`
+                            ? t("creds.confirmDeleteTitle")
+                            : t("creds.deleteKeyTitle", { name: entry.label })
                         }
                       >
-                        {deleting === entry.id ? "删除中…" : pendingDelete ? "确认删除" : "删除"}
+                        {deleting === entry.id ? t("creds.deleting") : pendingDelete ? t("creds.confirmDelete") : t("common.delete")}
                       </button>
                     )}
                   </div>
                 );
               })}
               {discoveredSources.filter(source => !entries.some(entry => sourceForEntry(entry)?.id === source.id)).map(source => <div key={source.id} className="provider-dialog__item">
-                <span className="provider-dialog__item-name" title={source.endpoint}><span className="credentials-dialog__entry-label">{source.label}</span><span className="provider-dialog__item-badge provider-dialog__item-badge--muted">外部 API</span></span>
-                <span className="credentials-dialog__entry-status" title={checks[source.id]?.detail || source.issue || undefined}>{checks[source.id]?.state || (source.issue ? "配置待处理" : "未检测")}</span>
-                <button type="button" className="engine-popover__link" disabled={scanning || checks[source.id]?.state === "检测中…"} onClick={() => void checkSource(source.id)}>检测</button>
+                <span className="provider-dialog__item-name" title={source.endpoint}><span className="credentials-dialog__entry-label">{source.label}</span><span className="provider-dialog__item-badge provider-dialog__item-badge--muted">{t("creds.kindExternalApi")}</span></span>
+                <span className="credentials-dialog__entry-status" title={checks[source.id]?.detail || source.issue || undefined}>{checks[source.id]?.state || (source.issue ? t("creds.statusIssuePending") : t("creds.statusUnchecked"))}</span>
+                <button type="button" className="engine-popover__link" disabled={scanning || checks[source.id]?.state === t("creds.checking")} onClick={() => void checkSource(source.id)}>{t("creds.check")}</button>
               </div>)}
             </div>
             {entries.some((e) => e.kind !== "key-plan") && (
               <p className="provider-dialog__hint">
-                外部凭证的登录、修改和退出，请在对应 CLI 中操作。
+                {t("creds.externalCredsHint")}
               </p>
             )}
           </div>
 
           <details className="credentials-dialog__paths">
-            <summary>详情与诊断</summary>
+            <summary>{t("creds.diagnostics")}</summary>
           {/* ── Scan results (read-only) ── */}
           <div className="provider-dialog__section">
-            <span className="provider-dialog__section-title">本机来源 <button type="button" className="engine-popover__link" disabled={scanning || busy} onClick={() => void load()}>{scanning ? "扫描中…" : "重新扫描"}</button></span>
+            <span className="provider-dialog__section-title">{t("creds.localSources")} <button type="button" className="engine-popover__link" disabled={scanning || busy} onClick={() => void load()}>{scanning ? t("creds.scanning") : t("creds.rescan")}</button></span>
             <div className="credentials-dialog__scan">
               {loaded && scanSources.length === 0 && (
-                <div className="provider-dialog__empty">没有取得凭据扫描结果，请重新扫描查看错误信息</div>
+                <div className="provider-dialog__empty">{t("creds.scanNoResults")}</div>
               )}
               {scanSources.map((source) => (
                 <div
@@ -339,28 +349,27 @@ export function CredentialsDialog({ agents, onClose }: Props) {
             {discoveredSources.map(source => <div key={source.id} className="credentials-dialog__source-detail">
               <div className="credentials-dialog__source-head">
                 <strong>{source.label}</strong>
-                <span className="credentials-dialog__source-count">{source.models.length ? `${source.models.length} 个模型` : "未列出模型"}</span>
+                <span className="credentials-dialog__source-count">{source.models.length ? t("creds.modelCount", { count: source.models.length }) : t("creds.noModelsListed")}</span>
               </div>
               <code>{source.endpoint}</code>
-              {source.origins.length > 0 && <div>{source.origins.join("；")}</div>}
+              {source.origins.length > 0 && <div>{source.origins.join(t("creds.originsSeparator"))}</div>}
               {source.issue && <div className="credentials-dialog__source-issue">{source.issue}</div>}
             </div>)}
             <div className="credentials-dialog__paths">
               <details>
-                <summary>扫描位置与结果（{paths.length} 项）</summary>
+                <summary>{t("creds.scanPaths", { count: paths.length })}</summary>
                 {paths.map(path => <div key={path.path} className="credentials-dialog__source-detail"><code>{path.path}</code><div>{path.detail}</div></div>)}
               </details>
             </div>
-            {scanSources.filter(s => s.detail && s.status !== "found").map(s => <p key={s.agent} className="provider-dialog__hint">{agentLabel(s.agent)}：{s.detail}</p>)}
+            {scanSources.filter(s => s.detail && s.status !== "found").map(s => <p key={s.agent} className="provider-dialog__hint">{t("creds.agentDetail", { agent: agentLabel(s.agent), detail: s.detail })}</p>)}
             {warnings.map(w => <p key={w} className="provider-dialog__hint">{w}</p>)}
           </div>
 
           {/* ── M2 translation engine (subscription cross-use) ── */}
           <div className="provider-dialog__section">
-            <span className="provider-dialog__section-title">翻译引擎</span>
+            <span className="provider-dialog__section-title">{t("creds.engineSection")}</span>
             <p className="provider-dialog__hint">
-              订阅登录态（Grok / Claude / ChatGPT）经内嵌 magpie
-              引擎翻译为标准协议；出厂种子随应用内嵌，本机落位后可在左下角「模型共享」里检查/更新到上游稳定版。只在本机环回监听、随本应用退出。
+              {t("creds.engineHint")}
             </p>
             <div className="credentials-dialog__scan">
               <div
@@ -377,7 +386,7 @@ export function CredentialsDialog({ agents, onClose }: Props) {
                   }`}
                   aria-hidden
                 />
-                <span className="credentials-dialog__scan-name">magpie 引擎</span>
+                <span className="credentials-dialog__scan-name">{t("creds.magpieEngine")}</span>
                 <span className="credentials-dialog__scan-status">
                   {engineStatusText(engine)}
                 </span>
@@ -387,9 +396,9 @@ export function CredentialsDialog({ agents, onClose }: Props) {
                     className="project-dialog__submit"
                     disabled={engineBusy || saving}
                     onClick={() => void handleEngineEnable()}
-                    title="下载并启动翻译引擎（幂等，重复点击安全）"
+                    title={t("creds.engineEnableTitle")}
                   >
-                    {engineBusy ? "准备中…" : engine?.state === "failed" ? "重试" : "启用"}
+                    {engineBusy ? t("creds.preparing") : engine?.state === "failed" ? t("common.retry") : t("creds.enable")}
                   </button>
                 )}
               </div>
@@ -401,9 +410,9 @@ export function CredentialsDialog({ agents, onClose }: Props) {
           {error && <div role="alert" className="provider-dialog__error">{error}</div>}
           {/* ── Add key form ── */}
           {adding && <div className="provider-dialog__section">
-            <span className="provider-dialog__section-title">添加密钥</span>
+            <span className="provider-dialog__section-title">{t("creds.addKeySection")}</span>
             <label className="provider-dialog__field">
-              <span className="provider-dialog__label">服务商</span>
+              <span className="provider-dialog__label">{t("creds.provider")}</span>
               <select
                 className="provider-dialog__select"
                 value={preset}
@@ -419,34 +428,34 @@ export function CredentialsDialog({ agents, onClose }: Props) {
                     {p.label}
                   </option>
                 ))}
-                <option value="custom">自定义</option>
+                <option value="custom">{t("creds.custom")}</option>
               </select>
             </label>
             <label className="provider-dialog__field">
-              <span className="provider-dialog__label">{preset === "custom" ? "来源名称" : "名称（可选）"}</span>
+              <span className="provider-dialog__label">{preset === "custom" ? t("creds.sourceName") : t("creds.nameOptional")}</span>
               <input
                 className="provider-dialog__input"
                 type="text"
                 value={label}
                 onChange={(e) => setLabel(e.target.value)}
-                placeholder="如：工作号"
+                placeholder={t("creds.labelPlaceholder")}
                 disabled={saving}
               />
             </label>
             {preset === "custom" && <>
-              <label className="provider-dialog__field"><span className="provider-dialog__label">接口地址</span><input className="provider-dialog__input" type="url" value={endpoint} onChange={e => setEndpoint(e.target.value)} placeholder="https://ollama.com/v1" disabled={saving} /></label>
-              <label className="provider-dialog__field"><span className="provider-dialog__label">协议</span><select className="provider-dialog__select" value={protocol} onChange={e => setProtocol(e.target.value)} disabled={saving}><option value="chat">OpenAI Chat Completions</option><option value="responses">OpenAI Responses</option><option value="anthropic">Anthropic Messages</option></select></label>
-              <label className="provider-dialog__field"><span className="provider-dialog__label">模型 ID（每行一个，留空则尝试读取服务端目录）</span><textarea className="provider-dialog__input" value={modelIds} onChange={e => setModelIds(e.target.value)} placeholder="deepseek-v4.1-flash:1017" rows={3} disabled={saving} /></label>
-              <p className="provider-dialog__hint">填写接口基础地址。OpenAI 兼容服务通常以 /v1 结尾；Anthropic 服务按供应商说明填写。相同名称、地址和协议再次保存会更新密钥。</p>
+              <label className="provider-dialog__field"><span className="provider-dialog__label">{t("creds.endpoint")}</span><input className="provider-dialog__input" type="url" value={endpoint} onChange={e => setEndpoint(e.target.value)} placeholder="https://ollama.com/v1" disabled={saving} /></label>
+              <label className="provider-dialog__field"><span className="provider-dialog__label">{t("creds.protocol")}</span><select className="provider-dialog__select" value={protocol} onChange={e => setProtocol(e.target.value)} disabled={saving}><option value="chat">OpenAI Chat Completions</option><option value="responses">OpenAI Responses</option><option value="anthropic">Anthropic Messages</option></select></label>
+              <label className="provider-dialog__field"><span className="provider-dialog__label">{t("creds.modelIdsLabel")}</span><textarea className="provider-dialog__input" value={modelIds} onChange={e => setModelIds(e.target.value)} placeholder="deepseek-v4.1-flash:1017" rows={3} disabled={saving} /></label>
+              <p className="provider-dialog__hint">{t("creds.endpointHint")}</p>
             </>}
             <label className="provider-dialog__field">
-              <span className="provider-dialog__label">API Key{preset === "custom" ? "（无需认证的服务可留空）" : ""}</span>
+              <span className="provider-dialog__label">API Key{preset === "custom" ? t("creds.apiKeyOptional") : ""}</span>
               <input
                 className="provider-dialog__input"
                 type="password"
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
-                placeholder="粘贴 API Key（保存后不再显示）"
+                placeholder={t("creds.apiKeyPlaceholder")}
                 disabled={saving}
                 autoFocus
               />
@@ -454,9 +463,9 @@ export function CredentialsDialog({ agents, onClose }: Props) {
           </div>}
         </div>
         <div className="project-dialog__actions">
-          {adding && <button type="button" className="project-dialog__cancel" disabled={busy} onClick={() => { setAdding(false); setApiKey(""); setError(""); }}>取消添加</button>}
+          {adding && <button type="button" className="project-dialog__cancel" disabled={busy} onClick={() => { setAdding(false); setApiKey(""); setError(""); }}>{t("creds.cancelAdd")}</button>}
           <button type="button" className="project-dialog__cancel" onClick={onClose} disabled={busy}>
-            关闭
+            {t("common.close")}
           </button>
           {adding && <button
             type="button"
@@ -464,7 +473,7 @@ export function CredentialsDialog({ agents, onClose }: Props) {
             disabled={busy}
             onClick={() => void handleAdd()}
           >
-            {saving ? "保存中…" : "保存 API"}
+            {saving ? t("creds.saving") : t("creds.saveApi")}
           </button>}
         </div>
     </DialogShell>

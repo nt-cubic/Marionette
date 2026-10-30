@@ -5,6 +5,7 @@ import { cachedCapabilitiesFor } from "../lib/capabilityCache";
 import { invalidateBridgeModels } from "../lib/bridge";
 import { configureSourceEnvironment, expandHiddenProviders, DEFAULT_MODEL_PREFERENCES, libraryGroups, ordered, refreshModelSources, rowHidden, rowKeys, saveModelPreferences, toggleRow, useModelLibrary, type LibraryGroup, type ModelLibraryPreferences } from "../lib/modelLibrary";
 import { splitModelMeta } from "../lib/modelMenu";
+import { useT } from "../lib/i18n";
 import type { AgentConfig } from "../lib/types";
 
 export function ModelLibraryDialog({ agents, onClose, onManageSources }: { agents: AgentConfig[]; onClose: () => void; onManageSources: () => void }) {
@@ -17,6 +18,7 @@ export function ModelLibraryDialog({ agents, onClose, onManageSources }: { agent
   const [dirty, setDirty] = useState(false);
   /** Groups the user opened or closed; unset groups follow the size rule. */
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const t = useT();
   useEffect(() => { if (!dirty) setDraft(preferences); }, [preferences, dirty]);
   async function refresh() {
     setBusy(true); setError("");
@@ -52,6 +54,9 @@ export function ModelLibraryDialog({ agents, onClose, onManageSources }: { agent
   }, [draft, groups]);
   const q = query.trim().toLowerCase();
   const filtered = groups.filter(g => !q || `${g.label} ${g.rows.map(r => `${r.label} ${r.modelId}`).join(" ")}`.toLowerCase().includes(q));
+  /** Backend warnings are generated per-locale at refresh time (engine.rs ts!):
+   * match either wording so the summary stays right after a language switch. */
+  const isRegisterFailedWarning = (w: string) => w.includes("注册失败") || w.includes("registration failed");
   const change = (next: ModelLibraryPreferences) => { setDraft(next); setDirty(true); };
   function move(keys: string[], key: string, delta: number): string[] {
     const next = keys.slice(); const from = next.indexOf(key); const to = from + delta;
@@ -69,18 +74,18 @@ export function ModelLibraryDialog({ agents, onClose, onManageSources }: { agent
   // reads as a hang. The fetch keeps running; a setState after unmount is a
   // harmless no-op in React 18.
   return <div className="project-dialog-backdrop" onClick={onClose}>
-    <div className="project-dialog model-library-dialog" role="dialog" aria-modal="true" aria-label="模型与来源" onClick={e => e.stopPropagation()}>
-      <div className="project-dialog__header model-library-dialog__header"><span>模型与来源</span><button type="button" className="pill-action pill-action--icon" aria-label="关闭" onClick={onClose}><X size={16} /></button></div>
+    <div className="project-dialog model-library-dialog" role="dialog" aria-modal="true" aria-label={t("models.dialogLabel")} onClick={e => e.stopPropagation()}>
+      <div className="project-dialog__header model-library-dialog__header"><span>{t("models.dialogLabel")}</span><button type="button" className="pill-action pill-action--icon" aria-label={t("common.close")} onClick={onClose}><X size={16} /></button></div>
       <div className="project-dialog__body model-library-dialog__body">
-        <p className="model-library-dialog__hint">勾选要显示的模型。同一接口和同一密钥下已配置的模型只列一次，标题注明发现位置。隐藏不会删除配置，也不影响已有会话。</p>
-        <div className="model-library-dialog__toolbar"><input type="search" placeholder="搜索来源或模型" aria-label="搜索来源或模型" value={query} onChange={e => setQuery(e.target.value)} /><button type="button" className="project-dialog__cancel" disabled={busy || dirty} title={dirty ? "请先保存显示设置" : "添加或管理来源"} onClick={onManageSources}>管理来源</button><button type="button" className="project-dialog__cancel" disabled={busy} aria-label="重新扫描" title="重新扫描" onClick={() => void refresh()}><RefreshCw size={14} /></button></div>
+        <p className="model-library-dialog__hint">{t("models.hint")}</p>
+        <div className="model-library-dialog__toolbar"><input type="search" placeholder={t("models.searchPlaceholder")} aria-label={t("models.searchPlaceholder")} value={query} onChange={e => setQuery(e.target.value)} /><button type="button" className="project-dialog__cancel" disabled={busy || dirty} title={dirty ? t("models.saveFirst") : t("models.manageSourcesTitle")} onClick={onManageSources}>{t("models.manageSources")}</button><button type="button" className="project-dialog__cancel" disabled={busy} aria-label={t("models.rescan")} title={t("models.rescan")} onClick={() => void refresh()}><RefreshCw size={14} /></button></div>
         {(error || loadError) && <p role="alert" className="model-library-dialog__error">{error || loadError}</p>}
         {warnings.length > 0 && <details className="model-library-dialog__warn">
-          <summary><span className="model-library-dialog__warn-dot" aria-hidden />{warnings.every(w => w.includes("注册失败")) ? `${warnings.length} 个来源注册失败` : `${warnings.length} 条来源提示`}<span className="model-library-dialog__warn-more">查看</span><button type="button" className="model-library-dialog__link" disabled={busy} onClick={e => { e.preventDefault(); e.stopPropagation(); void refresh(); }}>{busy ? "刷新中…" : "刷新重试"}</button></summary>
+          <summary><span className="model-library-dialog__warn-dot" aria-hidden />{warnings.every(isRegisterFailedWarning) ? t("models.sourcesFailed", { count: warnings.length }) : t("models.sourceNotices", { count: warnings.length })}<span className="model-library-dialog__warn-more">{t("models.view")}</span><button type="button" className="model-library-dialog__link" disabled={busy} onClick={e => { e.preventDefault(); e.stopPropagation(); void refresh(); }}>{busy ? t("creds.refreshing") : t("models.refreshRetry")}</button></summary>
           {warnings.map(w => <div key={w}>{w}</div>)}
         </details>}
         {catalog?.note && <p className="model-library-dialog__hint">{catalog.note}</p>}
-        {filtered.length === 0 && <p className="model-library-dialog__hint">{busy ? "正在读取模型目录…" : "没有匹配的模型。Agent 自带的模型会在首次连接后加入目录。"}</p>}
+        {filtered.length === 0 && <p className="model-library-dialog__hint">{busy ? t("models.readingCatalog") : t("models.noMatches")}</p>}
         {filtered.length > 0 && <div className="model-library-dialog__list">{filtered.map(group => {
           const source = sources.find(s => (aliases[`engine:${s.id}`] ?? `engine:${s.id}`) === group.key);
           const selected = group.rows.filter(r => !draft.hiddenProviders.includes(group.key) && !rowHidden(draft, r)).length;
@@ -100,7 +105,7 @@ export function ModelLibraryDialog({ agents, onClose, onManageSources }: { agent
           const restCount = rowsInScope.length - shownRows.length;
           return <section key={group.key} className={`model-library-dialog__group${hidden ? " is-hidden" : ""}`}>
             <div className="model-library-dialog__provider">
-              <button type="button" className="model-library-dialog__disclosure" aria-expanded={open} aria-label={open ? `收起 ${group.label}` : `展开 ${group.label}`} onClick={() => setExpanded(e => ({ ...e, [group.key]: !open }))}><ChevronRight size={14} className={open ? "is-open" : ""} /></button>
+              <button type="button" className="model-library-dialog__disclosure" aria-expanded={open} aria-label={open ? t("models.collapseSource", { name: group.label }) : t("models.expandSource", { name: group.label })} onClick={() => setExpanded(e => ({ ...e, [group.key]: !open }))}><ChevronRight size={14} className={open ? "is-open" : ""} /></button>
               <label><input type="checkbox" checked={group.rows.length > 0 && selected === group.rows.length} aria-checked={selected > 0 && selected < group.rows.length ? "mixed" : selected > 0} ref={el => { if (el) el.indeterminate = selected > 0 && selected < group.rows.length; }} disabled={!group.rows.length} onChange={e => {
                 const next = expandHiddenProviders(draft, groups);
                 // Group toggle works on current keys; stale pre-merge keys of a
@@ -112,10 +117,10 @@ export function ModelLibraryDialog({ agents, onClose, onManageSources }: { agent
                 {source && <span className="model-library-dialog__proto">{source.protocol}</span>}
                 {source && [...new Set(source.origins.map(o => o.split(" · ")[0]?.trim()).filter(Boolean))].map(agent => <span key={agent} className="model-library-dialog__agent">{agent}</span>)}
               </label>
-              <span className="model-library-dialog__count">{selected === group.rows.length ? `${group.rows.length} 个` : `${selected}/${group.rows.length}`}{group.key.startsWith("native:") ? ` · ${group.key.split(":")[1]}` : ""}</span>
+              <span className="model-library-dialog__count">{selected === group.rows.length ? t("models.countAll", { count: group.rows.length }) : `${selected}/${group.rows.length}`}{group.key.startsWith("native:") ? ` · ${group.key.split(":")[1]}` : ""}</span>
               <div className="model-library-dialog__order">
-                <button type="button" aria-label={`上移来源 ${group.label}`} disabled={index === 0} onClick={() => change({ ...draft, providerOrder: move(groups.map(g => g.key), group.key, -1) })}><ArrowUp size={14} /></button>
-                <button type="button" aria-label={`下移来源 ${group.label}`} disabled={index === groups.length - 1} onClick={() => change({ ...draft, providerOrder: move(groups.map(g => g.key), group.key, 1) })}><ArrowDown size={14} /></button>
+                <button type="button" aria-label={t("models.moveSourceUp", { name: group.label })} disabled={index === 0} onClick={() => change({ ...draft, providerOrder: move(groups.map(g => g.key), group.key, -1) })}><ArrowUp size={14} /></button>
+                <button type="button" aria-label={t("models.moveSourceDown", { name: group.label })} disabled={index === groups.length - 1} onClick={() => change({ ...draft, providerOrder: move(groups.map(g => g.key), group.key, 1) })}><ArrowDown size={14} /></button>
               </div>
             </div>
             {open && source && <div className="model-library-dialog__origin" title={[source.endpoint, ...source.origins].join("\n")}><span>{source.endpoint}</span><span className="model-library-dialog__origin-files">{source.origins.map(o => o.split(" · ").slice(1).join(" · ").split(/[\\/]/).pop()).join(" · ")}</span></div>}
@@ -126,16 +131,16 @@ export function ModelLibraryDialog({ agents, onClose, onManageSources }: { agent
               return <div className="model-library-dialog__model" key={row.key}>
                 <label><input type="checkbox" checked={!draft.hiddenProviders.includes(group.key) && !rowHidden(draft, row)} onChange={() => { const next = expandHiddenProviders(draft, groups); change(toggleRow(next, row)); }} />{(() => { const { name, meta } = splitModelMeta(rowLabel(group.label, row.label, row.modelId)); return <span className="model-library-dialog__name" title={row.modelId}>{name}{meta && <em>{meta}</em>}</span>; })()}<small>{row.modelId}</small></label>
                 <div className="model-library-dialog__order">
-                  <button type="button" aria-label={`上移模型 ${row.label}`} disabled={rowIndex === 0} onClick={() => reorder(-1)}><ArrowUp size={13} /></button>
-                  <button type="button" aria-label={`下移模型 ${row.label}`} disabled={rowIndex === group.rows.length - 1} onClick={() => reorder(1)}><ArrowDown size={13} /></button>
+                  <button type="button" aria-label={t("models.moveModelUp", { name: row.label })} disabled={rowIndex === 0} onClick={() => reorder(-1)}><ArrowUp size={13} /></button>
+                  <button type="button" aria-label={t("models.moveModelDown", { name: row.label })} disabled={rowIndex === group.rows.length - 1} onClick={() => reorder(1)}><ArrowDown size={13} /></button>
                 </div>
               </div>;
             })}</div>}
-            {!open && restCount > 0 && <button type="button" className="model-library-dialog__more" onClick={() => setExpanded(e => ({ ...e, [group.key]: true }))}>显示全部 {rowsInScope.length} 个模型…</button>}
+            {!open && restCount > 0 && <button type="button" className="model-library-dialog__more" onClick={() => setExpanded(e => ({ ...e, [group.key]: true }))}>{t("models.showAll", { count: rowsInScope.length })}</button>}
           </section>;
         })}</div>}
       </div>
-      <div className="project-dialog__actions"><button type="button" className="project-dialog__cancel" disabled={busy} onClick={() => change(DEFAULT_MODEL_PREFERENCES)}>恢复全部显示与默认顺序</button><button type="button" className="project-dialog__cancel" onClick={onClose}>取消</button><button type="button" className="project-dialog__submit" disabled={busy} onClick={() => void save()}>保存</button></div>
+      <div className="project-dialog__actions"><button type="button" className="project-dialog__cancel" disabled={busy} onClick={() => change(DEFAULT_MODEL_PREFERENCES)}>{t("models.resetAll")}</button><button type="button" className="project-dialog__cancel" onClick={onClose}>{t("common.cancel")}</button><button type="button" className="project-dialog__submit" disabled={busy} onClick={() => void save()}>{t("common.save")}</button></div>
     </div>
   </div>;
 }
@@ -165,6 +170,7 @@ function SourceEnvironmentInput({ sourceId, name, onSaved }: { sourceId: string;
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const t = useT();
   async function save() {
     setBusy(true); setError("");
     try { await configureSourceEnvironment(sourceId, name, value); setValue(""); await onSaved(); }
@@ -172,9 +178,9 @@ function SourceEnvironmentInput({ sourceId, name, onSaved }: { sourceId: string;
     finally { setBusy(false); }
   }
   return <div className="model-library-dialog__environment">
-    <label>{name}<input type="password" autoComplete="new-password" aria-label={`环境变量 ${name}`} placeholder="填写变量值" value={value} disabled={busy} onChange={e => setValue(e.target.value)} /></label>
-    <button type="button" className="project-dialog__cancel" disabled={busy || !value.trim()} onClick={() => void save()}>{busy ? "保存中…" : "保存并应用"}</button>
-    <small>保存到 Windows 用户环境变量，立即刷新来源；已运行的 agent 需重新连接。</small>
+    <label>{name}<input type="password" autoComplete="new-password" aria-label={t("models.envVar", { name })} placeholder={t("models.envVarPlaceholder")} value={value} disabled={busy} onChange={e => setValue(e.target.value)} /></label>
+    <button type="button" className="project-dialog__cancel" disabled={busy || !value.trim()} onClick={() => void save()}>{busy ? t("creds.saving") : t("models.saveAndApply")}</button>
+    <small>{t("models.envVarNote")}</small>
     {error && <div role="alert" className="model-library-dialog__error">{error}</div>}
   </div>;
 }

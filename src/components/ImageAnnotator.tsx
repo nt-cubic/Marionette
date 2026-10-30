@@ -7,6 +7,7 @@ import {
   type ImageMark,
 } from "../lib/imageAttachments";
 import { isTauriRuntime, readImageDataUrl } from "../lib/api";
+import { useT } from "../lib/i18n";
 import { DialogShell } from "./DialogShell";
 
 type Props = {
@@ -26,6 +27,7 @@ type DragState = {
  * Full-screen image annotator: click = point, drag = rect, then write a comment.
  */
 export function ImageAnnotator({ attachment, onClose, onSave }: Props) {
+  const t = useT();
   const [dataUrl, setDataUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [marks, setMarks] = useState<ImageMark[]>(attachment.marks);
@@ -162,7 +164,7 @@ export function ImageAnnotator({ attachment, onClose, onSave }: Props) {
         <div className="image-annotator__header">
           <div>
             <strong id="image-annotator-title">{attachment.name}</strong>
-            <span>单击打点 · 拖拽框选 · 写评论</span>
+            <span>{t("annotator.hint")}</span>
           </div>
           <button
             type="button"
@@ -259,14 +261,14 @@ export function ImageAnnotator({ attachment, onClose, onSave }: Props) {
               <div className="image-annotator__compose">
                 <div className="image-annotator__compose-meta">
                   {pending.kind === "point"
-                    ? `点 (${pending.nx.toFixed(2)}, ${pending.ny.toFixed(2)})`
-                    : `框 ${pending.nw.toFixed(2)}×${pending.nh.toFixed(2)}`}
+                    ? t("annotator.pendingPoint", { x: pending.nx.toFixed(2), y: pending.ny.toFixed(2) })
+                    : t("annotator.pendingRect", { w: pending.nw.toFixed(2), h: pending.nh.toFixed(2)})}
                 </div>
                 <input
                   ref={commentRef}
                   className="image-annotator__comment-input"
                   value={comment}
-                  placeholder="写评论，回车确认…"
+                  placeholder={t("annotator.commentPlaceholder")}
                   onChange={(e) => setComment(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Escape") {
@@ -289,7 +291,7 @@ export function ImageAnnotator({ attachment, onClose, onSave }: Props) {
                       setComment("");
                     }}
                   >
-                    取消
+                    {t("common.cancel")}
                   </button>
                   <button
                     type="button"
@@ -297,31 +299,31 @@ export function ImageAnnotator({ attachment, onClose, onSave }: Props) {
                     disabled={!comment.trim()}
                     onClick={commitPending}
                   >
-                    添加
+                    {t("annotator.add")}
                   </button>
                 </div>
               </div>
             ) : (
               <p className="image-annotator__hint">
-                在图上单击打点，或拖拽框选区域，然后写评论。
+                {t("annotator.emptyHint")}
               </p>
             )}
 
-            <div className="image-annotator__list-title">批注 ({marks.length})</div>
+            <div className="image-annotator__list-title">{t("annotator.listTitle", { count: marks.length })}</div>
             {marks.length === 0 ? (
-              <p className="image-annotator__muted">还没有批注</p>
+              <p className="image-annotator__muted">{t("annotator.noMarks")}</p>
             ) : (
               <ul className="image-annotator__list">
                 {marks.map((m, i) => (
                   <li key={m.id}>
                     <span className="image-annotator__list-n">{i + 1}</span>
                     <span className="image-annotator__list-text">
-                      <strong>{m.kind === "point" ? "点" : "框"}</strong> {m.comment}
+                      <strong>{m.kind === "point" ? t("annotator.point") : t("annotator.rect")}</strong> {m.comment}
                     </span>
                     <button
                       type="button"
                       className="image-annotator__list-del"
-                      title="删除"
+                      title={t("common.delete")}
                       onClick={() => removeMark(m.id)}
                     >
                       ✕
@@ -335,7 +337,7 @@ export function ImageAnnotator({ attachment, onClose, onSave }: Props) {
 
         <div className="image-annotator__footer">
           <button type="button" className="project-dialog__cancel" onClick={onClose}>
-            取消
+            {t("common.cancel")}
           </button>
           <button
             type="button"
@@ -345,7 +347,7 @@ export function ImageAnnotator({ attachment, onClose, onSave }: Props) {
               onClose();
             }}
           >
-            完成
+            {t("annotator.done")}
           </button>
         </div>
     </DialogShell>

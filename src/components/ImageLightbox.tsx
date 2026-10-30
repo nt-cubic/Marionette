@@ -7,6 +7,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
+import { useT } from "../lib/i18n";
 
 type ImageLightboxProps = {
   src: string;
@@ -32,6 +33,7 @@ export function ImageLightbox({
   onClose,
   onContextMenu,
 }: ImageLightboxProps) {
+  const t = useT();
   const [scale, setScale] = useState(1);
   const [tx, setTx] = useState(0);
   const [ty, setTy] = useState(0);
@@ -106,14 +108,14 @@ export function ImageLightbox({
       className="image-lightbox"
       role="dialog"
       aria-modal="true"
-      aria-label={alt || caption || "图片"}
+      aria-label={alt || caption || t("lightbox.image")}
       onClick={onClose}
     >
       <button
         type="button"
         className="image-lightbox__close"
-        title="关闭"
-        aria-label="关闭"
+        title={t("common.close")}
+        aria-label={t("common.close")}
         onClick={(event) => {
           event.stopPropagation();
           onClose();
@@ -145,7 +147,7 @@ export function ImageLightbox({
       </div>
       <p className="image-lightbox__hint" onClick={(event) => event.stopPropagation()}>
         {caption ? <span className="image-lightbox__caption">{caption}</span> : null}
-        <span>拖动移动 · 滚轮缩放 · Esc 关闭</span>
+        <span>{t("lightbox.hint")}</span>
       </p>
     </div>,
     document.body,

@@ -162,7 +162,7 @@ pub fn load() -> MemoryStore {
 
 pub fn save(store: &MemoryStore) -> Result<(), String> {
     store_path()
-        .ok_or_else(|| "无法定位用户目录（USERPROFILE/HOME 均缺失）".to_string())
+        .ok_or_else(|| crate::ts!("无法定位用户目录（USERPROFILE/HOME 均缺失）", "Could not locate the user directory (neither USERPROFILE nor HOME is set)"))
         .and_then(|p| save_at(&p, store))
 }
 
@@ -209,7 +209,7 @@ pub fn compose_card_from(store: &MemoryStore) -> Option<String> {
             entry.text.trim()
         );
         if body.len() + section.len() + 24 > 6000 {
-            body.push_str("\n（记忆过长，其余条目已截断）\n");
+            body.push_str(&crate::ts!("\n（记忆过长，其余条目已截断）\n", "\n(Memory too long; remaining entries truncated)\n"));
             break;
         }
         body.push_str(&section);
@@ -250,6 +250,15 @@ struct ImportSpec {
     source: &'static str,
     title: &'static str,
     rel_paths: &'static [&'static str],
+}
+
+/// Import section titles are user-visible; the const table carries zh (const
+/// contexts can't call ts!), so localize at the copy points (2026-10-30 i18n).
+fn import_title(title: &str) -> String {
+    match title {
+        "Codex 记忆" => crate::ts!("Codex 记忆", "Codex memory"),
+        other => other.to_string(),
+    }
 }
 
 const IMPORT_SPECS: &[ImportSpec] = &[
@@ -398,7 +407,7 @@ fn scan_claude_auto(home: &Path) -> Vec<ScanHit> {
         };
         hits.push(ScanHit {
             source: "claude-auto",
-            title: format!("Claude 记忆 · {}", pretty_project_slug(&slug)),
+            title: crate::ts!("Claude 记忆 · {}", "Claude memory · {}", pretty_project_slug(&slug)),
             path: memory_dir.display().to_string(),
             stable_id: format!("import-claude-auto-{slug}"),
             bytes: text.len() as u64,
@@ -416,7 +425,7 @@ fn scan_imports_at(home: &Path) -> Vec<ScanHit> {
         .filter_map(|spec| {
             read_first_content(home, spec.rel_paths).map(|(path, bytes, mtime_ms, text)| ScanHit {
                 source: spec.source,
-                title: spec.title.to_string(),
+                title: import_title(spec.title),
                 path: path.display().to_string(),
                 stable_id: format!("import-{}", spec.source),
                 bytes,
@@ -447,7 +456,7 @@ fn preview_rows(home: &Path, hits: &[ScanHit]) -> Vec<ImportSource> {
         let hit = hits.iter().find(|h| h.source == spec.source);
         out.push(ImportSource {
             source: spec.source.to_string(),
-            title: spec.title.to_string(),
+            title: import_title(spec.title),
             path: hit
                 .map(|h| h.path.clone())
                 .unwrap_or_else(|| home.join(spec.rel_paths[0]).display().to_string()),
@@ -625,7 +634,7 @@ pub fn distill_with_deepseek(digest: &str) -> Result<String, String> {
         .filter(|k| !k.trim().is_empty())
         .or_else(|| crate::provider_usage::peek_provider_key("deepseek"))
         .ok_or_else(|| {
-            "没有可用的 DEEPSEEK_API_KEY（Provider keys / OpenCode auth.json / 环境变量）".to_string()
+            crate::ts!("没有可用的 DEEPSEEK_API_KEY（Provider keys / OpenCode auth.json / 环境变量）", "No DEEPSEEK_API_KEY available (Provider keys / OpenCode auth.json / environment variables)")
         })?;
     let agent = crate::http_client::agent()?;
     // 手工序列化 + send_string：不依赖 ureq 的 "json" feature（get_json 也是
@@ -649,17 +658,17 @@ pub fn distill_with_deepseek(digest: &str) -> Result<String, String> {
         .set("Content-Type", "application/json")
         .timeout(std::time::Duration::from_secs(60))
         .send_string(&body)
-        .map_err(|e| format!("DeepSeek 请求失败: {e}"))?;
+        .map_err(|e| crate::ts!("DeepSeek 请求失败: {e}", "DeepSeek request failed: {e}"))?;
     let status = resp.status();
     let text = resp
         .into_string()
-        .map_err(|e| format!("读取 DeepSeek 应答失败: {e}"))?;
+        .map_err(|e| crate::ts!("读取 DeepSeek 应答失败: {e}", "Failed to read the DeepSeek response: {e}"))?;
     if !(200..300).contains(&status) {
         let head: String = text.chars().take(200).collect();
-        return Err(format!("DeepSeek 返回 {status}: {head}"));
+        return Err(crate::ts!("DeepSeek 返回 {status}: {head}", "DeepSeek returned {status}: {head}"));
     }
     let body: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("解析 DeepSeek 应答失败: {e}"))?;
+        serde_json::from_str(&text).map_err(|e| crate::ts!("解析 DeepSeek 应答失败: {e}", "Failed to parse the DeepSeek response: {e}"))?;
     let content = body
         .pointer("/choices/0/message/content")
         .and_then(|c| c.as_str())
@@ -667,7 +676,7 @@ pub fn distill_with_deepseek(digest: &str) -> Result<String, String> {
         .trim()
         .to_string();
     if content.is_empty() {
-        return Err("DeepSeek 返回了空内容".into());
+        return Err(crate::ts!("DeepSeek 返回了空内容", "DeepSeek returned empty content"));
     }
     Ok(content)
 }

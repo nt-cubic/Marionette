@@ -59,13 +59,13 @@ pub struct Source {
 pub fn check_source(id: &str) -> Value {
     let result = |state: &str, detail: &str| serde_json::json!({ "state": state, "detail": detail });
     let Some(source) = discover().sources.into_iter().find(|source| source.view.id == id) else {
-        return result("配置已变化", "请重新扫描");
+        return result(&crate::ts!("配置已变化", "Configuration changed"), &crate::ts!("请重新扫描", "Re-scan required"));
     };
     if let Some(issue) = &source.view.issue {
-        return result("配置待处理", issue);
+        return result(&crate::ts!("配置待处理", "Configuration needs attention"), issue);
     }
     let Ok(connector) = ureq::native_tls::TlsConnector::new() else {
-        return result("检测失败", "无法初始化 TLS");
+        return result(&crate::ts!("检测失败", "Check failed"), &crate::ts!("无法初始化 TLS", "Could not initialize TLS"));
     };
     let mut builder = ureq::AgentBuilder::new()
         .tls_connector(std::sync::Arc::new(connector))
@@ -74,7 +74,7 @@ pub fn check_source(id: &str) -> Value {
     let config = crate::proxy::load_proxy_config();
     if config.enabled && !config.url.trim().is_empty() {
         let Ok(proxy) = ureq::Proxy::new(config.url.trim()) else {
-            return result("配置待处理", "代理地址无效");
+            return result(&crate::ts!("配置待处理", "Configuration needs attention"), &crate::ts!("代理地址无效", "Invalid proxy URL"));
         };
         builder = builder.proxy(proxy);
     }
@@ -97,15 +97,15 @@ pub fn check_source(id: &str) -> Value {
             // Bound the body and require a catalogue, since a login HTML page can also be HTTP 200.
             let body: Result<Value, _> = serde_json::from_reader(std::io::Read::take(response.into_reader(), 1024 * 1024));
             if body.as_ref().ok().is_some_and(|body| body.get("data").is_some_and(Value::is_array) || body.get("models").is_some_and(Value::is_array)) {
-                result(&format!("已连接 · {} ms", started.elapsed().as_millis()), "模型目录可访问；实际调用还取决于模型权限和余额")
+                result(&crate::ts!("已连接 · {ms} ms", "Connected · {ms} ms", ms = started.elapsed().as_millis()), &crate::ts!("模型目录可访问；实际调用还取决于模型权限和余额", "Model catalogue reachable; actual calls still depend on model permissions and balance"))
             } else {
-                result("待确认", "接口有响应，但未返回模型目录")
+                result(&crate::ts!("待确认", "Needs confirmation"), &crate::ts!("接口有响应，但未返回模型目录", "Endpoint responded but returned no model catalogue"))
             }
         }
-        Err(ureq::Error::Status(401 | 403, _)) => result("认证受限", "请检查密钥和访问权限"),
-        Err(ureq::Error::Status(404 | 405, _)) => result("待确认", "服务不支持模型目录检测，可尝试实际调用"),
-        Err(ureq::Error::Status(status, _)) => result("检测失败", &format!("HTTP {status}")),
-        Err(_) => result("连接失败", "连接超时或网络、TLS 异常"),
+        Err(ureq::Error::Status(401 | 403, _)) => result(&crate::ts!("认证受限", "Auth limited"), &crate::ts!("请检查密钥和访问权限", "Check the API key and access permissions")),
+        Err(ureq::Error::Status(404 | 405, _)) => result(&crate::ts!("待确认", "Needs confirmation"), &crate::ts!("服务不支持模型目录检测，可尝试实际调用", "Service does not support catalogue probing; try an actual call")),
+        Err(ureq::Error::Status(status, _)) => result(&crate::ts!("检测失败", "Check failed"), &format!("HTTP {status}")),
+        Err(_) => result(&crate::ts!("连接失败", "Connection failed"), &crate::ts!("连接超时或网络、TLS 异常", "Timed out or a network/TLS error")),
     }
 }
 
@@ -176,14 +176,14 @@ fn env_reference(raw: &str) -> Option<&str> {
 fn resolve(raw: &str) -> Result<String, String> {
     let raw = raw.trim();
     if raw.starts_with('!') {
-        return Err("认证使用命令，请在原配置中改用环境变量以共享".into());
+        return Err(crate::ts!("认证使用命令，请在原配置中改用环境变量以共享", "Authentication uses a command; switch it to an environment variable in the original config to share"));
     }
     let name = env_reference(raw);
     if let Some(name) = name {
         return std::env::var(name)
             .ok()
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| format!("环境变量 {name} 不可用，请在下方填写并保存"));
+            .ok_or_else(|| crate::ts!("环境变量 {name} 不可用，请在下方填写并保存", "Environment variable {name} is unavailable; fill it in below and save"));
     }
     Ok(raw.into())
 }
@@ -194,7 +194,7 @@ impl Discovery {
             self.paths.push(ScanPath {
                 path: path.display().to_string(),
                 status: "missing".into(),
-                detail: "文件不存在".into(),
+                detail: crate::ts!("文件不存在", "File not found"),
             });
             return None;
         }
@@ -213,7 +213,7 @@ impl Discovery {
                 self.paths.push(ScanPath {
                     path: path.display().to_string(),
                     status: "found".into(),
-                    detail: "已读取配置".into(),
+                    detail: crate::ts!("已读取配置", "Config loaded"),
                 });
                 Some(v)
             }
@@ -221,10 +221,10 @@ impl Discovery {
                 self.paths.push(ScanPath {
                     path: path.display().to_string(),
                     status: "error".into(),
-                    detail: "文件存在，但读取或解析失败".into(),
+                    detail: crate::ts!("文件存在，但读取或解析失败", "File exists but could not be read or parsed"),
                 });
                 self.warnings
-                    .push(format!("无法读取配置：{}", path.display()));
+                    .push(crate::ts!("无法读取配置：{path}", "Could not read config: {path}", path = path.display()));
                 None
             }
         }
@@ -259,9 +259,10 @@ impl Discovery {
             || endpoint.contains('?')
             || !(endpoint.starts_with("http://") || endpoint.starts_with("https://"))
         {
-            self.warnings.push(format!(
-                "{} 的 {route} 接口地址需要使用独立认证字段",
-                path.display()
+            self.warnings.push(crate::ts!(
+                "{path} 的 {route} 接口地址需要使用独立认证字段",
+                "The {route} endpoint in {path} must use the separate auth field",
+                path = path.display()
             ));
             return;
         }
@@ -283,7 +284,7 @@ impl Discovery {
             };
             fs::read_to_string(file)
                 .map(|s| s.trim().to_string())
-                .map_err(|_| "无法读取原配置引用的密钥文件".to_string())
+                .map_err(|_| crate::ts!("无法读取原配置引用的密钥文件", "Could not read the key file referenced by the original config"))
         } else {
             resolve(auth)
         };
@@ -319,7 +320,7 @@ impl Discovery {
             && !authority.starts_with("127.0.0.1")
             && !authority.starts_with("[::1]")
         {
-            issue = Some("未找到可共享的 API key 或环境变量引用".into());
+            issue = Some(crate::ts!("未找到可共享的 API key 或环境变量引用", "No shareable API key or environment variable reference found"));
         }
         let origin = format!("{agent} · {}#{route}", path.display());
         let index = if let Some(i) = self.sources.iter().position(|s| {
@@ -534,7 +535,7 @@ fn discover_at(home: &Path, use_environment: bool) -> Discovery {
                 {
                     source.view.label = entry.label.clone();
                     source.view.issue = if entry.secret.is_some() && key.is_none() {
-                        Some("无法解密此来源的 API key".into())
+                        Some(crate::ts!("无法解密此来源的 API key", "Could not decrypt this source's API key"))
                     } else {
                         None
                     };
@@ -568,7 +569,7 @@ fn discover_at(home: &Path, use_environment: bool) -> Discovery {
                     "anthropic" | "messages" => "anthropic",
                     _ => {
                         out.warnings
-                            .push(format!("Grok 模型 {alias} 的协议 {backend} 暂未接入共享"));
+                            .push(crate::ts!("Grok 模型 {alias} 的协议 {backend} 暂未接入共享", "Protocol {backend} of Grok model {alias} is not yet supported for sharing"));
                         continue;
                     }
                 };
@@ -621,7 +622,7 @@ fn discover_at(home: &Path, use_environment: bool) -> Discovery {
                         "anthropic-messages" => "anthropic",
                         _ => {
                             out.warnings
-                                .push(format!("Pi provider {name} 的协议 {api} 暂未接入共享"));
+                                .push(crate::ts!("Pi provider {name} 的协议 {api} 暂未接入共享", "Protocol {api} of Pi provider {name} is not yet supported for sharing"));
                             continue;
                         }
                     };
@@ -692,8 +693,9 @@ fn discover_at(home: &Path, use_environment: bool) -> Discovery {
                         "@ai-sdk/openai" => "responses",
                         "" | "@ai-sdk/openai-compatible" => "chat",
                         _ => {
-                            out.warnings.push(format!(
-                                "OpenCode provider {name} 的 SDK {npm} 暂未接入共享"
+                            out.warnings.push(crate::ts!(
+                                "OpenCode provider {name} 的 SDK {npm} 暂未接入共享",
+                                "SDK {npm} of OpenCode provider {name} is not yet supported for sharing"
                             ));
                             continue;
                         }
@@ -931,9 +933,9 @@ fn prefs_path() -> Result<PathBuf, String> {
 pub fn load_preferences() -> Result<Value, String> {
     let path = prefs_path()?;
     match fs::read_to_string(path) {
-        Ok(s) => serde_json::from_str(&s).map_err(|_| "模型显示设置损坏，请恢复默认后保存".into()),
+        Ok(s) => serde_json::from_str(&s).map_err(|_| crate::ts!("模型显示设置损坏，请恢复默认后保存", "Model display preferences are corrupted; restore defaults and save again")),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::json!({})),
-        Err(e) => Err(format!("读取模型显示设置失败：{e}")),
+        Err(e) => Err(crate::ts!("读取模型显示设置失败：{e}", "Failed to read model display preferences: {e}")),
     }
 }
 
@@ -941,9 +943,9 @@ pub fn save_preferences(preferences: Value) -> Result<(), String> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = LOCK
         .lock()
-        .map_err(|_| "模型显示设置正在保存".to_string())?;
+        .map_err(|_| crate::ts!("模型显示设置正在保存", "Model display preferences are being saved"))?;
     if !preferences.is_object() {
-        return Err("模型显示设置格式无效".into());
+        return Err(crate::ts!("模型显示设置格式无效", "Invalid model display preferences format"));
     }
     let path = prefs_path()?;
     let temp = path.with_extension("json.tmp");
@@ -955,7 +957,7 @@ pub fn save_preferences(preferences: Value) -> Result<(), String> {
         serde_json::to_vec_pretty(&preferences).map_err(|e| e.to_string())?,
     )
     .and_then(|_| fs::rename(temp, path))
-    .map_err(|e| format!("保存模型显示设置失败：{e}"))
+    .map_err(|e| crate::ts!("保存模型显示设置失败：{e}", "Failed to save model display preferences: {e}"))
 }
 
 fn clean_jsonc(input: &str) -> String {
@@ -1231,19 +1233,19 @@ env_key = "MARIONETTE_TEST_DEEPSEEK_KEY"
 /// Save only an unresolved credential reference advertised by discovery.
 pub fn set_environment(source_id: &str, name: &str, value: &str) -> Result<(), String> {
     if name.is_empty() || !name.bytes().enumerate().all(|(i, b)| b.is_ascii_alphabetic() || b == b'_' || (i > 0 && b.is_ascii_digit())) {
-        return Err("环境变量名称无效".into());
+        return Err(crate::ts!("环境变量名称无效", "Invalid environment variable name"));
     }
     if value.trim().is_empty() || value.contains('\0') {
-        return Err("请输入有效的环境变量值".into());
+        return Err(crate::ts!("请输入有效的环境变量值", "Enter a valid environment variable value"));
     }
     let discovery = discover();
     if !discovery.sources.iter().any(|source| source.view.id == source_id && source.view.missing_env.iter().any(|n| n == name)) {
-        return Err("该来源不再缺少此环境变量，请重新扫描".into());
+        return Err(crate::ts!("该来源不再缺少此环境变量，请重新扫描", "This source no longer misses that environment variable; re-scan"));
     }
     #[cfg(windows)]
     {
         crate::shell_integration::reg_set_string("Environment", Some(name), value)
-            .map_err(|_| "无法保存 Windows 用户环境变量".to_string())?;
+            .map_err(|_| crate::ts!("无法保存 Windows 用户环境变量", "Could not save the Windows user environment variable"))?;
         std::env::set_var(name, value);
         // Notify Explorer so subsequently launched applications inherit it.
         use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE};
@@ -1252,5 +1254,5 @@ pub fn set_environment(source_id: &str, name: &str, value: &str) -> Result<(), S
         Ok(())
     }
     #[cfg(not(windows))]
-    Err("此功能目前仅支持 Windows 用户环境变量".into())
+    Err(crate::ts!("此功能目前仅支持 Windows 用户环境变量", "This feature currently supports only Windows user environment variables"))
 }

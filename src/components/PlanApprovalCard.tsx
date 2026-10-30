@@ -3,6 +3,7 @@ import { useCallback, useRef, useState } from "react";
 import type { PlanApprovalDecision } from "../lib/api";
 import { permissionOptionTone } from "../lib/permissionPlan";
 import { MarkdownBody } from "./MarkdownBody";
+import { useT } from "../lib/i18n";
 import type { PermissionOption } from "./PermissionDialog";
 
 export type PlanApprovalPrompt = {
@@ -40,6 +41,7 @@ export function PlanApprovalCard({
   const [changesOpen, setChangesOpen] = useState(false);
   const [feedback, setFeedback] = useState("");
   const inFlight = useRef(false);
+  const t = useT();
 
   const plan = prompt.planMarkdown.trim();
   const locked = busy || submitting;
@@ -77,11 +79,11 @@ export function PlanApprovalCard({
       <div className="plan-approval-card__header">
         <ListTodo size={16} aria-hidden />
         <div>
-          <strong>{prompt.title?.trim() || "计划待批准"}</strong>
+          <strong>{prompt.title?.trim() || t("plan.pendingTitle")}</strong>
           <span>
             {isPermission
-              ? "在卡片上选择如何继续 · 输入框已收起"
-              : "批准后开始执行；要求修改则继续规划 · 输入框已收起"}
+              ? t("plan.permissionHint")
+              : t("plan.hint")}
           </span>
         </div>
       </div>
@@ -92,7 +94,7 @@ export function PlanApprovalCard({
         </div>
       ) : (
         <p className="plan-approval-card__empty">
-          计划正文未随请求附带（Grok 常在批准后再读 plan.md）。可在右侧任务栏查看步骤，或直接批准。
+          {t("plan.emptyWithTip")}
         </p>
       )}
 
@@ -119,7 +121,7 @@ export function PlanApprovalCard({
             className="plan-approval-card__textarea"
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
-            placeholder="说明要改什么…"
+            placeholder={t("plan.changesPlaceholder")}
             disabled={locked}
             rows={3}
             autoFocus
@@ -131,7 +133,7 @@ export function PlanApprovalCard({
               disabled={locked}
               onClick={() => setChangesOpen(false)}
             >
-              取消
+              {t("common.cancel")}
             </button>
             <button
               type="button"
@@ -140,7 +142,7 @@ export function PlanApprovalCard({
               onClick={() => void run("request_changes", feedback.trim())}
             >
               {submitting && <Loader2 size={14} className="spin" aria-hidden />}
-              发送修改意见
+              {t("plan.sendFeedback")}
             </button>
           </div>
         </div>
@@ -153,7 +155,7 @@ export function PlanApprovalCard({
             onClick={() => void run("approve")}
           >
             {submitting && <Loader2 size={14} className="spin" aria-hidden />}
-            批准并执行
+            {t("plan.approveAndRun")}
           </button>
           <button
             type="button"
@@ -161,7 +163,7 @@ export function PlanApprovalCard({
             disabled={locked}
             onClick={() => setChangesOpen(true)}
           >
-            要求修改
+            {t("plan.requestChanges")}
           </button>
           <button
             type="button"
@@ -169,13 +171,13 @@ export function PlanApprovalCard({
             disabled={locked}
             onClick={() => void run("abandon")}
           >
-            放弃计划
+            {t("plan.abandon")}
           </button>
         </div>
       )}
 
       {error && (
-        <p className="plan-approval-card__error">提交失败，请重试：{error}</p>
+        <p className="plan-approval-card__error">{t("plan.submitFailed")}{error}</p>
       )}
     </div>
   );

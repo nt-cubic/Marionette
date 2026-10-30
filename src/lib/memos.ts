@@ -8,6 +8,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime } from "./api";
+import { t } from "./i18n";
 
 export type MemoKind = "file" | "text" | "image" | "link";
 
@@ -71,9 +72,9 @@ export function formatMemoAge(createdAt: string, now = Date.now()): string {
   const ms = Number(createdAt);
   if (!Number.isFinite(ms) || ms <= 0) return "";
   const diff = now - ms;
-  if (diff < 60_000) return "刚刚";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
+  if (diff < 60_000) return t("memo.justNow");
+  if (diff < 3_600_000) return t("common.minutesAgo", { n: Math.floor(diff / 60_000) });
+  if (diff < 86_400_000) return t("common.hoursAgo", { n: Math.floor(diff / 3_600_000) });
   const date = new Date(ms);
   const today = new Date(now);
   const sameYear = date.getFullYear() === today.getFullYear();
@@ -125,12 +126,12 @@ function localDayLabel(ms: number, now: number): string {
   const startToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
   const startThat = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
   const diffDays = Math.round((startToday - startThat) / 86_400_000);
-  if (diffDays === 0) return "今天";
-  if (diffDays === 1) return "昨天";
+  if (diffDays === 0) return t("common.today");
+  if (diffDays === 1) return t("common.yesterday");
   if (date.getFullYear() === today.getFullYear()) {
-    return `${date.getMonth() + 1}月${date.getDate()}日`;
+    return t("memo.shortDate", { m: date.getMonth() + 1, d: date.getDate() });
   }
-  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
+  return t("memo.fullDate", { y: date.getFullYear(), m: date.getMonth() + 1, d: date.getDate() });
 }
 
 /**
@@ -164,22 +165,25 @@ export function groupMemosByDay(entries: MemoEntry[], now = Date.now()): MemoDay
  */
 export function memoPrompt(entries: MemoEntry[], intent: "dialog" | "doc"): string {
   const lines = entries.map((entry) => {
-    if (entry.kind === "link") return `- 链接：${entry.title} ${entry.content ?? ""}`.trimEnd();
+    if (entry.kind === "link")
+      return t("memo.composerLink", { title: entry.title, content: entry.content ?? "" }).trimEnd();
     if (entry.kind === "text") {
       const body = (entry.content ?? entry.title).trim().replace(/\n/g, "\n  > ");
-      return `- 摘录：\n  > ${body}`;
+      return t("memo.composerExcerpt", { body });
     }
-    return `- ${entry.kind === "image" ? "图片" : "文件"}：${entry.path ?? entry.title}`;
+    return entry.kind === "image"
+      ? t("memo.composerImage", { path: entry.path ?? entry.title })
+      : t("memo.composerFile", { path: entry.path ?? entry.title });
   });
   const list = lines.join("\n");
   if (intent === "doc") {
     const date = new Date().toISOString().slice(0, 10);
     return [
-      `把下面 ${entries.length} 条收纳盒材料整理成一篇笔记：按主题分节，每节先给结论再列出处；链接保留原 URL，文件按需读取。`,
-      `存到项目的 docs/notes/${date}-<主题>.md，写完告诉我文件路径。`,
+      t("memo.docPrompt", { count: entries.length }),
+      t("memo.docPromptSave", { date }),
       "",
       list,
     ].join("\n");
   }
-  return [`参考下面 ${entries.length} 条材料：`, "", list, "", ""].join("\n");
+  return [t("memo.dialogPrompt", { count: entries.length }), "", list, "", ""].join("\n");
 }

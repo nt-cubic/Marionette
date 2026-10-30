@@ -16,6 +16,8 @@
 | `smoke-stream-merge.mts` | `npx tsx scripts/smoke-stream-merge.mts` | 流式合并：Grok Reply 逐 token、Codex Thought 不丢标点、多会话交错不串台；notice/retry 不进聊天；OpenCode v2 子代理流进 Task 卡不进 Reply；OpenCode write 从 `rawInput.content` 合成 diff 并在 success note 后保留；逐字数字 `1000` 与重复字不丢；Grok `spawn_subagent` + `_x.ai/session/update` 收进并行子代理卡 |
 | `verify-memo-box.mts` | `npx tsx scripts/verify-memo-box.mts` | 收纳盒：origin `memo` 的 Chat 会话拆进侧栏「收纳盒」栏目、10-22 方案的 `~/.marionette/inbox` 幽灵项目在加载口被过滤（正/反斜杠、尾斜杠）、memoPrompt dialog/doc 预填契约、文字拖放通道（页内拖拽源 tracker 让路 + dock 区文字 DOM 事件）、单列帖子流（`groupMemosByDay` / 顶上写一条 / 四种卡，不再是 40px 文件行）、图片卡按横竖比 contain 完整显示 |
 | `verify-agent-reentry.mts` | `npx tsx scripts/verify-agent-reentry.mts` | 再次进入对话（post-turn 续跑）：waiting+优雅期才武装、迟到回声/运行中/无回合边界不武装；安静收尾只封本会话尾卡（Reply→durationMs、Thought→endedAt），已封卡与他窗事件不动；zcode 真实形状回放不被粘进前一张卡 |
+| `inventory-zh.mts` | `npx tsx scripts/inventory-zh.mts [--rust] [--lines] [--check]` | i18n 盘点：列出（注释以外）还有中文的源码文件与行号。`--rust` 扫 `src-tauri/src`，`--lines` 给全量行号，`--check` 前端白名单外非零即退出 1。注意：正则密集文件可能误报（正则里的引号会骗过注释剥离器），Rust 侧 `ts!` 调用点按设计保留中文 |
+| `check-locale-fragments.mjs` | `node scripts/check-locale-fragments.mjs src/locales/parts/<batch>.zh.ts …` | i18n 片段对齐快检：每个 en 片段的键必须与对应 zh 片段完全一致（缺键/多键/重复键报错）；权威校验仍是一把梭 `npx tsc --noEmit` |
 | `usage-smoke.mts` | `npx tsx scripts/usage-smoke.mts` | usage 面板解析，断言用的是真实 adapter 抓到的报文 |
 | `title-smoke.mts` | `npx tsx scripts/title-smoke.mts` | 会话标题：拒绝 Marionette 自己注入的 prompt 抬头被当成标题，修复时从转录里取用户真正打的第一句 |
 | `suspend-smoke.mts` | `npx tsx scripts/suspend-smoke.mts` | 挂起规则两套：手动 ⏸ 按钮对**任何还持有进程**的会话都可按（starting / running / waiting / error，running 时按下去直接中断），只有已挂起的不画按钮；而 2 小时空闲自动挂起仍只碰「热但空闲且没有待办」的会话（子代理/后台命令/定时发送算在运作） |

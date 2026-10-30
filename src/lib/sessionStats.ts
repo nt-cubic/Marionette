@@ -20,6 +20,7 @@
  * counted, but contributes no time — never an estimate.
  */
 
+import { t } from "./i18n";
 import type { SessionEvent, TurnStats } from "./types";
 import type { TurnTokens } from "./usage";
 
@@ -448,7 +449,7 @@ export function formatTokensPerSecond(tps: number): string {
 /** `45.2秒` under a minute, `2分42秒` from there on. */
 export function formatDurationCompact(ms: number): string {
   const seconds = Math.max(0, ms) / 1000;
-  if (seconds < 60) return `${Math.round(seconds * 10) / 10}秒`;
+  if (seconds < 60) return t("stats.secondsCompact", { n: Math.round(seconds * 10) / 10 });
   const whole = Math.round(seconds);
-  return `${Math.floor(whole / 60)}分${whole % 60}秒`;
+  return t("stats.minutesSecondsCompact", { m: Math.floor(whole / 60), s: whole % 60 });
 }

@@ -211,7 +211,7 @@ pub fn engine_dir() -> Result<PathBuf, String> {
     }
     crate::app_paths::global_dir()
         .map(|dir| dir.join("engine"))
-        .map_err(|error| format!("无法定位 ~/.marionette: {error}"))
+        .map_err(|error| crate::ts!("无法定位 ~/.marionette: {error}", "Could not locate ~/.marionette: {error}"))
 }
 
 fn exe_path(dir: &Path) -> PathBuf {
@@ -272,14 +272,14 @@ pub(crate) fn load_manifest_at(dir: &Path) -> Option<EngineManifest> {
 
 pub(crate) fn save_manifest_at(dir: &Path, manifest: &EngineManifest) -> Result<(), String> {
     let body = serde_json::to_string_pretty(manifest)
-        .map_err(|e| format!("序列化 manifest.json 失败: {e}"))?;
-    std::fs::create_dir_all(dir).map_err(|e| format!("创建 engine 目录失败: {e}"))?;
+        .map_err(|e| crate::ts!("序列化 manifest.json 失败: {e}", "Failed to serialize manifest.json: {e}"))?;
+    std::fs::create_dir_all(dir).map_err(|e| crate::ts!("创建 engine 目录失败: {e}", "Failed to create engine directory: {e}"))?;
     let temp = dir.join(format!("manifest.json.{}.tmp", std::process::id()));
     std::fs::write(&temp, format!("{body}\n"))
-        .map_err(|e| format!("写 manifest.json 失败: {e}"))?;
+        .map_err(|e| crate::ts!("写 manifest.json 失败: {e}", "Failed to write manifest.json: {e}"))?;
     if let Err(error) = std::fs::rename(&temp, manifest_path(dir)) {
         let _ = std::fs::remove_file(&temp);
-        return Err(format!("manifest.json 原子落位失败: {error}"));
+        return Err(crate::ts!("manifest.json 原子落位失败: {error}", "Failed to atomically place manifest.json: {error}"));
     }
     Ok(())
 }
@@ -312,13 +312,13 @@ fn sha256_hex(bytes: &[u8]) -> String {
 fn sha256_of_file(path: &Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     let mut file =
-        std::fs::File::open(path).map_err(|e| format!("打开 {} 失败: {e}", path.display()))?;
+        std::fs::File::open(path).map_err(|e| crate::ts!("打开 {path} 失败: {e}", "Failed to open {path}: {e}", path = path.display()))?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 256 * 1024];
     loop {
         let n = file
             .read(&mut buffer)
-            .map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
+            .map_err(|e| crate::ts!("读取 {path} 失败: {e}", "Failed to read {path}: {e}", path = path.display()))?;
         if n == 0 {
             break;
         }
@@ -359,7 +359,7 @@ fn download_agent() -> Result<ureq::Agent, String> {
         return loopback_agent();
     }
     let connector = ureq::native_tls::TlsConnector::new()
-        .map_err(|e| format!("TLS 初始化失败 (schannel): {e}"))?;
+        .map_err(|e| crate::ts!("TLS 初始化失败 (schannel): {e}", "TLS init failed (schannel): {e}"))?;
     let mut builder = ureq::AgentBuilder::new();
     builder = builder.tls_connector(std::sync::Arc::new(connector));
     let config = crate::proxy::load_proxy_config();
@@ -411,17 +411,17 @@ fn resolve_latest_release() -> Result<ReleasePlan, String> {
         .set("User-Agent", USER_AGENT)
         .timeout(Duration::from_secs(20))
         .call()
-        .map_err(|e| format!("查询 GitHub Releases 失败（无网络或被墙？）: {e}"))?;
+        .map_err(|e| crate::ts!("查询 GitHub Releases 失败（无网络或被墙？）: {e}", "Failed to query GitHub Releases (offline or blocked?): {e}"))?;
     let value: serde_json::Value = response
         .into_json()
-        .map_err(|e| format!("解析 GitHub Releases 应答失败: {e}"))?;
+        .map_err(|e| crate::ts!("解析 GitHub Releases 应答失败: {e}", "Failed to parse GitHub Releases response: {e}"))?;
     let tag = value
         .get("tag_name")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("")
         .to_string();
     if tag.is_empty() {
-        return Err("GitHub Releases 应答里没有 tag_name".to_string());
+        return Err(crate::ts!("GitHub Releases 应答里没有 tag_name", "GitHub Releases response has no tag_name"));
     }
     let assets = value
         .get("assets")
@@ -438,7 +438,7 @@ fn resolve_latest_release() -> Result<ReleasePlan, String> {
         })
         .and_then(|asset| asset.get("browser_download_url"))
         .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| format!("latest release 没有 `{ASSET_NAME}` 资产"))?
+        .ok_or_else(|| crate::ts!("latest release 没有 `{ASSET_NAME}` 资产", "latest release has no `{ASSET_NAME}` asset"))?
         .to_string();
     let sums_url = assets
         .iter()
@@ -450,18 +450,18 @@ fn resolve_latest_release() -> Result<ReleasePlan, String> {
         })
         .and_then(|asset| asset.get("browser_download_url"))
         .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| "latest release 没有校验文件（SHA256SUMS）— 拒绝无校验下载".to_string())?
+        .ok_or_else(|| crate::ts!("latest release 没有校验文件（SHA256SUMS）— 拒绝无校验下载", "latest release has no checksums file (SHA256SUMS) — refusing unverified download"))?
         .to_string();
     let sums_text = agent
         .get(&sums_url)
         .set("User-Agent", USER_AGENT)
         .timeout(Duration::from_secs(20))
         .call()
-        .map_err(|e| format!("下载 SHA256SUMS 失败: {e}"))?
+        .map_err(|e| crate::ts!("下载 SHA256SUMS 失败: {e}", "Failed to download SHA256SUMS: {e}"))?
         .into_string()
-        .map_err(|e| format!("读取 SHA256SUMS 失败: {e}"))?;
+        .map_err(|e| crate::ts!("读取 SHA256SUMS 失败: {e}", "Failed to read SHA256SUMS: {e}"))?;
     let sha256 = parse_sums_entry(&sums_text, ASSET_NAME)
-        .ok_or_else(|| format!("SHA256SUMS 里没有 `{ASSET_NAME}` 的条目"))?;
+        .ok_or_else(|| crate::ts!("SHA256SUMS 里没有 `{ASSET_NAME}` 的条目", "No `{ASSET_NAME}` entry in SHA256SUMS"))?;
     Ok(ReleasePlan {
         version: strip_v(&tag).to_string(),
         asset_url,
@@ -494,7 +494,7 @@ fn download_and_install(plan: &ReleasePlan, dir: &Path) -> Result<(), String> {
 }
 
 fn download_once(plan: &ReleasePlan, dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("创建 engine 目录失败: {e}"))?;
+    std::fs::create_dir_all(dir).map_err(|e| crate::ts!("创建 engine 目录失败: {e}", "Failed to create engine directory: {e}"))?;
     let temp = dir.join(format!("magpie.exe.{}.download", std::process::id()));
     let response = download_agent()?
         .get(&plan.asset_url)
@@ -502,35 +502,36 @@ fn download_once(plan: &ReleasePlan, dir: &Path) -> Result<(), String> {
         .set("Accept", "application/octet-stream")
         .timeout(DOWNLOAD_TIMEOUT)
         .call()
-        .map_err(|e| format!("下载 magpie 失败: {e}"))?;
+        .map_err(|e| crate::ts!("下载 magpie 失败: {e}", "Failed to download magpie: {e}"))?;
     let total: u64 = response
         .header("Content-Length")
         .and_then(|value| value.parse().ok())
         .unwrap_or(0);
     let mut reader = response.into_reader();
     let mut file = std::fs::File::create(&temp)
-        .map_err(|e| format!("创建临时文件失败（{}）: {e}", temp.display()))?;
+        .map_err(|e| crate::ts!("创建临时文件失败（{temp}）: {e}", "Failed to create temp file ({temp}): {e}", temp = temp.display()))?;
     let mut buffer = vec![0u8; 64 * 1024];
     let mut downloaded: u64 = 0;
     let mut last_event = Instant::now();
     loop {
         let n = reader
             .read(&mut buffer)
-            .map_err(|e| format!("读取下载流失败: {e}"))?;
+            .map_err(|e| crate::ts!("读取下载流失败: {e}", "Failed to read download stream: {e}"))?;
         if n == 0 {
             break;
         }
         file.write_all(&buffer[..n])
-            .map_err(|e| format!("写入下载流失败: {e}"))?;
+            .map_err(|e| crate::ts!("写入下载流失败: {e}", "Failed to write download stream: {e}"))?;
         downloaded += n as u64;
         // 体积上限：sha256 只保证「内容对」，不保证不是 20GB 的假镜像。
         // 超限立刻止损，别把磁盘写穿。
         if downloaded > MAX_MAGPIE_DOWNLOAD_BYTES {
             drop(file);
             let _ = std::fs::remove_file(&temp);
-            return Err(format!(
-                "下载超过 {} MiB 上限 — 不像 magpie.exe（~48MB）",
-                MAX_MAGPIE_DOWNLOAD_BYTES / (1024 * 1024)
+            return Err(crate::ts!(
+                "下载超过 {limit} MiB 上限 — 不像 magpie.exe（~48MB）",
+                "Download exceeds {limit} MiB limit — not plausibly magpie.exe (~48MB)",
+                limit = MAX_MAGPIE_DOWNLOAD_BYTES / (1024 * 1024)
             ));
         }
         // 进度节流：状态机每 250ms 刷一次，事件同频（UI 不需要更密）。
@@ -539,29 +540,31 @@ fn download_once(plan: &ReleasePlan, dir: &Path) -> Result<(), String> {
             last_event = Instant::now();
         }
     }
-    file.flush().map_err(|e| format!("落盘失败: {e}"))?;
+    file.flush().map_err(|e| crate::ts!("落盘失败: {e}", "Failed to flush file: {e}"))?;
     drop(file);
     if downloaded < 1024 * 1024 {
         let _ = std::fs::remove_file(&temp);
-        return Err(format!(
-            "下载的文件只有 {} 字节 — 不像 magpie.exe（~48MB）",
-            downloaded
+        return Err(crate::ts!(
+            "下载的文件只有 {size} 字节 — 不像 magpie.exe（~48MB）",
+            "Downloaded file is only {size} bytes — not plausibly magpie.exe (~48MB)",
+            size = downloaded
         ));
     }
     let actual = sha256_of_file(&temp)?;
     if !actual.eq_ignore_ascii_case(&plan.sha256) {
         let _ = std::fs::remove_file(&temp);
-        return Err(format!(
-            "SHA256 校验失败（期望 {}…，实际 {}…）— 已删除，重试下载",
-            &plan.sha256[..8.min(plan.sha256.len())],
-            &actual[..8.min(actual.len())]
+        return Err(crate::ts!(
+            "SHA256 校验失败（期望 {expected}…，实际 {actual}…）— 已删除，重试下载",
+            "SHA256 mismatch (expected {expected}…, got {actual}…) — deleted, retrying download",
+            expected = &plan.sha256[..8.min(plan.sha256.len())],
+            actual = &actual[..8.min(actual.len())]
         ));
     }
     set_status(EngineStatus::Downloading { downloaded, total: downloaded });
     // 原子落位 + 围栏标记 + manifest。
     replace_engine_exe(&temp, dir)?;
     std::fs::write(dir.join(".portable"), b"")
-        .map_err(|e| format!("写 .portable 标记失败: {e}"))?;
+        .map_err(|e| crate::ts!("写 .portable 标记失败: {e}", "Failed to write .portable marker: {e}"))?;
     let manifest = EngineManifest {
         version: plan.version.clone(),
         sha256: plan.sha256.clone(),
@@ -732,14 +735,14 @@ fn replace_engine_exe(temp: &Path, dir: &Path) -> Result<(), String> {
         Err(error) => error,
     };
     if !target.exists() {
-        return Err(format!("magpie.exe 原子落位失败: {error}"));
+        return Err(crate::ts!("magpie.exe 原子落位失败: {error}", "Failed to atomically place magpie.exe: {error}"));
     }
     let aside = dir.join(format!("magpie.exe.{}.old", std::process::id()));
     let _ = std::fs::remove_file(&aside);
     std::fs::rename(&target, &aside).map_err(|move_error| {
-        format!("magpie.exe 原子落位失败（旧文件也让不开: {move_error}）: {error}")
+        crate::ts!("magpie.exe 原子落位失败（旧文件也让不开: {move_error}）: {error}", "Failed to atomically place magpie.exe (old file would not move aside: {move_error}): {error}")
     })?;
-    std::fs::rename(temp, &target).map_err(|e| format!("magpie.exe 原子落位失败: {e}"))?;
+    std::fs::rename(temp, &target).map_err(|e| crate::ts!("magpie.exe 原子落位失败: {e}", "Failed to atomically place magpie.exe: {e}"))?;
     crate::debug_log::append(
         "engine",
         "info",
@@ -754,14 +757,14 @@ fn replace_engine_exe(temp: &Path, dir: &Path) -> Result<(), String> {
 /// `.portable` 围栏 + manifest 记真实 sha——与下载路径共用 `is_installed_at`
 /// 的校验语义。纯输入参数，测试直接喂小夹具。
 fn install_embedded_engine_at(bytes: &[u8], version: &str, dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("创建 engine 目录失败: {e}"))?;
+    std::fs::create_dir_all(dir).map_err(|e| crate::ts!("创建 engine 目录失败: {e}", "Failed to create engine directory: {e}"))?;
     let temp = dir.join(format!("magpie.exe.{}.extract", std::process::id()));
     std::fs::write(&temp, bytes)
-        .map_err(|e| format!("写解出临时文件失败（{}）: {e}", temp.display()))?;
+        .map_err(|e| crate::ts!("写解出临时文件失败（{temp}）: {e}", "Failed to write extracted temp file ({temp}): {e}", temp = temp.display()))?;
     let sha = sha256_of_file(&temp)?;
     replace_engine_exe(&temp, dir)?;
     std::fs::write(dir.join(".portable"), b"")
-        .map_err(|e| format!("写 .portable 标记失败: {e}"))?;
+        .map_err(|e| crate::ts!("写 .portable 标记失败: {e}", "Failed to write .portable marker: {e}"))?;
     let manifest = EngineManifest {
         version: version.to_string(),
         sha256: sha,
@@ -866,7 +869,7 @@ fn spawn_serve(exe: &Path, port: u16) -> Result<ChildHandle, String> {
     }
     let mut child = command
         .spawn()
-        .map_err(|e| format!("拉起 magpie serve 失败（{}）: {e}", exe.display()))?;
+        .map_err(|e| crate::ts!("拉起 magpie serve 失败（{exe}）: {e}", "Failed to launch magpie serve ({exe}): {e}", exe = exe.display()))?;
     // 崩溃/强杀兜底：Job Object kill-on-close 带走引擎，防孤儿 magpie 常驻
     // （实测每个 ~100-160MB private，出过后要几分钟才自退）。正常退出路径
     // 本来就显式 kill，这里只补意外路径。
@@ -1276,7 +1279,7 @@ fn maybe_refresh_source_live(exe: &Path, id: &str, force: bool, changed: &mut bo
 fn sync_sources_at(exe: &Path, force_refresh: bool) -> Vec<String> {
     use sha2::{Digest, Sha256};
     static SYNC: OnceLock<Mutex<std::collections::HashMap<String, Vec<u8>>>> = OnceLock::new();
-    let Ok(mut fingerprints) = SYNC.get_or_init(|| Mutex::new(std::collections::HashMap::new())).lock() else { return vec!["模型来源同步正忙".into()] };
+    let Ok(mut fingerprints) = SYNC.get_or_init(|| Mutex::new(std::collections::HashMap::new())).lock() else { return vec![crate::ts!("模型来源同步正忙", "Model source sync is busy")] };
     let Ok(dir) = engine_dir() else { return vec![] };
     let path = dir.join("discovered-providers.json");
     let ledger = load_registered_ledger(&path);
@@ -1313,10 +1316,10 @@ fn sync_sources_at(exe: &Path, force_refresh: bool) -> Vec<String> {
             // 种子引擎（精简纯网关）刻意不含 provider CLI——给出可操作指引
             // 而不是含混的"刷新重试"。装上完整引擎后下一轮同步自动补齐。
             Err(error) if error.contains("engine seed") => {
-                warnings.push("引擎种子不含来源注册（provider CLI）——在「模型共享」中把引擎更新到完整版后自动注册".into());
+                warnings.push(crate::ts!("引擎种子不含来源注册（provider CLI）——在「模型共享」中把引擎更新到完整版后自动注册", "The slim engine seed ships without source registration (provider CLI) — update the engine to the full build in Model Sharing and it registers automatically"));
                 if ledger.contains(&id) {kept.push(id.clone());}
             }
-            Err(_) => { warnings.push(format!("{} 来源注册失败，可刷新重试",source.view.label)); if ledger.contains(&id) {kept.push(id.clone());} }
+            Err(_) => { warnings.push(crate::ts!("{label} 来源注册失败，可刷新重试", "{label} source registration failed; refresh to retry", label = source.view.label)); if ledger.contains(&id) {kept.push(id.clone());} }
         }
     }
     // On unreadable source files retain old routes for retry; do not interpret
@@ -1341,7 +1344,7 @@ pub fn sync_discovered_sources() -> Vec<String> {
     let Ok(dir)=engine_dir() else {return vec![]};
     let exe=exe_path(&dir);
     // Reused user installations are not owned by Marionette.
-    if matches!(status(),EngineStatus::Running {reused:true,..}) { return vec!["当前复用外部引擎；发现的 CLI 来源需由 Marionette 自带引擎接入".into()]; }
+    if matches!(status(),EngineStatus::Running {reused:true,..}) { return vec![crate::ts!("当前复用外部引擎；发现的 CLI 来源需由 Marionette 自带引擎接入", "An external engine is in use; discovered CLI sources require the Marionette-bundled engine")]; }
     sync_sources_at(&exe, true)
 }
 
@@ -1527,7 +1530,7 @@ fn fetch_quota_cli() -> Result<String, String> {
     let dir = engine_dir()?;
     let exe = exe_path(&dir);
     if !exe.is_file() {
-        return Err("magpie.exe 不在引擎目录".into());
+        return Err(crate::ts!("magpie.exe 不在引擎目录", "magpie.exe is not in the engine directory"));
     }
     run_magpie_cli_capture(&exe, &["quota", "--json"])
 }
@@ -1743,13 +1746,13 @@ fn stop_owned_for_replace() -> Result<(), String> {
     let mut state = lock_state();
     match &state.status {
         EngineStatus::Running { reused: true, .. } => {
-            return Err(
-                "当前复用本机自装的 magpie，无法替换。请先关掉它，再更新本应用引擎。"
-                    .to_string(),
-            );
+            return Err(crate::ts!(
+                "当前复用本机自装的 magpie，无法替换。请先关掉它，再更新本应用引擎。",
+                "A locally installed magpie is in use and cannot be replaced. Close it first, then update this app's engine."
+            ));
         }
         EngineStatus::Downloading { .. } | EngineStatus::Starting => {
-            return Err("引擎正在安装或启动，请稍后再试".to_string());
+            return Err(crate::ts!("引擎正在安装或启动，请稍后再试", "Engine is installing or starting; try again shortly"));
         }
         EngineStatus::Running { .. } => {
             if let Some(child) = state.child.as_mut() {
@@ -1819,7 +1822,7 @@ pub fn update() -> Result<EngineStatus, String> {
         let mut state = lock_state();
         match state.status {
             EngineStatus::Downloading { .. } | EngineStatus::Starting => {
-                return Err("引擎正在安装或启动，请稍后再试".to_string());
+                return Err(crate::ts!("引擎正在安装或启动，请稍后再试", "Engine is installing or starting; try again shortly"));
             }
             _ => {
                 let initial = EngineStatus::Downloading {
@@ -1839,7 +1842,7 @@ pub fn update() -> Result<EngineStatus, String> {
                 set_status(EngineStatus::Failed { error });
             }
         })
-        .map_err(|e| format!("启动引擎更新线程失败: {e}"))?;
+        .map_err(|e| crate::ts!("启动引擎更新线程失败: {e}", "Failed to spawn engine update thread: {e}"))?;
     Ok(initial)
 }
 
@@ -1860,7 +1863,7 @@ fn update_pipeline(dir: &Path) -> Result<(), String> {
 pub fn restore_factory() -> Result<EngineStatus, String> {
     let (bytes, version) = embedded_artifact();
     if bytes.is_empty() || version.is_empty() {
-        return Err("当前构建没有内嵌引擎，无法恢复出厂".to_string());
+        return Err(crate::ts!("当前构建没有内嵌引擎，无法恢复出厂", "This build has no embedded engine; factory restore is unavailable"));
     }
     let version = version.to_string();
     stop_owned_for_replace()?;
@@ -1869,7 +1872,7 @@ pub fn restore_factory() -> Result<EngineStatus, String> {
         let mut state = lock_state();
         match state.status {
             EngineStatus::Downloading { .. } | EngineStatus::Starting => {
-                return Err("引擎正在安装或启动，请稍后再试".to_string());
+                return Err(crate::ts!("引擎正在安装或启动，请稍后再试", "Engine is installing or starting; try again shortly"));
             }
             _ => {
                 let initial = EngineStatus::Starting;
@@ -1886,7 +1889,7 @@ pub fn restore_factory() -> Result<EngineStatus, String> {
                 set_status(EngineStatus::Failed { error });
             }
         })
-        .map_err(|e| format!("启动引擎恢复线程失败: {e}"))?;
+        .map_err(|e| crate::ts!("启动引擎恢复线程失败: {e}", "Failed to spawn engine restore thread: {e}"))?;
     Ok(initial)
 }
 
@@ -1985,15 +1988,14 @@ fn run_magpie_cli_capture(exe: &Path, args: &[&str]) -> Result<String, String> {
     }
     let output = command
         .output()
-        .map_err(|e| format!("启动 magpie CLI 失败: {e}"))?;
+        .map_err(|e| crate::ts!("启动 magpie CLI 失败: {e}", "Failed to launch magpie CLI: {e}"))?;
     if !output.status.success() {
         // stderr 一起带上——"no provider x" 这类可判别错误靠它（回收对账
         // 视"不存在"为已回收），也是注册失败时唯一有诊断价值的输出。
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(format!(
-            "magpie {} 退出码 {:?}{}",
-            args.first().unwrap_or(&""),
-            output.status.code(),
+            "{}{}",
+            crate::ts!("magpie {subcommand} 退出码 {code:?}", "magpie {subcommand} exited with code {code:?}", subcommand = args.first().unwrap_or(&""), code = output.status.code()),
             if stderr.is_empty() {
                 String::new()
             } else {
@@ -2001,7 +2003,7 @@ fn run_magpie_cli_capture(exe: &Path, args: &[&str]) -> Result<String, String> {
             },
         ));
     }
-    String::from_utf8(output.stdout).map_err(|e| format!("magpie 输出不是 UTF-8: {e}"))
+    String::from_utf8(output.stdout).map_err(|e| crate::ts!("magpie 输出不是 UTF-8: {e}", "magpie output is not UTF-8: {e}"))
 }
 
 /// 跑一个短命 magpie CLI 命令（.portable 围栏由 exe 位置决定，无需 env）。
@@ -2026,7 +2028,7 @@ fn run_magpie_cli(exe: &Path, args: &[&str]) -> Result<(), String> {
     }
     let output = command
         .output()
-        .map_err(|e| format!("拉起 magpie CLI 失败: {e}"))?;
+        .map_err(|e| crate::ts!("拉起 magpie CLI 失败: {e}", "Failed to spawn magpie CLI: {e}"))?;
     if output.status.success() {
         Ok(())
     } else {
@@ -2265,7 +2267,7 @@ pub fn enable() -> Result<EngineStatus, String> {
                 set_status(EngineStatus::Failed { error: error.clone() });
             }
         })
-        .map_err(|e| format!("启动引擎后台线程失败: {e}"))?;
+        .map_err(|e| crate::ts!("启动引擎后台线程失败: {e}", "Failed to spawn engine background thread: {e}"))?;
     Ok(initial)
 }
 
@@ -2314,7 +2316,7 @@ fn enable_pipeline(dir: &Path) -> Result<(), String> {
     }
     if !is_installed_at(dir) {
         if embedded_version().is_some() {
-            return Err("内嵌引擎落位后仍不完整".to_string());
+            return Err(crate::ts!("内嵌引擎落位后仍不完整", "Embedded engine still incomplete after placement"));
         }
         let plan = resolve_latest_release()?;
         download_and_install(&plan, dir)?;
@@ -2323,7 +2325,7 @@ fn enable_pipeline(dir: &Path) -> Result<(), String> {
     set_status(EngineStatus::Starting);
     let exe = exe_path(dir);
     let port = find_free_port_from(DEFAULT_PORT)
-        .ok_or_else(|| format!("从 {DEFAULT_PORT} 起找不到空闲环回端口"))?;
+        .ok_or_else(|| crate::ts!("从 {DEFAULT_PORT} 起找不到空闲环回端口", "No free loopback port found from {DEFAULT_PORT}"))?;
     let mut child = spawn_serve(&exe, port)?;
     let deadline = Instant::now() + HEALTH_TIMEOUT;
     loop {
@@ -2332,18 +2334,19 @@ fn enable_pipeline(dir: &Path) -> Result<(), String> {
         }
         match child.try_wait() {
             Ok(Some(status)) => {
-                return Err(format!("引擎进程提前退出（code={}）— 详见 dev.log 的 serve 输出", status));
+                return Err(crate::ts!("引擎进程提前退出（code={code}）— 详见 dev.log 的 serve 输出", "Engine process exited early (code={code}) — see serve output in dev.log", code = status));
             }
             Ok(None) => {}
             Err(error) => {
                 child.kill();
-                return Err(format!("引擎进程状态查询失败: {error}"));
+                return Err(crate::ts!("引擎进程状态查询失败: {error}", "Failed to query engine process status: {error}"));
             }
         }
         if Instant::now() >= deadline {
             child.kill();
-            return Err(format!(
-                "引擎 {HEALTH_TIMEOUT:?} 内未通过健康检查（GET /v1/models）"
+            return Err(crate::ts!(
+                "引擎 {HEALTH_TIMEOUT:?} 内未通过健康检查（GET /v1/models）",
+                "Engine did not pass the health check (GET /v1/models) within {HEALTH_TIMEOUT:?}"
             ));
         }
         std::thread::sleep(HEALTH_POLL);
@@ -2404,7 +2407,7 @@ pub fn status() -> EngineStatus {
         if dead {
             state.child = None;
             state.status = EngineStatus::Failed {
-                error: format!("引擎进程已退出（端口 {port} 不再服务）"),
+                error: crate::ts!("引擎进程已退出（端口 {port} 不再服务）", "Engine process has exited (port {port} is no longer serving)"),
             };
             let error = state.status.clone();
             drop(state);

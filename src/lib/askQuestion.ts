@@ -1,4 +1,5 @@
 import type { AskQuestionItem, AskQuestionPrompt } from "../components/AskQuestionCard";
+import { t } from "./i18n";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -49,7 +50,7 @@ export function parseAskQuestionPrompt(
       .filter((o): o is NonNullable<typeof o> => o != null);
     if (!question && options.length === 0) continue;
     questions.push({
-      question: question || "请选择",
+      question: question || t("ask.defaultQuestion"),
       header: asString(rec.header) || undefined,
       multiSelect: rec.multiSelect === true || rec.multi_select === true,
       options,

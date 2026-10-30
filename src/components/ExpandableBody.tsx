@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useT } from "../lib/i18n";
 
 type ExpandableBodyProps = {
   children: ReactNode;
@@ -12,6 +13,7 @@ type ExpandableBodyProps = {
  * virtual list re-measures the row through its own ResizeObserver.
  */
 export function ExpandableBody({ children, maxHeight = 200 }: ExpandableBodyProps) {
+  const t = useT();
   const innerRef = useRef<HTMLDivElement>(null);
   const [overflows, setOverflows] = useState(false);
   const [open, setOpen] = useState(false);
@@ -35,7 +37,7 @@ export function ExpandableBody({ children, maxHeight = 200 }: ExpandableBodyProp
       </div>
       {overflows && (
         <button type="button" className="expandable-body__toggle" onClick={() => setOpen((value) => !value)}>
-          {open ? "收起" : "展开全文"}
+          {open ? t("ui.collapse") : t("ui.expandFullText")}
         </button>
       )}
     </div>

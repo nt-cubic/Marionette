@@ -95,7 +95,7 @@ pub fn refresh_marionette_route() -> Result<Option<PathBuf>, String> {
     let _guard = REFRESH_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let dir = bundle_dir().ok_or_else(|| "无法定位用户目录".to_string())?;
+    let dir = bundle_dir().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     match crate::engine::status() {
         crate::engine::EngineStatus::Running { port, .. } => {
             let models = crate::engine::catalog_direct_entries();
@@ -149,10 +149,10 @@ fn ensure_bundle_at(
     models: &[crate::model_bridge::CatalogModelRow],
 ) -> Result<(), String> {
     if models.is_empty() {
-        return Err("引擎目录为空，拒绝写 dsh 路由".to_string());
+        return Err(crate::ts!("引擎目录为空，拒绝写 dsh 路由", "Engine catalog is empty; refusing to write the dsh route"));
     }
     fs::create_dir_all(dir)
-        .map_err(|e| format!("创建 bundle 目录 {} 失败: {e}", dir.display()))?;
+        .map_err(|e| crate::ts!("创建 bundle 目录 {} 失败: {e}", "Failed to create bundle directory {}: {e}", dir.display()))?;
     write_if_changed(&dir.join(BUNDLE_MANIFEST), MANIFEST_JSON)?;
     write_if_changed(&dir.join(BUNDLE_PATCH), &patch_text(port, models))?;
     Ok(())
@@ -162,7 +162,7 @@ fn write_if_changed(path: &Path, text: &str) -> Result<(), String> {
     match fs::read_to_string(path) {
         Ok(current) if current == text => Ok(()),
         _ => crate::model_bridge::write_text_atomic_pub(path, text)
-            .map_err(|e| format!("写入 {} 失败: {e}", path.display())),
+            .map_err(|e| crate::ts!("写入 {} 失败: {e}", "Failed to write {}: {e}", path.display())),
     }
 }
 
@@ -170,7 +170,7 @@ fn remove_bundle_at(dir: &Path) -> Result<(), String> {
     match fs::remove_dir_all(dir) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("删除 bundle 目录 {} 失败: {error}", dir.display())),
+        Err(error) => Err(crate::ts!("删除 bundle 目录 {} 失败: {error}", "Failed to delete bundle directory {}: {error}", dir.display())),
     }
 }
 
@@ -193,7 +193,7 @@ fn patch_text(port: u16, models: &[crate::model_bridge::CatalogModelRow]) -> Str
         "  config:".to_string(),
         "    providers:".to_string(),
         format!("      {MARIONETTE_PROVIDER}:"),
-        "        displayName: Marionette 模型共享".to_string(),
+        crate::ts!("        displayName: Marionette 模型共享", "        displayName: Marionette Model Share"),
         format!("        apiKeyEnv: {MARIONETTE_TOKEN_ENV}"),
         "        api: openai-completions".to_string(),
         format!("        baseURL: http://127.0.0.1:{port}/v1"),
@@ -245,16 +245,16 @@ fn migrate_legacy_patch_at(path: &Path) -> Result<bool, String> {
     let original = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(format!("读取 {} 失败: {error}", path.display())),
+        Err(error) => return Err(crate::ts!("读取 {} 失败: {error}", "Failed to read {}: {error}", path.display())),
     };
     let Some(next) = strip_managed_block(&original) else {
         return Ok(false);
     };
     let backup = path.with_extension("marionette-bak");
     fs::write(&backup, &original)
-        .map_err(|e| format!("备份 {} 失败: {e}", backup.display()))?;
+        .map_err(|e| crate::ts!("备份 {} 失败: {e}", "Failed to back up {}: {e}", backup.display()))?;
     crate::model_bridge::write_text_atomic_pub(path, &next)
-        .map_err(|e| format!("写入 {} 失败: {e}", path.display()))?;
+        .map_err(|e| crate::ts!("写入 {} 失败: {e}", "Failed to write {}: {e}", path.display()))?;
     crate::debug_log::append(
         "bridge",
         "info",
@@ -335,7 +335,7 @@ fn migrate_standalone_model_at(
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(format!("读取 {} 失败: {error}", path.display())),
+        Err(error) => return Err(crate::ts!("读取 {} 失败: {error}", "Failed to read {}: {error}", path.display())),
     };
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&text) else {
         return Ok(false);
@@ -368,12 +368,12 @@ fn migrate_standalone_model_at(
     value["provider"] = serde_json::Value::String(MARIONETTE_PROVIDER.to_string());
     value["model"] = serde_json::Value::String(target);
     let next = serde_json::to_string(&value)
-        .map_err(|e| format!("序列化 {STANDALONE_MODEL_FILE} 失败: {e}"))?;
+        .map_err(|e| crate::ts!("序列化 {STANDALONE_MODEL_FILE} 失败: {e}", "Failed to serialize {STANDALONE_MODEL_FILE}: {e}"))?;
     if next == text {
         return Ok(false);
     }
     crate::model_bridge::write_text_atomic_pub(path, &next)
-        .map_err(|e| format!("写入 {} 失败: {e}", path.display()))?;
+        .map_err(|e| crate::ts!("写入 {} 失败: {e}", "Failed to write {}: {e}", path.display()))?;
     Ok(true)
 }
 

@@ -7,6 +7,7 @@
  * dialog is still working — auto-park must leave it alone, and the
  * background-task panel should show a running row.
  */
+import { t } from "./i18n";
 import type { SessionEvent } from "./types";
 import { isSubagentTool, isToolInProgress } from "./activityHealth";
 import { parseBackgroundSubagentStart } from "./acpTranscript";
@@ -76,7 +77,7 @@ export function listLiveSubagents(
     rows.push({
       sessionId,
       key: event.toolCallId || event.createdAt,
-      title: (event.title && event.title.trim()) || toolMainText(event) || stub?.description || "子代理",
+      title: (event.title && event.title.trim()) || toolMainText(event) || stub?.description || t("subagents.fallbackTitle"),
       detail: stub?.description || stub?.id || event.input?.split("\n")[0],
       startedAtMs: Number.isFinite(startedAtMs) ? startedAtMs : Date.now(),
     });

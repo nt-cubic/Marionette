@@ -1,5 +1,6 @@
 import { ShieldAlert } from "lucide-react";
 import { permissionOptionTone } from "../lib/permissionPlan";
+import { useT } from "../lib/i18n";
 
 export type PermissionOption = {
   optionId: string;
@@ -35,6 +36,7 @@ function optionRank(opt: PermissionOption): number {
 }
 
 export function PermissionDialog({ prompt, busy = false, onChoose }: PermissionDialogProps) {
+  const t = useT();
   const options = (
     prompt.options.length > 0
       ? prompt.options
@@ -60,7 +62,7 @@ export function PermissionDialog({ prompt, busy = false, onChoose }: PermissionD
         <div className="permission-dialog__header">
           <ShieldAlert size={18} aria-hidden />
           <div>
-            <span className="permission-dialog__eyebrow">需要你批准</span>
+            <span className="permission-dialog__eyebrow">{t("perm.eyebrow")}</span>
             <strong id="permission-dialog-title">{prompt.title || "Permission required"}</strong>
           </div>
         </div>

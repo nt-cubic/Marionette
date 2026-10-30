@@ -12,7 +12,7 @@ const MAX_MSG_CHARS = 2_400;
  * through. Replayed as conversation they teach it to expect interruptions it
  * did not cause, and they cost context budget the real turns need.
  */
-const SELF_NOTICES = /^(已挂起|Interrupted\.|The agent did not answer the cancel)/;
+const SELF_NOTICES = /^(已挂起|Parked\.|Interrupted\.|The agent did not answer the cancel)/;
 
 function clip(text: string, max = MAX_MSG_CHARS): string {
   const t = text.trim();

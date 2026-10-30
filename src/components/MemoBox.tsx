@@ -33,13 +33,14 @@ import {
   type MemoKind,
 } from "../lib/memos";
 import { showToast } from "../lib/toast";
+import { useT, type DictKey } from "../lib/i18n";
 
-const FILTERS: ReadonlyArray<{ id: MemoKind | "all"; label: string }> = [
-  { id: "all", label: "全部" },
-  { id: "link", label: "链接" },
-  { id: "text", label: "文字" },
-  { id: "image", label: "图片" },
-  { id: "file", label: "文件" },
+const FILTERS: ReadonlyArray<{ id: MemoKind | "all"; label: DictKey }> = [
+  { id: "all", label: "memo.kindAll" },
+  { id: "link", label: "memo.kindLink" },
+  { id: "text", label: "memo.kindText" },
+  { id: "image", label: "memo.kindImage" },
+  { id: "file", label: "memo.kindFile" },
 ];
 
 function kindIcon(kind: MemoKind) {
@@ -66,6 +67,7 @@ type Props = {
 };
 
 export function MemoBox({ onClose, onChanged, onUse }: Props) {
+  const t = useT();
   const [entries, setEntries] = useState<MemoEntry[]>([]);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<MemoKind | "all">("all");
@@ -150,9 +152,9 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
           const paths = payload.paths ?? [];
           if (!paths.length) return;
           setBusy(true);
-          void memoSavePaths(paths, "拖入")
+          void memoSavePaths(paths, t("memo.sourceDrop"))
             .then(publish)
-            .catch((error) => showToast({ text: "没能存进收纳盒", detail: String(error), tone: "error" }))
+            .catch((error) => showToast({ text: t("memo.saveFailed"), detail: String(error), tone: "error" }))
             .finally(() => setBusy(false));
         }
       })
@@ -185,10 +187,10 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
       const text = event.text.trim();
       if (!text) return;
       setBusy(true);
-      void memoSaveText(text, undefined, "拖入")
+      void memoSaveText(text, undefined, t("memo.sourceDrop"))
         .then((saved) => {
           if (!saved) {
-            showToast({ text: "没能存进收纳盒", tone: "error" });
+            showToast({ text: t("memo.saveFailed"), tone: "error" });
             return;
           }
           return memoList().then(publish);
@@ -214,7 +216,7 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
       return memoSaveText(trimmed, undefined, source)
         .then((saved) => {
           if (!saved) {
-            showToast({ text: "没能存进收纳盒", tone: "error" });
+            showToast({ text: t("memo.saveFailed"), tone: "error" });
             return false;
           }
           return memoList().then((rows) => {
@@ -235,7 +237,7 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
       const text = event.clipboardData.getData("text/plain").trim();
       if (!text) return;
       event.preventDefault();
-      void saveText(text, "粘贴");
+      void saveText(text, t("memo.sourcePaste"));
     },
     [saveText],
   );
@@ -247,7 +249,7 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
 
   const submitCompose = () => {
     const text = draft;
-    void saveText(text, "写下").then((ok) => {
+    void saveText(text, t("memo.sourceWrite")).then((ok) => {
       if (!ok) return;
       setDraft("");
       const el = composeRef.current;
@@ -279,7 +281,7 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
   const remove = (id: string) => {
     void memoDelete(id).then((next) => {
       if (next) publish(next);
-      else showToast({ text: "删除失败，条目还在", tone: "error" });
+      else showToast({ text: t("memo.deleteFailed"), tone: "error" });
     });
   };
 
@@ -308,10 +310,10 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
     void openExternal(target)
       .then((result) => {
         if (!result?.opened) {
-          showToast({ text: result?.message ?? "打不开这条", tone: "error" });
+          showToast({ text: result?.message ?? t("memo.openFailed"), tone: "error" });
         }
       })
-      .catch((error) => showToast({ text: "打不开这条", detail: String(error), tone: "error" }));
+      .catch((error) => showToast({ text: t("memo.openFailed"), detail: String(error), tone: "error" }));
   };
 
   const onCardClick = (event: React.MouseEvent, entry: MemoEntry) => {
@@ -341,7 +343,7 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
       ref={rootRef}
       className={`memo-box${dropActive ? " is-drop-active" : ""}${selecting ? " is-selecting" : ""}`}
       role="dialog"
-      aria-label="收纳盒"
+      aria-label={t("dock.pageMemo")}
       tabIndex={-1}
       onPaste={onPaste}
     >
@@ -351,8 +353,8 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
         <textarea
           ref={composeRef}
           rows={2}
-          placeholder="写一条，或粘贴链接"
-          aria-label="写一条"
+          placeholder={t("memo.composePlaceholder")}
+          aria-label={t("memo.composeAria")}
           value={draft}
           disabled={busy}
           onChange={(event) => {
@@ -374,7 +376,7 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
             disabled={busy || !draft.trim()}
             onClick={submitCompose}
           >
-            保存
+            {t("common.save")}
           </button>
         </div>
       </div>
@@ -383,12 +385,12 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
           <Search size={12} />
           <input
             type="search"
-            placeholder="搜索标题、内容、路径"
-            aria-label="搜索收纳盒"
+            placeholder={t("memo.searchPlaceholder")}
+            aria-label={t("memo.searchAria")}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
-          {busy && <span className="memo-box__busy">存入中…</span>}
+          {busy && <span className="memo-box__busy">{t("memo.saving")}</span>}
         </label>
         {entries.length > 0 && (
           <button
@@ -396,7 +398,7 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
             className={selecting ? "memo-box__text-btn is-on" : "memo-box__text-btn"}
             onClick={() => (selecting ? exitSelect() : setSelecting(true))}
           >
-            {selecting ? "完成" : "选择"}
+            {selecting ? t("memo.done") : t("memo.select")}
           </button>
         )}
       </div>
@@ -409,7 +411,7 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
               className={filter === chip.id ? "memo-box__chip is-on" : "memo-box__chip"}
               onClick={() => setFilter(chip.id)}
             >
-              {chip.label}
+              {t(chip.label)}
               <b>{counts.get(chip.id) ?? 0}</b>
             </button>
           ))}
@@ -418,12 +420,12 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
       <div className="memo-box__list custom-scrollbar">
         {entries.length === 0 ? (
           <div className="memo-box__empty">
-            <strong>还没有东西</strong>
-            <span>在上面写一条，把文件拖进来，或 Ctrl V 粘贴。</span>
-            <span>之后可以多选，交给新对话，或整理成一篇笔记。</span>
+            <strong>{t("memo.emptyTitle")}</strong>
+            <span>{t("memo.emptyHint")}</span>
+            <span>{t("memo.emptyHint2")}</span>
           </div>
         ) : filtered.length === 0 ? (
-          <p className="memo-box__none">没有匹配的条目</p>
+          <p className="memo-box__none">{t("memo.noMatches")}</p>
         ) : (
           groups.map((group) => (
             <section key={group.key} className="memo-box__group">
@@ -449,21 +451,21 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
       {selecting ? (
         <div className="memo-box__selbar">
           <span>
-            已选 <b>{picked.size}</b>
+            {t("memo.picked")} <b>{picked.size}</b>
           </span>
           <span className="memo-box__spacer" />
           <button type="button" className="memo-box__act" disabled={!picked.size} onClick={() => use("doc")}>
             <FileText size={12} />
-            整理成文档
+            {t("memo.makeDoc")}
           </button>
           <button type="button" className="memo-box__act is-primary" disabled={!picked.size} onClick={() => use("dialog")}>
             <MessageSquarePlus size={12} />
-            开新对话
+            {t("memo.newDialog")}
           </button>
         </div>
       ) : (
         <div className={dropActive ? "memo-box__drop is-active" : "memo-box__drop"}>
-          {dropActive ? "松开即存入" : "拖入文件 · Ctrl V 粘贴 · Ctrl 点击多选"}
+          {dropActive ? t("memo.dropRelease") : t("memo.dropHint")}
         </div>
       )}
     </div>
@@ -486,6 +488,7 @@ function applyShotOrient(img: HTMLImageElement) {
 }
 
 function MemoCard({ entry, selecting, picked, textOpen, onClick, onToggle, onDelete }: CardProps) {
+  const t = useT();
   const [imageBroken, setImageBroken] = useState(false);
   const draggable = !selecting && (entry.kind === "file" || entry.kind === "image") && Boolean(entry.path);
   const kindClass =
@@ -523,18 +526,18 @@ function MemoCard({ entry, selecting, picked, textOpen, onClick, onToggle, onDel
       title={
         entry.kind === "text"
           ? textOpen
-            ? "点击收起"
-            : "点击展开"
+            ? t("memo.clickCollapse")
+            : t("memo.clickExpand")
           : entry.kind === "link"
             ? url
-            : `${entry.path ?? entry.title}${draggable ? "\n可拖到输入框" : ""}`
+            : `${entry.path ?? entry.title}${draggable ? `\n${t("memo.dragHint")}` : ""}`
       }
     >
       {selecting && (
         <button
           type="button"
           className={picked ? "memo-box__check is-on" : "memo-box__check"}
-          aria-label={picked ? `取消选择 ${entry.title}` : `选择 ${entry.title}`}
+          aria-label={picked ? t("memo.unpickAria", { title: entry.title }) : t("memo.pickAria", { title: entry.title })}
           aria-pressed={picked}
           onClick={(event) => {
             event.stopPropagation();
@@ -576,7 +579,7 @@ function MemoCard({ entry, selecting, picked, textOpen, onClick, onToggle, onDel
             <span className="memo-box__icon" aria-hidden>
               {kindIcon("link")}
             </span>
-            <span className="memo-box__link-host">{host || "链接"}</span>
+            <span className="memo-box__link-host">{host || t("memo.kindLink")}</span>
           </div>
           {!titleIsUrl && entry.title && <span className="memo-box__title">{entry.title}</span>}
           {url && <span className="memo-box__url">{url}</span>}
@@ -609,6 +612,7 @@ function CardFoot({
   selecting: boolean;
   onDelete: () => void;
 }) {
+  const t = useT();
   return (
     <div className="memo-box__foot">
       <span className="memo-box__age">{formatMemoAge(entry.createdAt)}</span>
@@ -616,8 +620,8 @@ function CardFoot({
         <button
           type="button"
           className="memo-box__delete"
-          aria-label={`删除 ${entry.title}`}
-          title="删除"
+          aria-label={t("memo.deleteAria", { title: entry.title })}
+          title={t("common.delete")}
           onClick={(event) => {
             event.stopPropagation();
             onDelete();

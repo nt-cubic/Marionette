@@ -25,6 +25,7 @@ mod handoff;
 mod http_client;
 mod memory;
 mod memos;
+mod loc;
 mod models;
 mod model_bridge;
 mod model_sources;
@@ -207,6 +208,10 @@ mod tests {
 }
 
 fn main() {
+    // UI language for Rust-side user-visible strings (native dialogs,
+    // Telegram bot texts, command errors) before anything can show one.
+    loc::init_from_disk();
+
     // Before any WebView host is created — native dialog if runtime missing.
     webview2_gate::ensure_or_exit();
 
@@ -443,13 +448,15 @@ fn main() {
                     "failed to initialize Marionette storage",
                     Some(&error),
                 );
-                crate::data_dir_gate::prompt_and_exit(&format!(
-                    "Marionette 无法初始化存储：{error}"
+                crate::data_dir_gate::prompt_and_exit(&crate::ts!(
+                    "Marionette 无法初始化存储：{error}",
+                    "Marionette could not initialize storage: {error}"
                 ));
             })),
             acp: AcpService::new(),
         })
         .invoke_handler(tauri::generate_handler![
+            loc::set_ui_locale,
             commands::list_projects,
             commands::list_providers,
             commands::navigate_webview,
@@ -596,6 +603,9 @@ fn main() {
                 "tauri run failed",
                 Some(&error.to_string()),
             );
-            crate::data_dir_gate::prompt_and_exit(&format!("Marionette 启动失败：{error}"));
+            crate::data_dir_gate::prompt_and_exit(&crate::ts!(
+                "Marionette 启动失败：{error}",
+                "Marionette failed to start: {error}"
+            ));
         });
 }

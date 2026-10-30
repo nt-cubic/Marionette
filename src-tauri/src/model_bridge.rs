@@ -396,8 +396,8 @@ fn entry_view(credentials_path: &Path, entry: &CredentialEntry) -> BridgeEntryVi
     };
     let note = match entry.kind {
         CredentialKind::KeyPlan => None,
-        CredentialKind::Subscription => Some("订阅型，跨用将在下版本开放".to_string()),
-        CredentialKind::Reference => Some("key 保存在原 agent 文件里，未复制".to_string()),
+        CredentialKind::Subscription => Some(crate::ts!("订阅型，跨用将在下版本开放", "Subscription-based; cross-agent use arrives in the next release")),
+        CredentialKind::Reference => Some(crate::ts!("key 保存在原 agent 文件里，未复制", "Key stays in the original agent's file; not copied")),
     };
     BridgeEntryView {
         id: entry.id.clone(),
@@ -413,7 +413,7 @@ fn entry_view(credentials_path: &Path, entry: &CredentialEntry) -> BridgeEntryVi
 
 /// bridge_list_entries 本体（默认路径包装）。
 pub fn list_entries() -> Result<Vec<BridgeEntryView>, String> {
-    let path = credentials_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    let path = credentials_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     list_entries_at(&path)
 }
 
@@ -428,7 +428,7 @@ fn list_entries_at(path: &Path) -> Result<Vec<BridgeEntryView>, String> {
 
 /// bridge_add_key 本体：校验 preset 在表内，落 DPAPI store，返回新视图。
 pub fn add_key(preset: &str, label: Option<&str>, key: &str) -> Result<BridgeEntryView, String> {
-    let path = credentials_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    let path = credentials_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     add_key_at(&path, preset, label, key)
 }
 
@@ -441,7 +441,7 @@ fn add_key_at(
     let known = find_preset(preset)
         .ok_or_else(|| {
             let known: Vec<&str> = presets().iter().map(|p| p.id).collect();
-            format!("未知 preset `{preset}`（可选：{}）", known.join(", "))
+            crate::ts!("未知 preset `{preset}`（可选：{}）", "Unknown preset `{preset}` (options: {})", known.join(", "))
         })?;
     let label = label
         .map(str::trim)
@@ -453,7 +453,7 @@ fn add_key_at(
         .entries
         .iter()
         .find(|entry| entry.id == preset)
-        .ok_or_else(|| "写入后读不回条目".to_string())?;
+        .ok_or_else(|| crate::ts!("写入后读不回条目", "Could not read the entry back after writing"))?;
     Ok(entry_view(path, entry))
 }
 
@@ -463,7 +463,7 @@ pub fn list_models(agent_id: &str) -> BridgeModelsResult {
         return BridgeModelsResult {
             models: Vec::new(),
             sources: Vec::new(),
-            note: Some("无法定位用户目录".to_string()),
+            note: Some(crate::ts!("无法定位用户目录", "Could not locate the user directory")),
         };
     };
     let credentials = home.join(".marionette").join("credentials.json");
@@ -525,7 +525,7 @@ pub fn opencode_engine_config_content(
     );
     provider.insert(
         "name".to_string(),
-        Value::String("Marionette 模型共享".to_string()),
+        Value::String(crate::ts!("Marionette 模型共享", "Marionette Model Share")),
     );
     provider.insert(
         "options".to_string(),
@@ -631,15 +631,15 @@ fn pi_remove_marionette_at(path: &Path) -> Result<bool, String> {
     let original = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(format!("读取 models.json 失败: {error}")),
+        Err(error) => return Err(crate::ts!("读取 models.json 失败: {error}", "Failed to read models.json: {error}")),
     };
     if original.trim().is_empty() {
         return Ok(false);
     }
     let mut root = serde_json::from_str::<Value>(&original)
-        .map_err(|e| format!("models.json 解析失败（{e}）— 拒绝写入半截"))?;
+        .map_err(|e| crate::ts!("models.json 解析失败（{e}）— 拒绝写入半截", "models.json parse failed ({e}) — refusing a partial write"))?;
     let Some(root_obj) = root.as_object_mut() else {
-        return Err("models.json 不是 JSON object — 拒绝写入".to_string());
+        return Err(crate::ts!("models.json 不是 JSON object — 拒绝写入", "models.json is not a JSON object — refusing to write"));
     };
     let mut providers = root_obj
         .remove("providers")
@@ -669,7 +669,7 @@ pub fn refresh_pi_marionette_route() -> Result<bool, String> {
     let _guard = BRIDGE_WRITE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let path = pi_models_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    let path = pi_models_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     match crate::engine::status() {
         crate::engine::EngineStatus::Running { port, .. } => {
             let models = crate::engine::catalog_direct();
@@ -679,7 +679,7 @@ pub fn refresh_pi_marionette_route() -> Result<bool, String> {
             let existing = match fs::read_to_string(&path) {
                 Ok(text) => Some(text),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(error) => return Err(format!("读取 models.json 失败: {error}")),
+                Err(error) => return Err(crate::ts!("读取 models.json 失败: {error}", "Failed to read models.json: {error}")),
             };
             // 半写坏 / 非 object 的原文不能静默整体替换（用户自建 provider
             // 会丢）——先改名留档，再当作新文件合并。
@@ -910,15 +910,15 @@ fn zcode_remove_marionette_at(path: &Path) -> Result<bool, String> {
     let original = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(format!("读取 provider_config.json 失败: {error}")),
+        Err(error) => return Err(crate::ts!("读取 provider_config.json 失败: {error}", "Failed to read provider_config.json: {error}")),
     };
     if original.trim().is_empty() {
         return Ok(false);
     }
     let mut root = serde_json::from_str::<Value>(&original)
-        .map_err(|e| format!("provider_config.json 解析失败（{e}）— 拒绝写入半截"))?;
+        .map_err(|e| crate::ts!("provider_config.json 解析失败（{e}）— 拒绝写入半截", "provider_config.json parse failed ({e}) — refusing a partial write"))?;
     let Some(root_obj) = root.as_object_mut() else {
-        return Err("provider_config.json 不是 JSON object — 拒绝写入".to_string());
+        return Err(crate::ts!("provider_config.json 不是 JSON object — 拒绝写入", "provider_config.json is not a JSON object — refusing to write"));
     };
     let managed = crate::dsh_bridge::MARIONETTE_PROVIDER;
     let mut touched = false;
@@ -978,7 +978,7 @@ pub fn refresh_zcode_marionette_route() -> Result<bool, String> {
     let _guard = BRIDGE_WRITE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let path = zcode_provider_config_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    let path = zcode_provider_config_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     match crate::engine::status() {
         crate::engine::EngineStatus::Running { port, .. } => {
             let models = crate::engine::catalog_direct_entries();
@@ -988,7 +988,7 @@ pub fn refresh_zcode_marionette_route() -> Result<bool, String> {
             let existing = match fs::read_to_string(&path) {
                 Ok(text) => Some(text),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(error) => return Err(format!("读取 provider_config.json 失败: {error}")),
+                Err(error) => return Err(crate::ts!("读取 provider_config.json 失败: {error}", "Failed to read provider_config.json: {error}")),
             };
             // 半写坏 / 非 object 的原文不能静默整体替换（用户自建 provider
             // 会丢）——先改名留档，再当作新文件合并。
@@ -1029,23 +1029,20 @@ fn list_models_at(
                 return BridgeModelsResult {
                     models: Vec::new(),
                     sources: Vec::new(),
-                    note: Some(
-                        "模型共享需要翻译引擎 — 请先在设置的凭据页启用（引擎运行中后重开此菜单）"
-                            .to_string(),
-                    ),
+                    note: Some(crate::ts!("模型共享需要翻译引擎 — 请先在设置的凭据页启用（引擎运行中后重开此菜单）", "Model Share needs the translation engine — enable it on the Credentials page in Settings first (reopen this menu once the engine is running)")),
                 };
             }
             let mut models = Vec::new();
             let truncated = push_engine_models(&mut models);
             let mut note = if models.is_empty() {
-                Some("引擎还没有可用模型（订阅发现进行中，稍后重试）".to_string())
+                Some(crate::ts!("引擎还没有可用模型（订阅发现进行中，稍后重试）", "No models from the engine yet (subscription discovery in progress; retry later)"))
             } else {
                 None
             };
             if truncated {
-                let suffix = "目录过长已截断，更多模型请用「自定义模型」输入";
+                let suffix = crate::ts!("目录过长已截断，更多模型请用「自定义模型」输入", "Catalog truncated; use the Custom model input for more models");
                 note = Some(match note {
-                    Some(existing) => format!("{existing}；{suffix}"),
+                    Some(existing) => crate::ts!("{existing}；{suffix}", "{existing}; {suffix}"),
                     None => suffix.to_string(),
                 });
             }
@@ -1087,14 +1084,13 @@ fn list_models_at(
                 None
             } else {
                 Some(
-                    "模型共享未运行 — Grok/GPT 等订阅模型暂不可见；点左下角模型共享按钮启动（或稍候自动唤醒）后重开此菜单"
-                        .to_string(),
+                    crate::ts!("模型共享未运行 — Grok/GPT 等订阅模型暂不可见；点左下角模型共享按钮启动（或稍候自动唤醒）后重开此菜单", "Model Share is not running — subscription models such as Grok/GPT are hidden for now; start it via the Model Share button in the bottom-left corner (or wait for auto-wake), then reopen this menu"),
                 )
             };
             if truncated {
-                let suffix = "目录过长已截断，更多模型请用「自定义模型」输入";
+                let suffix = crate::ts!("目录过长已截断，更多模型请用「自定义模型」输入", "Catalog truncated; use the Custom model input for more models");
                 note = Some(match note {
-                    Some(existing) => format!("{existing}；{suffix}"),
+                    Some(existing) => crate::ts!("{existing}；{suffix}", "{existing}; {suffix}"),
                     None => suffix.to_string(),
                 });
             }
@@ -1109,10 +1105,7 @@ fn list_models_at(
         BridgeAgent::Other => BridgeModelsResult {
             models: Vec::new(),
             sources: Vec::new(),
-            note: Some(
-                "该 agent 的模型共享还没接（当前支持 Claude Code、Grok、Codex、OpenCode、DeepSeek、Pi 与 ZCode）"
-                    .to_string(),
-            ),
+            note: Some(crate::ts!("该 agent 的模型共享还没接（当前支持 Claude Code、Grok、Codex、OpenCode、DeepSeek、Pi 与 ZCode）", "Model Share is not wired up for this agent yet (currently supported: Claude Code, Grok, Codex, OpenCode, DeepSeek, Pi, and ZCode)")),
         },
         agent => {
             let store = match crate::credentials::load_store_at(credentials_path) {
@@ -1188,9 +1181,9 @@ fn list_models_at(
                 truncated |= push_engine_models(&mut models);
             }
             let mut note = if sources.is_empty() {
-                Some("还没有可共享的 API Key，请先在设置的凭据页添加".to_string())
+                Some(crate::ts!("还没有可共享的 API Key，请先在设置的凭据页添加", "No API key to share yet — add one on the Credentials page in Settings"))
             } else if models.is_empty() {
-                Some("当前凭证没有可用的共享模型（拉取模型目录失败，可稍后重试或用自定义输入）".to_string())
+                Some(crate::ts!("当前凭证没有可用的共享模型（拉取模型目录失败，可稍后重试或用自定义输入）", "No shared models for the current credentials (catalog fetch failed; retry later or use custom input)"))
             } else {
                 None
             };
@@ -1198,14 +1191,13 @@ fn list_models_at(
             // 缺席不是没有，是引擎未运行——给出动作指引。
             if !crate::engine::bridge_ready() && note.is_none() {
                 note = Some(
-                    "模型共享未运行 — Grok/GPT 等订阅模型暂不可见；点左下角模型共享按钮启动（或稍候自动唤醒）后重开此菜单"
-                        .to_string(),
+                    crate::ts!("模型共享未运行 — Grok/GPT 等订阅模型暂不可见；点左下角模型共享按钮启动（或稍候自动唤醒）后重开此菜单", "Model Share is not running — subscription models such as Grok/GPT are hidden for now; start it via the Model Share button in the bottom-left corner (or wait for auto-wake), then reopen this menu"),
                 );
             }
             if truncated {
-                let suffix = "目录过长已截断，更多模型请用「自定义模型」输入";
+                let suffix = crate::ts!("目录过长已截断，更多模型请用「自定义模型」输入", "Catalog truncated; use the Custom model input for more models");
                 note = Some(match note {
-                    Some(existing) => format!("{existing}；{suffix}"),
+                    Some(existing) => crate::ts!("{existing}；{suffix}", "{existing}; {suffix}"),
                     None => suffix.to_string(),
                 });
             }
@@ -1607,13 +1599,13 @@ fn temp_sibling(path: &Path) -> PathBuf {
 
 fn write_text_atomic(path: &Path, body: &str) -> Result<(), String> {
     if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(|e| format!("创建目录失败: {e}"))?;
+        fs::create_dir_all(dir).map_err(|e| crate::ts!("创建目录失败: {e}", "Failed to create directory: {e}"))?;
     }
     let temp = temp_sibling(path);
-    fs::write(&temp, body).map_err(|e| format!("写入临时文件失败: {e}"))?;
+    fs::write(&temp, body).map_err(|e| crate::ts!("写入临时文件失败: {e}", "Failed to write temp file: {e}"))?;
     if let Err(error) = fs::rename(&temp, path) {
         let _ = fs::remove_file(&temp);
-        return Err(format!("重命名临时文件失败: {error}"));
+        return Err(crate::ts!("重命名临时文件失败: {error}", "Failed to rename temp file: {error}"));
     }
     Ok(())
 }
@@ -1655,7 +1647,7 @@ fn archive_corrupt(path: &Path) -> Result<PathBuf, String> {
         n += 1;
     }
     fs::rename(path, &candidate)
-        .map_err(|e| format!("{name} 已损坏且留档失败（{e}）— 已中止"))?;
+        .map_err(|e| crate::ts!("{name} 已损坏且留档失败（{e}）— 已中止", "{name} is corrupt and archiving failed ({e}) — aborted"))?;
     Ok(candidate)
 }
 
@@ -1680,7 +1672,7 @@ pub fn load_bindings_at(path: &Path) -> Result<BindingFile, String> {
         return Ok(empty_bindings());
     }
     let text =
-        fs::read_to_string(path).map_err(|e| format!("读取 bridge-bindings.json 失败: {e}"))?;
+        fs::read_to_string(path).map_err(|e| crate::ts!("读取 bridge-bindings.json 失败: {e}", "Failed to read bridge-bindings.json: {e}"))?;
     if text.trim().is_empty() {
         return Ok(empty_bindings());
     }
@@ -1695,7 +1687,7 @@ pub fn load_bindings_at(path: &Path) -> Result<BindingFile, String> {
 
 pub fn save_bindings_at(path: &Path, file: &BindingFile) -> Result<(), String> {
     let body = serde_json::to_string_pretty(file)
-        .map_err(|e| format!("序列化 bridge-bindings.json 失败: {e}"))?;
+        .map_err(|e| crate::ts!("序列化 bridge-bindings.json 失败: {e}", "Failed to serialize bridge-bindings.json: {e}"))?;
     write_text_atomic(path, &format!("{body}\n"))
 }
 
@@ -1730,9 +1722,9 @@ pub fn bind_session(
     agent_id: Option<&str>,
     selection: Option<BridgeSelection>,
 ) -> Result<(), String> {
-    let bindings = bindings_path().ok_or_else(|| "无法定位用户目录".to_string())?;
-    let credentials = credentials_path().ok_or_else(|| "无法定位用户目录".to_string())?;
-    let grok_config = grok_config_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    let bindings = bindings_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
+    let credentials = credentials_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
+    let grok_config = grok_config_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     let scan = crate::credentials::scan_opencode();
     bind_session_at(
         &bindings,
@@ -1865,35 +1857,39 @@ fn resolve_bound_preset(
     let store = crate::credentials::load_store_at(credentials_path)?;
     if let Some(entry) = store.entries.iter().find(|entry| entry.id == entry_id) {
         if entry.kind != CredentialKind::KeyPlan {
-            return Err(format!(
+            return Err(crate::ts!(
                 "凭证 `{entry_id}` 不是 key 型 plan（kind = {}），无法直连",
+                "Credential `{entry_id}` is not a key plan (kind = {}); cannot connect directly",
                 kind_str(entry.kind)
             ));
         }
         let preset_id = entry
             .preset
             .as_deref()
-            .ok_or_else(|| format!("凭证 `{entry_id}` 缺少 preset"))?;
+            .ok_or_else(|| crate::ts!("凭证 `{entry_id}` 缺少 preset", "Credential `{entry_id}` is missing its preset"))?;
         let preset = find_preset(preset_id)
-            .ok_or_else(|| format!("凭证 `{entry_id}` 的 preset `{preset_id}` 不在预设表内"))?;
+            .ok_or_else(|| crate::ts!("凭证 `{entry_id}` 的 preset `{preset_id}` 不在预设表内", "Credential `{entry_id}` uses preset `{preset_id}`, which is not in the preset table"))?;
         return Ok(BoundPreset::Store(preset));
     }
     if let Some(entry) = opencode_scan.entries.iter().find(|entry| {
         entry.id == entry_id && entry.kind == CredentialKind::Reference
     }) {
         let provider = ref_path_provider(entry.ref_path.as_deref()).ok_or_else(|| {
-            format!("凭证 `{entry_id}` 的 ref 路径解析不出 provider-id，无法直连")
+            crate::ts!("凭证 `{entry_id}` 的 ref 路径解析不出 provider-id，无法直连", "Cannot parse a provider id from the ref path of credential `{entry_id}`; cannot connect directly")
         })?;
         let preset = preset_for_opencode_provider(&provider).ok_or_else(|| {
-            format!(
+            crate::ts!(
                 "opencode provider `{provider}` 未映射到任何直连 preset \
-                （没有核实过的 L1 端点），无法直连"
+                （没有核实过的 L1 端点），无法直连",
+                "opencode provider `{provider}` is not mapped to any direct preset \
+                (no verified L1 endpoint); cannot connect directly"
             )
         })?;
         return Ok(BoundPreset::Reference(preset));
     }
-    Err(format!(
-        "绑定引用的凭证 `{entry_id}` 不存在（凭据库与 opencode auth.json 的扫描里都没有）"
+    Err(crate::ts!(
+        "绑定引用的凭证 `{entry_id}` 不存在（凭据库与 opencode auth.json 的扫描里都没有）",
+        "The credential `{entry_id}` referenced by this binding does not exist (absent from both the credential store and the opencode auth.json scan)"
     ))
 }
 
@@ -1907,16 +1903,16 @@ fn validate_selection_at(
     selection: &BridgeSelection,
 ) -> Result<BoundPreset, String> {
     if selection.model_id.trim().is_empty() {
-        return Err("model_id 不能为空".to_string());
+        return Err(crate::ts!("model_id 不能为空", "model_id cannot be empty"));
     }
     if selection.entry_id == crate::engine::ENGINE_ENTRY_ID {
         return if crate::engine::bridge_ready() {
             Ok(BoundPreset::Engine)
         } else {
-            Err(
-                "翻译引擎未在运行 — 请先在设置的凭据页启用（引擎就绪后重新选择模型）"
-                    .to_string(),
-            )
+            Err(crate::ts!(
+                "翻译引擎未在运行 — 请先在设置的凭据页启用（引擎就绪后重新选择模型）",
+                "The translation engine is not running — enable it on the Credentials page in Settings first, then reselect the model"
+            ))
         };
     }
     resolve_bound_preset(credentials_path, opencode_scan, &selection.entry_id)
@@ -2137,7 +2133,7 @@ fn grok_engine_owned_block(model_id: &str, base_url: &str) -> String {
         marker = GROK_OWNED_MARKER,
         header = grok_table_header(&grok_table_name(model_id)),
         model = toml_escape(model_id),
-        name = toml_escape("翻译引擎"),
+        name = toml_escape(&crate::ts!("翻译引擎", "Translation engine")),
         base = toml_escape(base_url),
         key = toml_escape(crate::engine::ENGINE_TOKEN),
     )
@@ -2153,11 +2149,11 @@ fn ensure_grok_block_at(
     let original = match fs::read_to_string(config_path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(error) => return Err(format!("读取 grok config.toml 失败: {error}")),
+        Err(error) => return Err(crate::ts!("读取 grok config.toml 失败: {error}", "Failed to read grok config.toml: {error}")),
     };
     if !original.trim().is_empty() {
         toml::from_str::<toml::Value>(&original)
-            .map_err(|e| format!("grok config.toml 解析失败（{e}）— 拒绝写入半截"))?;
+            .map_err(|e| crate::ts!("grok config.toml 解析失败（{e}）— 拒绝写入半截", "grok config.toml parse failed ({e}) — refusing a partial write"))?;
     }
 
     let mut blocks = split_blocks(&original);
@@ -2210,7 +2206,7 @@ fn ensure_grok_block_at(
 
     let output = blocks_to_text(&blocks);
     toml::from_str::<toml::Value>(&output)
-        .map_err(|e| format!("生成的 grok config.toml 未通过 TOML 校验（{e}）— 已放弃写入"))?;
+        .map_err(|e| crate::ts!("生成的 grok config.toml 未通过 TOML 校验（{e}）— 已放弃写入", "Generated grok config.toml failed TOML validation ({e}) — write abandoned"))?;
     write_text_atomic(config_path, &output)?;
     Ok(true)
 }
@@ -2233,11 +2229,12 @@ pub fn ensure_grok_model_table_at(
 ) -> Result<bool, String> {
     let model_id = model_id.trim();
     if model_id.is_empty() {
-        return Err("model_id 不能为空".to_string());
+        return Err(crate::ts!("model_id 不能为空", "model_id cannot be empty"));
     }
     if preset.chat_base.is_none() {
-        return Err(format!(
+        return Err(crate::ts!(
             "preset `{}` 没有核实过的 chat 端点，拒绝写 grok 表",
+            "Preset `{}` has no verified chat endpoint; refusing to write the grok table",
             preset.id
         ));
     }
@@ -2253,7 +2250,7 @@ pub fn ensure_grok_engine_table_at(
 ) -> Result<bool, String> {
     let model_id = model_id.trim();
     if model_id.is_empty() {
-        return Err("model_id 不能为空".to_string());
+        return Err(crate::ts!("model_id 不能为空", "model_id cannot be empty"));
     }
     let desired = grok_engine_owned_block(model_id, base_url);
     ensure_grok_block_at(config_path, &grok_table_name(model_id), &desired)
@@ -2265,13 +2262,13 @@ pub fn remove_grok_model_tables_at(config_path: &Path) -> Result<bool, String> {
     let original = match fs::read_to_string(config_path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(format!("读取 grok config.toml 失败: {error}")),
+        Err(error) => return Err(crate::ts!("读取 grok config.toml 失败: {error}", "Failed to read grok config.toml: {error}")),
     };
     if original.trim().is_empty() {
         return Ok(false);
     }
     toml::from_str::<toml::Value>(&original)
-        .map_err(|e| format!("grok config.toml 解析失败（{e}）— 拒绝写入半截"))?;
+        .map_err(|e| crate::ts!("grok config.toml 解析失败（{e}）— 拒绝写入半截", "grok config.toml parse failed ({e}) — refusing a partial write"))?;
 
     let mut blocks = split_blocks(&original);
     // 只删 marionette/ 前缀的 model 表；序言、非 model 表（[cli]/[models]/
@@ -2303,7 +2300,7 @@ pub fn remove_grok_model_tables_at(config_path: &Path) -> Result<bool, String> {
     }
     if !output.trim().is_empty() {
         toml::from_str::<toml::Value>(&output).map_err(|e| {
-            format!("生成的 grok config.toml 未通过 TOML 校验（{e}）— 已放弃写入")
+            crate::ts!("生成的 grok config.toml 未通过 TOML 校验（{e}）— 已放弃写入", "Generated grok config.toml failed TOML validation ({e}) — write abandoned")
         })?;
     }
     write_text_atomic(config_path, &output)?;
@@ -2314,14 +2311,14 @@ pub fn remove_grok_model_tables_at(config_path: &Path) -> Result<bool, String> {
 /// 绑定走 `preset_id == "engine"` 分支 —— base_url 指引擎的 `/v1`、api_key
 /// 用字面量令牌（acp.rs 的 SpawnInjection::GrokTable 传进来的就是它）。
 pub fn ensure_grok_model_table(model_id: &str, preset_id: &str) -> Result<bool, String> {
-    let path = grok_config_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    let path = grok_config_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     if preset_id == crate::engine::ENGINE_PRESET_ID {
         let base_url = crate::engine::engine_v1_url().ok_or_else(|| {
-            "翻译引擎未在运行，无法写 grok 引擎表（绑定已降级）".to_string()
+            crate::ts!("翻译引擎未在运行，无法写 grok 引擎表（绑定已降级）", "The translation engine is not running; cannot write the grok engine table (binding downgraded)")
         })?;
         return ensure_grok_engine_table_at(&path, model_id, &base_url);
     }
-    let preset = find_preset(preset_id).ok_or_else(|| format!("未知 preset `{preset_id}`"))?;
+    let preset = find_preset(preset_id).ok_or_else(|| crate::ts!("未知 preset `{preset_id}`", "Unknown preset `{preset_id}`"))?;
     ensure_grok_model_table_at(&path, model_id, preset, GROK_KEY_ENV)
 }
 
@@ -2330,7 +2327,7 @@ pub fn ensure_grok_model_table(model_id: &str, preset_id: &str) -> Result<bool, 
 /// 是为了给未来的全局清理（如设置页「移除全部跨用表」）一个直接入口。
 #[allow(dead_code)]
 pub fn remove_grok_model_tables() -> Result<bool, String> {
-    let path = grok_config_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    let path = grok_config_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     remove_grok_model_tables_at(&path)
 }
 
@@ -2346,7 +2343,7 @@ const ZHIPU_CODING_CHAT: &str = "https://open.bigmodel.cn/api/coding/paas/v4";
 /// 只动匹配到套餐钥匙的表；按量钥匙、`$ENV` 展开（我们自己的 owned 表）、
 /// 已经是 coding 端点的，一律不碰。失败不阻塞 spawn。
 pub fn rewrite_grok_zhipu_coding_plan_bases() -> Result<bool, String> {
-    let path = grok_config_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    let path = grok_config_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     rewrite_grok_zhipu_coding_plan_bases_at(&path, &glm_coding_plan_keys())
 }
 
@@ -2360,13 +2357,13 @@ pub fn rewrite_grok_zhipu_coding_plan_bases_at(
     let original = match fs::read_to_string(config_path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(format!("读取 grok config.toml 失败: {error}")),
+        Err(error) => return Err(crate::ts!("读取 grok config.toml 失败: {error}", "Failed to read grok config.toml: {error}")),
     };
     if original.trim().is_empty() {
         return Ok(false);
     }
     toml::from_str::<toml::Value>(&original)
-        .map_err(|e| format!("grok config.toml 解析失败（{e}）— 拒绝写入半截"))?;
+        .map_err(|e| crate::ts!("grok config.toml 解析失败（{e}）— 拒绝写入半截", "grok config.toml parse failed ({e}) — refusing a partial write"))?;
 
     let keys: HashSet<&str> = coding_plan_keys
         .iter()
@@ -2412,7 +2409,7 @@ pub fn rewrite_grok_zhipu_coding_plan_bases_at(
 
     let output = blocks_to_text(&blocks);
     toml::from_str::<toml::Value>(&output).map_err(|e| {
-        format!("生成的 grok config.toml 未通过 TOML 校验（{e}）— 已放弃写入")
+        crate::ts!("生成的 grok config.toml 未通过 TOML 校验（{e}）— 已放弃写入", "Generated grok config.toml failed TOML validation ({e}) — write abandoned")
     })?;
     write_text_atomic(config_path, &output)?;
     Ok(true)
@@ -2552,7 +2549,7 @@ pub fn injection_for_agent(
     entry_id: &str,
     model_id: &str,
 ) -> Result<Option<SpawnInjection>, String> {
-    let path = credentials_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    let path = credentials_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     let scan = crate::credentials::scan_opencode();
     injection_for_agent_at(&path, &scan, agent_id, entry_id, model_id)
 }
@@ -2574,13 +2571,14 @@ pub fn injection_for_agent_at(
     //    引擎不在 Running → Err（acp.rs 走残留绑定降级路径：warn + 普通会话）。
     if entry_id == crate::engine::ENGINE_ENTRY_ID {
         if !crate::engine::bridge_ready() {
-            return Err(format!(
+            return Err(crate::ts!(
                 "翻译引擎未在运行（绑定 `{}` 已失效）— 降级为普通会话",
+                "The translation engine is not running (binding `{}` is stale) — falling back to a regular session",
                 crate::engine::ENGINE_ENTRY_ID
             ));
         }
         let Some(port) = crate::engine::running_base().map(|(port, _)| port) else {
-            return Err("翻译引擎状态不可用 — 降级为普通会话".to_string());
+            return Err(crate::ts!("翻译引擎状态不可用 — 降级为普通会话", "Translation engine status unavailable — falling back to a regular session"));
         };
         return Ok(match agent {
             BridgeAgent::ClaudeCode => Some(SpawnInjection::ClaudeEnv {
@@ -2614,19 +2612,19 @@ pub fn peek_reference_secret(entry: &CredentialEntry) -> Result<String, String> 
     let ref_path = entry
         .ref_path
         .as_deref()
-        .ok_or_else(|| format!("reference `{}` 没有 ref 路径", entry.id))?;
+        .ok_or_else(|| crate::ts!("reference `{}` 没有 ref 路径", "Reference `{}` has no ref path", entry.id))?;
     let (path, provider) = ref_path
         .rsplit_once('#')
-        .ok_or_else(|| format!("ref 路径不是 `文件路径#provider-id` 形态: {ref_path}"))?;
+        .ok_or_else(|| crate::ts!("ref 路径不是 `文件路径#provider-id` 形态: {ref_path}", "Ref path is not in `file path#provider-id` form: {ref_path}"))?;
     let text = fs::read_to_string(path)
-        .map_err(|e| format!("读取 reference 源文件失败（`{provider}`）: {e}"))?;
+        .map_err(|e| crate::ts!("读取 reference 源文件失败（`{provider}`）: {e}", "Failed to read the reference source file (`{provider}`): {e}"))?;
     let auth: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| format!("reference 源文件解析失败（`{provider}`）: {e}"))?;
+        .map_err(|e| crate::ts!("reference 源文件解析失败（`{provider}`）: {e}", "Failed to parse the reference source file (`{provider}`): {e}"))?;
     let value = auth
         .get(provider)
-        .ok_or_else(|| format!("`{provider}` 条目已不在 reference 源文件里"))?;
+        .ok_or_else(|| crate::ts!("`{provider}` 条目已不在 reference 源文件里", "`{provider}` entry no longer exists in the reference source file"))?;
     crate::provider_usage::strict_api_key_of(value)
-        .map_err(|e| format!("`{provider}` 的 key 现场读失败: {e}"))
+        .map_err(|e| crate::ts!("`{provider}` 的 key 现场读失败: {e}", "Failed to read the key for `{provider}` on the spot: {e}"))
 }
 
 /// spawn 注入的钥匙统一解析（acp.rs 的注入段调用）：key-plan → 凭据库 DPAPI
@@ -3914,7 +3912,7 @@ official_marketplace_auto_installed = true\n";
         let source = BridgeSource {
             entry_id: "engine".to_string(),
             preset: "engine".to_string(),
-            label: "翻译引擎（订阅）".to_string(),
+label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)"),
             from_scan: false,
         };
         let result_of = |ids: &[&str]| BridgeModelsResult {

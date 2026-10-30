@@ -12,6 +12,7 @@ import {
 import { memo, useState } from "react";
 import { createPortal } from "react-dom";
 import { openExternal, revealInFileManager } from "../lib/api";
+import { t, useT } from "../lib/i18n";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { MemorySection } from "./MemorySection";
 import { PluginsSection } from "./PluginsSection";
@@ -139,7 +140,7 @@ function mcpServerLine(server: McpServerSpec, nativeHere: boolean): string {
   if (server.transport === "stdio") {
     const cmd = (server.command ?? "").split(/[\\/]/).pop() ?? "";
     const pkg = server.args.find((a) => !a.startsWith("-") && a !== "-y") ?? "";
-    where = ["本地", [cmd, pkg].filter(Boolean).join(" ")].filter(Boolean).join(" · ");
+    where = [t("context.local"), [cmd, pkg].filter(Boolean).join(" ")].filter(Boolean).join(" · ");
   } else {
     let host = server.url ?? "";
     try {
@@ -147,12 +148,12 @@ function mcpServerLine(server: McpServerSpec, nativeHere: boolean): string {
     } catch {
       // keep the raw url
     }
-    where = ["远程", host].filter(Boolean).join(" · ");
+    where = [t("context.remote"), host].filter(Boolean).join(" · ");
   }
   const owners = nativeHere
-    ? "当前 agent 自带"
+    ? t("context.bundledHere")
     : server.agents.length > 0
-      ? `${server.agents.join("、")} 已自带`
+      ? t("context.bundledIn", { agents: server.agents.join(t("context.listSep")) })
       : "";
   return [where, owners].filter(Boolean).join(" · ");
 }
@@ -176,7 +177,7 @@ function usageSource(window: UsageWindow, agentLabel: string): { key: string; na
     const name = window.label.split(" · ")[0] || window.label;
     return { key: window.id.split(":")[1] ?? name, name };
   }
-  if (window.kind === "rate_limit") return { key: "agent", name: agentLabel || "当前 agent" };
+  if (window.kind === "rate_limit") return { key: "agent", name: agentLabel || t("context.currentAgent") };
   const name = window.label.split(" · ")[0] || window.label;
   return { key: `label:${name}`, name };
 }
@@ -278,36 +279,36 @@ function changeBadge(changeType: ChangedFile["changeType"]): string {
 function backgroundTaskStateMark(row: BackgroundTaskRow): { glyph: string; label: string } {
   switch (row.state) {
     case "attention":
-      return { glyph: "!", label: "需要你" };
+      return { glyph: "!", label: t("context.needYou") };
     case "running":
-      return { glyph: "◐", label: "运行中" };
+      return { glyph: "◐", label: t("context.stateRunning") };
     case "queued":
-      return { glyph: "…", label: "排队" };
+      return { glyph: "…", label: t("context.stateQueued") };
     case "failed":
-      return { glyph: "×", label: "失败" };
+      return { glyph: "×", label: t("context.stateFailed") };
     case "stopped":
-      return { glyph: "■", label: "已停止" };
+      return { glyph: "■", label: t("context.stateStopped") };
     default:
-      return { glyph: "✓", label: "完成" };
+      return { glyph: "✓", label: t("context.stateDone") };
   }
 }
 
 function backgroundTaskKindLabel(row: BackgroundTaskRow): string {
   switch (row.kind) {
     case "delegate":
-      return "子代理";
+      return t("context.subagent");
     case "delegate_queued":
-      return "子代理排队";
+      return t("context.subagentQueued");
     case "terminal":
-      return "后台命令";
+      return t("context.backgroundCommand");
     case "queued":
-      return "排队发送";
+      return t("context.queuedSend");
     case "subagent":
-      return "子代理";
+      return t("context.subagent");
     case "scheduled":
-      return "定时发送";
+      return t("context.scheduledSend");
     default:
-      return "需要你";
+      return t("context.needYou");
   }
 }
 
@@ -322,6 +323,7 @@ const BackgroundTaskRowView = memo(function BackgroundTaskRowView({
   onOpen: (row: BackgroundTaskRow) => void;
   onKill?: (terminalId: string) => void;
 }) {
+  const t = useT();
   const mark = backgroundTaskStateMark(row);
   const kind = backgroundTaskKindLabel(row);
   const killable = row.kind === "terminal" && row.state === "running";
@@ -358,8 +360,8 @@ const BackgroundTaskRowView = memo(function BackgroundTaskRowView({
         <button
           type="button"
           className="pill-action pill-action--icon pill-action--sm bg-task-row__kill"
-          title="终止这个后台命令"
-          aria-label={`终止 ${row.title}`}
+          title={t("context.killTask")}
+          aria-label={t("context.killTaskNamed", { title: row.title })}
           onClick={() => onKill(row.key.slice("terminal:".length))}
         >
           <X size={11} />
@@ -390,6 +392,7 @@ function ChangedFileRow({
   onRisky: (path: string) => void;
   onNote: (note: string | null) => void;
 }) {
+  const t = useT();
   const deleted = file.changeType === "deleted";
   const canAct = Boolean(cwd);
 
@@ -403,7 +406,7 @@ function ChangedFileRow({
         return;
       }
       if (!result.opened) {
-        onNote(result.message ?? "无法打开这个文件。");
+        onNote(result.message ?? t("context.cannotOpenFile"));
       }
     } catch (error) {
       onNote(error instanceof Error ? error.message : String(error));
@@ -427,7 +430,7 @@ function ChangedFileRow({
         <button
           type="button"
           className="changed-file-row__main"
-          title={`${file.path}\n点击查看 diff`}
+          title={t("context.viewDiff", { path: file.path })}
           onClick={() => onOpenDiff?.(file.path)}
         >
           <span className={`change-badge change-${file.changeType}`}>{changeBadge(file.changeType)}</span>
@@ -437,8 +440,8 @@ function ChangedFileRow({
           <button
             type="button"
             className="pill-action pill-action--icon pill-action--sm changed-file-row__action"
-            title={deleted ? "文件已删除，无法打开" : "用默认程序打开"}
-            aria-label={deleted ? "文件已删除，无法打开" : "用默认程序打开"}
+            title={deleted ? t("context.fileDeleted") : t("context.openDefault")}
+            aria-label={deleted ? t("context.fileDeleted") : t("context.openDefault")}
             disabled={!canAct || deleted}
             onClick={() => void openFile()}
           >
@@ -447,8 +450,8 @@ function ChangedFileRow({
           <button
             type="button"
             className="pill-action pill-action--icon pill-action--sm changed-file-row__action"
-            title={deleted ? "在资源管理器中打开所在文件夹" : "在资源管理器中显示"}
-            aria-label={deleted ? "在资源管理器中打开所在文件夹" : "在资源管理器中显示"}
+            title={deleted ? t("context.openParentFolder") : t("context.revealInExplorer")}
+            aria-label={deleted ? t("context.openParentFolder") : t("context.revealInExplorer")}
             disabled={!canAct}
             onClick={() => void reveal()}
           >
@@ -502,6 +505,7 @@ export const ContextPanel = memo(function ContextPanel({
   onOpenBackgroundTask,
   onKillBackgroundTerminal,
 }: ContextPanelProps) {
+  const t = useT();
   const planList = planEntries && planEntries.length > 0 ? planEntries : null;
   const [draftTodo, setDraftTodo] = useState("");
   /** Docked: the update control joins the strip's footer bar below the composer. */
@@ -556,7 +560,7 @@ export const ContextPanel = memo(function ContextPanel({
     setMergeError(null);
     const result = onPrepareAiTodoMerge?.() ?? null;
     if (!result) {
-      setMergeError("没有可用的 AI 清单（等 plan 更新或 ```marionette-todo 代码块）");
+      setMergeError(t("context.noAiTodoList"));
       setMergePreview(null);
       return;
     }
@@ -579,7 +583,7 @@ export const ContextPanel = memo(function ContextPanel({
   // read together, shortest first; a source with one window keeps the plain row.
   const usageGroups = groupUsageBySource(usage.windows, usage.agentLabel);
   const attentionCount = backgroundTasks.filter((row) => row.state === "attention").length;
-  const usageFooter = [usage.note, usage.refreshedAt || "尚未刷新"]
+  const usageFooter = [usage.note, usage.refreshedAt || t("context.notRefreshed")]
     .filter((part, i, all): part is string => Boolean(part) && all.indexOf(part) === i)
     .join(" · ");
   const renderUsageRow = (window: UsageWindow) => {
@@ -627,8 +631,8 @@ export const ContextPanel = memo(function ContextPanel({
     <button
       className={`pill-action pill-action--icon pill-action--sm context-panel__button--update${appUpdateAvailable ? " is-update-ready" : ""}`}
       type="button"
-      title={appUpdateAvailable ? "有新版本可用 — 点击检查" : "检查更新"}
-      aria-label={appUpdateAvailable ? "有新版本可用 — 点击检查" : "检查更新"}
+      title={appUpdateAvailable ? t("context.updateReady") : t("context.checkUpdate")}
+      aria-label={appUpdateAvailable ? t("context.updateReady") : t("context.checkUpdate")}
       disabled={checkAppUpdateBusy}
       onClick={onCheckAppUpdate}
     >
@@ -652,7 +656,7 @@ export const ContextPanel = memo(function ContextPanel({
       )}
       <section className="context-card" id="context-tasks" aria-label="Tasks">
         <div className="context-card__heading">
-          <span>任务</span>
+          <span>{t("context.tasks")}</span>
         </div>
 
         {planList && (
@@ -676,7 +680,7 @@ export const ContextPanel = memo(function ContextPanel({
             </ul>
             {onAbsorbPlan && (
               <button type="button" className="tasks-action" onClick={onAbsorbPlan}>
-                ↓ 吸收进 Todo
+                {t("context.absorbPlan")}
               </button>
             )}
           </div>
@@ -685,11 +689,11 @@ export const ContextPanel = memo(function ContextPanel({
         {!planList && planModeActive && (
           <div className="plan-block plan-block--empty">
             <div className="plan-block__meta">
-              Plan 模式 · {activeAgentLabel || activeAgentId || "agent"}
+              {t("context.planModeMeta", { agent: activeAgentLabel || activeAgentId || "agent" })}
             </div>
             <p className="context-card__empty">
-              已切换到 Plan。Grok 等 Agent 多数把方案写在对话里，不会推结构化清单到这里。
-              对话中的选择题会弹卡片；方案写完后切回 Build 再动手。
+              {t("context.planEmptyHint1")}
+              {t("context.planEmptyHint2")}
             </p>
           </div>
         )}
@@ -749,46 +753,46 @@ export const ContextPanel = memo(function ContextPanel({
           <div className="tasks-actions">
             {onSendTodosToAi && todoItems.length > 0 && (
               <button type="button" className="tasks-action" onClick={onSendTodosToAi}>
-                发给 AI
+                {t("context.sendToAi")}
               </button>
             )}
             {onRequestAiTodoUpdate && (
               <button type="button" className="tasks-action" onClick={onRequestAiTodoUpdate}>
-                让 AI 更新…
+                {t("context.askAiUpdate")}
               </button>
             )}
             {onPrepareAiTodoMerge && (
               <button type="button" className="tasks-action" onClick={runPrepareMerge}>
-                预览 AI 变更
+                {t("context.previewAiChanges")}
               </button>
             )}
           </div>
           {mergeError && <p className="context-card__empty">{mergeError}</p>}
           {mergePreview && (
             <div className="todo-merge-preview">
-              <div className="plan-block__meta">AI 建议的变更</div>
+              <div className="plan-block__meta">{t("context.aiSuggestedChanges")}</div>
               <ul className="todo-merge-preview__list">
                 {mergePreview.added.length > 0 && (
-                  <li>+ 新增 {mergePreview.added.length} 条</li>
+                  <li>{t("context.mergeAdded", { count: mergePreview.added.length })}</li>
                 )}
                 {mergePreview.completed.length > 0 && (
-                  <li>✓ 标记完成 {mergePreview.completed.length} 条</li>
+                  <li>{t("context.mergeCompleted", { count: mergePreview.completed.length })}</li>
                 )}
                 {mergePreview.statusChanged.length > 0 && (
-                  <li>~ 状态变更 {mergePreview.statusChanged.length} 条</li>
+                  <li>{t("context.mergeStatusChanged", { count: mergePreview.statusChanged.length })}</li>
                 )}
                 {mergePreview.untouched.length > 0 && (
-                  <li>? AI 未提及 {mergePreview.untouched.length} 条（保留）</li>
+                  <li>{t("context.mergeUntouched", { count: mergePreview.untouched.length })}</li>
                 )}
                 {mergePreview.added.length === 0 &&
                   mergePreview.completed.length === 0 &&
                   mergePreview.statusChanged.length === 0 && (
-                    <li>无实质变更</li>
+                    <li>{t("context.mergeNoChanges")}</li>
                   )}
               </ul>
               <div className="tasks-actions">
                 <button type="button" className="tasks-action tasks-action--primary" onClick={applyMerge}>
-                  应用
+                  {t("context.apply")}
                 </button>
                 <button
                   type="button"
@@ -798,7 +802,7 @@ export const ContextPanel = memo(function ContextPanel({
                     setMergeError(null);
                   }}
                 >
-                  取消
+                  {t("common.cancel")}
                 </button>
               </div>
             </div>
@@ -808,9 +812,9 @@ export const ContextPanel = memo(function ContextPanel({
       {backgroundTasks.length > 0 && (
         <section className="context-card" id="context-background" aria-label="Background tasks">
           <div className="context-card__heading">
-            <span>后台任务</span>
+            <span>{t("context.backgroundTasks")}</span>
             {attentionCount > 0 && (
-              <span className="bg-task-attention-badge" title={`${attentionCount} 项等待处理`}>
+              <span className="bg-task-attention-badge" title={t("context.attentionCount", { count: attentionCount })}>
                 {attentionCount}
               </span>
             )}
@@ -830,7 +834,7 @@ export const ContextPanel = memo(function ContextPanel({
       )}
       <section className="context-card" id="context-usage">
         <div className="context-card__heading">
-          <span>用量</span>
+          <span>{t("context.usage")}</span>
           <button className="pill-action pill-action--icon pill-action--sm" type="button" title="Refresh usage" aria-label="Refresh usage" onClick={onUsageRefresh}>
             <RefreshCw size={11} />
           </button>
@@ -838,7 +842,7 @@ export const ContextPanel = memo(function ContextPanel({
         <div className="usage-agent">{usage.agentLabel}</div>
         {usage.windows.length === 0 ? (
           <p className="context-card__empty">
-            暂无用量数据。先发一条消息或点刷新；OpenCode 会查余额，Claude/Codex 在已连接时会拉 /usage、/status。
+            {t("context.usageEmpty")}
           </p>
         ) : (
           <div className="usage-list">
@@ -892,13 +896,13 @@ export const ContextPanel = memo(function ContextPanel({
 
       <section className="context-card" id="context-changes">
         <div className="context-card__heading">
-          <span>改动文件 · 项目</span>
+          <span>{t("context.changedFilesProject")}</span>
           <div className="context-card__heading-actions">
             {onCommitAndPush && changedFiles.length > 0 && (
               <button
                 className="pill-action pill-action--icon pill-action--sm"
                 type="button"
-                title="让 AI 写 commit 并推送到远端"
+                title={t("context.aiCommitPush")}
                 aria-label="Commit and push via AI"
                 onClick={onCommitAndPush}
               >
@@ -941,7 +945,7 @@ export const ContextPanel = memo(function ContextPanel({
 
       <section className="context-card" id="context-project">
         <div className="context-card__heading">
-          <span>项目上下文</span>
+          <span>{t("context.projectContext")}</span>
           {onRescanProjectContext && (
             <button
               className="pill-action pill-action--icon pill-action--sm"
@@ -1062,7 +1066,7 @@ export const ContextPanel = memo(function ContextPanel({
 
       <section className="context-card">
         <div className="context-card__heading">
-          <span>交接</span>
+          <span>{t("context.handoff")}</span>
         </div>
         {handoff ? (
           <div className="handoff-block">
@@ -1082,11 +1086,11 @@ export const ContextPanel = memo(function ContextPanel({
 
       {riskyOpenPath && (
         <ConfirmDialog
-          title="打开可执行文件"
+          title={t("context.openExecutableTitle")}
           itemName={riskyOpenPath}
-          description="这类文件会被系统直接运行。确认要用默认程序打开吗？"
-          confirmLabel="打开"
-          cancelLabel="取消"
+          description={t("context.openExecutableDesc")}
+          confirmLabel={t("common.open")}
+          cancelLabel={t("common.cancel")}
           onCancel={() => setRiskyOpenPath(null)}
           onConfirm={() => {
             const path = riskyOpenPath;

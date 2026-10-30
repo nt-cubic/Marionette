@@ -1,6 +1,7 @@
 import { getSessionUpdate, getSessionUpdateKind } from "./acpTranscript";
 import type { EngineQuotaEntry } from "./api";
 import type { SessionEvent, TurnStats, UsageSnapshot, UsageWindow } from "./types";
+import { t } from "./i18n";
 
 /**
  * Engine quota rows skip the active agent's own subscription family — the
@@ -35,7 +36,7 @@ function engineQuotaRows(entries: EngineQuotaEntry[], agentId: string): UsageWin
           id: `engine:${entry.provider}:balance`,
           label: entry.name || entry.provider,
           percentage: null,
-          detail: `余额 ${entry.balance}`,
+          detail: t("usage.balance", { balance: entry.balance }),
           kind: "provider",
         });
       }
@@ -44,8 +45,8 @@ function engineQuotaRows(entries: EngineQuotaEntry[], agentId: string): UsageWin
     for (const w of entry.windows) {
       if (w.used == null && w.remaining == null && w.resetsAt == null) continue;
       const parts: string[] = [];
-      if (w.remaining != null) parts.push(`剩 ${Math.round(w.remaining)}%`);
-      if (w.resetsAt) parts.push(`${formatQuotaReset(w.resetsAt)} 重置`);
+      if (w.remaining != null) parts.push(t("usage.remainingPercent", { n: Math.round(w.remaining) }));
+      if (w.resetsAt) parts.push(t("usage.resetsAt", { time: formatQuotaReset(w.resetsAt) }));
       rows.push({
         id: `engine:${entry.provider}:${w.name}`,
         label: `${entry.name || entry.provider} · ${w.name}`,

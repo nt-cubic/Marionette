@@ -36,7 +36,7 @@ import { newQuotePinId, type QuotePin } from "../lib/quoteComment";
 import { buildMessagePresentation } from "../lib/messagePresentation";
 import { buildTurnDeliveries, type TurnDeliveryUnit } from "../lib/turnDelivery";
 import { modeTone } from "../lib/modeTone";
-import { diffTargetPath, isWorkspaceDiffPath, splitToolBody } from "../lib/toolBody";
+import { diffTargetPath, isImagePath, isWorkspaceDiffPath, splitToolBody } from "../lib/toolBody";
 import {
   activityRunUntilMs,
   activityTimeline,
@@ -61,6 +61,7 @@ import {
 import { useVirtualWindow } from "../lib/useVirtualWindow";
 import { isCursorOverWindow, setMergeHighlight } from "../lib/detachedWindow";
 import { loadDetailsVisible, saveDetailsVisible } from "../lib/uiRestore";
+import { useT } from "../lib/i18n";
 import { SplitBesideMenu, type OpenBesideEdge } from "./SplitBesideMenu";
 import type { DropEdge } from "../lib/splitWorkspace";
 import type { AgentConfig, Session, SessionEvent, SessionStatus } from "../lib/types";
@@ -75,6 +76,7 @@ import { WebReplyBody } from "./WebReplyBody";
 import { MessageOutline } from "./MessageOutline";
 import { MessageTimestamp } from "./MessageTimestamp";
 import { ToolImageStrip } from "./ToolImageStrip";
+import { ToolImageThumbs } from "./ToolImageThumbs";
 import { TurnDeliveryCard } from "./TurnDeliveryCard";
 import { UnifiedDiffView } from "./UnifiedDiffView";
 import { UserImageCard } from "./UserImageCard";
@@ -246,6 +248,7 @@ export function SessionTabs({
   };
 }) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
+  const t = useT();
   const [renameDraft, setRenameDraft] = useState("");
   const renameInputRef = useRef<HTMLInputElement>(null);
   const tablistRef = useRef<HTMLDivElement>(null);
@@ -587,8 +590,8 @@ export function SessionTabs({
               ) : doneUnread ? (
                 <span
                   className="editor-tab__done"
-                  title="任务已完成"
-                  aria-label="任务已完成"
+                  title={t("session.taskDone")}
+                  aria-label={t("session.taskDone")}
                 />
               ) : null}
               {isRenaming ? (
@@ -616,7 +619,7 @@ export function SessionTabs({
                   type="button"
                   title={
                     doneUnread
-                      ? `${openSession.label} · 任务已完成`
+                      ? `${openSession.label} · ${t("session.taskDone")}`
                       : onTabPopOut && !detachedMode
                         ? `${openSession.label} · drag out to tear off · double-click to rename`
                         : onTabMergeBack
@@ -658,7 +661,7 @@ export function SessionTabs({
                 <button
                   className="pill-action pill-action--icon pill-action--sm editor-tab__split"
                   type="button"
-                  title="在右侧打开"
+                  title={t("session.openRight")}
                   aria-label={`Open ${openSession.label} to the right`}
                   disabled={openSessions.length <= 1}
                   style={openSessions.length <= 1 ? { visibility: "hidden" } : undefined}
@@ -703,18 +706,18 @@ export function SessionTabs({
           <button
             className="editor-tab__select"
             type="button"
-            title="收纳盒"
+            title={t("session.memoBox")}
             onClick={memoTab.onSelect}
           >
             <Inbox size={12} />
-            <span>收纳盒</span>
+            <span>{t("session.memoBox")}</span>
             {memoTab.count > 0 && <b className="editor-tab__memo-count">{memoTab.count}</b>}
           </button>
           <button
             className="pill-action pill-action--icon pill-action--sm editor-tab__close"
             type="button"
-            title="Close 收纳盒"
-            aria-label="Close 收纳盒"
+            title={`Close ${t("session.memoBox")}`}
+            aria-label={`Close ${t("session.memoBox")}`}
             data-tauri-drag-region="false"
             onClick={(e) => {
               e.stopPropagation();
@@ -742,9 +745,9 @@ export function SessionTabs({
           <span className="tab-tear-ghost__hint">
             {onTabMergeBack
               ? mergeHover
-                ? "松开以合并回主窗口"
-                : "拖到主窗口上方合并"
-              : ghostHint ?? "松开以打开新窗口"}
+                ? t("session.releaseToMergeBack")
+                : t("session.dragToMerge")
+              : ghostHint ?? t("session.releaseToNewWindow")}
           </span>
         </div>,
         document.body
@@ -789,6 +792,7 @@ export function SessionView({
   detailsVisible: detailsVisibleProp,
   onDetailsVisibleChange,
 }: SessionViewProps) {
+  const t = useT();
   // Eye open: each thought/tool is its own card. Eye closed: consecutive
   // thought+tool runs collapse into nested activity folds (not hidden).
   // Default is closed (quiet). Open is remembered across launches.
@@ -827,7 +831,7 @@ export function SessionView({
           role="status"
         >
           <div className="session-auth-banner__copy">
-            <strong>{bannerKind === "upgrade" ? "需要更新" : "需要登录"}</strong>
+            <strong>{bannerKind === "upgrade" ? t("session.needsUpdate") : t("session.needsLogin")}</strong>
             <span>{authBanner}</span>
           </div>
           {bannerKind === "upgrade" && onUpdate ? (
@@ -837,7 +841,7 @@ export function SessionView({
               disabled={updateBusy}
               onClick={() => void onUpdate()}
             >
-              {updateBusy ? "正在打开更新…" : `更新 ${agent.label}`}
+              {updateBusy ? t("session.openingUpdate") : t("session.updateAgent", { name: agent.label })}
             </button>
           ) : onSignIn ? (
             <button
@@ -846,7 +850,7 @@ export function SessionView({
               disabled={signInBusy}
               onClick={() => void onSignIn()}
             >
-              {signInBusy ? "正在打开登录…" : `用 ${agent.label} 登录`}
+              {signInBusy ? t("session.openingLogin") : t("session.loginWithAgent", { name: agent.label })}
             </button>
           ) : null}
         </div>
@@ -918,6 +922,7 @@ function FileChangeCard({
   }) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const t = useT();
   const [diff, setDiff] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1005,12 +1010,12 @@ function FileChangeCard({
           {commenting && onLineComment && (
             <div className="file-diff-card__comment">
               <div className="file-diff-card__comment-meta">
-                {path}:{commenting.lineNumber}（{commenting.side === "new" ? "新" : "旧"}）
+                {path}:{commenting.lineNumber}({commenting.side === "new" ? t("session.sideNew") : t("session.sideOld")})
               </div>
               <input
                 className="file-diff-card__comment-input"
                 value={commentDraft}
-                placeholder="写评论，回车添加…"
+                placeholder={t("session.commentPlaceholder")}
                 autoFocus
                 onChange={(e) => setCommentDraft(e.target.value)}
                 onKeyDown={(e) => {
@@ -1038,7 +1043,7 @@ function FileChangeCard({
                   className="pill-action subtask-card__btn"
                   onClick={() => setCommenting(null)}
                 >
-                  取消
+                  {t("common.cancel")}
                 </button>
                 <button
                   type="button"
@@ -1057,13 +1062,13 @@ function FileChangeCard({
                     setCommentDraft("");
                   }}
                 >
-                  添加
+                  {t("session.add")}
                 </button>
               </div>
             </div>
           )}
           <div className="file-diff-card__note">
-            当前工作区 diff · 行号与 git 对齐 · 点代码行可加评论
+            {t("session.diffNote")}
           </div>
         </div>
       </div>
@@ -1129,10 +1134,16 @@ function hasUnifiedDiff(text: string): boolean {
   return /^@@\s+-\d+/m.test(text) && /^(?:\+\+\+|---|[+-])\s?/m.test(text);
 }
 
-/** Drop `[image]` / `[image] foo.png` placeholder lines once the real picture is shown. */
+/**
+ * Drop `[image]` / `[image] foo.png` and `[resource C:\…\x.png]` placeholder
+ * lines once the real picture is shown next to the tool output.
+ */
 function stripImagePlaceholders(text: string): string {
   return text
     .replace(/^\s*\[image\](?:\s+\S+)?\s*$/gm, "")
+    .replace(/^\s*\[resource\s+([^\]\r\n]+)\]\s*$/gm, (line, path: string) =>
+      isImagePath(path.trim()) ? "" : line,
+    )
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -1693,6 +1704,7 @@ function CleanPlaceholder({
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const [editBusy, setEditBusy] = useState(false);
+  const t = useT();
   /** User-toggled tool cards only — never store force-open (running) keys here. */
   const [expandedToolKeys, setExpandedToolKeys] = useState<Set<string>>(() => new Set());
   /** Delivery cards the user undid this session — survives virtual remounts. */
@@ -2037,14 +2049,14 @@ function CleanPlaceholder({
     <div className="clean-surface">
       <div className="clean-surface__tools">
         {agent.id === "web-chatgpt" && (
-          <label className="web-reply-width-control" title={`GPT 回复宽度：${webReplyWidthPercent}%`}>
+          <label className="web-reply-width-control" title={t("session.webReplyWidthTitle", { n: webReplyWidthPercent })}>
             <input
               type="range"
               min={25}
               max={100}
               step={1}
               value={webReplyWidthPercent}
-              aria-label="GPT 回复宽度"
+              aria-label={t("session.webReplyWidth")}
               onChange={(event) => {
                 const value = Number(event.currentTarget.value);
                 onWebReplyWidthChange?.(value);
@@ -2058,13 +2070,13 @@ function CleanPlaceholder({
           type="button"
           title={
             detailsVisible
-              ? "折叠全部 tool / thinking"
-              : "展开全部 tool / thinking"
+              ? t("session.collapseAllDetails")
+              : t("session.expandAllDetails")
           }
           aria-label={
             detailsVisible
-              ? "折叠全部 tool / thinking"
-              : "展开全部 tool / thinking"
+              ? t("session.collapseAllDetails")
+              : t("session.expandAllDetails")
           }
           onClick={() => {
             if (detailsVisible) {
@@ -2173,14 +2185,14 @@ function CleanPlaceholder({
                     {target} · {event.prompt.slice(0, 48)}
                     {event.prompt.length > 48 ? "…" : ""}
                   </span>
-                  <span className="subtask-card__meta">进行中</span>
+                  <span className="subtask-card__meta">{t("session.subtaskRunning")}</span>
                   {onSubtaskStop && (
                     <button
                       type="button"
                       className="pill-action subtask-card__btn"
                       onClick={() => onSubtaskStop(event.childSessionId)}
                     >
-                      停止
+                      {t("session.subtaskStop")}
                     </button>
                   )}
                 </div>
@@ -2242,8 +2254,8 @@ function CleanPlaceholder({
             const duration =
               event.durationMs != null
                 ? event.durationMs < 60_000
-                  ? `${Math.round(event.durationMs / 1000)}秒`
-                  : `${Math.floor(event.durationMs / 60_000)}分${Math.round((event.durationMs % 60_000) / 1000)}秒`
+                  ? t("session.durationSeconds", { n: Math.round(event.durationMs / 1000) })
+                  : t("session.durationMinutesSeconds", { n: Math.floor(event.durationMs / 60_000), m: Math.round((event.durationMs % 60_000) / 1000) })
                 : "";
             const expanded = expandedChildId === event.childSessionId;
             const childStream = allEvents.filter((e) => e.sessionId === event.childSessionId);
@@ -2265,10 +2277,10 @@ function CleanPlaceholder({
                       ? duration
                       : event.error ||
                         (event.status === "timeout"
-                          ? "超时"
+                          ? t("session.subtaskTimeout")
                           : event.status === "cancelled"
-                            ? "已取消"
-                            : "失败")}
+                            ? t("session.subtaskCancelled")
+                            : t("session.subtaskFailed"))}
                   </span>
                   <button
                     type="button"
@@ -2277,7 +2289,7 @@ function CleanPlaceholder({
                       setExpandedChildId?.(expanded ? null : event.childSessionId)
                     }
                   >
-                    {expanded ? "收起" : "展开"}
+                    {expanded ? t("session.collapse") : t("session.expand")}
                   </button>
                   {ok && onSubtaskQuote && event.summary && (
                     <button
@@ -2285,7 +2297,7 @@ function CleanPlaceholder({
                       className="pill-action subtask-card__btn"
                       onClick={() => onSubtaskQuote(event.summary)}
                     >
-                      引用
+                      {t("session.quote")}
                     </button>
                   )}
                   {!ok && onSubtaskRetry && (
@@ -2294,7 +2306,7 @@ function CleanPlaceholder({
                       className="pill-action subtask-card__btn"
                       onClick={() => onSubtaskRetry(event.childSessionId)}
                     >
-                      重试
+                      {t("common.retry")}
                     </button>
                   )}
                 </div>
@@ -2439,10 +2451,10 @@ function CleanPlaceholder({
                 onLineComment={
                   onQuotePinsChange
                     ? ({ filePath, side, lineNumber, quoted, comment }) => {
-                        const sideLabel = side === "new" ? "新" : "旧";
+                        const sideLabel = side === "new" ? t("session.sideNew") : t("session.sideOld");
                         const pin: QuotePin = {
                           id: newQuotePinId(),
-                          quoted: `${filePath}:${lineNumber}（${sideLabel}）\n${quoted}`,
+                          quoted: `${filePath}:${lineNumber}(${sideLabel})\n${quoted}`,
                           comment,
                           x: 0,
                           y: 0,
@@ -2668,6 +2680,14 @@ function CleanPlaceholder({
                       <span className="event-card__tool-diff-del">−{toolDiff.del}</span>
                     </span>
                   )}
+                  {event.type === "tool_call" ? (
+                    <ToolImageThumbs
+                      srcs={collectToolImageSrcs(event)}
+                      cwd={session.cwd}
+                      max={2}
+                      className="event-card__thumbs"
+                    />
+                  ) : null}
                   {toolOutcome && (
                     <span className={`event-card__outcome${toolOutcome.failed ? " is-failed" : ""}`}>
                       {toolOutcome.text}
@@ -2743,8 +2763,8 @@ function CleanPlaceholder({
                         detectForceWebSearchInText(event.text)) && (
                         <span
                           className="event-card__web-badge"
-                          title="发送时已要求模型先联网检索"
-                          aria-label="本条要求联网检索"
+                          title={t("session.webSearchSentTitle")}
+                          aria-label={t("session.webSearchBadge")}
                         >
                           <Globe size={12} aria-hidden />
                         </span>
@@ -2752,10 +2772,10 @@ function CleanPlaceholder({
                     {isUser && "queued" in event && event.queued && (
                       <span
                         className="event-card__queued-badge"
-                        title="打断当前回合后立即发送"
-                        aria-label="插话中，等待发送"
-                      >
-                        插话中
+                          title={t("session.queuedTitle")}
+                          aria-label={t("session.interjectingWaiting")}
+                        >
+                          {t("session.interjectingBadge")}
                       </span>
                     )}
                   </span>
@@ -2873,7 +2893,9 @@ function CleanPlaceholder({
                       if (event.type === "assistant_message" && event.webReply) {
                         content = <WebReplyBody reply={event.webReply} text={event.text} />;
                       } else if (useMarkdown && typeof displayBody === "string" && displayBody.trim()) {
-                        content = <MarkdownBody text={displayBody} />;
+                        content = (
+                          <MarkdownBody text={displayBody} />
+                        );
                       } else if (typeof displayBody === "string" && displayBody.trim()) {
                         content = (
                           <pre className="event-card__plain">
@@ -2924,7 +2946,7 @@ function CleanPlaceholder({
                       <button
                         type="button"
                         className="pill-action pill-action--icon event-card__fork"
-                        title="从这里分叉 — 复制到这条回复为止的对话，另开一条新会话"
+                        title={t("session.forkHereTitle")}
                         aria-label="Fork from this reply"
                         onMouseDown={(e) => e.preventDefault()}
                         onClick={() =>
@@ -2969,6 +2991,7 @@ function CleanPlaceholder({
                 open={open}
                 live={live}
                 liveIcon={liveIcon}
+                cwd={session.cwd}
                 trace={live ? (
                   <>
                     <LiveActivityTimeline items={unit.items} live untilMs={untilMs} />
@@ -3010,6 +3033,7 @@ function CleanPlaceholder({
                           open={groupOpen}
                           live={false}
                           liveIcon={liveIcon}
+                          cwd={session.cwd}
                           onToggle={(isOpen) =>
                             toggleSetKey(setExpandedKindKeys, groupKey, isOpen)
                           }
@@ -3142,6 +3166,7 @@ function QuoteOverlay({
   const pinsRef = useRef(pins);
   pinsRef.current = pins;
   const committingRef = useRef(false);
+  const t = useT();
 
   // Belt-and-suspenders with key={sessionId}: clear popover if identity changes
   // without a full remount (or if parent reuses the instance).
@@ -3334,7 +3359,7 @@ function QuoteOverlay({
             }}
           >
             <MessageSquareQuote size={13} />
-            评论
+            {t("session.comment")}
           </button>
         </div>
       )}
@@ -3353,7 +3378,7 @@ function QuoteOverlay({
             ref={inputRef}
             className="quote-draft__input"
             rows={3}
-            placeholder="写评论…（Ctrl+Enter 落针）"
+            placeholder={t("session.commentDraftPlaceholder")}
             value={draft.comment}
             onChange={(e) => setDraft((d) => (d ? { ...d, comment: e.target.value } : d))}
             onKeyDown={(e) => {
@@ -3374,7 +3399,7 @@ function QuoteOverlay({
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => setDraft(null)}
             >
-              取消
+              {t("common.cancel")}
             </button>
             <button
               type="button"
@@ -3383,7 +3408,7 @@ function QuoteOverlay({
               disabled={!draft.comment.trim()}
               onClick={() => commit(draft)}
             >
-              落针
+              {t("session.pinComment")}
             </button>
           </div>
         </div>

@@ -98,17 +98,17 @@ pub fn save_proxy_config(config: &ProxyConfig) -> Result<(), String> {
 pub fn validate_proxy_url(url: &str) -> Result<(), String> {
     let url = url.trim();
     if url.is_empty() {
-        return Err("代理地址不能为空".to_string());
+        return Err(crate::ts!("代理地址不能为空", "Proxy address cannot be empty"));
     }
     if !url.starts_with("http://") && !url.starts_with("https://") {
         // Allow bare host:port (ureq treats it as http), but still require a port.
         if !url.contains(':') {
-            return Err("代理地址缺少端口，例如 http://127.0.0.1:7890".to_string());
+            return Err(crate::ts!("代理地址缺少端口，例如 http://127.0.0.1:7890", "Proxy address is missing a port, e.g. http://127.0.0.1:7890"));
         }
     }
     ureq::Proxy::new(url)
         .map(|_| ())
-        .map_err(|e| format!("代理地址无效: {e}"))
+        .map_err(|e| crate::ts!("代理地址无效: {e}", "Invalid proxy address: {e}"))
 }
 
 /// Environment to inject into agent processes when a proxy is enabled.
@@ -144,7 +144,7 @@ pub fn test_proxy(url: &str) -> Result<ProxyTestResult, String> {
             let ms = started.elapsed().as_millis() as u64;
             Ok(ProxyTestResult {
                 ok: true,
-                message: format!("连接成功 · {ms}ms"),
+                message: crate::ts!("连接成功 · {ms}ms", "Connected · {ms}ms"),
                 latency_ms: Some(ms),
             })
         }
@@ -153,13 +153,13 @@ pub fn test_proxy(url: &str) -> Result<ProxyTestResult, String> {
             let ms = started.elapsed().as_millis() as u64;
             Ok(ProxyTestResult {
                 ok: true,
-                message: format!("代理连通（HTTP {code}）· {ms}ms"),
+                message: crate::ts!("代理连通（HTTP {code}）· {ms}ms", "Proxy reachable (HTTP {code}) · {ms}ms"),
                 latency_ms: Some(ms),
             })
         }
         Err(error) => Ok(ProxyTestResult {
             ok: false,
-            message: format!("连接失败: {error}"),
+            message: crate::ts!("连接失败: {error}", "Connection failed: {error}"),
             latency_ms: None,
         }),
     }

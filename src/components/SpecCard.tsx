@@ -9,6 +9,7 @@ import {
   type SpecSpec,
   type SpecState,
 } from "../lib/specSchema";
+import { t, useT } from "../lib/i18n";
 
 /**
  * ` ```spec ` fence → interactive card (generative UI, research-codeg.md B4).
@@ -305,7 +306,7 @@ class SpecBoundary extends Component<{ raw: string; children: ReactNode }, { err
 
   render() {
     if (this.state.error !== null) {
-      return <SpecFailure note={`卡片渲染失败：${this.state.error}`} raw={this.props.raw} />;
+      return <SpecFailure note={t("md.specRenderFailed", { error: this.state.error })} raw={this.props.raw} />;
     }
     return this.props.children;
   }
@@ -321,9 +322,10 @@ function SpecFailure({ note, raw }: { note: string; raw: string }) {
 }
 
 export const SpecCard = memo(function SpecCard({ raw }: { raw: string }) {
+  const t = useT();
   const parsed = useMemo(() => parseSpecSpec(raw.replace(/\n$/, "")), [raw]);
   if (!parsed.ok) {
-    return <SpecFailure note="spec 卡片 · 数据未完整或格式错误" raw={raw} />;
+    return <SpecFailure note={t("md.specIncomplete")} raw={raw} />;
   }
   return (
     <div className="md-spec">

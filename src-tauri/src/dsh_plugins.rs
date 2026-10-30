@@ -20,7 +20,7 @@ pub struct DshPlugin {
 
 fn dsh_command(args: &[&str]) -> Result<Command, String> {
     let resolved = crate::process_util::resolve_spawn_command("dsh")
-        .map_err(|e| format!("`dsh` 不在 PATH 上（先安装 @deepseek-ai/dsh）: {e}"))?;
+        .map_err(|e| crate::ts!("`dsh` 不在 PATH 上（先安装 @deepseek-ai/dsh）: {e}", "`dsh` is not on PATH (install @deepseek-ai/dsh first): {e}"))?;
     let mut command = Command::new(&resolved.program);
     resolved.apply_to(&mut command);
     command.args(args);
@@ -43,7 +43,7 @@ fn run_dsh_plugin(args: &[&str], timeout_secs: u64) -> Result<String, String> {
     let stderr = crate::process_util::decode_process_bytes(&child.stderr);
     if !child.status.success() {
         let tail: String = stderr.lines().rev().take(6).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
-        return Err(format!("dsh plugin 失败（{}）: {}", child.status, tail));
+        return Err(crate::ts!("dsh plugin 失败（{}）: {}", "dsh plugin failed ({}): {}", child.status, tail));
     }
     Ok(format!("{stdout}{stderr}"))
 }

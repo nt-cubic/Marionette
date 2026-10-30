@@ -113,7 +113,7 @@ fn read_apply_result(dir: &Path) -> Option<String> {
     while end > 0 && !text.is_char_boundary(end) {
         end -= 1;
     }
-    Some(format!("上次自动更新失败，未能替换程序文件：{}", &text[..end]))
+    Some(crate::ts!("上次自动更新失败，未能替换程序文件：{tail}", "Last auto-update failed; could not replace the program file: {tail}", tail = &text[..end]))
 }
 
 pub fn check_for_update() -> AppUpdateInfo {

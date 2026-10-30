@@ -7,6 +7,7 @@ import { ClippedBody } from "./ClippedBody";
 import { MarkdownBody } from "./MarkdownBody";
 import type { PlanApprovalPrompt } from "./PlanApprovalCard";
 import { PlanApprovalCard } from "./PlanApprovalCard";
+import { t, useT } from "../lib/i18n";
 
 export type StreamPromptHandlers = {
   liveAsk?: AskQuestionPrompt | null;
@@ -20,10 +21,10 @@ export type StreamPromptHandlers = {
 };
 
 function statusChip(status: string): string {
-  if (status === "pending") return "待回复";
-  if (status === "declined") return "已跳过";
-  if (status === "timeout") return "已超时";
-  return "已回复";
+  if (status === "pending") return t("stream.pendingReply");
+  if (status === "declined") return t("stream.skipped");
+  if (status === "timeout") return t("stream.timedOut");
+  return t("stream.answered");
 }
 
 export function StreamPromptCard({
@@ -101,6 +102,7 @@ function SettledPlan({
   event: Extract<SessionEvent, { type: "plan_prompt" }>;
 }) {
   const plan = event.planMarkdown.trim();
+  const t = useT();
   const label =
     event.decisionLabel ||
     planDecisionLabel(event.decision, event.options) ||
@@ -110,7 +112,7 @@ function SettledPlan({
       <div className="stream-prompt__head">
         <ListTodo size={15} aria-hidden />
         <div>
-          <strong>{event.title?.trim() || "计划"}</strong>
+          <strong>{event.title?.trim() || t("plan.defaultTitle")}</strong>
           <span className="stream-prompt__chip">{label}</span>
         </div>
       </div>
@@ -119,10 +121,10 @@ function SettledPlan({
           <MarkdownBody text={plan} className="plan-approval-card__md" />
         </ClippedBody>
       ) : (
-        <p className="plan-approval-card__empty">计划正文未随请求附带。</p>
+        <p className="plan-approval-card__empty">{t("plan.bodyMissing")}</p>
       )}
       {event.feedback?.trim() ? (
-        <p className="stream-prompt__feedback">修改意见：{event.feedback.trim()}</p>
+        <p className="stream-prompt__feedback">{t("plan.feedbackLabel")}{event.feedback.trim()}</p>
       ) : null}
     </>
   );
@@ -133,18 +135,19 @@ function SettledAsk({
 }: {
   event: Extract<SessionEvent, { type: "ask_prompt" }>;
 }) {
+  const t = useT();
   const label =
     event.status === "answered"
-      ? "已选择"
+      ? t("stream.selected")
       : event.status === "declined"
-        ? "已跳过"
+        ? t("stream.skipped")
         : statusChip(event.status);
   return (
     <>
       <div className="stream-prompt__head">
         <HelpCircle size={15} aria-hidden />
         <div>
-          <strong>提问</strong>
+          <strong>{t("ask.title")}</strong>
           <span className="stream-prompt__chip">{label}</span>
         </div>
       </div>
@@ -158,9 +161,9 @@ function SettledAsk({
             <div key={`${i}:${q.question.slice(0, 48)}`} className="stream-prompt__q">
               <p className="stream-prompt__qtext">{q.question}</p>
               {picked.length > 0 ? (
-                <p className="stream-prompt__atext">{picked.join("、")}</p>
+                <p className="stream-prompt__atext">{picked.join(t("turn.nameSeparator"))}</p>
               ) : event.status === "declined" ? (
-                <p className="stream-prompt__atext">让 Agent 自己定</p>
+                <p className="stream-prompt__atext">{t("stream.letAgentDecide")}</p>
               ) : null}
             </div>
           );

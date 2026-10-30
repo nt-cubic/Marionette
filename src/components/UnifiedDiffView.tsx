@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { parseUnifiedDiff, type DiffLine } from "../lib/annotations";
+import { useT } from "../lib/i18n";
 
 export type DiffLineComment = {
   side: "old" | "new";
@@ -52,6 +53,7 @@ export function UnifiedDiffView({
   onLineComment,
   elideUnchanged = false,
 }: UnifiedDiffViewProps) {
+  const t = useT();
   const { parsed, elidedMiddle } = useMemo(() => {
     if (!text) return { parsed: [] as DiffLine[], elidedMiddle: 0 };
     const all = parseUnifiedDiff(text);
@@ -93,7 +95,7 @@ export function UnifiedDiffView({
                   <span className="file-diff-card__ln" />
                 </span>
                 <span className="file-diff-card__code">
-                  {showTruncation ? `⋯ 中间省略 ${elidedMiddle} 行 ⋯` : "⋮"}
+                  {showTruncation ? t("md.elidedMiddleLines", { n: elidedMiddle }) : "⋮"}
                 </span>
               </span>
             )}
@@ -110,7 +112,7 @@ export function UnifiedDiffView({
                 <button
                   type="button"
                   className="file-diff-card__code"
-                  title="评论此行"
+                  title={t("md.commentThisLine")}
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();

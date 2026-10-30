@@ -1,4 +1,5 @@
 import type { SessionEvent } from "./types";
+import { t } from "./i18n";
 import { classifyToolCall, extractDiffStats, formatActivityTally } from "./turnActivity";
 
 /**
@@ -96,12 +97,12 @@ export type TurnDelivery = {
 /** Collapsed delivery headline. Files take priority over command-only turns. */
 export function formatDeliveryHeadline(delivery: Pick<TurnDelivery, "files" | "commandCount">): string {
   if (delivery.files.length > 0) {
-    return `${delivery.files.length} 个文件已更改`;
+    return t("delivery.filesChanged", { count: delivery.files.length });
   }
   if (delivery.commandCount > 0) {
-    return `跑了 ${delivery.commandCount} 条命令`;
+    return t("delivery.commandsRun", { count: delivery.commandCount });
   }
-  return "本轮无改动";
+  return t("delivery.noChanges");
 }
 
 export type TurnDeliveryUnit = {
