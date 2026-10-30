@@ -800,6 +800,13 @@ fn unwrap_npm_shim_dir_to_exe(shim_path: &Path) -> Option<String> {
 /// hits it accumulates another zombie process plus a thread that never exits.
 /// This runs the child via `spawn`, polls, and kills on the deadline so both
 /// the process and the thread are reclaimed.
+///
+/// 2026-10-31 补排水线程：曾经的「先 try_wait 等退出、退出后才读管道」在
+/// 输出超过 OS 管道缓冲（Windows 64KB）时是经典管道死锁——子进程写满管道
+/// 阻塞、永不退出，父进程干等。实测 `git status --porcelain -uall` 在
+/// Marionette 主仓输出 69.7KB，恰好越线，配合上层「持 storage 锁跑 git」
+/// 把整个应用的新建对话/列表全部饿死。现在两条管道各起一个读线程并发排
+/// 水，子进程永不因输出量阻塞；超时兜底不变。
 pub fn output_with_kill_timeout(
     mut cmd: Command,
     wait: std::time::Duration,
@@ -813,24 +820,44 @@ pub fn output_with_kill_timeout(
         .spawn()
         .map_err(|e| e.to_string())?;
 
-    let deadline = std::time::Instant::now() + wait;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut stdout = Vec::new();
-                let mut stderr = Vec::new();
-                if let Some(mut pipe) = child.stdout.take() {
-                    let _ = pipe.read_to_end(&mut stdout);
-                }
-                if let Some(mut pipe) = child.stderr.take() {
-                    let _ = pipe.read_to_end(&mut stderr);
-                }
-                return Ok(std::process::Output { status, stdout, stderr });
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let stdout_reader = std::thread::Builder::new()
+        .name("pipe-drain-stdout".to_string())
+        .spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = stdout_pipe {
+                let _ = pipe.read_to_end(&mut buf);
             }
+            buf
+        })
+        .map_err(|e| e.to_string())?;
+    let stderr_reader = std::thread::Builder::new()
+        .name("pipe-drain-stderr".to_string())
+        .spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = stderr_pipe {
+                let _ = pipe.read_to_end(&mut buf);
+            }
+            buf
+        })
+        .map_err(|e| e.to_string())?;
+
+    let deadline = std::time::Instant::now() + wait;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
             Ok(None) => {
                 if std::time::Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
+                    // 排水线程不同步 join：kill 只杀直接子进程，孙进程
+                    // （cmd /C 的 ping、sh 的子命令）还攥着继承来的管道句柄，
+                    // read_to_end 要等它们全部退出才 EOF——同步等会把「超时
+                    // 立即返回」拖成等整棵进程树（回归测试实锤 29s）。读
+                    // 线程留着自然收尾。
+                    std::mem::forget(stdout_reader);
+                    std::mem::forget(stderr_reader);
                     return Err(format!(
                         "timed out after {}s (child killed)",
                         wait.as_secs()
@@ -838,9 +865,16 @@ pub fn output_with_kill_timeout(
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
-            Err(error) => return Err(error.to_string()),
+            Err(error) => {
+                std::mem::forget(stdout_reader);
+                std::mem::forget(stderr_reader);
+                return Err(error.to_string());
+            }
         }
-    }
+    };
+    let stdout = stdout_reader.join().unwrap_or_default();
+    let stderr = stderr_reader.join().unwrap_or_default();
+    Ok(std::process::Output { status, stdout, stderr })
 }
 
 #[cfg(test)]

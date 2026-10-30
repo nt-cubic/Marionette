@@ -1,6 +1,6 @@
 import { emit, listen } from "@tauri-apps/api/event";
 import { ChevronLeft, ChevronRight, FolderOpen, Inbox, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, memo, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, memo, type CSSProperties } from "react";
 import { agents, projects, sessions } from "../lib/mockData";
 import {
   collapseIntermediateAssistantAsThought,
@@ -1187,9 +1187,24 @@ export function App() {
   // 行，头部留在盘上、SessionView 顶部「加载更早」按需翻页。olderHeads 记录
   // 每个截断会话的窗口起点；isHeadTruncated/ensureHeadForPersist 交给 rails
   // 做全量回写守卫——rail 只装尾部，直接全量写会把磁盘上的历史头吃掉。
-  const [olderHeads, setOlderHeads] = useState<Record<string, { firstLine: number; loading: boolean }>>({});
+  // olderHeads 走 ref + tick：这个形状是「异步装载结果的派生展示态」，曾经
+  // 用 useState 提交，实测在 boot 恢复路径上更新会静默丢失（updater 执行、
+  // keysAfter 有值、后续渲染仍读到旧空对象——2026-10-31 哨兵缺失的根因）。
+  // ref 直写 + tick bump 对并发渲染的更新丢弃免疫。
   const olderHeadsRef = useRef<Record<string, { firstLine: number; loading: boolean }>>({});
-  olderHeadsRef.current = olderHeads;
+  const [, bumpOlderHeadsTick] = useReducer((tick: number) => tick + 1, 0);
+  const writeOlderHead = (sessionId: string, head: { firstLine: number; loading: boolean } | null) => {
+    const current = olderHeadsRef.current;
+    if (head == null) {
+      if (!(sessionId in current)) return;
+      const next = { ...current };
+      delete next[sessionId];
+      olderHeadsRef.current = next;
+    } else {
+      olderHeadsRef.current = { ...current, [sessionId]: head };
+    }
+    bumpOlderHeadsTick();
+  };
   const ensureHeadForPersistRef = useRef<(sessionId: string) => Promise<void>>(async () => {});
   const isHeadTruncated = useCallback(
     (sessionId: string) => (olderHeadsRef.current[sessionId]?.firstLine ?? 0) > 0,
@@ -3581,15 +3596,7 @@ export function App() {
     const page = await loadTranscriptPage(sessionId, TRANSCRIPT_TAIL_EVENTS);
     let parsed = parseTranscriptEvents(page.events);
     const truncated = page.firstLine > 0;
-    setOlderHeads((current) => {
-      if (!truncated) {
-        if (!(sessionId in current)) return current;
-        const next = { ...current };
-        delete next[sessionId];
-        return next;
-      }
-      return { ...current, [sessionId]: { firstLine: page.firstLine, loading: false } };
-    });
+    writeOlderHead(sessionId, truncated ? { firstLine: page.firstLine, loading: false } : null);
     if (parsed.length === 0) return;
     // If the agent process is gone, close orphan pending/in_progress tools so
     // Clean View does not treat a multi-hundred-tool history as still working
@@ -3670,23 +3677,19 @@ export function App() {
       if (!head || head.firstLine <= 0 || head.loading) return;
       const first = Math.max(0, head.firstLine - TRANSCRIPT_TAIL_EVENTS);
       const count = head.firstLine - first;
-      setOlderHeads((current) => ({ ...current, [sessionId]: { ...head, loading: true } }));
+      writeOlderHead(sessionId, { ...head, loading: true });
       try {
         const page = await loadTranscriptWindow(sessionId, first, count);
         const parsed = parseTranscriptEvents(page.events);
         if (parsed.length > 0) {
           updateSessionEvents(sessionId, (current) => [...parsed, ...current], { publish: true });
         }
-        setOlderHeads((current) => {
-          if (page.firstLine <= 0) {
-            const next = { ...current };
-            delete next[sessionId];
-            return next;
-          }
-          return { ...current, [sessionId]: { firstLine: page.firstLine, loading: false } };
-        });
+        writeOlderHead(
+          sessionId,
+          page.firstLine <= 0 ? null : { firstLine: page.firstLine, loading: false },
+        );
       } catch (error) {
-        setOlderHeads((current) => ({ ...current, [sessionId]: { ...head, loading: false } }));
+        writeOlderHead(sessionId, { ...head, loading: false });
         pushDebug({
           sessionId,
           level: "warn",
@@ -3712,19 +3715,18 @@ export function App() {
         const page = await loadTranscriptWindow(sessionId, 0, head.firstLine);
         const parsed = parseTranscriptEvents(page.events);
         if (parsed.length > 0) {
-          updateSessionEvents(sessionId, (current) => [...parsed, ...current], { publish: false });
+          // publish: true —— 补头必须立刻反映到视图：曾经静默进 shadow，装
+          // 完清掉 olderHeads 后哨兵消失、界面却还停在尾部窗口（2026-10-31
+          // 哨兵缺失的根因形态）。
+          updateSessionEvents(sessionId, (current) => [...parsed, ...current], { publish: true });
         }
         if (page.firstLine <= 0) {
-          setOlderHeads((current) => {
-            const next = { ...current };
-            delete next[sessionId];
-            return next;
-          });
+          writeOlderHead(sessionId, null);
           head = undefined;
         } else {
           // 窗口没吃满（上游异常）——防死循环，标记到位后退出。
           const nextHead = { firstLine: page.firstLine, loading: false };
-          setOlderHeads((current) => ({ ...current, [sessionId]: nextHead }));
+          writeOlderHead(sessionId, nextHead);
           head = page.firstLine < head.firstLine ? nextHead : undefined;
         }
       }
@@ -8252,8 +8254,8 @@ export function App() {
           agent={agent}
           events={events}
           session={session}
-          olderCount={olderHeads[session.id]?.firstLine ?? 0}
-          olderLoading={olderHeads[session.id]?.loading ?? false}
+          olderCount={olderHeadsRef.current[session.id]?.firstLine ?? 0}
+          olderLoading={olderHeadsRef.current[session.id]?.loading ?? false}
           onLoadOlder={() => void loadOlderTranscriptRef.current(session.id)}
           webReplyWidthPercent={webReplyWidthPercent}
           onWebReplyWidthChange={(value) => {
