@@ -2,11 +2,23 @@ use crate::models::{Project, Session};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fs;
+use std::fs::OpenOptions;
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// 窗口化转录读取结果（跨 IPC 给前端，camelCase）。
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptPage {
+    pub events: Vec<serde_json::Value>,
+    /// 文件里的总事件行数（含未加载的头部）。
+    pub total_lines: usize,
+    /// 本次返回的首行行号（0 基）。> 0 表示头部还有未加载的历史。
+    pub first_line: usize,
+}
 
 pub struct StorageService {
     global_dir: PathBuf,
@@ -913,6 +925,36 @@ impl StorageService {
         write_atomic(path, &body).map_err(|error| format!("Write transcript failed: {error}"))
     }
 
+    /// 追加写（流式落盘的快路径）：只把新增事件续到文件尾，不重写整文件。
+    /// 曾经每 450ms 全量序列化 + tmp/rename 整文件重写——事件数组随历史线性
+    /// 膨胀（本项目最大转录 24MB），缺页风暴下每次重写都是秒级硬等待
+    /// （2026-10-31 事故主因之一）。与 `write_atomic` 共用进程级写锁防交错；
+    /// 语义前提：调用方保证传入事件是**当前文件末尾之后**的新增（前端按
+    /// 「前缀引用全等」判定纯追加后才走这里）。
+    pub fn append_transcript_file(
+        path: &Path,
+        events: &[serde_json::Value],
+    ) -> Result<(), String> {
+        let _serial = WRITE_ATOMIC_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut body = String::new();
+        for event in events {
+            let line = serde_json::to_string(event)
+                .map_err(|error| format!("Serialize transcript event failed: {error}"))?;
+            body.push_str(&line);
+            body.push('\n');
+        }
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(|error| format!("Open transcript for append failed: {error}"))?;
+        file.write_all(body.as_bytes())
+            .and_then(|_| file.flush())
+            .map_err(|error| format!("Append transcript failed: {error}"))
+    }
+
     /// Rewrite Clean-view transcript as JSONL (one SessionEvent per line).
     pub fn write_transcript(
         &self,
@@ -960,6 +1002,96 @@ impl StorageService {
             );
         }
         Ok(events)
+    }
+
+    /// 窗口化读取转录：`first_line = None` → 取末尾 `count` 行（首开秒开
+    /// 24MB 老会话的关键——全文件只是**顺序读过**，只 parse 窗口内的行，
+    /// 不再把整份 JSONL materialize 成 Vec<Value> 过一次 IPC）；
+    /// `Some(i)` → 取 `[i, i+count)`（向上翻页）。空行沿用 `load_transcript`
+    /// 口径跳过不计数。返回窗口事件 + 全文件行数 + 窗口首行行号（0 基）。
+    pub fn load_transcript_window(
+        &self,
+        session_id: &str,
+        first_line: Option<usize>,
+        count: usize,
+    ) -> Result<TranscriptPage, String> {
+        let session = self
+            .find_session(session_id)?
+            .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        let path = PathBuf::from(&session.transcript_path);
+        if !path.exists() || count == 0 {
+            let total = if !path.exists() {
+                0
+            } else {
+                self.count_transcript_lines(&path)
+            };
+            return Ok(TranscriptPage {
+                events: Vec::new(),
+                total_lines: total,
+                first_line: first_line.unwrap_or(total),
+            });
+        }
+        let file = std::fs::File::open(&path)
+            .map_err(|error| format!("Read transcript failed: {error}"))?;
+        let reader = BufReader::new(file);
+        // tail 模式用环形缓冲只留最后 count 行（窗口要读完整个文件才知道边界）；
+        // range 模式窗口已知，窗口外的行连 String 都不进。
+        let mut ring: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+        let mut total = 0usize;
+        for line in reader.lines() {
+            let line =
+                line.map_err(|error| format!("Read transcript line failed: {error}"))?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let index = total;
+            total += 1;
+            match first_line {
+                None => {
+                    ring.push_back(line);
+                    if ring.len() > count {
+                        ring.pop_front();
+                    }
+                }
+                Some(start) => {
+                    if index >= start && index < start.saturating_add(count) {
+                        ring.push_back(line);
+                    }
+                }
+            }
+        }
+        let window_first = match first_line {
+            Some(start) => start.min(total),
+            None => total.saturating_sub(ring.len()),
+        };
+        let mut events = Vec::with_capacity(ring.len());
+        let mut corrupt = 0usize;
+        for line in ring {
+            match serde_json::from_str::<serde_json::Value>(line.trim()) {
+                Ok(value) => events.push(value),
+                Err(_) => corrupt += 1,
+            }
+        }
+        if corrupt > 0 {
+            crate::debug_log::append(
+                "storage",
+                "warn",
+                session_id,
+                &format!("transcript window load skipped {corrupt} corrupt line(s)"),
+                None,
+            );
+        }
+        Ok(TranscriptPage {
+            events,
+            total_lines: total,
+            first_line: window_first,
+        })
+    }
+
+    fn count_transcript_lines(&self, path: &Path) -> usize {
+        std::fs::read_to_string(path)
+            .map(|text| text.lines().filter(|line| !line.trim().is_empty()).count())
+            .unwrap_or(0)
     }
 
     /// Root directory used for Chat metadata and transcripts. This lives under
@@ -1144,20 +1276,47 @@ fn sessions_file(project_path: &Path) -> PathBuf {
 /// leaves a half file, and `from_global_dir` then fails outright — the whole
 /// storage layer bricks on one corrupted index. Rename keeps readers seeing
 /// either the old or the new file, never a partial one.
+///
+/// 2026-10-31 加固：同路径的并发调用共用同一个 `json.tmp` 名字会互相吞
+/// rename（流式 450ms flush 与加载期回写撞车实测 "Rename into place
+/// failed: os error 2"，且此时原文件已被挪去 .bak、主路径缺失）。全进程
+/// 一把串行锁（写入本就是 debounce 过的低频操作）+ 三轮重试（AV 短暂锁
+/// 文件 / 瞬态缺失）+ 最终兜底直写（放弃原子性换数据不丢，半文件只可能
+/// 出现在兜底途中断电，`read_json_with_recovery` 还有 .bak 复活链）。
+static WRITE_ATOMIC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub(crate) fn write_atomic(path: &Path, body: &str) -> Result<(), String> {
+    let _serial = WRITE_ATOMIC_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| format!("Create dir failed: {error}"))?;
     }
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, body).map_err(|error| format!("Write tmp failed: {error}"))?;
-    // Windows rename refuses to overwrite, so move the old file aside first.
     let bak = path.with_extension("json.bak");
-    if path.exists() {
-        let _ = fs::remove_file(&bak);
-        let _ = fs::rename(path, &bak);
+    let mut last_rename_error = String::new();
+    for _attempt in 0..3 {
+        fs::write(&tmp, body).map_err(|error| format!("Write tmp failed: {error}"))?;
+        // Windows rename refuses to overwrite, so move the old file aside first.
+        if path.exists() {
+            let _ = fs::remove_file(&bak);
+            let _ = fs::rename(path, &bak);
+        }
+        match fs::rename(&tmp, path) {
+            Ok(()) => return Ok(()),
+            Err(error) => last_rename_error = error.to_string(),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
     }
-    fs::rename(&tmp, path).map_err(|error| format!("Rename into place failed: {error}"))
+    if let Err(error) = fs::write(path, body) {
+        // 兜底也失败：把 .bak 还原回主路径，至少保住旧内容再报错。
+        let _ = fs::rename(&bak, path);
+        return Err(format!(
+            "Write fallback failed: {error} (rename: {last_rename_error})"
+        ));
+    }
+    Ok(())
 }
 
 /// Read a JSON index that may have been truncated by a crash before atomic
@@ -1698,6 +1857,69 @@ mod tests {
         assert!(project_dir.join(".marionette").is_dir());
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 尾部优先加载 / 向上翻页 / 追加写（2026-10-31 内存压力韧性批）：
+    /// 大转录不再整文件过 IPC（窗口化读取），流式落盘不再全量重写（append）。
+    #[test]
+    fn transcript_window_and_append_semantics() {
+        let root = test_root();
+        let global_dir = root.join("global");
+        let project_dir = root.join("workspace");
+        fs::create_dir_all(&project_dir).unwrap();
+        let service = StorageService::from_global_dir(global_dir).unwrap();
+        let project = service
+            .add_project(project_dir.to_string_lossy().to_string())
+            .unwrap();
+        let session = service
+            .create_session(&project.id, "opencode".into(), "T".into())
+            .unwrap();
+        let mk = |i: usize| {
+            serde_json::json!({
+                "type": "user_message",
+                "sessionId": session.id,
+                "text": format!("m{i}"),
+                "createdAt": "2026-10-31T00:00:00Z"
+            })
+        };
+        let events: Vec<_> = (0..10).map(mk).collect();
+        let path = service.transcript_path_for(&session.id).unwrap();
+        StorageService::write_transcript_file(&path, &events).unwrap();
+
+        // tail 模式：末 3 行 + 全文件行数 + 窗口首行。
+        let tail = service.load_transcript_window(&session.id, None, 3).unwrap();
+        assert_eq!(tail.total_lines, 10);
+        assert_eq!(tail.first_line, 7, "尾部窗口的首行 = total - count");
+        assert_eq!(tail.events.len(), 3);
+        assert_eq!(tail.events[0]["text"], "m7");
+        assert_eq!(tail.events[2]["text"], "m9");
+
+        // range 模式：向上翻页 [2, 5)。
+        let page = service.load_transcript_window(&session.id, Some(2), 3).unwrap();
+        assert_eq!(page.first_line, 2);
+        assert_eq!(page.events.len(), 3);
+        assert_eq!(page.events[0]["text"], "m2");
+
+        // 追加写：文件尾续 2 行，头部原样。
+        let extra = vec![mk(10), mk(11)];
+        StorageService::append_transcript_file(&path, &extra).unwrap();
+        let full = service.load_transcript(&session.id).unwrap();
+        assert_eq!(full.len(), 12);
+        assert_eq!(full[0]["text"], "m0", "append 不动头部");
+        assert_eq!(full[11]["text"], "m11");
+
+        // 空行不计行号（与 load_transcript 口径一致，翻页游标才对得齐）：
+        // 覆写会话转录为「空行夹有效行」，窗口游标必须跳过空行。
+        let body = format!(
+            "\n{}\n\n{}\n",
+            serde_json::to_string(&mk(0)).unwrap(),
+            serde_json::to_string(&mk(1)).unwrap()
+        );
+        fs::write(&path, body).unwrap();
+        let tail = service.load_transcript_window(&session.id, None, 1).unwrap();
+        assert_eq!(tail.total_lines, 2, "空行不计数");
+        assert_eq!(tail.first_line, 1);
+        assert_eq!(tail.events[0]["text"], "m1");
     }
 
     #[test]

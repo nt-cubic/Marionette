@@ -641,6 +641,36 @@
   pointer-events: none;
 }
 
+/* 「加载更早」哨兵：尾部优先加载的截断头部按需翻页入口。 */
+.event-list__older {
+  flex: 0 0 auto;
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  padding: 10px 0 6px;
+}
+
+.event-list__older-btn {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  opacity: 0.75;
+  font-size: 12px;
+  padding: 4px 14px;
+  cursor: pointer;
+}
+
+.event-list__older-btn:hover:not(:disabled) {
+  background: var(--hover);
+  opacity: 1;
+}
+
+.event-list__older-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 /*
  * content-visibility:auto was removed — under WebView2 it interacted badly with
  * scroll pinning / height estimates and caused continuous list flicker.

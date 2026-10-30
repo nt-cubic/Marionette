@@ -6,11 +6,16 @@ import {
   findLastIndexForSession,
   type AcpTextPart,
 } from "../lib/acpTranscript";
-import { isTauriRuntime, writeTranscript } from "../lib/api";
+import { isTauriRuntime, appendTranscriptEvents, writeTranscript } from "../lib/api";
 import { persistableEventsForSession } from "../lib/transcript";
 import type { SessionEvent } from "../lib/types";
 
 const EMPTY_EVENTS: SessionEvent[] = [];
+
+/** 基础 debounce；事件数组超过该规模后升档（见 FLUSH_DEBOUNCE_SLOW_MS）。 */
+const FLUSH_DEBOUNCE_MS = 450;
+const FLUSH_DEBOUNCE_SLOW_EVENTS = 3000;
+const FLUSH_DEBOUNCE_SLOW_MS = 2000;
 
 type SendMeta = {
   agentId?: string;
@@ -36,6 +41,10 @@ export interface SessionRailsEnv {
   delegateMetaRef: MutableRefObject<Map<string, { parentId: string }>>;
   turnStartedAtRef: MutableRefObject<Record<string, number>>;
   sendMetaRef: MutableRefObject<SendMeta>;
+  /** 会话的转录头部是否仍截断未加载（尾部优先加载）。 */
+  isHeadTruncated: (sessionId: string) => boolean;
+  /** 全量回写前补齐头部（内部会再触发 debounce，本轮 flush 让位）。 */
+  ensureHeadForPersist: (sessionId: string) => Promise<void>;
 }
 
 /**
@@ -49,6 +58,17 @@ export function useSessionRails(env: SessionRailsEnv) {
   const eventsBySessionRef = useRef(new Map<string, SessionEvent[]>());
   const shadowBySessionRef = useRef(new Map<string, SessionEvent[]>());
   const livePaintSetRef = useRef<Set<string>>(new Set());
+  /**
+   * 上次已落盘的（persistable）事件数组，按引用身份做前缀比对：前缀全等 +
+   * 变长 = 纯追加 → 走 appendTranscriptEvents 只续文件尾，不再每 450ms 全量
+   * 序列化 + 整文件重写（事件数组随历史线性膨胀，本项目最大转录 24MB，
+   * 缺页风暴下每次全量重写都是秒级硬等待——2026-10-31 事故主因之一）。
+   */
+  const lastPersistedRef = useRef(new Map<string, SessionEvent[]>());
+
+  const notePersisted = (sessionId: string, events: SessionEvent[]) => {
+    lastPersistedRef.current.set(sessionId, events);
+  };
 
   const armTranscriptTimer = (sessionId: string) => {
     if (!isTauriRuntime()) return;
@@ -56,6 +76,10 @@ export function useSessionRails(env: SessionRailsEnv) {
     if (env.reloadingSessionsRef.current.has(sessionId)) return;
     const prev = env.transcriptSaveTimers.current.get(sessionId);
     if (prev) clearTimeout(prev);
+    // 自适应 debounce：大转录（按事件数近似）流式期间升档，磁盘压力让路；
+    // turn 收尾 / 关闭路径的显式 flush 不受影响。
+    const sizeHint = shadowBySessionRef.current.get(sessionId)?.length ?? 0;
+    const delay = sizeHint > FLUSH_DEBOUNCE_SLOW_EVENTS ? FLUSH_DEBOUNCE_SLOW_MS : FLUSH_DEBOUNCE_MS;
     const timer = setTimeout(() => {
       env.transcriptSaveTimers.current.delete(sessionId);
       if (!env.ownsAcpSession(sessionId)) return;
@@ -64,7 +88,37 @@ export function useSessionRails(env: SessionRailsEnv) {
         shadowBySessionRef.current.get(sessionId) ?? EMPTY_EVENTS,
         sessionId,
       );
+      if (events.length === 0) return;
+      const last = lastPersistedRef.current.get(sessionId);
+      const prefixIdentical =
+        last != null && events.length >= last.length && last.every((ev, i) => events[i] === ev);
+      if (last != null && prefixIdentical) {
+        if (events.length === last.length) return; // 无变化
+        const suffix = events.slice(last.length);
+        lastPersistedRef.current.set(sessionId, events);
+        void appendTranscriptEvents(sessionId, suffix).catch((error) => {
+          // 追加失败：丢弃账本标记，下一轮自动退回全量重写（保守恢复）。
+          lastPersistedRef.current.delete(sessionId);
+          env.pushDebugRef.current({
+            sessionId,
+            level: "warn",
+            source: "transcript",
+            summary: "append transcript failed; falling back to full write",
+            detail: error instanceof Error ? error.message : String(error),
+          });
+        });
+        return;
+      }
+      // 全量重写前必须补齐截断的头部——rail 只装了尾部，直接写会把磁盘上
+      // 的历史头吃掉。ensureHead 内部的 updateSessionEvents 会重新 arm 本
+      // timer，届时头已在、走真正的全量写。
+      if (env.isHeadTruncated(sessionId)) {
+        void env.ensureHeadForPersist(sessionId);
+        return;
+      }
+      lastPersistedRef.current.set(sessionId, events);
       void writeTranscript(sessionId, events).catch((error) => {
+        lastPersistedRef.current.delete(sessionId);
         env.pushDebugRef.current({
           sessionId,
           level: "warn",
@@ -73,7 +127,7 @@ export function useSessionRails(env: SessionRailsEnv) {
           detail: error instanceof Error ? error.message : String(error),
         });
       });
-    }, 450);
+    }, delay);
     env.transcriptSaveTimers.current.set(sessionId, timer);
   };
 
@@ -101,6 +155,7 @@ export function useSessionRails(env: SessionRailsEnv) {
       if (shadowBySessionRef.current.has(id) || eventsBySessionRef.current.has(id)) {
         shadowBySessionRef.current.delete(id);
         eventsBySessionRef.current.delete(id);
+        lastPersistedRef.current.delete(id);
         bumped.push(id);
       }
     }
@@ -169,5 +224,6 @@ export function useSessionRails(env: SessionRailsEnv) {
     dropSessionRails,
     applyStreamPart,
     publishedEventsForView,
+    notePersisted,
   };
 }

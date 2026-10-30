@@ -808,6 +808,14 @@ async function considerDockOut(): Promise<void> {
 
 /** Rust CloseRequested in background mode lands here: close = retract (dock if still floating). */
 async function handleCloseFromRust(): Promise<void> {
+  // Rust 侧 2s 关窗看门狗的显式应答：一接管就清标记，别等 retract 动画收完
+  // （否则慢一步 Rust 就把贴边窗整个 hide 掉，贴边唤回链路就断了）。
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    void invoke("ack_main_close");
+  } catch {
+    // 非 Tauri 运行时（测试/预览）没有这个命令
+  }
   if (dockState === "floating") {
     const docked = await enterDock();
     if (!docked) {

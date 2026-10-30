@@ -130,6 +130,10 @@ type SessionViewProps = {
   allEvents?: SessionEvent[];
   onSubtaskStop?: (childSessionId: string) => void;
   onSubtaskQuote?: (summary: string) => void;
+  /** 头部还有未加载的转录历史（尾部优先加载）→ 顶部渲染「加载更早」。 */
+  olderCount?: number;
+  olderLoading?: boolean;
+  onLoadOlder?: () => void;
   onSubtaskRetry?: (childSessionId: string) => void;
   /** Live Plan / Ask waiter — interactive while pending, otherwise a settled card. */
   streamPrompt?: StreamPromptHandlers;
@@ -791,6 +795,9 @@ export function SessionView({
   onWebReplyWidthChange,
   detailsVisible: detailsVisibleProp,
   onDetailsVisibleChange,
+  olderCount = 0,
+  olderLoading = false,
+  onLoadOlder,
 }: SessionViewProps) {
   const t = useT();
   // Eye open: each thought/tool is its own card. Eye closed: consecutive
@@ -889,6 +896,9 @@ export function SessionView({
             streamPrompt={streamPrompt}
             webReplyWidthPercent={webReplyWidthPercent}
             onWebReplyWidthChange={onWebReplyWidthChange}
+            olderCount={olderCount}
+            olderLoading={olderLoading}
+            onLoadOlder={onLoadOlder}
           />
         </div>
         </MarkdownImageCwdContext.Provider>
@@ -1546,6 +1556,9 @@ function CleanPlaceholder({
   streamPrompt,
   webReplyWidthPercent = 85,
   onWebReplyWidthChange,
+  olderCount = 0,
+  olderLoading = false,
+  onLoadOlder,
 }: {
   agent: AgentConfig;
   session: Session;
@@ -1576,8 +1589,22 @@ function CleanPlaceholder({
   streamPrompt?: StreamPromptHandlers;
   webReplyWidthPercent?: number;
   onWebReplyWidthChange?: (width: number) => void;
+  olderCount?: number;
+  olderLoading?: boolean;
+  onLoadOlder?: () => void;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
+  /**
+   * 「加载更早」的滚动锚定：前插历史会让所有内容下移，记下点击时的
+   * scrollTop/scrollHeight，列表高度变化后把 scrollTop 平移同样的像素，
+   * 用户看到的第一条消息保持不动（估算高度有小漂移，可接受）。
+   */
+  const pendingPrependScrollRef = useRef<{ top: number; height: number } | null>(null);
+  const handleLoadOlder = useCallback(() => {
+    const el = listRef.current;
+    if (el) pendingPrependScrollRef.current = { top: el.scrollTop, height: el.scrollHeight };
+    onLoadOlder?.();
+  }, [onLoadOlder]);
   /** When true, new content may stick the viewport to the bottom. */
   const stickToBottomRef = useRef(true);
   /** State mirror of stickToBottom so the jump-to-bottom chip can re-render. */
@@ -1701,6 +1728,15 @@ function CleanPlaceholder({
     // reuse measured heights instead of collapsing to 48px estimates.
     resetKey: `${session.id}|${detailsVisible ? "details" : "clean"}|${useVirtual ? "v" : "full"}`,
   });
+  // 「加载更早」前插后的滚动复位（见 handleLoadOlder 的注释）。
+  useLayoutEffect(() => {
+    const pending = pendingPrependScrollRef.current;
+    const el = listRef.current;
+    if (!pending || !el) return;
+    const delta = el.scrollHeight - pending.height;
+    if (delta > 0) el.scrollTop = pending.top + delta;
+    pendingPrependScrollRef.current = null;
+  }, [virtual.totalSize]);
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const [editBusy, setEditBusy] = useState(false);
@@ -3104,6 +3140,20 @@ function CleanPlaceholder({
           if (!useVirtual) return nodes;
           return (
             <>
+              {olderCount > 0 ? (
+                <div className="event-list__older">
+                  <button
+                    type="button"
+                    className="event-list__older-btn"
+                    onClick={handleLoadOlder}
+                    disabled={olderLoading}
+                  >
+                    {olderLoading
+                      ? t("transcript.loadingOlder")
+                      : t("transcript.loadOlder", { count: olderCount })}
+                  </button>
+                </div>
+              ) : null}
               <div
                 className="event-list__virt-spacer"
                 style={{ height: virtual.paddingTop }}

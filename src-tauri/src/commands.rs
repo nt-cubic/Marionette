@@ -1137,16 +1137,65 @@ pub fn set_stream_interests(levels: HashMap<String, u8>) {
     crate::acp::set_stream_interests(&levels);
 }
 
+/// 窗口化读取：`tail = Some(n)` → 只取末尾 n 行（首开秒开超长转录）；
+/// `tail = None` → 全量（导出 / 编辑重发补头 / 标签修复等全量消费者）。
 #[tauri::command(async)]
 pub fn load_transcript(
     session_id: String,
+    tail: Option<usize>,
     state: State<'_, AppState>,
-) -> Result<Vec<serde_json::Value>, String> {
+) -> Result<crate::storage::TranscriptPage, String> {
     let storage = state
         .storage
         .lock()
         .map_err(|_| "Storage lock poisoned".to_string())?;
-    storage.load_transcript(&session_id)
+    match tail {
+        None => {
+            let events = storage.load_transcript(&session_id)?;
+            Ok(crate::storage::TranscriptPage {
+                total_lines: events.len(),
+                first_line: 0,
+                events,
+            })
+        }
+        Some(count) => storage.load_transcript_window(&session_id, None, count),
+    }
+}
+
+/// 向上翻页：读 `[first_line, first_line + count)`。
+#[tauri::command(async)]
+pub fn load_transcript_window(
+    session_id: String,
+    first_line: usize,
+    count: usize,
+    state: State<'_, AppState>,
+) -> Result<crate::storage::TranscriptPage, String> {
+    let storage = state
+        .storage
+        .lock()
+        .map_err(|_| "Storage lock poisoned".to_string())?;
+    storage.load_transcript_window(&session_id, Some(first_line), count)
+}
+
+/// 流式落盘快路径：把**纯新增**事件追加到文件尾（见 storage 的
+/// `append_transcript_file`——语义前提由前端「前缀引用全等」判定保证）。
+#[tauri::command(async)]
+pub fn append_transcript_events(
+    session_id: String,
+    events: Vec<serde_json::Value>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    if events.is_empty() {
+        return Ok(());
+    }
+    let path = {
+        let storage = state
+            .storage
+            .lock()
+            .map_err(|_| "Storage lock poisoned".to_string())?;
+        storage.transcript_path_for(&session_id)?
+    };
+    crate::storage::StorageService::append_transcript_file(&path, &events)
 }
 
 /// Best-effort local auth probe: CLI status commands where available, credential
@@ -3170,7 +3219,9 @@ pub fn bridge_list_models(agent_id: String) -> crate::model_bridge::BridgeModels
     ) {
         crate::engine::ensure_bridge_ready_if_installed(std::time::Duration::from_secs(5));
     }
-    let _ = crate::engine::sync_discovered_sources();
+    // 被动路径（非强制）：不排队等同步锁、不强制 live 重抓——菜单打开不该
+    // 被后台注册链/网络 refresh 挡住（0.5.4 启动卡顿共犯）。
+    let _ = crate::engine::sync_discovered_sources(false);
     let result = crate::model_bridge::list_models(&agent_id);
     // B4-2 漂移防线：按 source 对比指纹存档，变化记 dev.log（只记日志，失败
     // 不影响目录本身）。
@@ -3188,7 +3239,8 @@ pub fn bridge_add_custom_provider(label: String, key: String, config: crate::cre
 #[tauri::command(async)]
 pub fn model_library_scan() -> serde_json::Value {
     let mut discovery = crate::model_sources::discover();
-    discovery.warnings.extend(crate::engine::sync_discovered_sources());
+    // 手动面板刷新：强制 live 重抓 + 排队等锁（用户显式要新数据）。
+    discovery.warnings.extend(crate::engine::sync_discovered_sources(true));
     let aliases=crate::engine::model_source_aliases(&discovery.sources);
     serde_json::json!({ "sources": discovery.sources.into_iter().map(|s|s.view).collect::<Vec<_>>(), "warnings": discovery.warnings, "paths": discovery.paths, "aliases": aliases, "accounts": discovery.accounts })
 }

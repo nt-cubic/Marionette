@@ -484,10 +484,49 @@ export async function writeTranscript(sessionId: string, events: unknown[]): Pro
   await invoke("write_transcript", { sessionId, events });
 }
 
+/** 流式落盘快路径：只把纯新增事件追加到文件尾，不重写整文件。 */
+export async function appendTranscriptEvents(sessionId: string, events: unknown[]): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("append_transcript_events", { sessionId, events });
+}
+
+/** 窗口化转录页：events + 全文件行数 + 窗口首行（0 基，> 0 表示头部截断）。 */
+export interface TranscriptPage {
+  events: unknown[];
+  totalLines: number;
+  firstLine: number;
+}
+
+/** 尾部优先加载：`tail` 行（默认见 App 的 TRANSCRIPT_TAIL_EVENTS）。 */
+export async function loadTranscriptPage(sessionId: string, tail?: number): Promise<TranscriptPage> {
+  if (!isTauriRuntime()) return { events: [], totalLines: 0, firstLine: 0 };
+  try {
+    return await invoke<TranscriptPage>("load_transcript", { sessionId, tail: tail ?? null });
+  } catch {
+    return { events: [], totalLines: 0, firstLine: 0 };
+  }
+}
+
+/** 向上翻页：读 [firstLine, firstLine + count)。失败给空页（firstLine 回退到请求起点）。 */
+export async function loadTranscriptWindow(
+  sessionId: string,
+  firstLine: number,
+  count: number,
+): Promise<TranscriptPage> {
+  if (!isTauriRuntime()) return { events: [], totalLines: 0, firstLine };
+  try {
+    return await invoke<TranscriptPage>("load_transcript_window", { sessionId, firstLine, count });
+  } catch {
+    return { events: [], totalLines: 0, firstLine };
+  }
+}
+
+/** 全量加载（导出 / 编辑重发补头 / 标签修复等全量消费者）。 */
 export async function loadTranscript(sessionId: string): Promise<unknown[]> {
   if (!isTauriRuntime()) return [];
   try {
-    return await invoke<unknown[]>("load_transcript", { sessionId });
+    const page = await invoke<TranscriptPage>("load_transcript", { sessionId, tail: null });
+    return page.events;
   } catch {
     return [];
   }

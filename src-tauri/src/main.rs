@@ -67,6 +67,54 @@ const SHUTDOWN_KILL_TIMEOUT_SECS: u64 = 5;
 ///
 /// Callers must `api.prevent_close()` first so default WebView teardown never
 /// starts while we are still on the event-handler stack.
+// ─── 后台模式关窗交接的兜底 ──────────────────────────────────────────────────
+//
+// Background mode 的关闭路径把事件交给前端（retract 到贴边 / 自行 hide）。
+// 前端 JS 冻死时这条链无人应答——2026-10-31 事故里用户连窗口都关不掉
+// （无边框窗的 ✕ 也是 HTML，Alt+F4 走的也是同一条交接）。交接时立一个
+// 2s 看门狗：前端一接管就调 `ack_main_close` 清标记；超时仍挂着说明渲染
+// 进程没在干活，由 Rust 直接兜底 hide（webview 级先行，配对 WebView2 挂
+// 起补丁），Alt+F4 / 任务栏关闭恢复为可靠逃生门。贴边 retract 后窗口仍是
+// visible（停在屏外），所以完成信号必须用显式 ack，不能拿可见性凑合。
+
+static MAIN_CLOSE_HANDOFF_PENDING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+const MAIN_CLOSE_HANDOFF_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// 前端 dockMode.handleCloseFromRust 一进来就调（retract 动画收完与否无关）。
+#[tauri::command]
+fn ack_main_close() {
+    MAIN_CLOSE_HANDOFF_PENDING.store(false, std::sync::atomic::Ordering::Release);
+}
+
+fn arm_main_close_handoff_watchdog(app: tauri::AppHandle) {
+    MAIN_CLOSE_HANDOFF_PENDING.store(true, std::sync::atomic::Ordering::Release);
+    std::thread::Builder::new()
+        .name("main-close-handoff-watchdog".to_string())
+        .spawn(move || {
+            std::thread::sleep(MAIN_CLOSE_HANDOFF_TIMEOUT);
+            if !MAIN_CLOSE_HANDOFF_PENDING.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                return; // 前端已接管
+            }
+            use tauri::Manager as _;
+            if let Some(main) = app.get_webview_window("main") {
+                // webview 级 hide 先行（TrySuspend 配对红线：只走 tao 层会让
+                // 下次唤醒白屏），与 shell_integration 二次启动交接的
+                // `win.as_ref().show()` 成对。窗口级 hide 随后。
+                let _ = main.as_ref().hide();
+                let _ = main.hide();
+                crate::debug_log::append(
+                    "window",
+                    "warn",
+                    "",
+                    "frontend close handoff timed out; hid main window from Rust",
+                    Some("renderer unresponsive — recover via relaunch / tray"),
+                );
+            }
+        })
+        .ok();
+}
+
 pub(crate) fn shutdown_and_exit(app: &tauri::AppHandle) -> ! {
     use tauri::Manager;
 
@@ -389,6 +437,7 @@ fn main() {
                             // here; the window is never hidden while docking.
                             use tauri::Emitter as _;
                             let _ = window.emit_to(label.as_str(), "marionette-main-close", ());
+                            arm_main_close_handoff_watchdog(window.app_handle().clone());
                             crate::debug_log::append(
                                 "window",
                                 "info",
@@ -589,6 +638,9 @@ fn main() {
             dock_support::set_background_mode,
             dock_support::quit_app,
             dock_support::fullscreen_active,
+            ack_main_close,
+            commands::load_transcript_window,
+            commands::append_transcript_events,
             memos::memo_list,
             memos::memo_save_paths,
             memos::memo_save_text,
