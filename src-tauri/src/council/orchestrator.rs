@@ -192,6 +192,48 @@ pub fn recover_orphaned_runs(emitter: &CouncilEventEmitter) -> Vec<String> {
     recovered
 }
 
+/// 验证-修复回路上限(任务书 §4.3 默认 3)。
+pub const MAX_VERIFY_ATTEMPTS: u32 = 3;
+
+/// 修订计划后的任务账本迁移:同 id 且同 detail 的已完成(Merged)任务
+/// 保留执行成果(不重跑、不重复调用 agent);失败/被修改/新增的任务
+/// 复位 Pending;被删除的步骤出账。
+fn migrate_tasks(
+    old_plan: &crate::council::types::PlanDoc,
+    new_plan: &crate::council::types::PlanDoc,
+    current: &[super::tasks::TaskProgress],
+) -> Vec<super::tasks::TaskProgress> {
+    use super::tasks::TaskStatus;
+    let mut out = Vec::new();
+    for new_step in &new_plan.steps {
+        let old_detail = old_plan.steps.iter().find(|s| s.id == new_step.id).map(|s| s.detail.clone());
+        let current_prog = current.iter().find(|t| t.step_id == new_step.id);
+        let keep = match (current_prog, &old_detail) {
+            (Some(prog), Some(old)) => prog.status == TaskStatus::Merged && *old == new_step.detail,
+            _ => false,
+        };
+        if keep {
+            let mut kept = current_prog.unwrap().clone();
+            kept.title = new_step.title.clone();
+            out.push(kept);
+        } else {
+            out.push(super::tasks::TaskProgress {
+                step_id: new_step.id.clone(),
+                title: new_step.title.clone(),
+                status: TaskStatus::Pending,
+                session_id: None,
+                worktree: None,
+                branch: None,
+                changes: Vec::new(),
+                error: None,
+                attempts: current_prog.map(|p| p.attempts).unwrap_or(0),
+                notes: String::new(),
+            });
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // fan-out job
 // ---------------------------------------------------------------------------
@@ -557,23 +599,97 @@ fn run_loop(
             }
 
             RunPhase::Verifying => {
-                // M2:自动验证命令执行属 M3;当前把计划声明的验证清单作
-                // 为交付证据记录后完成(诚实标注,不伪造验证结果)。
-                if let Some(plan) = store::load_plan(run_id)? {
-                    if !plan.verification.is_empty() {
-                        let msg = new_message(
-                            run_id, state.round, "system", "all", MessageKind::Evidence, None,
-                            &format!("计划声明的验证命令(自动执行属后续版本):
-{}", plan.verification.iter().map(|v| format!("- `{v}`")).collect::<Vec<_>>().join("
-")),
-                            None,
-                        );
-                        persist_message(&mut messages, run_id, emitter, msg);
-                    }
+                let Some(plan) = store::load_plan(run_id)? else {
+                    fail_run(&mut state, run_id, emitter, "验证阶段找不到计划".into());
+                    return Ok(());
+                };
+                let Some(executor) = spec.executor.clone() else {
+                    transition(&mut state, run_id, emitter, RunPhase::Completed, Some("无执行器,跳过验证"));
+                    return Ok(());
+                };
+                let cwd = std::path::PathBuf::from(&executor.cwd);
+                let results = super::verify::run_all(&cwd, &plan.verification, 900);
+                let evidence = super::verify::render_evidence(&results);
+                let all_ok = results.iter().all(|r| r.ok);
+                let msg = new_message(
+                    run_id,
+                    state.round,
+                    "system",
+                    "all",
+                    MessageKind::Evidence,
+                    None,
+                    &evidence,
+                    Some(json!({ "attempt": state.verify_attempts, "allOk": all_ok })),
+                );
+                persist_message(&mut messages, run_id, emitter, msg);
+                emitter.emit(run_id, "verify", serde_json::to_value(&results).unwrap_or(json!([])));
+
+                if all_ok {
+                    transition(&mut state, run_id, emitter, RunPhase::Completed, Some("验证全部通过"));
+                    emitter.emit(run_id, "finished", json!({ "phase": "completed" }));
+                    return Ok(());
                 }
-                transition(&mut state, run_id, emitter, RunPhase::Completed, Some("执行完成;自动验证属后续版本"));
-                emitter.emit(run_id, "finished", json!({ "phase": "completed" }));
-                return Ok(());
+                // 失败 → 受限修复回路(默认上限 3,任务书 §4.3)。
+                if state.verify_attempts >= MAX_VERIFY_ATTEMPTS {
+                    fail_run(&mut state, run_id, emitter, format!("验证失败且修复次数已用尽({MAX_VERIFY_ATTEMPTS} 次)"));
+                    return Ok(());
+                }
+                state.verify_attempts += 1;
+                let chair = chair_of(&spec).ok_or("找不到主席成员")?;
+                let (system, user) =
+                    prompts::repair_round_prompt(&spec, chair, &plan, &evidence, state.verify_attempts);
+                let repaired_raw = match call_model(&mut state, client, handle, &chair.model, &system, &user, "plan-repair") {
+                    Ok(out) => out.content,
+                    Err(e) => {
+                        fail_run(&mut state, run_id, emitter, format!("修复计划生成失败:{e}"));
+                        return Ok(());
+                    }
+                };
+                let new_plan = match parse_plan(&repaired_raw) {
+                    Ok(p) => p,
+                    Err(first) => {
+                        emitter.emit(run_id, "warn", json!({ "message": "修复计划 JSON 解析失败,请求一次修复", "error": first }));
+                        let (rs, ru) = prompts::plan_repair_prompt(chair, &repaired_raw, &first);
+                        match call_model(&mut state, client, handle, &chair.model, &rs, &ru, "plan-repair-retry") {
+                            Ok(out) => match parse_plan(&out.content) {
+                                Ok(p) => p,
+                                Err(second) => {
+                                    fail_run(&mut state, run_id, emitter, format!("修复计划两次解析失败:{second}"));
+                                    return Ok(());
+                                }
+                            },
+                            Err(e) => {
+                                fail_run(&mut state, run_id, emitter, format!("修复计划调用失败:{e}"));
+                                return Ok(());
+                            }
+                        }
+                    }
+                };
+                // 版本化:旧计划已由 Plan 消息留痕;新计划落盘 + Plan 消息。
+                let old_plan = plan;
+                store::save_plan(run_id, &new_plan)?;
+                let plan_msg = new_message(
+                    run_id,
+                    state.round,
+                    &chair.id,
+                    "all",
+                    MessageKind::Plan,
+                    None,
+                    &new_plan.summary,
+                    Some(json!({ "planJson": repaired_raw, "repairRound": state.verify_attempts })),
+                );
+                persist_message(&mut messages, run_id, emitter, plan_msg);
+                // 任务账本迁移:同 id 同 detail 的 Merged 任务保留(不重跑);
+                // 其余(失败的、detail 变化的、新增的)复位 Pending。
+                state.tasks = migrate_tasks(&old_plan, &new_plan, &state.tasks);
+                let _ = store::save_state(&state);
+                emitter.emit(
+                    run_id,
+                    "warn",
+                    json!({ "message": format!("验证失败,进入第 {} 次修复:计划已修订,受影响任务复位重跑", state.verify_attempts) }),
+                );
+                transition(&mut state, run_id, emitter, RunPhase::Executing, Some("验证失败,修订计划后重执行"));
+                continue;
             }
 
             RunPhase::AwaitingApproval => {
@@ -1014,6 +1130,7 @@ mod tests {
                 .collect(),
             budget_usage: Default::default(),
             tasks: Vec::new(),
+            verify_attempts: 0,
             updated_at: now_millis(),
             error: None,
         };
@@ -1324,6 +1441,139 @@ mod tests {
             .filter(|c| c.prompt.contains("独立完成对以下任务的技术提案") && c.model == shared_model)
             .count();
         assert_eq!(proposal_calls, 2, "同模型的两个成员各自被调用");
+    }
+
+    /// 验收 #11:验证失败触发受限修订路径——首轮执行产出坏内容,
+    /// 验证命令失败 → 主席修订计划(同 id 换 detail)→ 受影响任务复位
+    /// 重跑 → 验证通过 → Completed。全程计划版本留痕。
+    #[test]
+    fn verification_failure_triggers_bounded_repair() {
+        let sandbox = Sandbox::new("repair");
+        // 真实 git 临时仓库(验证命令要在里面跑)。
+        let repo = std::env::temp_dir().join(format!("marionette-council-repair-{}", new_run_id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [vec!["init", "-q"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]] {
+            assert!(std::process::Command::new("git").args(args).current_dir(&repo).status().unwrap().success());
+        }
+        std::fs::write(repo.join("seed.txt"), "seed
+").unwrap();
+        assert!(std::process::Command::new("git").args(["add", "--all"]).current_dir(&repo).status().unwrap().success());
+        assert!(std::process::Command::new("git").args(["commit", "-q", "-m", "init"]).current_dir(&repo).status().unwrap().success());
+
+        let mut spec = setup_run(&sandbox, "repair");
+        spec.mode = CouncilMode::CouncilAndExecution;
+        spec.executor = Some(crate::council::types::ExecutorSpec {
+            agent_id: "fake-agent".into(),
+            cwd: repo.to_string_lossy().to_string(),
+            project_id: None,
+            step_timeout_secs: Some(30),
+        });
+        store::save_spec(&spec).unwrap();
+
+        // plan v1:写坏内容;验证要求 good。
+        let plan_v1 = crate::council::orchestrator::parse_plan(
+            r#"{"summary":"v1","steps":[{"id":"s1","title":"写文件","detail":"WRITE out.txt|bad","dependsOn":[],"acceptance":"含 good"}],"verification":["cmd /C exit 1"]}"#,
+        )
+        .unwrap();
+        store::save_plan(&spec.run_id, &plan_v1).unwrap();
+
+        // 状态推进到 Executing(测试内直接落状态;approve 是 UI 命令)。
+        let mut state = store::load_state(&spec.run_id).unwrap();
+        let mut phase = RunPhase::Created;
+        for hop in [RunPhase::Analyzing, RunPhase::Proposing, RunPhase::Reviewing, RunPhase::Synthesizing, RunPhase::PlanReady, RunPhase::Executing] {
+            let rec = crate::council::state::apply_transition(&mut state, hop, Some("test")).unwrap();
+            store::append_transition(&spec.run_id, &rec).unwrap();
+            phase = hop;
+        }
+        let _ = phase;
+        store::save_state(&state).unwrap();
+
+        // chair 的修复调用返回 plan v2(同 id,detail 改好)。
+        let plan_v2_json = r#"{"summary":"v2 修复","steps":[{"id":"s1","title":"写文件","detail":"WRITE out.txt|good","dependsOn":[],"acceptance":"含 good"}],"verification":["cmd /C exit 0"]}"#;
+        let mock = Arc::new(MockClient::new());
+        mock.enqueue(&spec.members[1].model, vec![plan_v2_json.to_string()]); // chair = members[1]
+
+        let harness = Arc::new(crate::council::executor::ScriptedHarness { timeout_secs: 30 });
+        start_run(
+            CouncilEventEmitter::new(None),
+            spec.run_id.clone(),
+            RunClients { model: Some(mock.clone()), harness: Some(harness) },
+        )
+        .unwrap();
+        wait_phase(&spec.run_id, RunPhase::Completed, 60_000);
+
+        let final_state = store::load_state(&spec.run_id).unwrap();
+        assert_eq!(final_state.phase, RunPhase::Completed, "修复后应完成:{:?}", final_state.error);
+        assert_eq!(final_state.verify_attempts, 1, "恰好一轮修复");
+        // 文件最终是修复后的内容。
+        let content = std::fs::read_to_string(repo.join("out.txt")).unwrap();
+        assert!(content.contains("good"), "最终内容应来自修订计划:{content}");
+        // 计划版本留痕:两条 Plan 消息(v1 未走消息流,这里是修复轮的 v2;至少一条 repair)。
+        let messages = store::load_messages(&spec.run_id).unwrap();
+        assert!(messages.iter().any(|m| m.kind == MessageKind::Evidence));
+        assert!(messages.iter().any(|m| m.kind == MessageKind::Plan && m.meta.as_ref().and_then(|v| v.get("repairRound")).is_some()));
+        // 最终 plan.json 是 v2。
+        let plan = store::load_plan(&spec.run_id).unwrap().unwrap();
+        assert!(plan.steps[0].detail.contains("good"));
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// 修复上限:验证始终失败 → 3 次修复后 Failed 终态(不无限自改)。
+    #[test]
+    fn repair_loop_is_bounded() {
+        let sandbox = Sandbox::new("bound");
+        let repo = std::env::temp_dir().join(format!("marionette-council-bound-{}", new_run_id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [vec!["init", "-q"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]] {
+            assert!(std::process::Command::new("git").args(args).current_dir(&repo).status().unwrap().success());
+        }
+        std::fs::write(repo.join("seed.txt"), "seed
+").unwrap();
+        assert!(std::process::Command::new("git").args(["add", "--all"]).current_dir(&repo).status().unwrap().success());
+        assert!(std::process::Command::new("git").args(["commit", "-q", "-m", "init"]).current_dir(&repo).status().unwrap().success());
+
+        let mut spec = setup_run(&sandbox, "bound");
+        spec.mode = CouncilMode::Autonomous;
+        spec.executor = Some(crate::council::types::ExecutorSpec {
+            agent_id: "fake-agent".into(),
+            cwd: repo.to_string_lossy().to_string(),
+            project_id: None,
+            step_timeout_secs: Some(30),
+        });
+        store::save_spec(&spec).unwrap();
+
+        // 恒败验证 + 修复计划永远不改 detail(同 id 同 detail → 任务虽复位,
+        // 结果不变)→ 循环触顶。
+        let plan = parse_plan(
+            r#"{"summary":"v","steps":[{"id":"s1","title":"写","detail":"WRITE out.txt|bad","dependsOn":[],"acceptance":"含 good"}],"verification":["cmd /C exit 1"]}"#,
+        )
+        .unwrap();
+        store::save_plan(&spec.run_id, &plan).unwrap();
+
+        let mut state = store::load_state(&spec.run_id).unwrap();
+        for hop in [RunPhase::Analyzing, RunPhase::Proposing, RunPhase::Reviewing, RunPhase::Synthesizing, RunPhase::PlanReady, RunPhase::Executing] {
+            let rec = crate::council::state::apply_transition(&mut state, hop, Some("test")).unwrap();
+            store::append_transition(&spec.run_id, &rec).unwrap();
+        }
+        store::save_state(&state).unwrap();
+
+        let same_plan_json = r#"{"summary":"v","steps":[{"id":"s1","title":"写","detail":"WRITE out.txt|bad","dependsOn":[],"acceptance":"含 good"}],"verification":["cmd /C exit 1"]}"#;
+        let mock = Arc::new(MockClient::new());
+        mock.enqueue(&spec.members[1].model, vec![same_plan_json.to_string()]);
+        let harness = Arc::new(crate::council::executor::ScriptedHarness { timeout_secs: 30 });
+        start_run(
+            CouncilEventEmitter::new(None),
+            spec.run_id.clone(),
+            RunClients { model: Some(mock), harness: Some(harness) },
+        )
+        .unwrap();
+        wait_phase(&spec.run_id, RunPhase::Failed, 120_000);
+        let final_state = store::load_state(&spec.run_id).unwrap();
+        assert_eq!(final_state.verify_attempts, MAX_VERIFY_ATTEMPTS, "恰好用尽 3 次修复");
+        assert!(final_state.error.as_deref().unwrap_or("").contains("修复次数已用尽"));
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     /// 计划解析:围栏剥离 + 字段容错。

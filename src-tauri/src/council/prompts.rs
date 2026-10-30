@@ -11,7 +11,7 @@
 //! 可见性由 orchestrator 在调用这些函数前决定(它们只渲染给定输入),
 //! 但函数签名刻意做成"只收该看的消息",配合隔离测试双向锁死。
 
-use super::types::{CouncilMessage, CouncilSpec, MemberSpec, MessageKind};
+use super::types::{CouncilMessage, CouncilSpec, MemberSpec, MessageKind, PlanDoc};
 
 /// 所有阶段共用的角色前缀(任务书 §3.2:模型身份显式披露,同一模型
 /// 多成员必须知道自己是谁)。
@@ -169,6 +169,40 @@ pub fn plan_prompt(spec: &CouncilSpec, chair: &MemberSpec, synthesis: &CouncilMe
 pub fn plan_repair_prompt(chair: &MemberSpec, broken: &str, error: &str) -> (String, String) {
     let system = format!("你是主席 {}。你上一轮输出的计划 JSON 无法解析,请修复后重新输出**只含一个 json 围栏**的结果。", chair.display_name);
     let user = format!("解析错误:{error}\n\n你上一轮的输出:\n```\n{broken}\n```\n\n请输出修复后的完整 JSON(保持约定 schema,只输出 ```json 围栏)。");
+    (system, user)
+}
+
+
+/// 修复轮(§4.3 targeted revision):验证失败后,主席根据失败证据修订
+/// 计划。要求:只改有问题的步骤(未受影响的保持原 id 原样输出,使已
+/// 完成的任务可以保留);每处修改附失败证据的对应关系。
+pub fn repair_round_prompt(
+    spec: &CouncilSpec,
+    chair: &MemberSpec,
+    plan: &PlanDoc,
+    evidence: &str,
+    attempt: u32,
+) -> (String, String) {
+    let system = format!(
+        "{}你是主席。执行验证失败了,你需要**修订实施计划**。规则:\n- 只修改与失败证据相关的步骤;无关步骤保持 id 与内容不变(系统会保留它们已完成的执行结果)。\n- 修改/新增的步骤要针对证据里具体的失败原因。\n- 若失败源于验证命令本身不合理,可以修正 verification 清单并说明理由。{}",
+        role_header(spec, chair),
+        OUTPUT_DISCIPLINE
+    );
+    let steps = plan
+        .steps
+        .iter()
+        .map(|s| {
+            format!(
+                "- [{}] {}(detail: {}; dependsOn: {:?}; acceptance: {})",
+                s.id, s.title, s.detail, s.depends_on, s.acceptance
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let user = format!(
+        "## 第 {attempt} 次修复尝试\n\n## 当前计划\n{steps}\n\n## 验证失败证据\n{evidence}\n\n## 任务原文\n{}\n\n只输出一个 ```json 围栏,内容为修订后的完整计划(与原 schema 相同)。",
+        spec.task
+    );
     (system, user)
 }
 
