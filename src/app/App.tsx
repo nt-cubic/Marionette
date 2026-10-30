@@ -90,6 +90,7 @@ import { enterDock, getDockState, initDockMode, readDockPrefs, subscribeDockPref
 import { DockChrome, DockResizeGrip, type DockPage } from "../components/DockChrome";
 import { DockDropRouter } from "../components/DockDropRouter";
 import { MemoBox } from "../components/MemoBox";
+import { CouncilPage } from "../components/CouncilPage";
 import { memoList, memoPrompt } from "../lib/memos";
 import { installPageDragSourceTracker } from "../lib/dragText";
 import { splitShelfChatSessions, withoutGhostProjects } from "../lib/sessionGroups";
@@ -560,6 +561,8 @@ export function App() {
    * conversation tab keeps the tab, like any other open dialog).
    */
   const [memoActive, setMemoActive] = useState(false);
+  /** Council Mode(多模型审议)整页:打开时中栏切 Council 视图,与收纳盒页互斥。 */
+  const [councilOpen, setCouncilOpen] = useState(false);
   /** Sessions that finished a turn while this window was looking at another dialog. */
   const [doneUnreadIds, setDoneUnreadIds] = useState<Set<string>>(() => new Set());
   /** Agent proxy config (single exit address), loaded on mount. */
@@ -4764,6 +4767,8 @@ export function App() {
   }, [pushDebug]);
 
   const applyFocusedSession = (nextSession: Session) => {
+    // 切到具体对话时退出 Council 整页(与收纳盒页同语义)。
+    setCouncilOpen(false);
     setCurrentProjectId(nextSession.projectId);
     setCurrentSessionId(nextSession.id);
     // Selecting any conversation switches the center back to its flow — the
@@ -8668,6 +8673,11 @@ export function App() {
             onOpenMemo={dockActive ? undefined : () => {
               setMemoOpen(true);
               setMemoActive(true);
+              setCouncilOpen(false);
+            }}
+            onOpenCouncil={dockActive || IS_DETACHED_WINDOW ? undefined : () => {
+              setCouncilOpen(true);
+              setMemoActive(false);
             }}
           />
           )}
@@ -8715,6 +8725,15 @@ export function App() {
                   ]
                 : []),
               { id: "new-chat", label: t("palette.newChat"), run: () => void handleCreateChatSession() },
+              {
+                id: "open-council",
+                label: "打开 Council 多模型协作",
+                hint: "多模型审议与计划",
+                run: () => {
+                  setCouncilOpen(true);
+                  setMemoActive(false);
+                },
+              },
               {
                 id: "add-project",
                 label: t("palette.addProject"),
@@ -8902,7 +8921,17 @@ export function App() {
               {rightCollapsed ? <ChevronLeft size={12} /> : <ChevronRight size={12} />}
             </button>
           )}
-          {memoActive && !dockActive && !IS_DETACHED_WINDOW ? (
+          {councilOpen && !dockActive && !IS_DETACHED_WINDOW ? (
+            // Council Mode 整页:中栏切换为审议视图(侧栏/右栏保留),
+            // Esc 或返回退出;对话流不受影响。
+            <div className="council-tab-page" aria-label="Council 协作">
+              <CouncilPage
+                onClose={() => {
+                  setCouncilOpen(false);
+                }}
+              />
+            </div>
+          ) : memoActive && !dockActive && !IS_DETACHED_WINDOW ? (
             // 收纳盒 as a tab page: only the conversation-flow column switches
             // (shelf and context panel stay); no composer for this page.
             <div className="memo-tab-page" aria-label={t("app.memoBox")}>

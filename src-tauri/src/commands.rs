@@ -3699,3 +3699,177 @@ mod tests {
 pub fn model_library_set_environment(source_id: String, name: String, value: String) -> Result<(), String> {
     crate::model_sources::set_environment(&source_id, &name, &value)
 }
+
+// ===========================================================================
+// Council Mode(多模型审议)——命令面。实现见 `crate::council::*`。
+// ===========================================================================
+
+use crate::council::orchestrator::CouncilEventEmitter;
+use crate::council::types as council_types;
+
+fn council_detail(run_id: &str) -> Result<council_types::RunDetail, String> {
+    let spec = crate::council::store::load_spec(run_id)?;
+    let state = crate::council::store::load_state(run_id)?;
+    let messages = crate::council::store::load_messages(run_id)?;
+    let transitions = crate::council::store::load_transitions(run_id)?;
+    let plan = crate::council::store::load_plan(run_id)?;
+    let live = crate::council::orchestrator::run_is_live(run_id);
+    Ok(council_types::RunDetail { spec, state, messages, transitions, plan, live })
+}
+
+/// 创建并启动一个 Council run。`input` 的 runId/createdAt 由后端重写
+/// (不信任前端);成员/模型/预算等配置保留。
+#[tauri::command(async)]
+pub fn council_create(
+    app: tauri::AppHandle,
+    input: council_types::CouncilSpec,
+) -> Result<council_types::RunDetail, String> {
+    let mut spec = input;
+    spec.run_id = council_types::new_run_id();
+    spec.created_at = council_types::now_millis();
+    council_types::validate_spec(&spec)?;
+    let state = council_types::CouncilState {
+        run_id: spec.run_id.clone(),
+        phase: council_types::RunPhase::Created,
+        round: 1,
+        paused_from: None,
+        member_status: spec
+            .members
+            .iter()
+            .map(|m| (m.id.clone(), council_types::MemberRuntimeStatus::Idle))
+            .collect(),
+        budget_usage: Default::default(),
+        updated_at: council_types::now_millis(),
+        error: None,
+    };
+    crate::council::store::save_spec(&spec)?;
+    crate::council::store::save_state(&state)?;
+    crate::council::orchestrator::start_run(CouncilEventEmitter::new(Some(app)), spec.run_id.clone(), None)?;
+    council_detail(&spec.run_id)
+}
+
+#[tauri::command]
+pub fn council_list_runs() -> Result<Vec<council_types::RunSummary>, String> {
+    crate::council::store::list_runs()
+}
+
+#[tauri::command]
+pub fn council_get_run(run_id: String) -> Result<council_types::RunDetail, String> {
+    council_detail(&run_id)
+}
+
+/// 取消 run。活线程 → 置标志由编排线程落账;非活线程(PlanReady/
+/// Paused/残留运行态)→ 直接落盘转移。
+#[tauri::command]
+pub fn council_cancel_run(run_id: String) -> Result<council_types::CouncilState, String> {
+    let live = crate::council::orchestrator::cancel_run(&run_id)?;
+    if live {
+        // 编排线程即将完成转移;短暂等待其落账。
+        for _ in 0..80 {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            if let Ok(state) = crate::council::store::load_state(&run_id) {
+                if state.phase == council_types::RunPhase::Cancelled {
+                    return Ok(state);
+                }
+            }
+        }
+    }
+    let mut state = crate::council::store::load_state(&run_id)?;
+    if state.phase.is_terminal() {
+        return Ok(state);
+    }
+    let record = crate::council::state::apply_transition(&mut state, council_types::RunPhase::Cancelled, Some("用户取消"))?;
+    crate::council::store::append_transition(&run_id, &record)?;
+    crate::council::store::save_state(&state)?;
+    Ok(state)
+}
+
+/// 暂停 run(当前批次的活请求会完成,随后停在阶段边界)。
+#[tauri::command]
+pub fn council_pause_run(run_id: String) -> Result<(), String> {
+    let paused = crate::council::orchestrator::pause_run(&run_id)?;
+    if !paused {
+        return Err(format!("run {run_id} 没有正在运行的编排线程"));
+    }
+    Ok(())
+}
+
+/// 恢复暂停的 run(回到 paused_from 指向的阶段)。
+#[tauri::command(async)]
+pub fn council_resume_run(app: tauri::AppHandle, run_id: String) -> Result<council_types::CouncilState, String> {
+    let mut state = crate::council::store::load_state(&run_id)?;
+    let target = crate::council::state::can_resume(&state)?;
+    let record = crate::council::state::apply_transition(&mut state, target, Some("用户恢复"))?;
+    crate::council::store::append_transition(&run_id, &record)?;
+    crate::council::store::save_state(&state)?;
+    crate::council::orchestrator::start_run(CouncilEventEmitter::new(Some(app)), run_id.clone(), None)?;
+    Ok(state)
+}
+
+/// Plan Gate:用户对计划做出裁决。accept=true →
+/// - council-only:交付完成(PlanReady→Completed,审计注明);
+/// - 执行型模式:M1 阶段同样 Completed(执行集成属 M2,不伪造执行)。
+/// accept=false → 保持 PlanReady(前端引导修改或取消),记录 Status 消息。
+#[tauri::command]
+pub fn council_approve_plan(run_id: String, accept: bool) -> Result<council_types::CouncilState, String> {
+    let mut state = crate::council::store::load_state(&run_id)?;
+    if state.phase != council_types::RunPhase::PlanReady {
+        return Err(format!("计划未就绪(当前状态 {:?}),不能裁决", state.phase));
+    }
+    if !accept {
+        let msg = council_types::CouncilMessage {
+            message_id: format!("reject-{}", council_types::now_millis()),
+            run_id: run_id.clone(),
+            round: state.round,
+            from: "system".into(),
+            to: "all".into(),
+            kind: council_types::MessageKind::Status,
+            reply_to: None,
+            content: "用户未接受当前计划;可调整任务后重新发起,或取消本次 run。".into(),
+            timestamp: council_types::now_millis(),
+            meta: None,
+        };
+        crate::council::store::append_message(&run_id, &msg).ok();
+        return Ok(state);
+    }
+    let reason = if state.phase == council_types::RunPhase::PlanReady {
+        "计划被接受;council-only 交付完成(无代码执行)"
+    } else {
+        "计划被接受"
+    };
+    let record = crate::council::state::apply_transition(&mut state, council_types::RunPhase::Completed, Some(reason))?;
+    crate::council::store::append_transition(&run_id, &record)?;
+    crate::council::store::save_state(&state)?;
+    Ok(state)
+}
+
+#[tauri::command]
+pub fn council_delete_run(run_id: String) -> Result<(), String> {
+    if crate::council::orchestrator::run_is_live(&run_id) {
+        return Err("run 正在运行,先取消再删除".into());
+    }
+    crate::council::store::delete_run(&run_id)
+}
+
+/// Council 可用模型清单(引擎目录直通)。顺带短暂唤醒引擎,让目录
+/// 尽量新鲜;未就绪时返回空清单 + ready=false,前端给安装/启动引导。
+#[tauri::command(async)]
+pub fn council_list_models() -> Result<serde_json::Value, String> {
+    let ready = crate::engine::ensure_bridge_ready_if_installed(std::time::Duration::from_secs(5));
+    let models: Vec<serde_json::Value> = if ready {
+        crate::engine::catalog_direct_entries()
+            .into_iter()
+            .map(|row| {
+                serde_json::json!({
+                    "id": row.id,
+                    "contextWindow": row.context_window,
+                    "maxOutput": row.max_output,
+                    "images": row.images,
+                })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Ok(serde_json::json!({ "ready": ready, "models": models }))
+}
