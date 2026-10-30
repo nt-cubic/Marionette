@@ -852,6 +852,12 @@ fn spawn_serve(exe: &Path, port: u16) -> Result<ChildHandle, String> {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .current_dir(exe.parent().unwrap_or(Path::new(".")));
+    // Go 软内存上限：实测引擎空转常驻 ~120-160MB private，128MiB 让 GC 在
+    // 长尾增长前先收。软限制——逼近时只是更勤 GC（STW 微秒级，不碍流式代理），
+    // 不会 OOM。用户自设时不覆盖（与 acp.rs 的 env 注入同规矩）。
+    if std::env::var_os("GOMEMLIMIT").is_none() {
+        command.env("GOMEMLIMIT", "128MiB");
+    }
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -861,6 +867,11 @@ fn spawn_serve(exe: &Path, port: u16) -> Result<ChildHandle, String> {
     let mut child = command
         .spawn()
         .map_err(|e| format!("拉起 magpie serve 失败（{}）: {e}", exe.display()))?;
+    // 崩溃/强杀兜底：Job Object kill-on-close 带走引擎，防孤儿 magpie 常驻
+    // （实测每个 ~100-160MB private，出过后要几分钟才自退）。正常退出路径
+    // 本来就显式 kill，这里只补意外路径。
+    #[cfg(target_os = "windows")]
+    assign_child_to_kill_job(&child);
     if let Some(stdout) = child.stdout.take() {
         spawn_log_thread(stdout);
     }
@@ -894,6 +905,57 @@ fn spawn_log_thread<R: Read + Send + 'static>(reader: R) {
             }
         }
     });
+}
+
+/// Windows Job Object（`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`）：本进程退出
+/// （含 panic-abort / 任务管理器强杀）时内核带走所有挂进来的引擎子进程。
+/// 句柄随进程存活故意持有不关——job 的生命周期就是我们的生命周期。
+/// 引擎可能反复重启（更新/端口让位），共用同一个 job 即可。若本进程已被
+/// 别的 job 收编（沙箱启动器，breakaway 受限），AssignProcess 会失败——
+/// 这只是兜底机制，失败记一条日志即可。
+#[cfg(target_os = "windows")]
+fn assign_child_to_kill_job(child: &std::process::Child) {
+    use std::sync::OnceLock;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    // HANDLE（*mut c_void）不是 Send/Sync，存 isize。
+    static JOB: OnceLock<isize> = OnceLock::new();
+    let job = *JOB.get_or_init(|| unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            return 0;
+        }
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let ok = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const core::ffi::c_void,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        );
+        if ok == 0 {
+            return 0;
+        }
+        job as isize
+    });
+    if job == 0 {
+        return;
+    }
+    use std::os::windows::io::AsRawHandle;
+    unsafe {
+        if AssignProcessToJobObject(job as _, child.as_raw_handle()) == 0 {
+            crate::debug_log::append(
+                "engine",
+                "warn",
+                "",
+                "kill-on-close job: assign engine failed (already inside a job?)",
+                None,
+            );
+        }
+    }
 }
 
 /// 按字符边界截断（PTY drain 断言的教训：绝不在多字节字符中间切）。
