@@ -67,6 +67,8 @@ export const en = {
   "transcript.compactionManual": "Context compacted (manual)",
   "transcript.compactionAuto": "Context compacted (auto)",
   "transcript.pleaseSelect": "Please choose",
+  "transcript.loadOlder": "Load earlier messages (~{count} more)",
+  "transcript.loadingOlder": "Loading earlier messages…",
   "usage.balance": "Balance {balance}",
   "usage.remainingPercent": "{n}% left",
   "usage.resetsAt": "Resets at {time}",

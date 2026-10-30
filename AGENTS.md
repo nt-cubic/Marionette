@@ -388,8 +388,61 @@ magpie 120–160MB——前两个是「运行时入场费」，调不掉，能�
    列表），已钉住的来源经 `provider refresh` → `provider models <id> all` 迁移到
    全量 live 语义（**顺序不能反**：`all` 暴露的是最近一次抓取的清单；refresh
    失败保持旧列表）。手动面板刷新全量 force；引擎拉起等自动链路每来源 6h 一
-   次（`maybe_refresh_source_live`，进程重启首轮必刷）。语义均经本地假厂商服务
+   次（`maybe_refresh_source_live`，进程重启首轮必刷；2026-10-31 起失败退避 10min、
+   注册链后台化——见「内存压力韧性批」）。语义均经本地假厂商服务
    实测（sandbox：钉死 add→refresh 不露新、no-picks add→live 全露、all 解钉）。
+
+## 内存压力韧性批（2026-10-31：转录分页 / 落盘减压 / 启动解卡 / 关窗兜底）
+
+**事故定调**：外部 llama 基准吃掉 ~110GB 内存 → 全机缺页风暴，ZCode/浏览器存活、
+Marionette 前端失去响应（点新建对话、点关闭都没反应），Rust watchdog 全程 12s 心跳
+健康、零 panic。**这是韧性差距不是崩溃**——浏览器靠进程隔离 + 流式加载扛住了同样
+的压力，我们的关键路径全是 O(文件)/O(n)。
+
+1. **转录尾部优先加载 + 向上翻页**：`load_transcript` 命令带可选 `tail`（App 用
+   `TRANSCRIPT_TAIL_EVENTS=800`）；Rust `load_transcript_window`（storage.rs）tail/range
+   两模式，只 parse 窗口内行、空行不计数；前端 `olderHeads`（App.tsx）记每会话截断
+   起点，SessionView 顶部「加载更早」哨兵（`event-list__older`），前插后按
+   scrollHeight delta 平移 scrollTop 保锚。**全量消费者红线**：编辑重发 / agent 交接 /
+   fork / 撕窗合并 / 冷热淘汰一律走 `persistRailsNow`——它先 `ensureFullTranscript`
+   补头再全量写；**rail 只装了尾部，直接 `writeTranscript` 会把磁盘上的历史头吃掉**。
+   `repairInjectedLabels` 只处理打开的标签且 idle 推迟（曾经启动期串行全量加载）。
+2. **流式落盘减压**：rails（useSessionRails.ts）`lastPersistedRef` 前缀**引用**比对 →
+   纯追加走 `append_transcript_events`（JSONL 追加，不再每 450ms 全量序列化+整文件
+   重写——24MB 转录在缺页风暴下每次重写都是秒级）；非纯追加全量写；事件 >3000 时
+   debounce 升到 2s。append 失败自动退回全量。**新增直接写盘点必须过 persistRailsNow
+   或 rails 的 armTranscriptTimer**，别绕过截断守卫。
+3. **write_atomic 加固**（storage.rs）：进程级写锁——两个并发 write_atomic 共用同一
+   个 `.json.tmp` 名字会互吞 rename（"os error 2" 实锤，且最终 rename 失败时原文件已
+   被挪去 .bak、主路径缺失）+ 3 轮重试 + 兜底直写（弃原子性保数据）+ 失败还原 .bak。
+   `append_transcript_file` 共用同一把锁。
+4. **关窗兜底**（main.rs）：后台模式 CloseRequested 交给前端后启动 2s 看门狗
+   （`arm_main_close_handoff_watchdog`）；前端 `handleCloseFromRust` **一进来就**
+   `ack_main_close`（别等 retract 动画收完，否则慢一步 Rust 就把贴边窗整个 hide）；
+   超时 Rust 兜底 hide——webview 级 `as_ref().hide()` 先行，与 shell_integration 交接
+   的 `win.as_ref().show()` 成对（TrySuspend 白屏红线）。此前前端冻死时连 Alt+F4 都
+   没人应答，窗口悬死。
+5. **孤儿 magpie 收割**（engine.rs `reap_orphan_engines`，enable_pipeline 第 1 步）：
+   toolhelp 快照 + 镜像路径在我们 `engine_dir` 下（含 `.old` 改名镜像与 bun 缓存）+
+   父进程已死 → Terminate。**fail-open**：PID 复用只会「误判为活」从而跳过，绝不
+   误杀。Job Object 创建失败补了 warn（原来静默）。
+6. **cargo test 日志窜流已修**：debug_log 的 `log_path()` 在 `cfg!(test)` 下拒绝真实
+   `~/.marionette/logs/dev.log`（格式化照跑、只断文件 sink）。**回归口径**：跑完
+   cargo test，`grep -c "marionette_test\|9\.9\.9" dev.log` 零增长。
+7. **启动链解卡**（0.5.4 用户机实测 start_acp_session→ready 58–60s，0.5.3 <3s）：
+   `run_magpie_cli` 全线 10s 超时（`process_util::output_with_kill_timeout`，超时杀
+   子进程）；注册/来源同步移出 enable 关键路径（`spawn_provider_registration` 后台
+   线程，Running 状态先行、目录靠 drift 事件跟上）；**种子引擎短路**——
+   `engine/cli-absent.marker`：装内嵌种子落标记、GitHub 完整版摘标记、真实 CLI 被
+   拒（stderr 含 "engine seed"）自学习补写；注册账本 `save_registered_ledger` 落盘
+   前去重排序（`opencode-go` 曾累积 41 份，存量脏账本下次保存自愈）；
+   `maybe_refresh_source_live` 失败退避 10min（成功 6h）；菜单路径
+   `sync_discovered_sources(false)` 不排队不强制（try-lock 让位），手动面板刷新才
+   force。
+8. **UI 心跳与周期 tick**：前端每 60s `pushDebug({source:"ui-heartbeat", …})`——下次
+   事故 dev.log 直接可判「JS 活没活」（本轮事故只能靠推断，context scan 是事件驱动
+   不是定时器）。`document.hidden` 时暂停 3s 终端轮询 / 1s live tick / 1s stats /
+   12s git 扫描，可见即续（定时发送、挂起巡检等安全类 tick 不受影响）。
 
 ## DeepSeek Harness 接入（@openma/deepseek-harness-acp，2026-10-19 起）
 

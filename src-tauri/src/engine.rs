@@ -475,7 +475,11 @@ fn download_and_install(plan: &ReleasePlan, dir: &Path) -> Result<(), String> {
     let mut last_error = String::new();
     for attempt in 0..2 {
         match download_once(plan, dir) {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                // 完整版引擎带 provider CLI——摘掉种子短路标记，注册链恢复。
+                let _ = std::fs::remove_file(cli_absent_marker_path(dir));
+                return Ok(());
+            }
             Err(error) => {
                 if attempt == 0 {
                     crate::debug_log::append(
@@ -771,6 +775,9 @@ fn install_embedded_engine_at(bytes: &[u8], version: &str, dir: &Path) -> Result
         installed_at: now_epoch_millis(),
     };
     save_manifest_at(dir, &manifest)?;
+    // 内嵌产物是种子（marionette_seed 构建，无 provider CLI）：落短路标记，
+    // 注册/同步链不再为每个 provider 白起注定失败的子进程。
+    mark_cli_absent(dir);
     crate::debug_log::append(
         "engine",
         "info",
@@ -929,6 +936,13 @@ fn assign_child_to_kill_job(child: &std::process::Child) {
     let job = *JOB.get_or_init(|| unsafe {
         let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
         if job.is_null() {
+            crate::debug_log::append(
+                "engine",
+                "warn",
+                "",
+                "kill-on-close job: CreateJobObjectW failed (engine crash cleanup lost)",
+                None,
+            );
             return 0;
         }
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
@@ -940,6 +954,13 @@ fn assign_child_to_kill_job(child: &std::process::Child) {
             std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
         );
         if ok == 0 {
+            crate::debug_log::append(
+                "engine",
+                "warn",
+                "",
+                "kill-on-close job: SetInformationJobObject failed (engine crash cleanup lost)",
+                None,
+            );
             return 0;
         }
         job as isize
@@ -960,6 +981,143 @@ fn assign_child_to_kill_job(child: &std::process::Child) {
         }
     }
 }
+
+// ─── 孤儿引擎收割 ───────────────────────────────────────────────────────────
+//
+// Job Object 是崩溃兜底，但它有三个漏洞：本进程被沙箱收编时 Assign 失败、
+// Job 创建本身失败（上面刚补的 warn）、以及老版本 Marionette（无 Job 机制时
+// 期）留下的进程。2026-10-31 实锤：20:08 被已死实例拉起的 magpie 孤儿跑了
+// 近 5 小时占着默认端口，新实例只能让位到 3426 并把运行中的 exe move-aside。
+// magpie 没有 HTTP shutdown 端点（vendored 源里 gateway 路由表可查），收割
+// 只能进程级。规则刻意保守——fail-open，宁可漏杀绝不误杀。
+
+/// 判定一个进程条目是否是我们该收的孤儿引擎（纯函数，便于单测）。
+///
+/// 全部满足才收：
+/// 1. 进程名是 `magpie.exe` / `magpie-bun.exe`；
+/// 2. 镜像路径位于我们的 `engine_dir` 之下（大小写不敏感；同时覆盖被
+///    move-aside 改名的 `magpie.exe.<pid>.old` 与 `engine/data/cache/bun/`
+///    里的 magpie-bun）——绝不碰用户在别处自装的 magpie；
+/// 3. 父进程已死。我们自己的引擎父进程是本进程（活着），天然豁免；PID
+///    复用只会让死父「看起来活着」从而跳过（fail-open 的唯一误差方向）。
+fn is_orphan_engine(
+    name: &str,
+    image_path: &str,
+    parent_pid: u32,
+    engine_dir: &Path,
+    parent_alive: impl Fn(u32) -> bool,
+) -> bool {
+    if !matches!(name, "magpie.exe" | "magpie-bun.exe") {
+        return false;
+    }
+    if parent_pid == 0 {
+        return false; // System Idle 亲子关系不明，宁可不碰
+    }
+    let dir = engine_dir.to_string_lossy().to_lowercase();
+    let dir = if dir.ends_with('\\') { dir } else { format!("{dir}\\") };
+    if !image_path.to_lowercase().starts_with(&dir) {
+        return false;
+    }
+    !parent_alive(parent_pid)
+}
+
+/// 启用引擎前扫一遍进程表，收割上一代孤儿。扫描/句柄失败只记 warn 不阻塞
+/// （最坏情况退回旧行为：端口让位）。`engine_dir` 传测试 seam 目录时天然
+/// 匹配不到任何真实进程，单测里调用是无害空转。
+#[cfg(target_os = "windows")]
+fn reap_orphan_engines(dir: &Path) {
+    use std::collections::HashSet;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot.is_null() || snapshot == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        crate::debug_log::append("engine", "warn", "", "orphan engine scan failed (snapshot)", None);
+        return;
+    }
+    // 先收齐整张表再判定：父进程存活要看「全表 PID 集合」，边遍历边杀会
+    // 让后面条目的父判定失真。
+    let mut entries: Vec<(u32, u32, String)> = Vec::new(); // (pid, ppid, 小写进程名)
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    if unsafe { Process32FirstW(snapshot, &mut entry) } != 0 {
+        loop {
+            let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+            let name = String::from_utf16_lossy(&entry.szExeFile[..len]).to_lowercase();
+            entries.push((entry.th32ProcessID, entry.th32ParentProcessID, name));
+            if unsafe { Process32NextW(snapshot, &mut entry) } == 0 {
+                break;
+            }
+        }
+    }
+    unsafe { CloseHandle(snapshot) };
+
+    let live_pids: HashSet<u32> = entries.iter().map(|(pid, _, _)| *pid).collect();
+    for (pid, ppid, name) in entries {
+        if !matches!(name.as_str(), "magpie.exe" | "magpie-bun.exe") {
+            continue;
+        }
+        // 镜像路径拿不到（权限/竞态）就当不认识——绝不误杀。
+        let Some(image) = process_image_path(pid) else { continue };
+        if !is_orphan_engine(&name, &image, ppid, dir, |p| live_pids.contains(&p)) {
+            continue;
+        }
+        if terminate_process(pid) {
+            crate::debug_log::append(
+                "engine",
+                "info",
+                "",
+                "reaped an orphan engine process",
+                Some(&format!("name={name} pid={pid} parent={ppid}")),
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn process_image_path(pid: u32) -> Option<String> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut len);
+        CloseHandle(handle);
+        if ok == 0 {
+            return None;
+        }
+        Some(String::from_utf16_lossy(&buf[..len as usize]))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn terminate_process(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+    unsafe {
+        let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        // 退出码 1 与我们 kill_engine 的 TerminateProcess 语义一致：magpie 的
+        // JSON 落盘全是 tmp+rename 原子写，强杀不留半文件。
+        let ok = TerminateProcess(handle, 1);
+        CloseHandle(handle);
+        ok != 0
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn reap_orphan_engines(_dir: &Path) {}
 
 /// 按字符边界截断（PTY drain 断言的教训：绝不在多字节字符中间切）。
 fn cap_at_char_boundary(text: &str, max_bytes: usize) -> &str {
@@ -1066,7 +1224,14 @@ fn load_registered_ledger(path: &Path) -> Vec<String> {
 }
 
 fn save_registered_ledger(path: &Path, names: &[String]) {
-    if let Ok(text) = serde_json::to_string(names) {
+    // 落盘前去重排序：register_key_providers 的 kept_ledger 从「ledger ∩ plan」
+    // 起步、成功注册再 push 一份，账本里已有同名时每轮 +1 条重复（实测
+    // opencode-go 累积到 41 份，每轮启动都要对账一遍）。这里是两个账本写点
+    // 的唯一 choke point，历史脏数据下一次保存自愈。
+    let mut unique = names.to_vec();
+    unique.sort();
+    unique.dedup();
+    if let Ok(text) = serde_json::to_string(&unique) {
         let temp = path.with_extension("json.tmp");
         if std::fs::write(&temp, text).and_then(|_| std::fs::rename(&temp, path)).is_err() {
             crate::debug_log::append(
@@ -1092,6 +1257,21 @@ fn register_key_providers(exe: &Path) {
     #[cfg(test)]
     if test_register_hook().is_some() {
         return;
+    }
+    // 种子引擎没有 provider CLI：注册链整体短路（订阅由引擎 discovery 自己
+    // 发现，不损失功能）。面板上的「更新引擎后自动注册」提示由菜单路径的
+    // sync_discovered_sources 负责给出。
+    if let Some(dir) = exe.parent() {
+        if cli_absent_seed(dir) {
+            crate::debug_log::append(
+                "engine",
+                "info",
+                "",
+                "engine provider registration skipped (seed engine has no provider CLI)",
+                None,
+            );
+            return;
+        }
     }
     let _ = sync_sources_at(exe, false);
     let Some(home) = std::env::var_os("USERPROFILE")
@@ -1223,6 +1403,28 @@ fn register_key_providers(exe: &Path) {
     save_registered_ledger(&ledger_path, &kept_ledger);
 }
 
+/// 注册链的后台执行器。enable 可被并发触发（多个会话同时 spawn、唤醒 +
+/// 手动补注册撞车），in-flight 标记去重——正在跑的那一轮刚读过凭据，晚几
+/// 百毫秒的增量下轮补得上，不值得为它再排一整轮 CLI。
+static PROVIDER_REGISTRATION_IN_FLIGHT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn spawn_provider_registration(exe: PathBuf) {
+    if PROVIDER_REGISTRATION_IN_FLIGHT.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("engine-provider-registration".to_string())
+        .spawn(move || {
+            register_key_providers(&exe);
+            PROVIDER_REGISTRATION_IN_FLIGHT.store(false, std::sync::atomic::Ordering::Release);
+        })
+        .is_ok();
+    if !spawned {
+        PROVIDER_REGISTRATION_IN_FLIGHT.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
 /// magpie 的 provider id 只收小写字母、数字和横线——发现来源带着主机名形态的
 /// id（`deepseek.com`、`opencode.ai`、`open.bigmodel.cn`），CLI 直接拒收
 /// （"provider id must be lowercase letters, digits and dashes"），于是
@@ -1254,22 +1456,38 @@ fn provider_id_slug(id: &str) -> String {
 /// refresh→all 迁移到全量 live 语义。顺序不能反：`models all` 暴露的是
 /// **最近一次抓取**的清单。refresh 失败（中转 /models 不可用）保持旧列表
 /// 不动。手动面板刷新 force=true；引擎拉起等自动链路每来源 6h 一次、
-/// 进程重启后首轮也会刷一次。
+/// 进程重启后首轮也会刷一次。失败（含 CLI 超时）退避 10 分钟——曾经的
+/// 语义是失败与成功同盖 6h 戳，但计时表在进程内存里，重启即清零，每轮
+/// 首刷都对死端点全量重试，是 0.5.4 启动卡顿的共犯。
 const SOURCE_LIVE_REFRESH_EVERY: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
+const SOURCE_LIVE_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 fn maybe_refresh_source_live(exe: &Path, id: &str, force: bool, changed: &mut bool) {
-    static LAST: OnceLock<Mutex<std::collections::HashMap<String, Instant>>> = OnceLock::new();
-    let Ok(mut last) = LAST.get_or_init(|| Mutex::new(std::collections::HashMap::new())).lock() else { return };
-    let due = force || last.get(id).is_none_or(|t| t.elapsed() >= SOURCE_LIVE_REFRESH_EVERY);
-    if due {
-        last.insert(id.to_string(), Instant::now());
-    }
-    drop(last);
-    if !due { return; }
-    if run_magpie_cli(exe, &["provider", "refresh", id]).is_ok()
-        && run_magpie_cli(exe, &["provider", "models", id, "all"]).is_ok()
+    static NEXT_DUE: OnceLock<Mutex<std::collections::HashMap<String, Instant>>> = OnceLock::new();
     {
+        let Ok(mut due_map) = NEXT_DUE
+            .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+            .lock()
+        else {
+            return;
+        };
+        if !force && due_map.get(id).is_some_and(|t| *t > Instant::now()) {
+            return;
+        }
+    }
+    let ok = run_magpie_cli(exe, &["provider", "refresh", id]).is_ok()
+        && run_magpie_cli(exe, &["provider", "models", id, "all"]).is_ok();
+    if ok {
         *changed = true;
+    }
+    if let Ok(mut due_map) = NEXT_DUE
+        .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+        .lock()
+    {
+        due_map.insert(
+            id.to_string(),
+            Instant::now() + if ok { SOURCE_LIVE_REFRESH_EVERY } else { SOURCE_LIVE_RETRY_BACKOFF },
+        );
     }
 }
 
@@ -1279,7 +1497,21 @@ fn maybe_refresh_source_live(exe: &Path, id: &str, force: bool, changed: &mut bo
 fn sync_sources_at(exe: &Path, force_refresh: bool) -> Vec<String> {
     use sha2::{Digest, Sha256};
     static SYNC: OnceLock<Mutex<std::collections::HashMap<String, Vec<u8>>>> = OnceLock::new();
-    let Ok(mut fingerprints) = SYNC.get_or_init(|| Mutex::new(std::collections::HashMap::new())).lock() else { return vec![crate::ts!("模型来源同步正忙", "Model source sync is busy")] };
+    // 强制路径（手动面板刷新 / 注册链）才排队等锁；菜单打开这类被动路径遇到
+    // 同步进行中就直接让位——按当前路由答，新的靠 catalog drift 事件跟上。
+    // 曾经菜单也要排在后台注册链后面等同一把锁（0.5.4 启动卡顿的另一半）。
+    let guard = SYNC.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    let fingerprints = if force_refresh {
+        guard.lock().ok()
+    } else {
+        guard.try_lock().ok()
+    };
+    let Some(mut fingerprints) = fingerprints else {
+        if force_refresh {
+            return vec![crate::ts!("模型来源同步正忙", "Model source sync is busy")];
+        }
+        return vec![];
+    };
     let Ok(dir) = engine_dir() else { return vec![] };
     let path = dir.join("discovered-providers.json");
     let ledger = load_registered_ledger(&path);
@@ -1339,13 +1571,15 @@ fn sync_sources_at(exe: &Path, force_refresh: bool) -> Vec<String> {
     warnings
 }
 
-pub fn sync_discovered_sources() -> Vec<String> {
+/// `force_refresh`：true = 手动面板刷新（排队等锁、强制 live 重抓）；
+/// false = 菜单打开等被动路径（不排队、按 6h/退避节奏走）。
+pub fn sync_discovered_sources(force_refresh: bool) -> Vec<String> {
     if !matches!(status(),EngineStatus::Running {..}) { return vec![]; }
     let Ok(dir)=engine_dir() else {return vec![]};
     let exe=exe_path(&dir);
     // Reused user installations are not owned by Marionette.
     if matches!(status(),EngineStatus::Running {reused:true,..}) { return vec![crate::ts!("当前复用外部引擎；发现的 CLI 来源需由 Marionette 自带引擎接入", "An external engine is in use; discovered CLI sources require the Marionette-bundled engine")]; }
-    sync_sources_at(&exe, true)
+    sync_sources_at(&exe, force_refresh)
 }
 
 /// Exact account aliases for menu presentation. Compare resolved credentials
@@ -1405,9 +1639,7 @@ pub fn reregister_key_providers() {
     if !exe.is_file() {
         return;
     }
-    let _ = std::thread::Builder::new()
-        .name("engine-reregister".into())
-        .spawn(move || register_key_providers(&exe));
+    spawn_provider_registration(exe);
 }
 
 // ─── 订阅配额（`magpie quota --json` → 用量面板；30s 缓存）─────────────────
@@ -1968,6 +2200,29 @@ fn idle_watchdog() {
 }
 
 /// 跑一个短命 magpie CLI 命令并捕获 stdout（quota 用；测试缝同 run_magpie_cli）。
+/// magpie CLI 单条命令的硬超时。曾经是无超时的阻塞 `output()`：`provider
+/// refresh` 要打厂商 /models，端点一慢整条注册链就吊死（0.5.4 实测：会话
+/// 就绪被拖到 58–60s，0.5.3 同链路 <3s）。超时即杀子进程，错误当失败处理
+/// （refresh 失败保持旧清单，语义不变）。
+const MAGPIE_CLI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// 种子引擎（精简纯网关）不含 provider CLI。装内嵌种子时落这个标记，注册/
+/// 同步链一眼看穿直接短路——否则每个 provider 都要白起一遍注定失败的子进程
+/// （实测一轮注册 7.7s 全耗在种子拒绝上，还每轮重试）。GitHub 完整引擎落位
+/// 时摘标记。已部署的旧种子没有标记：第一次真实 CLI 失败（stderr 含
+/// "engine seed"）后自学习补写，下一轮起短路。
+fn cli_absent_marker_path(dir: &Path) -> PathBuf {
+    dir.join("cli-absent.marker")
+}
+
+fn cli_absent_seed(dir: &Path) -> bool {
+    cli_absent_marker_path(dir).exists()
+}
+
+fn mark_cli_absent(dir: &Path) {
+    let _ = std::fs::write(cli_absent_marker_path(dir), b"seed engine: no provider CLI\n");
+}
+
 fn run_magpie_cli_capture(exe: &Path, args: &[&str]) -> Result<String, String> {
     #[cfg(test)]
     if let Some(hook) = test_cli_capture_hook() {
@@ -1986,13 +2241,13 @@ fn run_magpie_cli_capture(exe: &Path, args: &[&str]) -> Result<String, String> {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
-    let output = command
-        .output()
+    let output = crate::process_util::output_with_kill_timeout(command, MAGPIE_CLI_TIMEOUT)
         .map_err(|e| crate::ts!("启动 magpie CLI 失败: {e}", "Failed to launch magpie CLI: {e}"))?;
     if !output.status.success() {
         // stderr 一起带上——"no provider x" 这类可判别错误靠它（回收对账
         // 视"不存在"为已回收），也是注册失败时唯一有诊断价值的输出。
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        remember_seed_rejection(exe, &stderr);
         return Err(format!(
             "{}{}",
             crate::ts!("magpie {subcommand} 退出码 {code:?}", "magpie {subcommand} exited with code {code:?}", subcommand = args.first().unwrap_or(&""), code = output.status.code()),
@@ -2013,6 +2268,16 @@ fn run_magpie_cli(exe: &Path, args: &[&str]) -> Result<(), String> {
     if let Some(hook) = test_cli_hook() {
         return hook(args);
     }
+    // 种子短路：标记在（种子引擎，无 provider CLI）就不再起子进程，直接以
+    // 种子口径失败——错误串带 "engine seed"，下游的警告分类照旧成立。
+    if let Some(dir) = exe.parent() {
+        if cli_absent_seed(dir) {
+            return Err(crate::ts!(
+                "magpie: provider is not in the Marionette engine seed — update the engine (Marionette model share) for the full CLI",
+                "magpie: provider is not in the Marionette engine seed — update the engine (Marionette model share) for the full CLI"
+            ));
+        }
+    }
     let mut command = std::process::Command::new(exe);
     command
         .args(args)
@@ -2026,14 +2291,34 @@ fn run_magpie_cli(exe: &Path, args: &[&str]) -> Result<(), String> {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
-    let output = command
-        .output()
+    let output = crate::process_util::output_with_kill_timeout(command, MAGPIE_CLI_TIMEOUT)
         .map_err(|e| crate::ts!("拉起 magpie CLI 失败: {e}", "Failed to spawn magpie CLI: {e}"))?;
     if output.status.success() {
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(cap_at_char_boundary(stderr.trim(), MAX_LOG_LINE).to_string())
+        let trimmed = stderr.trim();
+        remember_seed_rejection(exe, trimmed);
+        Err(cap_at_char_boundary(trimmed, MAX_LOG_LINE).to_string())
+    }
+}
+
+/// 自学习：真实 CLI 失败且 stderr 表明是种子引擎拒收时补写标记，让下一轮
+/// 起完全跳过子进程（覆盖 marker 机制上线前已部署的存量种子）。
+fn remember_seed_rejection(exe: &Path, stderr: &str) {
+    if stderr.contains("engine seed") {
+        if let Some(dir) = exe.parent() {
+            if !cli_absent_seed(dir) {
+                mark_cli_absent(dir);
+                crate::debug_log::append(
+                    "engine",
+                    "info",
+                    "",
+                    "seed engine detected via CLI rejection; provider calls will short-circuit",
+                    None,
+                );
+            }
+        }
     }
 }
 
@@ -2276,7 +2561,12 @@ fn enable_pipeline(dir: &Path) -> Result<(), String> {
     //    缺位、aside 里躺着旧镜像）。先把旧镜像找回来，避免「内嵌引擎落位后
     //    仍不完整」的必死错误和状态倒退到工厂版本。
     recover_interrupted_replace(dir);
-    // 1. 用户自装实例在默认端口上跑着 → 直接复用（不是我们的进程，不杀）。
+    // 1. 收割上一代孤儿引擎（父进程已死、镜像在我们 engine 目录下的 magpie /
+    //    magpie-bun）。Job Object 兜底失效（沙箱收编 / 老版本实例）时它们会
+    //    一直占着默认端口，把新实例挤到下一个端口还换不了 exe（2026-10-31
+    //    实锤：孤儿跑了近 5 小时）。规则 fail-open，扫失败只记 warn。
+    reap_orphan_engines(dir);
+    // 2. 用户自装实例在默认端口上跑着 → 直接复用（不是我们的进程，不杀）。
     //    但旧实例不能把新构建的版本拖回去：比内嵌还旧就忽略它，自己在下一个
     //    空闲端口起最新引擎（典型场景：上一个实例的 magpie 还占着端口）。
     if let Some(version) = probe_reuse_at(DEFAULT_PORT) {
@@ -2307,7 +2597,7 @@ fn enable_pipeline(dir: &Path) -> Result<(), String> {
             )),
         );
     }
-    // 2. 安装：本机权威在 `engine/`。尚未完整安装、或本机版本比内嵌旧时用
+    // 3. 安装：本机权威在 `engine/`。尚未完整安装、或本机版本比内嵌旧时用
     //    内嵌种子离线落位（升级只前移，不覆盖用户已更新的更新版本）。
     //    便携版种子落位失败即停（不偷偷上网）。无内嵌的开发构建才走 GitHub 下载。
     if needs_embedded_seed(dir) {
@@ -2321,7 +2611,7 @@ fn enable_pipeline(dir: &Path) -> Result<(), String> {
         let plan = resolve_latest_release()?;
         download_and_install(&plan, dir)?;
     }
-    // 3. 拉起 + 等健康。
+    // 4. 拉起 + 等健康。
     set_status(EngineStatus::Starting);
     let exe = exe_path(dir);
     let port = find_free_port_from(DEFAULT_PORT)
@@ -2356,15 +2646,19 @@ fn enable_pipeline(dir: &Path) -> Result<(), String> {
         let mut state = lock_state();
         state.child = Some(child);
     }
-    // 4. key 型 provider 注册（失败不阻塞；订阅由引擎 discovery 自己发现）。
-    register_key_providers(&exe);
+    // 5. 引擎先到 Running——ACP spawn 的就绪只等健康检查。key 型 provider
+    //    注册 + 来源同步（每 provider 一两条短命 CLI，refresh 还要打厂商
+    //    /models）曾经同步串在这里，会话就绪被拖到 58–60s（0.5.4 实测，
+    //    0.5.3 同链路 <3s）。挪到后台线程；模型目录随后由 catalog drift /
+    //    engine-state-changed 事件跟上，订阅由引擎 discovery 自己发现。
     note_engine_needed();
     set_status(EngineStatus::Running {
         port,
         version,
         reused: false,
     });
-    // 5. 桥文件（dsh cordis patch / zcode provider_config）里的引擎 baseURL
+    spawn_provider_registration(exe.clone());
+    // 6. 桥文件（dsh cordis patch / zcode provider_config）里的引擎 baseURL
     //    立即刷新到新端口——引擎每次重启端口都变，等下一次 spawn 才重写的话，
     //    这期间的菜单/会话看到的是上一代引擎的死地址。
     for (what, refresh) in [
@@ -2854,6 +3148,81 @@ mod tests {
     }
 
     // ─── catalog ordering ────────────────────────────────────────────────────
+
+    /// 2026-10-31 事故回归：孤儿收割判定。核心红线是 fail-open——只有
+    /// 「名字 + 我们 engine 目录下的镜像 + 父进程已死」三证齐全才收。
+    #[test]
+    fn orphan_engine_reap_decision() {
+        let dir = PathBuf::from(r"C:\Users\dev\.marionette\engine");
+        fn alive(pids: &[u32]) -> impl Fn(u32) -> bool + '_ {
+            move |p: u32| pids.contains(&p)
+        }
+
+        // 三证齐全 → 收。
+        assert!(is_orphan_engine(
+            "magpie.exe",
+            r"C:\Users\dev\.marionette\engine\magpie.exe.30852.old",
+            1234,
+            &dir,
+            &alive(&[100]),
+        ));
+        // bun 同理（镜像在 engine/data/cache/bun 下）。
+        assert!(is_orphan_engine(
+            "magpie-bun.exe",
+            r"C:\Users\dev\.marionette\engine\data\cache\bun\1.4.4\magpie-bun.exe",
+            1234,
+            &dir,
+            &alive(&[100]),
+        ));
+        // 父进程活着（我们自己的引擎父进程 = 本进程）→ 绝不收。
+        assert!(!is_orphan_engine(
+            "magpie.exe",
+            r"C:\Users\dev\.marionette\engine\magpie.exe",
+            1234,
+            &dir,
+            &alive(&[1234]),
+        ));
+        // 镜像在别处（用户自装的独立 magpie）→ 不收。
+        assert!(!is_orphan_engine(
+            "magpie.exe",
+            r"D:\tools\magpie\magpie.exe",
+            1234,
+            &dir,
+            &alive(&[100]),
+        ));
+        // 路径只是前缀相似但不在目录内 → 不收（目录边界带分隔符）。
+        assert!(!is_orphan_engine(
+            "magpie.exe",
+            r"C:\Users\dev\.marionette\engine-other\magpie.exe",
+            1234,
+            &dir,
+            &alive(&[100]),
+        ));
+        // 大小写不敏感（Windows 路径）。
+        assert!(is_orphan_engine(
+            "magpie.exe",
+            r"c:\users\DEV\.marionette\ENGINE\MAGPIE.EXE",
+            1234,
+            &dir,
+            &alive(&[100]),
+        ));
+        // 名字不认识 → 不收。
+        assert!(!is_orphan_engine(
+            "node.exe",
+            r"C:\Users\dev\.marionette\engine\magpie.exe",
+            1234,
+            &dir,
+            &alive(&[100]),
+        ));
+        // 父 PID 为 0（System Idle）→ 亲子关系不明，不收。
+        assert!(!is_orphan_engine(
+            "magpie.exe",
+            r"C:\Users\dev\.marionette\engine\magpie.exe",
+            0,
+            &dir,
+            &alive(&[]),
+        ));
+    }
 
     #[test]
     fn pay_per_use_models_sink_to_tail_stably() {
@@ -3385,15 +3754,27 @@ mod tests {
     }
 
     /// 账本读写 roundtrip；损坏文件按空账本处理（绝不动引擎状态）。
+    /// 2026-10-31 起 save 落盘前去重+排序（register 的 kept_ledger 会每轮
+    /// +1 条同名重复，实测 opencode-go 累积 41 份）——roundtrip 断言跟着
+    /// 改成排序序，并补一条去重断言。
     #[test]
     fn registered_ledger_roundtrips_and_tolerates_corruption() {
         let dir = temp_dir("ledger");
         let path = dir.join("registered-providers.json");
         assert!(load_registered_ledger(&path).is_empty(), "缺文件 → 空账本");
-        save_registered_ledger(&path, &["opencode-go".to_string(), "deepseek".to_string()]);
+        save_registered_ledger(
+            &path,
+            &[
+                "opencode-go".to_string(),
+                "deepseek".to_string(),
+                "opencode-go".to_string(),
+                "opencode-go".to_string(),
+            ],
+        );
         assert_eq!(
             load_registered_ledger(&path),
-            vec!["opencode-go".to_string(), "deepseek".to_string()]
+            vec!["deepseek".to_string(), "opencode-go".to_string()],
+            "重复条目落盘时合并（历史脏账本下一次保存自愈）"
         );
         std::fs::write(&path, "{not json").unwrap();
         assert!(load_registered_ledger(&path).is_empty(), "坏文件 → 空账本");

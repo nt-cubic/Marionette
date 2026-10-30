@@ -84,6 +84,14 @@ fn open_log() -> Result<File, String> {
 }
 
 fn log_path() -> Result<PathBuf, String> {
+    // Test binaries share this module via #[cfg(test)] and lazily hit the same
+    // sink. Without this guard, `cargo test` writes its fixture chatter (moved-
+    // aside engines, version=9.9.9, corrupt-index restores) straight into the
+    // real diary, interleaving with — and rotating away — crash evidence
+    // (2026-10-31). Formatting still runs in tests; only the file sink is cut.
+    if cfg!(test) {
+        return Err("test sink disabled".to_string());
+    }
     let dir = crate::app_paths::global_dir()?.join("logs");
     create_dir_all(&dir).map_err(|error| format!("Create log dir failed: {error}"))?;
     Ok(dir.join("dev.log"))
@@ -251,6 +259,16 @@ fn sanitize_one_line(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression for the 2026-10-31 incident: `cargo test` fixture lines
+    /// (engine move-aside, version=9.9.9, storage corrupt-index restore) showed
+    /// up in the real `~/.marionette/logs/dev.log`, polluting the crash diary.
+    /// The sink must refuse the real path in every test build.
+    #[test]
+    fn test_binaries_never_touch_the_real_dev_log() {
+        assert!(log_path().is_err());
+        assert!(open_log().is_err());
+    }
 
     /// A `read` tool result for a Chinese document is >4000 bytes of 3-byte
     /// characters, so the clip offset lands mid-character. Byte-slicing there

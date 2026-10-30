@@ -70,6 +70,8 @@ export const zh = {
   "transcript.compactionManual": "上下文压缩（手动）",
   "transcript.compactionAuto": "上下文压缩（自动）",
   "transcript.pleaseSelect": "请选择",
+  "transcript.loadOlder": "加载更早的消息（还有约 {count} 条）",
+  "transcript.loadingOlder": "正在加载更早的消息…",
   "usage.balance": "余额 {balance}",
   "usage.remainingPercent": "剩 {n}%",
   "usage.resetsAt": "{time} 重置",

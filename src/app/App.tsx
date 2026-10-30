@@ -30,7 +30,7 @@ import { engineQuota as fetchEngineQuota, type EngineQuotaEntry } from "../lib/a
 import { TELEGRAM_COMMAND_EVENT, telegramRemoteResult, type TelegramCommand } from "../lib/api";
 import { invalidateBridgeModels } from "../lib/bridge";
 import { useLatestCallback } from "../lib/useLatestCallback";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, killAcpTerminal, listAcpTerminals, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, quitApp, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, setUiLocale, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID } from "../lib/api";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, killAcpTerminal, listAcpTerminals, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, loadTranscriptPage, loadTranscriptWindow, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, quitApp, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, setUiLocale, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID } from "../lib/api";
 import {
   bindDetachedWindowReaper,
   DETACHED_HIDDEN_EVENT,
@@ -377,6 +377,9 @@ function turnStopReason(data: unknown): string {
  * duration into the session statistics, so it stays unstamped.
  */
 const EMPTY_EVENTS: SessionEvent[] = [];
+
+/** 尾部优先加载的窗口大小（行）：首开只装末尾这么多的转录事件。 */
+const TRANSCRIPT_TAIL_EVENTS = 800;
 
 /** 后台任务面板：终端快照轮询 3s 一次，浅比较避免无变化时击穿下游 memo。 */
 function sameTerminals(prev: AcpTerminalRow[], next: AcpTerminalRow[]): boolean {
@@ -927,6 +930,7 @@ export function App() {
   const openSessionIdsRef = useRef(openSessionIds);
   const openSessionRef = useRef<(s: Session) => void>(() => undefined);
   const loadSessionTranscriptRef = useRef<(id: string) => Promise<void>>(async () => undefined);
+  const loadOlderTranscriptRef = useRef<(id: string) => Promise<void>>(async () => undefined);
   const pushDebugRef = useRef<(entry: {
     sessionId?: string;
     level?: "info" | "warn" | "error";
@@ -1178,6 +1182,23 @@ export function App() {
   // 每会话事件 rail 库（审计「App.tsx 事件管线」抽出）：rails 本体、落盘
   // 定时、流式合并与视图拼装都在 useSessionRails 里；这里只解构同名符号，
   // 组件其余部分零改动。
+  //
+  // 尾部优先加载（2026-10-31）：会话打开只装载转录末尾 TRANSCRIPT_TAIL_EVENTS
+  // 行，头部留在盘上、SessionView 顶部「加载更早」按需翻页。olderHeads 记录
+  // 每个截断会话的窗口起点；isHeadTruncated/ensureHeadForPersist 交给 rails
+  // 做全量回写守卫——rail 只装尾部，直接全量写会把磁盘上的历史头吃掉。
+  const [olderHeads, setOlderHeads] = useState<Record<string, { firstLine: number; loading: boolean }>>({});
+  const olderHeadsRef = useRef<Record<string, { firstLine: number; loading: boolean }>>({});
+  olderHeadsRef.current = olderHeads;
+  const ensureHeadForPersistRef = useRef<(sessionId: string) => Promise<void>>(async () => {});
+  const isHeadTruncated = useCallback(
+    (sessionId: string) => (olderHeadsRef.current[sessionId]?.firstLine ?? 0) > 0,
+    [],
+  );
+  const ensureHeadForPersist = useCallback(
+    (sessionId: string) => ensureHeadForPersistRef.current(sessionId),
+    [],
+  );
   const {
     eventsBySessionRef,
     shadowBySessionRef,
@@ -1186,6 +1207,7 @@ export function App() {
     dropSessionRails,
     applyStreamPart,
     publishedEventsForView,
+    notePersisted,
   } = useSessionRails({
     transcriptSaveTimers,
     ownsAcpSession,
@@ -1195,6 +1217,8 @@ export function App() {
     delegateMetaRef,
     turnStartedAtRef,
     sendMetaRef,
+    isHeadTruncated,
+    ensureHeadForPersist,
   });
 
   /**
@@ -2075,7 +2099,7 @@ export function App() {
       );
       try {
         if (isTauriRuntime() && events.length > 0) {
-          await writeTranscript(sessionId, events);
+          await persistRailsNow(sessionId);
         }
         flushed.push(sessionId);
       } catch {
@@ -3159,7 +3183,7 @@ export function App() {
         release();
         return;
       }
-      void writeTranscript(DETACHED_SESSION_ID, events).finally(release);
+      void persistRailsNow(DETACHED_SESSION_ID).finally(release);
     }).then((fn) => {
       unlisten = fn;
     });
@@ -3390,6 +3414,8 @@ export function App() {
     async (sessionId: string, anchor: ForkAnchor) => {
       const source = sessionsRef.current.find((s) => s.id === sessionId);
       if (!source) return;
+      // 截断态先补头：fork 的锚点若落在未加载的头部，rail 里找不到。
+      if (isHeadTruncated(sessionId)) await ensureFullTranscript(sessionId);
       const events = shadowBySessionRef.current.get(sessionId) ?? EMPTY_EVENTS;
       // Nothing to copy means the anchor is gone (the reply was truncated or
       // the transcript reloaded) — bail before creating a dialog.
@@ -3474,23 +3500,38 @@ export function App() {
    * Repair labels already stored from a Marionette prompt preamble: re-derive
    * the title from the first message the user actually typed, out of the
    * session's own transcript. Runs once per startup, on the affected rows only.
+   *
+   * 2026-10-31 起：只处理**当前打开标签**里的会话，且推迟到首帧渲染后的
+   * idle 时隙——曾经对全部可疑会话串行做全量转录加载，启动路径被它拖住
+   * （缺页风暴下 = 开局即卡）。非打开标签的修复等它们下次被打开时自然
+   * 发生（transcriptLoadedRef 未命中会重新装载）。
    */
   const repairInjectedLabels = useCallback(async (sessions: Session[]) => {
     if (!isTauriRuntime()) return;
-    for (const session of sessions) {
-      if (!isInjectedPromptText(session.label)) continue;
-      const raw = await loadTranscript(session.id).catch(() => []);
-      const first = parseTranscriptEvents(raw).find(
-        (event) => event.type === "user_message" && !isInjectedPromptText(event.text),
-      );
-      if (!first || first.type !== "user_message") continue;
-      const label = titleFromUserText(first.text);
-      if (!label || isInjectedPromptText(label)) continue;
-      setAvailableSessions((current) =>
-        current.map((s) => (s.id === session.id ? { ...s, label, labelSource: "user" } : s))
-      );
-      void updateSessionLabel(session.id, label, "user").catch(() => undefined);
-      void broadcastSessionPatch({ sessionId: session.id, label, labelSource: "user" });
+    const openIds = new Set(openSessionIdsRef.current);
+    const candidates = sessions.filter((s) => openIds.has(s.id) && isInjectedPromptText(s.label));
+    if (candidates.length === 0) return;
+    const run = async () => {
+      for (const session of candidates) {
+        if (!isInjectedPromptText(session.label)) continue;
+        const raw = await loadTranscript(session.id).catch(() => []);
+        const first = parseTranscriptEvents(raw).find(
+          (event) => event.type === "user_message" && !isInjectedPromptText(event.text),
+        );
+        if (!first || first.type !== "user_message") continue;
+        const label = titleFromUserText(first.text);
+        if (!label || isInjectedPromptText(label)) continue;
+        setAvailableSessions((current) =>
+          current.map((s) => (s.id === session.id ? { ...s, label, labelSource: "user" } : s))
+        );
+        void updateSessionLabel(session.id, label, "user").catch(() => undefined);
+        void broadcastSessionPatch({ sessionId: session.id, label, labelSource: "user" });
+      }
+    };
+    if (typeof requestIdleCallback === "function") {
+      requestIdleCallback(() => void run(), { timeout: 4000 });
+    } else {
+      setTimeout(() => void run(), 1500);
     }
   }, []);
 
@@ -3534,8 +3575,21 @@ export function App() {
     if (!isTauriRuntime()) return;
     if (transcriptLoadedRef.current.has(sessionId)) return;
     transcriptLoadedRef.current.add(sessionId);
-    const raw = await loadTranscript(sessionId);
-    let parsed = parseTranscriptEvents(raw);
+    // 尾部优先：只装载末尾 TRANSCRIPT_TAIL_EVENTS 行。曾经整个 JSONL 一次性
+    // 跨 IPC 传回 + 全量同步 parse（24MB 会话 = 启动即秒级白屏，缺页风暴下
+    // 数分钟——2026-10-31 事故）。头部留在盘上，SessionView 顶部按需翻页。
+    const page = await loadTranscriptPage(sessionId, TRANSCRIPT_TAIL_EVENTS);
+    let parsed = parseTranscriptEvents(page.events);
+    const truncated = page.firstLine > 0;
+    setOlderHeads((current) => {
+      if (!truncated) {
+        if (!(sessionId in current)) return current;
+        const next = { ...current };
+        delete next[sessionId];
+        return next;
+      }
+      return { ...current, [sessionId]: { firstLine: page.firstLine, loading: false } };
+    });
     if (parsed.length === 0) return;
     // If the agent process is gone, close orphan pending/in_progress tools so
     // Clean View does not treat a multi-hundred-tool history as still working
@@ -3553,14 +3607,19 @@ export function App() {
       )
     ) {
       parsed = markOpenTools(parsed, sessionId, "cancelled");
-      void writeTranscript(
-        sessionId,
-        persistableEventsForSession(parsed, sessionId),
-      ).catch(() => undefined);
+      // 截断态只改内存 rail、不回写磁盘——宁留旧的开放工具标记，也不为它
+      // 全量重写文件（回写守卫见 rails 的 flush 路径）。
+      if (!truncated) {
+        const marked = persistableEventsForSession(parsed, sessionId);
+        notePersisted(sessionId, marked);
+        void writeTranscript(sessionId, marked).catch(() => undefined);
+      }
     }
     const existing = shadowBySessionRef.current.get(sessionId);
     if (!existing || existing.length === 0) {
       updateSessionEvents(sessionId, () => parsed, { publish: true });
+      // 播种 append 账本：文件里已有的 = 这段尾部的 persistable 视图。
+      notePersisted(sessionId, persistableEventsForSession(parsed, sessionId));
     }
     // Seed lastTurnStats from persisted transcript so a restored dialog
     // still has per-turn token splits in memory (the Usage panel no longer
@@ -3603,6 +3662,102 @@ export function App() {
     }
   }, []);
   loadSessionTranscriptRef.current = loadSessionTranscript;
+
+  /** 向上翻页：SessionView 顶部「加载更早」→ 前插一段历史到 rail。 */
+  const loadOlderTranscript = useCallback(
+    async (sessionId: string) => {
+      const head = olderHeadsRef.current[sessionId];
+      if (!head || head.firstLine <= 0 || head.loading) return;
+      const first = Math.max(0, head.firstLine - TRANSCRIPT_TAIL_EVENTS);
+      const count = head.firstLine - first;
+      setOlderHeads((current) => ({ ...current, [sessionId]: { ...head, loading: true } }));
+      try {
+        const page = await loadTranscriptWindow(sessionId, first, count);
+        const parsed = parseTranscriptEvents(page.events);
+        if (parsed.length > 0) {
+          updateSessionEvents(sessionId, (current) => [...parsed, ...current], { publish: true });
+        }
+        setOlderHeads((current) => {
+          if (page.firstLine <= 0) {
+            const next = { ...current };
+            delete next[sessionId];
+            return next;
+          }
+          return { ...current, [sessionId]: { firstLine: page.firstLine, loading: false } };
+        });
+      } catch (error) {
+        setOlderHeads((current) => ({ ...current, [sessionId]: { ...head, loading: false } }));
+        pushDebug({
+          sessionId,
+          level: "warn",
+          source: "transcript",
+          summary: "load older transcript failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+    [updateSessionEvents, pushDebug],
+  );
+  loadOlderTranscriptRef.current = loadOlderTranscript;
+
+  /**
+   * 补齐截断的头部（一次性把 [0, firstLine) 全部装入 rail）。全量回写前的
+   * 守卫：rail 只装了尾部，直接 writeTranscript 会把磁盘上的历史头吃掉。
+   * 编辑重发 / agent 交接 / 冷热淘汰这些结构性改动前必须先经过它。
+   */
+  const ensureFullTranscript = useCallback(
+    async (sessionId: string) => {
+      let head = olderHeadsRef.current[sessionId];
+      while (head && head.firstLine > 0) {
+        const page = await loadTranscriptWindow(sessionId, 0, head.firstLine);
+        const parsed = parseTranscriptEvents(page.events);
+        if (parsed.length > 0) {
+          updateSessionEvents(sessionId, (current) => [...parsed, ...current], { publish: false });
+        }
+        if (page.firstLine <= 0) {
+          setOlderHeads((current) => {
+            const next = { ...current };
+            delete next[sessionId];
+            return next;
+          });
+          head = undefined;
+        } else {
+          // 窗口没吃满（上游异常）——防死循环，标记到位后退出。
+          const nextHead = { firstLine: page.firstLine, loading: false };
+          setOlderHeads((current) => ({ ...current, [sessionId]: nextHead }));
+          head = page.firstLine < head.firstLine ? nextHead : undefined;
+        }
+      }
+    },
+    [updateSessionEvents],
+  );
+  ensureHeadForPersistRef.current = ensureFullTranscript;
+
+  /**
+   * 统一的「立即落盘当前 rail」入口：显式全量写之前的截断守卫 + append 账本
+   * 同步。交接 / 撕窗 / 编辑重发 / 冷淘汰等直接写盘的路径一律走它。
+   */
+  const persistRailsNow = useCallback(
+    async (sessionId: string) => {
+      if (!isTauriRuntime()) return;
+      let events = persistableEventsForSession(
+        shadowBySessionRef.current.get(sessionId) ?? EMPTY_EVENTS,
+        sessionId,
+      );
+      if (events.length === 0) return;
+      if (isHeadTruncated(sessionId)) {
+        await ensureFullTranscript(sessionId);
+        events = persistableEventsForSession(
+          shadowBySessionRef.current.get(sessionId) ?? EMPTY_EVENTS,
+          sessionId,
+        );
+        if (events.length === 0) return;
+      }
+      notePersisted(sessionId, events);
+      await writeTranscript(sessionId, events);
+    },
+    [isHeadTruncated, ensureFullTranscript],
+  );
 
   // Restore Clean history for every visible pane (and the focused tab when unsplit).
   useEffect(() => {
@@ -4205,8 +4360,13 @@ export function App() {
         setAcpTerminals((prev) => (sameTerminals(prev, rows) ? prev : rows));
       });
     };
+    const gatedPull = () => {
+      // 窗口藏后台时暂停轮询（可见即恢复）——终端列表不是藏后台时要新鲜的。
+      if (document.hidden) return;
+      pull();
+    };
     pull();
-    const id = window.setInterval(pull, 3000);
+    const id = window.setInterval(gatedPull, 3000);
     return () => {
       alive = false;
       window.clearInterval(id);
@@ -4234,8 +4394,12 @@ export function App() {
       liveWorkSigRef.current = sig;
       setBackgroundTick((t) => t + 1);
     };
+    const gatedTick = () => {
+      if (document.hidden) return;
+      tick();
+    };
     tick();
-    const id = window.setInterval(tick, 1000);
+    const id = window.setInterval(gatedTick, 1000);
     return () => window.clearInterval(id);
   }, []);
 
@@ -4378,9 +4542,28 @@ export function App() {
   const [statsTick, setStatsTick] = useState(0);
   useEffect(() => {
     if (!sessionRunning) return;
-    const id = window.setInterval(() => setStatsTick((tick) => tick + 1), 1000);
+    const id = window.setInterval(
+      () => {
+        if (!document.hidden) setStatsTick((tick) => tick + 1);
+      },
+      1000,
+    );
     return () => window.clearInterval(id);
   }, [sessionRunning]);
+
+  // UI 心跳（60s）：下次事故 dev.log 直接可判「前端 JS 活没活」——2026-10-31
+  // 事故里前端静默只能靠间接推断（context scan 是事件驱动、不是定时器）。
+  // 刻意用英文诊断串，与 dev.log 其它行一样可 grep。
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const id = window.setInterval(() => {
+      pushDebugRef.current({
+        source: "ui-heartbeat",
+        summary: `ui alive | visibility=${document.visibilityState} sessions=${sessionsRef.current.length}`,
+      });
+    }, 60_000);
+    return () => window.clearInterval(id);
+  }, []);
 
   const sessionStats = useMemo(
     () =>
@@ -5074,7 +5257,7 @@ export function App() {
       session.id,
     );
     if (pending.length > 0) {
-      void writeTranscript(session.id, pending).catch(() => undefined);
+      void persistRailsNow(session.id).catch(() => undefined);
     }
     const ok = await openDetachedSessionWindow(session, { atCursor: viaDrag });
     if (!ok) return;
@@ -5147,7 +5330,7 @@ export function App() {
       session.id,
     );
     if (events.length > 0) {
-      await writeTranscript(session.id, events).catch(() => undefined);
+      await persistRailsNow(session.id).catch(() => undefined);
     }
     await requestMergeBack(session.id);
   };
@@ -5236,6 +5419,9 @@ export function App() {
   useEffect(() => {
     void refreshChangedFiles();
     const timer = window.setInterval(() => {
+      // 藏后台暂停 git 扫描（可见即恢复）——Changed Files 没人看时不必
+      // 每 12s 起子进程跑 git。
+      if (document.hidden) return;
       void refreshChangedFiles();
     }, 12_000);
     return () => window.clearInterval(timer);
@@ -5647,7 +5833,7 @@ export function App() {
 
     // Seal the previous agent's last Reply so the next harness's tools / CoT
     // stream cannot demote it to Thinking (same dialog, shared transcript).
-    const sealedLive = updateSessionEvents(
+    updateSessionEvents(
       sid,
       (current) => sealOpenAssistantReplies(current, sid),
       { publish: true },
@@ -5655,8 +5841,7 @@ export function App() {
 
     // Flush transcript so handoff can read the latest Clean history.
     try {
-      const events = persistableEventsForSession(sealedLive, sid);
-      await writeTranscript(sid, events);
+      await persistRailsNow(sid);
     } catch {
       // still attempt handoff from whatever is on disk
     }
@@ -6485,8 +6670,7 @@ export function App() {
 
       // Persist truncated transcript immediately.
       try {
-        const forSession = persistableEventsForSession(nextEvents, sid);
-        await writeTranscript(sid, forSession);
+        await persistRailsNow(sid);
       } catch (error) {
         pushDebug({
           sessionId: sid,
@@ -8068,6 +8252,9 @@ export function App() {
           agent={agent}
           events={events}
           session={session}
+          olderCount={olderHeads[session.id]?.firstLine ?? 0}
+          olderLoading={olderHeads[session.id]?.loading ?? false}
+          onLoadOlder={() => void loadOlderTranscriptRef.current(session.id)}
           webReplyWidthPercent={webReplyWidthPercent}
           onWebReplyWidthChange={(value) => {
             setWebReplyWidthPercent(value);
