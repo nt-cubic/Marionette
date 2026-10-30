@@ -39,8 +39,9 @@ import {
   type RunPhase,
   type RunSummary,
 } from "../lib/council";
-import { isTauriRuntime } from "../lib/api";
+import { isTauriRuntime, listAgents } from "../lib/api";
 import { showToast } from "../lib/toast";
+import { taskStatusLabel, type AgentLite } from "../lib/council";
 
 // ---------------------------------------------------------------------------
 // 成员草稿(setup 表单的编辑态)
@@ -262,11 +263,21 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
   const [engineReady, setEngineReady] = useState(true);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [agents, setAgents] = useState<AgentLite[]>([]);
+  const [execAgentId, setExecAgentId] = useState("");
+  const [execCwd, setExecCwd] = useState("");
 
   useEffect(() => {
     void councilListModels().then((result) => {
       setModels(result.models);
       setEngineReady(result.ready);
+    });
+    void listAgents().then((all) => {
+      const usable = all
+        .filter((a) => a.enabled && a.id !== "web-chatgpt" && a.id !== "web-deepseek")
+        .map((a) => ({ id: a.id, label: a.label }));
+      setAgents(usable);
+      setExecAgentId((prev) => prev || usable[0]?.id || "");
     });
   }, []);
 
@@ -337,6 +348,10 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
         },
         projectId: null,
         cwd: null,
+        executor:
+          mode !== "council_only" && execAgentId && execCwd.trim()
+            ? { agentId: execAgentId, cwd: execCwd.trim(), projectId: null }
+            : null,
       });
       if (detail?.spec?.runId) {
         onCreated(detail.spec.runId);
@@ -395,6 +410,29 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
         </div>
         <p className="council-sub">{MODE_OPTIONS.find((o) => o.id === mode)?.hint}</p>
       </div>
+
+      {mode !== "council_only" && (
+        <div className="council-field">
+          <span>执行器(计划批准后由该 agent 落码)</span>
+          <div className="council-exec-row">
+            <select value={execAgentId} onChange={(e) => setExecAgentId(e.target.value)}>
+              {agents.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.label}
+                </option>
+              ))}
+            </select>
+            <input
+              value={execCwd}
+              onChange={(e) => setExecCwd(e.target.value)}
+              placeholder="项目根目录(绝对路径,git 仓库)"
+            />
+          </div>
+          <p className="council-sub">
+            执行集成为早期版本:并行任务用 git worktree 隔离,冲突显式上报;不填则批准后仅交付计划。
+          </p>
+        </div>
+      )}
 
       <div className="council-field">
         <span>
@@ -559,6 +597,26 @@ function CouncilRunView(props: { detail: RunDetail; onBack: () => void; onReload
           {spec.budget.maxRequests ? ` / 上限 ${spec.budget.maxRequests}` : ""}
         </div>
       </div>
+
+      {state.tasks.length > 0 && (
+        <section className="council-tasks">
+          <h3 className="council-tgroup__title">执行任务({state.tasks.length})</h3>
+          {state.tasks.map((t) => (
+            <div key={t.stepId} className="council-task">
+              <span className="council-task__id">{t.stepId}</span>
+              <span className="council-task__title">{t.title}</span>
+              <span className={`council-task__status council-task__status--${typeof t.status === "string" ? t.status : "failed"}`}>
+                {taskStatusLabel(t.status)}
+              </span>
+              {t.changes.length > 0 && (
+                <span className="council-task__changes" title={t.changes.join(" · ")}>
+                  {t.changes.length} 个文件
+                </span>
+              )}
+            </div>
+          ))}
+        </section>
+      )}
 
       {plan && <CouncilPlanView plan={plan} phase={state.phase} onApprove={control} />}
 

@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 /// `~/.marionette`。
 static ROOT_OVERRIDE: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 
+#[cfg(test)]
 pub fn set_root_override_for_tests(path: Option<PathBuf>) {
     *ROOT_OVERRIDE.lock().unwrap() = path;
 }
@@ -277,6 +278,7 @@ pub(crate) mod tests {
             paused_from: None,
             member_status: spec.members.iter().map(|m| (m.id.clone(), MemberRuntimeStatus::Idle)).collect(),
             budget_usage: Default::default(),
+            tasks: Vec::new(),
             updated_at: now_millis(),
             error: None,
         };

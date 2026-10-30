@@ -86,6 +86,22 @@ pub enum CouncilMode {
     Autonomous,
 }
 
+/// 执行器配置(M2):计划批准后由哪个 agent harness 在哪个目录落地。
+/// `None` 或 mode=council_only → 计划批准即交付完成(不执行)。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutorSpec {
+    /// agent id(`custom_agents::all_agents_merged()` 里的一条)。
+    pub agent_id: String,
+    /// 项目根(git 仓库;worktree 隔离的基)。
+    pub cwd: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// 单步 turn 等待上限(秒;默认 900)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_timeout_secs: Option<u64>,
+}
+
 /// 资源预算。创建时固化进 spec.json,运行期不可改(OmO store.ts:148
 /// 验证过的决策)。全部 `None` = 不设限(仍受取消与失败终止)。
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -121,6 +137,9 @@ pub struct CouncilSpec {
     pub project_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// 执行配置(M2;M1 创建的 run 无此字段,serde 默认兼容)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor: Option<ExecutorSpec>,
 }
 
 /// 预算用量快照,随 state.json 持久化。
@@ -156,6 +175,9 @@ pub struct CouncilState {
     pub paused_from: Option<RunPhase>,
     pub member_status: HashMap<String, MemberRuntimeStatus>,
     pub budget_usage: BudgetUsage,
+    /// 执行阶段的任务账目(Executing 起;M1 run 为空数组)。
+    #[serde(default)]
+    pub tasks: Vec<crate::council::tasks::TaskProgress>,
     /// epoch 毫秒。
     pub updated_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -378,6 +400,7 @@ pub(crate) mod tests {
             created_at: now_millis(),
             project_id: None,
             cwd: None,
+            executor: None,
         }
     }
 

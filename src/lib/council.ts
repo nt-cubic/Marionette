@@ -55,6 +55,13 @@ export interface CouncilBudget {
   wallClockSecs?: number | null;
 }
 
+export interface ExecutorSpec {
+  agentId: string;
+  cwd: string;
+  projectId?: string | null;
+  stepTimeoutSecs?: number | null;
+}
+
 export interface CouncilSpec {
   runId: string;
   title: string;
@@ -67,6 +74,44 @@ export interface CouncilSpec {
   createdAt: number;
   projectId?: string | null;
   cwd?: string | null;
+  executor?: ExecutorSpec | null;
+}
+
+export type TaskStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | { failed: string }
+  | { skipped: string }
+  | "staged"
+  | "merged";
+
+export interface TaskProgress {
+  stepId: string;
+  title: string;
+  status: TaskStatus;
+  sessionId?: string | null;
+  worktree?: string | null;
+  branch?: string | null;
+  changes: string[];
+  error?: string | null;
+  attempts: number;
+  notes: string;
+}
+
+export function taskStatusLabel(status: TaskStatus | undefined): string {
+  if (!status) return "待执行";
+  if (status === "pending") return "待执行";
+  if (status === "running") return "执行中";
+  if (status === "staged") return "待合并";
+  if (status === "merged") return "已合并";
+  if (status === "completed") return "完成";
+  if (typeof status === "object" && "failed" in status) return `失败:${status.failed}`;
+  return "跳过";
+}
+
+export function isTaskTerminal(status: TaskStatus | undefined): boolean {
+  return status === "merged" || status === "completed" || (typeof status === "object" && status !== null && ("failed" in status || "skipped" in status));
 }
 
 export type RunPhase =
@@ -105,6 +150,7 @@ export interface CouncilState {
   pausedFrom?: RunPhase | null;
   memberStatus: Record<string, MemberRuntimeStatus>;
   budgetUsage: BudgetUsage;
+  tasks: TaskProgress[];
   updatedAt: number;
   error?: string | null;
 }
@@ -152,6 +198,12 @@ export interface RunDetail {
   transitions: TransitionRecord[];
   plan?: PlanDoc | null;
   live: boolean;
+}
+
+/** agent 下拉用的轻量形状(来自 api.listAgents 的 AgentConfig)。 */
+export interface AgentLite {
+  id: string;
+  label: string;
 }
 
 export interface CouncilModelInfo {
@@ -233,7 +285,7 @@ export const COUNCIL_EVENT = "council-event";
 
 export interface CouncilEvent {
   runId: string;
-  kind: "message" | "phase" | "member" | "plan-ready" | "finished" | "warn" | "error" | "created";
+  kind: "message" | "phase" | "member" | "plan-ready" | "finished" | "warn" | "error" | "created" | "task";
   data: Record<string, unknown>;
 }
 

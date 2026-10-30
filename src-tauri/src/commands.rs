@@ -3739,12 +3739,17 @@ pub fn council_create(
             .map(|m| (m.id.clone(), council_types::MemberRuntimeStatus::Idle))
             .collect(),
         budget_usage: Default::default(),
+        tasks: Vec::new(),
         updated_at: council_types::now_millis(),
         error: None,
     };
     crate::council::store::save_spec(&spec)?;
     crate::council::store::save_state(&state)?;
-    crate::council::orchestrator::start_run(CouncilEventEmitter::new(Some(app)), spec.run_id.clone(), None)?;
+    crate::council::orchestrator::start_run(
+        CouncilEventEmitter::new(Some(app)),
+        spec.run_id.clone(),
+        crate::council::orchestrator::RunClients::default(),
+    )?;
     council_detail(&spec.run_id)
 }
 
@@ -3802,25 +3807,36 @@ pub fn council_resume_run(app: tauri::AppHandle, run_id: String) -> Result<counc
     let record = crate::council::state::apply_transition(&mut state, target, Some("用户恢复"))?;
     crate::council::store::append_transition(&run_id, &record)?;
     crate::council::store::save_state(&state)?;
-    crate::council::orchestrator::start_run(CouncilEventEmitter::new(Some(app)), run_id.clone(), None)?;
+    crate::council::orchestrator::start_run(
+        CouncilEventEmitter::new(Some(app)),
+        run_id.clone(),
+        crate::council::orchestrator::RunClients::default(),
+    )?;
     Ok(state)
 }
 
 /// Plan Gate:用户对计划做出裁决。accept=true →
-/// - council-only:交付完成(PlanReady→Completed,审计注明);
-/// - 执行型模式:M1 阶段同样 Completed(执行集成属 M2,不伪造执行)。
+/// - council-only(或未配置执行器):交付完成(PlanReady→Completed);
+/// - 执行型模式 + executor:PlanReady→Executing,拉起执行线程(真实
+///   agent 落码;验收 #9:这是进入 Executing 的唯一入口)。
 /// accept=false → 保持 PlanReady(前端引导修改或取消),记录 Status 消息。
 #[tauri::command]
-pub fn council_approve_plan(run_id: String, accept: bool) -> Result<council_types::CouncilState, String> {
-    let mut state = crate::council::store::load_state(&run_id)?;
-    if state.phase != council_types::RunPhase::PlanReady {
-        return Err(format!("计划未就绪(当前状态 {:?}),不能裁决", state.phase));
+pub fn council_approve_plan(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::AppState>,
+    run_id: String,
+    accept: bool,
+) -> Result<council_types::CouncilState, String> {
+    let mut run_state = crate::council::store::load_state(&run_id)?;
+    let spec = crate::council::store::load_spec(&run_id)?;
+    if run_state.phase != council_types::RunPhase::PlanReady {
+        return Err(format!("计划未就绪(当前状态 {:?}),不能裁决", run_state.phase));
     }
     if !accept {
         let msg = council_types::CouncilMessage {
             message_id: format!("reject-{}", council_types::now_millis()),
             run_id: run_id.clone(),
-            round: state.round,
+            round: run_state.round,
             from: "system".into(),
             to: "all".into(),
             kind: council_types::MessageKind::Status,
@@ -3830,17 +3846,44 @@ pub fn council_approve_plan(run_id: String, accept: bool) -> Result<council_type
             meta: None,
         };
         crate::council::store::append_message(&run_id, &msg).ok();
-        return Ok(state);
+        return Ok(run_state);
     }
-    let reason = if state.phase == council_types::RunPhase::PlanReady {
-        "计划被接受;council-only 交付完成(无代码执行)"
-    } else {
-        "计划被接受"
-    };
-    let record = crate::council::state::apply_transition(&mut state, council_types::RunPhase::Completed, Some(reason))?;
+    let executor_mode = spec.mode != council_types::CouncilMode::CouncilOnly;
+    if executor_mode && spec.executor.is_some() {
+        let executor = spec.executor.clone().unwrap();
+        let agent = crate::custom_agents::all_agents_merged()
+            .into_iter()
+            .find(|a| a.id == executor.agent_id)
+            .ok_or_else(|| format!("执行器 agent 不可用:{}", executor.agent_id))?;
+        let harness = crate::council::executor::AcpHarness {
+            app: app.clone(),
+            acp: state.acp.clone(),
+            agent_id: agent.id,
+            command: agent.command,
+            args: agent.args,
+        };
+        let record = crate::council::state::apply_transition(
+            &mut run_state,
+            council_types::RunPhase::Executing,
+            Some("计划被用户接受,开始执行"),
+        )?;
+        crate::council::store::append_transition(&run_id, &record)?;
+        crate::council::store::save_state(&run_state)?;
+        crate::council::orchestrator::start_run(
+            CouncilEventEmitter::new(Some(app)),
+            run_id.clone(),
+            crate::council::orchestrator::RunClients {
+                model: None,
+                harness: Some(std::sync::Arc::new(harness)),
+            },
+        )?;
+        return Ok(run_state);
+    }
+    let reason = "计划被接受;council-only 交付完成(无代码执行)";
+    let record = crate::council::state::apply_transition(&mut run_state, council_types::RunPhase::Completed, Some(reason))?;
     crate::council::store::append_transition(&run_id, &record)?;
-    crate::council::store::save_state(&state)?;
-    Ok(state)
+    crate::council::store::save_state(&run_state)?;
+    Ok(run_state)
 }
 
 #[tauri::command]

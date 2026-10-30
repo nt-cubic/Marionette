@@ -871,6 +871,124 @@ fn map_status(xy: &str) -> String {
     "modified".to_string()
 }
 
+
+// ---------------------------------------------------------------------------
+// Council worktree isolation (M2) — parallel coding tasks each get their own
+// `git worktree add --detach/-b` checkout; merges back in topological order
+// with explicit conflict reporting (never a silent overwrite; acceptance #10).
+// ---------------------------------------------------------------------------
+
+/// Result of merging a task branch back into the project worktree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeOutcome {
+    /// Merged cleanly; `files` lists the paths the merge touched.
+    Clean { files: Vec<String> },
+    /// Conflict: the listed files collide; nothing from this branch was
+    /// silently dropped — the caller records a failed task with evidence.
+    Conflict { files: Vec<String> },
+}
+
+/// Create an isolated worktree at `worktree_path` on a new branch
+/// `council/<run_id>/<step_id>` rooted at HEAD of `project_root`.
+pub fn create_worktree(project_root: &Path, worktree_path: &Path, branch: &str) -> Result<(), String> {
+    let branch = branch.replace(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '/'), "-");
+    let branch_arg = format!("-b{branch}");
+    run_git_checked(
+        project_root,
+        &["worktree", "add", &branch_arg, &worktree_path.to_string_lossy(), "HEAD"],
+        "创建 worktree",
+    )
+    .map(|_| ())
+}
+
+/// Remove a council worktree (force: task worktrees may contain build
+/// artifacts) and prune the admin metadata.
+pub fn remove_worktree(project_root: &Path, worktree_path: &Path) -> Result<(), String> {
+    let out = run_git(
+        project_root,
+        &["worktree", "remove", "--force", &worktree_path.to_string_lossy()],
+    )?;
+    let _ = run_git(project_root, &["worktree", "prune"])?;
+    let _ = out;
+    Ok(())
+}
+
+/// Commit all changes inside a task worktree (author = Marionette Council),
+/// then merge its branch into the project worktree. `--no-ff` keeps per-task
+/// merge commits so attribution survives; a conflict aborts the merge
+/// (--no-commit + conflict check leaves the tree dirty → we abort hard and
+/// report files).
+pub fn merge_worktree_branch(project_root: &Path, worktree_path: &Path, branch: &str, message: &str) -> Result<MergeOutcome, String> {
+    // 1. Commit everything inside the task worktree (skip if clean).
+    let status = run_git(worktree_path, &["status", "--porcelain"])?;
+    if !String::from_utf8_lossy(&status.stdout).trim().is_empty() {
+        run_git_checked(worktree_path, &["add", "--all"], "暂存任务改动")?;
+        let _ = run_git(worktree_path, &["-c", "user.name=Marionette Council", "-c", "user.email=council@marionette.local", "-c", "commit.gpgsign=false", "commit", "-q", "-m", message]);
+        // commit failing on nothing-to-commit is fine.
+    }
+    // 2. Merge into the project worktree.
+    let merge = run_git(project_root, &["merge", "--no-ff", "--no-commit", branch])?;
+    let merge_out = String::from_utf8_lossy(&merge.stdout).to_string();
+    let merge_err = String::from_utf8_lossy(&merge.stderr).to_string();
+    if merge.status.success() {
+        // `--no-commit` succeeded: conflict-free. Commit it.
+        run_git_checked(
+            project_root,
+            &[
+                "-c",
+                "user.name=Marionette Council",
+                "-c",
+                "user.email=council@marionette.local",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                message,
+            ],
+            "提交合并",
+        )?;
+        let files = run_git(project_root, &["diff", "--name-only", "HEAD^", "HEAD"])?;
+        let list = String::from_utf8_lossy(&files.stdout)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        return Ok(MergeOutcome::Clean { files: list });
+    }
+    // 3. Conflict path: collect the colliding files, then abort the merge so
+    // the project worktree stays clean for the next task.
+    let diff = run_git(project_root, &["diff", "--name-only", "--diff-filter=U"])?;
+    let conflicted: Vec<String> = String::from_utf8_lossy(&diff.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    let _ = run_git(project_root, &["merge", "--abort"]);
+    if !conflicted.is_empty() {
+        return Ok(MergeOutcome::Conflict { files: conflicted });
+    }
+    Err(format!("合并失败(非冲突):{merge_out} {merge_err}"))
+}
+
+/// Whether the directory is inside a git work tree (worktree isolation needs
+/// this; non-git projects fall back to direct execution with a warning).
+pub fn is_git_worktree(project_root: &Path) -> bool {
+    run_git(project_root, &["rev-parse", "--is-inside-work-tree"])
+        .ok()
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<bool>().ok())
+        .unwrap_or(false)
+}
+
+fn run_git_checked(cwd: &Path, args: &[&str], what: &str) -> Result<std::process::Output, String> {
+    let out = run_git(cwd, args)?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("{what}失败:{stderr}"));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
