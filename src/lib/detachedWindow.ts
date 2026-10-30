@@ -17,9 +17,30 @@ import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { cursorPosition, getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow, getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
+import { Webview } from "@tauri-apps/api/webview";
 import { isTauriRuntime } from "./api";
 import { clientPointFromScreen } from "./splitWorkspace";
 import type { Session } from "./types";
+
+/**
+ * Webview-controller hide/show must pair with the OS window calls: the
+ * webview-level call is what arms WebView2 suspension while hidden
+ * (vendor/wry patch) and what lifts it before a re-show — skip the show
+ * half and the window comes back blank.
+ */
+async function withDetachedWebview(
+  label: string,
+  op: "hide" | "show",
+): Promise<void> {
+  try {
+    const wv = await Webview.getByLabel(label);
+    if (!wv) return;
+    if (op === "hide") await wv.hide();
+    else await wv.show();
+  } catch {
+    /* webview-level op is the suspend hook — failure means stock behavior */
+  }
+}
 
 export type DetachWindowOpts = {
   /** Open near the OS cursor (drag drop / optional click). */
@@ -326,6 +347,7 @@ export async function focusDetachedWindow(sessionId: string): Promise<boolean> {
   try {
     const win = await WebviewWindow.getByLabel(detachedWindowLabel(sessionId));
     if (!win) return false;
+    await withDetachedWebview(win.label, "show");
     try {
       await win.show();
     } catch {
@@ -406,6 +428,7 @@ export async function hideDetachedWindowForSession(sessionId: string): Promise<v
   await setDetachedSessionOwner(sessionId, false);
   try {
     const win = await WebviewWindow.getByLabel(detachedWindowLabel(sessionId));
+    if (win) await withDetachedWebview(win.label, "hide");
     await win?.hide();
   } catch {
     /* optional */
@@ -429,6 +452,9 @@ export async function openDetachedSessionWindow(
     const existing = await WebviewWindow.getByLabel(label);
     if (existing) {
       // Secondary close only hides (avoid tao WebView teardown crash).
+      // Lift suspension before showing / navigating (suspended shells can't
+      // run the reload below).
+      await withDetachedWebview(label, "show");
       try {
         await existing.show();
       } catch {

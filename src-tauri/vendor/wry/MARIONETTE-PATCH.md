@@ -1,6 +1,8 @@
 # Marionette patch on wry 0.55.1
 
-Vendored from crates.io `wry 0.55.1` with **one** behavior change:
+Vendored from crates.io `wry 0.55.1` with **four** behavior changes:
+
+## 1. Text/link OLE drag fallback (`src/webview2/drag_drop.rs` + `src/marionette_drag.rs`)
 
 `src/webview2/drag_drop.rs` — while the OLE drop target is registered,
 WebView2's HTML5 external drop is disabled (`SetAllowExternalDrop(false)`),
@@ -37,3 +39,46 @@ Details that matter:
 
 Drop this vendor (and the `[patch.crates-io]` entry) when upstream wry/tauri
 ships drag-drop events that carry text payloads.
+
+## 2. Memory-usage target Low at creation (`src/webview2/mod.rs`, new_in_hwnd)
+
+Every webview is created with `SetMemoryUsageTargetLevel(1)` (Low) —
+WebView2 trims renderer caches harder (measured ~20-40% less webview
+memory), designed for webviews that idle most of their life. Escape
+hatch: `MARIONETTE_WEBVIEW_MEM=NORMAL` in the environment restores the
+stock default. The stock runtime API `WebView::set_memory_usage_level`
+is untouched.
+
+## 3. Hidden webviews suspend (`src/webview2/mod.rs`, set_visible)
+
+`set_visible(false)` additionally calls `ICoreWebView2_3::TrySuspend` —
+a hidden WebView2 frees most of its renderer memory (measured
+~150-250MB while Marionette sits in background mode). `set_visible(true)`
+calls `Resume()`. Both arms live in the same function, so a suspension
+can never outlive the next show. `TrySuspend` quietly fails when the
+controller is still visible — harmless.
+
+Tauri's window-level `hide()`/`show()` do NOT reach the webview-level
+`set_visible`, so Marionette pairs every window hide/show with a
+webview-level hide/show:
+
+- frontend: `lib/detachedWindow.ts` (`withDetachedWebview`), `lib/dockMode.ts`
+  `handleCloseFromRust` fallback, `app/App.tsx` merge-back show
+- Rust: `main.rs` detached-window close, `shell_integration.rs`
+  second-instance handoff wake (`win.as_ref().show()` before `win.show()`)
+
+capabilities gained `core:webview:allow-webview-show` / `allow-webview-hide`
+for the JS `Webview.hide()/show()` calls.
+
+## 4. focus() defensively resumes (`src/webview2/mod.rs`, focus)
+
+`focus()` first sets the controller visible and calls `Resume()` before
+`MoveFocus` — a wake path that shows the window without the paired
+webview-level show would otherwise render blank. No-ops when nothing is
+suspended. Belt-and-braces for path 3.
+
+Known interaction: Marionette's detached-shell reaper navigates hidden
+shells to `about:blank` after a grace period; a suspended shell can't run
+that navigation, the best-effort reaper skips it, and the suspended shell
+has already freed more memory than the blanking would — resume-on-show
+brings the full SPA back instead of a reload.

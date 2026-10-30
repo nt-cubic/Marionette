@@ -392,6 +392,13 @@ fn main() {
                                 Some("dockMode retracts to edge; fallback hide is its own"),
                             );
                         } else {
+                            // Webview-level hide first: arms WebView2
+                            // suspension for the hidden stay (vendor/wry
+                            // patch). The frontend re-show paths
+                            // (openDetachedSessionWindow) lift it again.
+                            for webview in window.webviews() {
+                                let _ = webview.hide();
+                            }
                             let _ = window.hide();
                             // Frontend reaper blanks excess hidden shells (memory).
                             // Detached SPA flushes transcript then releases ACP
