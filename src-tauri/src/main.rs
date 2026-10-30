@@ -9,6 +9,7 @@ mod elicitation;
 mod app_update;
 mod commands;
 mod context_inventory;
+mod council;
 mod credentials;
 mod custom_agents;
 mod web_chat_bridge;
@@ -294,6 +295,8 @@ fn main() {
             // Engine progress/state events are emitted from its background
             // threads — they need an app handle kept for the process lifetime.
             engine::set_app_handle(app.handle().clone());
+            // Council:崩溃/退出残留的运行态 run 置 Paused(用户可 resume)。
+            council::orchestrator::recover_orphaned_runs(&council::orchestrator::CouncilEventEmitter::new(Some(app.handle().clone())));
             // Telegram 远程桥：只读配置 + 起 worker 线程（无 token 时全空转）。
             // try_state：状态缺失时跳过（不 panic——release 是 panic=abort）。
             if let Some(state) = app.try_state::<AppState>() {
@@ -597,7 +600,16 @@ fn main() {
             memos::memo_list,
             memos::memo_save_paths,
             memos::memo_save_text,
-            memos::memo_delete
+            memos::memo_delete,
+            commands::council_create,
+            commands::council_list_runs,
+            commands::council_get_run,
+            commands::council_cancel_run,
+            commands::council_pause_run,
+            commands::council_resume_run,
+            commands::council_approve_plan,
+            commands::council_delete_run,
+            commands::council_list_models
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|error| {

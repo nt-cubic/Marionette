@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
-import { Archive, Bell, BellOff, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, KeyRound, Languages, MessageSquare, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, SlidersHorizontal, SunMedium, Trash2, X, Zap } from "lucide-react";
+import { Archive, Bell, BellOff, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, KeyRound, Languages, MessageSquare, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, SlidersHorizontal, SunMedium, Trash2, Users, X, Zap } from "lucide-react";
 // Refresh on a project row folds CLI history into the normal session list.
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { applyLocale, getLocale, localeToggleTitle, nextLocale } from "../lib/i18n";
@@ -174,6 +174,8 @@ type ProjectShelfProps = {
   onNewChat?: () => void;
   /** Open the memo page from the entry above the Chat section. */
   onOpenMemo?: () => void;
+  /** Council Mode(多模型审议)整页入口。 */
+  onOpenCouncil?: () => void;
   /** Scan this project's agent CLI stores into the normal session list. */
   externalScanning?: boolean;
   onRefreshExternal?: (projectId: string) => void;
@@ -297,6 +299,7 @@ export function ProjectShelf({
   onChatSessionSelect,
   onNewChat,
   onOpenMemo,
+  onOpenCouncil,
   externalScanning = false,
   onRefreshExternal,
 }: ProjectShelfProps) {
@@ -1827,6 +1830,12 @@ export function ProjectShelf({
         <button className="shelf-memo-entry" type="button" onClick={onOpenMemo}>
           <Archive size={13} aria-hidden />
           {t("shelf.memoBox")}
+        </button>
+      )}
+      {onOpenCouncil && (
+        <button className="shelf-memo-entry" type="button" onClick={onOpenCouncil} title="多智能体协作(Council)">
+          <Users size={13} aria-hidden />
+          Council 协作
         </button>
       )}
 
