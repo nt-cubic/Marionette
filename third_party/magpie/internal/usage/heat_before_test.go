@@ -27,11 +27,11 @@ func TestHeatBeforeKeptBySerial(t *testing.T) {
 		var s heatSum
 		for _, c := range set {
 			for i := range c.Rows {
-				if p := &c.Rows[i]; p.Time.Before(cut) {
+				if p := &c.Rows[i]; p.Time().Before(cut) {
 					s.n++
-					s.at += p.Time.UnixNano()
+					s.at += p.Time().UnixNano()
 					for _, v := range p.Tokens {
-						s.tokens += v
+						s.tokens += int64(v)
 					}
 				}
 			}

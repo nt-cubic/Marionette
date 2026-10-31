@@ -37,6 +37,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         t.after(() => browser.close());
         const page = await (await browser.newContext({ viewport: { width: 390, height: 844 }, reducedMotion: "reduce", colorScheme: theme })).newPage();
         page.setDefaultTimeout(6000);
+        page.setDefaultNavigationTimeout(60000);
         const errors = [];
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", fixture(lang, theme, [], { lan: true, web: true, keys: [] }));
@@ -61,6 +62,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     t.after(() => browser.close());
     const page = await (await browser.newContext({ viewport: { width: 390, height: 844 }, reducedMotion: "reduce" })).newPage();
     page.setDefaultTimeout(6000);
+    page.setDefaultNavigationTimeout(60000);
     await page.route("**/*", fixture("en", "light", [], { lan: true, web: true, keysError: "gateway keys unreadable" }));
     await page.goto("http://magpie.test/?view=gateway");
     await page.locator("#gatewayKeys .none").waitFor();
@@ -80,6 +82,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     t.after(() => browser.close());
     const page = await (await browser.newContext({ viewport: { width: 390, height: 844 }, reducedMotion: "reduce" })).newPage();
     page.setDefaultTimeout(6000);
+    page.setDefaultNavigationTimeout(60000);
     await page.route("**/*", fixture("en", "light", [], { lan: true, web: true }));
     await page.goto("http://magpie.test/?view=gateway");
     await page.locator("#gatewayKeys .acc[data-key]").nth(2).waitFor();

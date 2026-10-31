@@ -67,7 +67,7 @@ func TestRelaunchStartsTheBundleWhenOpenNeverWorks(t *testing.T) {
 		dir := fakeOpen(t, 1000)
 		bundle, started := fakeBundle(t, "magpie")
 		log := filepath.Join(t.TempDir(), relaunchLogName)
-		if err := runAfterExit(gonePid(t), relaunchScript(bundle, c.window, log, shortWaits)); err != nil {
+		if err := runAfterExit(gonePid(t), relaunchScript(bundle, c.window, false, log, shortWaits)); err != nil {
 			t.Fatal(err)
 		}
 		if got := waitFor(t, started, "the new version starting"); got != c.args {
@@ -109,7 +109,7 @@ func TestRelaunchLogsEachTry(t *testing.T) {
 	fakeOpen(t, 1000)
 	bundle, started := fakeBundle(t, "magpie")
 	log := filepath.Join(t.TempDir(), relaunchLogName)
-	if err := runScript(t, relaunchScript(bundle, false, log, shortWaits)); err != nil {
+	if err := runScript(t, relaunchScript(bundle, false, false, log, shortWaits)); err != nil {
 		t.Fatalf("the shell: %v", err)
 	}
 	waitFor(t, started, "the new version starting")
@@ -136,7 +136,7 @@ func TestRelaunchOpenedStartsNothingElse(t *testing.T) {
 	dir := fakeOpen(t, 1)
 	bundle, started := fakeBundle(t, "magpie")
 	log := filepath.Join(t.TempDir(), relaunchLogName)
-	if err := runScript(t, relaunchScript(bundle, false, log, shortWaits)); err != nil {
+	if err := runScript(t, relaunchScript(bundle, false, false, log, shortWaits)); err != nil {
 		t.Fatalf("opened on the second try, and the shell said %v", err)
 	}
 	if _, err := os.Stat(started); err == nil {
@@ -158,7 +158,7 @@ func TestRelaunchNoProgramIsLogged(t *testing.T) {
 	exe := filepath.Join(bundle, "Contents", "MacOS", "magpie")
 	os.Remove(exe)
 	log := filepath.Join(t.TempDir(), relaunchLogName)
-	if err := runScript(t, relaunchScript(bundle, false, log, shortWaits)); err == nil {
+	if err := runScript(t, relaunchScript(bundle, false, false, log, shortWaits)); err == nil {
 		t.Error("nothing started, and the shell said it did")
 	}
 	if b, _ := os.ReadFile(log); !strings.Contains(string(b), "no executable at "+exe) {
@@ -176,7 +176,7 @@ func TestRelaunchRunsTheProgramInfoPlistNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := filepath.Join(t.TempDir(), relaunchLogName)
-	if err := runScript(t, relaunchScript(moved, true, log, shortWaits)); err != nil {
+	if err := runScript(t, relaunchScript(moved, true, false, log, shortWaits)); err != nil {
 		t.Fatalf("the shell: %v", err)
 	}
 	if got := waitFor(t, started, "the program Info.plist names starting"); got != "gui" {

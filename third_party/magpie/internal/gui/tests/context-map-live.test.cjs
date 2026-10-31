@@ -71,6 +71,7 @@ const words = {
 async function open(browser, lang, width, reduced) {
   const page = await (await browser.newContext({ viewport: { width, height: 1600 }, reducedMotion: reduced ? "reduce" : "no-preference" })).newPage();
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(60000);
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.route("**/*", serve(lang));

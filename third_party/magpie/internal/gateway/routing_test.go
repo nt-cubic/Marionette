@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"net/http"
 	"strconv"
 	"testing"
@@ -322,5 +323,93 @@ func TestSmartFiveHoursAlone(t *testing.T) {
 	share["w"] = weekly(time.Hour)
 	if got := restsOf(route(p, []candidate{acct("e"), acct("w")}, "m", provider.Chat)); got != "s#w s#e " {
 		t.Fatalf("a week renewing within the hour first: %s", got)
+	}
+}
+
+// A relay's 429 that names the model whose credentials cooled down is
+// that model's rest: its siblings on the same key still answer upstream,
+// and none of them is told the model's sentence (#3039, Welkon's relay:
+// "All credentials for model model-a are cooling down via provider
+// upstream", Retry-After an hour). Resting the key benched every sibling
+// for that hour without one being asked. Read as a rate limit or out of
+// credit, the model's ladder and sink are its own too.
+func TestModelCoolingDownRestsTheModelOnly(t *testing.T) {
+	old := allowances
+	defer func() { allowances = old }()
+	fresh(t)
+	forgetSinks(t)
+	allowances = func(string) map[string]provider.Allowance {
+		return map[string]provider.Allowance{}
+	}
+	key := func(model string) candidate {
+		return candidate{p: provider.Provider{ID: "relay", Key: "sk-relay"}, model: model, rest: "relay"}
+	}
+	s := &Server{}
+	header := http.Header{}
+	header.Set("Retry-After", "3597")
+	for _, tc := range []struct {
+		name, why string
+		body      string
+		noWait    bool // sent with no Retry-After: on the credit ladder
+	}{
+		// the report's own bytes
+		{"quota", failQuota, `{"error":{"message":"All credentials for model model-a are cooling down via provider upstream (last error: usage_limit_reached: The usage limit has been reached)"}}`, false},
+		// CLIProxyAPI's modelCooldownError as it marshals it, with no
+		// last error: a rate limit
+		{"rate", failRate, `{"error":{"code":"model_cooldown","message":"All credentials for model model-a are cooling down via provider codex","model":"model-a","provider":"codex","reset_seconds":3597,"reset_time":"59m57s"}}`, false},
+		// OmniRoute's, naming no model: the requested one
+		{"requested", failRate, `{"error":{"message":"All credentials for the requested model are cooling down","type":"rate_limit_error","code":"model_cooldown","reset_seconds":3597}}`, false},
+		{"credit", failCredit, `{"error":{"message":"All credentials for model model-a are cooling down via provider upstream (last error: insufficient balance)"}}`, true},
+	} {
+		forgetSinks(t)
+		a := key("model-a")
+		// the key's own run of rests of this kind, just ended: the
+		// model's rest climbs its own ladder, not the key's
+		restingUntil.Lock()
+		restingUntil.m[a.restKey()] = time.Now().Add(-time.Second)
+		restingUntil.note[a.restKey()] = Rest{Why: tc.why, Failures: 3}
+		restingUntil.Unlock()
+		h := header
+		if tc.noWait {
+			h = http.Header{}
+		}
+		r := s.restAfter(a, 429, h, []byte(tc.body))
+		if r.Why != tc.why {
+			t.Fatalf("%s: read as %q, want %q", tc.name, r.Why, tc.why)
+		}
+		if r.Key != a.restID() || r.Model != a.model {
+			t.Fatalf("%s: model-a's cooling-down rested %+v (model %q), not the model alone", tc.name, r, r.Model)
+		}
+		if _, ok := restOf(key("model-b").restID()); ok {
+			t.Fatalf("%s: model-a cooling down rested model-b", tc.name)
+		}
+		if _, ok := restOf(key("model-b").restKey()); ok {
+			t.Fatalf("%s: model-a cooling down rested the whole key", tc.name)
+		}
+		if _, ok := sunk.m[a.restKey()]; ok {
+			t.Fatalf("%s: model-a cooling down sank the whole key", tc.name)
+		}
+		if (tc.why == failRate || tc.why == failCredit) && r.Failures != 1 {
+			t.Fatalf("%s: model-a's rest is rung %d of the key's ladder, want the model's first", tc.name, r.Failures)
+		}
+		if tc.why == failRate {
+			if _, ok := sunk.m[a.restID()]; !ok {
+				t.Fatalf("%s: model-a, rate limited with quota left, didn't sink", tc.name)
+			}
+		}
+		if tc.why == failQuota {
+			// the model's own sentence is the model's rest's to keep
+			if kept, _ := restOf(a.restID()); !bytes.Contains([]byte(kept.said), []byte("model-a")) {
+				t.Fatalf("%s: model-a's rest keeps %q", tc.name, kept.said)
+			}
+		}
+	}
+
+	// an account-level cool-down that names no model rests the key: the
+	// model-scoped branch is for wordings that name one
+	forgetSinks(t)
+	whole := key("model-b")
+	if r := s.restAfter(whole, 429, header, []byte(`{"error":{"message":"All credentials are cooling down via provider upstream"}}`)); r.Key != whole.restKey() {
+		t.Fatalf("an account-level cool-down rested %+v, want the key", r)
 	}
 }

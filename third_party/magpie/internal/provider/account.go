@@ -1242,7 +1242,7 @@ func codexRefresh(ctx context.Context, raw map[string]any, reason string) (strin
 		RefreshToken string `json:"refresh_token"`
 	}
 	if res.StatusCode != 200 || json.Unmarshal(b, &fresh) != nil || fresh.AccessToken == "" {
-		err := refreshFailed(res.StatusCode, "Codex", "Codex is signed out (token refresh failed); run codex login")
+		err := refreshFailed(res.StatusCode, "Codex", "Codex is signed out (token refresh failed); sign in to this account again")
 		if res.StatusCode != 200 && codexRefreshGone(res.StatusCode, b) {
 			// refused for good, by Codex's own rule (#4308)
 			err = codexRefreshGoneError{err}

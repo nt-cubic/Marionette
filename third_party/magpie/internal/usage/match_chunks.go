@@ -63,8 +63,8 @@ func hintsOf(chunks []*rowChunk, rows *chunkRows) []*chunkHints {
 		open := rows.of(c)
 		for j := range open.Rows {
 			p := &open.Rows[j]
-			if p.Time.After(h.latest) {
-				h.latest = p.Time
+			if p.Time().After(h.latest) {
+				h.latest = p.Time()
 			}
 			if id := open.Strings[open.text(p, 11)]; id != "" {
 				h.ids = append(h.ids, uint32(matchHash(id)))

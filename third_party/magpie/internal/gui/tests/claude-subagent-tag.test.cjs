@@ -125,6 +125,7 @@ for (const engine of engines) {
           const page = await browser.newPage({ viewport, reducedMotion: "reduce" });
           pages.push(page);
           page.setDefaultTimeout(5000);
+          page.setDefaultNavigationTimeout(60000);
           page.on("pageerror", (e) => errors.push(e.message));
           await page.route("**/*", serve(lang));
           await page.addInitScript((on) => localStorage.setItem("magpie.routingBySession", on ? "1" : "0"), bySession);

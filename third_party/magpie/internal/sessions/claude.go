@@ -186,7 +186,7 @@ func ccWhere(s *state, b []byte) {
 
 // strAt is the string after the last key in b.
 func strAt(b, key []byte) string {
-	i := bytes.LastIndex(b, key)
+	i := lastIndex(b, key)
 	if i < 0 {
 		return ""
 	}
@@ -295,7 +295,7 @@ func ccReply(s *state, at time.Time, msg, b []byte, main bool) {
 	m := ccUsageState(&s.Claude).message(id, request)
 	defer s.Claude.finish(m)
 
-	i := bytes.LastIndex(b, ccUsage)
+	i := lastIndex(b, ccUsage)
 	if i < 0 {
 		i = len(b)
 	}

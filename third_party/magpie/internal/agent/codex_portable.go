@@ -13,7 +13,10 @@ import (
 // OpenAI itself, unless its rollout is written portable
 // (sessions.PortCodexRollouts, LukeMa on X): done while magpie runs, for
 // the threads no Codex has open, and again as magpie lets Codex go (quit,
-// Disconnect), for those it has just let go.
+// Disconnect), for those it has just let go. Once Codex no longer goes
+// through magpie, magpie's reasoning items are written so too
+// (sessions.PortCodexRolloutsLeft): OpenAI won't take a thread holding
+// one as the base of its next turn (hentulong on X).
 
 // codexPortEvery is how often a running magpie makes the rollouts written
 // since portable; codexPortAfter how long after it starts it first does.
@@ -24,11 +27,15 @@ var codexPortEvery, codexPortAfter = 10 * time.Minute, 2 * time.Minute
 const codexPortUnwire = 3 * time.Second
 
 // portCodexHome makes the rollouts of the Codex home dir portable, for
-// up to d.
-func portCodexHome(dir string, d time.Duration) {
+// up to d; left says Codex no longer goes through magpie.
+func portCodexHome(dir string, d time.Duration, left bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), d)
 	defer cancel()
-	res, err := sessions.PortCodexRollouts(ctx, dir)
+	port := sessions.PortCodexRollouts
+	if left {
+		port = sessions.PortCodexRolloutsLeft
+	}
+	res, err := port(ctx, dir)
 	if err != nil {
 		log.Println("codex rollouts:", err)
 	}
@@ -41,8 +48,15 @@ func portCodexHome(dir string, d time.Duration) {
 // to d: as magpie quits.
 func PortCodexRollouts(d time.Duration) {
 	if home, err := os.UserHomeDir(); err == nil {
-		portCodexHome(here(home).codexHome(), d)
+		portCodexHome(here(home).codexHome(), d, codexLeft(home))
 	}
+}
+
+// codexLeft says this machine's Codex doesn't go through magpie: neither
+// routed to it nor failing over by it.
+func codexLeft(home string) bool {
+	a := codex(home)
+	return !(a.Routed != nil && a.Routed()) && !(a.FailingOver != nil && a.FailingOver())
 }
 
 // KeepCodexRolloutsPortable makes this machine's Codex rollouts portable
@@ -62,6 +76,6 @@ func KeepCodexRolloutsPortable(ctx context.Context) {
 		}
 		wait = codexPortEvery
 		// a pass that is cut short goes on from where it was next time
-		portCodexHome(dir, codexPortEvery/2)
+		portCodexHome(dir, codexPortEvery/2, codexLeft(home))
 	}
 }

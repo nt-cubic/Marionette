@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -260,6 +261,14 @@ func find(ctx context.Context, m pii.Model, texts []string) ([][]redact.Found, e
 	}
 	ch := make(chan res, 1)
 	go func() {
+		// a panic in the model is this request's error: on a goroutine
+		// of its own it would end magpie (#4553)
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("masking: the local model panicked: %v\n%s", r, debug.Stack())
+				ch <- res{nil, fmt.Errorf("the local masking model failed reading this request (%v)", r)}
+			}
+		}()
 		got, err := m.Find(ctx, texts)
 		ch <- res{got, err}
 	}()

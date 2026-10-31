@@ -3,10 +3,10 @@
 // one step a click). In the editor a named member's number is its handle,
 // with a grip beside it drawn only while the row is under the pointer;
 // dragging it moves the model, Alt+↑/↓ moves it from the keyboard, which
-// stays on it, and Up and Down stay beside it. A pattern's members follow
-// the named ones and have no handle. Saved, the members go in the new
-// order. No click or drag moves the page. In English and Chinese, Chromium
-// and WebKit.
+// stays on it, and Up and Down stay beside it. A pattern's members are
+// moved the same way (usrname1833 on Discord), among the named ones too.
+// Saved, the order of them all goes as placed. No click
+// or drag moves the page. In English and Chinese, Chromium and WebKit.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -67,6 +67,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const page = await (await browser.newContext({ viewport: { width: 1100, height: 1400 }, reducedMotion: "reduce" })).newPage();
       t.after(() => browser.close());
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       const errors = [], posts = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang, posts));
@@ -80,21 +81,21 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const row = (name) => ed.locator(".fbrow", { has: page.locator(".n > span:first-child", { hasText: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`) }) });
       const handle = (name) => row(name).locator(".rt-mhandle");
 
-      // every named member has a handle with its number; the pattern's none
-      assert.deepEqual(await ed.locator(".fbrow .rt-mhandle").allTextContents(), ["1", "2", "3"]);
-      assert.equal(await handle("free:free").count(), 0, "a pattern's member has a handle");
+      // every member has a handle with its number, a pattern's too
+      assert.deepEqual(await ed.locator(".fbrow .rt-mhandle").allTextContents(), ["1", "2", "3", "4"]);
       assert.equal(await handle("two").getAttribute("aria-label"), w.move);
-      // Up on all but the first named, Down on all but the last named
+      // Up on all but the first, Down on all but the last
       const btns = async (name) => row(name).locator("button.text").allTextContents();
       assert(!(await btns("one")).includes(w.up) && (await btns("one")).includes(w.down));
-      assert((await btns("three")).includes(w.up) && !(await btns("three")).includes(w.down));
+      assert((await btns("three")).includes(w.up) && (await btns("three")).includes(w.down));
+      assert((await btns("free:free")).includes(w.up) && !(await btns("free:free")).includes(w.down));
 
       // the grip shows on the row under the pointer only
       await page.mouse.move(1, 1);
       const grip = (name) => handle(name).evaluate((h) => getComputedStyle(h, "::before").opacity);
       assert.equal(await grip("two"), "0");
       await row("two").locator(".n").hover();
-      await page.waitForFunction(() => [...document.querySelectorAll(".rt-mhandle")].map((h) => getComputedStyle(h, "::before").opacity).join() === "0,1,0");
+      await page.waitForFunction(() => [...document.querySelectorAll(".rt-mhandle")].map((h) => getComputedStyle(h, "::before").opacity).join() === "0,1,0,0");
 
       await ed.evaluate((x) => x.scrollIntoView({ block: "center" })); // by the test, as the reader would
       await page.waitForTimeout(200);
@@ -115,14 +116,21 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.keyboard.press("Alt+ArrowDown");
       assert.deepEqual(await order(), ["three", "two", "one", "free:free"]);
       assert.equal(await page.evaluate(() => document.activeElement?.closest(".fbrow")?.querySelector(".n > span")?.textContent), "one", "the keyboard left the moved model");
-      // it never goes past the pattern's
+      // past a pattern's too
       await page.keyboard.press("Alt+ArrowDown");
-      assert.deepEqual(await order(), ["three", "two", "one", "free:free"]);
+      assert.deepEqual(await order(), ["three", "two", "free:free", "one"]);
       // Down and Up still move it a step
       await row("three").locator("button.text", { hasText: w.down }).click();
-      assert.deepEqual(await order(), ["two", "three", "one", "free:free"]);
+      assert.deepEqual(await order(), ["two", "three", "free:free", "one"]);
       await row("one").locator("button.text", { hasText: w.up }).click();
-      assert.deepEqual(await order(), ["two", "one", "three", "free:free"]);
+      assert.deepEqual(await order(), ["two", "three", "one", "free:free"]);
+      // a pattern's dragged to the top
+      const hf = await handle("free:free").boundingBox(), first = await row("two").boundingBox();
+      await page.mouse.move(hf.x + hf.width / 2, hf.y + hf.height / 2);
+      await page.mouse.down();
+      for (let i = 1; i <= 8; i++) await page.mouse.move(hf.x + hf.width / 2, hf.y + hf.height / 2 - ((hf.y - first.y + 6) * i) / 8);
+      await page.mouse.up();
+      assert.deepEqual(await order(), ["free:free", "two", "three", "one"], "a pattern's was dragged");
       assert.equal(await at(), before, "a click or drag moved the page");
 
       const b = ed.locator("button.primary", { hasText: w.save });
@@ -135,7 +143,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.mouse.click(bb.x + bb.width / 2, bb.y + bb.height / 2);
       await page.waitForFunction(() => !document.querySelector(".rt-gedit"));
       const sent = posts.find((p) => p.path === "/api/groups/save");
-      assert.deepEqual(sent.body.members.slice(0, 3), ["a/two", "a/one", "b/three"]);
+      assert.deepEqual(sent.body.members, ["a/two", "b/three", "a/one"]);
+      assert.deepEqual(sent.body.placed, ["c/free:free", "a/two", "b/three", "a/one"], "the order, a pattern's among them");
 
       const missing = await page.evaluate(() => ["Down", "Move {name}", "Drag to reorder · Alt+↑/↓ to move"].filter((k) => !I18N.zh[k] || !I18N.ja[k] || !I18N.de[k]));
       assert.deepEqual(missing, [], "every string has its Chinese, Japanese and German");

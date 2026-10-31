@@ -100,7 +100,7 @@ func TestMergeExternalStatsWritesNoInput(t *testing.T) {
 	keep := Stats{From: st.From, To: st.To, Days: []Day{{Date: "2026-10-02", Usage: slices1(usage)}}, Sessions: slices1(sums)}
 	merged := MergeExternalStats(st, []ExternalDayUsage{{Date: "2026-10-02", Agent: "claude", Model: "m", Tokens: Tokens{Output: 5}}, {Date: "2026-10-02", Agent: "opencode", Model: "x"}},
 		[]ExternalSession{{Agent: "opencode", ID: "g", Last: time.Unix(20, 0)}})
-	if len(merged.Sessions) != 2 || merged.Sessions[0].ID != "g" || merged.Days[0].Usage[0].Tokens.Output != 6 || len(merged.Days[0].Usage) != 2 {
+	if all := merged.AllSessions(); len(all) != 2 || all[0].ID != "g" || merged.Days[0].Usage[0].Tokens.Output != 6 || len(merged.Days[0].Usage) != 2 {
 		t.Fatalf("merged %+v", merged)
 	}
 	if !reflect.DeepEqual(st.Days[0].Usage, keep.Days[0].Usage) || !reflect.DeepEqual(st.Sessions, keep.Sessions) ||

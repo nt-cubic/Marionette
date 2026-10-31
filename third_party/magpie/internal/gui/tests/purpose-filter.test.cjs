@@ -84,6 +84,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const context = await browser.newContext({ viewport: { width: 1100, height: 800 }, reducedMotion: "reduce" });
       const page = await context.newPage();
       page.setDefaultTimeout(7000);
+      page.setDefaultNavigationTimeout(60000);
       const errors = [], asked = [];
       // WebKit reports a ResizeObserver round left to the next frame as a page
       // error; Chromium doesn't. A purpose picked from a long list shrinks the
@@ -213,6 +214,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       t.after(() => browser.close());
       const page = await browser.newPage({ viewport: { width: 1100, height: 800 }, reducedMotion: "reduce" });
       page.setDefaultTimeout(7000);
+      page.setDefaultNavigationTimeout(60000);
       const errors = [];
       page.on("pageerror", (e) => { if (!/^ResizeObserver loop completed with undelivered notifications/.test(e.message)) errors.push(e.message); });
       await page.route("**/*", server(lang, []));

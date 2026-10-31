@@ -10,7 +10,11 @@ package provider
 // exports its Codex accounts in these shapes: its own (CLIProxyAPI's),
 // Codex's auth.json, CPA and Sub2API. codexbar (lizhelang/codexbar), a
 // menu-bar switcher, keeps its ChatGPT accounts in ~/.codexbar/config.json
-// (see codexbarEntries); its own export is Sub2API's. A bare refresh token
+// (see codexbarEntries); its own export is Sub2API's. claude-swap (cswap,
+// realiti4/claude-swap) exports its Claude accounts as {version: 1,
+// swapVersion, encrypted, accounts: [{email, uuid, organizationUuid,
+// organizationName, credentials: {claudeAiOauth: {…}}, config:
+// {oauthAccount: {…}}, alias, kind}]} (see cswapEntry). A bare refresh token
 // a line is taken too. They all sign in with the agents' own OAuth clients, the ones
 // magpie uses.
 //
@@ -44,6 +48,9 @@ type loginImport struct {
 	// uuids, Claude Code's oauthAccount accountUuid and organizationUuid,
 	// when the file has them
 	claudeAccount, claudeOrg string
+	// claudeOrgName is the organization's name, as oauthAccount has it;
+	// alias the name the tool it came from gave the account (cswap's)
+	claudeOrgName, alias string
 }
 
 // claudeImportScopes are what Claude Code's sign-in asks for, taken when a
@@ -62,6 +69,15 @@ func parseLoginImport(agent, data string) ([]loginImport, error) {
 		if err := json.Unmarshal([]byte(s), &v); err != nil {
 			return nil, fmt.Errorf("not valid JSON: %v", err)
 		}
+		if x, ok := v.(map[string]any); ok && x["swapVersion"] != nil {
+			// as cswap's own import refuses them (transfer.py)
+			if x["encrypted"] == true {
+				return nil, errors.New("an encrypted claude-swap export: decrypt it first (gpg -d), then import what that gives")
+			}
+			if n, ok := x["version"].(float64); !ok || n != 1 {
+				return nil, fmt.Errorf("a claude-swap export of format %v: magpie reads format 1 (claude-swap 0.29)", x["version"])
+			}
+		}
 		var walk func(v any)
 		walk = func(v any) {
 			switch x := v.(type) {
@@ -74,6 +90,11 @@ func parseLoginImport(agent, data string) ([]loginImport, error) {
 				// in credentials
 				if c, ok := x["credentials"].(map[string]any); ok && jsonStr(x, "platform") != "" {
 					out = append(out, sub2apiEntry(agent, x, c))
+					return
+				}
+				// a cswap account: credentials and config, no platform
+				if _, ok := x["config"].(map[string]any); ok && x["credentials"] != nil && jsonStr(x, "email") != "" {
+					out = append(out, cswapEntry(agent, x))
 					return
 				}
 				if es, ok := codexbarEntries(agent, x); ok {
@@ -140,6 +161,43 @@ func loginEntry(agent string, x map[string]any) loginImport {
 	case e.refreshToken == "" && jsonStr(x, "OPENAI_API_KEY", "api_key", "apiKey") != "":
 		e.err = "an API key, not a sign-in; add it as a key instead"
 	case e.refreshToken == "" && (e.accessToken != "" || jsonStr(x, "personal_access_token") != ""):
+		e.err = accessOnly
+	}
+	return e
+}
+
+// cswapEntry reads one account of a claude-swap export (cswap --export,
+// transfer.py): {number, email, uuid, organizationUuid, organizationName,
+// added, credentials, config, alias, kind}. credentials is Claude Code's
+// own ({claudeAiOauth: {…}}), or with --full whatever else it kept beside
+// it; config is {oauthAccount: {…}}, or with --full all of ~/.claude.json.
+// An API-key account's credentials are the sk-ant-… key, its kind
+// "api_key".
+func cswapEntry(agent string, x map[string]any) loginImport {
+	cfg, _ := x["config"].(map[string]any)
+	acct, _ := cfg["oauthAccount"].(map[string]any)
+	e := loginImport{email: cmp.Or(jsonStr(acct, "emailAddress"), jsonStr(x, "email")),
+		claudeAccount: cmp.Or(jsonStr(acct, "accountUuid"), jsonStr(x, "uuid")),
+		claudeOrg:     cmp.Or(jsonStr(acct, "organizationUuid"), jsonStr(x, "organizationUuid")),
+		claudeOrgName: cmp.Or(jsonStr(acct, "organizationName"), jsonStr(x, "organizationName")),
+		alias:         jsonStr(x, "alias")}
+	creds, ok := x["credentials"].(map[string]any)
+	switch {
+	case agent != "claude":
+		e.err = "a Claude account (claude-swap's), not Codex's"
+		return e
+	case jsonStr(x, "kind") == "api_key" || !ok:
+		e.err = "an API key, not a sign-in; add it as a key instead"
+		return e
+	}
+	src := creds
+	if t, ok := creds["claudeAiOauth"].(map[string]any); ok {
+		src = t
+	}
+	e.accessToken = jsonStr(src, "accessToken", "access_token")
+	e.refreshToken = jsonStr(src, "refreshToken", "refresh_token")
+	e.scopes = importScopes(src["scopes"])
+	if e.refreshToken == "" && e.accessToken != "" {
 		e.err = accessOnly
 	}
 	return e
@@ -336,6 +394,7 @@ func ImportLogins(ctx context.Context, agent string, files []string) ([]Imported
 		}()
 	}
 	wg.Wait()
+	importNames(agent, all, out)
 	for _, r := range out {
 		if r.Status == "added" || r.Status == "updated" {
 			_ = ShowAccount(agent)
@@ -343,6 +402,35 @@ func ImportLogins(ctx context.Context, agent string, files []string) ([]Imported
 		}
 	}
 	return out, nil
+}
+
+// importNames gives each account brought in the name the tool it came from
+// gave it (cswap's alias), while it has none of the user's own and the
+// name picks no other account: not another's name, email or email part
+// (AccountByName). A name that can't be given is left off, the account
+// still added.
+func importNames(agent string, es []loginImport, out []ImportedAccount) {
+	for i, e := range es {
+		r := out[i]
+		if e.alias == "" || (r.Status != "added" && r.Status != "updated") || AccountNameOf(agent, r.User) != "" {
+			continue
+		}
+		var users []string
+		for _, l := range Logins(agent) {
+			users = append(users, l.User)
+		}
+		taken := false
+		for _, u := range users {
+			email, _, _ := strings.Cut(u, " · ")
+			if !strings.EqualFold(u, r.User) && (strings.EqualFold(AccountNameOf(agent, u), e.alias) ||
+				strings.EqualFold(u, e.alias) || strings.EqualFold(strings.TrimSpace(email), e.alias)) {
+				taken = true
+			}
+		}
+		if !taken {
+			_ = SetAccountName(agent, r.User, e.alias)
+		}
+	}
 }
 
 // loginRefreshToken is the refresh token a saved sign-in holds.
@@ -408,6 +496,9 @@ func importLogin(ctx context.Context, agent string, e loginImport, name string, 
 		}
 		if e.claudeOrg != "" {
 			acct["organizationUuid"] = e.claudeOrg
+		}
+		if e.claudeOrgName != "" {
+			acct["organizationName"] = e.claudeOrgName
 		}
 		l, err = claudeLogin(c, acct)
 	}

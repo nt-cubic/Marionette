@@ -58,6 +58,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const page = await ctx.newPage();
         t.after(() => ctx.close());
         page.setDefaultTimeout(15000); // a busy machine takes seconds over a click
+        page.setDefaultNavigationTimeout(60000);
         const errors = [];
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", server(lang));

@@ -291,7 +291,10 @@ func DismissCodexApp() {
 // on Windows the Store app's (OpenAI.Codex, ChatGPT.exe), which copies its
 // codex out of WindowsApps and runs it from %LOCALAPPDATA%:
 // `C:\Users\…\AppData\Local\OpenAI\Codex\bin\<hash>\codex.exe -c … app-server
-// --analytics-default-enabled …` (26.1021 on the Windows box). Not the
+// --analytics-default-enabled …` (26.1021 on the Windows box); on Linux
+// the official app's (the chatgpt deb, rpm or Arch package, 26.1027):
+// `/usr/lib/chatgpt/resources/codex -c … app-server
+// --analytics-default-enabled …`. Not the
 // managed daemon, nor an app-server's helpers or proxy, nor an editor's
 // codex.
 func findCodexApp(ps []proc.Process) int {
@@ -312,7 +315,7 @@ func isCodexAppServer(args string) bool {
 	// the program's own path: ps leaves a path's spaces unquoted, so
 	// "…/Codex Computer Use.app/Contents/MacOS/…" reads as one named Codex
 	exe, rest := splitExe(args)
-	if !strings.Contains(exe, ".app/Contents/") && !windowsCodexApp(exe) {
+	if !strings.Contains(exe, ".app/Contents/") && !windowsCodexApp(exe) && !linuxCodexApp(exe) {
 		return false
 	}
 	if base := strings.ToLower(exe[strings.LastIndexAny(exe, `/\`)+1:]); base != "codex" && base != "codex.exe" {
@@ -329,6 +332,15 @@ func isCodexAppServer(args string) bool {
 func windowsCodexApp(exe string) bool {
 	e := strings.ToLower(exe)
 	return strings.Contains(e, `\appdata\local\openai\codex\bin\`) || strings.Contains(e, `\windowsapps\openai.`)
+}
+
+// linuxCodexApp is whether exe is the Linux Codex app's codex: the one in
+// its resources, /usr/lib/chatgpt/resources/codex in OpenAI's packages
+// (the deb's and the Arch package's, chatgpt 26.1027). Not a codex the
+// user installed (npm's, a release's): those run from a folder of their
+// own.
+func linuxCodexApp(exe string) bool {
+	return strings.HasPrefix(exe, "/") && strings.HasSuffix(exe, "/chatgpt/resources/codex")
 }
 
 // RestartCodexDaemon has Codex restart its app-server, which reads the

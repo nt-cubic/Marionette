@@ -4,28 +4,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
-	"net/netip"
+	"regexp"
 	"strings"
 	"testing"
 )
 
-// docAddr says f is an IPv4 stand-in: in RFC 5737's ranges, .101 to .254.
-func docAddr(f string) bool {
-	a, err := netip.ParseAddr(f)
-	if err != nil || !a.Is4() {
-		return false
-	}
-	b := a.As4()
-	inNet := b[0] == 192 && b[1] == 0 && b[2] == 2 || b[0] == 198 && b[1] == 51 && b[2] == 100 || b[0] == 203 && b[1] == 0 && b[2] == 113
-	return inNet && b[3] >= 101 && b[3] <= 254
-}
+// standInRe is an address's stand-in: public-ip- and eight lowercase
+// letters, no address of any kind.
+var standInRe = regexp.MustCompile(`^public-ip-[a-z]{8}$`)
 
-// A server's address the user gives goes as an address from the
-// documentation ranges, not {{IP_…}}: told "my server is {{IP_…}}", models
-// asked the user for the real one or searched ~/.ssh for it (0x0_air on X,
-// 10-28: "你消息里的 IP 被脱敏成 …，我无法连接"). The model's ssh with the
-// stand-in comes back with the real address, in a whole reply and a stream.
-func TestIPGoesAsADocumentationAddress(t *testing.T) {
+func isIPStandIn(f string) bool { return standInRe.MatchString(f) }
+
+// A server's address the user gives goes as a public-ip- name, neither
+// {{IP_…}} nor another address: told "my server is {{IP_…}}", models asked
+// the user for the real one or searched ~/.ssh for it (0x0_air on X,
+// 10-28); told a documentation address, they said it was an example and
+// not the user's server, and a 192.0.2. one read as a LAN address
+// (akic404 on Discord, 10-31). The model's ssh with the stand-in comes
+// back with the real address, in a whole reply and a stream.
+func TestIPGoesAsAPublicIPName(t *testing.T) {
 	Forget()
 	t.Cleanup(Forget)
 	const ip = "47.96.123.45"
@@ -33,8 +30,8 @@ func TestIPGoesAsADocumentationAddress(t *testing.T) {
 	msg := "我的服务器是 " + ip + "，用户 root，已经配好密钥登录。先 ssh 上去看看 uname -a 和磁盘空间。"
 	out, n := Mask(msg, o)
 	f := strings.TrimSuffix(strings.Fields(strings.TrimPrefix(out, "我的服务器是 "))[0], "，用户")
-	if n != 1 || strings.Contains(out, ip) || strings.Contains(out, "{{") || !docAddr(f) {
-		t.Fatalf("sent %q (address %q), want the address as a documentation one", out, f)
+	if n != 1 || strings.Contains(out, ip) || strings.Contains(out, "{{") || !isIPStandIn(f) {
+		t.Fatalf("sent %q (address %q), want the address as a public-ip- name", out, f)
 	}
 	if again, _ := Mask(msg, o); again != out {
 		t.Errorf("not the same stand-in twice: %q, %q", out, again)
@@ -56,11 +53,19 @@ func TestIPGoesAsADocumentationAddress(t *testing.T) {
 		{"ssh to " + f + ".", "ssh to " + ip + "."},
 		{"[" + f + "]", "[" + ip + "]"},
 		{"ip:" + f, "ip:" + ip},
+		{"http://" + f + ":8080/health", "http://" + ip + ":8080/health"},
+		{"`" + f + "`", "`" + ip + "`"},
+		{"**" + f + "**", "**" + ip + "**"},
+		{f + "，用户 root", ip + "，用户 root"},
+		{"Host " + f + "\n", "Host " + ip + "\n"},
 		{f + "0", f + "0"},
-		{"1" + f, "1" + f},
-		{"10." + f, "10." + f},
-		{f + ".5", f + ".5"},
 		{f + "a", f + "a"},
+		{f + "-2", f + "-2"},
+		{f + "_x", f + "_x"},
+		{"my-" + f, "my-" + f},
+		{"x" + f, "x" + f},
+		{"db." + f, "db." + f},
+		{f + ".lan", f + ".lan"},
 	} {
 		if got := Restore(c.s, false); got != c.want {
 			t.Errorf("Restore(%q) = %q, want %q", c.s, got, c.want)
@@ -109,40 +114,40 @@ func TestIPGoesAsADocumentationAddress(t *testing.T) {
 	}
 }
 
-// An IPv6 address goes as one in 2001:db8::/32, and comes back.
-func TestIPv6GoesAsADocumentationAddress(t *testing.T) {
+// An IPv6 address goes as a public-ip- name too, and comes back, in a
+// URL's brackets as well.
+func TestIPv6GoesAsAPublicIPName(t *testing.T) {
 	Forget()
 	t.Cleanup(Forget)
 	const ip = "2400:cb00:2048:1::c629:d7a2"
 	o := Options{Personal: true, Kinds: map[string]bool{"ip": true}}
 	out, n := Mask("ssh root@"+ip, o)
 	f := strings.TrimPrefix(out, "ssh root@")
-	a, err := netip.ParseAddr(f)
-	if n != 1 || err != nil || !netip.MustParsePrefix("2001:db8::/32").Contains(a) {
+	if n != 1 || !isIPStandIn(f) {
 		t.Fatalf("sent %q", out)
 	}
 	if back := Restore(`{"command":"ping6 `+f+`"}`, true); back != `{"command":"ping6 `+ip+`"}` {
 		t.Errorf("put back as %s", back)
 	}
+	if back := Restore("curl http://["+f+"]:8080/", false); back != "curl http://["+ip+"]:8080/" {
+		t.Errorf("put back as %s", back)
+	}
 }
 
-// Two addresses never share a stand-in: past the 462 IPv4 ones, an
-// address goes as its placeholder, and every one comes back as itself.
+// Two addresses never share a stand-in, every one comes back as itself,
+// and a documentation address the user writes goes and comes back as
+// written: it is no stand-in, so nothing turns it into another address.
 func TestIPStandInsNeverShared(t *testing.T) {
 	Forget()
 	t.Cleanup(Forget)
 	o := Options{Personal: true, Kinds: map[string]bool{"ip": true}}
 	seen := map[string]string{}
-	const total = len(ipNets)*ipHosts + 10
-	for i := 0; i < total; i++ {
+	for i := 0; i < 1000; i++ {
 		ip := fmt.Sprintf("47.96.%d.%d", i/200, 1+i%200)
 		out, n := Mask("host "+ip, o)
 		f := strings.TrimPrefix(out, "host ")
-		if n != 1 {
-			t.Fatalf("%s: sent %q", ip, out)
-		}
-		if i < len(ipNets)*ipHosts && !docAddr(f) || i >= len(ipNets)*ipHosts && !strings.HasPrefix(f, "{{IP_") {
-			t.Fatalf("%s (#%d) went as %q", ip, i, f)
+		if n != 1 || !isIPStandIn(f) {
+			t.Fatalf("%s (#%d) went as %q", ip, i, out)
 		}
 		if other, ok := seen[f]; ok {
 			t.Fatalf("%s and %s both went as %s", other, ip, f)
@@ -156,6 +161,13 @@ func TestIPStandInsNeverShared(t *testing.T) {
 		if back := Restore("ssh "+f, false); back != "ssh "+ip {
 			t.Fatalf("%s put back as %q, want %s", f, back, ip)
 		}
+	}
+	const doc = "203.0.113.147"
+	if out, n := Mask("例子里写的是 "+doc, o); n != 0 || out != "例子里写的是 "+doc {
+		t.Errorf("a documentation address went as %q", out)
+	}
+	if back := Restore("ssh root@"+doc, false); back != "ssh root@"+doc {
+		t.Errorf("a documentation address came back as %q", back)
 	}
 }
 

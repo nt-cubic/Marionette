@@ -125,7 +125,7 @@ func TestRequestDiskNamesItsSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := sha256.New()
-	io.WriteString(h, sessions.CallCacheVersion)
+	io.WriteString(h, sessions.CallCacheVersion())
 	sources := 0
 	for _, name := range names {
 		if strings.HasSuffix(name, "_test.go") {

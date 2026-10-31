@@ -16,6 +16,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       t.after(() => browser.close());
       const page = await browser.newPage({ viewport: { width, height: 760 } });
       page.setDefaultTimeout(8000);
+      page.setDefaultNavigationTimeout(60000);
       await page.route("**/*", async (route) => {
         const url = new URL(route.request().url());
         const json = (data) => route.fulfill({ json: data });

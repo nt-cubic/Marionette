@@ -131,9 +131,9 @@ func (s *Server) visionMCPRun(r *http.Request, image, prompt string) (string, er
 	ctx := context.WithValue(r.Context(), describeForKey{}, describeFor{call: &CallFor{Agent: callerOf(r).agent, Missing: VisionMissing(), MCP: true}})
 	var said string
 	if prompt == "" {
-		said, err = s.describe(ctx, model, src)
+		said, _, err = s.describe(ctx, model, src)
 	} else {
-		said, err = s.askVisionWith(ctx, model, src, visionAskSystem, prompt)
+		said, _, err = s.describeWith(ctx, model, src, visionAskSystem, prompt)
 	}
 	if err != nil {
 		if r.Context().Err() == nil {

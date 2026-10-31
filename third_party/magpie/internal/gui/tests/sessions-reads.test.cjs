@@ -80,6 +80,7 @@ async function open(engine, width, t) {
     await browser.close();
   });
   page.setDefaultTimeout(6000);
+  page.setDefaultNavigationTimeout(60000);
   return { page, errors };
 }
 

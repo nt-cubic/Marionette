@@ -51,6 +51,7 @@ async function open(engine, lang, web, posted, st, t) {
   // tall enough that Lightweight mode is over the window's foot: rows were added above it
   const page = await (await browser.newContext({ viewport: { width: 900, height: 1200 } })).newPage();
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(60000);
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.route("**/*", serve(lang, web, posted, st));

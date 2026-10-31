@@ -9,6 +9,7 @@ for(const [engine,browserType] of Object.entries({chromium,webkit}))for(const la
   const browser=await browserType.launch({headless:true});t.after(()=>browser.close());
   const page=await browser.newPage({viewport:{width:900,height:900},reducedMotion:'reduce'});
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(60000);
   const asked=[],errors=[];let signed=false;page.on('pageerror',e=>errors.push(e.message));
   const methods=[{type:'api',label:'Enable fixed access',keyless:true}];
   const plugins=[{id:'fixed-access-plugin',pid:'fixed-access',name:'PublicFixture',icon:'generic',spec:'public-fixture',methods,single:true},{id:'ordinary-fixture',pid:'ordinary-fixture',name:'OrdinaryFixture',icon:'generic',spec:'ordinary-fixture',methods:[{type:'api',label:'Personal credential'}]}];

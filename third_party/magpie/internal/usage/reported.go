@@ -109,7 +109,7 @@ func IngestReported(recs []Record) ([]bool, error) {
 			continue
 		}
 		r.Source = SourceReported
-		r.CallerKeyID, r.CallerKeyName = "", ""
+		r.CallerKeyID, r.CallerKeyName, r.CallerIssuerID = "", "", ""
 		b, err := json.Marshal(r)
 		if err != nil {
 			return nil, err

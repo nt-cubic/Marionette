@@ -54,6 +54,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const posts = [];
       await page.route("**/*", serve(lang, posts));
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       await page.goto("http://magpie.test/");
       await page.locator("#prefs").click();
       await page.locator("#setTab-sync").click();

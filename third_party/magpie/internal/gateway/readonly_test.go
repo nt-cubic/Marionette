@@ -27,6 +27,8 @@ var readOnlyRefused = []string{
 	"POST /v1/magpie/usage/requests", "POST " + provider.RemoteRefreshPath,
 	"GET /v1/magpie/route", "GET /v1/magpie/trace",
 	"GET " + ClaudeRunsPath, "GET " + HeapPath, "GET " + CPUPath, "GET " + GoroutinesPath,
+	"POST " + RestartPath,
+	"POST " + KeysPath, "GET " + KeysPath, "DELETE " + KeysPath + "/{id}",
 	"GET /v1/magpie/omarchy", "OPTIONS /v1/magpie/omarchy",
 	// models, a WebSocket's upgrade and count_tokens among them
 	"POST /v1/chat/completions", "POST /chat/completions",

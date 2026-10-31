@@ -70,26 +70,19 @@ func TestRenameGroupMovesTheAgentsOnIt(t *testing.T) {
 	}
 }
 
-// The Codex app's app-server reads its model catalog only as it starts,
-// so the route it is restarted on (codex_app_server.go) follows what the
-// catalog holds: a provider's name changed in magpie reached the file, and
-// the app kept showing the old one (lucis0116 on X). The same bytes
-// written again are no change.
-func TestCodexAppRouteFollowsTheCatalog(t *testing.T) {
+// A change to the list alone never restarts the Codex app's app-server:
+// a provider renamed rewrites the catalog, and the app shows the new name
+// at its next launch (TestCodexEffortPickKeepsTheAppRunning says why).
+func TestCodexAppRouteIgnoresARename(t *testing.T) {
 	home := syncHome(t)
 	codexCat := filepath.Join(home, ".codex", "magpie-models.json")
 	writeFile(t, filepath.Join(home, ".codex", "config.toml"), "model = \"relay/glm-4.6\"\nmodel_provider = \"magpie\"\nmodel_catalog_json = '"+codexCat+"'\n")
 	writeFile(t, codexCat, `{"models":[]}`)
 	SyncCatalog()
-	route := func() string {
-		t.Helper()
-		r, _, known := codexAppRoute()
-		if !known {
-			t.Fatal("route not known")
-		}
-		return r
+	before, _, known := codexAppRoute()
+	if !known {
+		t.Fatal("route not known")
 	}
-	before := route()
 	if !strings.Contains(readFile(codexCat), "GLM-4.6 · Relay") {
 		t.Fatalf("catalog:\n%s", readFile(codexCat))
 	}
@@ -100,15 +93,7 @@ func TestCodexAppRouteFollowsTheCatalog(t *testing.T) {
 	if !strings.Contains(readFile(codexCat), "GLM-4.6 · Renamed") {
 		t.Fatalf("catalog not rewritten:\n%s", readFile(codexCat))
 	}
-	renamed := route()
-	if renamed == before {
-		t.Fatal("a provider renamed left the Codex app's route as it was: its app-server keeps the old names")
-	}
-	// written again as it is (a Connect does): no restart for that
-	if err := writeOwnList(codexCat, []byte(readFile(codexCat))); err != nil {
-		t.Fatal(err)
-	}
-	if route() != renamed {
-		t.Error("the same catalog written again changed the route")
+	if r, _, _ := codexAppRoute(); r != before {
+		t.Fatal("a provider renamed changed the Codex app's route: its app-server is ended for a list")
 	}
 }

@@ -2,13 +2,16 @@ package provider
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,7 +46,7 @@ func stubCodexApp(t *testing.T) *codexAppStub {
 	reset := func() {
 		codexApp.Lock()
 		codexApp.seen, codexApp.route, codexApp.stale, codexApp.stuck, codexApp.switched = false, "", nil, false, false
-		codexApp.ended, codexApp.backBy, codexApp.spent = nil, time.Time{}, false
+		codexApp.ended, codexApp.backBy, codexApp.spent, codexApp.why = nil, time.Time{}, false, ""
 		codexApp.Unlock()
 	}
 	t.Cleanup(func() {
@@ -173,6 +176,54 @@ func TestCodexAppServerRestartedOnDisconnect(t *testing.T) {
 	s.route = "openai_base_url=http://127.0.0.1:3425/backend-api/codex" // connected again
 	if got := step(); !slices.Equal(got, []int{100}) {
 		t.Fatalf("connected again: ended %v, want [100]", got)
+	}
+}
+
+// Each end of the Codex app's app-server is logged with what made it
+// stale. The ChatGPT app can read the end as a crash (#4550), and the log
+// is what tells a used-up takeover, a route change and an account switch
+// apart in a user's report.
+func TestCodexAppEndSaysWhy(t *testing.T) {
+	signIn(t)
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	now := time.Now()
+	idle := func() (int, time.Time) { return 0, now.Add(-time.Minute) }
+	step := func() []int { return codexAppStep(context.Background(), now, idle) }
+	said := func(want string) {
+		t.Helper()
+		got := buf.String()
+		buf.Reset()
+		if !strings.Contains(got, "ended the Codex app's app-server") || !strings.Contains(got, want) {
+			t.Fatalf("the log says %q, want the end and %q", got, want)
+		}
+	}
+
+	s := stubCodexApp(t)
+	s.running, s.on = []int{60}, true
+	if got := step(); !slices.Equal(got, []int{60}) {
+		t.Fatalf("first look on magpie: ended %v", got)
+	}
+	said("used up")
+	s.on = false
+	s.route = "openai_base_url="
+	if got := step(); !slices.Equal(got, []int{100}) {
+		t.Fatalf("the route changed: ended %v", got)
+	}
+	said("where Codex's config sends it changed")
+	codexApp.Lock()
+	codexApp.switched = true
+	codexApp.Unlock()
+	if got := step(); !slices.Equal(got, []int{101}) {
+		t.Fatalf("the account switched: ended %v", got)
+	}
+	said("account was switched")
+	if got := step(); got != nil {
+		t.Fatalf("nothing changed: ended %v", got)
+	}
+	if strings.Contains(buf.String(), "ended the Codex app's app-server") {
+		t.Fatalf("a look that ended nothing logged an end: %q", buf.String())
 	}
 }
 
@@ -500,6 +551,11 @@ func TestCodexOutUntil(t *testing.T) {
 // codexWindowsAppServer is the Windows Codex app's own app-server.
 const codexWindowsAppServer = `C:\Users\yeton\AppData\Local\OpenAI\Codex\bin\2993767bd1dfb009\codex.exe -c features.code_mode_host=true app-server --analytics-default-enabled -c plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true`
 
+// codexLinuxAppServer is the Linux Codex app's own app-server, as the
+// official chatgpt 26.1027 deb ran it in the WSL distro magpie-desktop
+// (Ubuntu 24.04).
+const codexLinuxAppServer = "/usr/lib/chatgpt/resources/codex -c features.code_mode_host=true app-server --analytics-default-enabled -c plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true"
+
 // Only the app's own app-server is restarted: another program's, started
 // from the app's bundled codex with --listen (Miyi Helper's, seen on the
 // owner's Mac), is that program's.
@@ -510,6 +566,7 @@ func TestCodexAppOwnServer(t *testing.T) {
 		// as Windows listed it on the Windows box: run from LOCALAPPDATA,
 		// not from its package (zhibukaixinyao on Discord)
 		codexWindowsAppServer,
+		codexLinuxAppServer,
 	} {
 		if !isCodexAppOwnServer(own) {
 			t.Errorf("the app's own app-server not taken: %s", own)
@@ -523,6 +580,8 @@ func TestCodexAppOwnServer(t *testing.T) {
 		"/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex app-server --listen=ws://127.0.0.1:4500",
 		"/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex -c forced_login_method=\"chatgpt\" exec-server --remote https://codex-cloud-environments.chatgpt.com/api",
 		"/usr/local/bin/codex app-server",
+		"/usr/lib/chatgpt/resources/codex app-server --listen stdio://",
+		"/usr/lib/chatgpt/resources/codex exec-server --remote x",
 	} {
 		if isCodexAppOwnServer(other) {
 			t.Errorf("taken for the app's own app-server: %s", other)

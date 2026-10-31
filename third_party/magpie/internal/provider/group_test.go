@@ -103,3 +103,38 @@ func TestCodexListedKeepsGroups(t *testing.T) {
 		t.Errorf("fast: group %v, model %v", ms[0].Fast, ms[1].Fast)
 	}
 }
+
+// A group keeps what Kimi Code's list says of its models (always thinks,
+// loads tools mid-conversation, its default effort) when every member says
+// it, and has none of it when one member doesn't (jiabubu on Discord: a Kimi
+// model put in a group lost always_thinking and dynamically_loaded_tools in
+// Kimi Code).
+func TestGroupSharesKimiFacts(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	e := func(p, m string, always, dynamic bool, def string) Entry {
+		return Entry{ID: p + "/" + m, Model: m, Name: m, Provider: Provider{ID: p}, Reasoning: true,
+			Efforts: []string{"low", "medium", "high"}, AlwaysThinks: always, DynamicTools: dynamic, DefaultEffort: def}
+	}
+	type facts struct {
+		always, dynamic bool
+		def             string
+	}
+	got := map[string]facts{}
+	for _, g := range groupEntries([]Entry{
+		e("kimi-code", "kimi-k3", true, true, "high"), e("kimi-code-cn", "kimi-k3", true, true, "high"),
+		e("kimi-code", "kimi-k2.7", true, true, "high"), e("or", "kimi-k2.7", false, false, ""),
+		e("kimi-code", "kimi-k2.8", true, false, "medium"), e("kimi-code-cn", "kimi-k2.8", true, true, "high"),
+	}) {
+		got[g.ID] = facts{g.AlwaysThinks, g.DynamicTools, g.DefaultEffort}
+	}
+	want := map[string]facts{
+		AutoPrefix + "kimi-k3":   {true, true, "high"},
+		AutoPrefix + "kimi-k2.7": {},
+		AutoPrefix + "kimi-k2.8": {always: true},
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+}

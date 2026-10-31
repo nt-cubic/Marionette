@@ -146,9 +146,9 @@ func served(ref string) bool {
 // sameModel is the option for ref's model from another provider still
 // serving it: the same id, else one that differs only in how it is spelt
 // (claude-sonnet-4.5 and claude-sonnet-4-5-20250929). For a group magpie
-// found (group/auto-…), gone as found groups are turned off or its model
-// is down to one provider magpie has, it is that model from the first
-// provider still serving it; none for any other routing group, which is
+// found (group/auto-…), gone as found groups are turned off, a provider
+// is kept out of them, or its model is down to one provider magpie has, it
+// is that model from the first provider still serving it; none for any other routing group, which is
 // nobody else's.
 func sameModel(opts []Option, ref string) Option {
 	// a group's id carries Claude Code's [1m] mark as a model's does, and
@@ -157,15 +157,26 @@ func sameModel(opts []Option, ref string) Option {
 		if !strings.HasPrefix(gid, "auto-") {
 			return Option{}
 		}
+		// a provider the user keeps out of found groups last
+		// (provider.SetAutoGroupSkip): skipping it is what took the group
+		skip := provider.AutoGroupSkip()
+		var kept Option
 		for _, o := range opts {
 			if o.Ref == "" || provider.IsGroupRef(o.Ref) || !served(o.Ref) {
 				continue
 			}
-			if pid, m, _ := strings.Cut(o.Ref, "/"); provider.AutoGroupOf(pid, m) == gid {
+			pid, m, _ := strings.Cut(o.Ref, "/")
+			if provider.AutoGroupOf(pid, m) != gid {
+				continue
+			}
+			if !slices.Contains(skip, pid) {
 				return o
 			}
+			if kept.Ref == "" {
+				kept = o
+			}
 		}
-		return Option{}
+		return kept
 	}
 	pid, model, ok := strings.Cut(ref, "/")
 	if !ok || pid+"/" == provider.GroupPrefix {

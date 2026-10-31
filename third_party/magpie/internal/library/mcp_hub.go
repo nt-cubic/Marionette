@@ -17,9 +17,15 @@ package library
 //   - a URL is reached as the check reaches it, with magpie's sign-in
 //     (httpSession), or over its event stream (SSE).
 //
-// magpie's own image server is never behind the hub: it asks the agent
-// that started it for its roots. What a server lists is kept until it says
-// its tools changed, or the server is edited.
+// magpie's own image server saves into the calling agent's project, which
+// a server started once for every agent can't ask its client for: the
+// gateway asks the agent for its roots on each call (gateway.HubCaller)
+// and the call carries them to it, in _meta (imageMeta). An agent in WSL
+// is given it directly still, run in the distro, whose paths it takes. A
+// server the user keeps direct (Server.Hub, #4382) is each agent's own
+// too: a command that reads its project from the folder it starts in, or
+// keeps a session's state. What a server lists is kept until it says its
+// tools changed, or the server is edited.
 
 import (
 	"bufio"
@@ -66,9 +72,34 @@ func SetMCPHub(on bool) (*Result, error) {
 	return res, err
 }
 
-// inHub is whether the hub gives s: every server but magpie's own image
-// server, which asks its agent for its roots.
-func inHub(s *Server) bool { return !isSelf(s) }
+// HubDirect is Server.Hub for a server the hub leaves out: each agent
+// given it keeps its own entry, as with the hub off (#4382).
+const HubDirect = "direct"
+
+// inHub is whether the hub gives s to agent id: every server but one the
+// user keeps direct (Server.Hub), and magpie's own image server to an
+// agent in WSL, which is given it run in its distro (mcpFile.side) for the
+// paths it saves to be the agent's.
+func inHub(s *Server, id string) bool {
+	return s.Hub != HubDirect && (!isSelf(s) || !strings.Contains(id, "@wsl:"))
+}
+
+// ServerHub shares a server through the hub, or keeps it each agent's own
+// entry (direct); the agents are written again at once, so the entry it
+// had the other way goes.
+func ServerHub(name string, direct bool) (*Result, error) {
+	return change(func(l *Library) error {
+		s := l.server(name)
+		if s == nil {
+			return fmt.Errorf("no server called %s", name)
+		}
+		s.Hub = ""
+		if direct {
+			s.Hub = HubDirect
+		}
+		return nil
+	})
+}
 
 // hubServerFor is the entry agent t is given for the hub, at the address
 // the agent reaches the gateway at, with a key when it reaches it from
@@ -117,7 +148,7 @@ func (l *Library) hubFor(t *Target, a *Applied, entries map[string]map[string]an
 		return nil, ""
 	}
 	id := t.Agent.ID
-	if !slices.ContainsFunc(l.MCP, func(s *Server) bool { return slices.Contains(s.Agents, id) && inHub(s) }) {
+	if !slices.ContainsFunc(l.MCP, func(s *Server) bool { return slices.Contains(s.Agents, id) && inHub(s, id) }) {
 		return nil, ""
 	}
 	hs := hubServerFor(t)
@@ -158,7 +189,7 @@ func hubServers(agentID string) []*Server {
 	}
 	var out []*Server
 	for _, s := range l.MCP {
-		if (agentID == "" || slices.Contains(s.Agents, agentID)) && inHub(s) {
+		if (agentID == "" || slices.Contains(s.Agents, agentID)) && inHub(s, agentID) {
 			out = append(out, s)
 		}
 	}
@@ -189,7 +220,7 @@ func (theHub) Tools(ctx context.Context, agentID string) []gateway.HubTool {
 				if json.Unmarshal(t["name"], &name) != nil || name == "" || slices.Contains(s.DisabledTools, name) {
 					continue
 				}
-				lists[i] = append(lists[i], gateway.HubTool{Server: s.Name, Tool: name, Spec: t})
+				lists[i] = append(lists[i], gateway.HubTool{Server: s.Name, Tool: name, Spec: t, Roots: isSelf(s)})
 			}
 		}()
 	}
@@ -214,10 +245,25 @@ func (theHub) Call(ctx context.Context, agentID, server, tool string, args json.
 	if slices.Contains(s.DisabledTools, tool) {
 		return nil, errors.New("the tool is turned off in magpie's Library")
 	}
+	var meta map[string]any
+	if isSelf(s) {
+		meta = imageMeta(gateway.HubCallerOf(ctx))
+	}
 	if s.Plugin != "" {
 		return pluginHubCall(ctx, agentID, s, tool, args)
 	}
-	return backendOf(s).call(ctx, tool, args)
+	return backendOf(s).call(ctx, tool, args, meta)
+}
+
+// imageMeta is the _meta a call of magpie's image server is made with:
+// the calling agent's roots, which it saves into, and its name, which its
+// requests go under.
+func imageMeta(c gateway.HubCaller) map[string]any {
+	m := map[string]any{gateway.HubRootsMeta: append([]string{}, c.Roots...)}
+	if c.Client != "" {
+		m[gateway.HubClientMeta] = c.Client
+	}
+	return m
 }
 
 func (theHub) Stop() { hubStopAll() }
@@ -244,7 +290,7 @@ func hubPrune() {
 	given := map[string]string{}
 	if l.MCPHub {
 		for _, s := range l.MCP {
-			if inHub(s) {
+			if inHub(s, "") {
 				given[s.Name] = hubKey(s)
 			}
 		}
@@ -504,15 +550,20 @@ func (b *backend) tools(ctx context.Context) ([]map[string]json.RawMessage, erro
 	return all, nil
 }
 
-// call runs one tool, and is its result as the server gave it.
-func (b *backend) call(ctx context.Context, tool string, args json.RawMessage) (json.RawMessage, error) {
+// call runs one tool, with meta as its _meta when there is one, and is its
+// result as the server gave it.
+func (b *backend) call(ctx context.Context, tool string, args json.RawMessage, meta map[string]any) (json.RawMessage, error) {
 	b.use()
 	defer b.done()
 	c, err := b.connect(ctx)
 	if err != nil {
 		return nil, err
 	}
-	m, err := c.ask(ctx, "tools/call", map[string]any{"name": tool, "arguments": args})
+	params := map[string]any{"name": tool, "arguments": args}
+	if meta != nil {
+		params["_meta"] = meta
+	}
+	m, err := c.ask(ctx, "tools/call", params)
 	if err != nil {
 		return nil, err
 	}

@@ -170,6 +170,10 @@ func TestRefusedOptionalNamesOnlyUnsupportedFields(t *testing.T) {
 		{"other-unsupported-parameter", `{"error":{"message":"Unsupported parameter: 'metadata'","param":"model","code":"unsupported_parameter"}}`, 400, nil},
 		{"unsupported-value", `{"error":{"message":"Unsupported value: 'service_tier' is not supported with this model.","param":"service_tier","code":"unsupported_value"}}`, 400, nil},
 		{"unsupported-value-no-code", `{"error":{"message":"Unsupported value: 'service_tier' is not supported with this model."}}`, 400, nil},
+		// litellm's own, naming the value it turned away before the field (#3978)
+		{"litellm-tier-value-first", `{"error":{"message":"litellm.BadRequestError: OpenAIException - 'priority' is not supported for 'service_tier' on this model. Received Model Group=gpt-6.1-sol\nAvailable Model Group Fallbacks=None","type":"invalid_request_error","param":null,"code":"400"}}`, 400, []string{"service_tier"}},
+		// and the same refusal with the backend's JSON embedded in its message (0.1.1829, #3978)
+		{"litellm-tier-json-embedded", `{"error":{"message":"litellm.BadRequestError: OpenAIException - {\"error\":{\"message\":\"'priority' is not supported for 'service_tier' on this model\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"validation_error\"}}","type":"invalid_request_error","param":null,"code":"validation_error"}}`, 400, []string{"service_tier"}},
 		{"missing-value", `{"detail":[{"type":"missing","loc":["body","metadata"],"msg":"Field required"}]}`, 422, nil},
 		{"multiple-extras", `{"detail":[{"type":"extra_forbidden","loc":["body","thinking"],"msg":"Extra inputs are not permitted"},{"type":"extra_forbidden","loc":["body","store"],"msg":"Extra inputs are not permitted"}]}`, 422, []string{"store", "thinking"}},
 		{"root-location", `{"detail":[{"type":"extra_forbidden","loc":["store"],"msg":"Extra inputs are not permitted"}]}`, 422, []string{"store"}},
@@ -272,5 +276,40 @@ func TestPromptCacheOptionsRefusedRetried(t *testing.T) {
 		if sent["prompt_cache_options"] != nil || sent["prompt_cache_key"] == nil {
 			t.Errorf("turn %d: options kept or the key lost: %s", turn+1, f.got)
 		}
+	}
+}
+
+// A litellm relay in front of a model that serves no tier names the value
+// it turned away before the field: "'priority' is not supported for
+// 'service_tier' on this model" (#3978). Asked again without the tier,
+// and not sent it again.
+func TestServiceTierRefusedForTheValueRetried(t *testing.T) {
+	f := &fake{t: t, reply: optionalFieldReply(provider.Responses)}
+	f.refuse = func(b []byte) (int, string) {
+		var v map[string]json.RawMessage
+		json.Unmarshal(b, &v)
+		if _, present := v["service_tier"]; present {
+			return 400, `{"error":{"message":"litellm.BadRequestError: OpenAIException - 'priority' is not supported for 'service_tier' on this model. Received Model Group=gpt-6.1-sol\nAvailable Model Group Fallbacks=None","type":"invalid_request_error","param":null,"code":"400"}}`
+		}
+		return 0, ""
+	}
+	setup(t, provider.Responses, f)
+	srv := New()
+	path, body := optionalFieldAsk(provider.Responses)
+	request := string(withFields([]byte(body), map[string]any{"service_tier": "priority", "metadata": map[string]string{"session": "synthetic"}}))
+	for turn, want := range []int{2, 1} {
+		calls := f.calls
+		code, reply := postTo(t, srv, path, request)
+		if code != 200 || f.calls-calls != want {
+			t.Fatalf("turn %d: %d after %d calls, want %d: %s", turn+1, code, f.calls-calls, want, reply)
+		}
+		var sent map[string]json.RawMessage
+		json.Unmarshal(f.got, &sent)
+		if sent["service_tier"] != nil || sent["metadata"] == nil {
+			t.Errorf("turn %d: the tier kept or unrelated metadata lost: %s", turn+1, f.got)
+		}
+	}
+	if srv.fits("fake", tierField, provider.Responses) {
+		t.Errorf("the tier not remembered unfit for the provider")
 	}
 }

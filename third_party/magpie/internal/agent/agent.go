@@ -339,6 +339,18 @@ type Agent struct {
 	// that is dirShared: a file only the agent (or its own app) writes
 	// there (the Qoder app's status file, #2138).
 	sign func() bool
+	// binNot, when set, says whether a binary found for Bin is not this
+	// agent's: another program's launcher of the same name (VS Code's
+	// copilot launcher, #3269), which detection and the CLI's lookup are
+	// not to take for the agent.
+	binNot func(bin string) bool
+}
+
+// binsOwn says whether bin, as binAt or proc.FindTool found it, is the
+// agent's own command: binNot, when set, turns away what another program
+// puts there under the same name.
+func (a *Agent) binsOwn(bin string) bool {
+	return bin != "" && (a.binNot == nil || !a.binNot(bin))
 }
 
 // Running reports whether a process whose command line matches any pattern
@@ -402,7 +414,7 @@ func (a *Agent) Detected() bool {
 	if a.sign != nil && a.sign() {
 		return true
 	}
-	if a.Bin != "" && binAt(a.Bin) != "" {
+	if a.Bin != "" && a.binsOwn(binAt(a.Bin)) {
 		return true
 	}
 	// one with no Bin, as its command's name is other tools' too, that

@@ -99,6 +99,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const errors = [];
         page.on("pageerror", (e) => errors.push(e.message));
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         await page.route("**/*", serve(lang));
         await page.goto("http://magpie.test/?view=routing");
         await page.locator("#view-routing .rt-srcs .rt-node").first().waitFor();

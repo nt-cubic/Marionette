@@ -1,6 +1,9 @@
 package gateway
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"slices"
@@ -60,4 +63,47 @@ func logOpenCodeRefusal(p provider.Provider, req *http.Request, status int) {
 	}
 	log.Printf("opencode: %s answered %d to %s %s%s; x-opencode-session %s; headers sent: %s",
 		p.ID, status, req.Method, req.URL.Host, req.URL.Path, session, strings.Join(names, ", "))
+}
+
+// errorKeys are the fields any error an API answers carries, in its own
+// body or in an error object of it: a body none of them name says nothing
+// of why.
+var errorKeys = []string{"error", "message", "msg", "code", "type", "param", "detail", "reason", "description"}
+
+// openCodeBare is said in the 502 openCodeBareRefusal makes of a bare 400,
+// for restAfterMarked to rest nobody for it.
+const openCodeBare = "which is no error, not an API reply"
+
+// openCodeBareRefusal is res as the 502 it stands for, when OpenCode's
+// gateway answers a request with a 400 whose body is no error at all:
+// {"model":"deepseek-v4.1-flash"}, the model's name and nothing else
+// (#3740, s-leeq), with nothing in or out and no reply id. The same
+// request is answered some seconds later (s-leeq's timelines: four to six
+// 400s over 13s to 25s, then a 200 of the same prompt), so it is read as
+// the 502 such a failure is: a group's next member is asked, and a lone
+// provider is asked again within its patience, which outlasts that
+// window, where the 400 ended the turn at once. It is tied to the request
+// (in s-leeq's day, 30 of 214 requests carrying ~246K tokens of tools
+// failed so and none of 420 carrying under 1K), so nobody rests for it
+// (restAfterMarked): the key goes on serving the requests it serves. A
+// 400 that names anything, as the missing x-opencode-session refusal
+// does, goes on as it came, as does a body that isn't a JSON object.
+func openCodeBareRefusal(req *http.Request, res *http.Response) *http.Response {
+	if res == nil || res.StatusCode != http.StatusBadRequest || res.Body == nil ||
+		req == nil || !provider.OpenCodeURL(req.URL.String()) {
+		return res
+	}
+	b, _ := io.ReadAll(io.LimitReader(res.Body, 64<<10))
+	// what wasn't read is read after what was: a body is never cut
+	res.Body = readCloser{io.MultiReader(bytes.NewReader(b), res.Body), res.Body}
+	var v map[string]any
+	if len(b) == 64<<10 || json.Unmarshal(bytes.TrimSpace(b), &v) != nil {
+		return res
+	}
+	for _, k := range errorKeys {
+		if _, ok := v[k]; ok {
+			return res
+		}
+	}
+	return asBadGateway(res, "", "answered "+res.Status+" with "+clipRunes(strings.TrimSpace(string(b)), 200)+", "+openCodeBare)
 }

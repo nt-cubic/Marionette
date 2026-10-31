@@ -34,12 +34,27 @@ func sideEffort(model, want string) string {
 
 // visionEffort is the level the Image recognition model is asked to read
 // an image at: the one picked in Settings, else magpie's own, the least
-// it has (classifyEffort), as a description is wanted quickly.
+// it has (leastEffort), as a description is wanted quickly.
 func visionEffort(model string) string {
 	if e := sideEffort(model, provider.HeldSettings().VisionEffort); e != "" {
 		return e
 	}
-	return classifyEffort(model)
+	return leastEffort(model)
+}
+
+// leastEffort is the least reasoning model takes: none when it can go
+// without, else its lowest level; "" when its levels aren't known, which
+// leaves it to the vendor.
+func leastEffort(model string) string {
+	p, m, ok := provider.Resolve(model)
+	if !ok {
+		return ""
+	}
+	levels := p.Efforts(m)
+	if len(levels) == 0 {
+		return ""
+	}
+	return fitEffort("none", levels)
 }
 
 // VisionEffortNow is the level the Image recognition model in use is

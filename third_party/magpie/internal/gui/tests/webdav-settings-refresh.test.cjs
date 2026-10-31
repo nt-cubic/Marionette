@@ -126,7 +126,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await form.waitFor({ state: "visible" });
       const tick = (word) => form.locator("label.tick", { hasText: word }).locator("input");
       assert.equal(await tick("API Key").isChecked(), true);
-      assert.equal(await tick(zh ? "agent" : "Agents").isChecked(), false, "agents' models must be unticked, as the CLI left it");
+      assert.equal(await tick(zh ? "agent" : "Agents' models").isChecked(), false, "agents' models must be unticked, as the CLI left it");
       assert.equal(await tick(zh ? "资源库" : "Library").isChecked(), false, "the library must be unticked, as the CLI left it");
       await first.locator(".val button", { hasText: zh ? "关闭" : "Close" }).click();
       await form.waitFor({ state: "detached" });

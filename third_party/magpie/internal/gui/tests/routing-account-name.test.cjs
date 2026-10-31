@@ -5,7 +5,8 @@
 // after. The trace keeps the vendor's name (who), the key the user's name
 // is kept by; the page looks the name up as it draws, so a request from
 // before the rename reads by the new name too, and the two stay one
-// account. A key's name and an unnamed account read as they were.
+// account. A key's name and an unnamed account read as they were. An
+// unnamed account a plugin's usage names (#4416) reads by that name.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -28,7 +29,7 @@ function routes(now) {
   }).reverse();
 }
 
-function serve(lang, now, names) {
+function serve(lang, now, names, users = () => ({})) {
   const assets = path.resolve(__dirname, "../assets");
   return async (route) => {
     const url = new URL(route.request().url());
@@ -45,7 +46,7 @@ function serve(lang, now, names) {
     if (url.pathname === "/api/providers") return json({ providers: [{
       id: "kiro", name: "Kiro", icon: "kiro", models: [{ id: "claude-sonnet-4.5", on: true }], keyList: [],
       account: { agent: "plugin", user: VENDOR, logins: [{ user: VENDOR, active: true, on: true }, { user: OTHER, on: true }] },
-      accountNames: names(),
+      accountNames: names(), accountUsers: users(),
     }], presets: [], excluded: [], gateway: { running: true, window: true } });
     if (url.pathname.startsWith("/api/")) return json({});
     const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
@@ -61,11 +62,12 @@ for (const engine of process.env.BROWSER ? [process.env.BROWSER] : ["chromium", 
       t.after(() => browser.close());
       const page = await browser.newPage({ viewport: { width: 1100, height: 1000 } });
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
       const now = new Date();
-      let names = {};
-      await page.route("**/*", serve(lang, now, () => names));
+      let names = {}, users = {};
+      await page.route("**/*", serve(lang, now, () => names, () => users));
       await page.goto("http://magpie.test/?view=routing");
       await page.locator(".rt-act").first().waitFor();
       const acts = page.locator(".rt-acts");
@@ -84,6 +86,14 @@ for (const engine of process.env.BROWSER ? [process.env.BROWSER] : ["chromium", 
       const list = await page.locator(".said").allInnerTexts();
       assert.ok(list.some((s) => s.includes(NAMED)), "the requests list names who answered by the new name: " + list.join(" | "));
       assert.ok(!list.some((s) => s.includes(VENDOR)), "and never by the old: " + list.join(" | "));
+      // a plugin's usage names an account (a masked phone for an IAM id,
+      // #4416): the account reads by it, and the user's own name still wins
+      users = { [OTHER.toLowerCase()]: "180****2361", [VENDOR.toLowerCase()]: "139****0000" };
+      await page.reload();
+      await page.locator(".rt-act").first().waitFor();
+      const byPlugin = await acts.innerText();
+      assert.equal(await page.locator(".rt-act", { hasText: "180****2361" }).count(), 1, "the plugin's name for an unnamed account: " + byPlugin);
+      assert.ok(!byPlugin.includes(OTHER) && !byPlugin.includes("139****0000") && byPlugin.includes(NAMED), "the id gives way, the user's own name doesn't: " + byPlugin);
       if (process.env.ARTIFACT_DIR) {
         await fs.mkdir(process.env.ARTIFACT_DIR, { recursive: true });
         await page.screenshot({ path: path.join(process.env.ARTIFACT_DIR, `${engine}-${lang}-routing-account-name.png`) });

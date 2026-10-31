@@ -69,6 +69,21 @@ func TestParseProbe(t *testing.T) {
 		t.Fatalf("probe doesn't print the user: %s", s)
 	}
 
+	// the user's home, where its Claude Code keeps its transcripts, as
+	// Windows reads it (claudetui)
+	for out, home := range map[string]string{"home:/home/me\n": "/home/me", "home:/root\r\n": "/root", "home:\n": "", "": ""} {
+		tool, _ = parseProbe("d", "bin:/usr/bin/claude\n"+out)
+		if tool.Home != home {
+			t.Errorf("%q: Home = %q, want %q", out, tool.Home, home)
+		}
+	}
+	if s := probeScript("claude"); !strings.Contains(s, `echo "home:$HOME"`) {
+		t.Fatalf("probe doesn't print the home: %s", s)
+	}
+	if w := (Tool{Distro: "Ubuntu"}).Windows("/home/me/.claude/projects"); w != `\\wsl$\Ubuntu\home\me\.claude\projects` {
+		t.Fatalf("Windows = %q", w)
+	}
+
 	// no claude in the distro (the probe skips Windows' own under /mnt)
 	if _, ok := parseProbe("d", "mount:/mnt/c/\n"); ok {
 		t.Fatal("found nothing, yet ok")

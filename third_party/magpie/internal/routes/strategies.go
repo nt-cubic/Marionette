@@ -345,6 +345,48 @@ var FreeFirst = Strategy{ByFree: true, Order: func(_ string, seats []Seat) []int
 	return append(free, paid...)
 }}
 
+// Cheapest sends a request where its model costs least at the request's
+// time: the priced seats by Cost (a million tokens in and a million out),
+// those that cost the same by CacheCost, then the seats whose price isn't
+// known, each kept in its listed order among those alike. A price that
+// changes with the hour (DeepSeek's off-peak half price, a provider's rate
+// window) is read at the request's time, so one model on several
+// providers goes to the one that bills least now: DeepSeek's own API off
+// its peak hours, another provider of the same model in them (liyuanzheng
+// and lam_em on Discord). Prices a hair apart (sameCost) count as the
+// same, so a rate's rounding doesn't reorder providers billing alike.
+//
+// Like FreeFirst it orders one tier only: a member's allowance, rests and
+// failover are as for every routing, and a provider or group in the group
+// routed its own way keeps it.
+var Cheapest = Strategy{ByPrice: true, Order: func(_ string, seats []Seat) []int {
+	idx := identity(len(seats))
+	sort.SliceStable(idx, func(a, b int) bool {
+		sa, sb := seats[idx[a]], seats[idx[b]]
+		if sa.Priced != sb.Priced {
+			return sa.Priced
+		}
+		if !sa.Priced {
+			return false
+		}
+		if !sameCost(sa.Cost, sb.Cost) {
+			return sa.Cost < sb.Cost
+		}
+		return !sameCost(sa.CacheCost, sb.CacheCost) && sa.CacheCost < sb.CacheCost
+	})
+	return idx
+}}
+
+// sameCost: two prices within a millionth of each other, or of a cent a
+// million tokens, are the same price.
+func sameCost(a, b float64) bool {
+	d := a - b
+	if d < 0 {
+		d = -d
+	}
+	return d <= 1e-6 || d <= 1e-6*max(a, b)
+}
+
 // Builtin are the routings besides Smart and their strategies, as
 // plugins/rotation registers them.
 var Builtin = map[string]Strategy{
@@ -355,4 +397,5 @@ var Builtin = map[string]Strategy{
 	provider.Weighted:  Weighted,
 	provider.FreeFirst: FreeFirst,
 	provider.Fastest:   Fastest,
+	provider.Cheapest:  Cheapest,
 }

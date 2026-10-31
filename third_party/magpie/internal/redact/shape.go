@@ -7,7 +7,6 @@ import (
 	"net/netip"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 )
 
@@ -181,6 +180,7 @@ func shaped(kind, v string) string {
 		shapes[f] = kind
 		addKnown(f, k)
 	}
+	touch(f)
 	mu.Unlock()
 	if taken && have != k {
 		// another value's made-up key, which nothing ever is by chance
@@ -191,9 +191,9 @@ func shaped(kind, v string) string {
 
 // restoreShapes puts back each made-up key in s, counting it in put
 // where put isn't nil; called with mu held for reading. A made-up key
-// needs no escaping, nor does the value it stands for. A stand-in address
-// is put back only where it is a whole address: 203.0.113.147 is no part
-// of 203.0.113.1470 or 10.203.0.113.147.
+// needs no escaping, nor does the value it stands for. An address's
+// stand-in is put back only where it is a whole name: public-ip-kvxqmrtz
+// is no part of public-ip-kvxqmrtzab or my-public-ip-kvxqmrtz.
 func restoreShapes(s string, put map[string]int) string {
 	for f, kind := range shapes {
 		if kind == "IP" {
@@ -210,13 +210,15 @@ func restoreShapes(s string, put map[string]int) string {
 	return s
 }
 
-// restoreAddr is s with each whole stand-in address f in it put back as
-// v, counted in put where put isn't nil.
+// restoreAddr is s with each whole stand-in f in it put back as the
+// address v, counted in put where put isn't nil: not where a letter, a
+// digit, '-' or '_' is against it, or a dot before it or before a letter
+// or digit after it, which make it a piece of another name
+// (public-ip-kvxqmrtz.lan); a port, a path or a full stop may follow it.
 func restoreAddr(s, f, v string, put map[string]int) string {
 	if !strings.Contains(s, f) {
 		return s
 	}
-	v6 := strings.Contains(f, ":")
 	var b strings.Builder
 	last := 0
 	for i := 0; ; {
@@ -226,8 +228,8 @@ func restoreAddr(s, f, v string, put map[string]int) string {
 		}
 		a, z := i+j, i+j+len(f)
 		i = a + 1
-		if a > 0 && addrByte(s[a-1], v6) || z < len(s) && addrByte(s[z], v6) && s[z] != '.' ||
-			z+1 < len(s) && s[z] == '.' && s[z+1] >= '0' && s[z+1] <= '9' {
+		if a > 0 && (nameByte(s[a-1]) || s[a-1] == '.') || z < len(s) && nameByte(s[z]) ||
+			z+1 < len(s) && s[z] == '.' && nameByte(s[z+1]) {
 			continue
 		}
 		b.WriteString(s[last:a])
@@ -244,12 +246,10 @@ func restoreAddr(s, f, v string, put map[string]int) string {
 	return b.String()
 }
 
-// addrByte says c may be part of an address, so an address beside it is
-// a piece of a longer one: a letter or digit, a dot, and beside an IPv6
-// one a colon (an IPv4 one has its port after one, or a field's name
-// before: ip:203.0.113.147:22).
-func addrByte(c byte, v6 bool) bool {
-	return c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '.' || v6 && c == ':'
+// nameByte says c may be part of a host's name beside a stand-in: a
+// letter, a digit, '-' or '_'.
+func nameByte(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '-' || c == '_'
 }
 
 // shapeTail is how much of the end of s may be the start of a made-up
@@ -342,63 +342,53 @@ func standInOf(v string) string {
 	return string(out)
 }
 
-// A public IP address goes to the vendor as an address from the ranges
-// set aside for documentation (RFC 5737's 192.0.2.0/24, 198.51.100.0/24
-// and 203.0.113.0/24; RFC 3849's 2001:db8::/32), not a placeholder. Told
-// "my server is {{IP_…}}, ssh in", models asked the user for the real
-// address or searched ~/.ssh and the environment for it (0x0_air on X,
-// 10-28: "你消息里的 IP 被脱敏成 …，我无法连接"); told 203.0.113.147, they
-// ran ssh root@203.0.113.147, which comes back as the real address in the
-// tool call, so the agent connects where the user asked. An address in
-// those ranges is no one's, so a stand-in the vendor tries itself reaches
-// nobody, and the IP rule never masks one (notIPs). The same address gets
-// the same stand-in every turn while magpie runs; two addresses never
-// share one. IPv4 stand-ins end in 101 to 254, so one is never the start
-// of another, and come back only as whole addresses (restoreAddr).
+// A public IP address goes to the vendor as a host's name that says what
+// the address is, public-ip- and eight lowercase letters
+// (public-ip-kvxqmrtz), not {{IP_…}} and not another address. Told "my
+// server is {{IP_…}}, ssh in", models asked the user for the real address
+// or searched ~/.ssh and the environment for it (0x0_air on X, 10-28).
+// Told an address from the documentation ranges (192.0.2.0/24 and the
+// like), they ran ssh, but every model knows those ranges: asked why ssh
+// to it timed out, deepseek-v4-pro, kimi-k3, gpt-6-luna and
+// claude-sonnet-5-5 told the user they had an example address and not
+// their server's, and a 192.0.2. address read to the user as one on their
+// own network (akic404 on Discord, 10-31: 公网 IP 被脱敏成内网 IP). Told
+// public-ip-kvxqmrtz, the same five models ran ssh root@public-ip-kvxqmrtz
+// at once, which comes back as the real address in the tool call, and
+// took it for the public address it is when asked what was wrong. A name
+// with no dot in it is no one's on the internet, so a stand-in the vendor
+// tries itself reaches nobody. The same address gets the same stand-in
+// every turn while magpie runs, and two addresses never share one; it is
+// put back only as a whole name (restoreAddr).
 
-// ipNets are the IPv4 documentation ranges stand-ins are made in, and
-// ipHosts how many of each range's addresses are used: .101 to .254.
-var ipNets = [...]string{"192.0.2.", "198.51.100.", "203.0.113."}
-
-const ipHosts = 154
+// ipStandInHead starts every address's stand-in, and ipStandInLen
+// letters follow it.
+const (
+	ipStandInHead = "public-ip-"
+	ipStandInLen  = 8
+)
 
 // ipStandIns are the stand-ins the address v may go as, in the order
-// they are tried: n of them, the i-th made by at(i) (every IPv4 one from
-// where v's hash starts, or a few IPv6 ones), with nothing locked, so it
-// may be called with mu held. False where v is no address.
+// they are tried: n of them, the i-th made by at(i), with nothing locked,
+// so it may be called with mu held. False where v is no address.
 func ipStandIns(v string) (at func(i int) string, n int, ok bool) {
 	a, err := netip.ParseAddr(v)
 	if err != nil {
 		return nil, 0, false
 	}
 	k := key()
-	sum := func(i int) []byte {
-		h := hmac.New(sha256.New, k)
-		h.Write([]byte("ip\x00" + a.String()))
-		if i >= 0 {
-			var c [8]byte
-			binary.BigEndian.PutUint64(c[:], uint64(i))
-			h.Write(c[:])
-		}
-		return h.Sum(nil)
-	}
-	if a.Unmap().Is4() {
-		n := len(ipNets) * ipHosts
-		start := int(binary.BigEndian.Uint32(sum(-1)[:4]) % uint32(n))
-		return func(i int) string {
-			slot := (start + i) % n
-			return ipNets[slot/ipHosts] + strconv.Itoa(101+slot%ipHosts)
-		}, n, true
-	}
 	return func(i int) string {
-		s := sum(i)
-		g := []string{"2001", "db8"}
-		for k := 0; k < 6; k++ {
-			// each group of four digits with no 0 to start, so all are
-			// as long and none is the start of another
-			g = append(g, strconv.FormatUint(uint64(0x1000+binary.BigEndian.Uint16(s[2*k:])%0xf000), 16))
+		h := hmac.New(sha256.New, k)
+		h.Write([]byte("ip\x00" + a.Unmap().String()))
+		var c [8]byte
+		binary.BigEndian.PutUint64(c[:], uint64(i))
+		h.Write(c[:])
+		sum := h.Sum(nil)
+		out := []byte(ipStandInHead)
+		for j := 0; j < ipStandInLen; j++ {
+			out = append(out, 'a'+sum[j]%26)
 		}
-		return strings.Join(g, ":")
+		return string(out)
 	}, 8, true
 }
 
@@ -417,6 +407,7 @@ func ipStandIn(v string) (string, bool) {
 		f := at(i)
 		have, taken := values[f]
 		if taken && have == v {
+			touch(f)
 			return f, true
 		}
 		if !taken && free == "" {
@@ -431,11 +422,12 @@ func ipStandIn(v string) (string, bool) {
 	kinds["IP"] = true
 	shapes[free] = "IP"
 	addKnown(free, v)
+	touch(free)
 	return free, true
 }
 
 // standIn is put with a user name sent as its made-up name and an IP
-// address as a documentation one, each kept to be put back as a made-up
+// address as a public-ip- name, each kept to be put back as a made-up
 // key is; put's own where that name is another value's already.
 func standIn(put func(kind, v string) string) func(kind, v string) string {
 	return func(kind, v string) string {
@@ -461,6 +453,7 @@ func standIn(put func(kind, v string) string) func(kind, v string) string {
 			shapes[f] = kind
 			addKnown(f, v)
 		}
+		touch(f)
 		mu.Unlock()
 		if taken && have != v {
 			return put(kind, v)

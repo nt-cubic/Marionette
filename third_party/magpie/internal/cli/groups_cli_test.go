@@ -76,12 +76,12 @@ func storedGroups(t *testing.T) []map[string]any {
 }
 
 func TestParseRoutingStays(t *testing.T) {
-	for in, want := range map[string]string{"smart": "", "": "", "order": "order", "In-Order": "order", "rotate": "rotate", "usage": "usage", "least-used": "usage", "fast": "fast", "Fastest": "fast", "speed": "fast", "speed-first": "fast"} {
+	for in, want := range map[string]string{"smart": "", "": "", "order": "order", "In-Order": "order", "rotate": "rotate", "usage": "usage", "least-used": "usage", "fast": "fast", "Fastest": "fast", "speed": "fast", "speed-first": "fast", "cheap": "cheap", "Cheapest": "cheap", "cheapest-first": "cheap", "price": "cheap"} {
 		if got, err := parseRouting(in); err != nil || got != want {
 			t.Errorf("routing %q: %q %v, want %q", in, got, err, want)
 		}
 	}
-	if _, err := parseRouting("cheapest"); err == nil || !strings.Contains(err.Error(), "smart, order, rotate, usage") || !strings.Contains(err.Error(), "fast") || !strings.Contains(err.Error(), "<plugin>/<name>") {
+	if _, err := parseRouting("priciest"); err == nil || !strings.Contains(err.Error(), "smart, order, rotate, usage") || !strings.Contains(err.Error(), "fast") || !strings.Contains(err.Error(), "<plugin>/<name>") {
 		t.Errorf("unknown routing: %v", err)
 	}
 	// a gateway plugin's routing is taken as it is written, and named so
@@ -144,7 +144,7 @@ func TestApplyGroupPairs(t *testing.T) {
 	if err := applyGroupPairs(&g, []string{"listed=YES"}, resolve, false); err != nil || g.Unlists {
 		t.Fatalf("listed=yes: %v %v", g.Unlists, err)
 	}
-	for _, bad := range [][]string{{"models"}, {"colour=red"}, {"id=x"}, {"models=nope"}, {"routing=cheapest"}, {"models-=a/m"}, {"context=lots"}, {"listed=maybe"}} {
+	for _, bad := range [][]string{{"models"}, {"colour=red"}, {"id=x"}, {"models=nope"}, {"routing=priciest"}, {"models-=a/m"}, {"context=lots"}, {"listed=maybe"}} {
 		h := g
 		if err := applyGroupPairs(&h, bad, resolve, false); err == nil {
 			t.Errorf("%v: no error", bad)
@@ -319,5 +319,39 @@ func TestGroupRenameSaysTheIDStays(t *testing.T) {
 	}
 	if !strings.Contains(out, "its id stays fast") || !strings.Contains(out, "group/fast") {
 		t.Fatalf("rename said %q; want that the id stays fast", out)
+	}
+}
+
+// magpie group auto skip keeps providers out of the groups magpie finds
+// (chenxiang0010 on Discord), refuses a name it has no provider of or a
+// flag, and skip none lets them back in.
+func TestGroupAutoSkip(t *testing.T) {
+	groupsHome(t)
+	found := func() bool {
+		_, _, ok := provider.FindGroup("group/auto-m")
+		return ok
+	}
+	if !found() {
+		t.Fatal("no auto-m to begin with")
+	}
+	for _, bad := range [][]string{{"skip", "nope"}, {"skip", "--help"}} {
+		if err := groupCmd(append([]string{"group", "auto"}, bad...)); err == nil {
+			t.Fatalf("%v taken", bad)
+		}
+	}
+	if got := provider.AutoGroupSkip(); len(got) != 0 {
+		t.Fatalf("a refused name was kept: %v", got)
+	}
+	if err := groupCmd([]string{"group", "auto", "skip", "B"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := provider.AutoGroupSkip(); len(got) != 1 || got[0] != "b" || found() {
+		t.Fatalf("b left out: %v, auto-m still found: %v", got, found())
+	}
+	if err := groupCmd([]string{"group", "auto", "skip", "none"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := provider.AutoGroupSkip(); len(got) != 0 || !found() {
+		t.Fatalf("let back in: %v %v", got, found())
 	}
 }

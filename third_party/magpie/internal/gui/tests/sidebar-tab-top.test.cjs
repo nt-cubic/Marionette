@@ -81,6 +81,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await context.addInitScript(() => { try { localStorage.setItem("magpie.settingsTab", "general"); localStorage.setItem("magpie.libTab", "mcp"); } catch {} });
       const page = await context.newPage();
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", server(lang));
@@ -152,6 +153,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await context.addInitScript((layout) => { try { localStorage.setItem("magpie.settingsTab", "general"); localStorage.setItem("magpie.libTab", "mcp"); if (layout) localStorage.setItem("magpie.navLayout", layout); } catch {} }, layout);
       const page = await context.newPage();
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", server(lang));

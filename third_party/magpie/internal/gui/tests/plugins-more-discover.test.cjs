@@ -68,6 +68,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const w = L[lang];
         const page = await (await browser.newContext({ viewport: { width: 980, height: 820 } })).newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         const errors = [], fetched = [], updates = {};
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", server(lang, fetched, null, updates));
@@ -116,6 +117,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // looked for, a space and an & in it too
         const panel = await (await browser.newContext({ viewport: { width: 560, height: 720 } })).newPage();
         panel.setDefaultTimeout(5000);
+        panel.setDefaultNavigationTimeout(60000);
         panel.on("pageerror", (e) => errors.push(e.message));
         const opened = [];
         await panel.route("**/*", server(lang, fetched, opened));

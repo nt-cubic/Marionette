@@ -439,3 +439,31 @@ func TestSettingsNoBird(t *testing.T) {
 		}
 	}
 }
+
+// "Models that search by themselves" (Settings › Models › Web search) is
+// set on its own: the endpoint sets it, and a save of the whole page, which
+// doesn't name it, keeps it.
+func TestSettingsSearchAllSetOnItsOwn(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	h := Handler(nil, nil)
+	post := func(path, body string) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("POST", path, strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s %s: %d %s", path, body, rec.Code, rec.Body)
+		}
+	}
+	post("/api/settings/search-all", `{"on":true}`)
+	if !settings.Load().SearchAll {
+		t.Fatal("search-all didn't set it")
+	}
+	post("/api/settings", `{"theme":"dark"}`)
+	if !settings.Load().SearchAll {
+		t.Fatal("a save of the page dropped searchAll")
+	}
+	post("/api/settings/search-all", `{"on":false}`)
+	if settings.Load().SearchAll {
+		t.Fatal("search-all didn't turn it off")
+	}
+}

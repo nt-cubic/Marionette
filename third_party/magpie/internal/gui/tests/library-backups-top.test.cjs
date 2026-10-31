@@ -68,6 +68,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await context.addInitScript((tb) => { try { localStorage.setItem("magpie.libTab", tb); } catch {} }, tab);
           const page = await context.newPage();
           page.setDefaultTimeout(5000);
+          page.setDefaultNavigationTimeout(60000);
           const errors = [];
           page.on("pageerror", (e) => errors.push(e.message));
           page.on("console", (m) => { if (/scroll not asked for/.test(m.text())) errors.push(m.text()); });

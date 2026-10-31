@@ -129,6 +129,9 @@ func fakeBun(args []string) error {
 		}
 		deps[name], lock[name] = spec, commit
 	case "update":
+		if os.Getenv("MAGPIE_FAKE_BUN_STUCK") == "1" {
+			return nil // as bun whose cache's clone of the repository is stale: the lock's commit stays (#2954)
+		}
 		for _, n := range args[2:] {
 			if deps[n] == "" {
 				return fmt.Errorf("no dependency %s", n)
@@ -430,10 +433,7 @@ func gitPluginRest(t *testing.T, ctx context.Context, repo gitRepo, spec string,
 	}
 
 	// the same package from another URL takes the entry's place
-	file := "git+file://" + filepath.ToSlash(repo.bare)
-	if !strings.HasPrefix(file, "git+file:///") {
-		file = "git+file:///" + strings.TrimPrefix(file, "git+file://")
-	}
+	file := gitFileURL(repo.bare)
 	if _, err := Add(ctx, file); err != nil {
 		t.Fatal(err)
 	}

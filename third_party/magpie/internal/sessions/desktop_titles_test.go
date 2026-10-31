@@ -143,7 +143,7 @@ func TestDesktopSessionTitleInStats(t *testing.T) {
 	writeDesktopTitle(t, filepath.Join(data, "local-agent-mode-sessions", "account", "org", "local_s.json"), `{"sessionId":"local_s","cliSessionId":"cli-s","title":"Cowork plan"}`)
 	st := MergeExternalStats(Stats{}, nil, []ExternalSession{{Agent: "claude-desktop", ID: "cli-s", Title: "Recorded prompt"}, {Agent: "claude-desktop", ID: "other", Title: "Recorded prompt"}})
 	got := map[string]string{}
-	for _, s := range st.Sessions {
+	for _, s := range st.AllSessions() {
 		got[s.ID] = s.Title
 	}
 	if got["cli-s"] != "Cowork plan" || got["other"] != "Recorded prompt" {

@@ -49,7 +49,7 @@ func requestDiskPath() string {
 // source, which 17 of 99 releases changed.
 var requestDiskBinary = sync.OnceValue(func() string {
 	h := sha256.New()
-	io.WriteString(h, sessions.CallCacheVersion)
+	io.WriteString(h, sessions.CallCacheVersion())
 	// unread, it is the binary's, as it was
 	binary := func() string {
 		exe, err := os.Executable()

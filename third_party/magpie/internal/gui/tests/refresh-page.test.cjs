@@ -86,6 +86,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const ctl = { calls: [], agents: [agent("codex", "Codex")], installs: structuredClone(INSTALLS) };
         const page = await (await browser.newContext({ viewport: { width: 1000, height: 600 } })).newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         const errors = [];
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", server(lang, ctl));
@@ -128,6 +129,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const ctl = { calls: [], agents: [agent("codex", "Codex")], installs: structuredClone(INSTALLS) };
         const page = await (await browser.newContext({ viewport: { width: 380, height: 600 } })).newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         const errors = [];
         page.on("pageerror", (e) => errors.push(e.message));
         await page.addInitScript(() => { try { localStorage.setItem("magpie.panelTab", "agents"); } catch {} });

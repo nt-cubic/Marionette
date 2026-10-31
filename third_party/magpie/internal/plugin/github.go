@@ -61,7 +61,8 @@ var (
 // tagged a moment ago shows within minutes (lee04052822 on X tagged theirs
 // and, asked six hours apart, didn't see it). A search is one request of
 // the ten a minute; what each repository's package.json and npm said is
-// kept while its last push stays the same, so asking again costs no more.
+// kept while its last push stays the same (but see rawFresh), so asking
+// again costs no more.
 const taggedTTL = 10 * time.Minute
 
 // taggedSearch bounds each page of GitHub's search: from mainland China
@@ -83,6 +84,14 @@ var (
 	// taggedPage is how many repositories one page of the search holds
 	// (GitHub's most is 100)
 	taggedPage = 100
+	// rawFresh is how long after a push raw.githubusercontent.com may
+	// still answer from before it: its answers, a 404 too, say they
+	// stand five minutes, so a file pushed a moment ago (the package.json,
+	// the file it names) can read as missing, or as it was (MengXiangxi
+	// on #3821, #4067). What a read that soon after the push made of a
+	// repository is shown, as any read's is, and it is read again at the
+	// next ask.
+	rawFresh = 10 * time.Minute
 )
 
 var (
@@ -97,6 +106,8 @@ var (
 	// when it was left out
 	readMu   sync.Mutex
 	readRepo = map[string]*Tagged{}
+	// readRepo's keys read less than rawFresh after the push
+	readSoon = map[string]bool{}
 )
 
 func taggedCache() string { return filepath.Join(filepath.Dir(marketCache()), "plugin-github.json") }
@@ -206,9 +217,10 @@ func TaggedAskAgain() {
 }
 
 // askTagged asks GitHub's search, and reads each repository it names
-// that wasn't read at its last push. whole is false when a repository was
-// left out for want of an answer in taggedWait: it is then as last had
-// it, if it had it, and missing counts those last didn't have.
+// that wasn't read at its last push, or was read less than rawFresh after
+// it. whole is false when a repository was left out for want of an answer
+// in taggedWait: it is then as last had it, if it had it, and missing
+// counts those last didn't have.
 func askTagged(ctx context.Context, last []Tagged) (l []Tagged, whole bool, missing *TaggedMissing, err error) {
 	type item struct {
 		FullName      string    `json:"full_name"`
@@ -302,13 +314,16 @@ func askTagged(ctx context.Context, last []Tagged) (l []Tagged, whole bool, miss
 		seen[key] = true
 		readMu.Lock()
 		was, read := readRepo[key]
+		soon := readSoon[key]
 		readMu.Unlock()
 		if read {
 			if was != nil {
 				out[i], keep[i] = fresh(*was, t), true
 			}
 			done[i] = true
-			continue
+			if !soon {
+				continue
+			}
 		}
 		wg.Add(1)
 		go func(i int, t Tagged, branch string) {
@@ -325,10 +340,12 @@ func askTagged(ctx context.Context, last []Tagged) (l []Tagged, whole bool, miss
 				} else {
 					readRepo[key] = nil
 				}
+				readSoon[key] = time.Since(it.Pushed) < rawFresh
 				readMu.Unlock()
 			}
 			mu.Lock()
-			if !late {
+			// read again and not answered: as it was read before
+			if !late && (ok || read || !done[i]) {
 				out[i], keep[i] = got, ok
 				// a package.json GitHub didn't answer for: not known
 				done[i] = ok || read
@@ -353,6 +370,7 @@ func askTagged(ctx context.Context, last []Tagged) (l []Tagged, whole bool, miss
 	for k := range readRepo {
 		if !seen[k] {
 			delete(readRepo, k)
+			delete(readSoon, k)
 		}
 	}
 	readMu.Unlock()
@@ -447,7 +465,7 @@ func readTagged(pc context.Context, t Tagged, branch string) (Tagged, bool, bool
 	// published to npm from this repository: npm's copy is the one
 	// built to be installed (a repository often leaves its dist out,
 	// built only to publish), so it is installed from npm
-	b, err := fetchJSON(pc, npmRegistry+"/"+npmPath(pj.Name)+"/latest", 1<<20)
+	b, err := fetchNPM(pc, pj.Name, "/"+npmPath(pj.Name)+"/latest", 1<<20)
 	known := err == nil || errors.Is(err, errNotFound)
 	var unknown error
 	if !known {

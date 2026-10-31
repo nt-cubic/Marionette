@@ -179,7 +179,7 @@ func Describe(id, name string) Model {
 	if x, ok := lookup(id, labs); ok {
 		m.ImageInput = imageInput(x.Modalities.Input)
 		m.Released, m.Temperature = x.ReleaseDate, x.Temperature
-		m.InputModalities, m.OutputModalities = x.Modalities.Input, x.Modalities.Output
+		m.InputModalities, m.OutputModalities = Kinds(x.Modalities.Input), Kinds(x.Modalities.Output)
 	}
 	return m
 }

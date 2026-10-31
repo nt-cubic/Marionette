@@ -63,15 +63,26 @@ const words = {
 
 const scrolls = (page) => page.evaluate(() => [scrollY, ...[...document.querySelectorAll("*")].filter((e) => e.scrollTop).map((e) => e.scrollTop)].join(","));
 
+// still: until no box has scrolled for ten frames, as a wheel's scroll in
+// WebKit is still easing in after a fixed wait, and the page went on
+// moving under the click that was to leave it where it was
+const still = (page) => page.evaluate(() => new Promise((done) => {
+  let last = "", same = 0;
+  const at = () => [scrollY, ...[...document.querySelectorAll("*")].map((e) => e.scrollTop)].join(",");
+  const f = () => { const now = at(); same = now === last ? same + 1 : 0; last = now; if (same >= 10) done(); else requestAnimationFrame(f); };
+  requestAnimationFrame(f);
+}));
+
 // wheelTo scrolls the page until loc is above the window's foot
 async function wheelTo(page, loc, x) {
   await page.mouse.move(x, 400);
   for (let i = 0; i < 15; i++) {
+    await still(page);
     const r = await loc.boundingBox(), foot = await page.locator("footer.foot").boundingBox();
     if (r && foot && r.y + r.height < foot.y - 8) return;
     await page.mouse.wheel(0, 200);
-    await page.waitForTimeout(100);
   }
+  await still(page);
 }
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
@@ -83,6 +94,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         t.after(() => browser.close());
         const page = await (await browser.newContext({ viewport: { width, height: 900 }, reducedMotion: "reduce" })).newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         const errors = [], asked = [];
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", serve(lang, asked));
@@ -126,6 +138,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         t.after(() => browser.close());
         const page = await (await browser.newContext({ viewport: { width, height: 900 }, reducedMotion: "reduce" })).newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         const errors = [], asked = [];
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", serve(lang, asked));

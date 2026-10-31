@@ -3,6 +3,7 @@ package redact
 import (
 	"bytes"
 	"net/http"
+	"slices"
 	"strings"
 )
 
@@ -31,11 +32,12 @@ const (
 	asIs
 )
 
-// held is an event that ended in what may be the start of a placeholder.
+// held is an event one or more of whose texts ended in what may be the
+// start of a placeholder: each one's tail by its path.
 type held struct {
-	ctx, path string
-	tail      string
-	full, cut []byte // the event as it is, and without the tail
+	ctx       string
+	tails     map[string]string
+	full, cut []byte // the event as it is, and without the tails
 }
 
 // NewWriter wraps w; Finish must be called when the handler is done.
@@ -67,9 +69,23 @@ func (rw *Writer) decide(first []byte) {
 		rw.mode = stream
 	case ct == "" && (bytes.HasPrefix(first, []byte("event:")) || bytes.HasPrefix(first, []byte("data:")) || bytes.HasPrefix(first, []byte(":"))):
 		rw.mode = stream // the ChatGPT backend streams without saying so
+	case binaryType(ct):
+		rw.mode = asIs // speech, an image, a video: no text to put back
 	default:
 		rw.mode = whole
 	}
+}
+
+// binaryType says a Content-Type is of bytes that aren't text: audio, an
+// image, a video, a file. Held whole, speech played only when it ended.
+func binaryType(ct string) bool {
+	ct = strings.ToLower(ct)
+	for _, t := range []string{"audio/", "image/", "video/", "application/octet-stream", "application/pdf", "application/zip"} {
+		if strings.HasPrefix(ct, t) {
+			return true
+		}
+	}
+	return false
 }
 
 func (rw *Writer) WriteHeader(code int) {
@@ -185,7 +201,20 @@ func (rw *Writer) Finish() {
 }
 
 // event puts the values back in one event and writes it, or holds it.
+//
+// Every text of it is put back but what a vendor sealed (a signature, a
+// file's data): a tool's own arguments, as Gemini streams them whole, use
+// the keys a vendor uses for itself (name, type, id, url, status), and a
+// name the model wrote under "name" kept its placeholder. Only a text is
+// held for its tail, never an id or Responses' random obfuscation, and
+// each text's tail is held for itself: obfuscation that ended in a kind's
+// first letters took the hold from the delta beside it, and the next
+// event's half of that placeholder went out as it came.
 func (rw *Writer) event(ev []byte) error {
+	if rw.pending == nil && !holding() {
+		_, err := rw.w.Write(ev) // nothing masked to put back
+		return err
+	}
 	name, data, pre, post, ok := splitEvent(ev)
 	if !ok {
 		if err := rw.release(); err != nil {
@@ -195,14 +224,14 @@ func (rw *Writer) event(ev []byte) error {
 		return err
 	}
 	ctx := name + "|" + eventCtx(data)
-	// the start of a placeholder the last event ended in goes on here
-	carry, at := "", ""
+	// the starts of placeholders the last event ended in go on here
+	var carry map[string]string
 	if p := rw.pending; p != nil {
-		if p.ctx == ctx && hasPath(data, p.path) {
+		if p.ctx == ctx && hasPaths(data, p.tails) {
 			if _, err := rw.w.Write(p.cut); err != nil {
 				return err
 			}
-			carry, at = p.tail, p.path
+			carry = p.tails
 		} else if _, err := rw.w.Write(p.full); err != nil {
 			return err
 		}
@@ -212,38 +241,57 @@ func (rw *Writer) event(ev []byte) error {
 	if typ == "" {
 		typ = name
 	}
-	tailPath, tail, cut := "", "", ""
+	var tails, cuts map[string]string
 	restored, _ := walk(data, func(path, key, s string) string {
-		if path == at {
-			s = carry + s
+		if c, ok := carry[path]; ok {
+			s = c + s
 		}
-		if keep(key, s) {
+		if sealedText(key, s) {
 			return s
 		}
 		// the tail is looked for before anything is put back, so a
 		// placeholder whose last brace is still to come isn't put back
 		// without it and the brace left behind
-		if n := partialTail(s); n > 0 {
-			tailPath, tail = path, s[len(s)-n:]
-			cut = Restore(s[:len(s)-n], asJSON(key, typ))
+		if !kept[key] && key != "obfuscation" {
+			if n := partialTail(s); n > 0 {
+				if tails == nil {
+					tails, cuts = map[string]string{}, map[string]string{}
+				}
+				tails[path] = s[len(s)-n:]
+				cuts[path] = Restore(s[:len(s)-n], asJSON(key, typ))
+			}
 		}
 		// counted here only: cut is s again without its tail, and
 		// whichever of the two goes out, the places are these
 		return restore(s, asJSON(key, typ), rw.count())
 	})
 	full := rebuild(pre, restored, post)
-	if tail == "" {
+	if tails == nil {
 		_, err := rw.w.Write(full)
 		return err
 	}
 	cutData, _ := walk(restored, func(path, _, s string) string {
-		if path == tailPath {
-			return cut
+		if c, ok := cuts[path]; ok {
+			return c
 		}
 		return s
 	})
-	rw.pending = &held{ctx: ctx, path: tailPath, tail: tail, full: full, cut: rebuild(pre, cutData, post)}
+	rw.pending = &held{ctx: ctx, tails: tails, full: full, cut: rebuild(pre, cutData, post)}
 	return nil
+}
+
+// sealedText says a string of a vendor's answer goes on as it came: what the
+// vendor sealed (signatureKeys) and a file's encoded data.
+func sealedText(key, s string) bool {
+	return slices.Contains(signatureKeys, key) || strings.HasPrefix(s, "data:") ||
+		key == "data" && len(s) >= 64 && !strings.ContainsAny(s, " \n")
+}
+
+// holding says some value is masked, and may be put back.
+func holding() bool {
+	mu.RLock()
+	defer mu.RUnlock()
+	return len(values) > 0
 }
 
 func (rw *Writer) release() error {
@@ -320,13 +368,14 @@ func eventCtx(data []byte) string {
 	return b.String()
 }
 
-func hasPath(data []byte, path string) bool {
-	found := false
+// hasPaths says data has a string at each of the paths.
+func hasPaths(data []byte, paths map[string]string) bool {
+	found := 0
 	walk(data, func(p, _, s string) string {
-		if p == path {
-			found = true
+		if _, ok := paths[p]; ok {
+			found++
 		}
 		return s
 	})
-	return found
+	return found == len(paths)
 }

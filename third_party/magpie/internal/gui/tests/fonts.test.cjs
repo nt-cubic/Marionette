@@ -21,6 +21,7 @@ async function open(browser, lang = "en", options = {}) {
     cur: { lang, theme: "light", textSize: 100, currency: "usd", tray: "panel", version: "0.1.0", visionModels: [], imageGenModels: [], ...options.settings } };
   const page = await context.newPage();
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(60000);
   const errors = [];
   page.on("pageerror", e => { errors.push(e.message); console.error(e.message); });
   await page.route("**/*", async route => {

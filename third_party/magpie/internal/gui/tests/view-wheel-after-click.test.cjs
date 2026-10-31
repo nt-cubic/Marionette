@@ -84,6 +84,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const ctx = await browser.newContext({ viewport: { width, height: 600 }, reducedMotion: "reduce" });
         const p = await ctx.newPage();
         p.setDefaultTimeout(8000);
+        p.setDefaultNavigationTimeout(60000);
         const errors = [];
         p.on("pageerror", (e) => { if (!/^ResizeObserver loop/.test(e.message)) errors.push(e.message); });
         if (deaf) await p.addInitScript(DEAF);

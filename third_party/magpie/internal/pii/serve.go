@@ -375,7 +375,7 @@ func Warm() {
 		go func() {
 			turn <- struct{}{}
 			defer func() { <-turn }()
-			classify([]string{"warm"})
+			classifySafely(classify, []string{"warm"})
 		}()
 	}
 }

@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -138,7 +140,7 @@ func TestEncodeCacheIsMarshal(t *testing.T) {
 	}
 	for _, c := range []cacheFile{
 		{Version: cacheVersion, Zone: "28800/28800", Files: files},
-		{Version: cacheVersion, Zone: "<z>", Files: map[string]*state{}},
+		{Version: cacheVersion, Zone: "<z>", Parsers: map[string]int{"codex": 2, "claude": 1}, Files: map[string]*state{"/c": {Agent: "codex", Size: 1}}},
 		{Version: cacheVersion, Zone: "0/0"},
 	} {
 		want, err := json.Marshal(c)
@@ -156,5 +158,39 @@ func TestEncodeCacheIsMarshal(t *testing.T) {
 			}
 			t.Fatalf("%d files: %d bytes, want %d; apart at %d: %.80q", len(c.Files), got.Len(), len(want), n, got.Bytes()[n:])
 		}
+	}
+}
+
+// A raise of one agent's parseVersions reads that agent's files again and
+// keeps every other agent's parses: a raise of cacheVersion read a long
+// history whole, minutes of CPU after an update (#2278).
+func TestParseVersionsReadOneAgentAgain(t *testing.T) {
+	defer func(v map[string]int) { parseVersions = v }(parseVersions)
+	kept := func(c cacheFile, now map[string]int) []string {
+		var b bytes.Buffer
+		if err := encodeCache(&b, c); err != nil {
+			t.Fatal(err)
+		}
+		parseVersions = now
+		files, ok := decodeCache(b.Bytes(), "z")
+		if !ok {
+			t.Fatal("refused")
+		}
+		return slices.Sorted(maps.Keys(files))
+	}
+	files := map[string]*state{"/codex": {Agent: "codex", Size: 1}, "/claude": {Agent: "claude", Size: 2}, "/old": {Size: 3}}
+	c := cacheFile{Version: cacheVersion, Zone: "z", Files: files}
+	if got := kept(c, map[string]int{}); !slices.Equal(got, []string{"/claude", "/codex", "/old"}) {
+		t.Errorf("nothing raised: kept %v", got)
+	}
+	if got := kept(c, map[string]int{"claude": 1}); !slices.Equal(got, []string{"/codex"}) {
+		t.Errorf("claude raised: kept %v, want Codex's alone", got)
+	}
+	c.Parsers = map[string]int{"claude": 1}
+	if got := kept(c, map[string]int{"claude": 1}); !slices.Equal(got, []string{"/claude", "/codex", "/old"}) {
+		t.Errorf("saved at the same versions: kept %v", got)
+	}
+	if got := kept(c, map[string]int{"claude": 1, "codex": 1}); !slices.Equal(got, []string{"/claude"}) {
+		t.Errorf("codex raised: kept %v, want Claude Code's alone", got)
 	}
 }

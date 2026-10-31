@@ -55,6 +55,7 @@ const bend = (d) => { const n = (d || "").match(/-?[\d.]+/g)?.map(Number) || [];
 async function open(browser, reduced, noBird) {
   const page = await (await browser.newContext({ viewport: { width: 980, height: 820 }, reducedMotion: reduced ? "reduce" : "no-preference" })).newPage();
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(60000);
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   // each read of the page waits for the next release

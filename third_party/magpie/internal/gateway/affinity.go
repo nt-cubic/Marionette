@@ -63,6 +63,14 @@ const (
 	// reasoning the first had sealed was refused there (leelantao on X:
 	// two Plus accounts' allowance spent 90% in a day).
 	chatGPTCold = time.Hour
+	// deepseekCold is how long DeepSeek's own API keeps a conversation's
+	// prefix cached without it being read. Its context caching guide
+	// (api-docs.deepseek.com/guides/kv_cache, read 10-31) says an unused
+	// cache is cleared "usually within a few hours to a few days", and a
+	// real Claude Code conversation on deepseek-v4-pro (10-31) read back
+	// 98–99% of its prompt after 7 and 26 minutes idle. Moving it to
+	// another DeepSeek key after five minutes sent it all again uncached.
+	deepseekCold = time.Hour
 	// cacheHour is how long Anthropic keeps what was written with
 	// cache_control's ttl "1h" (cache_creation's ephemeral_1h_input_tokens)
 	// without it being read, as Claude Code asks of a subscription (#2302)
@@ -74,10 +82,14 @@ const (
 )
 
 // coldAfter is how long p's vendor keeps a prompt cached without it being
-// read: cacheCold, or chatGPTCold for a ChatGPT account.
+// read: cacheCold, chatGPTCold for a ChatGPT account, or deepseekCold on
+// DeepSeek's own API.
 func coldAfter(p provider.Provider) time.Duration {
 	if p.Account != nil && p.Account.Agent == "codex" {
 		return chatGPTCold
+	}
+	if p.Host() == deepseekHost {
+		return deepseekCold
 	}
 	return cacheCold
 }
@@ -100,7 +112,9 @@ type Affinity struct {
 	// little for a cache it keeps without saying so), "cold" (too long
 	// ago), "resting", "spent", "gone" (no longer one to route to),
 	// "main" (a provider's fallback answered it, and the provider's own
-	// model is ready again: backToMain).
+	// model is ready again: backToMain), "order" (a later member of a
+	// group routed In order answered it, and a member ahead is ready
+	// again at a new turn: backToFirst).
 	Why string `json:"why"`
 }
 
@@ -499,8 +513,9 @@ func stickKey(scope string, in http.Header, body []byte) string {
 // as the agent wrote it, which the turn's folder is read from too
 // (dirOf): one parse of a held body serves both (factsOf), where counting
 // it in the masked body parsed the conversation a second time, ~27 MB
-// more for each 4 MB Codex request in flight.
-func affine(scope, mode string, rotate bool, in http.Header, from provider.Protocol, body, written []byte, cs []candidate, pl planned) ([]candidate, planned, *Affinity, string) {
+// more for each 4 MB Codex request in flight. inOrder: the request is to
+// a routing group set to In order, whose order the user chose (backToFirst).
+func affine(scope, mode string, rotate, spread, inOrder bool, in http.Header, from provider.Protocol, body, written []byte, cs []candidate, pl planned) ([]candidate, planned, *Affinity, string) {
 	key := stickKey(scope, in, body)
 	a := &Affinity{Mode: mode}
 	a.Turn, a.Within = turnOf(from, written)
@@ -553,6 +568,19 @@ func affine(scope, mode string, rotate bool, in http.Header, from provider.Proto
 		// for it, which the provider can't read, and the whole prompt is
 		// sent afresh to the provider at the next turn all the same
 		a.Why = "main"
+	case !a.Within && inOrder && mode == "" && backToFirst(cs, pl.order, at):
+		// a group set to In order tries its members in the order the user
+		// put them in: a conversation that went to a later member while
+		// the first couldn't take it (a 429, a 5xx, a rest) goes back to
+		// the first at its next turn once that one is ready, whatever the
+		// later one cached, as a provider's fallback gives it back (main).
+		// Kept by its cache, a Claude Code session stayed on the later
+		// member for good after one failure of the first (yyhhyyyyyy on
+		// Discord: an API key first, a Claude subscription second, 8 of 10
+		// requests on the subscription). Within a turn it stays, on the
+		// reasoning the later member sealed; Stays: Session or Strict,
+		// the user's own, keep it where it is
+		a.Why = "order"
 	case at > 0 && pl.order[at].Known && pl.order[at].Used >= provider.SpentShareOf(cs[at].p.Routing):
 		// all but used up, and put behind another: first still — the
 		// one key or account it has (#1016), or every one used up — it
@@ -599,8 +627,15 @@ func affine(scope, mode string, rotate bool, in http.Header, from provider.Proto
 			cs, pl = after(cs, pl, at)
 		}
 	case "first":
-		if rotate {
-			cs, pl = leastHeld(scope, key, cs, pl)
+		switch {
+		case rotate:
+			cs, pl = leastHeld(scope, key, cs, pl, false)
+		case spread && strings.Contains(key, "|agent:"):
+			// a subagent goes with its session's account, not to another
+			// as a session of its own
+			cs, pl = withLead(key, cs, pl)
+		case spread:
+			cs, pl = leastHeld(scope, key, cs, pl, true)
 		}
 	}
 	return cs, pl, a, key
@@ -613,6 +648,25 @@ func affine(scope, mode string, rotate bool, in http.Header, from provider.Proto
 // members are never fallbacks, so its own affinity is as it was.
 func backToMain(order []Weighed, at int) bool {
 	return at > 0 && at < len(order) && order[at].Fallback && !order[0].Fallback && order[0].Rest == nil
+}
+
+// backToFirst says whether, in a group routed In order, the one ready
+// first, order[0], is a member of the group ahead of the member that
+// answered last, cs[at]: another member, not another key or account of
+// the same one (a provider's keys, a group in the group, keep their own
+// affinity). restLast puts a resting one behind every ready one, so the
+// first is ready only when it isn't resting.
+func backToFirst(cs []candidate, order []Weighed, at int) bool {
+	if at <= 0 || at >= len(order) || at >= len(cs) || order[0].Rest != nil || order[0].Aside {
+		return false
+	}
+	member := func(i int) string {
+		if len(order[i].Via) > 0 {
+			return provider.GroupPrefix + order[i].Via[0]
+		}
+		return cs[i].p.ID + "/" + provider.WithMemberEffort(cs[i].model, cs[i].effort)
+	}
+	return member(0) != member(at)
 }
 
 // heldFor is how long after its last answer a conversation still counts as
@@ -629,7 +683,13 @@ const heldFor = 30 * time.Minute
 // was sent (sticks.opening, under key until opened ends it): many started
 // at once all went to the one holding the fewest before any of them was
 // answered (#1342: 24 requests at once over 5 accounts).
-func leastHeld(scope, key string, cs []candidate, pl planned) ([]candidate, planned) {
+//
+// ready is for a conversation kept for the whole session (spreadsSessions):
+// it goes only to one routing would put a new conversation on as well —
+// not a fallback while the provider's own model leads, nor one used past
+// lowShare, which Smart puts behind for new conversations — and routing's
+// order is otherwise as it was, its turn marks too.
+func leastHeld(scope, key string, cs []candidate, pl planned, ready bool) ([]candidate, planned) {
 	if len(cs) < 2 || len(pl.order) < len(cs) {
 		return cs, pl
 	}
@@ -650,7 +710,7 @@ func leastHeld(scope, key string, cs []candidate, pl planned) ([]candidate, plan
 	defer sticks.Unlock()
 	for _, m := range []map[string]stick{sticks.m, sticks.opening} {
 		for k, st := range m {
-			if strings.HasPrefix(k, scope+"|") && now.Sub(st.at) <= heldFor {
+			if strings.HasPrefix(k, scope+"|") && now.Sub(st.at) <= heldFor && !(ready && strings.Contains(k, "|agent:")) {
 				held[st.who+"/"+provider.WithMemberEffort(st.model, st.effort)]++
 			}
 		}
@@ -665,7 +725,7 @@ func leastHeld(scope, key string, cs []candidate, pl planned) ([]candidate, plan
 	seat := func(c candidate) string { return c.who() + "/" + provider.WithMemberEffort(c.model, c.effort) }
 	best := -1
 	for i, c := range cs {
-		if pl.order[i].Rest != nil || pl.order[i].Aside {
+		if pl.order[i].Rest != nil || pl.order[i].Aside || ready && i > 0 && !readyForNew(pl.order, i) {
 			continue
 		}
 		if best < 0 || held[seat(c)] < held[seat(cs[best])] {
@@ -677,10 +737,65 @@ func leastHeld(scope, key string, cs []candidate, pl planned) ([]candidate, plan
 	}
 	cs = append(append([]candidate{cs[best]}, cs[:best]...), cs[best+1:]...)
 	pl.order = append(append([]Weighed{pl.order[best]}, pl.order[:best]...), pl.order[best+1:]...)
-	for j := range pl.order {
-		pl.order[j].Turn = j == 0
+	if !ready {
+		for j := range pl.order {
+			pl.order[j].Turn = j == 0
+		}
 	}
 	return cs, pl
+}
+
+// readyForNew says whether order[i], behind order[0], is one routing would
+// put a new conversation on: not resting, nor a key for another protocol,
+// nor a fallback while the provider's own model leads, nor used past
+// lowShare.
+func readyForNew(order []Weighed, i int) bool {
+	w := order[i]
+	return w.Rest == nil && !w.Aside && !(w.Fallback && !order[0].Fallback) && !(w.Known && w.Used >= lowShare)
+}
+
+// withLead puts first, for a subagent's conversation nobody has answered
+// yet (a key stickKey gave "|agent:"), the key or account its session's
+// lead is on, while that one is readyForNew: under spreadsSessions the
+// session keeps its account, subagents included, rather than a subagent
+// counted as a session of its own and sent to another.
+func withLead(key string, cs []candidate, pl planned) ([]candidate, planned) {
+	lead, _, _ := strings.Cut(key, "|agent:")
+	sticks.Lock()
+	st, ok := stickOf(lead)
+	sticks.Unlock()
+	if !ok || time.Since(st.at) > heldFor || len(pl.order) < len(cs) {
+		return cs, pl
+	}
+	for i := 1; i < len(cs); i++ {
+		if cs[i].who() == st.who && cs[i].model == st.model && cs[i].effort == st.effort && readyForNew(pl.order, i) {
+			cs = append(append([]candidate{cs[i]}, cs[:i]...), cs[i+1:]...)
+			pl.order = append(append([]Weighed{pl.order[i]}, pl.order[:i]...), pl.order[i+1:]...)
+			break
+		}
+	}
+	return cs, pl
+}
+
+// spreadsSessions says whether new conversations kept for the whole
+// session (Stays: Session or Strict) go to the key, account or member the
+// fewest others are on (leastHeld), under a routing that picks by what
+// each has left: Smart, Least used first, Weekly pace. Several sessions
+// started side by side then each keep an account of their own until its
+// allowance runs out, as a user picking the mode with several accounts
+// expects (connor_yang on Discord: three sessions on two of three
+// accounts). In order, By weight, Free first, Speed first, Cheapest, Manual
+// and a plugin's routing pick for their own reasons, and keep their order;
+// In turn spreads on its own.
+func spreadsSessions(mode, routing string) bool {
+	if mode != provider.AffinitySession && mode != provider.AffinityStrict {
+		return false
+	}
+	switch routingOf(routing) {
+	case "", provider.LeastUsed, provider.Pace:
+		return true
+	}
+	return false
 }
 
 // after puts first the one after cs[at], round from the end, that isn't
@@ -768,8 +883,10 @@ func unanswered(key string, c candidate) {
 // item rs_… could not be verified", invalid_encrypted_content; xAI's
 // (Grok's API and a SuperGrok account alike) "Could not decrypt the
 // provided encrypted_content. Ensure the value is the unmodified
-// encrypted_content from a previous response."
-var foreignReasoning = regexp.MustCompile(`(?i)invalid_encrypted_content|encrypted[ _]content.{0,80}could not be (verified|decrypted)|could not (decrypt|verify).{0,40}encrypted[ _]content`)
+// encrypted_content from a previous response."; Azure's (through a relay
+// in front of a deployment, snowshadow) "invalid encrypted summary",
+// which names no item and spells it with spaces.
+var foreignReasoning = regexp.MustCompile(`(?i)invalid_encrypted_content|invalid[ _]encrypted[ _](summary|content)|encrypted[ _]content.{0,80}could not be (verified|decrypted)|could not (decrypt|verify).{0,40}encrypted[ _]content`)
 
 // refusedSeals remembers, per conversation and the key or account that
 // refused it, the sealed reasoning another one wrote. Codex hands every

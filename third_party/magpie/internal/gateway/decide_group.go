@@ -261,7 +261,7 @@ func (e decideRefused) Unwrap() error { return e.err }
 // accounts in the group's order, each asked as Jev is (askJev) until one
 // answers, the one that failed resting as it would for a chat. ok is false
 // when model names no decision group.
-func (s *Server) askDecisionGroup(model string, intents []string, prev before, effort bool, text string) (v verdict, ok bool, err error) {
+func (s *Server) askDecisionGroup(wait time.Duration, model string, intents []string, prev before, effort bool, text string) (v verdict, ok bool, err error) {
 	if !provider.IsGroupRef(model) {
 		return verdict{}, false, nil
 	}
@@ -276,20 +276,20 @@ func (s *Server) askDecisionGroup(model string, intents []string, prev before, e
 	if len(cs) == 0 {
 		return verdict{}, true, fmt.Errorf("no decision model of the group %s can be asked now", g.Name)
 	}
-	v, err = s.askDecideTries(cs, intents, prev, effort, text)
+	v, err = s.askDecideTries(wait, cs, intents, prev, effort, text)
 	return v, true, err
 }
 
 // askDecider is askClassifier for one decision provider's model: its keys
 // or accounts in its routing's order (decideKeys), each asked until one
 // answers, as a decision group's are.
-func (s *Server) askDecider(p provider.Provider, model string, intents []string, prev before, effort bool, text string) (verdict, error) {
+func (s *Server) askDecider(wait time.Duration, p provider.Provider, model string, intents []string, prev before, effort bool, text string) (verdict, error) {
 	cs, _ := s.decideKeys(p, model)
 	cs = probeOne(cs) // of those resting, only the one back soonest (#1799)
 	if len(cs) == 0 {
 		return verdict{}, fmt.Errorf("no key or account of %s may be asked %s now", p.Name, model)
 	}
-	return s.askDecideTries(cs, intents, prev, effort, text)
+	return s.askDecideTries(wait, cs, intents, prev, effort, text)
 }
 
 // askDecideTries asks each of cs as Jev is (askJev) until one answers, the
@@ -297,9 +297,10 @@ func (s *Server) askDecider(p provider.Provider, model string, intents []string,
 // when none does. Every try shares the one classifier's wait, as Settings
 // says it is given, its failover included: a try each given the whole
 // wait held a request N waits before routing it (Jason on Discord, a 2m
-// hold).
-func (s *Server) askDecideTries(cs []candidate, intents []string, prev before, effort bool, text string) (v verdict, err error) {
-	wait := classifyTimeout()
+// hold). wait is that wait, or what a request has left of it (askWaited):
+// a try cut off by less than the whole wait is not rested for it.
+func (s *Server) askDecideTries(wait time.Duration, cs []candidate, intents []string, prev before, effort bool, text string) (v verdict, err error) {
+	full := classifyTimeout()
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
 	for _, c := range cs {
@@ -313,6 +314,9 @@ func (s *Server) askDecideTries(cs []candidate, intents []string, prev before, e
 		var refused decideRefused
 		var answer answerError
 		switch {
+		case wait < full && ctx.Err() != nil && !errors.As(err, &refused) && !errors.As(err, &answer):
+			// cut off by the request's wait running out, not its own
+			return verdict{}, cutShort(c.p.Name+"/"+c.model, wait, full)
 		case errors.As(err, &refused):
 			s.decideFailed(c, refused.status, refused.header, refused.body)
 		case errors.As(err, &answer), errors.Is(err, context.Canceled):

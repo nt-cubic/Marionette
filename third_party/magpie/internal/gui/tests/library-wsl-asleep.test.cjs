@@ -7,7 +7,9 @@
 // next runs. One whose places magpie never saw (unseen) is only on the
 // rows that name it, greyed out, kept by every click on the row, and a
 // click on it says why. One line under the list names the distro. Nothing
-// here starts WSL (#3896): the page only reads /api/library. Chromium and
+// here starts WSL (#3896): the page only reads /api/library. The
+// Instructions page lists them the same way (#4182), and the Hooks and
+// Subagents pages as while the distro runs (#4237, #4238). Chromium and
 // WebKit, 1100px and 390px, in en, zh, zh-TW, ja and de. No backend: the
 // API is faked here.
 const assert = require("node:assert/strict");
@@ -21,14 +23,24 @@ const assets = path.resolve(__dirname, "../assets");
 const HOME = "/Users/me", D = "Ubuntu-24.04";
 const CX = "codex@wsl:" + D, PI = "pi@wsl:" + D;
 const srv = (name, agents, more = {}) => ({ name, transport: "stdio", command: "uvx", args: [name], agents, ...more });
-const lib = (servers) => ({
+const lib = (servers, instructions = { agents: [] }) => ({
   dir: `${HOME}/.magpie/library`, backups: `${HOME}/.magpie/backups`, home: HOME,
   agents: [
-    { id: "claude", name: "Claude Code", icon: "", mcp: `${HOME}/.claude.json`, skills: `${HOME}/.claude/skills` },
+    { id: "claude", name: "Claude Code", icon: "", instructions: `${HOME}/.claude/CLAUDE.md`, mcp: `${HOME}/.claude.json`, skills: `${HOME}/.claude/skills` },
     { id: CX, name: "Codex · WSL " + D, icon: "", mcp: "\\\\wsl.localhost\\" + D + "\\home\\me\\.codex\\config.toml", skills: "\\\\wsl.localhost\\" + D + "\\home\\me\\.codex\\skills", noSSE: true, mustCopy: true, how: "copy", asleep: D },
     { id: PI, name: "Pi · WSL " + D, icon: "", asleep: D, unseen: true },
   ],
-  instructions: { agents: [] }, servers, skills: [], foundServers: [], projects: [], foundSkills: [], problems: [],
+  instructions, servers, skills: [], foundServers: [], projects: [], foundSkills: [], problems: [],
+});
+// the Instructions page's rows: Claude Code here, Codex in the stopped
+// distro at the file magpie last saw, and Pi on there, its file never seen
+const instr = (on) => ({
+  shared: "Be brief.", sets: [{ id: "default", name: "", active: true, text: "Be brief." }],
+  agents: [
+    { agent: "claude", name: "Claude Code", icon: "", path: `${HOME}/.claude/CLAUDE.md`, on: on.includes("claude"), extra: "" },
+    { agent: CX, name: "Codex · WSL " + D, icon: "", path: "\\\\wsl.localhost\\" + D + "\\home\\me\\.codex\\AGENTS.md", on: on.includes(CX), extra: "", asleep: D },
+    { agent: PI, name: "Pi · WSL " + D, icon: "", path: "", on: on.includes(PI), extra: "", asleep: D, unseen: true },
+  ],
 });
 
 let I18N;
@@ -48,10 +60,15 @@ function server(lang, state, posts) {
     if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:true};` });
     if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
     if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings: { lang, theme: "light" } });
-    if (url.pathname === "/api/library") return json(lib(state.servers));
-    if (url.pathname.startsWith("/api/library/") && req.method() === "POST" && !url.pathname.endsWith("/reveal") && !url.pathname.includes("/check")) {
+    if (url.pathname === "/api/library") return json({ ...lib(state.servers, state.instr), ...state.more });
+    if (url.pathname === "/api/library/reveal") { (state.reveals ||= []).push(req.postDataJSON()); return json({}); }
+    if (url.pathname.startsWith("/api/library/") && req.method() === "POST" && !url.pathname.includes("/check")) {
       const body = req.postDataJSON(), what = url.pathname.replace("/api/library/", "");
       posts.push({ what, body });
+      if (what === "instructions/save" && state.instr) {
+        state.instr = instr(body.agents);
+        return json({ part: "instructions", instructions: state.instr, result: { changed: [] } });
+      }
       if (what === "servers/agents") {
         state.servers = state.servers.map((s) => (s.name === body.name ? { ...s, agents: [...body.agents].sort() } : s));
         return json({ ...lib(state.servers), result: { changed: [] } });
@@ -96,6 +113,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await ctx.addInitScript(() => { try { localStorage.setItem("magpie.libTab", "mcp"); } catch {} });
         const page = await ctx.newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         page.on("pageerror", (e) => errors.push(e.message));
         page.on("dialog", (d) => { errors.push("a browser dialog: " + d.message()); d.dismiss(); });
         await page.route("**/*", server(lang, state, posts));
@@ -149,6 +167,148 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await chip("git", CX).click();
         await page.waitForTimeout(300);
         assert.deepEqual(posts[1], { what: "servers/agents", body: { name: "git", agents: ["claude", CX] } });
+        assert.deepEqual(errors, []);
+        await ctx.close();
+      });
+    }
+  });
+}
+
+for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
+  // #4182: the Instructions page leaves them out no more. Codex's row is
+  // at the file magpie last saw, greyer, its path no button (the file
+  // manager would start WSL); its switch says the distro isn't running and
+  // is sent as any is. Pi, on, whose file magpie never saw, is greyed out
+  // and kept on by every switch: before, a switch sent the agents without
+  // the stopped distro's, which took them off.
+  test(engine + ": a stopped WSL distro's agents are on the Instructions page as last seen", async (t) => {
+    assert(["chromium", "webkit"].includes(engine), "BROWSER must be chromium or webkit");
+    I18N = strings().I18N;
+    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL || "chromium" }));
+    t.after(() => browser.close());
+    for (const width of [1100, 390]) for (const lang of ["en", "zh", "zh-TW", "ja", "de"]) {
+      await t.test(`${lang} at ${width}px`, async () => {
+        const w = (key, vars) => tr(lang, key, vars);
+        const state = { servers: [], instr: instr(["claude", PI]) };
+        const posts = [], errors = [];
+        const ctx = await browser.newContext({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
+        await ctx.addInitScript(() => { try { localStorage.setItem("magpie.libTab", "instructions"); } catch {} });
+        const page = await ctx.newPage();
+        page.setDefaultTimeout(5000);
+        page.on("pageerror", (e) => errors.push(e.message));
+        page.on("dialog", (d) => { errors.push("a browser dialog: " + d.message()); d.dismiss(); });
+        await page.route("**/*", server(lang, state, posts));
+        await page.goto("http://magpie.test/");
+        await page.locator('button[data-view="library"]').click();
+        const v = page.locator("#view-library");
+        const row = (name) => v.locator(".lib-row:not(.lib-set)").filter({ has: page.locator(".name", { hasText: new RegExp("^" + name) }) });
+        const sw = (name) => row(name).locator(".lib-switch");
+        const asleep = w("WSL {distro} isn't running: its agents show what magpie last saw there, and what you change is written there the next time it runs.", { distro: D });
+        await row("Codex").waitFor();
+
+        assert.doesNotMatch(await row("Claude Code").getAttribute("class"), /\basleep\b/);
+        assert.match(await row("Codex").getAttribute("class"), /\basleep\b/);
+        assert.equal(await row("Codex").locator(".lib-path").evaluate((e) => e.tagName), "SPAN");
+        assert.equal(await sw("Codex").getAttribute("aria-checked"), "false");
+        assert.equal(await sw("Codex").getAttribute("aria-disabled"), null);
+        assert.equal(await sw("Codex").getAttribute("title"), asleep);
+        assert.match(await row("Pi").getAttribute("class"), /\basleep\b/);
+        assert.equal(await row("Pi").locator(".lib-path").count(), 0);
+        assert.equal(await sw("Pi").getAttribute("aria-checked"), "true");
+        assert.equal(await sw("Pi").getAttribute("aria-disabled"), "true");
+        assert.equal(await sw("Pi").getAttribute("title"), w("WSL {distro} isn't running, and magpie hasn't seen {agent}'s files there yet: start the distro to change this", { distro: D, agent: "Pi · WSL " + D }));
+        // one line for the distro, naming Pi; neither is said to keep no
+        // instructions file
+        const aside = v.locator(".lib-asleep");
+        assert.equal(await aside.count(), 1);
+        assert.equal(await aside.textContent(), asleep + " " + w("{agents} can be changed once it runs.", { agents: "Pi · WSL " + D }));
+        for (const x of await v.locator(".lib-aside:not(.lib-asleep)").allTextContents()) assert.doesNotMatch(x, /WSL/);
+        assert.deepEqual(await sideways(page), [], "sideways with the rows");
+
+        // Codex's path clicked: no file manager asked for
+        await row("Codex").locator(".lib-path").click();
+        await page.waitForTimeout(200);
+        assert.deepEqual(state.reveals || [], []);
+        // Pi's switch clicked: nothing sent
+        await sw("Pi").click({ force: true });
+        await page.waitForTimeout(200);
+        assert.deepEqual(posts, []);
+        // Codex switched on while its distro is stopped: sent, Pi kept on,
+        // and the status says when it is written
+        await sw("Codex").click();
+        await page.waitForFunction((want) => document.querySelector("#status").textContent === want, asleep).catch(() => {});
+        assert.deepEqual(posts.map((p) => p.what), ["instructions/save"]);
+        assert.deepEqual(posts[0].body, { agents: ["claude", CX, PI] });
+        assert.equal(await page.locator("#status").textContent(), asleep);
+        assert.equal(await sw("Codex").getAttribute("aria-checked"), "true");
+        // Claude Code switched off: both of the stopped distro's stay on
+        await sw("Claude Code").click();
+        await page.waitForTimeout(300);
+        assert.deepEqual(posts[1], { what: "instructions/save", body: { agents: [CX, PI] } });
+        assert.deepEqual(errors, []);
+        await ctx.close();
+      });
+    }
+  });
+}
+
+// #4237, #4238: the Hooks and Subagents pages list the stopped distro's
+// Codex as they do while the distro runs: its chip greyed, saying magpie
+// gives no agent in WSL any yet, named in the line under the list, and a
+// click on it sends nothing. Pi, whose places magpie never saw, isn't on
+// a row that doesn't name it. The page draws what /api/library says
+// (hooksView and subagentsView list the stopped agents); this holds it to
+// that.
+const GREYED = {
+  hooks: {
+    lib: { hooks: [{ name: "notify", event: "turn-end", command: "notify-send done", agents: ["claude"] }], hookAgents: [{ id: "claude", file: `${HOME}/.claude/settings.json`, events: ["Stop"] }, { id: CX, no: "magpie gives hooks only to agents on this computer, not yet to Codex · WSL " + D + " in WSL", wsl: true }] },
+    row: ".lib-hook", name: "notify",
+    tip: "magpie gives hooks only to agents on this computer, not yet to {agent} in WSL",
+    line: [".lib-hooks-no", "magpie can't give hooks to {agents} yet: their chips are greyed, and say why."],
+  },
+  subagents: {
+    lib: { subagents: [{ name: "reviewer", description: "Reviews a diff", prompt: "Review it.", skills: [], mcp: [], agents: ["claude"] }], subagentAgents: [{ id: "claude", dir: `${HOME}/.claude/agents`, skills: true, mcp: true }, { id: CX, no: "magpie gives no subagents to an agent in WSL yet", wsl: true }] },
+    row: ".lib-subagent", name: "reviewer",
+    tip: "magpie gives subagents only to agents on this computer, not yet to {agent} in WSL",
+    line: [".lib-subagents-no", "magpie can't give subagents to {agents} yet: their chips are greyed, and say why."],
+  },
+};
+for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) for (const [tab, g] of Object.entries(GREYED)) {
+  test(engine + `: a stopped WSL distro's agents are on the ${tab} page, greyed as while it runs`, async (t) => {
+    assert(["chromium", "webkit"].includes(engine), "BROWSER must be chromium or webkit");
+    I18N = strings().I18N;
+    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL || "chromium" }));
+    t.after(() => browser.close());
+    for (const width of [1100, 390]) for (const lang of ["en", "zh", "zh-TW", "ja", "de"]) {
+      await t.test(`${lang} at ${width}px`, async () => {
+        const w = (key, vars) => tr(lang, key, vars);
+        const state = { servers: [], more: g.lib };
+        const posts = [], errors = [];
+        const ctx = await browser.newContext({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
+        await ctx.addInitScript((tab) => { try { localStorage.setItem("magpie.libTab", tab); } catch {} }, tab);
+        const page = await ctx.newPage();
+        page.setDefaultTimeout(5000);
+        page.on("pageerror", (e) => errors.push(e.message));
+        page.on("dialog", (d) => { errors.push("a browser dialog: " + d.message()); d.dismiss(); });
+        await page.route("**/*", server(lang, state, posts));
+        await page.goto("http://magpie.test/");
+        await page.locator('button[data-view="library"]').click();
+        const v = page.locator("#view-library");
+        const row = v.locator(g.row).filter({ has: page.locator(".name", { hasText: new RegExp("^" + g.name) }) });
+        await row.waitFor();
+        assert.deepEqual(await row.locator(":scope > .lib-agents > .lib-ag[data-agent]").evaluateAll((cs) => cs.map((c) => c.dataset.agent)), ["claude", CX]);
+        const cx = row.locator(`.lib-ag[data-agent="${CX}"]`);
+        assert.match(await cx.getAttribute("class"), /\bblocked\b/);
+        assert.match(await cx.getAttribute("class"), /\basleep\b/);
+        assert.equal(await cx.getAttribute("aria-disabled"), "true");
+        assert.equal(await cx.getAttribute("aria-pressed"), "false");
+        assert.equal(await cx.getAttribute("title"), w(g.tip, { agent: "Codex · WSL " + D }));
+        assert.equal(await v.locator(g.line[0]).textContent(), w(g.line[1], { agents: "Codex · WSL " + D }));
+        assert.deepEqual(await sideways(page), [], "sideways with the rows");
+        await row.locator(":scope > .lib-agents").hover();
+        await cx.click({ force: true });
+        await page.waitForTimeout(200);
+        assert.deepEqual(posts, []);
         assert.deepEqual(errors, []);
         await ctx.close();
       });

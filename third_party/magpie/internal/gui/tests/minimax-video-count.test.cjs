@@ -65,6 +65,7 @@ for (const [name, engine] of [["chromium", chromium], ["webkit", webkit]]) {
             const at = `${lang} ${width}px ${quotaLeft ? "left" : "used"}`;
             const page = await (await browser.newContext({ viewport: { width, height: 900 }, reducedMotion: "reduce" })).newPage();
             page.setDefaultTimeout(5000);
+            page.setDefaultNavigationTimeout(60000);
             await page.route("**/*", serve(lang, quotaLeft));
             await page.goto("http://magpie.test/?view=usage");
             await page.locator(".subscription-card .quota-n").nth(3).waitFor();

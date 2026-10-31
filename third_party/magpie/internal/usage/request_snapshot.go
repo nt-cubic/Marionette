@@ -72,15 +72,15 @@ func (c *rowChunk) encode(keep func([]byte) bool) ([]byte, []*time.Location) {
 	locs := map[*time.Location]uint64{}
 	for k := range c.Rows {
 		p := &c.Rows[k]
-		loc := p.Time.Location()
+		loc := p.Time().Location()
 		id, ok := locs[loc]
 		if !ok {
 			id = uint64(len(locations))
 			locs[loc] = id
 			locations = append(locations, loc)
 		}
-		put(uint64(p.Time.Unix()))
-		put(uint64(p.Time.Nanosecond()))
+		put(uint64(p.Time().Unix()))
+		put(uint64(p.Time().Nanosecond()))
 		put(id)
 		put(uint64(p.Shape))
 		for _, n := range p.Varied {
@@ -264,7 +264,7 @@ func (c *rowChunk) unpackReusing(dst *rowChunk, into []packedRow, strs []string,
 		if loc >= uint64(len(c.Locations)) {
 			return nil
 		}
-		p.Time = time.Unix(sec, nano).In(c.Locations[loc])
+		p.setTime(time.Unix(sec, nano).In(c.Locations[loc]))
 		p.Shape = uint32(take())
 		if int(p.Shape) >= len(next.Shapes) {
 			return nil
@@ -277,7 +277,7 @@ func (c *rowChunk) unpackReusing(dst *rowChunk, into []packedRow, strs []string,
 			p.Varied[j] = uint32(n)
 		}
 		for j := range p.Tokens {
-			p.Tokens[j] = int64(take())
+			p.Tokens[j] = tokensOf(int64(take()))
 		}
 		p.Millis, p.TTFT, p.FirstText, p.Order = msOf(int64(take())), msOf(int64(take())), msOf(int64(take())), int64(take())
 		p.RouteID = int64(take())

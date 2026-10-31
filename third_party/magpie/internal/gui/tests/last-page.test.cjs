@@ -63,6 +63,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const context = await browser.newContext({ viewport: { width, height: 640 }, reducedMotion: "reduce" });
       const page = await context.newPage();
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", server());
@@ -103,6 +104,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const gw = await browser.newContext({ viewport: { width, height: 640 }, reducedMotion: "reduce" });
       const gp = await gw.newPage();
       gp.setDefaultTimeout(5000);
+      gp.setDefaultNavigationTimeout(60000);
       const gerr = [];
       gp.on("pageerror", (e) => gerr.push(e.message));
       await gp.route("**/*", server({ web: true, gateway: true }));

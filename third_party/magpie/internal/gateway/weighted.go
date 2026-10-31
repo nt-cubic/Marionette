@@ -1,7 +1,9 @@
 package gateway
 
 // Weighted routing (#841): a provider's requests spread over its keys by
-// each key's weight, as NGINX's smooth weighted round robin does — keys
+// each key's weight, and a subscription's over its accounts by each
+// account's (provider.AccountWeights, rubbzha on X), as NGINX's smooth
+// weighted round robin does — keys
 // weighing 3 and 1 go a, a, b, a, a, a, b, a…, the ratio held over a
 // handful of requests rather than only on average. A key resting after a
 // failure is left out of the round while it rests, so the others share
@@ -21,8 +23,14 @@ import (
 	"github.com/yetone/magpie/internal/routes"
 )
 
-// keyWeight is a candidate's weight: its key's, 1 when none.
-func keyWeight(c candidate) int { return max(c.p.KeyWeight, 1) }
+// keyWeight is a candidate's weight: its account's (provider.AccountWeights,
+// rubbzha on X) or its key's, 1 when none.
+func keyWeight(c candidate) int {
+	if c.p.Account != nil {
+		return c.p.AccountWeight(c.p.Account.User)
+	}
+	return max(c.p.KeyWeight, 1)
+}
 
 // resting says whether c rests now, as restLast will find.
 func resting(c candidate) bool {

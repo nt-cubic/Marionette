@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -88,6 +89,49 @@ func TestGroupsFoundSwitch(t *testing.T) {
 	}
 	if st := found(`{"on":true}`); !st.Found || len(st.Groups) != 1 || st.Groups[0].ID != "auto-m" {
 		t.Fatalf("on again: %v %+v", st.Found, st.Groups)
+	}
+}
+
+// groups/skip keeps providers out of the groups magpie finds
+// (chenxiang0010 on Discord): the state names them, and lists every
+// provider that can be, one kept out that is gone too.
+func TestGroupsSkip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", os.Getenv("HOME"))
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	for _, id := range []string{"a", "b", "c"} {
+		if err := provider.Save(provider.Provider{ID: id, Name: "P " + id, Key: "k" + id, Chat: "http://127.0.0.1:1/v1", Models: []string{"m"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mux := http.NewServeMux()
+	groupRoutes(mux)
+	skip := func(body string) groupsJSON {
+		t.Helper()
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest("POST", "/api/groups/skip", strings.NewReader(body)))
+		if w.Code != 200 {
+			t.Fatalf("%s: %d %s", body, w.Code, w.Body)
+		}
+		var st groupsJSON
+		if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+	if st := groupsState(); len(st.Skip) != 0 || len(st.Skippable) != 3 || len(st.Groups) != 1 || len(st.Groups[0].Members) != 3 {
+		t.Fatalf("before: %+v %+v %+v", st.Skip, st.Skippable, st.Groups)
+	}
+	st := skip(`{"skip":["b","gone"]}`)
+	if !slices.Equal(st.Skip, []string{"b", "gone"}) || len(st.Groups) != 1 || !slices.Equal(st.Groups[0].Members, []string{"a/m", "c/m"}) {
+		t.Fatalf("b kept out: %+v %+v", st.Skip, st.Groups)
+	}
+	if i := slices.IndexFunc(st.Skippable, func(k skippableJSON) bool { return k.ID == "gone" }); i < 0 || st.Skippable[i].Name != "gone" {
+		t.Fatalf("a provider kept out and gone can't be let back in: %+v", st.Skippable)
+	}
+	if st := skip(`{"skip":[]}`); len(st.Skip) != 0 || len(st.Groups[0].Members) != 3 {
+		t.Fatalf("let back in: %+v %+v", st.Skip, st.Groups)
 	}
 }
 

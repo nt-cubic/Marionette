@@ -354,7 +354,7 @@ func codexContentOf(c Call, keep func([]byte) bool, add func(input bool, p Part)
 			case "assistant":
 				return add(false, textPart("assistant", words()))
 			}
-		case "reasoning":
+		case "reasoning", "magpie_reasoning": // magpie_reasoning: PortCodexRolloutsLeft
 			var s []string
 			for _, x := range p.Summary {
 				s = append(s, x.Text)

@@ -75,8 +75,8 @@ func TestPIDesktopTitlesNameGatewaySessions(t *testing.T) {
 		}
 	}
 	st := MergeExternalStats(Stats{}, nil, []ExternalSession{{Agent: "pi-desktop", ID: id, Last: time.Now()}})
-	if len(st.Sessions) != 1 || st.Sessions[0].Title != "你好啊" {
-		t.Errorf("stats sessions %+v", st.Sessions)
+	if all := st.AllSessions(); len(all) != 1 || all[0].Title != "你好啊" {
+		t.Errorf("stats sessions %+v", all)
 	}
 	if after := folderState(t, dir); after != before {
 		t.Errorf("PI-Desktop's folder changed:\n%s\n→\n%s", before, after)

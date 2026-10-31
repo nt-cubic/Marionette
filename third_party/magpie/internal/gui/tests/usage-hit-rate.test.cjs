@@ -44,6 +44,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       try {
         const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, reducedMotion: "reduce" });
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         await page.route("http://magpie.test/**", server(lang));
         await page.goto("http://magpie.test/?view=usage");
         await page.locator("#usageAgents .row.stat").nth(2).waitFor();

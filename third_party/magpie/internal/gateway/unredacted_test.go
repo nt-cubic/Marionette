@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/yetone/magpie/internal/gwmw"
 	"github.com/yetone/magpie/internal/masking"
+	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 )
@@ -332,5 +334,41 @@ func TestUnredactedAskedButSentElsewhereMasked(t *testing.T) {
 	}
 	if n := scans.Load(); n != 1 {
 		t.Fatalf("scanned %d times, want 1", n)
+	}
+}
+
+// AcMilan on Discord: "Send requests unmasked" is the user's switch for
+// each provider. A model at a name of the user's own DNS
+// (http://llm.corp.lan:8000) gets the request whole with it on, and
+// masked with it off; nothing is looked up to decide. The name is reached
+// through a proxy set in Settings, the test's fake, so no lookup reaches
+// the network.
+func TestLANNameUnredactedProvider(t *testing.T) {
+	const key = "sk-proj-abcdEFGH1234ijklMNOP5678qrst"
+	chat := `{"model":"fake/m1","max_tokens":10,"messages":[{"role":"user","content":"my key is ` + key + `"}]}`
+	for _, on := range []bool{true, false} {
+		f := &fake{ctype: "application/json", reply: `{"id":"msg_1","type":"message","role":"assistant","model":"m1","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":1}}`}
+		up := setup(t, provider.Anthropic, f)
+		t.Cleanup(netproxy.SetLookup(func(_ context.Context, host string) ([]net.IPAddr, error) {
+			return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+		}))
+		p, err := provider.Find("fake")
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.Unredacted = on
+		p.Anthropic = "http://llm.corp.lan:8000"
+		if err := provider.Save(*p); err != nil {
+			t.Fatal(err)
+		}
+		if err := settings.Save(settings.Settings{Redact: true, Proxy: up.URL}); err != nil {
+			t.Fatal(err)
+		}
+		if code, reply := post(t, "/v1/messages", chat); code != 200 || f.calls != 1 {
+			t.Fatalf("on %v: %d %s, the model asked %d times", on, code, reply, f.calls)
+		}
+		if whole := strings.Contains(string(f.got), key); whole != on {
+			t.Fatalf("switch on %v, sent whole %v: %s", on, whole, f.got)
+		}
 	}
 }

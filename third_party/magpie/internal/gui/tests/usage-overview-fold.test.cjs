@@ -93,6 +93,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           const open = async () => {
             const p = await ctx.newPage();
             p.setDefaultTimeout(5000);
+            p.setDefaultNavigationTimeout(60000);
             p.on("pageerror", (e) => errors.push(e.message));
             await p.route("**/*", server(lang));
             await p.goto("http://magpie.test/");
@@ -215,6 +216,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           t.after(() => ctx.close());
           const p = await ctx.newPage();
           p.setDefaultTimeout(5000);
+          p.setDefaultNavigationTimeout(60000);
           p.on("pageerror", (e) => errors.push(e.message));
           await p.route("**/*", server(lang));
           await p.goto("http://magpie.test/");

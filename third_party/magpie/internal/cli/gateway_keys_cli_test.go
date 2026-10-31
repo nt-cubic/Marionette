@@ -447,3 +447,44 @@ func TestGatewayKeyQuotasCLI(t *testing.T) {
 		t.Fatal("not kept off")
 	}
 }
+
+// magpie gateway-key move puts a key at a place, counted from 1 as list
+// shows them, and list shows the keys in that order (alextjy on Discord).
+func TestGatewayKeyCLIMove(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", os.Getenv("HOME"))
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	call := func(args ...string) (string, error) {
+		var out bytes.Buffer
+		err := gatewayKeysTo(&out, append([]string{"gateway-key"}, args...))
+		return out.String(), err
+	}
+	for _, name := range []string{"Laptop", "Phone", "CI"} {
+		if _, err := call("add", name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keys, _ := access.List()
+	if _, err := call("move", keys[2].ID, "1"); err != nil {
+		t.Fatal(err)
+	}
+	list, err := call("list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ci, laptop, phone := strings.Index(list, "CI"), strings.Index(list, "Laptop"), strings.Index(list, "Phone")
+	if ci < 0 || !(ci < laptop && laptop < phone) {
+		t.Fatal("list after moving CI to 1:\n" + list)
+	}
+	for _, bad := range []string{"0", "4", "top"} {
+		if _, err := call("move", keys[0].ID, bad); err == nil {
+			t.Fatal("place", bad)
+		}
+	}
+	if _, err := call("move", "nope", "1"); err == nil {
+		t.Fatal("no such key")
+	}
+	if _, err := call("move", keys[0].ID); err == nil {
+		t.Fatal("no place")
+	}
+}

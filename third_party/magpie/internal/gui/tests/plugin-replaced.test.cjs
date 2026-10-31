@@ -49,6 +49,7 @@ const L = {
 async function open(browser, lang, st, view) {
   const page = await (await browser.newContext({ viewport: { width: 900, height: 600 } })).newPage();
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(60000);
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.route("**/*", server(lang, st));

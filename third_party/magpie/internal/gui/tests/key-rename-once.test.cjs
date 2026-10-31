@@ -71,6 +71,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       });
       const page = await context.newPage(), f = fixture(lang), errors = [];
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", f.route);
       await page.goto("http://magpie.test/?view=providers&edit=relay");

@@ -75,6 +75,7 @@ func TestFakeMCPServer(t *testing.T) {
 			Params struct {
 				Name      string          `json:"name"`
 				Arguments json.RawMessage `json:"arguments"`
+				Meta      json.RawMessage `json:"_meta"`
 			} `json:"params"`
 		}
 		json.Unmarshal(sc.Bytes(), &m)
@@ -82,7 +83,7 @@ func TestFakeMCPServer(t *testing.T) {
 		case "tools/call":
 			// the hub's: "die" ends the server mid-call, "slow" never
 			// answers, any other tool says its name, its arguments and the
-			// process it ran in
+			// process it ran in, and the _meta it came with if any
 			switch m.Params.Name {
 			case "die":
 				fmt.Fprintln(os.Stderr, "Error: lost the database")
@@ -90,7 +91,11 @@ func TestFakeMCPServer(t *testing.T) {
 			case "slow":
 				continue
 			}
-			text, _ := json.Marshal(fmt.Sprintf("%s %s pid=%d", m.Params.Name, m.Params.Arguments, os.Getpid()))
+			said := fmt.Sprintf("%s %s pid=%d", m.Params.Name, m.Params.Arguments, os.Getpid())
+			if len(m.Params.Meta) > 0 {
+				said += " meta=" + string(m.Params.Meta)
+			}
+			text, _ := json.Marshal(said)
 			fmt.Printf(`{"jsonrpc":"2.0","id":%d,"result":{"content":[{"type":"text","text":%s}]}}`+"\n", *m.ID, text)
 		case "initialize":
 			fmt.Printf(`{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fake","version":"1"}}}`+"\n", *m.ID)

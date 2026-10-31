@@ -252,7 +252,15 @@ func renewSaved(ctx context.Context, agent, user string, force bool, stale strin
 		// whose refresh token would sign that Codex out
 		tok, accountID, err := codexTokenRenewing(ctx, home, stale)
 		if err != nil {
-			return "", "", fmt.Errorf("%s, signed in to Codex in %s: %w; to sign in again there, run CODEX_HOME=%s codex login", user, home, err, home)
+			// said with no command to run (charliepu on Discord, Windows:
+			// "run CODEX_HOME=… codex login"): a refusal marks the account
+			// signed out on its row (codexSignInRead), whose Sign in again
+			// runs magpie's own sign-in and writes it back to home (addLogin)
+			err = fmt.Errorf("%s, signed in to Codex in %s: %w", user, home, err)
+			if errors.As(err, new(refreshRefused)) {
+				err = codexHeldRefusal{err}
+			}
+			return "", "", err
 		}
 		return tok, accountID, nil
 	}
@@ -317,6 +325,14 @@ func heldByCodex(l savedLogin) bool {
 	}
 	return sameRefresh(live.Auth, l.Auth)
 }
+
+// codexHeldRefusal is a refresh OpenAI refused for an account Codex is
+// signed in to in another of its folders (codexHeldIn). savedRefreshFailed
+// doesn't mark it, magpie's copy not being the sign-in, so codexSignInRead
+// marks it signed out as it does Codex's own.
+type codexHeldRefusal struct{ error }
+
+func (e codexHeldRefusal) Unwrap() error { return e.error }
 
 // savedRefreshFailed words a saved account's failed refresh. One the vendor
 // refused is marked lapsed on the account: that sign-in is gone and has to be

@@ -3,6 +3,7 @@ package library
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -253,6 +254,17 @@ func TestWSLMagpieImage(t *testing.T) {
 		t.Errorf("the distro was asked %d times", probed)
 	}
 
+	// the hub on: an agent in WSL is given magpie-image itself still, run
+	// in its distro, whose paths it saves to; the hub gives it nothing
+	ok(t)(SetMCPHub(true))
+	if s := read(t, filepath.Join(h, ".codex/config.toml")); !strings.Contains(s, "[mcp_servers.magpie-image]") {
+		t.Errorf("codex@wsl lost magpie-image to the hub:\n%s", s)
+	}
+	if got := hubServers(wslCodex); len(got) != 0 {
+		t.Errorf("the hub gives codex@wsl %v", got)
+	}
+	ok(t)(SetMCPHub(false))
+
 	// drives mounted elsewhere: the server is told where
 	reset()
 	answer = "/win/d/tools/Magpie/magpie-windows-amd64.exe\ninterop:on\n"
@@ -416,6 +428,264 @@ func TestWSLStoppedUnseen(t *testing.T) {
 	l, _ := load()
 	if got := l.server("fetch").Agents; !slices.Equal(got, []string{wslPi}) {
 		t.Errorf("fetch's agents: %v", got)
+	}
+	if n := agent.FakeWSLRuns(distro); n != runs {
+		t.Errorf("%d commands ran in the stopped distro", n-runs)
+	}
+}
+
+// instrRow is the agent id's row on the Instructions page, nil for none.
+func instrRow(t *testing.T, id string) *AgentInstructions {
+	t.Helper()
+	iv, err := ReadInstructions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := Read(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the page's whole read and the one after an instructions change agree
+	if len(v.Instructions.Agents) != len(iv.Agents) {
+		t.Errorf("Read lists %d instructions rows, ReadInstructions %d", len(v.Instructions.Agents), len(iv.Agents))
+	}
+	for _, a := range iv.Agents {
+		if a.Agent == id {
+			return &a
+		}
+	}
+	return nil
+}
+
+// #4182: the Instructions page left a stopped distro's agents out, so
+// none could be switched on until WSL ran, and a switch on the page sent
+// the agents without them. They are listed at the file magpie last saw
+// them read, switched as the library has them, and a switch is written
+// into the distro once it runs (Woken), on or off. Nothing of the distro
+// is opened or run while it is stopped (#3896): not even its file, whose
+// own lines aren't counted then.
+func TestWSLStoppedInstructions(t *testing.T) {
+	const distro = "Ubuntu-24.04"
+	h := wslSandbox(t)
+	agentsMD := filepath.Join(h, ".codex", "AGENTS.md")
+	write(t, agentsMD, "Mine.\n")
+	shared := "Be brief."
+	// the distro seen running, nothing of the library given to it
+	ok(t)(SaveInstructions(InstructionsChange{Shared: &shared, Agents: []string{"claude"}}))
+	if r := instrRow(t, wslCodex); r == nil || r.Asleep != "" || r.Own != 1 {
+		t.Fatalf("Codex while running: %+v", r)
+	}
+	root := filepath.Dir(filepath.Dir(h))
+	away := root + ".away"
+	stop := func() {
+		t.Helper()
+		agent.StopFakeWSL(distro)
+		// the distro's files gone from reach: anything opened there fails,
+		// anything written there makes its folder again
+		if err := os.Rename(root, away); err != nil {
+			t.Fatal(err)
+		}
+		if res, err := Woken(); res != nil || err != nil {
+			t.Errorf("a sync while the distro is stopped: %+v %v", res, err)
+		}
+	}
+	start := func() {
+		t.Helper()
+		if _, err := os.Stat(root); !os.IsNotExist(err) {
+			t.Errorf("something was written into the stopped distro: %v", err)
+		}
+		if err := os.Rename(away, root); err != nil {
+			t.Fatal(err)
+		}
+		agent.StartFakeWSL(distro)
+		if res, err := Woken(); err != nil || res == nil {
+			t.Fatalf("no sync once the distro ran: %+v %v", res, err)
+		}
+	}
+	stop()
+	runs := agent.FakeWSLRuns(distro)
+	cx := instrRow(t, wslCodex)
+	if cx == nil {
+		t.Fatal("a stopped distro's Codex isn't on the Instructions page")
+	}
+	if cx.Asleep != distro || cx.Unseen || cx.On || cx.Path != agentsMD || cx.Own != 0 || cx.Edited || cx.Override != "" {
+		t.Errorf("Codex while stopped: %+v", *cx)
+	}
+	if cl := instrRow(t, wslClaude); cl == nil || cl.Asleep != distro || cl.Path != filepath.Join(h, ".claude", "CLAUDE.md") {
+		t.Errorf("Claude Code while stopped: %+v", cl)
+	}
+	if id, err := Takes("Codex · WSL "+distro, "instructions"); err != nil || id != wslCodex {
+		t.Errorf("Takes while stopped: %s %v", id, err)
+	}
+	// switched on while stopped: kept, and on the page as on
+	ok(t)(SaveInstructions(InstructionsChange{Agents: []string{"claude", wslCodex}}))
+	if l, _ := load(); !slices.Equal(l.Instructions.Agents, []string{"claude", wslCodex}) {
+		t.Errorf("the agents: %v", l.Instructions.Agents)
+	}
+	if r := instrRow(t, wslCodex); r == nil || !r.On {
+		t.Errorf("Codex switched on while stopped: %+v", r)
+	}
+	if n := agent.FakeWSLRuns(distro); n != runs {
+		t.Errorf("%d commands ran in the stopped distro", n-runs)
+	}
+	start()
+	if s := read(t, agentsMD); !strings.HasPrefix(s, "Mine.\n") || !strings.Contains(s, "Be brief.") {
+		t.Errorf("codex@wsl AGENTS.md once the distro ran:\n%s", s)
+	}
+	if r := instrRow(t, wslCodex); r == nil || r.Asleep != "" || !r.On || r.Own != 1 {
+		t.Errorf("Codex once running: %+v", r)
+	}
+	// switched off while stopped: the part is taken out once it runs,
+	// though no agent of the distro is on any more
+	stop()
+	ok(t)(SaveInstructions(InstructionsChange{Agents: []string{"claude"}}))
+	start()
+	if s := read(t, agentsMD); s != "Mine.\n" {
+		t.Errorf("codex@wsl AGENTS.md once switched off and run:\n%s", s)
+	}
+}
+
+// One the library switched on in a distro that stopped before magpie
+// saw its file is listed as on, unseen, to be kept on; one never seen and
+// not on isn't listed.
+func TestWSLStoppedInstructionsUnseen(t *testing.T) {
+	const distro = "Ubuntu-24.04"
+	wslSandbox(t)
+	agent.All() // the probe, while it runs; no target is made
+	agent.StopFakeWSL(distro)
+	runs := agent.FakeWSLRuns(distro)
+	ok(t)(SaveInstructions(InstructionsChange{Agents: []string{wslPi}}))
+	if r := instrRow(t, wslPi); r == nil || !r.Unseen || !r.On || r.Asleep != distro || r.Path != "" {
+		t.Errorf("Pi switched on while stopped: %+v", r)
+	}
+	if r := instrRow(t, wslCodex); r != nil {
+		t.Errorf("Codex on nowhere, never seen: %+v", r)
+	}
+	if _, err := Takes("Codex · WSL "+distro, "instructions"); err == nil || !strings.Contains(err.Error(), "isn't running") {
+		t.Errorf("Takes of an unseen agent: %v", err)
+	}
+	if n := agent.FakeWSLRuns(distro); n != runs {
+		t.Errorf("%d commands ran in the stopped distro", n-runs)
+	}
+}
+
+// wslHookAgents are the Hooks page's agents in WSL, by id.
+func wslHookAgents(t *testing.T) map[string]HookAgentView {
+	t.Helper()
+	v, err := Read(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := map[string]HookAgentView{}
+	for _, a := range v.HookAgents {
+		if strings.Contains(a.ID, "@wsl:") {
+			m[a.ID] = a
+		}
+	}
+	return m
+}
+
+// #4237: the Hooks page left a stopped distro's agents out, where while
+// it runs it lists them greyed, saying magpie gives no agent in WSL hooks
+// yet. They are listed the same while it is stopped, by what magpie saw
+// there (their shape), and a hook given one says why, as while it runs.
+// There is nothing to write once the distro runs. Nothing of the distro
+// is opened or run while it is stopped (#3896).
+func TestWSLStoppedHooks(t *testing.T) {
+	const distro = "Ubuntu-24.04"
+	h := wslSandbox(t)
+	running := wslHookAgents(t)
+	if len(running) != 4 || running[wslCodex].No == "" || !running[wslCodex].WSL {
+		t.Fatalf("the WSL agents on the Hooks page while it runs: %+v", running)
+	}
+	agent.StopFakeWSL(distro)
+	root := filepath.Dir(filepath.Dir(h))
+	if err := os.Rename(root, root+".away"); err != nil {
+		t.Fatal(err)
+	}
+	runs := agent.FakeWSLRuns(distro)
+	if stopped := wslHookAgents(t); !reflect.DeepEqual(stopped, running) {
+		t.Errorf("the WSL agents on the Hooks page while it is stopped: %+v, while it ran: %+v", stopped, running)
+	}
+	l, err := load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Hooks = append(l.Hooks, &Hook{Name: "notify", Event: "turn-end", Command: "notify-send done", Agents: []string{wslCodex}})
+	if err := l.save(); err != nil {
+		t.Fatal(err)
+	}
+	v, err := Read(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Hooks) != 1 || v.Hooks[0].Problems[wslCodex] != running[wslCodex].No {
+		t.Errorf("a hook given the stopped Codex: %+v", v.Hooks)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Errorf("something was written into the stopped distro: %v", err)
+	}
+	if n := agent.FakeWSLRuns(distro); n != runs {
+		t.Errorf("%d commands ran in the stopped distro", n-runs)
+	}
+}
+
+// wslSubagentAgents are the Subagents page's agents in WSL, by id.
+func wslSubagentAgents(t *testing.T) map[string]SubagentAgentView {
+	t.Helper()
+	v, err := Read(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := map[string]SubagentAgentView{}
+	for _, a := range v.SubagentAgents {
+		if strings.Contains(a.ID, "@wsl:") {
+			m[a.ID] = a
+		}
+	}
+	return m
+}
+
+// #4238: the Subagents page left a stopped distro's agents out, where
+// while it runs it lists those that take subagents here (Claude Code and
+// Codex) greyed, saying magpie gives no agent in WSL subagents yet. They
+// are listed the same while it is stopped, by what magpie saw there
+// (their shape), and a subagent given one says why, as while it runs.
+// There is nothing to write once the distro runs. Nothing of the distro
+// is opened or run while it is stopped (#3896).
+func TestWSLStoppedSubagents(t *testing.T) {
+	const distro = "Ubuntu-24.04"
+	h := wslSandbox(t)
+	running := wslSubagentAgents(t)
+	if len(running) != 2 || running[wslCodex].No == "" || !running[wslCodex].WSL || running[wslClaude].No == "" {
+		t.Fatalf("the WSL agents on the Subagents page while it runs: %+v", running)
+	}
+	agent.StopFakeWSL(distro)
+	root := filepath.Dir(filepath.Dir(h))
+	if err := os.Rename(root, root+".away"); err != nil {
+		t.Fatal(err)
+	}
+	runs := agent.FakeWSLRuns(distro)
+	if stopped := wslSubagentAgents(t); !reflect.DeepEqual(stopped, running) {
+		t.Errorf("the WSL agents on the Subagents page while it is stopped: %+v, while it ran: %+v", stopped, running)
+	}
+	l, err := load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Subagents = append(l.Subagents, &Subagent{Name: "reviewer", Description: "Reviews a diff", Prompt: "Review it.", Agents: []string{wslClaude}})
+	if err := l.save(); err != nil {
+		t.Fatal(err)
+	}
+	v, err := Read(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Subagents) != 1 || v.Subagents[0].Problems[wslClaude] != running[wslClaude].No {
+		t.Errorf("a subagent given the stopped Claude Code: %+v", v.Subagents)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Errorf("something was written into the stopped distro: %v", err)
 	}
 	if n := agent.FakeWSLRuns(distro); n != runs {
 		t.Errorf("%d commands ran in the stopped distro", n-runs)

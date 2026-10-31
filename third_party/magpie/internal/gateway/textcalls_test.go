@@ -64,6 +64,9 @@ func relayedChat(t *testing.T, body string, up ...string) (text string, calls ma
 				if tc.Function.Name != "" {
 					names = append(names, tc.Function.Name)
 				}
+				if len(names) == 0 {
+					continue // a fragment with no name before it
+				}
 				calls[names[len(names)-1]] += tc.Function.Arguments
 			}
 			if c.FinishReason != nil {

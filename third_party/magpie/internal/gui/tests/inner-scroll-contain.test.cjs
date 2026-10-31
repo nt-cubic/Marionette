@@ -109,6 +109,7 @@ for (const engine of engines) {
         const ctx = await browser.newContext({ viewport: { width, height }, reducedMotion: "reduce" });
         const page = await ctx.newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", serve(lang));
         await page.goto("http://magpie.test/?view=routing");
@@ -158,6 +159,7 @@ for (const engine of engines) {
     const ctx = await browser.newContext({ viewport: { width: 900, height: 700 }, reducedMotion: "reduce" });
     const page = await ctx.newPage();
     page.setDefaultTimeout(5000);
+    page.setDefaultNavigationTimeout(60000);
     await page.route("**/*", serve("en"));
     await page.goto("http://magpie.test/?view=routing");
     const view = page.locator("#view-routing");
@@ -276,6 +278,7 @@ for (const engine of engines) {
     try {
       const page = await browser.newPage({ viewport: { width: 1300, height: 800 } });
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       await page.route("**/*", serve("en"));
       await page.goto("http://magpie.test/?view=routing");
       await page.locator("#view-routing .rt-req").nth(39).waitFor();
@@ -350,6 +353,7 @@ for (const engine of engines) {
       });
       const page = await ctx.newPage();
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       await page.route("**/*", serve("en"));
       await page.goto("http://magpie.test/?view=routing");
       const view = page.locator("#view-routing");

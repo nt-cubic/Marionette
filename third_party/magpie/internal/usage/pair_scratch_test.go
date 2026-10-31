@@ -121,6 +121,42 @@ func TestPairScratchGoesWhenUnused(t *testing.T) {
 	}
 }
 
+// A pairing much smaller than the one a scratch was made for makes its
+// own, and the large one goes (#2278): a poll's pairing of its last days
+// kept the whole history's ~140 MB at a cold start while the window polled.
+// One alike in size takes what is kept.
+func TestSmallPairingLetsLargeScratchGo(t *testing.T) {
+	was := scratchFloor
+	scratchFloor = 1
+	t.Cleanup(func() {
+		scratchFloor = was
+		ReleaseScratch()
+	})
+	now := time.Date(2026, 10, 1, 13, 0, 0, 0, time.UTC)
+	bg, bl := pairFixture(40, 20)
+	sg, sl := pairFixture(2, 3)
+	ReleaseScratch()
+	pairRows(All, now, bg, bl, nil, nil)
+	match, picks, seen := keptMatch.Load(), keptPicks.Load(), keptSeen.Load()
+	if match == nil || picks == nil || seen == nil {
+		t.Fatal("nothing kept for the next call")
+	}
+	pairRows(All, now, bg, bl, nil, nil)
+	if keptMatch.Load() != match || keptPicks.Load() != picks || keptSeen.Load() != seen {
+		t.Fatal("a pairing alike in size made scratch of its own")
+	}
+	pairRows(All, now, sg, sl, nil, nil)
+	if keptMatch.Load() == match {
+		t.Fatal("a small pairing kept the match scratch of a large one")
+	}
+	if keptPicks.Load() == picks {
+		t.Fatal("a small pairing kept the picks of a large one")
+	}
+	if keptSeen.Load() == seen {
+		t.Fatal("a small pairing kept the ids seen of a large one")
+	}
+}
+
 // A pass's decode buffer is kept for the next across collections, as the
 // matcher's scratch is (#2278), and goes on ReleaseScratch.
 func TestRowBufferKeptPastCollections(t *testing.T) {

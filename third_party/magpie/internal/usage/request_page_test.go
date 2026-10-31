@@ -410,7 +410,7 @@ func TestVisibleLocalSeenKeptEmpty(t *testing.T) {
 		t.Fatalf("left out %v, want b's row 0", got)
 	}
 	kept := keptSeen.Load()
-	if kept == nil || len(*kept) != 0 {
+	if kept == nil || len(kept.ids) != 0 {
 		t.Fatal("the ids seen weren't kept empty")
 	}
 	// b alone repeats nothing; the last call's msg_2 doesn't stand

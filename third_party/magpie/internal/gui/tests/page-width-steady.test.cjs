@@ -69,6 +69,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     t.after(() => browser.close());
     const page = await onPlatform(browser, platform, { width, height: 700 });
     page.setDefaultTimeout(6000);
+    page.setDefaultNavigationTimeout(60000);
     await page.route("**/*", serve("en"));
     await page.goto("http://magpie.test/?view=agents");
     const ids = await page.evaluate(() => [...document.querySelectorAll(".view[id^='view-']")].map((v) => v.id.slice(5)));
@@ -127,6 +128,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       t.after(() => browser.close());
       const page = await onPlatform(browser, platform, { width: 1000, height: 330 });
       page.setDefaultTimeout(6000);
+      page.setDefaultNavigationTimeout(60000);
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang));

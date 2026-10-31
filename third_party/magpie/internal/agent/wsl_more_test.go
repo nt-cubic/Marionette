@@ -30,7 +30,7 @@ var wslMore = []struct {
 	{"fx", ".fx/settings.json", "/v1"},
 	{"commandcode", ".commandcode/providers.json", "/v1"},
 	{"minimax-code", ".minimax/config.yaml", ""},
-	{"dsh", ".dsh/config.yaml", "/v1"},
+	{"dsh", ".dsh/profiles/web/cordis.patch.yml", "/v1"}, // liby233: no dsh reads config.yaml
 	{"muse", ".config/muse/settings.json", "/v1"},
 	{"qoder", ".qoder/settings.json", "/v1"},
 	{"qoder-cn", ".qoder-cn/settings.json", "/v1"},

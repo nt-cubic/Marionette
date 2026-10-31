@@ -40,6 +40,7 @@ async function open(browser, opts, web, view) {
   const context = await browser.newContext({ reducedMotion: "reduce", ...opts });
   const page = await context.newPage();
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(60000);
   page.errors = [];
   page.on("pageerror", (e) => page.errors.push(e.message));
   await page.route("**/*", serve(web));

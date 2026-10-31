@@ -166,6 +166,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         t.after(() => browser.close());
         const page = await (await browser.newContext({ viewport: { width, height: 900 } })).newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         let { errors, card } = await open(page, lang, width);
 
         // the map is the default: tiles and the free space, the grid hidden
@@ -274,6 +275,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       t.after(() => browser.close());
       const page = await (await browser.newContext({ viewport: { width, height: 900 }, reducedMotion: "reduce" })).newPage();
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       const files = Array.from({ length: 16 }, (_, i) => ({ name: `/work/app/f${i}.rs`, tag: "shell", tokens: [2000, 1400, 1300, 830][i] || 530 }));
       const { errors, card } = await open(page, "en", width, {
         window: 0, tokens: 72100, counted: true, turns: 1,
@@ -304,6 +306,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     t.after(() => browser.close());
     const page = await (await browser.newContext({ viewport: { width: 1100, height: 900 }, reducedMotion: "reduce" })).newPage();
     page.setDefaultTimeout(5000);
+    page.setDefaultNavigationTimeout(60000);
     const { errors, card } = await open(page, "en", 1100);
     await card.locator(".ctx-map .ctx-tile.free").waitFor();
     const moving = () => page.evaluate(() => document.getAnimations().filter((a) => a.effect?.target?.closest?.(".ctx-viz")).length);

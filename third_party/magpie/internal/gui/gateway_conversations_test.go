@@ -101,7 +101,7 @@ func TestGatewaySessionHistoryAndCalendar(t *testing.T) {
 		usage.Append(usage.Record{Time: today.AddDate(0, 0, offset), Agent: "opencode", Session: "multi-day", Provider: "fake", Model: "m", Input: 10, Output: 2, Status: 200})
 	}
 	all := combinedSessionStats(0)
-	if all.From != today.AddDate(0, 0, -3).Format(time.DateOnly) || len(all.Sessions) != 1 || all.Sessions[0].Input != 30 {
+	if all.From != today.AddDate(0, 0, -3).Format(time.DateOnly) || len(all.AllSessions()) != 1 || all.AllSessions()[0].Input != 30 {
 		t.Fatalf("all-time gateway history missing: %+v", all)
 	}
 	view := all.Overview("", "", "", 8)
@@ -112,7 +112,7 @@ func TestGatewaySessionHistoryAndCalendar(t *testing.T) {
 		t.Fatalf("gateway daily output missing: %v", view.Output)
 	}
 	window := combinedSessionStats(2)
-	if len(window.Sessions) != 1 || window.Sessions[0].Input != 10 {
+	if ws := window.AllSessions(); len(ws) != 1 || ws[0].Input != 10 {
 		t.Fatalf("two-day window includes older requests: %+v", window)
 	}
 }
@@ -149,7 +149,7 @@ func TestGatewaySessionsNativeWinsBeforeLimits(t *testing.T) {
 		t.Fatalf("limit exposed a duplicate gateway projection: %s", w.Body)
 	}
 	st := combinedSessionStats(2)
-	if len(st.Sessions) != 1 || st.Sessions[0].ID != "new-native" || st.Sessions[0].Input != 10 {
-		t.Fatalf("date window exposed a duplicate gateway projection: %+v", st.Sessions)
+	if all := st.AllSessions(); len(all) != 1 || all[0].ID != "new-native" || all[0].Input != 10 {
+		t.Fatalf("date window exposed a duplicate gateway projection: %+v", all)
 	}
 }

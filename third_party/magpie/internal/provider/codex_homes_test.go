@@ -108,7 +108,9 @@ func TestCodexOtherHomeAccountReadsQuota(t *testing.T) {
 	if now, _ := os.ReadFile(filepath.Join(home, ".codex", "auth.json")); string(now) != string(mainAuth) {
 		t.Errorf("~/.codex/auth.json was rewritten: %s", now)
 	}
-	if err := ForgetLogin("codex", "work@example.com"); err == nil || !strings.Contains(err.Error(), "codex logout") {
+	// removed from magpie, ~/.codex-work left as it is
+	// (TestCodexHeldFolderAccountRemoved)
+	if err := ForgetLogin("codex", "work@example.com"); err != nil {
 		t.Errorf("remove the other folder's account: %v", err)
 	}
 }

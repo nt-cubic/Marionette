@@ -61,9 +61,14 @@ func redactedHits(ctx context.Context, w http.ResponseWriter, body []byte) (http
 	if err != nil {
 		return w, body, func() {}, maskHits{}, err
 	}
-	if o.h.n == 0 { // only values sent as written: told, nothing to put back
-		return w, body, func() {}, o.h, nil
+	if o.h.n == 0 { // only values sent as written: told, nothing masked
+		o.b = body
 	}
+	// put back even when this request masked nothing: a conversation
+	// the vendor holds part of (Codex's compaction, sealed in
+	// encrypted_content, a session kept on the vendor's side) has
+	// placeholders a turn of only new, unmasked words doesn't carry, and
+	// the model writes them back in its answer
 	rw, done := m.Writer(w)
 	done = toldBack(rw, done, &o.h)
 	return rw, o.b, done, o.h, nil
@@ -95,12 +100,13 @@ func redactedPrompt(ctx context.Context, w http.ResponseWriter, prompt string) (
 // redactedPromptHits is redactedPrompt with what it swapped.
 func redactedPromptHits(ctx context.Context, w http.ResponseWriter, prompt string) (http.ResponseWriter, string, func(), maskHits, error) {
 	m, masked, h, err := maskTextHits(ctx, prompt)
-	if err != nil {
-		return w, prompt, func() {}, maskHits{}, err
+	if err != nil || m == nil { // masking off: nothing to put back
+		return w, prompt, func() {}, h, err
 	}
 	if h.n == 0 {
-		return w, prompt, func() {}, h, nil
+		masked = prompt
 	}
+	// put back even with nothing masked, as redactedHits does
 	rw, done := m.Writer(w)
 	done = toldBack(rw, done, &h)
 	return rw, masked, done, h, nil
@@ -403,6 +409,11 @@ func maskRouteFor(r *http.Request, h maskHits) string {
 // A turn held back (redact.Block) is left to be held back there.
 func codexMaskRoute(r *http.Request, rest string, body []byte) string {
 	if rest != "/responses" || !MaskRoute(settings.Shared().RedactRouteTo) {
+		return ""
+	}
+	// one the user set to go unmasked goes there as written anyway
+	// (codexUpstreamOn), and stays on it
+	if !apiKey(r.Header) && codexRouteUnmasked(nil) {
 		return ""
 	}
 	_, _, _, hits, err := redactedHits(r.Context(), httptest.NewRecorder(), body)

@@ -223,7 +223,14 @@ func windowHolds(qs []provider.SubscriptionQuota, now, first time.Time, priceOf 
 		}
 		// who answered, not who a merge shows it under (Renames.Own)
 		r.Provider = renamed.Own(r.Provider, r.Time)
-		acct := r.Provider + "\x00" + strings.ToLower(r.Account())
+		// the call answers as the account it went out as, or, when it went
+		// on a key (which names no account, #557), as the key: a plan's
+		// card is on the key, named as the ledger names it (#3747)
+		who := r.Account()
+		if who == "" {
+			who = r.ProviderKeyName
+		}
+		acct := r.Provider + "\x00" + strings.ToLower(who)
 		var runs []runKey
 		for i, d := range dry[acct] {
 			if !d.holds(r.Time) {

@@ -17,6 +17,12 @@ const (
 	zcodeFlashTrialEnded = `{"type":"error","error":{"type":"invalid_request_error","message":"ZCode has no active limited quota for GLM-5.3-Flash-Trial"}}`
 	zcodeTrialEnded      = `{"type":"error","error":{"type":"invalid_request_error","message":"ZCode has no active limited quota for GLM-5.3-Trial"}}`
 	zcodeTrialSpent      = `{"type":"error","error":{"type":"rate_limit_error","message":"ZCode's limited quota for glm-5.3 is exhausted or temporarily unavailable"}}`
+	// zcode.z.ai's edge firewall's block page, as the plugin's startBlocked
+	// puts it (windy_66454 on Discord, 10-31: "405 Method Not Allowed — the
+	// provider's network firewall blocked …"), and ZCode's risk control
+	// blocking the account (code 3012, plugins#348)
+	zcodeStartEdge = `{"type":"error","error":{"type":"permission_error","message":"405 Method Not Allowed — the provider's network firewall blocked requests from this IP; wait a while, or switch to another network or proxy"}}`
+	zcodeStartRisk = `{"type":"error","error":{"type":"permission_error","message":"request has been blocked due to unusual activity. (405, code 3012) — ZCode's risk control blocked this account for unusual activity (code 3012); it rests, and the group's other providers are used. If the ZCode app fails on this account too, only ZCode support can lift the block"}}`
 )
 
 // A ZCode account's Start Plan trial entry that ended, or whose bucket is
@@ -46,6 +52,15 @@ func TestZCodeTrialRefusalRestsTheTrialAlone(t *testing.T) {
 		{"not a trial", "zcode", "GLM-5.3", `{"type":"error","error":{"type":"invalid_request_error","message":"ZCode has no active limited quota for GLM-5.3"}}`, 400, false, true},
 		{"ended words on a 429", "zcode", "GLM-5.3-Trial", zcodeTrialEnded, 429, false, true},
 		{"another vendor's words", "factory", "GLM-5.3-Trial", zcodeTrialEnded, 400, false, true},
+		// a trial entry goes to zcode.z.ai's Start Plan, and a dual
+		// account's GLM Coding Plan to api.z.ai: zcode.z.ai's firewall
+		// blocking the trial says nothing of the plan's host, so the trial
+		// rests alone and the plan's model is asked. Blocking the plain
+		// model, or the account's own risk control, rests the account
+		{"trial edge block", "zcode", "GLM-5.3-Flash-Trial", zcodeStartEdge, 405, true, false},
+		{"plain edge block", "zcode", "GLM-5.3", zcodeStartEdge, 405, false, true},
+		{"trial risk control", "zcode", "GLM-5.3-Flash-Trial", zcodeStartRisk, 405, true, true},
+		{"another vendor's block", "factory", "GLM-5.3-Trial", zcodeStartEdge, 405, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// a ZCode list with no free model, which would rest a paid

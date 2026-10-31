@@ -58,8 +58,9 @@ func TestSuffixMode(t *testing.T) {
 	if s := settings.Load(); SuffixMode() != SuffixOff || !s.PlainNames || s.PlainOwnNames || touched != 2 {
 		t.Fatalf("off: %q %+v, told %d", SuffixMode(), s, touched)
 	}
-	// b's sol and the group found for it would both read "Sol": they keep theirs
-	if got := codex(); !slices.Equal(got, []string{"a/sol=My Sol", "auto/sol=Sol · routing group", "b/sol=Sol · B"}) {
+	// b's sol and the group found for it would both read "Sol": the group
+	// keeps "· routing group", which tells them apart
+	if got := codex(); !slices.Equal(got, []string{"a/sol=My Sol", "auto/sol=Sol · routing group", "b/sol=Sol"}) {
 		t.Fatalf("off: %q", got)
 	}
 

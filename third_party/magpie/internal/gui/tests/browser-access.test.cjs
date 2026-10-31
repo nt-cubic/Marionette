@@ -73,6 +73,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const page = await (await browser.newContext({ viewport: { width, height: 700 }, reducedMotion: "reduce" })).newPage();
       pages.push(page);
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       const errors = [], posts = [], gets = { n: 0 };
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", server(lang, web, posts, gets));

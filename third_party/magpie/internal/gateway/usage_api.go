@@ -27,7 +27,7 @@ const usageRefused = "magpie's usage is told to another machine only when magpie
 // heldKey: the request's gateway key is held to a budget, models or
 // accounts, and so sees only its own usage.
 func heldKey(who access.Identity) bool {
-	return who.KeyID != "" && (len(who.Limits()) > 0 || len(who.Models) > 0 || len(who.Accounts) > 0)
+	return who.KeyID != "" && (who.Limited() || len(who.Models) > 0 || len(who.Accounts) > 0)
 }
 
 // heldRefused is what a held key is told where this magpie's own accounts

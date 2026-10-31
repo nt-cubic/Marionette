@@ -32,7 +32,9 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -202,8 +204,10 @@ func usedPast(q SubscriptionQuota, share float64, now time.Time) bool {
 // one it is on: the account magpie moved it off, once that has room again
 // (back); else, when the one it is on is spent, the first of its other
 // accounts that are on in magpie, in the order they were saved, whose
-// allowance is known and not spent. A saved Claude account not read yet is
-// read then (readSpare). ok is false when the agent should stay.
+// allowance is known and not spent, or, when every one is past its line
+// too, the one with the most room left (roomLeft). A saved Claude account
+// not read yet is read then (readSpare). ok is false when the agent should
+// stay.
 func NextLogin(ctx context.Context, agent string) (from, to string, back, ok bool) {
 	if leftAlone(agent) {
 		return "", "", false, false // magpie has no say in its sign-in, or was told to leave it be
@@ -282,6 +286,13 @@ func NextLogin(ctx context.Context, agent string) (from, to string, back, ok boo
 	for user, q := range someLoginUsage(ctx, agent, users...) {
 		u[user] = q
 	}
+	// every spare past its line too: the one with the most room left, when
+	// it has more than the one it is on by roomMargin, so that the agent
+	// isn't moved to and fro between two all but even; else it stays
+	best, most := "", math.Inf(-1)
+	if !q.Held {
+		most = roomLeft(q, share, AccountCapsOf(agent, from), now) + roomMargin
+	}
 	for _, l := range spares {
 		q, known := u[l.User]
 		if agent == "claude" && (!known || unreadSpare(q)) {
@@ -290,11 +301,103 @@ func NextLogin(ctx context.Context, agent string) (from, to string, back, ok boo
 			// a time and only till one has room
 			q, known = readSpare(ctx, l)
 		}
-		if known && q.Error == "" && !q.Held && !usedPast(q, share, now) && !capped(l.User, q) {
+		if !known || q.Error != "" || q.Held {
+			continue
+		}
+		if !usedPast(q, share, now) && !capped(l.User, q) {
 			return from, l.User, false, true
 		}
+		if r := roomLeft(q, share, AccountCapsOf(agent, l.User), now); r > most {
+			best, most = l.User, r
+		}
+	}
+	if best != "" {
+		return from, best, false, true
 	}
 	return "", "", false, false
+}
+
+// roomMargin is how much more room (roomLeft) an account past its line
+// needs than the one the agent is on, past its line too, to be moved to.
+const roomMargin = 1
+
+// roomLeft is how far the fullest of q's windows that stop the account for
+// every model is below the line it is moved off at: its own usage cap
+// (account_caps.go) when that is lower, else share. Below zero when it is
+// past the line; a window renewed since it was read, or none, leaves the
+// whole line.
+func roomLeft(q SubscriptionQuota, share float64, caps WindowCaps, now time.Time) float64 {
+	room := share
+	for _, w := range q.Windows {
+		if w.Aside || w.Model != "" || w.Unlimited || resetPassed(w, now) {
+			continue
+		}
+		line := share
+		if c, _ := caps.Of(w.Name); c > 0 && float64(c) < line {
+			line = float64(c)
+		}
+		room = min(room, line-w.Used)
+	}
+	return room
+}
+
+// NextInOrder is the account `magpie accounts switch <agent> next` signs
+// agent in to: of its other accounts the agent can be signed in to, taken
+// in their order from the one after the account it is on, the first whose
+// allowance is known and has room; when none has, the one with the most
+// room left (roomLeft), and over says so. A saved Claude account not read
+// yet is read then, as NextLogin's spares are.
+//
+// An account off in magpie is taken too, as switching to it by name or
+// from the accounts list is: on/off is whether the gateway's requests go
+// to it, not whether the agent may be signed in to it. An account the
+// agent signed itself in to (Claude Code's /login, codex login) starts
+// off, and next passed over it (StringKe, #4532). The automatic switch
+// (NextLogin) still takes only accounts that are on.
+func NextInOrder(ctx context.Context, agent string) (to string, over bool, err error) {
+	if !slices.Contains(loginAgents, agent) {
+		return "", false, fmt.Errorf("next switches Claude Code's and Codex's accounts; name the %s account to switch to", agent)
+	}
+	ls := Logins(agent)
+	at := slices.IndexFunc(ls, func(l Login) bool { return l.Active })
+	var order []Login
+	for i := range ls {
+		l := ls[(at+1+i)%len(ls)]
+		if !l.Active && l.Lapsed == "" && switchable(l) {
+			order = append(order, l)
+		}
+	}
+	if len(order) == 0 {
+		return "", false, fmt.Errorf("%s has no other account in magpie to switch to", agent)
+	}
+	users := make([]string, 0, len(order))
+	for _, l := range order {
+		users = append(users, l.User)
+	}
+	share, _ := loginSwitching(agent)
+	u := someLoginUsage(ctx, agent, users...)
+	now := time.Now()
+	best, most := "", math.Inf(-1)
+	for _, l := range order {
+		q, known := u[l.User]
+		if agent == "claude" && (!known || unreadSpare(q)) {
+			q, known = readSpare(ctx, l)
+		}
+		if !known || q.Error != "" || q.Held {
+			continue
+		}
+		caps := AccountCapsOf(agent, l.User)
+		if !usedPast(q, share, now) && !capReached(q, caps, now) {
+			return l.User, false, nil
+		}
+		if r := roomLeft(q, share, caps, now); r > most {
+			best, most = l.User, r
+		}
+	}
+	if best == "" {
+		return "", false, fmt.Errorf("magpie has no reading of %s's other accounts' usage: name the one to switch to (magpie accounts switch %s <email>)", agent, agent)
+	}
+	return best, true, nil
 }
 
 // unreadSpare says q, a saved Claude account's reading, has nothing to go

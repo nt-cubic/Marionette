@@ -210,7 +210,7 @@ func Forward(from, to string) error {
 
 // Settled clears, in the installed magpie Forward opened, what magpie left
 // beside the exe it was installed from: what updates moved aside there,
-// and the magpie.com or magpie.cmd magpie wrote there to run it, which
+// an update downloaded for it (magpie.exe.new), and the magpie.com or magpie.cmd magpie wrote there to run it, which
 // the `magpie` on PATH is now. A file it didn't write, or wrote for
 // another program, is left.
 func Settled() {
@@ -224,6 +224,9 @@ func Settled() {
 
 func clearBeside(from string) {
 	RemoveOld(from)
+	// an update the download had fetched is never put in now: the
+	// installed one updates itself
+	removeStaged(from)
 	dir := filepath.Dir(from)
 	if p := filepath.Join(dir, comName); comRuns(p, from) {
 		RemoveOld(p)

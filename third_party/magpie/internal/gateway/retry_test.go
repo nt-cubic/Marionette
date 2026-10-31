@@ -165,6 +165,8 @@ func TestStreamErrorBeforeContentFailsOver(t *testing.T) {
 		{`: keep-alive`, eventLead},
 		{`data: {"id":"c","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}`, eventLead},
 		{`data: {"id":"c","choices":[{"index":0,"delta":{"content":"hi"}}]}`, eventContent},
+		{`data: {"id":"c","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`, eventContent},
+		{`data: {"id":"c","choices":[{"index":0,"delta":{},"finish_reason":"error"}]}`, eventError},
 		{`data: {"error":{"message":"upstream failed"}}`, eventError},
 		{`event: response.created` + "\n" + `data: {"type":"response.created","response":{"id":"r"}}`, eventLead},
 		{`event: codex.rate_limits` + "\n" + `data: {"type":"codex.rate_limits","plan_type":"plus","rate_limits":{"allowed":true}}`, eventLead},
@@ -175,6 +177,43 @@ func TestStreamErrorBeforeContentFailsOver(t *testing.T) {
 		if k, _, _ := streamEvent([]byte(x.ev)); k != x.kind {
 			t.Errorf("streamEvent(%s) = %d, want %d", x.ev, k, x.kind)
 		}
+	}
+}
+
+// A 200 stream a vendor ends with finish_reason "error" — the word
+// WorkBuddy's and a DeepSeek harness's replies carry when the turn is not
+// finished but failed (#2471) — is the failure it says, held for the
+// group's next member as an error event before content is, and nobody
+// rests: the reply's shape failed, not the account, as one that looped
+// (#1359).
+func TestFinishReasonErrorFailsOver(t *testing.T) {
+	fresh(t)
+	broken := sse(`data: {"id":"c","choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
+		`data: {"id":"c","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":0,"total_tokens":5}}`,
+		`data: [DONE]`)
+	good := sse(`data: {"id":"c2","choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
+		`data: {"id":"c2","choices":[{"index":0,"delta":{"content":"from b"}}]}`,
+		`data: {"id":"c2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		`data: [DONE]`)
+	a := &scripted{replies: []reply{{200, "text/event-stream", broken}}}
+	b := &scripted{replies: []reply{{200, "text/event-stream", good}}}
+	scriptedOn(t, "a", provider.Chat, a)
+	scriptedOn(t, "b", provider.Chat, b)
+	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"a/m", "b/m"}, Routing: provider.Ordered}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	code, body := postAs(t, s, "", `{"model":"group/g","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if code != 200 || !strings.Contains(body, "from b") || strings.Contains(body, `"error"`) {
+		t.Fatalf("%d %s %+v", code, body, s.trace.routes[len(s.trace.routes)-1])
+	}
+	if a.n != 1 || b.n != 1 {
+		t.Fatalf("a asked %d, b asked %d", a.n, b.n)
+	}
+	r := s.trace.routes[len(s.trace.routes)-1]
+	if len(r.Tries) != 2 || r.Tries[0].Status != 502 || r.Tries[0].Fail != failOther || r.Tries[0].Rest != nil ||
+		!strings.Contains(r.Tries[0].Error, `finish_reason "error"`) {
+		t.Fatalf("tries: %+v", r.Tries)
 	}
 }
 

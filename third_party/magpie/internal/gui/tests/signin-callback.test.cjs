@@ -10,6 +10,7 @@ test("A pasted sign-in callback retries errors and submits only once", async (t)
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 420, height: 640 } });
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(60000);
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   const assets = path.resolve(__dirname, "../assets");

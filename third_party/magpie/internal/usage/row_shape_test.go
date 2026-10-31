@@ -14,8 +14,8 @@ import (
 // and 140 of a row's 328 bytes were string ids most rows of a chunk repeat.
 // Packed and read back, every row is the row it was.
 func TestRowsOfOneSessionShareAShape(t *testing.T) {
-	if n := unsafe.Sizeof(packedRow{}); n > 184 {
-		t.Fatalf("a packed row is %d bytes, want 184 at most", n)
+	if n := unsafe.Sizeof(packedRow{}); n > 152 {
+		t.Fatalf("a packed row is %d bytes, want 152 at most", n)
 	}
 	at := time.Date(2026, 10, 21, 12, 0, 0, 0, time.Local)
 	c := &rowChunk{}
@@ -64,5 +64,29 @@ func TestRowTimesPastWhatARowKeeps(t *testing.T) {
 	got := c.row(0)
 	if got.Millis != math.MaxInt32 || got.Queued != math.MinInt32 || got.TTFT != 1500 {
 		t.Fatalf("read back Millis %d, Queued %d, TTFT %d; want %d, %d, 1500", got.Millis, got.Queued, got.TTFT, int64(math.MaxInt32), int64(math.MinInt32))
+	}
+}
+
+// A row's tokens are kept in 32 bits and its time as ns beside its zone:
+// a count past 2^31 is kept as the most an int32 holds, not wrapped, and
+// packed and read back, the time is the instant it was in the zone it
+// was, and a zero time stays zero.
+func TestRowTokensAndZoneKept(t *testing.T) {
+	zone := time.FixedZone("IST", 5*3600+1800)
+	at := time.Date(2026, 10, 21, 12, 0, 0, 123, zone)
+	c := &rowChunk{}
+	c.add(Row{Record: Record{Time: at, Input: 3_000_000_000, Output: -3_000_000_000, CacheRead: 7}}, "", 0, false)
+	c.add(Row{Record: Record{Input: 1}}, "", 1, false)
+	for _, c := range []*rowChunk{c, c.pack().unpack()} {
+		got := c.row(0)
+		if got.Input != math.MaxInt32 || got.Output != math.MinInt32 || got.CacheRead != 7 {
+			t.Fatalf("read back Input %d, Output %d, CacheRead %d; want %d, %d, 7", got.Input, got.Output, got.CacheRead, math.MaxInt32, math.MinInt32)
+		}
+		if !got.Time.Equal(at) || got.Time.Location() != zone || got.Time.Format(time.RFC3339Nano) != at.Format(time.RFC3339Nano) {
+			t.Fatalf("read back time %v in %v, want %v", got.Time, got.Time.Location(), at)
+		}
+		if z := c.row(1).Time; !z.IsZero() {
+			t.Fatalf("a zero time read back as %v", z)
+		}
 	}
 }

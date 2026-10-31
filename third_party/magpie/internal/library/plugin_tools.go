@@ -151,11 +151,8 @@ func (l *Library) hubAgents() []string {
 		return out
 	}
 	for _, s := range l.MCP {
-		if !inHub(s) {
-			continue
-		}
 		for _, a := range s.Agents {
-			if !slices.Contains(out, a) {
+			if inHub(s, a) && !slices.Contains(out, a) {
 				out = append(out, a)
 			}
 		}

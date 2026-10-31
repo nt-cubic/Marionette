@@ -376,9 +376,11 @@ func InstallAsAdmin(staged, bundle string) error {
 // window when window is set, else only its menu bar icon (`tray`, as a
 // login launch), which a restart by itself uses while no window was up.
 // Each try, and what it came to, is written to relaunch.log in magpie's
-// own folder.
-func Relaunch(bundle string, window bool) error {
-	return runAfterExit(os.Getpid(), relaunchCommand(bundle, window, relaunchLog()))
+// own folder. quiet, the restart is one magpie made by itself: the app
+// opens in the background (open -g), as it does too with no window, so it
+// takes no focus from the app the user is in (relaunchOpen).
+func Relaunch(bundle string, window, quiet bool) error {
+	return runAfterExit(os.Getpid(), relaunchCommand(bundle, window, quiet, relaunchLog()))
 }
 
 // openWaits are the pauses, in seconds, between tries of the relaunch's
@@ -420,12 +422,12 @@ func relaunchLog() string {
 // even with the 13s of tries (molvqingtai, after fb23bca5c): LaunchServices
 // can go on refusing the open for as long as the session is locked, and a
 // program run by its path needs nothing from it to start.
-func relaunchCommand(bundle string, window bool, log string) string {
-	return relaunchScript(bundle, window, log, openWaits)
+func relaunchCommand(bundle string, window, quiet bool, log string) string {
+	return relaunchScript(bundle, window, quiet, log, openWaits)
 }
 
 // relaunchScript is relaunchCommand with the pauses between opens.
-func relaunchScript(bundle string, window bool, log string, waits []string) string {
+func relaunchScript(bundle string, window, quiet bool, log string, waits []string) string {
 	if log == "" {
 		log = os.DevNull
 	}
@@ -438,7 +440,7 @@ func relaunchScript(bundle string, window bool, log string, waits []string) stri
 	b.WriteString("log=" + shellQuote(log) + "; ")
 	b.WriteString(`note() { echo "$(date '+%Y-%m-%d %H:%M:%S %z') $*" >> "$log" 2>/dev/null; }; `)
 	// open's own exit status and what it said, on one line
-	b.WriteString(`try() { n=$((n+1)); e=$(` + relaunchOpen(bundle, window) + ` 2>&1 >/dev/null); s=$?; note "open try $n: exit $s $(printf '%s' "$e" | tr '\n' ' ')"; return $s; }; `)
+	b.WriteString(`try() { n=$((n+1)); e=$(` + relaunchOpen(bundle, window, quiet) + ` 2>&1 >/dev/null); s=$?; note "open try $n: exit $s $(printf '%s' "$e" | tr '\n' ' ')"; return $s; }; `)
 	b.WriteString("n=0; note " + shellQuote("magpie has exited; opening "+bundle) + "; ")
 	b.WriteString(retried("try", waits))
 	b.WriteString(" || { note \"open gave up after $n tries; starting \"" + shellQuote(run) + "; ")
@@ -501,11 +503,27 @@ func runAfterExit(pid int, command string) error {
 // macOS 27.0.1, v0.1.1308), as often as it is tried. A magpie that is in
 // fact up still has the one instance: the new process finds the instance
 // lock held and hands over to it (runningAlready in internal/gui).
-func relaunchOpen(bundle string, window bool) string {
-	if window {
-		return fmt.Sprintf("open -n %q", bundle)
+//
+// -g opens it in the background, unless it comes back with its window on
+// a restart the user asked for. Without it, LaunchServices brings magpie
+// to the front as it starts: a restart into an update with only the menu
+// bar icon to come back, or one magpie made by itself (Settings'
+// AutoRestart), took the focus from the app the user was typing in
+// (xyxyxy_15591 on Discord).
+func relaunchOpen(bundle string, window, quiet bool) string {
+	return openCommand(bundle, window, quiet)
+}
+
+// openCommand is the open of relaunchOpen and openBeside.
+func openCommand(bundle string, window, quiet bool) string {
+	g := ""
+	if quiet || !window {
+		g = "-g "
 	}
-	return fmt.Sprintf("open -n %q --args tray", bundle)
+	if window {
+		return fmt.Sprintf("open -n %s%q", g, bundle)
+	}
+	return fmt.Sprintf("open -n %s%q --args tray", g, bundle)
 }
 
 // ReplaceBinary puts the release's build for this binary where the
@@ -526,8 +544,8 @@ func ReplaceBinary(ctx context.Context, rel *Release) error {
 	return err
 }
 
-// StageBinary downloads the release's build for this binary next to it (or
-// to the cache, where magpie may not write there), ready for InstallBinary.
+// StageBinary downloads the release's build for this binary out of sight
+// (binaryStage), ready for InstallBinary.
 func StageBinary(ctx context.Context, rel *Release) (string, error) {
 	a, ok := rel.Assets[BinaryAsset()]
 	if !ok {
@@ -537,22 +555,117 @@ func StageBinary(ctx context.Context, rel *Release) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	tmp := exe + ".new"
-	if !Writable(filepath.Dir(exe)) {
-		dir := stageDir(filepath.Dir(exe))
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return "", err
-		}
-		tmp = filepath.Join(dir, filepath.Base(exe)+".new")
+	return stageBinaryFor(ctx, a, exe)
+}
+
+func stageBinaryFor(ctx context.Context, a Asset, exe string) (string, error) {
+	tmp, err := binaryStage(exe)
+	if err != nil {
+		return "", err
 	}
 	if err := download(ctx, a, tmp); err != nil {
+		dropStage(tmp)
 		return "", err
 	}
 	if err := os.Chmod(tmp, 0o755); err != nil {
 		os.Remove(tmp)
+		dropStage(tmp)
 		return "", err
 	}
 	return tmp, nil
+}
+
+// The GUI downloads an update when it is out and swaps it in at the next
+// restart, which may be days later. It was downloaded beside the program
+// as magpie.exe.new, so a magpie kept on the Desktop showed the download
+// there, and deleted, it came back with the next check (nianshou5 on
+// Discord). It is downloaded to magpie's cache now, in a folder of this
+// program's own, whenever a rename from there reaches the program's
+// folder, which is what puts it in; else (the cache on another volume)
+// into a hidden .magpie-update folder beside the program. Where magpie may
+// not write beside the program, it goes to the cache as before, to be
+// moved in with the administrator's password.
+
+// besideStage is the hidden folder beside the program an update is
+// downloaded into when no rename from the cache reaches the program.
+const besideStage = ".magpie-update"
+
+// stageCache is magpie's cache folder; tests set it.
+var stageCache = appdir.SystemCache
+
+// binaryStage is the file StageBinary downloads exe's new build to, its
+// folder made.
+func binaryStage(exe string) (string, error) {
+	dir, name := filepath.Dir(exe), filepath.Base(exe)+".new"
+	if !Writable(dir) {
+		d := stageDir(dir)
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return "", err
+		}
+		return filepath.Join(d, name), nil
+	}
+	if d := cacheStage(exe); d != "" && os.MkdirAll(d, 0o755) == nil {
+		if renamesInto(d, dir) {
+			return filepath.Join(d, name), nil
+		}
+		os.Remove(d)
+	}
+	d := filepath.Join(dir, besideStage)
+	if err := os.MkdirAll(d, 0o755); err != nil {
+		return "", err
+	}
+	hide(d)
+	return filepath.Join(d, name), nil
+}
+
+// cacheStage is exe's own folder in the cache for its downloads, "" with
+// no cache: two copies of magpie (a portable one and the installed one)
+// never share one.
+func cacheStage(exe string) string {
+	cache, err := stageCache()
+	if err != nil || cache == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(strings.ToLower(filepath.Clean(exe))))
+	return filepath.Join(cache, "update", hex.EncodeToString(sum[:6]))
+}
+
+// renamesInto says whether a file in from can be renamed into dir: the
+// same volume, which a move that can't fail half way needs.
+func renamesInto(from, dir string) bool {
+	f, err := os.CreateTemp(from, ".magpie-update-*")
+	if err != nil {
+		return false
+	}
+	f.Close()
+	to := filepath.Join(dir, filepath.Base(f.Name()))
+	if err := os.Rename(f.Name(), to); err != nil {
+		os.Remove(f.Name())
+		return false
+	}
+	os.Remove(to)
+	return true
+}
+
+// dropStage removes the folder a staged download was in once it is empty,
+// when it is one binaryStage made.
+func dropStage(staged string) {
+	d := filepath.Dir(staged)
+	if filepath.Base(d) == besideStage || (len(filepath.Base(d)) == 12 && filepath.Base(filepath.Dir(d)) == "update") {
+		os.Remove(d)
+	}
+}
+
+// stagedFiles are the places a download of exe's next build may be: where
+// binaryStage puts it, and beside exe as exe.new, where earlier versions
+// put it.
+func stagedFiles(exe string) []string {
+	name := filepath.Base(exe) + ".new"
+	out := []string{exe + ".new", filepath.Join(filepath.Dir(exe), besideStage, name)}
+	if d := cacheStage(exe); d != "" {
+		out = append(out, filepath.Join(d, name))
+	}
+	return out
 }
 
 // InstallBinary swaps a staged binary in for exe, the running one, which
@@ -576,6 +689,7 @@ func InstallBinaryAside(staged, exe string) (string, error) {
 		if !trialled.passed(staged) {
 			if err := canStart(staged); err != nil {
 				os.Remove(staged)
+				dropStage(staged)
 				return "", &BlockedError{Err: err}
 			}
 			trialled.note(staged)
@@ -603,9 +717,11 @@ func InstallBinaryAside(staged, exe string) (string, error) {
 			}
 		} else if !NeedsAdmin(err) { // kept for InstallBinaryAsAdmin
 			os.Remove(staged)
+			dropStage(staged)
 		}
 		return "", err
 	}
+	dropStage(staged)
 	return old, nil
 }
 
@@ -786,17 +902,30 @@ func Replaced(exe string, started os.FileInfo) bool {
 	return err == nil && started != nil && (now.Size() != started.Size() || !now.ModTime().Equal(started.ModTime()))
 }
 
-// RemoveStaleNew removes exe.new when it is exe over again: the update a
-// magpie left running from before it downloaded once more.
+// RemoveStaleNew removes a download of exe's next build (stagedFiles)
+// that is no newer than exe: exe over again (the update a magpie left
+// running from before it downloaded once more), or an older version a
+// swap never put in. A newer one, which a magpie still running may yet
+// put in, stays.
 func RemoveStaleNew(exe string) {
-	staged := exe + ".new"
-	a, err1 := os.Stat(exe)
-	b, err2 := os.Stat(staged)
-	if err1 != nil || err2 != nil || a.Size() != b.Size() {
-		return
+	mine := fileVersion(exe)
+	for _, staged := range stagedFiles(exe) {
+		if !exists(staged) {
+			continue
+		}
+		if v := fileVersion(staged); sameBytes(exe, staged) || (mine != 0 && v != 0 && v <= mine) {
+			os.Remove(staged)
+		}
+		dropStage(staged)
 	}
-	if ha, hb := fileHash(exe), fileHash(staged); ha != "" && ha == hb {
+}
+
+// removeStaged removes every download of exe's next build: what nothing
+// will put in.
+func removeStaged(exe string) {
+	for _, staged := range stagedFiles(exe) {
 		os.Remove(staged)
+		dropStage(staged)
 	}
 }
 
@@ -1056,20 +1185,18 @@ func Alive(pid int) bool { return alive(pid) }
 // OpenBeside opens bundle now, a new instance beside this one (open -n),
 // tried again while open fails: a restart that hands the gateway over
 // (internal/handoff) starts the new version before this one quits. With
-// window, its window; else its menu bar icon only, as Relaunch.
-func OpenBeside(bundle string, window bool) error {
-	cmd := proc.Command("/bin/sh", "-c", retried(openBeside(bundle, window), openWaits))
+// window, its window; else its menu bar icon only, as Relaunch, in the
+// background as Relaunch's when quiet or with no window.
+func OpenBeside(bundle string, window, quiet bool) error {
+	cmd := proc.Command("/bin/sh", "-c", retried(openBeside(bundle, window, quiet), openWaits))
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
 	detach(cmd)
 	return cmd.Start()
 }
 
 // openBeside is the open command OpenBeside runs for bundle.
-func openBeside(bundle string, window bool) string {
-	if window {
-		return fmt.Sprintf("open -n %q", bundle)
-	}
-	return fmt.Sprintf("open -n %q --args tray", bundle)
+func openBeside(bundle string, window, quiet bool) string {
+	return openCommand(bundle, window, quiet)
 }
 
 // StartBeside starts exe now, beside this process, as RelaunchBinary's

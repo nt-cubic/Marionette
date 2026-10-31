@@ -100,6 +100,40 @@ func TestCodexNewSessionEffortLastsModelSwitch(t *testing.T) {
 	}
 }
 
+// An effort picked in the Codex app keeps the app running. The app saves
+// it as model_reasoning_effort, the catalog's default_reasoning_level
+// follows it (above), and the next sync rewrote the catalog. The route the
+// app's app-server is ended on (codex_app_server.go) hashed the catalog's
+// bytes, so each pick ended it a few minutes later, and the ChatGPT app
+// read that as a crash and relaunched (indekkusu141209 on X, #4550). The
+// route is where requests go, never the list: the app reads a new list at
+// its next launch.
+func TestCodexEffortPickKeepsTheAppRunning(t *testing.T) {
+	home, read := codexHome(t, "", "model_reasoning_effort = \"xhigh\"\n")
+	effortModels(t)
+	cx := codex(home)
+	if err := cx.Fields[0].Set("volc/all-five"); err != nil {
+		t.Fatal(err)
+	}
+	cat := filepath.Join(home, ".codex", "magpie-models.json")
+	listed, _ := os.ReadFile(cat)
+	before, _, known := codexAppRoute()
+	if !known {
+		t.Fatal("route not known")
+	}
+	// as the Codex app saves a pick of its own
+	if err := edit.SetTOMLTop(filepath.Join(home, ".codex", "config.toml"), edit.KV{Path: "model_reasoning_effort", Value: "low"}); err != nil {
+		t.Fatal(err)
+	}
+	SyncCatalog()
+	if now, _ := os.ReadFile(cat); string(now) == string(listed) {
+		t.Fatalf("the effort didn't reach the catalog, so this tests nothing:\n%s", read())
+	}
+	if r, _, _ := codexAppRoute(); r != before {
+		t.Fatalf("an effort picked in the Codex app changed its route: its app-server is ended for it\n%s", read())
+	}
+}
+
 // Grok Build: a model picked without the chosen level starts at its
 // nearest, not at Grok's default.
 func TestGrokNewSessionEffortLastsModelSwitch(t *testing.T) {

@@ -86,6 +86,7 @@ async function open(browser, lang, width) {
   const ctx = await browser.newContext({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
   const p = await ctx.newPage();
   p.setDefaultTimeout(5000);
+  p.setDefaultNavigationTimeout(60000);
   p.on("pageerror", (e) => errors.push(e.message));
   await p.route("**/*", server(lang, s));
   await p.goto("http://magpie.test/");

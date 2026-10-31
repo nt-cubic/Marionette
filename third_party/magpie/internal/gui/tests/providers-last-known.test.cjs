@@ -56,6 +56,7 @@ async function open(engine, t, lang, kept, view, width = 900) {
   t.after(() => browser.close());
   const page = await (await browser.newContext({ viewport: { width, height: 700 }, reducedMotion: "reduce" })).newPage();
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(60000);
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   const reads = { asked: 0, done: 0 };

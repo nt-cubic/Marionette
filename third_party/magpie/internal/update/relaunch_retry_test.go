@@ -62,14 +62,15 @@ func tries(dir string) int {
 func TestRelaunchOpenTriedAgain(t *testing.T) {
 	dir := fakeOpen(t, 2)
 	bundle := filepath.Join(t.TempDir(), "magpie.app")
-	if err := runAfterExit(gonePid(t), relaunchCommand(bundle, false, filepath.Join(t.TempDir(), relaunchLogName))); err != nil {
+	if err := runAfterExit(gonePid(t), relaunchCommand(bundle, false, false, filepath.Join(t.TempDir(), relaunchLogName))); err != nil {
 		t.Fatal(err)
 	}
 	opened := filepath.Join(dir, "opened")
 	for end := time.Now().Add(30 * time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
 		if b, err := os.ReadFile(opened); err == nil && len(b) > 0 {
-			// -n: a new instance, not a reopen sent to the gone one
-			if got, want := strings.TrimSpace(string(b)), "-n "+bundle+" --args tray"; got != want {
+			// -n: a new instance, not a reopen sent to the gone one; -g: in the
+			// background, as only the menu bar icon comes back
+			if got, want := strings.TrimSpace(string(b)), "-n -g "+bundle+" --args tray"; got != want {
 				t.Fatalf("opened %q, want %q", got, want)
 			}
 			if n := tries(dir); n != 3 {

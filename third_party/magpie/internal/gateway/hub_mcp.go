@@ -3,11 +3,17 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
+	"net/url"
+	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/yetone/magpie/internal/access"
+	"github.com/yetone/magpie/internal/sessions"
 )
 
 // The MCP hub (#2679): with the Library's switch on, magpie is the one MCP
@@ -37,6 +43,41 @@ type HubTool struct {
 	// inputSchema and the rest go to the agent as they are, its name
 	// replaced
 	Spec map[string]json.RawMessage
+	// Roots: the server writes into the agent's project (magpie-image),
+	// so a call is made with the agent's folders (HubCaller)
+	Roots bool
+}
+
+// HubCaller is who a call of a Roots tool is for: the folders the agent
+// said are its, as file URIs (none for an agent on another machine, whose
+// folders aren't here), and its User-Agent's product, the name the
+// server's own requests go under.
+type HubCaller struct {
+	Roots  []string
+	Client string
+}
+
+// The _meta keys a call of magpie's image server carries its caller in:
+// the roots, a list of file URIs (an empty one when the agent has none
+// here), and the client; and the one its result says the model it drew
+// with in (provider/model), for the hub's row of the call.
+const (
+	HubRootsMeta  = "magpie/roots"
+	HubClientMeta = "magpie/client"
+	HubModelMeta  = "magpie/model"
+)
+
+type hubCallerKey struct{}
+
+// WithHubCaller is ctx carrying caller c.
+func WithHubCaller(ctx context.Context, c HubCaller) context.Context {
+	return context.WithValue(ctx, hubCallerKey{}, c)
+}
+
+// HubCallerOf is the caller a hub call's ctx carries.
+func HubCallerOf(ctx context.Context) HubCaller {
+	c, _ := ctx.Value(hubCallerKey{}).(HubCaller)
+	return c
 }
 
 // Hub is the servers behind the hub: the library's.
@@ -156,6 +197,7 @@ func (s *Server) hubMCPCall(r *http.Request, agent string, m mcpMessage) (any, m
 		var p struct {
 			Name      string          `json:"name"`
 			Arguments json.RawMessage `json:"arguments"`
+			Meta      hubCallMeta     `json:"_meta"`
 		}
 		if err := json.Unmarshal(m.Params, &p); err != nil {
 			return nil, map[string]any{"code": -32602, "message": "invalid params: " + err.Error()}
@@ -165,6 +207,9 @@ func (s *Server) hubMCPCall(r *http.Request, agent string, m mcpMessage) (any, m
 		}
 		for _, t := range hubTools(r.Context(), agent) {
 			if t.name == p.Name {
+				if t.Roots {
+					r = r.WithContext(WithHubCaller(r.Context(), HubCaller{Roots: hubRoots(r, p.Meta), Client: hubClient(r)}))
+				}
 				return s.hubMCPRun(r, agent, t, p.Arguments), nil
 			}
 		}
@@ -202,7 +247,87 @@ func (s *Server) hubMCPRun(r *http.Request, agent string, t hubTool, args json.R
 		}
 		return toolResult("The MCP server "+t.Server+" couldn't run "+t.Tool+": "+why, true)
 	}
+	if t.Roots {
+		// magpie's image server draws through the gateway on its own
+		// connection, so its result names the model for this call's row
+		var m struct {
+			Meta struct {
+				Model string `json:"magpie/model"`
+			} `json:"_meta"`
+		}
+		json.Unmarshal(res, &m)
+		use.usedRef(m.Meta.Model)
+	}
 	return res
+}
+
+// hubCallMeta is what of a tool call's _meta the hub reads: the thread
+// Codex names its calls by, and the workspaces its turn metadata names
+// (the git repositories it works in, keyed by their folder).
+type hubCallMeta struct {
+	ThreadID string `json:"threadId"`
+	Turn     struct {
+		Workspaces map[string]json.RawMessage `json:"workspaces"`
+	} `json:"x-codex-turn-metadata"`
+}
+
+// hubRootsWait is how long the agent is given to say its roots.
+var hubRootsWait = 3 * time.Second
+
+// hubRoots are the folders of the agent calling, as file URIs: what it
+// answers roots/list with, asked on the call's own stream (Claude Code
+// answers), else the workspaces of Codex's turn the call names, else the
+// folder of the Codex thread it names (Codex declares no roots, and
+// answers none). An agent on another machine has none here.
+func hubRoots(r *http.Request, meta hubCallMeta) []string {
+	if !local(r) {
+		return nil
+	}
+	var roots []string
+	if m, err := askClient(r.Context(), "roots/list", nil, hubRootsWait); err == nil && len(m.Result) > 0 {
+		var res struct {
+			Roots []struct {
+				URI string `json:"uri"`
+			} `json:"roots"`
+		}
+		json.Unmarshal(m.Result, &res)
+		for _, root := range res.Roots {
+			if strings.HasPrefix(root.URI, "file:") {
+				roots = append(roots, root.URI)
+			}
+		}
+	}
+	if len(roots) == 0 {
+		// what the call says itself first; a thread's rollout is read
+		// only when it says no workspace (a folder that isn't a repository)
+		for _, dir := range slices.Sorted(maps.Keys(meta.Turn.Workspaces)) {
+			if filepath.IsAbs(dir) {
+				roots = append(roots, fileURI(dir))
+			}
+		}
+	}
+	if len(roots) == 0 && meta.ThreadID != "" {
+		if dir := sessions.CodexThreadCwd(meta.ThreadID); dir != "" {
+			roots = append(roots, fileURI(dir))
+		}
+	}
+	return roots
+}
+
+// fileURI is the file:// URI of folder dir: file:///C:/p for C:\p.
+func fileURI(dir string) string {
+	p := filepath.ToSlash(dir)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return (&url.URL{Scheme: "file", Path: p}).String()
+}
+
+// hubClient is the product a request's User-Agent starts with
+// (claude-code/2.1.314, codex-mcp-client/0.165.0).
+func hubClient(r *http.Request) string {
+	c, _, _ := strings.Cut(strings.TrimSpace(r.Header.Get("User-Agent")), " ")
+	return c
 }
 
 // hubPruneEvery is how often the gateway ends the servers the hub no

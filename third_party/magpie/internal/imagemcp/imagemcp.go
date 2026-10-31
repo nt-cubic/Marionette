@@ -136,6 +136,15 @@ type server struct {
 	running  sync.WaitGroup
 }
 
+// caller is who a tool call is made for: the agent that started this
+// server, or, behind magpie's MCP hub (one server for every agent), the
+// agent the hub's call carries in its _meta (gateway.HubRootsMeta).
+type caller struct {
+	hub   bool     // the call came through the hub
+	roots []string // the hub's caller's roots, file URIs
+	agent string   // the User-Agent the call's requests go under
+}
+
 // job is one image or video being made: it runs to its end whether or not
 // the call that started it is still waiting.
 type job struct {
@@ -290,6 +299,7 @@ func (s *server) handle(req rpc) {
 	var rpcErr any
 	began := time.Now()
 	var called *gateway.MCPCalled // a tool call, for the gateway's request log
+	var viaHub bool               // the hub's own row of the call is its request log's
 	var j *job
 	switch req.Method {
 	case "initialize":
@@ -329,6 +339,8 @@ func (s *server) handle(req rpc) {
 			Arguments json.RawMessage `json:"arguments"`
 			Meta      struct {
 				ProgressToken json.RawMessage `json:"progressToken"`
+				Roots         *[]string       `json:"magpie/roots"`
+				Client        string          `json:"magpie/client"`
 			} `json:"_meta"`
 		}
 		if err := json.Unmarshal(req.Params, &p); err != nil || (p.Name != tool && p.Name != videoTool && p.Name != resultTool) {
@@ -336,6 +348,16 @@ func (s *server) handle(req rpc) {
 			break
 		}
 		called = &gateway.MCPCalled{Tool: p.Name}
+		s.mu.Lock()
+		c := caller{agent: s.agent}
+		s.mu.Unlock()
+		if p.Meta.Roots != nil {
+			c.hub, c.roots = true, *p.Meta.Roots
+			if name := strings.TrimSpace(p.Meta.Client); name != "" {
+				c.agent = name + " " + gateway.DrawAgent
+			}
+		}
+		viaHub = c.hub
 		if p.Name == resultTool {
 			var a struct {
 				ID string `json:"id"`
@@ -353,17 +375,21 @@ func (s *server) handle(req rpc) {
 			if p.Name == videoTool {
 				generate = s.film
 			}
-			j = s.start(p.Name, func(j *job) (string, error) { return generate(p.Arguments, &j.model) })
+			j = s.start(p.Name, func(j *job) (string, error) { return generate(p.Arguments, &j.model, c) })
 		}
 		if !s.await(j, p.Meta.ProgressToken) {
 			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": stillGoing(j)}}}
 			break
 		}
+		res := map[string]any{"content": []any{map[string]any{"type": "text", "text": j.text}}}
 		if j.err != nil {
-			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": j.err.Error()}}, "isError": true}
-			break
+			res = map[string]any{"content": []any{map[string]any{"type": "text", "text": j.err.Error()}}, "isError": true}
 		}
-		result = map[string]any{"content": []any{map[string]any{"type": "text", "text": j.text}}}
+		if viaHub && j.model != "" {
+			// the hub's row of the call names the model, as report does
+			res["_meta"] = map[string]any{gateway.HubModelMeta: j.model}
+		}
+		result = res
 	default:
 		rpcErr = map[string]any{"code": -32601, "message": "method not found"}
 	}
@@ -374,7 +400,7 @@ func (s *server) handle(req rpc) {
 		out["result"] = result
 	}
 	s.send(out)
-	if called != nil {
+	if called != nil && !viaHub {
 		called.Millis = time.Since(began).Milliseconds()
 		if j != nil {
 			select {
@@ -421,7 +447,7 @@ type args struct {
 // generate asks the gateway for the images and saves them; what it says is
 // where they are. used, when not nil, is set to the model the gateway
 // named, provider/model.
-func (s *server) generate(raw json.RawMessage, used *string) (string, error) {
+func (s *server) generate(raw json.RawMessage, used *string, c caller) (string, error) {
 	var a args
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return "", err
@@ -430,7 +456,7 @@ func (s *server) generate(raw json.RawMessage, used *string) (string, error) {
 		return "", errors.New("prompt is required")
 	}
 	a.N = max(1, min(a.N, 4))
-	project := s.project()
+	project := s.project(c)
 	// the images themselves, not URLs to fetch: the gateway fetches one a
 	// vendor keeps through the vendor's own proxy, the way it just reached
 	// it (#1576)
@@ -464,9 +490,7 @@ func (s *server) generate(raw json.RawMessage, used *string) (string, error) {
 	r, _ := http.NewRequest(http.MethodPost, s.gateway+endpoint, bytes.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+gateway.Token)
-	s.mu.Lock()
-	r.Header.Set("User-Agent", s.agent)
-	s.mu.Unlock()
+	r.Header.Set("User-Agent", c.agent)
 	res, err := s.client.Do(r)
 	if err != nil {
 		return "", fmt.Errorf("magpie isn't answering at %s (is it running?): %w", s.gateway, err)
@@ -561,14 +585,23 @@ func (s *server) generate(raw json.RawMessage, used *string) (string, error) {
 }
 
 // project is the folder images are saved in: the client's first root when
-// it can say, else the folder the agent started magpie in. The home folder
-// or / isn't a project: ~/Pictures/Magpie is used then (the distro's, for
-// an agent in WSL).
-func (s *server) project() string {
-	if dir := s.root(); dir != "" {
+// it can say, else the folder the agent started magpie in; behind the hub,
+// the first of the roots the call carries. The home folder or / isn't a
+// project: ~/Pictures/Magpie is used then (the distro's, for an agent in
+// WSL), as it is when the hub's caller has no roots, since this server
+// was started in the home folder for every agent.
+func (s *server) project(c caller) string {
+	if c.hub {
+		if dir := rootOf(c.roots); dir != "" {
+			return dir
+		}
+	} else if dir := s.root(); dir != "" {
 		return dir
 	}
-	dir, _ := os.Getwd()
+	var dir string
+	if !c.hub {
+		dir, _ = os.Getwd()
+	}
 	if wsl != nil && wsl.home != "" {
 		if d := wsl.shown(dir); d == "" || d == "/" || strings.TrimSuffix(d, "/") == strings.TrimSuffix(wsl.home, "/") {
 			return wsl.local(strings.TrimSuffix(wsl.home, "/") + "/Pictures/Magpie")
@@ -603,18 +636,28 @@ func (s *server) root() string {
 			} `json:"roots"`
 		}
 		json.Unmarshal(m.Result, &r)
-		for _, root := range r.Roots {
-			if u, err := url.Parse(root.URI); err == nil && u.Scheme == "file" && u.Path != "" {
-				if wsl != nil {
-					return wsl.local(u.Path)
-				}
-				return filePath(u)
-			}
+		uris := make([]string, len(r.Roots))
+		for i, root := range r.Roots {
+			uris[i] = root.URI
 		}
+		return rootOf(uris)
 	case <-time.After(3 * time.Second):
 		s.mu.Lock()
 		delete(s.pending, id)
 		s.mu.Unlock()
+	}
+	return ""
+}
+
+// rootOf is the folder the first file:// URI of uris names, "" when none does.
+func rootOf(uris []string) string {
+	for _, uri := range uris {
+		if u, err := url.Parse(uri); err == nil && u.Scheme == "file" && u.Path != "" {
+			if wsl != nil {
+				return wsl.local(u.Path)
+			}
+			return filePath(u)
+		}
 	}
 	return ""
 }
@@ -792,16 +835,14 @@ func wholeSeconds(v any) (int, error) {
 	return 0, fmt.Errorf("seconds is a whole number from 1 to 15, not %v", v)
 }
 
-// call asks the gateway, as the agent.
-func (s *server) call(method, path string, body []byte) ([]byte, int, error) {
+// call asks the gateway, as the agent c is of.
+func (s *server) call(c caller, method, path string, body []byte) ([]byte, int, error) {
 	r, _ := http.NewRequest(method, s.gateway+path, bytes.NewReader(body))
 	if body != nil {
 		r.Header.Set("Content-Type", "application/json")
 	}
 	r.Header.Set("Authorization", "Bearer "+gateway.Token)
-	s.mu.Lock()
-	r.Header.Set("User-Agent", s.agent)
-	s.mu.Unlock()
+	r.Header.Set("User-Agent", c.agent)
 	res, err := s.client.Do(r)
 	if err != nil {
 		return nil, 0, fmt.Errorf("magpie isn't answering at %s (is it running?): %w", s.gateway, err)
@@ -827,7 +868,7 @@ func gatewaySaid(data []byte) string {
 // film asks the gateway to make a video, waits for it and saves it; what
 // it says is where it is. used, when not nil, is set to the model the
 // gateway named, provider/model.
-func (s *server) film(raw json.RawMessage, used *string) (string, error) {
+func (s *server) film(raw json.RawMessage, used *string, c caller) (string, error) {
 	var a filmArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return "", err
@@ -839,7 +880,7 @@ func (s *server) film(raw json.RawMessage, used *string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	project := s.project()
+	project := s.project(c)
 	req := map[string]any{"prompt": a.Prompt}
 	if strings.TrimSpace(a.Model) != "" {
 		m, err := s.mediaModel(videoTool, a.Model)
@@ -873,7 +914,7 @@ func (s *server) film(raw json.RawMessage, used *string) (string, error) {
 		req["reference_images"] = refs
 	}
 	body, _ := json.Marshal(req)
-	data, code, err := s.call(http.MethodPost, "/v1/videos", body)
+	data, code, err := s.call(c, http.MethodPost, "/v1/videos", body)
 	if err != nil {
 		return "", err
 	}
@@ -908,7 +949,7 @@ func (s *server) film(raw json.RawMessage, used *string) (string, error) {
 			return "", fmt.Errorf("the video (%s) wasn't ready after %s; ask the gateway for GET /v1/videos/%s later", id, videoWait, id)
 		}
 		time.Sleep(videoPollEvery)
-		data, code, err = s.call(http.MethodGet, "/v1/videos/"+id, nil)
+		data, code, err = s.call(c, http.MethodGet, "/v1/videos/"+id, nil)
 		if err != nil {
 			return "", err
 		}
@@ -924,7 +965,7 @@ func (s *server) film(raw json.RawMessage, used *string) (string, error) {
 			v.Model = prev
 		}
 	}
-	mp4, code, err := s.call(http.MethodGet, "/v1/videos/"+id+"/content", nil)
+	mp4, code, err := s.call(c, http.MethodGet, "/v1/videos/"+id+"/content", nil)
 	if err != nil {
 		return "", err
 	}

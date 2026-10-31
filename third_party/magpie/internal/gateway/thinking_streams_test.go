@@ -128,13 +128,14 @@ func TestThinkingStreamsThroughGroup(t *testing.T) {
 }
 
 // Claude's reasoning is still held for a refusal after it (#248) while
-// another candidate could answer, and so are OpenAI's and Gemini's;
-// anybody else's is let through.
+// another candidate could answer, and so are OpenAI's, Gemini's and
+// DeepSeek's (plugins #540); anybody else's is let through.
 func TestThinkingHeldFor(t *testing.T) {
 	for model, held := range map[string]bool{
 		"claude-opus-5-5": true, "anthropic/claude-sonnet-4.5": true, "gpt-5.2-codex": true, "o3": true,
 		"gemini-3-pro-preview": true, "models/gemini-2.5-flash": true,
-		"GLM-5.1": false, "glm-4.6": false, "deepseek-v4": false, "kimi-k2.5": false, "MiniMax-M2": false,
+		"deepseek-v4": true, "deepseek-v4.1-flash": true, "deepseek/deepseek-v4-pro": true,
+		"GLM-5.1": false, "glm-4.6": false, "kimi-k2.5": false, "MiniMax-M2": false,
 	} {
 		if got := refusesAfterThinking(model); got != held {
 			t.Errorf("%s: held %v, want %v", model, got, held)

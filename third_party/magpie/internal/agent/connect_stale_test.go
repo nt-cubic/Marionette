@@ -2,9 +2,12 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -251,5 +254,77 @@ func TestCodexStaleOnWindowsIsTheDaemonsLastCheck(t *testing.T) {
 	codexDaemonSeen.Unlock()
 	if got := copies(); len(got) != 0 {
 		t.Fatalf("an old check: %+v, want none", got)
+	}
+}
+
+// Qyburn3 on X: "为什么我每天好多次要重启" — the Codex row said 已接入 ·
+// 退出并重开 Codex 应用后生效 several times a day for a Codex app already
+// connected. Beside the ChatGPT sign-in magpie writes the app's list
+// (magpie-desktop-models.json) with the backend's entries as it sends
+// them, asked for again each hour, and every entry's details follow
+// magpie's version and models.dev; each rewrite counted as a change to
+// reopen for. Only a change in which models the lists hold (or where the
+// config sends Codex) does; a stash an older magpie wrote over the same
+// files is taken as it is.
+func TestCodexStaleNotForAListsDetails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip(staleOnWindows)
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Setenv("CODEX_HOME", "")
+	dir := filepath.Join(home, ".codex")
+	os.MkdirAll(dir, 0o755)
+	cfg := filepath.Join(dir, "config.toml")
+	desk := filepath.Join(dir, "magpie-desktop-models.json")
+	os.WriteFile(cfg, []byte("model = \"gpt-6-sol\"\nopenai_base_url = \"http://127.0.0.1:3425/backend-api/codex\"\nmodel_catalog_json = \""+tomlString(desk)+"\"\n\n"+
+		"[model_providers.magpie]\nname = \"magpie\"\nbase_url = \"http://127.0.0.1:3425/v1\"\n"), 0o600)
+	entry := func(slug, vis, instr string, prio int) string {
+		return `{"slug":"` + slug + `","visibility":"` + vis + `","base_instructions":"` + instr + `","comp_hash":"` + instr + `","priority":` + strconv.Itoa(prio) + `}`
+	}
+	write := func(entries ...string) {
+		os.WriteFile(desk, []byte(`{"models":[`+strings.Join(entries, ",")+`]}`), 0o644)
+	}
+	write(entry("gpt-6-sol", "list", "v1", 1), entry("codex-auto-review", "hide", "v1", 2), entry("ds/deepseek-v4-pro", "list", "magpie", 3))
+	then := time.Now().Add(-2 * time.Hour)
+	os.Chtimes(cfg, then, then)
+	os.Chtimes(desk, then, then)
+
+	was := running
+	t.Cleanup(func() { running = was })
+	running = func(string) []runningProc {
+		// the Codex app, opened an hour ago
+		return []runningProc{{time.Hour, "/Applications/Codex.app/Contents/Resources/codex app-server --listen stdio://"}}
+	}
+	a := codex(home)
+	if n := a.Stale(); n != 0 {
+		t.Fatalf("opened after the list was written: %d stale, want 0", n)
+	}
+
+	// the backend's entries come back with other details, in another
+	// order, and magpie's entry is written with another priority
+	write(entry("codex-auto-review", "hide", "v2", 1), entry("gpt-6-sol", "list", "v2", 2), entry("ds/deepseek-v4-pro", "list", "magpie 2", 4))
+	if n := a.Stale(); n != 0 {
+		t.Fatalf("the same models, other details: %d stale, want 0", n)
+	}
+
+	// a model magpie serves now: the app opened before lacks it
+	write(entry("codex-auto-review", "hide", "v2", 1), entry("gpt-6-sol", "list", "v2", 2), entry("ds/deepseek-v4-pro", "list", "magpie 2", 4), entry("ds/deepseek-v5", "list", "magpie", 5))
+	if n := a.Stale(); n != 1 {
+		t.Fatalf("a model added: %d stale, want 1", n)
+	}
+
+	// an older magpie's stash, a digest of every byte, over the files as
+	// they are: kept at its time, not a change first seen now
+	old := sha256.Sum256([]byte(a.readsBefore()()))
+	stash(map[string]string{"codex.started": hex.EncodeToString(old[:8]) + " " + strconv.FormatInt(then.UnixNano(), 10)})
+	if n := a.Stale(); n != 0 {
+		t.Fatalf("an older magpie's stash, nothing changed since: %d stale, want 0", n)
+	}
+	if n := codex(home).Stale(); n != 0 {
+		t.Fatalf("asked again: %d stale, want 0", n)
 	}
 }

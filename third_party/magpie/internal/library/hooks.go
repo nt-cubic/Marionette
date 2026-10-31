@@ -16,6 +16,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/jsonc"
+	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/edit"
 )
 
@@ -132,7 +133,7 @@ var claudeHookEvents = []string{"PreToolUse", "PostToolUse", "PostToolUseFailure
 
 func hookSpecOf(t *Target) (*hookSpec, string) {
 	if t.Agent.WSL != "" {
-		return nil, fmt.Sprintf("magpie gives hooks only to agents on this computer, not yet to %s in WSL", t.Agent.Name)
+		return nil, wslNoHooks(t.Agent)
 	}
 	switch t.Agent.ID {
 	case "claude":
@@ -1083,6 +1084,12 @@ func RemoveHooks(names []string) (*Result, error) {
 	return res, err
 }
 
+// wslNoHooks is why a, an agent in WSL, is given no hooks, its distro
+// running or not.
+func wslNoHooks(a *agent.Agent) string {
+	return fmt.Sprintf("magpie gives hooks only to agents on this computer, not yet to %s in WSL", a.Name)
+}
+
 // ---- the page --------------------------------------------------------------
 
 // HookView is a library hook, and what each agent makes of it.
@@ -1108,7 +1115,11 @@ type HookAgentView struct {
 	Events []string `json:"events,omitempty"`
 }
 
-func (l *Library) hooksView(targets []*Target, of func(string) map[string]string) ([]HookView, []HookAgentView) {
+// hooksView is the Hooks page for these agents, and those in stopped WSL
+// distros (asleep) that the page lists by what magpie last knew of them
+// (asleepView): greyed as while their distro runs, since magpie gives no
+// agent in WSL hooks yet, and nothing of theirs opened (#3896, #4237).
+func (l *Library) hooksView(targets []*Target, asleep []*agent.Agent, of func(string) map[string]string) ([]HookView, []HookAgentView) {
 	agents := []HookAgentView{}
 	specs := map[string]*hookSpec{}
 	for _, t := range targets {
@@ -1119,6 +1130,11 @@ func (l *Library) hooksView(targets []*Target, of func(string) map[string]string
 			av.File, av.Off, av.Events = sp.path, hooksOff(t, sp), sp.native
 		}
 		agents = append(agents, av)
+	}
+	for _, a := range asleep {
+		if shapeOf(a) != nil {
+			agents = append(agents, HookAgentView{ID: a.ID, No: wslNoHooks(a), WSL: true})
+		}
 	}
 	hooks := []HookView{}
 	for _, h := range l.Hooks {

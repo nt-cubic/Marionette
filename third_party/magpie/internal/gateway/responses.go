@@ -976,6 +976,55 @@ func pairToolItems(body []byte) []byte {
 	return encoded
 }
 
+// withoutSearchCalls is a Responses request with its input's
+// web_search_call items left out, for a relay to a provider that doesn't
+// run web search itself (relaySearchCalls). Such a provider turns the
+// request into chat for its model, and a web_search_call becomes an
+// assistant tool call that no tool message answers: Command Code's
+// Provider API answered Codex's summary request for a thread that had
+// searched (52 function calls and their outputs, 8 web searches magpie
+// ran for the model) 400 "An assistant message with 'tool_calls' must be
+// followed by tool messages responding to each 'tool_call_id'"
+// (mxmllln on Discord, deepseek-v4-flash-vision-exp). A turn offering
+// web_search is translated for magpie's search and leaves them out there
+// already (searchedForIt, searchRoundsBack); a request with no web_search
+// offered — Codex's compaction, magpie's summary request, a turn with
+// search off — was relayed with them. The item holds the query and the
+// pages, never what they said, and the reply after it says what was
+// found, so nothing the model read is lost.
+func withoutSearchCalls(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`"web_search_call"`)) {
+		return body
+	}
+	var q map[string]json.RawMessage
+	if decodeJSONView(body, &q) != nil {
+		return body
+	}
+	input, isList := inputList(q["input"])
+	if !isList {
+		return body
+	}
+	out := make([]json.RawMessage, 0, len(input))
+	for _, raw := range input {
+		var it struct {
+			Type string `json:"type"`
+		}
+		if decodeJSONView(raw, &it) == nil && it.Type == "web_search_call" {
+			continue
+		}
+		out = append(out, raw)
+	}
+	if len(out) == len(input) {
+		return body
+	}
+	q["input"], _ = marshalPlain(out)
+	encoded, err := marshalPlain(q)
+	if err != nil {
+		return body
+	}
+	return encoded
+}
+
 // mergeTurns joins consecutive messages of the same role, since the
 // Responses API splits an assistant turn into one item per part.
 func mergeTurns(msgs []Message) []Message {

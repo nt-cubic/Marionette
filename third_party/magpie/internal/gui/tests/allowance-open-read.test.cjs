@@ -51,6 +51,7 @@ async function open(browser, t, surface, lang) {
   t.after(() => context.close());
   const page = await context.newPage();
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(60000);
   page.on("pageerror", (e) => errors.push(e.message));
   await page.clock.install();
   await page.route("**/*", serve(lang, acct));

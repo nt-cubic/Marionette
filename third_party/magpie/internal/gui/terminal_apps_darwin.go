@@ -15,7 +15,8 @@ import (
 	"unsafe"
 )
 
-// discoverTerminals asks Launch Services for apps that claim .command files.
+// discoverTerminals asks Launch Services for apps that claim .command files,
+// and adds Rex when its CLI is found (withRex).
 func discoverTerminals() (terminalDiscovery, error) {
 	raw := C.magpieTerminalAppsJSON()
 	if raw == nil {
@@ -26,5 +27,5 @@ func discoverTerminals() (terminalDiscovery, error) {
 	if err := json.Unmarshal([]byte(C.GoString(raw)), &found); err != nil {
 		return terminalDiscovery{}, err
 	}
-	return found, nil
+	return withRex(found), nil
 }

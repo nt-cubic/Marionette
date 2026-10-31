@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // postMessages sends an Anthropic Messages request to the gateway, as dsh's
@@ -24,7 +26,7 @@ func postMessages(t *testing.T, body string) (int, string) {
 // retry and which says nothing of what went wrong (#370).
 func TestPassthroughStreamSeveredUpstream(t *testing.T) {
 	fresh(t)
-	severed(t, anthropicStart, anthropicText)
+	severed(t, provider.Anthropic, anthropicStart, anthropicText)
 	code, body := postMessages(t, `{"model":"up/m","stream":true,"max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
 	if code != 200 {
 		t.Fatalf("status = %d, want 200; body: %s", code, body)
@@ -163,5 +165,63 @@ func TestPassthroughResponsesBigLastEvent(t *testing.T) {
 	code, body := post(t, "/v1/responses", `{"model":"fake/m1","stream":true,"input":"hi"}`)
 	if code != 200 || body != reply {
 		t.Fatalf("a whole stream with a big last event was changed: %d, %d bytes added", code, len(body)-len(reply))
+	}
+}
+
+// The upstream reset inside an event (#2580: Z.ai cut a glm-5.3 stream
+// mid-line under pi): the half event went to the client as data, and the
+// client's SSE parser died reading it — "malformed server-sent event
+// JSON" — so the error event magpie appended after it was never reached,
+// and the turn failed without a word of what went wrong. A line the
+// upstream never ended is no event of its own: the client reads the
+// events that were whole and then the error, nothing it has to fail on.
+func TestChatStreamCutMidLineLeavesNoHalfEvent(t *testing.T) {
+	fresh(t)
+	severed(t, provider.Chat, sse(chatThink("glm-5.3", "thinking")),
+		`data: {"id":"c1","model":"glm-5.3","choices":[{"index":0,"delta":{"reasoning_content":"the VM program itself hit an undefined`)
+	code, body := post(t, "/v1/chat/completions", `{"model":"up/m","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if code != 200 {
+		t.Fatalf("status = %d, want 200; body: %s", code, body)
+	}
+	if !strings.Contains(body, "connection lost mid-reply") {
+		t.Fatalf("a cut Chat stream ended without the error event: %s", body)
+	}
+	if strings.Contains(body, "undefined") {
+		t.Fatalf("a half event the upstream never ended went to the client as data: %s", body[max(0, len(body)-300):])
+	}
+	// every event the client reads parses, the error included: the
+	// stream is one a strict SSE reader goes through to the end of
+	readSSE(strings.NewReader(body), func(_, data string) error {
+		if data != "[DONE]" && !json.Valid([]byte(data)) {
+			t.Errorf("an event the client reads is no JSON: %q", data)
+		}
+		return nil
+	})
+}
+
+// A reset that comes after an event's JSON is whole but before the line
+// ends leaves no half event: that event parses, so it goes to the client
+// as before, and the error after it is an event of its own. Only a line
+// whose data doesn't parse is dropped (#2580).
+func TestChatStreamCutAfterWholeEventKeepsIt(t *testing.T) {
+	fresh(t)
+	severed(t, provider.Chat, sse(chatThink("glm-5.3", "thinking")), `data: `+chatText("glm-5.3", "kept to the end"))
+	code, body := post(t, "/v1/chat/completions", `{"model":"up/m","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if code != 200 {
+		t.Fatalf("status = %d, want 200; body: %s", code, body)
+	}
+	if !strings.Contains(body, "connection lost mid-reply") {
+		t.Fatalf("a cut Chat stream ended without the error event: %s", body)
+	}
+	var got []string
+	readSSE(strings.NewReader(body), func(_, data string) error {
+		if data != "[DONE]" && !json.Valid([]byte(data)) {
+			t.Errorf("an event the client reads is no JSON: %q", data)
+		}
+		got = append(got, data)
+		return nil
+	})
+	if !strings.Contains(strings.Join(got, "\n"), "kept to the end") {
+		t.Fatalf("the last whole event was dropped: %q", body)
 	}
 }

@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
 	"maps"
 	"net/http"
@@ -60,6 +61,15 @@ func str(m obj, k string) string {
 	return s
 }
 
+// aName says whether raw is a JSON string: a call name a client's shape
+// check takes, empty or not. No name, null and any other kind are not
+// (#1475): a client that checks the shape of every frame refuses the
+// whole reply for one.
+func aName(r json.RawMessage) bool {
+	t := bytes.TrimSpace(r)
+	return len(t) > 0 && t[0] == '"'
+}
+
 // chatWholeEvents streams a chat.completion as its chunks: each choice's
 // message as one delta, its tool calls numbered as a stream numbers them,
 // then its finish reason with the usage, then [DONE].
@@ -101,12 +111,34 @@ func chatWholeEvents(b []byte) []wholeEvent {
 		delta := maps.Clone(c.Message)
 		var calls []obj
 		if json.Unmarshal(delta["tool_calls"], &calls) == nil && len(calls) > 0 {
-			for n, call := range calls {
-				if _, ok := call["index"]; !ok {
+			var kept []obj
+			for _, call := range calls {
+				var fn obj
+				if json.Unmarshal(call["function"], &fn) != nil || !aName(fn["name"]) {
+					// a call naming no function in a string runs nowhere
+					// and no client can read (#1475): dropped, as a written
+					// block naming no offered tool is
+					continue
+				}
+				kept = append(kept, call)
+			}
+			for n, call := range kept {
+				// numbered as a stream numbers them, with no gap where a
+				// dropped call stood
+				if _, ok := call["index"]; !ok || len(kept) < len(calls) {
 					call["index"] = raw(n)
 				}
 			}
-			delta["tool_calls"] = raw(calls)
+			if kept == nil {
+				delete(delta, "tool_calls")
+			} else {
+				delta["tool_calls"] = raw(kept)
+			}
+			if kept == nil && string(bytes.TrimSpace(c.FinishReason)) == `"tool_calls"` {
+				// the call the finish named named no function: it ends
+				// stop, as a reply that made no call
+				c.FinishReason = raw("stop")
+			}
 		}
 		d := obj{"index": index, "delta": raw(delta), "finish_reason": raw(nil)}
 		if c.Logprobs != nil {

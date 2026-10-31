@@ -11,7 +11,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -126,7 +128,10 @@ func TestPiPackage(t *testing.T) {
 	defer cancel()
 
 	installPinnedPi(t, ctx)
-	abs, _ := filepath.Abs("testdata/pi")
+	abs := filepath.Join(Dir(), "fake-pi-package")
+	if err := os.CopyFS(abs, os.DirFS("testdata/pi")); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Add(ctx, abs); err != nil {
 		t.Fatal(err)
 	}
@@ -248,6 +253,12 @@ func TestPiPackage(t *testing.T) {
 		}}},
 	})
 	s := r.seen(t)
+	// the extension's import reaches the pi the lock installed, not npm's
+	// latest that Bun installs for a folder with no node_modules above it
+	// (#2865)
+	if s["pi"] != pinnedPi {
+		t.Fatalf("the extension's import reached pi %v, not the %s the lock installed", s["pi"], pinnedPi)
+	}
 	if r.status != 200 || s["apiKey"] != "a-blue" || s["reasoning"] != "high" || s["maxTokens"] != 8000.0 || s["system"] != "be brief" ||
 		!slices.Equal(anys(s["tools"]), []string{"lookup"}) || !slices.Equal(anys(s["images"]), []string{"image/png"}) {
 		t.Fatalf("pi was handed %v (%d)", s, r.status)
@@ -411,7 +422,12 @@ func TestSearchFindsPiPackages(t *testing.T) {
 const pinnedPi = "1.2.0"
 
 // installPinnedPi installs testdata/pi-lock's pi into the plugins folder
-// with its lock frozen, as the folder would have it after ensurePi.
+// with its lock frozen, as the folder would have it after ensurePi. A
+// test's pi package is put in the plugins folder too, so pi and the
+// package's imports of it resolve to that pi: from a folder with no
+// node_modules above it, testdata/pi or a TempDir, Bun installs npm's
+// latest pi as the host starts (its auto-install), and the host waited
+// on npm for over 100 manifests and ran that pi, not this one (#2865).
 func installPinnedPi(t *testing.T, ctx context.Context) {
 	t.Helper()
 	if err := os.MkdirAll(Dir(), 0o755); err != nil {
@@ -430,11 +446,100 @@ func installPinnedPi(t *testing.T, ctx context.Context) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out, err := bunCommand(ctx, bun, Dir(), "install", "--frozen-lockfile", "--ignore-scripts").CombinedOutput(); err != nil {
+	cmd := bunCommand(ctx, bun, Dir(), "install", "--frozen-lockfile", "--ignore-scripts")
+	if cache := pinnedPiCache(time.Now()); cache != "" {
+		cmd.Env = append(cmd.Env, "BUN_INSTALL_CACHE_DIR="+cache) // os/exec takes a key's last
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Skipf("pi couldn't be installed: %v: %s", err, lastLines(string(out), 6))
 	}
 	if v := Version(piAgent); v != pinnedPi {
 		t.Fatalf("installed pi %q, the lock has %s", v, pinnedPi)
+	}
+}
+
+// pinnedPiCache is the Bun install cache installPinnedPi installs with at
+// now, in the temp folder, which outlives the test's home: a run after the
+// first installs pi from it, where the home's own cache started empty each
+// run and every run fetched pi's 118 tarballs, most of TestPiPackage's 4
+// minutes on a busy machine (#2865). It is this user's (their uid in its
+// name, as the temp folder is shared on Linux; Windows' is the user's
+// own), and used only when no one else can read or write it and this
+// user can write in it; else "", and the home's cache is used as before.
+// Never as root: root passes those checks in a folder another user made.
+// It is a new folder every two days (pinnedPiCacheDays), so none of its
+// files is old enough for the temp folder's cleaner to have taken it
+// (macOS' takes what went unread for 3 days): Bun installs a package
+// whose cached folder lost a file as it is, and pi didn't load. The
+// folder before stays for a run still using it; older ones go. Bun
+// unpacks a package in a folder of its own and renames it into the
+// cache, so two go test runs can share it. It isn't the app's cache
+// (installCacheDir), which pruneInstallCache prunes.
+func pinnedPiCache(now time.Time) string {
+	if os.Getuid() == 0 {
+		return ""
+	}
+	name := "magpie-test-bun-cache-" + strconv.Itoa(os.Getuid()) + "-"
+	n := now.Unix() / int64(pinnedPiCacheDays*24*time.Hour/time.Second)
+	old, _ := filepath.Glob(filepath.Join(os.TempDir(), name+"*"))
+	for _, o := range old {
+		if k, err := strconv.ParseInt(strings.TrimPrefix(filepath.Base(o), name), 10, 64); err == nil && k < n-1 {
+			os.RemoveAll(o)
+		}
+	}
+	dir := filepath.Join(os.TempDir(), name+strconv.FormatInt(n, 10))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return ""
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil || !fi.IsDir() || runtime.GOOS != "windows" && fi.Mode().Perm()&0o077 != 0 {
+		return ""
+	}
+	f, err := os.CreateTemp(dir, "probe-")
+	if err != nil {
+		return ""
+	}
+	f.Close()
+	os.Remove(f.Name())
+	return dir
+}
+
+// pinnedPiCacheDays is how long pinnedPiCache keeps one folder.
+const pinnedPiCacheDays = 2
+
+// The pinned pi's cache moves to a new folder every two days, the one
+// before kept and older ones taken out, so the temp folder's cleaner
+// never takes a file from the one in use (#2865).
+func TestPinnedPiCacheMovesOn(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root gets no cache")
+	}
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp) // os.TempDir: TMPDIR on Unix, TMP on Windows
+	t.Setenv("TMP", tmp)
+	day := 24 * time.Hour
+	period := int64(pinnedPiCacheDays * 24 * 3600)
+	start := time.Unix(1800000000/period*period, 0) // a folder's first second
+	a := pinnedPiCache(start)
+	if a == "" || filepath.Dir(a) != tmp {
+		t.Fatalf("the cache is %q, not a folder in %s", a, tmp)
+	}
+	if got := pinnedPiCache(start.Add(2*day - time.Second)); got != a {
+		t.Fatalf("within its two days the cache moved from %s to %s", a, got)
+	}
+	b := pinnedPiCache(start.Add(2 * day))
+	if b == "" || b == a {
+		t.Fatalf("after two days the cache is %q, not a folder other than %s", b, a)
+	}
+	if _, err := os.Stat(a); err != nil {
+		t.Fatalf("the folder before was taken out while a run may use it: %v", err)
+	}
+	c := pinnedPiCache(start.Add(4 * day))
+	if _, err := os.Stat(a); !os.IsNotExist(err) {
+		t.Fatalf("a folder four days old is kept (%v)", err)
+	}
+	if _, err := os.Stat(b); err != nil || c == "" || c == b {
+		t.Fatalf("after four days: %q, and the one before %s: %v", c, b, err)
 	}
 }
 

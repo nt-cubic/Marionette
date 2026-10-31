@@ -167,6 +167,11 @@ type Provider struct {
 	// by its KeyID; 0 there is no limit for it. One not in it takes the
 	// provider's (see LaneLimit).
 	AccountConcurrency map[string]int `json:"accountConcurrency,omitempty"`
+	// AccountWeights is, for a subscription, each account's weight under
+	// Weighted routing, by its name in lower case (rubbzha on X: a Max
+	// account and a Pro one shared by how much more one allows); one not
+	// in it weighs 1. A key's weight is its own (KeyAccount.Weight).
+	AccountWeights map[string]int `json:"accountWeights,omitempty"`
 	// QueueLimit is how many requests may wait for a slot of each key or
 	// account at once (#892); one more is turned away as the queue being
 	// full. 0 is no bound.
@@ -212,6 +217,13 @@ type Provider struct {
 	// a price the user set for one of its models stands as set. 0 is the
 	// price as listed; at most three decimals (PriceRateOK).
 	PriceRate float64 `json:"priceRate,omitempty"`
+	// CountFree is the user's word that the provider costs them nothing
+	// (jiabubu on Discord: ModelScope's free daily quota): every model of
+	// it counts as free where routing weighs that, as a model its vendor
+	// lists free does (FreeModel: Free first spends it first, Cheapest
+	// weighs it at nothing). Prices and the costs Usage counts stay as
+	// listed: it says what to spend first, not what a call cost.
+	CountFree bool `json:"countFree,omitempty"`
 	// RateWindows are the time-of-day windows it bills at its own rate
 	// (#2463): a peak at 2× or 3×, a discount off peak. The first window
 	// that holds a call's time multiplies the price again, on top of
@@ -327,12 +339,16 @@ type Provider struct {
 	// Azure's own APIs, which take x-api-key alone, ignore it.
 	AuthHeader string `json:"authHeader,omitempty"`
 
-	// Unredacted has requests to a provider on this machine or the local
-	// network (Ollama, LM Studio, a vLLM box) go as the agent wrote them,
-	// unmasked by Settings' redaction, which keeps secrets from vendors
-	// (lc on Discord). It is the user's word, not the address's: a relay
-	// run locally, or Ollama's cloud models, pass a request on to a vendor.
-	// See SkipsRedaction.
+	// Unredacted has requests to a provider go as the agent wrote them,
+	// unmasked by Settings' redaction, which keeps secrets from vendors:
+	// for a model on this machine or the local network (Ollama, LM Studio,
+	// a vLLM box; lc on Discord). It is the user's word, not the
+	// address's (AcMilan on Discord), on a subscription or a plugin's
+	// provider too (isee1_1 on Discord): the editor cautions while it is
+	// on for one not local, and a relay run locally, or Ollama's cloud
+	// models, pass a request on to a vendor whatever the address. A
+	// signed-in account keeps it with its model picks (withPicks). See
+	// SkipsRedaction.
 	Unredacted bool `json:"unredacted,omitempty"`
 
 	// InsecureTLS has magpie take the certificate of the provider's own
@@ -523,6 +539,11 @@ type file struct {
 	// NoAutoGroups: the user turned off the groups magpie finds on its
 	// own (SetAutoGroups); the groups they made or changed stay.
 	NoAutoGroups bool `json:"noAutoGroups,omitempty"`
+	// AutoGroupSkip are the providers, by id, the user keeps out of the
+	// groups magpie finds (SetAutoGroupSkip; chenxiang0010 on Discord):
+	// their models are in none, so a model only one other provider serves
+	// is no group. The groups the user made or changed keep them.
+	AutoGroupSkip []string `json:"autoGroupSkip,omitempty"`
 	// Order is the order the user put the providers in on the Providers
 	// tab (#499), by id; one not in it follows those that are, in the
 	// order it was added (see SetOrder).
@@ -710,6 +731,7 @@ func (p Provider) clone() Provider {
 		p.AccountWindowCaps = m
 	}
 	p.AccountConcurrency = maps.Clone(p.AccountConcurrency)
+	p.AccountWeights = maps.Clone(p.AccountWeights)
 	p.Contexts = maps.Clone(p.Contexts)
 	if p.AccountModels != nil {
 		m := make(map[string][]string, len(p.AccountModels))
@@ -784,16 +806,22 @@ func withPicks(a, pk Provider) Provider {
 	a.Sink, a.NoModels, a.BestInFamily = pk.Sink, pk.NoModels, pk.BestInFamily
 	a.NativeCompaction = pk.NativeCompaction
 	a.PromptAsWritten = pk.PromptAsWritten
+	// Send requests unmasked, the user's for a subscription and a
+	// plugin's provider too (isee1_1 on Discord)
+	a.Unredacted = pk.Unredacted
 	a.Proxy, a.AccountProxies, a.AccountModels = pk.Proxy, pk.AccountProxies, pk.AccountModels
 	a.AccountCaps, a.AccountWindowCaps = pk.AccountCaps, pk.AccountWindowCaps
 	a.CapStop, a.CapCareful = pk.CapStop, pk.CapCareful
 	a.AccountNames = pk.AccountNames
 	a.MaxConcurrency, a.PinUpstream = pk.MaxConcurrency, pk.PinUpstream
 	a.AccountConcurrency, a.QueueLimit, a.QueueWait = pk.AccountConcurrency, pk.QueueLimit, pk.QueueWait
+	a.AccountWeights = pk.AccountWeights
 	a.MaxRPM = pk.MaxRPM
 	// what it bills against the official price (#819): an account's editor
 	// sets it as a key provider's does (PaulT on Discord, Codex)
 	a.PriceRate = pk.PriceRate
+	// counted free by the user's word, every account alike
+	a.CountFree = pk.CountFree
 	// the hours the provider bills at its own rate (#2463), as the editor
 	// keeps them for the account like the rest of these
 	a.RateWindows = pk.RateWindows
@@ -931,7 +959,7 @@ func Save(p Provider) error {
 		if p.ID == "kiro" {
 			key = p.Key
 		}
-		p = Provider{ID: p.ID, Key: key, Models: p.Models, NoModels: p.NoModels, BestInFamily: p.BestInFamily, RateWindows: p.RateWindows, PickedFrom: p.PickedFrom, Delisted: p.Delisted, Unlisted: p.Unlisted, HiddenDrawers: p.HiddenDrawers, Off: p.Off, Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, Contexts: p.Contexts, Family: p.Family, Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, CapStop: p.CapStop, CapCareful: p.CapCareful, AccountNames: p.AccountNames, MaxConcurrency: p.MaxConcurrency, AccountConcurrency: p.AccountConcurrency, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM, PriceRate: p.PriceRate, QuotaRest: p.QuotaRest, QuotaResetAt: p.QuotaResetAt, RestCap: p.RestCap, PinUpstream: p.PinUpstream, NativeCompaction: p.NativeCompaction, PromptAsWritten: p.PromptAsWritten, Hidden: hiddenAccount(p.ID), Quiet: quietAccount(p.ID), Tucked: tuckedAccount(p.ID)}
+		p = Provider{ID: p.ID, Key: key, Models: p.Models, NoModels: p.NoModels, BestInFamily: p.BestInFamily, RateWindows: p.RateWindows, PickedFrom: p.PickedFrom, Delisted: p.Delisted, Unlisted: p.Unlisted, HiddenDrawers: p.HiddenDrawers, Off: p.Off, Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, Contexts: p.Contexts, Family: p.Family, Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, CapStop: p.CapStop, CapCareful: p.CapCareful, AccountNames: p.AccountNames, MaxConcurrency: p.MaxConcurrency, AccountConcurrency: p.AccountConcurrency, AccountWeights: p.AccountWeights, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM, PriceRate: p.PriceRate, CountFree: p.CountFree, QuotaRest: p.QuotaRest, QuotaResetAt: p.QuotaResetAt, RestCap: p.RestCap, PinUpstream: p.PinUpstream, NativeCompaction: p.NativeCompaction, PromptAsWritten: p.PromptAsWritten, Unredacted: p.Unredacted, Hidden: hiddenAccount(p.ID), Quiet: quietAccount(p.ID), Tucked: tuckedAccount(p.ID)}
 	} else {
 		p.AccountProxies = keyProxies(p) // a provider of keys proxies each key apart
 		if subscriptionID(p.ID) && !stored(p.ID) {
@@ -1145,6 +1173,7 @@ func AddCopy(p Provider, from string) (string, error) {
 	}
 	p.Searches = p.Searches || src.Searches
 	p.Unredacted = p.Unredacted || src.Unredacted
+	p.CountFree = p.CountFree || src.CountFree
 	p.NativeCompaction = p.NativeCompaction || src.NativeCompaction
 	p.PassUserAgent = p.PassUserAgent || src.PassUserAgent
 	if p.Website == "" {
@@ -1467,6 +1496,7 @@ func normalize(p Provider) Provider {
 		p.MaxConcurrency = new(int)
 	}
 	p.AccountConcurrency = normalAccountConcurrency(p.AccountConcurrency)
+	p.AccountWeights = normalAccountWeights(p.AccountWeights)
 	p.QueueLimit, p.QueueWait = min(max(p.QueueLimit, 0), MaxQueueLimit), min(max(p.QueueWait, 0), MaxQueueWait)
 	p.MaxRPM = min(max(p.MaxRPM, 0), MaxRPMLimit)
 	p.QuotaRest = min(max(p.QuotaRest, 0), MaxQuotaRest)
@@ -1748,7 +1778,8 @@ func openAIModel(model string) bool {
 // the model on itself, so a request on it is relayed as it is rather than
 // translated — Responses for a ChatGPT sign-in, or an OpenAI model on
 // OpenAI's API or Copilot's; Anthropic's Messages for a Claude model
-// where that is served; Chat where that is served. "" when every
+// where that is served; the API a custom provider's Base URL was given as
+// (BaseAPI); Chat where that is served. "" when every
 // request is translated anyway: a sign-in served through its agent's own
 // API (Claude Code's binary, Devin, Code Assist).
 func (p Provider) Native(model string) Protocol {
@@ -1773,6 +1804,13 @@ func (p Provider) Native(model string) Protocol {
 	}
 	if p.MessagesFirst(model) && slices.Contains(out, Anthropic) {
 		return Anthropic
+	}
+	// the API the user gave a custom provider's Base URL as, where it
+	// serves the model: a relay whose Chat URL was found beside it (Detect
+	// sets every API that answers) is still the Responses one they picked
+	// (nb5p on Discord: dsh, Pi and droid asked its GPTs on Chat)
+	if pr := Protocol(p.BaseAPI); pr != "" && slices.Contains(out, pr) {
+		return pr
 	}
 	return out[0]
 }

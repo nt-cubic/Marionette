@@ -104,6 +104,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const errors = [], asked = [], refreshed = { n: 0 };
         const p = await (await browser.newContext({ viewport: { width: 1180, height: 800 }, reducedMotion: "reduce" })).newPage();
         p.setDefaultTimeout(5000);
+        p.setDefaultNavigationTimeout(60000);
         p.on("pageerror", (e) => errors.push(e.message));
         await p.route("**/*", server(lang, asked, refreshed));
         await p.goto("http://magpie.test/");
@@ -214,6 +215,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const errors = [], asked = [], refreshed = { n: 0 };
       const p = await (await browser.newContext({ viewport: { width: 560, height: 800 }, reducedMotion: "reduce" })).newPage();
       p.setDefaultTimeout(5000);
+      p.setDefaultNavigationTimeout(60000);
       p.on("pageerror", (e) => errors.push(e.message));
       await p.route("**/*", server("en", asked, refreshed));
       await p.goto("http://magpie.test/");

@@ -721,8 +721,9 @@ func codexIn(at place) *Agent {
 	// provider of the user's (CC Switch's, #887); none while a profile
 	// still names magpie, whose threads they are; and a copy of each is
 	// kept in magpie's trash (MoveCodexProvider). A thread Codex wrote to
-	// in the last minute waits for the next Sync. This machine's Codex
-	// only: a distro's state database isn't magpie's to open.
+	// in the last minute, or one a Codex has open, waits for the next
+	// Sync. This machine's Codex only: a distro's state database isn't
+	// magpie's to open.
 	bringBack := func() {
 		if at.spell != nil || namesMagpie() {
 			return
@@ -1485,7 +1486,7 @@ func codexIn(at place) *Agent {
 			// in them written as Codex's own (a distro's Codex locks its
 			// files where this machine's locks can't reach)
 			if at.spell == nil {
-				portCodexHome(dir, codexPortUnwire)
+				portCodexHome(dir, codexPortUnwire, true)
 			}
 			// and are listed where Codex now is
 			bringBack()

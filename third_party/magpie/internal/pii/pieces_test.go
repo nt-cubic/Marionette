@@ -78,6 +78,35 @@ func TestPiecesCut(t *testing.T) {
 	}
 }
 
+// Text that isn't UTF-8 is cut too: a run of stray continuation bytes
+// has no rune's start to cut at, and the scan for one read past the
+// text's end and panicked on the model's goroutine (#4553's class: a
+// malformed request ended magpie). Its pieces still cover the text, each
+// overlapping the one before, none over pieceSize.
+func TestPiecesCutMalformed(t *testing.T) {
+	for name, text := range map[string]string{
+		"continuations":      strings.Repeat("\x80", 3*pieceSize),
+		"after a byte":       "a" + strings.Repeat("\x80", 3*pieceSize),
+		"after valid text":   strings.Repeat("ab", pieceSize) + strings.Repeat("\x80", pieceSize),
+		"0xff":               strings.Repeat("\xff", 3*pieceSize),
+		"one short of a cut": strings.Repeat("\x80", pieceSize+1),
+		"between cjk":        strings.Repeat("张伟", 3000) + strings.Repeat("\xbf", 2*pieceSize) + strings.Repeat("张伟", 3000),
+	} {
+		ps := pieces(text)
+		if len(ps) < 2 || ps[0].at != 0 || ps[len(ps)-1].end != len(text) {
+			t.Fatalf("%s: pieces %v don't cover 0..%d", name, ps, len(text))
+		}
+		for i, p := range ps {
+			if p.end <= p.at || p.end-p.at > pieceSize {
+				t.Fatalf("%s: piece %d %v", name, i, p)
+			}
+			if i > 0 && (p.at <= ps[i-1].at || p.at > ps[i-1].end || ps[i-1].end-p.at > pieceOverlap) {
+				t.Fatalf("%s: piece %d %v after %v", name, i, p, ps[i-1])
+			}
+		}
+	}
+}
+
 // Spans from overlapping pieces: one found twice is one, one cut by a
 // piece's end and whole in the next is the whole, labels kept apart where
 // spans only touch, and of one label joined, as sure as the surer.

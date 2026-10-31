@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -136,7 +137,7 @@ func TestImageMCPDrawsAndServesTheImage(t *testing.T) {
 		t.Fatalf("vendor was sent %v", sent)
 	}
 	urls := urlsIn(m.Result.Content[0].Text)
-	if len(urls) != 1 || !strings.HasPrefix(urls[0], "http://127.0.0.1:3425"+ImageMCPFiles) || !strings.HasSuffix(urls[0], ".png") || !strings.Contains(m.Result.Content[0].Text, "art/") {
+	if len(urls) != 1 || !strings.HasPrefix(urls[0], "http://127.0.0.1:3425"+ImageMCPFiles) || !strings.HasSuffix(bare(urls[0]), ".png") || !strings.Contains(m.Result.Content[0].Text, "art/") {
 		t.Fatalf("text: %q", m.Result.Content[0].Text)
 	}
 	if got, want := m.meta(FilesMeta), `[{"url":"`+urls[0]+`","inline":true}]`; got != want || m.meta(PendingMeta) != "" {
@@ -222,17 +223,147 @@ func TestImageMCPGuarded(t *testing.T) {
 	if w := imageGet(h, there, urls[0], "Authorization", "Bearer "+secrets[0]); w.Code != 200 || w.Body.String() != string(pngBytes) {
 		t.Fatalf("its own key: %d %s", w.Code, w.Body.String())
 	}
-	if w := imageGet(h, there, urls[0]); w.Code != http.StatusUnauthorized {
+	// without the link's token, only its key opens it
+	if w := imageGet(h, there, bare(urls[0]), "Authorization", "Bearer "+secrets[0]); w.Code != 200 {
+		t.Fatalf("its own key, no token: %d %s", w.Code, w.Body.String())
+	}
+	if w := imageGet(h, there, bare(urls[0])); w.Code != http.StatusUnauthorized {
 		t.Fatalf("no key: %d %s", w.Code, w.Body.String())
 	}
-	if w := imageGet(h, there, urls[0], "Authorization", "Bearer "+secrets[1]); w.Code != http.StatusNotFound {
+	if w := imageGet(h, there, bare(urls[0]), "Authorization", "Bearer "+secrets[1]); w.Code != http.StatusNotFound {
 		t.Fatalf("another key: %d %s", w.Code, w.Body.String())
 	}
-	if w := imageGet(h, "127.0.0.1:5000", urls[0]); w.Code != http.StatusNotFound {
+	if w := imageGet(h, "127.0.0.1:5000", bare(urls[0])); w.Code != http.StatusNotFound {
 		t.Fatalf("keyless on this computer: %d %s", w.Code, w.Body.String())
 	}
 	if w := imageGet(h, "127.0.0.1:5000", urls[0], "Authorization", "Bearer "+secrets[0], "Origin", "http://localhost:5173"); w.Code != http.StatusForbidden {
 		t.Fatalf("a page: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// bare is a file URL without its token.
+func bare(u string) string { b, _, _ := strings.Cut(u, "?"); return b }
+
+// The URL the image server hands out opens with no header, from another
+// computer, in a browser (dhanyqaz on Discord: a model hands a person the
+// link, and a browser sends no key): its token, signed by the gateway, is
+// the only thing that lets a request without the key in, for that file,
+// within its hour, while its key is on and magpie is shared, and it
+// carries neither the key nor its id.
+func TestImageMCPFileLinkOpensWithoutKey(t *testing.T) {
+	s, _ := easeled(t)
+	t.Setenv("MAGPIE_ADDR", "")
+	t.Setenv("MAGPIE_PUBLIC_URL", "")
+	t.Cleanup(s.imageStore.running.Wait)
+	h := lanGuard(s.Handler())
+	keys, secrets := newCaller(t, "Laptop", "Phone")
+	const there = "192.0.2.7:4000"
+	draw := imageToolCall(GenerateImageTool, map[string]any{"prompt": "a magpie"})
+	var urls []string
+	for range 2 {
+		m := readImageReply(t, imagePost(h, there, draw, "Authorization", "Bearer "+secrets[0]))
+		u := urlsIn(m.Result.Content[0].Text)
+		if m.Result.IsError || len(u) != 1 || !strings.Contains(m.Result.Content[0].Text, "opens without a header") {
+			t.Fatalf("drawn: %+v", m)
+		}
+		urls = append(urls, u...)
+	}
+	for _, u := range urls {
+		if strings.Contains(u, secrets[0]) || strings.Contains(u, keys[0].ID) || !strings.Contains(u, "?"+imageTokenParam+"=") {
+			t.Fatalf("the link %s carries the key or no token", u)
+		}
+	}
+	get := func(u string, hdr ...string) int { return imageGet(h, there, u, hdr...).Code }
+	// no header, from another computer and through a tunnel, and in a
+	// browser's own navigation
+	if w := imageGet(h, there, urls[0]); w.Code != 200 || w.Body.String() != string(pngBytes) || w.Header().Get("Content-Type") != "image/png" {
+		t.Fatalf("no header: %d %s", w.Code, w.Body.String())
+	}
+	if c := get(urls[0], "Cf-Connecting-IP", "198.51.100.9", "Sec-Fetch-Site", "none", "Sec-Fetch-Mode", "navigate"); c != 200 {
+		t.Fatalf("a browser through a tunnel: %d", c)
+	}
+	if w := imageGet(h, "127.0.0.1:5000", urls[0]); w.Code != 200 {
+		t.Fatalf("on this computer: %d", w.Code)
+	}
+	// the token is what opens it, beside another key too
+	if c := get(urls[0], "Authorization", "Bearer "+secrets[1]); c != 200 {
+		t.Fatalf("another key, with the token: %d", c)
+	}
+	// a wrong key is refused as it always was, token or not
+	if c := get(urls[0], "Authorization", "Bearer sk-magpie-not-a-key-at-all"); c != http.StatusUnauthorized {
+		t.Fatalf("a wrong key: %d", c)
+	}
+	q := func(u, tok string) string { return bare(u) + "?" + imageTokenParam + "=" + url.QueryEscape(tok) }
+	tok := func(u string) string { pu, _ := url.Parse(u); return pu.Query().Get(imageTokenParam) }
+	name := func(u string) string { return strings.TrimPrefix(bare(u), "http://127.0.0.1:3425"+ImageMCPFiles) }
+	exp, sig, _ := strings.Cut(tok(urls[0]), ".")
+	flipped := []byte(sig)
+	flipped[3] ^= 1
+	n, _ := strconv.ParseInt(exp, 10, 64)
+	s.imageStore.mu.Lock()
+	secret := s.imageStore.secret
+	s.imageStore.mu.Unlock()
+	for what, u := range map[string]string{
+		"a tampered token":        q(urls[0], exp+"."+string(flipped)),
+		"a later expiry":          q(urls[0], strconv.FormatInt(n+3600, 10)+"."+sig),
+		"another file's token":    q(urls[0], tok(urls[1])),
+		"an empty token":          q(urls[0], "."),
+		"an expired token":        q(urls[0], imageFileToken(secret, name(urls[0]), keys[0].ID, time.Now().Unix()-1)),
+		"a token for another key": q(urls[0], imageFileToken(secret, name(urls[0]), keys[1].ID, n)),
+		"another secret's token":  q(urls[0], imageFileToken([]byte("not magpie's secret at all......"), name(urls[0]), keys[0].ID, n)),
+		"the token on no file":    q(strings.Replace(urls[0], name(urls[0]), "0123456789abcdef0123456789abcdef.png", 1), tok(urls[0])),
+		"the token past its path": bare(urls[0]) + "/x?" + imageTokenParam + "=" + url.QueryEscape(tok(urls[0])),
+	} {
+		if c := get(u); c != http.StatusUnauthorized && c != http.StatusNotFound {
+			t.Fatalf("%s, no header: %d", what, c)
+		}
+		if c := get(u, "Authorization", "Bearer "+secrets[1]); c != http.StatusNotFound && c != http.StatusUnauthorized {
+			t.Fatalf("%s, another key: %d", what, c)
+		}
+	}
+	if c := get(q(urls[0], exp+"."+string(flipped))); c != http.StatusUnauthorized {
+		t.Fatalf("a tampered token is refused as no key is: %d", c)
+	}
+	// a web page reading it is refused as it was
+	if c := get(urls[0], "Origin", "https://evil.example"); c != http.StatusForbidden {
+		t.Fatalf("a web page: %d", c)
+	}
+	// the token opens GET and HEAD only
+	r := httptest.NewRequest(http.MethodPost, bare(urls[0])[len("http://127.0.0.1:3425"):]+"?"+imageTokenParam+"="+url.QueryEscape(tok(urls[0])), nil)
+	r.RemoteAddr, r.Host = there, "127.0.0.1:3425"
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("a POST with the token: %d", w.Code)
+	}
+	// past its hour the file is gone, token and all
+	s.imageStore.mu.Lock()
+	s.imageStore.files[name(urls[1])].made = time.Now().Add(-imageMCPKeep - time.Second)
+	s.imageStore.mu.Unlock()
+	if c := get(urls[1]); c != http.StatusUnauthorized {
+		t.Fatalf("past its hour: %d", c)
+	}
+	// turning its key off takes its links with it
+	if _, err := access.Update("off-key", access.Change{Key: keys[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+	if c := get(urls[0]); c != http.StatusUnauthorized {
+		t.Fatalf("its key off: %d", c)
+	}
+	if _, err := access.Update("on-key", access.Change{Key: keys[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+	if c := get(urls[0]); c != 200 {
+		t.Fatalf("its key on again: %d", c)
+	}
+	// not shared, the token opens nothing from another computer
+	st := settings.Load()
+	st.LAN = false
+	if err := settings.Save(st); err != nil {
+		t.Fatal(err)
+	}
+	if c := get(urls[0]); c != http.StatusForbidden {
+		t.Fatalf("not shared: %d", c)
 	}
 }
 

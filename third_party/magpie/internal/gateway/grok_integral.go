@@ -9,24 +9,23 @@ import (
 	"github.com/yetone/magpie/internal/provider"
 )
 
-// Grok's models write a whole number in a tool call's arguments with a
-// fraction of zeros ("yield_time_ms":2500.0, "session_id":17277.0), whoever
-// serves them: a Grok subscription or its plugin, xAI's API, OpenRouter's
-// x-ai/grok-*, or a relay in front of any of them. Codex reads such fields
-// as u64, usize, i32 or i64 (exec_command, write_stdin, shell's timeout_ms,
-// sleep, tool_search's limit, wait), though their schemas say "number", and
-// serde turns the whole call away: "failed to parse function arguments:
-// invalid type: floating point `2500.0`, expected u64" (#1431, 11 of 11
-// turns on grok-4.6 and grok-4.7 through a relay). Any client that types
-// its arguments strictly does the same.
+// Models write a whole number in a tool call's arguments with a fraction
+// of zeros ("yield_time_ms":2500.0, "session_id":17277.0), whoever serves
+// them: Grok's do it on every turn (#1431, 11 of 11 turns on grok-4.6 and
+// grok-4.7 through a relay), and muse-spark wrote tool_search's limit as
+// 8.0 through the gateway (#3152). Codex reads such fields as u64, usize,
+// i32 or i64 (exec_command, write_stdin, shell's timeout_ms, sleep,
+// tool_search's limit, wait), though their schemas say "number", and serde
+// turns the whole call away: "failed to parse function arguments: invalid
+// type: floating point `2500.0`, expected u64". Any client that types its
+// arguments strictly does the same.
 //
-// In a reply from a Grok model, a number in a call's arguments written with
-// a fraction of zeros and no exponent loses that fraction: 2500.0 is
-// written 2500. JSON has one kind of number, so 2500 is the same value to
-// every client, and one that took 2500.0 takes 2500; a tool's schema isn't
-// asked, since Codex's own say "number" for the integers it reads. Strings,
-// keys, other fractions (2.5) and exponents (2.5e3) stay as written, and
-// so does every other model's reply.
+// In a reply, a number in a call's arguments written with a fraction of
+// zeros and no exponent loses that fraction: 2500.0 is written 2500. JSON
+// has one kind of number, so 2500 is the same value to every client, and
+// one that took 2500.0 takes 2500; a tool's schema isn't asked, since
+// Codex's own say "number" for the integers it reads. Strings, keys, other
+// fractions (2.5) and exponents (2.5e3) stay as written.
 //
 // The rule is applied to the arguments as a stream of text, so it gives
 // the same arguments whether they come whole or in deltas cut anywhere:
@@ -34,18 +33,13 @@ import (
 
 // grokModel is whether id, the model as magpie or its upstream names it, is
 // one of Grok's, under whatever vendor prefix a relay or router gives it
-// (xai/grok-4.5, x-ai/grok-4).
+// (xai/grok-4.5, x-ai/grok-4). Grok's schema quirks (grok_schema.go) are
+// still Grok's alone; whole floats in calls' arguments are every model's.
 func grokModel(id string) bool {
 	if i := strings.LastIndexByte(id, '/'); i >= 0 {
 		id = id[i+1:]
 	}
 	return strings.HasPrefix(strings.ToLower(id), "grok")
-}
-
-// grokServed is whether a request for model on p goes to a Grok model,
-// by magpie's id for it or the name it is sent upstream under.
-func grokServed(wires map[string]string, p provider.Provider, model string) bool {
-	return grokModel(model) || grokModel(provider.UpstreamNameIn(wires, p.ID, model))
 }
 
 // wholeNums drops the zero fraction of each number in a stream of JSON
@@ -119,8 +113,8 @@ func wholeArgs(s string) string {
 	return n.feed(s)
 }
 
-// wholeEncoder hands its encoder a Grok model's reply with the zero
-// fractions dropped from its calls' arguments, streamed in pieces.
+// wholeEncoder hands its encoder a reply with the zero fractions dropped
+// from its calls' arguments, streamed in pieces.
 type wholeEncoder struct {
 	streamEncoder
 	args wholeNums
@@ -138,8 +132,8 @@ func (e *wholeEncoder) event(ev Event) {
 	e.streamEncoder.event(ev)
 }
 
-// wholeResult is a whole reply from a Grok model with its calls'
-// arguments' zero fractions dropped.
+// wholeResult is a whole reply with its calls' arguments' zero fractions
+// dropped.
 func wholeResult(res Result) Result {
 	var parts []Part
 	for i, p := range res.Parts {
@@ -159,12 +153,11 @@ func wholeResult(res Result) Result {
 	return res
 }
 
-// intTidy drops, in a Grok model's reply relayed as it came, the zero
-// fractions of its calls' arguments: Responses' function_call items and
-// argument deltas, Chat's tool_calls, and Messages' tool_use input. A
-// stream's lines pass as they came unless one carries arguments that
-// change; a reply that isn't one is held whole and gone through at the
-// end.
+// intTidy drops, in a reply relayed as it came, the zero fractions of its
+// calls' arguments: Responses' function_call items and argument deltas,
+// Chat's tool_calls, and Messages' tool_use input. A stream's lines pass
+// as they came unless one carries arguments that change; a reply that
+// isn't one is held whole and gone through at the end.
 type intTidy struct {
 	proto provider.Protocol
 	sse   bool
@@ -190,6 +183,11 @@ func (t *intTidy) flush() []byte {
 	b := t.buf
 	t.buf = nil
 	if !t.sse {
+		// every model's whole reply comes here now: one with no call in
+		// it is said as it came, without being decoded
+		if !t.carries(b) {
+			return b
+		}
 		if out, ok := t.event(b); ok {
 			return out
 		}

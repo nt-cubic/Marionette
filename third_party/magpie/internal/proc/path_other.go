@@ -111,16 +111,31 @@ func LoginPath() []string {
 // netproxy.
 var ProxyVars = []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"}
 
+// RegistryVars are the npm registry variables the login shell is asked
+// for beside them: a registry set in .zshrc is the user's for bun's
+// installs of plugins and magpie's asks of npm, which magpie opened from
+// the Dock didn't see (timwangdev on X). Only read (LoginEnvKnown).
+var RegistryVars = []string{"BUN_CONFIG_REGISTRY", "NPM_CONFIG_REGISTRY", "npm_config_registry"}
+
 // shellVars are the variables shellProbe asks for, in its order. Claude
 // Code's provider switches (agentenv.ClaudeProviders) are only read, as the
 // proxy variables are.
-var shellVars = slices.Concat(agentenv.Vars, ProxyVars, agentenv.ClaudeProviders)
+var shellVars = slices.Concat(agentenv.Vars, ProxyVars, agentenv.ClaudeProviders, RegistryVars)
 
 // LoginEnv is the value a terminal opened now has for k, one of
 // agentenv.Vars, ProxyVars or agentenv.ClaudeProviders: the login shell's, asked as LoginPath asks
 // and with it; "" when the shell has none for it or doesn't say.
 func LoginEnv(k string) string {
 	LoginPath()
+	login.Lock()
+	defer login.Unlock()
+	return login.vars[k]
+}
+
+// LoginEnvKnown is what the login shell last said of k (UserPath or
+// LoginPath asked it), "" when it hasn't been asked or had none; it never
+// asks the shell itself, so a path every page takes doesn't wait on one.
+func LoginEnvKnown(k string) string {
 	login.Lock()
 	defer login.Unlock()
 	return login.vars[k]

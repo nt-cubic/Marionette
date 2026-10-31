@@ -125,7 +125,6 @@ type ExternalDayUsage struct {
 // read (keptStats), so what is changed is copied first.
 func MergeExternalStats(st Stats, days []ExternalDayUsage, external []ExternalSession) Stats {
 	oldFirst, _ := time.ParseInLocation(time.DateOnly, st.From, time.Local)
-	sessionsOwn := false
 	for _, d := range days {
 		if d.Date <= st.To && (st.From == "" || d.Date < st.From) {
 			st.From = d.Date
@@ -133,19 +132,8 @@ func MergeExternalStats(st Stats, days []ExternalDayUsage, external []ExternalSe
 	}
 	first, _ := time.ParseInLocation(time.DateOnly, st.From, time.Local)
 	if !oldFirst.IsZero() && !first.Equal(oldFirst) {
-		shift := int(math.Round(oldFirst.Sub(first).Hours() / 24))
-		st.Sessions, sessionsOwn = slices.Clone(st.Sessions), true
-		for i := range st.Sessions {
-			s := &st.Sessions[i]
-			s.Days = slices.Clone(s.Days)
-			for j := range s.Days {
-				s.Days[j] += shift
-			}
-			s.perDay = slices.Clone(s.perDay)
-			for j := range s.perDay {
-				s.perDay[j].day += shift
-			}
-		}
+		// noted, not written into a copy of every session
+		st.shift += int(math.Round(oldFirst.Sub(first).Hours() / 24))
 	}
 	st.Days = slices.Clone(st.Days)
 	byDate, own := map[string]int{}, map[int]bool{}
@@ -182,18 +170,8 @@ func MergeExternalStats(st Stats, days []ExternalDayUsage, external []ExternalSe
 		}
 	}
 	names := desktopExternalTitles(external)
-	// grown once for every external: a Clip and then an append a session
-	// copied the whole list again and again, ~110 MB a minute of polls on a
-	// full history (#2278)
-	n := 0
-	for _, e := range external {
-		if e.ID != "" && e.Agent != "" {
-			n++
-		}
-	}
-	if n > 0 {
-		st.Sessions, sessionsOwn = slices.Grow(slices.Clip(st.Sessions), n), true
-	}
+	// the gateway's go beside Sessions, not into a copy of them (#2278)
+	st.gateway = slices.Clip(st.gateway)
 	for _, e := range external {
 		if e.ID == "" || e.Agent == "" {
 			continue
@@ -205,7 +183,8 @@ func MergeExternalStats(st Stats, days []ExternalDayUsage, external []ExternalSe
 			if err != nil {
 				continue
 			}
-			d := int(math.Round(day.Sub(first).Hours() / 24))
+			// in Sessions' days, st.shift after the range's
+			d := int(math.Round(day.Sub(first).Hours()/24)) - st.shift
 			if first.IsZero() || u.Date < st.From || u.Date > st.To {
 				continue
 			}
@@ -225,12 +204,9 @@ func MergeExternalStats(st Stats, days []ExternalDayUsage, external []ExternalSe
 			s.Models = append(s.Models, m.Model)
 			s.Priced = s.Priced && m.Priced
 		}
-		st.Sessions = append(st.Sessions, s)
+		st.gateway = append(st.gateway, s)
 	}
 	sort.Slice(st.Days, func(i, j int) bool { return st.Days[i].Date < st.Days[j].Date })
-	if sessionsOwn {
-		// st's own come sorted so
-		sort.SliceStable(st.Sessions, func(i, j int) bool { return st.Sessions[i].Last.After(st.Sessions[j].Last) })
-	}
+	sort.SliceStable(st.gateway, func(i, j int) bool { return st.gateway[i].Last.After(st.gateway[j].Last) })
 	return st
 }

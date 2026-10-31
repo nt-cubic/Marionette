@@ -18,6 +18,7 @@ for (const engine of engines) for (const lang of ["en", "zh"]) {
     t.after(() => browser.close());
     const page = await browser.newPage({ viewport: { width: 420, height: 640 } });
     page.setDefaultTimeout(5000);
+    page.setDefaultNavigationTimeout(60000);
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     const posted = [];

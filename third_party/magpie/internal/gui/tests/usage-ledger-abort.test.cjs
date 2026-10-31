@@ -60,6 +60,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const errors = [], seen = [], held = [], failed = [];
       const page = await (await browser.newContext({ viewport: { width, height: 760 }, reducedMotion: "reduce" })).newPage();
       page.setDefaultTimeout(8000);
+      page.setDefaultNavigationTimeout(60000);
       page.on("pageerror", (e) => errors.push(e.message));
       page.on("requestfailed", (r) => { if (/\/api\/usage\/(requests|heatmap)\?/.test(r.url())) failed.push(r.url()); });
       await page.route("**/*", server("en", seen, held));

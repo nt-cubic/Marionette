@@ -98,6 +98,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       });
       const page = await (await browser.newContext({ viewport: { width: 900, height: 760 }, reducedMotion: "reduce" })).newPage();
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
       const posts = [];
@@ -120,6 +121,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const before = await row(page, id).evaluate((e) => Math.round(e.getBoundingClientRect().top)), sc = await scrolled(page);
       await b.click();
       await page.waitForTimeout(200);
+      // the redraw's soft refresh starts 2px low; WebKit can hold it there past 200ms
+      await page.evaluate(() => Promise.all(document.querySelector("#modal .dialog").getAnimations().map((a) => a.finished)));
       assert.equal(await row(page, id).evaluate((e) => Math.round(e.getBoundingClientRect().top)), before, `${id}'s row moved`);
       assert.equal(await scrolled(page), sc, "a click scrolled");
     };

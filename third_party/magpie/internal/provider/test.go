@@ -5,12 +5,15 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"regexp"
 	"slices"
@@ -40,7 +43,7 @@ type Result struct {
 // serves, signed with a key made for it and asking for a model that key
 // sees, and reports what came back.
 func (p Provider) Test(ctx context.Context) []Result {
-	ctx = p.ownRequests(p.Via(ctx), probelog.KindTest)
+	ctx = withUnreached(p.ownRequests(p.Via(ctx), probelog.KindTest))
 	if p.DecideOnly() {
 		return p.testDecide(ctx)
 	}
@@ -234,11 +237,67 @@ func tinyBody(q Provider, proto Protocol, model string) (url, body string) {
 // for the gateway, which gives it no such bound (mingxia_16024 on
 // Discord: every Qoder and WorkBuddy model's test ended at 20s while
 // agents were answered).
+// connectWait is how long a probe waits for its connection (a TLS
+// handshake done, through any proxy) before it gives up on the host: an
+// address nothing answers at is said in that time, not the whole wait's
+// (RIck on Discord: a failing test took too long to say so).
 var (
 	testWait       = 20 * time.Second
 	drawWait       = 2 * time.Minute
 	pluginTestWait = time.Minute
+	connectWait    = 10 * time.Second
 )
+
+// unreached is the hosts one test run couldn't connect to, with why
+// (host:port → string): its other requests there fail at once with the
+// same words instead of each waiting out its own connectWait. An answer
+// that is slow, or a model that doesn't answer, is the model's and is
+// never put here.
+type unreached struct{ sync.Map }
+
+type unreachedKey struct{}
+
+func withUnreached(ctx context.Context) context.Context {
+	if ctx.Value(unreachedKey{}) != nil {
+		return ctx
+	}
+	return context.WithValue(ctx, unreachedKey{}, &unreached{})
+}
+
+// errNoConnect is the cause a probe's request is ended with when its
+// connection wasn't had in connectWait.
+var errNoConnect = errors.New("no connection")
+
+// hostOnly reports whether err says the host can't be reached at all,
+// whatever is asked of it: its name doesn't resolve, nothing takes the
+// connection, the connection wasn't had in connectWait, or its
+// certificate isn't trusted.
+func hostOnly(err error) bool {
+	var dns *net.DNSError
+	var op *net.OpError
+	var cert *tls.CertificateVerificationError
+	return errors.Is(err, errNoConnect) || errors.As(err, &dns) || errors.As(err, &cert) || errors.As(err, &op) && op.Op == "dial"
+}
+
+// hostPort is u's host with its port, the scheme's when none is written.
+func hostPort(u *url.URL) string {
+	if u.Port() != "" {
+		return u.Host
+	}
+	if u.Scheme == "http" {
+		return net.JoinHostPort(u.Hostname(), "80")
+	}
+	return net.JoinHostPort(u.Hostname(), "443")
+}
+
+// connecting is ctx ended with errNoConnect when no connection was had
+// in connectWait; stop ends its timer.
+func connecting(ctx context.Context) (_ context.Context, stop func()) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	t := time.AfterFunc(connectWait, func() { cancel(errNoConnect) })
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{GotConn: func(httptrace.GotConnInfo) { t.Stop() }})
+	return ctx, func() { t.Stop(); cancel(nil) }
+}
 
 // drawsOnImages is whether model is asked on p's images API, as the
 // gateway draws with it there: chat would be turned away, or answered in
@@ -268,7 +327,7 @@ func tinyDrawing(q Provider, model string) (url, body string) {
 // on the endpoint it's served on and with a key that sees it: whether each
 // answers, not only whether the vendor does. Results are in models' order.
 func (p Provider) TestModels(ctx context.Context, models []string) []Result {
-	ctx = p.ownRequests(p.Via(ctx), probelog.KindTest)
+	ctx = withUnreached(p.ownRequests(p.Via(ctx), probelog.KindTest))
 	out := make([]Result, len(models))
 	sem := make(chan struct{}, 4)
 	var wg sync.WaitGroup
@@ -278,6 +337,11 @@ func (p Provider) TestModels(ctx context.Context, models []string) []Result {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
+			if err := context.Cause(ctx); err != nil {
+				// stopped, or out of time, before its turn came
+				out[i] = Result{Model: model, Error: "not asked: " + err.Error()}
+				return
+			}
 			out[i] = p.testOne(ctx, model)
 		}()
 	}
@@ -601,10 +665,25 @@ func probeOnce(ctx context.Context, p Provider, proto Protocol, url string, body
 	if logged {
 		rctx = probelog.Taken(ctx)
 	}
+	if !p.IsPlugin() && (p.Account == nil || p.Account.transport == nil && p.Account.clientFor == nil) {
+		// a plugin's or an account's own client may make no connection
+		// that tells the trace
+		var stop func()
+		rctx, stop = connecting(rctx)
+		defer stop()
+	}
 	req, err := http.NewRequestWithContext(rctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		r.Error = err.Error()
 		return r
+	}
+	host := hostPort(req.URL)
+	dead, _ := ctx.Value(unreachedKey{}).(*unreached)
+	if dead != nil {
+		if why, ok := dead.Load(host); ok {
+			r.Error = why.(string)
+			return r
+		}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if proto == Anthropic {
@@ -682,6 +761,14 @@ func probeOnce(ctx context.Context, p Provider, proto Protocol, url string, body
 	r.Millis = time.Since(start).Milliseconds()
 	if err != nil {
 		r.Error = strings.TrimPrefix(err.Error(), "Post \""+url+"\": ")
+		if context.Cause(rctx) == errNoConnect {
+			err, r.Error = errNoConnect, fmt.Sprintf("couldn't connect to %s in %s", req.URL.Host, connectWait)
+		} else if ctx.Err() == context.DeadlineExceeded {
+			r.Error = fmt.Sprintf("no answer in %s", time.Since(start).Round(time.Second))
+		}
+		if dead != nil && hostOnly(err) {
+			dead.Store(host, r.Error)
+		}
 		return r
 	}
 	defer res.Body.Close()
@@ -692,6 +779,9 @@ func probeOnce(ctx context.Context, p Provider, proto Protocol, url string, body
 		if streams(body) {
 			if msg, failed := streamAnswer(res.Body); failed {
 				r.Error = msg
+				if ctx.Err() == context.DeadlineExceeded {
+					r.Error = fmt.Sprintf("no answer in %s", time.Since(start).Round(time.Second))
+				}
 				return r
 			}
 		}
@@ -715,7 +805,8 @@ func streams(body []byte) bool {
 // streamAnswer reads a streamed answer up to the first thing the model
 // says — a word, a thought or a tool call, in Chat's, Responses' or
 // Anthropic's events — and reports an error the stream gives before that.
-// A stream that ends with neither was answered, as a 200 always was.
+// A stream that ends with neither was answered, as a 200 always was; one
+// broken off, or held open past the probe's wait, was not.
 func streamAnswer(r io.Reader) (msg string, failed bool) {
 	sc := bufio.NewScanner(io.LimitReader(r, 1<<20))
 	sc.Buffer(make([]byte, 64*1024), 1<<20)
@@ -762,6 +853,9 @@ func streamAnswer(r io.Reader) (msg string, failed bool) {
 			}
 		}
 	}
+	if err := sc.Err(); err != nil {
+		return "the stream broke off before the model answered: " + err.Error(), true
+	}
 	return "", false
 }
 
@@ -786,12 +880,25 @@ func EdgeBlocked(b []byte) bool {
 	return edgeBlocked.Match(b) || bytes.Contains(b, []byte(BlockedHint))
 }
 
+// restrictedHinted says an error body is one a plugin already put in
+// magpie's words as an account its vendor restricted: ZCode's Start Plan
+// 3012 (ZCodeRestrictedHint) keeps ZCode's own "request has been blocked
+// due to unusual activity" in front of the hint, which edgeBlocked reads
+// as a firewall's page. Told as that, the hint was cut, the agent was told
+// to change networks, and the gateway rested the account as any failure,
+// never as restricted: the 405 windy_66454 met (Discord, 10-31) read
+// "405 Method Not Allowed — " BlockedHint, the same words ZCode's 3012
+// and Alibaba Cloud's page were both told in.
+func restrictedHinted(b []byte) bool {
+	return bytes.Contains(b, []byte(ZCodeRestrictedHint)) || bytes.Contains(b, []byte(WBRestrictedHint))
+}
+
 // APIError pulls the human message out of an error body when there is one.
 // A firewall's block page is put in plain words (BlockedHint); Google's
 // "verify your account" refusal also says what to do about it, with the
 // link it gave.
 func APIError(b []byte, fallback string) string {
-	if edgeBlocked.Match(b) {
+	if edgeBlocked.Match(b) && !restrictedHinted(b) {
 		if said, ok := WebPage(b); ok && fallback != "" {
 			return fallback + ": " + said + " — " + BlockedHint
 		}

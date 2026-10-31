@@ -104,6 +104,13 @@ func readZhipuPlan(b []byte) (string, []QuotaWindow, error) {
 	if code, msg, ok := zhipuEnvelope(b); ok && ZhipuKeyRefused(code) {
 		// the key itself refused, which no plan can be read past
 		return "", nil, zhipuKeyRefusal{msg}
+	} else if ok && code != 1113 && zhipuCodeStatus(code) == http.StatusTooManyRequests {
+		// /api/monitor answers its rate limits 200 in the envelope too
+		// (1302 "并发数过高", 1303 "频率过高", …), in Chinese words a
+		// passing failure isn't recognised by: said as the 429 it is, so
+		// the card keeps what was last read (keepLast) instead of losing
+		// it to a read that told nothing about the plan
+		return "", nil, fmt.Errorf("429 rate limited (%d): %s", code, msg)
 	}
 	if r.Success != nil && !*r.Success || r.Data == nil {
 		if r.Msg != "" {
@@ -782,9 +789,15 @@ func PlanQuotas(ctx context.Context) []SubscriptionQuota {
 			case err == nil && len(ws) == 0:
 				return // a key with no plan
 			case err != nil && !j.src.sure:
-				// no plan, unless one was read before
+				// no plan, unless one was read before: a key whose windows
+				// were read is a plan's, and a read of it that fails is
+				// unknown, not "no plan" — its card stays, with what was
+				// last read when the failure passes, else with why
+				// (larchsis on X: the second of two GLM Coding Plan keys
+				// lost its card on each refresh)
 				q.Error = err.Error()
-				if q = keepReading(ctx, q, tag); q.AsOf != nil {
+				known := hadReading(q.Provider, tag)
+				if q = keepReading(ctx, q, tag); q.AsOf != nil || known {
 					got[i] = &q
 				}
 				return

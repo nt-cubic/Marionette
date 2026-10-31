@@ -249,9 +249,13 @@ func TestSettledClearsOnlyMagpiesFiles(t *testing.T) {
 	if err := os.WriteFile(f.exe+".old", []byte("MZ"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// an update an older magpie downloaded beside it, never put in now
+	if err := os.WriteFile(f.exe+".new", []byte("MZ newer"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv(installedFromEnv, f.exe)
 	Settled()
-	for _, p := range []string{com, filepath.Join(dir, shimName), f.exe + ".old"} {
+	for _, p := range []string{com, filepath.Join(dir, shimName), f.exe + ".old", f.exe + ".new"} {
 		if exists(p) {
 			t.Fatalf("%s left", filepath.Base(p))
 		}
@@ -356,8 +360,10 @@ func TestNoCompanionBesideAForwardingDownload(t *testing.T) {
 	if err := EnsureCompanion(f.exe); err != nil {
 		t.Fatal(err)
 	}
-	if got := exists(filepath.Join(f.downloads, comName)); got == forwards(f.exe) {
-		t.Fatalf("magpie.com beside the download: %v, forwarding: %v", got, forwards(f.exe))
+	// nor one that runs where it is: a download folder gets one only from
+	// Add (TestNoCompanionPutBackOnTheDesktop)
+	if exists(filepath.Join(f.downloads, comName)) {
+		t.Fatalf("magpie.com beside the download, forwarding: %v", forwards(f.exe))
 	}
 }
 

@@ -1,10 +1,14 @@
 package agent
 
 import (
+	"encoding/json"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // The route the Codex app's app-server is restarted on (codex_app_server.go)
@@ -68,5 +72,78 @@ func TestCodexAppRouteFollowsOpenAIAuth(t *testing.T) {
 	}
 	if without, _, _ := codexAppRoute(); without == with {
 		t.Fatalf("requires_openai_auth taken out left the route as it was:\n%s", read())
+	}
+}
+
+// #4550: the Codex app's app-server was restarted three times in 20
+// minutes with the user doing nothing, and a slow MCP server took
+// ChatGPT down with each. What magpie writes to Codex's catalog changes
+// with no change of the user's: a list that fails to fetch drops its
+// models and has them back at the next fetch, the order is re-ranked by
+// the models Codex used last, descriptions and windows follow the
+// vendor's list. None of that is where Codex sends, so none of it is the
+// route, which restarts the app-server at once; and a catalog that can't
+// be read now is no change either.
+func TestCodexAppRouteKeepsThroughListFlaps(t *testing.T) {
+	home := syncHome(t)
+	codexCat := filepath.Join(home, ".codex", "magpie-models.json")
+	writeFile(t, filepath.Join(home, ".codex", "config.toml"), "model = \"relay/glm-4.6\"\nmodel_provider = \"magpie\"\nmodel_catalog_json = '"+codexCat+"'\n")
+	writeFile(t, codexCat, `{"models":[]}`)
+	save := func(models ...string) {
+		t.Helper()
+		if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k", Chat: "http://127.0.0.1:1/v1", Models: models}); err != nil {
+			t.Fatal(err)
+		}
+		SyncCatalog()
+	}
+	route := func() string {
+		t.Helper()
+		r, _, known := codexAppRoute()
+		if !known {
+			t.Fatal("route not known")
+		}
+		return r
+	}
+	save("glm-4.6", "glm-4.5")
+	full := readFile(codexCat)
+	if !strings.Contains(full, "glm-4.5") {
+		t.Fatalf("catalog:\n%s", full)
+	}
+	before := route()
+	// the list fetched while the vendor failed: one model left
+	save("glm-4.6")
+	if strings.Contains(readFile(codexCat), "glm-4.5") {
+		t.Fatalf("catalog still lists the dropped model:\n%s", readFile(codexCat))
+	}
+	if r := route(); r != before {
+		t.Errorf("a model dropped from the list changed the route:\n%s\nto\n%s", before, r)
+	}
+	// and back at the next fetch
+	save("glm-4.6", "glm-4.5")
+	if r := route(); r != before {
+		t.Errorf("the model back in the list changed the route:\n%s\nto\n%s", before, r)
+	}
+	// the same models in another order, as usage re-ranks them, with
+	// other descriptions
+	var cat map[string][]map[string]any
+	if err := json.Unmarshal([]byte(readFile(codexCat)), &cat); err != nil {
+		t.Fatal(err)
+	}
+	ms := cat["models"]
+	slices.Reverse(ms)
+	for i, m := range ms {
+		m["priority"] = i + 1
+		m["description"] = "fetched again"
+	}
+	b, _ := json.Marshal(cat)
+	writeFile(t, codexCat, string(b))
+	if r := route(); r != before {
+		t.Errorf("the list in another order changed the route:\n%s\nto\n%s", before, r)
+	}
+	// half a file, as another writer's would be mid-write: not known,
+	// never a change
+	writeFile(t, codexCat, `{"models":[{"slug":"glm`)
+	if r := route(); r != before {
+		t.Errorf("a catalog that can't be read changed the route:\n%s\nto\n%s", before, r)
 	}
 }

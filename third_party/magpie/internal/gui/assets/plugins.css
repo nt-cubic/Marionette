@@ -190,9 +190,25 @@ button.pm-chip:disabled { cursor: default; opacity: .6; }
 .pm-note.warn svg { flex: none; margin-top: 2px; color: var(--amber); }
 .pm-empty { margin: 24px 4px; font-size: 12.5px; color: var(--red); }
 
-/* a package the market doesn't list */
-.pm-manual { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 12px; border: 1px dashed var(--line); flex-wrap: wrap; }
+/* a package the market doesn't list. It floats at the foot of the view
+   while the cards scroll under it (0x3108 on X: with many plugins it was
+   found only at the very end), on a strip of the page's own colour that
+   reaches into the gaps round it and the view's padding below; at the end
+   of the list it is back in its place, above the registry line. The strip
+   is the box's ::before, which a sticky box paints over its own border, so
+   the dashed border is drawn by its ::after. The strip takes the pointer, so
+   a press on it never reaches a card hidden under it */
+.pm-manual { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 12px; border: 1px solid transparent; flex-wrap: wrap; --bleed-l: 12px; }
+body.window .pm-manual { --bleed-l: 16px; }
+.pm-manual::before { content: ""; position: absolute; z-index: -1; top: -11px; bottom: -13px; left: calc(-1 * var(--bleed-l)); right: calc(var(--bar, 0px) - 12px); background: var(--bg); }
+.pm-manual::after { content: ""; position: absolute; inset: -1px; pointer-events: none; border-radius: inherit; border: 1px dashed var(--line); }
+/* a card reached with Tab stops above the box, not under it */
+#view-plugins { scroll-padding-bottom: 76px; }
 .pm-mlabel { font-size: 12px; color: var(--muted); }
+.pm-registry { display: flex; align-items: center; gap: 8px; padding: 4px 12px 0; flex-wrap: wrap; font-size: 12px; min-width: 0; }
+.pm-reg-url { min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+.pm-reg-from { color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
+.pm-reg-err { flex-basis: 100%; color: var(--red); }
 .pm-minput { flex: 1; min-width: 180px; height: 26px; padding: 0 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--fg); font: var(--code-style, normal) var(--code-weight, 400) 12px var(--code-font, var(--code)); font-stretch: var(--code-stretch, 100%); outline: none; }
 .pm-minput:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
 /* the system's folder picker, beside the field it fills */

@@ -428,7 +428,7 @@ func ledgerMatched(since, until time.Time, f Filter, recs []Record, logs []sessi
 	// the upstream names in force now, read once for the lot: a row is
 	// judged by the names standing today, which is what Ledger says, and
 	// the rows here are what a reader compares a bill against
-	wires := settings.Load().ModelWires
+	wires := settings.Load().Wires()
 	priceOf := Pricer()
 	codexIdentities := sessions.CodexIdentities()
 	rows = make([]Row, 0, len(recs)+len(logs))

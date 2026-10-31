@@ -26,7 +26,9 @@ const (
 	LeastUsed = "usage"
 	Pace      = "pace"
 	// Weighted spreads a provider's requests over its keys by each key's
-	// weight (KeyAccount.Weight, #841), smoothly: 3 and 1 go a, a, b, a…
+	// weight (KeyAccount.Weight, #841), or a subscription's over its
+	// accounts by each account's (AccountWeights), smoothly: 3 and 1 go
+	// a, a, b, a…
 	Weighted = "weight"
 	// FreeFirst spends what costs nothing first: the models its vendor
 	// serves at no cost to the subscription's allowance or credits, before
@@ -36,6 +38,12 @@ const (
 	// lately — first token, then how fast it wrote — first; one not
 	// measured lately gets a turn now and then to be (routes.Fastest).
 	Fastest = "fast"
+	// Cheapest goes by price: the member whose model costs least at the
+	// request's time first — its vendor's peak hours and the provider's
+	// rate windows read then — those alike in their listed order
+	// (routes.Cheapest). A group's only: a provider's keys and accounts
+	// all bill its one price.
+	Cheapest = "cheap"
 )
 
 // pluginRouting is a routing a plugin serves: "<plugin>/<name>".
@@ -91,6 +99,18 @@ func SetCapCareful(id string, on bool) error {
 		return err
 	}
 	p.CapCareful = on
+	return Save(*p)
+}
+
+// SetCountFree has every model of a provider count as free for the
+// routings that weigh it, or go by its vendor's word again
+// (Provider.CountFree).
+func SetCountFree(id string, on bool) error {
+	p, err := Find(id)
+	if err != nil {
+		return err
+	}
+	p.CountFree = on
 	return Save(*p)
 }
 
@@ -252,7 +272,7 @@ func (a Allowance) WeekUsedUp(now time.Time) bool {
 
 // Restarts is when an auto-used reset starts the account's windows again,
 // as the Codex reset about to run out is spent (expiringResetSpent):
-// resetExpiryLead before it runs out, or now when the account is held up
+// resetLead before it runs out, or now when the account is held up
 // past then. What they have left then is lost, as at their own reset, so
 // Weekly pace and Smart take it for their renewal when it comes sooner
 // (#717, #718). Zero when none will be.

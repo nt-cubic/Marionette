@@ -16,7 +16,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/yetone/magpie/internal/access"
+	"github.com/yetone/magpie/internal/budget"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/usage"
 )
 
 // When no provider can search, magpie's web_search tool is answered by a
@@ -141,8 +144,10 @@ func (s *Server) askSearchAPIKeys(ctx context.Context, a provider.SearchAPI, que
 		one := a
 		one.Key = keys[i]
 		ctx, cancel := context.WithTimeout(ctx, searchTimeout/4)
+		start := time.Now()
 		pages, err := s.askSearchAPI(ctx, one, query)
 		cancel()
+		logSearchAPI(ctx, one, query, start, len(pages), err)
 		if err == nil {
 			wakeSearchKey(a.Vendor, keys[i])
 			return pages, nil
@@ -162,6 +167,58 @@ func (s *Server) askSearchAPIKeys(ctx context.Context, a provider.SearchAPI, que
 		}
 	}
 	return nil, errors.Join(errs...)
+}
+
+// logSearchAPI writes the request log's row of one ask of a search API
+// with one key (usage.SourceSearch; cybercaius on Discord: which search
+// API each search used, and how much, couldn't be seen): the API by name,
+// where it was asked, the key masked, how long it took and how it ended.
+func logSearchAPI(ctx context.Context, a provider.SearchAPI, query string, start time.Time, found int, err error) {
+	rec := usage.Record{Requested: a.Name(), Host: provider.HostOf(a.Base())}
+	if a.Key != "" {
+		rec.ProviderKeyID, rec.ProviderKeyName = searchKeyID(a.Vendor, a.Key), provider.MaskSearchKey(a.Key)
+	}
+	logSearch(ctx, rec, query, start, found, err)
+}
+
+// logSearch writes rec, a search magpie ran with a search API or a plan's
+// own search service, as the request log's row of it: the agent it was
+// for, how long it took and how it ended (200, the API's refusal, the
+// error, "found nothing"). The query is never kept, nor said in the
+// error: the row may go to another computer the usage syncs with.
+func logSearch(ctx context.Context, rec usage.Record, query string, start time.Time, found int, err error) {
+	rec.Time, rec.Agent, rec.Kind, rec.Source = start, "magpie", "web_search", usage.SourceSearch
+	rec.Millis = time.Since(start).Milliseconds()
+	if f := searchFor(ctx); f != nil && f.Agent != "" {
+		rec.Agent = f.Agent
+	}
+	who := access.Caller(ctx)
+	rec.CallerKeyID, rec.CallerKeyName, rec.CallerIssuerID = who.KeyID, who.KeyName, who.IssuerID()
+	switch {
+	case err != nil && found == 0 && errors.Is(err, errFoundNothing):
+		rec.Error = "found nothing"
+	case err != nil:
+		said := err.Error()
+		var ue *url.Error // its URL holds the query of an API asked by GET
+		if errors.As(err, &ue) {
+			said = ue.Op + " " + provider.HostOf(ue.URL) + ": " + ue.Err.Error()
+		}
+		if q := strings.TrimSpace(query); q != "" {
+			for _, form := range []string{q, url.QueryEscape(q), url.PathEscape(q)} {
+				said = strings.ReplaceAll(said, form, "…")
+			}
+		}
+		rec.Error = keepMsg(said)
+		var r searchRefused
+		if errors.As(err, &r) {
+			rec.Status = r.status
+		}
+	case found == 0:
+		rec.Error = "found nothing"
+	default:
+		rec.Status = http.StatusOK
+	}
+	budget.Append(rec)
 }
 
 // searchRefused is a search API's refusal of the key it was asked with,

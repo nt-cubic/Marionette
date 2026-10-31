@@ -13,8 +13,8 @@ import (
 	"github.com/yetone/magpie/internal/settings"
 )
 
-// docIP is an IPv4 stand-in: an address in RFC 5737's ranges, .101 to .254
-var docIP = regexp.MustCompile(`(?:192\.0\.2|198\.51\.100|203\.0\.113)\.(?:1\d\d|2[0-4]\d|25[0-4])`)
+// docIP is an address's stand-in: public-ip- and eight lowercase letters
+var docIP = regexp.MustCompile(`public-ip-[a-z]{8}`)
 
 // The kinds of personal data the user turned on or off in settings
 // (redactKinds) are what the vendor doesn't see, the others as their
@@ -47,8 +47,8 @@ func TestRedactedKinds(t *testing.T) {
 		t.Fatalf("%d %s", code, body)
 	}
 	sent := string(got)
-	// an address goes as one from the documentation ranges, not a
-	// placeholder, so the model uses it rather than asking for the real one
+	// an address goes as a public-ip- name, not a placeholder, so the
+	// model uses it rather than asking for the real one
 	if strings.Contains(sent, ssn) || strings.Contains(sent, ip) || !strings.Contains(sent, "{{SSN_") || !docIP.MatchString(sent) || strings.Contains(sent, "{{IP_") {
 		t.Fatalf("SSN (on by default) or IP (turned on) went out: %s", sent)
 	}

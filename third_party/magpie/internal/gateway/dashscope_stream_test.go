@@ -73,12 +73,19 @@ func TestDashScopeHosts(t *testing.T) {
 		{Chat: "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1"},
 		{Chat: "https://maas.qianwenaiapi.com/compatible-mode/v1"},
 		{Chat: "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+		// Qwen Cloud's (judi0713): its presets, its plan's host, a region's
+		// and the regionless Singapore one
+		{Preset: "qwencloud"}, {Preset: "qwencloud-token-plan"},
+		{Chat: "https://token-plan.maas.qwencloudapi.com/compatible-mode/v1"},
+		{Chat: "https://us-east-1.maas.qwencloudapi.com/compatible-mode/v1"},
+		{Chat: "https://maas.qwencloudapi.com/compatible-mode/v1"},
 	} {
 		if !dashScope(p) {
 			t.Errorf("not DashScope: %+v", p)
 		}
 	}
-	if dashScope(provider.Provider{Chat: "https://api.deepseek.com/v1"}) || dashScope(provider.Provider{Chat: "https://qianwenaiapi.com.example/v1"}) {
+	if dashScope(provider.Provider{Chat: "https://api.deepseek.com/v1"}) || dashScope(provider.Provider{Chat: "https://qianwenaiapi.com.example/v1"}) ||
+		dashScope(provider.Provider{Chat: "https://maas.qwencloudapi.com.example/v1"}) {
 		t.Error("another vendor is DashScope")
 	}
 }

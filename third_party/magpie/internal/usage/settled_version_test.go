@@ -1,11 +1,13 @@
 package usage
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -16,7 +18,7 @@ import (
 // settled days, under settledCountVersion. A change that counts them
 // otherwise changes it: raise settledCountVersion and set this to the new
 // hash in the same commit.
-const settledCounted = "f8a4cfb6f86c4145176efcbe1c879631849e1ee9d87987c182cd921b95acc2a8"
+const settledCounted = "d7ac763fc3c86fa5e0061f7025974d9c18d5c0fca1305bbf1488139a1fbad51e"
 
 // The settled days, a page's cells and Codex's effort are kept on disk
 // under settledCountVersion, not under this package's source: an upgrade
@@ -70,12 +72,24 @@ func TestSettledCountedAsVersioned(t *testing.T) {
 	}
 	var pages []pageDiskEntry
 	var heat heatDiskEntry
-	var effort effortDiskEntry
+	var efforts []effortDiskEntry
 	read(pageDiskPath(), &pages)
 	read(heatDiskPath(), &heat)
-	read(effortDiskPath(), &effort)
+	read(effortDiskPath(), &efforts)
+	var effort effortDiskEntry
+	if len(efforts) > 0 {
+		effort = efforts[0]
+	}
+	// when and under what they were counted, not how; and the cells in
+	// one order, as a first build a few weeks at a time adds them up in
+	// another
 	for i := range pages {
-		pages[i].Key, pages[i].At = "", time.Time{}
+		pages[i].Key, pages[i].At, pages[i].Cut, pages[i].Since = "", time.Time{}, time.Time{}, time.Time{}
+		slices.SortFunc(pages[i].Cells, func(a, b pageDiskCell) int {
+			x, _ := json.Marshal(a)
+			y, _ := json.Marshal(b)
+			return bytes.Compare(x, y)
+		})
 	}
 	if len(pages) == 0 || len(heat.Days) == 0 || len(effort.Sums) == 0 {
 		t.Fatalf("kept %d pages, %d days, %d threads' effort", len(pages), len(heat.Days), len(effort.Sums))

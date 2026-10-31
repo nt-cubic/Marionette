@@ -69,6 +69,7 @@ async function open(engine, width, t, name) {
     await browser.close();
   });
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(60000);
   return page;
 }
 

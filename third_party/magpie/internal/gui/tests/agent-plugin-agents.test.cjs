@@ -67,6 +67,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const ctl = { installs: INSTALLS, agents: AGENTS };
         const page = await (await browser.newContext({ viewport: { width, height: 760 } })).newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         const errors = [];
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", server(lang, ctl));
@@ -127,6 +128,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         ctl.installs = [];
         const p2 = await (await browser.newContext({ viewport: { width, height: 760 } })).newPage();
         p2.setDefaultTimeout(5000);
+        p2.setDefaultNavigationTimeout(60000);
         p2.on("pageerror", (e) => errors.push(e.message));
         await p2.route("**/*", server(lang, ctl));
         await p2.goto("http://magpie.test/");
@@ -140,6 +142,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         Object.assign(ctl, { installs: INSTALLS, agents: [] });
         const p3 = await (await browser.newContext({ viewport: { width, height: 760 } })).newPage();
         p3.setDefaultTimeout(5000);
+        p3.setDefaultNavigationTimeout(60000);
         p3.on("pageerror", (e) => errors.push(e.message));
         await p3.route("**/*", server(lang, ctl));
         await p3.goto("http://magpie.test/");

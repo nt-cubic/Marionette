@@ -37,6 +37,7 @@ type Tool struct {
 	Mount  string // where Windows' drives are mounted: "/mnt/"
 	Host   string // the Windows host's address inside the distro, "" when it is 127.0.0.1 (HostLoopback)
 	Root   bool   // the distro's default user, as whom the command runs, is root
+	Home   string // that user's home folder, inside the distro
 }
 
 // On is whether there is WSL to look in: on Windows, or in tests.
@@ -259,7 +260,7 @@ func probeScript(name string) string {
 		`case "$p" in /mnt/*|"") continue;; esac; ` +
 		`[ -x "$p" ] && { echo "bin:$p"; ` +
 		`echo "path:$(bash -ic 'echo $PATH' 2>/dev/null </dev/null | tail -n1)"; echo "lpath:$PATH"; break; }; done; ` +
-		`echo "mount:$(wslpath -u 'C:\' 2>/dev/null)"; echo "uid:$(id -u)"; ` +
+		`echo "mount:$(wslpath -u 'C:\' 2>/dev/null)"; echo "uid:$(id -u)"; echo "home:$HOME"; ` +
 		`ip route show default 2>/dev/null | head -n1 | sed 's/^/route:/'; ` +
 		`command -v wslinfo >/dev/null 2>&1 && echo "net:$(wslinfo --networking-mode 2>/dev/null)"; true`
 }
@@ -296,6 +297,10 @@ func parseProbe(distro, out string) (Tool, bool) {
 			net_ = strings.ToLower(v)
 		case "uid":
 			t.Root = v == "0"
+		case "home":
+			if strings.HasPrefix(v, "/") {
+				t.Home = v
+			}
 		}
 	}
 	if !strings.HasPrefix(t.Path, "/") {
@@ -392,6 +397,10 @@ var runSeq struct {
 	n int
 }
 
+// Args is Command's arguments to wsl.exe, without what Command adds to end
+// the run with ctx: for a program that starts wsl.exe itself.
+func (t Tool) Args(args ...string) []string { return t.argv(args) }
+
 func (t Tool) argv(args []string) []string {
 	runSeq.Lock()
 	runSeq.n++
@@ -412,6 +421,12 @@ func (t Tool) Linux(win string) string {
 		mount = "/mnt/"
 	}
 	return mount + strings.ToLower(win[:1]) + "/" + strings.TrimPrefix(rest, "/")
+}
+
+// Windows is where path linux inside the distro is on Windows:
+// \\wsl$\<distro>\home\me for /home/me.
+func (t Tool) Windows(linux string) string {
+	return `\\wsl$\` + t.Distro + strings.ReplaceAll(linux, "/", `\`)
 }
 
 func isLetter(c byte) bool { return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' }

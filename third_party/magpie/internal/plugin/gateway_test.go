@@ -301,7 +301,7 @@ func TestGatewayHookMixedPiPackage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
 	defer cancel()
 	installPinnedPi(t, ctx)
-	dir := t.TempDir()
+	dir := filepath.Join(Dir(), "mixed-pi-package") // where pi resolves to the pinned one (installPinnedPi)
 	if err := os.MkdirAll(filepath.Join(dir, "extensions"), 0o755); err != nil {
 		t.Fatal(err)
 	}

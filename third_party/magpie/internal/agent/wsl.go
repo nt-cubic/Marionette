@@ -276,6 +276,9 @@ type wslKind struct {
 	dir, bin string
 	in       func(place) *Agent // the agent at a place, as on this machine
 	restart  notice             // advice after a change, when mirrored; "" none
+	// restartAt, when set, is restart's choice at a place (kimi-cli or Kimi
+	// Code 2.x, told by the folder there)
+	restartAt func(place) notice
 	// version: the probe asks the distro's own bin its version (--version),
 	// for an agent whose config depends on it
 	version bool
@@ -410,7 +413,7 @@ var wslKinds = []wslKind{
 	// Kimi Code's ~/.kimi-code, or the old kimi-cli's ~/.kimi where that is
 	// all there is; a stopped distro's is looked at once it is started
 	{id: "kimi", name: "Kimi Code", dir: ".kimi-code", bin: "kimi", in: kimiIn,
-		restart: newNotice("{agent} in WSL {distro} reads its settings at start-up — restart open kimi sessions to use this."),
+		restart: noticeWSLKimiCode, restartAt: kimiWSLNotice,
 		asleep: func(key string) func(map[string]string) []Option {
 			if key != "model" {
 				return nil
@@ -494,7 +497,9 @@ var wslKinds = []wslKind{
 				return append(miniMaxOwnOptions("", cur["model"]), viaMagpie("minimax-code", magpieID+"/")...)
 			}
 		}},
-	{id: "dsh", name: "DeepSeek Harness", dir: ".dsh", bin: "dsh", in: dshIn,
+	// version: a dsh with no profile yet is told from one before profiles
+	// by it (liby233)
+	{id: "dsh", name: "DeepSeek Harness", dir: ".dsh", bin: "dsh", in: dshIn, version: true,
 		restart: newNotice("{agent} in WSL {distro} reads its config at start-up — restart open dsh sessions to use this."),
 		asleep: func(key string) func(map[string]string) []Option {
 			// the thinking levels hang on which patch lists there are, the
@@ -725,6 +730,9 @@ func wslAgent(k wslKind, d distro) *Agent {
 	id := k.id + "@wsl:" + d.Name
 	at := d.place(id)
 	a := k.in(at)
+	if k.restartAt != nil {
+		k.restart = k.restartAt(at)
+	}
 	a.ID, a.Name, a.Aliases, a.Bin, a.UA, a.WSL = id, k.name+" · WSL "+d.Name, nil, "", nil, d.Name
 	a.wslVersion = at.version
 	a.Gateway = d.base

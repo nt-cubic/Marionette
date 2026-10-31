@@ -284,3 +284,54 @@ func TestZCodeStartPlanBlockRestsRestricted(t *testing.T) {
 		t.Fatal("a 200 read as restricted")
 	}
 }
+
+// The ZCode plugin's 3012 answer keeps ZCode's own words, "request has
+// been blocked due to unusual activity", in front of ZCodeRestrictedHint.
+// Served through the plugin, it reaches the agent and the trace with the
+// hint, never as a firewall blocking the address (BlockedHint), and the
+// account rests as restricted. Before, the gateway read ZCode's words as
+// Alibaba Cloud's block page, told the agent to change networks and
+// rested the account as any failure (windy_66454 on Discord, 10-31). The
+// plugin's words for the page itself are still the firewall's.
+func TestZCodeRiskControlNotToldAsFirewall(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, says, notSays, why string
+	}{
+		{"risk control", `{"type":"error","error":{"type":"permission_error","message":"request has been blocked due to unusual activity. (405, code 3012) — ` + provider.ZCodeRestrictedHint + `"}}`, provider.ZCodeRestrictedHint, provider.BlockedHint, failRestricted},
+		{"block page", `{"type":"error","error":{"type":"permission_error","message":"405 Method Not Allowed — ` + provider.BlockedHint + `"}}`, provider.BlockedHint, provider.ZCodeRestrictedHint, failOther},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("FAKE_ZCODE", "1")
+			movedFake(t, "zcode", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				io.WriteString(w, tc.body)
+			}))
+			p, err := provider.Find("zcode")
+			if err != nil {
+				t.Fatal(err)
+			}
+			c := candidate{p: *p, rest: "zcode", model: "GLM-5.3"}
+			b := &scripted{replies: []reply{{200, "", chatOK}}}
+			scriptedOn(t, "b", provider.Chat, b)
+			if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"zcode/GLM-5.3", "b/m"}, Routing: provider.Ordered}); err != nil {
+				t.Fatal(err)
+			}
+			s := New()
+			if code, body := postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"hi"}]}`); code != 200 {
+				t.Fatalf("group request: %d %s", code, body)
+			}
+			tries := s.trace.routes[len(s.trace.routes)-1].Tries
+			if len(tries) != 2 || tries[0].Rest == nil {
+				t.Fatalf("tries: %+v", tries)
+			}
+			tr := tries[0]
+			if !strings.Contains(tr.Error, tc.says) || strings.Contains(tr.Error, tc.notSays) {
+				t.Fatalf("told %q", tr.Error)
+			}
+			if tr.Fail != tc.why || tr.Rest.Why != tc.why || tr.Rest.Key != c.restKey() {
+				t.Fatalf("failed %q, rested %+v", tr.Fail, *tr.Rest)
+			}
+		})
+	}
+}

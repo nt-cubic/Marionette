@@ -6,3 +6,4 @@ package gui
 func forgetTrayHidden() int             { return 0 }
 func forgetTrayHiddenLater()            {}
 func bringTrayBack() (stillHidden bool) { return false }
+func keepTrayPlace() int                { return 0 }

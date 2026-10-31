@@ -89,6 +89,14 @@ func ownSignals() {
 	}
 }
 
+// leaveSignals hands every signal endProbesOnSignal asked for back, for a
+// command that starts no probe and ends on each its own way.
+func leaveSignals() {
+	if onSignal != nil {
+		signal.Stop(onSignal)
+	}
+}
+
 // interrupts counts the commands ending themselves on Ctrl+C.
 var interrupts atomic.Int32
 

@@ -399,7 +399,14 @@ func traceRoutes(mux *http.ServeMux) {
 		day := r.URL.Query().Get("day")
 		days, routes, cut := gateway.History(day)
 		rememberTitleHistory(day, routes)
-		writeJSON(rw, map[string]any{"days": days, "routes": pricedRoutes(routes), "cut": cut})
+		out := map[string]any{"days": days, "routes": pricedRoutes(routes), "cut": cut}
+		if day == "" {
+			// the live page's accounts and keys say tried and answered of
+			// the day the Usage page reads, not of the last few requests
+			// the trace still keeps (#3351)
+			out["tallies"] = gateway.DayTallies()
+		}
+		writeJSON(rw, out)
 	})
 	// the report saved of a request held too long before routing, for its
 	// row's Copy Report: the app's log goes only to stderr, which its user

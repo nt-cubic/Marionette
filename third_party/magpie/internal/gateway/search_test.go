@@ -668,17 +668,17 @@ func TestSearchAskedLooksCheaply(t *testing.T) {
 	}
 	asks := []byte(`{"model":"gpt-5","input":"` + long + `","tools":[{"type":"web_search"}]}`)
 	codex := provider.Provider{ID: "codex", Responses: provider.CodexBase, Account: &provider.Account{Agent: "codex"}}
-	if searchedForIt(codex, provider.Responses, "gpt-5", asks) {
+	if searchedForIt(context.Background(), codex, provider.Responses, "gpt-5", asks) {
 		t.Error("Codex searches by itself, and magpie searched for it")
 	}
-	if n := testing.AllocsPerRun(20, func() { searchedForIt(codex, provider.Responses, "gpt-5", asks) }); n > 20 {
+	if n := testing.AllocsPerRun(20, func() { searchedForIt(context.Background(), codex, provider.Responses, "gpt-5", asks) }); n > 20 {
 		t.Errorf("a provider that searches by itself: %v allocations, the body parsed", n)
 	}
 	other := provider.Provider{ID: "x", Responses: "https://example.test/v1"}
-	if !searchedForIt(other, provider.Responses, "gpt-5", asks) {
+	if !searchedForIt(context.Background(), other, provider.Responses, "gpt-5", asks) {
 		t.Error("a provider that doesn't search: magpie didn't search for it")
 	}
-	if searchedForIt(other, provider.Responses, "gpt-5", plain) {
+	if searchedForIt(context.Background(), other, provider.Responses, "gpt-5", plain) {
 		t.Error("a body offering no search: magpie searched for it")
 	}
 }
@@ -692,13 +692,13 @@ func BenchmarkSearchedForIt(b *testing.B) {
 	b.Run("codex-asks", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			searchedForIt(codex, provider.Responses, "gpt-5", asks)
+			searchedForIt(context.Background(), codex, provider.Responses, "gpt-5", asks)
 		}
 	})
 	b.Run("other-plain", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			searchedForIt(other, provider.Responses, "gpt-5", plain)
+			searchedForIt(context.Background(), other, provider.Responses, "gpt-5", plain)
 		}
 	})
 }

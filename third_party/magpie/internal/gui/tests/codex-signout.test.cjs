@@ -19,11 +19,16 @@ const codex = (logins) => ({
   models: [{ id: "gpt-6", name: "GPT-6", on: true }], agents: [], fallback: [], headers: {}, keyList: [],
   account: { agent: "codex", agentName: "Codex", agentIcon: "codex-color", user: logins[0].user, plan: "PLUS", logins },
 });
+const claude = (logins) => ({
+  id: "claude", name: "Claude", icon: "claude-color", chat: "", responses: "", anthropic: "", catalog: "", routing: "smart",
+  models: [{ id: "claude-x", name: "Claude X", on: true }], agents: [], fallback: [], headers: {}, keyList: [],
+  account: { agent: "claude", agentName: "Claude Code", agentIcon: "claude-color", user: logins[0].user, plan: "MAX", logins },
+});
 const one = [{ user: "me@example.com", plan: "PLUS", active: true, on: true }];
 const two = [...one, { user: "work@example.com", plan: "PRO", on: true }];
 
-function serve(lang, logins, posts, refuse) {
-  const providers = { providers: [codex(logins)], presets: [], excluded: [], gateway: { running: true, window: true } };
+function serve(lang, logins, posts, refuse, of = codex) {
+  const providers = { providers: [of(logins)], presets: [], excluded: [], gateway: { running: true, window: true } };
   const state = { agents: [], profiles: [], settings: { lang, theme: "light" } };
   return async (route) => {
     const req = route.request();
@@ -37,6 +42,7 @@ function serve(lang, logins, posts, refuse) {
     if (url.pathname === "/api/plugins") return json({ plugins: [] });
     if (url.pathname === "/api/login/forget") {
       posts.push(req.postDataJSON());
+      if (refuse === "only") return route.fulfill({ status: 400, json: { error: "Claude Code is signed in to me@example.com", code: "signed_in_only", agent: "claude", user: "me@example.com" } });
       if (refuse) return route.fulfill({ status: 400, json: { error: "codex is signed in to me@example.com now", code: "signed_in", agent: "codex", user: "me@example.com" } });
       return json({ ...providers, providers: [] });
     }
@@ -48,24 +54,25 @@ function serve(lang, logins, posts, refuse) {
 }
 
 const words = {
-  en: { out: "Sign out", remove: "Remove", cancel: "Cancel", ask: "Sign Codex out of me@example.com?", text: /Codex is signed out, as codex logout does/, done: "Codex signed out of me@example.com", refused: /Codex is signed in to me@example\.com now: sign it in to another of its accounts first/ },
-  zh: { out: "退出登录", remove: "移除", cancel: "取消", ask: "让 Codex 退出 me@example.com？", text: /codex logout/, done: "Codex 已退出 me@example.com", refused: /Codex 当前登录的是 me@example\.com：请先在另一个账号上点「使用」/ },
+  en: { out: "Sign out", remove: "Remove", cancel: "Cancel", ask: "Sign Codex out of me@example.com?", text: /Codex is signed out, as codex logout does/, done: "Codex signed out of me@example.com", refused: /Codex is signed in to me@example\.com now: sign it in to another of its accounts first/, only: /Claude Code is signed in to me@example\.com, the only account in magpie it can be signed in to/ },
+  zh: { out: "退出登录", remove: "移除", cancel: "取消", ask: "让 Codex 退出 me@example.com？", text: /codex logout/, done: "Codex 已退出 me@example.com", refused: /Codex 当前登录的是 me@example\.com：请先在另一个账号上点「使用」/, only: /Claude Code 当前登录的是 me@example\.com，这是 magpie 里它唯一能登录的账号/ },
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   for (const lang of ["en", "zh"]) {
     const w = words[lang];
-    const open = async (t, logins, refuse = false) => {
+    const open = async (t, logins, refuse = false, of = codex) => {
       const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
       t.after(() => browser.close());
       const page = await (await browser.newContext({ viewport: { width: 900, height: 760 }, reducedMotion: "reduce" })).newPage();
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       const errors = [];
       const posts = [];
       page.on("pageerror", (e) => errors.push(e.message));
-      await page.route("**/*", serve(lang, logins, posts, refuse));
+      await page.route("**/*", serve(lang, logins, posts, refuse, of));
       await page.goto("http://magpie.test/?view=providers");
-      await page.locator(".row.provider", { hasText: "Codex" }).first().click();
+      await page.locator(".row.provider", { hasText: of === claude ? "Claude" : "Codex" }).first().click();
       await page.locator(".editor .acc").first().waitFor();
       return { page, errors, posts };
     };
@@ -139,9 +146,54 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await confirm.getByRole("button", { name: w.remove, exact: true }).click();
       await page.waitForFunction(() => document.querySelector("#status")?.textContent.includes("me@example.com"));
       assert.deepEqual(posts, [{ agent: "codex", user: "me@example.com" }]);
-      const missing = await page.evaluate(() => ["Codex is signed in to another of its accounts, and magpie forgets this one; the account itself is untouched"]
+      const missing = await page.evaluate(() => ["{agent} is signed in to another of its accounts, and magpie forgets this one; the account itself is untouched"]
         .filter((k) => !I18N.zh[k] || !I18N.ja[k] || !I18N.de[k]));
       assert.deepEqual(missing, [], "every string has its zh, ja and de");
+      assert.deepEqual(errors, []);
+    });
+
+    // StringKe (#4532): Claude Code's account in use is removed as Codex's
+    // is, signed in to another first, while it has another it can be
+    // signed in to; a setup-token one isn't that, and magpie never signs
+    // Claude Code out, so its only one has no Remove
+    test(`${engine} ${lang}: Claude Code's account in use has Remove while another can take its place`, async (t) => {
+      const { page, errors, posts } = await open(t, [...one, { user: "work@example.com", plan: "MAX", on: true }], false, claude);
+      const row = page.locator(".editor .acc", { hasText: "me@example.com" });
+      await more(row);
+      const remove = row.getByRole("button", { name: w.remove, exact: true });
+      assert.equal(await remove.count(), 1, "the one in use has Remove");
+      assert.match(await remove.getAttribute("title"), /Claude Code/);
+      await remove.click();
+      const confirm = page.locator("dialog.action-confirm[open]");
+      await confirm.getByRole("button", { name: w.remove, exact: true }).click();
+      await page.waitForFunction(() => document.querySelector("#status")?.textContent.includes("me@example.com"));
+      assert.deepEqual(posts, [{ agent: "claude", user: "me@example.com" }]);
+      assert.deepEqual(errors, []);
+    });
+
+    test(`${engine} ${lang}: Claude Code's only account it can be signed in to has no Remove`, async (t) => {
+      const { page, errors } = await open(t, [...one, { user: "ci@example.com", plan: "MAX", on: true, token: true }], false, claude);
+      const row = page.locator(".editor .acc", { hasText: "me@example.com" });
+      await more(row);
+      assert.equal(await row.getByRole("button", { name: w.remove, exact: true }).count(), 0);
+      assert.equal(await row.getByRole("button", { name: w.out, exact: true }).count(), 0, "magpie never signs Claude Code out");
+      const missing = await page.evaluate(() => ["{agent} is signed in to {user}, the only account in magpie it can be signed in to, and magpie doesn't sign it out: add another account first, or sign out in {agent} itself, then remove this one"]
+        .filter((k) => !I18N.zh[k] || !I18N["zh-TW"][k] || !I18N.ja[k] || !I18N.de[k]));
+      assert.deepEqual(missing, [], "every string has its zh, zh-TW, ja and de");
+      assert.deepEqual(errors, []);
+    });
+
+    // the CLI, or a GUI a step behind the accounts: the refusal of the
+    // only one says so, not "sign it in to another first"
+    test(`${engine} ${lang}: the only Claude account's refusal says it is the only one`, async (t) => {
+      const { page, errors } = await open(t, [...one, { user: "work@example.com", plan: "MAX", on: true }], "only", claude);
+      const row = page.locator(".editor .acc", { hasText: "me@example.com" });
+      await more(row);
+      await row.getByRole("button", { name: w.remove, exact: true }).click();
+      await page.locator("dialog.action-confirm[open]").getByRole("button", { name: w.remove, exact: true }).click();
+      await page.waitForFunction(() => /only account|唯一/.test([...document.querySelectorAll(".editor-error, #status")].map((n) => n.textContent).join(" ")));
+      const said = await page.evaluate(() => [...document.querySelectorAll(".editor-error, #status")].map((n) => n.textContent).join(" "));
+      assert.match(said, w.only);
       assert.deepEqual(errors, []);
     });
 

@@ -93,6 +93,93 @@ func TestGroupPatterns(t *testing.T) {
 	}
 }
 
+// The members a pattern matches are put in order by hand as a named one
+// is (usrname1833 on Discord): the group is read, and routed, in the order
+// the user put them in, a model matched since joins at the end in the
+// catalog's order, one no longer matched drops out, and the order is kept
+// through a save that sends the named members only, and a provider's
+// rename.
+func TestGroupPatternMembersKeepTheirPlace(t *testing.T) {
+	patternHome(t)
+	or := func(models ...string) {
+		t.Helper()
+		if err := Save(Provider{ID: "or", Name: "OR", Key: "k", Chat: "http://127.0.0.1:1/v1", Models: models}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	or("a:free", "b", "c:free")
+	if err := Save(Provider{ID: "zen", Name: "Zen", Key: "k", Chat: "http://127.0.0.1:1/v1", Models: []string{"y"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveGroup(Group{Name: "Free", Members: []string{"zen/y", "or/*:free"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := routedIDs(t, "group/free"); !slices.Equal(got, []string{"zen/y", "or/a:free", "or/c:free"}) {
+		t.Fatalf("unplaced: %v", got)
+	}
+	// dragged in the Routing page's editor, which sends the order:
+	// a matched one first, the named one between
+	g, _, _ := FindGroup("group/free")
+	g.Placed = []string{"or/c:free", "zen/y", "or/a:free"}
+	if err := SaveGroup(g); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"or/c:free", "zen/y", "or/a:free"}
+	if g, _, _ := FindGroup("group/free"); !slices.Equal(g.Members, want) || !slices.Equal(g.Matched, []string{"or/a:free", "or/c:free"}) {
+		t.Fatalf("read: %v matched %v", g.Members, g.Matched)
+	}
+	if got := routedIDs(t, "group/free"); !slices.Equal(got, want) {
+		t.Fatalf("routed: %v", got)
+	}
+	if s, _ := StoredGroups(); !slices.Equal(s[0].Members, []string{"zen/y"}) {
+		t.Fatalf("stored members: %v", s[0].Members)
+	}
+	// a save of the named ones only (the card's routing menu) keeps it
+	if err := SaveGroup(Group{ID: "free", Name: "Free", Members: []string{"zen/y"}, Match: []string{"or/*:free"}, Routing: Ordered}); err != nil {
+		t.Fatal(err)
+	}
+	if got := routedIDs(t, "group/free"); !slices.Equal(got, want) {
+		t.Fatalf("after a named-only save: %v", got)
+	}
+	// the vendor drops one and adds another: gone, and joined at the end
+	or("b", "c:free", "d:free")
+	if got := routedIDs(t, "group/free"); !slices.Equal(got, []string{"or/c:free", "zen/y", "or/d:free"}) {
+		t.Fatalf("after the catalog changed: %v", got)
+	}
+	// the provider renamed: its models keep their places
+	if err := Rename("or", "op"); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveGroup(Group{ID: "free", Name: "Free", Members: []string{"zen/y"}, Match: []string{"op/*:free"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := routedIDs(t, "group/free"); !slices.Equal(got, []string{"op/c:free", "zen/y", "op/d:free"}) {
+		t.Fatalf("after a rename: %v", got)
+	}
+	// a model added to the group as read (models+=, the TUI) goes after
+	// those named, the pattern's staying where they were
+	if err := Save(Provider{ID: "zen", Name: "Zen", Key: "k", Chat: "http://127.0.0.1:1/v1", Models: []string{"y", "z"}}); err != nil {
+		t.Fatal(err)
+	}
+	g, _, _ = FindGroup("group/free")
+	g.Members = append(g.Members, "zen/z")
+	if err := SaveGroup(g); err != nil {
+		t.Fatal(err)
+	}
+	if got := routedIDs(t, "group/free"); !slices.Equal(got, []string{"op/c:free", "zen/y", "zen/z", "op/d:free"}) {
+		t.Fatalf("after an add: %v", got)
+	}
+	// put back in the order it has unasked, nothing is kept
+	g, _, _ = FindGroup("group/free")
+	g.Placed = []string{"zen/y", "zen/z", "op/c:free", "op/d:free"}
+	if err := SaveGroup(g); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(Path()); strings.Contains(string(b), `"placed"`) {
+		t.Fatalf("placed kept: %s", b)
+	}
+}
+
 // A matched member may be switched off, picked, or ruled, like a named one;
 // and named at an effort of its own it is not matched again.
 func TestGroupPatternMembersOffAndRules(t *testing.T) {

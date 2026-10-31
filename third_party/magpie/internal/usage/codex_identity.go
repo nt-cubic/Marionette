@@ -196,6 +196,7 @@ type responsePick struct {
 // slab were ~775 MB of what 80 s of polls allocated while calls came in
 // (#2278).
 type pickScratch struct {
+	made   int // the gateway's rows of the largest call it served
 	picks  map[string]int32
 	slab   []responsePick
 	picked map[uint64]bool
@@ -235,10 +236,12 @@ func codexChunkResponsePairs(gateways, locals []*rowChunk, duplicateLocal refSet
 			}
 		}
 	}
+	need := rowsOfAll(gateways)
 	scratch := keptPicks.Swap(nil)
-	if scratch == nil {
+	if scratch == nil || !scratchFits(scratch.made, need) {
 		scratch = &pickScratch{}
 	}
+	scratch.made = max(scratch.made, need)
 	defer scratch.release()
 	scratch.picks = mapFor(scratch.picks, withID)
 	picks := scratch.picks

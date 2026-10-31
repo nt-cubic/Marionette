@@ -85,7 +85,7 @@ func Restore(ctx context.Context) ([]string, error) {
 		}
 		st := loadState()
 		if st.Key != stateKey(c) {
-			st = state{Key: stateKey(c)}
+			st = state{Key: stateKey(c), Brought: st.Brought, Replaced: st.Replaced, Own: st.Own}
 		}
 		if len(brought) > 0 {
 			kept, err := keepHere(c)
@@ -93,6 +93,17 @@ func Restore(ctx context.Context) ([]string, error) {
 				return fmt.Errorf("keeping this computer's setup before restoring: %w", err)
 			}
 			for _, p := range brought {
+				if p == "agents" {
+					// the server's whole, the fields kept here too: they
+					// follow the others again, as Follow leaves them
+					got, err := bringAgents(remote.Agents, nil)
+					broughtIn(&st, got)
+					st.Own, st.Follow = nil, false
+					if err != nil {
+						return fmt.Errorf("bringing in the %s: %w", p, err)
+					}
+					continue
+				}
 				if err := bring(remote, p); err != nil {
 					return fmt.Errorf("bringing in the %s: %w", p, err)
 				}
@@ -105,7 +116,7 @@ func Restore(ctx context.Context) ([]string, error) {
 		}
 		// as a sync that brought them in leaves it: the next one has
 		// nothing to push back
-		st.Local, st.Remote, st.Sum, st.Server = hashes(local), R, sum(data), ver
+		st.Local, st.Remote, st.Sum, st.Server = hashesOwn(local, st.Own), hashesOwn(remote, st.Own), sum(data), ver
 		st.Blind = nil // what is here now is what the server has
 		remember(data)
 		st.Last, st.Error = time.Now(), ""
@@ -175,10 +186,10 @@ func Upload(ctx context.Context) error {
 		}
 		st := loadState()
 		if st.Key != stateKey(c) {
-			st = state{Key: stateKey(c)}
+			st = state{Key: stateKey(c), Brought: st.Brought, Replaced: st.Replaced, Own: st.Own}
 		}
 		// as the first sync to an empty server leaves it
-		st.Local, st.Remote, st.Sum, st.Server = hashes(local), hashes(b), sum(sealed), v
+		st.Local, st.Remote, st.Sum, st.Server = hashesOwn(local, st.Own), hashesOwn(b, st.Own), sum(sealed), v
 		st.Blind = nil // it replaced what wasn't a backup: nothing to merge again
 		remember(sealed)
 		st.Last, st.Error, st.File = time.Now(), "", nil

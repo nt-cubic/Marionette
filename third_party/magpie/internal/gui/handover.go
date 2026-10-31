@@ -104,14 +104,15 @@ var (
 
 // beginHandover starts the new version and hands the gateway over to it
 // in the background, the caller quitting (leave) once that is done. False
-// when this restart can't hand over: the caller restarts as before.
-func beginHandover(bundle, exe string, window bool, view string) bool {
+// when this restart can't hand over: the caller restarts as before. quiet,
+// a restart by itself: the Mac's new one opens in the background.
+func beginHandover(bundle, exe string, window bool, view string, quiet bool) bool {
 	if !handsOver() {
 		return false
 	}
 	ho := &handover{gw: served.Load(), quit: make(chan func(), 1)}
 	if bundle != "" {
-		ho.fallback = func() error { return update.Relaunch(bundle, window) }
+		ho.fallback = func() error { return update.Relaunch(bundle, window, quiet) }
 	} else {
 		ho.fallback = func() error { return relaunchBinary(exe, "", window, view) }
 	}
@@ -126,7 +127,7 @@ func beginHandover(bundle, exe string, window bool, view string) bool {
 	}
 	ho.offer = offer
 	if bundle != "" {
-		err = openBeside(bundle, window)
+		err = openBeside(bundle, window, quiet)
 	} else {
 		err = startBeside(exe, window, view)
 	}

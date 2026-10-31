@@ -9,9 +9,13 @@ import (
 	"encoding/binary"
 	"encoding/gob"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"hash/crc32"
 	"hash/fnv"
 	"io"
+	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -42,12 +46,32 @@ import (
 // v15: Codex calls keep the compaction marker independently of its duration.
 // What each version names is what a cache of the one before it cannot serve:
 // the version is part of the directory's name, so a cache written by an older
-// one is never read (pruneCalls).
+// one is never read (pruneCalls). It is raised for a change to every agent's
+// calls, or to the shards' form; a change to one agent's calls raises that
+// agent's callParseVersions instead.
 const callCacheVersion = "calls-v15"
 
-// CallCacheVersion is callCacheVersion, for a cache of what is made of the
-// calls (usage's requests-v1.bin).
-const CallCacheVersion = callCacheVersion
+// callParseVersions is each agent's calls' version, for a change to how one
+// agent's calls are read: its shards written before are read again from
+// their sessions, and every other agent's are kept. Raising callCacheVersion
+// for one agent read every agent's history again, every call shard of a
+// long history (~16,000 files, minutes of CPU) after an update. An agent
+// not named here is at 0, as every shard written before this was.
+var callParseVersions = map[string]int{}
+
+// CallCacheVersion is callCacheVersion and callParseVersions, for a cache
+// of what is made of the calls (usage's requests-v1.bin and heatmap): a
+// raised agent's calls change what is made of them.
+func CallCacheVersion() string {
+	v := callCacheVersion
+	for _, agent := range slices.Sorted(maps.Keys(callParseVersions)) {
+		if n := callParseVersions[agent]; n != 0 {
+			v += fmt.Sprintf(",%s=%d", agent, n)
+		}
+	}
+	return v
+}
+
 const maxKeptCalls = 131072
 const maxKeptFiles = 64
 
@@ -273,6 +297,11 @@ func readCalls(f file) *callFile {
 		owned = true
 	}
 	if old != nil && old.Size == f.size && old.Mod == f.mod.UnixNano() {
+		if owned {
+			// a Claude session's calls a parse read along (callsRide) left
+			// their window on disk, not here
+			old = withCallRevisions(old)
+		}
 		callsMu.Lock()
 		if generation == callGeneration {
 			keepCalls(f.path, old)
@@ -380,21 +409,26 @@ func readCalls(f file) *callFile {
 // Codex app packs or repacks every rollout (11,591 on 10-20) the start's
 // warm-up parsed each for the Sessions page and then read each again for
 // Requests' calls: ~48 GB decompressed twice. Reading both on one pass
-// leaves readCalls a shard on disk that is already up to date.
+// leaves readCalls a shard on disk that is already up to date. A Claude
+// session read from its start rides too: a first start scanned each again
+// for its calls, ~20 s of its CPU on 13 GB of them (#2278).
 type callsRide struct {
 	f          file
 	st         *callFile
 	generation uint64
 	lock       *sync.Mutex
 	sum, calls bool // what each reader's head said of the line being read
+	claude     bool
 }
 
 // callsAlong is a ride for f's calls when f is a packed Codex rollout whose
-// calls are to be read again, and nil otherwise. It holds the file's calls
-// lock until release, so a readCalls of the file meanwhile waits for what
-// the ride reads rather than read it again.
+// calls are to be read again, or a Claude session whose calls were never
+// read, and nil otherwise. It holds the file's calls lock until release, so
+// a readCalls of the file meanwhile waits for what the ride reads rather
+// than read it again.
 func callsAlong(f file) *callsRide {
-	if f.agent != "codex" || !packed(f.path) || f.cold || wslCold(f.path) {
+	claude := f.agent == "claude" || f.agent == "claude-desktop"
+	if !(f.agent == "codex" && packed(f.path)) && !claude || f.cold || wslCold(f.path) {
 		return nil
 	}
 	lock := callLock(f.path)
@@ -402,6 +436,14 @@ func callsAlong(f file) *callsRide {
 	callsMu.Lock()
 	old, generation := callCache[f.path], callGeneration
 	callsMu.Unlock()
+	if claude {
+		// calls read before are read on, or again, by readCalls as they were
+		if _, err := os.Stat(callCachePath(f.path)); old != nil || !errors.Is(err, fs.ErrNotExist) {
+			lock.Unlock()
+			return nil
+		}
+		return &callsRide{f: f, st: prepareCalls(f, nil, false), generation: generation, lock: lock, claude: true}
+	}
 	owned := false
 	if old == nil {
 		old = loadKept(f)
@@ -428,7 +470,11 @@ func (r *callsRide) ride(head func([]byte) bool, line func([]byte, int64, int64)
 			}
 			if r.calls {
 				r.st.At, r.st.End = start, end
-				codexCallLine(r.st, b)
+				if r.claude {
+					claudeCallLine(r.st, b)
+				} else {
+					codexCallLine(r.st, b)
+				}
 			}
 			return true
 		}
@@ -447,7 +493,17 @@ func (r *callsRide) finish(off int64, err error) {
 	st.Off, st.Size, st.Mod = off, f.size, f.mod.UnixNano()
 	st.ContentHash = prefixHash(f.path, off)
 	writeCalls(st, 0, false)
+	if r.claude {
+		if st.Claude != nil && !workingRevision(f.mod.UnixNano(), time.Now()) {
+			st = st.withoutRevisions()
+		}
+		writeCallRevisions(st)
+	}
 	st.dirty = nil
+	if r.claude {
+		// on disk only: a Sessions read keeps no calls (readCalls loads them)
+		return
+	}
 	callsMu.Lock()
 	if r.generation == callGeneration {
 		keepCalls(f.path, st)
@@ -492,6 +548,7 @@ type callDiskState struct {
 	Head               string
 	HeadSize           int
 	Path, Agent        string
+	Parser             int // callParseVersions[Agent] when written
 	At, End, AsstEnd   int64
 	Session, Requested string
 	LastUser, LastAsst time.Time
@@ -506,7 +563,7 @@ type callDiskState struct {
 
 func diskCallState(s *callFile) callDiskState {
 	d := callDiskState{ContentHash: s.ContentHash, Size: s.Size, Mod: s.Mod, Off: s.Off, Head: s.Head, HeadSize: s.HeadSize,
-		Path: s.Path, Agent: s.Agent, At: s.At, End: s.End, AsstEnd: s.AsstEnd, Session: s.Session, Requested: s.Requested,
+		Path: s.Path, Agent: s.Agent, Parser: callParseVersions[s.Agent], At: s.At, End: s.End, AsstEnd: s.AsstEnd, Session: s.Session, Requested: s.Requested,
 		LastUser: s.LastUser, LastAsst: s.LastAsst}
 	if s.Dsh != nil {
 		d.Dsh, _ = json.Marshal(s.Dsh)
@@ -599,7 +656,7 @@ func loadCalls(f file) *callFile {
 			return nil
 		}
 		frame := k.frame()
-		if decodeFrame(data, frame) != nil || frame.State.Path != f.path || frame.State.Agent != f.agent {
+		if decodeFrame(data, frame) != nil || frame.State.Path != f.path || frame.State.Agent != f.agent || frame.State.Parser != callParseVersions[f.agent] {
 			return nil
 		}
 		if st != nil && frame.State.Off < st.Off {

@@ -945,8 +945,16 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 	// Claude's blocks magpie gave Codex (claudeseal) are Claude's alone:
 	// to OpenAI each item is its summary, as before magpie carried them
 	body = withoutClaudeSeals(body)
+	base := provider.CodexBase
+	if apiKey(r.Header) && rest != "/models" {
+		base = codexAPIBase
+	}
 	var maskedHits maskHits
-	if r.Method == http.MethodPost {
+	// the ChatGPT sign-in the user set to go unmasked, and its fallbacks
+	// (codexFallBack masks for its own route), gets the turn as written
+	// (isee1_1 on Discord); Codex's own API key is no account of magpie's
+	sentWhole := base == provider.CodexBase && codexRouteUnmasked(on)
+	if r.Method == http.MethodPost && !sentWhole {
 		var unmask func()
 		var err error
 		to := provider.Provider{ID: "codex"} // the ChatGPT backend
@@ -959,10 +967,6 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 			writeError(w, provider.Responses, maskStatus(err), err.Error())
 			return
 		}
-	}
-	base := provider.CodexBase
-	if apiKey(r.Header) && rest != "/models" {
-		base = codexAPIBase
 	}
 	if r.Method == http.MethodPost && rest == "/responses" && base == provider.CodexBase {
 		// a replayed web search the request doesn't declare the tool for
@@ -1028,7 +1032,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 		if m := noteMasked(r, "chat", maskedHits, sentOf(maskedHits, body), tr.ID, "openai", model); m != nil {
 			s.trace.update(tr, func(t *Route) { t.Masked = m })
 		}
-		promptRead := s.inspectPrompt(tr, provider.Responses, body, body, false)
+		promptRead := s.inspectPrompt(tr, provider.Responses, body, body, sentWhole)
 		end = func(status int, msg string, tokens, out int) {
 			ms := time.Since(start).Milliseconds()
 			ttft, text := first.ms()
@@ -1066,7 +1070,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 				}
 				try.TTFT, try.FirstText = fromTry(ttft), fromTry(text)
 				try.Net = nt.timing(try.Start, 0)
-				t.ReasoningHidden = first.hidesReasoning(provider.Responses)
+				t.ReasoningHidden = first.hidesReasoning(provider.Responses, uu.Reasoning)
 				try.ReasoningHidden = t.ReasoningHidden
 				t.Done, t.Status, t.Error, t.Millis, t.Tokens = true, status, msg, ms, tokens
 				if t.TitleLink != nil && isTitleKind(kind) && status < 400 && msg == "" && !titleReply.truncated {
@@ -1201,6 +1205,19 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 			sent = provider.CodexCompressed(req, body)
 			if res, err = s.client.Do(req); err != nil {
 				msg := "OpenAI: " + err.Error()
+				if overload && busyAgain < lastRetries && droppedUnanswered(r.Context(), err) {
+					// the connection closed with nothing of a reply (a
+					// proxy's or ChatGPT's front's "EOF" on a fresh
+					// connection, which Go doesn't send again by itself):
+					// asked again after a moment on a new one, as the
+					// accounts loop asks its last account again after the
+					// same 502 (aetrox333 on Discord: gpt-6-luna failed
+					// in 43ms every time, auto/gpt-6-luna never)
+					if !askAgain(502, msg, retryPause<<busyAgain) {
+						return
+					}
+					continue
+				}
 				if rest == "/responses" {
 					msg = codexUnreached(modelOf(body), err)
 				}
@@ -1453,8 +1470,8 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 		call.Fallback = strings.TrimSuffix(call.Fallback, "; ")
 	}
 	call.TTFT, call.FirstText = first.ms()
-	call.ReasoningHidden = first.hidesReasoning(provider.Responses)
 	uu.add(sniff.usage())
+	call.ReasoningHidden = first.hidesReasoning(provider.Responses, uu.Reasoning)
 	uu.Tier = servedTierAt(provider.HostOf(base), uu.Tier)
 	call.Flow = first.flowFor(uu.Reasoning)
 	call.Usage, served = uu, uu.Served
@@ -1500,6 +1517,21 @@ func codexBusy(status int, msg []byte) bool {
 		return false
 	}
 	return busy(status, msg)
+}
+
+// codexRouteUnmasked says a turn relayed to the ChatGPT backend on the
+// account on, or on Codex's own sign-in (the codex subscription) when on
+// is nil, goes there as written: the user set that subscription to go
+// unmasked, and every fallback of it too (unredactedRoute).
+func codexRouteUnmasked(on *provider.Provider) bool {
+	if on != nil {
+		return unredactedRoute(*on, false, nil)
+	}
+	p, err := provider.Find("codex")
+	if err != nil || p.Account == nil || p.Account.Agent != "codex" {
+		return false
+	}
+	return unredactedRoute(*p, false, nil)
 }
 
 // codexFallsBack says Codex's turn on one of its own models has fallbacks
@@ -1673,6 +1705,19 @@ func codexKeyRefused(msg []byte) string {
 		"This is one of Codex's own models, which goes to OpenAI with Codex's own sign-in: " +
 		"pick one of magpie's models in Codex (provider/model, or set it in magpie's Agents view), " +
 		"or sign Codex in with ChatGPT, or with an OpenAI API key"
+}
+
+// droppedUnanswered says whether err, a request's that got no reply, is
+// one that may pass when asked again: the connection closed or reset
+// before a byte of a reply, or couldn't be made. Not the caller gone, nor
+// a wait for the reply that ran out, which a second try would wait out
+// again.
+func droppedUnanswered(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var ne interface{ Timeout() bool }
+	return !errors.As(err, &ne) || !ne.Timeout()
 }
 
 // codexUnreached says why a model of Codex's own failed with 502: OpenAI,

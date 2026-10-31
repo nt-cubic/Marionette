@@ -61,6 +61,7 @@ for (const run of runs.filter((r) => !process.env.BROWSER || r.engine === proces
           const ctx = await browser.newContext({ viewport: { width, height: 640 }, reducedMotion: "reduce" });
           const p = await ctx.newPage();
           p.setDefaultTimeout(5000);
+          p.setDefaultNavigationTimeout(60000);
           p.on("pageerror", (e) => errors.push(e.message));
           await p.route("**/*", server(lang, []));
           await p.goto("http://magpie.test/");

@@ -415,3 +415,73 @@ func TestRunCodexEntry(t *testing.T) {
 		t.Fatal("a server given by its command again is still served")
 	}
 }
+
+// A server the user keeps direct (#4382, cuipengcx90: cocoindex reads its
+// project from the folder it starts in) is given to Codex on magpie as its
+// command, as to every other agent, with the hub on or off: Codex starts it
+// in the thread's folder, where magpie's /mcp/run would start it from home.
+// No cwd is written, which is what makes Codex use the thread's.
+func TestRunDirectServerIsCodexsCommand(t *testing.T) {
+	h := sandbox(t)
+	t.Cleanup(hubStopAll)
+	resetRuns(t)
+	runOn = true
+	was := runWired
+	runWired = func(a *agent.Agent) bool { return true }
+	t.Cleanup(func() { runOn, runWired = false, was })
+	if _, err := SaveServer("", Server{Name: "cocoindex", Transport: "stdio", Command: "ccc", Args: []string{"mcp"}, Env: map[string]string{"K": "v"}, Agents: []string{"codex", "claude"}, Hub: HubDirect}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SaveServer("", Server{Name: "mem", Transport: "stdio", Command: "node", Args: []string{"server.js"}, Agents: []string{"codex"}}); err != nil {
+		t.Fatal(err)
+	}
+	check := func(when string) {
+		t.Helper()
+		e, err := targetByID("codex").MCP.entries()
+		if err != nil {
+			t.Fatal(err)
+		}
+		codex := read(t, filepath.Join(h, ".codex/config.toml"))
+		c := e["cocoindex"]
+		if c["command"] != "ccc" || c["url"] != nil || c["cwd"] != nil || fmt.Sprint(c["args"]) != "[mcp]" || fmt.Sprint(c["env"]) != "map[K:v]" {
+			t.Fatalf("%s: codex's direct entry %v\n%s", when, c, codex)
+		}
+		runs.Lock()
+		_, given := runs.given["cocoindex"]
+		runs.Unlock()
+		if given {
+			t.Fatalf("%s: a direct server is served at %scocoindex", when, RunPath)
+		}
+		// before a sync has recorded what it gave, too
+		runs.Lock()
+		given2 := runs.given
+		runs.given = nil
+		runs.Unlock()
+		_, before := runSpecOf("cocoindex")
+		_, shared := runSpecOf("mem")
+		runs.Lock()
+		runs.given = given2
+		runs.Unlock()
+		if before || !shared {
+			t.Fatalf("%s: before a sync /mcp/run would start the direct server %v, the shared one %v", when, before, shared)
+		}
+	}
+	check("hub off")
+	if codex := read(t, filepath.Join(h, ".codex/config.toml")); !strings.Contains(codex, RunPath+"mem") {
+		t.Fatalf("a shared server isn't run by magpie any more:\n%s", codex)
+	}
+	if _, err := SetMCPHub(true); err != nil {
+		t.Fatal(err)
+	}
+	check("hub on")
+	// shared again: magpie runs it for Codex, as before
+	if _, err := ServerHub("cocoindex", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SetMCPHub(false); err != nil {
+		t.Fatal(err)
+	}
+	if codex := read(t, filepath.Join(h, ".codex/config.toml")); !strings.Contains(codex, RunPath+"cocoindex") {
+		t.Fatalf("cocoindex shared again:\n%s", codex)
+	}
+}

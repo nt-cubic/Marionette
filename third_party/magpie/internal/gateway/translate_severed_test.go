@@ -14,7 +14,7 @@ import (
 // severed speaks HTTP until it doesn't: it writes headers that promise more
 // body than it sends, delivers the events given, then closes the connection.
 // The client's stream read fails the way an upstream dying mid-reply fails.
-func severed(t *testing.T, events ...string) {
+func severed(t *testing.T, proto provider.Protocol, events ...string) {
 	t.Helper()
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.ReadAll(r.Body)
@@ -33,7 +33,13 @@ func severed(t *testing.T, events ...string) {
 		buf.Flush()
 	}))
 	t.Cleanup(up.Close)
-	p := provider.Provider{ID: "up", Name: "UP", Key: "k", Models: []string{"m"}, Anthropic: up.URL}
+	p := provider.Provider{ID: "up", Name: "UP", Key: "k", Models: []string{"m"}}
+	switch proto {
+	case provider.Chat:
+		p.Chat = up.URL + "/v1"
+	default:
+		p.Anthropic = up.URL
+	}
 	if err := provider.Save(p); err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +60,7 @@ const (
 // upstream died, as if the reply were whole.
 func TestTranslateBufferedSeveredUpstream(t *testing.T) {
 	fresh(t)
-	severed(t, anthropicStart, anthropicText)
+	severed(t, provider.Anthropic, anthropicStart, anthropicText)
 	code, body := postAs(t, New(), "", `{"model":"up/m","messages":[{"role":"user","content":"hi"}]}`)
 	if code != 502 {
 		t.Fatalf("status = %d, want 502; body: %s", code, body)
@@ -68,7 +74,7 @@ func TestTranslateBufferedSeveredUpstream(t *testing.T) {
 // [DONE] - over a reply the upstream never finished.
 func TestTranslateStreamSeveredUpstream(t *testing.T) {
 	fresh(t)
-	severed(t, anthropicStart, anthropicText)
+	severed(t, provider.Anthropic, anthropicStart, anthropicText)
 	code, body := postAs(t, New(), "", `{"model":"up/m","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
 	if code != 200 {
 		t.Fatalf("status = %d, want 200; body: %s", code, body)

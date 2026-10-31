@@ -98,10 +98,10 @@ func requestContent(agent, session string, from, to, at time.Time) contentJSON {
 }
 
 func usageRoutes(mux *http.ServeMux, w Windows) {
-	mux.HandleFunc("GET /api/usage", func(rw http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/usage", coldTurn(func(rw http.ResponseWriter, r *http.Request) {
 		// the days and hours of the reader's zone, which the page names
 		writeJSON(rw, usageState(periodOf(r.URL.Query().Get("period")), usageapi.ZoneOf(r)))
-	})
+	}))
 	// the providers a deleted one's calls can be merged into: those there
 	// are now and shown, by name
 	mux.HandleFunc("GET /api/usage/deleted/into", func(rw http.ResponseWriter, r *http.Request) {
@@ -176,17 +176,17 @@ func usageRoutes(mux *http.ServeMux, w Windows) {
 		writeJSON(rw, map[string]bool{"ok": true})
 	})
 	// the ledger: the period's calls, newest first, a page at a time
-	mux.HandleFunc("GET /api/usage/requests", func(rw http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/usage/requests", coldTurn(func(rw http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		offset, _ := strconv.Atoi(q.Get("offset"))
 		limit, _ := strconv.Atoi(q.Get("limit"))
 		writeJSON(rw, ledgerPage(periodOf(q.Get("period")), ledgerFilter(r), offset, limit))
-	})
+	}))
 	// the heatmap (#1369): the last 53 weeks a day each, of the requests the
 	// page's filters keep, read from the same index as the page
-	mux.HandleFunc("GET /api/usage/heatmap", func(rw http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/usage/heatmap", coldTurn(func(rw http.ResponseWriter, r *http.Request) {
 		writeJSON(rw, usage.HeatmapOf(ledgerFilter(r)))
-	})
+	}))
 	// what was said in one request, read from the agent's session file when the
 	// row is opened, between two times (the call's own, or a gateway request's
 	// span): magpie keeps no copy
@@ -270,6 +270,9 @@ func usageRoutes(mux *http.ServeMux, w Windows) {
 		qs = usage.WithWindowHolds(qs, usage.Clock())
 		// and when each began, for its Pace number (fflake33)
 		qs = provider.WithWindowStarts(qs, usage.Clock())
+		// and which the menu bar can show, by kind, for Settings to pick
+		// among (settings.TrayWindows)
+		qs = withTrayKinds(qs)
 		// an account's card may be the stale copy a read under way will
 		// replace: the page asks again until it has landed (#959)
 		if provider.SubscriptionUsageReading() {
@@ -289,7 +292,7 @@ func usageRoutes(mux *http.ServeMux, w Windows) {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 		provider.RefreshUsage(ctx, id, r.URL.Query().Get("user"))
-		writeJSON(rw, provider.WithWindowStarts(usage.WithWindowHolds(provider.InProviderOrder(provider.WithCheckins(provider.Quotas(ctx))), usage.Clock()), usage.Clock()))
+		writeJSON(rw, withTrayKinds(provider.WithWindowStarts(usage.WithWindowHolds(provider.InProviderOrder(provider.WithCheckins(provider.Quotas(ctx))), usage.Clock()), usage.Clock())))
 	})
 	// WorkBuddy's daily check-in pressed now, from the Usage card, for
 	// each account not in yet today, as `magpie accounts checkin` does; the

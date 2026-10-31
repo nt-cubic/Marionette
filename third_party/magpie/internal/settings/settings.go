@@ -10,6 +10,7 @@ package settings
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"math"
@@ -275,7 +276,7 @@ type Settings struct {
 	// of their rate-limit resets by themselves once their weekly window is
 	// used up and no other account can take the request: at most one a
 	// week each (see provider.AutoUseCodexReset); and one about to run out
-	// unused half an hour before it does, or at once when the account is
+	// unused CodexResetLead before it does, or at once when the account is
 	// held up past then (provider.SpendExpiringCodexResets).
 	CodexAutoReset []string `json:"codexAutoReset,omitempty"`
 	// CodexAutoResetOnly narrows an account in CodexAutoReset to one of
@@ -285,6 +286,15 @@ type Settings struct {
 	// about to run out only. An account not in it uses one at both, as
 	// every account did before the two were split.
 	CodexAutoResetOnly map[string]string `json:"codexAutoResetOnly,omitempty"`
+	// CodexResetLead is how many minutes before a reset about to run out
+	// unused an account with CodexAutoReset's "expiring" spends it (the
+	// owner, 10-30: 把提前用卡的时间做成可配置的): from CodexResetLeadLeast
+	// to CodexResetLeadMost, 0 for CodexResetLeadDefault. Earlier loses
+	// what the windows have left then (#718), so the default is late.
+	// One for every account: whether an account spends one is its own
+	// say, how early is the same trade for each. Read through
+	// ResetLead, which takes a value out of range for the default.
+	CodexResetLead int `json:"codexResetLead,omitempty"`
 	// CodexNoCredits are the ChatGPT accounts (lower-case) that don't
 	// spend their credits: once a usage window is used up, routing holds
 	// the account as used up and goes on to the user's other accounts,
@@ -340,6 +350,12 @@ type Settings struct {
 	// real Claude Code, its billing line and identity line kept; off, as by
 	// default, the run is the shape every Claude Code run has.
 	ClaudeLeanPrompt bool `json:"claudeLeanPrompt,omitempty"`
+	// ClaudePrintMode runs a Claude subscription's Claude Code as `claude
+	// -p` always. Off, as by default, a run is Claude Code's interactive
+	// mode, as a person runs it, where it can be (macOS and Linux, no
+	// images, safeguards or client cache marks): the plan counts a -p
+	// request at about twice an interactive one.
+	ClaudePrintMode bool `json:"claudePrintMode,omitempty"`
 	// ClaudeRunsMost is how many Claude Code processes a Claude
 	// subscription may have running at once: conversations' runs, those
 	// waiting for a next turn or on tool results, and one-off tests and
@@ -363,6 +379,13 @@ type Settings struct {
 	// as by default, subscriptions are found as ever. This computer's own
 	// (KeepOwn), set only by its own switch or `magpie accounts discovery`.
 	NoAccountDiscovery bool `json:"noAccountDiscovery,omitempty"`
+	// SignInLinkOnly keeps an account's sign-in page out of the default
+	// browser: the window (and the command line) shows its link to copy
+	// into a browser the user picks, a separate or fingerprint browser
+	// (max2020 on Discord). Off, as by default, the page opens as ever. A
+	// plugin whose own CLI opens its page (Grok Build on macOS and
+	// Windows) still does: magpie can't stop that.
+	SignInLinkOnly bool `json:"signInLinkOnly,omitempty"`
 	// NoStats stops the one event a day that counts magpie's users (see
 	// internal/stats).
 	NoStats bool `json:"noStats,omitempty"`
@@ -449,6 +472,12 @@ type Settings struct {
 	// SearchFirstAPI for the search APIs, the provider's search after them
 	// when they fail; empty for the provider first, as before.
 	SearchFirst string `json:"searchFirst,omitempty"`
+	// SearchAll is that magpie searches for every model, one whose
+	// provider searches the web by itself too (cybercaius on Discord):
+	// the client's search is answered by the searcher and the search APIs,
+	// as for a model that can't, and the provider is sent no search tool.
+	// Only while magpie can search for it (gateway.magpieSearches).
+	SearchAll bool `json:"searchAll,omitempty"`
 	// TrayUsages are the subscriptions and plans whose windows are shown
 	// beside the tray icon, in the order shown, each by its provider and
 	// account ("claude|a@b.c"); none when empty.
@@ -477,6 +506,14 @@ type Settings struct {
 	// no cards say the tokens alone (BussanQ on Discord); off by default,
 	// the cost shown.
 	TrayNoCost bool `json:"trayNoCost,omitempty"`
+	// TrayWindows are, by subscription or plan (a provider's id, every
+	// account of it alike), the windows its menu bar card shows, each by
+	// how long it runs ("5h", "7d", "month": gui.trayWindowKind), so a
+	// vendor reordering or renaming them changes nothing (StrikingRaw on
+	// X: Claude's 5h alone, not two small numbers). A provider not named
+	// shows every window, as before; one whose named windows are all gone
+	// shows every window too, never an empty card.
+	TrayWindows map[string][]string `json:"trayWindows,omitempty"`
 	// Lightweight lets the webview of a window closed — the tray panel or
 	// the main window — go once it has stayed closed a while, and makes it
 	// again when it is opened (#580): less memory, a moment's wait. This
@@ -648,6 +685,12 @@ type Settings struct {
 	// downloads are asked of mirrors in China first, and of their official
 	// addresses after (see source.China).
 	ChinaMirror bool `json:"chinaMirror,omitempty"`
+	// NPMRegistry is the npm registry set on the Plugins page or with
+	// `magpie plugin registry`: plugins are installed from it and npm's
+	// answers asked of it, before a registry the user's .npmrc, bunfig or
+	// shell names and before the 「国内镜像」 switch (plugin.Registry).
+	// "" leaves it to those.
+	NPMRegistry string `json:"npmRegistry,omitempty"`
 	// TextSize is how large the window's and the tray panel's pages are
 	// drawn, in percent (one of TextSizes): the webviews' own zoom, as a
 	// browser's, so the text and everything around it grow together.
@@ -810,6 +853,17 @@ type Settings struct {
 	// the routing groups, the usage records and what a call is priced at —
 	// keeps the name magpie knows the model by.
 	ModelWires map[string]string `json:"modelWires,omitempty"`
+	// ModelIDs are the ids the user lists a provider's models by, from
+	// "<provider id>/<the id magpie lists it by>" to the id the provider
+	// itself serves it under (zeewell on X: deepseek-v4.1-flash-1017 known
+	// as deepseek-v4.1-flash). The model is listed, picked, grouped, found
+	// in routing groups, limited by gateway keys and recorded in usage by
+	// that id, and a request for it goes out under the provider's own, as
+	// a ModelWires name does (Wires). Keyed by the id it is known by, so one
+	// id of a provider is one of its models; a model of the provider's own
+	// with that id is not listed while another goes by it. Absent leaves
+	// each model to the provider's id (provider.SetModelID).
+	ModelIDs map[string]string `json:"modelIDs,omitempty"`
 	// ModelAPIs is the one API a model is asked on at its provider, by
 	// "<provider id>/<model id>": chat, responses or anthropic, for a relay
 	// whose one key serves some models on one and others on another
@@ -1018,6 +1072,28 @@ func (s Settings) ImageWait() time.Duration {
 	return time.Duration(min(m, ImageTimeoutMost)) * time.Minute
 }
 
+// CodexResetLeadDefault is CodexResetLead's minutes when it is unset, and
+// CodexResetLeadLeast and CodexResetLeadMost the range it can be set in;
+// CodexResetLeads the choices the app and the CLI's words offer.
+const (
+	CodexResetLeadDefault = 30
+	CodexResetLeadLeast   = 15
+	CodexResetLeadMost    = 24 * 60
+)
+
+var CodexResetLeads = []int{15, 30, 60, 120, 180, 360, 720, 1440}
+
+// ResetLead is how long before a Codex reset about to run out unused it
+// is spent by itself: CodexResetLead's minutes, CodexResetLeadDefault's
+// when it is 0 or out of range (written by hand), never none.
+func (s Settings) ResetLead() time.Duration {
+	m := s.CodexResetLead
+	if m < CodexResetLeadLeast || m > CodexResetLeadMost {
+		m = CodexResetLeadDefault
+	}
+	return time.Duration(m) * time.Minute
+}
+
 // ClassifyTimeoutDefault is the seconds a classifier is given when
 // ClassifyTimeout is 0, and ClassifyTimeoutMost the most it can be set to:
 // the turn waits on it before it goes anywhere, with nothing sent to its
@@ -1200,6 +1276,7 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.WindowMaximised, s.KeepAwake, s.KeepAwakeDisplay = cur.WindowMaximised, cur.KeepAwake, cur.KeepAwakeDisplay
 	s.WindowAt = cur.WindowAt
 	s.TrayUsages, s.TrayUsage, s.TrayUsageEvery, s.TrayNoLogos, s.TrayNoBird, s.TrayPace, s.TrayNoCost = cur.TrayUsages, cur.TrayUsage, cur.TrayUsageEvery, cur.TrayNoLogos, cur.TrayNoBird, cur.TrayPace, cur.TrayNoCost
+	s.TrayWindows = cur.TrayWindows
 	s.GatewayMode = cur.GatewayMode
 	s.NoWSLAgents = cur.NoWSLAgents
 	s.QuotaReads = cur.QuotaReads
@@ -1212,6 +1289,70 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.RedactModelOff, s.RedactModelAuto = cur.RedactModelOff, cur.RedactModelAuto
 	s.ClaudeRunsMost = cur.ClaudeRunsMost
 	s.RequestArchiveLocal, s.RequestArchiveLocalMB = cur.RequestArchiveLocal, cur.RequestArchiveLocalMB
+}
+
+// Wires is ModelWires with the provider's own id of each model the user
+// lists by another (ModelIDs): what a request for "<provider>/<id>" goes out
+// under. A name the user gave the model itself in ModelWires is kept, and a
+// provider's "*" name is the provider's own id in its "*". With no ModelIDs
+// it is ModelWires itself; else it is made again only when either map holds
+// something else than the last time. It is read, never written to.
+func (s Settings) Wires() map[string]string {
+	if len(s.ModelIDs) == 0 {
+		return s.ModelWires
+	}
+	wiresMemo.Lock()
+	defer wiresMemo.Unlock()
+	if wiresMemo.out != nil && maps.Equal(wiresMemo.ids, s.ModelIDs) && maps.Equal(wiresMemo.wires, s.ModelWires) {
+		return wiresMemo.out
+	}
+	out := make(map[string]string, len(s.ModelWires)+len(s.ModelIDs))
+	maps.Copy(out, s.ModelWires)
+	for k, own := range s.ModelIDs {
+		pid, _, ok := strings.Cut(k, "/")
+		own = strings.TrimSpace(own)
+		if !ok || own == "" || strings.TrimSpace(s.ModelWires[k]) != "" {
+			continue
+		}
+		if all := strings.TrimSpace(s.ModelWires[pid+"/*"]); all != "" {
+			own = strings.ReplaceAll(all, "*", own)
+		}
+		out[k] = own
+	}
+	wiresMemo.ids, wiresMemo.wires, wiresMemo.out = maps.Clone(s.ModelIDs), maps.Clone(s.ModelWires), out
+	return out
+}
+
+// wiresMemo is the Wires last made, and copies of the two maps it was
+// made of: compared by what they hold, as a caller may change its own
+// settings' maps in place.
+var wiresMemo struct {
+	sync.Mutex
+	ids, wires, out map[string]string
+}
+
+// MoveModel moves what the user said of the model keyed from
+// ("<provider>/<model>") to the key to, in every per-model map but
+// ModelIDs, and says whether anything moved. A map with something under
+// to already keeps it, and what from had there stays where it was: what
+// the user said of the model now keyed to is theirs and is not written
+// over.
+func (s *Settings) MoveModel(from, to string) bool {
+	moved := false
+	PerModelKeys(s, func(name string, m reflect.Value) {
+		if name == "ModelIDs" || m.IsNil() {
+			return
+		}
+		fk, tk := reflect.ValueOf(from).Convert(m.Type().Key()), reflect.ValueOf(to).Convert(m.Type().Key())
+		v := m.MapIndex(fk)
+		if !v.IsValid() || m.MapIndex(tk).IsValid() {
+			return
+		}
+		m.SetMapIndex(fk, reflect.Value{})
+		m.SetMapIndex(tk, v)
+		moved = true
+	})
+	return moved
 }
 
 // RenamePerModel moves what the user said of a provider's models to the id
@@ -1327,6 +1468,52 @@ func Shared() Settings {
 	}
 	return s
 }
+
+// SharedModelIDs is Shared().ModelIDs, read for each model a list is
+// built of: only that field is parsed, once per change of the file, and a
+// missing file has none without the defaults Shared builds each time.
+// Unreadable or unparsable, it is what Shared says. It is shared: the
+// caller must not change it.
+func SharedModelIDs() map[string]string {
+	fileMu.RLock()
+	ids, err := filememo.Read("settings-model-ids", pathNow(), func(b []byte) (map[string]string, error) {
+		var s struct {
+			ModelIDs map[string]string `json:"modelIDs"`
+		}
+		err := json.Unmarshal(b, &s)
+		return s.ModelIDs, err
+	})
+	fileMu.RUnlock()
+	if err == nil {
+		return ids
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return Shared().ModelIDs
+}
+
+// pathNow is Path, built again only when what it is built from changed:
+// SharedModelIDs is read several times for each list, and Path's joins
+// were most of what building one allocated.
+func pathNow() string {
+	k := pathFrom{appdir.Portable(), os.Getenv("XDG_CONFIG_HOME"), os.Getenv("HOME"), os.Getenv("USERPROFILE")}
+	if m := lastPath.Load(); m != nil && m.from == k {
+		return m.path
+	}
+	path := Path()
+	lastPath.Store(&pathMemo{k, path})
+	return path
+}
+
+type pathFrom struct{ portable, xdg, home, profile string }
+
+type pathMemo struct {
+	from pathFrom
+	path string
+}
+
+var lastPath atomic.Pointer[pathMemo]
 
 // sharedFor is the shared Settings parse keeps for contents b, when it
 // keeps them.
@@ -1597,6 +1784,36 @@ func EditUsageAliases(edit func(map[string]string) (map[string]string, error)) e
 	return save(s, false)
 }
 
+// EditPluginOptions changes PluginOptions alone, as edit returns them from
+// what the file holds now (provider id → option key → on), as
+// EditUsageAliases does. edit is given a deep copy; an error from it, or a
+// settings file that can't be read, saves nothing.
+func EditPluginOptions(edit func(map[string]map[string]bool) (map[string]map[string]bool, error)) error {
+	defer lockFile()()
+	s, err := loadChecked()
+	if err != nil {
+		return err
+	}
+	cp := make(map[string]map[string]bool, len(s.PluginOptions))
+	for id, o := range s.PluginOptions {
+		cp[id] = maps.Clone(o)
+	}
+	m, err := edit(cp)
+	if err != nil {
+		return err
+	}
+	for id, o := range m {
+		if len(o) == 0 {
+			delete(m, id)
+		}
+	}
+	if len(m) == 0 {
+		m = nil
+	}
+	s.PluginOptions = m
+	return save(s, false)
+}
+
 // SetRedactModel turns the local masking model on or off, on its own, as
 // Settings → Privacy does once the model is downloaded; off is the
 // user's own (RedactModelOff), which the default never turns on again.
@@ -1829,6 +2046,7 @@ func saveOwn(s Settings, recording, reads bool) error {
 	s.ClientAgents = clientAgents(s.ClientAgents)
 	s.UsageCleared = usageCleared(s.UsageCleared)
 	s.TrayUsages = ids(s.TrayUsages)
+	s.TrayWindows = trayWindows(s.TrayWindows)
 	for i, u := range s.CodexAutoReset {
 		s.CodexAutoReset[i] = strings.ToLower(u)
 	}
@@ -2028,6 +2246,21 @@ func ids(in []string) []string {
 		if x = strings.TrimSpace(x); x != "" && !slices.Contains(out, x) {
 			out = append(out, x)
 		}
+	}
+	return out
+}
+
+// trayWindows is TrayWindows as kept: each provider's kinds trimmed, once
+// each, and a provider with none left out, as it shows every window.
+func trayWindows(m map[string][]string) map[string][]string {
+	out := map[string][]string{}
+	for p, kinds := range m {
+		if p, kinds = strings.TrimSpace(p), ids(kinds); p != "" && len(kinds) > 0 {
+			out[p] = kinds
+		}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

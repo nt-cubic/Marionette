@@ -360,6 +360,9 @@ func modelFits(s string, a, b int, kind string) bool {
 		if pinnedAfter(s, b) {
 			return false
 		}
+		if strings.Trim(v, digits) == "" {
+			return numberNamedSecret(s, a)
+		}
 		if wordsOnly(v) && !assignedSecret(s, a) {
 			return false
 		}
@@ -935,6 +938,45 @@ func secretCued(s string, at int) bool {
 	}
 	return false
 }
+
+// numberNamedSecret says the run of decimal digits at s[a:], which the
+// model took for a secret, is given a secret's name: the name right
+// before it, then =, :, is or a tag's > (and quotes), ends with a key's,
+// a token's, a password's or a PIN's word (api_key=, "token": , PIN:,
+// 密码是). Digits alone are a count, a time or an id everywhere else.
+// secretCued, which a hex run asks, takes a cue anywhere in the name and
+// read Claude Code's <total_tokens>14998720 tokens left</total_tokens>
+// as a token: every turn's count went as {{SECRET_…}} (steven_4422 on
+// Discord, 10-31). A name that ends past the word counts what it names
+// (total_tokens, max_tokens, token_count, keys).
+func numberNamedSecret(s string, a int) bool {
+	before := strings.ToLower(s[max(0, a-40):a])
+	for {
+		t := strings.TrimRight(before, " \t\"'`=:：>“「")
+		for _, sep := range []string{" is", " was", "是", "为", "為"} {
+			t = strings.TrimSuffix(t, sep)
+		}
+		if t == before {
+			break
+		}
+		before = t
+	}
+	if before == "" {
+		return false
+	}
+	for _, c := range numberSecretNames {
+		// a PIN's word stands alone (pin, user_pin), not the end of
+		// another's (spin, mapping)
+		if strings.HasSuffix(before, c) && (c != "pin" || len(before) == 3 || !unicode.IsLetter(rune(before[len(before)-4]))) {
+			return true
+		}
+	}
+	return false
+}
+
+// numberSecretNames are what a name that gives digits a secret's place
+// ends with.
+var numberSecretNames = []string{"key", "token", "secret", "password", "passwd", "pass", "pwd", "passcode", "pin", "密钥", "密码", "令牌", "口令"}
 
 // patternWords says v is three or more words joined by |, as a grep's or
 // a regexp's alternatives are.

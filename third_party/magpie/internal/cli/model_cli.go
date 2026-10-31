@@ -59,6 +59,17 @@ const modelUsage = `usage:
                                                  id of its own for a provider that has since been deleted,
                                                  and says when there was no name of its own to take away
   magpie model wires                             the names your vendors are asked for models by
+  magpie model id <provider/model>               the id magpie lists the model by, and the provider's own
+  magpie model id <provider/model> <id>          list the model by this id at that provider, e.g.
+                                                 relay-a/deepseek-v4.1-flash-1017 deepseek-v4.1-flash: agents,
+                                                 /v1/models, routing groups, the groups magpie finds, gateway keys
+                                                 and Usage all use it, and relay-a is still asked for
+                                                 deepseek-v4.1-flash-1017. One id is one model of a provider: the
+                                                 latest model given an id has it, and a model of the provider's
+                                                 own with that id is not listed while another is. A provider of
+                                                 your own (a key) only
+  magpie model id <provider/model> --reset       list it by the provider's own id again
+  magpie model ids                               the models you list by an id of your own
   magpie model names                             the models you named or narrowed
   magpie model alias <model> <name>              count the model's usage under another model id in Usage,
                                                  Sessions and the usage summaries, e.g. deepseek-v4.1-flash
@@ -139,6 +150,10 @@ func modelCmd(args []string) error {
 		return modelSpec(args[1:])
 	case "specs":
 		return modelSpecs()
+	case "id":
+		return modelID(args[1:])
+	case "ids":
+		return modelIDs()
 	case "alias":
 		return modelUsageAlias(args[1:])
 	case "aliases":

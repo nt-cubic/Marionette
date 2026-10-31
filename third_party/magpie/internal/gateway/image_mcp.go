@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -18,6 +20,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/access"
+	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 )
 
@@ -138,7 +141,7 @@ func imageMCPTools(r *http.Request) []any {
 			"name":  GenerateImageTool,
 			"title": "Generate image",
 			"description": "Generate an image from a text prompt, or edit/combine images given as reference_images, with the image model set in Magpie (Settings → Images → Image generation) or the one model names. " +
-				"The image comes back in the answer and at a URL Magpie keeps it at for an hour (from another computer, download it with the same Authorization header this server is called with); nothing is saved in your project, so save it there yourself if you need it. " +
+				"The image comes back in the answer and at a URL Magpie keeps it at for an hour (the link opens without a header, in a browser too, until it expires); nothing is saved in your project, so save it there yourself if you need it. " +
 				"When it is not ready within about 20 seconds, the answer is an id to wait on with " + GenerationResultTool + " instead. Write a detailed prompt: subject, style, composition, colours, any text to render exactly.",
 			"inputSchema": ro(ImageToolProps(imageMCPFrom+"s"), false),
 			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": false, "openWorldHint": true},
@@ -172,6 +175,10 @@ type imageMCPStore struct {
 	order   []string // files, oldest first
 	bytes   int
 	running sync.WaitGroup
+	// secret signs each file's URL (imageFileToken): made at the first
+	// file, never written anywhere, so a restart, which loses the files,
+	// loses the URLs with them
+	secret []byte
 }
 
 // imageJob is one generate_image call's drawing: it goes on after the call
@@ -404,7 +411,7 @@ func (s *Server) imageMCPDrawn(rec *replyRecorder, key, base string) map[string]
 	if len(urls) > 1 {
 		what = "The images are"
 	}
-	fmt.Fprintf(&b, "Generated with %s. %s in this answer and can be downloaded for an hour from (with the same Authorization header as this server, from another computer):\n", out.Model, what)
+	fmt.Fprintf(&b, "Generated with %s. %s in this answer and can be downloaded for an hour from (the link opens without a header, in a browser too, until it expires; whoever has it can open the image):\n", out.Model, what)
 	for _, u := range urls {
 		fmt.Fprintf(&b, "- %s\n", u)
 	}
@@ -626,16 +633,23 @@ func (s *Server) imageMCPAwait(r *http.Request, j *imageJob) map[string]any {
 		"Don't ask for it again: call %s with id %q to wait for it and get it.\n", int(time.Since(j.started)/time.Second), GenerationResultTool, j.id), false), PendingMeta, j.id)
 }
 
-// imageMCPKeepFile keeps img for an hour, for key, and is its file's name.
+// imageMCPKeepFile keeps img for an hour, for key, and is its file's name
+// with the token that opens it (?t=, imageFileToken).
 func (s *Server) imageMCPKeepFile(img []byte, mt, key string) string {
 	st := &s.imageStore
 	name := randomHex(16) + extOf(mt)
+	made := time.Now()
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if st.files == nil {
 		st.files = map[string]*imageFile{}
 	}
-	st.files[name] = &imageFile{data: img, mime: mt, key: key, made: time.Now()}
+	if st.secret == nil {
+		st.secret = make([]byte, 32)
+		rand.Read(st.secret)
+	}
+	st.files[name] = &imageFile{data: img, mime: mt, key: key, made: made}
+	at := name + "?" + imageTokenParam + "=" + imageFileToken(st.secret, name, key, made.Add(imageMCPKeep).Unix())
 	st.order = append(st.order, name)
 	st.bytes += len(img)
 	for len(st.order) > 1 && (st.bytes > imageMCPFilesMost || time.Since(st.files[st.order[0]].made) > imageMCPKeep) {
@@ -644,35 +658,91 @@ func (s *Server) imageMCPKeepFile(img []byte, mt, key string) string {
 		st.bytes -= len(st.files[old].data)
 		delete(st.files, old)
 	}
-	return name
+	return at
 }
 
-// imageMCPFile serves an image the server made, to the key that had it
-// made, guarded as the server is.
+// imageTokenParam is the query parameter of a file's URL that holds its
+// token (imageFileToken).
+const imageTokenParam = "t"
+
+// imageFileToken is what opens the file name, made for key, until exp
+// (Unix seconds), without a header (dhanyqaz on Discord: a model hands a
+// person the URL, and a browser sends no key): "<exp>.<HMAC-SHA256 of
+// name, exp and key under the store's secret>". It names neither the key
+// nor its id, only proves the gateway handed the URL out; a token for one
+// file, key or expiry is no other's.
+func imageFileToken(secret []byte, name, key string, exp int64) string {
+	m := hmac.New(sha256.New, secret)
+	fmt.Fprintf(m, "magpie image file\x00%s\x00%d\x00%s", name, exp, key)
+	return strconv.FormatInt(exp, 10) + "." + base64.RawURLEncoding.EncodeToString(m.Sum(nil))
+}
+
+// imageTokenAsked: r is a GET or HEAD of one of the image server's files
+// with a token and no key, which lanGuard lets through to imageMCPFile
+// for it to judge the token; anything else is judged as every request is.
+func imageTokenAsked(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead || r.URL.RawPath != "" {
+		return false
+	}
+	name, ok := strings.CutPrefix(r.URL.Path, ImageMCPFiles)
+	return ok && name != "" && !strings.Contains(name, "/") && r.URL.Query().Get(imageTokenParam) != "" && len(callerKeys(r)) == 0
+}
+
+// tokenOpens: r's token is the one the gateway made for f, named name,
+// and it hasn't expired; under st.mu.
+func (st *imageMCPStore) tokenOpens(r *http.Request, name string, f *imageFile) bool {
+	t := r.URL.Query().Get(imageTokenParam)
+	exp, _, ok := strings.Cut(t, ".")
+	if !ok || st.secret == nil {
+		return false
+	}
+	n, err := strconv.ParseInt(exp, 10, 64)
+	if err != nil || time.Now().Unix() > n {
+		return false
+	}
+	return hmac.Equal([]byte(t), []byte(imageFileToken(st.secret, name, f.key, n)))
+}
+
+// imageMCPFile serves an image the server made: to the key that had it
+// made, guarded as the server is, or to whoever has the URL it was handed
+// out at, with its token, within the hour. The token is the only thing
+// that lets a request without that key in: the allow list, sharing and a
+// web page's Origin are judged as for every request.
 func (s *Server) imageMCPFile(w http.ResponseWriter, r *http.Request) {
-	if !local(r) && !sharedWith(r) {
-		http.Error(w, "magpie's images are served to another machine only when magpie is shared on the local network and the request carries a gateway key (Authorization: Bearer <key>)", http.StatusForbidden)
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "GET an image here", http.StatusMethodNotAllowed)
+		return
+	}
+	name := r.PathValue("name")
+	st := &s.imageStore
+	st.mu.Lock()
+	f := st.files[name]
+	if f != nil && time.Since(f.made) > imageMCPKeep {
+		f = nil
+	}
+	tokened := f != nil && st.tokenOpens(r, name, f)
+	st.mu.Unlock()
+	// the key that had it made is still on: revoking a key takes its
+	// links with it (read outside the store's lock: it reads a file)
+	tokened = tokened && (f.key == "" || access.On(f.key))
+	if !local(r) && !sharedWith(r) && !(tokened && remoteKeyed()) {
+		if remoteKeyed() && len(callerKeys(r)) == 0 {
+			// lanGuard let a token through that opens nothing: refused
+			// as a request without a key is
+			writeError(w, provider.Chat, http.StatusUnauthorized, refusedKey(""))
+			return
+		}
+		http.Error(w, "magpie's images are served to another machine only when magpie is shared on the local network and the request carries a gateway key (Authorization: Bearer <key>) or the link's own token", http.StatusForbidden)
 		return
 	}
 	if o := r.Header.Get("Origin"); o != "" && !corsAllowed(o) {
 		http.Error(w, "magpie's images are served to agents, not web pages", http.StatusForbidden)
 		return
 	}
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.Header().Set("Allow", "GET, HEAD")
-		http.Error(w, "GET an image here", http.StatusMethodNotAllowed)
-		return
-	}
-	st := &s.imageStore
-	st.mu.Lock()
-	f := st.files[r.PathValue("name")]
-	if f != nil && time.Since(f.made) > imageMCPKeep {
-		f = nil
-	}
-	st.mu.Unlock()
 	// another key's image is as good as none: its name says nothing
-	if f == nil || f.key != access.Caller(r.Context()).KeyID {
-		http.Error(w, "no such image: images are kept for an hour, and only for the key that had them made", http.StatusNotFound)
+	if f == nil || !tokened && f.key != access.Caller(r.Context()).KeyID {
+		http.Error(w, "no such image: images are kept for an hour, and only for the key that had them made or the link they were handed out at", http.StatusNotFound)
 		return
 	}
 	w.Header().Set("Content-Type", f.mime)

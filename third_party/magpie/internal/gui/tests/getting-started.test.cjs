@@ -96,6 +96,7 @@ async function open(browser, layout, lang, w, posts) {
   await context.addInitScript(() => { try { localStorage.setItem("magpie.panelTab", "agents"); } catch {} });
   const page = await context.newPage();
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(60000);
   page.errors = [];
   page.on("pageerror", (e) => page.errors.push(e.message));
   await page.route("**/*", server(lang, w, posts));

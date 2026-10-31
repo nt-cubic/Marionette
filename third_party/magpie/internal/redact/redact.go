@@ -632,15 +632,19 @@ func luhn(v string) bool {
 // ---- placeholders ---------------------------------------------------------------
 
 var (
-	mu      sync.RWMutex
-	values  = map[string]string{} // placeholder → value
-	kinds   = map[string]bool{}   // the kinds of values, for wordTail
+	mu     sync.RWMutex
+	values = map[string]string{} // placeholder → value
+	kinds  = map[string]bool{}   // the kinds of values, for wordTail
+	// used is when each placeholder was last made or met again, by
+	// clock: makeRoom lets the ones used longest ago go first
+	used    = map[string]uint64{}
+	clock   uint64
 	keyOf   []byte
 	keyPath string // guarded by mu, as keyOf is
 )
 
-// maxValues bounds what is held; past it the oldest half is let go, and a
-// request that still has them brings them back.
+// maxValues bounds what is held; past it the half used longest ago is let
+// go, and a request that still has them brings them back.
 const maxValues = 200_000
 
 func key() []byte {
@@ -706,23 +710,35 @@ func placeholder(kind, v string) string {
 		kinds[kind] = true
 		addKnown(p, v)
 	}
+	touch(p)
 	mu.Unlock()
 	return p
 }
 
-// makeRoom lets the oldest half of values go when they are full; called
-// with mu held.
+// touch says p was used now; called with mu held.
+func touch(p string) {
+	clock++
+	used[p] = clock
+}
+
+// makeRoom lets the half of values used longest ago go when they are
+// full; called with mu held. What a request in flight has just masked, or
+// met again, is the newest: let go at random, a value masked a moment
+// before could be gone by the time its placeholder came back, and the
+// answer kept the placeholder.
 func makeRoom() {
 	if len(values) < maxValues {
 		return
 	}
-	n := 0
-	for k := range values {
-		delete(values, k)
-		delete(shapes, k)
-		if n++; n >= maxValues/2 {
-			break
-		}
+	ps := make([]string, 0, len(values))
+	for p := range values {
+		ps = append(ps, p)
+	}
+	sort.Slice(ps, func(i, j int) bool { return used[ps[i]] < used[ps[j]] })
+	for _, p := range ps[:len(ps)/2] {
+		delete(values, p)
+		delete(shapes, p)
+		delete(used, p)
 	}
 	reindexKnown()
 }
@@ -881,7 +897,7 @@ func Mask(s string, o Options) (string, int) {
 
 // Preview is Mask with nothing remembered: each value goes as the
 // placeholder, or with Options.Shape the made-up key, it would have (a
-// user name its made-up name, an IP address its documentation one), which
+// user name its made-up name, an IP address its public-ip- name), which
 // isn't kept for Restore or as a value seen before (known.go).
 func Preview(s string, o Options) string {
 	put := tag
@@ -901,7 +917,7 @@ func Preview(s string, o Options) string {
 		}
 		if kind == "IP" {
 			if at, _, ok := ipStandIns(v); ok {
-				return at(0) // an address's documentation one (shape.go)
+				return at(0) // an address's public-ip- name (shape.go)
 			}
 		}
 		return tagOrShape(kind, v)

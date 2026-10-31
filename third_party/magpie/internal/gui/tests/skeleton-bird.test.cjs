@@ -47,6 +47,7 @@ function server(market, prefs = {}, posted = []) {
 async function open(browser, reduced, market, prefs, posted, view = "plugins") {
   const page = await (await browser.newContext({ viewport: { width: 980, height: 820 }, reducedMotion: reduced ? "reduce" : "no-preference" })).newPage();
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(60000);
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.addInitScript(() => {

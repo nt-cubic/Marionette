@@ -218,6 +218,25 @@ func AutoVision() string {
 
 // autoVision is AutoVision's pick, and whether it has allowance left.
 func autoVision() (string, bool) {
+	if r := seersRanked(nil); len(r) > 0 {
+		return r[0].model, r[0].ready
+	}
+	return "", false
+}
+
+// rankedSeer is a model seersRanked names, and whether it has allowance.
+type rankedSeer struct {
+	model string
+	ready bool
+}
+
+// seersRanked is each switched-on provider's small model that sees, in
+// the order AutoVision picks among them: allowance left first, then a
+// Claude account's, a Codex account's, an API key's, another account's,
+// then the cheaper, then the provider listed first. A model skip holds is
+// passed over for the provider's next one (the describers a failed
+// description already asked, describeWith).
+func seersRanked(skip func(string) bool) []rankedSeer {
 	tier := func(p provider.Provider) int {
 		switch {
 		case p.Account != nil && p.Account.Agent == "claude":
@@ -229,29 +248,47 @@ func autoVision() (string, bool) {
 		}
 		return 3
 	}
-	best, bestTier, bestCost, bestReady := "", 0, 0.0, false
+	type ranked struct {
+		rankedSeer
+		tier int
+		cost float64
+	}
+	var rs []ranked
 	for _, p := range provider.All() {
 		if !p.On() || p.DecideOnly() {
 			continue
 		}
-		t := tier(p)
-		if bestReady && t > bestTier {
+		cs := keptSmallCands(p, "sees", seesAt(p.ID))
+		if skip != nil {
+			cs = slices.DeleteFunc(slices.Clone(cs), func(c smallCand) bool { return skip(p.ID + "/" + c.id) })
+		}
+		c, ready := smallReadyOf(p, cs, provider.Chat)
+		if c.id == "" {
 			continue
 		}
-		m, cost, ready := smallModelWhere(p, "sees", seesAt(p.ID))
-		if m == "" {
-			continue
-		}
-		switch {
-		case best == "", ready && !bestReady:
-		case ready != bestReady, t > bestTier:
-			continue
-		case t == bestTier && cost >= bestCost:
-			continue
-		}
-		best, bestTier, bestCost, bestReady = p.ID+"/"+m, t, cost, ready
+		rs = append(rs, ranked{rankedSeer{p.ID + "/" + c.id, ready}, tier(p), c.cost})
 	}
-	return best, bestReady
+	slices.SortStableFunc(rs, func(a, b ranked) int {
+		switch {
+		case a.ready != b.ready:
+			if a.ready {
+				return -1
+			}
+			return 1
+		case a.tier != b.tier:
+			return a.tier - b.tier
+		case a.cost < b.cost:
+			return -1
+		case a.cost > b.cost:
+			return 1
+		}
+		return 0
+	})
+	out := make([]rankedSeer, len(rs))
+	for i, r := range rs {
+		out[i] = r.rankedSeer
+	}
+	return out
 }
 
 // autoSpent is why AutoVision's model isn't asked to describe an image:
@@ -307,13 +344,21 @@ func seesAt(pid string) func(catalog.Model) bool {
 type sight struct {
 	done chan struct{}
 	text string
+	by   string // the model that described it: model, or one in its place
 	err  error
 }
 
 // describe is what model says of the image at src, asked once for each
 // image: a request that sends it again, or sends it while it is being
-// described, is given the same description.
-func (s *Server) describe(ctx context.Context, model, src string) (string, error) {
+// described, is given the same description. by is the model that
+// described it: model, or the next that sees when model couldn't
+// (describeWith).
+//
+// A description is kept under model, whichever described it: the image
+// sent again on the next turn isn't asked of anyone, while a new image is
+// asked of model first again, so a pick that failed once is tried on each
+// new image and not given up for good (kelvinjason11 on X).
+func (s *Server) describe(ctx context.Context, model, src string) (text, by string, err error) {
 	// a level picked since is asked again, not given what was said at the last
 	sum := sha256.Sum256([]byte(model + "\x00" + visionEffort(model) + "\x00" + src))
 	key := hex.EncodeToString(sum[:])
@@ -328,9 +373,13 @@ func (s *Server) describe(ctx context.Context, model, src string) (string, error
 		s.sightMu.Unlock()
 		select {
 		case <-e.done:
-			return e.text, e.err
+			by := e.by
+			if by == "" {
+				by = model
+			}
+			return e.text, by, e.err
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", model, ctx.Err()
 		}
 	}
 	if s.sights == nil {
@@ -344,7 +393,7 @@ func (s *Server) describe(ctx context.Context, model, src string) (string, error
 		s.sightOrder = s.sightOrder[1:]
 	}
 	s.sightMu.Unlock()
-	e.text, e.err = s.askVision(ctx, model, src)
+	e.text, e.by, e.err = s.describeWith(ctx, model, src, visionSystem, "Describe this image.")
 	if e.err != nil {
 		// a failure isn't kept: the next request asks again
 		s.sightMu.Lock()
@@ -354,22 +403,118 @@ func (s *Server) describe(ctx context.Context, model, src string) (string, error
 		s.sightMu.Unlock()
 	}
 	close(e.done)
-	return e.text, e.err
+	return e.text, e.by, e.err
+}
+
+// visionTries is how many models are asked about one image, the first
+// with those in its place.
+const visionTries = 3
+
+// describeWith asks model about the image at src (askVisionWith), and
+// when it fails, the next model that sees, as AutoVision ranks them, up
+// to visionTries in all and visionWaitMost all told. by is the model that
+// answered. kelvinjason11 on X: the one model picked to describe images
+// failing failed every turn with an image, though other models that see
+// were enabled.
+//
+// The model picked in Settings is always asked first; the others are
+// asked only once it fails, and the Routing view's row of the one that
+// answered names the one asked before it and why (CallFor.Instead). A
+// model out of its allowance isn't asked in another's place. A request
+// its agent canceled asks no other.
+func (s *Server) describeWith(ctx context.Context, model, src, system, text string) (said, by string, err error) {
+	deadline := time.Now().Add(visionWaitMost)
+	tried := []string{model}
+	var fails []visionTry
+	ask, askCtx := model, ctx
+	for {
+		said, err = s.askVisionWith(askCtx, ask, src, system, text, time.Until(deadline))
+		if err == nil {
+			return said, ask, nil
+		}
+		fails = append(fails, visionTry{ask, err})
+		if ctx.Err() != nil || len(tried) >= visionTries || !time.Now().Before(deadline) {
+			break
+		}
+		// those with allowance go first, so the first is out of it only
+		// when every one is
+		r := seersRanked(func(m string) bool {
+			if slices.Contains(tried, m) {
+				return true
+			}
+			pid, id, _ := strings.Cut(m, "/")
+			return s.sightRefused(pid, id)
+		})
+		if len(r) == 0 || !r[0].ready {
+			break
+		}
+		next := r[0].model
+		askCtx = describingInstead(ctx, ask, model, err)
+		tried = append(tried, next)
+		ask = next
+	}
+	return "", model, visionFailed(fails)
+}
+
+// visionTry is a model asked about an image, and why it didn't answer.
+type visionTry struct {
+	model string
+	err   error
+}
+
+// visionFailed is why no model asked about an image answered: the first
+// one's reason as it was, then each asked in its place, by name.
+type visionFailed []visionTry
+
+func (f visionFailed) Error() string {
+	var b strings.Builder
+	for i, t := range f {
+		if i == 0 {
+			b.WriteString(t.err.Error())
+			continue
+		}
+		fmt.Fprintf(&b, "; nor could %s, asked in its place: %v", t.model, t.err)
+	}
+	return b.String()
+}
+
+func (f visionFailed) Unwrap() []error {
+	out := make([]error, len(f))
+	for i, t := range f {
+		out[i] = t.err
+	}
+	return out
+}
+
+// describingInstead is ctx for a model asked about an image in failed's
+// place: the Routing view's row says which was asked before and why, and
+// whether that was the one picked in Settings (first, as Settings names it).
+func describingInstead(ctx context.Context, failed, first string, err error) context.Context {
+	f, _ := ctx.Value(describeForKey{}).(describeFor)
+	g := CallFor{}
+	if f.call != nil {
+		g = *f.call
+	}
+	g.Instead, g.Why = failed, err.Error()
+	g.Picked = failed == first && !autoDescribes()
+	f.call = &g
+	return context.WithValue(ctx, describeForKey{}, f)
 }
 
 // askVision asks model through the gateway itself, as a client would, what
 // the image at src shows.
 func (s *Server) askVision(ctx context.Context, model, src string) (string, error) {
-	return s.askVisionWith(ctx, model, src, visionSystem, "Describe this image.")
+	return s.askVisionWith(ctx, model, src, visionSystem, "Describe this image.", visionWaitMost)
 }
 
 // askVisionWith asks model about the image at src: system, and the user's
-// text beside the image.
-func (s *Server) askVisionWith(ctx context.Context, model, src, system, text string) (string, error) {
+// text beside the image. most is how long it may take, the waits for a
+// slot or a resting provider with it: what describeWith has left.
+func (s *Server) askVisionWith(ctx context.Context, model, src, system, text string, most time.Duration) (string, error) {
 	if err := autoSpent(model); err != nil {
 		return "", err
 	}
-	ctx, cancel := sideDeadline(context.WithValue(ctx, describingKey{}, true), "image description", visionTimeout, visionWaitMost)
+	ctx, cancel := sideDeadline(context.WithValue(ctx, describingKey{}, true), "image description", visionTimeout, most)
 	defer cancel()
 	req := map[string]any{
 		"model":  model,
@@ -453,8 +598,8 @@ func (s *Server) seenBody(ctx context.Context, proto provider.Protocol, body []b
 		return nil, nil
 	})
 	type result struct {
-		text string
-		err  error
+		text, by string
+		err      error
 	}
 	results := make([]result, len(srcs))
 	var wg sync.WaitGroup
@@ -465,8 +610,8 @@ func (s *Server) seenBody(ctx context.Context, proto provider.Protocol, body []b
 			defer wg.Done()
 			slots <- struct{}{}
 			defer func() { <-slots }()
-			text, err := s.describe(ctx, model, src)
-			results[i] = result{text, err}
+			text, by, err := s.describe(ctx, model, src)
+			results[i] = result{text, by, err}
 		}()
 	}
 	wg.Wait()
@@ -489,7 +634,7 @@ func (s *Server) seenBody(ctx context.Context, proto provider.Protocol, body []b
 			return textBlock(proto, "[Image omitted: this model accepts text only, and the image couldn't be described.]"), nil
 		}
 		// on its own lines: a translation may join it to the text around it
-		return textBlock(proto, "\n[Image, as "+model+" describes it for this model, which can't see images:]\n"+r.text+"\n[End of the image's description]\n"), nil
+		return textBlock(proto, "\n[Image, as "+r.by+" describes it for this model, which can't see images:]\n"+r.text+"\n[End of the image's description]\n"), nil
 	})
 }
 

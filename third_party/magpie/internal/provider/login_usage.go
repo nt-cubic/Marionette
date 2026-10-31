@@ -461,7 +461,9 @@ func loginQuota(ctx context.Context, l Login) SubscriptionQuota {
 // signed out as a revoked one is (signin_revoked.go): its row says Sign in
 // again, which runs magpie's sign-in for it and replaces its tokens, and
 // the gateway passes over it till then. A saved account's refused refresh
-// is marked lapsed already (savedRefreshFailed). A read that went through
+// is marked lapsed already (savedRefreshFailed), but not one Codex is
+// signed in to in another of its folders (codexHeldRefusal: charliepu's
+// C:\Users\…\.codex-db-backup-…), which is marked here. A read that went through
 // clears a mark it had. Anything else is unknown and marks nothing.
 func codexSignInRead(l Login, tok string, err error) error {
 	if err == nil {
@@ -469,7 +471,7 @@ func codexSignInRead(l Login, tok string, err error) error {
 		return nil
 	}
 	var refused refreshRefused
-	if !l.Active && errors.As(err, &refused) {
+	if !l.Active && errors.As(err, &refused) && !errors.As(err, new(codexHeldRefusal)) {
 		return err
 	}
 	m := bearerMark(codexGoneFor(err, tok, func() []byte { return codexLoginAuth(l) }))

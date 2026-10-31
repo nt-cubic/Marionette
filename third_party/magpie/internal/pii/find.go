@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strings"
@@ -247,7 +249,7 @@ func (b *backend) find(ctx context.Context, texts []string) ([][]redact.Found, e
 				done <- result{nil, fmt.Errorf("the local masking model has no text to read for %d texts", len(miss))}
 				return
 			}
-			found, err := b.classify(chunks[:1])
+			found, err := classifySafely(b.classify, chunks[:1])
 			if err != nil {
 				release()
 				done <- result{nil, err}
@@ -278,6 +280,22 @@ func (b *backend) find(ctx context.Context, texts []string) ([][]redact.Found, e
 	case <-ctx.Done():
 		return b.partial(ctx, texts)
 	}
+}
+
+// classifySafely is classify(texts), with a panic in it this request's
+// error: it runs on a goroutine of the request's find, where a panic
+// would end magpie and every request it serves (#4553, a stray byte in
+// an embeddings input on Windows). The request is held back, as for a
+// model that failed, and the model isn't counted as failed for the
+// requests after it.
+func classifySafely(classify func([]string) ([][]redact.Found, error), texts []string) (out [][]redact.Found, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("pii: the local model panicked reading a request: %v\n%s", r, debug.Stack())
+			out, err = nil, fmt.Errorf("the local masking model failed reading this request (%v)", r)
+		}
+	}()
+	return classify(texts)
 }
 
 // still is which of texts' miss are still missing, with got (this
@@ -605,7 +623,10 @@ func cut(t string, size int) []span {
 		} else if i := strings.IndexByte(t[next:end-pieceOverlap/2], ' '); i >= 0 {
 			next += i + 1
 		} else {
-			for !utf8.RuneStart(t[next]) {
+			// to end at most: text that isn't UTF-8 can have no rune's
+			// start up to it, or to the text's end (a run of stray
+			// continuation bytes read past it and panicked, #4553)
+			for next < end && !utf8.RuneStart(t[next]) {
 				next++
 			}
 		}

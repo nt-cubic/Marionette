@@ -8,7 +8,7 @@ import { spawn } from "node:child_process"
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai"
-import { readStoredCredential, type ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { readStoredCredential, VERSION, type ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Container, Input, SelectList, Text } from "@earendil-works/pi-tui"
 
 function stream(model, context, options) {
@@ -84,6 +84,7 @@ function stream(model, context, options) {
     s.push({ type: "text_start", contentIndex: out.content.length - 1, partial: out })
     s.push({ type: "text_end", contentIndex: out.content.length - 1, content: "", partial: out })
     const seen = {
+      pi: VERSION, // the pi its imports reached
       apiKey: options?.apiKey,
       reasoning: options?.reasoning ?? null,
       maxTokens: options?.maxTokens,

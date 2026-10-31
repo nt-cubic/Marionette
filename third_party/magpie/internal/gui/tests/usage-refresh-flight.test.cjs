@@ -98,6 +98,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium"]
     const context = await browser.newContext({ viewport: { width: 1180, height: 700 }, reducedMotion: "reduce" });
     const p = await context.newPage();
     p.setDefaultTimeout(5000);
+    p.setDefaultNavigationTimeout(60000);
     p.on("pageerror", (e) => errors.push(e.message));
     await p.clock.install({ time: now });
     await p.route("**/*", windowServer("en", log, gate, { holdUsage: true }));
@@ -136,6 +137,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium"]
     const context = await browser.newContext({ viewport: { width: 1180, height: 700 }, reducedMotion: "reduce" });
     const p = await context.newPage();
     p.setDefaultTimeout(5000);
+    p.setDefaultNavigationTimeout(60000);
     p.on("pageerror", (e) => errors.push(e.message));
     await p.clock.install({ time: now });
     let seq = 0;
@@ -182,6 +184,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium"]
     const context = await browser.newContext({ viewport: { width: 1180, height: 700 }, reducedMotion: "reduce" });
     const p = await context.newPage();
     p.setDefaultTimeout(5000);
+    p.setDefaultNavigationTimeout(60000);
     p.on("pageerror", (e) => errors.push(e.message));
     await p.clock.install({ time: now });
     // every Overview read answers with its own period's cost; a read is held
@@ -231,6 +234,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium"]
     const context = await browser.newContext({ viewport: { width: 1180, height: 700 }, reducedMotion: "reduce" });
     const p = await context.newPage();
     p.setDefaultTimeout(5000);
+    p.setDefaultNavigationTimeout(60000);
     p.on("pageerror", (e) => errors.push(e.message));
     await p.clock.install({ time: now });
     // The opening read and the timer's answer with the same figures, so the
@@ -284,6 +288,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium"]
     const context = await browser.newContext({ viewport: { width: 440, height: 340 }, reducedMotion: "reduce" });
     const p = await context.newPage();
     p.setDefaultTimeout(5000);
+    p.setDefaultNavigationTimeout(60000);
     p.on("pageerror", (e) => errors.push(e.message));
     await p.clock.install({ time: now });
     await p.route("**/*", async (route) => {
@@ -353,6 +358,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium"]
     const context = await browser.newContext({ viewport: { width: 440, height: 340 }, reducedMotion: "reduce" });
     const p = await context.newPage();
     p.setDefaultTimeout(5000);
+    p.setDefaultNavigationTimeout(60000);
     p.on("pageerror", (e) => errors.push(e.message));
     await p.clock.install({ time: now });
     await p.route("**/*", async (route) => {

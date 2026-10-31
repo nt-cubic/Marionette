@@ -75,14 +75,16 @@ func Rename(from, to string) error {
 	if !sub && !slices.Contains(p.Was, from) {
 		p.Was = append(p.Was, from)
 	}
-	for j := range f.Providers {
-		for k, m := range f.Providers[j].Fallback {
-			f.Providers[j].Fallback[k] = renamedRef(m, from, to)
-		}
-	}
+	mapModelRefs(&f, func(m string) string { return renamedRef(m, from, to) })
 	for j, id := range f.Order {
 		if id == from {
 			f.Order[j] = to
+		}
+	}
+	// kept out of found groups under its new id too
+	for j, id := range f.AutoGroupSkip {
+		if id == from {
+			f.AutoGroupSkip[j] = to
 		}
 	}
 	// a deleted provider merged into it stays merged (MergeDeleted)
@@ -90,24 +92,6 @@ func Rename(from, to string) error {
 		if f.Deleted[j].Into == from {
 			f.Deleted[j].Into = to
 		}
-	}
-	for j := range f.Groups {
-		g := &f.Groups[j]
-		for k, m := range g.Members {
-			g.Members[k] = renamedRef(m, from, to)
-		}
-		for k := range g.Rules {
-			g.Rules[k].MapUses(func(u string) string { return renamedRef(u, from, to) })
-		}
-		for k, m := range g.Fast {
-			g.Fast[k] = renamedRef(m, from, to)
-		}
-		for k, m := range g.Off {
-			g.Off[k] = renamedRef(m, from, to)
-		}
-		g.Weights = renamedWeights(g.Weights, func(m string) string { return renamedRef(m, from, to) })
-		g.Classifier = renamedRef(g.Classifier, from, to)
-		g.Pick = renamedRef(g.Pick, from, to)
 	}
 	// the vendor's list last fetched goes with it
 	os.Rename(catalog.LivePath(from), catalog.LivePath(to))
@@ -132,6 +116,40 @@ func Rename(from, to string) error {
 		return settings.Save(s)
 	}
 	return nil
+}
+
+// mapModelRefs gives every model ref the file keeps for routing — the
+// providers' fallbacks, and the routing groups' members, rules, fast and
+// placed members, those turned off, weights, classifiers and picks — as
+// to has it: what a provider's rename (Rename) and a model given another
+// id at its provider (SetModelID) both rewrite.
+func mapModelRefs(f *file, to func(string) string) {
+	for j := range f.Providers {
+		for k, m := range f.Providers[j].Fallback {
+			f.Providers[j].Fallback[k] = to(m)
+		}
+	}
+	for j := range f.Groups {
+		g := &f.Groups[j]
+		for k, m := range g.Members {
+			g.Members[k] = to(m)
+		}
+		for k := range g.Rules {
+			g.Rules[k].MapUses(to)
+		}
+		for k, m := range g.Fast {
+			g.Fast[k] = to(m)
+		}
+		for k, m := range g.Placed {
+			g.Placed[k] = to(m)
+		}
+		for k, m := range g.Off {
+			g.Off[k] = to(m)
+		}
+		g.Weights = renamedWeights(g.Weights, to)
+		g.Classifier = to(g.Classifier)
+		g.Pick = to(g.Pick)
+	}
 }
 
 // renamedRef is a model id ("provider/model", "magpie/provider/model")

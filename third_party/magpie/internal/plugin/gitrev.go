@@ -19,12 +19,136 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 )
 
 var hexSHA = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
+
+// refFixed is whether a git spec names the exact commit to install
+// (#<commit>): nothing is resolved for one, so no cache is fetched for it
+// either — the commit is in bun's clone of the repository already, and
+// the install keeps the pin whatever the clone's refs say.
+func refFixed(spec string) bool {
+	_, ref, _ := strings.Cut(spec, "#")
+	return hexSHA.MatchString(strings.ToLower(ref))
+}
+
+// gitURLs is the URLs the repository a git spec names is cloned from, the
+// spec's own first, then a shorthand's https one (github:owner/repo,
+// owner/repo, gitlab:, bitbucket:).
+func gitURLs(spec string) []string {
+	s, _, _ := strings.Cut(spec, "#")
+	s = strings.TrimPrefix(s, "git+")
+	var out []string
+	add := func(u string) {
+		u = strings.TrimSuffix(u, "/")
+		if u != "" && !slices.Contains(out, u) {
+			out = append(out, u)
+		}
+	}
+	add(s)
+	var shorthand string
+	switch {
+	case strings.HasPrefix(s, "github:"):
+		shorthand = "https://github.com/" + strings.TrimPrefix(s, "github:")
+	case strings.HasPrefix(s, "gitlab:"):
+		shorthand = "https://gitlab.com/" + strings.TrimPrefix(s, "gitlab:")
+	case strings.HasPrefix(s, "bitbucket:"):
+		shorthand = "https://bitbucket.org/" + strings.TrimPrefix(s, "bitbucket:")
+	case !strings.Contains(s, ":") && strings.Contains(s, "/"):
+		shorthand = "https://github.com/" + s
+	}
+	if shorthand != "" {
+		add(shorthand)
+	}
+	return out
+}
+
+// sameRepo is whether two URLs name one git repository: the git+ prefix,
+// the .git suffix and the letter case are nothing.
+func sameRepo(a, b string) bool {
+	trim := func(u string) string {
+		u = strings.TrimSpace(u)
+		u = strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(u, "git+"), "/"), ".git")
+		return u
+	}
+	return strings.EqualFold(trim(a), trim(b))
+}
+
+// cloneOrigin is the URL a bare clone in bun's cache was cloned from, ""
+// when its config names none: the origin remote's, else the first
+// remote's.
+func cloneOrigin(dir string) string {
+	b, err := os.ReadFile(filepath.Join(dir, "config"))
+	if err != nil {
+		return ""
+	}
+	first, atOrigin := "", false
+	for _, l := range strings.Split(string(b), "\n") {
+		l = strings.TrimSpace(l)
+		if strings.HasPrefix(l, "[") {
+			atOrigin = strings.HasPrefix(l, `[remote "origin`)
+			continue
+		}
+		if v, ok := strings.CutPrefix(l, "url"); ok {
+			v = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(v), "="))
+			if atOrigin {
+				return v
+			}
+			if first == "" {
+				first = v
+			}
+		}
+	}
+	return first
+}
+
+// fetchEach is how long a fetch into bun's cache is waited for.
+const fetchEach = time.Minute
+
+// refreshGitCache fetches the branches and tags of the repository a git
+// spec names into the clone of it bun keeps in its install cache, so
+// resolving the spec names the commit the remote is at now, not the one
+// it was at when bun cloned it first: bun fetches without moving the
+// clone's own refs, so every resolve of a branch after the first (a
+// plugin added as an unfixed git+https://… spec) found the old commit
+// again, bun.lock kept it, and an update said it had installed while
+// nothing changed (#2954). A spec pinned to a commit is left alone. With
+// no clone of the repository (bun fetches GitHub's as tarballs; a first
+// install hasn't cloned yet) there is nothing to refresh, and this is nil.
+func refreshGitCache(ctx context.Context, spec string) error {
+	if !IsGit(spec) || refFixed(spec) {
+		return nil
+	}
+	urls := gitURLs(spec)
+	es, err := os.ReadDir(installCacheDir())
+	if err != nil {
+		return nil // no cache yet: bun clones from the remote now
+	}
+	var errs []error
+	for _, e := range es {
+		if !strings.HasSuffix(e.Name(), ".git") || !e.IsDir() {
+			continue
+		}
+		dir := filepath.Join(installCacheDir(), e.Name())
+		u := cloneOrigin(dir)
+		if !slices.ContainsFunc(urls, func(want string) bool { return sameRepo(want, u) }) {
+			continue
+		}
+		fctx, cancel := context.WithTimeout(ctx, fetchEach)
+		cmd := command(fctx, "git", "-C", dir, "fetch", "--quiet", "origin", "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*")
+		cmd.Env = append(env(), "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
+		out, err := cmd.CombinedOutput()
+		cancel()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("fetching %s into Bun's cache: %v: %s", u, err, lastLines(string(out), 4)))
+		}
+	}
+	return errors.Join(errs...)
+}
 
 // GitCommit is the commit bun installed of the git plugin spec, as bun
 // recorded it (7 hex digits for a GitHub one, 40 for one fetched with

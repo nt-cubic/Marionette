@@ -74,7 +74,9 @@ func takesEffort(c candidate, e string) bool {
 			return true
 		}
 	}
-	if levels, ok := c.p.Account.Levels(c.model); ok && !slices.Contains(levels, e) {
+	// the account's list names its models by the vendor's id, not one the
+	// user lists one by (SetModelID)
+	if levels, ok := c.p.Account.Levels(c.p.OwnModelID(c.model)); ok && !slices.Contains(levels, e) {
 		return false
 	}
 	return true
@@ -178,7 +180,7 @@ func takesTier(c candidate, t string) bool {
 	if c.p.Account == nil {
 		return true
 	}
-	tiers, ok := c.p.Account.Tiers(c.model)
+	tiers, ok := c.p.Account.Tiers(c.p.OwnModelID(c.model)) // by the vendor's id, as Levels
 	return !ok || slices.Contains(tiers, t)
 }
 

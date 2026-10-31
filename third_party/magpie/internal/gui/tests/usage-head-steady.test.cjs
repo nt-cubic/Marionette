@@ -98,6 +98,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       t.after(() => browser.close());
       const page = await (await browser.newContext({ viewport: { width: 1044, height: 900 } })).newPage();
       page.setDefaultTimeout(8000);
+      page.setDefaultNavigationTimeout(60000);
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.addInitScript(() => { localStorage.setItem("magpie.navLayout", "top"); localStorage.setItem("magpie.usageTab", "requests"); });

@@ -260,6 +260,10 @@
         <div class="who"><div class="name" data-t>Allowances in the menu bar</div><div class="sub" id="trayUsageSub"></div></div>
         <div id="trayUsagePick"></div>
       </div>
+      <div class="row pref" id="trayWindowsRow" hidden>
+        <div class="who"><div class="name" data-t>Menu bar windows</div><div class="sub" data-t>Which of a subscription's windows its card shows, such as 5 hours or 7 days alone; every window unless you pick, and every window again when those picked are gone</div></div>
+        <div id="trayWindowsPick" class="tray-windows"></div>
+      </div>
       <div class="row pref" id="trayEveryRow" hidden>
         <div class="who"><div class="name" data-t>Menu bar refresh</div><div class="sub" data-t>How often the allowances beside the icon are asked for again</div></div>
         <div id="trayEverySegs"></div>
@@ -311,13 +315,13 @@
       <div class="row pref" id="codexAutoResetRow" hidden>
         <div class="who"><div class="name" data-t>Codex: auto-use resets</div><div class="sub wraps" data-t>A ChatGPT account uses one of its resets by itself when its week is used up and no other account can answer, or before one expires unused. Off until turned on, account by account; each account's card on the Usage page has the same switch.</div></div>
       </div>
+      <div class="row pref" id="codexResetLeadRow" hidden>
+        <div class="who"><div class="name" data-t>Codex: how early before one expires</div><div class="sub wraps" data-t>For every account with "before one expires" on: the reset about to run out unused is used this long before it does. Earlier loses what the account's windows have left then; the default is half an hour.</div></div>
+        <div id="codexResetLeadPick"></div>
+      </div>
       <div class="row pref" id="turnDoneRow">
         <div class="who"><div class="name" data-t>Task done alert</div><div class="sub" id="turnDoneSub"></div></div>
         <div id="turnDoneSegs"></div>
-      </div>
-      <div class="row pref" id="maskAlertRow" data-feature="redact">
-        <div class="who"><div class="name" data-t>Masking alert</div><div class="sub wraps" data-t>A notification when masking swaps a value for the first time: its kind and how many, never the value itself</div></div>
-        <div id="maskAlertSegs"></div>
       </div>
     </div>
     <div class="row-head warm-head" data-feature="warmups"><div class="warm-tabs" id="warmTabs" role="tablist">
@@ -433,6 +437,8 @@
     <div class="list prefs" id="shareList"></div>
     <div class="row-head"><span class="label" data-t>Agents' sign-ins</span></div>
     <div class="list prefs" id="discoveryList"></div>
+    <div class="row-head"><span class="label" data-t>Sign-in pages</span></div>
+    <div class="list prefs" id="signInOpenList"></div>
     <div class="row-head"><span class="label" data-t>Agents' session history</span></div>
     <div class="list prefs" id="sessionReadsList"></div>
   </section>

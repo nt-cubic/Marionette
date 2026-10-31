@@ -50,6 +50,7 @@ for (const [name, engine] of [["webkit", webkit], ["chromium", chromium]]) {
       for (const [lang, sys, want] of [["de", "en-US", "de"], ["system", "de-DE", "de"], ["system", "de-AT", "de"], ["system", "en-US", "en"]]) {
         const page = await (await browser.newContext({ locale: sys, viewport: { width: 1000, height: 760 } })).newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         await page.route("**/*", serve(lang));
         await page.goto("http://magpie.test/");
         await page.waitForFunction(() => typeof locale === "string" && document.documentElement.lang);

@@ -433,3 +433,58 @@ func TestClaudeDesktopAloneContextWindow(t *testing.T) {
 		t.Fatalf("the user's settings changed: %s", readFile(path))
 	}
 }
+
+// TestClaudeDesktopWSLContextWindow (young02036 on Discord): Claude
+// Desktop on Windows runs a Code tab session whose environment host is
+// WSL on the distro's Claude Code, which reads ~/.claude/settings.json
+// there (Desktop 4.29.0 probes ${CLAUDE_CONFIG_DIR:-$HOME/.claude} in the
+// distro) and is handed the mythos-magpie id with no window. Only
+// Windows' own settings.json was told Desktop's window, so a 500K group
+// read "/ 200k" in WSL. The distro's Claude Code, not on magpie itself,
+// is told the same window and capabilities while Desktop is on magpie,
+// the user's own settings there kept, and Desktop off takes them out.
+func TestClaudeDesktopWSLContextWindow(t *testing.T) {
+	home, own := desktopWindowSandbox(t)
+	root := t.TempDir()
+	distroSettings := filepath.Join(root, "home", "me", ".claude", "settings.json")
+	writeFile(t, distroSettings, `{"theme":"light","model":"opus"}`)
+	d := distro{Name: "Ubuntu", Root: root, Home: "/home/me", Has: map[string]bool{"dir:.claude": true},
+		Gateway: "172.20.0.1", Running: true}
+	a := wslAgent(wslKindOf("claude"), d)
+	if a.ID != "claude@wsl:Ubuntu" || a.Sync == nil {
+		t.Fatalf("%+v", a)
+	}
+	get := func(key string) string { v, _ := edit.GetJSON(distroSettings, key); return v }
+	window := func() string { return get("env." + claudeContextEnv) }
+
+	if err := a.Sync(); err != nil || window() != "" {
+		t.Fatalf("Desktop not on magpie: window %q %v", window(), err)
+	}
+	if err := claudeDesktop(home).Field("provider").Set("magpie"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if window() != "1000000" {
+		t.Fatalf("Desktop on magpie: the distro's window %q, want glm's 1000000\n%s", window(), readFile(distroSettings))
+	}
+	if caps := get("env." + claudeCapsEnv); !strings.Contains(caps, "mythos-magpie-") {
+		t.Fatalf("the distro's capabilities %q name none of Desktop's ids", caps)
+	}
+	if get("env.ANTHROPIC_BASE_URL") != "" || get("model") != "opus" || get("theme") != "light" {
+		t.Fatalf("the distro's own Claude Code setup changed: %s", readFile(distroSettings))
+	}
+	if w, _ := edit.GetJSON(own, "env."+claudeContextEnv); w != "1000000" {
+		t.Fatalf("Windows' own window %q", w)
+	}
+	if err := claudeDesktop(home).Field("provider").Set(""); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if window() != "" || get("env."+claudeCapsEnv) != "" || get("modelSettings") != "" || get("theme") != "light" {
+		t.Fatalf("Desktop off: %s", readFile(distroSettings))
+	}
+}

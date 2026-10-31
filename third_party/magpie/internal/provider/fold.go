@@ -342,6 +342,7 @@ func foldWhere(candidates func([]Provider) [][]int) (int, error) {
 			g.Rules[k].MapUses(ref)
 		}
 		g.Fast = compact(mapEach(g.Fast, ref))
+		g.Placed = compact(mapEach(g.Placed, ref))
 		g.Off = compact(mapEach(g.Off, ref))
 		g.Weights = renamedWeights(g.Weights, ref)
 		g.Classifier = ref(g.Classifier)

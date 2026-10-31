@@ -302,7 +302,7 @@ func visitBlocks(blocks []*rowChunk, since time.Time, fn func(Record)) {
 		c := rows.of(packed)
 		for i := range c.Rows {
 			p := &c.Rows[i]
-			if !p.Time.Before(since) {
+			if !p.Time().Before(since) {
 				fn(c.row(i).Record)
 			}
 		}

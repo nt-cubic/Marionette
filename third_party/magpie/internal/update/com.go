@@ -20,7 +20,8 @@ import (
 //
 // It is written wherever a terminal runs magpie from: when the app's
 // folder is on PATH, where Settings › Command line puts it, or a magpie.com
-// or magpie.cmd is there already. The app writes it again as it starts
+// or magpie.cmd is there already. On the Desktop or in Downloads only Add
+// writes it, and a start only keeps one there up to date. The app writes it again as it starts
 // when its bytes differ, so an update brings it along. They differ only
 // when the launcher does: it is built without the release's commit in it
 // (the Makefile's -buildvcs=false), or every update wrote a new magpie.com
@@ -107,7 +108,15 @@ func EnsureCompanion(exe string) error {
 		return nil
 	}
 	dir := filepath.Dir(exe)
-	if !onPath(dir, os.Getenv("PATH")) && !exists(filepath.Join(dir, comName)) && !exists(filepath.Join(dir, shimName)) {
+	if downloadFolder(dir) {
+		// the Desktop or Downloads, which the user sees: one there is
+		// kept up to date, never put back once deleted (nianshou5 on
+		// Discord: it came back on every start, the Desktop being on
+		// PATH). Settings › Command line's Add still writes it.
+		if !exists(filepath.Join(dir, comName)) {
+			return nil
+		}
+	} else if !onPath(dir, os.Getenv("PATH")) && !exists(filepath.Join(dir, comName)) && !exists(filepath.Join(dir, shimName)) {
 		return nil
 	}
 	_, err := writeCom(comLauncher, exe)

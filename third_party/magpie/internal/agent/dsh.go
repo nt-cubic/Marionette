@@ -95,6 +95,25 @@ func dshAt(at place) *Agent {
 	}
 	// DeepSeek Harness Desktop, on this machine (a distro has none)
 	desktop := func() bool { return at.spell == nil && (&Agent{ID: "dsh"}).HasApp() }
+	// the patch list magpie makes for a dsh with no profile yet: the desktop
+	// app's, else the web profile's; "" for a dsh before profiles, which
+	// reads config.yaml (liby233: a dsh 0.2 in WSL that hadn't booted a
+	// profile yet was wired in config.yaml, which it never reads)
+	fresh := func() string {
+		if desktop() {
+			return dshDesktopFile(dir)
+		}
+		version := at.version
+		if at.spell == nil {
+			version = dshVersion()
+		}
+		if dshBeforeProfiles(dir, version, at.cold) {
+			return ""
+		}
+		return dshWebFile(dir)
+	}
+	// profiles' patch lists, or one magpie makes, are what dsh reads
+	modern := func() bool { return len(dshProfiles(dir)) > 0 || fresh() != "" }
 	path := filepath.Join(dir, "config.yaml")
 	// a stopped distro's folder is never listed: that starts it (#3896)
 	var files []string
@@ -103,8 +122,8 @@ func dshAt(at place) *Agent {
 	}
 	if len(files) > 0 {
 		path = files[0]
-	} else if desktop() {
-		path = dshDesktopFile(dir)
+	} else if f := fresh(); f != "" {
+		path = f
 	}
 	return &Agent{
 		ID: "dsh", Name: "DeepSeek Harness", Icon: "deepseek-color", Aliases: []string{"deepseek-harness"}, Spelled: prefixed,
@@ -112,7 +131,7 @@ func dshAt(at place) *Agent {
 		Bin: "dsh", Dir: dir, Path: path,
 		// the desktop app installed and not opened yet has no ~/.dsh (#2279)
 		sign: desktop,
-		Sync: func() error { return dshSync(dir, gw()) },
+		Sync: func() error { return dshSyncFresh(dir, gw(), fresh) },
 		Notice: func() string {
 			var notes []string
 			if desktop() && dshUnopened(dir) {
@@ -130,7 +149,7 @@ func dshAt(at place) *Agent {
 				notes = append(notes, noticeDsh3.String())
 			}
 			// only before 0.1.5 does magpie go through llm-deepseek
-			if len(dshProfiles(dir)) == 0 && dshSettingsEndpoint(filepath.Join(dir, "settings.yaml")) {
+			if !modern() && dshSettingsEndpoint(filepath.Join(dir, "settings.yaml")) {
 				notes = append(notes, noticeDsh4.String())
 			}
 			return strings.Join(notes, " ")
@@ -170,16 +189,24 @@ func dshAt(at place) *Agent {
 			return dshEnv(dir, gw(), false, false)
 		},
 		// what magpie made for a desktop app never opened goes (#2279)
-		Restore: func() error { return dshTidyUnopened(dir) },
+		Restore: func() error {
+			if err := dshTidyUnopened(dir); err != nil {
+				return err
+			}
+			return dshTidyUnbooted(dir)
+		},
 		Fields: []Field{{
 			Key: "model", Label: "model",
 			Get: func() string { return dshGet(dir) },
 			Set: func(v string) error {
-				// the desktop app not opened yet: its profile is made as
-				// it makes it, and it keeps the patch list it finds (#2279)
-				if v != "" && len(dshProfiles(dir)) == 0 && desktop() {
-					if err := dshMakeDesktop(dir); err != nil {
-						return err
+				// the desktop app not opened yet, or a dsh that hasn't
+				// booted a profile: the profile is made as dsh makes it,
+				// and dsh keeps the patch list it finds (#2279, liby233)
+				if v != "" && len(dshProfiles(dir)) == 0 {
+					if f := fresh(); f != "" {
+						if err := dshMakeProfile(f); err != nil {
+							return err
+						}
 					}
 				}
 				return dshSet(dir, v, gw())
@@ -189,7 +216,7 @@ func dshAt(at place) *Agent {
 				// since 0.1.5 dsh's own go to DeepSeek on its own key, its
 				// llm-deepseek row left to it, and say so as every agent's
 				// own do (EZN7L2C3, #955); before, magpie took that row over
-				if len(dshProfiles(dir)) > 0 {
+				if modern() {
 					for i := range own {
 						own[i].Direct = "DeepSeek"
 					}
@@ -208,7 +235,7 @@ func dshAt(at place) *Agent {
 				// a model through magpie that lists no levels has none in
 				// dsh (its route gives it no reasoningEfforts), so none is
 				// offered: dsh's own four were, and each was turned away
-				if ref, ok := strings.CutPrefix(cur["model"], magpieID+"/"); ok && len(dshProfiles(dir)) > 0 {
+				if ref, ok := strings.CutPrefix(cur["model"], magpieID+"/"); ok && modern() {
 					return static(dshLevels(ref)...)
 				}
 				return static(dshEfforts...)
@@ -245,6 +272,42 @@ func dshDesktopFile(dir string) string {
 	return filepath.Join(dir, "profiles", "desktop", "cordis.patch.yml")
 }
 
+// dshWebFile is the web profile's patch list, $DSH_HOME/profiles/web: the
+// profile `dsh web` boots, the first of dsh's shipped ones (web, headless,
+// acp) that magpie makes for a dsh CLI that has booted none yet. A profile
+// dsh makes later is given magpie's route by the sync (dshFillNewProfiles).
+func dshWebFile(dir string) string {
+	return filepath.Join(dir, "profiles", "web", "cordis.patch.yml")
+}
+
+// dshProfilesSince is the first dsh whose patch lists are its profiles'.
+// That is every dsh on npm: 0.0.1-rc.1, the first, already boots
+// $DSH_HOME/profiles/<name>, and none of 0.0.1-rc.1, 0.0.1-rc.5,
+// 0.1.0-rc.8, 0.1.1-rc.1/rc.2, 0.1.2-rc.1, 0.1.3-alpha.2 or 0.2.1-rc.5
+// reads a config.yaml. A dsh saying an older version is one from before.
+const dshProfilesSince = "0.0.1-rc.1"
+
+// dshVersion is the version of the dsh CLI on this machine, "" when there is
+// none or it didn't say; a var for tests.
+var dshVersion = func() string { return (&Agent{ID: "dsh", Bin: "dsh"}).InstalledVersion() }
+
+// dshBeforeProfiles says a dsh with no profile at dir is one from before
+// profiles, which reads ~/.dsh/config.yaml: by its version where that is
+// known, else only where config.yaml holds an entry that isn't magpie's
+// (what such a dsh, or its user, wrote there). A dsh since profiles makes
+// none until one is first booted, and reads no config.yaml at all. cold is
+// a stopped distro's, whose files are not read.
+func dshBeforeProfiles(dir, version string, cold bool) bool {
+	if version != "" {
+		return Newer(dshProfilesSince, version)
+	}
+	if cold {
+		return false
+	}
+	_, items, err := dshRead(filepath.Join(dir, "config.yaml"))
+	return err == nil && slices.ContainsFunc(items, func(it dshItem) bool { return !it.magpie })
+}
+
 // dshMakeDesktop makes the desktop app's patch list, as dsh's template,
 // for an app installed and never opened (#2279, liangjinyuan-sihan): with
 // no profile at all magpie had nowhere to write, and DeepSeek Harness
@@ -253,8 +316,12 @@ func dshDesktopFile(dir string) string {
 // files are never touched"), so on its first start it adds its
 // package.json and pnpm-workspace.yaml beside this one and keeps
 // magpie's entries. The folder is owner-only, as the app makes it.
-func dshMakeDesktop(dir string) error {
-	f := dshDesktopFile(dir)
+func dshMakeDesktop(dir string) error { return dshMakeProfile(dshDesktopFile(dir)) }
+
+// dshMakeProfile makes the patch list f of a profile dsh hasn't made yet, as
+// dsh's template; dsh's initProfile adds the profile's other files beside
+// it on its first boot and keeps it.
+func dshMakeProfile(f string) error {
 	if err := os.MkdirAll(filepath.Dir(f), 0o700); err != nil {
 		return err
 	}
@@ -267,8 +334,12 @@ func dshMakeDesktop(dir string) error {
 // dshUnopened says the desktop app's profile is one magpie made and the
 // app hasn't started on yet: it has no package.json, which the app's first
 // start writes.
-func dshUnopened(dir string) bool {
-	f := dshDesktopFile(dir)
+func dshUnopened(dir string) bool { return dshUnbooted(dshDesktopFile(dir)) }
+
+// dshUnbooted says the profile whose patch list is f is one magpie made and
+// dsh hasn't booted yet: it has no package.json, which dsh's first boot of
+// it writes (initProfile).
+func dshUnbooted(f string) bool {
 	if !isFile(f) {
 		return false
 	}
@@ -280,9 +351,17 @@ func dshUnopened(dir string) bool {
 // app never opened since: the profile's patch list back to dsh's template
 // with nothing beside it, and the folders that leaves empty. A patch list
 // holding anything else, or a profile the app has started on, stays.
-func dshTidyUnopened(dir string) error {
-	f := dshDesktopFile(dir)
-	if !dshUnopened(dir) {
+func dshTidyUnopened(dir string) error { return dshTidyMade(dir, dshDesktopFile(dir)) }
+
+// dshTidyUnbooted is dshTidyUnopened for the web profile magpie made for a
+// dsh CLI that has booted none (liby233).
+func dshTidyUnbooted(dir string) error { return dshTidyMade(dir, dshWebFile(dir)) }
+
+// dshTidyMade takes out the profile patch list f magpie made, while dsh has
+// not booted it and it is dsh's template alone, and the folders that leaves
+// empty.
+func dshTidyMade(dir, f string) error {
+	if !dshUnbooted(f) {
 		return nil
 	}
 	b, err := os.ReadFile(f)
@@ -953,6 +1032,11 @@ var dshWrites sync.Mutex
 func dshSet(dir, v, gw string) error {
 	dshWrites.Lock()
 	defer dshWrites.Unlock()
+	return dshSetLocked(dir, v, gw)
+}
+
+// dshSetLocked is dshSet with dshWrites held.
+func dshSetLocked(dir, v, gw string) error {
 	ref, viaGateway := strings.CutPrefix(v, magpieID+"/")
 	if viaGateway && !isMagpie(ref) {
 		return fmt.Errorf("unknown model %q", v)
@@ -1708,12 +1792,36 @@ func dshRouteLines(model string) []string {
 // profile still on dsh's DeepSeek row taken over moves to the route.
 // Nothing else in the patch lists changes.
 func dshSync(dir, gw string) error {
+	return dshSyncFresh(dir, gw, func() string { return "" })
+}
+
+// dshSyncFresh is dshSync for a dsh whose first profile, when it has none
+// yet, is fresh's patch list ("" for a dsh before profiles). A model of
+// magpie's set in config.yaml, which no dsh since profiles reads, goes to the
+// profiles when none of them is wired: magpie wrote it there for a dsh that
+// hadn't booted a profile yet (liby233), and dsh's first boot made the
+// profile without it.
+func dshSyncFresh(dir, gw string, fresh func() string) error {
 	dshWrites.Lock()
 	defer dshWrites.Unlock()
 	models := magpieModels("dsh")
 	files := dshProfiles(dir)
+	made := ""
 	if len(files) == 0 {
-		return dshSyncLegacy(filepath.Join(dir, "config.yaml"), models, gw)
+		if made = fresh(); made == "" {
+			return dshSyncLegacy(filepath.Join(dir, "config.yaml"), models, gw)
+		}
+	}
+	if v := dshGetLegacy(filepath.Join(dir, "config.yaml")); dshCarried(v, files) && edit.GetYAMLMap(filepath.Join(dir, "settings.yaml"), "agent-default-model") == nil {
+		if made != "" {
+			if err := dshMakeProfile(made); err != nil {
+				return err
+			}
+		}
+		return dshSetLocked(dir, v, gw)
+	}
+	if len(files) == 0 {
+		return nil
 	}
 	defer func() {
 		// the key under the name the route gives it, moved from the old one
@@ -1743,6 +1851,26 @@ func dshSync(dir, gw string) error {
 		return err
 	}
 	return dshMirrorHome(dir, models, gw, false)
+}
+
+// dshCarried says v, the model config.yaml starts on, is one of magpie's
+// that profiles which have none of magpie's route take over.
+func dshCarried(v string, files []string) bool {
+	ref, ok := strings.CutPrefix(v, magpieID+"/")
+	if !ok || !isMagpie(ref) {
+		return false
+	}
+	for _, f := range files {
+		_, items, err := dshRead(f)
+		if err != nil || dshWired(items) || dshOldWiring(items) {
+			return false
+		}
+		// a start of the user's own, picked in dsh since
+		if i := dshFindLast(items, "agent-default-model"); i >= 0 && !dshOurs(items[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // dshStartsOnMagpie reports whether the model a profile's sessions start on
