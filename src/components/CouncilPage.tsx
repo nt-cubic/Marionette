@@ -37,14 +37,15 @@ import {
   phaseBadgeClass,
   phaseLabel,
   railLabel,
+  sgsRoleLabel,
   tierLabel,
   type AutoFormationResult,
   type CouncilMessage,
   type CouncilMessageKind,
   type CouncilMode,
   type FormationPlan,
-  type CouncilModelInfo,
   type MemberSpec,
+  type CouncilModelInfo,
   type RunDetail,
   type RunPhase,
   type RunSummary,
@@ -102,6 +103,7 @@ const MODE_OPTIONS: ReadonlyArray<{ id: CouncilMode }> = [
   { id: "council_only" },
   { id: "council_and_execution" },
   { id: "autonomous" },
+  { id: "sgs_game" },
 ];
 
 function modeLabel(id: CouncilMode): string {
@@ -418,6 +420,7 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
       })),
     );
     setRounds(tpl.rounds);
+    if (tpl.mode) setMode(tpl.mode);
   };
 
   const saveCurrentAsTemplate = () => {
@@ -534,6 +537,10 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
     }
     if (drafts.some((d) => !d.model)) {
       setError(t("council.setup.noModel"));
+      return;
+    }
+    if (mode === "sgs_game" && (drafts.length < 4 || drafts.length > 5)) {
+      setError(t("council.setup.sgsPlayers", { count: drafts.length }));
       return;
     }
     setCreating(true);
@@ -698,7 +705,7 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
           </div>
         </div>
 
-        {mode !== "council_only" && (
+        {(mode === "council_and_execution" || mode === "autonomous") && (
           <div className="council-field">
             <span>{t("council.setup.executorLabel")}</span>
             <div className="council-exec-row">
@@ -865,6 +872,7 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
         </div>
       </section>
 
+      {mode !== "sgs_game" && (
       <section className="council-section">
         <h3 className="council-section__title">{t("council.setup.section.rules")}</h3>
         <div className="council-params">
@@ -895,6 +903,10 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
         </div>
       </section>
 
+      )}
+      {mode === "sgs_game" && drafts.length !== 5 && (
+        <div className="council-warn">{t("council.setup.sgsPlayers", { count: drafts.length })}</div>
+      )}
       {error && <div className="council-warn council-warn--error">{error}</div>}
 
       <div className="council-setup__actions">
@@ -1041,6 +1053,8 @@ function CouncilRunView(props: { detail: RunDetail; onBack: () => void; onReload
         </div>
       </div>
 
+      {detail.game && <SgsBoard game={detail.game} members={spec.members} />}
+
       {state.tasks.length > 0 && (
         <section className="council-tasks">
           <h3 className="council-tgroup__title">{t("council.run.tasksTitle", { count: state.tasks.length })}</h3>
@@ -1092,6 +1106,44 @@ function CouncilRunView(props: { detail: RunDetail; onBack: () => void; onReload
       </div>
       </div>
     </div>
+  );
+}
+
+function SgsBoard(props: { game: NonNullable<RunDetail["game"]>; members: MemberSpec[] }) {
+  const { game, members } = props;
+  const t = useT();
+  const winnerSide = game.finished?.winner;
+  return (
+    <section className="council-tasks">
+      <h3 className="council-tgroup__title">
+        {t("council.sgs.board")} · {t("council.sgs.round", { n: game.round })} ·{" "}
+        {t("council.sgs.turnSeat", { n: game.turn + 1 })}
+        {winnerSide && (
+          <span className="council-badge council-badge--done" style={{ marginLeft: 8 }}>
+            {t("council.sgs.winner", { side: t(`council.sgs.winner.${winnerSide}` as Parameters<typeof tr>[0]) })}
+          </span>
+        )}
+      </h3>
+      {game.players.map((p, seat) => {
+        const member = members.find((m) => m.id === p.memberId);
+        return (
+          <div key={p.memberId} className={`council-task${p.alive ? "" : " is-dead"}`}>
+            <span className="council-task__id">{t("council.sgs.seat", { n: seat + 1 })}</span>
+            <span className="council-task__title">
+              {member?.displayName ?? p.memberId}
+            </span>
+            <span className="council-task__status">
+              {p.revealed ? sgsRoleLabel(p.role) : t("council.sgs.unknown")}
+            </span>
+            <span className={`council-task__status ${p.hp <= 1 ? "council-task__status--failed" : ""}`}>
+              {t("council.sgs.hp", { hp: p.hp, max: p.maxHp })}
+            </span>
+            <span className="council-task__changes">{t("council.sgs.handCount", { n: p.hand })}</span>
+            {!p.alive && <span className="council-task__status council-task__status--failed">{t("council.sgs.dead")}</span>}
+          </div>
+        );
+      })}
+    </section>
   );
 }
 

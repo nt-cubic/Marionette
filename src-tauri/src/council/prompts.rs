@@ -323,6 +323,7 @@ pub fn kind_name(kind: MessageKind) -> &'static str {
         MessageKind::Answer => "answer",
         MessageKind::Synthesis => "synthesis",
         MessageKind::Endorsement => "endorsement",
+        MessageKind::GameAction => "game_action",
         MessageKind::Plan => "plan",
         MessageKind::Task => "task",
         MessageKind::Status => "status",

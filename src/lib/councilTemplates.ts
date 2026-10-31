@@ -18,12 +18,14 @@ export interface TeamTemplate {
   id: string;
   /** 内置模板的 i18n key 前缀;自定义模板直接存显示名。 */
   name: string;
-  /** 2-8 人;恰好一个 chair。 */
+  /** 2-8 人;恰好一个 chair(游戏模板无 chair 概念时给第一个成员标记)。 */
   members: TemplateMember[];
   rounds: number;
   builtin: boolean;
   /** 建议把哪个座位配最强模型(人话提示)。 */
   strongestSeatHint?: string;
+  /** 套用模板时同时切换运行模式(游戏模板用 "sgs_game");缺省不改模式。 */
+  mode?: "council_only" | "council_and_execution" | "autonomous" | "sgs_game";
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +121,46 @@ export const BUILTIN_TEMPLATES: TeamTemplate[] = [
       {
         displayName: "谏议大夫",
         role: "你是谏议大夫,直言极谏:对任何人的结论(包括太师)都要质询,防止摄政垄断话语权;每条谏言给出可检验的依据。",
+        tier: "lead",
+        isChair: false,
+      },
+    ],
+  },
+  {
+    id: "sgs",
+    name: "builtin:sgs",
+    builtin: true,
+    rounds: 1,
+    mode: "sgs_game",
+    strongestSeatHint: "全部五个座位(身份局里没有弱席位)",
+    members: [
+      {
+        displayName: "主公位",
+        role: "你在玩简化三国杀身份局。你的身份由系统发牌决定(主公亮明,其余暗置)。按你的真实胜利条件行动:发言可以演,出牌要对得起身份。",
+        tier: "lead",
+        isChair: true,
+      },
+      {
+        displayName: "忠臣位",
+        role: "你在玩简化三国杀身份局。你的身份由系统发牌决定。按你的真实胜利条件行动:发言可以演,出牌要对得起身份。",
+        tier: "lead",
+        isChair: false,
+      },
+      {
+        displayName: "反贼位一",
+        role: "你在玩简化三国杀身份局。你的身份由系统发牌决定。按你的真实胜利条件行动:发言可以演,出牌要对得起身份。",
+        tier: "lead",
+        isChair: false,
+      },
+      {
+        displayName: "反贼位二",
+        role: "你在玩简化三国杀身份局。你的身份由系统发牌决定。按你的真实胜利条件行动:发言可以演,出牌要对得起身份。",
+        tier: "lead",
+        isChair: false,
+      },
+      {
+        displayName: "内奸位",
+        role: "你在玩简化三国杀身份局。你的身份由系统发牌决定。按你的真实胜利条件行动:发言可以演,出牌要对得起身份。",
         tier: "lead",
         isChair: false,
       },

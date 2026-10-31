@@ -14,6 +14,7 @@ import { t, type DictKey } from "./i18n";
 // ---------------------------------------------------------------------------
 
 export type CouncilMessageKind =
+  | "game_action"
   | "briefing"
   | "proposal"
   | "critique"
@@ -85,7 +86,7 @@ export interface AutoFormationResult {
   plan: FormationPlan;
 }
 
-export type CouncilMode = "council_only" | "council_and_execution" | "autonomous";
+export type CouncilMode = "council_only" | "council_and_execution" | "autonomous" | "sgs_game";
 
 export interface CouncilBudget {
   maxRequests?: number | null;
@@ -153,6 +154,7 @@ export function isTaskTerminal(status: TaskStatus | undefined): boolean {
 
 export type RunPhase =
   | "created"
+  | "playing"
   | "analyzing"
   | "proposing"
   | "reviewing"
@@ -228,13 +230,37 @@ export interface RunSummary {
   updatedAt: number;
 }
 
+export interface SgsPlayerState {
+  memberId: string;
+  role: "lord" | "loyalist" | "rebel" | "spy";
+  revealed: boolean;
+  hp: number;
+  maxHp: number;
+  hand: number;
+  alive: boolean;
+}
+
+/** 身份局游戏快照(RunDetail.game;体力/手牌数/身份亮暗)。 */
+export interface SgsGameState {
+  players: SgsPlayerState[];
+  round: number;
+  turn: number;
+  finished?: { winner: "lord_loyalist" | "rebel" | "spy"; summary: string } | null;
+}
+
 export interface RunDetail {
   spec: CouncilSpec;
   state: CouncilState;
   messages: CouncilMessage[];
   transitions: TransitionRecord[];
   plan?: PlanDoc | null;
+  game?: SgsGameState | null;
   live: boolean;
+}
+
+/** 游戏身份的展示文案(已亮明才该被调用)。 */
+export function sgsRoleLabel(role: SgsPlayerState["role"]): string {
+  return t(`council.sgs.role.${role}` as Parameters<typeof t>[0]);
 }
 
 /** agent 下拉用的轻量形状(来自 api.listAgents 的 AgentConfig)。 */

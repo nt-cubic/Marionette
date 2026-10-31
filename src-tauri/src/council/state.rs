@@ -59,6 +59,12 @@ pub fn can_transition(from: RunPhase, to: RunPhase) -> bool {
             | (Executing, Failed)
             | (Verifying, Failed)
             | (AwaitingApproval, Failed)
+            | (Created, Playing)
+            | (Playing, Completed)
+            | (Playing, Cancelled)
+            | (Playing, Failed)
+            | (Playing, BudgetExhausted)
+            | (Playing, Paused)
             | (Analyzing, BudgetExhausted)
             | (Proposing, BudgetExhausted)
             | (Reviewing, BudgetExhausted)
@@ -124,6 +130,7 @@ pub fn phase_name(p: RunPhase) -> &'static str {
         Executing => "executing",
         Verifying => "verifying",
         Completed => "completed",
+        Playing => "playing",
         Paused => "paused",
         Cancelled => "cancelled",
         Failed => "failed",

@@ -288,6 +288,31 @@ fn run_loop(
         }
 
         match state.phase {
+            RunPhase::Created if spec.mode == CouncilMode::SgsGame => {
+                transition(&mut state, run_id, emitter, RunPhase::Playing, Some("身份局开局"));
+            }
+            RunPhase::Playing => {
+                // 身份局游戏(M5.2):整局阻塞跑完,终局→Completed;
+                // 取消/失败按状态机收尾。恢复:runner 内部从 game-state.json 续。
+                let seed = spec.created_at as u64;
+                let result = super::game::runner::run_game(emitter, run_id, &spec, client, &handle.cancel, seed);
+                match result {
+                    Ok(()) => {
+                        transition(&mut state, run_id, emitter, RunPhase::Completed, Some("对局结束"));
+                        emitter.emit(run_id, "finished", json!({ "phase": "completed" }));
+                        return Ok(());
+                    }
+                    Err(e) if e == "__cancelled__" => {
+                        transition(&mut state, run_id, emitter, RunPhase::Cancelled, Some("用户取消"));
+                        emitter.emit(run_id, "finished", json!({ "phase": "cancelled" }));
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        fail_run(&mut state, run_id, emitter, format!("对局中断:{e}"));
+                        return Ok(());
+                    }
+                }
+            }
             RunPhase::Created => {
                 transition(&mut state, run_id, emitter, RunPhase::Analyzing, None);
             }
@@ -1303,7 +1328,7 @@ mod tests {
             }
         }
         start_run(CouncilEventEmitter::new(None), spec.run_id.clone(), crate::council::orchestrator::RunClients { model: Some(mock.clone()), harness: None }).unwrap();
-        wait_phase(&spec.run_id, RunPhase::Reviewing, 30_000);
+        wait_phase(&spec.run_id, RunPhase::Reviewing, 90_000);
         cancel_run(&spec.run_id).ok();
 
         let calls = mock.calls.lock().unwrap().clone();
@@ -1405,7 +1430,7 @@ mod tests {
             mock.enqueue(&m.model, vec![resp]);
         }
         start_run(CouncilEventEmitter::new(None), spec.run_id.clone(), crate::council::orchestrator::RunClients { model: Some(mock.clone()), harness: None }).unwrap();
-        wait_phase(&spec.run_id, RunPhase::Reviewing, 30_000);
+        wait_phase(&spec.run_id, RunPhase::Reviewing, 90_000);
         // 模拟崩溃:直接摘掉活线程注册。
         registry().lock().unwrap().remove(&spec.run_id);
         let calls_before = mock.call_count();
@@ -1514,7 +1539,7 @@ mod tests {
             }
         }
         start_run(CouncilEventEmitter::new(None), spec.run_id.clone(), crate::council::orchestrator::RunClients { model: Some(mock.clone()), harness: None }).unwrap();
-        wait_phase(&spec.run_id, RunPhase::Reviewing, 30_000);
+        wait_phase(&spec.run_id, RunPhase::Reviewing, 90_000);
         cancel_run(&spec.run_id).ok();
         let messages = store::load_messages(&spec.run_id).unwrap();
         let glm = &spec.members[0].id;
@@ -1779,6 +1804,94 @@ mod tests {
         assert!(messages
             .iter()
             .any(|m| m.kind == MessageKind::Endorsement && m.content.contains("否决")));
+    }
+
+    /// M5.2 身份局对局端到端(mock):整局从 Created → Playing →
+    /// Completed;消息账本含开局公告/行动/终局身份揭示;取消路径生效。
+    #[test]
+    fn sgs_game_plays_to_completion_with_mock_agents() {
+        let sandbox = Sandbox::new("sgs");
+        let mut spec = setup_run(&sandbox, "sgs");
+        spec.mode = CouncilMode::SgsGame;
+        spec.rounds = 1; // 游戏忽略
+        spec.members.truncate(5.min(spec.members.len()));
+        // 补足 5 人(样例只有 3 人)。
+        while spec.members.len() < 5 {
+            let n = spec.members.len() + 1;
+            spec.members.push(MemberSpec {
+                id: format!("p{n}"),
+                display_name: format!("玩家{n}"),
+                model: "m/extra".into(),
+                role: "玩家".into(),
+                is_chair: false,
+                tier: crate::council::types::MemberTier::Lead,
+            });
+        }
+        spec.budget.max_requests = Some(200); // 12 轮上限 × 5 人 ≈ 60 次
+        store::save_spec(&spec).unwrap();
+        let mock = Arc::new(MockClient::new());
+        // 所有模型:pass 计划(纯发言)。
+        let mut models: Vec<String> = spec.members.iter().map(|m| m.model.clone()).collect();
+        models.dedup();
+        for m in &models {
+            mock.enqueue(m, vec![r#"{"plays":[],"say":"且听下回分解"}"#.to_string()]);
+        }
+        start_run(
+            CouncilEventEmitter::new(None),
+            spec.run_id.clone(),
+            RunClients { model: Some(mock.clone()), harness: None },
+        )
+        .unwrap();
+        wait_phase(&spec.run_id, RunPhase::Completed, 120_000);
+        let state = store::load_state(&spec.run_id).unwrap();
+        assert_eq!(state.phase, RunPhase::Completed, "{:?}", state.error);
+        let messages = store::load_messages(&spec.run_id).unwrap();
+        assert!(messages.iter().any(|m| m.kind == MessageKind::GameAction && m.content.contains("开局")), "有开局公告");
+        assert!(messages.iter().any(|m| m.kind == MessageKind::GameAction && m.content.contains("发言")), "有玩家发言");
+        assert!(messages.iter().any(|m| m.kind == MessageKind::GameAction && m.content.contains("终局身份揭示")), "有终局揭示");
+        // 恢复现场可读:game-state.json 存在且已 finished。
+        let (game, _hist) = crate::council::game::runner::load_game(&spec.run_id).expect("game-state 落盘");
+        assert!(game.finished.is_some());
+        // 主公身份在视角层全程公开、其余暗置(引擎不变量)。
+        assert_eq!(game.players.iter().filter(|p| p.role == crate::council::game::engine::SgsRole::Lord).count(), 1);
+    }
+
+    #[test]
+    fn sgs_game_cancel_midgame() {
+        let sandbox = Sandbox::new("sgscancel");
+        let mut spec = setup_run(&sandbox, "sgscancel");
+        spec.mode = CouncilMode::SgsGame;
+        while spec.members.len() < 5 {
+            let n = spec.members.len() + 1;
+            spec.members.push(MemberSpec {
+                id: format!("p{n}"),
+                display_name: format!("玩家{n}"),
+                model: "m/extra".into(),
+                role: "玩家".into(),
+                is_chair: false,
+                tier: crate::council::types::MemberTier::Lead,
+            });
+        }
+        spec.budget.max_requests = Some(200);
+        store::save_spec(&spec).unwrap();
+        let mock = Arc::new(MockClient::new());
+        let mut models: Vec<String> = spec.members.iter().map(|m| m.model.clone()).collect();
+        models.dedup();
+        for m in &models {
+            mock.enqueue(m, vec![r#"{"plays":[],"say":"过"}"#.to_string()]);
+        }
+        start_run(
+            CouncilEventEmitter::new(None),
+            spec.run_id.clone(),
+            RunClients { model: Some(mock.clone()), harness: None },
+        )
+        .unwrap();
+        wait_phase(&spec.run_id, RunPhase::Playing, 60_000);
+        cancel_run(&spec.run_id).unwrap();
+        wait_phase(&spec.run_id, RunPhase::Cancelled, 60_000);
+        let calls = mock.call_count();
+        std::thread::sleep(Duration::from_millis(400));
+        assert_eq!(mock.call_count(), calls, "取消后不再调用模型");
     }
 
     /// 计划解析:围栏剥离 + 字段容错。

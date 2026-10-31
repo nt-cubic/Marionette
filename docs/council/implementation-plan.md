@@ -120,6 +120,16 @@ system prompt),tier 分层与人设正交,手动配置不限制主席分层(弱
 - [x] 顺手修复上游预存失败:v0.5.6 把 memoOwnsStrip 改名 extraOwnsStrip
       但 verify-memo-box.mts 文本断言未跟进(与本功能无关,上游 CI 恢复)
 
+## M5.2 — 身份局真对局 ✅(2026-10-31)
+
+用户需求「身份局也能让 agents 进行三国杀游戏」→ 调研 Werewolf/
+AvalonBench 范式(确定性引擎 + LLM 私有视角决策),新增
+`council/game/`(engine/player/runner)+ `RunPhase::Playing` +
+`CouncilMode::SgsGame`;v1 简化清单与测试见 formation.md §6。
+游戏模板(「身份局·真对局」)套用时自动切换模式;牌局面板实时显示
+体力/手牌/身份亮暗,终局揭示全部身份。council Rust 69 项、全量 439
+通过;verify-council 15/15。
+
 ## 外部依赖与风险记录
 
 | 风险 | 影响 | 缓解 |

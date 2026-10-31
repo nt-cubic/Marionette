@@ -37,6 +37,8 @@ pub enum MessageKind {
     Task,
     /// 运行状态通告(worker 失败、跳过原因等系统侧记录)。
     Status,
+    /// 身份局游戏的行动/结算/战报(M5.2)。
+    GameAction,
     Evidence,
 }
 
@@ -102,6 +104,8 @@ pub enum CouncilMode {
     CouncilOnly,
     CouncilAndExecution,
     Autonomous,
+    /// 身份局游戏(M5.2):成员作为玩家真打一局简化三国杀,不产计划。
+    SgsGame,
 }
 
 /// 执行器配置(M2):计划批准后由哪个 agent harness 在哪个目录落地。
@@ -273,6 +277,9 @@ pub struct RunDetail {
     pub transitions: Vec<TransitionRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<PlanDoc>,
+    /// 身份局游戏的当前局面(体力/手牌数/身份亮暗);审议型 run 为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game: Option<crate::council::game::engine::GameState>,
     /// 进程内是否有活 orchestrator 线程。
     pub live: bool,
 }
@@ -283,6 +290,8 @@ pub struct RunDetail {
 #[serde(rename_all = "snake_case")]
 pub enum RunPhase {
     Created,
+    /// 身份局游戏进行中(M5.2)。
+    Playing,
     Analyzing,
     Proposing,
     Reviewing,
@@ -343,6 +352,12 @@ pub fn validate_spec(spec: &CouncilSpec) -> Result<(), String> {
         if m.role.trim().is_empty() {
             return Err(format!("成员 {} 缺少角色描述", m.display_name));
         }
+    }
+    if spec.mode == CouncilMode::SgsGame {
+        if !(4..=5).contains(&spec.members.len()) {
+            return Err("身份局游戏 v1 支持 4 或 5 名玩家(主/忠/反[/反]/内)".into());
+        }
+        return Ok(());
     }
     if spec.rounds < 1 {
         return Err("审议轮次至少 1".into());

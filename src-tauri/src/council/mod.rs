@@ -16,6 +16,7 @@
 
 pub mod executor;
 pub mod formation;
+pub mod game;
 pub mod orchestrator;
 pub mod tasks;
 pub mod prompts;

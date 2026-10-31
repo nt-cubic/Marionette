@@ -166,6 +166,15 @@ ok("身份局模板含五个身份,内奸与雌小鬼为 contributor", () => {
   assert.ok(sg.members.find((m) => m.displayName === "反贼")!.role.includes("替代方案"));
 });
 
+ok("身份局真对局模板:5 座位、携带 sgs_game 模式", () => {
+  const sgs = BUILTIN_TEMPLATES.find((t) => t.id === "sgs")!;
+  assert.ok(sgs, "存在 sgs 模板");
+  assert.equal(sgs.members.length, 5);
+  assert.equal(sgs.mode, "sgs_game");
+  assert.ok(sgs.members.filter((m) => m.isChair).length === 1, "模板结构校验仍要求唯一 chair(游戏模板给首位)");
+  assert.ok(sgs.members.every((m) => m.role.includes("身份由系统发牌决定")), "座位 role 说明身份是引擎分配而非人设");
+});
+
 ok("垂帘听政模板:名义主席是 contributor,太师为 lead", () => {
   const rg = BUILTIN_TEMPLATES.find((t) => t.id === "regency")!;
   const chair = rg.members.find((m) => m.isChair)!;

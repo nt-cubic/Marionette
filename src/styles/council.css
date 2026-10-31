@@ -1296,3 +1296,7 @@
   color: var(--text);
   font-size: 12px;
 }
+
+/* ---- M5.2 身份局牌局 ---- */
+
+.council-task.is-dead { opacity: 0.55; }

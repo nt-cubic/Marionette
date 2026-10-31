@@ -3713,8 +3713,9 @@ fn council_detail(run_id: &str) -> Result<council_types::RunDetail, String> {
     let messages = crate::council::store::load_messages(run_id)?;
     let transitions = crate::council::store::load_transitions(run_id)?;
     let plan = crate::council::store::load_plan(run_id)?;
+    let game = crate::council::game::runner::load_game(run_id).map(|(g, _)| g);
     let live = crate::council::orchestrator::run_is_live(run_id);
-    Ok(council_types::RunDetail { spec, state, messages, transitions, plan, live })
+    Ok(council_types::RunDetail { spec, state, messages, transitions, plan, game, live })
 }
 
 /// 创建并启动一个 Council run。`input` 的 runId/createdAt 由后端重写

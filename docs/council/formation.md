@@ -109,3 +109,51 @@ tier 徽标;时间线出现「背书」分组。
 - `orchestrator::all_lead_config_skips_endorsement` — 旧配置零背书(兼容)
 - `orchestrator::rejected_contributor_output_is_flagged` — 否决路径可见
 - `prompts::parse_endorsement_verdicts` / `prompts::endorsement_prompt_addresses_contributor_output`
+
+
+## 6. 身份局真对局(M5.2)
+
+让身份局模板的成员**真打一局**简化三国杀,而不只是角色扮演审议。
+
+### 方法依据
+
+LLM 玩隐藏身份博弈已有成熟范式:[Werewolf 实证研究](https://arxiv.org/abs/2309.04658)、
+[AvalonBench](https://arxiv.org/abs/2310.21678)、Avalon 多轮涌现研究等——
+**确定性引擎持有全部真相,LLM 玩家只拿私有视角观测(自己的手牌与身份 +
+公开信息),决策以结构化 JSON 回传,引擎逐张校验结算,非法行动跳过留痕**。
+我们的实现与圆桌的信息隔离思想同源。
+
+### 机制(`council/game/`)
+
+- `engine.rs`:纯逻辑引擎(零 IO,单测 11 项)——75 张标准比例牌堆
+  (杀30/闪15/桃8/决斗3/无中4/南蛮3/万箭1/拆6/顺5)、环状座次与距离
+  (杀/顺手限相邻)、回合结算(摸2→出牌→弃至体力)、濒死自动桃、
+  杀反贼奖摸3、胜负判定(主公死→内奸独活则内奸胜否则反贼胜;反贼内奸
+  全灭→主忠胜)、回合上限 12 与弃牌堆重洗;
+- `player.rs`:私有视角构造(**他人手牌只有数量、身份只有主公亮明**,
+  有专项测试锁死信息隔离)+ 决策 prompt(整回合计划 JSON:plays/discard/
+  say,发言可演戏但出牌要服务真实胜利条件)+ 解析(plays 非数组判格式
+  错误,缺 plays 合法=过牌);
+- `runner.rs`:对局循环(复用 ModelClient seam / council-event / 取消 /
+  预算),每回合一次模型调用,决策失败自动过(游戏永不卡死);
+  game-state.json 全量落盘,进程重启后从当前局面续打。
+
+### v1 规则简化(诚实清单)
+
+无武将技能(白板)、无装备、无延时锦囊、无无懈可击;**防御响应
+(闪/决斗出杀/濒死桃)由系统自动打出**(有牌即出);桃仅自救;
+只支持 4-5 人局。这些简化让每局模型调用稳定在「每玩家每回合 1 次」,
+成本可预算;后续版本可逐项引入交互式响应。
+
+### 状态机与集成
+
+`RunPhase::Playing`(Created→Playing→Completed/Cancelled/Failed/
+BudgetExhausted/Paused);`CouncilMode::SgsGame`(校验:4-5 成员);
+`MessageKind::GameAction`(开局公告/行动/发言/终局身份揭示全进
+append-only 消息账本);RunDetail 附带游戏快照(体力/手牌数/身份亮暗)。
+
+### 测试
+
+引擎 11 项(发牌/距离/杀规则/闪桃链/身份胜负/AOE/非法行动留痕/重洗/
+回合上限)+ 玩家 3 项(信息隔离/视角/解析)+ 端到端 2 项(mock 整局到
+Completed 且账本含开局·发言·终局揭示;对局中取消冻结调用)。
