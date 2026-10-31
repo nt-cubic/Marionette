@@ -64,7 +64,6 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator('[data-view="gateway"]').first().click();
       const rows = page.locator("#activity .call-item");
       await rows.first().waitFor();
-      await page.locator("#foldConnect").click();
       assert.equal(seen.length, 0, "the recent list is metadata only");
       await rows.first().locator(".call").click();
       await rows.first().getByText(words[lang].loading, { exact: true }).waitFor();

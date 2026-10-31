@@ -100,7 +100,12 @@ func notePhase(ctx context.Context, phase string) (restore func()) {
 	}
 	was, _ := f.phase.Load().(string)
 	f.phase.Store(phase)
-	waited := noteWait(ctx)
+	// masking's phase is named by noteMasking's own wait
+	kind := phase
+	if phase == phaseRedact {
+		kind = ""
+	}
+	waited := noteWait(ctx, kind)
 	return func() { waited(); f.phase.Store(was) }
 }
 

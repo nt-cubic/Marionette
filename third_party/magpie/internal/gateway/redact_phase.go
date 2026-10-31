@@ -87,13 +87,20 @@ func (f *inflight) maskedFor() time.Duration {
 
 // maskingMs is the ms of own, magpie's own time before the request went
 // out (splitSent), that went on masking it: what masking took it, at
-// most own. Under a ms is still said, as 1; none is 0.
+// most own. Under a ms is still said, as 1; none is 0. With own unknown
+// (0: a plugin's fetch or Claude Code sent it, or no first token came)
+// it is all masking took: the request was masked all the same, and the
+// Routing page showed no masking for it (Discord, lute).
 func maskingMs(ctx context.Context, own int64) int64 {
 	d := inflightOf(ctx).maskedFor()
-	if d <= 0 || own <= 0 {
+	if d <= 0 {
 		return 0
 	}
-	return min(max(d.Milliseconds(), 1), own)
+	ms := max(d.Milliseconds(), 1)
+	if own > 0 {
+		return min(ms, own)
+	}
+	return ms
 }
 
 // showRedacting puts f's phase on the route that shows it, its own or the

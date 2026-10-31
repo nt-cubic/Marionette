@@ -23,9 +23,11 @@ func TestWarmUpListsRolloutsOnce(t *testing.T) {
 		if len(fs) != 1 {
 			t.Fatalf("warm-up listed again: %d rollouts", len(fs))
 		}
-		fs[0] = file{}
-		if again := codexFiles(); len(again) != 1 || again[0].path != first {
-			t.Fatalf("a caller's change reached the kept listing: %+v", again)
+		// the kept listing is shared, not copied for each read (#2278), and
+		// clipped: an append to one read's is made elsewhere
+		_ = append(fs, file{})
+		if again := codexFiles(); len(again) != 1 || &again[0] != &fs[0] || cap(again) != 1 {
+			t.Fatalf("the kept listing was copied, or an append reached it: %+v", again)
 		}
 		done := Ask()
 		if n := len(codexFiles()); n != 2 {

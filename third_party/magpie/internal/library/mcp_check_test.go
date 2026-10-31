@@ -72,9 +72,26 @@ func TestFakeMCPServer(t *testing.T) {
 		var m struct {
 			ID     *int   `json:"id"`
 			Method string `json:"method"`
+			Params struct {
+				Name      string          `json:"name"`
+				Arguments json.RawMessage `json:"arguments"`
+			} `json:"params"`
 		}
 		json.Unmarshal(sc.Bytes(), &m)
 		switch m.Method {
+		case "tools/call":
+			// the hub's: "die" ends the server mid-call, "slow" never
+			// answers, any other tool says its name, its arguments and the
+			// process it ran in
+			switch m.Params.Name {
+			case "die":
+				fmt.Fprintln(os.Stderr, "Error: lost the database")
+				os.Exit(5)
+			case "slow":
+				continue
+			}
+			text, _ := json.Marshal(fmt.Sprintf("%s %s pid=%d", m.Params.Name, m.Params.Arguments, os.Getpid()))
+			fmt.Printf(`{"jsonrpc":"2.0","id":%d,"result":{"content":[{"type":"text","text":%s}]}}`+"\n", *m.ID, text)
 		case "initialize":
 			fmt.Printf(`{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fake","version":"1"}}}`+"\n", *m.ID)
 		case "notifications/initialized":
@@ -263,6 +280,9 @@ func mcpHandler(t *testing.T, sse bool, seen *http.Header) http.HandlerFunc {
 			}
 			*seen = r.Header.Clone()
 			reply = fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{"tools":[{"name":"a"},{"name":"b"}]}}`, *m.ID)
+		case "tools/call":
+			// the hub's: the tool's name back, in the session it was sent in
+			reply = fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{"content":[{"type":"text","text":"remote %s"}]}}`, *m.ID, r.Header.Get("Mcp-Session-Id"))
 		}
 		if sse {
 			w.Header().Set("Content-Type", "text/event-stream")

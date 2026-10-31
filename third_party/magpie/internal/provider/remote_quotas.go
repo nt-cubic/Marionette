@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yetone/magpie/internal/catalog"
 )
 
 // A remote magpie's quotas (莫 on Discord): a computer whose providers are
@@ -360,6 +362,35 @@ func askRemote(ctx context.Context, p Provider, method, path string) ([]Subscrip
 	return cards, nil
 }
 
+// signRemote puts on req, a request of magpie's own to the remote magpie
+// p (its cards, a refresh, its quota history, a key's limit), key and p's
+// Headers, as its model list and its API requests carry them (Yirasumi on
+// Discord: the Usage page's read of the remote went without the headers a
+// proxy in front of it asks for). It is no turn of a conversation:
+// ${sessionId} and ${threadId} are an id of its own (conversation.go).
+// The key goes as Authorization: Bearer, which a user's Authorization
+// replaces (a proxy's own scheme), and always as x-api-key (remoteKey).
+func (p Provider) signRemote(req *http.Request, key string) {
+	req.Header.Set("Authorization", "Bearer "+key)
+	for k, v := range p.SentHeaders(context.Background()) {
+		catalog.PutUserHeader(req.Header, k, v)
+	}
+	remoteKey(req.Header, key)
+}
+
+// remoteKey writes key as x-api-key, in place of the header in any case:
+// to a remote magpie that header is magpie's key, which a gateway reads
+// beside Authorization, so a user's header (a proxy's Authorization) never
+// leaves the request without it, and a key's limit is read with that key.
+func remoteKey(h http.Header, key string) {
+	for k := range h {
+		if strings.EqualFold(k, "x-api-key") {
+			delete(h, k)
+		}
+	}
+	h.Set("x-api-key", key)
+}
+
 // remoteJSON asks p's gateway, with its key, for a {"data": …} list.
 func remoteJSON(ctx context.Context, p Provider, method, path string, dst any) error {
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
@@ -368,8 +399,8 @@ func remoteJSON(ctx context.Context, p Provider, method, path string, dst any) e
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+p.Key)
 	req.Header.Set("Accept", "application/json")
+	p.signRemote(req, p.Key)
 	res, err := p.Do(http.DefaultClient, req)
 	if err != nil {
 		return fmt.Errorf("%s %s: %w", errRemoteUnreachable, remoteName(p), err)

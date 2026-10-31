@@ -59,7 +59,7 @@ func TestCloseStepLeavesFullscreen(t *testing.T) {
 // had no close, minimise or full-screen buttons, and only Esc took it out of
 // full screen. A full-screen window keeps magpie in the Dock, whatever the setting.
 func TestFullscreenKeepsDock(t *testing.T) {
-	hidden, window, shown := settings.Settings{}, settings.Settings{DockWindow: true}, settings.Settings{Dock: true}
+	hidden, window, shown := settings.Settings{DockNever: true}, settings.Settings{DockWindow: true}, settings.Settings{Dock: true}
 	cases := []struct {
 		s                 settings.Settings
 		shown, fullscreen bool
@@ -76,6 +76,32 @@ func TestFullscreenKeepsDock(t *testing.T) {
 	for _, c := range cases {
 		if got := inDock(c.s, c.shown, c.fullscreen); got != c.want {
 			t.Errorf("inDock(%+v, shown=%v, fullscreen=%v) = %v, want %v", c.s, c.shown, c.fullscreen, got, c.want)
+		}
+	}
+}
+
+// ShouguangCao on X: with Show in Dock left as it came, the open window was
+// out of Command-Tab, so going back to it to paste a key copied in another
+// app took the menu bar. Out of the box magpie is in the Dock while its
+// window is open and leaves it when the window closes; Hide keeps it out,
+// and Show keeps it in.
+func TestDockFollowsWindowByDefault(t *testing.T) {
+	cases := []struct {
+		name  string
+		s     settings.Settings
+		shown bool
+		want  bool
+	}{
+		{"default, window open", settings.Settings{}, true, true},
+		{"default, window closed", settings.Settings{}, false, false},
+		{"an older file's With window, open", settings.Settings{DockWindow: true}, true, true},
+		{"Hide, window open", settings.Settings{DockNever: true}, true, false},
+		{"Show, window closed", settings.Settings{Dock: true}, false, true},
+		{"Show wins over Hide", settings.Settings{Dock: true, DockNever: true}, false, true},
+	}
+	for _, c := range cases {
+		if got := inDock(c.s, c.shown, false); got != c.want {
+			t.Errorf("%s: inDock = %v, want %v", c.name, got, c.want)
 		}
 	}
 }

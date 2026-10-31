@@ -142,3 +142,17 @@ func TestWindowsAtOnceReadAsOneByOne(t *testing.T) {
 		t.Fatalf("windows at once found %d spans, one by one %d", len(at), len(one))
 	}
 }
+
+// The model reads on half the cores at most, never more than 4: on all
+// of them a long history unread kept every core busy (Cores).
+func TestReadsOnFewCores(t *testing.T) {
+	was := runtime.GOMAXPROCS(32)
+	defer runtime.GOMAXPROCS(was)
+	if n := Cores(); n != 4 {
+		t.Fatalf("32 cores: reads on %d", n)
+	}
+	runtime.GOMAXPROCS(1)
+	if n := Cores(); n != 1 {
+		t.Fatalf("1 core: reads on %d", n)
+	}
+}

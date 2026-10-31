@@ -151,3 +151,16 @@ body.window .row.sm-sub-row { min-height: 42px; padding-left: calc(14px + var(--
 @media (max-width: 560px) {
   .sm-subs { --sub-step: 10px; padding-left: calc(12px + var(--sub-depth, 0) * var(--sub-step)); padding-right: 8px; }
 }
+
+/* the consent (RustCats on X): which agents' sessions may be read, asked
+   before any is; a plain grouped list of switches, as System Settings */
+.sm-consent { display: flex; flex-direction: column; gap: 10px; max-width: 560px; margin: 8px auto 16px; padding: 18px 18px 16px; border-radius: 12px; background: var(--card, var(--bg)); box-shadow: 0 0 0 0.5px var(--line); }
+.sm-consent-title { font-size: 14px; font-weight: 600; color: var(--fg); }
+.sm-consent-sub, .sm-consent-none { margin: 0; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.sm-consent-list { margin: 2px 0 0; }
+.sm-consent-row { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 6px 12px; cursor: pointer; }
+.sm-consent-row > svg, .sm-consent-row > img { flex: none; width: 16px; height: 16px; }
+.sm-consent-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--fg); }
+.sm-consent-row .lib-switch { flex: none; cursor: pointer; padding: 0; border: 0; }
+.sm-consent-row .lib-switch:disabled { opacity: .5; cursor: default; }
+.sm-consent-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 4px; }

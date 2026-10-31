@@ -27,7 +27,9 @@ func TestCodexMagpieProviderCarriesActorAuthorization(t *testing.T) {
 		t.Fatalf("magpie provider table carries no actor-authorization header:\n%s", cfg)
 	}
 	// uses_openai_actor_authorization() also requires !requires_openai_auth:
-	// the header beside that key would turn the flag off again.
+	// the header beside that key would turn the flag off again. A ChatGPT
+	// sign-in gets the key (openaiAuth) and keeps the image tool on its
+	// account; an API key, as here, has no account to keep.
 	if strings.Contains(cfg, "requires_openai_auth") {
 		t.Fatalf("magpie provider table requires OpenAI auth, hiding the actor header:\n%s", cfg)
 	}

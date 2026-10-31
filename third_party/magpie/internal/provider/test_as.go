@@ -80,6 +80,11 @@ func (p Provider) TestsAs(client string) string {
 	if p.IsOpenCode() || p.IsCline() || p.IsKilo() {
 		return "its requests are asked as its own client already"
 	}
+	if p.IsVertex() && client == ClientCodex {
+		// Google's own endpoints, as Claude Code's are below: its chat
+		// completions serve the partner models alone
+		return "a test is asked as Codex only of a relay"
+	}
 	if clientProto(client, p.Speaks()) == "" {
 		if client == ClientClaudeCode {
 			return "it has no Anthropic endpoint, where Claude Code's requests go"

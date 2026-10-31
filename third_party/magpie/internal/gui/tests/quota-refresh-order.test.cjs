@@ -31,6 +31,8 @@ function page(m = "window") {
     function renderQuotas() {}
     function loadUpstream() {}
     function status(x) { errors.push(x); }
+    function statusErr(x) { status(x.message, "err"); }
+    const NO_SCROLL = { preventScroll: true };
     function api(path) {
       if (path.includes("history")) return Promise.resolve([]);
       return new Promise((resolve, reject) => requests.push({ path, resolve, reject }));

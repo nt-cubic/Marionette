@@ -23,6 +23,7 @@ func resetClassified(t *testing.T) {
 		clear(classified.m)
 		clear(classified.failed)
 		clear(classified.last)
+		clear(classified.group)
 		clear(classified.inflight)
 	}
 	reset()

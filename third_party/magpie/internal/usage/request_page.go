@@ -6,6 +6,7 @@ package usage
 // complete ledger explicitly. This cache is disposable and bounded.
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
@@ -22,6 +23,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -68,18 +70,25 @@ type packedRow struct {
 	Time time.Time
 	// Varied are the strings of rowVaried, and Shape the chunk's Shapes
 	// entry that holds the row's other strings
-	Varied                         [len(rowVaried)]uint32
-	Shape                          uint32
-	Tokens                         [6]int64
-	Millis, TTFT, FirstText, Order int64
-	Sent, Flow, FirstReasoning     int64
-	Own, Retried, Queued           int64
-	RouteID                        int64
-	Cost, Credits                  float64
-	Status, Tries                  int32
-	Masking                        int32 // ms (Record.Masking)
-	Flags                          uint16
+	Varied         [len(rowVaried)]uint32
+	Shape          uint32
+	Tokens         [6]int64
+	Order, RouteID int64
+	Cost, Credits  float64
+	// the times of the call, in ms as in Record, kept in 32 bits (msOf):
+	// a page holds every row of its period, and they were 36 of a row's
+	// 216 bytes as int64s (#2278)
+	Millis, TTFT, FirstText    int32
+	Sent, Flow, FirstReasoning int32
+	Own, Retried, Queued       int32
+	Masking                    int32 // ms (Record.Masking)
+	Status, Tries              int32
+	Flags                      uint16
 }
+
+// msOf is a time in ms as a packedRow keeps it: one past 24 days, which
+// no call takes, is kept as the longest it can be.
+func msOf(ms int64) int32 { return int32(max(min(ms, math.MaxInt32), math.MinInt32)) }
 
 // rowHandedOn is the Flags bit of Record.HandedOn, rowReasoningHidden
 // Record.ReasoningHidden's: 64 is block_price.go's swapKnown, 256
@@ -115,15 +124,18 @@ type rowChunk struct {
 	// row of the period at once. 364k calls had 7300 shapes.
 	Shapes           [][rowTexts]uint32
 	shapeIDs         map[[rowTexts]uint32]uint32
-	codexActors      []string
+	codexActors      codexActors
 	codexCompactions map[int]*bool
 	codexIdentities  map[string]sessions.CodexIdentity
 	dict             map[string]uint32
 	Source           sessions.CallSource
 	Bytes            int64
-	Used             uint64
-	Count            int
-	Latest           time.Time
+	// used is the tick of the latest read that used the chunk, for trim:
+	// a counter of its own, so a read marks a published chunk used without
+	// writing the chunk under another read's page (use)
+	used   *atomic.Uint64
+	Count  int
+	Latest time.Time
 	// Computer is the other computer whose day this is (#542), by id
 	Computer string
 	// serial names the chunk as made, for the cells a page keeps of it
@@ -131,6 +143,11 @@ type rowChunk struct {
 	serial uint64
 	// mapped is the file Archive was read from, when it is of its pages
 	mapped *diskMapping
+	// raw is the gateway block a chunk is priced of. lazy is the pricer of
+	// one not priced yet (priceStubs), which only its serial and raw stand
+	// for: a page whose settled days are kept never reads them (#2278).
+	raw  *rowChunk
+	lazy *blockPricer
 }
 
 // rowMsg is the Text of a row's Claude message id, after rowText's, and
@@ -226,7 +243,7 @@ func (c *rowChunk) add(r Row, msg string, order int64, failed bool) {
 		c.Bytes += int64(len(s) + 48)
 		return id
 	}
-	p := packedRow{Time: r.Time, Tokens: [6]int64{int64(r.Input), int64(r.Output), int64(r.CacheRead), int64(r.CacheWrite), int64(r.Reasoning), int64(r.CacheWrite1h)}, Millis: r.Millis, TTFT: r.TTFT, FirstText: r.FirstText, FirstReasoning: r.FirstReasoning, Sent: r.Sent, Flow: r.Flow, Own: r.Own, Masking: int32(min(r.Masking, math.MaxInt32)), Retried: r.Retried, Queued: r.Queued, Order: order, RouteID: r.RouteID, Cost: r.Cost, Status: int32(r.Status), Tries: int32(r.Tries)}
+	p := packedRow{Time: r.Time, Tokens: [6]int64{int64(r.Input), int64(r.Output), int64(r.CacheRead), int64(r.CacheWrite), int64(r.Reasoning), int64(r.CacheWrite1h)}, Millis: msOf(r.Millis), TTFT: msOf(r.TTFT), FirstText: msOf(r.FirstText), FirstReasoning: msOf(r.FirstReasoning), Sent: msOf(r.Sent), Flow: msOf(r.Flow), Own: msOf(r.Own), Masking: int32(min(r.Masking, math.MaxInt32)), Retried: msOf(r.Retried), Queued: msOf(r.Queued), Order: order, RouteID: r.RouteID, Cost: r.Cost, Status: int32(r.Status), Tries: int32(r.Tries)}
 	var t [rowTexts]uint32
 	for i, s := range rowText(&r) {
 		t[i] = intern(*s)
@@ -275,25 +292,23 @@ func (c *rowChunk) add(r Row, msg string, order int64, failed bool) {
 		}
 	}
 	c.Rows = append(c.Rows, p)
-	if c.codexActors != nil || r.codexActor != "" {
-		if c.codexActors == nil {
-			c.codexActors = make([]string, len(c.Rows)-1)
-			c.Bytes += int64(len(c.codexActors)) * int64(unsafe.Sizeof(""))
+	if c.codexActors.ids != nil || r.codexActor != "" {
+		before := c.codexActors.bytes()
+		if c.codexActors.ids == nil {
+			c.codexActors.ids = make([]uint32, len(c.Rows)-1)
 		}
-		c.codexActors = append(c.codexActors, r.codexActor)
+		c.codexActors.add(r.codexActor)
+		c.Bytes += c.codexActors.bytes() - before
 	}
 	c.Count = len(c.Rows)
 	if r.Time.After(c.Latest) {
 		c.Latest = r.Time
 	}
 	c.Bytes += int64(unsafe.Sizeof(packedRow{}))
-	if c.codexActors != nil {
-		c.Bytes += int64(unsafe.Sizeof("")) + int64(len(r.codexActor))
-	}
 }
 func (c *rowChunk) row(i int) Row {
 	p := &c.Rows[i]
-	r := Row{Record: Record{RouteID: p.RouteID, Time: p.Time, Input: int(p.Tokens[0]), Output: int(p.Tokens[1]), CacheRead: int(p.Tokens[2]), CacheWrite: int(p.Tokens[3]), CacheWrite1h: int(p.Tokens[5]), Reasoning: int(p.Tokens[4]), Millis: p.Millis, TTFT: p.TTFT, FirstText: p.FirstText, FirstReasoning: p.FirstReasoning, ReasoningHidden: p.Flags&rowReasoningHidden != 0, CacheUnknown: p.Flags&rowCacheUnknown != 0, Sent: p.Sent, Flow: p.Flow, Own: p.Own, Masking: int64(p.Masking), Retried: p.Retried, Queued: p.Queued, Status: int(p.Status), Tries: int(p.Tries), HandedOn: p.Flags&rowHandedOn != 0, Rejected: p.Flags&4 != 0, SessionOfficialLogin: p.Flags&8 != 0}, Cost: p.Cost, Priced: p.Flags&1 != 0, Swapped: p.Flags&2 != 0, Routed: p.Flags&32 != 0}
+	r := Row{Record: Record{RouteID: p.RouteID, Time: p.Time, Input: int(p.Tokens[0]), Output: int(p.Tokens[1]), CacheRead: int(p.Tokens[2]), CacheWrite: int(p.Tokens[3]), CacheWrite1h: int(p.Tokens[5]), Reasoning: int(p.Tokens[4]), Millis: int64(p.Millis), TTFT: int64(p.TTFT), FirstText: int64(p.FirstText), FirstReasoning: int64(p.FirstReasoning), ReasoningHidden: p.Flags&rowReasoningHidden != 0, CacheUnknown: p.Flags&rowCacheUnknown != 0, Sent: int64(p.Sent), Flow: int64(p.Flow), Own: int64(p.Own), Masking: int64(p.Masking), Retried: int64(p.Retried), Queued: int64(p.Queued), Status: int(p.Status), Tries: int(p.Tries), HandedOn: p.Flags&rowHandedOn != 0, Rejected: p.Flags&4 != 0, SessionOfficialLogin: p.Flags&8 != 0}, Cost: p.Cost, Priced: p.Flags&1 != 0, Swapped: p.Flags&2 != 0, Routed: p.Flags&32 != 0}
 	if p.Flags&rowCredits != 0 {
 		credits := p.Credits
 		r.Credits = &credits
@@ -331,11 +346,7 @@ func (c *rowChunk) row(i int) Row {
 	}
 	r.Computer = c.Computer
 	if c.codexIdentities != nil {
-		actor := ""
-		if i < len(c.codexActors) {
-			actor = c.codexActors[i]
-		}
-		r = codexIdentityRow(r, actor, c.codexIdentities)
+		r = codexIdentityRow(r, c.codexActors.at(i), c.codexIdentities)
 	}
 	return r
 }
@@ -395,10 +406,33 @@ func (h *newestHeap) Pop() any          { a := *h; v := a[len(a)-1]; *h = a[:len
 
 // rowsIn is how many rows c has, packed or not.
 func rowsIn(c *rowChunk) int {
+	if c.lazy != nil {
+		return rowsIn(c.raw)
+	}
 	if len(c.Archive) != 0 {
 		return c.Count
 	}
 	return len(c.Rows)
+}
+
+// settledBefore is when the gateway's blocks a split page, heatmap or
+// effort keeps the days of (pageSplit, heatSplit, effortSplit) end before.
+func settledBefore(now time.Time) time.Time {
+	return time.Date(now.Year(), now.Month(), now.Day()-heatRecent, 0, 0, 0, 0, now.Location()).Add(-heatReach)
+}
+
+// priceStubs prices the blocks of gateways left unpriced (rowChunk.lazy),
+// in place, before their rows are read.
+func priceStubs(gateways []*rowChunk) {
+	for _, c := range gateways {
+		if b := c.lazy; b != nil {
+			if priced := b.block(c.raw); priced != nil {
+				*c = *priced
+			} else {
+				*c = rowChunk{serial: c.serial, raw: c.raw}
+			}
+		}
+	}
 }
 
 // chunkRows reads chunks' rows one chunk at a time. A page of the whole
@@ -419,7 +453,7 @@ type chunkRows struct {
 }
 
 // rowBuffer is what a chunkRows decodes into, kept between passes
-// (rowBuffers): each of a page's passes over every chunk grew its own from
+// (keptRows): each of a page's passes over every chunk grew its own from
 // nothing, and a warm start's page and Codex's effort after it allocated
 // ~30 MB a pass to read the same rows (#3493).
 type rowBuffer struct {
@@ -430,7 +464,40 @@ type rowBuffer struct {
 	open    rowChunk
 }
 
-var rowBuffers = sync.Pool{New: func() any { return new(rowBuffer) }}
+// keptRows is the buffers passes put back, kept as matchScratch is. A
+// sync.Pool kept them until the next collection, which a poll while an
+// agent works runs several times a second, and the next pass grew one to
+// the largest session chunk again: ~550 MB of the ~2.7 GB 90 s of polls
+// allocated, in matchedBlocks alone (#2278). They go with the matcher's
+// scratch, on ReleaseScratch or scratchLinger after the last pass.
+var keptRows [4]atomic.Pointer[rowBuffer]
+
+// rowBufferFor is a kept buffer, or a new one when every kept one is out
+func rowBufferFor() *rowBuffer {
+	for i := range keptRows {
+		if b := keptRows[i].Swap(nil); b != nil {
+			return b
+		}
+	}
+	return new(rowBuffer)
+}
+
+// keepRows puts b back, unless as many are kept as keptRows holds
+func keepRows(b *rowBuffer) {
+	for i := range keptRows {
+		if keptRows[i].CompareAndSwap(nil, b) {
+			lingerScratch()
+			return
+		}
+	}
+}
+
+// releaseRows lets go of every kept buffer
+func releaseRows() {
+	for i := range keptRows {
+		keptRows[i].Store(nil)
+	}
+}
 
 // lentRows is a chunkRows whose strings are lent (chunkRows.lent).
 func lentRows() chunkRows { return chunkRows{lent: true} }
@@ -443,7 +510,7 @@ func (r *chunkRows) of(c *rowChunk) *rowChunk {
 	}
 	if r.c != c {
 		if r.b == nil {
-			r.b = rowBuffers.Get().(*rowBuffer)
+			r.b = rowBufferFor()
 		}
 		b := r.b
 		var lent *[]byte
@@ -477,7 +544,7 @@ func (r *chunkRows) release() {
 		b.open = rowChunk{}
 		clear(b.strs[:cap(b.strs)]) // the strings of a block not lent are its own
 		r.b, r.c, r.open = nil, nil, nil
-		rowBuffers.Put(b)
+		keepRows(b)
 	}
 }
 
@@ -541,6 +608,13 @@ type requestIndex struct {
 	// names a call changes (meta), and read without the lock, since a
 	// part is never written once made
 	parts map[partKey]map[uint64]*chunkPart
+	// heatParts are the heatmap's sums of each chunk (heatOf), kept as
+	// parts are but apart, so that the heatmap's never push a page's out
+	heatParts map[partKey]map[uint64]*chunkPart
+	// heatOld are the heatmap's days before its last few (heatSplit)
+	heatOld map[partKey]*heatOld
+	// pageOld are a page's cells before its last few days (pageSplit)
+	pageOld map[partKey]*pageOld
 	// pairs are the last pairing of each of a few periods (pairMemo),
 	// kept as parts are
 	pairs map[Period]*pairMemo
@@ -650,7 +724,7 @@ func readRequestState(now time.Time) requestState {
 	cfg := settings.Load()
 	prices, _ := json.Marshal(cfg.ModelPrices)
 	wires, _ := json.Marshal(cfg.ModelWires)
-	meta := fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s", ids, renamed, prices, wires, statKey(provider.Path()), statKey(catalog.CachePath()), clientAgentsKey())
+	meta := fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s|%s", ids, renamed, prices, wires, statKey(provider.Path()), statKey(catalog.CachePath()), clientAgentsKey(), clearedKey())
 	h := sha256.New()
 	for _, current := range provider.All() {
 		fmt.Fprintf(h, "%q:%q:%v:%t:%t:%t;", current.ID, current.Where(), current.Catalogs(), current.IsPlugin(), current.Account == nil, current.Key != "")
@@ -709,14 +783,31 @@ func hashCodexIdentities(h hash.Hash, ids map[string]sessions.CodexIdentity) {
 func requestRoot() string { return Path() + "|" + catalog.CachePath() }
 
 func QueryPage(p Period, f Filter, offset, limit int) RequestPage {
-	return queryPage(p, f, offset, limit, sessions.ReadCallSource)
+	return queryPageOf(p, f, offset, limit, sessions.ReadCallSource, true)
 }
-func queryPage(p Period, f Filter, offset, limit int, readSource func(sessions.CallSource) []sessions.Call) (page RequestPage) {
+
+// queryPage is QueryPage of the session files as readSource reads them,
+// its chunks its own.
+func queryPage(p Period, f Filter, offset, limit int, readSource func(sessions.CallSource) []sessions.Call) RequestPage {
+	return queryPageOf(p, f, offset, limit, readSource, false)
+}
+
+// queryPageOf is queryPage; share says readSource is the files' own
+// reader, so a chunk another query is making of a file is waited for
+// (sharedBuild).
+func queryPageOf(p Period, f Filter, offset, limit int, readSource func(sessions.CallSource) []sessions.Call, share bool) (page RequestPage) {
 	if limit <= 0 {
 		limit = 100
 	}
 	limit = min(limit, 500)
 	offset = max(0, offset)
+	// this computer's zone is one key however it is named: the warm-up and
+	// the tray ask with none, the Usage page with time.Local, and each
+	// built and kept a page of its own, so the warm-up's warmed nothing the
+	// page read and page-v1.json held both (#2278)
+	if f.Zone == time.Local {
+		f.Zone = nil
+	}
 	// The time is read once, so that the rows, the chart and the day the page
 	// is kept for are of one day when midnight falls while it is worked out,
 	// and read in the reader's zone, whose days and hours the page shows.
@@ -763,16 +854,23 @@ func queryPage(p Period, f Filter, offset, limit int, readSource func(sessions.C
 		close(fl.done)
 	}()
 	// a rolling window's start moves with now, so its cells are never the
-	// same twice; the heatmap is added up on its own
+	// same twice; the heatmap's sums are kept apart (heatParts)
 	var cache *partCache
 	pk := partKey{p: p, f: f, since: p.Since(now), until: p.Until(now), loc: now.Location()}
-	if p.Last() == 0 && p != heatmapPeriod {
-		cache = &partCache{old: idx.parts[pk], next: map[uint64]*chunkPart{}, pairs: idx.pairs[p]}
+	if p == heatmapPeriod {
+		cache = &partCache{old: idx.heatParts[pk], next: map[uint64]*chunkPart{}, pairs: idx.pairs[All], heatOld: idx.heatOld[pk], disk: heatDiskRef{root: idx.root, meta: idx.meta}}
+	} else if p.Last() == 0 {
+		cache = &partCache{old: idx.parts[pk], next: map[uint64]*chunkPart{}, pairs: idx.pairs[p], pageOld: idx.pageOld[pk], disk: heatDiskRef{root: idx.root, meta: idx.meta}}
 	}
 	shared := idx
 	idx = shared.private()
 	shared.Unlock()
-	b := readRequestBlocks(idx, st, p, now, readSource)
+	var settled time.Time
+	if cache != nil {
+		settled = settledBefore(now)
+	}
+	b := readRequestBlocks(idx, st, p, now, settled, readSource, share)
+	defer b.priced.release() // on a panic too: a shared block is held until let go
 	var names map[string]string
 	if someShared {
 		names = sharedNames()
@@ -780,7 +878,20 @@ func queryPage(p Period, f Filter, offset, limit int, readSource func(sessions.C
 	if building != nil {
 		building()
 	}
-	page = buildRequestBlocksIn(p, f, offset, limit, now, b.gateways, b.chunks, b.others, names, codexIdentities, cache)
+	func() {
+		defer holdBigBuild(b.gateways, b.chunks, b.others)() // on a panic too
+		memo := p
+		if p == heatmapPeriod {
+			memo = All
+		}
+		if cache != nil {
+			cache.pairs = shared.lastPairs(idx, memo)
+		}
+		page = buildRequestBlocksIn(p, f, offset, limit, now, b.gateways, b.chunks, b.others, names, codexIdentities, cache)
+		if cache != nil && (p != heatmapPeriod || cache.pairsNext != nil) {
+			shared.keepPairsFor(idx, memo, cache.pairsNext)
+		}
+	}()
 	ownStrings(reflect.ValueOf(&page).Elem())
 	b.priced.release()
 	shared.Lock()
@@ -789,12 +900,26 @@ func queryPage(p Period, f Filter, offset, limit int, readSource func(sessions.C
 		return page
 	}
 	shared.noteBuilt(b)
-	if cache != nil {
+	if p == heatmapPeriod {
+		if shared.heatParts == nil || len(shared.heatParts) >= partSets && shared.heatParts[pk] == nil {
+			shared.heatParts = map[partKey]map[uint64]*chunkPart{}
+		}
+		shared.heatParts[pk] = cache.next
+		if shared.heatOld == nil || len(shared.heatOld) >= partSets && shared.heatOld[pk] == nil {
+			shared.heatOld = map[partKey]*heatOld{}
+		}
+		shared.heatOld[pk] = cache.heatOldNext
+	} else if cache != nil {
 		if shared.parts == nil || len(shared.parts) >= partSets && shared.parts[pk] == nil {
 			shared.parts = map[partKey]map[uint64]*chunkPart{}
 		}
 		shared.parts[pk] = cache.next
-		shared.keepPairs(p, cache.pairsNext)
+		if shared.pageOld == nil || len(shared.pageOld) >= partSets && shared.pageOld[pk] == nil {
+			shared.pageOld = map[partKey]*pageOld{}
+		}
+		if cache.pageOldNext != nil {
+			shared.pageOld[pk] = cache.pageOldNext
+		}
 	}
 	if len(shared.pages) >= 16 {
 		shared.pages = map[pageKey]RequestPage{}
@@ -819,24 +944,64 @@ func codexEffortOfIndex(st requestState, p Period, now time.Time) map[string][]s
 	shared.Lock()
 	shared.keepWhileAsked()
 	shared.adopt(st)
-	// the page of p just before, the warm-up's of All, paired these rows:
-	// a build after it paired every session file's calls again (#3493)
-	memo := shared.pairs[p]
 	idx := shared.private()
 	shared.Unlock()
-	b := readRequestBlocks(idx, st, p, now, sessions.ReadCallSource)
+	b := readRequestBlocks(idx, st, p, now, settledBefore(now), sessions.ReadCallSource, true)
+	defer b.priced.release()
 	sums := effortSums{}
-	ps, next := pairRowsMemo(p, now, b.gateways, b.chunks, b.others, st.codexIdentities, memo)
-	ps.visitActors(func(r *Row) { sums.add(r) })
+	var next *pairMemo
+	paired := false
+	func() {
+		defer holdBigBuild(b.gateways, b.chunks, b.others)()
+		// the page of p just before, the warm-up's of All, paired these
+		// rows: a build after it paired every session file's calls again
+		// (#3493)
+		memo := shared.lastPairs(idx, p)
+		full := func() *pairedRows {
+			var ps *pairedRows
+			ps, next = pairRowsMemo(p, now, b.gateways, b.chunks, b.others, st.codexIdentities, memo)
+			paired = true
+			return ps
+		}
+		if !effortSplit(sums, p, now, b.gateways, b.chunks, b.others, st.codexIdentities, heatDiskRef{root: st.root, meta: st.meta}, full) {
+			full().visitActors(func(r *Row) { sums.add(r) })
+		}
+		if paired {
+			shared.keepPairsFor(idx, p, next)
+		}
+	}()
 	b.priced.release()
 	shared.Lock()
 	if shared.keep(idx, b.on) {
 		shared.noteBuilt(b)
-		shared.keepPairs(p, next)
 		shared.trim(requestCacheBytes)
 	}
 	shared.Unlock()
 	return sums.values()
+}
+
+// bigBuilds is held while a page pairs and adds up bigBuildRows rows or
+// more. On a cold start the Usage page's heatmap and requests each paired
+// a year of calls side by side, ~350 MB held at once and most of the
+// footprint's peak (#2278). A smaller page, Today's, goes beside them.
+var bigBuilds sync.Mutex
+
+var bigBuildRows = 1 << 17
+
+// holdBigBuild holds bigBuilds when the chunks have bigBuildRows rows or
+// more, and is what lets it go.
+func holdBigBuild(sets ...[]*rowChunk) (let func()) {
+	n := 0
+	for _, set := range sets {
+		for _, c := range set {
+			n += rowsIn(c)
+		}
+	}
+	if n < bigBuildRows {
+		return func() {}
+	}
+	bigBuilds.Lock()
+	return bigBuilds.Unlock
 }
 
 // requestBlocks are what a page of a period is worked out from: the
@@ -853,8 +1018,12 @@ type requestBlocks struct {
 
 // readRequestBlocks reads the blocks of p at now into idx, a private copy
 // of the request index (private): a session file or another computer's
-// day is read again only when it changed since its chunk was made.
-func readRequestBlocks(idx *requestIndex, st requestState, p Period, now time.Time, readSource func(sessions.CallSource) []sessions.Call) requestBlocks {
+// day is read again only when it changed since its chunk was made. share
+// says readSource is sessions.ReadCallSource: a file another query is
+// making a chunk of now is waited for, not read beside it (sharedBuild).
+// The gateway's blocks before settled are left to be priced when a pairing
+// reads them (priceStubs).
+func readRequestBlocks(idx *requestIndex, st requestState, p Period, now, settled time.Time, readSource func(sessions.CallSource) []sessions.Call, share bool) requestBlocks {
 	sources, cfg, snapshot, days := st.sources, st.cfg, st.snapshot, st.days
 	price := Pricer()
 	// Swapped's names are a few hundred pairs over thousands of files' calls,
@@ -899,8 +1068,15 @@ func readRequestBlocks(idx *requestIndex, st requestState, p Period, now time.Ti
 	var gateways []*rowChunk
 	renames := provider.UsageRenames()
 	priced := newBlockPricer(renames, cfg.ModelWires, price)
+	meta := sha256.Sum256([]byte(st.root + "|" + st.meta))
+	priced.share(meta)
 	for _, packed := range snapshot.blocks {
 		if !gatewaySince.IsZero() && packed.Latest.Before(gatewaySince) {
+			continue
+		}
+		if len(packed.Archive) != 0 && packed.serial != 0 && packed.Latest.Before(settled) {
+			// named as its priced copy is (heatSettledKey)
+			gateways = append(gateways, &rowChunk{Source: packed.Source, Count: packed.Count, Latest: packed.Latest, Computer: packed.Computer, serial: packed.serial, raw: packed, lazy: priced})
 			continue
 		}
 		if c := priced.block(packed); c != nil {
@@ -910,8 +1086,10 @@ func readRequestBlocks(idx *requestIndex, st requestState, p Period, now time.Ti
 	if c := probeChunk(snapshot.probes, gatewaySince, renames, snapshot.hosts); c != nil {
 		gateways = append(gateways, c) // listed, never counted (SourceProbe)
 	}
-	on := map[string]bool{}
-	var chunks []*rowChunk
+	// made to size: a map of every session file grown a path at a time was
+	// ~96 MB of a minute and a third of polls, and the list beside it (#2278)
+	on := make(map[string]bool, len(sources))
+	chunks := make([]*rowChunk, 0, len(sources))
 	// made once a session file is to be read again, shared by the readers:
 	// it is only read after
 	resolver := sync.OnceValue(func() *sessionResolver { return newSessionResolver([]sessions.Call{{}}) })
@@ -938,7 +1116,7 @@ func readRequestBlocks(idx *requestIndex, st requestState, p Period, now time.Ti
 	// another, they were most of a cold build's wait (#3493).
 	makeChunk := func() func(sessions.CallSource) *rowChunk {
 		priceRow := pricers()
-		return func(s sessions.CallSource) *rowChunk {
+		build := func(s sessions.CallSource) *rowChunk {
 			cs := readSource(s)
 			c := &rowChunk{Source: s, Rows: make([]packedRow, 0, len(cs))}
 			for _, call := range cs {
@@ -954,6 +1132,12 @@ func readRequestBlocks(idx *requestIndex, st requestState, p Period, now time.Ti
 			c.dict, c.shapeIDs = nil, nil // local chunks are immutable until the source changes
 			return c.pack()
 		}
+		if !share {
+			return build
+		}
+		return func(s sessions.CallSource) *rowChunk {
+			return sharedBuild(chunkBuildKey{meta, s.Path, s.Size, s.Modified.UnixNano()}, func() *rowChunk { return build(s) })
+		}
 	}
 	read := prefetchEach(sources, stale, makeChunk)
 	for i, s := range sources {
@@ -967,17 +1151,18 @@ func readRequestBlocks(idx *requestIndex, st requestState, p Period, now time.Ti
 		put := false
 		if reused := c != nil && c.Source.Size == s.Size && c.Source.Modified.Equal(s.Modified); !reused {
 			c = read(i)
-			c.serial = nextChunkSerial()
+			c.serial = sourceSerial(st.root, st.meta, s)
 			built++
 			builtRows += c.Count
+			c.used = useAt(idx.tick)
 			put = spill.put(c, i)
+		} else {
+			c = idx.use(c)
 		}
-		kept, next := *c, *c
-		kept.Used, next.Used = idx.tick, idx.tick
-		idx.chunks[s.Path] = &kept
-		chunks = append(chunks, &next)
+		idx.chunks[s.Path] = c
+		chunks = append(chunks, c)
 		if put {
-			spill.hand(&kept, &next)
+			spill.hand(c)
 		}
 	}
 	spill.done(func(i int) *rowChunk { return makeChunk()(sources[i]) })
@@ -1007,11 +1192,12 @@ func readRequestBlocks(idx *requestIndex, st requestState, p Period, now time.Ti
 			c.dict, c.shapeIDs = nil, nil
 			c = c.pack()
 			c.serial = nextChunkSerial()
+			c.used = useAt(idx.tick)
+		} else {
+			c = idx.use(c)
 		}
-		kept, next := *c, *c
-		kept.Used, next.Used = idx.tick, idx.tick
-		idx.chunks[s.path] = &kept
-		others = append(others, &next)
+		idx.chunks[s.path] = c
+		others = append(others, c)
 	}
 	for path := range idx.chunks {
 		if !on[path] {
@@ -1024,6 +1210,48 @@ func readRequestBlocks(idx *requestIndex, st requestState, p Period, now time.Ti
 // adopt drops what idx keeps of a state other than st: every chunk when
 // what prices or names a call changed (meta), the pages when anything
 // did (key). idx is locked.
+// sourceSerial names a session file's chunk by what it is made of: the
+// file's path, size and mtime under the index's root and meta, as a read reuses
+// a chunk it keeps and joins another query's build of it (sharedBuild).
+// A serial of each read's own made a cold start's builds, which read the
+// files side by side, name every chunk apart: none found the pairing the
+// one before it made (pairMemo), and the whole history was paired once
+// for each, the footprint's peak (#2278). Its top bit keeps it apart from
+// a counted one.
+func sourceSerial(root, meta string, s sessions.CallSource) uint64 {
+	h := sha256.New()
+	fmt.Fprintf(h, "%s\x00%s\x00%s\x00%d\x00%d", root, meta, s.Path, s.Size, s.Modified.UnixNano())
+	return binary.BigEndian.Uint64(h.Sum(nil)) | 1<<63
+}
+
+// lastPairs is p's last pairing for read, idx's private copy, taken once
+// the build of read has its turn (holdBigBuild). Taken when it began, a
+// cold start's page of the month, heatmap, page of All and Codex's effort
+// each found none, as they began together and paired in turn: the whole
+// history was paired three times, each beside what the last kept, the
+// footprint's peak (#2278). idx is not locked.
+func (idx *requestIndex) lastPairs(read *requestIndex, p Period) *pairMemo {
+	idx.Lock()
+	defer idx.Unlock()
+	if idx.root != read.root || idx.meta != read.meta {
+		return nil
+	}
+	return idx.pairs[p]
+}
+
+// keepPairsFor keeps memo as p's last pairing for read, idx's private
+// copy, while the build of read still has its turn (holdBigBuild): kept
+// once it let go, as the page was, the build that had waited for it took
+// its turn first and found none (#2278). The memo is kept though read
+// isn't, as it stands only for chunks of its serials. idx is not locked.
+func (idx *requestIndex) keepPairsFor(read *requestIndex, p Period, memo *pairMemo) {
+	idx.Lock()
+	defer idx.Unlock()
+	if idx.root == read.root && idx.meta == read.meta {
+		idx.keepPairs(p, memo)
+	}
+}
+
 // keepPairs keeps memo as p's last pairing (nil: there is none to keep).
 func (idx *requestIndex) keepPairs(p Period, memo *pairMemo) {
 	if idx.pairs == nil || len(idx.pairs) >= partSets && idx.pairs[p] == nil {
@@ -1043,6 +1271,9 @@ func (idx *requestIndex) adopt(st requestState) {
 		idx.pages = nil
 		idx.heats = nil
 		idx.parts = nil
+		idx.heatParts = nil
+		idx.heatOld = nil
+		idx.pageOld = nil
 		idx.pairs = nil
 		idx.key = ""
 	}
@@ -1050,6 +1281,41 @@ func (idx *requestIndex) adopt(st requestState) {
 		idx.pages = map[pageKey]RequestPage{}
 		idx.key = st.key
 	}
+}
+
+// use is c, a chunk of idx's, as used by this read. Both the map and the
+// page take the one chunk: a copy for each was 13.5 MB of the live heap
+// after 34k sessions' start (#2278). The read is marked on c's own counter,
+// never by a copy: a copy of every published chunk on every read was
+// 255 MB of 5.4 GB allocated in 80s of polls while a session was written
+// (#2278).
+func (idx *requestIndex) use(c *rowChunk) *rowChunk {
+	if c.used == nil {
+		next := *c
+		next.used = useAt(idx.tick)
+		return &next
+	}
+	for {
+		was := c.used.Load()
+		if was >= idx.tick || c.used.CompareAndSwap(was, idx.tick) {
+			return c
+		}
+	}
+}
+
+// useAt is a chunk's use counter, made by a read of tick.
+func useAt(tick uint64) *atomic.Uint64 {
+	u := new(atomic.Uint64)
+	u.Store(tick)
+	return u
+}
+
+// lastUse is the tick of the latest read that used c, 0 for none.
+func (c *rowChunk) lastUse() uint64 {
+	if c.used == nil {
+		return 0
+	}
+	return c.used.Load()
 }
 
 // private is a copy of idx's metadata and chunk map to read into without
@@ -1072,7 +1338,7 @@ func (idx *requestIndex) keep(read *requestIndex, on map[string]bool) bool {
 	}
 	for path, c := range read.chunks {
 		prev := idx.chunks[path]
-		if prev != nil && prev.Used > c.Used {
+		if prev != nil && prev.lastUse() > c.lastUse() {
 			continue
 		}
 		if prev != nil && prev.serial == c.serial && prev.pagesRank() > c.pagesRank() {
@@ -1182,17 +1448,14 @@ func (idx *requestIndex) trim(bound int64) {
 		path string
 		row  *rowChunk
 	}
-	var kept []cachedChunk
+	kept := make([]cachedChunk, 0, len(idx.chunks))
 	for path, c := range idx.chunks {
 		bytes += c.Bytes
 		kept = append(kept, cachedChunk{path: path, row: c})
 	}
 	slices.SortFunc(kept, func(a, b cachedChunk) int {
-		if a.row.Used < b.row.Used {
-			return -1
-		}
-		if a.row.Used > b.row.Used {
-			return 1
+		if a, b := a.row.lastUse(), b.row.lastUse(); a != b {
+			return cmp.Compare(a, b)
 		}
 		return strings.Compare(a.path, b.path)
 	})
@@ -1207,35 +1470,174 @@ func (idx *requestIndex) trim(bound int64) {
 
 // localRefs visits first occurrences of Claude message IDs. It stores only
 // references for matches, never a full hydrated row for every call.
-func visibleLocal(chunks []*rowChunk) map[rowRef]bool {
-	duplicates := map[rowRef]bool{}
+func visibleLocal(chunks []*rowChunk) refSet {
+	duplicates := refSet{}
 	// a message id seen is kept as two 64-bit hashes of it, not a copy of
 	// the decoded chunk's string: a long history's ~400k ids held ~7MB of
 	// copies at the start's peak, and a key of these is a string header's
 	// size. Two ids alike in both are ~1e-28 likely.
-	seen := map[[2]uint64]struct{}{}
+	// made to size, as many as the rows that can have an id (a Codex call
+	// has none): grown an id at a time, it was ~250 MB of a minute and a
+	// third of polls (#2278)
+	keys := msgKeysOf(chunks)
+	n := 0
+	for _, k := range keys {
+		// a settled chunk's are read below: the set grows for them
+		if k != nil {
+			n += len(k.keys)
+		}
+	}
+	seen := keptSeen.Swap(nil)
+	if seen == nil {
+		m := make(map[[2]uint64]struct{}, n)
+		seen = &m
+	}
+	defer keepSeen(seen)
 	rows := lentRows()
 	defer rows.release()
-	for _, c := range chunks {
-		open := rows.of(c)
-		for i := range open.Rows {
-			p := &open.Rows[i]
-			msg := open.Strings[open.text(p, rowMsg)]
-			if msg == "" {
-				continue
-			}
-			k := [2]uint64{maphash.String(msgSeeds[0], msg), maphash.String(msgSeeds[1], msg)}
-			if _, ok := seen[k]; ok {
-				duplicates[rowRef{c, i}] = true
+	var read chunkMsgKeys
+	for i, c := range chunks {
+		k := keys[i]
+		if k == nil {
+			read.keys = appendMsgKeys(read.keys[:0], rows.of(c))
+			k = &read
+		}
+		for _, k := range k.keys {
+			if _, ok := (*seen)[k.k]; ok {
+				duplicates.add(rowRef{c, int(k.at)})
 			} else {
-				seen[k] = struct{}{}
+				(*seen)[k.k] = struct{}{}
 			}
 		}
 	}
 	return duplicates
 }
 
+// keptSeen is visibleLocal's set of ids seen, kept empty for the next
+// call as matchScratch is: made to size for every pairing it was ~210 MB
+// of the ~2 GB 90 s of polls allocated (#2278). A cleared map keeps its
+// buckets.
+var keptSeen atomic.Pointer[map[[2]uint64]struct{}]
+
+func keepSeen(seen *map[[2]uint64]struct{}) {
+	clear(*seen)
+	keptSeen.Store(seen)
+	lingerScratch()
+}
+
+// msgKeys are a chunk's message ids as visibleLocal hashes them, each
+// with its row, kept by the chunk's serial as matchHints are: a pairing
+// decoded every session file of the period to read them, ~840 MB of the
+// 1.1 GB visibleLocal allocated in 90s while an agent worked (#2278).
+var msgKeys struct {
+	sync.Mutex
+	by   map[uint64]*chunkMsgKeys
+	turn uint64
+}
+
+type chunkMsgKeys struct {
+	keys []msgKey
+	turn uint64
+}
+
+type msgKey struct {
+	k  [2]uint64
+	at int32
+}
+
+// msgKeysOpening, in tests, is told each chunk msgKeysOf decodes.
+var msgKeysOpening func(*rowChunk)
+
+// msgKeysOf are chunks' message keys, read from a chunk only when none
+// are kept for its serial. A chunk settled before the days a split page
+// pairs again (settledBefore) is left nil, for the caller to read on its
+// own: it is paired only when what was counted of it is missed, and a
+// cold start's pairing of the whole history kept all of them, ~67 MB of
+// its ~460 MB live heap, beside the period's that polls read (#2278).
+func msgKeysOf(chunks []*rowChunk) []*chunkMsgKeys {
+	settled := settledBefore(time.Now())
+	msgKeys.Lock()
+	msgKeys.turn++
+	turn := msgKeys.turn
+	out := make([]*chunkMsgKeys, len(chunks))
+	for i, c := range chunks {
+		if k := msgKeys.by[c.serial]; c.serial != 0 && k != nil {
+			k.turn = turn
+			out[i] = k
+		}
+	}
+	msgKeys.Unlock()
+	rows := lentRows()
+	defer rows.release()
+	made := map[uint64]*chunkMsgKeys{}
+	for i, c := range chunks {
+		if out[i] != nil || !c.Latest.IsZero() && c.Latest.Before(settled) {
+			continue
+		}
+		k := &chunkMsgKeys{turn: turn, keys: slices.Clip(appendMsgKeys(nil, rows.of(c)))}
+		out[i] = k
+		if c.serial != 0 {
+			made[c.serial] = k
+		}
+	}
+	msgKeys.Lock()
+	if msgKeys.by == nil {
+		msgKeys.by = map[uint64]*chunkMsgKeys{}
+	}
+	for serial, k := range made {
+		msgKeys.by[serial] = k
+	}
+	for serial, k := range msgKeys.by {
+		if k.turn+hintsKept < msgKeys.turn {
+			delete(msgKeys.by, serial)
+		}
+	}
+	msgKeys.Unlock()
+	return out
+}
+
+// appendMsgKeys appends the keys of open's rows that have a message id.
+func appendMsgKeys(keys []msgKey, open *rowChunk) []msgKey {
+	if msgKeysOpening != nil {
+		msgKeysOpening(open)
+	}
+	for j := range open.Rows {
+		p := &open.Rows[j]
+		msg := open.Strings[open.text(p, rowMsg)]
+		if msg == "" {
+			continue
+		}
+		keys = append(keys, msgKey{[2]uint64{maphash.String(msgSeeds[0], msg), maphash.String(msgSeeds[1], msg)}, int32(j)})
+	}
+	return keys
+}
+
 var msgSeeds = [2]maphash.Seed{maphash.MakeSeed(), maphash.MakeSeed()}
+
+// idCalls are the gateway's calls of one request id, in the gateway's
+// order: first, then more, which most ids have none of. last is the place
+// after the last local call found that names the id, 0 for none.
+type idCalls struct {
+	first rowRef
+	more  []rowRef
+	last  int32
+}
+
+func (c *idCalls) len() int { return 1 + len(c.more) }
+
+func (c *idCalls) at(j int) rowRef {
+	if j == 0 {
+		return c.first
+	}
+	return c.more[j-1]
+}
+
+// idLocal is a local call that names a request id, and the place after
+// the call found before it that names the id, 0 for none
+type idLocal struct {
+	before int32
+	timedRef
+}
 
 // matchKey narrows candidates before comparing their end times. Request IDs
 // are consumed first; fallback matching still requires uniqueness both ways.
@@ -1249,6 +1651,33 @@ type matchKey struct {
 	failed, hasID bool
 }
 
+// sum is k as two hashes of it, ~1e-28 likely alike for two keys. The
+// session is followed by bytes of a fixed length, so two keys never read
+// as the same bytes.
+func (k matchKey) sum() [2]uint64 {
+	var tail [26]byte
+	for i, t := range k.tokens {
+		binary.LittleEndian.PutUint64(tail[8*i:], uint64(t))
+	}
+	if k.failed {
+		tail[24] = 1
+	}
+	if k.hasID {
+		tail[25] = 1
+	}
+	var out [2]uint64
+	for i, seed := range matchKeySeeds {
+		var h maphash.Hash
+		h.SetSeed(seed)
+		h.WriteString(k.session)
+		h.Write(tail[:])
+		out[i] = h.Sum64()
+	}
+	return out
+}
+
+var matchKeySeeds = [2]maphash.Seed{maphash.MakeSeed(), maphash.MakeSeed()}
+
 // matchTokens is what a call's tokens are matched by: its input with what it
 // wrote to the cache in it, its output and what it read from the cache. The
 // two logs needn't split a cache write out of the input alike (#589): a
@@ -1261,9 +1690,133 @@ type matchEnd struct {
 	at    time.Time
 	index rowRef
 }
+
+// matchGroup is a key's gateway calls, ends[off:off+n] of one slab, by
+// their end; its range counts are counts[off+k:off+k+n+1] for the k-th
+// group. A key holds a call or two, a slice each was ~1 GB of what 80 s
+// of polls allocated while calls came in, on a year's history (#2278).
 type matchGroup struct {
-	ends   []matchEnd
-	counts []int
+	off, n int32
+}
+
+// matchCandidate is a local call with one gateway call in its range, and
+// that call's place in ends
+type matchCandidate struct {
+	ref rowRef
+	at  int32
+}
+
+// matchScratch is what one matchedBlocks call works in, kept for the
+// next. Every poll while an agent works matches a year's history again,
+// and growing these afresh each time was ~1.9 of the ~2.2 GB the matcher
+// allocated in 80 s of polls (#2278). A sync.Pool kept nothing: a poll
+// collects several times a second, and each collection empties it. One is
+// kept until ReleaseScratch, which the window calls once its reads rest,
+// or until no pairing has used it for scratchLinger.
+type matchScratch struct {
+	reserved   refSet
+	byID       map[string]int32
+	calls      []idCalls
+	ids        map[uint32]struct{}
+	found      []idLocal
+	used       refSet
+	refs       []timedRef
+	groupOf    map[[2]uint64]int32
+	groups     []matchGroup
+	ks         []int32
+	ends       []matchEnd
+	counts     []int32
+	named      map[uint64]struct{}
+	unique     []bool
+	candidates []matchCandidate
+}
+
+var keptMatch atomic.Pointer[matchScratch]
+
+// matchScratchFor is the kept scratch, or a new one when another call has
+// it or none is kept
+func matchScratchFor() *matchScratch {
+	if s := keptMatch.Swap(nil); s != nil {
+		return s
+	}
+	return &matchScratch{}
+}
+
+// mapFor is m, or a new map made for n when there is none yet
+func mapFor[K comparable, V any](m map[K]V, n int) map[K]V {
+	if m == nil {
+		return make(map[K]V, n)
+	}
+	return m
+}
+
+// ReleaseScratch lets go of what the request matching keeps between calls,
+// and the priced blocks no query holds.
+func ReleaseScratch() {
+	keptMatch.Store(nil)
+	keptPicks.Store(nil)
+	keptSeen.Store(nil)
+	releaseRows()
+	releasePriced()
+}
+
+// scratchLinger is how long the matcher's scratch is kept once the last
+// pairing put it back. While an agent works every poll pairs again and
+// finds it kept; with nothing new to pair, a poll is answered from the
+// pairings kept (pairMemo) and pairs nothing, and the scratch of one pairing
+// of the whole history sat unused while the window polled: ~120 MB of the
+// ~270 MB held over 60 s of polls on a 65 GB history (#2278).
+var scratchLinger = 30 * time.Second
+
+var scratchSweep struct {
+	sync.Mutex
+	t *time.Timer
+}
+
+// lingerScratch has the kept scratch let go scratchLinger after the last
+// pairing put it back.
+func lingerScratch() {
+	scratchSweep.Lock()
+	defer scratchSweep.Unlock()
+	if scratchSweep.t == nil {
+		scratchSweep.t = time.AfterFunc(scratchLinger, func() {
+			keptMatch.Store(nil)
+			keptPicks.Store(nil)
+			keptSeen.Store(nil)
+			releaseRows()
+		})
+		return
+	}
+	scratchSweep.t.Reset(scratchLinger)
+}
+
+// sized is s[:n], zeroed, in s's array when it holds n
+func sized[T any](s []T, n int) []T {
+	if cap(s) < n {
+		return make([]T, n)
+	}
+	s = s[:n]
+	clear(s)
+	return s
+}
+
+// release empties s, so it holds no chunk of this call, and keeps it
+func (s *matchScratch) release() {
+	clear(s.reserved)
+	clear(s.byID)
+	clear(s.ids)
+	clear(s.used)
+	clear(s.groupOf)
+	clear(s.named)
+	clear(s.calls)
+	clear(s.found)
+	clear(s.refs)
+	clear(s.ends)
+	clear(s.candidates)
+	s.calls, s.found, s.refs, s.groups, s.ks = s.calls[:0], s.found[:0], s.refs[:0], s.groups[:0], s.ks[:0]
+	s.ends, s.counts, s.unique, s.candidates = s.ends[:0], s.counts[:0], s.unique[:0], s.candidates[:0]
+	keptMatch.Store(s)
+	lingerScratch()
 }
 
 // agyMatchSession stands for the session of an Antigravity CLI (agy) call
@@ -1277,58 +1830,109 @@ const agyMatchSession = "\x00agy"
 // second, where every other session file's time is when its call ended.
 const agyStepLongest = 30 * time.Minute
 
-func matchedLocal(gateway *rowChunk, chunks []*rowChunk, skip map[rowRef]bool, since time.Time) map[rowRef]bool {
+func matchedLocal(gateway *rowChunk, chunks []*rowChunk, skip refSet, since time.Time) refSet {
 	return matchedBlocks([]*rowChunk{gateway}, chunks, skip, nil, since, true)
 }
 
-func matchedBlocks(gateways []*rowChunk, chunks []*rowChunk, skip map[rowRef]bool, responsePairs map[rowRef]rowRef, since time.Time, newestIDs bool) map[rowRef]bool {
-	reserved := make(map[rowRef]bool, len(responsePairs)*2)
-	matched := make(map[rowRef]bool, len(responsePairs))
+func matchedBlocks(gateways []*rowChunk, chunks []*rowChunk, skip refSet, responsePairs map[rowRef]rowRef, since time.Time, newestIDs bool) refSet {
+	scratch := matchScratchFor()
+	defer scratch.release()
+	scratch.reserved = mapFor(scratch.reserved, 0)
+	reserved := scratch.reserved
 	for gateway, local := range responsePairs {
-		reserved[gateway], reserved[local] = true, true
-		matched[local] = true
+		reserved.add(gateway)
+		reserved.add(local)
 	}
 	gatewaySince := since
 	if !since.IsZero() {
 		gatewaySince = since.Add(-24 * time.Hour)
 	}
-	byID := map[string][]rowRef{}
+	// A request id's gateway calls are its place in calls, and the local
+	// calls that name it are found, not a slice an id each: over a year's
+	// calls those slices and the maps' growth were ~1.5 GB of what two
+	// minutes of polls allocated while an agent worked (#2278).
+	matchable := func(gateway *rowChunk, i int) bool {
+		p := &gateway.Rows[i]
+		return !(p.Flags&4 != 0 || gateway.text(p, 1) == 0 && p.Status >= 400) && !p.Time.Before(gatewaySince)
+	}
+	withID := 0
 	for _, gateway := range gateways {
 		for i := range gateway.Rows {
-			ref := rowRef{gateway, i}
-			if reserved[ref] {
-				continue
-			}
-			p := &gateway.Rows[i]
-			if (p.Flags&4 != 0 || gateway.text(p, 1) == 0 && p.Status >= 400) || p.Time.Before(gatewaySince) {
-				continue
-			}
-			if id := gateway.Strings[gateway.text(p, 11)]; id != "" {
-				byID[id] = append(byID[id], rowRef{gateway, i})
+			if gateway.text(&gateway.Rows[i], 11) != 0 && matchable(gateway, i) {
+				withID++
 			}
 		}
 	}
-	byRequest := map[string][]timedRef{}
-	rows := lentRows() // a kept request id is cloned; a key is looked up
+	scratch.byID = mapFor(scratch.byID, withID)
+	byID := scratch.byID
+	calls := slices.Grow(scratch.calls, withID)
+	defer func() { scratch.calls = calls }()
+	for _, gateway := range gateways {
+		for i := range gateway.Rows {
+			ref := rowRef{gateway, i}
+			if reserved.has(ref) || !matchable(gateway, i) {
+				continue
+			}
+			p := &gateway.Rows[i]
+			if id := gateway.Strings[gateway.text(p, 11)]; id != "" {
+				if k, ok := byID[id]; ok {
+					calls[k].more = append(calls[k].more, ref)
+				} else {
+					byID[id] = int32(len(calls))
+					calls = append(calls, idCalls{first: ref})
+				}
+			}
+		}
+	}
+	// the local calls that name an id, chained from its calls[k].last in
+	// the order they were found
+	found := scratch.found
+	defer func() { scratch.found = found }()
+	rows := lentRows() // a key is looked up
 	defer rows.release()
-	for _, c := range chunks {
+	hints := hintsOf(chunks, &rows)
+	scratch.ids = mapFor(scratch.ids, len(byID))
+	ids := scratch.ids
+	for id := range byID {
+		ids[uint32(matchHash(id))] = struct{}{}
+	}
+	for n, c := range chunks {
+		if hints[n].latest.Before(since) || !namesAny(hints[n].ids, ids) {
+			continue
+		}
+		if matchOpening != nil {
+			matchOpening(c)
+		}
 		open := rows.of(c)
 		for i := range open.Rows {
 			p := &open.Rows[i]
 			ref := rowRef{c, i}
-			if skip[ref] || reserved[ref] || p.Time.Before(since) {
+			if skip.has(ref) || reserved.has(ref) || p.Time.Before(since) {
 				continue
 			}
-			if id := open.Strings[open.text(p, 11)]; len(byID[id]) > 0 {
-				if _, ok := byRequest[id]; !ok {
-					id = strings.Clone(id)
-				}
-				byRequest[id] = append(byRequest[id], timedOf(ref, p))
+			if open.text(p, 11) == 0 {
+				continue
+			}
+			if k, ok := byID[open.Strings[open.text(p, 11)]]; ok {
+				found = append(found, idLocal{calls[k].last, timedOf(ref, p)})
+				calls[k].last = int32(len(found))
 			}
 		}
 	}
-	used := map[rowRef]bool{}
-	for id, refs := range byRequest {
+	matched := refSet{}
+	for _, local := range responsePairs {
+		matched.add(local)
+	}
+	scratch.used = mapFor(scratch.used, 0)
+	used := scratch.used
+	refs := scratch.refs
+	defer func() { scratch.refs = refs }()
+	for k := range calls {
+		refs = refs[:0]
+		for j := calls[k].last; j != 0; j = found[j-1].before {
+			refs = append(refs, found[j-1].timedRef)
+		}
+		slices.Reverse(refs)
 		if newestIDs {
 			slices.SortFunc(refs, func(a, b timedRef) int {
 				if a.newer(b) {
@@ -1341,53 +1945,112 @@ func matchedBlocks(gateways []*rowChunk, chunks []*rowChunk, skip map[rowRef]boo
 			})
 		}
 		for j, ref := range refs {
-			if j >= len(byID[id]) {
+			if j >= calls[k].len() {
 				break
 			}
-			matched[ref.rowRef], used[byID[id][j]] = true, true
+			matched.add(ref.rowRef)
+			used.add(calls[k].at(j))
 		}
 	}
-	groups := map[matchKey]*matchGroup{}
+	// keyOf is the key of a gateway call the local calls left without a
+	// request id may match, ok false for one they never do
+	keyOf := func(gateway *rowChunk, i int) (matchKey, bool) {
+		if reserved.has(rowRef{gateway, i}) || used.has(rowRef{gateway, i}) {
+			return matchKey{}, false
+		}
+		p := &gateway.Rows[i]
+		if (p.Flags&4 != 0 || gateway.text(p, 1) == 0 && p.Status >= 400) || p.Time.Before(gatewaySince) {
+			return matchKey{}, false
+		}
+		session := gateway.Strings[gateway.text(p, 14)]
+		if session == "" {
+			session = gateway.Strings[gateway.text(p, 13)]
+		}
+		if session == "" && gateway.Strings[gateway.text(p, 0)] == "agy" {
+			session = agyMatchSession
+		}
+		if session == "" {
+			return matchKey{}, false
+		}
+		return matchKey{session, matchTokens(p.Tokens), p.Status >= 400 || gateway.text(p, 9) != 0, gateway.text(p, 11) != 0}, true
+	}
+	kept := 0
 	for _, gateway := range gateways {
 		for i := range gateway.Rows {
-			ref := rowRef{gateway, i}
-			if reserved[ref] {
-				continue
+			if _, ok := keyOf(gateway, i); ok {
+				kept++
 			}
-			p := &gateway.Rows[i]
-			if used[ref] || (p.Flags&4 != 0 || gateway.text(p, 1) == 0 && p.Status >= 400) || p.Time.Before(gatewaySince) {
-				continue
-			}
-			session := gateway.Strings[gateway.text(p, 14)]
-			if session == "" {
-				session = gateway.Strings[gateway.text(p, 13)]
-			}
-			if session == "" && gateway.Strings[gateway.text(p, 0)] == "agy" {
-				session = agyMatchSession
-			}
-			if session == "" {
-				continue
-			}
-			key := matchKey{session, matchTokens(p.Tokens), p.Status >= 400 || gateway.text(p, 9) != 0, gateway.text(p, 11) != 0}
-			g := groups[key]
-			if g == nil {
-				g = &matchGroup{}
-				groups[key] = g
-			}
-			g.ends = append(g.ends, matchEnd{p.Time.Add(time.Duration(p.Millis) * time.Millisecond), rowRef{gateway, i}})
 		}
 	}
-	for _, g := range groups {
-		slices.SortFunc(g.ends, func(a, b matchEnd) int { return a.at.Compare(b.at) })
-		g.counts = make([]int, len(g.ends)+1)
+	// a key's place in groups, by its sum: keyed by the key, a session
+	// header, three counts and two flags, a whole history's calls held
+	// ~29 MB of the start's peak, kept with the scratch (#2278)
+	scratch.groupOf = mapFor(scratch.groupOf, kept)
+	groupOf := scratch.groupOf
+	// the sessions the groups name
+	scratch.named = mapFor(scratch.named, 0)
+	named := scratch.named
+	groups := scratch.groups
+	defer func() { scratch.groups = groups }()
+	ks := slices.Grow(scratch.ks, kept) // each kept call's group, in the order read
+	for _, gateway := range gateways {
+		for i := range gateway.Rows {
+			key, ok := keyOf(gateway, i)
+			if !ok {
+				continue
+			}
+			sum := key.sum()
+			k, ok := groupOf[sum]
+			if !ok {
+				k = int32(len(groups))
+				groupOf[sum] = k
+				groups = append(groups, matchGroup{})
+				named[matchHash(key.session)] = struct{}{}
+			}
+			groups[k].n++
+			ks = append(ks, k)
+		}
 	}
-	candidates := map[rowRef]rowRef{}
-	for _, chunk := range chunks {
+	off := int32(0)
+	for k := range groups {
+		groups[k].off, off = off, off+groups[k].n
+		groups[k].n = 0
+	}
+	ends := sized(scratch.ends, len(ks))
+	scratch.ends, scratch.ks = ends, ks
+	next := 0
+	for _, gateway := range gateways {
+		for i := range gateway.Rows {
+			if _, ok := keyOf(gateway, i); !ok {
+				continue
+			}
+			g := &groups[ks[next]]
+			next++
+			p := &gateway.Rows[i]
+			ends[g.off+g.n] = matchEnd{p.Time.Add(time.Duration(p.Millis) * time.Millisecond), rowRef{gateway, i}}
+			g.n++
+		}
+	}
+	for k := range groups {
+		g := groups[k]
+		slices.SortFunc(ends[g.off:g.off+g.n], func(a, b matchEnd) int { return a.at.Compare(b.at) })
+	}
+	counts := sized(scratch.counts, len(ends)+len(groups))
+	scratch.counts = counts
+	candidates := scratch.candidates
+	defer func() { scratch.candidates = candidates }()
+	for n, chunk := range chunks {
+		if hints[n].latest.Before(since) || !namesAny(hints[n].sessions, named) {
+			continue
+		}
+		if matchOpening != nil {
+			matchOpening(chunk)
+		}
 		c := rows.of(chunk)
 		for j := range c.Rows {
 			p := &c.Rows[j]
 			ref := rowRef{chunk, j}
-			if skip[ref] || reserved[ref] || matched[ref] || p.Time.Before(since) {
+			if skip.has(ref) || reserved.has(ref) || matched.has(ref) || p.Time.Before(since) {
 				continue
 			}
 			failed := p.Flags&16 != 0
@@ -1399,7 +2062,7 @@ func matchedBlocks(gateways []*rowChunk, chunks []*rowChunk, skip map[rowRef]boo
 			if c.Strings[c.text(p, 0)] == "agy" {
 				key.session, to = agyMatchSession, p.Time.Add(agyStepLongest)
 			}
-			count, candidate := 0, (rowRef{})
+			count, at := 0, int32(0)
 			// Without a local ID either gateway partition can match. With an ID,
 			// only an unnamed gateway call can match (different IDs stay distinct).
 			for _, hasID := range []bool{false, true} {
@@ -1407,39 +2070,43 @@ func matchedBlocks(gateways []*rowChunk, chunks []*rowChunk, skip map[rowRef]boo
 					continue
 				}
 				key.hasID = hasID
-				g := groups[key]
-				if g == nil {
+				k, ok := groupOf[key.sum()]
+				if !ok {
 					continue
 				}
-				lo := sort.Search(len(g.ends), func(i int) bool { return !g.ends[i].at.Before(from) })
-				hi := sort.Search(len(g.ends), func(i int) bool { return g.ends[i].at.After(to) })
+				g := groups[k]
+				in := ends[g.off : g.off+g.n]
+				lo := sort.Search(len(in), func(i int) bool { return !in[i].at.Before(from) })
+				hi := sort.Search(len(in), func(i int) bool { return in[i].at.After(to) })
 				if hi > lo {
 					count += hi - lo
-					candidate = g.ends[lo].index
+					at = g.off + int32(lo)
 					// Range counts preserve ambiguity even for thousands of identical
 					// retries, without enumerating their Cartesian product.
-					g.counts[lo]++
-					g.counts[hi]--
+					counts[g.off+k+int32(lo)]++
+					counts[g.off+k+int32(hi)]--
 				}
 			}
 			if count == 1 {
-				candidates[ref] = candidate
+				candidates = append(candidates, matchCandidate{ref, at})
 			}
 		}
 	}
-	unique := map[rowRef]bool{}
-	for _, g := range groups {
-		count := 0
-		for i, end := range g.ends {
-			count += g.counts[i]
+	unique := sized(scratch.unique, len(ends))
+	scratch.unique = unique
+	for k := range groups {
+		g := groups[k]
+		count := int32(0)
+		for i := int32(0); i < g.n; i++ {
+			count += counts[g.off+int32(k)+i]
 			if count == 1 {
-				unique[end.index] = true
+				unique[g.off+i] = true
 			}
 		}
 	}
-	for ref, i := range candidates {
-		if unique[i] {
-			matched[ref] = true
+	for _, c := range candidates {
+		if unique[c.at] {
+			matched.add(c.ref)
 		}
 	}
 	return matched
@@ -1520,15 +2187,15 @@ func ownStrings(v reflect.Value) {
 }
 
 // pairedRows are the page's rows of p: each gateway call told the Codex
-// thread of the session file's call it is paired with (pairs), and the
-// session files' calls a gateway call matched, or another file's copy,
-// left out (matched, skip). visit hands each row on in all's order. The
-// chunks are copies, so the cached ones are left as they are.
+// thread of the session file's call it is paired with, and the session
+// files' calls a gateway call matched, or another file's copy, left out
+// (matched, skip). visit hands each row on in all's order. The chunks are
+// copies, so the cached ones are left as they are. The pairs themselves
+// are told the chunks and not kept: nothing read them, and a whole
+// history's were held while its rows were visited (#2278).
 type pairedRows struct {
 	all           []*rowChunk
-	skip, matched map[rowRef]bool
-	pairs         map[rowRef]rowRef
-	compactions   map[rowRef]*bool
+	skip, matched refSet
 	since, until  time.Time
 }
 
@@ -1536,6 +2203,12 @@ type pairedRows struct {
 var pairing func()
 
 func pairRows(p Period, now time.Time, gateways, chunks, others []*rowChunk, identities map[string]sessions.CodexIdentity) *pairedRows {
+	return pairRowsIn(p.Since(now), p.Until(now), gateways, chunks, others, identities)
+}
+
+// pairRowsIn is pairRows over the rows from since to until.
+func pairRowsIn(since, until time.Time, gateways, chunks, others []*rowChunk, identities map[string]sessions.CodexIdentity) *pairedRows {
+	priceStubs(gateways)
 	if pairing != nil {
 		pairing()
 	}
@@ -1548,34 +2221,16 @@ func pairRows(p Period, now time.Time, gateways, chunks, others []*rowChunk, ide
 		}
 	}
 	skip := visibleLocal(chunks)
-	for ref := range duplicateSkip {
-		skip[ref] = true
+	for ref := range duplicateSkip.all() {
+		skip.add(ref)
 	}
-	since, until := p.Since(now), p.Until(now)
 	matched := matchedBlocks(gateways, chunks, skip, pairs, since, true)
 	for gateway, local := range pairs {
-		actor := ""
-		if local.Index < len(local.Chunk.codexActors) {
-			actor = local.Chunk.codexActors[local.Index]
-		}
-		setCodexActor(gateway.Chunk, gateway.Index, actor)
+		setCodexActor(gateway.Chunk, gateway.Index, local.Chunk.codexActors.at(local.Index))
 		gateway.Chunk.setCodexCompaction(gateway.Index, compactions[local])
 	}
 	all := append(append(slices.Clone(gateways), chunks...), others...)
-	return &pairedRows{all: all, skip: skip, matched: matched, pairs: pairs, compactions: compactions, since: since, until: until}
-}
-
-// visit calls fn with each row of the period that no other one stands for.
-func (ps *pairedRows) visit(fn func(timedRef, *Row)) {
-	var rows chunkRows
-	defer rows.release()
-	// one row for the visit, written over for each: fn is not known
-	// here, so a row of each would be an allocation of its own, and fn
-	// keeps none of them
-	var r Row
-	for _, c := range ps.all {
-		ps.visitChunk(&rows, c, &r, fn)
-	}
+	return &pairedRows{all: all, skip: skip, matched: matched, since: since, until: until}
 }
 
 // visitActors is visit of the rows of the chunks a Codex thread is known
@@ -1588,7 +2243,7 @@ func (ps *pairedRows) visitActors(fn func(*Row)) {
 	defer rows.release()
 	var r Row
 	for _, c := range ps.all {
-		if slices.ContainsFunc(c.codexActors, func(a string) bool { return a != "" }) {
+		if c.codexActors.some() {
 			if visitingActors != nil {
 				visitingActors(c)
 			}
@@ -1606,7 +2261,7 @@ func (ps *pairedRows) visitChunk(rows *chunkRows, c *rowChunk, r *Row, fn func(t
 	for i := range open.Rows {
 		pr := &open.Rows[i] // not a copy: a row is 216 bytes
 		ref := rowRef{c, i}
-		if pr.Time.Before(ps.since) || after(ps.until, pr.Time) || len(ps.skip) > 0 && ps.skip[ref] || len(ps.matched) > 0 && ps.matched[ref] {
+		if pr.Time.Before(ps.since) || after(ps.until, pr.Time) || ps.skip.has(ref) || ps.matched.has(ref) {
 			continue
 		}
 		*r = open.row(i)
@@ -1622,27 +2277,15 @@ func buildRequestBlocksOf(p Period, f Filter, offset, limit int, now time.Time, 
 // cache's for the chunks it has them for (nil: every chunk's read).
 func buildRequestBlocksIn(p Period, f Filter, offset, limit int, now time.Time, gateways, chunks, others []*rowChunk, names map[string]string, identities map[string]sessions.CodexIdentity, cache *partCache) RequestPage {
 	since := p.Since(now)
-	var ps *pairedRows
-	if cache != nil {
-		ps, cache.pairsNext = pairRowsMemo(p, now, gateways, chunks, others, identities, cache.pairs)
-	} else {
-		ps = pairRows(p, now, gateways, chunks, others, identities)
-	}
-	out := RequestPage{Rows: []Row{}, Agents: []string{}, Providers: []string{}, Purposes: []string{}, By: map[string][]Share{}}
 	chartFilter := f
 	chartFilter.Day = ""
 	// The heatmap's page is only its days, all HeatmapOf reads: over its
 	// year the groups, shares and series below took seconds a call (#3493).
 	if p == heatmapPeriod {
-		out.Heat = heatmapOf(since, now, func(add func(Row)) {
-			ps.visit(func(_ timedRef, r *Row) {
-				if chartFilter.keepsRow(r) {
-					add(*r)
-				}
-			})
-		})
-		return out
+		return RequestPage{Rows: []Row{}, Agents: []string{}, Providers: []string{}, Purposes: []string{}, By: map[string][]Share{},
+			Heat: heatSplit(since, now, gateways, chunks, others, chartFilter, identities, cache)}
 	}
+	out := RequestPage{Rows: []Row{}, Agents: []string{}, Providers: []string{}, Purposes: []string{}, By: map[string][]Share{}}
 	agents, providers := map[string]bool{}, map[string]bool{}
 	kinds := map[string]bool{}
 	callers := map[string]*Group{}
@@ -1660,8 +2303,10 @@ func buildRequestBlocksIn(p Period, f Filter, offset, limit int, now time.Time, 
 	// Bound the requested prefix before adding limit: external offsets can
 	// reach MaxInt, and a page beyond all sources needs no heap at all.
 	maxRows := 0
-	for _, c := range ps.all {
-		maxRows += rowsIn(c)
+	for _, set := range [][]*rowChunk{gateways, chunks, others} {
+		for _, c := range set {
+			maxRows += rowsIn(c)
+		}
 	}
 	take := 0
 	if offset < maxRows {
@@ -1670,7 +2315,21 @@ func buildRequestBlocksIn(p Period, f Filter, offset, limit int, now time.Time, 
 	// a kept cell says which computer its rows are of whether this page
 	// counts computers or not: the next one of its partKey may
 	pass := newCellPass(p, f, now, names != nil || cache != nil)
-	parts := ps.partsOf(pass, cache, identities)
+	var ps *pairedRows
+	var parts, newestParts []*chunkPart
+	split := false
+	if cache != nil {
+		parts, ps, newestParts, split = pageSplit(p, f, now, take, pass, gateways, chunks, others, identities, cache)
+	}
+	if !split {
+		if cache != nil {
+			ps, cache.pairsNext = pairRowsMemo(p, now, gateways, chunks, others, identities, cache.pairs)
+		} else {
+			ps = pairRows(p, now, gateways, chunks, others, identities)
+		}
+		parts = ps.partsOf(pass, cache, identities)
+		newestParts = parts
+	}
 	var first time.Time
 	// Each dimension's groups are counted with its own pick cleared, and
 	// the computers' with the computer's and day's (cellPass): a cell's
@@ -1768,7 +2427,7 @@ func buildRequestBlocksIn(p Period, f Filter, offset, limit int, now time.Time, 
 			}
 		}
 	}
-	selected := ps.newest(f, parts, take)
+	selected, read := ps.newest(f, newestParts, take)
 	slices.SortFunc(selected, func(a, b timedRef) int {
 		if a.newer(b) {
 			return -1
@@ -1782,7 +2441,6 @@ func buildRequestBlocksIn(p Period, f Filter, offset, limit int, now time.Time, 
 	for _, ref := range selected[min(offset, len(selected)):] {
 		page = append(page, ref.rowRef)
 	}
-	read := rowsOf(ps.all, page)
 	for _, ref := range page {
 		out.Rows = append(out.Rows, read[ref])
 	}

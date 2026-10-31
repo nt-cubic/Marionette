@@ -24,7 +24,7 @@ func codexDeskReset(t *testing.T) {
 			<-done
 		}
 		codexDesk.Lock()
-		codexDesk.body, codexDesk.got, codexDesk.tried, codexDesk.asking, codexDesk.done = nil, time.Time{}, time.Time{}, false, nil
+		codexDesk.body, codexDesk.got, codexDesk.tried, codexDesk.asking, codexDesk.done, codexDesk.revoked = nil, time.Time{}, time.Time{}, false, nil, false
 		codexDesk.Unlock()
 	}
 	reset()

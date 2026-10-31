@@ -2,7 +2,8 @@
 // An agent's own settings are where the agent is (the owner, 10-20: Codex's
 // and Claude Code's rows sat in Settings › General, apart from the agents
 // they set). In the window, Codex's opened row holds its eight and Claude
-// Code's its one, Long conversations; Settings has none of them, but its
+// Code's and Grok Build's their one, Long conversations (Grok Build's since
+// uk.jent on Discord: its context_window is where it compacts); Settings has none of them, but its
 // search still finds them, as a row saying where they are whose Open shows
 // the agent's sheet. In the panel a "Settings" line opens the sheet, and so
 // does the agent's menu; shut, the rows are back where they were. Gateway
@@ -45,7 +46,7 @@ function server(lang, { gateway = false, none = false, posts = [] } = {}) {
     const json = (data) => route.fulfill({ json: data });
     if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:${gateway}${gateway ? ",gateway:true" : ""}};` });
     if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
-    if (url.pathname === "/api/state") return json({ agents: none ? [agentRow("pi", "Pi")] : [codex, agentRow("claude", "Claude Code"), agentRow("pi", "Pi")], profiles: [], settings: { lang, theme: "light" }, fx: settings.fx });
+    if (url.pathname === "/api/state") return json({ agents: none ? [agentRow("pi", "Pi")] : [codex, agentRow("claude", "Claude Code"), { ...agentRow("grok", "Grok Build"), icon: "xai" }, agentRow("pi", "Pi")], profiles: [], settings: { lang, theme: "light" }, fx: settings.fx });
     if (url.pathname === "/api/settings/full-context") {
       const body = route.request().postDataJSON();
       posts.push(body);
@@ -106,6 +107,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await noSideScroll(page, `${lang} ${width} Codex`);
         await openAgentSettings(page, "claude");
         assert.deepEqual(await shownIn(page, '.row.agent[data-id="claude"] .ag-prefs'), ["fullContextRow"], `${lang} ${width}: Claude Code's one`);
+        // Grok Build's one, Long conversations, whose line names it
+        await openAgentSettings(page, "grok");
+        const grokBox = '.row.agent[data-id="grok"] .ag-prefs';
+        assert.deepEqual(await shownIn(page, grokBox), ["fullContextRow"], `${lang} ${width}: Grok Build's one`);
+        assert.match(await page.locator(`${grokBox} #fullContextRow .sub`).textContent(), /Grok Build/, `${lang}: the line names Grok Build`);
+        assert(await page.locator(grokBox).evaluate((b) => b.scrollWidth <= b.clientWidth + 1), `${lang} ${width}: Grok Build's row fits`);
+        await noSideScroll(page, `${lang} ${width} Grok Build`);
 
         // none in Settings; its search says where they are
         await page.goto("http://magpie.test/?view=settings");
@@ -151,6 +159,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.getByRole("menuitem", { name: w.sheet.replace("Codex", "Claude Code") }).click();
       await sheet(page).waitFor();
       assert.deepEqual(await shownIn(page, "#modal .editor.agent-prefs"), ["fullContextRow"]);
+      await page.keyboard.press("Escape");
+      await page.locator("#modal").waitFor({ state: "hidden" });
+
+      await page.locator('.row.agent[data-id="grok"] .ag-handle').click();
+      await page.getByRole("menuitem", { name: w.sheet.replace("Codex", "Grok Build") }).click();
+      await sheet(page).waitFor();
+      assert.deepEqual(await shownIn(page, "#modal .editor.agent-prefs"), ["fullContextRow"], `${lang}: Grok Build's sheet`);
+      assert(await page.locator("#modal .dialog").evaluate((d) => d.scrollWidth <= d.clientWidth + 1), `${lang}: Grok Build's sheet fits 360`);
       await page.keyboard.press("Escape");
       await page.locator("#modal").waitFor({ state: "hidden" });
       for (const id of CODEX) assert.equal(await page.locator(`#${id}`).count(), 1, `${lang}: ${id} back`);

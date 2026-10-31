@@ -27,6 +27,7 @@ type resumeHarness struct {
 	logs   string
 	config string
 	extra  string // fields each request has besides its own, each with a comma after it
+	from   string // the requests' address, "" for httptest's (another computer's)
 }
 
 func newResumeHarness(t *testing.T) *resumeHarness {

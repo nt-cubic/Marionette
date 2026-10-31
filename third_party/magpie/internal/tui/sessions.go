@@ -57,6 +57,15 @@ func (m model) sessShown() []sessions.Session {
 	return sessFilter(m.slist, sessRanges[m.srange].days, m.smodel, m.sfolder, time.Now())
 }
 
+// sessNothing is what an empty range says: until the user allows an
+// agent (RustCats on X), magpie reads no agent's sessions, and says how.
+func sessNothing() string {
+	if !sessions.SettleReads().Asked {
+		return "magpie reads no agent's session history until you allow it · magpie sessions read on all (or on <agent>), or the app's Sessions page"
+	}
+	return "nothing in this range · Claude Code's, Codex's, OpenCode's and Pi's sessions on this computer show up here"
+}
+
 func sessFilter(all []sessions.Session, days int, model, folder string, now time.Time) []sessions.Session {
 	var since time.Time
 	if days > 0 {
@@ -230,7 +239,7 @@ func sessListLines(list []sessions.Session, agents []*agent.Agent, rng int, mode
 		if model != "" || folder != "" {
 			add(sMuted.Render("no session matches · x clears the filters"))
 		} else {
-			add(sMuted.Render("nothing in this range · Claude Code's, Codex's, OpenCode's and Pi's sessions on this computer show up here"))
+			add(sMuted.Render(sessNothing()))
 		}
 		return out
 	}
@@ -319,7 +328,7 @@ func sessLines(st sessions.Stats, rng int, model, folder string, byCost bool, wi
 		if model != "" || folder != "" {
 			add(sMuted.Render("no session matches · x clears the filters"))
 		} else {
-			add(sMuted.Render("nothing in this range · Claude Code's, Codex's, OpenCode's and Pi's sessions on this computer show up here"))
+			add(sMuted.Render(sessNothing()))
 		}
 		return out
 	}

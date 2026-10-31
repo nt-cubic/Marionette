@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/filememo"
@@ -77,6 +78,14 @@ type Model struct {
 	// provider after it (magpie_label): the name Provider in model names
 	// Off has here (ARNO on Discord).
 	Plain string `json:",omitempty"`
+	// Apart, in a list magpie hands Codex, is what tells the model from
+	// another entry Codex's picker would call the same (two providers
+	// named Codex each serving GPT-6.1-Sol, nb5p on Discord): its
+	// provider's id. Said in the entry's display_name alone
+	// (codexcat.Entries), which stays in Codex's picker; never in its
+	// description or Name, which go upstream in spawn_agent's list of
+	// models. Kept in the list's tag, so a change has Codex ask again.
+	Apart string `json:",omitempty"`
 	// Fast is set on a model Codex may ask for priority processing (its
 	// Fast mode): one a ChatGPT account serves.
 	Fast bool `json:",omitempty"`
@@ -195,6 +204,11 @@ type Price struct {
 	// output above 272K), lowest first. models.dev lists them as "tiers" of
 	// type "context".
 	Tiers []Tier `json:"tiers,omitempty"`
+	// Peak, when set, says this is an off-peak price, billed at PeakFactor
+	// times it in Peak's hours (Price.In): a DeepSeek model's list price at
+	// a provider that bills by DeepSeek's hours. A price the user set has
+	// none.
+	Peak Peak `json:"peak,omitempty"`
 }
 
 // Tier is a price from a request's input size on: what the whole request
@@ -279,7 +293,7 @@ func OneHourFor(id string, p *Price) {
 
 // Times is the price at r times each of its parts.
 func (p Price) Times(r float64) Price {
-	out := Price{Input: p.Input * r, Output: p.Output * r, CacheRead: p.CacheRead * r, CacheWrite: p.CacheWrite * r, CacheWrite1h: p.CacheWrite1h * r}
+	out := Price{Input: p.Input * r, Output: p.Output * r, CacheRead: p.CacheRead * r, CacheWrite: p.CacheWrite * r, CacheWrite1h: p.CacheWrite1h * r, Peak: p.Peak}
 	for _, t := range p.Tiers {
 		out.Tiers = append(out.Tiers, Tier{Above: t.Above, Input: t.Input * r, Output: t.Output * r, CacheRead: t.CacheRead * r, CacheWrite: t.CacheWrite * r, CacheWrite1h: t.CacheWrite1h * r})
 	}
@@ -289,7 +303,7 @@ func (p Price) Times(r float64) Price {
 // Same is whether two prices are the same in every part and tier.
 func (p Price) Same(q Price) bool {
 	return p.Input == q.Input && p.Output == q.Output && p.CacheRead == q.CacheRead && p.CacheWrite == q.CacheWrite &&
-		p.CacheWrite1h == q.CacheWrite1h && slices.Equal(p.Tiers, q.Tiers)
+		p.CacheWrite1h == q.CacheWrite1h && slices.Equal(p.Tiers, q.Tiers) && p.Peak == q.Peak
 }
 
 // At is the flat price a request whose input, cached and cache-written
@@ -297,10 +311,10 @@ func (p Price) Same(q Price) bool {
 // tier it is over, else the base price. OpenAI counts a request's input
 // with its cached tokens in it, and bills the whole request at the tier.
 func (p Price) At(prompt int) Price {
-	flat := Price{Input: p.Input, Output: p.Output, CacheRead: p.CacheRead, CacheWrite: p.CacheWrite, CacheWrite1h: p.CacheWrite1h}
+	flat := Price{Input: p.Input, Output: p.Output, CacheRead: p.CacheRead, CacheWrite: p.CacheWrite, CacheWrite1h: p.CacheWrite1h, Peak: p.Peak}
 	for _, t := range p.Tiers {
 		if prompt > t.Above {
-			flat = Price{Input: t.Input, Output: t.Output, CacheRead: t.CacheRead, CacheWrite: t.CacheWrite, CacheWrite1h: t.CacheWrite1h}
+			flat = Price{Input: t.Input, Output: t.Output, CacheRead: t.CacheRead, CacheWrite: t.CacheWrite, CacheWrite1h: t.CacheWrite1h, Peak: p.Peak}
 		}
 	}
 	return flat
@@ -517,6 +531,13 @@ var (
 	// under, which no catalog lists by it. One is a model as a listed one
 	// is, so it is never taken for another either (renamed)
 	canonical map[string]bool
+	// normal is the spelling, of the bare ids models.dev knows (listed,
+	// canonical or a lab's), that a model's SameModel name is looked up
+	// by when no spelling matches as given: kimi-k3.1-pro for Volcengine
+	// Ark's kimi-k3-1-pro-261024 (xyenon on Discord). Of several
+	// spellings, the one the most entries give (kimi-k3.1-pro over
+	// Venice's kimi-k3-1-pro); a tie goes to the first in order.
+	normal map[string]string
 
 	syncCh = make(chan struct{}, 1)
 )
@@ -565,6 +586,7 @@ func loadGen() (map[string]mdProvider, int) {
 					sizes, outs := map[string]map[int]int{}, map[string]map[int]int{}
 					levels := map[string]map[string]int{}
 					voted := map[string]bool{}
+					spelt := map[string]int{}
 					listed = map[string]bool{}
 					canonical = map[string]bool{}
 					// vote is what one entry says of a model, counted for
@@ -575,6 +597,7 @@ func loadGen() (map[string]mdProvider, int) {
 					// deepinfra/…, xiaomi/…) votes its levels once, not
 					// once a host.
 					vote := func(who, own, by string, x mdModel) {
+						spelt[who]++
 						if x.Name != "" && x.Name != own && x.Name != who {
 							if named[who] == nil {
 								named[who] = map[string]int{}
@@ -681,6 +704,13 @@ func loadGen() (map[string]mdProvider, int) {
 					for id, by := range levels {
 						efforts[id] = strings.Split(mostListed(by), ",")
 					}
+					normal = map[string]string{}
+					for id, n := range spelt {
+						k := SameModel(id)
+						if was, ok := normal[k]; !ok || n > spelt[was] || n == spelt[was] && id < was {
+							normal[k] = id
+						}
+					}
 					names = map[string]string{}
 					for id, by := range named {
 						names[id] = mostNamed(by)
@@ -715,7 +745,7 @@ func Reset() {
 	loaded = false
 	built = nil
 	gen++
-	mdev, images, windows, outputs, efforts, thinks, names, listed, canonical, labs = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
+	mdev, images, windows, outputs, efforts, thinks, names, listed, canonical, labs, normal = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
 	loadMu.Unlock()
 	if Forget != nil {
 		Forget()
@@ -942,6 +972,113 @@ func canonicallyPriced(all map[string]mdProvider, at int, providers []string, b 
 	return Price{}, false
 }
 
+// madeBy is who a model is, by models.dev's canonical_model_id: the labs
+// that make it, and the providers that list it as their own (ownAPI).
+type madeBy struct{ makers, owners []string }
+
+// makerOwners are, by bare id and by that id with its dots as dashes, the
+// makers of the models models.dev's providers list and those of the
+// providers that are a maker's own API, for the Reset count gen: an entry
+// whose canonical_model_id names the provider listing it, or one it is an
+// API of, as its maker (deepseek's deepseek-flash, deepseek/deepseek-v4.1-flash-1017;
+// meta's muse-spark-1.2; stepfun-ai's step-5-preview), under the entry's
+// id and its canonical's. An entry at $0 counts for neither: a maker's
+// free tier (nvidia's) is not what the model costs.
+var makerOwners struct {
+	sync.Mutex
+	gen int
+	by  map[string]*madeBy
+}
+
+// ownAPI is whether the models.dev provider pid is maker's own API: its
+// id, or its id and a region or edition (stepfun-ai is StepFun's global
+// API, alibaba-cn Alibaba's in China). A plan's catalog ("-plan") is not:
+// it lists what a membership charges, not the model's price.
+func ownAPI(pid, maker string) bool {
+	pid, maker = strings.ToLower(pid), strings.ToLower(maker)
+	return (pid == maker || strings.HasPrefix(pid, maker+"-")) && !strings.Contains(pid, "-plan")
+}
+
+// madeByOf is who the bare id b is made and listed as their own by, nil
+// when no provider lists it as its own.
+func madeByOf(all map[string]mdProvider, at int, b string) *madeBy {
+	makerOwners.Lock()
+	defer makerOwners.Unlock()
+	if makerOwners.by == nil || makerOwners.gen != at {
+		by := map[string]*madeBy{}
+		add := func(k, maker, pid string) {
+			for _, k := range []string{k, dashed(k)} {
+				x := by[k]
+				if x == nil {
+					x = &madeBy{}
+					by[k] = x
+				}
+				if !slices.Contains(x.makers, maker) {
+					x.makers = append(x.makers, maker)
+				}
+				if !slices.Contains(x.owners, pid) {
+					x.owners = append(x.owners, pid)
+				}
+			}
+		}
+		for pid, p := range all {
+			for key, m := range p.Models {
+				maker, _, ok := strings.Cut(m.Canonical, "/")
+				if !ok || !ownAPI(pid, maker) || m.Cost == nil || m.Cost.Same(Price{}) {
+					continue
+				}
+				maker = strings.ToLower(maker)
+				add(bareID(key), maker, pid)
+				add(bareID(m.Canonical), maker, pid)
+			}
+		}
+		for _, x := range by {
+			slices.Sort(x.makers)
+			slices.Sort(x.owners)
+		}
+		makerOwners.gen, makerOwners.by = at, by
+	}
+	if x := makerOwners.by[b]; x != nil {
+		return x
+	}
+	return makerOwners.by[dashed(b)]
+}
+
+// MakerPriced is the list price the model's own maker gives it: priced by
+// PricedBy at one provider alone, the first of prefer that is an API of
+// the model's maker (ownAPI), else the first by id of the providers that
+// list it as their own (madeByOf). A model a lab sells itself is costed at
+// the lab's price rather than a reseller's that a maker catalog asked
+// before it lists: Mistral sells DeepSeek's deepseek-v4.1-flash-1017 at
+// $0.30/$1.20, DeepSeek's own price is $0.15/$0.60 (bestony on Discord: a
+// Command Code call costed at the model's official price), and Meta's
+// muse-spark-1.2 and Sakana's fugu-ultra, which no maker preset lists, are
+// priced too. False when no provider lists it as its own, or none of
+// those prices it.
+func MakerPriced(prefer []string, id string) (Price, bool) {
+	all, at := loadGen()
+	b := bareID(id)
+	if r, ok := unprofiled(b); ok {
+		b = r
+	}
+	x := madeByOf(all, at, b)
+	if x == nil {
+		return Price{}, false
+	}
+	var asked []string
+	for _, pid := range prefer {
+		if slices.ContainsFunc(x.makers, func(mk string) bool { return ownAPI(pid, mk) }) {
+			asked = append(asked, pid)
+		}
+	}
+	for _, pid := range append(asked, x.owners...) {
+		if pr, ok := PricedBy([]string{pid}, id); ok {
+			return pr, true
+		}
+	}
+	return Price{}, false
+}
+
 // dashed is an id with its dots as dashes: the spelling two ids are compared
 // in when one vendor writes a model's version 4.6 and another 4-6.
 func dashed(id string) string { return strings.ReplaceAll(id, ".", "-") }
@@ -1057,6 +1194,16 @@ func NameOf(id string) string {
 	return n
 }
 
+// Spelling is the spelling models.dev gives a model most, of every bare
+// id it knows that is the same model (SameModel): glm-5.3-flash for
+// glm-5-3-flash, GLM-5.3-Flash or Ark's glm-5-3-flash-260828, as most of
+// its providers spell it (the normal index normalFor reads). Lowercase,
+// without a vendor's prefix; "" when it knows the model by no spelling.
+func Spelling(id string) string {
+	load()
+	return normal[SameModel(id)]
+}
+
 // Named gives a model the list names by its id alone the name models.dev
 // knows it by (NameOf), so one model reads the same under every provider:
 // a GLM Coding Plan's glm-5-turbo, which Zhipu's catalog doesn't list, is
@@ -1115,8 +1262,26 @@ func fillNames(ms []Model, fallback []string, reserved ...Model) {
 
 // Knows reports whether models.dev lists a model of this id at all, under
 // any provider, as ContextOf and EffortsOf match it.
+//
+// A model it lists under another spelling alone (normalFor) counts.
 func Knows(id string) bool {
 	return ContextOf(id) > 0 || len(EffortsOf(id)) > 0 || Thinks(id)
+}
+
+// KnowsAsWritten is Knows without another spelling (normalFor): the
+// usage report sends a model's id only when models.dev knows it as
+// written, so an id a user typed that only folds into a known one
+// ("Kimi K3.1 Pro 261024") is not sent.
+func KnowsAsWritten(id string) bool {
+	if contextAs(id, false) > 0 {
+		return true
+	}
+	load()
+	if e, _ := lookupAs(id, efforts, false); len(e) > 0 {
+		return true
+	}
+	v, _ := lookupAs(id, thinks, false)
+	return v
 }
 
 // Lists reports whether models.dev lists a model by this very id (its
@@ -1147,18 +1312,46 @@ func SeesImages(id string) bool {
 // A relay's rename of a model it knows (renamed) that names its window
 // ("[1M]", "[200K]", Claude Code's "[1m]") has the window it names: what
 // the relay serves it at, as Claude Code takes claude-opus-5[1m] for 1M.
-func ContextOf(id string) int {
+//
+// Last, a model it lists under another spelling (normalFor): Volcengine
+// Ark's kimi-k3-1-pro-261024 has kimi-k3.1-pro's window. A window the
+// vendor's own list gives is read before this, by the caller, and stays.
+func ContextOf(id string) int { return contextAs(id, true) }
+
+// contextAs is ContextOf, with another spelling (normalFor), the model
+// the user said it is the same as (UserSame) and a tag in brackets taken
+// off (untagged) only when spellings is true.
+func contextAs(id string, spellings bool) int {
 	load()
-	b := bareID(id)
+	return contextIn(bareID(id), spellings, spellings)
+}
+
+// contextIn is contextAs for a bare id, the user's word (UserSame) heard
+// only with user: the model it names is looked up as any other, but not
+// sent to the user's word again.
+func contextIn(b string, spellings, user bool) int {
 	if w, ok := found(b, windows); ok {
 		return w
+	}
+	if s, ok := userSame(b, user); ok {
+		if w := contextIn(s, true, false); w > 0 {
+			return w
+		}
 	}
 	if r, w, ok := renamed(b); ok {
 		if w > 0 {
 			return w
 		}
-		w, _ = found(r, windows)
+		if w, ok := found(r, windows); ok {
+			return w
+		}
+	}
+	if n, ok := normalFor(b); spellings && ok {
+		w, _ := found(n, windows)
 		return w
+	}
+	if t, ok := untagged(b); spellings && ok {
+		return contextIn(t, true, user)
 	}
 	return 0
 }
@@ -1184,19 +1377,121 @@ func EffortsOf(id string) []string {
 }
 
 // lookup is what table holds for a model of this id: as found finds it,
-// else as the relay's rename of a model found finds (renamed). Every
-// capability is looked up the same way, so a model the catalog knows has
-// all of them or none.
+// else as the relay's rename of a model found finds (renamed), else as
+// the spelling models.dev lists it by (normalFor). Every capability is
+// looked up the same way, so a model the catalog knows has all of them
+// or none.
 func lookup[T any](id string, table map[string]T) (T, bool) {
-	b := bareID(id)
+	return lookupAs(id, table, true)
+}
+
+// lookupAs is lookup, with another spelling (normalFor), the model the
+// user said it is the same as (UserSame) and a tag in brackets taken off
+// (untagged) only when spellings is true.
+func lookupAs[T any](id string, table map[string]T, spellings bool) (T, bool) {
+	return lookupIn(bareID(id), table, spellings, spellings)
+}
+
+// lookupIn is lookupAs for a bare id, the user's word heard only with
+// user, as contextIn.
+func lookupIn[T any](b string, table map[string]T, spellings, user bool) (T, bool) {
 	if v, ok := found(b, table); ok {
 		return v, true
 	}
+	if s, ok := userSame(b, user); ok {
+		if v, ok := lookupIn(s, table, true, false); ok {
+			return v, true
+		}
+	}
 	if r, _, ok := renamed(b); ok {
-		return found(r, table)
+		if v, ok := found(r, table); ok {
+			return v, true
+		}
+	}
+	if n, ok := normalFor(b); spellings && ok {
+		return found(n, table)
+	}
+	if t, ok := untagged(b); spellings && ok {
+		return lookupIn(t, table, true, user)
 	}
 	var zero T
 	return zero, false
+}
+
+// UserSame, when set, is the model the user said a model of this bare id
+// (lowercase, without a vendor's prefix) is the same as, by the id any
+// vendor spells it with (settings' ModelSameAs; the settings package sets
+// it). A model models.dev lists by its very id is that model; one it
+// doesn't is looked up as the model the user named, before any guess of
+// magpie's (renamed, normalFor): a relay's rename no rule can read,
+// "ds.4.1(WB)" for deepseek-v4.1-flash (pinmmis on X), has that model's
+// window, reply limit, levels and images.
+var UserSame func(bare string) (string, bool)
+
+// userSame is UserSame's answer for b, as a bare id, when user is true
+// and it names a model other than b.
+func userSame(b string, user bool) (string, bool) {
+	if !user || UserSame == nil {
+		return "", false
+	}
+	s, ok := UserSame(b)
+	if s = bareID(strings.TrimSpace(s)); !ok || s == "" || s == b {
+		return "", false
+	}
+	return s, true
+}
+
+// tagPairs are the brackets a relay or a user puts a channel's tag in,
+// before or after a model's id: "deepseek-v4.1-flash (WB)", "[WB]
+// deepseek-v4.1-flash", and their full-width forms.
+var tagPairs = [][2]string{{"(", ")"}, {"[", "]"}, {"（", "）"}, {"【", "】"}, {"「", "」"}}
+
+// untagged is b without a tag in brackets at its start or its end, and
+// whether it had one: "deepseek-v4.1-flash (wb)" is deepseek-v4.1-flash.
+// A "[...]" written onto the end of the id with no space before it is not
+// a tag ("deepseek-v4.1-flash[fast]" may be a variant). A window mark ("[1m]", renamed's) is not a tag, nor is what is left
+// with no letter in it.
+func untagged(b string) (string, bool) {
+	t := strings.TrimSpace(b)
+	if r, _ := unmarked(t); r != t {
+		return "", false
+	}
+	for _, p := range tagPairs {
+		if strings.HasSuffix(t, p[1]) {
+			// "[fast]" written onto the id may be a variant's
+			// (TestRenameNeverTakesAModelForAnother): only one set
+			// apart by a space is a tag
+			if i := strings.LastIndex(t, p[0]); i > 0 && (p[0] != "[" || t[i-1] == ' ') {
+				t = strings.TrimSpace(t[:i])
+				break
+			}
+		}
+		if strings.HasPrefix(t, p[0]) {
+			if i := strings.Index(t, p[1]); i > 0 && i+len(p[1]) < len(t) {
+				t = strings.TrimSpace(t[i+len(p[1]):])
+				break
+			}
+		}
+	}
+	t = strings.Trim(t, " -_·.")
+	if t == b || t == "" || !strings.ContainsFunc(t, unicode.IsLetter) {
+		return "", false
+	}
+	return t, true
+}
+
+// normalFor is the bare id models.dev knows a model by when it knows it
+// under another spelling alone: the same SameModel name, so a version's
+// dot or dash ("kimi-k3.1-pro", "kimi-k3-1-pro"), case and gaps, and a
+// snapshot date (Ark's six digits, "-261024"; "-20260801") don't keep
+// them apart, while a variant does (-pro-max is not -pro, -mini not the
+// model, k3.1 not k3). False for an id it knows as given, or none.
+func normalFor(b string) (string, bool) {
+	n, ok := normal[SameModel(b)]
+	if !ok || n == b {
+		return "", false
+	}
+	return n, true
 }
 
 // found is what table holds for a bare id: by the id itself, a Bedrock
@@ -1349,19 +1644,47 @@ func listedBy(providers []string, id string, providerOverrides bool) ([]string, 
 	if r, ok := unprofiled(b); ok {
 		b = r
 	}
+	pick := func(pid string, m mdModel) ([]string, bool) {
+		providerID := ""
+		if providerOverrides {
+			providerID = pid
+		}
+		if e := all[pid].levels(m, providerID); len(e) > 0 || !m.budgeted() {
+			return slices.Clone(e), true
+		}
+		return nil, false
+	}
 	for _, want := range []string{b, cutAt(b, '('), cutAt(b, ':')} {
 		for _, pid := range providers {
 			for key, m := range all[pid].Models {
 				if bareID(key) != want {
 					continue
 				}
-				providerID := ""
-				if providerOverrides {
-					providerID = pid
+				if e, ok := pick(pid, m); ok {
+					return e, true
 				}
-				if e := all[pid].levels(m, providerID); len(e) > 0 || !m.budgeted() {
-					return slices.Clone(e), true
-				}
+			}
+		}
+	}
+	// and last under another spelling (SameModel), only where no provider
+	// lists it as given, and only for a name models.dev knows (normal): Ark
+	// lists glm-5.3 on its plan, glm-5-3-flash-260828 pay-as-you-go. Of a
+	// provider's several such entries, the first in key order.
+	n := SameModel(b)
+	if _, ok := normal[n]; !ok {
+		return nil, false
+	}
+	for _, pid := range providers {
+		var keys []string
+		for key := range all[pid].Models {
+			if SameModel(bareID(key)) == n {
+				keys = append(keys, key)
+			}
+		}
+		slices.Sort(keys)
+		for _, key := range keys {
+			if e, ok := pick(pid, all[pid].Models[key]); ok {
+				return e, true
 			}
 		}
 	}

@@ -157,17 +157,20 @@ func TestSlowTransferIsNotCutShort(t *testing.T) {
 	// stops, so such a pause is all a shorter watchdog would catch (red
 	// on macOS in run 37693090857, near the end of the GET)
 	shortStall(t, time.Second, time.Second)
-	// the PUT's last MBs cross the line twice the watchdog after magpie has
-	// handed them all over
-	s := &slowDAV{chunk: 256 << 10, gap: 40 * time.Millisecond, tail: 2 * stallAfter}
+	// the PUT's last bytes cross the line twice the watchdog after magpie
+	// has handed them all over
+	s := &slowDAV{chunk: 64 << 10, gap: 125 * time.Millisecond, tail: 2 * stallAfter}
 	srv, client := narrowLine(t, s)
 	d, err := newDAV(Config{URL: srv.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
 	d.client = client
-	// ~24 MB at 6.4 MB/s: nearly 4 s each way
-	data := bytes.Repeat([]byte("magpie skill "), (24<<20)/13)
+	// 2 MB at 512 KB/s: about 4 s each way. Not more: the read back fills
+	// fresh buffers half as big as what has come, the watchdog counts that
+	// time too, and beside a full suite on a Linux box a 24 MB backup's GET
+	// went off ("took nothing for 1s (GET)") though the line never stopped.
+	data := bytes.Repeat([]byte("magpie skill "), (2<<20)/13)
 	ctx := context.Background()
 	start := time.Now()
 	if _, err := d.put(ctx, data, ""); err != nil {

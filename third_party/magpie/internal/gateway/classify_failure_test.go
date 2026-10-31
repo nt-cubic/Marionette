@@ -48,3 +48,54 @@ func TestClassifierFailureIsKept(t *testing.T) {
 		t.Fatalf("answered: %q %+v", why, r.Rule)
 	}
 }
+
+// A group says its classifier's failure only when that group's own turn
+// asked it (jjt on Discord): "claude难易", which no request reached, said
+// "the classifier failed 3 minutes ago: claude/claude-haiku-5-5: You've hit
+// your weekly limit", read as its classifier judging every turn, while the
+// failure was another group's that has the same classifier. A request for
+// another model asks no group's classifier at all.
+func TestClassifierFailureIsTheGroupsOwn(t *testing.T) {
+	resetClassified(t)
+	s, _, _, c := intented(t, provider.Rule{Use: "b/big", Intent: "refactoring"})
+	if err := provider.SaveGroup(provider.Group{ID: "idle", Name: "Idle", Members: []string{"a/small", "b/big"}, Routing: provider.Ordered,
+		Classifier: "c/cls", Rules: []provider.Rule{{Use: "b/big", Intent: "refactoring"}}}); err != nil {
+		t.Fatal(err)
+	}
+	c.set("", 400)
+	// a model of the idle group's, asked for itself: no classifier
+	postOK(t, s, "own1", `{"model":"a/small","messages":[{"role":"user","content":"rename this package"}]}`)
+	if n := c.n(); n != 0 {
+		t.Fatalf("a request for a/small asked a classifier %d times", n)
+	}
+	_, r := postOK(t, s, "own2", chat("rename this package", nil, 0, ""))
+	if r.Rule == nil || r.Rule.Classified == nil || r.Rule.Classified.Error == "" {
+		t.Fatalf("group/r's turn: %+v", r.Rule)
+	}
+	if why, _, ok := GroupClassifierFailure("r", "c/cls"); !ok || !strings.Contains(why, "classifier down") {
+		t.Fatalf("group/r, whose turn it failed: %q %v", why, ok)
+	}
+	if why, at, ok := GroupClassifierFailure("idle", "c/cls"); ok {
+		t.Fatalf("idle, which nothing asked: %q at %v", why, at)
+	}
+	// group/r's classifier changed since: what the old one said is not the new one's
+	if _, _, ok := GroupClassifierFailure("r", "c/other"); ok {
+		t.Fatal("a failure said for a classifier the group no longer has")
+	}
+	// resting, it is still why group/r's next turn went unjudged, in the
+	// vendor's words and at the time it failed, not the rest's
+	_, at0, _ := GroupClassifierFailure("r", "c/cls")
+	postOK(t, s, "own3", chat("rename that package", nil, 0, ""))
+	if why, at, ok := GroupClassifierFailure("r", "c/cls"); !ok || !strings.Contains(why, "classifier down") || !at.Equal(at0) {
+		t.Fatalf("resting: %q %v %v", why, at, ok)
+	}
+	// it answers group/r: nothing to say
+	classified.Lock()
+	delete(classified.failed, "c/cls")
+	classified.Unlock()
+	c.set("1", 0)
+	postOK(t, s, "own4", chat("rename everything", nil, 0, ""))
+	if why, _, ok := GroupClassifierFailure("r", "c/cls"); ok {
+		t.Fatalf("answered: %q", why)
+	}
+}

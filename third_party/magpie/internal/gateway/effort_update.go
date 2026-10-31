@@ -232,3 +232,88 @@ func isUserItem(raw json.RawMessage) bool {
 	}
 	return json.Unmarshal(raw, &it) == nil && it.Role == "user" && (it.Type == "" || it.Type == "message")
 }
+
+// Codex sends such updates itself with its reasoning_effort_override
+// feature on (0.162.1): an effort switched mid-thread (/model, then "s")
+// leaves reasoning.effort at the thread's first and goes as a
+// configuration_update after the turn's user message. The last one is the
+// effort the request is asked at; read from the top alone, Routing showed
+// medium for a thread switched to xhigh, and a vendor the items are taken
+// out for (forVendor) or a translation was asked at medium (zzzkl3994 on
+// Discord).
+
+// effortUpdated is the effort the last configuration_update in a Responses
+// request's input asks for: "" with none.
+func effortUpdated(body []byte) string {
+	if !bytes.Contains(body, []byte(`"configuration_update"`)) {
+		return ""
+	}
+	e := ""
+	inputItems(body, func(it []byte) bool {
+		if string(memberOrNil(it, "type")) == `"configuration_update"` {
+			if u := updateEffort(it); u != "" {
+				e = u
+			}
+		}
+		return true
+	})
+	return e
+}
+
+// updateEffort is the effort a configuration_update item asks for.
+func updateEffort(it []byte) string {
+	var u struct {
+		Reasoning *struct {
+			Effort string `json:"effort"`
+		} `json:"reasoning"`
+	}
+	if decodeJSON(it, &u) != nil || u.Reasoning == nil {
+		return ""
+	}
+	return u.Reasoning.Effort
+}
+
+// withEffortUpdated is a Responses request whose last configuration_update
+// asks for effort, the rest as it came: magpie's own pick for the request
+// goes where the agent's last change of effort went, so the upstream
+// that reads the items isn't asked another by them, and the thread's
+// prefix stays as it was. The body as it is when it has none.
+func withEffortUpdated(body []byte, effort string) []byte {
+	if !bytes.Contains(body, []byte(`"configuration_update"`)) {
+		return body
+	}
+	q, err := rawObject(body)
+	if err != nil || q == nil {
+		return body
+	}
+	items, err := rawArray(q["input"])
+	if err != nil {
+		return body
+	}
+	last := -1
+	for i, raw := range items {
+		if string(memberOrNil(raw, "type")) == `"configuration_update"` && updateEffort(raw) != "" {
+			last = i
+		}
+	}
+	if last < 0 {
+		return body
+	}
+	it, err := rawObject(items[last])
+	if err != nil || it == nil {
+		return body
+	}
+	reasoning, err := rawObject(it["reasoning"])
+	if err != nil || reasoning == nil {
+		return body
+	}
+	reasoning["effort"], _ = json.Marshal(effort)
+	it["reasoning"], _ = marshalPlain(reasoning)
+	items[last], _ = marshalPlain(it)
+	q["input"], _ = marshalPlain(items)
+	b, err := marshalPlain(q)
+	if err != nil {
+		return body
+	}
+	return b
+}

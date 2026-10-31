@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"maps"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -135,6 +137,48 @@ const (
 	vertexMissingSig   = "{\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details.\",\n    \"status\": \"INVALID_ARGUMENT\"\n  }\n}\n"
 )
 
+// vertexPartnerStream and vertexPartnerWhole are a partner model's
+// answer on Vertex AI's OpenAI-compatible chat completions, streamed and
+// whole, in the shape Google's docs for its open models show
+// (call-open-model-apis): chat.completion.chunk events, the last with the
+// finish reason and usage, then [DONE].
+const (
+	vertexPartnerStream = `data: {"id":"chatcmpl-v41","object":"chat.completion.chunk","created":1761609600,"model":"deepseek-ai/deepseek-v4.1-flash-maas","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"}}]}
+
+data: {"id":"chatcmpl-v41","object":"chat.completion.chunk","created":1761609600,"model":"deepseek-ai/deepseek-v4.1-flash-maas","choices":[{"index":0,"delta":{"content":" from DeepSeek"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":4,"total_tokens":13}}
+
+data: [DONE]
+
+`
+	vertexPartnerWhole = `{"id":"chatcmpl-v41","object":"chat.completion","created":1761609600,"model":"deepseek-ai/deepseek-v4.1-flash-maas","choices":[{"index":0,"message":{"role":"assistant","content":"Hello from DeepSeek"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":4,"total_tokens":13}}`
+)
+
+// vertexClaudeStream and vertexClaudeWhole are Claude's answer on Vertex
+// AI's streamRawPredict and rawPredict: Anthropic's Messages API events
+// and message, as Anthropic's Vertex SDK reads them.
+const (
+	vertexClaudeStream = `event: message_start
+data: {"type":"message_start","message":{"id":"msg_vrtx_01","type":"message","role":"assistant","model":"claude-sonnet-5-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":11,"output_tokens":1}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello from Claude"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":4}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+	vertexClaudeWhole = `{"id":"msg_vrtx_01","type":"message","role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"text","text":"Hello from Claude"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":11,"output_tokens":4}}`
+)
+
 // vertexLevels are the reasoning levels models.dev gives Gemini's models.
 const vertexLevels = `{"google":{"models":{
 	"gemini-3.8-flash":{"id":"gemini-3.8-flash","reasoning_options":[{"type":"effort","values":["low","medium","high"]}]},
@@ -156,8 +200,8 @@ type vertexUp struct {
 }
 
 type vertexAsked struct {
-	path, query, auth string
-	body              map[string]any
+	path, query, auth, beta string
+	body                    map[string]any
 }
 
 func (v *vertexUp) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -172,10 +216,28 @@ func (v *vertexUp) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(r.URL.Path, "/v1/projects/"):
 		var m map[string]any
 		json.Unmarshal(b, &m)
-		v.asked = append(v.asked, vertexAsked{r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization"), m})
+		v.asked = append(v.asked, vertexAsked{r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization"), r.Header.Get("anthropic-beta"), m})
 		code, out, kind := http.StatusOK, vertexPong, "text/event-stream"
 		if strings.HasSuffix(r.URL.Path, ":generateContent") {
 			out, kind = vertexColours, "application/json; charset=UTF-8"
+		}
+		if strings.HasSuffix(r.URL.Path, "/endpoints/openapi/chat/completions") {
+			// a partner model, on Google's OpenAI-compatible chat completions
+			out = vertexPartnerStream
+			if m["stream"] != true {
+				out, kind = vertexPartnerWhole, "application/json"
+			}
+		}
+		if strings.Contains(r.URL.Path, "/publishers/anthropic/models/") {
+			// Claude, on Anthropic's Messages API
+			switch {
+			case strings.HasSuffix(r.URL.Path, "/count-tokens:rawPredict"):
+				out, kind = `{"input_tokens":21}`, "application/json"
+			case strings.HasSuffix(r.URL.Path, ":streamRawPredict"):
+				out = vertexClaudeStream
+			default:
+				out, kind = vertexClaudeWhole, "application/json"
+			}
 		}
 		if refused := vertexSigRefused(m); refused != "" {
 			code, out = http.StatusBadRequest, refused
@@ -847,5 +909,132 @@ func TestVertexRetriesOnlyForVertex(t *testing.T) {
 		if rec.Code != http.StatusBadRequest || n != 1 {
 			t.Errorf("%s: status %d after %d requests, want the 400 after one: %s", c.name, rec.Code, n, rec.Body.String())
 		}
+	}
+}
+
+// A partner model on Vertex AI (deepseek-ai/deepseek-v4.1-flash-maas) is
+// asked on Google's OpenAI-compatible chat completions at the project,
+// signed with the same minted token, its full id in the body, from a Chat
+// client, Claude Code and Codex, streamed or not, with nothing set beyond
+// the Gemini provider the user already has; a Gemini model beside it is
+// still asked at streamGenerateContent. Its effort goes as the client
+// asked: Gemini's levels (vertexEffort) are not put on it.
+func TestVertexPartnerModel(t *testing.T) {
+	v := &vertexUp{}
+	s := vertexServe(t, v, vertexLevels)
+	const want = "/v1/projects/proj-1/locations/global/endpoints/openapi/chat/completions"
+	const model = "google-vertex/deepseek-ai/deepseek-v4.1-flash-maas"
+	for _, c := range []struct{ name, path, body string }{
+		{"chat", "/v1/chat/completions", `{"model":"` + model + `","messages":[{"role":"user","content":"hi"}]}`},
+		{"anthropic", "/v1/messages", `{"model":"` + model + `","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`},
+		{"responses", "/v1/responses", `{"model":"` + model + `","input":"hi"}`},
+	} {
+		for _, stream := range []string{"false", "true"} {
+			n := v.count()
+			body := strings.TrimSuffix(c.body, "}") + `,"stream":` + stream + `}`
+			out := vertexAsk(t, s, c.path, body)
+			a := v.last(t)
+			if v.count() != n+1 || a.path != want || a.auth != "Bearer ya29.vertex-test" || a.body["model"] != "deepseek-ai/deepseek-v4.1-flash-maas" {
+				t.Errorf("%s stream %s: asked %d times, at %s with %q, model %v", c.name, stream, v.count()-n, a.path, a.auth, a.body["model"])
+			}
+			if _, gemini := a.body["contents"]; gemini {
+				t.Errorf("%s stream %s: sent a Gemini body: %v", c.name, stream, a.body)
+			}
+			if !strings.Contains(out, "Hello") || !strings.Contains(out, "DeepSeek") {
+				t.Errorf("%s stream %s: client given %s", c.name, stream, out)
+			}
+		}
+	}
+	vertexAsk(t, s, "/v1/chat/completions", `{"model":"google-vertex/gemini-3.8-flash","messages":[{"role":"user","content":"hi"}]}`)
+	if a := v.last(t); a.path != "/v1/projects/proj-1/locations/global/publishers/google/models/gemini-3.8-flash:streamGenerateContent" {
+		t.Errorf("Gemini asked at %s", a.path)
+	}
+	// translated from Codex's Responses, where Gemini's levels (low to
+	// high when a model's own aren't known) would be put on it
+	vertexAsk(t, s, "/v1/responses", `{"model":"`+model+`","reasoning":{"effort":"xhigh"},"input":"hi"}`)
+	if a := v.last(t); a.path != want || a.body["reasoning_effort"] != "xhigh" {
+		t.Errorf("effort xhigh sent at %s as %v", a.path, a.body["reasoning_effort"])
+	}
+}
+
+// Claude on Vertex AI (claude-sonnet-5-5, claude-sonnet-4-5@20250929) is
+// asked on Anthropic's Messages API at the project, as Anthropic's Vertex
+// SDK asks it, from every client magpie serves (Chat, Responses,
+// Anthropic's Messages, Gemini), streamed or not, with nothing set beyond
+// the project: at publishers/anthropic/models/<model>:streamRawPredict
+// when it streams and :rawPredict when it doesn't, signed with the same
+// minted token, the model out of the body, anthropic_version
+// vertex-2023-10-16 in it, and no Gemini body or Gemini level.
+func TestVertexClaudeModel(t *testing.T) {
+	v := &vertexUp{}
+	s := vertexServe(t, v, vertexLevels)
+	const at = "/v1/projects/proj-1/locations/global/publishers/anthropic/models/"
+	for _, upstream := range []string{"claude-sonnet-5-5", "claude-sonnet-4-5@20250929"} {
+		model := "google-vertex/" + upstream
+		for _, c := range []struct{ name, path, body string }{
+			{"chat", "/v1/chat/completions", `{"model":"` + model + `","messages":[{"role":"user","content":"hi"}]}`},
+			{"anthropic", "/v1/messages", `{"model":"` + model + `","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`},
+			{"responses", "/v1/responses", `{"model":"` + model + `","input":"hi"}`},
+		} {
+			for _, stream := range []bool{false, true} {
+				n := v.count()
+				body := strings.TrimSuffix(c.body, "}") + `,"stream":` + strconv.FormatBool(stream) + `}`
+				out := vertexAsk(t, s, c.path, body)
+				a := v.last(t)
+				// a translated request is always asked streamed, as
+				// at any vendor; the Messages API's own as it came
+				want := at + upstream + ":rawPredict"
+				if stream || c.name != "anthropic" {
+					want = at + upstream + ":streamRawPredict"
+				}
+				if v.count() != n+1 || a.path != want || a.query != "" || a.auth != "Bearer ya29.vertex-test" {
+					t.Errorf("%s %s stream %v: asked %d times, at %s?%s with %q", upstream, c.name, stream, v.count()-n, a.path, a.query, a.auth)
+				}
+				if _, has := a.body["model"]; has || a.body["anthropic_version"] != "vertex-2023-10-16" || a.body["messages"] == nil {
+					t.Errorf("%s %s stream %v: body %v", upstream, c.name, stream, a.body)
+				}
+				if !strings.Contains(out, "Hello from Claude") {
+					t.Errorf("%s %s stream %v: client given %s", upstream, c.name, stream, out)
+				}
+			}
+		}
+	}
+	// a Gemini client's request, translated
+	out := vertexAsk(t, s, "/v1beta/models/google-vertex/claude-sonnet-5-5:streamGenerateContent?alt=sse", `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
+	if a := v.last(t); a.path != at+"claude-sonnet-5-5:streamRawPredict" || a.body["contents"] != nil || a.body["anthropic_version"] != "vertex-2023-10-16" {
+		t.Errorf("Gemini client's request asked at %s with %v", a.path, a.body)
+	}
+	if !strings.Contains(out, "Hello from Claude") {
+		t.Errorf("Gemini client given %s", out)
+	}
+	// Codex's effort goes as Claude takes it, never held to Gemini's
+	// levels (vertexEffort: xhigh as high, off as minimal)
+	vertexAsk(t, s, "/v1/responses", `{"model":"google-vertex/claude-sonnet-5-5","reasoning":{"effort":"xhigh"},"input":"hi"}`)
+	if a := v.last(t); fmt.Sprint(a.body["output_config"]) != "map[effort:xhigh]" {
+		t.Errorf("effort xhigh sent as %v", a.body)
+	}
+	vertexAsk(t, s, "/v1/responses", `{"model":"google-vertex/claude-sonnet-5-5","reasoning":{"effort":"none"},"input":"hi"}`)
+	if a := v.last(t); strings.Contains(fmt.Sprint(a.body), "minimal") || a.body["generationConfig"] != nil {
+		t.Errorf("effort none sent as %v", a.body)
+	}
+	// Claude Code's own request: beta=true never reaches Vertex AI, and
+	// tool search's beta goes under the name it gives it for Vertex
+	req := httptest.NewRequest("POST", "/v1/messages?beta=true", strings.NewReader(`{"model":"google-vertex/claude-sonnet-5-5","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("User-Agent", "claude-cli/2.1.314 (external, cli)")
+	req.Header.Set("anthropic-beta", "advanced-tool-use-2025-11-20")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if a := v.last(t); rec.Code != http.StatusOK || a.path != at+"claude-sonnet-5-5:streamRawPredict" || a.query != "" || a.beta != "tool-search-tool-2025-10-19" {
+		t.Errorf("Claude Code's request: %d, asked at %s?%s with beta %q: %s", rec.Code, a.path, a.query, a.beta, rec.Body)
+	}
+	// its count, at the publisher's count-tokens with the model kept
+	out = vertexAsk(t, s, "/v1/messages/count_tokens?beta=true", `{"model":"google-vertex/claude-sonnet-5-5","messages":[{"role":"user","content":"hi"}]}`)
+	if a := v.last(t); a.path != at+"count-tokens:rawPredict" || a.body["model"] != "claude-sonnet-5-5" || a.body["anthropic_version"] != "vertex-2023-10-16" || !strings.Contains(out, `"input_tokens":21`) {
+		t.Errorf("count asked at %s with %v, gave %s", a.path, a.body, out)
+	}
+	// a Gemini model beside it is still asked on generateContent
+	vertexAsk(t, s, "/v1/messages", `{"model":"google-vertex/gemini-3.8-flash","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`)
+	if a := v.last(t); a.path != "/v1/projects/proj-1/locations/global/publishers/google/models/gemini-3.8-flash:streamGenerateContent" || a.body["contents"] == nil {
+		t.Errorf("Gemini asked at %s", a.path)
 	}
 }

@@ -7,7 +7,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+
+	"github.com/yetone/magpie/internal/proc"
 )
 
 // WindowSpec is what a plugin adds to magpie's window: its page
@@ -38,6 +41,19 @@ type PageSpec struct {
 	// Replaces is the built-in page (one of Replaceable) whose place in
 	// the sidebar the page takes while its plugin is on, or "".
 	Replaces string
+	// Service is the local HTTP service the plugin's host part runs for
+	// the page (magpie.page.service), or nil: magpie web serves it under
+	// its own address to a browser on another computer, where the
+	// service's 127.0.0.1 is that computer's own.
+	Service *ServiceSpec
+}
+
+// ServiceSpec is a page's local service: an HTTP server on 127.0.0.1 at
+// Port, or at the port in the plugin's option named Option when the user
+// set one (magpie.page.service {"port": 3477, "option": "port"}).
+type ServiceSpec struct {
+	Port   int
+	Option string // "" when no option moves it
 }
 
 // PanelSpec is a panel a plugin adds to one of magpie's own pages: a
@@ -115,7 +131,7 @@ const maxPanels = 8
 
 // Window is what a plugin at target adds to magpie's window, or nil when
 // it adds nothing: package.json's magpie.page {title, file, icon,
-// replaces}, magpie.panels [{slot, file, title}] and magpie.actions [{id,
+// replaces, service}, magpie.panels [{slot, file, title}] and magpie.actions [{id,
 // menu, title}]. A file outside the
 // plugin's folder, or not .html, is no page or panel; a panel in a slot
 // magpie doesn't have is left out, and so is a replaces of a page that
@@ -139,6 +155,7 @@ func Window(target string) (w *WindowSpec, only bool) {
 		Replaces string          `json:"replaces"`
 		ID       string          `json:"id"`
 		Menu     string          `json:"menu"`
+		Service  json.RawMessage `json:"service"`
 	}
 	var pkg struct {
 		Main    string          `json:"main"`
@@ -165,6 +182,12 @@ func Window(target string) (w *WindowSpec, only bool) {
 			}
 			if r := strings.TrimSpace(pg.Replaces); slices.Contains(Replaceable, r) {
 				p.Replaces = r
+			}
+			// a service is run by the plugin's host part: a plugin that is
+			// only a page has none, so its sandboxed page can't be handed
+			// a way to some other program's port on this computer
+			if pkg.Main != "" || len(pkg.Exports) > 0 {
+				p.Service = service(pg.Service)
 			}
 			w.Page = p
 		}
@@ -203,6 +226,65 @@ func Window(target string) (w *WindowSpec, only bool) {
 	return w, pkg.Main == "" && len(pkg.Exports) == 0
 }
 
+// service is a page's magpie.page.service, or nil when it names none or
+// names it wrong: {"port": a TCP port, "option": the plugin's option that
+// moves it, optional}. One that is wrong leaves the page as it is.
+func service(raw json.RawMessage) *ServiceSpec {
+	var sv struct {
+		Port   any `json:"port"`
+		Option any `json:"option"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &sv) != nil {
+		return nil
+	}
+	port, ok := portOf(sv.Port)
+	if !ok {
+		return nil
+	}
+	out := &ServiceSpec{Port: port}
+	if o, _ := sv.Option.(string); len(strings.TrimSpace(o)) <= 64 {
+		out.Option = strings.TrimSpace(o)
+	}
+	return out
+}
+
+// portOf is v as a TCP port: a whole number from 1 to 65535, or a string
+// of one.
+func portOf(v any) (int, bool) {
+	var n float64
+	switch x := v.(type) {
+	case float64:
+		n = x
+	case string:
+		i, err := strconv.Atoi(strings.TrimSpace(x))
+		if err != nil {
+			return 0, false
+		}
+		n = float64(i)
+	default:
+		return 0, false
+	}
+	if n != float64(int(n)) || n < 1 || n > 65535 {
+		return 0, false
+	}
+	return int(n), true
+}
+
+// ServicePort is the port spec's service listens on for the plugin with
+// options: the option's value when the user set one, else the port the
+// package names.
+func (s *ServiceSpec) ServicePort(options map[string]any) int {
+	if s == nil {
+		return 0
+	}
+	if s.Option != "" {
+		if p, ok := portOf(options[s.Option]); ok {
+			return p
+		}
+	}
+	return s.Port
+}
+
 // htmlInside is rel joined to dir, if that stays inside dir and is an
 // .html file.
 func htmlInside(dir, rel string) (string, bool) {
@@ -217,7 +299,11 @@ func htmlInside(dir, rel string) (string, bool) {
 }
 
 // inside is rel joined to dir, if that stays inside dir: no "..", no
-// absolute path, and no symbolic link out of it.
+// absolute path, and no link out of it. Both sides are resolved with
+// proc.RealPath, which follows a Windows junction as well as a symlink:
+// filepath.EvalSymlinks gives up on a path through a junction since Go
+// 1.23, and a config dir under Scoop's persist junction lost every page
+// (#4265).
 func inside(dir, rel string) (string, bool) {
 	rel = strings.TrimSpace(rel)
 	if rel == "" || filepath.IsAbs(rel) || strings.HasPrefix(rel, "/") || strings.Contains(rel, `\`) {
@@ -228,11 +314,11 @@ func inside(dir, rel string) (string, bool) {
 		return "", false
 	}
 	full := filepath.Join(dir, clean)
-	realDir, err := filepath.EvalSymlinks(dir)
+	realDir, err := proc.RealPath(dir)
 	if err != nil {
 		return "", false
 	}
-	real, err := filepath.EvalSymlinks(full)
+	real, err := proc.RealPath(full)
 	if err != nil {
 		return "", false
 	}

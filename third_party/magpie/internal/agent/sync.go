@@ -52,7 +52,9 @@ func SyncCatalog() {
 		unhold := filememo.Hold()
 		renaming := setToFoundGroups()
 		for _, a := range All() {
-			if a.Sync != nil {
+			// a provider named magpie written by hand is the user's, its
+			// model list too (handWired)
+			if a.Sync != nil && !a.handWired() && (!a.ListOnly || a.Wired()) {
 				_ = synced(a.Sync)
 			}
 			// a field magpie set to a found group's id before (autoref.go)

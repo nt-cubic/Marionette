@@ -63,7 +63,7 @@ func TestUpdateStagedGivesWayToNewer(t *testing.T) {
 	t.Setenv("MAGPIE_UPDATE_FEED", srv.URL)
 	// 0.1.13 out: that is the one it restarts into
 	latest.Store("0.1.13")
-	u.recheck()
+	u.recheck(false)
 	for u.json().State == "downloading" || u.json().State == "checking" {
 		time.Sleep(10 * time.Millisecond)
 	}

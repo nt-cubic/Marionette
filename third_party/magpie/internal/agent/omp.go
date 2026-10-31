@@ -455,6 +455,7 @@ func ompAt(at place, dir string, entry func() ompProviderEntry) *Agent {
 		// a role's thinking level is omp's, after whichever model it is on;
 		// a list of models is the user's own
 		SplitSuffix: ompSplit,
+		ListOnly:    true,
 		Sync: func() error {
 			models := pick("models")
 			if err := syncYAML(models, "providers."+magpieID, func() any { return ompProvider(models) }); err != nil {
@@ -561,6 +562,21 @@ type ompModel struct {
 	Context   int          `yaml:"contextWindow,omitempty"`
 	MaxTokens int          `yaml:"maxTokens,omitempty"`
 	Input     []string     `yaml:"input,omitempty"`
+	// Cost is the model's price in USD per million tokens, the unit omp's
+	// calculateUsageCost divides by (omp 18.9.1, pi-catalog
+	// src/models.ts). omp's custom provider prices a call by it alone;
+	// without it omp takes a bundled model's its fuzzy id match finds, and
+	// a group/* id matches none, so its calls cost 0 (taotao7 on Discord).
+	Cost *ompCost `yaml:"cost,omitempty"`
+}
+
+// ompCost is a model's cost in omp's models.yml (omp 18.9.1,
+// models-config-schema-bundle.ts: input, output, cacheRead, cacheWrite).
+type ompCost struct {
+	Input      float64 `yaml:"input"`
+	Output     float64 `yaml:"output"`
+	CacheRead  float64 `yaml:"cacheRead"`
+	CacheWrite float64 `yaml:"cacheWrite"`
 }
 
 type ompThinking struct {
@@ -622,7 +638,9 @@ func ompTakesMax(v string) bool {
 // baseUrl/responses; one on Anthropic's Messages API to the gateway's
 // /v1/messages (omp adds the /v1). That one thinks adaptively when it takes
 // nothing else, else on a budget: omp's anthropic-budget-effort would also
-// send output_config.effort, which Sonnet 4.5 and Haiku 4.5 refuse.
+// send output_config.effort, which Sonnet 4.5 and Haiku 4.5 refuse. One on
+// Gemini's API goes to the gateway's /v1beta on google-generative-ai
+// (#4277, ompGeminiMode).
 func ompProvider() ompProviderEntry { return ompProviderAt(gateway.URL(), ompVersion()) }
 
 // ompProviderAt is ompProvider for an omp of version (as ompVersion) that
@@ -632,6 +650,9 @@ func ompProviderAt(gw, version string) ompProviderEntry {
 	ms := []ompModel{}
 	for _, m := range magpieModels("omp") {
 		e := ompModel{ID: m.ID, Name: m.Name, Context: m.Context, MaxTokens: maxTokens(m)}
+		if p := m.Price; p != nil {
+			e.Cost = &ompCost{Input: p.Input, Output: p.Output, CacheRead: p.CacheRead, CacheWrite: p.CacheWrite}
+		}
 		mode := "effort"
 		switch {
 		case slices.Contains(m.APIs, string(provider.Responses)):
@@ -642,6 +663,14 @@ func ompProviderAt(gw, version string) ompProviderEntry {
 			if gateway.AdaptiveThinking(m.ID) {
 				mode = "anthropic-adaptive"
 			}
+		case slices.Contains(m.APIs, string(provider.Gemini)):
+			// #4277: a Gemini model on Gemini's own API at the gateway's
+			// /v1beta, as OmO's; omp posts to baseUrl/models/<id>:
+			// streamGenerateContent?alt=sse with x-goog-api-key, the key
+			// being "N/A" (kNoAuth) under auth: none, which loopback takes
+			// (pi-ai providers/google.ts, 16.0.0 to 18.14.0)
+			e.API, e.BaseURL = "google-generative-ai", gw+"/v1beta"
+			mode = ompGeminiMode(m.ID)
 		}
 		// Without input omp takes it from a bundled model its fuzzy id match
 		// finds, else text only; a model the source never answered for is
@@ -682,6 +711,21 @@ func ompProviderAt(gw, version string) ompProviderEntry {
 		e.Auth, e.APIKey = "", key
 	}
 	return e
+}
+
+// ompGeminiMode is how omp asks a Gemini model on google-generative-ai
+// to think. Gemini 3 and later take thinkingConfig.thinkingLevel
+// (google-level: omp sends minimal to high as MINIMAL to HIGH, xhigh and max
+// as HIGH); Gemini 2.x and earlier take a thinkingBudget and refuse a level,
+// so they go on budget, which omp sends as -1, the model's own (pi-ai
+// stream.ts and pi-catalog's gemini.kdl, omp 18.14.0). "effort" there is a
+// budget too, the same -1.
+func ompGeminiMode(id string) string {
+	name := strings.ToLower(id[strings.LastIndex(id, "/")+1:])
+	if strings.HasPrefix(name, "gemini-1") || strings.HasPrefix(name, "gemini-2") {
+		return "budget"
+	}
+	return "google-level"
 }
 
 // ompKept is magpie's entry e laid over the one in the models.yml at path.

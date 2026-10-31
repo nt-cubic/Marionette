@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/yetone/magpie/internal/backup"
 	"github.com/yetone/magpie/internal/provider"
@@ -290,6 +291,12 @@ func TestSyncTeraCloudStillSeesOtherWrites(t *testing.T) {
 
 	a.use(t)
 	provider.Save(provider.Provider{ID: "three", Name: "Three", Chat: "https://z/v1", Key: "k3"})
+	// dated to the moment, as b's push is: the file's own time, a tick of
+	// the kernel's clock behind, made a's newer providers read as the
+	// older (red 21 of 100 alone on a Linux box), as in TestSync
+	if at := time.Now(); os.Chtimes(provider.Path(), at, at) != nil {
+		t.Fatal("dating a's providers")
+	}
 	if err := Now(ctx); err != nil {
 		t.Fatal(err)
 	}

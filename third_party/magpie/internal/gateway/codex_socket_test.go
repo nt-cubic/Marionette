@@ -58,14 +58,17 @@ func (f *fakeSocketBackend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer c.CloseNow()
+		// counted before the read: a message over the limit is closed
+		// 1009 inside Read, and the client can finish its turns over HTTP
+		// before Read returns
+		f.mu.Lock()
+		f.handshakes++
+		f.mu.Unlock()
 		c.SetReadLimit(-1)
 		if f.limit > 0 {
 			c.SetReadLimit(f.limit)
 		}
 		_, msg, err := c.Read(r.Context())
-		f.mu.Lock()
-		f.handshakes++
-		f.mu.Unlock()
 		if err != nil {
 			return
 		}

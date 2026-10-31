@@ -57,9 +57,12 @@ func planQuotaSourceOf(p Provider) (planQuotaSource, bool) {
 			// preset too, and is told the plan's 5-hour and weekly windows;
 			// a pay-as-you-go key has none, and no card
 			return planQuotaSource{"https://api.commandcode.ai/alpha/billing/credits", true, readCommandCodePlan, false}, true
-		case "api.minimaxi.com", "api.minimax.io":
+		case "api.minimaxi.com", "api.minimax.cn", "api.minimax.io":
 			// a Coding Plan key (sk-cp-…) is told its windows; a
-			// pay-as-you-go key isn't, and gets no card (#387)
+			// pay-as-you-go key isn't, and gets no card (#387).
+			// api.minimax.cn is MiniMax China's host since mmx-cli
+			// 8746d48f (2026-09-28), beside api.minimaxi.com, and
+			// answers the same query
 			return planQuotaSource{"https://" + hostOf(base) + "/v1/token_plan/remains", true, readMiniMaxPlan, false}, true
 		case "ollama.com":
 			// Ollama Cloud's included allowance (#1888); a key with none
@@ -402,10 +405,27 @@ func KimiCodeSearch(p Provider) string {
 //
 // usage is the week's allowance, each of limits a shorter window; the
 // numbers come as strings or numbers, used or what remains.
+//
+// A plan on Kimi's monthly allowance (lidazi2016 on Discord) is also, or
+// only, told as shares in usages, as kimi-code reads them
+// (packages/oauth/src/managed-usage.ts, usage-format.ts):
+//
+//	"usages":{"limit_5h":{"used_ratio":0.4372,"reset_time":"…"},
+//	  "limit_7d":{…},"limit_month_total":{…},"limit_month_code":{…}}
+//
+// limit_month_total is the month's allowance. limit_month_code is code's
+// share of it (kimi-code) or, on the membership of 2026-09, the coding
+// allowance itself with no total beside it (GCMP's kimiUsage.ts), so it
+// is the month only when limit_month_total isn't there. A window told
+// both ways is taken from usages, as kimi-code does. Each share is read
+// under its camelCase name too, a reset as text or epoch seconds or
+// milliseconds (EchoBird's fixture), and a limits[] window counted in
+// weeks or months by its length.
 func readKimiCode(b []byte) (string, []QuotaWindow, error) {
 	type row map[string]any
 	var r struct {
-		Usage  row `json:"usage"`
+		Usage  row            `json:"usage"`
+		Usages map[string]row `json:"usages"`
 		Limits []struct {
 			Window row `json:"window"`
 			Detail row `json:"detail"`
@@ -424,6 +444,25 @@ func readKimiCode(b []byte) (string, []QuotaWindow, error) {
 		}
 		return 0, false
 	}
+	// a reset as RFC 3339 text or as epoch seconds or milliseconds, under
+	// either spelling of its name
+	resetOf := func(d row) *time.Time {
+		for _, k := range []string{"resetTime", "resetAt", "reset_at", "reset_time"} {
+			if s, _ := d[k].(string); s != "" {
+				if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+					return &t
+				}
+			}
+			if n, ok := num(d[k]); ok && n > 0 {
+				t := time.Unix(int64(n), 0)
+				if n > 1e11 {
+					t = time.UnixMilli(int64(n))
+				}
+				return &t
+			}
+		}
+		return nil
+	}
 	window := func(d row, name string, span time.Duration) (QuotaWindow, bool) {
 		limit, ok := num(d["limit"])
 		if !ok || limit <= 0 {
@@ -438,14 +477,7 @@ func readKimiCode(b []byte) (string, []QuotaWindow, error) {
 			used = limit - left
 		}
 		w := QuotaWindow{Name: name, Span: span, Used: max(0, min(100, used/limit*100))}
-		for _, k := range []string{"resetTime", "resetAt", "reset_at", "reset_time"} {
-			if s, _ := d[k].(string); s != "" {
-				if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
-					w.ResetsAt = &t
-					break
-				}
-			}
-		}
+		w.ResetsAt = resetOf(d)
 		return w, true
 	}
 	out := []QuotaWindow{}
@@ -464,9 +496,15 @@ func readKimiCode(b []byte) (string, []QuotaWindow, error) {
 			span = time.Duration(n) * time.Hour
 		case strings.Contains(unit, "DAY"):
 			span = time.Duration(n) * 24 * time.Hour
+		case strings.Contains(unit, "WEEK"):
+			span = time.Duration(n) * 7 * 24 * time.Hour
+		case strings.Contains(unit, "MONTH"):
+			span = time.Duration(n) * 30 * 24 * time.Hour
 		}
 		name := "Allowance"
 		switch {
+		case span == 30*24*time.Hour:
+			name = "Month"
 		case span > 24*time.Hour && span%(24*time.Hour) == 0:
 			name = fmt.Sprintf("%d days", span/(24*time.Hour))
 		case span >= time.Hour && span%time.Hour == 0:
@@ -480,6 +518,49 @@ func readKimiCode(b []byte) (string, []QuotaWindow, error) {
 	}
 	if w, ok := window(r.Usage, "7 days", 7*24*time.Hour); ok {
 		out = append(out, w)
+	}
+	shares := []QuotaWindow{}
+	for _, k := range []struct {
+		key, name string
+		span      time.Duration
+	}{{"limit_5h", "5 hours", 5 * time.Hour}, {"limit_7d", "7 days", 7 * 24 * time.Hour},
+		{"limit_month_total", "Month", 30 * 24 * time.Hour}, {"limit_month_code", "Month", 30 * 24 * time.Hour}} {
+		d := r.Usages[k.key]
+		if d == nil {
+			d = r.Usages[camel(k.key)]
+		}
+		ratio, ok := num(d["used_ratio"])
+		if !ok {
+			ratio, ok = num(d["usedRatio"])
+		}
+		if d == nil || !ok || math.IsNaN(ratio) || math.IsInf(ratio, 0) ||
+			slices.ContainsFunc(shares, func(s QuotaWindow) bool { return s.Span == k.span }) {
+			continue
+		}
+		shares = append(shares, QuotaWindow{Name: k.name, Span: k.span, Used: max(0, min(100, ratio*100)), ResetsAt: resetOf(d)})
+	}
+	if len(shares) > 0 {
+		out = slices.DeleteFunc(out, func(w QuotaWindow) bool {
+			return slices.ContainsFunc(shares, func(s QuotaWindow) bool { return s.Span == w.Span })
+		})
+		out = append(out, shares...)
+		// shortest first, as the counted windows come; one of no known
+		// length last
+		span := func(w QuotaWindow) time.Duration {
+			if w.Span == 0 {
+				return math.MaxInt64
+			}
+			return w.Span
+		}
+		slices.SortStableFunc(out, func(a, b QuotaWindow) int {
+			switch sa, sb := span(a), span(b); {
+			case sa < sb:
+				return -1
+			case sa > sb:
+				return 1
+			}
+			return 0
+		})
 	}
 	if len(out) == 0 {
 		return "", nil, fmt.Errorf("no usage in the reply")
@@ -841,4 +922,16 @@ func zhipuKeyTeamAt(ctx context.Context, root, quotaURL, key string, team *Zhipu
 	}
 	_, ws, err := readZhipuPlan(b)
 	return "GLM Coding Team", ws, err
+}
+
+// camel spells a snake_case name in camelCase: limit_month_total is
+// limitMonthTotal.
+func camel(s string) string {
+	parts := strings.Split(s, "_")
+	for i := 1; i < len(parts); i++ {
+		if parts[i] != "" {
+			parts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
+		}
+	}
+	return strings.Join(parts, "")
 }

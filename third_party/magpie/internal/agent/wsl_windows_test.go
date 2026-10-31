@@ -19,6 +19,8 @@ func TestWSLCodexLive(t *testing.T) {
 	if name == "" {
 		t.Skip("MAGPIE_WSL_TEST_DISTRO not set")
 	}
+	// the real wsl.exe, before testenv's failing stand-in
+	t.Setenv("PATH", filepath.Join(os.Getenv("SystemRoot"), "System32")+string(os.PathListSeparator)+os.Getenv("PATH"))
 	names, _ := wslList()
 	found := false
 	for _, n := range names {

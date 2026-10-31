@@ -46,7 +46,7 @@ func TestRequestMatchIndexEquivalent(t *testing.T) {
 			local.add(Row{Record: r, Source: "log"}, "", int64(i), r.Failed())
 		}
 		for _, since := range []time.Time{{}, now.Add(5 * time.Second)} {
-			got := matchedLocal(gateway, []*rowChunk{local}, nil, since)
+			got := refMap(matchedLocal(gateway, []*rowChunk{local}, nil, since))
 			want := matchedLocalLegacy(gateway, []*rowChunk{local}, nil, since)
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("seed %d: %d matches, want %d", seed, len(got), len(want))
@@ -140,7 +140,9 @@ func BenchmarkMatchedLocal(b *testing.B) {
 			for _, impl := range []struct {
 				name string
 				f    func(*rowChunk, []*rowChunk, map[rowRef]bool, time.Time) map[rowRef]bool
-			}{{"indexed", matchedLocal}, {"without_index", matchedLocalLegacy}} {
+			}{{"indexed", func(g *rowChunk, c []*rowChunk, _ map[rowRef]bool, since time.Time) map[rowRef]bool {
+				return refMap(matchedLocal(g, c, nil, since))
+			}}, {"without_index", matchedLocalLegacy}} {
 				b.Run(fmt.Sprintf("%d/dense=%v/%s", n, dense, impl.name), func(b *testing.B) {
 					b.ReportAllocs()
 					for i := 0; i < b.N; i++ {

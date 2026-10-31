@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -110,5 +111,59 @@ func TestSearchKeyStaysAtItsBaseURL(t *testing.T) {
 	}
 	if len(elsewhere) != 0 {
 		t.Errorf("the search was sent on to another host %d times", len(elsewhere))
+	}
+}
+
+// A base URL given with the path magpie puts after it (…/search for
+// Tavily) is asked at that path once, never /search/search (plugins#509,
+// chenjiangzi): for every vendor, whether Settings saved it so or
+// providers.json held it so from before; and Settings keeps it as its base.
+func TestSearchAPIBaseURLWithItsPath(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var mu sync.Mutex
+	var asked []string
+	own := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		asked = append(asked, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{}`)
+	}))
+	t.Cleanup(own.Close)
+	s := New()
+	for _, v := range provider.SearchVendors {
+		if len(v.Paths) == 0 {
+			t.Fatalf("%s says no path", v.ID)
+		}
+		path := v.Paths[0] // the one asked with a key
+		at := own.URL + "/relay/" + v.ID
+		for _, given := range []string{at + path, at + path + "/", at + strings.ToLower(path)} {
+			for _, saved := range []bool{true, false} {
+				a := provider.SearchAPI{Vendor: v.ID, Key: "k-" + v.ID, URL: given}
+				if saved {
+					if err := provider.SetSearchAPI(a); err != nil {
+						t.Fatal(err)
+					}
+					i := slices.IndexFunc(provider.StoredSearchAPIs(), func(x provider.SearchAPI) bool { return x.Vendor == v.ID })
+					if got := provider.StoredSearchAPIs()[i].URL; got != at {
+						t.Errorf("%s: %q saved as %q, want %q", v.ID, given, got, at)
+					}
+				}
+				mu.Lock()
+				asked = nil
+				mu.Unlock()
+				s.askSearchAPI(context.Background(), a, "latest go")
+				mu.Lock()
+				if len(asked) != 1 || asked[0] != "/relay/"+v.ID+path {
+					t.Errorf("%s at %q (saved %v) asked %q, want %q", v.ID, given, saved, asked, "/relay/"+v.ID+path)
+				}
+				mu.Unlock()
+			}
+		}
+	}
+	// a base that only ends like a path is left alone
+	a := provider.SearchAPI{Vendor: "tavily", Key: "tvly-k", URL: own.URL + "/my-search"}
+	if a.Base() != own.URL+"/my-search" {
+		t.Errorf("base %q", a.Base())
 	}
 }

@@ -63,6 +63,9 @@ type KeyRest struct {
 	Status int       `json:"status"`
 	Until  time.Time `json:"until"`
 	Key    string    `json:"key"`
+	// Probed: the gateway asks it again in the background, and lifts the
+	// rest as soon as it answers (gateway/rest_probe.go)
+	Probed bool `json:"probed,omitempty"`
 }
 
 // RestKey is what the gateway rests the key k of a provider by: the

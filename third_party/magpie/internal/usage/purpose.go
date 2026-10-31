@@ -30,9 +30,11 @@ var purposeKinds = func() map[string]PurposeKind {
 	add("Web search", "web_search")
 	add("Image description", "vision")
 	add("Routing classifier", "routing")
-	add("Test", "provider_test")     // magpie's own (probelog.KindTest)
-	add("Detect APIs", "api_detect") // probelog.KindDetect
-	add("Model list", "model_list")  // probelog.KindList
+	add("Connection check", "connection_check") // Claude Desktop's (gateway.KindDesktopCheck)
+	add("Test", "provider_test")                // magpie's own (probelog.KindTest)
+	add("Detect APIs", "api_detect")            // probelog.KindDetect
+	add("Model list", "model_list")             // probelog.KindList
+	add("MCP tool", KindMCP)                    // an MCP tool call (SourceMCP)
 	return out
 }()
 

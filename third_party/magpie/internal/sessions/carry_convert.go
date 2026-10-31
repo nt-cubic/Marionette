@@ -126,6 +126,9 @@ type carryKey struct {
 // CarryOver converts a session for the agent to (one carries offers it
 // with Convert), and says how to open the new one.
 func CarryOver(s Session, to string) (CarryResult, error) {
+	if !Reads(s.Agent) {
+		return CarryResult{}, ErrNotRead
+	}
 	ok := false
 	for _, c := range carries(s) {
 		if c.Agent == to && c.Convert {

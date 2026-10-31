@@ -3,13 +3,10 @@ package gateway
 import (
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/yetone/magpie/internal/access"
-	"github.com/yetone/magpie/internal/provider"
 )
 
 // Every route Handler registers is either a client route `magpie web`'s
@@ -19,39 +16,13 @@ import (
 // /_magpie/. A route added to Handler and to neither fails this, so the
 // one-port page doesn't miss it, or take it, by accident.
 func TestClientPathCoversHandler(t *testing.T) {
-	src, err := os.ReadFile("gateway.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	start := strings.Index(string(src), "func (s *Server) Handler() http.Handler {")
-	end := strings.Index(string(src)[start:], "\n}\n")
-	body := string(src)[start : start+end]
-	consts := map[string]string{
-		"claudeMCPPath": claudeMCPPath, "CodexPath": CodexPath, "CodexCatalogPath": CodexCatalogPath,
-		"AlphaSearchPath": AlphaSearchPath, "HeapPath": HeapPath, "CPUPath": CPUPath,
-		"GoroutinesPath": GoroutinesPath, "ClaudeRunsPath": ClaudeRunsPath, "SearchMCPPath": SearchMCPPath, "VisionMCPPath": VisionMCPPath,
-		"ImageMCPPath": ImageMCPPath, "ImageMCPFiles": ImageMCPFiles,
-		"ToolsMCPPath": ToolsMCPPath, "provider.RemoteCardsPath": provider.RemoteCardsPath,
-		"provider.RemoteRefreshPath": provider.RemoteRefreshPath,
-	}
-	re := regexp.MustCompile(`mux\.HandleFunc\(((?:"[^"]*"|[A-Za-z.]+)(?:\s*\+\s*(?:"[^"]*"|[A-Za-z.]+))*),`)
+	// the patterns as routes() registers them, not as its source reads
 	n := 0
-	for _, m := range re.FindAllStringSubmatch(body, -1) {
-		pat := ""
-		for _, part := range strings.Split(m[1], "+") {
-			part = strings.TrimSpace(part)
-			if strings.HasPrefix(part, `"`) {
-				pat += strings.Trim(part, `"`)
-			} else if v, ok := consts[part]; ok {
-				pat += v
-			} else {
-				t.Fatalf("Handler names %s, which this test doesn't know: add it to consts", part)
-			}
-		}
+	for _, pat := range New().routes().patterns {
 		if i := strings.IndexByte(pat, ' '); i >= 0 {
 			pat = pat[i+1:]
 		}
-		p := strings.NewReplacer("{$}", "", "{id...}", "x", "{call...}", "x", "{id}", "x", "{token}", "x", "{name}", "x").Replace(pat)
+		p := strings.NewReplacer("{$}", "", "{id...}", "x", "{call...}", "x", "{id}", "x", "{token}", "x", "{name}", "x", "{agent}", "x").Replace(pat)
 		n++
 		stays := p == "/" || strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/_magpie/")
 		if ClientPath(p) == stays {
@@ -59,7 +30,7 @@ func TestClientPathCoversHandler(t *testing.T) {
 		}
 	}
 	if n < 60 {
-		t.Fatalf("found %d routes in Handler: the pattern no longer reads it", n)
+		t.Fatalf("found %d routes in Handler", n)
 	}
 }
 

@@ -90,10 +90,6 @@ func TestCodexIdentityParentChainsAndSummaryCache(t *testing.T) {
 			t.Errorf("identity %s = %+v, want %+v", id, got, want)
 		}
 	}
-	delete(identities, "main-a")
-	if got := CodexIdentities()["main-a"]; got.Role != codexRoleMain || got.RootSession != "main-a" {
-		t.Fatalf("identity snapshot shares its map: %+v", got)
-	}
 	if sources, ids := CallSourcesAndCodexIdentities(); !reflect.DeepEqual(sources, CallSources()) || !reflect.DeepEqual(ids, CodexIdentities()) {
 		t.Fatalf("one walk for both differs: %d sources, %d identities", len(sources), len(ids))
 	}
@@ -289,5 +285,45 @@ func TestCodexIdentityInvalidatesOldSummaryCache(t *testing.T) {
 	Reset()
 	if got := CodexIdentities()["old-cache-thread"]; got.Role != codexRoleMain || got.RootSession != "old-cache-thread" {
 		t.Fatalf("old summary cache hid current identity: %+v", got)
+	}
+}
+
+// While no rollout changes, the identities are the ones built before, not
+// built again; a rollout whose identity changed has them built afresh, the
+// same as building them with nothing kept (#2278).
+func TestCodexIdentitiesKeptWhileNoRolloutChanges(t *testing.T) {
+	d := setupCalls(t)
+	spawn := `{"subagent":{"thread_spawn":{"parent_thread_id":"main-k","depth":1}}}`
+	codexIdentityRollout(t, d.codex, "main-k", codexIdentityMeta(t, "main-k", "s-k", `"vscode"`, "", ""), codexIdentityUsage(1, "r-main", "s-k", ""))
+	child := codexIdentityRollout(t, d.codex, "child-k", codexIdentityMeta(t, "child-k", "s-k", `"vscode"`, "", ""), codexIdentityUsage(2, "r-child", "s-k", ""))
+	built := func() map[string]CodexIdentity {
+		mu.Lock()
+		defer mu.Unlock()
+		return codexIdentitiesBuilt(append(codexFiles(), wslFiles("codex")...))
+	}
+	same := func(a, b map[string]CodexIdentity) bool {
+		return reflect.ValueOf(a).UnsafePointer() == reflect.ValueOf(b).UnsafePointer()
+	}
+	first := CodexIdentities()
+	if got := first["child-k"]; got.Role != codexRoleMain {
+		t.Fatalf("child-k before it is a subagent: %+v", got)
+	}
+	if again := CodexIdentities(); !same(first, again) {
+		t.Fatal("the identities were built again with no rollout changed")
+	}
+	if !reflect.DeepEqual(first, built()) {
+		t.Fatalf("kept identities differ from built ones\n got: %+v\nwant: %+v", first, built())
+	}
+	// the child's rollout is written again as a subagent of main-k
+	writeLines(t, child, codexIdentityMeta(t, "child-k", "s-k", spawn, "", ""), codexIdentityUsage(2, "r-child", "s-k", ""), codexIdentityUsage(3, "r-child2", "s-k", ""))
+	after := CodexIdentities()
+	if same(first, after) {
+		t.Fatal("a rollout changed and the identities kept from before were handed out")
+	}
+	if got := after["child-k"]; got.Role != codexRoleSubagent || got.RootSession != "main-k" {
+		t.Fatalf("child-k after its rollout changed: %+v", got)
+	}
+	if !reflect.DeepEqual(after, built()) {
+		t.Fatalf("identities after a change differ from built ones\n got: %+v\nwant: %+v", after, built())
 	}
 }

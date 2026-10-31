@@ -237,7 +237,7 @@ func takeMatching(id string, isNew func(string) bool) ([]string, error) {
 	q := &f.Providers[i]
 	// new ones first, as the vendor's list and withNewlyListed have them
 	q.Models = append(slices.Clone(taken), served...)
-	q.NoModels = false
+	q.NoModels, q.BestInFamily = false, false
 	// picked from the list as it is now: one it lists later and no rule
 	// matches stays out, unless the picks hold every model
 	q.PickedFrom = nil

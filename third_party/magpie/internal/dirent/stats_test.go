@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 // Stats says of each entry what os.Lstat says: a file's size and time to
@@ -94,4 +95,90 @@ func TestStatsAsLstat(t *testing.T) {
 	if _, ok := Stats(filepath.Join(dir, "gone")); ok {
 		t.Error("Stats read a folder that isn't there")
 	}
+}
+
+// A listing given back (Done) is the next one's room, and holds nothing of
+// its folder: a smaller folder read into it has its own entries only.
+func TestStatsAfterDone(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("listed in one call a folder on macOS only")
+	}
+	big, small := t.TempDir(), t.TempDir()
+	for i := range 40 {
+		if err := os.WriteFile(filepath.Join(big, fmt.Sprintf("b%02d", i)), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(small, "s"), []byte("abc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		l, ok := Stats(big)
+		if !ok || len(l) != 40 {
+			t.Fatalf("big folder: %d entries, ok %t", len(l), ok)
+		}
+		l.Done(big)
+		s, ok := Stats(small)
+		if !ok || len(s) != 1 || s[0].Name != "s" || s[0].Size != 3 {
+			t.Fatalf("small folder after a big one given back: %+v, ok %t", s, ok)
+		}
+		if rest := s[1:cap(s)]; slices.ContainsFunc(rest, func(e Entry) bool { return e.Name != "" }) {
+			t.Fatalf("a listing given back kept its folder's entries: %+v", rest)
+		}
+		s.Done(small)
+	}
+}
+
+// A listing given back is kept across garbage collections: a poll
+// collects about twice a second, and a sync.Pool emptied by each had none
+// for the next folder (#2278). A folder's next read takes the names it had
+// where they are the same, and the room of the read before.
+func TestListingKeptAcrossCollections(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("listed in one call a folder on macOS only")
+	}
+	listings.Lock()
+	listings.last, listings.room, listings.entries = nil, nil, 0 // what tests before kept
+	listings.Unlock()
+	dir := t.TempDir()
+	for _, name := range []string{"rollout-a.jsonl", "rollout-b.jsonl", "rollout-c.jsonl"} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, ok := Stats(dir)
+	if !ok {
+		t.Fatal("Stats failed")
+	}
+	room, b := unsafe.SliceData(first[:cap(first)]), unsafe.StringData(first[1].Name)
+	first.Done(dir)
+	runtime.GC()
+	runtime.GC()
+	if err := os.WriteFile(filepath.Join(dir, "rollout-b.jsonl"), []byte("grown"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "rollout-c.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "rollout-d.jsonl"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second, _ := Stats(dir)
+	var names []string
+	for _, e := range second {
+		names = append(names, e.Name)
+	}
+	if !slices.Equal(names, []string{"rollout-a.jsonl", "rollout-b.jsonl", "rollout-d.jsonl"}) || second[1].Size != 5 {
+		t.Fatalf("after a file grew, one went and one came: %+v", second)
+	}
+	if unsafe.StringData(second[1].Name) != b {
+		t.Error("a name listed before was copied again, or let go by a garbage collection")
+	}
+	second.Done(dir)
+	runtime.GC()
+	third, _ := Stats(dir)
+	if unsafe.SliceData(third[:cap(third)]) != room {
+		t.Error("a listing given back was let go by a garbage collection")
+	}
+	third.Done(dir)
 }

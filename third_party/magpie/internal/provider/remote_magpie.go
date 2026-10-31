@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"maps"
 	"strings"
 
@@ -93,7 +94,7 @@ func (p *Provider) remoteMagpieEndpoints() {
 		"/v1/messages/count_tokens", "/v1/messages",
 		"/v1/chat/completions", "/v1/responses", "/v1/systemone",
 		"/v1/embeddings", "/v1/rerank",
-		"/v1/audio/transcriptions", "/v1/audio/translations",
+		"/v1/audio/transcriptions", "/v1/audio/translations", "/v1/audio/speech",
 		"/v1/images/generations", "/v1/images/edits",
 		"/v1/videos", "/v1",
 	} {
@@ -108,13 +109,22 @@ func (p *Provider) remoteMagpieEndpoints() {
 
 // listHeaders are the headers p's model list is asked with: a remote
 // magpie is asked for its image, video and decision models too, and its prices.
+// Its key goes as x-api-key whatever the user's headers say (remoteKey).
+// A list is no turn of a conversation: ${sessionId} and ${threadId} in a
+// value are an id of the list's own (conversation.go).
 func (p Provider) listHeaders() map[string]string {
+	h := p.SentHeaders(context.Background())
 	if !p.IsRemoteMagpie() {
-		return p.Headers
+		return h
 	}
-	h := maps.Clone(p.Headers)
+	h = maps.Clone(h)
 	if h == nil {
 		h = map[string]string{}
+	}
+	for k := range h {
+		if strings.EqualFold(k, "x-api-key") {
+			delete(h, k)
+		}
 	}
 	h[DrawersHeader] = "1"
 	h[VideomakersHeader] = "1"

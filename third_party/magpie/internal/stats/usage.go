@@ -102,7 +102,7 @@ func modelLabel(ref string) string {
 	if l == "custom" || l == "plugin" {
 		return l
 	}
-	if p.Account == nil && !p.IsPlugin() && !catalog.Knows(m) {
+	if p.Account == nil && !p.IsPlugin() && !catalog.KnowsAsWritten(m) {
 		return l + "/other"
 	}
 	return l + "/" + m

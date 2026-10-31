@@ -72,6 +72,8 @@ const groupUsage = `usage:
            or max — sent whatever the agent asks or effort=auto picks, at the level the model has nearest;
            without one it reasons as the group's effort says. The same model at two efforts is two members
            (a rule can send to either). A model whose own id ends so (a :free, :7b or :0) stays as it is
+           provider/model:low+high gives it several levels for the agent to choose from, each sent at the
+           level the model has nearest, and the group offers agents those for it
            provider/model[:effort]:fast sends the member in its vendor's fast mode: priority processing on a
            ChatGPT account (Codex's Fast) or an OpenAI key, Cursor's -fast model, Claude's fast mode on an
            Anthropic key for Opus 4.8 and 5; a model without one is refused (codex/gpt-6.1-sol:high:fast)
@@ -918,7 +920,9 @@ func memberLabel(id string, names map[string]provider.Entry) (string, bool) {
 		if n == "" {
 			n = e.Model
 		}
-		if effort != "" {
+		if _, levels := provider.MemberLevels(effort); len(levels) > 0 {
+			n += " · " + strings.Join(levels, "/") + " reasoning, as the agent picks"
+		} else if effort != "" {
 			n += " · " + effort + " reasoning, whatever the agent asks"
 		}
 		return e.Provider.Name + " · " + n, true

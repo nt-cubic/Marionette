@@ -245,6 +245,9 @@ func copyFile(from, to string) error {
 }
 
 func cursorFiles() []file {
+	if !Reads("cursor") {
+		return nil
+	}
 	paths, _ := filepath.Glob(filepath.Join(CursorDir(), "chats", "*", "*", "store.db"))
 	var out []file
 	for _, p := range paths {

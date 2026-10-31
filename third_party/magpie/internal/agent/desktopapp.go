@@ -30,7 +30,9 @@ import (
 // Store package by its package name and publisher id. guid is the key an
 // electron-builder installer registers the app under for the current user
 // (HKCU\Software\<guid>'s InstallLocation, and its Uninstall entry's
-// DisplayVersion): its installer lets the user pick another folder.
+// DisplayVersion): its installer lets the user pick another folder. more
+// are the app's other builds, each under a bundle id of its own (CodeBuddy's
+// China build beside its international one).
 type desktopApp struct {
 	id        string
 	names     []string
@@ -38,6 +40,7 @@ type desktopApp struct {
 	store     string
 	publisher string
 	guid      string
+	more      []desktopApp
 }
 
 var desktopApps = map[string]desktopApp{
@@ -67,6 +70,14 @@ var desktopApps = map[string]desktopApp{
 	// namespace, as dsh's above is of com.deepseek.dsh. Linux's deb links
 	// /usr/bin/penguin, so Bin finds it there.
 	"penguin": {id: "com.prismshadow.penguinharness", names: []string{"PenguinHarness.app"}, win: filepath.Join("PenguinHarness", "PenguinHarness.exe"), guid: "8bb9acb7-2bdc-596b-9669-7b014ab1c47f"},
+	// The CodeBuddy IDE (Tencent's VS Code fork, 4.12.2: CodeBuddy.app,
+	// com.tencent.codebuddy, from codebuddy.ai; CodeBuddy CN.app,
+	// com.tencent.codebuddycn, from codebuddy.cn) reads the CodeBuddy Code
+	// CLI's ~/.codebuddy/models.json for models of one's own (codebuddy.go)
+	// and needs no CLI. Its Windows install folder isn't known here, so on
+	// Windows only the rule that a desktop app's folder is never gone holds.
+	"codebuddy": {id: "com.tencent.codebuddy", names: []string{"CodeBuddy.app"},
+		more: []desktopApp{{id: "com.tencent.codebuddycn", names: []string{"CodeBuddy CN.app"}}}},
 }
 
 // appFolders are where apps are installed; a var so tests can point it
@@ -297,7 +308,17 @@ func (a *Agent) AppVersion() string {
 	if !ok || a.WSL != "" {
 		return ""
 	}
-	return app.version()
+	for _, b := range app.builds() {
+		if v := b.version(); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// builds are app and its other builds (more), the first one first.
+func (app desktopApp) builds() []desktopApp {
+	return append([]desktopApp{app}, app.more...)
 }
 
 // version is the version of app installed here, "" when it isn't or doesn't
@@ -379,7 +400,7 @@ func storeAppVersion(packages []string, name, publisher string) string {
 // %LOCALAPPDATA%\Programs, or in the folder its installer registered.
 func (a *Agent) HasApp() bool {
 	app, ok := desktopApps[a.ID]
-	return ok && a.WSL == "" && app.installed()
+	return ok && a.WSL == "" && slices.ContainsFunc(app.builds(), desktopApp.installed)
 }
 
 // installed reports whether app is installed on this machine (see HasApp).

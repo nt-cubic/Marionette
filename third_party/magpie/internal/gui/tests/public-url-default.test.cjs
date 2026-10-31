@@ -29,6 +29,7 @@ async function setup(t, engine, lang, width, options) {
   const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
   t.after(() => browser.close());
   const page = await (await browser.newContext({ viewport: { width, height: 800 }, reducedMotion: "reduce" })).newPage();
+  await page.addInitScript(() => { try { localStorage.setItem("magpie.gwConnectFolded", "0"); } catch {} }); // Connect opened, as a user who reads it
   page.setDefaultTimeout(6000);
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
@@ -66,8 +67,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await keyed(page, PUBLIC + "/v1");
         assert.doesNotMatch(await shown("#connect pre.snip"), /127\.0\.0\.1/);
         // in the app, the gateway's own address stays this computer's
-        assert.equal(await shown("#gateway .url code"), LOCAL);
-        if (width >= 1100) assert.match(await shown("#sideGw span"), /127\.0\.0\.1:3999/);
+        assert.equal(await shown("#gatewayLan .gw-url:first-child code"), LOCAL);
+        // the sidebar's line, shared, names where other machines reach it
+        // (coeo91), this computer's in its tooltip
+        if (width >= 1100) {
+          assert.match(await shown("#sideGw span"), /magpie\.example\.com/);
+          assert.match(await page.locator("#sideGw").getAttribute("title"), /127\.0\.0\.1:3999/);
+        }
         await page.locator("#connectAddress").click();
         assert.match(await page.locator(".proto-menu .pm-item", { hasText: "magpie.example.com" }).textContent(), new RegExp(words[lang]));
         await fits("Gateway");
@@ -98,7 +104,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await open();
       assert.equal(await shown("#connectAddress"), PUBLIC + "/v1");
       await keyed(page, PUBLIC + "/v1");
-      assert.equal(await shown("#gateway .url code"), PUBLIC);
+      assert.equal(await shown("#gatewayLan .gw-url:first-child code"), PUBLIC);
       // the sidebar's line at its foot, there at this width, says it too
       if (width >= 1100) {
         assert.match(await shown("#sideGw span"), /magpie\.example\.com/);
@@ -119,7 +125,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     const { page, errors, open, shown, settingsTab } = await setup(t, engine, "en", 1100, { lanURLs: ["http://192.168.1.10:3999"], web: true });
     await open();
     assert.equal(await shown("#connectAddress"), LOCAL + "/v1");
-    assert.equal(await shown("#gateway .url code"), LOCAL);
+    assert.equal(await shown("#gatewayLan .gw-url:first-child code"), LOCAL);
     await settingsTab("about");
     await page.locator("#about .row").first().waitFor();
     assert.equal(await page.locator("#publicURLRow").count(), 0);

@@ -550,3 +550,35 @@ func BenchmarkHistoryLook(b *testing.B) {
 		History("")
 	}
 }
+
+// A day that is over, asked for the first time, parses only its latest
+// routes too: every route of a busy day's .gz was parsed to keep the last
+// historyMax of them, and a small server opening the Usage page's Context
+// tab ran out of memory (Yayoi_no_yume on X).
+func TestHistoryParsesOnlyAGzDaysLatest(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir := HistoryDir()
+	os.MkdirAll(dir, 0o700)
+	day := time.Now().AddDate(0, 0, -2)
+	at := day.Add(-time.Hour)
+	n := historyMax + historySlack + 3000
+	var buf bytes.Buffer
+	z := gzip.NewWriter(&buf)
+	for i := 1; i <= n; i++ {
+		b, _ := json.Marshal(Route{ID: int64(i), Model: "m", Time: at.Add(time.Duration(i) * time.Millisecond)})
+		z.Write(append(b, '\n'))
+	}
+	z.Close()
+	os.WriteFile(filepath.Join(dir, day.Format(dayForm)+".jsonl.gz"), buf.Bytes(), 0o600)
+	history.mu.Lock()
+	history.counts = nil
+	historyParsed.Store(0)
+	history.mu.Unlock()
+	days, rs, cut := History(day.Format(dayForm))
+	if len(days) != 1 || days[0].Requests != n || len(rs) != historyMax || !cut || rs[len(rs)-1].ID != int64(n) || rs[0].ID != int64(n-historyMax+1) {
+		t.Fatalf("days %+v, %d routes, cut %v", days, len(rs), cut)
+	}
+	if n := historyParsed.Load(); n > historyMax+historySlack {
+		t.Fatalf("parsed %d routes for a day's latest %d", n, historyMax)
+	}
+}

@@ -167,6 +167,9 @@ const codexDaemonRecheck = 5 * time.Second
 func noteCodexSwitch(from, to string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	// the Codex app's app-servers are found and restarted on
+	// KeepCodexAppOnItsProvider's own look, whatever this listing finds
+	codexAppAccountSwitched()
 	ps, err := listProcesses(ctx)
 	known := err == nil
 	codexDaemonMu.Lock()
@@ -177,9 +180,6 @@ func noteCodexSwitch(from, to string) {
 	}
 	noteLeft(&codexDaemonLeft, findCodexDaemon(ps, codexHome()), from, to)
 	noteLeft(&codexAppLeft, findCodexApp(ps), from, to)
-	if codexAppLeft.pid != 0 {
-		codexAppAccountLeft(codexAppLeft.pid)
-	}
 }
 
 // noteLeft updates what is known of the app-server pid, running as Codex's
@@ -203,9 +203,20 @@ func noteLeft(left *leftDaemon, pid int, from, to string) {
 // it isn't running or is on the account Codex is.
 func CodexDaemonStale() string {
 	codexDaemonMu.Lock()
-	defer codexDaemonMu.Unlock()
 	recheckLeft()
-	return codexDaemonLeft.user
+	was := codexDaemonLeft.user
+	codexDaemonMu.Unlock()
+	return leftOnAccount(was)
+}
+
+// leftOnAccount is was, the account an app-server is left on, or "" when
+// Codex's provider takes no ChatGPT account (CodexNoAccount): the
+// app-server goes by none, so nothing is to be restarted for it.
+func leftOnAccount(was string) string {
+	if was == "" || codexNoAccount() {
+		return ""
+	}
+	return was
 }
 
 // CodexAppStale answers the account the Codex desktop app is still signed
@@ -215,9 +226,10 @@ func CodexDaemonStale() string {
 // until it is quit and opened again.
 func CodexAppStale() string {
 	codexDaemonMu.Lock()
-	defer codexDaemonMu.Unlock()
 	recheckLeft()
-	return codexAppLeft.user
+	was := codexAppLeft.user
+	codexDaemonMu.Unlock()
+	return leftOnAccount(was)
 }
 
 // recheckLeft forgets an app-server left on an account before that has
@@ -238,9 +250,24 @@ func recheckLeft() {
 	if findCodexDaemon(ps, codexHome()) != codexDaemonLeft.pid {
 		codexDaemonLeft = leftDaemon{}
 	}
-	if findCodexApp(ps) != codexAppLeft.pid {
+	// one that went with none in its place left an app still on nothing
+	// new while it runs (codexAppGotNone): the app read no sign-in
+	// afresh, so it is still said
+	if p := findCodexApp(ps); p != codexAppLeft.pid && (p != 0 || !codexAppStillOpen()) {
 		codexAppLeft = leftDaemon{}
 	}
+}
+
+// codexAppStillOpen is whether the Codex desktop app is known to run
+// (CodexAppOpen), for an app-server gone with none in its place.
+func codexAppStillOpen() bool {
+	if CodexAppOpen == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	open, known := CodexAppOpen(ctx)
+	return open && known
 }
 
 // DismissCodexDaemon stops saying the app-server is on another account.
@@ -269,7 +296,8 @@ func DismissCodexApp() {
 // codex.
 func findCodexApp(ps []proc.Process) int {
 	for _, p := range ps {
-		if isCodexAppServer(p.Args) {
+		// not another program's, run from the app's codex with --listen
+		if isCodexAppOwnServer(p.Args) {
 			return p.PID
 		}
 	}
@@ -554,3 +582,23 @@ func splitExe(args string) (exe, rest string) {
 
 // CodexHome is the Codex home magpie wires and signs Codex in through.
 func CodexHome() string { return codexHome() }
+
+// CodexPIDs lists the Codex processes running now that may hold a thread
+// sending to magpie's gateway: the Codex app's app-server, the managed
+// daemon, the CLI's sessions, an editor's codex. A relay magpie leaves at
+// quit for them ends once they all have (codexrelay).
+func CodexPIDs(ctx context.Context) []int {
+	ps, err := listProcesses(ctx)
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, p := range ps {
+		exe, _ := splitExe(p.Args)
+		base := strings.ToLower(exe[strings.LastIndexAny(exe, `/\`)+1:])
+		if p.PID != os.Getpid() && (base == "codex" || base == "codex.exe" || isCodexAppServer(p.Args) || isManagedDaemon(p.Args)) {
+			pids = append(pids, p.PID)
+		}
+	}
+	return pids
+}

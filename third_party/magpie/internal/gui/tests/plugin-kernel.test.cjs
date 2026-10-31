@@ -105,9 +105,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // its markup came back translated, and its wiring with it
         assert.equal((await page.locator("#foldConnect .label").textContent()).trim(), await page.evaluate(() => t("Connect")), `${where}: translated again`);
         await page.locator("#foldConnect").click();
-        await page.waitForFunction(() => document.querySelector("#connect").hidden);
-        await page.locator("#foldConnect").click();
         await page.waitForFunction(() => !document.querySelector("#connect").hidden);
+        await page.locator("#foldConnect").click();
+        await page.waitForFunction(() => document.querySelector("#connect").hidden);
         assert.deepEqual(errors, [], where);
         await context.close();
       }

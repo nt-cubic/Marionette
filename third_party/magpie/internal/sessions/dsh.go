@@ -30,8 +30,11 @@ import (
 // then an event per line: {type, seq, time, data}. A "user/message" is a
 // prompt typed when its source's kind is "user" (else instructions, a
 // plugin's, a subagent's report…), a "session/title" names the session,
-// and an "assistant/message" carries its model and its usage — input
-// without the cache, output with the reasoning. A session forked from
+// an "assistant/message" carries its model and its usage — input
+// without the cache, output with the reasoning — and a "tool/call" is a
+// tool called, {name, arguments}; a skill is a call of the skill tool,
+// or, typed as /<skill>, a "user/message" whose source is
+// {kind: "skill-invocation", name: <skill>}. A session forked from
 // another starts with that one's events: before format 2 the first
 // seedLength of them, after it those up to a "session/end-seed" said to be
 // inherited. They count where they were first written. dsh has no command
@@ -69,6 +72,9 @@ var (
 )
 
 func dshFiles() []file {
+	if !Reads("dsh") {
+		return nil
+	}
 	dirs, _ := filepath.Glob(filepath.Join(DshDir(), "sessions", "*", "*"))
 	var out []file
 	parent := map[string]string{}
@@ -226,7 +232,12 @@ type dshEvent struct {
 		Content json.RawMessage `json:"content"`
 		Source  struct {
 			Kind string `json:"kind"`
+			// a skill-invocation's skill
+			Name string `json:"name"`
 		} `json:"source"`
+		// a tool/call's tool and its arguments, a JSON string
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
 		Title     string `json:"title"`
 		Inherited bool   `json:"inherited"`
 		// Messages are a title call's (session/title-llm-request)
@@ -246,7 +257,7 @@ type dshEvent struct {
 	} `json:"data"`
 }
 
-var dshWanted = [][]byte{[]byte(`"user/message"`), []byte(`"session/title"`), []byte(`"session/title-llm-request"`), []byte(`"assistant/message"`), []byte(`"session/end-seed"`)}
+var dshWanted = [][]byte{[]byte(`"user/message"`), []byte(`"session/title"`), []byte(`"session/title-llm-request"`), []byte(`"assistant/message"`), []byte(`"session/end-seed"`), []byte(`"tool/call"`)}
 
 // dshCarry is what a read of a dsh session file carries on with: where it
 // read to and the header it read first.
@@ -365,9 +376,31 @@ func dshCount(s *state, h *dshHead, b []byte, main bool) {
 	}
 	at := ms(e.Time)
 	s.saw(at, main)
+	switch {
+	case e.Type == "tool/call":
+		s.tool(at, e.Data.Name, dshSkill(e.Data.Name, e.Data.Arguments))
+	case e.Type == "user/message" && e.Data.Source.Kind == "skill-invocation":
+		// a /<skill> typed: dsh puts the skill's text in after the prompt
+		s.tool(at, "", e.Data.Source.Name)
+	}
 	if u := e.Data.Usage; e.Type == "assistant/message" && u != nil && e.Data.Message.Source.Model != "" {
 		s.use(dateOf(at), e.Data.Message.Source.Model, Tokens{Input: u.Input, Output: u.Output, CacheRead: u.CacheRead, CacheWrite: u.CacheWrite})
 	}
+}
+
+// dshSkill is the skill a call of dsh's skill tool brings in: its
+// arguments are {"name": <skill>}.
+func dshSkill(tool, args string) string {
+	if tool != "skill" {
+		return ""
+	}
+	var a struct {
+		Name string `json:"name"`
+	}
+	if json.Unmarshal([]byte(args), &a) != nil {
+		return ""
+	}
+	return a.Name
 }
 
 func dshWant(b []byte) bool {

@@ -56,7 +56,16 @@ func TestCombinedOutputOwnAnswersForItself(t *testing.T) {
 	}
 }
 
+// noShell skips a test that drives /bin/sh where there is none (Windows).
+func noShell(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("no /bin/sh on Windows")
+	}
+}
+
 func TestCombinedOutputOwnRuns(t *testing.T) {
+	noShell(t)
 	dir := t.TempDir()
 	cmd := Command("/bin/sh", "-c", "pwd; echo \"$MAGPIE_T\"; echo err >&2; if [ -p /dev/stdin ]; then echo pipe; else echo other; fi; exit 3")
 	cmd.Env = append(os.Environ(), "MAGPIE_T=v")
@@ -80,6 +89,7 @@ func TestCombinedOutputOwnRuns(t *testing.T) {
 
 // The context ending ends the command, and the run with it.
 func TestCombinedOutputOwnContext(t *testing.T) {
+	noShell(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {

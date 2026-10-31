@@ -122,7 +122,17 @@ func TestClaudeRunsNamesEachProcess(t *testing.T) {
 		l := runsUntil(t, s, "two runs, one answering", func(l ClaudeRuns) bool {
 			b, err := os.ReadFile(filepath.Join(dir, "hang.pid"))
 			hung, _ = strconv.Atoi(strings.TrimSpace(string(b)))
-			return err == nil && hung > 0 && len(l.Runs) == 2
+			if err != nil || hung <= 0 || len(l.Runs) != 2 {
+				return false
+			}
+			// the hung run's pid is listed once launch has set its tree,
+			// a moment after Claude Code wrote hang.pid
+			for _, r := range l.Runs {
+				if r.PID == hung {
+					return true
+				}
+			}
+			return false
 		})
 		by := map[int]ClaudeRun{}
 		for _, r := range l.Runs {

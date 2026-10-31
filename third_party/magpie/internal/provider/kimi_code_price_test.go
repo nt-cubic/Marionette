@@ -103,7 +103,8 @@ func TestKimiCodeListPrice(t *testing.T) {
 	if got := PricedNameFor("relay", "k3"); got != "k3" {
 		t.Errorf("PricedNameFor(relay, k3) = %q", got)
 	}
-	if got := PricedNameFor("codex", "codex-auto-review"); got != PricedName("codex-auto-review") {
+	// free on a ChatGPT sign-in, so priced as nothing else (codexReviewFree)
+	if got := PricedNameFor("codex", "codex-auto-review"); got != "codex-auto-review" {
 		t.Errorf("PricedNameFor(codex, codex-auto-review) = %q", got)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -81,6 +82,41 @@ func closeWinProcs(pids []int) error {
 		args = append(args, "/PID", strconv.Itoa(pid))
 	}
 	return proc.Command("taskkill", args...).Run()
+}
+
+// shownCallback is EnumWindows' callback, made once: Go has room for only
+// so many. shownPids and shownSeen are its input and output, under shownMu.
+var (
+	shownMu       sync.Mutex
+	shownPids     map[uint32]bool
+	shownSeen     bool
+	shownCallback = windows.NewCallback(func(h windows.HWND, _ uintptr) uintptr {
+		var pid uint32
+		if _, err := windows.GetWindowThreadProcessId(h, &pid); err == nil && shownPids[pid] && windows.IsWindowVisible(h) {
+			shownSeen = true
+			return 0
+		}
+		return 1
+	})
+)
+
+// winWindowsShown says whether any of pids has a visible top-level window,
+// true when the windows can't be listed. An Electron app closed to the
+// tray hides its window and keeps running.
+func winWindowsShown(pids []int) bool {
+	shownMu.Lock()
+	defer shownMu.Unlock()
+	shownPids = make(map[uint32]bool, len(pids))
+	for _, p := range pids {
+		shownPids[uint32(p)] = true
+	}
+	shownSeen = false
+	if err := windows.EnumWindows(shownCallback, nil); err != nil && !shownSeen {
+		// a callback that stops the walk makes EnumWindows return an
+		// error too; any other error leaves it unknown
+		return true
+	}
+	return shownSeen
 }
 
 // endWinTree ends pid and every process under it.

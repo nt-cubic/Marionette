@@ -7,8 +7,10 @@
 // a pick keeps Codex signed in to an account of the user's choosing
 // (keepLoginAs) while the first stays first: that row says Signed in, the
 // first says First, and Make first on it arranges the order rather than
-// signing Codex in. The page doesn't move. In English and Chinese,
-// Chromium and WebKit.
+// signing Codex in. The page doesn't move. #1907: while magpie only
+// switches Codex's sign-in, there is nothing to keep it on (kept on one,
+// nothing would move it): no tick, and the notes say magpie moves it. In
+// English and Chinese, Chromium and WebKit.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -16,8 +18,8 @@ const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
 
 const assets = path.resolve(__dirname, "../assets");
-const codex = ({ keepLogin = false, routing = "", spare = true } = {}) => ({
-  id: "codex", name: "Codex", icon: "codex-color", chat: "", responses: "", anthropic: "", catalog: "", routing, keepLogin,
+const codex = ({ keepLogin = false, keepLoginAs = "", switchOnly = false, routing = "", spare = true } = {}) => ({
+  id: "codex", name: "Codex", icon: "codex-color", chat: "", responses: "", anthropic: "", catalog: "", routing, keepLogin, keepLoginAs, switchOnly,
   models: [{ id: "gpt-6", name: "GPT-6", on: true }], agents: [], fallback: [], headers: {}, keyList: [],
   account: {
     agent: "codex", agentName: "Codex", user: "work@example.com", plan: "PLUS",
@@ -61,8 +63,8 @@ function serve(lang, first, posts) {
 }
 
 const words = {
-  en: { keep: "Keep Codex signed in to", first: "the first account", pickHead: "Account to stay signed in to", signed: "Signed in", firstLabel: "First", makeFirst: "Make first", keptAs: /Codex on its own stays signed in to spare@example.com/, kept: /Codex on its own stays signed in to the first account/, moves: /once it is 98% used/, usedUp: /once it is used up/ },
-  zh: { keep: "Codex 始终登录", first: "首选账号", pickHead: "始终登录的账号", signed: "已登录", firstLabel: "首选", makeFirst: "设为首选", keptAs: /Codex 直连时始终登录 spare@example.com/, kept: /Codex 直连时始终登录首选账号/, moves: /用到 98% 时/, usedUp: /额度用完时/ },
+  en: { switchOnly: "Only switch Codex's sign-in", magpieMoves: /Tick more and magpie moves on to the next/, keep: "Keep Codex signed in to", first: "the first account", pickHead: "Account to stay signed in to", signed: "Signed in", firstLabel: "First", makeFirst: "Make first", keptAs: /Codex on its own stays signed in to spare@example.com/, kept: /Codex on its own stays signed in to the first account/, moves: /once it is 98% used/, usedUp: /once it is used up/ },
+  zh: { switchOnly: "只切换 Codex 的登录", magpieMoves: /前一个额度用完 magpie 自动换下一个/, keep: "Codex 始终登录", first: "首选账号", pickHead: "始终登录的账号", signed: "已登录", firstLabel: "首选", makeFirst: "设为首选", keptAs: /Codex 直连时始终登录 spare@example.com/, kept: /Codex 直连时始终登录首选账号/, moves: /用到 98% 时/, usedUp: /额度用完时/ },
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
@@ -176,6 +178,23 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.doesNotMatch(text, w.moves);
       assert.deepEqual(errors, []);
     });
+
+    for (const keepLoginAs of ["", "spare@example.com"]) {
+      test(`${engine} ${lang}: switching only Codex's sign-in, kept on ${keepLoginAs || "the first"}, it is moved on all the same`, async (t) => {
+        const { page, errors } = await open(t, { switchOnly: true, keepLogin: true, keepLoginAs });
+        assert.equal(await page.locator(".editor .accts .keep-login").count(), 0, "no keep tick under switch-only");
+        const only = page.locator(".editor .accts .switch-only label");
+        assert.equal((await only.textContent()).trim(), w.switchOnly);
+        assert.equal(await only.locator("input").isChecked(), true);
+        const text = await page.locator(".editor").textContent();
+        assert.match(text, w.moves);
+        assert.doesNotMatch(text, w.kept);
+        assert.doesNotMatch(text, w.keptAs);
+        assert.match(text, w.magpieMoves);
+        assert.equal(await page.evaluate(() => I18N.zh["{agent} signs in to the first. Tick more and magpie moves on to the next when the one before it is out of quota. Sessions already running keep theirs until restarted."] ? "" : "missing"), "");
+        assert.deepEqual(errors, []);
+      });
+    }
 
     test(`${engine} ${lang}: with one account on, there is nothing to keep`, async (t) => {
       const { page, errors } = await open(t, { spare: false });

@@ -350,3 +350,61 @@ func TestOwnKeyValue(t *testing.T) {
 		t.Fatal("a short key shows its end", keys[1].Masked, short)
 	}
 }
+
+// Authenticate tells the sharing key magpie made itself (the one it writes
+// into this computer's own agents) from every other gateway key, so a
+// plugin's ctx.origin can tell the owner's agents from a friend's key
+// (plugins#526): marked LAN, named by LANKeyID only, or the older
+// settings-only key the fallback takes.
+func TestAuthenticateTellsTheDefaultKey(t *testing.T) {
+	t.Run("made by ConfigureLAN", func(t *testing.T) {
+		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+		friend, err := Update("add-key", Change{Name: "Friend"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		brought, err := Update("add-key", Change{Name: "Brought", Secret: "a-much-longer-key-of-my-own"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ConfigureLAN(true, false); err != nil {
+			t.Fatal(err)
+		}
+		if who, ok := Authenticate(LANSecret()); !ok || !who.Default {
+			t.Fatal("the default sharing key isn't Default", who, ok)
+		}
+		for _, k := range []string{friend, brought} {
+			if who, ok := Authenticate(k); !ok || who.Default {
+				t.Fatal("a named key reads as the default one", who, ok)
+			}
+		}
+	})
+	t.Run("named by LANKeyID only", func(t *testing.T) {
+		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+		s := settings.Load()
+		s.LANKeyID = "lan"
+		if err := settings.Save(s); err != nil {
+			t.Fatal(err)
+		}
+		if err := save([]Key{{ID: "lan", Name: "Desk", Secret: Prefix + "lan"}, {ID: "other", Name: "Other", Secret: Prefix + "other"}}); err != nil {
+			t.Fatal(err)
+		}
+		if who, ok := Authenticate(Prefix + "lan"); !ok || !who.Default {
+			t.Fatal(who, ok)
+		}
+		if who, ok := Authenticate(Prefix + "other"); !ok || who.Default {
+			t.Fatal(who, ok)
+		}
+	})
+	t.Run("older magpie's settings key", func(t *testing.T) {
+		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+		s := settings.Load()
+		s.LAN, s.LANKey = true, "sk-magpie-legacy-lan-secret"
+		if err := settings.Save(s); err != nil {
+			t.Fatal(err)
+		}
+		if who, ok := Authenticate(s.LANKey); !ok || !who.Default {
+			t.Fatal(who, ok)
+		}
+	})
+}

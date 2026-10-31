@@ -175,6 +175,19 @@ func (s *Server) stopAccepting() {
 	}
 }
 
+// closesWhenHandedOff has each reply the gateway gives once it takes no
+// connection (stopAccepting) close its connection, so the agent's next
+// request dials the magpie serving the port after this one rather than
+// waiting on a connection this one's end closes (unreadConns).
+func (s *Server) closesWhenHandedOff(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.notAccepting.Load() {
+			w.Header().Set("Connection", "close")
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
 // handingOver is whether another magpie serves the port once this
 // gateway ends: it was handed off, or `make dev` started one beside it.
 func (s *Server) handingOver() bool { return Handover || s.handedOff.Load() }
@@ -192,30 +205,43 @@ func (s *Server) drainFor() time.Duration {
 // nothing for 5s is idle.
 var unreadWait = 5 * time.Second
 
-// unreadConns are the connections the gateway took whose first request it
-// hasn't read yet. Shutdown closes such a connection unanswered when its
-// request is read after it began, so a handover's end waits for them
-// first: the agent's request is answered here, not cut.
+// unreadConns are the connections the gateway took whose next request it
+// hasn't read yet: new ones, and kept-alive ones idle between requests or
+// still answering one (net/http notes one idle after its reply is out, so
+// an agent can have read the reply and sent its next request first).
+// Shutdown closes such a connection unanswered, and a request the agent
+// sent on it just then is cut ("connection reset", #3451), so a
+// handover's end waits for them first: each one's next request is
+// answered here, its reply closing it (closesWhenHandedOff), and the
+// agent's next one dials the magpie after this one.
 type unreadConns struct {
 	mu    sync.Mutex
 	conns map[net.Conn]bool
+	kept  map[net.Conn]bool // answering a request, or idle after one
 	// stopped: the server takes none from here on, its Serve returned
 	stopped bool
 }
 
-// note is the server's ConnState: a connection is unread from StateNew to
-// its next state, whichever it is.
+// note is the server's ConnState: a connection is unread from StateNew
+// to its next state, and kept from StateActive until it is closed or
+// hijacked.
 func (u *unreadConns) note(c net.Conn, state http.ConnState) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if state != http.StateNew {
-		delete(u.conns, c)
-		return
+	delete(u.conns, c)
+	delete(u.kept, c)
+	switch state {
+	case http.StateNew:
+		if u.conns == nil {
+			u.conns = map[net.Conn]bool{}
+		}
+		u.conns[c] = true
+	case http.StateActive, http.StateIdle:
+		if u.kept == nil {
+			u.kept = map[net.Conn]bool{}
+		}
+		u.kept[c] = true
 	}
-	if u.conns == nil {
-		u.conns = map[net.Conn]bool{}
-	}
-	u.conns[c] = true
 }
 
 // stop is called once the server's Serve has returned. net/http notes a
@@ -229,11 +255,13 @@ func (u *unreadConns) stop() {
 }
 
 // wait returns once the server takes no more connections and none it took
-// is unread, after unreadWait at most, or when ctx ends.
+// is unread, after unreadWait at most, or when ctx ends. A kept-alive
+// connection its agent leaves idle that long is closed by Shutdown, as
+// its idle timeout would.
 func (u *unreadConns) wait(ctx context.Context) {
 	for deadline := time.Now().Add(unreadWait); ; time.Sleep(10 * time.Millisecond) {
 		u.mu.Lock()
-		done := u.stopped && len(u.conns) == 0
+		done := u.stopped && len(u.conns) == 0 && len(u.kept) == 0
 		u.mu.Unlock()
 		if done || time.Now().After(deadline) || ctx.Err() != nil {
 			return

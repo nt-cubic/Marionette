@@ -22,7 +22,7 @@ import (
 
 // ResetCredits is how many rate-limit resets an account holds and the
 // soonest one of them runs out; Until is nil when none does, or when that
-// couldn't be read.
+// couldn't be read (untilUnread then).
 type ResetCredits struct {
 	Count int        `json:"count"`
 	Until *time.Time `json:"until,omitempty"`
@@ -39,6 +39,10 @@ type ResetCredits struct {
 	// lists them, where it only said the first). Empty when the vendor
 	// didn't say.
 	Each []ResetCard `json:"each,omitempty"`
+	// untilUnread: when they run out couldn't be read, so a nil Until is
+	// not known, not "never" — the reset about to run out is looked at
+	// again soon rather than left for hours (SpendExpiringCodexResets)
+	untilUnread bool
 }
 
 // ResetCard is one reset: when it runs out (nil: it never does) and, of
@@ -87,8 +91,18 @@ func (r ResetCredits) Words() string {
 }
 
 // codexResetDetailsTimeout bounds the second look, at when the resets run
-// out: without it the count alone is shown.
+// out: without it the count alone is shown. The background look at a
+// reset about to run out waits longer (withResetDetailsWait): nobody
+// waits on it, and without it the reset can't be spent in time.
 var codexResetDetailsTimeout = 4 * time.Second
+
+type resetDetailsWaitKey struct{}
+
+// withResetDetailsWait has the reads made with ctx wait up to d for when
+// the resets run out, in place of codexResetDetailsTimeout.
+func withResetDetailsWait(ctx context.Context, d time.Duration) context.Context {
+	return context.WithValue(ctx, resetDetailsWaitKey{}, d)
+}
 
 type codexResetCreditsWire struct {
 	AvailableCount int `json:"available_count"`
@@ -156,10 +170,16 @@ func codexResets(ctx context.Context, base, token, accountID string, count int) 
 		return nil
 	}
 	out := &ResetCredits{Count: count}
-	ctx, cancel := context.WithTimeout(ctx, codexResetDetailsTimeout)
+	wait := codexResetDetailsTimeout
+	if d, ok := ctx.Value(resetDetailsWaitKey{}).(time.Duration); ok {
+		wait = d
+	}
+	ctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	var w codexResetCreditsWire
-	if accountJSON(ctx, base+"/wham/rate-limit-reset-credits", token, map[string]string{"chatgpt-account-id": accountID}, &w) == nil {
+	if err := accountJSON(ctx, base+"/wham/rate-limit-reset-credits", token, codexAccountHeaders(accountID), &w); err != nil {
+		out.untilUnread = true
+	} else {
 		out.Until = w.soonest()
 		// listed only when they are the ones counted: a list that says
 		// otherwise isn't put on the card as if it were
@@ -218,7 +238,7 @@ func useCodexReset(ctx context.Context, user, why string) (ResetOutcome, error) 
 	// which of them to spend is named, as Codex itself does: left to the
 	// vendor, it may be one that lasts longer
 	var w codexResetCreditsWire
-	if err := accountJSON(ctx, base+"/wham/rate-limit-reset-credits", tok, map[string]string{"chatgpt-account-id": accountID}, &w); err != nil {
+	if err := accountJSON(ctx, base+"/wham/rate-limit-reset-credits", tok, codexAccountHeaders(accountID), &w); err != nil {
 		return ResetOutcome{}, fmt.Errorf("couldn't read which reset runs out first, so none was used: %w", err)
 	}
 	credit, _ := w.first()
@@ -297,8 +317,10 @@ func consumeCodexReset(ctx context.Context, base, token, accountID, credit, id s
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
-	if accountID != "" {
-		req.Header.Set("chatgpt-account-id", accountID)
+	for k, v := range codexAccountHeaders(accountID) {
+		if v != "" {
+			req.Header.Set(k, v)
+		}
 	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {

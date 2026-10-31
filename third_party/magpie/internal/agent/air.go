@@ -174,6 +174,7 @@ func air(home, cfg string) *Agent {
 			return wiringOff("Air", ocPath, func(k string) (string, bool) { return edit.GetJSON(ocPath, "provider."+magpieID+".options."+k) },
 				"baseURL", gatewayV1(), "apiKey", hereKey())
 		},
+		ListOnly: true,
 		Sync: func() error {
 			return syncJSONInOrder(ocPath, "provider."+magpieID, provider)
 		},

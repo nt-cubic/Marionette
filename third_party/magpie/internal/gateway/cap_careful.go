@@ -128,10 +128,8 @@ func carefulOf(p provider.Provider, model string, ms []provider.Member) ([]provi
 		return ps, models
 	}
 	ps, models = append(ps, p), append(models, model)
-	for _, id := range p.Fallback {
-		if fp, fm, ok := provider.ResolveRoute(id); ok {
-			ps, models = append(ps, fp), append(models, fm)
-		}
+	for _, m := range provider.FallbackModels(p) {
+		ps, models = append(ps, m.Provider), append(models, m.Model)
 	}
 	return ps, models
 }

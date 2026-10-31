@@ -80,7 +80,9 @@ func (s *sseWriter) begin() {
 	h := s.w.Header()
 	h.Set("Content-Type", "text/event-stream; charset=utf-8")
 	h.Set("Cache-Control", "no-cache")
-	h.Set("Connection", "keep-alive")
+	if h.Get("Connection") == "" { // a handed-off gateway's close stays (closesWhenHandedOff)
+		h.Set("Connection", "keep-alive")
+	}
 	h.Set("X-Accel-Buffering", "no")
 	s.w.WriteHeader(http.StatusOK)
 	s.flush()

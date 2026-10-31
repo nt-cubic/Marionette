@@ -770,6 +770,42 @@ func TestAnthropicPassthroughMiniMaxArkThinkingOffRefused(t *testing.T) {
 	}
 }
 
+// #3739: Kimi Code (China)'s K3.1 models refuse thinking turned off in
+// their own words, the reporter's literal message. The request magpie
+// turned it off for (ZCode sends none; it asks for a level as
+// output_config.effort) is asked again with thinking left to the model,
+// once; thinking the caller asked for goes as it came, and another 400 on
+// the same request, or a near wording, is the caller's to see.
+func TestAnthropicPassthroughKimiThinkingOffRefused(t *testing.T) {
+	const refusal = `{"type":"error","error":{"type":"invalid_request_error","message":"Kimi Code (China): K3.1 Pro does not support disabled thinking mode. Please enable thinking and try again, or choose another model."}}`
+	f := &fake{t: t, ctype: "application/json", reply: `{"id":"msg","type":"message","content":[]}`}
+	f.refuse = func(b []byte) (int, string) {
+		if bytes.Contains(b, []byte(`"disabled"`)) {
+			return 400, refusal
+		}
+		return 0, ""
+	}
+	setup(t, provider.Anthropic, f)
+	code, body := post(t, "/v1/messages", `{"model":"m1","max_tokens":1,"messages":[{"role":"user","content":[{"type":"text","text":"Hi","cache_control":{"type":"ephemeral"}}]}]}`)
+	if code != 200 || f.calls != 2 || bytes.Contains(f.got, []byte("thinking")) || !bytes.Contains(f.got, []byte(`"Hi"`)) {
+		t.Fatalf("omitted: %d %s after %d calls, last sent %s", code, body, f.calls, f.got)
+	}
+	f.calls = 0
+	if code, body := post(t, "/v1/messages", `{"model":"m1","max_tokens":1,"thinking":{"type":"adaptive"},"messages":[{"role":"user","content":"."}]}`); code != 200 || f.calls != 1 || !bytes.Contains(f.got, []byte(`"thinking":{"type":"adaptive"}`)) {
+		t.Errorf("adaptive: %d %s after %d calls, sent %s", code, body, f.calls, f.got)
+	}
+	for _, other := range []string{
+		`{"type":"error","error":{"type":"invalid_request_error","message":"Kimi Code (China): max_tokens is too large"}}`,
+		`{"type":"error","error":{"type":"invalid_request_error","message":"Kimi Code (China): tool use is not supported by this model"}}`,
+	} {
+		f.calls = 0
+		f.refuse = func([]byte) (int, string) { return 400, other }
+		if code, _ := post(t, "/v1/messages", `{"model":"m1","max_tokens":1,"messages":[{"role":"user","content":"."}]}`); code != 400 || f.calls != 1 {
+			t.Errorf("%s: %d after %d calls", other, code, f.calls)
+		}
+	}
+}
+
 // The same refusal, escaped as \uXXXX the way a relay whose encoder
 // escapes what isn't ASCII sends it (#1669): asked again all the same.
 func TestAnthropicPassthroughAlwaysThinksInEscapedChinese(t *testing.T) {

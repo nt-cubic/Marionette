@@ -303,6 +303,9 @@ var ErrNoSubagent = errors.New("no such subagent in this session")
 
 // SubagentTranscript is the conversation of the session's subagent sub.
 func SubagentTranscript(s Session, sub string) (Transcript, error) {
+	if !Reads(s.Agent) {
+		return Transcript{Parts: []Part{}}, ErrNotRead
+	}
 	for _, sa := range s.Subagents {
 		if sa.ID != sub {
 			continue

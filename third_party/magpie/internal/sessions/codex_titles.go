@@ -70,7 +70,12 @@ func codexTitleOf() func(id string) string {
 
 // CodexTitles reads only the append-only name index. It caches unchanged
 // files and reads newly appended complete lines from the previous offset.
-func CodexTitles(ids []string) map[string]string { return codexTitlesAt(codexTitleIndexPath(), ids) }
+func CodexTitles(ids []string) map[string]string {
+	if !Reads("codex") {
+		return map[string]string{}
+	}
+	return codexTitlesAt(codexTitleIndexPath(), ids)
+}
 func codexTitlesAt(path string, ids []string) map[string]string {
 	out := make(map[string]string)
 	if len(ids) == 0 {
@@ -93,7 +98,7 @@ func codexTitlesAt(path string, ids []string) map[string]string {
 // They still count as conflicting recipients of a generated title.
 func CodexTitleRecipients(digests []string) map[string][]TitleApplication {
 	out := map[string][]TitleApplication{}
-	if len(digests) == 0 {
+	if len(digests) == 0 || !Reads("codex") {
 		return out
 	}
 	codexTitles.Lock()

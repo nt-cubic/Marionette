@@ -384,8 +384,10 @@ func TestGeminiParallelToolResultsStayWithTheirCalls(t *testing.T) {
 }
 
 func TestClaudeTraceSubagentsShareSessionWithoutIDCollisions(t *testing.T) {
-	for _, agent := range []string{"claude", "claude-desktop"} {
-		t.Run(agent, func(t *testing.T) {
+	// Desktop's Code tab writes "claude-desktop", or "claude-desktop-3p"
+	// in its third-party inference mode (cybercaius, a gateway setup)
+	for entry, agent := range map[string]string{"claude": "claude", "claude-desktop": "claude-desktop", "claude-desktop-3p": "claude-desktop"} {
+		t.Run(entry, func(t *testing.T) {
 			testenv.SetHome(t, t.TempDir())
 			t.Setenv("CODEX_HOME", t.TempDir())
 			t.Setenv("PI_CODING_AGENT_DIR", t.TempDir())
@@ -405,8 +407,8 @@ func TestClaudeTraceSubagentsShareSessionWithoutIDCollisions(t *testing.T) {
 				// No sessionId is required: child paths provide the parent session ID.
 				var lines []string
 				for _, event := range []map[string]any{
-					{"type": "user", "uuid": "old", "entrypoint": agent, "timestamp": since.Add(-time.Minute), "message": map[string]any{"content": "PRIVATE-OLD"}},
-					{"type": "user", "uuid": "same-user", "entrypoint": agent, "timestamp": since, "message": map[string]any{"content": "PRIVATE-NEW"}},
+					{"type": "user", "uuid": "old", "entrypoint": entry, "timestamp": since.Add(-time.Minute), "message": map[string]any{"content": "PRIVATE-OLD"}},
+					{"type": "user", "uuid": "same-user", "entrypoint": entry, "timestamp": since, "message": map[string]any{"content": "PRIVATE-NEW"}},
 					{"type": "assistant", "timestamp": since.Add(time.Second), "message": map[string]any{"id": "same-message", "model": "claude-sonnet", "stop_reason": "end_turn", "content": []map[string]string{{"type": "text", "text": "PRIVATE-ANSWER"}}, "usage": map[string]int{"input_tokens": 10, "output_tokens": 5}}},
 					{"type": "system", "subtype": "turn_duration", "timestamp": since.Add(2 * time.Second)},
 				} {

@@ -167,10 +167,10 @@ func (h hangs) Find(context.Context, []string) ([][]redact.Found, error) {
 }
 
 // shensmart on Discord (10-28): with the model on by default, a request
-// waited for it as long as its client did, "masking…" on the Requests
+// waited for it as long as its client did, masking on the Requests
 // page, every one after it queued behind. On by default, it is waited for
-// defaultWait at most and the rules mask alone; turned on by the user, the
-// request still waits for it (and is held back when ctx ends).
+// defaultWait at most and the rules mask alone; turned on by the user, it
+// is waited for longer (strictWait).
 func TestDefaultModelHangingIsTheRules(t *testing.T) {
 	h := t.TempDir()
 	t.Setenv("HOME", h)
@@ -215,7 +215,12 @@ func TestDefaultModelHangingIsTheRules(t *testing.T) {
 		t.Fatal("the model was never asked")
 	}
 
-	// turned on by the user, the request waits for the model: no bound
+	// turned on by the user, the request waits for the model longer
+	// than the default's wait (strictWait; its end is
+	// TestStrictModelStalledIsTheRulesForWhatItDidntRead's)
+	wasStrict := strictWait
+	strictWait = time.Hour
+	t.Cleanup(func() { strictWait = wasStrict })
 	done := make(chan any, 1)
 	go func() {
 		defer func() { done <- recover() }()
@@ -226,5 +231,120 @@ func TestDefaultModelHangingIsTheRules(t *testing.T) {
 	case <-done:
 		t.Fatal("turned on by the user, the model wasn't waited for")
 	case <-time.After(3 * defaultWait):
+	}
+}
+
+// partly is a model that read the first text (a history it saw before)
+// and not the rest when the wait ended: the burst ahead of it in the
+// queue (xRayySummers on X).
+type partly struct{ hangs }
+
+func (p partly) Find(ctx context.Context, texts []string) ([][]redact.Found, error) {
+	p.asked <- struct{}{}
+	<-ctx.Done()
+	out, missing := make([][]redact.Found, len(texts)), 0
+	for i, s := range texts {
+		if strings.Contains(s, "new tool result") {
+			missing++
+		} else if k := strings.Index(s, "Liu Xiang"); k >= 0 {
+			out[i] = []redact.Found{{Start: k, End: k + 9, Label: "private_person", Score: 0.9}}
+		}
+	}
+	return out, &pii.Partial{Missing: missing, Of: len(texts), Err: ctx.Err()}
+}
+
+// xRayySummers on X (magpie 0.1.1877, Linux, AstrLink Guard turned on):
+// in a burst of requests with text the model hadn't read, one waited
+// 290s, and each that stopped waiting was "masking failed, so nothing
+// was sent". Turned on by the user, the model is waited for strictWait
+// at most: what it read is masked with its finds, the rest by the rules,
+// and the request goes. Nothing the rules mask goes as written. The old
+// code waited with no bound, and held the request back when the wait
+// ended.
+func TestStrictModelStalledIsTheRulesForWhatItDidntRead(t *testing.T) {
+	h := t.TempDir()
+	t.Setenv("HOME", h)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
+	if err := settings.Save(settings.Settings{Redact: true, RedactPersonal: true, RedactModel: true, RedactModelName: pii.AstrLinkGuard}); err != nil {
+		t.Fatal(err)
+	}
+	stalled := hangs{fake{installed: true}, make(chan struct{}, 8), make(chan struct{})}
+	t.Cleanup(func() { close(stalled.release) })
+	var m pii.Model = stalled
+	wasPicked, wasFetch, wasDisk, wasWait := picked, fetch, onDisk, strictWait
+	picked = func(settings.Settings) pii.Model { return m }
+	fetch = func(pii.Model, bool) {}
+	onDisk = func() bool { return true }
+	strictWait = 200 * time.Millisecond
+	t.Cleanup(func() { picked, fetch, onDisk, strictWait = wasPicked, wasFetch, wasDisk, wasWait })
+
+	key := "sk-ant-api03-" + strings.Repeat("a", 40)
+	mask := func(body []byte) ([]byte, int, any) {
+		type res struct {
+			b []byte
+			n int
+			p any
+		}
+		got := make(chan res, 1)
+		go func() {
+			var r res
+			defer func() { r.p = recover(); got <- r }()
+			b, hits := Masker{}.JSONHitsContext(context.Background(), body)
+			r.b, r.n = b, len(hits)
+		}()
+		select {
+		case r := <-got:
+			return r.b, r.n, r.p
+		case <-time.After(20 * strictWait):
+			t.Fatal("turned on by the user, a model that never answers held the request with no bound")
+		}
+		return nil, 0, nil
+	}
+
+	// a model that never answers: the rules mask alone
+	b, n, p := mask([]byte(`{"input":[{"role":"user","content":"new tool result: key ` + key + `"}]}`))
+	if p != nil {
+		t.Fatalf("held back: %v", p)
+	}
+	if strings.Contains(string(b), "aaaa") || n == 0 {
+		t.Fatalf("the rules didn't mask: %s", b)
+	}
+
+	// a model that read the history and not the new text: its find is
+	// masked there, and the rules mask the new text
+	m = partly{stalled}
+	b, _, p = mask([]byte(`{"input":[{"role":"user","content":"Liu Xiang said deploy"},{"role":"user","content":"new tool result: key ` + key + `"}]}`))
+	if p != nil {
+		t.Fatalf("held back: %v", p)
+	}
+	if strings.Contains(string(b), "Liu Xiang") || strings.Contains(string(b), "aaaa") {
+		t.Fatalf("what the model read wasn't masked with its find, or the rest not by the rules: %s", b)
+	}
+}
+
+// bounds is a model that says whether it was asked Bounded.
+type bounds struct {
+	fake
+	got *bool
+}
+
+func (b bounds) Find(ctx context.Context, texts []string) ([][]redact.Found, error) {
+	*b.got = pii.IsBounded(ctx)
+	return make([][]redact.Found, len(texts)), nil
+}
+
+// On by default the model is asked Bounded: what a request adds first,
+// and of a history it went without reading, a little a request
+// (xinvxueyuan and shensmart on Discord, 10-28). Turned on by the user,
+// it reads all of it.
+func TestDefaultModelIsBounded(t *testing.T) {
+	var got bool
+	model(context.Background(), bounds{fake{installed: true}, &got}, 0.8, false)([]string{"a"})
+	if !got {
+		t.Fatal("on by default, the model wasn't asked Bounded")
+	}
+	model(context.Background(), bounds{fake{installed: true}, &got}, 0.8, true)([]string{"a"})
+	if got {
+		t.Fatal("turned on by the user, the model was asked Bounded")
 	}
 }

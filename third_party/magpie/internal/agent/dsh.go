@@ -451,6 +451,11 @@ func dshParse(path, raw string) (head []string, items []dshItem, err error) {
 	}
 	opened := false // a "---" or "[]" came before the first entry
 	for _, l := range splitLinesKeep(raw) {
+		// magpie's notes are left out, and dshWrite puts them back: a
+		// route is compared with the lines magpie would write
+		if edit.IsNote(l) {
+			continue
+		}
 		t := strings.TrimSpace(l)
 		switch {
 		case strings.HasPrefix(l, "- ") || l == "-":
@@ -515,6 +520,9 @@ func dshWrite(path string, head []string, items []dshItem) error {
 		}
 		out = append(out, "[]") // dsh wants a list, even an empty one
 	}
+	// a route on the gateway says so (edit.Mark)
+	orig, _ := edit.Read(path)
+	out = edit.MarkYAMLLines(out, string(orig))
 	return edit.WriteAtomic(path, []byte(strings.Join(out, "\n")+"\n"))
 }
 

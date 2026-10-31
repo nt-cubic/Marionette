@@ -52,11 +52,25 @@ func TestSkillRepoFromXDGLock(t *testing.T) {
 	}
 }
 
+// checkout makes dir a git checkout whose config is cfg, with what git
+// looks for in its .git (provider.GitAt) as git init lays it out.
+func checkout(t *testing.T, dir, cfg string) {
+	t.Helper()
+	write(t, filepath.Join(dir, ".git/HEAD"), "ref: refs/heads/main\n")
+	write(t, filepath.Join(dir, ".git/config"), cfg)
+	for _, d := range []string{"objects", "refs/heads"} {
+		if err := os.MkdirAll(filepath.Join(dir, ".git", d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // A skill not installed from GitHub is grouped with the repository it
 // came from all the same (White Immortal on Discord): the skills CLI's
 // lock names it, or the git checkout it's in, whatever the remote's form,
-// and never with a user or token the remote had. A skill in ~/.claude kept
-// in git (the user's dotfiles) is not from that repository.
+// and never with a user or token the remote had. The checkout is the one
+// git finds, past an empty .git on the way (#3675). A skill in ~/.claude
+// kept in git (the user's dotfiles) is not from that repository.
 func TestSkillRepoTraced(t *testing.T) {
 	h := sandbox(t)
 	// npx skills add mattpocock/skills: in ~/.agents/skills, in its lock
@@ -69,12 +83,16 @@ func TestSkillRepoTraced(t *testing.T) {
 	// a clone of the repository, linked from the library
 	clone := filepath.Join(h, "code/skills")
 	skill(t, filepath.Join(clone, "skills/write-a-prd"), "write-a-prd", "PRD")
-	write(t, filepath.Join(clone, ".git/config"), "[core]\n\tbare = false\n[remote \"upstream\"]\n\turl = https://github.com/other/fork.git\n[remote \"origin\"]\r\n\turl = https://me:ghp_secret@github.com/mattpocock/skills.git\r\n")
+	checkout(t, clone, "[core]\n\tbare = false\n[remote \"upstream\"]\n\turl = https://github.com/other/fork.git\n[remote \"origin\"]\r\n\turl = https://me:ghp_secret@github.com/mattpocock/skills.git\r\n")
+	// an empty .git between the skill and its clone, which git passes over
+	if err := os.MkdirAll(filepath.Join(clone, "skills/.git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	// a skill that is a clone of its own, moved in
 	skill(t, filepath.Join(h, ".claude/skills/review"), "review", "Review")
-	write(t, filepath.Join(h, ".claude/skills/review/.git/config"), "[remote \"origin\"]\n\turl = git@gitlab.com:me/review.git\n")
+	checkout(t, filepath.Join(h, ".claude/skills/review"), "[remote \"origin\"]\n\turl = git@gitlab.com:me/review.git\n")
 	// ~/.claude in git: the user's dotfiles
-	write(t, filepath.Join(h, ".claude/.git/config"), "[remote \"origin\"]\n\turl = git@github.com:me/dotfiles.git\n")
+	checkout(t, filepath.Join(h, ".claude"), "[remote \"origin\"]\n\turl = git@github.com:me/dotfiles.git\n")
 	skill(t, filepath.Join(h, ".claude/skills/notes"), "notes", "Mine")
 
 	ok(t)(ImportSkills([]string{"grill-me", "review", "notes"}))

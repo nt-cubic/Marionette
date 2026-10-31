@@ -132,3 +132,34 @@ func TestPluginHostPassesAnAbsentUsedOn(t *testing.T) {
 		t.Error("a used of 0 that was said is not known")
 	}
 }
+
+// A window that tells its count (amount of limit) and leaves out used has
+// its share in that count: 370 of 1000 is 37% used, read by routing when
+// it stops the account and shown with its count when it is aside. Before,
+// it was text alone, and an account whose windows all told counts so was
+// unknown to routing (plugins#468). A count of 0, what a left-out amount
+// reads as, still says nothing.
+func TestAWindowsCountIsItsShare(t *testing.T) {
+	var u plugin.Usage
+	if err := json.Unmarshal([]byte(`{"windows":[
+		{"name":"Credits","amount":370,"limit":1000,"unit":"credits","display":"370 / 1000","resetsAt":"2099-01-01T00:00:00Z"},
+		{"name":"Bonus","amount":5,"limit":20,"aside":true,"display":"5 / 20"},
+		{"name":"Daily","limit":100,"display":"? / 100"}]}`), &u); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	q := quotaOfPlugin(SubscriptionQuota{Provider: "acme-plugin", User: "u"}, u)
+	if w := q.Windows[0]; w.Text || w.Aside || w.Used != 37 {
+		t.Errorf("a counted window: Text %v, Aside %v, Used %v", w.Text, w.Aside, w.Used)
+	}
+	if w := q.Windows[1]; w.Text || !w.Aside || w.Used != 25 {
+		t.Errorf("a counted window set aside: Text %v, Aside %v, Used %v", w.Text, w.Aside, w.Used)
+	}
+	if w := q.Windows[2]; !w.Text || !w.Aside {
+		t.Errorf("a limit with no count: Text %v, Aside %v", w.Text, w.Aside)
+	}
+	a, ok := routedAllowance("plugin:acme", "u", q, now)
+	if used, _ := a.For("", now); !ok || used != 37 {
+		t.Errorf("routing: known %v, used %v; want the count's 37", ok, used)
+	}
+}

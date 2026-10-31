@@ -51,3 +51,34 @@ func TestWalletWithMoreLeftGoesFirst(t *testing.T) {
 		}
 	}
 }
+
+// mycf_711 (#4095): the same SuperMagic accounts that go by their points
+// asked directly went in their listed order in a group, which weighs the
+// members' accounts as one pool beside WorkBuddy's credits: 282 points,
+// then 119, then 6,635. In the group too SuperMagic's go by what they
+// have left, and WorkBuddy's account keeps its place.
+func TestGroupWalletsGoByWhatTheyHaveLeft(t *testing.T) {
+	old := allowances
+	defer func() { allowances = old }()
+	share := map[string]provider.Allowance{}
+	allowances = func(string) map[string]provider.Allowance { return share }
+	wallet := func(left float64, unit string) provider.Allowance {
+		return provider.Allowance{{Name: unit, Balance: &left, Unit: unit}}
+	}
+	share["181****632"], share["181****710"], share["189****051"] = wallet(282, "积分"), wallet(119, "积分"), wallet(6635, "积分")
+	share["wb"] = wallet(50, "credits")
+	acct := func(agent, user string) candidate {
+		return candidate{p: provider.Provider{ID: agent, Account: &provider.Account{Agent: agent, User: user}}, model: "m", rest: agent + "#" + user}
+	}
+	for _, routing := range []string{"", provider.Pace, provider.LeastUsed} {
+		g := provider.Provider{ID: provider.GroupPrefix + "deepseek-v4.1-flash1017", Routing: routing}
+		got, _ := weigh(g, []candidate{acct("workbuddy", "wb"), acct("magicrew", "181****632"), acct("magicrew", "181****710"), acct("magicrew", "189****051")}, "", provider.Chat)
+		var s []string
+		for _, c := range got {
+			s = append(s, c.p.Account.User)
+		}
+		if got, want := strings.Join(s, ","), "wb,189****051,181****632,181****710"; got != want {
+			t.Errorf("%q: %s, want %s", routing, got, want)
+		}
+	}
+}

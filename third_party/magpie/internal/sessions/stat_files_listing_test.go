@@ -6,9 +6,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 // statFiles gives each file what os.Stat (follow) or os.Lstat gives it, and
@@ -173,5 +175,58 @@ func TestListedRolloutsAsWalked(t *testing.T) {
 	}
 	if _, ok := listedRollouts(filepath.Join(home, "none")); ok {
 		t.Error("a sessions folder that isn't there was listed")
+	}
+}
+
+// A listing after the first keeps each rollout's path and key from it
+// (#2278), and still gives each its size and time now, a new rollout and
+// none that went.
+func TestListedRolloutsKeepTheirNames(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("listed in one call a folder on macOS only")
+	}
+	root := filepath.Join(t.TempDir(), "sessions")
+	day := filepath.Join(root, "2026", "10", "30")
+	if err := os.MkdirAll(day, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	name := func(i int) string {
+		return filepath.Join(day, fmt.Sprintf("rollout-2026-10-30T10-00-0%d-0190aaaa-1111-7222-8333-44445555666%d.jsonl", i, i))
+	}
+	for i := range 3 {
+		if err := os.WriteFile(name(i), []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, ok := listedRollouts(root)
+	if !ok || len(first) != 3 {
+		t.Fatalf("first listing: %d rollouts, ok %t", len(first), ok)
+	}
+	if err := os.WriteFile(name(0), []byte("{}\n{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(name(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(name(5), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	again, ok := listedRollouts(root)
+	if !ok || len(again) != 3 {
+		t.Fatalf("second listing: %d rollouts, ok %t", len(again), ok)
+	}
+	for i, want := range []string{name(0), name(2), name(5)} {
+		if again[i].path != want || again[i].key != "codex:"+strings.TrimSuffix(filepath.Base(want)[28:], ".jsonl") {
+			t.Errorf("rollout %d: %s %s, want %s", i, again[i].path, again[i].key, want)
+		}
+	}
+	if again[0].size != 6 {
+		t.Errorf("a grown rollout's size: %d, want 6", again[0].size)
+	}
+	if unsafe.StringData(again[0].path) != unsafe.StringData(first[0].path) || unsafe.StringData(again[1].key) != unsafe.StringData(first[2].key) {
+		t.Error("a rollout listed before had its path and key made again")
+	}
+	if unsafe.StringData(again[2].path) == unsafe.StringData(first[2].path) {
+		t.Error("a new rollout took another's path")
 	}
 }

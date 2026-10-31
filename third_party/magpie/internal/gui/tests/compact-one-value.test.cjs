@@ -80,11 +80,11 @@ function serve(lang, posts) {
 }
 
 const words = {
-  en: { long: "Long conversations, shared by Codex and Claude Code", undo: "Undo" },
-  zh: { long: "「长对话」，Codex 和 Claude Code 共用", undo: "撤销" },
-  "zh-TW": { long: "「長對話」，Codex 與 Claude Code 共用", undo: "復原" },
-  ja: { long: "「長い会話」。Codex と Claude Code で共通", undo: "取り消す" },
-  de: { long: "„Lange Unterhaltungen“, die Codex und Claude Code teilen", undo: "Rückgängig" },
+  en: { long: "Long conversations, shared by Codex, Claude Code and Grok Build", undo: "Undo" },
+  zh: { long: "「长对话」，Codex、Claude Code 和 Grok Build 共用", undo: "撤销" },
+  "zh-TW": { long: "「長對話」，Codex、Claude Code 與 Grok Build 共用", undo: "復原" },
+  ja: { long: "「長い会話」。Codex、Claude Code、Grok Build で共通", undo: "取り消す" },
+  de: { long: "„Lange Unterhaltungen“, die Codex, Claude Code und Grok Build teilen", undo: "Rückgängig" },
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {

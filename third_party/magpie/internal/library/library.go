@@ -35,6 +35,11 @@ type Library struct {
 	// Applied is what magpie wrote into each agent, so that what it takes
 	// away is only ever its own.
 	Applied map[string]*Applied `json:"applied,omitempty"`
+	// Away are other computers' servers by the name of one kept to this
+	// computer here (Server.Local), as a sync last brought them: never
+	// given to an agent here, and carried on as they came, so a sync from
+	// here takes them from nobody (carry.go)
+	Away []*Server `json:"away,omitempty"`
 	// Icons are the icons of the servers added from the market, by what
 	// each runs, for the page to show them by
 	Icons map[string]string `json:"icons,omitempty"`
@@ -46,6 +51,13 @@ type Library struct {
 	// copy (#896, skill_how.go)
 	CopySkills bool              `json:"copySkills,omitempty"`
 	SkillHow   map[string]string `json:"skillHow,omitempty"`
+	// MCPHub gives each agent that can reach it magpie's one MCP server,
+	// which hands each call on to the library's servers ticked for it, in
+	// place of their own entries (#2679, mcp_hub.go)
+	MCPHub bool `json:"mcpHub,omitempty"`
+	// PluginsOffered are the plugins (plugin.Name) given a server of their
+	// tools, for one the user removed not to come back (plugin_tools.go)
+	PluginsOffered []string `json:"pluginsOffered,omitempty"`
 	// SeenSkills are, by repository and ref ("owner/repo@ref"), the
 	// folders of skills there the page has offered: picked or not at
 	// install, or set aside after a check. A check offers only the others
@@ -171,6 +183,7 @@ func (l *Library) save() error {
 	for _, s := range l.MCP {
 		s.Agents = orNone(s.Agents)
 	}
+	sort.Slice(l.Away, func(i, j int) bool { return l.Away[i].Name < l.Away[j].Name })
 	l.Instructions.Agents = orNone(l.Instructions.Agents)
 	b, err := json.MarshalIndent(l, "", "  ")
 	if err != nil {
@@ -269,6 +282,7 @@ func changeLocked(f func(l *Library) error) (*Result, error) {
 	if err := f(l); err != nil {
 		return nil, err
 	}
+	l.settleAway()
 	l.heal() // a server f brought in, from another computer too
 	if err := l.save(); err != nil {
 		return nil, err

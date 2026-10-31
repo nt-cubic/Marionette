@@ -27,8 +27,10 @@ import (
 // offer gpt-6-luna's Ultrafast only to the Pro account. It returns the
 // account and service tier each request was tried with, in order. With
 // echo set, a reply says the tier it ran at, as OpenAI's API does
-// (service_tier on the response: the one asked, or "default").
-func tierAccounts(t *testing.T, proOut, echo *bool) func() []string {
+// (service_tier on the response: the one asked, or "default"). With said
+// given, response.created and response.completed say the tiers it gives
+// for the one asked.
+func tierAccounts(t *testing.T, proOut, echo *bool, said ...func(asked string) (created, completed string)) func() []string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -81,14 +83,18 @@ func tierAccounts(t *testing.T, proOut, echo *bool) func() []string {
 			io.WriteString(w, `{"error":{"message":"You've hit your usage limit"}}`)
 			return
 		}
-		said := ""
+		began, ended := "", ""
 		if echo != nil && *echo {
-			said = `,"service_tier":"` + cmp.Or(q.Tier, "default") + `"`
+			ended = `,"service_tier":"` + cmp.Or(q.Tier, "default") + `"`
+		}
+		if len(said) > 0 {
+			c, d := said[0](q.Tier)
+			began, ended = `,"service_tier":"`+c+`"`, `,"service_tier":"`+d+`"`
 		}
 		io.WriteString(w, sse(
-			`data: {"type":"response.created","response":{"id":"r1","model":"gpt-6-luna"}}`,
+			`data: {"type":"response.created","response":{"id":"r1","model":"gpt-6-luna"`+began+`}}`,
 			`data: {"type":"response.output_text.delta","delta":"pong"}`,
-			`data: {"type":"response.completed","response":{"id":"r1"`+said+`,"usage":{"input_tokens":7,"output_tokens":1}}}`))
+			`data: {"type":"response.completed","response":{"id":"r1"`+ended+`,"usage":{"input_tokens":7,"output_tokens":1}}}`))
 	}))
 	t.Cleanup(up.Close)
 	old := provider.CodexBase
@@ -277,12 +283,13 @@ func TestTierRecordedPerTry(t *testing.T) {
 	if sr := sessionRouteOf(r); sr.Tier != "ultrafast" || sr.TierServed != "ultrafast" {
 		t.Errorf("route: %+v", sr)
 	}
-	// none asked: none in the log, and the reply's "default" as it said
+	// none asked: none in the log, and the ChatGPT backend's "default"
+	// kept as unknown, which it is there (servedTierAt)
 	postFrom(t, s, "omp", "/v1/responses", `{"model":"codex/gpt-6-luna","input":"ping"}`)
 	tried()
 	recs = usage.Load(time.Time{})
 	if n := len(recs); n < 3 || recs[n-2].TierAsked != "ultrafast" || recs[n-2].TierSent != "ultrafast" || recs[n-2].TierServed != "ultrafast" ||
-		recs[n-1].TierAsked != "" || recs[n-1].TierSent != "" || recs[n-1].TierServed != "default" {
+		recs[n-1].TierAsked != "" || recs[n-1].TierSent != "" || recs[n-1].TierServed != "" {
 		t.Fatalf("usage: %+v", recs)
 	}
 

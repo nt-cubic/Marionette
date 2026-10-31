@@ -82,12 +82,13 @@ const modelUsage = `usage:
                                                  own, a name you gave a model just as you wrote it, "Opus 5.5",
                                                  the others as on; off, "Sol" alone — but two a list would name
                                                  the same keep it
-  magpie model compact [on|off|<size>]           whether Codex and Claude Code compact a long conversation at
-                                                 272K: on, as by default, for a model of a longer window (in
-                                                 Claude Code, a Claude model runs to its own); off, at the
-                                                 model's whole window, 1M for a [1m] one; a size such as 500k
-                                                 compacts there instead. The app's Long conversations,
-                                                 in Codex's and Claude Code's settings on the Agents page,
+  magpie model compact [on|off|<size>]           whether Codex, Claude Code and Grok Build compact a long
+                                                 conversation at 272K: on, as by default, for a model of a
+                                                 longer window (in Claude Code, a Claude model runs to its
+                                                 own); off, at the model's whole window, 1M for a [1m] one; a
+                                                 size such as 500k compacts there instead. The app's Long
+                                                 conversations, in Codex's, Claude Code's and Grok Build's
+                                                 settings on the Agents page,
                                                  is the same switch; a provider's own Compact at (its
                                                  editor) comes before it
 
@@ -688,9 +689,9 @@ func modelSuffix(args []string) error {
 func modelCompact(args []string) error {
 	if len(args) == 0 {
 		if s := settings.Load(); s.FullContext {
-			fmt.Println("off", muted.Render("· Codex and Claude Code run a conversation to the model's whole window · magpie model compact on"))
+			fmt.Println("off", muted.Render("· Codex, Claude Code and Grok Build run a conversation to the model's whole window · magpie model compact on"))
 		} else {
-			fmt.Println("on", muted.Render(fmt.Sprintf("· Codex and Claude Code compact at %dK on a longer window; in Claude Code a Claude model runs to its own · magpie model compact off", s.Compact()/1000)))
+			fmt.Println("on", muted.Render(fmt.Sprintf("· Codex, Claude Code and Grok Build compact at %dK on a longer window; in Claude Code a Claude model runs to its own · magpie model compact off", s.Compact()/1000)))
 		}
 		return nil
 	}
@@ -707,16 +708,16 @@ func modelCompact(args []string) error {
 		if err := provider.SetCompactAt(n); err != nil {
 			return err
 		}
-		fmt.Println(green.Render("✓"), fmt.Sprintf("Codex and Claude Code compact at %dK on a longer window", settings.Load().Compact()/1000))
+		fmt.Println(green.Render("✓"), fmt.Sprintf("Codex, Claude Code and Grok Build compact at %dK on a longer window", settings.Load().Compact()/1000))
 		return nil
 	}
 	if err := provider.SetFullContext(full); err != nil {
 		return err
 	}
 	if full {
-		fmt.Println(green.Render("✓"), "Codex and Claude Code run a conversation to the model's whole window", muted.Render("· every turn sends all of it"))
+		fmt.Println(green.Render("✓"), "Codex, Claude Code and Grok Build run a conversation to the model's whole window", muted.Render("· every turn sends all of it"))
 	} else {
-		fmt.Println(green.Render("✓"), fmt.Sprintf("Codex and Claude Code compact at %dK again", settings.Load().Compact()/1000))
+		fmt.Println(green.Render("✓"), fmt.Sprintf("Codex, Claude Code and Grok Build compact at %dK again", settings.Load().Compact()/1000))
 	}
 	return nil
 }

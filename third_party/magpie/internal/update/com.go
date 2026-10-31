@@ -101,7 +101,9 @@ func comOwner(exe string) bool {
 // magpie.cmd there), or brings one there up to this version. Nothing in
 // a build without the launcher, or when it is as it should be already.
 func EnsureCompanion(exe string) error {
-	if comLauncher == nil || !comOwner(exe) {
+	// a download that opens the installed magpie (Settle) leaves the
+	// command to that one, in its folder on PATH
+	if comLauncher == nil || !comOwner(exe) || forwards(exe) {
 		return nil
 	}
 	dir := filepath.Dir(exe)

@@ -106,7 +106,7 @@ func (p Provider) kiloModelsPage(ctx context.Context, at string) ([]catalog.Mode
 	if p.Key != "" {
 		req.Header.Set("Authorization", "Bearer "+p.Key)
 	}
-	for k, v := range p.Headers {
+	for k, v := range p.SentHeaders(ctx) {
 		catalog.PutUserHeader(req.Header, k, v)
 	}
 	res, err := http.DefaultClient.Do(req)

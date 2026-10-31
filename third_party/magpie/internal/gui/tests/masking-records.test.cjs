@@ -158,7 +158,7 @@ const shot = (page, name) => process.env.MASK_SHOTS && page.screenshot({ path: p
 // English that a translated page must not show
 const english = ["Kept from vendors", "By request", "By value", "masked these on this computer", "Different values", "values masked", "Held back",
   "Request content", "How it was masked", "What happened", "Side by side", "Only the parts masking changed", "parts unchanged", "Found by", "In the answer",
-  "This request was not sent", "Mask it instead", "See the rules", "Nothing to put back", "no longer in memory", "Masked most", "Local model"];
+  "This request was not sent", "Mask it instead", "See the rules", "Nothing to put back", "no longer in memory", "never on disk", "Masked most", "Local model"];
 const untranslated = async (page, lang) => {
   if (lang === "en") return;
   const said = await page.locator("#view-masking").innerText();
@@ -400,14 +400,61 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     });
     test(`${engine} ${lang}: your own words alone are masking on`, async (t) => {
       const empty = (d) => ({ ...summary(d), requests: 0, n: 0, distinct: 0, blocked: 0, kinds: [], agents: [], providers: [], values: [], by: {} });
-      const { browser, page, errors } = await open(engine, lang, 640, empty, null, { off: true, none: true, settings: { redactWords: ["Nightjar"] } });
+      const { browser, page, errors, asked } = await open(engine, lang, 640, empty, null, { off: true, none: true, settings: { redactWords: ["Nightjar"] } });
       t.after(() => browser.close());
       await page.locator("#maskCard .msk-head").waitFor();
       assert.equal(await page.locator("#maskCard.off").count(), 0, "words alone mask, the card says off");
-      assert.equal(await page.locator("#maskCard .msk-head button").count(), 0, "no Turn on masking while words mask");
+      // the way off is Settings › Privacy, where the words are: a click
+      // here that turned the switches off would leave words masking
+      const off = page.locator("#maskCard .msk-head button");
+      assert.equal(await off.count(), 1, "one way off, no Turn on masking while words mask");
+      if (lang === "en") assert.equal(await off.innerText(), "Turn off in Settings");
+      else assert(!(await off.innerText()).includes("Turn"), "Turn off in Settings left in English");
       assert(!(await page.locator("#maskCard .msk-flow-none").innerText()).includes("Only keys"), "words alone: not the secrets-only line");
+      await off.click();
+      await page.locator("#view-settings").waitFor({ state: "visible" });
+      assert(!asked.some((x) => x.startsWith("settings")), "opening Settings saves nothing");
       assert.deepEqual(errors, []);
     });
+    // masking on, the page turns it off as it turns it on (ZekeXiao on X:
+    // "脱敏好像只有一个打开开关，不能关？"): both switches go off, the page
+    // then says off, and Turn on masking brings back what was on
+    for (const width of [1100, 640]) {
+      test(`${engine} ${lang} ${width}px: masking on, the page turns it off and on again`, async (t) => {
+        const { browser, page, errors, asked } = await open(engine, lang, width, summary);
+        t.after(() => browser.close());
+        const head = page.locator("#maskCard .msk-head");
+        await page.locator("#maskCard .msk-num").waitFor();
+        const off = head.locator("button.text");
+        assert.equal(await off.count(), 1, "a way off while masking is on");
+        if (lang === "en") assert.equal(await off.innerText(), "Turn off masking");
+        else assert(!(await off.innerText()).includes("Turn"), "Turn off masking left in English");
+        assert.deepEqual(await wide(page), { page: false, over: [] });
+        await shot(page, `${engine}-${lang}-${width}-on-off`);
+        const offText = await off.innerText();
+        await stillClick(page, off);
+        await until(() => asked.some((x) => x.startsWith("settings")));
+        const sent = JSON.parse(asked.find((x) => x.startsWith("settings")).slice(9));
+        assert.equal(sent.redact, false);
+        assert.equal(sent.redactPersonal, false);
+        // what the page says after is true: off, and the way back on
+        const on = head.locator("button.text");
+        await page.waitForFunction((was) => { const b = document.querySelector("#maskCard .msk-head button.text"); return b && !b.disabled && b.textContent !== was; }, offText);
+        if (lang === "en") {
+          assert.equal(await head.locator(".msk-sub").innerText(), "Masking is off: requests go to vendors as they are");
+          assert.equal(await on.innerText(), "Turn on masking");
+        }
+        assert.deepEqual(await wide(page), { page: false, over: [] });
+        asked.length = 0;
+        await stillClick(page, on);
+        await until(() => asked.some((x) => x.startsWith("settings")));
+        const back = JSON.parse(asked.find((x) => x.startsWith("settings")).slice(9));
+        assert.equal(back.redact, true);
+        assert.equal(back.redactPersonal, true, "personal data comes back on as it was");
+        await page.waitForFunction((was) => document.querySelector("#maskCard .msk-head button.text")?.textContent === was, offText);
+        assert.deepEqual(errors, []);
+      });
+    }
   }
 
   test(`${engine}: a masked call on the Gateway page, and a key in the address, open its request`, async (t) => {
@@ -461,6 +508,39 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await stillClick(page, one.locator(".msk-val").first());
       assert.equal(await one.locator("mark.lit").count(), 4);
       await untranslated(page, lang);
+      assert.deepEqual(errors, []);
+    });
+  }
+}
+
+// After a restart a record has no text left at all: the request's text,
+// the lines around its values and the values are memory's alone, never on
+// disk (maskrec). The page says that once, and doesn't say the lines are
+// still there (brianeee2 on X, in Docker, took it for a missing volume).
+const restarted = {
+  records: [{ key: K1, t: ago(300e3), route: "chat", what: "chat", agent: "claude", provider: "anthropic", model: "claude-opus-4-1", n: 1,
+    values: [{ p: NAME, k: "PERSON", b: "model", h: "", l: 3, n: 1 }] }],
+  sent: {},
+};
+for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
+  for (const lang of ["en", "zh", "zh-TW", "ja", "de"]) {
+    test(`${engine} ${lang}: a request from before a restart says its text was in memory only, once`, async (t) => {
+      const { browser, page, errors, asked } = await open(engine, lang, 640, summary, "", restarted);
+      t.after(() => browser.close());
+      await page.locator("#maskList .msk-row").first().click();
+      const one = page.locator("#maskOne");
+      await until(() => asked.includes("sent " + K1));
+      await one.locator(".msk-gone").waitFor();
+      assert.equal(await one.locator(".msk-gone").count(), 1, "one message");
+      assert.equal(await one.locator(".msk-none").count(), 0, "no second message");
+      assert.equal(await one.locator(".msk-msg").count(), 0);
+      const said = await one.locator(".msk-gone").innerText();
+      if (lang === "en") {
+        assert.match(said, /never on disk/);
+        assert.doesNotMatch(said, /line around each placeholder/, "no line is left to show");
+      }
+      await untranslated(page, lang);
+      assert.deepEqual(await wide(page), { page: false, over: [] });
       assert.deepEqual(errors, []);
     });
   }

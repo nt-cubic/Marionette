@@ -44,7 +44,7 @@ func (l *Library) takeEdits(targets []*Target, res *Result) {
 		var edits []edit
 		seen := map[string]bool{}
 		for _, t := range targets {
-			if t.Skills == "" || t.Desktop != nil || !slices.Contains(s.Agents, t.Agent.ID) {
+			if t.Skills == "" || t.Desktop != nil || !s.gives(t.Agent.ID) {
 				continue
 			}
 			p := filepath.Join(t.Skills, s.Name)

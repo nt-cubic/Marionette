@@ -99,10 +99,11 @@ func Catalog(ms []catalog.Model) []byte { return CatalogAt(ms, NewSessionEffort(
 func CatalogAt(ms []catalog.Model, effort string) []byte { return CatalogUsed(ms, effort, nil) }
 
 // CatalogUsed is CatalogAt with the models Codex used, most recent first,
-// kept where the Codex app reads them (Fit).
+// and a ChatGPT account's own (ChatGPTOwn), kept where the Codex app reads
+// them (FitOwn).
 func CatalogUsed(ms []catalog.Model, effort string, used []string) []byte {
 	entries := entriesAt(ms, 0, effort)
-	Fit(entries, used)
+	FitOwn(entries, used, ChatGPTOwn)
 	out := struct {
 		Models []any `json:"models"`
 	}{Models: entries}
@@ -112,6 +113,12 @@ func CatalogUsed(ms []catalog.Model, effort string, used []string) []byte {
 	b, _ := json.MarshalIndent(out, "", " ")
 	return b
 }
+
+// ChatGPTOwn reports whether slug is a ChatGPT account's own model in
+// magpie's list for Codex (codex/<slug>): Codex's own GPT models, for a
+// Codex that reaches them through magpie, which FitOwn keeps in the first
+// AppList.
+func ChatGPTOwn(slug string) bool { return strings.HasPrefix(slug, "codex/") }
 
 // level, tier and model are an entry of models.json as Entries writes it.
 type level struct {
@@ -143,10 +150,19 @@ type model struct {
 	} `json:"truncation_policy"`
 	Tools      []string `json:"experimental_supported_tools"`
 	Modalities []string `json:"input_modalities"`
-	Context    *int     `json:"context_window,omitempty"`
-	// the model's whole window when Context is the working one
-	// (settings.Working): Codex's model_context_window may raise it
-	// that far, as it does OpenAI's own models'
+	// the model's whole window, which Codex shows (95% of it) as the
+	// context the conversation has
+	Context *int `json:"context_window,omitempty"`
+	// where Codex compacts the conversation when that is before the
+	// window: the threshold set on the model or its provider, else
+	// Long conversations' (settings.Working). Codex compacts at the
+	// lesser of this and 90% of Context, and a
+	// model_auto_compact_token_limit the user put in config.toml comes
+	// before it. Until 10-30 the threshold went in Context, so a 1M
+	// model showed 258K in Codex (01huadalang on Discord).
+	AutoCompact *int `json:"auto_compact_token_limit,omitempty"`
+	// never written now; kept a field so it is one magpie owns, and
+	// Keep doesn't carry an old catalog's over
 	MaxContext *int   `json:"max_context_window,omitempty"`
 	Tiers      []tier `json:"service_tiers"`
 	// Without the search, Codex puts every MCP tool's schema (a
@@ -187,6 +203,28 @@ type model struct {
 	// the model Codex's auto-review runs on, settings.CodexAutoReview
 	// (see AutoReview)
 	AutoReview string `json:"auto_review_model_override,omitempty"`
+	// "none" on a DeepSeek model, as DeepSeek's own Codex setup says (see
+	// deepSeek); Codex's default, auto, otherwise, where a value the user
+	// put in by hand stays (Keep).
+	Summary string `json:"default_reasoning_summary,omitempty" keep:"unset"`
+	// Codex may send an image at its original detail: on a DeepSeek model
+	// that takes images, as DeepSeek's setup says. A true the user put in
+	// stays (Keep).
+	DetailOriginal bool `json:"supports_image_detail_original,omitempty" keep:"true"`
+}
+
+// deepSeekModel is a DeepSeek model of the V4 line on any host
+// (deepseek/deepseek-v4-pro, a relay's deepseek-ai/deepseek-v4-pro-0813,
+// DeepSeek's own deepseek-flash, a found auto/deepseek-flash), named by
+// the model's own id after its provider's. A routing group is not one: it
+// may hand the turn to any model.
+var deepSeekModel = regexp.MustCompile(`(?i)^deepseek-(v[4-9]|v\d\d|flash|pro|chat|reasoner)`)
+
+func deepSeek(id string) bool {
+	if strings.HasPrefix(id, "group/") {
+		return false
+	}
+	return deepSeekModel.MatchString(id[strings.LastIndex(id, "/")+1:])
 }
 
 // Entries renders models as models.json entries, ranked after the first
@@ -205,7 +243,7 @@ func entriesAt(ms []catalog.Model, after int, effort string) []any {
 	var entries []any
 	for i, m := range ms {
 		if raw, ok := own[strings.TrimPrefix(m.ID, "codex/")]; ok && strings.HasPrefix(m.ID, "codex/") {
-			e := ownEntry(raw, m.ID, m.Name, after+i+1)
+			e := ownEntry(raw, m.ID, shownName(m), after+i+1)
 			// the window as magpie resolves it — the one the user set,
 			// else the account's list's — not the cache's, which is what
 			// magpie last handed Codex (#674)
@@ -222,7 +260,7 @@ func entriesAt(ms []catalog.Model, after int, effort string) []any {
 			continue
 		}
 		e := model{
-			Slug: m.ID, DisplayName: m.Name, Description: m.Name + " via magpie",
+			Slug: m.ID, DisplayName: shownName(m), Description: m.Name + " via magpie",
 			Instructions: Prompt, Efforts: []level{},
 			Shell: "unified_exec", Visibility: "list", InAPI: true, Priority: after + i + 1,
 			ApplyPatch: "freeform", Tools: []string{}, Modalities: []string{"text"},
@@ -263,17 +301,40 @@ func entriesAt(ms []catalog.Model, after int, effort string) []any {
 		}
 		if c := m.Context; c > 0 {
 			// the model's or its provider's threshold, else the one for
-			// every model (#876); one at or above c is its whole window
+			// every model (#876); one at or above c is its whole window.
+			// A DeepSeek model too, though DeepSeek's own Codex setup
+			// compacts at none of its 1M: magpie's 272K came of a
+			// DeepSeek report (e950eb080: turns of ~550K waited 70-90s
+			// for a first token), and Full window or the model's own
+			// Compact at gives it the whole window
 			w := work.Working(c)
 			if m.Compact > 0 {
 				w = min(c, m.Compact)
 			}
-			e.Context = &w
+			e.Context = &c
 			if w < c {
-				e.MaxContext = &c
+				e.AutoCompact = &w
 			}
 		}
 		e.Truncation.Mode, e.Truncation.Limit = "tokens", 10000
+		if deepSeek(m.ID) {
+			// as DeepSeek's own Codex setup has its models (its
+			// models.json; Rollkey8 on X): shell_command, the one-shot
+			// shell tool of a Codex before 0.16x (0.165 reads it as
+			// unified_exec, its only one); low verbosity;
+			// no reasoning summary asked for (DeepSeek streams its
+			// reasoning as text); Codex's agents in V2; an image at its
+			// original detail. Its prompt (base_instructions) is not
+			// taken: magpie never rewrites a model's Codex prompt.
+			e.Shell = "shell_command"
+			low := "low"
+			e.Verbosity, e.DefVerbosity = true, &low
+			e.Summary = "none"
+			if e.MultiAgent == "" {
+				e.MultiAgent = "v2"
+			}
+			e.DetailOriginal = m.Images
+		}
 		for _, ef := range m.Efforts {
 			e.Efforts = append(e.Efforts, level{Effort: ef})
 		}
@@ -291,7 +352,9 @@ func entriesAt(ms []catalog.Model, after int, effort string) []any {
 // owned are the keys of an entry magpie writes, or leaves out on purpose:
 // every field of model, and the two ownEntry takes out of Codex's own.
 // keepTrue are those of them where a true the user set by hand stays over
-// magpie's false (keep:"true").
+// magpie's false (keep:"true"). A field tagged keep:"unset" is not owned:
+// written on some models only, the user's own on the rest stays, as
+// before magpie wrote it anywhere.
 var owned, keepTrue = func() (own, yes map[string]bool) {
 	own = map[string]bool{"availability_nux": true, "upgrade": true}
 	yes = map[string]bool{}
@@ -303,8 +366,11 @@ var owned, keepTrue = func() (own, yes map[string]bool) {
 			continue
 		}
 		own[name] = true
-		if f.Tag.Get("keep") == "true" {
+		switch f.Tag.Get("keep") {
+		case "true":
 			yes[name] = true
+		case "unset":
+			delete(own, name)
 		}
 	}
 	return own, yes
@@ -561,7 +627,15 @@ const AppList = 100
 // order they stood, in place of the last of the others there. The order
 // is otherwise kept, and the priorities numbered 1 to n in it. The slice
 // is put in that order too.
-func Fit(entries []any, used []string) {
+func Fit(entries []any, used []string) { FitOwn(entries, used, nil) }
+
+// FitOwn is Fit with Codex's own models (own reports them by slug) kept
+// in the first AppList ahead of the ones used, wherever the user's order
+// (Order) put them: Codex lists them itself, so a user who didn't take
+// them out of its list expects them in the app. An order set while the
+// list had none of them names only magpie's, and put every one past the
+// 100th (maiya on Discord). A hidden one still goes last.
+func FitOwn(entries []any, used []string, own func(slug string) bool) {
 	type ranked struct {
 		e        any
 		slug     string
@@ -603,7 +677,17 @@ func Fit(entries []any, used []string) {
 			listed++
 		}
 	}
-	if listed > AppList && len(used) > 0 {
+	if listed > AppList && (len(used) > 0 || own != nil) {
+		n := 0
+		// Codex's own first, then the used ones, as room allows
+		if own != nil {
+			for i := range rs[:listed] {
+				if n < AppList && own(rs[i].slug) {
+					rs[i].promoted = true
+					n++
+				}
+			}
+		}
 		at := map[string]int{}
 		for i, r := range rs[:listed] {
 			at[r.slug] = i
@@ -613,7 +697,6 @@ func Fit(entries []any, used []string) {
 				at["codex/"+r.slug] = i
 			}
 		}
-		n := 0
 		for _, u := range used {
 			if i, ok := at[u]; ok && !rs[i].promoted && n < AppList {
 				rs[i].promoted = true
@@ -832,6 +915,17 @@ func ownEntry(raw map[string]any, id, name string, priority int) map[string]any 
 	return e
 }
 
+// shownName is the name Codex's picker shows m by: its Name, with what
+// tells it from another entry of that name after it (catalog.Model.Apart).
+// The picker alone shows it: the description, and the names magpie adds
+// to spawn_agent, which go upstream, keep Name.
+func shownName(m catalog.Model) string {
+	if m.Apart == "" {
+		return m.Name
+	}
+	return m.Name + " · " + m.Apart
+}
+
 // listedEntry is the entry m's vendor lists it under in Codex's own shape
 // (catalog.Model.Codex, a sub2api's), under magpie's id: as the vendor
 // gave it — its instructions, tools, truncation, tiers and the rest, which
@@ -847,7 +941,7 @@ func listedEntry(m catalog.Model, priority int, work settings.Settings, autoRevi
 	if len(m.Codex) == 0 || json.Unmarshal(m.Codex, &raw) != nil || raw == nil {
 		return nil, false
 	}
-	e := ownEntry(raw, m.ID, m.Name, priority)
+	e := ownEntry(raw, m.ID, shownName(m), priority)
 	desc, _ := e["description"].(string)
 	e["description"] = cmp.Or(strings.TrimSpace(desc), m.Name) + " via magpie"
 	if c := m.Context; c > 0 {
@@ -862,7 +956,7 @@ func listedEntry(m catalog.Model, priority int, work settings.Settings, autoRevi
 			w = work.Working(c)
 		}
 		if w < c {
-			e["context_window"] = w
+			e["auto_compact_token_limit"] = w
 		}
 	}
 	// the levels, where the user's differ from the vendor's: those the
@@ -948,6 +1042,7 @@ func Window(e map[string]any, n, most int) {
 // Tag names a list of magpie's models: another list, another tag.
 func Tag(ms []catalog.Model) string {
 	b, _ := json.Marshal(ms)
+	b = append(b, catalogFormat...)
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:6])
 }
@@ -961,6 +1056,12 @@ func UsedTag(used []string) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:6])
 }
+
+// catalogFormat changes when the entries made of the same models change
+// shape, so a Codex holding the list magpie gave before asks again: v2 put
+// the window in context_window and the threshold in
+// auto_compact_token_limit (10-30).
+const catalogFormat = "v2"
 
 // tagMark is where a tag starts in an ETag magpie made.
 const tagMark = "+magpie-"

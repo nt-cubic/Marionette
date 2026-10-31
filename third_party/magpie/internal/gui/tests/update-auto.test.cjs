@@ -4,8 +4,10 @@
 // run: 30 min, 1 h, 6 h (the default, nothing set) or 24 h (#472). Off, the
 // interval stays, dimmed, kept for when it is on again, and the version
 // row, not asked yet, says so and offers Check, which asks the backend.
-// The rows are in Settings' About tab. No click moves the page. English
-// and Chinese; no backend, the API is faked.
+// The rows are in Settings' About tab. No click moves the page. The
+// switch's line says it checks: whether what it finds is downloaded at once
+// is Download updates automatically's (#3893). English and Chinese; no
+// backend, the API is faked.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -17,9 +19,11 @@ const assets = path.resolve(__dirname, "../assets");
 
 const words = {
   en: { auto: "Automatic updates", every: "Check every", off: "Off", on: "On", m30: "30 min", h6: "6 h", h24: "24 h",
-    version: "Version", check: "Check", isOff: "Automatic updates are off", latest: "Up to date", whileOn: "While automatic updates are on", often: "How often magpie looks for a newer version" },
+    version: "Version", check: "Check", isOff: "Automatic updates are off", latest: "Up to date", whileOn: "While automatic updates are on", often: "How often magpie looks for a newer version",
+    what: "Checks for a newer magpie by itself" },
   zh: { auto: "自动更新", every: "检查间隔", off: "关闭", on: "开启", m30: "30 分钟", h6: "6 小时", h24: "24 小时",
-    version: "版本", check: "检查", isOff: "自动更新已关闭", latest: "已是最新", whileOn: "自动更新开启时生效", often: "magpie 多久检查一次新版本" },
+    version: "版本", check: "检查", isOff: "自动更新已关闭", latest: "已是最新", whileOn: "自动更新开启时生效", often: "magpie 多久检查一次新版本",
+    what: "自动检查 magpie 新版本" },
 };
 
 function settingsPayload(lang, ctl) {
@@ -111,6 +115,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const auto = rowOf(w.auto), every = rowOf(w.every), version = rowOf(w.version);
         await auto.waitFor();
         assert.equal((await auto.locator(".opt.on").innerText()).trim(), w.on);
+        assert.equal((await auto.locator(".sub").innerText()).trim(), w.what, "the switch says it checks, not that it downloads");
         assert.equal((await every.locator(".opt.on").innerText()).trim(), w.h6);
         assert.deepEqual((await every.locator(".opt").allInnerTexts()).map((s) => s.trim()), [w.m30, lang === "zh" ? "1 小时" : "1 h", w.h6, w.h24]);
 

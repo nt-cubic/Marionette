@@ -52,3 +52,37 @@ func TestWalletLeftWithinItsTier(t *testing.T) {
 		}
 	}
 }
+
+// mycf_711 (#4095): a group's pool holds several providers' wallets —
+// WorkBuddy's credits beside SuperMagic's points — and with two kinds in
+// it nothing was weighed by a balance, so the group spent SuperMagic's
+// 282 and 119 points before its 6,635. Each kind goes by what it has left
+// in the places its own seats take; the other kind's seat, and a seat
+// that told none, keep theirs.
+func TestWalletsOfSeveralProvidersEachGoByWhatTheyHaveLeft(t *testing.T) {
+	const pts, credits = "magicrew\x00积分", "workbuddy\x00credits"
+	wallet := func(key string, left float64, in string) Seat {
+		return Seat{Key: key, Account: true, Known: true, Pace: 100.0 / 168, Left: left, LeftIn: in}
+	}
+	for _, st := range []struct {
+		name string
+		s    Strategy
+	}{{"smart", Smart}, {"pace", Pace}, {"usage", LeastUsed}} {
+		s := []Seat{wallet("wb-small", 40, credits), wallet("632", 282, pts), wallet("710", 119, pts), wallet("wb-big", 900, credits), wallet("051", 6635, pts)}
+		if got, want := keys(s, Apply(st.s, "p", s)), []string{"wb-big", "051", "632", "wb-small", "710"}; !slices.Equal(got, want) {
+			t.Errorf("%s: %v, want %v", st.name, got, want)
+		}
+		// the reporter's three behind another provider's wallet
+		s = []Seat{wallet("wb", 50, credits), wallet("632", 282, pts), wallet("710", 119, pts), wallet("051", 6635, pts)}
+		if got, want := keys(s, Apply(st.s, "p", s)), []string{"wb", "051", "632", "710"}; !slices.Equal(got, want) {
+			t.Errorf("%s, reporter's: %v, want %v", st.name, got, want)
+		}
+	}
+	// least used: the kinds keep the order of what magpie sent them lately
+	// between them, each kind in its places by what it has left
+	s := []Seat{wallet("632", 282, pts), wallet("wb", 50, credits), wallet("051", 6635, pts)}
+	s[0].Tokens, s[1].Tokens, s[2].Tokens = 10, 20, 30
+	if got, want := keys(s, Apply(LeastUsed, "p", s)), []string{"051", "wb", "632"}; !slices.Equal(got, want) {
+		t.Errorf("usage by tokens: %v, want %v", got, want)
+	}
+}

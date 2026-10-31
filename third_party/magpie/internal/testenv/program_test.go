@@ -24,7 +24,11 @@ func TestProgram(t *testing.T) {
 		if out, err := exec.Command(p, "a").Output(); err != nil || string(out) != "one a\n" {
 			t.Fatalf("ran: %q %v", out, err)
 		}
-		// written again within the test: the new script runs
+		// written again within the test, over a file left at another
+		// mode: the new script runs, at 0755
+		if err := os.Chmod(p, 0o644); err != nil {
+			t.Fatal(err)
+		}
 		Program(t, p, []byte("#!/bin/sh\necho two\n"))
 		if out, err := exec.Command(p).Output(); err != nil || string(out) != "two\n" {
 			t.Fatalf("ran again: %q %v", out, err)

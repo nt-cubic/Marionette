@@ -1246,7 +1246,7 @@ func balanceRead(ctx context.Context, p Provider) (amount string, parts, split [
 		// a named endpoint still gets the provider's headers, which is
 		// where a new-api relay's New-Api-User goes
 		if p.BalanceURL != "" {
-			for k, v := range p.Headers {
+			for k, v := range p.SentHeaders(ctx) {
 				req.Header.Set(k, withBalanceKey(v, p.Key, false))
 			}
 		}
@@ -1255,7 +1255,7 @@ func balanceRead(ctx context.Context, p Provider) (amount string, parts, split [
 		for k, v := range AuthHeaders(p, Chat) {
 			req.Header.Set(k, v)
 		}
-		for k, v := range p.Headers {
+		for k, v := range p.SentHeaders(ctx) {
 			req.Header.Set(k, withBalanceKey(v, p.Key, false))
 		}
 	}

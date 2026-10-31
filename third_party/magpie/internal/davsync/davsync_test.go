@@ -304,6 +304,13 @@ func TestSync(t *testing.T) {
 	b.use(t)
 	Dismiss()
 	settings.Save(settings.Settings{Theme: "light", Lang: "en", Proxy: "direct"})
+	// A file's time is the kernel's clock, which moves in ticks (4 ms at
+	// HZ=250), and the push's is time.Now(): saved within a tick of a's
+	// push, b's newer settings read as the older (red 13 of 100 alone on
+	// a Linux box). They are dated to the moment, as finely as the push.
+	if at := time.Now(); os.Chtimes(settings.Path(), at, at) != nil {
+		t.Fatal("dating b's settings")
+	}
 	v = now(t)
 	if v.Notice == nil || !slices.Equal(v.Notice.There, []string{"settings"}) {
 		t.Fatalf("newer here: %+v", v.Notice)

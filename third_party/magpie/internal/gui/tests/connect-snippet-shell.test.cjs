@@ -43,6 +43,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           const context = await browser.newContext({ viewport: { width, height: 800 }, reducedMotion: "reduce" });
           await context.addInitScript((p) => Object.defineProperty(Navigator.prototype, "platform", { get: () => p }), platform);
           const page = await context.newPage();
+          await page.addInitScript(() => { try { localStorage.setItem("magpie.gwConnectFolded", "0"); } catch {} }); // Connect opened, as a user who reads it
           page.setDefaultTimeout(6000);
           const errors = [];
           page.on("pageerror", (e) => errors.push(e.message));

@@ -50,7 +50,13 @@ func TestSaveAnswersBeforeTheAgentsSync(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{}`), 0o600); err != nil {
+	// Pi runs a model of magpie's: connected, so a sync writes its list
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{"defaultProvider":"magpie","defaultModel":"a/m1"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Pi as magpie connected it (Connect's connect.was stash): a sync
+	// writes only an agent connected in magpie
+	if err := os.WriteFile(filepath.Join(filepath.Dir(provider.Path()), "stash.json"), []byte(`{"pi.connect.was":"{}"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	fifo := filepath.Join(dir, "models.json")

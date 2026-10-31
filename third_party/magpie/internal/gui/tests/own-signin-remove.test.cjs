@@ -60,6 +60,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       return { page, errors };
     };
 
+    // an account's Remove waits under its ⋯
+    const more = async (row) => { await row.hover(); if (await row.locator(".acc-more").count()) await row.locator(".acc-more").click(); };
+
     test(`${engine} ${lang}: kiro-cli's own sign-in behind another can be removed, hidden`, async (t) => {
       const posts = [];
       const { page, errors } = await open(t, [
@@ -67,6 +70,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         { user: "Kiro account", plan: "KIRO FREE", on: true, own: true },
       ], posts);
       const mine = page.locator(".accts .acc", { hasText: "me@example.com" });
+      await more(mine);
+      await more(page.locator(`.accts .acc[data-account-id="Kiro account"]`));
       assert.equal(await mine.getByRole("button", { name: remove[lang], exact: true }).count(), 0, "the first of magpie's has no Remove");
       const own = page.locator(".accts .acc", { hasText: "Kiro account" }).getByRole("button", { name: remove[lang], exact: true });
       assert.equal(await own.getAttribute("title"), title[lang]);
@@ -81,6 +86,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     test(`${engine} ${lang}: kiro-cli's own sign-in in use first can be removed too`, async (t) => {
       const posts = [];
       const { page, errors } = await open(t, [{ user: "Kiro account", plan: "KIRO FREE", active: true, on: true, own: true }], posts);
+      await more(page.locator(`.accts .acc[data-account-id="Kiro account"]`));
       const own = page.locator(".accts .acc", { hasText: "Kiro account" }).getByRole("button", { name: remove[lang], exact: true });
       assert.equal(await own.getAttribute("title"), title[lang]);
       await own.click();

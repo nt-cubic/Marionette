@@ -42,10 +42,11 @@ func (s *Server) codexCatalog(w http.ResponseWriter, r *http.Request) {
 	var b bytes.Buffer
 	b.Write(head)
 	n, out := 0, 0
-	// the Codex app reads the first 100 alone (codexcat.AppList): the ones
-	// this key's Codex used are among them, and kept when the end is cut
+	// the Codex app reads the first 100 alone (codexcat.AppList): a ChatGPT
+	// account's own models and the ones this key's Codex used are among
+	// them, and kept when the end is cut
 	entries := codexcat.Entries(ms, 0)
-	codexcat.Fit(entries, usage.CodexUsedBy(access.Caller(r.Context()).KeyID))
+	codexcat.FitOwn(entries, usage.CodexUsedBy(access.Caller(r.Context()).KeyID), codexcat.ChatGPTOwn)
 	for _, e := range entries {
 		var one bytes.Buffer
 		enc := json.NewEncoder(&one)

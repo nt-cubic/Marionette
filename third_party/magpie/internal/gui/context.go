@@ -8,15 +8,22 @@ package gui
 // requests from the live trace.
 
 import (
+	"fmt"
+	"maps"
 	"math"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/sessions"
+	"github.com/yetone/magpie/internal/usage"
 )
 
 // defaultWindow is the window a prompt is measured against when the
@@ -86,7 +93,18 @@ type ctxAgent struct {
 	Models     []string           `json:"models"`
 	LatestID   int64              `json:"latestId"`
 	LatestTime time.Time          `json:"latestTime"`
+	// Clients are the libraries scriptsAgent's card is of, the most used
+	// first
+	Clients []string `json:"clients,omitempty"`
 }
+
+// scriptsAgent is the card the requests of a script go under: those whose
+// User-Agent names only an HTTP library, a runtime or an API SDK
+// (usage.IsLibrary: curl, Bun, python-httpx), or nothing at all ("other").
+// Each had a card of its own, scored as an agent's (theforeveriris on X).
+// Read from each route's agent as kept, so the history's older days go
+// there too; the Usage page's Agents list still has each by its own name.
+const scriptsAgent = "scripts"
 
 type ctxJSON struct {
 	Days     int          `json:"days"`
@@ -146,6 +164,73 @@ func mcpTokens(p *gateway.Prompt) int {
 	return n
 }
 
+// ctxRec is what the tab reads of a route: its prompt's parts by their
+// tokens, its items left out, and the whole prompt only where it can be its
+// session's latest (keepLatest). The tab held a week of routes whole, the
+// prompts' items and the tries' accounts with them, and read them again
+// at every refresh (Yayoi_no_yume on X: a 1-core server with 962 MB went
+// down with the tab open).
+type ctxRec struct {
+	ID                         int64
+	Time                       time.Time
+	Agent, Model, Kind, Sub    string
+	Session, Parent, Conv      string
+	Done, Failed               bool
+	Asked                      bool // it has a prompt of some tokens
+	Tokens, Window, MCP, Cache int
+	Counted, Tools, CacheKnown bool
+	Parts                      []gateway.PromptPart // items left out
+	Prompt                     *gateway.Prompt      // whole, when kept
+}
+
+// recOf is r as the tab reads it, its whole prompt kept when whole.
+func recOf(r gateway.Route, whole bool) ctxRec {
+	c := ctxRec{ID: r.ID, Time: r.Time, Agent: r.Agent, Model: r.Model, Kind: r.Kind, Sub: r.Sub,
+		Session: r.Session, Parent: r.ParentSession, Conv: r.Conv, Done: r.Done,
+		Failed: r.Status >= 400 || r.Error != "", Cache: cacheOf(r), CacheKnown: cacheKnown(r)}
+	if p := r.Prompt; p != nil {
+		c.Asked = p.Tokens > 0
+		c.Tokens, c.Window, c.Counted = p.Tokens, p.Window, p.Counted
+		c.MCP, c.Tools = mcpTokens(p), withTools(p)
+		c.Parts = make([]gateway.PromptPart, len(p.Parts))
+		for i, x := range p.Parts {
+			c.Parts[i] = gateway.PromptPart{Kind: x.Kind, Tokens: x.Tokens}
+		}
+		if whole {
+			c.Prompt = p
+		}
+	}
+	return c
+}
+
+// keepLatest is routes as the tab reads them, the whole prompt kept only on
+// each session's latest route with tools and its latest without: of these
+// two, the one the tab counts (toolSessions) is its session's latest, over
+// the other days' routes too.
+func keepLatest(routes []gateway.Route) []ctxRec {
+	latest := map[string]int{}
+	for i := range routes {
+		r := &routes[i]
+		// as contextOfRecs counts a session's request
+		if !r.Done || r.Agent == "" || r.Status >= 400 || r.Error != "" || r.Prompt == nil || r.Prompt.Tokens <= 0 || r.Kind != "" || r.Sub != "" {
+			continue
+		}
+		k := r.Agent + "\x00" + sessionOfRoute(*r) + "\x00" + strconv.FormatBool(withTools(r.Prompt))
+		if j, ok := latest[k]; !ok || !r.Time.Before(routes[j].Time) {
+			latest[k] = i
+		}
+	}
+	whole := make(map[int]bool, len(latest))
+	for _, i := range latest {
+		whole[i] = true
+	}
+	out := make([]ctxRec, len(routes))
+	for i, r := range routes {
+		out[i] = recOf(r, whole[i])
+	}
+	return out
+}
+
 func cacheOf(r gateway.Route) int {
 	if len(r.Usage) == 0 {
 		return 0
@@ -171,16 +256,26 @@ func sessionOfRoute(r gateway.Route) string {
 	return r.Conv
 }
 
+func sessionOfRec(r *ctxRec) string {
+	switch {
+	case r.Parent != "":
+		return r.Parent
+	case r.Session != "":
+		return r.Session
+	}
+	return r.Conv
+}
+
 // joinConvs puts a route that names no session under the agent's session
 // its conversation id was read from (sessions' Convs): dsh's
 // chat-completions and messages routes send no session id, so the gateway
 // keys each request by its first prompt's hash, and the page showed
 // "magpie-a…" where the Sessions page shows the session's title (Kumo31
 // on Discord). An id two sessions share stays as it is.
-func joinConvs(routes []gateway.Route, list func() []sessions.Session) {
+func joinConvs(routes []ctxRec, list func() []sessions.Session) {
 	loose := false
 	for _, r := range routes {
-		if r.Session == "" && r.ParentSession == "" && r.Conv != "" {
+		if r.Session == "" && r.Parent == "" && r.Conv != "" {
 			loose = true
 			break
 		}
@@ -200,7 +295,7 @@ func joinConvs(routes []gateway.Route, list func() []sessions.Session) {
 		}
 	}
 	for i, r := range routes {
-		if r.Session == "" && r.ParentSession == "" && r.Conv != "" {
+		if r.Session == "" && r.Parent == "" && r.Conv != "" {
 			if id := of[r.Agent+"\x00"+r.Conv]; id != "" {
 				routes[i].Session = id
 			}
@@ -213,8 +308,8 @@ func joinConvs(routes []gateway.Route, list func() []sessions.Session) {
 func compacted(prev, next int) bool { return prev >= 20000 && next < prev*6/10 }
 
 // ctxKey is the agent's session a route is in, "" when it names none.
-func ctxKey(r gateway.Route) string {
-	if key := sessionOfRoute(r); key != "" {
+func ctxKey(r *ctxRec) string {
+	if key := sessionOfRec(r); key != "" {
 		return r.Agent + "\x00" + key
 	}
 	return ""
@@ -230,10 +325,10 @@ func withTools(p *gateway.Prompt) bool { return partTokens(p, gateway.PartTools)
 // its title and its quota check — not a turn of the conversation, whose
 // prompt can't stand for it: a classifier's 40K after a 100K turn is no
 // compaction (Player on Discord: 45 in a session that never compacted).
-func toolSessions(routes []gateway.Route) map[string]bool {
+func toolSessions(routes []ctxRec) map[string]bool {
 	out := map[string]bool{}
-	for _, r := range routes {
-		if r.Kind == "" && r.Sub == "" && r.Prompt != nil && withTools(r.Prompt) {
+	for i := range routes {
+		if r := &routes[i]; r.Kind == "" && r.Sub == "" && r.Tools {
 			if sk := ctxKey(r); sk != "" {
 				out[sk] = true
 			}
@@ -244,6 +339,15 @@ func toolSessions(routes []gateway.Route) map[string]bool {
 
 // contextOf works the agents and their sessions out of their routes.
 func contextOf(routes []gateway.Route, days int) ctxJSON {
+	recs := make([]ctxRec, len(routes))
+	for i, r := range routes {
+		recs[i] = recOf(r, true)
+	}
+	return contextOfRecs(recs, days)
+}
+
+// contextOfRecs is contextOf of the routes as the tab reads them.
+func contextOfRecs(routes []ctxRec, days int) ctxJSON {
 	sort.SliceStable(routes, func(i, j int) bool { return routes[i].Time.Before(routes[j].Time) })
 	out := ctxJSON{Days: days, Agents: []ctxAgent{}, Sessions: []ctxSession{}}
 	type agentAcc struct {
@@ -266,9 +370,21 @@ func contextOf(routes []gateway.Route, days int) ctxJSON {
 		return listed
 	}
 	joinConvs(routes, list)
+	// routes are the tab's copies, so the history kept (ctxKept) keeps
+	// each route's own agent
+	scripts := map[string]int{}
+	for i := range routes {
+		if a := routes[i].Agent; a == "other" || usage.IsLibrary(a) {
+			if a != "other" {
+				scripts[a]++
+			}
+			routes[i].Agent = scriptsAgent
+		}
+	}
 	tooled := toolSessions(routes)
 	var order []string
-	for _, r := range routes {
+	for i := range routes {
+		r := &routes[i]
 		if !r.Done || r.Agent == "" {
 			continue
 		}
@@ -278,37 +394,36 @@ func contextOf(routes []gateway.Route, days int) ctxJSON {
 			agents[r.Agent] = acc
 		}
 		acc.a.Calls++
-		if r.Status >= 400 || r.Error != "" {
+		if r.Failed {
 			acc.a.Errors++
 			continue
 		}
-		p := r.Prompt
-		if p == nil || p.Tokens <= 0 || r.Kind != "" || !withTools(p) && tooled[ctxKey(r)] {
+		if !r.Asked || r.Kind != "" || !r.Tools && tooled[ctxKey(r)] {
 			// a title or another side call is neither the conversation's
 			// nor what the agent's prompts are like
 			continue
 		}
-		window := p.Window
+		window := r.Window
 		if window <= 0 {
 			window = defaultWindow
 		}
 		acc.a.Requests++
-		acc.prompts = append(acc.prompts, p.Tokens)
-		acc.bases = append(acc.bases, partTokens(p, gateway.PartSystem, gateway.PartTools, gateway.PartSkills, gateway.PartMemory))
-		acc.mcps = append(acc.mcps, mcpTokens(p))
-		for _, x := range p.Parts {
+		acc.prompts = append(acc.prompts, r.Tokens)
+		acc.bases = append(acc.bases, partTokens(&gateway.Prompt{Parts: r.Parts}, gateway.PartSystem, gateway.PartTools, gateway.PartSkills, gateway.PartMemory))
+		acc.mcps = append(acc.mcps, r.MCP)
+		for _, x := range r.Parts {
 			acc.parts[x.Kind] += x.Tokens
 		}
-		if p.Counted && cacheKnown(r) {
-			acc.counted += p.Tokens
-			acc.cached += min(cacheOf(r), p.Tokens)
+		if r.Counted && r.CacheKnown {
+			acc.counted += r.Tokens
+			acc.cached += min(r.Cache, r.Tokens)
 		}
 		acc.models[r.Model]++
 		if r.Time.After(acc.a.LatestTime) {
 			acc.a.LatestTime, acc.a.LatestID = r.Time, r.ID
 		}
 		acc.a.Window = max(acc.a.Window, window)
-		key := sessionOfRoute(r)
+		key := sessionOfRec(r)
 		if key == "" || r.Sub != "" {
 			// a subagent's prompt is its own conversation's, not the
 			// one whose session id it goes under
@@ -324,17 +439,17 @@ func contextOf(routes []gateway.Route, days int) ctxJSON {
 		}
 		if n := len(s.Points); n > 0 {
 			prev := s.Points[n-1].Tokens
-			if compacted(prev, p.Tokens) {
+			if compacted(prev, r.Tokens) {
 				s.Compacts++
 				acc.a.Compacts++
-			} else if d := p.Tokens - prev; d > 0 {
+			} else if d := r.Tokens - prev; d > 0 {
 				acc.growths = append(acc.growths, d)
 			}
 		}
-		s.Points = append(s.Points, ctxPoint{ID: r.ID, Time: r.Time, Tokens: p.Tokens, Window: p.Window, Cache: cacheOf(r), CacheUnknown: !cacheKnown(r)})
+		s.Points = append(s.Points, ctxPoint{ID: r.ID, Time: r.Time, Tokens: r.Tokens, Window: r.Window, Cache: r.Cache, CacheUnknown: !r.CacheKnown})
 		s.Requests++
-		s.Last, s.Latest, s.LatestID, s.Model = r.Time, p, r.ID, r.Model
-		s.Peak = max(s.Peak, p.Tokens)
+		s.Last, s.Latest, s.LatestID, s.Model = r.Time, r.Prompt, r.ID, r.Model
+		s.Peak = max(s.Peak, r.Tokens)
 		s.Window = max(s.Window, window)
 	}
 	// the sessions, the latest first
@@ -431,6 +546,14 @@ func contextOf(routes []gateway.Route, days int) ctxJSON {
 		if len(a.Models) > 3 {
 			a.Models = a.Models[:3]
 		}
+		if a.Agent == scriptsAgent {
+			a.Clients = slices.SortedFunc(maps.Keys(scripts), func(x, y string) int {
+				if scripts[x] != scripts[y] {
+					return scripts[y] - scripts[x]
+				}
+				return strings.Compare(x, y)
+			})
+		}
 		scoreAgent(a, acc.counted > 0)
 		out.Agents = append(out.Agents, *a)
 	}
@@ -517,27 +640,95 @@ func scoreAgent(a *ctxAgent, counted bool) {
 	}
 }
 
-// contextRoutes reads the routes of the days asked for: the history kept,
-// and the live trace's not yet in it.
-func contextRoutes(r *http.Request, days int) []gateway.Route {
+// ctxKept is what the tab has read of the routing history: each day's
+// routes as it reads them, by the size and time its files had, and its
+// last answer by what it was worked out of. The tab asks at every refresh
+// of the Usage page (5s by default); a day whose files are as they were
+// isn't read again, and an answer whose routes are the same is given
+// again. A day is its latest routes at most (gateway.History), so what is
+// kept doesn't grow with the history.
+var ctxKept = struct {
+	sync.Mutex
+	days map[string]ctxDay
+	key  string
+	at   time.Time
+	out  ctxJSON
+}{days: map[string]ctxDay{}}
+
+type ctxDay struct {
+	key  string
+	recs []ctxRec
+}
+
+// ctxAgain is how long an answer stands while nothing it was worked out of
+// changed: the sessions' titles and the models' names it has are read
+// again after it.
+const ctxAgain = time.Minute
+
+// readingDay, in tests, is told each day the tab reads from the history.
+var readingDay func(day string)
+
+// dayStamp is what a day's files are now: their sizes and times.
+func dayStamp(day string) string {
+	var b strings.Builder
+	base := filepath.Join(gateway.HistoryDir(), day+".jsonl")
+	for _, p := range []string{base, base + ".gz"} {
+		if fi, err := os.Stat(p); err == nil {
+			fmt.Fprintf(&b, "%d/%d;", fi.Size(), fi.ModTime().UnixNano())
+		} else {
+			b.WriteString("-;")
+		}
+	}
+	return b.String()
+}
+
+// contextRecs reads the routes of the days asked for: the history kept,
+// and the live trace's not yet in it. stamp is what they were read from.
+func contextRecs(r *http.Request, days int) (out []ctxRec, stamp string) {
+	ctxKept.Lock()
+	defer ctxKept.Unlock()
+	return contextRecsLocked(r, days)
+}
+
+func contextRecsLocked(r *http.Request, days int) (out []ctxRec, stamp string) {
 	seen := map[int64]bool{}
-	var out []gateway.Route
 	now := time.Now()
+	var key strings.Builder
+	asked := map[string]bool{}
 	for i := days - 1; i >= 0; i-- {
 		day := now.AddDate(0, 0, -i).Format("2006-01-02")
-		_, rs, _ := gateway.History(day)
-		for _, x := range rs {
+		asked[day] = true
+		st := dayStamp(day)
+		fmt.Fprintf(&key, "%s=%s", day, st)
+		d, ok := ctxKept.days[day]
+		if !ok || d.key != st {
+			if readingDay != nil {
+				readingDay(day)
+			}
+			_, rs, _ := gateway.History(day)
+			d = ctxDay{key: st, recs: keepLatest(rs)}
+			ctxKept.days[day] = d
+		}
+		for _, x := range d.recs {
 			if !seen[x.ID] {
 				seen[x.ID] = true
 				out = append(out, x)
 			}
 		}
 	}
+	// a day out of the range is let go; the range's days are kept for the
+	// next refresh
+	for day := range ctxKept.days {
+		if !asked[day] {
+			delete(ctxKept.days, day)
+		}
+	}
 	if gw := served.Load(); gw != nil {
 		for _, x := range gw.Trace(r.Context(), 0, 0).Routes {
 			if x.Done && !seen[x.ID] {
 				seen[x.ID] = true
-				out = append(out, x)
+				out = append(out, recOf(x, true))
+				fmt.Fprintf(&key, ",%d", x.ID)
 			}
 		}
 	}
@@ -546,6 +737,21 @@ func contextRoutes(r *http.Request, days int) []gateway.Route {
 	for i := range out {
 		out[i].Model = pub(out[i].Model)
 	}
+	return out, key.String()
+}
+
+// contextFor is the tab's answer for the days asked for: the last one
+// again when its routes are the same and it isn't ctxAgain old.
+func contextFor(r *http.Request, days int) ctxJSON {
+	ctxKept.Lock()
+	defer ctxKept.Unlock()
+	recs, stamp := contextRecsLocked(r, days)
+	stamp = strconv.Itoa(days) + "|" + stamp
+	if stamp == ctxKept.key && time.Since(ctxKept.at) < ctxAgain {
+		return ctxKept.out
+	}
+	out := contextOfRecs(recs, days)
+	ctxKept.key, ctxKept.at, ctxKept.out = stamp, time.Now(), out
 	return out
 }
 
@@ -555,7 +761,7 @@ func contextRoutesAPI(mux *http.ServeMux) {
 		if days <= 0 || days > 30 {
 			days = 7
 		}
-		writeJSON(rw, contextOf(contextRoutes(r, days), days))
+		writeJSON(rw, contextFor(r, days))
 	})
 	// the text of a part of a request's prompt (masaka on Discord): the
 	// part's items, and one item's text when item is given. From the

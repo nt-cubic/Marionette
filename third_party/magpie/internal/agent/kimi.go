@@ -261,6 +261,7 @@ func kimiIn(at place) *Agent {
 		ID: "kimi", Name: "Kimi Code", Icon: "kimi", Aliases: []string{"kimi-code", "kimi-cli"}, Spelled: prefixed,
 		UA:  []string{"kimicli"},
 		Bin: "kimi", Dir: dir, Path: path,
+		ListOnly: true,
 		Sync: func() error {
 			t, err := edit.GetTOMLTable(path, providerTable)
 			if err != nil || t == nil {

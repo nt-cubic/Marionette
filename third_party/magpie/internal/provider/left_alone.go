@@ -9,6 +9,10 @@ package provider
 // those ran every minute or so for a Claude switched off, and a request
 // made just as a proxy came back up after a restart went out on the
 // machine's own address (Riko on Discord).
+//
+// One read is kept for Codex: the account it is signed in to, while it
+// takes magpie's models, for whether the Codex app holds it
+// (codexHoldReading), which decides where Codex sends at all.
 
 // leftAlone says whether magpie leaves provider id alone in the
 // background: switched off, or its account removed from magpie.

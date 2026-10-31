@@ -25,7 +25,8 @@ import (
 // for — the vendor sees no more than that many — and what is waited is
 // told in the route's try (Try.Queued).
 
-// lanes are the slots of each key or account with a limit.
+// lanes are the slots of each key or account with a limit, and the count
+// of those out on one without (limit 0), which take no slot and never wait.
 type lanes struct {
 	mu sync.Mutex
 	m  map[string]*lane
@@ -67,7 +68,7 @@ var (
 // acquire waits for one of who's limit slots, in turn, with no bound on
 // the queue or the wait. It answers the release, to call once the request
 // is done with the vendor, and false with no slot taken when ctx ended
-// first. A limit of 0 takes no slot.
+// first. A limit of 0 never waits; the request is only counted.
 func (l *lanes) acquire(ctx context.Context, who string, limit int) (release func(), ok bool) {
 	release, _, err := l.take(ctx, who, limit, 0, 0)
 	return release, err == nil
@@ -84,18 +85,19 @@ func (l *lanes) take(ctx context.Context, who string, limit, queue int, wait tim
 		l.m = map[string]*lane{}
 	}
 	ln := l.m[who]
-	if limit <= 0 {
-		if ln != nil {
-			// the limit was lifted: whoever waits goes now
-			ln.limit = 0
-			ln.grant()
-		}
-		l.mu.Unlock()
-		return func() {}, 0, nil
-	}
 	if ln == nil {
 		ln = &lane{}
 		l.m[who] = ln
+	}
+	if limit <= 0 {
+		// the limit was lifted: whoever waits goes now. With none, the
+		// request is still counted while it is out, for the pill that
+		// says how many run (chentuoyan on Discord)
+		ln.limit = 0
+		ln.grant()
+		ln.busy++
+		l.mu.Unlock()
+		return l.releaser(who, ln), 0, nil
 	}
 	ln.limit = limit
 	ln.grant() // a limit raised lets more of those waiting go
@@ -263,8 +265,9 @@ func (s *Server) concurrency(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"object": "concurrency", "data": lanes, "requests": b.Requests, "waiting": waiting, "tools": b.Tools, "active": s.Active()})
 }
 
-// Lanes is how each key or account with requests out or waiting under a
-// limit stands, by its who (provider, provider#key, provider@account).
+// Lanes is how each key or account with requests out or waiting stands,
+// limit or none (Limit 0), by its who (provider, provider#key,
+// provider@account).
 func (s *Server) Lanes() map[string]Lane {
 	s.lanes.mu.Lock()
 	defer s.lanes.mu.Unlock()

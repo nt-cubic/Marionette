@@ -203,6 +203,19 @@ func inGroupTry(ctx context.Context) bool {
 	return v
 }
 
+// fallbackKey marks a try with another candidate after it: a model's next
+// account, provider or group member.
+type fallbackKey struct{}
+
+func withFallback(ctx context.Context) context.Context {
+	return context.WithValue(ctx, fallbackKey{}, true)
+}
+
+func hasFallback(ctx context.Context) bool {
+	v, _ := ctx.Value(fallbackKey{}).(bool)
+	return v
+}
+
 // prefillHow is how the upstream a reply is translated to goes on from
 // the part of it the client has, sent back as the conversation's last
 // assistant message: an Anthropic Messages upstream natively, a Chat one

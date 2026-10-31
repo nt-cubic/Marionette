@@ -92,6 +92,40 @@ func TestExtraBodyResponsesRelayed(t *testing.T) {
 	}
 }
 
+// Claude Code's subagents share the conversation's session header, so
+// ${sessionId} alone puts every subagent's turns on one prompt_cache_key
+// (yetone/magpie#2937), more than a relay keeps warm. ${subagentId} is
+// the request's x-claude-code-agent-id, which the conversation's own
+// turns never send: the lead's key stays one shard, each subagent's
+// turns another.
+func TestExtraBodySubagentId(t *testing.T) {
+	f := &fake{t: t, reply: responsesReply, ctype: "application/json"}
+	setup(t, provider.Responses, f)
+	withExtraBody(t, "fake", `{"prompt_cache_key":"${sessionId}:${subagentId}"}`)
+
+	ask := func(agent string) string {
+		t.Helper()
+		head := map[string]string{"x-claude-code-session-id": "sess-1"}
+		if agent != "" {
+			head["x-claude-code-agent-id"] = agent
+		}
+		code, body := postWith(t, "/v1/responses", `{"model":"m1","input":"hi"}`, head)
+		if code != 200 {
+			t.Fatalf("status %d: %s", code, body)
+		}
+		return gjson.GetBytes(f.got, "prompt_cache_key").String()
+	}
+	if got := ask(""); got != "sess-1:" {
+		t.Errorf("the lead's key %q", got)
+	}
+	if got := ask("worker-a"); got != "sess-1:worker-a" {
+		t.Errorf("a subagent's key %q", got)
+	}
+	if got := ask("worker-b"); got == "sess-1:worker-a" || got == "sess-1:" {
+		t.Errorf("another subagent's key %q", got)
+	}
+}
+
 // Without a session header, ${sessionId} is the id magpie derives from the
 // conversation's first user message: never the literal, the same on every
 // turn of one conversation, different for another.

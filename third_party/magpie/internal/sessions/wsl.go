@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -67,6 +68,7 @@ var wslAgents = []struct{ agent, dir string }{
 	{"claude", ".claude"},
 	{"codex", ".codex"},
 	{"pi", filepath.Join(".pi", "agent")},
+	{"raft", ".slock"},
 	{"omp", filepath.Join(".omp", "agent")},
 	{"kimi", ".kimi-code"},
 }
@@ -83,6 +85,8 @@ func wslScan(home string) []file {
 			out = append(out, codexFilesIn(dir)...)
 		case "pi":
 			out = append(out, piFilesIn(dir, "")...)
+		case "raft":
+			out = append(out, raftFilesIn(dir)...)
 		case "omp":
 			out = append(out, ompFilesIn(dir)...)
 		case "kimi":
@@ -133,7 +137,8 @@ func wslListPath() string { return filepath.Join(filepath.Dir(CachePath()), "ses
 // as last listed; a listing is started behind when the last is older than
 // wslRelist.
 func wslFiles(agents ...string) []file {
-	if !wslLooking() {
+	agents = slices.DeleteFunc(slices.Clone(agents), func(a string) bool { return !Reads(a) })
+	if len(agents) == 0 || !wslLooking() {
 		return nil
 	}
 	wslSess.Lock()

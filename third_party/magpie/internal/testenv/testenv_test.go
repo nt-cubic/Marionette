@@ -68,6 +68,28 @@ func TestIsolate(t *testing.T) {
 	}
 }
 
+// wsl.exe, which magpie runs by that name to list and open the WSL
+// distros, is a failing stand-in under Isolate: the distros' homes lie
+// outside the test home, and a Windows test read the real one's Codex
+// sessions (#4177).
+func TestIsolateStandsInForWSL(t *testing.T) {
+	for _, k := range append(folderVars, "PATH", Marker) {
+		t.Setenv(k, os.Getenv(k)) // restored after the test
+	}
+	home, err := Isolate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { remove(home) })
+	got, err := exec.LookPath("wsl.exe")
+	if err != nil || !within(got, home) {
+		t.Fatalf("wsl.exe is %q (%v), not a stand-in in %s", got, err, home)
+	}
+	if out, err := exec.Command(got, "-l", "-q").Output(); err == nil || len(out) > 0 {
+		t.Fatalf("the stand-in listed distros: %q, %v", out, err)
+	}
+}
+
 // A binary started again by a test keeps that test's homes, all in the
 // temporary folder; one pointing anywhere else is refused.
 func TestCheckChild(t *testing.T) {

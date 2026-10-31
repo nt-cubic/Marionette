@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -288,6 +290,25 @@ func TestAsyncGatewayOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// a key of the user's own value, made for a friend, is a named key too
+	friend, err := access.Update("add-key", access.Change{Name: "Friend", Secret: "a-friends-own-key-0042"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the sharing key magpie makes and writes into this computer's agents
+	if err := access.ConfigureLAN(true, false); err != nil {
+		t.Fatal(err)
+	}
+	mine := access.LANSecret()
+	if mine == "" || mine == key {
+		t.Fatalf("no default sharing key: %q", mine)
+	}
+	// this computer's own network address, and a WSL distro's NAT network
+	oldOwn, oldNets := ownAddr, WSLNets
+	ownAddr = func(a netip.Addr) bool { return a == netip.MustParseAddr("192.168.50.7") }
+	_, wslNet, _ := net.ParseCIDR("172.28.80.1/20")
+	WSLNets = func() []*net.IPNet { return []*net.IPNet{wslNet} }
+	t.Cleanup(func() { ownAddr, WSLNets = oldOwn, oldNets })
 	abs := filepath.Join(t.TempDir(), "origin.hooks.mjs")
 	script := `export function onRequest(body,ctx){ctx.state.origin=ctx.origin;body.origin=ctx.origin;return body}
 export async function onResponse(reply,ctx){await fetch(ctx.options.url,{method:"POST",body:JSON.stringify({origin:ctx.origin,before:ctx.state.origin}),signal:ctx.signal})}`
@@ -314,6 +335,15 @@ export async function onResponse(reply,ctx){await fetch(ctx.options.url,{method:
 		{"named-loopback", "127.0.0.1:1234", "", key, "0", "gateway-key"},
 		{"remote", "10.0.0.1:1234", "", key, "0", "gateway-key"},
 		{"proxy", "127.0.0.1:1234", "X-Forwarded-For", key, "0", "gateway-key"},
+		{"friend-own-value", "10.0.0.1:1234", "", friend, "0", "gateway-key"},
+		{"magpie-key-loopback", "127.0.0.1:1234", "", mine, "0", "magpie-key"},
+		{"magpie-key-own-address", "192.168.50.7:1234", "", mine, "0", "magpie-key"},
+		{"magpie-key-wsl-nat", "172.28.80.9:1234", "", mine, "0", "magpie-key"},
+		// the same key copied to another computer (Gateway keys' Copy) or
+		// handed to a friend is not the owner's own agent
+		{"magpie-key-elsewhere", "10.0.0.1:1234", "", mine, "0", "gateway-key"},
+		{"magpie-key-proxied", "127.0.0.1:1234", "X-Forwarded-For", mine, "0", "gateway-key"},
+		{"magpie-key-trusted-proxy", "127.0.0.1:1234", "Forwarded", mine, "1", "gateway-key"},
 		{"trusted-proxy", "127.0.0.1:1234", "Forwarded", "", "1", "remote"},
 		{"trusted-tunnel", "127.0.0.1:1234", "Tailscale-User-Login", "", "1", "remote"},
 		{"unknown-peer", "malformed", "", "", "0", "remote"},

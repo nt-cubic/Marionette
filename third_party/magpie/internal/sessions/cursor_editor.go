@@ -87,6 +87,9 @@ func cursorEditorDB() string {
 }
 
 func cursorEditorFiles(cli []file) []file {
+	if !Reads("cursor") {
+		return nil
+	}
 	seen := map[string]bool{}
 	for _, f := range cli {
 		seen[strings.TrimPrefix(f.key, "cursor:")] = true

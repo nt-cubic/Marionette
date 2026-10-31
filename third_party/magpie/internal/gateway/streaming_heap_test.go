@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,18 +29,20 @@ func (s *streamingHold) Flush()                      {}
 // continuations read, not the body that went upstream: that was held by
 // the transport until the stream ended, and eight Claude Code requests
 // of 4.7 MB translated to Chat held 152 MB mid-stream, 88 MB once it
-// goes when it is answered (#3383).
+// goes when it is answered (#3383). The heap is read once every
+// request's first text has reached its agent: the upstream has written
+// it before the gateway has the answer, and a request not answered yet
+// still holds what it sent.
 func TestStreamingRequestsLetTheirSentBodyGo(t *testing.T) {
 	fresh(t)
 	const n = 8
-	got := make(chan struct{}, n)
+	answered := make(chan struct{}, n)
 	release := make(chan struct{})
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.Copy(io.Discard, r.Body)
 		w.Header().Set("Content-Type", "text/event-stream")
 		io.WriteString(w, `data: {"id":"c","object":"chat.completion.chunk","model":"m1","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"}}]}`+"\n\n")
 		w.(http.Flusher).Flush()
-		got <- struct{}{}
 		<-release
 		io.WriteString(w, `data: {"id":"c","object":"chat.completion.chunk","model":"m1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":5}}`+"\n\ndata: [DONE]\n\n")
 	}))
@@ -77,13 +80,13 @@ func TestStreamingRequestsLetTheirSentBodyGo(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			pr, pw := io.Pipe()
-			go io.Copy(io.Discard, pr)
+			go firstText(t, pr, answered)
 			h.ServeHTTP(&streamingHold{h: http.Header{}, w: pw}, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body)))
 			pw.Close()
 		}()
 	}
 	for i := 0; i < n; i++ {
-		<-got
+		<-answered
 	}
 	runtime.GC()
 	runtime.GC()
@@ -95,4 +98,25 @@ func TestStreamingRequestsLetTheirSentBodyGo(t *testing.T) {
 	if each := held / n; each > 3*int64(len(body)) {
 		t.Errorf("%d streaming requests of %d MB hold %d MB, %.1f times the body each", n, len(body)>>20, held>>20, float64(each)/float64(len(body)))
 	}
+}
+
+// firstText reads a stream as its agent does and says on answered when
+// the reply's first text has come, the gateway's answer from the
+// upstream with it; then it reads the rest.
+func firstText(t *testing.T, r io.Reader, answered chan<- struct{}) {
+	var seen []byte
+	buf := make([]byte, 4096)
+	for {
+		k, err := r.Read(buf)
+		seen = append(seen, buf[:k]...)
+		if bytes.Contains(seen, []byte(`"text":"hi"`)) {
+			break
+		}
+		if err != nil {
+			t.Errorf("the stream ended before its first text: %q", seen)
+			break
+		}
+	}
+	answered <- struct{}{}
+	io.Copy(io.Discard, r)
 }

@@ -132,6 +132,7 @@ func TestMoveCursorEfforts(t *testing.T) {
 		}
 	}
 	write(`{"defaultProvider": "magpie", "defaultModel": "curs/grok-4.7-low", "theme": "dark"}`)
+	setUpInMagpie("pi")
 	moveEfforts("curs", base)
 	for k, want := range map[string]string{"defaultProvider": "magpie", "defaultModel": "curs/grok-4.7", "defaultThinkingLevel": "low", "theme": "dark"} {
 		if v, _ := edit.GetJSON(pi, k); v != want {
@@ -148,5 +149,13 @@ func TestMoveCursorEfforts(t *testing.T) {
 	moveEfforts("curs", base)
 	if v, _ := edit.GetJSON(pi, "defaultModel"); v != "curs/gone-low" {
 		t.Errorf("model %q", v)
+	}
+	// a provider named magpie the user wrote by hand is theirs: left as it is
+	stash(map[string]string{"pi.connect.was": ""})
+	mine := `{"defaultProvider": "magpie", "defaultModel": "curs/grok-4.7-low"}`
+	write(mine)
+	moveEfforts("curs", base)
+	if b, _ := os.ReadFile(pi); string(b) != mine {
+		t.Errorf("hand-wired Pi moved:\n%s", b)
 	}
 }

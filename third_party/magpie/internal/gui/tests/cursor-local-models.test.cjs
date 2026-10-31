@@ -102,14 +102,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           assert.equal(await page.locator(`${cd} > .field.launch`).count(), 1, "the launch command's square is gone");
           menu = page.locator(`${cd} > .ag-menu`);
         } else {
-          assert.equal(await page.locator(`${cd} .ag-sum .vt`).textContent(), "DeepSeek V4.1 Flash, grok-4.6 +1");
+          assert.equal(await page.locator(`${cd} .ag-sum .vt`).textContent(), await page.evaluate(() => t("Showing {shown} / {listed} models", { shown: 3, listed: 4 })));
           await page.locator(`${cd} .ag-sum`).click();
           menu = page.locator(`${cd} .ag-open .ag-menu`);
           await page.waitForFunction((sel) => document.querySelector(sel)?.getBoundingClientRect().height > 0, `${cd} .ag-open .ag-menu`);
           assert.equal(await page.locator(`${cd} .ag-conn-said`).textContent(), w.said);
         }
         assert.equal(await menu.count(), 1, "no model button");
-        assert.equal(await menu.locator(".v").textContent(), "DeepSeek V4.1 Flash, grok-4.6 +1");
+        assert.equal(await menu.locator(".v").textContent(), await page.evaluate(() => t("Showing {shown} / {listed} models", { shown: 3, listed: 4 })));
         assert.ok((await menu.getAttribute("title")).includes(w.restart), await menu.getAttribute("title"));
 
         const y = await page.evaluate(() => scrollY);
@@ -133,7 +133,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         if (where === "panel") assert.equal(await page.locator(`${cd} .ag-sum .vt`).textContent(), "DeepSeek V4.1 Flash, grok-4.6");
         // and Kimi K3 back in
         await box.locator(".am-mr", { hasText: "Kimi K3" }).click();
-        await page.waitForFunction(() => document.querySelector(".ag-menu .v")?.textContent === "DeepSeek V4.1 Flash, grok-4.6 +1");
+        await page.waitForFunction(() => document.querySelector(".ag-menu .v")?.textContent === t("Showing {shown} / {listed} models", { shown: 3, listed: 4 }));
         await page.waitForTimeout(150);
         assert.equal(fx.posts.length, 2);
         assert.deepEqual(fx.posts.at(-1), ["relay/glm-5"]);

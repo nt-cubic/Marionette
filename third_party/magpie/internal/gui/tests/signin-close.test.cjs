@@ -166,7 +166,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
       const missing = await page.evaluate(() => ["Stop waiting for this sign-in"].filter((k) => !I18N.zh[k]));
       assert.deepEqual(missing, []);
-      assert.deepEqual(ctl.other.filter((o) => o.startsWith("POST") && !o.includes("/api/open")), [], "nothing else was changed");
+      // a Windows window tints its title bar to the page (6927bedfc), which changes nothing
+      assert.deepEqual(ctl.other.filter((o) => o.startsWith("POST") && !o.includes("/api/open") && !o.includes("/api/window/titlebar")), [], "nothing else was changed");
       assert.deepEqual(errors, []);
     });
   }

@@ -17,6 +17,7 @@ import (
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/sessions"
+	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/usage"
 	"github.com/yetone/magpie/internal/usageapi"
 )
@@ -128,6 +129,23 @@ func usageRoutes(mux *http.ServeMux, w Windows) {
 			out = append(out, target{p.ID, name, icon})
 		}
 		writeJSON(rw, out)
+	})
+	// a clear of usage from the Usage page (CrazyMouse_TT on X): the calls up to
+	// now of one provider's model, or of everything with both "", stop
+	// being counted on the usage pages. usage.jsonl keeps them, and a key's
+	// spending limit and the allowances still count them
+	// (settings.UsageCleared).
+	mux.HandleFunc("POST /api/usage/clear", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Provider, Model string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		if err := settings.ClearUsage(in.Provider, in.Model, usage.Clock()); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, map[string]bool{"ok": true})
 	})
 	// a deleted provider's calls, as the Usage page lists them under id:
 	// merged into a provider there is now (Into, "" to part them again)

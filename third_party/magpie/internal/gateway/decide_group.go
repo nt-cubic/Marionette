@@ -294,10 +294,19 @@ func (s *Server) askDecider(p provider.Provider, model string, intents []string,
 
 // askDecideTries asks each of cs as Jev is (askJev) until one answers, the
 // one that failed resting as it would for a chat; the last one's error
-// when none does.
+// when none does. Every try shares the one classifier's wait, as Settings
+// says it is given, its failover included: a try each given the whole
+// wait held a request N waits before routing it (Jason on Discord, a 2m
+// hold).
 func (s *Server) askDecideTries(cs []candidate, intents []string, prev before, effort bool, text string) (v verdict, err error) {
+	wait := classifyTimeout()
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
 	for _, c := range cs {
-		if v, err = s.askJev(c.p, c.model, intents, prev, effort, text); err == nil {
+		if ctx.Err() != nil {
+			break // the wait is spent: the rest are not asked, nor rested
+		}
+		if v, err = s.askJev(ctx, wait, c.p, c.model, intents, prev, effort, text); err == nil {
 			servedCandidate(c, 0)
 			return v, nil
 		}

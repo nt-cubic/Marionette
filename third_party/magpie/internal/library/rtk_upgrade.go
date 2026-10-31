@@ -985,10 +985,45 @@ func installFailed(c []string, out string, code int, err error) error {
 		}
 		return ie
 	}
-	if said := installerSaid(out, 3); said != "" {
+	said := installerSaid(out, 3)
+	// what went wrong is Homebrew's first Error: line; its last lines can
+	// be the support-tier notice it ends with
+	if tool == "brew" {
+		if e := brewError(out); e != "" {
+			said = e
+		}
+	}
+	if said != "" {
 		ie.msg += " — " + said
 	}
 	return ie
+}
+
+// brewError is the first "Error:" line Homebrew printed, and the line
+// after it that says what to do, when there is one.
+func brewError(out string) string {
+	ls := strings.Split(strings.ToValidUTF8(ansiSeq.ReplaceAllString(out, ""), ""), "\n")
+	for i, l := range ls {
+		l = strings.TrimSpace(l)
+		if !strings.HasPrefix(l, "Error:") {
+			continue
+		}
+		// "Error: No developer tools installed.", then "Install the
+		// Command Line Tools:" and the command, a blank line between
+		var then []string
+		for _, n := range ls[i+1:] {
+			n = strings.TrimSpace(n)
+			if n == "" && len(then) == 0 {
+				continue
+			}
+			if n == "" || strings.HasPrefix(n, "Error:") || len(then) == 2 {
+				break
+			}
+			then = append(then, n)
+		}
+		return strings.Join(append([]string{l}, then...), " ")
+	}
+	return ""
 }
 
 var (

@@ -44,9 +44,25 @@ func (s *Server) readRequestBody(w http.ResponseWriter, r *http.Request, from pr
 	if limit > 0 {
 		limits.body = limit
 	}
+	// wait for room before reading: a body waiting is not held (bodyRoom)
+	most := limits.body
+	if most <= 0 {
+		most = defaultBodyLimit
+	}
+	if n := r.ContentLength; n > 0 && n <= most {
+		if err := bodyRoom.take(r.Context(), n); err != nil {
+			w.Header().Set("Connection", "close") // its body is left unread
+			writeError(w, from, http.StatusServiceUnavailable, err.Error())
+			return nil, false
+		}
+	}
 	body, status, err := readBoundedRequestBody(w, r, limits)
 	if err != nil {
 		writeError(w, from, status, err.Error())
+		return nil, false
+	}
+	if err := bodyRoom.take(r.Context(), int64(len(body))); err != nil {
+		writeError(w, from, http.StatusServiceUnavailable, err.Error())
 		return nil, false
 	}
 	holdBody(r.Context(), body)

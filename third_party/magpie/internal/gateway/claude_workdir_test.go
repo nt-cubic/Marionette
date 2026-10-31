@@ -29,6 +29,13 @@ func claudeWorkDirs(t *testing.T, prepare func(work string)) (dirs []string, wor
 // environment the runs had.
 func claudeWorkDirsTold(t *testing.T, prepare func(work string), system func(home string) string) (dirs []string, work string, s *Server, env, told string) {
 	t.Helper()
+	return claudeWorkDirsFrom(t, "", prepare, system)
+}
+
+// claudeWorkDirsFrom is claudeWorkDirsTold with the requests from the
+// address from ("" for httptest's, another computer's).
+func claudeWorkDirsFrom(t *testing.T, from string, prepare func(work string), system func(home string) string) (dirs []string, work string, s *Server, env, told string) {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("a shell script stands in for Claude Code")
 	}
@@ -66,7 +73,11 @@ done
 		body := `{"model":"claude-sonnet-5","max_tokens":100,"system":` + string(rules) + `,"messages":[{"role":"user","content":"` + said + `"}]}`
 		rec := httptest.NewRecorder()
 		var u Usage
-		if code, msg := s.serveClaudeSubscription(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body)), provider.Anthropic, p, "claude-sonnet-5", []byte(body), &u); code != 200 {
+		r := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+		if from != "" {
+			r.RemoteAddr = from
+		}
+		if code, msg := s.serveClaudeSubscription(rec, r, provider.Anthropic, p, "claude-sonnet-5", []byte(body), &u); code != 200 {
 			t.Fatalf("%d %s", code, msg)
 		}
 	}
@@ -220,4 +231,38 @@ func btoi(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// A caller on another computer that names no folder (packinggoods on
+// Discord: a Mac client of a Windows gateway) is told after its
+// instructions that the environment Claude Code gives, the gateway's
+// platform, shell and temp folder, is not where its tools run: told only
+// that one, the model wrapped every command in the gateway's PowerShell.
+// It is told so with no instructions of its own too. A caller on this
+// computer naming none is told nothing more, and one naming a folder
+// elsewhere is told the note for that, not this one.
+func TestClaudeRemoteCallerNamingNoFolderIsToldToolsAreElsewhere(t *testing.T) {
+	for _, c := range []struct {
+		from, said string
+		unknown    bool
+	}{
+		{"192.0.2.7:51000", "You are a coding agent.", true},
+		{"[2001:db8::7]:51000", "", true},
+		{"127.0.0.1:51000", "You are a coding agent.", false},
+		{"192.0.2.7:51000", " - Primary working directory: /no/such/folder/here", false},
+	} {
+		dirs, work, _, _, told := claudeWorkDirsFrom(t, c.from, nil, func(string) string { return c.said })
+		if len(dirs) != 2 || dirs[0] != work || dirs[1] != work {
+			t.Fatalf("%s %q: working directories %q, want %s", c.from, c.said, dirs, work)
+		}
+		if got := strings.Count(told, "not the one the tools run on"); got != 2*btoi(c.unknown) {
+			t.Fatalf("%s %q: told the tools run elsewhere in %d of 2 runs, want %v: %s", c.from, c.said, got, c.unknown, told)
+		}
+		if c.unknown && strings.Index(told, "not the one the tools run on") > strings.Index(told, "/external_system_instructions") {
+			t.Fatalf("%s %q: the note is not with the caller's instructions: %s", c.from, c.said, told)
+		}
+		if c.unknown && strings.Contains(told, "every tool runs in") {
+			t.Fatalf("%s %q: told the named-folder note too: %s", c.from, c.said, told)
+		}
+	}
 }

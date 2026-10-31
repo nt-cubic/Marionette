@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/gateway"
@@ -412,13 +413,17 @@ func (c *asideConnection) state() NativeState {
 	return s
 }
 
-func asideImageOptions() []Option {
+// asideImageOptions are the image models Aside is offered: those unticked
+// in their provider's editor left out (provider.HiddenDrawers).
+func asideImageOptions() []Option { return asideImages(gateway.OfferedDrawers) }
+
+func asideImages(drawers func(provider.Provider) []catalog.Model) []Option {
 	var out []Option
 	for _, p := range provider.All() {
 		if !p.On() {
 			continue
 		}
-		for _, m := range gateway.Drawers(p) {
+		for _, m := range drawers(p) {
 			ref := p.ID + "/" + m.ID
 			out = append(out, Option{Value: "magpie/" + ref, Ref: ref, Label: m.Name, Group: p.Name, Icon: p.Icon, Note: "image generation · via magpie"})
 		}
@@ -432,7 +437,8 @@ func asideImageOffered(value string) bool {
 	if ref, ok := strings.CutPrefix(value, "magpie/"); ok {
 		value = "magpie/" + gateway.ListedDrawer(ref)
 	}
-	for _, o := range asideImageOptions() {
+	// one unticked in its editor still draws: Aside set to it keeps it
+	for _, o := range asideImages(gateway.Drawers) {
 		if o.Value == value {
 			return true
 		}

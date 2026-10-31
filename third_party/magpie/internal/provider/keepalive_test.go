@@ -58,7 +58,7 @@ func TestRenewLogins(t *testing.T) {
 		t.Fatalf("refreshed with %v", got)
 	}
 	l := saved()
-	if !strings.Contains(string(l.Auth), `"r-2"`) || time.Since(l.Renewed) > time.Minute || !renewalDue(l, keepAliveEvery, time.Now().Add(25*time.Hour)) {
+	if !strings.Contains(string(l.Auth), `"r-2"`) || time.Since(l.Renewed) > time.Minute || !renewalDue(l, keepAliveEvery, time.Now().Add(keepAliveEvery+time.Hour)) {
 		t.Fatalf("saved after renewal: %+v", l)
 	}
 	var live codexAuth
@@ -125,11 +125,14 @@ func TestRenewalDue(t *testing.T) {
 		l    savedLogin
 		due  bool
 	}{
-		{"never renewed, seen long ago", savedLogin{Agent: "codex", Seen: now.Add(-48 * time.Hour)}, true},
+		{"never renewed, seen long ago", savedLogin{Agent: "codex", Seen: now.Add(-9 * 24 * time.Hour)}, true},
+		{"never renewed, seen two days ago", savedLogin{Agent: "codex", Seen: now.Add(-48 * time.Hour)}, false},
 		{"seen in the agent's hands today", savedLogin{Agent: "codex", Seen: now.Add(-time.Hour)}, false},
-		{"renewed today", savedLogin{Agent: "codex", Seen: now.Add(-72 * time.Hour), Renewed: now.Add(-time.Hour)}, false},
+		{"renewed today", savedLogin{Agent: "codex", Seen: now.Add(-30 * 24 * time.Hour), Renewed: now.Add(-time.Hour)}, false},
 		{"codex refreshed itself lately", savedLogin{Agent: "codex", Seen: now.Add(-72 * time.Hour), Auth: codex(now.Add(-2 * time.Hour))}, false},
-		{"codex a day since", savedLogin{Agent: "codex", Seen: now.Add(-72 * time.Hour), Auth: codex(now.Add(-25 * time.Hour))}, true},
+		{"codex a day since", savedLogin{Agent: "codex", Seen: now.Add(-72 * time.Hour), Auth: codex(now.Add(-25 * time.Hour))}, false},
+		{"codex a week since", savedLogin{Agent: "codex", Seen: now.Add(-30 * 24 * time.Hour), Auth: codex(now.Add(-7 * 24 * time.Hour))}, false},
+		{"codex eight days since", savedLogin{Agent: "codex", Seen: now.Add(-30 * 24 * time.Hour), Auth: codex(now.Add(-8*24*time.Hour - time.Minute))}, true},
 	} {
 		if got := renewalDue(c.l, keepAliveEvery, now); got != c.due {
 			t.Errorf("%s: due %v", c.name, got)

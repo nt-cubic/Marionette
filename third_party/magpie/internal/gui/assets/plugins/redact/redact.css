@@ -148,12 +148,12 @@
    scrolls under them, on the frosted strip Settings' head has */
 .msk-onebar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 8px; min-height: 28px; }
 .msk-onebar::before {
-  content: ""; position: absolute; z-index: -1; pointer-events: none; inset: -6px -12px;
+  content: ""; position: absolute; z-index: -1; pointer-events: none; inset: -6px calc(var(--bar, 0px) - 12px) -6px -12px; /* the bar's room is out of the padding */
   background: color-mix(in srgb, var(--bg) 92%, transparent);
   -webkit-backdrop-filter: saturate(1.6) blur(16px); backdrop-filter: saturate(1.6) blur(16px);
 }
 body.window .msk-onebar { top: -2px; }
-body.window .msk-onebar::before { inset: -6px -16px; }
+body.window .msk-onebar::before { inset: -6px calc(var(--bar, 0px) - 16px) -6px -16px; }
 .msk-back { display: inline-flex; align-items: center; gap: 2px; margin-left: -4px; }
 .msk-crumb { color: var(--faint); }
 .msk-when { font-size: 12.5px; color: var(--fg-2); font-variant-numeric: tabular-nums; }

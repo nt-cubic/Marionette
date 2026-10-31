@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -40,6 +41,8 @@ func TestPlanQuotaSource(t *testing.T) {
 		{Provider{Chat: "https://api.commandcode.ai/provider/v1", Anthropic: "https://api.commandcode.ai/provider"}, "https://api.commandcode.ai/alpha/billing/credits", true, false},
 		{Provider{Chat: "https://api.minimaxi.com/v1", Anthropic: "https://api.minimaxi.com/anthropic"}, "https://api.minimaxi.com/v1/token_plan/remains", true, false},
 		{Provider{Anthropic: "https://api.minimax.io/anthropic"}, "https://api.minimax.io/v1/token_plan/remains", true, false},
+		// MiniMax China's host since mmx-cli 8746d48f
+		{Provider{Chat: "https://api.minimax.cn/v1", Anthropic: "https://api.minimax.cn/anthropic"}, "https://api.minimax.cn/v1/token_plan/remains", true, false},
 		{Provider{Chat: "https://api.deepseek.com"}, "", false, false},
 		{Provider{Chat: "https://ollama.com/v1", Anthropic: "https://ollama.com"}, "https://ollama.com/api/balance", true, false},
 		{Provider{Chat: "http://localhost:11434/v1"}, "", false, false}, // a local Ollama
@@ -428,6 +431,153 @@ func TestReadKimiCode(t *testing.T) {
 	}
 	if _, _, err := readKimiCode([]byte(`{"error":{"message":"bad key"}}`)); err == nil {
 		t.Fatal("nothing read")
+	}
+}
+
+// A plan on Kimi's monthly allowance tells it in usages, as shares
+// (lidazi2016 on Discord: 5h and weekly shown, the month not). The first
+// body is a live reply of 2026-09-23 (narumiruna/pi-extensions#1390): no
+// weekly usage, the 5h window told both ways. The second has every
+// window kimi-code reads (managed-usage.ts); each is taken from usages,
+// limit_month_code not shown beside limit_month_total.
+func TestReadKimiCodeMonth(t *testing.T) {
+	_, ws, err := readKimiCode([]byte(`{
+  "limits": [
+    {
+      "window": { "duration": 300, "timeUnit": "TIME_UNIT_MINUTE" },
+      "detail": { "limit": "100", "used": "44", "remaining": "56", "resetTime": "2026-09-23T06:47:09.122865Z" }
+    }
+  ],
+  "usages": {
+    "limit_5h":          { "used_ratio": 0.4372, "reset_time": "2026-09-23T06:47:08Z" },
+    "limit_month_total": { "used_ratio": 0.7877, "reset_time": "2026-10-17T00:00:00Z" },
+    "limit_month_code":  { "used_ratio": 0.7877, "reset_time": "2026-10-17T00:00:00Z" }
+  },
+  "booster_wallet": {}
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ws) != 2 || ws[0].Name != "5 hours" || math.Abs(ws[0].Used-43.72) > 1e-9 || ws[0].Span != 5*time.Hour || ws[0].ResetsAt == nil || ws[0].ResetsAt.Second() != 8 ||
+		ws[1].Name != "Month" || math.Abs(ws[1].Used-78.77) > 1e-9 || ws[1].Span != 30*24*time.Hour || ws[1].ResetsAt == nil || ws[1].ResetsAt.Day() != 17 {
+		t.Fatalf("%+v", ws)
+	}
+
+	_, ws, err = readKimiCode([]byte(`{"usage":{"limit":"100","used":"30","resetTime":"2026-10-31T05:24:18.44Z"},
+		"limits":[{"window":{"duration":300,"timeUnit":"TIME_UNIT_MINUTE"},"detail":{"limit":"100","remaining":"88","resetTime":"2026-10-29T09:00:00Z"}}],
+		"usages":{"limit_month_code":{"used_ratio":0.1},"limit_month_total":{"used_ratio":"0.4","reset_time":"2026-11-18T00:00:00Z"},
+		  "limit_7d":{"used_ratio":0.3012,"reset_time":"2026-10-31T05:24:18Z"},"limit_5h":{"used_ratio":0.1234}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ws) != 3 || ws[0].Name != "5 hours" || math.Abs(ws[0].Used-12.34) > 1e-9 || ws[0].ResetsAt != nil ||
+		ws[1].Name != "7 days" || math.Abs(ws[1].Used-30.12) > 1e-9 || ws[1].Span != 7*24*time.Hour ||
+		ws[2].Name != "Month" || math.Abs(ws[2].Used-40) > 1e-9 || ws[2].ResetsAt == nil || ws[2].ResetsAt.Day() != 18 {
+		t.Fatalf("%+v", ws)
+	}
+
+	// a share that isn't a number is no window; the counted ones stand
+	_, ws, err = readKimiCode([]byte(`{"usage":{"limit":"100","used":"12"},"usages":{"limit_month_total":{"used_ratio":null},"limit_7d":{"reset_time":"2026-10-31T05:24:18Z"}}}`))
+	if err != nil || len(ws) != 1 || ws[0].Name != "7 days" || ws[0].Used != 12 {
+		t.Fatalf("%+v %v", ws, err)
+	}
+}
+
+// The month however Kimi tells it (lidazi2016 on Discord, still no month
+// on v0.1.2023 with a Kimi Code China key): the membership of 2026-09
+// sends limit_5h and limit_month_code with no total (GCMP's
+// kimiUsage.ts), a share may come in camelCase with its reset in epoch
+// milliseconds (EchoBird's fixture), and a counted window may be a
+// month or a week long.
+func TestReadKimiCodeMonthEveryWay(t *testing.T) {
+	for _, c := range []struct{ name, body string }{
+		{"code share only", `{"usages":{"limit_5h":{"used_ratio":0.25,"reset_time":"2026-10-29T11:25:00Z"},
+			"limit_month_code":{"used_ratio":0.5,"reset_time":"2026-11-17T00:00:00Z"}}}`},
+		{"camelCase", `{"usages":{"limit5h":{"usedRatio":0.25,"resetTime":"2026-10-29T11:25:00Z"},
+			"limitMonthTotal":{"usedRatio":"0.5","resetTime":1794873600000}}}`},
+		{"counted", `{"limits":[{"window":{"duration":300,"timeUnit":"TIME_UNIT_MINUTE"},"detail":{"limit":"100","used":"25","resetTime":"2026-10-29T11:25:00Z"}},
+			{"window":{"duration":1,"timeUnit":"TIME_UNIT_MONTH"},"detail":{"limit":"100","remaining":"50","resetTime":1794873600}}]}`},
+	} {
+		_, ws, err := readKimiCode([]byte(c.body))
+		if err != nil || len(ws) != 2 || ws[0].Name != "5 hours" || ws[0].Used != 25 || ws[0].ResetsAt == nil ||
+			ws[1].Name != "Month" || ws[1].Used != 50 || ws[1].Span != 30*24*time.Hour ||
+			ws[1].ResetsAt == nil || ws[1].ResetsAt.UTC().Day() != 17 || ws[1].ResetsAt.UTC().Month() != time.November {
+			t.Errorf("%s: %+v %v", c.name, ws, err)
+		}
+	}
+	// a counted week is the week, beside the month the shares tell
+	_, ws, err := readKimiCode([]byte(`{"limits":[{"window":{"duration":1,"timeUnit":"TIME_UNIT_WEEK"},"detail":{"limit":10,"used":4}}],
+		"usages":{"limit_month_total":{"used_ratio":0.1},"limit_month_code":{"used_ratio":0.05}}}`))
+	if err != nil || len(ws) != 2 || ws[0].Name != "7 days" || ws[0].Used != 40 || ws[1].Name != "Month" || math.Abs(ws[1].Used-10) > 1e-9 {
+		t.Errorf("week and month: %+v %v", ws, err)
+	}
+}
+
+// Every way a Kimi Code key is added shows the month Kimi tells: the
+// China and global presets, a provider of its own at the Anthropic base
+// alone, and a key imported from OpenCode's auth.json. Each card is read
+// from /usages on its own host with its own key.
+func TestPlanQuotasKimiCodeMonthEveryRoute(t *testing.T) {
+	isolate(t)
+	h := t.TempDir()
+	t.Setenv("HOME", h)
+	t.Setenv("USERPROFILE", h)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(h, ".cache"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(h, ".local", "share"))
+	t.Setenv("PATH", h)
+	for _, v := range agentenv.Vars {
+		t.Setenv(v, "")
+	}
+	month := `{"limits":[{"window":{"duration":300,"timeUnit":"TIME_UNIT_MINUTE"},"detail":{"limit":"100","used":"11","resetTime":"2026-10-29T11:25:00Z"}}],
+		"usages":{"limit_5h":{"used_ratio":0.11,"reset_time":"2026-10-29T11:25:00Z"},"limit_month_code":{"used_ratio":0.3,"reset_time":"2026-11-17T00:00:00Z"}}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Header.Get("X-Host") + r.URL.Path + " " + r.Header.Get("Authorization") {
+		case "api.kimi.com/coding/v1/usages Bearer sk-kimi-cn",
+			"api.kimi.ai/coding/v1/usages Bearer sk-kimi-global",
+			"api.kimi.com/coding/v1/usages Bearer sk-kimi-own",
+			"api.kimi.com/coding/v1/usages Bearer sk-kimi-oc":
+			w.Write([]byte(month))
+		default:
+			t.Errorf("asked %s%s with %q", r.Header.Get("X-Host"), r.URL.Path, r.Header.Get("Authorization"))
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	}))
+	defer srv.Close()
+	old := http.DefaultClient.Transport
+	http.DefaultClient.Transport = rewrite{srv}
+	t.Cleanup(func() { http.DefaultClient.Transport = old })
+
+	auth := filepath.Join(h, "auth.json")
+	if err := os.WriteFile(auth, []byte(`{"kimi-code-plan-cn":{"type":"api","key":"sk-kimi-oc"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	items, err := readOpenCodeAuth(auth)
+	if err != nil || len(items) != 1 || items[0].Skip != "" {
+		t.Fatalf("OpenCode import: %+v %v", items, err)
+	}
+	oc := items[0].Provider
+	oc.ID = "kimi-oc"
+	for _, p := range []Provider{
+		FromPresetKey(t, "kimi-code-cn", "sk-kimi-cn"),
+		FromPresetKey(t, "kimi-code", "sk-kimi-global"),
+		{ID: "kimi-own", Name: "My Kimi", Anthropic: "https://api.kimi.com/coding/", Key: "sk-kimi-own"},
+		oc,
+	} {
+		if err := Save(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := map[string]SubscriptionQuota{}
+	for _, q := range PlanQuotas(context.Background()) {
+		got[q.Provider] = q
+	}
+	for _, id := range []string{"kimi-code-cn", "kimi-code", "kimi-own", "kimi-oc"} {
+		q := got[id]
+		if len(q.Windows) != 2 || q.Windows[0].Name != "5 hours" || q.Windows[1].Name != "Month" ||
+			math.Abs(q.Windows[1].Used-30) > 1e-9 || q.Windows[1].ResetsAt == nil {
+			t.Errorf("%s: %+v", id, q)
+		}
 	}
 }
 

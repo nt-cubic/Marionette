@@ -265,3 +265,119 @@ func TestAntigravityProInvalidTierAsksWithoutOne(t *testing.T) {
 		}
 	}
 }
+
+// ferock4669 on Discord: an Antigravity subscription's Requests page filled
+// with "Model list" rows for /v1internal:fetchAvailableModels, each a 400.
+// A Pro account's list is asked first with its paid tier named, which
+// Google answers 400 INVALID_ARGUMENT (#1553), then without one, which
+// lists its models. That first ask was a row of its own on every list, and
+// was sent again on every list and quota reading. Now the refused tier is
+// a step no row is written for, it isn't named again for tierRefusedFor,
+// and a list that fails without one is still written down.
+func TestAntigravityRefusedTierAskedOnceAndNoRow(t *testing.T) {
+	const load = `{"currentTier":{"id":"free-tier","name":"Antigravity"},
+		"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"},
+		"cloudaicompanionProject":"aicode-consumers"}`
+	const invalid = `{"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}`
+	plain := 200
+	f := &fakeGoogle{load: load, modelsFor: func(body map[string]any) (int, string) {
+		if body["entitlement"] != nil {
+			return 400, invalid
+		}
+		if plain != 200 {
+			return plain, invalid
+		}
+		return 200, withClaude
+	}}
+	googleSandbox(t, f)
+	captureLog(t)
+	rows := probeRows(t)
+	auth := googleAuth{AccessToken: "tok", RefreshToken: "rt-ferock", Expiry: time.Now().Add(time.Hour).UnixMilli()}
+	if err := addGoogleLogin("antigravity", "paid@gmail.com", "", auth); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := googleAccountOf("antigravity")
+	for range 3 {
+		if ms, err := p.Fetch(context.Background()); err != nil || len(ms) != 2 {
+			t.Fatalf("models %v, %v", ms, err)
+		}
+	}
+	// the account's quota reading asks the same list
+	g := googleLogins("antigravity")[0].acct
+	if q := g.quota(context.Background(), ""); q.Error != "" {
+		t.Fatalf("quota: %s", q.Error)
+	}
+	f.mu.Lock()
+	var named int
+	for _, b := range f.fetches {
+		if b["entitlement"] != nil {
+			named++
+		}
+	}
+	asked := len(f.fetches)
+	f.mu.Unlock()
+	if named != 1 || asked != 5 {
+		t.Errorf("asked %d times, %d with the refused tier named; want 5 and 1", asked, named)
+	}
+	for _, r := range rows() {
+		if r.Status == 400 {
+			t.Errorf("a refused tier written down: %+v", r)
+		}
+	}
+
+	// a day on, the tier is named again
+	googleState.Lock()
+	for k := range googleState.refused {
+		googleState.refused[k] = time.Now().Add(-tierRefusedFor - time.Minute)
+	}
+	googleState.Unlock()
+	f.mu.Lock()
+	f.fetches = nil
+	f.mu.Unlock()
+	if _, err := p.Fetch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	if len(f.fetches) != 2 || f.fetches[0]["entitlement"] == nil {
+		t.Errorf("a day on, asked %v", f.fetches)
+	}
+	f.mu.Unlock()
+
+	// the list refused without a tier too is written down, once
+	f.mu.Lock()
+	plain = 400
+	f.mu.Unlock()
+	before := len(rows())
+	p.Fetch(context.Background())
+	var failed []string
+	for _, r := range rows()[before:] {
+		if r.Status != 200 {
+			failed = append(failed, fmt.Sprint(r.Status, " ", r.Kind, " ", r.Endpoint))
+		}
+	}
+	if len(failed) != 1 || failed[0] != "400 model_list /daily/v1internal:fetchAvailableModels" {
+		t.Errorf("rows of the failed list %v", failed)
+	}
+}
+
+// A tier refused for a reason other than a 400 (Google down) is named
+// again on the next list.
+func TestAntigravityTierNotRestedForOtherFailures(t *testing.T) {
+	f := &fakeGoogle{load: proLoad, modelsFor: func(body map[string]any) (int, string) {
+		if body["entitlement"] != nil {
+			return 503, `{"error":{"code":503,"message":"The service is currently unavailable.","status":"UNAVAILABLE"}}`
+		}
+		return 200, geminiOnly
+	}}
+	googleSandbox(t, f)
+	captureLog(t)
+	auth := googleAuth{AccessToken: "tok", RefreshToken: "rt-503", Expiry: time.Now().Add(time.Hour).UnixMilli()}
+	addGoogleLogin("antigravity", "pro@example.com", "", auth)
+	antigravityModelIDs(t, "antigravity")
+	antigravityModelIDs(t, "antigravity")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.fetches) != 6 { // g1-pro-tier, standard-tier, none; twice
+		t.Errorf("asked %v", f.fetches)
+	}
+}

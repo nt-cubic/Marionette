@@ -48,7 +48,7 @@ func compactionTriggerIn(body []byte) bool {
 	if !bytes.Contains(body, []byte(`"compaction_trigger"`)) {
 		return false
 	}
-	for _, it := range gjson.GetBytes(body, "input").Array() {
+	for _, it := range getIn(body, "input").Array() {
 		if it.Get("type").Str == "compaction_trigger" {
 			return true
 		}
@@ -64,7 +64,7 @@ func sealedCompactions(body []byte) []string {
 		return nil
 	}
 	var out []string
-	for _, it := range gjson.GetBytes(body, "input").Array() {
+	for _, it := range getIn(body, "input").Array() {
 		if !slices.Contains(compactionKinds, it.Get("type").Str) {
 			continue
 		}
@@ -116,14 +116,8 @@ func (s *Server) nativeCompactionFor(asked string) bool {
 	if s.plannedCarrier(p, model) {
 		return true
 	}
-	seen := map[string]bool{p.ID + "/" + model: true}
-	for _, id := range p.Fallback {
-		fp, fm, ok := provider.ResolveRoute(id)
-		if !ok || seen[fp.ID+"/"+fm] {
-			continue
-		}
-		seen[fp.ID+"/"+fm] = true
-		if s.plannedCarrier(fp, fm) {
+	for _, m := range provider.FallbackModels(p) {
+		if (m.Provider.ID != p.ID || m.Model != model) && s.plannedCarrier(m.Provider, m.Model) {
 			return true
 		}
 	}

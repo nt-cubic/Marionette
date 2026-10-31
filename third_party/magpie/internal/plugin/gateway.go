@@ -80,7 +80,7 @@ func GatewayOnly(target string) bool {
 // GatewayContext contains only the request identity and text, never its
 // authorization headers. Empty fields mean the agent supplied no identity.
 type GatewayContext struct {
-	Origin   string `json:"origin"` // local, remote, or gateway-key; empty means unknown
+	Origin   string `json:"origin"` // local, remote, magpie-key or gateway-key; empty means unknown
 	Protocol string `json:"protocol"`
 	Model    string `json:"model"`
 	Stream   bool   `json:"stream"`

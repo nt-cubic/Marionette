@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -24,7 +25,85 @@ func sessionsCmd(args []string) error {
 	if len(args) > 1 && args[1] == "relocate-claude" {
 		return relocateClaudeTo(os.Stdout, args[2:])
 	}
+	if len(args) > 1 && args[1] == "read" {
+		return sessionReadsTo(os.Stdout, args[2:])
+	}
+	if r := sessions.SettleReads(); !r.Asked {
+		fmt.Fprintln(os.Stderr, notAskedLine)
+	}
 	return sessionsTo(os.Stdout, args[1:], time.Now())
+}
+
+const sessionReadsUsage = "usage: magpie sessions read [on|off all|<agent>...]"
+
+// notAskedLine: a fresh install reads no agent's sessions until the user
+// allows it (RustCats on X), so an empty list says why.
+const notAskedLine = "magpie reads no agent's session history until you allow it: magpie sessions read on all (or on <agent>…), or the Sessions page"
+
+// sessionReadsTo: `magpie sessions read` — which agents' session history
+// magpie may read, as the Sessions page's consent and Settings › Privacy
+// set it; `read on|off all|<agent>…` changes it. "all" is every agent,
+// those found later too.
+func sessionReadsTo(w io.Writer, args []string) error {
+	if len(args) == 0 {
+		r := sessions.SettleReads()
+		switch {
+		case !r.Asked:
+			fmt.Fprintln(w, "Not asked yet: no agent's sessions are read.")
+		case r.All:
+			fmt.Fprintln(w, "Agents found later: read")
+		default:
+			fmt.Fprintln(w, "Agents found later: not read")
+		}
+		names := agentNames()
+		found := sessions.Found()
+		for a := range r.Agents {
+			if !slices.Contains(found, a) {
+				found = append(found, a)
+			}
+		}
+		slices.Sort(found)
+		for _, a := range found {
+			name := names[a]
+			if name == "" {
+				name = a
+			}
+			on := "off"
+			if r.Reads(a) {
+				on = "on"
+			}
+			fmt.Fprintf(w, "  %-3s  %s (%s)\n", on, name, a)
+		}
+		return nil
+	}
+	if len(args) < 2 || (args[0] != "on" && args[0] != "off") {
+		return fmt.Errorf("%s", sessionReadsUsage)
+	}
+	on := args[0] == "on"
+	var all *bool
+	agents := map[string]bool{}
+	known := agentNames()
+	for _, a := range args[1:] {
+		if a == "all" {
+			all = &on
+			// "off all" turns off the agents named before too
+			for _, f := range sessions.Found() {
+				agents[f] = on
+			}
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			return fmt.Errorf("%s", sessionReadsUsage)
+		}
+		if _, ok := known[a]; !ok && !slices.Contains(sessions.Found(), a) {
+			return fmt.Errorf("unknown agent %q (magpie sessions read lists them)\n%s", a, sessionReadsUsage)
+		}
+		agents[a] = on
+	}
+	if err := sessions.SetReads(all, agents); err != nil {
+		return err
+	}
+	return sessionReadsTo(w, nil)
 }
 
 func relocateClaudeTo(w io.Writer, args []string) error {

@@ -39,6 +39,7 @@ import (
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/probelog"
 )
 
 // CodeAssist is Google's Code Assist API, which magpie only speaks
@@ -315,7 +316,66 @@ var googleState = struct {
 	tokens   map[string]googleAuth // by refresh token
 	projects map[string]googleProject
 	flags    map[string]geminiFlags // by refresh token and project
-}{tokens: map[string]googleAuth{}, projects: map[string]googleProject{}, flags: map[string]geminiFlags{}}
+	// when Google last refused each tier named in an account's
+	// fetchAvailableModels with a 400, by refresh token, project and tier
+	// (tierRefusedFor)
+	refused map[string]time.Time
+}{tokens: map[string]googleAuth{}, projects: map[string]googleProject{}, flags: map[string]geminiFlags{}, refused: map[string]time.Time{}}
+
+// tierRefusedFor is how long a tier Google answered an account's
+// fetchAvailableModels 400 for is left out of its next ones. A Google AI
+// Pro account gets 400 INVALID_ARGUMENT with g1-pro-tier named (#1553,
+// AnxForever's log) and its list only from the request without one, so
+// every list, start-up's, the hourly relist's, each quota reading's, sent
+// Google that 400 first, and each list's was a 400 "Model list" row on the
+// Requests page (ferock4669 on Discord). Asked again after a day, in case
+// Google takes it by then; a tier the account newly has is a new key.
+const tierRefusedFor = 24 * time.Hour
+
+func tierKey(rt, project, tier string) string { return rt + "\x00" + project + "\x00" + tier }
+
+// askTiers are the tiers to name in the account's next fetchAvailableModels,
+// best first, then "" (none): its entitlements less those Google refused
+// it within tierRefusedFor.
+func (g googleAccount) askTiers(p googleProject) []string {
+	googleState.Lock()
+	defer googleState.Unlock()
+	var out []string
+	for _, t := range p.entitlements() {
+		if at, ok := googleState.refused[tierKey(g.auth.RefreshToken, p.id, t)]; ok && time.Since(at) < tierRefusedFor {
+			continue
+		}
+		out = append(out, t)
+	}
+	return append(out, "")
+}
+
+// tierRefused notes that Google refused the account's fetchAvailableModels
+// with tier named.
+func (g googleAccount) tierRefused(p googleProject, tier string) {
+	googleState.Lock()
+	googleState.refused[tierKey(g.auth.RefreshToken, p.id, tier)] = time.Now()
+	googleState.Unlock()
+}
+
+// codeAssistError is Code Assist's answer to a call other than 200: its
+// status, and what Google said (APIError).
+type codeAssistError struct {
+	status int
+	msg    string
+}
+
+func (e *codeAssistError) Error() string { return e.msg }
+
+// codeAssistStatus is the status Code Assist answered err with, 0 for an
+// error that isn't such an answer.
+func codeAssistStatus(err error) int {
+	var e *codeAssistError
+	if errors.As(err, &e) {
+		return e.status
+	}
+	return 0
+}
 
 type googleProject struct {
 	id, plan string
@@ -458,7 +518,7 @@ func (g googleAccount) call(ctx context.Context, base, method string, body, out 
 	defer res.Body.Close()
 	rb, _ := io.ReadAll(io.LimitReader(res.Body, 4<<20))
 	if res.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s: %s", g.app.name, APIError(rb, res.Status))
+		return &codeAssistError{status: res.StatusCode, msg: fmt.Sprintf("%s: %s", g.app.name, APIError(rb, res.Status))}
 	}
 	if out == nil {
 		return nil
@@ -945,20 +1005,31 @@ func (g googleAccount) modelInfo(ctx context.Context) ([]googleModelInfo, error)
 			} `json:"agentModelSorts"`
 		}
 		// with the account's tier named, as Antigravity asks; a tier Google
-		// won't take from it is left out, down to none
+		// won't take from it is left out, down to none, and not named
+		// again for a while (tierRefusedFor)
 		sent := ""
-		tiers := append(p.entitlements(), "")
+		tiers := g.askTiers(p)
 		for i, t := range tiers {
 			body := map[string]any{"project": p.id}
+			ask := ctx
 			if t != "" {
 				body["entitlement"] = map[string]any{"userTier": t}
+				// a step towards the list, which the request after it
+				// fetches: not a row of the request log, where a
+				// refused tier was a 400 "Model list" beside every list
+				// that was fetched (ferock4669); the last request, with
+				// none named, is written down as before
+				ask = probelog.Taken(ctx)
 			}
-			if err = g.call(ctx, g.app.base, "fetchAvailableModels", body, &res, nil); err == nil {
+			if err = g.call(ask, g.app.base, "fetchAvailableModels", body, &res, nil); err == nil {
 				sent = t
 				break
 			}
 			if ctx.Err() != nil {
 				return nil, err
+			}
+			if t != "" && codeAssistStatus(err) == http.StatusBadRequest {
+				g.tierRefused(p, t)
 			}
 			switch {
 			case t == "":

@@ -64,3 +64,17 @@ func TestCodexReachedReadsLogOnlyWhenItChanged(t *testing.T) {
 		t.Fatalf("since after every request: %v", got)
 	}
 }
+
+// forgetReached drops what codexReached kept of Codex's log, for a test of
+// what Drift says about each request it logs, asked right after it. Two
+// inserts inside one tick of the file system's clock can leave the log's
+// size and time as they were (a rollback journal writes the same page
+// again; a -wal that wrapped, as Codex's own has, writes over its old
+// frames), and the kept read then stands for up to reachedFor, as it does
+// in the app. When the log is read again is
+// TestCodexReachedReadsLogOnlyWhenItChanged's to test.
+func forgetReached() {
+	reachedMu.Lock()
+	clear(reachedMemo)
+	reachedMu.Unlock()
+}

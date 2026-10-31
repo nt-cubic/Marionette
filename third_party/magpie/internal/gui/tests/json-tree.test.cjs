@@ -109,7 +109,6 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         });
 
         await page.goto("http://magpie.test/?view=gateway");
-        await page.locator("#foldConnect").click(); // Connect away, the calls in view
         const rows = page.locator("#activity .call-item");
         await rows.first().waitFor();
         // what is clicked is brought into view by the wheel, as the reader

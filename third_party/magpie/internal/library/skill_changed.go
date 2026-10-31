@@ -10,15 +10,69 @@ package library
 // asks first, an update of many leaves it as it is, and the version an
 // update replaces is kept with the backups unless it is known to be
 // GitHub's own.
+//
+// A skill may ask to have its dependencies installed in its own folder
+// (npm install in easyeda-api-skill; ggbr on Discord). What that writes
+// (node_modules, a Python virtualenv, bytecode, the lock file written
+// again) is the install's, not a change of the user's: it neither marks
+// the skill changed nor is lost to an update, which carries it over to
+// the version fetched (carryInstalled).
 
 import (
 	"fmt"
+	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
-	"slices"
+	"strings"
 	"sync"
 	"time"
 )
+
+// installedDirs are the folders installing a skill's dependencies, or
+// running it, makes in it, wherever in it they are.
+var installedDirs = map[string]bool{
+	"node_modules":  true,
+	".venv":         true,
+	"venv":          true,
+	"__pycache__":   true,
+	".pytest_cache": true,
+	".mypy_cache":   true,
+	".ruff_cache":   true,
+}
+
+// lockFiles are what a package manager writes again as it installs, even
+// over the one the skill came with.
+var lockFiles = map[string]bool{
+	"package-lock.json": true,
+	"yarn.lock":         true,
+	"pnpm-lock.yaml":    true,
+	"bun.lock":          true,
+	"bun.lockb":         true,
+	"uv.lock":           true,
+}
+
+// fromInstall is whether an entry of a skill's folder called name was
+// written by installing its dependencies or running it rather than by
+// hand: one of installedDirs (a folder, or a link to one), compiled
+// Python, and with locks a lock file.
+func fromInstall(name string, dir, locks bool) bool {
+	if dir && installedDirs[name] {
+		return true
+	}
+	if dir {
+		return false
+	}
+	if strings.HasSuffix(name, ".pyc") || strings.HasSuffix(name, ".pyo") {
+		return true
+	}
+	return locks && lockFiles[name]
+}
+
+// ownHash is the hash of a skill's folder leaving aside, as well as what
+// Finder keeps in it, what installing its dependencies writes: what is
+// the skill's own. "" when it can't be read.
+func ownHash(dir string) string { return rememberedHash(dir, leaveInstalled) }
 
 // EditedError is an update refused because the skill was changed here
 // since it was fetched from GitHub, or From, the git repository it came
@@ -93,16 +147,19 @@ func (l *Library) editState(s *Skill, targets []*Target) (edited, known bool) {
 	if linked(lib) {
 		return false, false
 	}
-	h := libraryHash(s.Name)
-	if h == "" {
-		return false, false
-	}
-	// the fetched files may hold a .DS_Store of their own
-	if h != s.Hash && hashDir(lib) != s.Hash {
-		return true, true
+	// asked first: the hashes after it read every installed dependency
+	if !onlyInstalled(s, lib) {
+		h := libraryHash(s.Name)
+		if h == "" {
+			return false, false
+		}
+		// the fetched files may hold a .DS_Store of their own
+		if h != s.Hash && hashDir(lib) != s.Hash {
+			return true, true
+		}
 	}
 	for _, t := range targets {
-		if t.Skills == "" || t.Desktop != nil || !slices.Contains(s.Agents, t.Agent.ID) {
+		if t.Skills == "" || t.Desktop != nil || !s.gives(t.Agent.ID) {
 			continue
 		}
 		p := filepath.Join(t.Skills, s.Name)
@@ -122,11 +179,65 @@ func (l *Library) editState(s *Skill, targets []*Target) (edited, known bool) {
 		if !at.After(made) {
 			continue
 		}
-		if !sameTree(p, lib) {
+		if !sameTree(p, lib) && ownHash(p) != ownHash(lib) {
 			return true, true
 		}
 	}
 	return false, true
+}
+
+// onlyInstalled is whether the library's folder of s differs from the
+// files fetched only by what installing its dependencies wrote. Own is
+// kept from when this was known; one fetched before has only Hash, and
+// is the same when the lock file it may have come with was left as it
+// was, or it came with none.
+func onlyInstalled(s *Skill, lib string) bool {
+	if s.Own != "" {
+		h := ownHash(lib)
+		return h != "" && h == s.Own
+	}
+	if h := rememberedHash(lib, leaveBuilt); h != "" && h == s.Hash {
+		return true
+	}
+	h := ownHash(lib)
+	return h != "" && h == s.Hash
+}
+
+// carryInstalled moves what installing a skill's dependencies wrote in
+// its folder as it was, old, to the folder an update put in its place,
+// so they needn't be installed again: what the new version doesn't have
+// itself. What can't be moved stays in old.
+func carryInstalled(old, dir string) {
+	filepath.WalkDir(old, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || p == old {
+			return nil
+		}
+		if d.IsDir() && d.Name() == ".git" {
+			return filepath.SkipDir
+		}
+		isDir := d.IsDir() || d.Type()&fs.ModeSymlink != 0
+		if !fromInstall(d.Name(), isDir, true) {
+			return nil
+		}
+		rel, _ := filepath.Rel(old, p)
+		dst := filepath.Join(dir, rel)
+		if _, err := os.Lstat(dst); err == nil {
+			// the new version's own, as fetched
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err == nil {
+			if err := os.Rename(p, dst); err != nil {
+				log.Printf("library: %s stays with the version replaced: %v", rel, err)
+			}
+		}
+		if d.IsDir() {
+			return filepath.SkipDir
+		}
+		return nil
+	})
 }
 
 // keepReplaced moves the library's version of a skill an update replaces

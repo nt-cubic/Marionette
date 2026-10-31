@@ -275,7 +275,13 @@ func renewSaved(ctx context.Context, agent, user string, force bool, stale strin
 		} else if exp, _ := jwtClaims(a.Tokens.AccessToken)["exp"].(float64); !force && (exp == 0 || time.Until(time.Unix(int64(exp), 0)) > 5*time.Minute) {
 			return a.Tokens.AccessToken, accountID, nil
 		}
-		if tok, err = codexRefresh(ctx, raw); err != nil {
+		reason := codexRefreshExpiry
+		if stale != "" {
+			reason = codexRefreshRecovery
+		} else if force {
+			reason = forcedReason(ctx)
+		}
+		if tok, err = codexRefresh(ctx, raw, reason); err != nil {
 			return "", "", savedRefreshFailed(agent, user, err)
 		}
 		if auth, err = json.MarshalIndent(raw, "", "  "); err != nil {

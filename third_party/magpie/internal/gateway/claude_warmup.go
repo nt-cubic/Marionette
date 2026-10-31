@@ -76,6 +76,8 @@ func askClaude(ctx context.Context, configDir, model string) error {
 
 func init() {
 	provider.ProbeClaudeVia(askClaude)
+	// Warm up now sends what the scheduled warm-up sends
+	provider.WarmClaudeVia(warmClaude)
 	provider.UsageClaudeVia(claudeUsage)
 }
 

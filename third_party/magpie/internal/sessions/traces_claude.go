@@ -68,7 +68,7 @@ func (c *traceCursor) claude(line []byte, bodies bool) []TraceSpan {
 	if o.SessionID != "" {
 		c.session = o.SessionID
 	}
-	if o.Entrypoint == "claude-desktop" {
+	if desktopEntrypoint(o.Entrypoint) {
 		c.agent = "claude-desktop"
 	}
 	type block struct {

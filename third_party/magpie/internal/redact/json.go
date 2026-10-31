@@ -462,7 +462,8 @@ func MaskJSON(body []byte, o Options) ([]byte, int) {
 		// number or an address the vendor wrote of its own can be one
 		// masked in another conversation (13800138000 is in many), and
 		// masked, its text would no longer match its signature
-		t, n := apply(t, sentKnownSpans(t, Options{Secrets: o.Secrets}), o.put(), o)
+		ko := Options{Secrets: o.Secrets, Route: o.Route}
+		t, n := apply(t, sentSpans(sentKnown, t, ko, func() []span { return knownSpans(t, ko) }), o.put(), o)
 		total += n
 		return t
 	})
@@ -496,6 +497,23 @@ func asJSON(key, eventType string) bool {
 	return key == "arguments" || key == "partial_json" || key == "delta" && strings.Contains(eventType, "arguments")
 }
 
+// typeOf is the type a JSON object says it is, wherever its "type" is
+// among its keys. Read as the keys came, a Responses
+// function_call_arguments.delta whose "delta" came before its "type", as
+// a Go map writes them, had its value put back unescaped: a password
+// with a quote in it ended the arguments' string there, and the arguments
+// the agent put together were JSON no longer.
+func typeOf(data []byte) string {
+	typ := ""
+	walk(data, func(path, _, s string) string {
+		if path == "type" {
+			typ = s
+		}
+		return s
+	})
+	return typ
+}
+
 // RestoreJSON puts the values back in a response body.
 func RestoreJSON(body []byte) []byte { return restoreJSON(body, nil) }
 
@@ -504,11 +522,8 @@ func restoreJSON(body []byte, put map[string]int) []byte {
 	if !bytes.Contains(body, []byte("{{")) && !hasShapes(body) {
 		return body
 	}
-	typ := ""
+	typ := typeOf(body)
 	out, ok := walk(body, func(path, key, s string) string {
-		if path == "type" {
-			typ = s
-		}
 		return restore(s, asJSON(key, typ), put)
 	})
 	if !ok {

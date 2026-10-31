@@ -13,6 +13,13 @@
 //   magpie.context                where a panel is (P5): { provider: {
 //                                 id, name } } in a provider's editor,
 //                                 else {}; set once magpie.ready is
+//   magpie.service               the address of the page's local service
+//                                 (package.json's magpie.page.service)
+//                                 through magpie, set once magpie.ready
+//                                 is, on a page a browser opened through
+//                                 magpie web; "" where 127.0.0.1 is the
+//                                 service's own computer (the app's
+//                                 window) or magpie is older
 //   magpie.onAction(fn)           fn({ id, provider | agent: { id, name } })
 //                                 when one of its magpie.actions is picked
 //                                 in a row's menu (P6); one picked before
@@ -94,6 +101,7 @@
   const api = {
     theme: null,
     context: {},
+    service: "",
     onTheme(fn) { themed.push(fn); },
     onAction(fn) {
       acting = fn;
@@ -105,9 +113,11 @@
     },
     read: (name, params) => call("read", { name, params }),
   };
-  api.ready = call("hello").then(({ context, ...theme }) => {
+  api.ready = call("hello").then(({ context, service, ...theme }) => {
     api.theme = theme;
     api.context = context || {};
+    api.service = "";
+    try { if (service) api.service = new URL(service, location.href).href; } catch { /* none */ }
     paint(theme);
     return theme;
   });

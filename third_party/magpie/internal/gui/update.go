@@ -41,7 +41,9 @@ type updater struct {
 	mirror  string      // error: the mirror the failed download came through (#893)
 	network bool        // error: the network broke the download off (update.Network)
 	staged  string
-	aside   string // Windows: where install moved the running exe, to put back
+	// stable: latest was found on Settings' Stable channel
+	stable bool
+	aside  string // Windows: where install moved the running exe, to put back
 	// a version this computer wouldn't start (Smart App Control, #894),
 	// which the clock's checks don't download again; byClock, the check
 	// under way is the clock's
@@ -76,6 +78,7 @@ type updater struct {
 	// called off, which isn't restarted into by itself again.
 	autoRestart func() bool
 	autoSkip    string
+	waitAsked   bool // the restart waiting was a click's
 }
 
 type updateJSON struct {
@@ -126,6 +129,9 @@ func updateDue(s settings.Settings, last, now time.Time) bool {
 
 func (u *updater) start() {
 	u.place(runtime.GOOS, update.GUI)
+	if u.bundle != "" {
+		go update.ForgetOldStaging(u.bundle) // #3965
+	}
 	go func() {
 		time.Sleep(5 * time.Second) // let the app settle first
 		for {
@@ -241,20 +247,47 @@ func (u *updater) download() bool {
 
 // recheck asks the feed again before a restart into what was downloaded,
 // so a newer version out since is the one restarted into. It waits for
-// the feed a little while; a newer version is then downloading.
-func (u *updater) recheck() {
+// the feed a little while (recheckTicks of recheckTick); a newer version
+// is then downloading. asked is a click on Restart to update, which asks
+// for the newest: with Settings' NoAutoDownload on too, a newer version
+// out since is downloaded and restarted into, not the one the last check
+// found (coeo91 on Discord).
+func (u *updater) recheck(asked bool) {
 	if u.begin() {
+		u.mu.Lock()
+		u.fetch = asked
+		u.mu.Unlock()
 		go u.run()
 	}
-	for range 50 {
-		u.mu.Lock()
-		s := u.state
-		u.mu.Unlock()
-		if s != "checking" {
+	for range recheckTicks {
+		if !u.asking() {
 			return
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(recheckTick)
 	}
+}
+
+// askedOver is whether the feed was last asked over d ago.
+func (u *updater) askedOver(d time.Duration) bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return time.Since(u.asked) >= d
+}
+
+// recheckTicks of recheckTick is how long recheck waits for the feed;
+// tests shorten it.
+var (
+	recheckTicks = 50
+	recheckTick  = 200 * time.Millisecond
+)
+
+// asking is whether the feed is being asked. The state then reads
+// "ready" while an older download waits (jsonIn), which a restart doesn't
+// go into: the answer may name a newer one.
+func (u *updater) asking() bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.state == "checking"
 }
 
 // freshAfter is how long the feed's answer stays fresh for the dialog
@@ -268,7 +301,7 @@ func (u *updater) freshen() {
 	stale := u.state == "ready" && u.staged != "" && time.Since(u.asked) >= freshAfter
 	u.mu.Unlock()
 	if stale {
-		u.recheck()
+		u.recheck(false) // the dialog asks for nothing to be downloaded
 	}
 }
 
@@ -328,15 +361,29 @@ func (u *updater) run() {
 	if lang == "" {
 		lang = notesLang(trayLang(s.Lang, systemLang))
 	}
+	stable := s.UpdateChannel == settings.UpdateStable
 	rel, err := update.LatestIn(ctx, lang)
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	// the feed names an older version than the one found before: Settings'
-	// Update channel went to Stable since (ssharpcc on X). What was
-	// downloaded from every version isn't put in, and the version found
-	// is the feed's again, as if never found.
 	if err == nil && u.latest != nil && update.Newer(u.latest.Version, rel.Version) {
-		u.staged, u.latest = "", nil
+		if stable != u.stable {
+			// an older version than the one found before, on another
+			// channel: Settings' Update channel went to Stable since
+			// (ssharpcc on X). What was downloaded from every version
+			// isn't put in, and the version found is the feed's again, as
+			// if never found.
+			u.staged, u.latest = "", nil
+		} else {
+			// on the same channel it is the feed behind: the site, short
+			// of GitHub's API, answers from GitHub's latest redirect or
+			// the last answer it kept, which can be a release or more
+			// old. Restart to update asks the feed first (recheck), and
+			// such an answer dropped the download it was about to put
+			// in: no restart, and the app stayed on the version it was
+			// (littleHong on Discord, v0.1.2037 offered v0.1.2038). The
+			// version found stands, and so does its download.
+			rel, lang = u.latest, u.notesIn
+		}
 	}
 	// a version downloaded on a click stays the one restarted into while
 	// downloads wait for a click: a newer one out since isn't fetched
@@ -357,7 +404,7 @@ func (u *updater) run() {
 		u.state, u.err = "error", err.Error()
 		return
 	}
-	u.latest, u.notesIn = rel, lang
+	u.latest, u.notesIn, u.stable = rel, lang, stable
 	switch {
 	case !update.Released(Version):
 		u.state = "source"
@@ -641,12 +688,20 @@ func updateRoutes(mux *http.ServeMux, w Windows) {
 						return true
 					}
 					return false
-				})
+				}, true)
 				writeJSON(rw, updates.json())
 				return
 			}
 			updates.cancelWait()
-			updates.recheck()
+			updates.recheck(true)
+			if updates.asking() {
+				// the feed hasn't answered yet: the page reads again and
+				// restarts once it has, into the newest
+				j := updates.json()
+				j.State = "checking"
+				writeJSON(rw, j)
+				return
+			}
 		}
 		switch j := updates.json(); {
 		case j.State == "ready":
@@ -660,6 +715,14 @@ func updateRoutes(mux *http.ServeMux, w Windows) {
 			// NoAutoDownload says (#2296)
 			updates.download()
 		case j.State == "available" && j.URL != "":
+			// the newest's page, not the one the last check found: a check
+			// over a minute old is made again first (coeo91 on Discord)
+			if updates.askedOver(time.Minute) {
+				updates.recheck(true)
+				if j = updates.json(); j.URL == "" {
+					break
+				}
+			}
 			_ = w.OpenURL(j.URL) // nothing waits on the page: the card still shows the update
 		}
 		writeJSON(rw, updates.json())

@@ -193,13 +193,19 @@ func magpieModels(agent string) []catalog.Model {
 	// a model magpie describes images to takes them (provider.Described)
 	seen := provider.Described != nil && provider.Described()
 	st, find := settings.Load(), provider.GroupFinder()
-	priceOf := provider.EntryPricer(st, find)
+	priceOf := provider.AgentPricer(st, find)
 	members := func(id string) []provider.Member {
 		_, ms, _ := find(id)
 		return ms
 	}
 	for i, e := range shown {
-		m := catalog.Model{ID: e.ID, Name: labels[i], Provider: firstOf(e.Provider.Catalogs()), Efforts: e.Efforts, Images: e.Images || seen, ImageInput: e.ImageInput, Context: e.Context, Output: e.Output, OutputSet: e.OutputSet, AgentsV2: e.AgentsV2, Reasoning: e.Thinks()}
+		efforts := e.Efforts
+		if agent == "codex" {
+			// the levels Codex's picker offers, a model magpie has no
+			// word on included (provider.CodexEfforts)
+			efforts = provider.CodexEfforts(e)
+		}
+		m := catalog.Model{ID: e.ID, Name: labels[i], Provider: firstOf(e.Provider.Catalogs()), Efforts: efforts, Images: e.Images || seen, ImageInput: e.ImageInput, Context: e.Context, Output: e.Output, OutputSet: e.OutputSet, AgentsV2: e.AgentsV2, Reasoning: e.Thinks()}
 		// where Codex and Claude Code compact it (#876): a threshold the
 		// user set on the model or on its provider, else a window they
 		// typed whole (#1809), else the one for every model, which codexcat
@@ -213,8 +219,8 @@ func magpieModels(agent string) []catalog.Model {
 			yes := true
 			m.ImageInput = &yes
 		}
-		// APIs is the one to ask it on for the gateway to relay the request
-		// as it is. A group's members may each want another, so a group has
+		// APIs is the preferred client protocol, preserving the vendor's
+		// own content where possible. A group's members may differ, so a group has
 		// one only when every member is served best on Responses (#1594,
 		// ObsidianArch02): Pi, omp, droid and dsh then ask it there, and a
 		// GPT group's tool-call arguments stream as the member sends them
@@ -222,6 +228,16 @@ func magpieModels(agent string) []catalog.Model {
 		if e.Group == "" {
 			if n := e.Provider.Native(e.Model); n != "" {
 				m.APIs = []string{string(n)}
+			} else {
+				// Gemini clients also reach Code Assist and Google plugins
+				// through the gateway's Gemini API, with translation as needed.
+				apis := e.Provider.APIs(e.Model)
+				for _, pr := range e.Provider.Speaks() {
+					if (pr == provider.Gemini || pr == provider.CodeAssist) && (apis == nil || slices.Contains(apis, pr)) {
+						m.APIs = []string{string(provider.Gemini)}
+						break
+					}
+				}
 			}
 		} else if allResponses(members(e.ID)) {
 			m.APIs = []string{string(provider.Responses)}

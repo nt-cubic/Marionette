@@ -22,6 +22,21 @@ func TestVSCodeDetected(t *testing.T) {
 		{name: "windows code", layout: "windows", product: `{"applicationName":"code"}`, want: true},
 		{name: "windows cursor", layout: "windows", product: `{"applicationName":"cursor"}`},
 		{name: "cursor name", layout: "mac", product: `{"nameShort":"Cursor"}`},
+		// Qoder IDE ships bin/code beside bin/qoder (ggbr on Discord); its
+		// product.json as the 2026-10-29 macOS build has it
+		{name: "mac qoder", layout: "mac", product: `{"nameShort":"Qoder","nameLong":"Qoder","applicationName":"qoder","dataFolderName":".qoder","darwinBundleIdentifier":"com.qoder.ide","win32DirName":"Qoder IDE"}`},
+		{name: "linux qoder", layout: "linux", product: `{"applicationName":"qoder","nameShort":"Qoder"}`},
+		{name: "windows qoder", layout: "windows", product: `{"applicationName":"qoder","nameShort":"Qoder"}`},
+		{name: "qoder symlink", layout: "mac", product: `{"applicationName":"qoder"}`, link: "single"},
+		{name: "mac windsurf", layout: "mac", product: `{"applicationName":"windsurf","nameShort":"Windsurf"}`},
+		{name: "windows trae", layout: "windows", product: `{"applicationName":"trae","nameShort":"Trae"}`},
+		{name: "linux kiro", layout: "linux", product: `{"applicationName":"kiro","nameShort":"Kiro"}`},
+		{name: "windows codebuddy", layout: "windows", product: `{"applicationName":"codebuddy","nameShort":"CodeBuddy"}`},
+		{name: "mac antigravity", layout: "mac", product: `{"applicationName":"antigravity","nameShort":"Antigravity"}`},
+		{name: "insiders product", layout: "mac", product: `{"applicationName":"code-insiders","nameShort":"Code - Insiders"}`},
+		{name: "qoder name", layout: "mac", product: `{"nameShort":"Qoder"}`},
+		{name: "code name", layout: "mac", product: `{"nameShort":"Code"}`, want: true},
+		{name: "visual studio code name", layout: "windows", product: `{"nameShort":"Visual Studio Code"}`, want: true},
 		{name: "unbranded product", layout: "mac", product: `{}`, want: true},
 		{name: "invalid product", layout: "mac", product: `{"applicationName":"cursor",`, want: true},
 		{name: "missing product", layout: "mac", want: true},
@@ -127,5 +142,33 @@ func vscodeTestSymlink(t *testing.T, target, link string) {
 			t.Skipf("symlink unavailable: %v", err)
 		}
 		t.Fatal(err)
+	}
+}
+
+// Each of VS Code's builds is told by its own command's name in its
+// product.json, and a fork's launcher of the same name is not it.
+func TestVSCodeBuildLauncher(t *testing.T) {
+	for _, tt := range []struct {
+		app, product string
+		want         bool
+	}{
+		{"code", `{"applicationName":"code","nameShort":"Code"}`, true},
+		{"code-insiders", `{"applicationName":"code-insiders","nameShort":"Code - Insiders"}`, true},
+		{"codium", `{"applicationName":"codium","nameShort":"VSCodium"}`, true},
+		{"codium", `{"applicationName":"code"}`, false},
+		{"code-insiders", `{"applicationName":"qoder"}`, false},
+		{"codium", `{"applicationName":"cursor"}`, false},
+		{"codium", `{"nameShort":"VSCodium"}`, true},
+		{"code", `{"nameShort":"Code - OSS"}`, true},
+		{"code", `{"nameShort":"Windsurf"}`, false},
+	} {
+		root := t.TempDir()
+		app := filepath.Join(root, "Editor.app", "Contents", "Resources", "app")
+		writeFile(t, filepath.Join(app, "product.json"), tt.product)
+		bin := filepath.Join(app, "bin", tt.app)
+		writeFile(t, bin, "#!/bin/sh\n")
+		if got := vscodeCodeBinary(bin, tt.app); got != tt.want {
+			t.Errorf("vscodeCodeBinary(%s, %s) = %v, want %v", tt.app, tt.product, got, tt.want)
+		}
 	}
 }

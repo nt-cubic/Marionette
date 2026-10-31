@@ -607,6 +607,10 @@ func stepPlanQuotas(ctx context.Context) []SubscriptionQuota {
 		go func() {
 			defer wg.Done()
 			out[i] = stepPlanQuota(ctx, p)
+			if out[i].Error == "" {
+				// what routing goes by, read just now (KeyAllowance)
+				noteKeyAllowance(p, out[i].Windows, time.Now())
+			}
 		}()
 	}
 	wg.Wait()

@@ -15,7 +15,7 @@
 }
 .lib-head::before {
   content: ""; position: absolute; z-index: -1; pointer-events: none;
-  top: 0; bottom: 0; left: calc(-1 * var(--bleed-l)); right: calc(-1 * var(--bleed-r));
+  top: 0; bottom: 0; left: calc(-1 * var(--bleed-l)); right: calc(var(--bar, 0px) - var(--bleed-r)); /* the bar's room is out of the padding */
   background: color-mix(in srgb, var(--bg) 92%, transparent);
   -webkit-backdrop-filter: saturate(1.6) blur(16px); backdrop-filter: saturate(1.6) blur(16px);
   box-shadow: 0 1px 0 transparent; transition: box-shadow .18s var(--ease);
@@ -30,6 +30,8 @@ body.window .lib-head { top: -2px; margin: -2px 0 0; padding: 8px 0 4px; --bleed
   }
   body.web .lib-tabs { max-width: 100%; flex-wrap: wrap; }
   body.web .lib-more, body.web .lib-discover, body.web .lib-backups { flex: none; }
+  /* a phone's inputs are 44pt with 16px text: the search box grows round it */
+  body.web .editor.lib-hubsheet label.lib-hubsearch { height: 44px; border-radius: 10px; }
 }
 /* a window too narrow for the tabs and the buttons beside them (Discover,
    Library folder, Backups) on one line has the buttons on a line of their own, at
@@ -52,10 +54,94 @@ body.window .lib-head { top: -2px; margin: -2px 0 0; padding: 8px 0 4px; --bleed
 .lib-intro { margin: 8px 2px 10px; font-size: 12px; line-height: 1.5; color: var(--muted); text-wrap: pretty; }
 .lib-aside { margin: 8px 4px 0; font-size: 11.5px; line-height: 1.5; color: var(--faint); }
 .lib-aside.center { text-align: center; margin-top: 14px; }
+/* the MCP hub's switch, under the servers (#2679) */
+.lib-hublist { margin-top: 16px; }
+.lib-hub .lib-switch { align-self: center; }
+/* its switch stays beside its text in a narrow window, as a setting's does */
+.lib-list .row.lib-hub { flex-wrap: nowrap; }
+.lib-hub .name { white-space: normal; }
+.lib-hub .lib-hubstats { margin-top: 4px; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* the address any other app connects at, under the switch */
+.lib-list .row.lib-hubat { flex-wrap: nowrap; align-items: center; }
+.lib-hubat > .lib-glyph { align-self: center; margin-top: 0; }
+.lib-hubat .who { min-width: 0; }
+.lib-hubat .lib-hubURL { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: text; }
+.lib-hubat .lib-hubconnect { flex: none; }
+/* Connect an app: Agents | Other apps, as System Settings draws a pane:
+   one line of where things stand, then inset groups with hairlines */
+/* one column: the dialog's body (.ebody) is the editor's label/field grid */
+.modal .editor.lib-hubsheet > .ebody { grid-template-columns: minmax(0, 1fr); grid-auto-rows: max-content; gap: 16px; }
+.lib-hubsheet .ebody > * { min-width: 0; margin-top: 0; margin-bottom: 0; }
+.lib-hubsheet .ebody > .segs { justify-self: center; max-width: 100%; }
+.lib-hubsheet .segs .opt { flex: none; }
+.lib-hubpane { display: flex; flex-direction: column; gap: 18px; min-width: 0; min-height: 240px; }
+/* agents → magpie → servers */
+.lib-hubflow { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 0 2px; text-align: center; }
+.lib-hubroute { display: flex; align-items: center; width: 100%; max-width: 320px; margin-bottom: 10px; }
+.lib-hubstack { display: inline-flex; align-items: center; flex: none; }
+.lib-hubstack > * { flex: none; box-shadow: 0 0 0 2px var(--card); border-radius: 7px; background: var(--card); }
+.lib-hubstack > * + * { margin-left: -7px; }
+.lib-hubroute .lib-hubstack > :is(.ic, .lib-glyph, .lib-logo) { width: 24px; height: 24px; }
+.lib-hubmore { display: grid; place-items: center; min-width: 24px; padding: 0 5px; border-radius: 7px; background: var(--pill); color: var(--muted); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.lib-hubwire { flex: 1; min-width: 12px; height: 1px; margin: 0 8px; background: linear-gradient(90deg, var(--line), var(--faint), var(--line)); }
+.lib-hubnode { flex: none; width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center; color: var(--fg); background: var(--card); box-shadow: 0 0 0 0.5px var(--line), 0 1px 2px rgb(0 0 0 / 6%), 0 4px 12px -4px rgb(0 0 0 / 12%); }
+.lib-hubsheet .lib-hublead { margin: 0; font-size: 13px; font-weight: 500; color: var(--fg); text-wrap: balance; font-variant-numeric: tabular-nums; }
+.lib-hubsheet .lib-hubapps { align-self: center; text-align: center; font-weight: 400; color: var(--fg-2); }
+.lib-hubsub { margin: 0; font-size: 12px; color: var(--muted); text-wrap: balance; }
+.lib-hubsub > span { display: inline-block; }
+/* a label in an .editor: its form rows' padding-top, right-aligned 12px
+   text (more under body.web) would push the glass and the text off the
+   middle, so the box says its own */
+.editor.lib-hubsheet label.lib-hubsearch { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; border-radius: 7px; background: var(--pill); color: var(--muted); text-align: left; font-size: 13px; }
+.editor.lib-hubsheet .lib-hubsearch input { flex: 1; min-width: 0; height: 100%; min-height: 0; margin: 0; border: 0; padding: 0; background: transparent; font: inherit; font-size: 13px; color: var(--fg); outline: none; box-shadow: none; }
+.lib-hubsheet .lib-hubsearch input:is(:focus, :focus-visible) { border: 0; box-shadow: none; outline: none; }
+.lib-hubsearch input::-webkit-search-cancel-button { -webkit-appearance: none; }
+.lib-hubsearch:focus-within { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+/* a group: a quiet heading, its count, a fold; then its inset list */
+.lib-hubgrp { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.lib-hubsheet .lib-hubsec { display: flex; align-items: baseline; gap: 6px; padding: 0 12px; font-size: 11.5px; font-weight: 500; color: var(--muted); }
+.lib-hubn { color: var(--faint); font-variant-numeric: tabular-nums; }
+.lib-hubsec .lib-hubfold { margin-left: auto; height: auto; padding: 0; border: 0; background: none; color: var(--accent); font-size: 11.5px; }
+.lib-hubsheet .lib-list .row { min-height: 40px; padding: 6px 12px; gap: 10px; flex-wrap: nowrap; }
+.lib-hubsheet .lib-list .row + .row { border-top: 0; box-shadow: inset 44px 0 0 var(--card), inset 0 1px 0 var(--line-2); }
+.lib-hubsheet .lib-list .row > .ic { width: 22px; height: 22px; flex: none; }
+.lib-hubagent .name, .lib-hubapp .name { font-weight: 400; }
+.lib-hubagent .sub { white-space: normal; text-wrap: pretty; }
+.lib-hubkept .name { color: var(--muted); }
+.lib-hubkept > .ic { opacity: .7; }
+.lib-hubtag { flex: none; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.lib-hubinfo { flex: none; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; display: grid; place-items: center; background: none; color: var(--faint); }
+.lib-hubinfo:hover, .lib-hubinfo[aria-expanded="true"] { color: var(--accent); }
+.lib-hubwhy { margin: 0; padding: 0 12px 10px 44px; margin-top: -4px; font-size: 12px; line-height: 1.5; color: var(--muted); text-wrap: pretty; }
+button.row.lib-hubfolded { width: 100%; border: 0; background: none; text-align: left; font: inherit; color: inherit; cursor: pointer; }
+button.row.lib-hubfolded:hover { background: var(--pill); }
+.lib-hubfolded .lib-hubstack > * { width: 18px; height: 18px; border-radius: 5px; box-shadow: 0 0 0 1.5px var(--card); }
+.lib-hubfolded .lib-hubstack > * + * { margin-left: -5px; }
+.lib-hubfolded .name { flex: 1; min-width: 0; }
+.lib-hubfolded > svg { flex: none; color: var(--faint); }
+.lib-hubnone { margin: 16px 0; text-align: center; color: var(--muted); }
+/* other apps */
+.lib-hubaddr { display: flex; align-items: center; gap: 6px; min-width: 0; height: 36px; padding: 0 6px 0 12px; border-radius: 9px; background: var(--card); border: 1px solid var(--line); }
+.lib-hubaddr code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--fg-2); user-select: all; }
+.lib-hubcap { margin: -10px 12px 0; font-size: 12px; line-height: 1.5; color: var(--muted); text-wrap: pretty; }
+.lib-hubapp .sub { white-space: normal; text-wrap: pretty; }
+.lib-hubpill { flex: none; height: 24px; padding: 0 11px; border: 0; border-radius: 12px; background: var(--pill); color: var(--fg); font-size: 12px; font-weight: 500; white-space: nowrap; }
+.lib-hubpill:hover { background: var(--pill-hover); }
+.lib-hubpill.lib-hubadd { background: var(--accent-soft); color: var(--accent); }
+.lib-hubpill.quiet { background: none; color: var(--muted); padding: 0 6px; }
+.lib-hubpill.quiet:hover { color: var(--fg); background: var(--pill); }
+.lib-hubsheet .bar .lib-hubnote { font-size: 12px; color: var(--muted); }
+@media (max-width: 560px) {
+  .lib-hubsheet .lib-list .row { flex-wrap: nowrap; }
+  .lib-hubtag { display: none; }
+}
 
 /* the glyph at the front of a row: drawn, in the text colour */
 .lib-glyph { flex: none; width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; color: var(--fg-2); background: var(--pill); }
 .lib-glyph svg { width: 15px; height: 15px; }
+/* the hub's mark: magpie's bird on the glyph's tile */
+.lib-glyph.lib-hubmark { color: var(--fg); }
+.lib-glyph.lib-hubmark svg { width: 17px; height: 17px; }
 .lib-rtk-logo .mask { width: 20px; height: 20px; background: currentColor; -webkit-mask: var(--i) center / contain no-repeat; mask: var(--i) center / contain no-repeat; }
 .mk-icon.lib-logo { flex: none; width: 26px; height: 26px; border-radius: 7px; }
 .lib-editor .ehead .mk-icon.lib-logo { width: 24px; height: 24px; }
@@ -105,6 +191,13 @@ body.window .lib-head { top: -2px; margin: -2px 0 0; padding: 8px 0 4px; --bleed
 .lib-skill .sub { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.4; }
 .lib-skill.missing .name { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--faint); }
 .lib-skill.missing .sub { color: var(--amber); }
+/* off on this computer: its agents' ticks are the other computers', shown faded and not to be changed here */
+.lib-skill.offhere > .lib-glyph, .lib-skill.offhere > .lib-logo, .lib-skill.offhere .sub { opacity: .55; }
+.lib-skill.offhere > .lib-agents { opacity: .4; pointer-events: none; }
+.lib-hereline { display: flex; margin-top: 3px; min-width: 0; }
+.lib-hereline > .lib-tag.lib-offhere { cursor: pointer; margin-left: 0; flex: 0 1 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.lib-tag.lib-offhere:hover { color: var(--fg); }
+.lib-icon.lib-here.on { color: var(--accent); }
 .lib-src { display: flex; align-items: center; gap: 5px; margin-top: 3px; font-size: 11px; color: var(--faint); min-width: 0; }
 /* "linked from" stays whole, one line, and the path beside it gives way:
    CJK can break after any character, so the label shrank to a column of
@@ -113,6 +206,10 @@ body.window .lib-head { top: -2px; margin: -2px 0 0; padding: 8px 0 4px; --bleed
 .lib-src > .lib-path, .lib-src > .lib-srclink { flex: 0 1 auto; min-width: 0; }
 .lib-srclink { font: var(--code-style, normal) var(--code-weight, 400) 11px var(--code-font, var(--code)); font-stretch: var(--code-stretch, 100%); color: var(--muted); text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lib-srclink:hover { color: var(--fg); text-decoration: underline; text-underline-offset: 2px; }
+/* kept in ~/.agents/skills: moved into the library on a click (tnt1223) */
+.lib-src > .lib-handover { flex: 0 2 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; height: auto; border: 0; background: none; font-size: 11px; color: var(--accent); padding: 0 2px; margin-left: 4px; border-radius: 3px; white-space: nowrap; }
+.lib-src > .lib-handover:hover { text-decoration: underline; text-underline-offset: 2px; }
+.lib-confirm.lib-muted { color: var(--muted); }
 
 /* a path: shown in the file manager on a click */
 .lib-path { font: var(--code-style, normal) var(--code-weight, 400) 11px var(--code-font, var(--code)); font-stretch: var(--code-stretch, 100%); color: var(--muted); padding: 0; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; border-radius: 3px; }
@@ -218,6 +315,8 @@ input.lib-setname:focus { border-color: var(--accent); box-shadow: 0 0 0 3px col
 .lib-ag.warn::after { content: ""; position: absolute; top: -2px; right: -2px; width: 7px; height: 7px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 2px var(--card); }
 .lib-ag.blocked { opacity: .35; }
 .lib-ag.blocked:hover { background: none; }
+/* a stopped WSL distro's agent: shown as last seen, quietly greyer */
+.lib-ag.asleep .ic { opacity: .55; filter: grayscale(1); }
 .lib-ag:active:not(.blocked) { transform: scale(.92); }
 .editor .lib-agents { max-width: none; justify-content: flex-start; gap: 5px; }
 .editor .lib-ag { padding: 0 9px 0 6px; border-color: var(--line); }
@@ -412,9 +511,14 @@ input.lib-setname:focus { border-color: var(--accent); box-shadow: 0 0 0 3px col
 .mk-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .mk-icon {
   flex: none; width: 36px; height: 36px; border-radius: 9px; overflow: hidden; display: grid; place-items: center;
-  background: #fff; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .07);
+  position: relative; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .07);
 }
-.mk-icon img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* The white sits on a plate 1px in, not on the tile: under an opaque logo
+   a white background bleeds through the rounded clip's soft edge as a white
+   fringe at each corner. */
+.mk-icon::before { content: ""; position: absolute; inset: 1px; border-radius: inherit; background: #fff; }
+.mk-icon.mono::before { content: none; }
+.mk-icon img { position: relative; width: 100%; height: 100%; object-fit: cover; display: block; }
 .mk-icon.svg img { width: 72%; height: 72%; object-fit: contain; }
 .mk-icon.mono { background: var(--pill); box-shadow: none; }
 .mk-mono { font-size: 15px; font-weight: 600; color: var(--fg-2); }

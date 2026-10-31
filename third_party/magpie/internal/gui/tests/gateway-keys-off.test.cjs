@@ -6,8 +6,8 @@ const { fixture } = require("./fixtures/caller-keys.cjs");
 // Gateway keys are left out of Gateway while magpie isn't shared, and a
 // tunnel to loopback (Cloudflare Tunnel) is refused until it is. DD on
 // Discord looked for the keys to put a tunnel behind one and found none:
-// the page says where they come from, and its button opens Settings ›
-// Network and sharing. Shared, the line gives way to the keys.
+// the page says where they come from, and sharing is switched on right
+// there, on the gateway's card. Shared, the line gives way to the keys.
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   for (const locale of ["en", "zh", "zh-TW", "ja", "de"]) {
     for (const width of [1100, 420]) {
@@ -15,6 +15,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
         t.after(() => browser.close());
         const page = await (await browser.newContext({ viewport: { width, height: 760 }, reducedMotion: "reduce" })).newPage();
+        await page.addInitScript(() => { try { localStorage.setItem("magpie.gwConnectFolded", "0"); } catch {} }); // Connect opened, as a user who reads it
         page.setDefaultTimeout(6000);
         const errors = [];
         page.on("pageerror", (e) => errors.push(e.message));
@@ -28,31 +29,16 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const text = await hint.textContent();
         assert(text.includes("Cloudflare Tunnel"), text);
         if (locale !== "en") assert(!text.includes("other computers"), "translated: " + text);
-        // the line fits the page, the button inside it
-        const fits = await hint.evaluate((n) => {
-          const b = n.querySelector("button").getBoundingClientRect(), p = n.getBoundingClientRect();
-          return b.right <= p.right + 1 && p.right <= document.documentElement.clientWidth + 1;
-        });
+        // the line fits the page
+        const fits = await hint.evaluate((p) => p.getBoundingClientRect().right <= document.documentElement.clientWidth + 1);
         assert(fits, "the hint overflows at " + width);
 
+        // shared from the card: the keys show and the line is gone
         const y = await page.evaluate(() => scrollY);
-        await page.locator("#openLanSettings").click();
-        await page.locator("#setPage-network").waitFor({ state: "visible" });
-        assert.equal(await page.locator("#setTab-network").getAttribute("aria-selected"), "true");
-        const share = await page.locator("#lanList .row").first().textContent();
-        assert(share.includes("Cloudflare Tunnel"), share);
-
-        // shared: the keys show and the line is gone
-        const on = page.locator("#lanList .segs button").last();
-        const bounds = await on.boundingBox();
-        await page.mouse.move(width / 2, 400);
-        await page.mouse.wheel(0, bounds.y - 250);
-        await on.click();
-        await page.locator("#lanList .lan-address-row").waitFor();
-        await page.goto("http://magpie.test/?view=gateway");
+        await page.locator("#gatewayLan .segs button").last().click();
         await page.locator("#gatewayKeysBlock").waitFor({ state: "visible" });
         assert.equal(await hint.isVisible(), false);
-        assert.equal(y, 0);
+        assert.equal(y, await page.evaluate(() => scrollY), "sharing moved the page");
         assert.deepEqual(errors, []);
       });
     }

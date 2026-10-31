@@ -43,7 +43,7 @@ func TestInstallNeedsAdmin(t *testing.T) {
 	apps := filepath.Join(root, "Applications")
 	bundle := filepath.Join(apps, "magpie.app")
 	app(t, bundle, "old")
-	staged := filepath.Join(root, "cache", "app", "magpie.app")
+	staged := filepath.Join(root, "cache", "update", stagedName)
 	app(t, staged, "new")
 	os.Chmod(apps, 0o555)
 	defer os.Chmod(apps, 0o755)
@@ -67,7 +67,7 @@ func TestSwapScript(t *testing.T) {
 		t.Skip("the swap runs as root under /bin/sh, on a Mac or Linux")
 	}
 	dir := filepath.Join(t.TempDir(), `it's "a" \ $(dir) `)
-	bundle, staged, old := filepath.Join(dir, "magpie.app"), filepath.Join(dir, "s", "magpie.app"), filepath.Join(dir, "s", "old.app")
+	bundle, staged, old := filepath.Join(dir, "magpie.app"), filepath.Join(dir, "s", stagedName), filepath.Join(dir, "s", asideName)
 	app(t, bundle, "old")
 	app(t, staged, "new")
 	if b, err := exec.Command("/bin/sh", "-c", swapScript(staged, bundle, old)).CombinedOutput(); err != nil {

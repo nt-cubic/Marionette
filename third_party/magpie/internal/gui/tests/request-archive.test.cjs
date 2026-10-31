@@ -118,7 +118,6 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // the Gateway page: no switch, and a call the archive kept shows its
       // bodies with nothing of the archive under them
       await page.goto("http://magpie.test/?view=gateway");
-      await page.locator("#foldConnect").click();
       const calls = page.locator("#activity .call-item");
       await calls.first().waitFor();
       assert.equal(await page.locator("#archiveList, #view-gateway [role=switch]").count(), 0, "no archive switch on the Gateway page");

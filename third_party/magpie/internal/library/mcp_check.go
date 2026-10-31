@@ -300,12 +300,14 @@ func request(id int, method string, params any) []byte {
 	return b
 }
 
-func initializeReq() []byte {
-	return request(1, "initialize", map[string]any{
+func initializeReq() []byte { return request(1, "initialize", initParams()) }
+
+func initParams() map[string]any {
+	return map[string]any{
 		"protocolVersion": mcpProtocol,
 		"capabilities":    map[string]any{},
 		"clientInfo":      map[string]any{"name": "magpie", "version": gateway.Version},
-	})
+	}
 }
 
 var initializedNote = []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
@@ -529,17 +531,23 @@ func withPath(env []string, dir string) []string {
 	return append(out, "PATH="+dir)
 }
 
-// checkStdioAt starts the command on this machine, or in WSL distro.
-func checkStdioAt(ctx context.Context, s *Server, distro string) ServerHealth {
-	// started as the agents start it: in the environment magpie has, with
-	// the server's own variables over it
+// startServer starts the command s runs as the agents start it, on this
+// machine or in WSL distro: in the environment magpie has, with the
+// server's own variables over it, in home. Its stdin and stdout are the
+// MCP connection; what it writes to stderr is kept in errs; stop ends a
+// run in a distro (call it beside tree.Kill). The check starts it so, and
+// so does the hub (mcp_hub.go), on this machine.
+func startServer(ctx context.Context, s *Server, distro string) (tree *proc.Tree, stdin io.WriteCloser, stdout io.ReadCloser, errs *tail, stop func(), bad *ServerHealth) {
+	fail := func(h ServerHealth) (*proc.Tree, io.WriteCloser, io.ReadCloser, *tail, func(), *ServerHealth) {
+		return nil, nil, nil, nil, nil, &h
+	}
 	env, unset := expandAll(s.Env)
 	if len(unset) > 0 {
-		return failed("novar", strings.Join(unset, ", "))
+		return fail(failed("novar", strings.Join(unset, ", ")))
 	}
 	var cmd *exec.Cmd
 	var t wslrun.Tool
-	stop := func() {}
+	stop = func() {}
 	found := ""
 	if distro == "" {
 		var prog string
@@ -550,11 +558,11 @@ func checkStdioAt(ctx context.Context, s *Server, distro string) ServerHealth {
 		t, err = wslrun.In(distro, s.Command)
 		switch {
 		case errors.Is(err, wslrun.ErrDown):
-			return failed("wsldown", distro)
+			return fail(failed("wsldown", distro))
 		case errors.Is(err, wslrun.ErrNotFound):
-			return failed("notfound", s.Command)
+			return fail(failed("notfound", s.Command))
 		case err != nil:
-			return failed("start", "wsl.exe -d "+distro+": "+err.Error())
+			return fail(failed("start", "wsl.exe -d "+distro+": "+err.Error()))
 		}
 		// its own context, ended with the check, which ends the run inside
 		// the distro too (killing wsl.exe alone leaves it there); not the
@@ -563,7 +571,6 @@ func checkStdioAt(ctx context.Context, s *Server, distro string) ServerHealth {
 		rctx, stop = context.WithCancel(context.WithoutCancel(ctx))
 		cmd = wslCommand(rctx, t, s.Args...)
 	}
-	defer stop()
 	// Agents start MCP servers from a project or home directory. A magpie
 	// launched from a shortcut (Windows Start menu) often has C:\Windows\system32
 	// as its own cwd, which is not writable; inherit that and a server that
@@ -592,22 +599,36 @@ func checkStdioAt(ctx context.Context, s *Server, distro string) ServerHealth {
 		slices.Sort(names)
 		cmd.Env = t.Env(cmd.Env, names...)
 	}
-	stdin, err := cmd.StdinPipe()
+	in, err := cmd.StdinPipe()
 	if err != nil {
-		return failed("start", err.Error())
+		stop()
+		return fail(failed("start", err.Error()))
 	}
-	stdout, err := cmd.StdoutPipe()
+	out, err := cmd.StdoutPipe()
 	if err != nil {
-		return failed("start", err.Error())
+		stop()
+		return fail(failed("start", err.Error()))
 	}
-	errs := &tail{}
+	errs = &tail{}
 	cmd.Stderr = errs
-	tree, err := proc.StartTree(cmd)
+	tree, err = proc.StartTree(cmd)
 	if err != nil {
+		h := failed("start", err.Error())
 		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
-			return failed("notfound", s.Command)
+			h = failed("notfound", s.Command)
 		}
-		return failed("start", err.Error())
+		stop()
+		return fail(h)
+	}
+	return tree, in, out, errs, stop, nil
+}
+
+// checkStdioAt starts the command on this machine, or in WSL distro, and
+// asks it for its tools.
+func checkStdioAt(ctx context.Context, s *Server, distro string) ServerHealth {
+	tree, stdin, stdout, errs, stop, bad := startServer(ctx, s, distro)
+	if bad != nil {
+		return *bad
 	}
 	var exitErr error
 	exited := make(chan struct{})
@@ -762,107 +783,157 @@ func statusHealth(res *http.Response) ServerHealth {
 	return h
 }
 
-func checkHTTP(ctx context.Context, s *Server) ServerHealth {
+// httpSession is a connection to a streamable HTTP server: its headers,
+// with magpie's token when it is signed in to it, and the session the
+// server gave. A check holds one for its few requests, the hub for as long
+// as the server is used (mcp_hub.go).
+type httpSession struct {
+	s *Server
+
+	mu  sync.Mutex
+	hdr http.Header
+	// tok is magpie's own token, when it is signed in: one the server
+	// refuses is renewed once and asked again with, as the gateway's
+	// relay does, and one refused just after it was renewed is a sign-in
+	// that has run out
+	tok              string
+	renewed          bool
+	session, version string
+}
+
+func newHTTPSession(ctx context.Context, s *Server) (*httpSession, *ServerHealth) {
 	hdr, bad := remoteHeaders(ctx, s)
 	if bad != nil {
-		return *bad
+		return nil, bad
 	}
-	// magpie's own token, when it is signed in: one the server refuses is
-	// renewed once and asked again with, as the gateway's relay does, and
-	// one refused just after it was renewed is a sign-in that has run out
-	tok := ""
+	c := &httpSession{s: s, hdr: hdr, version: mcpProtocol}
 	if s.Transport == "http" && mcpauth.SignedIn(s.Name, s.URL) {
-		tok = strings.TrimPrefix(hdr.Get("Authorization"), "Bearer ")
+		c.tok = strings.TrimPrefix(hdr.Get("Authorization"), "Bearer ")
 	}
-	renewed := false
-	session, version := "", mcpProtocol
-	post := func(body []byte) (*http.Response, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.URL, bytes.NewReader(body))
-		if err != nil {
-			return nil, err
-		}
-		for k, v := range hdr {
-			req.Header[k] = v
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json, text/event-stream")
-		if session != "" {
-			req.Header.Set("Mcp-Session-Id", session)
-			req.Header.Set("MCP-Protocol-Version", version)
-		}
-		return checkClient.Do(req)
+	return c, nil
+}
+
+func (c *httpSession) post(ctx context.Context, body []byte) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.s.URL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
 	}
-	// call posts a request and reads its reply, as JSON or from an event
-	// stream
-	var call func(id int, body []byte) (*rpcMsg, *ServerHealth)
-	call = func(id int, body []byte) (*rpcMsg, *ServerHealth) {
-		res, err := post(body)
-		if err != nil {
-			h := netHealth(ctx, err)
-			return nil, &h
-		}
-		defer res.Body.Close()
-		if res.StatusCode == 401 && tok != "" {
-			if renewed {
-				mcpauth.Rejected(s.Name, tok)
-			} else {
-				renewed = true
-				io.Copy(io.Discard, io.LimitReader(res.Body, 1<<16))
-				fresh, err := mcpauth.Renew(ctx, s.Name, tok)
-				if err != nil {
-					return nil, &ServerHealth{State: "auth", Code: 401, OAuth: true, Detail: err.Error()}
-				}
-				tok = fresh
-				hdr.Set("Authorization", "Bearer "+fresh)
-				return call(id, body)
+	c.mu.Lock()
+	for k, v := range c.hdr {
+		req.Header[k] = slices.Clone(v)
+	}
+	session, version := c.session, c.version
+	c.mu.Unlock()
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	if session != "" {
+		req.Header.Set("Mcp-Session-Id", session)
+		req.Header.Set("MCP-Protocol-Version", version)
+	}
+	return checkClient.Do(req)
+}
+
+// call posts a request and reads its reply, as JSON or from an event
+// stream.
+func (c *httpSession) call(ctx context.Context, id int, body []byte) (*rpcMsg, *ServerHealth) {
+	res, err := c.post(ctx, body)
+	if err != nil {
+		h := netHealth(ctx, err)
+		return nil, &h
+	}
+	defer res.Body.Close()
+	c.mu.Lock()
+	tok, renewed := c.tok, c.renewed
+	c.mu.Unlock()
+	if res.StatusCode == 401 && tok != "" {
+		if renewed {
+			mcpauth.Rejected(c.s.Name, tok)
+		} else {
+			io.Copy(io.Discard, io.LimitReader(res.Body, 1<<16))
+			fresh, err := mcpauth.Renew(ctx, c.s.Name, tok)
+			if err != nil {
+				return nil, &ServerHealth{State: "auth", Code: 401, OAuth: true, Detail: err.Error()}
 			}
+			c.mu.Lock()
+			c.renewed, c.tok = true, fresh
+			c.hdr.Set("Authorization", "Bearer "+fresh)
+			c.mu.Unlock()
+			return c.call(ctx, id, body)
 		}
-		if res.StatusCode == 401 || res.StatusCode == 403 {
-			h := refused(res)
-			return nil, &h
-		}
-		if res.StatusCode/100 != 2 {
-			h := statusHealth(res)
-			return nil, &h
-		}
-		if sid := res.Header.Get("Mcp-Session-Id"); sid != "" {
-			session = sid
-		}
-		m, err := replyOf(res, id)
-		if err != nil {
-			if ctx.Err() != nil {
-				h := timedOut(ctx)
-				return nil, &h
-			}
-			h := failed("protocol", err.Error())
-			return nil, &h
-		}
-		return m, nil
 	}
-	m, h := call(1, initializeReq())
+	if res.StatusCode == 401 || res.StatusCode == 403 {
+		h := refused(res)
+		return nil, &h
+	}
+	if res.StatusCode/100 != 2 {
+		h := statusHealth(res)
+		return nil, &h
+	}
+	if sid := res.Header.Get("Mcp-Session-Id"); sid != "" {
+		c.mu.Lock()
+		c.session = sid
+		c.mu.Unlock()
+	}
+	m, err := replyOf(res, id)
+	if err != nil {
+		if ctx.Err() != nil {
+			h := timedOut(ctx)
+			return nil, &h
+		}
+		h := failed("protocol", err.Error())
+		return nil, &h
+	}
+	return m, nil
+}
+
+// initialize opens the session: initialize, and the note that it is.
+func (c *httpSession) initialize(ctx context.Context, init []byte) *ServerHealth {
+	m, h := c.call(ctx, 1, init)
 	if h != nil {
-		return *h
+		return h
 	}
 	if h := initError(m); h != nil {
-		return *h
+		return h
 	}
-	var init struct {
+	var r struct {
 		ProtocolVersion string `json:"protocolVersion"`
 	}
-	if json.Unmarshal(m.Result, &init) == nil && init.ProtocolVersion != "" {
-		version = init.ProtocolVersion
-	}
-	if session != "" {
-		defer endSession(s.URL, hdr, session)
+	if json.Unmarshal(m.Result, &r) == nil && r.ProtocolVersion != "" {
+		c.mu.Lock()
+		c.version = r.ProtocolVersion
+		c.mu.Unlock()
 	}
 	stepTo(ctx, "notifications/initialized")
-	if res, err := post(initializedNote); err == nil {
+	if res, err := c.post(ctx, initializedNote); err == nil {
 		io.Copy(io.Discard, io.LimitReader(res.Body, 1<<16))
 		res.Body.Close()
 	} else if ctx.Err() != nil {
-		return timedOut(ctx)
+		h := timedOut(ctx)
+		return &h
 	}
-	return listTools(ctx, call)
+	return nil
+}
+
+// end tells the server the session is done with, when it gave one.
+func (c *httpSession) end() {
+	c.mu.Lock()
+	hdr, session := c.hdr.Clone(), c.session
+	c.mu.Unlock()
+	if session != "" {
+		endSession(c.s.URL, hdr, session)
+	}
+}
+
+func checkHTTP(ctx context.Context, s *Server) ServerHealth {
+	c, bad := newHTTPSession(ctx, s)
+	if bad != nil {
+		return *bad
+	}
+	if h := c.initialize(ctx, initializeReq()); h != nil {
+		return *h
+	}
+	defer c.end()
+	return listTools(ctx, func(id int, body []byte) (*rpcMsg, *ServerHealth) { return c.call(ctx, id, body) })
 }
 
 // endSession tells the server the check is done with its session, as a

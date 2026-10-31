@@ -158,3 +158,73 @@ func TestWhatsNewKeyedByChannel(t *testing.T) {
 		t.Fatalf("every version keeps %d", len(got))
 	}
 }
+
+// The feed behind on the same channel (littleHong on Discord). Short of
+// GitHub's API the site answers from GitHub's latest redirect or the
+// last answer it kept, which can be older than the version the app found
+// and downloaded. Restart to update asks the feed first; such an answer
+// dropped 0.1.12's download, so nothing was restarted into and the app
+// stayed on 0.1.10. The version found stands, download and all.
+func TestUpdateFeedBehindKeepsDownload(t *testing.T) {
+	sandboxHome(t)
+	body := []byte("new magpie")
+	sum := sha256.Sum256(body)
+	var downloads atomic.Int32
+	var behind atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/asset" {
+			downloads.Add(1)
+			w.Write(body)
+			return
+		}
+		v := "0.1.12"
+		if behind.Load() {
+			v = "0.1.11"
+		}
+		json.NewEncoder(w).Encode(update.Release{Version: v, Assets: map[string]update.Asset{
+			update.BinaryAsset(): {URL: "http://" + r.Host + "/asset", Size: int64(len(body)), SHA256: hex.EncodeToString(sum[:])},
+		}})
+	}))
+	defer srv.Close()
+	t.Setenv("MAGPIE_UPDATE_FEED", srv.URL)
+	oldV := Version
+	Version = "0.1.10"
+	defer func() { Version = oldV }()
+	exe, err := update.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(exe + ".new")
+
+	o := updates
+	u := &updater{exe: exe}
+	u.self, _ = os.Stat(exe)
+	updates = u
+	defer func() { updates = o }()
+	settle := func() updateJSON {
+		t.Helper()
+		for range 1000 {
+			if j := u.json(); j.State != "checking" && j.State != "downloading" {
+				return j
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("still %s", u.json().State)
+		return updateJSON{}
+	}
+
+	u.check()
+	if j := settle(); j.State != "ready" || j.Latest != "0.1.12" || downloads.Load() != 1 {
+		t.Fatalf("found: %+v, %d downloads", j, downloads.Load())
+	}
+	// Restart to update asks the feed again, and it is a release behind
+	behind.Store(true)
+	u.recheck(true)
+	j := settle()
+	u.mu.Lock()
+	staged := u.staged
+	u.mu.Unlock()
+	if j.State != "ready" || j.Latest != "0.1.12" || staged == "" || downloads.Load() != 1 {
+		t.Fatalf("feed behind: %+v, staged %q, %d downloads", j, staged, downloads.Load())
+	}
+}

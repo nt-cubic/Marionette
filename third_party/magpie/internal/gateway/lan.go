@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/budget"
+	"github.com/yetone/magpie/internal/netguard"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/usage"
@@ -168,6 +170,93 @@ func LANURLs() []string {
 		return []string{Scheme() + "://" + net.JoinHostPort(h, Port())}
 	}
 	var out []string
+	for _, h := range LANHosts() {
+		out = append(out, Scheme()+"://"+net.JoinHostPort(h, Port()))
+	}
+	return out
+}
+
+// LANHosts are this computer's IPv4 addresses other machines can reach it
+// at, on every interface that is up: a private one, and a public one an
+// ISP assigns to the network card itself. The gateway's addresses and
+// `magpie web`'s links are both made from these, so the two list the
+// same computer the same way (a static public address was in one and not
+// the other). Private ones come first: in the interfaces' order the public
+// one came first, and Settings offered it as the address under "Share on
+// local network" (the same user, asking why sharing was on the internet).
+// Of the private ones, RFC 1918's (a home or office network) come before
+// carrier-grade NAT's (Tailscale). A proxy's TUN address is left out:
+// 198.18.0.0/15 (netguard.FakeIP), which Clash, Mihomo, sing-box, Surge
+// and Stash take for their TUN interfaces and fake-ip answers, and which
+// no network hands out: no other device reaches this computer there, and
+// Settings offered http://198.18.0.1 instead of 192.168.110.x (coeo91 on
+// Discord). It goes by the address, not the interface's name: Tailscale's
+// is a utun too, and its address is reached.
+func LANHosts() []string {
+	var home, near, far []string
+	for _, ip := range hostIPs() {
+		if ip.To4() == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() || fakeIP(ip) {
+			continue
+		}
+		switch {
+		case ip.IsPrivate():
+			home = append(home, ip.String())
+		case PublicIP(ip):
+			far = append(far, ip.String())
+		default:
+			near = append(near, ip.String())
+		}
+	}
+	return slices.Concat(home, near, far)
+}
+
+// fakeIP: ip is a proxy's TUN or fake-ip address (netguard.FakeIP).
+func fakeIP(ip net.IP) bool {
+	a, ok := netip.AddrFromSlice(ip)
+	return ok && netguard.FakeIP(a)
+}
+
+// sharedRanges are IPv4 ranges outside RFC 1918 that still aren't the
+// internet: carrier-grade NAT, which Tailscale uses, and the benchmarking
+// range proxies' TUN interfaces (Clash, Surge) take.
+var sharedRanges = []*net.IPNet{
+	{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)},
+	{IP: net.IPv4(198, 18, 0, 0), Mask: net.CIDRMask(15, 32)},
+}
+
+// PublicIP: ip is an internet address, which any computer online may
+// reach, not one on a private network.
+func PublicIP(ip net.IP) bool {
+	if !ip.IsGlobalUnicast() || ip.IsPrivate() {
+		return false
+	}
+	for _, n := range sharedRanges {
+		if n.Contains(ip) {
+			return false
+		}
+	}
+	return true
+}
+
+// PublicURLs are those of urls (LANURLs) at an internet address.
+func PublicURLs(urls []string) []string {
+	var out []string
+	for _, u := range urls {
+		p, err := url.Parse(u)
+		if err != nil {
+			continue
+		}
+		if ip := net.ParseIP(p.Hostname()); ip != nil && PublicIP(ip) {
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
+// hostIPs are the addresses on this computer's interfaces that are up,
+// loopback's left out; a variable for the tests.
+var hostIPs = func() []net.IP {
+	var out []net.IP
 	ifs, _ := net.Interfaces()
 	for _, i := range ifs {
 		if i.Flags&net.FlagUp == 0 || i.Flags&net.FlagLoopback != 0 {
@@ -175,11 +264,9 @@ func LANURLs() []string {
 		}
 		addrs, _ := i.Addrs()
 		for _, a := range addrs {
-			n, ok := a.(*net.IPNet)
-			if !ok || n.IP.To4() == nil || n.IP.IsLinkLocalUnicast() {
-				continue
+			if n, ok := a.(*net.IPNet); ok {
+				out = append(out, n.IP)
 			}
-			out = append(out, Scheme()+"://"+net.JoinHostPort(n.IP.String(), Port()))
 		}
 	}
 	return out
@@ -278,6 +365,12 @@ func lanGuard(next http.Handler) http.Handler {
 				return
 			}
 			http.Error(w, "magpie isn't shared on the local network", http.StatusForbidden)
+			return
+		}
+		// the key page itself is the same bytes for everyone, so it is
+		// opened before the key it asks for is typed; its data isn't
+		if remote && keyPageOpen(r) {
+			next.ServeHTTP(w, r)
 			return
 		}
 		if remote || managedKey(r) {
@@ -485,6 +578,10 @@ func appendUsage(r *http.Request, rec usage.Record) {
 	rec.Local = local(r)
 	if r.Context().Value(observedKey{}) != nil {
 		rec.Watched = true
+	}
+	if !rec.IsProbe() {
+		// a request an MCP tool call made: its row names the model (mcpUse)
+		mcpUseOf(r.Context()).used(rec.Provider, rec.Model)
 	}
 	budget.Append(rec)
 }

@@ -97,8 +97,11 @@ func slot(keyID string) string { return usage.Path() + "\x00" + keyID }
 
 // counts reports whether r is a call a key's budget counts.
 // A call an app reported itself (#1874) never counts: it didn't go through
-// magpie, and may be a backfill of calls long past.
-func counts(r usage.Record) bool { return !r.IsRejected() && !r.IsReported() && r.Computer == "" }
+// magpie, and may be a backfill of calls long past. Nor does an MCP tool
+// call (usage.SourceMCP): the model requests it made are calls of their own.
+func counts(r usage.Record) bool {
+	return !r.IsRejected() && !r.IsReported() && !r.IsProbe() && r.Computer == ""
+}
 
 // sumsFor is keyID's sums for each window starting at starts, read from
 // usage.jsonl the first time; those of windows no limit counts in now
@@ -440,7 +443,8 @@ func priceOf(model string) (float64, bool) {
 	if !ok {
 		return 0, false
 	}
-	return pr.Input / 1e6, true
+	// the call is made now, at this hour's price (Price.In)
+	return pr.In(time.Now()).Input / 1e6, true
 }
 
 // ModelOf is the model a JSON request body names, "" for none.

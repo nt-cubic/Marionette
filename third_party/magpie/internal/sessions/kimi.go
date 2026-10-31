@@ -59,6 +59,9 @@ import (
 // state.json is part of the main file, so a title changed there reads the
 // session again.
 func kimiFilesIn(sessions string) []file {
+	if !Reads("kimi") {
+		return nil
+	}
 	paths, _ := SessionGlob(filepath.Join(sessions, "*", "*", "agents", "*", "wire.jsonl"))
 	var out []file
 	for _, p := range paths {

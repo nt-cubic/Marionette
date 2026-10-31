@@ -51,7 +51,13 @@ func TestReadNotHeldByAnotherRead(t *testing.T) {
 
 	warm := make(chan struct{})
 	go func() { defer close(warm); statsAt(0, statsNow) }()
-	<-started
+	// a warm-up that parses nothing (its files listed before they grew)
+	// is a red here, not a wait until the package's timeout (#4177)
+	select {
+	case <-started:
+	case <-warm:
+		t.Fatal("the warm-up parsed none of the files that grew")
+	}
 
 	listed := make(chan []Session, 1)
 	go func() { listed <- List(0) }()
@@ -108,7 +114,11 @@ func TestReadWaitsForAFirstReadUnderWay(t *testing.T) {
 
 	warm := make(chan struct{})
 	go func() { defer close(warm); statsAt(0, statsNow) }()
-	<-started
+	select {
+	case <-started:
+	case <-warm:
+		t.Fatal("the warm-up parsed none of the new files")
+	}
 	before := parsed.Load()
 
 	listed := make(chan []Session, 1)

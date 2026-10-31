@@ -3,7 +3,6 @@ package sessions
 import (
 	"slices"
 	"sync"
-	"time"
 )
 
 // held is the session folders' listings kept while a request that reads
@@ -13,13 +12,18 @@ import (
 // twice a poll.
 var held struct {
 	sync.Mutex
-	n     int
-	since time.Time // when the latest hold began
+	n int
+	// gen counts the holds begun: a listing is taken after the latest
+	// hold began when it carries that hold's gen. A count, not a time:
+	// on Windows two time.Now() a moment apart can be the same, and a
+	// hold begun in the tick a listing was taken in counted that older
+	// listing as its own (#4114)
+	gen   uint64
 	lists map[string]*heldList
 }
 
 type heldList struct {
-	at    time.Time
+	gen   uint64 // held.gen when it was taken
 	files []file
 	// closed once files is in: a read that comes while the folder is
 	// being listed waits for that listing rather than taking its own
@@ -33,7 +37,7 @@ type heldList struct {
 func OneListing() (done func()) {
 	held.Lock()
 	held.n++
-	held.since = time.Now()
+	held.gen++
 	held.Unlock()
 	return letGo()
 }
@@ -48,7 +52,7 @@ func ShareListing() (done func()) {
 	held.Lock()
 	defer held.Unlock()
 	if held.n++; held.n == 1 {
-		held.since = time.Now()
+		held.gen++
 	}
 	return letGo()
 }
@@ -68,30 +72,33 @@ var heldWaiting func()
 
 // heldFiles is list(), or, under a hold, the listing of key taken since
 // the latest hold began. The folders are listed outside the lock, once
-// for the reads that ask meanwhile.
+// for the reads that ask meanwhile. The listing is theirs together: a
+// reader never writes to it, and sorts or filters a copy of its own.
 func heldFiles(key string, list func() []file) []file {
 	held.Lock()
 	if held.n == 0 {
 		held.Unlock()
 		return list()
 	}
-	if l, ok := held.lists[key]; ok && !l.at.Before(held.since) {
+	if l, ok := held.lists[key]; ok && l.gen == held.gen {
 		held.Unlock()
 		if heldWaiting != nil {
 			heldWaiting()
 		}
 		<-l.ready
-		return slices.Clone(l.files)
+		return l.files
 	}
-	mine := &heldList{at: time.Now(), ready: make(chan struct{})}
+	mine := &heldList{gen: held.gen, ready: make(chan struct{})}
 	if held.lists == nil {
 		held.lists = map[string]*heldList{}
 	}
 	held.lists[key] = mine
 	held.Unlock()
 	defer close(mine.ready)
-	files := list()
-	// before ready is closed, so whoever waited reads it
-	mine.files = slices.Clone(files)
-	return files
+	// one listing for every read under the hold, not a copy each: ~95 MB
+	// of a minute of polls (#2278). They only read it, and clipped, an
+	// append to it is made elsewhere. Before ready is closed, so whoever
+	// waited reads it.
+	mine.files = slices.Clip(list())
+	return mine.files
 }

@@ -13,10 +13,14 @@ import (
 // checks its model against its list (OpenCode) would find it gone. On its
 // next write of the agent's lists (SyncCatalog), magpie moves each field
 // it set to the old id onto the new one; a field the user set themselves,
-// or changed since magpie set it, stays as they left it.
+// or changed since magpie set it, stays as they left it. So does a field
+// magpie set to an auto/<model> spelt as the group is listed no longer
+// (auto/glm-5-3-flash, now auto/glm-5.3-flash: the spelling follows
+// models.dev's, Group.Spelled), which the gateway serves as ever.
 
 // setToFoundGroups are the agents magpie set a field of to a found
-// group's group/auto-<slug>, by id: those renameFoundGroups looks at, so
+// group's group/auto-<slug> or auto/<model>, by id: those
+// renameFoundGroups looks at, so
 // a sync reads no other agent's files for it. None while a provider of
 // the user's is called auto, and auto/<model> is its.
 func setToFoundGroups() map[string]bool {
@@ -28,7 +32,7 @@ func setToFoundGroups() map[string]bool {
 	var out map[string]bool
 	for id, ap := range appliedLoad() {
 		for _, v := range ap.Fields {
-			if strings.Contains(v, provider.GroupPrefix+"auto-") {
+			if strings.Contains(v, provider.GroupPrefix+"auto-") || strings.Contains(v, provider.AutoPrefix) {
 				if out == nil {
 					out = map[string]bool{}
 				}
@@ -41,8 +45,8 @@ func setToFoundGroups() map[string]bool {
 }
 
 // renameFoundGroups moves a's fields that magpie set to a found group's
-// group/auto-<slug> onto the group's auto/<model>, the agent's prefix and
-// suffix kept. It answers whether it moved any.
+// group/auto-<slug>, or to an auto/<model> it is listed by no longer,
+// onto the group's auto/<model> now, the agent's prefix and suffix kept. It answers whether it moved any.
 func (a *Agent) renameFoundGroups() bool {
 	if a.Native != nil || len(a.Fields) == 0 {
 		return false
@@ -73,16 +77,20 @@ func (a *Agent) renameFoundGroups() bool {
 }
 
 // publicValue is v, an agent's value for a field, with a found group's
-// group/auto-<slug> in it as the group's auto/<model>: its prefix
-// (magpie/), an effort or [1m] after the id, and the agent's own suffix
-// kept. ok is false when v names no such group, or one magpie has no
-// group for now.
+// group/auto-<slug>, or an auto/<model> spelt otherwise than the group is
+// listed now, in it as the group's auto/<model>: its prefix (magpie/), an
+// effort or [1m] after the id, and the agent's own suffix kept. ok is
+// false when v names no such group, one magpie has no group for now, or
+// the group as it is listed already.
 func (a *Agent) publicValue(v string) (string, bool) {
 	model, suffix, one := a.split(v)
 	if !one {
 		return v, false
 	}
 	i := strings.Index(model, provider.GroupPrefix+"auto-")
+	if i < 0 {
+		i = strings.Index(model, provider.AutoPrefix)
+	}
 	if i < 0 || i > 0 && model[i-1] != '/' {
 		return v, false
 	}

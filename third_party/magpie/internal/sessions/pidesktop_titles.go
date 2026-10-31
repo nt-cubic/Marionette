@@ -44,6 +44,9 @@ var piDesktopTitlesHeld = time.Second
 // store.db is (openCursorStore). A database that can't be read leaves the
 // names last read standing: unknown, not untitled.
 func PIDesktopTitles(ids []string) map[string]string {
+	if !Reads("pi") {
+		return map[string]string{}
+	}
 	out := map[string]string{}
 	if len(ids) == 0 {
 		return out

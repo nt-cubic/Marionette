@@ -268,9 +268,10 @@ func PluginCheckinOn(s settings.Settings, id string) bool {
 // within the Beijing day, as magpie's own Qoder check-in is (recheck):
 // a campaign can open mid-day (Qoder CN's ran 10:00 to 09:59 the next
 // day), so a done or inactive read before then said nothing about the
-// day's own and was kept all day, a press too (#2696). Every other
-// plugin is settled for the day.
-func pluginRechecks(id string) bool { return id == "qoder" || id == QoderCNID }
+// day's own and was kept all day, a press too (#2696). ZCode's gift
+// plans open as campaigns too, some for under a day (plugins#503). Every
+// other plugin is settled for the day.
+func pluginRechecks(id string) bool { return id == "qoder" || id == QoderCNID || id == "zcode" }
 
 func (p pluginCheckinProvider) checkiner(now func() time.Time) checkiner {
 	return checkiner{path: pluginCheckinPath(), now: now, mu: &pluginCheckinMu, by: pluginCheckinBy(p.ID), label: p.ID, recheck: pluginRechecks(p.ID), accounts: func() []checkinAcct {

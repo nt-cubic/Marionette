@@ -176,6 +176,9 @@ func agyFolder(uri, goos string) string {
 // agyTranscripts are each conversation's transcript_full.jsonl in an agy
 // data folder, keyed agy:<conversation id>.
 func agyTranscripts(dir string) []file {
+	if !Reads("agy") {
+		return nil
+	}
 	brain := filepath.Join(dir, "brain")
 	dirs, _ := os.ReadDir(brain)
 	var out []file
@@ -202,6 +205,9 @@ func agyFiles() []file { return agyFilesIn(AgyDir()) }
 // steps in conversations/<id>.db too, protobuf this doesn't read) is
 // listed from its row alone: its title, folder and time, and no tokens.
 func agyFilesIn(dir string) []file {
+	if !Reads("agy") {
+		return nil
+	}
 	out := agyTranscripts(dir)
 	rows := agySummariesOf(dir)
 	if len(out) == 0 && len(rows) == 0 {

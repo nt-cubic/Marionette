@@ -26,20 +26,26 @@ const Topic = "magpie-plugin"
 
 // Tagged is a repository tagged with Topic.
 type Tagged struct {
-	Spec        string    `json:"spec"`  // what Install adds: its npm name when npm has it from this repository, else github:owner/repo
-	Repo        string    `json:"repo"`  // owner/repo
-	URL         string    `json:"url"`   // its page on GitHub
-	Owner       string    `json:"owner"` // its owner's login
-	OwnerAvatar string    `json:"ownerAvatar,omitempty"`
-	Description string    `json:"description,omitempty"`
-	Stars       int       `json:"stars"`
-	License     string    `json:"license,omitempty"` // SPDX id
-	Pushed      time.Time `json:"pushed"`
+	Spec        string `json:"spec"`  // what Install adds: its npm name when npm has it from this repository, else github:owner/repo
+	Repo        string `json:"repo"`  // owner/repo
+	URL         string `json:"url"`   // its page on GitHub
+	Owner       string `json:"owner"` // its owner's login
+	OwnerAvatar string `json:"ownerAvatar,omitempty"`
+	Description string `json:"description,omitempty"`
+	Stars       int    `json:"stars"`
+	// License is its SPDX id as GitHub reads its LICENSE file, else as
+	// its package.json says (PkgLicense): a LICENSE GitHub can't match to
+	// one (NOASSERTION: MIT's text with a line of credit added) or none at
+	// all left the card with no licence, while npm shows package.json's
+	// (plugins#468)
+	License    string    `json:"license,omitempty"`
+	PkgLicense string    `json:"pkgLicense,omitempty"`
+	Pushed     time.Time `json:"pushed"`
 	// from its package.json on the default branch: what bun will install
 	// it as, its version, and whether it is gateway middleware or an agent
 	Package string `json:"package,omitempty"`
 	Version string `json:"version,omitempty"`
-	Kind    string `json:"kind,omitempty"` // "middleware", "agent" or "page" when that is all it is
+	Kind    string `json:"kind,omitempty"` // "middleware", "agent", "page" or "hooks" when that is all it is
 	// its package.json's magpie.icon, as an installed plugin gives its
 	// provider one: an https URL or a data:image URI, as it is written
 	Icon string `json:"icon,omitempty"`
@@ -261,6 +267,9 @@ func askTagged(ctx context.Context, last []Tagged) (l []Tagged, whole bool, miss
 	// what the search says now, over what is kept of a repository
 	fresh := func(r, t Tagged) Tagged {
 		r.URL, r.Owner, r.OwnerAvatar, r.Description, r.Stars, r.License, r.Pushed = t.URL, t.Owner, t.OwnerAvatar, t.Description, t.Stars, t.License, t.Pushed
+		if r.License == "" {
+			r.License = r.PkgLicense
+		}
 		return r
 	}
 	var mu sync.Mutex // out, keep, done, why; late once the page stops waiting
@@ -394,9 +403,11 @@ func readTagged(pc context.Context, t Tagged, branch string) (Tagged, bool, bool
 		Version string          `json:"version"`
 		Main    string          `json:"main"`
 		Exports json.RawMessage `json:"exports"`
+		License any             `json:"license"`
 		Magpie  struct {
 			Middleware string `json:"middleware"`
 			Agent      string `json:"agent"`
+			Hooks      string `json:"hooks"`
 			Icon       string `json:"icon"`
 			Page       struct {
 				File string `json:"file"`
@@ -407,6 +418,14 @@ func readTagged(pc context.Context, t Tagged, branch string) (Tagged, bool, bool
 		return t, false, true, nil
 	}
 	t.Package, t.Version = pj.Name, pj.Version
+	// the licence it names, a string as npm takes it, for when GitHub
+	// couldn't tell one from its LICENSE file
+	if l, ok := pj.License.(string); ok {
+		t.PkgLicense = strings.TrimSpace(l)
+		if t.License == "" {
+			t.License = t.PkgLicense
+		}
+	}
 	// a picture, as host.js's iconOf takes one: magpie checks and
 	// keeps it before the page shows it (the GUI's /api/plugins/github)
 	t.Icon = ownIcon(pj.Magpie.Icon)
@@ -418,6 +437,11 @@ func readTagged(pc context.Context, t Tagged, branch string) (Tagged, bool, bool
 			t.Kind = "agent"
 		case strings.TrimSpace(pj.Magpie.Page.File) != "":
 			t.Kind = "page"
+		// gateway hooks alone (magpie.hooks) need no entry of their
+		// own, as the host loads them: the hooks file is the one to
+		// find (#3821)
+		case strings.TrimSpace(pj.Magpie.Hooks) != "":
+			t.Kind = "hooks"
 		}
 	}
 	// published to npm from this repository: npm's copy is the one
@@ -453,6 +477,8 @@ func readTagged(pc context.Context, t Tagged, branch string) (Tagged, bool, bool
 			entry = pj.Magpie.Agent
 		} else if t.Kind == "page" {
 			entry = pj.Magpie.Page.File
+		} else if t.Kind == "hooks" {
+			entry = pj.Magpie.Hooks
 		} else if t.Kind != "middleware" {
 			entry = pkgEntry(pj.Exports, pj.Main)
 			if !IsGit(t.Spec) {

@@ -227,7 +227,8 @@ func TestLanesLimitLifted(t *testing.T) {
 		defer l.mu.Unlock()
 		return l.m["p"] != nil && len(l.m["p"].queue) == 1
 	})
-	if _, ok := l.acquire(context.Background(), "p", 0); !ok {
+	r3, ok := l.acquire(context.Background(), "p", 0)
+	if !ok {
 		t.Fatal("no limit refused")
 	}
 	select {
@@ -238,11 +239,53 @@ func TestLanesLimitLifted(t *testing.T) {
 	}
 	r1()
 	r1() // twice is once
+	r3()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if len(l.m) != 0 {
 		t.Fatalf("lanes left: %+v", l.m["p"])
 	}
+}
+
+// A key with no limit on requests at once still has its requests out
+// counted (chentuoyan on Discord: the Providers page's pill says how many
+// run), as a Lane with Limit 0 and nobody waiting, gone once they are done.
+func TestLanesCountWithNoLimit(t *testing.T) {
+	fresh(t)
+	v := &slowVendor{release: map[string]chan struct{}{}, quit: make(chan struct{})}
+	up := httptest.NewServer(v)
+	t.Cleanup(up.Close)
+	if err := provider.Save(provider.Provider{ID: "slow", Name: "Slow", Key: "k", Models: []string{"m"}, Chat: up.URL + "/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	gw := httptest.NewServer(s.Handler())
+	t.Cleanup(gw.Close)
+	t.Cleanup(func() { close(v.quit) })
+	lane := func() Lane { return s.Lanes()["slow#"+provider.KeyID("k")] }
+	replies := make(chan error, 3)
+	for _, tag := range []string{"a", "b", "c"} {
+		body := `{"model":"slow/m","stream":true,"messages":[{"role":"user","content":"` + tag + `"}]}`
+		go func() {
+			res, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+			if err == nil {
+				_, err = io.ReadAll(res.Body)
+				res.Body.Close()
+			}
+			replies <- err
+		}()
+	}
+	within(t, "three at the vendor", func() bool { return len(v.seen()) == 3 })
+	if l := lane(); l != (Lane{Busy: 3}) {
+		t.Fatalf("lane = %+v, want 3 out, none waiting, no limit", l)
+	}
+	for _, tag := range []string{"a", "b", "c"} {
+		close(v.gate(tag))
+		if err := <-replies; err != nil {
+			t.Fatal(err)
+		}
+	}
+	within(t, "every count given back", func() bool { return len(s.Lanes()) == 0 })
 }
 
 // Concurrency is the user's setting, else none; 0 set is none, and a

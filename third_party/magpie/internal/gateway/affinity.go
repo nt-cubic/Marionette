@@ -98,7 +98,9 @@ type Affinity struct {
 	// (nobody has answered it yet), "new-turn", "no-cache" (the vendor
 	// read and wrote too little of its cache to keep, or was sent too
 	// little for a cache it keeps without saying so), "cold" (too long
-	// ago), "resting", "spent", "gone" (no longer one to route to).
+	// ago), "resting", "spent", "gone" (no longer one to route to),
+	// "main" (a provider's fallback answered it, and the provider's own
+	// model is ready again: backToMain).
 	Why string `json:"why"`
 }
 
@@ -541,6 +543,16 @@ func affine(scope, mode string, rotate bool, in http.Header, from provider.Proto
 		a.Why = "strict"
 	case pl.order[at].Rest != nil:
 		a.Why = "resting"
+	case !a.Within && backToMain(pl.order, at):
+		// a provider's fallback is its emergency path, not a place a
+		// conversation stays: once one of the provider's own keys or
+		// accounts is ready again (its rest over, its quota back) the
+		// user's next turn goes to it, whatever the fallback has cached
+		// (01huadalang on Discord). Within a turn it stays where it is:
+		// the turn's tool loop runs on the reasoning the fallback sealed
+		// for it, which the provider can't read, and the whole prompt is
+		// sent afresh to the provider at the next turn all the same
+		a.Why = "main"
 	case at > 0 && pl.order[at].Known && pl.order[at].Used >= provider.SpentShareOf(cs[at].p.Routing):
 		// all but used up, and put behind another: first still — the
 		// one key or account it has (#1016), or every one used up — it
@@ -592,6 +604,15 @@ func affine(scope, mode string, rotate bool, in http.Header, from provider.Proto
 		}
 	}
 	return cs, pl, a, key
+}
+
+// backToMain says whether the one that answered last, order[at], is a
+// provider's fallback while the provider's own model stands first, ready:
+// restLast puts a resting one behind every ready one, so the first is the
+// provider's own only when it can take the request. A routing group's
+// members are never fallbacks, so its own affinity is as it was.
+func backToMain(order []Weighed, at int) bool {
+	return at > 0 && at < len(order) && order[at].Fallback && !order[0].Fallback && order[0].Rest == nil
 }
 
 // heldFor is how long after its last answer a conversation still counts as

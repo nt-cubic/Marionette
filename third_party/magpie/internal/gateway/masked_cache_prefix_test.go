@@ -132,3 +132,56 @@ func TestMaskedConversationKeepsItsCachedPrefix(t *testing.T) {
 		}
 	}
 }
+
+// A text goes as it went only where it went: the system prompt sent to
+// one provider with a value as written, before a rule found the value,
+// keeps it as written there, and has it masked on its way to another
+// provider, which was never sent it (masking's route, maskedFor).
+func TestMaskedPrefixKeptOnlyOnItsRoute(t *testing.T) {
+	fresh(t)
+	var mu sync.Mutex
+	got := map[string][]string{}
+	serve := func(name string) *httptest.Server {
+		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, _ := io.ReadAll(r.Body)
+			mu.Lock()
+			got[name] = append(got[name], string(b))
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"id":"m","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":1}}`)
+		}))
+		t.Cleanup(up.Close)
+		if err := provider.Save(provider.Provider{ID: name, Name: name, Key: "k", Models: []string{"claude-opus-5-5"}, Anthropic: up.URL + "/v1"}); err != nil {
+			t.Fatal(err)
+		}
+		return up
+	}
+	serve("first")
+	serve("second")
+	if err := settings.Save(settings.Settings{Redact: true, RedactPersonal: true}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	const secret = "Zr5routeKeep42q"
+	system := `"system":"You are Claude. Staging deploys with ` + secret + ` for now."`
+	send := func(to, msgs string) {
+		t.Helper()
+		if code, raw := postJSON(t, s, "/v1/messages", `{"model":"`+to+`/claude-opus-5-5","max_tokens":64,`+system+`,"messages":[`+msgs+`]}`); code != 200 {
+			t.Fatalf("%s: %d %s", to, code, raw)
+		}
+	}
+	send("first", `{"role":"user","content":"hi"}`)
+	send("first", `{"role":"user","content":"hi"},{"role":"assistant","content":"ok"},{"role":"user","content":"DB_PASSWORD=`+secret+`"}`)
+	send("second", `{"role":"user","content":"hi"}`)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got["first"]) != 2 || len(got["second"]) != 1 {
+		t.Fatalf("upstream got %d and %d", len(got["first"]), len(got["second"]))
+	}
+	if !strings.Contains(got["first"][1], "deploys with "+secret) {
+		t.Errorf("the first provider's system prompt, sent with the value as written, was rewritten: %s", got["first"][1])
+	}
+	if strings.Contains(got["second"][0], secret) {
+		t.Errorf("another provider, never sent it, got the value as written: %s", got["second"][0])
+	}
+}

@@ -54,8 +54,14 @@ func TestPluginToldWhereTheAgentWorks(t *testing.T) {
 		out, _ := json.Marshal(b)
 		return string(out)
 	}
+	// a repository as git init lays one out, what git looks for in it
 	repo := filepath.Join(t.TempDir(), "My Repo 中文")
-	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+	for _, d := range []string{"objects", "refs/heads"} {
+		if err := os.MkdirAll(filepath.Join(repo, ".git", d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	inRepo := filepath.Join(repo, "sub")
@@ -63,6 +69,14 @@ func TestPluginToldWhereTheAgentWorks(t *testing.T) {
 		t.Fatal(err)
 	}
 	plain := t.TempDir()
+	// under an empty .git, which git passes over (#3675)
+	underEmpty := filepath.Join(t.TempDir(), "sub")
+	if err := os.MkdirAll(filepath.Join(filepath.Dir(underEmpty), ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(underEmpty, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	piAsks := func(dir string) string {
 		b, _ := json.Marshal(map[string]any{"model": pid + "/fake-1", "messages": []map[string]any{
 			{"role": "system", "content": "You are pi.\n<cwd>\n" + filepath.ToSlash(dir) + "\n</cwd>"},
@@ -84,6 +98,7 @@ func TestPluginToldWhereTheAgentWorks(t *testing.T) {
 		// a folder here: looked at on disk, the repository above it too
 		{"in a repository", "/v1/chat/completions", piAsks(inRepo), filepath.ToSlash(inRepo), "yes"},
 		{"not in one", "/v1/chat/completions", piAsks(plain), filepath.ToSlash(plain), "no"},
+		{"not in one, under an empty .git", "/v1/chat/completions", piAsks(underEmpty), filepath.ToSlash(underEmpty), "no"},
 		{"no folder said", "/v1/chat/completions", `{"model":"` + pid + `/fake-1","messages":[{"role":"user","content":"hi"}]}`, "", ""},
 	} {
 		mu.Lock()

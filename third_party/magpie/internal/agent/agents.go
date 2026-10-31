@@ -52,6 +52,20 @@ func init() {
 	// and when Codex is connected or disconnected, or its route otherwise
 	// changes, so a running app sends where its config now says
 	provider.CodexAppRoute = codexAppRoute
+	// but not when Codex's account is switched while its provider takes
+	// no ChatGPT account: the app-server goes by none
+	provider.CodexNoAccount = codexNoAccount
+	// and when none starts in place of the one ended, the app is
+	// reopened on Windows, where its stdout was held open
+	provider.CodexAppOpen = codexAppOpen
+	provider.CodexAppReopen = codexAppReopen
+	// and what the Codex app holds is read while Codex takes magpie's
+	// models beside its sign-in, Codex switched off in magpie or not
+	provider.CodexHoldMatters = func() bool {
+		home, _ := homes()
+		a := codex(home)
+		return a.HoldMatters != nil && a.HoldMatters()
+	}
 }
 
 // codexAppRoute is where Codex's config sends it, as the app-server reads
@@ -76,6 +90,10 @@ func codexAppRoute() (route string, out, known bool) {
 	}
 	t, _ := edit.GetTOMLTable(a.Path, "model_providers."+magpieID)
 	b.WriteString("magpie.base_url=" + t["base_url"] + "\n")
+	// and whether it requires OpenAI auth, which decides whether the app
+	// has its ChatGPT account at all (openaiAuth in codex.go): read as the
+	// app-server starts, like the rest
+	b.WriteString("magpie.requires_openai_auth=" + t["requires_openai_auth"] + "\n")
 	// and the list in that catalog, which the app-server also reads only
 	// as it starts: a provider or group renamed, or a model added, left
 	// the app on the names and models it started with (lucis0116 on X)
@@ -91,6 +109,37 @@ func codexAppRoute() (route string, out, known bool) {
 	return b.String(), out, true
 }
 
+// codexNoAccount is whether the provider Codex's config.toml names takes
+// no ChatGPT account: a model_provider whose [model_providers] table
+// doesn't say requires_openai_auth = true (magpie's with the user's own
+// false, or magpie as the provider with no sign-in to keep). Codex then
+// sends the table's own key and its app-server reads no account
+// (codex-rs ModelProviderInfo::account_state, resolve_provider_auth), so
+// switching the account in auth.json changes nothing a running Codex
+// goes by. The built-in openai provider, a provider with no table here, a
+// profile (which may name another provider) or a config that can't be
+// read is false: those may go by the account.
+func codexNoAccount() bool {
+	defer filememo.Hold()()
+	home, _ := homes()
+	a := codex(home)
+	if _, err := os.ReadFile(a.Path); err != nil {
+		return false
+	}
+	if p, _ := edit.GetTOMLTop(a.Path, "profile"); p != "" {
+		return false
+	}
+	id, _ := edit.GetTOMLTop(a.Path, "model_provider")
+	if id == "" || id == "openai" {
+		return false
+	}
+	t, err := edit.GetTOMLTable(a.Path, "model_providers."+id)
+	if err != nil || t == nil {
+		return false
+	}
+	return t["requires_openai_auth"] != "true"
+}
+
 // others are clients that reach the gateway without being agents magpie
 // sets up: known only by their requests, to be drawn with a logo.
 var others = []*Agent{
@@ -101,6 +150,10 @@ var others = []*Agent{
 	// ("pi-desktop/0.1.0"), it is told apart from Pi by that name, which
 	// Pi's "pi-" would take otherwise (#1966, dgmico)
 	{ID: "pi-desktop", Name: "PI-Desktop", Icon: "pi", UA: []string{"pi-desktop"}},
+	// Raft (slock's raft-computer) runs Pi in each of its agents' folders;
+	// Sessions lists those as Raft's (internal/sessions/raft.go), while
+	// their requests say "pi (…)" and are Pi's
+	{ID: "raft", Name: "Raft", Icon: "generic"},
 }
 
 // Clients is everyone whose requests the gateway knows by name: every
@@ -195,6 +248,7 @@ func onMachine(home, cfg string) []*Agent {
 		empryo(home),
 		ante(home),
 		astrbot(home),
+		openClaw(home),
 		jcode(home),
 		miniMax(home),
 		droid(home),
@@ -450,6 +504,12 @@ func magpieProviderJSONAt(shape, catalog, gw string) any {
 				e["reasoning"] = true
 			}
 			e["variants"] = openCodeVariants(m.Efforts, m.CodexFast)
+			// OpenCode counts a session's cost by it, in USD per million
+			// tokens (models.dev's cost; OpenCode 2.0.25 reads input,
+			// output, cache_read, cache_write), and counted 0 without it
+			if p := m.Price; p != nil {
+				e["cost"] = map[string]any{"input": p.Input, "output": p.Output, "cache_read": p.CacheRead, "cache_write": p.CacheWrite}
+			}
 			ms[m.ID] = e
 		}
 		return map[string]any{"npm": "@ai-sdk/openai-compatible", "name": "magpie",
@@ -469,8 +529,15 @@ func magpieProviderJSONAt(shape, catalog, gw string) any {
 			if tokens == 0 {
 				tokens = 16384
 			}
-			ms = append(ms, map[string]any{"id": m.ID, "name": m.Name, "context_window": window, "default_max_tokens": tokens,
-				"can_reason": len(m.Efforts) > 0})
+			cm := map[string]any{"id": m.ID, "name": m.Name, "context_window": window, "default_max_tokens": tokens,
+				"can_reason": len(m.Efforts) > 0}
+			// Crush counts a session's cost by it (catwalk's cost_per_1m_*,
+			// Crush 0.39.3): in_cached is a cache write, out_cached a read
+			if p := m.Price; p != nil {
+				cm["cost_per_1m_in"], cm["cost_per_1m_out"] = p.Input, p.Output
+				cm["cost_per_1m_in_cached"], cm["cost_per_1m_out_cached"] = p.CacheWrite, p.CacheRead
+			}
+			ms = append(ms, cm)
 		}
 		if ms == nil {
 			ms = []map[string]any{}
@@ -479,7 +546,7 @@ func magpieProviderJSONAt(shape, catalog, gw string) any {
 	case "pi":
 		var ms []map[string]any
 		for _, m := range models {
-			ms = append(ms, piModelJSON(m, gw, true))
+			ms = append(ms, piModelJSON(piAsked(catalog, m), gw, true))
 		}
 		if ms == nil {
 			ms = []map[string]any{}
@@ -582,9 +649,34 @@ func objectPairs(raw []byte) orderedJSON {
 	return out
 }
 
+// piAsked is m as agentID's models.json can ask it: without the Gemini API
+// where nothing that reads the file can be trusted to stream
+// google-generative-ai, so such a model stays on the provider's Chat,
+// which the gateway translates.
+//
+//   - StepCode registers no google-generative-ai stream, only Pi's
+//     anthropic-messages, openai-completions and openai-responses
+//     (packages/providers/src/compat.ts BUILTIN_APIS, Step-Code at
+//     90a57820), though its docs list it (#3282).
+//   - Pi's own agent folder is read by every app that runs Pi's SDK on it,
+//     not by Pi alone. Raft (slock's raft-daemon, the Pi runtime of its
+//     agents) opens ~/.pi/agent/models.json (or PI_CODING_AGENT_DIR's) and
+//     hands every request its own fetch (installProviderHttpClient), which
+//     pi-ai's Google adapter refuses before sending: "Custom fetch is not
+//     supported by the Google Generative AI adapter" (pi-ai 0.83.0 and
+//     1.4.0, api/google-generative-ai.js; yunfei9958 on X). Per-request
+//     fetch is a feature of Pi's SDK, so any other host of it can do the
+//     same. OmO's and Prime Agent's folders are their own, and keep it.
+func piAsked(agentID string, m catalog.Model) catalog.Model {
+	if agentID == "stepcode" || agentID == "pi" {
+		m.APIs = slices.DeleteFunc(slices.Clone(m.APIs), func(a string) bool { return a == string(provider.Gemini) })
+	}
+	return m
+}
+
 // piModelJSON is one of magpie's models as an entry of Pi's models.json.
-// native asks it on the API its provider speaks natively (a model's own
-// api and baseUrl); without it the model is left on the provider's
+// native selects the model's preferred gateway API (its own api and
+// baseUrl); without it the model is left on the provider's
 // openai-completions (Pencil, pencil.go).
 func piModelJSON(m catalog.Model, gw string, native bool) map[string]any {
 	// reasoning lets Pi offer its thinking levels for the model: as
@@ -611,11 +703,24 @@ func piModelJSON(m catalog.Model, gw string, native bool) map[string]any {
 		if gateway.AdaptiveThinking(m.ID) {
 			e["compat"] = map[string]any{"forceAdaptiveThinking": true}
 		}
+	case slices.Contains(m.APIs, string(provider.Gemini)):
+		e["api"], e["baseUrl"] = "google-generative-ai", gw+"/v1beta"
 	}
 	if m.Images {
 		e["input"] = []string{"text", "image"}
 	}
 	if levels := piThinkingLevels(m.Efforts, e["api"] == "anthropic-messages" && gateway.ThinksOnlyWhenAsked(m.ID)); levels != nil {
+		// on google-generative-ai Pi resolves a level through the map to
+		// one of Gemini's four (pi-ai's resolveGoogleThinkingLevel) and
+		// throws before sending on any other name, so a level the model
+		// calls something else (xhigh, max) is hidden there (#3282)
+		if e["api"] == "google-generative-ai" {
+			for l, v := range levels {
+				if s, ok := v.(string); ok && l != "off" && !slices.Contains([]string{"minimal", "low", "medium", "high"}, strings.ToLower(s)) {
+					levels[l] = nil
+				}
+			}
+		}
 		e["thinkingLevelMap"] = levels
 	}
 	// without it Pi takes every model for a 128K one, and compacts
@@ -897,6 +1002,7 @@ func openCodeLike(at place, id, name, icon, bin, dir, auth string, ua []string, 
 			return wiringOff(name, path, func(k string) (string, bool) { return edit.GetJSON(path, "provider."+magpieID+".options."+k) },
 				"baseURL", at.v1(), "apiKey", openCodeKeyAt(id, at.gw()))
 		},
+		ListOnly: true,
 		Sync: func() error {
 			// a model of magpie's chosen, but its provider gone from the
 			// file: put it back, or the agent has nothing to send it to
@@ -1220,6 +1326,7 @@ func piLikeKeyed(at place, id, name, dir string, key func() string) *Agent {
 			return wiringOff(name, modelsPath, func(k string) (string, bool) { return edit.GetJSON(modelsPath, "providers."+magpieID+"."+k) },
 				"baseUrl", at.v1(), "apiKey", key())
 		},
+		ListOnly: true,
 		Sync: func() error {
 			if err := syncJSON(modelsPath, "providers."+magpieID, block); err != nil {
 				return err
@@ -1349,7 +1456,8 @@ func gooseIn(at place, cfg string) *Agent {
 			return wiringOff("Goose", provider, func(k string) (string, bool) { return edit.GetJSON(provider, k) },
 				"base_url", at.v1(), "headers.Authorization", "Bearer "+gooseKey(at))
 		},
-		Sync: func() error { return syncGooseProvider(provider, at) },
+		ListOnly: true,
+		Sync:     func() error { return syncGooseProvider(provider, at) },
 		// goose loads custom_providers when it starts
 		Notice: func() string {
 			if p, _ := gooseActive(path); p == gooseProviderID && Running(`Goose\.app/`, `(^|/)goose( |$)`) {
@@ -1630,6 +1738,7 @@ func crushAt(at place, path, data string) *Agent {
 			return wiringOff("Crush", path, func(k string) (string, bool) { return get("providers." + magpieID + "." + k) },
 				"base_url", at.v1(), "api_key", at.gwKey())
 		},
+		ListOnly: true,
 		Sync: func() error {
 			return syncJSON(path, "providers."+magpieID, provider)
 		},

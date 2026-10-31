@@ -62,3 +62,34 @@ func TestRelayInputCapGoesToTheNextMember(t *testing.T) {
 		t.Fatalf("bad request: %d %s (a %d, b %d)", code, body, a.n, b.n)
 	}
 }
+
+// #4420 (MYCF711 on Discord): a group member's 400 "内容太长了，请精简输入
+// 或开启新对话", past ~730K on a model it declares at 1M, names the input
+// rather than the context. It was filed as a failure that rested the
+// member, and the group's other members were never asked. It goes the way
+// an overflow goes: the next member is asked and nobody rests, in the
+// vendor's words and \u-escaped alike.
+func TestChineseInputTooLongGoesToTheNextMember(t *testing.T) {
+	for _, said := range []string{
+		`{"error":{"message":"内容太长了，请精简输入或开启新对话","type":"invalid_request_error"}}`,
+		`{"error":{"message":"内容太长了，请精简输入或开启新对话"}}`,
+	} {
+		fresh(t)
+		a := &scripted{replies: []reply{{400, "", said}}}
+		b := &scripted{replies: []reply{{200, "", chatOK}}}
+		scriptedOn(t, "a", provider.Chat, a)
+		scriptedOn(t, "b", provider.Chat, b)
+		if err := provider.SaveGroup(provider.Group{Name: "Top", Members: []string{"a/m", "b/m"}, Routing: provider.Ordered}); err != nil {
+			t.Fatal(err)
+		}
+		s := New()
+		code, body := postAs(t, s, "", `{"model":"group/top","messages":[{"role":"user","content":"hi"}]}`)
+		if code != 200 || !strings.Contains(body, "hello") || a.n != 1 || b.n != 1 {
+			t.Fatalf("%s: %d %s (a %d, b %d)", said, code, body, a.n, b.n)
+		}
+		r := s.trace.routes[len(s.trace.routes)-1]
+		if len(r.Tries) != 2 || r.Tries[0].Fail != failOverflow || r.Tries[0].Rest != nil || r.Tries[1].Rest != nil {
+			t.Fatalf("%s: tries %+v", said, r.Tries)
+		}
+	}
+}

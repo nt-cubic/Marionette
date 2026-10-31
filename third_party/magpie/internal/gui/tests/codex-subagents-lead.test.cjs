@@ -67,19 +67,19 @@ function server(lang, sets) {
 // the words as i18n.js has them
 const W = {
   en: { lead: "subagents: the lead's pick, else same as model", set: "subagents: GPT-6.1 Sol", same: "subagents: same as model",
-    hint: "Codex's lead may name another model for a subagent; set the subagent model to hold every subagent to one",
+    hint: "The model a subagent starts on when Codex's lead names none; the lead may still name another. To hold every subagent to one model, set the subagent model",
     pick: "Lead's pick", note: "GPT-6.1 Sol unless the lead names another" },
   zh: { lead: "子代理：由主代理自选，未指定时同主模型", set: "子代理：GPT-6.1 Sol", same: "子代理：同主模型",
-    hint: "Codex 的主代理可以给子代理指定别的模型；要让每个子代理都用同一个模型，请设置子代理模型",
+    hint: "Codex 主代理没指定模型时子代理用的模型；主代理仍可指定别的。要让所有子代理固定用一个模型，请设置子代理模型",
     pick: "由主代理自选", note: "GPT-6.1 Sol，主代理指定其他模型时除外" },
   "zh-TW": { lead: "子代理：由主代理自選，未指定時同主模型", set: "子代理：GPT-6.1 Sol", same: "子代理：同主模型",
-    hint: "Codex 的主代理可以給子代理指定別的模型；要讓每個子代理都用同一個模型，請設定子代理模型",
+    hint: "Codex 主代理沒指定模型時子代理用的模型；主代理仍可指定別的。要讓所有子代理固定用一個模型，請設定子代理模型",
     pick: "由主代理自選", note: "GPT-6.1 Sol，主代理指定其他模型時除外" },
   ja: { lead: "サブエージェント：リードが選ぶモデル、指定がなければモデルと同じ", set: "サブエージェント：GPT-6.1 Sol", same: "サブエージェント：モデルと同じ",
-    hint: "Codex のリードはサブエージェントに別のモデルを指定できます。すべてのサブエージェントを同じモデルにするには、サブエージェントのモデルを設定してください",
+    hint: "Codex のリードがモデルを指定しないときにサブエージェントが使うモデルです。リードは別のモデルを指定することもできます。すべてのサブエージェントを 1 つのモデルに固定するには、サブエージェントのモデルを設定してください",
     pick: "リードが選ぶ", note: "GPT-6.1 Sol（リードが別のモデルを指定した場合を除く）" },
   de: { lead: "Subagenten: vom Haupt-Agenten gewählt, sonst wie Modell", set: "Subagenten: GPT-6.1 Sol", same: "Subagenten: wie Modell",
-    hint: "Der Haupt-Agent von Codex kann einem Subagenten ein anderes Modell geben; setze das Modell der Subagenten, um alle auf eines festzulegen",
+    hint: "Das Modell, auf dem ein Subagent startet, wenn der Haupt-Agent von Codex keins nennt; er kann trotzdem ein anderes nennen. Um alle Subagenten auf ein Modell festzulegen, setze das Modell der Subagenten",
     pick: "Wahl des Haupt-Agenten", note: "GPT-6.1 Sol, außer der Haupt-Agent nennt ein anderes" },
 };
 

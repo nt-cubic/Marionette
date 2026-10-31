@@ -53,13 +53,15 @@ type mcpMessage struct {
 }
 
 func (s *Server) searchMCP(w http.ResponseWriter, r *http.Request) {
-	serveMCP(w, r, "magpie's web search", 1<<20, s.searchMCPCall)
+	serveMCP(w, r, "magpie's web search", "magpie-web-search", 1<<20, s.searchMCPCall)
 }
 
 // serveMCP answers the JSON-RPC messages POSTed to one of magpie's own MCP
-// servers (what names it in a refusal) with call, a body up to limit bytes
-// long: guarded as a gateway route, and a web page turned away.
-func serveMCP(w http.ResponseWriter, r *http.Request, what string, limit int64, call func(*http.Request, mcpMessage) (any, map[string]any)) {
+// servers (what names it in a refusal, server in the request log) with
+// call, a body up to limit bytes long: guarded as a gateway route, and a
+// web page turned away. Each tools/call is a row of the request log
+// (callMCPTool).
+func serveMCP(w http.ResponseWriter, r *http.Request, what, server string, limit int64, call func(*http.Request, mcpMessage) (any, map[string]any)) {
 	if !local(r) && !sharedWith(r) {
 		http.Error(w, what+" is served to another machine only when magpie is shared on the local network and the request carries a gateway key (Authorization: Bearer <key>)", http.StatusForbidden)
 		return
@@ -103,7 +105,13 @@ func serveMCP(w http.ResponseWriter, r *http.Request, what string, limit int64, 
 		if len(m.ID) == 0 || bytes.Equal(m.ID, []byte("null")) || m.Method == "" {
 			continue
 		}
-		result, rpcErr := call(r, m)
+		var result any
+		var rpcErr map[string]any
+		if m.Method == "tools/call" {
+			result, rpcErr = callMCPTool(r, server, m, call)
+		} else {
+			result, rpcErr = call(r, m)
+		}
 		reply := map[string]any{"jsonrpc": "2.0", "id": m.ID}
 		if rpcErr != nil {
 			reply["error"] = rpcErr

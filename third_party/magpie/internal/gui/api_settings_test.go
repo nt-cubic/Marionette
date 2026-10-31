@@ -395,3 +395,47 @@ func TestSettingsReduceMotion(t *testing.T) {
 		}
 	}
 }
+
+// The loading bird's switch (Yayoi_no_yume on X) is on unless turned off:
+// boot.js says noBird only when it is, a save that leaves it out keeps it,
+// and false brings the bird back.
+func TestSettingsNoBird(t *testing.T) {
+	h := t.TempDir()
+	t.Setenv("HOME", h)
+	t.Setenv("USERPROFILE", h)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(h, ".cache"))
+	handler := Handler(nil, nil)
+
+	getBoot := func() string {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest("GET", "/boot.js", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /boot.js: %d %s", rec.Code, rec.Body)
+		}
+		return rec.Body.String()
+	}
+	if boot := getBoot(); strings.Contains(boot, `"noBird"`) {
+		t.Fatalf("the bird is on by default, got boot.js: %s", boot)
+	}
+	for _, tc := range []struct {
+		body string
+		want bool
+	}{
+		{`{"theme":"dark","noBird":true}`, true},
+		{`{"theme":"light"}`, true},
+		{`{"theme":"dark","noBird":false}`, false},
+	} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest("POST", "/api/settings", strings.NewReader(tc.body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", tc.body, rec.Code, rec.Body)
+		}
+		if got := settings.Load().NoBird; got != tc.want {
+			t.Fatalf("%s: NoBird = %v, want %v", tc.body, got, tc.want)
+		}
+		if boot := getBoot(); strings.Contains(boot, `"noBird":true`) != tc.want {
+			t.Fatalf("%s: boot.js = %s, want noBird=%v", tc.body, boot, tc.want)
+		}
+	}
+}

@@ -23,6 +23,7 @@ func TestOwnMCPRejectsOversizedBody(t *testing.T) {
 		{"vision", VisionMCPPath, visionMCPBody},
 		{"search", SearchMCPPath, 1 << 20},
 		{"tools", ToolsMCPPath, toolsMCPBody},
+		{"hub", HubMCPPath + "claude", hubBody},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, upstream := eyed(t)

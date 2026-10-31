@@ -312,6 +312,7 @@ func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, a
 		default:
 			t0 := time.Now()
 			v, cached, err := classify(ask, g.Classifier, intents, prev, effort, text)
+			classifiedFor(g.ID, g.Classifier, err)
 			c.Intent, c.Cached, c.Ms = v.Intent, cached, int(time.Since(t0).Milliseconds())
 			if effort {
 				c.Effort, c.Score = v.Effort, v.Score
@@ -755,28 +756,49 @@ func ruleOver(hit *RuleHit, ms []provider.Member, cs []candidate, pl planned, af
 	return cs, pl
 }
 
-// ruleEffort is the reasoning a rule asks its member for (#2633), when c
-// is one of that member's keys or accounts — the outermost group's rule
-// that names one, as the turn's pick is the outermost group's — fitted to
-// the levels c's model has. A model whose levels aren't known is asked as
-// it would be without the rule: magpie can't tell it thinks. "" for none.
-// A rule after it that only fails over (Then) asks nothing of its member.
-func ruleEffort(c candidate, hit *RuleHit, nested []NestedRule) string {
+// ruleEffort is the reasoning a rule asks its request for (#2633), fitted
+// to the levels c's model has: that of the outermost group's rule naming
+// one of c's members, as the turn's pick is the outermost group's. A
+// member the group fails over to is asked it too (#3664): the effort is
+// the turn's decision, so a provider that turns the request away doesn't
+// leave the member it went to instead at the agent's own level — and a
+// rule that names c wins over one it only fails over from. A nested
+// group's rule decides for that group's members only, so a member of the
+// outer group outside it isn't asked its effort (ms are the outer
+// group's, each with the groups it is reached through). A model whose
+// levels aren't known is asked as it would be without the rule: magpie
+// can't tell it thinks. "" for none.
+// A rule after it that only fails over (Then) asks nothing of its own:
+// its member is asked the first rule's, as every other member is.
+func ruleEffort(c candidate, hit *RuleHit, nested []NestedRule, ms []provider.Member) string {
 	hits := []*RuleHit{hit}
 	for _, n := range nested {
 		hits = append(hits, n.Rule)
 	}
-	for _, h := range hits {
-		if h == nil || h.UseEffort == "" || !slices.ContainsFunc(h.members, func(m provider.Member) bool { return ofMember(c, m) }) {
+	within := func(group string) bool {
+		return slices.ContainsFunc(ms, func(m provider.Member) bool { return ofMember(c, m) && slices.Contains(m.Groups(), group) })
+	}
+	asked := "" // the effort of the first rule with one, unless one names c
+	for i, h := range hits {
+		if h == nil || h.UseEffort == "" || i > 0 && !within(nested[i-1].Group) {
 			continue
 		}
-		levels := c.p.Efforts(c.model)
-		if len(levels) == 0 {
-			return ""
+		if asked == "" {
+			asked = h.UseEffort
 		}
-		return fitLevel(h.UseEffort, levels)
+		if slices.ContainsFunc(h.members, func(m provider.Member) bool { return ofMember(c, m) }) {
+			asked = h.UseEffort
+			break
+		}
 	}
-	return ""
+	if asked == "" {
+		return ""
+	}
+	levels := c.p.Efforts(c.model)
+	if len(levels) == 0 {
+		return ""
+	}
+	return fitLevel(asked, levels)
 }
 
 // homeCands sends the keys or accounts of the rule's members as the
@@ -819,7 +841,7 @@ func applyRule(hit *RuleHit, ms []provider.Member, cs []candidate, pl planned) (
 // effort.
 func ofMember(c candidate, m provider.Member) bool {
 	id := m.Provider.ID
-	return c.model == m.Model && c.effort == m.Effort && (c.rest == id || strings.HasPrefix(c.rest, id+"#") || strings.HasPrefix(c.rest, id+"@"))
+	return c.model == m.Model && c.effort == m.Effort && slices.Equal(c.levels, m.Levels) && (c.rest == id || strings.HasPrefix(c.rest, id+"#") || strings.HasPrefix(c.rest, id+"@"))
 }
 
 // membersImageInput is whether a group request may carry images: when a

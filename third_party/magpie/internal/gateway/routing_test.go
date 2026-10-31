@@ -217,6 +217,16 @@ func TestSmartRouting(t *testing.T) {
 	h.Set("Retry-After", "300")
 	s.restAfter(key("t#rate"), 429, h, []byte("slow down"))
 	s.restAfter(key("t#fail"), 500, http.Header{}, nil)
+	// failing again while it rests keeps its step (ly on Discord: one
+	// request's own retries counted alike); once the rest is over, the
+	// next failure climbs to the next
+	s.restAfter(key("t#fail"), 500, http.Header{}, nil)
+	if until("t#fail") != time.Minute {
+		t.Fatalf("failing again while resting: %v", until("t#fail"))
+	}
+	restingUntil.Lock()
+	restingUntil.m["t#fail"] = time.Now().Add(-time.Second)
+	restingUntil.Unlock()
 	s.restAfter(key("t#fail"), 500, http.Header{}, nil)
 	if until("t#credit") != creditRest || until("t#rate") != 5*time.Minute || until("t#fail") != 2*time.Minute {
 		t.Fatalf("rests: %v %v %v", until("t#credit"), until("t#rate"), until("t#fail"))

@@ -237,6 +237,10 @@ func TestStatsHoursAndSessions(t *testing.T) {
 	if !sortedByLast(s.Sessions) || len(s.Sessions) < 3 {
 		t.Fatalf("sessions %+v", s.Sessions)
 	}
+	// each range keeps its list, so it holds its rows and no more (#2278)
+	if cap(s.Sessions) != len(s.Sessions) || cap(s.Keys) != len(s.Keys) {
+		t.Fatalf("%d sessions held in %d, %d keys in %d", len(s.Sessions), cap(s.Sessions), len(s.Keys), cap(s.Keys))
+	}
 	// a range counts only its own days
 	day := statsAt(1, time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC))
 	if x := find(day); x == nil || x.Tokens != (Tokens{400, 40, 10, 0, 0}) || x.Active != 240 || len(x.Days) != 1 || x.Days[0] != 0 {

@@ -128,7 +128,7 @@ func (s *Server) alphaSearchOn(w http.ResponseWriter, r *http.Request, body []by
 	if err != nil {
 		return false, err.Error()
 	}
-	noteMasked(r, "search", hits, string(body), 0, "openai", model)
+	noteMasked(r, "search", hits, sentOf(hits, body), 0, "openai", model)
 	var errs []string
 	for _, on := range ons {
 		who := "OpenAI (" + on.Account.User + "): "

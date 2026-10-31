@@ -77,14 +77,14 @@ func TestKeepAwakeKeptAndOwn(t *testing.T) {
 // a synced or restored bundle doesn't bring another's.
 func TestWindowMaximisedKeptAndOwn(t *testing.T) {
 	from := Settings{}
-	from.KeepOwn(Settings{Window: []int{900, 700}, WindowMaximised: true})
-	if !from.WindowMaximised || len(from.Window) != 2 {
-		t.Fatalf("KeepOwn dropped it: %v %v", from.Window, from.WindowMaximised)
+	from.KeepOwn(Settings{Window: []int{900, 700}, WindowMaximised: true, WindowAt: []int{40, 60}})
+	if !from.WindowMaximised || len(from.Window) != 2 || len(from.WindowAt) != 2 {
+		t.Fatalf("KeepOwn dropped it: %v %v %v", from.Window, from.WindowMaximised, from.WindowAt)
 	}
-	from = Settings{Window: []int{1200, 800}, WindowMaximised: true}
+	from = Settings{Window: []int{1200, 800}, WindowMaximised: true, WindowAt: []int{2560, 0}}
 	from.KeepOwn(Settings{})
-	if from.WindowMaximised || from.Window != nil {
-		t.Fatalf("another computer's window here: %v %v", from.Window, from.WindowMaximised)
+	if from.WindowMaximised || from.Window != nil || from.WindowAt != nil {
+		t.Fatalf("another computer's window here: %v %v %v", from.Window, from.WindowMaximised, from.WindowAt)
 	}
 }
 

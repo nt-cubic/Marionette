@@ -577,6 +577,55 @@ func TestCodexAppStale(t *testing.T) {
 	}
 }
 
+// An app-server that went with none started in its place left the app
+// with nothing that read the new sign-in (蛋仔 on Discord, Windows: "Codex
+// app-server process is not available" till Codex was reopened): while
+// the app runs, that is still said; once it quits, or it starts another,
+// it isn't.
+func TestCodexAppStaleWhileNoServerCameBack(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+	server, open := 60, true
+	oldList, oldOpen := listProcesses, CodexAppOpen
+	t.Cleanup(func() {
+		listProcesses, CodexAppOpen = oldList, oldOpen
+		DismissCodexDaemon()
+		DismissCodexApp()
+		codexApp.Lock()
+		codexApp.switched = false
+		codexApp.Unlock()
+	})
+	listProcesses = func(context.Context) ([]proc.Process, error) {
+		if server == 0 {
+			return nil, nil
+		}
+		return []proc.Process{{PID: server, Args: codexWindowsAppServer}}, nil
+	}
+	CodexAppOpen = func(context.Context) (bool, bool) { return open, true }
+	recheck := func() { codexDaemonMu.Lock(); codexDaemonChecked = time.Time{}; codexDaemonMu.Unlock() }
+	DismissCodexApp()
+
+	noteCodexSwitch("a@x", "b@x")
+	server = 0 // ended, and the app started none
+	recheck()
+	if got := CodexAppStale(); got != "a@x" {
+		t.Fatalf("app open with no app-server: got %q, want a@x", got)
+	}
+	open = false
+	recheck()
+	if got := CodexAppStale(); got != "" {
+		t.Fatalf("app quit: %q", got)
+	}
+
+	open, server = true, 60
+	noteCodexSwitch("a@x", "b@x")
+	server = 61
+	recheck()
+	if got := CodexAppStale(); got != "" {
+		t.Fatalf("a new app-server: %q", got)
+	}
+}
+
 // The daemon magpie restarts runs with the login shell's proxy and PATH,
 // as one a terminal started would (guotianci6 on X): magpie opened from
 // the desktop has neither.
@@ -597,5 +646,31 @@ func TestCodexDaemonEnvIsTheTerminals(t *testing.T) {
 	in := []string{"PATH=/usr/bin", "HTTPS_PROXY=http://p:1"}
 	if got := codexDaemonEnv(in); !slices.Equal(got, in) {
 		t.Errorf("env %q, want %q", got, in)
+	}
+}
+
+// CodexPIDs finds what can hold a thread open on the gateway's address
+// as magpie quits: the Codex app, a CLI session, the app's app-server and
+// a managed daemon; never another program, nor magpie itself.
+func TestCodexPIDsFindsOpenCodex(t *testing.T) {
+	old := listProcesses
+	t.Cleanup(func() { listProcesses = old })
+	listProcesses = func(context.Context) ([]proc.Process, error) {
+		return []proc.Process{
+			{PID: 11, Args: "/Applications/Codex.app/Contents/MacOS/Codex"},
+			{PID: 12, Args: "/opt/homebrew/bin/codex resume"},
+			{PID: 13, Args: codexWindowsAppServer},
+			{PID: 14, Args: "/Users/u/.codex/bin/codex app-server --managed-daemon"},
+			{PID: 15, Args: "/usr/bin/vim codex.md"},
+			{PID: 16, Args: "/Applications/Codexify.app/Contents/MacOS/Codexify"},
+			{PID: os.Getpid(), Args: "/usr/local/bin/codex"},
+		}, nil
+	}
+	if got := CodexPIDs(context.Background()); !slices.Equal(got, []int{11, 12, 13, 14}) {
+		t.Fatalf("got %v", got)
+	}
+	listProcesses = func(context.Context) ([]proc.Process, error) { return nil, errors.New("ps failed") }
+	if got := CodexPIDs(context.Background()); got != nil {
+		t.Fatalf("a failed list gave %v", got)
 	}
 }

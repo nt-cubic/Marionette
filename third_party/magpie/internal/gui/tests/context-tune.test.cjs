@@ -239,7 +239,17 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.locator(".ctx-none").waitFor(); // the history has answered: the pane is its full length
         // the reader scrolls to the picker, as a wheel does
         await page.mouse.move(width / 2, 300);
-        for (let i = 0; i < 20 && (await row.locator(".ctx-tune-pick").boundingBox()).y > height * 0.6; i++) {
+        // the row can re-render under the wheel, and a picker being replaced has no box
+        // for a moment: wait for one instead of reading null (#4221)
+        const pickY = async () => {
+          for (let i = 0; i < 50; i++) {
+            const b = await row.locator(".ctx-tune-pick").boundingBox();
+            if (b) return b.y;
+            await page.waitForTimeout(20);
+          }
+          throw new Error("the picker never had a box");
+        };
+        for (let i = 0; i < 20 && (await pickY()) > height * 0.6; i++) {
           await page.mouse.wheel(0, 120);
           await page.waitForTimeout(60);
         }
@@ -533,6 +543,77 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const row2 = page.locator(".ctx-tune-row").nth(0);
         assert.equal(await row2.locator(".ctx-tune-foot .ctx-chip").innerText(), leanest[lang]);
         assert.equal(await row2.locator(".ctx-tune-foot button.primary").count(), 0);
+        await ctx.close();
+      });
+    }
+    assert.deepEqual(errors, []);
+  });
+}
+
+// A model's own Compact at, over Long conversations (hoobnn on Discord):
+// Long conversations held the 170K magpie put in, the advice was 170K, and
+// the row said "In use" beside "Now 430K", where the provider's own
+// threshold has Codex compact. It now names that threshold, as it does a
+// variable that comes first, and offers no window Long conversations
+// can't make so; Undo still puts Long conversations back. Without one,
+// Codex runs at the advice, which says so. In both engines, every language, a phone's
+// width and a desk's.
+const ownTune = (own) => ({
+  days: 1,
+  agents: [{ agent: "codex", calls: 2808, advice: [
+    { knob: "compact", setting: { value: "170000", source: "long", ours: true }, ...(own ? { own: { model: "cpa/gpt-6-astra", value: 430000 } } : {}),
+      compact: { model: "cpa/gpt-6-astra", current: own ? 430000 : 170000, window: 440000, best: 170000, cost: own ? 1.4e9 : 1.02e9, low: 1.02e9, curve: curve(90000, 440000, 170000), facts } },
+  ] }],
+});
+const ownNote = {
+  en: "cpa/gpt-6-astra compacts at its own 430K, which comes first",
+  zh: "cpa/gpt-6-astra 有自己的压缩阈值 430K，它优先",
+  "zh-TW": "cpa/gpt-6-astra 有自己的壓縮閾值 430K，它優先",
+  ja: "cpa/gpt-6-astra には独自の圧縮しきい値 430K があり、そちらが優先されます",
+  de: "cpa/gpt-6-astra hat ein eigenes „Komprimieren ab“ (430K), das Vorrang hat",
+};
+const inUse = { en: "In use", zh: "使用中", "zh-TW": "使用中", ja: "使用中", de: "In Verwendung" };
+for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
+  test(`${engine}: a model's own Compact at isn't called In use`, async (t) => {
+    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+    const errors = [];
+    t.after(() => browser.close());
+    for (const lang of Object.keys(heading)) for (const [width, height] of [[360, 760], [1100, 760]]) {
+      await t.test(`${lang}, ${width}x${height}`, async () => {
+        const ctx = await browser.newContext({ viewport: { width, height }, reducedMotion: "reduce" });
+        await ctx.addInitScript(() => { try { localStorage.setItem("magpie.usageTab", "context"); } catch {} });
+        const page = await ctx.newPage();
+        page.setDefaultTimeout(5000);
+        page.on("pageerror", (e) => errors.push(e.message));
+        let own = true;
+        const base = serve(lang, []);
+        await page.route("**/*", (r) => new URL(r.request().url()).pathname === "/api/tune" ? r.fulfill({ json: ownTune(own) }) : base(r));
+        await page.goto("http://magpie.test/?view=usage");
+        const row = page.locator(".ctx-tune-row").nth(0);
+        await row.locator(".ctx-tune-foot .ctx-chip").waitFor();
+        assert.equal(await row.locator(".ctx-tune-src").innerText(), ownNote[lang]);
+        assert.notEqual(await row.locator(".ctx-tune-foot .ctx-chip").innerText(), inUse[lang]);
+        assert.equal(await row.locator(".ctx-tune-foot .ctx-chip").getAttribute("class"), "ctx-chip info");
+        assert.equal(await row.getAttribute("class"), "ctx-tune-row", "Now is struck through: it isn't the advice");
+        assert.equal(await row.locator(".ctx-tune-foot button.primary").count(), 0);
+        assert.equal(await row.locator(".ctx-tune-pick").count(), 0);
+        assert.equal(await row.locator(".ctx-tune-foot button.text:not(.primary)").count(), 1, "Undo stays");
+        const over = await page.evaluate(() => {
+          const view = document.querySelector("#view-usage");
+          const out = view.scrollWidth > view.clientWidth + 1 ? ["page " + view.scrollWidth + ">" + view.clientWidth] : [];
+          const b = document.querySelector(".ctx-tune").getBoundingClientRect();
+          for (const e of document.querySelectorAll(".ctx-tune *")) {
+            const r = e.getBoundingClientRect();
+            if (r.width && (r.right > b.right + 1 || r.left < b.left - 1)) out.push((e.className.baseVal ?? e.className) + " " + Math.round(r.left) + "–" + Math.round(r.right));
+          }
+          return out;
+        });
+        assert.deepEqual(over, []);
+        // Long conversations is where Codex runs: it runs at the advice
+        own = false;
+        await page.evaluate(() => window.loadContext());
+        await page.locator(".ctx-tune-row.done .ctx-chip.good").waitFor();
+        assert.equal(await page.locator(".ctx-tune-row .ctx-tune-foot .ctx-chip").innerText(), leanest[lang]);
         await ctx.close();
       });
     }

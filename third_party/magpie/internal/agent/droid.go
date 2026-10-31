@@ -19,10 +19,22 @@ package agent
 // sets sessionDefaultSettings.model; the user's entries stay as they were
 // and in front, so their own ids don't move, and the default they had is
 // stashed and put back when magpie steps out.
+//
+// droid judges a custom model by its "model" too: one whose name reads as
+// OpenAI's on another provider, or as a Claude off "anthropic", gets a
+// warning at every session start (droidWants). Such a model is written on
+// the provider droid asks for, and the gateway translates.
+//
+// A field of one of magpie's entries the user changed in settings.json
+// stays theirs (droidKept): what magpie last wrote is stashed, and a value
+// other than it is the user's. baseUrl and apiKey are the wiring, put back
+// at every sync.
 
 import (
 	"encoding/json"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -65,15 +77,20 @@ func droidEntries() []droidEntry { return droidEntriesAt(gateway.URL()) }
 func droidEntriesAt(gw string) []droidEntry {
 	var out []droidEntry
 	for _, m := range magpieModels("droid") {
-		e := droidEntry{Model: m.ID, ID: droidID + m.ID, BaseURL: gw + "/v1", APIKey: keyAt(gw),
+		e := droidEntry{Model: m.ID, ID: droidID + m.ID, APIKey: keyAt(gw),
 			Provider: "generic-chat-completion-api", MaxContextLimit: m.Context, MaxOutputTokens: maxTokens(m), NoImageSupport: !m.Images}
-		switch {
+		switch want := droidWants(m.ID); {
+		case want != "":
+			// droid warns at every session start about a model whose name
+			// it reads as OpenAI's or Claude's on any other provider
+			// (ji233 on Discord: ultrafast/gpt-6.1-sol on Chat)
+			e.Provider = want
 		case slices.Contains(m.APIs, string(provider.Responses)):
 			e.Provider = "openai"
 		case slices.Contains(m.APIs, string(provider.Anthropic)):
-			// Anthropic's SDK adds the /v1 itself
-			e.Provider, e.BaseURL = "anthropic", gw
+			e.Provider = "anthropic"
 		}
+		e.BaseURL = droidBase(gw, e.Provider)
 		// the catalog's own label ("pro · DeepSeek") is what the picker
 		// shows; droid finds the model by its id, whatever its name
 		if e.DisplayName = m.Name; e.DisplayName == "" {
@@ -82,6 +99,135 @@ func droidEntriesAt(gw string) []droidEntry {
 		out = append(out, e)
 	}
 	return out
+}
+
+// droidBase is the baseUrl droid sends a provider's requests to: the
+// OpenAI SDKs join their path to /v1, Anthropic's adds the /v1 itself.
+func droidBase(gw, prov string) string {
+	if prov == "anthropic" {
+		return gw
+	}
+	return gw + "/v1"
+}
+
+// droid's own reading of a custom model's name (droid 0.231.0, xs and g2
+// in its bundle): one that isn't on "openai" while its name matches
+// droidGPT is warned about as OpenAI's, and then one on neither
+// "anthropic" nor "bedrock-converse" whose name matches droidClaude as
+// Claude's. Before the patterns, droid looks the name up among its own
+// models (gpt-* are OpenAI's, the rest not); every OpenAI one of those
+// matches droidGPT, bar gpt-image and gpt-transcribe, which no chat
+// catalog lists.
+var (
+	droidGPT = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\bgpt[-_.]?\d`),
+		regexp.MustCompile(`(?i)codex`),
+		regexp.MustCompile(`(?i)\bo[1-9](?:[-_.]|$)`),
+	}
+	droidClaude = regexp.MustCompile(`(?i)claude|haiku|sonnet|opus`)
+)
+
+// droidWants is the provider droid asks for a custom model by its "model",
+// or "" when it asks for none.
+func droidWants(model string) string {
+	for _, re := range droidGPT {
+		if re.MatchString(model) {
+			return "openai"
+		}
+	}
+	if droidClaude.MatchString(model) {
+		return "anthropic"
+	}
+	return ""
+}
+
+// droidKept are the fields of magpie's entries a value the user set stays
+// in. baseUrl follows the provider; apiKey is the wiring.
+var droidKept = []string{"provider", "displayName", "maxContextLimit", "maxOutputTokens", "noImageSupport"}
+
+// droidWrote is what magpie gave the droidKept fields of an entry, as JSON,
+// a field it left out missing.
+func droidWrote(e droidEntry) map[string]json.RawMessage {
+	b, _ := json.Marshal(e)
+	r := gjson.ParseBytes(b)
+	out := map[string]json.RawMessage{}
+	for _, k := range droidKept {
+		if v := r.Get(k); v.Exists() {
+			out[k] = json.RawMessage(v.Raw)
+		}
+	}
+	return out
+}
+
+// droidMerge is magpie's entry e over the one the file has (had): a
+// droidKept field whose value there isn't what magpie last wrote (last)
+// keeps the file's, and keys magpie doesn't write stay, droid's "index"
+// aside. With no record of the entry, magpie's values are taken: before
+// the record, every sync wrote them over anyway.
+func droidMerge(gw string, e droidEntry, had gjson.Result, last map[string]json.RawMessage) json.RawMessage {
+	b, _ := json.Marshal(e)
+	if last == nil {
+		return b
+	}
+	type kv struct {
+		k string
+		v json.RawMessage
+	}
+	var out []kv
+	ours := map[string]bool{}
+	gjson.ParseBytes(b).ForEach(func(k, v gjson.Result) bool {
+		ours[k.String()] = true
+		out = append(out, kv{k.String(), json.RawMessage(v.Raw)})
+		return true
+	})
+	same := func(a json.RawMessage, b gjson.Result) bool {
+		if a == nil || !b.Exists() {
+			return a == nil && !b.Exists()
+		}
+		return reflect.DeepEqual(gjson.ParseBytes(a).Value(), b.Value())
+	}
+	user := map[string]gjson.Result{}
+	for _, k := range droidKept {
+		if v := had.Get(k); !same(last[k], v) {
+			user[k] = v
+		}
+	}
+	prov := e.Provider
+	if v, ok := user["provider"]; ok && v.Exists() {
+		prov = v.String()
+	}
+	var kept []kv
+	for _, p := range out {
+		switch v, ok := user[p.k]; {
+		case p.k == "baseUrl":
+			p.v, _ = json.Marshal(droidBase(gw, prov))
+		case ok && !v.Exists():
+			// the user took it out
+			continue
+		case ok:
+			p.v = json.RawMessage(v.Raw)
+		}
+		kept = append(kept, p)
+	}
+	had.ForEach(func(k, v gjson.Result) bool {
+		if n := k.String(); !ours[n] && n != "index" {
+			kept = append(kept, kv{n, json.RawMessage(v.Raw)})
+		}
+		return true
+	})
+	var sb strings.Builder
+	sb.WriteByte('{')
+	for i, p := range kept {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		k, _ := json.Marshal(p.k)
+		sb.Write(k)
+		sb.WriteByte(':')
+		sb.Write(p.v)
+	}
+	sb.WriteByte('}')
+	return json.RawMessage(sb.String())
 }
 
 // droidSlug is droid's own spelling of a display name in a model id.
@@ -141,6 +287,9 @@ func droidIn(at place) *Agent {
 	path := filepath.Join(dir, "settings.json")
 	legacy := filepath.Join(dir, "config.json")
 	key := "droid:" + path + ":" + droidModel
+	// keyWrote is what magpie last gave the droidKept fields of each of
+	// its entries, so a value other than it is the user's
+	keyWrote := "droid:" + path + ":wrote"
 	// raw is the model droid starts on as written: sessionDefaultSettings'
 	// or, while that is unset, the top-level one it moves there
 	raw := func() string {
@@ -162,20 +311,35 @@ func droidIn(at place) *Agent {
 	// magpie's after them; none left takes the key out
 	setModels := func(with bool) error {
 		var ms []any
-		var had bool
+		had := map[string]gjson.Result{}
 		for _, c := range droidCustoms(path, droidModels) {
 			if strings.HasPrefix(c.id, droidID) {
-				had = true
+				had[c.id] = gjson.ParseBytes(c.raw)
 				continue
 			}
 			ms = append(ms, c.raw)
 		}
 		if with {
+			saved := stashLoad()[keyWrote]
+			var last map[string]map[string]json.RawMessage
+			json.Unmarshal([]byte(saved), &last)
+			wrote := map[string]map[string]json.RawMessage{}
+			gw := at.gw()
 			for _, e := range droidEntries() {
-				ms = append(ms, e)
+				wrote[e.ID] = droidWrote(e)
+				if h, ok := had[e.ID]; ok {
+					ms = append(ms, droidMerge(gw, e, h, last[e.ID]))
+				} else {
+					ms = append(ms, e)
+				}
 			}
-		} else if !had {
+			if b, _ := json.Marshal(wrote); string(b) != saved {
+				stash(map[string]string{keyWrote: string(b)})
+			}
+		} else if len(had) == 0 {
 			return nil
+		} else {
+			forget(keyWrote)
 		}
 		if len(ms) > 0 {
 			return edit.SetJSON(path, edit.KV{Path: droidModels, Value: ms})
@@ -209,6 +373,7 @@ func droidIn(at place) *Agent {
 		// droid's requests to a custom model carry factory-cli/<version>
 		UA:  []string{"factory-cli"},
 		Bin: "droid", Dir: dir, Path: path,
+		ListOnly: true,
 		Sync: func() error {
 			for _, c := range droidCustoms(path, droidModels) {
 				if strings.HasPrefix(c.id, droidID) {

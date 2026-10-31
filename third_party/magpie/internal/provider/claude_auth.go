@@ -59,6 +59,9 @@ func claudeLoginVersion(l savedLogin) string {
 	if c, ok := parseClaudeCredentials(l.Auth); ok {
 		return c.version()
 	}
+	if tok := claudeSetupToken(l.Auth); tok != "" {
+		return claudeTokenVersion(tok)
+	}
 	return ""
 }
 

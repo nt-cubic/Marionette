@@ -33,8 +33,9 @@ const relay = () => ({
 const solo = () => ({
   id: "solo", name: "Solo", icon: "generic", chat: "https://solo.example.com/v1", responses: "", anthropic: "", catalog: "",
   models: [{ id: "small", name: "", on: true }], agents: [], fallback: [], headers: {},
-  key: { set: true, masked: "sk-…solo" }, balanceToken: { takes: false, set: false }, proxy: "",
-  keyList: [{ id: "5050505050", name: "", masked: "sk-…solo", on: true, active: true }],
+  // no key yet: the API key box is shown only then (keys are replaced in Accounts)
+  key: { set: false }, balanceToken: { takes: false, set: false }, proxy: "",
+  keyList: [],
 });
 
 function serve(lang, posts) {

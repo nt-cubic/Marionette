@@ -269,6 +269,7 @@ func TestCodexDriftReached(t *testing.T) {
 		at++
 		db.Exec(`INSERT INTO logs (ts, ts_nanos, level, target, feedback_log_body) VALUES (?, 0, ?, 'codex_api::endpoint::responses_websocket', ?)`,
 			at, level, "responses_websocket.connect{}: "+body)
+		forgetReached()
 	}
 	log("INFO", "connecting to websocket: "+ws)
 	log("ERROR", "failed to connect to websocket: IO error: Connection refused (os error 61), url: "+ws)

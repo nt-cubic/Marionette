@@ -175,6 +175,7 @@ task:
     review: [magpie/deepseek/pro:low]
 `
 	os.WriteFile(configPath, []byte(before), 0o644)
+	setUpInMagpie("omp")
 	if err := f.Set("magpie/deepseek/pro"); err != nil {
 		t.Fatal(err)
 	}

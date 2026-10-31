@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	ole "github.com/go-ole/go-ole"
 	"github.com/go-ole/go-ole/oleutil"
@@ -120,4 +121,21 @@ func write(lnk, exe string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// unregisterAppPath takes magpie's App Paths entry out while it opens exe,
+// or an exe that is gone.
+func unregisterAppPath(exe string) error {
+	k, err := registry.OpenKey(registry.CURRENT_USER, appPath, registry.QUERY_VALUE)
+	if err != nil {
+		return nil // none
+	}
+	v, _, err := k.GetStringValue("")
+	k.Close()
+	if err == nil && v != "" && !strings.EqualFold(filepath.Clean(v), filepath.Clean(exe)) {
+		if _, err := os.Stat(v); err == nil {
+			return nil // another magpie's
+		}
+	}
+	return registry.DeleteKey(registry.CURRENT_USER, appPath)
 }

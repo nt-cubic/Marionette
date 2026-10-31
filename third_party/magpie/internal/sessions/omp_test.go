@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -91,6 +92,53 @@ func TestOmp(t *testing.T) {
 		m := find(t, ss, "omp", id)
 		if id == ompNamed && !strings.Contains(m.Resume, "omp --profile work --resume "+id) {
 			t.Fatalf("profile resume %q", m.Resume)
+		}
+	}
+}
+
+// Jumy (Discord, 10-30): omp's subagents and advisor each send their own
+// session id to the gateway (x-session-affinity, the id in their file's
+// header), not the main session's. Their files are counted in the main
+// session, so the gateway's records under those ids are the same calls:
+// they are the session's own to the gateway, not sessions of their own
+// counted again.
+func TestOmpSubagentsAreTheSessionsToTheGateway(t *testing.T) {
+	setupAgents(t)
+	subs := []string{
+		"019a0000-0000-7000-8000-00000000001a", // 0-Explore.jsonl
+		"019a0000-0000-7000-8000-00000000002a", // 0-Explore/0-Find.jsonl
+		"019a0000-0000-7000-8000-00000000003a", // __advisor.jsonl
+	}
+	ss := List(0)
+	m := find(t, ss, "omp", ompMain)
+	keys := GatewayKeys(m)
+	for _, id := range subs {
+		if !slices.Contains(keys, "omp|"+id) {
+			t.Errorf("GatewayKeys leave out the subagent %s: %v", id, keys)
+		}
+	}
+	merged := MergeExternal(ss, []ExternalSession{
+		{Agent: "omp", ID: subs[0], Title: "fail"},
+		{Agent: "omp", ID: subs[2], Title: "fail"},
+		{Agent: "omp", ID: "01a18ae4-0000-7000-8000-000000000000", Title: "omp's own"},
+	})
+	if n, want := count(merged, "omp"), count(ss, "omp")+1; n != want {
+		t.Fatalf("the gateway's records of omp's subagents listed as sessions: %d omp sessions, want %d", n, want)
+	}
+	ids := NativeIDs(map[string]bool{"omp": true})["omp"]
+	_, native := StatsAndNative(0)
+	for _, id := range append([]string{ompMain}, subs...) {
+		if !ids[id] {
+			t.Errorf("omp's native ids leave out %s: %v", id, ids)
+		}
+		if !native["omp|"+id] {
+			t.Errorf("the gateway's omp session %s is counted again: %v", id, native)
+		}
+	}
+	// the other sessions keep only their own
+	for _, id := range []string{ompFork, ompNamed} {
+		if s := find(t, ss, "omp", id); len(s.Subs) != 0 {
+			t.Errorf("%s: subagents %v", id, s.Subs)
 		}
 	}
 }

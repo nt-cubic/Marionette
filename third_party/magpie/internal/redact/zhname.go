@@ -216,7 +216,7 @@ func zhNameSpans(s string, person []span, nicks bool) []span {
 		if ok {
 			kind = "PERSON"
 		}
-		cs = append(cs, span{a, b, kind, ByModel, 0})
+		cs = append(cs, span{a, b, kind, ByModel, 0, false})
 	}
 	// a name joined by 和, 与, 跟, 及 or 、 to one that is a name is one
 	// too: 李娜和刘洋, where only 刘洋 has a word after it that says so

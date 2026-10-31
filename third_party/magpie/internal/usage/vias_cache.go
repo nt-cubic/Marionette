@@ -1,6 +1,7 @@
 package usage
 
 import (
+	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -27,7 +28,10 @@ var viasCache struct {
 	version uint64
 	clients string // the clients counted as agents (#1958), and the renames
 	all     *viaLists
-	window  struct {
+	// what all counted over the log's full blocks, which a call logged
+	// counts on from: each call was ~280 MB of the whole log again (#2278)
+	prefix *viaPrefix
+	window struct {
 		version uint64
 		clients string
 		since   time.Time
@@ -101,9 +105,10 @@ func cachedVias(since time.Time) ViaIndex {
 	defer viasCache.Unlock()
 	all := viasCache.all
 	if all == nil || viasCache.version != snapshot.version || viasCache.clients != clients {
-		all = buildVias(snapshot, time.Time{}, renames)
+		var prefix *viaPrefix
+		all, prefix = foldVias(snapshot, renames, clients, viasCache.prefix)
 		if snapshot.complete() {
-			viasCache.version, viasCache.clients, viasCache.all = snapshot.version, clients, all
+			viasCache.version, viasCache.clients, viasCache.all, viasCache.prefix = snapshot.version, clients, all, prefix
 		}
 	}
 	return ViaIndex{all: all, since: since, snapshot: snapshot, clients: clients, renames: renames}
@@ -113,4 +118,44 @@ func cachedVias(since time.Time) ViaIndex {
 // built from it can be kept for its version.
 func (s *logSnapshot) complete() bool {
 	return s.info != nil && s.off == s.info.Size()
+}
+
+// viaPrefix is the whole log's lists counted over its first n blocks, all
+// of them full: a full block is never written again (logSnapshot), and a
+// log read afresh has blocks of its own, so the last of them still being
+// blocks[n-1] says the n are the same.
+type viaPrefix struct {
+	n       int
+	last    *rowChunk
+	clients string
+	counted map[string]viaAcc // never written: a count copies what it touches
+	lists   *viaLists         // counted's, listed
+}
+
+// viaFolds counts the lists counted on from a prefix, for the tests.
+var viaFolds int
+
+// foldVias is buildVias of the whole log, counted on from pre where it
+// fits, and the prefix of the log's full blocks to count on from next.
+// Its calls are counted in the log's order, as buildVias' are, so every
+// sum is the same to the last bit. Called under viasCache's lock.
+func foldVias(snapshot *logSnapshot, renames provider.Renames, clients string, pre *viaPrefix) (*viaLists, *viaPrefix) {
+	blocks := snapshot.blocks
+	cut := max(len(blocks)-1, 0)
+	if pre == nil || pre.clients != clients || pre.n > cut || pre.n > 0 && blocks[pre.n-1] != pre.last {
+		pre = &viaPrefix{clients: clients, counted: map[string]viaAcc{}, lists: &viaLists{m: map[string][]Via{}, first: map[string]time.Time{}}}
+	} else if pre.n > 0 {
+		viaFolds++
+	}
+	keep := keptStrings{}
+	next := pre
+	if pre.n < cut {
+		own := map[string]viaAcc{}
+		countVias(blocks[pre.n:cut], time.Time{}, renames, pre.counted, own, keep)
+		next = &viaPrefix{n: cut, last: blocks[cut-1], clients: clients, counted: maps.Clone(pre.counted), lists: listedVias(pre.lists, own)}
+		maps.Copy(next.counted, own)
+	}
+	tail := map[string]viaAcc{}
+	countVias(blocks[cut:], time.Time{}, renames, next.counted, tail, keep)
+	return listedVias(next.lists, tail), next
 }

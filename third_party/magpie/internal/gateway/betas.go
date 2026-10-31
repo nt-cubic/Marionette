@@ -54,8 +54,8 @@ func askedBetas(in http.Header) []string {
 func betaKey(beta string) string { return "anthropic-beta\x00" + beta }
 
 // betas is the list asked (header values, each maybe comma-separated),
-// fitted to what p takes: renamed and left out as Bedrock wants, without
-// those p has refused, and without repeats.
+// fitted to what p takes: renamed as Bedrock and Vertex AI want, left out
+// as Bedrock does, without those p has refused, and without repeats.
 func (s *Server) betas(p provider.Provider, asked []string) []string {
 	var out []string
 	for _, v := range asked {
@@ -64,10 +64,12 @@ func (s *Server) betas(p provider.Provider, asked []string) []string {
 			if b == "" {
 				continue
 			}
-			if p.IsBedrock() {
+			if p.IsBedrock() || p.IsVertex() {
 				if to, ok := bedrockBetas[b]; ok {
 					b = to
 				}
+			}
+			if p.IsBedrock() {
 				if slices.Contains(bedrockRefuses, b) {
 					continue
 				}

@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"container/heap"
 	"hash/maphash"
+	"reflect"
 	"slices"
 	"sync/atomic"
 	"time"
@@ -85,6 +86,10 @@ type chunkPart struct {
 	cells []pageCell
 	kept  int       // rows the filter keeps
 	first time.Time // the oldest charted row's time
+	// days are the heatmap's sums of the chunk, oldest first (heatOf)
+	days []Day
+	// newest is the chunk's newest rows a page read of it (newest)
+	newest atomic.Pointer[chunkNewest]
 }
 
 // partKey is what a chunk's cells are of besides the chunk: the page's
@@ -103,6 +108,15 @@ type partCache struct {
 	old, next map[uint64]*chunkPart
 	// pairs is the last pairing of the period, and pairsNext this page's
 	pairs, pairsNext *pairMemo
+	// heatOld is the heatmap's days before its last few the page before
+	// kept, and heatOldNext this page's (heatSplit)
+	heatOld, heatOldNext *heatOld
+	// pageOld is a page's cells before its last few days the page before
+	// kept, and pageOldNext this page's (pageSplit)
+	pageOld, pageOldNext *pageOld
+	// disk is where heatSplit and pageSplit keep what is settled between
+	// runs
+	disk heatDiskRef
 }
 
 // partSets bounds the partKeys kept: a page is open on one period and
@@ -263,10 +277,10 @@ func mix(vs ...uint64) uint64 {
 // whose chunk has one serial and one sig read the same rows from it.
 func (ps *pairedRows) sigs(identities map[string]sessions.CodexIdentity) map[*rowChunk]uint64 {
 	out := make(map[*rowChunk]uint64, len(ps.all))
-	for ref := range ps.skip {
+	for ref := range ps.skip.all() {
 		out[ref.Chunk] += mix(1, uint64(ref.Index))
 	}
-	for ref := range ps.matched {
+	for ref := range ps.matched.all() {
 		out[ref.Chunk] += mix(2, uint64(ref.Index))
 	}
 	actors := map[string]uint64{}
@@ -287,8 +301,8 @@ func (ps *pairedRows) sigs(identities map[string]sessions.CodexIdentity) map[*ro
 		if c.codexIdentities != nil {
 			h += mix(3)
 		}
-		for i, a := range c.codexActors {
-			if a != "" {
+		for i := range c.codexActors.len() {
+			if a := c.codexActors.at(i); a != "" {
 				h += mix(4, uint64(i), actor(a))
 			}
 		}
@@ -336,16 +350,23 @@ func (ps *pairedRows) partsOf(pass *cellPass, cache *partCache, identities map[s
 // newest are the take newest rows f keeps, newest last in heap order. A
 // chunk is read only while its newest call (Latest) could be one of them,
 // newest chunk first: a page of All reads the few its rows are in, not
-// every one.
-func (ps *pairedRows) newest(f Filter, parts []*chunkPart, take int) newestHeap {
-	selected := newestHeap{}
+// every one. What a chunk gave is kept on its part, the rows with their
+// refs, and a chunk read for as many rows before is not read again: a page
+// read again after a call decoded the few newest chunks again, among them
+// a long session's whole file (57k calls), for its refs and then for its
+// rows (rowsOf), ~390 MB of 90s while an agent worked (#2278). read is the
+// rows of the refs selected, each its own copy.
+func (ps *pairedRows) newest(f Filter, parts []*chunkPart, take int) (selected newestHeap, read map[rowRef]Row) {
+	selected = newestHeap{}
 	if take <= 0 {
-		return selected
+		return selected, nil
 	}
 	var order []*rowChunk
+	partOf := map[*rowChunk]*chunkPart{}
 	for i, c := range ps.all {
 		if parts[i].kept > 0 {
 			order = append(order, c)
+			partOf[c] = parts[i]
 		}
 	}
 	slices.SortStableFunc(order, func(a, b *rowChunk) int {
@@ -357,24 +378,76 @@ func (ps *pairedRows) newest(f Filter, parts []*chunkPart, take int) newestHeap 
 		}
 		return b.Latest.Compare(a.Latest)
 	})
-	var rows chunkRows
+	kept := map[rowRef]*Row{}
+	push := func(ref timedRef, r *Row) {
+		kept[ref.rowRef] = r
+		if len(selected) < take {
+			heap.Push(&selected, ref)
+		} else if ref.newer(selected[0]) {
+			selected[0] = ref
+			heap.Fix(&selected, 0)
+		}
+	}
+	rows := lentRows() // a row is kept as its ref
 	defer rows.release()
 	var r Row
 	for _, c := range order {
 		if len(selected) == take && !c.Latest.IsZero() && c.Latest.Before(selected[0].at) {
 			break
 		}
+		part := partOf[c]
+		if had := part.newest.Load(); had != nil && (had.all || len(had.rows) >= take) {
+			for i := range had.rows {
+				k := &had.rows[i]
+				push(timedRef{rowRef{c, int(k.i)}, k.at, k.order}, &k.row)
+			}
+			continue
+		}
+		if newestOpening != nil {
+			newestOpening(c)
+		}
+		own, n := newestHeap{}, 0
 		ps.visitChunk(&rows, c, &r, func(ref timedRef, r *Row) {
 			if !f.keepsRow(r) {
 				return
 			}
-			if len(selected) < take {
-				heap.Push(&selected, ref)
-			} else if ref.newer(selected[0]) {
-				selected[0] = ref
-				heap.Fix(&selected, 0)
+			n++
+			if len(own) < take {
+				heap.Push(&own, ref)
+			} else if ref.newer(own[0]) {
+				own[0] = ref
+				heap.Fix(&own, 0)
 			}
 		})
+		k := &chunkNewest{all: n <= take, rows: make([]newestRow, len(own))}
+		open := rows.of(c) // still c's: decoded once
+		for i, ref := range own {
+			k.rows[i] = newestRow{i: int32(ref.Index), at: ref.at, order: ref.order, row: open.row(ref.Index)}
+			ownStrings(reflect.ValueOf(&k.rows[i].row).Elem()) // lent
+			push(ref, &k.rows[i].row)
+		}
+		part.newest.Store(k)
 	}
-	return selected
+	read = make(map[rowRef]Row, len(selected))
+	for _, ref := range selected {
+		read[ref.rowRef] = *kept[ref.rowRef]
+	}
+	return selected, read
 }
+
+// chunkNewest is a chunk's newest rows its page's filter keeps, as many
+// as the page read it for; all: every one it keeps.
+type chunkNewest struct {
+	rows []newestRow
+	all  bool
+}
+
+type newestRow struct {
+	i     int32
+	at    time.Time
+	order int64
+	row   Row
+}
+
+// newestOpening, in tests, is told each chunk newest decodes.
+var newestOpening func(*rowChunk)

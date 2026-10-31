@@ -67,6 +67,8 @@ func codexModels(ctx context.Context, sign func(context.Context, *http.Request, 
 // the models a flag of OpenAI's names unless Codex reads its list from a
 // file. An error when Codex is not signed in to ChatGPT, the backend
 // doesn't answer 200, or its answer lists no model: never an empty list.
+// CodexListRevoked tells one that is the backend calling the sign-in
+// revoked.
 func CodexLiveList(ctx context.Context) ([]byte, error) {
 	home, _ := os.UserHomeDir()
 	p, ok := codexAccount(home)
@@ -92,7 +94,8 @@ func CodexLiveList(ctx context.Context) ([]byte, error) {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ChatGPT models: %s", resp.Status)
+		// what it said, for CodexListRevoked
+		return nil, fmt.Errorf("ChatGPT models: %w", &accountStatusError{status: resp.StatusCode, body: b[:min(len(b), 64<<10)]})
 	}
 	var list struct {
 		Models []json.RawMessage `json:"models"`
@@ -419,16 +422,70 @@ func levelRank(e string) int {
 	return len(Levels)
 }
 
-// codexFetchSaved asks for the models of each saved ChatGPT account that
-// stands behind the one Codex is signed in to, with that account's own
-// sign-in, so the gateway doesn't send one a model its plan lacks. One that
-// can't be asked now keeps what it listed last.
+// codexSavedListAge is how old a saved account's list is before it is
+// asked for again, and codexSavedAtOnce how many of those one fetch of the
+// active account's list asks. The active account's list is asked every
+// accountListAge (KeepAccountsListed) as Codex asks its own; asking every
+// switched-on saved account's beside it each hour was a burst of N
+// /codex/models calls from one address for accounts no Codex was using
+// (the audit after owl's deactivated accounts, 10-30). A plan's models
+// change seldom: once a day, one account a look, so they drift apart.
+const (
+	codexSavedListAge = 24 * time.Hour
+	codexSavedAtOnce  = 1
+)
+
+// codexSavedAsked is when each saved account's list was last asked for,
+// fetched or not, so one that keeps failing (a deactivated account) waits
+// its day like the others instead of being first every look.
+var codexSavedAsked = struct {
+	sync.Mutex
+	m map[string]time.Time
+}{m: map[string]time.Time{}}
+
+// codexSavedNow is codexFetchSaved's clock; a var so tests can move it.
+var codexSavedNow = time.Now
+
+// codexFetchSaved asks for the models of the saved ChatGPT accounts that
+// stand behind the one Codex is signed in to, with each account's own
+// sign-in, so the gateway doesn't send one a model its plan lacks. An
+// account with no list yet is asked at once; of the rest, the one asked
+// longest ago, once codexSavedListAge has passed, and no more than
+// codexSavedAtOnce of them. One that can't be asked now keeps what it
+// listed last.
 func codexFetchSaved(ctx context.Context) {
-	for _, l := range Logins("codex") {
+	now := codexSavedNow()
+	type due struct {
+		user string
+		at   time.Time
+	}
+	var fresh, stale []due
+	ls := Logins("codex")
+	codexSavedAsked.Lock()
+	for _, l := range ls {
 		if l.Active || !l.On {
 			continue
 		}
-		user := l.User
+		_, at, ok := catalog.Live(accountModels("codex", l.User))
+		if !ok {
+			fresh = append(fresh, due{l.User, at})
+			continue
+		}
+		if a := codexSavedAsked.m[strings.ToLower(l.User)]; a.After(at) {
+			at = a
+		}
+		if now.Sub(at) >= codexSavedListAge {
+			stale = append(stale, due{l.User, at})
+		}
+	}
+	sort.SliceStable(stale, func(i, j int) bool { return stale[i].at.Before(stale[j].at) })
+	ask := append(fresh, stale[:min(len(stale), codexSavedAtOnce)]...)
+	for _, d := range ask {
+		codexSavedAsked.m[strings.ToLower(d.user)] = now
+	}
+	codexSavedAsked.Unlock()
+	for _, d := range ask {
+		user := d.user
 		sign := codexSign(func(ctx context.Context) (string, string, error) { return savedLoginToken(ctx, "codex", user) })
 		// through the account's own proxy, if it has one
 		if ms, err := codexModels(ViaLogin(ctx, "codex", user), sign); err == nil {
@@ -577,7 +634,8 @@ func buildCodexListTag(kind string) string {
 // A provider switched off picks nothing, as it serves no agent anything
 // (Provider.Off): its picks are kept for when it is switched on again and
 // are not a narrowing now. Usage only narrows the visible native list to
-// none, as it does the general catalog; codexModels keeps hidden jobs.
+// none, as it does the general catalog; codexModels keeps hidden jobs. Best
+// in family narrows it to the newest of each family the account lists.
 func CodexNativePicked() (map[string]bool, bool) {
 	p, ok := find(All(), "codex")
 	if !ok || p.Off {
@@ -585,6 +643,15 @@ func CodexNativePicked() (map[string]bool, bool) {
 	}
 	if p.ServesNone() {
 		return nil, true
+	}
+	if len(p.Models) == 0 && p.BestInFamily {
+		// Best in family: the newest of each family the account lists
+		keep := map[string]bool{}
+		for _, m := range catalog.BestInFamily(p.Available()) {
+			keep[m.ID] = true
+		}
+		// with no list known, the account's own is left whole
+		return keep, len(keep) > 0
 	}
 	if len(p.Models) == 0 {
 		return nil, false
@@ -684,16 +751,92 @@ func codexListed(shown []Entry, members func(id string) []Member, own bool) []ca
 	seen := described()
 	s := settings.Load()
 	find := func(id string) (Group, []Member, bool) { return Group{}, members(id), true }
+	listed := func(e Entry) bool { return own || !CodexOwn(e) }
+	apart := codexApart(shown, labels, listed)
 	for i, e := range shown {
-		if CodexOwn(e) && !own {
+		if !listed(e) {
 			continue
 		}
-		m := catalog.Model{ID: e.ID, Name: labels[i], Efforts: e.Efforts, Images: e.Images || seen, Context: e.Context, AgentsV2: e.AgentsV2, Codex: e.Codex}
+		m := catalog.Model{ID: e.ID, Name: labels[i], Efforts: CodexEfforts(e), Images: e.Images || seen, Context: e.Context, AgentsV2: e.AgentsV2, Codex: e.Codex, Apart: apart[i]}
 		m.Compact = CompactFor(s, e, find)
 		CodexTiers(&m, e, members)
 		ms = append(ms, m)
 	}
 	return ms
+}
+
+// codexUnknownLevels are the levels Codex is offered on a model magpie
+// has no word on (CodexEfforts): the three every API that takes a
+// reasoning effort reads, OpenAI's Chat and Responses and the relays
+// copying them.
+var codexUnknownLevels = []string{"low", "medium", "high"}
+
+// CodexEfforts are the levels Codex's picker offers for e: its own, or,
+// for a model nothing magpie reads says anything about — a custom
+// provider's model-code, a relay's alias — low, medium and high. Codex
+// sends such a model an effort whatever its entry lists (medium, or the
+// one config.toml starts sessions at), and the gateway passes an effort
+// on as asked where the model's levels aren't known (fitEffort), so with
+// no levels in its entry the effort was sent and couldn't be changed
+// (ccdcn on X: no effort choice for a custom provider's models). A model
+// known to have no levels keeps none: one its vendor's catalog or
+// models.dev lists without them, one the user said takes no reasoning
+// ask, and a routing group, whose levels are its members'.
+func CodexEfforts(e Entry) []string {
+	if len(e.Efforts) > 0 || !e.levelsUnknown() {
+		return e.Efforts
+	}
+	return slices.Clone(codexUnknownLevels)
+}
+
+// levelsUnknown reports whether nothing magpie reads says which reasoning
+// levels e's model has, or that it has none: not its vendor's own list
+// (levels, or an entry in Codex's shape), not the vendor's catalog, not
+// models.dev under any provider, not the user.
+func (e Entry) levelsUnknown() bool {
+	if e.Group != "" || len(e.Efforts) > 0 || e.Reasonless || len(e.Codex) > 0 || e.Model == "" {
+		return false
+	}
+	if _, ok := catalog.ListedBy(e.Provider.Catalogs(), e.Model); ok {
+		return false
+	}
+	// models.dev lists it (glm-4.5-air, with no reasoning) or knows it
+	// under another spelling: what it says stands
+	return !catalog.Lists(e.Model) && !catalog.Knows(e.Model)
+}
+
+// codexApart is, for each of shown that is listed, what tells it from
+// another listed entry its label (labels) would call the same in Codex's
+// picker (catalog.Model.Apart): its provider's id, or its own id where
+// that doesn't tell them apart (a routing group, or two of one provider).
+// "" for every other entry, whose picker name stays as it was.
+func codexApart(shown []Entry, labels []string, listed func(Entry) bool) []string {
+	out := make([]string, len(shown))
+	same := map[string][]int{}
+	for i, e := range shown {
+		if listed(e) {
+			k := strings.ToLower(labels[i])
+			same[k] = append(same[k], i)
+		}
+	}
+	for _, is := range same {
+		if len(is) < 2 {
+			continue
+		}
+		ids := map[string]int{}
+		for _, i := range is {
+			ids[strings.ToLower(shown[i].Provider.ID)]++
+		}
+		for _, i := range is {
+			e := shown[i]
+			if e.Group == "" && e.Provider.ID != "" && ids[strings.ToLower(e.Provider.ID)] == 1 {
+				out[i] = e.Provider.ID
+			} else {
+				out[i] = e.ID
+			}
+		}
+	}
+	return out
 }
 
 // CodexTiers sets on m what Codex is offered on e's service tiers
@@ -740,3 +883,8 @@ func CodexTiers(m *catalog.Model, e Entry, members func(id string) []Member) {
 
 // codexFastTier is Fast's service tier as Codex sends it.
 const codexFastTier = "priority"
+
+// CodexListRevoked says err, from CodexLiveList, is the backend calling
+// Codex's sign-in revoked (SignInRevoked), not a refusal a refresh mends,
+// a 5xx or a network error.
+func CodexListRevoked(err error) bool { return codexRevoked(err) }

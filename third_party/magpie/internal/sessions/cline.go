@@ -43,6 +43,9 @@ func ClineSessionDir() string {
 }
 
 func clineFiles() []file {
+	if !Reads("cline") {
+		return nil
+	}
 	paths, _ := filepath.Glob(filepath.Join(ClineSessionDir(), "*", "*.messages.json"))
 	var out []file
 	for _, p := range paths {
@@ -182,12 +185,48 @@ func parseCline(f file, old *state) *state {
 			continue // the copy of the session it was forked from
 		}
 		s.saw(at, f.main)
+		if m.Role == "assistant" {
+			for _, c := range clineTools(m.Content) {
+				s.tool(at, c[0], c[1])
+			}
+		}
 		if u := m.Metrics; m.Role == "assistant" && u != nil && m.ModelInfo != nil && m.ModelInfo.ID != "" {
 			s.use(dateOf(at), m.ModelInfo.ID, Tokens{Input: max(0, u.Input-u.CacheRead-u.CacheWrite), Output: u.Output, CacheRead: u.CacheRead, CacheWrite: u.CacheWrite})
 		}
 	}
 	s.Cline = c
 	return name(s, c.Prompt)
+}
+
+// clineTools are the tools a reply called, each with the skill it brought
+// in: Cline's content blocks are Anthropic's, a call
+// {"type":"tool_use","name","input"}, and its skills tool's input is
+// {"skill": <name>, "args"?}. A /<skill> typed with the skills tool on is
+// sent as typed and the model calls the tool for it; with the tool off
+// Cline puts the skill's text in the prompt and nothing names it.
+func clineTools(content json.RawMessage) [][2]string {
+	var blocks []struct {
+		Type  string `json:"type"`
+		Name  string `json:"name"`
+		Input struct {
+			Skill string `json:"skill"`
+		} `json:"input"`
+	}
+	if json.Unmarshal(content, &blocks) != nil {
+		return nil
+	}
+	var out [][2]string
+	for _, b := range blocks {
+		if b.Type != "tool_use" || b.Name == "" {
+			continue
+		}
+		k := ""
+		if b.Name == "skills" {
+			k = b.Input.Skill
+		}
+		out = append(out, [2]string{b.Name, k})
+	}
+	return out
 }
 
 // clineHook, when a test sets it, is told each time a messages file is

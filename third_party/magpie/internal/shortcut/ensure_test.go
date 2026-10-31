@@ -105,3 +105,35 @@ func TestEnsurePortable(t *testing.T) {
 		t.Fatalf("portable: %d writes, shortcut %v, App Paths %v, state %v", f.writes, exists(f.lnk), f.paths, exists(state))
 	}
 }
+
+// magpie uninstall takes the Start menu shortcut and the App Paths entry
+// out, for the exe in place of one an update moved aside.
+func TestRemove(t *testing.T) {
+	dir := t.TempDir()
+	lnk := filepath.Join(dir, "Magpie.lnk")
+	if err := os.WriteFile(lnk, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldMenu, oldUn := startMenu, unregister
+	t.Cleanup(func() { startMenu, unregister = oldMenu, oldUn })
+	startMenu = func() (string, error) { return lnk, nil }
+	var asked string
+	unregister = func(exe string) error { asked = exe; return nil }
+	if err := Remove(`C:\Tools\magpie.exe.old`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(lnk); !os.IsNotExist(err) {
+		t.Error("the shortcut is still there")
+	}
+	if asked != `C:\Tools\magpie.exe` {
+		t.Errorf("App Paths asked for %q", asked)
+	}
+	// none there, or no Start menu: nothing to say
+	if err := Remove(`C:\Tools\magpie.exe`); err != nil {
+		t.Fatal(err)
+	}
+	startMenu = func() (string, error) { return "", errNoStartMenu }
+	if err := Remove("/usr/local/bin/magpie"); err != nil {
+		t.Fatal(err)
+	}
+}

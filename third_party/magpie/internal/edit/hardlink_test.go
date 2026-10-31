@@ -120,6 +120,10 @@ func TestWriteAtomicReadOnlyHardLink(t *testing.T) {
 	if err := os.WriteFile(other, []byte("old\n"), 0o444); err != nil {
 		t.Fatal(err)
 	}
+	// the umask cuts WriteFile's mode: 0400 under 077 (#3640)
+	if err := os.Chmod(other, 0o444); err != nil {
+		t.Fatal(err)
+	}
 	p := filepath.Join(d, "models.yml")
 	hardLink(t, other, p)
 	if err := WriteAtomic(p, []byte("new\n")); err != nil {

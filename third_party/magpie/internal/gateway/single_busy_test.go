@@ -83,7 +83,7 @@ func singleAsk(stream bool) string {
 
 // scaled shrinks the waits the test goes through, keeping their order:
 // a Retry-After past the same-one retries' longestPause (8s), the pause
-// past keepHeldAfter (15s), all within singlePatience (60s).
+// past keepHeldAfter (3s), all within singlePatience (60s).
 func scaled(t *testing.T, patience time.Duration) {
 	t.Helper()
 	lp, sp, kh, we, rp := longestPause, singlePatience, keepHeldAfter, watchEvery, retryPause

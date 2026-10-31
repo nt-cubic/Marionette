@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -99,12 +100,21 @@ func sameCodexSnapshot(a, b os.FileInfo) bool {
 // Only a proven decoded prefix is a redundant copy. A shared thread/name
 // alone cannot establish ownership of divergent logs or distinct segments.
 func distinctCodexFiles(files []file) []file {
-	groups := map[string][]int{}
+	// a name's first file, and the rest of its files, which few names
+	// have: a slice made for every name was ~45 MB of a minute of the
+	// page's polls (#2278)
+	first := make(map[string]int, len(files))
+	var more map[string][]int
 	keep := make([]bool, len(files))
 	for i, f := range files {
 		keep[i] = true
 		name := strings.TrimSuffix(filepath.Base(f.path), zstSuffix)
-		for _, j := range groups[name] {
+		j0, seen := first[name]
+		if !seen {
+			first[name] = i
+			continue
+		}
+		for _, j := range slices.Concat([]int{j0}, more[name]) {
 			if !keep[j] {
 				continue
 			}
@@ -118,7 +128,10 @@ func distinctCodexFiles(files []file) []file {
 				break
 			}
 		}
-		groups[name] = append(groups[name], i)
+		if more == nil {
+			more = map[string][]int{}
+		}
+		more[name] = append(more[name], i)
 	}
 	out := files[:0]
 	for i, f := range files {

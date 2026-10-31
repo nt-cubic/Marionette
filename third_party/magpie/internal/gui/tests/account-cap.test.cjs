@@ -2,7 +2,7 @@
 // A subscription account can be used up to a share of each usage window
 // only — a new Claude account kept to 70% of its five hours and its week,
 // asked on Discord to lower the risk of a ban. Its row has a pill: a capped
-// one says its cap, always shown; one without says No cap, on hover. A
+// one says its cap, always shown; one without says No cap, under its ⋯. A
 // click opens the app's own menu of shares (no native select): a share, No
 // cap, or Other… for one typed in place, each posted to provider/accountcap
 // with the account and the cap (0: none). Each meter the cap counts has a
@@ -143,15 +143,17 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await pill(page, "me@example.com").evaluate((e) => getComputedStyle(e).opacity), "1");
       assert.equal(await row(page, "me@example.com").locator(".acap-held").textContent(), w.held);
       assert.deepEqual(await row(page, "me@example.com").locator(".aq-cap").evaluateAll((ms) => ms.map((m) => m.style.left)), ["70%", "70%"]);
-      // the spare has none: No cap on hover only, no note, no mark
+      // the spare has none: No cap under its ⋯ only, no note, no mark
       assert.equal(await pill(page, "Spare@Example.com").textContent(), w.none);
       await page.mouse.move(0, 0);
       await page.waitForTimeout(250);
-      assert.equal(await pill(page, "Spare@Example.com").evaluate((e) => getComputedStyle(e).opacity), "0");
+      assert.equal(await pill(page, "Spare@Example.com").isVisible(), false);
       assert.equal(await row(page, "Spare@Example.com").locator(".acap-held, .aq-cap").count(), 0);
 
       // the spare's pill opens the app's menu; 80% is posted
       await row(page, "Spare@Example.com").hover();
+      await still(page, "Spare@Example.com", row(page, "Spare@Example.com").locator(".acc-more"));
+      assert.equal(await pill(page, "Spare@Example.com").isVisible(), true);
       await still(page, "Spare@Example.com", pill(page, "Spare@Example.com"));
       await menu(page).waitFor();
       assert.equal(await menu(page).locator(".pm-head").textContent(), w.menu);

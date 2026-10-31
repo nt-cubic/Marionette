@@ -91,6 +91,7 @@ func (f *fakeTools) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					"n":                map[string]any{"type": "integer", "minimum": 1, "maximum": 4},
 					"quality":          map[string]any{"type": "string", "enum": []string{"low", "medium", "high", "auto"}},
 					"reference_images": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Images to edit: file paths or URLs"},
+					"model":            map[string]any{"type": "string", "enum": []string{"art/gpt-image-1", "art/painter"}, "description": "The image model to use, as provider/model."},
 				}}},
 			map[string]any{"name": gateway.GenerationResultTool, "description": "Waits.", "inputSchema": map[string]any{
 				"type": "object", "required": []string{"id"}, "properties": map[string]any{"id": map[string]any{"type": "string"}}}},
@@ -197,7 +198,8 @@ func TestToolReadsParameters(t *testing.T) {
 func TestToolRefusesWhatItDoesntKnowAndCallsNothing(t *testing.T) {
 	f, dir := toolHere(t)
 	for _, args := range [][]string{
-		{"tool", "generate_image", "--model", "gpt-image-1", "a magpie"},
+		{"tool", "generate_image", "--style", "vivid", "a magpie"},
+		{"tool", "generate_image", "--model", "art/nope", "a magpie"},
 		{"tool", "generate_image", "--n", "2"},
 		{"tool", "generate_image", "--n", "two", "a magpie"},
 		{"tool", "generate_image", "--quality", "ultra", "a magpie"},
@@ -219,8 +221,8 @@ func TestToolRefusesWhatItDoesntKnowAndCallsNothing(t *testing.T) {
 	if got := filesIn(t, dir); len(got) != 0 {
 		t.Fatalf("a refused call wrote %v", got)
 	}
-	_, err := runOut(t, "tool", "generate_image", "--model", "x", "a magpie")
-	if err == nil || !strings.Contains(err.Error(), "takes no --model") || !strings.Contains(err.Error(), "--prompt") || !strings.Contains(err.Error(), "nothing was called") {
+	_, err := runOut(t, "tool", "generate_image", "--style", "x", "a magpie")
+	if err == nil || !strings.Contains(err.Error(), "takes no --style") || !strings.Contains(err.Error(), "--prompt") || !strings.Contains(err.Error(), "nothing was called") {
 		t.Fatalf("an unknown parameter: %v", err)
 	}
 }
@@ -286,6 +288,13 @@ func TestToolSavesTheImage(t *testing.T) {
 	out, err = runOut(t, "tool", "generate_image", "--json", "a magpie")
 	if err != nil || !strings.Contains(out, gateway.FilesMeta) || len(filesIn(t, dir)) != 3 {
 		t.Fatalf("--json: %v %q", err, out)
+	}
+	// --model goes to the tool as its model argument
+	if _, err := runOut(t, "tool", "generate_image", "--model", "art/painter", "--json", "a magpie"); err != nil {
+		t.Fatal(err)
+	}
+	if c := f.toolCalls(); !strings.Contains(c[len(c)-1], `"model":"art/painter"`) {
+		t.Fatalf("--model: %v", c)
 	}
 }
 

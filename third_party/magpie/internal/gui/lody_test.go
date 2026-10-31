@@ -21,6 +21,65 @@ type importWindows struct {
 
 func (w *importWindows) OpenURL(u string) error { w.opened = u; return nil }
 
+// linksOpen has every app's import link opened here, whatever this
+// machine has installed (agent.OpenAppLink asks the system).
+func linksOpen(t *testing.T) {
+	old := appLink
+	t.Cleanup(func() { appLink = old })
+	appLink = func(link string, open func(string) error) error { return open(link) }
+}
+
+// sungt (10-29): Add magpie on Cindy did nothing when nothing on the
+// computer opened cindy:// links. /api/open says so, by code and app, and
+// hands nothing over.
+func TestImportLinkNothingOpens(t *testing.T) {
+	sandboxHome(t)
+	old := appLink
+	t.Cleanup(func() { appLink = old })
+	for _, c := range []struct{ link, app, exe string }{
+		{agent.CindyLink("http://127.0.0.1:3425"), "Cindy", ""},
+		{agent.CindyLink("http://127.0.0.1:3425"), "Cindy", `C:\gone\Cindy.exe`},
+		{agent.AionUiScheme + "a=1", "AionUi", ""},
+		{agent.LodyLink("http://127.0.0.1:3425"), "Lody", ""},
+	} {
+		appLink = func(link string, open func(string) error) error {
+			return &agent.NoLinkHandlerError{App: c.app, Scheme: "x", Exe: c.exe}
+		}
+		w := &importWindows{}
+		mux := http.NewServeMux()
+		providerRoutes(mux, w)
+		body, _ := json.Marshal(map[string]string{"url": c.link})
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("POST", "/api/open", strings.NewReader(string(body))))
+		var out map[string]string
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		if rec.Code != http.StatusBadRequest || out["code"] != "no_link_handler" || out["app"] != c.app || out["exe"] != c.exe || out["said"] != linkSaid[c.exe != ""] {
+			t.Errorf("%s: %d %s", c.app, rec.Code, rec.Body)
+		}
+		if w.opened != "" {
+			t.Errorf("%s: handed over %q", c.app, w.opened)
+		}
+	}
+}
+
+// What the page says for it is a key i18n.js has in every language, with
+// the {app} and {exe} the reply fills.
+func TestLinkSaidIsTranslated(t *testing.T) {
+	words, err := os.ReadFile("assets/i18n.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for exe, said := range linkSaid {
+		key, _ := json.Marshal(said)
+		if n := strings.Count(string(words), string(key)+":"); n != 4 {
+			t.Errorf("%v: i18n.js has %q in %d languages, want zh, zh-TW, ja and de", exe, said, n)
+		}
+		if !strings.Contains(said, "{app}") || strings.Contains(said, "{exe}") != exe {
+			t.Errorf("%v: %q doesn't say {app}, or {exe} only when it is set", exe, said)
+		}
+	}
+}
+
 func TestLodyImportHandoff(t *testing.T) {
 	home := sandboxHome(t)
 	// no Lody desktop entry of the machine's is run (agent.OpenLody)
@@ -67,6 +126,7 @@ func TestLodyImportHandoff(t *testing.T) {
 	if b, _ := json.Marshal(cindy); !strings.Contains(string(b), `"added":false`) {
 		t.Fatalf("Cindy's row leaves added out: %s", b)
 	}
+	linksOpen(t)
 	w := &importWindows{}
 	mux := http.NewServeMux()
 	providerRoutes(mux, w)
@@ -122,6 +182,7 @@ func TestLodyImportRunsLodyOnLinux(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := agent.LodyLink("http://127.0.0.1:3425")
+	linksOpen(t)
 	w := &importWindows{}
 	mux := http.NewServeMux()
 	providerRoutes(mux, w)
@@ -206,6 +267,7 @@ func TestAionUiImportRow(t *testing.T) {
 	if b, _ := json.Marshal(find()); strings.Contains(string(b), `"added"`) {
 		t.Fatalf("an unreadable database says added: %s", b)
 	}
+	linksOpen(t)
 	w := &importWindows{}
 	mux := http.NewServeMux()
 	providerRoutes(mux, w)

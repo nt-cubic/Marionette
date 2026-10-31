@@ -61,7 +61,9 @@ func TestLoadChecked(t *testing.T) {
 	if s, err := LoadChecked(); err == nil {
 		t.Fatalf("garbled with no backup read as good: %v", s.AllowIPs)
 	}
-	if s := Load(); !reflect.DeepEqual(s, Settings{}.normal()) {
+	// the defaults, with the Dock choice an older file's (Hide): a file
+	// nobody can read could be one
+	if s := Load(); !reflect.DeepEqual(s, Settings{}.settleDock().normal()) {
 		t.Fatalf("Load of a garbled file changed: %+v", s)
 	}
 	if err := Save(Load()); err == nil {

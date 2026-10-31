@@ -3,7 +3,6 @@ package guard
 import (
 	"fmt"
 	"math"
-	"runtime"
 	"slices"
 	"sync"
 )
@@ -250,10 +249,6 @@ func (m *qmat) matmul(x []float32, rows, t int) []float32 {
 	})
 	return out
 }
-
-// threads is how many goroutines the model reads with: a long text's
-// windows that many at once, or one window's matmuls split over them.
-var threads = max(1, runtime.GOMAXPROCS(0)-1)
 
 // parallel calls f over [0, n) in t parts at once.
 func parallel(t, n int, f func(a, b int)) {

@@ -129,11 +129,15 @@ func (g Group) Ref() string {
 }
 
 // PublicRef is the id agents are given for ref: a found group's
-// group/auto-<slug> as its auto/<model> (Group.Ref), its effort and [1m]
-// mark kept; any other ref as it is, a found group magpie has none of now
-// too.
+// group/auto-<slug>, or an auto/<model> spelt otherwise than it is listed
+// now (auto/glm-5-3-flash for auto/glm-5.3-flash), as its auto/<model>
+// (Group.Ref), its effort and [1m] mark kept; any other ref as it is, a
+// found group magpie has none of now too.
 func PublicRef(ref string) string {
 	s := strings.TrimSpace(ref)
+	if strings.HasPrefix(s, AutoPrefix) {
+		s = CanonicalRef(s)
+	}
 	s, marked := strings.CutSuffix(s, "[1m]")
 	gid, ok := strings.CutPrefix(s, GroupPrefix)
 	if !ok || !strings.HasPrefix(gid, "auto-") || !autoRefsOn() {
@@ -155,12 +159,18 @@ func PublicRef(ref string) string {
 }
 
 // spelledIn is how the model of a found group's id is spelt by a vendor
-// (Group.Spelled): of the members whose model merges into the group by its
-// own id (mergeKey), the first models.dev lists by that very spelling, else
-// the first; failing those, the model the user said a member is the same
-// as (settings' ModelSameAs). Without a vendor's prefix ("anthropic/").
-// "" for a group whose id is not auto-…, or none of whose members is its
-// model: one the user made, whatever it is called, stays group/<id>.
+// (Group.Spelled): the spelling models.dev gives the model most
+// (catalog.Spelling: glm-5.3-flash whether the members serve glm-5-3-flash
+// or glm-5.3-flash, XYenon on Discord), so the id doesn't follow the
+// order the providers were added in, and the group's name is the one
+// models.dev gives that spelling (autoGroups). Failing that, of the
+// members whose model merges into the group by its own id (mergeKey), the
+// first models.dev lists by that very spelling, else the first; failing
+// those, the model the user said a member is the same as (settings'
+// ModelSameAs). Without a vendor's prefix ("anthropic/"). "" for a group
+// whose id is not auto-…, or none of whose members is its model: one the
+// user made, whatever it is called, stays group/<id>. Every spelling it
+// had before is still the group (CanonicalRef).
 func spelledIn(g Group, same map[string]string) string {
 	if !strings.HasPrefix(g.ID, "auto-") {
 		return ""
@@ -188,6 +198,11 @@ func spelledIn(g Group, same map[string]string) string {
 	// an id a relay lists as its display name ("GPT-6 Sol") is no id to
 	// put in an agent's config: the one vendors agree on is, below
 	spaced := func(s string) bool { return strings.ContainsFunc(s, unicode.IsSpace) }
+	for _, m := range slices.Concat(own, alike) {
+		if s := catalog.Spelling(m); s != "" && !spaced(s) && "auto-"+Slug(sameModel(s)) == g.ID {
+			return s
+		}
+	}
 	spacedOnly := len(own)+len(alike) > 0
 	own, alike = slices.DeleteFunc(own, spaced), slices.DeleteFunc(alike, spaced)
 	for _, s := range own {

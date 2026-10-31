@@ -16,7 +16,8 @@ func allKinds() Options {
 	return o
 }
 
-// Each category finds its values, as the placeholder of its kind, and puts
+// Each category finds its values, as the placeholder of its kind (an IP as
+// a documentation address, a user name as a made-up one), and puts
 // them back; and leaves alone what only looks like one: versions,
 // timestamps, hashes, UUIDs, ordinary dates, model ids, URLs in code.
 func TestMoreKinds(t *testing.T) {
@@ -98,6 +99,14 @@ func TestMoreKinds(t *testing.T) {
 			p := placeholder(g.kind, g.value)
 			if g.kind == "USERNAME" {
 				p = standInOf(g.value) // a made-up name (shape.go)
+			}
+			if at, n, ok := ipStandIns(g.value); g.kind == "IP" && ok {
+				for i := 0; i < n; i++ { // a documentation address (shape.go)
+					if strings.Contains(out, at(i)) {
+						p = at(i)
+						break
+					}
+				}
 			}
 			if !strings.Contains(out, p) {
 				t.Errorf("%q: no %s placeholder for %q in %q", c.in, g.kind, g.value, out)

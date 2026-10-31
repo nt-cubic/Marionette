@@ -470,7 +470,8 @@ func setModelAPI(ref, api string) (bool, error) {
 // ModelAPI is the API the user said p's model is asked on, when p has a
 // URL for it still.
 func (p Provider) ModelAPI(model string) (Protocol, bool) {
-	if len(p.Speaks()) < 2 {
+	// Vertex AI's model id says its one API (ListedAPIs)
+	if len(p.Speaks()) < 2 || p.IsVertex() {
 		return "", false
 	}
 	proto := Protocol(heldSettings().ModelAPIs[p.ID+"/"+model])

@@ -120,7 +120,7 @@ func TestImageMCPDrawsAndServesTheImage(t *testing.T) {
 			t.Fatalf("%s takes a path the gateway can't write to", tl.Name)
 		}
 	}
-	if strings.Join(names, ",") != "generate_image,generate_video,generation_result" || len(list.Result.Tools[0].InputSchema.Properties) != len(ImageToolProps("")) {
+	if strings.Join(names, ",") != "generate_image,generate_video,generation_result" || len(list.Result.Tools[0].InputSchema.Properties) != len(ImageToolProps(""))+1 {
 		t.Fatalf("tools: %s", w.Body.String())
 	}
 	m := readImageReply(t, imagePost(h, "127.0.0.1:5000", imageToolCall(GenerateImageTool, map[string]any{"prompt": "a magpie", "size": "1024x1024"})))

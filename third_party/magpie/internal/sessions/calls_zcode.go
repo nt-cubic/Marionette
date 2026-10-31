@@ -37,6 +37,9 @@ var zcCallList struct {
 
 // zcodeCallFiles are ZCode's sessions as call sources.
 func zcodeCallFiles() []file {
+	if !Reads("zcode") {
+		return nil
+	}
 	path := zcodeDB()
 	if !fileExists(path) {
 		return nil

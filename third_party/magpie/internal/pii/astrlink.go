@@ -17,7 +17,7 @@ import (
 // AstrLink Guard (QuantumNous/astrlink-guard, Apache-2.0) is the second
 // local model: a 37 MB int8 token classifier for Chinese and English,
 // run in magpie's own process by internal/pii/guard, on the CPU of every
-// system, with nothing native to download. Its files are fetched from
+// system and through CoreML on a Mac, with nothing native to download. Its files are fetched from
 // Hugging Face at the revision their sha256 were pinned at (the
 // publisher's own listing), and are loaded on the first request that
 // needs them and let go after idleAfter with none.
@@ -136,6 +136,11 @@ type spanFinder interface {
 	Find(text string) []guard.Span
 }
 
+// backender is a model that says what reads it (guard.Model.Backend).
+type backender interface {
+	Backend() (via, device string, err error)
+}
+
 // guardLoad reads the model; a var for tests.
 var guardLoad = func(dir string) (spanFinder, error) {
 	m, err := guard.Load(dir)
@@ -145,8 +150,19 @@ var guardLoad = func(dir string) (spanFinder, error) {
 	return m, nil
 }
 
-// guardTurn is held by the one request the model reads.
-var guardTurn = make(chan struct{}, 1)
+// guardTurn is held by each request the model reads, guard.Cores() of
+// them at once. They share those cores (guard.Find takes them as it reads
+// each window), so a short request goes beside a long one's chunk on a
+// core of its own instead of after it, and requests at once never read
+// on more cores than one did. One at a time, concurrent agent requests
+// queued behind each other (yyhhyyyyyy on Discord, 10-28). Through
+// CoreML they meet at its one model, which reads as fast for one
+// request as for eight.
+var guardTurn = make(chan struct{}, guard.Cores())
+
+// guardLoading is held while the model loads, so requests read at once
+// load it once.
+var guardLoading sync.Mutex
 
 var guardBackend = &backend{
 	turn:     guardTurn,
@@ -156,6 +172,7 @@ var guardBackend = &backend{
 	path:     func() string { return filepath.Join(guardRoot(), "found-"+guardRev[:12]+".bin") },
 	classify: guardClassify,
 	heldBack: guardHeldBack,
+	chunk:    guardChunk,
 }
 
 // guardClassify is what the model finds in texts, loaded if it isn't.
@@ -182,28 +199,11 @@ func guardClassify(texts []string) ([][]redact.Found, error) {
 func guardClassifyTurn(texts []string) ([][]redact.Found, error) {
 	gsrv.mu.Lock()
 	m, gen := gsrv.m, gsrv.gen
-	if m == nil {
-		gsrv.loading = true
-	}
 	gsrv.mu.Unlock()
 	if m == nil {
-		if !guardInstalled() {
-			gsrv.mu.Lock()
-			gsrv.loading = false
-			gsrv.mu.Unlock()
-			return nil, ErrNotInstalled
-		}
-		t := time.Now()
 		var err error
-		m, err = guardLoad(guardDir())
-		gsrv.mu.Lock()
-		gsrv.loading = false
-		if err == nil && gsrv.gen == gen {
-			gsrv.m, gsrv.loadMS = m, int(time.Since(t)/time.Millisecond)
-		}
-		gsrv.mu.Unlock()
-		if err != nil {
-			return nil, fmt.Errorf("the local masking model didn't load: %w", err)
+		if m, gen, err = guardLoaded(); err != nil {
+			return nil, err
 		}
 	}
 	out := make([][]redact.Found, len(texts))
@@ -226,14 +226,57 @@ func guardClassifyTurn(texts []string) ([][]redact.Found, error) {
 	return out, nil
 }
 
+// guardLoaded is the model, loaded by this request unless another
+// loaded it meanwhile, and the gen it was loaded in.
+func guardLoaded() (spanFinder, int, error) {
+	guardLoading.Lock()
+	defer guardLoading.Unlock()
+	gsrv.mu.Lock()
+	m, gen := gsrv.m, gsrv.gen
+	if m == nil {
+		gsrv.loading = true
+	}
+	gsrv.mu.Unlock()
+	if m != nil {
+		return m, gen, nil
+	}
+	if !guardInstalled() {
+		gsrv.mu.Lock()
+		gsrv.loading = false
+		gsrv.mu.Unlock()
+		return nil, gen, ErrNotInstalled
+	}
+	t := time.Now()
+	m, err := guardLoad(guardDir())
+	gsrv.mu.Lock()
+	gsrv.loading = false
+	if err == nil && gsrv.gen == gen {
+		gsrv.m, gsrv.loadMS = m, int(time.Since(t)/time.Millisecond)
+	}
+	gsrv.mu.Unlock()
+	if err != nil {
+		return nil, gen, fmt.Errorf("the local masking model didn't load: %w", err)
+	}
+	return m, gen, nil
+}
+
 // guardIdle lets the model go after idleAfter with no request, unless
-// one is on it now (it sets the timer again when done).
+// one is on it now (it sets the timer again when done): it takes every
+// turn there is, and none if one is held.
 func guardIdle() {
-	select {
-	case guardTurn <- struct{}{}:
-		defer func() { <-guardTurn }()
-	default:
-		return
+	n := 0
+	defer func() {
+		for range n {
+			<-guardTurn
+		}
+	}()
+	for n < cap(guardTurn) {
+		select {
+		case guardTurn <- struct{}{}:
+			n++
+		default:
+			return
+		}
 	}
 	guardUnload()
 }
@@ -306,6 +349,12 @@ func (guardModel) Now() Status {
 	gsrv.mu.Lock()
 	if gsrv.m != nil {
 		s.Running, s.Device, s.LoadMS = true, "CPU", gsrv.loadMS
+		if b, ok := gsrv.m.(backender); ok {
+			var err error
+			if s.Via, s.Device, err = b.Backend(); err != nil {
+				s.GPUError = err.Error()
+			}
+		}
 	}
 	s.Failed, s.Loading = gsrv.failed, gsrv.loading
 	gsrv.mu.Unlock()

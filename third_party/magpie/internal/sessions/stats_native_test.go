@@ -1,6 +1,10 @@
 package sessions
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+	"time"
+)
 
 // The overview's stats and the sessions that tell its gateway sessions
 // apart come of one pass over every agent's files (#2776): it took a second
@@ -27,6 +31,33 @@ func TestStatsAndNativeOnePass(t *testing.T) {
 	for k := range want {
 		if !native[k] {
 			t.Fatalf("native %v, List's %v", native, want)
+		}
+	}
+}
+
+// TestStatsAllRangesOnePass: the ranges statsFor keeps are read again in
+// one pass, and each comes out as its own read would (#2278).
+func TestStatsAllRangesOnePass(t *testing.T) {
+	setup(t)
+	now := time.Now()
+	ranges := []int{0, 1, 7, 30}
+	passes := 0
+	filesHook = func() { passes++ }
+	t.Cleanup(func() { filesHook = nil })
+	all := statsReadAll(ranges, now, map[string]bool{})
+	if passes != 1 {
+		t.Fatalf("%d passes over the files", passes)
+	}
+	if len(all[0].Sessions) == 0 {
+		t.Fatalf("no stats: %+v", all[0])
+	}
+	for i, days := range ranges {
+		// read again, not the ranges kept
+		mu.Lock()
+		forgetKeptStats()
+		mu.Unlock()
+		if one := statsRead(days, now, nil); !reflect.DeepEqual(all[i], one) {
+			t.Fatalf("days=%d: one pass %+v\nalone %+v", days, all[i], one)
 		}
 	}
 }

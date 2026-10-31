@@ -60,17 +60,17 @@ type busyTry struct {
 
 // busy says whether a failure is one a member may be over in a moment:
 // overloaded, unavailable, timed out, or a rate limit that isn't the
-// plan's or the money's. A proxy that refused the connection, a quota used
-// up, response protection's 502, or an upstream that answered a stream
-// request with a whole reply (didNotStream) isn't: each fails the same
-// however often it is asked.
+// plan's or the money's, nor an account's token wall (walled). A proxy
+// that refused the connection, a quota used up, response protection's
+// 502, or an upstream that answered a stream request with a whole reply
+// (didNotStream) isn't: each fails the same however often it is asked.
 func busy(status int, body []byte) bool {
 	switch status {
 	case 408, 500, 502, 503, 504, 529:
 		return failure(status, body) == failOther && !protectionRefused(status, body) &&
 			!bytes.Contains(body, []byte(didNotStream))
 	case 429:
-		return failure(status, body) == failRate && !creditWords.Match(wordsOf(body))
+		return failure(status, body) == failRate && !creditWords.Match(wordsOf(body)) && !walled(body)
 	}
 	return false
 }

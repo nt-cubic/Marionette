@@ -52,8 +52,8 @@ function server(lang, sets) {
 }
 
 const W = {
-  en: { unset: "a Claude model of the tier, else the chat's model", reset: "Not set", summary: "tiers: haiku" },
-  zh: { unset: "该档位的 Claude 模型，没有则用对话的模型", reset: "未设置", summary: "分档：haiku" },
+  en: { unset: "the chat's model; for a Claude chat, its provider's model of the tier", reset: "Not set", summary: "tiers: haiku" },
+  zh: { unset: "对话的模型；对话用 Claude 模型时，用其供应商的该档位模型", reset: "未设置", summary: "分档：haiku" },
 };
 
 const cd = '.row.agent[data-id="claude-desktop"]';

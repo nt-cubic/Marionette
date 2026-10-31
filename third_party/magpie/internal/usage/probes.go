@@ -18,12 +18,30 @@ import (
 // the calls (logSnapshot.probes) so a reader of those never meets it.
 const SourceProbe = "probe"
 
-// IsProbe is a request magpie sent on its own (SourceProbe).
-func (r Record) IsProbe() bool { return r.Source == SourceProbe }
+// SourceMCP is Record.Source for an agent's call to a tool of one of
+// magpie's own MCP servers: the gateway's (image, vision, web search,
+// plugin tools, the MCP hub) and the Magpie Image server an agent runs
+// (ferock on Discord). Its Kind is KindMCP, Requested the tool's name as
+// it was called, Host the server's, Provider and Model what the tool used
+// when it used a model, Millis how long the call took and Error what a
+// failed one said. Its arguments are never kept. It rides the probes'
+// lane: listed on the request log, told apart there, counted nowhere, as
+// the model requests the tool made are rows of their own that are.
+const SourceMCP = "mcp"
+
+// KindMCP is an MCP tool call's Kind, the purpose the request log picks
+// them by.
+const KindMCP = "mcp"
+
+// IsProbe is a request magpie sent on its own (SourceProbe), or an MCP
+// tool call (SourceMCP): a row listed and counted nowhere.
+func (r Record) IsProbe() bool { return r.Source == SourceProbe || r.Source == SourceMCP }
 
 // IsProbe is a row of such a request. A packed row keeps the row's Source,
 // not its record's, so the request log asks the row.
-func (r Row) IsProbe() bool { return r.Source == SourceProbe || r.Record.IsProbe() }
+func (r Row) IsProbe() bool {
+	return r.Source == SourceProbe || r.Source == SourceMCP || r.Record.IsProbe()
+}
 
 // probeRow is a probe's record and where its line ends in the log, as a
 // gateway row's Order is.
@@ -95,6 +113,14 @@ func probeChunk(probes []probeRow, since time.Time, renames provider.Renames, ho
 			c = &rowChunk{}
 		}
 		r := p.Record
+		if r.Source == SourceMCP {
+			// a tool call names the provider its gateway call went to, by id
+			if r.Provider != "" {
+				r.Provider = renames.Of(r.Provider, r.Time)
+			}
+			c.add(Row{Record: r, Source: SourceMCP}, "", p.off, false)
+			continue
+		}
 		r.Provider = probeProvider(r, renames, hosts, sites)
 		c.add(Row{Record: r, Source: SourceProbe}, "", p.off, false)
 	}

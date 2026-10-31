@@ -174,6 +174,86 @@ func VertexPath(model string) string {
 	return "/publishers/google/models/" + url.PathEscape(model) + ":streamGenerateContent?alt=sse"
 }
 
+// VertexPartner is whether model is one of Vertex AI's partner or open
+// models (Model as a Service: DeepSeek, GLM, gpt-oss, Gemma, Llama…),
+// which Google serves on its OpenAI-compatible chat completions at the
+// project (Base(Chat), …/endpoints/openapi) under a publisher/model id
+// such as deepseek-ai/deepseek-v4.1-flash-maas. Every such id models.dev
+// lists for google-vertex has the publisher before a slash, and no Gemini
+// id on generateContent has one, so the slash is what tells them apart.
+func VertexPartner(model string) bool { return strings.Contains(model, "/") }
+
+// VertexClaude is whether model is one of Anthropic's Claude models on
+// Vertex AI (claude-opus-5-5, claude-sonnet-4-5@20250929), which Google
+// serves on Anthropic's own Messages API at the project, under the
+// anthropic publisher (VertexClaudeRequest), not on generateContent or
+// chat completions. The id alone says so, as the slash says a partner
+// model's: no Gemini id starts so, and Claude's ids have no publisher
+// before a slash.
+func VertexClaude(model string) bool {
+	return !VertexPartner(model) && strings.HasPrefix(strings.ToLower(model), "claude-")
+}
+
+// vertexAnthropicVersion is the Messages API's version a Claude request
+// on Vertex AI names in its body, where Anthropic's own takes the
+// anthropic-version header; Anthropic's Vertex SDK puts it there when the
+// body has none.
+const vertexAnthropicVersion = "vertex-2023-10-16"
+
+// VertexClaudeRequest is where at a Vertex AI provider (under its
+// Base(Anthropic)), and with what body, a request made for Anthropic's
+// Messages API at path (/v1/messages, its count_tokens, with or without
+// ?beta=true) goes, as Anthropic's Vertex SDK asks it: a message at
+// /publishers/anthropic/models/<model>:streamRawPredict when it streams,
+// :rawPredict when it doesn't, the model taken out of the body since the
+// path names it; a count at the publisher's count-tokens:rawPredict, the
+// model kept in the body. Either body names anthropic_version
+// (vertex-2023-10-16) unless it has one. ok is false for a body with no
+// model, which has no path.
+func VertexClaudeRequest(path string, body []byte) (string, []byte, bool) {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(body, &m) != nil {
+		return "", body, false
+	}
+	var model string
+	if json.Unmarshal(m["model"], &model) != nil || model == "" {
+		return "", body, false
+	}
+	if _, has := m["anthropic_version"]; !has {
+		m["anthropic_version"] = json.RawMessage(`"` + vertexAnthropicVersion + `"`)
+	}
+	at := "/publishers/anthropic/models/"
+	if p, _, _ := strings.Cut(path, "?"); strings.HasSuffix(p, "/count_tokens") {
+		at += "count-tokens:rawPredict"
+	} else {
+		var stream bool
+		_ = json.Unmarshal(m["stream"], &stream)
+		verb := ":rawPredict"
+		if stream {
+			verb = ":streamRawPredict"
+		}
+		at += url.PathEscape(model) + verb
+		delete(m, "model")
+	}
+	out, err := marshalRaw(m)
+	if err != nil {
+		return "", body, false
+	}
+	return at, out, true
+}
+
+// marshalRaw is m as JSON, its values byte for byte as they came (no
+// HTML escaping of a value's <, > and &).
+func marshalRaw(m map[string]json.RawMessage) ([]byte, error) {
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(m); err != nil {
+		return nil, err
+	}
+	return []byte(strings.TrimSuffix(b.String(), "\n")), nil
+}
+
 // VertexWholePath is where a request for model answered as one JSON body
 // goes.
 func VertexWholePath(model string) string {
@@ -215,9 +295,10 @@ func vertexGeneration(model string) int {
 	return n
 }
 
-// vertexModels are the Gemini models a location serves, as each answered
+// vertexModels are the models a location serves, as each answered
 // on 2026-10-06: every one at global (and Gemini 4 Argon, there since
-// 2026-10-13, #2155); Gemini 3's Flash models at us and
+// 2026-10-13, #2155, and the partner models Google serves at global
+// alone, VertexPartner); Gemini 3's Flash models at us and
 // eu, which serve no Pro, preview or 2.5; Gemini 2.5 at a region, where a
 // few add one more (asia-northeast1's gemini-3.5-flash), typed in by hand.
 func vertexModels(loc string) []string {

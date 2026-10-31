@@ -60,8 +60,21 @@ func TestCodexSwitchedWhenUsedUp(t *testing.T) {
 	if err := SetLoginOn("codex", "spare@example.com", true); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		codexApp.Lock()
+		codexApp.switched, codexApp.spent = false, false
+		codexApp.Unlock()
+	})
 	if to := switched(); to != "spare@example.com" {
 		t.Fatalf("switched to %q", to)
+	}
+	// the Codex app's app-server is restarted past a turn left stuck on
+	// the account used up (TestCodexAppServerRestartedPastATurnStuckOnTheSpentAccount)
+	codexApp.Lock()
+	spent := codexApp.spent
+	codexApp.Unlock()
+	if !spent {
+		t.Fatal("the switch off a used-up account isn't marked spent for the Codex app")
 	}
 	var live codexAuth
 	readJSON(filepath.Join(home, ".codex", "auth.json"), &live)

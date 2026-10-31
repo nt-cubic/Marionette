@@ -167,3 +167,83 @@ func TestVolcengineModelLists(t *testing.T) {
 		}
 	}
 }
+
+// The plans' models are their docs' (套餐概览 1925114 and 2366394, 快速开始
+// 1928261, read 10-29): kimi-k3.1-pro and deepseek-v4.1-flash-economy
+// came, doubao-seed-2.1-turbo and kimi-k2.7-code went, minimax-m3 stays
+// until it goes offline, and the Agent Plan draws with Seedream 5.0 Flash
+// too. A user's own pick of a model the plan dropped is still theirs.
+func TestVolcenginePlanModelsAsDocumented(t *testing.T) {
+	pr := Preset("volcengine")
+	coding, agent := pr.Regions[0], pr.Regions[1]
+	for _, r := range []Region{coding, agent} {
+		for _, id := range []string{"kimi-k3.1-pro", "deepseek-v4.1-flash-economy", "minimax-m3", "kimi-k3", "deepseek-v4.1-flash"} {
+			if !slices.Contains(r.Models, id) {
+				t.Errorf("%s: %s missing from %v", r.ID, id, r.Models)
+			}
+		}
+		for _, id := range []string{"doubao-seed-2.1-turbo", "kimi-k2.7-code"} {
+			if slices.Contains(r.Models, id) {
+				t.Errorf("%s: %s is offline but listed", r.ID, id)
+			}
+		}
+	}
+	if !slices.Contains(agent.Drawers, "doubao-seedream-5.0-flash") || !slices.Contains(agent.Drawers, "doubao-seedream-5-0-pro") {
+		t.Errorf("Agent Plan drawers %v", agent.Drawers)
+	}
+	p, err := FromPreset("volcengine")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Models = []string{"kimi-k2.7-code", "kimi-k3.1-pro"}
+	if got := modelIDs(p.Exposed()); !slices.Equal(got, p.Models) {
+		t.Fatalf("a user's picks %v exposed as %v", p.Models, got)
+	}
+}
+
+// What Ark's list says of a plan model's images names a model of the
+// plan, and reaches the plan's models (tongzhenbao on X).
+func TestArkPlanImagesAreThePlans(t *testing.T) {
+	for id := range arkPlanImages {
+		if !slices.Contains(arkPlanModels, id) {
+			t.Errorf("arkPlanImages names %q, which isn't a plan model", id)
+		}
+	}
+	p, err := FromPreset("volcengine")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range p.planModels(nil) {
+		want, ok := arkPlanImages[m.ID]
+		switch {
+		case !ok && m.ImageInput != nil:
+			t.Errorf("%s: Ark's list doesn't name it, but it is marked %v", m.ID, *m.ImageInput)
+		case ok && (m.ImageInput == nil || *m.ImageInput != want || m.Images != want):
+			t.Errorf("%s: images %v (%v), want %v", m.ID, m.Images, m.ImageInput, want)
+		}
+	}
+}
+
+// XYenon: Ark's plan docs say glm-5.3-flash, deepseek-v4.1-flash,
+// -economy and kimi-k3 take images, so each is sent the image itself, not
+// marked text-only from the plans' /models (#1216: not the plans' list).
+func TestArkPlanModelsSeeAsTheDocsSay(t *testing.T) {
+	p, err := FromPreset("volcengine")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms := map[string]catalog.Model{}
+	for _, m := range p.planModels(nil) {
+		ms[m.ID] = m
+	}
+	for _, id := range []string{"glm-5.3-flash", "deepseek-v4.1-flash", "deepseek-v4.1-flash-economy", "kimi-k3", "kimi-k2.8-preview", "minimax-m3"} {
+		m, ok := ms[id]
+		if !ok {
+			t.Errorf("%s isn't a plan model", id)
+			continue
+		}
+		if m.ImageInput == nil || !*m.ImageInput || !m.Images {
+			t.Errorf("%s: the docs say it takes images, marked %v (%v)", id, m.Images, m.ImageInput)
+		}
+	}
+}

@@ -135,6 +135,10 @@ func volcPlanQuotas(ctx context.Context) []SubscriptionQuota {
 		go func() {
 			defer wg.Done()
 			out[i] = volcPlanQuota(j.p.Via(ctx), j.p, j.action, j.plan, j.region)
+			if out[i].Error == "" {
+				// what routing goes by, read just now (KeyAllowance)
+				noteKeyAllowance(j.p, out[i].Windows, time.Now())
+			}
 			// a failed read shows what was last read, as a key's plan does
 			out[i] = keepReading(ctx, out[i], keyTag("volc "+j.action, j.p.AccessKeyID))
 		}()

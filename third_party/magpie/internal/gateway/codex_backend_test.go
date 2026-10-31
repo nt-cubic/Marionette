@@ -11,12 +11,15 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/yetone/magpie/internal/codexcat"
+	"github.com/yetone/magpie/internal/gwmw"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/usage"
 )
 
@@ -866,19 +869,6 @@ func TestCodexModelsEtagTagged(t *testing.T) {
 	}
 }
 
-// Responses over a WebSocket are turned away so Codex uses HTTP at once.
-func TestCodexWebSocketUpgradeRequired(t *testing.T) {
-	chatgpt(t, func(w http.ResponseWriter, r *http.Request) { t.Error("sent to ChatGPT") })
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", CodexPath+"/responses", nil)
-	req.Header.Set("Upgrade", "websocket")
-	req.Header.Set("Connection", "Upgrade")
-	New().Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusUpgradeRequired {
-		t.Errorf("%d", rec.Code)
-	}
-}
-
 // A routing group in Codex's model list is named as one, not as its first
 // member's provider, which would read as that provider's own model.
 func TestCodexModelsNameGroups(t *testing.T) {
@@ -1248,5 +1238,78 @@ func TestRenamedProviderAnsweredItsLead(t *testing.T) {
 	}
 	if a := loggedAnswers(session); len(a) != 1 || a[0].provider != "newrelay" || a[0].who != "newrelay#fp" {
 		t.Fatalf("answers %+v", a)
+	}
+}
+
+// A turn on Codex's own sign-in goes out through magpie's client as a
+// routed try does, so its try says where its time went as one does
+// (TryNet): the Routing page showed nothing for it (Discord, lute: some
+// requests showed magpie's and the vendor's time and some didn't). The
+// backend's wait before its headers is the vendor's.
+func TestCodexOwnSignInTellsWhereItsTimeWent(t *testing.T) {
+	setup(t, provider.Chat, &fake{t: t})
+	const hold = 200 * time.Millisecond
+	chatgpt(t, func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		time.Sleep(hold)
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse(`data: {"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":9,"output_tokens":2}}}`))
+	})
+	s := New()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":"hi"}`))
+	req.Header.Set("Authorization", "Bearer chatgpt-token")
+	s.Handler().ServeHTTP(rec, req)
+	st := s.Trace(t.Context(), 0, 0)
+	if rec.Code != 200 || len(st.Routes) != 1 || len(st.Routes[0].Tries) != 1 {
+		t.Fatalf("%d %+v", rec.Code, st.Routes)
+	}
+	n := st.Routes[0].Tries[0].Net
+	if n == nil {
+		t.Fatal("no timing for a turn on Codex's own sign-in")
+	}
+	holdMs := float64(hold.Milliseconds())
+	if n.Asks != 1 || n.Wait < holdMs-1 || n.Head < n.Wait {
+		t.Fatalf("timing %+v for a %v hold", *n, hold)
+	}
+}
+
+// A turn on Codex's own sign-in that was masked keeps what masking took,
+// on its route and in its usage record, as a routed one does: the
+// Routing page showed no masking time for it.
+func TestCodexOwnSignInKeepsItsMaskingTime(t *testing.T) {
+	setup(t, provider.Chat, &fake{t: t})
+	if err := settings.Save(settings.Settings{Redact: true}); err != nil {
+		t.Fatal(err)
+	}
+	chatgpt(t, func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse(`data: {"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":9,"output_tokens":2}}}`))
+	})
+	withoutMasker(t)
+	m := heldMasker{let: make(chan struct{}), entered: make(chan struct{}), once: new(sync.Once)}
+	t.Cleanup(gwmw.Mask(m))
+	const hold = 120 * time.Millisecond
+	go func() {
+		<-m.entered
+		time.Sleep(hold)
+		close(m.let)
+	}()
+	s := New()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":"hi"}`))
+	req.Header.Set("Authorization", "Bearer chatgpt-token")
+	s.Handler().ServeHTTP(rec, req)
+	st := s.Trace(t.Context(), 0, 0)
+	if rec.Code != 200 || len(st.Routes) != 1 {
+		t.Fatalf("%d %+v", rec.Code, st.Routes)
+	}
+	if got := st.Routes[0].Masking; got < hold.Milliseconds() {
+		t.Fatalf("route's masking %d ms, held %s", got, hold)
+	}
+	recs := usage.Load(time.Time{})
+	if len(recs) == 0 || recs[len(recs)-1].Masking != st.Routes[0].Masking {
+		t.Fatalf("usage records %+v, route's masking %d", recs, st.Routes[0].Masking)
 	}
 }

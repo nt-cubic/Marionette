@@ -117,7 +117,7 @@ func TestPluginPanelsServedShutIn(t *testing.T) {
 			r := httptest.NewRequest("GET", "/", nil)
 			r.URL.Path = path
 			w := httptest.NewRecorder()
-			servePluginPage(w, r)
+			servePluginPage(w, r, false)
 			if w.Code == 200 || strings.Contains(w.Body.String(), "SECRET") || strings.Contains(w.Body.String(), `"name"`) {
 				t.Errorf("%s: %d %s", path, w.Code, w.Body)
 			}
@@ -127,7 +127,7 @@ func TestPluginPanelsServedShutIn(t *testing.T) {
 	r := httptest.NewRequest("GET", "/", nil)
 	r.URL.Path = pluginPagePrefix + pageToken(off+"\x00panel\x000") + "/notes.html"
 	w = httptest.NewRecorder()
-	servePluginPage(w, r)
+	servePluginPage(w, r, false)
 	if w.Code == 200 {
 		t.Errorf("a plugin switched off's panel: %d", w.Code)
 	}

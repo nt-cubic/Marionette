@@ -14,7 +14,7 @@ const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
 
 const assets = path.resolve(__dirname, "../assets");
-const models = [{ id: "a/sol", name: "sol", providerName: "A Cloud", icon: "generic" }];
+const models = [{ id: "a/sol", name: "sol", providerName: "A Cloud", icon: "generic" }, { id: "a/luna", name: "luna", providerName: "A Cloud", icon: "openai" }];
 const info = [
   { id: "a/sol", ready: true, provider: "a", name: "A Cloud", model: "sol", on: 1 },
   { id: "b/sol", ready: false, providerOff: true, provider: "b", name: "B Cloud", icon: "generic", model: "sol", on: 0 },
@@ -24,6 +24,15 @@ const base = { members: ["a/sol", "b/sol", "c/sol"], ready: true, memberInfo: in
 const groups = { models, pools: [], groups: [
   { ...base, id: "auto-sol", name: "Sol", routing: "order" },
   { ...base, id: "hand", name: "Hand", routing: "manual", pick: "a/sol", picked: "a/sol" },
+  // one magpie found (XYenon on Discord): its card leaves the member out
+  { id: "auto-luna", name: "Luna", auto: true, routing: "order", ready: true, offers: [], shared: [],
+    members: ["a/luna", "b/luna"], memberInfo: [
+      { id: "a/luna", ready: true, provider: "a", name: "A Cloud", icon: "openai", model: "luna", on: 1 },
+      { id: "b/luna", ready: false, providerOff: true, provider: "b", name: "B Cloud", icon: "anthropic", model: "luna", on: 0 },
+    ] },
+  // every member's provider off: nothing left to show, so they are said
+  { id: "auto-terra", name: "Terra", auto: true, routing: "order", ready: false, offers: [], shared: [],
+    members: ["b/terra"], memberInfo: [{ id: "b/terra", ready: false, providerOff: true, provider: "b", name: "B Cloud", icon: "anthropic", model: "terra", on: 0 }] },
 ] };
 
 function serve(lang) {
@@ -79,6 +88,27 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await pick.getAttribute("title"), why);
         assert.equal(await pick.evaluate((b) => b.classList.contains("off")), true);
         assert.equal(await hand.locator('.rt-pick[data-member="c/sol"]').getAttribute("title"), await say("No provider serves {id} now; it is skipped", { id: "c/sol" }));
+
+        // a group magpie found lists only the members it can send to, and
+        // its logos are theirs: the switched-off one is counted in a tag
+        // that says why when hovered
+        const found = page.locator(".rt-group", { hasText: "Luna" }).first();
+        assert.equal(await found.locator(".mem").first().textContent(), "A Cloud · luna");
+        const tag = found.locator(".tag.rt-goff");
+        assert.equal(await tag.textContent(), await say("{n} switched off", { n: 1 }));
+        if (lang !== "en") assert.notEqual(await tag.textContent(), "1 switched off", `${lang} has it in its own words`);
+        assert.equal(await tag.getAttribute("title"), why);
+        const logos = await found.locator(".rt-ghandle").innerHTML();
+        assert.ok(!logos.includes("anthropic"), "no logo of the provider switched off: " + logos);
+        const terra = page.locator(".rt-group", { hasText: "Terra" }).first();
+        assert.equal(await terra.locator(".mem").first().textContent(), `B Cloud · terra (${off})`);
+        assert.equal(await terra.locator(".tag.rt-goff").count(), 0);
+        // its editor still has the member, greyed with why
+        await found.locator("button", { hasText: await say("Edit") }).dispatchEvent("click");
+        const fed = page.locator(".rt-gedit");
+        assert.equal(await fed.locator(".fbrow", { has: page.locator(".n small", { hasText: `B Cloud · ${off}` }) }).count(), 1);
+        await fed.locator("button", { hasText: await say("Cancel") }).first().dispatchEvent("click");
+        await fed.waitFor({ state: "detached" });
 
         // the editor: its row muted, saying why
         // the page puts back a scroll the reader didn't make, so at 420 the

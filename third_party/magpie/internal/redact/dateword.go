@@ -176,7 +176,7 @@ func dateSpans(s, w string) ([]span, bool) {
 	var out []span
 	for _, m := range re.FindAllStringIndex(s, -1) {
 		if dateWhole(s, m[0], m[1]) {
-			out = append(out, span{m[0], m[1], "TERM", ByWord, 0})
+			out = append(out, span{m[0], m[1], "TERM", ByWord, 0, false})
 		}
 	}
 	return out, true

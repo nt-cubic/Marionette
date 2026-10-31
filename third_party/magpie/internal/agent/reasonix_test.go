@@ -169,7 +169,10 @@ func TestReasonixCLIRequiresSupportedNativeVersion(t *testing.T) {
 	}{{"1.18.0", false}, {"1.39.4", true}, {"2.24.0", true}} {
 		source := "package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"reasonix v" + tc.version + "\") }\n"
 		os.WriteFile(filepath.Join(dir, "cmd", "reasonix", "main.go"), []byte(source), 0o600)
-		cmd := proc.Command("go", "build", "-o", bin, "./cmd/reasonix")
+		// no VCS stamp: go build asks git about any .git folder above
+		// the temp folder and fails when that is no repository (an
+		// empty /tmp/.git); the fixture needs none (#3641)
+		cmd := proc.Command("go", "build", "-buildvcs=false", "-o", bin, "./cmd/reasonix")
 		cmd.Dir = dir
 		cmd.Env = append(os.Environ(), "GOWORK=off")
 		if b, err := cmd.CombinedOutput(); err != nil {
@@ -217,7 +220,8 @@ func main() {
 		}
 	}
 	bin := filepath.Join(dir, "reasonix.exe")
-	cmd := proc.Command("go", "build", "-o", bin, "./cmd/reasonix")
+	// no VCS stamp, as above (#3641)
+	cmd := proc.Command("go", "build", "-buildvcs=false", "-o", bin, "./cmd/reasonix")
 	cmd.Dir, cmd.Env = dir, append(os.Environ(), "GOWORK=off")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build native probe: %v %s", err, out)

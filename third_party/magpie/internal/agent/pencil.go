@@ -49,6 +49,7 @@ func pencil(home string) *Agent {
 			}
 			return ""
 		},
+		ListOnly: true,
 		Sync: func() error {
 			return syncJSON(path, key, theirsKept(path, key, func() any { return pencilProviderJSON(gateway.URL()) }, "models"))
 		},

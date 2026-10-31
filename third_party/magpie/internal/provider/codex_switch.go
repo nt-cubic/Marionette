@@ -24,7 +24,10 @@ package provider
 // to it, as Smart gives it requests again then (#408). A switch the user
 // makes meanwhile ends that. With KeepLogin on the subscription, the agent
 // stays signed in to the first, whatever it has left (#524); with
-// KeepLoginAs, to that account, wherever it stands in the order.
+// KeepLoginAs, to that account, wherever it stands in the order. Not while
+// magpie only switches the sign-in (SwitchOnly): moving it is then all
+// magpie is asked to do, and kept on one account nothing would ever move
+// (#1907, keepsLogin).
 
 import (
 	"context"
@@ -121,11 +124,11 @@ func SpentShareOf(routing string) float64 {
 
 // loginSwitching is how magpie moves agent's sign-in, as its subscription
 // says: the share the account it is on is moved off at, and whether it is
-// kept on the first instead (KeepLogin).
+// kept on the first instead (keepsLogin).
 func loginSwitching(agent string) (share float64, keep bool) {
 	for _, p := range load().Providers {
 		if p.ID == agent {
-			return SpentShareOf(p.Routing), p.KeepLogin
+			return SpentShareOf(p.Routing), p.keepsLogin()
 		}
 	}
 	return SpentShare, false
@@ -199,7 +202,8 @@ func usedPast(q SubscriptionQuota, share float64, now time.Time) bool {
 // one it is on: the account magpie moved it off, once that has room again
 // (back); else, when the one it is on is spent, the first of its other
 // accounts that are on in magpie, in the order they were saved, whose
-// allowance is known and not spent. ok is false when the agent should stay.
+// allowance is known and not spent. A saved Claude account not read yet is
+// read then (readSpare). ok is false when the agent should stay.
 func NextLogin(ctx context.Context, agent string) (from, to string, back, ok bool) {
 	if leftAlone(agent) {
 		return "", "", false, false // magpie has no say in its sign-in, or was told to leave it be
@@ -215,7 +219,9 @@ func NextLogin(ctx context.Context, agent string) (from, to string, back, ok boo
 			first = &ls[i]
 		}
 		// never one Codex keeps signed in in another folder (switchSavedLogin)
-		if !l.Active && l.On && l.Lapsed == "" && l.home == "" {
+		// nor one added by a setup-token, which Claude Code can't be
+		// signed in to
+		if !l.Active && l.On && l.Lapsed == "" && l.home == "" && !l.Token {
 			spares = append(spares, l)
 		}
 	}
@@ -237,7 +243,14 @@ func NextLogin(ctx context.Context, agent string) (from, to string, back, ok boo
 	if keep && first != nil && first.On && first.Lapsed == "" {
 		return from, first.User, true, true
 	}
-	u := LoginUsage(ctx, agent)
+	// the account it is on, and the one it goes back to, are read; the
+	// spares only once the one it is on is spent (below): every account
+	// read at once on each look was a burst no official client makes
+	var firstUser string
+	if first != nil {
+		firstUser = first.User
+	}
+	u := someLoginUsage(ctx, agent, from, firstUser)
 	now := time.Now()
 	// an account at its usage cap is spent as one at the share below
 	// (account_caps.go): it is moved off, and none is moved to or back to
@@ -262,12 +275,42 @@ func NextLogin(ctx context.Context, agent string) (from, to string, back, ok boo
 	if keep || !known || q.Error != "" || !q.Held && !usedPast(q, share, now) && !capped(from, q) {
 		return "", "", false, false
 	}
+	users := make([]string, 0, len(spares))
 	for _, l := range spares {
-		if q, known := u[l.User]; known && q.Error == "" && !q.Held && !usedPast(q, share, now) && !capped(l.User, q) {
+		users = append(users, l.User)
+	}
+	for user, q := range someLoginUsage(ctx, agent, users...) {
+		u[user] = q
+	}
+	for _, l := range spares {
+		q, known := u[l.User]
+		if agent == "claude" && (!known || unreadSpare(q)) {
+			// a saved Claude account magpie has no reading of: read now,
+			// by Claude Code's /usage in its own directory, one account at
+			// a time and only till one has room
+			q, known = readSpare(ctx, l)
+		}
+		if known && q.Error == "" && !q.Held && !usedPast(q, share, now) && !capped(l.User, q) {
 			return from, l.User, false, true
 		}
 	}
 	return "", "", false, false
+}
+
+// unreadSpare says q, a saved Claude account's reading, has nothing to go
+// by: never read (a /usage not run), or a read that failed for a reason
+// not the account's own. Its /usage is then run (readSpare).
+func unreadSpare(q SubscriptionQuota) bool {
+	return q.Error != "" && (readDeferred(q.Error) || !claudeUsageDenied.MatchString(q.Error))
+}
+
+// readSpare is the reading of the saved Claude account l, its /usage run
+// now when claudeWindows allows (spareRead: once, then again only after a
+// wait), rather than the minute's cached "not read yet".
+func readSpare(ctx context.Context, l Login) (SubscriptionQuota, bool) {
+	forgetLoginReading(l)
+	q, known := someLoginUsage(readingSpare(ctx), l.Agent, l.User)[l.User]
+	return q, known
 }
 
 // SwitchWhenSpent signs agent in to the next of its accounts when the one
@@ -299,6 +342,9 @@ func SwitchWhenSpent(ctx context.Context, agent string) (string, error) {
 		setLoginReturn(agent, r)
 		share, _ := loginSwitching(agent)
 		log.Printf("%s: %s has used %g%% or more of its allowance; signed it in to %s", agent, from, share, to)
+		if agent == "codex" {
+			codexAppSpentSwitch()
+		}
 	}
 	if agent == "codex" {
 		if was := CodexAppStale(); was != "" {
@@ -387,11 +433,14 @@ func noteCodexUsedUp(now bool) {
 }
 
 // KeepOnAnAccountWithRoom runs SwitchWhenSpent for Codex and Claude Code a
-// minute after it starts and every loginSwitchEvery after that, until ctx
-// ends, and keeps Claude Code's proxy that of its account
-// (SyncClaudeProxyEnv).
+// minute after it starts and every loginSwitchEvery after that (Codex's
+// codexLookEvery), until ctx ends, and keeps Claude Code's proxy that of
+// its account (SyncClaudeProxyEnv). Between those looks Claude's sign-in is
+// looked at every claudeLookEvery when claudeLookDue: Claude Code asks
+// Anthropic itself, and an account burnt fast was out minutes before the
+// next look (#4443).
 func KeepOnAnAccountWithRoom(ctx context.Context) {
-	t := time.NewTimer(time.Minute)
+	t := time.NewTimer(firstSignInLook)
 	defer t.Stop()
 	live := false
 	defer func() {
@@ -399,6 +448,7 @@ func KeepOnAnAccountWithRoom(ctx context.Context) {
 			codexLiveChecks.Add(-1)
 		}
 	}()
+	var full time.Time // when the next full look is due; zero: now
 	for {
 		select {
 		case <-ctx.Done():
@@ -412,12 +462,17 @@ func KeepOnAnAccountWithRoom(ctx context.Context) {
 			live = true
 			codexLiveChecks.Add(1)
 		}
-		for _, agent := range switchedAgents {
-			c, cancel := context.WithTimeout(ctx, time.Minute)
-			if _, err := SwitchWhenSpent(c, agent); err != nil {
-				log.Printf("%s: switching to an account with room: %v", agent, err)
+		claudeDue := claudeLookDue()
+		if time.Now().Before(full) {
+			if claudeDue {
+				lookAtSignIn(ctx, "claude")
 			}
-			cancel()
+			signInsLooked(false)
+			t.Reset(min(time.Until(full), claudeLookEvery))
+			continue
+		}
+		for _, agent := range switchedAgents {
+			lookAtSignIn(ctx, agent)
 		}
 		// a sign-in made in Claude Code itself, or a proxy picked since,
 		// takes its account's proxy too (#1807)
@@ -425,6 +480,28 @@ func KeepOnAnAccountWithRoom(ctx context.Context) {
 		c, cancel := context.WithTimeout(ctx, time.Minute)
 		noteCodexUsedUp(CodexUsedUp(c))
 		cancel()
-		t.Reset(codexLookEvery(knownLoginUsage("codex")))
+		// Codex's own sign-in refused for good, or signed in again since
+		noteCodexGoneNow()
+		every := codexLookEvery(knownLoginUsage("codex"))
+		full = time.Now().Add(every)
+		signInsLooked(true)
+		t.Reset(min(every, claudeLookEvery))
+	}
+}
+
+// firstSignInLook is when KeepOnAnAccountWithRoom first looks. A var so
+// tests can say.
+var firstSignInLook = time.Minute
+
+// signInsLooked is told after each of KeepOnAnAccountWithRoom's looks,
+// whether it was a full one. A var so tests can wait on it.
+var signInsLooked = func(full bool) {}
+
+// lookAtSignIn is one look of KeepOnAnAccountWithRoom at agent's sign-in.
+func lookAtSignIn(ctx context.Context, agent string) {
+	c, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	if _, err := SwitchWhenSpent(c, agent); err != nil {
+		log.Printf("%s: switching to an account with room: %v", agent, err)
 	}
 }

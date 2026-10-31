@@ -16,6 +16,8 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 	"unsafe"
+
+	"github.com/tidwall/gjson"
 )
 
 // decodeJSON is json.Unmarshal(data, dst), made for a request body: one
@@ -1427,6 +1429,16 @@ func appendHTMLEscaped(dst, s []byte) []byte {
 	return append(dst, s[start:]...)
 }
 
+// getIn is gjson.GetBytes read in place: what it finds points into body
+// rather than into a copy. GetBytes copies the value it finds, and for a
+// conversation's list that is the conversation, 45 MiB of a Codex turn
+// for one look at its items (#4004). A string kept from the result keeps
+// all of body: clone one that outlives the request, and never change body
+// while one is held.
+func getIn(body []byte, path string) gjson.Result {
+	return gjson.Get(unsafe.String(unsafe.SliceData(body), len(body)), path)
+}
+
 // marshalBody is json.Marshal of a request body being built, byte for
 // byte, its lists (the messages, the input items) written an item at a
 // time into a buffer of the size they come to. json.Marshal writes the
@@ -1435,24 +1447,39 @@ func appendHTMLEscaped(dst, s []byte) []byte {
 // 316 MiB, the buffers it outgrew being garbage until the next GC (#4004,
 // jihuayu's profile on a 2 GiB server). Here no buffer outgrows the
 // largest item. A value json.Marshal refuses gets json.Marshal's answer.
-func marshalBody(out map[string]any) ([]byte, error) {
+//
+// spent names the list the builder made for this body alone (its
+// messages, its input items): each of its items is let go once written,
+// so the built conversation, strings joined from the request's parts
+// among it, is garbage while the body fills instead of held beside it to
+// the end (#4004). A value json.Marshal refuses is refused still, and the
+// list is then left part spent.
+//
+// Past bodyKept of them, the written items aren't kept for the body
+// either: each is measured, its bytes written to no buffer, and written
+// again into the body once that is made. Kept, they were a copy of the
+// conversation beside the body at its peak; written twice costs a large
+// body's encoding once more, and a body under bodyKept nothing.
+func marshalBody(out map[string]any, spent string) ([]byte, error) {
 	keys := make([]string, 0, len(out))
 	for k := range out {
+		// a key json.Marshal writes another way, before anything is spent
+		if _, ok := appendJSONKey(nil, k, true); !ok {
+			return json.Marshal(out)
+		}
 		keys = append(keys, k)
 	}
 	slices.Sort(keys)
 	vals := make([][]json.RawMessage, len(keys))
+	kept := bodyKept
 	n := 2
 	for i, k := range keys {
-		items, ok := marshalItems(out[k])
+		items, sizes, ok := marshalItems(out[k], k == spent, &kept)
 		if !ok {
 			return json.Marshal(out)
 		}
 		vals[i] = items
-		n += len(k) + 4
-		for _, it := range items {
-			n += len(it) + 1
-		}
+		n += len(k) + 4 + len(items) + sizes
 	}
 	dst := make([]byte, 0, n)
 	dst = append(dst, '{')
@@ -1472,11 +1499,24 @@ func marshalBody(out map[string]any) ([]byte, error) {
 			continue
 		}
 		dst = append(dst, '[')
+		list := reflect.ValueOf(out[k])
 		for j, it := range items {
 			if j > 0 {
 				dst = append(dst, ',')
 			}
-			dst = append(dst, it...)
+			if it != nil {
+				dst = append(dst, it...)
+				continue
+			}
+			// measured only: written now, straight into the body
+			w := appendWriter{dst}
+			if err := json.NewEncoder(&w).Encode(list.Index(j).Addr().Interface()); err != nil {
+				return nil, err
+			}
+			dst = w.b[:len(w.b)-1] // Encode's newline
+			if k == spent {
+				list.Index(j).SetZero()
+			}
 		}
 		dst = append(dst, ']')
 	}
@@ -1495,22 +1535,57 @@ func isSplitList(v any) bool {
 
 // marshalItems is v as json.Marshal writes it: its items each on their
 // own for a list isSplitList takes, or one piece; false when json.Marshal
-// refuses any of it.
-func marshalItems(v any) ([]json.RawMessage, bool) {
+// refuses any of it, and the bytes they come to. An item is kept while
+// *kept, the bytes left to keep, is above 0; past it an item is only
+// measured, nil among the items, and left as it was. spend sets each item
+// kept to its zero value.
+func marshalItems(v any, spend bool, kept *int) ([]json.RawMessage, int, bool) {
 	if !isSplitList(v) {
 		b, err := json.Marshal(v)
-		return []json.RawMessage{b}, err == nil
+		*kept -= len(b)
+		return []json.RawMessage{b}, len(b), err == nil
 	}
 	rv := reflect.ValueOf(v)
 	items := make([]json.RawMessage, rv.Len())
+	var count countWriter
+	measure := json.NewEncoder(&count)
+	size := 0
 	for i := range items {
 		// by its address, as json.Marshal reaches a slice's items: a
 		// MarshalJSON on the pointer is called
-		b, err := json.Marshal(rv.Index(i).Addr().Interface())
+		it := rv.Index(i).Addr().Interface()
+		if *kept <= 0 {
+			before := count.n
+			if measure.Encode(it) != nil {
+				return nil, 0, false
+			}
+			size += count.n - before - 1 // Encode's newline
+			continue
+		}
+		b, err := json.Marshal(it)
 		if err != nil {
-			return nil, false
+			return nil, 0, false
 		}
 		items[i] = b
+		size += len(b)
+		*kept -= len(b)
+		if spend {
+			rv.Index(i).SetZero()
+		}
 	}
-	return items, true
+	return items, size, true
 }
+
+// bodyKept is how many bytes of a body's written items marshalBody keeps
+// to put in the body; past it they are measured and written again.
+var bodyKept = 4 << 20
+
+// countWriter counts what is written to it.
+type countWriter struct{ n int }
+
+func (w *countWriter) Write(b []byte) (int, error) { w.n += len(b); return len(b), nil }
+
+// appendWriter appends what is written to it to b.
+type appendWriter struct{ b []byte }
+
+func (w *appendWriter) Write(p []byte) (int, error) { w.b = append(w.b, p...); return len(p), nil }

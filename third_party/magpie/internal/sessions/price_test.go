@@ -174,3 +174,30 @@ func TestListingPricesEveryModelAtTheSettingsItReadOnce(t *testing.T) {
 		t.Errorf("the next listing prices the second at %v; want the $3 just written", p)
 	}
 }
+
+// A session is priced without its provider's rate windows (#2463): its
+// calls are summed by model, not by time, so the window open as it is
+// read would price every call at it, and the same session would read 3×
+// at the peak and 1× off it. A window that holds every hour shows it.
+func TestPriceOfLeavesTheRateWindowOut(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	catalog.Reset()
+	t.Cleanup(catalog.Reset)
+	if err := settings.Save(settings.Settings{ModelPrices: map[string]settings.ModelPrice{
+		"relay/gpt-5.5": {Input: new(float64(0.2)), Output: new(float64(1)),
+			CacheRead: new(float64(0.05)), CacheWrite: new(float64(0.25))},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k", Chat: "https://relay.example.com/v1",
+		RateWindows: []provider.RateWindow{{Start: "00:00", End: "24:00", Rate: 3}}}); err != nil {
+		t.Fatal(err)
+	}
+	if pr, ok := priceOf(settings.Load(), "relay/gpt-5.5"); !ok || pr.Input != 0.2 || pr.Output != 1 {
+		t.Errorf("priceOf(relay/gpt-5.5) = %+v, %v; want the set $0.2/$1, not the window's 3×", pr, ok)
+	}
+}

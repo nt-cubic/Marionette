@@ -83,9 +83,14 @@ func (r *subscriptionRun) oversized(share int64) (string, bool) {
 	return fmt.Sprintf("its Claude Code held %d MiB, over the %d MiB a run may hold to be kept (%s)", rss>>20, budget>>20, why), true
 }
 
-// pid is the run's Claude Code process id, 0 before it starts.
+// pid is the run's Claude Code process id, 0 before it starts. It is
+// read once tree is set under mu: cmd.Process is written by cmd.Start,
+// which a list of the runs may be reading through.
 func (r *subscriptionRun) pid() int {
-	if r.cmd == nil || r.cmd.Process == nil {
+	r.mu.Lock()
+	t := r.tree
+	r.mu.Unlock()
+	if t == nil || r.cmd == nil || r.cmd.Process == nil {
 		return 0
 	}
 	return r.cmd.Process.Pid

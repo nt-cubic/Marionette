@@ -44,7 +44,7 @@ func (c *rowChunk) pack() *rowChunk {
 	next.Count = len(c.Rows) // what rowsIn says of it
 	next.Rows, next.Strings, next.Shapes, next.dict, next.shapeIDs = nil, nil, nil, nil, nil
 	next.Archive, next.Locations = encoded, locations
-	next.Bytes = int64(len(next.Archive)+len(locations)*8) + codexActorBytes(next.codexActors)
+	next.Bytes = int64(len(next.Archive)+len(locations)*8) + next.codexActors.bytes()
 	return &next
 }
 
@@ -89,7 +89,7 @@ func (c *rowChunk) encode(keep func([]byte) bool) ([]byte, []*time.Location) {
 		for _, n := range p.Tokens {
 			put(uint64(n))
 		}
-		for _, n := range []int64{p.Millis, p.TTFT, p.FirstText, p.Order, p.RouteID, p.Sent, p.Flow, p.Own, p.Retried, p.Queued, p.FirstReasoning} {
+		for _, n := range []int64{int64(p.Millis), int64(p.TTFT), int64(p.FirstText), p.Order, p.RouteID, int64(p.Sent), int64(p.Flow), int64(p.Own), int64(p.Retried), int64(p.Queued), int64(p.FirstReasoning)} {
 			put(uint64(n))
 		}
 		put(math.Float64bits(p.Cost))
@@ -202,7 +202,7 @@ func (c *rowChunk) unpackReusing(dst *rowChunk, into []packedRow, strs []string,
 	} else {
 		next.Strings = make([]string, int(count))
 	}
-	next.Bytes = int64(len(next.Rows))*int64(unsafe.Sizeof(packedRow{})) + codexActorBytes(next.codexActors)
+	next.Bytes = int64(len(next.Rows))*int64(unsafe.Sizeof(packedRow{})) + next.codexActors.bytes()
 	// The strings are copied out in one piece: one allocation a block, not
 	// one a string. The section is walked once to find its end, and its
 	// copy again to cut the strings from it.
@@ -279,11 +279,11 @@ func (c *rowChunk) unpackReusing(dst *rowChunk, into []packedRow, strs []string,
 		for j := range p.Tokens {
 			p.Tokens[j] = int64(take())
 		}
-		p.Millis, p.TTFT, p.FirstText, p.Order = int64(take()), int64(take()), int64(take()), int64(take())
+		p.Millis, p.TTFT, p.FirstText, p.Order = msOf(int64(take())), msOf(int64(take())), msOf(int64(take())), int64(take())
 		p.RouteID = int64(take())
-		p.Sent, p.Flow = int64(take()), int64(take())
-		p.Own, p.Retried, p.Queued = int64(take()), int64(take()), int64(take())
-		p.FirstReasoning = int64(take())
+		p.Sent, p.Flow = msOf(int64(take())), msOf(int64(take()))
+		p.Own, p.Retried, p.Queued = msOf(int64(take())), msOf(int64(take())), msOf(int64(take()))
+		p.FirstReasoning = msOf(int64(take()))
 		p.Cost, p.Status, p.Flags = math.Float64frombits(take()), int32(take()), uint16(take())
 		p.Tries = int32(take())
 		p.Masking = int32(take())
