@@ -3887,6 +3887,59 @@ pub fn council_approve_plan(
     Ok(run_state)
 }
 
+// ---------------------------------------------------------------------------
+// M5:能力感知组队(AI 参与团队设置)
+// ---------------------------------------------------------------------------
+
+#[tauri::command(async)]
+pub fn council_probe_models(models: Vec<String>) -> Result<Vec<crate::council::formation::ProbeOutcome>, String> {
+    if models.is_empty() {
+        return Err("候选模型列表为空".into());
+    }
+    crate::engine::wake_if_installed();
+    let ready = crate::engine::ensure_bridge_ready_if_installed(std::time::Duration::from_secs(20));
+    if !ready {
+        return Err("模型共享引擎未就绪,无法探测".into());
+    }
+    let client = crate::council::worker::EngineClient::default();
+    let mut results = Vec::new();
+    for model in &models {
+        results.push(crate::council::formation::probe_model(&client, model));
+    }
+    let merged = crate::council::formation::merge_probe_results(&models, &results);
+    crate::council::formation::save_probe_results(&merged)?;
+    Ok(results)
+}
+
+/// 自动组队:组队 agent(池中画像分最高者)读任务 + 全部画像,产出
+/// 团队配置(成员/角色/分层/职责/理由)。**建议而已**——经 UI 审阅、
+/// 用户确认后才进 CouncilSpec(人在环)。
+#[tauri::command(async)]
+pub fn council_auto_formation(
+    app: tauri::AppHandle,
+    task: String,
+    models: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    if task.trim().len() < 10 {
+        return Err("任务描述太短,组队 agent 无法判断需求".into());
+    }
+    if models.len() < 2 {
+        return Err("候选池至少 2 个模型".into());
+    }
+    crate::engine::wake_if_installed();
+    let ready = crate::engine::ensure_bridge_ready_if_installed(std::time::Duration::from_secs(20));
+    if !ready {
+        return Err("模型共享引擎未就绪".into());
+    }
+    let probes = crate::council::formation::load_probe_results();
+    let profiles: Vec<crate::council::formation::ModelProfile> =
+        models.iter().map(|m| crate::council::formation::build_profile(m, &probes)).collect();
+    let client = crate::council::worker::EngineClient::default();
+    let plan = crate::council::formation::auto_formation(&client, &task, &profiles)?;
+    let _ = app;
+    Ok(serde_json::json!({ "profiles": profiles, "plan": plan }))
+}
+
 #[tauri::command]
 pub fn council_delete_run(run_id: String) -> Result<(), String> {
     if crate::council::orchestrator::run_is_live(&run_id) {

@@ -15,6 +15,7 @@
 //! std-thread 模型从零编写(OmO 为 Sustainable Use License,不拷贝)。
 
 pub mod executor;
+pub mod formation;
 pub mod orchestrator;
 pub mod tasks;
 pub mod prompts;

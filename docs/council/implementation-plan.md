@@ -84,6 +84,24 @@ Council 视图独立整页(memo-tab-page 模式)。
 - [ ] AwaitingApproval 交互式确认(破坏性验证命令)
 - [ ] Windows 长路径/杀毒下的 store 压测
 
+## M5 — 能力感知组队 + 分层背书 ✅(2026-10-31)
+
+任务来源:用户需求「AI 参与团队设置——强者主导、弱者做简单调研设计、
+弱者产出须强者检验」。方法组合与依据见 [`formation.md`](./formation.md)
+(DyLAN/AgentVerse 动态组队 + 层级稳健性 + RouteLLM 强弱路由 +
+verifier 背书)。
+
+- [x] `formation.rs`:三信号画像(静态启发 / 本地探针 1 请求 /
+      model-stats.json 历史反馈闭环)+ `auto_formation`(池内最强
+      模型当组队 agent)+ `parse_formation` 硬校验
+- [x] 协议:`MemberTier`(缺省 lead,旧 run 零变化)、
+      `MessageKind::Endorsement`、synthesizing 前背书 fan-out、
+      主席综合输入带背书标记 + 分层采信规则(认可 ≥1 才可采纳)
+- [x] 命令:`council_auto_formation` / `council_probe_models`
+- [x] 前端:智能组队面板(池选择/探针/AI 建议/审阅应用,人在环)、
+      成员 tier 下拉、运行页 tier 徽标、时间线背书分组(163 键双语)
+- [x] 测试 10 项(council 53/53;全量 423 通过)
+
 ## 外部依赖与风险记录
 
 | 风险 | 影响 | 缓解 |

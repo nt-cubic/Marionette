@@ -27,6 +27,9 @@ pub enum MessageKind {
     Revision,
     Question,
     Answer,
+    /// 分层背书:lead 成员对 contributor 产出的认可/否决判定
+    /// (M5 能力分层协议;verdict 在 meta.endorse)。
+    Endorsement,
     /// Phase D:主席综合。
     Synthesis,
     /// Phase E:结构化实施计划(PlanDoc 的 JSON 正文)。
@@ -59,6 +62,18 @@ pub struct CouncilMessage {
     pub meta: Option<serde_json::Value>,
 }
 
+/// 能力分层(M5,任务书「能力感知组队」):lead = 强模型,主导综合、
+/// 背书他人产出;contributor = 较弱模型,承担调研/简单设计,其产出
+/// 须经至少一个 lead 背书才被主席采信。默认 lead = 与旧 spec 行为
+/// 完全一致(全员同层,背书跳过)。
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberTier {
+    #[default]
+    Lead,
+    Contributor,
+}
+
 /// 审议成员(模型 worker)。同一 model 可以配置多个成员(验收 #2),
 /// 每个成员有独立的角色 prompt 与消息身份。
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -74,6 +89,9 @@ pub struct MemberSpec {
     /// 是否主席。恰好一个成员为 chair(校验在 spec 校验处)。
     #[serde(default)]
     pub is_chair: bool,
+    /// 能力分层(M5)。缺省 lead(旧 run 兼容)。
+    #[serde(default)]
+    pub tier: MemberTier,
 }
 
 /// 运行模式(任务书 §3.1)。M1 全部模式都止步于 `PlanReady`;
@@ -381,6 +399,7 @@ pub(crate) mod tests {
                     model: "glm/glm-5.3".into(),
                     role: "系统架构".into(),
                     is_chair: false,
+                    tier: MemberTier::Lead,
                 },
                 MemberSpec {
                     id: "gpt-reviewer".into(),
@@ -388,6 +407,7 @@ pub(crate) mod tests {
                     model: "openai/gpt-5.2".into(),
                     role: "批判性评审".into(),
                     is_chair: true,
+                    tier: MemberTier::Lead,
                 },
                 MemberSpec {
                     id: "ds-math".into(),
@@ -395,6 +415,7 @@ pub(crate) mod tests {
                     model: "deepseek/deepseek-v4".into(),
                     role: "算法与数学分析".into(),
                     is_chair: false,
+                    tier: MemberTier::Lead,
                 },
             ],
             rounds: 2,

@@ -609,7 +609,9 @@ fn main() {
             commands::council_resume_run,
             commands::council_approve_plan,
             commands::council_delete_run,
-            commands::council_list_models
+            commands::council_list_models,
+            commands::council_probe_models,
+            commands::council_auto_formation
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|error| {

@@ -1,6 +1,7 @@
-# Council Mode — 架构(M1–M3 定稿)
+# Council Mode — 架构(M1–M5 定稿)
 
-> 状态:M1(审议)+ M2(执行)+ M3(验证回路)已实现(2026-10-31)。
+> 状态:M1(审议)+ M2(执行)+ M3(验证回路)+ M5(能力感知组队与
+> 分层背书,见 [`formation.md`](./formation.md))已实现(2026-10-31)。
 > 对比审计与决策依据见 [`architecture-audit.md`](./architecture-audit.md);
 > 本文描述**实际落地**的结构。与代码冲突时以代码为准。
 
@@ -26,6 +27,7 @@ Council 是 Marionette 内建的多模型审议编排器:多个模型各自独�
 │    ├─ worker.rs    ModelClient:EngineClient(引擎 HTTP)/ Mock     │
 │    ├─ state.rs     状态机转移表(硬编码 + 审计)                   │
 │    ├─ store.rs     ~/.marionette/council/runs/{id}/ 持久化        │
+│    ├─ formation.rs M5 能力感知组队(画像/探针/历史/自动组队)      │
 │    ├─ tasks.rs     PlanDoc→任务图(frontier 调度/失败不级联)      │
 │    ├─ executor.rs  执行 harness(ACP 生产 + 脚本测试)+ worktree 合并│
 │    ├─ verify.rs    验证命令执行(超时/输出截断/危险拦截)           │
@@ -43,7 +45,8 @@ Council 是 Marionette 内建的多模型审议编排器:多个模型各自独�
 | A 独立提案 | `proposing` | 全体 | 任务 + 角色 + 简报(**互相不可见提案**) | `proposal` |
 | B 交叉质询 | `reviewing` | 全体 | 他人最新方案(署名) | `critique` |
 | C 修订回应 | `revising` | 被质询的作者 | 自己最新版 + 针对自己的质询 | `revision` |
-| D 主席综合 | `synthesizing` | 主席 | 全部消息流 | `synthesis` |
+| D′ 分层背书(M5) | `synthesizing`(综合前) | 非主席 lead × contributor | contributor 最新产出 | `endorsement`(认可/否决+理由;全员 lead 时跳过) |
+| D 主席综合 | `synthesizing` | 主席 | 全部消息流(contributor 产出带背书标记;认可 ≥1 才可采纳) | `synthesis` |
 | E 计划门 | `synthesizing`→`plan_ready` | 主席 | synthesis | `plan`(JSON)+ plan.json |
 
 - 轮次:round N 的 B/C 之后仍有未回应质询且 `round < rounds` → 回

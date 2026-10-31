@@ -18,8 +18,10 @@ import {
   councilCreate,
   councilDeleteRun,
   councilGetRun,
+  councilAutoFormation,
   councilListModels,
   councilListRuns,
+  councilProbeModels,
   councilPauseRun,
   councilRail,
   councilRailStatus,
@@ -35,9 +37,12 @@ import {
   phaseBadgeClass,
   phaseLabel,
   railLabel,
+  tierLabel,
+  type AutoFormationResult,
   type CouncilMessage,
   type CouncilMessageKind,
   type CouncilMode,
+  type FormationPlan,
   type CouncilModelInfo,
   type MemberSpec,
   type RunDetail,
@@ -55,6 +60,7 @@ import { taskStatusLabel, type AgentLite } from "../lib/council";
 
 interface MemberDraft extends MemberSpec {
   key: string;
+  tier?: "lead" | "contributor";
 }
 
 /** 建议角色键序(name/duty 双语都在 fe-council 片段)。 */
@@ -347,6 +353,12 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
   const [agents, setAgents] = useState<AgentLite[]>([]);
   const [execAgentId, setExecAgentId] = useState("");
   const [execCwd, setExecCwd] = useState("");
+  // M5 AI 智能组队:候选池(目录 id 集合)→ 探针(可选)→ AI 组队 → 审阅 → 应用。
+  const [pool, setPool] = useState<Set<string>>(new Set());
+  const [probing, setProbing] = useState(false);
+  const [forming, setForming] = useState(false);
+  const [formation, setFormation] = useState<AutoFormationResult | null>(null);
+  const [formationError, setFormationError] = useState<string | null>(null);
   const t = useT();
 
   useEffect(() => {
@@ -379,6 +391,64 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
       return changed ? next : prev;
     });
   }, [models]);
+
+  const runProbe = async () => {
+    setFormationError(null);
+    const picked = [...pool];
+    if (picked.length === 0) {
+      setFormationError(t("council.formation.pickPoolFirst"));
+      return;
+    }
+    setProbing(true);
+    try {
+      const outcomes = await councilProbeModels(picked);
+      if (!outcomes) throw new Error("engine unavailable");
+      showToast({ text: t("council.formation.probeDone", { count: outcomes.length }) });
+    } catch (e) {
+      setFormationError(t("council.formation.probeFailed", { error: String(e) }));
+    } finally {
+      setProbing(false);
+    }
+  };
+
+  const runFormation = async () => {
+    setFormationError(null);
+    if (task.trim().length < 10) {
+      setFormationError(t("council.formation.needTask"));
+      return;
+    }
+    const picked = [...pool];
+    if (picked.length < 2) {
+      setFormationError(t("council.formation.pickPoolFirst"));
+      return;
+    }
+    setForming(true);
+    try {
+      const result = await councilAutoFormation(task.trim(), picked);
+      if (!result) throw new Error("engine unavailable");
+      setFormation(result);
+    } catch (e) {
+      setFormationError(t("council.formation.failed", { error: String(e) }));
+    } finally {
+      setForming(false);
+    }
+  };
+
+  const applyFormation = (plan: FormationPlan) => {
+    setDrafts(
+      plan.members.map((m, i) => ({
+        key: `f${i}-${Date.now()}`,
+        id: deriveMemberId(m.role, plan.members.slice(0, i).map((x) => x.role)),
+        displayName: m.role,
+        model: m.model,
+        role: m.assignment || m.role,
+        isChair: m.isChair,
+        tier: m.tier,
+      })),
+    );
+    setRounds(plan.rounds);
+    showToast({ text: t("council.formation.applied") });
+  };
 
   const updateDraft = (key: string, patch: Partial<MemberDraft>) => {
     setDrafts((prev) => prev.map((d) => (d.key === key ? { ...d, ...patch } : d)));
@@ -435,9 +505,9 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
         title: title.trim() || task.trim().slice(0, 40),
         task: task.trim(),
         mode,
-        members: drafts.map(({ key, ...rest }) => {
+        members: drafts.map(({ key, tier, ...rest }) => {
           void key;
-          return rest;
+          return { ...rest, tier: tier ?? "lead" };
         }),
         rounds,
         maxConcurrent,
@@ -534,7 +604,84 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
         )}
       </section>
 
-      <section className="council-section">
+            <section className="council-section">
+        <h3 className="council-section__title">{t("council.formation.title")}</h3>
+        <p className="council-sub">{t("council.formation.subtitle")}</p>
+        <div className="council-field">
+          <span>{t("council.formation.poolLabel")}</span>
+          <div className="council-formation__toolbar">
+            <button type="button" className="council-link-btn" onClick={() => setPool(new Set(models.map((m) => m.id)))}>
+              {t("council.formation.selectAll")}
+            </button>
+            <button type="button" className="council-link-btn" onClick={() => setPool(new Set())}>
+              {t("council.formation.selectNone")}
+            </button>
+          </div>
+          <div className="council-formation__pool">
+            {models.map((m) => (
+              <label key={m.id} className="council-formation__pick">
+                <input
+                  type="checkbox"
+                  checked={pool.has(m.id)}
+                  onChange={(e) => {
+                    setPool((prev) => {
+                      const next = new Set(prev);
+                      if (e.target.checked) next.add(m.id);
+                      else next.delete(m.id);
+                      return next;
+                    });
+                  }}
+                />
+                <span>{m.id}</span>
+              </label>
+            ))}
+            {models.length === 0 && <span className="council-sub">—</span>}
+          </div>
+          <div className="council-formation__actions">
+            <button type="button" className="council-btn" disabled={probing || pool.size === 0 || !engineReady} onClick={() => void runProbe()}>
+              {probing ? t("council.formation.probing") : t("council.formation.probe")}
+            </button>
+            <button
+              type="button"
+              className="council-btn council-btn--primary"
+              disabled={forming || pool.size < 2 || !engineReady}
+              onClick={() => void runFormation()}
+            >
+              {forming ? t("council.formation.running") : t("council.formation.run")}
+            </button>
+          </div>
+          {formationError && <div className="council-warn council-warn--error">{formationError}</div>}
+          {formation && (
+            <div className="council-formation__result">
+              {formation.plan.notes && <p className="council-sub">{t("council.formation.notes", { notes: formation.plan.notes })}</p>}
+              {formation.plan.members.map((m, i) => {
+                const profile = formation.profiles.find((p) => p.model === m.model);
+                return (
+                  <div key={i} className="council-formation__member">
+                    <div className="council-formation__member-head">
+                      <strong>{m.model}</strong>
+                      <span className="council-badge">{tierLabel(m.tier)}</span>
+                      {m.isChair && <span className="council-badge council-badge--plan">{t("council.formation.chair")}</span>}
+                      {profile && <span className="council-sub">{t("council.formation.score", { score: profile.score })}</span>}
+                    </div>
+                    <div className="council-formation__member-body">
+                      <div>{m.role}</div>
+                      {m.assignment && <div className="council-sub">{t("council.formation.assignment", { text: m.assignment })}</div>}
+                      {m.rationale && <div className="council-sub">{t("council.formation.rationale", { text: m.rationale })}</div>}
+                      {profile && <div className="council-sub">{profile.evidence.join(" · ")}</div>}
+                    </div>
+                  </div>
+                );
+              })}
+              <button type="button" className="council-btn council-btn--primary" onClick={() => applyFormation(formation.plan)}>
+                {t("council.formation.apply")}
+              </button>
+            </div>
+          )}
+        </div>
+      </section>
+
+<section className="council-section">
         <h3 className="council-section__title">{t("council.setup.section.seats")}</h3>
         <div className="council-field">
           <span>
@@ -582,6 +729,17 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
                   onChange={(e) => updateDraft(draft.key, { role: e.target.value })}
                   placeholder={t("council.setup.memberRolePlaceholder")}
                 />
+                <div className="council-member__tier">
+                  <span className="council-sub">{t("council.setup.memberTier")}</span>
+                  <select
+                    value={draft.tier ?? "lead"}
+                    onChange={(e) => updateDraft(draft.key, { tier: e.target.value as "lead" | "contributor" })}
+                    title={t("council.tier.hint")}
+                  >
+                    <option value="lead">{tierLabel("lead")}</option>
+                    <option value="contributor">{tierLabel("contributor")}</option>
+                  </select>
+                </div>
               </div>
             ))}
           </div>
@@ -746,6 +904,9 @@ function CouncilRunView(props: { detail: RunDetail; onBack: () => void; onReload
               <span className="council-member-chip__dot" style={{ background: memberColor(spec.members, member.id) }} />
               <span className="council-member-chip__name">{member.displayName}</span>
               {member.isChair ? <span className="council-member-chip__chair">{t("council.setup.memberChair")}</span> : null}
+              {member.tier === "contributor" ? (
+                <span className="council-member-chip__chair" title={t("council.tier.hint")}>{tierLabel(member.tier)}</span>
+              ) : null}
               <span className="council-member-chip__model">{member.model}</span>
               <span className="council-member-chip__status">{memberStatusText(status)}</span>
             </div>

@@ -46,6 +46,43 @@ export interface MemberSpec {
   model: string;
   role: string;
   isChair: boolean;
+  /** M5 能力分层:lead=主导+背书他人;contributor=产出需 lead 背书。缺省 lead(旧 run 兼容)。 */
+  tier?: MemberTier;
+}
+
+export type MemberTier = "lead" | "contributor";
+
+/** M5 组队:模型画像(三信号源混合,附证据)。 */
+export interface ModelProfile {
+  model: string;
+  score: number;
+  evidence: string[];
+}
+
+export interface ProbeOutcome {
+  score: number;
+  notes: string;
+  at: number;
+}
+
+export interface FormationMember {
+  model: string;
+  role: string;
+  tier: MemberTier;
+  isChair: boolean;
+  assignment?: string;
+  rationale?: string;
+}
+
+export interface FormationPlan {
+  members: FormationMember[];
+  rounds: number;
+  notes?: string;
+}
+
+export interface AutoFormationResult {
+  profiles: ModelProfile[];
+  plan: FormationPlan;
 }
 
 export type CouncilMode = "council_only" | "council_and_execution" | "autonomous";
@@ -280,6 +317,39 @@ export async function councilListModels(): Promise<CouncilModelsResult> {
   }
 }
 
+/** M5:候选模型能力画像(静态启发+历史统计;探针结果若已跑过则并入)。 */
+export async function councilModelProfiles(models: string[]): Promise<ModelProfile[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    return await invoke<ModelProfile[]>("council_model_profiles", { models });
+  } catch {
+    return [];
+  }
+}
+
+/** M5:本地能力探针(每模型 1 次请求;显式动作,结果持久化)。 */
+export async function councilProbeModels(models: string[]): Promise<ProbeOutcome[] | null> {
+  if (!isTauriRuntime() || models.length === 0) return null;
+  try {
+    return await invoke<ProbeOutcome[]>("council_probe_models", { models });
+  } catch {
+    return null;
+  }
+}
+
+/** M5:AI 自动组队——返回建议的团队配置(用户审阅后才应用)。 */
+export async function councilAutoFormation(
+  task: string,
+  models: string[],
+): Promise<AutoFormationResult | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await invoke<AutoFormationResult>("council_auto_formation", { task, models });
+  } catch {
+    return null;
+  }
+}
+
 /** 后端全局事件名(payload:{runId,kind,data})。 */
 export const COUNCIL_EVENT = "council-event";
 
@@ -416,6 +486,11 @@ export function groupTimeline(messages: CouncilMessage[]): TimelineGroup[] {
     group.messages.push(msg);
   }
   return groups;
+}
+
+/** M5 分层徽标文案。 */
+export function tierLabel(tier: MemberTier | undefined): string {
+  return tier === "contributor" ? t("council.tier.contributor") : t("council.tier.lead");
 }
 
 /** 成员运行状态点(state.memberStatus → 展示态)。 */

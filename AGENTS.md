@@ -245,7 +245,7 @@ tool 完成 + 新的 agent message，**没有 turnState、没有 turn/complete**
   在活回合中途放掉 composer）。冷启动恢复的会话（`turnEndedAtRef` 无记录）永不武装。
 - 回归：`npx tsx scripts/verify-agent-reentry.mts`。
 
-## Council 多模型协作(2026-10-31,M1–M3)
+## Council 多模型协作(2026-10-31,M1–M3;M5 能力组队)
 
 UI 名「圆桌 / 圆桌会议」(en Roundtable);代码模块、路径、事件仍叫 council。
 前端版式跟收纳盒同一套表面:整栏 `--panel` 灰底、卡片
@@ -265,7 +265,16 @@ UI 名「圆桌 / 圆桌会议」(en Roundtable);代码模块、路径、事件�
   (`council/<runId>/<stepId>` 分支),按拓扑序顺序合并,冲突显式
   `Failed(文件清单)`——**绝不静默覆盖**(真实 git 仓库的回归测试
   `executor::parallel_same_file_conflicts_are_explicit` 守着)。
-- **测试**:`cargo test --bin marionette council`(43 项,沙箱在
+- **M5 组队/背书**(`formation.rs` + docs/council/formation.md):
+  成员有 `tier`(lead/contributor,缺省 lead=旧行为零变化);有
+  contributor 时 synthesizing 前自动跑背书(全员 lead 整段跳过,零
+  额外调用);画像三信号(静态启发/探针/`model-stats.json` 历史)
+  只是**建议**,组队结果必须经 UI 审阅(人在环);`probes.json` 存
+  最近一次探针——模型升级后旧分不粘滞。改背书判定字段时记得
+  `record_deliberation_outcome` 的统计读取与 prompts 的
+  `endorsement_state` 渲染用的是同一套 meta 键(targetAuthor/
+  targetKind/verdict),三处要同步。
+- **测试**:`cargo test --bin marionette council`(53 项,沙箱在
   temp,不碰真实用户目录)+ `npx tsx scripts/verify-council.mts`;
   模型调用全部经 `ModelClient` / `TaskHarness` seam(EngineClient /
   AcpHarness 为生产实现,MockClient / ScriptedHarness 为测试),不要
