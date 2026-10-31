@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { ChevronLeft, CircleStop, Crown, Pause, Play, Plus, Trash2 } from "lucide-react";
+import { ChevronLeft, CircleStop, Pause, Play, Plus, Trash2 } from "lucide-react";
 import { MarkdownBody } from "./MarkdownBody";
 import {
   COUNCIL_EVENT,
@@ -105,18 +105,6 @@ function pickUnusedModel(models: CouncilModelInfo[], taken: Iterable<string>): s
   return models.find((m) => !used.has(m.id))?.id ?? models[0]?.id ?? "";
 }
 
-function RoundtableMark({ size = 32 }: { size?: number }) {
-  return (
-    <svg className="council-mark" width={size} height={size} viewBox="0 0 32 32" aria-hidden>
-      <circle className="council-mark__table" cx="16" cy="16" r="7.2" />
-      <circle className="council-mark__hub" cx="16" cy="16" r="2.1" />
-      <circle className="council-mark__seat" cx="16" cy="4.6" r="2.35" />
-      <circle className="council-mark__seat" cx="26.6" cy="21.4" r="2.35" />
-      <circle className="council-mark__seat" cx="5.4" cy="21.4" r="2.35" />
-    </svg>
-  );
-}
-
 function FlowHint() {
   const t = useT();
   const steps = t("council.setup.flow").split("→").map((s) => s.trim());
@@ -140,7 +128,11 @@ function PhaseRail(props: { phase: RunPhase; pausedFrom?: RunPhase | null; mode:
       {rail.map((step) => {
         const status = councilRailStatus(phase, pausedFrom, step, rail);
         return (
-          <li key={step} className={`council-rail__step is-${status}`}>
+          <li
+            key={step}
+            className={`council-rail__step is-${status}`}
+            aria-current={status === "current" ? "step" : undefined}
+          >
             <span className="council-rail__dot" />
             <span className="council-rail__label">{railLabel(step)}</span>
             <span className="council-rail__line" />
@@ -253,11 +245,11 @@ export function CouncilPage({ onClose }: CouncilPageProps) {
         />
       )}
       {view.kind === "run" && !detail && (
-        <div className="council-empty">
+        <div className="council-frame">
           <button type="button" className="council-back" onClick={() => setView({ kind: "list" })}>
             <ChevronLeft size={14} /> {t("council.run.back")}
           </button>
-          <p>{t("council.list.missing")}</p>
+          <p className="council-sub">{t("council.list.missing")}</p>
         </div>
       )}
     </div>
@@ -278,57 +270,58 @@ function CouncilListView(props: {
   const { runs, onNew, onOpen, onRefresh, onDelete } = props;
   const t = useT();
   return (
-    <div className="council-list">
-      <div className="council-list__head">
-        <div className="council-brand">
-          <RoundtableMark size={36} />
-          <div className="council-brand__text">
-            <h2>{t("council.list.title")}</h2>
-            <p className="council-sub">{t("council.list.subtitle")}</p>
-            <FlowHint />
+    <div className={`council-list${runs.length === 0 ? " is-empty" : ""}`}>
+      <div className="council-frame">
+        {runs.length > 0 && (
+          <div className="council-list__head">
+            <div>
+              <h2>{t("council.list.title")}</h2>
+              <p className="council-sub">{t("council.list.subtitle")}</p>
+              <FlowHint />
+            </div>
+            <button type="button" className="council-btn council-btn--primary" onClick={() => onNew()}>
+              <Plus size={14} /> {t("council.list.new")}
+            </button>
           </div>
-        </div>
-        <button type="button" className="council-btn council-btn--primary" onClick={() => onNew()}>
-          <Plus size={14} /> {t("council.list.new")}
-        </button>
-      </div>
-      {runs.length === 0 ? (
-        <div className="council-empty">
-          <RoundtableMark size={48} />
-          <strong>{t("council.list.emptyTitle")}</strong>
-          <p>{t("council.list.empty")}</p>
-          <button type="button" className="council-btn council-btn--primary" onClick={() => onNew()}>
-            <Plus size={14} /> {t("council.list.new")}
-          </button>
-        </div>
-      ) : (
-        <div className="council-run-rows">
-          {runs.map((run) => {
-            const live = !isTerminalPhase(run.phase) && run.phase !== "plan_ready" && run.phase !== "paused";
-            return (
-              <div key={run.runId} className={`council-run-row${live ? " is-live" : ""}`}>
-                <button type="button" className="council-run-row__main" onClick={() => onOpen(run.runId)}>
-                  <span className="council-run-row__title">{run.title || t("council.list.untitled")}</span>
-                  <span className="council-run-row__meta">
-                    {t("council.list.runMeta", { phase: phaseLabel(run.phase), members: run.memberCount, rounds: run.rounds, messages: run.messageCount })}
+        )}
+        {runs.length === 0 ? (
+          <div className="council-empty">
+            <strong>{t("council.list.emptyTitle")}</strong>
+            <p>{t("council.list.empty")}</p>
+            <FlowHint />
+            <button type="button" className="council-btn council-btn--primary" onClick={() => onNew()}>
+              <Plus size={14} /> {t("council.list.new")}
+            </button>
+          </div>
+        ) : (
+          <div className="council-run-rows">
+            {runs.map((run) => {
+              const live = !isTerminalPhase(run.phase) && run.phase !== "plan_ready" && run.phase !== "paused";
+              return (
+                <div key={run.runId} className={`council-run-row${live ? " is-live" : ""}`}>
+                  <button type="button" className="council-run-row__main" onClick={() => onOpen(run.runId)}>
+                    <span className="council-run-row__title">{run.title || t("council.list.untitled")}</span>
+                    <span className="council-run-row__meta">
+                      {t("council.list.runMeta", { phase: phaseLabel(run.phase), members: run.memberCount, rounds: run.rounds, messages: run.messageCount })}
+                    </span>
+                  </button>
+                  <span className={phaseBadgeClass(run.phase)}>
+                    {phaseLabel(run.phase)}
                   </span>
-                </button>
-                <span className={phaseBadgeClass(run.phase)}>
-                  {phaseLabel(run.phase)}
-                </span>
-                <button type="button" className="council-icon-btn" title={t("council.list.delete")} onClick={() => onDelete(run.runId)}>
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      )}
-      {runs.length > 0 && (
-        <button type="button" className="council-link-btn" onClick={onRefresh}>
-          {t("council.list.refresh")}
-        </button>
-      )}
+                  <button type="button" className="council-icon-btn" title={t("council.list.delete")} onClick={() => onDelete(run.runId)}>
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {runs.length > 0 && (
+          <button type="button" className="council-link-btn" onClick={onRefresh}>
+            {t("council.list.refresh")}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -473,16 +466,12 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
 
   return (
     <div className="council-setup">
+      <div className="council-frame council-frame--form">
       <button type="button" className="council-back" onClick={onBack}>
         <ChevronLeft size={14} /> {t("council.setup.back")}
       </button>
-      <div className="council-brand">
-        <RoundtableMark size={32} />
-        <div className="council-brand__text">
-          <h2>{t("council.setup.title")}</h2>
-          <FlowHint />
-        </div>
-      </div>
+      <h2>{t("council.setup.title")}</h2>
+      <FlowHint />
 
       {!engineReady && (
         <div className="council-warn">{t("council.setup.engineNotReady")}</div>
@@ -553,11 +542,7 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
           </span>
           <div className="council-members">
             {drafts.map((draft, index) => (
-              <div
-                key={draft.key}
-                className={`council-member${draft.isChair ? " is-chair" : ""}`}
-                style={{ borderLeftColor: seatColor(index) }}
-              >
+              <div key={draft.key} className="council-member">
                 <div className="council-member__row">
                   <span className="council-member__seat" style={{ background: seatColor(index) }} />
                   <input
@@ -571,7 +556,6 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
                     onClick={() => setChair(draft.key)}
                     title={draft.isChair ? t("council.setup.memberChairTitle") : t("council.setup.memberSetChair")}
                   >
-                    <Crown size={11} />
                     {draft.isChair ? t("council.setup.memberChair") : t("council.setup.memberChairOff")}
                   </button>
                   <button
@@ -643,6 +627,7 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
           {creating ? t("council.setup.starting") : t("council.setup.start")}
         </button>
       </div>
+      </div>
     </div>
   );
 }
@@ -706,43 +691,46 @@ function CouncilRunView(props: { detail: RunDetail; onBack: () => void; onReload
   return (
     <div className="council-run">
       <div className="council-run__head">
-        <div className="council-run__head-row">
-          <button type="button" className="council-back" onClick={onBack}>
-            <ChevronLeft size={14} /> {t("council.run.back")}
-          </button>
-          <div className="council-run__title">
-            <strong>{spec.title}</strong>
-            <span className={phaseBadgeClass(state.phase)}>
-              {phaseLabel(state.phase)}
-              {state.round > 1 ? ` · ${t("council.run.roundBadge", { n: state.round })}` : ""}
-            </span>
-            {detail.live && (
-              <span className={`council-badge council-badge--live${running ? " is-pulse" : ""}`}>
-                {t("council.run.live")}
+        <div className="council-frame council-frame--wide">
+          <div className="council-run__head-row">
+            <button type="button" className="council-back" onClick={onBack}>
+              <ChevronLeft size={14} /> {t("council.run.back")}
+            </button>
+            <div className="council-run__title">
+              <strong>{spec.title}</strong>
+              <span className={phaseBadgeClass(state.phase)}>
+                {phaseLabel(state.phase)}
+                {state.round > 1 ? ` · ${t("council.run.roundBadge", { n: state.round })}` : ""}
               </span>
-            )}
+              {detail.live && (
+                <span className={`council-badge council-badge--live${running ? " is-pulse" : ""}`}>
+                  {t("council.run.live")}
+                </span>
+              )}
+            </div>
+            <div className="council-run__controls">
+              {state.phase === "paused" && (
+                <button type="button" className="council-btn" onClick={() => control("resume")}>
+                  <Play size={13} /> {t("council.run.resume")}
+                </button>
+              )}
+              {running && (
+                <button type="button" className="council-btn" onClick={() => control("pause")}>
+                  <Pause size={13} /> {t("council.run.pause")}
+                </button>
+              )}
+              {!isTerminalPhase(state.phase) && (
+                <button type="button" className="council-btn council-btn--danger" onClick={() => control("cancel")}>
+                  <CircleStop size={13} /> {t("council.run.cancel")}
+                </button>
+              )}
+            </div>
           </div>
-          <div className="council-run__controls">
-            {state.phase === "paused" && (
-              <button type="button" className="council-btn" onClick={() => control("resume")}>
-                <Play size={13} /> {t("council.run.resume")}
-              </button>
-            )}
-            {running && (
-              <button type="button" className="council-btn" onClick={() => control("pause")}>
-                <Pause size={13} /> {t("council.run.pause")}
-              </button>
-            )}
-            {!isTerminalPhase(state.phase) && (
-              <button type="button" className="council-btn council-btn--danger" onClick={() => control("cancel")}>
-                <CircleStop size={13} /> {t("council.run.cancel")}
-              </button>
-            )}
-          </div>
+          <PhaseRail phase={state.phase} pausedFrom={state.pausedFrom} mode={spec.mode} />
         </div>
-        <PhaseRail phase={state.phase} pausedFrom={state.pausedFrom} mode={spec.mode} />
       </div>
 
+      <div className="council-frame council-frame--wide">
       {state.error && <div className="council-warn council-warn--error">{state.error}</div>}
 
       <div className="council-run__members">
@@ -753,13 +741,10 @@ function CouncilRunView(props: { detail: RunDetail; onBack: () => void; onReload
             <div
               key={member.id}
               className={`council-member-chip${working ? " is-working" : ""}${member.isChair ? " is-chair" : ""}`}
-              style={{ borderColor: memberColor(spec.members, member.id) }}
             >
               <span className="council-member-chip__dot" style={{ background: memberColor(spec.members, member.id) }} />
-              <span className="council-member-chip__name">
-                {member.isChair ? <Crown size={10} /> : null}
-                {member.displayName}
-              </span>
+              <span className="council-member-chip__name">{member.displayName}</span>
+              {member.isChair ? <span className="council-member-chip__chair">{t("council.setup.memberChair")}</span> : null}
               <span className="council-member-chip__model">{member.model}</span>
               <span className="council-member-chip__status">{memberStatusText(status)}</span>
             </div>
@@ -823,10 +808,10 @@ function CouncilRunView(props: { detail: RunDetail; onBack: () => void; onReload
         ))}
         {messages.length === 0 && (
           <div className="council-empty">
-            <RoundtableMark size={36} />
             <p>{t("council.run.timelineEmpty")}</p>
           </div>
         )}
+      </div>
       </div>
     </div>
   );
