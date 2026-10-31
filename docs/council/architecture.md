@@ -148,9 +148,9 @@ paused → paused_from 指向的原状态(或 cancelled)
 - 视图:`.council-tab-page` 整页(收纳盒伪标签同模式),三态:
   **列表**(run 历史)、**设置**(任务/模式/成员/轮次/并发/预算)、
   **运行**(成员状态条 + 分组时间线 + 计划面板 + 暂停/取消/批准)。
-  版式跟产品其余界面同一套:居中栏(列表 720 / 召集 640 / 运行 800)、
-  1px 线、`var(--radius)` 3px 角;中栏宽度用容器查询适配
-  (双侧栏窄列 ≈ 466 起)。不另搞圆角卡片 / 插画 / 毛玻璃。
+  版式跟收纳盒同一套:整栏 `--panel` 灰底,卡片 `--panel-raised` +
+  8px 圆角;居中栏(列表 760 / 召集 680 / 运行 840),中栏宽度用
+  容器查询适配(双侧栏窄列 ≈ 466 起)。
 - 事件驱动:后端 `council-event`(message/phase/member/plan-ready/
   finished/warn/error)→ 当前 run 全量重拉(M1 量级 <百条消息)。
 - 复用:`MarkdownBody`(消息渲染)、`showToast`、模型目录经
