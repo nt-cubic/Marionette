@@ -18,6 +18,7 @@ import { en as enFeLibA } from "./parts/fe-libA.en";
 import { en as enFeWorkspace } from "./parts/fe-workspace.en";
 import { en as enFeLibB } from "./parts/fe-libB.en";
 import { en as enFeLibC } from "./parts/fe-libC.en";
+import { en as enFeCouncil } from "./parts/fe-council.en";
 
 export const en = {
   ...enCommon,
@@ -34,4 +35,5 @@ export const en = {
   ...enFeWorkspace,
   ...enFeLibB,
   ...enFeLibC,
+  ...enFeCouncil,
 } satisfies Record<keyof typeof zh, string>;

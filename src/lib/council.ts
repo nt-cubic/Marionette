@@ -7,6 +7,7 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime } from "./api";
+import { t, type DictKey } from "./i18n";
 
 // ---------------------------------------------------------------------------
 // 类型(镜像 src-tauri/src/council/types.rs)
@@ -100,14 +101,13 @@ export interface TaskProgress {
 }
 
 export function taskStatusLabel(status: TaskStatus | undefined): string {
-  if (!status) return "待执行";
-  if (status === "pending") return "待执行";
-  if (status === "running") return "执行中";
-  if (status === "staged") return "待合并";
-  if (status === "merged") return "已合并";
-  if (status === "completed") return "完成";
-  if (typeof status === "object" && "failed" in status) return `失败:${status.failed}`;
-  return "跳过";
+  if (!status || status === "pending") return t("council.task.pending");
+  if (status === "running") return t("council.task.running");
+  if (status === "staged") return t("council.task.staged");
+  if (status === "merged") return t("council.task.merged");
+  if (status === "completed") return t("council.task.completed");
+  if (typeof status === "object" && "failed" in status) return t("council.task.failed", { reason: status.failed });
+  return t("council.task.skipped");
 }
 
 export function isTaskTerminal(status: TaskStatus | undefined): boolean {
@@ -313,7 +313,7 @@ export function memberColor(members: MemberSpec[], memberId: string): string {
 }
 
 export function memberLabel(members: MemberSpec[], memberId: string): string {
-  if (memberId === "system") return "系统";
+  if (memberId === "system") return t("council.msg.system");
   const member = members.find((m) => m.id === memberId);
   return member ? member.displayName : memberId;
 }
@@ -323,49 +323,16 @@ export function memberModelLabel(members: MemberSpec[], memberId: string): strin
   return member ? member.model : "";
 }
 
-const PHASE_LABELS: Record<RunPhase, string> = {
-  created: "已创建",
-  analyzing: "任务分析",
-  proposing: "独立提案",
-  reviewing: "交叉评审",
-  revising: "修订回应",
-  synthesizing: "主席综合",
-  plan_ready: "计划待批",
-  awaiting_approval: "等待确认",
-  executing: "执行中",
-  verifying: "验证中",
-  completed: "已完成",
-  paused: "已暂停",
-  cancelled: "已取消",
-  failed: "失败",
-  budget_exhausted: "预算耗尽",
-};
-
 export function phaseLabel(phase: RunPhase): string {
-  return PHASE_LABELS[phase] ?? phase;
+  return t(`council.phase.${phase}` as DictKey);
 }
 
 export function isTerminalPhase(phase: RunPhase): boolean {
   return phase === "completed" || phase === "cancelled" || phase === "failed" || phase === "budget_exhausted";
 }
 
-const KIND_LABELS: Record<CouncilMessageKind, string> = {
-  briefing: "简报",
-  proposal: "提案",
-  critique: "质询",
-  rebuttal: "反驳",
-  revision: "修订",
-  question: "提问",
-  answer: "回答",
-  synthesis: "综合",
-  plan: "计划",
-  task: "任务",
-  status: "状态",
-  evidence: "证据",
-};
-
 export function kindLabel(kind: CouncilMessageKind): string {
-  return KIND_LABELS[kind] ?? kind;
+  return t(`council.kind.${kind}` as DictKey);
 }
 
 /** 讨论时间线分组:briefing 独立一组;之后按 (round, kind) 分组,
@@ -386,7 +353,7 @@ export function groupTimeline(messages: CouncilMessage[]): TimelineGroup[] {
     const key = msg.kind === "briefing" ? "briefing" : `r${msg.round}-${msg.kind}`;
     let group = groups.find((g) => g.key === key);
     if (!group) {
-      const roundLabel = msg.kind === "briefing" ? "" : `第 ${msg.round} 轮 · `;
+      const roundLabel = msg.kind === "briefing" ? "" : t("council.timeline.roundPrefix", { n: msg.round });
       group = { key, round: msg.round, kind: msg.kind, title: `${roundLabel}${kindLabel(msg.kind)}`, messages: [] };
       groups.push(group);
     }
@@ -397,11 +364,10 @@ export function groupTimeline(messages: CouncilMessage[]): TimelineGroup[] {
 
 /** 成员运行状态点(state.memberStatus → 展示态)。 */
 export function memberStatusText(status: MemberRuntimeStatus | undefined): string {
-  if (!status) return "待命";
-  if (status === "idle") return "待命";
-  if (status === "working") return "工作中";
-  if (status === "done") return "已完成";
-  return `失败:${status.failed}`;
+  if (!status || status === "idle") return t("council.member.idle");
+  if (status === "working") return t("council.member.working");
+  if (status === "done") return t("council.member.done");
+  return t("council.member.failed", { reason: status.failed });
 }
 
 /** 从成员配置生成默认成员 id(displayName 派生,保证 kebab-case 唯一)。 */
