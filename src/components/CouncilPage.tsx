@@ -7,7 +7,8 @@
  * 的渲染(任务书 §3.5)。
  *
  * 版式按「会议室」而不是「设置表单」:空态是一张待入座的桌子,
- * 召集是左简报 / 右席位,运行是围桌发言。
+ * 召集是左简报 / 右席位,运行是围桌发言。视觉跟对话流同一套
+ * (--radius 3px / 1px 边 / 无阴影),不要收纳盒 8px 卡。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
@@ -595,42 +596,69 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
           <div className="council-setup__grid">
             <section className="council-brief" aria-label={t("council.setup.section.topic")}>
               <h3 className="council-kicker">{t("council.setup.section.topic")}</h3>
-              <input
-                className="council-brief__title"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder={t("council.setup.titlePlaceholder")}
-                aria-label={t("council.setup.titleAria")}
-              />
-              <textarea
-                ref={taskRef}
-                className="council-brief__task"
-                value={task}
-                onChange={(e) => setTask(e.target.value)}
-                placeholder={t("council.setup.taskPlaceholder")}
-                aria-label={t("council.setup.taskAria")}
-                aria-required
-                rows={8}
-              />
-
-              <div className="council-brief__mode">
-                <span className="council-kicker">{t("council.setup.modeLabel")}</span>
-                <div className="council-seg" role="radiogroup" aria-label={t("council.setup.modeLabel")}>
-                  {MODE_OPTIONS.map((opt) => (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      role="radio"
-                      aria-checked={mode === opt.id}
-                      className={`council-seg__opt${mode === opt.id ? " is-active" : ""}`}
-                      onClick={() => setMode(opt.id)}
-                    >
-                      {modeLabel(opt.id)}
-                    </button>
-                  ))}
+              <div className="council-brief__paper">
+                <input
+                  className="council-brief__title"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder={t("council.setup.titlePlaceholder")}
+                  aria-label={t("council.setup.titleAria")}
+                />
+                <textarea
+                  ref={taskRef}
+                  className="council-brief__task"
+                  value={task}
+                  onChange={(e) => setTask(e.target.value)}
+                  placeholder={t("council.setup.taskPlaceholder")}
+                  aria-label={t("council.setup.taskAria")}
+                  aria-required
+                  rows={4}
+                />
+                <div className="council-brief__bar">
+                  <div className="council-seg" role="radiogroup" aria-label={t("council.setup.modeLabel")}>
+                    {MODE_OPTIONS.map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={mode === opt.id}
+                        className={`council-seg__opt${mode === opt.id ? " is-active" : ""}`}
+                        onClick={() => setMode(opt.id)}
+                      >
+                        {modeLabel(opt.id)}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="council-steppers">
+                    <Stepper
+                      label={t("council.setup.roundsLabel")}
+                      value={rounds}
+                      min={1}
+                      max={4}
+                      display={t("council.setup.roundsShort", { n: rounds })}
+                      onChange={setRounds}
+                    />
+                    <Stepper
+                      label={t("council.setup.concurrencyLabel")}
+                      value={maxConcurrent}
+                      min={1}
+                      max={8}
+                      display={t("council.setup.concurrencyShort", { n: maxConcurrent })}
+                      onChange={setMaxConcurrent}
+                    />
+                    <Stepper
+                      label={t("council.setup.budgetLabel")}
+                      value={maxRequests}
+                      min={10}
+                      max={400}
+                      step={10}
+                      display={t("council.setup.budgetShort", { n: maxRequests })}
+                      onChange={setMaxRequests}
+                    />
+                  </div>
                 </div>
-                <p className="council-brief__hint">{modeHint(mode)}</p>
               </div>
+              <p className="council-brief__hint">{modeHint(mode)}</p>
 
               {mode !== "council_only" && (
                 <div className="council-exec">
@@ -652,37 +680,6 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
                   <p className="council-brief__hint">{t("council.setup.executorHint")}</p>
                 </div>
               )}
-
-              <div className="council-rules">
-                <span className="council-kicker">{t("council.setup.section.rules")}</span>
-                <div className="council-steppers">
-                  <Stepper
-                    label={t("council.setup.roundsLabel")}
-                    value={rounds}
-                    min={1}
-                    max={4}
-                    display={t("council.setup.roundsShort", { n: rounds })}
-                    onChange={setRounds}
-                  />
-                  <Stepper
-                    label={t("council.setup.concurrencyLabel")}
-                    value={maxConcurrent}
-                    min={1}
-                    max={8}
-                    display={t("council.setup.concurrencyShort", { n: maxConcurrent })}
-                    onChange={setMaxConcurrent}
-                  />
-                  <Stepper
-                    label={t("council.setup.budgetLabel")}
-                    value={maxRequests}
-                    min={10}
-                    max={400}
-                    step={10}
-                    display={t("council.setup.budgetShort", { n: maxRequests })}
-                    onChange={setMaxRequests}
-                  />
-                </div>
-              </div>
             </section>
 
             <section className="council-seats" aria-label={t("council.setup.section.seats")}>
@@ -729,26 +726,28 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
                         <Trash2 size={13} />
                       </button>
                     </div>
-                    <select
-                      className="council-member__model"
-                      value={draft.model}
-                      onChange={(e) => updateDraft(draft.key, { model: e.target.value })}
-                      aria-label={t("council.setup.memberModelPlaceholder")}
-                    >
-                      <option value="">{t("council.setup.memberModelPlaceholder")}</option>
-                      {models.map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.id}
-                        </option>
-                      ))}
-                    </select>
-                    <input
-                      className="council-member__duty"
-                      value={draft.role}
-                      onChange={(e) => updateDraft(draft.key, { role: e.target.value })}
-                      placeholder={t("council.setup.memberRolePlaceholder")}
-                      aria-label={t("council.setup.memberRolePlaceholder")}
-                    />
+                    <div className="council-member__meta">
+                      <select
+                        className="council-member__model"
+                        value={draft.model}
+                        onChange={(e) => updateDraft(draft.key, { model: e.target.value })}
+                        aria-label={t("council.setup.memberModelPlaceholder")}
+                      >
+                        <option value="">{t("council.setup.memberModelPlaceholder")}</option>
+                        {models.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.id}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        className="council-member__duty"
+                        value={draft.role}
+                        onChange={(e) => updateDraft(draft.key, { role: e.target.value })}
+                        placeholder={t("council.setup.memberRolePlaceholder")}
+                        aria-label={t("council.setup.memberRolePlaceholder")}
+                      />
+                    </div>
                   </div>
                 ))}
                 {drafts.length < 8 && (
