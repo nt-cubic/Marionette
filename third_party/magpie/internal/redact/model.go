@@ -2,6 +2,7 @@ package redact
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -84,7 +85,7 @@ func modelSpans(s string, o Options) []span {
 			a, b = zhTrim(s, a, b)
 		}
 		if a < b && utf8.ValidString(s[a:b]) && modelTakes(kind, s[a:b]) && modelFits(s, a, b, kind) && !(kind == "PERSON" && zhWordNotName(s, a, b)) {
-			out = append(out, span{a, b, kind, ByModel, f.Score})
+			out = append(out, span{a, b, kind, ByModel, f.Score, false})
 		}
 	}
 	if o.covers(catPersonal) {
@@ -121,7 +122,7 @@ func delimiter(c byte) bool { return isSpace(c) || strings.IndexByte(`"',;:`, c)
 func modelTakes(kind, v string) bool {
 	switch kind {
 	case "SECRET":
-		return len(v) >= 8 && !madeID(v) && !namesThing(v)
+		return len(v) >= 8 && !madeID(v) && !namesThing(v) && !versionValue(v)
 	case "PERSON":
 		// (an ordinary Chinese word, 文案 or 关键词, is left where it is
 		// read: zhWordNotName)
@@ -161,7 +162,7 @@ func namesThing(v string) bool {
 	if u, n, ok := strings.Cut(v, ":"); ok && n != "" && strings.Trim(n, digits) == "" {
 		v = u
 	}
-	if uuidRe.MatchString(v) || digestRe.MatchString(v) || slugRe.MatchString(v) || fileNameRe.MatchString(v) || modelName(v) {
+	if uuidRe.MatchString(v) || digestRe.MatchString(v) || sriRe.MatchString(v) || slugRe.MatchString(v) || fileNameRe.MatchString(v) || modelName(v) {
 		return true
 	}
 	return !strings.ContainsAny(v, " \t\n") && (strings.HasPrefix(v, "/") || strings.HasPrefix(v, "~/") ||
@@ -201,6 +202,11 @@ var (
 	// a file's name in lower case (make-icons.sh, run_all.py)
 	fileNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*(?:\.[a-z0-9_-]+)*\.[a-z][a-z0-9]{0,4}$`)
 	digestRe   = regexp.MustCompile(`^(?i)(?:md5|sha-?(?:1|224|256|384|512)|blake2b?|blake3)[ :=-]+[0-9a-f]{32,128}$`)
+	// a package's digest as a lock file pins it (Subresource Integrity:
+	// package-lock.json's and pnpm-lock.yaml's "integrity"), sha512- and
+	// the hash in base64, with the } or quote the model took in after it.
+	// Privacy Filter took each one for a secret.
+	sriRe = regexp.MustCompile(`^sha(?:256|384|512)-[A-Za-z0-9+/]{43,86}={0,2}[}"',;)\]]*$`)
 )
 
 // madeID says v is an id of the shape vendors and tools give theirs: a
@@ -306,6 +312,17 @@ func modelFits(s string, a, b int, kind string) bool {
 		return false
 	}
 	v := s[a:b]
+	if evmRe.MatchString(v) {
+		// a wallet's or a contract's address (0x and 40 hex digits) is
+		// public, on its chain for anyone to read, and the vendor's model
+		// needs it as written: masked, it took the placeholder for a
+		// private key and told the user to rotate it (0x0_air on X,
+		// 10-28). A key is 64 hex digits; one called a key is masked still.
+		return kind == "SECRET" && secretCued(s, a)
+	}
+	if packageAt(s, a, b) {
+		return false
+	}
 	switch kind {
 	case "PERSON":
 		return personFits(s, a, b, v)
@@ -322,7 +339,7 @@ func modelFits(s string, a, b int, kind string) bool {
 	case "ADDRESS":
 		// a path is no address (-Users-x-projects-a/2b1a….jsonl); a Chinese
 		// one has no spaces, a Latin one has them
-		if isASCII(v) && !strings.ContainsAny(v, " \t\n") && strings.ContainsAny(v, `/\`) {
+		if isASCII(v) && !strings.ContainsAny(v, " \t\n") && strings.ContainsAny(v, `/\`) || programWords(v) {
 			return false
 		}
 		return strings.IndexFunc(v, unicode.IsLetter) >= 0
@@ -340,12 +357,356 @@ func modelFits(s string, a, b int, kind string) bool {
 		if f := strings.Fields(v); len(f) > 1 && hexRe.MatchString(f[0]) || modCacheRe.MatchString(v) {
 			return false
 		}
+		if pinnedAfter(s, b) {
+			return false
+		}
+		if wordsOnly(v) && !assignedSecret(s, a) {
+			return false
+		}
 		return !hexRe.MatchString(v) || secretCued(s, a)
 	case "EMAIL":
 		// a URL's user:password@host is no address, as for the rule's (#3538)
 		return wordByte(v[0]) && !modCacheRe.MatchString(v) && !inUserinfo(s, a)
 	}
 	return true
+}
+
+// programWords says v, which the model took for a person's or a place's,
+// is a program's words: it has an underscore (node_modules, __pycache__,
+// node_modules 太, the model running on into the sentence after it), or
+// it is Latin letters in lower case with no digit (dist, vendor,
+// site-packages, ls node_modules). No name and no address is written so:
+// a name has its capitals (personFits), an address its number or its
+// capitals (42 Wallaby Way), a Chinese one its characters. The model took
+// such a folder for personal data and the agent read a placeholder where
+// the folder was ("node_modules给识别成姓名了", kekek711 on X, 10-29).
+func programWords(v string) bool {
+	if strings.Contains(v, "_") {
+		return true
+	}
+	return isASCII(v) && strings.IndexFunc(v, unicode.IsLetter) >= 0 && strings.IndexFunc(v, func(r rune) bool { return unicode.IsUpper(r) || unicode.IsDigit(r) }) < 0
+}
+
+// wordsOnlyRe is words in lower case and nothing else, joined by - . or
+// _: drizzle-orm, reflect-metadata, lodash.merge, secretstorage; and a
+// folder's name as a path or Python writes it, with the slash after it
+// or underscores around it: node_modules/, __pycache__.
+var wordsOnlyRe = regexp.MustCompile(`^_*[a-z]+(?:[-._][a-z]+)*_*/?$`)
+
+// wordsOnly says v, which the model took for a secret, is made of words
+// in lower case alone, as a package's, a tool's or a setting's name is.
+// A key is random: it has a digit, a capital or a symbol in it, and the
+// SECRET rules ask a digit of a value after password= too (secretValue).
+// AstrLink Guard took drizzle-orm for a secret in a tsup config's
+// external list in a Markdown fence (dniray on Discord, v0.1.1976; 0.515
+// on that line alone), after v0.1.1932 and v0.1.1976 had each let it go
+// in more places (an import, package.json, a tsc error): the places a
+// package's name is written can't all be listed, so the shape decides. Such a value is a
+// secret only where it is assigned to a secret's name (assignedSecret):
+// PASSWORD=opensesame, "password": "letmeinplease", the wifi password is
+// purplemonkey.
+func wordsOnly(v string) bool { return wordsOnlyRe.MatchString(v) }
+
+// assignedSecret says the value at s[a] is given to a secret's name: the
+// name, then =, :, is or 是 (and the quotes around them), right before it.
+// A list's comma before it is no assignment, whatever is further back:
+// 'jsonwebtoken', 'drizzle-orm' (secretCued takes the token in that).
+func assignedSecret(s string, a int) bool {
+	before := strings.ToLower(strings.TrimRight(s[max(0, a-64):a], " \t\"'`“「"))
+	for _, sep := range []string{"=", ":", "：", " is", " was", "是", "为", "為"} {
+		if !strings.HasSuffix(before, sep) {
+			continue
+		}
+		name := strings.TrimRight(before[:len(before)-len(sep)], " \t\"'`:")
+		i := len(name)
+		for i > 0 && (wordByte(name[i-1]) || name[i-1] == '.' || name[i-1] == '-') {
+			i--
+		}
+		if i == len(name) {
+			// a Chinese name: 密码是, 令牌为
+			return slices.ContainsFunc(secretCues, func(c string) bool { return c[0] >= 0x80 && strings.HasSuffix(name, c) })
+		}
+		return slices.ContainsFunc(secretCues, func(c string) bool { return c[0] < 0x80 && strings.Contains(name[i:], c) }) ||
+			strings.Contains(name[i:], "pass") || strings.Contains(name[i:], "pwd") || strings.Contains(name[i:], "credential")
+	}
+	return false
+}
+
+// pinnedAfter says the value that ends at s[b] is a package's name, as
+// a requirement pins its version after it: django-rest-passwordreset==1.4.0,
+// tokenizers>=0.15, a-lib~=2.1 (pip's comparisons). AstrLink Guard took a
+// package with password in its name for a secret, and the agent read
+// {{SECRET_…}}==1.4.0 in requirements.txt (dniray on Discord, v0.1.1917).
+// No secret has a version pinned after it; a password before @ and an
+// address (s3cret@10.0.0.5) is no pin.
+func pinnedAfter(s string, b int) bool {
+	rest := s[b:]
+	for _, op := range []string{"===", "==", ">=", "<=", "~=", "!="} {
+		if strings.HasPrefix(rest, op) {
+			rest = strings.TrimLeft(rest[len(op):], " ")
+			return rest != "" && rest[0] >= '0' && rest[0] <= '9'
+		}
+	}
+	return false
+}
+
+// moduleRe is what code names a module by: drizzle-orm, @scope/name/sub,
+// node:fs, ./db/schema, golang.org/x/net, serde_json::Value.
+var moduleRe = regexp.MustCompile(`^(?:[a-z]+:)?@?[A-Za-z0-9_.~-]+(?:(?:/|::)[A-Za-z0-9_.~@-]+)*$`)
+
+// moduleAt says s[a:b] is the module a line of code loads: import { eq }
+// from 'drizzle-orm', require(' jsonwebtoken '), import('x'), from
+// django.contrib import auth, import torch, use jsonwebtoken::encode.
+// AstrLink Guard took a package with a word like token in its name, or
+// one alone in its quotes, for a secret (dniray on Discord, v0.1.1917:
+// from ' {{SECRET_…}} '), and the agent read an import it could not
+// resolve. A secret is never the module code loads. Prose is not code:
+// "the token from 'a1b2…'" and "copy it from a1b2…" are judged as before,
+// as a from counts only on an import or export line or after } or *.
+func moduleAt(s string, a, b int) bool {
+	if !moduleRe.MatchString(s[a:b]) {
+		return false
+	}
+	line := strings.LastIndexByte(s[:a], '\n') + 1
+	head := codeHead(s[line:a])
+	end := strings.IndexByte(s[b:], '\n')
+	if end < 0 {
+		end = len(s) - b
+	}
+	tail := strings.TrimLeft(s[b:b+end], " \t")
+	if q := strings.TrimRight(head, " \t"); q != "" && strings.ContainsRune("'\"`", rune(q[len(q)-1])) {
+		// quoted, and ended in the same quote: from ' drizzle-orm '
+		if tail == "" || tail[0] != q[len(q)-1] {
+			return false
+		}
+		q = strings.TrimRight(q[:len(q)-1], " \t")
+		if c := strings.TrimSuffix(q, "("); c != q {
+			q = strings.TrimRight(c, " \t")
+			return wordEnd(q, "require") || wordEnd(q, "import")
+		}
+		if !wordEnd(q, "from") {
+			// import 'reflect-metadata'
+			return q == "import"
+		}
+		q = strings.TrimRight(strings.TrimSuffix(q, "from"), " \t")
+		return strings.HasPrefix(q, "import") || strings.HasPrefix(q, "export") ||
+			strings.HasSuffix(q, "}") || strings.HasSuffix(q, "*") || q == ""
+	}
+	// unquoted, the word starts the line: Python's and Rust's
+	switch strings.TrimRight(head, " \t") {
+	case "from":
+		return strings.HasPrefix(tail, "import ")
+	case "import":
+		return tail == "" || tail[0] == ',' || tail[0] == ';' || strings.HasPrefix(tail, "as ")
+	case "use", "extern crate":
+		return strings.HasPrefix(tail, "::") || tail == "" || tail[0] == ';' || tail[0] == '{'
+	}
+	return false
+}
+
+// codeHead is a line of code up to a value, without what a tool puts
+// before the code: an editor's or cat -n's line number (Claude Code's
+// Read gives "     1→import drizzle from 'drizzle-orm'", cat -n a tab,
+// grep -n a colon) and a diff's + or -. With the number before it, a
+// default import was no import line (dniray, v0.1.1965).
+func codeHead(h string) string {
+	h = strings.TrimLeft(h, " \t")
+	i := 0
+	for i < len(h) && h[i] >= '0' && h[i] <= '9' {
+		i++
+	}
+	if i > 0 {
+		for _, sep := range []string{"→", "\t", ":", "|"} {
+			if strings.HasPrefix(h[i:], sep) {
+				h = strings.TrimLeft(h[i+len(sep):], " \t")
+				break
+			}
+		}
+	}
+	if h != "" && (h[0] == '+' || h[0] == '-') {
+		h = strings.TrimLeft(h[1:], " \t")
+	}
+	return h
+}
+
+// packageAt says s[a:b] is a package's or a module's name by where it is:
+// the module code loads (moduleAt), a dependency a manifest pins
+// (dependencyAt), a folder under node_modules or site-packages, the
+// module an error could not find (missingModuleAt), a package an install
+// names (installedAt) or one pinned at its version with @
+// (drizzle-orm@0.36.4, pinnedAt). The local model took drizzle-orm for a
+// secret in package.json, a tsc error or a sentence; masked there, the
+// name was known (knownSpans) and masked on the import line too, which
+// moduleAt had let go when the model found it there (dniray on Discord,
+// v0.1.1965: from ' {{SECRET_o2tu7vej}} ' still). knownSpans asks this
+// too: no secret is a name code loads or a manifest pins, whatever
+// found it before.
+func packageAt(s string, a, b int) bool {
+	// the whole of a name a piece of it was found in: drizzle-orm of
+	// drizzle-orm/pg-core, name of @scope/name
+	for b+1 < len(s) && s[b] == '/' && moduleByte(s[b+1]) {
+		for b++; b < len(s) && moduleByte(s[b]); b++ {
+		}
+	}
+	if a > 2 && s[a-1] == '/' {
+		i := a - 1
+		for i > 0 && moduleByte(s[i-1]) {
+			i--
+		}
+		if i < a-2 && s[i] == '@' {
+			a = i
+		}
+	}
+	if !moduleRe.MatchString(s[a:b]) {
+		return false
+	}
+	return moduleAt(s, a, b) || dependencyAt(s, a, b) || underPackages(s, a) ||
+		missingModuleAt(s, a, b) || installedAt(s, a, b) || pinnedAt(s, a, b)
+}
+
+func moduleByte(c byte) bool { return wordByte(c) || c == '.' || c == '-' || c == '~' || c == '@' }
+
+// dependencyAt says s[a:b] is a dependency's name as a manifest pins it:
+// a JSON key whose value is a version or a range ("drizzle-orm":
+// "^0.36.4", "x": "workspace:*") or TOML's at a line's start (jsonwebtoken
+// = "9.2.0"). A key whose value is no version ({"Zq8v…": "hunter2"}) is
+// judged as before.
+func dependencyAt(s string, a, b int) bool {
+	rest := ""
+	if a > 0 && s[a-1] == '"' && b < len(s) && s[b] == '"' {
+		rest = strings.TrimLeft(s[b+1:], " \t")
+		if !strings.HasPrefix(rest, ":") {
+			return false
+		}
+		rest = strings.TrimLeft(rest[1:], " \t")
+	} else {
+		line := strings.LastIndexByte(s[:a], '\n') + 1
+		if strings.Trim(s[line:a], " \t") != "" {
+			return false
+		}
+		rest = strings.TrimLeft(s[b:], " \t")
+		if !strings.HasPrefix(rest, "=") || strings.HasPrefix(rest, "==") {
+			return false
+		}
+		rest = strings.TrimLeft(rest[1:], " \t")
+		if strings.HasPrefix(rest, "{") {
+			// jsonwebtoken = { version = "9", features = […] }
+			return strings.HasPrefix(strings.TrimLeft(rest[1:], " \t"), "version")
+		}
+	}
+	if !strings.HasPrefix(rest, `"`) {
+		return false
+	}
+	v, _, ok := strings.Cut(rest[1:], `"`)
+	return ok && depVersion(v)
+}
+
+// depVersion says v is what a manifest pins a dependency at: a version
+// or a range of them (^0.36.4, >=0.30.0 <1, 9, 1.x, *), a workspace's or
+// a catalog's, a tag (latest, next), or where it comes from (npm:,
+// file:, link:, git+…, github:).
+func depVersion(v string) bool {
+	for _, p := range []string{"workspace:", "catalog:", "npm:", "file:", "link:", "portal:", "git+", "git:", "github:", "http://", "https://"} {
+		if strings.HasPrefix(v, p) {
+			return true
+		}
+	}
+	switch v {
+	case "*", "latest", "next", "beta", "canary", "x":
+		return true
+	}
+	for _, part := range strings.Fields(strings.NewReplacer("||", " ", " - ", " ").Replace(v)) {
+		if !depRangeRe.MatchString(part) {
+			return false
+		}
+	}
+	return v != ""
+}
+
+var depRangeRe = regexp.MustCompile(`^(?:[~^]|[<>]=?|=)?[vV]?\d+(?:\.(?:\d+|[xX*]))*(?:[-+][0-9A-Za-z.-]+)?$`)
+
+// underPackages says the name at a is a folder packages are installed in:
+// node_modules/drizzle-orm/…, site-packages/secretstorage/….
+func underPackages(s string, a int) bool {
+	return strings.HasSuffix(s[:a], "node_modules/") || strings.HasSuffix(s[:a], "node_modules\\") ||
+		strings.HasSuffix(s[:a], "site-packages/") || strings.HasSuffix(s[:a], "site-packages\\")
+}
+
+// missingModuleAt says s[a:b] is quoted after the words an error names a
+// module it could not load with: tsc's and Node's Cannot find module
+// 'x', Python's No module named 'x', a bundler's Can't resolve 'x'.
+func missingModuleAt(s string, a, b int) bool {
+	if a == 0 || b >= len(s) || !strings.ContainsRune("'\"`", rune(s[a-1])) || s[b] != s[a-1] {
+		return false
+	}
+	q := strings.ToLower(strings.TrimRight(s[:a-1], " \t"))
+	for _, w := range []string{"find module", "find package", "module named", "resolve", "resolve import", "resolve module"} {
+		if wordEnd(q, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// installRe is a package manager's command that names packages after it.
+var installRe = regexp.MustCompile(`(?:^|[\s;&|(` + "`" + `$])(?:npm|pnpm|yarn|bun|npx|pip|pip3|uv|poetry|pipx|cargo|gem|composer|deno|go)(?: +(?:pip|-[\w-]+))* +(?:add|install|i|remove|rm|uninstall|un|get|require|update|upgrade|up)(?: |$)`)
+
+// installedAt says s[a:b] is one of the packages a command on its line
+// installs or removes: pnpm add drizzle-orm postgres, npm i -D x,
+// pip install a-lib. A value after a flag for a credential (--token,
+// --auth) is that flag's, and judged as before.
+func installedAt(s string, a, b int) bool {
+	if b < len(s) && !isSpace(s[b]) && s[b] != ';' && s[b] != '&' && s[b] != '|' && s[b] != ')' {
+		return false
+	}
+	line := strings.LastIndexByte(s[:a], '\n') + 1
+	ms := installRe.FindAllStringIndex(s[line:a], -1)
+	if len(ms) == 0 {
+		return false
+	}
+	args := strings.Fields(s[line+ms[len(ms)-1][1] : a])
+	if a > 0 && !isSpace(s[a-1]) {
+		return false
+	}
+	for _, w := range args {
+		if strings.ContainsAny(w, ";&|<>`$") {
+			return false
+		}
+	}
+	if n := len(args); n > 0 && strings.HasPrefix(args[n-1], "-") && credFlag(args[n-1]) {
+		return false
+	}
+	return true
+}
+
+// credFlag says a command's flag names a credential (--token, --auth-key).
+func credFlag(f string) bool {
+	f = strings.ToLower(f)
+	for _, w := range []string{"token", "key", "pass", "secret", "auth", "cred"} {
+		if strings.Contains(f, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// pinnedAt says s[a:b] is a package's name pinned at a version with @, as
+// npm and pnpm write one (drizzle-orm@0.36.4, js-tokens@4.0.0:): a name
+// in lower case, as npm's are, and a version of three numbers that is no
+// IPv4 address, so s3cretPass@10.0.0.5 is a password still.
+func pinnedAt(s string, a, b int) bool {
+	if b >= len(s) || s[b] != '@' || strings.ToLower(s[a:b]) != s[a:b] {
+		return false
+	}
+	m := pinVersionRe.FindString(s[b+1:])
+	return m != "" && !(len(s) > b+1+len(m) && s[b+1+len(m)] == '.')
+}
+
+var pinVersionRe = regexp.MustCompile(`^[\^~]?v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]*[0-9A-Za-z])?`)
+
+// wordEnd says s ends in the word w.
+func wordEnd(s, w string) bool {
+	return strings.HasSuffix(s, w) && (len(s) == len(w) || !wordByte(s[len(s)-len(w)-1]))
 }
 
 func wordByte(c byte) bool {
@@ -501,7 +862,10 @@ var assistantNames = map[string]bool{
 }
 
 var (
-	hexRe     = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
+	hexRe = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
+	// an EVM chain's address: 0x and 40 hex digits, in either case or
+	// mixed (EIP-55's checksum)
+	evmRe     = regexp.MustCompile(`^0[xX][0-9a-fA-F]{40}$`)
 	decimalRe = regexp.MustCompile(`^\d+\.\d+$`)
 	// a time of day in words the model took for a passphrase (release
 	// about 17:05Z)

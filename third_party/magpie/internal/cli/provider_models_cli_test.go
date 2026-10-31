@@ -177,3 +177,66 @@ func TestGroupMemberNotExposedSaysHow(t *testing.T) {
 		}
 	}
 }
+
+// magpie provider models <id> best serves the newest of each family the
+// vendor lists (Best in family, Steven on Discord); all gives the whole
+// list back, and a pick or none clears it.
+func TestProviderModelsBest(t *testing.T) {
+	groupsHome(t)
+	catalog.Changed = nil
+	if err := provider.Save(provider.Provider{ID: "og", Name: "OG", Key: "k", Chat: "http://127.0.0.1:1/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(catalog.LivePath("og")), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(catalog.LivePath("og"), []byte(`{"models":[{"id":"gpt-6.1-sol"},{"id":"gpt-6-astra"},{"id":"gpt-6-sol"},{"id":"gpt-6-luna"},{"id":"gpt-5.6-sol"},{"id":"gpt-5.6-terra"},{"id":"gpt-5.6-luna"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	catalog.Reset()
+	t.Cleanup(catalog.Reset)
+	run := func(args ...string) (string, error) {
+		return stdoutOf(t, func() error { return providerCmd(append([]string{"provider", "models", "og"}, args...)) })
+	}
+	exposed := func() []string {
+		var out []string
+		for _, m := range mustFind(t, "og").Exposed() {
+			out = append(out, m.ID)
+		}
+		return out
+	}
+	if _, err := run("best"); err != nil {
+		t.Fatal(err)
+	}
+	if p := mustFind(t, "og"); !p.BestInFamily || p.Models != nil || p.NoModels {
+		t.Fatalf("best saved %v noModels %v best %v", p.Models, p.NoModels, p.BestInFamily)
+	}
+	if want := []string{"gpt-6.1-sol", "gpt-6-astra", "gpt-6-luna", "gpt-5.6-terra"}; !slices.Equal(exposed(), want) {
+		t.Fatalf("best exposes %v, want %v", exposed(), want)
+	}
+	// the older ones are named as left out, and why
+	out, err := stdoutOf(t, func() error { return providerCmd([]string{"provider", "og"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "gpt-5.6-sol") || !strings.Contains(out, "best in family") {
+		t.Errorf("provider og said %q; want gpt-5.6-sol left out by best in family", out)
+	}
+	if _, err := run("all"); err != nil {
+		t.Fatal(err)
+	}
+	if p := mustFind(t, "og"); p.BestInFamily || len(p.Exposed()) != 7 {
+		t.Fatalf("all after best: best %v exposing %d", p.BestInFamily, len(p.Exposed()))
+	}
+	for _, args := range [][]string{{"gpt-6-sol"}, {"none"}} {
+		if _, err := run("best"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := run(args...); err != nil {
+			t.Fatal(err)
+		}
+		if p := mustFind(t, "og"); p.BestInFamily {
+			t.Errorf("%v after best kept it", args)
+		}
+	}
+}

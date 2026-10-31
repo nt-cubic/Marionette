@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -49,8 +50,8 @@ func (n *notifier) start() error {
 			_ = ns.RegisterNotificationCategory(clickCategory)
 		}
 		ns.OnNotificationResponse(func(r notifications.NotificationResult) {
-			if opensUsage(runtime.GOOS, r.Response) {
-				n.h.whenReady(func() { application.InvokeAsync(func() { n.h.ShowMain("usage") }) })
+			if v := clickView(runtime.GOOS, r.Response); v != "" {
+				n.h.whenReady(func() { application.InvokeAsync(func() { n.h.ShowMain(v) }) })
 			}
 		})
 		n.ns = ns
@@ -92,8 +93,12 @@ func (n *notifier) problem() string {
 }
 
 // turnNotice is the id a turn's end is notified under, an alert's
-// "magpie-alert-"
-const turnNotice = "magpie-turn-"
+// "magpie-alert-"; maskNotice a value masked for the first time, followed
+// by its record's key and "-"
+const (
+	turnNotice = "magpie-turn-"
+	maskNotice = "magpie-mask-"
+)
 
 func (n *notifier) send(title, body string) { n.sendAs("magpie-alert-", title, body) }
 
@@ -133,16 +138,24 @@ func notice(goos, id, title, body string) notifications.NotificationOptions {
 	return o
 }
 
-// opensUsage says whether a response to a notification opens the Usage
-// page: a click on an alert does. On a turn's end, where the user goes is
-// their agent, not magpie. On Linux only a click (linuxClick) is one: an
-// alert dismissed there opened the main window, maximised if it was left
-// so, over the desktop with the focus (#2513).
-func opensUsage(goos string, r notifications.NotificationResponse) bool {
-	if strings.HasPrefix(r.ID, turnNotice) {
-		return false
+// clickView is the page a response to a notification opens, "" for none.
+// A click on an alert opens Usage; on a value masked, the 脱敏 page at the
+// request that masked it. On a turn's end, where the user goes is their
+// agent, not magpie. On Linux only a click (linuxClick) is one: an alert
+// dismissed there opened the main window, maximised if it was left so,
+// over the desktop with the focus (#2513).
+func clickView(goos string, r notifications.NotificationResponse) string {
+	if strings.HasPrefix(r.ID, turnNotice) || goos == "linux" && r.ActionIdentifier != linuxClick {
+		return ""
 	}
-	return goos != "linux" || r.ActionIdentifier == linuxClick
+	if rest, ok := strings.CutPrefix(r.ID, maskNotice); ok {
+		key, _, _ := strings.Cut(rest, "-")
+		if _, err := strconv.ParseInt(key, 10, 64); err != nil || key == "0" {
+			return "masking"
+		}
+		return "masking&key=" + key
+	}
+	return "usage"
 }
 
 // watchAlerts tells the user, with a notification, of a window used past
@@ -163,9 +176,15 @@ func (h *host) watchAlerts() {
 	go func() {
 		<-h.ready
 		// set before this run: asked now, so Settings can say if it was refused
-		if s := settings.Load(); s.UsageAlert > 0 || s.BalanceAlert > 0 || s.ResetReminder > 0 || s.TurnDoneAlert > 0 {
+		if s := settings.Load(); s.UsageAlert > 0 || s.BalanceAlert > 0 || s.ResetReminder > 0 || s.TurnDoneAlert > 0 || s.MaskAlert {
 			go n.allowed()
 		}
+		// a value masked for the first time (Must2333 on X)
+		masks := newMaskAlerts(func() bool { return settings.Load().MaskAlert }, func(m maskNote) {
+			title, body := maskAlertText(trayLang(settings.Load().Lang, systemLang), m, agentName)
+			n.sendAs(fmt.Sprintf("%s%d-", maskNotice, m.Key), title, body)
+		})
+		gateway.OnMasked = masks.add
 		// an agent's turn done, past the length set (itieniu on X)
 		gateway.TurnDone = func(t gateway.TurnEnd) {
 			title, body := turnDoneText(trayLang(settings.Load().Lang, systemLang), agentName(t.Agent), t)

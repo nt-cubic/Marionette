@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -59,10 +60,11 @@ func TestJoinSplitsAtChunkSize(t *testing.T) {
 	long := strings.Repeat("x", chunkSize)
 	texts := []string{"a", "b", long, "c"}
 	chunks, parts := join(pf.missing(texts, []int{0, 1, 2, 3}, nil))
-	if len(chunks) != 3 || chunks[0] != "a"+sep+"b" || chunks[1] != long || chunks[2] != "c" {
+	// the last text first: TestNewestTextReadFirst
+	if len(chunks) != 3 || chunks[0] != "c" || chunks[1] != long || chunks[2] != "b"+sep+"a" {
 		t.Fatalf("chunks = %d: %.20q", len(chunks), chunks)
 	}
-	if !reflect.DeepEqual(parts, [][]part{{{"a", 0}, {"b", 1 + len(sep)}}, {{long, 0}}, {{"c", 0}}}) {
+	if !reflect.DeepEqual(parts, [][]part{{{"c", 0}}, {{long, 0}}, {{"b", 0}, {"a", 1 + len(sep)}}}) {
 		t.Fatalf("parts = %v", parts)
 	}
 }
@@ -337,6 +339,38 @@ func TestServeThatCantLoadSaysWhy(t *testing.T) {
 	_, err := Find([]string{"hi Alice"})
 	if err == nil || !strings.Contains(err.Error(), "can't load noload") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// A model in a folder whose name isn't ASCII loads: on Windows pf-serve's
+// argv is in the ANSI code page and its fopen reads UTF-8, so a Chinese
+// user name in C:\Users failed every load, on the GPU and the CPU alike,
+// with the path in mojibake (AIMetaPhD on X). pf-serve gets the model's
+// name, run in its folder; the stand-in refuses a byte outside ASCII as
+// pf-serve does.
+func TestModelInFolderNotASCIILoads(t *testing.T) {
+	d := filepath.Join(t.TempDir(), "用户 Ünïcode", ".cache", "privacy-filter")
+	log := fakeInstallAt(t, "ok", true, d)
+	got, err := Find([]string{"hi Alice"})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(got[0]) != 1 {
+		t.Fatalf("found %v", got)
+	}
+	if m := fakeLines(t, log, "model "); len(m) == 0 || m[0] != "model "+modelName() {
+		t.Fatalf("pf-serve was given %q, want the model's name", m)
+	}
+}
+
+// pf-serve's error names the model by the name it was given; the user
+// reads the whole path, in UTF-8.
+func TestModelErrorNamesWholePath(t *testing.T) {
+	d := filepath.Join(t.TempDir(), "用户")
+	fakeInstallAt(t, "badmodel", false, d)
+	_, err := Find([]string{"hi Alice"})
+	if err == nil || !strings.Contains(err.Error(), "failed to read GGUF: "+modelPath()) {
+		t.Fatalf("err = %v, want %s in it", err, modelPath())
 	}
 }
 

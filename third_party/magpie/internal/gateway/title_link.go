@@ -112,7 +112,7 @@ func titleUserText(content gjson.Result, title bool) string {
 func titlePromptDigest(body []byte, title bool) string {
 	var digest string
 	i := 0
-	input := gjson.GetBytes(body, "input")
+	input := getIn(body, "input")
 	if !input.IsArray() {
 		return ""
 	}

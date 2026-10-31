@@ -19,9 +19,13 @@
 .rt-flows { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; will-change: transform; }
 .rt-flows path { fill: none; stroke: var(--agent, var(--muted)); stroke-width: 1.5; stroke-dasharray: 3 5; animation: rtflow .7s linear infinite; }
 @keyframes rtflow { to { stroke-dashoffset: -8; } }
-/* the magpies, over the nodes: one carries each request out, another
-   brings its answer back — the dot at the tip of its beak */
-.rt-sky { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+/* the magpies: one carries each request out, another brings its answer
+   back — the dot at the tip of its beak. They fly along the wires and
+   under the cards, through magpie's box rather than over its words: over
+   them, with two agents sending at once one sat on the hub's address and
+   another on a member's row (penershu on X). Each flight starts and ends
+   a dot clear of the card at either end of its wire (pose). */
+.rt-sky { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 /* each agent's requests and answers fly in its colour: a request filled
    with it, an answer ringed with it, a failure ringed red */
 .rt-sky .pkt { fill: var(--agent, var(--fg)); filter: drop-shadow(0 0 3px var(--agent, var(--muted))); }
@@ -56,7 +60,7 @@
 .rt-hub.tick, .rt-src.tick { animation: rttick .4s ease-out; }
 @keyframes rttick { 40% { transform: scale(1.04); } }
 .rt-accts { position: relative; z-index: 1; list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; min-width: 0; }
-.rt-accts li { position: relative; display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; column-gap: 10px; row-gap: 6px; padding: 9px 12px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; font-size: 13px; transition: opacity .3s, border-color .3s, transform .5s cubic-bezier(.2, .8, .2, 1); }
+.rt-accts li { position: relative; display: grid; grid-template-columns: 10px minmax(0, 1fr) fit-content(60%); align-items: center; column-gap: 10px; row-gap: 6px; padding: 9px 12px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; font-size: 13px; transition: opacity .3s, border-color .3s, transform .5s cubic-bezier(.2, .8, .2, 1); }
 .rt-accts li { margin-left: calc(var(--depth, 0) * 18px); }
 /* a key off screen is not laid out or painted (#3164): with hundreds of
    keys open, WebKit painted every row again on each frame a magpie flew.
@@ -76,7 +80,9 @@
    it routes to together on a line of its own */
 .rt-accts li.rt-sub { flex-wrap: wrap; row-gap: 4px; cursor: pointer; user-select: none; }
 .rt-accts li.rt-sub .n { white-space: nowrap; }
-.rt-accts li.rt-sub .n:empty, .rt-accts li.rt-sub em:empty { display: none; }
+.rt-accts li.rt-sub .n:empty, .rt-accts li.rt-sub em:empty, .rt-accts li.rt-sub i:empty { display: none; }
+/* a route's heading, when more than one route is on the stage: its provider's logo */
+.rt-accts li.rt-sub > .ic { flex: none; }
 .rt-accts li.rt-sub .chev { display: inline-flex; color: var(--muted); transition: transform .2s; }
 .rt-accts li.rt-sub .chev svg { color: inherit; }
 .rt-accts li.rt-sub:hover .chev { color: var(--fg); }
@@ -94,6 +100,10 @@
 .rt-accts b code.mdl, :is(.rt-req, .rt-probe) code, .rt-act code.mdl { font: var(--code-style, normal) 500 11px/1.5 var(--code-font, var(--code)); font-stretch: var(--code-stretch, 100%); color: var(--fg-2); background: var(--card-2); border-radius: 5px; padding: 0 5px; }
 .rt-accts b code.mdl { margin-left: 7px; font-weight: 450; }
 .rt-accts em { font-style: normal; font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* what a row says has at most its column: a long one (an intent smart
+   routing picked it for) is cut short, its name kept, never run off the
+   row's edge (penershu on X) */
+.rt-accts li > em { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .rt-accts .bar { grid-column: 2 / 4; height: 3px; border-radius: 2px; background: var(--card-2); overflow: hidden; }
 .rt-accts .bar i { display: block; height: 100%; width: 0; border-radius: 2px; background: var(--muted); transition: width .4s; }
 .rt-accts li.nobar .bar { display: none; }
@@ -650,6 +660,9 @@ button.rt-session { cursor: pointer; }
 /* Add a rule, and beside it a rule by what the message asks for */
 .rt-gadds { display: flex; flex-wrap: wrap; gap: 6px; }
 .rt-gadds > [hidden] { display: none; }
+/* Add a model, and beside it Sort by weight while it would move something */
+.rt-madds { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.rt-madds > [hidden] { display: none; }
 /* a group's rules, each one line read as a sentence: the conditions it
    has, → and the model it sends that turn to first; its acts under ⋯ */
 .rt-rules .fbl:not(:empty) + .rt-gadds { margin-top: 2px; }

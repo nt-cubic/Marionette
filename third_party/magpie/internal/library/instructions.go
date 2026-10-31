@@ -675,7 +675,8 @@ func SyncLinked() (*Result, error) {
 	return changeInstructions(func(*Library) error { return nil })
 }
 
-// KeepLinked runs SyncLinked every interval, for as long as the app runs.
+// KeepLinked runs SyncLinked, and Woken, every interval, for as long as
+// the app runs.
 func KeepLinked(interval time.Duration) {
 	for {
 		if res, err := SyncLinked(); err != nil {
@@ -685,6 +686,8 @@ func KeepLinked(interval time.Duration) {
 				log.Println("library: linked instructions:", p.Agent, p.What, p.Error)
 			}
 		}
+		// what was ticked for a stopped WSL distro's agents, once it runs
+		keepWoken()
 		time.Sleep(interval)
 	}
 }

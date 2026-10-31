@@ -16,6 +16,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/yetone/magpie/internal/gateway"
 )
 
 var png = []byte("\x89PNG\r\n\x1a\n fake")
@@ -30,6 +32,10 @@ type gw struct {
 
 func (g *gw) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	b, _ := io.ReadAll(r.Body)
+	if r.URL.Path == gateway.ImageMCPPath {
+		modelsMCP(w, b)
+		return
+	}
 	g.mu.Lock()
 	g.path, g.body, g.ua = append(g.path, r.URL.Path), append(g.body, string(b)), append(g.ua, r.Header.Get("User-Agent"))
 	g.mu.Unlock()
@@ -46,6 +52,33 @@ func (g *gw) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		data = append(data, map[string]string{"b64_json": base64.StdEncoding.EncodeToString(png), "mime_type": "image/png"})
 	}
 	json.NewEncoder(w).Encode(map[string]any{"model": "art/gpt-image-1", "data": data})
+}
+
+// modelsMCP is the gateway's image MCP server as the stdio one asks it:
+// the model argument tools/list gives, and which model one asked is.
+func modelsMCP(w http.ResponseWriter, b []byte) {
+	var m struct {
+		ID     any    `json:"id"`
+		Method string `json:"method"`
+		Params struct {
+			Model string `json:"model"`
+		} `json:"params"`
+	}
+	json.Unmarshal(b, &m)
+	out := map[string]any{"jsonrpc": "2.0", "id": m.ID}
+	switch m.Method {
+	case "tools/list":
+		out["result"] = map[string]any{"tools": []any{map[string]any{"name": "generate_image", "inputSchema": map[string]any{"properties": map[string]any{
+			"model": map[string]any{"type": "string", "enum": []string{"art/gpt-image-1", "art/painter"}, "description": "The image model to use."}}}}}}
+	case gateway.MediaModelMethod:
+		switch m.Params.Model {
+		case "art/painter", "painter":
+			out["result"] = map[string]any{"model": "art/painter"}
+		default:
+			out["error"] = map[string]any{"code": -32602, "message": "generate_image: \"" + m.Params.Model + "\" isn't an image model that can be used here. Pick one of: art/gpt-image-1, art/painter"}
+		}
+	}
+	json.NewEncoder(w).Encode(out)
 }
 
 // client talks to a server over pipes, answering roots/list with root, and
@@ -125,7 +158,7 @@ func TestGenerateSavesInTheProject(t *testing.T) {
 	c := start(t, g, project)
 	c.call("initialize", map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{"roots": map[string]any{}}, "clientInfo": map[string]any{"name": "claude-code", "version": "2.1.0"}})
 	tools := c.call("tools/list", map[string]any{})
-	if b, _ := json.Marshal(tools); !strings.Contains(string(b), `"generate_image"`) {
+	if b, _ := json.Marshal(tools); !strings.Contains(string(b), `"generate_image"`) || !strings.Contains(string(b), `"enum":["art/gpt-image-1","art/painter"]`) {
 		t.Fatalf("tools %s", b)
 	}
 	r := c.call("tools/call", map[string]any{"name": "generate_image", "arguments": map[string]any{"prompt": "A Magpie, on a branch!", "n": 2}})
@@ -166,7 +199,7 @@ func TestGatewayRefusalIsAToolError(t *testing.T) {
 	}))
 	defer up.Close()
 	s := &server{gateway: up.URL, client: http.DefaultClient, agent: "x", pending: map[string]chan rpc{}}
-	_, err := s.generate(json.RawMessage(`{"prompt":"x"}`))
+	_, err := s.generate(json.RawMessage(`{"prompt":"x"}`), nil)
 	if err == nil || !strings.Contains(err.Error(), "Image generation") {
 		t.Fatalf("err = %v", err)
 	}
@@ -207,6 +240,10 @@ type vgw struct {
 
 func (g *vgw) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	b, _ := io.ReadAll(r.Body)
+	if r.URL.Path == gateway.ImageMCPPath {
+		http.NotFound(w, r)
+		return
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.path, g.body = append(g.path, r.Method+" "+r.URL.Path), append(g.body, string(b))
@@ -289,7 +326,7 @@ func TestVideoToolSaysEveryVideoModel(t *testing.T) {
 	if desc == "" {
 		t.Fatalf("no generate_video in %v", res)
 	}
-	for _, want := range []string{"Grok", "Seedance", "another Magpie", "model list marks video models"} {
+	for _, want := range []string{"Grok", "Seedance", "MiniMax H3", "another Magpie", "model list marks video models"} {
 		if !strings.Contains(desc, want) {
 			t.Errorf("description leaves out %q: %s", want, desc)
 		}
@@ -489,5 +526,26 @@ func TestSlowImageAnswersBeforeTheAgentGivesUp(t *testing.T) {
 	}
 	if r = c.call("tools/call", map[string]any{"name": "generation_result", "arguments": map[string]any{"id": "image-0-0"}}); r["isError"] != true {
 		t.Fatalf("an unknown id: %v", r)
+	}
+}
+
+// The model asked is the one the gateway says it is, named to the images
+// API; one it doesn't know is a tool error and nothing is drawn.
+func TestGenerateTakesTheModel(t *testing.T) {
+	g := &gw{}
+	project := t.TempDir()
+	c := start(t, g, project)
+	c.call("initialize", map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{"roots": map[string]any{}}, "clientInfo": map[string]any{"name": "claude-code", "version": "2.1.0"}})
+	r := c.call("tools/call", map[string]any{"name": "generate_image", "arguments": map[string]any{"prompt": "a magpie", "model": "painter"}})
+	if r["isError"] == true || len(g.body) != 1 || !strings.Contains(g.body[0], `"model":"art/painter"`) {
+		t.Fatalf("%v: asked %v", r, g.body)
+	}
+	r = c.call("tools/call", map[string]any{"name": "generate_image", "arguments": map[string]any{"prompt": "a magpie", "model": "art/nope"}})
+	if r["isError"] != true || !strings.Contains(text(r), "art/gpt-image-1, art/painter") || len(g.body) != 1 {
+		t.Fatalf("%v: asked %v", r, g.body)
+	}
+	r = c.call("tools/call", map[string]any{"name": "generate_image", "arguments": map[string]any{"prompt": "a magpie"}})
+	if r["isError"] == true || len(g.body) != 2 || strings.Contains(g.body[1], `"model"`) {
+		t.Fatalf("%v: asked %v", r, g.body)
 	}
 }

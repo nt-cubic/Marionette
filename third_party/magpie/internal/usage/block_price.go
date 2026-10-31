@@ -3,6 +3,7 @@ package usage
 import (
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/provider"
@@ -18,6 +19,9 @@ type pricedAs struct {
 	provider string
 	flags    uint16
 	price    *catalog.Price
+	// windows are the provider's rate windows (#2463): price is asked
+	// without a time, so each row's own time is read against them
+	windows []provider.RateWindow
 }
 
 // blockPricer prices the gateway's raw blocks as a query reads them. What a
@@ -30,7 +34,13 @@ type blockPricer struct {
 	price   func(Record) *catalog.Price
 	by      map[[4]string]pricedAs
 	agents  map[string][2]string
-	pooled  []*[]packedRow
+	// meta names what prices and names a call (requestState.meta): the
+	// blocks priced of it are shared with the other queries reading now
+	// (sharedPriced). A pricer of none keeps its blocks to itself.
+	meta   [32]byte
+	shared bool
+	held   []pricedKey
+	pooled []*[]packedRow
 }
 
 // pricedRows are the rows of the blocks a query priced, handed back when
@@ -38,13 +48,109 @@ type blockPricer struct {
 // and allocating and clearing their rows again each time was a third of it.
 var pricedRows = sync.Pool{New: func() any { s := make([]packedRow, 0, logBlockRows); return &s }}
 
+type pricedKey struct {
+	meta  [32]byte
+	block *rowChunk
+}
+
+// pricedBlock is a gateway block priced, held by refs queries.
+type pricedBlock struct {
+	c    *rowChunk
+	rows *[]packedRow // pooled, nil when c's rows are not
+	refs int
+	idle time.Time // when the last query holding it was done
+}
+
+// pricedLinger is how long a priced block is kept after the last query
+// holding it is done. It outlasts the GUI's polls (Usage every 10 s,
+// Sessions every 15 s): each poll priced the whole history again, its
+// rows' pool emptied by the collections between, ~920 MB of 5.7 GB
+// allocated in 80 s of polls (#2278). The window's rest lets them go at
+// once (ReleaseScratch).
+const pricedLinger = 30 * time.Second
+
+// sharedPriced are the gateway's blocks the queries reading now priced, by
+// block. A query over the whole history holds every block decoded until it
+// is done, and the GUI's requests arriving together each held their own:
+// at a cold start with the app open, three such queries held 105 MB of
+// rows between them and the app grew to 737 MB where it was 388 MB unasked
+// (#2278). A block is frozen once written (freeze), and its priced copy is
+// only read after: a query that changes a row's thread clones the chunk
+// first (cloneCodexChunks).
+var sharedPriced = struct {
+	sync.Mutex
+	blocks map[pricedKey]*pricedBlock
+	sweep  *time.Timer // the idle blocks' going, or nil
+}{blocks: map[pricedKey]*pricedBlock{}}
+
+// sweepPriced lets the blocks no query has held for pricedLinger go, all
+// idle ones when every is true, and is armed again while idle ones are
+// left. Called under sharedPriced's lock.
+func sweepPriced(now time.Time, every bool) {
+	left := time.Duration(0)
+	for k, e := range sharedPriced.blocks {
+		if e.refs != 0 {
+			continue
+		}
+		if wait := pricedLinger - now.Sub(e.idle); !every && wait > 0 {
+			left = max(left, wait)
+			continue
+		}
+		delete(sharedPriced.blocks, k)
+		if e.rows != nil {
+			pricedRows.Put(e.rows)
+		}
+	}
+	if sharedPriced.sweep != nil {
+		sharedPriced.sweep.Stop()
+		sharedPriced.sweep = nil
+	}
+	if left > 0 {
+		sharedPriced.sweep = time.AfterFunc(left, func() {
+			sharedPriced.Lock()
+			defer sharedPriced.Unlock()
+			sweepPriced(time.Now(), false)
+		})
+	}
+}
+
+// releasePriced lets every block no query holds now go.
+func releasePriced() {
+	sharedPriced.Lock()
+	defer sharedPriced.Unlock()
+	sweepPriced(time.Now(), true)
+}
+
+// share has b's blocks shared with the other queries of meta, a hash of
+// requestState's root and meta.
+func (b *blockPricer) share(meta [32]byte) {
+	b.meta, b.shared = meta, true
+}
+
 // release hands the rows of the blocks it priced back, once the query no
-// longer reads them (a page's rows are copies).
+// longer reads them (a page's rows are copies); a shared block's,
+// pricedLinger after the last query holding it is done.
 func (b *blockPricer) release() {
 	for _, rows := range b.pooled {
 		pricedRows.Put(rows)
 	}
 	b.pooled = nil
+	if len(b.held) == 0 {
+		return
+	}
+	sharedPriced.Lock()
+	now := time.Now()
+	for _, k := range b.held {
+		e := sharedPriced.blocks[k]
+		if e.refs--; e.refs == 0 {
+			e.idle = now
+		}
+	}
+	if sharedPriced.sweep == nil {
+		sweepPriced(now, false)
+	}
+	sharedPriced.Unlock()
+	b.held = nil
 }
 
 func newBlockPricer(renames provider.Renames, wires map[string]string, price func(Record) *catalog.Price) *blockPricer {
@@ -68,6 +174,7 @@ func (b *blockPricer) as(prov, model, served, effort string) pricedAs {
 		a.flags |= 32
 	}
 	a.price = b.price(Record{Provider: prov, Model: model, Served: served, Effort: effort})
+	a.windows = provider.RateWindowsOf(prov)
 	b.by[k] = a
 	return a
 }
@@ -83,23 +190,68 @@ func (b *blockPricer) agent(ua string) (string, string) {
 	return a[0], a[1]
 }
 
-// block is the priced copy of a raw block, made for one query and not kept.
+// block is the priced copy of a raw block, held until release: one
+// another query of the same meta priced and holds still, or one made now.
 func (b *blockPricer) block(packed *rowChunk) *rowChunk {
+	if !b.shared {
+		c, rows := b.priceBlock(packed)
+		if rows != nil {
+			b.pooled = append(b.pooled, rows)
+		}
+		return c
+	}
+	k := pricedKey{b.meta, packed}
+	sharedPriced.Lock()
+	if e := sharedPriced.blocks[k]; e != nil {
+		e.refs++
+		sharedPriced.Unlock()
+		b.held = append(b.held, k)
+		return e.c
+	}
+	sharedPriced.Unlock()
+	c, rows := b.priceBlock(packed)
+	if c == nil {
+		return nil
+	}
+	sharedPriced.Lock()
+	e := sharedPriced.blocks[k]
+	if e == nil { // priced by another query meanwhile: that one's is kept
+		e = &pricedBlock{c: c, rows: rows}
+		sharedPriced.blocks[k] = e
+	} else if rows != nil {
+		pricedRows.Put(rows)
+	}
+	e.refs++
+	sharedPriced.Unlock()
+	b.held = append(b.held, k)
+	return e.c
+}
+
+// blockPricing, in tests, is told of each block priced.
+var blockPricing func()
+
+// priceBlock is the priced copy of a raw block, and the pooled rows it is in.
+func (b *blockPricer) priceBlock(packed *rowChunk) (*rowChunk, *[]packedRow) {
+	if blockPricing != nil {
+		blockPricing()
+	}
 	buf := pricedRows.Get().(*[]packedRow)
 	raw := packed.unpackInto(*buf)
 	// unpackInto decodes into the buffer whenever it is large enough
+	var pooled *[]packedRow
 	if raw != nil && raw != packed && cap(*buf) >= len(raw.Rows) {
-		b.pooled = append(b.pooled, buf)
+		pooled = buf
 	} else {
 		pricedRows.Put(buf)
 	}
 	if raw == nil {
-		return nil
+		return nil, nil
 	}
 	c := *raw
 	if raw == packed {
 		c.Rows = slices.Clone(raw.Rows) // a block too small to compress is shared
 	}
+	c.raw = packed
 	c.Strings = slices.Clip(c.Strings)
 	added := map[string]uint32{}
 	intern := func(s string, was uint32) uint32 {
@@ -118,9 +270,10 @@ func (b *blockPricer) block(packed *rowChunk) *rowChunk {
 	// make: the agent, the client and the provider are all a shape's
 	c.Shapes, c.shapeIDs = slices.Clip(c.Shapes), nil
 	type ids struct {
-		id    uint32 // the provider's string, or the row's shape
-		flags uint16
-		price *catalog.Price
+		id      uint32 // the provider's string, or the row's shape
+		flags   uint16
+		price   *catalog.Price
+		windows []provider.RateWindow
 	}
 	names := map[[6]uint32]ids{}
 	agents := map[uint32][2]uint32{}
@@ -158,7 +311,7 @@ func (b *blockPricer) block(packed *rowChunk) *rowChunk {
 			named, ok := names[k]
 			if !ok {
 				a := b.as(c.Strings[k[5]], c.Strings[k[1]], c.Strings[k[2]], c.Strings[k[3]])
-				named = ids{k[4], a.flags, a.price}
+				named = ids{k[4], a.flags, a.price, a.windows}
 				names[k] = named
 			}
 			agent, ok := agents[t[0]]
@@ -168,7 +321,7 @@ func (b *blockPricer) block(packed *rowChunk) *rowChunk {
 				agents[t[0]] = agent
 			}
 			t[0], t[1], t[rowClient] = agent[0], named.id, agent[1]
-			got = ids{c.shape(t), named.flags, named.price}
+			got = ids{c.shape(t), named.flags, named.price, named.windows}
 			shapes[sk] = got
 		}
 		p.Shape = got.id
@@ -183,8 +336,8 @@ func (b *blockPricer) block(packed *rowChunk) *rowChunk {
 		p.Cost = 0
 		if got.price != nil && p.Tokens[0]+p.Tokens[1] > 0 {
 			p.Flags |= 1
-			p.Cost = got.price.CostSplit(int(p.Tokens[0]), int(p.Tokens[1]), int(p.Tokens[2]), int(p.Tokens[3]), int(p.Tokens[5]))
+			p.Cost = atWindow(got.price, got.windows, p.Time).In(p.Time).CostSplit(int(p.Tokens[0]), int(p.Tokens[1]), int(p.Tokens[2]), int(p.Tokens[3]), int(p.Tokens[5]))
 		}
 	}
-	return &c
+	return &c, pooled
 }

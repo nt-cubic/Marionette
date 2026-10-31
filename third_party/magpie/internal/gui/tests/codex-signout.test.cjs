@@ -70,11 +70,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       return { page, errors, posts };
     };
 
+    // an account's Remove and Sign out wait under its ⋯
+    const more = async (row) => { await row.hover(); if (await row.locator(".acc-more").count()) await row.locator(".acc-more").click(); };
+
     test(`${engine} ${lang}: Codex's only account signs out, asked first`, async (t) => {
       const { page, errors, posts } = await open(t, one);
       const top = await page.evaluate(() => document.scrollingElement.scrollTop);
       const row = page.locator(".editor .acc", { hasText: "me@example.com" });
       const out = row.getByRole("button", { name: w.out, exact: true });
+      await more(row);
       assert.equal(await out.count(), 1, "the only account has Sign out");
       assert.ok(await out.getAttribute("title"));
 
@@ -118,6 +122,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const { page, errors, posts } = await open(t, two);
       for (const user of ["me@example.com", "work@example.com"]) {
         const row = page.locator(".editor .acc", { hasText: user });
+        await more(row);
         assert.equal(await row.getByRole("button", { name: w.out, exact: true }).count(), 0, user);
       }
       const remove = page.locator(".editor .acc", { hasText: "me@example.com" }).getByRole("button", { name: w.remove, exact: true });
@@ -142,6 +147,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
     test(`${engine} ${lang}: a refusal says what to do, in the reader's language`, async (t) => {
       const { page, errors } = await open(t, one, true);
+      await more(page.locator(".editor .acc", { hasText: "me@example.com" }));
       await page.locator(".editor .acc", { hasText: "me@example.com" }).getByRole("button", { name: w.out, exact: true }).click();
       const ask = page.locator("#modal .forget-ask");
       await ask.getByRole("button", { name: w.out, exact: true }).click();

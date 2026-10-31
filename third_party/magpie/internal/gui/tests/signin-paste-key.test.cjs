@@ -90,7 +90,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const errors = [], asked = [];
       page.on("pageerror", (e) => errors.push(e.message));
       // web: a page opens in the browser, not through magpie
-      await page.addInitScript(() => { window.opened = []; window.open = (u) => { window.opened.push(u); return null; }; });
+      await page.addInitScript(() => { window.opened = []; window.open = (u) => { window.opened.push(u); return {}; }; });
       await page.route("**/*", server(lang, asked));
       await page.goto("http://magpie.test/?view=providers");
       await page.locator("#addProvider").click();

@@ -68,8 +68,8 @@ func TestCodeBuddySessionsListedUnderTheirName(t *testing.T) {
 			continue
 		}
 		n++
-		if s.Name != "CodeBuddy Code" || s.Icon != "codebuddy-color" {
-			t.Errorf("listed as %q (%s), want CodeBuddy Code (codebuddy-color)", s.Name, s.Icon)
+		if s.Name != "CodeBuddy" || s.Icon != "codebuddy-color" {
+			t.Errorf("listed as %q (%s), want CodeBuddy (codebuddy-color)", s.Name, s.Icon)
 		}
 		if !strings.Contains(s.Resume, "codebuddy --resume ") {
 			t.Errorf("resume %q", s.Resume)
@@ -89,8 +89,8 @@ func TestCodeBuddySessionsListedUnderTheirName(t *testing.T) {
 	for _, a := range manage.Agents {
 		if a.Agent == "codebuddy" {
 			found = true
-			if a.Name != "CodeBuddy Code" {
-				t.Errorf("the Sessions page's agent is %q, want CodeBuddy Code", a.Name)
+			if a.Name != "CodeBuddy" {
+				t.Errorf("the Sessions page's agent is %q, want CodeBuddy", a.Name)
 			}
 			if !a.Deletable {
 				t.Error("the Sessions page offers no trash for CodeBuddy Code's sessions")
@@ -104,7 +104,7 @@ func TestCodeBuddySessionsListedUnderTheirName(t *testing.T) {
 		Agents map[string]string `json:"agents"`
 	}
 	get("/api/sessions/stats?days=0", &stats)
-	if stats.Agents["codebuddy"] != "CodeBuddy Code" {
+	if stats.Agents["codebuddy"] != "CodeBuddy" {
 		t.Errorf("Usage > Sessions' agent strip names it %q: %v", stats.Agents["codebuddy"], stats.Agents)
 	}
 }

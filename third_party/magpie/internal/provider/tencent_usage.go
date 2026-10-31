@@ -128,6 +128,12 @@ func tencentPlanQuotas(ctx context.Context) []SubscriptionQuota {
 		go func() {
 			defer wg.Done()
 			got[i] = tencentPlanCards(ctx, j.p, j.region, time.Now)
+			if qs := got[i]; len(qs) == 1 && qs[0].Error == "" {
+				// the account's one plan is what routing goes by, read
+				// just now (KeyAllowance); of several, which a key is of
+				// isn't told
+				noteKeyAllowance(j.p, qs[0].Windows, time.Now())
+			}
 		}()
 	}
 	wg.Wait()

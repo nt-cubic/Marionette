@@ -200,6 +200,9 @@ func cacheAsk(t *testing.T, h *resumeHarness, fields, messages, mode string) *ht
 	t.Helper()
 	body := `{"model":"claude-sonnet-5","max_tokens":100,` + fields + `"messages":` + messages + `}`
 	r := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+	if h.from != "" {
+		r.RemoteAddr = h.from
+	}
 	if mode != "" {
 		r.Header.Set("X-Magpie-Cache-Marks", mode)
 	}
@@ -278,6 +281,7 @@ func TestClaudeClientCacheRunningTailAndDrops(t *testing.T) {
 func TestClaudeClientCacheAbsentUnchanged(t *testing.T) {
 	h := newScriptHarness(t, "ok", `echo "cache-disabled ${DISABLE_PROMPT_CACHING-unset}" >> $log`)
 	t.Setenv("DISABLE_PROMPT_CACHING", "0")
+	h.from = "127.0.0.1:51000" // a caller elsewhere is told where its tools run
 	fields := `"system":[{"type":"text","text":"shared","cache_control":{"type":"ephemeral","ttl":"5m"}}],"cache_control":{"type":"ephemeral","ttl":"1h"},`
 	w := cacheAsk(t, h, fields, `[{"role":"user","content":"hello"}]`, "")
 	if w.Header().Get("X-Magpie-Cache-Marks-Dropped") != "" {

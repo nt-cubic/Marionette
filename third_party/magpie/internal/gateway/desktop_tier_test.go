@@ -12,9 +12,11 @@ import (
 
 // Claude Desktop's Code tab runs a subagent on a tier only when the
 // gateway's /v1/models tags a model with it; untagged, every subagent ran on
-// the chat's model (WilianWeng). A Claude model is tagged with its own tier,
-// a model the user picks for a tier with that one as its default, and Claude
-// Code's own id of a tier no row carries goes to the tier's pick.
+// the chat's model (WilianWeng). A model the user picks for a tier is tagged
+// with it as its default, and Claude Code's own id of a tier no row carries
+// goes to the tier's pick. A Claude model is not tagged with its own tier
+// unpicked (cybercaius: another provider's haiku took Claude Code's small
+// calls).
 func TestClaudeDesktopTiers(t *testing.T) {
 	f := &fake{reply: sse(
 		`event: message_start`+"\n"+`data: {"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"m1","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}`,
@@ -63,9 +65,9 @@ func TestClaudeDesktopTiers(t *testing.T) {
 		return modelOf(f.got)
 	}
 
-	// nothing picked: the Claude model stands in for its own tier
+	// nothing picked: nothing is tagged
 	got := rows()
-	if r := got["fake/claude-sonnet-5"]; r.Tier != "sonnet" || r.Default {
+	if r := got["fake/claude-sonnet-5"]; r.Tier != "" || r.Default {
 		t.Fatalf("claude-sonnet-5 unpicked: %+v", r)
 	}
 	if r := got["fake/m1"]; r.Tier != "" {

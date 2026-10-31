@@ -409,8 +409,8 @@ func TestCodexFailoverEndsWithMagpie(t *testing.T) {
 		asked = append(asked, h)
 		return provider.CodexDaemonCheck{}
 	}
-	if err := EndCodexFailover(); err != nil {
-		t.Fatal(err)
+	if ended, err := EndCodexFailover(); err != nil || !ended {
+		t.Fatalf("failover not said ended (%v): the open threads get no relay", err)
 	}
 	if cfg := read(); strings.Contains(cfg, "openai_base_url") || !strings.Contains(cfg, `model = "gpt-5.5"`) {
 		t.Fatalf("magpie quit, Codex still pointed at it:\n%s", cfg)
@@ -436,8 +436,8 @@ func TestCodexFailoverEndsWithMagpie(t *testing.T) {
 	if err := edit.SetTOMLTop(cx.Path, edit.KV{Path: "openai_base_url", Value: base}); err != nil {
 		t.Fatal(err)
 	}
-	if err := EndCodexFailover(); err != nil {
-		t.Fatal(err)
+	if ended, err := EndCodexFailover(); err != nil || ended {
+		t.Fatalf("the user's own base URL said ended (%v): a relay would take the port for nothing", err)
 	}
 	if cfg := read(); !strings.Contains(cfg, `openai_base_url = "`+base+`"`) {
 		t.Fatalf("the user's base URL was taken:\n%s", cfg)
@@ -495,10 +495,52 @@ func TestCodexMirrorFailoverHeldAndEndsWithMagpie(t *testing.T) {
 	if cfg := sync(); !strings.Contains(cfg, `base_url = "`+gateway.URL()) {
 		t.Fatalf("not written once the proxy passes it on:\n%s", cfg)
 	}
-	if err := EndCodexFailover(); err != nil {
+	if _, err := EndCodexFailover(); err != nil {
 		t.Fatal(err)
 	}
 	if cfg := read(); strings.Contains(cfg, "base_url") || !strings.Contains(cfg, `model_provider = "custom"`) || !strings.Contains(cfg, "supports_websockets = true") {
 		t.Fatalf("magpie quit, CC Switch's mirror still pointed at it:\n%s", cfg)
+	}
+}
+
+// At quit, a relay is left at the gateway's own address for the Codex
+// processes running then (idkatbro on X: an open thread got 503 until
+// magpie was opened again); none when no Codex runs, and none for a
+// gateway on another computer's address, which a relay here can't take.
+func TestRelayOpenCodexLeftForRunningCodex(t *testing.T) {
+	wasStart, wasPIDs := startRelay, codexPIDs
+	t.Cleanup(func() { startRelay, codexPIDs = wasStart, wasPIDs })
+	type call struct {
+		addr string
+		pids []int
+	}
+	var started []call
+	startRelay = func(addr string, pids []int) error {
+		started = append(started, call{addr, pids})
+		return nil
+	}
+	running := []int{41, 42}
+	codexPIDs = func(context.Context) []int { return running }
+
+	t.Setenv("MAGPIE_ADDR", "127.0.0.1:3499")
+	if err := RelayOpenCodex(); err != nil {
+		t.Fatal(err)
+	}
+	if len(started) != 1 || started[0].addr != "127.0.0.1:3499" || len(started[0].pids) != 2 {
+		t.Fatalf("no relay for the open Codex: %+v", started)
+	}
+	// a gateway on every interface is reached on loopback, and relayed
+	t.Setenv("MAGPIE_ADDR", "0.0.0.0:3498")
+	if err := RelayOpenCodex(); err != nil || len(started) != 2 || started[1].addr != "127.0.0.1:3498" {
+		t.Fatalf("%v %+v", err, started)
+	}
+	running = nil
+	if err := RelayOpenCodex(); err != nil || len(started) != 2 {
+		t.Fatalf("a relay with no Codex running: %v %+v", err, started)
+	}
+	running = []int{41}
+	t.Setenv("MAGPIE_ADDR", "192.0.2.7:3425")
+	if err := RelayOpenCodex(); err != nil || len(started) != 2 {
+		t.Fatalf("a relay for another computer's address: %v %+v", err, started)
 	}
 }

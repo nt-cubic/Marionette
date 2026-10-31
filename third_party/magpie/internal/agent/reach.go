@@ -125,8 +125,8 @@ func reachesMagpie(v, want string) bool {
 }
 
 // surelyMagpie is reachesMagpie once magpie has answered there: what a
-// write that keeps the address waits for, so a relay not yet tried never
-// gets magpie's model or key.
+// write that keeps the address waits for (magpieAsked), so a relay not yet
+// tried never gets magpie's model or key.
 func surelyMagpie(v, want string) bool {
 	base, ok := proxyBase(v, want)
 	if !ok {
@@ -134,6 +134,18 @@ func surelyMagpie(v, want string) bool {
 	}
 	ok, known := magpieAt(base)
 	return ok && known
+}
+
+// magpieAsked is magpieAt waited for, for a write: base, not asked yet, is
+// asked now (probedNow, as codexProxyOK asks a proxy), so what the write
+// reads after is magpie's answer there. Unasked, surelyMagpie is no, and
+// the first write in a magpie just started, the CLI's, took a proxy to
+// magpie for the user's own endpoint (#1985). One answered before, at any
+// age, is what the write goes by, as the reads do.
+func magpieAsked(base string) {
+	if _, known := magpieAt(base); !known {
+		probedNow("magpie "+base, func() bool { return magpieProbe(base) })
+	}
 }
 
 var reach struct {

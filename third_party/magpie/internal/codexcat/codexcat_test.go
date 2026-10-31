@@ -71,8 +71,9 @@ func TestCodexCatalogImages(t *testing.T) {
 
 // A model magpie describes has Codex search its MCP tools rather than send
 // every one in each request (#258), with its prompt, context window, and
-// neither code mode nor Responses Lite. A window above the working window
-// is told as that, the whole one as its max, unless settings.FullContext.
+// neither code mode nor Responses Lite. Its whole window is told, and a
+// window above the working one is compacted at that (auto_compact_token_
+// limit), unless settings.FullContext.
 func TestCodexCatalogToolSearch(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("USERPROFILE", os.Getenv("HOME"))
@@ -87,7 +88,7 @@ func TestCodexCatalogToolSearch(t *testing.T) {
 		t.Fatalf("%v", got)
 	}
 	e := got.Models[0]
-	if e["supports_search_tool"] != true || e["base_instructions"] != Prompt || e["context_window"] != float64(settings.WorkingWindow) || e["max_context_window"] != float64(996147) {
+	if e["supports_search_tool"] != true || e["base_instructions"] != Prompt || e["context_window"] != float64(996147) || e["auto_compact_token_limit"] != float64(settings.WorkingWindow) || e["max_context_window"] != nil {
 		t.Errorf("entry: %v", e)
 	}
 	if err := settings.Save(settings.Settings{FullContext: true}); err != nil {
@@ -99,7 +100,7 @@ func TestCodexCatalogToolSearch(t *testing.T) {
 	json.Unmarshal(Catalog([]catalog.Model{
 		{ID: "group/auto-gemini-3-8-flash", Name: "auto", Context: 996147},
 	}), &full)
-	if e := full.Models[0]; e["context_window"] != float64(996147) || e["max_context_window"] != nil {
+	if e := full.Models[0]; e["context_window"] != float64(996147) || e["auto_compact_token_limit"] != nil || e["max_context_window"] != nil {
 		t.Errorf("full context: %v", e)
 	}
 	for _, off := range []string{"tool_mode", "use_responses_lite", "multi_agent_version", "model_messages"} {

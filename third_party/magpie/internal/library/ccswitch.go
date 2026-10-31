@@ -37,7 +37,7 @@ func ccSwitchOrigin(s *Skill) (Source, bool) {
 // origin finds the skill in the repository fetched for it: the folder
 // named as CC Switch named it, or the skill of that name.
 func origin(root string, src Source, name string) (string, bool) {
-	for _, c := range candidates(root, "") {
+	for _, c := range candidates(root, "", srcFolder(src)) {
 		if lastPart(c.Path) == src.Path || c.Name == name {
 			return c.Path, true
 		}

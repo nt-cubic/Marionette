@@ -95,7 +95,9 @@ func TestHeldKeyToldItsOwnQuotas(t *testing.T) {
 		"AlphaAll":  {"alpha:one", "alpha:two"},
 		"AlphaSome": {"beta:"}, // none of alpha's: m2 spends its quota too
 		"AlphaTwo":  {"alpha:two"},
-		"BetaKey":   every,
+		// beta's key alone and no model: beta's models alone are the
+		// key's (Linka on Discord), so alpha's cards are not its
+		"BetaKey": {"beta:"},
 	}
 	for _, path := range []string{"/v1/magpie/quotas?kept=1", provider.RemoteCardsPath} {
 		for i, s := range secrets {

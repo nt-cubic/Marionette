@@ -22,9 +22,11 @@ func TestTreeRSS(t *testing.T) {
 		t.Fatal(err)
 	}
 	// just after its exec a command holds a few pages, until its loader
-	// maps what it runs on (16KiB on ubuntu CI), so it is read until it does
+	// maps what it runs on (16KiB on ubuntu CI), so it is read until it
+	// does; under WSL2 the first read can say 0 kB, which isn't a reading
+	// (#4033)
 	rss, ok := tree.RSS()
-	for end := time.Now().Add(10 * time.Second); ok && rss < 64<<10 && time.Now().Before(end); {
+	for end := time.Now().Add(10 * time.Second); (!ok || rss < 64<<10) && time.Now().Before(end); {
 		time.Sleep(20 * time.Millisecond)
 		rss, ok = tree.RSS()
 	}

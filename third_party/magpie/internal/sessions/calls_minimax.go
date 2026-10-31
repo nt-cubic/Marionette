@@ -51,6 +51,9 @@ const mcodeGateway = "custom_provider:magpie"
 // beside it (messages*.jsonl). A reply copied into another generation keeps
 // its message_id, and Calls counts an id once.
 func minimaxCallFiles() []file {
+	if !Reads("minimax-code") {
+		return nil
+	}
 	var out []file
 	walkLinked(minimaxSessions(), func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {

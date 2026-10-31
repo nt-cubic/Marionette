@@ -60,7 +60,7 @@ func TestClaudeFableTierOnClaude(t *testing.T) {
 		t.Fatalf("fable shown as %q, want following", a.Field("fable").Get())
 	}
 	// Claude Code's own fable, asked of the gateway, runs on the main model
-	if got := claudeStandInAt(path, "claude-fable-5-1", env("ANTHROPIC_BASE_URL")); got != "anth/claude-opus-5-5" {
+	if got := claudeStandInAt(here(""), path, "claude-fable-5-1"); got != "anth/claude-opus-5-5" {
 		t.Fatalf("claude-fable-5-1 stands in as %q", got)
 	}
 	// another Claude model that is no Fable
@@ -90,7 +90,7 @@ func TestClaudeFableTierOnClaude(t *testing.T) {
 		if env("ANTHROPIC_DEFAULT_OPUS_MODEL") != m || env("ANTHROPIC_DEFAULT_SONNET_MODEL") != m || env("ANTHROPIC_DEFAULT_HAIKU_MODEL") != m {
 			t.Fatalf("on %s the other tiers should follow:\n%s", m, readFile(path))
 		}
-		if got := claudeStandInAt(path, "claude-fable-5-1", env("ANTHROPIC_BASE_URL")); got != m {
+		if got := claudeStandInAt(here(""), path, "claude-fable-5-1"); got != m {
 			t.Fatalf("on %s claude-fable-5-1 stands in as %q", m, got)
 		}
 	}

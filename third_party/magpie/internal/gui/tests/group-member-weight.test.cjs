@@ -7,6 +7,7 @@
 // Enter keeps it, Escape puts it back, and one out of 1 to 1000 is refused
 // with a warning. Nothing on the page moves. Saved, the group goes with
 // routing "weight" and the weights above 1 of the members it still has. At
+// Sort by weight puts the heaviest first once, and is saved so. At
 // 420px the segments and the rows don't spill. English, Chinese and German,
 // Chromium and WebKit; no backend, the API is faked here.
 const assert = require("node:assert/strict");
@@ -85,6 +86,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const weight = (name) => row(name).locator("button.rt-weight");
       await row("glm-5").waitFor();
       assert.equal(await ed.locator("button.rt-weight").count(), 0, "In order shows no weights");
+      const sort = ed.locator("button.rt-wsort");
+      assert.equal(await sort.isVisible(), false, "In order offers no sort by weight");
 
       const byWeight = ed.locator(".segs .opt", { hasText: await tr("By weight") });
       // what is clicked is wheeled into view by the test, as the reader
@@ -129,6 +132,22 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await weight("o4-mini").textContent(), await tr("Weight {n} · {share}%", { n: 1, share: 10 }));
       assert(await page.locator("body", { hasText: await tr("A weight is 1 to 1000") }).count(), "the refusal is said");
 
+      // Sort by weight (Norcleeh on Discord) puts the heaviest first once,
+      // equal weights in their order, one switched off too; then it goes,
+      // since nothing is left to move
+      const order = async () => {
+        const names = await ed.locator(".fbl").first().locator(":scope > .fbrow .n > span:first-child").allTextContents();
+        return names.map((x) => ["gpt-6.1-sol", "glm-5", "o4-mini", "kimi-k2.6"].find((n) => x.includes(n)));
+      };
+      assert.deepEqual(await order(), ["gpt-6.1-sol", "glm-5", "o4-mini", "kimi-k2.6"]);
+      assert.equal(await sort.textContent(), await tr("Sort by weight"));
+      await reach(page, sort);
+      assert(await page.evaluate(() => document.querySelector(".rt-wsort").getBoundingClientRect().right <= document.querySelector(".rt-gedit").getBoundingClientRect().right + 1), "Sort by weight fits at " + width);
+      await sort.click();
+      assert.deepEqual(await order(), ["glm-5", "gpt-6.1-sol", "kimi-k2.6", "o4-mini"], "heaviest first");
+      assert.equal(await sort.isVisible(), false, "sorted, it has nothing to do");
+      assert.equal(await weight("glm-5").textContent(), await tr("Weight {n} · {share}%", { n: 6, share: 60 }), "each keeps its weight");
+
       // nothing spills, and no left-border accent
       const spill = await page.evaluate(() => {
         const ed = document.querySelector(".rt-gedit").getBoundingClientRect();
@@ -153,9 +172,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const sent = posts.find((p) => p.path === "/api/groups/save");
       assert.equal(sent.body.routing, "weight");
       assert.deepEqual(sent.body.weights, { "oa/gpt-6.1-sol:high": 3, "rl/glm-5": 6, "rl/kimi-k2.6": 2 });
+      assert.deepEqual(sent.body.members, ["rl/glm-5", "oa/gpt-6.1-sol:high", "rl/kimi-k2.6", "rl/o4-mini"], "the sorted order is saved");
 
       const missing = await page.evaluate(() => [
-        "By weight", "Weight {n}", "Weight {n} · {share}%", "Weight of {name}", "A weight is 1 to 1000",
+        "By weight", "Sort by weight", "Heaviest first. When a model fails, the next one in this order takes over", "Weight {n}", "Weight {n} · {share}%", "Weight of {name}", "A weight is 1 to 1000",
         "Its share of the requests: a model weighing 3 takes three for every one a model weighing 1 takes",
         "By weight: each model takes its share of the requests by the weight set beside it — one weighing 3 three for every one a model weighing 1 takes, spread out rather than in bursts. One resting after a failure leaves the round and the others share its requests; the next model is the fallback when one fails.",
       ].filter((k) => !I18N.zh[k] || !I18N["zh-TW"][k] || !I18N.ja[k] || !I18N.de[k]));

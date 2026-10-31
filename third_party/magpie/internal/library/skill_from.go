@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // Where a skill came from, for the page to group it with the others from
@@ -175,7 +176,10 @@ func siteOf(s string) string {
 }
 
 // gitRepoOf is the repository of the git checkout a skill's folder is, or
-// is in a few folders down: its remote origin. A checkout that is the home
+// is in a few folders down: its remote origin. The checkout is the one git
+// finds (provider.GitAt): a .git git passes over, an empty one say, is
+// passed over here too (#3675), and its config is in the repository's
+// folder, the common one of a linked worktree. A checkout that is the home
 // folder, or a folder of an app's own in it (~/.claude kept in git), is
 // the user's dotfiles rather than where the skill came from.
 func gitRepoOf(dir string) string {
@@ -184,12 +188,11 @@ func gitRepoOf(dir string) string {
 		if p := filepath.Dir(dir); p == h && strings.HasPrefix(filepath.Base(dir), ".") {
 			return ""
 		}
-		if fi, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			cfg := filepath.Join(dir, ".git", "config")
-			if !fi.IsDir() {
-				cfg = gitdirConfig(dir)
-			}
-			return originURL(cfg)
+		switch git, common, err := provider.GitAt(filepath.Join(dir, ".git")); {
+		case err != nil || git == "no":
+			return ""
+		case git == "yes":
+			return originURL(filepath.Join(common, "config"))
 		}
 		next := filepath.Dir(dir)
 		if next == dir {
@@ -198,31 +201,6 @@ func gitRepoOf(dir string) string {
 		dir = next
 	}
 	return ""
-}
-
-// gitdirConfig is the config of a checkout whose .git is a file (a
-// worktree or a submodule): the folder it names, or its common one.
-func gitdirConfig(dir string) string {
-	b, err := os.ReadFile(filepath.Join(dir, ".git"))
-	if err != nil {
-		return ""
-	}
-	g, ok := strings.CutPrefix(strings.TrimSpace(string(b)), "gitdir:")
-	if !ok {
-		return ""
-	}
-	g = strings.TrimSpace(g)
-	if !filepath.IsAbs(g) {
-		g = filepath.Join(dir, g)
-	}
-	if c, err := os.ReadFile(filepath.Join(g, "commondir")); err == nil {
-		cd := strings.TrimSpace(string(c))
-		if !filepath.IsAbs(cd) {
-			cd = filepath.Join(g, cd)
-		}
-		g = cd
-	}
-	return filepath.Join(g, "config")
 }
 
 var originSection = regexp.MustCompile(`^\[\s*remote\s+"origin"\s*\]$`)
@@ -322,7 +300,7 @@ func noteFrom(src Source, root string, cands []Candidate) int {
 			// git checkout), and an edited one stays only grouped.
 			if dir := skillDir(s.Name); s.Source == nil && !linked(dir) && sameTree(dir, filepath.Join(root, filepath.FromSlash(c.Path))) {
 				s.Source = &Source{Kind: "github", Repo: src.Repo, Ref: src.Ref, Path: c.Path}
-				s.Hash, s.Commit, s.From = hashDir(dir), "", ""
+				s.Hash, s.Own, s.Commit, s.From = hashDir(dir), ownHash(dir), "", ""
 				l.seenAt(src.Repo, src.Ref, c.Path)
 				forgetCheck(s.Name)
 				bound++
@@ -378,7 +356,7 @@ func RegroupSkills() (int, error) {
 			continue
 		}
 		fetched++
-		noted += noteFrom(src, root, candidates(root, ""))
+		noted += noteFrom(src, root, candidates(root, "", srcFolder(src)))
 		os.RemoveAll(root)
 	}
 	if fetched == 0 && first != nil {

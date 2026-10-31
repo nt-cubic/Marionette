@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yetone/magpie/internal/provider"
@@ -299,6 +300,15 @@ func History(day string) (days []HistoryDay, routes []Route, cut bool) {
 				})
 			}
 		} else if d.day == day || !ok || c.size != d.size {
+			if d.day == day && (!ok || c.size != d.size) {
+				// counted first, routes left as lines: a busy day's every
+				// route parsed at once, to keep its latest historyMax, was
+				// hundreds of MB, and a small server running the Context
+				// tab went down (Yayoi_no_yume on X)
+				n := 0
+				readDay(d.path, func([]byte) bool { n++; return true })
+				c, ok = counted{size: d.size, n: n}, true
+			}
 			n, skip := 0, -1
 			if d.day == day && ok && c.size == d.size {
 				skip = c.n - historyMax - historySlack
@@ -334,7 +344,11 @@ func History(day string) (days []HistoryDay, routes []Route, cut bool) {
 // route done after the later ones began.
 const historySlack = 200
 
+// historyParsed counts the routes History has parsed, for the tests.
+var historyParsed atomic.Int64
+
 func appendRoute(routes []Route, line []byte) []Route {
+	historyParsed.Add(1)
 	var r Route
 	if json.Unmarshal(line, &r) != nil {
 		return routes

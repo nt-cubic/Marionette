@@ -8,6 +8,10 @@
 // linked dsh's rtk-ai/rtk#3847. Each agent's tag says its own reason now:
 // Grok Build's cites rtk-ai/rtk#2136, the request for Grok Build, and says
 // nothing about its hooks.
+// Discord (lml0664): Qoder, Cline and Kimi Code, which RTK has nothing
+// global for, are listed each with its own reason (Qoder's cites
+// rtk-ai/rtk#1327), and Droid, which it has a hook for from RTK 0.44,
+// says that version when this RTK is older, not Codex's 0.50.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -19,7 +23,7 @@ const HOME = "/Users/aimer";
 const agent = (id, name) => ({ id, name, icon: "", skills: `${HOME}/.${id}/skills`, mcp: `${HOME}/.${id}/mcp.json` });
 const lib = () => ({
   dir: `${HOME}/.magpie/library`, backups: `${HOME}/.magpie/backups`, home: HOME,
-  agents: [agent("pi", "Pi"), agent("dsh", "DeepSeek Harness"), agent("grok", "Grok Build")],
+  agents: [agent("pi", "Pi"), agent("dsh", "DeepSeek Harness"), agent("grok", "Grok Build"), agent("qoder", "Qoder"), agent("kimi", "Kimi Code"), agent("droid", "Droid")],
   instructions: { agents: [], sets: [] }, foundServers: [], projects: [], foundSkills: [], skills: [], servers: [],
 });
 const rtkView = () => ({
@@ -28,6 +32,9 @@ const rtkView = () => ({
     { id: "pi", name: "Pi", icon: "", on: false },
     { id: "dsh", name: "DeepSeek Harness", icon: "", on: false, noHook: true, blocked: "RTK has no hook for DeepSeek Harness yet" },
     { id: "grok", name: "Grok Build", icon: "", on: false, noHook: true, blocked: "RTK has no hook for Grok Build yet" },
+    { id: "qoder", name: "Qoder", icon: "", on: false, noHook: true, blocked: "RTK has no hook for Qoder yet" },
+    { id: "kimi", name: "Kimi Code", icon: "", on: false, noHook: true, blocked: "RTK has no hook for Kimi Code" },
+    { id: "droid", name: "Droid", icon: "", on: false, blocked: "Droid's hook needs RTK 0.44 or newer" },
   ],
 });
 
@@ -54,8 +61,8 @@ function server(lang, calls) {
 }
 
 const words = {
-  en: { tag: "No RTK hook", why: "DeepSeek Harness's hooks can only allow or deny a command, not change it", grok: "RTK's installer has no option for Grok Build" },
-  zh: { tag: "RTK 暂不支持", why: "DeepSeek Harness 的 hook 只能放行或拦截命令，不能改写", grok: "RTK 的安装程序还没有 Grok Build 的选项" },
+  en: { tag: "No RTK hook", why: "DeepSeek Harness's hooks can only allow or deny a command, not change it", grok: "RTK's installer has no option for Grok Build", qoder: "RTK's installer has no option for Qoder", kimi: "AGENTS.md", update: "Update RTK", droid: "RTK 0.44 or newer" },
+  zh: { tag: "RTK 暂不支持", why: "DeepSeek Harness 的 hook 只能放行或拦截命令，不能改写", grok: "RTK 的安装程序还没有 Grok Build 的选项", qoder: "RTK 的安装程序还没有 Qoder 的选项", kimi: "AGENTS.md", update: "需更新 RTK", droid: "RTK 0.44 或更高版本" },
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
@@ -93,6 +100,17 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert(gwhy.includes(w.grok) && gwhy.includes("rtk-ai/rtk/issues/2136"), gwhy);
         assert(!gwhy.includes("3847") && !gwhy.includes("DeepSeek") && !gwhy.includes("hook"), gwhy);
         assert.equal(await row("Grok Build").locator(".lib-switch").isDisabled(), true);
+        // Qoder's and Kimi Code's are their own too
+        const qwhy = await row("Qoder").locator(".lib-tag").getAttribute("title");
+        assert(qwhy.includes(w.qoder) && qwhy.includes("rtk-ai/rtk/issues/1327") && !qwhy.includes("2136"), qwhy);
+        const kwhy = await row("Kimi Code").locator(".lib-tag").getAttribute("title");
+        assert(kwhy.includes(w.kimi) && !kwhy.includes("issues/"), kwhy);
+        // Droid with an RTK before 0.44: its own version, not Codex's
+        const dtag = row("Droid").locator(".lib-tag");
+        assert.deepEqual(await dtag.allTextContents(), [w.update]);
+        const dwhy = await dtag.getAttribute("title");
+        assert(dwhy.includes(w.droid) && !dwhy.includes("0.50"), dwhy);
+        assert.equal(await row("Droid").locator(".lib-switch").isDisabled(), true);
         const sw = row("DeepSeek Harness").locator(".lib-switch");
         assert.equal(await sw.isDisabled(), true);
         // Pi has a hook: nothing to say, and it can be switched on

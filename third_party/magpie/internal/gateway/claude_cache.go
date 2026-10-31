@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"hash"
@@ -28,6 +29,19 @@ type clientCache struct {
 
 func wantsClientCache(r *http.Request, from provider.Protocol) bool {
 	return from == provider.Anthropic && r.Header.Get("X-Magpie-Cache-Marks") == "client"
+}
+
+// classifierClientCache reports whether a Messages body is Claude Code's
+// auto mode classifier carrying cache marks of its own. Desktop's
+// classifier marks its blocks but knows nothing of magpie's private header
+// (#3835): its marks are kept like an opted-in client's, validated as
+// theirs are. The bytes are looked at before the request is parsed, and
+// only a classifier-shaped body carrying a cache_control field is parsed
+// for its marks.
+func classifierClientCache(from provider.Protocol, body []byte) bool {
+	return from == provider.Anthropic &&
+		bytes.Contains(body, []byte("cache_control")) &&
+		autoModeClassifierAsk(body)
 }
 
 // selected reports the mapping as soon as run selection is known. Starting

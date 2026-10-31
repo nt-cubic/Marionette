@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"slices"
 
@@ -21,6 +22,13 @@ import (
 // magpie's to read.
 func (s *Server) serveAgent(w http.ResponseWriter, r *http.Request, from provider.Protocol, body []byte) {
 	withGatewaySession(w, r)
+	// the agent's own turn, which the user's model for requests masking
+	// would change is for (maskRouteFor)
+	r = agentTurn(r)
+	// a Responses request naming the response it follows is given the
+	// conversation whole before anything reads it (prev_response.go)
+	w, r, body, kept := previousResponse(w, r, from, body)
+	defer kept()
 	w, recorded := recordConversation(w, r, from, body)
 	defer recorded()
 	// a conversation going round one tool call is answered here, before
@@ -40,7 +48,7 @@ func (s *Server) serveAgent(w http.ResponseWriter, r *http.Request, from provide
 	for _, a := range agents {
 		// the user's middleware runs before a route is begun: a wait
 		// magpie knows of (unrouted.go)
-		waited := noteWait(r.Context())
+		waited := noteWait(r.Context(), "JS middleware")
 		run := a.Begin(info)
 		if run == nil {
 			waited()
@@ -94,9 +102,11 @@ func triedOn(ctx context.Context, p provider.Provider, model string, body []byte
 // onProvider on one runtime, and the gateway died of "concurrent map read
 // and map write" (#3695). Nor does the hooks' ctx describe them: a
 // description's body is Chat and a search's Anthropic, whatever
-// ctx.protocol names, and ctx.model and ctx.stream are the agent's.
+// ctx.protocol names, and ctx.model and ctx.stream are the agent's. Nor
+// is it the agent's turn, which a model set for requests masking would
+// change takes (maskRouteFor): it is masked as magpie's own asks are.
 func ownAsk(ctx context.Context) context.Context {
-	return context.WithValue(ctx, triedKey{}, []gwmw.Tried(nil))
+	return context.WithValue(context.WithValue(ctx, triedKey{}, []gwmw.Tried(nil)), agentTurnKey{}, false)
 }
 
 // middlewareWanted: plugins.json has a JS middleware on, so plugins/middleware
@@ -119,7 +129,7 @@ func gatewayHooks(w http.ResponseWriter, r *http.Request, from provider.Protocol
 	}
 	// the plugin host, started for it if need be: a wait magpie knows of
 	// before a route is begun (unrouted.go)
-	waited := noteWait(r.Context())
+	waited := noteWait(r.Context(), "plugin hooks")
 	run := plugin.GatewayBegin(r.Context(), body, info)
 	waited()
 	if run == nil {
@@ -147,12 +157,53 @@ func gatewayQuery(req *Request) string {
 // gatewayOrigin exposes provenance, never credentials or peer addresses.
 // Forwarded traffic remains remote even when the administrator trusts its
 // proxy for authentication: that trust does not establish conversation ownership.
+//
+// The sharing key magpie made itself is "magpie-key" only when it comes
+// from this computer (ownComputer): that is where magpie writes it into
+// the owner's own agents. The same key is listed under Gateway keys with
+// a Copy button and offered to connect other computers, so it can be in a
+// friend's hands too, and from anywhere else it stays "gateway-key", as
+// every other gateway key does — one the owner made for someone else, a
+// value a user brought, or one that didn't authenticate. A plugin can then
+// serve the owner's own agents without serving a friend's key
+// (plugins#526). Plugins that trust only "local" see both as not local.
 func gatewayOrigin(r *http.Request) string {
-	if access.Caller(r.Context()).KeyID != "" || managedKey(r) {
+	if who := access.Caller(r.Context()); who.KeyID != "" && who.Default && ownComputer(r) {
+		return "magpie-key"
+	} else if who.KeyID != "" || managedKey(r) {
 		return "gateway-key"
 	}
-	if local(r) && !slices.ContainsFunc(forwardHeaders, func(h string) bool { return r.Header.Get(h) != "" }) {
+	if local(r) && !forwarded(r) {
 		return "local"
 	}
 	return "remote"
+}
+
+func forwarded(r *http.Request) bool {
+	return slices.ContainsFunc(forwardHeaders, func(h string) bool { return r.Header.Get(h) != "" })
+}
+
+// ownComputer: r's connection was made on this computer, where magpie
+// writes the sharing key into agents (agent.keyAt): loopback (a WSL
+// distro on the WSL network is mapped to it by lanGuard), one of this
+// computer's own addresses (an agent calling MAGPIE_ADDR beyond loopback),
+// or a WSL distro's address under NAT calling this computer's network
+// address. Never a request with forwarding headers, a trusted proxy's
+// included, nor one through magpie web's page port.
+func ownComputer(r *http.Request) bool {
+	if forwarded(r) || viaPagePort(r) {
+		return false
+	}
+	if local(r) {
+		return true
+	}
+	a, ok := peerAddr(r)
+	if !ok {
+		return false
+	}
+	if ownAddr(a) {
+		return true
+	}
+	ip := net.IP(a.AsSlice())
+	return slices.ContainsFunc(WSLNets(), func(n *net.IPNet) bool { return n.Contains(ip) })
 }

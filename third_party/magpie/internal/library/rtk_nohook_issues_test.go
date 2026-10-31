@@ -16,6 +16,8 @@ import (
 var sharedRTKIssues = map[[2]string]string{
 	// Grok App runs Grok Build, and rtk-ai/rtk#2136 asks for Grok Build.
 	{"grok", "grok-app"}: "Grok App runs Grok Build",
+	// Qoder CN is Qoder's China build, and rtk-ai/rtk#1327 asks for Qoder.
+	{"qoder", "qoder-cn"}: "Qoder CN is Qoder's China build",
 }
 
 var rtkIssueRe = regexp.MustCompile(`github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)`)

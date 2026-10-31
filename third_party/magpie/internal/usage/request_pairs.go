@@ -17,14 +17,9 @@ type pairMemo struct {
 	// serials are the chunks' in pairRows' order, each set ended by a 0;
 	// a chunk without a serial (the probes') is named by its rows instead
 	serials       []uint64
-	skip, matched []serialRef
-	actors        map[uint64][]string
+	skip, matched map[uint64][]uint64 // refSets, by serial
+	actors        map[uint64]codexActors
 	compactions   map[uint64]map[int]*bool
-}
-
-type serialRef struct {
-	serial uint64
-	index  int
 }
 
 // pairSerials names the chunks of a pairing, or is false when two have
@@ -62,6 +57,7 @@ func unnamedSerial(c *rowChunk) uint64 {
 // pairRowsMemo is pairRows, through old when it paired these chunks over
 // the same window. The memo it returns is for the next call (nil: none).
 func pairRowsMemo(p Period, now time.Time, gateways, chunks, others []*rowChunk, identities map[string]sessions.CodexIdentity, old *pairMemo) (*pairedRows, *pairMemo) {
+	priceStubs(gateways)
 	since, until := p.Since(now), p.Until(now)
 	serials, ok := pairSerials(gateways, chunks, others)
 	if !ok {
@@ -72,6 +68,23 @@ func pairRowsMemo(p Period, now time.Time, gateways, chunks, others []*rowChunk,
 	}
 	ps := pairRows(p, now, gateways, chunks, others, identities)
 	return ps, memoOf(ps, serials, append(append(slices.Clone(gateways), chunks...), others...))
+}
+
+// pairEvery is the pairing of every row of these chunks, as the whole
+// history's page and Codex's effort pair them, through and for their memo
+// (cache.pairs, All's), visited from since on. The heatmap paired its
+// year apart: the same chunks for most histories, and a third pairing of
+// all of them on a cold start beside the page's and the effort's, the
+// last and highest of the footprint's peaks (#2278). A call is paired to
+// its session row as the whole history pairs it; only what is counted is
+// the window's.
+func pairEvery(since, now time.Time, gateways, chunks, others []*rowChunk, identities map[string]sessions.CodexIdentity, cache *partCache) *pairedRows {
+	ps, next := pairRowsMemo(All, now, gateways, chunks, others, identities, cache.pairs)
+	if next != cache.pairs {
+		cache.pairsNext = next
+	}
+	ps.since = since
+	return ps
 }
 
 // memoOf is ps as a memo; originals are the chunks ps.all was cloned from.
@@ -85,9 +98,9 @@ func memoOf(ps *pairedRows, serials []uint64, originals []*rowChunk) *pairMemo {
 		}
 		named[c] = serials[k]
 		k++
-		if !slices.Equal(c.codexActors, originals[i].codexActors) {
+		if !c.codexActors.equal(originals[i].codexActors) {
 			if m.actors == nil {
-				m.actors = map[uint64][]string{}
+				m.actors = map[uint64]codexActors{}
 			}
 			m.actors[serials[k-1]] = c.codexActors
 		}
@@ -98,10 +111,10 @@ func memoOf(ps *pairedRows, serials []uint64, originals []*rowChunk) *pairMemo {
 			m.compactions[serials[k-1]] = c.codexCompactions
 		}
 	}
-	refs := func(set map[rowRef]bool) []serialRef {
-		out := make([]serialRef, 0, len(set))
-		for ref := range set {
-			out = append(out, serialRef{named[ref.Chunk], ref.Index})
+	refs := func(set refSet) map[uint64][]uint64 {
+		out := make(map[uint64][]uint64, len(set))
+		for c, b := range set {
+			out[named[c]] = slices.Clone(b)
 		}
 		return out
 	}
@@ -128,10 +141,10 @@ func (m *pairMemo) apply(serials []uint64, identities map[string]sessions.CodexI
 		}
 		k++
 	}
-	refs := func(list []serialRef) map[rowRef]bool {
-		out := make(map[rowRef]bool, len(list))
-		for _, ref := range list {
-			out[rowRef{by[ref.serial], ref.index}] = true
+	refs := func(set map[uint64][]uint64) refSet {
+		out := make(refSet, len(set))
+		for s, b := range set {
+			out[by[s]] = slices.Clone(b)
 		}
 		return out
 	}

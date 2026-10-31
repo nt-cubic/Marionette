@@ -273,3 +273,21 @@ func TestSessionsListIsNotCutAtTheLimit(t *testing.T) {
 		t.Fatalf("the page shows %d sessions, want at least %d", got, n)
 	}
 }
+
+// Not asked yet (RustCats on X), the page lists nothing and says how to
+// allow an agent, where it would say none ran in the range.
+func TestSessionsNotAskedSaysHow(t *testing.T) {
+	sessionsHome(t)
+	if err := settings.SetSessionReads(func(*settings.SessionReads) *settings.SessionReads {
+		return &settings.SessionReads{}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m := press(t, model{w: 220, h: 40, srange: 1}, "5", "A")
+	if n := len(m.sessShown()); n != 0 {
+		t.Fatalf("not asked, %d sessions read", n)
+	}
+	if v := m.View(); !strings.Contains(v, "magpie sessions read on all") {
+		t.Errorf("the empty page doesn't say how to allow an agent:\n%s", v)
+	}
+}

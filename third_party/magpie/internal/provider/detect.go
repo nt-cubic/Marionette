@@ -172,7 +172,8 @@ func (q Provider) detectOne(proto Protocol, m string, wait time.Duration) (Detec
 	}
 	return d, func(ctx context.Context) Result {
 		u, body := tiny(k, proto, UpstreamName(q, m))
-		return probe(ctx, k, proto, u, k.tested(body), m, wait)
+		ctx, b := k.tested(ctx, body)
+		return probe(ctx, k, proto, u, b, m, wait)
 	}
 }
 

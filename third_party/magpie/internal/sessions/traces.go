@@ -13,6 +13,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -87,17 +88,23 @@ func TraceAgent(agent string) bool {
 
 // Claude child transcripts are discovered alongside their parent stores.
 func traceLineFiles() []file {
-	files := append(codexFiles(), piFiles()...)
+	// a slice of its own: traceRecentFiles sorts it, and Codex's listing
+	// is shared (heldFiles)
+	files := slices.Concat(codexFiles(), piFiles())
 	claude := func(agent, dir string) { files = append(files, ccFiles(agent, dir)...) }
 	claude("claude", ClaudeDir())
-	for _, dir := range callDesktopDirs() {
+	for _, dir := range desktopReadDirs() {
 		homes, _ := SessionGlob(filepath.Join(dir, "local-agent-mode-sessions", "*", "*", "local_*", ".claude"))
 		for _, home := range homes {
 			claude("claude-desktop", home)
 		}
 	}
 	seen := map[string]bool{}
-	for _, root := range ompSessionRoots() {
+	var ompRoots []string
+	if Reads("omp") {
+		ompRoots = ompSessionRoots()
+	}
+	for _, root := range ompRoots {
 		paths, _ := SessionGlob(filepath.Join(root, "*", "*.jsonl"))
 		for _, path := range paths {
 			if seen[path] {
@@ -110,7 +117,7 @@ func traceLineFiles() []file {
 			}
 		}
 	}
-	return append(files, geminiTraceFiles()...)
+	return allowed(append(files, geminiTraceFiles()...))
 }
 
 func TraceID(parts ...string) string {

@@ -67,7 +67,8 @@ func t3code(home string) *Agent {
 		Dir: base, Path: path,
 		// ~/.t3 is made at its first start; a Mac app never opened yet is
 		// found by its bundle. No command: `t3` is a common name.
-		detect: func() bool { return isDir(base) || t3App(home) },
+		detect:   func() bool { return isDir(base) || t3App(home) },
+		ListOnly: true,
 		Sync: func() error {
 			return syncJSON(path, t3Instance, func() any { return t3Merged(path, gateway.URL()) })
 		},

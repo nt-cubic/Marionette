@@ -112,7 +112,9 @@ func TestUploadStillUnderwayIsNotCutByHealthPing(t *testing.T) {
 	vendor := h2Vendor(t, func(w http.ResponseWriter, r *http.Request) {
 		n, err := io.Copy(io.Discard, r.Body)
 		if err != nil {
-			t.Errorf("the vendor reading the body: %v", err)
+			// the try the lost ping cut, given up for the one sent again;
+			// it ends when the path closes, after the test (#4033)
+			return
 		}
 		fmt.Fprintf(w, "%s %d", r.Proto, n)
 	})

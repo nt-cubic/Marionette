@@ -79,7 +79,7 @@ const words = {
     fetch: ["can't start: uvx not found", "Can't start it: there is no uvx on the PATH magpie has"],
     github: ["exited (1)", "It exited with code 1 before listing its tools\nError: GITHUB_PERSONAL_ACCESS_TOKEN is not set"],
     slow: ["no answer to tools/list", "No answer to tools/list in 60 seconds"],
-    again: "Click to check again", fresh: "13 tools", skills: "Skills",
+    again: "Click to check again", signin: "Click to sign in", fresh: "13 tools", skills: "Skills",
     idle: ["not checked", "No agent has it, so it isn't checked on its own\nClick to check it"], idleOk: "2 tools",
   },
   zh: {
@@ -89,7 +89,7 @@ const words = {
     fetch: ["无法启动：找不到 uvx", "无法启动：magpie 的 PATH 里没有 uvx"],
     github: ["已退出（1）", "列出工具前就退出了，退出码 1\nError: GITHUB_PERSONAL_ACCESS_TOKEN is not set"],
     slow: ["tools/list 无响应", "等了 60 秒，tools/list 仍没有响应"],
-    again: "点击重新检查", fresh: "13 个工具", skills: "技能",
+    again: "点击重新检查", signin: "点击登录", fresh: "13 个工具", skills: "技能",
     idle: ["未检查", "没有 agent 在用它，所以不会自动检查\n点击检查"], idleOk: "2 个工具",
   },
 };
@@ -138,7 +138,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const cls = { files: "ok", linear: "auth", fetch: "err", github: "err", slow: "err" };
         for (const [n, [text, tip]] of Object.entries(w).filter(([k]) => k in found && k !== "idle")) {
           assert.equal(await status(n).textContent(), text, n);
-          assert.equal(await status(n).getAttribute("title"), tip + "\n" + w.again, n);
+          // one asking for a sign-in is signed in to with a click
+          assert.equal(await status(n).getAttribute("title"), tip + "\n" + (n === "linear" ? w.signin : w.again), n);
           assert.equal(await status(n).evaluate((b, c) => b.classList.contains(c), cls[n]), true, n);
           // a dot, not a coloured stripe
           assert.equal(await status(n).evaluate((b) => getComputedStyle(b).borderLeftWidth), "0px");

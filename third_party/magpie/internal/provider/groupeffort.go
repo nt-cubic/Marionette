@@ -13,6 +13,13 @@ package provider
 // a group saved before reads the same, and a backup or a sync carries it
 // as any other member.
 //
+// A member may instead carry several levels, joined by "+"
+// ("provider/model:low+high", Garydesu on X): it follows the agent's
+// effort, as a member without one does, but only among those levels — the
+// group offers agents them for it (groupEntries), and a request asking
+// for another is sent the nearest of them (Member.Levels). One level is a
+// fixed effort as before, so a member saved before reads the same.
+//
 // A model's own id may have a colon in it — OpenRouter's
 // "deepseek/deepseek-r1:free", Ollama's "qwen:7b", Bedrock's
 // "anthropic.claude-…-v1:0" — so only a last part that is a level's name
@@ -20,6 +27,7 @@ package provider
 // provider has.
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 	"strings"
@@ -41,20 +49,50 @@ func MemberEffort(id string) (model, effort string) {
 }
 
 // memberEffortIn is MemberEffort with the catalog's entries read already
-// (nil to read the providers' models as needed).
+// (nil to read the providers' models as needed). Several levels come
+// back as MemberLevels reads them: each once, lowest first, joined by "+".
 func memberEffortIn(entries []Entry, id string) (string, string) {
 	i := strings.LastIndex(id, ":")
 	if i <= 0 {
 		return id, ""
 	}
-	level := strings.ToLower(id[i+1:])
-	if !slices.Contains(MemberEfforts, level) {
+	level := memberLevelsSpelled(id[i+1:])
+	if level == "" {
 		return id, "" // ":free", ":7b", ":0" — the model's own
 	}
 	if !strings.HasPrefix(id, GroupPrefix) && isModel(entries, id) {
 		return id, ""
 	}
 	return id[:i], level
+}
+
+// memberLevelsSpelled is a member's effort suffix as it is kept: one
+// level, or several joined by "+" each once, lowest first, lowercase; ""
+// when a part isn't a level (the suffix is the model's own).
+func memberLevelsSpelled(suffix string) string {
+	parts := strings.Split(strings.ToLower(suffix), "+")
+	for _, p := range parts {
+		if !slices.Contains(MemberEfforts, p) {
+			return ""
+		}
+	}
+	return strings.Join(fixedLevels(parts), "+")
+}
+
+// MemberLevels splits the effort MemberEffort gives into the one a member
+// is fixed at and the several the agent picks among (nil for one or none):
+// "high" is fixed at high, "low+high" follows the agent among low and high.
+func MemberLevels(effort string) (fixed string, levels []string) {
+	if !strings.Contains(effort, "+") {
+		return effort, nil
+	}
+	return "", strings.Split(effort, "+")
+}
+
+// Spelled is the member's model as the group names it: with the effort it
+// is fixed at, or the levels it follows the agent among.
+func (m Member) Spelled() string {
+	return WithMemberEffort(m.Provider.ID+"/"+m.Model, cmp.Or(m.Effort, strings.Join(m.Levels, "+")))
 }
 
 // isModel reports whether id is a model a provider has as it is spelled,

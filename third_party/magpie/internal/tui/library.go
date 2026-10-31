@@ -64,6 +64,9 @@ func (m *model) reloadLibrary() {
 		if s.Command != "" {
 			what = strings.TrimSpace(s.Command + " " + strings.Join(s.Args, " "))
 		}
+		if s.Local {
+			what = "this computer only · " + what
+		}
 		m.lib = append(m.lib, libRow{kind: "mcp", name: s.Name, about: what, on: s.Agents, bad: len(s.Problems)})
 	}
 	for _, s := range v.Skills {
@@ -72,6 +75,10 @@ func (m *model) reloadLibrary() {
 			r.about, r.bad = "its folder is gone", r.bad+1
 		} else if s.Gone != "" {
 			r.about, r.bad = "removed from "+s.Source+" · d takes it out", r.bad+1
+		}
+		if s.OffHere {
+			// ticked agents are other computers' too; none gets it here
+			r.about = "off on this computer · magpie library skill on-here " + s.Name
 		}
 		m.lib = append(m.lib, r)
 	}
@@ -417,7 +424,8 @@ func saveServer(old *library.Server, line string) tea.Cmd {
 		if old != nil {
 			was, done = old.Name, "saved "+s.Name
 			// and its OAuth app and startup timeout, which only the GUI edits
-			s.Agents, s.Env, s.Headers, s.OAuth, s.StartupTimeout = old.Agents, old.Env, old.Headers, old.OAuth, old.StartupTimeout
+			// and whether it is kept to this computer
+			s.Agents, s.Env, s.Headers, s.OAuth, s.StartupTimeout, s.Local = old.Agents, old.Env, old.Headers, old.OAuth, old.StartupTimeout, old.Local
 		}
 		return libCmd(func() (*library.Result, error) { return library.SaveServer(was, s) }, done)()
 	}

@@ -5,15 +5,17 @@ import (
 	"cmp"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"os"
+	"reflect"
 	"runtime"
 	"runtime/debug"
-	"runtime/metrics"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -67,15 +69,15 @@ func gatewayDays(g usage.GatewaySession) []sessions.ExternalDayUsage {
 
 // gatewayListed is a gateway session as a list shows it: titled by what it
 // was first asked, when magpie recorded it, not by its ses_… id (YOU on
-// Discord)
-func gatewayListed(g usage.GatewaySession) sessions.ExternalSession {
+// Discord). title is a sessions.GatewayTitler's.
+func gatewayListed(g usage.GatewaySession, title func(agent, id string) string) sessions.ExternalSession {
 	e := gatewayExternal(g)
-	e.Title = sessions.GatewayTitle(g.Agent, g.ID)
+	e.Title = title(g.Agent, g.ID)
 	return e
 }
 
 func gatewaySession(g usage.GatewaySession) sessions.Session {
-	return sessions.MergeExternal(nil, []sessions.ExternalSession{gatewayListed(g)})[0]
+	return sessions.MergeExternal(nil, []sessions.ExternalSession{gatewayListed(g, sessions.GatewayTitle)})[0]
 }
 
 func sessionRoutes(mux *http.ServeMux, w Windows) {
@@ -104,18 +106,18 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			out.Dirs = append(out.Dirs, tilde(d))
 		}
 		list := sessions.List(sessions.All)
-		nativeKeys := map[string]bool{}
+		nativeKeys := make(map[string]bool, len(list))
 		for _, s := range list {
-			nativeKeys[s.Agent+"|"+s.ID] = true
-			// a copy of its conversation is the agent's own too
-			for _, id := range s.Copies {
-				nativeKeys[s.Agent+"|"+id] = true
+			// its copies' and subagents' ids among them
+			for _, k := range sessions.GatewayKeys(s) {
+				nativeKeys[k] = true
 			}
 		}
 		gateway := listedGateway(usage.GatewaySessions(time.Time{}, nativeKeys))
 		ext := make([]sessions.ExternalSession, 0, len(gateway))
+		title := sessions.GatewayTitler()
 		for _, g := range gateway {
-			ext = append(ext, gatewayListed(g))
+			ext = append(ext, gatewayListed(g, title))
 		}
 		list = sessions.MergeExternal(list, ext)
 		if len(list) > n {
@@ -138,9 +140,14 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			}
 		}
 		vias := usage.Vias(since.Add(-time.Minute))
+		// made to size: up to sessions.All rows, grown by append each poll
+		// was copied through every size on the way, ~140 MB of eight (#2278)
+		out.Sessions = make([]sessionJSON, 0, len(list))
 		for _, s := range list {
-			j := sessionJSON{Session: s, Name: s.Agent, Icon: "generic", Via: vias.Of(s.Agent + "|" + s.ID)}
-			if a := agents[s.Agent]; a != nil {
+			// drawn as the agent it ran in: Claude Desktop's Code tab's
+			// sessions are in Claude Code's folder (Session.App)
+			j := sessionJSON{Session: s, Name: s.Agent, Icon: "generic", Via: viaOf(vias, s)}
+			if a := agents[cmp.Or(s.App, s.Agent)]; a != nil {
 				j.Name, j.Icon = a.SharedName(), a.Icon
 			}
 			j.Name = wslName(j.Name, s)
@@ -158,7 +165,7 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 	mux.HandleFunc("GET /api/sessions/stats", func(rw http.ResponseWriter, r *http.Request) {
 		defer sessions.ShareListing()()
 		n, _ := strconv.Atoi(r.URL.Query().Get("days"))
-		st := statsFor(n)
+		st, gen := statsForGen(n)
 		names := map[string]string{}
 		for _, a := range agent.Clients() {
 			names[a.ID] = a.SharedName()
@@ -172,10 +179,26 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 				agents[a.Agent] = cmp.Or(names[a.Agent], a.Agent)
 			}
 		}
-		writeJSONSame(rw, r, struct {
-			sessions.Stats
-			Agents map[string]string `json:"agents"`
-		}{st, agents})
+		// the page has this very answer: told so without encoding and
+		// hashing a long history's ~6 MB of it again on every poll (#2278)
+		statsTags.Lock()
+		t, ok := statsTags.m[n]
+		statsTags.Unlock()
+		if ok && t.gen == gen && maps.Equal(t.agents, agents) && r.Header.Get("X-Magpie-Had") == t.tag {
+			rw.Header().Set("X-Magpie-Tag", t.tag)
+			rw.Header().Set("X-Magpie-Same", "1")
+			rw.WriteHeader(http.StatusOK)
+			return
+		}
+		tag := writeSame(rw, r, func(b *bytes.Buffer) error { return statsAnswer(b, st, agents) })
+		if tag != "" {
+			statsTags.Lock()
+			if statsTags.m == nil || len(statsTags.m) >= statsMemoMost {
+				statsTags.m = map[int]statsTag{}
+			}
+			statsTags.m[n] = statsTag{gen, agents, tag}
+			statsTags.Unlock()
+		}
 	})
 	// overview sums up the range's sessions under the page's filters:
 	// how many, what the middle one spent, how many each day, and the ones
@@ -241,7 +264,7 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 		}
 		j := sessionJSON{Session: s, Name: s.Agent, Icon: "generic"}
 		for _, a := range agent.Clients() {
-			if a.ID == s.Agent {
+			if a.ID == cmp.Or(s.App, s.Agent) {
 				j.Name, j.Icon = a.SharedName(), a.Icon
 			}
 		}
@@ -250,7 +273,7 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 		if since.IsZero() {
 			since = s.Last
 		}
-		j.Via = usage.Vias(since.Add(-time.Minute)).Of(s.Agent + "|" + s.ID)
+		j.Via = viaOf(usage.Vias(since.Add(-time.Minute)), s)
 		j.Path = tilde(j.Path)
 		writeJSON(rw, j)
 	})
@@ -458,6 +481,7 @@ var statsMemo struct {
 type statsKept struct {
 	at   time.Time
 	st   sessions.Stats
+	gen  uint64 // st's, new only when a read found st changed
 	busy bool
 	// used is the memo's ask count when this range was last asked: a count,
 	// not a clock, since Windows' clock can give two asks the same time.
@@ -469,32 +493,76 @@ type statsKept struct {
 // least recently asked one is let go when a new value comes past it.
 const statsMemoMost = 8
 
+// statsGen numbers each Stats the memo keeps, across memos: an answer's
+// tag is known by it (statsTags).
+var statsGen atomic.Uint64
+
+// statsTags is the tag of the stats answer last sent for each ?days, the
+// Stats it was made from known by its gen.
+var statsTags struct {
+	sync.Mutex
+	m map[int]statsTag
+}
+
+type statsTag struct {
+	gen    uint64
+	agents map[string]string
+	tag    string
+}
+
+// sameStats is whether a and b would be sent the same: a read again
+// behind finds the same stats most times, and keeping a's gen spares the
+// page's next ask the encoding.
+func sameStats(a, b sessions.Stats) bool {
+	return a.From == b.From && a.To == b.To && slices.Equal(a.Keys, b.Keys) && reflect.DeepEqual(a.Days, b.Days)
+}
+
 func statsFor(days int) sessions.Stats {
+	st, _ := statsForGen(days)
+	return st
+}
+
+func statsForGen(days int) (sessions.Stats, uint64) {
 	days = max(0, days)
 	statsMemo.Lock()
 	if k := statsMemo.m[days]; k != nil {
 		statsMemo.asks++
 		k.used = statsMemo.asks
 		if !k.busy && time.Since(k.at) > 10*time.Second {
-			k.busy = true
+			// every range kept that is as old is read again with it, in
+			// one pass: the page asks for 7, 30 and every day, and each
+			// read alone listed and summed every session file (#2278)
+			var ranges []int
+			var kept []*statsKept
+			for d, o := range statsMemo.m {
+				if !o.busy && time.Since(o.at) > 10*time.Second {
+					o.busy = true
+					ranges, kept = append(ranges, d), append(kept, o)
+				}
+			}
 			// read beside the page's own reads: with their listing of
 			// the session files, and handed back once they all rest
 			shared, rest := sessions.ShareListing(), readingPage()
 			go func() {
 				defer rest()
 				defer shared()
-				st := combinedSessionStats(days)
+				sts := combinedSessionStatsAll(ranges)
 				statsMemo.Lock()
-				k.at, k.st, k.busy = time.Now(), st, false
+				for i, o := range kept {
+					if !sameStats(o.st, sts[i]) {
+						o.st, o.gen = sts[i], statsGen.Add(1)
+					}
+					o.at, o.busy = time.Now(), false
+				}
 				statsMemo.Unlock()
 			}()
 		}
-		st := k.st
+		st, gen := k.st, k.gen
 		statsMemo.Unlock()
-		return st
+		return st, gen
 	}
 	statsMemo.Unlock()
-	st := combinedSessionStats(days)
+	st, gen := combinedSessionStats(days), statsGen.Add(1)
 	statsMemo.Lock()
 	if statsMemo.m == nil {
 		statsMemo.m = map[int]*statsKept{}
@@ -510,22 +578,36 @@ func statsFor(days int) sessions.Stats {
 			delete(statsMemo.m, oldest)
 		}
 		statsMemo.asks++
-		statsMemo.m[days] = &statsKept{at: time.Now(), st: st, used: statsMemo.asks}
+		statsMemo.m[days] = &statsKept{at: time.Now(), st: st, gen: gen, used: statsMemo.asks}
 	}
 	statsMemo.Unlock()
-	return st
+	return st, gen
 }
 
 func combinedSessionStats(days int) sessions.Stats {
-	st, nativeKeys := sessions.StatsAndNative(days)
+	return combinedSessionStatsAll([]int{days})[0]
+}
+
+// combinedSessionStatsAll is combinedSessionStats for each of days, the
+// session files read once for all of them.
+func combinedSessionStatsAll(days []int) []sessions.Stats {
+	sts, nativeKeys := sessions.StatsAndNativeAll(days)
+	for i := range sts {
+		sts[i] = withGatewaySessions(sts[i], days[i], nativeKeys)
+	}
+	return sts
+}
+
+func withGatewaySessions(st sessions.Stats, days int, nativeKeys map[string]bool) sessions.Stats {
 	var since time.Time
 	if days > 0 && st.From != "" {
 		since, _ = time.ParseInLocation(time.DateOnly, st.From, time.Local)
 	}
 	gs, gd := usage.GatewaySessionWindowExcept(since, nativeKeys)
 	ext := make([]sessions.ExternalSession, 0, len(gs))
+	title := sessions.GatewayTitler()
 	for _, g := range gs {
-		e := gatewayListed(g)
+		e := gatewayListed(g, title)
 		e.Daily = gatewayDays(g)
 		ext = append(ext, e)
 	}
@@ -553,6 +635,9 @@ var warmOnce sync.Once
 
 func warmStart() {
 	go func() {
+		// a fresh install reads no agent's sessions until asked; one
+		// that read them before keeps reading them (decided once)
+		sessions.SettleReads()
 		time.Sleep(3 * time.Second)
 		// with few readers, as nobody waits on it yet: after an update
 		// that reads every file again, it held every core (#1665)
@@ -607,16 +692,14 @@ func warmUp(steps ...func()) {
 // still holds its rows, run under it: the warm-up as a whole did too for
 // ~11 s more CPU.
 //
-// It also holds the memory Go asks of the system to what it held when fn
-// began, as a soft limit (a lower one the user set is kept, and GOGC off
-// has none). A build of the request index after an update reads every
-// session again and allocates ~1.2 GB to keep ~40 MB more, and the heap
-// overshot its goal into pages it then kept: 308–323 MB in Activity
-// Monitor for 15.7k sessions, where a start that reads the index peaked at
-// 247–255 MB. Under the limit, 241–251 MB and 211–228 MB, for 1–7 s more
-// CPU in that build.
+// It sets no memory limit. It held the memory Go asked of the system to
+// what it held when fn began, and a cold start then reached the limit
+// with the heap all live: from ~11 s to ~24 s it collected every ~160 ms,
+// a core's worth, 3:39 of CPU in its first 60 s for 390k calls and 1166
+// collections. Without it, 2:03–2:06 and 618, and the footprint's peak
+// the same, 835–863 MB against 855 (#2278).
 func underTightGC(fn func()) {
-	defer tightenGC(true)()
+	defer tightenGC()()
 	fn()
 }
 
@@ -626,15 +709,12 @@ func underTightGC(fn func()) {
 // when the first to begin ended before the second.
 var tightGC struct {
 	sync.Mutex
-	n, limits int   // reads under it, and those of them limited
-	was       int   // GOGC before the first
-	limit     int64 // the memory limit before the first limited one
-	limited   bool  // whether that one set one
+	n   int // reads under it
+	was int // GOGC before the first
 }
 
-// tightenGC begins a read under a tight GC, with the memory limit too when
-// limit is set; undo ends it.
-func tightenGC(limit bool) (undo func()) {
+// tightenGC begins a read under a tight GC; undo ends it.
+func tightenGC() (undo func()) {
 	tightGC.Lock()
 	defer tightGC.Unlock()
 	if tightGC.n == 0 {
@@ -645,35 +725,13 @@ func tightenGC(limit bool) (undo func()) {
 		tightGC.was = was
 	}
 	tightGC.n++
-	if limit {
-		if tightGC.limits == 0 {
-			tightGC.limited = false
-			if held := heldMemory(); tightGC.was >= 0 && held < debug.SetMemoryLimit(-1) {
-				tightGC.limit, tightGC.limited = debug.SetMemoryLimit(held), true
-			}
-		}
-		tightGC.limits++
-	}
 	return sync.OnceFunc(func() {
 		tightGC.Lock()
 		defer tightGC.Unlock()
-		if limit {
-			if tightGC.limits--; tightGC.limits == 0 && tightGC.limited {
-				debug.SetMemoryLimit(tightGC.limit)
-			}
-		}
 		if tightGC.n--; tightGC.n == 0 {
 			debug.SetGCPercent(tightGC.was)
 		}
 	})
-}
-
-// heldMemory is what Go holds of the system's memory: all it mapped, less
-// the pages it gave back.
-func heldMemory() int64 {
-	s := []metrics.Sample{{Name: "/memory/classes/total:bytes"}, {Name: "/memory/classes/heap/released:bytes"}}
-	metrics.Read(s)
-	return int64(s[0].Value.Uint64() - s[1].Value.Uint64())
 }
 
 const tightGCPercent = 25
@@ -717,5 +775,66 @@ func openTerminal(command, choice string) error {
 	}
 	// Terminal has read it long before
 	time.AfterFunc(time.Minute, func() { os.Remove(f.Name()) })
+	return nil
+}
+
+// viaOf is what the gateway sent a session's calls to, under any key its
+// gateway record can carry (sessions.GatewayKeys: Raft's Pi says it is Pi).
+func viaOf(x usage.ViaIndex, s sessions.Session) []usage.Via {
+	for _, k := range sessions.GatewayKeys(s) {
+		if v := x.Of(k); v != nil {
+			return v
+		}
+	}
+	return nil
+}
+
+// statsAnswer writes the stats answer into b as an Encoder of
+// struct{ sessions.Stats; Agents } does, its days one at a time: encoded
+// whole, the Encoder's own buffer grew to the ~6 MB answer from nothing
+// after each collection, ~200 MB of 90 s of polls while an agent worked
+// (#2278).
+func statsAnswer(b *bytes.Buffer, st sessions.Stats, agents map[string]string) error {
+	enc := json.NewEncoder(b)
+	// v as Marshal writes it: Encode ends it with a newline
+	put := func(v any) error {
+		if err := enc.Encode(v); err != nil {
+			return err
+		}
+		b.Truncate(b.Len() - 1)
+		return nil
+	}
+	b.WriteString(`{"from":`)
+	if err := put(st.From); err != nil {
+		return err
+	}
+	b.WriteString(`,"to":`)
+	if err := put(st.To); err != nil {
+		return err
+	}
+	b.WriteString(`,"days":`)
+	if st.Days == nil {
+		b.WriteString("null")
+	} else {
+		b.WriteByte('[')
+		for i := range st.Days {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			if err := put(&st.Days[i]); err != nil {
+				return err
+			}
+		}
+		b.WriteByte(']')
+	}
+	b.WriteString(`,"keys":`)
+	if err := put(st.Keys); err != nil {
+		return err
+	}
+	b.WriteString(`,"agents":`)
+	if err := put(agents); err != nil {
+		return err
+	}
+	b.WriteString("}\n")
 	return nil
 }

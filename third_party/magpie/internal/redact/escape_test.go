@@ -233,12 +233,12 @@ func TestMaskJSONArgumentsCutShort(t *testing.T) {
 	// inside it too
 	s := `x\u0040y\nz`
 	found := outsideEscapes(s, []span{
-		{3, 5, "A", ByRule, 0},  // 00 of \u0040: nothing left
-		{1, 7, "B", ByRule, 0},  // the whole \u0040: as it is
-		{0, 4, "C", ByRule, 0},  // ends in it: x
-		{7, 9, "D", ByRule, 0},  // y and the backslash of \n: y
-		{9, 11, "E", ByRule, 0}, // the n of \n and z: z
-		{8, 11, "F", ByRule, 0}, // \nz: as it is
+		{3, 5, "A", ByRule, 0, false},  // 00 of \u0040: nothing left
+		{1, 7, "B", ByRule, 0, false},  // the whole \u0040: as it is
+		{0, 4, "C", ByRule, 0, false},  // ends in it: x
+		{7, 9, "D", ByRule, 0, false},  // y and the backslash of \n: y
+		{9, 11, "E", ByRule, 0, false}, // the n of \n and z: z
+		{8, 11, "F", ByRule, 0, false}, // \nz: as it is
 	})
 	var kept []string
 	for _, f := range found {

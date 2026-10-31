@@ -16,7 +16,7 @@ import (
 // one set on the provider for a model, isn't cut to magpie's default
 // working window (272K, which Codex ran to 95% of: ~258K). Codex is told
 // it as its context_window, on disk and in the gateway's list, with no
-// max_context_window; Claude Code is handed no CLAUDE_CODE_AUTO_COMPACT_
+// auto_compact_token_limit; Claude Code is handed no CLAUDE_CODE_AUTO_COMPACT_
 // WINDOW, so it runs to the CLAUDE_CODE_MAX_CONTEXT_TOKENS it is told. A
 // model whose window nobody typed keeps the default, and a size typed in
 // Settings (Compact at) still comes before a typed window.
@@ -36,14 +36,14 @@ func TestTypedWindowReachesCodexAndClaudeCode(t *testing.T) {
 	must(provider.SaveGroup(provider.Group{ID: "flash", Name: "Flash", Members: []string{"ds/flash"}, Context: 500000}))
 
 	must(codex(home).Fields[0].Set("group/flash"))
-	type window struct{ context, max int }
+	type window struct{ context, compact int }
 	onDisk := func() map[string]window {
 		t.Helper()
 		var got struct {
 			Models []struct {
 				Slug    string `json:"slug"`
 				Context int    `json:"context_window"`
-				Max     int    `json:"max_context_window"`
+				Compact int    `json:"auto_compact_token_limit"`
 			} `json:"models"`
 		}
 		raw := readFile(filepath.Join(home, ".codex", "magpie-models.json"))
@@ -52,7 +52,7 @@ func TestTypedWindowReachesCodexAndClaudeCode(t *testing.T) {
 		}
 		out := map[string]window{}
 		for _, m := range got.Models {
-			out[m.Slug] = window{m.Context, m.Max}
+			out[m.Slug] = window{m.Context, m.Compact}
 		}
 		return out
 	}
@@ -81,7 +81,7 @@ func TestTypedWindowReachesCodexAndClaudeCode(t *testing.T) {
 	expect("typed windows", map[string]window{
 		"group/flash": {500000, 0},       // the group's own size
 		"ds/pro":      {400000, 0},       // the provider's for the model
-		"ds/flash":    {272000, 1000000}, // nobody typed it: the default
+		"ds/flash":    {1000000, 272000}, // nobody typed it: the default
 	}, map[string]int{"group/flash": 500000, "ds/pro": 400000, "ds/flash": 0})
 
 	path := filepath.Join(home, ".claude", "settings.json")
@@ -105,8 +105,8 @@ func TestTypedWindowReachesCodexAndClaudeCode(t *testing.T) {
 	must(provider.SetCompactAt(300000))
 	SyncCatalog()
 	expect("Compact at 300K", map[string]window{
-		"group/flash": {300000, 500000},
-		"ds/pro":      {300000, 400000},
+		"group/flash": {500000, 300000},
+		"ds/pro":      {400000, 300000},
 	}, map[string]int{"group/flash": 0, "ds/pro": 0})
 	must(a.Field("model").Set("group/flash"))
 	if c := env(claudeCompactEnv); c != "300000" {
@@ -196,15 +196,15 @@ func TestLargestMemberTypedWindow(t *testing.T) {
 		Models []struct {
 			Slug    string `json:"slug"`
 			Context int    `json:"context_window"`
-			Max     int    `json:"max_context_window"`
+			Compact int    `json:"auto_compact_token_limit"`
 		} `json:"models"`
 	}
 	raw := readFile(filepath.Join(home, ".codex", "magpie-models.json"))
 	must(json.Unmarshal([]byte(raw), &disk))
 	for _, m := range disk.Models {
-		want := map[string][2]int{"group/ultra": {872000, 0}, "group/loose": {272000, 1000000}}
-		if w, ok := want[m.Slug]; ok && [2]int{m.Context, m.Max} != w {
-			t.Errorf("Codex: on disk %s is told %d (max %d); want %v", m.Slug, m.Context, m.Max, w)
+		want := map[string][2]int{"group/ultra": {872000, 0}, "group/loose": {1000000, 272000}}
+		if w, ok := want[m.Slug]; ok && [2]int{m.Context, m.Compact} != w {
+			t.Errorf("Codex: on disk %s is told %d (compacting at %d); want %v", m.Slug, m.Context, m.Compact, w)
 		}
 	}
 

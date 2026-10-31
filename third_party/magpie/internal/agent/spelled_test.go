@@ -60,7 +60,9 @@ func TestOwnProviderNamedAsMagpies(t *testing.T) {
 }
 
 // OpenCode's own provider that sends to magpie's gateway is magpie's all
-// the same (openCodeRef names a model there by it).
+// the same (openCodeRef names a model there by it), once magpie set
+// OpenCode up: before that, it is a provider the user wrote by hand and
+// theirs (handWired, JFunfunfun on X).
 func TestOpenCodeGatewayProviderIsMagpies(t *testing.T) {
 	syncHome(t)
 	a, err := Find("opencode")
@@ -68,6 +70,13 @@ func TestOpenCodeGatewayProviderIsMagpies(t *testing.T) {
 		t.Fatal(err)
 	}
 	hanakoWrite(t, a.Path, `{"provider":{"relay":{"options":{"baseURL":"`+gatewayV1()+`"},"models":{"relay/glm-4.6":{}}}},"model":"relay/relay/glm-4.6"}`, 0o644)
+	if a.Wired() {
+		t.Fatalf("its own provider at the gateway, written by hand, reads as connected: %v", a.Values())
+	}
+	// as magpie opencode relay/glm-4.6 sets it (9b1641a49)
+	if err := a.Apply("model", "relay/relay/glm-4.6"); err != nil {
+		t.Fatal(err)
+	}
 	if !a.Wired() {
 		t.Fatalf("a model through its own provider at the gateway isn't magpie's: %v (%s)", a.Values(), filepath.Base(a.Path))
 	}

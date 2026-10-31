@@ -13,7 +13,7 @@ import (
 func main() {
 	out := flag.String("out", "", "JavaScript asset to write")
 	flag.Parse()
-	b, err := json.MarshalIndent(usage.PurposeKinds(), "", "  ")
+	b, err := json.Marshal(usage.PurposeKinds())
 	if err != nil {
 		log.Fatal(err)
 	}

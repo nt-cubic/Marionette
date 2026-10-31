@@ -182,7 +182,7 @@ func TestChatRelayLeavesOutEmptyAssistant(t *testing.T) {
 		{"no content", "ds/glm-5.2", `{"role":"user","content":"hi"},{"role":"assistant"},{"role":"user","content":"continue"}`,
 			"user", `"hi\n\ncontinue"`},
 		{"blank parts", "ds/glm-5.2", `{"role":"user","content":"hi"},{"role":"assistant","content":[{"type":"text","text":""}]},{"role":"user","content":[{"type":"text","text":"continue"}]}`,
-			"user", `[{"text":"hi","type":"text"},{"text":"continue","type":"text"}]`},
+			"user", `"hi\n\ncontinue"`},
 		{"after a tool result", "ds/deepseek-v4.1-flash", `{"role":"user","content":"what time is it?"},
 			{"role":"assistant","content":null,"reasoning_content":"Ask.","tool_calls":[` + timeCall + `]},
 			{"role":"tool","tool_call_id":"call_1","content":"12:00"},

@@ -80,6 +80,9 @@ const almaCronTitle = "⏰ Cron:"
 // files change with every write to any chat, so a chat is read again only
 // when its own rows did.
 func almaFiles() []file {
+	if !Reads("alma") {
+		return nil
+	}
 	path := almaDB()
 	if path == "" || !fileExists(path) {
 		return nil

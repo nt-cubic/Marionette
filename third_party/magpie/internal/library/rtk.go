@@ -61,8 +61,8 @@ type rtkSpec struct {
 	// environment, so it writes where the agent reads
 	env func(a *agent.Agent) []string
 	// blocked says why rtk's installer mustn't be run for the agent as it
-	// is on this machine, "" when it can be
-	blocked func() string
+	// is where it lives (this machine, or its WSL distro), "" when it can be
+	blocked func(a *agent.Agent) string
 }
 
 func contains(path, s string) bool {
@@ -85,59 +85,61 @@ func rtkRef(line string) bool {
 var rtkSpecs = map[string]rtkSpec{
 	"claude": {
 		patch: true,
-		has: func(*agent.Agent) bool {
-			return contains(filepath.Join(claudeDir(), "settings.json"), "rtk hook claude")
+		has: func(a *agent.Agent) bool {
+			return contains(filepath.Join(rtkClaudeDir(a), "settings.json"), "rtk hook claude")
 		},
-		files: func(*agent.Agent) []string {
-			d := claudeDir()
+		files: func(a *agent.Agent) []string {
+			d := rtkClaudeDir(a)
 			return []string{filepath.Join(d, "settings.json"), filepath.Join(d, "CLAUDE.md"), filepath.Join(d, "RTK.md")}
 		},
-		remove: func(*agent.Agent) error {
-			d := claudeDir()
+		remove: func(a *agent.Agent) error {
+			d := rtkClaudeDir(a)
 			return errors.Join(
 				dropHook(filepath.Join(d, "settings.json"), "hooks.PreToolUse", "rtk hook claude"),
 				dropLines(filepath.Join(d, "CLAUDE.md"), rtkRef),
 				rm(filepath.Join(d, "RTK.md")))
 		},
-		dir: func(*agent.Agent) string { return claudeDir() },
+		dir: func(a *agent.Agent) string { return rtkClaudeDir(a) },
 	},
 	"codex": {
 		flags:   []string{"--codex"},
 		blocked: codexBlocked,
-		has:     func(*agent.Agent) bool { return contains(filepath.Join(codexDir(), "hooks.json"), "rtk hook codex") },
-		files: func(*agent.Agent) []string {
-			d := codexDir()
+		has: func(a *agent.Agent) bool {
+			return contains(filepath.Join(rtkCodexDir(a), "hooks.json"), "rtk hook codex")
+		},
+		files: func(a *agent.Agent) []string {
+			d := rtkCodexDir(a)
 			return []string{filepath.Join(d, "hooks.json"), filepath.Join(d, "AGENTS.md"), filepath.Join(d, "RTK.md")}
 		},
-		remove: func(*agent.Agent) error {
-			d := codexDir()
+		remove: func(a *agent.Agent) error {
+			d := rtkCodexDir(a)
 			return errors.Join(
 				dropHook(filepath.Join(d, "hooks.json"), "hooks.PreToolUse", "rtk hook codex"),
 				dropLines(filepath.Join(d, "AGENTS.md"), rtkRef),
 				rm(filepath.Join(d, "RTK.md")))
 		},
-		dir: func(*agent.Agent) string { return codexDir() },
+		dir: func(a *agent.Agent) string { return rtkCodexDir(a) },
 	},
 	"gemini": {
 		// --hook-only: without it the installer writes its own GEMINI.md
 		// over the user's
 		flags: []string{"--gemini", "--hook-only"}, patch: true,
-		has: func(*agent.Agent) bool {
-			return contains(filepath.Join(home(), ".gemini", "settings.json"), "rtk-hook-gemini")
+		has: func(a *agent.Agent) bool {
+			return contains(filepath.Join(rtkHome(a), ".gemini", "settings.json"), "rtk-hook-gemini")
 		},
-		files: func(*agent.Agent) []string {
-			d := filepath.Join(home(), ".gemini")
+		files: func(a *agent.Agent) []string {
+			d := filepath.Join(rtkHome(a), ".gemini")
 			return []string{filepath.Join(d, "settings.json"), filepath.Join(d, "hooks", "rtk-hook-gemini.sh"), filepath.Join(d, "hooks", ".rtk-hook.sha256")}
 		},
-		remove: func(*agent.Agent) error {
-			d := filepath.Join(home(), ".gemini")
+		remove: func(a *agent.Agent) error {
+			d := filepath.Join(rtkHome(a), ".gemini")
 			err := errors.Join(
 				dropHook(filepath.Join(d, "settings.json"), "hooks.BeforeTool", "rtk-hook-gemini"),
 				rm(filepath.Join(d, "hooks", "rtk-hook-gemini.sh"), filepath.Join(d, "hooks", ".rtk-hook.sha256")))
 			os.Remove(filepath.Join(d, "hooks")) // when nothing else is in it
 			return err
 		},
-		dir: func(*agent.Agent) string { return filepath.Join(home(), ".gemini") },
+		dir: func(a *agent.Agent) string { return filepath.Join(rtkHome(a), ".gemini") },
 	},
 	"opencode": {
 		flags: []string{"--opencode"}, patch: true, withClaude: true, blocked: openCodeBlocked,
@@ -148,29 +150,31 @@ var rtkSpecs = map[string]rtkSpec{
 	},
 	"cursor": {
 		flags: []string{"--agent", "cursor"}, patch: true, withClaude: true,
-		has: func(*agent.Agent) bool {
-			return contains(filepath.Join(home(), ".cursor", "hooks.json"), "rtk hook cursor")
+		has: func(a *agent.Agent) bool {
+			return contains(filepath.Join(rtkHome(a), ".cursor", "hooks.json"), "rtk hook cursor")
 		},
-		files: func(*agent.Agent) []string { return []string{filepath.Join(home(), ".cursor", "hooks.json")} },
-		remove: func(*agent.Agent) error {
-			return dropHook(filepath.Join(home(), ".cursor", "hooks.json"), "hooks.preToolUse", "rtk hook cursor")
+		files: func(a *agent.Agent) []string { return []string{filepath.Join(rtkHome(a), ".cursor", "hooks.json")} },
+		remove: func(a *agent.Agent) error {
+			return dropHook(filepath.Join(rtkHome(a), ".cursor", "hooks.json"), "hooks.preToolUse", "rtk hook cursor")
 		},
-		dir: func(*agent.Agent) string { return filepath.Join(home(), ".cursor") },
+		dir: func(a *agent.Agent) string { return filepath.Join(rtkHome(a), ".cursor") },
 	},
 	"copilot": {
 		flags: []string{"--copilot"}, patch: true,
-		has: func(*agent.Agent) bool { return exists(filepath.Join(home(), ".copilot", "hooks", "rtk-rewrite.json")) },
-		files: func(*agent.Agent) []string {
-			d := filepath.Join(home(), ".copilot")
+		has: func(a *agent.Agent) bool {
+			return exists(filepath.Join(rtkHome(a), ".copilot", "hooks", "rtk-rewrite.json"))
+		},
+		files: func(a *agent.Agent) []string {
+			d := filepath.Join(rtkHome(a), ".copilot")
 			return []string{filepath.Join(d, "hooks", "rtk-rewrite.json"), filepath.Join(d, "copilot-instructions.md")}
 		},
-		remove: func(*agent.Agent) error {
-			d := filepath.Join(home(), ".copilot")
+		remove: func(a *agent.Agent) error {
+			d := filepath.Join(rtkHome(a), ".copilot")
 			return errors.Join(
 				rm(filepath.Join(d, "hooks", "rtk-rewrite.json")),
 				dropBlock(filepath.Join(d, "copilot-instructions.md"), "<!-- rtk-instructions", "<!-- /rtk-instructions -->"))
 		},
-		dir: func(*agent.Agent) string { return filepath.Join(home(), ".copilot") },
+		dir: func(a *agent.Agent) string { return filepath.Join(rtkHome(a), ".copilot") },
 	},
 	// Antigravity CLI (agy): rtk 0.51 on writes a plugin of its own into
 	// Antigravity's global customization folder, ~/.gemini/config, shared
@@ -182,18 +186,53 @@ var rtkSpecs = map[string]rtkSpec{
 	// (rtk-ai/rtk#3404), so the folder is taken out by magpie.
 	"agy": {
 		flags: []string{"--agent", "antigravity"}, blocked: agyBlocked,
-		has: func(*agent.Agent) bool {
-			return contains(filepath.Join(agyPlugin(), "hooks.json"), "rtk hook antigravity")
+		has: func(a *agent.Agent) bool {
+			return contains(filepath.Join(agyPlugin(a), "hooks.json"), "rtk hook antigravity")
 		},
-		files: func(*agent.Agent) []string {
-			d := agyPlugin()
+		files: func(a *agent.Agent) []string {
+			d := agyPlugin(a)
 			return []string{filepath.Join(d, "plugin.json"), filepath.Join(d, "hooks.json"), filepath.Join(d, "rules", "AGENTS.md")}
 		},
-		remove: func(*agent.Agent) error { return os.RemoveAll(agyPlugin()) },
-		dir:    func(*agent.Agent) string { return filepath.Dir(filepath.Dir(agyPlugin())) },
+		remove: func(a *agent.Agent) error { return os.RemoveAll(agyPlugin(a)) },
+		dir:    func(a *agent.Agent) string { return filepath.Dir(filepath.Dir(agyPlugin(a))) },
 	},
 	"pi":  extensionSpec("pi"),
 	"omp": extensionSpec("omp"),
+	// Factory's Droid: rtk 0.44 on (src/hooks/init/droid.rs in 1.1.0)
+	// adds a PreToolUse group matching Execute, running rtk hook droid, to
+	// the one file of Droid's whose PreToolUse hooks Droid runs: the root
+	// hooks.json (or the legacy hooks/hooks.json when there's none), else
+	// settings.json's hooks, and takes a stale one out of the others. It
+	// finds Droid's folder as Droid does, $FACTORY_HOME_OVERRIDE/.factory
+	// or ~/.factory, and is told the one magpie found Droid in. It reads
+	// no patch mode, so --auto-patch isn't given.
+	"droid": {
+		flags: []string{"--agent", "droid"}, blocked: droidBlocked,
+		has: func(a *agent.Agent) bool {
+			for _, f := range droidHookFiles(a) {
+				if contains(f.path, droidHook) {
+					return true
+				}
+			}
+			return false
+		},
+		files: func(a *agent.Agent) []string {
+			var out []string
+			for _, f := range droidHookFiles(a) {
+				out = append(out, f.path)
+			}
+			return out
+		},
+		remove: func(a *agent.Agent) error {
+			var errs []error
+			for _, f := range droidHookFiles(a) {
+				errs = append(errs, dropHook(f.path, f.key, droidHook))
+			}
+			return errors.Join(errs...)
+		},
+		dir: func(a *agent.Agent) string { return a.Dir },
+		env: func(a *agent.Agent) []string { return []string{"FACTORY_HOME_OVERRIDE=" + filepath.Dir(a.Dir)} },
+	},
 	// Hermes's folder is the agent's (appdir.HermesHome): $HERMES_HOME,
 	// else %LOCALAPPDATA%\hermes on Windows and ~/.hermes elsewhere. rtk
 	// (0.51, src/hooks/init/hermes.rs) knows only $HERMES_HOME and
@@ -227,13 +266,56 @@ var rtkSpecs = map[string]rtkSpec{
 var rtkNoHook = map[string]string{
 	"dsh": "RTK has no hook for DeepSeek Harness yet: RTK works by rewriting the shell command an agent is about to run, and dsh's hooks can only allow or deny a command, not change it; rtk init has no --agent dsh either (github.com/rtk-ai/rtk/issues/3847)",
 	// rtk init's agents are claude, cursor, codex, copilot, gemini,
-	// opencode and the rest of rtkSpecs (src/hooks/init in rtk 1.0.1).
+	// opencode and the rest of rtkSpecs (src/hooks/init in rtk 1.1.0).
 	// There is no grok or grok-app, so a hook written here would have
 	// nowhere to go, for Grok Build no more than for the App that runs it.
 	// rtk-ai/rtk#2136 asks for Grok Build, and Grok App runs Grok Build,
 	// so the two share it on purpose (sharedRTKIssues in the test).
 	"grok":     "RTK has no hook for Grok Build yet: rtk init has no Grok agent, so it cannot rewrite the shell commands Grok Build runs (github.com/rtk-ai/rtk/issues/2136)",
 	"grok-app": "RTK has no hook for Grok App yet: rtk init has no Grok or Grok App agent, so it cannot rewrite the shell commands Grok App runs (github.com/rtk-ai/rtk/issues/2136)",
+	// rtk 1.1.0 has no Qoder agent: rtk-ai/rtk#1327 asks for one, and its
+	// PR (#1721) is still open. Qoder CN is Qoder's China build, so the two
+	// share it on purpose (sharedRTKIssues in the test).
+	"qoder":    "RTK has no hook for Qoder yet: rtk init has no Qoder agent (RTK 1.1.0), so it cannot rewrite the shell commands Qoder CLI runs (github.com/rtk-ai/rtk/issues/1327)",
+	"qoder-cn": "RTK has no hook for Qoder CN yet: rtk init has no Qoder agent (RTK 1.1.0), so it cannot rewrite the shell commands Qoder CN's CLI runs (github.com/rtk-ai/rtk/issues/1327)",
+	// rtk init --agent cline writes .clinerules into the folder it is run
+	// in, asking the model to type rtk itself, and has no hook; it is
+	// project-only (instructions_agents.rs in 1.1.0), so there is nothing
+	// to give every project. rtk-ai/rtk#3841 asks for a hook through Cline
+	// CLI's own hooks.
+	"cline": "RTK has no hook for Cline yet: rtk init --agent cline only writes a .clinerules into one project, asking the model to type rtk itself, and nothing for every project (github.com/rtk-ai/rtk/issues/3841)",
+	// rtk init --agent kimi adds instructions to one project's AGENTS.md and
+	// refuses -g: Kimi Code's PreToolUse hooks can allow or deny a command
+	// but not rewrite it (instructions_agents.rs in 1.1.0).
+	"kimi": "RTK has no hook for Kimi Code: Kimi Code's hooks can only allow or deny a command, not rewrite it, so rtk init --agent kimi only adds instructions to one project's AGENTS.md and refuses to install for every project",
+}
+
+// droidHook is the command rtk's Droid hook runs.
+const droidHook = "rtk hook droid"
+
+// droidHookFile is one of Droid's files with PreToolUse hooks, and where
+// in it they are.
+type droidHookFile struct{ path, key string }
+
+// droidHookFiles are every file Droid reads PreToolUse hooks from, as rtk
+// 1.1.0's droid_hook_file_candidates: hooks.json and the legacy
+// hooks/hooks.json hold them at the top, settings.json under hooks.
+func droidHookFiles(a *agent.Agent) []droidHookFile {
+	return []droidHookFile{
+		{filepath.Join(a.Dir, "hooks.json"), "PreToolUse"},
+		{filepath.Join(a.Dir, "hooks", "hooks.json"), "PreToolUse"},
+		{filepath.Join(a.Dir, "settings.json"), "hooks.PreToolUse"},
+	}
+}
+
+// droidBlocked: rtk has a Droid agent from 0.44.0 on; an older one refuses
+// --agent droid.
+func droidBlocked(a *agent.Agent) string {
+	v := rtkVersionOf(a)
+	if v == "" || !older(v, 0, 44) {
+		return ""
+	}
+	return fmt.Sprintf("Droid's hook needs RTK 0.44 or newer, and this RTK is %s, which has no Droid hook. Update RTK (brew upgrade rtk, or its installer again), then switch it on", v)
 }
 
 func opencodePlugin(a *agent.Agent) string {
@@ -251,12 +333,12 @@ func opencodePlugin(a *agent.Agent) string {
 // setup() beside OpenCode 1's server(). So with an OpenCode 2 here, rtk is
 // given to OpenCode only by an rtk of 0.52 or newer; an older one, or one
 // that doesn't say its version, would only add a plugin that fails to load.
-func openCodeBlocked() string {
-	v := openCodeVersion()
+func openCodeBlocked(a *agent.Agent) string {
+	v := openCodeVersionOf(a)
 	if !openCode2(v) {
 		return ""
 	}
-	r := rtkVersion()
+	r := rtkVersionOf(a)
 	if r != "" && !older(r, 0, 52) {
 		return ""
 	}
@@ -283,17 +365,17 @@ func openCodeHas(a *agent.Agent) bool {
 	if !exists(p) {
 		return false
 	}
-	if contains(p, "setup(") || !openCode2(openCodeVersion()) {
+	if contains(p, "setup(") || !openCode2(openCodeVersionOf(a)) {
 		return true
 	}
-	return openCodeBlocked() != ""
+	return openCodeBlocked(a) != ""
 }
 
 // codexBlocked: rtk has a hook for Codex from 0.50.0 on (rtk hook codex in
 // hooks.json); before that rtk init --codex only puts @RTK.md in AGENTS.md,
 // which rewrites no command, so an older rtk isn't run for Codex.
-func codexBlocked() string {
-	v := rtkVersion()
+func codexBlocked(a *agent.Agent) string {
+	v := rtkVersionOf(a)
 	if v == "" || !older(v, 0, 50) {
 		return ""
 	}
@@ -301,13 +383,15 @@ func codexBlocked() string {
 }
 
 // agyPlugin is the folder rtk's installer writes its Antigravity plugin to.
-func agyPlugin() string { return filepath.Join(home(), ".gemini", "config", "plugins", "rtk") }
+func agyPlugin(a *agent.Agent) string {
+	return filepath.Join(rtkHome(a), ".gemini", "config", "plugins", "rtk")
+}
 
 // agyBlocked: rtk installs for Antigravity globally from 0.51.0 on; 0.50
 // knows it only per project and fails rtk init -g --agent antigravity
 // ("Antigravity is project-scoped"), so an older rtk isn't run for it.
-func agyBlocked() string {
-	v := rtkVersion()
+func agyBlocked(a *agent.Agent) string {
+	v := rtkVersionOf(a)
 	if v == "" || !older(v, 0, 51) {
 		return ""
 	}
@@ -378,13 +462,13 @@ func hermesPlugin(a *agent.Agent) string { return filepath.Join(a.Dir, "plugins"
 
 // extensionSpec is pi's and omp's: an extension of rtk's own, and nothing else.
 func extensionSpec(id string) rtkSpec {
-	ext := func() string { return filepath.Join(home(), "."+id, "agent", "extensions", "rtk.ts") }
+	ext := func(a *agent.Agent) string { return filepath.Join(rtkHome(a), "."+id, "agent", "extensions", "rtk.ts") }
 	return rtkSpec{
 		flags: []string{"--agent", id}, patch: true,
-		has:    func(*agent.Agent) bool { return exists(ext()) },
-		files:  func(*agent.Agent) []string { return []string{ext()} },
-		remove: func(*agent.Agent) error { return rm(ext()) },
-		dir:    func(*agent.Agent) string { return filepath.Join(home(), "."+id, "agent") },
+		has:    func(a *agent.Agent) bool { return exists(ext(a)) },
+		files:  func(a *agent.Agent) []string { return []string{ext(a)} },
+		remove: func(a *agent.Agent) error { return rm(ext(a)) },
+		dir:    func(a *agent.Agent) string { return filepath.Join(rtkHome(a), "."+id, "agent") },
 	}
 }
 
@@ -456,7 +540,12 @@ func dropHook(path, key, mark string) error {
 	if err := edit.DelJSON(path, key); err != nil {
 		return err
 	}
-	parent := key[:strings.LastIndex(key, ".")]
+	i := strings.LastIndex(key, ".")
+	if i < 0 {
+		// the array was at the top (Droid's hooks.json): the file stays
+		return nil
+	}
+	parent := key[:i]
 	if v, ok := edit.GetJSON(path, parent); ok && strings.TrimSpace(v) == "{}" {
 		return edit.DelJSON(path, parent)
 	}
@@ -553,6 +642,12 @@ type RTKAgent struct {
 	Blocked string `json:"blocked,omitempty"`
 	// NoHook: rtk has no hook for it at all (rtkNoHook), and Blocked says why
 	NoHook bool `json:"noHook,omitempty"`
+	// WSL is the distro an agent in WSL lives in: its hook runs the rtk
+	// of that distro (RTKView.WSL), not this machine's
+	WSL string `json:"wsl,omitempty"`
+	// Asleep: its distro isn't running, so its files aren't read (that
+	// would start it) and On isn't known
+	Asleep bool `json:"asleep,omitempty"`
 }
 
 // RTKGain is what rtk says it saved, over every command it has recorded.
@@ -618,7 +713,9 @@ type RTKView struct {
 	PathLink bool       `json:"pathLink,omitempty"`
 	OffPath  bool       `json:"offPath,omitempty"`
 	Agents   []RTKAgent `json:"agents"`
-	URL      string     `json:"url"`
+	// WSL is the rtk of each WSL distro an agent listed lives in
+	WSL []RTKDistro `json:"wsl,omitempty"`
+	URL string      `json:"url"`
 	// Install is the command Install RTK runs, shown before it is clicked
 	Install string `json:"install,omitempty"`
 	// Restart are the agents a change reached, to be restarted to see it
@@ -700,7 +797,7 @@ func rtkAgents(agents []*agent.Agent) []*agent.Agent {
 	}
 	var out []*agent.Agent
 	for _, a := range agents {
-		sp, ok := rtkSpecs[a.ID]
+		sp, ok := rtkSpecs[rtkKind(a.ID)]
 		// an uninstall that left the folder behind (#2254) isn't given rtk,
 		// as the library gives it nothing (Targets); one with rtk's hook
 		// still shows, so the hook can be taken out
@@ -723,18 +820,26 @@ func ReadRTK() *RTKView {
 	// the agents are detected once and the two passes below share them
 	agents := detected()
 	for _, a := range rtkAgents(agents) {
-		sp := rtkSpecs[a.ID]
-		ra := RTKAgent{ID: a.ID, Name: a.Name, Icon: a.Icon, On: sp.has(a)}
+		sp := rtkSpecs[rtkKind(a.ID)]
+		ra := RTKAgent{ID: a.ID, Name: a.Name, Icon: a.Icon, WSL: a.WSL}
+		// a stopped distro's files aren't opened: that starts it (#3896)
+		if a.WSL != "" && !rtkWSLLive(a) {
+			ra.Asleep = true
+			v.Agents = append(v.Agents, ra)
+			continue
+		}
+		ra.On = sp.has(a)
 		if sp.blocked != nil {
-			ra.Blocked = sp.blocked()
+			ra.Blocked = sp.blocked(a)
 		}
 		v.Agents = append(v.Agents, ra)
 	}
 	for _, a := range agents {
-		if why, ok := rtkNoHook[a.ID]; ok && !a.CLIMissing() {
-			v.Agents = append(v.Agents, RTKAgent{ID: a.ID, Name: a.Name, Icon: a.Icon, Blocked: why, NoHook: true})
+		if why, ok := rtkNoHook[rtkKind(a.ID)]; ok && !a.CLIMissing() {
+			v.Agents = append(v.Agents, RTKAgent{ID: a.ID, Name: a.Name, Icon: a.Icon, Blocked: why, NoHook: true, WSL: a.WSL})
 		}
 	}
+	v.WSL = rtkDistros(v.Agents)
 	if v.Path == "" {
 		return v
 	}
@@ -890,24 +995,37 @@ func SetRTK(id string, on bool) (*RTKView, error) {
 			a = x
 		}
 	}
-	sp, ok := rtkSpecs[id]
+	kind := rtkKind(id)
+	sp, ok := rtkSpecs[kind]
 	switch {
-	case !ok && rtkNoHook[id] != "":
-		return nil, errors.New(rtkNoHook[id])
+	case !ok && rtkNoHook[kind] != "":
+		return nil, errors.New(rtkNoHook[kind])
 	case !ok:
 		return nil, fmt.Errorf("rtk has no hook for %s", id)
 	case a == nil:
 		return nil, fmt.Errorf("%s isn't installed", id)
+	case a.WSL != "" && !rtkWSLLive(a):
+		// nothing in it is read or run: that would start it (#3896)
+		return nil, fmt.Errorf("WSL %s isn't running, and magpie doesn't start it to change RTK for %s: start the distro (open its terminal), then switch it again", a.WSL, a.Name)
 	case sp.has(a) == on:
 		return ReadRTK(), nil
 	}
 	if on && sp.blocked != nil {
-		if why := sp.blocked(); why != "" {
+		if why := sp.blocked(a); why != "" {
 			return nil, errors.New(why)
 		}
 	}
-	bin := rtkPath()
-	if on && bin == "" {
+	bin := ""
+	if a.WSL != "" {
+		// the hook runs in the distro, so it is the distro's rtk that is
+		// run for it: a Windows rtk.exe is no path there
+		if on {
+			d := rtkDistroOf(a.WSL, true)
+			if bin = d.Path; bin == "" {
+				return nil, fmt.Errorf("RTK isn't installed in WSL %s — install it there first (magpie library rtk install %s)", a.WSL, a.WSL)
+			}
+		}
+	} else if bin = rtkPath(); on && bin == "" {
 		return nil, fmt.Errorf("rtk isn't installed — install it first (%s)", RTKURL)
 	}
 	b := newBackups()
@@ -937,9 +1055,12 @@ func SetRTK(id string, on bool) (*RTKView, error) {
 }
 
 func rtkInstall(bin string, a *agent.Agent) error {
-	sp := rtkSpecs[a.ID]
+	sp := rtkSpecs[rtkKind(a.ID)]
 	if err := os.MkdirAll(sp.dir(a), 0o755); err != nil {
 		return err
+	}
+	if a.WSL != "" {
+		return rtkInstallWSL(bin, a, sp)
 	}
 	args := append([]string{"init", "-g"}, sp.flags...)
 	if sp.patch {
@@ -970,8 +1091,9 @@ func rtkInstall(bin string, a *agent.Agent) error {
 // rtkScript is rtk's own installer, which puts it in ~/.local/bin.
 const rtkScript = "https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh"
 
-// rtkInstaller is how rtk is installed here: with Homebrew when there is
-// one, winget on Windows, else rtk's own script; nil when there's no way.
+// rtkInstaller is how rtk is installed here: with Homebrew when it has
+// rtk's bottle for this computer, winget on Windows, else rtk's own
+// script; nil when there's no way.
 func rtkInstaller() []string {
 	if runtime.GOOS == "windows" {
 		if _, err := proc.Look("winget"); err == nil {
@@ -979,13 +1101,68 @@ func rtkInstaller() []string {
 		}
 		return nil
 	}
-	if _, err := proc.Look("brew"); err == nil {
+	if brew, err := proc.Look("brew"); err == nil && brewBottled(brew) {
 		return []string{"brew", "install", "rtk"}
 	}
 	if _, err := proc.Look("curl"); err == nil {
 		return []string{"sh", "-c", "curl -fsSL " + rtkScript + " | sh"}
 	}
 	return nil
+}
+
+// brewBottled says whether Homebrew installs rtk on this computer from its
+// bottle, a download of seconds. Without one, `brew install rtk` builds rtk
+// from source, and first the Rust, LLVM and Python it builds with: hours,
+// while Install RTK waits five minutes, so it never finished and was ended
+// each time it was tried again (Scott__D on X). Homebrew bottles rtk for
+// Apple silicon on the newest macOS versions only: not for an Intel Mac,
+// nor for macOS 14 and older (brew there would install 19 formulae, rust
+// and llvm among them, from source). brew info says which: "rtk: stable
+// 1.1.0 (bottled)" only when brew would pour the bottle here. A brew that
+// doesn't say, or doesn't answer, is not used: rtk's own script, which
+// downloads rtk's release for this system, is.
+//
+// ReadRTK asks it on every read while rtk isn't installed, so the answer is
+// kept for brewBottledFor, per brew.
+var brewBottled = func(brew string) bool {
+	bottled.Lock()
+	defer bottled.Unlock()
+	if bottled.brew == brew && time.Since(bottled.at) < brewBottledFor {
+		return bottled.ok
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), brewInfoWait)
+	defer cancel()
+	cmd := proc.CommandContext(ctx, brew, "info", "rtk")
+	cmd.Stdin = nil
+	cmd.Env = append(os.Environ(), "HOMEBREW_NO_AUTO_UPDATE=1", "HOMEBREW_NO_ENV_HINTS=1", "NONINTERACTIVE=1")
+	out, err := cmd.Output()
+	ok := err == nil && brewSaysBottled(string(out))
+	bottled.brew, bottled.ok, bottled.at = brew, ok, time.Now()
+	return ok
+}
+
+var bottled struct {
+	sync.Mutex
+	brew string
+	ok   bool
+	at   time.Time
+}
+
+const brewBottledFor = time.Hour
+
+// brewInfoWait is how long brew info is given: it may first download
+// Homebrew's formula list when its copy is old.
+var brewInfoWait = 30 * time.Second
+
+// brewSaysBottled reads brew info rtk's first line, "==> rtk: stable 1.1.0
+// (bottled), HEAD".
+func brewSaysBottled(out string) bool {
+	for _, l := range strings.Split(ansiSeq.ReplaceAllString(out, ""), "\n") {
+		if l = strings.TrimSpace(l); strings.HasPrefix(l, "==> rtk: ") {
+			return strings.Contains(l, "(bottled)")
+		}
+	}
+	return false
 }
 
 // InstallRTK installs rtk, when the user asks for it.
@@ -1016,10 +1193,10 @@ func RTKTakes(q string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if why := rtkNoHook[a.ID]; why != "" {
+	if why := rtkNoHook[rtkKind(a.ID)]; why != "" {
 		return "", errors.New(why)
 	}
-	if _, ok := rtkSpecs[a.ID]; !ok {
+	if _, ok := rtkSpecs[rtkKind(a.ID)]; !ok {
 		var ids []string
 		for id := range rtkSpecs {
 			ids = append(ids, id)

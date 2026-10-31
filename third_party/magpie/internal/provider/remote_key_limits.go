@@ -238,8 +238,8 @@ func askRemoteKeyLimit(ctx context.Context, p Provider, key string) (*remoteKeyA
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Accept", "application/json")
+	p.signRemote(req, key)
 	res, err := p.Do(http.DefaultClient, req)
 	if err != nil {
 		return nil, fmt.Errorf("%s %s: %w", errRemoteUnreachable, remoteName(p), err)

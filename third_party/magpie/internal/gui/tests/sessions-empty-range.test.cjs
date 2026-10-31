@@ -34,10 +34,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       });
       await page.addInitScript(() => { localStorage.setItem("magpie.usageTab", "sessions"); localStorage.setItem("magpie.sessRange", "today"); });
       await page.goto("http://magpie.test/?view=usage");
-      await page.locator('#sessAgent [data-agent="opencode"]').click();
+      // the agent filter is a menu (as the model and folder ones)
+      await page.locator("#sessAgent").click();
+      await page.locator('.sess-menu .pm-item[title="opencode"]').click();
       await page.locator("#sessStats .sess-show-history").click();
       await page.getByText("Historical conversation", { exact: true }).waitFor();
-      assert.equal(await page.locator('#sessAgent [data-agent="opencode"]').getAttribute("aria-pressed"), "true");
+      assert.equal(await page.locator("#sessAgent").innerText(), "OpenCode");
+      assert.match(await page.locator("#sessAgent").getAttribute("class"), /\bset\b/);
       assert.equal(await page.locator("#sessRange .opt.on").innerText(), all);
     });
   }

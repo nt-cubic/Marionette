@@ -103,7 +103,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           const { context, page, errors } = await open(browser, lang, width, posts);
           const box = page.locator("#discoveryList");
           const opts = box.locator(".opt");
-          assert.equal((await page.locator("#setPage-privacy .row-head .label").last().textContent()).trim(), head);
+          // the heading right above the list (Agents' session history follows it)
+          assert.equal((await box.evaluate((b) => b.previousElementSibling.querySelector(".label").textContent)).trim(), head);
           assert.equal((await box.locator(".name").textContent()).trim(), name);
           const sub = (await box.locator(".sub").textContent()).trim();
           assert(sub.includes("Claude Code") && sub.includes("Codex"), "the sub names what is read: " + sub);

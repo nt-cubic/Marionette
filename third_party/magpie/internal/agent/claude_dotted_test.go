@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/yetone/magpie/internal/edit"
-	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -130,7 +129,7 @@ func TestClaudeDottedVersionsGoInDashed(t *testing.T) {
 	if model() != "relay/claude-haiku-4-5" || env("ANTHROPIC_DEFAULT_OPUS_MODEL") != "relay/claude-haiku-4-5" {
 		t.Fatalf("followers go with the pick:\n%s", readFile(path))
 	}
-	if got := claudeStandInAt(path, "some-unknown-model", gateway.URL()); got != "relay/claude-haiku-4.5" {
+	if got := claudeStandInAt(here(""), path, "some-unknown-model"); got != "relay/claude-haiku-4.5" {
 		t.Fatalf("stand-in: %q", got)
 	}
 	noDots()

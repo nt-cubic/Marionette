@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,11 +31,19 @@ var codexRecheck struct {
 	at time.Time
 }
 
-// codexReadNow reads whether Codex's account is out; a var for tests.
+// codexReadNow reads whether Codex's account is out, and signs Codex in
+// to the next account with room when it is, as KeepOnAnAccountWithRoom's
+// look does: the Codex app greys its Send once its account is out, so no
+// request comes to tell magpie again, and that look could be five minutes
+// off (danzi002 on Discord restarted the app each time instead). A var
+// for tests.
 var codexReadNow = func(user string) {
 	StaleAllowance("codex", user)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
+	if _, err := SwitchWhenSpent(ctx, "codex"); err != nil {
+		log.Printf("codex: switching to an account with room: %v", err)
+	}
 	noteCodexUsedUp(CodexUsedUp(ctx))
 }
 

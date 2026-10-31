@@ -476,7 +476,7 @@ func pluggedIcon(p *agentplug.Agent) string {
 	if ic := provider.PluginOwnIcon(p.Desc.Icon); ic != "" {
 		return ic
 	}
-	if ic := plugin.Icon(p.Spec, p.Desc.ID); ic != "" {
+	if ic := provider.MarketIcon(plugin.Icon(p.Spec, p.Desc.ID)); ic != "" {
 		return ic
 	}
 	// magpie's glyph for one it has no picture of, not an empty square

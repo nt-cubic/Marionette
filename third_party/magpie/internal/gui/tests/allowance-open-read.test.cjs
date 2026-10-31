@@ -32,7 +32,7 @@ function serve(lang, acct) {
       return json([{ provider: "codex", name: "Codex", user: "a@example.com", plan: "plus",
         windows: [{ name: "5 hours", used: acct.kept, resetsAt: "2030-01-01T00:00:00Z" }] }]);
     }
-    if (url.pathname === "/api/usage/quotas/history") return json([]);
+    if (url.pathname === "/api/usage/quotas/history") { acct.hist++; return json([]); }
     if (url.pathname === "/api/usage") return json({ calls: 1, input: 100, output: 10, cost: 0.01, series: [], agents: [], models: [] });
     if (url.pathname === "/api/groups") return json({ groups: [], models: [] });
     if (url.pathname === "/api/plugins") return json({ plugins: [] });
@@ -45,7 +45,7 @@ function serve(lang, acct) {
 }
 
 async function open(browser, t, surface, lang) {
-  const acct = { reads: [], kept: 10, vendor: 40, hold: null };
+  const acct = { reads: [], kept: 10, vendor: 40, hold: null, hist: 0 };
   const errors = [];
   const context = await browser.newContext({ viewport: surface === "panel" ? { width: 360, height: 640 } : { width: 1000, height: 760 }, reducedMotion: "reduce" });
   t.after(() => context.close());
@@ -115,6 +115,23 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator(":is(#usageTab .opt, .nav-s):visible").first().click();
       await shows(80);
       assert.equal(asked(), m + 1, `the Overview picked asks: ${acct.reads}`);
+
+      // the page opened from the nav on the Requests tab asks nothing, nor
+      // reads the allowances' history (#4064)
+      await page.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
+      await nav("agents");
+      await page.clock.fastForward(31e3);
+      await settle();
+      const r = asked(), hist = acct.hist;
+      await nav("usage");
+      await page.locator("#ledgerPane").waitFor();
+      await settle();
+      assert.equal(asked(), r, `Usage opened on Requests asks nothing: ${acct.reads}`);
+      assert.equal(acct.hist, hist, "nor reads the allowances' history");
+      acct.vendor = 85;
+      await page.locator(":is(#usageTab .opt, .nav-s):visible").first().click();
+      await shows(85);
+      assert.equal(asked(), r + 1, `then the Overview picked asks: ${acct.reads}`);
 
       // the timed refresh, left alone for minutes, never asks
       const k = asked();

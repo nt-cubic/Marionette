@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yetone/magpie/internal/codexcat"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -41,7 +42,10 @@ var codexDesk struct {
 	body       []byte
 	got, tried time.Time
 	asking     bool
-	done       chan struct{} // closed as the ask under way ends
+	// revoked: the last ask had the backend call the sign-in revoked
+	// (provider.CodexListRevoked)
+	revoked bool
+	done    chan struct{} // closed as the ask under way ends
 }
 
 // CodexDesktopCatalog is the list a Codex beside its ChatGPT sign-in is
@@ -52,9 +56,15 @@ var codexDesk struct {
 // gave. That is unknown, never an empty list, and the file as it was
 // stands. The backend is asked again in the background when its list is
 // old, CodexDesktopChanged told when it changed.
+//
+// A sign-in the backend calls revoked, with no list of its from before,
+// is handed Codex's last list of its own and magpie's models, as
+// codexModels answers Codex then (#4308): the backend has said all it
+// will for that sign-in, and without it the app's picker had none of
+// magpie's models until the user signed in again.
 func CodexDesktopCatalog() (b []byte, ok bool) {
 	codexDesk.Lock()
-	body := codexDesk.body
+	body, revoked := codexDesk.body, codexDesk.revoked
 	stale := body == nil || time.Since(codexDesk.got) >= codexDeskFor
 	if stale && !codexDesk.asking && time.Since(codexDesk.tried) >= codexDeskRetry {
 		codexDesk.asking, codexDesk.tried = true, time.Now()
@@ -62,6 +72,14 @@ func CodexDesktopCatalog() (b []byte, ok bool) {
 		go codexDeskRefresh(codexDesk.done)
 	}
 	codexDesk.Unlock()
+	if body == nil && revoked {
+		var own []any
+		for _, e := range codexcat.CacheEntries() {
+			own = append(own, e)
+		}
+		b, err := json.MarshalIndent(map[string]any{"models": codexMerged(own, true)}, "", " ")
+		return b, err == nil
+	}
 	if body == nil {
 		return nil, false
 	}
@@ -86,8 +104,13 @@ func codexDeskRefresh(done chan struct{}) {
 	codexDesk.Lock()
 	changed := false
 	if err == nil {
-		changed = !bytes.Equal(b, codexDesk.body)
-		codexDesk.body, codexDesk.got = b, time.Now()
+		changed = !bytes.Equal(b, codexDesk.body) || codexDesk.revoked
+		codexDesk.body, codexDesk.got, codexDesk.revoked = b, time.Now(), false
+	} else if revoked := provider.CodexListRevoked(err); revoked != codexDesk.revoked {
+		// told only where it changes what is handed out: with no list
+		// from before (CodexDesktopCatalog)
+		changed = codexDesk.body == nil
+		codexDesk.revoked = revoked
 	}
 	codexDesk.asking = false
 	codexDesk.Unlock()

@@ -59,7 +59,7 @@ var visionMCPSchema = map[string]any{
 }
 
 func (s *Server) visionMCP(w http.ResponseWriter, r *http.Request) {
-	serveMCP(w, r, "magpie's image recognition", visionMCPBody, s.visionMCPCall)
+	serveMCP(w, r, "magpie's image recognition", "magpie-vision", visionMCPBody, s.visionMCPCall)
 }
 
 // visionMCPCall answers one request: its result, or its JSON-RPC error.

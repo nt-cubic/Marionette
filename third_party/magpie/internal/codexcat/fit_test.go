@@ -107,3 +107,67 @@ func TestUsedTagIsTheSet(t *testing.T) {
 		t.Error("the tag didn't change with the set")
 	}
 }
+
+// Codex's own models are kept in the first AppList wherever an order put
+// them, ahead of the used ones; a hidden one of them still goes last
+// (maiya on Discord: an order naming only magpie's put every GPT model
+// past the 100 the Codex app reads).
+func TestFitOwnKeepsCodexsOwnInTheAppsHundred(t *testing.T) {
+	var entries []any
+	for i := range 130 {
+		entries = append(entries, map[string]any{"slug": fmt.Sprintf("many/model-%03d", i), "priority": i + 1, "visibility": "list"})
+	}
+	for i, s := range []string{"gpt-6-sol", "gpt-5.5", "codex-auto-review"} {
+		v := "list"
+		if s == "codex-auto-review" {
+			v = "hide"
+		}
+		entries = append(entries, map[string]any{"slug": s, "priority": 131 + i, "visibility": v})
+	}
+	own := map[string]bool{"gpt-6-sol": true, "gpt-5.5": true, "codex-auto-review": true}
+	FitOwn(entries, []string{"many/model-120"}, func(s string) bool { return own[s] })
+	var order []string
+	for _, e := range entries {
+		order = append(order, e.(map[string]any)["slug"].(string))
+	}
+	first := order[:AppList]
+	for _, s := range []string{"gpt-6-sol", "gpt-5.5", "many/model-120"} {
+		if !slices.Contains(first, s) {
+			t.Errorf("%s is at %d, past the first %d", s, slices.Index(order, s)+1, AppList)
+		}
+	}
+	if order[len(order)-1] != "codex-auto-review" {
+		t.Errorf("the hidden codex-auto-review is at %d", slices.Index(order, "codex-auto-review")+1)
+	}
+	// the rest in the order they stood: 97 of magpie's from the top
+	if order[0] != "many/model-000" || order[96] != "many/model-096" || order[100] != "many/model-097" {
+		t.Errorf("the first 101: %v", order[:101])
+	}
+}
+
+// The model_catalog_json magpie writes keeps a ChatGPT account's own
+// (codex/…) models in the first AppList the same way.
+func TestCatalogUsedKeepsChatGPTOwn(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", os.Getenv("HOME"))
+	var ms []catalog.Model
+	for i := range 130 {
+		ms = append(ms, catalog.Model{ID: fmt.Sprintf("many/model-%03d", i)})
+	}
+	ms = append(ms, catalog.Model{ID: "codex/gpt-5.5"})
+	var got struct {
+		Models []map[string]any `json:"models"`
+	}
+	if err := json.Unmarshal(CatalogUsed(ms, "", nil), &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range got.Models {
+		if m["slug"] == "codex/gpt-5.5" {
+			if p := m["priority"].(float64); p > AppList {
+				t.Fatalf("codex/gpt-5.5's priority is %v", p)
+			}
+			return
+		}
+	}
+	t.Fatal("codex/gpt-5.5 is not in the catalog")
+}

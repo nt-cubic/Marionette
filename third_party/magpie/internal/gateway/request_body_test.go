@@ -9,12 +9,26 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/yetone/magpie/internal/provider"
 )
 
 const oldBodyLimit = 64 << 20
+
+// largeBodyRoom lifts the cut on a request held before routing, under
+// -race only, for a test that serves an oldBodyLimit body: the race
+// detector makes the scans of its 64MB before routing take 20s on an M5
+// Pro and near 60s on CI, where without it they take under a second, so
+// the 30s cut answered 504 (#3957). Without -race the cut stays, and a
+// slower scan still fails the test.
+func largeBodyRoom(t *testing.T) {
+	if raceOn {
+		unknownLimit(t, 10*time.Minute)
+		unroutedLimits(t, unroutedShow, 10*time.Minute)
+	}
+}
 
 func encodedBody(t *testing.T, body []byte, encoding string) []byte {
 	t.Helper()
@@ -63,6 +77,7 @@ func TestCodexBodyReadsPastOldLimit(t *testing.T) {
 }
 
 func TestLargeRequestEndpoints(t *testing.T) {
+	largeBodyRoom(t)
 	const payload = `{"model":"fake/m1","input":"END!","messages":[{"role":"user","content":"END!"}],"contents":[{"role":"user","parts":[{"text":"END!"}]}]}`
 	// Padding keeps the test about reading the whole body, not token limits.
 	body := append(bytes.Repeat([]byte(" "), oldBodyLimit), payload...)
@@ -119,6 +134,7 @@ type bodyReadError struct{}
 func (bodyReadError) Read([]byte) (int, error) { return 0, errors.New("body read failed") }
 
 func TestRequestTailAfterOldLimit(t *testing.T) {
+	largeBodyRoom(t)
 	const payload = `{"model":"fake/m1","input":"hi","messages":[],"contents":[]}`
 	body := append([]byte(payload), bytes.Repeat([]byte(" "), oldBodyLimit-len(payload))...)
 	for _, path := range []string{CodexPath + "/responses", "/v1/responses", "/v1/messages/count_tokens", "/v1beta/models/fake/m1:generateContent"} {
@@ -160,6 +176,7 @@ func TestRequestTailAfterOldLimit(t *testing.T) {
 }
 
 func TestCodexCompressedTailError(t *testing.T) {
+	largeBodyRoom(t)
 	const payload = `{"model":"fake/m1","input":"hi"}`
 	body := append([]byte(payload), bytes.Repeat([]byte(" "), oldBodyLimit-len(payload))...)
 	for _, encoding := range []string{"gzip", "zstd"} {

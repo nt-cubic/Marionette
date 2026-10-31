@@ -127,3 +127,25 @@ func Stale(target, dir, exe string) bool {
 	}
 	return !same(target, exe) || !same(dir, filepath.Dir(exe))
 }
+
+// what Remove asks of the system besides startMenu; the tests put fakes in
+var unregister = unregisterAppPath
+
+// Remove takes out what Ensure made, for magpie uninstall: the Start menu
+// shortcut, the App Paths entry while it names exe (or an exe gone), and
+// the record of having made them. A portable magpie made none, and an
+// entry another copy of magpie registered stays that copy's.
+func Remove(exe string) error {
+	var errs []error
+	if lnk, err := startMenu(); err == nil {
+		if err := os.Remove(lnk); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, err)
+		}
+	} else if !errors.Is(err, errNoStartMenu) {
+		errs = append(errs, err)
+	}
+	if err := unregister(Target(exe)); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}

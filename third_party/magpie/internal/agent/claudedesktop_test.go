@@ -1092,3 +1092,46 @@ func TestClaudeDesktopImportedProfileIsOnMagpie(t *testing.T) {
 		}
 	})
 }
+
+// Desktop's 3p mode runs in Claude-3p, a userData of its own, so the
+// chats, projects and Code sessions of the Anthropic sign-in (in Claude/)
+// aren't shown on magpie (xgddm88 on X: 之前的工程和会话记录全没了). Turning
+// Desktop on and off leaves every byte of that history as it was, and the
+// notice says before the restart that it stays and comes back.
+func TestClaudeDesktopKeepsTheSignedInHistory(t *testing.T) {
+	home, p := desktopSandbox(t)
+	history := map[string]string{
+		filepath.Join(p.dir, "config.json"):                                                 `{"locale":"zh-CN","oauth:tokenCache":"x"}`,
+		filepath.Join(p.dir, "Local Storage", "leveldb", "000003.log"):                      "chats",
+		filepath.Join(p.dir, "IndexedDB", "https_claude.ai_0.indexeddb.leveldb", "CURRENT"): "MANIFEST-000001\n",
+		filepath.Join(p.dir, "claude-code-sessions", "a", "b", "local_1.json"):              `{"cwd":"/Users/me/proj"}`,
+		filepath.Join(p.dir, "local-agent-mode-sessions", "s", "session.json"):              `{"title":"proj"}`,
+	}
+	for f, s := range history {
+		desktopWrite(t, f, s)
+	}
+	a := claudeDesktop(home)
+	f := a.Field("provider")
+	if err := f.Set("magpie"); err != nil {
+		t.Fatal(err)
+	}
+	for f, s := range history {
+		if b, err := os.ReadFile(f); err != nil || string(b) != s {
+			t.Errorf("on changed %s: %q %v", f, b, err)
+		}
+	}
+	if n := a.Notice(); !strings.Contains(n, noticeClaudedesktop3.String()) {
+		t.Errorf("on, the notice doesn't say the signed-in history stays: %q", n)
+	}
+	if err := f.Set(""); err != nil {
+		t.Fatal(err)
+	}
+	for f, s := range history {
+		if b, err := os.ReadFile(f); err != nil || string(b) != s {
+			t.Errorf("off changed %s: %q %v", f, b, err)
+		}
+	}
+	if n := a.Notice(); !strings.Contains(n, noticeClaudedesktop4.String()) {
+		t.Errorf("off, the notice doesn't say the history is back: %q", n)
+	}
+}

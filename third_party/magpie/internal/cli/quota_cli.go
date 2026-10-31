@@ -32,8 +32,8 @@ const quotaUsage = `usage: magpie quota [<provider>…] [--json]
   starting the account's current windows again (the one Codex is signed in to unless
   named). It can't be undone, so it asks first; --yes doesn't. quota auto-reset on lets
   the account spend one by itself when its weekly window is used up and no other
-  account can take a request, one a week at most (the five hours running out never
-  does), and spend the one about to expire about half an hour before it does, if
+  account can take a request, or before a request goes on its credits, one a week
+  at most (the five hours running out never does), and spend the one about to expire about half an hour before it does, if
   the account's windows have been used, so what they have left can be used until
   then and it isn't lost; at once when the account is held up until after then.
   week on|off or expiring on|off turns only one of those two times on or off, the
@@ -47,7 +47,7 @@ const quotaUsage = `usage: magpie quota [<provider>…] [--json]
   goes to the other accounts, groups and fallbacks, or is refused with why (with
   auto-reset on, its week used up and no one else left, it spends a reset first).
   on, the default, lets the vendor answer on its credits then, so the task goes
-  on; alone it says which accounts don't spend theirs.
+  on (with auto-reset's week on, a reset held is spent before the credits); alone it says which accounts don't spend theirs.
   quota alert 80 has the magpie app notify when any window of a subscription or plan
   reaches 80% used, once each time the window runs (not windows set aside, such as
   on-demand spending); --balance 5 when a balance falls to 5 or under, in its own
@@ -316,9 +316,9 @@ func quotaAutoResetCmd(args []string) error {
 	}
 	switch week, expiring := provider.CodexAutoResetWhen(user); {
 	case week && expiring:
-		fmt.Println(green.Render("✓"), user+":", "uses a reset by itself once its week is used up and no other account can answer, one a week at most, and the one about to expire half an hour before it does, or at once when held up past then")
+		fmt.Println(green.Render("✓"), user+":", "uses a reset by itself once its week is used up and no other account can answer, or before its credits are spent, one a week at most, and the one about to expire half an hour before it does, or at once when held up past then")
 	case week:
-		fmt.Println(green.Render("✓"), user+":", "uses a reset by itself once its week is used up and no other account can answer, one a week at most; one about to expire is left to run out")
+		fmt.Println(green.Render("✓"), user+":", "uses a reset by itself once its week is used up and no other account can answer, or before its credits are spent, one a week at most; one about to expire is left to run out")
 	case expiring:
 		fmt.Println(green.Render("✓"), user+":", "uses the reset about to expire half an hour before it does, or at once when held up past then; a week used up is waited out")
 	default:

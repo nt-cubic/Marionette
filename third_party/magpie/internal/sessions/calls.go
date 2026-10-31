@@ -147,7 +147,17 @@ type cxCallUsage = cxUsage
 var callDesktopDirs = desktopDataDirs
 
 // DesktopDataDirs are the folders whose session metadata belongs to this index.
-func DesktopDataDirs() []string { return callDesktopDirs() }
+func DesktopDataDirs() []string { return desktopReadDirs() }
+
+// desktopReadDirs are callDesktopDirs, or none when Claude Desktop's
+// sessions are not to be read (Reads): its local_*.json and Cowork's
+// folders are its session history.
+func desktopReadDirs() []string {
+	if !Reads("claude-desktop") {
+		return nil
+	}
+	return callDesktopDirs()
+}
 
 // Calls reads per-file request shards, separately from the session summaries.
 // Only changed files are scanned, and only a bounded number of parses stay in
@@ -291,33 +301,21 @@ func callsFor(since time.Time, session, agent string) []Call {
 func callFiles() []file { return callFilesWith(codexFiles()) }
 
 // callFilesWith is callFiles with codex the rollouts codexFiles found.
-func callFilesWith(codex []file) []file {
+func callFilesWith(codex []file) []file { return distinctOf(callFileLists(codex)...) }
+
+// callFileLists are callFilesWith's lists, each path not yet kept once:
+// the callers that list more add theirs and keep each path once, over
+// all of them (distinctOf), instead of copying callFilesWith's again.
+func callFileLists(codex []file) [][]file {
 	lists := [][]file{ccFiles("claude", ClaudeDir())}
-	for _, d := range callDesktopDirs() {
+	for _, d := range desktopReadDirs() {
 		// Cowork keeps a Claude Code folder of its own for each session
 		homes, _ := SessionGlob(filepath.Join(d, "local-agent-mode-sessions", "*", "*", "local_*", ".claude"))
 		for _, h := range homes {
 			lists = append(lists, ccFiles("claude-desktop", h))
 		}
 	}
-	lists = append(lists, codex, wslFiles("claude", "codex"))
-	// sized once: a file is ~200 bytes, and growing a list of ~20k of them
-	// on every 15 s poll was ~36 MB a read
-	n := 0
-	for _, fs := range lists {
-		n += len(fs)
-	}
-	out := make([]file, 0, n)
-	seen := make(map[string]bool, n)
-	for _, fs := range lists {
-		for _, f := range fs {
-			if !seen[f.path] {
-				seen[f.path] = true
-				out = append(out, f)
-			}
-		}
-	}
-	return out
+	return append(lists, allowed(codex), wslFiles("claude", "codex"))
 }
 
 // callSources are callFiles and the other agents' session files. Most are
@@ -333,18 +331,18 @@ func callFilesWith(codex []file) []file {
 func callSources() []file { return callSourcesWith(codexFiles()) }
 
 // callSourcesWith is callSources with codex the rollouts codexFiles found.
-func callSourcesWith(codex []file) []file {
-	out := callFilesWith(codex)
-	out = append(out, openCodeCallFiles()...)
-	out = append(out, zcodeCallFiles()...)
-	out = append(out, dshCallFiles()...)
-	out = append(out, minimaxCallFiles()...)
-	out = append(out, kimiCallFiles()...)
-	out = append(out, wslFiles("kimi")...)
-	out = append(out, piCallFiles()...)
-	out = append(out, codebuddyCallFiles()...)
-	out = append(out, agyCallFiles()...) // #2097
-	return distinctPaths(append(out, workbuddyCallFiles()...))
+func callSourcesWith(codex []file) []file { return callSourcesInto(nil, codex) }
+
+// callSourcesInto is callSourcesWith appended to out.
+func callSourcesInto(out []file, codex []file) []file {
+	lists := append(callFileLists(codex), openCodeCallFiles(), zcodeCallFiles(), dshCallFiles(),
+		minimaxCallFiles(), kimiCallFiles(), wslFiles("kimi"), piCallFiles(), codebuddyCallFiles(),
+		agyCallFiles(), // #2097
+		workbuddyCallFiles())
+	if out == nil {
+		return allowed(distinctOf(lists...))
+	}
+	return allowed(distinctInto(out, lists...))
 }
 
 // desktopDataDirs are Claude Desktop's folders on this computer that
@@ -762,7 +760,7 @@ func claudeCallLine(st *callFile, b []byte) {
 	if c.Session == "" {
 		c.Session = st.Session
 	}
-	if st.Agent == "claude" && l.Entrypoint == "claude-desktop" {
+	if st.Agent == "claude" && desktopEntrypoint(string(l.Entrypoint)) {
 		c.Agent = "claude-desktop"
 	}
 	if l.APIError {
@@ -1186,8 +1184,29 @@ func CallSources() []CallSource { return callSourcesOf(callSources()) }
 // ~150ms of each rebuild.
 func CallSourcesAndCodexIdentities() ([]CallSource, map[string]CodexIdentity) {
 	codex := codexFiles()
-	sources := callSourcesOf(callSourcesWith(codex))
+	// the listing is let go once its sources are taken: made new on each
+	// Requests and effort ask, it was ~100 MB of a minute of polls (#2278)
+	fs := callSourcesInto(listingBuf(), codex)
+	sources := callSourcesOf(fs)
+	putListingBuf(fs)
 	return sources, codexIdentitiesOf(codex)
+}
+
+// listingBufs are listings a read takes and lets go of before it ends,
+// kept on a shelf: a sync.Pool, emptied by the collections a poll makes
+// about twice a second, had none for most reads (#2278).
+var listingBufs shelf[[]file]
+
+func listingBuf() []file {
+	if b, ok := listingBufs.take(nil); ok {
+		return b[:0]
+	}
+	return nil
+}
+
+func putListingBuf(fs []file) {
+	clear(fs[:cap(fs)]) // its files' strings go with the listing
+	listingBufs.give(fs[:0], func(h, fs []file) bool { return cap(h) < cap(fs) })
 }
 
 func callSourcesOf(fs []file) []CallSource {
@@ -1202,6 +1221,9 @@ func callSourcesOf(fs []file) []CallSource {
 // ReadCallSource returns immutable calls for one source. Independent files can
 // be read concurrently; disk IO never holds callsMu.
 func ReadCallSource(s CallSource) []Call {
+	if !Reads(s.Agent) {
+		return nil
+	}
 	st := readCalls(file{path: s.Path, key: s.Key, agent: s.Agent, size: s.Size, mod: s.Modified})
 	// Requests retains its own compact snapshot. Keeping the expanded parser's
 	// calls as well doubles residency, especially for long active sessions. The
@@ -1222,4 +1244,12 @@ func ReadCallSource(s CallSource) []Call {
 	}
 	callsMu.Unlock()
 	return st.Calls
+}
+
+// desktopEntrypoint is a Claude Code transcript's entrypoint when Claude
+// Desktop ran it for its Code tab: "claude-desktop", or
+// "claude-desktop-3p" in its third-party inference mode (Desktop 2.7032's
+// nK: type "3p"), the mode a gateway such as magpie's is set in.
+func desktopEntrypoint(e string) bool {
+	return e == "claude-desktop" || e == "claude-desktop-3p"
 }

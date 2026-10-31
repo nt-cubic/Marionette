@@ -160,18 +160,20 @@ func TestBootSaysWhereItsGatewayListens(t *testing.T) {
 		t.Fatalf("served here: %s", b)
 	}
 	t.Setenv("MAGPIE_ADDR", "0.0.0.0:3483")
-	if b := boot(); !strings.Contains(b, `"sideGateway":{"boot":true,"running":true,"url":"http://127.0.0.1:3483"}`) {
+	// on the network, it says so, with the addresses other machines use,
+	// for the window's line to name them (coeo91 on Discord)
+	if b := boot(); !strings.Contains(b, `"sideGateway":{"boot":true,"lan":true,`) || !strings.Contains(b, `"running":true,"url":"http://127.0.0.1:3483"}`) {
 		t.Fatalf("every interface, reached on loopback: %s", b)
 	}
 	// MAGPIE_PUBLIC_URL goes with it while other machines are let in, for
 	// magpie web's page to show (noahhrreion on Discord, in Docker), and
 	// not while the gateway is this computer's alone
 	t.Setenv("MAGPIE_PUBLIC_URL", "http://nas.local:3425")
-	if b := boot(); !strings.Contains(b, `"sideGateway":{"boot":true,"publicURL":"http://nas.local:3425","running":true,"url":"http://127.0.0.1:3483"}`) {
+	if b := boot(); !strings.Contains(b, `"sideGateway":{"boot":true,"lan":true,"lanURLs":["http://nas.local:3425"],"publicURL":"http://nas.local:3425","running":true,"url":"http://127.0.0.1:3483"}`) {
 		t.Fatalf("on the network, with MAGPIE_PUBLIC_URL: %s", b)
 	}
 	t.Setenv("MAGPIE_ADDR", "127.0.0.1:3483")
-	if b := boot(); strings.Contains(b, "nas.local") {
+	if b := boot(); strings.Contains(b, "nas.local") || strings.Contains(b, `"lan"`) {
 		t.Fatalf("on loopback, not shared: %s", b)
 	}
 	t.Setenv("MAGPIE_PUBLIC_URL", "")

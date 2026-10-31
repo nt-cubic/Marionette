@@ -50,6 +50,7 @@ func kiloWired(t *testing.T) (string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	setUpInMagpie(a.ID)
 	if err := a.Field("model").Set("magpie/deepseek/pro"); err != nil {
 		t.Fatal(err)
 	}

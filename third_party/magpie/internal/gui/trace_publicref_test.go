@@ -103,7 +103,8 @@ func TestRoutesNameFoundGroupsByTheirPublicID(t *testing.T) {
 		t.Fatal(err)
 	}
 	found := false
-	for _, r := range contextRoutes(httptest.NewRequest("GET", "/api/context", nil), 1) {
+	recs, _ := contextRecs(httptest.NewRequest("GET", "/api/context", nil), 1)
+	for _, r := range recs {
 		if r.ID == 1 {
 			found = true
 			if r.Model != "auto/claude-opus-5.5:high" {

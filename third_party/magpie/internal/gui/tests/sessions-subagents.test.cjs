@@ -9,6 +9,8 @@
 // parent_session is listed is drawn under that session, a session of its
 // own still (its details open where it is), and only main sessions are on
 // top; a loop of parents, or a parent not listed, leaves a thread on top.
+// A Claude session forked from another that went on (role "branch") sits
+// under it the same way, its fold naming them branches.
 // No click moves the page, nothing has a left-border accent, no <select>,
 // nothing wider than the window. In every language, Chromium and WebKit,
 // at 1100px and 420px; no backend, the API is faked.
@@ -34,6 +36,11 @@ const CLAUDE = [
     ],
   }),
   sess("claude", "c-2", "an older one", 50),
+  // Neo (#feedback): forks of a compacted session, each with a task of its
+  // own, are its branches, folded under it
+  sess("claude", "c-5", "Plan the items", 60),
+  sess("claude", "c-6", "Plan the items", 61, { role: "branch", parent_session: "c-5" }),
+  sess("claude", "c-7", "Plan the items", 62, { role: "branch", parent_session: "c-5" }),
 ];
 const CODEX = [
   sess("codex", "x-1", "Lead the port", 5),
@@ -131,7 +138,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       test(`${engine} ${lang} ${width}: a Claude Code session's subagents are folded under it and open to what was said`, async (t) => {
         const { page, view, calls, errors, still, tr, tidy } = await open(engine, lang, width, "claude", t);
         if (lang !== "en") {
-          const missing = await page.evaluate((lang) => ["{n} subagent", "{n} subagents"].filter((k) => !I18N[lang]?.[k]), lang);
+          const missing = await page.evaluate((lang) => ["{n} subagent", "{n} subagents", "{n} branch", "{n} branches"].filter((k) => !I18N[lang]?.[k]), lang);
           assert.deepEqual(missing, [], `every new string has its ${lang}`);
         }
         const row = (id) => view.locator(`.row.sm-sess[data-id="${id}"]`);
@@ -143,6 +150,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await fold.getAttribute("aria-expanded"), "false");
         assert.equal(await view.locator(".sm-sub").count(), 0, "folded at first");
         assert.equal(await row("c-2").locator("xpath=..").locator(".sm-subs").count(), 0, "a session with none has no fold");
+        const tops = await view.locator(".sm-group > .sm-item > .row.sm-sess").evaluateAll((rs) => rs.map((r) => r.dataset.id));
+        assert.deepEqual(tops, ["c-1", "c-2", "c-5"], "a branch is not a row beside its session");
+        const branches = row("c-5").locator("xpath=..").locator(":scope > .sm-subs > .sm-subs-fold");
+        assert.equal((await branches.textContent()).trim(), await tr("{n} branches", { n: 2 }));
+        await still(row("c-5"), "unfolding the branches", () => branches.click());
+        await row("c-6").waitFor();
+        assert.equal(await row("c-7").isVisible(), true);
+        await branches.click();
 
         await still(row("c-1"), "unfolding the subagents", () => fold.click());
         assert.equal(await fold.getAttribute("aria-expanded"), "true");

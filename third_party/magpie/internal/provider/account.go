@@ -159,6 +159,18 @@ func (p Provider) ListedAPIs(model string) []Protocol {
 			return apis
 		}
 	}
+	// Vertex AI serves Gemini on generateContent, its partner models
+	// (publisher/model) on chat completions alone, and Claude on
+	// Anthropic's Messages API alone
+	if p.IsVertex() {
+		if VertexPartner(model) {
+			return []Protocol{Chat}
+		}
+		if VertexClaude(model) {
+			return []Protocol{Anthropic}
+		}
+		return []Protocol{Gemini}
+	}
 	// Factory serves each model on the one API droid sends it on
 	if p.ID == "factory" && p.Account != nil {
 		return factoryAPIs(model)
@@ -193,7 +205,7 @@ func (p Provider) ListedAPIs(model string) []Protocol {
 // Sign authenticates a request to the provider, refreshing what needs it.
 // Plain providers get their key; accounts get the agent's tokens.
 func (p Provider) Sign(ctx context.Context, req *http.Request, proto Protocol, body []byte) error {
-	if p.Account != nil && settings.AccountDiscoveryOff() {
+	if p.Account != nil && settings.AccountDiscoveryOff() && !p.publicAccount() {
 		return errAccountDiscoveryOff
 	}
 	ctx = p.Via(ctx) // a sign-in refreshed on the way goes through its proxy
@@ -224,12 +236,20 @@ func (p Provider) Sign(ctx context.Context, req *http.Request, proto Protocol, b
 	// other case (PutUserHeader), so it is sent once, theirs.
 	// A list the request has its own of (anthropic-beta) is added to, not
 	// replaced: the user's betas go after those the agent asked.
-	for k, v := range p.Headers {
+	// ${sessionId} and ${threadId} in a value are the conversation's
+	// (conversation.go).
+	for k, v := range p.SentHeaders(ctx) {
 		if ListHeader(k) {
 			MergeList(req.Header, k, v)
 			continue
 		}
 		catalog.PutUserHeader(req.Header, k, v)
+	}
+	// a remote magpie is always sent its key as x-api-key, which no header
+	// of the user's replaces: their Authorization (a proxy's) goes on
+	// without taking the key away (remoteKey)
+	if p.IsRemoteMagpie() && p.Key != "" {
+		remoteKey(req.Header, p.Key)
 	}
 	return nil
 }
@@ -858,7 +878,7 @@ func refreshFailed(status int, agent, msg string) error {
 // Accounts lists the signed-in agents as providers.
 func Accounts() []Provider {
 	if settings.AccountDiscoveryOff() {
-		return nil
+		return pluginAccounts() // the public plugins' alone (publicPlugin)
 	}
 	rememberLogins(false)
 	home, _ := os.UserHomeDir()
@@ -1046,6 +1066,31 @@ func codexToken(ctx context.Context, dir string) (tok, accountID string, err err
 	return codexTokenRenewing(ctx, dir, "")
 }
 
+// codexTokenAsKept is the access token Codex keeps in dir, as it is: an
+// expired one is an error, not refreshed, for a sign-in magpie leaves to
+// Codex (leftAlone), which renews it itself.
+func codexTokenAsKept(dir string) (tok, accountID string, err error) {
+	b, _, err := readCodexLogin(dir, false)
+	if err != nil {
+		return "", "", err
+	}
+	var a codexAuth
+	if json.Unmarshal(b, &a) != nil || a.Tokens.AccessToken == "" {
+		return "", "", errors.New("Codex is signed out; run codex login")
+	}
+	if exp, _ := jwtClaims(a.Tokens.AccessToken)["exp"].(float64); exp != 0 && !time.Now().Before(time.Unix(int64(exp), 0)) {
+		return "", "", errors.New("Codex's sign-in has expired; Codex renews it as it runs")
+	}
+	return a.Tokens.AccessToken, codexAccountID(a), nil
+}
+
+// CodexSignInAsKept is the access token and account id of the ChatGPT
+// sign-in Codex keeps, as it is (codexTokenAsKept): an expired one is an
+// error, left to Codex to renew.
+func CodexSignInAsKept() (tok, accountID string, err error) {
+	return codexTokenAsKept(codexHome())
+}
+
 // codexTokenRenewing is codexToken, and with stale, the access token the
 // backend just answered 401 "token expired" for while its exp was still
 // ahead (willz on Discord, #2973: a Team account's), refreshes the
@@ -1086,10 +1131,20 @@ func codexTokenRenewing(ctx context.Context, dir, stale string) (tok, accountID 
 		return "", "", errors.New("Codex is signed out; run codex login")
 	}
 	accountID = codexAccountID(a)
-	tok, err = codexRefresh(ctx, raw)
+	reason := codexRefreshExpiry
+	if stale != "" {
+		reason = codexRefreshRecovery
+	}
+	tok, err = codexRefresh(ctx, raw, reason)
 	if err != nil {
+		// OpenAI refused this sign-in for good: Codex is signed out to
+		// magpie's wiring until it is signed in again (#4308)
+		if errors.As(err, new(codexRefreshGoneError)) {
+			noteCodexSignInGone(dir, a.Tokens.RefreshToken)
+		}
 		return "", "", err
 	}
+	forgetCodexSignInGone(dir)
 	// keep every other field as Codex wrote it. auth.json is the user's
 	// own sign-in, which Codex CLI and the Codex app read: written beside
 	// it, flushed and renamed in, never truncated in place, so a machine
@@ -1117,9 +1172,39 @@ func codexAccountID(a codexAuth) string {
 	return claimString(jwtClaims(a.Tokens.IDToken), "https://api.openai.com/auth", "chatgpt_account_id")
 }
 
+// Why a ChatGPT sign-in is refreshed, in the words codex-rs sends with
+// its own refresh (refresh_reason, login/src/oauth/client.rs).
+const (
+	codexRefreshExpiry    = "proactive_expiry"      // its access token is about to run out
+	codexRefreshScheduled = "scheduled"             // not refreshed for keepAliveEvery
+	codexRefreshRecovery  = "unauthorized_recovery" // the backend called its token expired
+	codexRefreshForced    = "forced"                // asked for: an import, a check
+)
+
+type refreshReasonKey struct{}
+
+// refreshingFor has a forced refresh made under ctx say why it is made,
+// when it is more than "forced" (the keep-alive's "scheduled").
+func refreshingFor(ctx context.Context, reason string) context.Context {
+	return context.WithValue(ctx, refreshReasonKey{}, reason)
+}
+
+// forcedReason is why ctx forces a refresh: what refreshingFor said, else
+// "forced".
+func forcedReason(ctx context.Context) string {
+	if r, _ := ctx.Value(refreshReasonKey{}).(string); r != "" {
+		return r
+	}
+	return codexRefreshForced
+}
+
 // codexRefresh renews the tokens of an auth.json-shaped sign-in in place,
 // every other field left as it was, and returns the new access token.
-func codexRefresh(ctx context.Context, raw map[string]any) (string, error) {
+// It is asked as codex-rs asks it (request_chatgpt_token_refresh): a JSON
+// body of client_id, grant_type, refresh_token and refresh_reason, with
+// no scope (a refresh keeps the scopes granted), and Codex's originator
+// and User-Agent.
+func codexRefresh(ctx context.Context, raw map[string]any, reason string) (string, error) {
 	toks, _ := raw["tokens"].(map[string]any)
 	if toks == nil {
 		toks = map[string]any{}
@@ -1138,12 +1223,13 @@ func codexRefresh(ctx context.Context, raw map[string]any) (string, error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	body, _ := json.Marshal(map[string]string{"client_id": codexClientID, "grant_type": "refresh_token",
-		"refresh_token": refresh, "scope": "openid profile email"})
+		"refresh_token": refresh, "refresh_reason": reason})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, codexTokenURL, bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	codexClientHeaders(req.Header, codexVersion())
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", errors.New("Codex token refresh: " + err.Error())
@@ -1156,7 +1242,12 @@ func codexRefresh(ctx context.Context, raw map[string]any) (string, error) {
 		RefreshToken string `json:"refresh_token"`
 	}
 	if res.StatusCode != 200 || json.Unmarshal(b, &fresh) != nil || fresh.AccessToken == "" {
-		return "", refreshFailed(res.StatusCode, "Codex", "Codex is signed out (token refresh failed); run codex login")
+		err := refreshFailed(res.StatusCode, "Codex", "Codex is signed out (token refresh failed); run codex login")
+		if res.StatusCode != 200 && codexRefreshGone(res.StatusCode, b) {
+			// refused for good, by Codex's own rule (#4308)
+			err = codexRefreshGoneError{err}
+		}
+		return "", err
 	}
 	toks["access_token"] = fresh.AccessToken
 	if fresh.IDToken != "" {

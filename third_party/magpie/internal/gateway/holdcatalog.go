@@ -17,6 +17,11 @@ import (
 // and a file another program writes is seen within the second.
 func holdCatalog(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// a WebSocket lasts a session: each of its turns holds it instead
+		if wantsSocket(r) {
+			h.ServeHTTP(w, r)
+			return
+		}
 		defer provider.Hold()()
 		defer filememo.Hold()()
 		h.ServeHTTP(w, r)

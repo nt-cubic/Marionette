@@ -329,3 +329,24 @@ func BenchmarkToolLoopCheck(b *testing.B) {
 		}
 	}
 }
+
+// The conversation's tail is read where it sits in the body: GetBytes
+// copied the whole input list to find the last items, 45 MiB of a Codex
+// turn on every request (#4004).
+func TestTailOfReadsInPlace(t *testing.T) {
+	item := `{"type":"function_call_output","call_id":"c%d","output":"` + strings.Repeat("o", 20<<10) + `"}`
+	items := make([]string, 200)
+	for i := range items {
+		items[i] = fmt.Sprintf(item, i)
+	}
+	body := []byte(`{"model":"m","input":[` + strings.Join(items, ",") + `],"stream":true}`)
+	var tail []byte
+	n := allocated(func() { tail = tailOf(provider.Responses, body) })
+	want := `{"model":"m","input":[` + strings.Join(items[len(items)-tailItems:], ",") + `],"stream":true}`
+	if string(tail) != want {
+		t.Fatalf("tail is %.200s…", tail)
+	}
+	if n > uint64(len(want))+uint64(len(body))/4 {
+		t.Fatalf("%d bytes allocated for a %d byte tail of a %d byte body", n, len(want), len(body))
+	}
+}

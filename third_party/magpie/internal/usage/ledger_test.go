@@ -793,3 +793,99 @@ func TestLedgerPricesAModelListedUnderItsCanonicalID(t *testing.T) {
 		}
 	}
 }
+
+// A record inside one of its provider's rate windows (#2463) is priced at
+// that window's rate at the record's own time, one outside at the base,
+// and one Pricer holds the base and the windows across the boundary: the
+// two sides of it price apart within one page.
+func TestPricerRateWindows(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	// sol at $2 a million in, $8 out
+	os.MkdirAll(filepath.Dir(catalog.CachePath()), 0o755)
+	os.WriteFile(catalog.CachePath(), []byte(`{"anthropic":{"id":"anthropic","models":{"sol":{"id":"sol","cost":{"input":2,"output":8,"cache_read":0.5,"cache_write":2.5}}}}}`), 0o644)
+	catalog.Reset()
+	t.Cleanup(catalog.Reset)
+	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k", Chat: "https://relay.example/v1",
+		RateWindows: []provider.RateWindow{{Start: "09:00", End: "12:00", Rate: 3}}}); err != nil {
+		t.Fatal(err)
+	}
+	day := time.Now()
+	in := func(h, m int) time.Time {
+		return time.Date(day.Year(), day.Month(), day.Day(), h, m, 0, 0, time.Local)
+	}
+	rec := func(at time.Time) Record {
+		return Record{Time: at, Agent: "codex", Provider: "relay", Model: "sol", Input: 1e6, Status: 200}
+	}
+	price := Pricer()
+	peak, off := price(rec(in(10, 0))), price(rec(in(15, 0)))
+	if peak == nil || off == nil {
+		t.Fatal("both prices known")
+	}
+	// $2 a million in, the peak window's 3 makes $6, and the same base
+	// price under the earlier call stays $2 after the later one: the rate
+	// is the record's own, not the last one priced
+	if c := peak.Cost(1e6, 0, 0, 0); c != 6 {
+		t.Fatalf("inside 09:00-12:00: $%v", c)
+	}
+	if c := off.Cost(1e6, 0, 0, 0); c != 2 {
+		t.Fatalf("outside the window, after one inside: $%v", c)
+	}
+	// the boundary itself: in at the start, out at the end
+	if c := price(rec(in(9, 0))).Cost(1e6, 0, 0, 0); c != 6 {
+		t.Fatalf("at the start: $%v", c)
+	}
+	if c := price(rec(in(12, 0))).Cost(1e6, 0, 0, 0); c != 2 {
+		t.Fatalf("at the end: $%v", c)
+	}
+}
+
+// A gateway block's rows are priced from one memo per provider and model,
+// asked of the Pricer without a time: each row still takes the rate
+// window of its own time (#2463), as it takes DeepSeek's peak, so the
+// Requests tab prices a call at 10:00 inside 09:00-12:00 at 3x and one at
+// 15:00 at the list price, not every row at whatever the memo's zero time
+// fell in.
+func TestBlockRowsTakeTheirRateWindow(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	os.MkdirAll(filepath.Dir(catalog.CachePath()), 0o755)
+	os.WriteFile(catalog.CachePath(), []byte(`{"anthropic":{"id":"anthropic","models":{"sol":{"id":"sol","cost":{"input":2,"output":8}}}}}`), 0o644)
+	catalog.Reset()
+	t.Cleanup(catalog.Reset)
+	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k", Chat: "https://relay.example/v1",
+		RateWindows: []provider.RateWindow{{Start: "09:00", End: "12:00", Rate: 3}}}); err != nil {
+		t.Fatal(err)
+	}
+	day := time.Now()
+	inside := time.Date(day.Year(), day.Month(), day.Day(), 10, 0, 0, 0, time.Local)
+	outside := time.Date(day.Year(), day.Month(), day.Day(), 15, 0, 0, 0, time.Local)
+	var raw rowChunk
+	for i := 0; i < logBlockRows; i++ {
+		at := inside
+		if i%2 == 1 {
+			at = outside
+		}
+		raw.add(Row{Record: Record{Time: at, Provider: "relay", Model: "sol", Input: 1_000_000}}, "", int64(i), false)
+	}
+	c, _ := newBlockPricer(provider.Renames{}, nil, Pricer()).priceBlock(raw.pack())
+	if c == nil {
+		t.Fatal("no block")
+	}
+	for i := range c.Rows {
+		r := c.row(i)
+		want := 2.0
+		if r.Time.Equal(inside) {
+			want = 6
+		}
+		if math.Abs(r.Cost-want) > 1e-9 {
+			t.Fatalf("row %d at %v: $%v, want $%v", i, r.Time.Format("15:04"), r.Cost, want)
+		}
+	}
+}

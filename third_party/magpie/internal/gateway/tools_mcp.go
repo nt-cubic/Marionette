@@ -3,8 +3,11 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -45,7 +48,7 @@ var (
 const errToolsOff = "magpie's Plugin tools plugin is off, so no plugin's tool runs; turn it on in magpie's Settings → Plugins"
 
 func (s *Server) toolsMCP(w http.ResponseWriter, r *http.Request) {
-	serveMCP(w, r, "magpie's plugin tools", toolsMCPBody, s.toolsMCPCall)
+	serveMCP(w, r, "magpie's plugin tools", "magpie-tools", toolsMCPBody, s.toolsMCPCall)
 }
 
 // mcpTool is one plugin tool as the server names it.
@@ -143,13 +146,92 @@ var anyPluginOn = func() bool {
 }
 
 func (s *Server) toolsMCPCall(r *http.Request, m mcpMessage) (any, map[string]any) {
+	return s.toolsMCPServe(r, m, "", servedTools)
+}
+
+// ToolsMCPOne is where one plugin's tools are served, each by its own
+// name, the plugin's short name (ToolPrefix) after it: the address of the
+// Library server magpie gives each plugin with tools
+// (library/plugin_tools.go), so it can be switched on per agent and put
+// behind the MCP hub like any other.
+const ToolsMCPOne = ToolsMCPPath + "/"
+
+// ToolPrefix is the name a plugin's tools are under: its short name, in
+// the characters MCP clients take.
+func ToolPrefix(spec string) string { return toolPrefix(spec) }
+
+func (s *Server) toolsMCPOne(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("plugin")
+	serveMCP(w, r, "magpie's plugin tools", "magpie-tools", toolsMCPBody, func(r *http.Request, m mcpMessage) (any, map[string]any) {
+		return s.toolsMCPServe(r, m, name, func(ctx context.Context) ([]mcpTool, error) {
+			spec, ts, err := pluginToolsBy(ctx, func(spec string) bool { return toolPrefix(spec) == name })
+			out := make([]mcpTool, 0, len(ts))
+			for _, t := range ts {
+				out = append(out, mcpTool{spec: spec, Tool: t, name: t.Name})
+			}
+			return out, err
+		})
+	})
+}
+
+// pluginToolsBy are the tools of the first plugin that is on that is
+// picks, and its spec; none while Plugin tools is off, or no plugin that
+// is on is it. With no plugin on, the plugin host isn't started for it.
+func pluginToolsBy(ctx context.Context, is func(spec string) bool) (string, []plugin.Tool, error) {
+	if !gwtool.Served(gwtool.PluginTools) || !anyPluginOn() {
+		return "", nil, nil
+	}
+	pts, err := pluginTools(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	for _, pt := range pts {
+		if is(pt.Spec) {
+			return pt.Spec, pt.Tools, nil
+		}
+	}
+	return "", nil, nil
+}
+
+// PluginToolsOf are the tools of the plugin called name (plugin.Name of
+// its spec) while it is on and Plugin tools is served: what the MCP hub
+// lists for its Library server.
+func PluginToolsOf(ctx context.Context, name string) ([]plugin.Tool, error) {
+	_, ts, err := pluginToolsBy(ctx, func(spec string) bool { return plugin.Name(spec) == name })
+	return ts, err
+}
+
+// RunPluginToolOf runs tool of the plugin called name for agent, as the
+// MCP hub calls it: the text it answered, or why it couldn't run. The hub
+// has held the call to the caller's key limit already.
+func RunPluginToolOf(ctx context.Context, name, tool string, args json.RawMessage, agent string) (string, error) {
+	if !gwtool.Served(gwtool.PluginTools) {
+		return "", errors.New(errToolsOff)
+	}
+	spec, ts, err := pluginToolsBy(ctx, func(spec string) bool { return plugin.Name(spec) == name })
+	if err != nil {
+		return "", fmt.Errorf("magpie couldn't load its plugins: %w", err)
+	}
+	if !slices.ContainsFunc(ts, func(t plugin.Tool) bool { return t.Name == tool }) {
+		return "", fmt.Errorf("the plugin %s isn't on in magpie, or gives no tool %s", name, tool)
+	}
+	return runPluginTool(ctx, spec, tool, args, agent)
+}
+
+// toolsMCPServe answers m for the tools list gives: every plugin's (one
+// "") or one plugin's.
+func (s *Server) toolsMCPServe(r *http.Request, m mcpMessage, one string, servedTools func(context.Context) ([]mcpTool, error)) (any, map[string]any) {
 	switch m.Method {
 	case "initialize":
+		say := "The tools the plugins added to magpie give, each named <plugin>_<tool>. Add or switch plugins in magpie's Settings → Plugins."
+		if one != "" {
+			say = "The tools magpie's plugin " + one + " gives. Add or switch plugins in magpie's Settings → Plugins."
+		}
 		return map[string]any{
 			"protocolVersion": mcpVersion(m),
 			"capabilities":    map[string]any{"tools": map[string]any{}},
 			"serverInfo":      map[string]any{"name": "magpie-tools", "title": "Magpie Plugin Tools", "version": Version},
-			"instructions":    "The tools the plugins added to magpie give, each named <plugin>_<tool>. Add or switch plugins in magpie's Settings → Plugins.",
+			"instructions":    say,
 		}, nil
 	case "ping":
 		return map[string]any{}, nil
@@ -194,6 +276,9 @@ func (s *Server) toolsMCPCall(r *http.Request, m mcpMessage) (any, map[string]an
 				}
 				return toolResult(said, false), nil
 			}
+		}
+		if one != "" {
+			return nil, map[string]any{"code": -32602, "message": "unknown tool " + p.Name + ": the plugin " + one + " isn't on in magpie, or gives no such tool"}
 		}
 		return nil, map[string]any{"code": -32602, "message": "unknown tool " + p.Name + ": no plugin that is on gives it"}
 	}

@@ -218,6 +218,9 @@ func half(f float32) uint16 {
 	return sign | uint16(h)
 }
 
+// coremlRead is coremlLogits; a var for tests.
+var coremlRead = coremlLogits
+
 // coremlLogits are nt.logits(ids), from m.
 func coremlLogits(m *coreml.Model, nt *net, ids []int) ([]float32, error) {
 	n := len(ids)

@@ -92,6 +92,18 @@ func withoutReasoningFields(proto provider.Protocol, body []byte, all bool) []by
 				}
 			}
 		}
+		// Responses' changes of effort mid-thread ask for reasoning too
+		if in, ok := m["input"].([]any); ok && proto == provider.Responses {
+			kept := in[:0:0]
+			for _, it := range in {
+				if o, ok := it.(map[string]any); !ok || o["type"] != "configuration_update" {
+					kept = append(kept, it)
+				}
+			}
+			if len(kept) < len(in) {
+				m["input"], changed = kept, true
+			}
+		}
 	case provider.Anthropic:
 		if t, ok := m["thinking"].(map[string]any); ok {
 			if s, _ := t["type"].(string); all || s == "enabled" || s == "adaptive" {

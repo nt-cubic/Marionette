@@ -321,3 +321,37 @@ func TestClaudeAtAnOlderGatewayAddress(t *testing.T) {
 		}
 	}
 }
+
+// A stopped distro's Claude Code offers a tier's effort, and the
+// subagents', the levels of its model as a running one does, not
+// magpie's models: picking one of those as an effort is refused (cybercaius).
+func TestWSLClaudeStoppedEfforts(t *testing.T) {
+	root, _ := claudeDistroHome(t, `{}`)
+	saveDeepseek(t)
+	d := distro{Name: "Stopped", Root: root, Home: "/home/me", Has: map[string]bool{"dir:.claude": true}, Gateway: "172.20.0.1"}
+	k := wslKindOf("claude")
+	a := asleep(wslAgent(k, d), k, d)
+	cur := map[string]string{"model": "deepseek/pro"}
+	for _, key := range []string{"opus_effort", "sonnet_effort", "haiku_effort", "subagent_effort"} {
+		f := a.Field(key)
+		if f == nil {
+			t.Fatalf("no %s", key)
+		}
+		for _, o := range f.Options(cur) {
+			if !contains(provider.MemberEfforts, o.Value) {
+				t.Fatalf("%s offers %q, not an effort: %v", key, o.Value, f.Options(cur))
+			}
+		}
+	}
+	if f := a.Field("ultracode"); f != nil {
+		for _, o := range f.Options(cur) {
+			if o.Value != "on" {
+				t.Fatalf("ultracode offers %q", o.Value)
+			}
+		}
+	}
+	// a tier still offers magpie's models
+	if len(a.Field("opus").Options(cur)) == 0 {
+		t.Fatal("opus offers no model")
+	}
+}

@@ -115,6 +115,7 @@ func atomcodeIn(at place) *Agent {
 		ID: "atomcode", Name: "AtomCode", Icon: "atomcode", Spelled: prefixed, NoNames: true,
 		UA:  []string{"atomcode"},
 		Bin: "atomcode", Dir: dir, Path: path,
+		ListOnly: true,
 		Sync: func() error {
 			ts, err := edit.TOMLTables(path)
 			if err != nil {

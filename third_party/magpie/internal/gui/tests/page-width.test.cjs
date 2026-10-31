@@ -38,7 +38,8 @@ const box = (page, v) => page.evaluate((v) => {
   const cs = getComputedStyle(e);
   const r = e.getBoundingClientRect();
   const pl = parseFloat(cs.paddingLeft), pr = parseFloat(cs.paddingRight);
-  return { left: Math.round(r.left + pl), width: Math.round(e.clientWidth - pl - pr), pl, pr };
+  // pr is the right side's gap with the bar's room, which comes out of the padding
+  return { left: Math.round(r.left + pl), width: Math.round(e.clientWidth - pl - pr), pl, pr: pr + e.offsetWidth - e.clientWidth };
 }, v);
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {

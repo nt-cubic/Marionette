@@ -115,9 +115,14 @@ func TestClaudeDesktopClassifierOnRemoteMagpie(t *testing.T) {
 	if got := send(electron, title); got != "work/claude-opus-5-5" {
 		t.Fatalf("title: sent %q", got)
 	}
-	// a Claude model the other magpie doesn't serve goes to the session's
-	if got := send(cli, `{"model":"claude-haiku-4-5","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hi"}]}`); got != "work/claude-opus-5-5" {
-		t.Fatalf("unserved: sent %q", got)
+	// a Claude model the other magpie doesn't serve goes to its model of
+	// the same tier (cybercaius: a haiku call stays a haiku call on the
+	// session's provider), and one of a tier it has none of to the session's
+	if got := send(cli, `{"model":"claude-haiku-4-5","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hi"}]}`); got != "work/claude-haiku-5-5" {
+		t.Fatalf("unserved haiku: sent %q", got)
+	}
+	if got := send(cli, `{"model":"claude-fable-5-1","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hi"}]}`); got != "work/claude-opus-5-5" {
+		t.Fatalf("unserved fable: sent %q", got)
 	}
 }
 

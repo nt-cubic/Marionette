@@ -7,13 +7,16 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yetone/magpie/internal/gateway"
 )
 
 // The tray panel's Routing tab opens the window's Routing page on the
-// request clicked: the id goes along, and nothing else does.
+// request clicked: the id goes along, and nothing else does. Its More in
+// Plugins opens Plugins on Discover, q even empty, with what the panel
+// looked for when that is a line of text (#3579).
 func TestMainView(t *testing.T) {
 	for _, c := range []struct {
 		q    url.Values
@@ -34,6 +37,18 @@ func TestMainView(t *testing.T) {
 		{url.Values{"view": {"usage"}, "tab": {"requests"}, "agent": {"claude-desktop"}, "provider": {"relay team"}}, "usage&tab=requests&provider=relay+team&agent=claude-desktop"},
 		{url.Values{"view": {"usage"}, "tab": {"other"}, "provider": {"x&view=settings"}}, "usage"},
 		{url.Values{"view": {"settings"}, "provider": {"codex"}}, "settings"},
+		{url.Values{"view": {"plugins"}}, "plugins"},
+		{url.Values{"view": {"plugins"}, "q": {""}}, "plugins&q="},
+		{url.Values{"view": {"plugins"}, "q": {"kiro"}}, "plugins&q=kiro"},
+		{url.Values{"view": {"plugins"}, "q": {"fake co&x"}}, "plugins&q=fake+co%26x"},
+		{url.Values{"view": {"plugins"}, "q": {"智谱 glm&view=settings"}}, "plugins&q=%E6%99%BA%E8%B0%B1+glm%26view%3Dsettings"},
+		{url.Values{"view": {"plugins"}, "q": {"a\nb"}}, "plugins&q="},
+		{url.Values{"view": {"plugins"}, "q": {strings.Repeat("x", 100)}}, "plugins&q=" + strings.Repeat("x", 100)},
+		{url.Values{"view": {"plugins"}, "q": {strings.Repeat("x", 101)}}, "plugins&q="},
+		{url.Values{"view": {"plugins"}, "q": {"a\tb"}}, "plugins&q="},
+		{url.Values{"view": {"plugins"}, "q": {strings.Repeat("智", 100)}}, "plugins&q=" + strings.Repeat("%E6%99%BA", 100)},
+		{url.Values{"view": {"plugins"}, "q": {strings.Repeat("智", 101)}}, "plugins&q="},
+		{url.Values{"view": {"settings"}, "q": {"kiro"}}, "settings"},
 	} {
 		if got := mainView(c.q); got != c.want {
 			t.Errorf("%v: %q, want %q", c.q, got, c.want)

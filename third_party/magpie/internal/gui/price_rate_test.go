@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // A save's priceRate (#819): left out keeps the rate, null clears it, a
@@ -93,5 +95,36 @@ func TestAccountSaveKeepsPriceRate(t *testing.T) {
 		if got := rate(); got != c.want {
 			t.Fatalf("saved %s, read back %v", c.send, got)
 		}
+	}
+}
+
+// What a provider row says it bills at now (#2463) is the price rate times
+// the window holding the time on this computer's clock, 0 for 1×, and
+// /api/providers carries it: the browser's clock may be another zone's.
+func TestRateNowOf(t *testing.T) {
+	ws := []provider.RateWindow{{Start: "10:00", End: "14:00", Rate: 3}}
+	peak := time.Date(2026, 10, 20, 11, 0, 0, 0, time.Local)
+	off := time.Date(2026, 10, 20, 15, 0, 0, 0, time.Local)
+	for _, c := range []struct {
+		name string
+		p    provider.Provider
+		at   time.Time
+		want float64
+	}{
+		{"price rate and window", provider.Provider{PriceRate: 2, RateWindows: ws}, peak, 6},
+		{"price rate off the window", provider.Provider{PriceRate: 2, RateWindows: ws}, off, 2},
+		{"window alone", provider.Provider{RateWindows: ws}, peak, 3},
+		{"the peak written in UTC", provider.Provider{RateWindows: ws}, peak.UTC(), 3},
+		{"nothing", provider.Provider{RateWindows: ws}, off, 0},
+		{"a price rate with no window", provider.Provider{PriceRate: 2}, peak, 0},
+		{"a window at 1×", provider.Provider{RateWindows: []provider.RateWindow{{Start: "10:00", End: "14:00", Rate: 1}}}, peak, 0},
+	} {
+		if got := rateNowOf(c.p, c.at); got != c.want {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+	}
+	allDay := []provider.RateWindow{{Start: "00:00", End: "24:00", Rate: 3}}
+	if got := providerInfo(provider.Provider{ID: "relay", RateWindows: allDay}, nil).RateNow; got != 3 {
+		t.Errorf("/api/providers' rateNow under an all-day 3× window: %v", got)
 	}
 }

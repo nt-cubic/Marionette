@@ -29,6 +29,7 @@ func TestRenameGroupMovesTheAgentsOnIt(t *testing.T) {
 	writeFile(t, piSettings, `{"defaultProvider":"magpie","defaultModel":"group/smart"}`)
 	oc := filepath.Join(home, ".config", "opencode", "opencode.json")
 	writeFile(t, oc, `{"model":"magpie/group/smart"}`)
+	setUpInMagpie("pi", "opencode")
 	claudeCfg := filepath.Join(home, ".claude", "settings.json")
 	writeFile(t, claudeCfg, `{}`)
 	cc, err := Find("claude")

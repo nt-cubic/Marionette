@@ -57,7 +57,7 @@ func clinePin(p provider.Provider, to provider.Protocol, body []byte) []byte {
 // chatImages is whether a Chat body carries an image part
 func chatImages(body []byte) bool {
 	found := false
-	gjson.GetBytes(body, "messages").ForEach(func(_, m gjson.Result) bool {
+	getIn(body, "messages").ForEach(func(_, m gjson.Result) bool {
 		m.Get("content").ForEach(func(_, part gjson.Result) bool {
 			if t := part.Get("type").String(); t == "image_url" || t == "image" || t == "input_image" {
 				found = true

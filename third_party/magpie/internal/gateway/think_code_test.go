@@ -209,4 +209,7 @@ func TestAfterThoughtCloseInCode(t *testing.T) {
 	if got := afterThought("<think>never closed"); got != "<think>never closed" {
 		t.Errorf("afterThought of an open block = %q", got)
 	}
+	if got := afterThought("\r\n<think>a</think>\r\nb"); got != "b" {
+		t.Errorf("afterThought after a line end = %q", got)
+	}
 }

@@ -257,3 +257,179 @@ func TestGrokFoldsItsOwnAccount(t *testing.T) {
 		t.Errorf("DeepSeek's row: %v", others)
 	}
 }
+
+// Each of magpie's models is asked on the API its provider serves it on
+// natively (uk.jent on Discord): a model served on OpenAI's Responses API
+// on "responses", one on Anthropic's Messages API on "messages", and the
+// rest on Chat Completions, Grok Build's default. All three go to the
+// gateway's one /v1, where Grok adds /responses, /messages or
+// /chat/completions.
+func TestGrokAsksEachModelNatively(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Setenv("GROK_HOME", filepath.Join(home, "grok"))
+	for _, p := range []provider.Provider{
+		{ID: "deepseek", Name: "DeepSeek", Key: "k", Chat: "http://127.0.0.1:1/v1", Models: []string{"pro"}},
+		{ID: "resp", Name: "Resp", Key: "k", Responses: "http://127.0.0.1:1/v1", Models: []string{"gpt-6-sol"}},
+		{ID: "anth", Name: "Anth", Key: "k", Anthropic: "http://127.0.0.1:1", Models: []string{"claude-sonnet-5"}},
+	} {
+		if err := provider.Save(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(home, "grok", "config.toml")
+	if err := grok(home).Field("model").Set("magpie/deepseek/pro"); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	for id, want := range map[string]string{"deepseek/pro": "chat_completions", "resp/gpt-6-sol": "responses", "anth/claude-sonnet-5": "messages"} {
+		m, err := edit.GetTOMLTable(path, `model."magpie/`+id+`"`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m["api_backend"] != want || !strings.HasSuffix(m["base_url"], "/v1") {
+			t.Errorf("%s: api_backend %q, base_url %q, want %q on /v1\n%s", id, m["api_backend"], m["base_url"], want, raw)
+		}
+	}
+}
+
+// grokSandbox is a sandbox HOME with a DeepSeek of a 1M and a 200K model,
+// windows the user typed, and the path of Grok Build's config there.
+func grokSandbox(t *testing.T) (string, string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Setenv("GROK_HOME", filepath.Join(home, "grok"))
+	if err := provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "http://127.0.0.1:1/v1", Key: "k", Models: []string{"pro", "flash"},
+		Contexts: map[string]int{"pro": 1000000, "flash": 200000}}); err != nil {
+		t.Fatal(err)
+	}
+	return home, filepath.Join(home, "grok", "config.toml")
+}
+
+// grokWindows is the context_window of magpie's tables for pro and flash.
+func grokWindows(t *testing.T, path string) (int, int) {
+	t.Helper()
+	got, err := grokWindowsIn(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got["deepseek/pro"], got["deepseek/flash"]
+}
+
+// A context_window the user set by hand in one of magpie's tables stays
+// through a sync and a new pick (uk.jent on Discord: dozens of models told
+// 1M, set to 300K one by one, and written over on the next sync), while
+// the tables they didn't touch follow magpie's catalog.
+func TestGrokKeepsAWindowSetByHand(t *testing.T) {
+	home, path := grokSandbox(t)
+	a := grok(home)
+	if err := a.Field("model").Set("magpie/deepseek/pro"); err != nil {
+		t.Fatal(err)
+	}
+	if pro, flash := grokWindows(t, path); pro != 1000000 || flash != 200000 {
+		t.Fatalf("magpie's windows: pro %d, flash %d", pro, flash)
+	}
+	if err := edit.SetTOMLKey(path, `model."magpie/deepseek/pro"`, "context_window", 300000); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Field("model").Set("magpie/deepseek/flash"); err != nil {
+		t.Fatal(err)
+	}
+	if pro, flash := grokWindows(t, path); pro != 300000 || flash != 200000 {
+		raw, _ := os.ReadFile(path)
+		t.Fatalf("after a sync: pro %d (set by hand to 300000), flash %d\n%s", pro, flash, raw)
+	}
+	// the provider's window changed in magpie: the one set by hand stays,
+	// the other follows
+	provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "http://127.0.0.1:1/v1", Key: "k", Models: []string{"pro", "flash"},
+		Contexts: map[string]int{"pro": 1000000, "flash": 128000}})
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if pro, flash := grokWindows(t, path); pro != 300000 || flash != 128000 {
+		t.Fatalf("after a window changed: pro %d, flash %d", pro, flash)
+	}
+	// taken out and put back, magpie's tables start from its own again
+	if err := a.Field("model").Set(""); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Field("model").Set("magpie/deepseek/pro"); err != nil {
+		t.Fatal(err)
+	}
+	if pro, _ := grokWindows(t, path); pro != 1000000 {
+		t.Fatalf("connected again: pro %d", pro)
+	}
+}
+
+// A config an older magpie wrote, with no record of what it gave: a window
+// other than the model's whole one is the user's and stays; the whole one,
+// which that magpie wrote, follows Long conversations.
+func TestGrokKeepsAWindowSetBeforeTheRecord(t *testing.T) {
+	home, path := grokSandbox(t)
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	old := "[models]\ndefault = \"magpie/deepseek/pro\"\n\n" +
+		"[model.\"magpie/deepseek/pro\"]\nmodel = \"deepseek/pro\"\nbase_url = \"http://127.0.0.1:3425/v1\"\napi_key = \"magpie\"\ncontext_window = 300000\n\n" +
+		"[model.\"magpie/deepseek/flash\"]\nmodel = \"deepseek/flash\"\nbase_url = \"http://127.0.0.1:3425/v1\"\napi_key = \"magpie\"\ncontext_window = 200000\n"
+	if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := settings.Load()
+	s.CompactAt = 150000
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	if err := grok(home).Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if pro, flash := grokWindows(t, path); pro != 300000 || flash != 150000 {
+		raw, _ := os.ReadFile(path)
+		t.Fatalf("pro %d (the user's 300000), flash %d (Long conversations' 150000)\n%s", pro, flash, raw)
+	}
+}
+
+// Grok Build compacts by context_window, so it is told where Long
+// conversations has Codex and Claude Code compact: the size typed there
+// on a longer window, the whole window under Full window, and a threshold
+// set on the model in its provider before either.
+func TestGrokWindowFollowsLongConversations(t *testing.T) {
+	home, path := grokSandbox(t)
+	a := grok(home)
+	if err := a.Field("model").Set("magpie/deepseek/pro"); err != nil {
+		t.Fatal(err)
+	}
+	set := func(f func(*settings.Settings)) {
+		t.Helper()
+		s := settings.Load()
+		f(&s)
+		if err := settings.Save(s); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.Sync(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	set(func(s *settings.Settings) { s.CompactAt = 300000 })
+	if pro, flash := grokWindows(t, path); pro != 300000 || flash != 200000 {
+		t.Fatalf("compact at 300K: pro %d, flash %d", pro, flash)
+	}
+	set(func(s *settings.Settings) { s.FullContext = true })
+	if pro, flash := grokWindows(t, path); pro != 1000000 || flash != 200000 {
+		t.Fatalf("full window: pro %d, flash %d", pro, flash)
+	}
+	set(func(s *settings.Settings) {
+		s.FullContext, s.ModelCompacts = false, map[string]int{"deepseek/pro": 400000}
+	})
+	if pro, flash := grokWindows(t, path); pro != 400000 || flash != 200000 {
+		t.Fatalf("pro's own threshold: pro %d, flash %d", pro, flash)
+	}
+}

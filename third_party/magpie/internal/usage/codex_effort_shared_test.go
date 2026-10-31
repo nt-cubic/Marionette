@@ -239,3 +239,20 @@ func TestCodexModelEffortIsTheWholeLedgers(t *testing.T) {
 		}
 	}
 }
+
+// Asks within the minute are told the kept answer itself, not a copy of
+// every thread's consumption each: over a large history the copies were
+// ~230 MB every 80 s of an open Sessions page (#2278).
+func TestCodexModelEffortAsksShareTheKeptAnswer(t *testing.T) {
+	effortFixture(t)
+	effortFresh = time.Hour
+	t.Cleanup(func() { effortFresh = 0 })
+	first := CodexModelEffort(All)
+	again := CodexModelEffort(All)
+	if len(first) == 0 {
+		t.Fatal("no consumption")
+	}
+	if reflect.ValueOf(first).UnsafePointer() != reflect.ValueOf(again).UnsafePointer() {
+		t.Fatal("an unchanged ask was told a copy of the kept answer")
+	}
+}

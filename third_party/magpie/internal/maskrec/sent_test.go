@@ -1,6 +1,8 @@
 package maskrec
 
 import (
+	"fmt"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,36 +58,71 @@ func TestSentAndBackInMemory(t *testing.T) {
 		t.Fatalf("the record went with its body: %+v %v", got, ok)
 	}
 	store.mu.Lock()
-	n := 0
+	n := len(store.sent)
 	for _, r := range store.snips {
 		if r.Sent != "" {
-			n++
+			t.Fatal("a record in memory holds its body whole")
 		}
 	}
 	store.mu.Unlock()
 	if n != keepSent {
 		t.Fatalf("%d bodies kept, want %d", n, keepSent)
 	}
-	// sentBudget in all: the oldest go first
+	// sentBudget in all, as stored: the oldest go first. Random bytes
+	// don't compress, so each takes about sentMax.
 	sandbox(t, now)
+	rnd := rand.New(rand.NewPCG(1, 2))
 	var keys []int64
 	for range 20 {
-		r := Add(Record{Time: now, What: "chat", N: 1, Sent: strings.Repeat("y", sentMax),
+		raw := make([]byte, sentMax)
+		for i := range raw {
+			raw[i] = byte(rnd.Uint32())
+		}
+		r := Add(Record{Time: now, What: "chat", N: 1, Sent: string(raw),
 			Values: []Value{{Placeholder: p, Kind: "API_KEY", By: "rule", Len: 40}}})
 		keys = append(keys, r.Key)
 	}
-	if _, ok := SentOf(keys[len(keys)-sentBudget/sentMax-1]); ok {
+	store.mu.Lock()
+	n, stored := len(store.sent), store.sentBytes
+	store.mu.Unlock()
+	if stored > sentBudget || n < sentBudget/sentMax-1 || n > sentBudget/sentMax {
+		t.Fatalf("%d bodies of %d bytes kept, budget %d", n, stored, sentBudget)
+	}
+	if _, ok := SentOf(keys[len(keys)-n-1]); ok {
 		t.Fatal("bodies over sentBudget kept")
 	}
-	if _, ok := SentOf(keys[len(keys)-sentBudget/sentMax]); !ok {
+	if _, ok := SentOf(keys[len(keys)-n]); !ok {
 		t.Fatal("a body within sentBudget dropped")
-	}
-	if store.sentBytes != sentBudget {
-		t.Fatalf("sentBytes %d", store.sentBytes)
 	}
 	// a key nobody has
 	Restored(12345, map[string]int{p: 1})
 	if _, ok := SentOf(12345); ok {
 		t.Fatal("SentOf an unknown key")
+	}
+}
+
+// A request is JSON that repeats itself: memory keeps it compressed, a
+// tenth of its size or less, and hands it back whole (#2278).
+func TestSentKeptCompressed(t *testing.T) {
+	now := time.Date(2026, 10, 24, 9, 0, 0, 0, time.Local)
+	sandbox(t, now)
+	const p = "{{API_KEY_ccccdddd}}"
+	var b strings.Builder
+	b.WriteString(`{"model":"gpt-6.1-sol","input":[`)
+	for i := 0; b.Len() < 1<<20; i++ {
+		fmt.Fprintf(&b, `{"type":"function_call_output","call_id":"call_%d","output":"line %d of the build log, key %s, ok\\n"},`, i, i*7, p)
+	}
+	b.WriteString(`{"role":"user","content":"go on"}]}`)
+	body := b.String()
+	r := Add(Record{Time: now, What: "chat", N: 1, Sent: body,
+		Values: []Value{{Placeholder: p, Kind: "API_KEY", By: "rule", Len: 40}}})
+	store.mu.Lock()
+	stored := store.sentBytes
+	store.mu.Unlock()
+	if stored == 0 || stored > len(body)/10 {
+		t.Fatalf("a %d-byte request is kept in %d bytes", len(body), stored)
+	}
+	if got, ok := SentOf(r.Key); !ok || got != body {
+		t.Fatalf("SentOf: %d bytes, %v; want %d", len(got), ok, len(body))
 	}
 }

@@ -753,9 +753,18 @@ func postToken(ctx context.Context, tokenURL, ctype string, body []byte, out any
 // postTokenAs is postToken asked with bearer, a token already had, when it
 // isn't "" (Google's IAM Credentials, which trades one for another).
 func postTokenAs(ctx context.Context, tokenURL, ctype, bearer string, body []byte, out any) error {
+	return postTokenWith(ctx, tokenURL, ctype, bearer, nil, body, out)
+}
+
+// postTokenWith is postTokenAs sent with the headers in h too (Codex's
+// own, codexClientHeaders).
+func postTokenWith(ctx context.Context, tokenURL, ctype, bearer string, h http.Header, body []byte, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, bytes.NewReader(body))
 	if err != nil {
 		return err
+	}
+	for k, v := range h {
+		req.Header[k] = v
 	}
 	req.Header.Set("Content-Type", ctype)
 	req.Header.Set("Accept", "application/json")
@@ -830,7 +839,10 @@ func codexExchange(ctx context.Context, code, verifier, redirect string) (savedL
 		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
 	}
-	if err := postToken(ctx, codexTokenURL, "application/x-www-form-urlencoded", []byte(form.Encode()), &tok); err != nil {
+	// sent as Codex sends it (codex-rs OAuthClient::exchange_code)
+	h := http.Header{}
+	codexClientHeaders(h, codexVersion())
+	if err := postTokenWith(ctx, codexTokenURL, "application/x-www-form-urlencoded", "", h, []byte(form.Encode()), &tok); err != nil {
 		return savedLogin{}, err
 	}
 	if tok.AccessToken == "" || tok.RefreshToken == "" || tok.IDToken == "" {
@@ -881,6 +893,11 @@ func addLogin(l savedLogin) (using bool, err error) {
 	ls := readLogins()
 	l.User = codexName(ls, l)
 	using = !signedIn || sameLogin(live, l)
+	if l.Agent == "claude" && claudeSetupToken(l.Auth) != "" {
+		// Claude Code itself can't be signed in to a setup-token: the
+		// account is magpie's alone, its own sign-in left as it is
+		using = false
+	}
 	if first := claudeStandIn(ls); !signedIn && l.Agent == "claude" && first != "" {
 		// logged out of Claude Code with accounts in magpie: it stays so,
 		// as the user left it (a claude.ai sign-in beside magpie's token

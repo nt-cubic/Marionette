@@ -193,7 +193,8 @@ func penguinIn(at place) *Agent {
 		Dir: filepath.Dir(root), Path: path,
 		// the desktop app, on this machine (a distro has none): installed
 		// and not opened yet, it has made no ~/.penguin
-		sign: func() bool { return at.spell == nil && (&Agent{ID: "penguin"}).HasApp() },
+		sign:     func() bool { return at.spell == nil && (&Agent{ID: "penguin"}).HasApp() },
+		ListOnly: true,
 		Sync: func() error {
 			t, err := edit.GetTOMLTable(path, providerTable)
 			if err != nil || t == nil {

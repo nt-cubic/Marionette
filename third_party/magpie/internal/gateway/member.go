@@ -97,8 +97,9 @@ type memberWriter struct {
 	mu     sync.Mutex
 	member string
 
-	mode int // memberUnknown, …
-	buf  bytes.Buffer
+	mode     int // memberUnknown, …
+	buf      bytes.Buffer
+	finished bool
 }
 
 const (
@@ -159,6 +160,18 @@ func (m *memberWriter) Write(p []byte) (int, error) {
 	}
 	switch m.mode {
 	case memberWhole:
+		if m.finished {
+			// written after finish, by a writer inside this one that held
+			// it longer: no one would write it from the buffer, so it goes
+			// now, named when it is the whole body (#4129)
+			if json.Valid(p) {
+				if _, err := m.w.Write(memberNamed(p, m.memberID())); err != nil {
+					return 0, err
+				}
+				return len(p), nil
+			}
+			return m.w.Write(p)
+		}
 		return m.buf.Write(p)
 	case memberStream:
 		m.buf.Write(p)
@@ -174,13 +187,18 @@ func (m *memberWriter) Write(p []byte) (int, error) {
 				return len(p), err
 			}
 		}
+		if m.finished && m.buf.Len() > 0 { // no finish is left to write it
+			_, err := m.w.Write(m.buf.Bytes())
+			m.buf.Reset()
+			return len(p), err
+		}
 		return len(p), nil
 	}
 	return m.w.Write(p)
 }
 
 func (m *memberWriter) Flush() {
-	if m.mode == memberWhole {
+	if m.mode == memberWhole && !m.finished {
 		return // sent whole, once it is
 	}
 	if f, ok := m.w.(http.Flusher); ok {
@@ -189,6 +207,7 @@ func (m *memberWriter) Flush() {
 }
 
 func (m *memberWriter) finish() {
+	m.finished = true
 	if m.buf.Len() == 0 {
 		return
 	}

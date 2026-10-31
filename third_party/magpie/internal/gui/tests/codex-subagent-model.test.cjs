@@ -109,33 +109,33 @@ function server(lang, sets) {
 
 // the words as i18n.js has them
 const W = {
-  en: { unset: "subagent model: Same as the lead", line: "Each subagent runs on the lead's model (GPT-5.5), or on another the lead picks for it. Pick a model here to put every subagent on it.",
+  en: { unset: "subagent model: Same as the lead", line: "The lead picks each subagent's model; one it names none for runs on the lead's model (GPT-5.5). A resumed subagent stays on the model it started on. A model picked here holds every subagent to it, even when the lead names another.",
     old: "Codex's config still starts subagents on gpt-5.4-mini when the lead names none; picking here replaces it.",
-    def: "Same as the lead", note: "GPT-5.5, or another the lead picks for a subagent", set: "subagent model: GPT-6 Astra", setLine: "Every subagent runs on this model, whatever the lead asks for.", row: "Codex subagent model",
+    def: "Same as the lead", note: "GPT-5.5, or another the lead picks for a subagent", set: "subagent model: GPT-6 Astra", setLine: "Every subagent runs on this model, even when the lead names another. Same as the lead gives the pick back to the lead.", row: "Codex subagent model",
     moved: "Codex requested a subagent on gpt-5.5; magpie put it on codex/gpt-6-astra, the model set for its subagents.",
     kept: "Codex requested a subagent on gpt-5.5 and it stayed there: its subagents are set to codex/gpt-6-astra, but no ChatGPT account on in magpie serves it.",
     sealed: "Codex requested a subagent on gpt-5.5 and it stayed there: its subagents are set to token/gpt-6.1-sol, but its task was sealed by the ChatGPT backend that answered its lead, and only a ChatGPT account can open it." },
-  zh: { unset: "子代理模型：跟主代理一样", line: "每个子代理都用主代理正在用的模型（GPT-5.5），主代理也可能给某个子代理另选一个。在这里选定一个模型，所有子代理就都用它。",
+  zh: { unset: "子代理模型：跟主代理一样", line: "主代理为每个子代理选模型；主代理没指定时，子代理用主代理的模型（GPT-5.5）。恢复的子代理仍用它最初的模型。在这里选定一个模型，所有子代理都固定用它，主代理指定了别的也一样。",
     old: "Codex 配置里还写着：主代理没指定时，子代理用 gpt-5.4-mini。在这里选一次就会替换掉它。",
-    def: "跟主代理一样", note: "GPT-5.5，或主代理给子代理另选的模型", set: "子代理模型：GPT-6 Astra", setLine: "所有子代理都用这个模型，不管主代理要的是哪个。", row: "Codex 子代理模型",
+    def: "跟主代理一样", note: "GPT-5.5，或主代理给子代理另选的模型", set: "子代理模型：GPT-6 Astra", setLine: "所有子代理都用这个模型，主代理指定了别的也一样。选“跟主代理一样”就把选择交还给主代理。", row: "Codex 子代理模型",
     moved: "Codex 请求了使用 gpt-5.5 的子代理；magpie 将其改用 codex/gpt-6-astra，即为它的子代理设定的模型。",
     kept: "Codex 请求了使用 gpt-5.5 的子代理，并保留在该模型上：它的子代理设为 codex/gpt-6-astra，但magpie 中启用的 ChatGPT 账号都不提供该模型。",
     sealed: "Codex 请求了使用 gpt-5.5 的子代理，并保留在该模型上：它的子代理设为 token/gpt-6.1-sol，但它的任务由回答主代理的 ChatGPT 后端加密，只有 ChatGPT 账号能打开。" },
-  "zh-TW": { unset: "子代理模型：跟主代理一樣", line: "每個子代理都用主代理正在用的模型（GPT-5.5），主代理也可能給某個子代理另選一個。在這裡選定一個模型，所有子代理就都用它。",
+  "zh-TW": { unset: "子代理模型：跟主代理一樣", line: "主代理為每個子代理選模型；主代理沒指定時，子代理用主代理的模型（GPT-5.5）。恢復的子代理仍用它最初的模型。在這裡選定一個模型，所有子代理都固定用它，主代理指定了別的也一樣。",
     old: "Codex 設定裡還寫著：主代理沒指定時，子代理用 gpt-5.4-mini。在這裡選一次就會取代它。",
-    def: "跟主代理一樣", note: "GPT-5.5，或主代理給子代理另選的模型", set: "子代理模型：GPT-6 Astra", setLine: "所有子代理都用這個模型，不管主代理要的是哪個。", row: "Codex 子代理模型",
+    def: "跟主代理一樣", note: "GPT-5.5，或主代理給子代理另選的模型", set: "子代理模型：GPT-6 Astra", setLine: "所有子代理都用這個模型，主代理指定了別的也一樣。選「跟主代理一樣」就把選擇交還給主代理。", row: "Codex 子代理模型",
     moved: "Codex 請求了使用 gpt-5.5 的子代理；magpie 將其改用 codex/gpt-6-astra，即為它的子代理設定的模型。",
     kept: "Codex 請求了使用 gpt-5.5 的子代理，並保留在該模型上：它的子代理設為 codex/gpt-6-astra，但magpie 中啟用的 ChatGPT 帳號都不提供該模型。",
     sealed: "Codex 請求了使用 gpt-5.5 的子代理，並保留在該模型上：它的子代理設為 token/gpt-6.1-sol，但它的任務由回應主代理的 ChatGPT 後端加密，只有 ChatGPT 帳號能打開。" },
-  ja: { unset: "サブエージェントのモデル：リードと同じ", line: "各サブエージェントはリードと同じモデル（GPT-5.5）で動きます。リードが別のモデルを選ぶこともあります。ここでモデルを選ぶと、すべてのサブエージェントがそのモデルになります。",
+  ja: { unset: "サブエージェントのモデル：リードと同じ", line: "各サブエージェントのモデルはリードが選びます。指定がなければリードのモデル（GPT-5.5）で動きます。再開したサブエージェントは最初のモデルのままです。ここでモデルを選ぶと、リードが別のモデルを指定しても、すべてのサブエージェントがそのモデルに固定されます。",
     old: "Codex の設定には、リードが指定しないときのサブエージェントのモデルとして gpt-5.4-mini が残っています。ここで選ぶとそれを置き換えます。",
-    def: "リードと同じ", note: "GPT-5.5、またはリードがサブエージェントに選ぶ別のモデル", set: "サブエージェントのモデル：GPT-6 Astra", setLine: "リードが何を指定しても、すべてのサブエージェントがこのモデルで動きます。", row: "Codex サブエージェントのモデル",
+    def: "リードと同じ", note: "GPT-5.5、またはリードがサブエージェントに選ぶ別のモデル", set: "サブエージェントのモデル：GPT-6 Astra", setLine: "リードが別のモデルを指定しても、すべてのサブエージェントがこのモデルで動きます。「リードと同じ」を選ぶと、選択をリードに戻します。", row: "Codex サブエージェントのモデル",
     moved: "Codex が gpt-5.5 のサブエージェントをリクエストしました。magpie はサブエージェント用に設定された codex/gpt-6-astra に切り替えました。",
     kept: "Codex が gpt-5.5 のサブエージェントをリクエストし、そのモデルのままになりました。サブエージェントは codex/gpt-6-astra に設定されていますが、magpie で有効な ChatGPT アカウントはどれもこのモデルを提供していません。",
     sealed: "Codex が gpt-5.5 のサブエージェントをリクエストし、そのモデルのままになりました。サブエージェントは token/gpt-6.1-sol に設定されていますが、そのタスクはリードに応答した ChatGPT バックエンドが暗号化しており、開けるのは ChatGPT アカウントだけです。" },
-  de: { unset: "Modell der Subagenten: Wie der Haupt-Agent", line: "Jeder Subagent läuft auf dem Modell des Haupt-Agenten (GPT-5.5) oder auf einem anderen, das der Haupt-Agent für ihn wählt. Wähle hier ein Modell, damit alle Subagenten darauf laufen.",
+  de: { unset: "Modell der Subagenten: Wie der Haupt-Agent", line: "Der Haupt-Agent wählt das Modell jedes Subagenten; nennt er keins, läuft der Subagent auf dem Modell des Haupt-Agenten (GPT-5.5). Ein fortgesetzter Subagent bleibt auf seinem ersten Modell. Ein hier gewähltes Modell legt alle Subagenten darauf fest, auch wenn der Haupt-Agent ein anderes nennt.",
     old: "Die Codex-Konfiguration startet Subagenten noch auf gpt-5.4-mini, wenn der Haupt-Agent keins nennt; eine Wahl hier ersetzt das.",
-    def: "Wie der Haupt-Agent", note: "GPT-5.5 oder ein anderes, das der Haupt-Agent für einen Subagenten wählt", set: "Modell der Subagenten: GPT-6 Astra", setLine: "Alle Subagenten laufen auf diesem Modell, egal was der Haupt-Agent verlangt.", row: "Codex-Subagenten-Modell",
+    def: "Wie der Haupt-Agent", note: "GPT-5.5 oder ein anderes, das der Haupt-Agent für einen Subagenten wählt", set: "Modell der Subagenten: GPT-6 Astra", setLine: "Alle Subagenten laufen auf diesem Modell, auch wenn der Haupt-Agent ein anderes nennt. „Wie der Haupt-Agent“ gibt die Wahl an den Haupt-Agenten zurück.", row: "Codex-Subagenten-Modell",
     moved: "Codex hat einen Subagent mit gpt-5.5 angefordert; magpie hat ihn auf codex/gpt-6-astra gesetzt, das für seine Subagenten festgelegte Modell.",
     kept: "Codex hat einen Subagent mit gpt-5.5 angefordert, und er blieb dort: Seine Subagenten sind auf codex/gpt-6-astra gesetzt, aber kein eingeschaltetes ChatGPT-Konto in magpie bietet es an.",
     sealed: "Codex hat einen Subagent mit gpt-5.5 angefordert, und er blieb dort: Seine Subagenten sind auf token/gpt-6.1-sol gesetzt, aber seine Aufgabe wurde vom ChatGPT-Backend versiegelt, das seinen Lead beantwortet hat, und nur ein ChatGPT-Konto kann sie öffnen." },
@@ -236,10 +236,14 @@ for (const engine of engines) {
         await page.locator("#codexSubagentModelRow button", { hasText: "GPT-6 Astra" }).waitFor();
         assert.deepEqual(sets.at(-1), { agent: "codex", field: "subagent_model", value: "codex/gpt-6-astra" });
         assert.equal(await page.locator("#codexSubagentModelRow .who").getAttribute("title"), w.setLine);
+        // said under its name too, not only on hover (HoGee_xxl on X)
+        assert.equal(await page.locator("#codexSubagentModelRow .who .sub").textContent(), w.setLine);
         await pick.click();
         await page.locator("#pop:not([hidden]) #list li").first().waitFor();
         await page.locator("#pop #list li").first().click();
         await page.locator("#codexSubagentModelRow button", { hasText: w.def }).waitFor();
+        assert.equal(await page.locator("#codexSubagentModelRow .who .sub").count(), 1);
+        assert((await page.locator("#codexSubagentModelRow .who .sub").textContent()).startsWith(w.line), "the row's note says what Same as the lead does");
         assert.deepEqual(sets.at(-1), { agent: "codex", field: "subagent_model", value: "" });
 
         // the Routing page's story: put on the model set, or why not

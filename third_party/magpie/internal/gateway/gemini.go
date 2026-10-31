@@ -80,6 +80,7 @@ type gRequest struct {
 		ResponseSchema     json.RawMessage `json:"responseSchema,omitempty"`
 		ResponseJSONSchema json.RawMessage `json:"responseJsonSchema,omitempty"`
 		ThinkingConfig     *gThinking      `json:"thinkingConfig,omitempty"`
+		ImageConfig        json.RawMessage `json:"imageConfig,omitempty"`
 	} `json:"generationConfig,omitempty"`
 }
 
@@ -116,7 +117,7 @@ func buildGemini(r *Request, model string) ([]byte, error) {
 		return nil, err
 	}
 	req["model"] = model
-	return marshalBody(req)
+	return marshalBody(req, "")
 }
 
 // geminiRequest is the request inside the Code Assist envelope that
@@ -225,6 +226,11 @@ func parseGemini(body []byte) (*Request, error) {
 		if tc := gc.ThinkingConfig; tc != nil {
 			r.Effort = tc.effort()
 			r.Thinking = r.Effort != ""
+		}
+		// the size and shape of the image asked for, which only an
+		// upstream that speaks Gemini takes (#3820)
+		if ic := gc.ImageConfig; len(ic) > 0 && string(ic) != "null" {
+			r.ImageConfig = ic
 		}
 		// structured output, asked for in the upstream's own field
 		// (Format) and in words as well: a Gemini client doesn't know

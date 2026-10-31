@@ -206,6 +206,7 @@ func openChamber(home, cfg string) *Agent {
 			return wiringOff("OpenChamber", ocPath, func(k string) (string, bool) { return edit.GetJSON(ocPath, "provider."+magpieID+".options."+k) },
 				"baseURL", gatewayV1(), "apiKey", hereKey())
 		},
+		ListOnly: true,
 		Sync: func() error {
 			if _, ok := edit.GetJSON(ocPath, "provider."+magpieID); !ok && usesMagpie(s.model(), s.small()) {
 				return edit.SetJSON(ocPath, edit.KV{Path: "provider." + magpieID, Value: provider()})

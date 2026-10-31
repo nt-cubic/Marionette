@@ -47,6 +47,18 @@ a live gateway.
 
 ## Gateway Caller Keys
 
+`key-page.test.cjs` drives the gateway's key page (`/me`,
+`internal/gateway/keypage.html`, under the gateway's CSP) at 390px in
+Chromium and WebKit and every language: a wrong key is told so in the
+page's language and shows nothing; the right one shows its limit, its
+usage and most used model, picks that model, and gives Claude Code, Codex,
+OpenAI-compatible and curl setup at the address the page was opened at,
+with a placeholder until "Put my key in the setup" is ticked. A reload
+keeps the key in the tab, Forget takes it away, and no request carries the
+key in its address. A read-only key gets no setup. Gateway → Gateway keys
+shows the page's address (the LAN one, or `MAGPIE_PUBLIC_URL`) with a
+Copy, translated, and nothing with no key.
+
 `gateway-keys-empty.test.cjs` checks the Gateway page with no gateway key
 yet, as magpie web on a 390px phone: "No gateway keys yet" sits inside the
 list's card, inset from its edges, in the muted colour and size of Recent
@@ -131,6 +143,12 @@ node --test --test-concurrency=1 internal/gui/tests/gateway-caller-keys.test.cjs
 ```
 
 ## Other Browser Regressions
+
+`mask-alert.test.cjs` checks Settings › Usage's Masking alert (Must2333 on
+X): after the task done alert, Off to begin with; On saves `maskAlert`,
+another setting saved later keeps it, Off saves false, no click moves the
+page, and the row goes while masking is switched off. Every language at 900
+and 380 wide, in Chromium and WebKit, with the API faked.
 
 `local-address.test.cjs` checks the Address of a local server's provider
 (Ollama, LM Studio, oMLX, MLX-Serve): under the key in a Server address
@@ -348,7 +366,10 @@ with the API faked.
 `plugins-more-discover.test.cjs` checks that the add sheet's "More in
 Plugins" row and its "look for a plugin" link open Plugins on Discover,
 after Built-in or Installed was the tab open last (outloudvi on Discord).
-English and Chinese, Chromium and WebKit, with the API faked.
+From the tray panel they ask the window for Plugins with what was looked
+for (`window/main?view=plugins&q=`), and the window opened at the address
+`mainView` makes of that shows Discover once, its address giving q up
+(#3579). English and Chinese, Chromium and WebKit, with the API faked.
 
 `plugin-git.test.cjs` checks a plugin installed from a git repository: the
 market's field says it takes a GitHub repo, and Install sends
@@ -487,6 +508,13 @@ posts `subagent_effort`.
 `gateway-fold.test.cjs` folds Connect on the Gateway page with the view
 scrolled: its fields hide, the head keeps the base URL and a copy button, the
 head stays where it was, and the fold is remembered across a reload.
+
+`gateway-models-open-steady.test.cjs` opens the Gateway page's folded models,
+with the open list running past the window, in both engines, en and zh, the
+window and magpie web: Connect's head and the models' keep their place and
+height, every head on the page keeps its height, and folded again the head
+is back where it was. A view is a flex column and shrank every head of a set
+height once it overflowed (the owner, 10-29).
 
 `sse-body.test.cjs` opens streamed replies in the Gateway page's recent
 calls (Anthropic Messages, Chat Completions with `[DONE]`, OpenAI Responses cut
@@ -1090,10 +1118,13 @@ at least 5em, at 420 wide the long names are shortened while no bar is under
 Chromium and WebKit, English and Chinese.
 
 `usage-sessions-agents-fit.test.cjs` checks Usage › Sessions with 15 agents
-(#929): at 860 and 560 wide the page, its main and the Usage view never
-scroll sideways; the agent strip fits the window and scrolls in itself, and
-the last agent, clicked at the strip's end, stays in view as the strip is
-drawn again; in Chromium and WebKit, English and Chinese.
+(#929): the agent filter is a menu button like the model and folder ones, no
+segment per agent; at 860 and 560 wide nothing scrolls sideways and the three
+filters sit on one line inside the window; the menu lists "All agents" and
+every agent, the most used first, a few letters narrow it, a pick shows on the
+button and stays checked when the page is drawn again, and "All agents" clears
+it. One agent in range leaves the filter hidden. Chromium and WebKit, English
+and Chinese.
 
 `usage-unpriced-names.test.cjs` checks Usage › Sessions where an agent
 recorded tokens under no model name (tony on Discord: the cost's note read
@@ -1480,17 +1511,6 @@ unfolded, the row opened and brought into sight by that click, with no
 scroll refused), another agent's switches the page to it, and All sessions
 opens the page. At 420px a row still fits with its title readable. English
 and Chinese, WebKit (Chromium too where it launches), API faked.
-
-`sess-agent-strip.test.cjs` keeps Usage → Sessions' agent filter inside the
-window (#929): with eleven agents in range the strip is wider than an 866px
-window, and it scrolls in itself instead of the page scrolling sideways, the
-way the regions strip and Connect's five APIs do; its first and last option
-are both reachable and both choose their agent, the model and folder picks
-beside it stay visible and open, and in a window wider than the strip nothing
-scrolls and the options keep their own widths. One agent in range still
-leaves the filter hidden, and the other strips on the page and elsewhere keep
-their behaviour. No left-border accent. English and Chinese, Chromium and
-WebKit, API faked.
 
 `sessions-purge.test.cjs` erases sessions in magpie's trash for good (#487):
 a trashed row's Delete forever and the Trash's Empty trash each ask in

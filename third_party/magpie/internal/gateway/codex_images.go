@@ -50,7 +50,7 @@ func codexImagesFit(p provider.Provider, to provider.Protocol, body []byte) []by
 	// every image: in a Computer Use turn of 160 screenshots, gigabytes of
 	// JSON read for one request (fflake33, Discord).
 	var jobs []fitJob
-	gjson.GetBytes(body, "input").ForEach(func(_, item gjson.Result) bool {
+	getIn(body, "input").ForEach(func(_, item gjson.Result) bool {
 		if !strings.Contains(item.Raw, "input_image") {
 			return true
 		}

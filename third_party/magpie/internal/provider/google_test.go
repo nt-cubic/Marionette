@@ -112,6 +112,7 @@ func resetGoogleState() {
 	googleState.tokens = map[string]googleAuth{}
 	googleState.projects = map[string]googleProject{}
 	googleState.flags = map[string]geminiFlags{}
+	googleState.refused = map[string]time.Time{}
 	googleState.Unlock()
 	antigravityVer.Lock()
 	antigravityVer.v, antigravityVer.at = "", time.Time{}

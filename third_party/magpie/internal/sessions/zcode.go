@@ -28,6 +28,9 @@ func ZCodeDir() string {
 func zcodeDB() string { return filepath.Join(ZCodeDir(), "cli", "db", "db.sqlite") }
 
 func zcodeFiles() []file {
+	if !Reads("zcode") {
+		return nil
+	}
 	if db := zcodeDB(); fileExists(db) {
 		return openCodeDBFiles("zcode", db)
 	}

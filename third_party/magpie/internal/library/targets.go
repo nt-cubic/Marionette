@@ -744,7 +744,17 @@ func Targets() []*Target { return targets(false) }
 func everyTarget() []*Target { return targets(true) }
 
 func targets(gone bool) []*Target {
+	out, _ := targetsAsleep(gone)
+	return out
+}
+
+// targetsAsleep is targets, and the agents in WSL distros that aren't
+// running now: none is a target, as its files can't be opened without
+// starting the distro, but the page lists them (asleepView). Each running
+// one's places are kept for when it is stopped (keepShape).
+func targetsAsleep(gone bool) ([]*Target, []*agent.Agent) {
 	var out []*Target
+	var asleep []*agent.Agent
 	own := map[string]bool{}
 	for _, a := range apps() {
 		own[a.ID] = true
@@ -767,6 +777,11 @@ func targets(gone bool) []*Target {
 		if !gone && a.CLIMissing() {
 			continue
 		}
+		if isAsleep(a) {
+			asleep = append(asleep, a)
+			noteUp(a.WSL, false)
+			continue
+		}
 		if t := targetOf(a); t != nil && t.open() {
 			out = append(out, t)
 		}
@@ -780,7 +795,12 @@ func targets(gone bool) []*Target {
 		}
 	}
 	readsWith(out)
-	return out
+	for _, t := range out {
+		if t.Agent.WSL != "" {
+			keepShape(t)
+		}
+	}
+	return out, asleep
 }
 
 // held are the agents not among have (Targets) — uninstalled, or gone for
@@ -798,7 +818,7 @@ func (l *Library) held(have []*Target) []*Target {
 		if a := l.Applied[id]; a != nil && (len(a.Skills) > 0 || len(a.MCP) > 0 || len(a.Hooks) > 0) {
 			return true
 		}
-		return slices.ContainsFunc(l.Skills, func(s *Skill) bool { return slices.Contains(s.Agents, id) }) ||
+		return slices.ContainsFunc(l.Skills, func(s *Skill) bool { return s.gives(id) }) ||
 			slices.ContainsFunc(l.MCP, func(s *Server) bool { return slices.Contains(s.Agents, id) }) ||
 			slices.ContainsFunc(l.Hooks, func(h *Hook) bool { return slices.Contains(h.Agents, id) })
 	}
@@ -896,7 +916,12 @@ func Takes(q, kind string) (string, error) {
 	}
 	t := targetOf(a)
 	var has bool
-	if t == nil && a.WSL != "" && (a.Home == "" || !agent.WSLRunning(a.WSL)) {
+	if t == nil && isAsleep(a) {
+		// one magpie saw it give MCP servers or skills a place to is
+		// recorded, and given them when the distro next runs (Woken)
+		if sh := shapeOf(a); sh != nil && (kind == "mcp" && sh.MCP != "" || kind == "skills" && sh.Skills != "") {
+			return a.ID, nil
+		}
 		return "", fmt.Errorf("WSL %s isn't running: start it, and %s can be given %s", a.WSL, a.Name, what)
 	}
 	if t != nil {

@@ -436,13 +436,53 @@ func pluginListings(ctx context.Context) []pluginListingJSON {
 		}
 		out = append(out, j)
 	}
-	ns := make([]*plugin.NPM, len(out))
-	for i := range out {
-		ns[i] = out[i].NPM
-	}
 	// at once: a picture still being fetched shows on the next ask
-	npmIcons(ns, 0)
+	listingIcons(out, 0)
 	return out
+}
+
+// pluginAgents are the suggested agent plugins not installed, by name.
+// One installed and turned off is installed: Plugins turns it on.
+func pluginAgents(ctx context.Context) []string {
+	have := map[string]bool{}
+	for _, e := range plugin.Load().Plugins {
+		have[plugin.Name(e.Spec)] = true
+	}
+	out := []string{}
+	for _, l := range plugin.Market(ctx) {
+		if l.Kind == "agent" && !have[l.Package] {
+			out = append(out, l.Name)
+		}
+	}
+	return out
+}
+
+// listingIcons puts each listing's pictures as the page can show them:
+// the one registry.json gives (Kilo Code's https://github.com/Kilo-Org.png)
+// and the one its package.json gives, both kept as a GitHub-tagged
+// plugin's is, in one wait. A bundled icon's name is left as it is; a
+// picture not kept by wait is left out, so the card shows npm's picture
+// or its kind's glyph until the next ask.
+func listingIcons(ls []pluginListingJSON, wait time.Duration) {
+	n := len(ls)
+	said := make([]string, 2*n)
+	for i, l := range ls {
+		if provider.MarketPicture(l.Icon) {
+			said[i] = l.Icon
+		}
+		if l.NPM != nil {
+			said[n+i] = l.NPM.Icon
+		}
+	}
+	got := provider.RepoIcons(said, wait)
+	for i := range ls {
+		if said[i] != "" {
+			ls[i].Icon = got[i]
+		}
+		if ls[i].NPM != nil {
+			ls[i].NPM.Icon = got[n+i]
+		}
+	}
 }
 
 // npmIcons puts the picture each package gives (magpie.icon) as the page
@@ -496,11 +536,7 @@ func pluginMarketState(ctx context.Context, w Windows) pluginMarketJSON {
 		n := info[l.Package]
 		m.Listings = append(m.Listings, pluginListingJSON{Listing: l, NPM: &n})
 	}
-	ns := make([]*plugin.NPM, len(m.Listings))
-	for i := range m.Listings {
-		ns[i] = m.Listings[i].NPM
-	}
-	npmIcons(ns, 3*time.Second)
+	listingIcons(m.Listings, 3*time.Second)
 	for i, e := range m.State.Plugins {
 		if !plugin.IsGit(e.Spec) {
 			m.State.Plugins[i].Latest = info[plugin.Name(e.Spec)].Version
@@ -527,6 +563,11 @@ func pluginRoutes(mux *http.ServeMux, w Windows) {
 	// suggested, at once, then what npm says of the packages named
 	mux.HandleFunc("GET /api/plugins/listings", func(rw http.ResponseWriter, r *http.Request) {
 		writeJSON(rw, map[string]any{"listings": pluginListings(r.Context())})
+	})
+	// the agents a suggested plugin adds that aren't installed here: the
+	// Agents page's Install another agent says Plugins has them
+	mux.HandleFunc("GET /api/plugins/agents", func(rw http.ResponseWriter, r *http.Request) {
+		writeJSON(rw, pluginAgents(r.Context()))
 	})
 	// repositories on GitHub tagged magpie-plugin: nobody's list, shown
 	// apart as not reviewed, installed from the repository
@@ -765,7 +806,11 @@ func pluginRoutes(mux *http.ServeMux, w Windows) {
 				fail(rw, err)
 				return
 			}
-			writeJSON(rw, provider.SignInState{Agent: id, State: "done", User: pp.Name})
+			// no account named: the provider's name as its user was taken
+			// for an account's by Hide accounts, and blurred wherever it
+			// showed (lileo0668 on Discord); the page names the sign-in
+			// by its subscription
+			writeJSON(rw, provider.SignInState{Agent: id, State: "done"})
 			return
 		}
 		st, err := provider.StartPluginSignInWith(in.Provider, in.Method, in.Inputs, provider.SignInOptions{Proxy: in.Proxy, User: in.User})

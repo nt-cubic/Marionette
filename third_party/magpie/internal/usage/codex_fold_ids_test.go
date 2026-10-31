@@ -33,12 +33,12 @@ func TestFoldReadsAChunksIDsOnce(t *testing.T) {
 	foldHashing = func(c *rowChunk) { read = append(read, c) }
 	t.Cleanup(func() { foldHashing = nil })
 
-	first := foldCodexRows([]*rowChunk{a, b})
+	first := refMap(foldCodexRows([]*rowChunk{a, b}))
 	if len(read) != 2 || len(first) != 1 || !first[rowRef{b, 0}] {
 		t.Fatalf("first fold read %d chunks, skipped %v; want both read and b's resp-1 skipped", len(read), first)
 	}
 	read = nil
-	again := foldCodexRows([]*rowChunk{a, b})
+	again := refMap(foldCodexRows([]*rowChunk{a, b}))
 	if len(read) != 0 {
 		t.Fatalf("a fold of the same chunks read %d of them again", len(read))
 	}
@@ -48,7 +48,7 @@ func TestFoldReadsAChunksIDsOnce(t *testing.T) {
 
 	read = nil
 	live := chunk("resp-1", "resp-4")
-	folded := foldCodexRows([]*rowChunk{a, live})
+	folded := refMap(foldCodexRows([]*rowChunk{a, live}))
 	if len(read) != 1 || read[0] != live {
 		t.Fatalf("a chunk made again wasn't the one read: %d read", len(read))
 	}

@@ -22,6 +22,7 @@ async function setup(t, engine, lang, width, pub) {
   const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
   t.after(() => browser.close());
   const page = await (await browser.newContext({ viewport: { width, height: 800 }, reducedMotion: "reduce" })).newPage();
+  await page.addInitScript(() => { try { localStorage.setItem("magpie.gwConnectFolded", "0"); } catch {} }); // Connect opened, as a user who reads it
   page.setDefaultTimeout(6000);
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));

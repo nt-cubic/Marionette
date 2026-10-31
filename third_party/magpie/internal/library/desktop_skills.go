@@ -248,7 +248,7 @@ func (l *Library) syncDesktopSkills(t *Target, res *Result) {
 		put := map[string]bool{}
 		var drop []string
 		for _, name := range prior {
-			if s := l.skill(name); s != nil && slices.Contains(s.Agents, id) {
+			if s := l.skill(name); s.gives(id) {
 				continue
 			}
 			p := filepath.Join(dir, name)
@@ -271,7 +271,7 @@ func (l *Library) syncDesktopSkills(t *Target, res *Result) {
 			res.changed(id)
 		}
 		for _, s := range l.Skills {
-			if !slices.Contains(s.Agents, id) {
+			if !s.gives(id) {
 				continue
 			}
 			p := filepath.Join(dir, s.Name)

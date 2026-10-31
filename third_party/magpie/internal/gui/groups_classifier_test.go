@@ -29,8 +29,8 @@ func TestGroupsSayAClassifierThatFailed(t *testing.T) {
 	at := time.Now().Add(-time.Minute).Truncate(time.Second)
 	was := classifierFailure
 	t.Cleanup(func() { classifierFailure = was })
-	classifierFailure = func(model string) (string, time.Time, bool) {
-		if model == "b/m" {
+	classifierFailure = func(group, model string) (string, time.Time, bool) {
+		if group == "intent" && model == "b/m" {
 			return why, at, true
 		}
 		return "", time.Time{}, false

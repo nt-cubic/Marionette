@@ -223,6 +223,9 @@ func equalFoldASCII(a, lower []byte) bool {
 // from its agent's own file; ErrNoTranscript for an agent whose
 // conversations aren't read.
 func SearchSession(ctx context.Context, s Session, needle string) (Hit, bool, error) {
+	if !Reads(s.Agent) {
+		return Hit{}, false, ErrNotRead
+	}
 	if !HasTranscript(s.Agent) || s.Path == "" {
 		return Hit{}, false, ErrNoTranscript
 	}
@@ -301,18 +304,30 @@ const gatewayTitleLines = 8
 // GatewayTitle is what a gateway session was first asked, made one short
 // line, from the first turns magpie recorded of it; "" when it recorded
 // none or nothing the user wrote.
-func GatewayTitle(agent, id string) string {
+func GatewayTitle(agent, id string) string { return GatewayTitler()(agent, id) }
+
+// GatewayTitler is GatewayTitle for a listing's many sessions: whether
+// magpie recorded anything at all is asked once, not once a session. A
+// Stat and the folder's name for each of ~5000 gateway sessions on each
+// poll were ~80 MB of 90 s of polls (#2278).
+func GatewayTitler() func(agent, id string) string {
+	root := gatewayDir()
+	if _, err := os.Stat(root); err != nil {
+		// nothing recorded at all, as for most
+		return func(string, string) string { return "" }
+	}
+	return func(agent, id string) string { return gatewayTitleIn(root, agent, id) }
+}
+
+func gatewayTitleIn(root, agent, id string) string {
 	if agent == "" || id == "" {
 		return ""
-	}
-	if _, err := os.Stat(gatewayDir()); err != nil {
-		return "" // nothing recorded at all, as for most
 	}
 	gatewayMu.Lock()
 	defer gatewayMu.Unlock()
 	now := time.Now().UTC()
 	for d := 7; d >= 0; d-- {
-		dir := filepath.Join(gatewayDir(), now.AddDate(0, 0, -d).Format(time.DateOnly), gatewayIdentity(agent, id))
+		dir := filepath.Join(root, now.AddDate(0, 0, -d).Format(time.DateOnly), gatewayIdentity(agent, id))
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			continue

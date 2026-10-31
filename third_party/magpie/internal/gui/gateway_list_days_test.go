@@ -3,6 +3,7 @@ package gui
 import (
 	"testing"
 
+	"github.com/yetone/magpie/internal/sessions"
 	"github.com/yetone/magpie/internal/usage"
 )
 
@@ -15,7 +16,7 @@ func TestGatewayListCopiesNoDays(t *testing.T) {
 	for range 365 {
 		g.Daily = append(g.Daily, usage.GatewayDayUsage{Date: "2026-10-19", Agent: "pi", Model: "m"})
 	}
-	if e := gatewayListed(g); len(e.Daily) != 0 || len(e.Models) != 1 {
+	if e := gatewayListed(g, sessions.GatewayTitle); len(e.Daily) != 0 || len(e.Models) != 1 {
 		t.Fatalf("a listed session copied %d days and %d models, want 0 and 1", len(e.Daily), len(e.Models))
 	}
 	if d := gatewayDays(g); len(d) != len(g.Daily) {

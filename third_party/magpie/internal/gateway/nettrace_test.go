@@ -90,3 +90,32 @@ func TestTryNetWithoutARequest(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 }
+
+// lute on Discord: some requests on the Routing page said where their
+// time went and some didn't. A plugin sends its request itself, through
+// its host, so magpie has no timing for it: its try says who sent it,
+// which the page shows in the timing's place.
+func TestPluginTrySaysWhoSentIt(t *testing.T) {
+	pid := besideFake(t, "cursor", &cursorUp{})
+	r := postProto(t, New(), "/v1/chat/completions", `{"model":"`+pid+`/fake-1","messages":[{"role":"user","content":"hi"}]}`)
+	if len(r.Tries) != 1 || r.Tries[0].Net != nil || r.Tries[0].SentBy != "plugin" {
+		t.Fatalf("tries %+v", r.Tries)
+	}
+}
+
+// Who sent a try: a plugin, Claude Code for a Claude subscription, and
+// magpie itself, whose try has its timing, for the rest.
+func TestSentBy(t *testing.T) {
+	for _, c := range []struct {
+		p    provider.Provider
+		want string
+	}{
+		{provider.Provider{ID: "claude", Account: &provider.Account{Agent: "claude", User: "u"}}, "claude"},
+		{provider.Provider{ID: "codex", Account: &provider.Account{Agent: "codex", User: "u"}}, ""},
+		{provider.Provider{ID: "a"}, ""},
+	} {
+		if got := sentBy(c.p); got != c.want {
+			t.Errorf("sentBy(%s) = %q, want %q", c.p.ID, got, c.want)
+		}
+	}
+}

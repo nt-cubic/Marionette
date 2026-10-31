@@ -153,6 +153,16 @@ type Agent struct {
 	// rather than asking the gateway, rewrites that list as the catalog is
 	// now — where magpie wrote one; nothing else changes (see SyncCatalog).
 	Sync func() error
+	// ListOnly: Sync does nothing but bring a block of magpie's name in the
+	// agent's files up to the catalog. A catalog sync runs it only while
+	// the agent is connected (Wired), as its switch on the Agents page
+	// says: switched off, nothing of magpie's writes its files. A custom
+	// provider the user named magpie in the agent, with a few models picked
+	// by hand (yyddbds on Discord, Xiaomi MiMo), was written over with the
+	// whole catalog at every start. A list magpie wrote while connected
+	// waits, while the agent runs a model of its own, until a model of
+	// magpie's is picked again.
+	ListOnly bool
 	// Unwire, for an agent whose fields' default is the agent as installed
 	// rather than what it had before magpie (Codex, Claude Code, Gemini
 	// CLI), takes magpie out of its config and puts back what the stash
@@ -187,6 +197,12 @@ type Agent struct {
 	// its sign-in only as it opens, sends nothing on it till it is opened
 	// again (MasterYi on Discord).
 	AppOut func() bool
+	// HoldMatters reports Codex takes magpie's models beside a ChatGPT
+	// sign-in, so that magpie is its provider while the Codex app holds
+	// the account (out), or is that already: what the app holds is read
+	// for it even with Codex switched off in magpie
+	// (provider.CodexHoldMatters).
+	HoldMatters func() bool
 	// SideModel is the model Codex is set to when it is one of magpie's,
 	// picked beside its ChatGPT sign-in (by the base URL, magpie not its
 	// provider), "" otherwise: the gateway answers the Codex app's hidden

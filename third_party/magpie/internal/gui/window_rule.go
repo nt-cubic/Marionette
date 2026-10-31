@@ -1,9 +1,14 @@
 package gui
 
-import "github.com/yetone/magpie/internal/settings"
+import (
+	"strings"
+
+	"github.com/yetone/magpie/internal/settings"
+)
 
 // The main window opens as it was last left: at the size it was last given
-// (settings.Window) and maximised again if it was (settings.WindowMaximised).
+// (settings.Window), where it was last put (settings.WindowAt) and maximised
+// again if it was (settings.WindowMaximised).
 
 // windowW, windowH is the main window's size, in points, before it is first
 // given one.
@@ -74,4 +79,62 @@ func abs(n int) int {
 		return -n
 	}
 	return n
+}
+
+// area is a screen's work area, in the units and coordinates of the main
+// window's Position: x, y of its top left corner, width and height.
+type area struct{ x, y, w, h int }
+
+// openAt is where the main window, w×h, opens: at the place it was last
+// left (saved: x, y), moved as little as it takes to lie whole on the work
+// area of the screen holding most of it now (areas). Not ok — left where the
+// system puts it, the middle of the screen — when no place was kept, or
+// no screen there now holds any of it: the screen it was on is gone, the
+// screens were laid out again, or none is known. A window larger than the
+// area keeps its top left corner in it, title bar in reach.
+func openAt(saved []int, w, h int, areas []area) (x, y int, ok bool) {
+	if len(saved) != 2 || w <= 0 || h <= 0 {
+		return 0, 0, false
+	}
+	x, y = saved[0], saved[1]
+	best, most := area{}, 0
+	for _, a := range areas {
+		if n := overlap(x, w, a.x, a.w) * overlap(y, h, a.y, a.h); n > most {
+			best, most = a, n
+		}
+	}
+	if most == 0 {
+		return 0, 0, false
+	}
+	return within(x, w, best.x, best.w), within(y, h, best.y, best.h), true
+}
+
+// overlap is how much of the span from p, n long, lies in the one from
+// ap, an long.
+func overlap(p, n, ap, an int) int {
+	return max(0, min(p+n, ap+an)-max(p, ap))
+}
+
+// within is p moved as little as it takes for the span from it, n long, to
+// lie in the one from ap, an long; ap when it is the longer.
+func within(p, n, ap, an int) int {
+	return max(ap, min(p, ap+an-n))
+}
+
+// settleAt keeps in s the place the main window was left at, x, y, and
+// says whether s changed.
+func settleAt(s *settings.Settings, x, y int) bool {
+	if len(s.WindowAt) == 2 && s.WindowAt[0] == x && s.WindowAt[1] == y {
+		return false
+	}
+	s.WindowAt = []int{x, y}
+	return true
+}
+
+// keepsPlace says whether the main window's place can be read and set on
+// goos: not in a Wayland session (unless GTK is made to speak X11 there,
+// GDK_BACKEND=x11), where a window has no place it can know and the
+// compositor puts it where it likes; Wails reads 0, 0 there.
+func keepsPlace(goos string, getenv func(string) string) bool {
+	return !waylandSession(goos, getenv) || strings.HasPrefix(getenv("GDK_BACKEND"), "x11")
 }

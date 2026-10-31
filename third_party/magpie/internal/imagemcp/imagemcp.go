@@ -1,7 +1,8 @@
 // Package imagemcp is `magpie mcp image`: a stdio MCP server an agent is
 // given, when it is picked for it in the Library, to make images with the
 // model the Settings' Image generation names, and videos with the first
-// video model the gateway has (gateway.AutoVideomaker). It asks the
+// video model the gateway has (gateway.AutoVideomaker), or with the model
+// a call names, among those the gateway lists for it. It asks the
 // gateway, which knows the providers, and saves what comes back in the
 // project.
 package imagemcp
@@ -15,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"mime"
 	"net/http"
 	"net/url"
@@ -75,7 +77,7 @@ var (
 var videoSchema = map[string]any{
 	"name": videoTool,
 	"description": "Generate a short video from a text prompt, optionally starting from an image to animate, with a video model set up in Magpie " +
-		"(a Grok subscription's Grok Imagine, Volcengine Ark Agent Plan's Seedance, another Magpie's, or a provider whose model list marks video models). It takes from ten seconds to a few minutes, then the video is saved as an mp4 file in the project (" + VideoFolder +
+		"(a Grok subscription's Grok Imagine, Volcengine Ark Agent Plan's Seedance, a MiniMax API key's MiniMax H3, another Magpie's, or a provider whose model list marks video models). It takes from ten seconds to a few minutes, then the video is saved as an mp4 file in the project (" + VideoFolder +
 		"/ unless path says where) and its path is returned; when it is not ready within about 20 seconds, the answer is an id to wait on with " + resultTool + " instead. Describe the subject, the motion and the camera: what moves, how, and what the shot is.",
 	"inputSchema": map[string]any{
 		"type": "object",
@@ -142,10 +144,12 @@ type job struct {
 	done     chan struct{}
 	text     string
 	err      error
+	// model is the one the gateway named, provider/model: set by run
+	model string
 }
 
 // start runs run as a job of tool.
-func (s *server) start(tool string, run func() (string, error)) *job {
+func (s *server) start(tool string, run func(*job) (string, error)) *job {
 	s.mu.Lock()
 	if s.jobs == nil {
 		s.jobs = map[string]*job{}
@@ -157,7 +161,7 @@ func (s *server) start(tool string, run func() (string, error)) *job {
 	s.running.Add(1)
 	go func() {
 		defer s.running.Done()
-		j.text, j.err = run()
+		j.text, j.err = run(j)
 		close(j.done)
 	}()
 	return j
@@ -284,6 +288,9 @@ func (s *server) serve(r io.Reader) error {
 func (s *server) handle(req rpc) {
 	var result any
 	var rpcErr any
+	began := time.Now()
+	var called *gateway.MCPCalled // a tool call, for the gateway's request log
+	var j *job
 	switch req.Method {
 	case "initialize":
 		var p struct {
@@ -314,7 +321,8 @@ func (s *server) handle(req rpc) {
 	case "ping":
 		result = map[string]any{}
 	case "tools/list":
-		result = map[string]any{"tools": []any{schema, videoSchema, resultSchema}}
+		props := s.modelProps()
+		result = map[string]any{"tools": []any{withModel(schema, props[tool]), withModel(videoSchema, props[videoTool]), resultSchema}}
 	case "tools/call":
 		var p struct {
 			Name      string          `json:"name"`
@@ -327,7 +335,7 @@ func (s *server) handle(req rpc) {
 			rpcErr = map[string]any{"code": -32602, "message": "unknown tool " + p.Name}
 			break
 		}
-		var j *job
+		called = &gateway.MCPCalled{Tool: p.Name}
 		if p.Name == resultTool {
 			var a struct {
 				ID string `json:"id"`
@@ -345,7 +353,7 @@ func (s *server) handle(req rpc) {
 			if p.Name == videoTool {
 				generate = s.film
 			}
-			j = s.start(p.Name, func() (string, error) { return generate(p.Arguments) })
+			j = s.start(p.Name, func(j *job) (string, error) { return generate(p.Arguments, &j.model) })
 		}
 		if !s.await(j, p.Meta.ProgressToken) {
 			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": stillGoing(j)}}}
@@ -366,10 +374,42 @@ func (s *server) handle(req rpc) {
 		out["result"] = result
 	}
 	s.send(out)
+	if called != nil {
+		called.Millis = time.Since(began).Milliseconds()
+		if j != nil {
+			select {
+			case <-j.done:
+				called.Model = j.model
+			default: // still being made: the model isn't known yet
+			}
+		}
+		if res, _ := result.(map[string]any); res["isError"] == true {
+			called.Error = "failed"
+			if c, _ := res["content"].([]any); len(c) > 0 {
+				if t, _ := c[0].(map[string]any)["text"].(string); t != "" {
+					called.Error = t
+				}
+			}
+		}
+		s.report(*called)
+	}
+}
+
+// report tells the gateway of a tool call this server answered, for its
+// request log (gateway.MCPCalledMethod): in the background, after the
+// answer, and a gateway that can't take it (not running, an older magpie)
+// is let be. The call's arguments are never sent.
+func (s *server) report(c gateway.MCPCalled) {
+	s.running.Add(1)
+	go func() {
+		defer s.running.Done()
+		s.ask(gateway.MCPCalledMethod, c)
+	}()
 }
 
 type args struct {
 	Prompt     string   `json:"prompt"`
+	Model      string   `json:"model"`
 	Path       string   `json:"path"`
 	Size       string   `json:"size"`
 	N          int      `json:"n"`
@@ -379,8 +419,9 @@ type args struct {
 }
 
 // generate asks the gateway for the images and saves them; what it says is
-// where they are.
-func (s *server) generate(raw json.RawMessage) (string, error) {
+// where they are. used, when not nil, is set to the model the gateway
+// named, provider/model.
+func (s *server) generate(raw json.RawMessage, used *string) (string, error) {
 	var a args
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return "", err
@@ -394,6 +435,13 @@ func (s *server) generate(raw json.RawMessage) (string, error) {
 	// vendor keeps through the vendor's own proxy, the way it just reached
 	// it (#1576)
 	req := map[string]any{"prompt": a.Prompt, "n": a.N, "response_format": "b64_json"}
+	if strings.TrimSpace(a.Model) != "" {
+		m, err := s.mediaModel(tool, a.Model)
+		if err != nil {
+			return "", err
+		}
+		req["model"] = m
+	}
 	for k, v := range map[string]string{"size": a.Size, "quality": a.Quality, "background": a.Background} {
 		if v != "" {
 			req[k] = v
@@ -439,6 +487,9 @@ func (s *server) generate(raw json.RawMessage) (string, error) {
 		} `json:"error"`
 	}
 	json.Unmarshal(data, &out)
+	if used != nil {
+		*used = out.Model
+	}
 	if res.StatusCode != 200 {
 		msg := strings.TrimSpace(string(data))
 		if out.Error != nil && out.Error.Message != "" {
@@ -710,6 +761,7 @@ func extOf(mt string) string {
 
 type filmArgs struct {
 	Prompt     string   `json:"prompt"`
+	Model      string   `json:"model"`
 	Path       string   `json:"path"`
 	Seconds    any      `json:"seconds"`
 	Size       string   `json:"size"`
@@ -773,8 +825,9 @@ func gatewaySaid(data []byte) string {
 }
 
 // film asks the gateway to make a video, waits for it and saves it; what
-// it says is where it is.
-func (s *server) film(raw json.RawMessage) (string, error) {
+// it says is where it is. used, when not nil, is set to the model the
+// gateway named, provider/model.
+func (s *server) film(raw json.RawMessage, used *string) (string, error) {
 	var a filmArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return "", err
@@ -788,6 +841,13 @@ func (s *server) film(raw json.RawMessage) (string, error) {
 	}
 	project := s.project()
 	req := map[string]any{"prompt": a.Prompt}
+	if strings.TrimSpace(a.Model) != "" {
+		m, err := s.mediaModel(videoTool, a.Model)
+		if err != nil {
+			return "", err
+		}
+		req["model"] = m
+	}
 	if secs > 0 {
 		req["seconds"] = strconv.Itoa(secs)
 	}
@@ -831,6 +891,9 @@ func (s *server) film(raw json.RawMessage) (string, error) {
 	}
 	if json.Unmarshal(data, &v) != nil || v.ID == "" {
 		return "", fmt.Errorf("no video: the gateway's answer has no id: %s", gatewaySaid(data))
+	}
+	if used != nil {
+		defer func() { *used = v.Model }()
 	}
 	id, deadline := v.ID, time.Now().Add(videoWait)
 	for v.Status != "completed" {
@@ -886,4 +949,111 @@ func (s *server) film(raw json.RawMessage) (string, error) {
 		length = v.Seconds + "-second "
 	}
 	return fmt.Sprintf("Generated a %svideo with %s, saved to:\n- %s\n", length, v.Model, shownPath(path)), nil
+}
+
+// The model a generate tool takes is the gateway's to say: it knows the
+// providers, which this process may not read (an agent in WSL, a gateway
+// elsewhere), and the models its caller may use. Its image MCP server's
+// tools list them (gateway.MediaModelMethod checks one).
+
+// modelAsk bounds asking the gateway for the models.
+const modelAsk = 10 * time.Second
+
+// ask asks the gateway's image MCP server method with params: its result,
+// or its JSON-RPC error's code and message.
+func (s *server) ask(method string, params any) (json.RawMessage, int, error) {
+	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+	ctx, cancel := context.WithTimeout(context.Background(), modelAsk)
+	defer cancel()
+	r, _ := http.NewRequestWithContext(ctx, http.MethodPost, s.gateway+gateway.ImageMCPPath, bytes.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Accept", "application/json, text/event-stream")
+	r.Header.Set("Authorization", "Bearer "+gateway.Token)
+	s.mu.Lock()
+	r.Header.Set("User-Agent", s.agent)
+	s.mu.Unlock()
+	res, err := s.client.Do(r)
+	if err != nil {
+		return nil, 0, fmt.Errorf("magpie isn't answering at %s (is it running?): %w", s.gateway, err)
+	}
+	defer res.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(res.Body, 4<<20))
+	if res.StatusCode != http.StatusOK {
+		return nil, 0, fmt.Errorf("magpie at %s answered %d: %s", s.gateway, res.StatusCode, gatewaySaid(data))
+	}
+	var m struct {
+		Result json.RawMessage `json:"result"`
+		Error  *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, 0, fmt.Errorf("magpie at %s answered what isn't JSON-RPC: %w", s.gateway, err)
+	}
+	if m.Error != nil {
+		return nil, m.Error.Code, errors.New(m.Error.Message)
+	}
+	return m.Result, 0, nil
+}
+
+// modelProps are the model argument of each generate tool, by its name, as
+// the gateway's image MCP server gives it; a plain one where it can't be
+// asked.
+func (s *server) modelProps() map[string]any {
+	out := map[string]any{
+		tool:      map[string]any{"type": "string", "description": "The image model to use, as provider/model. Leave it out to use the one set in Magpie (Settings → Images → Image generation)."},
+		videoTool: map[string]any{"type": "string", "description": "The video model to use, as provider/model. Leave it out to use the video model set up in Magpie."},
+	}
+	res, _, err := s.ask("tools/list", map[string]any{})
+	if err != nil {
+		return out
+	}
+	var l struct {
+		Tools []struct {
+			Name        string `json:"name"`
+			InputSchema struct {
+				Properties map[string]json.RawMessage `json:"properties"`
+			} `json:"inputSchema"`
+		} `json:"tools"`
+	}
+	json.Unmarshal(res, &l)
+	for _, t := range l.Tools {
+		var prop map[string]any
+		if _, ok := out[t.Name]; ok && json.Unmarshal(t.InputSchema.Properties["model"], &prop) == nil && prop != nil {
+			out[t.Name] = prop
+		}
+	}
+	return out
+}
+
+// withModel is sc, a tool's schema, with prop as its model argument.
+func withModel(sc map[string]any, prop any) map[string]any {
+	out := maps.Clone(sc)
+	in := maps.Clone(sc["inputSchema"].(map[string]any))
+	props := maps.Clone(in["properties"].(map[string]any))
+	props["model"] = prop
+	in["properties"] = props
+	out["inputSchema"] = in
+	return out
+}
+
+// mediaModel is the model of the gateway's that asked stands for in a call
+// of name, or why there is none.
+func (s *server) mediaModel(name, asked string) (string, error) {
+	res, code, err := s.ask(gateway.MediaModelMethod, map[string]any{"tool": name, "model": asked})
+	if code == -32601 {
+		// a magpie older than this one: it takes the model as named
+		return strings.TrimSpace(asked), nil
+	}
+	if err != nil {
+		return "", err
+	}
+	var m struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(res, &m) != nil || m.Model == "" {
+		return "", fmt.Errorf("magpie at %s didn't say which model %q is", s.gateway, asked)
+	}
+	return m.Model, nil
 }

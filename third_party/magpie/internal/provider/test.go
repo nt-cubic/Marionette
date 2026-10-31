@@ -60,7 +60,8 @@ func (p Provider) Test(ctx context.Context) []Result {
 			return []Result{{Protocol: proto, Error: zenPublicNone}}
 		}
 		url, body := tiny(q, proto, UpstreamName(p, model))
-		return []Result{probe(ctx, q, proto, url, q.tested(asClient(client, proto, body)), model, testWait)}
+		ctx, b := q.tested(ctx, asClient(client, proto, body))
+		return []Result{probe(ctx, q, proto, url, b, model, testWait)}
 	}
 	if p.isClaudeAccount() {
 		return []Result{p.testClaude(ctx, p.testModel(p, Anthropic))}
@@ -70,6 +71,12 @@ func (p Provider) Test(ctx context.Context) []Result {
 	}
 	var out []Result
 	for _, proto := range p.Speaks() {
+		if p.IsVertex() && (proto == Chat || proto == Anthropic) {
+			// a partner model, and Claude, answer only once the project
+			// has turned them on in Model Garden: the provider is tested
+			// on Gemini, and such a model by its own test (TestModel)
+			continue
+		}
 		q, ok := p.keyFor(proto)
 		model := p.testModel(q, proto)
 		if !ok {
@@ -82,7 +89,8 @@ func (p Provider) Test(ctx context.Context) []Result {
 			continue
 		}
 		url, body := tiny(q, proto, UpstreamName(p, model))
-		out = append(out, probe(ctx, q, proto, url, q.tested(body), model, testWait))
+		ctx, b := q.tested(ctx, body)
+		out = append(out, probe(ctx, q, proto, url, b, model, testWait))
 	}
 	if len(out) == 0 && p.zenPublic() {
 		out = append(out, Result{Protocol: Chat, Error: zenPublicNone})
@@ -189,13 +197,22 @@ func (p Provider) mantleBase(base, model string) string {
 func tinyBody(q Provider, proto Protocol, model string) (url, body string) {
 	switch proto {
 	case Chat:
-		if q.IsBedrock() || q.IsAzure() {
+		if q.IsBedrock() || q.IsAzure() || OpenAIHost(HostOf(q.Base(Chat))) {
+			// OpenAI's own API, Azure's and Bedrock's turn max_tokens away
+			// on their reasoning models (GoxxKintBlade on X: every model
+			// of an OpenAI key red, "Use 'max_completion_tokens' instead")
 			return q.mantleBase(q.Chat, model) + "/chat/completions", fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}],"max_completion_tokens":16}`, model)
 		}
-		return q.Chat + "/chat/completions", fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}],"max_tokens":16}`, model)
+		return q.Base(Chat) + "/chat/completions", fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}],"max_tokens":16}`, model)
 	case Responses:
 		return q.mantleBase(q.Responses, model) + "/responses", fmt.Sprintf(`{"model":%q,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"max_output_tokens":16}`, model)
 	case Anthropic:
+		if q.IsVertex() {
+			// Claude at the project, as Anthropic's Vertex SDK asks it
+			// (VertexClaudeRequest)
+			at, b, _ := VertexClaudeRequest("/v1/messages", fmt.Appendf(nil, `{"model":%q,"max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`, model))
+			return q.Base(Anthropic) + at, string(b)
+		}
 		return q.Anthropic + "/v1/messages", fmt.Sprintf(`{"model":%q,"max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`, model)
 	case Gemini:
 		if q.IsVertex() {
@@ -211,10 +228,16 @@ func tinyBody(q Provider, proto Protocol, model string) (url, body string) {
 }
 
 // testWait is how long a probe waits for an answer; drawWait, for a
-// picture, which takes an images API longer than a word takes chat.
-const (
-	testWait = 20 * time.Second
-	drawWait = 2 * time.Minute
+// picture, which takes an images API longer than a word takes chat;
+// pluginTestWait, for a plugin's provider, whose fetch may renew the
+// sign-in or ask its vendor more than once before it answers, as it does
+// for the gateway, which gives it no such bound (mingxia_16024 on
+// Discord: every Qoder and WorkBuddy model's test ended at 20s while
+// agents were answered).
+var (
+	testWait       = 20 * time.Second
+	drawWait       = 2 * time.Minute
+	pluginTestWait = time.Minute
 )
 
 // drawsOnImages is whether model is asked on p's images API, as the
@@ -335,7 +358,8 @@ func (p Provider) testOne(ctx context.Context, model string) Result {
 		r := probe(ctx, q, proto, url, []byte(body), model, drawWait)
 		if !r.OK && ((r.Status == 404 || r.Status == 405) && HostOf(q.Chat) != "openrouter.ai" || r.Status == 400 && catalog.PointsToChat(r.Error)) {
 			url, body := tiny(q, proto, model)
-			if c := probe(ctx, q, proto, url, q.tested(body), model, testWait); c.OK {
+			ctx, b := q.tested(ctx, body)
+			if c := probe(ctx, q, proto, url, b, model, testWait); c.OK {
 				return c
 			}
 		}
@@ -404,7 +428,8 @@ func (p Provider) testOn(ctx context.Context, client string, proto Protocol, mod
 	if client != "" {
 		body = asClient(client, proto, body)
 	}
-	return probe(ctx, p, proto, url, p.tested(body), model, testWait)
+	ctx, b := p.tested(ctx, body)
+	return probe(ctx, p, proto, url, b, model, testWait)
 }
 
 // keyFor is p using the first key on that works with proto: one made for
@@ -541,11 +566,33 @@ func (p Provider) ownRequests(ctx context.Context, kind string) context.Context 
 // it: the vendor's error, a stream's error after its 200 too. Do would
 // write the status alone, so a failed test's row said nothing of why
 // (ysm119 on Discord: "no answer", and no error to find anywhere).
-func probe(ctx context.Context, p Provider, proto Protocol, url string, body []byte, model string, wait time.Duration) (r Result) {
+func probe(ctx context.Context, p Provider, proto Protocol, url string, body []byte, model string, wait time.Duration) Result {
+	r := probeOnce(ctx, p, proto, url, body, model, wait)
+	if proto == Chat && r.Status == http.StatusBadRequest {
+		// a vendor whose 400 names the other reply-length field as the
+		// one to send (a relay in front of OpenAI's reasoning models, or
+		// one that reads max_tokens alone) is asked once more with it, as
+		// the gateway asks it (forward)
+		if b, ok := WithTokenField(body, TokenFieldWanted([]byte(r.Error))); ok {
+			return probeOnce(ctx, p, proto, url, b, model, wait)
+		}
+	}
+	return r
+}
+
+func probeOnce(ctx context.Context, p Provider, proto Protocol, url string, body []byte, model string, wait time.Duration) (r Result) {
 	r = Result{Protocol: proto, Model: model}
 	if model == "" {
 		r.Error = "no model to try: expose one, or refresh the model list"
 		return r
+	}
+	if p.IsPlugin() {
+		// the plugin host started and the account's loader run (a
+		// sign-in renewed) under the caller's time, as a warm host
+		// answers the gateway, not the probe's: a cold host took the
+		// whole of it (mingxia_16024)
+		p.warmPlugin(ctx)
+		wait = max(wait, pluginTestWait)
 	}
 	ctx, cancel := context.WithTimeout(probelog.WithModel(ctx, model), wait)
 	defer cancel()
@@ -574,6 +621,11 @@ func probe(ctx context.Context, p Provider, proto Protocol, url string, body []b
 	}
 	if client := testClient(ctx); client != "" {
 		clientHeaders(client, req.Header)
+	}
+	if p.IsPlugin() {
+		// a model its vendor has queued is said so at once, not waited
+		// out for minutes as an agent's turn is (Qoder's free models)
+		req.Header.Set(FallbackHeader, "1")
 	}
 	if err := p.Sign(ctx, req, proto, body); err != nil {
 		r.Error = err.Error()

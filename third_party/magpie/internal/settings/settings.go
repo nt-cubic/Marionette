@@ -49,9 +49,19 @@ type Settings struct {
 	// ReduceMotion stills magpie's animations as the system's Reduce
 	// Motion does, for a computer or phone that the moving Routing page
 	// keeps busy (#3813).
-	ReduceMotion bool   `json:"reduceMotion,omitempty"`
-	Lang         string `json:"lang,omitempty"` // system | en | zh
-	Tray         string `json:"tray,omitempty"` // what clicking the tray icon opens: panel | window
+	ReduceMotion bool `json:"reduceMotion,omitempty"`
+	// NoBird keeps magpie's bird off the loading skeletons and the
+	// Plugins page's README, for a small server where its watch for them
+	// is work enough to matter (Yayoi_no_yume on X). Off means shown.
+	NoBird bool   `json:"noBird,omitempty"`
+	Lang   string `json:"lang,omitempty"` // system | en | zh
+	Tray   string `json:"tray,omitempty"` // what clicking the tray icon opens: panel | window
+	// PanelShortcut is the key combination that opens the tray's quick
+	// panel from any app (ben hanks on Discord), as Wails names it
+	// ("Cmd+Shift+M"); "" is none, the default, so nothing clashes until
+	// the user records one. This computer's own (KeepOwn): a Mac's Cmd is
+	// another keyboard's Win key, and what is free differs per computer.
+	PanelShortcut string `json:"panelShortcut,omitempty"`
 	// SessionTerminal is the Mac app that opens a resumed session, by bundle
 	// id. "" and "system" follow the .command file association. This
 	// computer's own (KeepOwn): another Mac may not have that app.
@@ -72,10 +82,24 @@ type Settings struct {
 	// Dock keeps magpie in the Mac's Dock as well as the menu bar, for a
 	// menu bar too full to show its icon.
 	Dock bool `json:"dock,omitempty"`
-	// DockWindow shows it in the Dock only while its window is open, so
-	// Cmd-Tab reaches the window without an icon kept there the rest of
-	// the time. Dock wins over it.
+	// DockWindow is the With window choice: magpie is in the Dock, and so
+	// in Command-Tab, only while its window is open. It is what magpie
+	// does with neither Dock nor DockNever set (ShouguangCao on X: the
+	// window was out of Command-Tab, so going back to it to paste a key
+	// copied elsewhere took the menu bar), so it is still written for an
+	// older magpie reading the file, which took none for Hide.
 	DockWindow bool `json:"dockWindow,omitempty"`
+	// DockNever keeps magpie out of the Dock and Command-Tab even while
+	// its window is open, the Hide choice. Dock wins over it.
+	DockNever bool `json:"dockNever,omitempty"`
+	// DockSettled says this file's Dock choice is read with With window as
+	// the default. A file written before that (v0.1.2060) has none, and
+	// Hide was its default, stored as nothing: a user who chose Hide can't
+	// be told from one who never chose, so such a file with no choice is
+	// read as Hide (settleDock), never moved into the Dock by the new
+	// default. A new install, with no file, is settled from the start.
+	// Every save writes it.
+	DockSettled bool `json:"dockSettled,omitempty"`
 	// Proxy for magpie's own requests to vendors: "" follows the
 	// environment and then the system, "direct" uses none, anything else
 	// is the proxy (http://, https:// or socks5://; host:port means http).
@@ -145,6 +169,13 @@ type Settings struct {
 	// as written whatever finds them, each whole, in any case (#1977).
 	RedactActions map[string]string `json:"redactActions,omitempty"`
 	RedactAllow   []string          `json:"redactAllow,omitempty"`
+	// RedactRouteTo is the model an agent's request goes to, as written,
+	// when masking would change it (jessyoungyu on X: 「百度这家公司怎么样」
+	// reached a cloud model as a placeholder): "" masks it as before. Only
+	// a model whose every route the user set to go unmasked counts
+	// (provider.SkipsRedaction, the gateway's unredactedRoute), judged on
+	// each request; one that isn't now is as unset, masked.
+	RedactRouteTo string `json:"redactRouteTo,omitempty"`
 	// LAN shares the gateway on the local network; remote callers must use
 	// named caller keys. LANKey is retained for older Magpie versions.
 	// LAN is this computer's own (KeepOwn; Lullaby on Discord: sharing
@@ -203,6 +234,13 @@ type Settings struct {
 	// GatewayConversations is local, opt-in recording of session traffic.
 	// Only SetGatewayConversations changes it; other saves keep local consent.
 	GatewayConversations bool `json:"gatewayConversations,omitempty"`
+	// SessionReads is which agents' own session files magpie may read
+	// (RustCats on X: a first open listed every agent's history unasked).
+	// Nil is not settled yet (sessions.SettleReads decides it once). Only
+	// SetSessionReads changes it; other saves keep what the file holds,
+	// and it is this computer's own (KeepOwn): its agents and their files
+	// are this computer's.
+	SessionReads *SessionReads `json:"sessionReads,omitempty"`
 	// CodexWarmup starts a ChatGPT account's next window as soon as the
 	// last one resets, with one tiny request, so it counts from then (a
 	// Codex window starts at its first use): "" off, "week" the weekly
@@ -495,6 +533,11 @@ type Settings struct {
 	// notification (itieniu on X): a long task set going while the user
 	// works elsewhere. Only turns the app's own gateway serves; 0 is off.
 	TurnDoneAlert int `json:"turnDoneAlert,omitempty"`
+	// MaskAlert has magpie say with a notification when masking swaps a
+	// value it never masked before (Must2333 on X): its kind and how many,
+	// never the value, a burst said once and at most once a minute. Only
+	// requests the app's own gateway serves; off until turned on.
+	MaskAlert bool `json:"maskAlert,omitempty"`
 	// PlainNames has the model lists magpie gives agents name each model
 	// by its name alone, without its provider's or "routing group" after it
 	// (#335) — but for two in one list that would read the same, which keep
@@ -566,7 +609,7 @@ type Settings struct {
 	// DesktopSubagentEffort fixes Desktop's subagent tool turns at this
 	// reasoning level. Empty keeps the effort each request asks for.
 	DesktopSubagentEffort string `json:"desktopSubagentEffort,omitempty"`
-	// FullContext has Codex and Claude Code told a model's whole context
+	// FullContext has Codex, Claude Code and Grok Build told a model's whole context
 	// window. Off, a window above WorkingWindow is told as WorkingWindow,
 	// so they compact a long conversation there instead of sending ever
 	// more of it on every turn (X: Chen, a 1M DeepSeek model through
@@ -636,6 +679,13 @@ type Settings struct {
 	// Agents list leaves out (ikunbots on X). It is that list's only: the
 	// ledger keeps their calls, and the totals and the chart count them.
 	UsageAgentsHidden []string `json:"usageAgentsHidden,omitempty"`
+	// UsageCardsHidden are the allowance cards the Usage page's Overview
+	// leaves out (whqtian_07012 on Discord), each as its tray card id (the
+	// provider id, then "|" and the account when there is one) and "|plan"
+	// or "|balance", so StepFun's balance card goes while its plan card
+	// stays. Only what that page shows: routing, caps, counting, the tray
+	// panel (PanelUsageHidden is its own) and the menu bar's cells keep them.
+	UsageCardsHidden []string `json:"usageCardsHidden,omitempty"`
 	// ClientAgents counts a client magpie doesn't know as one of the agents
 	// it does, on the Usage and Sessions pages (#1958, NorethSea): a bridge
 	// that starts Codex's app-server under a name of its own
@@ -645,6 +695,15 @@ type Settings struct {
 	// name, and routing, keys, caps and budgets go on by it. A pair taken
 	// out counts the client on its own again, the history with it.
 	ClientAgents map[string]string `json:"clientAgents,omitempty"`
+	// UsageCleared are the user's clears of the Usage page's figures
+	// (CrazyMouse_TT on X: a local model benchmarked again from nothing),
+	// each the calls up to its time, of one provider's model or of
+	// everything. Only what the usage pages report: usage.jsonl keeps every
+	// call, and a key's spending limit, the allowances' window holds and
+	// the gateway's own reads of its log still count them. It rides the
+	// settings part of a sync, so a clear holds on every computer that
+	// syncs with this one, other computers' shared days included.
+	UsageCleared []UsageClear `json:"usageCleared,omitempty"`
 	// Visible narrows the models an agent is shown, by agent id: the
 	// families (the tag a provider or group is given), provider ids and
 	// group ids its lists hold. An agent it doesn't name is shown them all.
@@ -789,6 +848,14 @@ type Settings struct {
 	// when it last settled, so it opens maximised again; Window is still the
 	// size it is restored to.
 	WindowMaximised bool `json:"windowMaximised,omitempty"`
+	// WindowAt is where the main window was last left, its top left corner
+	// x and y in the system's coordinates across every screen (points on
+	// the Mac, DIPs on Windows, X11's pixels on Linux), so it opens there
+	// again after a restart rather than in the middle (jorbenzhu on
+	// Discord). Kept only while it isn't maximised, full screen or
+	// minimised; not at all under Wayland, where a window can't place
+	// itself. gui's openAt moves it onto a screen there now.
+	WindowAt []int `json:"windowAt,omitempty"`
 }
 
 // ModelPrice is the price of one model as the user states it. Each part is a
@@ -1113,22 +1180,25 @@ func (s Settings) Compact() int {
 }
 
 // KeepOwn puts back cur's settings that are this computer's own, which a
-// sync or a restored backup never brings from another: the window's size
-// and whether it was maximised, the proxy, the gateway's port, whether it
+// sync or a restored backup never brings from another: the window's size,
+// place and whether it was maximised, the proxy, the gateway's port, whether it
 // is shared on the local network and the addresses let in to it, the
 // Dock, gateway mode, whether WSL is looked in, whether agents' sign-ins
 // are read, when allowances are read, the terminal app a session resumes
-// in, whether the local masking model is on (it is downloaded on this
-// computer alone), how many Claude Code processes may run (its memory),
+// in, the quick panel's shortcut, whether the local masking model is on
+// (it is downloaded on this computer alone), how many Claude Code processes may run (its memory),
 // and what the menu bar or tray shows beside magpie's icon (yoooo on
 // Discord: usage turned off on a Mac came back from a Windows box that
 // shows it; Lullaby: sharing turned on at home came on at work).
 func (s *Settings) KeepOwn(cur Settings) {
 	s.GatewayConversations = cur.GatewayConversations
+	s.SessionReads = cur.SessionReads
 	s.UIFont, s.CodeFont = cur.UIFont, cur.CodeFont
 	s.Window, s.Proxy, s.Port, s.Dock, s.DockWindow, s.Lightweight = cur.Window, cur.Proxy, cur.Port, cur.Dock, cur.DockWindow, cur.Lightweight
+	s.DockNever, s.DockSettled = cur.DockNever, cur.DockSettled
 	s.ProxyCustom = cur.ProxyCustom
 	s.WindowMaximised, s.KeepAwake, s.KeepAwakeDisplay = cur.WindowMaximised, cur.KeepAwake, cur.KeepAwakeDisplay
+	s.WindowAt = cur.WindowAt
 	s.TrayUsages, s.TrayUsage, s.TrayUsageEvery, s.TrayNoLogos, s.TrayNoBird, s.TrayPace, s.TrayNoCost = cur.TrayUsages, cur.TrayUsage, cur.TrayUsageEvery, cur.TrayNoLogos, cur.TrayNoBird, cur.TrayPace, cur.TrayNoCost
 	s.GatewayMode = cur.GatewayMode
 	s.NoWSLAgents = cur.NoWSLAgents
@@ -1137,6 +1207,7 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.LAN, s.AllowIPs = cur.LAN, cur.AllowIPs
 	s.FetchPrivate = cur.FetchPrivate
 	s.SessionTerminal = cur.SessionTerminal
+	s.PanelShortcut = cur.PanelShortcut
 	s.RedactModel, s.RedactModelName, s.RedactModelScore = cur.RedactModel, cur.RedactModelName, cur.RedactModelScore
 	s.RedactModelOff, s.RedactModelAuto = cur.RedactModelOff, cur.RedactModelAuto
 	s.ClaudeRunsMost = cur.ClaudeRunsMost
@@ -1290,11 +1361,26 @@ func loadChecked() (Settings, error) {
 	b, err := through("settings", Path(), func(b []byte) ([]byte, error) { return b, nil })
 	if err != nil {
 		if os.IsNotExist(err) {
+			// a new install: With window is its default
+			s.DockSettled = true
 			return s.normal(), nil
 		}
-		return s.normal(), fmt.Errorf("could not read settings at %s: %w", Path(), err)
+		return s.settleDock().normal(), fmt.Errorf("could not read settings at %s: %w", Path(), err)
 	}
 	return parse(b)
+}
+
+// settleDock reads a Dock choice written before With window was the
+// default (DockSettled unset) as that magpie did: no choice is Hide.
+func (s Settings) settleDock() Settings {
+	if s.DockSettled {
+		return s
+	}
+	if !s.Dock && !s.DockWindow && !s.DockNever {
+		s.DockNever = true
+	}
+	s.DockSettled = true
+	return s
 }
 
 // parsed is the last settings.json that parsed whole and what it read as,
@@ -1326,6 +1412,7 @@ func parse(b []byte) (Settings, error) {
 	parses.Add(1)
 	perr := json.Unmarshal(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), &s)
 	if perr == nil {
+		s = s.settleDock()
 		// only what parsed whole is kept: a last good generation read in
 		// its place is read again, as is a file that can't be read at all
 		parsed.Lock()
@@ -1341,7 +1428,7 @@ func parse(b []byte) (Settings, error) {
 	} else if len(bytes.TrimSpace(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")))) != 0 {
 		err = fmt.Errorf("could not read settings at %s: %w", Path(), perr)
 	}
-	return s.normal(), err
+	return s.settleDock().normal(), err
 }
 
 // parses counts settings.json's parses (Parses).
@@ -1413,10 +1500,53 @@ func SavedAddr() string {
 	return fmt.Sprintf("127.0.0.1:%d", p)
 }
 
-// Save validates and writes the settings, preserving current recording consent.
+// Save validates and writes the settings, preserving current recording
+// consent and which agents' sessions may be read.
 func Save(s Settings) error {
 	defer lockFile()()
 	return save(s, false)
+}
+
+// SessionReads is the user's answer to which agents' session files magpie
+// reads. Before it is asked (Asked false) no agent's are read. Then an
+// agent named in Agents is read as it says, and any other as All says:
+// "allow all" is All with no Agents, so an agent installed later is read
+// too, and "allow selected" names each agent found then.
+type SessionReads struct {
+	Asked  bool            `json:"asked"`
+	All    bool            `json:"all,omitempty"`
+	Agents map[string]bool `json:"agents,omitempty"`
+}
+
+// Reads says whether agent's session files may be read.
+func (r *SessionReads) Reads(agent string) bool {
+	if r == nil || !r.Asked {
+		return false
+	}
+	if on, ok := r.Agents[agent]; ok {
+		return on
+	}
+	return r.All
+}
+
+// SetSessionReads changes which agents' sessions may be read, as edit
+// returns it from what the file holds now (nil when not settled), so a
+// save elsewhere from an older snapshot neither undoes nor brings it
+// back. A settings file that can't be read is left as it is, with the
+// error.
+func SetSessionReads(edit func(*SessionReads) *SessionReads) error {
+	defer lockFile()()
+	s, err := loadChecked()
+	if err != nil {
+		return err
+	}
+	var cur *SessionReads
+	if s.SessionReads != nil {
+		c := s.clone().SessionReads
+		cur = c
+	}
+	s.SessionReads = edit(cur)
+	return saveOwn(s, false, true)
 }
 
 // SetGatewayConversations changes local recording consent without overwriting
@@ -1530,9 +1660,16 @@ func UseRedactModel(name string) error {
 }
 
 // save is called under fileMu. Only the consent setter may replace recording.
-func save(s Settings, recording bool) error {
+func save(s Settings, recording bool) error { return saveOwn(s, recording, false) }
+
+// saveOwn is save; reads says s's SessionReads is the one to write, where
+// any other save keeps the file's.
+func saveOwn(s Settings, recording, reads bool) error {
 	defer filememo.Forget() // read again, where a request holds it
-	s = s.normal()
+	// what is written is settled: a Settings read from an older file was
+	// settled as it was read, and one made without reading has its Dock
+	// choice read as that file's would be
+	s = s.settleDock().normal()
 	if !slices.Contains(Themes, s.Theme) {
 		return fmt.Errorf("theme must be one of %v, not %q", Themes, s.Theme)
 	}
@@ -1645,6 +1782,10 @@ func save(s Settings, recording bool) error {
 	if s.CodexSubagentModel != "" && !strings.Contains(s.CodexSubagentModel, "/") {
 		return fmt.Errorf("the model for Codex's subagents must be a model's id such as codex/gpt-5.5, not %q", s.CodexSubagentModel)
 	}
+	s.RedactRouteTo = strings.TrimSpace(s.RedactRouteTo)
+	if s.RedactRouteTo != "" && !strings.Contains(s.RedactRouteTo, "/") {
+		return fmt.Errorf("the model for requests masking would change must be a model's id such as ollama/qwen3, not %q", s.RedactRouteTo)
+	}
 	s.DesktopSubagentModel = strings.TrimSpace(s.DesktopSubagentModel)
 	if s.DesktopSubagentModel != "" && !strings.Contains(s.DesktopSubagentModel, "/") {
 		return fmt.Errorf("the model for Claude Desktop's subagents must be a model's id such as deepseek/deepseek-v4, not %q", s.DesktopSubagentModel)
@@ -1684,7 +1825,9 @@ func save(s Settings, recording bool) error {
 	s.UsageOrder = ids(s.UsageOrder)
 	s.PanelUsageHidden = ids(s.PanelUsageHidden)
 	s.UsageAgentsHidden = ids(s.UsageAgentsHidden)
+	s.UsageCardsHidden = ids(s.UsageCardsHidden)
 	s.ClientAgents = clientAgents(s.ClientAgents)
+	s.UsageCleared = usageCleared(s.UsageCleared)
 	s.TrayUsages = ids(s.TrayUsages)
 	for i, u := range s.CodexAutoReset {
 		s.CodexAutoReset[i] = strings.ToLower(u)
@@ -1711,6 +1854,7 @@ func save(s Settings, recording bool) error {
 	// Load may have returned defaults or only part of an unreadable file.
 	// Do not replace it, including its permissions, with those values.
 	consent := false
+	var storedReads *SessionReads
 	if b, err := steady.ReadFile(Path()); err == nil {
 		b = bytes.TrimPrefix(b, []byte("\xef\xbb\xbf"))
 		if len(bytes.TrimSpace(b)) != 0 {
@@ -1726,12 +1870,16 @@ func save(s Settings, recording bool) error {
 				_ = json.Unmarshal(bytes.TrimPrefix(bak, []byte("\xef\xbb\xbf")), &stored)
 			}
 			consent = stored.GatewayConversations
+			storedReads = stored.SessionReads
 		}
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("could not read settings at %s: %w", Path(), err)
 	}
 	if !recording {
 		s.GatewayConversations = consent
+	}
+	if !reads {
+		s.SessionReads = storedReads
 	}
 	// the file there now is kept first, before anything below can make
 	// one: as the last good generation, or aside when it doesn't read
@@ -1901,6 +2049,102 @@ func clientAgents(m map[string]string) map[string]string {
 		return nil
 	}
 	return out
+}
+
+// UsageClear is one clear of the Usage page's figures: the calls up to At
+// (Unix milliseconds) of Model at Provider, as the page's Models list
+// names them (the model counted under its usage alias, the provider under
+// the id it is shown by now), stop being counted there. Both "" is every
+// call.
+type UsageClear struct {
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	At       int64  `json:"at"`
+}
+
+// Time is when the clear was made.
+func (c UsageClear) Time() time.Time { return time.UnixMilli(c.At) }
+
+// Covers is whether c clears every call o clears: everything, or the same
+// model, up to a time no earlier.
+func (c UsageClear) Covers(o UsageClear) bool {
+	return c.At >= o.At && (c.Provider == "" && c.Model == "" || c.Provider == o.Provider && c.Model == o.Model)
+}
+
+// usageCleared is UsageCleared as kept: one without a time left out, and
+// one another covers (a later clear of everything, or of the same model)
+// dropped, so the list holds no more than one a model.
+func usageCleared(in []UsageClear) []UsageClear {
+	var out []UsageClear
+	for i, c := range in {
+		c.Provider, c.Model = strings.TrimSpace(c.Provider), strings.TrimSpace(c.Model)
+		if c.At <= 0 {
+			continue
+		}
+		covered := false
+		for j, o := range in {
+			o.Provider, o.Model = strings.TrimSpace(o.Provider), strings.TrimSpace(o.Model)
+			// of two the same, the first is kept
+			if j != i && o.At > 0 && o.Covers(c) && (!c.Covers(o) || j < i) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// ClearUsage adds a clear of the Usage page's figures up to at: of model at
+// provider, or of everything with both "". It changes UsageCleared alone,
+// from what the file holds now, so a save elsewhere from an older snapshot
+// isn't undone; a settings file that can't be read is left as it is, with
+// the error.
+func ClearUsage(provider, model string, at time.Time) error {
+	provider, model = strings.TrimSpace(provider), strings.TrimSpace(model)
+	if model == "" && provider != "" {
+		return fmt.Errorf("a clear of %q's usage names its model", provider)
+	}
+	if at.UnixMilli() <= 0 {
+		return fmt.Errorf("a clear of usage needs a time")
+	}
+	defer lockFile()()
+	s, err := loadChecked()
+	if err != nil {
+		return err
+	}
+	s.UsageCleared = usageCleared(append(slices.Clone(s.UsageCleared), UsageClear{Provider: provider, Model: model, At: at.UnixMilli()}))
+	return save(s, false)
+}
+
+// UsageClearedNow is Load().UsageCleared, parsed again only once the file
+// changed: every read of the usage pages asks for it.
+func UsageClearedNow() []UsageClear {
+	fileMu.RLock()
+	defer fileMu.RUnlock()
+	m, err := filememo.Read("settings.usageCleared", Path(), func(b []byte) ([]UsageClear, error) {
+		if len(bytes.TrimSpace(b)) == 0 {
+			return nil, nil
+		}
+		var s struct {
+			UsageCleared []UsageClear `json:"usageCleared"`
+		}
+		if err := json.Unmarshal(b, &s); err != nil {
+			return nil, err
+		}
+		return usageCleared(s.UsageCleared), nil
+	})
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		// what load makes of a file that doesn't parse (its last good
+		// generation), not none
+		return usageCleared(load().UsageCleared)
+	}
+	return m
 }
 
 // ClientAgentsNow is Load().ClientAgents, parsed again only once the file

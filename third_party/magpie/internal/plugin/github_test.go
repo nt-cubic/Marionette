@@ -206,8 +206,14 @@ func TestTaggedRepos(t *testing.T) {
 		c.Owner != "griffinmartin" || c.License != "MIT" || c.Stars != 1301 || c.Kind != "" || c.Pushed.IsZero() || c.URL != "https://github.com/griffinmartin/opencode-claude-auth" {
 		t.Fatalf("claude auth: %+v", c)
 	}
-	if x := byRepo["someone/flaky-entry"]; x.License != "" {
-		t.Fatalf("NOASSERTION is no license: %+v", x)
+	// GitHub's NOASSERTION (a LICENSE file it can't name) is no license,
+	// and package.json's stands in for it; one with neither shows none
+	// (plugins#468)
+	if x := byRepo["someone/flaky-entry"]; x.License != "MIT" {
+		t.Fatalf("NOASSERTION, package.json MIT: %+v", x)
+	}
+	if x := byRepo["someone/page-glance"]; x.License != "" {
+		t.Fatalf("NOASSERTION and no package.json license: %+v", x)
 	}
 	// its own picture, package.json's magpie.icon, as an installed
 	// plugin's provider has it; none when it gives none
@@ -225,7 +231,7 @@ func TestTaggedRepos(t *testing.T) {
 	if x := byRepo["someone/page-glance"]; x.Kind != "page" || x.Spec != "github:someone/page-glance" || x.Package != "magpie-usage-glance" {
 		t.Fatalf("a page alone: %+v", x)
 	}
-	if x := byRepo["someone/word-guard"]; x.Kind != "middleware" || x.Package != "@magpie-community/middleware-word-guard" || x.License != "" {
+	if x := byRepo["someone/word-guard"]; x.Kind != "middleware" || x.Package != "@magpie-community/middleware-word-guard" || x.License != "MIT" {
 		t.Fatalf("a middleware alone: %+v", x)
 	}
 	// npm's copy when npm has it from this very repository (its build is

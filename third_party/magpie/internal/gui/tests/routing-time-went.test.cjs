@@ -4,7 +4,9 @@
 // network's and the vendor's, and each part that took any, as one stacked
 // bar and named values, the queue for a slot among them. A part that took
 // none isn't named. A try sent through a plugin's own fetch, or traced
-// before magpie measured it, has no network timing and no breakdown. Both engines, a narrow window, every language; no
+// before magpie measured it, has no network timing and no breakdown; the
+// plugin's says it sent the request itself, so the missing split doesn't
+// read as lost (Discord, lute). Both engines, a narrow window, every language; no
 // part runs out of the story, no left-border accent. The API is faked.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
@@ -26,7 +28,7 @@ const routes = [
     tries: [{ id: key.id, model: "deepseek-chat", start: at(0), done: true, status: 200, ms: 4200, ttft: 2100, queued: 40, net }],
     done: true, status: 200, ms: 4200, ttft: 2100, tokens: 900, served: "deepseek-chat" },
   { id: 100, seq: 100, time: at(1), agent: "codex", model: "kiro/claude-sonnet-4.5", provider: "kiro", order: [plug],
-    tries: [{ id: plug.id, model: "claude-sonnet-4.5", start: at(1), done: true, status: 200, ms: 3000, ttft: 1200 }],
+    tries: [{ id: plug.id, model: "claude-sonnet-4.5", start: at(1), done: true, status: 200, ms: 3000, ttft: 1200, sentBy: "plugin" }],
     done: true, status: 200, ms: 3000, ttft: 1200, tokens: 900, served: "claude-sonnet-4.5" },
 ];
 
@@ -63,11 +65,11 @@ function serve(lang) {
 }
 
 const want = {
-  en: { head: "Where the time went", vendor: "Vendor (first byte)", slot: "Waiting for a slot" },
-  zh: { head: "时间花在哪里", vendor: "供应商（首字节）", slot: "排队等空位" },
-  "zh-TW": { head: "時間花在哪裡", vendor: "供應商（首位元組）", slot: "排隊等空位" },
-  ja: { head: "時間の内訳", vendor: "ベンダー（最初のバイト）", slot: "空き枠待ち" },
-  de: { head: "Wohin die Zeit ging", vendor: "Anbieter (erstes Byte)", slot: "Warten auf einen freien Platz" },
+  en: { head: "Where the time went", vendor: "Vendor (first byte)", slot: "Waiting for a slot", plugin: "Its plugin sent this request itself, so magpie can't split its time" },
+  zh: { head: "时间花在哪里", vendor: "供应商（首字节）", slot: "排队等空位", plugin: "此请求由插件自行发出，magpie 无法拆分它的耗时" },
+  "zh-TW": { head: "時間花在哪裡", vendor: "供應商（首位元組）", slot: "排隊等空位", plugin: "此請求由外掛自行發出，magpie 無法拆分它的耗時" },
+  ja: { head: "時間の内訳", vendor: "ベンダー（最初のバイト）", slot: "空き枠待ち", plugin: "このリクエストはプラグインが自ら送信したため、magpie では時間の内訳を出せません" },
+  de: { head: "Wohin die Zeit ging", vendor: "Anbieter (erstes Byte)", slot: "Warten auf einen freien Platz", plugin: "Diese Anfrage hat die Erweiterung selbst gesendet, daher kann magpie ihre Zeit nicht aufschlüsseln" },
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
@@ -135,6 +137,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator(".rt-req").nth(1).and(page.locator('[aria-pressed="true"]')).waitFor();
       await page.locator(".rt-steps li.ok").first().waitFor();
       assert.equal(await page.locator(".rt-time").count(), 0);
+      const why = page.locator(".rt-steps li.aside", { hasText: want[lang].plugin });
+      await why.waitFor();
+      assert.equal(await why.count(), 1);
+      // and the routed try, which has its split, says nothing of the kind
+      await page.locator(".rt-req").nth(0).click();
+      await page.locator(".rt-steps li.time .rt-time").waitFor();
+      assert.equal(await page.locator(".rt-steps li.aside", { hasText: want[lang].plugin }).count(), 0);
       assert.deepEqual(errors, []);
     });
   }

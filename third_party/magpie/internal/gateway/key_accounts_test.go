@@ -193,12 +193,19 @@ func TestGatewayKeyAccountsListModels(t *testing.T) {
 		t.Fatalf("the key's models: %s", got)
 	}
 	// a provider with no account and no key (a local ollama) is one the
-	// key names no account of: its models stay listed, as its requests
-	// pass (#905)
+	// key names no account of: not its while it lists no model (Linka on
+	// Discord); among the models it lists, its models stay listed, as its
+	// requests pass (#905)
 	if err := provider.Save(provider.Provider{ID: "local", Name: "Local", Chat: "http://127.0.0.1:11434/v1", Models: []string{"tiny"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := catalog.SaveLive("local", "http://127.0.0.1:11434/v1", []catalog.Model{{ID: "tiny"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := list(secrets[0]); strings.Contains(got, `"local/tiny"`) {
+		t.Fatalf("an account-only key lists another provider: %s", got)
+	}
+	if _, err := access.Update("models-key", access.Change{Key: keys[0].ID, Models: []string{"codex/*", "local/*", "relay/*"}}); err != nil {
 		t.Fatal(err)
 	}
 	if got := list(secrets[0]); !strings.Contains(got, `"local/tiny"`) {
@@ -442,12 +449,24 @@ func TestGatewayKeyAccountsSystemOne(t *testing.T) {
 	if w := ask(secrets[0]); w.Code != 200 || decided != 1 {
 		t.Fatalf("the key's account: %d %s, decided %d", w.Code, w.Body.String(), decided)
 	}
-	// a provider the key names no account of: asked as it always did
+	// a provider the key names no account of, among its models: asked as
+	// it always did
 	if _, err := access.Update("accounts-key", access.Change{Key: keys[0].ID, Accounts: []string{"relay/" + provider.KeyID("sk-1")}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := access.Update("models-key", access.Change{Key: keys[0].ID, Models: []string{"jev/*", "relay/*"}}); err != nil {
 		t.Fatal(err)
 	}
 	if w := ask(secrets[0]); w.Code != 200 || decided != 2 {
 		t.Fatalf("an unnamed provider: %d %s, decided %d", w.Code, w.Body.String(), decided)
+	}
+	// with no model listed, the key may use its accounts' providers' only
+	// (Linka on Discord): the decider is not its
+	if _, err := access.Update("models-key", access.Change{Key: keys[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+	if w := ask(secrets[0]); w.Code != http.StatusForbidden || decided != 2 {
+		t.Fatalf("an account-only key's decider: %d %s, decided %d", w.Code, w.Body.String(), decided)
 	}
 	// the provider named, its account set not to serve the decision model
 	if _, err := access.Update("accounts-key", access.Change{Key: keys[0].ID, Accounts: []string{"jev/" + provider.KeyID("kj")}}); err != nil {
@@ -564,9 +583,11 @@ func TestGatewayKeyAccountsDrawOnAnAllowedKey(t *testing.T) {
 	}
 }
 
-// A key held to some accounts of one provider uses another's as it always
-// did (#905): the list holds it to some accounts of the providers it
-// names, not to the providers themselves.
+// A key that lists models and some accounts of one provider uses another
+// provider's models it lists on every account (#905): the accounts hold
+// it to some accounts of the providers they name, not to those
+// providers. (One that lists accounts and no model may use only their
+// providers' models: TestGatewayKeyAccountsOnlyHoldTheModels.)
 func TestGatewayKeyAccountsOfANamedProvider(t *testing.T) {
 	fresh(t)
 	plan := &fake{t: t, ctype: "application/json", reply: `{"id":"from-plan","choices":[]}`}
@@ -574,6 +595,9 @@ func TestGatewayKeyAccountsOfANamedProvider(t *testing.T) {
 	twoProviders(t, plan, spare)
 	keys, secrets := newCaller(t, "Held")
 	if _, err := access.Update("accounts-key", access.Change{Key: keys[0].ID, Accounts: []string{"plan/" + provider.KeyID("k")}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := access.Update("models-key", access.Change{Key: keys[0].ID, Models: []string{"plan/*", "spare/*"}}); err != nil {
 		t.Fatal(err)
 	}
 	h := New().Handler()

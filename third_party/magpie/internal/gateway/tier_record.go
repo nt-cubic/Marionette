@@ -18,6 +18,20 @@ import (
 	"github.com/yetone/magpie/internal/provider"
 )
 
+// servedTierAt is the served tier a reply from host says, as the log keeps
+// it. The ChatGPT backend's (CodexBase's host) "auto", in response.created,
+// and "default", in response.completed, are what it says whether priority
+// ran or not: on gpt-6.1-sol with a Plus account a Fast turn decoded at
+// about 200 tok/s and one without at about 110, both "default" (jjt on
+// Discord). There they tell nothing, and are kept as unknown (""), never
+// as the default tier. OpenAI's API means them, and they are kept as said.
+func servedTierAt(host, t string) string {
+	if (t == "auto" || t == "default") && host != "" && host == provider.HostOf(provider.CodexBase) {
+		return ""
+	}
+	return t
+}
+
 // bodyTier is the service tier a request body in proto asks for, in
 // OpenAI's words (service_tier: "priority", "ultrafast", "flex" …);
 // Claude's speed "fast" reads as "fast". "" when it asks for none.

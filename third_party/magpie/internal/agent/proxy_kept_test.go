@@ -283,6 +283,7 @@ func TestCodexBehindReverseProxy(t *testing.T) {
 		at++
 		db.Exec(`INSERT INTO logs (ts, ts_nanos, level, target, feedback_log_body) VALUES (?, 0, 'INFO', 'codex_api::endpoint::responses_websocket', ?)`,
 			at, "responses_websocket.connect{}: "+body)
+		forgetReached()
 	}
 	log("connecting to websocket: wss://ai.corp.example/magpie/backend-api/codex/responses")
 	if d := codex(home).Drift(); d != nil {
@@ -404,4 +405,287 @@ func TestClaudeBehindLocalProxyKeepsIt(t *testing.T) {
 	if u := url(); u != gateway.URL() {
 		t.Fatalf("a pick at a relay left %s", u)
 	}
+}
+
+// zhangt2333 (#3480): Claude Code never connected to magpie, its settings
+// pointing it at an endpoint of the user's own with a key of its own, got
+// GET / about every 30s from magpie: each read of it while the Agents page
+// was up asked that address whether it was magpie behind a proxy (#1985).
+// Claude Code sending a key of its own is on the user's endpoint, never
+// asked: not by a read, its drift (a model named as one of magpie's there
+// is told by the address, as it is, an administrator's too), a pick, or a
+// request's stand-ins. Once it
+// sends magpie's key, or keeps its claude.ai sign-in through magpie, a
+// proxy put in by hand is asked, is still magpie, and a pick keeps it.
+// After Disconnect, its own endpoint and key back, nothing is asked again,
+// though the claude.ai sign-in stays kept for the next time (its key in
+// ANTHROPIC_API_KEY, so none in ANTHROPIC_AUTH_TOKEN).
+func TestClaudeOwnEndpointNeverAsked(t *testing.T) {
+	t.Run("nginx", func(t *testing.T) { claudeOwnEndpointNeverAsked(t, corpProxy, "ANTHROPIC_AUTH_TOKEN") })
+	t.Run("local", func(t *testing.T) { claudeOwnEndpointNeverAsked(t, localProxy, "ANTHROPIC_API_KEY") })
+}
+
+func claudeOwnEndpointNeverAsked(t *testing.T, proxy, ownKey string) {
+	t.Setenv("MAGPIE_ADDR", "")
+	const own = "https://relay.example/anthropic"
+	home, path := claudeSettings(t, `{"model":"opus","env":{"ANTHROPIC_BASE_URL":"`+own+`","`+ownKey+`":"sk-own"}}`)
+	saveDeepseek(t)
+	// both would answer as magpie: whether they are asked is the point
+	asked := fakeMagpieAt(t, map[string]bool{own: true, proxy: true})
+	env := func(k string) string { v, _ := edit.GetJSON(path, "env."+k); return v }
+	cl := claude(home)
+	read := func() {
+		vals := cl.Values()
+		for _, f := range cl.Fields {
+			if f.Options != nil {
+				f.Options(vals)
+			}
+		}
+		cl.Wired()
+		cl.Drift()
+		claudeStandIn(path, "claude-haiku-4-5")
+		claudeClassifierIn(here(home), "deepseek/pro")
+	}
+	never := func(when string) {
+		t.Helper()
+		if b := asked(); len(b) > 0 {
+			t.Fatalf("%s: asked %v", when, b)
+		}
+	}
+
+	read()
+	never("never connected")
+	if cl.Wired() || cl.Drift() != nil {
+		t.Fatalf("never connected, yet wired %v, drift %+v", cl.Wired(), cl.Drift())
+	}
+	// a model of the endpoint's own named as one of magpie's: the address
+	// is told as it is, an administrator's too, and none as gone
+	edit.SetJSON(path, edit.KV{Path: "model", Value: "deepseek/pro"})
+	read()
+	never("a model of magpie's name")
+	if d := cl.Drift(); d == nil || d.Kind != "unwired" || !strings.Contains(d.Detail, "ANTHROPIC_BASE_URL") || !strings.Contains(d.Detail, own) {
+		t.Fatalf("its own key, a model of magpie's name: %+v", d)
+	}
+	managed := claudeManaged
+	claudeManaged = func() string { return filepath.Join(home, "managed-settings.json") }
+	t.Cleanup(func() { claudeManaged = managed })
+	os.WriteFile(claudeManaged(), []byte(`{"env":{"ANTHROPIC_BASE_URL":"`+proxy+`"}}`), 0o644)
+	if d := cl.Drift(); d == nil || !strings.Contains(d.Detail, "managed settings") || !strings.Contains(d.Detail, proxy) {
+		t.Fatalf("its own key, an administrator's proxy: %+v", d)
+	}
+	never("an administrator's proxy")
+	os.Remove(claudeManaged())
+	edit.DelJSON(path, "env.ANTHROPIC_BASE_URL")
+	if d := cl.Drift(); d == nil || !strings.Contains(d.Detail, "ANTHROPIC_BASE_URL") || !strings.Contains(d.Detail, "is gone") {
+		t.Fatalf("its own key, no address: %+v", d)
+	}
+	edit.SetJSON(path, edit.KV{Path: "env.ANTHROPIC_BASE_URL", Value: own}, edit.KV{Path: "model", Value: "opus"})
+	// a pick writes magpie's address and key, its own kept for Disconnect
+	if err := cl.Apply("model", "deepseek/flash"); err != nil {
+		t.Fatal(err)
+	}
+	never("a pick")
+	if env("ANTHROPIC_BASE_URL") != gateway.URL() || env("ANTHROPIC_AUTH_TOKEN") != gateway.Token {
+		t.Fatalf("after a pick:\n%s", readFile(path))
+	}
+
+	// the proxy put in by hand, magpie's key kept (#1985)
+	edit.SetJSON(path, edit.KV{Path: "env.ANTHROPIC_BASE_URL", Value: proxy})
+	if d := cl.Drift(); d != nil {
+		t.Fatalf("magpie's key at the proxy: %+v", d)
+	}
+	// its claude.ai sign-in kept through magpie: no key at all
+	if err := cl.Apply("login", "claudeai"); err != nil {
+		t.Fatal(err)
+	}
+	if tok, has := edit.GetJSON(path, "env.ANTHROPIC_AUTH_TOKEN"); !has || tok != "" || env("ANTHROPIC_BASE_URL") != proxy {
+		t.Fatalf("the claude.ai sign-in at the proxy:\n%s", readFile(path))
+	}
+	if d := cl.Drift(); d != nil || cl.Values()["login"] != "claudeai" {
+		t.Fatalf("the claude.ai sign-in at the proxy: drift %+v, sign-in %q", d, cl.Values()["login"])
+	}
+	if err := cl.Apply("model", "deepseek/pro"); err != nil {
+		t.Fatal(err)
+	}
+	if u := env("ANTHROPIC_BASE_URL"); u != proxy {
+		t.Fatalf("a pick with the claude.ai sign-in wrote %s", u)
+	}
+	b := asked()
+	if len(b) == 0 {
+		t.Fatal("the proxy was never asked")
+	}
+	for _, base := range b {
+		if base != proxy {
+			t.Fatalf("asked %s, not the proxy", base)
+		}
+	}
+
+	if err := cl.Disconnect(); err != nil {
+		t.Fatal(err)
+	}
+	if env("ANTHROPIC_BASE_URL") != own || env(ownKey) != "sk-own" {
+		t.Fatalf("after Disconnect:\n%s", readFile(path))
+	}
+	n := len(asked())
+	read()
+	if b := asked(); len(b) != n {
+		t.Fatalf("asked after Disconnect: %v", b[n:])
+	}
+}
+
+// The same for Claude Code in a WSL distro, whose stash keys are its own.
+func TestWSLClaudeOwnEndpointNeverAsked(t *testing.T) {
+	const own = "https://relay.example/anthropic"
+	root, home := claudeDistroHome(t, `{"model":"opus","env":{"ANTHROPIC_BASE_URL":"`+own+`","ANTHROPIC_AUTH_TOKEN":"sk-own"}}`)
+	saveDeepseek(t)
+	d := distro{Name: "Debian", Root: root, Home: "/home/me", Has: map[string]bool{"dir:.claude": true},
+		Gateway: "172.20.0.1", Running: true}
+	a := wslAgent(wslKindOf("claude"), d)
+	at := d.place(a.ID)
+	path := filepath.Join(home, ".claude", "settings.json")
+	asked := fakeMagpieAt(t, map[string]bool{own: true, corpProxy: true})
+	a.Values()
+	a.Wired()
+	a.Drift()
+	claudeStandInAt(at, path, "claude-haiku-4-5")
+	claudeClassifierIn(at, "deepseek/pro")
+	if err := a.Apply("model", "deepseek/flash"); err != nil {
+		t.Fatal(err)
+	}
+	if b := asked(); len(b) > 0 {
+		t.Fatalf("its own endpoint asked: %v", b)
+	}
+	edit.SetJSON(path, edit.KV{Path: "env.ANTHROPIC_BASE_URL", Value: corpProxy})
+	if dr := a.Drift(); dr != nil {
+		t.Fatalf("magpie's key at the proxy: %+v", dr)
+	}
+	if err := a.Apply("login", "claudeai"); err != nil {
+		t.Fatal(err)
+	}
+	if dr := a.Drift(); dr != nil || a.Values()["login"] != "claudeai" {
+		t.Fatalf("the claude.ai sign-in at the proxy: drift %+v, sign-in %q", dr, a.Values()["login"])
+	}
+	if b := asked(); len(b) == 0 || b[0] != corpProxy {
+		t.Fatalf("asked %v", b)
+	}
+	noOwnClaude(t)
+}
+
+// davisjiahao (#1985), from a magpie just started: Claude Code connected,
+// its haiku tier given a model by hand, then pointed by hand at a proxy to
+// magpie, magpie's key kept. Nothing has asked the proxy yet whether magpie
+// answers there, and a write doesn't take that for no: it asks, and waits
+// (magpieAsked). A pick keeps the proxy and the tier (it wrote 127.0.0.1
+// over the proxy and put the tier back on the main model), a Sync (a
+// provider added runs one) keeps the auto mode review off (it took it
+// out), a tier is picked (it said to pick a model through magpie first),
+// and Disconnect puts back the endpoint and key the user had before magpie
+// (it left magpie in and forgot them).
+func TestClaudeFirstWriteAsksTheProxy(t *testing.T) {
+	t.Run("nginx", func(t *testing.T) { claudeFirstWriteAsksTheProxy(t, corpProxy) })
+	t.Run("local", func(t *testing.T) { claudeFirstWriteAsksTheProxy(t, localProxy) })
+}
+
+func claudeFirstWriteAsksTheProxy(t *testing.T, proxy string) {
+	const own = "https://own.example/api"
+	behind := func(t *testing.T) (cl *Agent, env func(string) string, probed func() []string) {
+		t.Setenv("MAGPIE_ADDR", "")
+		home, path := claudeSettings(t, `{"model":"opus","env":{"ANTHROPIC_BASE_URL":"`+own+`","ANTHROPIC_AUTH_TOKEN":"sk-own"}}`)
+		if err := provider.Save(provider.Provider{ID: "fake", Name: "Fake", Key: "k", Chat: "http://127.0.0.1:1/v1", Models: []string{"m1", "m2", "m3"}}); err != nil {
+			t.Fatal(err)
+		}
+		cl = claude(home)
+		if err := cl.Apply("model", "fake/m1"); err != nil {
+			t.Fatal(err)
+		}
+		edit.SetJSON(path,
+			edit.KV{Path: "env." + tierEnv("haiku"), Value: "fake/m2"},
+			edit.KV{Path: "env.ANTHROPIC_SMALL_FAST_MODEL", Value: "fake/m2"},
+			edit.KV{Path: "env.ANTHROPIC_BASE_URL", Value: proxy})
+		env = func(k string) string { v, _ := edit.GetJSON(path, "env."+k); return v }
+		if env(claudeReviewEnv) != "0" {
+			t.Fatalf("connected, the review isn't off:\n%s", readFile(path))
+		}
+		return cl, env, coldMagpie(t, map[string]bool{proxy: true})
+	}
+	askedOnce := func(t *testing.T, probed []string) {
+		t.Helper()
+		if len(probed) != 1 || probed[0] != proxy {
+			t.Errorf("probed %v, want the proxy once", probed)
+		}
+	}
+
+	t.Run("pick", func(t *testing.T) {
+		cl, env, probed := behind(t)
+		if err := cl.Apply("model", "fake/m3"); err != nil {
+			t.Fatal(err)
+		}
+		if u := env("ANTHROPIC_BASE_URL"); u != proxy {
+			t.Errorf("a pick wrote %s over the proxy", u)
+		}
+		if h := env(tierEnv("haiku")); h != "fake/m2" {
+			t.Errorf("haiku's own model went: %q", h)
+		}
+		askedOnce(t, probed())
+	})
+	t.Run("sync", func(t *testing.T) {
+		cl, env, probed := behind(t)
+		if err := cl.Sync(); err != nil {
+			t.Fatal(err)
+		}
+		if v := env(claudeReviewEnv); v != "0" {
+			t.Errorf("the sync took out the review magpie turned off: %q", v)
+		}
+		askedOnce(t, probed())
+	})
+	t.Run("tier", func(t *testing.T) {
+		cl, env, probed := behind(t)
+		if err := cl.Apply("haiku", "fake/m3"); err != nil {
+			t.Fatal(err)
+		}
+		if h, u := env(tierEnv("haiku")), env("ANTHROPIC_BASE_URL"); h != "fake/m3" || u != proxy {
+			t.Errorf("haiku %q at %s", h, u)
+		}
+		askedOnce(t, probed())
+	})
+	t.Run("disconnect", func(t *testing.T) {
+		cl, env, probed := behind(t)
+		if err := cl.Disconnect(); err != nil {
+			t.Fatal(err)
+		}
+		if u, k := env("ANTHROPIC_BASE_URL"), env("ANTHROPIC_AUTH_TOKEN"); u != own || k != "sk-own" {
+			t.Errorf("after Disconnect, %s with %q, not the user's own endpoint and key", u, k)
+		}
+		if h := env(tierEnv("haiku")); h != "" {
+			t.Errorf("magpie's haiku tier stayed: %q", h)
+		}
+		askedOnce(t, probed())
+	})
+}
+
+// coldMagpie is magpie just started: no answer from any address yet, as a
+// probe a read starts in the background hasn't come back, until a write
+// asks and waits (magpieAsked). magpie answers at the bases in answers. It
+// says which bases were probed.
+func coldMagpie(t *testing.T, answers map[string]bool) func() []string {
+	t.Helper()
+	var mu sync.Mutex
+	var probed []string
+	was, wasAt, age := magpieProbe, magpieAt, reachAge
+	magpieProbe = func(base string) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		probed = append(probed, base)
+		return answers[base]
+	}
+	magpieAt = func(base string) (bool, bool) {
+		reach.Lock()
+		defer reach.Unlock()
+		a := reach.m["magpie "+base]
+		return a.ok, !a.at.IsZero()
+	}
+	reachAge = time.Hour
+	reachForget()
+	t.Cleanup(func() { magpieProbe, magpieAt, reachAge = was, wasAt, age; reachForget() })
+	return func() []string { mu.Lock(); defer mu.Unlock(); return append([]string(nil), probed...) }
 }

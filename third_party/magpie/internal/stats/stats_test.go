@@ -124,7 +124,7 @@ func TestAgentLabel(t *testing.T) {
 
 // A model on a key's provider goes by its id only when models.dev knows
 // it: one the user named (an Ollama model, a fine-tune naming their
-// organisation) is "other".
+// organisation, or a known one spelt their way) is "other".
 func TestModelLabelKeepsTheUsersOwnModelIDs(t *testing.T) {
 	cache := map[string]any{"deepseek": map[string]any{"id": "deepseek", "models": map[string]any{
 		"deepseek-v4": map[string]any{"id": "deepseek-v4", "limit": map[string]any{"context": 128000}},
@@ -139,7 +139,7 @@ func TestModelLabelKeepsTheUsersOwnModelIDs(t *testing.T) {
 	catalog.Reset()
 	t.Cleanup(func() { os.Remove(catalog.CachePath()); catalog.Reset() })
 	for _, p := range []provider.Provider{
-		{ID: "my-deepseek", Name: "DS", Preset: "deepseek", Chat: "https://api.deepseek.com/v1", Key: "sk-x", Models: []string{"deepseek-v4"}},
+		{ID: "my-deepseek", Name: "DS", Preset: "deepseek", Chat: "https://api.deepseek.com/v1", Key: "sk-x", Models: []string{"deepseek-v4", "DeepSeek_V4-260101"}},
 		{ID: "my-openai", Name: "OA", Preset: "openai", Chat: "https://api.openai.com/v1", Key: "sk-y", Models: []string{"ft:gpt-4o:acme-corp::abc123"}},
 		{ID: "my-ollama", Name: "Local", Preset: "ollama", Chat: "http://127.0.0.1:11434/v1", Models: []string{"acme-internal-llm"}},
 	} {
@@ -148,7 +148,10 @@ func TestModelLabelKeepsTheUsersOwnModelIDs(t *testing.T) {
 		}
 	}
 	for ref, want := range map[string]string{
-		"my-deepseek/deepseek-v4":               "deepseek/deepseek-v4",
+		"my-deepseek/deepseek-v4": "deepseek/deepseek-v4",
+		// known only under another spelling (catalog.SameModel): the
+		// user's own spelling isn't sent
+		"my-deepseek/DeepSeek_V4-260101":        "deepseek/other",
 		"my-openai/ft:gpt-4o:acme-corp::abc123": "openai/other",
 		"my-ollama/acme-internal-llm":           "ollama/other",
 	} {

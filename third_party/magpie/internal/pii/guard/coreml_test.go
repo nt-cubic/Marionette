@@ -2,6 +2,7 @@ package guard
 
 import (
 	"bytes"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
@@ -69,7 +70,7 @@ func TestCoreMLMatchesGo(t *testing.T) {
 		ids = append(ids, k.id)
 	}
 	ids = append(ids, 2)
-	want := m.net.logits(ids, threads)
+	want := m.net.logits(ids, Cores())
 	t1 := time.Now()
 	got, err := coremlLogits(m.ml, m.net, ids)
 	if err != nil {
@@ -134,4 +135,103 @@ func argmax(r []float32) int {
 		}
 	}
 	return best
+}
+
+// Backend names what reads the model: CoreML on the device its plan puts
+// most of the program on while CoreML reads, and the CPU with why once
+// CoreML's last read failed or it couldn't be made (Settings said "on
+// the CPU" while CoreML read every window: yyhhyyyyyy on Discord).
+func TestBackend(t *testing.T) {
+	made := errors.New("no CoreML program")
+	via, d, err := (&Model{MLErr: made}).Backend()
+	if via != "" || d != "CPU" || (coreml.Available && err != made) || (!coreml.Available && err != nil) {
+		t.Fatalf("without CoreML: %q %q %v", via, d, err)
+	}
+	m := &Model{ml: &coreml.Model{Device: "Neural Engine"}}
+	if via, d, err := m.Backend(); via != "CoreML" || d != "Neural Engine" || err != nil {
+		t.Fatalf("with CoreML: %q %q %v", via, d, err)
+	}
+	e := "prediction failed"
+	m.mlFail.Store(&e)
+	if via, d, err := m.Backend(); via != "" || d != "CPU" || err == nil || err.Error() != e {
+		t.Fatalf("after a failed read: %q %q %v", via, d, err)
+	}
+	m.mlFail.Store(nil)
+	if via, _, _ := m.Backend(); via != "CoreML" {
+		t.Fatalf("after a good read: %q", via)
+	}
+}
+
+// A failed CoreML read is what Backend says until one succeeds: logits
+// records it as bert.go reads the window instead.
+func TestFailedCoreMLReadIsSaid(t *testing.T) {
+	d := dir(t)
+	if !coreml.Available {
+		t.Skip("no CoreML here")
+	}
+	m, err := Load(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.ml == nil {
+		t.Fatalf("CoreML didn't open: %v", m.MLErr)
+	}
+	ids := make([]int, 40)
+	for i := range ids {
+		ids[i] = 5
+	}
+	ids[0], ids[len(ids)-1] = 0, 2
+	m.logits(ids, 1)
+	if via, _, err := m.Backend(); via != "CoreML" || err != nil {
+		t.Fatalf("after a good read: %q %v", via, err)
+	}
+	t.Cleanup(func() { coremlRead = coremlLogits })
+	coremlRead = func(*coreml.Model, *net, []int) ([]float32, error) { return nil, errors.New("prediction failed") }
+	if lg := m.logits(ids, 1); len(lg) != len(ids)*len(labels) {
+		t.Fatalf("bert.go read %d logits", len(lg))
+	}
+	if via, d, err := m.Backend(); via != "" || d != "CPU" || err == nil || err.Error() != "prediction failed" {
+		t.Fatalf("after a failed read: %q %q %v", via, d, err)
+	}
+	coremlRead = coremlLogits
+	m.logits(ids, 1)
+	if via, _, err := m.Backend(); via != "CoreML" || err != nil {
+		t.Fatalf("after CoreML read again: %q %v", via, err)
+	}
+}
+
+// CoreML's compute plan names where it runs the program: on a Mac with
+// macOS 14.4 or later, a device for every operation it places, shares
+// adding to one, and the loaded model's Device the largest of them.
+func TestCoreMLPlanNamesADevice(t *testing.T) {
+	d := dir(t)
+	if !coreml.Available {
+		t.Skip("no CoreML here")
+	}
+	m, err := Load(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.ml == nil {
+		t.Fatalf("CoreML didn't open: %v", m.MLErr)
+	}
+	es, _ := filepath.Glob(filepath.Join(d, "coreml", "*.mlmodelc"))
+	if len(es) != 1 {
+		t.Fatalf("compiled programs: %v", es)
+	}
+	sh, err := coreml.Plan(es[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sum float64
+	for _, s := range sh {
+		sum += s
+	}
+	t.Logf("plan: Neural Engine %.3f, GPU %.3f, CPU %.3f; Device %q", sh[0], sh[1], sh[2], m.ml.Device)
+	if math.Abs(sum-1) > 1e-6 || m.ml.Device != coreml.Most(sh) || m.ml.Device == "" || m.ml.DeviceErr != nil {
+		t.Fatalf("shares %v (sum %v), Device %q, %v", sh, sum, m.ml.Device, m.ml.DeviceErr)
+	}
+	if via, dev, err := m.Backend(); via != "CoreML" || dev != m.ml.Device || err != nil {
+		t.Fatalf("Backend: %q %q %v", via, dev, err)
+	}
 }

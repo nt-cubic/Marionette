@@ -104,12 +104,23 @@ func TestUsagePartialLineThenCompletion(t *testing.T) {
 // logFineSettle, so a read that long after an append continues the
 // snapshot from the appends it noted, hashing nothing again; one in whole
 // seconds still waits out logStampSettle (#3394).
+//
+// Each read is timed from the append's change stamp, not the wall clock: a
+// whole-second stamp is up to a second behind the append, so 150 ms after
+// an append late in its second is already the next second, past the
+// stamp's tick, where nothing is hashed, rightly (#3511). The last case
+// holds that: any later write has a later stamp by then.
 func TestUsageReadAfterAppendHashesNothingOnAFineClock(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		fine   bool
+		after  time.Duration // from the stamp to the read
 		hashes bool
-	}{{"fine stamp", true, false}, {"whole-second stamp", false, true}} {
+	}{
+		{"fine stamp", true, 150 * time.Millisecond, false},
+		{"whole-second stamp", false, 150 * time.Millisecond, true},
+		{"whole-second stamp read the next second", false, time.Second + 150*time.Millisecond, false},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pageHome(t)
 			holdClock(t, time.Now())
@@ -119,8 +130,9 @@ func TestUsageReadAfterAppendHashesNothingOnAFineClock(t *testing.T) {
 			if !tc.fine {
 				logChangeTime = func(info os.FileInfo) time.Time { return changeTime(info).Truncate(time.Second) }
 			}
-			// each read comes 150 ms after the append before it
-			logIndexNow = func() time.Time { return time.Now().Add(150 * time.Millisecond) }
+			// each read comes tc.after past the stamp of the append before it
+			stamp := logChangeTime(mustStat(t))
+			logIndexNow = func() time.Time { return stamp.Add(tc.after) }
 			Summarize(Today)
 			hash := logRecordHash
 			var hashed int64
@@ -132,7 +144,8 @@ func TestUsageReadAfterAppendHashesNothingOnAFineClock(t *testing.T) {
 			const cycles = 5
 			for range cycles {
 				Append(Record{Agent: "codex", Provider: "relay", Model: "m", Input: 1, Status: 200})
-				if c := logChangeTime(mustStat(t)); tc.fine && c.Nanosecond() == 0 {
+				stamp = logChangeTime(mustStat(t))
+				if tc.fine && stamp.Nanosecond() == 0 {
 					t.Skip("this file system keeps change times in whole seconds")
 				}
 				Summarize(Today)
@@ -143,7 +156,7 @@ func TestUsageReadAfterAppendHashesNothingOnAFineClock(t *testing.T) {
 			}
 			t.Logf("%d bytes hashed over %d appends", hashed, cycles)
 			if tc.hashes != (hashed > 0) {
-				t.Fatalf("hashed %d bytes over %d appends and reads 150 ms after each", hashed, cycles)
+				t.Fatalf("hashed %d bytes over %d appends and reads %v past each one's stamp", hashed, cycles, tc.after)
 			}
 		})
 	}

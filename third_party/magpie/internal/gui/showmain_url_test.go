@@ -2,6 +2,7 @@ package gui
 
 import (
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -18,6 +19,7 @@ func TestMainURL(t *testing.T) {
 		{mainView(url.Values{"view": {"usage"}, "tab": {"requests"}, "provider": {"relay team"}, "agent": {"claude-desktop"}}), "/?view=usage&tab=requests&provider=relay+team&agent=claude-desktop&lang=en"},
 		{mainView(url.Values{"view": {"usage"}, "tab": {"usage"}, "provider": {"codex"}}), "/?view=usage&tab=usage&provider=codex&lang=en"},
 		{mainView(url.Values{"view": {"usage"}, "tab": {"usage"}, "card": {"codex|a+b&c@test"}}), "/?view=usage&tab=usage&card=codex%7Ca%2Bb%26c%40test&lang=en"},
+		{mainView(url.Values{"view": {"plugins"}, "q": {"智谱 glm"}}), "/?view=plugins&q=%E6%99%BA%E8%B0%B1+glm&lang=en"},
 		{argView("settings"), "/?view=settings&lang=en"},
 		{argView("usage&tab=x"), "/?view=usage%26tab%3Dx&lang=en"},
 	} {
@@ -31,6 +33,9 @@ func TestMainURL(t *testing.T) {
 		}
 		if c.view == "routing&req=42" && (u.Query().Get("view") != "routing" || u.Query().Get("req") != "42") {
 			t.Errorf("%q: view %q req %q", got, u.Query().Get("view"), u.Query().Get("req"))
+		}
+		if strings.HasPrefix(c.view, "plugins&") && (u.Query().Get("view") != "plugins" || u.Query().Get("q") != "智谱 glm") {
+			t.Errorf("%q: view %q q %q", got, u.Query().Get("view"), u.Query().Get("q"))
 		}
 	}
 }

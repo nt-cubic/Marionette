@@ -300,3 +300,69 @@ func TestGroupUltra(t *testing.T) {
 		t.Fatalf("group levels without an ultra %v", got)
 	}
 }
+
+// A member given several levels ("a/small:low+high", Garydesu on X)
+// follows the agent among them: the agent's level when the member has it,
+// else the nearest of them; no reasoning when the agent asks for none.
+// The vendor is asked for the model's own id, and the group lists the
+// member's levels as its own.
+func TestMemberSeveralLevelsFollowAgent(t *testing.T) {
+	s, a, _ := ruled(t)
+	if err := provider.SetModelEfforts("a/small", []string{"low", "medium", "high", "xhigh"}); err != nil {
+		t.Fatal(err)
+	}
+	setMembers(t, []string{"a/small:low+xhigh", "b/big"})
+	for _, c := range []struct{ asked, want string }{
+		{"low", "low"},
+		{"xhigh", "xhigh"},
+		{"high", "xhigh"}, // the nearest of the member's
+		{"minimal", "low"},
+		{"", ""}, // asked for no reasoning: none given
+	} {
+		extra := ""
+		if c.asked != "" {
+			extra = `,"reasoning_effort":"` + c.asked + `"`
+		}
+		out, r := postOK(t, s, "", chat("hi", nil, 0, extra))
+		sent := sentBody(t, a)
+		got, _ := sent["reasoning_effort"].(string)
+		if !strings.Contains(out, "from ka") || sent["model"] != "small" || got != c.want {
+			t.Fatalf("asked %q: sent %v (%s)", c.asked, sent, out)
+		}
+		if len(r.Tries) != 1 || r.Tries[0].Fixed != "" || r.Tries[0].Effort != c.want {
+			t.Fatalf("asked %q: traced %+v", c.asked, r.Tries)
+		}
+		if r.Group == nil || r.Group.Members[0] != "a/small:low+xhigh" {
+			t.Fatalf("group %+v", r.Group)
+		}
+	}
+	// what agents are offered: the member's own levels, within those
+	// b/big has in common with them
+	if err := provider.SetModelEfforts("b/big", []string{"low", "medium", "high", "xhigh"}); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/v1/models", nil))
+	var list struct {
+		Data []struct {
+			ID     string `json:"id"`
+			Levels []struct {
+				Effort string `json:"effort"`
+			} `json:"supported_reasoning_levels"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("%v: %s", err, rec.Body)
+	}
+	var got []string
+	for _, m := range list.Data {
+		if m.ID == "group/r" {
+			for _, l := range m.Levels {
+				got = append(got, l.Effort)
+			}
+		}
+	}
+	if !slices.Equal(got, []string{"low", "xhigh"}) {
+		t.Fatalf("group offers %v, want low and xhigh", got)
+	}
+}

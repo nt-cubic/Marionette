@@ -13,6 +13,9 @@ import (
 	"github.com/yetone/magpie/internal/settings"
 )
 
+// docIP is an IPv4 stand-in: an address in RFC 5737's ranges, .101 to .254
+var docIP = regexp.MustCompile(`(?:192\.0\.2|198\.51\.100|203\.0\.113)\.(?:1\d\d|2[0-4]\d|25[0-4])`)
+
 // The kinds of personal data the user turned on or off in settings
 // (redactKinds) are what the vendor doesn't see, the others as their
 // defaults say; what it answers with a placeholder comes back as the value.
@@ -21,7 +24,7 @@ func TestRedactedKinds(t *testing.T) {
 	var got []byte
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got, _ = io.ReadAll(r.Body)
-		p := regexp.MustCompile(`\{\{IP_[a-z2-7]{8}\}\}`).FindString(string(got))
+		p := docIP.FindString(string(got))
 		chunk := func(s string) string {
 			b, _ := json.Marshal(map[string]any{"id": "c1", "model": "m1", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": s}}}})
 			return "data: " + string(b)
@@ -44,7 +47,9 @@ func TestRedactedKinds(t *testing.T) {
 		t.Fatalf("%d %s", code, body)
 	}
 	sent := string(got)
-	if strings.Contains(sent, ssn) || strings.Contains(sent, ip) || !strings.Contains(sent, "{{SSN_") || !strings.Contains(sent, "{{IP_") {
+	// an address goes as one from the documentation ranges, not a
+	// placeholder, so the model uses it rather than asking for the real one
+	if strings.Contains(sent, ssn) || strings.Contains(sent, ip) || !strings.Contains(sent, "{{SSN_") || !docIP.MatchString(sent) || strings.Contains(sent, "{{IP_") {
 		t.Fatalf("SSN (on by default) or IP (turned on) went out: %s", sent)
 	}
 	if !strings.Contains(sent, "s3://"+bucket+"/x") || !strings.Contains(sent, "/Users/"+user+"/src") {

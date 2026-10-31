@@ -41,8 +41,9 @@ import (
 
 // piCallFiles are Pi's and omp's session files, here and in WSL.
 func piCallFiles() []file {
-	out := append(piFiles(), ompFiles()...)
-	return append(out, wslFiles("pi", "omp")...)
+	out := append(piFiles(), raftFiles()...)
+	out = append(out, ompFiles()...)
+	return append(out, wslFiles("pi", "raft", "omp")...)
 }
 
 // piGateway is whether a provider is magpie's own entry.

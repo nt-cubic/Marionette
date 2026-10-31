@@ -227,6 +227,28 @@ let lanSelectedURL = "", lanProtocol = "openai";
 // the address picked under Share on local network is kept like Connect's
 let lanWant = "";
 try { lanWant = localStorage.getItem("magpie.lanAddress") || ""; } catch {}
+// lanShown: the local network addresses the gateway is offered at, and a
+// line on them when magpie runs in a container, for Settings and Gateway
+// alike. In a container magpie finds only the container's own addresses;
+// the page opened over the network was reached at the host's, so the
+// gateway is offered there, on its port.
+function lanShown(urls, container) {
+  if (!container) return { urls, sub: "" };
+  const host = location.hostname, port = urls.length ? new URL(urls[0]).port : "";
+  if (web && host && port && !/^(localhost|127\.|\[::1\]$)/.test(host))
+    return { urls: ["http://" + host + ":" + port], // an IPv6 hostname comes bracketed
+      sub: t("Where this page was opened, on the gateway’s port; MAGPIE_PUBLIC_URL sets another") };
+  return { urls, sub: t("The container’s own addresses, which other devices can’t reach: set MAGPIE_PUBLIC_URL to the host’s") };
+}
+// sideLAN: where other machines reach the gateway while it is shared, for
+// the sidebar's line (coeo91 on Discord): MAGPIE_PUBLIC_URL, else the
+// address picked here, else the first
+function sideLAN(g) {
+  const u = g.lan && g.lanURLs || [];
+  return u[0] && (g.publicURL || (u.includes(lanWant) ? lanWant : u[0]));
+}
+// the line was drawn from boot.js before this script came
+if (sideGwAt) renderSideGw();
 function renderLAN(s) {
   const box = $("#lanList");
   box.replaceChildren();
@@ -244,26 +266,22 @@ function renderLAN(s) {
   };
   const set = (body) => writingPrefs(api("settings/lan", body)).then((ns) => {
     prefs = ns; renderSettings();
+    // the sidebar's gateway names the address shared, or this computer's
+    api("providers").then((r) => renderSideGw(r?.gateway), () => {});
     if (ns.rekeyed) status(ns.rekeyed, "err");
   })
     .catch((e) => { status(t(e.message), "err"); renderSettings(); });
   row(t("Share on local network"), t("Agents on other computers on this network, or through a tunnel to this one such as Cloudflare Tunnel, can use magpie’s models with a gateway key from Gateway"), "",
     segs([["off", t("Off")], ["on", t("On")]], s.lan ? "on" : "off", (v) => set({ on: v === "on" })));
   if (!s.lan) return;
-  let urls = s.lanURLs || [], sub = "";
-  // in a container magpie finds only the container's own addresses; the
-  // page opened over the network was reached at the host's, so the
-  // gateway is offered there, on its port
-  if (s.lanContainer) {
-    const host = location.hostname, port = urls.length ? new URL(urls[0]).port : "";
-    if (web && host && port && !/^(localhost|127\.|\[::1\]$)/.test(host)) {
-      urls = ["http://" + host + ":" + port]; // an IPv6 hostname comes bracketed
-      sub = t("Where this page was opened, on the gateway’s port; MAGPIE_PUBLIC_URL sets another");
-    } else sub = t("The container’s own addresses, which other devices can’t reach: set MAGPIE_PUBLIC_URL to the host’s");
-  }
+  const { urls, sub } = lanShown(s.lanURLs || [], s.lanContainer);
   if (!urls.length) row(t("Address"), t("This computer has no local network address right now"), "");
   else {
     lanSelectedURL = urls.includes(lanWant) ? lanWant : urls[0];
+    // an interface can hold an internet address (an ISP's static one, a
+    // VPN's): the gateway answers there too, so the row says so
+    const far = new Set(s.lanPublic || []);
+    const listed = (s.allowIPsEnv ? s.allowIPsFromEnv : s.allowIPs)?.length > 0;
     const controls = el("div", "lan-address-controls");
     const address = urls.length === 1 ? el("code", "lan-address-text") : el("button", "proto pick lan-interface");
     if (urls.length > 1) {
@@ -273,8 +291,8 @@ function renderLAN(s) {
         e.stopPropagation();
         if (address.classList.contains("open")) return closeProtoMenu();
         const suffix = lanProtocol === "openai" ? "/v1" : "";
-        openProtoMenu(address, urls.map((u) => ({ v: u, name: u + suffix, note: "" })), lanSelectedURL,
-          (v) => { lanSelectedURL = lanWant = v; keepPick("magpie.lanAddress", v); update(); }, "Address", "lan-address-menu");
+        openProtoMenu(address, urls.map((u) => ({ v: u, name: u + suffix, note: far.has(u) ? t("On the internet") : "" })), lanSelectedURL,
+          (v) => { lanSelectedURL = lanWant = v; keepPick("magpie.lanAddress", v); update(); renderSideGw(); }, "Address", "lan-address-menu");
       };
     }
     const copyControl = el("span", "lan-copy");
@@ -288,10 +306,17 @@ function renderLAN(s) {
       const button = copyBtn(url, what, t("Copied {label} address", { label }));
       button.setAttribute("aria-label", t("Copy") + " " + what);
       copyControl.replaceChildren(button);
+      const who = addressRow?.querySelector(".who");
+      if (!who) return;
+      who.querySelector(".sub")?.remove();
+      if (far.has(lanSelectedURL)) who.append(el("div", "sub", listed
+        ? t("An internet address: only the addresses under Allowed addresses get in")
+        : t("An internet address: anyone online can reach magpie here with a gateway key. To keep it to this network, list its range under Allowed addresses")));
     };
     controls.append(segs([["openai", "OpenAI"], ["anthropic", "Anthropic"]], lanProtocol,
       (v) => { lanProtocol = v; update(); }), address, copyControl);
-    row(t("Address"), "", "", controls).classList.add("lan-address-row");
+    const addressRow = row(t("Address"), "", "", controls);
+    addressRow.classList.add("lan-address-row");
     update();
   }
   if (sub) row(t("In a container"), sub, "").classList.add("lan-container");

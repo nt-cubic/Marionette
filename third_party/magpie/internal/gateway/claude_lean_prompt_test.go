@@ -67,6 +67,9 @@ func leanSetting(t *testing.T, on bool) {
 func (h *resumeHarness) post(body string, header ...string) {
 	h.t.Helper()
 	r := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+	if h.from != "" {
+		r.RemoteAddr = h.from
+	}
 	for i := 0; i+1 < len(header); i += 2 {
 		r.Header.Set(header[i], header[i+1])
 	}
@@ -83,6 +86,7 @@ func (h *resumeHarness) post(body string, header ...string) {
 // instructions are in the first message, as before.
 func TestClaudeLeanPromptIsTheRunsSystemPrompt(t *testing.T) {
 	h, runs := newLeanHarness(t)
+	h.from = "127.0.0.1:51000" // a caller elsewhere is told where its tools run
 	leanSetting(t, true)
 	h.post(`{"model":"claude-sonnet-5","max_tokens":100,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.301.eca; cc_entrypoint=cli; cch=00000;"},{"type":"text","text":"You are Aria, a notes assistant."}],"messages":[{"role":"user","content":"one"}]}`)
 	h.post(`{"model":"claude-sonnet-5","max_tokens":100,"system":"Rules.","tools":[{"name":"look","input_schema":{"type":"object"}}],"tool_choice":{"type":"any"},"messages":[{"role":"user","content":"two"}]}`)
@@ -154,5 +158,30 @@ func TestClaudeLeanPromptFileInWSL(t *testing.T) {
 	}
 	if got := (claudeCLI{}).file("/tmp/x/system.md"); got != "/tmp/x/system.md" {
 		t.Fatalf("%q", got)
+	}
+}
+
+// A lean run's system prompt says where the caller's tools run when the
+// caller is elsewhere, as a run that keeps Claude Code's prompt is told
+// after the caller's instructions: Claude Code gives the gateway's
+// environment in the run's first message all the same, after the system
+// prompt. A caller on this computer naming no folder is told nothing more.
+func TestClaudeLeanPromptSaysWhereToolsRun(t *testing.T) {
+	h, runs := newLeanHarness(t)
+	leanSetting(t, true)
+	h.from = "192.0.2.7:51000"
+	h.post(`{"model":"claude-sonnet-5","max_tokens":100,"system":"Rules.","messages":[{"role":"user","content":"one"}]}`)
+	h.post(`{"model":"claude-sonnet-5","max_tokens":100,"system":"Rules.\n - Primary working directory: /no/such/folder/here","messages":[{"role":"user","content":"two"}]}`)
+	h.from = "127.0.0.1:51000"
+	h.post(`{"model":"claude-sonnet-5","max_tokens":100,"system":"Rules.","messages":[{"role":"user","content":"three"}]}`)
+
+	if one := told(t, runs(), "one"); one.system != "Rules."+envUnknownNote {
+		t.Fatalf("a caller elsewhere naming no folder: %q", one.system)
+	}
+	if two := told(t, runs(), "two"); !strings.HasSuffix(two.system, envElsewhereLeanNote) {
+		t.Fatalf("a caller naming a folder elsewhere: %q", two.system)
+	}
+	if three := told(t, runs(), "three"); three.system != "Rules." {
+		t.Fatalf("a caller on this computer: %q", three.system)
 	}
 }

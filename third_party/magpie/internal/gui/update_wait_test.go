@@ -40,7 +40,7 @@ func quick(t *testing.T, busy *fakeBusy, u *updater) {
 	t.Setenv("MAGPIE_UPDATE_FEED", "http://127.0.0.1:1/") // never the real one
 	oldBusy, oldSettle, oldMost, oldTick, oldRecheck := gatewayBusy, idleSettle, waitMost, waitTick, waitRecheck
 	gatewayBusy, idleSettle, waitMost, waitTick = busy.get, 80*time.Millisecond, time.Minute, 5*time.Millisecond
-	waitRecheck = func(*updater) {}
+	waitRecheck = func(*updater, bool) {}
 	t.Cleanup(func() {
 		u.cancelWait()
 		u.loops.Wait()
@@ -121,7 +121,7 @@ func TestRestartWhenIdle(t *testing.T) {
 	var told atomic.Int32
 	u.onWait = func() { told.Add(1) }
 	var restarts atomic.Int32
-	u.waitIdle(func() bool { restarts.Add(1); return true })
+	u.waitIdle(func() bool { restarts.Add(1); return true }, true)
 	time.Sleep(40 * time.Millisecond)
 	if restarts.Load() != 0 {
 		t.Fatal("restarted while streaming")
@@ -152,7 +152,7 @@ func TestRestartWhenIdle(t *testing.T) {
 	u.loops.Wait()
 	waitMost = 40 * time.Millisecond
 	busy.set(gateway.Busy{Requests: 1})
-	u.waitIdle(func() bool { restarts.Add(1); return true })
+	u.waitIdle(func() bool { restarts.Add(1); return true }, true)
 	eventually(t, "never gave up", func() bool { return u.json().GaveUp })
 	if j := u.json(); j.Waiting || restarts.Load() != 1 || j.Busy == nil {
 		t.Fatalf("gave up: %+v, %d restarts", j, restarts.Load())
@@ -202,7 +202,7 @@ func TestRestartWhenIdleIntoTheNewest(t *testing.T) {
 		into <- u.latest.Version
 		u.mu.Unlock()
 		return true
-	})
+	}, false)
 	latest.Store("0.1.12")
 	time.Sleep(30 * time.Millisecond)
 	latest.Store("0.1.13")

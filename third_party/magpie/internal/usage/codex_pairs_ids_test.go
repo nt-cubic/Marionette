@@ -2,6 +2,7 @@ package usage
 
 import (
 	"fmt"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -45,5 +46,35 @@ func TestPairsReadOnlyChunksTheGatewayNamed(t *testing.T) {
 	}
 	if got, ok := pairs[rowRef{gateway, 0}]; !ok || got != (rowRef{named, 1}) {
 		t.Fatalf("pairs = %v; want the gateway's resp-1 paired with the file's", pairs)
+	}
+}
+
+// A response id's pick is a place in one slice, not an allocation of its
+// own: a pick each was ~300 MB of what two minutes of polls allocated
+// over a year's Codex calls while an agent worked (#2278). Every id named
+// once on both sides is still paired.
+func TestPairsAllocateNoPickAnID(t *testing.T) {
+	const n = 4000
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	gateway, local := &rowChunk{}, &rowChunk{}
+	for i := range n {
+		r := Record{Time: now.Add(-time.Duration(i) * time.Second), Agent: "codex", Model: "native-model", Input: 80, Output: 8,
+			Session: "native-session", ResponseID: fmt.Sprint("resp-", i)}
+		gateway.add(Row{Record: r}, "", int64(i), false)
+		local.add(Row{Record: r, Source: "log"}, "", int64(i), false)
+	}
+	local.serial = nextChunkSerial()
+	locals := []*rowChunk{local}
+	foldCodexRows(locals)
+	pairs, _ := codexChunkResponsePairs([]*rowChunk{gateway}, locals, nil)
+	if len(pairs) != n || pairs[rowRef{gateway, 7}] != (rowRef{local, 7}) {
+		t.Fatalf("%d pairs of %d calls", len(pairs), n)
+	}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	codexChunkResponsePairs([]*rowChunk{gateway}, locals, nil)
+	runtime.ReadMemStats(&after)
+	if mallocs := after.Mallocs - before.Mallocs; mallocs > n/4 {
+		t.Fatalf("pairing %d calls made %d allocations", n, mallocs)
 	}
 }

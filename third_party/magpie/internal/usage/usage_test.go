@@ -311,3 +311,21 @@ func TestSawIsLastSeen(t *testing.T) {
 		t.Fatalf("after a request: %v", at)
 	}
 }
+
+// A client named by an HTTP library, a runtime or an SDK is no agent
+// (theforeveriris on X), as AgentOf names it from its User-Agent; an
+// agent's or an app's own name is not one.
+func TestIsLibrary(t *testing.T) {
+	for _, ua := range []string{"curl/8.7.1", "Bun/1.4.2", "python-httpx/0.28.1", "Go-http-client/1.1", "node-fetch/1.0",
+		"undici", "axios/1.7.2", "okhttp/4.12.0", "python-requests/2.32.3", "Python/3.12 aiohttp/3.10.5",
+		"OpenAI/Python 1.54.0", "AsyncOpenAI/Python 1.54.0", "Anthropic/JS 0.32.1"} {
+		if a := AgentOf(ua); !IsLibrary(a) {
+			t.Errorf("%q (%q) is not a library", ua, a)
+		}
+	}
+	for _, ua := range []string{"SillyTavern/1.12", "MyApp/2.0 (Linux)", "Mozilla/5.0 (Macintosh)", ""} {
+		if a := AgentOf(ua); IsLibrary(a) {
+			t.Errorf("%q (%q) is a library", ua, a)
+		}
+	}
+}

@@ -15,8 +15,10 @@ let lang = gwParams.get("lang") || localStorage.getItem("magpie.lang") || "shell
 let snipOS = localStorage.getItem("magpie.snipOS") || "";                               // the shell the Shell and curl snippets are for (#1514)
 let exampleModel = localStorage.getItem("magpie.model") || "";  // the model in the snippets
 let decideModel = localStorage.getItem("magpie.decideModel") || ""; // the System One snippets' decision model
-let connectFolded = false; // Connect folded away under its heading
-try { connectFolded = localStorage.getItem("magpie.gwConnectFolded") === "1"; } catch {}
+// Connect folded away under its heading: folded until it is opened, as it
+// is set up once and seldom read again (the owner)
+let connectFolded = true;
+try { connectFolded = localStorage.getItem("magpie.gwConnectFolded") !== "0"; } catch {}
 const expandedCalls = new Set(); // recent-call ids whose wire bodies are open
 const callBodies = new Map(); // callRow → its bodies, read when it is opened (#1521)
 // recent calls drawn a page at a time, as many as the plugin's setting
@@ -71,6 +73,7 @@ function renderGatewayView() {
   page.classList.remove("loading");
   page.removeAttribute("aria-busy");
   renderGateway();
+  renderGatewayLan();
   $("#gatewayKeysBlock").hidden = !providers.gateway.lan;
   // not shared, the keys are left out; this line says where they come from,
   // as a tunnel to loopback is refused until sharing is on (DD on Discord)
@@ -132,7 +135,9 @@ function gatewayFixSays(o) {
   return t("The gateway couldn't be served here: {error}", p);
 }
 
-// The status card: dot, state, the URL.
+// The status card: the gateway's mark, its state and what it does, and the
+// button that fixes what stands in its way.
+const GW_GLYPH = '<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="14" height="5" rx="1.5"/><rect x="3" y="11" width="14" height="5" rx="1.5"/></g><circle class="led" cx="6.2" cy="6.5" r="1.1"/><circle class="led" cx="6.2" cy="13.5" r="1.1"/></svg>';
 function renderGateway() {
   const g = providers.gateway;
   const box = $("#gateway");
@@ -140,7 +145,9 @@ function renderGateway() {
   // an older magpie keeping the port sends every agent's request its own
   // way, without this version's fixes (#506): said in place of the counts
   const older = g.running && !g.mine && g.older;
-  const dot = el("span", "dot " + (older ? "old" : g.running ? "on" : ""));
+  // the sidebar's mark, its lights the state: green running, amber not
+  const mark = el("span", "gw-mark " + (older ? "old" : g.running ? "on" : ""));
+  mark.innerHTML = GW_GLYPH;
   const who = el("div", "who");
   const name = el("div", "name", t("Gateway"));
   name.append(el("span", "state", older
@@ -154,18 +161,63 @@ function renderGateway() {
   } else who.append(name, el("div", "sub", g.running
     ? [t(g.models === 1 ? "{n} model" : "{n} models", { n: g.models }), n ? t(n === 1 ? "{n} agent routed through it" : "{n} agents routed through it", { n }) : t("no agent routed through it yet"), t("five APIs, one URL")].join(" · ")
     : t("start it with magpie serve, or open magpie at login")));
-  const fix = gatewayFixButton(g, older);
-  if (fix) who.append(fix);
   if (gatewayFix.err && gatewayFix.when === gatewayFixWhen(g)) who.append(el("div", "sub old err", gatewayFix.err));
+  box.append(mark, who);
+  const fix = gatewayFixButton(g, older);
+  if (fix) box.append(fix);
+}
+
+// Share on local network, set on the page that hands out its keys (the
+// owner): the same setting as Settings › Network and sharing, and every
+// address the gateway answers on, each to copy.
+let gatewayLanBusy = false;
+function renderGatewayLan() {
+  const g = providers.gateway;
+  const box = $("#gatewayLan");
+  box.replaceChildren();
+  const head = el("div", "row gw-share");
+  const choice = segs([["off", t("This computer")], ["on", t("Local network")]], g.lan ? "on" : "off", (v) => {
+    if (gatewayLanBusy || (v === "on") === !!g.lan) return;
+    gatewayLanBusy = true;
+    writingPrefs(api("settings/lan", { on: v === "on" }))
+      .then((ns) => { prefs = ns; if (ns.rekeyed) status(ns.rekeyed, "err"); })
+      .catch((e) => status(t(e.message), "err"))
+      .then(() => loadProviders().catch(() => {}))
+      .finally(() => {
+        gatewayLanBusy = false;
+        if (view !== "gateway" || !providers) return;
+        renderGatewayView();
+        if (providers.gateway.lan) loadGatewayKeys();
+      });
+  });
+  choice.setAttribute("role", "group");
+  choice.setAttribute("aria-label", t("Share on local network"));
+  head.append(el("div", "name grow", t("Share on local network")), choice);
+  box.append(head);
+  const list = el("div", "gw-urls");
+  const line = (label, url) => {
+    const r = el("div", "gw-url");
+    const val = el("span", "gw-url-val");
+    val.append(el("code", "", url), copyBtn(url, t("Gateway URL")));
+    r.append(el("span", "gw-url-label", label), val);
+    list.append(r);
+  };
   // served to other machines' browsers (magpie web), the address shown is
   // the one they reach, MAGPIE_PUBLIC_URL's, not this computer's loopback
   // (#1551)
   const shown = web && g.publicURL || g.url;
-  const url = el("button", "url");
-  url.append(el("code", "", shown));
-  url.title = t("Copy the gateway URL");
-  url.onclick = () => copy(shown, t("Gateway URL"));
-  box.append(dot, who, url);
+  line(t(shown === g.url ? "This computer" : "Public address"), shown);
+  if (g.lan) {
+    const { urls, sub } = lanShown(g.lanURLs || [], prefs?.lanContainer);
+    // an internet address on an interface (an ISP's static one) is said
+    // to be one, not listed as this network's
+    const far = new Set(g.lanPublic || []), rest = urls.filter((u) => u !== shown);
+    rest.filter((u) => !far.has(u)).forEach((u, i) => line(i ? "" : t("Local network"), u));
+    rest.filter((u) => far.has(u)).forEach((u, i) => line(i ? "" : t("On the internet"), u));
+    if (!urls.length) list.append(el("div", "gw-url-none", t("This computer has no local network address right now")));
+    if (sub) list.append(el("div", "gw-url-none", sub));
+  }
+  box.append(list);
 }
 
 // One entry per API the gateway serves: where each SDK's base URL points,
@@ -660,13 +712,14 @@ magpie.plugin("gateway", (ctx) => {
     html: `
 <div class="list gwcard">
   <div class="row gw" id="gateway"></div>
+  <div id="gatewayLan"></div>
 </div>
 <section id="gatewayKeysBlock" hidden>
   <div class="row-head"><span class="label" data-t>Gateway keys</span><span class="grow"></span><button class="text" id="addGatewayKey" data-t>Add gateway key</button></div>
   <p class="usage-note" data-t>Create a gateway key for each client. Usage is counted separately for each key.</p>
   <section id="gatewayKeys"></section>
 </section>
-<p class="usage-note gw-keys-off" id="gatewayKeysOff" hidden><span data-t>Gateway keys are for other computers, and for a tunnel to this one such as Cloudflare Tunnel: they are added here once Share on local network is on. Agents on this computer need none.</span> <button class="text" id="openLanSettings" data-t>Network and sharing</button></p>
+<p class="usage-note gw-keys-off" id="gatewayKeysOff" hidden data-t>Gateway keys are for other computers, and for a tunnel to this one such as Cloudflare Tunnel: they are added here once Share on local network is on. Agents on this computer need none.</p>
 <div class="row-head"><button class="fold" id="foldConnect" aria-expanded="true" aria-controls="connect"><span class="label" data-t>Connect</span></button><span class="grow"></span><span class="note" id="connectNote"></span></div>
 <section class="list connect" id="connect"></section>
 <div class="row-head"><button class="fold" id="foldModels" aria-expanded="true" aria-controls="gwModels"><span class="label" data-t>Models</span><span class="note" id="modelsCount"></span></button><span class="grow"></span><button class="text" id="copyModels" data-t>Copy all ids</button></div>
@@ -689,7 +742,6 @@ magpie.plugin("gateway", (ctx) => {
         renderGatewayModels();
         backToReader($("#view-gateway"));
       };
-      $("#openLanSettings").onclick = () => { openSettings(); setSetTab("network", true); };
       new MutationObserver(gatewayKeysTicks).observe($("#view-gateway"), { attributes: true, attributeFilter: ["hidden"] });
       document.addEventListener("visibilitychange", gatewayKeysTicks);
       gatewayKeysTicks();

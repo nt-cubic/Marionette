@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -102,6 +103,10 @@ func isolate(t testing.TB) {
 	// a minute, and CachedCards hands them on whatever their age
 	forgetPlanQuotas()
 	ForgetBalances()
+	// nor when another test asked a saved account's list
+	codexSavedAsked.Lock()
+	codexSavedAsked.m = map[string]time.Time{}
+	codexSavedAsked.Unlock()
 	t.Cleanup(func() {
 		claudeKeychain, claudeBase, claudeExecutable = oldKeychain, oldBase, oldExe
 		DevinExecutable = oldDevin
@@ -234,6 +239,16 @@ func TestAccountsAreProviders(t *testing.T) {
 		}
 	}
 	codex.Unlisted = false
+	Save(codex)
+	// and so do the image models unticked in its editor (321sssrt on X)
+	codex.HiddenDrawers = []string{"gpt-image-2"}
+	if err := Save(codex); err != nil {
+		t.Fatal(err)
+	}
+	if codex, _ = find(All(), "codex"); !slices.Equal(codex.HiddenDrawers, []string{"gpt-image-2"}) || !codex.DrawerHidden("gpt-image-2") {
+		t.Fatalf("hidden image models lost on an account: %v", codex.HiddenDrawers)
+	}
+	codex.HiddenDrawers = nil
 	Save(codex)
 
 	// signed out: gone, and a stale picks entry is not a provider

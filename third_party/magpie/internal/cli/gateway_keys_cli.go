@@ -40,6 +40,19 @@ func gatewayKeysTo(out io.Writer, args []string) error {
 		access.MigrateLegacyLANKeyBestEffort()
 		return gatewayKeyQuotas(out, args[1:])
 	}
+	if action == "access" {
+		access.MigrateLegacyLANKeyBestEffort()
+		return gatewayKeyAccess(out, args[1:])
+	}
+	// add <name> --read-only: a key that reads stats and uses no model
+	// (Steven on Discord: a desk display)
+	readOnly := false
+	if action == "add" {
+		if i := slices.Index(args[1:], "--read-only"); i >= 0 {
+			readOnly = true
+			args = slices.Delete(slices.Clone(args), 1+i, 2+i)
+		}
+	}
 	// add <name> --key <value>: the key keeps a value its clients already
 	// send (love1sbug on X); "--key -" reads it from stdin, out of the
 	// shell's history
@@ -59,7 +72,7 @@ func gatewayKeysTo(out io.Writer, args []string) error {
 		args = args[:2]
 	}
 	if (action == "list" && len(args) != 1) || (action != "list" && len(args) != 2) {
-		return fmt.Errorf("usage: magpie gateway-key list | add <name> [--key <value> | --key -] | rotate <id> | remove <id> | limit <id> [list | off | reset [<n>] | remove <n> | [add] day|week|month|<N>d|<N>h [--tokens N] [--cost USD] [--cache-reads]] | models <id> [all | <provider>/<model>|<provider>/* ...] | accounts <id> [all | <provider>/<account>|<provider>/<key id> ...] | quotas <id> [on | off]")
+		return fmt.Errorf("usage: magpie gateway-key list | add <name> [--key <value> | --key -] [--read-only] | rotate <id> | remove <id> | limit <id> [list | off | reset [<n>] | remove <n> | [add] day|week|month|<N>d|<N>h [--tokens N] [--cost USD] [--cache-reads]] | models <id> [all | <provider>/<model>|<provider>/* ...] | accounts <id> [all | <provider>/<account>|<provider>/<key id> ...] | quotas <id> [on | off] | access <id> [read-only | full]")
 	}
 	switch action {
 	case "list", "add", "rotate", "remove":
@@ -73,7 +86,7 @@ func gatewayKeysTo(out io.Writer, args []string) error {
 			return err
 		}
 		w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "ID\tNAME\tSTATE\tGATEWAY KEY\tLIMIT\tMODELS\tACCOUNTS")
+		fmt.Fprintln(w, "ID\tNAME\tSTATE\tGATEWAY KEY\tLIMIT\tMODELS\tACCOUNTS\tACCESS")
 		now := time.Now()
 		// an account is shown by who is signed in, kept by its stable id (#905)
 		names := provider.AccountNames()
@@ -82,9 +95,11 @@ func gatewayKeysTo(out io.Writer, args []string) error {
 			if k.Off {
 				state = "disabled"
 			}
+			// a key that names accounts and no model may use only its
+			// accounts' providers' models (access.HeldModels)
 			models := "all"
-			if len(k.Models) > 0 {
-				models = strings.Join(k.Models, ",")
+			if ms := access.HeldModels(k.Models, k.Accounts); len(ms) > 0 {
+				models = strings.Join(ms, ",")
 			}
 			accounts := "all"
 			if len(k.Accounts) > 0 {
@@ -94,18 +109,18 @@ func gatewayKeysTo(out io.Writer, args []string) error {
 				}
 				accounts = strings.Join(shown, ",")
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", k.ID, strings.Map(func(r rune) rune {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", k.ID, strings.Map(func(r rune) rune {
 				if r < 32 || r == 127 {
 					return ' '
 				}
 				return r
-			}, k.Name), state, k.Masked, limitWords(k, now), models, accounts)
+			}, k.Name), state, k.Masked, limitWords(k, now), models, accounts, accessWord(k))
 		}
 		return w.Flush()
 	}
 	in := access.Change{Key: args[1]}
 	if action == "add" {
-		in = access.Change{Name: args[1], Secret: own}
+		in = access.Change{Name: args[1], Secret: own, ReadOnly: readOnly}
 	}
 	secret, err := access.Update(action+"-key", in)
 	if err != nil {
@@ -385,6 +400,10 @@ func gatewayKeyModels(out io.Writer, args []string) error {
 		return fmt.Errorf("Key not found")
 	}
 	k := keys[i]
+	if len(k.Models) == 0 && len(k.Accounts) > 0 {
+		_, err = fmt.Fprintf(out, "%s: only its accounts' providers' models, %s\n", k.Name, strings.Join(access.HeldModels(nil, k.Accounts), ", "))
+		return err
+	}
 	if len(k.Models) == 0 {
 		_, err = fmt.Fprintf(out, "%s: every model\n", k.Name)
 		return err
@@ -492,6 +511,50 @@ func gatewayKeyQuotas(out io.Writer, args []string) error {
 		_, err = fmt.Fprintf(out, "%s: told no quotas when held to a budget, models or accounts\n", k.Name)
 	default:
 		_, err = fmt.Fprintf(out, "%s: told the quotas of the providers and accounts it may use\n", k.Name)
+	}
+	return err
+}
+
+// accessWord is a key's access as the list says it: "read-only" or "full".
+func accessWord(k access.Key) string {
+	if k.ReadOnly {
+		return "read-only"
+	}
+	return "full"
+}
+
+// gatewayKeyAccess shows or sets whether a key may use models or only
+// read magpie's stats (Steven on Discord: a desk display's key):
+//
+//	magpie gateway-key access <id>                 which it has
+//	magpie gateway-key access <id> read-only|full  quotas and usage alone, or what its other limits let it
+func gatewayKeyAccess(out io.Writer, args []string) error {
+	usage := fmt.Errorf("usage: magpie gateway-key access <id> [read-only | full]")
+	if len(args) == 0 || len(args) > 2 {
+		return usage
+	}
+	id := args[0]
+	if len(args) == 2 {
+		if args[1] != "read-only" && args[1] != "full" {
+			return usage
+		}
+		if _, err := access.Update("access-key", access.Change{Key: id, ReadOnly: args[1] == "read-only"}); err != nil {
+			return err
+		}
+	}
+	keys, err := access.List()
+	if err != nil {
+		return err
+	}
+	i := slices.IndexFunc(keys, func(k access.Key) bool { return k.ID == id })
+	if i < 0 {
+		return fmt.Errorf("Key not found")
+	}
+	k := keys[i]
+	if k.ReadOnly {
+		_, err = fmt.Fprintf(out, "%s: read-only, it reads quotas and usage and uses no model, MCP server or write\n", k.Name)
+	} else {
+		_, err = fmt.Fprintf(out, "%s: full access, models and stats as its other limits let it\n", k.Name)
 	}
 	return err
 }

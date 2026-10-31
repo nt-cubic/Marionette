@@ -55,6 +55,51 @@ static void *gmlOpen(const char *path, char **errp) {
 
 static void gmlClose(void *m) { CFRelease(m); }
 
+// gmlWalk adds each operation's estimated cost in b, and its blocks', to
+// cost by the device CoreML's plan prefers for it: the Neural Engine, the
+// GPU, the CPU; ops counts the operations placed.
+API_AVAILABLE(macos(14.4))
+static void gmlWalk(MLComputePlan *plan, MLModelStructureProgramBlock *b, double *cost, long *ops) {
+	for (MLModelStructureProgramOperation *op in b.operations) {
+		MLComputePlanDeviceUsage *u = [plan computeDeviceUsageForMLProgramOperation:op];
+		if (u != nil) {
+			MLComputePlanCost *c = [plan estimatedCostOfMLProgramOperation:op];
+			double w = c != nil ? c.weight : 0;
+			id<MLComputeDeviceProtocol> d = u.preferredComputeDevice;
+			int i = [(id)d isKindOfClass:[MLNeuralEngineComputeDevice class]] ? 0 : [(id)d isKindOfClass:[MLGPUComputeDevice class]] ? 1 : 2;
+			cost[i] += w;
+			ops[i]++;
+		}
+		for (MLModelStructureProgramBlock *sb in op.blocks) gmlWalk(plan, sb, cost, ops);
+	}
+}
+
+// gmlPlan fills cost (and ops) by device, Neural Engine, GPU, CPU, as
+// CoreML's compute plan for the compiled program at path places it.
+static char *gmlPlan(const char *path, double *cost, long *ops) {
+	@autoreleasepool {
+		if (@available(macOS 14.4, *)) {
+			MLModelConfiguration *cfg = [MLModelConfiguration new];
+			cfg.computeUnits = MLComputeUnitsAll;
+			dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+			__block MLComputePlan *plan = nil;
+			__block NSError *perr = nil;
+			[MLComputePlan loadContentsOfURL:[NSURL fileURLWithPath:@(path)] configuration:cfg completionHandler:^(MLComputePlan *p, NSError *e) {
+				plan = p;
+				perr = e;
+				dispatch_semaphore_signal(sem);
+			}];
+			if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC)) != 0) return strdup("the compute plan took over a minute");
+			if (plan == nil) return gmlErr(perr, "no compute plan");
+			MLModelStructureProgram *prog = plan.modelStructure.program;
+			if (prog == nil) return strdup("not an ML program");
+			for (MLModelStructureProgramFunction *f in prog.functions.allValues) gmlWalk(plan, f.block, cost, ops);
+			return NULL;
+		}
+		return strdup("the compute plan needs macOS 14.4");
+	}
+}
+
 static MLMultiArray *gmlArray(const float *src, NSArray<NSNumber *> *shape, NSArray<NSNumber *> *strides, size_t n, NSError **err) {
 	float *b = malloc(n * sizeof(float));
 	memcpy(b, src, n * sizeof(float));
@@ -124,6 +169,44 @@ func Compile(pkg, out string) error {
 type Model struct {
 	mu sync.Mutex
 	m  unsafe.Pointer
+	// Device is where CoreML's plan runs most of the program, by its
+	// estimated cost: "Neural Engine", "GPU" or "CPU"; "" where the plan
+	// can't be read (before macOS 14.4), and DeviceErr says why.
+	Device    string
+	DeviceErr error
+}
+
+// Plan is the share of the compiled program at path that CoreML's compute
+// plan places on each of Devices, by the operations' estimated cost (by
+// their count where it estimates none).
+func Plan(path string) ([3]float64, error) {
+	cp := C.CString(path)
+	defer C.free(unsafe.Pointer(cp))
+	var cost [3]C.double
+	var ops [3]C.long
+	if ce := C.gmlPlan(cp, &cost[0], &ops[0]); ce != nil {
+		defer C.free(unsafe.Pointer(ce))
+		return [3]float64{}, errors.New(C.GoString(ce))
+	}
+	return shares(cost, ops), nil
+}
+
+func shares(cost [3]C.double, ops [3]C.long) [3]float64 {
+	var out [3]float64
+	var sum, n float64
+	for i := range cost {
+		sum += float64(cost[i])
+		n += float64(ops[i])
+	}
+	for i := range out {
+		switch {
+		case sum > 0:
+			out[i] = float64(cost[i]) / sum
+		case n > 0:
+			out[i] = float64(ops[i]) / n
+		}
+	}
+	return out
 }
 
 // Open opens the compiled program at path.
@@ -137,6 +220,11 @@ func Open(path string) (*Model, error) {
 		return nil, errors.New(C.GoString(ce))
 	}
 	m := &Model{m: p}
+	if sh, err := Plan(path); err != nil {
+		m.DeviceErr = err
+	} else if m.Device = Most(sh); m.Device == "" {
+		m.DeviceErr = errors.New("the compute plan places no operation")
+	}
 	runtime.AddCleanup(m, func(p unsafe.Pointer) { C.gmlClose(p) }, p)
 	return m, nil
 }

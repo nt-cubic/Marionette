@@ -51,8 +51,9 @@ func logOpenCodeRefusal(p provider.Provider, req *http.Request, status int) {
 	session := "missing"
 	if v := req.Header.Get("x-opencode-session"); v != "" {
 		session = v[:min(len(v), 8)] + "…"
-		for k := range p.Headers {
-			if strings.EqualFold(k, "x-opencode-session") {
+		for k, v := range p.Headers {
+			// ${sessionId} in it is each conversation's own
+			if strings.EqualFold(k, "x-opencode-session") && !strings.Contains(v, provider.SessionPlaceholder) && !strings.Contains(v, provider.ThreadPlaceholder) {
 				session += " (the provider's own header: one session for every conversation)"
 			}
 		}

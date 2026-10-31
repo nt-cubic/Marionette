@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // TryNet is where a try's time went up to its reply's first byte, as Go's
@@ -163,6 +165,22 @@ func (n *netTrace) timing(began time.Time, queued int64) *TryNet {
 		t.Head = span(began, c.firstByte)
 	}
 	return t
+}
+
+// sentBy is what sends a request to p's vendor when magpie's own client
+// doesn't, which TryNet can't follow: "plugin", its plugin's fetch in the
+// plugin host; "claude", Claude Code's own run (the subscription bridge,
+// attempt); "" for magpie's client. The Routing page says it in place of
+// where the time went (Discord, lute: some requests had it and some
+// didn't, with nothing said).
+func sentBy(p provider.Provider) string {
+	switch {
+	case p.IsPlugin():
+		return "plugin"
+	case p.Account != nil && p.Account.Agent == "claude":
+		return "claude"
+	}
+	return ""
 }
 
 // tenth is d in ms, to a tenth.

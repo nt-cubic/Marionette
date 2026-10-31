@@ -122,9 +122,13 @@ type Route struct {
 	Queued  int64 `json:"queued,omitempty"`
 	// Phase: "redact" while it is being masked and not yet done
 	// (noteRedacting), so its row says masking rather than routing;
-	// Masking: the ms of Own that went on masking it (maskingMs)
+	// Masking: the ms of Own that went on masking it, all of it when Own
+	// is unknown (maskingMs)
 	Phase   string `json:"phase,omitempty"`
 	Masking int64  `json:"masking,omitempty"`
+	// Held: the file name, in HeldDir, of the report saved of a request
+	// magpie held too long before routing it and stopped (giveUp)
+	Held string `json:"held,omitempty"`
 	// Served: the model the reply says answered, as the last try has it;
 	// Swapped: another than the one that try asked for; Routed: that try
 	// asked another magpie's routing group, and Served is its member
@@ -216,7 +220,7 @@ func groupRef(g provider.Group, ms []provider.Member) *GroupRef {
 	ref := &GroupRef{ID: g.ID, Ref: g.Ref(), Name: g.Name, Routing: g.Routing, Affinity: g.Affinity, Auto: g.Auto, Sink: sinks(g.Sink, g.Routing)}
 	seen := map[string]bool{}
 	for _, m := range ms {
-		ref.Members = append(ref.Members, provider.WithMemberEffort(m.Provider.ID+"/"+m.Model, m.Effort))
+		ref.Members = append(ref.Members, m.Spelled())
 		if m.Fast {
 			ref.Fast = append(ref.Fast, ref.Members[len(ref.Members)-1])
 		}
@@ -352,6 +356,10 @@ type Try struct {
 	// first text, when it streamed any (#196)
 	TTFT      int64 `json:"ttft,omitempty"`
 	FirstText int64 `json:"firstText,omitempty"`
+	// SentBy: what sent its request to the vendor when magpie's own
+	// client didn't, so it has no Net and the Routing page says why
+	// (sentBy)
+	SentBy string `json:"sentBy,omitempty"`
 	// FirstReasoning is the start of paced visible reasoning, absent for hidden reasoning.
 	FirstReasoning  int64 `json:"firstReasoning,omitempty"`
 	ReasoningHidden bool  `json:"reasoningHidden,omitempty"`

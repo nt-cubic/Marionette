@@ -106,6 +106,9 @@ var featured = []MarketServer{
 		"Ask questions about any public GitHub repository and read its generated wiki.", false),
 	remoteServer("exa", "Exa", "Exa", gh("exa-labs"), "https://mcp.exa.ai/mcp",
 		"Web search and code search built for agents, with clean page contents.", false),
+	remoteServer("anysearch", "AnySearch", "AnySearch", gh("anysearch-ai"), "https://api.anysearch.com/mcp",
+		"Real-time web search, vertical searches (finance, papers, code, security and more) and full pages as Markdown.", false,
+		Input{Key: "Authorization", Where: "header", Label: "API key", Description: "Optional — raises the rate limit. From anysearch.com/console/api-keys", Placeholder: "as_sk_…", Secret: true, format: "Bearer {}"}),
 	localServer("filesystem", "Filesystem", "Model Context Protocol", gh("modelcontextprotocol"), "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
 		"Read, write and search files, limited to the folders you allow.", "npx", []string{"-y", "@modelcontextprotocol/server-filesystem"},
 		Input{Key: "dir", Where: "arg", Label: "Folder", Description: "The folder it may read and write", Placeholder: "~/code", Required: true}),
@@ -195,6 +198,7 @@ var homepages = map[string]string{
 	"github":          "https://github.com/github/github-mcp-server",
 	"deepwiki":        "https://deepwiki.com",
 	"exa":             "https://docs.exa.ai/reference/exa-mcp",
+	"anysearch":       "https://github.com/anysearch-ai/anysearch-mcp-server",
 	"sentry":          "https://docs.sentry.io/product/sentry-mcp/",
 	"linear":          "https://linear.app/docs/mcp",
 	"notion":          "https://developers.notion.com/docs/mcp",
@@ -235,7 +239,8 @@ var seenServers = struct {
 // that match it, then the registry's. A search that is an address — a
 // repository, a page, an endpoint, a package — finds the ones at it.
 func MarketServers(q string) ([]MarketServer, error) {
-	q = strings.ToLower(strings.TrimSpace(q))
+	raw := strings.TrimSpace(q)
+	q = strings.ToLower(raw)
 	addr := address(q)
 	var out []MarketServer
 	for _, m := range featured {
@@ -253,9 +258,9 @@ func MarketServers(q string) ([]MarketServer, error) {
 	if q != "" {
 		var found []MarketServer
 		if addr != "" {
-			found, err = searchRegistryAt(addr)
+			found, err = searchAt(raw, addr)
 		} else {
-			found, err = searchRegistry(q)
+			found, err = searchWords(q)
 		}
 		for _, f := range found {
 			if !slices.ContainsFunc(out, func(m MarketServer) bool { return serverKey(&m.server) == serverKey(&f.server) }) {

@@ -258,7 +258,8 @@ func Writable(dir string) bool {
 }
 
 // Stage downloads the app in rel and unpacks it next to the installed
-// bundle, ready for Install. It returns the unpacked app.
+// bundle, ready for Install. It returns the unpacked app, a bundle whose
+// folder is named stagedName.
 func Stage(ctx context.Context, rel *Release, bundle string) (string, error) {
 	a, ok := rel.Assets[AppAsset()]
 	if !ok {
@@ -274,13 +275,23 @@ func Stage(ctx context.Context, rel *Release, bundle string) (string, error) {
 		os.RemoveAll(dir)
 		return "", err
 	}
-	out := filepath.Join(dir, "app")
+	out := filepath.Join(dir, "unzip")
 	if b, err := proc.CommandContext(ctx, "ditto", "-x", "-k", zip, out).CombinedOutput(); err != nil {
 		os.RemoveAll(dir)
 		return "", fmt.Errorf("unzip: %v: %s", err, b)
 	}
 	os.Remove(zip)
-	app := filepath.Join(out, "magpie.app")
+	// the zip holds magpie.app, which leaves that name at once: a folder
+	// ending in .app beside the installed one is taken by LaunchServices
+	// for a second magpie, and Spotlight lists it after it is gone (#3965)
+	unzipped := filepath.Join(out, "magpie.app")
+	app := filepath.Join(dir, stagedName)
+	if err := os.Rename(unzipped, app); err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+	os.Remove(out)
+	unregister(unzipped) // in case it looked in that moment
 	if err := sameSigner(ctx, bundle, app); err != nil {
 		os.RemoveAll(dir)
 		return "", err
@@ -311,6 +322,15 @@ func team(ctx context.Context, app string) string {
 	return ""
 }
 
+// stagedName is what the new app is unpacked as in stageDir, and asideName
+// what the installed one is moved to while they are swapped. Neither ends
+// in .app, so LaunchServices never registers either as a second magpie
+// (#3965); the renames don't need the name, and stay on one volume.
+const (
+	stagedName = "payload"
+	asideName  = "old"
+)
+
 // stageDir is where an update is unpacked: beside what it replaces, so
 // installing it is a rename on one volume, or, where magpie may not write,
 // in its cache, to be moved in with the administrator's password.
@@ -328,7 +348,7 @@ func stageDir(dir string) string {
 // magpie's to change the error is a permission one (NeedsAdmin), and
 // InstallAsAdmin can do it instead.
 func Install(staged, bundle string) error {
-	old := filepath.Join(filepath.Dir(staged), "old.app")
+	old := filepath.Join(filepath.Dir(staged), asideName)
 	os.RemoveAll(old)
 	if err := os.Rename(bundle, old); err != nil {
 		return err
@@ -337,17 +357,17 @@ func Install(staged, bundle string) error {
 		os.Rename(old, bundle) // put it back
 		return err
 	}
-	os.RemoveAll(filepath.Dir(filepath.Dir(staged))) // .magpie-update
+	os.RemoveAll(filepath.Dir(staged)) // .magpie-update
 	return nil
 }
 
 // InstallAsAdmin is Install with the administrator's password, asked for
 // by the system.
 func InstallAsAdmin(staged, bundle string) error {
-	old := filepath.Join(filepath.Dir(staged), "old.app")
+	old := filepath.Join(filepath.Dir(staged), asideName)
 	err := asAdmin(swapScript(staged, bundle, old))
 	if err == nil {
-		os.RemoveAll(filepath.Dir(filepath.Dir(staged)))
+		os.RemoveAll(filepath.Dir(staged))
 	}
 	return err
 }

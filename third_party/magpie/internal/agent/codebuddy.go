@@ -16,6 +16,16 @@ package agent
 // a session starts on is settings.json's "model" (an id from that list, or
 // one of CodeBuddy's own), read when a session starts. Its requests say
 // "CLI/<ver> CodeBuddy/<ver>", so they are told apart by their key.
+//
+// The CodeBuddy IDE (CodeBuddy.app and CodeBuddy CN.app, 4.12.2; see
+// desktopApps) reads the same file: its genie extension's
+// CustomModelsProductProvider loads ~/.codebuddy/models.json's "models"
+// (an entry with no string id or url is skipped) and "availableModels",
+// watches the file and syncs its model list on a change, and lists each one
+// in its own model picker. It needs no CLI, so one row, CodeBuddy, stands
+// for both (bjzhangwn on X: only the CLI was supported, not the IDE). The
+// IDE reads <home>/.codebuddy whatever CODEBUDDY_CONFIG_DIR says, and not
+// settings.json's "model": its model is picked in the IDE.
 
 import (
 	"encoding/json"
@@ -46,10 +56,12 @@ func codebuddyIn(at place) *Agent {
 		d, _ := workbuddyRead(path)
 		return slices.ContainsFunc(d.models, func(raw json.RawMessage) bool { e, ok := workbuddyMine(raw); return ok && e.ID == id })
 	}
+	// the IDE alone is CodeBuddy here, its CLI not installed
+	ide := func() bool { return at.spell == nil && (&Agent{ID: "codebuddy"}).HasApp() }
 	return &Agent{
-		ID: "codebuddy", Name: "CodeBuddy Code", Icon: "codebuddy-color", Aliases: []string{"codebuddy-code", "cbc"},
+		ID: "codebuddy", Name: "CodeBuddy", Icon: "codebuddy-color", Aliases: []string{"codebuddy-code", "cbc"},
 		UA: []string{"codebuddy"}, Spelled: prefixed,
-		Bin: "codebuddy", Dir: dir, Path: path,
+		Bin: "codebuddy", Dir: dir, Path: path, sign: ide,
 		Sync: func() error {
 			if !workbuddyWired(path) {
 				return nil

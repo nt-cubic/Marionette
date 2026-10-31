@@ -15,7 +15,8 @@ import (
 func (s *Server) Front() http.Handler {
 	// the goroutine dump ahead of lanGuard too, whose allow list reads
 	// settings.json under its lock (dumpFirst)
-	s.frontOnce.Do(func() { s.front = s.dumpFirst(lanGuard(s.Handler())) })
+	// (socketEntry: a socket's turns go through all of it again)
+	s.frontOnce.Do(func() { s.front = socketEntry(s.dumpFirst(lanGuard(s.Handler()))) })
 	return s.front
 }
 
@@ -27,6 +28,9 @@ var clientPrefixes = []string{
 	"/models", "/chat/completions", "/responses", "/messages",
 	"/images", "/embeddings", "/rerank", "/audio", "/videos",
 	"/muse-code/models", CodexPath, AlphaSearchPath, "/mcp",
+	// the key page (KeyPagePath): a key's holder opens it at the address
+	// they give their agents
+	KeyPagePath,
 }
 
 // ClientPath: p is one of the gateway's client routes, which `magpie web`

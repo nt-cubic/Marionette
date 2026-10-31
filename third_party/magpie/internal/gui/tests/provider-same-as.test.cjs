@@ -91,10 +91,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.deepEqual(posts.map((p) => p.path), ["/api/provider/save"]);
       assert.deepEqual(posts[0].body.modelPrefs, { "deepseek-v4-1-flash-260910": { same: "deepseek-v4.1-flash" }, "ep-2026-sol": { same: "" } });
       const missing = await page.evaluate(() => ["Same as",
-        "The model other providers serve that {id} is the same as: the routing groups magpie finds put them together, and when no list prices {id}, its calls are costed at that model's list price. Empty: by its own id",
+        "The model other providers serve that {id} is the same as: the routing groups magpie finds put them together, and what no list gives for {id} is that model's: its window, reply limit, reasoning levels, images and list price. Empty: by its own id",
         "Its own name, every reasoning level it has, whether it sees images, the API it is asked on, the model it is the same as, and its list price",
-      ].filter((k) => !I18N.zh[k]));
-      assert.deepEqual(missing, [], "every string has its Chinese");
+      ].flatMap((k) => ["zh", "zh-TW", "ja", "de"].filter((l) => !I18N[l][k]).map((l) => `${l}: ${k}`)));
+      assert.deepEqual(missing, [], "every string has every language");
       assert.deepEqual(errors, []);
     });
   }

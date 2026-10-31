@@ -26,12 +26,14 @@ const searchUsage = `usage:
   magpie search move <api> <n>               put one at place n in the order they are asked
   magpie search rm <api>                     take one away
 
-  apis: tavily, brave, exa, firecrawl, you, deepseek, searxng
+  apis: tavily, brave, exa, firecrawl, you, deepseek, volcengine, wsa, searxng
 
   url= is the API's base URL, for an endpoint of your own that answers as that API
   does (e.g. url=https://search.example.com/tavily). Without it the vendor's own is
   used; a new key alone keeps the url set before, and url= with nothing after it puts
-  the vendor's own back. The key is sent only to that url.
+  the vendor's own back. magpie puts the API's path after it (/search for Tavily), so
+  a url given with that path at its end is taken as its base. The key is sent only
+  to that url.
 
   With several keys, a key the API refused lately (turned away, out of credit, rate
   limited) rests and is asked only after the others: a rate limit for as long as the API
@@ -53,7 +55,7 @@ func searchCmd(args []string) error {
 	if len(args) == 0 {
 		as := provider.StoredSearchAPIs()
 		if len(as) == 0 {
-			fmt.Println(muted.Render("  no search API · magpie search add <tavily|brave|exa|firecrawl|you|deepseek|searxng> <key>"))
+			fmt.Println(muted.Render("  no search API · magpie search add <tavily|brave|exa|firecrawl|you|deepseek|volcengine|wsa|searxng> <key>"))
 			return nil
 		}
 		for i, a := range as {

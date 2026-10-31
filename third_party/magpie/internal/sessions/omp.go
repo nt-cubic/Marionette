@@ -47,6 +47,9 @@ func ompRootsIn(dir string) []string {
 }
 
 func ompFiles() []file {
+	if !Reads("omp") {
+		return nil
+	}
 	var out []file
 	seen := map[string]bool{}
 	for _, root := range ompSessionRoots() {
@@ -59,6 +62,9 @@ func ompFiles() []file {
 // its profiles': the variables that move them (PI_CODING_AGENT_DIR,
 // $XDG_DATA_HOME) are the distro's and aren't read from Windows.
 func ompFilesIn(dir string) []file {
+	if !Reads("omp") {
+		return nil
+	}
 	var out []file
 	seen := map[string]bool{}
 	for _, root := range ompRootsIn(dir) {

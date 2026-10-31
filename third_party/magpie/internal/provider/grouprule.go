@@ -755,7 +755,7 @@ func PausedOut(g Group, ms []Member, agent, folder string, at time.Time) (kept [
 			}
 			for i, r := range by.Rules {
 				if d < len(m.Path) && pathNames(m.Path[d:], r.Use) && r.Pauses(agent, folder, at) {
-					hit = &Paused{Member: WithMemberEffort(m.Provider.ID+"/"+m.Model, m.Effort), Group: in, Rule: i + 1, Use: r.Use, When: r.Conditions(), ByFolder: r.ByFolder()}
+					hit = &Paused{Member: m.Spelled(), Group: in, Rule: i + 1, Use: r.Use, When: r.Conditions(), ByFolder: r.ByFolder()}
 					if r.ByFolder() {
 						hit.Folder = folder
 					}

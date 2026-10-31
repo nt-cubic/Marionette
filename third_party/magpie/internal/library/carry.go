@@ -83,7 +83,9 @@ func Collect() (*Bundle, error) {
 	if len(b.Extra) == 0 {
 		b.Extra = nil
 	}
-	for _, s := range sorted(l.MCP, func(s *Server) string { return s.Name }) {
+	// a server kept to this computer stays out; another computer's by its
+	// name, which a sync brought, goes on as it came (mcp_local.go)
+	for _, s := range sorted(l.carriedServers(), func(s *Server) string { return s.Name }) {
 		c := *carried(s) // magpie's own by name, each computer's own binary
 		c.Agents = orNone(slices.Sorted(slices.Values(s.Agents)))
 		b.MCP = append(b.MCP, &c)
@@ -377,7 +379,9 @@ func Put(b *Bundle) (*Result, error) {
 		}
 		skills := []*Skill{}
 		for _, s := range b.Skills {
-			skills = append(skills, &Skill{Name: s.Name, Source: s.Source, Agents: slices.Clone(orNone(s.Agents))})
+			// turned off here stays off here: that is this computer's own
+			off := l.skill(s.Name) != nil && l.skill(s.Name).OffHere
+			skills = append(skills, &Skill{Name: s.Name, Source: s.Source, Agents: slices.Clone(orNone(s.Agents)), OffHere: off})
 			if keep[s.Name] {
 				continue
 			}
@@ -447,12 +451,7 @@ func Put(b *Bundle) (*Result, error) {
 			}
 		}
 
-		l.MCP = nil
-		for _, s := range b.MCP {
-			c := *s
-			c.Agents = slices.Sorted(slices.Values(orNone(s.Agents)))
-			l.MCP = append(l.MCP, &c)
-		}
+		l.putServers(b.MCP)
 		l.Icons = maps.Clone(b.Icons)
 		return nil
 	})

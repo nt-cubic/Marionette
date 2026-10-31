@@ -163,3 +163,45 @@ func TestNoMaskingNoMaskingTime(t *testing.T) {
 		t.Fatalf("routes: %+v", rs)
 	}
 }
+
+// lute on Discord: a masked request whose time magpie can't split (here
+// the vendor refused it, so there is no first token) showed no masking
+// time at all. What masking took is kept whenever it took any, all of
+// it when magpie's own time is unknown.
+func TestMaskingTimeKeptWhenOwnIsUnknown(t *testing.T) {
+	fresh(t)
+	if err := settings.Save(settings.Settings{Redact: true}); err != nil {
+		t.Fatal(err)
+	}
+	slowOn(t, "a", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `{"error":{"message":"no"}}`)
+	}))
+	withoutMasker(t)
+	m := heldMasker{let: make(chan struct{}), entered: make(chan struct{}), once: new(sync.Once)}
+	t.Cleanup(gwmw.Mask(m))
+	const hold = 120 * time.Millisecond
+	go func() {
+		<-m.entered
+		time.Sleep(hold)
+		close(m.let)
+	}()
+
+	s := New()
+	code, body := postTo(t, s, "/v1/chat/completions", `{"model":"a/m","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if code == 200 {
+		t.Fatalf("the vendor's refusal answered %d %s", code, body)
+	}
+	rs := routesOf(s, "a/m")
+	if len(rs) != 1 || !rs[0].Done {
+		t.Fatalf("routes: %+v", rs)
+	}
+	if rs[0].Own != 0 {
+		t.Fatalf("own is known here (%d ms); this test is about when it isn't", rs[0].Own)
+	}
+	if rs[0].Masking < hold.Milliseconds() {
+		t.Fatalf("masking %d ms, held %s", rs[0].Masking, hold)
+	}
+}

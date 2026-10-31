@@ -151,6 +151,7 @@ func TestDshApplyReplacesAKeyTheGatewayRefuses(t *testing.T) {
 	home, dir, web := dshRouteHome(t)
 	os.WriteFile(web, []byte("# Your patch layer for this dsh profile.\n"), 0o644)
 	a := dsh(home)
+	setUpInMagpie(a.ID)
 	if err := a.Field("model").Set("magpie/deepseek/flash"); err != nil {
 		t.Fatal(err)
 	}

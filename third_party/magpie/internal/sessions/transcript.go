@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+
+	"github.com/tidwall/gjson"
 )
 
 // Transcript is what was said in a session, in the order it was said.
@@ -30,7 +32,7 @@ var ErrNoTranscript = errors.New("this agent's conversations can't be shown")
 // transcript.
 func HasTranscript(agent string) bool {
 	switch agent {
-	case "claude", "qoder", "qoder-cn", "codex", "pi", "omp", "cursor", "opencode", "kimi", "agy":
+	case "claude", "qoder", "qoder-cn", "codex", "pi", "raft", "omp", "cursor", "opencode", "kimi", "agy":
 		return true
 	}
 	return false
@@ -60,6 +62,9 @@ func (t *Transcript) add(_ bool, p Part) bool {
 
 // TranscriptOf reads a session's conversation from its (main) file.
 func TranscriptOf(s Session) (Transcript, error) {
+	if !Reads(s.Agent) {
+		return Transcript{Parts: []Part{}}, ErrNotRead
+	}
 	out := Transcript{Parts: []Part{}}
 	if !HasTranscript(s.Agent) || s.Path == "" {
 		return out, ErrNoTranscript
@@ -85,15 +90,74 @@ func readTranscriptOf(s Session, keep func([]byte) bool, add func(bool, Part) bo
 		return cursorTranscript(s.Path, add)
 	case "codex":
 		return codexContentOf(whole, keep, add)
-	case "pi", "omp":
+	case "pi", "raft", "omp":
 		return piTranscript(s.Path, add)
 	case "kimi":
 		return kimiTranscript(s.Path, keep, add)
 	case "agy":
 		return agyTranscript(s.Path, keep, add)
 	default:
+		if s.BranchOf != "" && keep == nil {
+			return branchTranscript(s, add)
+		}
 		return claudeContentOf(whole, keep, add)
 	}
+}
+
+// branchTranscript reads a branch (ccFamily) as its conversation went: the
+// session it is a branch of from its start up to the last message the two
+// share, then what the branch said on its own. A fork made after a
+// compaction holds only the summary and what follows it, and opened on
+// that summary and one turn (Neo, #feedback). A search reads the branch's
+// own file only, so a hit in the shared part is the head's, not each
+// branch's again.
+func branchTranscript(s Session, add func(bool, Part) bool) error {
+	ends := map[string]int64{}
+	if _, err := scanThin(s.BranchOf, 0, nil, thinClaude, func(b []byte, _, end int64) bool {
+		if u := ccMessageUUID(b); u != "" {
+			ends[u] = end
+		}
+		return true
+	}); err != nil {
+		// the head unread: the branch alone, as before it was known to be one
+		return claudeContentOf(Call{Agent: s.Agent, File: s.Path, To: math.MaxInt64}, nil, add)
+	}
+	fork := int64(-1)
+	if _, err := scanThin(s.Path, 0, nil, thinClaude, func(b []byte, _, _ int64) bool {
+		if e, ok := ends[ccMessageUUID(b)]; ok && e > fork {
+			fork = e
+		}
+		return true
+	}); err != nil {
+		return err
+	}
+	if fork < 0 {
+		return claudeContentOf(Call{Agent: s.Agent, File: s.Path, To: math.MaxInt64}, nil, add)
+	}
+	more := true
+	if err := claudeContentOf(Call{Agent: s.Agent, File: s.BranchOf, To: fork}, nil, func(in bool, p Part) bool {
+		more = add(in, p) && more
+		return more
+	}); err != nil || !more {
+		return err
+	}
+	return claudeContentOf(Call{Agent: s.Agent, File: s.Path, To: math.MaxInt64}, func(b []byte) bool {
+		_, shared := ends[ccMessageUUID(b)]
+		return !shared
+	}, add)
+}
+
+// ccMessageUUID is the uuid of a Claude-format user or assistant line, ""
+// for any other line.
+func ccMessageUUID(b []byte) string {
+	if !bytes.Contains(b, ccUser) && !bytes.Contains(b, ccAssistant) {
+		return ""
+	}
+	r := gjson.GetManyBytes(b, "type", "uuid")
+	if t := r[0].String(); (t == "user" || t == "assistant") && r[1].Type == gjson.String {
+		return r[1].String()
+	}
+	return ""
 }
 
 // piEntry is a line of a Pi (or oh-my-pi) session: an entry of its tree.

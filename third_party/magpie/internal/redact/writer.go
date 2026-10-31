@@ -208,12 +208,12 @@ func (rw *Writer) event(ev []byte) error {
 		}
 		rw.pending = nil
 	}
-	typ := ""
+	typ := typeOf(data)
+	if typ == "" {
+		typ = name
+	}
 	tailPath, tail, cut := "", "", ""
 	restored, _ := walk(data, func(path, key, s string) string {
-		if path == "type" {
-			typ = s
-		}
 		if path == at {
 			s = carry + s
 		}

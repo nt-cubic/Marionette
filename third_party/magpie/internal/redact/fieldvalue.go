@@ -26,6 +26,12 @@ import (
 //     10-28: function names were masked). A key's characters are random;
 //     a name made of words, one of them token, secret or password, is a
 //     function's or a variable's.
+//   - a package's version: a dependency whose name has token, secret or
+//     password in it is pinned in a manifest the same way, "js-tokens":
+//     "^4.0.0-beta.1", jsonwebtoken = "9.2.0-beta1", tokenizer =
+//     "2.4.0-beta02" (dniray on Discord, v0.1.1917: package names and
+//     their versions were replaced). A release's version is published for
+//     anyone to read (versionValue).
 //
 // A secret written down still masks: password=hunter2pass9,
 // API_KEY=AbC123dEf456GhI789, token: t0k3nValue2, a password of one word
@@ -41,8 +47,23 @@ func fieldAt(s string, a, b int) bool {
 	if v[0] == '=' {
 		return false // Go's := with no space after it: secretKey:=base64Encode(raw)
 	}
-	return !fileField(s, a) && !lineRef(v) && !pathValue(v) && !namesASecret(v) && !skillName(s, a, b)
+	return !fileField(s, a) && !lineRef(v) && !pathValue(v) && !namesASecret(v) && !skillName(s, a, b) && !versionValue(v)
 }
+
+// versionRangeRe is a release's version as a manifest or a lock file
+// pins it: a range's operator (^, ~, >=, ==), numbers joined by dots,
+// then a pre-release's or a build's parts, each a word releases are
+// tagged with and its number (-beta.1, -rc1, -alpha03, .post2, b1,
+// .RELEASE, +build.5) or a number alone. One letter on its own is a
+// part only with a number after it (b1, M2), so 3.14159abc is no
+// version.
+var versionRangeRe = regexp.MustCompile(`^(?:[~^]|[<>=!~]=?|==)?[vV]?\d+(?:\.\d+)+` +
+	`(?:[-+._]?(?:(?i:alpha|beta|rc|pre|preview|post|dev|canary|next|nightly|snapshot|release|final|ga|stable|build|incubating)\d*|[abcmABCM]\d+|\d+))*$`)
+
+// versionValue says v is a release's version, which no secret is: the
+// SECRET rules found it after a package's name with token or secret in
+// it, the local model in a manifest.
+func versionValue(v string) bool { return versionRangeRe.MatchString(v) }
 
 // skillName says s[a:b] is the second half of plugin:skill, as Claude
 // Code names a plugin's skill and command (design-tokens:generate-v2,

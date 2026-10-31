@@ -12,21 +12,26 @@ import (
 // desktop with the focus (#2513): Wails reports the dismissal as
 // DefaultActionIdentifier, so there only the click's own id opens Usage.
 func TestDismissedAlertOpensNothing(t *testing.T) {
-	alert, turn := "magpie-alert-1", turnNotice+"1"
+	alert, turn, mask := "magpie-alert-1", turnNotice+"1", maskNotice+"1761700000000000001-17617"
 	for _, c := range []struct {
 		goos, id, action string
-		want             bool
+		want             string
 	}{
-		{"linux", alert, notifications.DefaultActionIdentifier, false}, // dismissed
-		{"linux", alert, linuxClick, true},                             // clicked
-		{"linux", turn, linuxClick, false},
-		{"darwin", alert, notifications.DefaultActionIdentifier, true},
-		{"windows", alert, notifications.DefaultActionIdentifier, true},
-		{"windows", turn, notifications.DefaultActionIdentifier, false},
+		{"linux", alert, notifications.DefaultActionIdentifier, ""}, // dismissed
+		{"linux", alert, linuxClick, "usage"},                       // clicked
+		{"linux", turn, linuxClick, ""},
+		{"linux", mask, notifications.DefaultActionIdentifier, ""},
+		{"linux", mask, linuxClick, "masking&key=1761700000000000001"},
+		{"darwin", alert, notifications.DefaultActionIdentifier, "usage"},
+		{"darwin", mask, notifications.DefaultActionIdentifier, "masking&key=1761700000000000001"},
+		{"darwin", maskNotice + "0-1", notifications.DefaultActionIdentifier, "masking"},
+		{"windows", alert, notifications.DefaultActionIdentifier, "usage"},
+		{"windows", turn, notifications.DefaultActionIdentifier, ""},
+		{"windows", mask, notifications.DefaultActionIdentifier, "masking&key=1761700000000000001"},
 	} {
 		r := notifications.NotificationResponse{ID: c.id, ActionIdentifier: c.action}
-		if got := opensUsage(c.goos, r); got != c.want {
-			t.Errorf("opensUsage(%s, %s %s) = %v, want %v", c.goos, c.id, c.action, got, c.want)
+		if got := clickView(c.goos, r); got != c.want {
+			t.Errorf("clickView(%s, %s %s) = %q, want %q", c.goos, c.id, c.action, got, c.want)
 		}
 	}
 }

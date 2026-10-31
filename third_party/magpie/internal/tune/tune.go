@@ -203,7 +203,7 @@ func streams(cs []Call) [][]Call {
 	out := make([][]Call, 0, len(keys))
 	for _, k := range keys {
 		s := by[k]
-		sort.SliceStable(s, func(i, j int) bool { return s[i].Time.Before(s[j].Time) })
+		slices.SortStableFunc(s, func(a, b Call) int { return a.Time.Compare(b.Time) })
 		out = append(out, s)
 	}
 	return out

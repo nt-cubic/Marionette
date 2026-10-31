@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"regexp"
 	"slices"
@@ -314,6 +315,7 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 // the request goes out under is the one everything below is shaped from.
 // agent "vertex" is Vertex AI's request (buildVertex).
 func buildCodeAssistSent(r *Request, sent, agent string) []byte {
+	r = responseInstructions(r)
 	ag := agent == "antigravity"
 	vx := agent == "vertex"
 	at := "" // the level the id says it thinks at
@@ -561,9 +563,16 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 			gen["responseJsonSchema"] = sc
 		}
 	}
-	if catalog.DrawsID(sent) {
-		// an image model draws only when asked for images too
+	if catalog.DrawsID(sent) || r.draws {
+		// an image model draws only when asked for images too: one named
+		// for them, or any asked to draw (a plugin's that says it does)
 		gen["responseModalities"] = []string{"TEXT", "IMAGE"}
+	}
+	if len(r.ImageConfig) > 0 {
+		// the size and shape a Gemini client asked its image drawn at, as
+		// it asked them: left out, the model drew at its default size
+		// (#3820)
+		gen["imageConfig"] = r.ImageConfig
 	}
 	if len(gen) > 0 {
 		req["generationConfig"] = gen
@@ -798,9 +807,30 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 			}
 		}
 	}
+	// resolve is a member as its local $ref names it, nil when it is no
+	// schema
+	resolve := func(v any) map[string]any {
+		m, _ := v.(map[string]any)
+		if ref, ok := m["$ref"].(string); ok {
+			m, _ = defs[ref[strings.LastIndex(ref, "/")+1:]].(map[string]any)
+		}
+		return m
+	}
 	var walk func(v any, depth int) any
 	walk = func(v any, depth int) any {
 		switch x := v.(type) {
+		case bool:
+			// a boolean schema, which JSON Schema has wherever a schema
+			// goes: true is any value, the schema {}; false is none, nil,
+			// and whoever holds it leaves it out. Google's Schema is an
+			// object only, and turns the whole request away over a
+			// boolean ("…items.items (…aiplatform.master.Schema), true",
+			// han_tiv on Discord: an MCP tool's array of arrays of
+			// anything)
+			if x {
+				return map[string]any{}
+			}
+			return nil
 		case []any:
 			out := make([]any, len(x))
 			for i, e := range x {
@@ -818,7 +848,8 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 				}
 				return map[string]any{"type": "object"}
 			}
-			// allOf: one schema with all the members' fields
+			// allOf: one schema with all the members' fields, and every
+			// field one of them requires
 			if all, ok := x["allOf"].([]any); ok {
 				merged := map[string]any{}
 				for k, v := range x {
@@ -826,9 +857,17 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 						merged[k] = v
 					}
 				}
+				required := requiredNames(x["required"])
 				for _, e := range all {
+					// a member's required is read before it is walked: walked
+					// alone, a member that only requires ({"required":["a"]})
+					// has no properties to keep its names for
+					required = append(required, requiredNames(resolve(e)["required"])...)
 					if m, ok := walk(e, depth+1).(map[string]any); ok {
 						for k, v := range m {
+							if k == "required" {
+								continue
+							}
 							if k == "properties" {
 								props, _ := merged["properties"].(map[string]any)
 								if props == nil {
@@ -844,9 +883,23 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 						}
 					}
 				}
+				if len(required) > 0 {
+					merged["required"] = distinctNames(required)
+				}
 				return walk(merged, depth+1)
 			}
-			// anyOf / oneOf: the first member that isn't null, nullable
+			if (x["anyOf"] != nil || x["oneOf"] != nil) && ownShape(x) {
+				// a schema with its own type or properties beside an anyOf
+				// or oneOf keeps them, and the union is folded into it:
+				// Philo's rg tool is an object whose oneOf only says which
+				// of its fields go together, and its first branch, standing
+				// for the whole, sent it as {"type":"string"}; Claude on
+				// Antigravity answered 400 "input_schema.type: Input should
+				// be 'object'" (#4046, imuxin)
+				return walk(foldUnion(x, resolve), depth+1)
+			}
+			// anyOf / oneOf with nothing of its own beside it: the first
+			// member that isn't null, nullable
 			for _, k := range []string{"anyOf", "oneOf"} {
 				if alts, ok := x[k].([]any); ok {
 					var pick map[string]any
@@ -914,12 +967,23 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 					props := map[string]any{}
 					if m, ok := v.(map[string]any); ok {
 						for pk, pv := range m {
-							props[pk] = walk(pv, depth+1)
+							// a property whose schema is false is one the
+							// call may not have: it is left out, and so is
+							// its name in required
+							if w := walk(pv, depth+1); w != nil {
+								props[pk] = w
+							}
 						}
 					}
 					out[k] = props
 				case "items":
-					out[k] = walk(v, depth+1)
+					if w := walk(v, depth+1); w != nil {
+						out[k] = w
+					} else if x["maxItems"] == nil {
+						// items false: an array with nothing in it
+						out[k] = map[string]any{}
+						out["maxItems"] = 0
+					}
 				case "enum":
 					// Google takes string enums only
 					if es, ok := v.([]any); ok {
@@ -1003,6 +1067,117 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 		return raw
 	}
 	return b
+}
+
+// ownShape is whether a schema says what it is beside its anyOf or
+// oneOf: a type that isn't only null, properties or items.
+func ownShape(x map[string]any) bool {
+	if x["properties"] != nil || x["items"] != nil {
+		return true
+	}
+	switch t := x["type"].(type) {
+	case string:
+		return t != "null"
+	case []any:
+		for _, e := range t {
+			if e != "null" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// foldUnion is x, which has a shape of its own (ownShape), with its anyOf
+// and oneOf folded in, for a schema subset that has no unions. What x says
+// itself stands. A null branch makes it nullable. On an object, a field
+// only branches declare joins its properties, as the first branch to
+// declare it gives it, and a field every branch that isn't null requires
+// is required: the model sees every field it may send, and is held only
+// to what any choice holds it to. The rest of a branch — which fields go together, a "not" —
+// is a rule the subset can't say, and the client still checks the call
+// against its own schema.
+func foldUnion(x map[string]any, resolve func(any) map[string]any) map[string]any {
+	out := make(map[string]any, len(x))
+	for k, v := range x {
+		if k != "anyOf" && k != "oneOf" {
+			out[k] = v
+		}
+	}
+	object := x["type"] == "object" || x["properties"] != nil
+	if ts, ok := x["type"].([]any); ok {
+		for _, t := range ts {
+			object = object || t == "object"
+		}
+	}
+	props := map[string]any{}
+	own, _ := x["properties"].(map[string]any)
+	for k, v := range own {
+		props[k] = v
+	}
+	var common []any
+	branches := 0
+	for _, k := range []string{"anyOf", "oneOf"} {
+		alts, _ := x[k].([]any)
+		for _, a := range alts {
+			m := resolve(a)
+			if m == nil {
+				continue
+			}
+			if m["type"] == "null" {
+				out["nullable"] = true
+				continue
+			}
+			if !object {
+				continue
+			}
+			bp, _ := m["properties"].(map[string]any)
+			for _, pk := range slices.Sorted(maps.Keys(bp)) {
+				if _, has := props[pk]; !has {
+					props[pk] = bp[pk]
+				}
+			}
+			br := requiredNames(m["required"])
+			if branches == 0 {
+				common = append([]any(nil), br...)
+			} else {
+				common = slices.DeleteFunc(common, func(n any) bool { return !slices.Contains(br, n) })
+			}
+			branches++
+		}
+	}
+	if object {
+		if len(props) > 0 {
+			out["properties"] = props
+		}
+		if req := requiredNames(x["required"]); len(req)+len(common) > 0 {
+			out["required"] = distinctNames(append(req, common...))
+		}
+	}
+	return out
+}
+
+// requiredNames is a required list's names: its strings, a fresh slice.
+func requiredNames(v any) []any {
+	l, _ := v.([]any)
+	var out []any
+	for _, e := range l {
+		if s, ok := e.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// distinctNames is vs with each value kept once, in order.
+func distinctNames(vs []any) []any {
+	var out []any
+	for _, v := range vs {
+		if !slices.Contains(out, v) {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // codeAssistDecoder reads Code Assist's stream: Gemini chunks, each wrapped

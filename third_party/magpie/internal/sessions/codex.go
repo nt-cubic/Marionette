@@ -6,6 +6,7 @@ import (
 	pathpkg "path"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -198,6 +199,13 @@ func cxSkillReads(b []byte, name string) []string {
 	if strings.Contains(text, "*** Begin Patch") {
 		return nil
 	}
+	return skillReadsIn(text)
+}
+
+// skillReadsIn are the skills a command or a path that reads files calls
+// up: each SKILL.md read by its folder's name, once. A redirect into one
+// and a bare SKILL.md with no folder (a find -name, a grep) call none up.
+func skillReadsIn(text string) []string {
 	var out []string
 	for rest := text; ; {
 		i := strings.Index(rest, "SKILL.md")
@@ -339,7 +347,8 @@ func noteCodexIdentity(s *state, identity CodexIdentity, conflict bool) {
 	s.CodexIdentity = &merged
 }
 
-// CodexIdentities returns an independent snapshot of the native thread identities.
+// CodexIdentities returns a snapshot of the native thread identities. It is
+// shared with every caller asking while no rollout changed: only read it.
 func CodexIdentities() map[string]CodexIdentity { return codexIdentitiesOf(codexFiles()) }
 
 // codexIdentitiesOf is CodexIdentities with codex the rollouts codexFiles
@@ -385,12 +394,17 @@ func codexSubagentTaskTitles(files []file) map[codexTaskTitle]string {
 		if f.agent != "codex" || cache[f.path] == nil {
 			continue
 		}
+		st := cache[f.path]
+		// most threads spawn no agent: four maps for each of them on every
+		// poll were ~140 MB in 80s of polls over ~34k sessions (#2278)
+		if len(st.CodexSpawnConflicts) == 0 && len(st.CodexAgentConflicts) == 0 && len(st.CodexSpawnNames) == 0 && len(st.CodexAgentIDs) == 0 {
+			continue
+		}
 		calls := parents[f.key]
 		if calls == nil {
 			calls = &parentCalls{names: map[string]string{}, children: map[string]string{}, badNames: map[string]bool{}, badChildren: map[string]bool{}}
 			parents[f.key] = calls
 		}
-		st := cache[f.path]
 		for id := range st.CodexSpawnConflicts {
 			calls.badNames[id] = true
 		}
@@ -479,7 +493,86 @@ func setSessionCodexTaskTitle(s *Session, titles map[codexTaskTitle]string) {
 	}
 }
 
+// codexIdentityMemo is the identities codexIdentitySnapshot built last, with
+// what each Codex rollout gave them from. Every Sessions and Requests poll
+// asks for them over every rollout, and building them again while no
+// rollout's identity had changed was ~277 MB of what 80 s of polls allocated
+// while an agent worked (#2278). The maps it hands out are shared: they are
+// only read.
+var codexIdentityMemo struct {
+	sync.Mutex
+	kept []keptIdentities // the last used first
+}
+
+// codexIdentityMemoSize is how many file lists' identities are kept: the
+// whole history's, and a session's or an agent's own.
+const codexIdentityMemoSize = 4
+
+type keptIdentities struct {
+	from       []codexIdentityFrom
+	identities map[string]CodexIdentity
+}
+
+// codexIdentityFrom is what one Codex rollout gives the identities from.
+type codexIdentityFrom struct {
+	key      string
+	identity CodexIdentity
+	known    bool
+	conflict bool
+}
+
+func codexIdentityFromOf(f file) codexIdentityFrom {
+	from := codexIdentityFrom{key: f.key}
+	if s := cache[f.path]; s != nil && s.CodexIdentity != nil {
+		from.identity, from.known, from.conflict = *s.CodexIdentity, true, s.CodexIdentityConflict
+	}
+	return from
+}
+
+// madeFrom reports whether files' Codex rollouts give what k was built from.
+func (k *keptIdentities) madeFrom(files []file) bool {
+	n := 0
+	for _, f := range files {
+		if f.agent != "codex" {
+			continue
+		}
+		if n == len(k.from) || codexIdentityFromOf(f) != k.from[n] {
+			return false
+		}
+		n++
+	}
+	return n == len(k.from)
+}
+
+// codexIdentitySnapshot is the native thread identities of files' Codex
+// rollouts, kept while none of them changes.
 func codexIdentitySnapshot(files []file) map[string]CodexIdentity {
+	m := &codexIdentityMemo
+	m.Lock()
+	defer m.Unlock()
+	for i := range m.kept {
+		if m.kept[i].madeFrom(files) {
+			k := m.kept[i]
+			copy(m.kept[1:i+1], m.kept[:i])
+			m.kept[0] = k
+			return k.identities
+		}
+	}
+	k := keptIdentities{identities: codexIdentitiesBuilt(files)}
+	for _, f := range files {
+		if f.agent == "codex" {
+			k.from = append(k.from, codexIdentityFromOf(f))
+		}
+	}
+	if len(m.kept) < codexIdentityMemoSize {
+		m.kept = append(m.kept, keptIdentities{})
+	}
+	copy(m.kept[1:], m.kept[:len(m.kept)-1])
+	m.kept[0] = k
+	return k.identities
+}
+
+func codexIdentitiesBuilt(files []file) map[string]CodexIdentity {
 	identities := map[string]CodexIdentity{}
 	conflicts := map[string]bool{}
 	for _, f := range files {

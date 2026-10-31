@@ -125,7 +125,7 @@ func (l *Library) behind(targets []*Target) map[string][]string {
 			continue
 		}
 		for _, s := range l.Skills {
-			if !slices.Contains(s.Agents, t.Agent.ID) {
+			if !s.gives(t.Agent.ID) {
 				continue
 			}
 			p := filepath.Join(t.Skills, s.Name)

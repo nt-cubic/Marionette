@@ -289,6 +289,9 @@ func hermesSelect(cols map[string]bool, names []string, fallback string) string 
 }
 
 func hermesFiles() []file {
+	if !Reads("hermes") {
+		return nil
+	}
 	var out []file
 	for _, dir := range HermesDirs() {
 		path := filepath.Join(dir, "state.db")

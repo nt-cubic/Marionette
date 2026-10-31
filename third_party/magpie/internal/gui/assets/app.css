@@ -202,7 +202,7 @@ body.window.mac .seg { top: calc(50% + 1px / var(--zoom, 1)); } /* 50% centres i
 .brand { display: flex; align-items: center; gap: 6px; font-weight: 600; letter-spacing: .01em; }
 body.window:not(.mac):not(.linux):not(.web) .brand { display: none; } /* Windows' title bar above already shows the icon and the name; a browser tab has no title bar of the app's */
 /* app.js removes these controls later; keep them out of the first paint too. */
-body.window :is(#open, #openMain, #quit),
+body.window :is(#open, #quit),
 body:not(.window.linux) #winclose { display: none; }
 /* Linux: the header is the title bar, so it closes the window too — round,
    as GNOME draws its close button, and set a little apart from the icons */
@@ -270,9 +270,12 @@ body.panel .seg { display: none; }
    WebKit turns a whole svg on a layer snapped to the pixel grid, so off a
    whole pixel its ring circles about a point a pixel or so off its centre */
 .icon.spin svg > * { transform-box: view-box; transform-origin: 50% 50%; animation: spin .9s linear infinite; }
-/* a newer magpie is ready: a quiet pill before the header's icons */
+/* a newer magpie is ready: a quiet pill before the header's icons. It
+   opens from nothing, so the title bar's tools beside the sidebar (app.js
+   tools) slide over to make room, not jump 80px at once (#4057) */
 .update {
   align-self: center; display: inline-flex; align-items: center; gap: 4px;
+  max-width: 20em; overflow: hidden;
   height: 22px; margin-right: 6px; padding: 0 9px 0 7px; border-radius: 999px;
   font-size: 11.5px; font-weight: 560; letter-spacing: .005em; white-space: nowrap;
   color: var(--accent); background: var(--accent-soft);
@@ -336,7 +339,7 @@ body.window .top.inrow .actions { margin-left: 0; }
   body.web .top #nav button { flex: none; height: 40px; padding: 0 14px; font-size: 14px; }
   body.web .top .actions { gap: 4px; }
 }
-@keyframes update-in { from { opacity: 0; transform: translateY(-3px) scale(.94); } }
+@keyframes update-in { from { opacity: 0; max-width: 0; margin-right: 0; padding: 0; } }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ---- the sidebar (app.js layoutNav) -------------------------------------- */
@@ -361,13 +364,17 @@ body.side-nav { --side-w: 212px; padding-left: var(--side-w); }
 @media (pointer: coarse) { .side-edge { right: -12px; width: 24px; } }
 .side-edge:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; }
 body.side-drag, body.side-drag * { cursor: col-resize !important; user-select: none; }
-.side-top { flex: none; display: flex; align-items: center; height: 46px; padding: 0 18px; }
+/* its top is the title bar's left end: the sidebar's button (app.js
+   layoutNav), then the magpie, at the header's own height and left padding,
+   so the button is in the one place whether the sidebar shows or not, as
+   Finder's and Notes' is (ztf4080 on X) */
+.side-top { flex: none; display: flex; align-items: center; gap: 8px; height: 46px; padding: 0 18px 0 14px; }
 .side-top .brand { font-size: 13.5px; }
+/* a sidebar too narrow for the name keeps the bird (app.js fitTop) */
+.side-top.tight .brand > span:not(.logo) { display: none; }
 /* the traffic lights are the sidebar's top left, as in a Mac app's sidebar;
-   the magpie beside them, level with them (see .top above) */
-body.window.mac .side-top { height: calc(50px / var(--zoom, 1)); padding: calc(2px / var(--zoom, 1)) 0 0 calc(90px / var(--zoom, 1)); }
-/* Windows' title bar above already shows the icon and the name */
-body.window:not(.mac):not(.linux):not(.web) .side-top { height: 10px; }
+   the button and the magpie beside them, level with them (see .top above) */
+body.window.mac .side-top { height: calc(50px / var(--zoom, 1)); padding: calc(2px / var(--zoom, 1)) 0 0 calc(96px / var(--zoom, 1)); }
 .side-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0 10px 10px; }
 .side-foot { flex: none; max-height: 55%; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; padding: 8px 10px 10px; border-top: .5px solid var(--line-2); }
 /* a short window's sidebar keeps no bar beside its pages: a thin one is laid
@@ -525,21 +532,41 @@ body:not(.side-nav) .side-toggle .st-pane { opacity: 0; }
 @keyframes side-out { to { transform: translateX(-100%); } }
 
 /* ---- lists ---------------------------------------------------------------- */
-.view { flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 4px; display: flex; flex-direction: column; animation: view-in .24s var(--ease); }
+/* every page keeps its bar's room, whether it runs past the window or
+   not: a row that opens (an agent's details, a fold, a card's list) made
+   the bar appear and the whole page 8px narrower in one frame, and shake
+   back when it closed (the owner, on Agents). The track is transparent,
+   so a page that fits shows nothing there. Usage and Routing needed it
+   first: their square-celled grids (the year heatmap, Sessions' calendar,
+   the context waffle) grow taller as they grow wider, so near the
+   window's height WebKit laid the page out at the full width under the
+   bar and, on each redraw, 8px narrower for a few frames (@LingYi_Stu on
+   X) */
+/* the bar's room comes out of the right padding, so a page's sides stay
+   the same width. Its width depends on the engine and the system, so
+   layout.js measures it into --bar, again on a resize (a text-size zoom
+   comes as one) */
+.view { flex: 1; min-height: 0; overflow-y: scroll; padding: 0 max(0px, calc(12px - var(--bar, 0px))) 4px 12px; display: flex; flex-direction: column; animation: view-in .24s var(--ease); }
 /* a box that scrolls in a page, marked by app.js while it overflows: the
    wheel at its ends stays with it (contain keeps the Mac's bounce on it).
    Only then: Chromium holds the wheel even in a box that doesn't overflow.
    :where() weighs nothing, so .mchips in a short window still passes it on */
 :where(.holds) { overscroll-behavior-y: contain; }
+/* a page scrolls rather than squeeze what is on it: as a flex column, a
+   view taller than its window shrank every box of a set height, so opening
+   the Gateway page's models took a header from 26px to 21 and moved the
+   head over them up (the owner, 10-29). :where() weighs nothing, so a box
+   that sets its own flex keeps it */
+:where(.view) > * { flex-shrink: 0; }
 @keyframes view-in { from { opacity: 0; transform: translateY(5px); } }
 @media (prefers-reduced-motion: reduce) { .view { animation-name: fade-in; } }
-body.window .view { padding: 2px 16px 8px; }
+body.window .view { padding: 2px max(0px, calc(16px - var(--bar, 0px))) 8px 16px; }
 /* every page keeps to a width the eye can follow across, centred in a
    maximized window, rather than its name at one edge and its switch at the
    other (#860); Routing, Usage and Sessions too, so a large screen doesn't
    stretch them alone edge to edge while the others sit in the middle (面条 on
    Discord): their tables and charts lay out by the room they get */
-body.window :is(#view-agents, #view-sessions, #view-providers, #view-routing, #view-gateway, #view-usage, #view-library, #view-plugins, #view-settings) { padding-left: max(16px, calc(50% - 600px)); padding-right: max(16px, calc(50% - 600px)); }
+body.window :is(#view-agents, #view-sessions, #view-providers, #view-routing, #view-gateway, #view-usage, #view-library, #view-plugins, #view-settings) { padding-left: max(16px, calc(50% - 600px)); padding-right: max(0px, calc(max(16px, calc(50% - 600px)) - var(--bar, 0px))); }
 /* a view takes focus (tabIndex -1) only so the keys scroll it after a click;
    a ring round the whole list there marks nothing a reader can act on (#1601) */
 .view:focus { outline: none; }
@@ -564,15 +591,9 @@ body.mac :is(.view, .modal .dialog, .modal .editor.framed > .ebody, .heat-scroll
    and scrolled sideways; the bar's room is always kept, out of the right
    padding, so the fields end where they did */
 body.mac .modal .editor.framed > .ebody { overflow-y: scroll; padding-right: 10px; }
-/* Usage and Routing keep their bar's room too, whether the page runs past
-   the window or not. Their square-celled grids (the year heatmap, Sessions'
-   calendar, the context waffle) grow taller as they grow wider, so near the
-   window's height WebKit could lay the page out at the full width under the
-   bar and, on each redraw (Requests' 5s refresh), 8px narrower for a few
-   frames: the head's refresh, interval and cost shook sideways with Today
-   picked (@LingYi_Stu on X). The other pages have no such grid and keep the
-   8px while short */
-body.window :is(#view-usage, #view-routing) { overflow-y: scroll; }
+/* the same on Windows and Linux, whose bar is 10px: a field that opens
+   (an advanced section, a long error) no longer narrows the body under it */
+body:not(.mac):not(.web) .modal .editor.framed > .ebody { overflow-y: scroll; padding-right: 8px; }
 .list { background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; flex: none; }
 body.panel .list { border: 0; border-radius: 10px; box-shadow: var(--card-edge); }
 .row { display: flex; align-items: center; gap: 9px; min-height: 40px; padding: 5px 9px 5px 11px; }
@@ -657,6 +678,14 @@ body.panel #agents > .row .ag-handle::before { left: -8px; }
 .ag-acc { display: inline-flex; align-items: center; flex: none; height: 20px; padding: 0 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--card); color: var(--fg-2); font: inherit; font-size: 11.5px; line-height: 1; cursor: pointer; transition: background-color .15s, color .15s; }
 .ag-acc:hover { background: var(--pill); color: var(--fg); }
 .ag-acc:focus-visible { outline: 1.5px solid var(--fg-2); outline-offset: 1px; }
+/* Switch accounts only: the account the agent is signed in to, its menu a click away; a long address is cut, never the row widened */
+.ag-acc.ag-who { gap: 5px; flex: 0 1 auto; min-width: 0; max-width: 100%; padding: 0 7px; }
+.ag-who > svg { flex: none; }
+.ag-who .v { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ag-who.open { background: var(--pill); color: var(--fg); }
+.ag-open .field.ag-who .ok { order: 2; }
+.ag-who .ok { display: none; flex: none; align-items: center; gap: 3px; color: var(--green); font-weight: 600; }
+.ag-who.done .ok { display: inline-flex; }
 .ag-fix.busy svg > * { transform-box: view-box; transform-origin: 50% 50%; animation: spin .8s linear infinite; }
 /* what has to listen at an address no agent reaches magpie by (#1013): long addresses wrap, and it can be copied */
 .drift-why { overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
@@ -716,8 +745,18 @@ body.window .row.agent .who .ag-cli { flex: 0 1 auto; overflow: hidden; }
 .ag-install-cmd { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .ag-install-via { flex: 0 0 84px; font-size: 11.5px; color: var(--muted); }
 .ag-install-cmd code { flex: 1 1 auto; min-width: 0; overflow-x: auto; white-space: nowrap; font-size: 11.5px; padding: 2px 6px; border-radius: 5px; background: var(--pill); color: var(--fg-2); }
+/* the agents plugins add: one row, its way to Plugins */
+.ag-install-plugins { width: 100%; align-items: center; font: inherit; color: var(--accent); text-align: left; cursor: pointer; transition: background .2s; }
+.ag-install-plugins:hover { background: var(--accent-soft); }
+.ag-install-head + .ag-install-plugins { margin-top: 6px; }
+.ag-install-plugins:focus-visible { outline: 1.5px solid var(--fg-2); outline-offset: 1px; }
+.ag-install-plugins .ag-install-who { flex: none; padding-top: 0; }
+.ag-install-plugins .puzzle { flex: none; width: 18px; height: 18px; display: grid; place-items: center; }
+.ag-install-pnames { flex: 1 1 auto; min-width: 0; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ag-install-plugins > .chev { flex: none; display: inline-flex; opacity: .7; }
 @media (max-width: 600px) {
   .ag-install-row { flex-direction: column; gap: 6px; }
+  .ag-install-plugins { flex-direction: row; }
   .ag-install-who { flex: none; }
 }
 /* the panel's name column has no room for it: there it is a badge on the
@@ -1195,8 +1234,13 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
 .us-hid .us-hidline[aria-expanded="true"] svg { transform: rotate(180deg); }
 .us-hid .list { margin-top: 4px; }
 .us-hid .list[hidden] { display: none; }
+.us-hid .us-showall { align-self: flex-start; margin: 4px 0 0 2px; font-size: 11.5px; }
+.us-hid .us-showall[hidden] { display: none; }
+#quotaHid .row.stat .who { flex: 1 1 auto; min-width: 0; }
 .row.stat.hid > :not(.us-unhide) { opacity: .55; }
 .usage-note { padding: 10px 4px 2px; font-size: 11px; color: var(--faint); user-select: text; -webkit-user-select: text; }
+.usage-clear { margin: 0; padding: 2px 0 6px; }
+.usage-clear button { font-size: 11px; }
 .usage-pane { display: flex; flex-direction: column; flex: none; }
 .usage-pane[hidden] { display: none; }
 
@@ -1477,7 +1521,7 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
 .led .src.access-subscription { --badge-ink: var(--tk-k); }
 .led .src.proto { --badge-ink: var(--muted); font-weight: 500; }
 .led .src.reported { --badge-ink: var(--tk-o); }
-.led .src.probe { --badge-ink: var(--muted); }
+.led .src.probe, .led .src.mcp { --badge-ink: var(--muted); }
 .led .duration { font-weight: 550; }
 .led .duration-fast { color: var(--tk-s); }
 .led .duration-slow { color: var(--amber); }
@@ -2096,7 +2140,11 @@ body.window .foot { padding-left: 18px; }
    it fits the footer's 22px, so its coming doesn't make the page above
    it shorter and move it */
 .status.ok, .status.err, .status.warn { font-size: 12.5px; line-height: 16px; font-weight: 500; padding: 3px 10px; border-radius: 999px; background: color-mix(in srgb, currentColor 16%, var(--bg)); box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 30%, transparent); }
-.status.lift { position: fixed; z-index: 21; font-size: 12.5px; font-weight: 500; padding: 3px 10px; border-radius: 999px; background: color-mix(in srgb, currentColor 16%, var(--card)); left: 50%; bottom: 18px; transform: translateX(-50%); max-width: calc(100vw - 32px); box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 30%, transparent), 0 6px 20px rgba(0, 0, 0, .28); animation: fade-in .2s var(--ease); }
+.status.lift { position: fixed; z-index: 21; font-size: 12.5px; font-weight: 500; padding: 3px 10px; border-radius: 11px; background: color-mix(in srgb, currentColor 16%, var(--card)); left: 50%; bottom: 18px; transform: translateX(-50%); max-width: calc(100vw - 32px); box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 30%, transparent), 0 6px 20px rgba(0, 0, 0, .28); animation: fade-in .2s var(--ease); }
+/* a line longer than its place floats too (status), and is read whole
+   (littleHong): wrapped, up to ten lines, the rest scrolled to; one line
+   is still a pill (22px tall, 11px corners) */
+body .foot .status.lift { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; width: max-content; max-width: min(560px, calc(100vw - 32px)); max-height: min(166px, 40vh); overflow-y: auto; overscroll-behavior: contain; }
 
 /* ---- picker popover ------------------------------------------------------- */
 .pop {
@@ -2277,20 +2325,47 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .gw-sk-call .result { width: 68px; }
 /* the status card: a dot where the logo would be, the URL as a pill */
 .gwcard { margin: 4px 0 2px; }
-.gw .dot { width: 8px; height: 8px; margin: 0 7px; border-radius: 50%; background: var(--amber); flex: none; box-shadow: 0 0 0 3px var(--amber-soft); }
-.gw .dot.on { background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
-.gw .who { flex: 1 1 auto; }
+/* the gateway's mark, the sidebar's glyph in a tile, its two lights the
+   state: green running, amber not or served by an older magpie */
+.gw { min-height: 52px; padding: 8px 10px 8px 11px; gap: 8px 11px; flex-wrap: wrap; }
+.gw .gw-mark { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; flex: none; color: var(--fg-2); background: var(--pill); box-shadow: inset 0 0 0 1px var(--line-2); }
+.gw .gw-mark svg { display: block; }
+.gw .gw-mark .led { fill: var(--amber); }
+.gw .gw-mark.on .led { fill: var(--green); }
+/* narrow, the fix button goes under the state rather than squeeze it */
+.gw .who { flex: 1 1 15em; min-width: 0; }
 .gw .name .state { margin-left: 8px; font-size: 11px; font-weight: 500; color: var(--green); }
-.gw .dot:not(.on) ~ .who .state { color: var(--amber); }
+.gw .gw-mark:not(.on) ~ .who .state { color: var(--amber); }
 .gw .sub.old { white-space: normal; overflow: visible; text-overflow: clip; }
 .gw .sub.err { color: var(--red); overflow-wrap: anywhere; }
 /* the take-over / restart button: bordered, so it reads as a button on the
    card in either theme (leslie_luo on Discord: in dark mode it didn't) */
-.gw .gw-fix { display: inline-flex; height: auto; min-height: 27px; margin: 6px 0 0; padding: 4px 10px; white-space: normal; text-align: left; }
-.gw .url { display: inline-flex; align-items: center; height: 24px; padding: 0 8px; border-radius: 6px; background: var(--pill); box-shadow: inset 0 0 0 1px var(--line-2); flex: none; transition: background .12s, box-shadow .12s; }
-.gw .url:hover { background: var(--pill-hover); box-shadow: inset 0 0 0 1px var(--line); }
-.gw .url code { color: var(--fg-2); font-size: 11px; }
-.gw .url:hover code { color: var(--fg); }
+.gw .gw-fix { display: inline-flex; flex: none; height: auto; min-height: 27px; max-width: 100%; margin: 0 0 0 auto; padding: 4px 10px; white-space: normal; text-align: left; }
+/* Share on local network, on the card under the state, and the addresses
+   the gateway answers on: one quiet line each, the copy beside it */
+#gatewayLan { border-top: 1px solid var(--line-2); }
+/* narrow, the choice goes under its name rather than wrap it word by word */
+.gw-share { min-height: 40px; padding: 5px 10px 5px 11px; flex-wrap: wrap; row-gap: 4px; }
+.gw-share .name { flex: 1 1 9em; font-size: 12.5px; white-space: normal; overflow-wrap: anywhere; }
+.gw-share .segs { align-self: center; flex: none; max-width: 100%; margin-left: auto; }
+/* the addresses: their labels one column as wide as the longest, the
+   address and its copy the next */
+.gw-urls { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: 14px; padding: 0 10px 7px 11px; }
+.gw-url { display: contents; }
+.gw-url-label { align-self: center; max-width: 12em; font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gw-url-val { display: flex; align-items: center; gap: 6px; min-height: 28px; min-width: 0; }
+.gw-url code { flex: 0 1 auto; min-width: 0; font-size: 12px; color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: text; }
+.gw-url .copy { flex: none; }
+.gw-url-none { grid-column: 2; padding: 4px 0 2px; font-size: 11.5px; color: var(--muted); }
+/* a gateway key: the copy right beside the masked key, the rest under
+   its … (the owner: a copy out in the row's middle looked lost) */
+.gw-keys .acc > .plan + .copy { margin-left: -5px; }
+/* narrow, the masked key gives up its room before the key's name does.
+   Not the Providers keys list's rules (.accts.keys): Limit and Models keep
+   their room there while hidden, so a hover doesn't push the row about */
+.gw-keys .acc > .plan { flex: 0 6 auto; min-width: 3em; overflow: hidden; text-overflow: ellipsis; }
+.gw-keys .gw-key-more { flex: none; color: var(--muted); }
+.gw-keys .gw-key-more:is(:hover, .open) { color: var(--fg); }
 #view-gateway .row-head, #view-usage .row-head { margin: 14px 0 6px; padding: 0 2px; }
 #view-usage .row-head.quota-head { margin: 6px 0 6px; }
 #view-gateway .row-head .note { font-size: 11px; color: var(--faint); }
@@ -2508,6 +2583,9 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .accts { display: grid; grid-template-columns: minmax(0, 1fr); border: 1px solid var(--line); border-radius: 10px; background: var(--card); overflow: hidden; }
 .acc { display: flex; align-items: center; gap: 9px; min-height: 38px; padding: 5px 8px 5px 11px; font-size: 12.5px; text-align: left; }
 .acc + .acc, .accts .signing { border-top: 1px solid var(--line-2); }
+/* every row of the box ruled off from the one above it, a setting's too
+   (the owner, 10-29: Add another sat unruled under Only switch) */
+.accts > :is(.keep-login, .switch-only, .pool-ends) + .acc { border-top: 1px solid var(--line-2); }
 .editor .accts .keep-login, .editor .accts .switch-only, .editor .accts .pool-ends { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 34px; padding: 6px 11px; font-size: 12px; border-top: 1px solid var(--line-2); }
 .editor .accts .keep-login .keep-as { max-width: 240px; }
 .editor .accts .pool-ends .note { flex-basis: 100%; color: var(--fg-2); }
@@ -2628,6 +2706,40 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .acc .acct-user, .acc .acct-seat { color: var(--muted); font-size: 11px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acc .acct-who .n { flex: 0 1 auto; }
 .acc .plan { flex: none; }
+/* an account's first line (the owner, 10-29): its name gives way, never
+   its place on the right, so First and Make first end every row at the
+   same edge. What is set shows on it; the rest waits under ⋯ on a line
+   of its own, so nothing on it takes room it doesn't show */
+.acc-line { flex: 1 0 100%; display: flex; align-items: center; gap: 9px; min-width: 0; min-height: 22px; }
+.acc-line > .plan { flex: 0 3 auto; min-width: 3em; overflow: hidden; text-overflow: ellipsis; }
+.acc-line > :not(.acct-who, .n, .plan, .grow, .amodels, .acap, .alane, .text, .using) { flex-shrink: 0; }
+.acc-line > .using, .acc-line > .text { white-space: nowrap; }
+/* and only where even that is too narrow (a long German Make first beside
+   a 240px row) the button's own words end in an ellipsis, last of all */
+.acc-line > :is(.using, .text:not(.quiet)) { flex-shrink: .001; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.acc-line > .acct-who, .acc-line > .n { min-width: 4.5em; }
+/* a signed-out account keeps both ways out on its line: where they don't
+   fit beside the name they wrap under it, Remove still at the right end */
+.acc.signed-out .acc-line { flex-wrap: wrap; row-gap: 4px; }
+.acc.signed-out .acc-line > .text.quiet:last-child { margin-left: auto; }
+.acc-line > :is(.amodels, .acap, .alane) { flex-shrink: .01; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* the pills sit closer to one another than to the name */
+.acc-line > :is(.amodels, .acap, .alane) + :is(.amodels, .acap, .alane) { margin-left: -4px; }
+/* a pill set when the row was drawn that is no longer (requests running
+   that ended) takes no room till the row is drawn again */
+.acc-line > :is(.amodels:not(.set), .acap:not(.set), .alane:not(.set)):not(.open):not(:focus-visible) { max-width: 0; padding-left: 0; padding-right: 0; margin-left: -9px; box-shadow: none; opacity: 0; }
+/* ⋯: a hover brings it out, beside what ends the row */
+.acc .acc-more { flex: none; display: inline-grid; place-items: center; width: 22px; height: 20px; padding: 0; border: 0; border-radius: 5px; background: none; color: var(--muted); cursor: default; opacity: 0; transition: opacity .15s, background .12s, color .12s; }
+.acc:hover .acc-more, .acc.tools-open .acc-more { opacity: 1; }
+.acc .acc-more:focus-visible { opacity: 1; } /* its own rule: Safari before 15.4 drops a list holding it */
+.acc .acc-more:hover { color: var(--fg); background: var(--pill-hover); }
+.acc.tools-open .acc-more { color: var(--fg); background: var(--pill); }
+/* and its line, under the quota, lined up with it */
+.acc .acc-tools { flex-basis: 100%; display: none; align-items: center; flex-wrap: wrap; gap: 6px; padding-left: 25px; min-width: 0; }
+.acc.tools-open .acc-tools { display: flex; }
+.acc .acc-tools > :is(.amodels, .acap, .alane, .text.quiet) { opacity: 1; }
+/* Remove ends the line, and where the line wraps it ends the next */
+.acc .acc-tools > .text.quiet { margin-left: auto; }
 /* a key's row (#841): what shows only on hover takes no room till then,
    so a key's weight never squeezes its name away; the room it takes on
    hover is the row's free room, else the masked key's, and the models
@@ -2651,6 +2763,11 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
   .accts.keys .acc:not(:hover) > .alane:not(.set):not(.open):not(:focus) { margin-left: -9px; }
 }
 .accts.keys .acc .using, .accts.keys .acc > .text:not(.quiet) { flex: none; white-space: nowrap; }
+/* Switch off on hover, beside Remove (wei_VC on X): in a narrow weighted
+   list the weight pill and Make first leave no room for it, and the name
+   went to nothing; there the tick dot alone switches an on key off */
+.accts.keys { container-type: inline-size; }
+@container (max-width: 520px) { .accts.keys.weighted .acc > .key-switch.quiet { display: none; } }
 #gatewayKeys .acc { min-width: 0; }
 #gatewayKeys .acc .plan { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* a gateway key's own limit (#585): the badge, what it used under the
@@ -2685,6 +2802,9 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
    and gives way before the row runs past a narrow window */
 #gatewayKeys .amodels.key-quotas { display: inline-block; flex: 0 1 auto; min-width: 0; line-height: 20px; overflow: hidden; text-overflow: ellipsis; }
 #gatewayKeys .acc:not(:hover) > .key-quotas:not(.set):not(:focus) { max-width: 0; padding: 0; margin-left: -9px; box-shadow: none; }
+/* a read-only key's tag, always shown, never a button */
+#gatewayKeys .amodels.key-readonly { display: inline-block; flex: 0 1 auto; min-width: 0; line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
+#gatewayKeys .amodels.key-readonly:hover { color: var(--accent); background: var(--accent-soft); }
 /* the Settings row's picker: the key row's badge, always shown */
 .row.pref .proto.pick { flex: none; margin-left: auto; display: inline-flex; align-items: center; gap: 3px; height: 24px; padding: 0 6px 0 9px; font: inherit; font-size: 12px; color: var(--fg-2); border: 0; border-radius: 7px; background: var(--pill); white-space: nowrap; cursor: default; transition: background .12s, color .12s; }
 .row.pref .proto.pick svg { opacity: .7; transition: transform .15s var(--ease); }
@@ -2818,6 +2938,9 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .fbrow { display: flex; align-items: center; gap: 8px; min-height: 28px; font-size: 12.5px; }
 .fbrow .i { width: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .fbrow .grow { flex: 1; }
+/* a routing group among the fallbacks: its fan, then the muted word */
+.fbrow .mtell { color: var(--muted); font-size: 11px; flex: none; }
+.fbrow > svg { flex: none; color: var(--muted); }
 .fallback .mchips:empty { display: none; }
 .after-list { display: flex; align-items: center; gap: 8px; padding: 8px 4px 0; flex: none; }
 /* the Providers page's add button stays at the view's foot over a long list;
@@ -2825,7 +2948,7 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
    in the content box (a negative margin-end was sideways scroll in macOS
    15's WebKit: see .lib-head, #1236) */
 #view-providers .after-list { position: sticky; bottom: -8px; z-index: 2; margin: 0 0 -8px; padding: 14px 4px 12px; transition: opacity .18s ease, visibility 0s; }
-#view-providers .after-list::before { content: ""; position: absolute; z-index: -1; inset: 0 -12px; pointer-events: none; background: linear-gradient(to bottom, transparent, var(--bg) 12px); }
+#view-providers .after-list::before { content: ""; position: absolute; z-index: -1; inset: 0 calc(var(--bar, 0px) - 12px) 0 -12px; pointer-events: none; background: linear-gradient(to bottom, transparent, var(--bg) 12px); } /* the bar's room is out of the padding */
 /* stepping aside it fades, then goes; back, it is there at once, so the
    focus can go to it as the sheet closes */
 #view-providers .after-list.away { opacity: 0; visibility: hidden; transition: opacity .18s ease, visibility 0s .18s; }
@@ -2915,7 +3038,10 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .sheet .custom-foot .custom:hover, .sheet .custom-foot .custom.on { background: var(--accent-soft); }
 .sheet .custom-foot .hint { font-size: 12px; color: var(--muted); }
 /* the provider editor, in a dialog */
-.editor { padding: 16px 18px 14px; display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px 14px; align-items: start; }
+/* the label column is as wide as its longest label, so that label starts
+   at the padding and the fields end the same way on the right (the
+   owner, 10-29: a 72px column left the left edge twice the right) */
+.editor { padding: 16px 18px 14px; display: grid; grid-template-columns: fit-content(132px) minmax(0, 1fr); gap: 10px 14px; align-items: start; }
 .editor .ehead { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; padding-bottom: 8px; margin-bottom: 2px; border-bottom: 1px solid var(--line-2); }
 .editor .ehead .ic { width: 20px; height: 20px; }
 .editor .icon-pick { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -2930,6 +3056,7 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .editor .ehead b { font-weight: 600; }
 .editor .ehead .note { font-size: 12px; color: var(--muted); }
 .editor label { font-size: 12px; color: var(--fg-2); text-align: right; padding-top: 5px; }
+.editor label.by-list { padding-top: 11px; }
 .editor .hint { font-size: 11px; color: var(--fg-2); margin-top: 4px; }
 /* a provider's own proxy (#237): the address beside the options, its room
    kept while it is hidden so a pick never changes the dialog's height */
@@ -3012,6 +3139,9 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .editor .extra-body .why { font-size: 12px; line-height: 1.45; color: var(--red); overflow-wrap: anywhere; }
 .editor .extra-body .why:empty { display: none; }
 .segs { position: relative; display: inline-flex; padding: 2px; border-radius: 7px; background: var(--pill); align-self: flex-start; }
+/* an editor's choices wrap where its sheet is narrow, never pushing the
+   sheet into a sideways scroll (German Routing at the 560px window) */
+.editor .segs { max-width: 100%; flex-wrap: wrap; }
 .opt { position: relative; z-index: 1; white-space: nowrap; height: 22px; padding: 0 10px; border-radius: 5px; font-size: 12px; color: var(--muted); transition: color .18s var(--ease), transform .14s var(--ease); }
 .opt.on { color: var(--fg); }
 /* how often magpie checks for updates, while it doesn't by itself */
@@ -3039,19 +3169,19 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
    which #929 left widening the whole page until its last agent's
    filter was only reachable by dragging the page sideways, and Plugins'
    kinds on GitHub, wider than a 420px window in Japanese */
-.segs.regions, .connect .segs, #sessAgent, .pm-ghbar .segs { max-width: 100%; overflow-x: auto; }
+.segs.regions, .connect .segs, .pm-ghbar .segs { max-width: 100%; overflow-x: auto; }
 /* no scrollbar-width here: Chromium (WebView2) then drops every
    ::-webkit-scrollbar rule and draws Windows' classic bar, arrows and all,
    under the strip; the app's thin thumb instead, slimmer still */
-:where(body:not(.mac)) :is(.segs.regions, .connect .segs, #sessAgent, .pm-ghbar .segs)::-webkit-scrollbar { height: 6px; }
-:where(body:not(.mac)) :is(.segs.regions, .connect .segs, #sessAgent, .pm-ghbar .segs)::-webkit-scrollbar-thumb { border-width: 1px; }
+:where(body:not(.mac)) :is(.segs.regions, .connect .segs, .pm-ghbar .segs)::-webkit-scrollbar { height: 6px; }
+:where(body:not(.mac)) :is(.segs.regions, .connect .segs, .pm-ghbar .segs)::-webkit-scrollbar-thumb { border-width: 1px; }
 /* on a Mac they scroll with no bar, as a Mac's own tab strips do: the
    system's overlay bar showed over the options' lower half for a moment
    after each scroll, and a click there went to the bar, which paged the
    strip sideways and picked nothing (#1620) */
-:where(body.mac) :is(.segs.regions, .connect .segs, #sessAgent, .pm-ghbar .segs) { scrollbar-width: none; }
-:where(body.mac) :is(.segs.regions, .connect .segs, #sessAgent, .pm-ghbar .segs)::-webkit-scrollbar { display: none; }
-.segs.regions .opt, .connect .segs .opt, #sessAgent .opt, .pm-ghbar .segs .opt { flex: none; }
+:where(body.mac) :is(.segs.regions, .connect .segs, .pm-ghbar .segs) { scrollbar-width: none; }
+:where(body.mac) :is(.segs.regions, .connect .segs, .pm-ghbar .segs)::-webkit-scrollbar { display: none; }
+.segs.regions .opt, .connect .segs .opt, .pm-ghbar .segs .opt { flex: none; }
 /* a custom provider's five Base URL APIs wrap to a second row where the
    editor is too narrow for them (#1346); the thumb follows the row */
 .segs.base-apis { max-width: 100%; flex-wrap: wrap; }
@@ -3290,7 +3420,7 @@ body:not(.side-nav) #view-settings .set-head { position: sticky; top: 0; z-index
 body.window:not(.side-nav) #view-settings .set-head { top: -2px; --bleed-l: 16px; --bleed-r: 16px; }
 body:not(.side-nav) #view-settings .set-head::before {
   content: ""; position: absolute; z-index: -1; pointer-events: none;
-  top: -6px; bottom: -6px; left: calc(-1 * var(--bleed-l)); right: calc(-1 * var(--bleed-r));
+  top: -6px; bottom: -6px; left: calc(-1 * var(--bleed-l)); right: calc(var(--bar, 0px) - var(--bleed-r));
   background: color-mix(in srgb, var(--bg) 92%, transparent);
   -webkit-backdrop-filter: saturate(1.6) blur(16px); backdrop-filter: saturate(1.6) blur(16px);
   box-shadow: 0 1px 0 transparent; transition: box-shadow .18s var(--ease);
@@ -3381,6 +3511,15 @@ body:not(.side-nav) #view-settings .set-head.stuck::before { box-shadow: 0 1px 0
 .row.pref .set-field { flex: none; width: 120px; height: 24px; padding: 0 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--card); }
 .row.pref .set-field[type=number] { width: 72px; text-align: right; }
 .row.pref .set-field[aria-invalid=true] { border-color: var(--red); }
+/* the quick panel's shortcut: a field that listens for keys, and its clear */
+#panelKey { flex: none; margin-left: auto; display: flex; align-items: center; gap: 4px; }
+#panelKey .key-rec { min-width: 120px; height: 24px; padding: 0 8px; font: inherit; font-size: 12px; color: var(--fg); border: 1px solid var(--line); border-radius: 7px; background: var(--card); white-space: nowrap; cursor: default; }
+#panelKey .key-rec.on { color: var(--fg-2); border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+#panelKey .key-rec:disabled { opacity: .5; }
+#panelKey .key-clear { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; color: var(--fg-2); background: none; }
+#panelKey .key-clear:hover { color: var(--fg); background: var(--pill); }
+#panelKey .key-clear[hidden] { display: none; }
+#panelKeyRow .sub { user-select: text; -webkit-user-select: text; }
 /* a plugin's page that broke (kernel.js): what broke, and Try again */
 .slot-error .row { gap: 14px; padding: 12px 14px; }
 .slot-error .sub { margin-top: 2px; color: var(--fg-2); overflow-wrap: anywhere; }
@@ -3513,6 +3652,8 @@ input.words.search-key, input.words.search-url { flex: 1 1 120px; width: auto; m
 .prefs .row.rule-editing .val.rule-add { flex-wrap: wrap; row-gap: 6px; }
 .prefs .row.rule-editing .rule-tail { display: flex; align-items: center; gap: 6px; flex: 1 1 240px; min-width: 0; }
 .row.pref .sub.err { color: var(--red); white-space: normal; }
+/* Warm up now's line holds a vendor's reason, which can be one long word */
+.row.warm-now .sub { white-space: normal; overflow-wrap: anywhere; }
 .warm-at { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: none; }
 .warm-at input.at { width: auto; height: 27px; padding: 0 8px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--fg); font: inherit; font-size: 12.5px; font-variant-numeric: tabular-nums; outline: none; transition: border-color .12s, box-shadow .12s; }
 .warm-at input.at:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
@@ -3730,7 +3871,7 @@ body.panel .modal { padding: 16px 12px; }
   body.web .view {
     --view-left: max(12px, env(safe-area-inset-left));
     --view-right: max(12px, env(safe-area-inset-right));
-    padding: 2px var(--view-right) 12px var(--view-left);
+    padding: 2px max(0px, calc(var(--view-right) - var(--bar, 0px))) 12px var(--view-left);
   }
   body.web .foot { padding-bottom: max(8px, env(safe-area-inset-bottom)); min-width: 0; }
   body.web .foot .status { min-width: 0; overflow-wrap: anywhere; }
@@ -3805,7 +3946,7 @@ body.panel .modal { padding: 16px 12px; }
   body.web .row.gw { flex-wrap: wrap; }
   body.web .row.gw > .who { flex: 1 1 0; min-width: 0; }
   body.web .row.gw .sub { white-space: normal; }
-  body.web .row.gw > .url { order: 2; margin-left: 17px; max-width: calc(100% - 17px); }
+  body.web .row.gw > .gw-fix { order: 2; margin-left: 39px; max-width: calc(100% - 39px); }
   body.web .call { flex-wrap: wrap; height: auto; min-height: 24px; padding: 3px 6px; }
   body.web .call > .m { order: 2; margin-left: 20px; min-width: 0; }
   body.web .call > .p { order: 3; }
@@ -3817,6 +3958,7 @@ body.panel .modal { padding: 16px 12px; }
   /* nothing hovers on a phone: what a row shows on hover is shown, and a
      key's row gives it back the room it folds away till a hover (#841) */
   body.web .acc :is(.text.quiet, .proto, .amodels, .alane) { opacity: 1; }
+  body.web .acc .acc-more { opacity: 1; }
   body.web .accts.keys .acc > :is(.amodels, .proto, .alane, .text.quiet) { max-width: none !important; padding: 0 7px !important; flex-shrink: 0 !important; }
   body.web .accts.keys .acc > .alane:not(.set) { margin-left: 0 !important; }
   body.web #gatewayKeys .acc > .key-quotas { max-width: none !important; padding: 0 7px !important; margin-left: 0 !important; flex-shrink: 0; }
@@ -4210,6 +4352,9 @@ body.window .row + .row.agent.conn > .who { min-height: 41px; } /* the line abov
 /* the model it starts on, beside the switch: one width down the list, so
    the pickers and the switches line up */
 .row.agent.conn > .field.ag-start { flex: none; width: 196px; margin-left: 8px; align-self: center; justify-content: flex-start; }
+/* just above the narrow layout the page keeps its bar's 8px too, so the
+   picker gives that back and the name keeps its 150px */
+@media (max-width: 640px) { body.window .row.agent.conn > .field.ag-start { width: 184px; } }
 .row.agent.conn > .who + .field.ag-start { margin-left: auto; }
 .row.agent.conn > .field.ag-start .v { flex: 1; text-align: left; }
 .row.agent.conn > .field.ag-start .chev { margin-left: auto; }
@@ -4394,6 +4539,21 @@ body .row.agent .ag-prefs .row.pref .who { display: block; }
 :is(.ag-prefs, .agent-prefs) .compact-at { flex: 0 1 auto; min-width: 0; flex-wrap: wrap; row-gap: 6px; }
 /* Settings' search finds them; not searching, the links stay out */
 #view-settings:not(.set-searching) #agentPrefLinks { display: none; }
+
+/* a provider's rate windows (#2463): the editor's rows, a day chip each,
+   a span and a rate beside them */
+.rate-windows > .rate-win:last-child + button { align-self: start; }
+.rate-win { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.rate-win .day-chips { display: flex; gap: 2px; }
+.rate-win .day-chip { min-width: 24px; height: 24px; padding: 0 4px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--muted); font: inherit; font-size: 11px; }
+.rate-win .day-chip.on { color: var(--fg); background: var(--seg-thumb); box-shadow: var(--seg-edge); }
+.rate-win input { width: 64px; height: 28px; padding: 0 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--card); color: var(--fg); font: inherit; font-size: 12px; }
+.rate-win .rate-rate { width: 56px; }
+.rate-win .rate-dash { color: var(--muted); }
+.rate-win .rate-win-del { flex: none; padding: 0 6px; color: var(--muted); }
+.rate-win .rate-win-del:hover { color: var(--red); }
+.rate-win .rate-time { width: 86px; height: 28px; justify-content: space-between; padding: 0 8px; flex: none; }
+.rate-win .rate-time[data-value=""] span { color: var(--muted); }
 .sess-pick.led-more { padding: 0 6px; }
 .sess-pick.led-more svg { transform: none; }
 .sess-tools .led-rename { flex: none; width: 180px; height: 26px; padding: 0 8px; border-radius: 7px; font-size: 12px; }

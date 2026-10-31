@@ -448,7 +448,7 @@ func TestCodexActorSurvivesPackedRequestChunk(t *testing.T) {
 	if row.SessionRole != "subagent" || row.Session != "main" || row.Subagent != "child" {
 		t.Fatalf("packed Codex actor identity was lost: %+v", row)
 	}
-	if len(chunk.codexActors) != len(chunk.Rows) || chunk.codexActors[0] != "child" {
+	if chunk.codexActors.len() != len(chunk.Rows) || chunk.codexActors.at(0) != "child" {
 		t.Fatal("query identity changed the source chunk")
 	}
 }
@@ -470,13 +470,12 @@ func TestCodexModelEffortReadsLedgerOnlyWhenCallsChange(t *testing.T) {
 	if got, ok := findModelEffort(first["main-a"], "m", "low"); !ok || got.Input != 20 {
 		t.Fatalf("first read = %+v", first)
 	}
-	first["main-a"][0].Input = 999 // a caller's copy is its own
 	again := CodexModelEffort(All)
 	if built != 1 {
 		t.Fatalf("ledger read %d times for an unchanged history, want 1", built)
 	}
 	if got, _ := findModelEffort(again["main-a"], "m", "low"); got.Input != 20 {
-		t.Fatalf("cached answer was changed through a caller's copy: %+v", again)
+		t.Fatalf("cached answer = %+v", again)
 	}
 
 	writeCodexCall(t, path, "main-a", "main-a", `"vscode"`, "resp-1", "m", "low", now.Add(-time.Hour), 2000, 30)

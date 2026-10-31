@@ -324,21 +324,14 @@ func NetworkLinks(port, key string) []string {
 
 // LANAddrs are this computer's addresses on the local network, for the
 // links to print when the page is served there: MAGPIE_PUBLIC_URL's host
-// when set (in a container, whose own addresses the network can't reach).
+// when set (in a container, whose own addresses the network can't reach),
+// else the gateway's own (gateway.LANHosts), so Settings lists one
+// computer's addresses the same way twice.
 func LANAddrs() []string {
 	if h := gateway.PublicHost(); h != "" {
 		return []string{h}
 	}
-	var out []string
-	as, _ := net.InterfaceAddrs()
-	for _, a := range as {
-		n, ok := a.(*net.IPNet)
-		if !ok || n.IP.IsLoopback() || n.IP.To4() == nil || !n.IP.IsPrivate() {
-			continue
-		}
-		out = append(out, n.IP.String())
-	}
-	return out
+	return gateway.LANHosts()
 }
 
 // webServed is all `magpie web` on port serves: the gateway's client
@@ -390,11 +383,16 @@ func webCompressed(next http.Handler) http.Handler {
 // gzipETag ends the ETag of a gzipped response.
 const gzipETag = "-gzip"
 
-// compressible: text, scripts, JSON and SVG; not PNG, WebP, ICO or JPEG.
+// compressible: text, scripts, JSON and SVG; not PNG, WebP, ICO or JPEG,
+// and not an event stream, which gzip holds back until a block fills (a
+// plugin page's service streams a chat's tokens, servePageService).
 func compressible(ct string) bool {
 	ct = strings.ToLower(strings.TrimSpace(ct))
 	if i := strings.IndexByte(ct, ';'); i >= 0 {
 		ct = strings.TrimSpace(ct[:i])
+	}
+	if ct == "text/event-stream" {
+		return false
 	}
 	return strings.HasPrefix(ct, "text/") || strings.HasSuffix(ct, "javascript") ||
 		strings.HasSuffix(ct, "json") || ct == "image/svg+xml"

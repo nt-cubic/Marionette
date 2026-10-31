@@ -191,7 +191,7 @@ func hasTurnEffort(body []byte) bool {
 		return false
 	}
 	found := false
-	gjson.GetBytes(body, "messages").ForEach(func(_, m gjson.Result) bool {
+	getIn(body, "messages").ForEach(func(_, m gjson.Result) bool {
 		found = m.Get("output_config").Exists()
 		return !found
 	})
@@ -325,7 +325,7 @@ func hasDeferredTools(body []byte) bool {
 		return false
 	}
 	found := false
-	gjson.GetBytes(body, "messages").ForEach(func(_, m gjson.Result) bool {
+	getIn(body, "messages").ForEach(func(_, m gjson.Result) bool {
 		m.Get("content").ForEach(func(_, b gjson.Result) bool {
 			found = deferredBlock(b.Get("type").String())
 			return !found
@@ -449,7 +449,7 @@ func hasRefsOnlyResult(body []byte) bool {
 		return false
 	}
 	found := false
-	gjson.GetBytes(body, "messages").ForEach(func(_, m gjson.Result) bool {
+	getIn(body, "messages").ForEach(func(_, m gjson.Result) bool {
 		m.Get("content").ForEach(func(_, b gjson.Result) bool {
 			found = b.Get("type").String() == "tool_result" && refsOnly(b.Get("content"))
 			return !found

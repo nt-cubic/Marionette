@@ -321,6 +321,7 @@ func chatReplaysReasoning(host, model string) bool {
 }
 
 func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
+	r = responseInstructions(r)
 	var msgs []map[string]any
 	if r.System != "" {
 		msgs = append(msgs, map[string]any{"role": "system", "content": r.System})
@@ -331,7 +332,8 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 	// interleaved thinking): the decoder takes it out as thinking (#1267),
 	// so it goes back in where it came from. A relay serving MiniMax's
 	// models may give the thinking apart and take it back otherwise.
-	inlineThink := strings.HasSuffix(host, "minimax.io") || strings.HasSuffix(host, "minimaxi.com")
+	// api.minimax.cn is MiniMax China's host beside api.minimaxi.com.
+	inlineThink := strings.HasSuffix(host, "minimax.io") || strings.HasSuffix(host, "minimaxi.com") || strings.HasSuffix(host, "minimax.cn")
 	// Gemini wants each step's thought signature back on its first call
 	// (#687), and one it can't check for a step it didn't sign
 	gemini := geminiCompat(host, model)
@@ -524,7 +526,7 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 		out["service_tier"] = r.Tier
 	}
 	if r.MaxTokens > 0 {
-		if strings.HasSuffix(host, "openai.com") {
+		if provider.OpenAIHost(host) {
 			out["max_completion_tokens"] = r.MaxTokens
 		} else {
 			out["max_tokens"] = r.MaxTokens
@@ -584,7 +586,7 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 		// OpenRouter's own search, for any of its models
 		out["plugins"] = []map[string]any{{"id": "web"}}
 	}
-	b, _ := marshalBody(out)
+	b, _ := marshalBody(out, "messages")
 	return b
 }
 
@@ -1094,6 +1096,11 @@ type chatDecoder struct {
 	trim bool
 }
 
+// leadSpace is the white space a leading block of thinking may come
+// after: a relay writing Windows line ends puts "\r\n" before its <think>
+// (grok2api_python's grok-3-search: "\r\n<think>…</think>\r\n").
+const leadSpace = " \t\r\n"
+
 // thoughtTags are the tags a leading block of thinking comes between in a
 // Chat reply's text, by its opening tag.
 var thoughtTags = map[string]string{"<thought>": "</thought>", "<think>": "</think>"}
@@ -1103,7 +1110,7 @@ var thoughtTags = map[string]string{"<thought>": "</thought>", "<think>": "</thi
 func (d *chatDecoder) text(s string, emit func(Event)) {
 	if !d.past && !d.thought {
 		d.lead += s
-		lead := strings.TrimLeft(d.lead, " \n")
+		lead := strings.TrimLeft(d.lead, leadSpace)
 		for open := range thoughtTags {
 			if len(lead) < len(open) && strings.HasPrefix(open, lead) {
 				return
@@ -1144,7 +1151,7 @@ func (d *chatDecoder) text(s string, emit func(Event)) {
 		}
 	}
 	if d.trim {
-		if s = strings.TrimLeft(s, "\n"); s != "" {
+		if s = strings.TrimLeft(s, "\r\n"); s != "" {
 			d.trim = false
 		}
 	}
@@ -1217,7 +1224,7 @@ func (m *mdCode) find(s, close string, last bool) (at, hold int) {
 // afterThought is t without a leading <think>…</think> block, a whole
 // reply's thinking where its API leaves it in the text; t when it has none.
 func afterThought(t string) string {
-	rest, ok := strings.CutPrefix(t, "<think>")
+	rest, ok := strings.CutPrefix(strings.TrimLeft(t, leadSpace), "<think>")
 	if !ok {
 		return t
 	}
@@ -1240,7 +1247,7 @@ func (d *chatDecoder) markedThought(s string, emit func(Event)) {
 		return
 	}
 	tagged := d.thought || d.lead != ""
-	if lead := strings.TrimLeft(s, " \n"); !tagged && !d.past {
+	if lead := strings.TrimLeft(s, leadSpace); !tagged && !d.past {
 		tagged = lead == ""
 		for open := range thoughtTags {
 			tagged = tagged || strings.HasPrefix(lead, open) || strings.HasPrefix(open, lead)

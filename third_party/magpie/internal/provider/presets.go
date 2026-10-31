@@ -105,6 +105,10 @@ type Region struct {
 	Embeddings []string `json:"embeddings,omitempty"`
 	Drawers    []string `json:"drawers,omitempty"`
 	Videos     []string `json:"videos,omitempty"`
+	// Images says which of Models take images, as the vendor's own list
+	// says, for a plan whose /models doesn't list its models: a model
+	// it leaves out is judged as before (models.dev, the user's say).
+	Images map[string]bool `json:"-"`
 	// Decide is the region's decision API, for a preset that routes groups
 	Decide string `json:"decide,omitempty"`
 }
@@ -116,6 +120,37 @@ const WorkspaceID = "{WorkspaceId}"
 // bailianWorkspace is Bailian's System One root in a workspace of region.
 func bailianWorkspace(region string) string {
 	return "https://" + WorkspaceID + "." + region + ".maas.aliyuncs.com/compatible-mode/v1"
+}
+
+// arkPlanModels are the text models of Volcengine Ark's Coding Plan and
+// Agent Plan, which list the same ones: the plans' /models doesn't give
+// them, so they are the docs' (套餐概览 docs/82379/1925114 and 2366394,
+// 快速开始 1928261), ark-code-latest first. doubao-seed-2.1-turbo and
+// kimi-k2.7-code are gone from the plans (xyenon, 10-29). minimax-m3 is
+// marked 即将下线 and stays until it goes (11-02, as reported), as the
+// accounts that have it are still served it.
+var arkPlanModels = []string{"ark-code-latest", "doubao-seed-evolving", "doubao-seed-2.1-pro", "doubao-seed-2.1-lite",
+	"doubao-seed-2.0-mini", "minimax-m3", "glm-5.3", "glm-5.3-flash", "deepseek-v4.1-flash", "deepseek-v4.1-flash-economy", "deepseek-v4-flash", "deepseek-v4-pro",
+	"kimi-k2.8-preview", "kimi-k3", "kimi-k3.1-pro"}
+
+// arkPlanImages are which of arkPlanModels take images, as Ark's plan
+// docs say (Coding Plan 套餐概览 docs/82379/1925114, Agent Plan 2366394,
+// read 10-29), never the plans' /models: its input_modalities aren't the
+// plans' models (#1216), and 10c85e1fe took them from it and marked
+// glm-5.3-flash and deepseek-v4.1-flash(-economy) text-only, so their
+// images went to another model to be described (XYenon). The docs say
+// glm-5.3-flash "为原生多模态模型，支持图片输入", deepseek-v4.1-flash "原生
+// 具备多模态视觉理解能力", -economy "支持多模态输入", kimi-k3 "原生支持视觉
+// 理解", kimi-k2.8-preview "支持文本和图片输入" and minimax-m3 "支持多模态
+// 视觉理解". The Doubao Seed models and kimi-k3.1-pro aren't described
+// either way there and keep what tongzhenbao's fix gave them (they see);
+// deepseek-v4-flash and -pro are DeepSeek's text-only V4, which V4.1 Flash
+// added vision to. ark-code-latest and glm-5.3 are left to models.dev.
+var arkPlanImages = map[string]bool{
+	"glm-5.3-flash": true, "deepseek-v4.1-flash": true, "deepseek-v4.1-flash-economy": true,
+	"kimi-k3": true, "kimi-k2.8-preview": true, "minimax-m3": true,
+	"doubao-seed-evolving": true, "doubao-seed-2.1-pro": true, "doubao-seed-2.1-lite": true, "doubao-seed-2.0-mini": true, "kimi-k3.1-pro": true,
+	"deepseek-v4-flash": false, "deepseek-v4-pro": false,
 }
 
 // alibabaPlanModels are the text models of Alibaba's Token Plan, the same
@@ -139,8 +174,14 @@ var presets = []PresetDef{
 		Website: "https://aistudio.google.com", KeysURL: "https://aistudio.google.com/apikey"},
 	// Google's Gemini models in the user's own Google Cloud project
 	// (vertex.go): generateContent, signed with their Google credentials
-	// rather than a key. It has no list to ask that says which models a
-	// location serves, so they are given: these, every one global serves;
+	// rather than a key; and its partner models (publisher/model ids,
+	// VertexPartner) on Google's OpenAI-compatible chat completions there,
+	// the live ones Google's docs list at global on 2026-10-28 (Gemma 4,
+	// Experimental, is left to be typed in); and Anthropic's Claude
+	// (VertexClaude) on its Messages API there, the current ones under the
+	// ids Claude Code asks Vertex AI for (an older one, claude-…@date, is
+	// typed in). It has no list to ask that says which models a location
+	// serves, so they are given: these, every one global serves;
 	// vertexModels has the others'. Its Priority PayGo and Flex PayGo are
 	// asked for with the two headers.
 	{ID: VertexPreset, Name: "Google Vertex AI", Short: "Vertex AI", Icon: "vertexai-color", Kind: KindVendor,
@@ -149,7 +190,9 @@ var presets = []PresetDef{
 		NoList:  true,
 		Models: []string{"gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite",
 			"gemini-4-argon", "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.1-flash-lite", "gemini-3-flash-preview",
-			"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"},
+			"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite",
+			"deepseek-ai/deepseek-v4.1-flash-maas", "zai-org/glm-5.2-maas", "openai/gpt-oss-120b-maas",
+			"claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"},
 		HeaderHints: []string{"X-Vertex-AI-LLM-Request-Type", "X-Vertex-AI-LLM-Shared-Request-Type"}},
 	{ID: "deepseek", Name: "DeepSeek", Icon: "deepseek-color", Kind: KindVendor, Catalog: "deepseek",
 		Chat: "https://api.deepseek.com/v1", Responses: "https://api.deepseek.com/v1", Anthropic: "https://api.deepseek.com/anthropic",
@@ -328,16 +371,12 @@ var presets = []PresetDef{
 		Website: "https://www.volcengine.com/docs/82379/1925114", KeysURL: "https://ark.volcengine.com/region:cn-beijing/apikey",
 		RegionLabel: "Plan", KeyPlans: true, Regions: []Region{
 			{ID: "coding", Name: "Coding Plan", Chat: "https://ark.cn-beijing.volces.com/api/coding/v3", Responses: "https://ark.cn-beijing.volces.com/api/coding/v3", Anthropic: "https://ark.cn-beijing.volces.com/api/coding",
-				Models: []string{"ark-code-latest", "doubao-seed-evolving", "doubao-seed-2.1-pro", "doubao-seed-2.1-lite", "doubao-seed-2.1-turbo",
-					"doubao-seed-2.0-mini", "minimax-m3", "glm-5.3", "glm-5.3-flash", "deepseek-v4.1-flash", "deepseek-v4-flash", "deepseek-v4-pro",
-					"kimi-k2.7-code", "kimi-k2.8-preview", "kimi-k3"},
+				Models: arkPlanModels, Images: arkPlanImages,
 				Embeddings: []string{"doubao-embedding-vision"}},
 			{ID: "agent", Name: "Agent Plan", Chat: "https://ark.cn-beijing.volces.com/api/plan/v3", Responses: "https://ark.cn-beijing.volces.com/api/plan/v3", Anthropic: "https://ark.cn-beijing.volces.com/api/plan",
-				Models: []string{"ark-code-latest", "doubao-seed-evolving", "doubao-seed-2.1-pro", "doubao-seed-2.1-lite", "doubao-seed-2.1-turbo",
-					"doubao-seed-2.0-mini", "minimax-m3", "glm-5.3", "glm-5.3-flash", "deepseek-v4.1-flash", "deepseek-v4-flash", "deepseek-v4-pro",
-					"kimi-k2.7-code", "kimi-k2.8-preview", "kimi-k3"},
+				Models: arkPlanModels, Images: arkPlanImages,
 				Embeddings: []string{"doubao-embedding-vision"},
-				Drawers:    []string{"doubao-seedream-5-0-pro"},
+				Drawers:    []string{"doubao-seedream-5-0-pro", "doubao-seedream-5.0-flash"},
 				Videos:     []string{"doubao-seedance-2.0", "doubao-seedance-2.0-fast", "doubao-seedance-2.0-mini", "doubao-seedance-2.5"}},
 			{ID: "api", Name: "Pay as you go", Chat: "https://ark.cn-beijing.volces.com/api/v3", Responses: "https://ark.cn-beijing.volces.com/api/v3", Lists: true},
 		},

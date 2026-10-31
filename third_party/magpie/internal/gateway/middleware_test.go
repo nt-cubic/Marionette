@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -39,6 +40,9 @@ func TestMiddlewareThroughGateway(t *testing.T) {
 		}
 		json.Unmarshal(got, &sent)
 		last, _ := json.Marshal(sent.Messages[len(sent.Messages)-1].Content)
+		// the note on the masked message is the gateway's, not the agent's
+		note, _ := json.Marshal(noteBlock)
+		last = bytes.Replace(last, bytes.Trim(note, `"`), nil, 1)
 		io.WriteString(w, sse(chunk("hello "), chunk(string(last)), `data: {"id":"c1","model":"m1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}`, "data: [DONE]"))
 	}))
 	defer up.Close()

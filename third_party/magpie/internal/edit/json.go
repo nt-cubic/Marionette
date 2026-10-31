@@ -55,13 +55,18 @@ func SetJSON(path string, kvs ...KV) error {
 		raw = []byte("{}\n")
 	}
 	orig := raw
+	raw = dropLoneCommas(raw)
 	for _, kv := range kvs {
 		raw, err = setJSONBytes(raw, kv.Path, kv.Value)
 		if err != nil {
 			return fmt.Errorf("%s: %w", path, err)
 		}
 	}
-	return WriteAtomic(path, keepCRLF(raw, orig))
+	out, err := checkJSONC(keepCRLF(raw, orig), dropLoneCommas(orig))
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	return WriteAtomic(path, out)
 }
 
 // keepCRLF is out, an edit of orig, with \r\n at every line break when orig
@@ -84,6 +89,7 @@ func PatchJSON(raw []byte, set []KV, del []string) ([]byte, error) {
 		raw = []byte("{}\n")
 	}
 	orig := raw
+	raw = dropLoneCommas(raw)
 	var err error
 	for _, kv := range set {
 		raw, err = setJSONBytes(raw, kv.Path, kv.Value)
@@ -97,10 +103,14 @@ func PatchJSON(raw []byte, set []KV, del []string) ([]byte, error) {
 			return nil, err
 		}
 	}
-	if marked {
-		return append(append([]byte(nil), bom...), keepCRLF(raw, orig)...), nil
+	out, err := checkJSONC(keepCRLF(raw, orig), dropLoneCommas(orig))
+	if err != nil {
+		return nil, err
 	}
-	return keepCRLF(raw, orig), nil
+	if marked {
+		return append(append([]byte(nil), bom...), out...), nil
+	}
+	return out, nil
 }
 
 func setJSONBytes(raw []byte, keyPath string, value any) ([]byte, error) {
@@ -180,11 +190,15 @@ func insertKey(raw, stripped []byte, from int, key string, value any) ([]byte, e
 	k, _ := json.Marshal(key)
 	pretty := bytes.IndexByte(raw, '\n') >= 0
 	empty := len(bytes.TrimSpace(raw[open+1:close])) == 0
+	// an object of comments only has no member for the new one to come
+	// before: a comma after it would be the object's trailing comma, which
+	// only some apps read
+	members := len(bytes.TrimSpace(stripped[open+1:close])) > 0
 
 	if !pretty {
 		v, _ := json.Marshal(value)
 		ins := string(k) + ":" + string(v)
-		if !empty {
+		if members {
 			ins += ","
 		}
 		return splice(raw, open+1, 0, []byte(ins))
@@ -197,6 +211,9 @@ func insertKey(raw, stripped []byte, from int, key string, value any) ([]byte, e
 	kv := child + string(k) + ": " + string(v)
 	if empty {
 		return splice(raw, open, close-open+1, []byte("{\n"+kv+"\n"+base+"}"))
+	}
+	if !members {
+		return splice(raw, open+1, 0, []byte("\n"+kv))
 	}
 	return splice(raw, open+1, 0, []byte("\n"+kv+","))
 }
@@ -271,6 +288,8 @@ func DelJSON(path string, keyPaths ...string) error {
 	if err != nil || len(bytes.TrimSpace(raw)) == 0 {
 		return err
 	}
+	orig := raw
+	raw = dropLoneCommas(raw)
 	changed := false
 	for _, kp := range keyPaths {
 		out, ok, err := delJSONBytes(raw, kp)
@@ -284,7 +303,11 @@ func DelJSON(path string, keyPaths ...string) error {
 	if !changed {
 		return nil
 	}
-	return WriteAtomic(path, raw)
+	out, err := checkJSONC(raw, dropLoneCommas(orig))
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	return WriteAtomic(path, out)
 }
 
 // pastLineEnd is i past the line end raw has at i, \n or \r\n, else i: a
@@ -343,10 +366,23 @@ func delJSONBytes(raw []byte, keyPath string) ([]byte, bool, error) {
 		}
 		out, _ = splice(raw, from, to-from, nil)
 	} else {
-		// last member: drop the line, then the comma that preceded it
+		// last member: its own trailing comma goes (jsonc blanks it in
+		// stripped, so it isn't seen above), or the only member's would be
+		// left with nothing before it, "{ , }", which OpenCode calls invalid
+		if t := nextToken(raw, b); t < len(raw) && raw[t] == ',' {
+			raw = append(raw[:t:t], raw[t+1:]...)
+			stripped = append(stripped[:t:t], stripped[t+1:]...)
+		}
+		// then drop the line, and the comma that preceded it
 		if alone {
 			from = ls
-			to = pastLineEnd(raw, to)
+			e := to
+			for e < len(raw) && (raw[e] == ' ' || raw[e] == '\t') {
+				e++
+			}
+			if p := pastLineEnd(raw, e); p > e {
+				to = p
+			}
 		}
 		out, _ = splice(raw, from, to-from, nil)
 		k := a

@@ -114,6 +114,7 @@ func miniMaxAt(at place, dir string) *Agent {
 		ID: "minimax-code", Name: "MiniMax Code", Icon: "minimax-color", Aliases: []string{"mcode"}, Spelled: prefixed,
 		UA:  []string{mcodeUA, "minimaxcode"},
 		Bin: "mcode", Dir: dir, Path: path,
+		ListOnly: true,
 		Sync: func() error {
 			if _, ok := edit.GetYAMLText(path, mcodeEntry); !ok {
 				return nil

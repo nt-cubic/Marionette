@@ -21,8 +21,26 @@ func PluginIcon(pp plugin.Provider) string {
 	if ic := pluginOwnIcon(pp.Icon); ic != "" {
 		return ic
 	}
-	return plugin.Icon(pp.Spec, pp.ID)
+	return MarketIcon(plugin.Icon(pp.Spec, pp.ID))
 }
+
+// MarketIcon is an icon the plugin market (registry.json) gives, as the
+// page can show it. A bundled icon's name is given as it is. A picture
+// (an https URL or a data:image URI) is checked, fetched and kept as a
+// plugin's own picture is, and is "" until it is in: the page never
+// loads a remote URL itself, and an icon("https://…") would look for a
+// bundled file of that name.
+func MarketIcon(said string) string {
+	if MarketPicture(said) {
+		return pluginOwnIcon(said)
+	}
+	return said
+}
+
+// MarketPicture is whether a market icon is a picture to fetch or decode
+// (anything with a scheme or a path in it) rather than a bundled icon's
+// name.
+func MarketPicture(said string) bool { return strings.ContainsAny(said, ":/") }
 
 // PluginOwnIcon is the Icon value of a picture a plugin gave (a data:image
 // URI or an https URL), "" while there is none to show: an agent a

@@ -49,7 +49,9 @@ func TestCodexDesktopEfforts(t *testing.T) {
 			t.Fatal(err)
 		}
 		cfg := read()
-		if !strings.Contains(cfg, "# the ones I use\nenabled-reasoning-efforts = [\"high\", \"low\", \"max\"] # mine\nother = 1\n") {
+		// medium: codexHome's fake/m1, a model nothing knows, is offered
+		// low, medium and high (provider.CodexEfforts)
+		if !strings.Contains(cfg, "# the ones I use\nenabled-reasoning-efforts = [\"high\", \"low\", \"medium\", \"max\"] # mine\nother = 1\n") {
 			t.Fatalf("config:\n%s", cfg)
 		}
 		// again: nothing missing, nothing written

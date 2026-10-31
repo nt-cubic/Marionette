@@ -118,3 +118,39 @@ func TestFindOthers(t *testing.T) {
 		}
 	}
 }
+
+// Claude Code that Desktop keeps for its Code tab is found in its userData
+// on Windows (%APPDATA%\Claude\claude-code\<version>\claude.exe, and the
+// 3p mode's Claude-3p), and on a Mac as Desktop's claude.app bundle; a
+// version folder with no program in it (a download cut short) is none.
+func TestClaudeCode(t *testing.T) {
+	put := func(p string) {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, nil, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	home := t.TempDir()
+	roaming, local := filepath.Join(home, "AppData", "Roaming"), filepath.Join(home, "AppData", "Local")
+	e := env(map[string]string{"APPDATA": roaming, "LOCALAPPDATA": local})
+	if got := ClaudeCode("windows", home, e); len(got) != 0 {
+		t.Fatalf("nothing here: %v", got)
+	}
+	put(filepath.Join(roaming, "Claude", "claude-code", "2.1.300", "claude.exe"))
+	put(filepath.Join(local, "Claude-3p", "claude-code", "2.1.310", "claude.exe"))
+	if err := os.MkdirAll(filepath.Join(roaming, "Claude", "claude-code", "2.1.320"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := ClaudeCode("windows", home, e), []string{"2.1.300", "2.1.310"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Windows: %v, want %v", got, want)
+	}
+	mac := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(mac, "Library", "Application Support", "Claude", "claude-code", "2.1.300", "claude.app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := ClaudeCode("darwin", mac, env(nil)), []string{"2.1.300"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Mac: %v, want %v", got, want)
+	}
+}

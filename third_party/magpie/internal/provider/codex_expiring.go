@@ -18,6 +18,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"log"
 	"strings"
 	"sync"
@@ -48,6 +49,14 @@ var (
 	resetExpiryFar = 6 * time.Hour
 )
 
+// errResetsUntilUnread: the account holds resets, but when they run out
+// couldn't be read
+var errResetsUntilUnread = errors.New("couldn't read when its resets run out")
+
+// expiringResetDetailsWait is how long the background look waits for when
+// the resets run out (withResetDetailsWait)
+var expiringResetDetailsWait = 30 * time.Second
+
 var expiring = expiringResets{next: map[string]time.Time{}, until: map[string]time.Time{}}
 
 type expiringResets struct {
@@ -74,6 +83,12 @@ func (e *expiringResets) check(user string, now time.Time, look func() ([]QuotaW
 		return ResetOutcome{}, nil
 	}
 	windows, resets, err := look()
+	if err == nil && resets != nil && resets.Count > 0 && resets.untilUnread {
+		// held, but when they run out wasn't read: unknown, not never —
+		// taken for "none runs out", the account went unread for
+		// resetExpiryFar and a reset running out within it ran out unspent
+		err = errResetsUntilUnread
+	}
 	if err != nil {
 		// tried again by the reset last read, soon when it is near
 		e.next[key] = now.Add(resetExpiryWatch)
@@ -191,6 +206,7 @@ func SpendExpiringCodexResets(ctx context.Context) {
 		if _, expiring := CodexAutoResetWhen(user); !expiring {
 			continue // kept to its week used up (#2078)
 		}
+		ctx := withResetDetailsWait(ctx, expiringResetDetailsWait)
 		var who string
 		out, err := expiring.check(user, time.Now(), func() ([]QuotaWindow, *ResetCredits, error) {
 			var windows []QuotaWindow

@@ -378,6 +378,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
                 await current.addStyleTag({ content: ".row.pref .sub { white-space: nowrap; overflow-wrap: normal; }" });
                 await current.waitForTimeout(350);
               }
+              // The sidebar's button sits ahead of the magpie in both layouts
+              // (ztf4080 on X), so the header beside the sidebar no longer
+              // starts with it: until BASE_REF has it, the button, the magpie
+              // and the header beside the sidebar are left out of both pictures and the rest
+              // compared as ever; side-toggle.test.cjs covers where they are.
+              if (!baselineFile("app.js").includes("append(btn, brand)")) {
+                for (const p of [current, original]) await p.addStyleTag({ content: "#sideToggle, .brand, body.side-nav .top { visibility: hidden !important; }" });
+                await current.waitForTimeout(350);
+              }
               const before = PNG.sync.read(await still(original));
               const after = PNG.sync.read(await still(current));
               const sameSize = before.width === after.width && before.height === after.height;

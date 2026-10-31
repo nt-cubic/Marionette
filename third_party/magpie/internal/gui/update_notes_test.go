@@ -163,13 +163,13 @@ func TestUpdateRecheckTakesNotesLate(t *testing.T) {
 		updates.mu.Unlock()
 	}
 	hold("")
-	updates.recheck()
+	updates.recheck(false)
 	if j := updates.json(); j.State != "ready" || j.Latest != "0.1.1224" || !strings.Contains(j.Notes, "twenty-four") || j.URL == "" {
 		t.Fatalf("empty notes not taken from the recheck: %+v", j)
 	}
 
 	hold("- held")
-	updates.recheck()
+	updates.recheck(false)
 	if j := updates.json(); j.Notes != "- held" {
 		t.Fatalf("held notes replaced: %+v", j)
 	}

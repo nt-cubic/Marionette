@@ -163,8 +163,18 @@ func quotaOfPlugin(q SubscriptionQuota, u plugin.Usage) SubscriptionQuota {
 			b := *x.Balance
 			w.Balance = &b
 		}
-		if x.Used != nil {
-			w.Used = *x.Used
+		used := x.Used
+		if used == nil && x.Limit > 0 && x.Amount > 0 && x.Balance == nil {
+			// the plugin told the window's count and not its share: the share
+			// is the count's. Before, such a window was text alone and an
+			// account with no other was unknown to routing (plugins#468). An
+			// amount of 0 is what a count left out reads as, so it says
+			// nothing yet.
+			u := x.Amount / x.Limit * 100
+			used = &u
+		}
+		if used != nil {
+			w.Used = *used
 		} else if !x.Aside && x.Balance == nil {
 			// the plugin didn't say how much of it is used: its text is all
 			// there is, and routing has no share to count (#3650)
@@ -173,7 +183,7 @@ func quotaOfPlugin(q SubscriptionQuota, u plugin.Usage) SubscriptionQuota {
 		// a row set aside with text and nothing counted is that text: a
 		// window that counts nothing yet says 0 with a count, or with no
 		// text, and one that stops the account is a reading at 0
-		w.Text = w.Text || x.Aside && x.Display != "" && (x.Used == nil || *x.Used == 0) && x.Amount == 0 && x.Limit == 0 && x.Balance == nil
+		w.Text = w.Text || x.Aside && x.Display != "" && (used == nil || *used == 0) && x.Amount == 0 && x.Limit == 0 && x.Balance == nil
 		if t, err := time.Parse(time.RFC3339, x.ResetsAt); err == nil {
 			w.ResetsAt = &t
 		}

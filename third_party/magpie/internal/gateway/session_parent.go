@@ -32,6 +32,7 @@ func isPredictionKind(kind string) bool {
 // prompts or the rest of the metadata in the trace.
 type sessionMetadata struct {
 	Turn         string `json:"turn_id"`
+	Thread       string `json:"thread_id"`
 	Source       string `json:"thread_source"`
 	Parent       string `json:"parent_thread_id"`
 	Forked       string `json:"forked_from_thread_id"`
@@ -57,6 +58,7 @@ func requestSessionMetadata(h http.Header, body []byte) sessionMetadata {
 			}
 		} else if len(metadata) > 0 {
 			_ = json.Unmarshal(metadata["turn_id"], &m.Turn)
+			_ = json.Unmarshal(metadata["thread_id"], &m.Thread)
 			// Compatibility projections used by clients without the full blob.
 			_ = json.Unmarshal(metadata["thread_source"], &m.Source)
 			_ = json.Unmarshal(metadata["parent_thread_id"], &m.Parent)

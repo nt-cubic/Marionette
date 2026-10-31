@@ -498,9 +498,10 @@ func pluginCheckinCounter(id string, outcome *string, calls *int) pluginCheckinP
 // magpie's own Qoder check-in is. A campaign can open mid-day, so a done or
 // inactive read before it was kept for the whole Beijing day, even on a
 // press. Now the loop asks again 30 minutes after the last answer, not
-// before, and a press asks at once.
+// before, and a press asks at once. ZCode's gift plans are rechecked the
+// same way (plugins#503).
 func TestPluginCheckinQoderRechecksCampaigns(t *testing.T) {
-	for _, id := range []string{"qoder", QoderCNID} {
+	for _, id := range []string{"qoder", QoderCNID, "zcode"} {
 		for _, first := range []string{CheckinInactive, CheckinDone} {
 			// each: wait this long, press or not, then the outcome shown
 			// and the asks so far
@@ -546,7 +547,7 @@ func TestPluginCheckinQoderRechecksCampaigns(t *testing.T) {
 
 // Every other plugin's check-in is settled for the Beijing day by a claim,
 // or by a done, inactive or ineligible answered from noon Beijing on: the
-// loop doesn't ask again after 30 minutes (#2696 changes Qoder's alone).
+// loop doesn't ask again after 30 minutes (#2696 changes Qoder's, plugins#503 ZCode's).
 // A press asks again for any of those but a claim: the record is not the
 // vendor's answer now (#3326).
 func TestPluginCheckinOthersSettledForTheDay(t *testing.T) {

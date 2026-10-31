@@ -33,12 +33,43 @@ func CleanModels(in []string) ([]string, error) {
 	return out, nil
 }
 
+// HeldModels is the models a key that lists models and accounts may
+// use. A key that names some accounts and no model may use only the
+// models of those accounts' providers, "<provider>/*" each (Linka on
+// Discord): in the Gateway page's "Models this key may use", ticking an
+// account and no model narrows the key to that account, and never leaves
+// it every model of every other provider, as it did when the accounts
+// held only the providers they name (#905). A key that lists models is
+// held to those, its accounts holding the providers they name, as before.
+func HeldModels(models, accounts []string) []string {
+	if len(models) > 0 || len(accounts) == 0 {
+		return models
+	}
+	var out []string
+	for _, a := range accounts {
+		pid, _, ok := strings.Cut(strings.TrimSpace(a), "/")
+		if !ok || pid == "" {
+			continue
+		}
+		m := pid + "/*"
+		if !slices.ContainsFunc(out, func(o string) bool { return strings.EqualFold(o, m) }) {
+			out = append(out, m)
+		}
+	}
+	if len(out) == 0 {
+		// no account entry names a provider: held to nothing rather
+		// than let off to every model
+		return []string{"/"}
+	}
+	return out
+}
+
 // Restricted says the key may use only the models or accounts it lists.
 func (who Identity) Restricted() bool { return len(who.Models) > 0 || len(who.Accounts) > 0 }
 
 // Allows says one of ids is among the key's models; any, for a key that
-// lists none. The accounts a key may be held to say nothing of its
-// models: they hold the candidates of a plan, not its models.
+// lists none. An Identity's models are already HeldModels: a key that
+// names accounts and no model may use its accounts' providers' models.
 func (who Identity) Allows(ids ...string) bool {
 	if len(who.Models) == 0 {
 		return true

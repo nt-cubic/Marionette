@@ -92,8 +92,10 @@
         p.hello = true;
         clearTimeout(p.timer);
         p.said?.();
-        // a panel is told where it is: the provider whose editor it is in
-        return { ...theme(), context: p.context || {} };
+        // a panel is told where it is: the provider whose editor it is in;
+        // a page served to a browser, where its local service is through
+        // this server (pageservice.go), relative to the page
+        return { ...theme(), context: p.context || {}, service: (!p.context && e.service) || "" };
       case "theme":
         return theme();
       case "options.get":

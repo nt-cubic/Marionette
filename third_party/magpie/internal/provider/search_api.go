@@ -1,7 +1,8 @@
 package provider
 
 // Search APIs answer a model's web search when no provider can (#419):
-// Tavily, Brave Search, Exa, Firecrawl, You.com, a SearXNG of the user's. They are
+// Tavily, Brave Search, Exa, Firecrawl, You.com, DeepSeek, Volcengine's
+// Doubao Search, Tencent Cloud's Yuanbao Search, a SearXNG of the user's. They are
 // kept in providers.json beside the providers, their keys with theirs.
 
 import (
@@ -45,6 +46,10 @@ type SearchVendor struct {
 	// KeyOptional: it answers with no key too (a SearXNG; You.com's free
 	// search, YouFreeSearch)
 	KeyOptional bool
+	// Paths are what magpie puts after its base URL to search (the
+	// gateway's askSearchAPI): a base URL given ending in one of them is
+	// that base, so the path isn't asked twice (/search/search, #509)
+	Paths []string
 }
 
 // YouFreeSearch is You.com's search that takes no key (#1626): 100
@@ -54,13 +59,20 @@ const YouFreeSearch = "https://api.you.com/v1/agents/search"
 
 // SearchVendors are the search APIs magpie can ask, in the order offered.
 var SearchVendors = []SearchVendor{
-	{ID: "tavily", Name: "Tavily", Base: "https://api.tavily.com", KeysURL: "https://app.tavily.com/home"},
-	{ID: "brave", Name: "Brave Search", Base: "https://api.search.brave.com", KeysURL: "https://api-dashboard.search.brave.com/app/keys"},
-	{ID: "exa", Name: "Exa", Base: "https://api.exa.ai", KeysURL: "https://dashboard.exa.ai/api-keys"},
-	{ID: "firecrawl", Name: "Firecrawl", Base: "https://api.firecrawl.dev", KeysURL: "https://www.firecrawl.dev/app/api-keys"},
-	{ID: "you", Name: "You.com", Base: "https://ydc-index.io", KeysURL: "https://you.com/platform", KeyOptional: true},
-	{ID: "deepseek", Name: "DeepSeek", Base: "https://api.deepseek.com", KeysURL: "https://platform.deepseek.com/api_keys"},
-	{ID: "searxng", Name: "SearXNG", KeyOptional: true},
+	{ID: "tavily", Name: "Tavily", Base: "https://api.tavily.com", KeysURL: "https://app.tavily.com/home", Paths: []string{"/search"}},
+	{ID: "brave", Name: "Brave Search", Base: "https://api.search.brave.com", KeysURL: "https://api-dashboard.search.brave.com/app/keys", Paths: []string{"/res/v1/web/search"}},
+	{ID: "exa", Name: "Exa", Base: "https://api.exa.ai", KeysURL: "https://dashboard.exa.ai/api-keys", Paths: []string{"/search"}},
+	{ID: "firecrawl", Name: "Firecrawl", Base: "https://api.firecrawl.dev", KeysURL: "https://www.firecrawl.dev/app/api-keys", Paths: []string{"/v2/search"}},
+	{ID: "you", Name: "You.com", Base: "https://ydc-index.io", KeysURL: "https://you.com/platform", KeyOptional: true, Paths: []string{"/v1/search", "/v1/agents/search"}},
+	{ID: "deepseek", Name: "DeepSeek", Base: "https://api.deepseek.com", KeysURL: "https://platform.deepseek.com/api_keys", Paths: []string{"/v1/tools/search"}},
+	// Volcengine's Doubao Search Custom (豆包搜索 Custom版, once 联网搜索 /
+	// 融合信息搜索), with an API key from its console (CyberCaius on Discord)
+	{ID: "volcengine", Name: "Doubao Search (Volcengine)", Base: "https://open.feedcoopapi.com", KeysURL: "https://console.volcengine.com/search-infinity/api-key", Paths: []string{"/search_api/web_search"}},
+	// Tencent Cloud's Yuanbao Search (元宝搜索, wsa) by its service API
+	// key (服务 API KEY 方式, cloud.tencent.com/document/product/1806/130615),
+	// made in its console's 概览 › 服务 API KEY 方式 (plugins#509)
+	{ID: "wsa", Name: "Yuanbao Search (Tencent Cloud)", Base: "https://api.wsa.cloud.tencent.com", KeysURL: "https://console.cloud.tencent.com/wsapi/index", Paths: []string{"/SearchPro"}},
+	{ID: "searxng", Name: "SearXNG", KeyOptional: true, Paths: []string{"/search"}},
 }
 
 // SearchVendorOf is the vendor by its id.
@@ -112,13 +124,28 @@ func (a SearchAPI) Name() string {
 	return a.Vendor
 }
 
-// Base is the address it is asked at, without a slash at its end.
+// Base is the address it is asked at, without a slash at its end, nor
+// the vendor's own path (SearchVendor.Paths) when its URL was given with
+// it: one saved so before is asked right too (#509).
 func (a SearchAPI) Base() string {
 	if a.URL != "" {
-		return strings.TrimRight(a.URL, "/")
+		return a.ownBase()
 	}
 	v, _ := SearchVendorOf(a.Vendor)
 	return v.Base
+}
+
+// ownBase is URL without a slash at its end, nor the vendor's path at
+// its end (…/search for Tavily): magpie puts that path after it.
+func (a SearchAPI) ownBase() string {
+	u := strings.TrimRight(a.URL, "/")
+	v, _ := SearchVendorOf(a.Vendor)
+	for _, p := range v.Paths {
+		if len(u) > len(p) && strings.EqualFold(u[len(u)-len(p):], p) {
+			return strings.TrimRight(u[:len(u)-len(p)], "/")
+		}
+	}
+	return u
 }
 
 // Ready is whether it can be asked: a vendor magpie knows, at an address,
@@ -215,6 +242,10 @@ func SetSearchAPI(a SearchAPI) error {
 	}
 	if err := a.check(); err != nil {
 		return err
+	}
+	if a.URL != "" {
+		// kept as its base, the field showing what is asked
+		a.URL = a.ownBase()
 	}
 	if i >= 0 {
 		f.Searches[i] = a

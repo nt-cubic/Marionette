@@ -293,6 +293,7 @@ func jcodeAt(at place) *Agent {
 			}
 			return ""
 		},
+		ListOnly: true,
 		Sync: func() error {
 			c, err := jcodeRead(path)
 			if err != nil {

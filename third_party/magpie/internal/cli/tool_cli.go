@@ -44,7 +44,8 @@ const toolUsage = `usage:
   the tool's answer as it came and saves nothing.
   An unknown parameter, or a missing required one, is refused before anything is
   called. The models are the ones magpie's Settings pick (Images › Image generation,
-  Image recognition, Web search). It asks the gateway at the port in Settings' Gateway
+  Image recognition, Web search); generate_image and generate_video take --model
+  provider/model for another one set up (magpie tools generate_image lists them). It asks the gateway at the port in Settings' Gateway
   address (or MAGPIE_ADDR; MAGPIE_GATEWAY=<url> for another).
 
   e.g. magpie tool generate_image "a magpie on a branch, watercolour" --size 1536x1024 -o hero.png

@@ -15,11 +15,10 @@ import (
 // messages, $set/$patch and $rewindTo records. Both stores use the same message
 // schema. Message/tool timestamps are event boundaries, not measured latency.
 func geminiTraceFiles() []file {
-	home, _ := os.UserHomeDir()
-	if custom := appdir.Getenv("GEMINI_CLI_HOME"); custom != "" {
-		home = custom
+	if !Reads("gemini") {
+		return nil
 	}
-	root := filepath.Join(home, ".gemini", "tmp")
+	root := geminiTmpDir()
 	var out []file
 	for _, pattern := range []string{"*/chats/session-*.json", "*/chats/session-*.jsonl"} {
 		paths, _ := SessionGlob(filepath.Join(root, pattern))
@@ -31,6 +30,15 @@ func geminiTraceFiles() []file {
 		}
 	}
 	return out
+}
+
+// geminiTmpDir is where Gemini CLI keeps its chats.
+func geminiTmpDir() string {
+	home, _ := os.UserHomeDir()
+	if custom := appdir.Getenv("GEMINI_CLI_HOME"); custom != "" {
+		home = custom
+	}
+	return filepath.Join(home, ".gemini", "tmp")
 }
 
 type geminiTraceTool struct {

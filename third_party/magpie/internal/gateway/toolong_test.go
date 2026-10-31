@@ -83,6 +83,15 @@ func TestEveryVendorsOverflow(t *testing.T) {
 		{400, "prompt too long; exceeded max context length by 100 tokens"},
 		{400, "Range of input length should be [1, 98304]"},
 		{400, "token limit exceeded"},
+		// Chinese that names the input, not the context (#4420, MYCF711)
+		{400, "内容太长了，请精简输入或开启新对话"},
+		{400, `{"error":{"code":"1261","message":"Prompt 超长"}}`},
+		{400, "token数量超过上限。对话历史+问题的字数太多，需要精简输入"},
+		{400, "输入过长，请缩短后重试"},
+		{400, "输入长度超过限制"},
+		{400, "输入内容超过模型最大token数"},
+		{400, "提示词超出最大长度"},
+		{413, "请求内容过长"},
 	} {
 		if !tooLong(tc.status, tc.msg) {
 			t.Errorf("%q isn't taken for a conversation too long", tc.msg)
@@ -97,6 +106,40 @@ func TestEveryVendorsOverflow(t *testing.T) {
 	// a rate limit worded with tokens is still one
 	if tooLong(429, "Too many tokens, please wait before trying again.") {
 		t.Error("a rate limit taken for a conversation too long")
+	}
+}
+
+// A Chinese pace limit beside words of size, or a length that isn't the
+// conversation's, isn't taken for a conversation too long (#4420): told
+// so, the agent compacts for nothing, and a pace limit worded so would
+// never be asked of the next account.
+func TestChineseNotTooLong(t *testing.T) {
+	for _, msg := range []string{
+		"内容太长，已达到速率限制",
+		"请求过于频繁，输入内容过长的请求请稍后再试",
+		"输入token数超过每分钟限制",
+		"输入过长：已超过并发上限",
+		"每日token数量超过上限",
+		"token数量超过上限",
+		"名称超出最大长度",
+		"输出过长，请调小 max_tokens",
+		"文件名过长",
+		"参数错误",
+		"服务出现问题，请联系管理员",
+		"模型不存在",
+	} {
+		if tooLong(400, msg) {
+			t.Errorf("%q taken for a conversation too long", msg)
+		}
+	}
+	// the pace limit said with size still goes to the next account
+	if !retryable(400, []byte("内容太长，已达到速率限制")) {
+		t.Error("a pace limit worded with size isn't asked of the next account")
+	}
+	for _, msg := range []string{"请求过于频繁", "已达到速率限制"} {
+		if f := failure(429, []byte(msg)); f != failRate {
+			t.Errorf("429 %q is a %s failure", msg, f)
+		}
 	}
 }
 

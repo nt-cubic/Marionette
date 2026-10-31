@@ -131,17 +131,21 @@ func shorterWaits(t *testing.T, stall time.Duration) {
 // generate_image lost it, "image 1: context deadline exceeded": its own
 // download of the 10.6 MB had 2 minutes in all, whether or not it was still
 // coming. A download that keeps coming now goes on to the end (here the
-// cap that was is played by a stall 4 times shorter than the download),
-// and the gateway was asked for the image itself.
+// cap that was is played by a stall shorter than the download), and the
+// gateway was asked for the image itself.
 func TestFourKImageByURLIsSaved(t *testing.T) {
 	big := fourK()
 	if len(big) < 9<<20 {
 		t.Fatalf("the 4K image is %d bytes, not about 10.6 MB", len(big))
 	}
 	t.Logf("the 4K PNG is %.1f MB", float64(len(big))/(1<<20))
-	shorterWaits(t, time.Second)
+	// The stall also counts the time this process takes to grow the
+	// download's buffer. Beside a full suite on a Linux box, a write that
+	// grew one was held up to 2.7 s, and a 1 s stall went off at 4.2 MB of
+	// a download that never stopped.
+	shorterWaits(t, 5*time.Second)
 	fetchLocal(t)
-	files := httptest.NewServer(slowFile(big, 100*time.Millisecond, 0)) // ~4 s in all
+	files := httptest.NewServer(slowFile(big, 200*time.Millisecond, 0)) // ~8 s in all
 	t.Cleanup(files.Close)
 	g := &urlGateway{urls: []string{files.URL + "/4k.png"}}
 	project := t.TempDir()
@@ -152,8 +156,8 @@ func TestFourKImageByURLIsSaved(t *testing.T) {
 	if r["isError"] == true || !strings.Contains(out, saved) {
 		t.Fatalf("after %s: %s", time.Since(began).Round(time.Millisecond), out)
 	}
-	if took := time.Since(began); took < 3*time.Second {
-		t.Fatalf("the download took %s, not the slow one this is about", took)
+	if took := time.Since(began); took <= gateway.ImageStall {
+		t.Fatalf("the download took %s, no longer than the stall: not the slow one this is about", took)
 	}
 	if b, _ := os.ReadFile(saved); !bytes.Equal(b, big) {
 		t.Fatalf("saved %d bytes of %d", len(b), len(big))
@@ -187,17 +191,21 @@ func TestFourKImageAsB64IsSaved(t *testing.T) {
 // it; one of two that came is saved and said beside it.
 func TestStalledDownloadSaysWhereTheImageIs(t *testing.T) {
 	big := fourK()
-	shorterWaits(t, 300*time.Millisecond)
+	// A second, and a small image for the one that comes in full: the
+	// stall also counts the time this process takes to grow the download's
+	// buffer, and at 300 ms, beside a full suite on a Linux box, it went off
+	// at 8.2 MB of a 4K image that was still coming, and once at 0.0 MB.
+	shorterWaits(t, time.Second)
 	fetchLocal(t)
-	stuck := httptest.NewServer(slowFile(big, 0, 3<<20))
+	stuck := httptest.NewServer(slowFile(big, 0, 1<<20))
 	t.Cleanup(stuck.Close)
-	fine := httptest.NewServer(slowFile(big, 0, 0))
+	fine := httptest.NewServer(slowFile(png, 0, 0))
 	t.Cleanup(fine.Close)
 
 	project := t.TempDir()
 	c := initialized(t, &urlGateway{urls: []string{stuck.URL + "/a.png"}}, project)
 	r, out := c.await(map[string]any{"prompt": "a 4K city", "path": "city.png"})
-	if r["isError"] != true || !strings.Contains(out, stuck.URL+"/a.png") || !strings.Contains(out, "nothing came for 300ms, after 3.0 MB") {
+	if r["isError"] != true || !strings.Contains(out, stuck.URL+"/a.png") || !strings.Contains(out, "nothing came for 1s, after 1.0 MB") {
 		t.Fatalf("%v: %s", r["isError"], out)
 	}
 
@@ -206,8 +214,8 @@ func TestStalledDownloadSaysWhereTheImageIs(t *testing.T) {
 	if r["isError"] == true || !strings.Contains(out, filepath.Join(project, "two-1.png")) || !strings.Contains(out, "Not saved: image 2") || !strings.Contains(out, stuck.URL+"/b.png") {
 		t.Fatalf("%s", out)
 	}
-	if b, _ := os.ReadFile(filepath.Join(project, "two-1.png")); !bytes.Equal(b, big) {
-		t.Fatalf("saved %d bytes of %d", len(b), len(big))
+	if b, _ := os.ReadFile(filepath.Join(project, "two-1.png")); !bytes.Equal(b, png) {
+		t.Fatalf("saved %d bytes of %d", len(b), len(png))
 	}
 }
 

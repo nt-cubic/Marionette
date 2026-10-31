@@ -2,7 +2,7 @@
 // Each account of a subscription, and each key, can be kept for some of the
 // provider's models only (#474: 增加账号级别的模型选项). Its row has a badge:
 // one kept for some says how many, always shown; one serving every model
-// says All models, on hover. A click opens the provider's models under the
+// says All models, under its ⋯. A click opens the provider's models under the
 // row as chips; Save posts provider/accountmodels with the account (or the
 // key's id) and the models picked, All models posts none. A click moves
 // nothing and the page stays where it is. A subscription with one account
@@ -123,23 +123,30 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await row(page, id).evaluate((e) => Math.round(e.getBoundingClientRect().top)), before, `${id}'s row moved`);
       assert.equal(await scrolled(page), sc, "a click scrolled");
     };
+    // an unset badge waits under its row's ⋯
+    const reveal = async (page, id) => {
+      if (await pill(page, id).isVisible()) return;
+      await row(page, id).hover();
+      await row(page, id).locator(".acc-more").click();
+    };
     const posted = async (posts, n) => {
       for (let i = 0; i < 60 && posts.length === n; i++) await new Promise((r) => setTimeout(r, 50));
       return posts.at(-1);
     };
 
     test(`${engine} ${lang}: a Codex account is kept for some models, and given all again`, async (t) => {
-      const { page, errors, posts } = await open(t, "Codex", ".editor .accts .acc .amodels");
-      // the one kept for gpt-6-mini says so, always; the other says All models on hover only
+      const { page, errors, posts } = await open(t, "Codex", ".editor .accts .acc .amodels.set");
+      // the one kept for gpt-6-mini says so, always; the other says All models under ⋯ only
       assert.equal(await pill(page, "Spare@Example.com").textContent(), w.one);
       assert.equal(await pill(page, "Spare@Example.com").getAttribute("title"), w.only);
       assert.equal(await pill(page, "Spare@Example.com").evaluate((e) => getComputedStyle(e).opacity), "1");
       assert.equal(await pill(page, "me@example.com").textContent(), w.all);
       await page.mouse.move(0, 0);
       await page.waitForTimeout(250);
-      assert.equal(await pill(page, "me@example.com").evaluate((e) => getComputedStyle(e).opacity), "0");
+      assert.equal(await pill(page, "me@example.com").isVisible(), false);
 
       // me: the provider's models it serves agents, none picked; Save waits for one
+      await reveal(page, "me@example.com");
       await still(page, "me@example.com", pill(page, "me@example.com"));
       assert.deepEqual(await chips(page, "me@example.com"), ["gpt-6", "gpt-6-mini"]);
       const save = panel(page, "me@example.com").getByRole("button", { name: w.save, exact: true });
@@ -208,7 +215,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     };
 
     test(`${engine} ${lang}: the editor's Save saves an account's unsaved picks first`, async (t) => {
-      const { page, errors, posts } = await open(t, "Codex", ".editor .accts .acc .amodels");
+      const { page, errors, posts } = await open(t, "Codex", ".editor .accts .acc .amodels.set");
       await pill(page, "Spare@Example.com").click();
       await panel(page, "Spare@Example.com").locator(".mchip", { hasText: /^gpt-6$/ }).click();
       assert.deepEqual(await chips(page, "Spare@Example.com"), ["gpt-6*", "gpt-6-mini*"]);
@@ -225,6 +232,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     test(`${engine} ${lang}: the editor's Save saves a key's unsaved picks first`, async (t) => {
       const { page, errors, posts } = await open(t, "Relay", ".editor .accts .acc");
       await row(page, "bbbbbbbbbb").hover();
+      await reveal(page, "bbbbbbbbbb");
       await pill(page, "bbbbbbbbbb").click();
       await panel(page, "bbbbbbbbbb").locator(".mchip", { hasText: "Cheap one" }).click();
       const n = posts.length;
@@ -235,7 +243,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     });
 
     test(`${engine} ${lang}: a picker with every model unpicked holds the editor's Save`, async (t) => {
-      const { page, errors, posts } = await open(t, "Codex", ".editor .accts .acc .amodels");
+      const { page, errors, posts } = await open(t, "Codex", ".editor .accts .acc .amodels.set");
       await pill(page, "Spare@Example.com").click();
       await panel(page, "Spare@Example.com").locator(".mchip", { hasText: "gpt-6-mini" }).click();
       const n = posts.length;

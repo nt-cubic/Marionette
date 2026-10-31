@@ -2,7 +2,8 @@ package provider
 
 // A daily check-in, whichever vendor's: WorkBuddy's (workbuddy_checkin.go)
 // and Trae CN's (trae_checkin.go). Each account in use is checked in once
-// a Beijing day, except Qoder's campaigns, rechecked every 30 minutes,
+// a Beijing day, except Qoder's campaigns and ZCode's gift plans,
+// rechecked every 30 minutes,
 // and an answer that may be the vendor's day before (provisional, #3326),
 // asked again every 30 minutes until a claim or an answer from noon on.
 // A press asks the vendor again for a done, inactive or ineligible one.

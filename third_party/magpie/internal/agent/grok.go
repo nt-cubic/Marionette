@@ -16,15 +16,23 @@ package agent
 // gives them back.
 
 import (
+	"encoding/json"
+	"errors"
+	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
+	toml "github.com/pelletier/go-toml/v2"
 	"github.com/tidwall/gjson"
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // grokEfforts are the reasoning efforts Grok knows.
@@ -34,19 +42,28 @@ var grokEfforts = []string{"none", "minimal", "low", "medium", "high", "xhigh", 
 var grokModelTable = `model."` + magpieID + "/"
 
 // grokModelTables are magpie's model tables, for a Grok that reaches the
-// gateway's /v1 at v1.
-func grokModelTables(v1 string) []edit.Table {
+// gateway's /v1 at v1, and the context_window magpie gives each model (by
+// its catalog id), which the caller stashes. A context_window the user set
+// in a table themselves (grokOwnWindow: had is what the tables hold now,
+// wrote what magpie last gave them, nil before magpie kept a record) stays
+// as they set it.
+func grokModelTables(v1 string, had, wrote map[string]int) ([]edit.Table, map[string]int) {
 	var out []edit.Table
+	st, gave := settings.Load(), map[string]int{}
 	for _, m := range magpieModels("grok") {
 		kvs := []edit.KV{
 			{Path: "model", Value: m.ID},
 			{Path: "name", Value: m.Name},
 			{Path: "base_url", Value: v1},
 			{Path: "api_key", Value: keyAt(v1)},
-			{Path: "api_backend", Value: "chat_completions"},
+			{Path: "api_backend", Value: grokBackend(m)},
 		}
-		if m.Context > 0 {
-			kvs = append(kvs, edit.KV{Path: "context_window", Value: m.Context})
+		if w := grokWindow(st, m); w > 0 {
+			gave[m.ID] = w
+			if n, ok := grokOwnWindow(m, w, had, wrote); ok {
+				w = n
+			}
+			kvs = append(kvs, edit.KV{Path: "context_window", Value: w})
 		}
 		var efforts []string
 		for _, e := range grokEfforts { // in Grok's order
@@ -59,7 +76,88 @@ func grokModelTables(v1 string) []edit.Table {
 		}
 		out = append(out, edit.Table{Name: "model." + strconv.Quote(magpieID+"/"+m.ID), KVs: kvs})
 	}
-	return out
+	return out, gave
+}
+
+// grokWindow is the context_window Grok Build is told for m. Grok Build
+// auto-compacts by it ("drives auto-compact timing", its config reference),
+// so it is where Long conversations has Codex and Claude Code compact
+// (codexcat's rule): the threshold set on the model or its provider, else
+// settings' working window on a longer one, and the whole window under
+// Full window (uk.jent on Discord: dozens of models told 1M, each set to
+// 300K by hand). 0 when m's window isn't known.
+func grokWindow(st settings.Settings, m catalog.Model) int {
+	c := m.Context
+	if c <= 0 {
+		return 0
+	}
+	if m.Compact > 0 {
+		return min(c, m.Compact)
+	}
+	return st.Working(c)
+}
+
+// grokOwnWindow is a context_window the user set in magpie's table for m
+// themselves, which a sync keeps: one other than magpie last gave it. With
+// no record of magpie's (wrote nil, a config an older magpie wrote, or a
+// model new to the record), one other than the model's whole window, which
+// an older magpie wrote, and other than w, which magpie gives it now.
+func grokOwnWindow(m catalog.Model, w int, had, wrote map[string]int) (int, bool) {
+	n, ok := had[m.ID]
+	if !ok || n <= 0 || n == w {
+		return 0, false
+	}
+	if prev, ok := wrote[m.ID]; ok {
+		return n, n != prev
+	}
+	return n, n != m.Context
+}
+
+// grokWindowsIn is the context_window of each of magpie's model tables in
+// the config at path, by catalog id. A config that isn't there has none; one
+// that doesn't parse is an error, so a sync writes nothing over it.
+func grokWindowsIn(path string) (map[string]int, error) {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var doc struct {
+		Model map[string]map[string]any `toml:"model"`
+	}
+	if err := toml.Unmarshal(b, &doc); err != nil {
+		return nil, err
+	}
+	out := map[string]int{}
+	for name, t := range doc.Model {
+		id, ok := strings.CutPrefix(name, magpieID+"/")
+		if !ok {
+			continue
+		}
+		if n, ok := t["context_window"].(int64); ok {
+			out[id] = int(n)
+		}
+	}
+	return out, nil
+}
+
+// grokBackend is the api_backend a model of magpie's is asked on: the API
+// its provider serves it on natively, so the gateway relays what Grok sent
+// as it is instead of translating Chat Completions. Grok Build takes
+// "chat_completions" (its default), "responses" and "messages" (Anthropic
+// Messages) on each [model.*] table, and sends each to base_url's
+// /chat/completions, /responses or /messages, so the one /v1 serves all
+// three. A model whose native API is Chat or not known stays on Chat.
+func grokBackend(m catalog.Model) string {
+	switch {
+	case slices.Contains(m.APIs, string(provider.Responses)):
+		return "responses"
+	case slices.Contains(m.APIs, string(provider.Anthropic)):
+		return "messages"
+	}
+	return "chat_completions"
 }
 
 func grok(home string) *Agent { return grokIn(here(home)) }
@@ -89,8 +187,36 @@ func grokIn(at place) *Agent {
 		}
 		return false, nil
 	}
-	writeMagpie := func() error { return edit.SetTOMLTables(path, []string{grokModelTable}, grokModelTables(at.v1())) }
-	dropMagpie := func() error { return edit.SetTOMLTables(path, []string{grokModelTable}, nil) }
+	// keyWindows is the context_window magpie last gave each of its models,
+	// so one the user set by hand since is told from it and kept
+	keyWindows := "grok:" + path + ":windows"
+	writeMagpie := func() error {
+		had, err := grokWindowsIn(path)
+		if err != nil {
+			return err
+		}
+		var wrote map[string]int
+		saved := stashLoad()[keyWindows]
+		if saved != "" {
+			json.Unmarshal([]byte(saved), &wrote)
+		}
+		tables, gave := grokModelTables(at.v1(), had, wrote)
+		if err := edit.SetTOMLTables(path, []string{grokModelTable}, tables); err != nil {
+			return err
+		}
+		if !maps.Equal(gave, wrote) || saved == "" {
+			b, _ := json.Marshal(gave)
+			stash(map[string]string{keyWindows: string(b)})
+		}
+		return nil
+	}
+	dropMagpie := func() error {
+		if err := edit.SetTOMLTables(path, []string{grokModelTable}, nil); err != nil {
+			return err
+		}
+		forget(keyWindows)
+		return nil
+	}
 	// the default model is the user's, not a campaign's
 	ownDefault := func(features map[string]string) error {
 		if features["campaigns"] == "false" {

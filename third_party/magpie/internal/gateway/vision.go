@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -92,7 +93,16 @@ func describedFor(ctx context.Context) *CallFor {
 // list says it takes none (in), or says nothing and magpie counts it
 // text-only — as agents were told before Vision had them told every model
 // takes images (provider.Described): models.dev doesn't say it sees either.
-func blindTo(pid, model string, in *bool) bool {
+//
+// One that turned an image away since magpie started (sightRefused) is
+// blind whatever its list or models.dev says: models.dev's DeepSeek-V4.1-
+// Flash takes images, and a relay serving it with text only refused the
+// image with a 400 that sent the request on to the same model at another
+// provider, past the Image recognition model the user picked (xyenon).
+func (s *Server) blindTo(pid, model string, in *bool) bool {
+	if s.sightRefused(pid, model) {
+		return true
+	}
 	if in != nil {
 		return !*in
 	}
@@ -432,7 +442,7 @@ func (s *Server) askVisionWith(ctx context.Context, model, src, system, text str
 func (s *Server) seenBody(ctx context.Context, proto provider.Protocol, body []byte, model string) ([]byte, error) {
 	// the images described before a route is begun: a wait magpie knows
 	// of (unrouted.go)
-	defer noteWait(ctx)()
+	defer noteWait(ctx, "image description")()
 	var srcs []string
 	have := map[string]bool{}
 	walkImages(proto, body, func(im imageAt) (json.RawMessage, error) {
@@ -492,4 +502,37 @@ func smallModelWhere(p provider.Provider, kind string, keep func(catalog.Model) 
 		return "", 0, false
 	}
 	return c.id, c.cost, ready
+}
+
+// imageRefusedWords are how a vendor turns away an image its model can't
+// take: DeepSeek's 400 "Failed to deserialize the JSON body into the
+// target type: messages[0]: unknown variant `image_url`, expected `text`"
+// (and Responses' input_image, Messages' image, so spelt), OpenAI's
+// "image_url is only supported by certain models", OpenRouter's "No
+// endpoints found that support image input", vLLM's "is not a multimodal
+// model", and the plain "does not support image input" / "image input is
+// not supported" / "不支持图片" of the rest.
+var imageRefusedWords = regexp.MustCompile("(?i)unknown variant [`'\"\\\\]*(?:image_url|input_image|image)\\b|image_url is only supported by certain models|no endpoints found that support image|not a multi-?modal model|(?:does not|doesn't|do not|don't|cannot|can't|unable to) (?:support|accept|process|handle|take|read) (?:the )?(?:image|images|vision|multi-?modal)|\\b(?:image|images|vision|multi-?modal|image_url|input_image)(?: (?:input|inputs|content|parts?))? (?:is |are )?(?:not supported|unsupported|not enabled|not allowed)|不支持(?:图片|图像|多模态|视觉|识图)")
+
+// imageRefused says a failure was the model turning the request's image
+// away: what a describer fixes by describing it, not what another
+// provider of the model should be sent instead (refuseSight).
+func imageRefused(status int, body []byte) bool {
+	switch status {
+	case http.StatusBadRequest, http.StatusUnsupportedMediaType, http.StatusUnprocessableEntity:
+	default:
+		return false
+	}
+	return imageRefusedWords.Match(wordsOf(body))
+}
+
+// refuseSight records that pid's model turned an image away (Server.blind):
+// each later image to it is described (blindTo) or, with nothing to
+// describe it, sent only to a model that sees.
+func (s *Server) refuseSight(pid, model string) { s.blind.Store(pid+"/"+model, true) }
+
+// sightRefused is whether pid's model turned an image away (refuseSight).
+func (s *Server) sightRefused(pid, model string) bool {
+	_, ok := s.blind.Load(pid + "/" + model)
+	return ok
 }

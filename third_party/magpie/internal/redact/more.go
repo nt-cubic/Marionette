@@ -123,10 +123,12 @@ var moreRules = []rule{
 		fold: []string{"users", "documents and settings"}, back: 12, ahead: 100},
 
 	// user@host as a shell prompt has it (user@host:~$, [user@host ~]$) or
-	// as ssh, scp and rsync are given it; git@github.com is no one's
-	{cat: "userhost", groups: []string{"USERNAME", "HOSTNAME"}, groupOK: []func(string) bool{userOK, hostOK}, markers: []string{"@"},
+	// as ssh, scp and rsync are given it; git@github.com is no one's; a
+	// package pinned at its version,
+	// js-tokens@4.0.0: in pnpm-lock.yaml, is no login (notPackagePin)
+	{cat: "userhost", groups: []string{"USERNAME", "HOSTNAME"}, groupOK: []func(string) bool{userOK, hostOK}, markers: []string{"@"}, at: notPackagePin,
 		re: regexp.MustCompile(`(?m)(?:^|[^A-Za-z0-9._%+-])(` + unixUser + `)@(` + hostRe + `)(?::[~/]|:[ \t]*$|[ \t]+[~/]|[ \t]*[$%#>][ \t]|[ \t]*[$%#>]$)`)},
-	{cat: "userhost", groups: []string{"USERNAME", "HOSTNAME"}, groupOK: []func(string) bool{userOK, hostOK}, markers: []string{"@"},
+	{cat: "userhost", groups: []string{"USERNAME", "HOSTNAME"}, groupOK: []func(string) bool{userOK, hostOK}, markers: []string{"@"}, at: notPackagePin,
 		re: regexp.MustCompile(`(?i:\b(?:ssh|scp|sftp|rsync|mosh|ssh-copy-id))\b[^\n@]{0,80}?[ \t"'](` + unixUser + `)@(` + hostRe + `)`)},
 	// hostname: x, HOSTNAME=x, a line with the value alone after it; or
 	// ssh config's HostName x, indented under its Host
@@ -348,6 +350,38 @@ func inCode(v string) bool {
 	}
 	last := strings.ToLower(v[strings.LastIndexByte(v, '.')+1:])
 	return codeObjects[first] || notUsers[last] || notNames[last] || publicHosts[last] || last == "login" || last == "username"
+}
+
+// notPackagePin says the user or the host of user@host at s[a:b] is not
+// half of a package pinned at its version: pnpm-lock.yaml lists each
+// package as js-tokens@4.0.0: on a line of its own, which is a shell
+// prompt's shape, and the package and its version went as a user and a
+// host (dniray on Discord, v0.1.1917). A host that is an address
+// (alice@10.0.0.5) is a host still.
+func notPackagePin(s string, a, b int) bool {
+	if b < len(s) && s[b] == '@' {
+		// the user: what follows the @ is the host
+		e := b + 1
+		for e < len(s) && strings.IndexByte(alnum+"-.", s[e]) >= 0 {
+			e++
+		}
+		return !versionHost(strings.TrimRight(s[b+1:e], "."))
+	}
+	return !(a > 0 && s[a-1] == '@' && versionHost(s[a:b]))
+}
+
+// versionHostRe is a release's version as a host's characters can
+// spell it: 4.0.0, 18.2.0-rc.0.
+var versionHostRe = regexp.MustCompile(`^v?\d+(?:\.\d+)+(?:-[0-9A-Za-z.-]+)?$`)
+
+// versionHost says h, after a user's @, is a version and not a host: no
+// host's name is numbers and dots alone, but an address is.
+func versionHost(h string) bool {
+	if !versionHostRe.MatchString(h) {
+		return false
+	}
+	_, err := netip.ParseAddr(h)
+	return err != nil
 }
 
 func lineUserOK(v string) bool { return userOK(v) && !inCode(v) && !chatWords[strings.ToLower(v)] }

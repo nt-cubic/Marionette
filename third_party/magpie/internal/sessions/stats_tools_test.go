@@ -112,7 +112,7 @@ func TestStatsToolsAndSkills(t *testing.T) {
 // TestShapesMinutesWithoutMessages: a session whose agent tells no messages
 // (pi, grok…) still counts by its minutes at work, and only there.
 func TestShapesMinutesWithoutMessages(t *testing.T) {
-	sh := shapes([]Summary{
+	sh := shapes([]*Summary{
 		{Agent: "claude", Prompts: 2, Replies: 3, ToolCalls: 4, Active: 600},
 		{Agent: "pi", Active: 1200},
 		{Agent: "grok"},

@@ -4,6 +4,8 @@ import (
 	"runtime/debug"
 	"sync"
 	"time"
+
+	"github.com/yetone/magpie/internal/usage"
 )
 
 // A Sessions or Usage page's poll reads every session file's listing and
@@ -15,9 +17,12 @@ import (
 // reads aren't its requests. So once those reads have rested for
 // pageRest, what they left goes back at once, as the warm-up's does.
 
-// pageRest is how long the page reads rest before that: a poll's few
-// reads come within a second of one another.
-const pageRest = 3 * time.Second
+// pageRest is how long the page reads rest before that. It outlasts the
+// pages' polls (Usage every 10 s, Sessions every 15 s), so the pages go
+// back once a window stops polling, not between an open window's polls:
+// at 3 s every poll took back the pages the last one handed back, and
+// madvise and the collections it drove were ~40% of the CPU (#2278).
+const pageRest = 30 * time.Second
 
 var pageReads struct {
 	sync.Mutex
@@ -70,6 +75,8 @@ func releaseIfPagesRest() {
 	}
 	release := pageReads.release
 	pageReads.Unlock()
+	// what the request matching keeps for a poll's next read goes too
+	usage.ReleaseScratch()
 	if release != nil {
 		release()
 		return

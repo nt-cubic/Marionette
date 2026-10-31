@@ -47,3 +47,26 @@ func TestCodexAppRouteFollowsConnectAndDisconnect(t *testing.T) {
 		t.Fatalf("disconnect left the route as it was: %q\n%s", r, read())
 	}
 }
+
+// requires_openai_auth on magpie's table decides whether the Codex app
+// has its ChatGPT account at all (openaiAuth), and the app-server reads it
+// as it starts: the route changes with it, so the app is restarted onto
+// its account when Sync writes it (Qyburn3 on X).
+func TestCodexAppRouteFollowsOpenAIAuth(t *testing.T) {
+	home, read := codexHome(t, `{"tokens":{"access_token":"x","id_token":"x.e30.x"}}`, "")
+	cx := codex(home)
+	if err := cx.Field("login").Set("api"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cx.Fields[0].Set("fake/m1"); err != nil {
+		t.Fatal(err)
+	}
+	with, _, _ := codexAppRoute()
+	codexUsedUp = func() bool { return true }
+	if err := cx.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if without, _, _ := codexAppRoute(); without == with {
+		t.Fatalf("requires_openai_auth taken out left the route as it was:\n%s", read())
+	}
+}

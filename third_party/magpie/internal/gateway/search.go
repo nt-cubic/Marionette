@@ -245,13 +245,14 @@ func partSearcher(p provider.Provider) bool {
 }
 
 // searchHosts are the APIs that search by themselves: OpenAI's, xAI's,
-// DeepSeek's, Zhipu's and Z.ai's web_search tool (Zhipu's on its Responses
-// API only, DeepSeek's on its Responses and Anthropic APIs: their Chat APIs
-// have no such tool), Anthropic's web_search_20250305 (DeepSeek's Anthropic
+// DeepSeek's, Zhipu's, Z.ai's and Volcengine Ark's web_search tool
+// (Zhipu's and Ark's on their Responses APIs only, DeepSeek's on its
+// Responses and Anthropic APIs: their Chat APIs have no such tool; Ark's
+// in the shape forArkSearch gives it), Anthropic's web_search_20250305 (DeepSeek's Anthropic
 // API runs it too, answering web_search_tool_result blocks, #669),
 // OpenRouter's web plugin, Gemini's googleSearch.
 var searchHosts = map[provider.Protocol][]string{
-	provider.Responses: {"api.openai.com", "api.x.ai", "api.deepseek.com", "open.bigmodel.cn", "api.z.ai"},
+	provider.Responses: {"api.openai.com", "api.x.ai", "api.deepseek.com", "open.bigmodel.cn", "api.z.ai", arkHost},
 	provider.Anthropic: {"api.anthropic.com", "api.deepseek.com"},
 	provider.Chat:      {"openrouter.ai"},
 	provider.Gemini:    {"generativelanguage.googleapis.com"},

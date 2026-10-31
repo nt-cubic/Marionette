@@ -55,6 +55,11 @@ type Options struct {
 	Kinds map[string]bool
 	// Model, where set, finds more in the texts to mask (model.go)
 	Model Model
+	// Route names where a request masked for a vendor may go (the gateway
+	// sets it: the providers a model, its fallbacks or a routing group's
+	// members are served by). A text sent on it before goes on it again
+	// as it went (sentSpans); on another route it is masked afresh.
+	Route string
 	// MinScore is the score the user has Model's finds need (Settings →
 	// Privacy's slider), which Model's own finds are held to already. A
 	// value only the model found, masked before at a lower score, isn't
@@ -83,7 +88,8 @@ type Options struct {
 	// found are the spans Model found, by text, for one request's texts
 	found map[string][]Found
 	// sent is masking for a vendor (Mask, MaskJSON): a text masked
-	// before has the known values it had then (sentKnownSpans)
+	// before on Route has the model's finds and the known values it had
+	// then (sentSpans)
 	sent bool
 }
 
@@ -163,7 +169,7 @@ var rules = append([]rule{
 	{kind: "TOKEN", re: regexp.MustCompile(`eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`), markers: []string{"eyJ"}, bound: tokenCh},
 	// the password of user:password@host, or of :password@host as a Redis
 	// URL has it with no user
-	{kind: "PASSWORD", re: regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s:@/?#"'<>]*:([^\s@/?#"'<>]{3,})@`), markers: []string{"://"}, ok: notAVariable},
+	{kind: "PASSWORD", re: regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s:@/?#"'<>]*:([^\s@/?#"'<>]{3,})@`), markers: []string{"://"}, ok: notAVariable, at: hiddenInURL},
 	// password = …, API_KEY: "…", as .env files and configs have them
 	{kind: "SECRET", re: regexp.MustCompile(`(?i)[A-Za-z0-9_.-]*(?:` + secretNames.pattern() + `)[A-Za-z0-9_.-]*` + quote + `[ \t]*[:=][ \t]*` + quote + `(` + secretCh + `{8,})`),
 		markers: secretNames.markers(), ok: secretValue, at: fieldAt},
@@ -275,6 +281,12 @@ const (
 // placeholderRe is a placeholder as Mask writes it.
 var placeholderRe = regexp.MustCompile(`\{\{[A-Z][A-Z0-9_]*_[a-z2-7]{8}\}\}`)
 
+// HasPlaceholder says whether s holds text written as Mask writes a
+// placeholder, in JSON or not.
+func HasPlaceholder(s string) bool {
+	return strings.Contains(s, "{{") && placeholderRe.MatchString(s)
+}
+
 // notAVariable turns away what stands in for a value: ${PASS}, <password>, ****.
 func notAVariable(v string) bool {
 	if strings.ContainsAny(v[:1], "$%{<[*") {
@@ -301,8 +313,10 @@ func keyValue(v string) bool {
 // time.
 func keyAt(s string, a, b int) bool {
 	v := s[a:b]
-	if pathValue(v) {
-		return false // where a key is kept: 私钥 ~/.ssh/id_ed25519 (fieldvalue.go)
+	if pathValue(v) || versionValue(v) {
+		// where a key is kept: 私钥 ~/.ssh/id_ed25519, or a release's
+		// version: token 是 0.15.0-rc1 (fieldvalue.go)
+		return false
 	}
 	if keyValue(v) {
 		return true
@@ -405,6 +419,46 @@ func inUserinfo(s string, a int) bool {
 		k++ // a scheme starts with a letter
 	}
 	return k < j
+}
+
+// hiddenInURL says the password at s[a:b], in a URL's user:password@,
+// is hidden by masking it: it is not also written as it is elsewhere in
+// the same URL, as its user name, a part of its host or of its path. A
+// test database's URL often gives one word for all three:
+// postgresql://geodatafusion:geodatafusion@127.0.0.1:55432/geodatafusion
+// is the PostGIS test of the geodatafusion repo. Its password was masked
+// while the URL still had it twice as written, and once masked the word
+// was known (knownSpans): the project's folders, its crate, its .toml
+// and cargo test -p geodatafusion went to the vendor as a made-up word
+// for the rest of the run, as a password (xuanwo on X, 10-29: "很多项目名
+// 被识别成了 password", 26M masked in a day). postgres:postgres,
+// root:root and guest:guest are the same: anyone who reads the user
+// reads the password. A password not written elsewhere in its URL is
+// masked as before, whatever it looks like: app:geodatafusion@ masks it
+// there and, as known, wherever it is next.
+func hiddenInURL(s string, a, b int) bool {
+	pw := s[a:b]
+	i := strings.LastIndex(s[:a], "//")
+	if i < 0 || s[a-1] != ':' {
+		return true
+	}
+	if s[i+2:a-1] == pw {
+		return false // the user name
+	}
+	// the host and the path, to the URL's end
+	end := b + 1
+	for end < len(s) && !strings.ContainsRune(" \t\r\n\"'<>`\\)]}", rune(s[end])) {
+		end++
+	}
+	if b+1 > end {
+		return true
+	}
+	for _, part := range strings.FieldsFunc(s[b+1:end], func(r rune) bool { return strings.ContainsRune("/:.?#&=;,@", r) }) {
+		if part == pw {
+			return false
+		}
+	}
+	return true
 }
 
 // realEmail is whether v, matched as an address, is someone's. git@ is
@@ -689,6 +743,9 @@ type span struct {
 	kind       string
 	by         string  // which finder found it: one of the By constants
 	score      float64 // the model's score for one it found, else 0
+	// bare: a whole bare value of JSON text (inStrings), whose
+	// placeholder goes in quoted
+	bare bool
 }
 
 // Which finder found a value (Hit.By): magpie's rules, the user's own
@@ -824,7 +881,7 @@ func Mask(s string, o Options) (string, int) {
 
 // Preview is Mask with nothing remembered: each value goes as the
 // placeholder, or with Options.Shape the made-up key, it would have (a
-// user name its made-up name), which
+// user name its made-up name, an IP address its documentation one), which
 // isn't kept for Restore or as a value seen before (known.go).
 func Preview(s string, o Options) string {
 	put := tag
@@ -841,6 +898,11 @@ func Preview(s string, o Options) string {
 	put = func(kind, v string) string {
 		if kind == "USERNAME" {
 			return standInOf(v) // a user name's made-up name (shape.go)
+		}
+		if kind == "IP" {
+			if at, _, ok := ipStandIns(v); ok {
+				return at(0) // an address's documentation one (shape.go)
+			}
 		}
 		return tagOrShape(kind, v)
 	}
@@ -906,7 +968,7 @@ func mask(raw string, o Options, put func(kind, v string) string, escaped bool) 
 				i = a + max(n, 1)
 				continue
 			}
-			found = append(found, span{a, b, "TERM", ByWord, 0})
+			found = append(found, span{a, b, "TERM", ByWord, 0, false})
 			i = max(b, a+1)
 		}
 	}
@@ -941,12 +1003,12 @@ func mask(raw string, o Options, put func(kind, v string) string, escaped bool) 
 				took := false
 				for g, kind := range r.groups {
 					if a, b := m[2*g+2], m[2*g+3]; a >= 0 && r.takes(s, a, b, r.groupOK[g]) {
-						found = append(found, span{a, b, kind, r.by(), 0})
+						found = append(found, span{a, b, kind, r.by(), 0, false})
 						took = true
 					}
 				}
 				if took {
-					split = append(split, span{m[2], m[1], "", "", 0})
+					split = append(split, span{m[2], m[1], "", "", 0, false})
 				}
 				continue
 			}
@@ -969,7 +1031,7 @@ func mask(raw string, o Options, put func(kind, v string) string, escaped bool) 
 				ok = nil
 			}
 			if r.takes(s, a, b, ok) {
-				found = append(found, span{a, b, r.kind, r.by(), 0})
+				found = append(found, span{a, b, r.kind, r.by(), 0, false})
 			}
 		}
 	}
@@ -980,20 +1042,52 @@ func mask(raw string, o Options, put func(kind, v string) string, escaped bool) 
 	}
 	// after the rules', so where a rule finds the same value it keeps the
 	// kind it has always had
-	found = append(found, modelSpans(raw, o)...) // the model was asked about raw
 	if o.sent {
-		found = append(found, sentKnownSpans(s, o)...)
+		// the model was asked about raw
+		now := modelSpans(raw, o)
+		kept := sentSpans(sentModel, raw, o, func() []span { return now })
+		learnLate(raw, now, kept, o, escaped)
+		found = append(found, kept...)
+		found = append(found, sentSpans(sentKnown, s, o, func() []span { return knownSpans(s, o) })...)
 	} else {
+		found = append(found, modelSpans(raw, o)...) // the model was asked about raw
 		found = append(found, knownSpans(s, o)...)
 	}
 	if escaped {
-		found = outsideEscapes(raw, found)
+		found = inStrings(raw, outsideEscapes(raw, found))
 	}
 	found = noNumbers(s, noIDs(s, found))
 	if o.sent {
 		noteScores(raw, found) // what is masked for a vendor, not a preview
 	}
 	return apply(raw, found, put, o)
+}
+
+// learnLate makes known what the model finds in raw now that it didn't
+// the first time raw was sent on o.Route (now, beside kept): raw goes as
+// it went, but a value in it the model has read since is masked in new
+// text, as it would be had raw been masked with it (known.go). Nothing
+// is told (o.Seen): it isn't masked here.
+func learnLate(raw string, now, kept []span, o Options, escaped bool) {
+	var late []span
+	for _, f := range now {
+		if !slices.ContainsFunc(kept, func(k span) bool { return k.start == f.start && k.end == f.end && k.kind == f.kind }) {
+			late = append(late, f)
+		}
+	}
+	if len(late) == 0 {
+		return
+	}
+	if escaped {
+		late = outsideEscapes(raw, late)
+	}
+	noteScores(raw, late)
+	o.Seen = nil
+	put := o.put()
+	if escaped {
+		put = unescapedPut(put)
+	}
+	apply(raw, late, put, o)
 }
 
 // unescapedView is s, JSON text, as long as s and read as the vendor reads
@@ -1090,6 +1184,83 @@ func outsideEscapes(s string, found []span) []span {
 		}
 	}
 	return out
+}
+
+// inStrings is found, for s JSON text (a tool call's arguments), with
+// each value inside the one string it starts in: cut at that string's
+// closing quote, or started at the first string inside it. A value that
+// is a whole bare value (a number under "password":) is kept, and its
+// placeholder goes in quoted (span.bare); one in nothing else, across a
+// key's quotes, a colon or a brace, goes. Masked over the quote, the
+// arguments were JSON no longer: the local model reads a password's ! and
+// the "} after it as one token, and {"cmd":"export DB_PASSWORD=Hunt3r!"}
+// went as {"cmd":"export DB_PASSWORD={{SECRET_…}}}; a user's rule
+// tok-\S+ took the "} too. The vendor turned away every turn that
+// replayed the call, and Codex reconnected over and over
+// (xiaojiang091499 on X). Every finder's values go through here, as
+// through outsideEscapes. Text that isn't JSON is left as it is.
+func inStrings(s string, found []span) []span {
+	if len(found) == 0 || !json.Valid([]byte(s)) {
+		return found
+	}
+	// in[i] is 1 + which string literal byte i is the text of, 0 for one
+	// outside every string (its quotes among them)
+	in := make([]int32, len(s))
+	n := int32(0)
+	for i := 0; i < len(s); i++ {
+		if s[i] != '"' {
+			continue
+		}
+		n++
+		j := i + 1
+		for ; j < len(s) && s[j] != '"'; j++ {
+			in[j] = n
+			if s[j] == '\\' && j+1 < len(s) {
+				j++
+				in[j] = n
+			}
+		}
+		i = j
+	}
+	out := found[:0]
+	for _, f := range found {
+		a := f.start
+		for a < f.end && in[a] == 0 {
+			a++
+		}
+		if a == f.end {
+			if bareValue(s, f.start, f.end) {
+				f.bare = true
+				out = append(out, f)
+			}
+			continue
+		}
+		b := a
+		for b < f.end && in[b] == in[a] {
+			b++
+		}
+		f.start, f.end = a, b
+		out = append(out, f)
+	}
+	return out
+}
+
+// bareValue says s[a:b], JSON text outside its strings, is all of one
+// bare value: an object's (after :) or an array's (after [ or ,), with
+// the , } or ] that ends it after it.
+func bareValue(s string, a, b int) bool {
+	if a >= b || strings.ContainsAny(s[a:b], " \t\r\n{}[]\",:") {
+		return false
+	}
+	i := a - 1
+	for i >= 0 && isSpace(s[i]) {
+		i--
+	}
+	k := b
+	for k < len(s) && isSpace(s[k]) {
+		k++
+	}
+	return i >= 0 && strings.IndexByte(":[,", s[i]) >= 0 && (k == len(s) || strings.IndexByte(",}]", s[k]) >= 0)
 }
 
 // noNumbers is found without what is a piece of a decimal number of s:
@@ -1306,7 +1477,11 @@ func apply(s string, found []span, put func(kind, v string) string, o Options) (
 		}
 		b.WriteString(s[last:f.start])
 		h.Placeholder = put(f.kind, v)
-		b.WriteString(h.Placeholder)
+		if f.bare {
+			b.WriteString(`"` + h.Placeholder + `"`)
+		} else {
+			b.WriteString(h.Placeholder)
+		}
 		if o.Seen != nil {
 			o.Seen(h)
 		}

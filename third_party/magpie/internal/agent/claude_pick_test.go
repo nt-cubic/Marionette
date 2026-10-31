@@ -48,7 +48,7 @@ func TestClaudeModelPickedInClaudeCode(t *testing.T) {
 	if v := a.Values(); v["model"] != "deepseek/flash" || v["opus"] != "" || v["haiku"] != "deepseek/lite" {
 		t.Fatalf("the pick is the main model, the tiers that followed still follow: %v", v)
 	}
-	if got := claudeStandInAt(path, "claude-sonnet-5", gateway.URL()); got != "deepseek/pro" {
+	if got := claudeStandInAt(here(""), path, "claude-sonnet-5"); got != "deepseek/pro" {
 		t.Fatalf("sonnet's stand-in before Follow: %q", got)
 	}
 	if err := a.Follow(); err != nil {
@@ -58,7 +58,7 @@ func TestClaudeModelPickedInClaudeCode(t *testing.T) {
 		env("ANTHROPIC_DEFAULT_SONNET_MODEL") != "deepseek/flash" || env("ANTHROPIC_DEFAULT_HAIKU_MODEL") != "deepseek/lite" {
 		t.Fatalf("followers go with the pick, haiku keeps its own:\n%s", readFile(path))
 	}
-	if got := claudeStandInAt(path, "some-unknown-model", gateway.URL()); got != "deepseek/flash" {
+	if got := claudeStandInAt(here(""), path, "some-unknown-model"); got != "deepseek/flash" {
 		t.Fatalf("a model of no tier stands in for the pick: %q", got)
 	}
 

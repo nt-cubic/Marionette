@@ -93,3 +93,53 @@ func TestLastKnownProviders(t *testing.T) {
 		t.Fatalf("another version's list served: %.200s", b)
 	}
 }
+
+// The tray panel's account switch (shuizhuyu on X) draws the kept list,
+// so a change made through a provider or login action is kept at once,
+// not only on the next GET /api/providers.
+func TestKeptProvidersFollowActions(t *testing.T) {
+	sandboxHome(t)
+	forgetLastProviders()
+	t.Cleanup(forgetLastProviders)
+	if _, err := provider.Add(provider.Provider{ID: "own", Name: "Own", Chat: "http://127.0.0.1:1/v1", Key: "sk-own", Models: []string{"m1"}}); err != nil {
+		t.Fatal(err)
+	}
+	srv := Handler(nil, nil)
+	do := func(method, path, body string) string {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(method, path, strings.NewReader(body)))
+		if rec.Code != 200 {
+			t.Fatalf("%s %s: %d %s", method, path, rec.Code, rec.Body)
+		}
+		return rec.Body.String()
+	}
+	off := func() bool {
+		t.Helper()
+		var l struct {
+			Last      bool `json:"last"`
+			Providers []struct {
+				ID  string `json:"id"`
+				Off bool   `json:"off"`
+			} `json:"providers"`
+		}
+		if err := json.Unmarshal([]byte(do("GET", "/api/providers?last=1", "")), &l); err != nil || !l.Last {
+			t.Fatalf("kept list: %+v %v", l, err)
+		}
+		for _, p := range l.Providers {
+			if p.ID == "own" {
+				return p.Off
+			}
+		}
+		t.Fatal("own is not in the kept list")
+		return false
+	}
+	do("GET", "/api/providers", "")
+	if off() {
+		t.Fatal("own kept as off before it was switched off")
+	}
+	do("POST", "/api/provider/off", `{"id":"own"}`)
+	if !off() {
+		t.Error("the kept list still has own on after it was switched off")
+	}
+}

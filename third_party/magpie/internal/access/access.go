@@ -122,7 +122,8 @@ type Key struct {
 	// key has them only beside a Limit, which an older magpie still reads.
 	More []Limit `json:"moreLimits,omitempty"`
 	// Models are the models the key may use (#882): "<provider>/<model>",
-	// "<provider>/*" or a group's "group/<name>"; none for every model.
+	// "<provider>/*" or a group's "group/<name>"; none for every model,
+	// unless it lists accounts: then its accounts' providers' (HeldModels).
 	Models []string `json:"models,omitempty"`
 	// Accounts are the accounts and keys the key may use (#905), as
 	// "<provider>/<account>": a signed-in account by its stable id, a
@@ -133,6 +134,12 @@ type Key struct {
 	// every model it may use, of the accounts and keys it may use, names
 	// and balances included. Off, it is told none (#1981).
 	Quotas bool `json:"quotas,omitempty"`
+	// ReadOnly holds the key to reading this magpie's stats (Steven on
+	// Discord: a desk display polling quotas and usage, its key kept in
+	// a device's flash): the gateway answers it only the routes in its
+	// readOnlyRoutes and refuses it every other, every model, MCP and
+	// write route among them. Off, the key may do what its other limits let it.
+	ReadOnly bool `json:"readOnly,omitempty"`
 }
 
 // Identity is the gateway key a request came with, its budget, the
@@ -144,6 +151,12 @@ type Identity struct {
 	Models         []string
 	Accounts       []string
 	Quotas         bool
+	ReadOnly       bool
+	// Default: the key is the sharing key magpie made itself (Default),
+	// the one it writes into this computer's own agents that reach the
+	// gateway from beyond loopback, never one the user made for someone
+	// else.
+	Default bool
 }
 type contextKey struct{}
 
@@ -299,6 +312,9 @@ type Change struct {
 	Accounts []string `json:"accounts,omitempty"`
 	// Quotas is what "quotas-key" sets (#2216).
 	Quotas bool `json:"quotas,omitempty"`
+	// ReadOnly is what "access-key" sets, and "add-key" gives the new key:
+	// it may read stats and use no model (Key.ReadOnly).
+	ReadOnly bool `json:"readOnly,omitempty"`
 	// Secret is the value "add-key" gives the new key, one its clients
 	// already send (love1sbug on X: keys handed out from another gateway);
 	// "" for one magpie makes.
@@ -340,7 +356,7 @@ func Update(action string, in Change) (string, error) {
 			}
 			secret = Prefix + token
 		}
-		keys = append(keys, Key{ID: id, Name: name, Secret: secret})
+		keys = append(keys, Key{ID: id, Name: name, Secret: secret, ReadOnly: in.ReadOnly})
 	} else {
 		i := slices.IndexFunc(keys, func(k Key) bool { return k.ID == in.Key })
 		if i < 0 {
@@ -440,6 +456,14 @@ func Update(action string, in Change) (string, error) {
 			keys[i].Accounts = as
 		case "quotas-key":
 			keys[i].Quotas = in.Quotas
+		case "access-key":
+			// the sharing key is the one magpie gives its own agents (a
+			// WSL distro's under NAT, LANSecret): read-only, they could
+			// no longer use a model
+			if in.ReadOnly && defaultKey {
+				return "", errors.New("The sharing key is the one magpie gives agents that reach it from elsewhere, so it can't be read-only: add a key of its own for reading stats")
+			}
+			keys[i].ReadOnly = in.ReadOnly
 		case "on-key", "off-key":
 			keys[i].Off = action == "off-key"
 		case "remove-key":
@@ -454,7 +478,7 @@ func Update(action string, in Change) (string, error) {
 		default:
 			return "", fmt.Errorf("unknown key action %q", action)
 		}
-		if defaultKey && action != "remove-key" && action != "rename-key" && action != "limit-key" && action != "reset-limit-key" && action != "models-key" && action != "accounts-key" && action != "quotas-key" {
+		if defaultKey && action != "remove-key" && action != "rename-key" && action != "limit-key" && action != "reset-limit-key" && action != "models-key" && action != "accounts-key" && action != "quotas-key" && action != "access-key" {
 			mirror = &keys[i]
 		}
 	}
@@ -501,7 +525,10 @@ func Authenticate(secret string) (Identity, bool) {
 			if k.Off {
 				return Identity{}, false
 			}
-			return Identity{KeyID: k.ID, KeyName: k.Name, Limit: k.Limit, More: k.More, Models: k.Models, Accounts: k.Accounts, Quotas: k.Quotas}, true
+			// the default key as Default tells it: marked LAN, or the id
+			// the settings name (settings read only for an unmarked key)
+			def := k.LAN || (settings.Load().LANKeyID == k.ID && k.ID != "")
+			return Identity{KeyID: k.ID, KeyName: k.Name, Limit: k.Limit, More: k.More, Models: HeldModels(k.Models, k.Accounts), Accounts: k.Accounts, Quotas: k.Quotas, ReadOnly: k.ReadOnly, Default: def}, true
 		}
 	}
 	s := settings.Load()
@@ -509,7 +536,7 @@ func Authenticate(secret string) (Identity, bool) {
 	// fall back after either durable marker exists, or to a revoked mirror.
 	if s.LAN && s.LANKeyID == "" && s.LANKey != "" && !strings.HasPrefix(s.LANKey, revokedLANPrefix) && !slices.ContainsFunc(keys, func(k Key) bool { return k.LAN }) && subtle.ConstantTimeCompare([]byte(secret), []byte(s.LANKey)) == 1 {
 		k := legacyLANKey(s.LANKey)
-		return Identity{KeyID: k.ID, KeyName: k.Name}, true
+		return Identity{KeyID: k.ID, KeyName: k.Name, Default: true}, true
 	}
 	return Identity{}, false
 }

@@ -137,7 +137,7 @@ func (p Provider) azureModels(ctx context.Context) ([]catalog.Model, string, err
 	for k, v := range AuthHeaders(p, Chat) {
 		headers[k] = v
 	}
-	for k, v := range p.Headers {
+	for k, v := range p.SentHeaders(ctx) {
 		// the user's api-key, in any case, is the one sent
 		for had := range headers {
 			if strings.EqualFold(had, k) {

@@ -26,6 +26,7 @@ func TestHermes(t *testing.T) {
 	if err := provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com/v1", Key: "k", Models: []string{"pro", "flash"}}); err != nil {
 		t.Fatal(err)
 	}
+	setUpInMagpie("hermes")
 	dir := appdir.HermesHomeIn(home)
 	path := filepath.Join(dir, "config.yaml")
 	read := func() (map[string]any, map[string]any, string) {
@@ -105,6 +106,7 @@ func TestHermes(t *testing.T) {
 	}
 
 	// Disconnect from magpie's model: back to what the user had
+	setUpInMagpie("hermes")
 	f.Set("magpie/deepseek/flash")
 	if err := a.Disconnect(); err != nil {
 		t.Fatal(err)
@@ -116,6 +118,7 @@ func TestHermes(t *testing.T) {
 
 	// a config with no provider of its own: none comes back
 	os.WriteFile(path, []byte("agent:\n  max_turns: 60\n"), 0o644)
+	setUpInMagpie("hermes")
 	f.Set("magpie/deepseek/pro")
 	if err := a.Disconnect(); err != nil {
 		t.Fatal(err)

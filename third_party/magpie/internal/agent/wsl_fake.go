@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -26,12 +27,15 @@ func FakeWSL(probes, roots map[string]string) func() {
 	}
 	list := []byte(strings.Join(names, "\n"))
 	stopped := map[string]bool{}
-	fakeStop = func(name string) {
+	fakeStop = func(name string, stop bool) {
 		wsl.Lock()
-		stopped[name] = true
+		stopped[name] = stop
 		wsl.runAt = time.Time{}
 		wsl.Unlock()
 	}
+	fakeCalls.Lock()
+	fakeCalls.in = map[string]int{}
+	fakeCalls.Unlock()
 	wslOn = true
 	wslRun = func(_ time.Duration, args ...string) ([]byte, error) {
 		switch strings.Join(args, " ") {
@@ -47,6 +51,9 @@ func FakeWSL(probes, roots map[string]string) func() {
 			return []byte(strings.Join(run, "\n")), nil
 		}
 		if len(args) > 2 && args[0] == "-d" {
+			fakeCalls.Lock()
+			fakeCalls.in[args[1]]++
+			fakeCalls.Unlock()
 			if p, ok := probes[args[1]]; ok {
 				return []byte(p), nil
 			}
@@ -61,13 +68,36 @@ func FakeWSL(probes, roots map[string]string) func() {
 	}
 }
 
-var fakeStop func(string)
+var fakeStop func(string, bool)
+
+// fakeCalls counts, for each of FakeWSL's distros, the commands run in it
+// (wsl.exe -d name …): each one would start a stopped distro.
+var fakeCalls struct {
+	sync.Mutex
+	in map[string]int
+}
 
 // StopFakeWSL, for other packages' tests, has FakeWSL's distro name stop,
 // as the user stopping it (wsl --shutdown) does: wsl.exe lists it as not
 // running from now on.
 func StopFakeWSL(name string) {
 	if fakeStop != nil {
-		fakeStop(name)
+		fakeStop(name, true)
 	}
+}
+
+// StartFakeWSL has a distro StopFakeWSL stopped run again, as the user
+// opening a WSL shell does.
+func StartFakeWSL(name string) {
+	if fakeStop != nil {
+		fakeStop(name, false)
+	}
+}
+
+// FakeWSLRuns is how many commands magpie ran in FakeWSL's distro name
+// (wsl.exe -d name …), each of which starts a stopped distro.
+func FakeWSLRuns(name string) int {
+	fakeCalls.Lock()
+	defer fakeCalls.Unlock()
+	return fakeCalls.in[name]
 }

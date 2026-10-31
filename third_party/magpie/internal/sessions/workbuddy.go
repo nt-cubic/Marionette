@@ -75,6 +75,9 @@ func isBuddy(agent string) bool { return agent == "workbuddy" || agent == "codeb
 // buddyFiles are the sessions under projects/ in dir, as agent's: WorkBuddy's,
 // or CodeBuddy Code's, which keeps them the same way.
 func buddyFiles(agent, dir string) []file {
+	if !Reads(agent) {
+		return nil
+	}
 	var out []file
 	walkLinked(filepath.Join(dir, "projects"), func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".jsonl") {

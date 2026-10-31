@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -116,7 +117,11 @@ func TestCodexSearchAnsweredOnResponses(t *testing.T) {
 	if _, err := p.Fetch(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	code, out := post(t, "/v1/responses", `{"model":"xiaomi/mimo-v2.6-flash","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"What is the latest Go?"}]}],
+	code, out := post(t, "/v1/responses", `{"model":"xiaomi/mimo-v2.6-flash","stream":true,"instructions":"You are a coding assistant.","input":[`+
+		codexItem("developer", "Plan: do not make changes.")+`,`+
+		codexItem("user", "Plan a version check.")+`,`+
+		codexItem("assistant", "Check the latest Go release.")+`,`+
+		codexItem("developer", "Default: previous Plan instructions no longer apply.")+`,{"type":"message","role":"user","content":[{"type":"input_text","text":"What is the latest Go?"}]}],
 		"tools":[{"type":"function","name":"shell","description":"run","parameters":{"type":"object","properties":{}}},{"type":"web_search","external_web_access":false}]}`)
 	if code != 200 {
 		t.Fatalf("%d %s", code, out)
@@ -132,5 +137,22 @@ func TestCodexSearchAnsweredOnResponses(t *testing.T) {
 	}
 	if !strings.Contains(asked[0], `"web_search"`) || !strings.Contains(asked[1], "1.27.1") {
 		t.Fatalf("search tool or result not given to the model:\n%s\n%s", asked[0], asked[1])
+	}
+	for i, body := range asked {
+		var sent struct {
+			Instructions string `json:"instructions"`
+			Input        []struct {
+				Role    string
+				Content json.RawMessage
+			} `json:"input"`
+		}
+		if err := json.Unmarshal([]byte(body), &sent); err != nil {
+			t.Fatal(err)
+		}
+		if sent.Instructions != "You are a coding assistant." || len(sent.Input) < 5 ||
+			sent.Input[0].Role != "developer" || sent.Input[3].Role != "developer" ||
+			text(responsesParts(sent.Input[3].Content)) != "Default: previous Plan instructions no longer apply." {
+			t.Fatalf("search round %d changed instruction authority: %s", i+1, body)
+		}
 	}
 }

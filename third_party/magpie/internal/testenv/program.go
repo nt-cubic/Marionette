@@ -49,7 +49,13 @@ func WriteProgram[S ~string | ~[]byte](path string, script S) error {
 		return err
 	}
 	if runtime.GOOS != "darwin" {
-		return os.WriteFile(path, b, 0o755)
+		if err := os.WriteFile(path, b, 0o755); err != nil {
+			return err
+		}
+		// WriteFile's mode is cut by the umask (0700 under 077), and a
+		// file written over keeps the one it had: 0755 either way, as
+		// on macOS (#3640)
+		return os.Chmod(path, 0o755)
 	}
 	if !ran(path) {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {

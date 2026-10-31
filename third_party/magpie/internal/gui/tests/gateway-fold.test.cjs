@@ -41,7 +41,7 @@ const view = "#view-gateway";
 const top = (page, sel) => page.locator(sel).evaluate((e) => e.getBoundingClientRect().top);
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
-  test(engine + ": Connect folds away and stays folded", async (t) => {
+  test(engine + ": Connect starts folded, and opened or folded it stays so", async (t) => {
     assert(["chromium", "webkit"].includes(engine), "BROWSER must be chromium or webkit");
     const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
     const context = await browser.newContext({ viewport: { width: 900, height: 560 }, reducedMotion: "reduce" });
@@ -58,45 +58,48 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await browser.close();
     });
 
+    // folded until it is opened: set up once, seldom read again (the owner)
     await page.goto("http://magpie.test/?view=gateway");
-    await page.locator("#connect .val code").first().waitFor();
+    await page.locator("#connectNote code").waitFor();
     const fold = page.locator("#foldConnect");
-    assert.equal(await fold.getAttribute("aria-expanded"), "true", "Connect starts open");
-    assert.equal(await page.locator("#connectNote code").count(), 0, "open, the head has no URL of its own");
+    assert.equal(await fold.getAttribute("aria-expanded"), "false", "Connect starts folded");
+    assert(await page.locator("#connect").evaluate((c) => c.hidden), "folded, Connect's fields are hidden");
+    assert.equal((await page.locator("#connectNote code").textContent()).trim(), "http://127.0.0.1:3999/v1", "folded, the head shows the base URL");
+    assert.equal(await page.locator("#connectNote .copy").count(), 1, "with a copy button");
 
-    // scrolled so the Connect head is well down the view, the fold leaves it there
+    // scrolled so the Connect head is well down the view, opening leaves it there
     await page.locator(view).evaluate((v) => { v.scrollTop = 40; });
     await page.waitForTimeout(300);
     const was = await top(page, "#foldConnect");
     await fold.click();
     await page.waitForTimeout(600);
-    assert.equal(await fold.getAttribute("aria-expanded"), "false");
-    assert(await page.locator("#connect").evaluate((c) => c.hidden), "folded, Connect's fields are hidden");
+    assert.equal(await fold.getAttribute("aria-expanded"), "true");
+    assert(await page.locator("#connect").evaluate((c) => !c.hidden), "opened, Connect's fields show");
+    assert.equal(await page.locator("#connectNote code").count(), 0, "open, the head has no URL of its own");
     const is = await top(page, "#foldConnect");
-    assert(Math.abs(is - was) <= 1, `folding moved the head ${Math.round(is - was)}px`);
-    assert.equal((await page.locator("#connectNote code").textContent()).trim(), "http://127.0.0.1:3999/v1", "folded, the head shows the base URL");
-    assert.equal(await page.locator("#connectNote .copy").count(), 1, "with a copy button");
+    assert(Math.abs(is - was) <= 1, `opening moved the head ${Math.round(is - was)}px`);
 
-    // remembered across a reload
+    // opened, it stays open across a reload
     await page.reload();
-    await page.locator("#activity .call").first().waitFor();
+    await page.locator("#connect .val code").first().waitFor();
     // Reduced-motion animations can still be on their first frame when
     // fast fixtures return. Compare the settled heading position.
     await page.locator(view).evaluate(async (v) => {
       await Promise.all(v.getAnimations().map((a) => a.finished.catch(() => {})));
     });
-    assert.equal(await page.locator("#foldConnect").getAttribute("aria-expanded"), "false", "the fold is remembered");
-    assert(await page.locator("#connect").evaluate((c) => c.hidden));
+    assert.equal(await page.locator("#foldConnect").getAttribute("aria-expanded"), "true", "the open fold is remembered");
 
-    // and opens again, the head where it was
+    // and folds again, the head where it was, and stays folded
     const before = await top(page, "#foldConnect");
     await page.locator("#foldConnect").click();
     await page.waitForTimeout(600);
-    assert.equal(await page.locator("#foldConnect").getAttribute("aria-expanded"), "true");
-    assert(await page.locator("#connect").evaluate((c) => !c.hidden));
-    assert.equal(await page.locator("#connectNote code").count(), 0);
+    assert.equal(await page.locator("#foldConnect").getAttribute("aria-expanded"), "false");
+    assert(await page.locator("#connect").evaluate((c) => c.hidden));
     const after = await top(page, "#foldConnect");
-    assert(Math.abs(after - before) <= 1, `unfolding moved the head ${Math.round(after - before)}px`);
+    assert(Math.abs(after - before) <= 1, `folding moved the head ${Math.round(after - before)}px`);
+    await page.reload();
+    await page.locator("#connectNote code").waitFor();
+    assert.equal(await page.locator("#foldConnect").getAttribute("aria-expanded"), "false", "the fold is remembered");
     assert.deepEqual(errors, []);
   });
 }

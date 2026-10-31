@@ -234,3 +234,34 @@ func windowsDir(local string, threep bool) string {
 	sort.Strings(found)
 	return filepath.Join(local, found[0])
 }
+
+// ClaudeCode are the versions of Claude Code that Desktop keeps for its
+// Code tab, in any set's userData (Data, or ThreeP in its 3p mode):
+// <userData>/claude-code/<version>/ holding claude.exe on Windows, claude
+// elsewhere, or claude.app on a Mac (Desktop 2.7032's CCD storageDir and
+// getBinaryPathForTarget). That copy reads ~/.claude as Claude Code does.
+// Empty when Desktop hasn't fetched it, or isn't here.
+func ClaudeCode(goos, home string, getenv func(string) string) []string {
+	names := []string{"claude", "claude.app"}
+	if goos == "windows" {
+		names = []string{"claude.exe"}
+	}
+	var out []string
+	for _, d := range Sets(goos, home, getenv) {
+		for _, data := range []string{d.Data, d.ThreeP} {
+			ents, _ := os.ReadDir(filepath.Join(data, "claude-code"))
+			for _, e := range ents {
+				if !e.IsDir() || slices.Contains(out, e.Name()) {
+					continue
+				}
+				for _, n := range names {
+					if _, err := os.Stat(filepath.Join(data, "claude-code", e.Name(), n)); err == nil {
+						out = append(out, e.Name())
+						break
+					}
+				}
+			}
+		}
+	}
+	return out
+}

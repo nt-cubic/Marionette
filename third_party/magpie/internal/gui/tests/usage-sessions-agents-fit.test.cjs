@@ -1,8 +1,11 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
 // Usage › Sessions with more agents than fit on one line (#929, liuweifeng):
-// the agent strip scrolls in itself, so the page never gets a sideways
-// scrollbar, and the agent picked stays in view. English and Chinese,
-// Chromium and WebKit.
+// the agent filter is a menu beside the model and folder ones, not a strip
+// of a segment per agent, which ran past the window and was scrolled
+// sideways to reach the last (the owner, 10-28: "这应该是个 Combo Box").
+// The page never scrolls sideways, every agent is in the menu, most used
+// first, a few letters find one, and one agent in range leaves it hidden.
+// English and Chinese, Chromium and WebKit.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -16,11 +19,11 @@ const iso = (d) => [d.getFullYear(), d.getMonth() + 1, d.getDate()].map((n) => S
 const today = iso(new Date());
 const days = [{
   date: today,
-  usage: names.map((_, i) => ({ agent: "a" + i, cwd: "/work/app", model: "m" + (i % 3), input: 1000 * (i + 1), output: 100, cache_read: 0, cache_write: 0, cost: 0.1, priced: true })),
+  usage: names.map((_, i) => ({ agent: "a" + i, cwd: "/work/app" + (i % 2), model: "m" + (i % 3), input: 1000 * (i + 1), output: 100, cache_read: 0, cache_write: 0, cost: 0.1, priced: true })),
   active: [],
 }];
 
-function serve(lang) {
+function serve(lang, n = names.length) {
   return async (route) => {
     const url = new URL(route.request().url());
     const json = (data) => route.fulfill({ json: data });
@@ -29,7 +32,7 @@ function serve(lang) {
     if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings: { lang, theme: "light" } });
     if (url.pathname === "/api/sessions/progress") return json({ indexing: false });
     if (url.pathname === "/api/sessions") return json({ sessions: [], dirs: [] });
-    if (url.pathname === "/api/sessions/stats") return json({ from: today, to: today, days, agents });
+    if (url.pathname === "/api/sessions/stats") return json({ from: today, to: today, days: days.map((d) => ({ ...d, usage: d.usage.slice(0, n) })), agents: Object.fromEntries(Object.entries(agents).slice(0, n)) });
     if (url.pathname === "/api/groups") return json({ groups: [] });
     if (url.pathname === "/api/usage/quotas") return json([]);
     if (url.pathname.startsWith("/api/")) return json({});
@@ -41,8 +44,8 @@ function serve(lang) {
 }
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
-  for (const lang of ["en", "zh"]) {
-    test(`${engine} ${lang}: many agents don't widen Usage › Sessions`, async (t) => {
+  for (const [lang, everyAgent] of [["en", "All agents"], ["zh", "全部 Agent"]]) {
+    test(`${engine} ${lang}: many agents are a menu that doesn't widen Usage › Sessions`, async (t) => {
       const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
       t.after(() => browser.close());
       const page = await (await browser.newContext({ viewport: { width: 860, height: 700 }, reducedMotion: "reduce" })).newPage();
@@ -50,47 +53,56 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang));
-      await page.addInitScript(() => { localStorage.setItem("magpie.usageTab", "sessions"); localStorage.setItem("magpie.sessRange", "all"); });
+      await page.addInitScript(() => { localStorage.setItem("magpie.usageTab", "sessions"); localStorage.setItem("magpie.sessRange", "all"); localStorage.setItem("magpie.usageEvery", "0"); });
       await page.goto("http://magpie.test/?view=usage");
-      const strip = page.locator("#sessAgent");
-      await page.waitForFunction((n) => document.querySelectorAll("#sessAgent .opt").length === n, names.length + 1);
+      const pick = page.locator("#sessAgent");
+      await pick.waitFor({ state: "visible" });
+      assert.equal(await pick.evaluate((e) => e.tagName + "." + e.className), "BUTTON.sess-pick", "the agent filter is the same menu button as the model and folder ones");
+      assert.equal((await pick.innerText()).trim(), everyAgent);
+      assert.equal(await pick.locator(".opt").count(), 0, "no segment per agent is left");
       const settle = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
-      const all = strip.locator('.opt[data-agent="all"]');
-      assert.equal(await all.getAttribute("aria-pressed"), "true", "All starts selected for assistive technology");
-      assert.equal(await strip.getByRole("button", { pressed: false }).count(), names.length);
       for (const width of [860, 560]) {
         await page.setViewportSize({ width, height: 700 });
         await settle();
-        const sideways = await page.evaluate(() => [document.documentElement, document.body, document.querySelector("main"), document.querySelector("#view-usage")]
+        const sideways = await page.evaluate(() => [document.documentElement, document.body, document.querySelector("main"), document.querySelector("#view-usage"), document.querySelector(".sess-tools")]
           .filter(Boolean).filter((e) => e.scrollWidth > e.clientWidth + 1).map((e) => `${e.tagName}#${e.id} ${e.scrollWidth}>${e.clientWidth}`));
-        assert.deepEqual(sideways, [], `${width}px: nothing scrolls sideways but the strip`);
-        const box = await strip.boundingBox();
-        assert(box.x >= 0 && box.x + box.width <= width, `${width}px: the agent strip fits the window: ${JSON.stringify(box)}`);
-        assert(await strip.evaluate((e) => e.scrollWidth > e.clientWidth), "the strip itself scrolls");
+        assert.deepEqual(sideways, [], `${width}px: something scrolls sideways`);
+        // the three filters sit on one line, inside the window
+        const boxes = await Promise.all(["#sessAgent", "#sessModel", "#sessFolder"].map((id) => page.locator(id).boundingBox()));
+        for (const b of boxes) assert(b && b.x >= 0 && b.x + b.width <= width, `${width}px: a filter sits outside the window: ${JSON.stringify(boxes)}`);
+        assert(boxes.every((b) => Math.abs(b.y - boxes[0].y) < 1), `${width}px: the filters aren't on one line: ${JSON.stringify(boxes)}`);
       }
-      // the last agent, clicked where the strip was scrolled to, stays there:
-      // the strip drawn again kept its buttons and where it was scrolled
-      await strip.evaluate((e) => { e.scrollLeft = e.scrollWidth; });
-      const last = strip.locator(".opt").last();
-      // Playwright's WebKit stops hit-testing a scroller's children once it
-      // has been scrolled (a click lands on the strip, ~70% of runs; the
-      // system's WKWebView takes it, tried from a WKWebView in AppKit), so
-      // there the button is clicked as an element
-      if (engine === "webkit") await last.evaluate((b) => b.click());
-      else {
-        const lb = await last.boundingBox();
-        await page.mouse.click(lb.x + lb.width / 2, lb.y + lb.height / 2);
-      }
-      await page.waitForFunction(() => document.querySelector("#sessAgent .opt.on")?.textContent === "Zed");
+
+      // every agent is in the menu, after "All agents", the most used first
+      await pick.click();
+      const menu = page.locator(".pop.proto-menu.sess-menu");
+      await menu.waitFor();
+      const items = menu.locator(".pm-item .pm-name");
+      assert.deepEqual(await items.allInnerTexts(), [everyAgent, ...[...names].reverse()]);
+      // a few letters find one, and picking it says so on the button
+      await menu.locator(".sc-q").fill("zed");
+      assert.deepEqual(await items.allInnerTexts(), ["Zed"]);
+      await menu.locator(".pm-item").first().click();
+      await menu.waitFor({ state: "detached" });
+      await page.waitForFunction(() => document.querySelector("#sessAgent span")?.textContent === "Zed");
+      assert.match(await pick.getAttribute("class"), /\bset\b/);
+      // drawn again, the pick holds, and the menu shows it checked
       await settle();
-      assert.equal(await strip.getByRole("button", { pressed: true }).textContent(), "Zed", "the reused button exposes its new selection");
-      assert.equal(await all.getAttribute("aria-pressed"), "false", "the previous selection is cleared");
-      const on = await strip.locator(".opt.on").boundingBox();
-      const sb = await strip.boundingBox();
-      const seen = Math.min(on.x + on.width, sb.x + sb.width) - Math.max(on.x, sb.x);
-      assert(seen >= on.width * 0.75, `the picked agent stays in view after the strip is drawn again: ${JSON.stringify({ on, sb })}`);
-      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+      assert.equal((await pick.innerText()).trim(), "Zed");
+      await pick.click();
+      await menu.waitFor();
+      assert.equal(await menu.locator('.pm-item[aria-checked="true"] .pm-name').innerText(), "Zed");
+      await menu.locator(".pm-item").first().click();
+      await page.waitForFunction((all) => document.querySelector("#sessAgent span")?.textContent === all, everyAgent);
+      assert.doesNotMatch(await pick.getAttribute("class"), /\bset\b/);
       assert.deepEqual(errors, []);
+
+      // one agent: the filter stays hidden, as the strip was
+      await page.unroute("**/*");
+      await page.route("**/*", serve(lang, 1));
+      await page.reload();
+      await page.waitForFunction(() => !document.querySelector("#view-usage").classList.contains("loading") && document.querySelector("#sessStats").childElementCount > 0);
+      assert.equal(await pick.isVisible(), false, "one agent in range should leave the agent filter hidden");
     });
   }
 }

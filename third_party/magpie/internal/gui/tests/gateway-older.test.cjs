@@ -62,14 +62,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         if (older) {
           assert.equal((await state.textContent()).trim(), c.state);
           assert.match(await page.locator("#gateway .sub").textContent(), c.sub);
-          assert(await page.locator("#gateway .dot").evaluate((d) => !d.classList.contains("on")), "the dot isn't green");
+          assert(await page.locator("#gateway > .gw-mark").evaluate((d) => !d.classList.contains("on")), "the mark's light isn't green");
           // the whole text is there to read, nothing cut off, and the page doesn't scroll sideways
           const fits = await page.locator("#gateway .sub").evaluate((s) => s.scrollWidth <= s.clientWidth + 1);
           assert(fits, "the advice is cut off");
           assert(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), "the page scrolls sideways");
         } else {
           assert.equal((await state.textContent()).trim(), c.same);
-          assert(await page.locator("#gateway .dot").evaluate((d) => d.classList.contains("on")));
+          assert(await page.locator("#gateway > .gw-mark").evaluate((d) => d.classList.contains("on")));
         }
         await context.close();
       }

@@ -831,6 +831,7 @@ func targetAPIs(target string) []string {
 // catalog's entry for the same id, keeping the live order.
 func Decorate(live []Model, known []Model) []Model {
 	byID := make(map[string]Model, len(known))
+	var bySame map[string]Model
 	for _, m := range known {
 		byID[m.ID] = m
 	}
@@ -840,6 +841,20 @@ func Decorate(live []Model, known []Model) []Model {
 		k, ok := byID[m.ID]
 		if i := strings.LastIndexByte(m.ID, '/'); !ok && i >= 0 {
 			k, ok = byID[m.ID[i+1:]] // a gateway's "deepseek/deepseek-chat"
+		}
+		if !ok && len(known) > 0 {
+			// the same model under another spelling (SameModel): Ark's
+			// list says glm-5-3-flash-260828 where its plan's catalog
+			// says glm-5.3-flash. Of several, the first known.
+			if bySame == nil {
+				bySame = make(map[string]Model, len(known))
+				for _, x := range known {
+					if _, dup := bySame[SameModel(x.ID)]; !dup {
+						bySame[SameModel(x.ID)] = x
+					}
+				}
+			}
+			k, ok = bySame[SameModel(m.ID)]
 		}
 		if ok {
 			if m.Name == "" || m.Name == m.ID {

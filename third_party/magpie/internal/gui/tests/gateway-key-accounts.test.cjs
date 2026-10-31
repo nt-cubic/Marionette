@@ -17,11 +17,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.setDefaultTimeout(6000);
       const events = [], errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
-      await page.route("**/*", fixture(lang, "light", events, { lan: true, keyHolds: { server: { accounts: ["relay/me@example.com"] }, laptop: { models: ["relay/gone"], accounts: ["relay/nobody@example.com"] } } }));
+      await page.route("**/*", fixture(lang, "light", events, { lan: true, keyHolds: { server: { accounts: ["relay/me@example.com"] }, laptop: { models: ["relay/gone", "openai/gpt-5"], accounts: ["relay/nobody@example.com"] } } }));
       const zh = lang === "zh";
       const w = zh
-        ? { label: "此密钥可用的模型", all: "全部模型", gone: "当前未提供", off: "当前未登录", used: "会被使用：OpenAI 没有勾选任何账号", hint: "没勾选任何账号的供应商" }
-        : { label: "Models this key may use", all: "All models", gone: "Not served now", off: "Not signed in now", used: "Used: no OpenAI account is picked", hint: "A provider with no account picked is used on every account" };
+        ? { label: "此密钥可用的模型", all: "全部模型", gone: "当前未提供", off: "当前未登录", used: "会被使用：OpenAI 没有勾选任何账号", unused: "不会被使用：OpenAI 没有勾选任何模型或账号", hint: "没勾选任何账号的供应商", only: "此密钥只能使用所勾选账号所属供应商的模型", told: "Server 仅可使用所选账号的模型" }
+        : { label: "Models this key may use", all: "All models", gone: "Not served now", off: "Not signed in now", used: "Used: no OpenAI account is picked", unused: "Not used: no OpenAI model or account is picked", hint: "A provider with no account picked is used on every account", only: "this key may use only the picked accounts' providers' models", told: "Server may use only the picked accounts' models" };
       await page.goto("http://magpie.test/?view=gateway");
       await page.locator("#gatewayKeys .acc[data-key]").last().waitFor();
       const row = (id) => page.locator(`#gatewayKeys .acc[data-key="${id}"]`);
@@ -76,19 +76,24 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await badge("server").click();
       await menu.waitFor();
       assert.deepEqual((await menu.locator(".pm-item.on").allTextContents()).map((s) => s.trim()), ["me@example.comRelay · Pro"]);
-      // #2077: the list holds the key to the accounts of the providers it
-      // names only, so OpenAI's key, none of OpenAI's picked, is used, and
-      // says so; Relay's unpicked account is not, and says its provider
+      // Linka on Discord: an account picked and no model holds the key to
+      // the account's provider's models, so OpenAI's key, none of
+      // OpenAI's picked, is not used, and says so (it said "Used" when
+      // the key could use every other provider); Relay's unpicked account
+      // is not either, and says its provider
       const noteOf = async (s) => (await menu.locator(".pm-item", { hasText: s }).locator(".pm-note").textContent()).trim();
-      assert.equal(await noteOf("k-1a2b3c"), w.used);
+      assert.equal(await noteOf("k-1a2b3c"), w.unused);
       assert.equal(await noteOf("spare@example.com"), "Relay");
-      assert(String(await badge("server").getAttribute("title")).includes(w.hint), await badge("server").getAttribute("title"));
+      const serverTitle = String(await badge("server").getAttribute("title"));
+      assert(serverTitle.includes(w.only) && !serverTitle.includes(w.hint), serverTitle);
       await menu.locator(".pm-item", { hasText: "me@example.com" }).click();
       await menu.locator(".pm-item", { hasText: "k-1a2b3c" }).click();
       await page.keyboard.press("Escape");
       await menu.waitFor({ state: "detached" });
       await until(() => events.filter((e) => e.action === "accounts-key").length > 0 && events.filter((e) => e.action === "accounts-key").at(-1).body.key === "server");
       assert.deepEqual(events.filter((e) => e.action === "accounts-key").at(-1).body, { key: "server", accounts: ["openai/k-1a2b3c"] });
+      // what it is told says the accounts hold its models, not "every model"
+      await page.waitForFunction((want) => document.body.textContent.includes(want), w.told);
       await badge("server").click();
       await menu.waitFor();
       await menu.locator(".pm-item", { hasText: w.all }).first().click();
@@ -111,7 +116,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert(dead[atDead("relay/nobody@example.com")] === "relay/nobody@example.com" + w.off, dead.join(" | "));
       assert(atDead("relay/gone") > atDead("k-1a2b3c"), dead.join(" | "));
       assert(atDead("relay/nobody@example.com") > atDead("relay/gone"), dead.join(" | "));
-      assert.deepEqual((await menu.locator(".pm-item.on").allTextContents()).map((s) => s.trim()), ["relay/gone" + w.gone, "relay/nobody@example.com" + w.off]);
+      assert.deepEqual((await menu.locator(".pm-item.on").allTextContents()).map((s) => s.trim()), ["GPT-5openai/gpt-5", "relay/gone" + w.gone, "relay/nobody@example.com" + w.off]);
+      // #2077: a key that lists models holds only the providers its
+      // accounts name to them: OpenAI, among its models and no account of
+      // it picked, is used on its key, and says so
+      assert.equal(await noteOf("k-1a2b3c"), w.used);
+      assert(String(await badge("laptop").getAttribute("title")).includes(w.hint), await badge("laptop").getAttribute("title"));
       await page.keyboard.press("Escape");
       await menu.waitFor({ state: "detached" });
       const lefts = await page.locator("#gatewayKeys .key-models, .proto-menu .pm-item").evaluateAll((els) => els.map((e) => getComputedStyle(e).borderLeftStyle));

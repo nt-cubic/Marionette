@@ -41,6 +41,8 @@ const (
 //	loadhang     never says the model is loaded
 //	slow         answers each request after 300ms
 //	noload       says it couldn't load the model
+//	badmodel     says it couldn't read the model's file, by the name
+//	             it was given
 //	novulkan     as pf-serve-vulkan, says Vulkan is missing; else ok
 //	gpuloadhang  on the GPU, never says the model is loaded; else ok
 //	asserts      fails a ggml assert at its first request
@@ -76,6 +78,19 @@ func fakeServe(mode string) {
 	logf("path %s", filepath.Base(filepath.Dir(os.Args[0])))
 	logf("residency %s", os.Getenv("GGML_METAL_NO_RESIDENCY"))
 	logf("moechunk %s %s", name, os.Getenv("PF_MOE_CHUNK"))
+	// as pf-serve on Windows, whose argv is in the ANSI code page and
+	// whose ggml reads it as UTF-8: a model path with a byte outside
+	// ASCII can't be opened. And it opens the file from where it runs.
+	model := ""
+	if len(os.Args) > 1 {
+		model = os.Args[1]
+	}
+	logf("model %s", model)
+	_, err := os.Stat(model)
+	if strings.IndexFunc(model, func(r rune) bool { return r > 0x7f }) >= 0 || err != nil || mode == "badmodel" {
+		json.NewEncoder(os.Stdout).Encode(map[string]string{"error": "failed to read GGUF: " + model})
+		os.Exit(1)
+	}
 	if mode == "noload" || mode == "novulkan" && name == "pf-serve-vulkan" {
 		json.NewEncoder(os.Stdout).Encode(map[string]string{"error": "can't load " + mode})
 		os.Exit(1)
@@ -155,8 +170,16 @@ func fakeServe(mode string) {
 // test's own; it gives the file the stand-in logs to.
 func fakeInstall(t *testing.T, mode string, vulkan bool) string {
 	t.Helper()
+	return fakeInstallAt(t, mode, vulkan, t.TempDir())
+}
+
+// fakeInstallAt is fakeInstall in folder d.
+func fakeInstallAt(t *testing.T, mode string, vulkan bool, d string) string {
+	t.Helper()
 	upgrades.Wait() // one started before reads dir
-	d := t.TempDir()
+	if err := os.MkdirAll(d, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	was, wasSize, wasIdle := dir, modelSize, idleAfter
 	dir, modelSize = func() string { return d }, 4
 	t.Cleanup(func() {

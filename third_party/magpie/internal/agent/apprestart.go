@@ -88,17 +88,23 @@ type winProc struct {
 
 // The Windows part of a restart, vars so tests stand in for each:
 // winProcs lists the running processes named exe, winClose asks pids to close as
-// their windows' close does, winEnd ends pid with its tree, and winLaunch
-// opens what a restart opens again.
+// their windows' close does, winShown says whether any of pids still shows
+// a window (true when it can't tell), winEnd ends pid with its tree, and
+// winLaunch opens what a restart opens again.
 var (
 	winProcs  = listWinProcs
 	winClose  = closeWinProcs
+	winShown  = winWindowsShown
 	winEnd    = endWinTree
 	winLaunch = launchWin
-	// appCloseWait is how long a Windows app has to close by itself
-	// before it is ended, and appBackWait how long it has to come back
+	// appCloseWait is how long a Windows app that still shows a window
+	// has to close by itself before it is ended, and appBackWait how long
+	// it has to come back. appTrayGrace is how long one whose windows have
+	// all closed has to end by itself before it counts as staying in the
+	// tray.
 	appCloseWait = 10 * time.Second
 	appBackWait  = 20 * time.Second
+	appTrayGrace = time.Second
 	appPoll      = 200 * time.Millisecond
 )
 
@@ -307,12 +313,18 @@ func (a *Agent) RestartApp(ctx context.Context) error {
 	if c.bundle != "" {
 		return reopenBundle(ctx, a, c.bundle)
 	}
+	return a.restartWin(ctx, r, c)
+}
+
+// restartWin asks c's windows to close, ends it when it stays (in
+// the tray, or past appCloseWait), opens it again and waits for it.
+func (a *Agent) restartWin(ctx context.Context, r restartable, c appRunning) error {
 	pids := make([]int, len(c.procs))
 	for i, p := range c.procs {
 		pids[i] = p.pid
 	}
 	_ = winClose(pids)
-	if !waitGone(ctx, r, appCloseWait) {
+	if !waitClosed(ctx, r, appCloseWait) {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -337,6 +349,42 @@ func (a *Agent) RestartApp(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-time.After(appPoll):
+		}
+	}
+}
+
+// waitClosed waits, after its windows were asked to close, until r's app
+// no longer runs: true when it ended by itself. An app that closed every
+// window and still runs after appTrayGrace has gone to the tray, which no
+// waiting ends (Claude Desktop 2.9939 on Windows hides its window in ~0.6s
+// and keeps all nine processes), so it is false then, not after limit;
+// limit is for an app still showing a window, which may be asking
+// something.
+func waitClosed(ctx context.Context, r restartable, limit time.Duration) bool {
+	start := time.Now()
+	end := start.Add(limit)
+	for {
+		c, ok := findRestartable(r)
+		if !ok {
+			return true
+		}
+		now := time.Now()
+		if !now.Before(end) {
+			return false
+		}
+		if now.Sub(start) >= appTrayGrace {
+			pids := make([]int, len(c.procs))
+			for i, p := range c.procs {
+				pids[i] = p.pid
+			}
+			if !winShown(pids) {
+				return false
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return false
 		case <-time.After(appPoll):
 		}
 	}

@@ -102,13 +102,14 @@ func pruneCalls(files []file) {
 		callCache, callOrder, callRoot = map[string]*callFile{}, nil, root
 		callCounts = map[string]int{}
 	}
-	on := make(map[string]bool, len(files))
+	on := pathSet()
+	defer putPathSet(on)
 	for _, f := range files {
-		on[f.path] = true
+		on[f.path] = struct{}{}
 	}
 	order := callOrder[:0]
 	for _, path := range callOrder {
-		if on[path] {
+		if _, ok := on[path]; ok {
 			order = append(order, path)
 		} else {
 			delete(callCache, path)
@@ -117,14 +118,14 @@ func pruneCalls(files []file) {
 	callOrder = order
 	gone := false
 	for path := range callCounts {
-		if !on[path] {
+		if _, ok := on[path]; !ok {
 			delete(callCounts, path)
 			gone = true
 		}
 	}
 	order = callContinuationOrder[:0]
 	for _, path := range callContinuationOrder {
-		if on[path] {
+		if _, ok := on[path]; ok {
 			order = append(order, path)
 		} else {
 			delete(callContinuations, path)
@@ -247,6 +248,7 @@ type lineCallReader struct {
 var lineCallReaders = map[string]lineCallReader{
 	"kimi": {kimiCallsBegin, kimiCallLine, nil},         // #1607
 	"pi":   {piCallsBegin, readPiCallLine, piCallsKept}, // #1951
+	"raft": {piCallsBegin, readPiCallLine, piCallsKept},
 	"omp":  {piCallsBegin, readPiCallLine, piCallsKept},
 }
 

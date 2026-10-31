@@ -285,7 +285,7 @@ func findNew(l *Library, repo, ref string, f *fetcher, limited *atomic.Pointer[e
 	sort.Strings(agents)
 	found = []NewSkill{}
 	from := (&Source{Kind: "github", Repo: repo, Ref: ref, Path: base}).String()
-	for _, c := range candidates(tmp, base) {
+	for _, c := range candidates(tmp, base, srcFolder(Source{Kind: "github", Repo: repo})) {
 		if known[c.Path] || l.skill(c.Name) != nil || checkName("skill", c.Name) != nil {
 			continue
 		}
