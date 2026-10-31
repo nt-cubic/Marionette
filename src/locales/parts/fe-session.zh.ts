@@ -21,8 +21,6 @@ export const zh = {
   "session.diffNote": "当前工作区 diff · 行号与 git 对齐 · 点代码行可加评论",
   "session.webReplyWidthTitle": "GPT 回复宽度：{n}%",
   "session.webReplyWidth": "GPT 回复宽度",
-  "session.collapseAllDetails": "折叠全部 tool / thinking",
-  "session.expandAllDetails": "展开全部 tool / thinking",
   "session.subtaskRunning": "进行中",
   "session.subtaskStop": "停止",
   "session.durationSeconds": "{n}秒",

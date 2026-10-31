@@ -475,6 +475,7 @@ fn main() {
             commands::unregister_shell_integration,
             commands::shell_integration_registered,
             commands::pick_folder,
+            commands::save_text_file,
             commands::pick_files,
             commands::delete_project,
             commands::reorder_projects,

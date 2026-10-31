@@ -19,6 +19,10 @@ export const en = {
   "shelf.taskDone": "Task completed",
   "shelf.rename": "Rename",
   "shelf.park": "Park",
+  "shelf.more": "More",
+  "shelf.exportMarkdown": "Export as Markdown",
+  "shelf.openCommands": "Commands and settings",
+  "shelf.openCommandsHint": "Command palette · Ctrl K",
   "shelf.filterByStatus": "Filter conversations by status",
   "shelf.showAll": "Show all conversations",
   "shelf.showOnly": "Show only {label} conversations",
@@ -125,6 +129,6 @@ export const en = {
   "shelf.importedSuffix": " · Imported",
   "shelf.started": "Started",
   "shelf.recent": "Last active",
-  "shelf.peekHint": "Double-click or click the pencil to rename · right-click to open in split view",
+  "shelf.peekHint": "Double-click to rename · right-click to split · ⋯ for pin and export",
   "shelf.updateCheckUnavailable": "Cannot check for updates (not a desktop runtime)",
 } satisfies Record<keyof typeof zh, string>;

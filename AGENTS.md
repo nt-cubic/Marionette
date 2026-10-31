@@ -53,7 +53,7 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
   （用量与项目收进 ⋯）。
 - **底栏（输入框下面那一栏）**：贴边时左右侧栏都是整页覆盖层，所以两侧栏把各自 footer 子树
   **portal** 到 body 级的 `#dock-footer`（`src/lib/dockFooter.ts` 的 `useDocked` / `dockFooterHost`）：
-  ProjectShelf 出模型共享入口 + 主题/通知/代理/Telegram，ContextPanel 出检查更新；它们的 popover
+  ProjectShelf 出模型共享入口 + 设置齿轮（打开 Ctrl K）+ 主题/通知/代理/Telegram，ContextPanel 出检查更新；它们的 popover
   也必须一起 portal（`DockedLayer`），否则 `translateX(100%)` 的 rail 会连 `position: fixed` 的浮层
   一起藏掉。`.dock-mode .app-shell` 预留 40px，整页 bottom 也收 40px。
 - **关闭路径**（2026-10-31 定稿）：× 的行为由用户在 Ctrl K 面板选择（dock prefs 的
@@ -194,7 +194,8 @@ textarea `field-sizing: content` 跟着正文长、上限 min(28vh,190px)，底�
    的会话一律不自动挂起（Grok `spawn_subagent` 会立刻把工具卡标成 completed，子进程其实还在
    父进程里，必须按「Subagent started in background」桩识别）。
 
-**对话轨迹（clean view）**：连续 thought/tool 从**第一步**起就是一张组卡（稳定 `act-起点` key，
+**对话轨迹（clean view）**：永远折叠，**没有** SessionView 右上角的全局眼睛开关（旧
+`marionette-details-visible` 忽略）。连续 thought/tool 从**第一步**起就是一张组卡（稳定 `act-起点` key，
 单步也分组）。运行时**上方实时轨迹面板**（`LiveActivityTimeline` → `ActivityTimeline`，
 thought / tool / command / search 等泳道与时间条），**下方默认关闭的 tally 详情折叠**。
 **时间图必须在 details 外面**，不能再用 live 步骤列表代替，也不能等 open 才渲染。

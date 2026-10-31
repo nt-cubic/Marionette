@@ -21,8 +21,6 @@ export const en = {
   "session.diffNote": "Workspace diff · line numbers match git · click a code line to comment",
   "session.webReplyWidthTitle": "GPT reply width: {n}%",
   "session.webReplyWidth": "GPT reply width",
-  "session.collapseAllDetails": "Collapse all tool / thinking",
-  "session.expandAllDetails": "Expand all tool / thinking",
   "session.subtaskRunning": "Running",
   "session.subtaskStop": "Stop",
   "session.durationSeconds": "{n}s",

@@ -28,4 +28,10 @@ export const en = {
   "palette.closeBehaviorExit": "Close button (×): quit the app (click to keep in background instead)",
   "palette.quitApp": "Quit Marionette",
   "palette.quitAppHint": "Stops the engine and every session",
+  "palette.openMemo": "Open Memo Box",
+  "palette.openMemoHint": "Collected materials",
+  "palette.openTelegram": "Telegram remote",
+  "palette.openTelegramHint": "Phone notifications and replies",
+  "palette.openModelShare": "Model Share",
+  "palette.openModelShareHint": "Models and quota across agents",
 } satisfies Record<keyof typeof zh, string>;
