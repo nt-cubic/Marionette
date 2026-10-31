@@ -24,10 +24,6 @@ var kept = map[string]bool{
 	"stop_reason": true, "finish_reason": true, "status": true, "object": true, "event": true,
 }
 
-func keep(key, s string) bool {
-	return kept[key] || strings.HasPrefix(s, "data:")
-}
-
 // keepIn is keep for a request's string at path, with its ids kept too.
 // In a tool call's arguments (args) the keys are the tool's, not the
 // vendor's: a "signature", "name" or "user_id" there holds what the agent
@@ -519,7 +515,7 @@ func RestoreJSON(body []byte) []byte { return restoreJSON(body, nil) }
 
 // restoreJSON is RestoreJSON, counting in put as restore does.
 func restoreJSON(body []byte, put map[string]int) []byte {
-	if !bytes.Contains(body, []byte("{{")) && !hasShapes(body) {
+	if !heldIn(body) && !hasShapes(body) {
 		return body
 	}
 	typ := typeOf(body)
@@ -530,4 +526,47 @@ func restoreJSON(body []byte, put map[string]int) []byte {
 		return []byte(restore(string(body), false, put))
 	}
 	return out
+}
+
+// heldIn says b may have a placeholder of a value held, in any of the
+// ways Restore takes one back: a kind, _ and the 8 of its hash, in any
+// case, with its braces or without. Looked for "{{" alone, a whole reply
+// whose model wrote PERSON_kb32hzkg or {PERSON_kb32hzkg} kept it, while a
+// stream had it put back.
+func heldIn(b []byte) bool {
+	mu.RLock()
+	defer mu.RUnlock()
+	if len(values) == 0 {
+		return false
+	}
+	for i := 0; ; {
+		j := bytes.IndexByte(b[i:], '_')
+		if j < 0 {
+			return false
+		}
+		i += j + 1
+		z := i + 8
+		if z > len(b) || z < len(b) && isWordByte(b[z]) || !base32Lower(b[i:z]) {
+			continue
+		}
+		hash := strings.ToLower(string(b[i:z]))
+		for k := range kinds {
+			if n := len(k); i-1 >= n && strings.EqualFold(string(b[i-1-n:i-1]), k) {
+				if _, ok := values["{{"+strings.ToUpper(k)+"_"+hash+"}}"]; ok {
+					return true
+				}
+			}
+		}
+	}
+}
+
+// base32Lower says b is of the letters a placeholder's hash has, in
+// either case.
+func base32Lower(b []byte) bool {
+	for _, c := range b {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '2' && c <= '7') {
+			return false
+		}
+	}
+	return true
 }

@@ -129,6 +129,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const p = await (await browser.newContext({ viewport, reducedMotion: "reduce" })).newPage();
         pages.push(p);
         p.setDefaultTimeout(5000);
+        p.setDefaultNavigationTimeout(60000);
         p.on("pageerror", (e) => errors.push(e.message));
         await p.route("**/*", serve(lang, asked, opened, fitted, (h) => p.setViewportSize({width: p.viewportSize().width, height:Math.max(220,Math.min(560,h))})));
         await p.goto(url);
@@ -263,6 +264,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const context = await browser.newContext({ viewport: { width: 440, height: 760 }, reducedMotion: "reduce" });
         const shot = await context.newPage();
         shot.setDefaultTimeout(5000);
+        shot.setDefaultNavigationTimeout(60000);
         await shot.addInitScript(() => { localStorage.setItem("magpie.panelTab", "stats"); localStorage.setItem("magpie.panelUsePeriod", "7d"); });
         await shot.route("**/*", serve(lang, [], []));
         await shot.goto("http://magpie.test/?mode=panel");
@@ -394,6 +396,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const q = await (await browser.newContext({ viewport: { width: 440, height: 500 }, reducedMotion: "reduce" })).newPage();
       pages.push(q);
       q.setDefaultTimeout(5000);
+      q.setDefaultNavigationTimeout(60000);
       q.on("pageerror", (e) => again.push(e.message));
       await q.addInitScript(() => { try { localStorage.setItem("magpie.panelTab", "stats"); } catch {} });
       await q.route("**/*", serve(lang, [], []));

@@ -54,6 +54,7 @@ async function open(engine, lang, width, opts = {}) {
   const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
   const page = await (await browser.newContext({ viewport: { width, height: 1000 }, reducedMotion: opts.motion ? "no-preference" : "reduce" })).newPage();
   page.setDefaultTimeout(8000);
+  page.setDefaultNavigationTimeout(60000);
   const errors = [], fetched = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.route("**/*", serve(lang, opts.theme || "light", fetched, opts.settings, opts.boot));

@@ -23,6 +23,8 @@
   };
   const CELLS = 400;
   const partName = (k) => t(PART_NAMES[k] || k);
+  // the Codexes here before 0.163 or of no known version (app.js too)
+  const codexHeld = window.codexHeld = (held) => t("{who}: the share needs Codex 0.163 or later; until it's updated magpie writes only async_compaction = true, at 65%", { who: held.map((r) => t({ app: "Codex app", ide: "Codex editor extension", wsl: "Codex in WSL" }[r.kind] || "Codex CLI") + (r.version ? " " + r.version : "")).join(", ") });
 
   const fmtK = (n) => {
     n = Math.max(0, Math.round(n || 0));
@@ -1506,11 +1508,11 @@
     else if (set.value) note.textContent = t("You set {value}", { value: show(set.value) });
     else note.textContent = t("The agent's default");
     const key = [agent, a.knob, a.model || ""].join("\x00");
-    const send = async (path, value) => {
+    const send = async (path, value, knob = a.knob) => {
       tuneBusy = key;
       renderContext();
       try {
-        await api("tune/" + path, { agent, knob: a.knob, model: a.model || "", value: String(value ?? "") });
+        await api("tune/" + path, { agent, knob, model: a.model || "", value: String(value ?? "") });
         status(path === "apply" ? t("Saved: {agent} reads it from its next session", { agent: agentLabel(agent) }) : t("Put back"), "ok");
       } catch (e) {
         statusErr(e);
@@ -1575,6 +1577,22 @@
       };
       foot.append(other);
     }
+    // Codex's background compaction at the advice, the limit kept (herman_hong)
+    const as = a.async, aset = as?.setting || {}, cav = (s) => row.append(el("p", "ctx-tune-caveat ctx-tune-async", s));
+    const btn = (label, go, c = "") => {
+      const b = el("button", "text" + c, label);
+      b.type = "button";
+      b.disabled = tuneBusy === key;
+      b.onclick = go;
+      return foot.appendChild(b);
+    };
+    if (!as) {} else if (aset.locked) cav(t("Background compaction: Codex's config.toml sets {key}, which comes first", { key: aset.locked }));
+    else if (as.held?.length) cav(codexHeld(as.held));
+    else if (aset.ours && +aset.value === as.percent) {
+      verdict.after(el("span", "ctx-chip good ctx-tune-async", t("In the background at {value}", { value: fmtK(as.value) })));
+      verdict.nextSibling.prepend(el("i"));
+      btn(t("Undo background"), () => send("undo", "", "async_compact"));
+    } else btn(t("Use {value} in the background", { value: fmtK(as.value) }), () => send("apply", as.percent, "async_compact"), " ctx-tune-async").dataset.tt = t("Codex compacts in the background past {pct} of the model's window, about {value} of {window}, while the turn goes on; {now} stays as the foreground limit, for when the background one isn't ready. A Codex feature still under development, 0.163 or later.", { pct: as.percent + "%", value: fmtK(as.value), window: fmtK(as.window), now: show(cur) });
     row.append(foot);
     return row;
   }

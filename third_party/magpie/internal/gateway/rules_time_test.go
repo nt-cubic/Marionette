@@ -36,9 +36,10 @@ func TestRuleTimeWindowAtTurnStart(t *testing.T) {
 	if !strings.Contains(out, "from kb") || !r.Rule.Held || r.Rule.N != 1 {
 		t.Fatalf("turn 1 tool round: %s %+v", out, r.Rule)
 	}
-	// turn 2 begins after them: no rule
-	if _, r = post(chat("hello", []string{"more"}, 0, ""), "sess"); r.Rule.N != 0 || r.Rule.Held {
-		t.Fatalf("turn 2: %+v", r.Rule)
+	// turn 2 begins after them: no rule, and the group goes in order, so
+	// the conversation goes back to its first member
+	if out, r = post(chat("hello", []string{"more"}, 0, ""), "sess"); !strings.Contains(out, "from ka") || r.Rule.N != 0 || r.Rule.Held {
+		t.Fatalf("turn 2: %s %+v", out, r.Rule)
 	}
 	// nor another conversation's: the group's order
 	if out, r = post(chat("hi", nil, 0, ""), "s2"); !strings.Contains(out, "from ka") || r.Rule.N != 0 {
@@ -58,7 +59,7 @@ func TestRuleTimeWindowAtTurnStart(t *testing.T) {
 	if out, r = post(chat("hello", nil, 0, ""), "s4"); !strings.Contains(out, "from ka") || r.Rule.N != 0 {
 		t.Fatalf("saturday: %s %+v", out, r.Rule)
 	}
-	if a.n() != 4 || b.n() != 3 {
+	if a.n() != 5 || b.n() != 2 {
 		t.Fatalf("a %d b %d", a.n(), b.n())
 	}
 }

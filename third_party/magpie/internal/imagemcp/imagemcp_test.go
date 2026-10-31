@@ -199,7 +199,7 @@ func TestGatewayRefusalIsAToolError(t *testing.T) {
 	}))
 	defer up.Close()
 	s := &server{gateway: up.URL, client: http.DefaultClient, agent: "x", pending: map[string]chan rpc{}}
-	_, err := s.generate(json.RawMessage(`{"prompt":"x"}`), nil)
+	_, err := s.generate(json.RawMessage(`{"prompt":"x"}`), nil, caller{agent: s.agent})
 	if err == nil || !strings.Contains(err.Error(), "Image generation") {
 		t.Fatalf("err = %v", err)
 	}

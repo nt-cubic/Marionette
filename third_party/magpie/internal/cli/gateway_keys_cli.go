@@ -2,6 +2,7 @@ package cli
 
 import (
 	"cmp"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -44,6 +45,18 @@ func gatewayKeysTo(out io.Writer, args []string) error {
 		access.MigrateLegacyLANKeyBestEffort()
 		return gatewayKeyAccess(out, args[1:])
 	}
+	if action == "move" {
+		access.MigrateLegacyLANKeyBestEffort()
+		return gatewayKeyMove(out, args[1:])
+	}
+	if action == "issue" {
+		access.MigrateLegacyLANKeyBestEffort()
+		return gatewayKeyIssue(out, args[1:])
+	}
+	if action == "issuer" {
+		access.MigrateLegacyLANKeyBestEffort()
+		return gatewayKeyIssuer(out, args[1:])
+	}
 	// add <name> --read-only: a key that reads stats and uses no model
 	// (Steven on Discord: a desk display)
 	readOnly := false
@@ -72,7 +85,7 @@ func gatewayKeysTo(out io.Writer, args []string) error {
 		args = args[:2]
 	}
 	if (action == "list" && len(args) != 1) || (action != "list" && len(args) != 2) {
-		return fmt.Errorf("usage: magpie gateway-key list | add <name> [--key <value> | --key -] [--read-only] | rotate <id> | remove <id> | limit <id> [list | off | reset [<n>] | remove <n> | [add] day|week|month|<N>d|<N>h [--tokens N] [--cost USD] [--cache-reads]] | models <id> [all | <provider>/<model>|<provider>/* ...] | accounts <id> [all | <provider>/<account>|<provider>/<key id> ...] | quotas <id> [on | off] | access <id> [read-only | full]")
+		return fmt.Errorf("usage: magpie gateway-key list | add <name> [--key <value> | --key -] [--read-only] | rotate <id> | remove <id> | limit <id> [list | off | reset [<n>] | remove <n> | [add] day|week|month|<N>d|<N>h [--tokens N] [--cost USD] [--cache-reads]] | models <id> [all | <provider>/<model>|<provider>/* ...] | accounts <id> [all | <provider>/<account>|<provider>/<key id> ...] | quotas <id> [on | off] | access <id> [read-only | full] | move <id> <place> | issue --ttl <duration> [--name <name>] [--models a,b] [--accounts a,b] [--tokens N] [--cost USD] [--read-only] [--from <id>] | issuer <id> [on | off]")
 	}
 	switch action {
 	case "list", "add", "rotate", "remove":
@@ -92,8 +105,18 @@ func gatewayKeysTo(out io.Writer, args []string) error {
 		names := provider.AccountNames()
 		for _, k := range keys {
 			state := "enabled"
-			if k.Off {
+			switch {
+			case k.Off:
 				state = "disabled"
+			case !k.Expires.IsZero() && !now.Before(k.Expires):
+				state = "expired"
+			case !k.Expires.IsZero():
+				state = "until " + k.Expires.Local().Format("01-02 15:04")
+			}
+			if k.Issuer != "" {
+				state += " (issued by " + k.Issuer + ")"
+			} else if k.Issues {
+				state += ", issues keys"
 			}
 			// a key that names accounts and no model may use only its
 			// accounts' providers' models (access.HeldModels)
@@ -555,6 +578,149 @@ func gatewayKeyAccess(out io.Writer, args []string) error {
 		_, err = fmt.Fprintf(out, "%s: read-only, it reads quotas and usage and uses no model, MCP server or write\n", k.Name)
 	} else {
 		_, err = fmt.Fprintf(out, "%s: full access, models and stats as its other limits let it\n", k.Name)
+	}
+	return err
+}
+
+// gatewayKeyMove puts a key at a place in the list, counted from 1 as
+// `magpie gateway-key list` shows them, the order the app's Gateway page
+// lists them in too, where a key is dragged to its place (alextjy on
+// Discord):
+//
+//	magpie gateway-key move <id> <place>
+func gatewayKeyMove(out io.Writer, args []string) error {
+	if len(args) != 2 {
+		return fmt.Errorf("usage: magpie gateway-key move <id> <place>")
+	}
+	keys, err := access.List()
+	if err != nil {
+		return err
+	}
+	n, err := strconv.Atoi(args[1])
+	if err != nil || n < 1 || n > len(keys) {
+		return fmt.Errorf("a key's place is 1 to %d, as `magpie gateway-key list` lists them: %q", len(keys), args[1])
+	}
+	n--
+	if _, err := access.Update("move-key", access.Change{Key: args[0], Index: &n}); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "Gateway key moved to place %d\n", n+1)
+	return err
+}
+
+// gatewayKeyIssue makes a short-lived key (xazaj on X: one per sandboxed
+// agent, that stops working by itself), and prints its secret alone so a
+// script can take it:
+//
+//	magpie gateway-key issue --ttl 1h [--name n] [--models a,b] [--accounts a,b]
+//	                         [--tokens N] [--cost USD] [--read-only] [--from <id>]
+//
+// --from issues it under a key that may issue keys (issuer <id> on), held
+// to that key as POST /v1/magpie/keys with it would be.
+func gatewayKeyIssue(out io.Writer, args []string) error {
+	usage := fmt.Errorf("usage: magpie gateway-key issue --ttl <duration, e.g. 1h> [--name <name>] [--models <provider>/<model>,...] [--accounts <provider>/<account>,...] [--tokens N] [--cost USD] [--read-only] [--from <id>] [--json]")
+	var in access.Issue
+	asJSON := false
+	list := func(v string) []string {
+		var out []string
+		for _, f := range strings.Split(v, ",") {
+			if f = strings.TrimSpace(f); f != "" {
+				out = append(out, f)
+			}
+		}
+		return out
+	}
+	for i := 0; i < len(args); i++ {
+		flag := args[i]
+		switch flag {
+		case "--read-only":
+			in.ReadOnly = true
+			continue
+		case "--json":
+			asJSON = true
+			continue
+		case "--ttl", "--name", "--models", "--accounts", "--tokens", "--cost", "--from":
+		default:
+			return usage
+		}
+		if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") {
+			return usage
+		}
+		i++
+		v := args[i]
+		var err error
+		switch flag {
+		case "--ttl":
+			if in.TTL, err = time.ParseDuration(v); err != nil {
+				return fmt.Errorf("--ttl is a duration such as 30m, 1h or 24h")
+			}
+		case "--name":
+			in.Name = v
+		case "--models":
+			in.Models = list(v)
+		case "--accounts":
+			in.Accounts = list(v)
+		case "--tokens":
+			if in.Tokens, err = strconv.ParseInt(v, 10, 64); err != nil || in.Tokens <= 0 {
+				return fmt.Errorf("--tokens is a whole number above 0")
+			}
+		case "--cost":
+			if in.Cost, err = strconv.ParseFloat(v, 64); err != nil || in.Cost <= 0 {
+				return fmt.Errorf("--cost is an amount in USD above 0")
+			}
+		case "--from":
+			in.Issuer = v
+		}
+	}
+	if in.TTL == 0 {
+		return usage
+	}
+	k, err := access.IssueKey(in)
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		b, err := json.MarshalIndent(k, "", "  ")
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(out, string(b))
+		return err
+	}
+	_, err = fmt.Fprintln(out, k.Key)
+	return err
+}
+
+// gatewayKeyIssuer shows or sets whether a key may issue short-lived keys
+// under itself (POST /v1/magpie/keys with it), each held to it:
+//
+//	magpie gateway-key issuer <id> [on | off]
+func gatewayKeyIssuer(out io.Writer, args []string) error {
+	usage := fmt.Errorf("usage: magpie gateway-key issuer <id> [on | off]")
+	if len(args) == 0 || len(args) > 2 {
+		return usage
+	}
+	id := args[0]
+	if len(args) == 2 {
+		if args[1] != "on" && args[1] != "off" {
+			return usage
+		}
+		if _, err := access.Update("issuer-key", access.Change{Key: id, Issues: args[1] == "on"}); err != nil {
+			return err
+		}
+	}
+	keys, err := access.List()
+	if err != nil {
+		return err
+	}
+	i := slices.IndexFunc(keys, func(k access.Key) bool { return k.ID == id })
+	if i < 0 {
+		return fmt.Errorf("Key not found")
+	}
+	if keys[i].Issues {
+		_, err = fmt.Fprintf(out, "%s: may issue short-lived keys, each held to its own models, accounts, limits and life\n", keys[i].Name)
+	} else {
+		_, err = fmt.Fprintf(out, "%s: issues no keys\n", keys[i].Name)
 	}
 	return err
 }

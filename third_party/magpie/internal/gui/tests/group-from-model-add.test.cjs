@@ -60,7 +60,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const open = async (posts, refuse) => {
           const page = await (await browser.newContext({ viewport: { width, height }, reducedMotion: "reduce" })).newPage();
           page.setDefaultTimeout(5000);
-          page.setDefaultNavigationTimeout(20000); // the page's first load, slow on a busy machine
+          page.setDefaultNavigationTimeout(60000); // the page's first load, slow on a busy machine
           const errors = [];
           page.on("pageerror", (e) => errors.push(e.message));
           await page.route("**/*", serve(lang, posts, refuse));

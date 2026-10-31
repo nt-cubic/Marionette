@@ -382,12 +382,13 @@ func TestIntentOddAnswerDoesNotRest(t *testing.T) {
 }
 
 // A classifier that reasons is asked to reason least, with room for its
-// reasoning and the number; one whose levels aren't known is asked plainly.
+// reasoning and the number; one whose levels aren't known is asked for
+// none (TestClassifierAsksThinkingOff).
 func TestIntentClassifierEffort(t *testing.T) {
 	s, _, _, c := intented(t, provider.Rule{Use: "b/big", Intent: "refactoring"})
 	c.set("1", 0)
 	postOK(t, s, "e1", chat("rename this package", nil, 0, ""))
-	if asked := c.last(); strings.Contains(asked, "reasoning_effort") || !strings.Contains(asked, `"max_tokens":2048`) {
+	if asked := c.last(); !strings.Contains(asked, `"reasoning_effort":"none"`) || !strings.Contains(asked, `"max_tokens":2048`) {
 		t.Fatalf("plain: %s", asked)
 	}
 	p, _ := provider.Find("c")

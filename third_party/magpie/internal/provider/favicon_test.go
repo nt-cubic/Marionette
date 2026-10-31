@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFaviconSites(t *testing.T) {
@@ -173,4 +174,71 @@ func TestFavicon(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored(icon, svg)
+}
+
+// A picture's address typed for a custom provider's icon (usrname1833) is
+// kept when it is a picture, and anything else leaves the name's letters
+// with the reason: a page, a missing file, one over MaxIcon, one too slow,
+// an address that isn't public https, and no address at all.
+func TestIconFromURL(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+
+	png := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+	mux := http.NewServeMux()
+	mux.HandleFunc("/icon.png", func(rw http.ResponseWriter, r *http.Request) { rw.Write(png) })
+	mux.HandleFunc("/page", func(rw http.ResponseWriter, r *http.Request) { rw.Write([]byte("<html><body>hi</body></html>")) })
+	mux.HandleFunc("/huge.png", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Write(append(append([]byte{}, png...), make([]byte, MaxIcon)...))
+	})
+	mux.HandleFunc("/slow.png", func(rw http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	pass := func(s string) (string, error) { return s, nil }
+	read := func(icon string) string {
+		t.Helper()
+		b, err := os.ReadFile(IconFile(strings.TrimPrefix(icon, iconPrefix)))
+		if err != nil {
+			t.Fatalf("%q isn't stored: %v", icon, err)
+		}
+		return string(b)
+	}
+
+	icon, failed, err := iconFromURL(context.Background(), srv.Client(), srv.URL+"/icon.png", "My Relay", pass)
+	if err != nil || failed != "" || read(icon) != string(png) {
+		t.Fatalf("a picture: %q %q %v", icon, failed, err)
+	}
+	for _, c := range []struct {
+		path, why string
+		timeout   bool
+	}{
+		{"/page", "not a picture", false},
+		{"/missing.png", "404", false},
+		{"/huge.png", "over 1 MB", false},
+		{"/slow.png", "could not fetch", true},
+	} {
+		ctx, cancel := context.Background(), func() {}
+		if c.timeout {
+			ctx, cancel = context.WithTimeout(ctx, 300*time.Millisecond)
+		}
+		icon, failed, err := iconFromURL(ctx, srv.Client(), srv.URL+c.path, "My Relay", pass)
+		cancel()
+		if err != nil || !strings.Contains(failed, c.why) || !strings.Contains(read(icon), ">MR</text>") {
+			t.Errorf("%s: %q %q %v, want the letters MR and %q", c.path, read(icon), failed, err, c.why)
+		}
+	}
+	// none typed: the letters, with nothing to say
+	if icon, failed, err := iconFromURL(context.Background(), srv.Client(), " ", "My Relay", pass); err != nil || failed != "" || !strings.Contains(read(icon), ">MR</text>") {
+		t.Errorf("no address: %q %q %v", icon, failed, err)
+	}
+	// the guard: only a public https address is fetched, and with no name
+	// the letters are the base URL's site's
+	for _, raw := range []string{"http://example.com/icon.png", srv.URL + "/icon.png", "https://localhost/icon.png", "https://user@example.com/i.png"} {
+		icon, failed, err := IconFromURL(context.Background(), raw, "", "https://api.kiwi.dev/v1")
+		if err != nil || !strings.Contains(failed, "not a picture's https address") || !strings.Contains(read(icon), ">Ki</text>") {
+			t.Errorf("%s: %q %q %v, want it refused and the letters Ki", raw, read(icon), failed, err)
+		}
+	}
 }

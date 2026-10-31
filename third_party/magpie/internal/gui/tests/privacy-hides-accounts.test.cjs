@@ -56,6 +56,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await context.addInitScript((v) => { try { if (v === null) localStorage.removeItem("magpie.maskEmails"); else localStorage.setItem("magpie.maskEmails", v); } catch {} }, stored);
         const page = await context.newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", serve(lang, settings, saved));
         await page.goto(url);

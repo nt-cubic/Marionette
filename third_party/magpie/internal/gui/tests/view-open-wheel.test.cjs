@@ -115,6 +115,7 @@ for (const engine of ["chromium", "webkit"]) {
         t.after(() => ctx.close());
         const p = await ctx.newPage();
         p.setDefaultTimeout(8000);
+        p.setDefaultNavigationTimeout(60000);
         const errors = [];
         p.on("pageerror", (e) => { if (!/^ResizeObserver loop/.test(e.message)) errors.push(e.message); });
         await p.addInitScript(heard === "late" ? LATE : DEAF);

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yetone/magpie/internal/agent"
@@ -56,6 +57,11 @@ type modelJSON struct {
 	Same       string   `json:"same,omitempty"`      // the model the user said it is the same as, for the groups magpie finds (#583)
 	Merge      string   `json:"merge,omitempty"`     // what those groups merge it by when the user says nothing
 	Kind       string   `json:"kind,omitempty"`      // what the user said it makes: image or video (#1399)
+	// Vendor is the provider's own id of a model the user lists by
+	// another (provider.SetModelID), "" for one listed by its own; IDs
+	// says the provider's models can be given ids at all (a key's)
+	Vendor string `json:"vendor,omitempty"`
+	IDs    bool   `json:"ids,omitempty"`
 	// Desktop is the number Claude Desktop's menu says beside this model
 	// (gateway.DesktopNumber), so a row of that menu can be matched to its
 	// provider (#2578): only for a model Claude Desktop, installed here,
@@ -102,6 +108,9 @@ type providerJSON struct {
 	// on this machine or the local network, set to go unmasked by
 	// Settings' redaction (provider.Unredacted)
 	Unredacted bool `json:"unredacted"`
+	// every model of it counted free by the user's word, for Free first
+	// and Cheapest (provider.CountFree)
+	CountFree bool `json:"countFree,omitempty"`
 	// a provider the user added whose own HTTPS host's certificate is
 	// taken as it is (provider.InsecureTLS, #2383); TakesInsecureTLS: it
 	// may be, being the user's own and not a preset's or a sign-in's
@@ -148,6 +157,11 @@ type providerJSON struct {
 	// name an account has until the user gives it one
 	AccountNames map[string]string `json:"accountNames,omitempty"`
 	AccountSeats map[string]string `json:"accountSeats,omitempty"`
+	// the name a plugin's usage gives each account where it isn't the
+	// accountId the account is kept by (Provider.PluginUser, #4416): a
+	// masked phone for an IAM id, the name the account goes by until the
+	// user gives it one
+	AccountUsers map[string]string `json:"accountUsers,omitempty"`
 	// where a custom provider's balance is asked (see provider.Balance)
 	BalanceURL    string `json:"balanceURL,omitempty"`
 	BalancePath   string `json:"balancePath,omitempty"`
@@ -237,6 +251,9 @@ type providerJSON struct {
 	// each key's or account's own limit over it (#892), by its name in
 	// lower case or its key id; 0 there is none
 	AccountConcurrency map[string]int `json:"accountConcurrency,omitempty"`
+	// each subscription account's weight under By weight routing, by its
+	// name in lower case; one not in it weighs 1 (provider.AccountWeights)
+	AccountWeights map[string]int `json:"accountWeights,omitempty"`
 	// how many may wait for each key or account, and for how many seconds
 	// (0: no bound)
 	QueueLimit int `json:"queueLimit,omitempty"`
@@ -634,12 +651,12 @@ func providerInfoWith(p provider.Provider, agents []agentUse, desktop map[string
 		ID: p.ID, Name: p.Name, Icon: p.Icon, Preset: p.Preset, Host: p.Host(),
 		Chat: p.Chat, Responses: p.Responses, Anthropic: p.Anthropic, Gemini: p.Gemini, Decide: p.Decide, BaseAPI: p.BaseAPI, ModelTest: p.ModelTest(), TestsAs: p.TestClients(), DecideTest: p.AsksDecideModels(), MarksKinds: p.MarksKinds(),
 		Catalog: p.Catalog, Website: p.Website, KeysURL: p.KeysURL,
-		Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountNames: p.AccountNames, Headers: p.Headers, ExtraBody: p.ExtraBody, ReplyHeaders: p.ReplyHeaders, Searches: p.Searches, Cline: p.ClinePinnable(), PinUpstream: p.PinUpstream, Unredacted: p.Unredacted, InsecureTLS: p.InsecureTLS, TakesInsecureTLS: p.TakesInsecureTLS(), LimitRestOff: p.LimitRestOff, NativeCompaction: p.NativeCompaction, CarriesCompaction: p.CarriesCompaction(), PassUserAgent: p.PassUserAgent, OwnClient: p.OwnClient(), AuthHeader: p.AuthHeader, BothAuth: p.BothAuth(), BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, BalanceMethod: p.BalanceMethod, ModelsURL: p.ModelsURL,
+		Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountNames: p.AccountNames, Headers: p.Headers, ExtraBody: p.ExtraBody, ReplyHeaders: p.ReplyHeaders, Searches: p.Searches, Cline: p.ClinePinnable(), PinUpstream: p.PinUpstream, Unredacted: p.Unredacted, CountFree: p.CountFree, InsecureTLS: p.InsecureTLS, TakesInsecureTLS: p.TakesInsecureTLS(), LimitRestOff: p.LimitRestOff, NativeCompaction: p.NativeCompaction, CarriesCompaction: p.CarriesCompaction(), PassUserAgent: p.PassUserAgent, OwnClient: p.OwnClient(), AuthHeader: p.AuthHeader, BothAuth: p.BothAuth(), BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, BalanceMethod: p.BalanceMethod, ModelsURL: p.ModelsURL,
 		Ready: p.Ready(), Chosen: p.Picks(), Models: []modelJSON{}, Agents: []providerAgent{},
 		Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, CapStop: p.CapStop, CapCareful: p.CapCareful, Unlisted: p.Unlisted, NoModels: p.ServesNone(), BestInFamily: p.BestInFamily && len(p.Models) == 0 && !p.NoModels, Off: p.Off, Contexts: p.Contexts,
 		MaxConcurrency: p.MaxConcurrency, PluginConcurrency: p.PluginConcurrency(), PriceRate: p.PriceRate,
 		RateWindows: p.RateWindows, RateNow: rateNowOf(p, time.Now()),
-		AccountConcurrency: p.AccountConcurrency, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM,
+		AccountConcurrency: p.AccountConcurrency, AccountWeights: p.AccountWeights, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM,
 		Outputs: provider.OutputsOf(p.ID), Compacts: provider.CompactsOf(p.ID),
 	}
 	if p.Account != nil {
@@ -649,6 +666,12 @@ func providerInfoWith(p provider.Provider, agents []agentUse, desktop map[string
 					out.AccountSeats = map[string]string{}
 				}
 				out.AccountSeats[strings.ToLower(strings.TrimSpace(r))] = s
+			}
+			if u := p.PluginUser(r); u != "" {
+				if out.AccountUsers == nil {
+					out.AccountUsers = map[string]string{}
+				}
+				out.AccountUsers[strings.ToLower(strings.TrimSpace(r))] = u
 			}
 		}
 	}
@@ -804,6 +827,10 @@ func providerInfoWith(p provider.Provider, agents []agentUse, desktop map[string
 		}
 		j.NoAPI = p.NoAPIFor(m.ID)
 		j.Same = sames[p.ID+"/"+m.ID]
+		if own := p.OwnModelID(m.ID); own != m.ID {
+			j.Vendor = own
+		}
+		j.IDs = p.TakesModelIDs()
 		j.Kind = p.ModelKind(m.ID)
 		j.Merge = provider.MergeName(m.ID)
 		j.Desktop = desktop[p.ID+"/"+m.ID]
@@ -1065,6 +1092,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 	contextRoutesAPI(mux)
 	tuneRoutes(mux)
 	groupRoutes(mux)
+	localHostsRoutes(mux)
 	// how each key's or account's requests stand under its limit on
 	// requests at once (#892), read every two seconds while a provider's
 	// rows are shown; empty when the gateway runs elsewhere
@@ -1201,6 +1229,21 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		}
 		writeJSON(rw, map[string]string{"icon": icon})
 	})
+	// a picture's address typed for the icon, or with none the letter tile;
+	// one that can't be used gives the tile too, and failed says why
+	mux.HandleFunc("POST /api/icons/url", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ URL, Name, Base string }
+		if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		icon, failed, err := provider.IconFromURL(r.Context(), in.URL, in.Name, in.Base)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, map[string]string{"icon": icon, "failed": failed})
+	})
 	mux.HandleFunc("GET /api/icons/{name}", func(rw http.ResponseWriter, r *http.Request) {
 		// a big picture comes scaled to what the window draws (#909)
 		f, ctype := provider.IconServed(r.PathValue("name"))
@@ -1320,6 +1363,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// As, for test: the agent the request is asked as
 			// (provider.TestAs: "codex", "claude-code"), "" as magpie
 			As string `json:"as"`
+			// Run, for test and teststop: the window's name for one
+			// test, which its Stop ends (testRuns)
+			Run string `json:"run"`
 			// DetectModels, for detect: models to ask on each API, each
 			// answered on its own, in place of Model
 			DetectModels []string `json:"detectModels"`
@@ -1338,6 +1384,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// it follow the account's cap
 			Cap    int    `json:"cap"`
 			Window string `json:"window"`
+			// Weight, for accountweight: the account's share under By
+			// weight routing, 1 to provider.MaxKeyWeight (0 or 1: none)
+			Weight int `json:"weight"`
 			// Alias, for accountname: the account's name of the user's
 			// own, "" to take it off (#1515)
 			Alias string `json:"alias"`
@@ -1464,6 +1513,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				pr.Searches = in.Searches
 				pr.PinUpstream = in.PinUpstream
 				pr.Unredacted = in.Unredacted
+				pr.CountFree = in.CountFree
 				pr.NativeCompaction = in.NativeCompaction
 				pr.PassUserAgent = in.PassUserAgent
 				pr.AuthHeader = in.AuthHeader
@@ -1680,11 +1730,13 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				if old != nil {
 					in.AccountModels = old.AccountModels
 				}
-				// and their usage caps, with accountcap and windowcap, and their
-				// limits on requests at once, with accountconcurrency
+				// and their usage caps, with accountcap and windowcap, their
+				// limits on requests at once, with accountconcurrency, and
+				// their weights, with accountweight
 				if old != nil {
 					in.AccountCaps, in.AccountWindowCaps = old.AccountCaps, old.AccountWindowCaps
 					in.AccountConcurrency = old.AccountConcurrency
+					in.AccountWeights = old.AccountWeights
 					in.AccountNames = old.AccountNames // with accountname
 				}
 				// the image models unticked in its editor likewise: []
@@ -1914,6 +1966,11 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				fail(rw, err)
 				return
 			}
+		case "accountweight":
+			if err := provider.SetAccountWeight(in.ID, req.Account, req.Weight); err != nil {
+				fail(rw, err)
+				return
+			}
 		case "route":
 			if err := provider.SetRouting(in.ID, in.Routing); err != nil {
 				fail(rw, err)
@@ -1987,11 +2044,25 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				fail(rw, err)
 				return
 			}
+		case "teststop":
+			if stop, ok := testRuns.LoadAndDelete(req.Run); ok && req.Run != "" {
+				stop.(context.CancelFunc)()
+			}
+			rw.WriteHeader(http.StatusNoContent)
+			return
 		case "test":
 			p, err := provider.Find(in.ID)
 			if err != nil {
 				fail(rw, err)
 				return
+			}
+			ctx := r.Context()
+			if req.Run != "" {
+				var stop context.CancelFunc
+				ctx, stop = context.WithCancel(ctx)
+				defer stop()
+				testRuns.Store(req.Run, stop)
+				defer testRuns.Delete(req.Run)
 			}
 			saved := *p
 			if req.Typed {
@@ -2000,12 +2071,12 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			}
 			if len(req.Test) > 0 {
 				// an image model's test draws a picture, which takes longer
-				ctx, cancel := context.WithTimeout(provider.TestAs(r.Context(), req.As), 3*time.Minute)
+				ctx, cancel := context.WithTimeout(provider.TestAs(ctx, req.As), 3*time.Minute)
 				defer cancel()
 				writeJSON(rw, map[string]any{"results": p.TestModels(ctx, req.Test)})
 				return
 			}
-			ctx, cancel := context.WithTimeout(provider.TestAs(r.Context(), req.As), 25*time.Second)
+			ctx, cancel := context.WithTimeout(provider.TestAs(ctx, req.As), 25*time.Second)
 			defer cancel()
 			writeJSON(rw, struct {
 				Results  []provider.Result `json:"results"`
@@ -2137,7 +2208,10 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				fail(rw, err)
 				return
 			}
-			ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+			// as long as the plugins' host bounds one providers RPC itself
+			// (30s, plugin.refreshDeadline): a plugin's Fetch models is one
+			// listing of every provider, which may spend all of it (#4065)
+			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 			defer cancel()
 			ask := *p
 			if req.Typed {
@@ -2349,7 +2423,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		}
 		// one that installs a CLI first has no URL yet: the window opens it
 		// once there is one
-		writeJSON(rw, signInOpened{st, openError(w, st.URL)})
+		writeJSON(rw, openSignIn(w, st))
 	})
 	mux.HandleFunc("GET /api/signin/{id}", func(rw http.ResponseWriter, r *http.Request) {
 		st, ok := provider.SignInStatus(r.PathValue("id"))
@@ -2534,6 +2608,13 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		rw.WriteHeader(http.StatusNoContent)
 	})
 }
+
+// testRuns: the provider tests under way by the name the window gave each
+// (Run), each with what ends it: Stop ends the test's requests to the
+// vendor, here as well as by the fetch it aborts, which WebView2 doesn't
+// end the request's context for (RIck on Discord: a test couldn't be
+// stopped)
+var testRuns sync.Map
 
 // typed is the saved provider p as the editor's form has it (in), for
 // Refresh and Test models before a Save: a key pasted to replace the saved

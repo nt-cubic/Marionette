@@ -148,6 +148,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const p = await ctx.newPage();
         const errors = [];
         p.setDefaultTimeout(5000);
+        p.setDefaultNavigationTimeout(60000);
         p.on("pageerror", (e) => errors.push(e.message));
         await p.route("**/*", serve(lang, store, false));
         const requests = async () => {
@@ -205,6 +206,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const pctx = await browser.newContext({ viewport: { width: 380, height: 560 }, reducedMotion: "reduce" });
         const pp = await pctx.newPage();
         pp.setDefaultTimeout(5000);
+        pp.setDefaultNavigationTimeout(60000);
         pp.on("pageerror", (e) => errors.push(e.message));
         await pp.route("**/*", serve(lang, store, true));
         await pp.goto("http://magpie.test/?mode=panel");

@@ -81,6 +81,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // the block grid, the look these cells are drawn in (the map is the default)
         await page.addInitScript(() => { try { localStorage.setItem("magpie.ctxLook", "grid"); } catch {} });
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         const errors = [];
         page.on("pageerror", (e) => errors.push(e.message));
         const feed = { next: null };
@@ -170,6 +171,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.addInitScript(() => { try { localStorage.setItem("magpie.ctxLook", "grid"); } catch {} });
         await page.addInitScript(() => { try { localStorage.setItem("magpie.ctxShut", "1"); } catch {} });
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         const errors = [];
         page.on("pageerror", (e) => errors.push(e.message));
         const feed = { next: null };

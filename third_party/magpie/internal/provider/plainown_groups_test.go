@@ -34,11 +34,12 @@ func TestPlainOwnNamesGroups(t *testing.T) {
 	if got, want := labels(), []string{"Fast", "My Sol", "Sol · B", "Sol · routing group"}; !slices.Equal(got, want) {
 		t.Fatalf("own names plain: %q, want %q", got, want)
 	}
-	// a group named as a model the list has keeps its suffix
+	// a group named as a model the list has keeps its suffix, and the
+	// model, told apart from it so, stays plain
 	if err := SaveGroup(Group{ID: "fast", Name: "My Sol", Members: []string{"a/sol", "b/sol"}}); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := labels(), []string{"My Sol · A", "My Sol · routing group", "Sol · B", "Sol · routing group"}; !slices.Equal(got, want) {
+	if got, want := labels(), []string{"My Sol", "My Sol · routing group", "Sol · B", "Sol · routing group"}; !slices.Equal(got, want) {
 		t.Fatalf("a group named as a model: %q, want %q", got, want)
 	}
 }

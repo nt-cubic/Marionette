@@ -36,28 +36,40 @@ func heatDiskPath() string {
 	return filepath.Join(filepath.Dir(sessions.CachePath()), "heat-v1.json")
 }
 
-// heatDiskEntry is the file: the key it was counted under and the days.
+// heatDiskEntry is the file: the key it was counted under, the cut and
+// since it names, and the days.
 type heatDiskEntry struct {
-	Key  string `json:"key"`
-	Days []Day  `json:"days"`
+	Key   string    `json:"key"`
+	Cut   time.Time `json:"cut,omitzero"`
+	Since time.Time `json:"since,omitzero"`
+	Days  []Day     `json:"days"`
+}
+
+func heatDiskEntryRead() (heatDiskEntry, bool) {
+	b, err := os.ReadFile(heatDiskPath())
+	if err != nil {
+		return heatDiskEntry{}, false
+	}
+	var e heatDiskEntry
+	if json.Unmarshal(b, &e) != nil {
+		return heatDiskEntry{}, false
+	}
+	return e, true
 }
 
 // heatDiskRead is the days the file holds under key, or false.
 func heatDiskRead(key string) ([]Day, bool) {
-	b, err := os.ReadFile(heatDiskPath())
-	if err != nil {
-		return nil, false
-	}
-	var e heatDiskEntry
-	if json.Unmarshal(b, &e) != nil || e.Key != key {
+	e, ok := heatDiskEntryRead()
+	if !ok || e.Key != key {
 		return nil, false
 	}
 	return e.Days, true
 }
 
-// heatDiskWrite keeps days under key, through a file renamed over the last.
-func heatDiskWrite(key string, days []Day) error {
-	b, err := json.Marshal(heatDiskEntry{Key: key, Days: days})
+// heatDiskWrite keeps days before cut from since under key, through a
+// file renamed over the last.
+func heatDiskWrite(key string, cut, since time.Time, days []Day) error {
+	b, err := json.Marshal(heatDiskEntry{Key: key, Cut: cut, Since: since, Days: days})
 	if err != nil {
 		return err
 	}
@@ -98,7 +110,7 @@ func heatSettledKey(d heatDiskRef, cut, since time.Time, f Filter, identities ma
 	f.Zone = nil
 	h := sha256.New()
 	fmt.Fprintf(h, "heat-v1\x00%s\x00%s\x00%s\x00%d\x00%d\x00%s\x00%#v\x00%s\x00%d:%d:%d\x00",
-		sessions.CallCacheVersion+"\x00"+settledCountVersion, d.root, d.meta, cut.UnixNano(), since.UnixNano(), cut.Location(), f, zone, before.n, before.at, before.tokens)
+		sessions.CallCacheVersion()+"\x00"+settledCountVersion, d.root, d.meta, cut.UnixNano(), since.UnixNano(), cut.Location(), f, zone, before.n, before.at, before.tokens)
 	hashCodexIdentities(h, identities)
 	var b []byte
 	rows := lentRows()
@@ -145,7 +157,7 @@ func hashRows(h hash.Hash, c *rowChunk) {
 	shapes := map[uint32]int{}
 	for i := range c.Rows {
 		p := &c.Rows[i]
-		b = binary.AppendVarint(b, p.Time.UnixNano())
+		b = binary.AppendVarint(b, p.Time().UnixNano())
 		for _, v := range p.Varied {
 			text(v)
 		}
@@ -161,7 +173,7 @@ func hashRows(h hash.Hash, c *rowChunk) {
 			}
 		}
 		for _, t := range p.Tokens {
-			b = binary.AppendVarint(b, t)
+			b = binary.AppendVarint(b, int64(t))
 		}
 		b = binary.AppendVarint(b, p.Order)
 		b = binary.AppendVarint(b, p.RouteID)
@@ -183,4 +195,43 @@ func hashRows(h hash.Hash, c *rowChunk) {
 // and names its calls: the index's root and meta. Empty, they aren't kept.
 type heatDiskRef struct {
 	root, meta string
+}
+
+// The cut moves a day each midnight, and every key names it: the first
+// start of each day found none of its sums on disk and paired the whole
+// history again, three times over (the page, the heatmap and Codex's
+// effort), ~180 MB of a ~480 MB footprint each morning (#2278). Sums
+// kept at an earlier cut still stand while that cut's key is the same:
+// the days between are added from a pairing of the chunks they reach.
+
+// splitAt is the chunks of sets with rows a pairing from cut on reaches,
+// and the rest.
+func splitAt(cut time.Time, sets [3][]*rowChunk) (recent, settled [3][]*rowChunk) {
+	edge := cut.Add(-heatReach)
+	for k, set := range sets {
+		for _, c := range set {
+			if c.Latest.IsZero() || !c.Latest.Before(edge) {
+				recent[k] = append(recent[k], c)
+			} else {
+				settled[k] = append(settled[k], c)
+			}
+		}
+	}
+	return recent, settled
+}
+
+// settledAt is sets split at an earlier cut, and the key of its settled
+// chunks there, or false.
+func settledAt(d heatDiskRef, cut, since time.Time, f Filter, identities map[string]sessions.CodexIdentity, sets [3][]*rowChunk) ([3][]*rowChunk, string, bool) {
+	recent, settled := splitAt(cut, sets)
+	if _, ok := pairSerials(settled[0], settled[1], settled[2]); !ok {
+		return recent, "", false
+	}
+	key, ok := heatSettledKey(d, cut, since, f, identities, settled, heatBefore(cut, recent))
+	return recent, key, ok
+}
+
+// chunksIn is how many chunks sets hold.
+func chunksIn(sets [3][]*rowChunk) int {
+	return len(sets[0]) + len(sets[1]) + len(sets[2])
 }

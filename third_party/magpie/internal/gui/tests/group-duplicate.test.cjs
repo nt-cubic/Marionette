@@ -72,7 +72,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     const w = words[lang];
     test(`${engine} ${lang}: a routing group is duplicated from its menu`, async (t) => {
       const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
-      const page = await (await browser.newContext({ viewport: { width: 420, height: 1200 }, reducedMotion: "reduce" })).newPage();
+      const page = await (await browser.newContext({ viewport: { width: 420, height: 1400 }, reducedMotion: "reduce" })).newPage();
       t.after(async () => {
         if (process.env.ARTIFACT_DIR) {
           await fs.mkdir(process.env.ARTIFACT_DIR, { recursive: true });
@@ -81,6 +81,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await browser.close();
       });
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       const errors = [], posts = [];
       // WebKit reports a ResizeObserver round left to the next frame as a page
       // error; Chromium doesn't. As the page first lays out, the view's
@@ -91,7 +92,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.route("**/*", serve(lang, posts));
       await page.goto("http://magpie.test/?view=routing");
       await page.locator(".rt-groups > .rt-group").nth(1).waitFor();
-      // tall enough that the rows are in view unscrolled: a scroll closes
+      // tall enough that the rows are in view unscrolled (1400: German
+      // with the found groups' "leave out" line needs more than 1200): a scroll closes
       // the menu, and the page settles its own scroll as it loads
       await page.waitForTimeout(500);
       assert.deepEqual(await listed(page), ["one", "two"]);

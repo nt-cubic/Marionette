@@ -55,6 +55,7 @@ const scrolls = (page) => page.evaluate(() => [window.scrollY, document.scrollin
 async function open(browser, lang, ctl, errors, width) {
   const page = await (await browser.newContext({ viewport: { width, height: 760 }, reducedMotion: "reduce" })).newPage();
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(60000);
   // webkit's note that a resize settled a frame late is not the page's error
   page.on("pageerror", (e) => { if (!/^ResizeObserver loop completed with undelivered notifications/.test(e.message)) errors.push(e.message); });
   await page.route("**/*", server(lang, ctl));

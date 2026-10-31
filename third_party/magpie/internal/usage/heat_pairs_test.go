@@ -15,6 +15,7 @@ import (
 // footprint's peaks (#2278). Only the heatmap's recent days are paired
 // again for it.
 func TestHeatmapPairsAsAllDoes(t *testing.T) {
+	pairAtOnce(t)
 	for _, heatFirst := range []bool{false, true} {
 		name := "page first"
 		if heatFirst {
@@ -66,6 +67,7 @@ func TestHeatmapPairsAsAllDoes(t *testing.T) {
 // chunks of its own serials, so none was the pairing's the one before
 // had paired.
 func TestBigBuildsBegunTogetherPairOnce(t *testing.T) {
+	pairAtOnce(t)
 	pageHome(t)
 	settleLogClock(t)
 	now := holdClock(t, time.Date(2026, 9, 30, 12, 0, 0, 0, time.Local))

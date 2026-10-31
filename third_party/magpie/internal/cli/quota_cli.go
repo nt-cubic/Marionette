@@ -17,6 +17,7 @@ import (
 const quotaUsage = `usage: magpie quota [<provider>…] [--json]
        magpie quota reset [<codex account>] [--yes]
        magpie quota auto-reset [<codex account>] [week|expiring] [on|off]
+       magpie quota auto-reset lead [<minutes or hours, like 30m or 3h>|default]
        magpie quota credits [<codex account>] [on|off]
        magpie quota alert [<percent>|off] [--balance <amount>|off]
        magpie quota wait <provider|account> [--timeout <duration>] [--quiet]
@@ -33,7 +34,7 @@ const quotaUsage = `usage: magpie quota [<provider>…] [--json]
   named). It can't be undone, so it asks first; --yes doesn't. quota auto-reset on lets
   the account spend one by itself when its weekly window is used up and no other
   account can take a request, or before a request goes on its credits, one a week
-  at most (the five hours running out never does), and spend the one about to expire about half an hour before it does, if
+  at most (the five hours running out never does), and spend the one about to expire half an hour before it does, if
   the account's windows have been used, so what they have left can be used until
   then and it isn't lost; at once when the account is held up until after then.
   week on|off or expiring on|off turns only one of those two times on or off, the
@@ -41,6 +42,9 @@ const quotaUsage = `usage: magpie quota [<provider>…] [--json]
   reset it) and still spends the reset about to expire.
   It is the account's standing setting, held resets or not; off stops it, and alone
   it says which accounts have it on. It is off until turned on.
+  quota auto-reset lead 2h spends the one about to expire two hours before it does
+  instead, for every account, from 15m to 24h; default puts back the half hour, and
+  alone it says what is set. Earlier loses what the windows have left then.
   quota credits off keeps a Codex account from spending its credits: once one of
   its windows is used up, by magpie's latest reading (refreshed about every
   minute), routing holds it as used up until that window renews and the request
@@ -266,6 +270,9 @@ func quotaResetCmd(args []string) error {
 // [on|off] — whether the account spends a reset by itself once its week is
 // used up, before one expires, or both (#2078).
 func quotaAutoResetCmd(args []string) error {
+	if len(args) > 0 && strings.EqualFold(args[0], "lead") {
+		return quotaResetLeadCmd(args[1:])
+	}
 	user, when, set, on := "", "", false, false
 	for _, a := range args {
 		switch strings.ToLower(a) {
@@ -316,15 +323,73 @@ func quotaAutoResetCmd(args []string) error {
 	}
 	switch week, expiring := provider.CodexAutoResetWhen(user); {
 	case week && expiring:
-		fmt.Println(green.Render("✓"), user+":", "uses a reset by itself once its week is used up and no other account can answer, or before its credits are spent, one a week at most, and the one about to expire half an hour before it does, or at once when held up past then")
+		fmt.Println(green.Render("✓"), user+":", "uses a reset by itself once its week is used up and no other account can answer, or before its credits are spent, one a week at most, and the one about to expire "+leadWords(settings.Load().ResetLead())+" before it does, or at once when held up past then")
 	case week:
 		fmt.Println(green.Render("✓"), user+":", "uses a reset by itself once its week is used up and no other account can answer, or before its credits are spent, one a week at most; one about to expire is left to run out")
 	case expiring:
-		fmt.Println(green.Render("✓"), user+":", "uses the reset about to expire half an hour before it does, or at once when held up past then; a week used up is waited out")
+		fmt.Println(green.Render("✓"), user+":", "uses the reset about to expire "+leadWords(settings.Load().ResetLead())+" before it does, or at once when held up past then; a week used up is waited out")
 	default:
 		fmt.Println(green.Render("✓"), user+":", "no longer uses a reset by itself")
 	}
 	return nil
+}
+
+// quotaResetLeadCmd: magpie quota auto-reset lead [<duration>|default] —
+// how long before a reset about to expire unused it is spent, for every
+// account with expiring on (the owner, 10-30).
+func quotaResetLeadCmd(args []string) error {
+	switch {
+	case len(args) > 1:
+		return fmt.Errorf("one lead at a time, like: magpie quota auto-reset lead 2h")
+	case len(args) == 0:
+		s := settings.Load()
+		say := "used " + leadWords(s.ResetLead()) + " before it expires"
+		if s.CodexResetLead == 0 {
+			say += " (the default)"
+		}
+		fmt.Println("a reset about to expire unused is", say)
+		return nil
+	}
+	a := strings.ToLower(strings.TrimSpace(args[0]))
+	minutes := 0
+	switch a {
+	case "help", "-h", "--help":
+		fmt.Println(quotaUsage)
+		return nil
+	case "default", "0":
+	default:
+		d, err := time.ParseDuration(a)
+		if err != nil {
+			n, nerr := strconv.Atoi(a)
+			if nerr != nil {
+				return fmt.Errorf("a lead looks like 30m or 3h, or default, not %q", args[0])
+			}
+			d = time.Duration(n) * time.Minute
+		}
+		if d%time.Minute != 0 {
+			return fmt.Errorf("a lead is whole minutes, not %v", d)
+		}
+		minutes = int(d / time.Minute)
+		if minutes <= 0 {
+			return fmt.Errorf("a lead is from %dm to %dh, not %q", settings.CodexResetLeadLeast, settings.CodexResetLeadMost/60, args[0])
+		}
+	}
+	if err := provider.SetCodexResetLead(minutes); err != nil {
+		return err
+	}
+	fmt.Println(green.Render("✓"), "a reset about to expire unused is used", leadWords(settings.Load().ResetLead()), "before it does, for every account with auto-reset's expiring on")
+	return nil
+}
+
+// leadWords says a lead as 30m or 3h.
+func leadWords(d time.Duration) string {
+	if d%time.Hour == 0 {
+		return strconv.Itoa(int(d/time.Hour)) + "h"
+	}
+	if d > time.Hour {
+		return strconv.Itoa(int(d/time.Hour)) + "h" + strconv.Itoa(int(d%time.Hour/time.Minute)) + "m"
+	}
+	return strconv.Itoa(int(d/time.Minute)) + "m"
 }
 
 // autoResetSay says when user spends a reset by itself.

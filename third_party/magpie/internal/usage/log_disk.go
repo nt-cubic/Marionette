@@ -70,12 +70,29 @@ type logDiskProbe struct {
 }
 
 // logDiskRead is the file's snapshot of the log at path, when the log's
-// first bytes are still the ones it was written of.
+// first bytes are still the ones it was written of. Where the system maps
+// the file, the blocks are of its pages, as requests-v1.bin's are
+// (diskMapping): read into the heap, a 240k-call history's 7 MB of them
+// stayed there for good, and the collector let the heap grow by as much
+// again (#2278).
 func logDiskRead(path string, size int64) *logDisk {
+	if m, ok := mapDiskFile(logDiskPath()); ok {
+		var d *logDisk
+		if !readMapped(m, func() { d = logDiskOf(m.data, m, path, size) }) {
+			d = nil
+		}
+		m.read()
+		return d
+	}
 	b, err := os.ReadFile(logDiskPath())
 	if err != nil {
 		return nil
 	}
+	return logDiskOf(b, nil, path, size)
+}
+
+// logDiskOf is logDiskRead of the file's bytes b, of m's pages with m.
+func logDiskOf(b []byte, m *diskMapping, path string, size int64) *logDisk {
 	header, b, ok := cutDiskEntry(b)
 	if !ok {
 		return nil
@@ -137,7 +154,7 @@ func logDiskRead(path string, size int64) *logDisk {
 		if err != nil {
 			return nil
 		}
-		c.serial = nextChunkSerial()
+		c.serial, c.mapped = nextChunkSerial(), m
 		d.blocks = append(d.blocks, c)
 	}
 	if len(b) != 0 {

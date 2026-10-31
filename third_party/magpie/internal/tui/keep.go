@@ -83,6 +83,10 @@ func keepGateway(connected bool) string {
 	return msg
 }
 
+// BackgroundLog is the log of a magpie serve that magpie tui left
+// running as it quit (serveInBackground).
+func BackgroundLog() string { return filepath.Join(appdir.Cache(), "serve.log") }
+
 // serveInBackground starts `magpie serve` on its own, outliving this
 // process and its terminal, its output in a log in magpie's cache.
 func serveInBackground() (int, string, error) {
@@ -90,7 +94,7 @@ func serveInBackground() (int, string, error) {
 	if err != nil {
 		return 0, "", err
 	}
-	log := filepath.Join(appdir.Cache(), "serve.log")
+	log := BackgroundLog()
 	if err := os.MkdirAll(filepath.Dir(log), 0o700); err != nil {
 		return 0, "", err
 	}

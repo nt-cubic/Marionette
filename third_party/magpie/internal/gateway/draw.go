@@ -1302,6 +1302,9 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 	if isArk(p) {
 		return s.drawArk(ctx, p, model, d)
 	}
+	if dashScopeDraws(p, model) {
+		return s.drawDashScope(ctx, p, model, d)
+	}
 	base := strings.TrimRight(p.Base(provider.Chat), "/")
 	if base == "" {
 		// a Responses-only relay serves the images API under the same root

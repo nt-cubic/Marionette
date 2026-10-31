@@ -34,6 +34,44 @@ type tuneAdvice struct {
 	// window in Long conversations doesn't move it (hoobnn on Discord: a
 	// card said "In use" for 170K beside "Now 430K")
 	Own *tuneOwn `json:"own,omitempty"`
+	// Async is Codex's background compaction at the advice, its foreground
+	// limit kept as the backstop; nil where it can't help
+	Async *tuneAsync `json:"async,omitempty"`
+}
+
+// tuneAsync is the advice as Codex's background compaction takes it: a
+// share of the model's window (Percent), about Value tokens of Window.
+// Held are the Codexes here too old for the share, or of no known version.
+type tuneAsync struct {
+	Percent int                 `json:"percent"`
+	Value   int                 `json:"value"`
+	Window  int                 `json:"window"`
+	Setting agent.TuneSetting   `json:"setting"`
+	Held    []agent.CodexReader `json:"held,omitempty"`
+}
+
+// codexAsyncAt is the advice r as a share of the window Codex's
+// background compaction starts at: the fewest tokens (a compaction in the
+// background keeps no one waiting, so the wait the advice weighs doesn't
+// count), rounded down, so it starts no later than that. ok is false
+// where it would start no sooner than the foreground does, at the lesser
+// of the limit now and 90% of the window (codex-rs ModelInfo
+// auto_compact_token_limit), and where the window isn't known.
+func codexAsyncAt(r *tune.Compaction) (percent, value int, ok bool) {
+	if r == nil || r.Window <= 0 {
+		return 0, 0, false
+	}
+	v := r.Best
+	if r.Cheapest > 0 && r.Facts.Took > 0 {
+		v = r.Cheapest
+	}
+	percent = max(1, min(100, v*100/r.Window))
+	value = r.Window * percent / 100
+	fg := r.Window * 9 / 10
+	if r.Current > 0 {
+		fg = min(fg, r.Current)
+	}
+	return percent, value, value < fg
 }
 
 type tuneOwn struct {
@@ -139,6 +177,10 @@ func adviseOf(by map[string][]tune.Call, days int, home string) tuneState {
 				ad := tuneAdvice{Knob: agent.TuneCompact, Setting: s, Compact: r}
 				if own != "" && s.Source == agent.TuneLong && r.Current == told {
 					ad.Own = &tuneOwn{Model: own, Value: told}
+				}
+				if pct, v, ok := codexAsyncAt(r); ok {
+					as, _ := agent.TuneRead(home, name, agent.TuneAsync, "")
+					ad.Async = &tuneAsync{Percent: pct, Value: v, Window: r.Window, Setting: as, Held: agent.CodexAsyncHeldHere(home)}
 				}
 				ta.Advice = append(ta.Advice, ad)
 			}

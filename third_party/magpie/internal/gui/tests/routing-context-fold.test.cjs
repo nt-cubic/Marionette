@@ -79,6 +79,7 @@ async function open(browser, lang, width, height) {
   // folded is the reader's own choice, kept in magpie.ctxShut; set once, so a reload keeps what the page stores
   await page.addInitScript(() => { try { if (!sessionStorage.getItem("seeded")) { sessionStorage.setItem("seeded", "1"); localStorage.setItem("magpie.ctxShut", "1"); } } catch {} });
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(60000);
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.route("**/*", serve(lang));

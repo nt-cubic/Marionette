@@ -118,9 +118,9 @@ func HeldReport(name string) (string, error) {
 }
 
 // heldReport is the report of u's request, held for held and stopped.
-func (s *Server) heldReport(u *unroutedHold, held time.Duration, who, asked, where string) string {
+func (s *Server) heldReport(u *unroutedHold, held time.Duration, status int, who, asked, where string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "magpie held a request before routing it, and stopped it with 504\n\n")
+	fmt.Fprintf(&b, "magpie held a request before routing it, and stopped it with %d\n\n", status)
 	fmt.Fprintf(&b, "time: %s\n", time.Now().UTC().Format(time.RFC3339))
 	fmt.Fprintf(&b, "magpie: %s (%s/%s, served by %s)\n", cmpOr(Version, "dev"), runtime.GOOS, runtime.GOARCH, cmpOr(Serves, "?"))
 	fmt.Fprintf(&b, "request: %s %s\n", u.r.Method, u.r.URL.Path)
@@ -128,6 +128,9 @@ func (s *Server) heldReport(u *unroutedHold, held time.Duration, who, asked, whe
 	fmt.Fprintf(&b, "agent: %s\n", who)
 	fmt.Fprintf(&b, "held: %s,%s\n", held, where)
 	fmt.Fprintf(&b, "known waits:%s\n", cmpOr(strings.TrimPrefix(u.waitsSaid(), ";"), " none"))
+	// a slow body from a body that stopped coming: what had come, and
+	// when the last of it did
+	fmt.Fprintf(&b, "body read: %s\n", u.bodySaid())
 	bodyRoom.mu.Lock()
 	fmt.Fprintf(&b, "body room: %d of %d bytes held (%s), %d waiting\n", bodyRoom.held, bodyRoom.room, cmpOr(bodyRoom.why, "unset"), len(bodyRoom.queue))
 	bodyRoom.mu.Unlock()

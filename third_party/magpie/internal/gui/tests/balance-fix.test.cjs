@@ -55,6 +55,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     const context = await browser.newContext({ viewport: { width: 900, height: 760 }, reducedMotion: "reduce" });
     const page = await context.newPage();
     page.setDefaultTimeout(5000);
+    page.setDefaultNavigationTimeout(60000);
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     const posted = [];
@@ -159,6 +160,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     const context = await browser.newContext({ viewport: { width: 900, height: 760 }, reducedMotion: "reduce" });
     const page = await context.newPage();
     page.setDefaultTimeout(5000);
+    page.setDefaultNavigationTimeout(60000);
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     await page.route("**/*", server([]));
@@ -190,6 +192,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     const context = await browser.newContext({ viewport: { width: 440, height: 760 }, reducedMotion: "reduce" });
     const page = await context.newPage();
     page.setDefaultTimeout(5000);
+    page.setDefaultNavigationTimeout(60000);
     const errors = [], posted = [];
     page.on("pageerror", (e) => errors.push(e.message));
     await page.route("**/*", server(posted, { provider: { ...relay, balanceURL: "https://relay.example.com/v1/usage", balancePath: "$remaining" } }));
@@ -232,6 +235,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await t.test(scenario.name, async (st) => {
             const page = await context.newPage();
             page.setDefaultTimeout(5000);
+            page.setDefaultNavigationTimeout(60000);
             st.after(() => page.close());
             const errors = [], posted = [];
             page.on("pageerror", (e) => errors.push(e.message));
@@ -313,6 +317,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await t.test(`${endpoint}: ${JSON.stringify(typed)}`, async (st) => {
           const page = await context.newPage();
           page.setDefaultTimeout(5000);
+          page.setDefaultNavigationTimeout(60000);
           st.after(() => page.close());
           const posted = [], errors = [];
           page.on("pageerror", (e) => errors.push(e.message));

@@ -15,25 +15,28 @@ import (
 // can't be opened without starting the distro (#3896). The page lists them
 // all the same (cybercaius on Discord: the MCP page knew a distro's agents
 // only once WSL had started), from what magpie learnt of them while the
-// distro ran — the places it gives each one MCP servers and skills, kept
-// in wsl.json beside the probe's memory (shape) — with the ticks the
-// library has for them. A tick there is kept as any is, in library.json,
-// and written into the distro the next time it runs (Woken): nothing is
-// opened while it is stopped, and nothing starts it but the user.
+// distro ran (the places it gives each one instructions, MCP servers and
+// skills, kept in wsl.json beside the probe's memory: shape), with the
+// ticks the library has for them. A tick there is kept as any is, in
+// library.json, and written into the distro the next time it runs (Woken):
+// nothing is opened while it is stopped, and nothing starts it but the
+// user.
 
-// shape is what the library last knew of where a WSL agent keeps its MCP
-// servers and skills, and what its MCP file can take: an AgentView's, so
-// the page can show the agent's ticks while its distro is stopped.
+// shape is what the library last knew of where a WSL agent keeps its
+// instructions, MCP servers and skills, and what its MCP file can take: an
+// AgentView's, so the page can show the agent's ticks while its distro is
+// stopped.
 type shape struct {
-	MCP        string   `json:"mcp,omitempty"`
-	Skills     string   `json:"skills,omitempty"`
-	SkillsAlso []string `json:"skillsAlso,omitempty"`
-	MCPVia     string   `json:"mcpVia,omitempty"`
-	NoSSE      bool     `json:"noSSE,omitempty"`
-	NoRemote   bool     `json:"noRemote,omitempty"`
-	NoEnvRefs  bool     `json:"noEnvRefs,omitempty"`
-	ToolsOff   bool     `json:"toolsOff,omitempty"`
-	Startup    bool     `json:"startup,omitempty"`
+	Instructions string   `json:"instructions,omitempty"`
+	MCP          string   `json:"mcp,omitempty"`
+	Skills       string   `json:"skills,omitempty"`
+	SkillsAlso   []string `json:"skillsAlso,omitempty"`
+	MCPVia       string   `json:"mcpVia,omitempty"`
+	NoSSE        bool     `json:"noSSE,omitempty"`
+	NoRemote     bool     `json:"noRemote,omitempty"`
+	NoEnvRefs    bool     `json:"noEnvRefs,omitempty"`
+	ToolsOff     bool     `json:"toolsOff,omitempty"`
+	Startup      bool     `json:"startup,omitempty"`
 }
 
 // shapeKey is the key a WSL agent's shape is kept under in its distro's
@@ -46,7 +49,7 @@ func shapeKey(id string) string {
 // keepShape remembers t's shape, t being an agent in a running distro.
 func keepShape(t *Target) {
 	a := t.Agent
-	sh := shape{Skills: t.Skills, SkillsAlso: t.SkillsAlso, MCPVia: t.MCPVia}
+	sh := shape{Instructions: t.Instructions, Skills: t.Skills, SkillsAlso: t.SkillsAlso, MCPVia: t.MCPVia}
 	if t.MCP != nil {
 		sh.MCP = t.MCP.Path
 		sh.NoSSE = t.MCP.supports(&Server{Transport: "sse"}) != nil
@@ -65,10 +68,11 @@ func keepShape(t *Target) {
 }
 
 // shapeOf is the shape kept for a, an agent in a stopped distro; nil when
-// magpie never saw it with an MCP file or a skills folder.
+// magpie never saw it with an instructions file, an MCP file or a skills
+// folder.
 func shapeOf(a *agent.Agent) *shape {
 	var sh shape
-	if json.Unmarshal([]byte(agent.WSLKept(a.WSL, shapeKey(a.ID))), &sh) != nil || sh.MCP == "" && sh.Skills == "" {
+	if json.Unmarshal([]byte(agent.WSLKept(a.WSL, shapeKey(a.ID))), &sh) != nil || sh.Instructions == "" && sh.MCP == "" && sh.Skills == "" {
 		return nil
 	}
 	return &sh
@@ -118,6 +122,27 @@ func (l *Library) asleepView(a *agent.Agent) (AgentView, bool) {
 	return av, true
 }
 
+// asleepInstructions is a stopped distro's agent as the Instructions page
+// lists it: at the file magpie last saw it read, switched on as the
+// library has it, with what it gets besides (kept in magpie's own folder);
+// what its file holds isn't read. One switched on whose file magpie never
+// saw is listed as Unseen, to be kept on; false for one the page leaves
+// out.
+func (l *Library) asleepInstructions(a *agent.Agent) (AgentInstructions, bool) {
+	on := slices.Contains(l.Instructions.Agents, a.ID)
+	sh := shapeOf(a)
+	if (sh == nil || sh.Instructions == "") && !on {
+		return AgentInstructions{}, false
+	}
+	ai := AgentInstructions{Agent: a.ID, Name: a.Name, Icon: a.Icon, On: on, Extra: readText(extraPath(a.ID)), Asleep: a.WSL}
+	if sh != nil && sh.Instructions != "" {
+		ai.Path = sh.Instructions
+	} else {
+		ai.Unseen = true
+	}
+	return ai, true
+}
+
 // names says whether the library gives the agent id anything, or holds
 // something it gave it.
 func (l *Library) names(id string) bool {
@@ -128,7 +153,8 @@ func (l *Library) names(id string) bool {
 		slices.ContainsFunc(l.MCP, func(s *Server) bool { return slices.Contains(s.Agents, id) })
 }
 
-// distrosNamed are the WSL distros the library names an agent in.
+// distrosNamed are the WSL distros the library names an agent in: one it
+// gives anything, instructions included, or holds anything it gave.
 func (l *Library) distrosNamed() []string {
 	in := map[string]bool{}
 	add := func(id string) {
@@ -136,10 +162,13 @@ func (l *Library) distrosNamed() []string {
 			in[d] = true
 		}
 	}
-	for id := range l.Applied {
-		if l.names(id) {
+	for id, a := range l.Applied {
+		if l.names(id) || a != nil && a.Instructions {
 			add(id)
 		}
+	}
+	for _, id := range l.Instructions.Agents {
+		add(id)
 	}
 	for _, s := range l.Skills {
 		for _, id := range s.Agents {

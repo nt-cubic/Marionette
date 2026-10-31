@@ -380,3 +380,113 @@ func TestTuneCodexMigrateOnSync(t *testing.T) {
 		t.Fatalf("Long conversations %d, want tune's 150000", got.CompactAt)
 	}
 }
+
+// TestTuneCodexAsync: the advice goes into Background compaction as a
+// share of the window; the foreground limit, the user's own in
+// config.toml or Long conversations, stays where it is (herman_hong's 384K
+// backstop), and Undo puts Background compaction back as it was.
+func TestTuneCodexAsync(t *testing.T) {
+	home := tuneSandbox(t)
+	path := filepath.Join(home, ".codex", "config.toml")
+	tuneWrite(t, path, "model_auto_compact_token_limit = 384000\n")
+	if err := provider.SetCompactAt(200000); err != nil {
+		t.Fatal(err)
+	}
+	setAsyncCompact(t, false, 0)
+	if s := asyncRead(home); s.Value != "" || s.Locked != "" || s.Ours || s.Source != TuneAsyncSource {
+		t.Fatalf("read %+v: want off", s)
+	}
+	for _, bad := range []string{"0", "101", "120000", "x"} {
+		if err := TuneApply(home, "codex", TuneAsync, "", bad); err == nil {
+			t.Fatalf("applied %q", bad)
+		}
+	}
+	if err := TuneApply(home, "codex", TuneAsync, "", "30"); err != nil {
+		t.Fatal(err)
+	}
+	if got := settings.Load(); !got.CodexAsyncCompact || got.CodexAsyncCompactPercent != 30 || got.CompactAt != 200000 {
+		t.Fatalf("after apply: async=%v %d%% compactAt=%d", got.CodexAsyncCompact, got.CodexAsyncCompactPercent, got.CompactAt)
+	}
+	if got := tuneFile(t, path); !strings.Contains(got, "model_auto_compact_token_limit = 384000") {
+		t.Fatalf("the foreground limit moved:\n%s", got)
+	}
+	if s, _ := TuneRead(home, "codex", TuneAsync, ""); s.Value != "30" || !s.Ours {
+		t.Fatalf("read after apply %+v", s)
+	}
+	// applying again keeps what was there before tune
+	if err := TuneApply(home, "codex", TuneAsync, "", "25"); err != nil {
+		t.Fatal(err)
+	}
+	if err := TuneUndo(home, "codex", TuneAsync, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := settings.Load(); got.CodexAsyncCompact || got.CodexAsyncCompactPercent != 0 {
+		t.Fatalf("after undo: async=%v %d%%, want off", got.CodexAsyncCompact, got.CodexAsyncCompactPercent)
+	}
+	if err := TuneUndo(home, "codex", TuneAsync, ""); err == nil {
+		t.Fatal("undid twice")
+	}
+	// Codex's own 65 reads as 65; a share the user picks in Settings after
+	// Use is theirs, and Undo leaves it
+	setAsyncCompact(t, true, 0)
+	if s := asyncRead(home); s.Value != "65" || s.Ours {
+		t.Fatalf("read at Codex's own %+v", s)
+	}
+	if err := TuneApply(home, "codex", TuneAsync, "", "30"); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.SetCodexAsyncCompact(true, 50); err != nil {
+		t.Fatal(err)
+	}
+	if s := asyncRead(home); s.Value != "50" || s.Ours {
+		t.Fatalf("read after the user's 50 %+v", s)
+	}
+	if err := TuneUndo(home, "codex", TuneAsync, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := settings.Load(); !got.CodexAsyncCompact || got.CodexAsyncCompactPercent != 50 {
+		t.Fatalf("undo wrote over the user's 50: %v %d", got.CodexAsyncCompact, got.CodexAsyncCompactPercent)
+	}
+}
+
+// TestTuneCodexAsyncOwn: background compaction the user set in Codex's
+// config.toml comes before magpie's, so the card says so and Use changes
+// nothing; a table magpie wrote itself is not the user's.
+func TestTuneCodexAsyncOwn(t *testing.T) {
+	for _, c := range []struct{ name, file, key string }{
+		{"own share", "[features.async_compaction]\nenabled = true\nmodel_async_compact_threshold_percent = 80\n", codexAsyncTable + "." + codexAsyncPercent},
+		{"turned off", "[features.async_compaction]\nenabled = false\n", codexAsyncTable + ".enabled"},
+		{"bare off", "[features]\nasync_compaction = false\n", "features.async_compaction"},
+		{"bare on", "[features]\nasync_compaction = true\n", "features.async_compaction"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			home := tuneSandbox(t)
+			path := filepath.Join(home, ".codex", "config.toml")
+			tuneWrite(t, path, c.file)
+			setAsyncCompact(t, false, 0)
+			if s := asyncRead(home); s.Locked != c.key || s.Value != "" {
+				t.Fatalf("read %+v, want locked by %s", s, c.key)
+			}
+			if err := TuneApply(home, "codex", TuneAsync, "", "30"); err == nil {
+				t.Fatal("applied under the user's own")
+			}
+			if got := settings.Load(); got.CodexAsyncCompact {
+				t.Fatal("Background compaction turned on")
+			}
+			if got := tuneFile(t, path); got != c.file {
+				t.Fatalf("config.toml changed:\n%s", got)
+			}
+		})
+	}
+	t.Run("magpie's own table", func(t *testing.T) {
+		home := tuneSandbox(t)
+		path := filepath.Join(home, ".codex", "config.toml")
+		tuneWrite(t, path, "[features.async_compaction]\nenabled = true\nmodel_async_compact_threshold_percent = 40\n")
+		b, _ := json.Marshal(codexAsyncStash{Enabled: true, Percent: 40})
+		stash(map[string]string{here(tuneHome(home)).key("codex.async"): string(b)})
+		setAsyncCompact(t, true, 40)
+		if s := asyncRead(home); s.Locked != "" || s.Value != "40" {
+			t.Fatalf("read %+v: magpie's own table counted as the user's", s)
+		}
+	})
+}

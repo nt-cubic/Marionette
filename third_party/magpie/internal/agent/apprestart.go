@@ -69,11 +69,12 @@ func winHas(image, part string) bool {
 	return strings.Contains(strings.ToLower(image), strings.ToLower(part))
 }
 
-// restartOnWindows and restartOnMac say which system this is; vars so a
-// test runs either.
+// restartOnWindows, restartOnMac and restartOnLinux say which system this
+// is; vars so a test runs any.
 var (
 	restartOnWindows = runtime.GOOS == "windows"
 	restartOnMac     = runtime.GOOS == "darwin"
+	restartOnLinux   = runtime.GOOS == "linux"
 )
 
 // winProc is a process running on Windows: its id, its parent's, its

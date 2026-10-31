@@ -74,6 +74,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await ctx.addInitScript(() => { try { if (!localStorage.getItem("magpie.libTab")) localStorage.setItem("magpie.libTab", "mcp"); } catch {} });
         const page = await ctx.newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         const errors = [];
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", server(lang));
@@ -94,7 +95,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const tips = (sort) => page.locator(`.segs.sortby[data-sort="${sort}"] .opt`).evaluateAll((os) => os.map((o) => o.title));
 
         // the Library's MCP servers: A→Z first, whatever order magpie gave them in
-        // (the MCP hub's row below them is no server, and isn't sorted)
+        // (the MCP router's row below them is no server, and isn't sorted)
         const serverNames = () => names("#view-library .lib-list:not(.lib-hublist) .lib-row > .who > .name");
         const openLib = async () => {
           await page.goto("http://magpie.test/");

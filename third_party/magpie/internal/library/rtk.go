@@ -94,8 +94,15 @@ var rtkSpecs = map[string]rtkSpec{
 		},
 		remove: func(a *agent.Agent) error {
 			d := rtkClaudeDir(a)
+			// rtk writes its hook under PostToolUse too when its pipeline
+			// has after_tool rules (rtk 1.0.1, src/hooks/init/claude.rs),
+			// and its own uninstaller takes PreToolUse, PostToolUse and
+			// SessionStart out alike; has reads the file whole, so an entry
+			// left under another event kept the row on (#2879)
 			return errors.Join(
 				dropHook(filepath.Join(d, "settings.json"), "hooks.PreToolUse", "rtk hook claude"),
+				dropHook(filepath.Join(d, "settings.json"), "hooks.PostToolUse", "rtk hook claude"),
+				dropHook(filepath.Join(d, "settings.json"), "hooks.SessionStart", "rtk hook claude"),
 				dropLines(filepath.Join(d, "CLAUDE.md"), rtkRef),
 				rm(filepath.Join(d, "RTK.md")))
 		},

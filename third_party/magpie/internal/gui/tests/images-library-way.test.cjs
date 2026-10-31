@@ -17,6 +17,7 @@ const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
 const { strings } = require("./strings.cjs");
+const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const { I18N } = strings();
@@ -109,10 +110,17 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const context = await browser.newContext({ viewport: { width, height: 800 }, reducedMotion: "reduce" });
       const page = await context.newPage();
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       page.errors = [];
       page.on("pageerror", (e) => page.errors.push(e.message));
       await page.route("**/*", f.route);
+      await watchSettingsReads(page);
       await page.goto("http://magpie.test/?view=settings&tab=models");
+      // Settings is drawn from each read of the settings, and a page opened
+      // on it reads them twice (its own read and load()'s): the row is held
+      // for a screenshot once the last of them is drawn, or the one it
+      // waited on is replaced under it (#4469)
+      await settingsDrawn(page);
       await row(page).waitFor();
       return { page, posts: f.posts };
     };

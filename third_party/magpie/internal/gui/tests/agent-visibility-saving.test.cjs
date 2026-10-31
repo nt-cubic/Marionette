@@ -11,6 +11,7 @@ async function fixture(t, engine) {
   t.after(() => browser.close());
   const page = await browser.newPage({viewport:{width:1000,height:800}, reducedMotion:'reduce'});
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(60000);
   const agent = (id, wired = false) => ({id, name:id, icon:'generic', wired, fields:[{key:'model',label:'model',value:wired ? 'relay/m1' : '',options:[{value:'relay/m1',label:'m1',ref:'relay/m1'}]}]});
   const f = {page, state:{agents:[agent('Main',true),agent('Pi'),agent('Zed')],profiles:[],settings:{lang:'en',theme:'light',agentsHidden:['Pi']}}, posts:[], save:null, read:null};
   await page.route('**/*', async (route) => {

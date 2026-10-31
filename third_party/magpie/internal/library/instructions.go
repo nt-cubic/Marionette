@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/edit"
 )
 
@@ -305,6 +306,12 @@ type AgentInstructions struct {
 	Edited   bool   `json:"edited,omitempty"`   // magpie's part was changed in the file
 	Override string `json:"override,omitempty"` // a file the agent reads instead
 	Profile  bool   `json:"profile,omitempty"`  // the file is the user's profile to the agent (Target.Profile)
+	// Asleep is the WSL distro, not running now, the agent is in: its row
+	// is what magpie last knew of it (asleepInstructions), its file isn't
+	// read, and a change is written there when the distro next runs.
+	// Unseen: magpie never saw where it keeps its instructions
+	Asleep string `json:"asleep,omitempty"`
+	Unseen bool   `json:"unseen,omitempty"`
 }
 
 // InstructionsView is the Instructions page.
@@ -331,13 +338,14 @@ func ReadInstructions() (*InstructionsView, error) {
 	if err != nil {
 		return nil, err
 	}
-	return l.instructionsView(Targets()), nil
+	return l.instructionsView(targetsAsleep(false)), nil
 }
 
-// instructionsView is the Instructions page for these agents. They are
-// passed in: finding them looks through every agent's folders, in WSL too,
-// which one read of the Library did three times over (#1624).
-func (l *Library) instructionsView(targets []*Target) *InstructionsView {
+// instructionsView is the Instructions page for these agents, and those in
+// stopped WSL distros (asleep). They are passed in: finding them looks
+// through every agent's folders, in WSL too, which one read of the Library
+// did three times over (#1624).
+func (l *Library) instructionsView(targets []*Target, asleep []*agent.Agent) *InstructionsView {
 	v := &InstructionsView{Shared: setText(l.sharedPath()), Agents: []AgentInstructions{}}
 	for _, s := range l.sets() {
 		v.Sets = append(v.Sets, SetView{ID: s.ID, Name: s.Name, Text: setText(l.textPath(s.ID)), Active: s.ID == l.active(), File: s.File})
@@ -360,6 +368,13 @@ func (l *Library) instructionsView(targets []*Target) *InstructionsView {
 			ai.Override = t.Override
 		}
 		v.Agents = append(v.Agents, ai)
+	}
+	// a stopped WSL distro's agents, by what magpie last knew of them:
+	// nothing of theirs is opened, which would start the distro (#3896)
+	for _, a := range asleep {
+		if ai, ok := l.asleepInstructions(a); ok {
+			v.Agents = append(v.Agents, ai)
+		}
 	}
 	return v
 }

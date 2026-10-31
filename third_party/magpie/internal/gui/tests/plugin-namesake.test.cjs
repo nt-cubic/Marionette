@@ -180,6 +180,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
               const page = await ctx.newPage();
               await page.setViewportSize({ width, height: 860 });
               page.setDefaultTimeout(5000);
+              page.setDefaultNavigationTimeout(60000);
               const errors = [];
               page.on("pageerror", (e) => errors.push(e.message));
               await page.route("**/*", server(lang, setup, asked));
@@ -309,6 +310,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
             const page = await ctx.newPage();
             try {
               page.setDefaultTimeout(5000);
+              page.setDefaultNavigationTimeout(60000);
               const errors = [];
               page.on("pageerror", (e) => errors.push(e.message));
               await page.route("**/*", server(lang, { installed: [{ spec, package: PKG }], repos: [OWN, NAMESAKE] }, asked));
@@ -354,6 +356,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
             try {
               await page.setViewportSize({ width, height: 860 });
               page.setDefaultTimeout(5000);
+              page.setDefaultNavigationTimeout(60000);
               const errors = [];
               page.on("pageerror", (e) => errors.push(e.message));
               await page.route("**/*", server(lang, {

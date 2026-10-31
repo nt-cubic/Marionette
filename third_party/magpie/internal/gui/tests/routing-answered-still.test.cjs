@@ -65,6 +65,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // motion on: what is checked is whether the dot pulses
         const page = await browser.newPage({ viewport: { width, height: 900 } });
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         const errors = [];
         page.on("pageerror", (error) => errors.push(error.message));
         const live = { pending: [], queued: [], seq: 1 };

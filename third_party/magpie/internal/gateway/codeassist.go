@@ -282,6 +282,10 @@ func codeAssistID(model, effort, agent string) string {
 // in force is looked up against the very id the envelope is addressed to:
 // asking twice reads the vendor's catalogue twice over for one answer.
 func codeAssistBody(p provider.Provider, r *Request, model string, wires map[string]string) []byte {
+	// a model the user lists by an id of theirs (SetModelID) is the
+	// account's own model: its envelope, the variant the effort picks and
+	// a name for the whole provider are of the vendor's id
+	model = p.OwnModelID(model)
 	sent := codeAssistID(model, r.Effort, p.Account.Agent)
 	if p.Account.Agent == "antigravity" && !p.PromptAsWritten {
 		// the lines Google turns away, broken up; the request the
@@ -760,6 +764,14 @@ func thinkingConfig(r *Request, model string, claude bool, at string) map[string
 			tc["thinkingLevel"] = level
 		}
 		return tc
+	}
+	if off, _, _, ok := vertexBudgets(strings.TrimPrefix(m, "models/")); ok && r.ThinkOff && !claude {
+		// reasoning turned off (a Chat client's effort none, the routing
+		// classifier's ask) goes as 2.5's off budget, as on Vertex AI:
+		// 0 for Flash and Flash-Lite, Pro's least, 128. It went as low's
+		// 4096 (tangtang969 on X: a classifier that doesn't think is
+		// faster)
+		return map[string]any{"thinkingBudget": off}
 	}
 	budget := budgetOf(effortOf(r.Effort))
 	if claude && r.MaxTokens > 0 && budget >= r.MaxTokens {

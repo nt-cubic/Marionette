@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/ghtoken"
@@ -448,7 +450,7 @@ func npmAsk(ctx context.Context, name string) (NPM, error) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		b, err := fetchJSON(ctx, npmRegistry+"/"+npmPath(name)+"/latest", 1<<20)
+		b, err := fetchNPM(ctx, name, "/"+npmPath(name)+"/latest", 1<<20)
 		if err != nil {
 			latestErr = err
 			return
@@ -555,7 +557,12 @@ func Search(ctx context.Context, q string) ([]Hit, error) {
 // (given their name and keywords, lowercased, and the keywords).
 func searchNPM(ctx context.Context, text string, keep func(string, []string) bool) ([]Hit, error) {
 	v := url.Values{"text": {text}, "size": {"30"}}
-	b, err := fetchJSON(ctx, npmRegistry+"/-/v1/search?"+v.Encode(), 4<<20)
+	b, err := fetchNPM(ctx, "", "/-/v1/search?"+v.Encode(), 4<<20)
+	if _, _, official := npmBase(""); err != nil && !official {
+		// a registry of the user's that has no search (a private one):
+		// npm's own has the plugins' packages
+		b, err = fetchJSON(ctx, npmRegistry+"/-/v1/search?"+v.Encode(), 4<<20)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -624,7 +631,7 @@ func Readme(ctx context.Context, name string) (Page, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
-	b, err := fetchJSON(ctx, npmRegistry+"/"+npmPath(name), 32<<20)
+	b, err := fetchNPM(ctx, name, "/"+npmPath(name), 32<<20)
 	if err != nil {
 		// one npm doesn't have (yet): the README the community repo's
 		// dist branch packed with it
@@ -702,20 +709,51 @@ func Installed(spec string) string {
 // gives in magpie.icon, as ownIcon takes one: the plugin's own, for its
 // row, apart from those its providers give themselves in the auth hook
 // (#1775). "" for none, or a plugin that is one file.
-func InstalledIcon(spec string) string {
+func InstalledIcon(spec string) string { return ownIcon(installedOwn(spec).Icon) }
+
+// InstalledName is the name the installed plugin spec's package.json
+// gives itself in magpie.name, for its row when the community's list
+// doesn't name it: a package's dependency key has to be ASCII for Bun,
+// so one installed from git, or from npm outside the list, had no other
+// way to show a readable name (#4558). It is the package's own word,
+// never used to resolve a name; "" for none, one that isn't one short
+// line, or a plugin that is one file.
+func InstalledName(spec string) string { return ownName(installedOwn(spec).Name) }
+
+// installedOwn is the magpie block of the installed plugin spec's
+// package.json, as the package says it: zero for none, or one that
+// can't be read.
+func installedOwn(spec string) (own struct {
+	Icon string `json:"icon"`
+	Name string `json:"name"`
+}) {
 	b, err := os.ReadFile(filepath.Join(Target(spec), "package.json"))
 	if err != nil {
-		return ""
+		return own
 	}
 	var p struct {
-		Magpie struct {
-			Icon string `json:"icon"`
-		} `json:"magpie"`
+		Magpie json.RawMessage `json:"magpie"`
 	}
-	if json.Unmarshal(b, &p) != nil {
+	if json.Unmarshal(b, &p) != nil || json.Unmarshal(p.Magpie, &own) != nil {
+		own.Icon, own.Name = "", ""
+	}
+	return own
+}
+
+// ownName is a package's magpie.name as a row may show it: one line of
+// at most 80 bytes, with no control or format characters (a bidi
+// override would make it read as another name); "" otherwise.
+func ownName(said string) string {
+	n := strings.TrimSpace(said)
+	if n == "" || len(n) > 80 || !utf8.ValidString(n) {
 		return ""
 	}
-	return ownIcon(p.Magpie.Icon)
+	for _, r := range n {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return ""
+		}
+	}
+	return n
 }
 
 // Upgrade installs the newest version of one plugin: npm's, or its git

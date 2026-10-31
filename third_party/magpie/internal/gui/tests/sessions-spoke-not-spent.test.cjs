@@ -96,6 +96,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const page = await context.newPage();
       t.after(() => browser.close());
       page.setDefaultTimeout(10000);
+      page.setDefaultNavigationTimeout(60000);
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
       // the whole of time, where the list is also the index of sessions

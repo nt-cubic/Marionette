@@ -114,3 +114,78 @@ func TestClaudeDesktopTiers(t *testing.T) {
 		t.Fatalf("tiers file left: %v", err)
 	}
 }
+
+// A short request for the model the user picked for one of Desktop's tiers
+// goes to that pick (#3264, Anarcadia): the pick is tagged is_family_default,
+// so it is Desktop's own small_fast and its titles ask for it by id — the
+// user's choice of what small work runs on, not the first id with haiku in
+// it that Desktop picks when no tier is picked, which is the one that
+// follows the session's model. A session on the slow model went to it all
+// the same, and its first token missed the title's timeout.
+func TestClaudeDesktopTierPickKeepsItsModel(t *testing.T) {
+	f := &fake{reply: sse(
+		`event: message_start`+"\n"+`data: {"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"m","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}`,
+		`event: message_stop`+"\n"+`data: {"type":"message_stop"}`)}
+	up := setup(t, provider.Anthropic, f)
+	if err := provider.Save(provider.Provider{ID: "fake", Name: "Fake", Key: "k", Anthropic: up.URL,
+		Models: []string{"gemini-4-argon-contributor", "anthropic/claude-haiku-5.5", "claude-sonnet-5"}}); err != nil {
+		t.Fatal(err)
+	}
+	desktopPicked.Lock()
+	desktopPicked.model, desktopPicked.from = "", ""
+	desktopPicked.Unlock()
+	const pick = "fake/anthropic/claude-haiku-5.5"
+	if err := SetDesktopTier("haiku", pick); err != nil {
+		t.Fatal(err)
+	}
+	desktop := Token + "-claude-desktop"
+	send := func(model string, tools bool) string {
+		t.Helper()
+		body := `{"model":"` + model + `","max_tokens":200,"stream":true,"system":"You write short session titles.","messages":[{"role":"user","content":"hi"}]}`
+		if tools {
+			body = `{"model":"` + model + `","max_tokens":32000,"stream":true,"tools":[{"name":"Bash","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"hi"}]}`
+		}
+		f.got = nil
+		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+		req.Header.Set("x-api-key", desktop)
+		rec := httptest.NewRecorder()
+		New().Handler().ServeHTTP(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("%s: %d %s", model, rec.Code, rec.Body)
+		}
+		return modelOf(f.got)
+	}
+	// a turn on the slow model the session is on
+	if got := send(aliasFor("fake/gemini-4-argon-contributor"), true); got != "gemini-4-argon-contributor" {
+		t.Fatalf("turn: sent %q", got)
+	}
+	// a title for a Claude model no tier is picked for follows the session
+	if got := send("fake/claude-sonnet-5", false); got != "gemini-4-argon-contributor" {
+		t.Fatalf("title for an unpicked tier: sent %q", got)
+	}
+	// a title for the haiku tier's pick goes to the pick, by the id Desktop
+	// was shown it by
+	haiku, ok := entryOf(pick)
+	if !ok {
+		t.Fatalf("%s is not in the catalog", pick)
+	}
+	if got := send(DesktopID(haiku), false); got != "anthropic/claude-haiku-5.5" {
+		t.Fatalf("title for the pick: sent %q, want anthropic/claude-haiku-5.5", got)
+	}
+	// a turn on the pick keeps it and makes it the session's model, as any
+	// model the user picks for a chat does
+	if got := send(DesktopID(haiku), true); got != "anthropic/claude-haiku-5.5" {
+		t.Fatalf("turn on the pick: sent %q", got)
+	}
+	if b, _ := os.ReadFile(desktopPickedPath()); strings.TrimSpace(string(b)) != pick {
+		t.Fatalf("picked %q", b)
+	}
+	// the next title follows that session, and an unserved Claude model of a
+	// tier with no pick goes there too
+	if got := send("fake/claude-sonnet-5", false); got != "anthropic/claude-haiku-5.5" {
+		t.Fatalf("title after a turn on the pick: sent %q", got)
+	}
+	if got := send("claude-opus-4-8", false); got != "anthropic/claude-haiku-5.5" {
+		t.Fatalf("unserved opus: sent %q", got)
+	}
+}

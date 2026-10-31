@@ -75,6 +75,7 @@ async function open(browser, lang, width, posts, over) {
   const context = await browser.newContext({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
   const page = await context.newPage();
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(60000);
   page.on("pageerror", (e) => errors.push(e.message));
   await page.route("**/*", server(lang, posts, over));
   await page.goto("http://magpie.test/?view=usage");

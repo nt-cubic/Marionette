@@ -68,6 +68,7 @@ func TestPageSettledFromDisk(t *testing.T) {
 // settled is the 20-day call's file; restart drops what a start doesn't
 // have.
 func pageHistory(t *testing.T) (now time.Time, settled string, paired *[]int, restart func()) {
+	pairAtOnce(t)
 	pageHome(t)
 	now = holdClock(t, time.Date(2026, 9, 30, 12, 0, 0, 0, time.Local))
 	for i, days := range []int{40, 20, 10, 5, 0} {
@@ -113,7 +114,7 @@ func TestPageReadAgainStaysOnDisk(t *testing.T) {
 	QueryPage(All, Filter{}, 0, 1)
 	all := (*paired)[0]
 	for i := range pageDiskPages - 1 {
-		if err := pageDiskWrite(fmt.Sprint("other", i), &chunkPart{}); err != nil {
+		if err := pageDiskWrite(fmt.Sprint("other", i), time.Time{}, time.Time{}, &chunkPart{}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -121,7 +122,7 @@ func TestPageReadAgainStaysOnDisk(t *testing.T) {
 	if QueryPage(All, Filter{}, 0, 1); (*paired)[len(*paired)-1] >= all {
 		t.Fatalf("the last page in the file, paired %d of %d", (*paired)[len(*paired)-1], all)
 	}
-	if err := pageDiskWrite("one more", &chunkPart{}); err != nil {
+	if err := pageDiskWrite("one more", time.Time{}, time.Time{}, &chunkPart{}); err != nil {
 		t.Fatal(err)
 	}
 	restart()

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"reflect"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -60,34 +59,10 @@ func putZoomFactor(w *application.WebviewWindow, z float64) error {
 }
 
 // webviewController is w's ICoreWebView2Controller, nil before WebView2
-// has made it. Wails keeps it unexported: WebviewWindow.impl, a
-// *windowsWebviewWindow, holds chromium, an *edge.Chromium, which holds
-// controller (Wails v3.0.0-beta.24). A Wails without that path gives nil,
-// and the text size stays as Wails left it.
+// has made it (chromiumPart). A Wails without it gives nil, and the text
+// size stays as Wails left it.
 func webviewController(w *application.WebviewWindow) unsafe.Pointer {
-	if w == nil {
-		return nil
-	}
-	v := reflect.ValueOf(w).Elem()
-	for _, name := range []string{"impl", "chromium", "controller"} {
-		if v.Kind() != reflect.Struct {
-			return nil
-		}
-		v = v.FieldByName(name)
-		for v.IsValid() && v.Kind() == reflect.Interface {
-			if v.IsNil() {
-				return nil
-			}
-			v = v.Elem()
-		}
-		if !v.IsValid() || v.Kind() != reflect.Pointer || v.IsNil() {
-			return nil
-		}
-		if name != "controller" {
-			v = v.Elem()
-		}
-	}
-	return v.UnsafePointer()
+	return chromiumPart(w, "controller")
 }
 
 var (

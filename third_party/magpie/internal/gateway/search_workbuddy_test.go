@@ -119,6 +119,11 @@ func TestWorkBuddyPluginSearches(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "web search quota exhausted (15001)") {
 		t.Fatalf("refusal: %v", err)
 	}
+	// each search is a row of the request log, under the plan (#3528)
+	if rows, _ := searchRows(t); len(rows) != 2 || rows[0].Provider != pid || rows[0].Status != 200 || rows[0].Failed() ||
+		rows[1].Provider != pid || !strings.Contains(rows[1].Error, "15001") || strings.Contains(rows[0].Host+rows[1].Error, "Go 1.26") {
+		t.Fatalf("rows %+v", rows)
+	}
 
 	// provider search off: WorkBuddy's isn't asked either
 	st := settings.Load()

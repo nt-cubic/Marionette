@@ -99,6 +99,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await browser.close();
       });
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       const errors = [], posts = [];
       // WebKit reports a ResizeObserver round left to the next frame as a
       // page error; see group-duplicate.test.cjs

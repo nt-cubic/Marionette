@@ -60,6 +60,8 @@ func helpFor(args []string) string {
 		return cpuUsage
 	case "goroutines":
 		return goroutinesUsage
+	case "log", "logs":
+		return logUsage
 	case "sessions":
 		return sessionsUsage
 	case "search":

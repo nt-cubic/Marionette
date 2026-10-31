@@ -241,9 +241,16 @@ func almaModels() (ids []string, known []map[string]any) {
 	for _, m := range magpieModels("alma") {
 		ids = append(ids, m.ID)
 		k := map[string]any{"id": m.ID, "name": m.Name}
-		if caps := almaCaps(m); len(caps) > 0 {
-			k["capabilityOverrides"] = caps
-		}
+		caps := almaCaps(m)
+		// every chat model magpie lists takes tools, as its /v1/models
+		// says (gateway's toolsTold). Alma looks function calling up on
+		// models.dev by the id, finds none for a routing group's name or a
+		// plugin's model, and puts the tools in the prompt instead
+		// (hermesToolMiddleware): no native tools went out, and DeepSeek
+		// answered with its DSML call text, shown raw (ethanchi on
+		// Discord). One the user set in Alma is kept (almaUserFirst).
+		caps["functionCalling"] = true
+		k["capabilityOverrides"] = caps
 		known = append(known, k)
 	}
 	// the model magpie draws with, which Alma offers for its image
@@ -317,10 +324,16 @@ func almaCaps(m catalog.Model) map[string]any {
 	return caps
 }
 
+// almaUserFirst are the overrides whose value a model already has in Alma
+// is kept over magpie's: magpie never wrote them before saying so, so one
+// there is the user's own (Model Options › Tool Calling), and magpie only
+// fills it in where it is missing.
+var almaUserFirst = []string{"functionCalling"}
+
 // almaWithOverrides is known with each model's overrides laid over the ones
 // it has in Alma: the overrides sent take the place of a model's, so one
-// the user set there that magpie says nothing of (functionCalling,
-// pricing) is sent back as it was.
+// the user set there that magpie says nothing of (pricing) is sent back as
+// it was, and one of almaUserFirst stays as the user set it.
 func almaWithOverrides(p *almaProvider, known []map[string]any) []map[string]any {
 	had := map[string]map[string]any{}
 	for _, k := range p.Known {
@@ -345,6 +358,9 @@ func almaWithOverrides(p *almaProvider, known []map[string]any) []map[string]any
 			merged[key] = v
 		}
 		for key, v := range mine {
+			if _, set := o[key]; set && slices.Contains(almaUserFirst, key) {
+				continue
+			}
 			merged[key] = v
 		}
 		kk := map[string]any{}
@@ -370,6 +386,9 @@ func almaSameModels(p *almaProvider, ids []string, known []map[string]any) bool 
 		mine, _ := k["capabilityOverrides"].(map[string]any)
 		had, _ := p.Known[i]["capabilityOverrides"].(map[string]any)
 		for key, v := range mine {
+			if _, set := had[key]; set && slices.Contains(almaUserFirst, key) {
+				continue
+			}
 			if !sameJSONValue(had[key], v) {
 				return false
 			}

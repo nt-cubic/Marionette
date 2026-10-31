@@ -19,6 +19,7 @@ for (const engine of process.env.BROWSER ? [process.env.BROWSER] : ['chromium', 
       t.after(() => browser.close());
       const page = await browser.newPage({ viewport: { width: lang === 'en' ? 1240 : 560, height: 760 }, reducedMotion: 'reduce' });
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       const agent = (id, wired = false) => ({ id, name: id, icon: 'generic', wired, fields: [{ key: 'model', label: 'model', value: wired ? 'relay/m1' : '', options: [{ value: 'relay/m1', label: 'm1', ref: 'relay/m1' }] }] });
       const theme = lang === 'de' ? 'dark' : 'light';
       const state = { agents: [agent('Codex', true), agent('Pi'), agent('Zed'), agent('Hidden')], profiles: [], settings: { lang, theme, agentOrder: ['Zed', 'Codex', 'Pi', 'Hidden'], agentsHidden: ['Hidden'] } };

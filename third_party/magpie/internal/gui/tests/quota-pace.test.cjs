@@ -82,6 +82,7 @@ async function open(browser, lang, width, over = {}, posts = [], platform = "Mac
   await context.addInitScript((p) => Object.defineProperty(Navigator.prototype, "platform", { get: () => p }), platform);
   const page = await context.newPage();
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(60000);
   await page.route("**/*", serve(lang, posts, over));
   await page.goto("http://magpie.test/?view=usage");
   return { context, page };

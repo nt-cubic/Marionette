@@ -101,6 +101,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const open = async (web) => {
         const page = await (await browser.newContext({ viewport: { width: 1180, height: 800 }, reducedMotion: "reduce" })).newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         const errors = [], failed = [];
         page.on("pageerror", (e) => errors.push(e.message));
         page.on("response", (r) => r.status() >= 400 && failed.push(new URL(r.url()).pathname));

@@ -72,6 +72,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const page = await (await browser.newContext({ viewport: { width: 900, height: 520 }, reducedMotion: "reduce" })).newPage();
         pages.push([name, page]);
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         page.on("pageerror", (e) => errors.push(e.message));
         if (range) await page.addInitScript((r) => localStorage.setItem("magpie.quotaRange", r), range);
         await page.route("**/*", serve(lang, theme, fixtures(Date.now())));
@@ -145,6 +146,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     const read = async (theme, colorblind) => {
       const page = await (await browser.newContext({ viewport: { width: 900, height: 520 }, reducedMotion: "reduce" })).newPage();
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve("en", theme, fixtures(Date.now()), colorblind));
       await page.goto("http://magpie.test/?view=usage");

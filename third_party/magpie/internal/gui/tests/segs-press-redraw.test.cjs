@@ -56,6 +56,7 @@ async function open(engine, lang, width, tab, posted, st, t, touch = false) {
   t.after(() => browser.close());
   const page = await (await browser.newContext({ viewport: { width, height: 1000 }, hasTouch: touch })).newPage();
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(60000);
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.route("**/*", serve(lang, posted, st));

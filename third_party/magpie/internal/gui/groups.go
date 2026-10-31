@@ -25,6 +25,12 @@ type groupsJSON struct {
 	Deciders []modelRef `json:"deciders"`
 	// Found: magpie finds groups on its own (provider.AutoGroupsOn)
 	Found bool `json:"found"`
+	// Skip: the providers kept out of found groups, by id
+	// (provider.AutoGroupSkip); Skippable: those that can be, each a
+	// provider ready to serve, switched off or not, and one in Skip that
+	// is no more, so it can be let back in
+	Skip      []string        `json:"skip"`
+	Skippable []skippableJSON `json:"skippable"`
 	// Moved: the agents turning found groups off moved off one of them,
 	// to its model from one provider (agent.Reseat)
 	Moved []agent.Move `json:"moved,omitempty"`
@@ -42,6 +48,11 @@ type groupsJSON struct {
 	// Imported: import's answer, the group added and what of the text
 	// this magpie has none of (provider.ImportGroup)
 	Imported *provider.Imported `json:"imported,omitempty"`
+}
+
+type skippableJSON struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type groupJSON struct {
@@ -350,6 +361,21 @@ func groupsState() groupsJSON {
 		}
 		out.Groups = append(out.Groups, gj)
 	}
+	out.Skip = provider.AutoGroupSkip()
+	if out.Skip == nil {
+		out.Skip = []string{}
+	}
+	out.Skippable = []skippableJSON{}
+	for _, p := range provider.All() {
+		if p.Ready() || slices.Contains(out.Skip, p.ID) {
+			out.Skippable = append(out.Skippable, skippableJSON{ID: p.ID, Name: p.Name})
+		}
+	}
+	for _, id := range out.Skip {
+		if !slices.ContainsFunc(out.Skippable, func(k skippableJSON) bool { return k.ID == id }) {
+			out.Skippable = append(out.Skippable, skippableJSON{ID: id, Name: id})
+		}
+	}
 	for _, p := range provider.All() {
 		if !p.On() {
 			continue
@@ -381,6 +407,9 @@ func groupRoutes(mux *http.ServeMux) {
 			provider.Group
 			From string `json:"from"` // the id the group had: another is a rename
 			On   bool   `json:"on"`   // found: magpie finds groups on its own
+			// skip: the providers kept out of found groups
+			// (provider.SetAutoGroupSkip)
+			Skip []string `json:"skip"`
 			// arrange: the groups by id, in the order the Routing page
 			// lists them (#779), which /v1/models follows too
 			Order []string `json:"order"`
@@ -407,6 +436,10 @@ func groupRoutes(mux *http.ServeMux) {
 			// from one provider; a request still naming one goes there too
 			// (provider.AutoStandIn)
 			moved, err = agent.Reseat(func() error { return provider.SetAutoGroups(body.On) })
+		case "skip":
+			// an agent set to a found group skipping took away is moved to
+			// its model from one provider, as turning found groups off does
+			moved, err = agent.Reseat(func() error { return provider.SetAutoGroupSkip(body.Skip) })
 		case "save":
 			to := strings.ToLower(strings.TrimSpace(in.ID))
 			if body.From == "" || body.From == to {

@@ -25,6 +25,7 @@ for (const engine of ['chromium', 'webkit']) {
         t.after(() => browser.close());
         const page = await browser.newPage({ viewport: { width, height: 760 }, reducedMotion: 'reduce' });
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         const posts = [], errors = [];
         page.on('pageerror', (e) => errors.push(e.message));
         const accounts = [

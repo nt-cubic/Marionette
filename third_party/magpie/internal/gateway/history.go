@@ -13,8 +13,10 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -58,6 +60,12 @@ var history struct {
 	mu     sync.Mutex
 	pruned time.Time
 	counts map[string]counted // a day's file → its requests, as of its size
+	// the live page's tallies of today (DayTallies): each file's bytes
+	// folded in so far, up to the end of its last whole line, so a look
+	// reads only what was added since (#3383: a busy day is 350 MB)
+	talliedDay string
+	talliedOff map[string]int64
+	tallies    map[string]*Tally
 }
 
 type counted struct {
@@ -416,8 +424,15 @@ func tally(d dayFile, c counted) counted {
 // was one answered under Google's name for the deployment serving its
 // Gemini model (gemini-3.8-flash as gemini-3.8-flash-n) or xAI's for a Grok
 // one (grok-4.7 as grok-4.7-build), usage.ServingName, nor one answered
-// under the name its provider's list gives it (usage.ListedAs).
+// under the name its provider's list gives it (usage.ListedAs). Its
+// agent is named again as usage.AgentOf names it now, as the ledger's
+// records are: Kimi Code's "kimi-code-cli", kept before AgentOf knew it,
+// is Kimi Code ("kimi") on the Routing page and the Context tab too, its
+// icon and name with it, not a card of its own drawn as the cube (jiabubu).
 func (r *Route) routedAgain() {
+	if r.Agent != "" {
+		r.Agent = usage.AgentOf(r.Agent)
+	}
 	for i := range r.Tries {
 		if tr := &r.Tries[i]; tr.Swapped && usage.GroupRouted(tr.Model, tr.Served) {
 			tr.Swapped, tr.Routed = false, true
@@ -465,6 +480,211 @@ func readDayFrom(path string, off int64, f func([]byte) bool) {
 			if !f(line) {
 				return
 			}
+		}
+	}
+}
+
+// Tally is one account or key's day, as the day's history tells it: how
+// often it was tried, answered and failed, its latest answer, the models
+// that answered, and how its latest try left it. The Routing page's
+// accounts and keys say these of a whole day (#3351), read from the
+// same files the Usage page reads, where counting the trace would say
+// only of the last few requests the gateway keeps. What the history
+// cannot say — the readings its latest request was weighed by, one model
+// resting alone — the page keeps from the trace.
+type Tally struct {
+	ID       string         `json:"id"` // what rests after a failure, as Weighed has it
+	Provider string         `json:"provider"`
+	Name     string         `json:"name,omitempty"`
+	Icon     string         `json:"icon,omitempty"`
+	Preset   string         `json:"preset,omitempty"`
+	Who      string         `json:"who,omitempty"`
+	Kind     string         `json:"kind"`
+	Agent    string         `json:"agent,omitempty"`
+	Plan     string         `json:"plan,omitempty"`
+	Model    string         `json:"model,omitempty"`
+	Routing  string         `json:"routing,omitempty"`
+	Rank     int            `json:"rank,omitempty"`
+	Tried    int            `json:"tried"`
+	OK       int            `json:"ok"`
+	Fails    map[string]int `json:"fails,omitempty"`
+	Last     int64          `json:"last,omitempty"` // ms, of its latest answer
+	Models   []string       `json:"models,omitempty"`
+	Rest     *Rest          `json:"rest,omitempty"`   // how its latest try left it
+	RestAt   int64          `json:"restAt,omitempty"` // ms, of when it did
+	seen     int64          // ms, of the latest request that weighed it
+}
+
+// tallied is the part of a kept route the tallies read: json.Unmarshal
+// leaves the rest of the line alone.
+type tallied struct {
+	Time  time.Time `json:"time"`
+	Order []Weighed `json:"order"`
+	Tries []Try     `json:"tries"`
+}
+
+// tallyKey is what the page groups an account by: its provider and its
+// user, however it is weighed into a request (its sign-in may move); a
+// key or a provider by its own id.
+func tallyKey(w Weighed) string {
+	if w.Kind == "account" && w.Who != "" {
+		b, _ := json.Marshal([]string{w.Provider, strings.ToLower(strings.TrimSpace(w.Who))})
+		return string(b)
+	}
+	return w.ID
+}
+
+// DayTallies counts today's history per account or key, the Usage page's
+// own source. The counts ride on the history read the live page already
+// asks for, every 15s while it is open, so each look folds in only the
+// lines added to today's files since the last: a busy day's file is
+// hundreds of MB (#3383), read whole once at most. What it returns is a
+// copy, written out after the lock is let go.
+func DayTallies() map[string]Tally {
+	day := historyClock().Local().Format(dayForm)
+	history.mu.Lock()
+	defer history.mu.Unlock()
+	var files []dayFile
+	for _, d := range historyFiles(HistoryDir()) {
+		if d.day == day {
+			files = append(files, d)
+		}
+	}
+	reset := history.talliedDay != day || history.tallies == nil
+	have := map[string]bool{}
+	for _, d := range files {
+		have[d.path] = true
+		// a file that shrank, or a .gz of today (a late route's day over
+		// once), is counted again from the start: everything of the day
+		if off, ok := history.talliedOff[d.path]; ok && (d.size < off || strings.HasSuffix(d.path, ".gz") && d.size != off) {
+			reset = true
+		}
+	}
+	for path := range history.talliedOff {
+		if !have[path] { // a file gone, or the folder moved (a test's HOME)
+			reset = true
+		}
+	}
+	if reset {
+		history.talliedDay, history.talliedOff, history.tallies = day, map[string]int64{}, map[string]*Tally{}
+	}
+	for _, d := range files {
+		off := history.talliedOff[d.path]
+		if strings.HasSuffix(d.path, ".gz") {
+			if off == d.size {
+				continue
+			}
+			readDay(d.path, func(line []byte) bool { foldTally(history.tallies, line); return true })
+			history.talliedOff[d.path] = d.size
+			continue
+		}
+		if off < d.size {
+			history.talliedOff[d.path] = foldTallies(d.path, off, history.tallies)
+		}
+	}
+	out := make(map[string]Tally, len(history.tallies))
+	for k, a := range history.tallies {
+		c := *a
+		c.Fails, c.Models = maps.Clone(a.Fails), slices.Clone(a.Models)
+		out[k] = c
+	}
+	return out
+}
+
+// foldTallies folds path's whole lines from off into tallies, and says
+// where the first line not folded starts: a line still being written
+// (another magpie's, say) waits for the next look.
+func foldTallies(path string, off int64, tallies map[string]*Tally) int64 {
+	f, err := os.Open(path)
+	if err != nil {
+		return off
+	}
+	defer f.Close()
+	if _, err := f.Seek(off, io.SeekStart); err != nil {
+		return off
+	}
+	br := bufio.NewReaderSize(f, 256<<10)
+	for {
+		line, err := br.ReadBytes('\n')
+		if err != nil { // no newline yet: not a whole line
+			return off
+		}
+		off += int64(len(line))
+		if line = bytes.TrimSpace(line); len(line) > 0 {
+			foldTally(tallies, line)
+		}
+	}
+}
+
+// tallyLines counts the lines foldTally has read, for the tests.
+var tallyLines atomic.Int64
+
+// foldTally counts one kept route into tallies. A route is written as it
+// is done, so a day's lines are nearly, not quite, in time order: which
+// rest and which name are the latest is told by their times.
+func foldTally(tallies map[string]*Tally, line []byte) {
+	tallyLines.Add(1)
+	var r tallied
+	if json.Unmarshal(line, &r) != nil {
+		return
+	}
+	ms := r.Time.UnixMilli()
+	by := map[string]*Tally{} // a try's seat → its tally
+	for _, w := range r.Order {
+		k := tallyKey(w)
+		a := tallies[k]
+		if a == nil {
+			a = &Tally{}
+			tallies[k] = a
+		}
+		if a.seen == 0 || ms >= a.seen { // how the latest request weighed it
+			a.ID, a.Provider, a.Name, a.Icon, a.Preset = w.ID, w.Provider, w.Name, w.Icon, w.Preset
+			a.Who, a.Kind, a.Agent, a.Plan, a.Model, a.Routing, a.Rank = w.Who, w.Kind, w.Agent, w.Plan, w.Model, w.Routing, w.Rank
+			a.seen = ms
+		}
+		// a rest on one model alone says nothing of the account (#1960),
+		// which answers its others; the page keeps that one from the trace
+		if w.Rest != nil && w.Rest.Model == "" && ms >= a.RestAt {
+			rest := *w.Rest
+			a.Rest, a.RestAt = &rest, ms
+		}
+		by[w.ID] = a
+	}
+	for _, tr := range r.Tries {
+		a := by[tr.ID]
+		if a == nil || !tr.Done || tr.Fail == "canceled" { // the agent's doing, not its
+			continue
+		}
+		end := tr.Start.UnixMilli() + tr.Millis
+		a.Tried++
+		if tr.Status < 400 && tr.Fail == "" {
+			a.OK++
+			a.Last = max(a.Last, end)
+			m := tr.Model
+			if m == "" {
+				for _, w := range r.Order {
+					if w.ID == tr.ID {
+						m = w.Model
+						break
+					}
+				}
+			}
+			if m != "" && !slices.Contains(a.Models, m) {
+				a.Models = append(a.Models, m)
+			}
+		} else {
+			f := tr.Fail
+			if f == "" {
+				f = "other"
+			}
+			if a.Fails == nil {
+				a.Fails = map[string]int{}
+			}
+			a.Fails[f]++
+		}
+		if tr.Rest != nil && tr.Rest.Model == "" && end >= a.RestAt {
+			rest := *tr.Rest
+			a.Rest, a.RestAt = &rest, end
 		}
 	}
 }

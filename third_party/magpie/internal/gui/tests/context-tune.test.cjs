@@ -102,6 +102,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await ctx.addInitScript(() => { try { localStorage.setItem("magpie.usageTab", "context"); } catch {} });
         const page = await ctx.newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         page.on("pageerror", (e) => errors.push(e.message));
         const posts = [];
         await page.route("**/*", serve(lang, posts));
@@ -182,6 +183,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     });
     const page = await ctx.newPage();
     page.setDefaultTimeout(5000);
+    page.setDefaultNavigationTimeout(60000);
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     const posts = [];
@@ -230,6 +232,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await ctx.addInitScript(() => { try { localStorage.setItem("magpie.usageTab", "context"); } catch {} });
         const page = await ctx.newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         page.on("pageerror", (e) => errors.push(e.message));
         const posts = [];
         await page.route("**/*", serve(lang, posts));
@@ -315,6 +318,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await ctx.addInitScript(() => { try { localStorage.setItem("magpie.usageTab", "context"); } catch {} });
       const page = await ctx.newPage();
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
       const base = serve(lang, []);
@@ -412,6 +416,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await ctx.addInitScript(() => { try { localStorage.setItem("magpie.usageTab", "context"); } catch {} });
         const page = await ctx.newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         page.on("pageerror", (e) => errors.push(e.message));
         const base = serve(lang, []);
         await page.route("**/*", (r) => new URL(r.request().url()).pathname === "/api/tune" ? r.fulfill({ json: timedTune }) : base(r));
@@ -501,6 +506,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await ctx.addInitScript(() => { try { localStorage.setItem("magpie.usageTab", "context"); } catch {} });
         const page = await ctx.newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         page.on("pageerror", (e) => errors.push(e.message));
         const posts = [];
         let value = 400000;
@@ -584,6 +590,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await ctx.addInitScript(() => { try { localStorage.setItem("magpie.usageTab", "context"); } catch {} });
         const page = await ctx.newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         page.on("pageerror", (e) => errors.push(e.message));
         let own = true;
         const base = serve(lang, []);
@@ -614,6 +621,115 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.evaluate(() => window.loadContext());
         await page.locator(".ctx-tune-row.done .ctx-chip.good").waitFor();
         assert.equal(await page.locator(".ctx-tune-row .ctx-tune-foot .ctx-chip").innerText(), leanest[lang]);
+        await ctx.close();
+      });
+    }
+    assert.deepEqual(errors, []);
+  });
+}
+
+// Codex's background compaction at the advice (herman_hong on Discord: a
+// foreground compaction kept them waiting, so they set 384K in config.toml
+// by hand; the advice's 120K is wanted in the background, the 384K kept).
+// The row offers it beside the foreground limit, which it never changes:
+// the click puts 30% (of a 400K window) in Background compaction, then a
+// chip says so and Undo puts it back. Codex's config.toml setting its own
+// share, or a Codex too old for one, says why and offers nothing. In both
+// engines, every language, a phone's width and a desk's.
+const asyncTune = (as) => ({
+  days: 7,
+  agents: [{ agent: "codex", calls: 2808, advice: [
+    { knob: "compact", setting: { value: "384000", source: "config", locked: "model_auto_compact_token_limit" },
+      compact: { model: "gpt-5.5", current: 384000, window: 400000, best: 120000, cost: 1.4e9, low: 1.02e9, curve: curve(90000, 400000, 120000), facts },
+      async: { percent: 30, value: 120000, window: 400000, setting: { source: "async", ...as.setting }, ...(as.held ? { held: as.held } : {}) } },
+  ] }],
+});
+const asyncUse = { en: "Use 120K in the background", zh: "在后台用 120K", "zh-TW": "在背景用 120K", ja: "バックグラウンドで 120K を使う", de: "120K im Hintergrund nutzen" };
+const asyncOn = { en: "In the background at 120K", zh: "后台压缩于 120K", "zh-TW": "背景壓縮於 120K", ja: "バックグラウンドで 120K", de: "Im Hintergrund bei 120K" };
+const asyncUndo = { en: "Undo background", zh: "撤销后台压缩", "zh-TW": "復原背景壓縮", ja: "バックグラウンドを取り消す", de: "Hintergrund rückgängig" };
+const asyncTip = {
+  en: "Codex compacts in the background past 30% of the model's window, about 120K of 400K, while the turn goes on; 384K stays as the foreground limit, for when the background one isn't ready. A Codex feature still under development, 0.163 or later.",
+  zh: "对话超过模型窗口的 30%（400K 中约 120K）时，Codex 在后台压缩，当前回合照常进行；384K 仍是前台压缩阈值，后台压缩没完成时兜底。这是 Codex 仍在开发中的功能，需要 0.163 或更新。",
+};
+const asyncLocked = {
+  en: "Background compaction: Codex's config.toml sets features.async_compaction.enabled, which comes first",
+  zh: "后台压缩：Codex 的 config.toml 设了 features.async_compaction.enabled，以它为准",
+  "zh-TW": "背景壓縮：Codex 的 config.toml 設了 features.async_compaction.enabled，以它為準",
+  ja: "バックグラウンド圧縮: Codex の config.toml が features.async_compaction.enabled を設定しており、そちらが優先されます",
+  de: "Hintergrundkomprimierung: Codex' config.toml setzt features.async_compaction.enabled, das hat Vorrang",
+};
+for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
+  test(`${engine}: Codex takes the advice in the background, its own limit kept`, async (t) => {
+    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+    const errors = [];
+    t.after(() => browser.close());
+    for (const lang of Object.keys(heading)) for (const [width, height] of [[360, 760], [1100, 760]]) {
+      await t.test(`${lang}, ${width}x${height}`, async () => {
+        const ctx = await browser.newContext({ viewport: { width, height }, reducedMotion: "reduce" });
+        await ctx.addInitScript(() => { try { localStorage.setItem("magpie.usageTab", "context"); } catch {} });
+        const page = await ctx.newPage();
+        page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
+        page.on("pageerror", (e) => errors.push(e.message));
+        const posts = [];
+        let as = { setting: {} };
+        const base = serve(lang, []);
+        await page.route("**/*", (r) => {
+          const p = new URL(r.request().url()).pathname;
+          if (p === "/api/tune") return r.fulfill({ json: asyncTune(as) });
+          if (p === "/api/tune/apply" || p === "/api/tune/undo") {
+            const b = JSON.parse(r.request().postData());
+            posts.push({ path: p, ...b });
+            as = { setting: p.endsWith("apply") ? { value: b.value, ours: true } : { value: "65" } };
+            return r.fulfill({ json: {} });
+          }
+          return base(r);
+        });
+        await page.goto("http://magpie.test/?view=usage");
+        const row = page.locator(".ctx-tune-row").nth(0);
+        const go = row.locator(".ctx-tune-foot button.ctx-tune-async");
+        await go.waitFor();
+        assert.equal(await go.innerText(), asyncUse[lang]);
+        if (asyncTip[lang]) assert.equal(await go.getAttribute("data-tt"), asyncTip[lang]);
+        // the foreground limit is the user's own: still no Use for it
+        assert.equal(await row.locator(".ctx-tune-foot button.primary").count(), 0);
+        assert.equal(await page.locator(".ctx-tune select, .ctx-tune-row .ctx-chip.ctx-tune-async").count(), 0);
+        const over = () => page.evaluate(() => {
+          const view = document.querySelector("#view-usage");
+          const out = view.scrollWidth > view.clientWidth + 1 ? ["page " + view.scrollWidth + ">" + view.clientWidth] : [];
+          const b = document.querySelector(".ctx-tune").getBoundingClientRect();
+          for (const e of document.querySelectorAll(".ctx-tune *")) {
+            const r = e.getBoundingClientRect();
+            if (r.width && (r.right > b.right + 1 || r.left < b.left - 1)) out.push((e.className.baseVal ?? e.className) + " " + Math.round(r.left) + "–" + Math.round(r.right));
+          }
+          return out;
+        });
+        assert.deepEqual(await over(), []);
+        await go.click();
+        const chip = row.locator(".ctx-chip.good.ctx-tune-async");
+        await chip.waitFor();
+        assert.deepEqual(posts, [{ path: "/api/tune/apply", agent: "codex", knob: "async_compact", model: "", value: "30" }]);
+        assert.equal(await chip.innerText(), asyncOn[lang]);
+        assert.equal(await go.count(), 0);
+        const undo = row.locator(".ctx-tune-foot button.text", { hasText: asyncUndo[lang] });
+        assert.equal(await undo.count(), 1);
+        assert.deepEqual(await over(), []);
+        await undo.click();
+        await go.waitFor();
+        assert.deepEqual(posts[1], { path: "/api/tune/undo", agent: "codex", knob: "async_compact", model: "", value: "" });
+        assert.equal(await chip.count(), 0);
+        // the user's own in config.toml, then a Codex too old for a share:
+        // each says why, and there's nothing to click
+        as = { setting: { locked: "features.async_compaction.enabled" } };
+        await page.evaluate(() => window.loadContext());
+        await row.locator(".ctx-tune-caveat.ctx-tune-async").waitFor();
+        assert.equal(await row.locator(".ctx-tune-caveat.ctx-tune-async").innerText(), asyncLocked[lang]);
+        assert.equal(await go.count(), 0);
+        as = { setting: {}, held: [{ kind: "cli", version: "0.162.1" }] };
+        await page.evaluate(() => window.loadContext());
+        await row.locator(".ctx-tune-caveat.ctx-tune-async", { hasText: "0.162.1" }).waitFor();
+        assert.equal(await go.count(), 0);
+        assert.deepEqual(await over(), []);
         await ctx.close();
       });
     }

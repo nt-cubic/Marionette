@@ -33,6 +33,11 @@ func TestAgentOf(t *testing.T) {
 		"minimax-code":   "minimax-code", // what magpie's entry sends
 		"MiniMaxCode":    "minimax-code", // 0.6.8's own (#1605)
 		"":               "other",
+		// Kimi Code 2.x and its desktop app, as jiabubu's requests named
+		// them; the old Python kimi-cli's KimiCLI/
+		"kimi-code-cli/2.4.1":     "kimi",
+		"kimi-code-desktop/1.2.1": "kimi-code-desktop",
+		"KimiCLI/1.4.0":           "kimi",
 	}
 	for ua, want := range cases {
 		if got := usage.AgentOf(ua); got != want {

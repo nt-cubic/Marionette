@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// A reset is spent by itself only within resetExpiryLead of running out,
+// A reset is spent by itself only within resetLead of running out,
 // and only when the account's windows have something to start again; an
 // account is read again when there may be something to do, not before.
 func TestResetSpentBeforeItRunsOut(t *testing.T) {

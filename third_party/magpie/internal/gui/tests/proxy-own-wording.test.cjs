@@ -90,6 +90,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
             for (const source of ["off", "none", "settings"]) {
               const page = await ctx.newPage();
               page.setDefaultTimeout(5000);
+              page.setDefaultNavigationTimeout(60000);
               const errors = [];
               page.on("pageerror", (e) => errors.push(e.message));
               await page.route("**/*", server(lang, source));

@@ -17,8 +17,9 @@ import (
 
 // Bundle is the library as a backup carries it to another computer: the
 // instruction sets and the one on, what each agent gets besides, the MCP
-// servers and the skills with their files. What magpie wrote into each
-// agent (Applied) is this computer's own and stays out. It is made the
+// servers, the skills with their files and the subagents. What magpie
+// wrote into each agent (Applied, the subagents' files among it) is this
+// computer's own and stays out. It is made the
 // same way every time — no times, everything in order — so two computers
 // with the same library carry the same bundle.
 type Bundle struct {
@@ -28,6 +29,10 @@ type Bundle struct {
 	MCP          []*Server         `json:"mcp"`
 	Skills       []*CarriedSkill   `json:"skills"`
 	Icons        map[string]string `json:"icons,omitempty"`
+	// Subagents are nil in a bundle from a magpie before they were
+	// carried, which knew nothing of this computer's: Put keeps them. Collect
+	// always sets it, empty too, so taking the last one out is carried.
+	Subagents *[]*Subagent `json:"subagents,omitempty"`
 }
 
 // CarriedSkill is a skill with its folder's files.
@@ -100,6 +105,14 @@ func Collect() (*Bundle, error) {
 		c.Name, c.Source, c.Agents = s.Name, s.Source, orNone(slices.Sorted(slices.Values(s.Agents)))
 		b.Skills = append(b.Skills, c)
 	}
+	subs := []*Subagent{}
+	for _, s := range sorted(l.Subagents, func(s *Subagent) string { return s.Name }) {
+		c := *s
+		c.Skills, c.MCP = slices.Sorted(slices.Values(s.Skills)), slices.Sorted(slices.Values(s.MCP))
+		c.Agents = orNone(slices.Sorted(slices.Values(s.Agents)))
+		subs = append(subs, &c)
+	}
+	b.Subagents = &subs
 	return b, nil
 }
 
@@ -229,6 +242,24 @@ func (b *Bundle) check() error {
 			}
 		}
 	}
+	if b.Subagents != nil {
+		seen := map[string]bool{}
+		for _, s := range *b.Subagents {
+			if s == nil {
+				return fmt.Errorf("an empty subagent")
+			}
+			// the name is the file's in every agent's folder; the agents
+			// are left as they come, as a skill's are: one a newer magpie
+			// gives subagents to is no target here and gets nothing
+			if !subagentNameRe.MatchString(s.Name) || slices.Contains(reservedSubagents, s.Name) {
+				return fmt.Errorf("the subagent name %q", s.Name)
+			}
+			if seen[s.Name] {
+				return fmt.Errorf("the subagent %s twice", s.Name)
+			}
+			seen[s.Name] = true
+		}
+	}
 	return nil
 }
 
@@ -315,7 +346,9 @@ func filled(m, have map[string]string, secret func(string) bool) map[string]stri
 // replaced or taken out is kept with the backups, and so is an
 // instructions file that changes. A skill that comes linked to a folder
 // this computer has too is linked to it; else it comes as its files. A
-// skill whose files are as they are here is left alone.
+// skill whose files are as they are here is left alone. The subagents
+// replace the ones here too, unless b is from a magpie that didn't carry
+// them.
 func Put(b *Bundle) (*Result, error) {
 	if err := b.check(); err != nil {
 		return nil, err
@@ -453,6 +486,17 @@ func Put(b *Bundle) (*Result, error) {
 
 		l.putServers(b.MCP)
 		l.Icons = maps.Clone(b.Icons)
+		// the agents are written on the sync change runs: what magpie
+		// wrote here (Applied) decides, file by file, what is its own
+		if b.Subagents != nil {
+			subs := []*Subagent{}
+			for _, s := range *b.Subagents {
+				c := *s
+				c.Skills, c.MCP, c.Agents = slices.Clone(s.Skills), slices.Clone(s.MCP), slices.Clone(orNone(s.Agents))
+				subs = append(subs, &c)
+			}
+			l.Subagents = subs
+		}
 		return nil
 	})
 }

@@ -54,6 +54,7 @@ for (const engine of process.env.BROWSER ? [process.env.BROWSER] : ["chromium", 
       t.after(() => browser.close());
       const page = await browser.newPage({ viewport: { width: 1100, height: 1000 } });
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
       const now = new Date();

@@ -64,6 +64,7 @@ for (const [name, engine] of [["webkit", webkit], ["chromium", chromium]]) {
       ]) {
         const page = await (await browser.newContext({ locale: sys, viewport: { width: 1000, height: 760 } })).newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         await page.route("**/*", serve(lang));
         await page.goto("http://magpie.test/");
         await page.waitForFunction(() => typeof locale === "string" && document.documentElement.lang);
@@ -89,6 +90,7 @@ for (const [name, engine] of [["webkit", webkit], ["chromium", chromium]]) {
       for (const width of [1000, 440]) {
         const page = await (await browser.newContext({ locale: "zh-TW", viewport: { width, height: 760 } })).newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         await page.route("**/*", serve("zh-TW"));
         await page.goto("http://magpie.test/");
         await page.locator("#prefs").click();

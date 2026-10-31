@@ -277,7 +277,7 @@ func TestEncryptedReasoningWithoutTokenDetails(t *testing.T) {
 func TestGeminiSummaryWithoutThoughtCount(t *testing.T) {
 	f := firstToken{start: time.Now().Add(-time.Second)}
 	f.see([]byte(`data: {"candidates":[{"content":{"parts":[{"text":"visible summary","thought":true}]}}]}` + "\n\n"))
-	if !f.hidesReasoning(provider.Gemini) || f.reasoningMs(provider.Gemini) != 0 {
+	if !f.hidesReasoning(provider.Gemini, 0) || !f.hidesReasoning(provider.Gemini, 7) || f.reasoningMs(provider.Gemini) != 0 {
 		t.Fatal("Gemini summary timed without its hidden thought count")
 	}
 }

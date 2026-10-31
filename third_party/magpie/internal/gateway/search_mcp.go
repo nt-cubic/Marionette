@@ -50,6 +50,9 @@ type mcpMessage struct {
 	ID      json.RawMessage `json:"id,omitempty"`
 	Method  string          `json:"method,omitempty"`
 	Params  json.RawMessage `json:"params,omitempty"`
+	// a client's answer to a request of the server's (askClient)
+	Result json.RawMessage `json:"result,omitempty"`
+	Error  json.RawMessage `json:"error,omitempty"`
 }
 
 func (s *Server) searchMCP(w http.ResponseWriter, r *http.Request) {
@@ -98,10 +101,17 @@ func serveMCP(w http.ResponseWriter, r *http.Request, what, server string, limit
 		writeJSON(w, http.StatusBadRequest, map[string]any{"jsonrpc": "2.0", "id": nil, "error": map[string]any{"code": -32700, "message": "parse error: the body isn't a JSON-RPC message"}})
 		return
 	}
+	// one request, by a client that takes an event stream back, may be
+	// answered by one, for the server to ask the client something first
+	x := &mcpExchange{w: w, canStream: !batch && strings.Contains(r.Header.Get("Accept"), "text/event-stream")}
+	r = r.WithContext(context.WithValue(r.Context(), mcpExchangeKey{}, x))
 	var out []any
 	for _, m := range msgs {
 		// a notification (no id) or a response to the server is answered
-		// with nothing
+		// with nothing; a response is handed to the request it answers
+		if m.Method == "" && len(m.ID) > 0 {
+			clientAnswered(m)
+		}
 		if len(m.ID) == 0 || bytes.Equal(m.ID, []byte("null")) || m.Method == "" {
 			continue
 		}
@@ -119,6 +129,10 @@ func serveMCP(w http.ResponseWriter, r *http.Request, what, server string, limit
 			reply["result"] = result
 		}
 		out = append(out, reply)
+	}
+	if x.streamed {
+		x.send(out[0])
+		return
 	}
 	if len(out) == 0 {
 		w.WriteHeader(http.StatusAccepted)

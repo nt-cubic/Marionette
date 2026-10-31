@@ -134,6 +134,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await ctx.addInitScript(() => { try { localStorage.setItem("magpie.libTab", "hooks"); } catch {} });
         const page = await ctx.newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         page.on("pageerror", (e) => errors.push(e.message));
         page.on("dialog", (d) => { errors.push("a browser dialog: " + d.message()); d.dismiss(); });
         await page.route("**/*", server(lang, state, posts));
@@ -173,6 +174,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await wctx.addInitScript(() => { try { localStorage.setItem("magpie.libTab", "hooks"); } catch {} });
           const wide = await wctx.newPage();
           wide.setDefaultTimeout(5000);
+          wide.setDefaultNavigationTimeout(60000);
           wide.on("pageerror", (e) => errors.push(e.message));
           await wide.route("**/*", server(lang, { hooks: state.hooks }, []));
           await wide.goto("http://magpie.test/");

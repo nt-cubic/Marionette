@@ -1,7 +1,10 @@
 package sessions
 
 import (
+	"bytes"
 	"database/sql"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -127,5 +130,63 @@ func TestMoveCodexThreadsNone(t *testing.T) {
 	}
 	if _, err := MoveCodexThreads(home, "magpie", "magpie"); err == nil {
 		t.Fatal("a move to the same provider went")
+	}
+}
+
+// bringBack's move (MoveCodexThreads) leaves a thread a Codex has open as
+// it leaves one written to in the last minute (#3751): no error, its
+// files and row on the provider they were, no copy kept. The others move,
+// and that one does once its Codex has let go. A Codex home without
+// thread-writer-locks (a Codex from before them) has none to look at: its
+// threads move as before, and none is made there.
+func TestMoveCodexThreadsLeavesAnOpenThread(t *testing.T) {
+	_, home := manageSetup(t)
+	const (
+		free = "019a0000-0000-7000-8000-0000000000a1"
+		open = "019a0000-0000-7000-8000-0000000000a2"
+	)
+	day := time.Now().Add(-24 * time.Hour).Truncate(time.Second)
+	cxRollout(t, home, "sessions", free, "magpie", day)
+	openPath := cxRollout(t, home, "sessions", open, "magpie", day)
+	db := cxThreadRows(t, home, map[string]string{free: "magpie", open: "magpie"})
+	orig, _ := os.ReadFile(openPath)
+	_, letGo := holdThread(t, home, open)
+
+	moved, err := MoveCodexThreads(home, "magpie", "openai")
+	if err != nil || len(moved) != 1 || moved[0].ID != free {
+		t.Fatalf("moved %+v, %v; want %s alone", moved, err, free)
+	}
+	if b, _ := os.ReadFile(openPath); !bytes.Equal(b, orig) {
+		t.Fatal("moved while a Codex had it open")
+	}
+	if got, _, _ := threadProvider(t, db, open); got != "magpie" {
+		t.Errorf("its row moved to %q, its files didn't", got)
+	}
+	if kept := providerTrash(t); len(kept) != 1 {
+		t.Errorf("copies kept: %v, want the moved thread's alone", kept)
+	}
+
+	letGo()
+	if moved, err = MoveCodexThreads(home, "magpie", "openai"); err != nil || len(moved) != 1 || moved[0].ID != open {
+		t.Fatalf("after its Codex let go: %+v %v", moved, err)
+	}
+	if got := codexMetaProvider(openPath); got != "openai" {
+		t.Errorf("file on %q", got)
+	}
+	if got, _, _ := threadProvider(t, db, open); got != "openai" {
+		t.Errorf("row on %q", got)
+	}
+
+	old := filepath.Join(t.TempDir(), ".codex")
+	p := cxRollout(t, old, "sessions", free, "magpie", day)
+	cxThreadRows(t, old, map[string]string{free: "magpie"})
+	if moved, err := MoveCodexThreads(old, "magpie", "openai"); err != nil || len(moved) != 1 {
+		t.Fatalf("a home without writer locks: %+v %v", moved, err)
+	}
+	if got := codexMetaProvider(p); got != "openai" {
+		t.Errorf("file on %q in a home without writer locks", got)
+	}
+	if _, err := os.Stat(filepath.Join(old, "thread-writer-locks")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("thread-writer-locks made where Codex keeps none: %v", err)
 	}
 }

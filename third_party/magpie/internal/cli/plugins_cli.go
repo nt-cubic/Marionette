@@ -17,6 +17,7 @@ import (
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/pluginrt"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/settings"
 	"golang.org/x/term"
 )
 
@@ -25,13 +26,14 @@ const pluginUsage = `usage: magpie plugin [list] [--json]
        magpie plugin rm <name>                     remove one
        magpie plugin update                        install the newest version of each
        magpie plugin on|off <name>                 turn one on or off
-       magpie plugin options <name> [<json> | off] show or set what a plugin is handed (a middleware's ctx.options)
+       magpie plugin options <name> [<json> | off] show or set what a plugin is handed: the switches it declares for its provider (as its editor's Plugin options), else a middleware's ctx.options
        magpie plugin use <name> <provider>         have this plugin serve a provider another plugin signs in to as well
        magpie plugin login <provider> [<method>]   sign in to a provider a plugin adds
        magpie plugin logout <provider>             forget the sign-in
        magpie plugin move|migrate <subscription>   run a built-in subscription's accounts on its community plugin
        magpie plugin builtin [on|off <id>]         list magpie's built-in plugins (Sessions, Library, routing groups…), or turn one on or off
        magpie plugin preset essentials|all         start the built-in plugins from the Essentials preset, or from all of them
+       magpie plugin registry [<url> | default]   show the npm registry plugins are installed from and npm is asked of, and where it comes from; or set one (an http:// or https:// address) before your .npmrc's, .bunfig.toml's and the 国内镜像 switch's, default to drop it
        magpie plugin dump [--json]                 what plugins.yml comes to: each built-in plugin, its config, and the layer each value is from`
 
 // pluginCmd: `magpie plugin …` — OpenCode's provider plugins and pi's
@@ -114,7 +116,7 @@ func pluginCmd(args []string) error {
 		if len(rest) < 1 || len(rest) > 2 {
 			return errors.New(pluginUsage)
 		}
-		return pluginOptions(rest[0], rest[1:])
+		return pluginOptions(ctx, rest[0], rest[1:])
 	case "use", "prefer":
 		if len(rest) != 2 {
 			return errors.New(pluginUsage)
@@ -176,6 +178,24 @@ func pluginCmd(args []string) error {
 		}
 		fmt.Println(green.Render("✓"), "built-in plugins start from", rest[0])
 		return builtinCmd(nil)
+	case "registry":
+		if len(rest) > 1 {
+			return errors.New(pluginUsage)
+		}
+		if len(rest) == 1 && strings.HasPrefix(rest[0], "-") {
+			fmt.Println(pluginUsage)
+			return nil
+		}
+		r := plugin.Registry()
+		if len(rest) == 1 {
+			var err error
+			if r, err = plugin.SetRegistry(rest[0]); err != nil {
+				return err
+			}
+			fmt.Print(green.Render("✓"), " ")
+		}
+		fmt.Println(r.URL, muted.Render("("+registryFrom(r)+")"))
+		return nil
 	case "dump":
 		return dumpPlugins(len(rest) > 0 && rest[0] == "--json")
 	case "help", "-h", "--help":
@@ -317,7 +337,7 @@ func installedName(name string) string {
 	return name
 }
 
-func pluginOptions(name string, set []string) error {
+func pluginOptions(ctx context.Context, name string, set []string) error {
 	var e *plugin.Entry
 	ps := plugin.Load().Plugins
 	// the one added as name exactly, else the one of that package
@@ -341,7 +361,21 @@ func pluginOptions(name string, set []string) error {
 		return fmt.Errorf("no plugin %q", name)
 	}
 	if len(set) == 0 {
+		switches := declaredSwitches(ctx, e.Spec, false)
+		if len(switches) > 0 {
+			chosen := settings.Load().PluginOptions
+			for _, sw := range switches {
+				v := "off"
+				if plugin.OptionOn(chosen, sw.provider, sw.Option) {
+					v = "on"
+				}
+				fmt.Printf("%s  %s %s  %s\n", sw.Key, sw.provider, v, muted.Render(sw.Label))
+			}
+		}
 		if len(e.Options) == 0 {
+			if len(switches) > 0 {
+				return nil
+			}
 			ex := plugin.OptionsExample(plugin.Target(e.Spec))
 			if ex == nil {
 				fmt.Println(muted.Render("No options set."))
@@ -362,15 +396,143 @@ func pluginOptions(name string, set []string) error {
 			return errors.New(`options are a JSON object ('{"key": "value"}'), or off`)
 		}
 	}
-	if err := plugin.SetOptions(e.Spec, opts); err != nil {
-		return err
+	// A switch the plugin declares for its provider (auth.options) is read
+	// from settings' PluginOptions (input.magpie.option), as the editor's
+	// Plugin options saves it; plugins.json's options are a middleware's
+	// ctx.options, which a provider plugin never sees. `options cursor
+	// '{"wire_trace": true}'` wrote the second and nothing turned on
+	// (plugins#550): a declared key goes to the first, the rest as before.
+	switches := declaredSwitches(ctx, e.Spec, opts != nil)
+	byKey := map[string][]string{}
+	for _, sw := range switches {
+		byKey[sw.Key] = append(byKey[sw.Key], sw.provider)
 	}
-	if opts == nil {
+	on := map[string]bool{}
+	rest := map[string]any{}
+	for k, v := range opts {
+		if len(byKey[k]) == 0 {
+			rest[k] = v
+			continue
+		}
+		b, ok := v.(bool)
+		if !ok {
+			return fmt.Errorf("%s is a switch %s declares: true or false", k, name)
+		}
+		on[k] = b
+	}
+	if len(switches) > 0 && (opts == nil || len(on) > 0) {
+		err := settings.EditPluginOptions(func(m map[string]map[string]bool) (map[string]map[string]bool, error) {
+			if m == nil {
+				m = map[string]map[string]bool{}
+			}
+			for _, sw := range switches {
+				if opts == nil {
+					// off: every switch back to the plugin's default
+					delete(m[sw.provider], sw.Key)
+					continue
+				}
+				v, ok := on[sw.Key]
+				if !ok {
+					continue
+				}
+				if m[sw.provider] == nil {
+					m[sw.provider] = map[string]bool{}
+				}
+				m[sw.provider][sw.Key] = v
+			}
+			return m, nil
+		})
+		if err != nil {
+			return err
+		}
+		// best effort: a host that misses it reads them when it next starts
+		if plugin.Running() {
+			c, cancel := context.WithTimeout(ctx, 5*time.Second)
+			_ = plugin.SetProviderOptions(c)
+			cancel()
+		}
+	}
+	// plugins.json keeps what isn't a declared switch: set with only
+	// switches leaves a middleware's options as they were, less any
+	// switch written there before
+	write, keep := opts == nil || len(rest) > 0, rest
+	if !write && len(on) > 0 {
+		keep = map[string]any{}
+		for k, v := range e.Options {
+			if len(byKey[k]) == 0 {
+				keep[k] = v
+			}
+		}
+		write = len(keep) != len(e.Options)
+	}
+	if write {
+		if len(keep) == 0 {
+			keep = nil
+		}
+		if err := plugin.SetOptions(e.Spec, keep); err != nil {
+			return err
+		}
+	}
+	switch {
+	case opts == nil:
 		fmt.Println(green.Render("✓"), name, "has no options")
-	} else {
+	case len(on) > 0:
+		keys := make([]string, 0, len(on))
+		for k := range on {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			v := "off"
+			if on[k] {
+				v = "on"
+			}
+			fmt.Println(green.Render("✓"), k, "is", v, "for", strings.Join(byKey[k], ", "))
+		}
+		if len(rest) > 0 {
+			fmt.Println(green.Render("✓"), name, "options set")
+		}
+	default:
 		fmt.Println(green.Render("✓"), name, "options set")
 	}
 	return nil
+}
+
+// declaredSwitch is a switch a plugin declares for one of its providers.
+type declaredSwitch struct {
+	plugin.Option
+	provider string
+}
+
+// declaredSwitches are the switches the plugin spec declares for its
+// providers (auth.options), from the providers last listed; ask lists them
+// from the plugin host when none were listed for it yet (a plugin just
+// added from the command line). A host that can't be asked is none known.
+func declaredSwitches(ctx context.Context, spec string, ask bool) []declaredSwitch {
+	of := func(ps []plugin.Provider) (out []declaredSwitch, listed bool) {
+		for _, p := range ps {
+			if p.Spec != spec {
+				continue
+			}
+			listed = true
+			for _, o := range p.Options {
+				out = append(out, declaredSwitch{o, p.ID})
+			}
+		}
+		return out, listed
+	}
+	out, listed := of(plugin.Cached())
+	if listed || !ask {
+		return out
+	}
+	c, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	ps, err := plugin.Providers(c)
+	if err != nil {
+		return nil
+	}
+	out, _ = of(ps)
+	return out
 }
 
 // pluginProvider is the plugins' provider named by OpenCode's id or
@@ -494,9 +656,16 @@ func pluginLogin(ctx context.Context, name, method string) error {
 			return err
 		}
 		if a.URL != "" {
-			fmt.Println("Sign in in your browser. If it didn't open, go to:")
+			// the user may keep sign-in pages to a browser of their own; a
+			// page the plugin's CLI opened itself is open either way
+			linkOnly := settings.Load().SignInLinkOnly && !a.Opened
+			if linkOnly {
+				fmt.Println("Open this link in the browser you sign in with:")
+			} else {
+				fmt.Println("Sign in in your browser. If it didn't open, go to:")
+			}
 			fmt.Println(faint.Render(a.URL))
-			if !a.Opened {
+			if !a.Opened && !linkOnly {
 				openInBrowser(a.URL)
 			}
 		}
@@ -700,4 +869,21 @@ func sayAgentBack(a *agent.Agent) {
 		return
 	}
 	fmt.Println(faint.Render("  " + a.Name + " is disconnected from magpie, back to what it had before; with the plugin back, connecting it (its switch on the Agents page) puts back the model it was on"))
+}
+
+// registryFrom says where the npm registry in use came from.
+func registryFrom(r plugin.RegistryInUse) string {
+	switch r.From {
+	case plugin.FromMagpie:
+		return "set in magpie; magpie plugin registry default drops it"
+	case plugin.FromEnv:
+		return "from " + r.Var
+	case plugin.FromShell:
+		return "from your shell's " + r.Var
+	case plugin.FromBunfig, plugin.FromNPMRC:
+		return "from " + r.Path
+	case plugin.FromChina:
+		return "the 国内镜像 switch on the Plugins page"
+	}
+	return "npm's own"
 }

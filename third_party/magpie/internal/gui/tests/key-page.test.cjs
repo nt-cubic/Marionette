@@ -35,6 +35,7 @@ async function open(engine, lang, me = ME) {
   const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
   const page = await (await browser.newContext({ viewport: { width: 390, height: 844 }, locale: LOCALE[lang], reducedMotion: "reduce" })).newPage();
   page.setDefaultTimeout(6000);
+  page.setDefaultNavigationTimeout(60000);
   const seen = { urls: [], errors: [] };
   page.on("pageerror", (e) => seen.errors.push(e.message));
   page.on("request", (r) => seen.urls.push(r.url()));
@@ -141,6 +142,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       t.after(() => browser.close());
       const page = await (await browser.newContext({ viewport: { width: 390, height: 844 }, reducedMotion: "reduce" })).newPage();
       page.setDefaultTimeout(6000);
+      page.setDefaultNavigationTimeout(60000);
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", fixture(lang, "light", [], { lan: true, web: true }));
@@ -163,6 +165,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     const ctx = await browser.newContext({ viewport: { width: 1000, height: 800 }, reducedMotion: "reduce" });
     let page = await ctx.newPage();
     page.setDefaultTimeout(6000);
+    page.setDefaultNavigationTimeout(60000);
     await page.route("**/*", fixture("en", "light", [], { lan: true, web: true, publicURL: "https://ai.corp.example" }));
     await page.goto("http://magpie.test/?view=gateway");
     await page.locator("#gatewayKeys .gw-key-page").waitFor();

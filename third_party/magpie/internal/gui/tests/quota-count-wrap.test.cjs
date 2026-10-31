@@ -46,6 +46,7 @@ for (const [name, engine] of [["webkit", webkit], ["chromium", chromium]]) {
       for (const width of [600, 980, 990, 1000, 1010, 1100]) {
         const page = await (await browser.newContext({ viewport: { width, height: 820 }, reducedMotion: "reduce" })).newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         await page.route("**/*", serve("zh", [...wb, trae.after]));
         await page.goto("http://magpie.test/?view=usage");
         await page.locator(".subscription-card .quota-n").nth(2).waitFor();

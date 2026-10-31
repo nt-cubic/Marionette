@@ -71,6 +71,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const w = words[lang], errors = [];
         const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", serve(lang, fixture()));
         try { await page.addInitScript(() => localStorage.setItem("magpie.routingBySession", "1")); } catch {}
@@ -109,6 +110,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // the tray panel's agent: its folders under the pointer
         const panel = await browser.newPage({ viewport: { width: Math.min(width, 440), height: 600 }, reducedMotion: "reduce" });
         panel.setDefaultTimeout(5000);
+        panel.setDefaultNavigationTimeout(60000);
         panel.on("pageerror", (e) => errors.push(e.message));
         await panel.route("**/*", serve(lang, fixture()));
         await panel.goto("http://magpie.test/?mode=panel");

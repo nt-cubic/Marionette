@@ -41,7 +41,7 @@ func TestStreamCutSaysConnection(t *testing.T) {
 	if err := provider.Save(provider.Provider{ID: "go", Name: "OpenCode Go", Key: "k", Models: []string{"m"}, Chat: up.URL + "/v1"}); err != nil {
 		t.Fatal(err)
 	}
-	severed(t, anthropicStart, anthropicText) // up/m, spoken to in Messages: the reply translated
+	severed(t, provider.Anthropic, anthropicStart, anthropicText) // up/m, spoken to in Messages: the reply translated
 
 	cases := []struct{ model, name string }{{"go/m", "OpenCode Go"}, {"up/m", "UP"}}
 	var wg sync.WaitGroup

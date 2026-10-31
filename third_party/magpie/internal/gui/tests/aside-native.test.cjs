@@ -70,6 +70,7 @@ for (const engine of ['chromium', 'webkit']) {
       t.after(() => browser.close());
       const page = await browser.newPage({ viewport: { width: 980, height: 760 } });
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       const posts = [], errors = [];
       page.on('pageerror', e => errors.push(e.message));
       let failure = { error: 'Aside settings could not be read', code: 'runtime_unavailable', offline: 'stage' };

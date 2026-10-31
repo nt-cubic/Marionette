@@ -191,15 +191,16 @@ func TestGroupsTextOnlyMemberIsGivenTheDescription(t *testing.T) {
 func TestDescriberThatCantSeeIsntAskedToDescribe(t *testing.T) {
 	s, u := eyed(t)
 	// the setting names a text-only model: its own request is turned away,
-	// not described by itself again and again
+	// not described by itself again and again, and the next model that
+	// sees describes the image in its place (kelvinjason11 on X)
 	st := settings.Load()
 	st.Vision = "probe/text"
 	if err := settings.Save(st); err != nil {
 		t.Fatal(err)
 	}
 	code, body := postAs(t, s, "", `{"model":"probe/text","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8="}}]}]}`)
-	if code != 502 || len(u.sent("text")) != 0 {
-		t.Fatalf("%d %s; text model sent %d", code, body, len(u.sent("text")))
+	if got := u.sent("text"); code != 200 || len(got) != 1 || !strings.Contains(got[0], "probe/eye describes it") {
+		t.Fatalf("%d %s; text model sent %v", code, body, got)
 	}
 }
 

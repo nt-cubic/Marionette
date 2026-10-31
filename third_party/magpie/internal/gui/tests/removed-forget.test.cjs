@@ -59,6 +59,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const w = L[lang];
         const page = await (await browser.newContext({ viewport: { width: 900, height: 520 } })).newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         const errors = [], asked = [];
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", server(lang, asked, true));
@@ -102,6 +103,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const w = L[lang];
         const page = await (await browser.newContext({ viewport: { width: 900, height: 700 } })).newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         const asked = [];
         await page.route("**/*", server(lang, asked, false, "the vendor said no"));
         await page.goto("http://magpie.test/?view=providers");
@@ -122,6 +124,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const w = L[lang];
         const page = await (await browser.newContext({ viewport: { width: 900, height: 700 } })).newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         const asked = [];
         await page.route("**/*", server(lang, asked, true));
         await page.goto("http://magpie.test/?view=providers");
@@ -137,6 +140,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const w = L[lang];
         const page = await (await browser.newContext({ viewport: { width: 900, height: 700 } })).newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         const asked = [];
         await page.route("**/*", server(lang, asked, false));
         await page.goto("http://magpie.test/?view=providers");

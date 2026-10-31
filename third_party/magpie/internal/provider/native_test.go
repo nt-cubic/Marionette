@@ -37,6 +37,12 @@ func TestNative(t *testing.T) {
 		{"o-series on OpenAI's API", openai, "o3", Responses},
 		{"other on OpenAI's API", openai, "whisper-x", Chat},
 		{"Chat and Responses elsewhere", Provider{ID: "both", Chat: "https://x.test/v1", Responses: "https://x.test/v1"}, "gpt-5.5", Chat},
+		// the API the user gave a custom provider's Base URL as, where a
+		// Chat URL was found beside it (nb5p on Discord)
+		{"Responses picked beside Chat", Provider{ID: "mygateway", Chat: "https://x.test/v1", Responses: "https://x.test/v1", BaseAPI: "responses"}, "gpt-6.1-sol", Responses},
+		{"Chat picked beside Responses", Provider{ID: "mygateway", Chat: "https://x.test/v1", Responses: "https://x.test/v1", BaseAPI: "chat"}, "gpt-6.1-sol", Chat},
+		{"Responses picked, Claude on Messages", Provider{ID: "mygateway", Responses: "https://x.test/v1", Anthropic: "https://x.test", BaseAPI: "responses"}, "claude-sonnet-5", Anthropic},
+		{"Responses picked, no Responses URL", Provider{ID: "mygateway", Chat: "https://x.test/v1", BaseAPI: "responses"}, "m", Chat},
 		{"anthropic only", Provider{ID: "anthropic", Anthropic: "https://api.anthropic.com"}, "claude-sonnet-5", Anthropic},
 		{"Copilot GPT", copilot, "gpt-5.5", Responses},
 		{"Copilot Claude", copilot, "claude-sonnet-5", Anthropic},

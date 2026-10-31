@@ -70,6 +70,7 @@ async function open(t, engine, lang, width = 440) {
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width, height: 640 }, reducedMotion: "reduce" });
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(60000);
   const errors = [], data = { quotas: fixtures(), gets: 0, posts: [], behavior: "fresh" };
   page.on("pageerror", e => errors.push(e.message));
   await page.route("**/*", serve(lang, data));

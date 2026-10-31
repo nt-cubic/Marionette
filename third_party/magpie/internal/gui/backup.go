@@ -127,6 +127,8 @@ func backupRoutes(mux *http.ServeMux, w Windows) {
 			_, err = davsync.Undo()
 		case "upload": // this computer's setup over a server file that isn't a backup, kept first
 			err = davsync.Upload(ctx)
+		case "follow": // the agent fields kept on this computer follow the others again
+			err = busy(davsync.Follow(ctx))
 		case "reveal":
 			err = w.OpenFolder(filepath.Join(settings.Dir(), "sync"))
 		default:

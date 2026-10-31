@@ -250,6 +250,11 @@ func (g *Group) RenameMember(from, to string) {
 			g.Fast[i] = to
 		}
 	}
+	for i, p := range g.Placed {
+		if p == from {
+			g.Placed[i] = to
+		}
+	}
 	for i, o := range g.Off {
 		if o == from {
 			g.Off[i] = to

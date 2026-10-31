@@ -90,6 +90,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await browser.close();
         });
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         const ctl = {};
         await page.route("**/*", (route) => serve(route, lang, added, ctl));
         await page.goto("http://magpie.test/");

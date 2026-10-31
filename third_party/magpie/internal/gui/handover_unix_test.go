@@ -203,7 +203,7 @@ func TestRestartHandsTheGatewayOver(t *testing.T) {
 		}
 	}()
 
-	if !beginHandover("", startExe, false, "") {
+	if !beginHandover("", startExe, false, "", false) {
 		t.Fatal("the restart didn't hand over")
 	}
 	quit := make(chan struct{})
@@ -279,7 +279,7 @@ func TestHandoverNotMadeRestartsAsBeforeOnceIdle(t *testing.T) {
 			if line, err := stream.ReadString('\n'); err != nil || !strings.Contains(line, "first") {
 				t.Fatalf("the stream's first chunk: %q %v", line, err)
 			}
-			if !beginHandover("", startExe, false, "") {
+			if !beginHandover("", startExe, false, "", false) {
 				t.Fatal("the restart didn't try to hand over")
 			}
 			quit := make(chan struct{})

@@ -149,9 +149,13 @@ func (h *host) Import(link string) {
 
 // dock puts magpie in the Dock or takes it out as s says, with the window
 // shown or not, full screen or not.
-func (h *host) dock(s settings.Settings, shown bool) {
+func (h *host) dock(s settings.Settings, shown bool) { h.dockFront(s, shown, shown) }
+
+// dockFront is dock, with front saying whether joining the Dock activates
+// magpie: not for the window a restart by itself brings back.
+func (h *host) dockFront(s settings.Settings, shown, front bool) {
 	full := application.InvokeSyncWithResult(func() bool { return h.main != nil && h.main.IsFullscreen() })
-	setDock(inDock(s, shown, full), shown)
+	setDock(inDock(s, shown, full), front)
 }
 
 // inDock: always, never, or while the window is shown (the default), as s
@@ -346,6 +350,10 @@ func Run(version string, showMain bool, link string) error {
 	if runningAlready(showMain || OpenPanel, link) {
 		return nil
 	}
+	// a restart magpie made by itself: back as it was, taking no focus
+	// (quiet_restart.go)
+	quiet := takeQuietRestart()
+	quietShow.Store(quiet && showMain)
 	// before the first webview, which opens WebKit's data where programName says
 	keepWebData()
 	go func() {
@@ -385,6 +393,9 @@ func Run(version string, showMain bool, link string) error {
 	if before != 0 && runtime.GOOS == "linux" {
 		awaitExit(before, handedOffWait)
 	}
+	// a quiet start joins the Dock once started (below): Wails activates
+	// an app that starts in it
+	policy := dockPolicy(settings.Load().Dock && !quiet)
 	h.app = application.New(application.Options{
 		// Windows and Linux start a new process for a magpie:// link (or a
 		// second launch); it hands its arguments to the running one and quits.
@@ -394,7 +405,7 @@ func Run(version string, showMain bool, link string) error {
 		Description:    "one place to pick every agent's model",
 		Icon:           appIconFor(),
 		Assets:         application.AssetOptions{Handler: ownWindow(handler)},
-		Mac:            application.MacOptions{ActivationPolicy: dockPolicy(settings.Load().Dock)},
+		Mac:            application.MacOptions{ActivationPolicy: policy},
 		Windows:        windowsOptions(),
 		Linux:          linuxOptions(),
 		// A version downloaded but not restarted into is installed on the
@@ -562,6 +573,9 @@ func Run(version string, showMain bool, link string) error {
 	}
 	h.tray.SetMenu(menu)
 	h.tray.AttachWindow(h.panel).WindowOffset(6)
+	// before Wails removes the item as the app quits, which would forget
+	// where the user put the icon (trayshown_darwin.go; nothing elsewhere)
+	h.app.OnShutdown(func() { keepTrayPlace() })
 	// a Mac that handed the gateway to the new version (handover.go)
 	// leaves the menu bar to it while it finishes its requests: one bird
 	if runtime.GOOS == "darwin" {
@@ -631,6 +645,10 @@ func Run(version string, showMain bool, link string) error {
 	}
 	if showMain {
 		h.whenReady(func() { h.ShowMain(argView(OpenView)) })
+	} else if quiet && settings.Load().Dock {
+		// kept out of the Dock to start (Mac options above), it joins
+		// now without coming to the front
+		h.whenReady(func() { setDock(true, false) })
 	}
 	if OpenPanel {
 		h.whenReady(func() { application.InvokeAsync(h.togglePanel) })

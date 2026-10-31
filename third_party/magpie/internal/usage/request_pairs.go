@@ -49,7 +49,7 @@ func pairSerials(sets ...[]*rowChunk) ([]uint64, bool) {
 func unnamedSerial(c *rowChunk) uint64 {
 	h := mix(6, uint64(len(c.Rows)))
 	for i := range c.Rows {
-		h = mix(h, uint64(c.Rows[i].Order), uint64(c.Rows[i].Time.UnixNano()))
+		h = mix(h, uint64(c.Rows[i].Order), uint64(c.Rows[i].Time().UnixNano()))
 	}
 	return h | 1
 }

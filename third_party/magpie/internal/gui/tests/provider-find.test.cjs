@@ -100,6 +100,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const ctx = await browser.newContext({ viewport: { width: 420, height: 560 }, reducedMotion: "reduce" });
         const page = await ctx.newPage(), f = fixture(lang);
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", f.route);
         await page.goto("http://magpie.test/?view=providers");

@@ -88,8 +88,11 @@ func TestComOwner(t *testing.T) {
 // EnsureCompanion writes where a terminal runs magpie from, and nowhere
 // else: a downloads folder off PATH gets nothing.
 func TestEnsureCompanion(t *testing.T) {
-	old := comLauncher
-	t.Cleanup(func() { comLauncher = old })
+	old, wasDL := comLauncher, downloadFolder
+	t.Cleanup(func() { comLauncher, downloadFolder = old, wasDL })
+	// on Windows a temporary folder counts as a download folder, which
+	// gets one only from Add (TestNoCompanionPutBackOnTheDesktop)
+	downloadFolder = func(string) bool { return false }
 	sep := string(os.PathListSeparator)
 
 	comLauncher = nil

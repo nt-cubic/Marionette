@@ -14,6 +14,7 @@ import (
 // pairs only the recent chunks, and tells the same effort a pairing of
 // every chunk does. A settled file changed, or no file, pairs them all.
 func TestCodexEffortSettledFromDisk(t *testing.T) {
+	pairAtOnce(t)
 	pageHome(t)
 	now := holdClock(t, time.Date(2026, 9, 30, 12, 0, 0, 0, time.Local))
 	write := func(id string, at time.Time, input int) string {
@@ -94,5 +95,52 @@ func TestCodexEffortSettledFromDisk(t *testing.T) {
 	os.Remove(effortDiskPath())
 	if cold := CodexModelEffort(All); !same(cold, changed) {
 		t.Fatalf("after a settled file changed %+v, cold %+v", changed, cold)
+	}
+}
+
+// The Sessions list's All and the overview's period are each kept: one
+// entry let the two write over each other, and every start paired one of
+// them whole again (#2278).
+func TestCodexEffortPeriodsKeptApart(t *testing.T) {
+	pairAtOnce(t)
+	pageHome(t)
+	now := holdClock(t, time.Date(2026, 9, 30, 12, 0, 0, 0, time.Local))
+	for i, days := range []int{40, 20, 10, 5, 0} {
+		id := string(rune('a' + i))
+		at := now.AddDate(0, 0, -days).Add(-time.Hour)
+		path := filepath.Join(sessions.CodexDir(), "sessions", at.Format("2006/01/02"), "rollout-"+at.Format("2006-01-02T15-04-05")+"-"+id+".jsonl")
+		writeCodexCall(t, path, id, "s"+id, `"vscode"`, "resp-"+id, "m", "low", at, 100+i, 10)
+		Append(Record{Time: at.Add(time.Minute), Agent: "codex", Provider: "openai", Model: "m", Input: 100 + i, Output: 10, Status: 200, ResponseID: "resp-" + id, Session: "s" + id})
+	}
+	paired := []int{}
+	effortPairing = func(n int) { paired = append(paired, n) }
+	t.Cleanup(func() { effortPairing = nil })
+	restart := func() {
+		codexEffort.Lock()
+		codexEffort.periods = map[Period]*effortEntry{}
+		codexEffort.Unlock()
+		codexEffortBuilding.Lock()
+		effortOlds = map[Period]*effortOld{}
+		codexEffortBuilding.Unlock()
+		requestCache.Lock()
+		requestCache.pairs = nil
+		requestCache.Unlock()
+	}
+	restart()
+	t.Cleanup(restart)
+	first := map[Period]int{}
+	for _, p := range []Period{All, Month} {
+		got := CodexModelEffort(p)
+		if len(got) == 0 || len(paired) == 0 {
+			t.Fatalf("%s: %d threads, pairings %v", p, len(got), paired)
+		}
+		first[p] = paired[len(paired)-1]
+	}
+	restart()
+	for _, p := range []Period{All, Month} {
+		CodexModelEffort(p)
+		if n := paired[len(paired)-1]; n >= first[p] {
+			t.Fatalf("%s started again, paired %d of %d: %v", p, n, first[p], paired)
+		}
 	}
 }

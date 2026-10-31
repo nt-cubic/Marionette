@@ -9,24 +9,32 @@ import (
 // does, its menu bar icon only (#2096); one with the window opens it. Both
 // ask for a new instance (-n), so LaunchServices launches the bundle rather
 // than send a reopen to the magpie that has just exited (Linka's -600).
+//
+// Only a restart the user asked for, with its window coming back, brings
+// magpie to the front. One magpie made by itself (quiet), or one with only
+// the menu bar icon to come back, opens in the background (-g): without
+// it, Settings' AutoRestart took the focus from the app the user was
+// typing in (xyxyxy_15591 on Discord).
 func TestRelaunchOpen(t *testing.T) {
-	if got, want := relaunchOpen("/Applications/magpie.app", true), `open -n "/Applications/magpie.app"`; got != want {
-		t.Errorf("window: %s, want %s", got, want)
-	}
-	if got, want := relaunchOpen("/Applications/magpie.app", false), `open -n "/Applications/magpie.app" --args tray`; got != want {
-		t.Errorf("no window: %s, want %s", got, want)
-	}
-}
-
-// A restart that hands the gateway over opens the new version while this
-// one runs: a new instance (-n), which LaunchServices would otherwise send
-// to the one running.
-func TestOpenBeside(t *testing.T) {
-	if got, want := openBeside("/Applications/magpie.app", true), `open -n "/Applications/magpie.app"`; got != want {
-		t.Errorf("window: %s, want %s", got, want)
-	}
-	if got, want := openBeside("/Applications/magpie.app", false), `open -n "/Applications/magpie.app" --args tray`; got != want {
-		t.Errorf("no window: %s, want %s", got, want)
+	const app = "/Applications/magpie.app"
+	for _, c := range []struct {
+		window, quiet bool
+		want          string
+	}{
+		{true, false, `open -n "/Applications/magpie.app"`},
+		{true, true, `open -n -g "/Applications/magpie.app"`},
+		{false, false, `open -n -g "/Applications/magpie.app" --args tray`},
+		{false, true, `open -n -g "/Applications/magpie.app" --args tray`},
+	} {
+		if got := relaunchOpen(app, c.window, c.quiet); got != c.want {
+			t.Errorf("relaunch, window %v quiet %v: %s, want %s", c.window, c.quiet, got, c.want)
+		}
+		// a restart that hands the gateway over opens the new version
+		// while this one runs: a new instance (-n), which LaunchServices
+		// would otherwise send to the one running, as quiet as Relaunch's
+		if got := openBeside(app, c.window, c.quiet); got != c.want {
+			t.Errorf("beside, window %v quiet %v: %s, want %s", c.window, c.quiet, got, c.want)
+		}
 	}
 }
 

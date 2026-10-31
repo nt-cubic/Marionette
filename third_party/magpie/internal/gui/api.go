@@ -31,6 +31,7 @@ import (
 
 	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/agent"
+	"github.com/yetone/magpie/internal/applog"
 	"github.com/yetone/magpie/internal/autostart"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/filememo"
@@ -243,6 +244,9 @@ type agentJSON struct {
 	// another agent offers it again where magpie knows how
 	CLIMissing bool               `json:"cliMissing,omitempty"`
 	Native     *agent.NativeState `json:"native,omitempty"`
+	// Terminal: a Mac's row menu offers Open in terminal, a command
+	// starting it being here (agentCommand)
+	Terminal bool `json:"terminal,omitempty"`
 }
 
 // clientJSON is an agent, or another client the gateway knows, as a
@@ -394,6 +398,9 @@ type settingsJSON struct {
 	OnNetwork       bool     `json:"onNetwork,omitempty"`
 	// Dir is the data folder beside a portable magpie (#508)
 	Portable bool `json:"portable,omitempty"`
+	// Log is the log the desktop app writes (applog), as shown; "" for a
+	// magpie writing none (magpie web)
+	Log string `json:"log,omitempty"`
 	// WSL is whether there is WSL to look in for agents (Windows), for
 	// Settings' Detect agents in WSL (#1264)
 	WSL bool `json:"wsl,omitempty"`
@@ -514,6 +521,15 @@ type settingsJSON struct {
 	// its share) out of the config at the last sync: too old for it
 	// (before 0.163.0-alpha.8), or of no known version (codex_async.go)
 	CodexAsyncHeld []agent.CodexReader `json:"codexAsyncHeld,omitempty"`
+	// the keys this machine's Codex config has that Codex reads before
+	// Long conversations (model_context_window,
+	// model_auto_compact_token_limit; agent.CodexCompactHeld), written
+	// as the row names them: "[profiles.p] key = value, ..."
+	CodexCompactKeys string `json:"codexCompactKeys,omitempty"`
+	// the magpie model Codex's config runs, when its own window is no
+	// larger than Long conversations' threshold: Codex compacts it at 90%
+	// of that window (codexWindowUnder)
+	CodexWindow *codexRunWindow `json:"codexWindow,omitempty"`
 	// whether a WorkBuddy (China) account is signed in, and each one's
 	// last daily check-in
 	WorkBuddy         bool                        `json:"workbuddy"`
@@ -639,9 +655,65 @@ type searchFailedJSON struct {
 // it. A var for the tests: the real one asks the user's own system.
 var loginState = autostart.Enabled
 
+// codexRunWindow is a model and the window magpie tells Codex it has.
+type codexRunWindow struct {
+	Model  string `json:"model"`
+	Window int    `json:"window"`
+	// Size is Window as the page writes a window (contextsText): 128K, 1M;
+	// "n" is its slot in the row's words, which take the struct whole
+	Size string `json:"n"`
+}
+
+func tokensSize(n int) string {
+	switch {
+	case n%1_000_000 == 0:
+		return strconv.Itoa(n/1_000_000) + "M"
+	case n%1000 == 0:
+		return strconv.Itoa(n/1000) + "K"
+	}
+	return strconv.Itoa(n)
+}
+
+// codexKeysText names Codex's config keys as the Long conversations row
+// shows them, each with its profile and value.
+func codexKeysText(hs []agent.CodexCompactHold) string {
+	var b []string
+	for _, h := range hs {
+		k := h.Key + " = " + h.Value
+		if h.Profile != "" {
+			k = "[profiles." + h.Profile + "] " + k
+		}
+		b = append(b, k)
+	}
+	return strings.Join(b, ", ")
+}
+
+// codexWindowUnder is model's window when Long conversations' threshold
+// doesn't come below it, so Codex compacts at 90% of the window instead
+// (zgjfjfl on Discord, 10-31: a relay's gpt-6-A at 128K, Long
+// conversations at 544K, compacting near 128K). Under Full window, or
+// with a threshold set on the model or its provider, it is nil: the row
+// says what the user chose. A provider's model is looked up at its
+// provider alone (ServedEntryOf), a group in the catalog, since this is
+// read on every settings read.
+func codexWindowUnder(st settings.Settings, model string) *codexRunWindow {
+	if model == "" || st.FullContext {
+		return nil
+	}
+	e, ok := provider.ServedEntryOf(model)
+	if !ok && strings.HasPrefix(model, provider.GroupPrefix) {
+		e, ok = provider.EntryOf(model)
+	}
+	if !ok || e.Context <= 0 || provider.CompactFor(st, e, provider.GroupFinder()) > 0 || st.Working(e.Context) < e.Context {
+		return nil
+	}
+	return &codexRunWindow{Model: model, Window: e.Context, Size: tokensSize(e.Context)}
+}
+
 func settingsState() settingsJSON {
 	s := settingsJSON{Settings: settings.Load(), Version: Version, Dir: tilde(settings.Dir()), Portable: settings.Portable() != "", Gateway: gateway.URL()}
 	s.AddrEnv = os.Getenv("MAGPIE_ADDR")
+	s.Log = tilde(applog.Current())
 	s.Builtins = builtinsState()
 	s.PanelKeys = panelKeysState()
 	s.JSRoutings = middleware.Routings()
@@ -693,6 +765,8 @@ func settingsState() settingsJSON {
 	s.CodexWarmed, s.ClaudeWarmed = latest(provider.CodexWarmed()), latest(provider.ClaudeWarmed())
 	s.CodexUsers, s.ClaudeUsers = loginUsers("codex"), loginUsers("claude")
 	s.CodexAsyncHeld = agent.CodexAsyncHeld()
+	s.CodexCompactKeys = codexKeysText(agent.CodexCompactHeld(""))
+	s.CodexWindow = codexWindowUnder(s.Settings, agent.CodexModel(""))
 	s.WorkBuddy, s.WorkBuddyCheckins = provider.HasWorkBuddy(), provider.WorkBuddyCheckins()
 	s.Trae, s.TraeCheckins = provider.HasTrae(), provider.TraeCheckins()
 	s.MiniMax, s.MiniMaxCheckins = provider.HasMiniMax(), provider.MiniMaxCheckins()
@@ -1401,6 +1475,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		// used or left is the Usage page's toggle as much as Settings', set on its own
 		in.QuotaLeft = cur.QuotaLeft
 		in.QuotaReads = cur.QuotaReads // set on its own (quota-reads below)
+		in.SearchAll = cur.SearchAll   // set on its own (search-all below)
 		in.UsageOrder = cur.UsageOrder // the Usage page's, dragged there
 		// and what the tray panel's Allowances tab leaves out, set there
 		in.PanelUsageHidden = cur.PanelUsageHidden
@@ -1440,9 +1515,11 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		in.RedactRouteTo = cur.RedactRouteTo
 		in.DesktopSubagentEffort = cur.DesktopSubagentEffort
 		in.ChinaMirror = cur.ChinaMirror // the Plugins page's, set on its own
+		in.NPMRegistry = cur.NPMRegistry // and its npm registry
 		// which Codex accounts spend a reset by themselves, set on the Usage card
 		in.CodexAutoReset = cur.CodexAutoReset
 		in.CodexAutoResetOnly = cur.CodexAutoResetOnly // and at which of the two times
+		in.CodexResetLead = cur.CodexResetLead         // and how early before one expires (codex-reset-lead)
 		// and which of them spend their credits, set there too
 		in.CodexNoCredits = cur.CodexNoCredits
 		// and each Codex account's own daily warm-up (codex-warm-at below)
@@ -1498,10 +1575,11 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		// the cards the menu bar shows, any of them (TrayUsage is only the first),
 		// how often, with their logos or not, beside the bird or not, and
-		// with their Pace numbers or not, with magpie's totals' cost or not
+		// with their Pace numbers or not, with magpie's totals' cost or not, and
+		// which of each subscription's windows
 		if (!slices.Equal(settings.Load().TrayUsages, cur.TrayUsages) || in.TrayUsageEvery != cur.TrayUsageEvery ||
 			in.TrayNoLogos != cur.TrayNoLogos || in.TrayNoBird != cur.TrayNoBird || in.TrayPace != cur.TrayPace ||
-			in.TrayNoCost != cur.TrayNoCost) && onTrayUsage != nil {
+			in.TrayNoCost != cur.TrayNoCost || !maps.EqualFunc(in.TrayWindows, cur.TrayWindows, slices.Equal)) && onTrayUsage != nil {
 			onTrayUsage()
 		}
 		// an alert turned on or moved is looked at now, the Mac asked for its
@@ -1561,6 +1639,24 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		s := settings.Load()
 		s.QuotaReads = in.Reads
+		if err := settings.Save(s); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, settingsState())
+	})
+	// whether magpie searches for a model whose provider searches by itself
+	// too (Settings › Models › Web search)
+	mux.HandleFunc("POST /api/settings/search-all", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			On bool `json:"on"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		s := settings.Load()
+		s.SearchAll = in.On
 		if err := settings.Save(s); err != nil {
 			fail(rw, err)
 			return
@@ -1711,6 +1807,15 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			err = provider.SetCompactAt(*in.At)
 		}
 		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, settingsState())
+	})
+	// takes out of Codex's config the keys it reads before Long
+	// conversations (agent.CodexCompactHeld), on the user's click
+	mux.HandleFunc("POST /api/settings/codex-compact-held/drop", func(rw http.ResponseWriter, r *http.Request) {
+		if err := agent.DropCodexCompactHolds(""); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -1922,6 +2027,20 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			set = func() error { return provider.SetCodexAutoResetCase(in.User, in.When, in.On) }
 		}
 		if err := set(); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, settingsState())
+	})
+	// how long before a Codex reset about to run out unused it is spent,
+	// for every account with "before one expires" on; 0 is the default
+	mux.HandleFunc("POST /api/settings/codex-reset-lead", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Minutes int }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		if err := provider.SetCodexResetLead(in.Minutes); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -2531,6 +2650,20 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		rw.WriteHeader(http.StatusNoContent)
 	})
+	// the app's log folder (applog), from Settings › About's Log row; the
+	// page names no path here either
+	mux.HandleFunc("POST /api/settings/log/reveal", func(rw http.ResponseWriter, r *http.Request) {
+		path := applog.Current()
+		if path == "" {
+			fail(rw, errors.New("this magpie writes no log file"))
+			return
+		}
+		if err := w.OpenFolder(filepath.Dir(path)); err != nil {
+			fail(rw, err)
+			return
+		}
+		rw.WriteHeader(http.StatusNoContent)
+	})
 	// the folder of the reports saved of requests held too long before
 	// routing (gateway.HeldDir), from such a request's row on Routing
 	mux.HandleFunc("POST /api/gateway/held/reveal", func(rw http.ResponseWriter, r *http.Request) {
@@ -2609,7 +2742,7 @@ func held(h http.Handler) http.Handler {
 			defer sessions.Ask()()
 			// and what the read threw away goes back once the page rests
 			defer readingPage()()
-			// and collected under GOGC 25 while it runs: a poll's reads
+			// and collected under GOGC 10 while it runs: a poll's reads
 			// allocated ~330 MB to keep ~105 MB, and at the default 100 the
 			// heap grew to twice what it kept before a collection, ~320 MB
 			// in Activity Monitor during a poll. No memory limit: held as
@@ -2686,6 +2819,8 @@ func state() stateJSON {
 			aj.Typed = a.Typed()
 		}
 		aj.CLIMissing = a.CLIMissing()
+		// as agentCommand makes it, Launch asked once
+		aj.Terminal = runtime.GOOS == "darwin" && a.WSL == "" && (aj.Launch != "" || a.BinPath() != "")
 		if a.Native != nil {
 			native := a.Native.Read()
 			aj.Native = &native
@@ -2712,6 +2847,23 @@ func state() stateJSON {
 type signInOpened struct {
 	provider.SignInState
 	OpenError string `json:"openError,omitempty"`
+	// LinkOnly is a sign-in whose page magpie didn't open, as the user
+	// asked (settings.SignInLinkOnly): the window says to copy its link
+	LinkOnly bool `json:"linkOnly,omitempty"`
+}
+
+// openSignIn opens an account sign-in's page, unless the user keeps those
+// pages to a browser of their own (settings.SignInLinkOnly), and says how
+// it went for signInOpened.
+func openSignIn(w Windows, st provider.SignInState) signInOpened {
+	if settings.Load().SignInLinkOnly {
+		return signInOpened{SignInState: st, LinkOnly: true}
+	}
+	var failed string
+	if w != nil && !st.Opened {
+		failed = openError(w, st.URL)
+	}
+	return signInOpened{SignInState: st, OpenError: failed}
 }
 
 // mcpSignInOpened is signInOpened for a sign-in to an MCP server.
@@ -2998,6 +3150,9 @@ func fail(rw http.ResponseWriter, err error) {
 	var signedIn *provider.SignedInError
 	if errors.As(err, &signedIn) {
 		out["code"], out["agent"], out["user"] = "signed_in", signedIn.Agent, signedIn.User
+		if signedIn.Only {
+			out["code"] = "signed_in_only"
+		}
 	}
 	// a text that isn't a group to import (laincatx on X), said in the
 	// reader's language

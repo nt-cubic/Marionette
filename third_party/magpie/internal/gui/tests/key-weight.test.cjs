@@ -67,6 +67,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await browser.close();
       });
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
       const posts = [];
@@ -103,6 +104,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal((await chip("aaaaaaaaaa").textContent()).trim(), w.a2);
       // still shown: the routing picked stays in the editor's draft
       assert.equal(await chip("bbbbbbbbbb").isVisible(), true);
+      // said once state is read again, after the chips are drawn: wait for it
+      await page.waitForFunction((n) => document.querySelector("#status")?.textContent.trim() == n, w.note).catch(() => {});
       assert.equal((await page.locator("#status").textContent()).trim(), w.note);
 
       if (process.env.ARTIFACT_DIR) await page.locator(".editor .accts").screenshot({ path: path.join(process.env.ARTIFACT_DIR, `${engine}-${lang}-key-weight-rows.png`) });

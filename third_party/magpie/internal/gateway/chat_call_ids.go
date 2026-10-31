@@ -137,3 +137,45 @@ func wholeCallIDs(msg map[string]json.RawMessage) bool {
 	}
 	return changed
 }
+
+// wholeNameless drops the tool calls of a whole reply's message whose
+// function names nothing in a JSON string — no name, null, another kind
+// (#1475) — and reports whether any was dropped.
+func wholeNameless(msg map[string]json.RawMessage) bool {
+	var calls []map[string]json.RawMessage
+	if decodeJSON(msg["tool_calls"], &calls) != nil {
+		return false
+	}
+	var kept []map[string]json.RawMessage
+	for _, c := range calls {
+		var fn map[string]json.RawMessage
+		if decodeJSON(c["function"], &fn) == nil && aName(fn["name"]) {
+			kept = append(kept, c)
+		}
+	}
+	if len(kept) == len(calls) {
+		return false
+	}
+	if kept == nil {
+		delete(msg, "tool_calls")
+		return true
+	}
+	msg["tool_calls"], _ = marshalPlain(kept)
+	return true
+}
+
+// wholeNamedCall says whether a whole reply's message still carries a
+// tool call whose function names itself in a string.
+func wholeNamedCall(msg map[string]json.RawMessage) bool {
+	var calls []map[string]json.RawMessage
+	if decodeJSON(msg["tool_calls"], &calls) != nil {
+		return false
+	}
+	for _, c := range calls {
+		var fn map[string]json.RawMessage
+		if decodeJSON(c["function"], &fn) == nil && aName(fn["name"]) {
+			return true
+		}
+	}
+	return false
+}

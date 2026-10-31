@@ -6,6 +6,7 @@ package tui
 // library.go.
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"math"
@@ -756,9 +757,9 @@ func (m model) viewProviders() string {
 			r.key = "○ switched off"
 		case p.Account != nil && signedOut(p):
 			// every account in use refused, as magpie providers says it
-			r.key = "○ " + p.Account.User + " is signed out"
+			r.key = "○ " + p.AccountShown(p.Account.User) + " is signed out"
 		case p.Account != nil:
-			r.key = "● " + p.Account.User
+			r.key = "● " + p.AccountShown(p.Account.User)
 		case p.IsVertex() && !p.Ready():
 			r.key = "○ needs a project"
 		case p.IsVertex():
@@ -1327,9 +1328,10 @@ func quotaLines(qs []provider.SubscriptionQuota, asked, left bool, width int, no
 			plain += " · " + t
 			styled += sFaint.Render(" · " + t)
 		}
-		if q.User != "" {
-			plain += " · " + q.User
-			styled += sFaint.Render(" · " + q.User)
+		// as the app's card names it: the user's own name, the plugin's, else the account (#4416)
+		if who := cmp.Or(q.Alias, q.User); who != "" {
+			plain += " · " + who
+			styled += sFaint.Render(" · " + who)
 		}
 		return
 	}

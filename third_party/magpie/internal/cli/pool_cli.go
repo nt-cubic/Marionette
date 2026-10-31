@@ -101,8 +101,17 @@ func poolCmd(rest []string) error {
 	ls := provider.Logins(agentID)
 	if accountsSet {
 		// every one named is known before anything changes
-		var order []string
+		var order, users []string
+		for _, l := range ls {
+			users = append(users, l.User)
+		}
 		for _, u := range accounts {
+			// an account by its name or the name the user gave it (#4532)
+			if n, err := provider.AccountByName(p.ID, users, u); err != nil {
+				return err
+			} else if n != "" {
+				u = n
+			}
 			i := slices.IndexFunc(ls, func(l provider.Login) bool { return strings.EqualFold(l.User, u) })
 			if i < 0 {
 				return fmt.Errorf("%s has no account %q", p.Name, u)

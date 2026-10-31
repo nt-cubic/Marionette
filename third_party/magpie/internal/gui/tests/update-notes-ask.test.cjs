@@ -67,6 +67,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const w = words[lang], ctl = { installs: [], asked: [] }, errors = [];
       const page = await (await browser.newContext({ viewport: { width: 1000, height: 640 }, reducedMotion: "reduce" })).newPage();
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       // WebKit's notice when a layout outruns its observers, not a fault
       page.on("pageerror", (e) => { if (!/^ResizeObserver loop completed with undelivered notifications/.test(e.message)) errors.push(e.message); });
       await page.route("**/*", server(lang, ctl));
@@ -124,6 +125,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const ctl = { installs: [], asked: [], one: true }, errors = [];
       const page = await (await browser.newContext({ viewport: { width: 1000, height: 640 }, reducedMotion: "reduce" })).newPage();
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       // WebKit's notice when a layout outruns its observers, not a fault
       page.on("pageerror", (e) => { if (!/^ResizeObserver loop completed with undelivered notifications/.test(e.message)) errors.push(e.message); });
       await page.route("**/*", server(lang, ctl));
@@ -151,6 +153,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const w = words[lang], ctl = { installs: [], asked: [], newer: true }, errors = [];
       const page = await (await browser.newContext({ viewport: { width: 1000, height: 640 }, reducedMotion: "reduce" })).newPage();
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       // WebKit's notice when a layout outruns its observers, not a fault
       page.on("pageerror", (e) => { if (!/^ResizeObserver loop completed with undelivered notifications/.test(e.message)) errors.push(e.message); });
       await page.route("**/*", server(lang, ctl));

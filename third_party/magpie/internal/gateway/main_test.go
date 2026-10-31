@@ -29,6 +29,8 @@ func TestMain(m *testing.M) {
 	serveMiddleware()
 	searchOn = gwtool.Serve(gwtool.WebSearch)
 	limitsOn = gwbudget.Limit(budget.Limiter{})
+	// the test binary is no magpie: it runs no claude-tui-helper
+	claudeTUIRuns = false
 	code, err := isolatedTests(m)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

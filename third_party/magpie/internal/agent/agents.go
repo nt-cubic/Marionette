@@ -70,9 +70,17 @@ func init() {
 
 // codexAppRoute is where Codex's config sends it, as the app-server reads
 // it at its start: the keys magpie writes for that, never one the Codex
-// app writes itself (model); and whether magpie is Codex's provider for
-// its used-up ChatGPT account (AppOut). Not known when Codex's config
-// can't be read.
+// app writes itself (model, model_reasoning_effort); and whether magpie
+// is Codex's provider for its used-up ChatGPT account (AppOut). Not known
+// when Codex's config can't be read.
+//
+// The model list (model_catalog_json, the file and what it holds) is not
+// in it. A change of route ends the app's app-server, and the ChatGPT app
+// takes that as a crash and relaunches. The catalog follows magpie's names
+// and the effort new sessions start at, which the app saves on each pick,
+// so a route that hashed it ended the app every few minutes
+// (indekkusu141209 on X, #4550). A new list is read at the app's next
+// launch, and the Agents row offers a Restart for it (StaleCopies).
 func codexAppRoute() (route string, out, known bool) {
 	// asked every 3s for as long as magpie runs: the config looked at once
 	// for its keys, not once for each (#1665)
@@ -84,7 +92,7 @@ func codexAppRoute() (route string, out, known bool) {
 	}
 	out = a.AppOut != nil && a.AppOut()
 	var b strings.Builder
-	for _, k := range []string{"model_provider", "openai_base_url", "model_catalog_json"} {
+	for _, k := range []string{"model_provider", "openai_base_url"} {
 		v, _ := edit.GetTOMLTop(a.Path, k)
 		b.WriteString(k + "=" + v + "\n")
 	}
@@ -94,15 +102,6 @@ func codexAppRoute() (route string, out, known bool) {
 	// has its ChatGPT account at all (openaiAuth in codex.go): read as the
 	// app-server starts, like the rest
 	b.WriteString("magpie.requires_openai_auth=" + t["requires_openai_auth"] + "\n")
-	// and the list in that catalog, which the app-server also reads only
-	// as it starts: a provider or group renamed, or a model added, left
-	// the app on the names and models it started with (lucis0116 on X)
-	if c, _ := edit.GetTOMLTop(a.Path, "model_catalog_json"); c != "" {
-		if !filepath.IsAbs(c) {
-			c = filepath.Join(filepath.Dir(a.Path), c)
-		}
-		b.WriteString("catalog=" + codexCatalogTag(c) + "\n")
-	}
 	if out {
 		b.WriteString("out\n")
 	}
@@ -150,6 +149,11 @@ var others = []*Agent{
 	// ("pi-desktop/0.1.0"), it is told apart from Pi by that name, which
 	// Pi's "pi-" would take otherwise (#1966, dgmico)
 	{ID: "pi-desktop", Name: "PI-Desktop", Icon: "pi", UA: []string{"pi-desktop"}},
+	// Kimi Code Desktop runs Kimi Code's engine on ~/.kimi-code, so it
+	// reaches magpie through Kimi Code's config, under a client name of
+	// its own ("kimi-code-desktop/…", jiabubu on Discord). Its icon is the
+	// app's own, from KimiCode-1.2.1-win-x64.exe's build/icon.ico.
+	{ID: "kimi-code-desktop", Name: "Kimi Code Desktop", Icon: "kimi-code-desktop", UA: []string{"kimi-code-desktop"}},
 	// Raft (slock's raft-computer) runs Pi in each of its agents' folders;
 	// Sessions lists those as Raft's (internal/sessions/raft.go), while
 	// their requests say "pi (…)" and are Pi's
@@ -1569,6 +1573,11 @@ func copilot(home string) *Agent {
 		// folder says nothing of the CLI: its settings.json or the copilot
 		// command does (#1495)
 		dirShared: true,
+		// VS Code 1.143 ships a copilot launcher of its own in
+		// bin\copilot-shim in its install folder, which is on the user's
+		// PATH, and running it only asks for the CLI to be installed
+		// (#3269): a command of the editor's is not the CLI
+		binNot: editorLauncher,
 		Fields: []Field{{
 			Key: "model", Label: "model",
 			Get: jsonGet(path, "model"),
@@ -1601,6 +1610,40 @@ func copilot(home string) *Agent {
 			},
 		}},
 	}
+}
+
+// editorLauncher reports whether bin is a launcher an editor ships beside
+// itself, not the CLI it is named after (#3269): an editor's install is
+// told by the product.json it keeps beside its program, as
+// vscodeCodeBinary tells one. VS Code 1.143 puts its copilot launcher in
+// <install>\bin\copilot-shim, with <install>\resources\app\product.json
+// in a Windows or Linux install; a Mac's app keeps bin in
+// Contents/Resources/app, beside product.json. So only bin's own folder
+// and the two above it are looked in, never further up, where a folder of
+// the user's (a home, a checkout of an editor's source) may hold a
+// product.json of its own. A link on PATH is judged where it points.
+// A copilot a user installed itself, in npm's global folder, Homebrew's,
+// winget's Links or scoop's shims, is still the CLI.
+func editorLauncher(bin string) bool {
+	if real, err := filepath.EvalSymlinks(bin); err == nil {
+		bin = real
+	}
+	dir, err := filepath.Abs(filepath.Dir(bin))
+	if err != nil {
+		return false
+	}
+	for range 3 {
+		if isFile(filepath.Join(dir, "product.json")) ||
+			isFile(filepath.Join(dir, "resources", "app", "product.json")) {
+			return true
+		}
+		up := filepath.Dir(dir)
+		if up == dir {
+			break
+		}
+		dir = up
+	}
+	return false
 }
 
 func crush(home, cfg string) *Agent {

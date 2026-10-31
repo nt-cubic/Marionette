@@ -69,6 +69,14 @@ type Seat struct {
 	// another provider's, or another unit.
 	Left   float64
 	LeftIn string
+	// Priced: what its model costs on it now is known. Cost is then what
+	// a million tokens in and a million out cost at the request's time —
+	// the user's own price, else the list's, at its provider's rate and
+	// rate window, doubled in its vendor's peak hours (catalog.Price.In) —
+	// and CacheCost a million read from the cache. Its model free there
+	// costs 0. Cheapest goes by them.
+	Priced          bool
+	Cost, CacheCost float64
 }
 
 // Strategy orders a pool.
@@ -91,6 +99,11 @@ type Strategy struct {
 	// BySpeed: it weighs by TTFT and TPS, so the gateway reads each seat's
 	// recent speed, and the routing trace then shows it.
 	BySpeed bool
+	// ByPrice: it weighs by Priced, Cost and CacheCost, so the gateway
+	// prices each seat's model at the request's time, and the routing
+	// trace then shows it. Only when set: pricing reads each provider's
+	// model list and the user's prices.
+	ByPrice bool
 }
 
 var reg = struct {

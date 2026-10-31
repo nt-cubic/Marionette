@@ -23,11 +23,12 @@ const xaiUndecryptable = "Could not decrypt the provided encrypted_content. Ensu
 // sealer is a Grok-like Responses upstream: it seals its reasoning as
 // "sealed-by-<name>" and can read only its own.
 type sealer struct {
-	name   string
-	down   bool // answering 429, for the conversation to move on
-	stream bool // refusing in the stream (response.failed), not as a 400
-	mu     sync.Mutex
-	got    [][]string // the sealed reasoning each request carried
+	name    string
+	down    bool   // answering 429, for the conversation to move on
+	stream  bool   // refusing in the stream (response.failed), not as a 400
+	errJSON string // refusing as a 400 with this body, not xAI's words
+	mu      sync.Mutex
+	got     [][]string // the sealed reasoning each request carried
 }
 
 func (s *sealer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -56,6 +57,10 @@ func (s *sealer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case foreign && !s.stream:
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(400)
+		if s.errJSON != "" {
+			io.WriteString(w, s.errJSON)
+			return
+		}
 		io.WriteString(w, `{"code":"Client specified an invalid argument","error":"`+xaiUndecryptable+`"}`)
 		return
 	}
@@ -166,6 +171,7 @@ func TestForeignReasoningWords(t *testing.T) {
 		xaiUndecryptable,
 		`{"error":{"message":"The encrypted content for item rs_1 could not be verified.","code":"invalid_encrypted_content"}}`,
 		"Grok (SuperGrok): Could not decrypt the provided encrypted_content.",
+		`{"error":{"message":"invalid encrypted summary","type":"invalid_request_error","param":null,"code":"validation_error"}}`,
 	} {
 		if !foreignReasoning.MatchString(m) {
 			t.Errorf("not matched: %s", m)
@@ -319,5 +325,62 @@ func TestForeignSealGrokToCodexAccount(t *testing.T) {
 			t.Fatalf("stream=%v openai was then sent %q", inStream, got)
 		}
 		g.sent()
+	}
+}
+
+// azureSummary is what a relay in front of an Azure OpenAI deployment
+// passes back for reasoning another backend sealed (snowshadow): it says
+// "invalid encrypted summary", not invalid_encrypted_content, and names
+// no item.
+const azureSummary = `{"error":{"message":"invalid encrypted summary","type":"invalid_request_error","param":null,"code":"validation_error"}}`
+
+// A Codex thread the ChatGPT backend served, resumed on a relay in front
+// of an Azure deployment (snowshadow): the deployment can't read the
+// reasoning the ChatGPT backend sealed and refuses it as "invalid
+// encrypted summary". It's asked again without it, and the next turn
+// leaves it out up front, instead of 400ing on every turn.
+func TestForeignSealAzureSummary(t *testing.T) {
+	fresh(t)
+	refusedSeals.Lock()
+	refusedSeals.m = map[string]sealsRefused{}
+	refusedSeals.Unlock()
+	az := &sealer{name: "azure", errJSON: azureSummary}
+	up := httptest.NewServer(az)
+	t.Cleanup(up.Close)
+	if err := provider.Save(provider.Provider{ID: "az1", Name: "Azure", Key: "k", Models: []string{"gpt-6.1-sol"}, Responses: up.URL + "/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	turn := func(items ...string) (int, string) {
+		t.Helper()
+		in := `{"type":"message","role":"user","content":[{"type":"input_text","text":"count the lines"}]}`
+		for _, it := range items {
+			in += "," + it
+		}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{"model":"az1/gpt-6.1-sol","stream":true,"input":[`+in+`]}`))
+		req.Header.Set("session_id", "thread-azure")
+		s.Handler().ServeHTTP(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+	sealed := `{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"sealed-by-chatgpt"}`
+	call := func(id string) string {
+		return `{"type":"function_call","call_id":"` + id + `","name":"shell","arguments":"{}"},{"type":"function_call_output","call_id":"` + id + `","output":"ok"}`
+	}
+
+	// the seal the ChatGPT backend wrote is refused as an invalid
+	// encrypted summary, and it's asked again without it
+	if code, body := turn(sealed, call("c1")); code != 200 || !strings.Contains(body, "from azure") {
+		t.Fatalf("first: %d %s", code, body)
+	}
+	if got := az.sent(); len(got) != 2 || len(got[0]) != 1 || len(got[1]) != 0 {
+		t.Fatalf("first turn sent %q, want the seal once, then none", got)
+	}
+	// the next turn doesn't hit it again: it's left out up front
+	if code, body := turn(sealed, call("c1")); code != 200 || !strings.Contains(body, "from azure") {
+		t.Fatalf("next turn: %d %s", code, body)
+	}
+	if got := az.sent(); len(got) != 1 || len(got[0]) != 0 {
+		t.Fatalf("next turn sent %q, want one request without the seal", got)
 	}
 }

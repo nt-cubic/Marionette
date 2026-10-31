@@ -79,15 +79,27 @@ func allows(who access.Identity, ids ...string) bool {
 	return false
 }
 
-// modelAllowed says the key may use provider p's model.
+// modelAllowed says the key may use provider p's model. A model the user lists by an id of their own (provider.SetModelID) is
+// the one model by either id, so a key held to one may use the other:
+// one written before the id was given, or an agent's old ref to the
+// provider's own id.
 func modelAllowed(who access.Identity, p provider.Provider, model string) bool {
-	return allows(who, p.ID+"/"+model)
+	if allows(who, p.ID+"/"+model) {
+		return true
+	}
+	if own := p.OwnModelID(model); own != model {
+		return allows(who, p.ID+"/"+own)
+	}
+	if local := p.ListedModelID(model); local != model {
+		return allows(who, p.ID+"/"+local)
+	}
+	return false
 }
 
 // memberAllowed says the key may use a routing group's member: the model,
 // or a group it is reached through that the key names.
 func memberAllowed(who access.Identity, m provider.Member) bool {
-	return allows(who, append([]string{m.Provider.ID + "/" + m.Model}, m.Path...)...)
+	return modelAllowed(who, m.Provider, m.Model) || len(m.Path) > 0 && allows(who, m.Path...)
 }
 
 // groupNamed says the key names the routing group g itself.

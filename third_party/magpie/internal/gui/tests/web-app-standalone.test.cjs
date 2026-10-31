@@ -42,6 +42,7 @@ async function open(browser, opts, web) {
 }
 async function load(page, web) {
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(60000);
   page.errors = [];
   page.on("pageerror", (e) => page.errors.push(e.message));
   await page.route("**/*", serve(web));

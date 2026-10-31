@@ -15,6 +15,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       t.after(() => browser.close());
       const page = await (await browser.newContext({ viewport: { width: 1000, height: 600 }, reducedMotion: "reduce" })).newPage();
       page.setDefaultTimeout(6000);
+      page.setDefaultNavigationTimeout(60000);
       const events = [], errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", fixture(lang, "light", events, { lan: true, keyHolds: { server: { accounts: ["relay/me@example.com"] }, laptop: { models: ["relay/gone", "openai/gpt-5"], accounts: ["relay/nobody@example.com"] } } }));

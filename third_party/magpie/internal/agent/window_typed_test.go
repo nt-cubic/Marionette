@@ -9,6 +9,7 @@ import (
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // A window the user typed is the one Codex and Claude Code run to (#1809,
@@ -236,4 +237,65 @@ func TestLargestMemberTypedWindow(t *testing.T) {
 			t.Errorf("Claude Desktop: %s (%s) compacts at %q; want %q", id, ids[id], v, want)
 		}
 	}
+}
+
+// young02036 on Discord: a routing group of a 500K GPT and a 1M Claude,
+// following its smallest member, is told 500K by every agent's list, but
+// Claude Code beside a Claude main model was told no window at all, so
+// the group picked in its /model ran at Claude Code's own 200K (2.1.314,
+// /context "200k"), and so did the GPT. With nothing told for the main,
+// every model /model offers counts as a tier's does: Claude Code is told
+// the largest window, and each model below it runs to its own, at the
+// working window or, under Full window, its whole window.
+func TestPickerModelsTheirOwnWindow(t *testing.T) {
+	_, path := desktopWindowSandbox(t)
+	home := filepath.Dir(filepath.Dir(path))
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(provider.Save(provider.Provider{ID: "w", Name: "W", Key: "k", Chat: "http://127.0.0.1:1/v1", Models: []string{"gpt-6.1-sol"}}))
+	must(catalog.SaveLive("w", "http://127.0.0.1:1/v1", []catalog.Model{{ID: "gpt-6.1-sol", Context: 500000}}))
+	must(provider.Save(provider.Provider{ID: "a", Name: "A", Key: "k", Chat: "http://127.0.0.1:1/v1", Models: []string{"claude-opus-5-5"}}))
+	must(catalog.SaveLive("a", "http://127.0.0.1:1/v1", []catalog.Model{{ID: "claude-opus-5-5", Context: 1000000}}))
+	must(provider.SaveGroup(provider.Group{ID: "mix", Name: "Mix", Members: []string{"w/gpt-6.1-sol", "a/claude-opus-5-5"}, Context: provider.ContextSmallest}))
+
+	a := claude(home)
+	env := func(k string) string { v, _ := edit.GetJSON(path, "env."+k); return v }
+	budget := func(id string) string { v, _ := edit.GetJSON(path, budgetPath(id)); return v }
+	check := func(name string, want map[string]string) {
+		t.Helper()
+		// glm is 1M, marked [1m] in /model: the window told
+		if w := env(claudeContextEnv); w != "1000000" {
+			t.Errorf("%s: Claude Code is told %q; want the largest, 1000000", name, w)
+		}
+		if c := env(claudeCompactEnv); c != "" {
+			t.Errorf("%s: %s is %q, which would hold every model to it", name, claudeCompactEnv, c)
+		}
+		for id, w := range want {
+			if v := budget(id); v != w {
+				t.Errorf("%s: %s in /model compacts at %q; want %q", name, id, v, w)
+			}
+		}
+	}
+	must(a.Field("model").Set("a/claude-opus-5-5"))
+	check("a Claude main", map[string]string{"group/mix": "272000", "w/gpt-6.1-sol": "272000", "v/grok": "256000", "v/gpt": "272000"})
+	// beside a main whose window is told, a /model pick runs at that one
+	// value, as before
+	must(a.Field("model").Set("v/grok"))
+	if w := env(claudeContextEnv); w != "256000" {
+		t.Errorf("a 256K main: Claude Code is told %q; want its own 256000", w)
+	}
+	if v := budget("group/mix"); v != "" {
+		t.Errorf("a 256K main: group/mix has its own entry %q; want none", v)
+	}
+
+	s := settings.Load()
+	s.FullContext = true
+	must(settings.Save(s))
+	SyncCatalog()
+	must(a.Field("model").Set("a/claude-opus-5-5"))
+	check("Full window", map[string]string{"group/mix": "500000", "w/gpt-6.1-sol": "500000", "v/grok": "256000", "v/gpt": "272000"})
 }

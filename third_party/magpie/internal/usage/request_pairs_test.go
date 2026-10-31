@@ -49,6 +49,7 @@ func TestRequestPairsReusedAcrossPages(t *testing.T) {
 // the effort read after it paired them all over (#3493). It is the effort
 // a pairing of its own gives.
 func TestCodexEffortReusesPagePairing(t *testing.T) {
+	pairAtOnce(t)
 	pageHome(t)
 	now := holdClock(t, time.Date(2026, 9, 30, 12, 0, 0, 0, time.Local))
 	dir := filepath.Join(sessions.CodexDir(), "sessions", "2026", "09", "30")

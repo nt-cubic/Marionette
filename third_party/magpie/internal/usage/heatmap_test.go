@@ -198,6 +198,7 @@ func TestHeatmapAfterACallAddsUpOnlyWhatChanged(t *testing.T) {
 // session file of old and new calls, and the pairing kept no longer than
 // heatOldFresh, or once a settled file changes.
 func TestHeatmapAfterACallPairsOnlyTheLastDays(t *testing.T) {
+	pairAtOnce(t)
 	pageHome(t)
 	now := holdClock(t, time.Date(2026, 9, 30, 12, 0, 0, 0, time.Local))
 	cut := time.Date(2026, 9, 28, 0, 0, 0, 0, time.Local)
@@ -332,6 +333,7 @@ func TestHeatmapAfterACallPairsOnlyTheLastDays(t *testing.T) {
 // the whole history's pairing was the cold start's peak. A settled file
 // changed since, or another filter, pairs every chunk again.
 func TestHeatmapSettledDaysFromDisk(t *testing.T) {
+	pairAtOnce(t)
 	pageHome(t)
 	now := holdClock(t, time.Date(2026, 9, 30, 12, 0, 0, 0, time.Local))
 	write := func(id string, at time.Time, input int) string {

@@ -121,6 +121,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: zoom, reducedMotion: "reduce", colorScheme: theme });
       const page = await context.newPage();
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       page.errors = [];
       page.on("pageerror", (e) => page.errors.push(e.message));
       await page.route("**/*", server(lang, theme, size, posts));

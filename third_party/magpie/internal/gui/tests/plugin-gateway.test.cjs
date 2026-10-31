@@ -34,6 +34,7 @@ for (const engine of ["chromium", "webkit"]) {
       await t.test(lang, async () => {
         const page = await browser.newPage({viewport:{width:980,height:820}});
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         const posted = [], errors = [];
         const state = {bun:true, bunVersion:"1.4.3", plugins:[{
           spec:SPEC, providers:[], moved:[], isGateway:true, gatewayOnly:true,

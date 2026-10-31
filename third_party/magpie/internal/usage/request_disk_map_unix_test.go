@@ -251,3 +251,31 @@ func TestArchiveSpillFailedMadeAgain(t *testing.T) {
 		t.Errorf("spill left: %v", err)
 	}
 }
+
+// The log's full blocks a start reads from log-v1.bin are of the file's
+// pages too, not of the heap (#2278).
+func TestLogDiskBlocksMapped(t *testing.T) {
+	pageHome(t)
+	settleLogClock(t)
+	t.Cleanup(restartLog)
+	restartLog()
+	logLines(t, 0, 2*logBlockRows+300)
+	readLogSnapshot()
+	if _, err := os.Stat(logDiskPath()); err != nil {
+		t.Fatalf("the full blocks weren't kept: %v", err)
+	}
+	restartLog()
+	s := readLogSnapshot()
+	if len(s.blocks) < 2 {
+		t.Fatalf("%d blocks", len(s.blocks))
+	}
+	for i, c := range s.blocks[:2] {
+		if c.mapped == nil {
+			t.Fatalf("block %d: read from the file into the heap", i)
+		}
+		at, start := uintptr(unsafe.Pointer(unsafe.SliceData(c.Archive))), uintptr(unsafe.Pointer(unsafe.SliceData(c.mapped.data)))
+		if at < start || at+uintptr(len(c.Archive)) > start+uintptr(len(c.mapped.data)) {
+			t.Fatalf("block %d: archive outside the mapping", i)
+		}
+	}
+}

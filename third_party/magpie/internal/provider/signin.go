@@ -915,11 +915,26 @@ func addLogin(l savedLogin) (using bool, err error) {
 		live.Seen = l.Seen
 		ls = upsertLogin(ls, live)
 	}
+	// signed in again to an account Codex keeps in another of its folders
+	// (CODEX_HOME=…, charliepu on Discord): the new tokens go there, where
+	// Codex and magpie both read it, or the next look would read the old
+	// ones back over them
+	held := ""
+	if l.Agent == "codex" && !using {
+		held = codexHeldFolder(ls, l)
+		l.Home = held
+	}
 	// a second account is in use beside the first straight away, as a
 	// second key is: it takes over when the first runs out
 	l.On = !using
 	if err := writeLogins(upsertLogin(ls, l)); err != nil {
 		return false, err
+	}
+	if held != "" {
+		if err := saveCodexLogin(held, l.Auth); err != nil {
+			return false, err
+		}
+		forgetCodexSignInGone(held)
 	}
 	if using {
 		switch l.Agent {
@@ -941,6 +956,20 @@ func addLogin(l savedLogin) (using bool, err error) {
 	loginsSeenAt.Store(0)
 	forgetAccountCaches()
 	return using, nil
+}
+
+// codexHeldFolder is the other Codex folder that holds l's account now,
+// as saved in ls (Home, codexHomeLogins): "" when none does.
+func codexHeldFolder(ls []savedLogin, l savedLogin) string {
+	for _, x := range ls {
+		if x.Agent != "codex" || x.Home == "" || !sameLogin(x, l) {
+			continue
+		}
+		if in, ok := codexLoginIn(x.Home); ok && sameLogin(in, l) {
+			return x.Home
+		}
+	}
+	return ""
 }
 
 // signInPage is what the browser shows at the end: magpie's, in its own

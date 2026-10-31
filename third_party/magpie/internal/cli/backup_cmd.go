@@ -65,6 +65,9 @@ func backupCmd(args []string) error {
 		green.Render("saved"), file, len(b.Providers), what, len(b.Profiles), len(b.Agents))
 	if l := b.Library; l != nil {
 		fmt.Printf("; library: %d MCP servers, %d skills", len(l.MCP), len(l.Skills))
+		if l.Subagents != nil && len(*l.Subagents) > 0 {
+			fmt.Printf(", %d subagents", len(*l.Subagents))
+		}
 	}
 	fmt.Println()
 	fmt.Println(muted.Render("Subscriptions are not in it: sign in to them on the other machine. Keep the passphrase: without it the file can't be opened."))

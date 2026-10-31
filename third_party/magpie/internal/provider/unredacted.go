@@ -1,33 +1,46 @@
 package provider
 
-import "net/url"
+import (
+	"net"
 
-// SkipsRedaction says requests to p go unmasked: the user set Unredacted,
-// and every address p has is on this machine or the local network. One
-// edited to a vendor's afterwards is masked again. A signed-in account, a
-// plugin's provider and another magpie are always masked: each reaches a
-// vendor.
+	"github.com/yetone/magpie/internal/netproxy"
+)
+
+// SkipsRedaction says requests to p go unmasked: the user set Unredacted
+// ("Send requests unmasked") and p has somewhere they go. It is the user's
+// word for each provider whatever the address (AcMilan on Discord), a
+// subscription's and a plugin's too (isee1_1 on Discord: a plugin's
+// provider never had the switch): the editor cautions while it is on for
+// one not on this computer or the local network, which a signed-in
+// account's or a plugin's vendor never is, and nothing here looks one up.
+// Another magpie is always masked: it masks on its own side, and what it
+// is sent goes on to its vendors.
 func (p Provider) SkipsRedaction() bool {
-	if !p.Unredacted || p.Account != nil || p.IsRemoteMagpie() {
+	if !p.Unredacted || p.IsRemoteMagpie() {
 		return false
 	}
-	return LocalAddresses(p.Chat, p.Responses, p.Anthropic, p.Gemini, p.Decide)
+	if p.Account != nil {
+		return true // the agent's sign-in or a plugin's: its vendor is where it goes
+	}
+	for _, b := range []string{p.Chat, p.Responses, p.Anthropic, p.Gemini, p.Decide} {
+		if b != "" {
+			return true
+		}
+	}
+	return false
 }
 
-// LocalAddresses says every non-empty base URL among bases is on this
-// machine or the local network (localhost, *.local, a loopback or private
-// IP), and there is at least one.
-func LocalAddresses(bases ...string) bool {
-	n := 0
-	for _, b := range bases {
-		if b == "" {
-			continue
-		}
-		u, err := url.Parse(b)
-		if err != nil || u.Host == "" || !local(u.Hostname()) {
-			return false
-		}
-		n++
+// LocalHost says host is on this machine or the local network: localhost,
+// a .local name, a loopback, private or link-local IP, or a name every
+// address of which is one (netproxy.LocalName, looked up now and kept a
+// minute; one that doesn't resolve isn't). Only the editor's caution asks
+// it (/api/local-hosts), never a request.
+func LocalHost(host string) bool {
+	if local(host) {
+		return true
 	}
-	return n > 0
+	if ip := net.ParseIP(host); ip != nil {
+		return netproxy.LocalIP(ip)
+	}
+	return netproxy.LocalName(host)
 }

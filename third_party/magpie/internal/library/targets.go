@@ -917,9 +917,10 @@ func Takes(q, kind string) (string, error) {
 	t := targetOf(a)
 	var has bool
 	if t == nil && isAsleep(a) {
-		// one magpie saw it give MCP servers or skills a place to is
-		// recorded, and given them when the distro next runs (Woken)
-		if sh := shapeOf(a); sh != nil && (kind == "mcp" && sh.MCP != "" || kind == "skills" && sh.Skills != "") {
+		// one magpie saw it give instructions, MCP servers or skills a
+		// place to is recorded, and given them when the distro next runs
+		// (Woken)
+		if sh := shapeOf(a); sh != nil && (kind == "instructions" && sh.Instructions != "" || kind == "mcp" && sh.MCP != "" || kind == "skills" && sh.Skills != "") {
 			return a.ID, nil
 		}
 		return "", fmt.Errorf("WSL %s isn't running: start it, and %s can be given %s", a.WSL, a.Name, what)

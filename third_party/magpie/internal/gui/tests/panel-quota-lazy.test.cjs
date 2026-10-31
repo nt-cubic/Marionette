@@ -46,6 +46,7 @@ async function open(t, engine, lang, width) {
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width, height: 640 }, reducedMotion: "reduce" });
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(60000);
   let release;
   const data = { quotas: fixtures(), gets: 0, states: 0, history: new Promise(r => { release = r; }) };
   const errors = [];

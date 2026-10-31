@@ -80,3 +80,14 @@ func webViewDefault(exe string) string {
 	}
 	return filepath.Join(a, filepath.Base(exe))
 }
+
+// hide gives p the hidden attribute, which Explorer leaves out of view.
+func hide(p string) {
+	u, err := windows.UTF16PtrFromString(p)
+	if err != nil {
+		return
+	}
+	if a, err := windows.GetFileAttributes(u); err == nil {
+		windows.SetFileAttributes(u, a|windows.FILE_ATTRIBUTE_HIDDEN)
+	}
+}

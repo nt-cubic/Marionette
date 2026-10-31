@@ -294,13 +294,13 @@ func (b *blockPricer) priceBlock(packed *rowChunk) (*rowChunk, *[]packedRow) {
 			id := c.Strings[raw]
 			to = renamedTo{timed: b.renames.Timed(id)}
 			if !to.timed {
-				shown, own := b.renames.Both(id, p.Time)
+				shown, own := b.renames.Both(id, p.Time())
 				to.to, to.own = intern(shown, raw), intern(own, raw)
 			}
 			provs[raw] = to
 		}
 		if to.timed {
-			shown, own := b.renames.Both(c.Strings[raw], p.Time)
+			shown, own := b.renames.Both(c.Strings[raw], p.Time())
 			to.to, to.own = intern(shown, raw), intern(own, raw)
 		}
 		sk := [3]uint32{p.Shape, to.to, to.own}
@@ -336,7 +336,7 @@ func (b *blockPricer) priceBlock(packed *rowChunk) (*rowChunk, *[]packedRow) {
 		p.Cost = 0
 		if got.price != nil && p.Tokens[0]+p.Tokens[1] > 0 {
 			p.Flags |= 1
-			p.Cost = atWindow(got.price, got.windows, p.Time).In(p.Time).CostSplit(int(p.Tokens[0]), int(p.Tokens[1]), int(p.Tokens[2]), int(p.Tokens[3]), int(p.Tokens[5]))
+			p.Cost = atWindow(got.price, got.windows, p.Time()).In(p.Time()).CostSplit(int(p.Tokens[0]), int(p.Tokens[1]), int(p.Tokens[2]), int(p.Tokens[3]), int(p.Tokens[5]))
 		}
 	}
 	return &c, pooled

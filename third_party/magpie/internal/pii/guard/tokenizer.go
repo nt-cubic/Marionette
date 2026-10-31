@@ -241,10 +241,14 @@ func (t *tokenizer) normalize(text string, base int) []nchar {
 	out := make([]nchar, 0, len(text))
 	add := func(part string, at int, to string) {
 		// the first characters of to are the first of part's, in turn;
-		// any more are put after the last
+		// any more are put after the last. Step by the decoded width: a
+		// malformed byte comes out as RuneError but takes up one byte,
+		// not utf8.RuneLen(RuneError)'s three.
 		var orig [][2]int
-		for i, r := range part {
-			orig = append(orig, [2]int{base + at + i, base + at + i + utf8.RuneLen(r)})
+		for i := 0; i < len(part); {
+			_, size := utf8.DecodeRuneInString(part[i:])
+			orig = append(orig, [2]int{base + at + i, base + at + i + size})
+			i += size
 		}
 		k := 0
 		for _, r := range to {
@@ -262,13 +266,15 @@ func (t *tokenizer) normalize(text string, base int) []nchar {
 				continue
 			}
 		}
-		for i, r := range gr {
-			part := gr[i : i+utf8.RuneLen(r)]
+		for i := 0; i < len(gr); {
+			r, size := utf8.DecodeRuneInString(gr[i:])
+			part := gr[i : i+size]
 			if to, ok := t.transform(part); ok {
 				add(part, at+i, to)
 			} else {
 				out = append(out, nchar{r, base + at + i, base + at + i + len(part)})
 			}
+			i += size
 		}
 	}
 	return out

@@ -174,7 +174,7 @@ code { font: var(--code-style, normal) var(--code-weight, 400) 11.5px var(--code
    they read a size bigger than a line logo beside them, so they are drawn at
    the size Alma's and Cindy's tiles have of their own. icon-tile.test.cjs
    measures every file in icons/ and keeps this list whole. */
-.ic:is([data-icon="aihubmix-color"], [data-icon="atomcode"], [data-icon="cherryin-color"], [data-icon="codebuddy-color"], [data-icon="codex-color"], [data-icon="crush"], [data-icon="geminicli-color"], [data-icon="hanako"], [data-icon="hunyuan-color"], [data-icon="kilo"], [data-icon="kiro-color"], [data-icon="lody"], [data-icon="mistermorph-color"], [data-icon="mlx-serve"], [data-icon="monica-color"], [data-icon="penguin-color"], [data-icon="phala-color"], [data-icon="pipellm-color"], [data-icon="qoder"], [data-icon="snow"], [data-icon="targon-color"], [data-icon="typesafe"], [data-icon="workbuddy-color"], [data-icon="yuanbao-color"], [data-icon="zcode"], [data-icon="zoo-code"]) > * { width: 82%; height: 82%; }
+.ic:is([data-icon="aihubmix-color"], [data-icon="atomcode"], [data-icon="cherryin-color"], [data-icon="codebuddy-color"], [data-icon="codex-color"], [data-icon="crush"], [data-icon="geminicli-color"], [data-icon="hanako"], [data-icon="hunyuan-color"], [data-icon="kilo"], [data-icon="kimi-code-desktop"], [data-icon="kiro-color"], [data-icon="lody"], [data-icon="mistermorph-color"], [data-icon="mlx-serve"], [data-icon="monica-color"], [data-icon="penguin-color"], [data-icon="phala-color"], [data-icon="pipellm-color"], [data-icon="qoder"], [data-icon="snow"], [data-icon="targon-color"], [data-icon="typesafe"], [data-icon="workbuddy-color"], [data-icon="yuanbao-color"], [data-icon="zcode"], [data-icon="zoo-code"]) > * { width: 82%; height: 82%; }
 .ic.generic { color: var(--muted); }
 /* maskSpan's shelf: a hidden user of every mask picture loaded, so a logo drawn again paints at once (#1847) */
 .mask-shelf { position: fixed; top: 0; left: 0; width: 0; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
@@ -433,6 +433,25 @@ body.side-nav #nav button.has-dot::after { top: 50%; right: 10px; margin-top: -3
    before the selection slides there */
 .nav-s:hover:not(.cur) { color: var(--fg); }
 .nav-s.cur { color: var(--fg); font-weight: 500; }
+/* the row under the pointer is lit as by a torch (navlamp.js), a page's
+   row and a sub-list's alike: --lx is the pointer's place in the word, --si
+   how lit the row is, --lo the row's own ink. Its heart is a step past the
+   text's ink (--fg taken to white in dark, black in light), the rest of the
+   row 15% of the way to it, and the plain hover above stands down. Where
+   color-mix is missing (Safari 15) the plain hover stays. */
+@supports (color: color-mix(in oklab, red, blue)) {
+  .navlamp .nav-s:hover:not(.cur) { color: var(--ctl-fg); }
+  .navlamp body.side-nav :is(#nav button[data-view], #prefs):hover:not(.on) { color: var(--fg-2); }
+  .navlamp body.side-nav :is(#nav button[data-view], #prefs) > span { --lo: var(--fg-2); }
+  :is(.nav-s, #nav button, #prefs) > span.lit {
+    --hi: var(--fg);
+    --hot: color-mix(in oklab, var(--hi) calc(var(--si) * 100%), var(--lo, var(--ctl-fg)));
+    --far: color-mix(in oklab, var(--fg) calc(var(--si) * 15%), var(--lo, var(--ctl-fg)));
+    background: radial-gradient(36px 400px at var(--lx) 50%, var(--hot) 0%, var(--hot) 12%, color-mix(in oklab, var(--hot) 45%, var(--far)) 45%, var(--far) 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+}
+@supports (color: oklch(from red round(l) c h)) { :is(.nav-s, #nav button, #prefs) > span.lit { --hi: oklch(from var(--fg) round(l) 0 h); } }
 /* a row pressed darkens, as a Mac sidebar's does: it never shrinks the way a
    button does (.seg button:active, .icon:active below) */
 body.side-nav #side button:active { transform: none; }
@@ -1521,7 +1540,7 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
 .led .src.access-subscription { --badge-ink: var(--tk-k); }
 .led .src.proto { --badge-ink: var(--muted); font-weight: 500; }
 .led .src.reported { --badge-ink: var(--tk-o); }
-.led .src.probe, .led .src.mcp { --badge-ink: var(--muted); }
+.led .src.probe, .led .src.mcp, .led .src.search { --badge-ink: var(--muted); }
 .led .duration { font-weight: 550; }
 .led .duration-fast { color: var(--tk-s); }
 .led .duration-slow { color: var(--amber); }
@@ -1573,6 +1592,9 @@ details.cx-part[open] > summary .cx-h { margin-bottom: 2px; }
 .sess-filter:focus { border-color: var(--accent); }
 .sess-tools { flex-wrap: wrap; row-gap: 6px; }
 .sess-pick { flex: none; display: inline-flex; align-items: center; gap: 4px; max-width: 180px; height: 26px; padding: 0 7px 0 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--muted); font: inherit; font-size: 12px; cursor: default; }
+.rl-say { display: grid; }
+.rl-say > span { grid-area: 1 / 1; white-space: nowrap; }
+.rl-say > span:not(.on) { visibility: hidden; }
 .sess-pick span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sess-pick svg { flex: none; opacity: .7; transition: transform .15s var(--ease); }
 .sess-pick:hover { background: var(--pill); }
@@ -2130,7 +2152,17 @@ body.window .profiles.detailed > #save { margin-top: 4px; }
 
 /* ---- footer --------------------------------------------------------------- */
 .foot { display: flex; align-items: center; gap: 2px; padding: 0 8px 6px 14px; min-height: 28px; flex: none; }
-body.window .foot { padding-left: 18px; }
+/* the window's footer holds only the status line (Quit, Profiles and the
+   Usage tab's age are the panel's), so it takes no room of its own: a page
+   runs to the window's foot instead of stopping above an empty bar
+   (yogurt36 on Discord). A line said there floats as the pill does, over
+   the page's foot, and goes with it. The panel's footer is as it was. */
+body.window footer.foot { position: fixed; left: 0; bottom: 0; width: 0; height: 0; min-height: 0; padding: 0; overflow: visible; z-index: 21; }
+body.window .foot .status:not(:empty):not(.lift) { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); max-width: calc(100vw - 32px); font-size: 12.5px; line-height: 16px; font-weight: 500; padding: 3px 10px; border-radius: 11px; background: color-mix(in srgb, currentColor 16%, var(--card)); box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 30%, transparent), 0 6px 20px rgba(0, 0, 0, .28); animation: fade-in .2s var(--ease); }
+/* a passing note over the page's foot takes no clicks, as a toast: a press
+   on the row under it (the Plugins page's Install at the window's foot)
+   lands on the row. An error or warning stays selectable, to be copied. */
+body.window .foot .status:not(.err):not(.warn) { pointer-events: none; }
 .status { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: opacity .3s; }
 .status.ok { color: var(--green); }
 .status.err { color: var(--red); }
@@ -2334,7 +2366,10 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .gw .gw-mark.on .led { fill: var(--green); }
 /* narrow, the fix button goes under the state rather than squeeze it */
 .gw .who { flex: 1 1 15em; min-width: 0; }
-.gw .name .state { margin-left: 8px; font-size: 11px; font-weight: 500; color: var(--green); }
+/* the state centred on the title's line, not sat on its baseline: a
+   smaller run of CJK on the baseline reads as dropped below it */
+.gw .name { display: flex; align-items: center; gap: 8px; }
+.gw .name .state { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 11px; font-weight: 500; color: var(--green); }
 .gw .gw-mark:not(.on) ~ .who .state { color: var(--amber); }
 .gw .sub.old { white-space: normal; overflow: visible; text-overflow: clip; }
 .gw .sub.err { color: var(--red); overflow-wrap: anywhere; }
@@ -2364,6 +2399,20 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
    Not the Providers keys list's rules (.accts.keys): Limit and Models keep
    their room there while hidden, so a hover doesn't push the row about */
 .gw-keys .acc > .plan { flex: 0 6 auto; min-width: 3em; overflow: hidden; text-overflow: ellipsis; }
+/* the keys in the order the user drags them into (alextjy on Discord), by
+   a row anywhere off its buttons, as the search APIs are; the grip in the
+   row's margin shows only on the row under the pointer */
+.gw-keys > .acc { position: relative; }
+.gw-keys.reorderable > .acc { cursor: grab; touch-action: pan-y; }
+.gw-keys.reorderable > .acc:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.gw-keys > .acc > .grip { position: absolute; left: 3px; top: 19px; translate: 0 -50%; width: 6px; height: 11px; background: radial-gradient(circle, var(--muted) .9px, transparent 1.2px) 0 0 / 3px 3.75px; opacity: 0; transition: opacity .15s; pointer-events: none; }
+.gw-keys > .acc:is(:hover, .dragging) > .grip { opacity: 1; }
+/* apart: Safari before 15.4 drops a whole selector list with :focus-visible in it */
+.gw-keys > .acc:focus-visible > .grip { opacity: 1; }
+@media (hover: none) { .gw-keys > .acc > .grip { opacity: 1; } }
+.gw-keys.sorting { user-select: none; -webkit-user-select: none; }
+.gw-keys.sorting > .acc { transition: transform .16s cubic-bezier(.22, 1, .36, 1); cursor: grabbing; }
+.gw-keys.sorting > .acc.dragging { z-index: 2; background: var(--card-2); box-shadow: 0 0 0 1px var(--line); transition: none; will-change: transform; }
 .gw-keys .gw-key-more { flex: none; color: var(--muted); }
 .gw-keys .gw-key-more:is(:hover, .open) { color: var(--fg); }
 #view-gateway .row-head, #view-usage .row-head { margin: 14px 0 6px; padding: 0 2px; }
@@ -2811,6 +2860,9 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .row.pref .proto.pick.open svg { transform: rotate(180deg); }
 .row.pref .proto.pick:hover, .row.pref .proto.pick.open { color: var(--fg); background: var(--pill-hover); }
 .row.pref .proto.pick.busy { opacity: .6; }
+.row.pref .tray-windows { flex: 0 1 auto; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; min-width: 0; max-width: 55%; }
+.row.pref .tray-windows .proto.pick { max-width: 100%; margin-left: 0; }
+.row.pref .tray-windows .proto.pick > span { overflow: hidden; text-overflow: ellipsis; }
 .pop.proto-menu { width: 262px; max-height: min(360px, 70vh); overflow-y: auto; overscroll-behavior: contain; padding: 4px; border: 1px solid var(--line); display: grid; gap: 1px; }
 .proto-menu .pm-head { padding: 6px 8px 5px; font-size: 11px; color: var(--muted); }
 .proto-menu .pm-item { display: flex; align-items: flex-start; gap: 7px; width: 100%; padding: 6px 8px 7px; border: 0; border-radius: 7px; background: none; color: var(--fg); font: inherit; text-align: left; cursor: default; outline: none; }
@@ -2855,6 +2907,8 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 /* a subscription's allowance, under its name */
 .accts .acc.with-aq { flex-wrap: wrap; row-gap: 3px; padding-top: 7px; padding-bottom: 8px; }
 .acc .aq { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; padding-left: 25px; font-size: 10.5px; color: var(--muted); min-height: 14px; }
+/* its refresh always shown, after its plan on the line that never wraps: on the readings' line it added a line where the meters filled it (the owner asked for a button here) */
+.acc-line > .quota-refresh { width: 14px; margin: 0 0 0 -5px; opacity: 1; }
 .acc .aq-w { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .acc .aq-track { width: 54px; height: 4px; border-radius: 2px; background: var(--pill); overflow: hidden; }
 .acc .aq-track i { display: block; height: 100%; border-radius: inherit; background: var(--fg-2); }
@@ -3145,7 +3199,7 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .opt { position: relative; z-index: 1; white-space: nowrap; height: 22px; padding: 0 10px; border-radius: 5px; font-size: 12px; color: var(--muted); transition: color .18s var(--ease), transform .14s var(--ease); }
 .opt.on { color: var(--fg); }
 /* how often magpie checks for updates, while it doesn't by itself */
-.update-every-row.off .segs, .update-restart-row.off .segs { opacity: .55; }
+.update-every-row.off .segs, .update-restart-row.off .segs, .search-all-row.off .segs { opacity: .55; }
 /* Command line: each shell's `magpie`, a dot for whether it runs this app */
 .cli-row .sub { overflow-wrap: anywhere; }
 .cli-shells { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
@@ -3195,23 +3249,24 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .link { font-size: 12px; color: var(--accent); padding: 3px 4px; white-space: nowrap; }
 .link:hover { text-decoration: underline; text-underline-offset: 2px; }
 .editor .more { grid-column: 1 / -1; }
-.editor .more summary { font-size: 12px; color: var(--muted); list-style: none; display: inline-flex; align-items: center; gap: 4px; padding: 2px 0; margin-left: 86px; }
+.editor .more summary { font-size: 12px; color: var(--muted); list-style: none; display: inline-flex; align-items: center; gap: 4px; padding: 2px 0; margin-left: var(--ed-at, 86px); }
 .editor .more summary::-webkit-details-marker { display: none; }
-.editor .more summary::before { content: "▸"; font-size: 10px; color: var(--faint); display: inline-block; transition: transform .42s cubic-bezier(.32, .72, 0, 1); }
+.editor .more summary::before { content: "▸"; font-size: 11px; color: var(--muted); display: inline-block; transition: transform .42s cubic-bezier(.32, .72, 0, 1); }
 .editor .more[open]:not(.closing) summary::before { transform: rotate(90deg); }
 @media (prefers-reduced-motion: reduce) { .editor .more summary::before { transition: none; } }
 .editor .more summary:hover { color: var(--fg); }
 /* its labels are longer (Anthropic 地址, Responses-URL): their column takes
    the longest, on one line, rather than wrap a last 址 under it (#875) */
-.editor .more .inner { display: grid; grid-template-columns: minmax(72px, max-content) minmax(0, 1fr); gap: 10px 14px; align-items: start; padding-top: 8px; }
+.editor .more .inner { display: grid; grid-template-columns: minmax(var(--ed-lab, 72px), max-content) minmax(0, 1fr); gap: 10px 14px; align-items: start; padding-top: 8px; }
 .editor .more .inner label { white-space: nowrap; }
 .editor .warnbox { grid-column: 1 / -1; font-size: 12px; line-height: 1.5; color: var(--fg); background: color-mix(in srgb, var(--amber) 12%, transparent); border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent); border-radius: 8px; padding: 8px 10px; }
-.editor .warnbox.soft { background: none; color: var(--amber); border: 0; padding: 0 0 0 86px; }
+.editor .warnbox.soft { background: none; color: var(--amber); border: 0; padding: 0 0 0 var(--ed-at, 86px); }
 .editor.import .mchips .mchip { cursor: default; }
 .editor .bar { grid-column: 1 / -1; display: flex; align-items: center; gap: 4px; padding-top: 10px; border-top: 1px solid var(--line-2); margin-top: 2px; }
 .editor .bar .danger { margin-left: -7px; }
 .editor .editor-error { grid-column: 1 / -1; font-size: 12px; line-height: 1.45; color: var(--red); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
 .editor .editor-error.warn { color: var(--amber); }
+.editor .hint.unmasked-away { color: var(--amber); }
 /* what a pasted curl command filled in (curlOf), said where an error is */
 .editor .editor-error.note { color: var(--fg-2); }
 .busy { opacity: .55; pointer-events: none; }
@@ -3591,6 +3646,8 @@ input.words { width: 240px; max-width: 100%; }
 /* Settings → Long conversations: 272K or the size typed, beside it (#876) */
 .compact-at { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: none; }
 .row.pref .compact-at .segs { margin-left: 0; }
+.compact-held { font-size: 11.5px; user-select: text; -webkit-user-select: text; line-height: 1.4; color: var(--fg-2); margin-top: 6px; text-align: right; overflow-wrap: anywhere; }
+.compact-held button.text { font-size: inherit; margin-left: 0.3em; }
 input.words.compact-num { flex: none; width: 76px; font-variant-numeric: tabular-nums; }
 /* the masking rules' add row: its words in full, then on a line of their
    own a name, prefix or regex, the match taking the room left, Add */
@@ -3871,9 +3928,8 @@ body.panel .modal { padding: 16px 12px; }
   body.web .view {
     --view-left: max(12px, env(safe-area-inset-left));
     --view-right: max(12px, env(safe-area-inset-right));
-    padding: 2px max(0px, calc(var(--view-right) - var(--bar, 0px))) 12px var(--view-left);
+    padding: 2px max(0px, calc(var(--view-right) - var(--bar, 0px))) max(12px, env(safe-area-inset-bottom)) var(--view-left);
   }
-  body.web .foot { padding-bottom: max(8px, env(safe-area-inset-bottom)); min-width: 0; }
   body.web .foot .status { min-width: 0; overflow-wrap: anywhere; }
   body.web .row-head { height: auto; min-height: 40px; flex-wrap: wrap; gap: 4px; }
   body.web .text, body.web .field, body.web .segs .opt, body.web .copy { min-height: 44px; }

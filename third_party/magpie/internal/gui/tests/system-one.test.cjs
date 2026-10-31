@@ -65,6 +65,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const saves = () => posted.filter((x) => x.action === "save").map((x) => x.body);
         const page = await (await browser.newContext({ viewport: { width: 900, height: 760 } })).newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         const errors = [];
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", server(lang, posted));

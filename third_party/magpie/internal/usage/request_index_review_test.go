@@ -185,7 +185,7 @@ func matchedLocalLegacy(gateway *rowChunk, chunks []*rowChunk, skip map[rowRef]b
 	for _, c := range chunks {
 		for i, p := range c.Rows {
 			ref := rowRef{c, i}
-			if skip[ref] || p.Time.Before(since) {
+			if skip[ref] || p.Time().Before(since) {
 				continue
 			}
 			id := c.Strings[c.text(&p, 11)]
@@ -218,7 +218,7 @@ func matchedLocalLegacy(gateway *rowChunk, chunks []*rowChunk, skip map[rowRef]b
 	for _, c := range chunks {
 		for j, p := range c.Rows {
 			ref := rowRef{c, j}
-			if skip[ref] || matched[ref] || p.Time.Before(since) {
+			if skip[ref] || matched[ref] || p.Time().Before(since) {
 				continue
 			}
 			s := c.Strings[c.text(&p, 13)]

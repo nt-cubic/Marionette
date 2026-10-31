@@ -62,6 +62,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await browser.close();
       });
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       await page.route("**/*", (route) => serve(route, lang));
       await page.goto("http://magpie.test/");
       await page.waitForLoadState("networkidle");

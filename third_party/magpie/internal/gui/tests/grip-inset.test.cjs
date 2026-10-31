@@ -155,6 +155,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         if (k.tab) await ctx.addInitScript((tab) => { try { localStorage.setItem("magpie.panelTab", tab); } catch {} }, k.tab);
         const page = await ctx.newPage(), errors = [];
         page.setDefaultTimeout(8000);
+        page.setDefaultNavigationTimeout(60000);
         page.on("pageerror", (e) => errors.push(e.message));
         try {
           await page.route("**/*", serve(lang, web));

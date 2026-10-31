@@ -120,6 +120,21 @@ func keepLast(q SubscriptionQuota, user string) SubscriptionQuota {
 	return out
 }
 
+// hadReading is whether a good reading of provider's account (or key
+// tag) user is kept: the account or key was read with windows or a
+// balance before.
+func hadReading(provider, user string) bool {
+	if provider == "" || user == "" {
+		return false
+	}
+	c := &lastQuotas
+	c.Lock()
+	defer c.Unlock()
+	c.load()
+	_, ok := c.m[provider+"/"+strings.ToLower(user)]
+	return ok
+}
+
 // readDeferred is whether err says no read was made this time (allowances
 // read only when asked, a Claude account's /usage not run) rather than a
 // read that failed. A read held back by holdUnasked fails inside the

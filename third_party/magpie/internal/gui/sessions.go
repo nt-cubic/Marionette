@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"math"
 	"net/http"
 	"os"
 	"reflect"
 	"runtime"
 	"runtime/debug"
+	"runtime/metrics"
 	"slices"
 	"strconv"
 	"strings"
@@ -82,7 +84,7 @@ func gatewaySession(g usage.GatewaySession) sessions.Session {
 
 func sessionRoutes(mux *http.ServeMux, w Windows) {
 	warmSessions()
-	mux.HandleFunc("GET /api/sessions", func(rw http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/sessions", coldTurn(func(rw http.ResponseWriter, r *http.Request) {
 		// the list and the Codex threads' effort each list every session file
 		defer sessions.OneListing()()
 		n, _ := strconv.Atoi(r.URL.Query().Get("limit"))
@@ -158,11 +160,11 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			Terminal bool     `json:"terminal"`
 			Dirs     []string `json:"dirs"`
 		}{out.Terminal, out.Dirs})
-	})
+	}))
 	// stats is every session's usage by day over the last ?days=N days
 	// (every day when 0 or none), cut by agent, folder and model for the
 	// page to filter; names are the agents' as the page shows them.
-	mux.HandleFunc("GET /api/sessions/stats", func(rw http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/sessions/stats", coldTurn(func(rw http.ResponseWriter, r *http.Request) {
 		defer sessions.ShareListing()()
 		n, _ := strconv.Atoi(r.URL.Query().Get("days"))
 		st, gen := statsForGen(n)
@@ -199,11 +201,11 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			statsTags.m[n] = statsTag{gen, agents, tag}
 			statsTags.Unlock()
 		}
-	})
+	}))
 	// overview sums up the range's sessions under the page's filters:
 	// how many, what the middle one spent, how many each day, and the ones
 	// that spent the most.
-	mux.HandleFunc("GET /api/sessions/overview", func(rw http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/sessions/overview", coldTurn(func(rw http.ResponseWriter, r *http.Request) {
 		defer sessions.ShareListing()()
 		q := r.URL.Query()
 		n, _ := strconv.Atoi(q.Get("days"))
@@ -234,7 +236,7 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			}
 		}
 		writeJSON(rw, out)
-	})
+	}))
 	// progress is how far the reading of the session files has got, for
 	// the page to show while its first read takes a while.
 	mux.HandleFunc("GET /api/sessions/progress", func(rw http.ResponseWriter, r *http.Request) {
@@ -365,7 +367,36 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, errors.New("no such session"))
 			return
 		}
-		if err := openTerminal(run, settings.Load().SessionTerminal); err != nil {
+		if err := openTerminal(run, s.Title, settings.Load().SessionTerminal); err != nil {
+			fail(rw, err)
+			return
+		}
+		rw.WriteHeader(http.StatusNoContent)
+	})
+	// agents/open opens Terminal on an agent of the Agents list: the command
+	// is made here from the agent as detected (agentCommand), and the page
+	// sends only its id.
+	mux.HandleFunc("POST /api/agents/open", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Agent string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		if runtime.GOOS != "darwin" || isWeb(w) {
+			fail(rw, errors.New("opening Terminal is only for the Mac app"))
+			return
+		}
+		run, name := "", ""
+		for _, a := range agent.Detected() {
+			if a.ID == in.Agent {
+				run, name = agentCommand(a), a.Name
+			}
+		}
+		if run == "" {
+			fail(rw, errors.New("no command starts this agent"))
+			return
+		}
+		if err := agentTerminal(run, name, settings.Load().SessionTerminal); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -400,7 +431,7 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			return
 		}
 		if in.Open {
-			if err := openTerminal(c.Command, settings.Load().SessionTerminal); err != nil {
+			if err := openTerminal(c.Command, s.Title, settings.Load().SessionTerminal); err != nil {
 				fail(rw, err)
 				return
 			}
@@ -676,18 +707,69 @@ func warmUp(steps ...func()) {
 	// that asks: an empty sandbox's warm-up looked at settings.json ~300
 	// times on Windows (#1665); a write still reads the disk (edit.Read)
 	defer filememo.Hold()()
+	defer coldTurns.over.Store(true)
 	for _, step := range steps {
-		step()
+		func() {
+			coldTurns.turn <- struct{}{}
+			defer coldTurnDone()
+			step()
+		}()
 	}
 	debug.FreeOSMemory()
 }
 
-// underTightGC runs fn letting the heap grow by a quarter of what it holds
-// before a collection, not Go's default of all of it, and then puts back
+// coldTurns has the warm-up's reads and the pages' first asks take turns
+// until the warm-up is over. A first start's window asks the Sessions
+// page's stats and the Usage page's requests and heatmap while the
+// warm-up reads the same history, each a first read of it held beside the
+// others: ~150 MB of the asks' and ~40 MB of the warm-up's at once, a
+// ~300 MB live heap and a 420–480 MB footprint (#2278). Each reads after
+// the one before it has kept what it read, and most then find it kept.
+var coldTurns = struct {
+	turn chan struct{}
+	over atomic.Bool
+}{turn: make(chan struct{}, 1)}
+
+// coldTurnDone ends a turn. What the request matching kept for a next
+// read goes with it: kept for scratchLinger, it sat under the next
+// turn's read of the history.
+func coldTurnDone() {
+	usage.ReleaseMatchScratch()
+	<-coldTurns.turn
+}
+
+// coldTurnMost is how long a page waits for its turn: a warm-up stuck on
+// one read never keeps the pages from answering.
+const coldTurnMost = 2 * time.Minute
+
+// coldTurnsTaken is false in tests, whose pages and warm-ups are their own.
+var coldTurnsTaken = !testing.Testing()
+
+// coldTurn is h taking its turn while the warm-up isn't over; the
+// warm-up's reading goes at full speed while it waits (held's
+// sessions.Ask).
+func coldTurn(h http.HandlerFunc) http.HandlerFunc {
+	return func(rw http.ResponseWriter, r *http.Request) {
+		if coldTurnsTaken && !coldTurns.over.Load() {
+			t := time.NewTimer(coldTurnMost)
+			select {
+			case coldTurns.turn <- struct{}{}:
+				defer coldTurnDone()
+			case <-t.C:
+			}
+			t.Stop()
+		}
+		h(rw, r)
+	}
+}
+
+// underTightGC runs fn letting the heap grow by a tenth of what it holds,
+// or by tightGCRoom when that is more (tightPercent), before a
+// collection, not Go's default of all of it, and then puts back
 // what was set; a GOGC the user set lower, or off, is kept. The usage
 // page's read of the whole history holds every row of it at once (~270 MB
 // live for 390k calls), and a cold start that rests at ~200 MB peaked at
-// 555–587 MB in Activity Monitor there; under it, 410–438 MB. That read
+// 555–587 MB in Activity Monitor there; under a quarter, 410–438 MB. That read
 // and Codex's effort, which reads the whole ledger again while the page
 // still holds its rows, run under it: the warm-up as a whole did too for
 // ~11 s more CPU.
@@ -705,12 +787,13 @@ func underTightGC(fn func()) {
 
 // tightGC is what the reads under a tight GC hold: the first to begin sets
 // it, and the last to end puts back what was set before it. Each read
-// putting back what it found let two at once leave GOGC at 25 for good,
+// putting back what it found let two at once leave GOGC tight for good,
 // when the first to begin ended before the second.
 var tightGC struct {
 	sync.Mutex
-	n   int // reads under it
-	was int // GOGC before the first
+	n      int  // reads under it
+	was    int  // GOGC before the first
+	hooked bool // a retightenGC is waiting for the next collection
 }
 
 // tightenGC begins a read under a tight GC; undo ends it.
@@ -723,6 +806,10 @@ func tightenGC() (undo func()) {
 			debug.SetGCPercent(was)
 		}
 		tightGC.was = was
+		if tightGCRoom > 0 && !tightGC.hooked {
+			tightGC.hooked = true
+			afterNextGC(retightenGC)
+		}
 	}
 	tightGC.n++
 	return sync.OnceFunc(func() {
@@ -734,18 +821,108 @@ func tightenGC() (undo func()) {
 	})
 }
 
-const tightGCPercent = 25
+// tightGCPercent is a tenth. Under a quarter, a first start's footprint
+// peaked at 390–397 MB, and a start with its caches at 304–321 MB, on a
+// live heap of ~280 MB and ~250 MB: each read, and the window's polls
+// beside it, let the heap grow by ~70 MB first. Under a tenth, 350–352
+// MB and 271–275 MB, for ~20% more CPU in the first start's minute and
+// ~2 s a minute of polls asking ten answers every 5 s (#2278).
+const tightGCPercent = 10
+
+// tightGCRoom is the least a tight GC lets the heap grow by before a
+// collection. A tenth of a small heap is a few MB: a first start's reads
+// began on a ~50 MB heap and allocate ~400 MB a second, so it collected
+// ~28 times a second, 2,205 times in its first 78 s, and the collections
+// were 69–72 s of its ~4:10 of CPU (#2278). With this room a heap of
+// over 320 MB is held to a tenth still; one below grows by 32 MB. 0 in
+// tests, whose GOGC is read as tightGCPercent while a read is under it.
+var tightGCRoom = func() int64 {
+	if testing.Testing() {
+		return 0
+	}
+	return 32 << 20
+}()
+
+// tightPercent is the GOGC a tight GC sets on a live heap of live bytes:
+// tightGCPercent, or enough for tightGCRoom, never above was, what was
+// set before (off stays off).
+func tightPercent(live int64, was int) int {
+	p := tightGCPercent
+	if live > 0 && tightGCRoom > 0 {
+		p = max(p, int(min(tightGCRoom*100/live, math.MaxInt32)))
+	}
+	if was < p {
+		return was
+	}
+	return p
+}
+
+// retightenGC sets the GOGC for the heap the collection just left, while
+// a read is under a tight GC, and waits for the next one.
+func retightenGC() {
+	tightGC.Lock()
+	defer tightGC.Unlock()
+	if tightGC.n == 0 {
+		tightGC.hooked = false
+		return
+	}
+	s := []metrics.Sample{{Name: "/gc/heap/live:bytes"}}
+	metrics.Read(s)
+	if s[0].Value.Kind() == metrics.KindUint64 {
+		debug.SetGCPercent(tightPercent(int64(s[0].Value.Uint64()), tightGC.was))
+	}
+	afterNextGC(retightenGC)
+}
+
+// afterNextGC runs fn on the finalizer goroutine once the next collection
+// has finished.
+func afterNextGC(fn func()) {
+	type tick struct{ _ *byte } // a pointer keeps it off the tiny allocator
+	runtime.SetFinalizer(&tick{}, func(*tick) { go fn() })
+}
+
+// agentCommand is the shell line that starts a: its Launch where it has
+// one (agy, Claude Science, Cursor Private Inference), else its own
+// program, quoted; "" for one in a WSL distro or with no program here (a
+// desktop app). Nothing of the page's goes into it.
+func agentCommand(a *agent.Agent) string {
+	if a.WSL != "" {
+		return ""
+	}
+	if a.Launch != nil {
+		if run := a.Launch(); run != "" {
+			return run
+		}
+	}
+	if bin := a.BinPath(); bin != "" {
+		return shellQuote(bin)
+	}
+	return ""
+}
+
+// agentTerminal is openTerminal, a var so a test opens no terminal.
+var agentTerminal = openTerminal
+
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
 // openTerminal runs a command in the chosen Mac terminal through a .command
-// file, as it would open from Finder: no Automation consent.
+// file, as it would open from Finder: no Automation consent; in Rex,
+// through its CLI, in a tab labelled label (terminal_rex.go).
 // The shell is left open when the agent quits.
-func openTerminal(command, choice string) error {
+func openTerminal(command, label, choice string) error {
 	var found terminalDiscovery
 	if choice != terminalBundleID {
 		var err error
 		// the system default falls back to Terminal when nothing is found
 		if found, err = discoverTerminals(); err != nil && choice != "" && choice != "system" {
 			return err
+		}
+	}
+	if choice == rexBundleID {
+		for _, app := range found.Apps {
+			if app.ID == rexBundleID {
+				return openInRex(app.Path, command, label)
+			}
 		}
 	}
 	args, err := terminalOpenArgs(choice, found)

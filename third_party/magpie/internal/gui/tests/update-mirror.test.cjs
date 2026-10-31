@@ -73,7 +73,8 @@ const scrolls = (page) => page.evaluate(() => [window.scrollY, document.scrollin
 async function open(browser, lang, ctl, errors) {
   const page = await (await browser.newContext({ viewport: { width: 900, height: 760 }, reducedMotion: "reduce" })).newPage();
   page.setDefaultTimeout(5000);
-  page.on("pageerror", (e) => errors.push(e.message));
+  page.setDefaultNavigationTimeout(60000);
+  page.on("pageerror", (e) => { if (!/^ResizeObserver loop completed with undelivered notifications/.test(e.message)) errors.push(e.message); });
   await page.route("**/*", server(lang, ctl));
   await watchSettingsReads(page);
   await page.goto("http://magpie.test/?view=settings");

@@ -58,7 +58,7 @@ func TestAlmaToldReasoning(t *testing.T) {
 		return nil
 	}
 	js := func(v any) string { b, _ := json.Marshal(v); return string(b) }
-	if got := js(caps("think/gpt-5.5")); got != `{"contextWindow":400000,"maxOutputTokens":128000,"reasoning":true,"reasoningLevels":["low","medium","high","xhigh"],"vision":true}` {
+	if got := js(caps("think/gpt-5.5")); got != `{"contextWindow":400000,"functionCalling":true,"maxOutputTokens":128000,"reasoning":true,"reasoningLevels":["low","medium","high","xhigh"],"vision":true}` {
 		t.Fatalf("gpt-5.5: %s", got)
 	}
 	if c := caps("think/switch-only"); c["reasoning"] != true || c["reasoningLevels"] != nil {
@@ -152,5 +152,86 @@ func TestAlmaToldPricing(t *testing.T) {
 	}
 	if p := pricing("think/unpriced"); p != nil {
 		t.Fatalf("unpriced: %v", p)
+	}
+}
+
+// Alma is told every one of magpie's chat models calls tools, as the
+// gateway's /v1/models says (toolsTold): Alma looks function calling up on
+// models.dev by the model's id, found nothing for a routing group's name or
+// a plugin's model, and put the tools in the prompt (hermesToolMiddleware),
+// so DeepSeek wrote its DSML call text out, shown raw (ethanchi on
+// Discord). A Tool Calling the user set in Alma, on or off, is kept, and
+// isn't written over again at every sync; one taken away is told again.
+func TestAlmaToldTools(t *testing.T) {
+	syncHome(t)
+	if err := provider.Save(provider.Provider{ID: "relay2", Name: "Relay Two", Chat: "https://example.test/v1", Key: "key",
+		Models: []string{"DeepSeek", "kimi"}}); err != nil {
+		t.Fatal(err)
+	}
+	f := startAlma(t)
+	a := alma()
+	if err := os.MkdirAll(a.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Apply("model", "magpie/relay2/DeepSeek"); err != nil {
+		t.Fatal(err)
+	}
+	var mine map[string]any
+	for _, p := range f.providers {
+		if p["name"] == "magpie" {
+			mine = p
+		}
+	}
+	if mine == nil {
+		t.Fatalf("no magpie provider: %v", f.providers)
+	}
+	model := func(id string) map[string]any {
+		t.Helper()
+		for _, m := range mine["availableModels"].([]any) {
+			if o := m.(map[string]any); o["id"] == id {
+				return o
+			}
+		}
+		t.Fatalf("%s not in %v", id, mine["availableModels"])
+		return nil
+	}
+	tools := func(id string) any {
+		t.Helper()
+		c, _ := model(id)["capabilityOverrides"].(map[string]any)
+		return c["functionCalling"]
+	}
+	ids, _ := mine["models"].([]any)
+	if len(ids) == 0 {
+		t.Fatal("no models told")
+	}
+	for _, id := range ids {
+		if got := tools(id.(string)); got != true {
+			t.Fatalf("%s: functionCalling %v, want true", id, got)
+		}
+	}
+	f.takeWrites()
+
+	// the user turned Tool Calling off for one, and Alma lost another's
+	// overrides: the user's kept, the other told again, and once told
+	// nothing is written again
+	model("relay2/DeepSeek")["capabilityOverrides"].(map[string]any)["functionCalling"] = false
+	delete(model("relay2/kimi"), "capabilityOverrides")
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.takeWrites(); len(w) != 1 {
+		t.Fatalf("sync wrote %v", w)
+	}
+	if got := tools("relay2/DeepSeek"); got != false {
+		t.Fatalf("user's off: functionCalling %v", got)
+	}
+	if got := tools("relay2/kimi"); got != true {
+		t.Fatalf("kimi told again: functionCalling %v", got)
+	}
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.takeWrites(); len(w) != 0 {
+		t.Fatalf("second sync wrote %v", w)
 	}
 }

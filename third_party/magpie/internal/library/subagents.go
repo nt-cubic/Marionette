@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/pelletier/go-toml/v2"
+	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/edit"
 )
@@ -89,10 +90,14 @@ type subagentSpec struct {
 
 func (sp *subagentSpec) path(name string) string { return filepath.Join(sp.dir, name+sp.ext) }
 
+// wslNoSubagents is why an agent in WSL is given no subagents, its distro
+// running or not.
+const wslNoSubagents = "magpie gives no subagents to an agent in WSL yet"
+
 func subagentSpecOf(t *Target) (*subagentSpec, string) {
 	a := t.Agent
 	if a.WSL != "" {
-		return nil, "magpie gives no subagents to an agent in WSL yet"
+		return nil, wslNoSubagents
 	}
 	md := func(dir string, keys func(s *Subagent, skills, mcp []string) [][2]string) *subagentSpec {
 		return &subagentSpec{dir: dir, ext: ".md", render: func(s *Subagent, skills, mcp []string) []byte {
@@ -453,7 +458,12 @@ type SubagentAgentView struct {
 	MCP    bool `json:"mcp,omitempty"`
 }
 
-func (l *Library) subagentsView(targets []*Target, of func(string) map[string]string) ([]SubagentView, []SubagentAgentView) {
+// subagentsView is the Subagents page for these agents, and those in
+// stopped WSL distros (asleep) that the page lists by what magpie last
+// knew of them (asleepView): greyed as while their distro runs, since
+// magpie gives no agent in WSL subagents yet, and nothing of theirs opened
+// (#3896, #4238).
+func (l *Library) subagentsView(targets []*Target, asleep []*agent.Agent, of func(string) map[string]string) ([]SubagentView, []SubagentAgentView) {
 	agents := []SubagentAgentView{}
 	for _, t := range targets {
 		if base, _, _ := strings.Cut(t.Agent.ID, "@wsl:"); !slices.Contains(SubagentAgents, base) {
@@ -465,6 +475,11 @@ func (l *Library) subagentsView(targets []*Target, of func(string) map[string]st
 			av.Dir, av.Skills, av.MCP = sp.dir, sp.skills, sp.mcp
 		}
 		agents = append(agents, av)
+	}
+	for _, a := range asleep {
+		if base, _, _ := strings.Cut(a.ID, "@wsl:"); slices.Contains(SubagentAgents, base) && shapeOf(a) != nil {
+			agents = append(agents, SubagentAgentView{ID: a.ID, No: wslNoSubagents, WSL: true})
+		}
 	}
 	views := []SubagentView{}
 	for _, s := range l.Subagents {

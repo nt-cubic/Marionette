@@ -105,7 +105,18 @@ func siwcSide() []sideLogin {
 	})
 }
 
-func siwcLoginList() []Login { return loginsOf(siwcSide()) }
+// siwcLoginList lists the accounts, one OpenAI no longer refreshes said
+// on its row (siwcRefresh's Lapsed), which then offers Sign in again: the
+// lapse was kept, and shown nowhere but on a failed request.
+func siwcLoginList() []Login {
+	ls := siwcSide()
+	for i := range ls {
+		if ls[i].Lapsed == "" {
+			ls[i].Lapsed = ls[i].saved.Lapsed
+		}
+	}
+	return loginsOf(ls)
+}
 
 func switchSIWCLogin(user string) error { return switchSideLogin(ChatGPTAPIID, user, siwcSide()) }
 

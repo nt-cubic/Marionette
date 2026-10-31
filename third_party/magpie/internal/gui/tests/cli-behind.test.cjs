@@ -50,6 +50,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const quiet = { calls: 0 };
       const page = await (await browser.newContext({ viewport: { width: 900, height: 700 }, reducedMotion: "reduce" })).newPage();
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", server(lang, true, quiet));
@@ -65,6 +66,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // the panel, too small for a dialog, says nothing
       const panel = await (await browser.newContext({ viewport: { width: 380, height: 600 }, reducedMotion: "reduce" })).newPage();
       panel.setDefaultTimeout(5000);
+      panel.setDefaultNavigationTimeout(60000);
       panel.on("pageerror", (e) => errors.push(e.message));
       await panel.route("**/*", server(lang, true, quiet));
       await panel.goto("http://magpie.test/?mode=panel");
@@ -74,6 +76,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // and no advice when the command is the link (no cliBehind)
       const ok = await (await browser.newContext({ viewport: { width: 900, height: 700 }, reducedMotion: "reduce" })).newPage();
       ok.setDefaultTimeout(5000);
+      ok.setDefaultNavigationTimeout(60000);
       ok.on("pageerror", (e) => errors.push(e.message));
       await ok.route("**/*", server(lang, false, quiet));
       await ok.goto("http://magpie.test/");

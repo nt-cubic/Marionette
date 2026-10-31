@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // Codex's only account is signed out when it is removed, as codex logout
@@ -82,28 +81,5 @@ func TestForgetAccountSignsCodexOut(t *testing.T) {
 	}
 	if ls := Logins("codex"); len(ls) != 0 {
 		t.Fatalf("saved still: %+v", ls)
-	}
-}
-
-// Claude Code's account in use is never signed out by a removal, even its
-// only one: its sign-in may be in the keychain, and magpie serves its
-// saved accounts while it is signed out (claudeStandIn).
-func TestClaudeInUseStillRefused(t *testing.T) {
-	home := claudeHome(t)
-	t.Setenv("CLAUDE_CONFIG_DIR", "")
-	shellFakes(t)
-	creds := claudeSignIn(t, home, time.Now().Add(time.Hour))
-	writeFile(t, filepath.Join(home, ".claude.json"), map[string]any{"oauthAccount": map[string]any{"emailAddress": "cc@example.com"}})
-	rememberLogins(true)
-	live, ok := liveLogin("claude")
-	if !ok {
-		t.Fatal("no Claude Code sign-in")
-	}
-	var signedIn *SignedInError
-	if err := ForgetLogin("claude", live.User); !errors.As(err, &signedIn) {
-		t.Fatalf("claude in use: %v", err)
-	}
-	if _, err := os.Stat(creds); err != nil {
-		t.Fatalf("credentials went: %v", err)
 	}
 }

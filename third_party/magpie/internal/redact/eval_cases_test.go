@@ -90,7 +90,7 @@ var evalCases = []evalCase{
 	{
 		ID: "token-count", From: "611b9e173",
 		Text: "<system-reminder><total_tokens>14902266 tokens left</total_tokens></system-reminder>",
-		Keep: []evalValue{{V: "14902266", Kind: "ACCOUNT", GuardKnown: "#3775"}},
+		Keep: []evalValue{{V: "14902266", Kind: "ACCOUNT"}},
 	},
 	{
 		ID: "assistant-names", From: "611b9e173",

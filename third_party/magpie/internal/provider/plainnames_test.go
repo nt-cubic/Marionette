@@ -50,12 +50,15 @@ func TestPlainNames(t *testing.T) {
 	if touched != 1 || !settings.Load().PlainNames {
 		t.Fatalf("agents told %d times, setting %v", touched, settings.Load().PlainNames)
 	}
-	// the group found for sol and b's sol are both "Sol": they keep theirs
-	want := []string{"a/sol=My Sol", "auto/sol=Sol · routing group", "b/sol=Sol · B"}
+	// the group found for sol and b's sol are both "Sol": the group is
+	// told apart by its "· routing group", and b's model stays plain as
+	// a/sol does (nb5p on Discord: a relay's GPT-6.1 Terra kept
+	// "· MyGateway" beside its group while its GPT-6.1 Sol had none)
+	want := []string{"a/sol=My Sol", "auto/sol=Sol · routing group", "b/sol=Sol"}
 	if got := codex(); !slices.Equal(got, want) {
 		t.Fatalf("plain: %q", got)
 	}
-	if got := other(); !slices.Equal(got, []string{"My Sol", "Sol · B", "Sol · routing group"}) {
+	if got := other(); !slices.Equal(got, []string{"My Sol", "Sol", "Sol · routing group"}) {
 		t.Fatalf("plain, another agent: %q", got)
 	}
 
@@ -69,9 +72,21 @@ func TestPlainNames(t *testing.T) {
 	if got := codex(); !slices.Equal(got, []string{"a/sol=My Sol", "auto/sol=Sol"}) {
 		t.Fatalf("plain, b hidden: %q", got)
 	}
-	if got := other(); !slices.Equal(got, []string{"My Sol", "Sol · B", "Sol · routing group"}) {
+	if got := other(); !slices.Equal(got, []string{"My Sol", "Sol", "Sol · routing group"}) {
 		t.Fatalf("plain, another agent: %q", got)
 	}
+
+	// two models a list would call the same still keep their providers'
+	if err := SetModelName("b/sol", "My Sol"); err != nil {
+		t.Fatal(err)
+	}
+	if got := other(); !slices.Equal(got, []string{"My Sol · A", "My Sol · B", "Sol"}) {
+		t.Fatalf("plain, two models named alike: %q", got)
+	}
+	if err := SetModelName("b/sol", ""); err != nil {
+		t.Fatal(err)
+	}
+	touched = 1
 
 	if err := SetPlainNames(false); err != nil {
 		t.Fatal(err)

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -113,9 +114,14 @@ const codexWinAUMID = "OpenAI.Codex_2p2nqsd0c76g0!App"
 
 // codexAppOpen is provider.CodexAppOpen: whether the Codex desktop app
 // runs here, ChatGPT.app (com.openai.codex) on macOS, the Store app on
-// Windows; not known elsewhere.
+// Windows, OpenAI's package's /usr/lib/chatgpt/ChatGPT on Linux (any of
+// its processes: Electron's helpers run the same executable); not known
+// elsewhere.
 func codexAppOpen(context.Context) (open, known bool) {
 	switch {
+	case restartOnLinux:
+		app := desktopApps["codex"]
+		return len(running("^"+regexp.QuoteMeta(app.linux+"/ChatGPT")+"( |$)")) > 0, true
 	case restartOnWindows:
 		_, ok := findRestartable(codexWinApp)
 		return ok, true

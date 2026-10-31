@@ -1020,7 +1020,7 @@ type listedFacts struct {
 func (f listedFacts) model(name string) catalog.Model {
 	m := catalog.Model{ID: name, Name: name, Context: cmp.Or(f.ContextLength, f.ContextWindow)}
 	if in := cmp.Or(len(f.Architecture.InputModalities), len(f.Modalities.Input)); in > 0 {
-		images := slices.Contains(f.Architecture.InputModalities, "image") || slices.Contains(f.Modalities.Input, "image")
+		images := slices.Contains(catalog.Kinds(f.Architecture.InputModalities), "image") || slices.Contains(catalog.Kinds(f.Modalities.Input), "image")
 		m.ImageInput, m.Images = &images, images
 	}
 	return m

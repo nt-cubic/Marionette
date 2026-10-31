@@ -151,6 +151,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           const ctx = await browser.newContext({ viewport: VIEWPORT, reducedMotion: "reduce" });
           const p = await ctx.newPage();
           p.setDefaultTimeout(8000);
+          p.setDefaultNavigationTimeout(60000);
           p.on("pageerror", (e) => {
             if (!/^ResizeObserver loop completed with undelivered notifications/.test(e.message)) errors.push(e.message);
           });

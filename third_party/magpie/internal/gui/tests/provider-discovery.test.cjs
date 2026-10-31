@@ -12,6 +12,7 @@ async function fixture(t, engine, lang = "en", options = {}) {
   const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
   const page = await browser.newPage({ viewport: { width: 900, height: 800 }, reducedMotion: "reduce" });
   page.setDefaultTimeout(7000);
+  page.setDefaultNavigationTimeout(60000);
   const errors = [], imported = new Set(), posts = [];
   const control = { scans: 0, reads: 0, posts, release: null, fail: false, empty: false, revisions: {}, omitted: [], extra: [] };
   const provider = (id, name) => ({ id, name, icon: "generic", host: "relay.example", chat: "https://relay.example/v1", models: [], agents: [], key: { set: true, masked: "sk-…1234" } });

@@ -74,7 +74,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           const errors = [];
           const page = await (await browser.newContext({ viewport: { width, height: 700 }, reducedMotion: "reduce" })).newPage();
           page.setDefaultTimeout(5000);
-          page.on("pageerror", (e) => errors.push(e.message));
+          page.setDefaultNavigationTimeout(60000);
+          page.on("pageerror", (e) => { if (!/^ResizeObserver loop completed with undelivered notifications/.test(e.message)) errors.push(e.message); });
           await page.route("**/*", server(lang, ctl, c.update));
           await page.goto("http://magpie.test/?view=settings&tab=about");
           const want = c.why(lang);
@@ -90,6 +91,57 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           // nothing is cut off or pushes the page sideways at a narrow width
           const over = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
           assert.ok(over <= 0, `the page scrolls sideways by ${over}px`);
+          assert.deepEqual(errors, []);
+          await page.close();
+        });
+      }
+    }
+  });
+}
+
+// A magpie a package manager installed (the AUR's magpie-bin, shuhai on
+// Discord) leaves its updates to the manager: the Version row says the
+// version is out and the command that updates the package, with no
+// Download (the release's binary isn't for this install) and no Update
+// pill (the package can come days after the release).
+const packaged = { state: "available", current: "0.1.400", latest: "0.1.401", url: "https://github.com/yetone/magpie-releases/releases/tag/v0.1.401", stuck: "package", packaged: { manager: "pacman", package: "magpie-bin", command: "yay -S magpie-bin" } };
+const byManager = {
+  en: "pacman installed magpie (magpie-bin), so pacman updates it, not magpie: yay -S magpie-bin",
+  zh: "pacman 安装了 magpie（magpie-bin），所以由 pacman 更新它，而不是 magpie 自己：yay -S magpie-bin",
+  "zh-TW": "pacman 安裝了 magpie（magpie-bin），所以由 pacman 更新它，而不是 magpie 自己：yay -S magpie-bin",
+  ja: "magpie は pacman でインストールされている（magpie-bin）ため、magpie ではなく pacman がアップデートします：yay -S magpie-bin",
+  de: "pacman hat magpie installiert (magpie-bin), daher aktualisiert pacman es, nicht magpie: yay -S magpie-bin",
+};
+for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
+  test(engine + ": a packaged magpie names its package manager's command", async (t) => {
+    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+    t.after(() => browser.close());
+    for (const lang of ["en", "zh", "zh-TW", "ja", "de"]) {
+      for (const width of [1000, 440]) {
+        await t.test(`${lang} at ${width}px`, async () => {
+          const ctl = { installs: 0 };
+          const errors = [];
+          const page = await (await browser.newContext({ viewport: { width, height: 700 }, reducedMotion: "reduce" })).newPage();
+          page.setDefaultTimeout(5000);
+          page.setDefaultNavigationTimeout(60000);
+          page.on("pageerror", (e) => { if (!/^ResizeObserver loop completed with undelivered notifications/.test(e.message)) errors.push(e.message); });
+          await page.route("**/*", server(lang, ctl, packaged));
+          await page.goto("http://magpie.test/?view=settings&tab=about");
+          const want = byManager[lang];
+          const sub = await (await page.waitForFunction((w) => [...document.querySelectorAll("#about .row.pref .sub")].find((s) => s.textContent.includes(w))?.textContent, want)).jsonValue();
+          assert.ok(sub.includes("0.1.401"), sub);
+          const row = page.locator("#about .row.pref", { has: page.locator(".sub", { hasText: want }) });
+          const buttons = await row.locator("button").allTextContents();
+          const download = { en: "Download", zh: "下载", "zh-TW": "下載", ja: "ダウンロード", de: "Herunterladen" }[lang];
+          assert.ok(!buttons.some((b) => b.trim() === download), buttons.join("|"));
+          // no Update pill, once the pill has read the update too (a fetch
+          // of /api/update beside the row's)
+          await page.waitForFunction(() => performance.getEntriesByType("resource").filter((e) => new URL(e.name).pathname === "/api/update").length >= 2);
+          await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+          assert.equal(await page.locator("#update").isHidden(), true);
+          const over = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+          assert.ok(over <= 0, `the page scrolls sideways by ${over}px`);
+          assert.equal(ctl.installs, 0);
           assert.deepEqual(errors, []);
           await page.close();
         });

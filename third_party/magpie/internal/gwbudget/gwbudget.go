@@ -104,7 +104,7 @@ var ErrUnlimited = errors.New("this gateway key is held to a limit, but magpie's
 // so a limit set a moment ago turns the plugin on for the request that
 // needs it. Fail closed.
 func Limiting(who access.Identity) (Limiter, error) {
-	if who.KeyID == "" || len(who.Limits()) == 0 {
+	if !who.Limited() {
 		return nil, nil
 	}
 	l, f := served()

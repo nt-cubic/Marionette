@@ -1009,11 +1009,37 @@ func claudeIn(at place) *Agent {
 		stash(map[string]string{pickerKey: "1"})
 		return edit.SetJSON(path, edit.KV{Path: "modelPicker", Value: map[string]any{"options": rows}})
 	}
+	// pickerRefs are the models writePicker lists in /model, as it lists
+	// them ("[1m]" on a 1M one), none while the picker is the user's.
+	// Claude Code runs a model picked there on the window it was told, and
+	// beside a Claude main it was told none: a routing group of a 500K GPT
+	// and a 1M Claude picked in /model ran at Claude Code's own 200K
+	// (young02036 on Discord)
+	pickerRefs := func() []string {
+		if _, has := edit.GetJSON(path, "modelPicker"); has && !pickerOurs() {
+			return nil
+		}
+		mark1M := claude1M()
+		var refs []string
+		for _, o := range viaMagpie("claude", "") {
+			refs = append(refs, mark1M(o.Value))
+		}
+		return refs
+	}
 	// writeCaps says what magpie's models can do, the ones in models first;
 	// Claude Desktop's ids too while it runs on magpie, its Code tab being
 	// Claude Code on this settings.json
 	desktopOn := func() bool {
-		return at.id == "" && at.sys == nil && desktopWiredAny(desktopSets(desktopdir.OS, at.home, os.Getenv))
+		// a distro's: Claude Desktop on Windows runs a Code tab session
+		// whose host is WSL on the distro's Claude Code, which reads
+		// ${CLAUDE_CONFIG_DIR:-$HOME/.claude} there (4.29.0's remote
+		// probe), not Windows' settings.json, and is handed the same
+		// mythos-magpie id and no window; only Windows' Desktop wired
+		// tells (young02036 on Discord: 500K group at "/ 200k" in WSL)
+		if at.sys != nil {
+			return desktopWiredAny(desktopSetsHere())
+		}
+		return at.id == "" && desktopWiredAny(desktopSets(desktopdir.OS, at.home, os.Getenv))
 	}
 	// Desktop's Explore compatibility flag has its own ownership: taking
 	// Claude Code off magpie must leave it while Desktop still needs it.
@@ -1100,8 +1126,8 @@ func claudeIn(at place) *Agent {
 	// desktopPlan is what writeWindow writes while Claude Desktop is on
 	// magpie (claudePlan, #2025): the models its Code tab runs Claude Code
 	// on, and while Claude Code itself is on magpie (main set) its main
-	// model and tiers', each with its own window under the
-	// largest. A model Claude Code knows as Claude's has its own window.
+	// model's, tiers' and those /model offers (pickerRefs), each with its
+	// own window under the largest. A model Claude Code knows as Claude's has its own window.
 	desktopPlan := func(main string, tiers map[string]string) (top, def int, entries map[string]int) {
 		s := settings.Load()
 		// the user's own top-level autoCompactWindow
@@ -1151,6 +1177,8 @@ func claudeIn(at place) *Agent {
 			for _, t := range claudeTiers {
 				refs = append(refs, tiers[t])
 			}
+			// and the models /model offers, each of which it may run on
+			refs = append(refs, pickerRefs()...)
 			for _, v := range refs {
 				m, _ := tierAt(v)
 				bare := strings.TrimSuffix(m, "[1m]")
@@ -1185,6 +1213,36 @@ func claudeIn(at place) *Agent {
 		top, entries = claudePlan(models, base, theirs)
 		return top, def, entries
 	}
+	// pickerApart says the main is one of Claude's own models (or a group
+	// of them), which Anthropic runs to its own window, magpie tells
+	// Claude Code no window for the rest (claudeWindow 0), and /model
+	// offers a model of magpie's whose window is known: picked there, it
+	// would run at Claude Code's own 200K, so each gets its own through
+	// desktopPlan. A model Claude Code takes for 1M by its "[1m]", or
+	// knows as Claude's, has its own already. Any other main is as
+	// before: one whose window is told serves a /model pick too, and one
+	// of no known window keeps the last.
+	pickerApart := func(main string, tiers map[string]string) bool {
+		m, _ := tierAt(main)
+		bare := strings.TrimSuffix(m, "[1m]")
+		if main == "" || !claudeModel(bare) && !provider.ClaudeGroup(bare) || claudeWindow(main, tiers) > 0 {
+			return false
+		}
+		window := map[string]int{}
+		for _, m := range magpieModels("claude") {
+			window[m.ID] = m.Context
+		}
+		for _, v := range pickerRefs() {
+			m, _ := tierAt(v)
+			if strings.HasSuffix(m, "[1m]") || claudeModel(m) || provider.ClaudeGroup(m) {
+				continue
+			}
+			if window[m] > 0 {
+				return true
+			}
+		}
+		return false
+	}
 	// writeWindow tells Claude Code the window of the models it runs on
 	// (claudeWindow). While Claude Desktop runs on magpie too, it is the
 	// largest of theirs and each model below it gets its own
@@ -1203,7 +1261,7 @@ func claudeIn(at place) *Agent {
 			forget(windowKey)
 			return dropBudgets()
 		}
-		if (desktopOn() || claudeLongMain(main) && claudeWindow(main, tiers) > 0) && (env(claudeCompactEnv) == "" || compactOurs()) {
+		if (desktopOn() || claudeLongMain(main) && claudeWindow(main, tiers) > 0 || pickerApart(main, tiers)) && (env(claudeCompactEnv) == "" || compactOurs()) {
 			top, def, entries := desktopPlan(main, tiers)
 			if top <= 0 {
 				return dropWindow()

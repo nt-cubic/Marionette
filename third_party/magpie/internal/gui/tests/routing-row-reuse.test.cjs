@@ -84,6 +84,7 @@ for (const engine of engines) for (const lang of ["en", "zh"]) {
     const context = await browser.newContext({ viewport: { width: 1100, height: 900 } });
     const page = await context.newPage();
     page.setDefaultTimeout(8000);
+    page.setDefaultNavigationTimeout(60000);
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     const feed = Array.from({ length: 40 }, (_, i) => req(i + 1)), next = [];

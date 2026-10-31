@@ -72,6 +72,7 @@ async function open(engine, lang, scene, width, t) {
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width, height: 700 }, reducedMotion: "reduce" });
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(60000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   // counts the routing view's once-a-second redraws, to hold a press over one

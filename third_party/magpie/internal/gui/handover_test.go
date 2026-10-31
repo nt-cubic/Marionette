@@ -57,7 +57,7 @@ func TestHandsOverOnlyWhereItCan(t *testing.T) {
 	if handsOver() {
 		t.Fatal("hands over a gateway this magpie doesn't serve")
 	}
-	if beginHandover("", "/apps/magpie", false, "") || pending.Load() != nil {
+	if beginHandover("", "/apps/magpie", false, "", false) || pending.Load() != nil {
 		t.Fatal("began a handover it can't make")
 	}
 }

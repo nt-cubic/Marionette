@@ -95,6 +95,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const open = async (url) => {
           const page = await context.newPage();
           page.setDefaultTimeout(5000);
+          page.setDefaultNavigationTimeout(60000);
           page.on("pageerror", (e) => errors.push(e.message));
           await page.route("**/*", serve(lang, url.includes("mode=panel")));
           await page.goto(url);
@@ -104,6 +105,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.locator(".row.provider", { hasText: "ZCode" }).first().click();
         const row = (id) => page.locator(`.editor .accts .acc[data-account-id="${id}"]`);
         await row(TEAM).locator(".acct-who").waitFor();
+        // the pointer off the rows: the click that opened the editor left it
+        // on ME's name at 360px
+        await page.mouse.move(0, 0);
         const eye = (id) => row(id).locator(".acct-eye");
 
         // Hide accounts off: no eye at all
@@ -202,6 +206,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const open = async (url) => {
           const page = await context.newPage();
           page.setDefaultTimeout(5000);
+          page.setDefaultNavigationTimeout(60000);
           page.on("pageerror", (e) => errors.push(e.message));
           await page.route("**/*", serve(lang, url.includes("mode=panel")));
           await page.goto(url);
@@ -277,6 +282,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const context = await browser.newContext({ viewport: { width, height: 760 }, reducedMotion: "reduce" });
         const page = await context.newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         const errors = [];
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", serve(lang));

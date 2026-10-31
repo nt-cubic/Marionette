@@ -497,12 +497,18 @@ func TestFindCodexApp(t *testing.T) {
 		9:     {{PID: 3, Args: "codex"}, {PID: 4, Args: "/Users/me/.codex/packages/app-server-daemon/releases/0.162.0-aarch64-apple-darwin/bin/codex app-server --listen unix:///x --managed-daemon"}, {PID: 9, Args: app}},
 		8:     {{PID: 8, Args: `"C:\Program Files\WindowsApps\OpenAI.Codex_1.0\app\resources\codex.exe" app-server`}},
 		61552: {{PID: 3, Args: `C:\Users\yeton\AppData\Local\Microsoft\WinGet\Links\codex.exe`}, {PID: 61552, Args: codexWindowsAppServer}},
+		// the Linux app's, beside npm's codex running an app-server of
+		// its own (pota on Discord: no account switch for it on Linux)
+		1957170: {{PID: 3, Args: "/usr/lib/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/codex/codex app-server"}, {PID: 1957170, Args: codexLinuxAppServer}},
 		0: {
 			{PID: 3, Args: "codex app-server proxy"},
 			{PID: 5, Args: "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex exec-server --remote x"},
 			{PID: 6, Args: "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex app-server daemon restart"},
 			{PID: 7, Args: "/Users/me/.vscode/extensions/openai.chatgpt-1.0/bin/darwin-aarch64/codex app-server"},
 			{PID: 10, Args: "/Users/me/.codex/computer-use/Codex Computer Use.app/Contents/MacOS/SkyComputerUseService app-server"},
+			{PID: 11, Args: "/usr/lib/chatgpt/ChatGPT --type=renderer"},
+			{PID: 12, Args: "/home/me/.local/bin/codex app-server"},
+			{PID: 13, Args: "chatgpt/resources/codex app-server"},
 		},
 	} {
 		if got := findCodexApp(ps); got != want {

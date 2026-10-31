@@ -3,15 +3,21 @@ package sessions
 import (
 	"bytes"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
+
+	"github.com/yetone/magpie/internal/filelock"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // codexState makes a Codex state database with a thread's row, as Codex
@@ -216,5 +222,170 @@ func TestMoveCodexProviderKeepsBytePlaces(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(main); !bytes.Equal(b, orig) {
 		t.Fatalf("moving back gave\n%s", b)
+	}
+}
+
+// holdThread holds a thread's writer lock in a Codex home as a Codex that
+// has the thread open does (the app-server after thread/resume, a resumed
+// TUI): thread-writer-locks/<id>.lock, locked on a descriptor of its own.
+// It gives the lock file's path and the Codex letting go, which leaves
+// the file, as a Codex that ended leaves it.
+func holdThread(t *testing.T, home, id string) (path string, letGo func()) {
+	t.Helper()
+	locks := filepath.Join(home, "thread-writer-locks")
+	if err := os.MkdirAll(locks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path = filepath.Join(locks, id+".lock")
+	lf, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := filelock.TryLock(lf); !got || err != nil {
+		lf.Close()
+		t.Fatalf("lock: %v %v", got, err)
+	}
+	var once sync.Once
+	letGo = func() { once.Do(func() { filelock.Unlock(lf); lf.Close() }) }
+	t.Cleanup(letGo)
+	return path, letGo
+}
+
+// providerTrash is what magpie's trash keeps of Codex provider moves.
+func providerTrash(t *testing.T) []string {
+	t.Helper()
+	kept, _ := filepath.Glob(filepath.Join(settings.Dir(), "trash", "codex-provider", "*"))
+	return kept
+}
+
+// #3751: a Codex that has a thread open (the app-server after
+// thread/resume, a resumed TUI) holds the thread's writer lock and keeps
+// its rollout open to append to. A move put a new file in its place, and
+// what that Codex wrote next went to the old one: a turn the upstream
+// answered was gone from the rollout, and from what Codex sent after its
+// next resume. A thread a Codex holds is left as it was, its files, time
+// and row, with no copy kept (ErrActive: the Sessions page says to close
+// it in Codex); once the Codex lets go it moves, and the lock file left
+// behind goes, as Codex's own guard removes it.
+func TestMoveCodexProviderLeavesAnOpenThread(t *testing.T) {
+	_, codex := manageSetup(t)
+	main := filepath.Join(codex, "sessions", "2026", "09", "20", "rollout-2026-09-20T15-48-28-"+mgCX+".jsonl")
+	b, _ := os.ReadFile(main)
+	orig := bytes.Replace(b, []byte(`"model_provider":"openai"`), []byte(`"model_provider":"custom"`), 1)
+	old := time.Now().Add(-24 * time.Hour).Truncate(time.Second)
+	os.WriteFile(main, orig, 0o644)
+	os.Chtimes(main, old, old)
+	db := codexStateDB(t, codex, mgCX, "custom")
+	lock, letGo := holdThread(t, codex, mgCX)
+
+	if _, err := MoveCodexProvider(mgCX, "magpie"); !errors.Is(err, ErrActive) {
+		t.Fatalf("err %v, want ErrActive", err)
+	}
+	if b, _ := os.ReadFile(main); !bytes.Equal(b, orig) {
+		t.Fatal("moved while a Codex had it open")
+	}
+	if fi, _ := os.Stat(main); !fi.ModTime().Equal(old) {
+		t.Errorf("its time became %v, want %v", fi.ModTime(), old)
+	}
+	if p, _, _ := threadProvider(t, db, mgCX); p != "custom" {
+		t.Errorf("its row moved to %q, its files didn't", p)
+	}
+	if kept := providerTrash(t); len(kept) != 0 {
+		t.Errorf("a copy kept of a thread left as it was: %v", kept)
+	}
+	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(main), ".magpie-*")); len(left) > 0 {
+		t.Errorf("left behind: %v", left)
+	}
+
+	letGo()
+	mv, err := MoveCodexProvider(mgCX, "magpie")
+	if err != nil || len(mv.Files) != 1 || len(mv.DB) != 1 {
+		t.Fatalf("after the Codex let go: %+v %v", mv, err)
+	}
+	if got := codexMetaProvider(main); got != "magpie" {
+		t.Fatalf("file on %q", got)
+	}
+	if p, _, _ := threadProvider(t, db, mgCX); p != "magpie" {
+		t.Errorf("row on %q", p)
+	}
+	if _, err := os.Stat(lock); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the thread's lock file is left: %v", err)
+	}
+}
+
+// moveProbe is run by magpie_move_probe(), which a test's state database
+// calls from a trigger as a move writes a thread's row.
+var (
+	moveProbeOnce sync.Once
+	moveProbe     func()
+)
+
+// probeRowMove has probe run from inside the state database db as a move
+// writes a thread's row, which it does after the thread's files.
+func probeRowMove(t *testing.T, db string, probe func()) {
+	t.Helper()
+	moveProbeOnce.Do(func() {
+		sqlite.MustRegisterScalarFunction("magpie_move_probe", 0, func(*sqlite.FunctionContext, []driver.Value) (driver.Value, error) {
+			if moveProbe != nil {
+				moveProbe()
+			}
+			return nil, nil
+		})
+	})
+	moveProbe = probe
+	t.Cleanup(func() { moveProbe = nil })
+	d, err := sql.Open("sqlite", db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if _, err := d.Exec(`CREATE TRIGGER probe BEFORE UPDATE OF model_provider ON threads BEGIN SELECT magpie_move_probe(); END`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A move holds the thread as Codex's own archive and delete hold one while
+// they move its rollouts (thread-store's acquire_writer_lock): from before
+// its files are copied until its row is written. A Codex that opens the
+// thread meanwhile is turned away by Codex itself ("already has an active
+// writer"), never handed a file about to be put out of its place, and the
+// files and the row move together. Looked at from inside the row's write.
+func TestMoveCodexProviderHoldsTheThread(t *testing.T) {
+	_, codex := manageSetup(t)
+	main := filepath.Join(codex, "sessions", "2026", "09", "20", "rollout-2026-09-20T15-48-28-"+mgCX+".jsonl")
+	b, _ := os.ReadFile(main)
+	old := time.Now().Add(-24 * time.Hour)
+	os.WriteFile(main, bytes.Replace(b, []byte(`"model_provider":"openai"`), []byte(`"model_provider":"custom"`), 1), 0o644)
+	os.Chtimes(main, old, old)
+	db := codexStateDB(t, codex, mgCX, "custom")
+	lock := filepath.Join(codex, "thread-writer-locks", mgCX+".lock")
+	if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	probeRowMove(t, db, func() {
+		lf, err := os.OpenFile(lock, os.O_RDWR, 0)
+		if err != nil {
+			seen = append(seen, "no lock file")
+			return
+		}
+		defer lf.Close()
+		if got, _ := filelock.TryLock(lf); got {
+			filelock.Unlock(lf)
+			seen = append(seen, "free")
+		} else {
+			seen = append(seen, "held")
+		}
+		seen = append(seen, "file on "+codexMetaProvider(main))
+	})
+
+	if _, err := MoveCodexProvider(mgCX, "magpie"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(seen, ", "); got != "held, file on magpie" {
+		t.Fatalf("as the row was written: %s; want held, file on magpie", got)
+	}
+	if _, err := os.Stat(lock); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the thread's lock file is left: %v", err)
 	}
 }

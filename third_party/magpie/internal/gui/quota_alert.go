@@ -173,7 +173,7 @@ func alertClockDe(at, now time.Time) string {
 func alertText(lang string, a provider.QuotaAlert, bal float64, left bool, now time.Time) (title, body string) {
 	title = a.Name
 	if a.User != "" {
-		title += " · " + a.User
+		title += " · " + provider.AccountShownOf(a.Provider, a.User) // as its card names it (#4416)
 	}
 	if a.Kind != "" {
 		return title, reminderText(lang, a, now)

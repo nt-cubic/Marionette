@@ -142,6 +142,19 @@ func setCodexAutoReset(user string, week, expiring bool) error {
 	return settings.Save(s)
 }
 
+// SetCodexResetLead sets how many minutes before a reset about to run out
+// unused it is spent (resetLead), for every account: from
+// settings.CodexResetLeadLeast to CodexResetLeadMost, or 0 for the default
+// half hour.
+func SetCodexResetLead(minutes int) error {
+	if minutes != 0 && (minutes < settings.CodexResetLeadLeast || minutes > settings.CodexResetLeadMost) {
+		return fmt.Errorf("a reset about to expire is used from %d minutes to %d hours before it does, not %d minutes", settings.CodexResetLeadLeast, settings.CodexResetLeadMost/60, minutes)
+	}
+	s := settings.Load()
+	s.CodexResetLead = minutes
+	return settings.Save(s)
+}
+
 var autoReset = autoResets{file: "codex-autoreset.json"}
 
 type autoResets struct {

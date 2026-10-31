@@ -62,6 +62,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           t.after(() => browser.close());
           const page = await browser.newPage({ viewport: { width, height: 700 }, reducedMotion: "reduce" });
           page.setDefaultTimeout(5000);
+          page.setDefaultNavigationTimeout(60000);
           const errors = [];
           page.on("pageerror", (error) => errors.push(error.message));
           const seen = { read: 0, reveal: 0, copied: [] };
@@ -108,6 +109,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       t.after(() => browser.close());
       const page = await browser.newPage({ viewport: { width: 1100, height: 700 }, reducedMotion: "reduce" });
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       const seen = { read: 0, reveal: 0, copied: [] };
       await page.route("**/*", serve(lang, { web: false, held: false, seen }));
       await page.goto("http://magpie.test/?view=routing");

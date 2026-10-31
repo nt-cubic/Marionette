@@ -110,25 +110,23 @@ func (a *Agent) FailoverSaid() string {
 // writes the same files (Codex keeps each project's trust, a notice seen,
 // the model picked in its app in config.toml), and a copy started before
 // such a write has magpie's list all the same (#729).
+//
+// Of Codex's model lists only which models they hold counts, not every
+// byte of each entry: the Codex app's list (deskList) carries the ChatGPT
+// backend's entries as the backend sends them, asked for again each hour,
+// and every entry's details follow magpie's version and models.dev. A
+// copy running from before such a rewrite has the same models to pick
+// and works on, yet the row told the user to quit and reopen the Codex
+// app several times a day (Qyburn3 on X).
 func (a *Agent) startsWith() (pats []string, files []string, reads func() string) {
 	switch a.ID {
 	case "codex":
-		list := filepath.Join(filepath.Dir(a.Path), "magpie-models.json")
-		// the list written for the Codex app beside the sign-in (deskList)
-		desk := filepath.Join(filepath.Dir(a.Path), "magpie-desktop-models.json")
+		list, desk := codexLists(a.Path)
 		return []string{`(^|/)codex( |$)`}, []string{a.Path, list, desk}, func() string {
 			var b strings.Builder
-			for _, k := range []string{"model_provider", "model_catalog_json", "openai_base_url"} {
-				v, _ := edit.GetTOMLTop(a.Path, k)
-				b.WriteString(k + "=" + v + "\n")
-			}
-			t, _ := edit.GetTOMLTable(a.Path, "model_providers."+magpieID)
-			j, _ := json.Marshal(t)
-			b.Write(j)
-			c, _ := os.ReadFile(list)
-			b.Write(c)
-			d, _ := os.ReadFile(desk)
-			b.Write(d)
+			codexWiring(&b, a.Path)
+			b.WriteString(listedModels(list))
+			b.WriteString(listedModels(desk))
 			return b.String()
 		}
 	case "claude":
@@ -139,6 +137,73 @@ func (a *Agent) startsWith() (pats []string, files []string, reads func() string
 		}
 	}
 	return nil, nil, nil
+}
+
+// codexLists are the model lists magpie writes beside Codex's config at
+// path: its catalog as Codex's provider, and the Codex app's list beside
+// the sign-in (deskList).
+func codexLists(path string) (list, desk string) {
+	dir := filepath.Dir(path)
+	return filepath.Join(dir, "magpie-models.json"), filepath.Join(dir, "magpie-desktop-models.json")
+}
+
+// codexWiring writes where Codex's config sends it, as magpie writes it:
+// its provider, its catalog's name, its base URL and magpie's table.
+func codexWiring(b *strings.Builder, path string) {
+	for _, k := range []string{"model_provider", "model_catalog_json", "openai_base_url"} {
+		v, _ := edit.GetTOMLTop(path, k)
+		b.WriteString(k + "=" + v + "\n")
+	}
+	t, _ := edit.GetTOMLTable(path, "model_providers."+magpieID)
+	j, _ := json.Marshal(t)
+	b.Write(j)
+}
+
+// listedModels is which models the Codex model list at path holds, each
+// slug with its visibility, in no order: what a copy started on it can
+// pick. A list that doesn't parse is taken whole, its every byte; none
+// there is "".
+func listedModels(path string) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var l struct {
+		Models []struct {
+			Slug       string `json:"slug"`
+			Visibility string `json:"visibility"`
+		} `json:"models"`
+	}
+	if json.Unmarshal(raw, &l) != nil {
+		return "\n" + string(raw)
+	}
+	ms := make([]string, 0, len(l.Models))
+	for _, m := range l.Models {
+		ms = append(ms, m.Slug+" "+m.Visibility)
+	}
+	slices.Sort(ms)
+	return "\n" + filepath.Base(path) + ":" + strings.Join(ms, ",")
+}
+
+// readsBefore is what an older magpie read of the files startsWith names,
+// for a digest it stashed to be taken as the one of now when nothing
+// changed since: Codex's lists byte for byte. Without it every Codex
+// started before the update was told to reopen once more. nil for an
+// agent whose part read the same then.
+func (a *Agent) readsBefore() func() string {
+	if a.ID != "codex" {
+		return nil
+	}
+	list, desk := codexLists(a.Path)
+	return func() string {
+		var b strings.Builder
+		codexWiring(&b, a.Path)
+		c, _ := os.ReadFile(list)
+		b.Write(c)
+		d, _ := os.ReadFile(desk)
+		b.Write(d)
+		return b.String()
+	}
 }
 
 // runningProc is a process found for an agent: how long it has run, and
@@ -175,6 +240,14 @@ func (a *Agent) changedAt(files []string, reads func() string) time.Time {
 	n, err := strconv.ParseInt(at, 10, 64)
 	if ok && err == nil && was == digest {
 		return time.Unix(0, n)
+	}
+	// stashed by an older magpie, over the same files as they are now
+	if ok && err == nil && a.readsBefore() != nil {
+		old := sha256.Sum256([]byte(a.readsBefore()()))
+		if was == hex.EncodeToString(old[:8]) {
+			stash(map[string]string{key: digest + " " + at})
+			return time.Unix(0, n)
+		}
 	}
 	// a change no file's time shows (Claude Desktop's models are the
 	// gateway's, not a file's) is put at when it is first seen

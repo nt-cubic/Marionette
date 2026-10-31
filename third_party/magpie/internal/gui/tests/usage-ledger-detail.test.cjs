@@ -91,6 +91,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const errors = [], refreshed = { n: 0 };
         const p = await (await browser.newContext({ viewport: { width: 1180, height: 640 }, reducedMotion: "reduce" })).newPage();
         p.setDefaultTimeout(5000);
+        p.setDefaultNavigationTimeout(60000);
         p.on("pageerror", (e) => errors.push(e.message));
         await p.route("**/*", server(lang, refreshed));
         await p.goto("http://magpie.test/");

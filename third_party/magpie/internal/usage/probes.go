@@ -29,18 +29,33 @@ const SourceProbe = "probe"
 // the model requests the tool made are rows of their own that are.
 const SourceMCP = "mcp"
 
+// SourceSearch is Record.Source for one ask of a search API (Tavily,
+// Brave, …) by a web search magpie ran (cybercaius on Discord: which
+// search API each search used couldn't be seen). Its Kind is
+// "web_search", Agent the agent the search was for, Requested the API's
+// name, Host where it was asked, ProviderKeyID and ProviderKeyName the key
+// (by a hash and masked), Millis how long it took, Status the API's when
+// it refused the key, and Error what a failed one said ("found nothing"
+// for an answer with no page). The query is never kept. It rides the
+// probes' lane as an MCP call does: listed on the request log and counted
+// nowhere, since it has no tokens and is no model's.
+const SourceSearch = "search"
+
 // KindMCP is an MCP tool call's Kind, the purpose the request log picks
 // them by.
 const KindMCP = "mcp"
 
-// IsProbe is a request magpie sent on its own (SourceProbe), or an MCP
-// tool call (SourceMCP): a row listed and counted nowhere.
-func (r Record) IsProbe() bool { return r.Source == SourceProbe || r.Source == SourceMCP }
+// IsProbe is a request magpie sent on its own (SourceProbe), an MCP tool
+// call (SourceMCP) or a search API's (SourceSearch): a row listed and
+// counted nowhere.
+func (r Record) IsProbe() bool {
+	return r.Source == SourceProbe || r.Source == SourceMCP || r.Source == SourceSearch
+}
 
 // IsProbe is a row of such a request. A packed row keeps the row's Source,
 // not its record's, so the request log asks the row.
 func (r Row) IsProbe() bool {
-	return r.Source == SourceProbe || r.Source == SourceMCP || r.Record.IsProbe()
+	return r.Source == SourceProbe || r.Source == SourceMCP || r.Source == SourceSearch || r.Record.IsProbe()
 }
 
 // probeRow is a probe's record and where its line ends in the log, as a
@@ -119,6 +134,10 @@ func probeChunk(probes []probeRow, since time.Time, renames provider.Renames, ho
 				r.Provider = renames.Of(r.Provider, r.Time)
 			}
 			c.add(Row{Record: r, Source: SourceMCP}, "", p.off, false)
+			continue
+		}
+		if r.Source == SourceSearch { // a search API is no provider
+			c.add(Row{Record: r, Source: SourceSearch}, "", p.off, false)
 			continue
 		}
 		r.Provider = probeProvider(r, renames, hosts, sites)

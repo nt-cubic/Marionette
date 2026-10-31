@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // zcodeEndedWords and zcodeSpentWords are the ZCode plugin's own answers
@@ -43,4 +45,23 @@ func zcodeTrialRefused(c candidate, status int, body []byte) bool {
 		return m != nil && strings.EqualFold(m[1]+"-Trial", c.model)
 	}
 	return false
+}
+
+// zcodeTrialBlocked says c, a ZCode plugin account asked for one of its
+// Start Plan trial entries, got zcode.z.ai's edge firewall's block page
+// (Alibaba Cloud's 405, provider.EdgeBlocked, as the plugin's startBlocked
+// words it). A trial entry is sent to zcode.z.ai alone; a dual account's
+// plain models go to its GLM Coding Plan at api.z.ai, which answered while
+// zcode.z.ai blocked the address (plugins#545, jinpy666). So the block
+// rests the trial entry, and the account's plain model is still asked: on
+// a gift-only account it goes to zcode.z.ai too, is blocked the same, and
+// that rests the account (windy_66454 on Discord, 10-31: glm-trial's two
+// members, GLM-5.3-Flash and GLM-5.3-Flash-Trial, shared one account rest
+// and the plain one was never asked). ZCode's risk control blocking the
+// account (code 3012, failRestricted) is the account's, and is read before.
+func zcodeTrialBlocked(c candidate, status int, body []byte) bool {
+	if status < 400 || c.p.PluginProvider() != "zcode" || !strings.HasSuffix(strings.ToLower(c.model), "-trial") {
+		return false
+	}
+	return provider.EdgeBlocked(wordsOf(body)) && !restrictedSaid(status, wordsOf(body))
 }

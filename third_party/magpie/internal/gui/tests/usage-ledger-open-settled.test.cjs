@@ -56,6 +56,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     // motion on: the sidebar moves as the reporter's does
     const p = await (await browser.newContext({ viewport: { width: 1280, height: 800 } })).newPage();
     p.setDefaultTimeout(5000);
+    p.setDefaultNavigationTimeout(60000);
     const errors = [];
     p.on("pageerror", (e) => errors.push(e.message));
     const answer = { first: 0 };

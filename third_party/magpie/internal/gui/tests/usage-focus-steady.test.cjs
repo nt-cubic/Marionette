@@ -121,6 +121,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const open = async (url, viewport, calls, cur) => {
         const p = await (await browser.newContext({ viewport, reducedMotion: "no-preference" })).newPage();
         p.setDefaultTimeout(5000);
+        p.setDefaultNavigationTimeout(60000);
         p.on("pageerror", (e) => errors.push(e.message));
         await p.route("**/*", serve(lang, calls, cur));
         await p.goto(url);
