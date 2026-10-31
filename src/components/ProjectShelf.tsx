@@ -1833,9 +1833,9 @@ export function ProjectShelf({
         </button>
       )}
       {onOpenCouncil && (
-        <button className="shelf-memo-entry" type="button" onClick={onOpenCouncil} title="多智能体协作(Council)">
+        <button className="shelf-memo-entry" type="button" onClick={onOpenCouncil} title={t("council.shelfEntryTitle")}>
           <Users size={13} aria-hidden />
-          Council 协作
+          {t("council.shelfEntry")}
         </button>
       )}
 

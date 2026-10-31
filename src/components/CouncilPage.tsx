@@ -40,6 +40,7 @@ import {
   type RunSummary,
 } from "../lib/council";
 import { isTauriRuntime, listAgents } from "../lib/api";
+import { t as tr, useT } from "../lib/i18n";
 import { showToast } from "../lib/toast";
 import { taskStatusLabel, type AgentLite } from "../lib/council";
 
@@ -51,25 +52,45 @@ interface MemberDraft extends MemberSpec {
   key: string;
 }
 
-const DEFAULT_ROLES: ReadonlyArray<string> = ["系统架构师", "批判性评审", "算法分析", "测试架构", "备选方案研究", "数学验证"];
+/** 建议角色键序(name/duty 双语都在 fe-council 片段)。 */
+const ROLE_KEYS: ReadonlyArray<string> = [
+  "architect",
+  "reviewer",
+  "analyst",
+  "tester",
+  "researcher",
+  "verifier",
+];
 
-function roleAt(index: number): string {
-  return DEFAULT_ROLES[index % DEFAULT_ROLES.length] ?? "评审";
+function roleName(key: string): string {
+  return tr(`council.role.${key}.name` as Parameters<typeof tr>[0]);
+}
+
+function roleDuty(key: string): string {
+  return tr(`council.role.${key}.duty` as Parameters<typeof tr>[0]);
 }
 
 function defaultDrafts(): MemberDraft[] {
   return [
-    { key: "m1", id: "architect", displayName: "系统架构师", model: "", role: "负责总体架构设计与技术选型", isChair: false },
-    { key: "m2", id: "reviewer", displayName: "批判性评审", model: "", role: "负责找出方案的逻辑与工程缺陷", isChair: true },
-    { key: "m3", id: "analyst", displayName: "算法分析", model: "", role: "负责算法正确性与复杂度分析", isChair: false },
+    { key: "m1", id: "architect", displayName: roleName("architect"), model: "", role: roleDuty("architect"), isChair: false },
+    { key: "m2", id: "reviewer", displayName: roleName("reviewer"), model: "", role: roleDuty("reviewer"), isChair: true },
+    { key: "m3", id: "analyst", displayName: roleName("analyst"), model: "", role: roleDuty("analyst"), isChair: false },
   ];
 }
 
-const MODE_OPTIONS: Array<{ id: CouncilMode; label: string; hint: string }> = [
-  { id: "council_only", label: "仅审议", hint: "模型审议并产出评审过的计划,不改动任何文件" },
-  { id: "council_and_execution", label: "审议 + 执行", hint: "计划批准后由 coding agent 执行(执行集成开发中)" },
-  { id: "autonomous", label: "自治研发", hint: "规划、执行、测试、评估、修订的受限循环(开发中)" },
+const MODE_OPTIONS: ReadonlyArray<{ id: CouncilMode }> = [
+  { id: "council_only" },
+  { id: "council_and_execution" },
+  { id: "autonomous" },
 ];
+
+function modeLabel(id: CouncilMode): string {
+  return tr(`council.setup.mode.${id}` as Parameters<typeof tr>[0]);
+}
+
+function modeHint(id: CouncilMode): string {
+  return tr(`council.setup.mode.${id}.hint` as Parameters<typeof tr>[0]);
+}
 
 // ---------------------------------------------------------------------------
 // 主组件
@@ -82,6 +103,7 @@ interface CouncilPageProps {
 type View = { kind: "list" } | { kind: "setup"; prefill?: string } | { kind: "run"; runId: string };
 
 export function CouncilPage({ onClose }: CouncilPageProps) {
+  const t = useT();
   const [view, setView] = useState<View>({ kind: "list" });
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [detail, setDetail] = useState<RunDetail | null>(null);
@@ -146,7 +168,7 @@ export function CouncilPage({ onClose }: CouncilPageProps) {
               await councilDeleteRun(runId);
               await refreshRuns();
             } catch (e) {
-              showToast({ text: `删除失败:${e}`, tone: "error" });
+              showToast({ text: tr("council.error.deleteFailed", { error: String(e) }), tone: "error" });
             }
           }}
         />
@@ -174,9 +196,9 @@ export function CouncilPage({ onClose }: CouncilPageProps) {
       {view.kind === "run" && !detail && (
         <div className="council-empty">
           <button type="button" className="council-back" onClick={() => setView({ kind: "list" })}>
-            <ChevronLeft size={14} /> 返回
+            <ChevronLeft size={14} /> {t("council.run.back")}
           </button>
-          <p>run 不存在或已删除。</p>
+          <p>{t("council.list.missing")}</p>
         </div>
       )}
     </div>
@@ -195,30 +217,31 @@ function CouncilListView(props: {
   onDelete: (runId: string) => void;
 }) {
   const { runs, onNew, onOpen, onRefresh, onDelete } = props;
+  const t = useT();
   return (
     <div className="council-list">
       <div className="council-list__head">
         <div>
-          <h2>多智能体协作 · Council</h2>
-          <p className="council-sub">多个模型独立提案、互相质询、共同修订,产出经评审的实施计划。</p>
+          <h2>{t("council.list.title")}</h2>
+          <p className="council-sub">{t("council.list.subtitle")}</p>
         </div>
         <button type="button" className="council-btn council-btn--primary" onClick={() => onNew()}>
-          <Plus size={14} /> 新建审议
+          <Plus size={14} /> {t("council.list.new")}
         </button>
       </div>
       {runs.length === 0 ? (
         <div className="council-empty">
           <Users size={28} />
-          <p>还没有审议记录。点「新建审议」,给三个模型一个复杂任务。</p>
+          <p>{t("council.list.empty")}</p>
         </div>
       ) : (
         <div className="council-run-rows">
           {runs.map((run) => (
             <div key={run.runId} className="council-run-row">
               <button type="button" className="council-run-row__main" onClick={() => onOpen(run.runId)}>
-                <span className="council-run-row__title">{run.title || "(未命名任务)"}</span>
+                <span className="council-run-row__title">{run.title || t("council.list.untitled")}</span>
                 <span className="council-run-row__meta">
-                  {phaseLabel(run.phase)} · {run.memberCount} 成员 · {run.rounds} 轮 · {run.messageCount} 条消息
+                  {t("council.list.runMeta", { phase: phaseLabel(run.phase), members: run.memberCount, rounds: run.rounds, messages: run.messageCount })}
                 </span>
               </button>
               <span
@@ -232,7 +255,7 @@ function CouncilListView(props: {
               >
                 {phaseLabel(run.phase)}
               </span>
-              <button type="button" className="council-icon-btn" title="删除" onClick={() => onDelete(run.runId)}>
+              <button type="button" className="council-icon-btn" title={t("council.list.delete")} onClick={() => onDelete(run.runId)}>
                 <Trash2 size={14} />
               </button>
             </div>
@@ -240,7 +263,7 @@ function CouncilListView(props: {
         </div>
       )}
       <button type="button" className="council-link-btn" onClick={onRefresh}>
-        刷新列表
+        {t("council.list.refresh")}
       </button>
     </div>
   );
@@ -266,6 +289,7 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
   const [agents, setAgents] = useState<AgentLite[]>([]);
   const [execAgentId, setExecAgentId] = useState("");
   const [execCwd, setExecCwd] = useState("");
+  const t = useT();
 
   useEffect(() => {
     void councilListModels().then((result) => {
@@ -292,15 +316,16 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
   const addMember = () => {
     setDrafts((prev) => {
       const n = prev.length + 1;
-      const role = roleAt(n - 1);
+      const key = ROLE_KEYS[(n - 1) % ROLE_KEYS.length] ?? "reviewer";
+      const name = roleName(key);
       return [
         ...prev,
         {
           key: `m${n}-${Date.now()}`,
-          id: deriveMemberId(role, prev.map((d) => d.id)),
-          displayName: role,
+          id: deriveMemberId(name, prev.map((d) => d.id)),
+          displayName: name,
           model: "",
-          role: "",
+          role: roleDuty(key),
           isChair: false,
         },
       ];
@@ -322,11 +347,11 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
   const submit = async () => {
     setError(null);
     if (task.trim().length < 10) {
-      setError("任务描述太短——至少写清目标与边界。");
+      setError(t("council.setup.taskTooShort"));
       return;
     }
     if (drafts.some((d) => !d.model)) {
-      setError("每个成员都要选择一个模型。");
+      setError(t("council.setup.noModel"));
       return;
     }
     setCreating(true);
@@ -356,7 +381,7 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
       if (detail?.spec?.runId) {
         onCreated(detail.spec.runId);
       } else {
-        setError("创建失败:当前环境不支持(需要桌面版)。");
+        setError(t("council.setup.createFailed"));
       }
     } catch (e) {
       setError(String(e));
@@ -368,33 +393,31 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
   return (
     <div className="council-setup">
       <button type="button" className="council-back" onClick={onBack}>
-        <ChevronLeft size={14} /> 返回列表
+        <ChevronLeft size={14} /> {t("council.setup.back")}
       </button>
-      <h2>新建审议</h2>
+      <h2>{t("council.setup.title")}</h2>
 
       {!engineReady && (
-        <div className="council-warn">
-          模型共享引擎未就绪。先在左下角「模型共享」里启动引擎(需要至少一个可用模型来源),再回到这里。
-        </div>
+        <div className="council-warn">{t("council.setup.engineNotReady")}</div>
       )}
 
       <label className="council-field">
-        <span>标题(可选)</span>
-        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="例如:为缓存模块设计并发安全方案" />
+        <span>{t("council.setup.titleLabel")}</span>
+        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t("council.setup.titlePlaceholder")} />
       </label>
 
       <label className="council-field">
-        <span>任务 *</span>
+        <span>{t("council.setup.taskLabel")}</span>
         <textarea
           value={task}
           onChange={(e) => setTask(e.target.value)}
           rows={6}
-          placeholder="描述要解决的软件工程问题:目标、约束、现有代码背景、期望产出。越具体,提案质量越高。"
+          placeholder={t("council.setup.taskPlaceholder")}
         />
       </label>
 
       <div className="council-field">
-        <span>运行模式</span>
+        <span>{t("council.setup.modeLabel")}</span>
         <div className="council-modes">
           {MODE_OPTIONS.map((opt) => (
             <button
@@ -402,18 +425,18 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
               type="button"
               className={`council-mode ${mode === opt.id ? "is-active" : ""}`}
               onClick={() => setMode(opt.id)}
-              title={opt.hint}
+              title={modeHint(opt.id)}
             >
-              {opt.label}
+              {modeLabel(opt.id)}
             </button>
           ))}
         </div>
-        <p className="council-sub">{MODE_OPTIONS.find((o) => o.id === mode)?.hint}</p>
+        <p className="council-sub">{modeHint(mode)}</p>
       </div>
 
       {mode !== "council_only" && (
         <div className="council-field">
-          <span>执行器(计划批准后由该 agent 落码)</span>
+          <span>{t("council.setup.executorLabel")}</span>
           <div className="council-exec-row">
             <select value={execAgentId} onChange={(e) => setExecAgentId(e.target.value)}>
               {agents.map((a) => (
@@ -425,19 +448,17 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
             <input
               value={execCwd}
               onChange={(e) => setExecCwd(e.target.value)}
-              placeholder="项目根目录(绝对路径,git 仓库)"
+              placeholder={t("council.setup.executorCwdPlaceholder")}
             />
           </div>
-          <p className="council-sub">
-            执行集成为早期版本:并行任务用 git worktree 隔离,冲突显式上报;不填则批准后仅交付计划。
-          </p>
+          <p className="council-sub">{t("council.setup.executorHint")}</p>
         </div>
       )}
 
       <div className="council-field">
         <span>
-          成员({drafts.length} 个,{distinctModels} 个不同模型
-          {distinctModels < Math.min(3, drafts.length) ? " —— 建议至少 3 个不同模型" : ""})
+          {t("council.setup.membersLabel", { count: drafts.length, models: distinctModels })}
+          {distinctModels < Math.min(3, drafts.length) ? t("council.setup.membersFewModels") : ""}
         </span>
         <div className="council-members">
           {drafts.map((draft) => (
@@ -446,28 +467,28 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
                 <input
                   value={draft.displayName}
                   onChange={(e) => updateDraft(draft.key, { displayName: e.target.value })}
-                  placeholder="角色名"
+                  placeholder={t("council.setup.memberNamePlaceholder")}
                 />
                 <button
                   type="button"
                   className={`council-chair-toggle ${draft.isChair ? "is-chair" : ""}`}
                   onClick={() => setChair(draft.key)}
-                  title={draft.isChair ? "当前主席(点击其他成员转移)" : "设为主席"}
+                  title={draft.isChair ? t("council.setup.memberChairTitle") : t("council.setup.memberSetChair")}
                 >
-                  {draft.isChair ? "★ 主席" : "☆ 主席"}
+                  {draft.isChair ? t("council.setup.memberChair") : t("council.setup.memberChairOff")}
                 </button>
                 <button
                   type="button"
                   className="council-icon-btn"
                   onClick={() => removeMember(draft.key)}
                   disabled={drafts.length <= 2}
-                  title="移除"
+                  title={t("council.setup.memberRemove")}
                 >
                   <Trash2 size={13} />
                 </button>
               </div>
               <select value={draft.model} onChange={(e) => updateDraft(draft.key, { model: e.target.value })}>
-                <option value="">选择模型…</option>
+                <option value="">{t("council.setup.memberModelPlaceholder")}</option>
                 {models.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.id}
@@ -477,19 +498,19 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
               <input
                 value={draft.role}
                 onChange={(e) => updateDraft(draft.key, { role: e.target.value })}
-                placeholder="角色职责(进提示词)"
+                placeholder={t("council.setup.memberRolePlaceholder")}
               />
             </div>
           ))}
         </div>
         <button type="button" className="council-link-btn" onClick={addMember} disabled={drafts.length >= 8}>
-          + 添加成员
+          {t("council.setup.addMember")}
         </button>
       </div>
 
       <div className="council-params">
         <label className="council-field council-field--inline">
-          <span>审议轮次</span>
+          <span>{t("council.setup.roundsLabel")}</span>
           <input
             type="number"
             min={1}
@@ -499,7 +520,7 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
           />
         </label>
         <label className="council-field council-field--inline">
-          <span>并发上限</span>
+          <span>{t("council.setup.concurrencyLabel")}</span>
           <input
             type="number"
             min={1}
@@ -509,7 +530,7 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
           />
         </label>
         <label className="council-field council-field--inline">
-          <span>请求预算(次)</span>
+          <span>{t("council.setup.budgetLabel")}</span>
           <input value={maxRequests} onChange={(e) => setMaxRequests(e.target.value.replace(/\D/g, ""))} placeholder="60" />
         </label>
       </div>
@@ -518,7 +539,7 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
 
       <div className="council-setup__actions">
         <button type="button" className="council-btn council-btn--primary" disabled={creating || !engineReady} onClick={submit}>
-          {creating ? "启动中…" : "开始审议"}
+          {creating ? t("council.setup.starting") : t("council.setup.start")}
         </button>
       </div>
     </div>
@@ -532,6 +553,7 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
 function CouncilRunView(props: { detail: RunDetail; onBack: () => void; onReload: () => void }) {
   const { detail, onBack, onReload } = props;
   const { spec, state, messages, plan } = detail;
+  const t = useT();
   const groups = useMemo(() => groupTimeline(messages), [messages]);
   const running = state.phase !== "paused" && !isTerminalPhase(state.phase) && state.phase !== "plan_ready";
 
@@ -552,27 +574,27 @@ function CouncilRunView(props: { detail: RunDetail; onBack: () => void; onReload
     <div className="council-run">
       <div className="council-run__head">
         <button type="button" className="council-back" onClick={onBack}>
-          <ChevronLeft size={14} /> 返回
+          <ChevronLeft size={14} /> {t("council.run.back")}
         </button>
         <div className="council-run__title">
           <strong>{spec.title}</strong>
-          <span className="council-badge">{phaseLabel(state.phase)}{state.round > 1 ? ` · 第 ${state.round} 轮` : ""}</span>
-          {detail.live && <span className="council-badge council-badge--live">运行中</span>}
+          <span className="council-badge">{phaseLabel(state.phase)}{state.round > 1 ? ` · ${t("council.run.roundBadge", { n: state.round })}` : ""}</span>
+          {detail.live && <span className="council-badge council-badge--live">{t("council.run.live")}</span>}
         </div>
         <div className="council-run__controls">
           {state.phase === "paused" && (
             <button type="button" className="council-btn" onClick={() => control("resume")}>
-              <Play size={13} /> 继续
+              <Play size={13} /> {t("council.run.resume")}
             </button>
           )}
           {running && (
             <button type="button" className="council-btn" onClick={() => control("pause")}>
-              <Pause size={13} /> 暂停
+              <Pause size={13} /> {t("council.run.pause")}
             </button>
           )}
           {!isTerminalPhase(state.phase) && (
             <button type="button" className="council-btn council-btn--danger" onClick={() => control("cancel")}>
-              <CircleStop size={13} /> 取消
+              <CircleStop size={13} /> {t("council.run.cancel")}
             </button>
           )}
         </div>
@@ -593,24 +615,24 @@ function CouncilRunView(props: { detail: RunDetail; onBack: () => void; onReload
           </div>
         ))}
         <div className="council-budget">
-          {state.budgetUsage.requests} 次请求 · ~{state.budgetUsage.tokensEst.toLocaleString()} tokens
-          {spec.budget.maxRequests ? ` / 上限 ${spec.budget.maxRequests}` : ""}
+          {t("council.run.budget", { requests: state.budgetUsage.requests, tokens: state.budgetUsage.tokensEst.toLocaleString() })}
+          {spec.budget.maxRequests ? t("council.run.budgetLimit", { limit: spec.budget.maxRequests }) : ""}
         </div>
       </div>
 
       {state.tasks.length > 0 && (
         <section className="council-tasks">
-          <h3 className="council-tgroup__title">执行任务({state.tasks.length})</h3>
-          {state.tasks.map((t) => (
-            <div key={t.stepId} className="council-task">
-              <span className="council-task__id">{t.stepId}</span>
-              <span className="council-task__title">{t.title}</span>
-              <span className={`council-task__status council-task__status--${typeof t.status === "string" ? t.status : "failed"}`}>
-                {taskStatusLabel(t.status)}
+          <h3 className="council-tgroup__title">{t("council.run.tasksTitle", { count: state.tasks.length })}</h3>
+          {state.tasks.map((task) => (
+            <div key={task.stepId} className="council-task">
+              <span className="council-task__id">{task.stepId}</span>
+              <span className="council-task__title">{task.title}</span>
+              <span className={`council-task__status council-task__status--${typeof task.status === "string" ? task.status : "failed"}`}>
+                {taskStatusLabel(task.status)}
               </span>
-              {t.changes.length > 0 && (
-                <span className="council-task__changes" title={t.changes.join(" · ")}>
-                  {t.changes.length} 个文件
+              {task.changes.length > 0 && (
+                <span className="council-task__changes" title={task.changes.join(" · ")}>
+                  {t("council.run.taskFiles", { count: task.changes.length })}
                 </span>
               )}
             </div>
@@ -629,7 +651,7 @@ function CouncilRunView(props: { detail: RunDetail; onBack: () => void; onReload
             ))}
           </section>
         ))}
-        {messages.length === 0 && <div className="council-empty">审议尚未开始……</div>}
+        {messages.length === 0 && <div className="council-empty">{t("council.run.timelineEmpty")}</div>}
       </div>
     </div>
   );
@@ -674,17 +696,18 @@ function CouncilPlanView(props: {
   onApprove: (action: "accept" | "reject") => void;
 }) {
   const { plan, phase, onApprove } = props;
+  const t = useT();
   return (
     <section className="council-plan">
       <header className="council-plan__head">
-        <h3>实施计划</h3>
+        <h3>{t("council.plan.title")}</h3>
         {phase === "plan_ready" ? (
           <div className="council-plan__actions">
             <button type="button" className="council-btn" onClick={() => onApprove("reject")}>
-              再议
+              {t("council.plan.reconsider")}
             </button>
             <button type="button" className="council-btn council-btn--primary" onClick={() => onApprove("accept")}>
-              接受计划
+              {t("council.plan.accept")}
             </button>
           </div>
         ) : (
@@ -698,16 +721,16 @@ function CouncilPlanView(props: {
             <div className="council-plan__step-title">
               <span className="council-plan__step-id">{step.id}</span>
               <strong>{step.title}</strong>
-              {step.dependsOn.length > 0 && <span className="council-plan__dep">依赖 {step.dependsOn.join(", ")}</span>}
+              {step.dependsOn.length > 0 && <span className="council-plan__dep">{t("council.plan.dependsOn", { deps: step.dependsOn.join(", ") })}</span>}
             </div>
             <div className="council-plan__step-detail">{step.detail}</div>
-            <div className="council-plan__step-acceptance">验收:{step.acceptance}</div>
+            <div className="council-plan__step-acceptance">{t("council.plan.acceptance", { text: step.acceptance })}</div>
           </li>
         ))}
       </ol>
       {plan.openQuestions.length > 0 && (
         <div className="council-plan__section">
-          <h4>遗留不确定性(已显式记录,不接受和稀泥)</h4>
+          <h4>{t("council.plan.openQuestions")}</h4>
           <ul>
             {plan.openQuestions.map((q, i) => (
               <li key={i}>{q}</li>
@@ -717,7 +740,7 @@ function CouncilPlanView(props: {
       )}
       {plan.verification.length > 0 && (
         <div className="council-plan__section">
-          <h4>验证命令</h4>
+          <h4>{t("council.plan.verification")}</h4>
           <ul className="council-plan__verify">
             {plan.verification.map((v, i) => (
               <li key={i}>

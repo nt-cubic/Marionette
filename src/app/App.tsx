@@ -8727,8 +8727,8 @@ export function App() {
               { id: "new-chat", label: t("palette.newChat"), run: () => void handleCreateChatSession() },
               {
                 id: "open-council",
-                label: "打开 Council 多模型协作",
-                hint: "多模型审议与计划",
+                label: t("council.paletteOpen"),
+                hint: t("council.paletteOpenHint"),
                 run: () => {
                   setCouncilOpen(true);
                   setMemoActive(false);
