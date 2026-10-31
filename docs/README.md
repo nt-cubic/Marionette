@@ -3,6 +3,7 @@
 | 位置 | 性质 |
 |---|---|
 | [`CURRENT.md`](./CURRENT.md) | **现行契约**：当前实现状态、产品底线、工程入口（含「跨用引擎」一节）。与代码冲突时以代码和本文件为准 |
+| [`ui-language.md`](./ui-language.md) | **视觉语言**：对话流就是设计系统（3px 卡、You 卡左边条、composer 芯片）。改任何用户可见界面前先读。技能 `.grok/skills/marionette-ui` |
 | [`i18n-guide.md`](./i18n-guide.md) | **i18n 规范**：中英双语的词典/`ts!` 用法、术语表、探测串双语并集红线与验收命令（2026-10-30 落地） |
 | [`cross-agent-bridge.md`](./cross-agent-bridge.md) | 指针：跨用桥已落地，现行行为在 `CURRENT.md`；完整设计稿在 [`archive/cross-agent-bridge.md`](./archive/cross-agent-bridge.md) |
 | [`close-freeze-deadlock.md`](./close-freeze-deadlock.md) | 案例记录：关窗死锁的成因、日志证据链，以及后续 kill 路径必须遵守的规则 |

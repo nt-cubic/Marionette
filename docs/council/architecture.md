@@ -149,8 +149,7 @@ paused → paused_from 指向的原状态(或 cancelled)
   **列表**(空态是椭圆桌+绕席示意;有历史则席位色点 + 行卡)、
   **召集**(宽时左简报/右席位;议题是 You 卡,模式芯片和步进器收在卡底栏,页脚钉 CTA)、
   **运行**(成员状态条 + 分组时间线 + 计划面板 + 暂停/取消/批准)。
-  地面 `--panel-muted`,桌面/席位/发言 `--panel-raised` + `--radius` + 1px 边、无阴影;
-  身份色 3px 通高左边条(对齐 You 卡),芯片 `--radius-sm`,卡距 6px;
+  表面走 [`docs/ui-language.md`](../ui-language.md)（对话流：3px 卡、You 卡左边条、芯片）；
   内容铺满中栏(无居中 max-width),容器查询 780 叠成单列
   (双侧栏窄列 ≈ 466 起)。伪标签 `councilOpen`/`councilActive`
   与收纳盒同语义。
