@@ -77,6 +77,7 @@ import {
   type GrokTurnUsage,
   type SessionUsageState,
 } from "../lib/usage";
+import { recordTurnUsage } from "../lib/usageLedger";
 import {
   bindDesktopNotifyFocusHandlers,
   cancelScheduledDesktopNotify,
@@ -2513,6 +2514,15 @@ export function App() {
           turnTokens != null
             ? buildTurnStats(turnTokens, { sentAt, firstChunkAt, endedAt })
             : null;
+        // 跨会话用量台账:每轮落一笔(今天/7天/30天聚合,见 UsageLedgerSection)。
+        // 与上面的盖戳共用同一条单窗口不变量——同一轮只被一个窗口处理。
+        if (turnStats) {
+          recordTurnUsage({
+            agentId: sessionsRef.current.find((s) => s.id === payload.sessionId)?.agentId,
+            stats: turnStats,
+            endedAt,
+          });
+        }
 
         // Stamp events first (and sync the ref) so later transcript restore
         // can seed lastTurnStats from this turn.
