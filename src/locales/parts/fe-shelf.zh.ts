@@ -117,6 +117,7 @@ export const zh = {
   "shelf.tgLastError": "最近一次发送失败：{error}",
   "shelf.removeProject": "移除项目",
   "shelf.deleteConversation": "删除对话",
+  "shelf.confirmDelete": "确认删除",
   "shelf.removeProjectDesc": "仅从列表中移除，不会删除磁盘上的文件。",
   "shelf.deleteConversationDesc": "这会删除本地对话记录，且无法撤销。",
   "shelf.importedSuffix": " · 导入",

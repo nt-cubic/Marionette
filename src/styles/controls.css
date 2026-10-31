@@ -896,6 +896,41 @@
   background: var(--panel-soft);
 }
 
+/* 内联删除确认（2026-10-31）：第一次点击后按钮原地展开变红成「确认删除」，
+   再点即删；鼠标离开所在行自动复位。连续清理多行不用反复关弹窗。 */
+.chat-row__action--danger.is-armed,
+.session-row__action--danger.is-armed {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: auto;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 9px;
+  background: var(--red);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease,
+    padding 140ms ease;
+}
+
+.chat-row__action--danger.is-armed:hover,
+.session-row__action--danger.is-armed:hover {
+  background: var(--red);
+  color: #fff;
+  filter: brightness(1.1);
+}
+
+.row-action-confirm {
+  white-space: nowrap;
+  line-height: 1;
+}
+
 .chat-row__rename {
   display: flex;
   flex: 1 1 auto;

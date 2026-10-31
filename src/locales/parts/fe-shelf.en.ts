@@ -119,6 +119,7 @@ export const en = {
   "shelf.tgLastError": "Last send failed: {error}",
   "shelf.removeProject": "Remove project",
   "shelf.deleteConversation": "Delete conversation",
+  "shelf.confirmDelete": "Confirm",
   "shelf.removeProjectDesc": "Removes it from the list only; files on disk stay.",
   "shelf.deleteConversationDesc": "This deletes the local conversation history and cannot be undone.",
   "shelf.importedSuffix": " · Imported",
