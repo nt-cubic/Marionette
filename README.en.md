@@ -86,14 +86,30 @@ Keys for OpenCode Go, DeepSeek, GLM, Kimi, OpenRouter and xAI, plus Grok and Cha
 
 MCP, Skills, long-term memory — one scan, one place. The same tool works for every agent; your preferences follow you across switches.
 
+## Memo Box
+
+A paragraph, a link, an image, a folder — drop it in and it becomes a card, grouped by today, yesterday, and date. Text cards expand in place, image cards show at full ratio, and Ctrl+V works too.
+
+When you need them, select a few and start a new conversation — the materials land in the composer automatically. Or drag a single card straight into any session at the cursor. While docked, dropping on the upper half of the strip goes to the box.
+
+## Image annotation
+
+Paste a screenshot into the composer and the annotator opens: click to pin a point, drag to box a region, attach one sentence to each mark.
+
+The agent receives numbered marks with your notes — no more "the thing to the right of that button".
+
+## Telegram
+
+Pair a bot from @BotFather and your phone becomes the remote: finished turns, approvals waiting, errors — notifications arrive with the full text.
+
+Reply in Telegram and it lands in that session through the exact same pipeline as local input. Permission notices carry inline buttons; tap to approve. A pinned control panel shows who's running, switches the reply target, and stops tasks remotely.
+
 ## More
 
-- **Memo Box** — drop things in, organize them into a conversation later
-- **Delivery card** — what changed this turn, at a glance
-- **Bilingual UI** — 中文 ⇄ English, one click via Ctrl K
 - **Parallel subagents** — each on its own, no scroll spam
-- **Telegram** — get replies on your phone, answer from it
-- **Image annotation** — circle it and say what to change
+- **Rich rendering** — math, diagrams, and syntax highlighting, right in the stream
+- **Scheduled sends** — write it now, it fires on time
+- **Session parking** — idle sessions park after two hours; one message brings them back
 
 ## Quick start
 
