@@ -20,6 +20,11 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
 - 验证脚本：`scripts/`（清单见 `scripts/README.md`）；Windows 启动/构建/发布：`tools/`（清单见 `tools/README.md`）
 - 根目录只保留 `start-marionette.bat` 一个入口；改 `tools/` 里的脚本时，仓库根一律用 `%~dp0..`
 
+## 视觉语言（2026-10-31）
+
+规范：`docs/ui-language.md` —— **改任何用户可见界面前先读它**。技能 `.grok/skills/marionette-ui`（`/marionette-ui`）。
+对话流（You / Reply / composer）就是设计系统：`--radius` 3px、1px 边、无阴影、You 卡 3px 通高左边条、芯片 22px `--radius-sm`、卡距 6px。收纳盒 8px 卡只属于收纳盒页。不要用通用设计库另起一套。
+
 ## 贴边停靠 edge dock（2026-10-24 落地，阶段 0–3）
 
 设计稿 `docs/plan-edge-dock.md`（含与实现的偏差记录），行为描述在 `docs/CURRENT.md`。改这块前先记四条红线：
@@ -248,15 +253,11 @@ tool 完成 + 新的 agent message，**没有 turnState、没有 turn/complete**
 ## Council 多模型协作(2026-10-31,M1–M3)
 
 UI 名「圆桌 / 圆桌会议」(en Roundtable);代码模块、路径、事件仍叫 council。
-前端版式按「会议室」而不是设置表单,视觉跟对话流同一套:
-整栏 `--panel-muted` 灰底、桌面/席位/发言是 `--panel-raised` + `--radius`(3px)
-+ 1px 边、无阴影(别用收纳盒 8px 卡)。身份色走 You 卡那种 3px 通高左边条,
-芯片 `--radius-sm`(2px),卡距 6px 对齐 event-list。空态是椭圆桌+绕席示意;
-召集页宽时左简报/右席位(容器 780 以下改单列),议题是一张 You 卡(标题+任务
-+ 底栏模式芯片和步进器),底栏钉住开始审议(composer 底色)。内容铺满中栏
-(无居中 max-width)。
-普通窗口点「圆桌」在标签行出 `is-council` 伪标签(`councilOpen`=标签存在 /
-`councilActive`=选中,与收纳盒同语义)。
+前端版式按「会议室」而不是设置表单，表面走 `docs/ui-language.md`。
+空态是椭圆桌+绕席示意；召集页宽时左简报/右席位（容器 780 以下改单列），
+议题是一张 You 卡（标题+任务+底栏模式芯片和步进器），底栏钉住开始审议。
+内容铺满中栏。普通窗口点「圆桌」在标签行出 `is-council` 伪标签
+（`councilOpen`=标签存在 / `councilActive`=选中，与收纳盒同语义）。
 多模型审议 → 计划 → agent 执行 → 验证回路的编排器。改前先记四条:
 
 - **模块**:`src-tauri/src/council/`(types/state/store/worker/prompts/
