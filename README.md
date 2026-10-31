@@ -35,7 +35,7 @@ Claude 用 Claude Code，Grok 用 Grok Build，GPT 用 Codex，DeepSeek 用 Deep
 
 Marionette 是一个 Windows 本地多 Agent 图形壳：只负责启动、展示、切换与记录 Agent，不实现 Agent runtime。**单文件便携版，下载双击即用。**
 
-## ✨ 一个窗口，所有 Agent
+## 一个窗口，所有 Agent
 
 OpenCode、Claude Code、Codex、Grok Build、ZCode、DeepSeek Harness、Pi、Hermes——一个窗口，全部装下。
 
@@ -43,24 +43,24 @@ ChatGPT 和 DeepSeek 的网页版也在里面：登录一次网页，它们就�
 
 - **按需启动**——你不输入，它不运行
 - **会话即标签页**，最多四格分屏，不同 Agent 并排干活
-- **Ctrl K 命令面板**——跳转、新建、窗口行为、外观、退出，全在这一个入口（详见下文「⌨️ Ctrl K 面板」）
+- **Ctrl K 命令面板**——跳转、新建、窗口行为、外观、退出，全在这一个入口（详见下文「Ctrl K 面板」）
 
-## 🗂 两条侧栏，就是工作台
+## 两条侧栏，就是工作台
 
 左边找，右边看。
 
-- 左栏：项目、会话、聊天、[收纳盒](#-还有更多)
+- 左栏：项目、会话、聊天、[收纳盒](#还有更多)
 - 右栏：Plan、Todo、用量与本轮改动
 
 所有东西都在该在的位置，不用在聊天流里翻找。
 
-## 📌 把桌面还给你
+## 把桌面还给你
 
 桌面被终端和 IDE 占满太久了。把 Marionette 拖到屏幕左右边缘，它收成一条窄带，只留一线把手；想用就滑出来，用完自己退回去。
 
 Agent 在边上继续跑：谁在跑、跑到哪一步、刚改了哪几个文件，扫一眼就有；想派活，就在窄带里发。窗口关掉它还在跑——真正退出才叫退出。
 
-## ⌨️ Ctrl K 面板
+## Ctrl K 面板
 
 任何地方按 **Ctrl K** 唤出命令面板，键盘优先，不打断手上的活：
 
@@ -72,21 +72,21 @@ Agent 在边上继续跑：谁在跑、跑到哪一步、刚改了哪几个文�
 - **外观**：主题（深/浅/跟随系统）、中英语言一键切换
 - **退出**：结束全部 Agent 与引擎后退出
 
-标签页的浏览器级快捷键也一并奉上：**Ctrl T** 新对话、**Ctrl W** 关标签、**Ctrl Tab / Ctrl Shift Tab** 切换、**Ctrl 1-9** 跳到第 N 个、**Ctrl Shift T** 恢复刚关掉的。
+标签页快捷键与浏览器一致：**Ctrl T** 新对话、**Ctrl W** 关标签、**Ctrl Tab / Ctrl Shift Tab** 切换、**Ctrl 1-9** 跳到第 N 个、**Ctrl Shift T** 恢复刚关掉的。
 
-## 🔄 换人，不换脑子
+## 换人，不换脑子
 
 从 Claude 切到 OpenCode，上下文不会断。Marionette 生成一份普通的 `handoff.md`：看得见，改得了，能提交 Git，不靠黑魔法。
 
 命令行里聊过的，点一下就收进列表，按时间排在一起，接着聊。
 
-## 🔑 一个来源，喂给任何 Agent
+## 一个来源，喂给任何 Agent
 
 OpenCode Go、DeepSeek、GLM、Kimi、OpenRouter、xAI 的钥匙，Grok 与 ChatGPT 的订阅，都能出现在任意一个会话的模型菜单里。不用为每个 Agent 配一遍。
 
 MCP、Skills、长期记忆——扫描一次，统一管理。同一个工具，这个 Agent 能用，那个也能用；你的偏好在换人时跟着走。
 
-## 🧰 还有更多
+## 还有更多
 
 - **收纳盒**：拖进来，再整理成对话
 - **交付卡**：每轮改了什么，一眼看到
@@ -95,7 +95,7 @@ MCP、Skills、长期记忆——扫描一次，统一管理。同一个工具�
 - **Telegram**：手机上收到，也能答
 - **图片批注**：圈出来，直说要改哪儿
 
-## 🚀 快速上手
+## 快速上手
 
 > [下载](https://github.com/nt-cubic/Marionette/releases/latest) `Marionette.exe`，双击即可。需要 WebView2 Runtime（Win11 与更新过的 Win10 自带）。
 
