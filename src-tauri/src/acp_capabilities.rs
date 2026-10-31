@@ -7,7 +7,7 @@
 use super::*;
 use agent_client_protocol_schema::v1 as acp_schema;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // ─── Capability parsing from session/new response ──────────────────────────
 
@@ -56,7 +56,143 @@ pub(super) fn parse_session_capabilities_after(
         parse_capabilities_fallback(session_response, legacy_modes, held)
     };
     merge_legacy_models_field(session_response, &mut caps);
+    normalize_combined_model_ids(&mut caps);
     caps
+}
+
+/// Codex ACP 2.x encodes effort in the model id: `gpt-5.6-luna[xhigh]`.
+/// Grok / Claude ids never use this form, so a miss is a no-op.
+pub(super) fn split_combined_model_id(id: &str) -> (String, Option<String>) {
+    let id = id.trim();
+    if let Some(open) = id.rfind('[') {
+        if id.ends_with(']') && open > 0 {
+            let base = &id[..open];
+            let effort = &id[open + 1..id.len() - 1];
+            if !base.is_empty()
+                && !effort.is_empty()
+                && effort
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            {
+                return (base.to_string(), Some(effort.to_string()));
+            }
+        }
+    }
+    (id.to_string(), None)
+}
+
+pub(super) fn combine_model_effort_id(model_id: &str, effort: Option<&str>) -> String {
+    let (base, _) = split_combined_model_id(model_id);
+    match effort.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(e) => format!("{base}[{e}]"),
+        None => base,
+    }
+}
+
+fn pretty_codex_effort_label(id: &str) -> String {
+    match id.to_ascii_lowercase().as_str() {
+        "none" => "None".into(),
+        "minimal" | "min" => "Minimal".into(),
+        "low" => "Low".into(),
+        "medium" | "mid" | "default" => "Medium".into(),
+        "high" => "High".into(),
+        "xhigh" | "extra-high" | "extra_high" => "Extra High".into(),
+        "max" => "Max".into(),
+        _ => id.to_string(),
+    }
+}
+
+fn strip_effort_decoration(label: &str, effort: Option<&str>) -> String {
+    let mut s = label.trim().to_string();
+    if s.ends_with(']') {
+        if let Some(open) = s.rfind('[') {
+            if open > 0 {
+                s.truncate(open);
+                s = s.trim_end().to_string();
+            }
+        }
+    }
+    if let Some(effort) = effort {
+        let suffix = format!(" ({effort})");
+        if s.len() > suffix.len()
+            && s.as_bytes()[s.len() - suffix.len()..].eq_ignore_ascii_case(suffix.as_bytes())
+        {
+            s.truncate(s.len() - suffix.len());
+            s = s.trim_end().to_string();
+        }
+    }
+    s
+}
+
+/// Peel `model[effort]` off current_model / the catalog so Composer sees a
+/// base model plus an Effort chip. A single bracketed current id is only the
+/// current level — not a menu — so we leave `effort_options` empty there and
+/// let the Codex supplement fill the list.
+pub(super) fn normalize_combined_model_ids(caps: &mut CapabilitySnapshot) {
+    let mut saw_combined = false;
+    if let Some(current) = caps.current_model.clone() {
+        let (base, effort) = split_combined_model_id(&current);
+        if let Some(effort) = effort {
+            saw_combined = true;
+            caps.current_model = Some(base);
+            // The suffix on the live model id is the wire's current level.
+            caps.current_effort_id = Some(effort);
+        }
+    }
+
+    let mut seen = HashSet::new();
+    let mut next_models = Vec::new();
+    let mut from_suffix: Vec<ModeDef> = Vec::new();
+    for model in caps.models.drain(..) {
+        let (base, effort) = split_combined_model_id(&model.id);
+        if let Some(ref e) = effort {
+            saw_combined = true;
+            if !from_suffix.iter().any(|o| o.id == *e) {
+                from_suffix.push(ModeDef {
+                    id: e.clone(),
+                    label: pretty_codex_effort_label(e),
+                    description: None,
+                });
+            }
+        }
+        if !seen.insert(base.clone()) {
+            continue;
+        }
+        let label = if effort.is_some() {
+            let stripped = strip_effort_decoration(&model.label, effort.as_deref());
+            if stripped.is_empty() || stripped == model.id {
+                base.clone()
+            } else {
+                stripped
+            }
+        } else {
+            model.label
+        };
+        next_models.push(ModelDef {
+            id: base,
+            label,
+            description: model.description,
+        });
+    }
+    caps.models = next_models;
+    if caps.effort_options.is_empty() && from_suffix.len() >= 2 {
+        caps.effort_options = from_suffix;
+    }
+    if saw_combined {
+        caps.effort_in_model_id = true;
+    }
+    if let Some(current) = &caps.current_model {
+        if !caps.models.iter().any(|m| &m.id == current) {
+            caps.models.insert(
+                0,
+                ModelDef {
+                    id: current.clone(),
+                    label: current.clone(),
+                    description: None,
+                },
+            );
+        }
+    }
 }
 
 /// Sandbox / file-permission levels DSH (and Codex-shaped agents) advertise.
@@ -379,6 +515,9 @@ pub(super) fn carry_forward_unsaid(next: &mut CapabilitySnapshot, prev: &Capabil
         if !next.effort_reject_models.contains(model) {
             next.effort_reject_models.push(model.clone());
         }
+    }
+    if prev.effort_in_model_id {
+        next.effort_in_model_id = true;
     }
     if next.effort_options.is_empty() && next.current_effort_id.is_none() {
         next.effort_options = prev.effort_options.clone();
@@ -713,6 +852,7 @@ pub(super) fn parse_capabilities_from_typed(
         model_effort_menus: HashMap::new(),
         model_default_efforts: HashMap::new(),
         effort_reject_models: Vec::new(),
+        effort_in_model_id: false,
     }
 }
 
@@ -908,5 +1048,6 @@ pub(super) fn parse_capabilities_fallback(
         model_effort_menus: HashMap::new(),
         model_default_efforts: HashMap::new(),
         effort_reject_models: Vec::new(),
+        effort_in_model_id: false,
     }
 }

@@ -121,11 +121,23 @@ const SUPPLEMENTS: Record<string, AcpSupplement> = {
       { id: "agent-full-access", label: "Agent (full access)" },
     ],
     defaultMode: "agent",
-    thinkingEffort: { min: 0, max: 1, default: 0.5 },
+    // Codex ACP 2.x often encodes effort in the model id (`gpt-5.6-luna[xhigh]`)
+    // and, when the catalog is empty, advertises no `reasoning_effort` option.
+    // Rust peels the suffix; this list fills the chip. A live
+    // `reasoning_effort` config still wins (see mergeAcpCapabilities).
+    effortOptions: [
+      { id: "xhigh", label: "Extra High" },
+      { id: "high", label: "High" },
+      { id: "medium", label: "Medium" },
+      { id: "low", label: "Low" },
+      { id: "minimal", label: "Minimal" },
+      { id: "none", label: "None" },
+    ],
+    effortViaLegacyModel: true,
+    defaultEffortId: "medium",
     // Only `mode` maps to approval+sandbox preset. Do not send agent-full-access
     // as approval-policy — that id expects never|on-request|… and will fail.
     modeConfigIds: ["mode"],
-    effortConfigIds: ["reasoning", "reasoning-effort", "effort"],
   },
 };
 
@@ -209,7 +221,9 @@ export function mergeAcpCapabilities(
   // to advertise, so absence proves nothing. Only a supplement that explicitly
   // opts in gets this — a missing id still means "no control" everywhere else.
   const legacyEffort =
-    sup.effortViaLegacyModel === true && (sup.effortOptions?.length ?? 0) > 0;
+    sup.effortViaLegacyModel === true &&
+    (sup.effortOptions?.length ?? 0) > 0 &&
+    !base.effortConfigId;
 
   const effortOptions = legacyEffort
     ? (base.effortOptions?.length ?? 0) > 0
