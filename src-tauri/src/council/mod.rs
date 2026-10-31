@@ -6,6 +6,7 @@
 //! - `store`      持久化(~/.marionette/council/runs/{id}/)
 //! - `worker`     模型客户端(引擎直调 + 测试 mock)
 //! - `prompts`    审议协议 prompt(信息隔离强制点)
+//! - `formation`  能力感知组队 + 分层背书(M5)
 //! - `tasks`     PlanDoc → 任务图(frontier 调度/失败不级联)
 //! - `executor`  执行 harness(ACP 生产 + 脚本测试)与 worktree 合并
 //! - `orchestrator` run 生命周期与协议循环
@@ -15,6 +16,7 @@
 //! std-thread 模型从零编写(OmO 为 Sustainable Use License,不拷贝)。
 
 pub mod executor;
+pub mod formation;
 pub mod orchestrator;
 pub mod tasks;
 pub mod prompts;

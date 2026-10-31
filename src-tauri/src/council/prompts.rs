@@ -11,7 +11,7 @@
 //! 可见性由 orchestrator 在调用这些函数前决定(它们只渲染给定输入),
 //! 但函数签名刻意做成"只收该看的消息",配合隔离测试双向锁死。
 
-use super::types::{CouncilMessage, CouncilSpec, MemberSpec, MessageKind, PlanDoc};
+use super::types::{CouncilMessage, CouncilSpec, MemberSpec, MemberTier, MessageKind, PlanDoc};
 
 /// 所有阶段共用的角色前缀(任务书 §3.2:模型身份显式披露,同一模型
 /// 多成员必须知道自己是谁)。
@@ -129,21 +129,56 @@ pub fn synthesis_prompt(spec: &CouncilSpec, chair: &MemberSpec, all: &[CouncilMe
         role_header(spec, chair),
         OUTPUT_DISCIPLINE
     );
+    // 分层背书状态(M5):contributor 的提案/修订附 lead 判定计数;
+    // 采信规则同步写进任务指令(见下方"分层规则")。
+    let tier_of = |id: &str| spec.members.iter().find(|m| m.id == id).map(|m| m.tier).unwrap_or(MemberTier::Lead);
+    let endorsement_state = |author: &str, round: u32, kind: &MessageKind| -> Option<(usize, usize)> {
+        if tier_of(author) != MemberTier::Contributor {
+            return None;
+        }
+        if !matches!(kind, MessageKind::Proposal | MessageKind::Revision) {
+            return None;
+        }
+        let mut endorsed = 0;
+        let mut rejected = 0;
+        for e in all.iter().filter(|m| m.kind == MessageKind::Endorsement) {
+            let meta = match &e.meta { Some(v) => v, None => continue };
+            let targets_author = meta.get("targetAuthor").and_then(|v| v.as_str()) == Some(author);
+            let same_round = e.round == round;
+            let same_kind = meta
+                .get("targetKind")
+                .and_then(|v| v.as_str())
+                .map(|k| k == format!("{:?}", kind))
+                .unwrap_or(true);
+            if targets_author && same_round && same_kind {
+                if meta.get("verdict").and_then(|v| v.as_str()) == Some("endorse") {
+                    endorsed += 1;
+                } else {
+                    rejected += 1;
+                }
+            }
+        }
+        Some((endorsed, rejected))
+    };
     let mut flow = String::new();
     for m in all {
-        let label = match m.kind {
+        let mut label = match m.kind {
             MessageKind::Proposal => format!("提案(第 {} 轮)", m.round),
             MessageKind::Critique => format!("质询(第 {} 轮)", m.round),
             MessageKind::Revision => format!("修订(第 {} 轮)", m.round),
             MessageKind::Rebuttal => format!("反驳(第 {} 轮)", m.round),
             MessageKind::Briefing => "开场简报".to_string(),
+            MessageKind::Endorsement => format!("背书(第 {} 轮)", m.round),
             _ => "发言".to_string(),
         };
+        if let Some((endorsed, rejected)) = endorsement_state(&m.from, m.round, &m.kind) {
+            label.push_str(&format!("〔lead 背书:认可 {endorsed} / 否决 {rejected}〕"));
+        }
         flow.push_str(&format!("\n---\n#### {} · {} · `{}`\n{}\n", label, kind_name(m.kind), m.from, m.content));
     }
     let user = format!(
         "以下是全部审议记录,请输出综合:\n{flow}\n## 任务原文\n{}\n\n\
-         输出四节:\n1. **采纳的结论**:各方方案中站得住的部分,以及最终合并出的技术路线(具体,可执行)。\n2. **已裁决的分歧**:每条 `分歧 → 裁决 → 依据`。\n3. **遗留不确定性(open questions)**:无法裁决的,每条附一个能消解它的具体实验/测试。\n4. **风险清单**:仍然成立的风险与缓解。",
+         输出四节:\n1. **采纳的结论**:各方方案中站得住的部分,以及最终合并出的技术路线(具体,可执行)。〔分层规则:lead 的产出按证据采信;contributor 的产出只有带「认可 ≥1」背书标记的才可直接采纳——全部被否决或零背书的 contributor 主张不得进入结论,其中有价值但未获认可的部分列入 open questions 并注明原因。〕\n2. **已裁决的分歧**:每条 `分歧 → 裁决 → 依据`。\n3. **遗留不确定性(open questions)**:无法裁决的,每条附一个能消解它的具体实验/测试。\n4. **风险清单**:仍然成立的风险与缓解。",
         spec.task
     );
     (system, user)
@@ -206,6 +241,69 @@ pub fn repair_round_prompt(
     (system, user)
 }
 
+// ---------------------------------------------------------------------------
+// M5:能力感知组队 + 分层背书
+// ---------------------------------------------------------------------------
+
+/// 自动组队(组队 agent = 候选池中画像分最高者)。输出 FormationPlan
+/// JSON;经 parse_formation 校验、用户 UI 审阅后才生效(人在环)。
+pub fn formation_prompt(task: &str, profiles: &[crate::council::formation::ModelProfile], organizer: &str) -> (String, String) {
+    let system = "你是软件工程团队的组建顾问(Team Formation Agent)。根据任务需要与各模型的**能力画像**配置一个多模型审议团。画像分数只是建议(注意其证据来源:启发式未经实测、探针是单次小样本、历史统计最可信),你要结合任务特征做判断,不要机械按分数排序。".to_string();
+    let mut roster = String::from("## 候选模型(画像分 0-10,附证据)\n");
+    for p in profiles {
+        roster.push_str(&format!(
+            "- `{}` — 建议 {} 分\n  - {}\n",
+            p.model,
+            p.score,
+            p.evidence.iter().map(|e| format!("·{e}")).collect::<Vec<_>>().join(" ")
+        ));
+    }
+    let user = format!(
+        "{roster}\n## 任务\n{task}\n\n你自己(`{organizer}`)也会被分配角色,可以当主席。\n\n配置原则:\n1. **分层**:能力强的模型(tier=\"lead\")担任主席/综合/架构评审等主导角色;能力较弱的(tier=\"contributor\")承担**简单、可检验**的工作(资料调研、备选方案枚举、边界情况清单等)。\n2. **检验**:contributor 的产出之后会由 lead 逐一背书,只有被认可的才进最终综合——给 contributor 的职责要具体、可检验。\n3. 恰好一个 isChair=true 的 lead 当主席(做最终综合)。\n4. 成员 3-5 个为宜;每个成员的 role(身份)与 assignment(具体职责)写清楚,rationale 说明为什么这样分。\n\n只输出一个 json 围栏:\n```json\n{{\n  \"members\": [\n    {{\"model\": \"...\", \"role\": \"...\", \"tier\": \"lead|contributor\", \"isChair\": false, \"assignment\": \"...\", \"rationale\": \"...\"}}\n  ],\n  \"rounds\": 2,\n  \"notes\": \"组队思路一句话\"\n}}\n```"
+    );
+    (system, user)
+}
+
+/// 分层背书:lead 成员对某个 contributor 的最新产出做认可/否决判定。
+pub fn endorsement_prompt(
+    spec: &CouncilSpec,
+    lead: &MemberSpec,
+    contributor: &MemberSpec,
+    contributor_output: &CouncilMessage,
+) -> (String, String) {
+    let system = format!(
+        "{}你是 lead 成员,负责**检验**较弱势成员的产出。判断标准:事实与逻辑是否成立、工程上是否可行、是否遗漏关键风险。认可要有依据,否决要给出必须解决的具体问题——不是礼节性盖章,也不是苛刻挑剔。",
+        role_header(spec, lead),
+    );
+    let kind_cn = match contributor_output.kind {
+        MessageKind::Proposal => "提案".to_string(),
+        MessageKind::Revision => "修订(回应质询后)".to_string(),
+        other => format!("{:?}", other),
+    };
+    let user = format!(
+        "## 待检验的产出\n来自 contributor `{}`(角色:{}):第 {} 轮的{}\n\n{}\n\n## 任务原文\n{}\n\n只输出一个 json 围栏:\n```json\n{{\"verdict\": \"endorse|reject\", \"reason\": \"一句话依据或必须解决的问题\"}}\n```",
+        contributor.id, contributor.role, contributor_output.round, kind_cn, contributor_output.content, spec.task
+    );
+    (system, user)
+}
+
+/// 解析背书输出:{"verdict":"endorse|reject","reason":...}。
+pub fn parse_endorsement(raw: &str) -> Result<(bool, String), String> {
+    let fence = raw
+        .find("```json")
+        .and_then(|start| raw[start + 7..].find("```").map(|end| &raw[start + 7..start + 7 + end]))
+        .map(|s| s.trim())
+        .unwrap_or(raw.trim());
+    let v: serde_json::Value = serde_json::from_str(fence).map_err(|e| format!("背书 JSON 解析失败:{e}"))?;
+    let verdict = v.get("verdict").and_then(|x| x.as_str()).ok_or("背书缺 verdict")?;
+    let reason = v.get("reason").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    match verdict {
+        "endorse" => Ok((true, reason)),
+        "reject" => Ok((false, reason)),
+        other => Err(format!("背书 verdict 非法:{other}")),
+    }
+}
+
 pub fn kind_name(kind: MessageKind) -> &'static str {
     match kind {
         MessageKind::Briefing => "briefing",
@@ -215,6 +313,7 @@ pub fn kind_name(kind: MessageKind) -> &'static str {
         MessageKind::Revision => "revision",
         MessageKind::Question => "question",
         MessageKind::Answer => "answer",
+        MessageKind::Endorsement => "endorsement",
         MessageKind::Synthesis => "synthesis",
         MessageKind::Plan => "plan",
         MessageKind::Task => "task",
@@ -378,6 +477,30 @@ mod tests {
         let messages2 = vec![c, rev];
         assert!(pending_critiques_for(&messages2, "a", 1).is_empty());
         assert!(authors_needing_revision(&messages2, 1).is_empty());
+    }
+
+    #[test]
+    fn parse_endorsement_verdicts() {
+        let (ok, reason) = parse_endorsement("```json\n{\"verdict\":\"endorse\",\"reason\":\"依据充分\"}\n```").unwrap();
+        assert!(ok);
+        assert_eq!(reason, "依据充分");
+        let (bad, _) = parse_endorsement("{\"verdict\":\"reject\",\"reason\":\"缺边界分析\"}").unwrap();
+        assert!(!bad);
+        assert!(parse_endorsement("{\"verdict\":\"maybe\"}").is_err());
+        assert!(parse_endorsement("认可").is_err());
+    }
+
+    #[test]
+    fn endorsement_prompt_addresses_contributor_output() {
+        let spec = sample_spec();
+        let lead = &spec.members[0];
+        let contributor = &spec.members[2];
+        let output = msg("ds-math", MessageKind::Proposal, 1, "轻量方案");
+        let (system, user) = endorsement_prompt(&spec, lead, contributor, &output);
+        assert!(system.contains("检验"));
+        assert!(user.contains("轻量方案"));
+        assert!(user.contains(&contributor.id));
+        assert!(user.contains("endorse|reject"));
     }
 
     #[test]

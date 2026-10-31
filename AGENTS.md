@@ -251,28 +251,31 @@ tool 完成 + 新的 agent message，**没有 turnState、没有 turn/complete**
   在活回合中途放掉 composer）。冷启动恢复的会话（`turnEndedAtRef` 无记录）永不武装。
 - 回归：`npx tsx scripts/verify-agent-reentry.mts`。
 
-## Council 多模型协作(2026-10-31,M1–M3)
+## Council 多模型协作(2026-10-31,M1–M5)
 
 UI 名「圆桌 / 圆桌会议」(en Roundtable);代码模块、路径、事件仍叫 council。
 前端版式按「会议室」而不是设置表单，表面走 `docs/ui-language.md`。
 空态是椭圆桌+绕席示意；召集页宽时左简报/右席位（容器 780 以下改单列），
-议题是一张 You 卡（标题+任务+底栏模式芯片和步进器），底栏钉住开始审议。
+议题是一张 You 卡（标题+任务+底栏模式芯片和步进器），席位栏顶上阵容芯片 + AI 组队，人卡元信息含主导/协办，底栏钉住开始审议。
 内容铺满中栏。普通窗口点「圆桌」在标签行出 `is-council` 伪标签
 （`councilOpen`=标签存在 / `councilActive`=选中，与收纳盒同语义）。
 多模型审议 → 计划 → agent 执行 → 验证回路的编排器。改前先记四条:
 
 - **模块**:`src-tauri/src/council/`(types/state/store/worker/prompts/
-  orchestrator/tasks/executor/verify);数据在 `~/.marionette/council/
+  formation/orchestrator/tasks/executor/verify);数据在 `~/.marionette/council/
   runs/{runId}/`(spec.json 不可变、state.json 原子写、messages 与
   transitions 是 append-only JSONL、plan.json);恢复语义 = 以消息账本
-  为进度,已完成阶段(含执行任务)绝不重放。
+  为进度,已完成阶段(含执行任务)绝不重放。组队/探针落
+  `council/probes.json` 与 `council/model-stats.json`。
 - **状态机红线**:`plan_ready → executing` 只能经 `council_approve_plan`
   (执行门);终态无出边;转移全走 `state.rs::apply_transition`(硬编码
   表 + transitions.jsonl 审计)。并行执行任务各持 `git worktree`
   (`council/<runId>/<stepId>` 分支),按拓扑序顺序合并,冲突显式
   `Failed(文件清单)`——**绝不静默覆盖**(真实 git 仓库的回归测试
   `executor::parallel_same_file_conflicts_are_explicit` 守着)。
-- **测试**:`cargo test --bin marionette council`(43 项,沙箱在
+  `MemberTier` 缺省 lead,全员主导时背书整段跳过。不要加
+  `CouncilMode::SgsGame` / `RunPhase::Playing`(牌局不进圆桌协议)。
+- **测试**:`cargo test --bin marionette council`(53 项,沙箱在
   temp,不碰真实用户目录)+ `npx tsx scripts/verify-council.mts`;
   模型调用全部经 `ModelClient` / `TaskHarness` seam(EngineClient /
   AcpHarness 为生产实现,MockClient / ScriptedHarness 为测试),不要
