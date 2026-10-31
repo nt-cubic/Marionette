@@ -18,6 +18,7 @@ import { MarkdownBody } from "./MarkdownBody";
 import {
   COUNCIL_EVENT,
   councilApprovePlan,
+  councilAutoFormation,
   councilCancelRun,
   councilCreate,
   councilDeleteRun,
@@ -25,6 +26,7 @@ import {
   councilListModels,
   councilListRuns,
   councilPauseRun,
+  councilProbeModels,
   councilRail,
   councilRailStatus,
   councilResumeRun,
@@ -39,15 +41,26 @@ import {
   phaseBadgeClass,
   phaseLabel,
   railLabel,
+  tierLabel,
+  type AutoFormationResult,
   type CouncilMessage,
   type CouncilMessageKind,
   type CouncilMode,
   type CouncilModelInfo,
   type MemberSpec,
+  type MemberTier,
   type RunDetail,
   type RunPhase,
   type RunSummary,
 } from "../lib/council";
+import {
+  BUILTIN_TEMPLATES,
+  deleteCustomTemplate,
+  loadCustomTemplates,
+  saveCustomTemplate,
+  templateFromDrafts,
+  type TeamTemplate,
+} from "../lib/councilTemplates";
 import { isTauriRuntime, listAgents } from "../lib/api";
 import { t as tr, useT } from "../lib/i18n";
 import { showToast } from "../lib/toast";
@@ -81,10 +94,23 @@ function roleDuty(key: string): string {
 
 function defaultDrafts(): MemberDraft[] {
   return [
-    { key: "m1", id: "architect", displayName: roleName("architect"), model: "", role: roleDuty("architect"), isChair: false },
-    { key: "m2", id: "reviewer", displayName: roleName("reviewer"), model: "", role: roleDuty("reviewer"), isChair: true },
-    { key: "m3", id: "analyst", displayName: roleName("analyst"), model: "", role: roleDuty("analyst"), isChair: false },
+    { key: "m1", id: "architect", displayName: roleName("architect"), model: "", role: roleDuty("architect"), isChair: false, tier: "lead" },
+    { key: "m2", id: "reviewer", displayName: roleName("reviewer"), model: "", role: roleDuty("reviewer"), isChair: true, tier: "lead" },
+    { key: "m3", id: "analyst", displayName: roleName("analyst"), model: "", role: roleDuty("analyst"), isChair: false, tier: "lead" },
   ];
+}
+
+function uniqueDrafts(rows: MemberDraft[]): MemberDraft[] {
+  const ids: string[] = [];
+  return rows.map((row) => {
+    const id = deriveMemberId(row.displayName || row.id, ids);
+    ids.push(id);
+    return { ...row, id };
+  });
+}
+
+function builtinTemplateName(id: string): string {
+  return tr(`council.templates.builtin.${id}` as Parameters<typeof tr>[0]);
 }
 
 const MODE_OPTIONS: ReadonlyArray<{ id: CouncilMode }> = [
@@ -449,6 +475,15 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
   const [agents, setAgents] = useState<AgentLite[]>([]);
   const [execAgentId, setExecAgentId] = useState("");
   const [execCwd, setExecCwd] = useState("");
+  const [customTemplates, setCustomTemplates] = useState<TeamTemplate[]>(() => loadCustomTemplates());
+  const [activeTpl, setActiveTpl] = useState<string | null>(null);
+  const [saveName, setSaveName] = useState("");
+  const [formOpen, setFormOpen] = useState(false);
+  const [pool, setPool] = useState<string[]>([]);
+  const [probing, setProbing] = useState(false);
+  const [forming, setForming] = useState(false);
+  const [formResult, setFormResult] = useState<AutoFormationResult | null>(null);
+  const [formNote, setFormNote] = useState<string | null>(null);
   const taskRef = useRef<HTMLTextAreaElement>(null);
   const t = useT();
 
@@ -456,6 +491,7 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
     void councilListModels().then((result) => {
       setModels(result.models);
       setEngineReady(result.ready);
+      setPool((prev) => (prev.length > 0 ? prev : result.models.map((m) => m.id)));
     });
     void listAgents().then((all) => {
       const usable = all
@@ -509,6 +545,7 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
           model: pickUnusedModel(models, prev.map((d) => d.model)),
           role: roleDuty(key),
           isChair: false,
+          tier: "lead",
         },
       ];
     });
@@ -524,6 +561,114 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
   };
 
   const distinctModels = useMemo(() => new Set(drafts.map((d) => d.model).filter(Boolean)).size, [drafts]);
+
+  const applyTemplate = (tpl: TeamTemplate) => {
+    const taken = new Set<string>();
+    const next = uniqueDrafts(
+      tpl.members.map((m, i) => {
+        const model = pickUnusedModel(models, taken);
+        if (model) taken.add(model);
+        return {
+          key: `tpl-${tpl.id}-${i}`,
+          id: m.displayName,
+          displayName: m.displayName,
+          role: m.role,
+          model,
+          isChair: m.isChair,
+          tier: m.tier,
+        };
+      }),
+    );
+    setDrafts(next);
+    setRounds(tpl.rounds);
+    setActiveTpl(tpl.id);
+    if (tpl.strongestSeatHint) {
+      showToast({ text: t("council.templates.strongestHint", { hint: tpl.strongestSeatHint }) });
+    }
+  };
+
+  const saveLineup = () => {
+    const name = saveName.trim();
+    if (!name) return;
+    const tpl = templateFromDrafts(name, drafts, rounds);
+    setCustomTemplates(saveCustomTemplate(tpl));
+    setSaveName("");
+    setActiveTpl(tpl.id);
+    showToast({ text: t("council.templates.saved") });
+  };
+
+  const removeCustom = (id: string) => {
+    setCustomTemplates(deleteCustomTemplate(id));
+    if (activeTpl === id) setActiveTpl(null);
+  };
+
+  const togglePool = (id: string) => {
+    setPool((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+
+  const runProbe = async () => {
+    if (pool.length < 1) {
+      setFormNote(t("council.formation.pickPoolFirst"));
+      return;
+    }
+    setFormNote(null);
+    setProbing(true);
+    try {
+      const outcomes = await councilProbeModels(pool);
+      setFormNote(t("council.formation.probeDone", { count: outcomes.length }));
+    } catch (e) {
+      setFormNote(t("council.formation.probeFailed", { error: String(e) }));
+    } finally {
+      setProbing(false);
+    }
+  };
+
+  const runFormation = async () => {
+    if (task.trim().length < 10) {
+      setFormNote(t("council.formation.needTask"));
+      taskRef.current?.focus();
+      return;
+    }
+    if (pool.length < 2) {
+      setFormNote(t("council.formation.pickPoolFirst"));
+      return;
+    }
+    setFormNote(null);
+    setForming(true);
+    try {
+      const result = await councilAutoFormation(task.trim(), pool);
+      setFormResult(result);
+    } catch (e) {
+      setFormResult(null);
+      setFormNote(t("council.formation.failed", { error: String(e) }));
+    } finally {
+      setForming(false);
+    }
+  };
+
+  const applyFormation = (result: AutoFormationResult) => {
+    const next = uniqueDrafts(
+      result.plan.members.map((m, i) => {
+        const name = m.role.trim() || m.model;
+        const duty = m.assignment?.trim() ? `${m.role} — ${m.assignment}` : m.role;
+        return {
+          key: `ai-${i}-${Date.now()}`,
+          id: name,
+          displayName: name.length > 18 ? name.slice(0, 18) : name,
+          role: duty,
+          model: m.model,
+          isChair: m.isChair,
+          tier: m.tier,
+        };
+      }),
+    );
+    setDrafts(next);
+    setRounds(result.plan.rounds);
+    setActiveTpl(null);
+    setFormOpen(false);
+    setFormResult(null);
+    showToast({ text: t("council.formation.applied") });
+  };
 
   const submit = async () => {
     setError(null);
@@ -689,6 +834,117 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
                   {t("council.setup.seatsMeta", { count: drafts.length, models: distinctModels })}
                 </span>
               </div>
+              <div className="council-tpls" role="list" aria-label={t("council.templates.title")}>
+                {BUILTIN_TEMPLATES.map((tpl) => (
+                  <button
+                    key={tpl.id}
+                    type="button"
+                    role="listitem"
+                    className={`council-chip${activeTpl === tpl.id ? " is-active" : ""}`}
+                    onClick={() => applyTemplate(tpl)}
+                  >
+                    {builtinTemplateName(tpl.id)}
+                  </button>
+                ))}
+                {customTemplates.map((tpl) => (
+                  <span key={tpl.id} className={`council-chip council-chip--custom${activeTpl === tpl.id ? " is-active" : ""}`}>
+                    <button type="button" className="council-chip__hit" onClick={() => applyTemplate(tpl)}>
+                      {tpl.name}
+                    </button>
+                    <button
+                      type="button"
+                      className="council-chip__x"
+                      title={t("council.templates.delete")}
+                      onClick={() => removeCustom(tpl.id)}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+                <button
+                  type="button"
+                  className={`council-chip${formOpen ? " is-active" : ""}`}
+                  onClick={() => setFormOpen((v) => !v)}
+                >
+                  {t("council.formation.title")}
+                </button>
+              </div>
+              <div className="council-tpls council-tpls--save">
+                <input
+                  className="council-tpls__name"
+                  value={saveName}
+                  onChange={(e) => setSaveName(e.target.value)}
+                  placeholder={t("council.templates.saveNamePlaceholder")}
+                  aria-label={t("council.templates.saveNamePlaceholder")}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      saveLineup();
+                    }
+                  }}
+                />
+                <button type="button" className="council-chip" onClick={saveLineup} disabled={!saveName.trim()}>
+                  {t("council.templates.save")}
+                </button>
+              </div>
+              {formOpen && (
+                <div className="council-form">
+                  <div className="council-form__pool" aria-label={t("council.formation.poolLabel")}>
+                    {models.map((m) => (
+                      <button
+                        key={m.id}
+                        type="button"
+                        className={`council-chip${pool.includes(m.id) ? " is-active" : ""}`}
+                        onClick={() => togglePool(m.id)}
+                      >
+                        {m.id}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="council-form__actions">
+                    <button type="button" className="council-chip" onClick={() => setPool(models.map((m) => m.id))}>
+                      {t("council.formation.selectAll")}
+                    </button>
+                    <button type="button" className="council-chip" onClick={() => setPool([])}>
+                      {t("council.formation.selectNone")}
+                    </button>
+                    <button type="button" className="council-chip" onClick={() => void runProbe()} disabled={probing || forming}>
+                      {probing ? t("council.formation.probing") : t("council.formation.probe")}
+                    </button>
+                    <button type="button" className="council-chip is-accent" onClick={() => void runFormation()} disabled={probing || forming}>
+                      {forming ? t("council.formation.running") : t("council.formation.run")}
+                    </button>
+                  </div>
+                  {formNote && <p className="council-seats__note">{formNote}</p>}
+                  {formResult && (
+                    <div className="council-form__plan">
+                      {formResult.plan.notes ? (
+                        <p className="council-form__notes">{t("council.formation.notes", { notes: formResult.plan.notes })}</p>
+                      ) : null}
+                      {formResult.plan.members.map((m, i) => {
+                        const profile = formResult.profiles.find((p) => p.model === m.model);
+                        return (
+                          <div key={`${m.model}-${i}`} className="council-form__row">
+                            <span className="council-form__role">
+                              {m.role}
+                              {m.isChair ? ` · ${t("council.setup.memberChair")}` : ""}
+                            </span>
+                            <span className="council-form__meta">
+                              {m.model} · {tierLabel(m.tier)}
+                              {profile ? ` · ${t("council.formation.score", { score: profile.score })}` : ""}
+                            </span>
+                            {m.assignment ? <span className="council-form__meta">{t("council.formation.assignment", { text: m.assignment })}</span> : null}
+                            {m.rationale ? <span className="council-form__meta">{t("council.formation.rationale", { text: m.rationale })}</span> : null}
+                          </div>
+                        );
+                      })}
+                      <button type="button" className="council-chip is-accent" onClick={() => applyFormation(formResult)}>
+                        {t("council.formation.apply")}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
               {distinctModels < Math.min(3, drafts.length) && (
                 <p className="council-seats__note">{t("council.setup.membersFewModels")}</p>
               )}
@@ -727,6 +983,16 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
                       </button>
                     </div>
                     <div className="council-member__meta">
+                      <select
+                        className="council-member__tier"
+                        value={draft.tier ?? "lead"}
+                        onChange={(e) => updateDraft(draft.key, { tier: e.target.value as MemberTier })}
+                        aria-label={t("council.setup.memberTier")}
+                        title={t("council.tier.hint")}
+                      >
+                        <option value="lead">{t("council.tier.lead")}</option>
+                        <option value="contributor">{t("council.tier.contributor")}</option>
+                      </select>
                       <select
                         className="council-member__model"
                         value={draft.model}
@@ -892,6 +1158,9 @@ function CouncilRunView(props: { detail: RunDetail; onBack: () => void; onReload
                 <span className="council-member-chip__dot" style={{ background: memberColor(spec.members, member.id) }} />
                 <span className="council-member-chip__name">{member.displayName}</span>
                 {member.isChair ? <span className="council-member-chip__chair">{t("council.setup.memberChair")}</span> : null}
+                {member.tier === "contributor" ? (
+                  <span className="council-member-chip__tier">{tierLabel(member.tier)}</span>
+                ) : null}
                 <span className="council-member-chip__model">{member.model}</span>
                 <span className="council-member-chip__status">{memberStatusText(status)}</span>
               </div>
@@ -970,6 +1239,7 @@ function CouncilMessageCard(props: { msg: CouncilMessage; spec: RunDetail["spec"
   const color = memberColor(spec.members, msg.from);
   const isSystem = msg.from === "system";
   const kind = msg.kind as CouncilMessageKind;
+  const verdict = typeof msg.meta?.verdict === "string" ? msg.meta.verdict : "";
   if (isSystem || kind === "status") {
     return (
       <div className={`council-msg council-msg--system${arriving ? " is-arriving" : ""}`}>
@@ -977,9 +1247,11 @@ function CouncilMessageCard(props: { msg: CouncilMessage; spec: RunDetail["spec"
       </div>
     );
   }
+  const endorseClass =
+    kind === "endorsement" ? (verdict === "reject" ? " is-reject" : verdict === "endorse" ? " is-endorse" : "") : "";
   return (
     <article
-      className={`council-msg${arriving ? " is-arriving" : ""}`}
+      className={`council-msg${arriving ? " is-arriving" : ""}${endorseClass}`}
       style={{ "--seat": color } as CSSProperties}
     >
       <header className="council-msg__head">

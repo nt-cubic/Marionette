@@ -1,6 +1,6 @@
 # Council Mode — 架构(M1–M3 定稿)
 
-> 状态:M1(审议)+ M2(执行)+ M3(验证回路)已实现(2026-10-31)。
+> 状态:M1(审议)+ M2(执行)+ M3(验证回路)+ M5(组队/背书)+ M5.1(阵容模板)已实现(2026-10-31)。
 > 对比审计与决策依据见 [`architecture-audit.md`](./architecture-audit.md);
 > 本文描述**实际落地**的结构。与代码冲突时以代码为准。
 
@@ -29,6 +29,7 @@ Council 是 Marionette 内建的多模型审议编排器:多个模型各自独�
 │    ├─ tasks.rs     PlanDoc→任务图(frontier 调度/失败不级联)      │
 │    ├─ executor.rs  执行 harness(ACP 生产 + 脚本测试)+ worktree 合并│
 │    ├─ verify.rs    验证命令执行(超时/输出截断/危险拦截)           │
+│    ├─ formation.rs 能力画像 / AI 组队 / 分层背书(M5)              │
 │    └─ types.rs     领域类型(spec/消息/状态/计划)                  │
 └───────────────────────────────────────────────────────────────────┘
           复用(不重造):engine.rs(Magpie 网关)、storage::write_atomic、
@@ -44,6 +45,7 @@ Council 是 Marionette 内建的多模型审议编排器:多个模型各自独�
 | B 交叉质询 | `reviewing` | 全体 | 他人最新方案(署名) | `critique` |
 | C 修订回应 | `revising` | 被质询的作者 | 自己最新版 + 针对自己的质询 | `revision` |
 | D 主席综合 | `synthesizing` | 主席 | 全部消息流 | `synthesis` |
+| 分层背书 | `synthesizing` 前 | 非主席 lead | contributor 最新产出 | `endorsement` |
 | E 计划门 | `synthesizing`→`plan_ready` | 主席 | synthesis | `plan`(JSON)+ plan.json |
 
 - 轮次:round N 的 B/C 之后仍有未回应质询且 `round < rounds` → 回

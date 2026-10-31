@@ -80,7 +80,10 @@ Council 视图独立整页(memo-tab-page 模式)。
 - [x] 事件补齐:task/verify/warn 事件进前端时间线
 - [ ] live 引擎冒烟(本机未配置 provider,见 testing.md §5 前置)
 - [ ] 增量事件(现为全量重拉,<百条消息量级可接受)
-- [ ] 模板保存/加载、per-member 成本归因、capability 模型推荐
+- [x] 模板保存/加载(M5.1,前端阵容芯片 + localStorage)
+- [x] capability 模型推荐(M5 画像 + AI 组队 + 分层背书)
+- [ ] per-member 成本归因
+- M5.2 真牌局(`CouncilMode::SgsGame` / `RunPhase::Playing`)不进圆桌协议(PR #4 第三提交搁置;身份局是人设模板,不是牌规)
 - [ ] AwaitingApproval 交互式确认(破坏性验证命令)
 - [ ] Windows 长路径/杀毒下的 store 压测
 

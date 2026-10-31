@@ -424,6 +424,91 @@ fn run_loop(
 
             RunPhase::Synthesizing => {
                 let chair = chair_of(&spec).ok_or("找不到主席成员")?;
+                // 0) 分层背书(M5):每个非主席 lead 对每个 contributor
+                //    的最新产出给出认可/否决。全员 lead(旧配置)→ 整段
+                //    跳过,零额外调用。恢复语义:某 (lead, contributor,
+                //    round) 的背书已在账上则不重调。Synthesis 依赖背书
+                //    状态渲染采信规则,必须先行。
+                let contributors: Vec<&MemberSpec> = spec
+                    .members
+                    .iter()
+                    .filter(|m| m.tier == MemberTier::Contributor)
+                    .collect();
+                let leads: Vec<&MemberSpec> = spec
+                    .members
+                    .iter()
+                    .filter(|m| m.tier == MemberTier::Lead && !m.is_chair)
+                    .collect();
+                if !contributors.is_empty() && !leads.is_empty() {
+                    for contributor in &contributors {
+                        let Some(output) = prompts::latest_own_position(&messages, &contributor.id) else {
+                            continue;
+                        };
+                        let round = output.round;
+                        let target_kind = format!("{:?}", output.kind);
+                        for lead in &leads {
+                            let already = messages.iter().any(|m| {
+                                m.kind == MessageKind::Endorsement
+                                    && m.from == lead.id
+                                    && m.round == round
+                                    && m.meta.as_ref().and_then(|v| v.get("targetAuthor")).and_then(|v| v.as_str())
+                                        == Some(contributor.id.as_str())
+                                    && m.meta.as_ref().and_then(|v| v.get("targetKind")).and_then(|v| v.as_str())
+                                        == Some(target_kind.as_str())
+                            });
+                            if already {
+                                continue;
+                            }
+                            if handle.cancel.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            let (system, user) =
+                                prompts::endorsement_prompt(&spec, lead, contributor, &output);
+                            match call_model(&mut state, client, handle, &lead.model, &system, &user, "endorsement") {
+                                Ok(out) => {
+                                    let verdict = prompts::parse_endorsement(&out.content);
+                                    let (verdict_str, reason) = match verdict {
+                                        Ok((true, reason)) => ("endorse", reason),
+                                        Ok((false, reason)) => ("reject", reason),
+                                        Err(e) => ("unparsed", e),
+                                    };
+                                    let msg = new_message(
+                                        run_id,
+                                        round,
+                                        &lead.id,
+                                        &contributor.id,
+                                        MessageKind::Endorsement,
+                                        Some(output.message_id.clone()),
+                                        &format!(
+                                            "{}:{}",
+                                            if verdict_str == "endorse" { "认可" } else if verdict_str == "reject" { "否决" } else { "无法解析" },
+                                            if reason.is_empty() { out.content.chars().take(200).collect::<String>() } else { reason.clone() }
+                                        ),
+                                        Some(json!({
+                                            "targetAuthor": contributor.id,
+                                            "targetKind": target_kind,
+                                            "verdict": verdict_str,
+                                            "byLead": lead.id,
+                                        })),
+                                    );
+                                    persist_message(&mut messages, run_id, emitter, msg);
+                                    set_member_status(&mut state, run_id, emitter, &lead.id, MemberRuntimeStatus::Done);
+                                }
+                                Err(e) => {
+                                    // 单个背书失败不毒化 run:记录状态消息,
+                                    // 该 contributor 的产出按"零背书"进入
+                                    // 综合(chair 的采信规则会兜住)。
+                                    let msg = new_message(
+                                        run_id, round, "system", "all", MessageKind::Status, None,
+                                        &format!("成员 `{}` 对 `{}` 的背书调用失败:{e}", lead.id, contributor.id),
+                                        Some(json!({ "member": lead.id, "failed": true })),
+                                    );
+                                    persist_message(&mut messages, run_id, emitter, msg);
+                                }
+                            }
+                        }
+                    }
+                }
                 // 1) synthesis(恢复跳过:已存在则不重调)。
                 if !messages.iter().any(|m| m.kind == MessageKind::Synthesis) {
                     let (system, user) = prompts::synthesis_prompt(&spec, chair, &messages);
@@ -482,6 +567,9 @@ fn run_loop(
                     persist_message(&mut messages, run_id, emitter, msg);
                 }
                 set_member_status(&mut state, run_id, emitter, &chair.id, MemberRuntimeStatus::Done);
+                // M5:审议落幕,把各模型表现(产出/背书/失败)记进
+                // model-stats.json——能力画像的历史信号源。
+                super::formation::record_deliberation_outcome(&spec, &messages);
                 transition(&mut state, run_id, emitter, RunPhase::PlanReady, None);
                 emitter.emit(run_id, "plan-ready", json!({}));
                 // PlanReady = 等用户批准,线程退出(验收 #9:执行门)。
@@ -1574,6 +1662,115 @@ mod tests {
         assert_eq!(final_state.verify_attempts, MAX_VERIFY_ATTEMPTS, "恰好用尽 3 次修复");
         assert!(final_state.error.as_deref().unwrap_or("").contains("修复次数已用尽"));
         let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// M5 分层背书端到端:contributor 的提案被非主席 lead 背书
+    /// (verdict/targetAuthor/targetKind 齐备),synthesis 输入带背书
+    /// 标记,run 到 plan_ready;历史统计落账。
+    #[test]
+    fn tiered_endorsement_flow() {
+        let sandbox = Sandbox::new("endorse");
+        let mut spec = setup_run(&sandbox, "endorse");
+        spec.rounds = 1;
+        // 分层:members[0]=lead(背书人)、members[1]=主席(lead)、
+        // members[2]=contributor(被检验)。
+        spec.members[2].tier = crate::council::types::MemberTier::Contributor;
+        store::save_spec(&spec).unwrap();
+
+        let mock = Arc::new(MockClient::new());
+        mock.enqueue(
+            &spec.members[0].model,
+            vec![r#"{"verdict":"endorse","reason":"推理与结论一致"}"#.to_string()],
+        );
+        mock.enqueue(&spec.members[1].model, vec![MOCK_PLAN.to_string()]);
+        mock.enqueue(&spec.members[2].model, vec!["调研结论:三种备选方案".to_string()]);
+
+        start_run(
+            CouncilEventEmitter::new(None),
+            spec.run_id.clone(),
+            RunClients { model: Some(mock.clone()), harness: None },
+        )
+        .unwrap();
+        wait_phase(&spec.run_id, RunPhase::PlanReady, 60_000);
+
+        let messages = store::load_messages(&spec.run_id).unwrap();
+        let endorsements: Vec<&CouncilMessage> =
+            messages.iter().filter(|m| m.kind == MessageKind::Endorsement).collect();
+        assert!(!endorsements.is_empty(), "应产生背书消息");
+        for e in &endorsements {
+            assert_eq!(e.from, spec.members[0].id, "背书只能由 lead 发出");
+            let meta = e.meta.as_ref().unwrap();
+            assert_eq!(meta.get("targetAuthor").and_then(|v| v.as_str()), Some(spec.members[2].id.as_str()));
+            assert_eq!(meta.get("targetKind").and_then(|v| v.as_str()), Some("Proposal"));
+            assert_eq!(meta.get("verdict").and_then(|v| v.as_str()), Some("endorse"));
+        }
+        let calls = mock.calls.lock().unwrap().clone();
+        let synthesis_call = calls.iter().find(|c| c.prompt.contains("输出综合")).expect("有综合调用");
+        assert!(synthesis_call.prompt.contains("〔lead 背书:认可 1"), "综合输入应带背书标记");
+        let stats = crate::council::formation::load_model_stats();
+        let entry = stats.models.get(&spec.members[2].model).expect("统计应含 contributor 模型");
+        assert_eq!(entry.runs, 1);
+        assert!(entry.endorsed >= 1, "收到认可背书:{:?}", entry);
+    }
+
+    /// 兼容性:全员 lead(旧配置)不产生任何背书调用与消息。
+    #[test]
+    fn all_lead_config_skips_endorsement() {
+        let sandbox = Sandbox::new("nolegs");
+        let mut spec = setup_run(&sandbox, "nolegs");
+        spec.rounds = 1;
+        store::save_spec(&spec).unwrap();
+        let mock = Arc::new(MockClient::new());
+        for m in &spec.members {
+            let resp = if m.is_chair { MOCK_PLAN.to_string() } else { "resp".to_string() };
+            mock.enqueue(&m.model, vec![resp]);
+        }
+        start_run(
+            CouncilEventEmitter::new(None),
+            spec.run_id.clone(),
+            RunClients { model: Some(mock.clone()), harness: None },
+        )
+        .unwrap();
+        wait_phase(&spec.run_id, RunPhase::PlanReady, 60_000);
+        let messages = store::load_messages(&spec.run_id).unwrap();
+        assert!(
+            messages.iter().all(|m| m.kind != MessageKind::Endorsement),
+            "全员 lead 时不应有背书消息"
+        );
+        let calls = mock.calls.lock().unwrap().clone();
+        assert!(calls.iter().all(|c| !c.prompt.contains("待检验的产出")), "零背书调用");
+    }
+
+    /// 背书否决路径:lead 全部 reject → synthesis 输入标「认可 0 / 否决」,
+    /// 主席按分层规则把该主张挡在结论外(不进 crash,run 仍到 plan_ready)。
+    #[test]
+    fn rejected_contributor_output_is_flagged() {
+        let sandbox = Sandbox::new("reject");
+        let mut spec = setup_run(&sandbox, "reject");
+        spec.rounds = 1;
+        spec.members[2].tier = crate::council::types::MemberTier::Contributor;
+        store::save_spec(&spec).unwrap();
+        let mock = Arc::new(MockClient::new());
+        mock.enqueue(
+            &spec.members[0].model,
+            vec![r#"{"verdict":"reject","reason":"复杂度分析错误,忽略了最坏情况"}"#.to_string()],
+        );
+        mock.enqueue(&spec.members[1].model, vec![MOCK_PLAN.to_string()]);
+        mock.enqueue(&spec.members[2].model, vec!["方案:用 O(n^2) 暴力扫描".to_string()]);
+        start_run(
+            CouncilEventEmitter::new(None),
+            spec.run_id.clone(),
+            RunClients { model: Some(mock.clone()), harness: None },
+        )
+        .unwrap();
+        wait_phase(&spec.run_id, RunPhase::PlanReady, 60_000);
+        let calls = mock.calls.lock().unwrap().clone();
+        let synthesis_call = calls.iter().find(|c| c.prompt.contains("输出综合")).expect("有综合调用");
+        assert!(synthesis_call.prompt.contains("认可 0 / 否决 1"), "否决要在综合输入可见");
+        let messages = store::load_messages(&spec.run_id).unwrap();
+        assert!(messages
+            .iter()
+            .any(|m| m.kind == MessageKind::Endorsement && m.content.contains("否决")));
     }
 
     /// 计划解析:围栏剥离 + 字段容错。
