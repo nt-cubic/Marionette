@@ -249,7 +249,9 @@ tool 完成 + 新的 agent message，**没有 turnState、没有 turn/complete**
 
 UI 名「圆桌 / 圆桌会议」(en Roundtable);代码模块、路径、事件仍叫 council。
 前端版式跟收纳盒同一套表面:整栏 `--panel` 灰底、卡片
-`--panel-raised` + 8px 圆角;居中栏 + 容器查询按中栏宽度收窄。
+`--panel-raised` + 8px 圆角;内容铺满中栏(无居中 max-width),
+容器查询按中栏宽度收窄。普通窗口点「圆桌」在标签行出 `is-council`
+伪标签(`councilOpen`=标签存在 / `councilActive`=选中,与收纳盒同语义)。
 多模型审议 → 计划 → agent 执行 → 验证回路的编排器。改前先记四条:
 
 - **模块**:`src-tauri/src/council/`(types/state/store/worker/prompts/

@@ -48,23 +48,16 @@
   min-height: 0;
 }
 
-/* 居中阅读栏。灰底铺满中栏,内容卡居中。 */
+/* 铺满中栏,跟收纳盒 / 对话流同一栏宽。列表卡、发言卡仍是 --panel-raised。 */
 .council-frame {
   width: 100%;
-  max-width: 760px;
-  margin-inline: auto;
-  padding: 12px 14px 28px;
+  padding: 8px 8px 24px;
 }
 
 .council-frame--form {
-  max-width: 680px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-}
-
-.council-frame--wide {
-  max-width: 840px;
+  gap: 16px;
 }
 
 .council-page h2 {
@@ -299,9 +292,6 @@
   color: var(--text-muted);
   font-size: 13px;
   text-align: center;
-  border: 1px dashed var(--border);
-  border-radius: var(--council-card);
-  background: var(--panel-muted);
 }
 
 .council-list.is-empty .council-empty {
@@ -413,14 +403,11 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 12px 14px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--council-card);
-  background: var(--panel-raised);
 }
 
 .council-section__title {
   margin: 0;
+  padding: 0 2px;
   font-size: 11px;
   font-weight: 650;
   color: var(--text-faint);
@@ -447,7 +434,7 @@
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--panel);
+  background: var(--bg);
   color: var(--text);
   font: inherit;
   font-size: 13px;
@@ -502,7 +489,7 @@
   padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: var(--council-card);
-  background: var(--panel);
+  background: var(--panel-raised);
   color: var(--text-muted);
   font: inherit;
   text-align: left;
@@ -530,7 +517,7 @@
 
 .council-mode.is-active {
   border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
-  background: color-mix(in srgb, var(--accent-soft) 70%, var(--panel));
+  background: color-mix(in srgb, var(--accent-soft) 70%, var(--panel-raised));
 }
 
 .council-mode.is-active strong {
@@ -550,7 +537,7 @@
   padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: var(--council-card);
-  background: var(--panel);
+  background: var(--panel-raised);
 }
 
 .council-member__row {
@@ -692,12 +679,9 @@
   align-items: center;
   gap: 0;
   margin: 8px 0 0;
-  padding: 8px 12px;
+  padding: 4px 2px 0;
   list-style: none;
   overflow-x: auto;
-  border: 1px solid var(--border);
-  border-radius: var(--council-card);
-  background: var(--panel-raised);
 }
 
 .council-rail__step {
@@ -1084,10 +1068,6 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px 14px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--council-card);
-  background: var(--panel-raised);
 }
 
 .council-task {
@@ -1096,8 +1076,8 @@
   gap: 10px;
   padding: 8px 12px;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--panel);
+  border-radius: var(--council-card);
+  background: var(--panel-raised);
   font-size: 12px;
 }
 
@@ -1148,10 +1128,6 @@
 /* ---- 中栏宽度(不是视口):双侧栏 960 窗 ≈ 466;收起侧栏后可到整窗 ---- */
 
 @container council (max-width: 680px) {
-  .council-frame {
-    padding-inline: 10px;
-  }
-
   .council-modes {
     grid-template-columns: 1fr;
   }
@@ -1166,10 +1142,6 @@
 }
 
 @container council (max-width: 560px) {
-  .council-frame {
-    padding: 8px 8px 24px;
-  }
-
   .council-run__head .council-frame {
     padding-top: 8px;
     padding-bottom: 8px;

@@ -149,8 +149,9 @@ paused → paused_from 指向的原状态(或 cancelled)
   **列表**(run 历史)、**设置**(任务/模式/成员/轮次/并发/预算)、
   **运行**(成员状态条 + 分组时间线 + 计划面板 + 暂停/取消/批准)。
   版式跟收纳盒同一套:整栏 `--panel` 灰底,卡片 `--panel-raised` +
-  8px 圆角;居中栏(列表 760 / 召集 680 / 运行 840),中栏宽度用
-  容器查询适配(双侧栏窄列 ≈ 466 起)。
+  8px 圆角;内容铺满中栏(与收纳盒/对话流同宽,无居中 max-width),
+  中栏宽度用容器查询适配(双侧栏窄列 ≈ 466 起)。伪标签
+  `councilOpen`/`councilActive` 与收纳盒同语义。
 - 事件驱动:后端 `council-event`(message/phase/member/plan-ready/
   finished/warn/error)→ 当前 run 全量重拉(M1 量级 <百条消息)。
 - 复用:`MarkdownBody`(消息渲染)、`showToast`、模型目录经

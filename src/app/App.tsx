@@ -1,5 +1,5 @@
 import { emit, listen } from "@tauri-apps/api/event";
-import { ChevronLeft, ChevronRight, FolderOpen, Inbox, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, FolderOpen, Inbox, UsersRound, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, memo, type CSSProperties } from "react";
 import { agents, projects, sessions } from "../lib/mockData";
 import {
@@ -561,8 +561,13 @@ export function App() {
    * conversation tab keeps the tab, like any other open dialog).
    */
   const [memoActive, setMemoActive] = useState(false);
-  /** Council Mode(多模型审议)整页:打开时中栏切 Council 视图,与收纳盒页互斥。 */
+  /**
+   * 圆桌 lives in the tab strip beside conversations, same as 收纳盒:
+   * `councilOpen` = the tab exists, `councilActive` = it is the selected page.
+   * Mutually exclusive with `memoActive` for the center column.
+   */
   const [councilOpen, setCouncilOpen] = useState(false);
+  const [councilActive, setCouncilActive] = useState(false);
   /** Sessions that finished a turn while this window was looking at another dialog. */
   const [doneUnreadIds, setDoneUnreadIds] = useState<Set<string>>(() => new Set());
   /** Agent proxy config (single exit address), loaded on mount. */
@@ -1054,6 +1059,8 @@ export function App() {
       // A floating page cannot stay open across the mode switch.
       setMemoOpen(false);
       setMemoActive(false);
+      setCouncilOpen(false);
+      setCouncilActive(false);
       if (state !== "docked-expanded") setDockPage(null);
     });
     return () => {
@@ -4767,13 +4774,12 @@ export function App() {
   }, [pushDebug]);
 
   const applyFocusedSession = (nextSession: Session) => {
-    // 切到具体对话时退出 Council 整页(与收纳盒页同语义)。
-    setCouncilOpen(false);
     setCurrentProjectId(nextSession.projectId);
     setCurrentSessionId(nextSession.id);
     // Selecting any conversation switches the center back to its flow — the
-    // 收纳盒 tab itself stays open in the strip.
+    // 收纳盒 / 圆桌 tabs themselves stay open in the strip.
     setMemoActive(false);
+    setCouncilActive(false);
     setViewMode("clean");
     setSessionCapabilities(capsByIdRef.current[nextSession.id] ?? null);
     setActiveModelId(null);
@@ -6559,8 +6565,14 @@ export function App() {
         setPaletteOpen((open) => !open);
         return;
       }
-      // Ctrl+W：关当前标签。收纳盒伪标签激活时优先关它。
+      // Ctrl+W：关当前标签。圆桌 / 收纳盒伪标签激活时优先关它。
       if (!event.shiftKey && (event.key === "w" || event.key === "W") && !IS_DETACHED_WINDOW) {
+        if (councilActive) {
+          event.preventDefault();
+          setCouncilOpen(false);
+          setCouncilActive(false);
+          return;
+        }
         if (memoOpen || memoActive) {
           event.preventDefault();
           setMemoOpen(false);
@@ -6627,6 +6639,7 @@ export function App() {
     currentSessionId,
     memoOpen,
     memoActive,
+    councilActive,
     closeSessionTab,
     handleCreateChatSession,
   ]);
@@ -8673,10 +8686,11 @@ export function App() {
             onOpenMemo={dockActive ? undefined : () => {
               setMemoOpen(true);
               setMemoActive(true);
-              setCouncilOpen(false);
+              setCouncilActive(false);
             }}
             onOpenCouncil={dockActive || IS_DETACHED_WINDOW ? undefined : () => {
               setCouncilOpen(true);
+              setCouncilActive(true);
               setMemoActive(false);
             }}
           />
@@ -8731,6 +8745,7 @@ export function App() {
                 hint: t("council.paletteOpenHint"),
                 run: () => {
                   setCouncilOpen(true);
+                  setCouncilActive(true);
                   setMemoActive(false);
                 },
               },
@@ -8837,10 +8852,28 @@ export function App() {
                 : {
                     active: memoActive,
                     count: memoCount,
-                    onSelect: () => setMemoActive(true),
+                    onSelect: () => {
+                      setMemoActive(true);
+                      setCouncilActive(false);
+                    },
                     onClose: () => {
                       setMemoOpen(false);
                       setMemoActive(false);
+                    },
+                  }
+            }
+            councilTab={
+              IS_DETACHED_WINDOW || !councilOpen
+                ? undefined
+                : {
+                    active: councilActive,
+                    onSelect: () => {
+                      setCouncilActive(true);
+                      setMemoActive(false);
+                    },
+                    onClose: () => {
+                      setCouncilOpen(false);
+                      setCouncilActive(false);
                     },
                   }
             }
@@ -8858,7 +8891,10 @@ export function App() {
                     className="editor-tab__select"
                     type="button"
                     title={t("app.memoBox")}
-                    onClick={() => setMemoActive(true)}
+                    onClick={() => {
+                      setMemoActive(true);
+                      setCouncilActive(false);
+                    }}
                   >
                     <Inbox size={12} />
                     <span>{t("app.memoBox")}</span>
@@ -8872,6 +8908,39 @@ export function App() {
                     onClick={() => {
                       setMemoOpen(false);
                       setMemoActive(false);
+                    }}
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              )}
+              {councilOpen && !IS_DETACHED_WINDOW && (
+                <div
+                  className={`editor-tab is-council${councilActive ? " is-active" : ""}`}
+                  role="tab"
+                  aria-selected={councilActive}
+                  data-tauri-drag-region="false"
+                >
+                  <button
+                    className="editor-tab__select"
+                    type="button"
+                    title={t("council.shelfEntryTitle")}
+                    onClick={() => {
+                      setCouncilActive(true);
+                      setMemoActive(false);
+                    }}
+                  >
+                    <UsersRound size={12} />
+                    <span>{t("council.shelfEntry")}</span>
+                  </button>
+                  <button
+                    className="pill-action pill-action--icon pill-action--sm editor-tab__close"
+                    type="button"
+                    title={t("council.closeTab")}
+                    aria-label={t("council.closeTab")}
+                    onClick={() => {
+                      setCouncilOpen(false);
+                      setCouncilActive(false);
                     }}
                   >
                     <X size={12} />
@@ -8921,13 +8990,14 @@ export function App() {
               {rightCollapsed ? <ChevronLeft size={12} /> : <ChevronRight size={12} />}
             </button>
           )}
-          {councilOpen && !dockActive && !IS_DETACHED_WINDOW ? (
-            // Council Mode 整页:中栏切换为审议视图(侧栏/右栏保留),
-            // Esc 或返回退出;对话流不受影响。
+          {councilActive && !dockActive && !IS_DETACHED_WINDOW ? (
+            // 圆桌 as a tab page: only the conversation-flow column switches
+            // (shelf and context panel stay). Esc / × closes the tab.
             <div className="council-tab-page" aria-label={t("council.pageLabel")}>
               <CouncilPage
                 onClose={() => {
                   setCouncilOpen(false);
+                  setCouncilActive(false);
                 }}
               />
             </div>
