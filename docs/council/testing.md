@@ -91,7 +91,7 @@ PlanDoc camelCase 契约锁定。
 ## 5. live 冒烟(未执行,待环境)
 
 前置:本机 Marionette 引擎 + 至少一个可用模型来源(订阅或 key)。
-步骤:`npm run tauri dev` → 侧栏「Council 协作」→ 选 3 个真实模型 →
+步骤:`npm run tauri dev` → 侧栏「圆桌」→ 选 3 个真实模型 →
 小任务(如"给 LRU 缓存设计并发淘汰策略")→ 观察五阶段 → plan_ready
 后批准。失败模式重点观察:引擎端口漂移、真模型不吐合法 plan JSON
 (修复链路)、token 估算与实际用量的偏差。

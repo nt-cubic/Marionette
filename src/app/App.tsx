@@ -8924,7 +8924,7 @@ export function App() {
           {councilOpen && !dockActive && !IS_DETACHED_WINDOW ? (
             // Council Mode 整页:中栏切换为审议视图(侧栏/右栏保留),
             // Esc 或返回退出;对话流不受影响。
-            <div className="council-tab-page" aria-label="Council 协作">
+            <div className="council-tab-page" aria-label={t("council.pageLabel")}>
               <CouncilPage
                 onClose={() => {
                   setCouncilOpen(false);

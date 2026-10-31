@@ -247,6 +247,7 @@ tool 完成 + 新的 agent message，**没有 turnState、没有 turn/complete**
 
 ## Council 多模型协作(2026-10-31,M1–M3)
 
+UI 名「圆桌 / 圆桌会议」(en Roundtable);代码模块、路径、事件仍叫 council。
 多模型审议 → 计划 → agent 执行 → 验证回路的编排器。改前先记四条:
 
 - **模块**:`src-tauri/src/council/`(types/state/store/worker/prompts/

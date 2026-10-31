@@ -78,6 +78,7 @@
 | 计划 | plan |
 | 子代理 | subagent |
 | 手递手 | handoff |
+| 圆桌 / 圆桌会议 | Roundtable |
 | Telegram 远程 | Telegram remote |
 | 代理 | proxy |
 | 运行中 / 等你 / 已完成 / 出错 | Running / Waiting on you / Done / Error |
