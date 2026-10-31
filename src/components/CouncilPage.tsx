@@ -5,11 +5,14 @@
  * councilActive = 选中;关闭由挂载点的铬负责,Esc 关闭)。状态全部由
  * 后端事件驱动(`council-event`),UI 不持有编排真相——只是 RunDetail
  * 的渲染(任务书 §3.5)。
+ *
+ * 版式按「会议室」而不是「设置表单」:空态是一张待入座的桌子,
+ * 召集是左简报 / 右席位,运行是围桌发言。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { ChevronLeft, CircleStop, Pause, Play, Plus, Trash2 } from "lucide-react";
+import { ChevronLeft, CircleStop, Crown, Minus, Pause, Play, Plus, Trash2 } from "lucide-react";
 import { MarkdownBody } from "./MarkdownBody";
 import {
   COUNCIL_EVENT,
@@ -106,15 +109,59 @@ function pickUnusedModel(models: CouncilModelInfo[], taken: Iterable<string>): s
   return models.find((m) => !used.has(m.id))?.id ?? models[0]?.id ?? "";
 }
 
-function FlowHint() {
+/** 空态/页头的圆桌示意:椭圆桌面 + 绕桌席位。 */
+function TableMark({ seats = 3, size = "lg" }: { seats?: number; size?: "lg" | "sm" }) {
+  const w = size === "sm" ? 72 : 240;
+  const h = size === "sm" ? 44 : 132;
+  const cx = w / 2;
+  const cy = h / 2 + (size === "sm" ? 0 : 2);
+  const rx = size === "sm" ? 20 : 72;
+  const ry = size === "sm" ? 9 : 30;
+  const prx = rx + (size === "sm" ? 7 : 16);
+  const pry = ry + (size === "sm" ? 7 : 14);
+  const r = size === "sm" ? 3.4 : 8;
+  const dots = Array.from({ length: seats }, (_, i) => {
+    const t = -Math.PI / 2 + (i * 2 * Math.PI) / seats;
+    return {
+      x: cx + prx * Math.cos(t),
+      y: cy + pry * Math.sin(t),
+      color: seatColor(i),
+    };
+  });
+  return (
+    <svg
+      className={`council-mark council-mark--${size}`}
+      viewBox={`0 0 ${w} ${h}`}
+      width={w}
+      height={h}
+      aria-hidden
+    >
+      <ellipse className="council-mark__table" cx={cx} cy={cy} rx={rx} ry={ry} />
+      <ellipse className="council-mark__well" cx={cx} cy={cy} rx={rx - (size === "sm" ? 3 : 8)} ry={ry - (size === "sm" ? 2 : 6)} />
+      {dots.map((d, i) => (
+        <circle
+          key={i}
+          className="council-mark__seat"
+          cx={d.x}
+          cy={d.y}
+          r={r}
+          fill={d.color}
+          style={{ animationDelay: `${i * 70}ms` }}
+        />
+      ))}
+    </svg>
+  );
+}
+
+function FlowHint({ variant = "inline" }: { variant?: "inline" | "hero" }) {
   const t = useT();
   const steps = t("council.setup.flow").split("→").map((s) => s.trim());
   return (
-    <div className="council-flow" aria-hidden>
+    <div className={`council-flow council-flow--${variant}`} aria-hidden>
       {steps.map((step, i) => (
-        <span key={step}>
-          {i > 0 && <span className="council-flow__sep">→</span>}
-          {step}
+        <span key={step} className="council-flow__step">
+          {i > 0 && <span className="council-flow__sep" />}
+          <span className="council-flow__label">{step}</span>
         </span>
       ))}
     </div>
@@ -141,6 +188,57 @@ function PhaseRail(props: { phase: RunPhase; pausedFrom?: RunPhase | null; mode:
         );
       })}
     </ol>
+  );
+}
+
+function Stepper(props: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  display: string;
+  onChange: (next: number) => void;
+}) {
+  const { label, value, min, max, step = 1, display, onChange } = props;
+  const t = useT();
+  const clamp = (n: number) => Math.max(min, Math.min(max, n));
+  return (
+    <div className="council-stepper">
+      <span className="council-stepper__label">{label}</span>
+      <div className="council-stepper__ctrl">
+        <button
+          type="button"
+          className="council-stepper__btn"
+          onClick={() => onChange(clamp(value - step))}
+          disabled={value <= min}
+          aria-label={t("council.setup.stepperDec")}
+        >
+          <Minus size={12} />
+        </button>
+        <span className="council-stepper__val">{display}</span>
+        <button
+          type="button"
+          className="council-stepper__btn"
+          onClick={() => onChange(clamp(value + step))}
+          disabled={value >= max}
+          aria-label={t("council.setup.stepperInc")}
+        >
+          <Plus size={12} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SeatDots({ count }: { count: number }) {
+  const n = Math.max(0, Math.min(8, count));
+  return (
+    <span className="council-seat-dots" aria-hidden>
+      {Array.from({ length: n }, (_, i) => (
+        <span key={i} style={{ background: seatColor(i) }} />
+      ))}
+    </span>
   );
 }
 
@@ -270,58 +368,61 @@ function CouncilListView(props: {
 }) {
   const { runs, onNew, onOpen, onRefresh, onDelete } = props;
   const t = useT();
+  if (runs.length === 0) {
+    return (
+      <div className="council-list is-empty">
+        <div className="council-hero">
+          <TableMark seats={3} />
+          <h2>{t("council.list.emptyTitle")}</h2>
+          <p>{t("council.list.empty")}</p>
+          <FlowHint variant="hero" />
+          <button type="button" className="council-btn council-btn--primary council-btn--lg" onClick={() => onNew()}>
+            <Plus size={15} /> {t("council.list.new")}
+          </button>
+        </div>
+      </div>
+    );
+  }
   return (
-    <div className={`council-list${runs.length === 0 ? " is-empty" : ""}`}>
+    <div className="council-list">
       <div className="council-frame">
-        {runs.length > 0 && (
-          <div className="council-list__head">
+        <div className="council-list__head">
+          <div className="council-list__intro">
+            <TableMark seats={3} size="sm" />
             <div>
               <h2>{t("council.list.title")}</h2>
               <p className="council-sub">{t("council.list.subtitle")}</p>
-              <FlowHint />
             </div>
-            <button type="button" className="council-btn council-btn--primary" onClick={() => onNew()}>
-              <Plus size={14} /> {t("council.list.new")}
-            </button>
           </div>
-        )}
-        {runs.length === 0 ? (
-          <div className="council-empty">
-            <strong>{t("council.list.emptyTitle")}</strong>
-            <p>{t("council.list.empty")}</p>
-            <FlowHint />
-            <button type="button" className="council-btn council-btn--primary" onClick={() => onNew()}>
-              <Plus size={14} /> {t("council.list.new")}
-            </button>
-          </div>
-        ) : (
-          <div className="council-run-rows">
-            {runs.map((run) => {
-              const live = !isTerminalPhase(run.phase) && run.phase !== "plan_ready" && run.phase !== "paused";
-              return (
-                <div key={run.runId} className={`council-run-row${live ? " is-live" : ""}`}>
-                  <button type="button" className="council-run-row__main" onClick={() => onOpen(run.runId)}>
-                    <span className="council-run-row__title">{run.title || t("council.list.untitled")}</span>
-                    <span className="council-run-row__meta">
-                      {t("council.list.runMeta", { phase: phaseLabel(run.phase), members: run.memberCount, rounds: run.rounds, messages: run.messageCount })}
-                    </span>
-                  </button>
-                  <span className={phaseBadgeClass(run.phase)}>
-                    {phaseLabel(run.phase)}
-                  </span>
-                  <button type="button" className="council-icon-btn" title={t("council.list.delete")} onClick={() => onDelete(run.runId)}>
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        )}
-        {runs.length > 0 && (
-          <button type="button" className="council-link-btn" onClick={onRefresh}>
-            {t("council.list.refresh")}
+          <button type="button" className="council-btn council-btn--primary" onClick={() => onNew()}>
+            <Plus size={14} /> {t("council.list.new")}
           </button>
-        )}
+        </div>
+        <div className="council-run-rows">
+          {runs.map((run) => {
+            const live = !isTerminalPhase(run.phase) && run.phase !== "plan_ready" && run.phase !== "paused";
+            return (
+              <div key={run.runId} className={`council-run-row${live ? " is-live" : ""}`}>
+                <SeatDots count={run.memberCount} />
+                <button type="button" className="council-run-row__main" onClick={() => onOpen(run.runId)}>
+                  <span className="council-run-row__title">{run.title || t("council.list.untitled")}</span>
+                  <span className="council-run-row__meta">
+                    {t("council.list.runMeta", { phase: phaseLabel(run.phase), members: run.memberCount, rounds: run.rounds, messages: run.messageCount })}
+                  </span>
+                </button>
+                <span className={phaseBadgeClass(run.phase)}>
+                  {phaseLabel(run.phase)}
+                </span>
+                <button type="button" className="council-icon-btn" title={t("council.list.delete")} onClick={() => onDelete(run.runId)}>
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+        <button type="button" className="council-link-btn" onClick={onRefresh}>
+          {t("council.list.refresh")}
+        </button>
       </div>
     </div>
   );
@@ -339,7 +440,7 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
   const [drafts, setDrafts] = useState<MemberDraft[]>(defaultDrafts());
   const [rounds, setRounds] = useState(2);
   const [maxConcurrent, setMaxConcurrent] = useState(4);
-  const [maxRequests, setMaxRequests] = useState<string>("60");
+  const [maxRequests, setMaxRequests] = useState(60);
   const [models, setModels] = useState<CouncilModelInfo[]>([]);
   const [engineReady, setEngineReady] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -347,6 +448,7 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
   const [agents, setAgents] = useState<AgentLite[]>([]);
   const [execAgentId, setExecAgentId] = useState("");
   const [execCwd, setExecCwd] = useState("");
+  const taskRef = useRef<HTMLTextAreaElement>(null);
   const t = useT();
 
   useEffect(() => {
@@ -380,6 +482,10 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
     });
   }, [models]);
 
+  useEffect(() => {
+    taskRef.current?.focus();
+  }, []);
+
   const updateDraft = (key: string, patch: Partial<MemberDraft>) => {
     setDrafts((prev) => prev.map((d) => (d.key === key ? { ...d, ...patch } : d)));
   };
@@ -410,7 +516,6 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
   const removeMember = (key: string) => {
     setDrafts((prev) => {
       const next = prev.filter((d) => d.key !== key);
-      // 删掉主席时把第一个非主席升为主席,保持恰好一个。
       const first = next[0];
       if (!next.some((d) => d.isChair) && first) next[0] = { ...first, isChair: true };
       return next;
@@ -423,6 +528,7 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
     setError(null);
     if (task.trim().length < 10) {
       setError(t("council.setup.taskTooShort"));
+      taskRef.current?.focus();
       return;
     }
     if (drafts.some((d) => !d.model)) {
@@ -442,7 +548,7 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
         rounds,
         maxConcurrent,
         budget: {
-          maxRequests: maxRequests.trim() ? Number(maxRequests) : null,
+          maxRequests: maxRequests > 0 ? maxRequests : null,
           maxTokens: null,
           wallClockSecs: null,
         },
@@ -467,168 +573,209 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
 
   return (
     <div className="council-setup">
-      <div className="council-frame council-frame--form">
-      <button type="button" className="council-back" onClick={onBack}>
-        <ChevronLeft size={14} /> {t("council.setup.back")}
-      </button>
-      <h2>{t("council.setup.title")}</h2>
-      <FlowHint />
-
-      {!engineReady && (
-        <div className="council-warn">{t("council.setup.engineNotReady")}</div>
-      )}
-
-      <section className="council-section">
-        <h3 className="council-section__title">{t("council.setup.section.topic")}</h3>
-        <label className="council-field">
-          <span>{t("council.setup.titleLabel")}</span>
-          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t("council.setup.titlePlaceholder")} />
-        </label>
-
-        <label className="council-field">
-          <span>{t("council.setup.taskLabel")}</span>
-          <textarea
-            value={task}
-            onChange={(e) => setTask(e.target.value)}
-            rows={6}
-            placeholder={t("council.setup.taskPlaceholder")}
-          />
-        </label>
-
-        <div className="council-field">
-          <span>{t("council.setup.modeLabel")}</span>
-          <div className="council-modes">
-            {MODE_OPTIONS.map((opt) => (
-              <button
-                key={opt.id}
-                type="button"
-                className={`council-mode ${mode === opt.id ? "is-active" : ""}`}
-                onClick={() => setMode(opt.id)}
-              >
-                <strong>{modeLabel(opt.id)}</strong>
-                <span>{modeHint(opt.id)}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {mode !== "council_only" && (
-          <div className="council-field">
-            <span>{t("council.setup.executorLabel")}</span>
-            <div className="council-exec-row">
-              <select value={execAgentId} onChange={(e) => setExecAgentId(e.target.value)}>
-                {agents.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.label}
-                  </option>
-                ))}
-              </select>
-              <input
-                value={execCwd}
-                onChange={(e) => setExecCwd(e.target.value)}
-                placeholder={t("council.setup.executorCwdPlaceholder")}
-              />
-            </div>
-            <p className="council-sub">{t("council.setup.executorHint")}</p>
-          </div>
-        )}
-      </section>
-
-      <section className="council-section">
-        <h3 className="council-section__title">{t("council.setup.section.seats")}</h3>
-        <div className="council-field">
-          <span>
-            {t("council.setup.membersLabel", { count: drafts.length, models: distinctModels })}
-            {distinctModels < Math.min(3, drafts.length) ? t("council.setup.membersFewModels") : ""}
-          </span>
-          <div className="council-members">
-            {drafts.map((draft, index) => (
-              <div key={draft.key} className="council-member">
-                <div className="council-member__row">
-                  <span className="council-member__seat" style={{ background: seatColor(index) }} />
-                  <input
-                    value={draft.displayName}
-                    onChange={(e) => updateDraft(draft.key, { displayName: e.target.value })}
-                    placeholder={t("council.setup.memberNamePlaceholder")}
-                  />
-                  <button
-                    type="button"
-                    className={`council-chair-toggle ${draft.isChair ? "is-chair" : ""}`}
-                    onClick={() => setChair(draft.key)}
-                    title={draft.isChair ? t("council.setup.memberChairTitle") : t("council.setup.memberSetChair")}
-                  >
-                    {draft.isChair ? t("council.setup.memberChair") : t("council.setup.memberChairOff")}
-                  </button>
-                  <button
-                    type="button"
-                    className="council-icon-btn"
-                    onClick={() => removeMember(draft.key)}
-                    disabled={drafts.length <= 2}
-                    title={t("council.setup.memberRemove")}
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-                <select value={draft.model} onChange={(e) => updateDraft(draft.key, { model: e.target.value })}>
-                  <option value="">{t("council.setup.memberModelPlaceholder")}</option>
-                  {models.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.id}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  value={draft.role}
-                  onChange={(e) => updateDraft(draft.key, { role: e.target.value })}
-                  placeholder={t("council.setup.memberRolePlaceholder")}
-                />
-              </div>
-            ))}
-          </div>
-          <button type="button" className="council-link-btn" onClick={addMember} disabled={drafts.length >= 8}>
-            {t("council.setup.addMember")}
+      <form
+        className="council-setup__form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
+      >
+        <header className="council-setup__chrome">
+          <button type="button" className="council-back" onClick={onBack}>
+            <ChevronLeft size={14} /> {t("council.setup.back")}
           </button>
+          <h2>{t("council.setup.title")}</h2>
+        </header>
+
+        <div className="council-setup__body">
+          {!engineReady && (
+            <div className="council-warn">{t("council.setup.engineNotReady")}</div>
+          )}
+
+          <div className="council-setup__grid">
+            <section className="council-brief" aria-label={t("council.setup.section.topic")}>
+              <h3 className="council-kicker">{t("council.setup.section.topic")}</h3>
+              <input
+                className="council-brief__title"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder={t("council.setup.titlePlaceholder")}
+                aria-label={t("council.setup.titleAria")}
+              />
+              <textarea
+                ref={taskRef}
+                className="council-brief__task"
+                value={task}
+                onChange={(e) => setTask(e.target.value)}
+                placeholder={t("council.setup.taskPlaceholder")}
+                aria-label={t("council.setup.taskAria")}
+                aria-required
+                rows={8}
+              />
+
+              <div className="council-brief__mode">
+                <span className="council-kicker">{t("council.setup.modeLabel")}</span>
+                <div className="council-seg" role="radiogroup" aria-label={t("council.setup.modeLabel")}>
+                  {MODE_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={mode === opt.id}
+                      className={`council-seg__opt${mode === opt.id ? " is-active" : ""}`}
+                      onClick={() => setMode(opt.id)}
+                    >
+                      {modeLabel(opt.id)}
+                    </button>
+                  ))}
+                </div>
+                <p className="council-brief__hint">{modeHint(mode)}</p>
+              </div>
+
+              {mode !== "council_only" && (
+                <div className="council-exec">
+                  <span className="council-kicker">{t("council.setup.executorLabel")}</span>
+                  <div className="council-exec-row">
+                    <select value={execAgentId} onChange={(e) => setExecAgentId(e.target.value)}>
+                      {agents.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.label}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      value={execCwd}
+                      onChange={(e) => setExecCwd(e.target.value)}
+                      placeholder={t("council.setup.executorCwdPlaceholder")}
+                    />
+                  </div>
+                  <p className="council-brief__hint">{t("council.setup.executorHint")}</p>
+                </div>
+              )}
+
+              <div className="council-rules">
+                <span className="council-kicker">{t("council.setup.section.rules")}</span>
+                <div className="council-steppers">
+                  <Stepper
+                    label={t("council.setup.roundsLabel")}
+                    value={rounds}
+                    min={1}
+                    max={4}
+                    display={t("council.setup.roundsShort", { n: rounds })}
+                    onChange={setRounds}
+                  />
+                  <Stepper
+                    label={t("council.setup.concurrencyLabel")}
+                    value={maxConcurrent}
+                    min={1}
+                    max={8}
+                    display={t("council.setup.concurrencyShort", { n: maxConcurrent })}
+                    onChange={setMaxConcurrent}
+                  />
+                  <Stepper
+                    label={t("council.setup.budgetLabel")}
+                    value={maxRequests}
+                    min={10}
+                    max={400}
+                    step={10}
+                    display={t("council.setup.budgetShort", { n: maxRequests })}
+                    onChange={setMaxRequests}
+                  />
+                </div>
+              </div>
+            </section>
+
+            <section className="council-seats" aria-label={t("council.setup.section.seats")}>
+              <div className="council-seats__head">
+                <h3 className="council-kicker">{t("council.setup.section.seats")}</h3>
+                <span className="council-seats__meta">
+                  {t("council.setup.seatsMeta", { count: drafts.length, models: distinctModels })}
+                </span>
+              </div>
+              {distinctModels < Math.min(3, drafts.length) && (
+                <p className="council-seats__note">{t("council.setup.membersFewModels")}</p>
+              )}
+              <div className="council-members">
+                {drafts.map((draft, index) => (
+                  <div
+                    key={draft.key}
+                    className={`council-member${draft.isChair ? " is-chair" : ""}`}
+                    style={{ "--seat": seatColor(index) } as CSSProperties}
+                  >
+                    <div className="council-member__row">
+                      <input
+                        className="council-member__name"
+                        value={draft.displayName}
+                        onChange={(e) => updateDraft(draft.key, { displayName: e.target.value })}
+                        placeholder={t("council.setup.memberNamePlaceholder")}
+                        aria-label={t("council.setup.memberNamePlaceholder")}
+                      />
+                      <button
+                        type="button"
+                        className={`council-chair-toggle ${draft.isChair ? "is-chair" : ""}`}
+                        onClick={() => setChair(draft.key)}
+                        title={draft.isChair ? t("council.setup.memberChairTitle") : t("council.setup.memberSetChair")}
+                      >
+                        <Crown size={11} />
+                        {draft.isChair ? t("council.setup.memberChair") : t("council.setup.memberChairOff")}
+                      </button>
+                      <button
+                        type="button"
+                        className="council-icon-btn"
+                        onClick={() => removeMember(draft.key)}
+                        disabled={drafts.length <= 2}
+                        title={t("council.setup.memberRemove")}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                    <select
+                      className="council-member__model"
+                      value={draft.model}
+                      onChange={(e) => updateDraft(draft.key, { model: e.target.value })}
+                      aria-label={t("council.setup.memberModelPlaceholder")}
+                    >
+                      <option value="">{t("council.setup.memberModelPlaceholder")}</option>
+                      {models.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.id}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      className="council-member__duty"
+                      value={draft.role}
+                      onChange={(e) => updateDraft(draft.key, { role: e.target.value })}
+                      placeholder={t("council.setup.memberRolePlaceholder")}
+                      aria-label={t("council.setup.memberRolePlaceholder")}
+                    />
+                  </div>
+                ))}
+                {drafts.length < 8 && (
+                  <button type="button" className="council-member council-member--add" onClick={addMember}>
+                    <Plus size={14} /> {t("council.setup.addMember")}
+                  </button>
+                )}
+              </div>
+            </section>
+          </div>
         </div>
-      </section>
 
-      <section className="council-section">
-        <h3 className="council-section__title">{t("council.setup.section.rules")}</h3>
-        <div className="council-params">
-          <label className="council-field council-field--inline">
-            <span>{t("council.setup.roundsLabel")}</span>
-            <input
-              type="number"
-              min={1}
-              max={4}
-              value={rounds}
-              onChange={(e) => setRounds(Math.max(1, Math.min(4, Number(e.target.value) || 1)))}
-            />
-          </label>
-          <label className="council-field council-field--inline">
-            <span>{t("council.setup.concurrencyLabel")}</span>
-            <input
-              type="number"
-              min={1}
-              max={8}
-              value={maxConcurrent}
-              onChange={(e) => setMaxConcurrent(Math.max(1, Math.min(8, Number(e.target.value) || 1)))}
-            />
-          </label>
-          <label className="council-field council-field--inline">
-            <span>{t("council.setup.budgetLabel")}</span>
-            <input value={maxRequests} onChange={(e) => setMaxRequests(e.target.value.replace(/\D/g, ""))} placeholder="60" />
-          </label>
-        </div>
-      </section>
+        {error && <div className="council-warn council-warn--error council-setup__error">{error}</div>}
 
-      {error && <div className="council-warn council-warn--error">{error}</div>}
-
-      <div className="council-setup__actions">
-        <button type="button" className="council-btn council-btn--primary" disabled={creating || !engineReady} onClick={submit}>
-          {creating ? t("council.setup.starting") : t("council.setup.start")}
-        </button>
-      </div>
-      </div>
+        <footer className="council-setup__dock">
+          <span className="council-setup__summary">
+            {t("council.setup.summary", {
+              seats: drafts.length,
+              models: distinctModels,
+              mode: modeLabel(mode),
+            })}
+          </span>
+          <button type="submit" className="council-btn council-btn--primary council-btn--lg" disabled={creating || !engineReady}>
+            {creating ? t("council.setup.starting") : t("council.setup.start")}
+          </button>
+        </footer>
+      </form>
     </div>
   );
 }
@@ -732,87 +879,88 @@ function CouncilRunView(props: { detail: RunDetail; onBack: () => void; onReload
       </div>
 
       <div className="council-frame council-frame--wide">
-      {state.error && <div className="council-warn council-warn--error">{state.error}</div>}
+        {state.error && <div className="council-warn council-warn--error">{state.error}</div>}
 
-      <div className="council-run__members">
-        {spec.members.map((member) => {
-          const status = state.memberStatus[member.id];
-          const working = status === "working";
-          return (
-            <div
-              key={member.id}
-              className={`council-member-chip${working ? " is-working" : ""}${member.isChair ? " is-chair" : ""}`}
-            >
-              <span className="council-member-chip__dot" style={{ background: memberColor(spec.members, member.id) }} />
-              <span className="council-member-chip__name">{member.displayName}</span>
-              {member.isChair ? <span className="council-member-chip__chair">{t("council.setup.memberChair")}</span> : null}
-              <span className="council-member-chip__model">{member.model}</span>
-              <span className="council-member-chip__status">{memberStatusText(status)}</span>
-            </div>
-          );
-        })}
-        <div className="council-budget">
-          <span>
-            {t("council.run.budget", { requests: state.budgetUsage.requests, tokens: state.budgetUsage.tokensEst.toLocaleString() })}
-            {spec.budget.maxRequests ? t("council.run.budgetLimit", { limit: spec.budget.maxRequests }) : ""}
-          </span>
-          {budgetLimit > 0 && (
-            <span className="council-budget__bar" aria-hidden>
-              <span style={{ width: `${budgetPct}%` }} />
+        <div className="council-run__members">
+          {spec.members.map((member) => {
+            const status = state.memberStatus[member.id];
+            const working = status === "working";
+            return (
+              <div
+                key={member.id}
+                className={`council-member-chip${working ? " is-working" : ""}${member.isChair ? " is-chair" : ""}`}
+              >
+                <span className="council-member-chip__dot" style={{ background: memberColor(spec.members, member.id) }} />
+                <span className="council-member-chip__name">{member.displayName}</span>
+                {member.isChair ? <span className="council-member-chip__chair">{t("council.setup.memberChair")}</span> : null}
+                <span className="council-member-chip__model">{member.model}</span>
+                <span className="council-member-chip__status">{memberStatusText(status)}</span>
+              </div>
+            );
+          })}
+          <div className="council-budget">
+            <span>
+              {t("council.run.budget", { requests: state.budgetUsage.requests, tokens: state.budgetUsage.tokensEst.toLocaleString() })}
+              {spec.budget.maxRequests ? t("council.run.budgetLimit", { limit: spec.budget.maxRequests }) : ""}
             </span>
-          )}
-        </div>
-      </div>
-
-      {state.tasks.length > 0 && (
-        <section className="council-tasks">
-          <h3 className="council-tgroup__title">{t("council.run.tasksTitle", { count: state.tasks.length })}</h3>
-          {state.tasks.map((task) => (
-            <div key={task.stepId} className="council-task">
-              <span className="council-task__id">{task.stepId}</span>
-              <span className="council-task__title">{task.title}</span>
-              <span className={`council-task__status council-task__status--${typeof task.status === "string" ? task.status : "failed"}`}>
-                {taskStatusLabel(task.status)}
+            {budgetLimit > 0 && (
+              <span className="council-budget__bar" aria-hidden>
+                <span style={{ width: `${budgetPct}%` }} />
               </span>
-              {task.changes.length > 0 && (
-                <span className="council-task__changes" title={task.changes.join(" · ")}>
-                  {t("council.run.taskFiles", { count: task.changes.length })}
+            )}
+          </div>
+        </div>
+
+        {state.tasks.length > 0 && (
+          <section className="council-tasks">
+            <h3 className="council-tgroup__title">{t("council.run.tasksTitle", { count: state.tasks.length })}</h3>
+            {state.tasks.map((task) => (
+              <div key={task.stepId} className="council-task">
+                <span className="council-task__id">{task.stepId}</span>
+                <span className="council-task__title">{task.title}</span>
+                <span className={`council-task__status council-task__status--${typeof task.status === "string" ? task.status : "failed"}`}>
+                  {taskStatusLabel(task.status)}
                 </span>
-              )}
-            </div>
-          ))}
-        </section>
-      )}
-
-      {plan && (
-        <CouncilPlanView
-          plan={plan}
-          phase={state.phase}
-          onApprove={control}
-          planRef={planRef}
-        />
-      )}
-
-      <div className="council-timeline">
-        {groups.map((group) => (
-          <section key={group.key} className="council-tgroup">
-            <h3 className="council-tgroup__title">{group.title}</h3>
-            {group.messages.map((msg) => (
-              <CouncilMessageCard
-                key={msg.messageId}
-                msg={msg}
-                spec={spec}
-                arriving={arriving.has(msg.messageId)}
-              />
+                {task.changes.length > 0 && (
+                  <span className="council-task__changes" title={task.changes.join(" · ")}>
+                    {t("council.run.taskFiles", { count: task.changes.length })}
+                  </span>
+                )}
+              </div>
             ))}
           </section>
-        ))}
-        {messages.length === 0 && (
-          <div className="council-empty">
-            <p>{t("council.run.timelineEmpty")}</p>
-          </div>
         )}
-      </div>
+
+        {plan && (
+          <CouncilPlanView
+            plan={plan}
+            phase={state.phase}
+            onApprove={control}
+            planRef={planRef}
+          />
+        )}
+
+        <div className="council-timeline">
+          {groups.map((group) => (
+            <section key={group.key} className="council-tgroup">
+              <h3 className="council-tgroup__title">{group.title}</h3>
+              {group.messages.map((msg) => (
+                <CouncilMessageCard
+                  key={msg.messageId}
+                  msg={msg}
+                  spec={spec}
+                  arriving={arriving.has(msg.messageId)}
+                />
+              ))}
+            </section>
+          ))}
+          {messages.length === 0 && (
+            <div className="council-empty council-empty--quiet">
+              <TableMark seats={spec.members.length} size="sm" />
+              <p>{t("council.run.timelineEmpty")}</p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -831,8 +979,12 @@ function CouncilMessageCard(props: { msg: CouncilMessage; spec: RunDetail["spec"
     );
   }
   return (
-    <article className={`council-msg${arriving ? " is-arriving" : ""}`} style={{ borderLeftColor: color }}>
+    <article
+      className={`council-msg${arriving ? " is-arriving" : ""}`}
+      style={{ "--seat": color } as CSSProperties}
+    >
       <header className="council-msg__head">
+        <span className="council-msg__dot" style={{ background: color }} />
         <span className="council-msg__author" style={{ color }}>
           {memberLabel(spec.members, msg.from)}
         </span>
