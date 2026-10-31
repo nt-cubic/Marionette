@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { listen } from "@tauri-apps/api/event";
 import { Archive, Bell, BellOff, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, KeyRound, Languages, MessageSquare, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, SlidersHorizontal, SunMedium, Trash2, X, Zap } from "lucide-react";
 // Refresh on a project row folds CLI history into the normal session list.
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
@@ -15,6 +16,7 @@ import {
   engineEnable,
   engineRestoreFactory,
   engineStatus,
+  type EngineDownloadProgress,
   engineStop,
   engineUpdate,
   telegramAcceptPairing,
@@ -545,6 +547,32 @@ export function ProjectShelf({
   }, []);
   useEffect(refreshEngine, [refreshEngine]);
 
+  // 引擎在后台起步/就绪/回收时状态行自动跟随——曾经只在挂载时拉一次，
+  // 后台拉起完成后 UI 停在「启动中」，要手动点一下才刷（2026-10-31 用户
+  // 实锤）。下载进度是独立事件，合并进 downloading 态。
+  useEffect(() => {
+    let disposed = false;
+    const unlisteners: Array<() => void> = [];
+    const keep = (fn: () => void) => {
+      if (disposed) fn();
+      else unlisteners.push(fn);
+    };
+    void listen<EngineStatus>("engine-state-changed", (event) => {
+      if (event.payload) setEngineState(event.payload);
+    }).then(keep);
+    void listen<EngineDownloadProgress>("engine-download-progress", (event) => {
+      setEngineState((prev) =>
+        prev?.state === "downloading" && event.payload
+          ? { ...prev, downloaded: event.payload.downloaded, total: event.payload.total }
+          : prev,
+      );
+    }).then(keep);
+    return () => {
+      disposed = true;
+      for (const fn of unlisteners) fn();
+    };
+  }, []);
+
   const handleEngineCheckUpdate = useCallback(async () => {
     setEngineUpdateBusy("check");
     setEngineUpdateError("");
@@ -681,6 +709,12 @@ export function ProjectShelf({
   const [pendingDelete, setPendingDelete] = useState<
     { kind: "project" | "session" | "chat"; id: string; label: string } | null
   >(null);
+  /**
+   * 内联删除确认（2026-10-31）：会话/对话行的删除不再弹窗——第一次点删除
+   * 按钮原地变红进入「确认删除」态，再点即删，鼠标离开该行自动复位。连点
+   * 多行清理时不用反复关弹窗。项目移除仍走弹窗（低频且更重）。
+   */
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   /**
    * Pointer-based reorder (not HTML5 DnD).
    * WebView2 often won't start a drag from nested <button>s, and React state
@@ -1200,6 +1234,9 @@ export function ProjectShelf({
           event.stopPropagation();
           setBesideMenu({ session, x: event.clientX, y: event.clientY });
         }}
+        onMouseLeave={() => {
+          setConfirmDeleteId((cur) => (cur === session.id ? null : cur));
+        }}
       >
         {isRenaming ? (
           <form
@@ -1283,16 +1320,25 @@ export function ProjectShelf({
             </button>
           )}
           <button
-            className="chat-row__action chat-row__action--danger"
+            className={`chat-row__action chat-row__action--danger${confirmDeleteId === session.id ? " is-armed" : ""}`}
             type="button"
-            title={t("common.delete")}
-            aria-label={t("common.delete")}
+            title={confirmDeleteId === session.id ? t("shelf.confirmDelete") : t("common.delete")}
+            aria-label={confirmDeleteId === session.id ? t("shelf.confirmDelete") : t("common.delete")}
             onClick={(event) => {
               event.stopPropagation();
-              setPendingDelete({ kind: "chat", id: session.id, label: session.label });
+              if (confirmDeleteId === session.id) {
+                setConfirmDeleteId(null);
+                onDeleteSession(session.id);
+              } else {
+                setConfirmDeleteId(session.id);
+              }
             }}
           >
-            <Trash2 size={12} />
+            {confirmDeleteId === session.id ? (
+              <span className="row-action-confirm">{t("shelf.confirmDelete")}</span>
+            ) : (
+              <Trash2 size={12} />
+            )}
           </button>
         </span>
       </div>
@@ -1605,7 +1651,10 @@ export function ProjectShelf({
                         onMouseEnter={(event) => {
                           if (!isRenaming) hoverRow(session, event.currentTarget);
                         }}
-                        onMouseLeave={() => hoverRow(session, null)}
+                        onMouseLeave={() => {
+                          hoverRow(session, null);
+                          setConfirmDeleteId((cur) => (cur === session.id ? null : cur));
+                        }}
                         onMouseDown={() => hoverRow(session, null)}
                         onContextMenu={(event) => {
                           if (!onOpenBeside) return;
@@ -1700,15 +1749,24 @@ export function ProjectShelf({
                             </button>
                           )}
                           <button
-                            className="session-row__action session-row__action--danger"
+                            className={`session-row__action session-row__action--danger${confirmDeleteId === session.id ? " is-armed" : ""}`}
                             type="button"
-                            title={t("common.delete")}
-                            aria-label={t("common.delete")}
+                            title={confirmDeleteId === session.id ? t("shelf.confirmDelete") : t("common.delete")}
+                            aria-label={confirmDeleteId === session.id ? t("shelf.confirmDelete") : t("common.delete")}
                             onClick={() => {
-                              setPendingDelete({ kind: "session", id: session.id, label: session.label });
+                              if (confirmDeleteId === session.id) {
+                                setConfirmDeleteId(null);
+                                onDeleteSession(session.id);
+                              } else {
+                                setConfirmDeleteId(session.id);
+                              }
                             }}
                           >
-                            <Trash2 size={12} />
+                            {confirmDeleteId === session.id ? (
+                              <span className="row-action-confirm">{t("shelf.confirmDelete")}</span>
+                            ) : (
+                              <Trash2 size={12} />
+                            )}
                           </button>
                         </span>
                       </div>

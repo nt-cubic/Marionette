@@ -6543,13 +6543,50 @@ export function App() {
   ]);
 
   // Ctrl/Cmd+K toggles the palette; Ctrl/Cmd+1..9 jumps to a tab; Ctrl/Cmd+Shift+T
-  // reopens the last closed one.
+  // reopens the last closed one; 2026-10-31 补浏览器常用键：Ctrl+W 关当前标签
+  // （收纳盒伪标签同样关）、Ctrl+T 新对话、Ctrl(+Shift)+Tab 循环切换标签。
+  // 撕窗实例不参与（标签逻辑属于主窗口）。
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
       if (!event.shiftKey && (event.key === "k" || event.key === "K") && !IS_DETACHED_WINDOW) {
         event.preventDefault();
         setPaletteOpen((open) => !open);
+        return;
+      }
+      // Ctrl+W：关当前标签。收纳盒伪标签激活时优先关它。
+      if (!event.shiftKey && (event.key === "w" || event.key === "W") && !IS_DETACHED_WINDOW) {
+        if (memoOpen || memoActive) {
+          event.preventDefault();
+          setMemoOpen(false);
+          setMemoActive(false);
+          return;
+        }
+        if (currentSessionId) {
+          event.preventDefault();
+          closeSessionTab(currentSessionId);
+        }
+        return;
+      }
+      // Ctrl+T：新对话（浏览器「新标签」的直觉位）。
+      if (!event.shiftKey && (event.key === "t" || event.key === "T") && !IS_DETACHED_WINDOW) {
+        event.preventDefault();
+        void handleCreateChatSession();
+        return;
+      }
+      // Ctrl(+Shift)+Tab：循环切换标签。
+      if (event.key === "Tab" && !IS_DETACHED_WINDOW) {
+        const tree = splitStateRef.current;
+        const paneTabs = findPane(tree, tree.focusedPaneId)?.tabIds ?? [];
+        const tabIds = paneTabs.length > 0 ? paneTabs : openSessionIds;
+        if (tabIds.length < 2) return;
+        const idx = tabIds.indexOf(currentSessionId ?? "");
+        const dir = event.shiftKey ? -1 : 1;
+        const nextId = tabIds[(idx + dir + tabIds.length * 2) % tabIds.length];
+        const next = availableSessions.find((s) => s.id === nextId);
+        if (!next || next.id === currentSessionId) return;
+        event.preventDefault();
+        openSession(next);
         return;
       }
       if (event.key >= "1" && event.key <= "9" && !event.shiftKey) {
@@ -6579,7 +6616,15 @@ export function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [availableSessions, openSessionIds]);
+  }, [
+    availableSessions,
+    openSessionIds,
+    currentSessionId,
+    memoOpen,
+    memoActive,
+    closeSessionTab,
+    handleCreateChatSession,
+  ]);
 
   /** P2-UX-4: edit You → truncate following events for this session + resend. */
   const handleEditResend = useCallback(
