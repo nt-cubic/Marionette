@@ -1,6 +1,5 @@
 /* 圆桌会议 — 多模型集体审议。挂载在 .council-tab-page(与 memo 页同模式)。
-   跟产品其余界面同一套语言:1px 线、3px 角、居中栏、克制动效。
-   成员色只作席位身份(方点 / 名字 / 消息左轨),不铺底、不描边整卡。 */
+   表面跟收纳盒同一套:整栏 --panel 灰底,卡片 --panel-raised + 8px 圆角。 */
 
 :root {
   --council-m1: #67d7bd;
@@ -11,6 +10,7 @@
   --council-m6: #5ec9c8;
   --council-m7: #d4bc6a;
   --council-m8: #8a94a6;
+  --council-card: 8px;
 }
 
 /* 挂载点:与 .memo-tab-page 同模式——absolute 覆盖中栏对话列,
@@ -34,7 +34,7 @@
   height: 100%;
   min-height: 0;
   overflow-y: auto;
-  background: var(--bg);
+  background: var(--panel);
   container-type: inline-size;
   container-name: council;
 }
@@ -48,20 +48,23 @@
   min-height: 0;
 }
 
-/* 居中阅读栏。宽屏不拉满;窄中栏(双侧栏 + 960 窗 ≈ 466)走 100%。 */
+/* 居中阅读栏。灰底铺满中栏,内容卡居中。 */
 .council-frame {
   width: 100%;
-  max-width: 720px;
+  max-width: 760px;
   margin-inline: auto;
-  padding: 18px 24px 40px;
+  padding: 12px 14px 28px;
 }
 
 .council-frame--form {
-  max-width: 640px;
+  max-width: 680px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .council-frame--wide {
-  max-width: 800px;
+  max-width: 840px;
 }
 
 .council-page h2 {
@@ -104,11 +107,11 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 26px;
-  padding: 0 10px;
+  height: 28px;
+  padding: 0 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--panel);
+  background: var(--panel-raised);
   color: var(--text);
   font: inherit;
   font-size: 12px;
@@ -122,7 +125,6 @@
 
 .council-btn:hover:not(:disabled) {
   border-color: var(--border-strong);
-  background: var(--panel-raised);
 }
 
 .council-btn:disabled {
@@ -154,8 +156,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
   border: none;
   border-radius: var(--radius);
   background: transparent;
@@ -178,7 +180,7 @@
 
 .council-link-btn {
   align-self: flex-start;
-  margin-top: 10px;
+  margin-top: 4px;
   border: none;
   background: none;
   color: var(--text-muted);
@@ -207,7 +209,7 @@
   font: inherit;
   font-size: 12px;
   cursor: pointer;
-  margin-bottom: 12px;
+  margin-bottom: 2px;
   padding: 0;
   transition: color var(--dur-fast) var(--ease-standard);
 }
@@ -221,10 +223,10 @@
 .council-badge {
   display: inline-flex;
   align-items: center;
-  padding: 1px 6px;
-  border-radius: var(--radius);
+  padding: 1px 8px;
+  border-radius: 999px;
   border: 1px solid var(--border);
-  background: transparent;
+  background: var(--panel-raised);
   color: var(--text-muted);
   font-size: 11px;
   white-space: nowrap;
@@ -233,26 +235,31 @@
 .council-badge--plan {
   color: var(--yellow);
   border-color: color-mix(in srgb, var(--yellow) 40%, var(--border));
+  background: color-mix(in srgb, var(--yellow) 10%, var(--panel-raised));
 }
 
 .council-badge--done {
   color: var(--green);
   border-color: color-mix(in srgb, var(--green) 40%, var(--border));
+  background: color-mix(in srgb, var(--green) 10%, var(--panel-raised));
 }
 
 .council-badge--live {
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: var(--accent-soft);
 }
 
 .council-badge--paused {
   color: var(--orange);
   border-color: color-mix(in srgb, var(--orange) 40%, var(--border));
+  background: color-mix(in srgb, var(--orange) 10%, var(--panel-raised));
 }
 
 .council-badge--err {
   color: var(--red);
   border-color: color-mix(in srgb, var(--red) 40%, var(--border));
+  background: color-mix(in srgb, var(--red) 10%, var(--panel-raised));
 }
 
 .council-badge--live.is-pulse::before {
@@ -260,7 +267,7 @@
   width: 6px;
   height: 6px;
   margin-right: 5px;
-  border-radius: 1px;
+  border-radius: 50%;
   background: var(--accent);
   animation: activity-pulse 1.2s ease-in-out infinite;
 }
@@ -272,9 +279,7 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 4px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
 }
 
 .council-list.is-empty .council-frame {
@@ -284,42 +289,32 @@
   min-height: 0;
 }
 
-.council-list.is-empty .council-list__head {
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-  border-bottom: 0;
-  padding-bottom: 0;
-  margin-bottom: 0;
-}
-
-.council-list.is-empty .council-flow {
-  justify-content: center;
-}
-
 .council-empty {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 48px 8px;
+  padding: 48px 20px;
   color: var(--text-muted);
   font-size: 13px;
   text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: var(--council-card);
+  background: var(--panel-muted);
 }
 
 .council-list.is-empty .council-empty {
   flex: 1 1 auto;
-  padding-top: 24px;
+  margin: 8px 0 12px;
 }
 
 .council-timeline .council-empty {
-  padding: 36px 0;
+  padding: 36px 16px;
 }
 
 .council-empty strong {
-  color: var(--text-strong);
+  color: var(--text-muted);
   font-size: 13px;
   font-weight: 600;
 }
@@ -328,7 +323,7 @@
   margin: 0;
   max-width: 36em;
   line-height: 1.55;
-  color: var(--text-muted);
+  color: var(--text-faint);
   font-size: 12px;
 }
 
@@ -344,20 +339,29 @@
 .council-run-rows {
   display: flex;
   flex-direction: column;
+  gap: 8px;
 }
 
 .council-run-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 9px 4px;
-  border-bottom: 1px solid var(--border);
-  background: transparent;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--council-card);
+  background: var(--panel-raised);
   animation: m-arrive var(--dur-slow) var(--ease-out) backwards;
+  transition:
+    border-color var(--dur-fast) var(--ease-standard),
+    background-color var(--dur-fast) var(--ease-standard);
 }
 
 .council-run-row:hover {
-  background: color-mix(in srgb, var(--text) 4%, transparent);
+  border-color: var(--border-strong);
+}
+
+.council-run-row.is-live {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
 }
 
 .council-run-row.is-live .council-run-row__title::before {
@@ -366,7 +370,7 @@
   width: 6px;
   height: 6px;
   margin-right: 8px;
-  border-radius: 1px;
+  border-radius: 50%;
   background: var(--accent);
   animation: activity-pulse 1.2s ease-in-out infinite;
   vertical-align: 1px;
@@ -376,7 +380,7 @@
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
   border: none;
   background: none;
   text-align: left;
@@ -409,14 +413,10 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding-top: 16px;
-  margin-top: 4px;
-  border-top: 1px solid var(--border);
-}
-
-.council-setup .council-section:first-of-type {
-  border-top: 0;
-  padding-top: 14px;
+  padding: 12px 14px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--council-card);
+  background: var(--panel-raised);
 }
 
 .council-section__title {
@@ -439,10 +439,14 @@
 
 .council-field input,
 .council-field textarea,
-.council-field select {
-  padding: 7px 8px;
+.council-field select,
+.council-member input,
+.council-member select,
+.council-exec-row select,
+.council-exec-row input {
+  padding: 8px 10px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 6px;
   background: var(--panel);
   color: var(--text);
   font: inherit;
@@ -459,9 +463,13 @@
 
 .council-field input:focus,
 .council-field textarea:focus,
-.council-field select:focus {
+.council-field select:focus,
+.council-member input:focus,
+.council-member select:focus,
+.council-exec-row select:focus,
+.council-exec-row input:focus {
   outline: none;
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
 }
 
 .council-field--inline {
@@ -480,14 +488,10 @@
   flex-wrap: wrap;
 }
 
-/* 分段控件:一条外框,竖线切开。窄栏改成横线切开的单列。 */
 .council-modes {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-  background: var(--panel);
+  gap: 8px;
 }
 
 .council-mode {
@@ -496,21 +500,16 @@
   align-items: flex-start;
   gap: 4px;
   padding: 10px 12px;
-  border: 0;
-  border-right: 1px solid var(--border);
-  border-radius: 0;
-  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--council-card);
+  background: var(--panel);
   color: var(--text-muted);
   font: inherit;
   text-align: left;
   cursor: pointer;
   transition:
-    background var(--dur-fast) var(--ease-standard),
-    color var(--dur-fast) var(--ease-standard);
-}
-
-.council-mode:last-child {
-  border-right: 0;
+    border-color var(--dur-fast) var(--ease-standard),
+    background var(--dur-fast) var(--ease-standard);
 }
 
 .council-mode strong {
@@ -526,11 +525,12 @@
 }
 
 .council-mode:hover {
-  background: var(--panel-soft);
+  border-color: var(--border-strong);
 }
 
 .council-mode.is-active {
-  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 70%, var(--panel));
 }
 
 .council-mode.is-active strong {
@@ -540,18 +540,17 @@
 .council-members {
   display: flex;
   flex-direction: column;
+  gap: 8px;
 }
 
 .council-member {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.council-member:first-child {
-  padding-top: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--council-card);
+  background: var(--panel);
 }
 
 .council-member__row {
@@ -566,9 +565,9 @@
 }
 
 .council-member__seat {
-  width: 6px;
-  height: 6px;
-  border-radius: 1px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
   flex-shrink: 0;
 }
 
@@ -581,58 +580,56 @@
   display: inline-flex;
   align-items: center;
   height: 22px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: 1px solid transparent;
+  border-radius: 999px;
   background: none;
   color: var(--text-muted);
   font: inherit;
   font-size: 11px;
-  padding: 0 7px;
+  padding: 0 8px;
   cursor: pointer;
   white-space: nowrap;
   transition:
     color var(--dur-fast) var(--ease-standard),
-    border-color var(--dur-fast) var(--ease-standard);
+    border-color var(--dur-fast) var(--ease-standard),
+    background var(--dur-fast) var(--ease-standard);
 }
 
 .council-chair-toggle:hover {
   color: var(--text);
+  background: var(--panel-soft);
 }
 
 .council-chair-toggle.is-chair {
   color: var(--text-strong);
-  border-color: var(--border-strong);
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
+  background: var(--accent-soft);
 }
 
 .council-setup__actions {
   display: flex;
   justify-content: flex-end;
-  padding-top: 16px;
-  margin-top: 8px;
-  border-top: 1px solid var(--border);
+  padding-top: 4px;
 }
 
 .council-warn {
-  padding: 8px 10px;
-  margin-top: 12px;
-  border-radius: var(--radius);
+  padding: 10px 12px;
+  border-radius: var(--council-card);
   border: 1px solid color-mix(in srgb, var(--orange) 40%, var(--border));
+  background: color-mix(in srgb, var(--orange) 8%, var(--panel-raised));
   color: var(--orange);
   font-size: 12px;
   line-height: 1.5;
 }
 
-.council-run .council-warn {
-  margin-top: 0;
+.council-warn--error {
+  border-color: color-mix(in srgb, var(--red) 45%, var(--border));
+  background: color-mix(in srgb, var(--red) 8%, var(--panel-raised));
+  color: var(--red);
 }
 
 .council-run .council-frame--wide > * + * {
-  margin-top: 16px;
-}
-
-.council-warn--error {
-  border-color: color-mix(in srgb, var(--red) 45%, var(--border));
-  color: var(--red);
+  margin-top: 12px;
 }
 
 /* ---- 运行视图 ---- */
@@ -645,7 +642,7 @@
   position: sticky;
   top: 0;
   z-index: 2;
-  background: var(--bg);
+  background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
 
@@ -695,9 +692,12 @@
   align-items: center;
   gap: 0;
   margin: 8px 0 0;
-  padding: 0;
+  padding: 8px 12px;
   list-style: none;
   overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--council-card);
+  background: var(--panel-raised);
 }
 
 .council-rail__step {
@@ -709,9 +709,9 @@
 }
 
 .council-rail__dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 1px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
   background: var(--border-strong);
   flex-shrink: 0;
 }
@@ -750,8 +750,7 @@
 
 .council-rail__step.is-current .council-rail__dot {
   background: var(--accent);
-  outline: 1px solid var(--accent);
-  outline-offset: 2px;
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .council-rail__step.is-current .council-rail__label {
@@ -760,6 +759,7 @@
 
 .council-rail__step.is-error .council-rail__dot {
   background: var(--red);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--red) 16%, transparent);
 }
 
 .council-rail__step.is-error .council-rail__label {
@@ -769,27 +769,25 @@
 .council-run__members {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex-wrap: wrap;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border);
 }
 
 .council-member-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 8px 3px 7px;
+  padding: 5px 10px 5px 8px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--panel);
+  border-radius: 999px;
+  background: var(--panel-raised);
   font-size: 11px;
 }
 
 .council-member-chip__dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 1px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
   flex-shrink: 0;
 }
 
@@ -811,6 +809,11 @@
 
 .council-member-chip__status {
   color: var(--text-faint);
+}
+
+.council-member-chip.is-working {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
+  background: var(--accent-soft);
 }
 
 .council-member-chip.is-working .council-member-chip__dot {
@@ -835,7 +838,8 @@
 
 .council-budget__bar {
   width: 120px;
-  height: 2px;
+  height: 3px;
+  border-radius: 999px;
   background: var(--border);
   overflow: hidden;
 }
@@ -844,6 +848,7 @@
   display: block;
   height: 100%;
   background: var(--accent);
+  border-radius: inherit;
   transition: width var(--dur-slow) var(--ease-out);
 }
 
@@ -863,6 +868,7 @@
 
 .council-tgroup__title {
   margin: 4px 0 0;
+  padding: 0 2px;
   font-size: 11px;
   font-weight: 650;
   color: var(--text-faint);
@@ -870,10 +876,10 @@
 
 .council-msg {
   border: 1px solid var(--border);
-  border-left-width: 2px;
-  border-radius: var(--radius);
-  background: var(--panel);
-  padding: 8px 12px;
+  border-left-width: 3px;
+  border-radius: var(--council-card);
+  background: var(--panel-raised);
+  padding: 10px 14px;
 }
 
 .council-msg.is-arriving {
@@ -883,7 +889,7 @@
 .council-msg--system {
   border: none;
   background: none;
-  padding: 2px 0;
+  padding: 2px 4px;
   color: var(--text-faint);
   font-size: 11px;
 }
@@ -907,8 +913,9 @@
 .council-msg__kind {
   color: var(--text-muted);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 0 5px;
+  border-radius: 999px;
+  padding: 0 6px;
+  background: var(--panel);
 }
 
 .council-msg__time {
@@ -938,14 +945,15 @@
 
 .council-plan {
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--panel);
-  padding: 12px 14px;
+  border-radius: var(--council-card);
+  background: var(--panel-raised);
+  padding: 14px 16px;
   animation: m-arrive var(--dur-slow) var(--ease-out) backwards;
 }
 
 .council-plan.is-gate {
-  border-top: 2px solid var(--yellow);
+  border-color: color-mix(in srgb, var(--yellow) 40%, var(--border));
+  background: color-mix(in srgb, var(--yellow) 8%, var(--panel-raised));
 }
 
 .council-plan__banner {
@@ -983,14 +991,17 @@
 .council-plan__steps {
   display: flex;
   flex-direction: column;
+  gap: 8px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
 .council-plan__step {
-  padding: 8px 0;
-  border-top: 1px solid var(--border);
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
 }
 
 .council-plan__step-title {
@@ -1002,9 +1013,10 @@
 
 .council-plan__step-id {
   font-size: 10px;
-  padding: 1px 5px;
-  border-radius: var(--radius-sm);
+  padding: 1px 6px;
+  border-radius: 999px;
   border: 1px solid var(--border);
+  background: var(--panel-raised);
   color: var(--text-faint);
 }
 
@@ -1046,8 +1058,9 @@
 
 .council-plan__verify code {
   font-size: 11px;
-  padding: 1px 5px;
-  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--panel);
   border: 1px solid var(--border);
 }
 
@@ -1070,28 +1083,30 @@
 .council-tasks {
   display: flex;
   flex-direction: column;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--border);
+  gap: 8px;
+  padding: 12px 14px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--council-card);
+  background: var(--panel-raised);
 }
 
 .council-task {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 7px 0;
-  border-top: 1px solid var(--border);
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
   font-size: 12px;
-}
-
-.council-task:first-of-type {
-  border-top: 0;
 }
 
 .council-task__id {
   font-size: 10px;
-  padding: 1px 5px;
-  border-radius: var(--radius-sm);
+  padding: 1px 6px;
+  border-radius: 999px;
   border: 1px solid var(--border);
+  background: var(--panel-raised);
   color: var(--text-faint);
 }
 
@@ -1134,20 +1149,11 @@
 
 @container council (max-width: 680px) {
   .council-frame {
-    padding-inline: 16px;
+    padding-inline: 10px;
   }
 
   .council-modes {
     grid-template-columns: 1fr;
-  }
-
-  .council-mode {
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .council-mode:last-child {
-    border-bottom: 0;
   }
 
   .council-rail__step:not(.is-current) .council-rail__label {
@@ -1161,7 +1167,7 @@
 
 @container council (max-width: 560px) {
   .council-frame {
-    padding: 12px 12px 28px;
+    padding: 8px 8px 24px;
   }
 
   .council-run__head .council-frame {
