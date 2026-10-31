@@ -20,6 +20,7 @@ import { zh as zhFeLibB } from "./parts/fe-libB.zh";
 import { zh as zhFeLibC } from "./parts/fe-libC.zh";
 import { zh as zhFeCouncil } from "./parts/fe-council.zh";
 import { zh as zhFeExport } from "./parts/fe-export.zh";
+import { zh as zhFeUsagedash } from "./parts/fe-usagedash.zh";
 
 export const zh = {
   ...zhCommon,
@@ -38,4 +39,5 @@ export const zh = {
   ...zhFeLibC,
   ...zhFeCouncil,
   ...zhFeExport,
+  ...zhFeUsagedash,
 } as const;

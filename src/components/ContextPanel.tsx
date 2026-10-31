@@ -17,6 +17,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { MemorySection } from "./MemorySection";
 import { PluginsSection } from "./PluginsSection";
 import { SessionStatsSection } from "./SessionStatsSection";
+import { UsageLedgerSection } from "./UsageLedgerSection";
 import { dockFooterHost, useDocked } from "../lib/dockFooter";
 import type { PlanEntry } from "../lib/acpPlan";
 import type { BackgroundTaskRow } from "../lib/backgroundTasks";
@@ -889,6 +890,8 @@ export const ContextPanel = memo(function ContextPanel({
         </small>
         {sessionStats && <SessionStatsSection stats={sessionStats} />}
       </section>
+
+      <UsageLedgerSection />
 
       <MemorySection activeSessionId={activeSessionId} />
 
