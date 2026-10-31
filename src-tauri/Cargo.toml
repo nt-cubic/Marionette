@@ -26,8 +26,9 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# default-features off — no tray/compression bloat
-tauri = { version = "2", default-features = false, features = ["wry", "protocol-asset"] }
+# default-features off — no compression bloat；tray-icon 为后台常驻的托盘驻留
+# （2026-10-31：× 行为可选「后台常驻」后，右下角需要图标承担唤回/退出）
+tauri = { version = "2", default-features = false, features = ["wry", "protocol-asset", "tray-icon"] }
 # Typed session/new only; do not pull full ACP SDK / async stack
 agent-client-protocol-schema = "1.4.0"
 # Small blocking HTTP (usage + npm version + app update). No tokio.
