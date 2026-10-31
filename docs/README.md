@@ -16,6 +16,8 @@
 | [`plan-edge-dock.md`](./plan-edge-dock.md) | 贴边停靠设计稿（阶段 0–3 已落地，现行行为以 `CURRENT.md`「贴边停靠」与 `AGENTS.md` 红线为准；文内记了与实现的偏差）。**悬浮球计划已废弃并入本计划**（原件 [`archive/plan-orb-assistant.md`](./archive/plan-orb-assistant.md)） |
 | [`research-codeg.md`](./research-codeg.md) | **调研（2026-10-25）**：同类产品 Codeg 全量分析（克隆在 `D:\Projects\codeg`）——可抄功能（活动胶囊/steer 队列/富内容渲染/MCP·Skills 分发/收菜任务/@委托/微信 iLink 通道…）、坑清单（进程管理/编码/Windows/流式 UI/适配器漂移…带 commit 证据）、ZCode 同桥情报（`ZCODE_ACP_RUNTIME` 等）、行动优先级 |
 | [`plan-codeg-borrow.md`](./plan-codeg-borrow.md) | **路线图（2026-10-25）**：从 Codeg 借什么、什么不借——对照现状（代理层/跨 agent handoff/12 parser/registry 安装/Ctrl K 搜索已对齐）分 P0 速赢→P1 对话流骨架→P2 数据与能力分发→P3 协作与远程→P4 按需，含明确不做清单、依赖关系与工程纪律 |
+| [`research-competitors-2026-10.md`](./research-competitors-2026-10.md) | **调研（2026-10-31）**：CLI agent 桌面管理壳竞品全景（Conductor/Sculptor/Nimbalyst/opcode/Vibe Kanban/AionUi/Happy/厂商原生 + 2026 新入场）与 ACP 生态现状；功能矩阵、跨竞品高频痛点、定位启示 |
+| [`plan-competitor-roadmap.md`](./plan-competitor-roadmap.md) | **路线图（2026-10-31）**：竞品调研的行动项——P0 会话导出（已落地）→ P1 补齐 table-stakes（成本仪表盘/checkpoint/MCP UI/registry 安装）→ P2 差异化纵深（交付卡 review 工作流/圆桌可视化/定时任务/Telegram 深化）→ P3 按需，含明确不做与风险观察 |
 | `archive/` | 历史归档（2026-07 前后的策划、路线图、规格与调研）。**不是**待办清单 |
 | `screenshots/` | 根 README 用的界面截图 |
 

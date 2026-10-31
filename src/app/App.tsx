@@ -224,6 +224,9 @@ import { WindowControls } from "../components/WindowControls";
 import { parseAskQuestionPrompt } from "../lib/askQuestion";
 import { initScrollbarAutoHide } from "../lib/scrollbarAutoHide";
 import { applyLocale, getLocale, nextLocale, useLocale, useT } from "../lib/i18n";
+import { showToast } from "../lib/toast";
+import { copyText } from "../lib/clipboard";
+import { exportSessionMarkdown } from "../lib/exportTranscript";
 import { nextTheme, parseStoredTheme, themeColorScheme, type ThemeMode } from "../lib/theme";
 
 const LEFT_PANEL_MIN = 180;
@@ -4834,6 +4837,22 @@ export function App() {
 
   /** Create a new Chat session in the current/default working folder. `origin:
    *  "memo"` files it under the shelf's 收纳盒 group. */
+  /** 导出当前对话为 Markdown(纯前端:全量转录 → 序列化 → WebView 下载)。 */
+  const handleExportTranscript = useCallback(async () => {
+    const session = displaySession;
+    if (!session?.id) return;
+    try {
+      const { fileName, markdown } = await exportSessionMarkdown(session.id, session.label);
+      showToast({
+        text: t("export.toastOk", { name: fileName }),
+        tone: "ok",
+        action: { label: t("export.copyAction"), run: () => void copyText(markdown) },
+      });
+    } catch (e) {
+      showToast({ text: t("export.toastError", { error: e instanceof Error ? e.message : String(e) }), tone: "error" });
+    }
+  }, [displaySession, t]);
+
   const handleCreateChatSession = useCallback(async (agentId?: string, opts?: { origin?: "memo" }) => {
     if (createChatInFlightRef.current) return createChatInFlightRef.current;
     const work = (async (): Promise<Session | undefined> => {
@@ -8749,6 +8768,16 @@ export function App() {
                   setMemoActive(false);
                 },
               },
+              ...(!memoActive && !councilActive
+                ? [
+                    {
+                      id: "export-transcript",
+                      label: t("export.paletteAction"),
+                      hint: "Markdown",
+                      run: () => void handleExportTranscript(),
+                    },
+                  ]
+                : []),
               {
                 id: "add-project",
                 label: t("palette.addProject"),

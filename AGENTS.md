@@ -670,3 +670,7 @@ ZCode 官方**没有** ACP（CLI 0.16.x 无 `--acp`，ACP registry 未收录）�
   的 locale，可能与当前 UI 不一致，新探测点照此办理。
 - 回归：`npx tsx scripts/inventory-zh.mts --check`（前端白名单外中文清零；正则密集
   文件有已知误报）、`npx tsc --noEmit`、`cargo test`（默认 zh，旧断言原样过）。
+- **新代码别给 inventory-zh 添误报**：它的注释剥离器不识别正则字面量——正则里出现裸
+  `"`（如 `/[\\/:*?"<>|]/`）会被当成字符串开头，从此整个文件的注释都不剥、文档注释里的
+  中文全被点名。正则里的引号一律用 `\x22`（`exportTranscript.ts` 的 `exportFileName` 是样板）；
+  模板字符串里的反引号同理尽量避开（`\`` 也会让框架栈错位）。
