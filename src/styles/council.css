@@ -1,5 +1,6 @@
-/* 圆桌会议 — 多模型集体审议。挂载在 .council-tab-page(与 memo 页同模式)。
-   表面跟收纳盒同一套:整栏 --panel 灰底,卡片 --panel-raised + 8px 圆角。 */
+/* 圆桌会议 — 会议室,不是设置表单。
+   挂载在 .council-tab-page(与 memo 页同模式)。
+   地面 --panel;桌面/席位/发言是 --panel-raised + 8px + 一层轻阴影。 */
 
 :root {
   --council-m1: #67d7bd;
@@ -11,6 +12,7 @@
   --council-m7: #d4bc6a;
   --council-m8: #8a94a6;
   --council-card: 8px;
+  --council-shadow: 0 1px 2px var(--shadow), 0 4px 12px color-mix(in srgb, var(--shadow) 55%, transparent);
 }
 
 /* 挂载点:与 .memo-tab-page 同模式——absolute 覆盖中栏对话列,
@@ -33,7 +35,7 @@
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  overflow-y: auto;
+  overflow: hidden;
   background: var(--panel);
   container-type: inline-size;
   container-name: council;
@@ -48,31 +50,74 @@
   min-height: 0;
 }
 
-/* 铺满中栏,跟收纳盒 / 对话流同一栏宽。列表卡、发言卡仍是 --panel-raised。 */
-.council-frame {
-  width: 100%;
-  padding: 8px 8px 24px;
+.council-list:not(.is-empty),
+.council-run {
+  overflow-y: auto;
 }
 
-.council-frame--form {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+/* 铺满中栏。宽时用双栏消化宽度,不把输入框拉成通栏。 */
+.council-frame {
+  width: 100%;
+  padding: 16px 18px 28px;
 }
 
 .council-page h2 {
   margin: 0;
-  font-size: 14px;
+  font-size: 18px;
   font-weight: 650;
+  letter-spacing: -0.02em;
   color: var(--text-strong);
 }
 
 .council-sub {
   margin: 4px 0 0;
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: 12.5px;
+  line-height: 1.55;
   color: var(--text-muted);
 }
+
+.council-kicker {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--text-faint);
+}
+
+/* ---- 圆桌示意 ---- */
+
+.council-mark {
+  display: block;
+  flex-shrink: 0;
+}
+
+.council-mark__table {
+  fill: var(--panel-raised);
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
+  filter: drop-shadow(0 2px 6px var(--shadow));
+}
+
+.council-mark__well {
+  fill: color-mix(in srgb, var(--accent) 8%, var(--panel));
+  stroke: none;
+}
+
+.council-mark__seat {
+  stroke: var(--panel);
+  stroke-width: 2;
+  animation: m-arrive var(--dur-slow) var(--ease-out) backwards;
+}
+
+.council-mark--sm .council-mark__seat {
+  animation: none;
+  stroke-width: 1.25;
+}
+
+.council-mark--sm .council-mark__table {
+  stroke-width: 1;
+}
+
+/* ---- 流程轨 ---- */
 
 .council-flow {
   display: flex;
@@ -84,13 +129,37 @@
   color: var(--text-faint);
 }
 
-.council-flow span {
-  padding: 1px 0;
+.council-flow__step {
+  display: inline-flex;
+  align-items: center;
 }
 
 .council-flow__sep {
+  width: 18px;
+  height: 1px;
   margin: 0 6px;
-  opacity: 0.45;
+  background: var(--border-strong);
+  opacity: 0.7;
+}
+
+.council-flow--hero {
+  justify-content: center;
+  margin-top: 18px;
+  max-width: 36em;
+}
+
+.council-flow--hero .council-flow__label {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.council-flow--hero .council-flow__sep {
+  width: 12px;
+  margin: 0 4px;
 }
 
 /* ---- 按钮 ---- */
@@ -120,6 +189,19 @@
   border-color: var(--border-strong);
 }
 
+.council-btn:focus-visible,
+.council-seg__opt:focus-visible,
+.council-icon-btn:focus-visible,
+.council-chair-toggle:focus-visible,
+.council-stepper__btn:focus-visible,
+.council-back:focus-visible,
+.council-member--add:focus-visible,
+.council-run-row__main:focus-visible,
+.council-link-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
+}
+
 .council-btn:disabled {
   opacity: 0.5;
   cursor: default;
@@ -135,6 +217,13 @@
 .council-btn--primary:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 88%, var(--text-strong));
   border-color: transparent;
+}
+
+.council-btn--lg {
+  height: 34px;
+  padding: 0 16px;
+  font-size: 13px;
+  border-radius: 6px;
 }
 
 .council-btn--danger {
@@ -156,6 +245,7 @@
   background: transparent;
   color: var(--text-faint);
   cursor: pointer;
+  flex-shrink: 0;
   transition:
     background var(--dur-fast) var(--ease-standard),
     color var(--dur-fast) var(--ease-standard);
@@ -173,7 +263,7 @@
 
 .council-link-btn {
   align-self: flex-start;
-  margin-top: 4px;
+  margin-top: 10px;
   border: none;
   background: none;
   color: var(--text-muted);
@@ -202,7 +292,6 @@
   font: inherit;
   font-size: 12px;
   cursor: pointer;
-  margin-bottom: 2px;
   padding: 0;
   transition: color var(--dur-fast) var(--ease-standard);
 }
@@ -251,7 +340,7 @@
 
 .council-badge--err {
   color: var(--red);
-  border-color: color-mix(in srgb, var(--red) 40%, var(--border));
+  border-color: color-mix(in srgb, var(--red) 45%, var(--border));
   background: color-mix(in srgb, var(--red) 10%, var(--panel-raised));
 }
 
@@ -265,21 +354,44 @@
   animation: activity-pulse 1.2s ease-in-out infinite;
 }
 
-/* ---- 列表 ---- */
+/* ---- 空态舞台 ---- */
 
-.council-list__head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
+.council-list.is-empty {
+  min-height: 0;
 }
 
-.council-list.is-empty .council-frame {
+.council-hero {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  flex: 1 1 auto;
-  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  padding: 48px 28px 64px;
+  text-align: center;
+  animation: m-arrive var(--dur-slow) var(--ease-out) backwards;
+}
+
+.council-hero .council-mark {
+  margin-bottom: 22px;
+}
+
+.council-hero h2 {
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+}
+
+.council-hero p {
+  margin: 10px 0 0;
+  max-width: 32em;
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: var(--text-muted);
+}
+
+.council-hero .council-btn {
+  margin-top: 22px;
 }
 
 .council-empty {
@@ -287,43 +399,40 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 48px 20px;
+  gap: 8px;
+  padding: 36px 16px;
   color: var(--text-muted);
   font-size: 13px;
   text-align: center;
 }
 
-.council-list.is-empty .council-empty {
-  flex: 1 1 auto;
-  margin: 8px 0 12px;
-}
-
-.council-timeline .council-empty {
-  padding: 36px 16px;
-}
-
-.council-empty strong {
-  color: var(--text-muted);
-  font-size: 13px;
-  font-weight: 600;
+.council-empty--quiet {
+  padding: 28px 16px 12px;
+  color: var(--text-faint);
+  font-size: 12.5px;
 }
 
 .council-empty p {
   margin: 0;
   max-width: 36em;
   line-height: 1.55;
-  color: var(--text-faint);
-  font-size: 12px;
 }
 
-.council-empty .council-btn {
-  margin-top: 10px;
+/* ---- 列表 ---- */
+
+.council-list__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
 }
 
-.council-empty .council-flow {
-  justify-content: center;
-  margin-top: 4px;
+.council-list__intro {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
 }
 
 .council-run-rows {
@@ -335,11 +444,12 @@
 .council-run-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
+  gap: 10px;
+  padding: 12px 14px;
   border: 1px solid var(--border);
   border-radius: var(--council-card);
   background: var(--panel-raised);
+  box-shadow: var(--council-shadow);
   animation: m-arrive var(--dur-slow) var(--ease-out) backwards;
   transition:
     border-color var(--dur-fast) var(--ease-standard),
@@ -354,16 +464,22 @@
   border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
 }
 
-.council-run-row.is-live .council-run-row__title::before {
-  content: "";
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  margin-right: 8px;
+.council-seat-dots {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.council-seat-dots span {
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  background: var(--accent);
-  animation: activity-pulse 1.2s ease-in-out infinite;
-  vertical-align: 1px;
+  border: 1.5px solid var(--panel-raised);
+  box-sizing: border-box;
+}
+
+.council-seat-dots span + span {
+  margin-left: -3px;
 }
 
 .council-run-row__main {
@@ -380,55 +496,203 @@
 }
 
 .council-run-row__title {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 13.5px;
+  font-weight: 650;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-strong);
 }
 
+.council-run-row.is-live .council-run-row__title::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: activity-pulse 1.2s ease-in-out infinite;
+  vertical-align: 1px;
+}
+
 .council-run-row__meta {
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--text-faint);
 }
 
-/* ---- 设置 ---- */
+/* ---- 召集:会议室双栏 ---- */
 
 .council-setup {
   animation: m-arrive var(--dur-slow) var(--ease-out) backwards;
 }
 
-.council-section {
+.council-setup__form {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.council-setup__chrome {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.council-setup__chrome h2 {
+  font-size: 15px;
+}
+
+.council-setup__chrome .council-back {
+  margin: 0;
+}
+
+.council-setup__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 18px 8px;
+}
+
+.council-setup__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.88fr);
+  gap: 22px 24px;
+  align-items: start;
+}
+
+.council-brief,
+.council-seats {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-width: 0;
 }
 
-.council-section__title {
-  margin: 0;
-  padding: 0 2px;
-  font-size: 11px;
+.council-seats {
+  position: sticky;
+  top: 0;
+}
+
+.council-brief__title {
+  width: 100%;
+  margin: 2px 0 0;
+  padding: 4px 2px 8px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 18px;
   font-weight: 650;
+  letter-spacing: -0.02em;
+  transition: border-color var(--dur-fast) var(--ease-standard);
+}
+
+.council-brief__title::placeholder {
+  color: var(--text-faint);
+  font-weight: 500;
+}
+
+.council-brief__title:focus {
+  outline: none;
+  border-bottom-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+
+.council-brief__task {
+  width: 100%;
+  min-height: 148px;
+  max-height: min(48vh, 360px);
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--council-card);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.65;
+  resize: vertical;
+  field-sizing: content;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-faint) 8%, transparent);
+  transition: border-color var(--dur-fast) var(--ease-standard);
+}
+
+.council-brief__task::placeholder {
   color: var(--text-faint);
 }
 
-.council-field {
+.council-brief__task:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.council-brief__mode,
+.council-exec,
+.council-rules {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.council-brief__hint {
+  margin: 0;
   font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-faint);
 }
 
-.council-field > span {
+.council-seg {
+  display: flex;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  gap: 2px;
+}
+
+.council-seg__opt {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
   color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition:
+    background var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
 }
 
-.council-field input,
-.council-field textarea,
-.council-field select,
-.council-member input,
-.council-member select,
+.council-seg__opt:hover {
+  color: var(--text-strong);
+}
+
+.council-seg__opt.is-active {
+  background: var(--panel-raised);
+  color: var(--accent);
+  box-shadow: 0 1px 2px var(--shadow);
+}
+
+.council-exec-row {
+  display: flex;
+  gap: 8px;
+}
+
 .council-exec-row select,
 .council-exec-row input {
   padding: 8px 10px;
@@ -438,90 +702,100 @@
   color: var(--text);
   font: inherit;
   font-size: 13px;
-  transition: border-color var(--dur-fast) var(--ease-standard);
 }
 
-.council-field textarea {
-  resize: vertical;
-  font-family: inherit;
-  line-height: 1.5;
-  min-height: 108px;
+.council-exec-row select {
+  flex: 0 0 180px;
 }
 
-.council-field input:focus,
-.council-field textarea:focus,
-.council-field select:focus,
-.council-member input:focus,
-.council-member select:focus,
+.council-exec-row input {
+  flex: 1;
+  min-width: 0;
+}
+
 .council-exec-row select:focus,
 .council-exec-row input:focus {
   outline: none;
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
 }
 
-.council-field--inline {
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-}
-
-.council-field--inline input {
-  width: 72px;
-}
-
-.council-params {
+.council-steppers {
   display: flex;
-  gap: 18px;
   flex-wrap: wrap;
-}
-
-.council-modes {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 
-.council-mode {
+.council-stepper {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  padding: 10px 12px;
+  gap: 6px;
+  padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: var(--council-card);
   background: var(--panel-raised);
-  color: var(--text-muted);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition:
-    border-color var(--dur-fast) var(--ease-standard),
-    background var(--dur-fast) var(--ease-standard);
+  min-width: 108px;
 }
 
-.council-mode strong {
-  font-size: 12.5px;
-  font-weight: 650;
-  color: var(--text-strong);
-}
-
-.council-mode span {
+.council-stepper__label {
   font-size: 11px;
-  line-height: 1.4;
   color: var(--text-faint);
 }
 
-.council-mode:hover {
+.council-stepper__ctrl {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.council-stepper__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.council-stepper__btn:hover:not(:disabled) {
+  color: var(--text-strong);
   border-color: var(--border-strong);
 }
 
-.council-mode.is-active {
-  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
-  background: color-mix(in srgb, var(--accent-soft) 70%, var(--panel-raised));
+.council-stepper__btn:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
-.council-mode.is-active strong {
-  color: var(--accent);
+.council-stepper__val {
+  flex: 1;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-strong);
+}
+
+.council-seats__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.council-seats__meta {
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.council-seats__note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--orange);
+  line-height: 1.45;
 }
 
 .council-members {
@@ -534,38 +808,67 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 10px 12px;
+  padding: 10px 12px 10px 16px;
   border: 1px solid var(--border);
   border-radius: var(--council-card);
   background: var(--panel-raised);
+  box-shadow: var(--council-shadow), inset 3px 0 0 var(--seat, var(--council-m1));
+  position: relative;
+}
+
+.council-member.is-chair {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
 }
 
 .council-member__row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
-.council-member__row input {
+.council-member__name {
   flex: 1;
   min-width: 0;
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 650;
 }
 
-.council-member__seat {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
+.council-member__name:focus {
+  outline: none;
 }
 
-.council-member > select,
-.council-member > input {
+.council-member__model,
+.council-member__duty {
   width: 100%;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+}
+
+.council-member__duty {
+  color: var(--text-faint);
+}
+
+.council-member__model:focus,
+.council-member__duty:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  color: var(--text);
 }
 
 .council-chair-toggle {
   display: inline-flex;
   align-items: center;
+  gap: 4px;
   height: 22px;
   border: 1px solid transparent;
   border-radius: 999px;
@@ -576,6 +879,7 @@
   padding: 0 8px;
   cursor: pointer;
   white-space: nowrap;
+  flex-shrink: 0;
   transition:
     color var(--dur-fast) var(--ease-standard),
     border-color var(--dur-fast) var(--ease-standard),
@@ -593,10 +897,57 @@
   background: var(--accent-soft);
 }
 
-.council-setup__actions {
+.council-member--add {
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 44px;
+  border-style: dashed;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.council-member--add::before {
+  display: none;
+}
+
+.council-member--add:hover {
+  border-color: var(--border-strong);
+  color: var(--text-strong);
+  background: color-mix(in srgb, var(--panel-raised) 50%, transparent);
+}
+
+.council-setup__error {
+  margin: 0 18px 8px;
+}
+
+.council-setup__dock {
   display: flex;
-  justify-content: flex-end;
-  padding-top: 4px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-shrink: 0;
+  padding: 10px 18px 14px;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 92%, var(--bg));
+}
+
+.council-setup__dock .council-btn--primary {
+  margin-left: auto;
+}
+
+.council-setup__summary {
+  font-size: 12px;
+  color: var(--text-faint);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .council-warn {
@@ -607,6 +958,7 @@
   color: var(--orange);
   font-size: 12px;
   line-height: 1.5;
+  margin-bottom: 12px;
 }
 
 .council-warn--error {
@@ -616,7 +968,7 @@
 }
 
 .council-run .council-frame--wide > * + * {
-  margin-top: 12px;
+  margin-top: 14px;
 }
 
 /* ---- 运行视图 ---- */
@@ -629,7 +981,8 @@
   position: sticky;
   top: 0;
   z-index: 2;
-  background: var(--panel);
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--border);
 }
 
@@ -659,7 +1012,7 @@
 }
 
 .council-run__title strong {
-  font-size: 13px;
+  font-size: 14px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -678,8 +1031,8 @@
   display: flex;
   align-items: center;
   gap: 0;
-  margin: 8px 0 0;
-  padding: 4px 2px 0;
+  margin: 10px 0 0;
+  padding: 2px 0 0;
   list-style: none;
   overflow-x: auto;
 }
@@ -739,6 +1092,10 @@
 
 .council-rail__step.is-current .council-rail__label {
   color: var(--accent);
+  background: var(--accent-soft);
+  padding: 2px 8px;
+  margin-left: 4px;
+  border-radius: 999px;
 }
 
 .council-rail__step.is-error .council-rail__dot {
@@ -841,7 +1198,7 @@
 .council-timeline {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
 }
 
 .council-tgroup {
@@ -860,10 +1217,22 @@
 
 .council-msg {
   border: 1px solid var(--border);
-  border-left-width: 3px;
   border-radius: var(--council-card);
   background: var(--panel-raised);
-  padding: 10px 14px;
+  box-shadow: var(--council-shadow);
+  padding: 12px 16px 12px 18px;
+  position: relative;
+}
+
+.council-msg::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: var(--seat, var(--border));
 }
 
 .council-msg.is-arriving {
@@ -873,21 +1242,34 @@
 .council-msg--system {
   border: none;
   background: none;
+  box-shadow: none;
   padding: 2px 4px;
   color: var(--text-faint);
   font-size: 11px;
+}
+
+.council-msg--system::before {
+  display: none;
 }
 
 .council-msg__head {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
   font-size: 11px;
+}
+
+.council-msg__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
 
 .council-msg__author {
   font-weight: 700;
+  font-size: 12.5px;
 }
 
 .council-msg__model {
@@ -909,8 +1291,8 @@
 }
 
 .council-msg__body {
-  font-size: 13px;
-  line-height: 1.6;
+  font-size: 13.5px;
+  line-height: 1.65;
 }
 
 .council-msg__body .md-body {
@@ -931,7 +1313,8 @@
   border: 1px solid var(--border);
   border-radius: var(--council-card);
   background: var(--panel-raised);
-  padding: 14px 16px;
+  box-shadow: var(--council-shadow);
+  padding: 16px 18px;
   animation: m-arrive var(--dur-slow) var(--ease-out) backwards;
 }
 
@@ -956,7 +1339,8 @@
 
 .council-plan__head h3 {
   margin: 0;
-  font-size: 13px;
+  font-size: 15px;
+  letter-spacing: -0.02em;
 }
 
 .council-plan__actions {
@@ -966,10 +1350,10 @@
 }
 
 .council-plan__summary {
-  margin: 0 0 10px;
-  font-size: 13px;
+  margin: 0 0 12px;
+  font-size: 13.5px;
   color: var(--text);
-  line-height: 1.55;
+  line-height: 1.6;
 }
 
 .council-plan__steps {
@@ -982,7 +1366,7 @@
 }
 
 .council-plan__step {
-  padding: 8px 12px;
+  padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--panel);
@@ -1012,8 +1396,9 @@
 
 .council-plan__step-detail {
   margin-top: 4px;
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--text);
+  line-height: 1.5;
 }
 
 .council-plan__step-acceptance {
@@ -1049,20 +1434,6 @@
 }
 
 /* ---- 执行任务面板 ---- */
-
-.council-exec-row {
-  display: flex;
-  gap: 8px;
-}
-
-.council-exec-row select {
-  flex: 0 0 180px;
-}
-
-.council-exec-row input {
-  flex: 1;
-  min-width: 0;
-}
 
 .council-tasks {
   display: flex;
@@ -1125,13 +1496,28 @@
   color: var(--text-faint);
 }
 
-/* ---- 中栏宽度(不是视口):双侧栏 960 窗 ≈ 466;收起侧栏后可到整窗 ---- */
+/* ---- 中栏宽度:双栏约 780;双侧栏 960 窗会叠成单列 ---- */
 
-@container council (max-width: 680px) {
-  .council-modes {
+@container council (max-width: 780px) {
+  .council-setup__grid {
     grid-template-columns: 1fr;
   }
 
+  .council-seats {
+    position: static;
+  }
+
+  .council-members {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  }
+
+  .council-member--add {
+    min-height: 88px;
+  }
+}
+
+@container council (max-width: 680px) {
   .council-rail__step:not(.is-current) .council-rail__label {
     display: none;
   }
@@ -1139,9 +1525,28 @@
   .council-rail__line {
     margin: 0 6px;
   }
+
+  .council-seg {
+    flex-wrap: wrap;
+  }
+
+  .council-seg__opt {
+    flex: 1 1 30%;
+  }
 }
 
 @container council (max-width: 560px) {
+  .council-frame {
+    padding: 12px 12px 22px;
+  }
+
+  .council-setup__chrome,
+  .council-setup__body,
+  .council-setup__dock {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
   .council-run__head .council-frame {
     padding-top: 8px;
     padding-bottom: 8px;
@@ -1191,6 +1596,31 @@
   .council-member__row {
     flex-wrap: wrap;
   }
+
+  .council-setup__dock {
+    flex-wrap: wrap;
+  }
+
+  .council-setup__summary {
+    flex-basis: 100%;
+    white-space: normal;
+  }
+
+  .council-hero {
+    padding: 32px 16px 48px;
+  }
+
+  .council-hero h2 {
+    font-size: 20px;
+  }
+
+  .council-members {
+    grid-template-columns: 1fr;
+  }
+
+  .council-member--add {
+    min-height: 44px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1198,7 +1628,9 @@
   .council-setup,
   .council-run,
   .council-msg.is-arriving,
-  .council-plan {
+  .council-plan,
+  .council-hero,
+  .council-mark__seat {
     animation: none;
   }
 
@@ -1206,5 +1638,9 @@
   .council-run-row.is-live .council-run-row__title::before,
   .council-member-chip.is-working .council-member-chip__dot {
     animation: none;
+  }
+
+  .council-run__head {
+    backdrop-filter: none;
   }
 }
