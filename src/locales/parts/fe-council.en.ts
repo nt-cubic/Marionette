@@ -7,6 +7,7 @@ export const en = {
   "council.paletteOpen": "Open Roundtable",
   "council.paletteOpenHint": "Multi-model deliberation into an implementation plan",
   "council.pageLabel": "Roundtable",
+  "council.closeTab": "Close Roundtable",
 
   "council.list.title": "Roundtable",
   "council.list.subtitle": "Models sit independently, cross-examine each other, and revise together into a reviewed implementation plan.",

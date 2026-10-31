@@ -1,9 +1,10 @@
 /**
  * 圆桌会议主视图(任务书 §5):设置 / 讨论时间线 / 计划门 / 历史。
  *
- * 挂载方式对齐 MemoBox 的伪标签页模式(App.tsx 条件渲染,关闭由挂载
- * 点的铬负责,Esc 关闭)。状态全部由后端事件驱动(`council-event`),
- * UI 不持有编排真相——只是 RunDetail 的渲染(任务书 §3.5)。
+ * 挂载方式对齐 MemoBox 的伪标签页模式(App.tsx: councilOpen = 标签存在,
+ * councilActive = 选中;关闭由挂载点的铬负责,Esc 关闭)。状态全部由
+ * 后端事件驱动(`council-event`),UI 不持有编排真相——只是 RunDetail
+ * 的渲染(任务书 §3.5)。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";

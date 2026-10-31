@@ -7,6 +7,7 @@ export const zh = {
   "council.paletteOpen": "打开圆桌会议",
   "council.paletteOpenHint": "多模型集体审议，产出实施计划",
   "council.pageLabel": "圆桌会议",
+  "council.closeTab": "关闭圆桌",
 
   "council.list.title": "圆桌会议",
   "council.list.subtitle": "几个模型围桌独立提案、交叉质询、共同修订，产出一份经过评审的实施计划。",

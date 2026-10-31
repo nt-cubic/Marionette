@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Columns2, Copy, Eye, EyeOff, FileText, Globe, Inbox, Merge, MessageSquareQuote, Pencil, Plus, Split, Square, SquareArrowOutUpRight, X } from "lucide-react";
+import { Check, ChevronDown, Columns2, Copy, Eye, EyeOff, FileText, Globe, Inbox, Merge, MessageSquareQuote, Pencil, Plus, Split, Square, SquareArrowOutUpRight, UsersRound, X } from "lucide-react";
 import {
   memo,
   useCallback,
@@ -193,6 +193,7 @@ export function SessionTabs({
   onOpenBeside,
   titlebarDragRegion = false,
   memoTab,
+  councilTab,
 }: {
   openSessions: Session[];
   session: Session;
@@ -247,6 +248,14 @@ export function SessionTabs({
   memoTab?: {
     active: boolean;
     count: number;
+    onSelect: () => void;
+    onClose: () => void;
+  };
+  /**
+   * 圆桌 pseudo-tab: same strip semantics as 收纳盒. No badge.
+   */
+  councilTab?: {
+    active: boolean;
     onSelect: () => void;
     onClose: () => void;
   };
@@ -517,16 +526,16 @@ export function SessionTabs({
 
   const tabClassById = useMemo(() => {
     const map = new Map<string, string>();
-    // 收纳盒伪标签占用这条时，对话标签全部退成未选中——current session id
+    // 收纳盒 / 圆桌伪标签占用这条时，对话标签全部退成未选中——current session id
     // 仍记着，点回去即切回；两边同时 is-active 会看起来像两个当前页。
-    const memoOwnsStrip = Boolean(memoTab?.active);
+    const extraOwnsStrip = Boolean(memoTab?.active || councilTab?.active);
     for (const openSession of openSessions) {
       map.set(
         openSession.id,
         [
           "editor-tab",
           `is-${openSession.status}`,
-          openSession.id === session.id && !memoOwnsStrip ? "is-active" : "",
+          openSession.id === session.id && !extraOwnsStrip ? "is-active" : "",
           draggingTabId === openSession.id ? "is-dragging-out" : "",
           ghost?.session.id === openSession.id ? "is-tear-source" : "",
           doneUnreadIds?.has(openSession.id) ? "is-done" : "",
@@ -536,7 +545,7 @@ export function SessionTabs({
       );
     }
     return map;
-  }, [openSessions, session.id, draggingTabId, ghost, doneUnreadIds, memoTab?.active]);
+  }, [openSessions, session.id, draggingTabId, ghost, doneUnreadIds, memoTab?.active, councilTab?.active]);
 
   return (
     <>
@@ -565,7 +574,7 @@ export function SessionTabs({
               key={openSession.id}
               className={tabClassById.get(openSession.id)}
               role="tab"
-              aria-selected={openSession.id === session.id && !memoTab?.active}
+              aria-selected={openSession.id === session.id && !memoTab?.active && !councilTab?.active}
               data-tauri-drag-region="false"
               onContextMenu={(e) => {
                 if (detachedMode || !onOpenBeside || openSessions.length <= 1) return;
@@ -726,6 +735,37 @@ export function SessionTabs({
             onClick={(e) => {
               e.stopPropagation();
               memoTab.onClose();
+            }}
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
+      {councilTab && !detachedMode && (
+        <div
+          className={`editor-tab is-council${councilTab.active ? " is-active" : ""}`}
+          role="tab"
+          aria-selected={councilTab.active}
+          data-tauri-drag-region="false"
+        >
+          <button
+            className="editor-tab__select"
+            type="button"
+            title={t("council.shelfEntryTitle")}
+            onClick={councilTab.onSelect}
+          >
+            <UsersRound size={12} />
+            <span>{t("council.shelfEntry")}</span>
+          </button>
+          <button
+            className="pill-action pill-action--icon pill-action--sm editor-tab__close"
+            type="button"
+            title={t("council.closeTab")}
+            aria-label={t("council.closeTab")}
+            data-tauri-drag-region="false"
+            onClick={(e) => {
+              e.stopPropagation();
+              councilTab.onClose();
             }}
           >
             <X size={12} />
