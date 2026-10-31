@@ -143,7 +143,7 @@ body.is-panel-resizing .workspace-grid {
   display: none;
 }
 
-/* Floating trigger buttons — match icon-button--eye style */
+/* Floating trigger buttons — 28px round pills on the workspace edge. */
 .floating-trigger {
   display: flex;
   align-items: center;

@@ -278,18 +278,26 @@
   overflow-y: auto;
 }
 
-/* User-message outline: thin rail + hover panel list */
+/* User-message outline: thin rail + hover panel list.
+   Top inset used to clear the global eye; that control is gone, so the
+   rail starts with the transcript. Web ChatGPT still parks a width slider
+   in the old corner — keep the previous offset when that bar is present. */
 .message-outline {
   position: absolute;
-  top: 32px;
+  top: 8px;
   right: 10px;
   z-index: 12;
   display: flex;
   flex-direction: row-reverse;
   align-items: flex-start;
   gap: 0;
-  max-height: calc(100% - 44px);
+  max-height: calc(100% - 20px);
   pointer-events: auto;
+}
+
+.clean-surface:has(.clean-surface__tools) .message-outline {
+  top: 32px;
+  max-height: calc(100% - 44px);
 }
 
 .message-outline__rail {
@@ -530,17 +538,6 @@
   cursor: wait;
 }
 
-.icon-button--eye {
-  position: absolute;
-  top: 4px;
-  right: 18px;
-  z-index: 13;
-  /* Slightly more visible at rest than in-content pills */
-  opacity: 0.72;
-  background: var(--panel);
-  border-color: var(--border);
-}
-
 .clean-surface__tools {
   position: absolute;
   top: 4px;
@@ -549,10 +546,6 @@
   display: flex;
   align-items: center;
   gap: 5px;
-}
-
-.clean-surface__tools .icon-button--eye {
-  position: static;
 }
 
 .web-reply-width-control {
