@@ -73,13 +73,24 @@ impl ModelClient for EngineClient {
         }
         let body = serde_json::to_string(&body).map_err(|e| format!("序列化请求失败:{e}"))?;
         let agent = crate::http_client::agent()?;
+        // 错误前缀是契约:orchestrator 的瞬时错误分类(worker::is_transient_error)
+        // 按「引擎请求失败」(传输层,可退避重试)与「引擎返回 <code>」
+        // (HTTP 状态,按码分类)区分,改动前缀前先看那边。
         let resp = agent
             .post(&format!("http://127.0.0.1:{port}/v1/chat/completions"))
             .set("Authorization", &format!("Bearer {}", crate::engine::ENGINE_TOKEN))
             .set("Content-Type", "application/json")
             .timeout(Duration::from_secs(self.timeout_secs))
             .send_string(&body)
-            .map_err(|e| format!("引擎请求失败({}):{}", req.model, shorten(&e.to_string(), 300)))?;
+            .map_err(|e| match e {
+                // ureq 2.x:非 2xx 是 Err(Status)——规整成「引擎返回 <code>」
+                // 前缀,别让它混进传输层错误。
+                ureq::Error::Status(code, r) => {
+                    let detail = r.into_string().map(|s| shorten(&s, 300)).unwrap_or_default();
+                    format!("引擎返回 {code}({}):{detail}", req.model)
+                }
+                _ => format!("引擎请求失败({}):{}", req.model, shorten(&e.to_string(), 300)),
+            })?;
         let status = resp.status();
         let text = resp.into_string().map_err(|e| format!("读取引擎应答失败:{e}"))?;
         if !(200..300).contains(&status) {
@@ -106,6 +117,8 @@ impl ModelClient for EngineClient {
 pub struct MockClient {
     /// model id → 响应队列(循环弹出)。
     scripts: Mutex<std::collections::HashMap<String, VecDeque<String>>>,
+    /// model id → 一次性错误注入(先进先出,耗尽后回落响应脚本)。
+    failures: Mutex<std::collections::HashMap<String, VecDeque<String>>>,
     /// (model, system+user 摘要) 调用记录。
     pub calls: Mutex<Vec<MockCall>>,
 }
@@ -118,12 +131,23 @@ pub struct MockCall {
 
 impl MockClient {
     pub fn new() -> Self {
-        MockClient { scripts: Mutex::new(std::collections::HashMap::new()), calls: Mutex::new(Vec::new()) }
+        MockClient {
+            scripts: Mutex::new(std::collections::HashMap::new()),
+            failures: Mutex::new(std::collections::HashMap::new()),
+            calls: Mutex::new(Vec::new()),
+        }
     }
 
     /// 给某模型入队一组响应(循环使用,永不耗尽)。
     pub fn enqueue(&self, model: &str, responses: Vec<String>) {
         self.scripts.lock().unwrap().insert(model.to_string(), responses.into());
+    }
+
+    /// 给某模型入队一次性错误(先进先出;耗尽后回落响应脚本)。
+    /// 错误文本建议按 EngineClient 的前缀约定书写,配合
+    /// `is_transient_error` 测退避重试。
+    pub fn enqueue_failures(&self, model: &str, errors: Vec<String>) {
+        self.failures.lock().unwrap().insert(model.to_string(), errors.into());
     }
 
     pub fn call_count(&self) -> usize {
@@ -151,6 +175,11 @@ impl ModelClient for MockClient {
             .lock()
             .unwrap()
             .push(MockCall { model: req.model.clone(), prompt: format!("{}||{}", req.system, req.user) });
+        if let Some(queue) = self.failures.lock().unwrap().get_mut(&req.model) {
+            if !queue.is_empty() {
+                return Err(queue.pop_front().unwrap());
+            }
+        }
         let mut scripts = self.scripts.lock().unwrap();
         match scripts.get_mut(&req.model) {
             Some(queue) if !queue.is_empty() => {
@@ -173,6 +202,25 @@ fn shorten(s: &str, max: usize) -> String {
         let cut: String = s.chars().take(max).collect();
         format!("{cut}…")
     }
+}
+
+/// 瞬时错误判定(DSH 式:瞬时与结构性分开,只有前者值得退避重试):
+/// - 「引擎请求失败」= 传输层(超时/连接拒绝/重置/DNS)→ 瞬时;
+/// - 「引擎返回 <code>」按状态码:408/429/5xx 瞬时,其余结构性;
+/// - 解析失败/空内容/引擎未运行等是结构性错误,重试无意义。
+/// EngineClient 的错误前缀是本文件拼的契约;Mock 注入的错误按同样
+/// 约定书写。
+pub fn is_transient_error(msg: &str) -> bool {
+    if msg.starts_with("引擎请求失败") {
+        return true;
+    }
+    if let Some(rest) = msg.strip_prefix("引擎返回 ") {
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(code) = digits.parse::<u16>() {
+            return code == 408 || code == 429 || (500..600).contains(&code);
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -205,5 +253,40 @@ mod tests {
             .err()
             .expect("应当失败");
         assert!(err.contains("引擎"), "错误信息应指向引擎:{err}");
+    }
+
+    #[test]
+    fn transient_error_classification() {
+        // 传输层 → 瞬时(超时/连接问题都走「引擎请求失败」前缀)。
+        assert!(is_transient_error("引擎请求失败(glm/x): connection refused"));
+        assert!(is_transient_error("引擎请求失败(glm/x): network timed out"));
+        // HTTP 状态:408/429/5xx 瞬时。
+        assert!(is_transient_error("引擎返回 429(glm/x):rate limited"));
+        assert!(is_transient_error("引擎返回 503(glm/x):overloaded"));
+        assert!(is_transient_error("引擎返回 408(glm/x):timeout"));
+        // 结构性:其它状态码与本地错误。
+        assert!(!is_transient_error("引擎返回 400(glm/x):bad request"));
+        assert!(!is_transient_error("引擎返回 401(glm/x):unauthorized"));
+        assert!(!is_transient_error("引擎返回空内容(glm/x)"));
+        assert!(!is_transient_error("解析引擎应答失败:expected value"));
+        assert!(!is_transient_error("模型共享引擎未运行(无法发起 Council 模型调用)"));
+        assert!(!is_transient_error("mock 队列无响应(glm/x)"));
+        assert!(!is_transient_error(""));
+    }
+
+    #[test]
+    fn mock_failure_injection_then_fallback() {
+        let mock = MockClient::new();
+        mock.enqueue("glm/x", vec!["恢复".into()]);
+        mock.enqueue_failures("glm/x", vec![
+            "引擎返回 503(glm/x):overloaded".into(),
+            "引擎返回 429(glm/x):rate limited".into(),
+        ]);
+        let req = WorkerRequest { model: "glm/x".into(), system: "s".into(), user: "u".into(), max_tokens: None };
+        assert!(mock.complete(&req).is_err());
+        assert!(mock.complete(&req).is_err());
+        let ok = mock.complete(&req).unwrap();
+        assert_eq!(ok.content, "恢复");
+        assert_eq!(mock.call_count(), 3);
     }
 }

@@ -29,6 +29,11 @@ pub fn can_transition(from: RunPhase, to: RunPhase) -> bool {
             | (PlanReady, Completed)
             | (Executing, Verifying)
             | (Executing, AwaitingApproval)
+            // 破坏性验证命令的人工裁决门(DSH 式 Attention):Verifying
+            // 检出待裁决命令 → 挂起;用户裁决后回 Verifying 重验。
+            // 裁决本身只能经 council_resolve_approval 命令(人)完成。
+            | (Verifying, AwaitingApproval)
+            | (AwaitingApproval, Verifying)
             | (AwaitingApproval, Executing)
             | (Verifying, Executing)
             | (Verifying, Completed)
@@ -154,6 +159,9 @@ mod tests {
             budget_usage: Default::default(),
             tasks: Vec::new(),
             verify_attempts: 0,
+            pending_approval: None,
+            approved_verifications: None,
+            rejected_verifications: None,
             updated_at: 0,
             error: None,
         }
@@ -222,5 +230,16 @@ mod tests {
         assert!(can_transition(RunPhase::Reviewing, RunPhase::Revising));
         assert!(can_transition(RunPhase::Revising, RunPhase::Reviewing));
         assert!(can_transition(RunPhase::Revising, RunPhase::Synthesizing));
+    }
+
+    #[test]
+    fn verification_attention_gate_edges() {
+        // 拦截门:Verifying 可挂起等人工,人工裁决后回 Verifying。
+        assert!(can_transition(RunPhase::Verifying, RunPhase::AwaitingApproval));
+        assert!(can_transition(RunPhase::AwaitingApproval, RunPhase::Verifying));
+        // 挂起态不能直达完成/执行(裁决必须回 Verifying 重验)。
+        assert!(!can_transition(RunPhase::AwaitingApproval, RunPhase::Completed));
+        // 修复回路入口保留(拒绝放行 → 重验失败 → Executing)。
+        assert!(can_transition(RunPhase::AwaitingApproval, RunPhase::Executing));
     }
 }

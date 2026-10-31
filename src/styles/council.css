@@ -940,6 +940,74 @@
   background: color-mix(in srgb, var(--yellow) 8%, var(--panel-raised));
 }
 
+/* ---- Attention 门(破坏性验证命令待人工裁决) ---- */
+
+.council-attention {
+  border: 1px solid color-mix(in srgb, var(--orange) 45%, var(--border));
+  border-radius: var(--council-card);
+  background: color-mix(in srgb, var(--orange) 8%, var(--panel-raised));
+  padding: 14px 16px;
+  animation: m-arrive var(--dur-slow) var(--ease-out) backwards;
+}
+
+.council-attention__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--orange);
+}
+
+.council-attention__head h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.council-attention__desc {
+  margin: 8px 0 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.council-attention__commands {
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+
+.council-attention__commands code {
+  display: block;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--orange) 30%, var(--border));
+  background: var(--panel);
+  font-size: 12px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.council-attention__note {
+  width: 100%;
+  margin-bottom: 10px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  resize: vertical;
+}
+
+.council-attention__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .council-plan__banner {
   margin: 0 0 10px;
   font-size: 12px;

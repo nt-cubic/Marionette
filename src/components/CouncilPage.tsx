@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { ChevronLeft, CircleStop, Pause, Play, Plus, Trash2 } from "lucide-react";
+import { ChevronLeft, CircleStop, Pause, Play, Plus, ShieldAlert, Trash2 } from "lucide-react";
 import { MarkdownBody } from "./MarkdownBody";
 import {
   COUNCIL_EVENT,
@@ -25,6 +25,7 @@ import {
   councilPauseRun,
   councilRail,
   councilRailStatus,
+  councilResolveApproval,
   councilResumeRun,
   deriveMemberId,
   groupTimeline,
@@ -46,6 +47,7 @@ import {
   type FormationPlan,
   type MemberSpec,
   type CouncilModelInfo,
+  type PendingApproval,
   type RunDetail,
   type RunPhase,
   type RunSummary,
@@ -314,7 +316,7 @@ function CouncilListView(props: {
         ) : (
           <div className="council-run-rows">
             {runs.map((run) => {
-              const live = !isTerminalPhase(run.phase) && run.phase !== "plan_ready" && run.phase !== "paused";
+              const live = !isTerminalPhase(run.phase) && run.phase !== "plan_ready" && run.phase !== "awaiting_approval" && run.phase !== "paused";
               return (
                 <div key={run.runId} className={`council-run-row${live ? " is-live" : ""}`}>
                   <button type="button" className="council-run-row__main" onClick={() => onOpen(run.runId)}>
@@ -928,11 +930,14 @@ function CouncilRunView(props: { detail: RunDetail; onBack: () => void; onReload
   const { spec, state, messages, plan } = detail;
   const t = useT();
   const groups = useMemo(() => groupTimeline(messages), [messages]);
-  const running = state.phase !== "paused" && !isTerminalPhase(state.phase) && state.phase !== "plan_ready";
+  // plan_ready 与 awaiting_approval 都是停靠态(线程已退出,等人工)。
+  const running = state.phase !== "paused" && !isTerminalPhase(state.phase) && state.phase !== "plan_ready" && state.phase !== "awaiting_approval";
   const seenRef = useRef<Set<string> | null>(null);
   const [arriving, setArriving] = useState<Set<string>>(() => new Set());
   const planRef = useRef<HTMLElement>(null);
   const sawPlanReady = useRef(false);
+  const attentionRef = useRef<HTMLElement>(null);
+  const sawAttention = useRef(false);
 
   useEffect(() => {
     const ids = messages.map((m) => m.messageId);
@@ -959,6 +964,17 @@ function CouncilRunView(props: { detail: RunDetail; onBack: () => void; onReload
     planRef.current?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
   }, [state.phase]);
 
+  useEffect(() => {
+    if (state.phase !== "awaiting_approval") {
+      sawAttention.current = false;
+      return;
+    }
+    if (sawAttention.current) return;
+    sawAttention.current = true;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    attentionRef.current?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+  }, [state.phase]);
+
   const control = async (action: "pause" | "resume" | "cancel" | "accept" | "reject") => {
     try {
       if (action === "pause") await councilPauseRun(spec.runId);
@@ -966,6 +982,15 @@ function CouncilRunView(props: { detail: RunDetail; onBack: () => void; onReload
       if (action === "cancel") await councilCancelRun(spec.runId);
       if (action === "accept") await councilApprovePlan(spec.runId, true);
       if (action === "reject") await councilApprovePlan(spec.runId, false);
+      onReload();
+    } catch (e) {
+      showToast({ text: String(e), tone: "error" });
+    }
+  };
+
+  const resolveAttention = async (approve: boolean, note?: string) => {
+    try {
+      await councilResolveApproval(spec.runId, approve, note);
       onReload();
     } catch (e) {
       showToast({ text: String(e), tone: "error" });
@@ -1019,6 +1044,10 @@ function CouncilRunView(props: { detail: RunDetail; onBack: () => void; onReload
 
       <div className="council-frame council-frame--wide">
       {state.error && <div className="council-warn council-warn--error">{state.error}</div>}
+
+      {state.pendingApproval && state.phase === "awaiting_approval" && (
+        <CouncilAttentionCard ref={attentionRef} pending={state.pendingApproval} onResolve={resolveAttention} />
+      )}
 
       <div className="council-run__members">
         {spec.members.map((member) => {
@@ -1243,6 +1272,58 @@ function CouncilPlanView(props: {
           </ul>
         </div>
       )}
+    </section>
+  );
+}
+
+/// Attention 门(DSH 式「需要人的事浮出来」):验证阶段检出破坏性
+/// 命令后停靠等裁决。批准 = 真执行;拒绝 = 拦截失败进修复回路。
+function CouncilAttentionCard(props: {
+  ref?: RefObject<HTMLElement>;
+  pending: PendingApproval;
+  onResolve: (approve: boolean, note?: string) => void;
+}) {
+  const { ref, pending, onResolve } = props;
+  const t = useT();
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const resolve = async (approve: boolean) => {
+    setBusy(true);
+    try {
+      await onResolve(approve, note.trim() || undefined);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section ref={ref} className="council-attention" role="alert">
+      <header className="council-attention__head">
+        <ShieldAlert size={16} aria-hidden />
+        <h3>{t("council.attention.title", { count: pending.commands.length })}</h3>
+      </header>
+      <p className="council-attention__desc">{t("council.attention.desc")}</p>
+      <ul className="council-attention__commands">
+        {pending.commands.map((c) => (
+          <li key={c}>
+            <code>{c}</code>
+          </li>
+        ))}
+      </ul>
+      <textarea
+        className="council-attention__note"
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        placeholder={t("council.attention.notePlaceholder")}
+        rows={2}
+      />
+      <div className="council-attention__actions">
+        <button type="button" className="council-btn" disabled={busy} onClick={() => resolve(false)}>
+          {t("council.attention.reject")}
+        </button>
+        <button type="button" className="council-btn council-btn--danger" disabled={busy} onClick={() => resolve(true)}>
+          {t("council.attention.approve")}
+        </button>
+      </div>
     </section>
   );
 }

@@ -168,6 +168,64 @@ pub fn pause_run(run_id: &str) -> Result<bool, String> {
     }
 }
 
+/// 人工裁决破坏性验证命令(AwaitingApproval 的唯一出口,DSH 式
+/// Attention:需要人的事浮出来,由人决定——模型输出永远进不了裁决
+/// 名单,命令集合只能来自 verify 阶段从 Plan Gate 冻结清单里拦下的
+/// 原文)。approve=true → 放行名单,回 Verifying 重验(批准的命令
+/// 真执行);false → 拒绝名单,重验时按拦截失败进修复回路。
+/// 两个名单都是持久状态:同一命令文本跨修复轮次不重复问。
+pub fn resolve_approval(
+    emitter: CouncilEventEmitter,
+    run_id: &str,
+    approve: bool,
+    note: Option<&str>,
+    clients: RunClients,
+) -> Result<CouncilState, String> {
+    let mut state = store::load_state(run_id)?;
+    if state.phase != RunPhase::AwaitingApproval {
+        return Err(format!("当前状态 {} 不在等待裁决", phase_name(state.phase)));
+    }
+    let Some(pending) = state.pending_approval.clone() else {
+        return Err("没有待裁决的命令".into());
+    };
+    if approve {
+        let mut list = state.approved_verifications.take().unwrap_or_default();
+        for c in &pending.commands {
+            if !list.contains(c) {
+                list.push(c.clone());
+            }
+        }
+        state.approved_verifications = Some(list);
+    } else {
+        let mut list = state.rejected_verifications.take().unwrap_or_default();
+        for c in &pending.commands {
+            if !list.contains(c) {
+                list.push(c.clone());
+            }
+        }
+        state.rejected_verifications = Some(list);
+    }
+    state.pending_approval = None;
+    let verdict = if approve { "批准放行" } else { "拒绝" };
+    let record = apply_transition(
+        &mut state,
+        RunPhase::Verifying,
+        Some(&format!("用户{verdict}破坏性验证命令({} 条)", pending.commands.len())),
+    )?;
+    let _ = store::append_transition(run_id, &record);
+    // 决定进消息账本(人话留痕,审议时间线可见)。
+    let mut content = format!("用户{verdict}破坏性验证命令:\n{}", pending.commands.iter().map(|c| format!("- `{c}`")).collect::<Vec<_>>().join("\n"));
+    if let Some(n) = note.map(str::trim).filter(|n| !n.is_empty()) {
+        content.push_str(&format!("\n\n备注:{n}"));
+    }
+    let msg = new_message(run_id, state.round, "system", "all", MessageKind::Status, None, &content, Some(json!({ "approval": verdict })));
+    let _ = store::append_message(run_id, &msg);
+    emitter.emit(run_id, "message", serde_json::to_value(&msg).unwrap_or(json!({})));
+    let _ = store::save_state(&state)?;
+    start_run(emitter, run_id.to_string(), clients)?;
+    Ok(state)
+}
+
 /// 启动时恢复:磁盘上是运行态但进程内无活线程(崩溃/退出残留)→ 置
 /// Paused。返回被标记的 run id 列表。
 pub fn recover_orphaned_runs(emitter: &CouncilEventEmitter) -> Vec<String> {
@@ -178,6 +236,12 @@ pub fn recover_orphaned_runs(emitter: &CouncilEventEmitter) -> Vec<String> {
             continue;
         }
         if !summary.phase.is_running() {
+            continue;
+        }
+        // AwaitingApproval 是故意停靠的人工裁决点(线程正常退出、
+        // pending_approval 已持久化),不是孤儿——重启后 attention
+        // 原样浮出,不降级成 Paused。
+        if summary.phase == RunPhase::AwaitingApproval {
             continue;
         }
         if let Ok(mut state) = store::load_state(&summary.run_id) {
@@ -721,7 +785,9 @@ fn run_loop(
                     return Ok(());
                 };
                 let cwd = std::path::PathBuf::from(&executor.cwd);
-                let results = super::verify::run_all(&cwd, &plan.verification, 900);
+                let approved = state.approved_verifications.clone().unwrap_or_default();
+                let rejected = state.rejected_verifications.clone().unwrap_or_default();
+                let results = super::verify::run_all(&cwd, &plan.verification, 900, &approved, &rejected);
                 let evidence = super::verify::render_evidence(&results);
                 let all_ok = results.iter().all(|r| r.ok);
                 let msg = new_message(
@@ -736,6 +802,22 @@ fn run_loop(
                 );
                 persist_message(&mut messages, run_id, emitter, msg);
                 emitter.emit(run_id, "verify", serde_json::to_value(&results).unwrap_or(json!([])));
+
+                // DSH 式 Attention 门:存在破坏性命令等人工裁决 → 挂起
+                // (不静默当失败烧修复次数,也不静默执行)。唯一出口是
+                // council_resolve_approval;裁决后回 Verifying 重验。
+                let awaiting = super::verify::pending_decisions(&results);
+                if !awaiting.is_empty() {
+                    state.pending_approval = Some(super::types::PendingApproval {
+                        commands: awaiting.clone(),
+                        asked_at: now_millis(),
+                        round: state.round,
+                    });
+                    let _ = store::save_state(&state);
+                    transition(&mut state, run_id, emitter, RunPhase::AwaitingApproval, Some("验证含破坏性命令,等待人工裁决"));
+                    emitter.emit(run_id, "attention", json!({ "commands": awaiting, "phase": "awaiting_approval" }));
+                    return Ok(());
+                }
 
                 if all_ok {
                     transition(&mut state, run_id, emitter, RunPhase::Completed, Some("验证全部通过"));
@@ -806,9 +888,22 @@ fn run_loop(
             }
 
             RunPhase::AwaitingApproval => {
-                // M3 权限场景(破坏性验证命令)预留;当前不应到达。
-                let stuck = phase_name(state.phase).to_string();
-                fail_run(&mut state, run_id, emitter, format!("阶段 {stuck} 尚未实现"));
+                // 停靠态:破坏性验证命令等人工裁决,唯一出口是
+                // council_resolve_approval(它负责转移回 Verifying 并
+                // 重启线程)。恢复/重启到达这里 → 重新浮出 attention
+                // 让 UI 重现,然后继续停靠(裁决不因重启丢失)。
+                match state.pending_approval.clone() {
+                    Some(pending) => {
+                        emitter.emit(
+                            run_id,
+                            "attention",
+                            json!({ "commands": pending.commands, "phase": "awaiting_approval" }),
+                        );
+                    }
+                    None => {
+                        fail_run(&mut state, run_id, emitter, "等待裁决但没有待裁决项(状态不一致)".into());
+                    }
+                }
                 return Ok(());
             }
 
@@ -853,7 +948,7 @@ fn fan_out(
                     return;
                 }
                 sem.acquire();
-                let result = call_with_retry(client, &job.model, &job.system, &job.user);
+                let result = call_with_retry(client, handle, &job.model, &job.system, &job.user);
                 sem.release();
                 let _ = tx.send(match result {
                     Ok((out, _retried)) => FanResult::Ok(job.member_id, out, job.system.chars().count() + job.user.chars().count()),
@@ -950,7 +1045,7 @@ fn call_model(
     if handle.cancel.load(Ordering::SeqCst) || handle.pause.load(Ordering::SeqCst) {
         return Err(format!("{label} 被取消"));
     }
-    let (out, _retried) = call_with_retry(client, model, system, user)?;
+    let (out, _retried) = call_with_retry(client, handle, model, system, user)?;
     state.budget_usage.requests += 1;
     state.budget_usage.tokens_est +=
         estimate_tokens(system.chars().count() + user.chars().count()) + estimate_tokens(out.output_chars);
@@ -961,12 +1056,31 @@ fn call_model(
     Ok(out)
 }
 
-/// 带一次重试的调用(worker 共用)。
+/// 瞬时失败的退避表(毫秒,DSH 式指数退避;结构性错误不退避)。
+const TRANSIENT_BACKOFF_MS: &[u64] = &[1_000, 2_000, 4_000];
+
+/// 带重试的调用(worker 共用):瞬时错误(传输层/408/429/5xx)按
+/// `TRANSIENT_BACKOFF_MS` 指数退避重试;结构性错误维持旧行为——立即
+/// 重试 1 次。每次重试前与退避等待中都查取消/暂停(退避按 50ms 切片
+/// 睡眠,取消即时打断——验收 #8:取消后零新调用)。
 fn call_with_retry(
     client: &dyn ModelClient,
+    handle: &RunHandle,
     model: &str,
     system: &str,
     user: &str,
+) -> Result<(WorkerOutput, bool), String> {
+    call_with_retry_impl(client, handle, model, system, user, TRANSIENT_BACKOFF_MS)
+}
+
+/// `backoff` 可注入(测试用微秒级表,不真睡)。
+fn call_with_retry_impl(
+    client: &dyn ModelClient,
+    handle: &RunHandle,
+    model: &str,
+    system: &str,
+    user: &str,
+    backoff: &[u64],
 ) -> Result<(WorkerOutput, bool), String> {
     let req = WorkerRequest {
         model: model.to_string(),
@@ -974,12 +1088,44 @@ fn call_with_retry(
         user: user.to_string(),
         max_tokens: None,
     };
-    match client.complete(&req) {
-        Ok(out) => Ok((out, false)),
-        Err(first) => match client.complete(&req) {
-            Ok(out) => Ok((out, true)),
-            Err(second) => Err(format!("{first};重试仍失败:{second}")),
-        },
+    let cancelled =
+        || handle.cancel.load(Ordering::SeqCst) || handle.pause.load(Ordering::SeqCst);
+    let mut attempt = 0usize;
+    let mut retried = false;
+    let mut last_err = String::new();
+    loop {
+        if cancelled() {
+            return Err(if last_err.is_empty() { "调用被取消".to_string() } else { format!("{last_err};退避中被取消") });
+        }
+        match client.complete(&req) {
+            Ok(out) => return Ok((out, retried)),
+            Err(e) => {
+                attempt += 1;
+                last_err = e;
+                let transient = super::worker::is_transient_error(&last_err);
+                let max_attempts = if transient { backoff.len() + 1 } else { 2 };
+                if attempt >= max_attempts {
+                    return Err(if attempt > 1 {
+                        format!("{last_err};重试 {attempt} 次仍失败")
+                    } else {
+                        last_err
+                    });
+                }
+                retried = true;
+                if transient {
+                    let ms = backoff[(attempt - 1).min(backoff.len() - 1)];
+                    let mut waited = 0u64;
+                    while waited < ms {
+                        if cancelled() {
+                            return Err(format!("{last_err};退避中被取消"));
+                        }
+                        let step = 50.min(ms - waited);
+                        std::thread::sleep(Duration::from_millis(step));
+                        waited += step;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1244,6 +1390,9 @@ mod tests {
             budget_usage: Default::default(),
             tasks: Vec::new(),
             verify_attempts: 0,
+            pending_approval: None,
+            approved_verifications: None,
+            rejected_verifications: None,
             updated_at: now_millis(),
             error: None,
         };
@@ -1903,5 +2052,160 @@ mod tests {
         assert_eq!(plan.verification, vec!["cargo test".to_string()]);
         assert!(parse_plan("不是 JSON").is_err());
         assert!(parse_plan("{\"summary\":\"s\",\"steps\":[]}").is_err(), "空步骤拒绝");
+    }
+
+    /// Attention 门端到端(DSH 式):破坏性验证命令 → AwaitingApproval
+    /// 停靠(不烧修复次数)→ 用户批准放行 → 重验(批准的命令真执行,
+    /// 沙箱里无远端必然失败)→ 修复回路换安全命令 → Completed。
+    #[test]
+    fn attention_gate_approve_flows_to_completion() {
+        let sandbox = Sandbox::new("attn-approve");
+        let repo = std::env::temp_dir().join(format!("marionette-council-attn-a-{}", new_run_id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [vec!["init", "-q"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]] {
+            assert!(std::process::Command::new("git").args(args).current_dir(&repo).status().unwrap().success());
+        }
+        let mut spec = setup_run(&sandbox, "attn-approve");
+        spec.mode = CouncilMode::Autonomous;
+        spec.executor = Some(crate::council::types::ExecutorSpec {
+            agent_id: "fake-agent".into(),
+            cwd: repo.to_string_lossy().to_string(),
+            project_id: None,
+            step_timeout_secs: Some(30),
+        });
+        store::save_spec(&spec).unwrap();
+        // 计划:任务可完成;验证含破坏性命令(拦截发生在执行前,不会真推送——
+        // 沙箱仓库也没有远端,批准后真执行 = 立即本地失败,零网络副作用)。
+        let plan = parse_plan(
+            r#"{"summary":"v1","steps":[{"id":"s1","title":"写文件","detail":"WRITE out.txt|good","dependsOn":[],"acceptance":"含 good"}],"verification":["git push"]}"#,
+        )
+        .unwrap();
+        store::save_plan(&spec.run_id, &plan).unwrap();
+        let mut state = store::load_state(&spec.run_id).unwrap();
+        for hop in [RunPhase::Analyzing, RunPhase::Proposing, RunPhase::Reviewing, RunPhase::Synthesizing, RunPhase::PlanReady, RunPhase::Executing] {
+            let rec = crate::council::state::apply_transition(&mut state, hop, Some("test")).unwrap();
+            store::append_transition(&spec.run_id, &rec).unwrap();
+        }
+        store::save_state(&state).unwrap();
+
+        let plan_v2_json = r#"{"summary":"v2 换安全验证","steps":[{"id":"s1","title":"写文件","detail":"WRITE out.txt|good","dependsOn":[],"acceptance":"含 good"}],"verification":["cmd /C exit 0"]}"#;
+        let mock = Arc::new(MockClient::new());
+        mock.enqueue(&spec.members[1].model, vec![plan_v2_json.to_string()]);
+        let harness = Arc::new(crate::council::executor::ScriptedHarness { timeout_secs: 30 });
+        start_run(
+            CouncilEventEmitter::new(None),
+            spec.run_id.clone(),
+            RunClients { model: Some(mock.clone()), harness: Some(harness) },
+        )
+        .unwrap();
+        wait_phase(&spec.run_id, RunPhase::AwaitingApproval, 60_000);
+        let parked = store::load_state(&spec.run_id).unwrap();
+        assert_eq!(
+            parked.pending_approval.as_ref().map(|p| p.commands.clone()),
+            Some(vec!["git push".to_string()]),
+            "破坏性命令应浮出待裁决"
+        );
+        assert_eq!(parked.verify_attempts, 0, "挂起裁决不烧修复次数");
+        // 批准前线程已停靠:无活 orchestrator。
+        assert!(!run_is_live(&spec.run_id));
+
+        // 人工批准(注入同一 mock:修复轮的主席调用)。
+        crate::council::orchestrator::resolve_approval(
+            CouncilEventEmitter::new(None),
+            &spec.run_id,
+            true,
+            Some("我确认这条命令"),
+            RunClients { model: Some(mock.clone()), harness: Some(Arc::new(crate::council::executor::ScriptedHarness { timeout_secs: 30 })) },
+        )
+        .unwrap();
+        wait_phase(&spec.run_id, RunPhase::Completed, 120_000);
+        let final_state = store::load_state(&spec.run_id).unwrap();
+        assert_eq!(
+            final_state.approved_verifications,
+            Some(vec!["git push".to_string()]),
+            "批准名单持久留痕"
+        );
+        assert_eq!(final_state.pending_approval, None);
+        assert_eq!(final_state.verify_attempts, 1, "批准的命令真执行并失败,恰好一轮修复");
+        let messages = store::load_messages(&spec.run_id).unwrap();
+        assert!(messages.iter().any(|m| m.kind == MessageKind::Status && m.content.contains("批准放行")));
+        let transitions = store::load_transitions(&spec.run_id).unwrap();
+        assert!(transitions
+            .iter()
+            .any(|t| t.from == RunPhase::AwaitingApproval && t.to == RunPhase::Verifying));
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// Attention 门拒绝路径:拒绝放行 → 重验按拦截失败进修复回路
+    /// (不再二次挂起,防死循环)→ 换安全命令后 Completed。
+    #[test]
+    fn attention_gate_reject_goes_to_repair_not_repark() {
+        let sandbox = Sandbox::new("attn-reject");
+        let repo = std::env::temp_dir().join(format!("marionette-council-attn-r-{}", new_run_id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [vec!["init", "-q"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]] {
+            assert!(std::process::Command::new("git").args(args).current_dir(&repo).status().unwrap().success());
+        }
+        let mut spec = setup_run(&sandbox, "attn-reject");
+        spec.mode = CouncilMode::Autonomous;
+        spec.executor = Some(crate::council::types::ExecutorSpec {
+            agent_id: "fake-agent".into(),
+            cwd: repo.to_string_lossy().to_string(),
+            project_id: None,
+            step_timeout_secs: Some(30),
+        });
+        store::save_spec(&spec).unwrap();
+        let plan = parse_plan(
+            r#"{"summary":"v1","steps":[{"id":"s1","title":"写文件","detail":"WRITE out.txt|good","dependsOn":[],"acceptance":"含 good"}],"verification":["git push"]}"#,
+        )
+        .unwrap();
+        store::save_plan(&spec.run_id, &plan).unwrap();
+        let mut state = store::load_state(&spec.run_id).unwrap();
+        for hop in [RunPhase::Analyzing, RunPhase::Proposing, RunPhase::Reviewing, RunPhase::Synthesizing, RunPhase::PlanReady, RunPhase::Executing] {
+            let rec = crate::council::state::apply_transition(&mut state, hop, Some("test")).unwrap();
+            store::append_transition(&spec.run_id, &rec).unwrap();
+        }
+        store::save_state(&state).unwrap();
+
+        let plan_v2_json = r#"{"summary":"v2 去掉危险命令","steps":[{"id":"s1","title":"写文件","detail":"WRITE out.txt|good","dependsOn":[],"acceptance":"含 good"}],"verification":["cmd /C exit 0"]}"#;
+        let mock = Arc::new(MockClient::new());
+        mock.enqueue(&spec.members[1].model, vec![plan_v2_json.to_string()]);
+        let harness = Arc::new(crate::council::executor::ScriptedHarness { timeout_secs: 30 });
+        start_run(
+            CouncilEventEmitter::new(None),
+            spec.run_id.clone(),
+            RunClients { model: Some(mock.clone()), harness: Some(harness) },
+        )
+        .unwrap();
+        wait_phase(&spec.run_id, RunPhase::AwaitingApproval, 60_000);
+
+        // 拒绝 → 重验不再挂起 → 修复 → Completed。
+        crate::council::orchestrator::resolve_approval(
+            CouncilEventEmitter::new(None),
+            &spec.run_id,
+            false,
+            None,
+            RunClients { model: Some(mock.clone()), harness: Some(Arc::new(crate::council::executor::ScriptedHarness { timeout_secs: 30 })) },
+        )
+        .unwrap();
+        wait_phase(&spec.run_id, RunPhase::Completed, 120_000);
+        let final_state = store::load_state(&spec.run_id).unwrap();
+        assert_eq!(
+            final_state.rejected_verifications,
+            Some(vec!["git push".to_string()]),
+            "拒绝名单持久留痕"
+        );
+        assert_eq!(final_state.pending_approval, None);
+        // 全程最多进入 AwaitingApproval 一次(拒绝后不二次挂起)。
+        let transitions = store::load_transitions(&spec.run_id).unwrap();
+        assert_eq!(
+            transitions.iter().filter(|t| t.to == RunPhase::AwaitingApproval).count(),
+            1,
+            "拒绝后不得再次挂起"
+        );
+        assert_eq!(final_state.verify_attempts, 1);
+        let _ = std::fs::remove_dir_all(&repo);
     }
 }

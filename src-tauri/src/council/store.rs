@@ -280,6 +280,9 @@ pub(crate) mod tests {
             budget_usage: Default::default(),
             tasks: Vec::new(),
             verify_attempts: 0,
+            pending_approval: None,
+            approved_verifications: None,
+            rejected_verifications: None,
             updated_at: now_millis(),
             error: None,
         };

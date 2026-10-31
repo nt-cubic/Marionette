@@ -82,6 +82,12 @@ export const en = {
   "council.plan.openQuestions": "Open questions (recorded explicitly — no hand-waving)",
   "council.plan.verification": "Verification commands",
 
+  "council.attention.title": "Needs your decision ({count} destructive command(s))",
+  "council.attention.desc": "These verification commands hit the destructive list (push/publish/recursive delete). The roundtable will neither run them silently nor fail silently. Approve runs them verbatim; reject treats them as intercepted and sends the plan back for revision.",
+  "council.attention.notePlaceholder": "Decision note (optional, recorded in the minutes)",
+  "council.attention.approve": "Approve & run",
+  "council.attention.reject": "Reject",
+
   "council.msg.system": "System",
 
   "council.rail.analyzing": "Brief",

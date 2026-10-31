@@ -203,10 +203,37 @@ pub struct CouncilState {
     /// 验证-修复回路已用次数(上限 3,任务书 §4.3)。
     #[serde(default)]
     pub verify_attempts: u32,
+    /// 当前待人工裁决的破坏性验证命令(AwaitingApproval 停靠态的
+    /// 载荷;DSH 式 Attention——需要人的事浮出来,不静默失败也不静默
+    /// 执行)。裁决完成即清空,决定分别留痕在 approved/rejected。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_approval: Option<PendingApproval>,
+    /// 用户批准放行的破坏性验证命令(按命令原文精确匹配;只能由
+    /// resolve 命令从 pending_approval 里填充,模型输出永远进不来)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_verifications: Option<Vec<String>>,
+    /// 用户明确拒绝的破坏性验证命令(重跑验证时不再挂起,按拦截失败
+    /// 进修复回路;防止「拒绝 → 重验 → 又挂起」死循环)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejected_verifications: Option<Vec<String>>,
     /// epoch 毫秒。
     pub updated_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+/// 待人工裁决的破坏性验证命令(AwaitingApproval 的载荷)。命令集合
+/// 由 verify 阶段从 Plan Gate 冻结的 verification 数组里筛出——运行期
+/// 提示注入无法把它扩到清单之外。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingApproval {
+    /// 被拦截等待裁决的命令原文(顺序与计划声明一致)。
+    pub commands: Vec<String>,
+    /// epoch 毫秒(浮出时间)。
+    pub asked_at: i64,
+    /// 浮出时的协议轮次。
+    pub round: u32,
 }
 
 /// Plan Gate 的结构化产物。`PlanDoc` 解析失败会触发一次修复调用

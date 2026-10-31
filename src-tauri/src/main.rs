@@ -608,6 +608,7 @@ fn main() {
             commands::council_pause_run,
             commands::council_resume_run,
             commands::council_approve_plan,
+            commands::council_resolve_approval,
             commands::council_delete_run,
             commands::council_list_models,
             commands::council_probe_models,

@@ -3742,6 +3742,9 @@ pub fn council_create(
         budget_usage: Default::default(),
         tasks: Vec::new(),
         verify_attempts: 0,
+        pending_approval: None,
+        approved_verifications: None,
+        rejected_verifications: None,
         updated_at: council_types::now_millis(),
         error: None,
     };
@@ -3886,6 +3889,25 @@ pub fn council_approve_plan(
     crate::council::store::append_transition(&run_id, &record)?;
     crate::council::store::save_state(&run_state)?;
     Ok(run_state)
+}
+
+/// Attention 门的人工裁决:破坏性验证命令浮出后由用户决定放行或
+/// 拒绝(DSH 式「需要人的事浮出来」;命令集合由后端从 state 读,
+/// 前端只传决定与备注,模型输出永远进不了裁决名单)。
+#[tauri::command(async)]
+pub fn council_resolve_approval(
+    app: tauri::AppHandle,
+    run_id: String,
+    approve: bool,
+    note: Option<String>,
+) -> Result<council_types::CouncilState, String> {
+    crate::council::orchestrator::resolve_approval(
+        CouncilEventEmitter::new(Some(app)),
+        &run_id,
+        approve,
+        note.as_deref(),
+        crate::council::orchestrator::RunClients::default(),
+    )
 }
 
 // ---------------------------------------------------------------------------

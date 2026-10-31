@@ -17,6 +17,7 @@ import {
 } from "../src/lib/councilTemplates.ts";
 import {
   councilRail,
+  councilRailFocus,
   councilRailStatus,
   deriveMemberId,
   groupTimeline,
@@ -143,6 +144,18 @@ ok("PlanDoc 契约字段为 camelCase(Rust serde 对齐)", () => {
   };
   assert.equal(plan.steps[0].dependsOn.length, 1);
   assert.deepEqual(plan.verification, ["cargo test"]);
+});
+
+ok("Attention 门投影与契约(DSH 式人工裁决)", () => {
+  // Attention 门发生在验证阶段:轨道亮「验证」而不是「计划」。
+  assert.equal(councilRailFocus("awaiting_approval", null), "verifying");
+  assert.equal(councilRailStatus("awaiting_approval", null, "verifying", councilRail("council_and_execution")), "current");
+  assert.equal(councilRailStatus("awaiting_approval", null, "executing", councilRail("council_and_execution")), "done");
+  // PendingApproval / 裁决名单字段为 camelCase(Rust serde 对齐)。
+  const pending = { commands: ["git push"], askedAt: 1, round: 1 };
+  const state = { pendingApproval: pending, approvedVerifications: ["git push"], rejectedVerifications: [] };
+  assert.equal(state.pendingApproval.commands.length, 1);
+  assert.equal(state.approvedVerifications.length, 1);
 });
 
 

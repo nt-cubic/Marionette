@@ -202,8 +202,23 @@ Merged/Completed 即就绪,非严格波次);**失败不级联**——上游失�
   尾部保留输出、CREATE_NO_WINDOW;**危险模式**(git push/publish/
   rm -rf/shutdown…)拦截为 needs-human,清单在 Plan Gate 冻结,运行
   期提示注入无法扩它。
+- **Attention 门(2026-10-31,DSH 式「需要人的事浮出来」)**:检出
+  危险命令不再静默当失败烧修复次数——`state.pendingApproval` 记下
+  命令原文,run 转移 `AwaitingApproval` 停靠(线程退出,重启不丢),
+  前端浮出裁决卡。唯一出口 `council_resolve_approval`:批准 → 命令
+  进 `approvedVerifications` 放行名单(重验时真执行;清单仍冻结,
+  放行只对被拦的原文生效);拒绝 → 进 `rejectedVerifications`,重验
+  按拦截失败进修复回路(不二次挂起)。两名单持久留痕,同一命令
+  文本跨修复轮次不重复问;裁决与备注以 Status 消息进账本。
 - 失败 → `Evidence` 消息(逐命令 ✓/✗/⚠)→ 主席 `repair_round_prompt`
   (只改受影响步骤、无关步骤保持 id 使已完成工作保留)→ 计划版本化
   (Plan 消息带 repairRound)→ 账本迁移(同 id 同 detail 的 Merged 保
   留,变更/新增复位)→ Executing 重跑 → 再验证;**上限 3 次**,触顶
   `Failed`(带证据),不无限自改(验收 #11)。
+- **模型调用退避重试(2026-10-31,DSH 式瞬时/结构性分开)**:
+  `worker::is_transient_error` 按错误前缀分类——「引擎请求失败」
+  (传输层)与「引擎返回 408/429/5xx」瞬时,指数退避(1s/2s/4s,
+  50ms 切片睡眠、取消/暂停即时打断)后重试;结构性错误(解析失败/
+  空内容/其它状态码)维持立即重试 1 次。EngineClient 的错误前缀是
+  契约(ureq 2.x 非 2xx 走 `Err(Status)`,已规整成「引擎返回 <code>」
+  前缀),改动前先看分类器。

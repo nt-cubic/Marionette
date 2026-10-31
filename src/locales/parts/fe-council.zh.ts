@@ -82,6 +82,12 @@ export const zh = {
   "council.plan.openQuestions": "遗留不确定性（已显式记录，不接受和稀泥）",
   "council.plan.verification": "验证命令",
 
+  "council.attention.title": "需要你确认（{count} 条破坏性命令）",
+  "council.attention.desc": "验证阶段的这些命令命中破坏性清单（推送/发布/递归删除），圆桌不会静默执行，也不会静默失败。批准将原样执行；拒绝则按拦截失败进入修订回路。",
+  "council.attention.notePlaceholder": "裁决备注（可选，进会议记录）",
+  "council.attention.approve": "批准执行",
+  "council.attention.reject": "拒绝放行",
+
   "council.msg.system": "系统",
 
   "council.rail.analyzing": "简报",
