@@ -203,9 +203,11 @@ function session(partial: Partial<Session> & { id: string }): Session {
   const tabs = readFileSync(join(here, "../src/components/SessionView.tsx"), "utf8");
   check(
     "收纳盒选中时对话标签不再 is-active",
-    tabs.includes("memoOwnsStrip") &&
-      tabs.includes("openSession.id === session.id && !memoOwnsStrip") &&
-      tabs.includes("openSession.id === session.id && !memoTab?.active"),
+    // v0.5.6 起 memoOwnsStrip 泛化为 extraOwnsStrip(memo/council 伪标签
+    // 共用),断言随之更新——语义不变:伪标签选中时对话标签退选。
+    tabs.includes("extraOwnsStrip") &&
+      tabs.includes("openSession.id === session.id && !extraOwnsStrip") &&
+      tabs.includes("openSession.id === session.id && !memoTab?.active && !councilTab?.active"),
   );
 }
 

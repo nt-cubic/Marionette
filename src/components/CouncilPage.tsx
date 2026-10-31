@@ -51,6 +51,15 @@ import {
 } from "../lib/council";
 import { isTauriRuntime, listAgents } from "../lib/api";
 import { t as tr, useT } from "../lib/i18n";
+import {
+  BUILTIN_TEMPLATES,
+  deleteCustomTemplate,
+  loadCustomTemplates,
+  saveCustomTemplate,
+  templateFromDrafts,
+  templateIsValid,
+  type TeamTemplate,
+} from "../lib/councilTemplates";
 import { showToast } from "../lib/toast";
 import { taskStatusLabel, type AgentLite } from "../lib/council";
 
@@ -359,6 +368,9 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
   const [forming, setForming] = useState(false);
   const [formation, setFormation] = useState<AutoFormationResult | null>(null);
   const [formationError, setFormationError] = useState<string | null>(null);
+  // 团队模板:内置 + localStorage 自定义;套用即覆盖成员草稿。
+  const [customTemplates, setCustomTemplates] = useState<TeamTemplate[]>([]);
+  const [templateName, setTemplateName] = useState("");
   const t = useT();
 
   useEffect(() => {
@@ -366,6 +378,7 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
       setModels(result.models);
       setEngineReady(result.ready);
     });
+    setCustomTemplates(loadCustomTemplates());
     void listAgents().then((all) => {
       const usable = all
         .filter((a) => a.enabled && a.id !== "web-chatgpt" && a.id !== "web-deepseek")
@@ -391,6 +404,30 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
       return changed ? next : prev;
     });
   }, [models]);
+
+  const applyTemplate = (tpl: TeamTemplate) => {
+    setDrafts(
+      tpl.members.map((m, i) => ({
+        key: `tpl-${tpl.id}-${i}-${Date.now()}`,
+        id: deriveMemberId(m.displayName, tpl.members.slice(0, i).map((x) => x.displayName)),
+        displayName: m.displayName,
+        model: "",
+        role: m.role,
+        isChair: m.isChair,
+        tier: m.tier,
+      })),
+    );
+    setRounds(tpl.rounds);
+  };
+
+  const saveCurrentAsTemplate = () => {
+    if (drafts.some((d) => !d.model)) return;
+    const tpl = templateFromDrafts(templateName || drafts[0]?.displayName || "lineup", drafts, rounds);
+    if (!templateIsValid(tpl)) return;
+    setCustomTemplates(saveCustomTemplate(tpl));
+    setTemplateName("");
+    showToast({ text: t("council.templates.saved") });
+  };
 
   const runProbe = async () => {
     setFormationError(null);
@@ -548,7 +585,86 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
         <div className="council-warn">{t("council.setup.engineNotReady")}</div>
       )}
 
-      <section className="council-section">
+            <section className="council-section">
+        <h3 className="council-section__title">{t("council.templates.title")}</h3>
+        <p className="council-sub">{t("council.templates.subtitle")}</p>
+        <div className="council-templates">
+          <span className="council-templates__group">{t("council.templates.builtinGroup")}</span>
+          <div className="council-templates__row">
+            {BUILTIN_TEMPLATES.map((tpl) => (
+              <div key={tpl.id} className="council-template-card" title={t(`council.templates.builtin.${tpl.id}.desc` as Parameters<typeof tr>[0])}>
+                <div className="council-template-card__name">{t(`council.templates.builtin.${tpl.id}` as Parameters<typeof tr>[0])}</div>
+                <div className="council-template-card__desc">{t(`council.templates.builtin.${tpl.id}.desc` as Parameters<typeof tr>[0])}</div>
+                {tpl.strongestSeatHint && (
+                  <div className="council-sub">{t("council.templates.strongestHint", { hint: tpl.strongestSeatHint })}</div>
+                )}
+                <div className="council-template-card__meta">
+                  {tpl.members.map((m) => (
+                    <span key={m.displayName} className={m.isChair ? "is-chair" : ""}>
+                      {m.isChair ? "★" : m.tier === "contributor" ? "○" : "●"}
+                      {m.displayName}
+                    </span>
+                  ))}
+                </div>
+                <button type="button" className="council-btn" onClick={() => applyTemplate(tpl)}>
+                  {t("council.templates.apply")}
+                </button>
+              </div>
+            ))}
+          </div>
+          {customTemplates.length > 0 && (
+            <>
+              <span className="council-templates__group">{t("council.templates.customGroup")}</span>
+              <div className="council-templates__row">
+                {customTemplates.map((tpl) => (
+                  <div key={tpl.id} className="council-template-card council-template-card--custom">
+                    <div className="council-template-card__name">{tpl.name}</div>
+                    <div className="council-template-card__meta">
+                      {tpl.members.map((m) => (
+                        <span key={m.displayName} className={m.isChair ? "is-chair" : ""}>
+                          {m.isChair ? "★" : m.tier === "contributor" ? "○" : "●"}
+                          {m.displayName}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="council-template-card__actions">
+                      <button type="button" className="council-btn" onClick={() => applyTemplate(tpl)}>
+                        {t("council.templates.apply")}
+                      </button>
+                      <button
+                        type="button"
+                        className="council-icon-btn"
+                        title={t("council.templates.delete")}
+                        onClick={() => setCustomTemplates(deleteCustomTemplate(tpl.id))}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+        <div className="council-formation__toolbar">
+          <input
+            className="council-templates__save-name"
+            value={templateName}
+            onChange={(e) => setTemplateName(e.target.value)}
+            placeholder={t("council.templates.saveNamePlaceholder")}
+          />
+          <button
+            type="button"
+            className="council-link-btn"
+            disabled={drafts.length < 2 || drafts.some((d) => !d.model)}
+            onClick={saveCurrentAsTemplate}
+          >
+            {t("council.templates.save")}
+          </button>
+        </div>
+      </section>
+
+<section className="council-section">
         <h3 className="council-section__title">{t("council.setup.section.topic")}</h3>
         <label className="council-field">
           <span>{t("council.setup.titleLabel")}</span>

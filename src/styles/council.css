@@ -1251,3 +1251,48 @@
 
 .council-member__tier { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
 .council-member__tier select { width: 120px; }
+
+/* ---- M5.1 团队模板 ---- */
+
+.council-templates { display: flex; flex-direction: column; gap: 6px; }
+
+.council-templates__group {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-top: 6px;
+}
+
+.council-templates__row { display: flex; flex-wrap: wrap; gap: 10px; }
+
+.council-template-card {
+  flex: 1 1 240px;
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  font-size: 12px;
+}
+
+.council-template-card__name { font-weight: 700; }
+.council-template-card__desc { color: var(--text-dim); font-size: 11px; line-height: 1.5; }
+
+.council-template-card__meta { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11px; color: var(--text-dim); }
+.council-template-card__meta .is-chair { color: #c9a227; }
+
+.council-template-card__actions { display: flex; align-items: center; gap: 8px; }
+
+.council-templates__save-name {
+  width: 200px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+}

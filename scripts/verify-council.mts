@@ -7,6 +7,15 @@
  */
 import assert from "node:assert/strict";
 import {
+  BUILTIN_TEMPLATES,
+  deleteCustomTemplate,
+  saveCustomTemplate,
+  loadCustomTemplates,
+  templateFromDrafts,
+  templateIsValid,
+  templateIssues,
+} from "../src/lib/councilTemplates.ts";
+import {
   councilRail,
   councilRailStatus,
   deriveMemberId,
@@ -134,6 +143,73 @@ ok("PlanDoc 契约字段为 camelCase(Rust serde 对齐)", () => {
   };
   assert.equal(plan.steps[0].dependsOn.length, 1);
   assert.deepEqual(plan.verification, ["cargo test"]);
+});
+
+
+console.log("councilTemplates.ts 团队模板");
+
+ok("内置模板结构全部合法(2-8 人/唯一主席/角色非空)", () => {
+  assert.ok(BUILTIN_TEMPLATES.length >= 4, "至少 4 个内置模板");
+  for (const tpl of BUILTIN_TEMPLATES) {
+    assert.ok(templateIsValid(tpl), `${tpl.id}: ${templateIssues(tpl).join(",")}`);
+  }
+});
+
+ok("身份局模板含五个身份,内奸与雌小鬼为 contributor", () => {
+  const sg = BUILTIN_TEMPLATES.find((t) => t.id === "sanguosha")!;
+  assert.equal(sg.members.length, 5);
+  for (const seat of ["主公", "忠臣", "反贼", "内奸", "雌小鬼"]) {
+    assert.ok(sg.members.some((m) => m.displayName === seat), `缺 ${seat}`);
+  }
+  assert.equal(sg.members.find((m) => m.displayName === "主公")!.isChair, true);
+  assert.equal(sg.members.find((m) => m.displayName === "雌小鬼")!.tier, "contributor");
+  assert.ok(sg.members.find((m) => m.displayName === "反贼")!.role.includes("替代方案"));
+});
+
+ok("垂帘听政模板:名义主席是 contributor,太师为 lead", () => {
+  const rg = BUILTIN_TEMPLATES.find((t) => t.id === "regency")!;
+  const chair = rg.members.find((m) => m.isChair)!;
+  assert.equal(chair.tier, "contributor", "幼太后应为弱层");
+  const regent = rg.members.find((m) => m.displayName === "太师")!;
+  assert.equal(regent.tier, "lead");
+  assert.ok(chair.role.includes("可颁"), "懿旨须依赖太师的可颁判定");
+});
+
+ok("自定义模板 localStorage 往返与删除", () => {
+  assert.deepEqual(loadCustomTemplates(), []);
+  const drafts = [
+    { displayName: "A", role: "r1", isChair: true },
+    { displayName: "B", role: "r2", isChair: false, tier: "contributor" },
+  ];
+  const tpl = templateFromDrafts("我的阵容", drafts, 2);
+  assert.ok(templateIsValid(tpl));
+  const backing = new Map<string, string>();
+  (globalThis as { localStorage?: Storage }).localStorage = {
+    getItem: (k: string) => backing.get(k) ?? null,
+    setItem: (k: string, v: string) => void backing.set(k, v),
+    removeItem: (k: string) => void backing.delete(k),
+    clear: () => backing.clear(),
+    key: (i: number) => [...backing.keys()][i] ?? null,
+    get length() {
+      return backing.size;
+    },
+  } as Storage;
+  saveCustomTemplate(tpl);
+  const loaded = loadCustomTemplates();
+  assert.equal(loaded.length, 1);
+  assert.equal(loaded[0].name, "我的阵容");
+  assert.equal(loaded[0].members[1].tier, "contributor");
+  deleteCustomTemplate(loaded[0].id);
+  assert.deepEqual(loadCustomTemplates(), []);
+  delete (globalThis as { localStorage?: Storage }).localStorage;
+});
+
+ok("结构校验拒绝:零主席/双主席/空角色", () => {
+  const base = { id: "x", name: "x", builtin: false, rounds: 2 };
+  const m = (n: string, chair: boolean, role = "r") => ({ displayName: n, role, tier: "lead" as const, isChair: chair });
+  assert.ok(templateIssues({ ...base, members: [m("a", false), m("b", false)] } as never).includes("chairs=0"));
+  assert.ok(templateIssues({ ...base, members: [m("a", true), m("b", true)] } as never).includes("chairs=2"));
+  assert.ok(templateIssues({ ...base, members: [m("a", true, " "), m("b", false)] } as never).includes("empty-role"));
 });
 
 console.log(`\n[verify] council: ${passed} 项通过`);
