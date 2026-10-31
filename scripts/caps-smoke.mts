@@ -210,6 +210,63 @@ check("and no list is invented when they advertise none", () => {
   assert.equal(caps.currentEffortId, null);
 });
 
+console.log("\ncodex (empty catalog: effort lives in model[effort])");
+
+check("effort chip is reconstructed when live advertised none", () => {
+  const caps = mergeAcpCapabilities(
+    "codex",
+    emptyLive({
+      models: [{ id: "gpt-5.6-luna", label: "gpt-5.6-luna" }],
+      currentModel: "gpt-5.6-luna",
+      currentEffortId: "xhigh",
+    }),
+  )!;
+  assert.deepEqual(
+    caps.effortOptions.map((o) => o.id),
+    ["xhigh", "high", "medium", "low", "minimal", "none"],
+  );
+  assert.equal(caps.currentEffortId, "xhigh");
+  assert.equal(caps.effortConfigId, null);
+  assert.equal(caps.thinkingEffort, null);
+});
+
+check("effort is sent as a logical knob, not a fabricated config id", () => {
+  const caps = mergeAcpCapabilities(
+    "codex",
+    emptyLive({
+      currentModel: "gpt-5.6-luna",
+      currentEffortId: "xhigh",
+    }),
+  )!;
+  assert.deepEqual(expandAcpConfigAttempts("codex", { effortId: "high" }, caps), [
+    { effortId: "high" },
+  ]);
+  assert.ok(!caps.effortConfigId);
+});
+
+check("a live reasoning_effort option still uses the advertised id", () => {
+  const caps = mergeAcpCapabilities(
+    "codex",
+    emptyLive({
+      effortConfigId: "reasoning_effort",
+      effortOptions: [
+        { id: "low", label: "Low" },
+        { id: "high", label: "High" },
+      ],
+      currentEffortId: "low",
+      currentModel: "gpt-5.6-terra",
+    }),
+  )!;
+  assert.equal(caps.effortConfigId, "reasoning_effort");
+  assert.deepEqual(
+    caps.effortOptions.map((o) => o.id),
+    ["low", "high"],
+  );
+  assert.deepEqual(expandAcpConfigAttempts("codex", { effortId: "high" }, caps), [
+    { configId: "reasoning_effort", value: "high" },
+  ]);
+});
+
 console.log("\neffort tier labels (the composer prints the axis name itself)");
 
 check("a trailing 'Effort' is dropped so the header is not repeated", () => {

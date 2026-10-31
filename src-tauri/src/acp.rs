@@ -254,6 +254,12 @@ pub struct CapabilitySnapshot {
     /// prompt. Session-local by design: a fresh `session/new` starts clean,
     /// which self-heals the knob after a grok update fixes the gate.
     pub effort_reject_models: Vec<String>,
+    /// Codex ACP 2.x encodes effort in the model id (`gpt-5.6-luna[xhigh]`).
+    /// When true, effort writes recombine into `model[effort]` for
+    /// `session/set_model` instead of Grok's `_meta.reasoningEffort`.
+    /// Internal — the Composer still sees a peeled base model + Effort chip.
+    #[serde(skip)]
+    pub effort_in_model_id: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1738,15 +1744,23 @@ impl AcpService {
                     .value
                     .as_str()
                     .ok_or_else(|| "Model id must be a string".to_string())?;
+                let caps = self.get_capabilities(session_id);
+                let effort = caps.as_ref().and_then(|c| effort_for_model(c, model_id));
+                let wire_id = caps
+                    .as_ref()
+                    .map(|c| wire_model_id(c, model_id, effort.as_deref()))
+                    .unwrap_or_else(|| model_id.to_string());
                 let mut params = json!({
                     "sessionId": agent_session_id,
-                    "modelId": model_id,
+                    "modelId": wire_id,
                 });
                 // A bare set_model snaps effort back to the model default, which
                 // would leave the Effort chip claiming a level the agent dropped.
                 // Re-assert whatever the session is on — gated on what it advertised.
-                if let Some(caps) = self.get_capabilities(session_id) {
-                    if let Some(effort) = effort_for_model(&caps, model_id) {
+                // Codex encodes that level in `model[effort]` already (`wire_model_id`);
+                // Grok still needs `_meta.reasoningEffort` on the bare id.
+                if caps.as_ref().map_or(true, |c| !c.effort_in_model_id) {
+                    if let Some(effort) = effort {
                         params["_meta"] = json!({ "reasoningEffort": effort });
                     }
                 }
@@ -1775,15 +1789,18 @@ impl AcpService {
                 if let Some(caps) = self.get_capabilities(session_id) {
                     effort = clamp_effort_id(&caps, &model_id, &effort);
                 }
-                request(
-                    process,
-                    "session/set_model",
-                    json!({
-                        "sessionId": agent_session_id,
-                        "modelId": model_id,
-                        "_meta": { "reasoningEffort": effort },
-                    }),
-                )
+                let wire_id = caps
+                    .as_ref()
+                    .map(|c| wire_model_id(c, &model_id, Some(&effort)))
+                    .unwrap_or_else(|| model_id.clone());
+                let mut params = json!({
+                    "sessionId": agent_session_id,
+                    "modelId": wire_id,
+                });
+                if caps.as_ref().map_or(true, |c| !c.effort_in_model_id) {
+                    params["_meta"] = json!({ "reasoningEffort": effort });
+                }
+                request(process, "session/set_model", params)
             }
             ConfigTarget::Other | ConfigTarget::Permission => Err(format!(
                 "Agent does not support session/set_config_option, and \"{}\" has no legacy equivalent",
@@ -2438,6 +2455,15 @@ fn numeric_effort_to_level(n: f64) -> String {
 /// where the historical trio is all we ever sent.
 fn reassertable_effort(caps: &CapabilitySnapshot) -> Option<String> {
     caps.current_effort_id.clone().filter(|id| {
+        if id.is_empty() {
+            return false;
+        }
+        // Codex encoded this level in `model[effort]`; keep it across a switch
+        // even when the catalog did not publish a menu (xhigh is not in the
+        // historical low/medium/high trio).
+        if caps.effort_in_model_id {
+            return true;
+        }
         if caps.effort_options.is_empty() {
             matches!(id.as_str(), "low" | "medium" | "high")
         } else {
@@ -2507,6 +2533,15 @@ fn send_effort_for_model(
                 "value": effort,
             }),
         )
+    } else if caps.effort_in_model_id {
+        request_quiet(
+            process,
+            "session/set_model",
+            json!({
+                "sessionId": agent_session_id,
+                "modelId": wire_model_id(caps, model_id, Some(effort)),
+            }),
+        )
     } else {
         request_quiet(
             process,
@@ -2517,6 +2552,16 @@ fn send_effort_for_model(
                 "_meta": { "reasoningEffort": effort },
             }),
         )
+    }
+}
+
+/// Wire model id for `session/set_model`. Codex 2.x wants `base[effort]`;
+/// Grok (and everyone else) wants the bare catalog id.
+fn wire_model_id(caps: &CapabilitySnapshot, model_id: &str, effort: Option<&str>) -> String {
+    if caps.effort_in_model_id {
+        combine_model_effort_id(model_id, effort)
+    } else {
+        split_combined_model_id(model_id).0
     }
 }
 
@@ -2736,6 +2781,7 @@ fn apply_local_config_change(caps: &mut CapabilitySnapshot, config_id: &str, val
             caps.current_permission = Some(text);
         }
     }
+    normalize_combined_model_ids(caps);
 }
 
 /// ACP: omitted or `null` both mean the agent does not support extra
@@ -4128,6 +4174,7 @@ mod tests {
             model_effort_menus: HashMap::new(),
             model_default_efforts: HashMap::new(),
             effort_reject_models: Vec::new(),
+            effort_in_model_id: false,
         }
     }
 
@@ -4447,6 +4494,8 @@ mod tests {
         assert_eq!(caps.models.len(), 1);
         assert_eq!(caps.effort_options.len(), 3);
         assert!(caps.effort_options.iter().any(|o| o.id == "low"));
+        assert!(!caps.effort_in_model_id);
+        assert_eq!(wire_model_id(&caps, "grok-4.5", Some("low")), "grok-4.5");
     }
 
     /// `@openma/deepseek-harness-acp` 0.4.x session/new: sandbox levels live in
@@ -4759,10 +4808,110 @@ mod tests {
             caps.effort_options.iter().map(|o| o.id.clone()).collect::<Vec<_>>(),
             vec!["low", "medium"]
         );
+        assert!(!caps.effort_in_model_id);
         // Codex has no separate permission select — its `mode` *is* the
         // permission axis — so nothing may invent a second control for it.
         assert_eq!(caps.permission_config_id, None);
         assert!(caps.permission_options.is_empty());
+    }
+
+    /// Codex ACP 2.x with an empty catalog (gateway listed none of the ChatGPT
+    /// models) still reports the live model as `gpt-5.6-luna[xhigh]` and omits
+    /// `reasoning_effort`. Peel that into a base model + current effort so the
+    /// Composer can show the chip; the menu itself comes from the supplement.
+    #[test]
+    fn codex_empty_catalog_peels_combined_current_model() {
+        let response = json!({
+            "sessionId": "s1",
+            "models": {
+                "availableModels": [],
+                "currentModelId": "gpt-5.6-luna[xhigh]"
+            },
+            "configOptions": [{
+                "id": "mode", "name": "Mode", "category": "mode", "type": "select",
+                "currentValue": "agent",
+                "options": [
+                    { "value": "read-only", "name": "Read-only" },
+                    { "value": "agent", "name": "Agent" }
+                ]
+            }]
+        });
+        let caps = parse_session_capabilities(&response);
+        assert_eq!(caps.current_model.as_deref(), Some("gpt-5.6-luna"));
+        assert_eq!(caps.current_effort_id.as_deref(), Some("xhigh"));
+        assert_eq!(caps.effort_config_id, None);
+        assert!(caps.effort_options.is_empty());
+        assert!(caps.effort_in_model_id);
+        assert_eq!(
+            caps.models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            vec!["gpt-5.6-luna"]
+        );
+        assert_eq!(
+            wire_model_id(&caps, "gpt-5.6-luna", Some("high")),
+            "gpt-5.6-luna[high]"
+        );
+        assert_eq!(reassertable_effort(&caps).as_deref(), Some("xhigh"));
+        assert_eq!(
+            wire_model_id(&caps, "gpt-5.4", reassertable_effort(&caps).as_deref()),
+            "gpt-5.4[xhigh]"
+        );
+        assert_eq!(
+            split_combined_model_id("gpt-5.6-luna[xhigh]"),
+            ("gpt-5.6-luna".into(), Some("xhigh".into()))
+        );
+        assert_eq!(
+            split_combined_model_id("grok-4.7"),
+            ("grok-4.7".into(), None)
+        );
+    }
+
+    /// Pre-v2 `models.availableModels` lists each `model[effort]` as its own
+    /// row. Dedup to unique bases and recover the effort menu from the suffixes.
+    #[test]
+    fn codex_legacy_catalog_dedupes_combined_ids_into_effort_menu() {
+        let response = json!({
+            "sessionId": "s1",
+            "models": {
+                "currentModelId": "gpt-5.6-luna[high]",
+                "availableModels": [
+                    { "modelId": "gpt-5.6-luna[low]", "name": "GPT-5.6 Luna (low)" },
+                    { "modelId": "gpt-5.6-luna[high]", "name": "GPT-5.6 Luna (high)" },
+                    { "modelId": "gpt-5.6-luna[xhigh]", "name": "GPT-5.6 Luna (xhigh)" },
+                    { "modelId": "gpt-5.4[high]", "name": "GPT-5.4 (high)" }
+                ]
+            }
+        });
+        let caps = parse_session_capabilities(&response);
+        assert_eq!(caps.current_model.as_deref(), Some("gpt-5.6-luna"));
+        assert_eq!(caps.current_effort_id.as_deref(), Some("high"));
+        assert_eq!(
+            caps.models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            vec!["gpt-5.6-luna", "gpt-5.4"]
+        );
+        assert_eq!(
+            caps.effort_options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(),
+            vec!["low", "high", "xhigh"]
+        );
+        assert_eq!(
+            caps.models.iter().map(|m| m.label.as_str()).collect::<Vec<_>>(),
+            vec!["GPT-5.6 Luna", "GPT-5.4"]
+        );
+        assert!(caps.effort_in_model_id);
+    }
+
+    #[test]
+    fn apply_local_model_write_peels_combined_id() {
+        let mut caps = parse_session_capabilities(&json!({
+            "sessionId": "s1",
+            "models": {
+                "availableModels": [],
+                "currentModelId": "gpt-5.6-luna[xhigh]"
+            }
+        }));
+        apply_local_config_change(&mut caps, "model", &json!("gpt-5.4[low]"));
+        assert_eq!(caps.current_model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(caps.current_effort_id.as_deref(), Some("low"));
+        assert!(caps.effort_in_model_id);
     }
 
     /// A `session/set_config_option` echo speaks only about the option it

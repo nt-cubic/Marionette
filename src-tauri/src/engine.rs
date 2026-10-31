@@ -2344,6 +2344,17 @@ fn alias_map() -> &'static Mutex<std::collections::HashMap<String, (String, Stri
     CODEX_ALIASES.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
+/// Codex encodes effort as `model[effort]`; magpie group ids only want the base.
+fn peel_combined_model_id(id: &str) -> &str {
+    let id = id.trim();
+    if let Some(open) = id.rfind('[') {
+        if id.ends_with(']') && open > 0 {
+            return &id[..open];
+        }
+    }
+    id
+}
+
 /// 组 id 规则对齐 magpie CLI 的校验（小写字母 / 数字 / 点 / 横线）；codex
 /// 内建名本身全小写，这里只做防御性归一，不合法的名字直接拒（留痕）。
 fn codex_group_id(builtin: &str) -> Option<String> {
@@ -2377,6 +2388,8 @@ fn owned_serve_exe() -> Option<PathBuf> {
 /// dev.log 里有原因可查。
 pub fn codex_alias_sync(session_id: &str, builtin: &str, engine_model: &str) {
     note_engine_needed();
+    // Codex encodes effort as `gpt-5.6-luna[xhigh]`; magpie group ids reject `[`.
+    let builtin = peel_combined_model_id(builtin);
     let Some(group_id) = codex_group_id(builtin) else {
         crate::debug_log::append(
             "engine",
@@ -3919,6 +3932,26 @@ mod tests {
         // 同名不同引擎模型（换绑）：重跑 add（pick 换人）。
         codex_alias_sync("s1", "gpt-5.2-codex", "kimi/k2.6");
         assert_eq!(cli.calls().len(), 2);
+    }
+
+    #[test]
+    fn codex_alias_peels_effort_suffix_before_group_id() {
+        assert_eq!(
+            peel_combined_model_id("gpt-5.6-luna[xhigh]"),
+            "gpt-5.6-luna"
+        );
+        assert_eq!(codex_group_id("gpt-5.6-luna[xhigh]"), None);
+        assert_eq!(
+            codex_group_id("gpt-5.6-luna"),
+            Some("gpt-5.6-luna".into())
+        );
+        let cli = CliRecorder::install(Vec::new());
+        codex_alias_sync("s1", "gpt-5.6-luna[xhigh]", "grok/grok-4.7");
+        assert!(
+            cli.calls()[0].iter().any(|a| a == "id=gpt-5.6-luna"),
+            "{:?}",
+            cli.calls()[0]
+        );
     }
 
     /// codex 原生切模型：新内建名建组，旧组无人引用即删（模型名不再 404）。
