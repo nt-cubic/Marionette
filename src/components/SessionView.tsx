@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Columns2, Copy, Eye, EyeOff, FileText, Globe, Inbox, Merge, MessageSquareQuote, Pencil, Plus, Split, Square, SquareArrowOutUpRight, UsersRound, X } from "lucide-react";
+import { Check, ChevronDown, Columns2, Copy, FileText, Globe, Inbox, Merge, MessageSquareQuote, Pencil, Plus, Split, Square, SquareArrowOutUpRight, UsersRound, X } from "lucide-react";
 import {
   memo,
   useCallback,
@@ -60,7 +60,6 @@ import {
 } from "../lib/transcriptScroll";
 import { useVirtualWindow } from "../lib/useVirtualWindow";
 import { isCursorOverWindow, setMergeHighlight } from "../lib/detachedWindow";
-import { loadDetailsVisible, saveDetailsVisible } from "../lib/uiRestore";
 import { useT } from "../lib/i18n";
 import { SplitBesideMenu, type OpenBesideEdge } from "./SplitBesideMenu";
 import type { DropEdge } from "../lib/splitWorkspace";
@@ -107,9 +106,6 @@ type SessionViewProps = {
   onTabClose?: (sessionId: string) => void;
   onNewTab?: () => void;
   onSessionStatusChange?: (status: SessionStatus) => void;
-  /** App-owned eye: both panes stay in sync. */
-  detailsVisible?: boolean;
-  onDetailsVisibleChange?: (visible: boolean) => void;
   onCapabilities?: (caps: import("../lib/types").CapabilitySnapshot | null) => void;
   /** P2-UX-4: edit You → truncate following + resend. */
   onEditResend?: (anchor: UserMessageAnchor, newText: string) => void | Promise<void>;
@@ -833,29 +829,11 @@ export function SessionView({
   streamPrompt,
   webReplyWidthPercent = 85,
   onWebReplyWidthChange,
-  detailsVisible: detailsVisibleProp,
-  onDetailsVisibleChange,
   olderCount = 0,
   olderLoading = false,
   onLoadOlder,
 }: SessionViewProps) {
   const t = useT();
-  // Eye open: each thought/tool is its own card. Eye closed: consecutive
-  // thought+tool runs collapse into nested activity folds (not hidden).
-  // Default is closed (quiet). Open is remembered across launches.
-  const [detailsVisibleLocal, setDetailsVisibleLocal] = useState(() => loadDetailsVisible());
-  const detailsControlled = detailsVisibleProp != null;
-  const detailsVisible = detailsControlled ? detailsVisibleProp : detailsVisibleLocal;
-  const setDetailsVisible = (next: boolean | ((prev: boolean) => boolean)) => {
-    const value = typeof next === "function" ? next(detailsVisible) : next;
-    if (!detailsControlled) setDetailsVisibleLocal(value);
-    onDetailsVisibleChange?.(value);
-    if (!detailsControlled) saveDetailsVisible(value);
-  };
-  useEffect(() => {
-    if (detailsControlled) return;
-    saveDetailsVisible(detailsVisibleLocal);
-  }, [detailsControlled, detailsVisibleLocal]);
   const [expandedChildId, setExpandedChildId] = useState<string | null>(null);
 
   /** childSessionId → result event (latest wins). */
@@ -910,8 +888,6 @@ export function SessionView({
             agent={agent}
             session={session}
             events={events}
-            detailsVisible={detailsVisible}
-            onDetailsToggle={() => setDetailsVisible((visible) => !visible)}
             authBanner={authBanner}
             bannerKind={bannerKind}
             onSignIn={onSignIn}
@@ -1570,8 +1546,6 @@ function CleanPlaceholder({
   agent,
   session,
   events,
-  detailsVisible,
-  onDetailsToggle,
   authBanner = null,
   bannerKind = "auth",
   onSignIn,
@@ -1603,8 +1577,6 @@ function CleanPlaceholder({
   agent: AgentConfig;
   session: Session;
   events: SessionEvent[];
-  detailsVisible: boolean;
-  onDetailsToggle: () => void;
   authBanner?: string | null;
   bannerKind?: "auth" | "upgrade";
   onSignIn?: () => void | Promise<void>;
@@ -1633,6 +1605,7 @@ function CleanPlaceholder({
   olderLoading?: boolean;
   onLoadOlder?: () => void;
 }) {
+  /** Always clustered. The global eye toggle is gone — per-card expand remains. */
   const listRef = useRef<HTMLDivElement>(null);
   /**
    * 「加载更早」的滚动锚定：前插历史会让所有内容下移，记下点击时的
@@ -1702,12 +1675,10 @@ function CleanPlaceholder({
     [session.id, visibleEvents],
   );
   /**
-   * Flat render units (reply parts expanded).
-   * Eye open: each thought/tool is its own card (original chrome).
-   * Eye closed: consecutive thought+tool runs collapse into one nested fold.
-   * Rows stay in the list — the eye never drops them.
-   * End-of-turn delivery cards interleave after clustering, anchored before
-   * the next turn's opening card.
+   * Flat render units (reply parts expanded). Consecutive thought+tool runs
+   * collapse into one nested fold. Per-card expand remains; there is no
+   * global "show every card" toggle. End-of-turn delivery cards interleave
+   * after clustering, anchored before the next turn's opening card.
    */
   const renderUnits = useMemo(() => {
     const flat: { key: string; event: SessionEvent; index: number }[] = [];
@@ -1730,9 +1701,7 @@ function CleanPlaceholder({
         });
       }
     }
-    const clustered: TranscriptUnit[] = detailsVisible
-      ? flat.map((unit) => ({ kind: "row" as const, ...unit }))
-      : clusterActivityRuns(flat);
+    const clustered: TranscriptUnit[] = clusterActivityRuns(flat);
     const deliveries = buildTurnDeliveries(displayEvents, session.id, session.cwd, viewRunning);
     if (deliveries.length === 0) return clustered;
     const merged: (TranscriptUnit | TurnDeliveryUnit)[] = [];
@@ -1749,7 +1718,7 @@ function CleanPlaceholder({
     }
     pushDue(Number.MAX_SAFE_INTEGER);
     return merged;
-  }, [presentationItems, detailsVisible, displayEvents, session.id, session.cwd, viewRunning, visibleEvents]);
+  }, [presentationItems, displayEvents, session.id, session.cwd, viewRunning, visibleEvents]);
   /**
    * Virtual window for long rails only. Short chats stay fully mounted (simpler
    * selection / stick-to-bottom). Threshold matches heavy tool-heavy sessions
@@ -1757,16 +1726,16 @@ function CleanPlaceholder({
    */
   const arrivalStamps = useArrivalStamps(
     useMemo(() => renderUnits.map((unit) => unit.key), [renderUnits]),
-    `${session.id}|${detailsVisible ? "details" : "clean"}`,
+    `${session.id}|clean`,
   );
   const useVirtual = renderUnits.length >= 48;
   const isLongTranscript = useVirtual;
   const virtual = useVirtualWindow(listRef, useVirtual ? renderUnits.length : 0, {
     estimate: 48,
     overscan: 12,
-    // Details on/off re-indexes every unit — cache is keyed so tab switches
-    // reuse measured heights instead of collapsing to 48px estimates.
-    resetKey: `${session.id}|${detailsVisible ? "details" : "clean"}|${useVirtual ? "v" : "full"}`,
+    // Cache is keyed so tab switches reuse measured heights instead of
+    // collapsing to 48px estimates.
+    resetKey: `${session.id}|clean|${useVirtual ? "v" : "full"}`,
   });
   // 「加载更早」前插后的滚动复位（见 handleLoadOlder 的注释）。
   useLayoutEffect(() => {
@@ -1879,15 +1848,13 @@ function CleanPlaceholder({
   const showStallBanner = isRunning;
 
   // Content fingerprint — only real transcript changes should pin-scroll (never a clock tick / health).
-  // Details on/off changes the rendered height, so it re-pins too (only while
-  // the reader is already at the tail).
   const scrollKey = useMemo(() => {
     const last = visibleEvents[visibleEvents.length - 1];
     const lastSig = last
       ? `${last.type}:${last.createdAt}:${"text" in last ? String(last.text).length : ""}:${"status" in last ? last.status : ""}`
       : "empty";
-    return `${session.id}|${detailsVisible ? "d" : "c"}|${visibleEvents.length}|${lastSig}|wait:${awaitingFirstChunk}`;
-  }, [session.id, visibleEvents, awaitingFirstChunk, detailsVisible]);
+    return `${session.id}|c|${visibleEvents.length}|${lastSig}|wait:${awaitingFirstChunk}`;
+  }, [session.id, visibleEvents, awaitingFirstChunk]);
 
   const prevAwaitingRef = useRef(false);
   const awaitingRef = useRef(awaitingFirstChunk);
@@ -2123,8 +2090,8 @@ function CleanPlaceholder({
     // Relative paths in agent text resolve against this dialog's project root.
     <LinkCwdContext.Provider value={session.cwd || null}>
     <div className="clean-surface">
+      {agent.id === "web-chatgpt" && (
       <div className="clean-surface__tools">
-        {agent.id === "web-chatgpt" && (
           <label className="web-reply-width-control" title={t("session.webReplyWidthTitle", { n: webReplyWidthPercent })}>
             <input
               type="range"
@@ -2140,33 +2107,8 @@ function CleanPlaceholder({
             />
             <output>{webReplyWidthPercent}%</output>
           </label>
-        )}
-        <button
-          className="pill-action pill-action--icon icon-button--eye"
-          type="button"
-          title={
-            detailsVisible
-              ? t("session.collapseAllDetails")
-              : t("session.expandAllDetails")
-          }
-          aria-label={
-            detailsVisible
-              ? t("session.collapseAllDetails")
-              : t("session.expandAllDetails")
-          }
-          onClick={() => {
-            if (detailsVisible) {
-              setActivityFoldPins(new Map());
-              setExpandedKindKeys(new Set());
-              setExpandedToolKeys(new Set());
-              setExpandedThoughtKeys(new Set());
-            }
-            onDetailsToggle();
-          }}
-        >
-          {detailsVisible ? <Eye size={14} /> : <EyeOff size={14} />}
-        </button>
       </div>
+      )}
       <div className="clean-surface__body">
       {!atBottom && visibleEvents.length > 0 && (
         <button
@@ -2615,14 +2557,14 @@ function CleanPlaceholder({
           // Tool: collapsed by default. Only shell / subagent tools auto-expand
           // into a tall "working" block while in_progress; ordinary read/edit stay
           // one-line. Stall still forces open so the user can see what hung.
-          // Folded (closed eye) keeps every finished row to one line, but the
+          // Clustered view keeps every finished row to one line, but the
           // live thought still streams — otherwise the text appears all at once
           // when the step completes, which reads as a layout snap.
           // Bodies are lazy-mounted: closed cards keep only the one-line summary
           // (critical for tool-heavy Grok sessions with 500+ tools).
           // User / assistant: always fully visible.
           if (isCollapsible) {
-            const foldAll = !detailsVisible;
+            const foldAll = true;
             const isToolEvent = event.type === "tool_call" ? event : null;
             const longRunningTool =
               isToolEvent != null && isLongRunningToolKind(isToolEvent);

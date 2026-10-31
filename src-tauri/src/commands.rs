@@ -156,6 +156,23 @@ pub fn pick_folder() -> Result<Option<String>, String> {
     Ok(picked)
 }
 
+/// Native "Save as" for exported Markdown (and any other text dump).
+/// `Ok(None)` = the user cancelled. Failures are write errors after a path was chosen.
+#[tauri::command]
+pub fn save_text_file(default_name: String, contents: String) -> Result<Option<String>, String> {
+    let _trace = crate::debug_log::CmdTrace::new("save_text_file");
+    let picked = rfd::FileDialog::new()
+        .set_title(&crate::ts!("导出对话", "Export conversation"))
+        .set_file_name(&default_name)
+        .add_filter("Markdown", &["md"])
+        .save_file();
+    let Some(path) = picked else {
+        return Ok(None);
+    };
+    fs::write(&path, contents.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(Some(path.to_string_lossy().to_string()))
+}
+
 /// Native multi-file picker for Composer「+」. Empty vec = user cancelled.
 ///
 /// HTML `<input type="file">` in the webview often only yields `file.name`

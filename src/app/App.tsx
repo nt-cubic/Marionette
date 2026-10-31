@@ -161,7 +161,7 @@ import { prettyEffortLabel } from "../lib/modelLabel";
 import { classifyToolCall } from "../lib/turnActivity";
 import { selectTurnWorkspaceChanges } from "../lib/turnDelivery";
 import { getLastUsedDefaults } from "../lib/recentModels";
-import { pickRestoredSession, saveUiRestore, saveQueuedSends, loadQueuedSends, saveScheduledSends, loadScheduledSends, saveClosedTabs, loadClosedTabs, loadDetailsVisible, saveDetailsVisible } from "../lib/uiRestore";
+import { pickRestoredSession, saveUiRestore, saveQueuedSends, loadQueuedSends, saveScheduledSends, loadScheduledSends, saveClosedTabs, loadClosedTabs } from "../lib/uiRestore";
 import {
   MAX_PANES,
   activateTab,
@@ -224,6 +224,10 @@ import { WindowControls } from "../components/WindowControls";
 import { parseAskQuestionPrompt } from "../lib/askQuestion";
 import { initScrollbarAutoHide } from "../lib/scrollbarAutoHide";
 import { applyLocale, getLocale, nextLocale, useLocale, useT } from "../lib/i18n";
+import { showToast, dismissToast } from "../lib/toast";
+import { copyText } from "../lib/clipboard";
+import { exportSessionMarkdown } from "../lib/exportTranscript";
+import { requestOpenEngine, requestOpenTelegram } from "../lib/shellActions";
 import { nextTheme, parseStoredTheme, themeColorScheme, type ThemeMode } from "../lib/theme";
 
 const LEFT_PANEL_MIN = 180;
@@ -484,7 +488,6 @@ export function App() {
   const [capsById, setCapsById] = useState<Record<string, CapabilitySnapshot | null>>({});
   const capsByIdRef = useRef(capsById);
   capsByIdRef.current = capsById;
-  const [detailsVisible, setDetailsVisible] = useState(() => loadDetailsVisible());
   /** Project opened via Explorer "在此处打开" / --open-path — pinned at shelf top. */
   const [openHereProjectId, setOpenHereProjectId] = useState<string | null>(null);
   /** Default folder for the Chat section (from --open-path or CWD). */
@@ -3792,10 +3795,6 @@ export function App() {
     }
   }, [currentSessionId, loadSessionTranscript, splitState, workspaceSplit]);
 
-  useEffect(() => {
-    saveDetailsVisible(detailsVisible);
-  }, [detailsVisible]);
-
   // Keep the one-leaf tree in sync with the flat tab list. Once split, the tree is source.
   useEffect(() => {
     if (IS_DETACHED_WINDOW) return;
@@ -4831,6 +4830,33 @@ export function App() {
       summary: `open-beside edge=${edge} pane=${targetId}`,
     });
   };
+
+  /** Export a dialog as Markdown. Native save-as; success toast offers Copy. */
+  const handleExportTranscript = useCallback(async (session?: Session) => {
+    const target = session ?? displaySession;
+    if (!target?.id || target.id.startsWith("session-empty-")) {
+      showToast({ text: t("export.toastNoSession"), tone: "error" });
+      return;
+    }
+    const preparing = showToast({ text: t("export.preparing"), tone: "info", duration: 30_000 });
+    try {
+      const { fileName, markdown, savedPath } = await exportSessionMarkdown(target.id, target.label);
+      dismissToast(preparing);
+      if (!savedPath) return;
+      showToast({
+        text: t("export.toastOk", { name: fileName }),
+        tone: "ok",
+        duration: 8000,
+        action: { label: t("export.copyAction"), run: () => void copyText(markdown) },
+      });
+    } catch (e) {
+      dismissToast(preparing);
+      showToast({
+        text: t("export.toastError", { error: e instanceof Error ? e.message : String(e) }),
+        tone: "error",
+      });
+    }
+  }, [displaySession, t]);
 
   /** Create a new Chat session in the current/default working folder. `origin:
    *  "memo"` files it under the shelf's 收纳盒 group. */
@@ -8272,6 +8298,10 @@ export function App() {
     onNewChat: useLatestCallback(() => {
       void handleCreateChatSession();
     }),
+    onOpenPalette: useLatestCallback(() => setPaletteOpen(true)),
+    onExportSession: useLatestCallback((session: Session) => {
+      void handleExportTranscript(session);
+    }),
   };
 
   const tabStable = {
@@ -8351,8 +8381,6 @@ export function App() {
           projectId={session.projectId || currentProjectId}
           onFilesRestored={() => void refreshChangedFiles()}
           allEvents={allEvents}
-          detailsVisible={detailsVisible}
-          onDetailsVisibleChange={setDetailsVisible}
           onSubtaskStop={(childId) => {
             void cancelAcpSession(childId).catch(() => undefined);
             finalizeDelegateChildRef.current(childId, "cancelled", t("app.stoppedByUser"));
@@ -8683,6 +8711,8 @@ export function App() {
             memoSessions={memoSessions}
             onChatSessionSelect={openChatSession}
             onNewChat={shelfStable.onNewChat}
+            onOpenPalette={shelfStable.onOpenPalette}
+            onExportSession={shelfStable.onExportSession}
             onOpenMemo={dockActive ? undefined : () => {
               setMemoOpen(true);
               setMemoActive(true);
@@ -8749,6 +8779,48 @@ export function App() {
                   setMemoActive(false);
                 },
               },
+              {
+                id: "open-memo",
+                label: t("palette.openMemo"),
+                hint: t("palette.openMemoHint"),
+                run: () => {
+                  if (dockActive) {
+                    setDockPage("memo");
+                    return;
+                  }
+                  setMemoOpen(true);
+                  setMemoActive(true);
+                  setCouncilActive(false);
+                },
+              },
+              {
+                id: "open-telegram",
+                label: t("palette.openTelegram"),
+                hint: t("palette.openTelegramHint"),
+                run: () => {
+                  if (leftCollapsed) setLeftCollapsed(false);
+                  window.setTimeout(() => requestOpenTelegram(), leftCollapsed ? 80 : 0);
+                },
+              },
+              {
+                id: "open-model-share",
+                label: t("palette.openModelShare"),
+                hint: t("palette.openModelShareHint"),
+                run: () => {
+                  if (leftCollapsed) setLeftCollapsed(false);
+                  window.setTimeout(() => requestOpenEngine(), leftCollapsed ? 80 : 0);
+                },
+              },
+              ...(!memoActive && !councilActive && displaySession.id && !displaySession.id.startsWith("session-empty-")
+                ? [
+                    {
+                      id: "export-transcript",
+                      label: t("export.paletteAction"),
+                      hint: "Markdown",
+                      run: () => void handleExportTranscript(),
+                    },
+                  ]
+                : []),
               {
                 id: "add-project",
                 label: t("palette.addProject"),

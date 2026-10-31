@@ -839,9 +839,10 @@
 }
 
 .chat-row:hover .chat-row__select,
-.chat-row:focus-within .chat-row__select {
-  /* Keep the title span out from under the overlay actions. */
-  padding-right: 96px;
+.chat-row:focus-within .chat-row__select,
+.chat-row.is-more-open .chat-row__select {
+  /* Keep the title span out from under the overlay actions (park + delete + ⋯). */
+  padding-right: 76px;
 }
 
 .chat-row__select:hover {
@@ -868,7 +869,8 @@
 .chat-row:hover .chat-row__actions,
 .chat-row:focus-within .chat-row__actions,
 .chat-row.is-active:hover .chat-row__actions,
-.chat-row.is-active:focus-within .chat-row__actions {
+.chat-row.is-active:focus-within .chat-row__actions,
+.chat-row.is-more-open .chat-row__actions {
   opacity: 1;
   pointer-events: auto;
 }
@@ -1589,7 +1591,8 @@ body.is-project-reordering .project-list {
 
 .session-row:hover .session-row__actions,
 .session-row:focus-within .session-row__actions,
-.session-row.is-active .session-row__actions {
+.session-row.is-active .session-row__actions,
+.session-row.is-more-open .session-row__actions {
   opacity: 1;
 }
 
@@ -1618,7 +1621,9 @@ body.is-project-reordering .project-list {
 
 /* Pin toggle: accent while the dialog is pinned, so the row and the control agree. */
 .session-row__action.is-pinned,
-.chat-row__action.is-pinned {
+.chat-row__action.is-pinned,
+.session-row__action.is-open,
+.chat-row__action.is-open {
   color: var(--accent);
 }
 
@@ -1824,7 +1829,8 @@ body.is-project-reordering .project-list {
 }
 
 .project-tree .session-row:hover .session-row__time,
-.project-tree .session-row:focus-within .session-row__time {
+.project-tree .session-row:focus-within .session-row__time,
+.project-tree .session-row.is-more-open .session-row__time {
   visibility: hidden;
 }
 
@@ -1844,7 +1850,8 @@ body.is-project-reordering .project-list {
 }
 
 .project-tree .session-row:hover .session-row__actions,
-.project-tree .session-row:focus-within .session-row__actions {
+.project-tree .session-row:focus-within .session-row__actions,
+.project-tree .session-row.is-more-open .session-row__actions {
   opacity: 1;
   pointer-events: auto;
 }
@@ -1855,7 +1862,8 @@ body.is-project-reordering .project-list {
 }
 
 .project-tree .session-row.is-active:hover .session-row__actions,
-.project-tree .session-row.is-active:focus-within .session-row__actions {
+.project-tree .session-row.is-active:focus-within .session-row__actions,
+.project-tree .session-row.is-active.is-more-open .session-row__actions {
   opacity: 1;
   pointer-events: auto;
 }

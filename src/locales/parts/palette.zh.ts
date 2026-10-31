@@ -26,4 +26,10 @@ export const zh = {
   "palette.closeBehaviorExit": "关闭窗口（×）：直接退出（点此改为后台常驻）",
   "palette.quitApp": "退出 Marionette",
   "palette.quitAppHint": "停止引擎与全部会话",
+  "palette.openMemo": "打开收纳盒",
+  "palette.openMemoHint": "收集的材料",
+  "palette.openTelegram": "Telegram 远程",
+  "palette.openTelegramHint": "手机通知与回复",
+  "palette.openModelShare": "模型共享",
+  "palette.openModelShareHint": "跨 agent 的模型与额度",
 } as const;

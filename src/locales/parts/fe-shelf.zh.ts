@@ -17,6 +17,10 @@ export const zh = {
   "shelf.taskDone": "任务已完成",
   "shelf.rename": "重命名",
   "shelf.park": "挂起",
+  "shelf.more": "更多",
+  "shelf.exportMarkdown": "导出为 Markdown",
+  "shelf.openCommands": "命令与设置",
+  "shelf.openCommandsHint": "命令面板 · Ctrl K",
   "shelf.filterByStatus": "按状态筛选对话",
   "shelf.showAll": "显示全部对话",
   "shelf.showOnly": "只看{label}的对话",
@@ -123,6 +127,6 @@ export const zh = {
   "shelf.importedSuffix": " · 导入",
   "shelf.started": "开始",
   "shelf.recent": "最近",
-  "shelf.peekHint": "双击或铅笔图标重命名 · 右键分屏打开",
+  "shelf.peekHint": "双击重命名 · 右键分屏打开 · ⋯ 里有置顶和导出",
   "shelf.updateCheckUnavailable": "无法检查更新（非桌面运行时）",
 } as const;

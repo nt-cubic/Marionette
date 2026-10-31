@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
-import { Archive, Bell, BellOff, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, KeyRound, Languages, MessageSquare, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, SlidersHorizontal, SunMedium, Trash2, UsersRound, X, Zap } from "lucide-react";
+import { Archive, Bell, BellOff, ChevronRight, CloudMoon, Download, Folder, FolderOpen, Globe, GripVertical, KeyRound, Languages, MessageSquare, MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, Settings, SlidersHorizontal, SunMedium, Trash2, UsersRound, X, Zap } from "lucide-react";
 // Refresh on a project row folds CLI history into the normal session list.
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { applyLocale, getLocale, localeToggleTitle, nextLocale } from "../lib/i18n";
@@ -35,6 +35,7 @@ import { ModelLibraryDialog } from "./ModelLibraryDialog";
 import { SplitBesideMenu, type OpenBesideEdge } from "./SplitBesideMenu";
 import type { DropEdge } from "../lib/splitWorkspace";
 import { dockFooterHost, useDocked } from "../lib/dockFooter";
+import { OPEN_ENGINE_EVENT, OPEN_TELEGRAM_EVENT } from "../lib/shellActions";
 
 /**
  * Docked mode: the footer buttons are portaled below the composer. Their
@@ -71,35 +72,6 @@ function magpieCredit(version?: string | null): string {
   return t("shelf.poweredByVersion", { version: raw.replace(/^v/i, "") });
 }
 
-/** Pin toggle shared by project session rows and chat rows. */
-function SessionPinButton({
-  pinned,
-  className,
-  onToggle,
-}: {
-  pinned: boolean;
-  className: string;
-  onToggle: (next: boolean) => void;
-}) {
-  const t = useT();
-  const name = pinned ? t("shelf.unpin") : t("shelf.pin");
-  return (
-    <button
-      className={pinned ? `${className} is-pinned` : className}
-      type="button"
-      title={name}
-      aria-label={name}
-      aria-pressed={pinned}
-      onClick={(event) => {
-        event.stopPropagation();
-        onToggle(!pinned);
-      }}
-    >
-      {pinned ? <PinOff size={12} /> : <Pin size={12} />}
-    </button>
-  );
-}
-
 /** Always-visible marker so a pinned row reads as pinned without hovering. */
 function PinnedMark({ className }: { className: string }) {
   const t = useT();
@@ -107,6 +79,95 @@ function PinnedMark({ className }: { className: string }) {
     <span className={className} title={t("shelf.pinned")} aria-hidden>
       <Pin size={10} />
     </span>
+  );
+}
+
+/** Overflow menu for a session row: pin, rename, export. Park and delete stay on the row. */
+function SessionMoreMenu({
+  x,
+  y,
+  pinned,
+  onPin,
+  onRename,
+  onExport,
+  onClose,
+}: {
+  x: number;
+  y: number;
+  pinned: boolean;
+  onPin?: () => void;
+  onRename?: () => void;
+  onExport?: () => void;
+  onClose: () => void;
+}) {
+  const t = useT();
+  useEffect(() => {
+    const onDown = () => onClose();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    const timer = window.setTimeout(() => {
+      document.addEventListener("mousedown", onDown);
+      document.addEventListener("keydown", onKey);
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  const left = Math.max(8, Math.min(x - 176, window.innerWidth - 188));
+  const top = Math.max(8, Math.min(y, window.innerHeight - 132));
+
+  return createPortal(
+    <div
+      className="split-beside-menu"
+      style={{ left, top }}
+      role="menu"
+      onMouseDown={(event) => event.stopPropagation()}
+    >
+      {onPin && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            onPin();
+            onClose();
+          }}
+        >
+          {pinned ? <PinOff size={13} aria-hidden /> : <Pin size={13} aria-hidden />}
+          {pinned ? t("shelf.unpin") : t("shelf.pin")}
+        </button>
+      )}
+      {onRename && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            onRename();
+            onClose();
+          }}
+        >
+          <Pencil size={13} aria-hidden />
+          {t("shelf.rename")}
+        </button>
+      )}
+      {onExport && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            onExport();
+            onClose();
+          }}
+        >
+          <Download size={13} aria-hidden />
+          {t("shelf.exportMarkdown")}
+        </button>
+      )}
+    </div>,
+    document.body,
   );
 }
 
@@ -176,6 +237,10 @@ type ProjectShelfProps = {
   onOpenMemo?: () => void;
   /** Council Mode(多模型审议)整页入口。 */
   onOpenCouncil?: () => void;
+  /** Open the Ctrl+K command palette (footer settings button). */
+  onOpenPalette?: () => void;
+  /** Export this dialog as Markdown (row ⋯ menu). */
+  onExportSession?: (session: Session) => void;
   /** Scan this project's agent CLI stores into the normal session list. */
   externalScanning?: boolean;
   onRefreshExternal?: (projectId: string) => void;
@@ -300,6 +365,8 @@ export function ProjectShelf({
   onNewChat,
   onOpenMemo,
   onOpenCouncil,
+  onOpenPalette,
+  onExportSession,
   externalScanning = false,
   onRefreshExternal,
 }: ProjectShelfProps) {
@@ -321,6 +388,11 @@ export function ProjectShelf({
   const proxyBtnRef = useRef<HTMLButtonElement | null>(null);
   const proxyPopRef = useRef<HTMLDivElement | null>(null);
   const [besideMenu, setBesideMenu] = useState<{
+    session: Session;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [moreMenu, setMoreMenu] = useState<{
     session: Session;
     x: number;
     y: number;
@@ -469,6 +541,31 @@ export function ProjectShelf({
       document.removeEventListener("keydown", onKey);
     };
   }, [tgOpen, refreshTg]);
+
+  /** Ctrl+K / settings button can open these popovers without deleting the footer icons. */
+  useEffect(() => {
+    const openTelegram = () => {
+      const rect = tgBtnRef.current?.getBoundingClientRect();
+      setTgAnchor(rect ? { left: rect.left, top: rect.top } : null);
+      setTgError(null);
+      setEngineOpen(false);
+      setProxyOpen(false);
+      setTgOpen(true);
+    };
+    const openEngine = () => {
+      const rect = engineBtnRef.current?.getBoundingClientRect();
+      setEngineAnchor(rect ? { left: rect.left, top: rect.top } : null);
+      setTgOpen(false);
+      setProxyOpen(false);
+      setEngineOpen(true);
+    };
+    window.addEventListener(OPEN_TELEGRAM_EVENT, openTelegram);
+    window.addEventListener(OPEN_ENGINE_EVENT, openEngine);
+    return () => {
+      window.removeEventListener(OPEN_TELEGRAM_EVENT, openTelegram);
+      window.removeEventListener(OPEN_ENGINE_EVENT, openEngine);
+    };
+  }, []);
 
   const tgSaveToken = async () => {
     const token = tgTokenDraft.trim();
@@ -1166,6 +1263,17 @@ export function ProjectShelf({
     <div className="sidebar-dock">
       {gatewayRow}
       <div className="sidebar-footer">
+        {onOpenPalette && (
+          <button
+            className="pill-action pill-action--icon pill-action--sm sidebar-footer__button"
+            type="button"
+            title={t("shelf.openCommandsHint")}
+            aria-label={t("shelf.openCommands")}
+            onClick={onOpenPalette}
+          >
+            <Settings size={13} />
+          </button>
+        )}
         {themeButton}
         {languageButton}
         {notifyButton}
@@ -1200,10 +1308,81 @@ export function ProjectShelf({
     );
   }, [memoSessions, query, searching, activeStatusFilter, unreadDone]);
 
+  const openRowMore = (session: Session, button: HTMLElement) => {
+    const rect = button.getBoundingClientRect();
+    setBesideMenu(null);
+    setConfirmDeleteId(null);
+    setMoreMenu({ session, x: rect.right, y: rect.bottom + 4 });
+  };
+
+  /** Park + delete stay on the row; pin / rename / export live in ⋯. */
+  const renderRowActions = (session: Session, prefix: "chat-row" | "session-row") => {
+    const park = suspendControl(session, session.label);
+    const isRenaming = renamingId === session.id;
+    if (isRenaming) return null;
+    return (
+      <span className={`${prefix}__actions`}>
+        {park.shown && onSuspendSession && (
+          <button
+            className={`${prefix}__action`}
+            type="button"
+            title={t("shelf.park")}
+            aria-label={t("shelf.park")}
+            onClick={(event) => {
+              event.stopPropagation();
+              onSuspendSession(session.id);
+            }}
+          >
+            <Pause size={12} />
+          </button>
+        )}
+        <button
+          className={`${prefix}__action ${prefix}__action--danger${confirmDeleteId === session.id ? " is-armed" : ""}`}
+          type="button"
+          title={confirmDeleteId === session.id ? t("shelf.confirmDelete") : t("common.delete")}
+          aria-label={confirmDeleteId === session.id ? t("shelf.confirmDelete") : t("common.delete")}
+          onClick={(event) => {
+            event.stopPropagation();
+            if (confirmDeleteId === session.id) {
+              setConfirmDeleteId(null);
+              onDeleteSession(session.id);
+            } else {
+              setConfirmDeleteId(session.id);
+            }
+          }}
+        >
+          {confirmDeleteId === session.id ? (
+            <span className="row-action-confirm">{t("shelf.confirmDelete")}</span>
+          ) : (
+            <Trash2 size={12} />
+          )}
+        </button>
+        <button
+          className={`${prefix}__action${moreMenu?.session.id === session.id ? " is-open" : ""}`}
+          type="button"
+          title={t("shelf.more")}
+          aria-label={t("shelf.more")}
+          aria-haspopup="menu"
+          aria-expanded={moreMenu?.session.id === session.id}
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            if (moreMenu?.session.id === session.id) {
+              setMoreMenu(null);
+              return;
+            }
+            openRowMore(session, event.currentTarget);
+          }}
+        >
+          <MoreHorizontal size={12} />
+        </button>
+      </span>
+    );
+  };
+
   /** One chat-row, shared by the 聊天 section and the 收纳盒 dialog group. */
   const renderChatRow = (session: Session) => {
     const busy = sessionIsBusy(session.status);
-    const park = suspendControl(session, session.label);
     const isActive = session.id === currentSessionId;
     const isRenaming = renamingId === session.id;
     const pinned = pinStamp(session) != null;
@@ -1229,6 +1408,7 @@ export function ProjectShelf({
           busy ? "is-running" : "",
           pinned ? "is-pinned" : "",
           doneUnread ? "is-done" : "",
+          moreMenu?.session.id === session.id ? "is-more-open" : "",
         ].filter(Boolean).join(" ")}
         key={session.id}
         onContextMenu={(event) => {
@@ -1286,64 +1466,7 @@ export function ProjectShelf({
             </span>
           </button>
         )}
-        <span className="chat-row__actions">
-          {onToggleSessionPin && !isRenaming && (
-            <SessionPinButton
-              pinned={pinned}
-              className="chat-row__action"
-              onToggle={(next) => onToggleSessionPin(session.id, next)}
-            />
-          )}
-          {onRenameSession && !isRenaming && (
-            <button
-              className="chat-row__action"
-              type="button"
-              title={t("shelf.rename")}
-              aria-label={t("shelf.rename")}
-              onClick={(event) => {
-                event.stopPropagation();
-                beginRename();
-              }}
-            >
-              <Pencil size={12} />
-            </button>
-          )}
-          {park.shown && onSuspendSession && !isRenaming && (
-            <button
-              className="chat-row__action"
-              type="button"
-              title={t("shelf.park")}
-              aria-label={t("shelf.park")}
-              onClick={(event) => {
-                event.stopPropagation();
-                onSuspendSession(session.id);
-              }}
-            >
-              <Pause size={12} />
-            </button>
-          )}
-          <button
-            className={`chat-row__action chat-row__action--danger${confirmDeleteId === session.id ? " is-armed" : ""}`}
-            type="button"
-            title={confirmDeleteId === session.id ? t("shelf.confirmDelete") : t("common.delete")}
-            aria-label={confirmDeleteId === session.id ? t("shelf.confirmDelete") : t("common.delete")}
-            onClick={(event) => {
-              event.stopPropagation();
-              if (confirmDeleteId === session.id) {
-                setConfirmDeleteId(null);
-                onDeleteSession(session.id);
-              } else {
-                setConfirmDeleteId(session.id);
-              }
-            }}
-          >
-            {confirmDeleteId === session.id ? (
-              <span className="row-action-confirm">{t("shelf.confirmDelete")}</span>
-            ) : (
-              <Trash2 size={12} />
-            )}
-          </button>
-        </span>
+        {renderRowActions(session, "chat-row")}
       </div>
     );
   };
@@ -1613,7 +1736,6 @@ export function ProjectShelf({
                   {visibleSessions.map((session) => {
                     const dayLabel = dayHeads.get(session.id);
                     const busy = sessionIsBusy(session.status);
-                    const park = suspendControl(session, session.label);
                     const isRenaming = renamingId === session.id;
                     const pinned = pinStamp(session) != null;
                     const doneUnread = unreadDone.has(session.id);
@@ -1648,6 +1770,7 @@ export function ProjectShelf({
                           `is-${session.status}`,
                           pinned ? "is-pinned" : "",
                           doneUnread ? "is-done" : "",
+                          moreMenu?.session.id === session.id ? "is-more-open" : "",
                         ]
                           .filter(Boolean)
                           .join(" ")}
@@ -1715,63 +1838,7 @@ export function ProjectShelf({
                             </span>
                           </button>
                         )}
-                        <span className="session-row__actions">
-                          {onToggleSessionPin && !isRenaming && (
-                            <SessionPinButton
-                              pinned={pinned}
-                              className="session-row__action"
-                              onToggle={(next) => onToggleSessionPin(session.id, next)}
-                            />
-                          )}
-                          {onRenameSession && !isRenaming && (
-                            <button
-                              className="session-row__action"
-                              type="button"
-                              title={t("shelf.rename")}
-                              aria-label={t("shelf.rename")}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                beginRename();
-                              }}
-                            >
-                              <Pencil size={12} />
-                            </button>
-                          )}
-                          {park.shown && onSuspendSession && !isRenaming && (
-                            <button
-                              className="session-row__action"
-                              type="button"
-                              title={t("shelf.park")}
-                              aria-label={t("shelf.park")}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onSuspendSession(session.id);
-                              }}
-                            >
-                              <Pause size={12} />
-                            </button>
-                          )}
-                          <button
-                            className={`session-row__action session-row__action--danger${confirmDeleteId === session.id ? " is-armed" : ""}`}
-                            type="button"
-                            title={confirmDeleteId === session.id ? t("shelf.confirmDelete") : t("common.delete")}
-                            aria-label={confirmDeleteId === session.id ? t("shelf.confirmDelete") : t("common.delete")}
-                            onClick={() => {
-                              if (confirmDeleteId === session.id) {
-                                setConfirmDeleteId(null);
-                                onDeleteSession(session.id);
-                              } else {
-                                setConfirmDeleteId(session.id);
-                              }
-                            }}
-                          >
-                            {confirmDeleteId === session.id ? (
-                              <span className="row-action-confirm">{t("shelf.confirmDelete")}</span>
-                            ) : (
-                              <Trash2 size={12} />
-                            )}
-                          </button>
-                        </span>
+                        {renderRowActions(session, "session-row")}
                       </div>
                       </Fragment>
                     );
@@ -2417,6 +2484,33 @@ export function ProjectShelf({
         y={besideMenu.y}
         onPick={(edge: OpenBesideEdge) => onOpenBeside(besideMenu.session, edge)}
         onClose={() => setBesideMenu(null)}
+      />
+    )}
+    {moreMenu && (
+      <SessionMoreMenu
+        key={moreMenu.session.id}
+        x={moreMenu.x}
+        y={moreMenu.y}
+        pinned={pinStamp(moreMenu.session) != null}
+        onPin={
+          onToggleSessionPin
+            ? () =>
+                onToggleSessionPin(
+                  moreMenu.session.id,
+                  pinStamp(moreMenu.session) == null,
+                )
+            : undefined
+        }
+        onRename={
+          onRenameSession
+            ? () => {
+                setRenamingId(moreMenu.session.id);
+                setRenameDraft(moreMenu.session.label);
+              }
+            : undefined
+        }
+        onExport={onExportSession ? () => onExportSession(moreMenu.session) : undefined}
+        onClose={() => setMoreMenu(null)}
       />
     )}
     </>

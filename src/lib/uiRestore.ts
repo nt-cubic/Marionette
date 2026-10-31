@@ -11,7 +11,6 @@ import {
 
 const STORAGE_KEY = "marionette-ui-restore";
 const SHELF_COLLAPSE_KEY = "marionette-project-shelf-collapsed";
-const DETAILS_VISIBLE_KEY = "marionette-details-visible";
 
 /** Last focused dialog + open tabs — restored on cold start. */
 export type UiRestoreSnapshot = {
@@ -51,28 +50,6 @@ export function saveCollapsedProjectIds(ids: Set<string> | Iterable<string>): vo
   try {
     const list = [...ids].filter((id) => id.trim() !== "");
     window.localStorage.setItem(SHELF_COLLAPSE_KEY, JSON.stringify(list));
-  } catch {
-    // localStorage might be disabled or full
-  }
-}
-
-/**
- * Clean View eye: closed = quiet folds (product default). Missing key is
- * closed so a first launch / cleared storage stays quiet. Open is remembered.
- */
-export function loadDetailsVisible(): boolean {
-  try {
-    const raw = window.localStorage.getItem(DETAILS_VISIBLE_KEY);
-    if (raw == null) return false;
-    return raw === "1";
-  } catch {
-    return false;
-  }
-}
-
-export function saveDetailsVisible(visible: boolean): void {
-  try {
-    window.localStorage.setItem(DETAILS_VISIBLE_KEY, visible ? "1" : "0");
   } catch {
     // localStorage might be disabled or full
   }

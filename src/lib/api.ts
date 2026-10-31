@@ -136,6 +136,31 @@ export async function pickFiles(): Promise<string[]> {
   }
 }
 
+/**
+ * Native "Save as" for a text file. Returns the written path, or null if the
+ * user cancelled. Browser preview falls back to an `<a download>` click and
+ * returns the suggested file name (no real path).
+ */
+export async function saveTextFile(defaultName: string, contents: string): Promise<string | null> {
+  if (!isTauriRuntime()) {
+    downloadTextFile(defaultName, contents);
+    return defaultName;
+  }
+  return invoke<string | null>("save_text_file", { defaultName, contents });
+}
+
+function downloadTextFile(fileName: string, content: string, mime = "text/markdown;charset=utf-8"): void {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
 /** Remove project from Marionette list (does not delete workspace files). */
 export async function deleteProject(projectId: string): Promise<void> {
   if (isTauriRuntime()) {
@@ -521,7 +546,7 @@ export async function loadTranscriptWindow(
   }
 }
 
-/** 全量加载（导出 / 编辑重发补头 / 标签修复等全量消费者）。 */
+/** 全量加载（编辑重发补头 / 标签修复等全量消费者）。失败给空数组。导出走 loadTranscriptFull。 */
 export async function loadTranscript(sessionId: string): Promise<unknown[]> {
   if (!isTauriRuntime()) return [];
   try {
@@ -530,6 +555,15 @@ export async function loadTranscript(sessionId: string): Promise<unknown[]> {
   } catch {
     return [];
   }
+}
+
+/**
+ * 全量加载，失败抛错。导出用这条——吞掉错误会交出只有标题的空 md 还显示成功。
+ */
+export async function loadTranscriptFull(sessionId: string): Promise<unknown[]> {
+  if (!isTauriRuntime()) return [];
+  const page = await invoke<TranscriptPage>("load_transcript", { sessionId, tail: null });
+  return page.events;
 }
 
 export type AgentAuthProbe = {
