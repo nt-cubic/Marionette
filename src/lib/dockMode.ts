@@ -2,11 +2,10 @@
  * Edge dock (docs/plan-edge-dock.md): the main window's "docked mode", not a
  * second window — docking is the same SPA narrowing into a vertical strip.
  *
- * Stage 0 — background residency: with `autoHideOnClose` on, closing the
- * window retracts it to the edge instead of exiting (engine, sessions and the
- * Telegram bridge keep running); true exit is 退出 in the strip's ⋯ menu or
- * the Ctrl K palette (`quit_app`). The Rust side mirrors the flag so its
- * CloseRequested branch knows the path.
+ * 2026-10-31 定稿：贴边与关闭解耦——贴边只走标题栏专属按钮（WindowControls
+ * 最小化左侧）和拖到屏幕边缘吸附；× 的行为由用户在 Ctrl K 面板选择
+ * （autoHideOnClose：默认直接退出，「后台常驻」= Rust 直接 hide 主窗）。
+ * 前端不再参与关闭路径（无交接、无看门狗）。
  *
  * Stage 1 — the dock engine, a three-state machine over the main window:
  *
@@ -67,7 +66,9 @@ const DEFAULT_PREFS: DockPrefs = {
   mode: "off",
   edge: "right",
   width: 400,
-  autoHideOnClose: true,
+  // 2026-10-31 起默认 × 直接退出；「后台常驻」在 Ctrl K 面板自选（存量用户
+  // 的 prefs 里已有 true 的按原值保留——readDockPrefs 读旧值不覆盖）。
+  autoHideOnClose: false,
   pinned: false,
 };
 
@@ -159,8 +160,9 @@ export function patchDockPrefs(patch: Partial<DockPrefs>): DockPrefs {
 }
 
 /**
- * Mirror `autoHideOnClose` into the Rust close-path branch. Call at app start
- * and after every toggle — the Rust flag resets on relaunch.
+ * Mirror `autoHideOnClose`（Ctrl K 面板的 × 行为选择）into the Rust
+ * close-path branch. Call at app start and after every toggle — the Rust flag
+ * resets on relaunch.
  */
 export async function syncBackgroundMode(): Promise<void> {
   if (!isTauriRuntime()) return;
@@ -806,39 +808,13 @@ async function considerDockOut(): Promise<void> {
   if (movedAway) void undock({ keepPosition: true });
 }
 
-/** Rust CloseRequested in background mode lands here: close = retract (dock if still floating). */
-async function handleCloseFromRust(): Promise<void> {
-  // Rust 侧 2s 关窗看门狗的显式应答：一接管就清标记，别等 retract 动画收完
-  // （否则慢一步 Rust 就把贴边窗整个 hide 掉，贴边唤回链路就断了）。
-  try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    void invoke("ack_main_close");
-  } catch {
-    // 非 Tauri 运行时（测试/预览）没有这个命令
-  }
-  if (dockState === "floating") {
-    const docked = await enterDock();
-    if (!docked) {
-      try {
-        // Webview-level hide first — arms WebView2 suspension for the
-        // background stay (vendor/wry patch); the Rust handoff wake path
-        // shows the webview again before focusing.
-        const { getCurrentWebview } = await import("@tauri-apps/api/webview");
-        await getCurrentWebview().hide();
-        await getCurrentWindow().hide(); // stage-0 fallback, awaiting second-launch handoff
-      } catch {
-        // ignore
-      }
-    }
-  } else if (dockState === "docked-expanded") {
-    await retract();
-  }
-  // docked-hidden: already retracted
-}
-
 /**
- * Bind the engine: close handoff, focus and pointer tracking. Main window
- * only — detached shells never dock. Call once from App's mount effect.
+ * Bind the engine: focus and pointer tracking. Main window only — detached
+ * shells never dock. Call once from App's mount effect.
+ *
+ * （2026-10-31 起关闭不再有前端交接路径：× 在 Rust 侧直接 shutdown_and_exit，
+ * 曾经的 marionette-main-close 监听与 handleCloseFromRust 随后台驻留模式
+ * 一并移除。）
  */
 export function initDockMode(): () => void {
   if (!isTauriRuntime() || readDetachedSessionId()) return () => {};
@@ -852,7 +828,6 @@ export function initDockMode(): () => void {
   const unlisteners: Array<() => void> = [];
   void (async () => {
     try {
-      unlisteners.push(await win.listen("marionette-main-close", () => void handleCloseFromRust()));
       unlisteners.push(
         await win.onFocusChanged(({ payload: nowFocused }) => {
           focused = nowFocused;

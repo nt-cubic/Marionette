@@ -22,8 +22,8 @@ export const zh = {
   "palette.undockHint": "恢复普通窗口",
   "palette.dockToEdge": "贴边收起",
   "palette.dockToEdgeHint": "也可以把窗口拖到屏幕左右边缘",
-  "palette.closeBehaviorHide": "关闭窗口时：收起到边缘（点此改为退出）",
-  "palette.closeBehaviorExit": "关闭窗口时：退出（点此改为收起到边缘）",
+  "palette.closeBehaviorHide": "关闭窗口（×）：后台常驻（点此改为直接退出）",
+  "palette.closeBehaviorExit": "关闭窗口（×）：直接退出（点此改为后台常驻）",
   "palette.quitApp": "退出 Marionette",
   "palette.quitAppHint": "停止引擎与全部会话",
 } as const;

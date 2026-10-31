@@ -51,11 +51,14 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
   ProjectShelf 出模型共享入口 + 主题/通知/代理/Telegram，ContextPanel 出检查更新；它们的 popover
   也必须一起 portal（`DockedLayer`），否则 `translateX(100%)` 的 rail 会连 `position: fixed` 的浮层
   一起藏掉。`.dock-mode .app-shell` 预留 40px，整页 bottom 也收 40px。
-- **关闭路径**：`main.rs` CloseRequested 里 background mode（Rust AtomicBool，前端启动时从
-  localStorage `marionette-dock-prefs` 的 `autoHideOnClose` 镜像过来）开 → 主窗 `emit_to`
-  `marionette-main-close` 交给前端 `dockMode.handleCloseFromRust`（停靠或兜底 hide），detached 窗
-  照旧 hide；关 → `shutdown_and_exit`。**prefs 的 `mode:"dock"` 是活窗态，不跨启动**——启动时
-  normalize 回 "off"，别把上次会话的停靠当成本次的。
+- **关闭路径**（2026-10-31 定稿）：× 的行为由用户在 Ctrl K 面板选择（dock prefs 的
+  `autoHideOnClose`，Rust AtomicBool 镜像；**默认 false = 直接退出**）。退出 → `shutdown_and_exit`；
+  「后台常驻」→ **Rust 在 CloseRequested 里直接 hide 主窗**（`main.as_ref().hide()` webview 级先行，
+  配对 TrySuspend 补丁；二次启动交接唤回）——**前端不参与关闭路径**（无 marionette-main-close 交接、
+  无 ack/看门狗，那条链已删；前端冻死也拦不住关窗）。贴边与关闭解耦：只走标题栏专属按钮
+  （`WindowControls` 最小化左侧的 `window-controls__btn--dock`，调 `enterDock()`）和拖到边缘吸附。
+  detached 壳照旧隐藏复用。**prefs 的 `mode:"dock"` 是活窗态，不跨启动**——启动时 normalize 回
+  "off"，别把上次会话的停靠当成本次的。
 - **能力命名**：capability 是 `core:window:allow-set-skip-taskbar`（不是 `allow-skip-taskbar`，
   ACL 校验在 build script 里直接报错）。`monitors_work_areas` 命令**不存在**——Tauri 2.8
   `Monitor.workArea` 自带工作区，显示器信息全走 JS API（`availableMonitors`/`currentMonitor`），
