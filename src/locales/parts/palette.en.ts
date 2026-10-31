@@ -24,8 +24,8 @@ export const en = {
   "palette.undockHint": "Back to a normal window",
   "palette.dockToEdge": "Dock to screen edge",
   "palette.dockToEdgeHint": "You can also drag the window to a screen edge",
-  "palette.closeBehaviorHide": "On window close: retract to edge (click to quit instead)",
-  "palette.closeBehaviorExit": "On window close: quit (click to retract instead)",
+  "palette.closeBehaviorHide": "Close button (×): keep running in background (click to quit instead)",
+  "palette.closeBehaviorExit": "Close button (×): quit the app (click to keep in background instead)",
   "palette.quitApp": "Quit Marionette",
   "palette.quitAppHint": "Stops the engine and every session",
 } satisfies Record<keyof typeof zh, string>;

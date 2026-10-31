@@ -67,53 +67,10 @@ const SHUTDOWN_KILL_TIMEOUT_SECS: u64 = 5;
 ///
 /// Callers must `api.prevent_close()` first so default WebView teardown never
 /// starts while we are still on the event-handler stack.
-// ─── 后台模式关窗交接的兜底 ──────────────────────────────────────────────────
 //
-// Background mode 的关闭路径把事件交给前端（retract 到贴边 / 自行 hide）。
-// 前端 JS 冻死时这条链无人应答——2026-10-31 事故里用户连窗口都关不掉
-// （无边框窗的 ✕ 也是 HTML，Alt+F4 走的也是同一条交接）。交接时立一个
-// 2s 看门狗：前端一接管就调 `ack_main_close` 清标记；超时仍挂着说明渲染
-// 进程没在干活，由 Rust 直接兜底 hide（webview 级先行，配对 WebView2 挂
-// 起补丁），Alt+F4 / 任务栏关闭恢复为可靠逃生门。贴边 retract 后窗口仍是
-// visible（停在屏外），所以完成信号必须用显式 ack，不能拿可见性凑合。
-
-static MAIN_CLOSE_HANDOFF_PENDING: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-const MAIN_CLOSE_HANDOFF_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
-
-/// 前端 dockMode.handleCloseFromRust 一进来就调（retract 动画收完与否无关）。
-#[tauri::command]
-fn ack_main_close() {
-    MAIN_CLOSE_HANDOFF_PENDING.store(false, std::sync::atomic::Ordering::Release);
-}
-
-fn arm_main_close_handoff_watchdog(app: tauri::AppHandle) {
-    MAIN_CLOSE_HANDOFF_PENDING.store(true, std::sync::atomic::Ordering::Release);
-    std::thread::Builder::new()
-        .name("main-close-handoff-watchdog".to_string())
-        .spawn(move || {
-            std::thread::sleep(MAIN_CLOSE_HANDOFF_TIMEOUT);
-            if !MAIN_CLOSE_HANDOFF_PENDING.swap(false, std::sync::atomic::Ordering::AcqRel) {
-                return; // 前端已接管
-            }
-            use tauri::Manager as _;
-            if let Some(main) = app.get_webview_window("main") {
-                // webview 级 hide 先行（TrySuspend 配对红线：只走 tao 层会让
-                // 下次唤醒白屏），与 shell_integration 二次启动交接的
-                // `win.as_ref().show()` 成对。窗口级 hide 随后。
-                let _ = main.as_ref().hide();
-                let _ = main.hide();
-                crate::debug_log::append(
-                    "window",
-                    "warn",
-                    "",
-                    "frontend close handoff timed out; hid main window from Rust",
-                    Some("renderer unresponsive — recover via relaunch / tray"),
-                );
-            }
-        })
-        .ok();
-}
+// 2026-10-31 起 × 直接退出（后台驻留模式整体下线——曾经 background mode 把
+// 关闭交给前端 hide/retract，还配过 2s 看门狗兜底前端冻死；现在贴边走标题
+// 栏专属按钮，关闭 = shutdown_and_exit，看门狗与 ack 随交接路径一并移除）。
 
 pub(crate) fn shutdown_and_exit(app: &tauri::AppHandle) -> ! {
     use tauri::Manager;
@@ -422,51 +379,48 @@ fn main() {
                         .values()
                         .filter(|w| w.is_visible().unwrap_or(true))
                         .count();
-                    // Background mode (edge dock, stage 0): close never exits —
-                    // the window hides, engine/sessions/TG bridge keep running.
-                    // True exit is footer 退出 → quit_app → shutdown_and_exit.
+                    // 2026-10-31 定稿：× 行为由 Ctrl K 面板选择（默认直接退出；
+                    // 「后台常驻」= × 隐藏主窗，引擎/会话继续跑）。后台分支由
+                    // Rust 直接 hide（webview 级先行，配对 TrySuspend 补丁；二次
+                    // 启动交接负责唤回）——不再经前端交接，前端冻死也拦不住关窗，
+                    // 也就不需要交接看门狗。贴边与关闭解耦（专属按钮 + 拖拽吸附）。
                     let background = dock_support::background_mode_enabled();
                     if (is_main || visible <= 1) && !background {
                         shutdown_and_exit(window.app_handle());
-                    } else {
-                        if is_main {
-                            // Background mode + edge dock (stage 1): hand the
-                            // close to the frontend — dockMode retracts the
-                            // window to the edge sliver (or hides itself as
-                            // fallback when docking is unavailable). No hide
-                            // here; the window is never hidden while docking.
-                            use tauri::Emitter as _;
-                            let _ = window.emit_to(label.as_str(), "marionette-main-close", ());
-                            arm_main_close_handoff_watchdog(window.app_handle().clone());
-                            crate::debug_log::append(
-                                "window",
-                                "info",
-                                "",
-                                "main close handed to frontend (background mode)",
-                                Some("dockMode retracts to edge; fallback hide is its own"),
-                            );
-                        } else {
-                            // Webview-level hide first: arms WebView2
-                            // suspension for the hidden stay (vendor/wry
-                            // patch). The frontend re-show paths
-                            // (openDetachedSessionWindow) lift it again.
-                            for webview in window.webviews() {
-                                let _ = webview.hide();
-                            }
-                            let _ = window.hide();
-                            // Frontend reaper blanks excess hidden shells (memory).
-                            // Detached SPA flushes transcript then releases ACP
-                            // ownership — do not steal the stream here or main
-                            // would rewrite JSONL from an empty in-memory rail.
-                            let _ = window.app_handle().emit("marionette-detached-hidden", &label);
-                            crate::debug_log::append(
-                                "window",
-                                "info",
-                                "",
-                                &format!("hid detached window `{label}` (no WebView destroy)"),
-                                Some("avoids tao#1180 paint assert on secondary close"),
-                            );
+                    } else if is_main {
+                        use tauri::Manager as _;
+                        if let Some(main) = window.app_handle().get_webview_window("main") {
+                            let _ = main.as_ref().hide();
+                            let _ = main.hide();
                         }
+                        crate::debug_log::append(
+                            "window",
+                            "info",
+                            "",
+                            "hid main window (background residency)",
+                            Some("relaunch or tray handoff brings it back; quit via the palette"),
+                        );
+                    } else {
+                        // Webview-level hide first: arms WebView2
+                        // suspension for the hidden stay (vendor/wry
+                        // patch). The frontend re-show paths
+                        // (openDetachedSessionWindow) lift it again.
+                        for webview in window.webviews() {
+                            let _ = webview.hide();
+                        }
+                        let _ = window.hide();
+                        // Frontend reaper blanks excess hidden shells (memory).
+                        // Detached SPA flushes transcript then releases ACP
+                        // ownership — do not steal the stream here or main
+                        // would rewrite JSONL from an empty in-memory rail.
+                        let _ = window.app_handle().emit("marionette-detached-hidden", &label);
+                        crate::debug_log::append(
+                            "window",
+                            "info",
+                            "",
+                            &format!("hid detached window `{label}` (no WebView destroy)"),
+                            Some("avoids tao#1180 paint assert on secondary close"),
+                        );
                     }
                 }
                 // Safety net if something still destroys a window without
@@ -638,7 +592,6 @@ fn main() {
             dock_support::set_background_mode,
             dock_support::quit_app,
             dock_support::fullscreen_active,
-            ack_main_close,
             commands::load_transcript_window,
             commands::append_transcript_events,
             memos::memo_list,

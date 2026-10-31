@@ -1,7 +1,8 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Minus, Square, X } from "lucide-react";
+import { ArrowRightToLine, Minus, Square, X } from "lucide-react";
 import { useCallback, useEffect, useState, type MouseEvent } from "react";
 import { isTauriRuntime } from "../lib/api";
+import { enterDock } from "../lib/dockMode";
 
 type WindowControlsProps = {
   className?: string;
@@ -43,6 +44,18 @@ export function WindowControls({ className = "" }: WindowControlsProps) {
   /** Stop parent drag-region / titlebar handlers from eating the gesture. */
   const guard = useCallback((event: MouseEvent) => {
     event.stopPropagation();
+  }, []);
+
+  /**
+   * 贴边专属按钮（2026-10-31）：× 不再承担贴边（后台模式点 × = 隐藏驻留），
+   * 进贴边只走这个按钮和拖到屏幕边缘吸附。dock 态下整组 window-controls
+   * 被 dock.css 藏起，不会出现「已贴边还能再贴」。
+   */
+  const dockToEdge = useCallback((event: MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!isTauriRuntime()) return;
+    void enterDock();
   }, []);
 
   const minimize = useCallback((event: MouseEvent) => {
@@ -91,6 +104,16 @@ export function WindowControls({ className = "" }: WindowControlsProps) {
       onMouseDown={guard}
       onPointerDown={guard}
     >
+      <button
+        className="window-controls__btn window-controls__btn--dock"
+        type="button"
+        title="Dock to edge"
+        aria-label="Dock to edge"
+        onMouseDown={guard}
+        onClick={dockToEdge}
+      >
+        <ArrowRightToLine size={12} strokeWidth={2.2} />
+      </button>
       <button
         className="window-controls__btn"
         type="button"
