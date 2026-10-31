@@ -306,10 +306,10 @@ const MEMBER_COLORS = [
 
 /** 成员稳定配色:spec 成员序为准;未知 id(如 system)灰。 */
 export function memberColor(members: MemberSpec[], memberId: string): string {
-  if (memberId === "system" || memberId === "chair") return "var(--text-dim)";
+  if (memberId === "system" || memberId === "chair") return "var(--text-muted)";
   const idx = members.findIndex((m) => m.id === memberId);
-  if (idx < 0) return "var(--text-dim)";
-  return MEMBER_COLORS[idx % MEMBER_COLORS.length] ?? "var(--text-dim)";
+  if (idx < 0) return "var(--text-muted)";
+  return MEMBER_COLORS[idx % MEMBER_COLORS.length] ?? "var(--text-muted)";
 }
 
 export function memberLabel(members: MemberSpec[], memberId: string): string {
@@ -329,6 +329,62 @@ export function phaseLabel(phase: RunPhase): string {
 
 export function isTerminalPhase(phase: RunPhase): boolean {
   return phase === "completed" || phase === "cancelled" || phase === "failed" || phase === "budget_exhausted";
+}
+
+/** 圆桌阶段轨道(简报→…→计划,执行型再接执行/验证/完成)。 */
+const RAIL_DELIB: readonly RunPhase[] = [
+  "analyzing",
+  "proposing",
+  "reviewing",
+  "revising",
+  "synthesizing",
+  "plan_ready",
+];
+const RAIL_EXEC: readonly RunPhase[] = ["executing", "verifying", "completed"];
+
+export function councilRail(mode: CouncilMode): RunPhase[] {
+  return mode === "council_only" ? [...RAIL_DELIB, "completed"] : [...RAIL_DELIB, ...RAIL_EXEC];
+}
+
+export type RailStepStatus = "done" | "current" | "pending" | "error";
+
+/** 把运行态(含暂停/待批/失败)投影到轨道上的一步。 */
+export function councilRailFocus(phase: RunPhase, pausedFrom?: RunPhase | null): RunPhase {
+  if (phase === "paused") return pausedFrom ?? "analyzing";
+  if (phase === "awaiting_approval") return "plan_ready";
+  if (phase === "created") return "analyzing";
+  return phase;
+}
+
+export function councilRailStatus(
+  phase: RunPhase,
+  pausedFrom: RunPhase | null | undefined,
+  step: RunPhase,
+  rail: readonly RunPhase[],
+): RailStepStatus {
+  if (phase === "completed") return "done";
+  const error = phase === "failed" || phase === "cancelled" || phase === "budget_exhausted";
+  const focus = councilRailFocus(error ? (pausedFrom ?? phase) : phase, pausedFrom);
+  const ei = rail.indexOf(rail.includes(focus) ? focus : rail[0] ?? "analyzing");
+  const si = rail.indexOf(step);
+  if (si < 0 || ei < 0) return "pending";
+  if (si < ei) return "done";
+  if (si === ei) return error ? "error" : "current";
+  return "pending";
+}
+
+export function railLabel(phase: RunPhase): string {
+  return t(`council.rail.${phase}` as DictKey);
+}
+
+export function phaseBadgeClass(phase: RunPhase): string {
+  if (phase === "completed") return "council-badge council-badge--done";
+  if (phase === "failed" || phase === "cancelled" || phase === "budget_exhausted") {
+    return "council-badge council-badge--err";
+  }
+  if (phase === "plan_ready" || phase === "awaiting_approval") return "council-badge council-badge--plan";
+  if (phase === "paused") return "council-badge council-badge--paused";
+  return "council-badge council-badge--live";
 }
 
 export function kindLabel(kind: CouncilMessageKind): string {

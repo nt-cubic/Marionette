@@ -143,8 +143,8 @@ paused → paused_from 指向的原状态(或 cancelled)
 
 ## 8. 前端(§5 任务书的 M1 覆盖)
 
-- 入口:侧栏「Council 协作」(ProjectShelf)+ Ctrl+K「打开 Council
-  多模型协作」。
+- 入口:侧栏「圆桌」(ProjectShelf)+ Ctrl+K「打开圆桌会议」
+  (代码模块仍叫 council)。
 - 视图:`.council-tab-page` 整页(收纳盒伪标签同模式),三态:
   **列表**(run 历史)、**设置**(任务/模式/成员/轮次/并发/预算)、
   **运行**(成员状态条 + 分组时间线 + 计划面板 + 暂停/取消/批准)。

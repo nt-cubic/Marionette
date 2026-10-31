@@ -7,6 +7,8 @@
  */
 import assert from "node:assert/strict";
 import {
+  councilRail,
+  councilRailStatus,
   deriveMemberId,
   groupTimeline,
   isTerminalPhase,
@@ -61,8 +63,8 @@ ok("成员配色稳定且不撞位", () => {
   const c2 = memberColor(members, "gpt-reviewer");
   assert.notEqual(c1, c2);
   assert.equal(c1, memberColor(members, "glm-architect"), "同 id 同色");
-  assert.equal(memberColor(members, "system"), "var(--text-dim)");
-  assert.equal(memberColor(members, "nobody"), "var(--text-dim)");
+  assert.equal(memberColor(members, "system"), "var(--text-muted)");
+  assert.equal(memberColor(members, "nobody"), "var(--text-muted)");
 });
 
 ok("成员与阶段文案", () => {
@@ -84,7 +86,7 @@ ok("终态判定", () => {
 
 ok("成员状态文案(含失败分支)", () => {
   assert.equal(memberStatusText(undefined), "待命");
-  assert.equal(memberStatusText("working"), "工作中");
+  assert.equal(memberStatusText("working"), "发言中");
   assert.equal(memberStatusText({ failed: "超时" }), "失败:超时");
 });
 
@@ -93,6 +95,32 @@ ok("派生成员 id:kebab-case 且去重", () => {
   const existing = ["reviewer"];
   assert.equal(deriveMemberId("Reviewer", existing), "reviewer-2");
   assert.equal(deriveMemberId("评审", []), "member", "非 ASCII 全剥离后兜底");
+});
+
+ok("阶段轨道:仅审议六步+完成;执行型再接执行/验证", () => {
+  assert.deepEqual(councilRail("council_only"), [
+    "analyzing",
+    "proposing",
+    "reviewing",
+    "revising",
+    "synthesizing",
+    "plan_ready",
+    "completed",
+  ]);
+  const exec = councilRail("council_and_execution");
+  assert.equal(exec.includes("executing"), true);
+  assert.equal(exec.at(-1), "completed");
+});
+
+ok("阶段轨道投影:当前/已过/未到/失败", () => {
+  const rail = councilRail("council_only");
+  assert.equal(councilRailStatus("proposing", null, "analyzing", rail), "done");
+  assert.equal(councilRailStatus("proposing", null, "proposing", rail), "current");
+  assert.equal(councilRailStatus("proposing", null, "plan_ready", rail), "pending");
+  assert.equal(councilRailStatus("completed", null, "plan_ready", rail), "done");
+  assert.equal(councilRailStatus("paused", "reviewing", "reviewing", rail), "current");
+  assert.equal(councilRailStatus("failed", "revising", "revising", rail), "error");
+  assert.equal(councilRailStatus("failed", "revising", "analyzing", rail), "done");
 });
 
 ok("PlanDoc 契约字段为 camelCase(Rust serde 对齐)", () => {
