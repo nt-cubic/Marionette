@@ -3783,3 +3783,78 @@
   cursor: wait;
 }
 
+
+/* ── 对话内查找浮条(Ctrl F / 命令面板) ────────────────────────────────── */
+.find-bar {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 15;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-raised, var(--panel));
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+  color: var(--text-strong);
+}
+
+.find-bar > svg {
+  color: var(--text-faint);
+  flex: none;
+}
+
+.find-bar__input {
+  width: 180px;
+  height: 24px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+}
+
+.find-bar__count {
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  min-width: 36px;
+  text-align: center;
+}
+
+.find-bar__count.is-empty {
+  color: color-mix(in srgb, #e5484d 85%, var(--text-strong));
+}
+
+.find-bar__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.find-bar__btn:hover:not(:disabled) {
+  color: var(--text-strong);
+  background: var(--panel-soft);
+}
+
+.find-bar__btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* 命中卡高亮:套在单元包裹层上,不惊动卡片内部布局。 */
+.event-list__virt-item.is-find-hit {
+  outline: 2px solid color-mix(in srgb, var(--accent) 65%, transparent);
+  outline-offset: 2px;
+  border-radius: 10px;
+}

@@ -1,4 +1,4 @@
-import { BarChart3, Check, ChevronDown, Columns2, Copy, FileText, Globe, Inbox, Merge, MessageSquareQuote, Pencil, Plus, Split, Square, SquareArrowOutUpRight, UsersRound, X } from "lucide-react";
+import { BarChart3, Check, ChevronDown, ChevronUp, Columns2, Copy, FileText, Globe, Inbox, Merge, MessageSquareQuote, Pencil, Plus, Search, Split, Square, SquareArrowOutUpRight, UsersRound, X } from "lucide-react";
 import {
   memo,
   useCallback,
@@ -17,6 +17,7 @@ import {
   isAssistantNotice,
   userMessageAnchorId,
 } from "../lib/acpTranscript";
+import { findConversationMatches } from "../lib/conversationFind";
 import {
   ACTIVITY_THRESHOLDS,
   activityHealth,
@@ -1895,6 +1896,87 @@ function CleanPlaceholder({
     if (delta > 0) el.scrollTop = pending.top + delta;
     pendingPrependScrollRef.current = null;
   }, [virtual.totalSize]);
+
+  // ── 对话内查找(Ctrl F / 命令面板 marionette:open-find) ───────────────
+  // v1 只搜主干卡(你/回复/计划/提问/交接/子代理/改动,见 conversationFind.ts);
+  // thought/tool 在折叠簇内,簇开合是卡片局部 state,自动展开留待后续。
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findHitPos, setFindHitPos] = useState(0);
+  const [findHitKey, setFindHitKey] = useState<string | null>(null);
+  const findInputRef = useRef<HTMLInputElement>(null);
+  const findMatches = useMemo(
+    () => findConversationMatches(displayEvents, findQuery),
+    [displayEvents, findQuery],
+  );
+
+  const jumpToFindHit = useCallback(
+    (pos: number) => {
+      if (findMatches.length === 0) return;
+      const wrapped = ((pos % findMatches.length) + findMatches.length) % findMatches.length;
+      setFindHitPos(wrapped);
+      const eventIndex = findMatches[wrapped]!;
+      // 命中事件 → 覆盖它的渲染单元:行单元 index 精确相等,交付卡按锚点区间。
+      let unitIdx = -1;
+      let unitKey: string | null = null;
+      for (let i = 0; i < renderUnits.length; i += 1) {
+        const unit = renderUnits[i]!;
+        const start =
+          unit.kind === "activity"
+            ? unit.items[0]!.index
+            : unit.kind === "delivery"
+              ? unit.anchorIndex
+              : unit.index;
+        if (start <= eventIndex) {
+          unitIdx = i;
+          unitKey = unit.key;
+        } else break;
+      }
+      if (unitIdx < 0 || !unitKey) return;
+      setFindHitKey(unitKey);
+      const el = listRef.current;
+      if (!el) return;
+      if (useVirtual) {
+        el.scrollTop = Math.max(0, virtual.offsetOf(unitIdx) - el.clientHeight / 4);
+      } else {
+        el.querySelector(`[data-unit-key="${CSS.escape(unitKey)}"]`)?.scrollIntoView({ block: "center" });
+      }
+    },
+    [findMatches, renderUnits, useVirtual, virtual],
+  );
+  // 经 ref 转发跳转:findMatches 每次流式更新都会变,直接进 effect 依赖会在
+  // 流式期间反复劫持滚动位置。
+  const findJumpRef = useRef(jumpToFindHit);
+  useLayoutEffect(() => {
+    findJumpRef.current = jumpToFindHit;
+  });
+
+  const closeFind = useCallback(() => {
+    setFindOpen(false);
+    setFindHitKey(null);
+  }, []);
+
+  // 查询/开关变化:回到第一个命中并跳过去(经 ref,不随流式重跳)。
+  useEffect(() => {
+    if (!findOpen) return;
+    if (findQuery.trim() && findMatches.length > 0) findJumpRef.current(0);
+    else setFindHitKey(null);
+    setFindHitPos(0);
+    // eslint 化的窄依赖是有意的:findMatches/jump 随转录流式更新,不该触发重跳。
+  }, [findOpen, findQuery, findMatches.length]);
+
+  useEffect(() => {
+    const onOpenFind = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string }>).detail;
+      // 主窗/撕窗/分屏各挂一份监听:只响应召唤自己这个会话的事件。
+      if (detail?.sessionId && detail.sessionId !== session.id) return;
+      setFindOpen(true);
+      setFindHitPos(0);
+    };
+    window.addEventListener("marionette:open-find", onOpenFind as EventListener);
+    return () => window.removeEventListener("marionette:open-find", onOpenFind as EventListener);
+  }, [session.id]);
+
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const [editBusy, setEditBusy] = useState(false);
@@ -2259,6 +2341,69 @@ function CleanPlaceholder({
       </div>
       )}
       <div className="clean-surface__body">
+      {findOpen && (
+        <div className="find-bar" role="search">
+          <Search size={12} aria-hidden />
+          <input
+            ref={findInputRef}
+            className="find-bar__input"
+            type="text"
+            value={findQuery}
+            placeholder={t("find.placeholder")}
+            aria-label={t("find.placeholder")}
+            autoFocus
+            onChange={(event) => setFindQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.stopPropagation();
+                closeFind();
+              } else if (event.key === "Enter") {
+                event.preventDefault();
+                findJumpRef.current(findHitPos + (event.shiftKey ? -1 : 1));
+              }
+            }}
+          />
+          <span
+            className={`find-bar__count${findQuery.trim() && findMatches.length === 0 ? " is-empty" : ""}`}
+            title={t("find.hint")}
+          >
+            {findQuery.trim()
+              ? findMatches.length > 0
+                ? t("find.counter", { i: findHitPos + 1, n: findMatches.length })
+                : t("find.noMatch")
+              : ""}
+          </span>
+          <button
+            type="button"
+            className="find-bar__btn"
+            title={t("find.prev")}
+            aria-label={t("find.prev")}
+            disabled={findMatches.length === 0}
+            onClick={() => findJumpRef.current(findHitPos - 1)}
+          >
+            <ChevronUp size={12} aria-hidden />
+          </button>
+          <button
+            type="button"
+            className="find-bar__btn"
+            title={t("find.next")}
+            aria-label={t("find.next")}
+            disabled={findMatches.length === 0}
+            onClick={() => findJumpRef.current(findHitPos + 1)}
+          >
+            <ChevronDown size={12} aria-hidden />
+          </button>
+          <button
+            type="button"
+            className="find-bar__btn"
+            title={t("find.close")}
+            aria-label={t("find.close")}
+            onClick={closeFind}
+          >
+            <X size={12} aria-hidden />
+          </button>
+        </div>
+      )}
       {!atBottom && visibleEvents.length > 0 && (
         <button
           type="button"
@@ -3224,6 +3369,9 @@ function CleanPlaceholder({
             if (arrivedAt > 0 && now - arrivedAt < ARRIVAL_WINDOW_MS) {
               rowClass = "is-arriving";
             }
+            if (unit.key === findHitKey) {
+              rowClass = rowClass ? `${rowClass} is-find-hit` : "is-find-hit";
+            }
             const node =
               unit.kind === "delivery" ? (
                 <TurnDeliveryCard
@@ -3251,6 +3399,7 @@ function CleanPlaceholder({
               return (
                 <div
                   key={unit.key}
+                  data-unit-key={unit.key}
                   className={rowClass ? `event-list__virt-item ${rowClass}` : "event-list__virt-item"}
                 >
                   {node}

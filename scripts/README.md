@@ -30,6 +30,7 @@
 | `verify-rich-markdown.mts` | `npx tsx scripts/verify-rich-markdown.mts` | 富文本管线：纯字符串扫描决定 katex/shiki/mermaid/spec 是否加载（bash `$$` 不当公式、单 `$` 永远字面、首 token 路由、```` 围栏状态机）、LaTeX `\[..\]`→`$$..$$` 改写不动围栏内、```spec 卡片 schema 三道防护（JSON 容错/原型污染/深度+尺寸上限）与各 type 形状校验 |
 | `verify-activity-cluster.mts` | `npx tsx scripts/verify-activity-cluster.mts` | 活动折叠：thought+tool 同一集群、同类连续分组、结束后摘要为 `1 think, 2 read, 3 edit`、live 时跟当前工具 |
 | `verify-transcript-export.mts` | `npx tsx scripts/verify-transcript-export.mts` | 对话 Markdown 导出：主干发言、thought/tool 进 `<details>`、连续 `file_change` 合成交付表、Windows 文件名净化、空 thought 不产出空折叠块 |
+| `verify-conversation-find.mts` | `npx tsx scripts/verify-conversation-find.mts` | 对话内查找：主干卡可搜（你/回复/计划/提问/交接/子代理/改动，重命名旧路径与选项/选中项参与）、thought/tool 返回 null（折叠簇内 v1 不搜）、大小写不敏感子串、查询 trim、命中下标升序、空查询/无命中 |
 | `verify-usage-ledger.mts` | `npx tsx scripts/verify-usage-ledger.mts` | 跨会话 Token 台账 + 牌价折算：按本地日落账（input/output/cached/cacheCreation/reasoning/turns/流式时长）、agent 与 model 拆分、小时桶、全 null turnStats 不记、180 天修剪边界、今天/近 7 天/近 30 天 + 上一周期聚合、按助手/模型排名（>limit 折叠其它）、逐日序列与小时×星期折叠、models.dev 目录解析/厂商优先/命名空间剥离匹配（`marionette\`、`marionette::`、`vendor/`）/按桶计价与未计价覆盖率、en 词典直查（占位符 `{count}`） |
 | `verify-turn-delivery.mts` | `npx tsx scripts/verify-turn-delivery.mts` | 交付卡折叠文案「N 个文件已更改」、git truth 与 tool edit 并集、git numstat 覆盖工具统计、**本轮归属规则**（起点就脏的文件需本轮工具碰过、无 HEAD 不丢文件、路径归一） |
 | `verify-transcript-scroll.mts` | `npx tsx scripts/verify-transcript-scroll.mts` | 对话 tab 滚动：贴底/历史位置快照、切回时恢复、虚拟列表行高缓存跨 tab 还在 |
