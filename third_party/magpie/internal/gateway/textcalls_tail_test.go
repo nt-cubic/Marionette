@@ -42,10 +42,12 @@ func TestTextWrittenCallCutEarlyNotCalled(t *testing.T) {
 		json.Unmarshal([]byte(calls["bash"]), &a)
 		t.Fatalf("text %q calls %v (%v) finish %q\n%s", text, calls, a, finish, raw)
 	}
-	// prose after a call with no close of its own still reads as before
+	// prose after a call with no close of its own: the call still reads
+	// as before; the prose, said before anything ran, goes
+	// (packinggoodsllc_07668, parseTextCalls)
 	text, calls, _, _ = relayedChat(t, `{"model":"a/m","stream":true,"messages":[{"role":"user","content":"hi"}],`+textCallTools+`}`,
 		chunkOf(`<tool_call>{"name":"bash","arguments":{"command":"ls"}}`+"\nDone."), stopChunk)
-	if calls["bash"] != `{"command":"ls"}` || !strings.Contains(text, "Done.") {
+	if calls["bash"] != `{"command":"ls"}` || strings.Contains(text, "Done.") {
 		t.Fatalf("no close: text %q calls %v", text, calls)
 	}
 }

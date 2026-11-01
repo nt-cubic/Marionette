@@ -57,6 +57,27 @@ func asJSON(t *testing.T, v *RTKView) map[string]any {
 	return m
 }
 
+// An answer cut off on the way is said so, not shown as a version that
+// couldn't be read (#3045).
+func TestLatestRTKCutAnswer(t *testing.T) {
+	sandbox(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1000")
+		w.Write([]byte(`{"tag_name": "v0.`))
+		w.(http.Flusher).Flush() // the answer's head arrives, its body doesn't
+		panic(http.ErrAbortHandler)
+	}))
+	defer srv.Close()
+	old, oldAPI := rtkReleases, rtkReleasesAPI
+	rtkReleases, rtkReleasesAPI = srv.URL+"/latest", srv.URL
+	t.Cleanup(func() { rtkReleases, rtkReleasesAPI = old, oldAPI })
+	if _, err := latestRTK(); err == nil {
+		t.Error("a cut-short answer wasn't noticed")
+	} else if !strings.Contains(err.Error(), "couldn't read GitHub's answer") {
+		t.Errorf("said: %v", err)
+	}
+}
+
 // Homebrew's rtk is upgraded with brew; the days it saved come with the
 // summary, oldest first; the latest release is read from where GitHub
 // redirects to.

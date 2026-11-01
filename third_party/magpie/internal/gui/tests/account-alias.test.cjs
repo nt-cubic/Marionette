@@ -7,8 +7,9 @@
 // by its address with the key plan it is the same seat as; a click on the
 // name types a new one in place, posted once to provider/accountname. The
 // Usage page's card and the tray panel's name it the same way, and Hide
-// accounts hides the name. A click moves nothing; no native select, no
-// border stripe; it fits at 360px. In every language.
+// accounts hides the accounts but not that name, the user's own (#3656).
+// A click moves nothing; no native select, no border stripe; it fits at
+// 360px. In every language.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -35,7 +36,7 @@ const fresh = () => ({
 const quotas = () => [
   { provider: "zcode", name: "ZCode", icon: "zcode", plan: "Pro", user: TEAM, alias: SEAT, seat: SEAT,
     windows: [{ name: "5 hours", used: 20, resetsAt: inHours(3) }] },
-  { provider: "zcode", name: "ZCode", icon: "zcode", plan: "Lite", user: ME, alias: "Personal",
+  { provider: "zcode", name: "ZCode", icon: "zcode", plan: "Lite", user: ME, alias: "Personal", named: true,
     windows: [{ name: "5 hours", used: 60, resetsAt: inHours(2) }] },
 ];
 
@@ -161,7 +162,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       }
     });
 
-    test(`${engine} ${lang}: the Usage page and the tray panel name the account, and Hide accounts hides the name`, async (t) => {
+    test(`${engine} ${lang}: the Usage page and the tray panel name the account, and Hide accounts hides the account, not its name`, async (t) => {
       const browser = await launch(t);
       for (const width of [900, 360]) {
         const context = await browser.newContext({ viewport: { width, height: 760 }, reducedMotion: "reduce" });
@@ -198,12 +199,20 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const pq = await panel.evaluate(() => [...document.querySelectorAll("#panelQuota .pq-card")].map((c) => ({ text: c.querySelector(".pq-user").textContent, title: c.title.split(" · ").slice(0, 3).join(" · ") })));
         assert.deepEqual(pq, [{ text: SEAT, title: `ZCode · ${SEAT} · ${TEAM}` }, { text: "Personal", title: `ZCode · Personal · ${ME}` }]);
 
-        // Hide accounts: the name of the user's own is an account's name too
+        // Hide accounts: the accounts hidden, the user's own name for one
+        // in sight (#3656), in its tooltip too. The window to the front: a
+        // page behind the panel's gets no frames, and a click waits for one
+        await page.bringToFront();
         await page.locator("#usageMask").click();
-        await page.waitForFunction(() => [...document.querySelectorAll(".subscription-account .pii")].some((e) => e.dataset.raw === "Personal"));
+        await page.waitForFunction((me) => [...document.querySelectorAll(".subscription-account .pii")].some((e) => e.dataset.raw === me), ME);
         const shown = await page.evaluate(() => [...document.querySelectorAll(".subscription-account")].map((a) => a.textContent + " " + [...a.querySelectorAll("[title]")].map((e) => e.title).join(" ")).join(" | "));
-        assert.ok(!/Personal|3141592636|me@example/.test(shown), shown);
-        await panel.waitForFunction(() => [...document.querySelectorAll("#panelQuota .pq-user .pii")].some((e) => e.dataset.raw === "Personal"));
+        assert.ok(!/3141592636|me@example/.test(shown), shown);
+        assert.equal(await page.locator(".subscription-account .quota-alias.own-name").textContent(), "Personal");
+        assert.equal(await page.locator(".subscription-account .quota-alias.own-name .pii").count(), 0);
+        assert.match(await page.locator(".subscription-account .quota-alias.own-name").getAttribute("title"), /^Personal · [^m]/);
+        await panel.bringToFront(); // the same, the other way round
+        await panel.waitForFunction((me) => [...document.querySelectorAll("#panelQuota .pq-card")].some((c) => c.querySelector(".pq-user").textContent === "Personal" && !c.title.includes(me)), ME);
+        assert.ok(!/3141592636|me@example/.test(await panel.locator("#panelQuota").evaluate((e) => e.textContent + [...e.querySelectorAll("[title]")].map((x) => x.title).join(" "))));
         assert.deepEqual(errors, []);
         await context.close();
       }

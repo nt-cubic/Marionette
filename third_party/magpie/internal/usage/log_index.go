@@ -111,7 +111,13 @@ func readLogSnapshot() *logSnapshot {
 	old := logIndex.snapshot
 	unchanged := old != nil && old.path == path && (err != nil && old.info == nil || err == nil && sameLogInfo(old.info, info))
 	if unchanged && info != nil {
-		if logChangeStamp(info) == "" || !old.settled {
+		if !old.settled && !settled && old.hash != "" && logChangeStamp(info) != "" {
+			// Still in the stamp's tick: hashing the log again proves nothing
+			// a read a moment earlier wouldn't have, and every reader an
+			// append wakes (the menu bar, the pages) hashed the whole log
+			// once more (#4368). The first read once it settles verifies it,
+			// before anything is built on it, as below.
+		} else if logChangeStamp(info) == "" || !old.settled {
 			unchanged = old.hash != "" && logRecordHash(path, old.off) == old.hash
 			if unchanged && settled {
 				promoted := *old
@@ -227,8 +233,13 @@ func readLogSnapshot() *logSnapshot {
 		next.blocks = append(next.blocks, tail.freeze())
 	}
 	next.hash, next.digest = fmt.Sprintf("%x", sum.Sum(nil)), marshalLogHash(sum)
-	// A rewrite during the read must not give old blocks the new content's hash.
-	if (!trusted || !settled) && next.hash != logRecordHash(path, next.off) {
+	// A rewrite during the read must not give old blocks the new content's
+	// hash. A read inside the stamp's tick is checked when it settles
+	// instead (no settled snapshot is made of it unchecked, and one
+	// continued from it hashes its prefix first): checked now, it hashed
+	// the whole log twice for each append, once now and again on
+	// settling (#4368).
+	if settled && !trusted && next.hash != logRecordHash(path, next.off) {
 		next.hash, next.digest = "", nil
 		next.settled = false
 		next.full = logFull{}

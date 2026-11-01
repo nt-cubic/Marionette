@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -165,7 +166,10 @@ func TestVisionBridgePassesLines(t *testing.T) {
 	if lines := strings.Split(strings.TrimSpace(out.String()), "\n"); len(lines) != 2 || !strings.Contains(out.String(), `"id":2`) {
 		t.Fatalf("out: %q", out.String())
 	}
-	if len(paths) != 3 || paths[0] != gateway.VisionMCPPath || paths[2] != gateway.VisionMCPPath || images[2] != filepath.Join(wd, "shots", "a.png") {
+	// the bridge passes messages side by side, so they reach the gateway
+	// in any order: the one image named is the call's
+	named := slices.DeleteFunc(slices.Clone(images), func(v string) bool { return v == "" })
+	if len(paths) != 3 || slices.ContainsFunc(paths, func(p string) bool { return p != gateway.VisionMCPPath }) || len(named) != 1 || named[0] != filepath.Join(wd, "shots", "a.png") {
 		t.Fatalf("paths %q, images %q", paths, images)
 	}
 
@@ -216,5 +220,24 @@ func TestImageFromLeavesTheRest(t *testing.T) {
 	}
 	if err := json.Unmarshal(got, &m); err != nil || m.ID != "x-1" || m.Params.Arguments.Image != filepath.Join(wd, "a.png") {
 		t.Fatalf("relative: %s", got)
+	}
+}
+
+// Behind magpie's MCP router this one process serves every agent, so a
+// call that names its caller's session in _meta goes on in that session,
+// each caller in a tab of its own; every other message, and a call with
+// no such session, goes in this process's own.
+func TestBridgeTakesTheRoutersCaller(t *testing.T) {
+	own := "stdio-abc"
+	for _, c := range []struct{ body, want string }{
+		{`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_tabs","_meta":{"magpie/session":"hub-claude-1"}}}`, "hub:hub-claude-1"},
+		{`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_tabs","_meta":{"magpie/session":" "}}}`, own},
+		{`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_tabs"}}`, own},
+		{`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"magpie/session":"hub-claude-1"}}}`, own},
+		{`not json`, own},
+	} {
+		if got := callerSession([]byte(c.body), own); got != c.want {
+			t.Errorf("%s: %q, want %q", c.body, got, c.want)
+		}
 	}
 }

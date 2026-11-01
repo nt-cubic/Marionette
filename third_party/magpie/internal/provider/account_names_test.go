@@ -53,8 +53,8 @@ func TestAccountNameOfAPluginAccount(t *testing.T) {
 	}
 	// on its card, as every surface reads it
 	qs := withAccountNames([]SubscriptionQuota{{Provider: id, User: "31****36@qq.com"}})
-	if qs[0].Alias != "某某·GLM 高级版" {
-		t.Fatalf("card alias %q", qs[0].Alias)
+	if qs[0].Alias != "某某·GLM 高级版" || !qs[0].Named {
+		t.Fatalf("card alias %q, the user's own %v", qs[0].Alias, qs[0].Named)
 	}
 	// and on what the vendor's name is kept by: the Usage page's Accounts,
 	// a gateway key's accounts, Routing's pools (magpie-community/plugins#310:

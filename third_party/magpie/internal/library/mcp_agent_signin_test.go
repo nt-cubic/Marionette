@@ -101,3 +101,102 @@ func TestCheckNamesAgentsSignedInThemselves(t *testing.T) {
 		t.Fatalf("no agent signed in to this URL, unreadable credentials: %+v", l)
 	}
 }
+
+// codexOwnSignIn is Codex's .credentials.json after `codex mcp login` kept
+// the tokens in the file, as codex-rs's rmcp-client writes it
+// (FallbackTokenEntry in oauth.rs): an entry under the key its
+// compute_store_key makes of the name and a 16-hex hash of the server's
+// config, the tokens flattened into it; a second, unfinished sign-in (no
+// token) that codex itself doesn't answer a lookup with.
+func codexOwnSignIn(name, url string) string {
+	return `{
+  "` + name + `|0123456789abcdef":{"server_name":"` + name + `","server_url":"` + url + `","client_id":"c","access_token":"tok","refresh_token":"ref","expires_at":1893456000000,"scopes":["mcp"]},
+  "half|fedcba9876543210":{"server_name":"half","server_url":"` + url + `/half","client_id":"c","access_token":""}
+}`
+}
+
+// codexOwnSignInExecutor is one entry of the executor's own, which codex
+// never answers a host lookup with.
+func codexOwnSignInExecutor(name, url string) string {
+	return `{"` + name + `:0123456789abcdef":{"server_name":"` + name + `","server_url":"` + url + `","client_id":"c","access_token":"tok","executor_owned":true}}`
+}
+
+// A remote server signed in to in Codex itself (`codex mcp login`) was
+// "needs sign-in" in the Library, as magpie's check connects without the
+// agent's tokens. The check reads the file codex-rs falls back to when
+// mcp_oauth_credentials_store is file or the keyring is missing, beside
+// the config.toml the target already has, a distro's too, and names the
+// agents signed in; the keyring itself is never read, the executor's
+// entries are not a `codex mcp login`, and a file that can't be read or
+// parsed names nobody.
+func TestCheckNamesCodexSignedInItself(t *testing.T) {
+	h := sandbox(t)
+	// every variable the reader's places come from: Codex's folder here,
+	// and the distro's, which only its probe says
+	t.Setenv("CODEX_HOME", "")
+	checked.Lock()
+	checked.m = map[string]checkedServer{}
+	checked.Unlock()
+	root := t.TempDir()
+	// the distro's Codex, its home \\wsl.localhost\Ubuntu\home\me
+	write(t, filepath.Join(root, "home", "me", ".codex", "config.toml"), "model = \"gpt-5.5\"\n")
+	// a Windows machine running Ubuntu, whatever the OS the test runs on
+	t.Cleanup(agent.FakeWSL(map[string]string{
+		"Ubuntu": "home:/home/me\ndir:.codex\nnet:mirrored\n",
+	}, map[string]string{"Ubuntu": root}))
+	const wsl = "codex@wsl:Ubuntu"
+	if tg := targetByID(wsl); tg == nil {
+		t.Fatalf("%s isn't a target: %v", wsl, ids(Targets()))
+	}
+
+	// a server that asks every client without a token to sign in
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="http://`+r.Host+`/.well-known/oauth-protected-resource"`)
+		w.WriteHeader(401)
+	}))
+	t.Cleanup(srv.Close)
+	url := srv.URL + "/mcp"
+	ok(t)(SaveServer("", Server{Name: "linear", Transport: "http", URL: url, Agents: []string{"codex", wsl}}))
+	ok(t)(SaveServer("", Server{Name: "half", Transport: "http", URL: url + "/half", Agents: []string{wsl}}))
+
+	check := func() map[string]ServerHealth {
+		t.Helper()
+		got, err := CheckServers(context.Background(), nil, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := check()["linear"]; got.State != "auth" || len(got.AgentSignIn) != 0 {
+		t.Fatalf("no agent signed in yet: %+v", got)
+	}
+
+	// signed in in WSL's Codex only
+	write(t, filepath.Join(root, "home", "me", ".codex", ".credentials.json"), codexOwnSignIn("linear", url))
+	got := check()
+	if l := got["linear"]; l.State != "auth" || !slices.Equal(l.AgentSignIn, []string{wsl}) {
+		t.Fatalf("signed in in %s, the check says %+v", wsl, l)
+	}
+	if hf := got["half"]; len(hf.AgentSignIn) != 0 {
+		t.Fatalf("a sign-in with no token counted: %+v", hf)
+	}
+
+	// and in this computer's Codex too; a page opened again (not a fresh
+	// check) isn't given the answer from before it
+	write(t, filepath.Join(h, ".codex", ".credentials.json"), codexOwnSignIn("linear", url+"/"))
+	again, err := CheckServers(context.Background(), []string{"linear"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := again["linear"]; !slices.Equal(l.AgentSignIn, []string{"codex", wsl}) {
+		t.Fatalf("signed in on both sides, the check says %+v", l)
+	}
+
+	// the executor's entry isn't a `codex mcp login`, and a file that
+	// can't be read or parsed names nobody
+	write(t, filepath.Join(root, "home", "me", ".codex", ".credentials.json"), codexOwnSignInExecutor("linear", url))
+	write(t, filepath.Join(h, ".codex", ".credentials.json"), "{not json")
+	if l := check()["linear"]; l.State != "auth" || len(l.AgentSignIn) != 0 {
+		t.Fatalf("only the executor's sign-in counted, unreadable credentials: %+v", l)
+	}
+}

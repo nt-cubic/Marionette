@@ -1014,6 +1014,18 @@ func Vias(since time.Time) ViaIndex {
 	return cachedVias(since)
 }
 
+// LogVersion is a number for the log as it stands, which changes when a
+// call is written to it, and whether there is one: a synthetic log
+// (LogCalls), or one not read to its end, has none; no log yet is one. The Sessions page
+// keys an unchanged list on it.
+func LogVersion() (uint64, bool) {
+	if LogCalls != nil {
+		return 0, false
+	}
+	s := readLogSnapshot()
+	return s.version, s.info == nil || s.complete()
+}
+
 // A provider renamed since is listed by the id it has now (renames): the
 // Sessions tab named a renamed one by its old id (cybercaius).
 func buildVias(snapshot *logSnapshot, since time.Time, renames provider.Renames) *viaLists {

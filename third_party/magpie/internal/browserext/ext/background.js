@@ -100,20 +100,32 @@ connect();
 
 // ---- sessions: each agent's tab ------------------------------------------
 
+// Each agent session (gateway.BrowserSessionHeader: one `magpie mcp
+// browser`, or one caller of magpie's MCP router) works in a tab of its
+// own and opens its tabs in a tab group of its own, so two agents at once
+// never act in one tab unless one picks the other's by its id.
 const sessions = new Map(); // session → tabId
+const groups = new Map(); // session → tab group id
 let loaded = false;
 
 async function loadSessions() {
   if (loaded) return;
   loaded = true;
   try {
-    const { sessions: s } = await chrome.storage.session.get("sessions");
+    const { sessions: s, groups: g } = await chrome.storage.session.get(["sessions", "groups"]);
     for (const [k, v] of Object.entries(s || {})) sessions.set(k, v);
+    for (const [k, v] of Object.entries(g || {})) groups.set(k, v);
   } catch {}
 }
 
 function saveSessions() {
-  chrome.storage.session.set({ sessions: Object.fromEntries(sessions) }).catch(() => {});
+  chrome.storage.session.set({ sessions: Object.fromEntries(sessions), groups: Object.fromEntries(groups) }).catch(() => {});
+}
+
+// heldByOther is whether another session works in tabId
+function heldByOther(session, tabId) {
+  for (const [k, v] of sessions) if (k !== session && v === tabId) return true;
+  return false;
 }
 
 chrome.tabs.onRemoved.addListener((tabId) => {
@@ -147,18 +159,47 @@ async function tabFor(session, args) {
   }
   const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (!active) throw new Error("no browser window is open: open one, or call browser_tabs with action new");
+  if (heldByOther(session, active.id)) {
+    // another agent works in the tab the user is looking at: this one is
+    // given a tab of its own, behind it, in its own group
+    const tab = await chrome.tabs.create({ url: "about:blank", active: false, windowId: active.windowId });
+    await group(session, tab.id, tab.windowId);
+    sessions.set(session, tab.id);
+    saveSessions();
+    return tab.id;
+  }
   sessions.set(session, active.id);
   saveSessions();
   return active.id;
 }
 
-// the tab group agents' tabs are opened in, one per window
-async function group(tabId, windowId) {
+// group puts a tab the session opened in the session's tab group in that
+// window: "Magpie" for the first session, "Magpie 2", "Magpie 3" for the
+// ones working beside it. A group no live session has (one an earlier run
+// left) is taken over by its title.
+async function group(session, tabId, windowId) {
   try {
-    const [g] = await chrome.tabGroups.query({ windowId, title: "Magpie" });
-    if (g) return await chrome.tabs.group({ tabIds: [tabId], groupId: g.id });
-    const id = await chrome.tabs.group({ tabIds: [tabId], createProperties: { windowId } });
-    await chrome.tabGroups.update(id, { title: "Magpie", color: "grey" });
+    const had = groups.get(session);
+    if (had !== undefined) {
+      const g = await chrome.tabGroups.get(had).catch(() => null);
+      if (g && g.windowId === windowId) return await chrome.tabs.group({ tabIds: [tabId], groupId: g.id });
+    }
+    const others = new Set([...groups].filter(([k]) => k !== session).map(([, v]) => v));
+    const inWindow = await chrome.tabGroups.query({ windowId });
+    for (let n = 1; ; n++) {
+      const title = n === 1 ? "Magpie" : `Magpie ${n}`;
+      const g = inWindow.find((x) => x.title === title);
+      if (g && others.has(g.id)) continue;
+      let id;
+      if (g) id = await chrome.tabs.group({ tabIds: [tabId], groupId: g.id });
+      else {
+        id = await chrome.tabs.group({ tabIds: [tabId], createProperties: { windowId } });
+        await chrome.tabGroups.update(id, { title, color: "grey" });
+      }
+      groups.set(session, id);
+      saveSessions();
+      return;
+    }
   } catch {}
 }
 
@@ -184,6 +225,7 @@ async function ready(session, args) {
     t.stoppedByUser = false;
     throw new Error("the user stopped Magpie Browser in this tab (Cancel on Chrome's bar): ask them before going on. The next call attaches to it again.");
   }
+  t.by = session; // whose call this is: act moves that session on to a tab it opens
   await attach(tabId);
   await send(tabId, "Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
   return t;
@@ -237,8 +279,7 @@ async function act(t, what, fn) {
   if (t.dialog) return { content: [text(out.join("\n"))] };
   if (opened && opened.openerTabId === t.tabId) {
     // a link that opens a new tab: the agent goes on in it
-    const s = [...sessions].find(([, v]) => v === t.tabId);
-    if (s) { sessions.set(s[0], opened.id); saveSessions(); }
+    if (t.by) { sessions.set(t.by, opened.id); saveSessions(); }
     const nt = state(opened.id);
     await attach(opened.id);
     await waitLoad(nt, 15000);
@@ -337,7 +378,7 @@ const TOOLS = {
     if (action === "new") {
       const [w] = await chrome.windows.getAll({ windowTypes: ["normal"] }).then((ws) => ws.filter((x) => x.focused).concat(ws));
       const tab = await chrome.tabs.create({ url: args.url ? withScheme(args.url) : "about:blank", active: args.background ? false : true, ...(w ? { windowId: w.id } : {}) });
-      await group(tab.id, tab.windowId);
+      await group(session, tab.id, tab.windowId);
       sessions.set(session, tab.id);
       saveSessions();
       const t = state(tab.id);
@@ -358,8 +399,9 @@ const TOOLS = {
     }
     const all = await chrome.tabs.query({});
     const mine = sessions.get(session);
-    const lines = all.map((x) => `${x.id === mine ? "*" : x.active ? "+" : " "} t${x.id} ${x.title ? JSON.stringify(x.title.slice(0, 100)) : ""} ${x.url ? x.url.slice(0, 200) : ""}`);
-    return { content: [text(`${all.length} tabs (* is the one calls go to, + a window's shown tab):\n` + lines.join("\n"))] };
+    const titles = new Map((await chrome.tabGroups.query({}).catch(() => [])).map((g) => [g.id, g.title]));
+    const lines = all.map((x) => `${x.id === mine ? "*" : heldByOther(session, x.id) ? "~" : x.active ? "+" : " "} t${x.id}${titles.get(x.groupId) ? ` [${titles.get(x.groupId)}]` : ""} ${x.title ? JSON.stringify(x.title.slice(0, 100)) : ""} ${x.url ? x.url.slice(0, 200) : ""}`);
+    return { content: [text(`${all.length} tabs (* is the one calls go to, ~ one another agent works in: leave it to them, + a window's shown tab):\n` + lines.join("\n"))] };
   },
 
   async browser_navigate(session, args) {

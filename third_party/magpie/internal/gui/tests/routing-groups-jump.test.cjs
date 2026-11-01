@@ -62,6 +62,15 @@ function serve(lang, web) {
   };
 }
 
+// Under the whole suite's load webkit en once waited past the 5s default
+// for the head button's fit (#3478): the page sizes the button a frame
+// after the head's layout, and a loaded machine serves those first frames
+// late, the fit with them. The waits that span the page's boot (the rows
+// it fills, the head and the fit it gets in the first frames) get 15s;
+// the goto keeps the minute every page's load has (#4470), and the waits
+// inside a loaded page (the click's jump and its settle) the quick 5s.
+const boot = 15000;
+
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   for (const lang of Object.keys(words)) {
     for (const { width, web } of [{ width: 1000, web: true }, { width: 480, web: true }, { width: 640, web: false }]) {
@@ -82,13 +91,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", serve(lang, web));
         await page.goto("http://magpie.test/?view=routing");
-        await page.locator(".rt-group", { hasText: "Model M" }).waitFor({ state: "attached" });
-        await page.locator(".rt-reqs > *").first().waitFor({ state: "attached" });
+        await page.locator(".rt-group", { hasText: "Model M" }).waitFor({ state: "attached", timeout: boot });
+        await page.locator(".rt-reqs > *").first().waitFor({ state: "attached", timeout: boot });
 
         const view = page.locator("#view-routing");
         const go = page.locator("#view-routing > .row-head #rtGoGroups");
-        await go.waitFor({ state: "attached" });
-        await page.waitForFunction(() => document.getElementById("rtGoGroups").dataset.fit);
+        await go.waitFor({ state: "attached", timeout: boot });
+        await page.waitForFunction(() => document.getElementById("rtGoGroups").dataset.fit, null, { timeout: boot });
         await page.waitForTimeout(100); // the fit settles in the frame after a resize
         const fit = await go.getAttribute("data-fit");
         if (width === 1000) assert.equal(fit, "full", "a wide head names it");

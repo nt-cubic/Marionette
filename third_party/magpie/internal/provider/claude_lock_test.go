@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yetone/magpie/internal/filelock"
 )
 
 // claudeLockAccounts signs Claude Code in to b, with a saved beside it,
@@ -151,4 +153,118 @@ func TestClaudeSwitchStaleAndHeldLocks(t *testing.T) {
 			t.Fatalf(".oauth_refresh.lock left behind: %v", err)
 		}
 	})
+}
+
+// #4532: a switch from one magpie process waits for Claude Code another
+// runs in the account's own directory (the app reading its /usage while
+// `magpie accounts switch` runs), and hands Claude Code the sign-in that
+// run refreshed. Before, the wait was in-process only: the switch handed
+// over the refresh token the run then spent.
+func TestClaudeSwitchWaitsForAnotherMagpiesRun(t *testing.T) {
+	claudeThree(t)
+	home := os.Getenv("HOME")
+	old := ClaudeHandedOver
+	t.Cleanup(func() { ClaudeHandedOver = old })
+	ClaudeHandedOver = func(string) {}
+	dir, err := claudeSavedDir("max@x.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the other magpie's run, as markClaudeRun holds it there
+	mark := claudeAccountDir("max@x.com") + ".run-99999-1.lock"
+	unlock, held := filelock.Lock(mark, time.Second)
+	if !held {
+		t.Fatal("the run's lock wasn't to be had")
+	}
+	done := make(chan error, 1)
+	go func() { done <- SwitchLogin("claude", "max@x.com") }()
+	select {
+	case err := <-done:
+		unlock()
+		t.Fatalf("switched while another magpie ran Claude Code in the account's directory (%v)", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	// its Claude Code refreshes the sign-in there, and ends
+	writeFile(t, filepath.Join(dir, ".credentials.json"), map[string]any{"claudeAiOauth": map[string]any{
+		"accessToken": "tok-rotated", "refreshToken": "r-rotated",
+		"expiresAt": time.Now().Add(8 * time.Hour).UnixMilli(), "subscriptionType": "max"}})
+	unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the switch never went on after the run ended")
+	}
+	b, err := os.ReadFile(filepath.Join(home, ".claude", ".credentials.json"))
+	if err != nil || !strings.Contains(string(b), "r-rotated") {
+		t.Fatalf("Claude Code was handed the spent sign-in: %s %v", b, err)
+	}
+	if m, _ := filepath.Glob(claudeRunMarks("max@x.com")); len(m) != 0 {
+		t.Fatalf("run locks left behind: %v", m)
+	}
+}
+
+// A run that outlasts the wait leaves Claude Code signed in as it was, and
+// says why; a lock file whose run ended without removing it holds nothing.
+func TestClaudeSwitchRunHeldAndLeft(t *testing.T) {
+	t.Run("held", func(t *testing.T) {
+		claudeThree(t)
+		home := os.Getenv("HOME")
+		w := claudeRunWait
+		claudeRunWait = 300 * time.Millisecond
+		t.Cleanup(func() { claudeRunWait = w })
+		unlock, held := filelock.Lock(claudeAccountDir("max@x.com")+".run-99999-1.lock", time.Second)
+		if !held {
+			t.Fatal("not held")
+		}
+		defer unlock()
+		if err := SwitchLogin("claude", "max@x.com"); !errors.Is(err, errClaudeRunning) {
+			t.Fatalf("got %v", err)
+		}
+		b, _ := os.ReadFile(filepath.Join(home, ".claude", ".credentials.json"))
+		if !strings.Contains(string(b), "r-pro@x.com") {
+			t.Fatalf("Claude Code's sign-in written over while a run held the account: %s", b)
+		}
+	})
+	t.Run("left", func(t *testing.T) {
+		claudeThree(t)
+		mark := claudeAccountDir("max@x.com") + ".run-99999-1.lock"
+		if err := os.MkdirAll(filepath.Dir(mark), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(mark, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := SwitchLogin("claude", "max@x.com"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(mark); !os.IsNotExist(err) {
+			t.Fatalf("a left lock file kept: %v", err)
+		}
+	})
+}
+
+// A run in a saved account's directory holds its lock file while it runs,
+// and removes it as it ends.
+func TestSavedClaudeRunHoldsItsLock(t *testing.T) {
+	claudeThree(t)
+	var seen []string
+	err := inSavedClaudeDir("max@x.com", func(string) error {
+		seen, _ = filepath.Glob(claudeRunMarks("max@x.com"))
+		if len(seen) == 1 {
+			if unlock, held := filelock.Lock(seen[0], 50*time.Millisecond); held {
+				unlock()
+				t.Error("the run's lock was free while it ran")
+			}
+		}
+		return nil
+	})
+	if err != nil || len(seen) != 1 {
+		t.Fatalf("%v, run locks %v", err, seen)
+	}
+	if m, _ := filepath.Glob(claudeRunMarks("max@x.com")); len(m) != 0 {
+		t.Fatalf("run locks left behind: %v", m)
+	}
 }

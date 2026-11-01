@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yetone/magpie/internal/fx"
@@ -352,7 +353,51 @@ func trayTotalPeriod(id string) (usage.Period, bool) {
 // requests and the calls the agents' session files record beside them,
 // from the ledger's cached index; a var for tests. The Overview's summary,
 // summed before, left those calls out (NextCommit on Discord).
-var trayTotalSum = func(p usage.Period) usage.Totals { return usage.QueryPage(p, usage.Filter{}, 0, 1).Sum }
+var trayTotalSum = func(p usage.Period) usage.Totals { return trayTotals.sum(p, time.Now()) }
+
+// trayTotalFresh is how long a total is shown again before it is summed
+// anew. The menu bar is read again on every allowance that lands and every
+// account that answers, seconds apart on a busy day, and each sum read
+// every session file's state (readRequestState) and built a page of the
+// Requests tab: 7s of CPU in 30s on the reporter's computer (#4366).
+const trayTotalFresh = time.Minute
+
+var trayTotals trayTotalMemo
+
+// trayTotalMemo is each period's last sum, the day it was for and when.
+type trayTotalMemo struct {
+	sync.Mutex
+	got map[usage.Period]trayTotalGot
+}
+
+type trayTotalGot struct {
+	day string
+	at  time.Time
+	sum usage.Totals
+}
+
+// sum is p's total as the Requests tab has it, summed again once it is a
+// minute old or of another day.
+func (m *trayTotalMemo) sum(p usage.Period, now time.Time) usage.Totals {
+	day := now.Format(time.DateOnly)
+	m.Lock()
+	g, ok := m.got[p]
+	m.Unlock()
+	if ok && g.day == day && now.Sub(g.at) >= 0 && now.Sub(g.at) < trayTotalFresh {
+		return g.sum
+	}
+	sum := trayQuerySum(p)
+	m.Lock()
+	if m.got == nil {
+		m.got = map[usage.Period]trayTotalGot{}
+	}
+	m.got[p] = trayTotalGot{day: day, at: now, sum: sum}
+	m.Unlock()
+	return sum
+}
+
+// trayQuerySum is what a sum reads; a var for tests.
+var trayQuerySum = func(p usage.Period) usage.Totals { return usage.QueryPage(p, usage.Filter{}, 0, 1).Sum }
 
 // trayTotalCard is a total as a card: its rows are every token, the
 // cache's too, as the Requests tab's and the panel's Tokens count them,

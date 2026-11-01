@@ -1174,6 +1174,110 @@ func withoutCompaction(body []byte) ([]byte, bool) {
 	return nil, false
 }
 
+// overflowLearned remembers, per conversation and the provider's model
+// that refused it, how large the request was when the model answered it
+// too long (#3453: a rule sent every request of a conversation to a
+// member whose bridge refused it as too long; another member answered,
+// and the next request tried the first all over again — twice within one
+// turn). An overflow says nothing is wrong with the account — the
+// request was too long for the model — so nobody rests, and the memory
+// is the conversation's, not the member's: another conversation, or a
+// key or account of the model on it, goes to it as before. The next
+// request of the same conversation, grown or unchanged, is refused the
+// same way, the fallback each time spending the member's answer and the
+// agent's wait.
+var overflowLearned = struct {
+	sync.Mutex
+	m map[string]map[string]refusedLong // conversation → provider\x00model → what it refused
+}{m: map[string]map[string]refusedLong{}}
+
+// refusedLong is a request a conversation's member refused as too long:
+// its own bytes as they came, at the time it was refused. A conversation
+// only grows — so what is remembered holds — until its agent compacts
+// it, and one smaller than what was refused may hold now — so what is
+// remembered yields.
+type refusedLong struct {
+	at    time.Time
+	bytes int
+}
+
+// noteOverflow remembers that c's model refused this conversation as too
+// long at size bytes.
+func noteOverflow(key string, c candidate, size int) {
+	now := time.Now()
+	overflowLearned.Lock()
+	defer overflowLearned.Unlock()
+	m := overflowLearned.m[key]
+	if m == nil {
+		m = map[string]refusedLong{}
+		overflowLearned.m[key] = m
+	}
+	m[c.p.ID+"\x00"+c.model] = refusedLong{at: now, bytes: size}
+	if len(overflowLearned.m) > 4096 {
+		for k, m := range overflowLearned.m {
+			old := true
+			for _, r := range m {
+				if now.Sub(r.at) <= stickKeep {
+					old = false
+				}
+			}
+			if old {
+				delete(overflowLearned.m, k)
+			}
+		}
+	}
+}
+
+// forgetOverflow drops what was remembered of c's model refusing this
+// conversation: it has just answered it, whatever its size — the bridge
+// that refused it a moment ago may take it now.
+func forgetOverflow(key string, c candidate) {
+	overflowLearned.Lock()
+	defer overflowLearned.Unlock()
+	m := overflowLearned.m[key]
+	if m == nil {
+		return
+	}
+	delete(m, c.p.ID+"\x00"+c.model)
+	if len(m) == 0 {
+		delete(overflowLearned.m, key)
+	}
+}
+
+// behindOverflow puts, of cs, the members whose models refused this very
+// conversation as too long at no more than size — what it is now, or has
+// grown to since — behind the others, so the member that answered last
+// is asked first instead (#3453). The rule that sends the turn to one of
+// them has been heard (ruleOver has run); the member is still asked when
+// every other member has failed: it is put behind, not out, and when it
+// answers the memory of its refusal is dropped. A request smaller than
+// what was refused — the agent has compacted the conversation — leaves
+// the member where it was.
+func behindOverflow(key string, cs []candidate, pl planned, size int) ([]candidate, planned) {
+	if len(cs) < 2 || len(pl.order) != len(cs) {
+		return cs, pl
+	}
+	// the conversation's map is read under the lock: another request of
+	// the same conversation may be noting or forgetting in it at once
+	overflowLearned.Lock()
+	noted := overflowLearned.m[key]
+	var behind, ready []candidate
+	var behindW, readyW []Weighed
+	for i, c := range cs {
+		if r, ok := noted[c.p.ID+"\x00"+c.model]; ok && size >= r.bytes {
+			behind, behindW = append(behind, c), append(behindW, pl.order[i])
+			continue
+		}
+		ready, readyW = append(ready, c), append(readyW, pl.order[i])
+	}
+	overflowLearned.Unlock()
+	if len(behind) == 0 || len(ready) == 0 {
+		return cs, pl
+	}
+	pl.order = append(readyW, behindW...)
+	return append(ready, behind...), pl
+}
+
 // withoutKinds is a Responses request without its input items of these
 // types.
 func withoutKinds(body []byte, kinds ...string) ([]byte, bool) {

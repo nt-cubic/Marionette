@@ -78,6 +78,8 @@ func helpFor(args []string) string {
 		return githubUsage
 	case "claude-code":
 		return claudeCodeUsage
+	case "settings":
+		return settingsUsage
 	case "list":
 		cmd = "ls"
 	case "account":

@@ -26,7 +26,13 @@ import (
 
 // textCallMarks are what a call written into the text opens with, beside
 // DeepSeek's DSML tags, which dsmlMark reads.
-var textCallMarks = []string{"<tool_call>"}
+// The plain invoke (packinggoodsllc_07668 on Discord: a model of a
+// routing group, in Claude Code, wrote <invoke name="ToolSearch">
+// <parameter name="query">…</parameter></invoke>, then a "*Result: …*" of
+// its own making and the next invoke) is the shape of Claude's own calls
+// and of MiniMax's, which wraps it in <minimax:tool_call>; Claude's wraps
+// it in <function_calls>.
+var textCallMarks = []string{"<tool_call>", "<invoke name=", "<function_calls>", "<minimax:tool_call>"}
 
 // dsmlMark tells whether s begins with a DSML tag's mark, read as the
 // parse regexes read one (dsmlTag): <, spaces, / and spaces for a close
@@ -102,14 +108,19 @@ type writtenCall struct {
 }
 
 var (
-	dsmlTag    = `<\s*/?\s*[|｜][\s|｜]*DSML[\s|｜]*`
-	dsmlInvoke = regexp.MustCompile(`<\s*[|｜][\s|｜]*DSML[\s|｜]*invoke\s+name\s*=\s*"([^"]+)"\s*>`)
-	dsmlParam  = regexp.MustCompile(`(?s)<\s*[|｜][\s|｜]*DSML[\s|｜]*parameter\s+name\s*=\s*"([^"]+)"((?:\s+\w+\s*=\s*"[^"]*")*)\s*>(.*?)` + dsmlTag + `parameter\s*>`)
-	dsmlClose  = regexp.MustCompile(`<\s*/\s*[|｜][\s|｜]*DSML[\s|｜]*invoke\s*>`)
+	dsmlTag = `<\s*/?\s*[|｜][\s|｜]*DSML[\s|｜]*`
+	// invokePre is what an invoke's or a parameter's tag name follows:
+	// DeepSeek's DSML pipes, a namespace (minimax:), or nothing, the plain
+	// invoke
+	invokePre  = `(?:[|｜][\s|｜]*DSML[\s|｜]*|[A-Za-z_][\w-]*:)?`
+	dsmlInvoke = regexp.MustCompile(`<\s*` + invokePre + `invoke\s+name\s*=\s*"([^"]+)"\s*>`)
+	dsmlParam  = regexp.MustCompile(`(?s)<\s*` + invokePre + `parameter\s+name\s*=\s*"([^"]+)"((?:\s+\w+\s*=\s*"[^"]*")*)\s*>(.*?)<\s*/?\s*` + invokePre + `parameter\s*>`)
+	dsmlClose  = regexp.MustCompile(`<\s*/\s*` + invokePre + `invoke\s*>`)
 	dsmlString = regexp.MustCompile(`string\s*=\s*"true"`)
 	// what is left of the tags once the calls are read out, and the
-	// braces, quotes or > GLM leaves before a close (#1945)
-	textCallJunk = regexp.MustCompile(dsmlTag + `[^<>]*>?|[}\]"'>]*\s*</tool_calls?>|<tool_calls?>`)
+	// braces, quotes or > GLM leaves before a close (#1945); and the
+	// plain invoke's, with its wrappers
+	textCallJunk = regexp.MustCompile(dsmlTag + `[^<>]*>?|[}\]"'>]*\s*</tool_calls?>|<tool_calls?>|<\s*/?\s*(?:[A-Za-z_][\w-]*:)?(?:invoke|parameter|function_calls|tool_calls?)\b[^<>]*>`)
 )
 
 // textCallNames are the tools a request offers, by name.
@@ -195,14 +206,36 @@ func textCallAt(s string) (at, tail int) {
 // parseTextCalls reads the calls written in s, which begins with one.
 // ok is false unless every block in it is a call of one of names whose
 // arguments can be read; rest is the text in it that is no call or tag.
+//
+// Text after a call read out of it, other than tags, ends the calls, and
+// it and all after it go (packinggoodsllc_07668: "*Result: Tool loaded.*"
+// after an invoke, then the next invoke, then "已用 magpie 的浏览器打开了
+// 谷歌"): the model went on as if its call had run and wrote the result
+// itself, before anything ran. The call runs, and the model reads its
+// real result.
 func parseTextCalls(s string, names map[string]bool) (calls []writtenCall, rest string, ok bool) {
 	var left strings.Builder
+	// text is the text before a block, or after the last; after a call,
+	// other than tags, it ends the calls
+	text := func(t string) bool {
+		if len(calls) > 0 {
+			t = strings.TrimSpace(textCallJunk.ReplaceAllString(t, ""))
+			if strings.TrimSpace(strings.TrimSuffix(t, cutMark(t))) != "" {
+				return false
+			}
+		}
+		left.WriteString(t)
+		return true
+	}
 	for s != "" {
 		h := strings.Index(s, "<tool_call>")
 		d := dsmlInvoke.FindStringSubmatchIndex(s)
 		switch {
 		case h >= 0 && (d == nil || h < d[0]):
-			left.WriteString(s[:h])
+			if !text(s[:h]) {
+				s = ""
+				continue
+			}
 			if t := strings.TrimLeft(s[h+len("<tool_call>"):], " \t\r\n"); t == "" || strings.HasPrefix(t, "<") {
 				// no JSON after it: DeepSeek's own tags, an invoke or the
 				// closes of one (#823), or nothing; the opener is dropped
@@ -224,7 +257,10 @@ func parseTextCalls(s string, names map[string]bool) (calls []writtenCall, rest 
 			calls = append(calls, c)
 			s = s[h+len("<tool_call>")+n:]
 		case d != nil:
-			left.WriteString(s[:d[0]])
+			if !text(s[:d[0]]) {
+				s = ""
+				continue
+			}
 			c, n, good := dsmlCall(s[d[0]:], s[d[2]:d[3]], d[1]-d[0], names)
 			if !good {
 				return nil, "", false
@@ -232,7 +268,7 @@ func parseTextCalls(s string, names map[string]bool) (calls []writtenCall, rest 
 			calls = append(calls, c)
 			s = s[d[0]+n:]
 		default:
-			left.WriteString(s)
+			text(s)
 			s = ""
 		}
 	}
@@ -281,7 +317,7 @@ func settled(native, holding bool, pending, held string) (string, string, bool) 
 // cutMark is the end of s that is a mark's beginning cut short (</ of
 // </tool_call>), "" when there's none; a lone < may be text.
 func cutMark(s string) string {
-	for _, m := range append([]string{"</tool_call>", "</parameter>"}, textCallMarks...) {
+	for _, m := range append([]string{"</tool_call>", "</parameter>", "</invoke>", "</function_calls>", "</minimax:tool_call>"}, textCallMarks...) {
 		for n := len(m) - 1; n >= 2; n-- {
 			if strings.HasSuffix(s, m[:n]) {
 				return m[:n]
@@ -796,7 +832,8 @@ func (t *textCallTidy) line(line []byte) []byte {
 // written into its text, for a request that offered names: one of
 // textCallMarks' words is in it, however its JSON escapes the brackets.
 func mayWriteCalls(b []byte, names map[string]bool) bool {
-	return names != nil && (bytes.Contains(b, []byte("tool_call")) || bytes.Contains(b, []byte("DSML")))
+	return names != nil && (bytes.Contains(b, []byte("tool_call")) || bytes.Contains(b, []byte("DSML")) ||
+		bytes.Contains(b, []byte("invoke name=")) || bytes.Contains(b, []byte("function_calls")))
 }
 
 // wholeTextCalls reads the calls written into the content of a whole Chat

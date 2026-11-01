@@ -69,10 +69,3 @@ func (s *shim) stop() {
 		_ = syscall.Kill(-s.cmd.Process.Pid, syscall.SIGKILL)
 	}
 }
-
-// printMode becomes Claude Code at path, run with the -p arguments pargs:
-// the same process, so the bridge's input, output and process tree go on
-// as they were.
-func printMode(path string, pargs []string) error {
-	return unix.Exec(path, append([]string{path}, pargs...), os.Environ())
-}

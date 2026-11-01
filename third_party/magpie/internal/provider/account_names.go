@@ -139,10 +139,17 @@ func AccountShownOf(id, user string) string { return cmp.Or(AccountLabelOf(id, u
 // (PluginUserOf); "" for none. id is a provider's or "plugin:<id>", as
 // logins name a plugin's accounts.
 func AccountLabelOf(id, user string) string {
-	if p, ok := strings.CutPrefix(id, "plugin:"); ok {
-		id = PluginID(p)
-	}
+	id = labelProvider(id)
 	return cmp.Or(AccountNameOf(id, user), PluginUserOf(id, user))
+}
+
+// labelProvider is the provider id behind id, a provider's or
+// "plugin:<id>" as logins name a plugin's accounts.
+func labelProvider(id string) string {
+	if p, ok := strings.CutPrefix(id, "plugin:"); ok {
+		return PluginID(p)
+	}
+	return id
 }
 
 // PluginUserOf is the name a plugin's usage gives its account user
@@ -223,12 +230,14 @@ func SetAccountName(id, ref, name string) error {
 
 // withAccountNames is qs with each account's name of the user's own on
 // its card, else the name of the key plan it stands for (Seat), as
-// Alias. qs is not changed: it is a cache's.
+// Alias; Named when Alias is the user's own name. qs is not changed: it
+// is a cache's.
 func withAccountNames(qs []SubscriptionQuota) []SubscriptionQuota {
 	out := make([]SubscriptionQuota, len(qs))
 	for i, q := range qs {
 		if q.From == "" {
-			q.Alias = cmp.Or(AccountLabelOf(q.Provider, q.User), q.Seat)
+			own := AccountNameOf(labelProvider(q.Provider), q.User)
+			q.Alias, q.Named = cmp.Or(own, AccountLabelOf(q.Provider, q.User), q.Seat), own != ""
 		}
 		out[i] = q
 	}

@@ -43,7 +43,7 @@ const GroupPrefix = "group/"
 // puts on a 1M window taken off, as an agent's own settings carry it. ok is
 // false for a ref that isn't a group's.
 func GroupIDOf(ref string) (string, bool) {
-	return strings.CutPrefix(CanonicalRef(strings.TrimSuffix(strings.TrimSpace(ref), "[1m]")), GroupPrefix)
+	return strings.CutPrefix(CanonicalRef(peelAgentModelMark(ref)), GroupPrefix)
 }
 
 // Affinities are how long a conversation stays with the key or account that
@@ -864,7 +864,7 @@ func FallbackModels(p Provider) []Member {
 // ok is false when no group has it. An id with a provider
 // in it ("a/m") names that provider's model, never a group.
 func GroupFor(id string) (string, bool) {
-	id = strings.TrimSuffix(strings.TrimSpace(id), "[1m]")
+	id = peelAgentModelMark(id)
 	if id == "" || strings.Contains(id, "/") {
 		return "", false
 	}
@@ -1033,7 +1033,7 @@ func unpicked(find entryOf, p Provider, m string) bool {
 // Resolve, which still takes it.
 func ResolveRoute(id string) (Provider, string, bool) {
 	entries := providerEntries()
-	p, m, ok := resolveIn(entries, strings.TrimSuffix(strings.TrimSpace(id), "[1m]"))
+	p, m, ok := resolveIn(entries, peelAgentModelMark(id))
 	// one pass for the one model, not a map of every entry (entriesBy):
 	// a request asks it for each fallback it may go to
 	find := func(pid, model string) int {

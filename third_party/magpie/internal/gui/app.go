@@ -127,9 +127,7 @@ func (h *host) whenReady(fn func()) {
 
 func (h *host) HidePanel() {
 	application.InvokeSync(func() {
-		if h.panel != nil {
-			h.panel.Hide()
-		}
+		hideWebview(h.panel)
 	})
 }
 func (h *host) ShowMain(view string) {
@@ -181,8 +179,9 @@ func (h *host) OpenURL(url string) error {
 	}
 	return err
 }
-func (h *host) OpenFolder(path string) error { return openFolder(h.app, path) }
-func (h *host) Copy(text string) bool        { return copyText(h.app, text) }
+func (h *host) OpenFolder(path string) error   { return openFolder(h.app, path) }
+func (h *host) RevealFolder(path string) error { return revealFolder(h.app, path) }
+func (h *host) Copy(text string) bool          { return copyText(h.app, text) }
 func (h *host) ChooseFolder(title string) (string, error) {
 	d := h.app.Dialog.OpenFile().CanChooseDirectories(true).CanChooseFiles(false).CanCreateDirectories(true).SetTitle(title)
 	if w := application.InvokeSyncWithResult(func() *application.WebviewWindow { return h.main }); w != nil {
@@ -835,12 +834,8 @@ func (h *host) leaveMenuBar() {
 	application.InvokeSync(func() {
 		h.tray.Hide()
 		forgetTrayHiddenLater()
-		if h.panel != nil {
-			h.panel.Hide()
-		}
-		if h.main != nil {
-			h.main.Hide()
-		}
+		hideWebview(h.panel)
+		hideWebview(h.main)
 		setDock(false, false)
 		// and its shortcut, for the new version to bind
 		go h.dropPanelKey()
@@ -896,11 +891,11 @@ func (h *host) togglePanelNow() {
 		// as closed, and the icon showed it again instead of closing it
 		// (#1661). Open is windowOpen: shown, covered or not.
 		if windowOpen(h.panel) {
-			h.panel.Hide()
+			hideWebview(h.panel)
 			return
 		}
 		_ = h.tray.PositionWindow(h.panel, 6)
-		h.panel.Show().Focus()
+		showWebview(h.panel).Focus()
 		return
 	}
 	h.tray.ToggleWindow()
@@ -941,8 +936,6 @@ func (h *host) placePanel() {
 // hidePanel closes the panel on Hyprland, where it has no focus-lost to
 // close on (see omarchy.ReportClicks).
 func (h *host) hidePanel() {
-	if h.panel != nil {
-		h.panel.Hide()
-	}
+	hideWebview(h.panel)
 	go omarchy.StopClicks()
 }

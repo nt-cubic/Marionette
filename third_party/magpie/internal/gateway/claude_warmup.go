@@ -43,7 +43,7 @@ func askClaude(ctx context.Context, configDir, model string) error {
 	if err != nil {
 		return err
 	}
-	if claudeTUIOnly() {
+	if claudeTUIOn() {
 		return askClaudeTUI(ctx, binary, configDir, model)
 	}
 	tmp, err := os.MkdirTemp("", "magpie-claude-")
@@ -78,17 +78,17 @@ func askClaude(ctx context.Context, configDir, model string) error {
 	return nil
 }
 
-// askClaudeTUI is askClaude where the user has model requests never be
-// -p (ClaudeTUIOnly): the "hi" is said in Claude Code's interactive mode,
+// askClaudeTUI is askClaude with the interactive mode on (claudeTUIOn),
+// whose model requests are never -p: the "hi" is said in it,
 // through its helper as the bridge runs it, and the run ends at its
 // result.
 func askClaudeTUI(ctx context.Context, binary claudeCLI, configDir, model string) error {
 	if _, why := claudeMachineWhy(binary); why != "" {
-		return claudeOnlyErr(why)
+		return claudeTUIErr(why)
 	}
 	if binary.wsl != nil {
 		if dir := binary.tuiWSLUnread(configDir); dir != "" {
-			return claudeOnlyErr("Windows can't read " + dir + ", where Claude Code in WSL writes its transcripts")
+			return claudeTUIErr("Windows can't read " + dir + ", where Claude Code in WSL writes its transcripts")
 		}
 	}
 	tmp, err := os.MkdirTemp("", "magpie-claude-")

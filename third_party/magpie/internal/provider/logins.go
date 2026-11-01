@@ -1228,6 +1228,10 @@ func switchSavedLogin(agent, user string) (from string, _ error) {
 		mu := claudeDirRun(user)
 		mu.Lock()
 		defer mu.Unlock()
+		// nor while another magpie process runs it there (#4532)
+		if err := waitClaudeRuns(user); err != nil {
+			return "", err
+		}
 	}
 	// not while a saved account is being refreshed: the agent would be
 	// given the refresh token that refresh is spending
