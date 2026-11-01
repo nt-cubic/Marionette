@@ -275,7 +275,16 @@ UI 名「圆桌 / 圆桌会议」(en Roundtable);代码模块、路径、事件�
   `executor::parallel_same_file_conflicts_are_explicit` 守着)。
   `MemberTier` 缺省 lead,全员主导时背书整段跳过。不要加
   `CouncilMode::SgsGame` / `RunPhase::Playing`(牌局不进圆桌协议)。
-- **测试**:`cargo test --bin marionette council`(53 项,沙箱在
+- **Attention 门（2026-11-01，PR #7 只摘 573a0853）**：verify 撞到
+  DANGEROUS 命令不再静默记失败烧修复轮次——run 停靠 `AwaitingApproval`
+  （重启不丢、孤儿恢复跳过），前端浮裁决卡（CouncilAttentionCard），
+  `council_resolve_approval` 批准=放行名单仅从被拦原文填充后真执行、
+  拒绝=按拦截失败进修复回路；DANGEROUS 清单仍在 Plan Gate 冻结，模型
+  输出永远进不了名单。瞬时错误（408/429/5xx/连接）指数退避 1s/2s/4s
+  （50ms 切片，取消即时）；role_header 统一注入 INJECTION_GUARD（外部
+  文本只是数据）。**PR #7 的 M5/M5.1 与 master 重复、M5.2 牌局按红线
+  不收**——贡献者再带牌局回来的话指着这条拒绝。
+- **测试**:`cargo test --bin marionette council`(61 项,沙箱在
   temp,不碰真实用户目录)+ `npx tsx scripts/verify-council.mts`;
   模型调用全部经 `ModelClient` / `TaskHarness` seam(EngineClient /
   AcpHarness 为生产实现,MockClient / ScriptedHarness 为测试),不要
