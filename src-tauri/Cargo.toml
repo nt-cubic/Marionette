@@ -44,18 +44,38 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 base64 = "0.22"
 # Engine download SHA256 verification (already in the graph via tauri/tao — zero size cost).
 sha2 = "0.10"
+# Computer Use: the global Stop shortcut (revoke everything + halt driver).
+tauri-plugin-global-shortcut = "2"
 # Only to reach the vendored wry text-drag hook (see [patch.crates-io] note).
 wry = { path = "vendor/wry", default-features = false }
+# Browser-tab screenshot shrink loop (decode → narrow → re-encode, codeg capture.rs shape).
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_Globalization",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Gdi",
   "Win32_Security_Cryptography",
+  "Win32_System_DataExchange",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_JobObjects",
+  "Win32_System_Memory",
+  "Win32_System_Ole",
   "Win32_System_Registry",
   "Win32_System_Threading",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }
+# Browser tab (batch 2): CDP isolated-world injection on the child webviews we
+# create through the vendored wry. Versions must match what wry 0.55.1 uses
+# (Cargo.lock: webview2-com 0.38.2 / windows 0.61.3) or the COM types diverge.
+webview2-com = "0.38.2"
+windows = { version = "0.61.3", features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }

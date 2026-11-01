@@ -18,6 +18,7 @@ import {
   modelAssertForEffortRefresh,
   normalizeAgentModeId,
 } from "../lib/acpSupplements";
+import { setSessionApproval } from "../lib/browserTabs";
 import {
   agentPreflight,
   bridgeBind,
@@ -661,6 +662,12 @@ export function Composer({
       setAlwaysApprove(sessionPrefs.preferredAlwaysApprove);
     }
   }, [sessionPrefs?.preferredAlwaysApprove]);
+  // Mirror the mode to the Rust tool channel (browser Control requests):
+  // always-approve sessions skip the permission card, like they skip tool
+  // prompts. The lib keeps a global map so unmounted composers stay known.
+  useEffect(() => {
+    void setSessionApproval(sessionId, alwaysApprove);
+  }, [sessionId, alwaysApprove]);
   /** True once caps came from a live agent — cached caps must not act as live. */
   const [capsLive, setCapsLive] = useState(false);
   const [menu, setMenu] = useState<

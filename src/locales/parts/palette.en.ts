@@ -34,4 +34,6 @@ export const en = {
   "palette.openTelegramHint": "Phone notifications and replies",
   "palette.openModelShare": "Model Share",
   "palette.openModelShareHint": "Models and quota across agents",
+  "palette.openProxy": "Network proxy",
+  "palette.openProxyHint": "HTTP / SOCKS proxy",
 } satisfies Record<keyof typeof zh, string>;

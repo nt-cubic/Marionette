@@ -3,6 +3,7 @@ export const zh = {
   "dock.pageShelf": "全部对话",
   "dock.pageContext": "用量与项目",
   "dock.pageMemo": "收纳盒",
+  "dock.pageUsage": "Token 用量",
   "dock.noQuotaData": "暂无额度数据",
   "dock.openDetails": "点开看明细",
   "dock.balanceLabel": "余额",

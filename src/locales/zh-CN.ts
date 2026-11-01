@@ -14,6 +14,9 @@ import { zh as zhFeDialogs } from "./parts/fe-dialogs.zh";
 import { zh as zhFeSession } from "./parts/fe-session.zh";
 import { zh as zhFeContext } from "./parts/fe-context.zh";
 import { zh as zhFeDockmemo } from "./parts/fe-dockmemo.zh";
+import { zh as zhFeDoctab } from "./parts/fe-doctab.zh";
+import { zh as zhFeBrowser } from "./parts/fe-browser.zh";
+import { zh as zhFeComputer } from "./parts/fe-computer.zh";
 import { zh as zhFeLibA } from "./parts/fe-libA.zh";
 import { zh as zhFeWorkspace } from "./parts/fe-workspace.zh";
 import { zh as zhFeLibB } from "./parts/fe-libB.zh";
@@ -33,6 +36,9 @@ export const zh = {
   ...zhFeSession,
   ...zhFeContext,
   ...zhFeDockmemo,
+  ...zhFeDoctab,
+  ...zhFeBrowser,
+  ...zhFeComputer,
   ...zhFeLibA,
   ...zhFeWorkspace,
   ...zhFeLibB,

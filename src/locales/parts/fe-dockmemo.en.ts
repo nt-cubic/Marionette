@@ -5,6 +5,7 @@ export const en = {
   "dock.pageShelf": "All Conversations",
   "dock.pageContext": "Usage & Projects",
   "dock.pageMemo": "Memo Box",
+  "dock.pageUsage": "Token usage",
   "dock.noQuotaData": "No usage data yet",
   "dock.openDetails": "open for details",
   "dock.balanceLabel": "Balance",

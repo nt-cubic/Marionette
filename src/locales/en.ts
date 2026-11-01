@@ -14,6 +14,9 @@ import { en as enFeDialogs } from "./parts/fe-dialogs.en";
 import { en as enFeSession } from "./parts/fe-session.en";
 import { en as enFeContext } from "./parts/fe-context.en";
 import { en as enFeDockmemo } from "./parts/fe-dockmemo.en";
+import { en as enFeDoctab } from "./parts/fe-doctab.en";
+import { en as enFeBrowser } from "./parts/fe-browser.en";
+import { en as enFeComputer } from "./parts/fe-computer.en";
 import { en as enFeLibA } from "./parts/fe-libA.en";
 import { en as enFeWorkspace } from "./parts/fe-workspace.en";
 import { en as enFeLibB } from "./parts/fe-libB.en";
@@ -33,6 +36,9 @@ export const en = {
   ...enFeSession,
   ...enFeContext,
   ...enFeDockmemo,
+  ...enFeDoctab,
+  ...enFeBrowser,
+  ...enFeComputer,
   ...enFeLibA,
   ...enFeWorkspace,
   ...enFeLibB,

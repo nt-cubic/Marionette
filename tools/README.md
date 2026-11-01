@@ -15,6 +15,10 @@
 | `bump-version.ps1` | 一次改完 `package.json`、`package-lock.json`、`src-tauri\tauri.conf.json`、`Cargo.toml`、`Cargo.lock` |
 | `ensure-msvc.bat` | 检查 MSVC / Windows SDK，缺失时可经 winget 安装 |
 | `ensure-rust.bat` | 检查 Rust 工具链，缺失时可经 rustup 安装 |
+| `probe-computer-helper.py` | 自检：对一个构建产物跑 CU helper 协议四连（Ready/未知 op 拒绝/假 configure 拒绝/stdin 关净退）。用法 `python tools/probe-computer-helper.py <Marionette.exe>` |
+| `probe-cu-e2e.py` | 自检：helper → cua-driver → list-windows 端到端（用真机已装的驱动，打印窗口清单与 grantable 标记） |
+| `capture-window.py` | PrintWindow 拍任意顶层窗（注意：GPU 合成内容在部分沙箱/虚拟 GPU 下拍不出，验证浏览器/CU 画面优先用 CDP screenshot 或 DOM 几何） |
+| 环境钩子 `MARIONETTE_AUTO_BROWSER_TAB=1` / `MARIONETTE_AUTO_CU_CHECK=1` | E2E 演练：开机自动开浏览器标签（冻死复现）/ 自动跑 CU 面板全流程（日志看 `[cu-check]`；冻死检测口径 = 数 `ui-heartbeat`，60s 一条，停跳即 JS 冻死） |
 | `demo-instance.bat` / `.ps1` | 起一个隔离的演示实例：`USERPROFILE` 与 `WEBVIEW2_USER_DATA_FOLDER` 都指向临时 profile，只看得见预置的 `demo-app`，用于截图与试用 |
 | `build-now.ps1` | 本地快捷打便携版（设 `SKIP_MAGPIE_IMPORT=1` + `NOPAUSE=1` 后转发 `build-portable.bat`）；路径基于 `$PSScriptRoot`，可从任意工作目录调用 |
 | `web-chat-bridge\` | 内置 ChatGPT / DeepSeek **网页版**聊天桥的源码（随 exe 编译携带，无需手动注册；CDP 驱动浏览器，不经引擎、无工具）。见其 `README.md` |
