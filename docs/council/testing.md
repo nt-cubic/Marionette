@@ -34,6 +34,11 @@ cd src-tauri && cargo test --bin marionette
 | `store::run_id_rejects_path_injection` | run id 路径注入防御 | — |
 | `worker::mock_client_distinguishes_models` | mock 按模型区分响应 | #1/#14 |
 | `worker::engine_client_reports_missing_engine` | 引擎缺席给人话错误 | #15 |
+| `worker::transient_error_classification` | 瞬时(传输层/408/429/5xx)与结构性错误分类 | — |
+| `worker::mock_failure_injection_then_fallback` | 一次性错误注入耗尽后回落响应脚本 | — |
+| `verify::dangerous_command_user_verdicts` | 批准放行真执行 / 拒绝不二次挂起 / 名单精确匹配 | — |
+| `verify::pending_decisions_filter` | 待裁决命令筛选(needs_human) | — |
+| `prompts::every_prompt_carries_injection_guard` | 每阶段 system 带外部内容只是数据红线 | — |
 | `prompts::proposal_prompt_isolated_from_other_proposals` | Phase A prompt 不含他人提案 | #3 |
 | `prompts::latest_positions_prefers_revision` | 评审看最新版本 | #4 |
 | `prompts::pending_critiques_clear_after_revision` | 修订后质询视为已回应 | #4 |
@@ -60,9 +65,12 @@ cd src-tauri && cargo test --bin marionette
 | `verify::evidence_rendering` | 证据渲染 | §4.3 |
 | `orchestrator::verification_failure_triggers_bounded_repair` | 端到端修复回路(恰 1 轮) | **#11** |
 | `orchestrator::repair_loop_is_bounded` | 恒败 → 恰 3 次 → Failed | **#11** |
+| `orchestrator::attention_gate_approve_flows_to_completion` | 破坏性命令停靠 AwaitingApproval → 批准 → 放行重验 → Completed | — |
+| `orchestrator::attention_gate_reject_goes_to_repair_not_repark` | 拒绝 → 重验按拦截失败进修复回路,不二次挂起 | — |
+| `state::verification_attention_gate_edges` | Verifying⇄AwaitingApproval 边;挂起态不能直达完成 | — |
 | `types::spec_validation_rejects_bad_input` | 创建期 spec 校验 | — |
 
-## 3. 前端回归(`scripts/verify-council.mts`,7 项)
+## 3. 前端回归(`scripts/verify-council.mts`,16 项)
 
 时间线分组(简报独立/同轮同类聚组/跨轮分开)、成员配色稳定、阶段/
 消息类型文案、终态判定、成员状态文案(含失败分支)、派生 id 去重、
