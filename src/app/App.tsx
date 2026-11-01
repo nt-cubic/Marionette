@@ -5053,6 +5053,26 @@ export function App() {
     }
   }, [displaySession, t]);
 
+  // Ctrl F = 在当前(主)对话中查找。WebView2 没有原生查找栏,这个键此前无人用;
+  // 具体哪个 SessionView 打开浮条由 marionette:open-find 的 sessionId 分发。
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        !event.shiftKey &&
+        !event.altKey &&
+        (event.key === "f" || event.key === "F")
+      ) {
+        event.preventDefault();
+        window.dispatchEvent(
+          new CustomEvent("marionette:open-find", { detail: { sessionId: displaySession.id } }),
+        );
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [displaySession.id]);
+
   /** Create a new Chat session in the current/default working folder. `origin:
    *  "memo"` files it under the shelf's 收纳盒 group. */
   const handleCreateChatSession = useCallback(async (agentId?: string, opts?: { origin?: "memo" }) => {
@@ -9084,6 +9104,16 @@ export function App() {
                       label: t("export.paletteAction"),
                       hint: "Markdown",
                       run: () => void handleExportTranscript(),
+                    },
+                    {
+                      id: "find-in-conversation",
+                      label: t("find.paletteOpen"),
+                      hint: "Ctrl F",
+                      run: () => {
+                        window.dispatchEvent(
+                          new CustomEvent("marionette:open-find", { detail: { sessionId: displaySession.id } }),
+                        );
+                      },
                     },
                   ]
                 : []),
