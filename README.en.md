@@ -98,6 +98,22 @@ Paste a screenshot into the composer and the annotator opens: click to pin a poi
 
 The agent receives numbered marks with your notes — no more "the thing to the right of that button".
 
+## Built-in browser
+
+Browser tabs open right beside the session. You browse as usual — and the agent reads the same page: it works off the page's structure tree, clicking, filling and screenshotting by element reference instead of guessing coordinates. Hand it a link and it opens the tab, reads it, and drives it on its own.
+
+## Computer Use
+
+For work beyond the browser window there's Computer Use: the agent can see the screen and drive the mouse and keyboard. Every control action goes through a permission card first; system settings and credential managers are never shareable, and keystrokes pass a whitelist.
+
+## Roundtable
+
+One topic, several models at the table: they state positions and review each other, the chair distills a plan — and nothing executes until you approve it. If a verification command turns out destructive (`git push`, `rm -rf`, …), the whole deliberation parks and waits for your ruling: never silently allowed, never silently counted as failure.
+
+## Token usage
+
+A cross-session token ledger: fresh input, cache reads, cache writes and output are booked separately, breakable down by model, hour and day. List prices translate it into money (list price — not what your subscription actually charges); the cache-hit rate is right there, so you can see whether the model is actually saving you money.
+
 ## Telegram
 
 Pair a bot from @BotFather and your phone becomes the remote: finished turns, approvals waiting, errors — notifications arrive with the full text.
