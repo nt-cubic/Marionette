@@ -204,6 +204,7 @@ export function UsageHeatmap({ days }: { days: UsageHeatDay[] }) {
       setSelectedKey(keyOf(hit.index));
     } else if (event.key === "Escape" && tipOpen) {
       event.preventDefault();
+      event.stopPropagation();
       setTipOpen(false);
     }
   }

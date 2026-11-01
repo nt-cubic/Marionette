@@ -1,14 +1,21 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
-import { X } from "lucide-react";
-import { useT } from "../lib/i18n";
-import { formatTokenCount } from "../lib/sessionStats";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { ArrowDownRight, ArrowUpRight, X } from "lucide-react";
+import { useLocale, useT } from "../lib/i18n";
+import { formatDurationCompact, formatTokenCount } from "../lib/sessionStats";
 import {
   aggregateDays,
+  cacheHitRate,
   dailySeries,
   deltaPercent,
+  foldHourDays,
+  freshTokens,
+  mondayFirstHourGrid,
+  peakHourOf,
+  rankedAgents,
   rankedModels,
+  totalTokens,
+  trendSeries,
   useUsageLedger,
-  type LedgerAggregate,
 } from "../lib/usageLedger";
 import {
   costOfBuckets,
@@ -17,25 +24,34 @@ import {
   rateForModel,
   type RateIndex,
 } from "../lib/tokenPrices";
-import { UsageHeatmap } from "./UsageHeatmap";
+import {
+  HourHeatmap,
+  RankedBars,
+  RingMeter,
+  TrendChart,
+  U_ACCENT,
+  U_FAINT,
+  U_INK,
+  U_INK_2,
+  U_INK_3,
+  type RankedDatum,
+  type TrendDatum,
+} from "./UsageCharts";
 
 /**
- * Token 用量分析大面板——入口只有两个:右栏「Token 总览」卡的链接与
- * Ctrl K 的「Token 用量分析」(App 经 openUsageAnalysis 挂进来),主界面
- * 不加按钮。版式走 project-dialog 骨架 + ui-language 的卡/芯片/身份色。
+ * Token 用量分析——伪标签页 / 贴边整页 / detached 弹窗共用本体。
  *
- * 内容(2026-11-01 定案,产品口径):总计+环比 → 四桶(读取/输出/缓存读/
- * 缓存写) → GitHub 式每日格子 + 逐日堆叠柱 → 模型环形+排名(>7 折叠
- * 「其它」) → 费用(models.dev 牌价折算,拉不到整段隐藏;明确标注
- * 「非订阅实付」)。图全部零依赖手绘(SpecCard 同路线)。
+ * 版式学 codeg token-usage-page:大数字英雄卡 + 缓存环、连通统计条、
+ * 两色趋势柱、构成条 + 小时×星期作息、模型/助手排名。表面仍走
+ * docs/ui-language.md(3px 角、1px 边、无阴影、芯片 22px)。
  */
 
-const GRID_WEEKS = 26;
-const DONUT_R = 48;
-const DONUT_C = 2 * Math.PI * DONUT_R;
+const RANGES = [7, 30, 90] as const;
+type RangeDays = (typeof RANGES)[number];
+const CACHE_HIT_DIGITS = 1;
 
-function pct(n: number): string {
-  return `${Math.round(n * 100)}%`;
+function pct(n: number, digits = 0): string {
+  return `${(n * 100).toFixed(digits)}%`;
 }
 
 function signedPct(n: number): string {
@@ -43,136 +59,91 @@ function signedPct(n: number): string {
   return `${n > 0 ? "+" : n < 0 ? "−" : ""}${s}%`;
 }
 
-function dayTotal(day: { input: number; output: number; cached: number; cacheCreation: number }) {
-  return day.input + day.output + day.cached + day.cacheCreation;
+function sliceDay(key: string): string {
+  return key.slice(5);
 }
 
-function aggregateTotal(agg: LedgerAggregate): number {
-  return agg.input + agg.output + agg.cached + agg.cacheCreation;
+function weekdayLabels(locale: string): string[] {
+  const fmt = new Intl.DateTimeFormat(locale === "zh-CN" ? "zh-CN" : "en", { weekday: "short" });
+  // 周一首行:1970-01-05 是周一。
+  return Array.from({ length: 7 }, (_, i) => fmt.format(new Date(1970, 0, 5 + i)));
 }
 
-/**
- * 逐日堆叠柱,交互语法学 uiarc bar-chart(2026-11-01):扫读光标(指针或键盘
- * role=slider)把头条读值从「日均」滚到当天,附日均参考线;触屏 pan-y
- * (横向扫、纵向滚)。零依赖,动效只有 transform/opacity。
- */
-function ScrubBars({
-  series,
-  maxDay,
-  rangeLabel,
+function Panel({
+  title,
+  hint,
+  actions,
+  children,
 }: {
-  series: ReturnType<typeof dailySeries>;
-  maxDay: number;
-  rangeLabel: string;
+  title: string;
+  hint?: string;
+  actions?: ReactNode;
+  children: ReactNode;
 }) {
-  const t = useT();
-  const [cursor, setCursor] = useState<number | null>(null);
-  const barAt = (index: number) => series[Math.max(0, Math.min(index, series.length - 1))]!;
-  const average =
-    series.length > 0
-      ? series.reduce((sum, day) => sum + dayTotal(day), 0) / series.length
-      : 0;
-  const readout =
-    cursor != null
-      ? `${barAt(cursor).key.slice(5)} · ${formatTokenCount(dayTotal(barAt(cursor)))}`
-      : t("usageLedger.dailyAverage", { tokens: formatTokenCount(average) });
-
   return (
-    <>
-    <div className="usage-analysis__bars-head">
-      <span className="usage-analysis__sub">{readout}</span>
-      <span className="usage-analysis__sub">{rangeLabel}</span>
-    </div>
-    <div
-      className="usage-analysis__bars"
-      role="slider"
-      aria-label={t("usageLedger.dailyTitle")}
-      aria-valuemin={0}
-      aria-valuemax={Math.max(0, series.length - 1)}
-      aria-valuenow={cursor ?? series.length - 1}
-      aria-valuetext={
-        cursor != null
-          ? `${barAt(cursor).key} · ${formatTokenCount(dayTotal(barAt(cursor)))}`
-          : t("usageLedger.dailyAverage", { tokens: formatTokenCount(average) })
-      }
-      tabIndex={0}
-      onPointerMove={(event) => {
-        const rect = event.currentTarget.getBoundingClientRect();
-        const ratio = (event.clientX - rect.left) / Math.max(1, rect.width);
-        setCursor(Math.max(0, Math.min(series.length - 1, Math.floor(ratio * series.length))));
-      }}
-      onPointerLeave={() => setCursor(null)}
-      onKeyDown={(event) => {
-        const moves: Record<string, number> = {
-          ArrowLeft: (cursor ?? series.length - 1) - 1,
-          ArrowRight: (cursor ?? series.length - 1) + 1,
-          Home: 0,
-          End: series.length - 1,
-        };
-        if (event.key in moves) {
-          event.preventDefault();
-          setCursor(Math.max(0, Math.min(series.length - 1, moves[event.key]!)));
-        } else if (event.key === "Escape") {
-          setCursor(null);
-        }
-      }}
-      style={{ ["--avg" as string]: `${(average / maxDay) * 100}%` } as CSSProperties}
-    >
-      <span className="usage-analysis__avg" aria-hidden />
-      {series.map((day, index) => {
-        const total = dayTotal(day);
-        const scale = total > 0 ? Math.max(0.04, total / maxDay) : 0;
-        const segs: Array<{ cls: string; value: number }> = [
-          { cls: "out", value: day.output },
-          { cls: "in", value: day.input },
-          { cls: "cr", value: day.cached },
-          { cls: "cw", value: day.cacheCreation },
-        ];
-        return (
-          <div
-            key={day.key}
-            className={`usage-analysis__bar${cursor === index ? " is-cursor" : ""}`}
-          >
-            {total > 0 &&
-              segs.map((seg) =>
-                seg.value > 0 ? (
-                  <div
-                    key={seg.cls}
-                    className={`usage-analysis__bar-seg usage-analysis__bar-seg--${seg.cls}`}
-                    style={{ height: `${(seg.value / total) * scale * 100}%` }}
-                  />
-                ) : null,
-              )}
-          </div>
-        );
-      })}
-    </div>
-    <div className="usage-analysis__bar-labels" aria-hidden>
-      <span>{series[0]?.key.slice(5)}</span>
-      <span>{rangeLabel}</span>
-      <span>{series[series.length - 1]?.key.slice(5)}</span>
-    </div>
-    <div className="usage-analysis__legend">
-      <span><i style={{ background: "var(--blue)" }} />{t("usageLedger.bucketInput")}</span>
-      <span><i style={{ background: "var(--accent)" }} />{t("usageLedger.bucketOutput")}</span>
-      <span><i style={{ background: "var(--green)" }} />{t("usageLedger.bucketCacheRead")}</span>
-      <span><i style={{ background: "var(--orange)" }} />{t("usageLedger.bucketCacheWrite")}</span>
-    </div>
-    </>
+    <section className="usage-analysis__panel">
+      <header className="usage-analysis__panel-head">
+        <div className="usage-analysis__panel-copy">
+          <h2 className="usage-analysis__kicker">{title}</h2>
+          {hint ? <p className="usage-analysis__sub">{hint}</p> : null}
+        </div>
+        {actions}
+      </header>
+      {children}
+    </section>
   );
 }
 
-/**
- * 分析内容本体——伪标签页(UsagePage,普通窗口)与弹窗(UsageAnalysisDialog,
- * 贴边/detached 兜底)共用。数据与聚合全部自持,不依赖外层容器。
- */
+function StatCell({ label, value, hint }: { label: string; value: string; hint?: string }) {
+  return (
+    <div className="usage-analysis__cell">
+      <div className="usage-analysis__cell-label">{label}</div>
+      <div className="usage-analysis__cell-value">{value}</div>
+      {hint ? <div className="usage-analysis__cell-hint">{hint}</div> : null}
+    </div>
+  );
+}
+
+function DeltaBadge({
+  delta,
+  newLabel,
+  title,
+}: {
+  delta: number | null;
+  newLabel: string;
+  title: string;
+}) {
+  if (delta == null) {
+    return (
+      <span className="usage-analysis__delta" data-dir="new" title={title}>
+        {newLabel}
+      </span>
+    );
+  }
+  if (Math.abs(delta) < 0.005) return null;
+  const up = delta > 0;
+  const Icon = up ? ArrowUpRight : ArrowDownRight;
+  return (
+    <span className="usage-analysis__delta" data-dir={up ? "up" : "down"} title={title}>
+      <Icon size={12} aria-hidden />
+      {signedPct(delta)}
+    </span>
+  );
+}
+
 export function UsageAnalysisBody() {
   const t = useT();
+  const locale = useLocale();
   const ledger = useUsageLedger();
-  const [rangeDays, setRangeDays] = useState<7 | 30>(7);
+  const [rangeDays, setRangeDays] = useState<RangeDays>(7);
+  const [bucketTouched, setBucketTouched] = useState(false);
+  const [bucket, setBucket] = useState<"day" | "week">("day");
+  const [dim, setDim] = useState<"model" | "agent">("model");
   const [priceIndex, setPriceIndex] = useState<RateIndex | null>(null);
-  // ⚠ 本组件所有 hooks 必须在任何条件 return 之前(见 MarkdownBody 红线)。
   const now = useMemo(() => new Date(), []);
+  const bcp47 = locale === "zh-CN" ? "zh-CN" : "en";
+  const weekdays = useMemo(() => weekdayLabels(bcp47), [bcp47]);
+
   const hasAnyRecords = useMemo(
     () => aggregateDays(ledger, 180, now).turns > 0,
     [ledger, now],
@@ -188,34 +159,37 @@ export function UsageAnalysisBody() {
     };
   }, []);
 
-  const prevDays = useMemo(() => {
+  const prevEnd = useMemo(() => {
     const prev = new Date(now);
     prev.setDate(prev.getDate() - rangeDays);
     return prev;
   }, [now, rangeDays]);
 
   const current = useMemo(() => aggregateDays(ledger, rangeDays, now), [ledger, rangeDays, now]);
-  const previous = useMemo(() => aggregateDays(ledger, rangeDays, prevDays), [ledger, rangeDays, prevDays]);
-  const series = useMemo(() => dailySeries(ledger, rangeDays, now), [ledger, rangeDays, now]);
-  const gridSeries = useMemo(() => dailySeries(ledger, GRID_WEEKS * 7, now), [ledger, now]);
-  const models = useMemo(() => rankedModels(current, 6), [current]);
-
-  const maxDay = useMemo(
-    () => Math.max(1, ...series.map(dayTotal)),
-    [series],
+  const previous = useMemo(
+    () => aggregateDays(ledger, rangeDays, prevEnd),
+    [ledger, rangeDays, prevEnd],
   );
-
-  const delta = useMemo(
-    () => deltaPercent(aggregateTotal(current), aggregateTotal(previous)),
-    [current, previous],
+  const daily = useMemo(() => dailySeries(ledger, rangeDays, now), [ledger, rangeDays, now]);
+  const effectiveBucket = bucketTouched ? bucket : rangeDays >= 90 ? "week" : "day";
+  const trend = useMemo(
+    () => trendSeries(daily, effectiveBucket),
+    [daily, effectiveBucket],
   );
+  const models = useMemo(() => rankedModels(current, 7), [current]);
+  const agents = useMemo(() => rankedAgents(current, 7), [current]);
+  const hourGrid = useMemo(
+    () => mondayFirstHourGrid(foldHourDays(ledger, rangeDays, now)),
+    [ledger, rangeDays, now],
+  );
+  const busiestHour = useMemo(() => peakHourOf(hourGrid), [hourGrid]);
 
-  const cacheHit = useMemo(() => {
-    const denom = current.input + current.cached;
-    return denom > 0 ? current.cached / denom : null;
-  }, [current]);
+  const totals = totalTokens(current);
+  const previousTotal = totalTokens(previous);
+  const delta = deltaPercent(totals, previousTotal);
+  const cache = cacheHitRate(current);
+  const fresh = freshTokens(current);
 
-  /** 费用只在牌价目录可用时出现;未计价 token 计入覆盖率分母(codeg 同口径)。 */
   const costs = useMemo(() => {
     if (!priceIndex || priceIndex.byModel.size === 0) return null;
     let usd = 0;
@@ -231,189 +205,301 @@ export function UsageAnalysisBody() {
     return { usd, coverage: priced / (priced + unpriced), fetchedAt: priceIndex.fetchedAt };
   }, [models, priceIndex]);
 
-  const donut = useMemo(() => {
-    const rows = models
-      .map((row, i) => ({ ...row, share: dayTotal(row), colorClass: `um-${row.modelId === "other" ? "other" : Math.min(i, 5)}` }))
-      .filter((row) => row.share > 0);
-    const total = rows.reduce((sum, row) => sum + row.share, 0);
-    if (total <= 0) return null;
-    let offset = 0;
-    const segments = rows.map((row) => {
-      const frac = row.share / total;
-      const seg = { ...row, frac, offset };
-      offset += frac;
-      return seg;
-    });
-    return { segments, top: segments[0]!, total };
-  }, [models]);
+  const trendData = useMemo<TrendDatum[]>(
+    () =>
+      trend.map((point) => ({
+        key: point.key,
+        label: sliceDay(point.key),
+        tooltipLabel:
+          effectiveBucket === "day"
+            ? new Date(`${point.key}T00:00:00`).toLocaleDateString(bcp47, {
+                month: "short",
+                day: "numeric",
+                weekday: "short",
+              })
+            : sliceDay(point.key),
+        cache: point.cache,
+        fresh: point.fresh,
+        detail: [{ label: t("usageLedger.tileTurns"), value: String(point.turns) }],
+      })),
+    [trend, effectiveBucket, bcp47, t],
+  );
 
-  const rangeLabel = rangeDays === 7 ? t("usageLedger.last7") : t("usageLedger.last30");
+  const compositionRows = useMemo<RankedDatum[]>(() => {
+    if (totals <= 0) return [];
+    const rows = [
+      { key: "cacheRead", label: t("usageLedger.bucketCacheRead"), value: current.cached, color: U_ACCENT },
+      { key: "input", label: t("usageLedger.bucketInput"), value: current.input, color: U_INK },
+      { key: "cacheWrite", label: t("usageLedger.bucketCacheWrite"), value: current.cacheCreation, color: U_INK_2 },
+      { key: "output", label: t("usageLedger.bucketOutput"), value: current.output, color: U_INK_3 },
+    ];
+    rows.sort((a, b) => b.value - a.value);
+    return rows.map((row) => ({ ...row, share: row.value / totals }));
+  }, [current, totals, t]);
+
+  const breakdownRows = useMemo<RankedDatum[]>(() => {
+    if (dim === "agent") {
+      const sum = agents.reduce((s, row) => s + row.output, 0);
+      return agents.map((row) => ({
+        key: row.agentId,
+        label: row.agentId === "other" ? t("usageLedger.other") : row.agentId,
+        value: row.output,
+        share: sum > 0 ? row.output / sum : null,
+        hint: t("usageLedger.sessionsCount", { count: row.turns }),
+        color: row.agentId === "other" ? U_FAINT : undefined,
+      }));
+    }
+    return models.map((row) => {
+      const share = totals > 0 ? totalTokens(row) / totals : null;
+      const cost =
+        costs && priceIndex ? costOfBuckets(row, rateForModel(row.modelId, priceIndex)) : null;
+      const sessions = t("usageLedger.sessionsCount", { count: row.turns });
+      const hint =
+        cost?.usd != null && cost.usd > 0 ? `${sessions} · ${formatUsd(cost.usd)}` : sessions;
+      return {
+        key: row.modelId,
+        label: row.modelId === "other" ? t("usageLedger.other") : row.modelId,
+        value: totalTokens(row),
+        share,
+        hint,
+        color: row.modelId === "other" ? U_FAINT : undefined,
+      };
+    });
+  }, [dim, agents, models, totals, costs, priceIndex, t]);
+
+  const peak = useMemo(() => {
+    let best: { key: string; total: number } | null = null;
+    for (const day of daily) {
+      const total = totalTokens(day);
+      if (total <= 0) continue;
+      if (!best || total > best.total) best = { key: day.key, total };
+    }
+    return best;
+  }, [daily]);
+
+  const rangeLabel =
+    rangeDays === 7
+      ? t("usageLedger.last7")
+      : rangeDays === 30
+        ? t("usageLedger.last30")
+        : t("usageLedger.last90");
+
+  const changeRange = (days: RangeDays) => {
+    setRangeDays(days);
+    setBucketTouched(false);
+  };
 
   return (
     <div className="usage-analysis">
+      <div className="usage-analysis__toolbar">
+        <div className="usage-analysis__ranges" role="tablist" aria-label={rangeLabel}>
+          {RANGES.map((days) => (
+            <button
+              key={days}
+              type="button"
+              role="tab"
+              aria-selected={rangeDays === days}
+              className={`composer-mode-chip${rangeDays === days ? " is-active" : ""}`}
+              onClick={() => changeRange(days)}
+            >
+              {days === 7
+                ? t("usageLedger.last7")
+                : days === 30
+                  ? t("usageLedger.last30")
+                  : t("usageLedger.last90")}
+            </button>
+          ))}
+        </div>
+        {costs?.fetchedAt != null && (
+          <span className="usage-analysis__sub">
+            {t("usageLedger.priceUpdated", {
+              when: new Date(costs.fetchedAt).toLocaleDateString(bcp47),
+            })}
+          </span>
+        )}
+      </div>
+
       {!hasAnyRecords ? (
-            <div className="usage-analysis__empty usage-analysis__card">
-              <p>{t("usageLedger.emptyTitle")}</p>
-              <p>{t("usageLedger.emptyNote")}</p>
+        <div className="usage-analysis__empty">
+          <p>{t("usageLedger.emptyTitle")}</p>
+          <p>{t("usageLedger.emptyNote")}</p>
+        </div>
+      ) : (
+        <>
+          <section className={`usage-analysis__hero-card${cache != null ? " has-cache" : ""}`}>
+            <div className="usage-analysis__hero-main">
+              <div className="usage-analysis__cell-label">{t("usageLedger.tileTotal")}</div>
+              <div className="usage-analysis__hero">
+                <span className="usage-analysis__total">{formatTokenCount(totals)}</span>
+                <DeltaBadge
+                  delta={previousTotal > 0 ? delta : totals > 0 ? null : 0}
+                  newLabel={t("usageLedger.deltaNew")}
+                  title={t("usageLedger.vsPrevious")}
+                />
+              </div>
+              {costs && costs.usd > 0 && (
+                <div className="usage-analysis__cost-inline">
+                  {formatUsd(costs.usd)}
+                  {costs.coverage < 1 ? ` · ${t("usageLedger.coverage", { pct: pct(costs.coverage) })}` : ""}
+                </div>
+              )}
+              {costs && costs.usd > 0 && (
+                <p className="usage-analysis__cost-note">{t("usageLedger.costNote")}</p>
+              )}
             </div>
-          ) : (
-            <>
-              <div className="usage-analysis__toolbar">
-                <div className="usage-analysis__ranges" role="tablist">
-                  {([7, 30] as const).map((days) => (
+            {cache != null && (
+              <div className="usage-analysis__hero-cache">
+                <RingMeter
+                  ratio={cache}
+                  valueText={pct(cache, CACHE_HIT_DIGITS)}
+                  caption={t("usageLedger.cacheHitCaption")}
+                />
+                <div className="usage-analysis__hero-cache-copy">
+                  <div className="usage-analysis__hero-cache-title">
+                    {cache >= 0.5 ? t("usageLedger.cacheHeroHigh") : t("usageLedger.cacheHeroLow")}
+                  </div>
+                  <p className="usage-analysis__sub">
+                    {t("usageLedger.cacheHeroDesc", {
+                      cached: formatTokenCount(current.cached),
+                      fresh: formatTokenCount(fresh),
+                    })}
+                  </p>
+                </div>
+              </div>
+            )}
+          </section>
+
+          <section className="usage-analysis__strip">
+            <StatCell
+              label={t("usageLedger.tileTurns")}
+              value={String(current.turns)}
+              hint={
+                current.turns > 0
+                  ? t("usageLedger.avgPerTurn", {
+                      tokens: formatTokenCount(Math.round(totals / current.turns)),
+                    })
+                  : undefined
+              }
+            />
+            <StatCell
+              label={t("usageLedger.tileActiveDays")}
+              value={String(current.days)}
+              hint={t("usageLedger.avgPerDay", {
+                tokens: formatTokenCount(
+                  current.days > 0 ? Math.round(totals / current.days) : 0,
+                ),
+              })}
+            />
+            <StatCell
+              label={t("usageLedger.tileGenTime")}
+              value={formatDurationCompact(current.ms)}
+            />
+            <StatCell
+              label={t("usageLedger.tilePeak")}
+              value={peak ? sliceDay(peak.key) : "—"}
+              hint={peak ? formatTokenCount(peak.total) : undefined}
+            />
+          </section>
+
+          <Panel
+            title={t("usageLedger.trendTitle")}
+            actions={
+              <div className="usage-analysis__trend-actions">
+                <span className="usage-analysis__legend">
+                  <span>
+                    <i style={{ background: U_ACCENT }} />
+                    {t("usageLedger.bucketCacheRead")}
+                  </span>
+                  <span>
+                    <i style={{ background: U_INK }} />
+                    {t("usageLedger.freshTokens")}
+                  </span>
+                </span>
+                <div className="usage-analysis__ranges" role="group">
+                  {(["day", "week"] as const).map((id) => (
                     <button
-                      key={days}
+                      key={id}
                       type="button"
-                      role="tab"
-                      aria-selected={rangeDays === days}
-                      className={`composer-mode-chip${rangeDays === days ? " is-active" : ""}`}
-                      onClick={() => setRangeDays(days)}
+                      className={`composer-mode-chip${effectiveBucket === id ? " is-active" : ""}`}
+                      onClick={() => {
+                        setBucket(id);
+                        setBucketTouched(true);
+                      }}
                     >
-                      {days === 7 ? t("usageLedger.last7") : t("usageLedger.last30")}
+                      {id === "day" ? t("usageLedger.bucketDay") : t("usageLedger.bucketWeek")}
                     </button>
                   ))}
                 </div>
-                {costs?.fetchedAt != null && (
-                  <span className="usage-analysis__sub">
-                    {t("usageLedger.priceUpdated", {
-                      when: new Date(costs.fetchedAt).toLocaleDateString(),
-                    })}
-                  </span>
-                )}
               </div>
+            }
+          >
+            <TrendChart
+              data={trendData}
+              label={t("usageLedger.trendTitle")}
+              cacheLabel={t("usageLedger.bucketCacheRead")}
+              freshLabel={t("usageLedger.freshTokens")}
+              emptyLabel={t("usageLedger.trendEmpty")}
+            />
+          </Panel>
 
-              <section className="usage-analysis__card">
-                <div className="usage-analysis__hero">
-                  <span className="usage-analysis__total">
-                    {formatTokenCount(aggregateTotal(current))}
-                  </span>
-                  {delta != null && (
-                    <span
-                      className="usage-analysis__delta"
-                      data-dir={delta > 0.005 ? "up" : delta < -0.005 ? "down" : "flat"}
-                    >
-                      {signedPct(delta)}
-                    </span>
-                  )}
-                  <span className="usage-analysis__sub">{rangeLabel}</span>
-                </div>
-                <div className="usage-analysis__buckets">
-                  <div className="usage-analysis__bucket" style={{ "--bucket": "var(--blue)" } as CSSProperties}>
-                    <div className="usage-analysis__bucket-label">{t("usageLedger.bucketInput")}</div>
-                    <div className="usage-analysis__bucket-value">{formatTokenCount(current.input)}</div>
-                  </div>
-                  <div className="usage-analysis__bucket" style={{ "--bucket": "var(--accent)" } as CSSProperties}>
-                    <div className="usage-analysis__bucket-label">{t("usageLedger.bucketOutput")}</div>
-                    <div className="usage-analysis__bucket-value">{formatTokenCount(current.output)}</div>
-                  </div>
-                  <div className="usage-analysis__bucket" style={{ "--bucket": "var(--green)" } as CSSProperties}>
-                    <div className="usage-analysis__bucket-label">{t("usageLedger.bucketCacheRead")}</div>
-                    <div className="usage-analysis__bucket-value">{formatTokenCount(current.cached)}</div>
-                  </div>
-                  <div className="usage-analysis__bucket" style={{ "--bucket": "var(--orange)" } as CSSProperties}>
-                    <div className="usage-analysis__bucket-label">{t("usageLedger.bucketCacheWrite")}</div>
-                    <div className="usage-analysis__bucket-value">{formatTokenCount(current.cacheCreation)}</div>
-                  </div>
-                </div>
-                <div className="usage-analysis__sub" style={{ marginTop: 6 }}>
-                  {t("usageLedger.turns", { count: current.turns })}
-                  {cacheHit != null && ` · ${t("usageLedger.cacheHit", { pct: pct(cacheHit) })}`}
-                </div>
-              </section>
+          <div className="usage-analysis__split">
+            <Panel title={t("usageLedger.compositionTitle")} hint={t("usageLedger.compositionHint")}>
+              <RankedBars data={compositionRows} emptyLabel={t("usageLedger.emptyBreakdown")} />
+            </Panel>
+            <Panel
+              title={t("usageLedger.rhythmTitle")}
+              hint={
+                busiestHour != null
+                  ? `${t("usageLedger.rhythmHint")} ${t("usageLedger.rhythmPeak", {
+                      hour: String(busiestHour).padStart(2, "0"),
+                    })}`
+                  : t("usageLedger.rhythmHint")
+              }
+            >
+              <HourHeatmap
+                matrix={hourGrid}
+                weekdayLabels={weekdays}
+                legendLess={t("usageLedger.heatLess")}
+                legendMore={t("usageLedger.heatMore")}
+                formatValue={(value) => t("usageLedger.rhythmValue", { count: value })}
+                formatAria={(weekday, hour, value) =>
+                  t("usageLedger.rhythmCell", {
+                    weekday: weekdays[weekday] ?? "",
+                    hour: String(hour).padStart(2, "0"),
+                    count: value,
+                  })
+                }
+              />
+            </Panel>
+          </div>
 
-              <section className="usage-analysis__card">
-                <div className="usage-analysis__kicker">{t("usageLedger.dailyTitle")}</div>
-                <UsageHeatmap
-                  days={gridSeries.map((day) => ({
-                    key: day.key,
-                    value: dayTotal(day),
-                    turns: day.turns,
-                  }))}
-                />
-                <ScrubBars series={series} maxDay={maxDay} rangeLabel={rangeLabel} />
-                <div className="usage-analysis__bar-labels" aria-hidden>
-                  <span>{series[0]?.key.slice(5)}</span>
-                  <span>{rangeLabel}</span>
-                  <span>{series[series.length - 1]?.key.slice(5)}</span>
-                </div>
-                <div className="usage-analysis__legend">
-                  <span><i style={{ background: "var(--blue)" }} />{t("usageLedger.bucketInput")}</span>
-                  <span><i style={{ background: "var(--accent)" }} />{t("usageLedger.bucketOutput")}</span>
-                  <span><i style={{ background: "var(--green)" }} />{t("usageLedger.bucketCacheRead")}</span>
-                  <span><i style={{ background: "var(--orange)" }} />{t("usageLedger.bucketCacheWrite")}</span>
-                </div>
-              </section>
-
-              <section className="usage-analysis__card">
-                <div className="usage-analysis__kicker">{t("usageLedger.modelsTitle")}</div>
-                <div className="usage-analysis__models">
-                  {donut && (
-                    <div className="usage-analysis__donut">
-                      <svg viewBox="0 0 120 120" width="120" height="120" aria-hidden>
-                        {donut.segments.map((seg) => {
-                          const colorVar = `var(--${["accent", "blue", "orange", "green", "yellow", "red"][Math.min(donut.segments.indexOf(seg), 5)]}, var(--text-faint))`;
-                          return (
-                            <circle
-                              key={seg.modelId}
-                              cx="60"
-                              cy="60"
-                              r={DONUT_R}
-                              fill="none"
-                              stroke={seg.modelId === "other" ? "var(--text-faint)" : colorVar}
-                              strokeWidth="14"
-                              strokeDasharray={`${seg.frac * DONUT_C} ${DONUT_C}`}
-                              strokeDashoffset={-seg.offset * DONUT_C}
-                              transform="rotate(-90 60 60)"
-                            />
-                          );
-                        })}
-                      </svg>
-                      <div className="usage-analysis__donut-center">
-                        <span className="usage-analysis__donut-pct">{pct(donut.top.frac)}</span>
-                        <span className="usage-analysis__donut-name">
-                          {donut.top.modelId === "other" ? t("usageLedger.other") : donut.top.modelId}
-                        </span>
-                      </div>
-                    </div>
-                  )}
-                  <div className="usage-analysis__rows">
-                    {models.map((row) => {
-                      const cost =
-                        costs && priceIndex
-                          ? costOfBuckets(row, rateForModel(row.modelId, priceIndex))
-                          : null;
-                      return (
-                        <div key={row.modelId} className={`usage-analysis__row ${row.modelId === "other" ? "um-other" : `um-${Math.min(models.indexOf(row), 5)}`}`}>
-                          <span className="usage-analysis__row-dot" aria-hidden />
-                          <span className="usage-analysis__row-name">
-                            {row.modelId === "other" ? t("usageLedger.other") : row.modelId}
-                          </span>
-                          <span className="usage-analysis__row-meta">
-                            {formatTokenCount(dayTotal(row))} · {t("usageLedger.turns", { count: row.turns })}
-                          </span>
-                          {cost?.usd != null && cost.usd > 0 && (
-                            <span className="usage-analysis__row-cost">{formatUsd(cost.usd)}</span>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </section>
-
-              {costs && costs.usd > 0 && (
-                <section className="usage-analysis__card">
-                  <div className="usage-analysis__cost">
-                    <span className="usage-analysis__cost-total">{formatUsd(costs.usd)}</span>
-                    <span className="usage-analysis__sub">
-                      {t("usageLedger.coverage", { pct: pct(costs.coverage) })}
-                    </span>
-                  </div>
-                  <p className="usage-analysis__cost-note">{t("usageLedger.costNote")}</p>
-                </section>
-              )}
-            </>
-          )}
+          <Panel
+            title={t("usageLedger.distributionTitle")}
+            actions={
+              <div className="usage-analysis__ranges" role="tablist">
+                {(["model", "agent"] as const).map((id) => (
+                  <button
+                    key={id}
+                    type="button"
+                    role="tab"
+                    aria-selected={dim === id}
+                    className={`composer-mode-chip${dim === id ? " is-active" : ""}`}
+                    onClick={() => setDim(id)}
+                  >
+                    {id === "model" ? t("usageLedger.byModel") : t("usageLedger.byAgent")}
+                  </button>
+                ))}
+              </div>
+            }
+          >
+            <RankedBars
+              data={breakdownRows}
+              showRank
+              emptyLabel={t("usageLedger.emptyBreakdown")}
+            />
+          </Panel>
+        </>
+      )}
     </div>
   );
 }

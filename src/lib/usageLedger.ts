@@ -3,9 +3,9 @@
  *
  * 每轮 turn/complete 时把 turnStats 增量记进按「本地日」聚合的台账
  * (turnStats 已盖在 assistant_message 上随转录持久化,这里另记一份聚合,
- * 供 ContextPanel 的「Token 总览」与 Token 用量分析面板跨会话展示)。
+ * 供 Token 用量分析伪标签页跨会话展示)。
  * O(1) 写入、跨重启,绝不为了聚合去重载转录(内存压力红线)。
- * 保留 180 个自然日(分析页的 GitHub 式格子要铺出小半年),写入时修剪。
+ * 保留 180 个自然日(90 天趋势与作息热图的窗口上限),写入时修剪。
  *
  * 记账挂在 turn/complete 处理器里,与事件盖戳共用同一条单窗口不变量
  * (同一轮只被一个窗口处理,否则转录本身就会重复)。**多窗口合并**:
@@ -415,15 +415,24 @@ export function dailySeries(
   return points;
 }
 
-/** 小时×星期折叠(7×24 的 turns 计数)——活动节奏热图的数据源。 */
+/** 小时×星期折叠(7×24 的 turns 计数)——活动节奏热图的数据源。0 行 = 周日。 */
 export function foldHourWeek(
   target: UsageLedger,
   weeks: number,
   endAt: Date = new Date(),
 ): number[][] {
+  return foldHourDays(target, weeks * 7, endAt);
+}
+
+/** 与 aggregateDays 同一自然日窗口的小时×星期折叠。0 行 = 周日。 */
+export function foldHourDays(
+  target: UsageLedger,
+  days: number,
+  endAt: Date = new Date(),
+): number[][] {
   const grid = Array.from({ length: 7 }, () => new Array(24).fill(0));
   const from = new Date(endAt);
-  from.setDate(from.getDate() - (weeks * 7 - 1));
+  from.setDate(from.getDate() - (days - 1));
   const fromKey = dayKeyOf(from);
   const endKey = dayKeyOf(endAt);
   for (const [key, day] of Object.entries(target.days)) {
@@ -432,6 +441,125 @@ export function foldHourWeek(
     for (let h = 0; h < 24; h += 1) grid[weekday]![h]! += day.hours[h] ?? 0;
   }
   return grid;
+}
+
+/** 把周日开头的 7×24 转成周一首行(热图从上到下一二三四五六日)。 */
+export function mondayFirstHourGrid(grid: number[][]): number[][] {
+  return [1, 2, 3, 4, 5, 6, 0].map((row) => grid[row] ?? new Array(24).fill(0));
+}
+
+/** 四桶合计。 */
+export function totalTokens(agg: {
+  input: number;
+  output: number;
+  cached: number;
+  cacheCreation: number;
+}): number {
+  return agg.input + agg.output + agg.cached + agg.cacheCreation;
+}
+
+/**
+ * 缓存命中率。分母是进模型的上下文(新鲜输入 + 缓存写 + 缓存读),
+ * 故意排除输出——输出从未进过缓存。无上下文时返回 null。
+ * 口径与 codeg `cacheHitRatio` 对齐。
+ */
+export function cacheHitRate(agg: {
+  input: number;
+  cached: number;
+  cacheCreation: number;
+}): number | null {
+  const denom = agg.input + agg.cached + agg.cacheCreation;
+  if (denom <= 0) return null;
+  return agg.cached / denom;
+}
+
+/** 这段时间真正新算的 token(合计 − 缓存读)。 */
+export function freshTokens(agg: {
+  input: number;
+  output: number;
+  cached: number;
+  cacheCreation: number;
+}): number {
+  return Math.max(0, totalTokens(agg) - agg.cached);
+}
+
+export type TrendPoint = {
+  key: string;
+  cache: number;
+  fresh: number;
+  turns: number;
+};
+
+/** 日序列按天或按周(周一首日)收成趋势柱。 */
+export function trendSeries(daily: DailyPoint[], bucket: "day" | "week"): TrendPoint[] {
+  const toPoint = (key: string, days: DailyPoint[]): TrendPoint => ({
+    key,
+    cache: days.reduce((sum, day) => sum + day.cached, 0),
+    fresh: days.reduce((sum, day) => sum + day.input + day.output + day.cacheCreation, 0),
+    turns: days.reduce((sum, day) => sum + day.turns, 0),
+  });
+  if (bucket === "day") return daily.map((day) => toPoint(day.key, [day]));
+  const groups = new Map<string, DailyPoint[]>();
+  const order: string[] = [];
+  for (const day of daily) {
+    const week = mondayOf(day.key);
+    if (!groups.has(week)) {
+      groups.set(week, []);
+      order.push(week);
+    }
+    groups.get(week)!.push(day);
+  }
+  return order.map((week) => toPoint(week, groups.get(week)!));
+}
+
+function mondayOf(key: string): string {
+  const date = new Date(`${key}T00:00:00`);
+  date.setDate(date.getDate() - ((date.getDay() + 6) % 7));
+  return dayKeyOf(date);
+}
+
+/** 助手排名:按输出降序,超过 limit 折叠进「其它」。 */
+export function rankedAgents(
+  agg: LedgerAggregate,
+  limit = 7,
+): Array<{ agentId: string; output: number; turns: number }> {
+  const rows = Object.entries(agg.agents)
+    .map(([agentId, agent]) => ({ agentId, output: agent.output, turns: agent.turns }))
+    .filter((row) => row.turns > 0)
+    .sort((a, b) => b.output - a.output || b.turns - a.turns);
+  const head = rows.slice(0, limit);
+  const tail = rows.slice(limit);
+  if (tail.length > 0) {
+    head.push({
+      agentId: "other",
+      output: tail.reduce((sum, row) => sum + row.output, 0),
+      turns: tail.reduce((sum, row) => sum + row.turns, 0),
+    });
+  }
+  return head;
+}
+
+/** 平方根分档(codeg 同口径):一次通宵不会把其余格子全压成最浅一档。0 不进 ramp。 */
+export function hourRampStep(value: number, max: number, steps = 7): number | null {
+  if (value <= 0 || max <= 0) return null;
+  const step = Math.ceil(Math.sqrt(value / max) * steps);
+  return Math.min(steps, Math.max(1, step)) - 1;
+}
+
+/** 7×24 网格里计数最高的小时(0–23);全 0 返回 null。 */
+export function peakHourOf(grid: number[][]): number | null {
+  let max = 0;
+  let hour: number | null = null;
+  for (const row of grid) {
+    for (let h = 0; h < row.length; h += 1) {
+      const value = row[h] ?? 0;
+      if (value > max) {
+        max = value;
+        hour = h;
+      }
+    }
+  }
+  return hour;
 }
 
 /** 环比:当前 vs 上一周期,输出 token 的变化百分比(null = 上期为 0,无环比)。 */
