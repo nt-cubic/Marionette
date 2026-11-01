@@ -180,6 +180,13 @@ export interface BudgetUsage {
   startedAt: number;
 }
 
+/** Attention 门:待人工裁决的破坏性验证命令(后端 PendingApproval)。 */
+export interface PendingApproval {
+  commands: string[];
+  askedAt: number;
+  round: number;
+}
+
 export interface CouncilState {
   runId: string;
   phase: RunPhase;
@@ -190,6 +197,9 @@ export interface CouncilState {
   tasks: TaskProgress[];
   updatedAt: number;
   error?: string | null;
+  pendingApproval?: PendingApproval | null;
+  approvedVerifications?: string[] | null;
+  rejectedVerifications?: string[] | null;
 }
 
 export interface PlanStep {
@@ -303,6 +313,13 @@ export async function councilApprovePlan(runId: string, accept: boolean): Promis
   await invoke("council_approve_plan", { runId, accept });
 }
 
+/** Attention 门裁决:放行/拒绝破坏性验证命令(命令集合由后端从
+ *  state.pendingApproval 读,前端只传决定与备注)。 */
+export async function councilResolveApproval(runId: string, approve: boolean, note?: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("council_resolve_approval", { runId, approve, note: note?.trim() ? note.trim() : null });
+}
+
 export async function councilDeleteRun(runId: string): Promise<void> {
   if (!isTauriRuntime()) return;
   await invoke("council_delete_run", { runId });
@@ -402,7 +419,8 @@ export type RailStepStatus = "done" | "current" | "pending" | "error";
 /** 把运行态(含暂停/待批/失败)投影到轨道上的一步。 */
 export function councilRailFocus(phase: RunPhase, pausedFrom?: RunPhase | null): RunPhase {
   if (phase === "paused") return pausedFrom ?? "analyzing";
-  if (phase === "awaiting_approval") return "plan_ready";
+  // Attention 门在验证阶段(破坏性命令等人工裁决),轨道亮「验证」。
+  if (phase === "awaiting_approval") return "verifying";
   if (phase === "created") return "analyzing";
   return phase;
 }
