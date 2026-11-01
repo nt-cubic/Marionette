@@ -190,6 +190,7 @@ function statsToTokens(stats: TurnStats): TurnTokens {
     input: stats.input ?? null,
     output: stats.output ?? null,
     cached: stats.cached ?? null,
+    cacheCreation: stats.cacheCreation ?? null,
     reasoning: stats.reasoning ?? null,
     total: stats.total ?? null,
   };

@@ -5,6 +5,7 @@ import "./styles/tokens.css";
 import "./styles/app.css";
 import "./styles/motion.css";
 import "./styles/dock.css";
+import "./styles/usage-panel.css";
 
 /** Prevent a single component crash from turning the whole window pure black. */
 class RootErrorBoundary extends React.Component<

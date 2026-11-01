@@ -111,6 +111,8 @@ export type TurnTokens = {
   input: number | null;
   output: number | null;
   cached: number | null;
+  /** Cache-creation (cache write) input tokens — null when the agent doesn't report it. */
+  cacheCreation: number | null;
   reasoning: number | null;
   total: number | null;
 };
@@ -182,6 +184,7 @@ export function buildTurnStats(
     input: tokens.input,
     output: tokens.output,
     cached: tokens.cached,
+    cacheCreation: tokens.cacheCreation,
     reasoning: tokens.reasoning,
     total: tokens.total,
   };
@@ -248,19 +251,22 @@ export function parseGrokCallUsage(data: unknown): GrokCallUsage | null {
  * Grok's prompt RPC response carries no usage at all, so a turn's totals can
  * only be derived from these notifications. `input`/`cached` track the
  * *latest* call (later calls see the grown context — the last one is the
- * turn's input total, and how much of it was cache-hit); `output`/`reasoning`
- * sum across all calls.
+ * turn's fresh input, and how much of its context was cache-hit);
+ * `cacheCreation`/`output`/`reasoning` sum across all calls (each call pays
+ * its own cache write). `input` is fresh-only (excludes both cache buckets),
+ * the same semantics the Claude path's `input_tokens` already has.
  */
 export type GrokTurnUsage = {
   input: number | null;
   cached: number | null;
+  cacheCreation: number;
   output: number | null;
   reasoning: number | null;
   calls: number;
 };
 
 export function emptyGrokTurnUsage(): GrokTurnUsage {
-  return { input: null, cached: null, output: null, reasoning: null, calls: 0 };
+  return { input: null, cached: null, cacheCreation: 0, output: null, reasoning: null, calls: 0 };
 }
 
 export function mergeGrokCallUsage(
@@ -269,8 +275,9 @@ export function mergeGrokCallUsage(
 ): GrokTurnUsage {
   const base = prev ?? emptyGrokTurnUsage();
   return {
-    input: call.input + call.cacheCreation + call.cacheRead,
+    input: call.input,
     cached: call.cacheRead,
+    cacheCreation: base.cacheCreation + call.cacheCreation,
     output: (base.output ?? 0) + call.output,
     reasoning: (base.reasoning ?? 0) + call.reasoning,
     calls: base.calls + 1,
@@ -286,6 +293,7 @@ export function grokTurnUsageToTurnTokens(
     input: accum.input,
     output: accum.output,
     cached: accum.cached,
+    cacheCreation: accum.cacheCreation,
     reasoning: accum.reasoning,
     total: null,
   };
@@ -304,7 +312,13 @@ export function applyGrokLiveContext(
   now = new Date()
 ): SessionUsageState {
   const base = prev ?? emptySessionUsage();
-  const used = tokens.input ?? tokens.total;
+  // Context = the whole prompt the model saw: fresh input + both cache
+  // buckets. `input` is fresh-only since the four-bucket split, so add the
+  // cache legs back here instead of folding them into `input` upstream.
+  const used =
+    tokens.input != null
+      ? tokens.input + (tokens.cached ?? 0) + (tokens.cacheCreation ?? 0)
+      : tokens.total;
   return {
     ...base,
     turnTokens: tokens,
@@ -459,6 +473,7 @@ export function formatTurnStatsTag(
     input: stats.input ?? null,
     output: stats.output ?? null,
     cached: stats.cached ?? null,
+    cacheCreation: stats.cacheCreation ?? null,
     reasoning: stats.reasoning ?? null,
     total: stats.total ?? null,
   });
@@ -934,6 +949,12 @@ export function extractTurnTokens(data: unknown): TurnTokens | null {
     "cacheReadInputTokens",
     "cache_read_input_tokens"
   );
+  const cacheCreation = pick(
+    "cachedWriteTokens",
+    "cached_write_tokens",
+    "cacheCreationInputTokens",
+    "cache_creation_input_tokens"
+  );
   const reasoning = pick(
     "thoughtTokens",
     "thought_tokens",
@@ -945,7 +966,7 @@ export function extractTurnTokens(data: unknown): TurnTokens | null {
   const total = pick("totalTokens", "total_tokens");
 
   if (input == null && output == null && total == null) return null;
-  return { input, output, cached, reasoning, total };
+  return { input, output, cached, cacheCreation, reasoning, total };
 }
 
 /**

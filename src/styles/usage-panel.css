@@ -1,0 +1,389 @@
+/* usage-panel — Token 总览卡(ContextPanel)与 Token 用量分析大面板。
+ * 视觉语言走 docs/ui-language.md:--radius 3px、1px 边、无阴影、
+ * 22px 芯片、身份色只做 3px 条与 7px 点;图表系列色全部取主题 token。 */
+
+/* ── 分析大面板本体(project-dialog 骨架,宽度同模型库) ─────────────── */
+
+.usage-analysis-dialog {
+  width: min(720px, calc(100vw - 40px));
+  max-height: calc(100vh - 64px);
+  display: flex;
+  flex-direction: column;
+}
+
+.usage-analysis-dialog .project-dialog__body {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* ── 摘要卡(ContextPanel 右栏,与 SessionStatsSection 同族) ────────── */
+
+.usage-ledger__spark {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 26px;
+  margin-top: 8px;
+}
+
+.usage-ledger__spark-col {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 1px;
+  height: 100%;
+}
+
+.usage-ledger__spark-seg {
+  min-height: 1px;
+  border-radius: 1px;
+}
+.usage-ledger__spark-seg--in { background: var(--blue); }
+.usage-ledger__spark-seg--out { background: var(--accent); }
+.usage-ledger__spark-seg--cr { background: var(--green); }
+.usage-ledger__spark-seg--cw { background: var(--orange); }
+
+.usage-ledger__spark-note {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.usage-ledger__open {
+  margin-top: 8px;
+}
+
+/* ── 分析大面板(project-dialog 骨架之上的内容区) ──────────────────── */
+
+.usage-analysis {
+  --u-in: var(--blue);
+  --u-out: var(--accent);
+  --u-cr: var(--green);
+  --u-cw: var(--orange);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.usage-analysis__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.usage-analysis__ranges {
+  display: flex;
+  gap: 4px;
+}
+
+.usage-analysis__card {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  overflow: hidden;
+}
+
+.usage-analysis__kicker {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-bottom: 6px;
+}
+
+/* Hero:总计 + 环比 + 缓存命中 */
+.usage-analysis__hero {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+
+.usage-analysis__total {
+  font-size: 20px;
+  font-weight: 650;
+  line-height: 1.1;
+  letter-spacing: 0;
+}
+
+.usage-analysis__delta {
+  font-size: 12px;
+  padding: 0 7px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+.usage-analysis__delta[data-dir="up"] { color: var(--green); }
+.usage-analysis__delta[data-dir="flat"] { color: var(--text-faint); }
+.usage-analysis__delta[data-dir="down"] { color: var(--red); }
+
+.usage-analysis__sub {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* 四桶格 */
+.usage-analysis__buckets {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.usage-analysis__bucket {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.usage-analysis__bucket::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--bucket, var(--accent));
+}
+
+.usage-analysis__bucket-label {
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.usage-analysis__bucket-value {
+  font-size: 14px;
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+/* GitHub 式格子:列 = 周,行 = 周日..周六 */
+.usage-analysis__gridwrap {
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.usage-analysis__grid {
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(7, 10px);
+  grid-auto-columns: 10px;
+  gap: 2px;
+  width: max-content;
+}
+
+.usage-analysis__cell {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--panel-soft);
+}
+.usage-analysis__cell[data-lv="1"] { background: color-mix(in srgb, var(--accent) 25%, var(--panel-soft)); }
+.usage-analysis__cell[data-lv="2"] { background: color-mix(in srgb, var(--accent) 50%, var(--panel-soft)); }
+.usage-analysis__cell[data-lv="3"] { background: color-mix(in srgb, var(--accent) 75%, var(--panel-soft)); }
+.usage-analysis__cell[data-lv="4"] { background: var(--accent); }
+
+/* 堆叠柱(所选范围逐日) */
+.usage-analysis__bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 96px;
+  margin-top: 8px;
+}
+
+.usage-analysis__bar {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 1px;
+}
+
+.usage-analysis__bar-seg {
+  min-height: 0;
+  border-radius: 1px;
+}
+.usage-analysis__bar-seg--in { background: var(--u-in); }
+.usage-analysis__bar-seg--out { background: var(--u-out); }
+.usage-analysis__bar-seg--cr { background: var(--u-cr); }
+.usage-analysis__bar-seg--cw { background: var(--u-cw); }
+
+.usage-analysis__bar-labels {
+  display: flex;
+  gap: 3px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.usage-analysis__bar-labels > span {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 模型:环形 + 排名 */
+.usage-analysis__models {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.usage-analysis__donut {
+  position: relative;
+  width: 120px;
+  height: 120px;
+}
+
+.usage-analysis__donut-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  pointer-events: none;
+}
+
+.usage-analysis__donut-pct {
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1;
+}
+
+.usage-analysis__donut-name {
+  max-width: 96px;
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.usage-analysis__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.usage-analysis__row {
+  display: grid;
+  grid-template-columns: 7px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  position: relative;
+  padding: 2px 0;
+}
+
+.usage-analysis__row-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dot, var(--accent));
+}
+
+.usage-analysis__row-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.usage-analysis__row-meta {
+  color: var(--text-faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.usage-analysis__row-cost {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 模型系列色(身份色次序循环,浅深主题各自取值) */
+.usage-analysis .um-0 { --dot: var(--accent); }
+.usage-analysis .um-1 { --dot: var(--blue); }
+.usage-analysis .um-2 { --dot: var(--orange); }
+.usage-analysis .um-3 { --dot: var(--green); }
+.usage-analysis .um-4 { --dot: var(--yellow); }
+.usage-analysis .um-5 { --dot: var(--red); }
+.usage-analysis .um-other { --dot: var(--text-faint); }
+
+/* 图例 */
+.usage-analysis__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.usage-analysis__legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.usage-analysis__legend i {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+/* 费用卡 */
+.usage-analysis__cost {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+
+.usage-analysis__cost-total {
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.usage-analysis__cost-note {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-top: 4px;
+  line-height: 1.5;
+}
+
+/* 空态 */
+.usage-analysis__empty {
+  padding: 26px 10px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-faint);
+}
+
+/* 窄面板(贴边整页等)时四桶改两列、模型上下排 */
+@media (max-width: 560px) {
+  .usage-analysis__buckets { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .usage-analysis__models { grid-template-columns: 1fr; justify-items: center; }
+  .usage-analysis__rows { width: 100%; }
+}
