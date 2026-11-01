@@ -417,3 +417,51 @@ func TestRepoTreeBigList(t *testing.T) {
 		t.Errorf("skills in it: %v", dirs)
 	}
 }
+
+// zhaoxuya520/reverse-skill keeps a routing SKILL.md in its skills folder
+// (#4572): reverse-skill-router, an entry that routes to the skills beside
+// it. The folder is a skill and a collection at once, and only the router
+// was listed: every skill under it was hidden behind it. A folder that
+// holds several skills beside its own SKILL.md is both, and offers them
+// all; a lone SKILL.md inside another skill (skills/pentest-tools/
+// src-hunter here, skills/dbs-save/inner in TestCheckSkillsFindsNewOnes)
+// still isn't a skill of its own.
+func TestRepoWithARoutingSkillListsItsSkillsToo(t *testing.T) {
+	sandbox(t)
+	files := map[string]string{
+		"skills/SKILL.md":                          "---\nname: reverse-skill-router\ndescription: Routes to the skills beside it\n---\n",
+		"skills/apk-reverse/SKILL.md":              "---\nname: apk-reverse\ndescription: APKs\n---\n",
+		"skills/ida-reverse/SKILL.md":              "---\nname: ida-reverse\ndescription: Binaries\n---\n",
+		"skills/pentest-tools/SKILL.md":            "---\nname: pentest-tools\ndescription: Tools\n---\n",
+		"skills/pentest-tools/src-hunter/SKILL.md": "---\nname: src-hunter\ndescription: Sources\n---\n",
+	}
+	fakeSkillRepo(t, files)
+
+	// the repository's root and its skills folder offer the same: the
+	// router and the skills under it
+	want := []string{"skills", "skills/apk-reverse", "skills/ida-reverse", "skills/pentest-tools"}
+	for _, in := range []string{"zhaoxuya520/reverse-skill", "https://github.com/zhaoxuya520/reverse-skill/tree/HEAD/skills"} {
+		p, err := ProbeSkills(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var paths []string
+		for _, c := range p.Candidates {
+			paths = append(paths, c.Path)
+		}
+		sort.Strings(paths)
+		if !slices.Equal(paths, want) {
+			t.Errorf("%s: candidates %v, want %v", in, paths, want)
+		}
+	}
+
+	// the check for new skills reads the tree the same way
+	tree := &gitTree{}
+	for p := range files {
+		tree.Tree = append(tree.Tree, gitEntry{Path: p, Type: "blob"})
+	}
+	sort.Slice(tree.Tree, func(i, j int) bool { return tree.Tree[i].Path < tree.Tree[j].Path })
+	if got := skillDirsIn(tree, ""); !slices.Equal(got, want) {
+		t.Errorf("skills in the tree %v, want %v", got, want)
+	}
+}

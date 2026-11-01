@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/yetone/magpie/internal/appdir"
 )
 
 // PI-Desktop (vastsa/PI-Desktop) keeps its chats as its own jsonl, not
@@ -20,7 +22,7 @@ import (
 // PIDesktopDir is where PI-Desktop keeps its data: $PI_DESKTOP_DATA_DIR,
 // else ~/.pi-desktop (a packaged install's, its 04-data-storage.md).
 func PIDesktopDir() string {
-	if d := os.Getenv("PI_DESKTOP_DATA_DIR"); d != "" {
+	if d := appdir.Getenv("PI_DESKTOP_DATA_DIR"); d != "" {
 		return d
 	}
 	home, _ := os.UserHomeDir()

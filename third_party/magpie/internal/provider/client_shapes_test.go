@@ -42,3 +42,30 @@ func TestClientShapeWrittenOnceForTwoWindows(t *testing.T) {
 		t.Fatalf("a new Codex version's User-Agent was not kept: %q", got)
 	}
 }
+
+// /api/providers asks the shape of every relay it lists: the file is
+// parsed once until it changes, and what a caller does to its copy is
+// not what the next one gets.
+func TestClientShapeParsedOnceUntilWritten(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	clientShapes.Lock()
+	clientShapes.written = nil
+	clientShapes.Unlock()
+	SawClient(ClientClaudeCode, http.Header{"User-Agent": {"claude-cli/2.1.0 (external, cli)"}})
+	clientShape(ClientClaudeCode)
+	parses := shapeParses.Load()
+	for range 30 {
+		h := clientShape(ClientClaudeCode)
+		if h.Get("User-Agent") != "claude-cli/2.1.0 (external, cli)" {
+			t.Fatalf("shape read back as %v", h)
+		}
+		h.Set("User-Agent", "changed")
+	}
+	if n := shapeParses.Load() - parses; n != 0 {
+		t.Fatalf("30 asks parsed the file %d times, want 0", n)
+	}
+	SawClient(ClientClaudeCode, http.Header{"User-Agent": {"claude-cli/2.2.0 (external, cli)"}})
+	if got := clientShape(ClientClaudeCode).Get("User-Agent"); got != "claude-cli/2.2.0 (external, cli)" {
+		t.Fatalf("after a write: %q", got)
+	}
+}

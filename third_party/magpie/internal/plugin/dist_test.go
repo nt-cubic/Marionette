@@ -29,14 +29,32 @@ func fakeDist(t *testing.T, pkgs map[string][]string, tamper bool) {
 	t.Helper()
 	u := distServer(t, pkgs, tamper)
 	forgetDist := func() {
+		distSettled(t)
 		distMu.Lock()
-		distIdx, distAt, distOK = nil, time.Time{}, false
+		distIdx, distAt, distOK, distErr = nil, time.Time{}, false, nil
 		distMu.Unlock()
 	}
 	base := distBase
 	distBase = u
 	forgetDist()
 	t.Cleanup(func() { distBase = base; forgetDist() })
+}
+
+// distSettled waits for a read of the dist branch under way to end: one a
+// test started ends with it, never writing into the next test's index.
+func distSettled(t *testing.T) {
+	t.Helper()
+	distMu.Lock()
+	reading := distReading
+	distMu.Unlock()
+	if reading == nil {
+		return
+	}
+	select {
+	case <-reading:
+	case <-time.After(distReadFor + 10*time.Second):
+		t.Fatal("a read of the dist branch didn't end")
+	}
 }
 
 // distServer serves a copy of the dist branch, as fakeDist describes, and

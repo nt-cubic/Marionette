@@ -58,9 +58,41 @@ type place struct {
 	// version is the agent's CLI's there, as the probe found it; "" when
 	// not known (one on this machine is asked itself)
 	version string
+	// reach is a path under home as magpie can open it (distro.open): one
+	// below a link the distro has is opened where the link leads; nil: as
+	// is. unreached keeps the first path it couldn't tell the way to.
+	reach     func(string) (string, error)
+	unreached *error
+	// chmod takes the group's and others' bits off a file under home, where
+	// magpie's own mode doesn't hold (a distro's: see ownerOnly); nil: here
+	chmod func(string) error
 }
 
 func here(home string) place { return place{home: home} }
+
+// open is path, a path under the place's home, where magpie can open it:
+// in a WSL distro, a folder that is a link there (~/.codex ->
+// /mnt/c/Users/me/.codex, #4502) is opened where it leads, as nothing
+// below it can be opened through \\wsl.localhost. A link the distro
+// couldn't resolve leaves path as it is, and the place unreached.
+func (p place) open(path string) string {
+	if p.reach == nil {
+		return path
+	}
+	o, err := p.reach(path)
+	if err != nil {
+		if p.unreached != nil && *p.unreached == nil {
+			*p.unreached = err
+		}
+		return path
+	}
+	return o
+}
+
+// join is filepath.Join(home, elem...), opened where magpie can (open).
+func (p place) join(elem ...string) string {
+	return p.open(filepath.Join(append([]string{p.home}, elem...)...))
+}
 
 // getenv is this machine's variable for this machine's agent; "" for one
 // in a distro, whose variables magpie can't read.
@@ -76,7 +108,7 @@ func (p place) getenv(k string) string {
 // read.
 func (p place) codexHome() string {
 	if p.spell != nil {
-		return filepath.Join(p.home, ".codex")
+		return p.join(".codex")
 	}
 	return appdir.CodexHomeIn(p.home)
 }
@@ -86,7 +118,7 @@ func (p place) codexHome() string {
 // magpie can't read.
 func (p place) claudeDir() string {
 	if p.spell != nil {
-		return filepath.Join(p.home, ".claude")
+		return p.join(".claude")
 	}
 	return appdir.ClaudeDirIn(p.home)
 }
@@ -97,7 +129,7 @@ func (p place) claudeDir() string {
 // variables magpie can't read.
 func (p place) hermesHome() string {
 	if p.spell != nil {
-		return filepath.Join(p.home, ".hermes")
+		return p.join(".hermes")
 	}
 	return appdir.HermesHomeIn(p.home)
 }
@@ -106,7 +138,7 @@ func (p place) hermesHome() string {
 // HERMES_HOME says: the root of its profiles.
 func (p place) hermesDefault() string {
 	if p.spell != nil {
-		return filepath.Join(p.home, ".hermes")
+		return p.join(".hermes")
 	}
 	return appdir.HermesDefaultIn(p.home)
 }
@@ -188,6 +220,13 @@ type distro struct {
 	// ~/.omp/profiles there: each is an agent of its own (omp#<name>).
 	// Kept so a stopped distro lists them without being started.
 	OmpProfiles []string `json:"ompProfiles,omitempty"`
+	// Links are the agents' folders (and files) under $HOME that lead
+	// elsewhere, by their path under it (".codex"): where readlink -f
+	// there says they lead, "" where it couldn't say (#4502)
+	Links map[string]string `json:"links,omitempty"`
+	// Drives are where Windows' drives are mounted in it, by mount point:
+	// "/mnt/c" is "C:"
+	Drives map[string]string `json:"drives,omitempty"`
 	// Mirrored is whether the distro's 127.0.0.1 is Windows' (mirror): in
 	// mirrored networking, or in consomme
 	Mirrored bool `json:"-"`
@@ -214,8 +253,22 @@ func (d distro) local(linux string) string {
 	return d.Root + strings.ReplaceAll(linux, "/", string(filepath.Separator))
 }
 
-// native is a path magpie opens as the distro spells it.
+// native is a path magpie opens as the distro spells it: one open moved
+// to where a link leads is spelt through the link, as the agent knows it.
 func (d distro) native(local string) string {
+	best, spelt := "", ""
+	for rel, to := range d.Links {
+		if to == "" {
+			continue
+		}
+		at := d.where(to)
+		if r, ok := below(local, at); ok && len(at) > len(best) {
+			best, spelt = at, strings.TrimRight(d.Home, "/")+"/"+rel+strings.ReplaceAll(r, string(filepath.Separator), "/")
+		}
+	}
+	if best != "" {
+		return spelt
+	}
 	rel := local
 	if len(local) >= len(d.Root) && strings.EqualFold(local[:len(d.Root)], d.Root) {
 		rel = local[len(d.Root):]
@@ -225,6 +278,78 @@ func (d distro) native(local string) string {
 		rel = "/" + rel
 	}
 	return rel
+}
+
+// open is local, a path in the distro as magpie opens it, where magpie can
+// open it. Through \\wsl.localhost Windows can't follow a link the
+// distro has: a path below ~/.codex, when that leads to
+// /mnt/c/Users/me/.codex, can be neither made, written, read nor listed,
+// and a mkdir of ~/.codex itself says it exists (linusxiong's #4502). So a
+// path at or below one of Links is opened where the link leads: on one of
+// Windows' drives, there itself (C:\Users\me\.codex); elsewhere in the
+// distro, through \\wsl.localhost again. A link the distro couldn't
+// resolve is an error: where it leads isn't guessed.
+func (d distro) open(local string) (string, error) {
+	h := d.local(d.Home)
+	best, rest := "", ""
+	for rel := range d.Links {
+		at := filepath.Join(h, filepath.FromSlash(rel))
+		r, ok := below(local, at)
+		if ok && len(rel) > len(best) {
+			best, rest = rel, r
+		}
+	}
+	if best == "" {
+		return local, nil
+	}
+	to := d.Links[best]
+	if to == "" {
+		return "", fmt.Errorf("~/%s in WSL %s is a link magpie couldn't follow (readlink -f there failed), so nothing is written through it; check where it points from a shell there", best, d.Name)
+	}
+	return d.where(to) + rest, nil
+}
+
+// where is linux, a path in the distro, as magpie opens it: on one of
+// Windows' drives, the drive's own path; anywhere else, through the
+// distro's root.
+func (d distro) where(linux string) string {
+	drives := d.Drives
+	if len(drives) == 0 {
+		// a probe before Drives: WSL's default mounts, /mnt/<letter>
+		if rest, ok := strings.CutPrefix(linux, "/mnt/"); ok && len(rest) >= 1 && (len(rest) == 1 || rest[1] == '/') && isLetter(rest[0]) {
+			drives = map[string]string{"/mnt/" + rest[:1]: strings.ToUpper(rest[:1]) + ":"}
+		}
+	}
+	best := ""
+	for m := range drives {
+		if (linux == m || strings.HasPrefix(linux, m+"/")) && len(m) > len(best) {
+			best = m
+		}
+	}
+	if best == "" {
+		return d.local(linux)
+	}
+	return wslDrive(drives[best]) + strings.ReplaceAll(strings.TrimPrefix(linux[len(best):], "/"), "/", string(filepath.Separator))
+}
+
+// wslDrive is the root of a Windows drive ("C:") as magpie opens it; a var
+// for tests.
+var wslDrive = func(drive string) string { return drive + `\` }
+
+func isLetter(c byte) bool { return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' }
+
+// below is what path has below dir (with its leading separator, "" for
+// dir itself), and whether it is dir or under it; Windows' paths compared
+// without case.
+func below(path, dir string) (string, bool) {
+	if len(path) < len(dir) || !strings.EqualFold(path[:len(dir)], dir) {
+		return "", false
+	}
+	rest := path[len(dir):]
+	if rest != "" && rest[0] != filepath.Separator {
+		return "", false
+	}
+	return rest, true
 }
 
 // mirror settles Mirrored from what wslinfo said at the probe, or, when it
@@ -264,7 +389,23 @@ func (d distro) place(id string) place {
 	if k, _, ok := strings.Cut(kind, "#"); ok {
 		kind = k
 	}
-	return place{home: d.local(d.Home), id: id, spell: d.native, sys: d.local, base: d.base, cold: !d.Running, version: d.Versions[kind]}
+	return place{home: d.local(d.Home), id: id, spell: d.native, sys: d.local, base: d.base, cold: !d.Running, version: d.Versions[kind],
+		reach: d.open, unreached: new(error), chmod: d.chmod}
+}
+
+// chmod takes the group's and others' bits off local, a file in the distro
+// magpie opens, from inside it: a file written through \\wsl.localhost is
+// 0644 there whatever mode magpie asks for, and a key store so is refused.
+func (d distro) chmod(local string) error {
+	if _, err := os.Stat(local); err != nil {
+		return nil
+	}
+	// a failure is said in the log, not as the pick's: the route and the key
+	// are written, and the next pick or sync tries again
+	if out, err := wslRun(30*time.Second, "-d", d.Name, "-e", "chmod", "go-rwx", d.native(local)); err != nil {
+		log.Printf("chmod go-rwx %s in %s: %v %s", d.native(local), d.Name, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // wslKind is an agent magpie looks for in a distro: what the probe finds
@@ -300,7 +441,7 @@ var wslKinds = []wslKind{
 					// over several accounts magpie routes, so they are
 					// offered via magpie too, as on a live Codex (#1603)
 					if codexFailover() {
-						return append(group("OpenAI", options(ownCodex(), "")), viaMagpie("codex", "")...)
+						return withVia(group("OpenAI", options(ownCodex(), "")), "codex", "")
 					}
 					own := codexInMagpie(group("OpenAI", options(ownCodex(), "")))
 					return append(own, codexViaMagpieFor(own)...)
@@ -330,7 +471,7 @@ var wslKinds = []wslKind{
 			if key == "model" {
 				// the providers of its auth.json are the distro's files
 				return func(cur map[string]string) []Option {
-					return append(ownOptions("", cur["model"]), viaMagpie("pi", magpieID+"/")...)
+					return withVia(ownOptions("", cur["model"]), "pi", magpieID+"/")
 				}
 			}
 			return nil
@@ -341,7 +482,7 @@ var wslKinds = []wslKind{
 		asleep: func(key string) func(map[string]string) []Option {
 			if key == "model" {
 				return func(cur map[string]string) []Option {
-					return append(ownOptions("", cur["model"]), viaMagpie("omo", magpieID+"/")...)
+					return withVia(ownOptions("", cur["model"]), "omo", magpieID+"/")
 				}
 			}
 			return nil
@@ -352,7 +493,7 @@ var wslKinds = []wslKind{
 		asleep: func(key string) func(map[string]string) []Option {
 			if key == "model" {
 				return func(cur map[string]string) []Option {
-					return append(ownOptions("", cur["model"]), viaMagpie("prime-agent", magpieID+"/")...)
+					return withVia(ownOptions("", cur["model"]), "prime-agent", magpieID+"/")
 				}
 			}
 			return nil
@@ -367,7 +508,7 @@ var wslKinds = []wslKind{
 			case "model":
 				// whether it has a base URL of its own is the distro's file
 				return func(cur map[string]string) []Option {
-					return append(group("Claude Code", claudeOwn(cur["model"], nil, catalog.Provider("anthropic"))), claudeViaMagpie(false)...)
+					return joinedVia(group("Claude Code", claudeOwn(cur["model"], nil, catalog.Provider("anthropic"))), claudeViaShared(false), [2]string{"\x00claude-via", "\x00asleep"})
 				}
 			case "effort", "ultracode":
 				// their own options read only what was last seen
@@ -419,7 +560,7 @@ var wslKinds = []wslKind{
 				return nil
 			}
 			return func(cur map[string]string) []Option {
-				return append(kimiOwnOptions("", cur["model"]), viaMagpie("kimi", magpieID+"/")...)
+				return withVia(kimiOwnOptions("", cur["model"]), "kimi", magpieID+"/")
 			}
 		}},
 	// Qwen Code's ~/.qwen, one settings.json of the same shape as this
@@ -431,7 +572,7 @@ var wslKinds = []wslKind{
 				return nil
 			}
 			return func(cur map[string]string) []Option {
-				return append(qwenOwnOptions("", cur["model"]), viaMagpie("qwen", magpieID+"/")...)
+				return withVia(qwenOwnOptions("", cur["model"]), "qwen", magpieID+"/")
 			}
 		}},
 	{id: "omp", name: "omp", dir: ".omp", bin: "omp", in: ompIn, version: true,
@@ -441,7 +582,7 @@ var wslKinds = []wslKind{
 				return nil
 			}
 			return func(cur map[string]string) []Option {
-				return append(ompOwnOptions("", cur[key]), viaMagpie("omp", magpieID+"/")...)
+				return withVia(ompOwnOptions("", cur[key]), "omp", magpieID+"/")
 			}
 		}},
 	{id: "crush", name: "Crush", dir: ".config/crush", bin: "crush", in: crushIn,
@@ -479,7 +620,7 @@ var wslKinds = []wslKind{
 				if c := cur["model"]; c != "" && !usesMagpie(c) {
 					own = append(own, Option{Value: c, Icon: modelIcon("", c)})
 				}
-				return append(group("Droid", own), viaMagpie("droid", magpieID+"/")...)
+				return withVia(group("Droid", own), "droid", magpieID+"/")
 			}
 		}},
 	// no bin: fx is also the JSON viewer's name
@@ -494,7 +635,7 @@ var wslKinds = []wslKind{
 				return nil
 			}
 			return func(cur map[string]string) []Option {
-				return append(miniMaxOwnOptions("", cur["model"]), viaMagpie("minimax-code", magpieID+"/")...)
+				return withVia(miniMaxOwnOptions("", cur["model"]), "minimax-code", magpieID+"/")
 			}
 		}},
 	// version: a dsh with no profile yet is told from one before profiles
@@ -510,7 +651,7 @@ var wslKinds = []wslKind{
 					for i := range own {
 						own[i].Direct = "DeepSeek"
 					}
-					return append(own, viaMagpie("dsh", magpieID+"/")...)
+					return withVia(own, "dsh", magpieID+"/")
 				}
 			}
 			if key != "effort" {
@@ -551,7 +692,7 @@ var wslKinds = []wslKind{
 			}
 			// the models of its config.toml are the distro's files
 			return func(cur map[string]string) []Option {
-				return append(atomcodeOwnModels("", cur["model"]), viaMagpie("atomcode", magpieID+"/")...)
+				return withVia(atomcodeOwnModels("", cur["model"]), "atomcode", magpieID+"/")
 			}
 		}},
 	// Snow CLI's ~/.snow, its profiles the distro's own; a stopped
@@ -596,12 +737,12 @@ var wslKinds = []wslKind{
 				if c := cur["model"]; c != "" && !usesMagpie(c) {
 					own = append(own, Option{Value: c, Icon: modelIcon("", c), Direct: "Google"})
 				}
-				return append(group("Antigravity CLI", own), viaMagpie("agy", magpieID+"/")...)
+				return withVia(group("Antigravity CLI", own), "agy", magpieID+"/")
 			}
 		}},
 	// Block's goose, by its folder alone: a goose command may be pressly's
 	// database migration tool
-	{id: "goose", name: "Goose", dir: ".config/goose", in: func(at place) *Agent { return gooseIn(at, filepath.Join(at.home, ".config")) },
+	{id: "goose", name: "Goose", dir: ".config/goose", in: func(at place) *Agent { return gooseIn(at, at.join(".config")) },
 		restart: newNotice("{agent} in WSL {distro} loads its providers at start-up — restart open goose sessions to use magpie's models."),
 		asleep:  wslOwnAsleep("goose", "model")},
 	// Reasonix's native CLI (1.39 on), by its command and the version it
@@ -625,7 +766,7 @@ var wslKinds = []wslKind{
 			switch key {
 			case "model", "planner":
 				return func(cur map[string]string) []Option {
-					out := append(ownOptions("", cur[key]), viaMagpie("reasonix", magpieID+"/")...)
+					out := append(ownOptions("", cur[key]), viaMagpieShared("reasonix", magpieID+"/")...)
 					if key == "planner" {
 						out = append([]Option{{Value: "off", Label: "off", Note: "Disable the separate planner"}}, out...)
 					}
@@ -658,7 +799,7 @@ func wslOwnAsleep(id string, keys ...string) func(string) func(map[string]string
 			return nil
 		}
 		return func(cur map[string]string) []Option {
-			return append(ownOptions("", cur[key]), viaMagpie(id, magpieID+"/")...)
+			return withVia(ownOptions("", cur[key]), id, magpieID+"/")
 		}
 	}
 }
@@ -771,6 +912,12 @@ func wslAgent(k wslKind, d distro) *Agent {
 	if !d.Running {
 		return asleep(a, k, d)
 	}
+	if k.dir != "" {
+		at.join(filepath.FromSlash(k.dir))
+	}
+	if err := *at.unreached; err != nil {
+		return unreached(a, err)
+	}
 	if reached := a.Reached; reached != nil {
 		a.Reached = func(since time.Time) (time.Time, string, bool) {
 			if !d.live() {
@@ -844,6 +991,48 @@ func wslAgent(k wslKind, d distro) *Agent {
 		}
 	}
 	return a
+}
+
+// unreached is an agent in a distro whose folder is a link the distro
+// couldn't resolve (distro.open): nothing of it is written, and each
+// change, and its notice, says why.
+func unreached(a *Agent, err error) *Agent {
+	a.unreached = err
+	a.Notice = func() string { return err.Error() }
+	for i := range a.Fields {
+		if a.Fields[i].Set != nil {
+			a.Fields[i].Set = func(string) error { return err }
+		}
+	}
+	if a.Sync != nil {
+		a.Sync = func() error { return err }
+	}
+	return a
+}
+
+// Unreached is why magpie can't open the folder of a, an agent in a WSL
+// distro: a link there the distro couldn't resolve; nil for any other.
+func (a *Agent) Unreached() error { return a.unreached }
+
+// WSLOpen is path, under the home of a, an agent in a WSL distro, where
+// magpie can open it (distro.open): below a link of the distro's, where
+// the link leads. The error says a link there couldn't be resolved. Any
+// other agent's path is as it is.
+func WSLOpen(a *Agent, path string) (string, error) {
+	if a == nil || a.WSL == "" {
+		return path, nil
+	}
+	wsl.Lock()
+	d := wsl.seen[a.WSL]
+	var c distro
+	if d != nil {
+		c = *d
+	}
+	wsl.Unlock()
+	if d == nil || c.Root == "" {
+		return path, nil
+	}
+	return c.open(path)
 }
 
 // asleep is a stopped distro's agent: its fields read what magpie last
@@ -929,7 +1118,7 @@ func wslAgentsOf(ds []distro) []*Agent {
 			k := wslKindOf("omp")
 			k.id, k.name = "omp#"+name, "omp · "+name
 			k.in = func(at place) *Agent {
-				return ompAt(at, filepath.Join(at.home, ".omp", "profiles", name, "agent"),
+				return ompAt(at, at.join(".omp", "profiles", name, "agent"),
 					func() ompProviderEntry { return ompProviderAt(at.gw(), at.version) })
 			}
 			out = append(out, wslAgent(k, d))
@@ -951,25 +1140,31 @@ func wslHomes() []sessions.WSLHome {
 		if d.Root == "" || d.Home == "" {
 			continue
 		}
-		out = append(out, sessions.WSLHome{Distro: d.Name, Home: d.local(d.Home), Running: d.Running})
+		open := func(path string) string {
+			if to, err := d.open(path); err == nil {
+				return to
+			}
+			return path
+		}
+		out = append(out, sessions.WSLHome{Distro: d.Name, Home: d.local(d.Home), Running: d.Running, Open: open})
 	}
 	return out
 }
 
 // wslCopilotDir is the Copilot CLI's folder under a distro's $HOME: not an
-// agent magpie sets up, but a sign-in it uses (provider.CopilotWSLHomes),
+// agent magpie sets up, but a sign-in it uses (provider.CopilotWSLDirs),
 // so a distro that has only it is kept as one agents are found in (#723).
 const wslCopilotDir = ".copilot"
 
-// copilotWSLHomes are the homes, as magpie opens them, of the running
-// distros the Copilot CLI's folder was found in, for provider to read its
-// sign-in in; none off Windows. A stopped distro is left out: reading it
-// would start it.
-func copilotWSLHomes() []string {
+// copilotWSLDirs are the Copilot CLI's folders, as magpie opens them (where
+// a link leads, #4502), in the running distros it was found in, for
+// provider to read its sign-in in; none off Windows. A stopped distro is
+// left out: reading it would start it.
+func copilotWSLDirs() []string {
 	var out []string
 	for _, h := range wslHomes() {
 		if h.Running && wslHasCopilot(h.Distro) {
-			out = append(out, h.Home)
+			out = append(out, h.Open(filepath.Join(h.Home, wslCopilotDir)))
 		}
 	}
 	return out
@@ -1450,8 +1645,15 @@ var wslProbeScript = func() string {
 		}
 	}
 	s += `[ -d "$HOME/` + wslCopilotDir + `" ] && echo dir:` + wslCopilotDir + `; `
-	// a drive's source in /proc/mounts is C:\ (written C:\134), under any automount root
-	s += `awk '$1 ~ /^[A-Za-z]:/ {print "win:" $2}' /proc/mounts 2>/dev/null; `
+	// where each agent folder that leads elsewhere leads (distro.open):
+	// "link:.codex /mnt/c/Users/me/.codex", or "link:.codex" alone where
+	// readlink -f couldn't say
+	// (a $HOME that is itself through a link is left as it is)
+	s += `h=$(readlink -f -- "$HOME" 2>/dev/null); for r in ` + strings.Join(wslLinkPaths(), " ") + `; do p="$HOME/$r"; { [ -e "$p" ] || [ -L "$p" ]; } || continue; ` +
+		`if t=$(readlink -f -- "$p" 2>/dev/null) && [ -n "$t" ]; then [ "$t" = "$p" ] || [ "$t" = "$h/$r" ] || echo "link:$r $t"; else echo "link:$r"; fi; done; `
+	// a drive's source in /proc/mounts is C:\ (written C:\134), under any
+	// automount root: its mount point, and the drive
+	s += `awk '$1 ~ /^[A-Za-z]:/ {print "win:" $2 " " toupper(substr($1,1,1)) ":"}' /proc/mounts 2>/dev/null; `
 	// named omp profiles: the probe runs only in a distro that is running,
 	// so this never starts a stopped one to find them
 	s += `for d in "$HOME"/.omp/profiles/*; do [ -d "$d" ] && echo "profile:omp:$(basename "$d")"; done; `
@@ -1459,6 +1661,20 @@ var wslProbeScript = func() string {
 		`grep -m1 '^nameserver' /etc/resolv.conf 2>/dev/null | sed 's/^/ns:/'; ` +
 		`command -v wslinfo >/dev/null 2>&1 && echo "net:$(wslinfo --networking-mode 2>/dev/null)"; true`
 }()
+
+// wslLinkPaths are the paths under a distro's $HOME the probe asks where
+// they lead (distro.Links): each agent's folder and its skills, and the
+// folders and files the agents keep beside theirs.
+func wslLinkPaths() []string {
+	out := []string{".config", ".local", ".local/share", ".agents", ".agents/skills", ".gemini", ".gemini/config", ".gemini/skills", ".kimi", ".reasonix", ".claude.json", ".slock", ".kimi-code/sessions", wslCopilotDir}
+	for _, k := range wslKinds {
+		if k.dir != "" {
+			out = append(out, k.dir, k.dir+"/skills")
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
 
 func wslProbe(name string) *distro {
 	b, err := wslRun(30*time.Second, "-d", name, "-e", "sh", "-lc", wslProbeScript)
@@ -1504,9 +1720,34 @@ func parseProbe(name, out string) *distro {
 			bin, path, _ := strings.Cut(v, " ")
 			bins[bin] = strings.TrimSpace(path)
 		case "win":
-			if v = strings.TrimRight(v, "/"); strings.HasPrefix(v, "/") {
-				win = append(win, v+"/")
+			// win:/mnt/c C: (a probe before it said only /mnt/c)
+			f := strings.Fields(v)
+			if len(f) == 0 {
+				continue
 			}
+			if m := strings.TrimRight(f[0], "/"); strings.HasPrefix(m, "/") {
+				win = append(win, m+"/")
+				if len(f) > 1 && len(f[1]) == 2 && f[1][1] == ':' && isLetter(f[1][0]) {
+					if d.Drives == nil {
+						d.Drives = map[string]string{}
+					}
+					d.Drives[m] = strings.ToUpper(f[1])
+				}
+			}
+		case "link":
+			// link:.codex /mnt/c/Users/me/.codex; link:.codex alone where
+			// it couldn't be resolved
+			rel, to, _ := strings.Cut(v, " ")
+			if !slices.Contains(wslLinkPaths(), rel) {
+				continue
+			}
+			if to = strings.TrimSpace(to); !strings.HasPrefix(to, "/") {
+				to = ""
+			}
+			if d.Links == nil {
+				d.Links = map[string]string{}
+			}
+			d.Links[rel] = strings.TrimRight(to, "/")
 		case "route":
 			// default via 172.20.0.1 dev eth0 …
 			if f := strings.Fields(v); len(f) >= 3 && f[1] == "via" && net.ParseIP(f[2]) != nil {

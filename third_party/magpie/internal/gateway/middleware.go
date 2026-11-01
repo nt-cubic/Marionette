@@ -44,7 +44,7 @@ func (s *Server) serveAgent(w http.ResponseWriter, r *http.Request, from provide
 		return
 	}
 	info := gwmw.Info{Protocol: string(from), Model: modelOf(body), Stream: streamOf(body), Path: r.URL.Path, Agent: agentOf(r)}
-	var tried []gwmw.Tried
+	var runs mwRuns
 	for _, a := range agents {
 		// the user's middleware runs before a route is begun: a wait
 		// magpie knows of (unrouted.go)
@@ -56,7 +56,10 @@ func (s *Server) serveAgent(w http.ResponseWriter, r *http.Request, from provide
 		}
 		defer run.End()
 		if t, ok := run.(gwmw.Tried); ok {
-			tried = append(tried, t)
+			runs.tried = append(runs.tried, t)
+		}
+		if t, ok := run.(gwmw.Accounts); ok {
+			runs.accounts = append(runs.accounts, t)
 		}
 		var turned *gwmw.Reject
 		body, turned = run.Request(body)
@@ -69,28 +72,57 @@ func (s *Server) serveAgent(w http.ResponseWriter, r *http.Request, from provide
 		w, done = run.Wrap(w)
 		defer done()
 	}
-	if len(tried) > 0 {
-		r = r.WithContext(context.WithValue(r.Context(), triedKey{}, tried))
+	if len(runs.tried) > 0 || len(runs.accounts) > 0 {
+		r = r.WithContext(context.WithValue(r.Context(), triedKey{}, runs))
 	}
 	s.serve(w, r, from, body)
 }
 
 type triedKey struct{}
 
+// mwRuns are the middleware of an agent's request that are asked again on
+// each try: tried change its body (onProvider), accounts may pass its
+// account over (onAccount).
+type mwRuns struct {
+	tried    []gwmw.Tried
+	accounts []gwmw.Accounts
+}
+
 // triedOn is body as it goes to model on p, in the agent's API: what each
 // middleware of the request that is also gwmw.Tried (the JS chain's
 // onProvider) made of it for that provider. Each try starts from the body
 // it is given, so a change for one provider never reaches another's.
 func triedOn(ctx context.Context, p provider.Provider, model string, body []byte) []byte {
-	tried, _ := ctx.Value(triedKey{}).([]gwmw.Tried)
-	if len(tried) == 0 {
+	runs, _ := ctx.Value(triedKey{}).(mwRuns)
+	if len(runs.tried) == 0 {
 		return body
 	}
 	to := gwmw.To{ID: p.ID, Name: p.Name, Account: accountAgent(p), Model: model}
-	for _, t := range tried {
+	for _, t := range runs.tried {
 		body = t.Tried(body, to)
 	}
 	return body
+}
+
+// accountSkipped asks the request's middleware with onAccount whether the
+// account p is may be used for this try of model, before anything of the
+// try is done: by is the middleware that passed it over, "" when none did.
+// A try on a key asks none, and tells them it is no account's.
+func accountSkipped(ctx context.Context, p provider.Provider, model string) (by string) {
+	runs, _ := ctx.Value(triedKey{}).(mwRuns)
+	if len(runs.accounts) == 0 {
+		return ""
+	}
+	a := gwmw.Account{ID: p.ID, Name: p.Name, Model: model}
+	if p.Account != nil {
+		a.Agent, a.User, a.Plan = p.Account.Agent, p.Account.User, p.Account.Plan
+	}
+	for _, t := range runs.accounts {
+		if skip, who := t.Account(a); skip {
+			return who
+		}
+	}
+	return ""
 }
 
 // ownAsk is ctx for a request magpie asks of its own gateway while it
@@ -106,7 +138,7 @@ func triedOn(ctx context.Context, p provider.Provider, model string, body []byte
 // is it the agent's turn, which a model set for requests masking would
 // change takes (maskRouteFor): it is masked as magpie's own asks are.
 func ownAsk(ctx context.Context) context.Context {
-	return context.WithValue(context.WithValue(ctx, triedKey{}, []gwmw.Tried(nil)), agentTurnKey{}, false)
+	return context.WithValue(context.WithValue(ctx, triedKey{}, mwRuns{}), agentTurnKey{}, false)
 }
 
 // middlewareWanted: plugins.json has a JS middleware on, so plugins/middleware

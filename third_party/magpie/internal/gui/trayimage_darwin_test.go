@@ -280,3 +280,20 @@ func TestTrayImageClickWithoutBird(t *testing.T) {
 	default:
 	}
 }
+
+// The digits weigh what the menu bar's other figures do (qingnianxiaozhe on
+// X: beside Surge's and iStat Menus' figures magpie's read too bold, and a
+// lone figure too small and too heavy): two stacked rows in the small
+// system font, regular or at most medium, never semibold or bold; a lone
+// row in the menu bar's own font, its size and regular weight. Both have
+// digits of one width.
+func TestTrayRowFont(t *testing.T) {
+	size, weight, mono, bar := trayRowFont(2)
+	if size < 9.5 || size > 10.5 || weight > 0.25 || weight < 0 || !mono {
+		t.Errorf("two rows: %.1fpt, weight %.2f, one-width digits %v; want 9.5-10.5pt, regular or medium, one width", size, weight, mono)
+	}
+	size, weight, mono, _ = trayRowFont(1)
+	if size != bar || weight != 0 || !mono {
+		t.Errorf("one row: %.1fpt, weight %.2f, one-width digits %v; want the menu bar's %.1fpt, regular, one width", size, weight, mono, bar)
+	}
+}

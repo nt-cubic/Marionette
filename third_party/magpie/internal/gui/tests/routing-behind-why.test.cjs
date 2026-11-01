@@ -23,7 +23,7 @@ const H = 3600e3;
 // (its week in 20h); affinity, when given, kept it on Max
 function routeOf(affinity) {
   const max = { id: "claude", provider: "claude", name: "Claude", who: "max@example.com", kind: "account", agent: "claude", model: "claude-haiku-5-5",
-    known: true, used: 80, renews: [iso(now + 9 * H), iso(now + 2 * H)], usedRenews: iso(now + 9 * H), plan: "max" };
+    known: true, used: 80, renews: [iso(now + 12 * H + 5 * 60e3), iso(now + 2 * H)], usedRenews: iso(now + 12 * H + 5 * 60e3), plan: "max" };
   const od = { id: "opendesign", provider: "opendesign", name: "Open Design", who: "od@example.com", kind: "account", agent: "opendesign", model: "claude-haiku-5.5",
     known: true, used: 25, renews: [iso(now + 20 * H + 5 * 60e3), iso(now + 3 * H)], usedRenews: iso(now + 20 * H + 5 * 60e3), plan: "Design Plan Go" };
   return {
@@ -59,13 +59,13 @@ function serve(lang, route) {
 }
 
 // what the Design Plan row says: behind one renewing sooner, and behind
-// the conversation kept on another
+// the conversation kept on another, each with when its week renews
 const words = {
-  en: ["75% left · renews in 20 h · one renewing sooner goes first", "75% left · conversation kept on another", "answered this request"],
-  zh: ["剩余 75% · 20 小时后重置 · 先用更早重置的账号", "剩余 75% · 会话留在另一个账号", "回答了这个请求"],
-  "zh-TW": ["剩餘 75% · 20 小時後重置 · 先用更早重置的帳號", "剩餘 75% · 對話留在另一個帳號"],
-  ja: ["残り 75% · 20 時間 後に更新 · 先に更新されるアカウントを優先", "残り 75% · 会話は別のアカウントに固定"],
-  de: ["75% übrig · erneuert sich in 20 h · eines, das sich früher erneuert, geht vor", "75% übrig · Unterhaltung bleibt bei einem anderen"],
+  en: ["75% left · renews in 20 h · one renewing sooner goes first", "75% left · conversation kept on another · renews in 20 h", "answered this request · renews in 12 h"],
+  zh: ["剩余 75% · 20 小时后重置 · 先用更早重置的账号", "剩余 75% · 会话留在另一个账号 · 20 小时后重置", "回答了这个请求 · 12 小时后重置"],
+  "zh-TW": ["剩餘 75% · 20 小時後重置 · 先用更早重置的帳號", "剩餘 75% · 對話留在另一個帳號 · 20 小時後重置"],
+  ja: ["残り 75% · 20 時間 後に更新 · 先に更新されるアカウントを優先", "残り 75% · 会話は別のアカウントに固定 · 20 時間 後に更新"],
+  de: ["75% übrig · erneuert sich in 20 h · eines, das sich früher erneuert, geht vor", "75% übrig · Unterhaltung bleibt bei einem anderen · erneuert sich in 20 h"],
 };
 
 const rowText = (page, who) => page.locator(".rt-accts > li", { hasText: who }).first().locator(".st, em").first();
@@ -91,7 +91,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
               await od.waitFor();
               await page.waitForFunction((w) => [...document.querySelectorAll(".rt-accts > li")].some((l) => l.textContent.includes(w)), words[lang][i], { timeout: 4000 }).catch(() => {});
               assert.equal((await od.textContent()).trim(), words[lang][i]);
-              // the one that answered says so, nothing more
+              // the one that answered says so, and when its week renews (dzxx0496)
               if (words[lang][2]) assert.equal((await rowText(page, "max@example.com").textContent()).trim(), words[lang][2]);
               const over = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
               assert.ok(over <= 1, `${lang} at ${width}: ${over}px past`);

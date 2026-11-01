@@ -2,7 +2,10 @@
 // Every page of the window keeps to one width, centred, on a large screen:
 // Routing, Usage and Sessions too, not stretched edge to edge while Agents,
 // Providers and Settings sit in the middle (面条 on Discord, after #860). A
-// narrow window keeps every page's 16px gutter.
+// narrow window keeps every page's 16px gutter. Masking too, which a
+// maximised window stretched edge to edge while the rest kept to the
+// middle (refeccd on Discord): the pages are the sidebar's own, so a page
+// added later is held to the same width without this list knowing it.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -10,7 +13,6 @@ const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
 
 const assets = path.resolve(__dirname, "../assets");
-const VIEWS = ["agents", "sessions", "library", "providers", "routing", "gateway", "usage", "plugins", "settings"];
 
 function serve(lang) {
   const state = { agents: [], profiles: [], settings: { lang, theme: "light" } };
@@ -46,7 +48,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
   test(`${engine}: every page keeps one width`, async (t) => {
     const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
     t.after(() => browser.close());
-    for (const [lang, width] of [["en", 1920], ["zh", 2560], ["zh-TW", 1920], ["ja", 2560], ["de", 1920], ["en", 900]]) {
+    for (const [lang, width] of [["en", 1920], ["zh", 2560], ["zh-TW", 1920], ["ja", 2560], ["de", 1920], ["en", 900], ["en", 420], ["zh", 420], ["zh-TW", 420], ["ja", 420], ["de", 420]]) {
       await t.test(`${lang} at ${width}`, async () => {
         const context = await browser.newContext({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
         const page = await context.newPage();
@@ -57,8 +59,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.route("**/*", serve(lang));
         await page.goto("http://magpie.test/");
         await page.waitForSelector("#nav button.on");
+        // every page the sidebar opens (a community plugin's page draws in a
+        // frame of its own, and none is installed here), and Settings
+        const views = await page.$$eval("#nav button[data-view]:not([data-plugin-page])", (bs) => bs.map((b) => b.dataset.view));
+        views.push("settings");
+        assert.ok(views.includes("masking"), `the sidebar's pages: ${views}`);
         const got = {};
-        for (const v of VIEWS) {
+        for (const v of views) {
           // Settings is at the sidebar's foot, the others in its list
           const b = page.locator(v === "settings" ? "#prefs" : `#nav button[data-view="${v}"]`);
           if (!(await b.isVisible())) continue;
@@ -66,7 +73,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await page.waitForFunction((v) => !document.querySelector(`#view-${v}`).hidden, v);
           got[v] = await box(page, v);
         }
-        assert.ok(["sessions", "routing", "usage", "agents", "settings"].every((v) => got[v]), `the pages reached: ${Object.keys(got)}`);
+        assert.ok(["sessions", "routing", "usage", "masking", "agents", "settings"].every((v) => got[v]), `the pages reached: ${Object.keys(got)}`);
         const ref = got.agents;
         for (const [v, b] of Object.entries(got)) {
           if (width >= 1600) {

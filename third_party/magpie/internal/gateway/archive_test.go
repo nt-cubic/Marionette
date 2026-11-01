@@ -226,8 +226,11 @@ func TestArchiveWholeBodies(t *testing.T) {
 			if a.Request.Body != body || a.Request.Size != int64(len(body)) || a.Request.Truncated {
 				t.Errorf("request kept %d of %d, size %d, cut %v", len(a.Request.Body), len(body), a.Request.Size, a.Request.Truncated)
 			}
-			if a.Response.Body != rec.Body.String() || a.Response.Size != int64(rec.Body.Len()) || a.Response.Truncated {
-				t.Errorf("response kept %d of %d, size %d, cut %v", len(a.Response.Body), rec.Body.Len(), a.Response.Size, a.Response.Truncated)
+			// the reply as the vendor sent it, under its own model name;
+			// the agent got the name it asked for
+			sent := namedAs(rec.Body.String(), "m1")
+			if a.Response.Body != sent || a.Response.Size != int64(len(sent)) || a.Response.Truncated {
+				t.Errorf("response kept %d of %d, size %d, cut %v", len(a.Response.Body), len(sent), a.Response.Size, a.Response.Truncated)
 			}
 			if u := lastUsage(t); u.Archive == "" || u.Archive != c.Archive {
 				t.Errorf("usage row names archive %q, the call %q", u.Archive, c.Archive)

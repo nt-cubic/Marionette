@@ -19,10 +19,12 @@ package provider
 // the sign-in. In order, the gateway goes to the first until it is used
 // up or refused, so the sign-in moves only once it is used up (#530).
 //
-// The account it moved from is the one the user made first, and it stays
-// that: once it is no longer low (backShare) the agent is signed back in
-// to it, as Smart gives it requests again then (#408). A switch the user
-// makes meanwhile ends that. With KeepLogin on the subscription, the agent
+// The account it moved from is the one the user made first, and where the
+// sign-in follows the gateway it stays that: once it is no longer low
+// (backShare) the agent is signed back in to it, as Smart gives it
+// requests again then (#408). Where the sign-in alone spends the accounts
+// (returnsToFirst), the agent stays on the one it moved to till that is
+// spent too. A switch the user makes meanwhile ends that. With KeepLogin on the subscription, the agent
 // stays signed in to the first, whatever it has left (#524); with
 // KeepLoginAs, to that account, wherever it stands in the order. Not while
 // magpie only switches the sign-in (SwitchOnly): moving it is then all
@@ -116,9 +118,9 @@ const SpentShare = 98
 // SpentShareOf is the share past which routing counts an account spent:
 // SpentShare, but In order sends requests to the first until a window of it
 // is used up or the vendor refuses it, so there an account at 98% is still
-// tried in its turn (#530).
+// tried in its turn (#530); Until used up stays on one until then too.
 func SpentShareOf(routing string) float64 {
-	if routing == Ordered {
+	if routing == Ordered || routing == Drain {
 		return 100
 	}
 	return SpentShare
@@ -128,12 +130,35 @@ func SpentShareOf(routing string) float64 {
 // says: the share the account it is on is moved off at, and whether it is
 // kept on the first instead (keepsLogin).
 func loginSwitching(agent string) (share float64, keep bool) {
-	for _, p := range load().Providers {
+	for _, p := range storedFile().Providers {
 		if p.ID == agent {
 			return SpentShareOf(p.Routing), p.keepsLogin()
 		}
 	}
 	return SpentShare, false
+}
+
+// returnsToFirst says whether magpie signs agent back in to the account
+// it moved it off once that has room again (#408), rather than leaving it
+// on the one it moved it to till that is spent in turn. The sign-in goes
+// back where it follows the gateway: Codex's requests go through magpie,
+// whose Smart and In order give the first account requests again once it
+// has room (#209), and In order on any subscription is the user's word
+// that the first comes first. Where the sign-in is what spends the
+// accounts — Claude Code asks Anthropic itself, and Codex whose sign-in
+// alone magpie switches (SwitchOnly) — going back at the first's reset
+// left the account moved to part used and started the first's next
+// window early, which is not "use one up, then the next" (hxy920830 on
+// X): there it stays, unless the user said the first comes first.
+func returnsToFirst(agent string) bool {
+	for _, p := range storedFile().Providers {
+		if p.ID == agent {
+			// kept on the first (KeepLogin), set aside under SwitchOnly,
+			// is still the user's word that the first comes first
+			return p.Routing == Ordered || p.KeepLogin || agent == "codex" && !p.SwitchOnly
+		}
+	}
+	return agent == "codex"
 }
 
 // backShare is the share below which the account magpie moved the agent
@@ -251,7 +276,7 @@ func NextLogin(ctx context.Context, agent string) (from, to string, back, ok boo
 	// spares only once the one it is on is spent (below): every account
 	// read at once on each look was a burst no official client makes
 	var firstUser string
-	if first != nil {
+	if first != nil && returnsToFirst(agent) {
 		firstUser = first.User
 	}
 	u := someLoginUsage(ctx, agent, from, firstUser)
@@ -266,7 +291,7 @@ func NextLogin(ctx context.Context, agent string) (from, to string, back, ok boo
 	// to go on with) is spent whatever its windows read: the app sends
 	// nothing for it, and a workspace seat at its owner's limit or a spend
 	// cap is held with every window under the share
-	if first != nil && first.On && first.Lapsed == "" {
+	if first != nil && first.On && first.Lapsed == "" && returnsToFirst(agent) {
 		if q, known := u[first.User]; known && q.Error == "" && !q.Held && !usedPast(q, backShare, now) && !capped(first.User, q) {
 			return from, first.User, true, true
 		}

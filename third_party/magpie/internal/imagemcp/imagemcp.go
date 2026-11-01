@@ -231,7 +231,7 @@ func callLongest() time.Duration {
 // Run serves MCP on stdin/stdout until stdin closes.
 func Run(args []string) error {
 	if len(args) > 0 && args[0] != "image" {
-		return fmt.Errorf("unknown MCP server %q (there is: image)", args[0])
+		return fmt.Errorf("unknown MCP server %q (there are: image, browser, search, vision)", args[0])
 	}
 	if len(args) > 1 {
 		w, err := options(args[1:])

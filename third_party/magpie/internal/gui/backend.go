@@ -13,7 +13,6 @@ import (
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/provider"
-	"github.com/yetone/magpie/internal/update"
 	"github.com/yetone/magpie/internal/usage"
 )
 
@@ -95,7 +94,9 @@ func watchGateway(ctx context.Context, every time.Duration) {
 		case <-t.C:
 		}
 		gatewayMu.Lock()
-		if ctx.Err() == nil && served.Load() == nil && !gateway.Running() {
+		if ctx.Err() == nil && served.Load() == nil {
+			// gone, or an older copy of the app done with its requests
+			// (otherServes): served here; else looked at again next time
 			serveGatewayLocked()
 		}
 		gatewayMu.Unlock()
@@ -134,11 +135,15 @@ func serveGatewayLocked() *gateway.Server {
 		// the Codex relay a magpie quitting left at the port (codexrelay)
 		// lets go of it, finishing the turns it streams
 		codexrelay.Leave()
+		// another magpie serving it: said on the page when its version
+		// isn't this one's, and quit when it is an older copy of the app
+		// with nothing in flight (gateway_older.go)
 		if o := gateway.ServedBy(); o.Running {
-			if update.Newer(gateway.Version, o.Version) {
-				log.Printf("gateway: magpie %s serves %s, older than this one (%s); agents' requests go through it until it quits", o.Version, gateway.URL(), gateway.Version)
+			if !otherServes(o) {
+				return nil
 			}
-			return nil
+			// the relay the one quit may have left at the port
+			codexrelay.Leave()
 		}
 		// a magpie too busy to answer the question in time (a small
 		// server, one starting), or another program, has the port: a
@@ -152,6 +157,7 @@ func serveGatewayLocked() *gateway.Server {
 		}
 	}
 	takenSaid.Store(false)
+	gatewayOther.Store(nil)
 	gw := gateway.New()
 	served.Store(gw)
 	serving.Add(1)

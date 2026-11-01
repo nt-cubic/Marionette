@@ -645,6 +645,14 @@ var presets = []PresetDef{
 		Decide:  "https://maas.qianwenaiapi.com/compatible-mode/v1",
 		Note:    "routes groups · picks model and effort",
 		Website: "https://www.qianwenai.com/models/decision-model-preview", KeysURL: "https://platform.qianwenai.com/home/api-keys"},
+	// Volcengine Ark's System One API, in beta (axelburks on Discord): its
+	// pay-as-you-go /api/v1/systemone, behind the ark-beta-systemone-api
+	// header, answers with doubao-seed-2-1-lite-260915 (ArkDecision) on an
+	// Ark API key. The Coding and Agent Plans' paths don't serve it.
+	{ID: "volcengine-decision", Name: "Volcengine Ark Decision", Short: "Ark Decision", Icon: "volcengine-color", Kind: KindVendor,
+		Decide:  "https://ark.cn-beijing.volces.com/api/v1",
+		Note:    "routes groups · picks model and effort",
+		Website: "https://www.volcengine.com/product/ark", KeysURL: "https://ark.volcengine.com/region:cn-beijing/apikey"},
 	// its decision models (Nimble, Clef, Tev …), served at /v1/systemone
 	// since 0.35.0, are the ones its /api/tags gives the "decision"
 	// capability (ollama_decide.go)

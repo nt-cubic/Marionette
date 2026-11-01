@@ -1,6 +1,7 @@
 package library
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 
@@ -15,7 +16,17 @@ func ccSwitchOrigin(s *Skill) (Source, bool) {
 	dir := filepath.Join(provider.CCSwitchSkillsDir(), s.Name)
 	switch {
 	case s.Source == nil:
-		if _, err := os.Stat(filepath.Join(dir, "SKILL.md")); err != nil {
+		// the library's own copy is CC Switch's only when it is the same
+		// skill, not one that has its name: CC Switch's folder outlives a
+		// copy of it deleted from the library, and another skill by that
+		// name brought in later was filed under (and updated from) CC
+		// Switch's repository (AzheRise on X)
+		theirs, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+		if err != nil {
+			return Source{}, false
+		}
+		mine, err := os.ReadFile(filepath.Join(skillDir(s.Name), "SKILL.md"))
+		if err != nil || !bytes.Equal(bytes.TrimSpace(mine), bytes.TrimSpace(theirs)) {
 			return Source{}, false
 		}
 	case s.Source.Kind == "folder":

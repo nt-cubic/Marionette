@@ -4,7 +4,8 @@
 // app's own menu (never a native select) with Automatic (the site's icon, as
 // before), Image URL… and Letter icon. A typed address is sent with Enter; one
 // the backend couldn't use comes back as the letter tile with a note saying
-// why, and the box stays for another try. Escape puts the box away. What is
+// why, and the box stays for another try, as does one that worked (hoobnn).
+// Escape puts the box away. What is
 // picked is what Save sends. No click scrolls the page. In Chromium and
 // WebKit, at 420 and 1100 wide, in every language.
 const assert = require("node:assert/strict");
@@ -136,7 +137,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await box.fill("https://cdn.example.com/logo.png");
         await box.press("Enter");
         assert.equal((await posted("/api/icons/url")).url, "https://cdn.example.com/logo.png");
-        await box.waitFor({ state: "detached" });
+        // the address it came from stays in its box (hoobnn)
+        await page.waitForFunction((src) => document.querySelector(".editor .icon-now img")?.getAttribute("src")?.endsWith(src), ICON.url.slice(5));
+        assert.equal(await box.inputValue(), "https://cdn.example.com/logo.png");
         assert.equal(await note.count(), 0, "the note outlived a picture that worked");
         assert((await now()).endsWith(ICON.url.slice(5)));
 

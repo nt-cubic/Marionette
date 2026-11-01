@@ -58,17 +58,14 @@ func TestOpenCodeSessionIsOpenCodes(t *testing.T) {
 		t.Fatalf("a hashed session went on as %q", got)
 	}
 	h := http.Header{"X-Session-Affinity": {"from-the-agent"}}
-	OpenCodeClient(h, "conversation-a")
-	if h.Get("x-opencode-session") != id || h.Get("x-opencode-session-id") != id || h.Get("User-Agent") != OpenCodeUserAgent {
+	OpenCodeClient(h, "conversation-a", "")
+	if h.Get("x-opencode-session") != id || h.Get("x-opencode-session-id") != id || h.Get("User-Agent") != OpenCodeUserAgent() {
 		t.Fatalf("headers %v", h)
 	}
-	// Zen's free tier refuses a request carrying x-session-affinity, which
-	// OpenCode itself doesn't send it
-	if h.Get("x-session-affinity") != "" || h.Get("X-Session-Id") != "" {
-		t.Fatalf("headers OpenCode doesn't send: %v", h)
-	}
-	if req := h.Get("x-opencode-request"); req[:4] != "msg_" || !openCodeIDRe.MatchString(req) {
-		t.Fatalf("request %q", req)
+	// OpenCode 2.2.5 sends the session in x-session-affinity and
+	// x-session-id too, and no x-opencode-request (#3491)
+	if h.Get("x-session-affinity") != id || h.Get("X-Session-Id") != id || h.Get("x-opencode-request") != "" {
+		t.Fatalf("headers %v", h)
 	}
 }
 

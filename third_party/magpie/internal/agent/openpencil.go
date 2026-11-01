@@ -196,7 +196,7 @@ type openPencilAgent struct {
 func openPencilEntry(gw string) openPencilAgent {
 	var ms []string
 	seen := map[string]bool{}
-	for _, m := range magpieModels("openpencil") {
+	for _, m := range sharedModels("openpencil") {
 		if m.ID == "" || seen[m.ID] || len([]rune(m.ID)) > 256 {
 			continue
 		}

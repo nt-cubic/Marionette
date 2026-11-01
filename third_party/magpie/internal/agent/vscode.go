@@ -122,16 +122,27 @@ func vscodeInsidersAgent(home, cfg string) *Agent { return vscodeOf(vscodeInside
 func vscodium(home, cfg string) *Agent { return vscodeOf(vscodiumKind, home, cfg) }
 
 func vscodeOf(k vscodeKind, home, cfg string) *Agent {
+	dir, exts := vscodeDirs(k, home, cfg)
 	if k.exts != "" {
-		k.extDir = filepath.Join(home, k.exts, "extensions")
+		k.extDir = exts
 	}
-	return vscodeKindAt(k, vscodeUserDir(k, home, cfg))
+	return vscodeKindAt(k, dir)
 }
 
-// vscodeUserDir is the User folder of the VS Code k, where its settings.json
-// is: its extensions' (Zoo Code's) settings too.
-func vscodeUserDir(k vscodeKind, home, cfg string) string {
-	switch runtime.GOOS {
+// vscodeOS is the system whose VS Code layout is read; a var so a test can
+// lay out a Mac's portable build on any machine.
+var vscodeOS = runtime.GOOS
+
+// vscodeDirs are the User folder of the VS Code k, where its settings.json
+// is (its extensions', Zoo Code's, too), and its extensions folder, both of
+// the same build. A portable build keeps both in its data folder
+// (vscodePortableData); an installed build's are the OS's place and the
+// home folder's.
+func vscodeDirs(k vscodeKind, home, cfg string) (user, exts string) {
+	if data := vscodePortableData(k); data != "" {
+		return filepath.Join(data, "user-data", "User"), filepath.Join(data, "extensions")
+	}
+	switch vscodeOS {
 	case "darwin":
 		cfg = filepath.Join(home, "Library", "Application Support")
 	case "windows":
@@ -140,7 +151,171 @@ func vscodeUserDir(k vscodeKind, home, cfg string) string {
 			cfg = filepath.Join(home, "AppData", "Roaming")
 		}
 	}
-	return filepath.Join(cfg, k.folder, "User")
+	return filepath.Join(cfg, k.folder, "User"), filepath.Join(home, k.extFolder(), "extensions")
+}
+
+// extFolder is the folder in home an installed build keeps its extensions
+// in: .vscode, .vscode-insiders, .vscode-oss.
+func (k vscodeKind) extFolder() string {
+	switch {
+	case k.exts != "":
+		return k.exts
+	case k.id == vscodeInsiders.id:
+		return ".vscode-insiders"
+	}
+	return ".vscode"
+}
+
+// vscodeBundles are where a Mac keeps each build's app, by bundle id and
+// name.
+var vscodeBundles = map[string]desktopApp{
+	vscodeStable.id:   {id: "com.microsoft.VSCode", names: []string{"Visual Studio Code.app"}},
+	vscodeInsiders.id: {id: "com.microsoft.VSCodeInsiders", names: []string{"Visual Studio Code - Insiders.app"}},
+	vscodiumKind.id:   {id: "com.vscodium", names: []string{"VSCodium.app"}},
+}
+
+// vscodePortableData is the data folder of a portable VS Code k, "" for an
+// installed build. The build is the one k's launcher is, followed through
+// a Scoop shim and every symlink (macOS: /usr/local/bin/code into
+// /Applications/Code/Visual Studio Code.app, #4151; Windows: Scoop's
+// current junction, #3260). On a Mac whose launcher isn't a build's, the
+// app folders' and Spotlight's bundles are read, and taken only when every
+// one found is the same portable build: a launcher, or no doubt, decides
+// which of two installs the user runs.
+func vscodePortableData(k vscodeKind) string {
+	if bin := binAt(k.bin); bin != "" {
+		if at := scoopShim(bin); at != "" {
+			bin = at
+		}
+		if resolved, err := filepath.EvalSymlinks(bin); err == nil {
+			bin = resolved
+		}
+		if appRoot, appPath := vscodeAppRoot(k, bin); appRoot != "" {
+			// a fork's launcher called code (Cursor's) is not k's
+			if data, ours := vscodePortableAt(k, appRoot, appPath); ours {
+				return data
+			}
+		}
+	}
+	app, ok := vscodeBundles[k.id]
+	if vscodeOS != "darwin" || !ok {
+		return ""
+	}
+	found := ""
+	for _, bundle := range macBundles(app) {
+		if !isDir(bundle) {
+			continue
+		}
+		data, _ := vscodePortableAt(k, filepath.Join(bundle, "Contents", "Resources", "app"), bundle)
+		if data == "" || (found != "" && data != found) {
+			return ""
+		}
+		found = data
+	}
+	return found
+}
+
+// vscodePortableFile reports whether path is in a portable VS Code's data
+// folder: VS Code's own files there, or Zoo Code's beside them.
+func vscodePortableFile(path string) bool {
+	for _, k := range []vscodeKind{vscodeStable, vscodeInsiders, vscodiumKind} {
+		if data := vscodePortableData(k); data != "" {
+			if r, err := filepath.Rel(data, path); err == nil && r != ".." && !strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// vscodeAppRoot is the app folder (resources/app, where product.json is)
+// of the build whose launcher is bin, and the build's own folder (VS
+// Code's getApplicationPath): <app>.app/Contents/Resources/app/bin and the
+// .app on a Mac; elsewhere <install>/bin beside <install>/resources/app,
+// or <install>/<version>/resources/app for a build that updates into a
+// versioned folder (win32VersionedUpdate), and <install>. "" for a
+// launcher outside any build's bin folder.
+func vscodeAppRoot(k vscodeKind, bin string) (appRoot, appPath string) {
+	dir := filepath.Dir(bin)
+	if !strings.EqualFold(filepath.Base(dir), "bin") {
+		return "", ""
+	}
+	if vscodeOS != "darwin" {
+		install := filepath.Dir(dir)
+		appRoot = filepath.Join(install, "resources", "app")
+		if _, err := os.Stat(filepath.Join(appRoot, "product.json")); err != nil {
+			if m, _ := filepath.Glob(filepath.Join(install, "*", "resources", "app", "product.json")); len(m) > 0 {
+				appRoot = filepath.Dir(m[len(m)-1])
+			}
+		}
+		return appRoot, install
+	}
+	appRoot = filepath.Dir(dir)
+	bundle := filepath.Dir(filepath.Dir(filepath.Dir(appRoot)))
+	if filepath.Base(bin) != k.bin || !strings.HasSuffix(bundle, ".app") ||
+		appRoot != filepath.Join(bundle, "Contents", "Resources", "app") {
+		return "", ""
+	}
+	return appRoot, bundle
+}
+
+// vscodePortableAt is the data folder of the build at appRoot when it is
+// portable, as VS Code's own configurePortable (src/bootstrap-node.ts)
+// decides it: its product.json has no target (an installer's build has
+// one) and its portable data folder exists. That folder is data beside the
+// program on Windows and Linux; on a Mac it is beside the .app, named by
+// product.json's portable, else <applicationName>-portable-data. A Mac
+// build's product.json must be read, and name k, to name it; elsewhere one
+// that can't be read leaves the data folder alone to decide. ours is false
+// when product.json names another editor (a fork's launcher called code):
+// the build is not k at all.
+func vscodePortableAt(k vscodeKind, appRoot, appPath string) (data string, ours bool) {
+	var product struct {
+		ApplicationName string          `json:"applicationName"`
+		Portable        string          `json:"portable"`
+		Target          json.RawMessage `json:"target"`
+	}
+	b, err := os.ReadFile(filepath.Join(appRoot, "product.json"))
+	read := err == nil && json.Unmarshal(b, &product) == nil
+	if read && product.ApplicationName != "" && product.ApplicationName != k.bin {
+		return "", false
+	}
+	if read && product.Target != nil {
+		return "", true
+	}
+	if vscodeOS == "darwin" {
+		if !read || product.ApplicationName == "" {
+			return "", true
+		}
+		name := product.Portable
+		if name == "" {
+			name = product.ApplicationName + "-portable-data"
+		}
+		data = filepath.Join(filepath.Dir(appPath), name)
+	} else {
+		data = filepath.Join(appPath, "data")
+	}
+	if !isDir(data) {
+		return "", true
+	}
+	return data, true
+}
+
+// scoopShim is the launcher a Scoop shim stands for: the path = line of the
+// .shim beside it (code.cmd in scoop's shims folder is a small program that
+// runs it, which proc.Unwrap doesn't read). "" when bin is no shim.
+func scoopShim(bin string) string {
+	b, err := os.ReadFile(strings.TrimSuffix(bin, filepath.Ext(bin)) + ".shim")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 3 && f[0] == "path" && f[1] == "=" {
+			return strings.Trim(strings.Join(f[2:], " "), `"`)
+		}
+	}
+	return ""
 }
 
 func vscodeAt(dir string) *Agent { return vscodeKindAt(vscodeStable, dir) }
@@ -329,7 +504,7 @@ func vscodeKindAt(k vscodeKind, dir string) *Agent {
 				if v := cur["model"]; v != "" && v != "auto" && !usesMagpie(v) {
 					own = append(own, Option{Value: v, Icon: modelIcon("", v)})
 				}
-				return append(group(k.name, own), viaMagpie(k.id, magpieID+"/")...)
+				return withVia(group(k.name, own), k.id, magpieID+"/")
 			},
 		}},
 	}, path, models, stashPath())
@@ -436,7 +611,7 @@ func vscodeURL() string { return gatewayV1() + "/chat/completions" }
 // Code k is shown it.
 func vscodeGroupJSON(k vscodeKind, vendor string) map[string]any {
 	list := []any{}
-	for _, m := range magpieModels(k.id) {
+	for _, m := range sharedModels(k.id) {
 		context := m.Context
 		if context == 0 {
 			context = 128000 // what VS Code takes a model of unknown window for

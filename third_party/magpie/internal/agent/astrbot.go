@@ -92,7 +92,7 @@ func astrbotRoot(at place) string {
 	if d := strings.TrimSpace(at.getenv("ASTRBOT_ROOT")); d != "" {
 		return d
 	}
-	desktop := filepath.Join(at.home, ".astrbot")
+	desktop := at.join(".astrbot")
 	if isFile(filepath.Join(desktop, "data", "cmd_config.json")) {
 		return desktop
 	}
@@ -100,7 +100,7 @@ func astrbotRoot(at place) string {
 		return at.home
 	}
 	for _, d := range []string{"astrbot", "AstrBot"} {
-		root := filepath.Join(at.home, d)
+		root := at.join(d)
 		if isFile(filepath.Join(root, "data", "cmd_config.json")) || isFile(filepath.Join(root, ".astrbot")) {
 			return root
 		}
@@ -302,7 +302,7 @@ func astrbotAt(at place) *Agent {
 				return setPick(v)
 			},
 			Options: func(cur map[string]string) []Option {
-				return append(astrbotOwn(path, cur["model"]), viaMagpie("astrbot", magpieID+"/")...)
+				return withVia(astrbotOwn(path, cur["model"]), "astrbot", magpieID+"/")
 			},
 		}},
 	}, path)
@@ -345,7 +345,7 @@ func astrbotWired(raw []byte, on bool, gw, key string) ([]byte, error) {
 	var wantModels []map[string]any
 	if on {
 		wantSource = astrbotSourceJSON(gw, key)
-		for _, m := range magpieModels("astrbot") {
+		for _, m := range sharedModels("astrbot") {
 			wantModels = append(wantModels, astrbotModelJSON(m))
 		}
 	}

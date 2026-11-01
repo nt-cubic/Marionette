@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -439,12 +440,15 @@ func TestMiMoCodeCatalogNarrowedSeparately(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { settings.Save(settings.Settings{}) })
-	mimo := magpieProviderJSONFor("opencode", "mimocode").(map[string]any)["models"].(map[string]any)
-	oc := magpieProviderJSON("opencode").(map[string]any)["models"].(map[string]any)
-	if len(mimo) != 1 || mimo["relay/glm-4.6"] == nil {
+	mimo := magpieProviderJSONFor("opencode", "mimocode").(map[string]any)["models"].(orderedJSON)
+	oc := magpieProviderJSON("opencode").(map[string]any)["models"].(orderedJSON)
+	has := func(ms orderedJSON, id string) bool {
+		return slices.IndexFunc(ms, func(p jsonPair) bool { return p.k == id }) >= 0
+	}
+	if len(mimo) != 1 || !has(mimo, "relay/glm-4.6") {
 		t.Fatalf("mimocode catalog: %v", mimo)
 	}
-	if oc["relay/glm-4.6"] == nil {
+	if !has(oc, "relay/glm-4.6") {
 		t.Fatalf("opencode catalog was narrowed too: %v", oc)
 	}
 }

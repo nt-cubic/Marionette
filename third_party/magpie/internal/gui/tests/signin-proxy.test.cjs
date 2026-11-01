@@ -3,7 +3,7 @@
 // (#1663, demystify0137: a sign-in went through the global proxy, the
 // account's requests after it through the subscription's). The sign-in
 // sheet says which, as a link: Claude's account with a proxy of its own,
-// signed in to again past Claude's warning, says that one, and the request
+// signed in to again (no warning: it has accounts), says that one, and the request
 // names the account. The link's menu offers Direct, Claude's proxy (its
 // password left out), the account's own and Custom…, but not the global
 // proxy, which an account can't be kept on while Claude has a proxy and
@@ -71,11 +71,11 @@ function serve(lang, seen) {
 }
 
 const W = {
-  en: { anyway: "Sign in anyway", again: "Sign in again", via: "Proxy: {p}", global: "Global proxy", direct: "Direct", custom: "Custom…", go: "Sign in through it" },
-  zh: { anyway: "仍然登录", again: "重新登录", via: "代理：{p}", global: "全局代理", direct: "直连", custom: "自定义…", go: "经由它登录" },
-  "zh-TW": { anyway: "仍然登入", again: "重新登入", via: "代理：{p}", global: "全域代理", direct: "直連", custom: "自訂…", go: "經由它登入" },
-  ja: { anyway: "それでもサインイン", again: "再度サインイン", via: "プロキシ：{p}", global: "グローバルプロキシ", direct: "直接接続", custom: "カスタム…", go: "これ経由でサインイン" },
-  de: { anyway: "Trotzdem anmelden", again: "Erneut anmelden", via: "Proxy: {p}", global: "Globaler Proxy", direct: "Direkt", custom: "Eigener…", go: "Darüber anmelden" },
+  en: { again: "Sign in again", via: "Proxy: {p}", global: "Global proxy", direct: "Direct", custom: "Custom…", go: "Sign in through it" },
+  zh: { again: "重新登录", via: "代理：{p}", global: "全局代理", direct: "直连", custom: "自定义…", go: "经由它登录" },
+  "zh-TW": { again: "重新登入", via: "代理：{p}", global: "全域代理", direct: "直連", custom: "自訂…", go: "經由它登入" },
+  ja: { again: "再度サインイン", via: "プロキシ：{p}", global: "グローバルプロキシ", direct: "直接接続", custom: "カスタム…", go: "これ経由でサインイン" },
+  de: { again: "Erneut anmelden", via: "Proxy: {p}", global: "Globaler Proxy", direct: "Direkt", custom: "Eigener…", go: "Darüber anmelden" },
 };
 
 const sizes = [{ width: 900, height: 800 }, { width: 380, height: 760 }];
@@ -108,8 +108,6 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const bob = page.locator(".editor .accts .acc", { hasText: "bob@example.com" });
         await bob.locator("button", { hasText: w.again }).click();
         const box = page.locator(".editor .signing");
-        // Claude's warning first: the account asked for kept past it
-        await box.locator("button", { hasText: w.anyway }).click();
         const via = box.locator(".acts .via");
         await via.waitFor();
         assert.deepEqual(seen.starts, [{ agent: "claude", user: "bob@example.com" }]);
@@ -150,7 +148,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await form.waitFor();
         const go = form.locator("button", { hasText: w.go });
         assert.equal(await go.isDisabled(), true, "nothing to sign in through yet");
-        await form.locator("input").fill("http://127.0.0.1:8888");
+        await form.locator("input").first().fill("http://127.0.0.1:8888");
         await go.click();
         await page.waitForFunction(() => document.querySelector(".editor .signing .acts .via")?.textContent.includes("8888"));
         assert.deepEqual(seen.starts[2], { agent: "claude", user: "bob@example.com", proxy: "http://127.0.0.1:8888" });

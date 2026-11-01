@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/ghtoken"
 	"github.com/yetone/magpie/internal/source"
 	"github.com/yetone/magpie/internal/update"
@@ -31,6 +32,12 @@ import (
 
 //go:embed market.json
 var builtinMarket []byte
+
+// builtinParsed is the built-in copy, parsed once; shared, so only read.
+var builtinParsed = sync.OnceValue(func() []Listing {
+	l, _ := parseMarket(builtinMarket)
+	return l
+})
 
 // MarketURL is where the list is kept; MAGPIE_PLUGIN_MARKET moves it, and
 // "off" keeps to the built-in copy.
@@ -149,11 +156,22 @@ func InfoCached(names []string) map[string]NPM {
 	c := npmCached()
 	out := map[string]NPM{}
 	for _, n := range names {
-		if e, ok := c[n]; ok {
+		if e, ok := c[n]; ok && !e.missingStale(time.Hour) {
 			out[n] = e.Info
 		}
 	}
 	return out
+}
+
+// missingStale is whether e is "not on npm" said over age ago: unknown
+// now, not missing. A package only the community repo's dist branch has
+// was kept as missing by builds before v0.1.2413 whenever the branch's
+// read was cut off (zhudabao8433 on Discord: PowerContext, installable the
+// day before, read Coming soon), and an ask that still can't read the
+// branch leaves that answer standing; a page told "unknown" offers
+// Install instead of a Coming soon nothing has confirmed.
+func (e npmEntry) missingStale(age time.Duration) bool {
+	return e.Info.Version == "" && time.Since(e.At) >= age
 }
 
 func marketCache() string { return filepath.Join(appdir.Cache(), "plugin-market.json") }
@@ -337,7 +355,10 @@ func infoWithin(ctx context.Context, names []string, age time.Duration) map[stri
 		asked[n] = true
 		e, hit := cache[n]
 		if hit {
-			out[n] = e.Info // what it said last, until it says otherwise
+			// what it said last, until it says otherwise
+			if !e.missingStale(time.Hour) {
+				out[n] = e.Info
+			}
 			if time.Since(e.At) < age {
 				continue
 			}
@@ -478,8 +499,15 @@ func npmAsk(ctx context.Context, name string) (NPM, error) {
 	// a @magpie-community package npm doesn't have yet, or has an older
 	// version of, is as the community repo's dist branch has it, which
 	// magpie installs it from (dist.go)
-	if d, ok := distInfo(ctx, name); ok && (latestErr != nil || update.Newer(d.Version, info.Version)) {
+	d, ok, derr := distInfo(ctx, name)
+	if ok && (latestErr != nil || update.Newer(d.Version, info.Version)) {
 		info, latestErr = d, nil
+	}
+	// npm not having it is "missing" only once the dist branch has
+	// said it hasn't either: the branch not read leaves it unknown, and
+	// it is asked again, not kept as missing for an hour (ferock)
+	if errors.Is(latestErr, errNotFound) && derr != nil {
+		latestErr = derr
 	}
 	info.Weekly = weekly
 	if latestErr != nil {
@@ -635,8 +663,12 @@ func Readme(ctx context.Context, name string) (Page, error) {
 	if err != nil {
 		// one npm doesn't have (yet): the README the community repo's
 		// dist branch packed with it
-		if d := distPkg(ctx, name); d != nil && d.Readme != "" {
+		d, derr := distPkg(ctx, name)
+		if d != nil && d.Readme != "" {
 			return Page{Readme: d.Readme}, nil
+		}
+		if errors.Is(err, errNotFound) && derr != nil {
+			return Page{}, derr // not known to be missing
 		}
 		return Page{}, err
 	}
@@ -784,11 +816,12 @@ func Icon(spec, id string) string {
 	l := marketList
 	marketMu.Unlock()
 	if l == nil {
-		if b, err := os.ReadFile(marketCache()); err == nil {
-			l, _ = parseMarket(b)
-		}
+		// parsed once for each copy, not for each plugin each look: the
+		// Providers page parsed it for every plugin's row each poll, 13 MB
+		// of what twenty polls allocated with real accounts
+		l, _ = filememo.Read("plugin-market", marketCache(), parseMarket)
 		if l == nil {
-			l, _ = parseMarket(builtinMarket)
+			l = builtinParsed()
 		}
 	}
 	pkg := Name(spec)

@@ -26,7 +26,7 @@ type child struct {
 // endSignals are what the helper ends on, its Claude Code with it: Ctrl+C,
 // and its console closed. The gateway ends a run by killing its job, which
 // no handler hears: the images folder is then left for another helper to
-// remove (dropLeftImages).
+// remove (dropLeft).
 var endSignals = []os.Signal{os.Interrupt, syscall.SIGTERM}
 
 func (s *shim) start(path string, args []string) error {
@@ -67,7 +67,7 @@ func (s *shim) start(path string, args []string) error {
 		out.Close()
 		return fmt.Errorf("a pseudo console: %w", err)
 	}
-	h, err := startIn(console, cmd.Path, line, childEnv())
+	h, err := startIn(console, cmd.Path, line, childEnv(s.env...))
 	if err != nil {
 		windows.ClosePseudoConsole(console)
 		in.Close()

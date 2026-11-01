@@ -185,9 +185,10 @@ func TestLoadedToolsWhereNotTaken(t *testing.T) {
 	}
 }
 
-// TestLoadsInPlaceScope: OpenAI's own API is sent the item, and a provider
-// the user said takes it; xAI, a relay, the ChatGPT backend, Azure and a
-// plugin aren't.
+// TestLoadsInPlaceScope: OpenAI's own API and a ChatGPT (Codex) account
+// are sent the item (#4738), and a provider the user said takes it; xAI, a
+// relay, another vendor's sign-in, Azure and a plugin aren't, nor one the
+// user turned it off for.
 func TestLoadsInPlaceScope(t *testing.T) {
 	for _, c := range []struct {
 		p    provider.Provider
@@ -199,7 +200,11 @@ func TestLoadsInPlaceScope(t *testing.T) {
 		{provider.Provider{ID: "xai", Responses: "https://api.x.ai/v1"}, false},
 		{provider.Provider{ID: "relay", Responses: "https://relay.example.com/v1"}, false},
 		{provider.Provider{ID: "relay", Responses: "https://relay.example.com/v1", AdditionalTools: true}, true},
-		{provider.Provider{ID: "codex", Responses: "https://api.openai.com/v1", Account: &provider.Account{Agent: "codex"}}, false},
+		{provider.Provider{ID: "codex", Responses: "https://chatgpt.com/backend-api/codex", Account: &provider.Account{Agent: "codex"}}, true},
+		{provider.Provider{ID: "codex", Responses: "https://chatgpt.com/backend-api/codex", Account: &provider.Account{Agent: "codex"}, AdditionalToolsOff: true}, false},
+		{provider.Provider{ID: "openai", Responses: "https://api.openai.com/v1", AdditionalToolsOff: true}, false},
+		{provider.Provider{ID: "copilot", Responses: "https://api.githubcopilot.com", Account: &provider.Account{Agent: "copilot"}}, false},
+		{provider.Provider{ID: "copilot", Responses: "https://api.githubcopilot.com", Account: &provider.Account{Agent: "copilot"}, AdditionalTools: true}, true},
 		{provider.Provider{ID: "az", Responses: "https://x.openai.azure.com/openai/v1"}, false},
 	} {
 		if got := loadsInPlace(c.p); got != c.want {

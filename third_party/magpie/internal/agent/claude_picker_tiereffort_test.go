@@ -77,4 +77,15 @@ func TestClaudePickerLeavesOutATiersModelAtItsEffort(t *testing.T) {
 	if got := listed(); !slices.Contains(got, "cx/gpt-6-luna") || slices.Contains(got, "cx/gpt-6-terra") {
 		t.Fatalf("picker %v: want Luna listed again and Terra, now on Haiku at max, left out", got)
 	}
+	// with Claude Code's own models hidden the picker says
+	// replaceBuiltInOptions, which takes the tier rows out of /model too
+	// (#4548): Terra, on Haiku at max, keeps its row then, or it would be
+	// in /model nowhere
+	if err := provider.SetOwnModelsHidden("claude", true); err != nil {
+		t.Fatal(err)
+	}
+	set("model", "cx/gpt-6.1-sol")
+	if got := listed(); !slices.Contains(got, "cx/gpt-6-terra") || !slices.Contains(got, "cx/gpt-6-luna") {
+		t.Fatalf("picker %v with the built-in rows replaced: want Terra, on Haiku at max, listed beside Luna", got)
+	}
 }

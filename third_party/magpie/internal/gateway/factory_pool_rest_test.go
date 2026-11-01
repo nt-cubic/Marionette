@@ -86,9 +86,11 @@ func TestFactoryStandardOutLeavesCore(t *testing.T) {
 				}
 			}
 			// read again once Standard's window has renewed, Opus is back:
-			// a rest out of quota is lifted by the reading, as one for
-			// credit wasn't (Ziqi-Cui on #1979)
+			// a window truly starting again tells both hooks, and lifts a
+			// rest out of quota, the refusal's own time included, as one
+			// for credit wasn't (Ziqi-Cui on #1979)
 			renewed(way.agent, "a@x.com")
+			restarted(way.agent, "a@x.com")
 			if _, ok := restingOf(acct("a@x.com", "claude-opus-5-5")); ok {
 				t.Fatal("Opus still rests after Standard's window renewed")
 			}

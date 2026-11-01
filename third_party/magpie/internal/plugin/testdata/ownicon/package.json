@@ -3,5 +3,5 @@
   "version": "1.0.0",
   "type": "module",
   "main": "index.js",
-  "magpie": { "icon": "https://ownicon.example/icon.png", "maxConcurrency": 5 }
+  "magpie": { "icon": "https://ownicon.example/icon.png", "maxConcurrency": 5, "maxAccounts": 2 }
 }

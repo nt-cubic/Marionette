@@ -84,18 +84,18 @@ func TestCodexOpenAIFieldsStayWithOpenAI(t *testing.T) {
 		{Responses: "https://api.openai.com/v1"},
 		{Account: &provider.Account{Agent: "codex"}},
 	} {
-		if got := forVendor(p, []byte(sent)); string(got) != sent {
+		if got := forVendor(p, []byte(sent), false); string(got) != sent {
 			t.Errorf("%+v: %s", p, got)
 		}
 	}
 	// another client's stream_options stay
 	vendor := provider.Provider{Responses: "https://relay.example/v1"}
 	other := `{"model":"m1","input":"hi","stream":true,"stream_options":{"include_obfuscation":false}}`
-	if got := forVendor(vendor, []byte(other)); string(got) != other {
+	if got := forVendor(vendor, []byte(other), false); string(got) != other {
 		t.Errorf("another client's: %s", got)
 	}
 	both := `{"stream_options":{"include_obfuscation":false,"reasoning_summary_delivery":"sequential_cutoff"}}`
-	if got := forVendor(vendor, []byte(both)); string(got) != `{"stream_options":{"include_obfuscation":false}}` {
+	if got := forVendor(vendor, []byte(both), false); string(got) != `{"stream_options":{"include_obfuscation":false}}` {
 		t.Errorf("both: %s", got)
 	}
 }

@@ -28,7 +28,7 @@ func commandCode(home string) *Agent { return commandCodeIn(here(home)) }
 // reaches it.
 func commandCodeIn(at place) *Agent {
 	ccProviderJSON := func() any { return ccProviderJSONAt(at.v1()) }
-	dir := filepath.Join(at.home, ".commandcode")
+	dir := at.join(".commandcode")
 	path := filepath.Join(dir, "settings.json")
 	providers := filepath.Join(dir, "providers.json")
 	get := func(k string) string { v, _ := edit.GetJSON(path, k); return v }
@@ -98,7 +98,7 @@ func commandCodeIn(at place) *Agent {
 				if v := cur["model"]; v != "" && !usesMagpie(v) {
 					out = append(out, Option{Value: v, Icon: modelIcon("", v)})
 				}
-				return append(out, viaMagpie("commandcode", magpieID+"/")...)
+				return withVia(out, "commandcode", magpieID+"/")
 			},
 		}, {
 			// settings.json's reasoningEffort keeps an effort for each model
@@ -124,7 +124,7 @@ func commandCodeIn(at place) *Agent {
 			},
 			Options: func(cur map[string]string) []Option {
 				if ref, ok := strings.CutPrefix(cur["model"], magpieID+"/"); ok {
-					for _, m := range magpieModels("commandcode") {
+					for _, m := range sharedModels("commandcode") {
 						if m.ID != ref {
 							continue
 						}
@@ -150,7 +150,7 @@ func commandCodeIn(at place) *Agent {
 // any, and Command Code refuses one written out.
 func ccProviderJSONAt(v1 string) any {
 	ms := map[string]any{}
-	for _, m := range magpieModels("commandcode") {
+	for _, m := range sharedModels("commandcode") {
 		e := map[string]any{"name": m.Name}
 		var efforts []string
 		for _, x := range m.Efforts {

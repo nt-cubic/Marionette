@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/provider"
@@ -106,7 +108,49 @@ func agentModelCount(a *agent.Agent, fields []fieldJSON) *modelCountJSON {
 	return nil
 }
 
+// modelCounts keeps each agent's count while provider.StampNow stays the
+// same, for a minute at most, as the agents' model lists are kept
+// (agent's magpieModelsFor): every poll of the Agents page counted each
+// agent's list anew, ListedFor built whole for a number (0.27 GB of the
+// 2.6 GB a real config allocated over 20 polls).
+var modelCounts struct {
+	sync.Mutex
+	m map[string]keptCount
+}
+
+type keptCount struct {
+	c     modelCountJSON
+	stamp provider.Stamp
+	at    time.Time
+}
+
+// modelCountFor is how long a count is kept while the stamp says nothing
+// changed: what it can't see (another app rewriting an account's file, a
+// model retired by its date) reaches the count within it.
+const modelCountFor = time.Minute
+
 func modelCount(id string) *modelCountJSON {
+	modelCounts.Lock()
+	k, ok := modelCounts.m[id]
+	modelCounts.Unlock()
+	// the stamp is read before the count is made: a change while it is
+	// moves it past the one kept, and the next call counts again
+	stamp := provider.StampNow()
+	if !ok || k.stamp != stamp || time.Since(k.at) >= modelCountFor {
+		k = keptCount{countModels(id), stamp, time.Now()}
+		modelCounts.Lock()
+		if modelCounts.m == nil {
+			modelCounts.m = map[string]keptCount{}
+		}
+		modelCounts.m[id] = k
+		modelCounts.Unlock()
+	}
+	c := k.c
+	c.By, c.Names = slices.Clone(c.By), slices.Clone(c.Names)
+	return &c
+}
+
+func countModels(id string) modelCountJSON {
 	listed, _ := provider.ListedFor(id)
 	off := provider.ModelOff(id)
 	c := &modelCountJSON{Listed: len(listed)}
@@ -131,7 +175,7 @@ func modelCount(id string) *modelCountJSON {
 		}
 		c.By[i].N++
 	}
-	return c
+	return *c
 }
 
 // usedBy reports whether one of the agent's values is the entry: its id,

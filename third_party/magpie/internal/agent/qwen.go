@@ -67,7 +67,7 @@ type qwenGen struct {
 // v1.
 func qwenEntriesAt(v1 string) []qwenEntry {
 	var out []qwenEntry
-	for _, m := range magpieModels("qwen") {
+	for _, m := range sharedModels("qwen") {
 		// name is what /model shows, the id beside it when they differ:
 		// the model's name as every agent's list calls it, by the Provider
 		// in model names setting (magpie/<id> before, which none of the
@@ -153,7 +153,7 @@ func qwen(home string) *Agent { return qwenIn(here(home)) }
 // (see wsl.go), whose entries name the gateway as the distro reaches it,
 // with the key it takes from there.
 func qwenIn(at place) *Agent {
-	dir := filepath.Join(at.home, ".qwen")
+	dir := at.join(".qwen")
 	if d := at.getenv("QWEN_HOME"); d != "" {
 		dir = d
 	}
@@ -212,7 +212,7 @@ func qwenIn(at place) *Agent {
 			// the user's own value is stashed once, whatever it is —
 			// "openai" of their own too, or it can't be told from
 			// magpie's on a later wire or Sync and comes off with it
-			if _, seen := stashLoad()[keyAuthSeen]; !seen {
+			if _, seen := stashShared()[keyAuthSeen]; !seen {
 				kv := map[string]string{keyAuthSeen: "1"}
 				if v, ok := edit.GetJSON(path, qwenAuth); ok {
 					kv[keyAuth] = v
@@ -406,7 +406,7 @@ func qwenIn(at place) *Agent {
 				return setProviders(false)
 			},
 			Options: func(cur map[string]string) []Option {
-				return append(qwenOwnOptions(path, cur["model"]), viaMagpie("qwen", magpieID+"/")...)
+				return withVia(qwenOwnOptions(path, cur["model"]), "qwen", magpieID+"/")
 			},
 		}},
 	}, path)

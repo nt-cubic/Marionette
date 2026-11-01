@@ -62,7 +62,8 @@ func tries(dir string) int {
 func TestRelaunchOpenTriedAgain(t *testing.T) {
 	dir := fakeOpen(t, 2)
 	bundle := filepath.Join(t.TempDir(), "magpie.app")
-	if err := runAfterExit(gonePid(t), relaunchCommand(bundle, false, false, filepath.Join(t.TempDir(), relaunchLogName))); err != nil {
+	log := filepath.Join(t.TempDir(), relaunchLogName)
+	if err := runAfterExit(gonePid(t), relaunchCommand(bundle, false, false, log)); err != nil {
 		t.Fatal(err)
 	}
 	opened := filepath.Join(dir, "opened")
@@ -76,10 +77,29 @@ func TestRelaunchOpenTriedAgain(t *testing.T) {
 			if n := tries(dir); n != 3 {
 				t.Fatalf("open tried %d times, want 3 (two refusals, then the open)", n)
 			}
+			// open writes opened before the shell writes its note for try
+			// 3, the shell's last write; wait for it, or the TempDir
+			// cleanup can race that note while the shell this test started
+			// is still going (#3881: TempDir RemoveAll cleanup: unlinkat
+			// .../003: directory not empty).
+			waitForNotes(t, log, 3)
 			return
 		}
 	}
 	t.Fatalf("open was tried %d times and the new version never opened", tries(dir))
+}
+
+// waitForNotes waits for the relaunch's shell to have written its n-th
+// "open try" note to the log: once an open went through, that note is the
+// shell's last write, and after it the shell only exits.
+func waitForNotes(t *testing.T, log string, n int) {
+	t.Helper()
+	for end := time.Now().Add(30 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		if b, err := os.ReadFile(log); err == nil && strings.Count(string(b), "open try ") >= n {
+			return
+		}
+	}
+	t.Fatalf("after 30s the relaunch's shell never wrote %d try notes to the log", n)
 }
 
 // runRetried runs retried's shell over the fake open, failing fails

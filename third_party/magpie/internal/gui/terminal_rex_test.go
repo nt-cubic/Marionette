@@ -2,12 +2,17 @@ package gui
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yetone/magpie/internal/proc"
 )
@@ -72,65 +77,252 @@ func TestFindRex(t *testing.T) {
 	}
 }
 
-// A session opens in a new Rex tab through `rex run`, its label and its
-// script arguments of their own, never parsed by a shell on the way; with
-// no session to add a tab to (exit 3) through `rex new`; with Rex's server
-// not running (exit 4) it says to open Rex. The script runs the command,
-// then the login shell, as the .command file does.
+// fakeRex models the rex CLI as Rex's server answered it (snapshot
+// 0.0.1793420730, run from outside Rex): a session target is a full ID or
+// a label, any case; one matching nothing or more than one exits 3, and so
+// does run with no -s unless there is exactly one session. `rex new` takes
+// no --label (exit 2). down makes every call exit 4.
+type fakeRex struct {
+	t        *testing.T
+	sessions []fakeRexSession
+	ran      [][]string
+	down     bool
+	seq      int
+	bin      string // the last rex run
+}
+
+type fakeRexSession struct {
+	id, label string
+	windows   []string // each tab's label
+	ids       []string // each tab's window ID
+}
+
+func (f *fakeRex) fail(code int, msg string) ([]byte, error) {
+	err := proc.Command("/bin/sh", "-c", fmt.Sprintf("exit %d", code)).Run()
+	ee := err.(*exec.ExitError)
+	ee.Stderr = []byte(msg)
+	return nil, ee
+}
+
+func (f *fakeRex) target(s string) (int, string) {
+	var hit []int
+	for i, x := range f.sessions {
+		if x.id == s {
+			return i, ""
+		}
+	}
+	for i, x := range f.sessions {
+		if strings.EqualFold(x.label, s) {
+			hit = append(hit, i)
+		}
+	}
+	switch len(hit) {
+	case 0:
+		return -1, fmt.Sprintf("Error: session target %q not found", s)
+	case 1:
+		return hit[0], ""
+	}
+	return -1, fmt.Sprintf("Error: session target %q is ambiguous", s)
+}
+
+func (f *fakeRex) run(_ context.Context, bin string, args ...string) ([]byte, error) {
+	f.ran, f.bin = append(f.ran, args), bin
+	if f.down {
+		return f.fail(4, "Error: server unreachable")
+	}
+	flags, rest := map[string]string{}, []string{}
+	for i := 1; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			rest = append(rest, args[i+1:]...)
+			break
+		}
+		if !strings.HasPrefix(a, "-") {
+			rest = append(rest, a)
+			continue
+		}
+		k, v, eq := strings.Cut(strings.TrimLeft(a, "-"), "=")
+		if !eq && k != "json" && i+1 < len(args) {
+			i++
+			v = args[i]
+		}
+		flags[k] = v
+	}
+	switch args[0] {
+	case "ls":
+		var b strings.Builder
+		b.WriteString(`{"sessions":[`)
+		for i, x := range f.sessions {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			fmt.Fprintf(&b, `{"session_id":%q,"label":%q}`, x.id, x.label)
+		}
+		b.WriteString("]}")
+		return []byte(b.String()), nil
+	case "new":
+		if _, ok := flags["label"]; ok {
+			return f.fail(2, "Error: unknown flag: --label")
+		}
+		f.seq++
+		x := fakeRexSession{id: fmt.Sprintf("session:%04d", f.seq), label: rest[0]}
+		w := flags["window"]
+		if w == "" {
+			w = "Window 1"
+		}
+		x.windows, x.ids = []string{w}, []string{fmt.Sprintf("window:%04d", f.seq)}
+		f.sessions = append(f.sessions, x)
+		if _, ok := flags["json"]; ok {
+			return []byte(fmt.Sprintf(`{"session_id":%q,"initial_windows":[{"window_id":%q,"block_ids":["block:%04d"],"revision":1}]}`, x.id, x.ids[0], f.seq)), nil
+		}
+		return []byte(x.id + "\n"), nil
+	case "client":
+		// no app connected: the CLI's own client only
+		return []byte(`{"clients":[{"client_id":"client:cli","info":{"kind":"cli","name":"rex"},"principal":{"kind":"peer","transport":"unix","display":"uid 501"},"connected_at":"2026-10-31T23:24:11Z","connection_state":"connected"}]}`), nil
+	case "run":
+		i := -1
+		if s, ok := flags["s"]; ok {
+			var msg string
+			if i, msg = f.target(s); i < 0 {
+				return f.fail(3, msg)
+			}
+		} else if len(f.sessions) == 1 {
+			i = 0
+		} else if len(f.sessions) == 0 {
+			return f.fail(3, "Error: session target default not found: no sessions")
+		} else {
+			return f.fail(3, "Error: session target default is ambiguous: multiple sessions are available")
+		}
+		f.seq++
+		w := fmt.Sprintf("window:%04d", f.seq)
+		f.sessions[i].windows = append(f.sessions[i].windows, "Window "+w[7:])
+		f.sessions[i].ids = append(f.sessions[i].ids, w)
+		return []byte(fmt.Sprintf(`{"window_id":%q,"block_ids":["block:%04d"],"revision":2}`, w, f.seq)), nil
+	case "window":
+		i, msg := f.target(flags["s"])
+		if args[1] != "rename" || len(rest) != 3 || i < 0 {
+			return f.fail(3, msg)
+		}
+		j := slices.Index(f.sessions[i].ids, rest[1])
+		if j < 0 {
+			return f.fail(3, "Error: window target not found")
+		}
+		f.sessions[i].windows[j] = rest[2]
+		return nil, nil
+	}
+	f.t.Fatalf("fake rex: %q", args)
+	return nil, nil
+}
+
+func (f *fakeRex) use(t *testing.T) {
+	wasRun, wasShow := rexRun, rexShow
+	t.Cleanup(func() { rexRun, rexShow = wasRun, wasShow })
+	rexRun, rexShow = f.run, func() {}
+}
+
+// A session opens in a tab of a Rex session of magpie's own, labelled
+// magpie, whether Rex has no session, one or several (StringKe, #4565: run
+// with no -s exits 3 for none and for several alike, and `rex new` has no
+// --label). The tab is named for the session; the label and the script
+// stay arguments of their own, never parsed by a shell on the way. With
+// Rex's server not running (exit 4) it says to open Rex.
 func TestOpenInRex(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Rex runs on macOS, Linux and FreeBSD")
 	}
-	wasRun, wasShow := rexRun, rexShow
-	t.Cleanup(func() { rexRun, rexShow = wasRun, wasShow })
-	shown := 0
-	rexShow = func() { shown++ }
-	exit := func(code string) error { return proc.Command("/bin/sh", "-c", "exit "+code).Run() }
-	var ran [][]string
-	codes := []string{}
-	rexRun = func(_ context.Context, bin string, args ...string) ([]byte, error) {
-		ran = append(ran, args)
-		if len(codes) > 0 {
-			c := codes[0]
-			codes = codes[1:]
-			return []byte("Error: no session"), exit(c)
-		}
-		return nil, nil
-	}
 	label := `it's "$(touch pwned)"`
-	if err := openInRex("/x/rex", "cd '/tmp' && claude", label); err != nil {
-		t.Fatal(err)
-	}
-	if len(ran) != 1 || ran[0][0] != "run" || shown != 1 {
-		t.Fatalf("ran %q shown %d, want one rex run and Rex shown", ran, shown)
-	}
-	i := slices.Index(ran[0], "--label")
-	if i < 0 || ran[0][i+1] != label || !slices.Equal(ran[0][len(ran[0])-4:len(ran[0])-1], []string{"--", "/bin/sh", "-c"}) {
-		t.Fatalf("rex run args %q", ran[0])
+	for _, tc := range []struct {
+		name     string
+		sessions []fakeRexSession
+	}{
+		{"no session", nil},
+		{"one session", []fakeRexSession{{id: "session:a1", label: "work"}}},
+		{"two sessions", []fakeRexSession{{id: "session:a1", label: "okcall"}, {id: "session:a2", label: "cswap"}}},
+		{"magpie's and two more", []fakeRexSession{{id: "session:a1", label: "okcall"}, {id: "session:a2", label: "Magpie"}, {id: "session:a3", label: "cswap"}}},
+		{"two named magpie", []fakeRexSession{{id: "session:a1", label: "MAGPIE"}, {id: "session:a2", label: "magpie"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeRex{t: t, sessions: slices.Clone(tc.sessions)}
+			f.use(t)
+			for range 2 {
+				if err := openInRex("/x/rex", "cd '/tmp' && claude", label); err != nil {
+					t.Fatalf("%v; ran %q", err, f.ran)
+				}
+			}
+			var mine []fakeRexSession
+			for _, s := range f.sessions {
+				if strings.EqualFold(s.label, "magpie") {
+					mine = append(mine, s)
+				}
+			}
+			own := 0
+			for _, s := range tc.sessions {
+				if strings.EqualFold(s.label, "magpie") {
+					own++
+				}
+			}
+			if own == 0 && (len(mine) != 1 || mine[0].label != "magpie") {
+				t.Fatalf("sessions %+v, want one session labelled magpie made", f.sessions)
+			}
+			if want := len(tc.sessions) + max(0, 1-own); len(f.sessions) != want {
+				t.Fatalf("sessions %+v, want %d: magpie's made once, then used", f.sessions, want)
+			}
+			tabs := 0
+			for _, s := range f.sessions {
+				for _, w := range s.windows {
+					if w == label {
+						tabs++
+					}
+				}
+			}
+			if tabs != 2 {
+				t.Fatalf("sessions %+v, want two tabs named %q", f.sessions, label)
+			}
+			for _, a := range f.ran {
+				if a[0] == "run" && !slices.Contains(a, "--label="+label) || a[0] == "new" && !slices.Contains(a, "--window="+label) {
+					t.Fatalf("rex %q: the label not an argument of its own", a)
+				}
+				if i := slices.Index(a, "--"); (a[0] == "run" || a[0] == "new") && (i < 0 || !slices.Equal(a[i:i+3], []string{"--", "/bin/sh", "-c"})) {
+					t.Fatalf("rex %q: not the script in sh", a)
+				}
+			}
+		})
 	}
 
-	ran, codes, shown = nil, []string{"3"}, 0
+	// the session ended between the list and the run: a new one
+	f := &fakeRex{t: t, sessions: []fakeRexSession{{id: "session:a1", label: "magpie"}}}
+	f.use(t)
+	wasRun := rexRun
+	rexRun = func(ctx context.Context, bin string, args ...string) ([]byte, error) {
+		if args[0] == "run" {
+			f.sessions = nil
+		}
+		return wasRun(ctx, bin, args...)
+	}
 	if err := openInRex("/x/rex", "claude", "Claude Code"); err != nil {
 		t.Fatal(err)
 	}
-	if len(ran) != 2 || ran[1][0] != "new" || ran[1][1] != "Claude Code" || shown != 1 {
-		t.Fatalf("with no session: ran %q, want rex run then rex new", ran)
+	if len(f.sessions) != 1 || f.sessions[0].windows[0] != "Claude Code" {
+		t.Fatalf("sessions %+v, want a new magpie session", f.sessions)
 	}
 
-	ran, codes, shown = nil, []string{"4"}, 0
-	if err := openInRex("/x/rex", "claude", ""); err == nil || !strings.Contains(err.Error(), "open Rex") || len(ran) != 1 || shown != 0 {
-		t.Fatalf("server not running: %v, ran %q, shown %d", err, ran, shown)
+	f = &fakeRex{t: t, down: true}
+	f.use(t)
+	if err := openInRex("/x/rex", "claude", ""); err == nil || !strings.Contains(err.Error(), "open Rex") || len(f.ran) != 1 {
+		t.Fatalf("server not running: %v, ran %q", err, f.ran)
 	}
-	ran, codes = nil, []string{"1"}
-	if err := openInRex("/x/rex", "claude", ""); err == nil || !strings.Contains(err.Error(), "no session") {
+	f = &fakeRex{t: t}
+	f.use(t)
+	rexRun = func(context.Context, string, ...string) ([]byte, error) { return f.fail(1, "Error: boom") }
+	if err := openInRex("/x/rex", "claude", ""); err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("rex failing: %v, want its output", err)
 	}
 
 	// the script, run as Rex runs it
 	dir := t.TempDir()
-	args := rexArgs("run", "cd "+shellQuote(dir)+" && echo ran > out", "x")
+	args := rexScript("cd " + shellQuote(dir) + " && echo ran > out")
 	t.Setenv("SHELL", "/usr/bin/true")
-	if out, err := proc.Command(args[len(args)-3], args[len(args)-2:]...).CombinedOutput(); err != nil {
+	if out, err := proc.Command(args[1], args[2:]...).CombinedOutput(); err != nil {
 		t.Fatalf("script: %v %s", err, out)
 	}
 	if b, _ := os.ReadFile(filepath.Join(dir, "out")); string(b) != "ran\n" {
@@ -138,5 +330,237 @@ func TestOpenInRex(t *testing.T) {
 	}
 	if got := rexLabel("  a\nlong  " + strings.Repeat("x", 80)); !strings.HasPrefix(got, "a long x") || len([]rune(got)) != 60 || rexLabel("") != "magpie" {
 		t.Fatalf("rexLabel: %q", got)
+	}
+}
+
+// The same against the real rex, when MAGPIE_TEST_REX names one: a server
+// of the test's own (rex starts one for the socket in XDG_RUNTIME_DIR),
+// with no session, one and two of others, then magpie's among them.
+func TestOpenInRexReal(t *testing.T) {
+	bin := os.Getenv("MAGPIE_TEST_REX")
+	if bin == "" {
+		t.Skip("MAGPIE_TEST_REX names no rex program")
+	}
+	run, err := os.MkdirTemp("/tmp", "rx") // a socket path's room is short
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(run) })
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_RUNTIME_DIR", run)
+	t.Setenv("SHELL", "/bin/sh")
+	for _, k := range []string{"REX_SESSION", "REX_BLOCK", "REX_SERVER", "REX_CLIENT"} {
+		t.Setenv(k, "")
+		os.Unsetenv(k)
+	}
+	wasShow := rexShow
+	t.Cleanup(func() { rexShow = wasShow })
+	rexShow = func() {}
+	rex := func(args ...string) []byte {
+		t.Helper()
+		out, err := rexRun(context.Background(), bin, args...)
+		if err != nil {
+			t.Fatalf("rex %q: %v", args, rexError(err))
+		}
+		return out
+	}
+	t.Cleanup(func() {
+		ids, _ := rexRun(context.Background(), bin, "ls", "-q", "--short=false")
+		if f := strings.Fields(string(ids)); len(f) > 0 {
+			rexRun(context.Background(), bin, append([]string{"kill"}, f...)...)
+		}
+		rexRun(context.Background(), bin, "server", "stop")
+	})
+	type session struct {
+		ID    string `json:"session_id"`
+		Label string `json:"label"`
+	}
+	list := func() []session {
+		var l struct{ Sessions []session }
+		if err := json.Unmarshal(rex("ls", "--json"), &l); err != nil {
+			t.Fatal(err)
+		}
+		return l.Sessions
+	}
+	tabs := func(id string) []string {
+		var w struct {
+			Windows []struct{ Label string }
+		}
+		if err := json.Unmarshal(rex("window", "ls", "-s", id, "--json"), &w); err != nil {
+			t.Fatal(err)
+		}
+		var l []string
+		for _, x := range w.Windows {
+			l = append(l, x.Label)
+		}
+		return l
+	}
+	mine := func() string {
+		t.Helper()
+		id := ""
+		for _, s := range list() {
+			if s.Label == "magpie" {
+				if id != "" {
+					t.Fatalf("two magpie sessions: %+v", list())
+				}
+				id = s.ID
+			}
+		}
+		if id == "" {
+			t.Fatalf("no magpie session: %+v", list())
+		}
+		return id
+	}
+	open := func(label string) {
+		t.Helper()
+		if err := openInRex(bin, "sleep 120", label); err != nil {
+			t.Fatalf("with sessions %+v: %v", list(), err)
+		}
+	}
+
+	open(`it's "$(touch pwned)"`) // no session
+	if got := tabs(mine()); !slices.Equal(got, []string{`it's "$(touch pwned)"`}) {
+		t.Fatalf("no session: tabs %q", got)
+	}
+	rex("kill", mine())
+	rex("new", "work", "--", "sleep", "120")
+	open("one") // one of another's
+	if got := tabs(mine()); !slices.Equal(got, []string{"one"}) {
+		t.Fatalf("one session: tabs %q", got)
+	}
+	rex("kill", mine())
+	rex("new", "notes", "--", "sleep", "120")
+	open("two") // two of others'
+	if got := tabs(mine()); !slices.Equal(got, []string{"two"}) {
+		t.Fatalf("two sessions: tabs %q", got)
+	}
+	open("-three") // magpie's among them: a tab added to it
+	if got := tabs(mine()); !slices.Equal(got, []string{"two", "-three"}) || len(list()) != 3 {
+		t.Fatalf("magpie's and two: tabs %q, sessions %+v", got, list())
+	}
+}
+
+// fakeRexBin is a rex program for a test: a shell script that writes each
+// call's arguments to dir/log and answers from the files in dir: ls.json
+// for `rex ls`, clients.json for `rex client list` (clients.fail makes it
+// exit 1), do.exit to refuse an app action with that status and do.hang
+// to never answer one.
+func fakeRexBin(t *testing.T, dir string) string {
+	t.Helper()
+	bin := filepath.Join(dir, "rex")
+	script := `#!/bin/sh
+d=` + shellQuote(dir) + `
+{ for a in "$@"; do printf '%s\n' "$a"; done; echo ---; } >> "$d/log"
+case "$1" in
+ls) cat "$d/ls.json" ;;
+run) echo '{"window_id":"window:run1","block_ids":["block:1"],"revision":2}' ;;
+window) ;;
+new) echo '{"session_id":"session:new1","initial_windows":[{"window_id":"window:new1","block_ids":["block:2"],"revision":1}]}' ;;
+client)
+	if [ -f "$d/clients.fail" ]; then echo "Error: boom" >&2; exit 1; fi
+	cat "$d/clients.json" ;;
+-C)
+	[ "$3" = do ] || exit 2
+	if [ -f "$d/do.hang" ]; then exec sleep 30; fi
+	if [ -f "$d/do.exit" ]; then echo "Error: client refused the action: remote control is off" >&2; exit "$(cat "$d/do.exit")"; fi
+	echo '{"performed_by":"'"$2"'"}' ;;
+*) echo "Error: unknown command $1" >&2; exit 2 ;;
+esac
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
+// After opening the tab, magpie asks the Rex app to go to it: a tab added
+// from outside only shows in the app's sidebar, and `open -b` only brings
+// the window forward (StringKe, #4565). The app client is the one of kind
+// app attached to magpie's session, else the last app connected, never a
+// lost one; it is asked with `rex -C <client> do session.select`, with the
+// session and the new tab, for a new session and an added tab alike. Remote
+// Control off (a refused do), no app, a failed client list or an app that
+// never answers leave the tab open and the open a success. Runs a fake rex
+// program, a script, so the arguments go through a real exec.
+func TestOpenInRexSelectsTheTab(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Rex runs on macOS, Linux and FreeBSD")
+	}
+	wasShow, wasWait := rexShow, rexSelectWait
+	t.Cleanup(func() { rexShow, rexSelectWait = wasShow, wasWait })
+	rexShow = func() {}
+	rexSelectWait = 300 * time.Millisecond
+
+	const (
+		none    = `{"sessions":[{"session_id":"session:w","label":"work"}]}`
+		mine    = `{"sessions":[{"session_id":"session:w","label":"work"},{"session_id":"session:m","label":"magpie"}]}`
+		cli     = `{"client_id":"client:cli","info":{"kind":"cli","name":"rex"},"principal":{"kind":"peer","transport":"unix","display":"uid 501"},"connected_at":"2026-10-31T23:24:11Z","connection_state":"connected"}`
+		appW    = `{"client_id":"client:appW","info":{"kind":"app","name":"Rex.app","platform":"macos"},"principal":{"kind":"peer","transport":"unix","display":"uid 501"},"connected_at":"2026-10-31T20:00:00Z","connection_state":"connected","session_ids":["session:w"]}`
+		appM    = `{"client_id":"client:appM","info":{"kind":"app","name":"Rex.app","platform":"ios"},"principal":{"kind":"tailscale","transport":"tailscale","display":"me"},"connected_at":"2026-10-31T19:00:00Z","connection_state":"connected","session_ids":["session:m","session:w"]}`
+		appLost = `{"client_id":"client:lost","info":{"kind":"app","name":"Rex.app"},"principal":{"kind":"peer","transport":"unix","display":"uid 501"},"connected_at":"2026-10-31T21:00:00Z","connection_state":"lost","connection_lost_at":"2026-10-31T22:00:00Z"}`
+	)
+	clients := func(c ...string) string { return `{"clients":[` + strings.Join(c, ",") + `]}` }
+	for _, tc := range []struct {
+		name, ls, clients string
+		files             map[string]string
+		want              []string // the do call, nil for none
+	}{
+		{"new session, an app on another", none, clients(appM, cli, appW, appLost), nil,
+			[]string{"-C", "client:appW", "do", "session.select", "session_id=session:new1", "window_id=window:new1"}},
+		{"magpie's session, the app attached to it", mine, clients(appM, cli, appW, appLost), nil,
+			[]string{"-C", "client:appM", "do", "session.select", "session_id=session:m", "window_id=window:run1"}},
+		{"only a lost app", mine, clients(cli, appLost), nil, nil},
+		{"no app", none, clients(cli), nil, nil},
+		{"client list fails", mine, clients(appW), map[string]string{"clients.fail": ""}, nil},
+		{"remote control off", mine, clients(appW), map[string]string{"do.exit": "1"},
+			[]string{"-C", "client:appW", "do", "session.select", "session_id=session:m", "window_id=window:run1"}},
+		{"the app never answers", none, clients(appW), map[string]string{"do.hang": ""},
+			[]string{"-C", "client:appW", "do", "session.select", "session_id=session:new1", "window_id=window:new1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			files := map[string]string{"ls.json": tc.ls, "clients.json": tc.clients}
+			maps.Copy(files, tc.files)
+			for k, v := range files {
+				if err := os.WriteFile(filepath.Join(dir, k), []byte(v), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			bin := fakeRexBin(t, dir)
+			start := time.Now()
+			if err := openInRex(bin, "claude", "Claude Code"); err != nil {
+				t.Fatalf("openInRex: %v, want the open to stand", err)
+			}
+			if d := time.Since(start); d > 10*time.Second {
+				t.Fatalf("openInRex took %v", d)
+			}
+			b, _ := os.ReadFile(filepath.Join(dir, "log"))
+			var calls [][]string
+			for _, c := range strings.Split(strings.TrimSuffix(string(b), "---\n"), "---\n") {
+				calls = append(calls, strings.Split(strings.TrimSuffix(c, "\n"), "\n"))
+			}
+			opened := false
+			var dos [][]string
+			for _, c := range calls {
+				switch c[0] {
+				case "run", "new":
+					opened = true
+				case "-C":
+					dos = append(dos, c)
+				}
+			}
+			if !opened {
+				t.Fatalf("no tab opened: %q", calls)
+			}
+			if tc.want == nil {
+				if len(dos) != 0 {
+					t.Fatalf("asked %q, want no app asked", dos)
+				}
+				return
+			}
+			if len(dos) != 1 || !slices.Equal(dos[0], tc.want) {
+				t.Fatalf("asked %q, want %q", dos, tc.want)
+			}
+		})
 	}
 }

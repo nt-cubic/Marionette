@@ -147,7 +147,7 @@ func PublicRef(ref string) string {
 	if i := strings.LastIndex(gid, ":"); i > 0 {
 		gid, level = gid[:i], gid[i:]
 	}
-	g, ok := groupOf(Groups(), gid)
+	g, ok := groupOf(sharedGroups(), gid)
 	if !ok || g.Spelled == "" {
 		return ref
 	}

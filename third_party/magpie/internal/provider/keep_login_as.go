@@ -21,7 +21,7 @@ func keptAs(agent string) string {
 	if !slices.Contains(switchedAgents, agent) {
 		return ""
 	}
-	for _, p := range load().Providers {
+	for _, p := range storedFile().Providers {
 		if p.ID != agent {
 			continue
 		}

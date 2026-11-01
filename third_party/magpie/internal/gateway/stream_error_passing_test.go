@@ -140,8 +140,9 @@ func TestStreamedByteCapSaysRequestTooLargeToPi(t *testing.T) {
 }
 
 // Every shape a stream already begun says a 413 in (#2533): the text names
-// request_too_large for Chat, Anthropic and Responses, and Chat's and
-// Anthropic's type is it; Gemini keeps its own status shape; a 413 that
+// request_too_large for Chat, Anthropic and Responses, Chat's and
+// Anthropic's type is it, and Responses' code is context_length_exceeded,
+// the one Codex compacts on; Gemini keeps its own status shape; a 413 that
 // says the context is too long stays context_length_exceeded.
 func TestStreamErrorByteCapInEveryShape(t *testing.T) {
 	const capped = "A: 413 Request Entity Too Large"
@@ -152,7 +153,8 @@ func TestStreamErrorByteCapInEveryShape(t *testing.T) {
 	}{
 		{provider.Chat, capped, "request_too_large", `"type":"request_too_large"`},
 		{provider.Anthropic, capped, "request_too_large", `"type":"request_too_large"`},
-		{provider.Responses, capped, "request_too_large", `"code":"server_error"`},
+		// Codex reconnects on server_error and compacts on this alone
+		{provider.Responses, capped, "request_too_large", `"code":"context_length_exceeded"`},
 		{provider.Gemini, capped, "", `"status"`},
 		{provider.Chat, "A: 413 prompt is too long: 300000 tokens > 200000 maximum", "", `"code":"context_length_exceeded"`},
 	} {

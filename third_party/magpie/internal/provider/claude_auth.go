@@ -15,6 +15,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
+	"sync"
 )
 
 // claudeAuthLapse is why a saved Claude account whose credential Anthropic
@@ -56,13 +57,52 @@ func (c claudeCredentials) cleared() bool {
 }
 
 func claudeLoginVersion(l savedLogin) string {
-	if c, ok := parseClaudeCredentials(l.Auth); ok {
-		return c.version()
+	if f := claudeAuthOf(l.Auth); f.ok {
+		return f.version
 	}
 	if tok := claudeSetupToken(l.Auth); tok != "" {
 		return claudeTokenVersion(tok)
 	}
 	return ""
+}
+
+// claudeAuthFacts is what claudeSignedOut and claudeLoginVersion read of a
+// saved sign-in: whether it parses as one (parseClaudeCredentials), and
+// its version.
+type claudeAuthFacts struct {
+	ok      bool
+	version string
+}
+
+// claudeAuthKept keeps claudeAuthFacts by the sign-in's bytes. Both are
+// read for every saved Claude account on each Providers poll, and parsing
+// each sign-in whole for them was 15 MB of what forty polls allocated with
+// real accounts. The bytes change only when the account is signed in or
+// refreshed; at most claudeAuthKeep are kept.
+var claudeAuthKept struct {
+	sync.Mutex
+	m map[string]claudeAuthFacts
+}
+
+const claudeAuthKeep = 64
+
+func claudeAuthOf(auth []byte) claudeAuthFacts {
+	claudeAuthKept.Lock()
+	f, hit := claudeAuthKept.m[string(auth)]
+	claudeAuthKept.Unlock()
+	if hit {
+		return f
+	}
+	if c, ok := parseClaudeCredentials(auth); ok {
+		f = claudeAuthFacts{ok: true, version: c.version()}
+	}
+	claudeAuthKept.Lock()
+	if claudeAuthKept.m == nil || len(claudeAuthKept.m) >= claudeAuthKeep {
+		claudeAuthKept.m = map[string]claudeAuthFacts{}
+	}
+	claudeAuthKept.m[string(auth)] = f
+	claudeAuthKept.Unlock()
+	return f
 }
 
 // ClaudeLoginVersion is the credential the saved Claude account user has

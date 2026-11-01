@@ -138,6 +138,16 @@ func TestWindowPanels(t *testing.T) {
 			t.Errorf("replaces %q: %+v, want %q", replaces, w, want)
 		}
 	}
+
+	// magpie.page.keepAlive is true or not there: a value of another kind
+	// is false, and the page is still read
+	for keep, want := range map[string]bool{`true`: true, `false`: false, `"true"`: false, `1`: false, `{}`: false, `null`: false} {
+		write(`{"name":"p","magpie":{"page":{"file":"ui/page.html","keepAlive":` + keep + `}}}`)
+		w, _ := Window(d)
+		if w == nil || w.Page == nil || w.Page.KeepAlive != want {
+			t.Errorf("keepAlive %s: %+v, want %v", keep, w, want)
+		}
+	}
 }
 
 // A page's and a panel's titles by language (magpie.page.titles) are kept

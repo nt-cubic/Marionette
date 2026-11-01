@@ -11,26 +11,32 @@ import (
 
 // OpenCode Zen's free models (-free) are served to OpenCode alone: a
 // request must carry OpenCode's headers (provider.OpenCodeClient), be
-// streamed, and offer tools named bash and read, or Zen answers 403
-// "OpenCode's free tier can only be used from within OpenCode", and since
-// mid-October 2026 be asked at the inference API's URL, not Zen's
-// (provider.OpenCodeFreeURL), with bash and read each taking a parameter
-// (provider.OpenCodeToolSchemas). The user
-// allowed magpie to ask them as OpenCode does, on this route only. So a
-// request to one is never relayed as it came: it is translated (which
-// always streams upstream, and gathers the stream into one reply for a
-// client that didn't ask for a stream), and on the way
+// streamed, and offer OpenCode's core tools, or Zen answers 403
+// "OpenCode's free tier can only be used from within OpenCode"; be asked
+// at OpenCode 2's paths (provider.OpenCodeFreeURL), with each core tool
+// taking OpenCode's parameters (provider.OpenCodeToolSchemas); and since
+// late October 2026 carry OpenCode 2's User-Agent and its environment
+// block in the system prompt (provider.OpenCodeEnvironment), or Zen
+// answers 429 "Free usage limit reached. Free models work in OpenCode"
+// (#3491). The user allowed magpie to ask them as OpenCode does, on this
+// route only. So a request to one is never relayed as it came: it is
+// translated (which always streams upstream, and gathers the stream into
+// one reply for a client that didn't ask for a stream), and on the way
 //
-//   - a tool of the client's named bash or read in another case (Claude
-//     Code's Bash and Read) is offered under the lowercase name, and the
-//     model's calls of it go back to the client under the client's own;
-//   - a missing bash or read (Codex's shell and exec_command are not bash)
-//     is offered as a stub that says never to call it, with OpenCode's own
-//     parameters. tool_choice is left
-//     as the client sent it. A call of a stub is never handed on: it is
-//     left out of the reply, and a turn that called nothing else ends there,
-//     with what the model said so far (a short note when it said nothing),
-//     as a plain stop rather than a tool call.
+//   - a tool of the client's named as a core tool in another case (Claude
+//     Code's Read, Edit, Glob and Grep) is offered under the lowercase name,
+//     and the model's calls of it go back to the client under the client's
+//     own;
+//   - a missing core tool (Claude Code's Bash is not shell) is offered as
+//     a stub that says never to call it, with OpenCode's own parameters.
+//     On Chat each tool says strict false, as OpenCode's do. tool_choice
+//     is left as the client sent it. A call of a stub is never handed on:
+//     it is left out of the reply, and a turn that called nothing else ends
+//     there, with what the model said so far (a short note when it said
+//     nothing), as a plain stop rather than a tool call;
+//   - OpenCode's environment block is added to the system prompt, for the
+//     folder the agent says it works in (the home folder when it says
+//     none), unless the prompt has one already (OpenCode's own).
 
 // zenTools is how one request's tools were offered to Zen's free tier.
 type zenTools struct {
@@ -62,6 +68,8 @@ func zenFreeTools(r *Request) *zenTools {
 		z.stubs[need] = true
 	}
 	r.Tools = tools
+	r.strictSaid = true
+	zenEnvironment(r)
 	if len(z.back) == 0 {
 		return z
 	}
@@ -91,6 +99,43 @@ func zenFreeTools(r *Request) *zenTools {
 		}
 	}
 	return z
+}
+
+// zenEnvironment adds OpenCode's environment block to r's system prompt,
+// unless the prompt carries one already.
+func zenEnvironment(r *Request) {
+	if provider.OpenCodeHasEnvironment(r.System) {
+		return
+	}
+	for _, m := range r.Messages {
+		if m.Role != "system" && m.Role != "developer" {
+			continue
+		}
+		for _, p := range m.Parts {
+			if p.Kind == Text && provider.OpenCodeHasEnvironment(p.Text) {
+				return
+			}
+		}
+	}
+	env := provider.OpenCodeEnvironment(openCodeDir(workDir(r)))
+	if r.System == "" {
+		r.System = env
+	} else {
+		r.System += "\n\n" + env
+	}
+}
+
+// openCodeDir is dir when it is a folder OpenCode could name, an absolute
+// path (or one under ~), else "" for the home folder.
+func openCodeDir(dir string) string {
+	if dir == "/" || dir == "~/" {
+		return ""
+	}
+	if strings.HasPrefix(dir, "/") || strings.HasPrefix(dir, "~/") || strings.HasPrefix(dir, `\\`) ||
+		len(dir) >= 3 && dir[1] == ':' && (dir[2] == '\\' || dir[2] == '/') {
+		return dir
+	}
+	return ""
 }
 
 // zenReply turns the model's events back into the client's: its tools'

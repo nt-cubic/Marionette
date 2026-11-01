@@ -96,7 +96,7 @@ func TestOpenCodeSessionOnEveryCall(t *testing.T) {
 	}
 	// a turn's session, named before signing, stays
 	req, _ := http.NewRequest("POST", "https://opencode.ai/zen/v1/chat/completions", nil)
-	OpenCodeClient(req.Header, "conversation-x")
+	OpenCodeClient(req.Header, "conversation-x", "")
 	turn := req.Header.Get("x-opencode-session")
 	if err := zen.Sign(context.Background(), req, Chat, nil); err != nil || req.Header.Get("x-opencode-session") != turn {
 		t.Errorf("a turn's session became %q (%v)", req.Header.Get("x-opencode-session"), err)

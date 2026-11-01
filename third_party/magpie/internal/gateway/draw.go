@@ -266,7 +266,13 @@ func drawsCodex(p provider.Provider) bool {
 // own picks named for images, and those the user said draw (#1399), less
 // those they said make videos; a ChatGPT account's GPT Image, a Grok
 // subscription's Grok Imagine, a WorkBuddy plan's those its config lists.
-func Drawers(p provider.Provider) []catalog.Model {
+func Drawers(p provider.Provider) []catalog.Model { return DrawersOf(p, p.Available) }
+
+// DrawersOf is Drawers with p's model list from avail, called only when
+// it is wanted: the Providers page has each provider's list at hand, and
+// reading it again for each was 15 MB of what twenty window polls
+// allocated. What avail gives is only read.
+func DrawersOf(p provider.Provider, avail func() []catalog.Model) []catalog.Model {
 	if drawsWorkBuddy(p) {
 		return wbDrawers(p)
 	}
@@ -284,7 +290,7 @@ func Drawers(p provider.Provider) []catalog.Model {
 		// the image models a Google sign-in lists (Antigravity's
 		// gemini-3.1-flash-image), which draw on Code Assist (#757)
 		var out []catalog.Model
-		for _, m := range p.Available() {
+		for _, m := range avail() {
 			if catalog.DrawsID(m.ID) {
 				m.Provider = p.ID
 				out = append(out, m)
@@ -302,7 +308,7 @@ func Drawers(p provider.Provider) []catalog.Model {
 		// when it says it gives images or is named for them (XYenon's
 		// Google AI Studio plugin).
 		var out []catalog.Model
-		for _, m := range p.Available() {
+		for _, m := range avail() {
 			if p.ModelKind(m.ID) == provider.KindVideo {
 				continue
 			}

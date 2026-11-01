@@ -2,9 +2,15 @@ package gateway
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -15,9 +21,10 @@ import (
 // A reply from a group says which member answered it (#822): its
 // X-Magpie-Provider and X-Magpie-Model headers always, relayed or
 // translated, streamed or not, after a failover too; its body's model the
-// vendor's own name, unless MemberModel (or the request's
+// group the agent asked for, unless MemberModel (or the request's
 // X-Magpie-Response-Model: member) asks for magpie's provider/model id
-// there — never for Claude Code or Codex, which read it themselves.
+// there — never for Claude Code or Codex, which read it themselves — or
+// X-Magpie-Response-Model: vendor for the vendor's own name.
 func TestReplyNamesMember(t *testing.T) {
 	bodies := map[string]string{
 		"/v1/messages":         `{"model":"group/auto","max_tokens":100,"messages":[{"role":"user","content":"hi"}]`,
@@ -44,14 +51,15 @@ func TestReplyNamesMember(t *testing.T) {
 				on     bool   // MemberModel
 				header string // X-Magpie-Response-Model
 				token  string // the agent's key
-				member bool   // the body names the member
+				want   string // the model the body names
 			}{
-				{"default", false, "", "", false},
-				{"on", true, "", "", true},
-				{"asked", false, "member", "", true},
-				{"on, vendor asked", true, "vendor", "", false},
-				{"on, codex", true, "", TokenFor("codex"), false},
-				{"on, claude code", true, "", TokenFor("claude"), false},
+				{"default", false, "", "", "group/auto"},
+				{"on", true, "", "", "b/glm-5.3-flash"},
+				{"asked", false, "member", "", "b/glm-5.3-flash"},
+				{"on, vendor asked", true, "vendor", "", served},
+				{"vendor asked", false, "vendor", "", served},
+				{"on, codex", true, "", TokenFor("codex"), "group/auto"},
+				{"on, claude code", true, "", TokenFor("claude"), "group/auto"},
 			} {
 				name := pa.name + "/" + c.name
 				if stream {
@@ -117,10 +125,7 @@ func TestReplyNamesMember(t *testing.T) {
 					if p, m := rec.Header().Get(providerHeader), rec.Header().Get(modelHeader); p != "b" || m != "b/glm-5.3-flash" {
 						t.Errorf("headers say %q %q", p, m)
 					}
-					want := served
-					if c.member {
-						want = "b/glm-5.3-flash"
-					}
+					want := c.want
 					names := modelsNamed(rec.Body.String(), stream)
 					if len(names) == 0 {
 						t.Fatalf("no model named in %s", rec.Body)
@@ -129,6 +134,9 @@ func TestReplyNamesMember(t *testing.T) {
 						if n != want {
 							t.Fatalf("the reply names %q, want %q:\n%s", n, want, rec.Body)
 						}
+					}
+					if r := lastRoute(s); r.Served != served {
+						t.Errorf("the route says %q served it, want the vendor's %q", r.Served, served)
 					}
 				})
 			}
@@ -178,3 +186,182 @@ func TestMemberLine(t *testing.T) {
 		}
 	}
 }
+
+// A reply names the model the agent asked for whenever the request went
+// out under another name, since agents compare the two and warn when they
+// differ (issennknight on Discord: deepseek-v4.1-flash, which the user
+// lists by that id, went out as deepseek-v4.1-flash-1017 and came back
+// so named): a model the user lists by an id of theirs, a group, a
+// provider/model id. One that went out under the name asked for keeps
+// the vendor's own text, its dated name. The route and the usage log
+// keep the vendor's name either way.
+func TestReplyNamesAskedModel(t *testing.T) {
+	paths := []struct {
+		name  string
+		proto provider.Protocol // the vendor's
+		agent string            // the agent's endpoint
+	}{
+		{"anthropic", provider.Anthropic, "/v1/messages"},
+		{"chat", provider.Chat, "/v1/chat/completions"},
+		{"responses", provider.Responses, "/v1/responses"},
+		{"chat from anthropic", provider.Anthropic, "/v1/chat/completions"},
+		{"anthropic from chat", provider.Chat, "/v1/messages"},
+		{"responses from chat", provider.Chat, "/v1/responses"},
+	}
+	cases := []struct {
+		name   string
+		asked  string
+		ids    map[string]string // settings' ModelIDs
+		served string            // what the vendor's reply says
+		header string            // X-Magpie-Response-Model
+		want   string
+	}{
+		{"own id", "deepseek-v4.1-flash", map[string]string{"d/deepseek-v4.1-flash": "deepseek-v4.1-flash-1017"}, "deepseek-v4.1-flash-1017", "", "deepseek-v4.1-flash"},
+		{"own id, vendor asked", "deepseek-v4.1-flash", map[string]string{"d/deepseek-v4.1-flash": "deepseek-v4.1-flash-1017"}, "deepseek-v4.1-flash-1017", "vendor", "deepseek-v4.1-flash-1017"},
+		{"group", "group/fast", nil, "deepseek-v4.1-flash-1017", "", "group/fast"},
+		{"provider id", "d/deepseek-v4.1-flash", nil, "deepseek-v4.1-flash", "", "d/deepseek-v4.1-flash"},
+		{"as asked, dated", "deepseek-v4.1-flash", nil, "deepseek-v4.1-flash-20261017", "", "deepseek-v4.1-flash-20261017"},
+	}
+	for _, pa := range paths {
+		for _, stream := range []bool{false, true} {
+			for _, c := range cases {
+				name := pa.name + "/" + c.name
+				if stream {
+					name += "/stream"
+				}
+				t.Run(name, func(t *testing.T) {
+					fresh(t)
+					var mu sync.Mutex
+					var sent []string // the models the vendor was asked for
+					serve := servedBy(pa.proto, c.served)
+					up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						b, _ := io.ReadAll(r.Body)
+						mu.Lock()
+						sent = append(sent, gjson.GetBytes(b, "model").Str)
+						mu.Unlock()
+						r.Body = io.NopCloser(bytes.NewReader(b))
+						serve(w, r)
+					}))
+					t.Cleanup(up.Close)
+					p := provider.Provider{ID: "d", Name: "D", Key: "k", Models: []string{"deepseek-v4.1-flash"}}
+					switch pa.proto {
+					case provider.Chat:
+						p.Chat = up.URL + "/v1"
+					case provider.Responses:
+						p.Responses = up.URL + "/v1"
+					case provider.Anthropic:
+						p.Anthropic = up.URL
+					}
+					if err := provider.Save(p); err != nil {
+						t.Fatal(err)
+					}
+					if err := provider.SaveGroup(provider.Group{Name: "fast", Routing: provider.Ordered, Members: []string{"d/deepseek-v4.1-flash"}}); err != nil {
+						t.Fatal(err)
+					}
+					if c.ids != nil {
+						if err := settings.Save(settings.Settings{ModelIDs: c.ids}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					m, _ := json.Marshal(c.asked)
+					body := `{"model":` + string(m) + `,"max_tokens":100,"messages":[{"role":"user","content":"hi"}]`
+					if pa.agent == "/v1/responses" {
+						body = `{"model":` + string(m) + `,"input":"hi"`
+					}
+					if stream {
+						body += `,"stream":true`
+					}
+					req := httptest.NewRequest("POST", pa.agent, strings.NewReader(body+"}"))
+					if c.header != "" {
+						req.Header.Set(responseModelHeader, c.header)
+					}
+					rec := httptest.NewRecorder()
+					s := New()
+					s.Handler().ServeHTTP(rec, req)
+					if rec.Code != 200 || !strings.Contains(rec.Body.String(), "hi") {
+						t.Fatalf("%d %s", rec.Code, rec.Body)
+					}
+					mu.Lock()
+					t.Logf("sent as %v", sent)
+					mu.Unlock()
+					names := modelsNamed(rec.Body.String(), stream)
+					if len(names) == 0 {
+						t.Fatalf("no model named in %s", rec.Body)
+					}
+					for _, n := range names {
+						if n != c.want {
+							t.Fatalf("the reply names %q, want %q:\n%s", n, c.want, rec.Body)
+						}
+					}
+					if r := lastRoute(s); r.Served != c.served {
+						t.Errorf("the route says %q served it, want the vendor's %q", r.Served, c.served)
+					}
+					if calls := s.Recent(); len(calls) == 0 || calls[0].Usage.Served != c.served {
+						t.Errorf("the log says %+v served it, want the vendor's %q", calls, c.served)
+					}
+				})
+			}
+		}
+	}
+}
+
+// A Gemini agent asks in the URL, and the reply's modelVersion names that
+// model when the request went out under another name.
+func TestGeminiReplyNamesAskedModel(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprint("stream ", stream), func(t *testing.T) {
+			fresh(t)
+			up := httptest.NewServer(servedBy(provider.Chat, "deepseek-v4.1-flash-1017"))
+			t.Cleanup(up.Close)
+			if err := provider.Save(provider.Provider{ID: "d", Name: "D", Key: "k", Chat: up.URL + "/v1", Models: []string{"deepseek-v4.1-flash"}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := settings.Save(settings.Settings{ModelIDs: map[string]string{"d/deepseek-v4.1-flash": "deepseek-v4.1-flash-1017"}}); err != nil {
+				t.Fatal(err)
+			}
+			path := "/v1beta/models/deepseek-v4.1-flash:generateContent"
+			if stream {
+				path = "/v1beta/models/deepseek-v4.1-flash:streamGenerateContent?alt=sse"
+			}
+			rec := httptest.NewRecorder()
+			New().Handler().ServeHTTP(rec, httptest.NewRequest("POST", path, strings.NewReader(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)))
+			if rec.Code != 200 || !strings.Contains(rec.Body.String(), "hi") {
+				t.Fatalf("%d %s", rec.Code, rec.Body)
+			}
+			names := modelsNamed(rec.Body.String(), stream)
+			if len(names) == 0 {
+				t.Fatalf("no model named in %s", rec.Body)
+			}
+			for _, n := range names {
+				if n != "deepseek-v4.1-flash" {
+					t.Fatalf("the reply names %q:\n%s", n, rec.Body)
+				}
+			}
+		})
+	}
+}
+
+// A run of a stream's lines is named line by line, and a run that names
+// no model, or a name of "", is the same slice back.
+func TestMemberLines(t *testing.T) {
+	in := []byte("event: response.created\ndata: {\"response\":{\"model\":\"v\"}}\n\nevent: response.output_text.delta\ndata: {\"delta\":\"hi\"}\n\ndata: {\"model\":\"v\"}\n")
+	want := "event: response.created\ndata: {\"response\":{\"model\":\"asked\"}}\n\nevent: response.output_text.delta\ndata: {\"delta\":\"hi\"}\n\ndata: {\"model\":\"v\"}\n"
+	if got := string(memberLines(in, "asked", memberPathsOf(provider.Responses)[1:])); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	plain := []byte("data: {\"delta\":\"hi\"}\n\n")
+	if got := memberLines(plain, "asked", memberPaths); &got[0] != &plain[0] {
+		t.Error("a run with no model was copied")
+	}
+	if got := memberLines(in, "", memberPaths); &got[0] != &in[0] {
+		t.Error("no name copied the run")
+	}
+}
+
+// namedAs is a reply as an agent that asked for asked gets it: every model
+// it names is that one (memberWriter), the rest as the vendor wrote it.
+func namedAs(reply, asked string) string {
+	return replyModels.ReplaceAllString(reply, `"$1"$2"`+asked+`"`)
+}
+
+var replyModels = regexp.MustCompile(`"(model|modelVersion)"(\s*:\s*)"[^"]*"`)

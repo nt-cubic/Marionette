@@ -59,7 +59,7 @@ func snow(home string) *Agent { return snowIn(here(home)) }
 // wsl.go), whose profile names the gateway as the distro reaches it, with
 // the key it takes from there.
 func snowIn(at place) *Agent {
-	dir := filepath.Join(at.home, ".snow")
+	dir := at.join(".snow")
 	if d := strings.TrimSpace(at.getenv("SNOW_CONFIG_DIR")); filepath.IsAbs(d) {
 		dir = filepath.Clean(d)
 	}
@@ -147,7 +147,7 @@ func snowIn(at place) *Agent {
 		mine := false
 		if b, err := edit.Read(ours); err == nil && b != nil && snowIsOurs(b) {
 			raw, mine = b, true
-			if w := stashLoad()[keyWrote]; w != "" {
+			if w := stashShared()[keyWrote]; w != "" {
 				json.Unmarshal([]byte(w), &wrote)
 			}
 		} else if base != "" {
@@ -173,7 +173,7 @@ func snowIn(at place) *Agent {
 	// one), takes magpie.json away (or puts back the user's own of that
 	// name), and copies the profile it is on to config.json
 	leave := func(to string) error {
-		was, none := unstash(keyActive), stashLoad()[keyNone] != ""
+		was, none := unstash(keyActive), stashShared()[keyNone] != ""
 		forget(keyNone, keyWrote)
 		// a profile asked for by name is made the active one; else the one
 		// the user was on, or none at all when Snow had no active file
@@ -331,7 +331,7 @@ func snowIn(at place) *Agent {
 				// (#1457). An empty value goes back to the one they were on.
 				to := ""
 				if v != "" {
-					to = snowFindProfile(profiles, v, stashLoad()[keyActive])
+					to = snowFindProfile(profiles, v, stashShared()[keyActive])
 					if to == "" {
 						return fmt.Errorf("%q is neither a model through magpie nor the model of one of Snow CLI's profiles: nothing was changed (magpie models snow lists them; magpie snow default goes back to your own profile)", v)
 					}
@@ -339,7 +339,7 @@ func snowIn(at place) *Agent {
 				return leave(to)
 			},
 			Options: func(cur map[string]string) []Option {
-				return append(snowOwnOptions(profiles, cur["model"]), viaMagpie("snow", magpieID+"/")...)
+				return withVia(snowOwnOptions(profiles, cur["model"]), "snow", magpieID+"/")
 			},
 		}, {
 			// basicModel, the light model Snow's summaries, compaction and
@@ -430,7 +430,7 @@ func snowIn(at place) *Agent {
 				if !ok {
 					return nil
 				}
-				for _, m := range magpieModels("snow") {
+				for _, m := range sharedModels("snow") {
 					if m.ID == ref && len(m.Efforts) > 0 {
 						return append([]Option{{Value: "", Takes: "off"}}, static(m.Efforts...)...)
 					}
@@ -493,7 +493,7 @@ func snowProfileFor(from []byte, ours bool, v1, key, ref string, wrote map[strin
 	}
 	ctx, out := snowContext, snowOutput
 	sees := false
-	for _, m := range magpieModels("snow") {
+	for _, m := range sharedModels("snow") {
 		if m.ID == ref {
 			if m.Context > 0 {
 				ctx = m.Context

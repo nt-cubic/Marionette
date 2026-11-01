@@ -92,3 +92,20 @@ func TestRestCapCmd(t *testing.T) {
 		t.Fatalf("30s taken: %v %d", err, cap())
 	}
 }
+
+// `magpie quota reset --card <n>` picks which of the account's resets is
+// spent (01huadalang on Discord); a card that isn't a place among them, or
+// a flag it doesn't know, is turned away before any account is read, never
+// taken for an account's name.
+func TestQuotaResetCardArgs(t *testing.T) {
+	for _, args := range [][]string{{"--card"}, {"--card", "0"}, {"--card", "two"}, {"me@example.com", "--card", "-1"}, {"--cards", "2"}} {
+		if err := quotaResetCmd(args); err == nil {
+			t.Fatalf("%q taken", args)
+		}
+	}
+	for n, want := range map[int]string{1: "1st", 2: "2nd", 3: "3rd", 4: "4th", 11: "11th", 12: "12th", 13: "13th", 21: "21st", 22: "22nd", 101: "101st", 111: "111th"} {
+		if got := ordinal(n); got != want {
+			t.Fatalf("ordinal(%d) = %q, want %q", n, got, want)
+		}
+	}
+}

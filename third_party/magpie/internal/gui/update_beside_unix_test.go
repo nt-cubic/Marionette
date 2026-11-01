@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -53,17 +54,23 @@ func TestUpdateInATerminalRestartsTheAppWithoutCuttingIt(t *testing.T) {
 	}
 	gateway.SetRestarter(updates.restartBeside)
 
-	var child *exec.Cmd
+	// the restart starts the child on a goroutine of its own, while this
+	// test waits for it to serve
+	var child atomic.Pointer[exec.Cmd]
 	startBeside = func(exe string, window bool, view string) error {
-		child = exec.Command(startExe, "-test.run=^TestHandoverSuccessor$", "-test.v")
-		child.Env = append(os.Environ(), successorEnv+"=1")
-		child.Stdout, child.Stderr = os.Stderr, os.Stderr
-		return child.Start()
+		c := exec.Command(startExe, "-test.run=^TestHandoverSuccessor$", "-test.v")
+		c.Env = append(os.Environ(), successorEnv+"=1")
+		c.Stdout, c.Stderr = os.Stderr, os.Stderr
+		if err := c.Start(); err != nil {
+			return err
+		}
+		child.Store(c)
+		return nil
 	}
 	t.Cleanup(func() {
-		if child != nil && child.Process != nil {
-			child.Process.Kill()
-			child.Wait()
+		if c := child.Load(); c != nil {
+			c.Process.Kill()
+			c.Wait()
 		}
 	})
 	relaunchBinary = func(string, string, bool, string) error {
@@ -98,7 +105,8 @@ func TestUpdateInATerminalRestartsTheAppWithoutCuttingIt(t *testing.T) {
 	}
 
 	eventually2(t, 30*time.Second, "the new magpie never served the gateway", func() bool {
-		return child != nil && child.Process != nil && servedByPid(addr) == child.Process.Pid
+		c := child.Load()
+		return c != nil && servedByPid(addr) == c.Process.Pid
 	})
 	q, err := http.Post("http://"+addr+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"plan/m1","messages":[{"role":"user","content":"hi"}]}`))
 	if err != nil {

@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
@@ -44,6 +45,11 @@ const (
 	// (routes.Cheapest). A group's only: a provider's keys and accounts
 	// all bill its one price.
 	Cheapest = "cheap"
+	// Drain stays on one key or account until it is used up, then goes
+	// on to the next in the listed order, and stays on that one: one
+	// before it that renews meanwhile doesn't take its requests back
+	// (dzxx0496 on Discord; routes.Drain).
+	Drain = "drain"
 )
 
 // pluginRouting is a routing a plugin serves: "<plugin>/<name>".
@@ -212,6 +218,21 @@ var usedCache struct {
 // first time they are asked for, so the first requests after magpie
 // starts are routed by them too; later ones never wait.
 var firstWait = 3 * time.Second
+
+// unwaited counts the callers under Unwaited.
+var unwaited atomic.Int32
+
+// Unwaited has Allowances answer from what is last known, without the
+// first ask's wait, until release: for a caller that only asks whether a
+// model is there, not which account a request goes to. Every agent's model
+// list asks the gateway whether a model sees images, and the migrations at
+// start read Pi's effort, which builds its list: each agent's first ask
+// waited firstWait for its accounts' usage over the network, and magpie's
+// gateway listened ~9 s after start.
+func Unwaited() (release func()) {
+	unwaited.Add(1)
+	return sync.OnceFunc(func() { unwaited.Add(-1) })
+}
 
 // Allowance is an account's allowance windows as last known.
 type Allowance []Limit
@@ -647,7 +668,7 @@ func Allowances(agent string) map[string]Allowance {
 				}
 				c.read[key] = st
 			}
-			var renewed []string
+			var renewed, restarts []string
 			for user, a := range all {
 				key := agent + "/" + strings.ToLower(user)
 				if c.renewed[key] > began {
@@ -657,8 +678,13 @@ func Allowances(agent string) map[string]Allowance {
 					at = time.Time{}
 					continue
 				}
-				if was, ok := c.seen[key]; ok && a.renewedFrom(was.a, was.at, share, now) {
-					renewed = append(renewed, user)
+				if was, ok := c.seen[key]; ok {
+					if a.renewedFrom(was.a, was.at, share, now) {
+						renewed = append(renewed, user)
+					}
+					if a.startedAgain(was.a, was.at, share, now) {
+						restarts = append(restarts, user)
+					}
 				}
 				c.seen[key] = reading{a, now}
 			}
@@ -676,12 +702,15 @@ func Allowances(agent string) map[string]Allowance {
 			for _, user := range renewed {
 				tellRenewed(agent, user)
 			}
+			for _, user := range restarts {
+				tellStarted(agent, user)
+			}
 			close(done)
 		}()
 	}
 	_, known := c.m[agent]
 	c.Unlock()
-	if !known && done != nil {
+	if !known && done != nil && unwaited.Load() == 0 {
 		select {
 		case <-done:
 		case <-time.After(firstWait):
@@ -759,13 +788,32 @@ var renewedHooks struct {
 	fs []func(agent, user string)
 }
 
+// OnStarted has f told as OnRenewed is, and by the same tellings, but
+// only when a window stands started again in fact: a reading finding one
+// it was full in full no more with its reset gone by, or standing a new,
+// later cycle, or a reset spent on them. What a vendor itself gave the
+// time of waits for that, not for a reading that merely finds its window
+// less than full while the vendor's own word stands (#2718).
+func OnStarted(f func(agent, user string)) {
+	startedHooks.Lock()
+	startedHooks.fs = append(startedHooks.fs, f)
+	startedHooks.Unlock()
+}
+
+var startedHooks struct {
+	sync.Mutex
+	fs []func(agent, user string)
+}
+
 // renewedNow tells those OnRenewed asked, and forgets the account's
 // allowance as last read: its windows are not known till read again, and
 // what holds an account at a share of them (a cap, credits not spent)
-// holds it no more.
+// holds it no more. Those OnStarted asked are told too: a reset spent is
+// a window started again in fact.
 func renewedNow(agent, user string) {
 	forgetAllowance(agent, user)
 	tellRenewed(agent, user)
+	tellStarted(agent, user)
 }
 
 // tellRenewed tells those OnRenewed asked.
@@ -773,6 +821,16 @@ func tellRenewed(agent, user string) {
 	renewedHooks.Lock()
 	fs := renewedHooks.fs
 	renewedHooks.Unlock()
+	for _, f := range fs {
+		f(agent, user)
+	}
+}
+
+// tellStarted tells those OnStarted asked.
+func tellStarted(agent, user string) {
+	startedHooks.Lock()
+	fs := startedHooks.fs
+	startedHooks.Unlock()
 	for _, f := range fs {
 		f(agent, user)
 	}

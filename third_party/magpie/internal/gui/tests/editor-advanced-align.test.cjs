@@ -68,6 +68,9 @@ for (const [engine, browserType] of [["chromium", chromium], ["webkit", webkit]]
       await page.locator(".row.provider", { hasText: "Claude Code" }).first().click();
       const adv = page.locator(".editor details.advanced");
       await adv.locator("summary").waitFor();
+      // the editor drawn last has been laid out: a redraw between two
+      // frames measured a details its observer hadn't seen yet (86px)
+      await page.waitForFunction(() => document.querySelector(".editor details.advanced")?.style.getPropertyValue("--ed-at"));
       await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
       let m = await measure(page);
       const start = m.stacked ? m.edge : m.fields;

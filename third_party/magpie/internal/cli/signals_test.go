@@ -146,3 +146,30 @@ func TestTUIKeepsSignalsWhileLoading(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// a signal writes the session index before magpie dies of it: `magpie web`
+// or `serve` ended by a service manager or a terminal's Ctrl+C kept none of
+// a scan's last minute, so the next start read those files again; an index
+// that won't write doesn't hold the signal past saveOnSignal
+func TestSignalSavesTheSessionIndex(t *testing.T) {
+	died := deaths(t, syscall.SIGTERM)
+	oldSave, oldWait := sessionsSaved, saveOnSignal
+	t.Cleanup(func() { sessionsSaved, saveOnSignal = oldSave, oldWait })
+	saved := make(chan struct{}, 1)
+	sessionsSaved = func() { saved <- struct{}{} }
+	endProbesOnSignal()
+	send(t, syscall.SIGTERM)
+	diesOf(t, died, syscall.SIGTERM)
+	select {
+	case <-saved:
+	default:
+		t.Fatal("died without the session index saved")
+	}
+
+	saveOnSignal = 50 * time.Millisecond
+	stuck := make(chan struct{})
+	t.Cleanup(func() { close(stuck) })
+	sessionsSaved = func() { <-stuck }
+	send(t, syscall.SIGTERM)
+	diesOf(t, died, syscall.SIGTERM)
+}

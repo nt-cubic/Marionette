@@ -167,7 +167,7 @@ func (b *blockPricer) as(prov, model, served, effort string) pricedAs {
 	}
 	a := pricedAs{provider: prov, flags: swapKnown}
 	sent := provider.SentNameIn(b.wires, prov, model, effort)
-	if served != "" && Swapped(sent, served) && !(SameSpelled(model, served) || ServingName(model, served) || RelayRenamed(model, served) || ListedAs(prov, model, served)) {
+	if served != "" && Swapped(sent, served) && !(SameSpelled(model, served) || ServingName(model, served) || RelayRenamed(model, served) || VendorAlias(model, served) || ListedAs(prov, model, served)) {
 		a.flags |= 2
 	}
 	if GroupRouted(sent, served) {

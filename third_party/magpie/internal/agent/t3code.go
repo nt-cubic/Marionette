@@ -182,7 +182,7 @@ func t3App(home string) bool {
 func t3InstanceJSON(path, gw string) map[string]any {
 	mark := claude1MFor("t3code")
 	models := []map[string]any{}
-	for _, m := range magpieModels("t3code") {
+	for _, m := range sharedModels("t3code") {
 		// Claude Code reads a dotted Claude version as Claude Opus 4
 		e := map[string]any{"slug": provider.ClaudeSpelled(mark(m.ID)), "name": m.Name}
 		if c := t3Capabilities(m.ID, m.Efforts); c != nil {
@@ -508,7 +508,7 @@ func t3CodexBaseOf(args string) string {
 func t3Stashed(key string) bool {
 	stashMu.Lock()
 	defer stashMu.Unlock()
-	return stashLoad()[key] != ""
+	return stashShared()[key] != ""
 }
 
 // t3Tokens is T3 Code's tokenizeCliArgs (packages/shared/src/cliArgs.ts),

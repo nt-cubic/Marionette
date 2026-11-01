@@ -93,7 +93,9 @@ func (l *Library) sync() *Result {
 // agents gone from here that still have what magpie gave them (held) only
 // have what was unticked taken out, after the rest.
 func syncSteps(all, gone []*Target, b *backups, res *Result) []func(*Library) {
-	var steps []func(*Library)
+	// a skill whose app moved it is followed first, for every agent to
+	// get the moved one (skill_moved.go)
+	steps := []func(*Library){func(l *Library) { l.followMovedSkills() }}
 	for _, t := range all {
 		steps = append(steps, func(l *Library) {
 			l.syncInstructions(t, b, res)
@@ -191,6 +193,9 @@ func Sync() (*Result, error) {
 }
 
 func (l *Library) syncMCP(t *Target, b *backups, res *Result) {
+	if res.unreached(t) {
+		return
+	}
 	if t.MCP == nil {
 		return
 	}
@@ -518,9 +523,7 @@ func Glance(problems []Problem) (*View, error) { return readView(problems, true)
 func readView(problems []Problem, glance bool) (*View, error) {
 	mu.Lock()
 	locked := true
-	// each folder on the way to a path is looked at once while the lock
-	// is held (linkmemo.go, #1771)
-	forget := readParts()
+	forget := func() {}
 	defer func() {
 		if locked {
 			forget()
@@ -530,6 +533,19 @@ func readView(problems []Problem, glance bool) (*View, error) {
 	l, err := load()
 	if err != nil {
 		return nil, err
+	}
+	// each folder on the way to a path is looked at once while the lock
+	// is held (linkmemo.go, #1771)
+	forget = readParts()
+	// a skill whose app moved it to its new version's folder is linked
+	// there (skill_moved.go); what was kept of the links is let go then,
+	// for the rest of the read to see the new one
+	if l.followMovedSkills() {
+		forget()
+		forget = readParts()
+		if err := l.save(); err != nil {
+			return nil, err
+		}
 	}
 	// a plugin's tools, a server of their own (plugin_tools.go): saved,
 	// and given to the agents by a sync of their own

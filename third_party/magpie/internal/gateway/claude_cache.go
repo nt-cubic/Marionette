@@ -111,6 +111,15 @@ func cacheMark(ttl string) map[string]string {
 	return map[string]string{"type": "ephemeral", "ttl": ttl}
 }
 
+// partMark is the mark of a client's own a rebuilt block keeps (#4571):
+// the ttl the parse read off the block, or none.
+func partMark(ttl string) map[string]string {
+	if ttl == "" {
+		return nil
+	}
+	return cacheMark(ttl)
+}
+
 func shorterTTL(a, b string) string {
 	if a == "" {
 		return b

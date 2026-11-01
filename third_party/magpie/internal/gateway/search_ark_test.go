@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // Volcengine Ark's Responses API runs web_search itself, on each of its
@@ -165,5 +166,138 @@ func TestForArkSearchScope(t *testing.T) {
 	doubao := []byte(`{"tools":[{"type":"web_search","sources":["doubao"]}]}`)
 	if out := forArkSearch(ark, doubao); string(out) != string(doubao) {
 		t.Errorf("Ark's own shape changed: %s", out)
+	}
+}
+
+// arkRefusesInclude answers as Ark's Responses API does a request whose
+// include names a value it doesn't take (asked with a real key,
+// 2026-11-01): the whole request is refused.
+func arkRefusesInclude(body []byte) (int, string) {
+	var q struct {
+		Include []string `json:"include"`
+	}
+	json.Unmarshal(body, &q)
+	for _, v := range q.Include {
+		if !arkIncludes[v] {
+			return 400, `{"error":{"code":"InvalidParameter","message":"The parameter ` + "`include`" + ` specified in the request are not valid: unknown type: ` + v + `. Request id: 021793510893623dc6263e9e52ba05a43f20bd75063a4f8b23617","param":"include","type":"BadRequest"}}`
+		}
+	}
+	return 0, ""
+}
+
+const arkSearchedReply = "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\",\"model\":\"deepseek-v4-1-flash-260910\"}}\n\n" +
+	"data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"web_search_call\",\"status\":\"completed\",\"action\":{\"type\":\"search\",\"query\":\"今天北京天气\"}}}\n\n" +
+	"data: {\"type\":\"response.output_text.delta\",\"delta\":\"北京今天晴，见 https://www.weather.com.cn/weather/101010100.shtml\"}\n\n" +
+	"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"usage\":{\"input_tokens\":40,\"output_tokens\":20}}}\n\n"
+
+// Every search that reaches Ark's Responses API goes without an include
+// value Ark refuses (axelburks on Discord: 400 "The parameter `include`
+// specified in the request are not valid: unknown type: ..."): a client's
+// web search on an Ark model, translated (Claude Code's
+// web_search_20250305) or relayed (OpenCode's AI SDK, which adds
+// web_search_call.action.sources itself), and Settings' searcher on an
+// Ark model. Sealed reasoning, which Ark takes, still goes.
+func TestArkSearchSendsNoIncludeItRefuses(t *testing.T) {
+	searchSandbox(t)
+	f := &fake{t: t, reply: arkSearchedReply, refuse: arkRefusesInclude}
+	up := httptest.NewServer(f)
+	t.Cleanup(up.Close)
+	ark := provider.Provider{ID: "volcengine", Preset: "volcengine", Name: "Volcengine Ark", Key: "k", Models: []string{"deepseek-v4-1-flash-260910"}, Responses: "http://ark.cn-beijing.volces.com/api/v3"}
+	if err := provider.Save(ark); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	addr := strings.TrimPrefix(up.URL, "http://")
+	s.client = &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, addr)
+	}}}
+	sent := func(t *testing.T) []string {
+		t.Helper()
+		var q struct {
+			Include []string         `json:"include"`
+			Tools   []map[string]any `json:"tools"`
+		}
+		if err := json.Unmarshal(f.got, &q); err != nil {
+			t.Fatalf("sent %s: %v", f.got, err)
+		}
+		if !slices.ContainsFunc(q.Tools, func(tl map[string]any) bool { return tl["type"] == "web_search" }) {
+			t.Fatalf("Ark wasn't sent its web_search: %s", f.got)
+		}
+		return q.Include
+	}
+
+	t.Run("claude code", func(t *testing.T) {
+		code, reply := postTo(t, s, "/v1/messages", `{"model":"volcengine/deepseek-v4-1-flash-260910","max_tokens":3000,"stream":true,"messages":[{"role":"user","content":"今天北京天气"}],"tools":[{"type":"web_search_20250305","name":"web_search"}]}`)
+		if code != 200 || strings.Contains(reply, "unknown type") {
+			t.Fatalf("%d %s", code, reply)
+		}
+		if inc := sent(t); len(inc) != 0 {
+			t.Errorf("Ark was asked for include %q", inc)
+		}
+	})
+	t.Run("opencode relayed", func(t *testing.T) {
+		code, reply := postTo(t, s, "/v1/responses", `{"model":"volcengine/deepseek-v4-1-flash-260910","stream":true,"reasoning":{"effort":"low"},"input":[{"role":"user","content":[{"type":"input_text","text":"今天北京天气"}]}],`+
+			`"tools":[{"type":"web_search"}],"include":["reasoning.encrypted_content","web_search_call.action.sources"]}`)
+		if code != 200 || strings.Contains(reply, "unknown type") {
+			t.Fatalf("%d %s", code, reply)
+		}
+		if inc := sent(t); !slices.Equal(inc, []string{"reasoning.encrypted_content"}) {
+			t.Errorf("Ark was asked for include %q, want the sealed reasoning alone", inc)
+		}
+	})
+	t.Run("settings searcher", func(t *testing.T) {
+		st := settings.Load()
+		st.Searcher = "volcengine/deepseek-v4-1-flash-260910"
+		if err := settings.Save(st); err != nil {
+			t.Fatal(err)
+		}
+		said, _, err := s.modelSearch(context.Background(), "今天北京天气")
+		if err != nil || !strings.Contains(said, "北京今天晴") {
+			t.Fatalf("search = %q %v", said, err)
+		}
+		if inc := sent(t); len(inc) != 0 {
+			t.Errorf("Ark was asked for include %q", inc)
+		}
+	})
+}
+
+// Ark's rule is Ark's: OpenAI's Responses API, and a relay, are still
+// asked for the pages a search found, and a client's include goes on as
+// it came; Ark keeps only what it takes, with no sources added.
+func TestArkIncludeScope(t *testing.T) {
+	include := func(body, host string) []string {
+		t.Helper()
+		r, err := parseResponses([]byte(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var q struct {
+			Include []string `json:"include"`
+		}
+		json.Unmarshal(buildResponses(r, "m", host, false), &q)
+		return q.Include
+	}
+	const body = `{"model":"m","input":"hi","reasoning":{"effort":"low"},"include":["reasoning.encrypted_content","message.output_text.logprobs"],"tools":[{"type":"web_search"}]}`
+	for host, want := range map[string][]string{
+		"api.openai.com": {"reasoning.encrypted_content", "message.output_text.logprobs", "web_search_call.action.sources"},
+		"relay.example":  {"reasoning.encrypted_content", "message.output_text.logprobs", "web_search_call.action.sources"},
+		arkHost:          {"reasoning.encrypted_content"},
+	} {
+		if got := include(body, host); !slices.Equal(got, want) {
+			t.Errorf("%s: include %q, want %q", host, got, want)
+		}
+	}
+	// a relayed body: OpenAI's as it came, Ark's without what it refuses
+	in := []byte(`{"model":"m","tools":[{"type":"function","name":"f"}],"include":["reasoning.encrypted_content","web_search_call.action.sources"]}`)
+	if out := forArkSearch(provider.Provider{ID: "openai", Responses: "https://api.openai.com/v1"}, in); string(out) != string(in) {
+		t.Errorf("OpenAI's body changed: %s", out)
+	}
+	out := forArkSearch(provider.Provider{ID: "volcengine", Responses: "https://ark.cn-beijing.volces.com/api/v3"}, in)
+	if !strings.Contains(string(out), `"include":["reasoning.encrypted_content"]`) || !strings.Contains(string(out), `"name":"f"`) {
+		t.Errorf("Ark's body: %s", out)
+	}
+	only := forArkSearch(provider.Provider{ID: "volcengine", Responses: "https://ark.cn-beijing.volces.com/api/v3"}, []byte(`{"model":"m","include":["web_search_call.action.sources"]}`))
+	if strings.Contains(string(only), "include") || strings.Contains(string(only), "tools") {
+		t.Errorf("Ark's body with nothing it takes: %s", only)
 	}
 }

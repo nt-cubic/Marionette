@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -24,18 +25,16 @@ import (
 // array-table headers. A name is the header's key path: a quoted part keeps its
 // quotes, and whitespace around the dots is not part of it, so `[ a . b ]` is
 // the name `a.b`. Missing files return (nil, nil); errors include the path.
+// The list is made once each time the file is read and shared by every
+// caller, so read only (an append makes a copy): a Codex config.toml with a
+// table for each of 11,000 projects had it made again for each look, 46 MB
+// of what twenty window polls allocated.
 func TOMLTables(path string) ([]string, error) {
-	tables, err := tomlTablesOf(path)
+	doc, err := tomlFileOf(path)
 	if err != nil {
 		return nil, err
 	}
-	var out []string
-	for _, table := range tables {
-		if !table.array {
-			out = append(out, table.name)
-		}
-	}
-	return out, nil
+	return doc.names, nil
 }
 
 // GetTOMLTable returns the scalar keys of one table, or (nil, nil) when
@@ -480,6 +479,12 @@ func tomlFileOf(path string) (tomlFile, error) {
 		if err != nil {
 			return tomlFile{}, fmt.Errorf("%s: %w", path, err)
 		}
+		for _, table := range doc.tables {
+			if !table.array {
+				doc.names = append(doc.names, table.name)
+			}
+		}
+		doc.names = slices.Clip(doc.names)
 		return doc, nil
 	})
 	if errors.Is(err, fs.ErrNotExist) {
@@ -501,6 +506,7 @@ func parseTOMLTables(lines []string) ([]tomlTableSpan, error) {
 type tomlFile struct {
 	root   tomlTableSpan
 	tables []tomlTableSpan
+	names  []string // TOMLTables
 }
 
 // parseTOMLFile is parseTOMLTables with the top-level keys too, located the

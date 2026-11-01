@@ -3,6 +3,7 @@ package pii
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -165,7 +166,15 @@ type candidate struct {
 // which runs on Metal; then pf-serve on the CPU, which runs anywhere.
 // macOS's was tried on Metal alone: one whose load hung there, or ended,
 // was tried again on Metal by every request (lazyeo, an M2).
+// A CPU without what pf-serve is built for runs pf-serve-base, on the
+// CPU alone: pf-serve-vulkan is built like pf-serve, and would end the
+// same way.
 func candidates(cpu bool) []candidate {
+	if !fullX86() {
+		if _, err := os.Stat(exe("pf-serve-base")); err == nil {
+			return []candidate{{exe("pf-serve-base"), true}}
+		}
+	}
 	var out []candidate
 	if !cpu {
 		if _, err := os.Stat(exe("pf-serve-vulkan")); err == nil {
@@ -182,6 +191,21 @@ func candidates(cpu bool) []candidate {
 func start(cpu bool, stop <-chan struct{}) (*helper, error) {
 	if !Installed() {
 		return nil, ErrNotInstalled
+	}
+	if !strings.HasSuffix(binDir(), "-"+target()) {
+		// only the Intel pf-serve under Rosetta, which may not start at
+		// all: Apple silicon's is fetched first, and one that can't be
+		// leaves the Intel one to try
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		go func() {
+			select {
+			case <-stop:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+		ensureServe(ctx)
+		cancel()
 	}
 	upgrades.Add(1)
 	go func() {

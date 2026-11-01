@@ -270,10 +270,11 @@ type lineCallReader struct {
 // lineCallReaders are the agents in callSources, beside callFiles' own,
 // whose calls are each one line of a file only appended to.
 var lineCallReaders = map[string]lineCallReader{
-	"kimi": {kimiCallsBegin, kimiCallLine, nil},         // #1607
-	"pi":   {piCallsBegin, readPiCallLine, piCallsKept}, // #1951
-	"raft": {piCallsBegin, readPiCallLine, piCallsKept},
-	"omp":  {piCallsBegin, readPiCallLine, piCallsKept},
+	"kimi":  {kimiCallsBegin, kimiCallLine, nil},         // #1607
+	"pi":    {piCallsBegin, readPiCallLine, piCallsKept}, // #1951
+	"raft":  {piCallsBegin, readPiCallLine, piCallsKept},
+	"cindy": {piCallsBegin, readPiCallLine, piCallsKept},
+	"omp":   {piCallsBegin, readPiCallLine, piCallsKept},
 }
 
 // callLock is the lock a file's calls are read under, so that two readers

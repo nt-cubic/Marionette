@@ -25,6 +25,13 @@ i.dot.free { background: var(--k-free); box-shadow: inset 0 0 0 1px color-mix(in
 .ctx-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .ctx-head .grow, .ctx-foot .grow, .ctx-contents-head .grow, .ctx-agent-head .grow, .ctx-agent-foot .grow, .ctx-sess-head .grow { flex: 1; }
 .ctx-title { font-size: 13px; font-weight: 600; color: var(--fg); white-space: nowrap; }
+.ctx-route, .ctx-who, .ctx-what { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+.ctx-route { gap: 6px; font-size: 12px; }
+.ctx-who { flex: none; color: var(--fg-2); font-weight: 500; white-space: nowrap; }
+.ctx-who .ic { width: 14px; height: 14px; }
+.ctx-what .ic { flex: none; width: 12px; height: 12px; }
+.ctx-sep { flex: none; color: var(--faint); }
+:where(.ctx-card.max420) :is(.ctx-who-n, .ctx-sep) { display: none; }
 .ctx-model { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--code-font, var(--code)); font-size: 11px; color: var(--muted); }
 .ctx-state { display: inline-flex; align-items: center; gap: 5px; flex: none; height: 20px; padding: 0 8px; border-radius: 10px; font-size: 11px; font-weight: 500; background: var(--pill); color: var(--fg-2); }
 .ctx-state i { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
@@ -145,7 +152,7 @@ i.dot.free { background: var(--k-free); box-shadow: inset 0 0 0 1px color-mix(in
 .ctx-card.shut > :not(.ctx-head) { display: none; }
 /* its head alone, the space under it is the space over it */
 .ctx-card.shut { padding-bottom: 14px; }
-:where(.ctx-card.shut.max420) .ctx-model { display: none; }
+:where(.ctx-card.shut.max420) .ctx-what { display: none; }
 /* folded, the head is one line of a fixed height whatever a live request
    puts in it, so nothing under it moves; a thin bar of what fills the
    window, a part each, takes the room between the figure and the model */

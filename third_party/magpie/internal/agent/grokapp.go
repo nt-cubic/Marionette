@@ -129,7 +129,7 @@ func grokAppWant(was string) []grokAppModel {
 		}
 	}
 	var out []grokAppModel
-	for _, m := range magpieModels("grok-app") {
+	for _, m := range sharedModels("grok-app") {
 		e := grokAppModel{ID: m.ID, Name: m.Name, ContextWindow: m.Context}
 		if e.Name == "" {
 			e.Name = m.ID
@@ -193,7 +193,7 @@ func grokApp(home string) *Agent {
 	// The App stops working when that route is magpie. A route the user
 	// picks in the App after this stays.
 	releaseRoute := func() error {
-		if stashLoad()[grokAppReleased] == "1" {
+		if stashShared()[grokAppReleased] == "1" {
 			return nil
 		}
 		def, _, err := grokAppRead(path)
@@ -300,7 +300,7 @@ func grokApp(home string) *Agent {
 	// over the one it replaced.
 	rememberRoute := func() error {
 		def, _, err := grokAppRead(path)
-		if err != nil || def == "" || def == magpieID || stashLoad()[keyDefault] != "" {
+		if err != nil || def == "" || def == magpieID || stashShared()[keyDefault] != "" {
 			return err
 		}
 		stash(map[string]string{keyDefault: def})
@@ -412,7 +412,7 @@ func grokApp(home string) *Agent {
 				return setDefault(v)
 			},
 			Options: func(cur map[string]string) []Option {
-				return append(grokAppOwn(path, keyDefault, cur["model"]), viaMagpie("grok-app", magpieID+"/")...)
+				return withVia(grokAppOwn(path, keyDefault, cur["model"]), "grok-app", magpieID+"/")
 			},
 		}},
 	}, path)
@@ -451,7 +451,7 @@ func grokAppOwn(path, keyDefault, cur string) []Option {
 			add(id, kv["name"], direct)
 		}
 	}
-	add(stashLoad()[keyDefault], "", "")
+	add(stashShared()[keyDefault], "", "")
 	add(cur, "", "")
 	return group("Grok App", out)
 }

@@ -78,9 +78,55 @@ function renderPort(s) {
 // lists each model by its own id as well, gpt-5.6-sol beside
 // codex/gpt-5.6-sol. Posted on its own; off by default.
 function renderBareIds(s) {
+  renderBusyLoad(s); // the row under it
   $("#bareIdsSegs").replaceChildren(segs([[false, t("Off")], [true, t("On")]], !!s.bareModelIDs, (on) =>
     writingPrefs(api("settings/bare-ids", { on })).then((ns) => { prefs = state.settings = ns; renderSettings(); })
       .catch((e) => { status(t(e.message), "err"); renderSettings(); })));
+}
+
+// renderBusyLoad: the load past which a model its plugin says is busy
+// (magpie.load) goes behind the others (settings.BusyLoad, axelburks on
+// Discord). Custom… opens a field for any other number, 1 to 9999, which
+// is then shown as its own choice; Enter or Apply saves it, Escape closes
+let busyDraft = null;
+const BUSY_CUSTOM = -1;
+function renderBusyLoad(s) {
+  const at = s.busyLoad || 0, sub = $("#busyLoadRow .sub"), d = busyDraft;
+  const put = (n) => writingPrefs(api("settings/busy-load", { at: n })).then((ns) => { busyDraft = null; prefs = state.settings = ns; renderSettings(); })
+    .catch((e) => { status(t(e.message), "err"); renderSettings(); });
+  sub.dataset.en ??= sub.textContent; // its English, as translateStatic keeps it
+  sub.classList.toggle("err", !!d?.err);
+  sub.textContent = d ? d.err || t("A load is in percent, as the plugin reports it: 100 is all its vendor serves at once, and past 100 requests queue (200 is twice that). Type 1 to 9999") : t(sub.dataset.en);
+  if (d) {
+    const field = input(d.value, "150");
+    field.className = "words busy-load-at";
+    field.style.cssText = "width:84px;flex:none";
+    field.inputMode = "numeric";
+    field.setAttribute("aria-label", t("Busy models last"));
+    const save = el("button", "text", t("Apply")), no = el("button", "text", t("Cancel"));
+    const close = () => { busyDraft = null; renderBusyLoad(s); };
+    save.onclick = () => {
+      const v = field.value.trim(), n = Number(v);
+      if (!/^\d+$/.test(v) || n < 1 || n > 9999) { busyDraft = { value: field.value, err: t("Type a whole number from 1 to 9999") }; renderBusyLoad(s); return $("#busyLoadRow .busy-load-at").focus(NO_SCROLL); }
+      save.disabled = true;
+      put(n);
+    };
+    no.onclick = close;
+    field.oninput = () => { d.value = field.value; };
+    field.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") save.onclick(); if (e.key === "Escape") close(); };
+    const val = el("div", "val");
+    val.append(field, save, no);
+    return $("#busyLoadSegs").replaceChildren(val);
+  }
+  const opts = [0, 50, 70, 80, 90];
+  if (!opts.includes(at)) opts.push(at);
+  opts.sort((a, b) => a - b);
+  $("#busyLoadSegs").replaceChildren(segs([...opts.map((n) => [n, n ? t("Over {n}%", { n }) : t("Off")]), [BUSY_CUSTOM, t("Custom…")]], at, (n) => {
+    if (n !== BUSY_CUSTOM) return put(n);
+    busyDraft = { value: [0, 50, 70, 80, 90].includes(at) ? "" : String(at), err: "" };
+    renderBusyLoad(s);
+    $("#busyLoadRow .busy-load-at").focus(NO_SCROLL);
+  }));
 }
 
 // renderCORS: the web pages whose scripts may call the gateway from a

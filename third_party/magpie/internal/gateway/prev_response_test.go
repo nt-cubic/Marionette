@@ -261,3 +261,34 @@ func TestPrevStoreBounded(t *testing.T) {
 		t.Fatal("kept past its time")
 	}
 }
+
+// TestKeptTurnOwnsItsInput: a kept response holds its input, not the body
+// it was read from with the request's tools and instructions, and counts
+// what it holds.
+func TestKeptTurnOwnsItsInput(t *testing.T) {
+	old := prevResponses
+	prevResponses = newPrevStore(prevCap, prevTTL)
+	t.Cleanup(func() { prevResponses = old })
+	body := []byte(`{"model":"m","instructions":"` + strings.Repeat("rules ", 1000) + `","input":[{"type":"message","role":"user","content":"hi"}]}`)
+	r := httptest.NewRequest("POST", "/v1/responses", nil)
+	r.RemoteAddr = "127.0.0.1:5555"
+	w, r, _, done := previousResponse(httptest.NewRecorder(), r, provider.Responses, body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	io.WriteString(w, `{"id":"resp_1","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":"ok"}]}`)
+	done()
+	for i := range body {
+		body[i] = 'x'
+	}
+	kept, ok := prevResponses.get(prevKey{prevScope(r), "resp_1"})
+	if !ok {
+		t.Fatal("nothing kept")
+	}
+	want := `[{"type":"message","role":"user","content":"hi"},{"type":"message","role":"assistant","content":"ok"}]`
+	if got, _ := json.Marshal(kept.items); string(got) != want {
+		t.Fatalf("kept after the body was written over: %s", got)
+	}
+	if n := len(want) - len("[,]"); kept.own != n {
+		t.Fatalf("own %d, want the %d bytes kept", kept.own, n)
+	}
+}

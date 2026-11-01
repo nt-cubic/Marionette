@@ -305,3 +305,51 @@ func TestRenewedFrom(t *testing.T) {
 		t.Error("its reset gone by before either reading: renewed")
 	}
 }
+
+// A window stands started again in fact — what a rest the vendor itself
+// gave the time of waits for, rather than the reading being renewedFrom
+// alone (#2718) — when one full at the last reading has its reset gone
+// by, or stands a new, later cycle now, a pool of some models as much as
+// the whole account's. Less than full at the same reset is not it, nor a
+// window not read this time, nor one that wasn't full.
+func TestStartedAgain(t *testing.T) {
+	now := time.Now()
+	h := func(n int) time.Time { return now.Add(time.Duration(n) * time.Hour) }
+	five := func(used float64, resets time.Time) QuotaWindow {
+		return QuotaWindow{Name: "5 hours", Used: used, Span: 5 * time.Hour, ResetsAt: &resets}
+	}
+	week := func(used float64, resets time.Time) QuotaWindow {
+		return QuotaWindow{Name: "7 days", Used: used, Span: 7 * 24 * time.Hour, ResetsAt: &resets}
+	}
+	opus := func(used float64, resets time.Time) QuotaWindow {
+		w := week(used, resets)
+		w.Name, w.Model = "7 days (Opus)", "opus"
+		return w
+	}
+	of := func(ws ...QuotaWindow) Allowance { return allowanceOf(ws, now) }
+	for _, c := range []struct {
+		what     string
+		was, now Allowance
+		started  bool
+	}{
+		{"a new, later cycle", of(five(100, h(1))), of(five(3, h(6))), true},
+		{"less than full, the same reset standing", of(five(100, h(1))), of(five(80, h(1))), false},
+		{"read full alike", of(five(100, h(1))), of(five(100, h(1))), false},
+		{"its window not read this time", of(five(100, h(1)), week(40, h(50))), of(week(41, h(50))), false},
+		{"not full at the last reading", of(five(20, h(1))), of(five(3, h(6))), false},
+		{"a model's own pool too", of(week(40, h(50)), opus(100, h(50))), of(week(41, h(50)), opus(0, h(218))), true},
+		{"a model's pool, the same reset standing", of(week(40, h(50)), opus(100, h(50))), of(week(41, h(50)), opus(50, h(50))), false},
+	} {
+		if got := c.now.startedAgain(c.was, now, 98, now); got != c.started {
+			t.Errorf("%s: started again %v", c.what, got)
+		}
+	}
+	// read before its reset, read alike after it: started again then
+	was := of(five(100, h(1)))
+	if !was.startedAgain(was, now, 98, h(2)) {
+		t.Error("its reset gone by since it was read: not started again")
+	}
+	if was.startedAgain(was, h(2), 98, h(3)) {
+		t.Error("its reset gone by before either reading: started again")
+	}
+}

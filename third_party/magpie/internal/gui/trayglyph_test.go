@@ -57,8 +57,8 @@ func TestTrayIconPerOS(t *testing.T) {
 	if icon, template := trayIconFor("darwin", false); !template || !bytes.Equal(icon, trayIcon) {
 		t.Errorf("darwin: want the template bird")
 	}
-	if icon, template := trayIconFor("windows", false); template || !bytes.Equal(icon, appIcon) {
-		t.Errorf("windows: want the app's own icon")
+	if icon, template := trayIconFor("windows", false); template || !bytes.Equal(icon, winTrayIcon) {
+		t.Errorf("windows: want the Windows tile")
 	}
 	if img, _ := png.Decode(bytes.NewReader(trayGlyph(trayGlyphLight))); img == nil || img.ColorModel() != color.NRGBAModel {
 		t.Errorf("trayGlyph: want an NRGBA png, got %T", img)

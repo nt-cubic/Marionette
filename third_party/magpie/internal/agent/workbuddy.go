@@ -284,7 +284,7 @@ func buddyWriteAt(path, agent string, on bool, where place) error {
 	var add []json.RawMessage
 	var ids []string
 	if on {
-		for _, m := range magpieModels(agent) {
+		for _, m := range sharedModels(agent) {
 			e := buddyModel(agent, m.ID, m.Name, m.Context, outputOr(m, zcodeOutput(maxTokens(m))), m.Images, m.Efforts)
 			if off[m.ID] {
 				e["disabled"] = true

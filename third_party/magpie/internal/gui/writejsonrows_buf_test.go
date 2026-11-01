@@ -76,3 +76,26 @@ func TestWriteJSONRowsWritesWhatMarshalDid(t *testing.T) {
 		t.Fatalf("delta\n got %q\nwant %q", w.Body, want)
 	}
 }
+
+// TestJSONRowsNotCopiedEach: a poll whose answer the page has already
+// encodes every row for its hash, and each row handed to the encoder as
+// an any was a copy allocated for it, ~2.7 MB a Sessions poll.
+func TestJSONRowsNotCopiedEach(t *testing.T) {
+	if raceOn {
+		t.Skip("-race: sync.Pool drops what it holds, so allocations are not what a build allocates")
+	}
+	rows := make([]rowsBufRow, 2000)
+	for i := range rows {
+		rows[i] = rowsBufRow{Name: "row", Note: "a note", N: float64(i)}
+	}
+	w := httptest.NewRecorder()
+	writeJSONRows(w, httptest.NewRequest("GET", "/x", nil), "rows", rows, struct{}{})
+	r := httptest.NewRequest("GET", "/x", nil)
+	r.Header.Set("X-Magpie-Had", w.Header().Get("X-Magpie-Tag"))
+	allocs := testing.AllocsPerRun(5, func() {
+		writeJSONRows(httptest.NewRecorder(), r, "rows", rows, struct{}{})
+	})
+	if allocs > float64(len(rows))/10 {
+		t.Fatalf("a poll of %d rows the page has made %.0f allocations", len(rows), allocs)
+	}
+}

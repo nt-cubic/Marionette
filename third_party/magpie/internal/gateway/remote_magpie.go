@@ -124,8 +124,13 @@ func boundedSession(v string) string {
 // X-Magpie-Session and the agent's own header (session_id, …) — so the
 // other magpie records the call under it and keeps a conversation on its
 // account by it rather than by its first message (#672). Only a remote
-// magpie is sent them; a vendor never is.
+// magpie is sent them; a vendor never is. It is asked, too, to name the
+// vendor's model in its reply, as it did before a reply named the model
+// asked for: this magpie records what served the call from it (served,
+// swapped, routed; TestRemoteMagpieGroupNotSwapped), and gives its own
+// agent the name it asked for itself.
 func passOnCaller(ctx context.Context, req *http.Request) {
+	req.Header.Set(responseModelHeader, "vendor")
 	c, ok := ctx.Value(callerCtx{}).(caller)
 	if !ok {
 		return

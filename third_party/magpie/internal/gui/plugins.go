@@ -548,8 +548,13 @@ func pluginMarketState(ctx context.Context, w Windows) pluginMarketJSON {
 	info := plugin.Info(ctx, names)
 	m := pluginMarketJSON{Listings: []pluginListingJSON{}, State: st}
 	for _, l := range ls {
-		n := info[l.Package]
-		m.Listings = append(m.Listings, pluginListingJSON{Listing: l, NPM: &n})
+		j := pluginListingJSON{Listing: l}
+		// npm not answered for (or the dist branch unread) is unknown:
+		// no npm, not an empty one that reads as Coming soon
+		if n, ok := info[l.Package]; ok {
+			j.NPM = &n
+		}
+		m.Listings = append(m.Listings, j)
 	}
 	listingIcons(m.Listings, 3*time.Second)
 	for i, e := range m.State.Plugins {

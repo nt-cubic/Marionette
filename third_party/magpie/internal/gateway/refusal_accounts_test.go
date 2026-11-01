@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -303,6 +304,36 @@ func TestClaudeSubscriptionRefusalMovesToNextAccount(t *testing.T) {
 		// the classifier's category, on the try it refused (#1768)
 		if ask.path == "/v1/messages" && !strings.Contains(r.Tries[0].Error, "category cyber") {
 			t.Errorf("%s: refused try says %q", ask.path, r.Tries[0].Error)
+		}
+	}
+}
+
+// A Claude subscription account refusing a conversation of ~110K tokens:
+// the spare account isn't asked, as it would be a new Claude Code told the
+// whole conversation, all of it written to that account's cache again, for
+// a refusal about the content it most likely gives too. A 900K
+// conversation refused on one Pro account and told again on the next cost
+// the user most of a 5-hour window (Aisiverto on X). The refusal is the
+// agent's, the one try on the Routing page.
+func TestClaudeSubscriptionBigRefusalNotToldAgain(t *testing.T) {
+	log := claudeSubscriptionRefusing(t)
+	s := New()
+	big := strings.Repeat("the conversation so far ", 440_000/24)
+	for _, stream := range []bool{true, false} {
+		os.Remove(log)
+		body, _ := json.Marshal(map[string]any{"model": "claude/claude-sonnet-5", "max_tokens": 50, "stream": stream,
+			"messages": []map[string]any{{"role": "user", "content": big}}})
+		code, reply := sendTo(s, "/v1/messages", string(body))
+		b, _ := os.ReadFile(log)
+		if runs := strings.Join(strings.Fields(string(b)), ","); runs != "own" {
+			t.Fatalf("stream %v: runs %q, want the refusing account's alone (status %d)", stream, runs, code)
+		}
+		// the agent is told the refusal, not an empty reply
+		if strings.Contains(reply, "pong") || !strings.Contains(reply, "refusal") && !strings.Contains(reply, "Usage Policy") {
+			t.Fatalf("stream %v: status %d: %s", stream, code, reply)
+		}
+		if r := lastRoute(s); len(r.Tries) != 1 {
+			t.Fatalf("stream %v: tries: %+v", stream, r.Tries)
 		}
 	}
 }

@@ -95,7 +95,10 @@ type typeInsert struct {
 }
 
 // collectUntypedEnums adds, for each schema under node with an enum or a
-// const and no type, where it opens and the type its values have.
+// const and no type, where it opens and the type it is given: properties
+// or items say it before the values do (a string enum beside items is an
+// array, #3867, as geminiSchemaType reads its keywords first), and the
+// values' own type when no keyword does.
 func collectUntypedEnums(body []byte, node gjson.Result, inSchema bool, ins *[]typeInsert) {
 	switch {
 	case node.IsArray():
@@ -112,6 +115,14 @@ func collectUntypedEnums(body []byte, node gjson.Result, inSchema bool, ins *[]t
 				vals = []gjson.Result{c}
 			}
 			if t := enumType(vals); t != "" {
+				if kt := keywordType(node); kt == "object" || kt == "array" {
+					// properties or items say the type before the
+					// values do: a schema with items and a string
+					// enum given "string" went on with items beside
+					// a string, as a Gemini one did before
+					// geminiSchemaType read its keywords first (#3867)
+					t = `"` + kt + `"`
+				}
 				*ins = append(*ins, typeInsert{node.Index, t})
 			}
 		}
@@ -196,18 +207,21 @@ func valuesType(vals []gjson.Result) string {
 
 // kimiLockedSampling is body without temperature and top_p when the model's
 // server locks them to one value: since kimi-k2.5 every kimi-kX.Y on both
-// Kimi platforms (Moonshot's API and a Kimi Code membership's), and Kimi
-// Code's own kimi-for-coding and k3*. A client that sends its own
-// defaults — VS Code Copilot's chat sends temperature 0.1 and top_p 1 — is
-// refused 400 "invalid temperature: only 1 is allowed for this model"
-// before any token is read (a K2.5/K2.6 with thinking off takes only 0.6),
-// and the whole request fails. Left out, the server fills in the value the
-// model and mode want, so no number is written here. Models that take a
-// range — moonshot-v1-*, kimi-k2-0905-preview, kimi-k2-thinking,
-// kimi-latest — keep what the user set, as does anyone not served by
-// Moonshot.
+// Kimi platforms (Moonshot's API and a Kimi Code membership's), Kimi
+// Code's own kimi-for-coding and k3*, and the same models on Volcengine
+// Ark, whose coding plan serves kimi-kX.Y behind hosts the preset's plans
+// and a provider added by hand both reach (#4495: 400 "Volcengine Ark:
+// `temperature` only 1 is allowed for this model"). A client that sends
+// its own defaults — VS Code Copilot's chat sends temperature 0.1 and
+// top_p 1 — is refused 400 "invalid temperature: only 1 is allowed for
+// this model" before any token is read (a K2.5/K2.6 with thinking off
+// takes only 0.6), and the whole request fails. Left out, the server
+// fills in the value the model and mode want, so no number is written
+// here. Models that take a range — moonshot-v1-*, kimi-k2-0905-preview,
+// kimi-k2-thinking, kimi-latest — keep what the user set, as does anyone
+// not served by Moonshot or Ark.
 func kimiLockedSampling(p provider.Provider, to provider.Protocol, body []byte) []byte {
-	if !isKimi(p, to) {
+	if !isKimi(p, to) && !isArk(p) {
 		return body
 	}
 	if !kimiLockedSamplingModel(gjson.GetBytes(body, "model").String()) {
@@ -276,11 +290,17 @@ func leadingInt(s string) (int, string) {
 // allOf one as it was (chaosy on Discord, Codex on k3). The type is the
 // one the target's keywords or branches say, a type array when they differ,
 // and every type when nothing does, which Kimi takes as "any". A target
-// that is {}, an anyOf (Kimi refuses a type beside one: "type should be
-// defined in anyOf items instead of the parent schema") or only another
-// $ref is left as Kimi takes it, as is an enum whose values no one type
-// array can hold. Written in place, like kimiToolEnumTypes', after which it
-// runs.
+// that is {} or an anyOf (Kimi refuses a type beside one: "type should be
+// defined in anyOf items instead of the parent schema") is left as Kimi
+// takes it, as is an enum whose values no one type array can hold. A
+// target that is itself a $ref — zod writes one beside what it changed of
+// a reused schema, a format and a description among them — has its chain
+// followed to the target it ends at, for a type beside a $ref is refused
+// too, 400 "At path '$defs.__schema14': when using $ref, type should be
+// defined in the referenced schema instead of the parent schema" (#3205),
+// so the type goes to the chain's end or nowhere; a chain that ends at a
+// ref to nowhere, or never ends, leaves its schemas as they were. Written
+// in place, like kimiToolEnumTypes', after which it runs.
 func kimiToolRefTypes(p provider.Provider, to provider.Protocol, body []byte) []byte {
 	if !isKimi(p, to) || !bytes.Contains(body, []byte(`"$ref"`)) {
 		return body
@@ -303,7 +323,9 @@ func kimiToolRefTypes(p provider.Provider, to provider.Protocol, body []byte) []
 
 // collectRefTargets adds, for each local $ref under node (a schema of the
 // tool schema root) whose target Kimi would refuse untyped, where the
-// target opens and the type it is given.
+// target opens and the type it is given. The target is the schema the
+// chain of $refs ends at, the one place a type may go (#3205); a chain
+// that ends at a ref to nowhere, or never ends, adds nothing.
 func collectRefTargets(body []byte, root, node gjson.Result, ins *[]typeInsert) {
 	walkSchema(node, func(s gjson.Result) {
 		ref := s.Get(`\$ref`)
@@ -311,7 +333,24 @@ func collectRefTargets(body []byte, root, node gjson.Result, ins *[]typeInsert) 
 			return
 		}
 		t, ok := refTarget(root, ref.String())
-		if !ok || !t.IsObject() || t.Index <= 0 || t.Index >= len(body) || body[t.Index] != '{' || !untypedForKimi(t) {
+		if !ok {
+			return
+		}
+		for i := 0; ; i++ {
+			r := t.Get(`\$ref`)
+			if r.Type != gjson.String {
+				break
+			}
+			if i > 16 {
+				return
+			}
+			n, ok := refTarget(root, r.String())
+			if !ok {
+				return
+			}
+			t = n
+		}
+		if !t.IsObject() || t.Index <= 0 || t.Index >= len(body) || body[t.Index] != '{' || !untypedForKimi(t) {
 			return
 		}
 		if typ := kimiSchemaType(root, t); typ != "" {
@@ -399,6 +438,13 @@ const allKimiTypes = `["string","number","integer","boolean","object","array","n
 // one (or the ones) its keywords and branches say, every type when they
 // say nothing, and "" for an enum no type Kimi takes beside one can hold.
 func kimiSchemaType(root, s gjson.Result) string {
+	if t := keywordType(s); t == "object" || t == "array" {
+		// properties or items say it before its values do: a schema
+		// with items and a string enum given "string" went on with
+		// items beside a string, as a Gemini one did before
+		// geminiSchemaType read its keywords first (#3867)
+		return `"` + t + `"`
+	}
 	if e := s.Get("enum"); e.IsArray() {
 		return enumType(e.Array())
 	}

@@ -89,3 +89,55 @@ func TestCacheUnknownNotTold(t *testing.T) {
 		t.Fatal("told")
 	}
 }
+
+// The Trae plugin's replies (opencode-trae-auth 0.2.26) to a token_usage
+// naming no cache field, chansee97's real one in plugins#455
+// ({"prompt_tokens":1717,"completion_tokens":2,"total_tokens":1719}): a
+// Chat usage saying magpie_cache_unknown, which magpie read as a counted
+// 0% miss on every Trae CN call (yetone/magpie#3991, #3979).
+const (
+	traeStream = `data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"deepseek-v3.1","choices":[{"index":0,"delta":{"role":"assistant","content":"OK"},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"deepseek-v3.1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"deepseek-v3.1","choices":[],"usage":{"prompt_tokens":1717,"completion_tokens":2,"total_tokens":1719,"magpie_cache_unknown":true}}` + "\n\n" +
+		"data: [DONE]\n\n"
+	traeJSON = `{"id":"chatcmpl-1","object":"chat.completion","model":"deepseek-v3.1","choices":[{"index":0,"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1717,"completion_tokens":2,"total_tokens":1719,"magpie_cache_unknown":true}}`
+	// a Chat vendor that counts its cache and read none of it: a real 0%
+	chatMissJSON = `{"id":"chatcmpl-2","object":"chat.completion","model":"m1","choices":[{"index":0,"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1717,"completion_tokens":2,"total_tokens":1719,"prompt_tokens_details":{"cached_tokens":0}}}`
+)
+
+// TestChatCacheUnknownReachesTheRoute: a Chat vendor's (a plugin's)
+// magpie_cache_unknown reaches the route and the ledger, as Kiro's does.
+func TestChatCacheUnknownReachesTheRoute(t *testing.T) {
+	chat := `{"model":"fake/m1","messages":[{"role":"user","content":"Say just OK."}]}`
+	streamed := strings.Replace(chat, `"messages"`, `"stream":true,"messages"`, 1)
+	messages := `{"model":"fake/m1","max_tokens":20,"messages":[{"role":"user","content":"Say just OK."}]}`
+	for _, c := range []struct {
+		name, ctype, reply, path, request string
+		unknown                           bool
+	}{
+		{"pi, whole", "application/json", traeJSON, "/v1/chat/completions", chat, true},
+		{"pi, streamed", "", traeStream, "/v1/chat/completions", streamed, true},
+		{"translated for Claude Code", "", traeStream, "/v1/messages", messages, true},
+		{"a counted miss stays 0%", "application/json", chatMissJSON, "/v1/chat/completions", chat, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			setup(t, provider.Chat, &fake{ctype: c.ctype, reply: c.reply})
+			s := New()
+			rec := httptest.NewRecorder()
+			s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", c.path, strings.NewReader(c.request)))
+			if rec.Code != 200 {
+				t.Fatalf("gateway: %d %s", rec.Code, rec.Body)
+			}
+			r := lastRoute(s)
+			if len(r.Usage) != 1 {
+				t.Fatalf("route usage %+v", r.Usage)
+			}
+			if got := r.Usage[0].CacheUnknown; got != c.unknown {
+				t.Fatalf("cache unknown %v, want %v: %+v", got, c.unknown, r.Usage[0])
+			}
+			if got := lastRecord(t); got.CacheUnknown != c.unknown {
+				t.Fatalf("ledger cache unknown %v, want %v: %+v", got.CacheUnknown, c.unknown, got)
+			}
+		})
+	}
+}

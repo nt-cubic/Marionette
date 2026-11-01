@@ -136,7 +136,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       });
       await page.goto("http://magpie.test/?view=usage");
       const today = page.locator("#period .opt").filter({ hasText: new RegExp("^" + w.day1 + "$") });
-      if (await today.count()) await today.first().click();
+      // a phone picks the days from the menu over the strip, which already says Today
+      if (await today.count() && await today.first().isVisible()) await today.first().click();
+      else await page.waitForFunction((s) => document.querySelector("#usageRangeMenu")?.textContent.trim() === s, w.day1);
       const heads = (name) => page.locator(".subscription-card", { hasText: name }).locator(".credit-days .cd-head span").allTextContents();
       await page.locator(".subscription-card", { hasText: "Cursor" }).locator(".credit-days").waitFor();
       assert.deepEqual(await heads("Trae CN"), [w.head]);

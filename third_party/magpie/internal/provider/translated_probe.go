@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/yetone/magpie/internal/probelog"
@@ -32,14 +33,30 @@ func (p Provider) testsTranslated() bool {
 	return translatedProbe != nil && p.Account != nil && !p.IsPlugin() && p.Account.codeAssist != ""
 }
 
-// testTranslated is the test of model on a provider testsTranslated.
+// pluginTranslated is whether model is a plugin's that only Code Assist
+// serves (@ai-sdk/google): the gateway asks it in Gemini's generateContent
+// through the plugin's fetch, so a test does too. Sent as any of the
+// plugin's other APIs, its vendor read a body of another shape (Zed's
+// cloud: 400 "failed to parse Google AI request: missing field contents",
+// Been on Discord).
+func (p Provider) pluginTranslated(model string) bool {
+	return translatedProbe != nil && p.IsPlugin() && slices.Equal(p.APIs(model), []Protocol{CodeAssist})
+}
+
+// testTranslated is the test of model on a provider testsTranslated, or
+// of a plugin's model pluginTranslated.
 func (p Provider) testTranslated(ctx context.Context, model string) Result {
 	r := Result{Protocol: CodeAssist, Model: model, Account: p.Account.User}
 	if model == "" {
 		r.Error = "no model to try: expose one, or refresh the model list"
 		return r
 	}
-	ctx, cancel := context.WithTimeout(ctx, testWait)
+	wait := testWait
+	if p.IsPlugin() {
+		// its fetch may renew the sign-in first (pluginTestWait)
+		wait = max(wait, pluginTestWait)
+	}
+	ctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	start := time.Now()
 	status, err := translatedProbe(probelog.Taken(ctx), p, CodeAssist, model)

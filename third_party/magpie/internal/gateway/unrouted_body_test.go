@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -98,4 +99,81 @@ func TestUnroutedTrickledBodyAnswered408(t *testing.T) {
 
 func isClosedConn(err error) bool {
 	return err != nil && (strings.Contains(err.Error(), "connection reset") || strings.Contains(err.Error(), "closed"))
+}
+
+// A full run caught the trickle above red with a 504 (#4511): the hold
+// ran out between two of its reads, and the read's absence alone was
+// taken for a hold of magpie's own. Less of the body having come than
+// the request's own Content-Length says, once its read has begun, the
+// body is still arriving and the time is the client's, inside a read or
+// between two. Before its first read, in the wait for body room, the
+// time is magpie's own.
+func TestUnroutedBodyArrivingBetweenReads(t *testing.T) {
+	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(strings.Repeat(" ", 400)))
+	u := &unroutedHold{r: r}
+	if u.bodyArriving() {
+		t.Fatal("a body not yet read counted as arriving")
+	}
+	room := u.wait("body room")
+	if u.bodyArriving() {
+		t.Fatal("a body waiting for room counted as arriving")
+	}
+	room()
+	// one read returned 19 bytes; the next has not begun
+	u.wait("body")()
+	u.bodyRead.Store(19)
+	if !u.bodyArriving() {
+		t.Fatal("a body between two reads, 19 of 400 come, did not count as arriving")
+	}
+	u.bodyRead.Store(400)
+	if u.bodyArriving() {
+		t.Fatal("a body read whole counted as arriving")
+	}
+	u.bodyRead.Store(19)
+	r.ContentLength = -1
+	if u.bodyArriving() {
+		t.Fatal("a body of no said length counted as arriving between reads")
+	}
+}
+
+// A request waiting for body room before its first read is held by
+// magpie, not by its client, whose body may all be sent: it is not
+// answered 408 "its body was still arriving".
+func TestUnroutedBodyRoomWaitNot408(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	unroutedLimits(t, 20*time.Millisecond, 1500*time.Millisecond)
+	// the room holds 2 MiB and this test holds 3 of it, so a request
+	// with a 1 MiB body waits for room before its first read, and keeps
+	// waiting while unroutedMost runs out
+	wasRoom := bodyRoom
+	bodyRoom = roomOf(2 << 20)
+	t.Cleanup(func() { bodyRoom = wasRoom })
+	hold, end := context.WithCancel(context.Background())
+	defer end()
+	if err := bodyRoom.take(hold, 3<<20); err != nil {
+		t.Fatal(err)
+	}
+
+	s, _ := slowEyed(t, 0)
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+
+	// a body of a declared 1 MiB, none of it sent
+	conn, err := net.Dial("tcp", strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	conn.SetDeadline(time.Now().Add(20 * time.Second))
+	fmt.Fprintf(conn, "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n", 1<<20)
+
+	res, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode == http.StatusRequestTimeout || strings.Contains(string(b), "its body was still arriving") {
+		t.Fatalf("a request waiting for magpie's body room was answered %d %s", res.StatusCode, b)
+	}
 }

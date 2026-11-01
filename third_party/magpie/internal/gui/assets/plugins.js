@@ -80,9 +80,7 @@
   // npm has the versions of a package: not a folder's, nor a git one's
   const onNPM = (spec) => !isPath(spec) && !isGit(spec);
   // a git one is out of date when its repository is at another commit than
-  // the one installed, whatever version its package.json says (ARNO on
-  // Discord: github:yuweihao17/codearts showed Update all the time, and
-  // still did right after updating); an abbreviated sha names the full one
+  // the one installed, whatever its version (ARNO); a short sha names the full one
   const sameCommit = (a, b) => !!a && !!b && (a.length > b.length ? a.startsWith(b) : b.startsWith(a));
   const gitBehind = (e) => isGit(e.spec) && !!e.commit && !!e.head && !sameCommit(e.commit, e.head);
   // the providers a plugin signs in to, as the add sheet knows them
@@ -205,6 +203,7 @@
   }
   // what npm says of the plugins suggested and those installed: drawn
   // when it comes, never waited on
+  let npmTries = 0;
   async function askNPM(only) {
     const names = [...new Set([...(listings || []).map((l) => l.package), ...(mine?.plugins || []).filter((e) => onNPM(e.spec)).map((e) => name(e.spec))])]
       .filter((n) => !only || !npm[n]);
@@ -214,8 +213,10 @@
       Object.assign(npm, r.npm || {});
     } catch {}
     merge();
-    // one npm said nothing of, now or ever: as one it doesn't have
-    for (const l of listings || []) if (!l.npm) l.npm = { weekly: 0 };
+    // one npm said nothing of: unknown (Install), asked again
+    let u = 0;
+    for (const l of listings || []) if (!l.npm || l.npm.u) u = l.npm = { weekly: 0, u: 1 };
+    if (u && npmTries++ < 4) setTimeout(() => askNPM(true), 15000);
     drawBody();
   }
 
@@ -491,7 +492,7 @@
       return b;
     }
     if (!e) {
-      if (listed && !listed.github && !listed.npm?.version) {
+      if (listed && !listed.github && !listed.npm?.version && !listed.npm.u) {
         b.textContent = t("Coming soon");
         b.disabled = true;
         b.title = t("Not on npm yet");
@@ -1265,7 +1266,7 @@
     // can use, which isn't known until the answer comes (#1112)
     else if (e.named) sub.textContent = t("Signs in to nothing magpie can use");
     if (sub.textContent) who.append(sub);
-    if (!ask) for (const c of clashes) who.append(clashLine(e, c, nameOfSpec));
+    if (!ask) for (const g of clashGroups(e, clashes)) who.append(clashLine(e, g, nameOfSpec));
     if (mw && !e.off && !ask) who.append(mwLine(mw));
     if (gw && !e.off && !ask) who.append(gatewayLine(gw));
     if (ag && !e.off && !ask) who.append(agentLine(ag));
@@ -1409,17 +1410,49 @@
   // mwLine is a middleware's line in its plugin's row: its hooks, how many
   // calls and how long each took, and the calls that failed (which went on
   // as if it weren't there), or why it didn't load
-  // clashLine is one provider two installed plugins both sign in to, as
-  // the row of either says it: served here, or served by the other one
-  function clashLine(e, c, nameOfSpec) {
-    const d = el("div", "sub pm-clash" + (c.by === e.spec ? "" : " warn"));
-    const others = (c.by === e.spec ? c.with : [c.by]).map(nameOfSpec).join(t(", "));
-    d.append(el("span", "dot"), el("span", "", c.by === e.spec
-      ? t("{other} signs in to {name} too; this one serves it", { name: c.name, other: others })
-      : t("{name} is served by {other}, which signs in to it too", { name: c.name, other: others })));
-    d.title = c.by === e.spec
-      ? t("Two plugins sign in to {name}; magpie runs it on one. Use for {name} on the other one's row switches it", { name: c.name })
-      : t("Two plugins sign in to {name}; magpie runs it on one. Use for {name} switches it to this one, or remove the one you don't want", { name: c.name });
+  // clashGroups are a row's clashes, one per other plugin and side: a
+  // plugin that signs in to two providers another one does too is one
+  // line naming both, not a line each saying the same thing (#565)
+  function clashGroups(e, clashes) {
+    const out = [];
+    for (const c of clashes) {
+      const here = c.by === e.spec;
+      const others = here ? c.with : [c.by];
+      const g = out.find((x) => x.here === here && x.others.join("\n") === others.join("\n"));
+      if (g) g.names.push(c.name);
+      else out.push({ here, others, names: [c.name] });
+    }
+    return out;
+  }
+
+  // clashLine is the providers two installed plugins both sign in to, as
+  // the row of either says it: served here, or served by the other one.
+  // The other one goes by its name; when that is this row's own name too
+  // (the same plugin installed twice, from two places), by where it came
+  // from, since "CodeArts / OfficeAce also signs in to CodeArts" on the
+  // CodeArts / OfficeAce row read as the plugin naming itself (#565)
+  function clashLine(e, g, nameOfSpec) {
+    const d = el("div", "sub pm-clash" + (g.here ? "" : " warn"));
+    const own = shownName(e);
+    const copies = g.others.filter((s) => nameOfSpec(s) === own);
+    const names = g.names.join(t(", "));
+    const many = g.names.length > 1;
+    let text;
+    if (copies.length && copies.length === g.others.length) {
+      const spec = copies.join(t(", "));
+      text = g.here
+        ? t("Another copy of this plugin ({spec}) signs in to {names} too; this copy serves them", { spec, names })
+        : t("Another copy of this plugin ({spec}) serves {names}", { spec, names });
+    } else {
+      const other = g.others.map(nameOfSpec).join(t(", "));
+      text = g.here
+        ? many ? t("{other} signs in to {names} too; this one serves them", { other, names }) : t("{other} signs in to {name} too; this one serves it", { other, name: names })
+        : many ? t("{names} are served by {other}, which signs in to them too", { other, names }) : t("{name} is served by {other}, which signs in to it too", { other, name: names });
+    }
+    d.append(el("span", "dot"), el("span", "", text));
+    d.title = g.names.map((name) => g.here
+      ? t("Two plugins sign in to {name}; magpie runs it on one. Use for {name} on the other one's row switches it", { name })
+      : t("Two plugins sign in to {name}; magpie runs it on one. Use for {name} switches it to this one, or remove the one you don't want", { name })).join("\n");
     return d;
   }
 

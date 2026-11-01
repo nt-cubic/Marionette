@@ -57,7 +57,7 @@ func TestClaudeTUIChosen(t *testing.T) {
 		if err := settings.Save(st); err != nil {
 			t.Fatal(err)
 		}
-		if got := claudeTUI(c.req, c.binary, c.prompt); got != c.want {
+		if got, _ := claudeTUI(c.req, c.binary, c.prompt); got != c.want {
 			t.Errorf("%s: claudeTUI = %v, want %v", c.name, got, c.want)
 		}
 		if got := claudePrintWhy(c.req, c.binary, c.prompt); on && got != c.why {
@@ -133,5 +133,43 @@ func TestClaudeTUIWSLUnread(t *testing.T) {
 	readable = false
 	if got := c.tuiWSLUnread("acct"); got != "" || len(asked) != 2 {
 		t.Fatalf("the account's folder: %q, asked %q", got, asked)
+	}
+}
+
+// The provider page's codes for why every run is -p: the setting, a
+// WSL Claude Code whose home is unknown, none found; "" for the TUI.
+func TestClaudeMachineWhy(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" && runtime.GOOS != "windows" {
+		t.Skip("no interactive mode on " + runtime.GOOS)
+	}
+	was := settings.Load()
+	t.Cleanup(func() { _ = settings.Save(was) })
+	claudeTUIRuns = true
+	t.Cleanup(func() { claudeTUIRuns = false })
+	here := claudeCLI{path: "/usr/local/bin/claude"}
+	for _, c := range []struct {
+		name   string
+		binary claudeCLI
+		print  bool
+		code   string
+	}{
+		{"here", here, false, ""},
+		{"in WSL", claudeCLI{wsl: &wslrun.Tool{Distro: "Ubuntu", Home: "/home/me"}}, false, ""},
+		{"turned off", here, true, "off"},
+		{"in WSL, its home unknown", claudeCLI{wsl: &wslrun.Tool{Distro: "Ubuntu"}}, false, "wsl-home"},
+		{"none", claudeCLI{}, false, "missing"},
+	} {
+		st := settings.Load()
+		st.ClaudePrintMode = c.print
+		if err := settings.Save(st); err != nil {
+			t.Fatal(err)
+		}
+		if code, why := claudeMachineWhy(c.binary); code != c.code || (code == "") != (why == "") {
+			t.Errorf("%s: %q %q, want code %q", c.name, code, why, c.code)
+		}
+	}
+	claudeTUIRuns = false
+	if code, _ := claudeMachineWhy(here); code != "no-shim" {
+		t.Errorf("no shim: %q", code)
 	}
 }

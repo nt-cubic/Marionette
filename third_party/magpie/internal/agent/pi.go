@@ -117,7 +117,7 @@ func piOffered(agentID, model string) []string {
 	if !ok {
 		return nil
 	}
-	for _, m := range magpieModels(agentID) {
+	for _, m := range sharedModels(agentID) {
 		if m.ID == ref {
 			return piSupported(piModelJSON(piAsked(agentID, m), "", true))
 		}

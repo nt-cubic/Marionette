@@ -2,6 +2,9 @@ package gateway
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -93,6 +96,82 @@ func atLineEnd(t *testing.T, body string) {
 	}
 }
 
+// severedChat is severed for an upstream the client speaks Chat to, as Pi
+// does an OpenAI-compatible provider (#3197).
+func severedChat(t *testing.T, events ...string) {
+	t.Helper()
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			panic("no hijacker")
+		}
+		conn, buf, err := hj.Hijack()
+		if err != nil {
+			panic(err)
+		}
+		defer conn.Close()
+		body := strings.Join(events, "")
+		fmt.Fprintf(buf, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\n\r\n", len(body)+100)
+		io.WriteString(buf, body)
+		buf.Flush()
+	}))
+	t.Cleanup(up.Close)
+	p := provider.Provider{ID: "up", Name: "UP", Key: "k", Models: []string{"m"}, Chat: up.URL + "/v1"}
+	if err := provider.Save(p); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// chatEventsSevered asks a Chat relay of the severed upstream and fails
+// when any event it left the client is no JSON a client can read, or the
+// stream doesn't end error, then [DONE].
+func chatEventsSevered(t *testing.T) {
+	t.Helper()
+	code, body := post(t, "/v1/chat/completions", `{"model":"up/m","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if code != 200 {
+		t.Fatalf("status = %d, want 200; body: %s", code, body)
+	}
+	readSSE(strings.NewReader(body), func(_, data string) error {
+		if data != "[DONE]" && json.Valid([]byte(data)) == false {
+			t.Fatalf("the severed stream left an event no client can read: %q", data)
+		}
+		return nil
+	})
+	i := strings.Index(body, "connection lost mid-reply")
+	if i < 0 {
+		t.Fatalf("the severed stream ended without the failure said: %s", body)
+	}
+	if !strings.Contains(body[i:], "data: [DONE]\n\n") {
+		t.Fatalf("the error event was not followed by [DONE]: %s", body[i:])
+	}
+}
+
+// A Chat stream the upstream severs inside a data line: what the client
+// has is half an event, and the blank line the relay's ending writes made
+// it one — Pi read its truncated JSON as "malformed server-sent event
+// JSON" and hung, the error event after it unread (#3197). The half line
+// never goes out, and the stream ends with the error and the [DONE] a
+// Chat client reads to.
+func TestPassthroughChatSeveredMidLine(t *testing.T) {
+	fresh(t)
+	severedChat(t,
+		`data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant"}}]}`+"\n\n",
+		`data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"content":"hel"}}]}`+"\n\n",
+		`data: {"id":"c1","model":"m","cho`)
+	chatEventsSevered(t)
+}
+
+// One severed at a line's end keeps the line it finished: the event it
+// completes stands, and the error and [DONE] follow as events of their own.
+func TestPassthroughChatSeveredAtLineEnd(t *testing.T) {
+	fresh(t)
+	severedChat(t,
+		`data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant"}}]}`+"\n\n",
+		`data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"content":"lo"}}]}`+"\n")
+	chatEventsSevered(t)
+}
+
 // A reply the loop guard cuts (cutLoop) while the client is mid-line ends
 // in the same joined event: what is appended after it must begin after a
 // blank line too.
@@ -130,13 +209,14 @@ func TestLoopCutMidLine(t *testing.T) {
 	}
 }
 
-// A whole stream goes through untouched, nothing added after its end.
+// A whole stream goes through untouched, nothing added after its end,
+// but for the model it names: the one the agent asked for (memberWriter).
 func TestPassthroughStreamWhole(t *testing.T) {
 	fresh(t)
 	f := &fake{reply: anthropicStart + anthropicText + anthropicStop}
 	setup(t, "anthropic", f)
 	code, body := postMessages(t, `{"model":"fake/m1","stream":true,"max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
-	if code != 200 || body != anthropicStart+anthropicText+anthropicStop {
+	if code != 200 || body != namedAs(anthropicStart+anthropicText+anthropicStop, "fake/m1") {
 		t.Fatalf("a whole stream was changed: %d %q", code, body)
 	}
 }
@@ -163,7 +243,7 @@ func TestPassthroughResponsesBigLastEvent(t *testing.T) {
 	f := &fake{reply: reply}
 	setup(t, "responses", f)
 	code, body := post(t, "/v1/responses", `{"model":"fake/m1","stream":true,"input":"hi"}`)
-	if code != 200 || body != reply {
+	if code != 200 || body != namedAs(reply, "fake/m1") {
 		t.Fatalf("a whole stream with a big last event was changed: %d, %d bytes added", code, len(body)-len(reply))
 	}
 }

@@ -94,3 +94,44 @@ func TestCopilotLauncherFromAnEditorIsNotTheCLI(t *testing.T) {
 		t.Error("a link to the editor's launcher is taken for the Copilot CLI")
 	}
 }
+
+// VS Code 1.139's versioned Windows layout (win32VersionedUpdate) keeps
+// the app's payload in a folder named for the build's commit — the short
+// hash, ten lowercase hex digits — with resources\app under it, and bin
+// beside it: Tony-ooo's 1.144.0 has bin\copilot-shim at
+// <install>, product.json only at <install>\2c33b50b16\resources\app
+// (microsoft/vscode#343045), and every product.json the six places of
+// 6f435677c look in is absent, so the launcher came back as the CLI
+// (#3269). A folder of the user's beside it — one not named as a commit's
+// short hash — is still nothing of an editor's.
+func TestCopilotLauncherBesideTheBuildsHashFolderIsNotTheCLI(t *testing.T) {
+	home := t.TempDir()
+	name := "copilot"
+	if runtime.GOOS == "windows" {
+		name += ".cmd"
+		t.Setenv("PATHEXT", ".CMD")
+	}
+	install := filepath.Join(t.TempDir(), "Microsoft VS Code")
+	writeAt(t, filepath.Join(install, "2c33b50b16", "resources", "app", "product.json"), `{"nameShort":"Visual Studio Code"}`)
+	shim := filepath.Join(install, "bin", "copilot-shim")
+	writeAt(t, filepath.Join(shim, name), "vscode-copilot-launcher\n")
+	if err := os.Chmod(filepath.Join(shim, name), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shim)
+	if copilot(home).Detected() {
+		t.Error("VS Code 1.144's copilot launcher is taken for the Copilot CLI")
+	}
+	if bin, _ := copilot(home).cliBin(); bin != "" {
+		t.Errorf("the CLI looked for is %s, the launcher", bin)
+	}
+	// a folder beside bin that no commit's short hash names, holding a
+	// product.json of its own (a user's checkout dropped into the
+	// install), is no editor's: with the build's hash folder gone, the
+	// launcher reads as the CLI again, as it did before
+	writeAt(t, filepath.Join(install, "workshop", "resources", "app", "product.json"), `{"nameShort":"Visual Studio Code"}`)
+	os.RemoveAll(filepath.Join(install, "2c33b50b16"))
+	if !copilot(home).Detected() {
+		t.Error("a folder beside bin that is no build's hash counts as an editor's install")
+	}
+}

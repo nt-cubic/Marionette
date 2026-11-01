@@ -9,7 +9,8 @@
 // the pointer stands further off the ground than the word's far end, and
 // both ends turn when the pointer goes to the other end. Both engines,
 // light and dark, English and Chinese. The sidebar's page rows (Providers,
-// Routing, Gateway…) and Settings are lit the same way.
+// Routing, Gateway…), Settings and the gateway's address under it are lit
+// the same way.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -22,7 +23,7 @@ function serve(lang, theme) {
   return async (route) => {
     const url = new URL(route.request().url());
     const json = (data) => route.fulfill({ json: data });
-    if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:${JSON.stringify(lang)},theme:${JSON.stringify(theme)},web:false};` });
+    if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:${JSON.stringify(lang)},theme:${JSON.stringify(theme)},web:false,sideGateway:{url:"http://127.0.0.1:3425",running:true}};` });
     if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
     if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings: { lang, theme } });
     if (url.pathname === "/api/settings") return json({ lang, theme, tray: "panel", version: "0.1.400", dir: "~/.config/magpie", gateway: "http://127.0.0.1:3425", lanURLs: [], visionModels: [], imageGenModels: [], workbuddyCheckins: [], redactWords: [] });
@@ -139,7 +140,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
 // a page row's word (Providers, Routing…, Settings): its box, whether lit,
 // whether its page is open
-const tops = (page) => page.$$eval("#side :is(#nav > button[data-view], #prefs) > span", (all) => all.filter((s) => s.offsetWidth).map((s) => {
+const tops = (page) => page.$$eval("#side :is(#nav > button[data-view], #prefs, #sideGw) > span", (all) => all.filter((s) => s.offsetWidth).map((s) => {
   const b = s.getBoundingClientRect();
   return { x: b.left, y: b.top, w: b.width, h: b.height, lit: s.classList.contains("lit"), on: s.parentElement.classList.contains("on"), id: s.parentElement.dataset.view || s.parentElement.id };
 }));
@@ -164,11 +165,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.mouse.move(700, 500);
       await page.waitForTimeout(400);
       let all = await tops(page);
-      assert(all.length >= 4 && all.some((w) => w.id === "prefs"), `the page rows and Settings: ${JSON.stringify(all.map((w) => w.id))}`);
+      assert(all.length >= 5 && all.some((w) => w.id === "prefs") && all.some((w) => w.id === "sideGw"), `the page rows, Settings and the gateway's address: ${JSON.stringify(all.map((w) => w.id))}`);
       assert(all.every((w) => !w.lit), "nothing lit before the pointer comes");
       const at = (id) => all.findIndex((w) => w.id === id);
-      const lit = (i) => page.waitForFunction((i) => { const s = [...document.querySelectorAll("#side :is(#nav > button[data-view], #prefs) > span")].filter((s) => s.offsetWidth)[i]; return s.classList.contains("lit") && +s.style.getPropertyValue("--si") > 0.99; }, i);
-      const out = (i) => page.waitForFunction((i) => ![...document.querySelectorAll("#side :is(#nav > button[data-view], #prefs) > span")].filter((s) => s.offsetWidth)[i].classList.contains("lit"), i);
+      const lit = (i) => page.waitForFunction((i) => { const s = [...document.querySelectorAll("#side :is(#nav > button[data-view], #prefs, #sideGw) > span")].filter((s) => s.offsetWidth)[i]; return s.classList.contains("lit") && +s.style.getPropertyValue("--si") > 0.99; }, i);
+      const out = (i) => page.waitForFunction((i) => ![...document.querySelectorAll("#side :is(#nav > button[data-view], #prefs, #sideGw) > span")].filter((s) => s.offsetWidth)[i].classList.contains("lit"), i);
       const pv = at("providers"), gw = at("gateway"), prefs = at("prefs"), word = all[pv];
 
       // at the word's start, the start stands off the ground more than its end
@@ -190,8 +191,16 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.mouse.move(all[prefs].x + 4, all[prefs].y + all[prefs].h / 2, { steps: 4 });
       await lit(prefs);
       await out(gw);
-      await page.mouse.move(700, 500);
+      // the gateway's address under Settings, brightest where the pointer is
+      const addr = all[at("sideGw")];
+      await page.mouse.move(addr.x + 2, addr.y + addr.h / 2, { steps: 4 });
+      await lit(at("sideGw"));
       await out(prefs);
+      await page.waitForTimeout(400);
+      const gwInk = await ink(page, addr);
+      assert(gwInk.start > gwInk.end + 12, `the address brightest where the pointer is: ${JSON.stringify(gwInk)}`);
+      await page.mouse.move(700, 500);
+      await out(at("sideGw"));
 
       // the open page's row keeps its own ink
       const cur = all.find((w) => w.on);

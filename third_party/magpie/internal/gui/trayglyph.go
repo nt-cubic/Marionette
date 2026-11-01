@@ -56,7 +56,7 @@ func trayIconFor(goos string, light bool) (icon []byte, template bool) {
 	case "linux":
 		return linuxTrayIcon(light), false
 	}
-	return appIcon, false
+	return winTrayIcon, false
 }
 
 // linuxTrayIcon is the glyph for a desktop whose colour scheme preference

@@ -103,7 +103,7 @@ func penguinRoot(at place) string {
 	if d := at.getenv("PENGUIN_HOME"); d != "" {
 		return d
 	}
-	return filepath.Join(at.home, ".penguin", "data")
+	return at.join(".penguin", "data")
 }
 
 // penguinProject is the Project the CLI works in: $PENGUIN_PROJECT_ID,
@@ -289,7 +289,7 @@ func penguinIn(at place) *Agent {
 				return dropMagpie()
 			},
 			Options: func(cur map[string]string) []Option {
-				return append(penguinOwnOptions(path, cur["model"]), viaMagpie("penguin", magpieID+"/")...)
+				return withVia(penguinOwnOptions(path, cur["model"]), "penguin", magpieID+"/")
 			},
 		}},
 	}, path)

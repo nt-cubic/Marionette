@@ -491,7 +491,7 @@ func checkSkill(s *Skill, f *fetcher, asked map[string]*commit, limited *atomic.
 	if have == "" {
 		have = hashDir(skillDir(s.Name)) // installed before magpie kept it
 	}
-	if theirs := hashDir(from); theirs == "" || theirs != have {
+	if theirs := s.fetchedHash(from); theirs == "" || theirs != have {
 		c.Status, c.URL = "update", history
 		return c, "", ""
 	}

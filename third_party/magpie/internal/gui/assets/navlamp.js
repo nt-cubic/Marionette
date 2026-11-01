@@ -1,5 +1,6 @@
 // The sidebar lights the row under the pointer as a torch would, in its
-// pages (Providers, Routing…, Settings) and their sub-lists alike:
+// pages (Providers, Routing…, Settings), their sub-lists and the
+// gateway's address at its foot alike:
 // brightest where it points, the rest of that row a step up from the
 // others, which keep their own ink (app.css, span.lit). The light
 // follows the pointer with a little lag and fades out as it moves on; with
@@ -36,7 +37,7 @@ function frame() {
 const go = () => { if (!raf) raf = requestAnimationFrame(frame); };
 
 document.addEventListener("pointermove", (e) => {
-  const row = e.pointerType === "touch" || !e.target.closest ? null : e.target.closest(".nav-sub > .nav-s, body.side-nav :is(#nav > button[data-view], #prefs)");
+  const row = e.pointerType === "touch" || !e.target.closest ? null : e.target.closest(".nav-sub > .nav-s, body.side-nav :is(#nav > button[data-view], #prefs, #sideGw)");
   const word = row && row.querySelector(":scope > span");
   if (word && !at) x = e.clientX;
   tx = e.clientX;

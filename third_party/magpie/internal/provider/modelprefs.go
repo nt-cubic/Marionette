@@ -351,9 +351,9 @@ func Reasonless(pid, model string) bool {
 // models, by model id.
 func (p Provider) ModelEfforts() map[string][]string {
 	out := map[string][]string{}
-	for k, es := range settings.Load().ModelEfforts {
+	for k, es := range settings.Shared().ModelEfforts {
 		if m, ok := strings.CutPrefix(k, p.ID+"/"); ok && len(es) > 0 {
-			out[m] = es
+			out[m] = slices.Clone(es) // the shared settings' own
 		}
 	}
 	return out
@@ -469,13 +469,40 @@ func setModelAPI(ref, api string) (bool, error) {
 
 // ModelAPI is the API the user said p's model is asked on, when p has a
 // URL for it still.
+//
+// The Providers page asks it of each model of every provider's list, and
+// most have no API set: that is looked up first, and the protocols p
+// speaks are counted, not listed (a list made for each model was 12 MB of
+// what forty polls allocated with real accounts).
 func (p Provider) ModelAPI(model string) (Protocol, bool) {
-	// Vertex AI's model id says its one API (ListedAPIs)
-	if len(p.Speaks()) < 2 || p.IsVertex() {
+	proto, ok := p.apiSet(model)
+	if !ok {
 		return "", false
 	}
+	n := 0
+	for range p.speaking {
+		if n++; n == 2 {
+			break
+		}
+	}
+	return p.modelAPIAmong(n, proto)
+}
+
+// apiSet is the API the user set model to be asked on, false with
+// none.
+func (p Provider) apiSet(model string) (Protocol, bool) {
 	proto := Protocol(heldSettings().ModelAPIs[p.ID+"/"+model])
-	if proto == "" || !modelAPI(proto) || p.Base(proto) == "" {
+	return proto, proto != ""
+}
+
+// modelAPIAmong is ModelAPI with the number of protocols p speaks (up to
+// two) and the one set found already.
+func (p Provider) modelAPIAmong(speaks int, proto Protocol) (Protocol, bool) {
+	// Vertex AI's model id says its one API (ListedAPIs)
+	if speaks < 2 || p.IsVertex() {
+		return "", false
+	}
+	if !modelAPI(proto) || p.Base(proto) == "" {
 		return "", false
 	}
 	return proto, true
@@ -931,7 +958,7 @@ func SetPlainNames(on bool) error {
 // ModelNames are the names the user gave the provider's models, by model id.
 func (p Provider) ModelNames() map[string]string {
 	out := map[string]string{}
-	for k, n := range settings.Load().ModelNames {
+	for k, n := range settings.Shared().ModelNames {
 		if m, ok := strings.CutPrefix(k, p.ID+"/"); ok && n != "" {
 			out[m] = n
 		}

@@ -156,6 +156,11 @@ func TestClaudeUsageExpiredReadingDoesNotSwitchAccounts(t *testing.T) {
 			}
 			if tt.back {
 				setLoginReturn("claude", loginReturn{Back: "b@example.com", To: "a@example.com"})
+				// Claude Code goes back to the first only In order
+				// (returnsToFirst)
+				if err := SetRouting("claude", Ordered); err != nil {
+					t.Fatal(err)
+				}
 			}
 			NoteClaudeLimits("b@example.com", []ClaudeLimit{{Kind: "five_hour", Used: .1, ResetsAt: future.Unix()}})
 			AskClaudeUsage()

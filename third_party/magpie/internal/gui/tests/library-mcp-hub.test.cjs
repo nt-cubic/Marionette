@@ -179,8 +179,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // what it serves: three servers, magpie-image among them, 2 tools each once checked, in Claude Code
         await page.waitForFunction((x) => document.querySelector("#view-library .lib-hubstats")?.textContent === x,
           [w("{n} servers", { n: 3 }), w("{n} tools", { n: 6 }), w("in {agents}", { agents: "Claude Code" })].join(" · "));
-        // the hub's mark is magpie's bird (the owner didn't like a made-up glyph)
-        assert.equal(await v.locator('.lib-hub > .lib-hubmark use[href="#bird"]').count(), 1);
+        // the hub's mark is magpie's bird (the owner didn't like a made-up glyph),
+        // its tail three routes out to three ends (the owner's pick, 10-31),
+        // drawn by a clip the page has
+        assert.equal(await v.locator('.lib-hub > .lib-hubmark use[href="#bird"][clip-path="url(#bird-notail)"]').count(), 1);
+        assert.equal(await v.locator(".lib-hub > .lib-hubmark path").count(), 3);
+        assert.equal(await v.locator(".lib-hub > .lib-hubmark circle").count(), 3);
+        assert.equal(await page.locator("clipPath#bird-notail").count(), 1);
         // the address any other app connects at
         const at = v.locator(".lib-hubat");
         // the row says what it is (the owner: "Other apps" over an address read as nonsense)

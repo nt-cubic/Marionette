@@ -32,7 +32,15 @@ func (s *slowThinker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.sent = append(s.sent, time.Now())
 		time.Sleep(s.gap)
 	}
-	s.done <- time.Now()
+	// a try that is asked again serves the same fake vendor a second
+	// time; the channel holds one send, so a second handler would block
+	// here forever and hold the reply it serves open, the package hung
+	// on the server's Close with it until go test's own timeout (#4530,
+	// Jackzigen). The tests read the time once; later sends can drop.
+	select {
+	case s.done <- time.Now():
+	default:
+	}
 }
 
 var glmThinksSlowly = []string{
@@ -140,6 +148,212 @@ func TestThinkingHeldFor(t *testing.T) {
 		if got := refusesAfterThinking(model); got != held {
 			t.Errorf("%s: held %v, want %v", model, got, held)
 		}
+	}
+}
+
+// A DeepSeek chat reply that reasoned and went on to say it, and one whose
+// filter ended it with nothing said (#540's shape), both as #4512's member
+// serves them.
+var deepseekThoughtThenAnswered = sse(
+	`data: {"id":"c1","object":"chat.completion.chunk","model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"The user is asking"},"finish_reason":null}]}`,
+	`data: {"id":"c1","object":"chat.completion.chunk","model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"reasoning_content":" about it."},"finish_reason":null}]}`,
+	`data: {"id":"c1","object":"chat.completion.chunk","model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"content":"from a"},"finish_reason":null}]}`,
+	`data: {"id":"c1","object":"chat.completion.chunk","model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`,
+	`data: [DONE]`)
+
+var deepseekThoughtThenRefused = sse(
+	`data: {"id":"c1","object":"chat.completion.chunk","model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"The user is asking"},"finish_reason":null}]}`,
+	`data: {"id":"c1","object":"chat.completion.chunk","model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{},"finish_reason":"content_filter"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`,
+	`data: [DONE]`)
+
+var deepseekChatThinksSlowly = []string{
+	`data: {"id":"c1","object":"chat.completion.chunk","model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"first thought"},"finish_reason":null}]}`,
+	`data: {"id":"c1","object":"chat.completion.chunk","model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"reasoning_content":" second thought"},"finish_reason":null}]}`,
+	`data: {"id":"c1","object":"chat.completion.chunk","model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"reasoning_content":" third thought"},"finish_reason":null}]}`,
+	`data: {"id":"c1","object":"chat.completion.chunk","model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"content":"done"},"finish_reason":null}]}`,
+	`data: {"id":"c1","object":"chat.completion.chunk","model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`,
+	`data: [DONE]`,
+}
+
+// A DeepSeek member whose thinking has gone on to an answer
+// thoughtCleanMost times running has its reasoning as it comes, GLM's
+// way, though another member stands behind it: CNife's group paid the
+// first 6.4s of every request for a filter that fired once in 33,245
+// requests over 7 days (#4512). Held, the reasoning reaches the agent
+// only once the text begins, all at once.
+func TestDeepSeekThinkingStreamsOnceTrusted(t *testing.T) {
+	fresh(t)
+	a := &scripted{replies: []reply{
+		{200, "text/event-stream", deepseekThoughtThenAnswered},
+		{200, "text/event-stream", deepseekThoughtThenAnswered},
+		{200, "text/event-stream", deepseekThoughtThenAnswered},
+	}}
+	scriptedOn(t, "a", provider.Chat, a)
+	pa, err := provider.Find("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pa.Models = []string{"deepseek-v4.1-flash"}
+	if err := provider.Save(*pa); err != nil {
+		t.Fatal(err)
+	}
+	scriptedOn(t, "b", provider.Anthropic, &scripted{replies: []reply{{200, "text/event-stream", anthropicAnswer}}})
+	refusalGroup(t, "a/deepseek-v4.1-flash", "b/m")
+	s := New()
+	for i := 0; i < thoughtCleanMost; i++ {
+		if code, body := sendTo(s, "/v1/messages", claudeCodeAsk); code != 200 || !strings.Contains(body, "from a") || strings.Contains(body, "from b") {
+			t.Fatalf("warm-up %d: %d %s (a %d)", i+1, code, body, a.n)
+		}
+	}
+
+	// trusted, the same member's next reply streams its reasoning as it
+	// comes, the text a good while after the first thought
+	up := &slowThinker{events: deepseekChatThinksSlowly, gap: 200 * time.Millisecond, done: make(chan time.Time, 1)}
+	vendor := httptest.NewServer(up)
+	t.Cleanup(vendor.Close)
+	pa, err = provider.Find("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pa.Chat = vendor.URL + "/v1"
+	if err := provider.Save(*pa); err != nil {
+		t.Fatal(err)
+	}
+	gw := httptest.NewServer(s.Handler())
+	t.Cleanup(gw.Close)
+	res, err := http.Post(gw.URL+"/v1/messages", "application/json", strings.NewReader(claudeCodeAsk))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var firstThought, firstText time.Time
+	rd := bufio.NewReader(res.Body)
+	for {
+		ln, err := rd.ReadString('\n')
+		if firstThought.IsZero() && strings.Contains(ln, `"thinking_delta"`) {
+			firstThought = time.Now()
+		}
+		if firstText.IsZero() && strings.Contains(ln, `"text_delta"`) {
+			firstText = time.Now()
+		}
+		if err != nil {
+			break
+		}
+	}
+	select {
+	case <-up.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the vendor never finished")
+	}
+	if firstThought.IsZero() || firstText.IsZero() {
+		t.Fatal("no thinking or no text reached the client")
+	}
+	// three thoughts 200ms apart come before the text
+	if firstText.Sub(firstThought) < 300*time.Millisecond {
+		t.Fatalf("thinking held: first thought only %v before the text", firstText.Sub(firstThought))
+	}
+	if a.n != thoughtCleanMost {
+		t.Fatalf("tries: a %d", a.n)
+	}
+	if r := lastRoute(s); len(r.Tries) != 1 {
+		t.Fatalf("the trusted member's reply was asked again: %+v", r.Tries)
+	}
+}
+
+// A trusted member that refuses after its thinking is held again: its
+// reasoning went through as it came and the reply ended with the filter's
+// content_filter and nothing said (#540's shape), and the next request's
+// reasoning waits, its refusal going to the next member.
+func TestDeepSeekRefusalHoldsATrustedMemberAgain(t *testing.T) {
+	fresh(t)
+	a := &scripted{replies: []reply{
+		{200, "text/event-stream", deepseekThoughtThenAnswered},
+		{200, "text/event-stream", deepseekThoughtThenAnswered},
+		{200, "text/event-stream", deepseekThoughtThenAnswered},
+		{200, "text/event-stream", deepseekThoughtThenRefused},
+		{200, "text/event-stream", deepseekThoughtThenRefused},
+	}}
+	scriptedOn(t, "a", provider.Chat, a)
+	pa, err := provider.Find("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pa.Models = []string{"deepseek-v4.1-flash"}
+	if err := provider.Save(*pa); err != nil {
+		t.Fatal(err)
+	}
+	b := &scripted{replies: []reply{{200, "text/event-stream", anthropicAnswer}}}
+	scriptedOn(t, "b", provider.Anthropic, b)
+	refusalGroup(t, "a/deepseek-v4.1-flash", "b/m")
+	s := New()
+	for i := 0; i < thoughtCleanMost; i++ {
+		if code, body := sendTo(s, "/v1/messages", claudeCodeAsk); code != 200 || !strings.Contains(body, "from a") || strings.Contains(body, "from b") {
+			t.Fatalf("warm-up %d: %d %s (a %d, b %d)", i+1, code, body, a.n, b.n)
+		}
+	}
+	// trusted, the refusal's reasoning went through as it came, and the
+	// refusal after it, with nothing yet said, went to the next member,
+	// whose answer follows the reasoning in the same stream (refusalHandover)
+	if code, body := sendTo(s, "/v1/messages", claudeCodeAsk); code != 200 || !strings.Contains(body, "The user is asking") || !strings.Contains(body, "from b") || a.n != thoughtCleanMost+1 || b.n != 1 {
+		t.Fatalf("trusted refusal: %d %s (a %d, b %d)", code, body, a.n, b.n)
+	}
+	// and the member is held again: the same refusal now goes to the next
+	// member, its reasoning with nothing shown
+	if code, body := sendTo(s, "/v1/messages", claudeCodeAsk); code != 200 || !strings.Contains(body, "from b") || strings.Contains(body, "The user is asking") || a.n != thoughtCleanMost+2 || b.n != 2 {
+		t.Fatalf("held again: %d %s (a %d, b %d)", code, body, a.n, b.n)
+	}
+	if r := lastRoute(s); len(r.Tries) != 2 || r.Tries[0].Fail != failRefused || r.Tries[1].Fail != "" {
+		t.Fatalf("tries: %+v", r.Tries)
+	}
+}
+
+// A try that is asked again asks the same fake vendor again: a reply
+// that only reasoned is asked again in place (#667), and a full run's
+// state may have any ask retried. The fake's done holds one send, and
+// the ask's first serve has filled it: a second handler that blocks on
+// the send never returns, the reply it serves never ends, and the
+// package hangs on vendor's Close until go test's own timeout (#4530).
+// Asked again, the fake must serve to its end regardless.
+func TestThinkingVendorAskedAgainStillEnds(t *testing.T) {
+	fresh(t)
+	thinks := []string{
+		`data: {"candidates":[{"content":{"role":"model","parts":[{"text":"first thought","thought":true}]}}],"modelVersion":"gemini-3-pro"}`,
+		`data: {"candidates":[{"content":{"role":"model","parts":[{"text":" second thought","thought":true}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"thoughtsTokenCount":8},"modelVersion":"gemini-3-pro"}`,
+	}
+	up := &slowThinker{events: thinks, gap: 0, done: make(chan time.Time, 1)}
+	vendor := httptest.NewServer(up)
+	t.Cleanup(vendor.Close)
+	p := provider.Provider{ID: "relay", Name: "Relay", Key: "k", Models: []string{"gemini-3-pro"}}
+	p.Gemini = vendor.URL + "/v1beta"
+	if err := provider.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	gw := httptest.NewServer(New().Handler())
+	t.Cleanup(gw.Close)
+
+	res, err := http.Post(gw.URL+"/v1/messages", "application/json",
+		strings.NewReader(strings.Replace(claudeCodeAsk, "group/g", "relay/gemini-3-pro", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	// the reply that said nothing is asked again in place: read it to its
+	// end, whichever try ends it — a handler stuck on done never ends it
+	rd := bufio.NewReader(res.Body)
+	for {
+		if _, err := rd.ReadString('\n'); err != nil {
+			break
+		}
+	}
+	select {
+	case <-up.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the vendor never finished")
+	}
+	// the ask-again came: the second serve went to its end, its events
+	// noted after the first serve's
+	if len(up.sent) < 2*len(thinks) {
+		t.Fatalf("the vendor served %d events of %d asks, the ask-again never ended", len(up.sent), 2)
 	}
 }
 

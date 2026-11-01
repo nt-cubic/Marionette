@@ -52,6 +52,37 @@ func (a Allowance) renewedFrom(was Allowance, wasAt time.Time, share float64, no
 	return false
 }
 
+// startedAgain says whether a window that was had full at wasAt stands
+// started again in fact, as a, read at now, has it: its reset, standing
+// at wasAt, has gone by since, or the same window's reset stands a new,
+// later cycle now — a pool of some models as much as the whole account's
+// (Factory's Standard renewed leaves its Opus back, #1979). A window
+// merely read less than full, its reset unchanged, is not one: a
+// vendor's usage can say so while its own refusal stands, and what rests
+// by the vendor's word waits for this rather than that (#2718). A window
+// not read this time tells nothing here.
+func (a Allowance) startedAgain(was Allowance, wasAt time.Time, share float64, now time.Time) bool {
+	type key struct{ name, model string }
+	keyOf := func(l Limit) key { return key{l.Name, l.Model} }
+	read := map[key]time.Time{}
+	for _, l := range a {
+		read[keyOf(l)] = l.Resets
+	}
+	for _, l := range was {
+		if l.Used < share || l.Resets.IsZero() || !l.Resets.After(wasAt) {
+			continue // not full at wasAt, its reset not said, or gone by already
+		}
+		resets, ok := read[keyOf(l)]
+		if !ok {
+			continue
+		}
+		if !l.Resets.After(now) || resets.After(l.Resets) {
+			return true
+		}
+	}
+	return false
+}
+
 // fullTill is when the windows in leaves full at share at now renew: the
 // last of their resets, zero when none is full, and far off when one is
 // full with its reset not known.

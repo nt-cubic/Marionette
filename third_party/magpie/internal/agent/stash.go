@@ -5,11 +5,13 @@ import (
 	"errors"
 	"io/fs"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"sync"
 
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/provider"
 )
@@ -28,12 +30,31 @@ var stashMu sync.Mutex
 
 func stashPath() string { return filepath.Join(filepath.Dir(provider.Path()), "stash.json") }
 
+// stashLoad is the stash as a map of the caller's own, to change and write
+// back.
 func stashLoad() map[string]string {
-	out := map[string]string{}
-	if b, err := os.ReadFile(stashPath()); err == nil {
-		json.Unmarshal(b, &out)
+	m := maps.Clone(stashRead(filememo.ReadNow[map[string]string]))
+	if m == nil {
+		m = map[string]string{}
 	}
-	return out
+	return m
+}
+
+// stashShared is the stash for a look at its values: shared with every
+// other look, so never changed. Each window poll looks at it hundreds of
+// times, and a fresh read and parse for each was 35 MB of what twenty
+// polls allocated.
+func stashShared() map[string]string {
+	return stashRead(filememo.Read[map[string]string])
+}
+
+func stashRead(read func(kind, path string, parse func([]byte) (map[string]string, error)) (map[string]string, error)) map[string]string {
+	m, _ := read("stash", stashPath(), func(b []byte) (map[string]string, error) {
+		out := map[string]string{}
+		json.Unmarshal(b, &out)
+		return out, nil
+	})
+	return m
 }
 
 // stashWrite writes m as the stash, a file there that doesn't parse kept

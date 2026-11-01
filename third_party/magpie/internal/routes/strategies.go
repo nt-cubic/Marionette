@@ -2,6 +2,7 @@ package routes
 
 import (
 	"cmp"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -180,6 +181,67 @@ func spentBefore(a, b Seat) bool {
 
 // Ordered tries a pool in its order: the first until it can't answer.
 var Ordered = Strategy{Exact: true, Order: func(_ string, seats []Seat) []int { return identity(len(seats)) }}
+
+var drains = struct {
+	sync.Mutex
+	m map[string]drainAt // pool → the seat it is on
+}{m: map[string]drainAt{}}
+
+// drainAt is the seat a pool routed Until used up is on: its Key, and past
+// once it was refused for its quota or credit (Drained), so the pool goes
+// on from it even if it renews before the pool's next request.
+type drainAt struct {
+	key  string
+	past bool
+}
+
+// Drained says key was refused for its quota or its credit: every pool
+// routed Until used up that is on it goes on to the next at its next
+// request, though key renews before then. The gateway's failover has
+// already tried the next for the request refused; without this, a pool
+// asked again only after key renewed went back to it.
+func Drained(key string) {
+	drains.Lock()
+	defer drains.Unlock()
+	for pool, at := range drains.m {
+		if at.key == key {
+			drains.m[pool] = drainAt{key, true}
+		}
+	}
+}
+
+// Drain stays on one seat until it is used up, then goes on to the next
+// in the listed order, and stays on that one (dzxx0496 on Discord: free
+// accounts one after another, the first not taking the requests back when
+// its quota renews). The one it is on goes first, the others after it in
+// their listed order from there, so failover goes on as Ordered's does.
+// Used up is a window of it used up (provider.SpentShareOf: 100, as In
+// order goes on at, #530), resting out of quota or credit (Seat.Spent),
+// or refused so since the pool's last request (Drained); a rate limit or
+// a failure only rests a seat, which the gateway tries last meanwhile,
+// and the pool stays on it. With every seat used up it stays where it
+// is. A seat it is on that leaves the pool (turned off, removed) leaves
+// it on the first not used up, in the listed order. Asking again with
+// nothing changed gives the same order, so a preview moves nothing.
+var Drain = Strategy{Exact: true, Order: func(pool string, seats []Seat) []int {
+	spent := func(s Seat) bool { return s.Spent || s.Known && s.Used >= provider.SpentShareOf(provider.Drain) }
+	drains.Lock()
+	defer drains.Unlock()
+	on := drains.m[pool]
+	at := slices.IndexFunc(seats, func(s Seat) bool { return s.Key != "" && s.Key == on.key })
+	if at < 0 {
+		at = max(0, slices.IndexFunc(seats, func(s Seat) bool { return !spent(s) }))
+	} else if on.past || spent(seats[at]) {
+		for k := 1; k < len(seats); k++ {
+			if i := (at + k) % len(seats); !spent(seats[i]) {
+				at = i
+				break
+			}
+		}
+	}
+	drains.m[pool] = drainAt{key: seats[at].Key}
+	return append(identity(len(seats))[at:], identity(at)...)
+}}
 
 var turns = struct {
 	sync.Mutex
@@ -398,4 +460,5 @@ var Builtin = map[string]Strategy{
 	provider.FreeFirst: FreeFirst,
 	provider.Fastest:   Fastest,
 	provider.Cheapest:  Cheapest,
+	provider.Drain:     Drain,
 }

@@ -102,24 +102,26 @@ const claudeTools = `"tools":[{"name":"Bash","description":"run","input_schema":
 	`{"name":"Read","description":"read","input_schema":{"type":"object","properties":{"file_path":{"type":"string"}}}},` +
 	`{"name":"Grep","description":"grep","input_schema":{"type":"object"}}]`
 
-// Claude Code's Bash and Read go to Zen's free models as bash and read, in a
-// streamed request, and the model's call of bash comes back to Claude Code
-// as Bash, in the stream it asked for and in a reply it didn't stream.
+// Claude Code's Read and Grep go to Zen's free models as OpenCode's read
+// and grep, beside stubs of the core tools it lacks (its Bash is not
+// shell), in a streamed request, and the model's call of read comes back
+// to Claude Code as Read, in the stream it asked for and in a reply it
+// didn't stream.
 func TestZenFreeClaudeCodeTools(t *testing.T) {
-	s, got := zenServer(t, chatSSE("Running it.", "bash", `{"command":"ls"}`))
+	s, got := zenServer(t, chatSSE("Reading it.", "read", `{"path":"a"}`))
 	history := `"messages":[{"role":"user","content":"list"},` +
 		`{"role":"assistant","content":[{"type":"tool_use","id":"t0","name":"Read","input":{"file_path":"a"}}]},` +
 		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t0","content":"ok"}]}]`
-	rec := zenSend(t, s, "/v1/messages", `{"model":"zen/mimo-v2.6-flash-free","max_tokens":100,"stream":true,`+claudeTools+`,"tool_choice":{"type":"tool","name":"Bash"},`+history+`}`)
+	rec := zenSend(t, s, "/v1/messages", `{"model":"zen/mimo-v2.6-flash-free","max_tokens":100,"stream":true,`+claudeTools+`,"tool_choice":{"type":"tool","name":"Read"},`+history+`}`)
 	sent := got["opencode.ai"][0]
 	if sent["stream"] != true {
 		t.Fatalf("not streamed: %v", sent)
 	}
-	if n := toolNames(sent); strings.Join(n, ",") != "bash,read,Grep" {
+	if n := toolNames(sent); strings.Join(n, ",") != "Bash,read,grep,edit,glob,shell" {
 		t.Fatalf("tools %v", n)
 	}
 	tc, _ := json.Marshal(sent["tool_choice"])
-	if !strings.Contains(string(tc), `"bash"`) {
+	if !strings.Contains(string(tc), `"read"`) {
 		t.Fatalf("tool_choice %s", tc)
 	}
 	hist, _ := json.Marshal(sent["messages"])
@@ -127,7 +129,7 @@ func TestZenFreeClaudeCodeTools(t *testing.T) {
 		t.Fatalf("history %s", hist)
 	}
 	out := rec.Body.String()
-	if !strings.Contains(out, `"name":"Bash"`) || strings.Contains(out, `"name":"bash"`) || !strings.Contains(out, "tool_use") {
+	if !strings.Contains(out, `"name":"Read"`) || strings.Contains(out, `"name":"read"`) || !strings.Contains(out, "tool_use") {
 		t.Fatalf("stream %s", out)
 	}
 
@@ -149,20 +151,20 @@ func TestZenFreeClaudeCodeTools(t *testing.T) {
 			names = append(names, c.Name)
 		}
 	}
-	if strings.Join(names, ",") != "Bash" || msg.StopReason != "tool_use" {
+	if strings.Join(names, ",") != "Read" || msg.StopReason != "tool_use" {
 		t.Fatalf("reply %s", rec.Body)
 	}
 }
 
-// Codex's shell is not bash: Zen is offered stubs of bash and read beside
-// it, and a call of a stub never reaches Codex; the turn ends with what the
+// Codex's shell is OpenCode's shell by name: Zen is offered stubs of the
+// other core tools beside it, and a call of a stub never reaches Codex; the turn ends with what the
 // model said.
 func TestZenFreeCodexStubs(t *testing.T) {
 	s, got := zenServer(t, chatSSE("Let me look.", "read", `{"path":"x"}`))
 	rec := zenSend(t, s, "/v1/responses", `{"model":"zen/mimo-v2.6-flash-free","stream":true,"input":"look",`+
 		`"tools":[{"type":"function","name":"shell","parameters":{"type":"object","properties":{"command":{"type":"array"}}}}],"tool_choice":"auto"}`)
 	sent := got["opencode.ai"][0]
-	if n := toolNames(sent); strings.Join(n, ",") != "shell,bash,read" {
+	if n := toolNames(sent); strings.Join(n, ",") != "shell,edit,glob,grep,read" {
 		t.Fatalf("tools %v", n)
 	}
 	if sent["tool_choice"] != "auto" {
@@ -174,7 +176,7 @@ func TestZenFreeCodexStubs(t *testing.T) {
 	}
 
 	// a stub called with nothing said: a short note, a plain stop
-	s, _ = zenServer(t, chatSSE("", "bash", `{}`))
+	s, _ = zenServer(t, chatSSE("", "shell", `{}`))
 	rec = zenSend(t, s, "/v1/chat/completions", `{"model":"zen/mimo-v2.6-flash-free","messages":[{"role":"user","content":"hi"}]}`)
 	var res struct {
 		Choices []struct {
@@ -230,7 +232,7 @@ func TestZenFreeZeroCostModels(t *testing.T) {
 		zenSend(t, s, "/v1/chat/completions", strings.Replace(body, "%s", m, 1))
 		sent := got["opencode.ai"][i]
 		free := i < 2
-		if n := strings.Join(toolNames(sent), ","); (n == "bash,read") != free {
+		if n := strings.Join(toolNames(sent), ","); (n == "Bash,edit,glob,grep,read,shell") != free {
 			t.Errorf("%s: tools %s", m, n)
 		}
 		if (sent["stream"] == true) != free {
@@ -242,11 +244,11 @@ func TestZenFreeZeroCostModels(t *testing.T) {
 // A request that searches is asked in rounds (searchReply): each round's
 // reply comes back with the client's names and without a stub's call.
 func TestZenFreeSearchRounds(t *testing.T) {
-	z := zenFreeTools(&Request{Tools: []Tool{{Name: "Bash"}}})
+	z := zenFreeTools(&Request{Tools: []Tool{{Name: "Read"}}})
 	ask := zenRound(z, func(ctx context.Context, req *Request) (<-chan Event, int, string) {
 		ch := make(chan Event, 8)
-		for _, ev := range []Event{{Kind: KText, Text: "hi"}, {Kind: KToolStart, ID: "a", Name: "bash"}, {Kind: KToolArgs, Text: "{}"},
-			{Kind: KToolStart, ID: "b", Name: "read"}, {Kind: KToolArgs, Text: "{}"}, {Kind: KStop, Stop: "tool"}} {
+		for _, ev := range []Event{{Kind: KText, Text: "hi"}, {Kind: KToolStart, ID: "a", Name: "read"}, {Kind: KToolArgs, Text: "{}"},
+			{Kind: KToolStart, ID: "b", Name: "shell"}, {Kind: KToolArgs, Text: "{}"}, {Kind: KStop, Stop: "tool"}} {
 			ch <- ev
 		}
 		close(ch)
@@ -257,16 +259,17 @@ func TestZenFreeSearchRounds(t *testing.T) {
 	for ev := range in {
 		got = append(got, ev.Name+ev.Text+ev.Stop)
 	}
-	if strings.Join(got, ",") != "hi,Bash,{},tool" {
+	if strings.Join(got, ",") != "hi,Read,{},tool" {
 		t.Fatalf("got %q", got)
 	}
 }
 
-// Since mid-October 2026 Zen's free tier answers at the inference API's
-// URL alone, and refuses bash or read offered with no parameters (c9cu on
-// Discord: Muse Spark 1.3 free 403 FreeTierError again): a free model is
-// asked at /inference/v1 with stubs that take OpenCode's own parameters,
-// and a paid one stays at the provider's /zen/v1.
+// Zen's free tier refuses a core tool offered with no parameters (c9cu on
+// Discord: Muse Spark 1.3 free 403 FreeTierError), and since late October
+// 2026 answers 429 to 1.x's /inference/v1 shape (#3491): a free model is
+// asked at OpenCode 2's /inference/openai/v1 with stubs that take OpenCode
+// 2.2.5's own parameters, strict false, and a paid one stays at the
+// provider's /zen/v1.
 func TestZenFreeAtInferenceURL(t *testing.T) {
 	s, _ := zenServer(t, chatSSE("hi", "", ""))
 	var paths []string
@@ -282,11 +285,11 @@ func TestZenFreeAtInferenceURL(t *testing.T) {
 	})}
 	zenSend(t, s, "/v1/chat/completions", `{"model":"zen/mimo-v2.6-flash-free","messages":[{"role":"user","content":"hi"}]}`)
 	zenSend(t, s, "/v1/chat/completions", `{"model":"zen/kimi-k2.6","messages":[{"role":"user","content":"hi"}]}`)
-	if len(paths) != 2 || paths[0] != "opencode.ai/inference/v1/chat/completions" || paths[1] != "opencode.ai/zen/v1/chat/completions" {
+	if len(paths) != 2 || paths[0] != "opencode.ai/inference/openai/v1/chat/completions" || paths[1] != "opencode.ai/zen/v1/chat/completions" {
 		t.Fatalf("paths %v", paths)
 	}
 	tools, _ := sent[0]["tools"].([]any)
-	if len(tools) != 2 {
+	if len(tools) != 5 {
 		t.Fatalf("tools %v", sent[0]["tools"])
 	}
 	for _, tl := range tools {
@@ -295,5 +298,12 @@ func TestZenFreeAtInferenceURL(t *testing.T) {
 		if props, _ := ps["properties"].(map[string]any); len(props) == 0 {
 			t.Fatalf("stub %v takes no parameter", f["name"])
 		}
+		if f["strict"] != false {
+			t.Fatalf("stub %v strict %v", f["name"], f["strict"])
+		}
+	}
+	// a paid model is offered nothing it didn't ask for
+	if tools, _ := sent[1]["tools"].([]any); len(tools) != 0 {
+		t.Fatalf("paid model offered %v", tools)
 	}
 }

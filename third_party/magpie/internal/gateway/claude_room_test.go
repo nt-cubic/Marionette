@@ -295,6 +295,31 @@ func TestClaudeMemRunsFromTheCgroup(t *testing.T) {
 	}
 }
 
+// The cgroup path walked is a "/" path whatever the host reads it on.
+// filepath's root is "\" on Windows, so the walk there never reached "/"
+// and read \memory.max forever, holding the whole suite (#4113).
+func TestClaudeMemWalkEndsAtRoot(t *testing.T) {
+	root := memFixture(t, map[string]string{
+		"proc/self/cgroup": "0::/system.slice/magpie.service\n",
+		"sys/fs/cgroup/system.slice/magpie.service/memory.max": "536870912\n",
+	})
+	done := make(chan struct{})
+	var limit int64
+	var why string
+	go func() {
+		limit, why = memLimit("linux", root)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Minute):
+		t.Fatal("the cgroup walk never ended at \"/\"")
+	}
+	if limit != 536870912 || !strings.Contains(why, "system.slice/magpie.service") {
+		t.Fatalf("limit %d (%s)", limit, why)
+	}
+}
+
 // Memory not read is not known, and bounds nothing: never 0 or 1 places
 // from files that weren't there, nor on another system.
 func TestClaudeMemRunsUnknownBoundsNothing(t *testing.T) {

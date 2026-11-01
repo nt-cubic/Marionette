@@ -128,7 +128,7 @@ func zedAtWith(dir, bin string, processes []string) *Agent {
 				if v := cur["model"]; v != "" && !usesMagpie(v) {
 					own = append(own, Option{Value: v, Icon: modelIcon("", v)})
 				}
-				return append(group("Zed", own), viaMagpie("zed", magpieID+"/")...)
+				return withVia(group("Zed", own), "zed", magpieID+"/")
 			},
 		}},
 	}, path, stashPath())
@@ -204,7 +204,7 @@ func zedProviderJSON(path string) map[string]any {
 		}
 	}
 	models := []any{}
-	for _, m := range magpieModels("zed") {
+	for _, m := range sharedModels("zed") {
 		context := m.Context
 		if context == 0 {
 			context = 128000 // Zed requires a context window for every custom model.

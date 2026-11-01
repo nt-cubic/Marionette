@@ -95,7 +95,7 @@ func TestCodexEffortChangeReaders(t *testing.T) {
 		{Responses: "https://api.openai.com/v1"},
 		{Responses: "https://chatgpt.com/backend-api/codex", Account: &provider.Account{Agent: "codex"}},
 	} {
-		if got := forVendor(p, body); string(got) != string(body) {
+		if got := forVendor(p, body, false); string(got) != string(body) {
 			t.Errorf("%s: %s", p.Responses, got)
 		}
 	}

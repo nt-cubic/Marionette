@@ -577,6 +577,11 @@ func TestAnteSyncKeepsTheUsersKeys(t *testing.T) {
 func TestAnteHome(t *testing.T) {
 	home, catalogPath, settingsPath := anteHome(t)
 	elsewhere := filepath.Join(home, "elsewhere", "ante")
+	// the folder above it is there: magpie makes the folder a variable
+	// names, never a missing tree above it (appdir.Gone)
+	if err := os.MkdirAll(filepath.Dir(elsewhere), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("ANTE_HOME", elsewhere)
 	a := ante(home)
 	path := filepath.Join(elsewhere, "catalog.json")

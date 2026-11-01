@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -263,5 +264,47 @@ func TestAccessProgramsNullKept(t *testing.T) {
 	json.Unmarshal(buildResponses(r, "m", "chatgpt.com", false), &m)
 	if string(m["access_programs"]) != "null" {
 		t.Fatalf("built %s", m["access_programs"])
+	}
+}
+
+// TestCodexAccountLoadsInPlace (#4738, infinitex233): Claude Code's tool
+// search through a ChatGPT account sends the tool it loaded to the backend
+// in an additional_tools item where the search loaded it, so the tools
+// and every earlier item stay as the request before sent them; set
+// additional-tools=off, the tool goes in the tools as before.
+func TestCodexAccountLoadsInPlace(t *testing.T) {
+	codexSignedIn(t)
+	d := daybreak(t)
+	body := func(i int) string {
+		return strings.Replace(tsRequests[i], `"model":"m1"`, `"model":"codex/gpt-daybreak-blue-latest"`, 1)
+	}
+	ask := func(i int) gjson.Result {
+		t.Helper()
+		if code, out := post(t, "/v1/messages", body(i)); code != 200 {
+			t.Fatalf("request %d: %d %s", i+1, code, out)
+		}
+		return gjson.ParseBytes(d.last(t))
+	}
+	first, second := ask(0), ask(1)
+	if got := tsNames(second.Get("tools")); strings.Join(got, ",") != strings.Join(tsNames(first.Get("tools")), ",") {
+		t.Fatalf("the loaded tool changed the tools: %v, before %v", got, tsNames(first.Get("tools")))
+	}
+	var item gjson.Result
+	second.Get("input").ForEach(func(_, it gjson.Result) bool {
+		if it.Get("type").String() == "additional_tools" {
+			item = it
+		}
+		return true
+	})
+	if strings.Join(tsNames(item.Get("tools")), ",") != "mcp__probe__read_a" {
+		t.Fatalf("no additional_tools item with read_a: %s", second.Get("input").Raw)
+	}
+
+	os.MkdirAll(filepath.Dir(provider.Path()), 0o755)
+	os.WriteFile(provider.Path(), mustJSON(map[string]any{"providers": []any{map[string]any{"id": "codex", "additionalToolsOff": true}}}), 0o600)
+	provider.ForgetAccounts()
+	off := ask(1)
+	if strings.Contains(off.Get("input").Raw, "additional_tools") || !slices.Contains(tsNames(off.Get("tools")), "mcp__probe__read_a") {
+		t.Fatalf("off, the tool goes in the tools: %s", off.Raw)
 	}
 }

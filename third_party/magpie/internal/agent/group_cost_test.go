@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/yetone/magpie/internal/provider"
@@ -51,6 +52,11 @@ func TestGroupModelsCarryTheirFirstMembersPrice(t *testing.T) {
 		case map[string]any:
 			m, _ := v[id].(map[string]any)
 			return m
+		case orderedJSON:
+			if i := slices.IndexFunc(v, func(p jsonPair) bool { return p.k == id }); i >= 0 {
+				m, _ := v[i].v.(map[string]any)
+				return m
+			}
 		case []map[string]any:
 			for _, m := range v {
 				if m["id"] == id {

@@ -103,12 +103,12 @@ func TestCodexOutputReplayStaysWithOpenAI(t *testing.T) {
 		{Responses: "https://api.openai.com/v1"},
 		{Account: &provider.Account{Agent: "codex"}},
 	} {
-		if got := forVendor(p, []byte(sent)); string(got) != sent {
+		if got := forVendor(p, []byte(sent), false); string(got) != sent {
 			t.Errorf("%+v: %s", p, got)
 		}
 	}
 	// include holding it alone goes without include
-	if got := forVendor(provider.Provider{Responses: "https://api.githubcopilot.com"}, []byte(`{"include":["output.encrypted_content"],"input":[]}`)); string(got) != `{"input":[]}` {
+	if got := forVendor(provider.Provider{Responses: "https://api.githubcopilot.com"}, []byte(`{"include":["output.encrypted_content"],"input":[]}`), false); string(got) != `{"input":[]}` {
 		t.Errorf("alone: %s", got)
 	}
 }

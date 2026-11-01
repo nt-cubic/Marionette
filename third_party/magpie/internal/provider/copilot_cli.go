@@ -54,11 +54,13 @@ func copilotCLIHome() string {
 	return filepath.Join(home, ".copilot")
 }
 
-// CopilotWSLHomes, set by internal/agent, are the homes, as magpie opens
-// them, of the WSL distros that run now: magpie on Windows finds a Copilot
-// CLI signed in inside one (#723, jia2). nil, or none, off Windows. A
-// stopped distro isn't in it: reading its files would start it.
-var CopilotWSLHomes func() []string
+// CopilotWSLDirs, set by internal/agent, are the Copilot CLI's folders
+// (~/.copilot), as magpie opens them, in the WSL distros that run now:
+// magpie on Windows finds a Copilot CLI signed in inside one (#723,
+// jia2). Where ~/.copilot is a link the folder is where it leads (#4502).
+// nil, or none, off Windows. A stopped distro isn't in it: reading its
+// files would start it.
+var CopilotWSLDirs func() []string
 
 // copilotWSLAge is how long a WSL distro's Copilot CLI sign-in is kept as
 // read: its files are read over WSL's file share, slower than a disk's.
@@ -83,7 +85,7 @@ func copilotCLILogin() (copilotApp, bool) {
 	if app, ok := copilotCLILoginIn(copilotCLIHome(), copilotCLISecret); ok {
 		return app, true
 	}
-	if CopilotWSLHomes == nil {
+	if CopilotWSLDirs == nil {
 		return copilotApp{}, false
 	}
 	c := &copilotWSL
@@ -93,8 +95,8 @@ func copilotCLILogin() (copilotApp, bool) {
 		return c.app, c.ok
 	}
 	c.app, c.ok = copilotApp{}, false
-	for _, home := range CopilotWSLHomes() {
-		if app, ok := copilotCLILoginIn(filepath.Join(home, ".copilot"), nil); ok {
+	for _, dir := range CopilotWSLDirs() {
+		if app, ok := copilotCLILoginIn(dir, nil); ok {
 			c.app, c.ok = app, true
 			break
 		}

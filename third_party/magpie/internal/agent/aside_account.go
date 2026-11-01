@@ -63,7 +63,7 @@ func asideID(raw json.RawMessage) (int, bool) {
 // ok is false when the file can't be read or parsed, or names no active
 // account: unknown, not empty.
 func asideAccounts(at place) (current int, list []asideAccountInfo, ok bool) {
-	b, err := os.ReadFile(filepath.Join(at.home, ".aside", "accounts.json"))
+	b, err := os.ReadFile(at.join(".aside", "accounts.json"))
 	if err != nil {
 		return 0, nil, false
 	}
@@ -90,7 +90,7 @@ func asideAccounts(at place) (current int, list []asideAccountInfo, ok bool) {
 }
 
 func asideAccountDir(at place, id int) string {
-	return filepath.Join(at.home, ".aside", "u", strconv.Itoa(id))
+	return at.join(".aside", "u", strconv.Itoa(id))
 }
 
 func asideAccountName(id int) string { return "u" + strconv.Itoa(id) }

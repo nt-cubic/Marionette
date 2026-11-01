@@ -199,6 +199,7 @@ func Found() []string {
 	add("opencode", OpenCodeDir())
 	add("pi", PiDir())
 	add("raft", filepath.Join(SlockDir(), "agents"))
+	add("cindy", cindySessionDirs()...)
 	add("zcode", zcodeDB())
 	add("dsh", filepath.Join(DshDir(), "sessions"))
 	add("cline", ClineSessionDir())

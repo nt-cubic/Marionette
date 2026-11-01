@@ -92,7 +92,7 @@ func PluginID(id string) string {
 func customIDs() map[string]bool {
 	return heldOf("customIDs", func() map[string]bool {
 		ids := map[string]bool{}
-		for _, p := range load().Providers {
+		for _, p := range storedFile().Providers {
 			if hasEndpoint(p) {
 				ids[p.ID] = true
 			}
@@ -114,6 +114,13 @@ func subscriptionID(id string) bool {
 
 // IsPlugin is whether the provider is a plugin's.
 func (p Provider) IsPlugin() bool { return p.Account != nil && p.Account.plugin != nil }
+
+// PluginForTest is the provider id served by the plugin's provider
+// pluginID, for a test to build a candidate of.
+func PluginForTest(id, pluginID string) Provider {
+	pp := plugin.Provider{ID: pluginID}
+	return Provider{ID: id, Account: &Account{Agent: "plugin", User: id, plugin: &pp}}
+}
 
 // PluginProvider is the id OpenCode knows the plugin's provider p is by
 // (grok, kiro), whatever magpie names it; "" for one no plugin gives.
@@ -289,6 +296,8 @@ func pluginCatalog(pp plugin.Provider) []catalog.Model {
 			APIs: []string{string(pluginProtocol(pp.ID, m))}, Images: m.Image,
 			Context: catalog.Window(m.Input), Output: m.Output, Free: m.Free,
 			Rate: m.Rate, RateWas: m.RateWas,
+			// the model's own sampling, as its plugin said it (#2492)
+			Temperature: m.Temperature,
 			// a decision model the plugin marked counts only where it
 			// serves a decision API (pp.Decide)
 			Decides: pp.Decide && m.Decides,
@@ -473,7 +482,9 @@ func pluginProviderServing(pp plugin.Provider, l pluginLogin, keys []string) Pro
 		// them (#404): the plugin's own rewrite would leave them out; and
 		// a plain agent_message goes as the user's message, as the plugin
 		// itself sends it from 0.1.11. A lone tool_choice "none" stays,
-		// for the plugin to read (grokPluginBody, #3110)
+		// and so does a tool_choice object Grok's backend doesn't take (an
+		// allowed_tools names the client's tools), for the plugin to read
+		// (grokPluginBody, #3110, #3153)
 		a.body = grokPluginBody
 	}
 	if pp.ID == "zed" {
@@ -713,8 +724,12 @@ const SignInHeader = "X-Magpie-Sign-In"
 
 // ModelUnserved are how a vendor says the model isn't one it serves this
 // key, or this way — words another provider, or key, may not answer with
-// (the gateway's unservedWords, read decoded: catalog.Words).
-var ModelUnserved = regexp.MustCompile(`(?i)model.{0,80}(not (supported|accessible|available|found|enabled|allowed)|unsupported|does ?n[o']t exist|unknown|invalid)|(no such|unknown|invalid|unsupported) model|model_not_found|模型.{0,12}(不存在|不支持|无权|未开通)`)
+// (the gateway's unservedWords, read decoded: catalog.Words): ModelScope's
+// 400 for a model id none of its instances serves, "Model id : … , has no
+// provider supported" (#2887), and Azure OpenAI's DeploymentNotFound, whose
+// message "The API deployment for this resource does not exist" a relay
+// passes on as a 400 (its 404 fails over by its status already).
+var ModelUnserved = regexp.MustCompile(`(?i)model.{0,80}(not (supported|accessible|available|found|enabled|allowed)|unsupported|does ?n[o']t exist|unknown|invalid)|(no such|unknown|invalid|unsupported) model|model_not_found|has no provider supported|deployment[ _]?not[ _]?found|deployment.{0,60}does ?n[o']t exist|模型.{0,12}(不存在|不支持|无权|未开通)`)
 
 // signInWords are words of a refusal about the sign-in itself, which a
 // model named beside them doesn't make the model's: "model gpt-x: invalid

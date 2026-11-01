@@ -227,6 +227,37 @@ func TestTraceRecordsTheEffortSent(t *testing.T) {
 	}
 }
 
+// A Gemini request's thinkingConfig is the reasoning it asks for, read
+// as parseGemini reads it (#4529): its level, or its budget as the level
+// it is nearest, by either spelling of the fields' names.
+func TestGeminiRequestEffort(t *testing.T) {
+	for _, c := range []struct {
+		body string
+		want string
+	}{
+		{`{"generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}}}`, "high"},
+		{`{"generationConfig":{"thinkingConfig":{"thinking_level":"LOW"}}}`, "low"},
+		{`{"generationConfig":{"thinkingConfig":{"thinkingBudget":512}}}`, "low"},
+		{`{"generationConfig":{"thinkingConfig":{"thinking_budget":32768}}}`, "xhigh"},
+		{`{"generationConfig":{"thinkingConfig":{"thinkingBudget":-1}}}`, "medium"},
+		{`{"generationConfig":{"thinkingConfig":{"thinkingBudget":0}}}`, ""},
+		{`{"generationConfig":{"thinkingConfig":{"includeThoughts":true}}}`, ""},
+		{`{"generationConfig":{}}`, ""},
+		{`{"contents":[{"parts":[{"text":"hi"}]}]}`, ""},
+	} {
+		if got := requestEffort(provider.Gemini, []byte(c.body)); got != c.want {
+			t.Errorf("%s: requestEffort %q, want %q", c.body, got, c.want)
+		}
+		r, err := parseGemini([]byte(c.body))
+		if err != nil {
+			t.Fatalf("%s: %v", c.body, err)
+		}
+		if r.Effort != c.want {
+			t.Errorf("%s: parseGemini effort %q, want %q", c.body, r.Effort, c.want)
+		}
+	}
+}
+
 // requestEffort reads the reasoning a request asks for in each API's words.
 func TestRequestEffort(t *testing.T) {
 	for _, c := range []struct {

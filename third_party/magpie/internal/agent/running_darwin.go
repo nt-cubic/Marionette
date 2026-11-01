@@ -10,12 +10,12 @@ import (
 	"github.com/yetone/magpie/internal/proc"
 )
 
-// listRunning lists the processes a pgrep -f pattern matches, each with
+// listRunningNow lists the processes a pgrep -f pattern matches, each with
 // its command line from pgrep -lf and its start from the kernel. ps isn't
 // run: on a Mac with a thousand processes and a busy CPU, ps -p over the
 // 25 copies of claude a user keeps open took 1-2s, on every /api/state
 // (#1962, #2341), where pgrep took 0.06s and a sysctl takes microseconds.
-func listRunning(pat string) []runningProc {
+func listRunningNow(pat string) []runningProc {
 	out, _ := proc.Command("pgrep", "-lf", pat).Output()
 	var ps []runningProc
 	now := time.Now()

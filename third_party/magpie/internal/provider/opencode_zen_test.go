@@ -40,8 +40,8 @@ func TestOpenCodeZenListsFreeModels(t *testing.T) {
 	}
 }
 
-// The Test button's probe of a free model is streamed and offers bash and
-// read, each in the protocol's own tool shape.
+// The Test button's probe of a free model is streamed and offers
+// OpenCode's five core tools, each in the protocol's own tool shape.
 func TestZenFreeProbe(t *testing.T) {
 	for proto, key := range map[Protocol]string{Chat: "function", Responses: "name", Anthropic: "input_schema"} {
 		var m map[string]any
@@ -49,7 +49,7 @@ func TestZenFreeProbe(t *testing.T) {
 			t.Fatal(err)
 		}
 		tools, _ := m["tools"].([]any)
-		if m["stream"] != true || len(tools) != 2 || m["model"] != "x-free" {
+		if m["stream"] != true || len(tools) != len(OpenCodeTools) || m["model"] != "x-free" {
 			t.Fatalf("%v: %v", proto, m)
 		}
 		if _, ok := tools[0].(map[string]any)[key]; !ok {
@@ -141,27 +141,44 @@ func TestZenAddKeyEmptyIsPublic(t *testing.T) {
 	}
 }
 
-// Zen's free tier is asked at the inference API's root, on every API's
-// URL Zen's own is saved with; Go's and other URLs are as they were.
+// Zen's free tier is asked where OpenCode 2 asks it, the base_url
+// models.dev's v2 catalog gives each protocol (#3491): /inference/openai/v1
+// for Chat and Responses, /inference/anthropic for Messages, from Zen's own
+// URL or 1.x's /inference/v1. Go's and other URLs are as they were.
 func TestOpenCodeFreeURL(t *testing.T) {
-	for in, want := range map[string]string{
-		"https://opencode.ai/zen/v1":           "https://opencode.ai/inference/v1",
-		"https://opencode.ai/zen/v1/":          "https://opencode.ai/inference/v1/",
-		"https://opencode.ai/zen/v1/responses": "https://opencode.ai/inference/v1/responses",
-		"https://opencode.ai/zenith/v1":        "https://opencode.ai/zenith/v1",
-		"https://opencode.ai/zen":              "https://opencode.ai/inference",
-		"https://opencode.ai/inference/v1":     "https://opencode.ai/inference/v1",
-		"https://opencode.ai/zen/go/v1":        "https://opencode.ai/zen/go/v1",
-		"https://relay.test/zen/v1":            "https://relay.test/zen/v1",
-		"https://api.opencode.ai/zen/v1":       "https://api.opencode.ai/inference/v1",
+	for _, c := range []struct {
+		in    string
+		proto Protocol
+		want  string
+	}{
+		{"https://opencode.ai/zen/v1", Chat, "https://opencode.ai/inference/openai/v1"},
+		{"https://opencode.ai/zen/v1/", Chat, "https://opencode.ai/inference/openai/v1/"},
+		{"https://opencode.ai/zen/v1/chat/completions", Chat, "https://opencode.ai/inference/openai/v1/chat/completions"},
+		{"https://opencode.ai/zen/v1/responses", Responses, "https://opencode.ai/inference/openai/v1/responses"},
+		{"https://opencode.ai/inference/v1", Chat, "https://opencode.ai/inference/openai/v1"},
+		{"https://opencode.ai/inference/v1", Responses, "https://opencode.ai/inference/openai/v1"},
+		{"https://opencode.ai/inference/openai/v1", Chat, "https://opencode.ai/inference/openai/v1"},
+		{"https://opencode.ai/zen", Anthropic, "https://opencode.ai/inference/anthropic"},
+		{"https://opencode.ai/zen/v1/messages", Anthropic, "https://opencode.ai/inference/anthropic/v1/messages"},
+		{"https://opencode.ai/inference", Anthropic, "https://opencode.ai/inference/anthropic"},
+		{"https://opencode.ai/inference/anthropic/v1", Anthropic, "https://opencode.ai/inference/anthropic/v1"},
+		{"https://opencode.ai/zen/v1", Gemini, "https://opencode.ai/inference/v1"},
+		{"https://opencode.ai/zenith/v1", Chat, "https://opencode.ai/zenith/v1"},
+		{"https://opencode.ai/zen/go/v1", Chat, "https://opencode.ai/zen/go/v1"},
+		{"https://opencode.ai/zen/go", Anthropic, "https://opencode.ai/zen/go"},
+		{"https://relay.test/zen/v1", Chat, "https://relay.test/zen/v1"},
+		{"https://api.opencode.ai/zen/v1", Chat, "https://api.opencode.ai/inference/openai/v1"},
 	} {
-		if got := OpenCodeFreeURL(in); got != want {
-			t.Errorf("%s: %s, want %s", in, got, want)
+		if got := OpenCodeFreeURL(c.in, c.proto); got != c.want {
+			t.Errorf("%s on %s: %s, want %s", c.in, c.proto, got, c.want)
 		}
 	}
 	p, _ := FromPreset("opencode-zen")
-	if url, _ := tiny(p, Responses, "muse-spark-1.3-contributor-free"); url != "https://opencode.ai/inference/v1/responses" {
+	if url, _ := tiny(p, Responses, "muse-spark-1.3-contributor-free"); url != "https://opencode.ai/inference/openai/v1/responses" {
 		t.Fatalf("probe %s", url)
+	}
+	if url, _ := tiny(p, Anthropic, "claude-free"); url != "https://opencode.ai/inference/anthropic/v1/messages" {
+		t.Fatalf("Messages probe %s", url)
 	}
 	if url, _ := tiny(p, Responses, "gpt-5.5"); url != "https://opencode.ai/zen/v1/responses" {
 		t.Fatalf("paid probe %s", url)
@@ -208,7 +225,7 @@ func zenFake(t *testing.T) func() []string {
 		if api == "" {
 			api = "chat"
 		}
-		path := map[string]string{"chat": "/inference/v1/chat/completions", "responses": "/inference/v1/responses", "anthropic": "/inference/messages"}[api]
+		path := map[string]string{"chat": "/inference/openai/v1/chat/completions", "responses": "/inference/openai/v1/responses", "anthropic": "/inference/anthropic/v1/messages"}[api]
 		if !strings.HasSuffix(model, "-free") && model != "big-pickle" || r.URL.Path != path {
 			w.WriteHeader(http.StatusUnauthorized)
 			return

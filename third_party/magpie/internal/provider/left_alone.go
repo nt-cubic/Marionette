@@ -20,7 +20,7 @@ func leftAlone(id string) bool {
 	if id == "" {
 		return false
 	}
-	for _, p := range load().Providers {
+	for _, p := range storedFile().Providers {
 		if p.ID == id && (p.Off || p.Hidden) {
 			return true
 		}

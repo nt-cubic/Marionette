@@ -33,7 +33,48 @@ type ExternalSession struct {
 // read-only (no file of the agent's to resume or open) with a gateway transcript
 // reader; magpie's own record of one is deleted by DeleteGateway.
 func MergeExternal(native []Session, external []ExternalSession) []Session {
-	names := desktopExternalTitles(external)
+	added := externalAdded(native, external)
+	out := make([]Session, len(native), len(native)+len(added))
+	copy(out, native)
+	out = append(out, added...)
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Last.After(out[j].Last) })
+	return out
+}
+
+// EachMerged calls each with every session MergeExternal(native, external)
+// lists, in its order, until each returns false, without making that list:
+// the Sessions page's poll copied all ~17k sessions into it, then into its
+// own rows. external holds none of native's sessions, as GatewaySessions
+// gives them for native's GatewayKeys: the set of native's keys made again
+// to look was ~2 MB a poll. native is written by neither; when it isn't
+// newest first, as List gives it, it is sorted in a copy first.
+func EachMerged(native []Session, external []ExternalSession, each func(*Session) bool) {
+	newest := func(a, b Session) int { return b.Last.Compare(a.Last) }
+	if !slices.IsSortedFunc(native, newest) {
+		native = slices.Clone(native)
+		slices.SortStableFunc(native, newest)
+	}
+	added := externalSessions(external)
+	slices.SortStableFunc(added, newest)
+	// a merge of the two, natives first among equals, as SliceStable over
+	// native then added gives
+	i, j := 0, 0
+	for i < len(native) || j < len(added) {
+		var s *Session
+		if j < len(added) && (i == len(native) || added[j].Last.After(native[i].Last)) {
+			s, j = &added[j], j+1
+		} else {
+			s, i = &native[i], i+1
+		}
+		if !each(s) {
+			return
+		}
+	}
+}
+
+// externalAdded are the external sessions MergeExternal adds to native, in
+// external's order.
+func externalAdded(native []Session, external []ExternalSession) []Session {
 	// keyed by the pair, not "agent|id": a string made for each of ~5000
 	// sessions on each of a poll's listings, and the set and the list grown
 	// an append at a time, were ~200 MB in 80s of polls (#2278)
@@ -55,20 +96,22 @@ func MergeExternal(native []Session, external []ExternalSession) []Session {
 			seen[agentID{s.Agent, id}] = struct{}{}
 		}
 	}
-	added := func(e ExternalSession) bool {
-		_, dup := seen[agentID{e.Agent, e.ID}]
-		return e.Agent != "" && e.ID != "" && !dup
-	}
-	n := len(native)
+	var not []ExternalSession
 	for _, e := range external {
-		if added(e) {
-			n++
+		if _, dup := seen[agentID{e.Agent, e.ID}]; !dup {
+			not = append(not, e)
 		}
 	}
-	out := make([]Session, len(native), n)
-	copy(out, native)
+	return externalSessions(not)
+}
+
+// externalSessions are external's sessions as a list shows them, those
+// with an agent and an id, in external's order.
+func externalSessions(external []ExternalSession) []Session {
+	names := desktopExternalTitles(external)
+	var out []Session
 	for _, e := range external {
-		if !added(e) {
+		if e.Agent == "" || e.ID == "" {
 			continue
 		}
 		s := Session{ReadOnly: true, Gateway: true, Transcript: true, Agent: e.Agent, ID: e.ID, Title: cmp.Or(names[e.Agent+"|"+e.ID], e.Title, e.ID), Start: e.Start, Last: e.Last, Models: []Model{}, Unpriced: e.Unpriced}
@@ -79,7 +122,6 @@ func MergeExternal(native []Session, external []ExternalSession) []Session {
 		s.Cost = e.Cost
 		out = append(out, s)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Last.After(out[j].Last) })
 	return out
 }
 

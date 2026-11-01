@@ -55,8 +55,8 @@ function server(lang, asked) {
 // what each row says, in each language
 const L = {
   en: { installed: "Installed", nothing: "Signs in to nothing magpie can use", served: "Acme is served by {other}, which signs in to it too", serves: "{other} signs in to Acme too; this one serves it", use: "Use for Acme", done: "Acme now runs on my-acme" },
-  zh: { installed: "已安装", nothing: "没有 magpie 能用的登录", served: "Acme 由同样登录它的 {other} 提供", serves: "{other} 也登录 Acme；由这个插件提供", use: "用于 Acme", done: "Acme 现在由 my-acme 提供" },
-  "zh-TW": { installed: "已安裝", nothing: "沒有 magpie 能用的登入", served: "Acme 由同樣登入它的 {other} 提供", serves: "{other} 也登入 Acme；由這個外掛提供", use: "用於 Acme", done: "Acme 現在由 my-acme 提供" },
+  zh: { installed: "已安装", nothing: "没有 magpie 能用的登录", served: "Acme 由同样登录它的 {other} 提供", serves: "{other} 也能登录 Acme，现由这个插件提供", use: "用于 Acme", done: "Acme 现在由 my-acme 提供" },
+  "zh-TW": { installed: "已安裝", nothing: "沒有 magpie 能用的登入", served: "Acme 由同樣登入它的 {other} 提供", serves: "{other} 也能登入 Acme，現由這個外掛提供", use: "用於 Acme", done: "Acme 現在由 my-acme 提供" },
   ja: { installed: "インストール済み", nothing: "magpie で使えるサインインはありません", served: "Acme は、同じくサインインする {other} が提供しています", serves: "{other} も Acme にサインインします。このプラグインが提供中です", use: "Acme に使う", done: "Acme は my-acme で動くようになりました" },
   de: { installed: "Installiert", nothing: "Meldet bei nichts an, das magpie nutzen kann", served: "Acme wird von {other} bereitgestellt, die sich ebenfalls dort anmeldet", serves: "{other} meldet sich auch bei Acme an; diese Erweiterung stellt es bereit", use: "Für Acme nutzen", done: "Acme läuft jetzt über my-acme" },
 };
@@ -117,6 +117,92 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           assert.equal(await mine.locator("button", { hasText: w.use }).count(), 0);
           assert.equal(await page.locator("#status").textContent(), w.done);
           await shot(view, `plugin-clash-used-${engine}-${lang}-${width}`);
+          assert.deepEqual(errors, []);
+          await ctx.close();
+        });
+      }
+    }
+  });
+}
+
+// #565 (ferocknew): the same plugin installed twice, from two places, and
+// signing in to two providers. Its row read "CodeArts / OfficeAce 也登录
+// CodeArts；由这个插件提供" and again for OfficeAce: the plugin naming
+// itself, once a provider. Now each row has one line, naming the other copy
+// by where it came from.
+const NPM = "@magpie-community/opencode-codearts-auth@latest";
+const DEV = "/Users/me/dev/codearts";
+const NAME = "CodeArts / OfficeAce";
+
+function twice(lang) {
+  const clash = (spec) => ["codearts", "officeace"].map((id, i) => ({ id, by: NPM, with: [spec === NPM ? DEV : NPM], name: ["CodeArts", "OfficeAce"][i] }));
+  const installed = [
+    { spec: DEV, ownName: NAME, providers: [], version: "0.3.0", clashes: clash(DEV) },
+    { spec: NPM, providers: ["CodeArts", "OfficeAce"], serves: ["CodeArts", "OfficeAce"], version: "0.3.0", clashes: clash(NPM) },
+  ];
+  const state = { bun: true, bunVersion: "1.3.0", plugins: installed };
+  const listings = [{ package: "@magpie-community/opencode-codearts-auth", name: NAME, providers: ["codearts", "officeace"] }];
+  return async (route) => {
+    const url = new URL(route.request().url());
+    const json = (data) => route.fulfill({ json: data });
+    if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:false};` });
+    if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
+    if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings: { lang, theme: "light" } });
+    if (url.pathname === "/api/providers") return json({ providers: [], presets: [], excluded: [], gateway: { running: true, window: true }, plugins: [] });
+    if (url.pathname === "/api/groups") return json({ groups: [], pools: [] });
+    if (url.pathname === "/api/gateway/trace") return json({ routes: [] });
+    if (url.pathname === "/api/plugins") return json(state);
+    if (url.pathname === "/api/plugins/listings") return json({ listings });
+    if (url.pathname === "/api/plugins/market") return json({ listings, state });
+    if (url.pathname === "/api/plugins/search") return json({ hits: [] });
+    if (url.pathname.startsWith("/api/")) return json({});
+    if (!/^\/[\w./-]*$/.test(url.pathname) || url.host !== "magpie.test") return route.fulfill({ status: 404, body: "" });
+    const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
+    const contentType = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)];
+    try { await route.fulfill({ body: await fs.readFile(file), contentType }); } catch { await route.fulfill({ status: 404, body: "" }); }
+  };
+}
+
+const T = {
+  en: { serves: `Another copy of this plugin (${DEV}) signs in to CodeArts, OfficeAce too; this copy serves them`, served: `Another copy of this plugin (${NPM}) serves CodeArts, OfficeAce` },
+  zh: { serves: `这个插件还装了另一份（${DEV}），也登录 CodeArts、OfficeAce；现在用的是这一份`, served: `CodeArts、OfficeAce 现由这个插件的另一份（${NPM}）提供` },
+  "zh-TW": { serves: `這個外掛還裝了另一份（${DEV}），也登入 CodeArts、OfficeAce；現在用的是這一份`, served: `CodeArts、OfficeAce 現由這個外掛的另一份（${NPM}）提供` },
+  ja: { serves: `このプラグインはもう一つ（${DEV}）インストールされていて、CodeArts、OfficeAce にもサインインします。使われているのはこちらです`, served: `このプラグインのもう一つのインストール（${NPM}）が CodeArts、OfficeAce を提供しています` },
+  de: { serves: `Eine weitere Kopie dieser Erweiterung (${DEV}) meldet sich auch bei CodeArts, OfficeAce an; diese Kopie stellt sie bereit`, served: `Eine weitere Kopie dieser Erweiterung (${NPM}) stellt CodeArts, OfficeAce bereit` },
+};
+
+for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
+  test(engine + ": one plugin installed twice says so once, not by its own name", async (t) => {
+    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL || "chromium" }));
+    t.after(() => browser.close());
+    for (const lang of Object.keys(T)) {
+      for (const width of [1100, 560]) {
+        await t.test(`${lang} ${width}px`, async () => {
+          const ctx = await browser.newContext({ viewport: { width, height: 820 } });
+          const page = await ctx.newPage();
+          page.setDefaultTimeout(5000);
+          page.setDefaultNavigationTimeout(60000);
+          const errors = [];
+          page.on("pageerror", (e) => errors.push(e.message));
+          await page.route("**/*", twice(lang));
+          await page.goto("http://magpie.test/?view=plugins");
+          const view = page.locator("#view-plugins");
+          await view.waitFor({ state: "visible" });
+          await view.page().locator(":is(.lib-tabs .opt, .nav-s):visible", { hasText: L[lang].installed }).click();
+          const rows = view.locator(".pm-row", { has: page.locator(".name span", { hasText: NAME }) });
+          await rows.nth(1).waitFor();
+          assert.equal(await rows.count(), 2);
+          const lines = [];
+          for (let i = 0; i < 2; i++) {
+            const clash = rows.nth(i).locator(".pm-clash");
+            assert.equal(await clash.count(), 1, "one line for both providers");
+            lines.push((await clash.innerText()).trim());
+          }
+          assert.deepEqual(lines.sort(), [T[lang].serves, T[lang].served].sort());
+          for (const l of lines) assert.ok(!l.includes(NAME), `the line doesn't name the plugin itself: ${l}`);
+          const over = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+          assert.ok(over <= 0, `the page scrolls sideways by ${over}px`);
+          await shot(view, `plugin-clash-twice-${engine}-${lang}-${width}`);
           assert.deepEqual(errors, []);
           await ctx.close();
         });

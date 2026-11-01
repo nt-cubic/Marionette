@@ -61,7 +61,7 @@ func cline(home string) *Agent { return clineIn(here(home)) }
 func clineIn(at place) *Agent {
 	dir := at.getenv("CLINE_DIR")
 	if dir == "" {
-		dir = filepath.Join(at.home, ".cline")
+		dir = at.join(".cline")
 	}
 	data := at.getenv("CLINE_DATA_DIR")
 	if data == "" {
@@ -254,7 +254,7 @@ func clineIn(at place) *Agent {
 					edit.KV{Path: "providers." + p + ".settings.model", Value: v})
 			},
 			Options: func(cur map[string]string) []Option {
-				return append(ownOptions("", cur["model"]), viaMagpie("cline", magpieID+"/")...)
+				return withVia(ownOptions("", cur["model"]), "cline", magpieID+"/")
 			},
 		}, {
 			// the reasoning of the provider in use, what Cline's --thinking
@@ -375,7 +375,7 @@ func clineModels(model string) map[string]any { return clineModelsAt(model, gate
 // clineModelsAt is clineModels for a Cline reaching the gateway's /v1 at v1.
 func clineModelsAt(model, v1 string) map[string]any {
 	ms := map[string]any{}
-	for _, m := range magpieModels("cline") {
+	for _, m := range sharedModels("cline") {
 		caps := []string{"streaming", "tools"}
 		if m.Images {
 			caps = append(caps, "images")

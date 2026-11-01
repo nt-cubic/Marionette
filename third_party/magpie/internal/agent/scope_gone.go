@@ -35,7 +35,7 @@ type scopeGone struct {
 
 func scopeGoneLoad(key string) scopeGone {
 	var g scopeGone
-	if raw := stashLoad()[key]; raw != "" {
+	if raw := stashShared()[key]; raw != "" {
 		json.Unmarshal([]byte(raw), &g)
 	}
 	return g

@@ -32,6 +32,52 @@ func (p Provider) PluginConcurrency() int {
 	return max(p.Account.plugin.MaxConcurrency, 0)
 }
 
+// AtOnce is how many of the provider's accounts or keys take requests at
+// the same time, 0 for no limit: the user's MaxAccounts when they set one,
+// else what the plugin giving the provider says (its auth hook's
+// maxAccounts, or its package.json's magpie.maxAccounts), else none. An
+// account not had from All or AlsoOn carries none of the provider's
+// settings: they are read from providers.json then.
+func (p Provider) AtOnce() int {
+	n := p.MaxAccounts
+	if n == nil && p.Account != nil {
+		if s, ok := storedPicks(p.ID); ok {
+			n = s.MaxAccounts
+		}
+	}
+	if n != nil {
+		return min(max(*n, 0), MaxLimit)
+	}
+	return p.PluginAtOnce()
+}
+
+// PluginAtOnce is how many of its accounts the plugin giving the provider
+// says may take requests at the same time, as it lists it now; 0 for none,
+// or for a provider no plugin gives.
+func (p Provider) PluginAtOnce() int {
+	if !p.IsPlugin() {
+		return 0
+	}
+	if cur, ok := PluginOf(p.ID); ok {
+		return min(max(cur.MaxAccounts, 0), MaxLimit)
+	}
+	return min(max(p.Account.plugin.MaxAccounts, 0), MaxLimit)
+}
+
+// SetAtOnce sets how many of the provider's accounts or keys take requests
+// at the same time: 0 for no limit, nil for what its plugin says.
+func SetAtOnce(id string, n *int) error {
+	if n != nil && (*n < 0 || *n > MaxLimit) {
+		return fmt.Errorf("accounts at once is from 0 (no limit) to %d, not %d", MaxLimit, *n)
+	}
+	p, err := Find(id)
+	if err != nil {
+		return err
+	}
+	p.MaxAccounts = n
+	return Save(*p)
+}
+
 // One account's or key's own limit (#892: a Claude account kept to two
 // at once while the provider's others take more), the queue's bound and
 // how long a request waits in it. The limit is the lane's — the account

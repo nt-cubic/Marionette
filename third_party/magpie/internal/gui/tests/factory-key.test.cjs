@@ -1,7 +1,6 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
 // A Factory account comes in by its API key (fk-…), as droid takes
-// FACTORY_API_KEY (aohun on #506): the accounts list and the warning before
-// a sign-in both offer it, the box says where keys are made and that each is
+// FACTORY_API_KEY (aohun on #506): the accounts list offers it, the box says where keys are made and that each is
 // checked with Factory, what is pasted is posted as it is, and each key's
 // outcome is listed; in English and Chinese, nothing new left untranslated.
 const assert = require("node:assert/strict");
@@ -76,25 +75,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       }
       const say = {
         row: await T("Add an account by API key…"),
-        instead: await T("Use an API key instead…"),
         title: await T("Add Factory accounts by API key"),
         checking: await T("Checking the keys with Factory…"),
       };
       if (lang === "en") assert.equal(say.row, "Add an account by API key…");
 
-      // the warning before a sign-in offers the key instead
-      await adds.nth(0).click();
-      const instead = page.locator(".signing button", { hasText: say.instead });
-      await instead.waitFor();
-      assert.match(await instead.getAttribute("title"), /FACTORY_API_KEY/);
-      await instead.click();
-      const box = page.locator(".signing.import");
-      await box.waitFor();
-      assert.equal(await box.locator(".tt .n").first().textContent(), say.title);
-      assert.match((await box.locator(".tt > .s").allTextContents())[0], /app\.factory\.ai\/settings\/api-keys/);
-      await box.getByRole("button", { name: await T("Cancel") }).click();
-
-      // and so does the accounts list
+      // the accounts list offers it
       assert.equal((await adds.nth(1).locator(".n").textContent()).trim(), say.row);
       await adds.nth(1).click();
       await page.locator(".signing.import textarea").fill(pasted);

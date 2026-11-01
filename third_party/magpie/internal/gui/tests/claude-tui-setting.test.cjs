@@ -1,8 +1,10 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
 // Settings › Models › Replies: Claude Code's interactive mode is On, says
-// what it saves and that Off is -p, and Off saves claudePrintMode with the
-// rest of the settings kept, the page not moved by the click. In English,
-// Chinese, Japanese and German, 1100 and 420 wide.
+// what it saves, that Off is -p and that Interactive only never is; Off
+// saves claudePrintMode with the rest of the settings kept, the page not
+// moved by the click, and Interactive only saves claudeTUIOnly with -p
+// turned back on. In English, Chinese, Japanese and German, 1100 and 420
+// wide.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -12,10 +14,10 @@ const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const words = {
-  en: { name: "Claude Code's interactive mode", head: "Replies", off: "Off", on: "On", sub: "about half", risk: "claude -p" },
-  zh: { name: "Claude Code 交互模式", head: "回复", off: "关闭", on: "开启", sub: "约为 -p 的一半", risk: "claude -p" },
-  ja: { name: "Claude Code の対話モード", head: "応答", off: "オフ", on: "オン", sub: "-p の約半分", risk: "claude -p" },
-  de: { name: "Interaktiver Modus von Claude Code", head: "Antworten", off: "Aus", on: "An", sub: "Hälfte von -p", risk: "claude -p" },
+  en: { name: "Claude Code's interactive mode", head: "Replies", off: "Off", on: "On", only: "Interactive only", sub: "about half", risk: "claude -p" },
+  zh: { name: "Claude Code 交互模式", head: "回复", off: "关闭", on: "开启", only: "仅交互", sub: "约为 -p 的一半", risk: "claude -p" },
+  ja: { name: "Claude Code の対話モード", head: "応答", off: "オフ", on: "オン", only: "対話のみ", sub: "-p の約半分", risk: "claude -p" },
+  de: { name: "Interaktiver Modus von Claude Code", head: "Antworten", off: "Aus", on: "An", only: "Nur interaktiv", sub: "Hälfte von -p", risk: "claude -p" },
 };
 
 function serve(lang, saved) {
@@ -81,11 +83,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert(fit, `${part} fits at ${width}`);
       }
       assert.equal(await page.locator("#replyList").evaluate((l) => l.previousElementSibling.textContent.trim()), w.head);
-      const on = row.locator(".segs button", { hasText: w.on });
-      const off = row.locator(".segs button", { hasText: w.off });
+      // exact: "On" is in "Interactive only" too
+      const seg = (text) => row.locator(".segs button", { hasText: new RegExp(`^${text}$`) });
+      const on = seg(w.on), off = seg(w.off), only = seg(w.only);
+      assert.equal(await row.locator(".segs button").count(), 3);
       assert.equal(await on.getAttribute("aria-pressed"), "true", "On at first");
 
       const before = await page.evaluate(() => [scrollX, scrollY, document.scrollingElement.scrollTop]);
+      await row.evaluate((e) => { e.dataset.drawn = "before"; });
       const b = await off.boundingBox();
       await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
       await page.waitForFunction(() => document.querySelector("#claudeTuiRow"));
@@ -95,7 +100,20 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(saved[0].claudeLeanPrompt, false, "the row beside it kept");
       assert.equal(saved[0].redact, true, "the rest kept");
       assert.equal(saved[0].lang, lang);
+      assert.equal(saved[0].claudeTUIOnly, false);
       assert.deepEqual(await page.evaluate(() => [scrollX, scrollY, document.scrollingElement.scrollTop]), before, "the click moved nothing");
+
+      // the save draws the page again: the buttons are the new row's
+      await page.waitForFunction(() => { const r = document.querySelector("#replyList #claudeTuiRow"); return r && !r.dataset.drawn; });
+      assert.equal(await seg(w.off).getAttribute("aria-pressed"), "true", "Off once saved");
+      assert(await only.evaluate((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.right <= innerWidth + 1 && e.scrollWidth <= e.clientWidth + 1; }), `Interactive only fits at ${width}`);
+      await only.click();
+      for (let i = 0; i < 50 && saved.length < 2; i++) await page.waitForTimeout(50);
+      assert.equal(saved.length, 2, "saved again");
+      assert.equal(saved[1].claudeTUIOnly, true);
+      assert.equal(saved[1].claudePrintMode, false, "-p turned back on with it");
+      assert.equal(await seg(w.only).getAttribute("aria-pressed"), "true", "Interactive only once saved");
+      assert.equal(await seg(w.on).getAttribute("aria-pressed"), "false");
       assert.deepEqual(errors, []);
     });
   }

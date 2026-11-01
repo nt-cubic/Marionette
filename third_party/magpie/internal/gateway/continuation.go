@@ -61,6 +61,12 @@ func emptyRetries(w http.ResponseWriter, ctx context.Context) int {
 // than ended with the loop's error.
 const loopReasks = 1
 
+// cutReasks is how many times a try a plugin ended on its upstream's
+// stream dying mid-call (plugins#38) is asked again where it stood, before
+// the next member is (#2873): the parser reads the same, the cut doesn't
+// come again.
+const cutReasks = 1
+
 // errStreamCut ends a reply's read once its error event is in hand,
 // without waiting on a vendor that keeps the connection open after it.
 var errStreamCut = errors.New("stream cut mid-reply")

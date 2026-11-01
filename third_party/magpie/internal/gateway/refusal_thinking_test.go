@@ -100,7 +100,7 @@ func TestRefusalAfterThinkingFailsOver(t *testing.T) {
 	scriptedOn(t, "a", provider.Anthropic, a)
 	scriptedOn(t, "b", provider.Anthropic, b)
 	refusalGroup(t, "a/m", "b/m")
-	if code, body := sendTo(New(), "/v1/messages", claudeCodeAsk); code != 200 || body != anthropicThoughtThenAnswered || b.n != 0 {
+	if code, body := sendTo(New(), "/v1/messages", claudeCodeAsk); code != 200 || body != namedAs(anthropicThoughtThenAnswered, "group/g") || b.n != 0 {
 		t.Fatalf("answered: %d %s (b %d)", code, body, b.n)
 	}
 }

@@ -1497,7 +1497,7 @@ func buildResponses(r *Request, model, host string, rejectTemp bool) []byte {
 	var include []string
 	for _, v := range r.Include {
 		if v == "" || slices.Contains(include, v) || (v == "reasoning.encrypted_content" && out["reasoning"] == nil) ||
-			v == outputReplay && host != "chatgpt.com" && host != "api.openai.com" {
+			v == outputReplay && host != "chatgpt.com" && host != "api.openai.com" || !includeTaken(host, v) {
 			continue
 		}
 		include = append(include, v)
@@ -1513,8 +1513,9 @@ func buildResponses(r *Request, model, host string, rejectTemp bool) []byte {
 		if r.WebSearch {
 			tools = append(tools, map[string]any{"type": "web_search"})
 			// the pages it found, which a client of another protocol is
-			// told of (OpenAI's option; xAI's API isn't known to take it)
-			if host != "api.x.ai" && !slices.Contains(include, "web_search_call.action.sources") {
+			// told of (OpenAI's option; xAI's API isn't known to take it,
+			// and Ark's refuses it, arkIncludes)
+			if host != "api.x.ai" && includeTaken(host, "web_search_call.action.sources") && !slices.Contains(include, "web_search_call.action.sources") {
 				include = append(include, "web_search_call.action.sources")
 			}
 		}
@@ -1615,6 +1616,10 @@ type responsesDecoder struct {
 	// giving, while it lasts, is the call whose lines are being given
 	waiting []*rCall
 	giving  *rCall
+	// addedID is the id each reasoning item went out added by, by its
+	// output_index: an upstream whose ids change per event (Copilot's)
+	// does the same item done by another (#2974)
+	addedID map[int]string
 }
 
 // rCall is a function_call item added before its arguments came (#3985):
@@ -1837,6 +1842,12 @@ func (d *responsesDecoder) decode(data string, emit func(Event)) error {
 		if ev.Item.Type == "reasoning" {
 			// an item of its own, by the id the upstream gave it (#1445)
 			emit(Event{Kind: KThinkStart, ID: ev.Item.ID})
+			if d.addedID == nil {
+				d.addedID = map[int]string{}
+			}
+			if ev.OutputIndex != nil {
+				d.addedID[*ev.OutputIndex] = ev.Item.ID
+			}
 		}
 	case "response.output_text.delta":
 		d.endCall(emit)
@@ -1897,7 +1908,14 @@ func (d *responsesDecoder) decode(data string, emit func(Event)) error {
 		}
 		if ev.Item.Type == "reasoning" && ev.Item.EncryptedContent != "" {
 			// sealed: the item as the upstream wrote it, for a Responses
-			// client and for its next request (#1445)
+			// client and for its next request (#1445). An encoder knows
+			// the item by the id it went out added by, so when the ids
+			// change per event the done one is told by its own (#2974)
+			if ev.OutputIndex != nil {
+				if a := d.addedID[*ev.OutputIndex]; a != "" {
+					ev.Item.ID = a
+				}
+			}
 			var whole struct {
 				Item json.RawMessage `json:"item"`
 			}
@@ -2016,8 +2034,11 @@ type responsesEncoder struct {
 	text    strings.Builder // text of the open message / reasoning
 	// a reasoning item began upstream (KThinkStart): the next thinking
 	// opens an item of its own, by thinkID when the upstream named it
+	// rs_ … . thinkUp is the id it came with whatever its shape: the
+	// sealed item done by it is the one that streamed, not another (#2974)
 	thinkNew bool
 	thinkID  string
+	thinkUp  string
 	// sig is Claude's signature of the open reasoning item's block, which
 	// its encrypted_content carries back (claudeseal); bare is an item of
 	// a block signed with no text, opened with no summary part
@@ -2213,7 +2234,8 @@ func (e *responsesEncoder) closeAs(sealed json.RawMessage) {
 	}
 	e.send("response.output_item.done", map[string]any{"output_index": e.item, "item": item})
 	e.output = append(e.output, item)
-	e.open, e.text = "", strings.Builder{}
+	// the open item's upstream id went with it
+	e.open, e.text, e.thinkUp = "", strings.Builder{}, ""
 	e.sig, e.bare = strings.Builder{}, false
 }
 
@@ -2266,7 +2288,7 @@ func (e *responsesEncoder) event(ev Event) {
 		e.text.WriteString(ev.Text)
 		e.send("response.reasoning_summary_text.delta", map[string]any{"item_id": e.itemID, "output_index": e.item, "summary_index": 0, "delta": ev.Text})
 	case KThinkStart:
-		e.thinkNew, e.thinkID = true, ""
+		e.thinkNew, e.thinkID, e.thinkUp = true, "", ev.ID
 		if strings.HasPrefix(ev.ID, "rs_") {
 			e.thinkID = ev.ID
 		}
@@ -2300,12 +2322,16 @@ func (e *responsesEncoder) event(ev Event) {
 			break // another API's, which a Responses client can't read
 		}
 		raw := json.RawMessage(ev.Text)
-		if e.open == Thinking && !e.thinkNew && (ev.ID == "" || ev.ID == e.itemID) {
-			// the item streamed so far, done as the upstream wrote it
-			e.closeAs(raw)
+		if e.open == Thinking && !e.thinkNew && (ev.ID == "" || ev.ID == e.itemID || ev.ID == e.thinkUp) {
+			// the item streamed so far, done as the upstream wrote it,
+			// made over when it carries its text (another vendor's,
+			// #2855); its events name it by the id they already carried
+			e.closeAs(magpieMadeReasoningRaw(raw, e.itemID))
 			break
 		}
-		// none of it streamed (no summary): added and done whole
+		// none of it streamed (no summary): added and done whole, made
+		// over when the item carries its text (#2855)
+		raw = magpieMadeReasoningRaw(raw, "")
 		e.closeItem()
 		e.item++
 		e.thinkNew, e.thinkID = false, ""
@@ -2427,8 +2453,10 @@ func renderResponses(res Result, model string, named map[string]nsTool) []byte {
 				"content": []map[string]any{{"type": "output_text", "text": p.Text, "annotations": []any{}}}})
 		case Thinking:
 			if p.sealedBy(sealResponses) {
-				// as the upstream wrote it: id, summary, encrypted_content
-				output = append(output, p.Sealed)
+				// as the upstream wrote it: id, summary, encrypted_content;
+				// made over when it carries its text (another vendor's,
+				// #2855)
+				output = append(output, magpieMadeReasoningRaw(p.Sealed, ""))
 				continue
 			}
 			if p.sealedBy(sealAnthropic) {

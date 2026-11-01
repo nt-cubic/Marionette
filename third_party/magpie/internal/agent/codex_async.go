@@ -170,16 +170,12 @@ type codexAsyncStash struct {
 // codexAsyncNow is how the config has them: the async_compaction value
 // (nil, a bool, or a table) and magpie's provider table, nil when absent.
 func codexAsyncNow(path string) (feature any, provider map[string]any, err error) {
-	raw, err := edit.Read(path)
-	if err != nil || raw == nil {
+	doc, err := codexTopOf(path)
+	if err != nil {
 		return nil, nil, err
 	}
-	var doc map[string]any
-	if err := toml.Unmarshal(raw, &doc); err != nil {
-		return nil, nil, err
-	}
-	features, _ := doc["features"].(map[string]any)
-	providers, _ := doc["model_providers"].(map[string]any)
+	features, _ := doc.Features.(map[string]any)
+	providers, _ := doc.ModelProviders.(map[string]any)
 	p, _ := providers[magpieID].(map[string]any)
 	return features["async_compaction"], p, nil
 }
@@ -202,7 +198,7 @@ func codexAsyncSync(path, key string, routed, on bool, percent int, tableOK bool
 		return err
 	}
 	var st codexAsyncStash
-	if raw := stashLoad()[key]; raw != "" {
+	if raw := stashShared()[key]; raw != "" {
 		json.Unmarshal([]byte(raw), &st)
 	}
 	was := st
@@ -379,7 +375,7 @@ func codexAsyncOwn(home string) string {
 		return ""
 	}
 	var st codexAsyncStash
-	if raw := stashLoad()[at.key("codex.async")]; raw != "" {
+	if raw := stashShared()[at.key("codex.async")]; raw != "" {
 		json.Unmarshal([]byte(raw), &st)
 	}
 	bare := "features.async_compaction"

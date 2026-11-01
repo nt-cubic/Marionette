@@ -79,21 +79,24 @@ func MoveRound(pool, picked, kept string) {
 	r.last = kept
 }
 
-// Forget drops what pool's round and turn hold, every pool's with none
+// Forget drops what pool's round, turn and drain hold, every pool's with none
 // named: a test starts each anew.
 func Forget(pools ...string) {
 	rounds.Lock()
 	turns.Lock()
 	probes.Lock()
+	drains.Lock()
 	defer rounds.Unlock()
+	defer drains.Unlock()
 	defer turns.Unlock()
 	defer probes.Unlock()
 	if len(pools) == 0 {
-		rounds.m, turns.m, probes.m = map[string]*round{}, map[string]int{}, map[string]probe{}
+		rounds.m, turns.m, probes.m, drains.m = map[string]*round{}, map[string]int{}, map[string]probe{}, map[string]drainAt{}
 	}
 	for _, p := range pools {
 		delete(rounds.m, p)
 		delete(turns.m, p)
 		delete(probes.m, p)
+		delete(drains.m, p)
 	}
 }

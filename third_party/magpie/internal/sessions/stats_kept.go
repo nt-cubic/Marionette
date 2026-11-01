@@ -50,29 +50,8 @@ func keptFileOf(f file) keptFile {
 // they weren't, what was kept is let go.
 func keptFor(files []file, today time.Time, price func(string) *catalog.Price, titles func(string) string) bool {
 	k := &keptStats
-	same := k.ranges != nil && k.gen == cacheGeneration && k.today.Equal(today) && len(k.files) == len(files)
-	for i := 0; same && i < len(files); i++ {
-		same = k.files[i] == keptFileOf(files[i])
-	}
-	for model, p := range k.prices {
-		if !same {
-			break
-		}
-		same = reflect.DeepEqual(price(model), p)
-	}
-	for id, t := range k.titles {
-		if !same {
-			break
-		}
-		same = titles(id) == t
-	}
-	if same && len(k.desktop) > 0 {
-		ids := make([]string, 0, len(k.desktop))
-		for id := range k.desktop {
-			ids = append(ids, id)
-		}
-		same = reflect.DeepEqual(DesktopTitles(ids), desktopKnown(k.desktop))
-	}
+	same := k.ranges != nil && k.gen == cacheGeneration && k.today.Equal(today) &&
+		keptStill(k.files, files, k.prices, k.titles, k.desktop, price, titles)
 	if !same {
 		forgetKeptStats()
 		k.files, k.today, k.gen = make([]keptFile, len(files)), today, cacheGeneration
@@ -82,6 +61,39 @@ func keptFor(files []file, today time.Time, price func(string) *catalog.Price, t
 		k.ranges, k.prices, k.titles, k.desktop = map[int]Stats{}, map[string]*catalog.Price{}, map[string]string{}, map[string]string{}
 	}
 	return same
+}
+
+// keptStill reports whether kept was taken of files as they are now, and
+// prices, titles and desktop, the answers what was made from them got, are
+// still what price, titles and Claude Desktop's names answer.
+func keptStill(kept []keptFile, files []file, prices map[string]*catalog.Price, names, desktop map[string]string,
+	price func(string) *catalog.Price, titles func(string) string) bool {
+	if len(kept) != len(files) {
+		return false
+	}
+	for i := range files {
+		if kept[i] != keptFileOf(files[i]) {
+			return false
+		}
+	}
+	for model, p := range prices {
+		if !reflect.DeepEqual(price(model), p) {
+			return false
+		}
+	}
+	for id, t := range names {
+		if titles(id) != t {
+			return false
+		}
+	}
+	if len(desktop) > 0 {
+		ids := make([]string, 0, len(desktop))
+		for id := range desktop {
+			ids = append(ids, id)
+		}
+		return reflect.DeepEqual(DesktopTitles(ids), desktopKnown(desktop))
+	}
+	return true
 }
 
 // keptRanges is how many ranges are kept: the page asks for three, and a

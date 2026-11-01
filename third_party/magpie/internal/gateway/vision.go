@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -30,6 +31,8 @@ import (
 // describes them to it.
 func init() {
 	provider.Described = func() bool {
+		// whether one sees, not which account a request goes to
+		defer provider.Unwaited()()
 		_, ok := seer()
 		return ok
 	}
@@ -346,6 +349,49 @@ type sight struct {
 	text string
 	by   string // the model that described it: model, or one in its place
 	err  error
+	// waiting is how many requests wait on it now, and stop ends the
+	// work of describing it: the last of them to go stops it (sightMu)
+	waiting int
+	stop    context.CancelFunc
+}
+
+// sightKey is what a description is kept under: the image's own bytes,
+// as an inline image's data URL carries them, or the address it is at,
+// and the level picked in Settings to describe images at. The same
+// picture is described once, whichever request, protocol or data URL's
+// type sends it, and whichever model describes it; a level picked since
+// reads it again.
+func sightKey(src string) string {
+	h := sha256.New()
+	h.Write([]byte(provider.HeldSettings().VisionEffort + "\x00"))
+	if b, ok := dataURLBytes(src); ok {
+		h.Write([]byte("bytes\x00"))
+		h.Write(b)
+	} else {
+		h.Write([]byte("src\x00"))
+		h.Write([]byte(src))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// dataURLBytes is the bytes of a base64 data URL, false for anything else.
+func dataURLBytes(src string) ([]byte, bool) {
+	rest, ok := strings.CutPrefix(src, "data:")
+	if !ok {
+		return nil, false
+	}
+	meta, data, ok := strings.Cut(rest, ",")
+	if !ok || !strings.HasSuffix(strings.ToLower(meta), ";base64") {
+		return nil, false
+	}
+	// strictly: text that only decodes loosely to the same bytes is
+	// another image's, as far as is known
+	for _, enc := range []*base64.Encoding{base64.StdEncoding.Strict(), base64.RawStdEncoding.Strict(), base64.URLEncoding.Strict(), base64.RawURLEncoding.Strict()} {
+		if b, err := enc.DecodeString(data); err == nil {
+			return b, true
+		}
+	}
+	return nil, false
 }
 
 // describe is what model says of the image at src, asked once for each
@@ -354,56 +400,135 @@ type sight struct {
 // described it: model, or the next that sees when model couldn't
 // (describeWith).
 //
-// A description is kept under model, whichever described it: the image
-// sent again on the next turn isn't asked of anyone, while a new image is
-// asked of model first again, so a pick that failed once is tried on each
-// new image and not given up for good (kelvinjason11 on X).
+// A description is kept under the image (sightKey), not the model that
+// was asked: Pkh on Discord had AutoVision's pick change between turns,
+// and every image of a long conversation was described again, one
+// request sending 63 descriptions at once. A new image is asked of
+// model first again, so a pick that failed once is tried on each new
+// image and not given up for good (kelvinjason11 on X).
+//
+// The description is the work of no one request: one that goes away
+// leaves it to the others waiting on it, and the last to go stops it
+// and leaves nothing behind, so the next asks again. Only a failure of
+// the describing itself is handed to those waiting; it isn't kept.
 func (s *Server) describe(ctx context.Context, model, src string) (text, by string, err error) {
-	// a level picked since is asked again, not given what was said at the last
-	sum := sha256.Sum256([]byte(model + "\x00" + visionEffort(model) + "\x00" + src))
-	key := hex.EncodeToString(sum[:])
+	return s.describeKeyed(ctx, model, src, sightKey(src))
+}
+
+func (s *Server) describeKeyed(ctx context.Context, model, src, key string) (text, by string, err error) {
+	if err := ctx.Err(); err != nil {
+		return "", model, err
+	}
 	s.sightMu.Lock()
-	if e, ok := s.sights[key]; ok {
+	e, ok := s.sights[key]
+	if ok {
 		// used again, so the last to go: a long conversation's first
 		// images, still sent every turn, outlast those of conversations
 		// that have ended
 		if i := slices.Index(s.sightOrder, key); i >= 0 {
 			s.sightOrder = append(append(s.sightOrder[:i:i], s.sightOrder[i+1:]...), key)
 		}
-		s.sightMu.Unlock()
-		select {
-		case <-e.done:
-			by := e.by
-			if by == "" {
-				by = model
-			}
-			return e.text, by, e.err
-		case <-ctx.Done():
-			return "", model, ctx.Err()
-		}
+	} else {
+		work, stop := context.WithCancel(context.WithoutCancel(ctx))
+		e = &sight{done: make(chan struct{}), stop: stop}
+		s.keepSightLocked(key, e)
+		go s.see(work, e, model, src, key)
 	}
+	e.waiting++
+	s.sightMu.Unlock()
+	select {
+	case <-e.done:
+		s.sightMu.Lock()
+		e.waiting--
+		s.sightMu.Unlock()
+		if e.by == "" {
+			return e.text, model, e.err
+		}
+		return e.text, e.by, e.err
+	case <-ctx.Done():
+		s.sightMu.Lock()
+		if e.waiting--; e.waiting == 0 {
+			select {
+			case <-e.done:
+			default:
+				// no one waits for it now: it stops, and the next to send
+				// the image asks again
+				s.forgetSightLocked(key, e)
+				if e.stop != nil {
+					e.stop()
+				}
+			}
+		}
+		s.sightMu.Unlock()
+		return "", model, ctx.Err()
+	}
+}
+
+// see describes the image for e, on work, which ends when no one waits.
+func (s *Server) see(work context.Context, e *sight, model, src, key string) {
+	text, by, err := s.describeWith(work, model, src, visionSystem, "Describe this image.")
+	s.sightMu.Lock()
+	e.text, e.by, e.err = text, by, err
+	switch {
+	case err != nil:
+		// a failure isn't kept: the next request asks again
+		s.forgetSightLocked(key, e)
+	case s.sights[key] == nil:
+		// answered as the last to wait went: kept for the next
+		s.keepSightLocked(key, e)
+	}
+	close(e.done)
+	s.sightMu.Unlock()
+	e.stop()
+}
+
+// keepSightLocked keeps e under key, the most recently used, and lets
+// the least recently used go past sightsKept; sightMu is held.
+func (s *Server) keepSightLocked(key string, e *sight) {
 	if s.sights == nil {
 		s.sights = map[string]*sight{}
 	}
-	e := &sight{done: make(chan struct{})}
 	s.sights[key] = e
 	s.sightOrder = append(s.sightOrder, key)
 	for len(s.sightOrder) > sightsKept {
 		delete(s.sights, s.sightOrder[0])
 		s.sightOrder = s.sightOrder[1:]
 	}
-	s.sightMu.Unlock()
-	e.text, e.by, e.err = s.describeWith(ctx, model, src, visionSystem, "Describe this image.")
-	if e.err != nil {
-		// a failure isn't kept: the next request asks again
-		s.sightMu.Lock()
-		if s.sights[key] == e {
-			delete(s.sights, key)
-		}
-		s.sightMu.Unlock()
+}
+
+// forgetSightLocked takes e, kept under key, out of the cache; sightMu is
+// held.
+func (s *Server) forgetSightLocked(key string, e *sight) {
+	if s.sights[key] != e {
+		return
 	}
-	close(e.done)
-	return e.text, e.by, e.err
+	delete(s.sights, key)
+	if i := slices.Index(s.sightOrder, key); i >= 0 {
+		s.sightOrder = slices.Delete(s.sightOrder, i, i+1)
+	}
+}
+
+// notDescribed puts on the Routing page a request whose images weren't
+// described before it was routed: call says why. Its describers' rows
+// stood in for it while it waited (noteRoute), and without this it had
+// none of its own once it ended (Pkh on Discord: only "Image
+// description" rows, the request they were for gone). One magpie
+// answered for, held too long (giveUp), has its own already.
+func (s *Server) notDescribed(r *http.Request, call *Call, start time.Time) {
+	if f := inflightOf(r.Context()); f != nil {
+		f.mu.Lock()
+		answered := f.unrouted != nil && f.unrouted.ended
+		f.mu.Unlock()
+		if answered {
+			return
+		}
+	}
+	rt := s.trace.beginFor(r, Route{Time: start, Agent: call.Agent, Session: sessionOf(r.Header), Kind: call.Kind, For: call.For, Model: call.Model, Provider: "magpie"})
+	ms := time.Since(start).Milliseconds()
+	s.trace.update(rt, func(t *Route) {
+		t.Done, t.Status, t.Error, t.Millis = true, call.Status, call.Error, ms
+	})
+	call.Route = rt.ID
 }
 
 // visionTries is how many models are asked about one image, the first
@@ -548,12 +673,6 @@ func (s *Server) askVisionWith(ctx context.Context, model, src, system, text str
 	}
 	w := httptest.NewRecorder()
 	s.serve(w, r, provider.Chat, body)
-	if t, ok := sideTimeout(ctx); ok {
-		return "", t
-	}
-	if ctx.Err() != nil {
-		return "", ctx.Err()
-	}
 	var out struct {
 		Choices []struct {
 			Message struct {
@@ -564,7 +683,21 @@ func (s *Server) askVisionWith(ctx context.Context, model, src, system, text str
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+	parsed := json.Unmarshal(w.Body.Bytes(), &out) == nil
+	if parsed && w.Code < 300 && out.Error == nil && len(out.Choices) > 0 {
+		if said := strings.TrimSpace(out.Choices[0].Message.Content); said != "" {
+			// a description that came whole is kept, though what asked
+			// for it ended as it came: it was paid for
+			return said, nil
+		}
+	}
+	if t, ok := sideTimeout(ctx); ok {
+		return "", t
+	}
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	if !parsed {
 		return "", fmt.Errorf("%d, not an answer", w.Code)
 	}
 	if w.Code >= 300 || out.Error != nil {
@@ -574,10 +707,7 @@ func (s *Server) askVisionWith(ctx context.Context, model, src, system, text str
 		}
 		return "", errors.New(msg)
 	}
-	if len(out.Choices) == 0 || strings.TrimSpace(out.Choices[0].Message.Content) == "" {
-		return "", errors.New("no description")
-	}
-	return strings.TrimSpace(out.Choices[0].Message.Content), nil
+	return "", errors.New("no description")
 }
 
 // seenBody is the body with each of its images described by model in its
@@ -588,12 +718,21 @@ func (s *Server) seenBody(ctx context.Context, proto provider.Protocol, body []b
 	// the images described before a route is begun: a wait magpie knows
 	// of (unrouted.go)
 	defer noteWait(ctx, "image description")()
-	var srcs []string
+	// each picture once, however many times and however it is sent
+	keyOf := map[string]string{}
+	var keys, srcs []string
 	have := map[string]bool{}
 	walkImages(proto, body, func(im imageAt) (json.RawMessage, error) {
-		if im.Src != "" && !have[im.Src] {
-			have[im.Src] = true
-			srcs = append(srcs, im.Src)
+		if im.Src == "" {
+			return nil, nil
+		}
+		if _, ok := keyOf[im.Src]; !ok {
+			k := sightKey(im.Src)
+			keyOf[im.Src] = k
+			if !have[k] {
+				have[k] = true
+				keys, srcs = append(keys, k), append(srcs, im.Src)
+			}
 		}
 		return nil, nil
 	})
@@ -608,16 +747,22 @@ func (s *Server) seenBody(ctx context.Context, proto provider.Protocol, body []b
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			slots <- struct{}{}
+			// one waiting for a slot when the request ends asks no one
+			select {
+			case slots <- struct{}{}:
+			case <-ctx.Done():
+				results[i] = result{by: model, err: ctx.Err()}
+				return
+			}
 			defer func() { <-slots }()
-			text, by, err := s.describe(ctx, model, src)
+			text, by, err := s.describeKeyed(ctx, model, src, keys[i])
 			results[i] = result{text, by, err}
 		}()
 	}
 	wg.Wait()
 	of := map[string]result{}
-	for i, src := range srcs {
-		of[src] = results[i]
+	for i, k := range keys {
+		of[k] = results[i]
 	}
 	return walkImages(proto, body, func(im imageAt) (json.RawMessage, error) {
 		if im.Src == "" {
@@ -626,7 +771,7 @@ func (s *Server) seenBody(ctx context.Context, proto provider.Protocol, body []b
 			}
 			return textBlock(proto, imageOmitted), nil
 		}
-		r := of[im.Src]
+		r := of[keyOf[im.Src]]
 		if r.err != nil {
 			if im.Current() {
 				return nil, r.err

@@ -314,6 +314,9 @@ type Agent struct {
 	// wslVersion is an agent in a WSL distro's CLI's version, as the
 	// distro's probe asked it (wslKind.version); "" when not asked
 	wslVersion string
+	// unreached, for an agent in a WSL distro, is why its folder there
+	// can't be opened: a link the distro couldn't resolve (distro.open)
+	unreached error
 	// move, when set, points the agent's config at to where it names the
 	// gateway at from: an address of WSL's that changed (#1013).
 	move func(from, to string) error
@@ -624,9 +627,11 @@ func Detected() []*Agent {
 }
 
 // Find resolves a user-typed name (id, alias, or unique prefix).
-func Find(q string) (*Agent, error) {
+func Find(q string) (*Agent, error) { return FindIn(All(), q) }
+
+// FindIn is Find among all, a list of All() the caller has built already.
+func FindIn(all []*Agent, q string) (*Agent, error) {
 	q = strings.ToLower(strings.TrimSpace(q))
-	all := All()
 	var prefix []*Agent
 	for _, a := range all {
 		if strings.EqualFold(a.ID, q) { // codex@wsl:Ubuntu

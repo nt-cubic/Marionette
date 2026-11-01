@@ -71,6 +71,7 @@ func TestStreamFailureAccounting(t *testing.T) {
 
 // Native stream errors are relayed byte for byte, including an
 // error event without a final newline, and still reach the request log.
+// Only the model a reply names is the one the agent asked for.
 func TestNativeStreamFailureAccounting(t *testing.T) {
 	const failure = "synthetic stream failure"
 	for _, c := range []struct {
@@ -100,7 +101,7 @@ func TestNativeStreamFailureAccounting(t *testing.T) {
 				s := New()
 				w := httptest.NewRecorder()
 				s.Handler().ServeHTTP(w, httptest.NewRequest("POST", c.path, strings.NewReader(c.body)))
-				if w.Code != 200 || w.Body.String() != reply {
+				if w.Code != 200 || w.Body.String() != namedAs(reply, "fake/m1") {
 					t.Fatalf("native stream was changed: %d %s", w.Code, w.Body)
 				}
 				state, recent := s.Trace(context.Background(), 0, 0), s.Recent()

@@ -56,7 +56,7 @@ const label = {
 };
 const strings = [
   "Only switch {agent}'s sign-in",
-  "magpie moves {agent}'s own sign-in to the next account with room when one is used up, and back once it has room. Nothing on these accounts is served through magpie.",
+  "magpie moves {agent}'s own sign-in to the next account with room when one is used up, and keeps it there till that one is used up too. Nothing on these accounts is served through magpie.",
   "magpie serves no requests on these accounts",
   "magpie serves requests on these accounts again",
 ];

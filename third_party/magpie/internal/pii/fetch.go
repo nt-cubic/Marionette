@@ -169,10 +169,16 @@ func upgrade() {
 	removeOld()
 }
 
-// removeOld deletes oldTags' pf-serve.
+// removeOld deletes oldTags' pf-serve, and serveTag's for a system
+// other than target (an Intel one under Rosetta).
 func removeOld() {
 	for _, tag := range oldTags {
-		os.RemoveAll(tagDir(tag))
+		for _, d := range tagDirs(tag) {
+			os.RemoveAll(d)
+		}
+	}
+	for _, d := range tagDirs(serveTag)[1:] {
+		os.RemoveAll(d)
 	}
 }
 

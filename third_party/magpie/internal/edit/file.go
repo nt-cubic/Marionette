@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tidwall/jsonc"
+	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/steady"
 )
@@ -55,6 +57,21 @@ func readThrough(path string, through func(string, string, func([]byte) ([]byte,
 		return nil, err
 	}
 	return bytes.Clone(TrimBOM(b)), nil
+}
+
+// jsonHeld is readHeld of a JSON or JSONC file made plain JSON (comments
+// and trailing commas blanked out), made once each time the file is read
+// and shared by every look, so read only. GetJSON copied the file and
+// converted it again on each look: 80 MB of what twenty window polls
+// allocated.
+func jsonHeld(path string) ([]byte, error) {
+	b, err := filememo.Read("plain json", path, func(b []byte) ([]byte, error) {
+		return jsonc.ToJSON(TrimBOM(b)), nil
+	})
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	return b, err
 }
 
 // bom is the UTF-8 byte order mark.
@@ -154,6 +171,13 @@ func WriteAtomic(path string, data []byte) error {
 		mode = st.Mode().Perm()
 	}
 	dir := filepath.Dir(path)
+	// a folder an agent's variable names is never made again once gone
+	// (appdir.Gone): the agent no longer reads it
+	if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
+		if err := appdir.Gone(dir); err != nil {
+			return err
+		}
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}

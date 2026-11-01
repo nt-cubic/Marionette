@@ -399,7 +399,12 @@ const (
 // its small model, as when none is named. Nil when none is named or
 // provider search is explicitly off.
 func chosenSearcher() (*provider.Provider, string, string) {
-	v := strings.TrimSpace(settings.Load().Searcher)
+	return namedSearcher(settings.Load().Searcher)
+}
+
+// namedSearcher is chosenSearcher of v, a searcher as Settings writes it.
+func namedSearcher(v string) (*provider.Provider, string, string) {
+	v = strings.TrimSpace(v)
 	if v == "" || v == "off" {
 		return nil, "", ""
 	}
@@ -419,7 +424,7 @@ func chosenSearcher() (*provider.Provider, string, string) {
 		// it searches with no model
 		return &p, "", ""
 	}
-	if model != "" && slices.ContainsFunc(p.Available(), func(m catalog.Model) bool { return m.ID == model }) && searchableModel(p, model) {
+	if model != "" && slices.ContainsFunc(searcherModels(p), func(m catalog.Model) bool { return m.ID == model }) && searchableModel(p, model) {
 		return &p, model, ""
 	}
 	if m := searcherModel(p); m != "" {
@@ -446,7 +451,7 @@ func Searchers() []SearcherChoice {
 			continue
 		}
 		var ms []catalog.Model
-		for _, m := range p.Available() {
+		for _, m := range searcherModels(p) {
 			if !provider.IsGroupRef(m.ID) && searchableModel(p, m.ID) {
 				ms = append(ms, m)
 			}
@@ -457,6 +462,25 @@ func Searchers() []SearcherChoice {
 		out = append(out, SearcherChoice{Provider: p, Small: searcherModel(p), Models: ms, rank: r, ManualOnly: manualOnly, Own: googleAccount(p)})
 	}
 	slices.SortStableFunc(out, func(a, b SearcherChoice) int { return cmp.Compare(a.rank, b.rank) })
+	return out
+}
+
+// searcherModels are the models a searcher may be named with: those its
+// list gives, then those typed in by hand that it doesn't list. A relay
+// with no model list (its models typed in by hand) has none listed, and
+// was left out of the picker while the row named it a relay to pick
+// (axelburks on Discord).
+func searcherModels(p provider.Provider) []catalog.Model {
+	avail := p.Available()
+	out := avail
+	for _, m := range p.ExposedOf(avail) {
+		if !slices.ContainsFunc(avail, func(a catalog.Model) bool { return a.ID == m.ID }) {
+			if len(out) == len(avail) {
+				out = slices.Clone(avail)
+			}
+			out = append(out, m)
+		}
+	}
 	return out
 }
 
@@ -760,11 +784,45 @@ func (s *Server) modelSearch(ctx context.Context, query string) (string, []Hit, 
 		said, hits, err = s.searchBy(ctx, p, model, query, searchEffort(p, model))
 	}
 	if named {
-		// a search the agent stopped waiting for is no failure of its
+		// those Settings names after it, in their order (SearcherThen),
+		// and no other
+		instead, first := "", err
+		if err != nil && ctx.Err() == nil {
+			for _, v := range settings.Load().SearcherThen {
+				q, m, why := namedSearcher(v)
+				if why != "" || q == nil || q.ID == p.ID && m == model || ctx.Err() != nil {
+					continue
+				}
+				if instead == "" {
+					ctx = searchingInstead(ctx, p, model, first)
+				}
+				instead = searcherOf(*q, m)
+				var next error
+				if said, hits, next = s.searchBy(ctx, *q, m, query, searchEffort(*q, m)); next == nil {
+					err = nil
+					break
+				}
+				err = errors.Join(err, next)
+			}
+			if err == nil {
+				// what Settings says is the first's failure, and who
+				// searched in its place
+				if !errors.Is(ctx.Err(), context.Canceled) {
+					namedFailed(p, model, first, instead)
+				}
+				return said, hits, nil
+			}
+		}
+		// a search the agent stopped waiting for is no failure of its.
+		// Settings says the first's own failure, those after it having
+		// failed too
 		if !errors.Is(ctx.Err(), context.Canceled) {
-			namedFailed(p, model, err)
+			namedFailed(p, model, first, "")
 		}
 		if err != nil {
+			if len(settings.Load().SearcherThen) > 0 {
+				return "", nil, fmt.Errorf("%w (the searchers picked in Settings › Web search, in their order: no other provider searches in their place)", err)
+			}
 			return "", nil, fmt.Errorf("%w (the searcher picked in Settings › Web search: no other provider searches in its place)", err)
 		}
 		return said, hits, nil
@@ -819,14 +877,23 @@ type SearchFailure struct {
 	Why          string // the error, when it neither found nothing nor didn't search
 	NothingFound bool   // it searched and named no page
 	NotSearched  bool   // it answered without searching (errNotSearched)
-	At           time.Time
+	// Instead is the searcher Settings names after it (SearcherThen) that
+	// searched in its place, "" when none did
+	Instead string
+	At      time.Time
 }
 
-func namedFailed(p provider.Provider, model string, err error) {
-	name := p.ID
-	if model != "" {
-		name += "/" + model
+// searcherOf is a searcher as Settings writes it: "<provider>/<model>",
+// or "<provider>" for one that searches with no model.
+func searcherOf(p provider.Provider, model string) string {
+	if model == "" {
+		return p.ID
 	}
+	return p.ID + "/" + model
+}
+
+func namedFailed(p provider.Provider, model string, err error, instead string) {
+	name := searcherOf(p, model)
 	lastNamedFail.Lock()
 	defer lastNamedFail.Unlock()
 	if err == nil {
@@ -835,7 +902,7 @@ func namedFailed(p provider.Provider, model string, err error) {
 		}
 		return
 	}
-	f := SearchFailure{Searcher: name, At: time.Now(), NotSearched: errors.Is(err, errNotSearched)}
+	f := SearchFailure{Searcher: name, At: time.Now(), NotSearched: errors.Is(err, errNotSearched), Instead: instead}
 	f.NothingFound = !f.NotSearched && errors.Is(err, errFoundNothing)
 	if !f.NothingFound && !f.NotSearched {
 		f.Why = strings.TrimPrefix(err.Error(), name+": ")
@@ -1053,6 +1120,47 @@ const SearchAgent = "magpie-search/1"
 // and message of a failure.
 type round func(ctx context.Context, req *Request) (<-chan Event, int, string)
 
+// textCallRound is a round whose reply has the calls written into its
+// text made calls (textCallSee), as the replies of the routes without a
+// search have them (streamTranslated, forwardTranslated): every search
+// route's every round passes here, whatever protocol the client asked
+// on, and a model that writes its calls out had them reach the client
+// as the text they were (#4562).
+func textCallRound(tools []Tool, ask round) round {
+	names := textCallNames(tools)
+	if names == nil {
+		return ask
+	}
+	return func(ctx context.Context, req *Request) (<-chan Event, int, string) {
+		in, status, msg := ask(ctx, req)
+		if in == nil {
+			return in, status, msg
+		}
+		out := make(chan Event, 16)
+		t := &textCallSee{names: names, see: func(ev Event) {
+			select {
+			case out <- ev:
+			case <-ctx.Done():
+			}
+		}}
+		go func() {
+			defer close(out)
+			for ev := range in {
+				select {
+				case <-ctx.Done():
+				default:
+					t.event(ev)
+				}
+			}
+			// a round that ended without its stop still hands on the
+			// text held from a mark begun, as the routes without a
+			// search do at their reply's end
+			t.release()
+		}()
+		return out, status, msg
+	}
+}
+
 // searchReply answers req through ask, running the searches its model
 // asks for and asking it again with what they found; the client sees one
 // reply. The first round's failure is a status, as another provider may
@@ -1065,6 +1173,7 @@ func (s *Server) searchReply(w http.ResponseWriter, r *http.Request, from provid
 	tool := searchTool(q.Tools)
 	q.Tools = append(slices.Clone(q.Tools), tool)
 	q.Messages = slices.Clone(q.Messages)
+	ask = textCallRound(q.Tools, ask)
 	first, status, msg := ask(ctx, &q)
 	if first == nil {
 		return writeError(w, from, status, msg), msg

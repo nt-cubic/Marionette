@@ -325,7 +325,7 @@ func (ps *pairedRows) sigs(identities map[string]sessions.CodexIdentity) map[*ro
 func (ps *pairedRows) partsOf(pass *cellPass, cache *partCache, identities map[string]sessions.CodexIdentity) []*chunkPart {
 	sigs := ps.sigs(identities)
 	parts := make([]*chunkPart, len(ps.all))
-	var rows chunkRows
+	rows := lentRows() // a cell keeps unique's handles, not the rows' strings
 	defer rows.release()
 	var r Row
 	for i, c := range ps.all {

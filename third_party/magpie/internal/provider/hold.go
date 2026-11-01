@@ -32,6 +32,10 @@ var held struct {
 	fgen uint64
 	// roots is the providers' and the settings' files as last looked at
 	roots [2]rootStamp
+	// stamp is StampNow's files as a request holding the catalog last
+	// looked at them, at stampAt (stampNowFiles)
+	stamp   [3]rootStamp
+	stampAt time.Time
 }
 
 // rootStamp is a file's time and size, or that it wasn't there.
@@ -119,6 +123,8 @@ func Hold() (release func()) {
 			held.built, held.env = nil, env
 		}
 		heldFreshLocked(true)
+		// a request's first StampNow looks at the files again
+		held.stampAt = time.Time{}
 	}
 	held.holds++
 	held.Unlock()
@@ -175,9 +181,39 @@ func StampNow() Stamp {
 	held.Lock()
 	gen := held.gen
 	held.Unlock()
-	return Stamp{gen: gen, fgen: filememo.Gen(), env: environSum(),
-		roots: [3]rootStamp{stampOf(Path()), stampOf(settings.Path()), stampOf(catalog.CachePath())}}
+	return Stamp{gen: gen, fgen: filememo.Gen(), env: environSum(), roots: stampNowFiles()}
 }
+
+// stampLooks counts StampNow's looks at its files, for a test.
+var stampLooks atomic.Int64
+
+// stampNowFiles is the files' part of StampNow: looked at once by a
+// request holding the catalog and its overlapping ones, for heldFor at
+// most, as what is held is. KeptListing takes a stamp for every
+// provider, and its three stats a provider were most of what a
+// Providers page poll spent (~600 of them a poll with 200 providers).
+// Another process's write is seen by the next request, as Hold's look
+// sees it.
+func stampNowFiles() [3]rootStamp {
+	held.Lock()
+	roots, fresh := held.stamp, held.holds > 0 && !held.stampAt.IsZero() && time.Since(held.stampAt) < heldFor
+	held.Unlock()
+	if fresh {
+		return roots
+	}
+	stampLooks.Add(1)
+	roots = [3]rootStamp{stampOf(Path()), stampOf(settings.Path()), stampOf(catalog.CachePath())}
+	held.Lock()
+	if held.holds > 0 {
+		held.stamp, held.stampAt = roots, time.Now()
+	}
+	held.Unlock()
+	return roots
+}
+
+// Held is what build gives, built once while a request holds it (Hold),
+// for what each row of a page looks up: shared by them, so read only.
+func Held[T any](key string, build func() T) T { return heldOf(key, build) }
 
 // heldOf is what build gives, built once while a request holds it.
 func heldOf[T any](key string, build func() T) T {

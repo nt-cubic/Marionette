@@ -28,7 +28,7 @@ var readOnlyRefused = []string{
 	"GET /v1/magpie/route", "GET /v1/magpie/trace",
 	"GET " + ClaudeRunsPath, "GET " + HeapPath, "GET " + CPUPath, "GET " + GoroutinesPath,
 	"POST " + RestartPath,
-	"POST " + KeysPath, "GET " + KeysPath, "DELETE " + KeysPath + "/{id}",
+	"POST " + KeysPath, "GET " + KeysPath, "DELETE " + KeysPath + "/{id}", "POST " + OIDCKeysPath,
 	"GET /v1/magpie/omarchy", "OPTIONS /v1/magpie/omarchy",
 	// models, a WebSocket's upgrade and count_tokens among them
 	"POST /v1/chat/completions", "POST /chat/completions",
@@ -44,7 +44,8 @@ var readOnlyRefused = []string{
 	"GET /v1/videos/{id}/content", "GET /videos/{id}/content",
 	// MCP servers, plugins' and Codex's backends, Gemini, everything else
 	"POST " + claudeMCPPath + "{token}", "/mcp/{name}", "/mcp/run/{name}",
-	SearchMCPPath, VisionMCPPath, ImageMCPPath, ImageMCPFiles + "{name}", ToolsMCPPath, ToolsMCPOne + "{plugin}",
+	SearchMCPPath, VisionMCPPath, ImageMCPPath, ImageMCPFiles + "{name}",
+	BrowserMCPPath, "GET " + BrowserExtensionPath, "GET " + BrowserStatusPath, ToolsMCPPath, ToolsMCPOne + "{plugin}",
 	HubMCPPath + "{agent}", HubMCPAll, CodexPath + "/", "GET " + CodexCatalogPath,
 	"GET /v1beta/models", "POST /v1beta/models/{call...}", "/",
 }

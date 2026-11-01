@@ -15,10 +15,10 @@ import (
 )
 
 const quotaUsage = `usage: magpie quota [<provider>…] [--json]
-       magpie quota reset [<codex account>] [--yes]
+       magpie quota reset [<codex account>] [--card <n>] [--yes]
        magpie quota auto-reset [<codex account>] [week|expiring] [on|off]
        magpie quota auto-reset lead [<minutes or hours, like 30m or 3h>|default]
-       magpie quota credits [<codex account>] [on|off]
+       magpie quota credits [<codex account>] [on|last|off]
        magpie quota alert [<percent>|off] [--balance <amount>|off]
        magpie quota wait <provider|account> [--timeout <duration>] [--quiet]
        magpie quota history [<provider|account>…] [--days <n>] [--json]
@@ -31,7 +31,9 @@ const quotaUsage = `usage: magpie quota [<provider>…] [--json]
   shared on the local network, with its key as the API key (Authorization: Bearer or x-api-key)
   A Codex account that holds rate-limit resets says how many; quota reset spends one,
   starting the account's current windows again (the one Codex is signed in to unless
-  named). It can't be undone, so it asks first; --yes doesn't. quota auto-reset on lets
+  named): the one that runs out first, or with --card n the nth to run out (2 the
+  one after the soonest; one that never runs out comes last). It can't be undone, so
+  it asks first, naming the reset; --yes doesn't. quota auto-reset on lets
   the account spend one by itself when its weekly window is used up and no other
   account can take a request, or before a request goes on its credits, one a week
   at most (the five hours running out never does), and spend the one about to expire half an hour before it does, if
@@ -51,7 +53,11 @@ const quotaUsage = `usage: magpie quota [<provider>…] [--json]
   goes to the other accounts, groups and fallbacks, or is refused with why (with
   auto-reset on, its week used up and no one else left, it spends a reset first).
   on, the default, lets the vendor answer on its credits then, so the task goes
-  on (with auto-reset's week on, a reset held is spent before the credits); alone it says which accounts don't spend theirs.
+  on (with auto-reset's week on, a reset held is spent before the credits); last spends
+  them too, but only after everything else: once a window is used up the account is
+  tried after every other account, key and fallback that isn't on its credits, so a
+  subscription, then an API key, then the credits. Alone it says which accounts don't
+  spend theirs and which spend them last.
   quota alert 80 has the magpie app notify when any window of a subscription or plan
   reaches 80% used, once each time the window runs (not windows set aside, such as
   on-demand spending); --balance 5 when a balance falls to 5 or under, in its own
@@ -203,18 +209,32 @@ func resetsCell(r *provider.ResetCredits, agent, user string) string {
 	return cell
 }
 
-// quotaResetCmd: magpie quota reset [<codex account>] [--yes] — spends one
-// of the account's rate-limit resets, once the user has said so.
+// quotaResetCmd: magpie quota reset [<codex account>] [--card <n>] [--yes]
+// — spends one of the account's rate-limit resets, once the user has said
+// so: the one that runs out first, or the nth to run out.
 func quotaResetCmd(args []string) error {
-	yes, user := false, ""
-	for _, a := range args {
-		switch a {
+	yes, user, card := false, "", 0
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; a {
 		case "--yes", "-y":
 			yes = true
+		case "--card":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--card takes which reset, 1 for the one that runs out first")
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 {
+				return fmt.Errorf("--card takes which reset, 1 for the one that runs out first, not %q", args[i])
+			}
+			card = n
 		case "help", "-h", "--help":
 			fmt.Println(quotaUsage)
 			return nil
 		default:
+			if strings.HasPrefix(a, "-") {
+				return fmt.Errorf("magpie quota reset doesn't know %s", a)
+			}
 			if user != "" {
 				return fmt.Errorf("one account at a time: %s or %s", user, a)
 			}
@@ -241,12 +261,30 @@ func quotaResetCmd(args []string) error {
 	if held.Resets == nil && held.Error == "" {
 		return fmt.Errorf("%s holds no rate-limit reset", who)
 	}
+	// the one chosen, by its place among them, soonest first
+	credit := ""
+	var chosen *provider.ResetCard
+	if card > 0 {
+		if held.Resets == nil || len(held.Resets.Each) == 0 || held.Resets.Each[0].ID == "" {
+			return fmt.Errorf("couldn't read %s's resets one by one, so none was used", who)
+		}
+		if card > len(held.Resets.Each) {
+			return fmt.Errorf("%s has %s, not a %s", who, plural(len(held.Resets.Each), "reset"), ordinal(card))
+		}
+		chosen = &held.Resets.Each[card-1]
+		credit = chosen.ID
+	}
 	if !yes {
 		n := "one of its resets"
 		if held.Resets != nil {
 			n = "one of its " + plural(held.Resets.Count, "reset")
 		}
-		if held.Resets != nil && held.Resets.Until != nil {
+		switch {
+		case chosen != nil && chosen.Until != nil:
+			n += " (reset " + strconv.Itoa(card) + ", which runs out " + provider.ResetClock(*chosen.Until, time.Now()) + ")"
+		case chosen != nil:
+			n += " (reset " + strconv.Itoa(card) + ", which never runs out)"
+		case held.Resets != nil && held.Resets.Until != nil:
 			n += " (the one that runs out first, " + provider.ResetClock(*held.Resets.Until, time.Now()) + ")"
 		}
 		fmt.Printf("Spend %s on %s, starting its current windows again? It can't be undone. [y/N] ", n, who)
@@ -255,7 +293,7 @@ func quotaResetCmd(args []string) error {
 			return fmt.Errorf("nothing spent")
 		}
 	}
-	out, err := provider.UseCodexReset(ctx, held.User)
+	out, err := provider.UseCodexResetCard(ctx, held.User, credit)
 	if err != nil {
 		return err
 	}
@@ -264,6 +302,22 @@ func quotaResetCmd(args []string) error {
 	}
 	fmt.Println(green.Render("✓"), who+":", out.Text())
 	return nil
+}
+
+// ordinal is n as "1st", "2nd", "3rd", "4th".
+func ordinal(n int) string {
+	suffix := "th"
+	if n%100 < 11 || n%100 > 13 {
+		switch n % 10 {
+		case 1:
+			suffix = "st"
+		case 2:
+			suffix = "nd"
+		case 3:
+			suffix = "rd"
+		}
+	}
+	return strconv.Itoa(n) + suffix
 }
 
 // quotaAutoResetCmd: magpie quota auto-reset [<codex account>] [week|expiring]
@@ -430,14 +484,15 @@ func resetUsedWhy(why string) string {
 	return "used by hand"
 }
 
-// quotaCreditsCmd: magpie quota credits [<codex account>] [on|off] —
-// whether the account spends its credits once its allowance is used up.
+// quotaCreditsCmd: magpie quota credits [<codex account>] [on|last|off]
+// — whether the account spends its credits once its allowance is used
+// up, and with last only after everything else.
 func quotaCreditsCmd(args []string) error {
-	user, set, on := "", false, false
+	user, mode := "", ""
 	for _, a := range args {
 		switch strings.ToLower(a) {
-		case "on", "off":
-			set, on = true, strings.EqualFold(a, "on")
+		case provider.CreditsOn, provider.CreditsLast, provider.CreditsOff:
+			mode = strings.ToLower(a)
 		case "help", "-h", "--help":
 			fmt.Println(quotaUsage)
 			return nil
@@ -448,14 +503,20 @@ func quotaCreditsCmd(args []string) error {
 			user = a
 		}
 	}
-	if !set && user == "" {
-		off := settings.Load().CodexNoCredits
-		if len(off) == 0 {
-			fmt.Println(muted.Render("every Codex account spends its credits once its allowance is used up ·"), "magpie quota credits <account> off")
+	if mode == "" && user == "" {
+		s := settings.Load()
+		off, last := s.CodexNoCredits, s.CodexCreditsLast
+		if len(off) == 0 && len(last) == 0 {
+			fmt.Println(muted.Render("every Codex account spends its credits once its allowance is used up ·"), "magpie quota credits <account> last|off")
 			return nil
 		}
 		for _, u := range off {
 			fmt.Println(muted.Render("○"), u, muted.Render("doesn't spend its credits: held once magpie reads a window used up"))
+		}
+		for _, u := range last {
+			if provider.CodexCreditsLast(u) {
+				fmt.Println(muted.Render("◐"), u, muted.Render("spends its credits only after every other account, key and fallback"))
+			}
 		}
 		return nil
 	}
@@ -463,20 +524,26 @@ func quotaCreditsCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	if !set {
-		if provider.CodexCredits(user) {
+	if mode == "" {
+		switch provider.CodexCreditsMode(user) {
+		case provider.CreditsOn:
 			fmt.Println(user, "spends its credits once its allowance is used up")
-		} else {
+		case provider.CreditsLast:
+			fmt.Println(user, "spends its credits once its allowance is used up, only after every other account, key and fallback")
+		default:
 			fmt.Println(user, "doesn't spend its credits: once magpie reads a window used up it is held till it renews")
 		}
 		return nil
 	}
-	if err := provider.SetCodexCredits(user, on); err != nil {
+	if err := provider.SetCodexCreditsMode(user, mode); err != nil {
 		return err
 	}
-	if on {
+	switch mode {
+	case provider.CreditsOn:
 		fmt.Println(green.Render("✓"), user+":", "spends its credits once its allowance is used up, so a task goes on")
-	} else {
+	case provider.CreditsLast:
+		fmt.Println(green.Render("✓"), user+":", "spends its credits once its allowance is used up, but only after every other account, key and fallback that isn't on its credits")
+	default:
 		fmt.Println(green.Render("✓"), user+":", "no longer spends its credits: once magpie reads a window used up, requests go to the other accounts till it renews")
 	}
 	return nil

@@ -32,12 +32,14 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/backup"
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/library"
 	"github.com/yetone/magpie/internal/plugin"
@@ -243,10 +245,19 @@ type blind struct {
 
 func path(name string) string { return filepath.Join(settings.Dir(), name) }
 
-// Load reads the setup; false when sync is off.
+// loadReads counts Load's reads of the file, for a test.
+var loadReads atomic.Int64
+
+// Load reads the setup; false when sync is off. The file's bytes are
+// read once until it changes (filememo), each caller given a Config of
+// its own: every Providers page poll asked it, most often of a file that
+// isn't there.
 func Load() (Config, bool) {
 	var c Config
-	b, err := os.ReadFile(path("sync.json"))
+	b, err := filememo.Read("davsync-setup", path("sync.json"), func(b []byte) ([]byte, error) {
+		loadReads.Add(1)
+		return bytes.Clone(b), nil // its own, not a buffer filememo reads into again
+	})
 	if err != nil || json.Unmarshal(b, &c) != nil || c.URL == "" {
 		return Config{}, false
 	}
@@ -441,7 +452,8 @@ func Off() error {
 			st.Error, st.Notice, st.Undo, st.Usage = "", nil, "", nil
 			saveState(st)
 		}
-		usage.DropAllShared() // the others' usage came by sync: it goes with it (#542)
+		usage.DropAllShared()   // the others' usage came by sync: it goes with it (#542)
+		defer filememo.Forget() // read again, where a request holds it
 		if err := os.Remove(path("sync.json")); err != nil && !os.IsNotExist(err) {
 			return err
 		}

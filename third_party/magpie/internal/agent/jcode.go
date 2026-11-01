@@ -50,7 +50,7 @@ func jcodeDir(at place) string {
 	if d := strings.TrimSpace(at.getenv("JCODE_HOME")); d != "" {
 		return d
 	}
-	return filepath.Join(at.home, ".jcode")
+	return at.join(".jcode")
 }
 
 // jcodeModel is one [[providers.<name>.models]] entry, as jcode's
@@ -104,7 +104,7 @@ func jcodeWant(was []jcodeModel) []jcodeModel {
 		kept[m.ID] = m.ReasoningEffort
 	}
 	var out []jcodeModel
-	for _, m := range magpieModels("jcode") {
+	for _, m := range sharedModels("jcode") {
 		ctx := m.Context
 		if ctx <= 0 {
 			ctx = jcodeContext
@@ -353,7 +353,7 @@ func jcodeAt(at place) *Agent {
 				return setPick(jcodePick{c.Provider.DefaultProvider, v})
 			},
 			Options: func(cur map[string]string) []Option {
-				return append(jcodeOwn(path, keyPick, cur["model"]), viaMagpie("jcode", magpieID+"/")...)
+				return withVia(jcodeOwn(path, keyPick, cur["model"]), "jcode", magpieID+"/")
 			},
 		}},
 	}, path)
@@ -364,7 +364,7 @@ func jcodeAt(at place) *Agent {
 // can't list.
 func jcodeOwn(path, keyPick, cur string) []Option {
 	var was jcodePick
-	json.Unmarshal([]byte(stashLoad()[keyPick]), &was)
+	json.Unmarshal([]byte(stashShared()[keyPick]), &was)
 	var out []Option
 	for _, m := range []string{was.Model, cur} {
 		if m == "" || prefixed(m) || slices.ContainsFunc(out, func(o Option) bool { return o.Value == m }) {

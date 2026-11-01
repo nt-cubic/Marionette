@@ -138,6 +138,34 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       });
     }
 
+    // ysm119 on Discord (v0.1.2519, WebKit): Codex's row opened and shut
+    // again, then Settings, threw "null is not an object (evaluating
+    // '$(row + ".who").title = t(en)')". Shut, the row was drawn again
+    // without its opened part, and Codex's settings rows went with that
+    // part, out of the page, where Settings and a language change look
+    // for them. Shut, they are back in it; Settings opens on its own
+    // button, with no reload, and says what each row does.
+    for (const width of [1100, 440]) {
+      test(`${engine} ${lang} ${width}: Settings opens after Codex's row was opened and shut`, async (t) => {
+        const { page, errors } = await newPage(engine, t, width, lang);
+        await page.goto("http://magpie.test/?view=agents");
+        await openAgentSettings(page, "codex");
+        await page.locator('.row.agent[data-id="codex"] .ag-link').click();
+        await page.locator('.row.agent[data-id="codex"] .ag-prefs').waitFor({ state: "detached" });
+        await page.locator('.row.agent[data-id="codex"] .ag-link[aria-expanded="false"]').waitFor();
+        for (const id of CODEX) assert(await page.evaluate((id) => document.getElementById(id)?.isConnected === true, id), `${lang} ${width}: ${id} in the page once shut`);
+        await page.locator("#prefs").click();
+        await page.locator("#view-settings").waitFor();
+        await page.waitForFunction(() => __settingsReads.asked > 0 && __settingsReads.asked === __settingsReads.drawn);
+        assert.deepEqual(errors, [], `${lang} ${width}: no error opening Settings`);
+        assert.equal(await page.locator("#status.err").textContent().catch(() => ""), "", `${lang} ${width}: no red error line`);
+        const tip = await page.evaluate(() => document.querySelector("#codexTitlesRow .who")?.title);
+        assert.equal(tip, await page.evaluate(() => t("Names each thread in a hidden request of its own; same as the session, it goes on the session’s model, as Codex sends it when that is one of Codex’s own")), `${lang}: the titles row says what it does`);
+        if (lang !== "en") assert(!/^Names each/.test(tip), `${lang}: in the language`);
+        await noSideScroll(page, `${lang} ${width} Settings`);
+      });
+    }
+
     test(`${engine} ${lang}: in the panel a Settings line and the agent's menu open its sheet`, async (t) => {
       const { page, errors } = await newPage(engine, t, 360, lang);
       const w = want[lang];

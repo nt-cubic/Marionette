@@ -8,7 +8,8 @@
 //     middleware (internal/middleware) is the one there, registered by
 //     plugins/middleware. It fails open: a middleware that fails leaves the
 //     request as it was. A Run that is also Tried changes the body again
-//     for each provider the gateway tries the request on.
+//     for each provider the gateway tries the request on, and one that is
+//     also Accounts can have an account passed over for the request.
 //   - Masker: what magpie sends to a vendor, masked as the settings say,
 //     and what the vendor answers with the values back. The redact plugin
 //     registers it. It fails closed: when the settings ask for masking and
@@ -71,6 +72,24 @@ type To struct {
 // changes no other try's.
 type Tried interface {
 	Tried(body []byte, to To) []byte
+}
+
+// Account is the subscription account a request is about to be tried on,
+// as the gateway knows it. Agent, User and Plan are who it is
+// (provider.Account) and never reach a middleware: a middleware is told a
+// ref made from them (internal/middleware's accountRef). A zero Agent is
+// a try on a key, no account.
+type Account struct {
+	Agent, User, Plan string
+	ID, Name, Model   string // the provider, and the model asked of it there
+}
+
+// Accounts is a Run asked, before each try, whether the account it goes
+// to may be used for this request: skip says it may not, and the gateway
+// goes on to the next as it does past an account that can't be used,
+// resting nothing. by names the middleware that said so.
+type Accounts interface {
+	Account(a Account) (skip bool, by string)
 }
 
 // Masker masks what magpie sends to a vendor and puts the values back in

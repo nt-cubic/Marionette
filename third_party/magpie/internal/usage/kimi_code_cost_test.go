@@ -13,9 +13,10 @@ import (
 
 // #1370 (maicent): the Usage page counted a Kimi Code membership's k3 at
 // ≈¥0.000, its plan's models.dev catalog listing every model at $0. A k3
-// call is now counted at Kimi's API price for kimi-k3, kimi-for-coding
-// (K2.8 Preview, which the API doesn't sell) is unpriced rather than free,
-// and a Moonshot pay-as-you-go call is what it was.
+// call is now counted at Kimi's API price for kimi-k3, a k3.1-pro one at
+// kimi-k3.1-pro's, kimi-for-coding (K2.8 Preview, which the API doesn't
+// sell) is unpriced rather than free, and a Moonshot pay-as-you-go call is
+// what it was.
 func TestKimiCodeCost(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -45,6 +46,7 @@ func TestKimiCodeCost(t *testing.T) {
 	// the reporter's k3 row: 240K in, 78.4K out, 10.0M cached
 	in, out, cached := 240_000, 78_400, 10_000_000
 	k3 := (float64(in)*3 + float64(out)*15 + float64(cached)*0.3) / 1e6
+	k31 := (float64(in)*2 + float64(out)*10 + float64(cached)*0.2) / 1e6
 	now := time.Now()
 	calls := []struct {
 		prov, model string
@@ -52,6 +54,7 @@ func TestKimiCodeCost(t *testing.T) {
 		want        float64
 	}{
 		{"kimi-code-cn", "k3", true, k3},
+		{"kimi-code-cn", "k3.1-pro", true, k31},
 		{"kimi-code-cn", "kimi-for-coding", false, 0},
 		{"moonshot", "kimi-k3", true, k3},
 	}
@@ -70,7 +73,7 @@ func TestKimiCodeCost(t *testing.T) {
 		}
 	}
 	s := Summarize(Month)
-	if s.Unpriced != 1 || math.Abs(s.Cost-2*k3) > 1e-9 || math.Abs(sum.Cost-2*k3) > 1e-9 {
-		t.Fatalf("summary cost %v unpriced %d, ledger %v; want %v and 1", s.Cost, s.Unpriced, sum.Cost, 2*k3)
+	if s.Unpriced != 1 || math.Abs(s.Cost-(2*k3+k31)) > 1e-9 || math.Abs(sum.Cost-(2*k3+k31)) > 1e-9 {
+		t.Fatalf("summary cost %v unpriced %d, ledger %v; want %v and 1", s.Cost, s.Unpriced, sum.Cost, 2*k3+k31)
 	}
 }

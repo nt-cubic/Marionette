@@ -56,6 +56,25 @@ type Target struct {
 	// after the user's, but never moves the user's own lines out of it
 	// (ImportInstructions), as the agent reads who its owner is there.
 	Profile bool
+	// Unreached, for an agent in a WSL distro, is why its folder there
+	// can't be opened (agent.WSLOpen): a link the distro couldn't
+	// resolve. Nothing is written to it; each sync says so.
+	Unreached error
+}
+
+// unreached says whether t's folder can't be opened, and, once in res,
+// why.
+func (r *Result) unreached(t *Target) bool {
+	if t.Unreached == nil {
+		return false
+	}
+	for _, p := range r.Problems {
+		if p.Agent == t.Agent.ID && p.What == "wsl" {
+			return true
+		}
+	}
+	r.fail(t.Agent.ID, "wsl", t.Unreached)
+	return true
 }
 
 func home() string { h, _ := os.UserHomeDir(); return h }
@@ -598,16 +617,18 @@ func wslTargetOf(a *agent.Agent) *Target {
 		return nil
 	}
 	t := &Target{Agent: a, Copy: true}
+	// a folder there that is a link is opened where it leads (#4502)
+	j := func(elem ...string) string { return wslOpen(t, filepath.Join(elem...)) }
 	id, _, _ := strings.Cut(a.ID, "@")
 	switch id {
 	case "claude":
-		d := filepath.Join(h, ".claude")
+		d := j(h, ".claude")
 		t.Instructions = filepath.Join(d, "CLAUDE.md")
-		t.MCP = &mcpFile{Path: filepath.Join(h, ".claude.json"), Format: fmtClaude}
+		t.MCP = &mcpFile{Path: j(h, ".claude.json"), Format: fmtClaude}
 		t.Skills = filepath.Join(d, "skills")
 		t.Settings = filepath.Join(d, "settings.json")
 	case "codex":
-		d := filepath.Join(h, ".codex")
+		d := j(h, ".codex")
 		t.Instructions = filepath.Join(d, "AGENTS.md")
 		t.Override = filepath.Join(d, "AGENTS.override.md")
 		t.MCP = &mcpFile{Path: filepath.Join(d, "config.toml"), Format: fmtCodex}
@@ -618,25 +639,25 @@ func wslTargetOf(a *agent.Agent) *Target {
 		// at the probe, and its extensions are those its settings.json and
 		// the distro's npm folders have (leokon on Discord: only the
 		// Windows Pi was offered MCP servers)
-		d := filepath.Join(h, ".pi", "agent")
+		d := j(h, ".pi", "agent")
 		t.Instructions = firstThere(d, "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD")
 		t.Override = filepath.Join(d, "AGENTS.override.md")
 		t.MCP, t.MCPVia = piMCP(h, d, piVersion(a), wslPiRoots(h))
 		t.Skills = filepath.Join(d, "skills")
 	case "omo":
-		d := filepath.Join(h, ".omo", "agent")
+		d := j(h, ".omo", "agent")
 		t.Instructions = firstThere(d, "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD")
 		t.Override = filepath.Join(d, "AGENTS.override.md")
 		t.MCP = &mcpFile{Path: filepath.Join(d, "mcp.json"), Format: fmtPiNative}
 		t.Skills = filepath.Join(d, "skills")
 	case "gemini":
 		// as targetOf's, under the distro's home
-		d := filepath.Join(h, ".gemini")
+		d := j(h, ".gemini")
 		t.Instructions = filepath.Join(d, "GEMINI.md")
 		t.MCP = &mcpFile{Path: filepath.Join(d, "settings.json"), Format: fmtGemini}
 		t.Skills = filepath.Join(d, "skills")
 	case "agy":
-		d := filepath.Join(h, ".gemini", "config")
+		d := j(h, ".gemini", "config")
 		t.Instructions = filepath.Join(d, "GEMINI.md")
 		t.MCP = &mcpFile{Path: filepath.Join(d, "mcp_config.json"), Format: fmtAntigravity}
 		t.Skills = filepath.Join(d, "skills")
@@ -674,11 +695,49 @@ func wslTargetOf(a *agent.Agent) *Target {
 	default:
 		return wslOwnFolder(a)
 	}
+	wslOpened(t)
 	if t.MCP != nil {
 		// a Windows program isn't given to it (mcpFile.side)
 		t.MCP.WSL, t.MCP.Distro, t.MCP.Home = true, a.WSL, linuxHome(h)
 	}
 	return t
+}
+
+// wslOpen is path, one of t's in a WSL distro, where magpie can open it
+// (agent.WSLOpen): below a link the distro has, where the link leads,
+// since nothing below one can be opened through \\wsl.localhost. A link
+// that couldn't be resolved leaves path as it is and t unreached.
+func wslOpen(t *Target, path string) string {
+	if path == "" {
+		return ""
+	}
+	if err := t.Agent.Unreached(); err != nil && t.Unreached == nil {
+		t.Unreached = err
+	}
+	o, err := agent.WSLOpen(t.Agent, path)
+	if err != nil {
+		if t.Unreached == nil {
+			t.Unreached = err
+		}
+		return path
+	}
+	return o
+}
+
+// wslOpened opens each of t's paths where magpie can (wslOpen): a link
+// below the agent's folder, its skills folder one, as well as the folder.
+func wslOpened(t *Target) {
+	for _, p := range []*string{&t.Instructions, &t.Override, &t.Skills, &t.Settings} {
+		*p = wslOpen(t, *p)
+	}
+	if t.MCP != nil {
+		t.MCP.Path = wslOpen(t, t.MCP.Path)
+		for _, ps := range [][]string{t.MCP.Also, t.MCP.Extra} {
+			for i := range ps {
+				ps[i] = wslOpen(t, ps[i])
+			}
+		}
+	}
 }
 
 // ownFolder are the agents that keep all the library gives them in their
@@ -706,6 +765,7 @@ func wslOwnFolder(a *agent.Agent) *Target {
 		return nil
 	}
 	t.Agent, t.Copy = a, true
+	wslOpened(t)
 	if t.MCP != nil {
 		t.MCP.WSL, t.MCP.Distro, t.MCP.Home = true, a.WSL, linuxHome(a.Home)
 	}

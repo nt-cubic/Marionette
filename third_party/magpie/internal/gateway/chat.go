@@ -320,6 +320,25 @@ func chatReplaysReasoning(host, model string) bool {
 	return strings.Contains(host, "deepseek") || strings.Contains(strings.ToLower(model), "deepseek") || host == provider.CommandCodePlanID || host == "qoder" || host == "qoder-cn"
 }
 
+// joinTexts joins text parts once, at their joined size: a long turn
+// is many parts, and a Builder grown part by part copied the turn
+// several times over on every request
+func joinTexts(content []map[string]any) string {
+	if len(content) == 1 {
+		return content[0]["text"].(string)
+	}
+	n := 0
+	for _, c := range content {
+		n += len(c["text"].(string))
+	}
+	var b strings.Builder
+	b.Grow(n)
+	for _, c := range content {
+		b.WriteString(c["text"].(string))
+	}
+	return b.String()
+}
+
 func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 	r = responseInstructions(r)
 	var msgs []map[string]any
@@ -454,11 +473,7 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 				seen = nil
 			}
 			if plain {
-				var b strings.Builder
-				for _, c := range content {
-					b.WriteString(c["text"].(string))
-				}
-				msgs = append(msgs, map[string]any{"role": "user", "content": b.String()})
+				msgs = append(msgs, map[string]any{"role": "user", "content": joinTexts(content)})
 			} else {
 				msgs = append(msgs, map[string]any{"role": "user", "content": content})
 			}
@@ -565,6 +580,9 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 			fn := map[string]any{"name": t.Name, "description": t.Description}
 			if len(t.Schema) > 0 {
 				fn["parameters"] = t.Schema
+			}
+			if r.strictSaid {
+				fn["strict"] = t.Strict
 			}
 			tools = append(tools, map[string]any{"type": "function", "function": fn})
 		}
@@ -1016,10 +1034,15 @@ type cUsage struct {
 		CachedTokens     int `json:"cached_tokens"`
 		CacheWriteTokens int `json:"cache_write_tokens"`
 	} `json:"magpie_deferred,omitempty"`
+	// MagpieCacheUnknown: a plugin's usage saying its vendor gave no cache
+	// counts, as aUsage's CacheUnknown, so the zero is not a miss: Trae's
+	// token_usage naming no cache field (yetone/magpie#3991, #3979).
+	// It is read, never told: chat() leaves it out.
+	MagpieCacheUnknown bool `json:"magpie_cache_unknown"`
 }
 
 func (u cUsage) usage() Usage {
-	out := Usage{Output: u.CompletionTokens}
+	out := Usage{Output: u.CompletionTokens, cacheUnknown: u.MagpieCacheUnknown}
 	if d := u.PromptTokensDetails; d != nil {
 		out.CacheRead, out.CacheWrite = d.CachedTokens, d.CacheWriteTokens
 	}
@@ -1498,7 +1521,7 @@ func stopFromChat(s string) string {
 		return "length"
 	case "tool_calls", "function_call":
 		return "tool"
-	case "content_filter":
+	case "content_filter", "sensitive": // "sensitive": Zhipu's filter
 		return "filter"
 	}
 	return "stop"

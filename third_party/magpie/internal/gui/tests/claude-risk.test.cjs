@@ -12,14 +12,18 @@ const { chromium, webkit } = require("playwright");
 
 const assets = path.resolve(__dirname, "../assets");
 
-function server(lang, asked) {
+// had: a Claude subscription with an account signed in already
+const claudeSub = { id: "claude", name: "Claude", icon: "claude-color", preset: "claude", models: [], agents: [], fallback: [], headers: {}, keyList: [], proxy: "",
+  account: { agent: "claude", agentName: "Claude Code", user: "me@example.com", plan: "Claude Max", logins: [{ user: "me@example.com", plan: "Claude Max", active: true, on: true }] } };
+
+function server(lang, asked, had) {
   return async (route) => {
     const url = new URL(route.request().url());
     const json = (data) => route.fulfill({ json: data });
     if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:false};` });
     if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
     if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings: { lang, theme: "light" } });
-    if (url.pathname === "/api/providers") return json({ providers: [{ id: "openai", name: "OpenAI", icon: "openai", preset: "openai", models: [], agents: [], key: { set: true, masked: "sk-…ab12" } }], presets: [], excluded: [], gateway: { running: true, window: true } });
+    if (url.pathname === "/api/providers") return json({ providers: [{ id: "openai", name: "OpenAI", icon: "openai", preset: "openai", models: [], agents: [], key: { set: true, masked: "sk-…ab12" } }, ...(had ? [claudeSub] : [])], presets: [], excluded: [], gateway: { running: true, window: true } });
     if (url.pathname === "/api/groups") return json({ groups: [], pools: [] });
     if (url.pathname === "/api/gateway/trace") return json({ routes: [] });
     if (url.pathname === "/api/signin") {
@@ -83,6 +87,30 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await box.locator("button", { hasText: w.anyway }).click();
         for (let i = 0; i < 50 && !asked.length; i++) await page.waitForTimeout(50);
         assert.deepEqual(asked, [{ agent: "claude" }]);
+        assert.deepEqual(errors, []);
+      });
+    }
+  });
+
+  // said once: another account beside one signed in already starts its
+  // sign-in at once (the owner: "这里就不要显示可能被封禁了")
+  test(engine + ": another Claude account is added without the warning again", async (t) => {
+    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+    t.after(() => browser.close());
+    for (const lang of ["en", "zh"]) {
+      await t.test(lang, async () => {
+        const page = await (await browser.newContext({ viewport: { width: 900, height: 800 } })).newPage();
+        const errors = [], asked = [];
+        page.on("pageerror", (e) => errors.push(e.message));
+        await page.route("**/*", server(lang, asked, true));
+        await page.goto("http://magpie.test/?view=providers");
+        await page.locator(".row.provider", { hasText: "Claude" }).first().click();
+        const add = page.locator(".editor .accts .acc.add").first();
+        await add.waitFor();
+        await add.click();
+        for (let i = 0; i < 50 && !asked.length; i++) await page.waitForTimeout(50);
+        assert.deepEqual(asked, [{ agent: "claude" }]);
+        assert.equal(await page.locator(".editor .signing .n", { hasText: L[lang].title }).count(), 0, "no warning again");
         assert.deepEqual(errors, []);
       });
     }

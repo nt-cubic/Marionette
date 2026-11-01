@@ -160,7 +160,7 @@ type kiroCrewJoined struct {
 
 func kiroCrewJoinedNow() (kiroCrewJoined, bool) {
 	var j kiroCrewJoined
-	s := stashLoad()[kiroCrewJoinedKey]
+	s := stashShared()[kiroCrewJoinedKey]
 	return j, s != "" && json.Unmarshal([]byte(s), &j) == nil && j.Agent != ""
 }
 
@@ -344,7 +344,7 @@ type kiroCrewWrote struct {
 
 func kiroCrewWroteNow() (kiroCrewWrote, bool) {
 	var w kiroCrewWrote
-	s := stashLoad()[kiroCrewWroteKey]
+	s := stashShared()[kiroCrewWroteKey]
 	return w, s != "" && json.Unmarshal([]byte(s), &w) == nil && w.Backend != ""
 }
 
@@ -438,7 +438,7 @@ func kiroCrew(home string) *Agent {
 			return nil
 		}
 		var s kiroCrewStash
-		json.Unmarshal([]byte(stashLoad()[kiroCrewWasKey]), &s)
+		json.Unmarshal([]byte(stashShared()[kiroCrewWasKey]), &s)
 		var set []edit.KV
 		var del []string
 		put := func(key string, was kiroCrewWas, ours bool) {

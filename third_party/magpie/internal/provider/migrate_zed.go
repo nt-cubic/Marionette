@@ -13,7 +13,7 @@ import (
 func init() {
 	movers["zed"] = &mover{
 		pkg:    "@magpie-community/opencode-zed-auth",
-		min:    "0.1.11", // a {role: "system"} message inside an Anthropic request goes to Zed as user text in place, not a role Zed refuses (Roy on Discord); 0.1.10: the organization with a plan is picked, and a 402 for the saved one moves the account (plugins#232); 0.1.9: a signed-in account whose model list was never read says why; 0.1.8: a free account's plan reads "No plan", as the built-in's; 0.1.6: a failure's status and its sign-in mark as the built-in's; a model token refused while listing marks the account
+		min:    "0.1.12", // a string message content goes to Zed as a text block, which Zed takes, not a string it refuses (Been on Discord); 0.1.11: a {role: "system"} message inside an Anthropic request goes to Zed as user text in place, not a role Zed refuses (Roy on Discord); 0.1.10: the organization with a plan is picked, and a 402 for the saved one moves the account (plugins#232); 0.1.9: a signed-in account whose model list was never read says why; 0.1.8: a free account's plan reads "No plan", as the built-in's; 0.1.6: a failure's status and its sign-in mark as the built-in's; a model token refused while listing marks the account
 		agents: []string{"zed"},
 		out: func() ([]Moving, error) {
 			var out []Moving

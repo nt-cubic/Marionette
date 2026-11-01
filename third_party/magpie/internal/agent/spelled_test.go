@@ -14,13 +14,13 @@ import (
 func TestOwnProviderNamedAsMagpies(t *testing.T) {
 	ids := []string{"agy", "opencode", "openchamber", "mimocode", "deveco", "pi", "aside", "omo", "prime-agent", "goose", "zed", "vscode",
 		"crush", "dsh", "commandcode", "fx", "omp", "hermes", "morph", "kimi", "empryo", "minimax-code", "droid",
-		"qoder", "qoder-cn", "grok", "atomcode", "cline", "snow"}
+		"qoder", "qoder-cn", "grok", "atomcode", "cline", "snow", "qwenpaw"}
 	for _, id := range ids {
 		t.Run(id, func(t *testing.T) {
 			if id == "aside" {
 				asideHome(t)
-			} else {
-				syncHome(t)
+			} else if home := syncHome(t); id == "qwenpaw" {
+				qwenpawFixture(t, home)
 			}
 			a, err := Find(id)
 			if err != nil {

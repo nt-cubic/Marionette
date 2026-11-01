@@ -253,3 +253,64 @@ func TestClaudeTUIParallelCallsBeforeTheirMessage(t *testing.T) {
 		})
 	}
 }
+
+// se is a stream_event line, as the helper tells what its tap read.
+func se(event string) string { return `{"type":"stream_event","event":` + event + `}` }
+
+// A streamed message's call is told once: its call, come before its
+// stream ends, doesn't tell the client itself too.
+func TestClaudeTUIStreamedCallToldOnce(t *testing.T) {
+	c := newTUICalls(t)
+	first := c.run.segment
+	c.write(
+		se(`{"type":"message_start","message":{"id":"msg_call","model":"claude-haiku-5-5","usage":{"input_tokens":3}}}`),
+		se(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
+		se(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"reading"}}`),
+		se(`{"type":"content_block_stop","index":0}`),
+		se(`{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_a","name":"mcp__magpie__Read","input":{}}}`),
+		se(`{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"p\":1}"}}`),
+	)
+	c.call("toolu_a", `{"p":1}`)
+	time.Sleep(3 * callFirst) // the call's own turn to tell the client passes
+	c.write(
+		se(`{"type":"content_block_stop","index":1}`),
+		se(`{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":40}}`),
+		se(`{"type":"message_stop"}`),
+		tuiRow("msg_call", `{"type":"text","text":"reading"}`, "tool_use", 40),
+		tuiRow("msg_call", tuiCall("toolu_a", 1), "tool_use", 40),
+	)
+	text, calls, stop, _, raw := c.reply(first)
+	if text != "reading" || len(calls) != 1 || calls[0] != `toolu_a{"p":1}` || stop != "tool_use" {
+		t.Fatalf("first reply %q %v %q:\n%s", text, calls, stop, raw)
+	}
+}
+
+// A streamed message's whole rows can come as the next message streams,
+// the transcript behind the tap: they are that message's, not one more.
+func TestClaudeTUILateRowOfStreamed(t *testing.T) {
+	c := newTUICalls(t)
+	first := c.run.segment
+	c.write(
+		se(`{"type":"message_start","message":{"id":"msg_1","model":"claude-haiku-5-5","usage":{"input_tokens":3}}}`),
+		se(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
+		se(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"a"}}`),
+		se(`{"type":"content_block_stop","index":0}`),
+		se(`{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"srvtoolu_1","name":"WebSearch","input":{}}}`),
+		se(`{"type":"content_block_stop","index":1}`),
+		se(`{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":4}}`),
+		se(`{"type":"message_stop"}`),
+		se(`{"type":"message_start","message":{"id":"msg_2","model":"claude-haiku-5-5","usage":{"input_tokens":3}}}`),
+		se(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
+		tuiRow("msg_1", `{"type":"text","text":"a"}`, "tool_use", 4),
+		se(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"b"}}`),
+		se(`{"type":"content_block_stop","index":0}`),
+		se(`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`),
+		se(`{"type":"message_stop"}`),
+		tuiRow("msg_2", `{"type":"text","text":"b"}`, "end_turn", 2),
+		tuiDone,
+	)
+	text, _, stop, _, raw := c.reply(first)
+	if text != "ab" || stop != "end_turn" {
+		t.Fatalf("reply %q %q:\n%s", text, stop, raw)
+	}
+}

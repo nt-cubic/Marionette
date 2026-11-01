@@ -376,16 +376,18 @@ func usageRoutes(mux *http.ServeMux, w Windows) {
 		writeJSON(rw, usage.HistoricalWindowHolds(provider.CachedCards(now), hist, from, to))
 	})
 	// spends one of a Codex account's rate-limit resets, which the page
-	// has asked the user about first; what it did comes back
+	// has asked the user about first: the one they chose (Credit, an id
+	// of its resets.each), else the one that runs out first; what it did
+	// comes back
 	mux.HandleFunc("POST /api/usage/codex-reset", func(rw http.ResponseWriter, r *http.Request) {
-		var in struct{ User string }
+		var in struct{ User, Credit string }
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			fail(rw, err)
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 		defer cancel()
-		out, err := provider.UseCodexReset(ctx, in.User)
+		out, err := provider.UseCodexResetCard(ctx, in.User, in.Credit)
 		if err != nil {
 			fail(rw, err)
 			return

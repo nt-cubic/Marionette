@@ -197,6 +197,9 @@ func fakeWSL(t *testing.T, installed, running string, probes, roots map[string]s
 		case "-l --running -q":
 			return utf16le(running, true), nil
 		}
+		if len(args) > 4 && args[0] == "-d" && args[2] == "-e" && args[3] == "chmod" {
+			return nil, nil // a key store made owner-only after a write: not a start nor a probe
+		}
 		if len(args) > 2 && args[0] == "-d" {
 			*asked = append(*asked, args[1])
 			return []byte(probes[args[1]]), nil

@@ -86,12 +86,15 @@ type pluginPage struct {
 	// (plugin.ServiceSpec) through this server, relative to the page's own
 	// address: only on a page served to a browser (servePageService)
 	Service string `json:"service,omitempty"`
-	token   string
-	dir     string
-	file    string // its HTML, relative to dir, with forward slashes
-	hosted  bool   // its plugin has a part for the host too (pageHost)
-	service *plugin.ServiceSpec
-	options map[string]any // its plugin's, as plugins.json keeps them
+	// KeepAlive keeps its frame while the reader is on another page
+	// (plugin.PageSpec); else the window lets it go after a while hidden
+	KeepAlive bool `json:"keepAlive,omitempty"`
+	token     string
+	dir       string
+	file      string // its HTML, relative to dir, with forward slashes
+	hosted    bool   // its plugin has a part for the host too (pageHost)
+	service   *plugin.ServiceSpec
+	options   map[string]any // its plugin's, as plugins.json keeps them
 }
 
 // pluginAction is an item a plugin's page adds to one of magpie's menus.
@@ -156,7 +159,7 @@ func windowParts() (pages []pluginPage, panels []pluginPanel) {
 			tok := pageToken(e.Spec)
 			rel, _ := filepath.Rel(spec.Dir, spec.File)
 			p := pluginPage{Spec: e.Spec, Name: name, Key: key, Title: spec.Title, Titles: spec.Titles, Reads: reads, token: tok, dir: spec.Dir,
-				URL: pluginPagePrefix + tok + "/" + filepath.ToSlash(rel), file: filepath.ToSlash(rel), hosted: !only, options: e.Options}
+				URL: pluginPagePrefix + tok + "/" + filepath.ToSlash(rel), file: filepath.ToSlash(rel), hosted: !only, options: e.Options, KeepAlive: spec.KeepAlive}
 			if !only {
 				p.service = spec.Service
 			}

@@ -100,6 +100,9 @@ var Vars = []string{
 	"ATOMCODE_HOME",
 	// Snow CLI's config folder, ~/.snow without it
 	"SNOW_CONFIG_DIR",
+	// QwenPaw's working folder (~/.qwenpaw, or a legacy ~/.copaw, without
+	// it) and its secret folder, <working folder>.secret without it
+	"QWENPAW_WORKING_DIR", "QWENPAW_SECRET_DIR",
 	// Cursor's CLI: its config folder (its chats) and its data folder
 	"CURSOR_CONFIG_DIR", "CURSOR_DATA_DIR",
 	// OpenCode and OpenChamber
