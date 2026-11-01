@@ -1,0 +1,170 @@
+/* ── Computer Use share dialog (batch 3) ─────────────────────────────── */
+
+.computer-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(560px, calc(100vw - 48px));
+  max-height: min(640px, calc(100vh - 80px));
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 30%);
+}
+
+.computer-dialog__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.computer-dialog__title {
+  flex: 1 1 auto;
+  font-weight: 700;
+  font-size: 13.5px;
+}
+
+.computer-dialog__hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.computer-dialog__install {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px dashed var(--border);
+  background: color-mix(in srgb, var(--text-muted) 5%, transparent);
+}
+
+.computer-dialog__install-text {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.computer-dialog__progress {
+  font-size: 12px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.computer-dialog__error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--red, #e5484d);
+  font-size: 12px;
+}
+
+.computer-dialog__list {
+  flex: 0 1 auto;
+  max-height: 42vh;
+  min-height: 96px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  scrollbar-width: thin;
+}
+
+.computer-window {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+
+.computer-window__main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.computer-window__title {
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.computer-window__sub {
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.computer-window__actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+}
+
+.computer-window__actions .pill-action.is-active {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+  color: var(--accent);
+}
+
+.computer-dialog__empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 12.5px;
+}
+
+.computer-dialog__foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.computer-dialog__shortcut {
+  flex: 1 1 auto;
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+
+.computer-dialog__foot-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* Text+icon small button (pill-action--sm is icon-only and breaks with text). */
+.computer-dialog__text-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.computer-dialog__text-btn:hover {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+
+/* The install button inherits project-dialog__submit; keep it content-width
+   inside the flex column, not stretched edge to edge. */
+.computer-dialog__install .project-dialog__submit {
+  align-self: flex-start;
+}
+
+/* Active share button state (read/control). */
+.computer-dialog__text-btn.is-active {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+  color: var(--accent);
+}
