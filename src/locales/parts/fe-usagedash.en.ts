@@ -29,4 +29,14 @@ export const en = {
   "usageLedger.emptyNote":
     "Finish your first turn and today / last 7 / last 30 totals will appear here.",
   "usageLedger.paletteOpen": "Token usage analysis",
+  // Activity grid (structure learned from uiarc ActivityHeatmap)
+  "usageLedger.heatSummary": "Last {weeks} weeks · {tokens} · {count} turns",
+  "usageLedger.heatNone": "No usage",
+  "usageLedger.heatLess": "Less",
+  "usageLedger.heatMore": "More",
+  "usageLedger.heatDays": "{count} days · {range}",
+  "usageLedger.heatDays_one": "{count} day · {range}",
+  "usageLedger.heatDays_other": "{count} days · {range}",
+  "usageLedger.heatHighlight": "Highlight days with {range}",
+  "usageLedger.heatLegendSr": "Darker squares mean more tokens. Levels: {ranges}.",
 } satisfies Record<keyof typeof zh, string>;

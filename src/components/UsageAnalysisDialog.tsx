@@ -17,6 +17,7 @@ import {
   rateForModel,
   type RateIndex,
 } from "../lib/tokenPrices";
+import { UsageHeatmap } from "./UsageHeatmap";
 
 /**
  * Token 用量分析大面板——入口只有两个:右栏「Token 总览」卡的链接与
@@ -48,17 +49,6 @@ function dayTotal(day: { input: number; output: number; cached: number; cacheCre
 
 function aggregateTotal(agg: LedgerAggregate): number {
   return agg.input + agg.output + agg.cached + agg.cacheCreation;
-}
-
-/** GitHub 式格子强度:0 空,1..4 按当日 token 相对最大日的分位。 */
-function gridLevel(total: number, max: number): number {
-  if (total <= 0) return 0;
-  if (max <= 0) return 0;
-  const ratio = total / max;
-  if (ratio > 0.75) return 4;
-  if (ratio > 0.5) return 3;
-  if (ratio > 0.25) return 2;
-  return 1;
 }
 
 export function UsageAnalysisDialog({ onClose }: { onClose: () => void }) {
@@ -106,10 +96,6 @@ export function UsageAnalysisDialog({ onClose }: { onClose: () => void }) {
   const maxDay = useMemo(
     () => Math.max(1, ...series.map(dayTotal)),
     [series],
-  );
-  const maxGridDay = useMemo(
-    () => Math.max(1, ...gridSeries.map(dayTotal)),
-    [gridSeries],
   );
 
   const delta = useMemo(
@@ -249,26 +235,13 @@ export function UsageAnalysisDialog({ onClose }: { onClose: () => void }) {
 
               <section className="usage-analysis__card">
                 <div className="usage-analysis__kicker">{t("usageLedger.dailyTitle")}</div>
-                <div className="usage-analysis__gridwrap">
-                  <div
-                    className="usage-analysis__grid"
-                    role="img"
-                    aria-label={t("usageLedger.dailyTitle")}
-                  >
-                    {gridSeries.map((day) => {
-                      const total = dayTotal(day);
-                      const [y, m, d] = day.key.split("-");
-                      return (
-                        <span
-                          key={day.key}
-                          className="usage-analysis__cell"
-                          data-lv={gridLevel(total, maxGridDay)}
-                          title={`${y}-${m}-${d} · ${formatTokenCount(total)} · ${t("usageLedger.turns", { count: day.turns })}`}
-                        />
-                      );
-                    })}
-                  </div>
-                </div>
+                <UsageHeatmap
+                  days={gridSeries.map((day) => ({
+                    key: day.key,
+                    value: dayTotal(day),
+                    turns: day.turns,
+                  }))}
+                />
                 <div className="usage-analysis__bars" aria-hidden>
                   {series.map((day) => {
                     const total = dayTotal(day);

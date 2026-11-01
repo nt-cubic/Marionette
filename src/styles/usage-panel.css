@@ -170,31 +170,230 @@
   margin-top: 2px;
 }
 
-/* GitHub 式格子:列 = 周,行 = 周日..周六 */
-.usage-analysis__gridwrap {
+/* ── 活动格子(UsageHeatmap,骨架学 uiarc ActivityHeatmap) ──────────── */
+
+.usage-heat__summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 6px;
+  min-width: 0;
+}
+
+.usage-heat__total {
+  font-size: 12px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.usage-heat__scroller {
   overflow-x: auto;
   padding-bottom: 2px;
 }
 
-.usage-analysis__grid {
-  display: grid;
-  grid-auto-flow: column;
-  grid-template-rows: repeat(7, 10px);
-  grid-auto-columns: 10px;
-  gap: 2px;
-  width: max-content;
+.usage-heat__canvas {
+  position: relative;
 }
 
-.usage-analysis__cell {
-  width: 10px;
-  height: 10px;
+.usage-heat__months {
+  position: relative;
+  height: 14px;
+  margin-left: 30px;
+}
+
+.usage-heat__month {
+  position: absolute;
+  left: 0;
+  top: 0;
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.usage-heat__row--labels {
+  position: absolute;
+  left: 0;
+  top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 28px;
+}
+
+.usage-heat__weekday {
+  height: 11px;
+  line-height: 11px;
+  font-size: 10px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.usage-heat__plot {
+  position: relative;
+  margin-left: 30px;
+}
+
+.usage-heat__grid {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.usage-heat__row {
+  display: flex;
+  gap: 2px;
+}
+
+.usage-heat__cell {
+  width: 11px;
+  height: 11px;
   border-radius: 2px;
   background: var(--panel-soft);
+  cursor: pointer;
 }
-.usage-analysis__cell[data-lv="1"] { background: color-mix(in srgb, var(--accent) 25%, var(--panel-soft)); }
-.usage-analysis__cell[data-lv="2"] { background: color-mix(in srgb, var(--accent) 50%, var(--panel-soft)); }
-.usage-analysis__cell[data-lv="3"] { background: color-mix(in srgb, var(--accent) 75%, var(--panel-soft)); }
-.usage-analysis__cell[data-lv="4"] { background: var(--accent); }
+.usage-heat__cell[data-empty] {
+  cursor: default;
+}
+.usage-heat__cell[data-lv="1"] { background: color-mix(in srgb, var(--accent) 25%, var(--panel-soft)); }
+.usage-heat__cell[data-lv="2"] { background: color-mix(in srgb, var(--accent) 50%, var(--panel-soft)); }
+.usage-heat__cell[data-lv="3"] { background: color-mix(in srgb, var(--accent) 75%, var(--panel-soft)); }
+.usage-heat__cell[data-lv="4"] { background: var(--accent); }
+.usage-heat__cell:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 图例钉住/预览一个等级:不匹配的日子退场,匹配的描一圈 */
+.usage-heat__grid[data-highlight] .usage-heat__cell:not([data-empty]) {
+  opacity: 0.25;
+}
+.usage-heat__grid[data-highlight] .usage-heat__cell[data-lv="0"] {
+  opacity: 0.15;
+}
+.usage-heat__grid[data-highlight="0"] .usage-heat__cell[data-lv="0"],
+.usage-heat__grid[data-highlight="1"] .usage-heat__cell[data-lv="1"],
+.usage-heat__grid[data-highlight="2"] .usage-heat__cell[data-lv="2"],
+.usage-heat__grid[data-highlight="3"] .usage-heat__cell[data-lv="3"],
+.usage-heat__grid[data-highlight="4"] .usage-heat__cell[data-lv="4"] {
+  opacity: 1;
+  outline: 1px solid color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+/* 选中环:单元素滑移,只动 transform */
+.usage-heat__ring {
+  position: absolute;
+  left: -2px;
+  top: -2px;
+  width: 13px;
+  height: 13px;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  pointer-events: none;
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+/* 共享 tooltip:常驻元素、透明度开关、transform 滑移 */
+.usage-heat__tip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--panel-raised);
+  pointer-events: none;
+  opacity: 0;
+  transform-origin: bottom center;
+  z-index: 2;
+  white-space: nowrap;
+}
+.usage-heat__tip[data-open] {
+  opacity: 1;
+  transition:
+    opacity var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+
+.usage-heat__tip-primary {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.usage-heat__tip-secondary {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* 图例 = 等级过滤器 */
+.usage-heat__legend {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 6px;
+  min-height: 18px;
+}
+
+.usage-heat__caption {
+  font-size: 11px;
+  color: var(--text-faint);
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.usage-heat__scale {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.usage-heat__legend-text {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.usage-heat__swatch {
+  width: 11px;
+  height: 11px;
+  border-radius: 2px;
+  border: 1px solid var(--border);
+  padding: 0;
+  background: var(--panel-soft);
+  cursor: pointer;
+}
+.usage-heat__swatch[data-lv="1"] { background: color-mix(in srgb, var(--accent) 25%, var(--panel-soft)); }
+.usage-heat__swatch[data-lv="2"] { background: color-mix(in srgb, var(--accent) 50%, var(--panel-soft)); }
+.usage-heat__swatch[data-lv="3"] { background: color-mix(in srgb, var(--accent) 75%, var(--panel-soft)); }
+.usage-heat__swatch[data-lv="4"] { background: var(--accent); }
+.usage-heat__swatch[aria-pressed="true"] {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.usage-heat__sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .usage-heat__ring,
+  .usage-heat__tip[data-open] {
+    transition: none;
+  }
+}
 
 /* 堆叠柱(所选范围逐日) */
 .usage-analysis__bars {

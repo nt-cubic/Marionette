@@ -27,4 +27,14 @@ export const zh = {
   "usageLedger.emptyTitle": "还没有用量记录",
   "usageLedger.emptyNote": "完成第一轮对话后,这里会出现今天 / 近 7 天 / 近 30 天的统计。",
   "usageLedger.paletteOpen": "Token 用量分析",
+  // 活动格子(骨架学 uiarc ActivityHeatmap)
+  "usageLedger.heatSummary": "近 {weeks} 周 · {tokens} · {count} 轮",
+  "usageLedger.heatNone": "无记录",
+  "usageLedger.heatLess": "少",
+  "usageLedger.heatMore": "多",
+  "usageLedger.heatDays": "{count} 天 · {range}",
+  "usageLedger.heatDays_one": "{count} 天 · {range}",
+  "usageLedger.heatDays_other": "{count} 天 · {range}",
+  "usageLedger.heatHighlight": "高亮 {range} 的日子",
+  "usageLedger.heatLegendSr": "颜色越深代表当天 token 越多。等级:{ranges}。",
 } as const;

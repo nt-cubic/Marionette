@@ -35,6 +35,11 @@ import {
   pickRate,
   rateForModel,
 } from "../src/lib/tokenPrices";
+import {
+  buildHeatModel,
+  heatGridPos,
+  heatWeekdayLabels,
+} from "../src/lib/activityHeatmap";
 import { en } from "../src/locales/en";
 import type { TurnStats } from "../src/lib/types";
 
@@ -279,7 +284,58 @@ check("dayKeyOf 格式", dayKeyOf(NOW) === "2026-10-31" && dayKeyOf(day(1)) === 
   check("金额格式", formatUsd(12.5) === "$12.50" && formatUsd(0.000481).startsWith("$0.000481"));
 }
 
-// ── 7. en 词典(占位符 {count}:t() 只认 params 里的键) ──────────────────
+// ── 7. 活动格子模型(lib/activityHeatmap.ts,骨架学 uiarc) ─────────────
+{
+  // 2026-10-25(周日)起 14 天,周一开头 → lead=6,首列只有 1 格。
+  const days = Array.from({ length: 14 }, (_, i) => {
+    const d = new Date(2026, 9, 25 + i);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return {
+      key: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+      value: i === 0 ? 400 : i % 3 === 0 ? 100 : i % 3 === 1 ? 50 : 0,
+    };
+  });
+  const model = buildHeatModel(days, { weekStartsOn: 1, locale: "zh-CN" });
+  check("热图:首周 lead 补齐(周一起)", model.lead === 6 && model.weeks === 3, `lead=${model.lead} weeks=${model.weeks}`);
+  check("热图:季度阈值", model.thresholds[0] === 100 && model.thresholds[1] === 200 && model.thresholds[2] === 300);
+  check("热图:等级与 perLevel", model.levels[0] === 4 && model.perLevel.reduce((a, b) => a + b, 0) === 14);
+  check("热图:稀疏日摊平 + 总量", model.counts[1] === 50 && model.counts[2] === 0 && model.total === 400 + 100 * 4 + 50 * 5);
+  check("热图:startKey 是本地日(不是 UTC 折叠)", model.startKey === "2026-10-25");
+  check(
+    "热图:网格位 index→列行",
+    heatGridPos(0, 6).col === 0 && heatGridPos(0, 6).row === 6 && heatGridPos(1, 6).col === 1 && heatGridPos(1, 6).row === 0,
+  );
+  const labels = heatWeekdayLabels(1, "zh-CN");
+  check(
+    "热图:星期标只标一/三/五",
+    labels[0] !== "" && labels[1] === "" && labels[2] !== "" && labels[3] === "" && labels[4] !== "" && labels[5] === "" && labels[6] === "",
+  );
+  // 月标:2026-09-01(周二)起 70 天,lead=1,Oct-1 落在第 4 列,隔 ≥3 列 → 两标都留。
+  const mkDays = (from: Date, n: number) =>
+    Array.from({ length: n }, (_, i) => {
+      const d = new Date(from.getFullYear(), from.getMonth(), from.getDate() + i);
+      const pad = (x: number) => String(x).padStart(2, "0");
+      return {
+        key: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+        value: 10,
+      };
+    });
+  const longModel = buildHeatModel(mkDays(new Date(2026, 8, 1), 70), { weekStartsOn: 1, locale: "zh-CN" });
+  check(
+    "热图:月标隔 ≥3 列都保留",
+    longModel.months.length === 3 && longModel.months[0]!.col === 0 && longModel.months[1]!.col === 4 && longModel.months[2]!.col === 8,
+    JSON.stringify(longModel.months),
+  );
+  // 残月让位:2026-09-28(周一)起,Oct-1 与首标同列 → 9 月残标被丢,只剩 10 月。
+  const stubModel = buildHeatModel(mkDays(new Date(2026, 8, 28), 30), { weekStartsOn: 1, locale: "zh-CN" });
+  check(
+    "热图:残月标签让位",
+    stubModel.months.length === 1 && stubModel.months[0]!.col === 0 && stubModel.months[0]!.label.includes("10"),
+    JSON.stringify(stubModel.months.map((m) => m.label)),
+  );
+}
+
+// ── 8. en 词典(占位符 {count}:t() 只认 params 里的键) ──────────────────
 {
   check(
     "en:title/viewAnalysis",
