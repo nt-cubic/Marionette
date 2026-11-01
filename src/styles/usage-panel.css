@@ -2,6 +2,50 @@
  * 视觉语言走 docs/ui-language.md:--radius 3px、1px 边、无阴影、
  * 22px 芯片、身份色只做 3px 条与 7px 点;图表系列色全部取主题 token。 */
 
+/* ── 伪标签页(usage-tab-page 挂载,council 同模式) ──────────────────── */
+
+.usage-tab-page {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  min-height: 0;
+}
+
+.usage-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--panel-muted);
+}
+
+.usage-page__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.usage-page__title {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.usage-page__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.usage-page__scroll .usage-analysis {
+  max-width: 980px;
+}
+
 /* ── 分析大面板本体(project-dialog 骨架,宽度同模型库) ─────────────── */
 
 .usage-analysis-dialog {
@@ -24,6 +68,17 @@
   gap: 3px;
   height: 26px;
   margin-top: 8px;
+  touch-action: pan-y;
+}
+
+.usage-ledger__spark:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.usage-ledger__spark-col.is-cursor {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .usage-ledger__spark-col {
@@ -395,13 +450,44 @@
   }
 }
 
-/* 堆叠柱(所选范围逐日) */
+/* 堆叠柱(所选范围逐日,扫读学 uiarc bar-chart) */
+.usage-analysis__bars-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 .usage-analysis__bars {
+  position: relative;
   display: flex;
   align-items: flex-end;
   gap: 3px;
   height: 96px;
-  margin-top: 8px;
+  margin-top: 4px;
+  touch-action: pan-y;
+  cursor: crosshair;
+}
+
+.usage-analysis__bars:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 日均参考线(高度由 --avg 内联给出) */
+.usage-analysis__avg {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--avg, 0%) - 0.5px);
+  border-top: 1px dashed color-mix(in srgb, var(--text-faint) 70%, transparent);
+  pointer-events: none;
+}
+
+.usage-analysis__bar.is-cursor {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .usage-analysis__bar {
