@@ -141,6 +141,125 @@ pub fn resolve_link_target(target: String, cwd: Option<String>) -> Value {
     }
 }
 
+// ===== In-app document tab =====
+//
+// Markdown/text files open inside Marionette as a pseudo-tab instead of being
+// handed to the OS default app. Reads and saves are plain fs operations (no
+// storage lock), but they keep this module's posture: the path always arrives
+// from a deliberate UI click, never from agent text on its own.
+
+/// Extensions the in-app document tab renders; everything else keeps the
+/// open-in-default-app behaviour.
+const DOC_EXTS: [&str; 4] = ["md", "markdown", "mdx", "txt"];
+
+fn mtime_ms(path: &Path) -> Option<u64> {
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as u64)
+}
+
+/// Read a markdown/text file for the in-app document tab.
+///
+/// Resolves the same way as `resolve_link_target` (project-relative against
+/// `cwd`, `file.ts:42` suffixes stripped), so the tab lands on the very file
+/// the click pointed at — including the near-miss path the UI already
+/// resolved. The response is always UTF-8 (lossy): agents write UTF-8, and a
+/// stray GBK byte should cost a replacement character, not the whole page.
+#[tauri::command(async)]
+pub fn read_doc_file(path: String, cwd: Option<String>) -> Result<Value, String> {
+    let local = strip_scheme(path);
+    let resolved = resolve_path(&local, cwd.as_deref())
+        .ok_or_else(|| format!("Not found on disk: {}", strip_extended_prefix(&local)))?;
+    if resolved.is_dir() {
+        return Err(format!("Not a file: {}", resolved.to_string_lossy()));
+    }
+    let ext = resolved
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    if !DOC_EXTS.contains(&ext.as_str()) {
+        return Err(format!("Not a document file: .{ext}"));
+    }
+    const MAX_BYTES: u64 = 2 * 1024 * 1024;
+    let meta = std::fs::metadata(&resolved).map_err(|e| format!("stat failed: {e}"))?;
+    if meta.len() > MAX_BYTES {
+        return Err("Document too large (max 2 MB)".to_string());
+    }
+    let bytes = std::fs::read(&resolved).map_err(|e| format!("read failed: {e}"))?;
+    let content = String::from_utf8_lossy(&bytes).into_owned();
+    Ok(json!({
+        "path": resolved.to_string_lossy(),
+        "content": content,
+        "size": bytes.len(),
+        "mtimeMs": mtime_ms(&resolved).unwrap_or(0),
+    }))
+}
+
+/// Save the in-app document tab back to disk (same-dir temp file + rename).
+///
+/// The save carries an optimistic lock: `expected_mtime_ms` from the load (or
+/// the last save). A mismatch is a *value*, not an error — the UI asks the
+/// user whether to overwrite, then retries with `force` — mirroring how a
+/// refusal elsewhere in this app never destroys the caller's turn.
+#[tauri::command(async)]
+pub fn save_doc_file(
+    path: String,
+    cwd: Option<String>,
+    content: String,
+    expected_mtime_ms: Option<u64>,
+    force: Option<bool>,
+) -> Result<Value, String> {
+    let local = strip_scheme(path);
+    let resolved = resolve_path(&local, cwd.as_deref())
+        .ok_or_else(|| format!("Not found on disk: {}", strip_extended_prefix(&local)))?;
+    if resolved.is_dir() {
+        return Err(format!("Not a file: {}", resolved.to_string_lossy()));
+    }
+    const MAX_WRITE_BYTES: usize = 5 * 1024 * 1024;
+    if content.len() > MAX_WRITE_BYTES {
+        return Err("Document too large to save (max 5 MB)".to_string());
+    }
+    let current_mtime = mtime_ms(&resolved);
+    if let (Some(expected), false) = (expected_mtime_ms, force.unwrap_or(false)) {
+        if current_mtime != Some(expected) {
+            return Ok(json!({
+                "saved": false,
+                "reason": "stale",
+                "mtimeMs": current_mtime.unwrap_or(0),
+            }));
+        }
+    }
+    // Atomic-ish: write a sibling temp file, then rename over the target. The
+    // name carries the pid so two Marionette windows never share one temp.
+    let tmp = resolved.with_file_name(format!(
+        ".{}.{:x}.marionette-tmp",
+        resolved
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("doc"),
+        std::process::id()
+    ));
+    std::fs::write(&tmp, content.as_bytes())
+        .map_err(|e| format!("write failed: {e}"))
+        .and_then(|_| std::fs::rename(&tmp, &resolved).map_err(|e| format!("rename failed: {e}")))
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            e
+        })?;
+    let saved_mtime = mtime_ms(&resolved).unwrap_or(0);
+    crate::debug_log::append(
+        "open",
+        "info",
+        "",
+        "save doc file",
+        Some(&resolved.to_string_lossy()),
+    );
+    Ok(json!({ "saved": true, "mtimeMs": saved_mtime }))
+}
+
 fn spawn_detached(program: &str, args: &[&str]) -> Result<(), String> {
     let mut command = Command::new(program);
     command
@@ -308,6 +427,54 @@ mod tests {
         assert_eq!(strip_scheme(r"D:\a\b".to_string()), r"D:\a\b");
         assert_eq!(strip_scheme("".to_string()), "");
         assert_eq!(strip_scheme("https://example.com".to_string()), "https://example.com");
+    }
+
+    #[test]
+    fn doc_read_and_save_round_trip_with_stale_lock() {
+        use super::{read_doc_file, save_doc_file};
+        let root = std::env::temp_dir().join(format!(
+            "marionette-doc-{}-{:x}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("notes.md");
+        fs::write(&file, "# hello\n").unwrap();
+        let path = file.to_string_lossy().to_string();
+
+        let read = read_doc_file(path.clone(), None).unwrap();
+        assert_eq!(read["content"].as_str().unwrap(), "# hello\n");
+        assert!(read["mtimeMs"].as_u64().unwrap() > 0);
+
+        // Save with the loaded mtime succeeds and reports the new one.
+        let saved = save_doc_file(
+            path.clone(),
+            None,
+            "# hello v2\n".to_string(),
+            Some(read["mtimeMs"].as_u64().unwrap()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(saved["saved"].as_bool().unwrap(), true);
+        assert!(saved["mtimeMs"].as_u64().unwrap() >= read["mtimeMs"].as_u64().unwrap());
+
+        // A stale expectation is a refusal value, not an error; force overwrites.
+        let stale = save_doc_file(path.clone(), None, "clobber\n".to_string(), Some(1), None).unwrap();
+        assert_eq!(stale["saved"].as_bool().unwrap(), false);
+        assert_eq!(stale["reason"].as_str().unwrap(), "stale");
+        let forced = save_doc_file(path.clone(), None, "clobber\n".to_string(), Some(1), Some(true)).unwrap();
+        assert_eq!(forced["saved"].as_bool().unwrap(), true);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "clobber\n");
+
+        // Non-doc extensions never enter the doc-tab pipeline.
+        let exe = root.join("tool.exe");
+        fs::write(&exe, "x").unwrap();
+        assert!(read_doc_file(exe.to_string_lossy().to_string(), None).is_err());
+
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
