@@ -170,6 +170,7 @@ check("Grok: _meta token counts, no usage_update anywhere", () => {
     input: 12729,
     output: 29,
     cached: 2816,
+    cacheCreation: null,
     reasoning: null,
     total: 12759,
   });
@@ -190,6 +191,23 @@ check("Claude / OpenCode: standard PromptResponse.usage", () => {
   });
   assert.equal(tokens?.input, 2);
   assert.equal(tokens?.total, 38067);
+  assert.equal(tokens?.cacheCreation, 38061);
+});
+
+check("ACP usage_update naming: cache_creation_input_tokens", () => {
+  const tokens = extractTurnTokens({
+    result: {
+      stopReason: "end_turn",
+      usage: {
+        input_tokens: 30,
+        output_tokens: 6,
+        cache_read_input_tokens: 900,
+        cache_creation_input_tokens: 120,
+      },
+    },
+  });
+  assert.equal(tokens?.cached, 900);
+  assert.equal(tokens?.cacheCreation, 120);
 });
 
 check("Codex: _meta.quota.token_count naming (cachedInputTokens)", () => {

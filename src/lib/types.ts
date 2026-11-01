@@ -153,6 +153,8 @@ export type TurnStats = {
   input?: number | null;
   output?: number | null;
   cached?: number | null;
+  /** Cache-creation (cache write) input tokens, where the agent reports it. */
+  cacheCreation?: number | null;
   reasoning?: number | null;
   total?: number | null;
   /** Send → first streamed chunk (perceived TTFT), ms. */

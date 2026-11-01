@@ -1,11 +1,30 @@
-/** 跨会话 Token 总览(fe-usagedash 批次):localStorage 台账的 UI 文案。 */
+/** 跨会话 Token 总览与分析面板(fe-usagedash 批次):localStorage 台账的 UI 文案。 */
 export const zh = {
   "usageLedger.title": "Token 总览",
   "usageLedger.last7": "近 7 天",
   "usageLedger.last30": "近 30 天",
-  "usageLedger.turns": "{n} 轮",
-  "usageLedger.turns_one": "{n} 轮",
-  "usageLedger.turns_other": "{n} 轮",
+  // 占位符必须是 {count}:t() 按 count 选复数,替换表也只认 params 里的键。
+  "usageLedger.turns": "{count} 轮",
+  "usageLedger.turns_one": "{count} 轮",
+  "usageLedger.turns_other": "{count} 轮",
   "usageLedger.byAgent": "按助手 · 近 7 天",
   "usageLedger.hint": "↓输出 · ↑输入(含缓存读写与思考);本机统计,不发送任何数据。",
+  "usageLedger.viewAnalysis": "查看分析",
+  "usageLedger.sparkTotal": "7 天 {tokens}",
+  "usageLedger.analysisTitle": "Token 用量分析",
+  "usageLedger.bucketInput": "读取",
+  "usageLedger.bucketOutput": "输出",
+  "usageLedger.bucketCacheRead": "缓存读",
+  "usageLedger.bucketCacheWrite": "缓存写",
+  "usageLedger.cacheHit": "缓存命中 {pct}",
+  "usageLedger.dailyTitle": "每日用量",
+  "usageLedger.modelsTitle": "模型占比",
+  "usageLedger.other": "其它",
+  "usageLedger.coverage": "已计价 {pct}",
+  "usageLedger.priceUpdated": "牌价更新于 {when}",
+  "usageLedger.costNote":
+    "按公开 API 牌价折算,不是订阅实付;未查到牌价的 token 不计入金额。",
+  "usageLedger.emptyTitle": "还没有用量记录",
+  "usageLedger.emptyNote": "完成第一轮对话后,这里会出现今天 / 近 7 天 / 近 30 天的统计。",
+  "usageLedger.paletteOpen": "Token 用量分析",
 } as const;
