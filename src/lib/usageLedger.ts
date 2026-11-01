@@ -16,6 +16,7 @@
  */
 
 import { useSyncExternalStore } from "react";
+import { saveTextFile } from "./api";
 import type { TurnStats } from "./types";
 
 export type LedgerAgentUsage = { output: number; turns: number };
@@ -566,4 +567,88 @@ export function peakHourOf(grid: number[][]): number | null {
 export function deltaPercent(current: number, previous: number): number | null {
   if (previous <= 0) return null;
   return (current - previous) / previous;
+}
+
+// ── CSV 导出(用量分析页;opcode 式「可导出的用量分析」) ────────────────
+
+const CSV_HEADER = "date,scope,model,turns,input,output,cached,cache_creation,reasoning,ms";
+
+/** CSV 字段转义:含逗号/引号/换行的字段加引号并把引号翻倍。 */
+function csvField(value: string | number): string {
+  const text = String(value);
+  // 正则里的引号一律 \x22——inventory-zh 的注释剥离器不识别正则字面量(见 AGENTS.md)。
+  return /[\x22,\n\r]/.test(text) ? `"${text.replace(/\x22/g, '""')}"` : text;
+}
+
+/**
+ * 台账 → CSV(long format,便于透视表):
+ * 每个有记录的自然日先出一行 `scope=total`(日合计,含流式时长 ms),
+ * 再按四桶总量降序出 `scope=model` 行(ms 不按模型记账,留空)。
+ * 无任何记录返回空串。
+ */
+export function ledgerToCsv(target: UsageLedger): string {
+  const dayKeys = Object.keys(target.days).filter((key) => (target.days[key]?.turns ?? 0) > 0).sort();
+  if (dayKeys.length === 0) return "";
+  const rows: string[] = [CSV_HEADER];
+  for (const key of dayKeys) {
+    const day = normalizeDay(target.days[key])!;
+    rows.push(
+      [
+        key,
+        "total",
+        "",
+        day.turns,
+        day.input,
+        day.output,
+        day.cached,
+        day.cacheCreation,
+        day.reasoning,
+        day.ms,
+      ].join(","),
+    );
+    const models = Object.entries(day.models)
+      .filter(([, m]) => m.turns > 0)
+      .sort(
+        (a, b) =>
+          b[1].input + b[1].output + b[1].cached + b[1].cacheCreation -
+          (a[1].input + a[1].output + a[1].cached + a[1].cacheCreation),
+      );
+    for (const [modelId, m] of models) {
+      rows.push(
+        [
+          key,
+          "model",
+          csvField(modelId),
+          m.turns,
+          m.input,
+          m.output,
+          m.cached,
+          m.cacheCreation,
+          // reasoning 只在日合计粒度记账(LedgerModelUsage 无 reasoning 桶),留空。
+          "",
+          "",
+        ].join(","),
+      );
+    }
+  }
+  return `${rows.join("\r\n")}\r\n`;
+}
+
+/** 导出文件名:`marionette-token-usage-YYYYMMDD.csv`。 */
+export function usageCsvFileName(at: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `marionette-token-usage-${at.getFullYear()}${pad(at.getMonth() + 1)}${pad(at.getDate())}.csv`;
+}
+
+/** 高层入口:序列化台账 → 原生「另存为」(非 Tauri 回落浏览器下载)。 */
+export async function exportUsageCsv(): Promise<{
+  fileName: string;
+  csv: string;
+  savedPath: string | null;
+}> {
+  const csv = ledgerToCsv(ledger);
+  if (!csv) throw new Error("no usage records");
+  const fileName = usageCsvFileName();
+  const savedPath = await saveTextFile(fileName, csv);
+  return { fileName, csv, savedPath };
 }

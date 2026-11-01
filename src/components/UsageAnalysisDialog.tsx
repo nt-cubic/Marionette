@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { ArrowDownRight, ArrowUpRight, X } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, Download, X } from "lucide-react";
 import { useLocale, useT } from "../lib/i18n";
 import { formatDurationCompact, formatTokenCount } from "../lib/sessionStats";
+import { showToast, dismissToast } from "../lib/toast";
+import { revealInFileManager } from "../lib/api";
 import {
   aggregateDays,
   cacheHitRate,
   dailySeries,
   deltaPercent,
+  exportUsageCsv,
   foldHourDays,
   freshTokens,
   mondayFirstHourGrid,
@@ -289,6 +292,34 @@ export function UsageAnalysisBody() {
     setBucketTouched(false);
   };
 
+  // 导出 CSV(原生另存为;成功 toast 可一键 reveal 所在文件夹)。
+  const [csvExporting, setCsvExporting] = useState(false);
+  const handleExportCsv = async () => {
+    if (csvExporting) return;
+    setCsvExporting(true);
+    const preparing = showToast({ text: t("usageLedger.csvPreparing"), tone: "info", duration: 30_000 });
+    try {
+      const { fileName, savedPath } = await exportUsageCsv();
+      dismissToast(preparing);
+      showToast({
+        text: t("usageLedger.csvOk", { name: fileName }),
+        tone: "ok",
+        duration: 8000,
+        action: savedPath
+          ? { label: t("usageLedger.csvReveal"), run: () => void revealInFileManager(savedPath) }
+          : undefined,
+      });
+    } catch (e) {
+      dismissToast(preparing);
+      showToast({
+        text: t("usageLedger.csvError", { error: e instanceof Error ? e.message : String(e) }),
+        tone: "error",
+      });
+    } finally {
+      setCsvExporting(false);
+    }
+  };
+
   return (
     <div className="usage-analysis">
       <div className="usage-analysis__toolbar">
@@ -316,6 +347,19 @@ export function UsageAnalysisBody() {
               when: new Date(costs.fetchedAt).toLocaleDateString(bcp47),
             })}
           </span>
+        )}
+        {hasAnyRecords && (
+          <button
+            type="button"
+            className="composer-mode-chip usage-analysis__export"
+            title={t("usageLedger.exportCsv")}
+            aria-label={t("usageLedger.exportCsv")}
+            disabled={csvExporting}
+            onClick={() => void handleExportCsv()}
+          >
+            <Download size={11} strokeWidth={2.25} aria-hidden />
+            {t("usageLedger.exportCsv")}
+          </button>
         )}
       </div>
 
