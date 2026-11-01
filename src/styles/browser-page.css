@@ -1,0 +1,299 @@
+/* ── Built-in browser page (batch 2) ────────────────────────────────────
+   A pseudo-tab page like the 收纳盒/文档 ones: it covers the conversation
+   column, the native webviews are positioned behind/over the host rect. */
+
+.browser-tab-page {
+  position: absolute;
+  inset: 0;
+  /* Below the edge-reveal chevrons (z 10). */
+  z-index: 5;
+  display: flex;
+  min-height: 0;
+}
+
+.browser-page {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--workspace-bg);
+}
+
+.browser-page__bar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.browser-page__tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.browser-tab {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: color-mix(in srgb, var(--text-muted) 8%, transparent);
+}
+
+.browser-tab.is-active {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.browser-tab__select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 3px 4px 3px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.browser-tab__select svg {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+
+.browser-tab.is-active .browser-tab__select svg {
+  color: var(--accent);
+}
+
+.browser-tab__select span {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.browser-tab__agent {
+  flex: 0 0 auto;
+  display: inline-flex;
+  color: var(--accent);
+}
+
+.browser-tab__grant {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.browser-tab__grant.is-read {
+  background: var(--green);
+}
+
+.browser-tab__grant.is-control {
+  background: var(--accent);
+}
+
+.browser-tab__close {
+  flex: 0 0 auto;
+  margin-right: 3px;
+}
+
+.browser-page__new {
+  flex: 0 0 auto;
+}
+
+.browser-page__nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.browser-page__address {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--workspace-bg);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.browser-page__address:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+}
+
+.browser-page__share {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.browser-page__share-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.browser-page__share-btn.is-control {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+  color: var(--accent);
+}
+
+.browser-page__share-btn.is-read {
+  border-color: color-mix(in srgb, var(--green) 50%, var(--border));
+}
+
+.browser-share-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  min-width: 260px;
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 25%);
+  display: flex;
+  flex-direction: column;
+}
+
+.browser-share-menu button {
+  text-align: left;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.browser-share-menu button:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.browser-page__host {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  /* The native webviews sit above the host background but below the bar. */
+  background: var(--workspace-bg);
+}
+
+.browser-page__empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 12.5px;
+}
+
+/* ── Permission card ──────────────────────────────────────────────────── */
+
+.browser-permission {
+  min-width: 340px;
+  max-width: 460px;
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 30%);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.browser-permission__title {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.browser-permission__session {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.browser-permission__body {
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.browser-permission__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* ── Pseudo-tab chip in the session strip (mirrors .is-memo / .is-doc) ── */
+
+.editor-tab.is-browser .editor-tab__select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.editor-tab.is-browser svg {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+
+.editor-tab.is-browser.is-active svg {
+  color: var(--accent);
+}
+
+/* ── Docked mode: the page fills below the strip chrome ───────────────── */
+
+.browser-dock-page {
+  position: fixed;
+  top: 32px;
+  left: 0;
+  right: 0;
+  bottom: 40px;
+  z-index: 75;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 8px;
+  overflow: hidden;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  outline: none;
+  animation: dock-page-in var(--dur-slow, 280ms) var(--ease-out, ease-out);
+}
+
+.browser-dock-page .browser-page {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+/* Invisible full-screen catcher that closes the share menu on outside click. */
+.popover-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 25;
+  background: transparent;
+}
