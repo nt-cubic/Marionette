@@ -51,7 +51,122 @@ function aggregateTotal(agg: LedgerAggregate): number {
   return agg.input + agg.output + agg.cached + agg.cacheCreation;
 }
 
-export function UsageAnalysisDialog({ onClose }: { onClose: () => void }) {
+/**
+ * 逐日堆叠柱,交互语法学 uiarc bar-chart(2026-11-01):扫读光标(指针或键盘
+ * role=slider)把头条读值从「日均」滚到当天,附日均参考线;触屏 pan-y
+ * (横向扫、纵向滚)。零依赖,动效只有 transform/opacity。
+ */
+function ScrubBars({
+  series,
+  maxDay,
+  rangeLabel,
+}: {
+  series: ReturnType<typeof dailySeries>;
+  maxDay: number;
+  rangeLabel: string;
+}) {
+  const t = useT();
+  const [cursor, setCursor] = useState<number | null>(null);
+  const barAt = (index: number) => series[Math.max(0, Math.min(index, series.length - 1))]!;
+  const average =
+    series.length > 0
+      ? series.reduce((sum, day) => sum + dayTotal(day), 0) / series.length
+      : 0;
+  const readout =
+    cursor != null
+      ? `${barAt(cursor).key.slice(5)} · ${formatTokenCount(dayTotal(barAt(cursor)))}`
+      : t("usageLedger.dailyAverage", { tokens: formatTokenCount(average) });
+
+  return (
+    <>
+    <div className="usage-analysis__bars-head">
+      <span className="usage-analysis__sub">{readout}</span>
+      <span className="usage-analysis__sub">{rangeLabel}</span>
+    </div>
+    <div
+      className="usage-analysis__bars"
+      role="slider"
+      aria-label={t("usageLedger.dailyTitle")}
+      aria-valuemin={0}
+      aria-valuemax={Math.max(0, series.length - 1)}
+      aria-valuenow={cursor ?? series.length - 1}
+      aria-valuetext={
+        cursor != null
+          ? `${barAt(cursor).key} · ${formatTokenCount(dayTotal(barAt(cursor)))}`
+          : t("usageLedger.dailyAverage", { tokens: formatTokenCount(average) })
+      }
+      tabIndex={0}
+      onPointerMove={(event) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        const ratio = (event.clientX - rect.left) / Math.max(1, rect.width);
+        setCursor(Math.max(0, Math.min(series.length - 1, Math.floor(ratio * series.length))));
+      }}
+      onPointerLeave={() => setCursor(null)}
+      onKeyDown={(event) => {
+        const moves: Record<string, number> = {
+          ArrowLeft: (cursor ?? series.length - 1) - 1,
+          ArrowRight: (cursor ?? series.length - 1) + 1,
+          Home: 0,
+          End: series.length - 1,
+        };
+        if (event.key in moves) {
+          event.preventDefault();
+          setCursor(Math.max(0, Math.min(series.length - 1, moves[event.key]!)));
+        } else if (event.key === "Escape") {
+          setCursor(null);
+        }
+      }}
+      style={{ ["--avg" as string]: `${(average / maxDay) * 100}%` } as CSSProperties}
+    >
+      <span className="usage-analysis__avg" aria-hidden />
+      {series.map((day, index) => {
+        const total = dayTotal(day);
+        const scale = total > 0 ? Math.max(0.04, total / maxDay) : 0;
+        const segs: Array<{ cls: string; value: number }> = [
+          { cls: "out", value: day.output },
+          { cls: "in", value: day.input },
+          { cls: "cr", value: day.cached },
+          { cls: "cw", value: day.cacheCreation },
+        ];
+        return (
+          <div
+            key={day.key}
+            className={`usage-analysis__bar${cursor === index ? " is-cursor" : ""}`}
+          >
+            {total > 0 &&
+              segs.map((seg) =>
+                seg.value > 0 ? (
+                  <div
+                    key={seg.cls}
+                    className={`usage-analysis__bar-seg usage-analysis__bar-seg--${seg.cls}`}
+                    style={{ height: `${(seg.value / total) * scale * 100}%` }}
+                  />
+                ) : null,
+              )}
+          </div>
+        );
+      })}
+    </div>
+    <div className="usage-analysis__bar-labels" aria-hidden>
+      <span>{series[0]?.key.slice(5)}</span>
+      <span>{rangeLabel}</span>
+      <span>{series[series.length - 1]?.key.slice(5)}</span>
+    </div>
+    <div className="usage-analysis__legend">
+      <span><i style={{ background: "var(--blue)" }} />{t("usageLedger.bucketInput")}</span>
+      <span><i style={{ background: "var(--accent)" }} />{t("usageLedger.bucketOutput")}</span>
+      <span><i style={{ background: "var(--green)" }} />{t("usageLedger.bucketCacheRead")}</span>
+      <span><i style={{ background: "var(--orange)" }} />{t("usageLedger.bucketCacheWrite")}</span>
+    </div>
+    </>
+  );
+}
+
+/**
+ * 分析内容本体——伪标签页(UsagePage,普通窗口)与弹窗(UsageAnalysisDialog,
+ * 贴边/detached 兜底)共用。数据与聚合全部自持,不依赖外层容器。
+ */
+export function UsageAnalysisBody() {
   const t = useT();
   const ledger = useUsageLedger();
   const [rangeDays, setRangeDays] = useState<7 | 30>(7);
@@ -72,14 +187,6 @@ export function UsageAnalysisDialog({ onClose }: { onClose: () => void }) {
       alive = false;
     };
   }, []);
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   const prevDays = useMemo(() => {
     const prev = new Date(now);
@@ -143,27 +250,8 @@ export function UsageAnalysisDialog({ onClose }: { onClose: () => void }) {
   const rangeLabel = rangeDays === 7 ? t("usageLedger.last7") : t("usageLedger.last30");
 
   return (
-    <div className="project-dialog-backdrop" onClick={onClose}>
-      <div
-        className="project-dialog usage-analysis-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-label={t("usageLedger.analysisTitle")}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="project-dialog__header">
-          <span>{t("usageLedger.analysisTitle")}</span>
-          <button
-            type="button"
-            className="pill-action pill-action--icon"
-            aria-label={t("common.close")}
-            onClick={onClose}
-          >
-            <X size={16} />
-          </button>
-        </div>
-        <div className="project-dialog__body usage-analysis">
-          {!hasAnyRecords ? (
+    <div className="usage-analysis">
+      {!hasAnyRecords ? (
             <div className="usage-analysis__empty usage-analysis__card">
               <p>{t("usageLedger.emptyTitle")}</p>
               <p>{t("usageLedger.emptyNote")}</p>
@@ -242,32 +330,7 @@ export function UsageAnalysisDialog({ onClose }: { onClose: () => void }) {
                     turns: day.turns,
                   }))}
                 />
-                <div className="usage-analysis__bars" aria-hidden>
-                  {series.map((day) => {
-                    const total = dayTotal(day);
-                    const scale = total > 0 ? Math.max(0.04, total / maxDay) : 0;
-                    const segs: Array<{ cls: string; value: number }> = [
-                      { cls: "out", value: day.output },
-                      { cls: "in", value: day.input },
-                      { cls: "cr", value: day.cached },
-                      { cls: "cw", value: day.cacheCreation },
-                    ];
-                    return (
-                      <div key={day.key} className="usage-analysis__bar" title={`${day.key} · ${formatTokenCount(total)}`}>
-                        {total > 0 &&
-                          segs.map((seg) =>
-                            seg.value > 0 ? (
-                              <div
-                                key={seg.cls}
-                                className={`usage-analysis__bar-seg usage-analysis__bar-seg--${seg.cls}`}
-                                style={{ height: `${(seg.value / total) * scale * 100}%` }}
-                              />
-                            ) : null,
-                          )}
-                      </div>
-                    );
-                  })}
-                </div>
+                <ScrubBars series={series} maxDay={maxDay} rangeLabel={rangeLabel} />
                 <div className="usage-analysis__bar-labels" aria-hidden>
                   <span>{series[0]?.key.slice(5)}</span>
                   <span>{rangeLabel}</span>
@@ -351,6 +414,42 @@ export function UsageAnalysisDialog({ onClose }: { onClose: () => void }) {
               )}
             </>
           )}
+    </div>
+  );
+}
+
+/** 弹窗形态:贴边窄条 / detached 窗没有标签行,分析内容以大弹窗兜底。 */
+export function UsageAnalysisDialog({ onClose }: { onClose: () => void }) {
+  const t = useT();
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div className="project-dialog-backdrop" onClick={onClose}>
+      <div
+        className="project-dialog usage-analysis-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("usageLedger.analysisTitle")}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="project-dialog__header">
+          <span>{t("usageLedger.analysisTitle")}</span>
+          <button
+            type="button"
+            className="pill-action pill-action--icon"
+            aria-label={t("common.close")}
+            onClick={onClose}
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="project-dialog__body">
+          <UsageAnalysisBody />
         </div>
       </div>
     </div>
