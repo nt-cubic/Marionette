@@ -1,31 +1,25 @@
 // The Claude Code provider editor's "Claude Code runs as" row: whether a
 // Claude subscription's runs are Claude Code's interactive mode (TUI) or
-// claude -p, why -p, how the last request went, and on hover what each is
-// and what it is good for (the owner, 10-31). app.js imports this with the
-// row's first read of /api/claude/mode (claudeModeRow), so it weighs
-// nothing on the core.
+// claude -p, switched right there, how the last request went, and on hover
+// what each is and what it is good for (the owner, 10-31, 11-01). With the
+// interactive mode on nothing runs as -p: a request it can't take fails,
+// saying why (the owner, 11-01). app.js imports this with the row's first
+// read of /api/claude/mode (claudeModeRow), so it weighs nothing on the
+// core.
 
-// why a run is -p, by the gateway's code (claudeMachineWhy, claudePrint)
+// why the interactive mode can't run here, or is off, by the gateway's
+// code (claudeMachineWhy)
 const CC_WHY = {
   off: "the interactive mode is off in Settings",
-  broken: "the interactive mode failed to start lately, and is tried again later",
   os: "this system can't run the interactive mode",
   "wsl-home": "magpie couldn't find the home folder of Claude Code in WSL",
   missing: "Claude Code isn't installed on this computer",
-  start: "the interactive mode didn't start",
-  safeguards: "the request carried safeguards",
-  cache: "the client marked its own cache points",
-  schema: "the request asked for a JSON schema",
-  image: "the request had an image by its URL",
-  big: "its first message was over 400KB",
-  branch: "it branched off another request's conversation, which a sub-agent's first request does",
-  wslread: "Windows can't read the transcripts of Claude Code in WSL",
 };
 const ccWhy = (code) => t(CC_WHY[code] || CC_WHY.os);
 
-// ccTip: the two modes side by side, the one in use marked
+// ccTip: the two modes side by side, the one chosen marked
 let ccTipEl = null;
-function ccTip(anchor, tui, only) {
+function ccTip(anchor, tui) {
   ccTipOff();
   const tip = ccTipEl = el("div", "cc-tip");
   tip.setAttribute("role", "tooltip");
@@ -44,11 +38,9 @@ function ccTip(anchor, tui, only) {
       t("Your plan counts these requests as Claude Code's own use, at about half of the 5-hour allowance that -p uses for the same work.")),
     mode(!tui, "claude -p",
       t("Claude Code's print mode, the one scripts and the Agent SDK use: a request in, its reply out."),
-      t("It starts at once, and takes what the interactive mode can't: a JSON schema, an image by its URL, safeguards, a client's own cache points, a first message over 400KB. Such a request runs as -p even with the interactive mode on."),
+      t("It starts at once, and takes what the interactive mode can't: a JSON schema, an image by its URL, safeguards, a client's own cache points, a first message over 400KB."),
       t("The plan counts a -p request at about twice the interactive mode's.")),
-    el("div", "foot", t(only
-      ? "Interactive only is set in Settings › Models › Replies: nothing runs as -p, and a request the interactive mode can't take, or one it fails to start for, fails saying why."
-      : "Turned on or off in Settings › Models › Replies. When the interactive mode fails to start, requests run as -p for a while and it is tried again later.")));
+    el("div", "foot", t("Switched here or in Settings › Models › Replies. With the interactive mode on, nothing ever runs as -p: a request it can't take, or one it fails to start for, fails saying why.")));
   document.body.append(tip);
   const a = anchor.getBoundingClientRect(), b = tip.getBoundingClientRect();
   tip.style.left = Math.max(8, Math.min(a.left, innerWidth - b.width - 8)) + "px";
@@ -64,29 +56,37 @@ function ccTipOff() {
 window.claudeModeDraw = function (box, m) {
   if (!m) return;
   const v = el("div", "cc-run");
-  const pill = el("span", "cc-pill" + (m.tui ? " tui" : ""));
-  pill.tabIndex = 0;
-  // Interactive only where it can't run: nothing runs, as -p or not
-  pill.append(el("i"), el("span", "", m.tui ? t("Interactive mode (TUI)") : m.only ? t("Interactive only") : "claude -p"));
-  pill.onmouseenter = pill.onfocus = () => ccTip(pill, m.tui, m.only);
-  pill.onmouseleave = pill.onblur = ccTipOff;
-  v.append(pill);
+  // on unless turned off, whether or not this machine can run it: on where
+  // it can't, Claude requests fail
+  const on = m.why !== "off";
+  const pick = segs([["tui", t("Interactive mode (TUI)")], ["p", "claude -p"]], on ? "tui" : "p", async (id) => {
+    ccTipOff();
+    if ((id === "tui") === on) return;
+    // the settings are read with the Settings page: one not opened yet has
+    // none to keep
+    if (!prefs) prefs = state.settings = await api("settings");
+    await savePrefs({ ...prefsKeep(prefs), claudePrintMode: id === "p" });
+    claudeMode = await api("claude/mode").catch(() => null);
+    claudeModeAt = Date.now();
+    if (box.isConnected) window.claudeModeDraw(box, claudeMode);
+  });
+  pick.classList.add("cc-pick");
+  pick.classList.toggle("tui", m.tui);
+  // magpie web shows the gateway's, which only its own Settings change
+  for (const b of pick.querySelectorAll(".opt")) b.disabled = gatewayMode;
+  // Chromium has no onfocusin property: the events are listened for
+  pick.onmouseenter = () => ccTip(pick, on);
+  pick.addEventListener("focusin", () => ccTip(pick, on));
+  pick.onmouseleave = () => ccTipOff();
+  pick.addEventListener("focusout", (e) => { if (!pick.contains(e.relatedTarget)) ccTipOff(); });
+  v.append(pick);
   const last = m.last;
   let said = "";
-  if (!m.tui && m.only) said = t("Claude requests fail: {why}", { why: ccWhy(m.why) });
-  else if (!m.tui) said = ccWhy(m.why);
+  if (on && !m.tui) said = t("Claude requests fail: {why}", { why: ccWhy(m.why) });
+  else if (!on) said = t("Every request runs as claude -p");
   else if (last && last.tui) said = t("Last request {ago}: interactive mode", { ago: ago(last.at) });
-  else if (last) said = t("Last request {ago} ran as -p: {why}", { ago: ago(last.at), why: ccWhy(last.why) });
-  else if (m.only) said = t("Interactive only: a request it can't take fails instead of running as -p");
-  if (said) v.append(el("span", "cc-said", said));
-  if (m.why === "off" || (!m.tui && m.only)) {
-    const b = el("button", "text action", t("Change in Settings"));
-    b.type = "button";
-    b.hidden = gatewayMode; // Settings has no such row then
-    b.onclick = (e) => { ccTipOff(); openSettingsAt(e, "models", "#claudeTuiRow"); };
-    v.append(b);
-  }
+  if (said) v.append(el("span", "cc-said" + (on && !m.tui ? " bad" : ""), said));
   box.replaceChildren(...field(t("Claude Code runs as"), v, ""));
 };
 // the editor going away takes its tip with it
-addEventListener("pointerdown", ccTipOff, true);
+addEventListener("pointerdown", (e) => { if (!e.target.closest?.(".cc-pick")) ccTipOff(); }, true);

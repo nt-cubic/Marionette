@@ -120,7 +120,7 @@ func TestClosingHidesShownAccounts(t *testing.T) {
 	}
 	_, hide, _ := strings.Cut(string(src), "func (h *host) hideMain() {")
 	hide, _, _ = strings.Cut(hide, "\n}\n")
-	if i, j := strings.Index(hide, "h.main.ExecJS(mainClosedJS)"), strings.Index(hide, "h.main.Hide()"); i < 0 || j < i {
+	if i, j := strings.Index(hide, "h.main.ExecJS(mainClosedJS)"), strings.Index(hide, "hideWebview(h.main)"); i < 0 || j < i {
 		t.Fatalf("hideMain doesn't tell the page before it hides the window:%s", hide)
 	}
 	js, err := os.ReadFile("assets/app.js")

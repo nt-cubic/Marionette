@@ -19,8 +19,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/yetone/magpie/internal/filelock"
 	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/settings"
 	"golang.org/x/text/unicode/norm"
@@ -129,6 +131,61 @@ func claudeDirRun(user string) *sync.RWMutex {
 	return mu
 }
 
+// claudeDirRun is this magpie's own runs only: a switch from another
+// magpie process (`magpie accounts switch` while the app reads a card)
+// didn't wait for them, and handed Claude Code the refresh token a run of
+// the app's could still spend (#4532). So each run also holds a lock file
+// of its own beside the account's directory, for as long as it runs, and
+// a switch waits on every one of them (waitClaudeRuns). A file whose
+// holder ended without removing it is free, and taken out.
+
+// claudeRunWait is how long a switch waits for runs in the account's
+// directory: a /usage or a warm-up takes seconds.
+var claudeRunWait = 90 * time.Second
+
+var claudeRunSeq atomic.Int64
+
+// claudeRunMarks matches the lock files of the runs in user's directory.
+func claudeRunMarks(user string) string { return claudeAccountDir(user) + ".run-*.lock" }
+
+// markClaudeRun holds a lock file of this run's own, released as it ends.
+func markClaudeRun(user string) (release func()) {
+	path := fmt.Sprintf("%s.run-%d-%d.lock", claudeAccountDir(user), os.Getpid(), claudeRunSeq.Add(1))
+	unlock, held := filelock.Lock(path, 0)
+	if !held {
+		_ = os.Remove(path)
+		return func() {}
+	}
+	return func() {
+		unlock()
+		_ = os.Remove(path)
+	}
+}
+
+// errClaudeRunning is a run in the account's directory past claudeRunWait.
+var errClaudeRunning = errors.New("Claude Code is still running on this account for magpie (its usage or a warm-up): try again in a moment")
+
+// waitClaudeRuns waits until no process runs Claude Code in user's
+// directory for magpie.
+func waitClaudeRuns(user string) error {
+	marks, _ := filepath.Glob(claudeRunMarks(user))
+	deadline := time.Now().Add(claudeRunWait)
+	for _, m := range marks {
+		start := time.Now()
+		wait := max(time.Until(deadline), 0)
+		unlock, held := filelock.Lock(m, wait)
+		if !held {
+			if time.Since(start) >= wait {
+				return errClaudeRunning
+			}
+			continue // a file system without locks: nothing to wait on
+		}
+		unlock()
+		_ = os.Remove(m) // its run has ended
+	}
+	return nil
+}
+
 // inSavedClaudeDir runs f with the config directory of the saved Claude
 // account user (claudeSavedDir), and keeps what Claude Code made of the
 // sign-in there in logins.json once it is done: a refreshed one is the
@@ -137,6 +194,7 @@ func inSavedClaudeDir(user string, f func(dir string) error) error {
 	mu := claudeDirRun(user)
 	mu.RLock()
 	defer mu.RUnlock()
+	defer markClaudeRun(user)()
 	dir, err := claudeSavedDir(user)
 	if err != nil {
 		return err

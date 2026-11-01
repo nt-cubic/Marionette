@@ -49,100 +49,8 @@ const browserFixture = `<!doctype html>
 // Chromium that takes --load-extension (Chrome for Testing, as Playwright
 // has it) to run it.
 func TestBrowserToolsInARealBrowser(t *testing.T) {
-	chrome := os.Getenv("MAGPIE_BROWSER_CHROME")
-	if chrome == "" {
-		t.Skip("MAGPIE_BROWSER_CHROME names no Chromium")
-	}
-	fresh(t)
-	s := New()
-	srv := httptest.NewServer(lanGuard(s.Handler()))
-	t.Cleanup(srv.Close)
-	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if r.URL.Path == "/two" {
-			io.WriteString(w, "<!doctype html><title>Two</title><h1>Page two</h1>")
-			return
-		}
-		io.WriteString(w, browserFixture)
-	}))
-	t.Cleanup(site.Close)
-
-	ext := t.TempDir()
-	if err := browserext.Write(ext, srv.URL); err != nil {
-		t.Fatal(err)
-	}
-	profile := t.TempDir()
-	cmd := exec.Command(chrome, "--headless=new", "--user-data-dir="+profile,
-		"--disable-extensions-except="+ext, "--load-extension="+ext,
-		"--no-first-run", "--no-default-browser-check", "--disable-gpu", "--remote-debugging-port=0",
-		// with the test's own HOME there is no keychain (macOS) or keyring
-		// (Linux), and Chrome waits on it before the extension's storage
-		// answers
-		"--use-mock-keychain", "--password-store=basic", "about:blank")
-	var logs bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &logs, &logs
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		defer cmd.Wait()
-		defer cmd.Process.Kill()
-		if t.Failed() {
-			t.Logf("chromium said:\n%s", logs.String())
-			// what it runs: is the extension's worker among them
-			if port, err := os.ReadFile(filepath.Join(profile, "DevToolsActivePort")); err == nil {
-				if resp, err := http.Get("http://127.0.0.1:" + strings.SplitN(string(port), "\n", 2)[0] + "/json/list"); err == nil {
-					b, _ := io.ReadAll(resp.Body)
-					resp.Body.Close()
-					t.Logf("its targets: %s", b)
-				}
-			}
-		}
-	})
-	for deadline := time.Now().Add(60 * time.Second); s.browser.current() == nil; {
-		if time.Now().After(deadline) {
-			t.Fatal("the extension never connected")
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	call := func(tool string, args map[string]any) imageReply {
-		t.Helper()
-		req, _ := http.NewRequest(http.MethodPost, srv.URL+BrowserMCPPath, strings.NewReader(imageToolCall(tool, args)))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json, text/event-stream")
-		req.Header.Set(BrowserSessionHeader, "e2e")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		b, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		var m imageReply
-		if resp.StatusCode != 200 || json.Unmarshal(b, &m) != nil || m.Error != nil || len(m.Result.Content) == 0 {
-			t.Fatalf("%s: %d %s", tool, resp.StatusCode, b)
-		}
-		return m
-	}
-	// ok calls a tool that should work and answers with its text
-	ok := func(tool string, args map[string]any, want ...string) string {
-		t.Helper()
-		m := call(tool, args)
-		var said []string
-		for _, c := range m.Result.Content {
-			said = append(said, c.Text)
-		}
-		out := strings.Join(said, "\n")
-		if m.Result.IsError {
-			t.Fatalf("%s %v failed: %s", tool, args, out)
-		}
-		for _, w := range want {
-			if !strings.Contains(out, w) {
-				t.Fatalf("%s %v doesn't say %q:\n%s", tool, args, w, out)
-			}
-		}
-		return out
-	}
+	srv, site := realBrowser(t)
+	call, ok := browserCaller(t, srv, "e2e")
 	ref := func(page, role, name string) string {
 		t.Helper()
 		m := regexp.MustCompile(`- ` + role + ` "` + regexp.QuoteMeta(name) + `"(?: \[[a-z=, ]+\])? \[ref=(e\d+)\]`).FindStringSubmatch(page)
@@ -219,5 +127,167 @@ func TestBrowserToolsInARealBrowser(t *testing.T) {
 	ok("browser_tabs", map[string]any{"action": "close", "tab": id}, "Closed "+id)
 	if m := call("browser_snapshot", map[string]any{"tab": id}); !m.Result.IsError {
 		t.Fatalf("a closed tab still answers: %+v", m.Result)
+	}
+}
+
+// realBrowser starts a Chromium with the extension magpie writes loaded
+// in a profile of its own, pointed at a gateway of the test's, and waits
+// for it to connect; site serves browserFixture (and /two).
+func realBrowser(t *testing.T) (srv, site *httptest.Server) {
+	t.Helper()
+	chrome := os.Getenv("MAGPIE_BROWSER_CHROME")
+	if chrome == "" {
+		t.Skip("MAGPIE_BROWSER_CHROME names no Chromium")
+	}
+	fresh(t)
+
+	s := New()
+	srv = httptest.NewServer(lanGuard(s.Handler()))
+	t.Cleanup(srv.Close)
+	site = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if r.URL.Path == "/two" {
+			io.WriteString(w, "<!doctype html><title>Two</title><h1>Page two</h1>")
+			return
+		}
+		io.WriteString(w, browserFixture)
+	}))
+	t.Cleanup(site.Close)
+
+	ext := t.TempDir()
+	if err := browserext.Write(ext, srv.URL); err != nil {
+		t.Fatal(err)
+	}
+	profile := t.TempDir()
+	cmd := exec.Command(chrome, "--headless=new", "--user-data-dir="+profile,
+		"--disable-extensions-except="+ext, "--load-extension="+ext,
+		"--no-first-run", "--no-default-browser-check", "--disable-gpu", "--remote-debugging-port=0",
+		// with the test's own HOME there is no keychain (macOS) or keyring
+		// (Linux), and Chrome waits on it before the extension's storage
+		// answers
+		"--use-mock-keychain", "--password-store=basic", "about:blank")
+	var logs bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &logs, &logs
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		defer cmd.Wait()
+		defer cmd.Process.Kill()
+		if t.Failed() {
+			t.Logf("chromium said:\n%s", logs.String())
+			// what it runs: is the extension's worker among them
+			if port, err := os.ReadFile(filepath.Join(profile, "DevToolsActivePort")); err == nil {
+				if resp, err := http.Get("http://127.0.0.1:" + strings.SplitN(string(port), "\n", 2)[0] + "/json/list"); err == nil {
+					b, _ := io.ReadAll(resp.Body)
+					resp.Body.Close()
+					t.Logf("its targets: %s", b)
+				}
+			}
+		}
+	})
+	for deadline := time.Now().Add(60 * time.Second); s.browser.current() == nil; {
+		if time.Now().After(deadline) {
+			t.Fatal("the extension never connected")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return srv, site
+}
+
+// browserCaller calls the browser's tools as the agent session session:
+// call answers with the reply, ok with the text of one that should work.
+func browserCaller(t *testing.T, srv *httptest.Server, session string) (call func(string, map[string]any) imageReply, ok func(string, map[string]any, ...string) string) {
+	call = func(tool string, args map[string]any) imageReply {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+BrowserMCPPath, strings.NewReader(imageToolCall(tool, args)))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set(BrowserSessionHeader, session)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		var m imageReply
+		if resp.StatusCode != 200 || json.Unmarshal(b, &m) != nil || m.Error != nil || len(m.Result.Content) == 0 {
+			t.Fatalf("%s: %d %s", tool, resp.StatusCode, b)
+		}
+		return m
+	}
+	// ok calls a tool that should work and answers with its text
+	ok = func(tool string, args map[string]any, want ...string) string {
+		t.Helper()
+		m := call(tool, args)
+		var said []string
+		for _, c := range m.Result.Content {
+			said = append(said, c.Text)
+		}
+		out := strings.Join(said, "\n")
+		if m.Result.IsError {
+			t.Fatalf("%s %v failed: %s", tool, args, out)
+		}
+		for _, w := range want {
+			if !strings.Contains(out, w) {
+				t.Fatalf("%s %v doesn't say %q:\n%s", tool, args, w, out)
+			}
+		}
+		return out
+	}
+	return call, ok
+}
+
+// Two agent sessions at once in a real Chromium (packinggoodsllc_07668 on
+// Discord: two agents behind one router took one tab): the first works in
+// the tab the user is looking at, the second, finding that tab another's,
+// in a new tab of its own; each opens its tabs in a group of its own
+// ("Magpie", "Magpie 2"), and each sees the other's tab marked ~.
+func TestBrowserSessionsApartInARealBrowser(t *testing.T) {
+	srv, site := realBrowser(t)
+	_, a := browserCaller(t, srv, "agent-a")
+	_, b := browserCaller(t, srv, "agent-b")
+	tabOf := func(page string) string {
+		t.Helper()
+		m := regexp.MustCompile(`Tab (t\d+):`).FindStringSubmatch(page)
+		if m == nil {
+			t.Fatalf("no tab in:\n%s", page)
+		}
+		return m[1]
+	}
+	ta := tabOf(a("browser_navigate", map[string]any{"url": site.URL}, "Magpie fixture"))
+	tb := tabOf(b("browser_navigate", map[string]any{"url": site.URL + "/two"}, "Page two"))
+	if ta == tb {
+		t.Fatalf("both sessions work in %s", ta)
+	}
+	if got := tabOf(a("browser_snapshot", nil)); got != ta {
+		t.Fatalf("a went from %s to %s", ta, got)
+	}
+	a("browser_evaluate", map[string]any{"script": "document.title"}, "Fixture")
+	b("browser_evaluate", map[string]any{"script": "document.title"}, "Two")
+	if list := a("browser_tabs", nil); !regexp.MustCompile(`(?m)^\* `+ta+` `).MatchString(list) || !regexp.MustCompile(`(?m)^~ `+tb+` `).MatchString(list) {
+		t.Fatalf("a's list doesn't mark its tab %s * and b's %s ~:\n%s", ta, tb, list)
+	}
+
+	// a tab each opens goes in its own group, and calls go on in it
+	a("browser_tabs", map[string]any{"action": "new", "url": site.URL})
+	b("browser_tabs", map[string]any{"action": "new", "url": site.URL + "/two"})
+	// the group of the tab a list marks mark with the page title
+	groupOf := func(list, mark, title string) string {
+		t.Helper()
+		m := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(mark) + ` t\d+ \[(Magpie(?: \d+)?)\] "` + title + `"`).FindStringSubmatch(list)
+		if m == nil {
+			t.Fatalf("no %s tab %q in a Magpie group:\n%s", mark, title, list)
+		}
+		return m[1]
+	}
+	list := a("browser_tabs", nil)
+	ga, gb := groupOf(list, "*", "Fixture"), groupOf(list, "~", "Two")
+	if ga == gb {
+		t.Fatalf("both sessions' tabs are in %s:\n%s", ga, list)
+	}
+	list = b("browser_tabs", nil)
+	if groupOf(list, "*", "Two") != gb || groupOf(list, "~", "Fixture") != ga {
+		t.Fatalf("b's list doesn't have its tab in %s and a's in %s:\n%s", gb, ga, list)
 	}
 }

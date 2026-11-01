@@ -250,3 +250,16 @@ func TestApiGetWholeAnswer(t *testing.T) {
 		t.Fatalf("502 over the cap: code %d, err %v", code, err)
 	}
 }
+
+// An empty 200 is said so, not kept for a 304 to answer nothing with
+// again (#3045).
+func TestAPIGetEmptyAnswer(t *testing.T) {
+	sandbox(t)
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer empty.Close()
+	if _, _, _, err := apiGet(empty.URL, 8<<20); err == nil {
+		t.Error("an empty answer wasn't noticed")
+	} else if !strings.Contains(err.Error(), "GitHub answered nothing") {
+		t.Errorf("said: %v", err)
+	}
+}

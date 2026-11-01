@@ -30,6 +30,12 @@ func CompactSet(id string) int {
 	return compactSet(settings.Load(), id, GroupFinder())
 }
 
+// CompactSetIn is CompactSet with the settings and group finder its caller
+// has already read (CompactFor's).
+func CompactSetIn(s settings.Settings, id string, find func(string) (Group, []Member, bool)) int {
+	return compactSet(s, id, find)
+}
+
 // CompactFor is where Codex compacts a conversation on e (catalog.Model's
 // Compact): the threshold the user set on it or its provider (CompactSet),
 // else, when its window is one the user typed (Entry.WindowSet) and no

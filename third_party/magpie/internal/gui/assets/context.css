@@ -167,9 +167,9 @@ i.dot.free { background: var(--k-free); box-shadow: inset 0 0 0 1px color-mix(in
 .ctx-agent, .ctx-tune { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px 12px; display: flex; flex-direction: column; gap: 12px; min-width: 0; font-variant-numeric: tabular-nums; }
 .ctx-agent-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .ctx-who-box { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.ctx-who { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.ctx-who .ic { width: 20px; height: 20px; flex: none; }
-.ctx-who b { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx-who-box .ctx-who { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ctx-who-box .ctx-who .ic { width: 20px; height: 20px; flex: none; }
+.ctx-who-box .ctx-who b { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ctx-who-sub { font-size: 11px; color: var(--muted); }
 .ctx-grade { display: flex; flex-direction: column; align-items: center; gap: 2px; flex: none; }
 .ctx-grade-word { font-size: 10.5px; font-weight: 600; }

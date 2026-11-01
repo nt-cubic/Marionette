@@ -350,8 +350,28 @@ func TestCodexScreenshotsAreNotFittedAgainEachTurn(t *testing.T) {
 // What is held stays within the budget.
 func TestCodexFittedImagesPastTheBudget(t *testing.T) {
 	shots := wideShots(t, 30)
-	one := len(fitKeyEntry(t, shots[0]).data)
-	made := freshFitted(t, 10*one+one/2)
+	// The shots fit to no one size: a few bytes of PNG each way, and the
+	// standard library's encoder shifts them from release to release
+	// (past a budget counted on the first shot alone, go1.26 kept 10 of
+	// these and go1.27 kept 11). The budget is counted on the shots as
+	// they fit, on the ten each turn ends holding: 20 to 29 after the
+	// first and third, 10 to 19 after the second. It holds the larger
+	// ten, and must leave out an eleventh from either.
+	sizes := make([]int, len(shots))
+	for i, shot := range shots {
+		sizes[i] = len(fitKeyEntry(t, shot).data)
+	}
+	sum := func(from, to int) (n int) {
+		for _, one := range sizes[from:to] {
+			n += one
+		}
+		return n
+	}
+	budget := max(sum(20, 30), sum(10, 20))
+	if budget >= min(sum(19, 30), sum(9, 20)) {
+		t.Fatalf("no budget holds ten of these and no eleven: %v", sizes)
+	}
+	made := freshFitted(t, budget)
 	body := computerUseRequest(shots)
 	was := int64(0)
 	for turn := 1; turn <= 3; turn++ {

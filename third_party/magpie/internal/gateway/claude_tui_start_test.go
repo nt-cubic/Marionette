@@ -14,8 +14,7 @@ import (
 // tuiHelperHarness is a script harness whose runs in Claude Code's
 // interactive mode start a stand-in for magpie's claude-tui-helper: it
 // notes each start in started, waits as hold says (a shell command), and
-// becomes the -p Claude Code it was handed, as the helper does when the
-// interactive Claude Code doesn't show its prompt in time.
+// runs the stand-in Claude Code it was handed.
 func tuiHelperHarness(t *testing.T, hold string) (*resumeHarness, string) {
 	t.Helper()
 	h := newReplyHarness(t, "ok")
@@ -52,28 +51,30 @@ func TestClaudeTUISlowStartAnswered(t *testing.T) {
 	if n := helperStarts(started); n != 1 {
 		t.Fatalf("the helper started %d times, want once", n)
 	}
-	if _, ok := claudetui.BrokenSince(); ok {
-		t.Fatal("a slow start that answered was marked broken")
-	}
 }
 
-// A helper that never answers initialize is let go, the machine is marked
-// as one whose interactive mode doesn't start, and the turn is answered by
-// -p: the turn, and the next, never wait on the interactive mode again.
-func TestClaudeTUIHungHelperGoesPrint(t *testing.T) {
+// A helper that never answers initialize is let go, and the turn fails
+// saying the interactive mode didn't start: it is never answered by -p,
+// which the plan counts as another client's and which has none of the
+// interactive mode's cache (the owner, 11-01). Nothing is marked: the next
+// turn tries the interactive mode again.
+func TestClaudeTUIHungHelperNeverPrint(t *testing.T) {
 	was := tuiInitWait
 	tuiInitWait = time.Second
 	t.Cleanup(func() { tuiInitWait = was })
 	h, started := tuiHelperHarness(t, "exec sleep 600")
-	h.ask("rules", "hi")
+	code, msg := h.askCode("rules", "hi")
+	if code == 200 || !strings.Contains(msg, "interactive mode didn't start") || !strings.Contains(msg, "never runs it as claude -p") {
+		t.Fatalf("%d %s", code, msg)
+	}
+	if runs := h.runs(); len(runs) != 0 {
+		t.Fatalf("a -p Claude Code ran: %v", runs)
+	}
 	if n := helperStarts(started); n != 1 {
 		t.Fatalf("the helper started %d times, want once", n)
 	}
-	if _, ok := claudetui.BrokenSince(); !ok {
-		t.Fatal("a helper that never answered left no mark")
-	}
-	h.ask("other rules", "hello")
-	if n := helperStarts(started); n != 1 {
-		t.Fatalf("the helper started %d times, want once: a run after the mark went to the interactive mode", n)
+	h.askCode("other rules", "hello")
+	if n := helperStarts(started); n != 2 {
+		t.Fatalf("the helper started %d times, want twice: the next turn didn't try the interactive mode", n)
 	}
 }

@@ -54,7 +54,14 @@ func TestRelayInputCapGoesToTheNextMember(t *testing.T) {
 		t.Fatalf("tries %+v", r.Tries)
 	}
 
-	// a plain bad request is as bad at the next member: not asked
+	// a plain bad request is as bad at the next member: not asked. The
+	// overflow above left this conversation's memory of a's refusal
+	// behind, and #3453's learning would put a behind b before either is
+	// asked; this phase is about how a plain 400 is classed, so the
+	// memory starts empty
+	overflowLearned.Lock()
+	overflowLearned.m = map[string]map[string]refusedLong{}
+	overflowLearned.Unlock()
 	bad := `{"error":{"message":"Invalid parameter: messages","type":"invalid_request_error"}}`
 	a.replies, a.n, b.n = []reply{{400, "", bad}}, 0, 0
 	code, body = postAs(t, s, "", `{"model":"group/top","messages":[{"role":"user","content":"hi"}]}`)

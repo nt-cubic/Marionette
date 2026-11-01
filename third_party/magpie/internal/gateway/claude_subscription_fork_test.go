@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yetone/magpie/internal/claudetui"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/testenv"
 )
@@ -210,11 +211,21 @@ wait
 // its lead's run made, after the lead's own next turn did: it found no run
 // to take them, and a new Claude Code was told the whole conversation in
 // one message, a prefix the cache has never seen. It branches off the
-// lead's run's session instead, cut after the reply that made the calls
-// (--resume-session-at, a copy with --fork-session): the conversation as
-// Claude Code asked it of Anthropic, cached, and its run is told the
-// results and the directive only. The lead's session stays the lead's.
+// lead's run's session instead, cut after the reply that made the calls:
+// the conversation as Claude Code asked it of Anthropic, cached, and its
+// run is told the results and the directive only. The lead's session
+// stays the lead's. The cut is a copy of the session's lines as far as
+// that reply, a session of its own (bbfatx on X): Claude Code's
+// interactive mode doesn't take --resume-session-at, so a branch was -p,
+// and read none of the conversation its interactive lead had cached; with
+// the interactive mode on, a -p branch is never run.
 func TestClaudeForkBranchesOffTheLeadsSession(t *testing.T) {
+	for _, mode := range []string{"print", "interactive"} {
+		t.Run(mode, func(t *testing.T) { forkBranches(t, mode) })
+	}
+}
+
+func forkBranches(t *testing.T, mode string) {
 	if runtime.GOOS == "windows" {
 		t.Skip("a shell script stands in for Claude Code")
 	}
@@ -235,29 +246,36 @@ func TestClaudeForkBranchesOffTheLeadsSession(t *testing.T) {
 
 	// Claude Code, keeping its session as it does: a turn told from the
 	// start calls Agent through its MCP server, the call's block written
-	// to the session as a line of its own, and says what the result said.
-	// Resumed with --fork-session, a copy of the session it names is its
-	// own, and it says where it was cut.
+	// to the session as a line of its own, and says what the result said,
+	// written after it. Resumed, it goes on from the session's last line,
+	// or as -p from the one --resume-session-at names, and says which, and
+	// whether every line is that session's; the interactive mode takes no
+	// --resume-session-at (Claude Code 2.1.316).
 	dir, logs := t.TempDir(), t.TempDir()
 	testenv.Program(t, filepath.Join(dir, "claude"), `#!/bin/sh
 if [ "$1" = auth ]; then echo '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","email":"lead@example.com","subscriptionType":"max"}'; exit 0; fi
 log=`+logs+`/$$
 echo "args $*" > $log
+echo "mode ${FAKE_TUI:-print}" >> $log
 cb=$(cat "$(printf '%s\n' "$@" | grep -o '"claude-mcp-helper","[^"]*"' | head -1 | sed 's/.*","//; s/"$//')")
-sid=lead$$; cut=; fork=; prev=
+sid=lead$$; resumed=; at=; fork=; prev=
 for a in "$@"; do
-  if [ "$prev" = --resume ]; then sid=$a; fi
-  if [ "$prev" = --resume-session-at ]; then cut=$a; fi
+  if [ "$prev" = --resume ]; then sid=$a; resumed=1; fi
+  if [ "$prev" = --resume-session-at ] && [ -z "$FAKE_TUI" ]; then at=$a; fi
   if [ "$a" = --fork-session ]; then fork=1; fi
   prev=$a
 done
 proj="$CLAUDE_CONFIG_DIR/projects/$(pwd -P | sed 's/[^A-Za-z0-9]/-/g')"
 mkdir -p "$proj"
-if [ -n "$fork" ]; then
-  [ -f "$proj/$sid.jsonl" ] || { echo "No conversation found with session ID: $sid" >&2; exit 1; }
-  sid=branch$$
+file="$proj/$sid.jsonl"
+if [ -n "$resumed" ]; then
+  [ -f "$file" ] || { echo "No conversation found with session ID: $sid" >&2; exit 1; }
+  cut=$(tail -n 1 "$file" | sed 's/.*"uuid":"\([^"]*\)".*/\1/')
+  if grep -v '"sessionId":"'$sid'"' "$file" | grep -q .; then cut="$cut, lines of another session"; fi
+  if [ -n "$at" ]; then cut=$at; fi
+  if [ -n "$fork" ]; then sid=fork$$; file="$proj/$sid.jsonl"; fi
 fi
-: >> "$proj/$sid.jsonl"
+: >> "$file"
 say() {
   echo '{"type":"stream_event","event":{"type":"message_start","message":{"id":"m'$$'","model":"claude-opus-5-5","usage":{"input_tokens":1}}}}'
   echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"'"$1"'"}}}'
@@ -273,7 +291,7 @@ while read -r line; do
     continue ;;
   esac
   echo "told $line" >> $log
-  if [ -n "$fork" ]; then say "branched at $cut"; continue; fi
+  if [ -n "$resumed" ]; then say "branched at $cut"; continue; fi
   case "$line" in
     *"Fork started"*) say "told it whole"; continue ;;
   esac
@@ -281,18 +299,35 @@ while read -r line; do
   echo '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_L'$$'","name":"mcp__magpie__Agent"}}}'
   echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"part\":1}"}}}'
   echo '{"type":"stream_event","event":{"type":"content_block_stop","index":0}}'
+  echo '{"type":"user","uuid":"ask-'$$'","sessionId":"'$sid'"}' >> "$file"
+  echo '{"type":"assistant","uuid":"line-'$$'","sessionId":"'$sid'","message":{"id":"m'$$'","model":"claude-opus-5-5"}}' >> "$file"
   echo '{"type":"assistant","uuid":"line-'$$'","message":{"id":"m'$$'","model":"claude-opus-5-5","content":[{"type":"tool_use","id":"toolu_L'$$'","name":"mcp__magpie__Agent","input":{"part":1}}]}}'
   echo '{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":3}}}'
   echo '{"type":"stream_event","event":{"type":"message_stop"}}'
   (
     call='{"tool_call_id":"toolu_L'$$'","name":"Agent","arguments":{"part":1}}'
     got=$(curl --noproxy '*' -s -X POST -H 'Content-Type: application/json' --data "$call" "$cb")
+    echo '{"type":"user","uuid":"result-'$$'","sessionId":"'$sid'"}' >> "$file"
     case "$got" in *"agent launched"*) say "heard:agent launched" ;; *) say "heard:something else" ;; esac
   ) &
 done
 wait
 `)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if mode != "print" {
+		// the interactive mode's helper, a stand-in that runs Claude
+		// Code as it was asked, saying the run is the interactive mode's
+		claudeTUIRuns = true
+		t.Cleanup(func() { claudeTUIRuns = false })
+		helper := filepath.Join(t.TempDir(), "magpie")
+		testenv.Program(t, helper, `#!/bin/sh
+[ "$1" = "`+claudetui.Command+`" ] || exit 9
+shift; claude=$1; shift
+FAKE_TUI=interactive exec "$claude" "$@"
+`)
+		claudeTUIHelper = helper
+		t.Cleanup(func() { claudeTUIHelper = "" })
+	}
 	provider.ForgetAccounts()
 	t.Cleanup(provider.ForgetAccounts)
 	if err := provider.SaveGroup(provider.Group{ID: "orchestrator", Name: "Orchestrator", Members: []string{"claude/claude-opus-5-5"}}); err != nil {
@@ -347,7 +382,7 @@ wait
 		t.Fatalf("the lead's next turn: %d %.400s", code, body)
 	}
 	code, body = post(`[` + lead + `,` + reply + `,` + result("Fork started — processing in background", "<fork-boilerplate>directive 1: take part 1</fork-boilerplate>") + `]`)
-	if code != 200 || !strings.Contains(body, "branched at line-"+pid) {
+	if code != 200 || !strings.Contains(body, "branched at line-"+pid+`"`) {
 		t.Fatalf("the fork was answered %d %.600s, want a run branched off the lead's session at line-%s", code, body, pid)
 	}
 	entries, _ := os.ReadDir(logs)
@@ -355,12 +390,20 @@ wait
 	for _, e := range entries {
 		b, _ := os.ReadFile(filepath.Join(logs, e.Name()))
 		log := string(b)
-		if !strings.Contains(log, "--fork-session") {
+		if !strings.Contains(log, "--resume ") {
 			continue
 		}
 		branched++
-		if !strings.Contains(log, "--resume lead"+pid+" ") || !strings.Contains(log, "--resume-session-at line-"+pid) {
+		if strings.Contains(log, "--resume lead") || strings.Contains(log, "--fork-session") || strings.Contains(log, "--resume-session-at") {
 			t.Errorf("the branch's arguments: %.300s", log)
+		}
+		// the branch is its lead's mode: the prompt its lead's cache has
+		want := "mode print"
+		if mode != "print" {
+			want = "mode interactive"
+		}
+		if !strings.Contains(log, "\n"+want+"\n") {
+			t.Errorf("the branch ran as %.300s, want %q", log, want)
 		}
 		told := log[strings.Index(log, "\ntold "):]
 		if strings.Contains(told, "lead task") || !strings.Contains(told, "Fork started") || !strings.Contains(told, "directive 1") {

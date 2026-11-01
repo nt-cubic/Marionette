@@ -25,6 +25,7 @@ import (
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/proc"
+	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/sessions"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/usage"
@@ -100,15 +101,38 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			n = sessions.All
 		}
 		agents := map[string]*agent.Agent{}
+		// what a row is named and drawn as, beside the list, for listTag
+		var drawn strings.Builder
 		for _, a := range agent.Clients() {
 			agents[a.ID] = a
+			drawn.WriteString(a.ID + "\x00" + a.SharedName() + "\x00" + a.Icon + "\x00")
 		}
 		out := sessionsJSON{Sessions: []sessionJSON{}, Terminal: runtime.GOOS == "darwin" && !isWeb(w),
 			Dirs: []string{}}
 		for _, d := range sessions.Dirs() {
 			out.Dirs = append(out.Dirs, tilde(d))
+			drawn.WriteString("\x01" + out.Dirs[len(out.Dirs)-1])
 		}
-		list := sessions.List(sessions.All)
+		// the page has this very answer when the listing, the usage log,
+		// the aliases and the agents are what they were when it was sent:
+		// told so without the rows being made, encoded and hashed again,
+		// ~60% of an unchanged poll's ~22 MB over ~17k real sessions
+		logV, logKnown := usage.LogVersion()
+		aliases := provider.UsageAliases()
+		now := listTag{log: logV, drawn: drawn.String(), aliases: aliases}
+		made := -1
+		listTags.Lock()
+		if t, ok := listTags.m[n]; ok && logKnown && t.same(now) && r.Header.Get("X-Magpie-Had") == t.tag {
+			made = t.made
+		}
+		listTags.Unlock()
+		list, made, same := sessions.ListUnless(sessions.All, made)
+		if same {
+			rw.Header().Set("X-Magpie-Tag", r.Header.Get("X-Magpie-Had"))
+			rw.Header().Set("X-Magpie-Same", "1")
+			rw.WriteHeader(http.StatusOK)
+			return
+		}
 		nativeKeys := make(map[string]bool, len(list))
 		for _, s := range list {
 			// its copies' and subagents' ids among them
@@ -161,10 +185,20 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			j.Name = wslName(j.Name, s)
 			j.Path = tilde(j.Path)
 		}
-		writeJSONRows(rw, r, "sessions", out.Sessions, struct {
+		listsRowed.Add(1)
+		tag := writeJSONRows(rw, r, "sessions", out.Sessions, struct {
 			Terminal bool     `json:"terminal"`
 			Dirs     []string `json:"dirs"`
 		}{out.Terminal, out.Dirs})
+		if tag != "" && logKnown {
+			now.made, now.tag = made, tag
+			listTags.Lock()
+			if listTags.m == nil || len(listTags.m) >= statsMemoMost {
+				listTags.m = map[int]listTag{}
+			}
+			listTags.m[n] = now
+			listTags.Unlock()
+		}
 	}))
 	// stats is every session's usage by day over the last ?days=N days
 	// (every day when 0 or none), cut by agent, folder and model for the
@@ -544,6 +578,31 @@ type statsTag struct {
 	gen    uint64
 	agents map[string]string
 	tag    string
+}
+
+// listTags is, by ?limit, what the last list sent was made from and its
+// tag: an ask with that tag while all of it stands gets X-Magpie-Same
+// without the list being made. What a row shows beyond these (a Codex
+// thread's effort, a gateway session's title) is bounded by the listing,
+// made again at least once in sessions' listKeptFor.
+var listTags struct {
+	sync.Mutex
+	m map[int]listTag
+}
+
+// listsRowed counts the lists made into rows and sent, for tests.
+var listsRowed atomic.Int64
+
+type listTag struct {
+	made    int    // sessions.ListUnless's listing
+	log     uint64 // usage.LogVersion
+	drawn   string // the agents' names and icons, and the folders
+	aliases map[string]string
+	tag     string
+}
+
+func (t listTag) same(u listTag) bool {
+	return t.log == u.log && t.drawn == u.drawn && maps.Equal(t.aliases, u.aliases)
 }
 
 // sameStats is whether a and b would be sent the same: a read again

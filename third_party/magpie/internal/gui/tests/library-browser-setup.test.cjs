@@ -2,11 +2,14 @@
 // Magpie Browser's sheet in the Library's Discover: the agents it gives the
 // browser act in the user's own tabs, so the sheet says so, and sets up the
 // extension it needs in the browser the user is signed in to. Not set up,
-// it offers Set up the extension…, which writes the folder and shows it,
-// and the steps to load it there (chrome://extensions → Load unpacked);
-// once the browser connects, the sheet says it is connected without being
-// opened again. Every language, Chromium and WebKit, at 1100 and 420 wide,
-// nothing running off to the side; no backend, the API is faked here.
+// it offers Set up the extension…, which writes the folder (in the home
+// folder, where it can be seen) and shows it, and the steps to load it
+// there: on the Mac the folder is in the sheet, dragged from it onto
+// chrome://extensions, elsewhere dragged from the file manager or chosen
+// with Load unpacked. Once the browser connects, the sheet says it is
+// connected without being opened again. Every language, Chromium and
+// WebKit, at 1100 and 420 wide, nothing running off to the side; no
+// backend, the API is faked here.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -19,12 +22,14 @@ const { I18N } = strings();
 const LANGS = ["en", "zh", "zh-TW", "ja", "de"];
 const tr = (lang, s, vars = {}) => Object.entries(vars).reduce((o, [k, v]) => o.replace(`{${k}}`, v), lang === "en" ? s : I18N[lang]?.[s] ?? s);
 const HOME = "/Users/tester";
-const DIR = `${HOME}/.config/magpie/browser-extension`;
+const DIR = `${HOME}/Magpie Browser Extension`;
 const ABOUT = "Use your own browser: your tabs, signed in to the sites you use. Open pages, click, type, upload, read and take screenshots, through the Magpie Browser extension.";
 
-function fixture(lang) {
-  const st = { written: false, connected: false, setups: 0 };
-  const browser = () => ({ dir: DIR, written: st.written, version: "0.1.0", connected: st.connected, ...(st.connected ? { extension: "0.1.0", browser: "Chrome/141" } : {}) });
+function fixture(lang, drag) {
+  const st = { written: false, connected: false, setups: 0, drags: 0 };
+  let onDrag;
+  const dragged = new Promise((ok) => { onDrag = ok; });
+  const browser = () => ({ dir: DIR, written: st.written, version: "0.1.0", connected: st.connected, ...(drag ? { drag: true } : {}), ...(st.connected ? { extension: "0.1.0", browser: "Chrome/141" } : {}) });
   const route = async (route) => {
     const req = route.request(), url = new URL(req.url());
     const json = (data) => route.fulfill({ json: data });
@@ -52,6 +57,11 @@ function fixture(lang) {
       st.written = true;
       return json(browser());
     }
+    if (url.pathname === "/api/library/browser/drag" && req.method() === "POST") {
+      st.drags++;
+      onDrag();
+      return json({ dragging: true });
+    }
     if (url.pathname === "/api/groups") return json({ groups: [] });
     if (url.pathname === "/api/providers") return json({ providers: [], gateway: { running: true } });
     if (url.pathname.startsWith("/api/")) return json({});
@@ -60,7 +70,7 @@ function fixture(lang) {
     const body = await fs.readFile(file).catch(() => null);
     await (body ? route.fulfill({ body, contentType }) : route.fulfill({ status: 404, body: "" }));
   };
-  return { route, st };
+  return { route, st, dragged };
 }
 
 const wide = (page) => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
@@ -79,9 +89,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     });
     for (const lang of LANGS) {
       const w = (s, vars) => tr(lang, s, vars);
-      for (const width of [1100, 420]) {
-        await t.test(`${lang} at ${width}px: set up, then connected`, async () => {
-          const f = fixture(lang);
+      for (const [width, drag] of [[1100, true], [420, true], [1100, false], [420, false]]) {
+        await t.test(`${lang} at ${width}px, ${drag ? "the Mac's drag" : "no drag"}: set up, then connected`, async () => {
+          const f = fixture(lang, drag);
           const context = await browser.newContext({ viewport: { width, height: 800 }, reducedMotion: "reduce" });
           const page = await context.newPage();
           page.setDefaultTimeout(5000);
@@ -108,9 +118,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
             w("Not set up: set up the extension in Chrome, Edge, Arc, Brave or another Chromium browser"));
           assert.equal((await go.textContent()).trim(), w("Set up the extension…"));
           assert.equal(await box.locator(".mk-browser-steps").isVisible(), false);
+          assert.equal(await box.locator(".mk-browser-folder").isVisible(), false);
           assert.equal(await state.locator(".mk-browser-dot.on").count(), 0);
           assert.equal(await wide(page), 0);
-          shots.push([`${lang}-${width}-new`, await sheet.screenshot()]);
+          shots.push([`${lang}-${width}-${drag ? "drag" : "nodrag"}-new`, await sheet.screenshot()]);
 
           await go.click();
           await page.waitForFunction((s) => document.querySelector("#modal .mk-browser-state")?.textContent === s,
@@ -120,13 +131,31 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           assert.deepEqual(await box.locator(".mk-browser-steps li").allTextContents(), [
             w("Open chrome://extensions (edge://extensions in Edge) in the browser you use every day."),
             w("Turn on Developer mode."),
-            w("Click Load unpacked and choose {dir}.", { dir: "~/.config/magpie/browser-extension" }),
+            drag ? w("Drag the folder below onto that page.")
+              : w("Drag the folder from the window that opened onto that page, or click Load unpacked and choose {dir}.", { dir: "~/Magpie Browser Extension" }),
           ]);
           assert.equal(await box.locator(".mk-browser-steps").isVisible(), true);
+          const folder = box.locator(".mk-browser-folder");
+          assert.equal(await folder.isVisible(), drag);
+          if (drag) {
+            assert.equal(await folder.locator(".mk-browser-folder-path").textContent(), "~/Magpie Browser Extension");
+            assert.equal(await folder.getAttribute("title"), w("Drag onto chrome://extensions"));
+            // a click is not a drag; a press that moves is, once
+            await folder.click();
+            assert.equal(f.st.drags, 0);
+            const at = await folder.boundingBox();
+            await page.mouse.move(at.x + 20, at.y + 15);
+            await page.mouse.down();
+            await page.mouse.move(at.x + 30, at.y + 25, { steps: 3 });
+            await page.mouse.move(at.x + 60, at.y + 40, { steps: 3 });
+            await page.mouse.up();
+            await f.dragged;
+            assert.equal(f.st.drags, 1);
+          }
           // nothing in the sheet runs off its side, the folder's path included
           assert.equal(await wide(page), 0);
           assert.equal(await sheet.evaluate((e) => e.scrollWidth - e.clientWidth), 0);
-          shots.push([`${lang}-${width}-written`, await sheet.screenshot()]);
+          shots.push([`${lang}-${width}-${drag ? "drag" : "nodrag"}-written`, await sheet.screenshot()]);
 
           // the extension loaded: the sheet says so on its next look
           f.st.connected = true;
@@ -134,8 +163,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
             w("Connected to your browser") + " · 0.1.0", { timeout: 10000 });
           assert.equal(await state.locator(".mk-browser-dot.on").count(), 1);
           assert.equal(await box.locator(".mk-browser-steps").isVisible(), false);
+          assert.equal(await box.locator(".mk-browser-folder").isVisible(), false);
           assert.equal(await wide(page), 0);
-          shots.push([`${lang}-${width}-connected`, await sheet.screenshot()]);
+          shots.push([`${lang}-${width}-${drag ? "drag" : "nodrag"}-connected`, await sheet.screenshot()]);
           assert.deepEqual(errors, []);
           await context.close();
         });

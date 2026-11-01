@@ -3,8 +3,8 @@
 // Discord, for a screen share): with Hide accounts on, an account's name
 // on the provider editor's row and on its Usage card has a quiet eye, in
 // sight on hover or keyboard focus. A click shows that account, by its
-// address and the name the user gave it, wherever the window draws it,
-// tooltips too; the others stay hidden. The tray panel's Usage cards have
+// address wherever the window draws it, tooltips too; the others stay
+// hidden. The name the user gave one is in sight throughout (#3656). The tray panel's Usage cards have
 // the same eye. Each page's shown accounts are its own: one shown in the
 // window stays hidden in the panel and the other way round. Closing the
 // window (hideMain's closed) or putting the panel away hides them again. With Hide accounts off there is no eye. A click moves nothing;
@@ -35,7 +35,7 @@ const provider = () => ({
 const quotas = () => [
   { provider: "zcode", name: "ZCode", icon: "zcode", plan: "Pro", user: TEAM, alias: SEAT, seat: SEAT,
     windows: [{ name: "5 hours", used: 20, resetsAt: inHours(3) }] },
-  { provider: "zcode", name: "ZCode", icon: "zcode", plan: "Lite", user: ME, alias: "Personal",
+  { provider: "zcode", name: "ZCode", icon: "zcode", plan: "Lite", user: ME, alias: "Personal", named: true,
     windows: [{ name: "5 hours", used: 60, resetsAt: inHours(2) }] },
 ];
 
@@ -116,7 +116,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
         await page.evaluate(() => hideAccounts.set(true, true));
         await sample(page);
-        await page.waitForFunction(() => document.querySelectorAll("#sample .pii").length === 3);
+        await page.waitForFunction(() => document.querySelectorAll("#sample .pii").length === 2);
         await page.waitForFunction((me) => document.querySelector(`.editor .acc[data-account-id="${me}"] .acct-user .pii`), ME);
         for (const id of [ME, TEAM]) assert.ok(!(await seen(row(id))).includes(id), `${id} is hidden first`);
 
@@ -175,12 +175,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await panel.locator("#panelQuota .pq-user").first().waitFor();
         await panel.waitForFunction(() => document.querySelector("#panelQuota .pq-user .pii"));
         const pq = await panel.evaluate(() => [...document.querySelectorAll("#panelQuota .pq-card")].map((c) => c.textContent + c.title).join(" "));
-        assert.ok(!pq.includes(ME) && !pq.includes("Personal"), "the panel still hides it: " + pq);
+        assert.ok(!pq.includes(ME), "the panel still hides it: " + pq);
         await panel.close();
 
         // the window closed: every account hidden again
         await page.evaluate(() => hideAccounts.closed());
-        await page.waitForFunction(() => document.querySelectorAll("#sample .pii").length === 3);
+        await page.waitForFunction(() => document.querySelectorAll("#sample .pii").length === 2);
         for (const id of [ME, TEAM]) assert.ok(!(await seen(row(id))).includes(id), `${id} is hidden after the window closed`);
         assert.equal(await eye(ME).getAttribute("aria-pressed"), "false");
 
@@ -224,7 +224,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await opacity(eye("Personal")), "none", "no eye while Hide accounts is off");
 
         await panel.evaluate(() => hideAccounts.set(true));
-        await panel.waitForFunction(() => document.querySelectorAll("#panelQuota .pq-user .pii").length === 2);
+        await panel.waitForFunction(() => document.querySelectorAll("#panelQuota .pq-user .pii").length === 1);
+        await panel.waitForFunction((me) => [...document.querySelectorAll("#panelQuota .pq-card")].some((c) => c.querySelector(".pq-user").textContent === "Personal" && !c.title.includes(me)), ME);
         await panel.mouse.move(0, 0);
         assert.equal(await opacity(eye("Personal")), "0");
         await card("Personal").hover();
@@ -235,7 +236,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // a click shows that one, its card's tooltip too; the other stays hidden; nothing moves
         const sc = await scrolled(panel);
         await eye("Personal").click();
-        await panel.waitForFunction(() => document.querySelectorAll("#panelQuota .pq-user .pii").length === 1);
+        await panel.waitForFunction((me) => [...document.querySelectorAll("#panelQuota .pq-card")].some((c) => c.querySelector(".pq-user").textContent === "Personal" && c.title.includes(me)), ME);
+        assert.equal(await panel.locator("#panelQuota .pq-user .pii").count(), 1);
         assert.equal(await scrolled(panel), sc, "a click scrolled");
         assert.equal(await card("Personal").locator(".pq-user").textContent(), "Personal");
         assert.ok((await card("Personal").getAttribute("title")).includes(ME), "its tooltip names it");
@@ -254,7 +256,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await win.locator(".subscription-account .quota-alias").first().waitFor();
         await win.waitForFunction(() => document.querySelectorAll(".subscription-account .quota-of .pii").length === 2);
         const ws = await win.evaluate(() => [...document.querySelectorAll(".subscription-account")].map((c) => c.textContent).join(" "));
-        assert.ok(!ws.includes(ME) && !ws.includes("Personal"), "the window still hides it: " + ws);
+        assert.ok(!ws.includes(ME) && ws.includes("Personal"), "the window still hides it, not its name: " + ws);
         await win.close();
 
         // put away (the panel's page goes hidden): hidden again
@@ -262,7 +264,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
           document.dispatchEvent(new Event("visibilitychange"));
         });
-        await panel.waitForFunction(() => document.querySelectorAll("#panelQuota .pq-user .pii").length === 2);
+        await panel.waitForFunction((me) => [...document.querySelectorAll("#panelQuota .pq-card")].some((c) => c.querySelector(".pq-user").textContent === "Personal" && !c.title.includes(me)), ME);
         assert.ok(!(await seen(card("Personal"))).includes(ME), "hidden once the panel is put away");
         assert.equal(await eye("Personal").getAttribute("aria-pressed"), "false");
 

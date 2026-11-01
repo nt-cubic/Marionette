@@ -27,7 +27,7 @@ var keptList struct {
 	// it changes when agy is wired to magpie's gateway or let go of
 	agy      bool
 	agyStart string
-	made     int // listings assembled, for tests
+	made     int // listings assembled: ListUnless's number for the one kept
 }
 
 // listKeptFor is how long a kept listing stands at most. What a row shows
@@ -37,8 +37,9 @@ var keptList struct {
 var listKeptFor = time.Minute
 
 // keptListing is the kept listing when it was made of files as they are
-// now, at limit, with the prices and names it got still the same: a copy,
-// which a caller may write rows of (List puts the aliases in).
+// now, at limit, with the prices and names it got still the same. It is
+// the kept slice itself: a caller copies it before writing rows of it
+// (List puts the aliases in).
 func keptListing(files []file, limit int, price func(string) *catalog.Price, titles func(string) string) ([]Session, bool) {
 	k := &keptList
 	if k.out == nil || k.gen != cacheGeneration || k.limit != limit || time.Since(k.at) >= listKeptFor ||
@@ -46,7 +47,7 @@ func keptListing(files []file, limit int, price func(string) *catalog.Price, tit
 		forgetKeptList()
 		return nil, false
 	}
-	return slices.Clone(k.out), true
+	return k.out, true
 }
 
 // keepListing starts what keepList keeps: price and titles answer as they

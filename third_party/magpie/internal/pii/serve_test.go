@@ -260,6 +260,7 @@ func TestFailedModelHoldsRequestsBackAtOnce(t *testing.T) {
 	classifyTimeout = func(int) time.Duration { return 300 * time.Millisecond }
 	t.Cleanup(func() { classifyTimeout = was })
 	first := findAsync(context.Background(), "hi Alice")
+	waitForStart(t, log)
 	waitFor(t, "the first request reaching pf-serve", func() bool { return len(fakeLines(t, log, "request")) == 1 })
 	queued := findAsync(context.Background(), "another Alice")
 	if r := within10s(t, "the first request", func() found { return <-first }); r.err == nil {

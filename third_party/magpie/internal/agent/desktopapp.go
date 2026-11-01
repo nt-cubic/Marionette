@@ -84,6 +84,10 @@ var desktopApps = map[string]desktopApp{
 	// CLI's ~/.codebuddy/models.json for models of one's own (codebuddy.go)
 	// and needs no CLI. Its Windows install folder isn't known here, so on
 	// Windows only the rule that a desktop app's folder is never gone holds.
+	// Antigravity's app (antigravity.go), not Antigravity IDE
+	// (com.google.antigravity-ide). Its Windows and Linux installs aren't
+	// known here: there the file its backend writes finds it.
+	"antigravity": {id: "com.google.antigravity", names: []string{"Antigravity.app"}},
 	"codebuddy": {id: "com.tencent.codebuddy", names: []string{"CodeBuddy.app"},
 		more: []desktopApp{{id: "com.tencent.codebuddycn", names: []string{"CodeBuddy CN.app"}}}},
 }

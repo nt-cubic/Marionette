@@ -27,6 +27,15 @@ func waitFor(t *testing.T, what string, ok func() bool) {
 	}
 }
 
+// waitForStart waits for the stand-in to be up. A wait on a first request
+// spends its bar on the stand-in's start too, and on a loaded machine the
+// start alone ate the whole of it (#3860): the waits that time a request
+// wait for the start line first, so their bar times only the request.
+func waitForStart(t *testing.T, log string) {
+	t.Helper()
+	waitFor(t, "the fake pf-serve starting", func() bool { return len(fakeLines(t, log, "start")) >= 1 })
+}
+
 // within10s runs f, and fails the test when it hasn't returned in 10s: what
 // it waits on is a request stuck for an hour.
 func within10s[T any](t *testing.T, what string, f func() T) T {
@@ -66,6 +75,7 @@ func TestStatusAndStopDontWaitForARequest(t *testing.T) {
 	classifyTimeout = func(int) time.Duration { return time.Hour }
 	t.Cleanup(func() { classifyTimeout = was })
 	stuck := findAsync(context.Background(), "hi Alice")
+	waitForStart(t, log)
 	waitFor(t, "the request reaching pf-serve", func() bool { return len(fakeLines(t, log, "request")) == 1 })
 	if st := within10s(t, "Now", Now); !st.Running || st.Loading {
 		t.Fatalf("Now = %+v, want running", st)
@@ -106,6 +116,7 @@ func TestWaiterLeavesWhenItsContextEnds(t *testing.T) {
 	t.Cleanup(func() { classifyTimeout = was })
 	ahead, cancelAhead := context.WithCancel(context.Background())
 	first := findAsync(ahead, "hi Alice")
+	waitForStart(t, log)
 	waitFor(t, "the first request reaching pf-serve", func() bool { return len(fakeLines(t, log, "request")) == 1 })
 
 	ctx, cancel := context.WithCancelCause(context.Background())
@@ -136,6 +147,7 @@ func TestQueuedRequestReadsWhatTheOneAheadLearned(t *testing.T) {
 	log := fakeInstall(t, "slow", false)
 	history := []string{"hi Alice", "nothing here", "Bob and Alice"}
 	first := findAsync(context.Background(), history...)
+	waitForStart(t, log)
 	waitFor(t, "the first request reaching pf-serve", func() bool { return len(fakeLines(t, log, "request")) == 1 })
 	second := findAsync(context.Background(), history...)
 	a, b := <-first, <-second

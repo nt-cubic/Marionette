@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -289,27 +290,32 @@ func unsealedReasoning(line []byte) bool {
 // compaction item (or, left, a reasoning item OpenAI didn't seal), and
 // says whether it did.
 func portRollout(ctx context.Context, home, path string, left bool) (bool, error) {
-	ours := true // begun on OpenAI's provider or magpie's
-	return editRollout(ctx, home, path, func(line []byte, paged bool) ([]byte, bool) {
-		if isMetaLine(line) {
-			switch gjson.GetBytes(line, "payload.model_provider").String() {
-			case "", "openai", "magpie":
-			default:
-				ours = false
+	return editRollout(ctx, home, path, func() func(line []byte, paged bool) ([]byte, bool) {
+		ours := true // begun on OpenAI's provider or magpie's
+		return func(line []byte, paged bool) ([]byte, bool) {
+			if isMetaLine(line) {
+				switch gjson.GetBytes(line, "payload.model_provider").String() {
+				case "", "openai", "magpie":
+				default:
+					ours = false
+				}
 			}
+			out, ok := portLineAs(line, left && ours)
+			if ok {
+				out, ok = fitLine(line, out, paged)
+			}
+			return out, ok
 		}
-		out, ok := portLineAs(line, left && ours)
-		if ok {
-			out, ok = fitLine(line, out, paged)
-		}
-		return out, ok
 	})
 }
 
-// editRollout writes the rollout at path with each line as edit gives it,
-// if edit changed one, and says whether it did; paged is whether the
-// rollout's history is paginated.
-func editRollout(ctx context.Context, home, path string, edit func(line []byte, paged bool) ([]byte, bool)) (bool, error) {
+// editRollout writes the rollout at path with each line as an edit from
+// edits gives it, if one changed a line, and says whether it did; paged is
+// whether the rollout's history is paginated. The rollout is read once to
+// see whether a line changes, and only then again to write it: most
+// rollouts a pass looks at have nothing to change, and writing each one
+// out, compressed for a .zst, cost a pass more than reading it (#4735).
+func editRollout(ctx context.Context, home, path string, edits func() func(line []byte, paged bool) ([]byte, bool)) (bool, error) {
 	thread := codexThreadOf(filepath.Base(path))
 	if thread == "" {
 		return false, nil
@@ -318,24 +324,26 @@ func editRollout(ctx context.Context, home, path string, edit func(line []byte, 
 	if err != nil {
 		return false, err
 	}
-	in, err := openLines(path)
-	if err != nil {
+	if changed, err := eachEditedLine(ctx, path, edits(), nil); err != nil || !changed {
 		return false, err
 	}
-	defer in.Close()
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".magpie-"+filepath.Base(path)+"-*")
 	if err != nil {
 		return false, err
 	}
+	rolloutWrites.Add(1)
 	done := false
+	var z *zstd.Encoder
 	defer func() {
 		if !done {
+			if z != nil {
+				z.Close()
+			}
 			tmp.Close()
 			os.Remove(tmp.Name())
 		}
 	}()
 	var w io.Writer = tmp
-	var z *zstd.Encoder
 	if packed(path) {
 		if z, err = zstd.NewWriter(tmp); err != nil {
 			return false, err
@@ -343,39 +351,20 @@ func editRollout(ctx context.Context, home, path string, edit func(line []byte, 
 		w = z
 	}
 	bw := bufio.NewWriterSize(w, 64<<10)
-	br := bufio.NewReaderSize(in, 64<<10)
-	changed := false
-	paged, metaSeen := false, false
-	for n := 0; ; n++ {
-		if n%4096 == 0 && ctx.Err() != nil {
-			return false, ctx.Err()
-		}
-		line, err := br.ReadBytes('\n')
-		if len(line) > 0 {
-			if !metaSeen && isMetaLine(line) {
-				paged, metaSeen = paginated(line), true
-			}
-			out, ok := edit(line, paged)
-			changed = changed || ok
-			if _, werr := bw.Write(out); werr != nil {
-				return false, werr
-			}
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return false, err
-		}
+	changed, err := eachEditedLine(ctx, path, edits(), bw)
+	if err != nil {
+		return false, err
 	}
 	if !changed {
-		return false, nil
+		return false, errRolloutHeld // it changed between the reads
 	}
 	if err := bw.Flush(); err != nil {
 		return false, err
 	}
 	if z != nil {
-		if err := z.Close(); err != nil {
+		err := z.Close()
+		z = nil
+		if err != nil {
 			return false, err
 		}
 	}
@@ -388,7 +377,6 @@ func editRollout(ctx context.Context, home, path string, edit func(line []byte, 
 	if err := tmp.Close(); err != nil {
 		return false, err
 	}
-	in.Close()
 	os.Chtimes(tmp.Name(), fi.ModTime(), fi.ModTime())
 
 	// published as Codex publishes a compressed rollout: under the
@@ -419,6 +407,63 @@ func editRollout(ctx context.Context, home, path string, edit func(line []byte, 
 	}
 	done = true
 	return true, nil
+}
+
+// rolloutWrites counts the rollouts editRollout began to write out.
+var rolloutWrites atomic.Int64
+
+// eachEditedLine reads the rollout at path through edit, writing each
+// line as edit gives it to w (when there is one), and says whether edit
+// changed a line.
+func eachEditedLine(ctx context.Context, path string, edit func(line []byte, paged bool) ([]byte, bool), w io.Writer) (bool, error) {
+	in, err := openLines(path)
+	if err != nil {
+		return false, err
+	}
+	defer in.Close()
+	br := bufio.NewReaderSize(in, 64<<10)
+	changed := false
+	paged, metaSeen := false, false
+	for n := 0; ; n++ {
+		if n%4096 == 0 && ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		line, err := br.ReadSlice('\n')
+		if errors.Is(err, bufio.ErrBufferFull) {
+			var long []byte
+			long, err = readLongLine(br, line)
+			line = long
+		}
+		if len(line) > 0 {
+			if !metaSeen && isMetaLine(line) {
+				paged, metaSeen = paginated(line), true
+			}
+			out, ok := edit(line, paged)
+			changed = changed || ok
+			if w == nil && changed {
+				return true, nil
+			}
+			if w != nil {
+				if _, werr := w.Write(out); werr != nil {
+					return false, werr
+				}
+			}
+		}
+		if err == io.EOF {
+			return changed, nil
+		}
+		if err != nil {
+			return false, err
+		}
+	}
+}
+
+// readLongLine is the rest of a line longer than br's buffer, after its
+// start: ReadSlice's, which the next read writes over, so it is copied.
+func readLongLine(br *bufio.Reader, start []byte) ([]byte, error) {
+	line := append([]byte{}, start...)
+	rest, err := br.ReadBytes('\n')
+	return append(line, rest...), err
 }
 
 // Codex keeps places in a rollout by byte: a fork's or a revert's
@@ -513,15 +558,17 @@ func repairLineages(ctx context.Context, home string) (fixed []string, whole boo
 		if !ok || at == base.Get("end_byte_offset").Int() {
 			continue
 		}
-		changed, err := editRollout(ctx, home, p, func(line []byte, paged bool) ([]byte, bool) {
-			r := gjson.GetBytes(line, "payload.history_base.end_byte_offset")
-			if !isMetaLine(line) || r.Index <= 0 || r.Type != gjson.Number {
-				return line, false
+		changed, err := editRollout(ctx, home, p, func() func(line []byte, paged bool) ([]byte, bool) {
+			return func(line []byte, paged bool) ([]byte, bool) {
+				r := gjson.GetBytes(line, "payload.history_base.end_byte_offset")
+				if !isMetaLine(line) || r.Index <= 0 || r.Type != gjson.Number {
+					return line, false
+				}
+				out := append([]byte{}, line[:r.Index]...)
+				out = strconv.AppendInt(out, at, 10)
+				out = append(out, line[r.Index+len(r.Raw):]...)
+				return fitLine(line, out, true)
 			}
-			out := append([]byte{}, line[:r.Index]...)
-			out = strconv.AppendInt(out, at, 10)
-			out = append(out, line[r.Index+len(r.Raw):]...)
-			return fitLine(line, out, true)
 		})
 		switch {
 		case err != nil:
