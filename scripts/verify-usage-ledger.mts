@@ -7,7 +7,8 @@
  * 2. pruneLedger:保留最近 180 个自然日(第 180 天还在、第 181 天走)。
  * 3. summarizeLedger:今天 / 近 7 天 / 近 30 天 + prev7/prev30 上一周期。
  * 4. topAgents7 / rankedModels(>limit 折叠「其它」)。
- * 5. dailySeries(连续含空日、weekday) / foldHourWeek(7×24) / deltaPercent。
+ * 5. dailySeries / foldHourWeek / foldHourDays / mondayFirst / trendSeries /
+ *    cacheHitRate(排除输出) / hourRampStep。
  * 6. tokenPrices:目录解析、厂商优先(pickRate)、命名空间剥离匹配
  *    (marionette\、marionette::、vendor/)、按桶计价与未计价覆盖率。
  * 7. en 词典直查(脚本跑在 node,默认 zh-CN;占位符必须是 {count})。
@@ -17,15 +18,24 @@
 
 import {
   aggregateDays,
+  cacheHitRate,
   dailySeries,
   dayKeyOf,
   deltaPercent,
+  foldHourDays,
   foldHourWeek,
+  freshTokens,
+  hourRampStep,
+  mondayFirstHourGrid,
+  peakHourOf,
   pruneLedger,
+  rankedAgents,
   rankedModels,
   recordTurnUsageInto,
   summarizeLedger,
   topAgents7,
+  totalTokens,
+  trendSeries,
   type UsageLedger,
 } from "../src/lib/usageLedger";
 import {
@@ -190,6 +200,59 @@ check("dayKeyOf 格式", dayKeyOf(NOW) === "2026-10-31" && dayKeyOf(day(1)) === 
   );
   const grid = foldHourWeek(ledger, 1, NOW);
   check("小时×星期折叠", grid[4]![9] === 1 && grid.reduce((s, r) => s + r.reduce((a, b) => a + b, 0), 0) === 1);
+  const byDays = foldHourDays(ledger, 7, NOW);
+  check("foldHourDays 与 foldHourWeek 同窗", byDays[4]![9] === 1);
+  const monday = mondayFirstHourGrid(grid);
+  check("周一首行", monday[3]![9] === 1 && monday[6] === grid[0]);
+  check("peakHourOf", peakHourOf(grid) === 9);
+}
+
+// ── 4b. 缓存命中 / 趋势收桶 / 平方根分档 ─────────────────────────────
+{
+  check(
+    "cacheHitRate 排除输出",
+    cacheHitRate({ input: 70, cached: 20, cacheCreation: 10 }) === 0.2,
+  );
+  check("cacheHitRate 无上下文", cacheHitRate({ input: 0, cached: 0, cacheCreation: 0 }) === null);
+  check(
+    "freshTokens = 合计 − 缓存读",
+    freshTokens({ input: 70, output: 5, cached: 20, cacheCreation: 10 }) === 85,
+  );
+  check("totalTokens 四桶", totalTokens({ input: 1, output: 2, cached: 3, cacheCreation: 4 }) === 10);
+
+  let ledger: UsageLedger = { version: 1, days: {} };
+  ledger = recordTurnUsageInto(ledger, {
+    agentId: "a",
+    stats: stats({ input: 10, output: 2, cached: 8 }),
+    endedAt: day(0).getTime(),
+  });
+  ledger = recordTurnUsageInto(ledger, {
+    agentId: "a",
+    stats: stats({ input: 4, output: 1, cached: 0 }),
+    endedAt: day(1).getTime(),
+  });
+  const daily = dailySeries(ledger, 7, NOW);
+  const days = trendSeries(daily, "day");
+  check("趋势按天长度", days.length === 7);
+  const weeks = trendSeries(daily, "week");
+  check("趋势按周收桶", weeks.length >= 1 && weeks.length <= 2);
+  check(
+    "按周合计守恒",
+    weeks.reduce((s, p) => s + p.cache + p.fresh, 0) ===
+      days.reduce((s, p) => s + p.cache + p.fresh, 0),
+  );
+
+  const agents = rankedAgents(
+    {
+      ...aggregateDays(ledger, 7, NOW),
+    },
+    7,
+  );
+  check("rankedAgents 有本助手", agents.some((row) => row.agentId === "a"));
+
+  check("hourRampStep 零", hourRampStep(0, 100) === null);
+  check("hourRampStep 满档", hourRampStep(100, 100) === 6);
+  check("hourRampStep 平方根中档", hourRampStep(25, 100) === 3);
 }
 
 // ── 5. rankedModels 折叠其它 ───────────────────────────────────────────
