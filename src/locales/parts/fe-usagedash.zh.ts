@@ -79,4 +79,10 @@ export const zh = {
   "usageLedger.sessionsCount_one": "{count} 轮",
   "usageLedger.sessionsCount_other": "{count} 轮",
   "usageLedger.peakDay": "最忙一天:{day} · {tokens}",
+  // CSV 导出(用量分析页工具栏)
+  "usageLedger.exportCsv": "导出 CSV",
+  "usageLedger.csvPreparing": "正在生成 CSV…",
+  "usageLedger.csvOk": "已导出 {name}",
+  "usageLedger.csvReveal": "查看文件",
+  "usageLedger.csvError": "导出失败:{error}",
 } as const;
