@@ -1305,12 +1305,51 @@ impl AcpService {
             crate::debug_log::append("context", "info", &session_id, &extra_note, None);
         }
 
+        // Marionette's own tool surface (browser tab tools): a localhost HTTP
+        // MCP entry with a per-session token. url-type only, so every agent
+        // that advertised http can take it — zcode's session/new accepts
+        // nothing else. Gated by the same wire policy as lent MCP servers.
+        let mut mcp_servers = mcp_servers;
+        if supports_http && crate::agent_registry::should_inject_mcp(agent_id.as_deref()) {
+            if let Some(entry) = crate::tools_mcp::session_entry(&app, &session_id) {
+                mcp_servers.push(entry);
+            }
+        }
+
+        // Self-healing MCP fallback: some adapters advertise mcpCapabilities.http
+        // but their session/new schema only accepts sse-shaped remote entries
+        // (OpenCode 1.19.5: literal type:"sse", headers as array). A rejected
+        // params response with injected servers costs one roundtrip to retry
+        // without them — far better than leaving the whole agent unusable.
         let new_session = match request(
             &process,
             "session/new",
             session_new_params(&cwd, &mcp_servers, &extra_roots, send_extra),
         ) {
             Ok(value) => value,
+            Err(error)
+                if !mcp_servers.is_empty()
+                    && format!("{error}").contains("Invalid params") =>
+            {
+                crate::debug_log::append(
+                    "context",
+                    "warn",
+                    &session_id,
+                    "session/new rejected params with injected mcpServers; retrying without them",
+                    Some(&format!("{error}")),
+                );
+                match request(
+                    &process,
+                    "session/new",
+                    session_new_params(&cwd, &[], &extra_roots, send_extra),
+                ) {
+                    Ok(value) => value,
+                    Err(retry_error) => {
+                        let _ = self.stop(&session_id);
+                        return Err(format!("ACP session/new failed: {retry_error}"));
+                    }
+                }
+            }
             Err(error) => {
                 let _ = self.stop(&session_id);
                 return Err(format!("ACP session/new failed: {error}"));
