@@ -5,9 +5,11 @@ mod acp_catalog;
 mod agent_registry;
 mod agent_update;
 mod app_paths;
+mod browser;
 mod elicitation;
 mod app_update;
 mod commands;
+mod computer;
 mod context_inventory;
 mod council;
 mod credentials;
@@ -40,6 +42,7 @@ mod shell_integration;
 mod storage;
 mod telegram_remote;
 mod terminal_runtime;
+mod tools_mcp;
 mod webview2_gate;
 mod zcode_mcp_bridge;
 
@@ -214,6 +217,14 @@ mod tests {
 }
 
 fn main() {
+    // Computer Use helper mode (batch 3): this process is only a driver host —
+    // no window, no lock, no event loop. Must run before the single-instance
+    // check: the main process spawns us while holding the lock itself.
+    #[cfg(target_os = "windows")]
+    if std::env::args().any(|arg| arg == "--marionette-computer-helper") {
+        std::process::exit(computer::helper::run_helper());
+    }
+
     // UI language for Rust-side user-visible strings (native dialogs,
     // Telegram bot texts, command errors) before anything can show one.
     loc::init_from_disk();
@@ -286,11 +297,62 @@ fn main() {
     }));
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             use tauri::Manager;
             spawn_main_thread_watchdog(app.handle().clone());
+            // Computer Use 的全局停止键：Ctrl+Alt+Shift+S 撤销全部共享并杀
+            // driver。注册失败（被占用）只警告——共享仍可从面板停止。
+            {
+                use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+                if let Err(error) = app.global_shortcut().on_shortcut("Ctrl+Alt+Shift+S", |app, _shortcut, event| {
+                    if event.state() == ShortcutState::Pressed {
+                        computer::stop_shortcut_pressed(app);
+                    }
+                }) {
+                    debug_log::append(
+                        "computer",
+                        "warn",
+                        "",
+                        "global stop shortcut not registered (key taken?)",
+                        Some(&format!("{error}")),
+                    );
+                }
+            }
             // 文字/链接拖放：vendor wry 补丁的钩子 → marionette-drag-text 事件。
             drag_text::init(app.handle());
+            // Browser tab prewarm: build one child webview NOW, before the
+            // tao event loop starts — creation's nested pump is outermost
+            // here, the only safe window on our tao build (2026-11-01).
+            #[cfg(target_os = "windows")]
+            {
+                let handle = app.handle().clone();
+                // setup runs on the main thread before the loop: build inline.
+                crate::browser::surface::prewarm(&handle);
+            }
+            // Test hook (no UI): MARIONETTE_AUTO_BROWSER_TAB=1 opens a browser
+            // tab a moment after boot so E2E tooling can exercise the child
+            // webview without clicking (tools/browser-tab-repro.py).
+            if std::env::var_os("MARIONETTE_AUTO_CU_CHECK").is_some() {
+                let app_handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(6));
+                    use tauri::Emitter;
+                    let _ = app_handle.emit("marionette-dev-cu-check", ());
+                });
+            }
+            if std::env::var_os("MARIONETTE_AUTO_BROWSER_TAB").is_some() {
+                let app_handle = app.handle().clone();
+                let no_activate = std::env::var_os("MARIONETTE_BROWSER_NO_ACTIVATE").is_some();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    use tauri::Emitter;
+                    let _ = app_handle.emit(
+                        "marionette-dev-open-browser",
+                        serde_json::json!({ "noActivate": no_activate }),
+                    );
+                });
+            }
             acp::spawn_pipeline_watchdog();
             // Engine progress/state events are emitted from its background
             // threads — they need an app handle kept for the process lifetime.
@@ -593,6 +655,25 @@ fn main() {
             open_target::resolve_link_target,
             open_target::open_external,
             open_target::reveal_in_file_manager,
+            open_target::read_doc_file,
+            open_target::save_doc_file,
+            browser::browser_open_tab,
+            browser::browser_close_tab,
+            browser::browser_navigate_tab,
+            browser::browser_set_tab_bounds,
+            browser::browser_set_tab_visible,
+            browser::browser_list_tabs,
+            browser::browser_debug_state,
+            browser::browser_share_tab,
+            browser::browser_permission_respond,
+            browser::set_browser_tools_enabled,
+            browser::set_session_approval,
+            computer::computer_driver_status,
+            computer::computer_install_driver,
+            computer::computer_uninstall_driver,
+            computer::computer_list_shareable,
+            computer::computer_share,
+            computer::computer_revoke_all,
             dock_support::set_background_mode,
             dock_support::quit_app,
             dock_support::fullscreen_active,

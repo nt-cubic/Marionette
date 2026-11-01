@@ -6,6 +6,7 @@
 
 export const OPEN_TELEGRAM_EVENT = "marionette:open-telegram";
 export const OPEN_ENGINE_EVENT = "marionette:open-engine";
+export const OPEN_PROXY_EVENT = "marionette:open-proxy";
 
 export function requestOpenTelegram(): void {
   window.dispatchEvent(new Event(OPEN_TELEGRAM_EVENT));
@@ -13,4 +14,8 @@ export function requestOpenTelegram(): void {
 
 export function requestOpenEngine(): void {
   window.dispatchEvent(new Event(OPEN_ENGINE_EVENT));
+}
+
+export function requestOpenProxy(): void {
+  window.dispatchEvent(new Event(OPEN_PROXY_EVENT));
 }

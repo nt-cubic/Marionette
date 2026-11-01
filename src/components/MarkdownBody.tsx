@@ -8,6 +8,7 @@ import { isTauriRuntime, readImageDataUrl } from "../lib/api";
 import { copyText } from "../lib/clipboard";
 import { t, useT } from "../lib/i18n";
 import { isImagePath } from "../lib/toolBody";
+import { isDocPath } from "../lib/openFile";
 import { stripFileUri } from "../lib/imageAttachments";
 import { prepareMarkdownForRender } from "../lib/markdownText";
 import { useMathPack } from "../lib/mathPack";
@@ -169,6 +170,7 @@ function decodeLocalTarget(url: string): string {
  */
 function MdLink({ href, children }: { href?: string; children?: ReactNode }) {
   const { openMenu, primaryAction, renderMenu } = useLinkMenu();
+  const docNav = useContext(DocNavContext);
   const imagePath = href ? stripFileUri(href) : "";
   if (imagePath && isImagePath(imagePath)) {
     return <PreviewImage src={href} alt={nodeText(children)} />;
@@ -181,6 +183,13 @@ function MdLink({ href, children }: { href?: string; children?: ReactNode }) {
         end: href.length,
       }
     : null;
+  // Doc-tab navigation: inside the document viewer, relative `.md` links hop
+  // between documents in the same tab strip. The raw href arrives decoded
+  // (urlTransform above); the viewer resolves it against the document's dir.
+  const navigateDoc =
+    docNav && target?.kind === "path" && isDocPath(stripFileUri(target.raw))
+      ? () => docNav(stripFileUri(target!.raw))
+      : null;
   return (
     <>
       <a
@@ -190,6 +199,10 @@ function MdLink({ href, children }: { href?: string; children?: ReactNode }) {
         onClick={(event) => {
           if (!target) return;
           event.preventDefault();
+          if (navigateDoc) {
+            navigateDoc();
+            return;
+          }
           void primaryAction(event, target);
         }}
         onContextMenu={(event) => {
@@ -213,6 +226,15 @@ function MdLink({ href, children }: { href?: string; children?: ReactNode }) {
  * the asset protocol needs an absolute path, so the loader joins them here.
  */
 export const MarkdownImageCwdContext = createContext<string | null>(null);
+
+/**
+ * Document-tab navigation for markdown links. Provided only by the in-app
+ * document viewer: a path link naming another markdown/text document opens it
+ * in the doc tab instead of the OS handler (the handler stays available via
+ * the right-click menu). Absent everywhere else — transcripts keep the
+ * click-opens-externally behaviour.
+ */
+export const DocNavContext = createContext<((rawTarget: string) => void) | null>(null);
 
 /** Resolved path → its bytes, so scrolling and re-renders never re-read. */
 type LoadedImage = { dataUrl: string; path: string };

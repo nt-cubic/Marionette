@@ -4,6 +4,7 @@ import {
   CHAT_PROJECT_ID,
   getFileDiff,
   openExternal,
+  resolveLinkTarget,
   restoreTurnFiles,
   revealInFileManager,
 } from "../lib/api";
@@ -11,6 +12,7 @@ import type { TurnDelivery, TurnDeliveryChangeType, TurnDeliveryFile } from "../
 import { formatDeliveryHeadline } from "../lib/turnDelivery";
 import { showToast } from "../lib/toast";
 import { useT } from "../lib/i18n";
+import { isDocPath, openInDocTabIfEligible } from "../lib/openFile";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { UnifiedDiffView } from "./UnifiedDiffView";
 
@@ -78,6 +80,14 @@ function DeliveryFileRow({
 
   const openFile = async (force = false) => {
     if (deleted) return;
+    // Markdown/text from the delivery card opens in the in-app document tab
+    // (resolved against cwd first — the card carries project-relative paths).
+    if (isDocPath(file.path)) {
+      const resolution = await resolveLinkTarget(file.path, cwd).catch(() => null);
+      if (resolution?.kind === "file" && !resolution.risky && openInDocTabIfEligible(resolution.target)) {
+        return;
+      }
+    }
     try {
       const result = await openExternal(file.path, cwd, force);
       if (result.reason === "risky") {

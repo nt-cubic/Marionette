@@ -1,10 +1,9 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
-import { Archive, Bell, BellOff, ChevronRight, CloudMoon, Download, Folder, FolderOpen, Globe, GripVertical, KeyRound, Languages, MessageSquare, MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, Settings, SlidersHorizontal, SunMedium, Trash2, UsersRound, X, Zap } from "lucide-react";
+import { Archive, Bell, BellOff, ChevronRight, CloudMoon, Download, Folder, FolderOpen, GripVertical, KeyRound, MessageSquare, MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, Settings, SlidersHorizontal, SunMedium, Trash2, UsersRound, X, Zap } from "lucide-react";
 // Refresh on a project row folds CLI history into the normal session list.
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
-import { applyLocale, getLocale, localeToggleTitle, nextLocale } from "../lib/i18n";
 import { t, useLocale, useT, type DictKey } from "../lib/i18n";
 import { themeToggleTitle, type ThemeMode } from "../lib/theme";
 import { collapsedShelfSessions, pinStamp, sortSessionsNewestFirst } from "../lib/sessionOrder";
@@ -35,7 +34,7 @@ import { ModelLibraryDialog } from "./ModelLibraryDialog";
 import { SplitBesideMenu, type OpenBesideEdge } from "./SplitBesideMenu";
 import type { DropEdge } from "../lib/splitWorkspace";
 import { dockFooterHost, useDocked } from "../lib/dockFooter";
-import { OPEN_ENGINE_EVENT, OPEN_TELEGRAM_EVENT } from "../lib/shellActions";
+import { OPEN_ENGINE_EVENT, OPEN_PROXY_EVENT, OPEN_TELEGRAM_EVENT } from "../lib/shellActions";
 
 /**
  * Docked mode: the footer buttons are portaled below the composer. Their
@@ -385,8 +384,8 @@ export function ProjectShelf({
   const [proxyTest, setProxyTest] = useState<string | null>(null);
   const [proxyError, setProxyError] = useState<string | null>(null);
   const [proxyAnchor, setProxyAnchor] = useState<{ left: number; top: number } | null>(null);
-  const proxyBtnRef = useRef<HTMLButtonElement | null>(null);
   const proxyPopRef = useRef<HTMLDivElement | null>(null);
+  const footerRef = useRef<HTMLDivElement | null>(null);
   const [besideMenu, setBesideMenu] = useState<{
     session: Session;
     x: number;
@@ -410,7 +409,7 @@ export function ProjectShelf({
     if (!proxyOpen) return;
     const onDown = (event: MouseEvent) => {
       const target = event.target as Node;
-      if (proxyPopRef.current?.contains(target) || proxyBtnRef.current?.contains(target)) return;
+      if (proxyPopRef.current?.contains(target) || footerRef.current?.contains(target)) return;
       setProxyOpen(false);
     };
     const onKey = (event: KeyboardEvent) => {
@@ -424,12 +423,12 @@ export function ProjectShelf({
     };
   }, [proxyOpen]);
 
-  const openProxyPopover = () => {
-    const rect = proxyBtnRef.current?.getBoundingClientRect();
+  const openProxyPopover = (forceOpen = false) => {
+    const rect = footerRef.current?.getBoundingClientRect();
     setProxyAnchor(rect ? { left: rect.left, top: rect.top } : null);
     setProxyTest(null);
     setProxyError(null);
-    setProxyOpen((open) => !open);
+    setProxyOpen((open) => (forceOpen ? true : !open));
   };
 
   const runProxyTest = async () => {
@@ -559,11 +558,18 @@ export function ProjectShelf({
       setProxyOpen(false);
       setEngineOpen(true);
     };
+    const openProxy = () => {
+      setTgOpen(false);
+      setEngineOpen(false);
+      openProxyPopover(true);
+    };
     window.addEventListener(OPEN_TELEGRAM_EVENT, openTelegram);
     window.addEventListener(OPEN_ENGINE_EVENT, openEngine);
+    window.addEventListener(OPEN_PROXY_EVENT, openProxy);
     return () => {
       window.removeEventListener(OPEN_TELEGRAM_EVENT, openTelegram);
       window.removeEventListener(OPEN_ENGINE_EVENT, openEngine);
+      window.removeEventListener(OPEN_PROXY_EVENT, openProxy);
     };
   }, []);
 
@@ -1065,18 +1071,6 @@ export function ProjectShelf({
     </button>
   );
 
-  const languageButton = (
-    <button
-      className="pill-action pill-action--icon pill-action--sm sidebar-footer__button"
-      type="button"
-      title={localeToggleTitle(getLocale())}
-      aria-label={localeToggleTitle(getLocale())}
-      onClick={() => void applyLocale(nextLocale(getLocale()))}
-    >
-      <Languages size={13} />
-    </button>
-  );
-
   const notifyButton = onToggleDesktopNotify ? (
     <button
       className={
@@ -1097,30 +1091,6 @@ export function ProjectShelf({
       {desktopNotifyEnabled ? <Bell size={13} /> : <BellOff size={13} />}
     </button>
   ) : null;
-
-  const proxyButton = (
-    <button
-      ref={proxyBtnRef}
-      type="button"
-      className={
-        proxyConfig?.enabled
-          ? "pill-action pill-action--icon pill-action--sm sidebar-footer__button is-proxy-on"
-          : "pill-action pill-action--icon pill-action--sm sidebar-footer__button is-proxy-off"
-      }
-      title={
-        proxyConfig?.enabled
-          ? t("shelf.proxyTitleOn", { url: proxyConfig.url })
-          : t("shelf.proxyTitleOff")
-      }
-      aria-label={proxyConfig?.enabled ? t("shelf.proxyAriaOn") : t("shelf.proxyAriaOff")}
-      aria-pressed={proxyConfig?.enabled}
-      aria-haspopup="dialog"
-      aria-expanded={proxyOpen}
-      onClick={openProxyPopover}
-    >
-      <Globe size={13} />
-    </button>
-  );
 
   const engineRunning = engineState?.state === "running";
   const engineBusyTransient =
@@ -1262,7 +1232,7 @@ export function ProjectShelf({
   const dockFooter = (
     <div className="sidebar-dock">
       {gatewayRow}
-      <div className="sidebar-footer">
+      <div className="sidebar-footer" ref={footerRef}>
         {onOpenPalette && (
           <button
             className="pill-action pill-action--icon pill-action--sm sidebar-footer__button"
@@ -1275,9 +1245,7 @@ export function ProjectShelf({
           </button>
         )}
         {themeButton}
-        {languageButton}
         {notifyButton}
-        {proxyButton}
         {telegramButton}
         {!docked && (
           <button className="pill-action pill-action--icon pill-action--sm sidebar-footer__button sidebar-footer__button--collapse" type="button" title={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} aria-label={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} onClick={collapsed ? onExpand : onCollapse}>

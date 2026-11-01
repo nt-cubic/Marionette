@@ -1,5 +1,6 @@
+import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
-import { ChevronLeft, ChevronRight, FolderOpen, Inbox, UsersRound, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, FileText, FolderOpen, Globe, Inbox, UsersRound, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, memo, type CSSProperties } from "react";
 import { agents, projects, sessions } from "../lib/mockData";
 import {
@@ -78,6 +79,8 @@ import {
   type SessionUsageState,
 } from "../lib/usage";
 import { recordTurnUsage } from "../lib/usageLedger";
+import { UsageAnalysisDialog } from "../components/UsageAnalysisDialog";
+import { UsagePage } from "../components/UsagePage";
 import {
   bindDesktopNotifyFocusHandlers,
   cancelScheduledDesktopNotify,
@@ -92,6 +95,24 @@ import { DockChrome, DockResizeGrip, type DockPage } from "../components/DockChr
 import { DockDropRouter } from "../components/DockDropRouter";
 import { MemoBox } from "../components/MemoBox";
 import { CouncilPage } from "../components/CouncilPage";
+import { DocCompareLayout, DocPage } from "../components/DocPage";
+import { setDocTabOpener } from "../lib/openFile";
+import { BrowserPage, BrowserPermissionDialog } from "../components/BrowserPage";
+import { ComputerShareDialog } from "../components/ComputerShareDialog";
+
+/** E2E bisect flag: the dev hook opened a tab without activating the page. */
+let browserAutoOpenSuppressActivate = false;
+import {
+  browserCloseTab,
+  browserOpenTab,
+  browserPermissionRespond,
+  browserShareTab,
+  browserListTabs,
+  onBrowserPermission,
+  onBrowserTabs,
+  type BrowserPermissionRequest,
+  type BrowserTab,
+} from "../lib/browserTabs";
 import { memoList, memoPrompt } from "../lib/memos";
 import { installPageDragSourceTracker } from "../lib/dragText";
 import { splitShelfChatSessions, withoutGhostProjects } from "../lib/sessionGroups";
@@ -228,7 +249,7 @@ import { applyLocale, getLocale, nextLocale, useLocale, useT } from "../lib/i18n
 import { showToast, dismissToast } from "../lib/toast";
 import { copyText } from "../lib/clipboard";
 import { exportSessionMarkdown } from "../lib/exportTranscript";
-import { requestOpenEngine, requestOpenTelegram } from "../lib/shellActions";
+import { requestOpenEngine, requestOpenProxy, requestOpenTelegram } from "../lib/shellActions";
 import { nextTheme, parseStoredTheme, themeColorScheme, type ThemeMode } from "../lib/theme";
 
 const LEFT_PANEL_MIN = 180;
@@ -572,6 +593,30 @@ export function App() {
    */
   const [councilOpen, setCouncilOpen] = useState(false);
   const [councilActive, setCouncilActive] = useState(false);
+  /**
+   * Token 用量 pseudo-tab, same lifecycle as 圆桌/收纳盒: `usageOpen` = the
+   * tab exists, `usageActive` = it is the center page. Main window only —
+   * dock/detached fall back to the dialog (no tab strip there).
+   */
+  const [usageOpen, setUsageOpen] = useState(false);
+  const [usageActive, setUsageActive] = useState(false);
+  /** Detached window has no tab strip — analysis opens as a dialog. */
+  const [usageDialogOpen, setUsageDialogOpen] = useState(false);
+  /** In-app document tabs (markdown/text): entries exist while open. */
+  const [docTabs, setDocTabs] = useState<{ path: string; title: string }[]>([]);
+  /** The selected document page; null = a conversation page is showing. */
+  const [activeDocPath, setActiveDocPath] = useState<string | null>(null);
+  /** Compare layout: conversation left, the active document right (main window only). */
+  const [docCompare, setDocCompare] = useState(false);
+  /** Built-in browser tabs (backend owns the list; this mirrors its event). */
+  const [browserTabs, setBrowserTabs] = useState<BrowserTab[]>([]);
+  const [activeBrowserTabId, setActiveBrowserTabId] = useState<string | null>(null);
+  /** The browser pseudo-tab is the selected center page. */
+  const [browserActive, setBrowserActive] = useState(false);
+  /** A Control-level action is waiting for the user's answer. */
+  const [browserPermission, setBrowserPermission] = useState<BrowserPermissionRequest | null>(null);
+  /** The Computer Use share panel (Ctrl K entry). */
+  const [computerShareOpen, setComputerShareOpen] = useState(false);
   /** Sessions that finished a turn while this window was looking at another dialog. */
   const [doneUnreadIds, setDoneUnreadIds] = useState<Set<string>>(() => new Set());
   /** Agent proxy config (single exit address), loaded on mount. */
@@ -2514,11 +2559,18 @@ export function App() {
           turnTokens != null
             ? buildTurnStats(turnTokens, { sentAt, firstChunkAt, endedAt })
             : null;
-        // 跨会话用量台账:每轮落一笔(今天/7天/30天聚合,见 UsageLedgerSection)。
+        // 跨会话用量台账:每轮落一笔(今天/7天/30天聚合,见 usageLedger)。
         // 与上面的盖戳共用同一条单窗口不变量——同一轮只被一个窗口处理。
+        // 模型归属取 agent 自报的 currentModel,兜底会话钉的偏好模型——
+        // 展示分组用,不是账本真相(真相是 turnStats 本身)。
         if (turnStats) {
+          const ledgerSession = sessionsRef.current.find((s) => s.id === payload.sessionId);
           recordTurnUsage({
-            agentId: sessionsRef.current.find((s) => s.id === payload.sessionId)?.agentId,
+            agentId: ledgerSession?.agentId,
+            modelId:
+              capsByIdRef.current[payload.sessionId]?.currentModel ??
+              ledgerSession?.preferredModel ??
+              null,
             stats: turnStats,
             endedAt,
           });
@@ -3681,6 +3733,7 @@ export function App() {
                     input: lastStats.input ?? null,
                     output: lastStats.output ?? null,
                     cached: lastStats.cached ?? null,
+                    cacheCreation: lastStats.cacheCreation ?? null,
                     reasoning: lastStats.reasoning ?? null,
                     total: lastStats.total ?? null,
                   }
@@ -4782,19 +4835,151 @@ export function App() {
     }
   }, [pushDebug]);
 
+  /** 打开「Token 用量」伪标签页;与其它整页互斥(开它关其它,互为反向)。 */
+  const openUsageTab = useCallback(() => {
+    setUsageOpen(true);
+    setUsageActive(true);
+    setMemoActive(false);
+    setCouncilActive(false);
+    setActiveDocPath(null);
+    setBrowserActive(false);
+  }, []);
+  // 反向互斥:任何其它整页接管中栏时,用量页退回未选中(标签保留)。
+  useEffect(() => {
+    if (usageActive && (memoActive || councilActive || activeDocPath || browserActive)) {
+      setUsageActive(false);
+    }
+  }, [usageActive, memoActive, councilActive, activeDocPath, browserActive]);
+
   const applyFocusedSession = (nextSession: Session) => {
     setCurrentProjectId(nextSession.projectId);
     setCurrentSessionId(nextSession.id);
     // Selecting any conversation switches the center back to its flow — the
-    // 收纳盒 / 圆桌 tabs themselves stay open in the strip.
+    // 收纳盒 / 圆桌 / Token 用量 / document / browser tabs themselves stay open in the strip.
     setMemoActive(false);
     setCouncilActive(false);
+    setUsageActive(false);
+    setActiveDocPath(null);
+    setBrowserActive(false);
     setViewMode("clean");
     setSessionCapabilities(capsByIdRef.current[nextSession.id] ?? null);
     setActiveModelId(null);
     lastProviderProbeKey.current = "";
     void loadSessionTranscript(nextSession.id);
   };
+
+  /** Open (or activate) an in-app document tab; docked mode shows it as the dock full page. */
+  const openDocTab = useCallback(
+    (absolutePath: string) => {
+      const title = absolutePath.split(/[\\/]/).pop() ?? absolutePath;
+      setDocTabs((tabs) =>
+        tabs.some((tab) => tab.path === absolutePath) ? tabs : [...tabs, { path: absolutePath, title }],
+      );
+      setActiveDocPath(absolutePath);
+      setMemoActive(false);
+      // While docked the strip has no tab row — the document takes the full page.
+      setDockPage((page) => (dockActive && page !== "doc" ? "doc" : page));
+    },
+    [dockActive],
+  );
+
+  const closeDocTab = useCallback(
+    (path: string) => {
+      setDocTabs((tabs) => tabs.filter((tab) => tab.path !== path));
+      if (path === activeDocPath) {
+        setActiveDocPath(null);
+        setDocCompare(false);
+        setDockPage((page) => (page === "doc" ? null : page));
+      }
+    },
+    [activeDocPath],
+  );
+
+  // The doc-tab opener serves deep components (transcript links, delivery
+  // card, context panel, memo box). Detached windows never install it, so
+  // clicks there keep the OS-handler route — same posture as the memo tab.
+  useEffect(() => {
+    if (IS_DETACHED_WINDOW) return;
+    setDocTabOpener(openDocTab);
+    return () => setDocTabOpener(null);
+  }, [openDocTab]);
+
+  // Built-in browser tabs: the backend owns the list and emits it whole;
+  // this mirrors it and surfaces NEW tabs on screen — whoever opened them
+  // (the user's + or the agent's browser_open_tab), the result should show.
+  useEffect(() => {
+    if (IS_DETACHED_WINDOW) return;
+    let known = new Set<string>();
+    void browserListTabs().then((tabs) => {
+      known = new Set(tabs.map((tab) => tab.id));
+      setBrowserTabs(tabs);
+    });
+    const stop = onBrowserTabs((tabs) => {
+      setBrowserTabs(tabs);
+      const fresh = tabs.filter((tab) => !known.has(tab.id));
+      known = new Set(tabs.map((tab) => tab.id));
+      if (fresh.length > 0 && !browserAutoOpenSuppressActivate) {
+        const newest = fresh[fresh.length - 1]!;
+        setActiveBrowserTabId((current) => current ?? newest.id);
+        setBrowserActive(true);
+        setMemoActive(false);
+        setActiveDocPath(null);
+        // While docked the strip has no chip — the page itself takes over.
+        setDockPage((page) => (page === "browser" ? page : "browser"));
+      }
+      if (tabs.length === 0) {
+        setBrowserActive(false);
+        setActiveBrowserTabId(null);
+      }
+    });
+    return () => {
+      void stop.then((unlisten) => unlisten());
+    };
+  }, []);
+
+  // Control-level browser actions ask here (2 minutes of silence denies on
+  // the Rust side; this is the answering end).
+  useEffect(() => {
+    if (IS_DETACHED_WINDOW) return;
+    const stop = onBrowserPermission((request) => setBrowserPermission(request));
+    // Rust test hook (MARIONETTE_AUTO_BROWSER_TAB=1): open a browser tab
+    // without a click, for E2E tooling.
+    void listen("marionette-dev-cu-check", () => {
+      // Full Computer Use dialog walkthrough (E2E harness): every step logs
+      // under [cu-check]; the panel opens at the end for a visual capture.
+      setComputerShareOpen(true);
+      void import("../lib/cuWalkthrough").then(({ runCuWalkthrough }) =>
+        runCuWalkthrough((step, detail) => {
+          pushDebugRef.current({
+            source: "cu-check",
+            summary: step,
+            detail: typeof detail === "string" ? detail : JSON.stringify(detail),
+          });
+        }),
+      );
+    });
+    void listen<{ noActivate: boolean }>("marionette-dev-open-browser", (event) => {
+      browserAutoOpenSuppressActivate = event.payload?.noActivate === true;
+      if (!browserAutoOpenSuppressActivate) {
+        setBrowserActive(true);
+        setMemoActive(false);
+        setActiveDocPath(null);
+      }
+      void browserOpenTab("https://example.com").then((result) => {
+        if (result) {
+          setActiveBrowserTabId(result.tabId);
+          for (const delay of [3000, 9000]) {
+            setTimeout(() => {
+              void invoke("browser_debug_state", { tabId: result.tabId }).catch(() => undefined);
+            }, delay);
+          }
+        }
+      });
+    });
+    return () => {
+      void stop.then((unlisten) => unlisten());
+    };
+  }, []);
 
   const openSession = (nextSession: Session) => {
     if (!IS_DETACHED_WINDOW && detachedOwnedIdsRef.current.has(nextSession.id)) {
@@ -6601,8 +6786,14 @@ export function App() {
         setPaletteOpen((open) => !open);
         return;
       }
-      // Ctrl+W：关当前标签。圆桌 / 收纳盒伪标签激活时优先关它。
+      // Ctrl+W：关当前标签。圆桌/收纳盒/文档/用量伪标签激活时优先关它们。
       if (!event.shiftKey && (event.key === "w" || event.key === "W") && !IS_DETACHED_WINDOW) {
+        if (usageActive) {
+          event.preventDefault();
+          setUsageOpen(false);
+          setUsageActive(false);
+          return;
+        }
         if (councilActive) {
           event.preventDefault();
           setCouncilOpen(false);
@@ -6613,6 +6804,16 @@ export function App() {
           event.preventDefault();
           setMemoOpen(false);
           setMemoActive(false);
+          return;
+        }
+        if (activeDocPath) {
+          event.preventDefault();
+          closeDocTab(activeDocPath);
+          return;
+        }
+        if (browserActive && activeBrowserTabId) {
+          event.preventDefault();
+          void browserCloseTab(activeBrowserTabId);
           return;
         }
         if (currentSessionId) {
@@ -6676,6 +6877,10 @@ export function App() {
     memoOpen,
     memoActive,
     councilActive,
+    activeDocPath,
+    browserActive,
+    activeBrowserTabId,
+    closeDocTab,
     closeSessionTab,
     handleCreateChatSession,
   ]);
@@ -8649,6 +8854,30 @@ export function App() {
    * and close (strip 返回 / titlebar tab). Using a note opens a dialog in the
    * project in view; plain context can go to a chat when no project is open.
    */
+  /**
+   * Document page factory, shared by the strip tab (normal window), the
+   * compare layout, and the dock full page. `escToClose` is false in the dock
+   * mount — the dock chrome owns Esc/返回 there.
+   */
+  const renderDocPage = (
+    path: string,
+    close: () => void,
+    compareAvailable: boolean,
+    escToClose: boolean,
+  ) => (
+    <DocPage
+      key={path}
+      path={path}
+      onClose={close}
+      onQuote={(block) => prefillComposer(block)}
+      onNavigate={openDocTab}
+      compareAvailable={compareAvailable}
+      compareActive={docCompare}
+      onToggleCompare={() => setDocCompare((value) => !value)}
+      escToClose={escToClose}
+    />
+  );
+
   const renderMemoBox = (close: () => void) => (
     <MemoBox
       onClose={close}
@@ -8821,6 +9050,33 @@ export function App() {
                   window.setTimeout(() => requestOpenEngine(), leftCollapsed ? 80 : 0);
                 },
               },
+              {
+                id: "open-proxy",
+                label: t("palette.openProxy"),
+                hint: t("palette.openProxyHint"),
+                run: () => {
+                  if (leftCollapsed) setLeftCollapsed(false);
+                  window.setTimeout(() => requestOpenProxy(), leftCollapsed ? 80 : 0);
+                },
+              },
+              {
+                // Token 用量分析:主界面不加按钮。普通窗口开伪标签页;
+                // 贴边走 DockPage「usage」整页;detached 弹窗兜底。
+                id: "open-usage-analysis",
+                label: t("usageLedger.paletteOpen"),
+                hint: t("usageLedger.paletteOpenHint"),
+                run: () => {
+                  if (dockActive) {
+                    setDockPage("usage");
+                    return;
+                  }
+                  if (IS_DETACHED_WINDOW) {
+                    setUsageDialogOpen(true);
+                    return;
+                  }
+                  openUsageTab();
+                },
+              },
               ...(!memoActive && !councilActive && displaySession.id && !displaySession.id.startsWith("session-empty-")
                 ? [
                     {
@@ -8831,6 +9087,23 @@ export function App() {
                     },
                   ]
                 : []),
+              {
+                id: "new-browser-tab",
+                label: t("palette.newBrowserTab"),
+                run: () => {
+                  setBrowserActive(true);
+                  setMemoActive(false);
+                  setActiveDocPath(null);
+                  void browserOpenTab("https://www.bing.com").then((result) => {
+                    if (result) setActiveBrowserTabId(result.tabId);
+                  });
+                },
+              },
+              {
+                id: "computer-share",
+                label: t("palette.computerShare"),
+                run: () => setComputerShareOpen(true),
+              },
               {
                 id: "add-project",
                 label: t("palette.addProject"),
@@ -8952,10 +9225,60 @@ export function App() {
                     onSelect: () => {
                       setCouncilActive(true);
                       setMemoActive(false);
+                      setUsageActive(false);
                     },
                     onClose: () => {
                       setCouncilOpen(false);
                       setCouncilActive(false);
+                    },
+                  }
+            }
+            usageTab={
+              IS_DETACHED_WINDOW || !usageOpen
+                ? undefined
+                : {
+                    active: usageActive,
+                    onSelect: () => openUsageTab(),
+                    onClose: () => {
+                      setUsageOpen(false);
+                      setUsageActive(false);
+                    },
+                  }
+            }
+            docTabs={
+              IS_DETACHED_WINDOW || docTabs.length === 0
+                ? undefined
+                : docTabs.map((tab) => ({
+                    path: tab.path,
+                    title: tab.title,
+                    titleHint: tab.path,
+                    active: activeDocPath === tab.path,
+                    onSelect: () => {
+                      setActiveDocPath(tab.path);
+                      setMemoActive(false);
+                    },
+                    onClose: () => closeDocTab(tab.path),
+                  }))
+            }
+            browserTab={
+              IS_DETACHED_WINDOW || browserTabs.length === 0
+                ? undefined
+                : {
+                    active: browserActive,
+                    count: browserTabs.length,
+                    onSelect: () => {
+                      setBrowserActive(true);
+                      setMemoActive(false);
+                      setActiveDocPath(null);
+                    },
+                    onClose: () => {
+                      // × closes the active tab — or the first one when none
+                      // is active (the page itself falls back to tabs[0] the
+                      // same way); closing the last retires the chip via the
+                      // tabs event.
+                      const target = activeBrowserTabId ?? browserTabs[0]?.id ?? null;
+                      if (target) void browserCloseTab(target);
+                      else setBrowserActive(false);
                     },
                   }
             }
@@ -9029,6 +9352,74 @@ export function App() {
                   </button>
                 </div>
               )}
+              {!IS_DETACHED_WINDOW &&
+                docTabs.map((tab) => (
+                  <div
+                    key={tab.path}
+                    className={`editor-tab is-doc${activeDocPath === tab.path ? " is-active" : ""}`}
+                    role="tab"
+                    aria-selected={activeDocPath === tab.path}
+                    data-tauri-drag-region="false"
+                  >
+                    <button
+                      className="editor-tab__select"
+                      type="button"
+                      title={tab.path}
+                      onClick={() => {
+                        setActiveDocPath(tab.path);
+                        setMemoActive(false);
+                      }}
+                    >
+                      <FileText size={12} />
+                      <span>{tab.title}</span>
+                    </button>
+                    <button
+                      className="pill-action pill-action--icon pill-action--sm editor-tab__close"
+                      type="button"
+                      title={t("doc.close")}
+                      aria-label={t("doc.close")}
+                      onClick={() => closeDocTab(tab.path)}
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                ))}
+              {!IS_DETACHED_WINDOW && browserTabs.length > 0 && (
+                <div
+                  className={`editor-tab is-browser${browserActive ? " is-active" : ""}`}
+                  role="tab"
+                  aria-selected={browserActive}
+                  data-tauri-drag-region="false"
+                >
+                  <button
+                    className="editor-tab__select"
+                    type="button"
+                    title={t("browser.tabTitle")}
+                    onClick={() => {
+                      setBrowserActive(true);
+                      setMemoActive(false);
+                      setActiveDocPath(null);
+                    }}
+                  >
+                    <Globe size={12} />
+                    <span>{t("browser.tabTitle")}</span>
+                    <b className="editor-tab__memo-count">{browserTabs.length}</b>
+                  </button>
+                  <button
+                    className="pill-action pill-action--icon pill-action--sm editor-tab__close"
+                    type="button"
+                    title={t("browser.closeTab")}
+                    aria-label={t("browser.closeTab")}
+                    onClick={() => {
+                      const target = activeBrowserTabId ?? browserTabs[0]?.id ?? null;
+                      if (target) void browserCloseTab(target);
+                      else setBrowserActive(false);
+                    }}
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              )}
               <div className="workspace-titlebar__fill" data-tauri-drag-region />
             </>
           )}
@@ -9083,6 +9474,41 @@ export function App() {
                 }}
               />
             </div>
+          ) : usageActive && !dockActive && !IS_DETACHED_WINDOW ? (
+            // Token 用量 pseudo-tab: same center-column takeover as 圆桌.
+            <div className="usage-tab-page" aria-label={t("usageLedger.analysisTitle")}>
+              <UsagePage
+                onClose={() => {
+                  setUsageOpen(false);
+                  setUsageActive(false);
+                }}
+              />
+            </div>
+          ) : browserActive && !dockActive && !IS_DETACHED_WINDOW ? (
+            // Browser pseudo-tab: covers the conversation column; the native
+            // webviews are positioned to the host rectangle inside BrowserPage.
+            <div className="browser-tab-page" aria-label={t("browser.tabTitle")}>
+              <BrowserPage
+                tabs={browserTabs}
+                activeTabId={activeBrowserTabId}
+                onSelectTab={setActiveBrowserTabId}
+                visible
+                onExit={() => setBrowserActive(false)}
+              />
+            </div>
+          ) : activeDocPath && !dockActive && !IS_DETACHED_WINDOW ? (
+            // Document pseudo-tab: the conversation column switches to the doc
+            // page (shelf/context stay). Compare mode keeps the chat beside it
+            // — a dedicated row, not the split tree (doc pages are not sessions).
+            docCompare && !workspaceSplit ? (
+              <DocCompareLayout doc={renderDocPage(activeDocPath, () => closeDocTab(activeDocPath), true, true)}>
+                {renderConversation(displaySession)}
+              </DocCompareLayout>
+            ) : (
+              <div className="doc-tab-page" aria-label={t("doc.tabTitle")}>
+                {renderDocPage(activeDocPath, () => closeDocTab(activeDocPath), !workspaceSplit, true)}
+              </div>
+            )
           ) : memoActive && !dockActive && !IS_DETACHED_WINDOW ? (
             // 收纳盒 as a tab page: only the conversation-flow column switches
             // (shelf and context panel stay); no composer for this page.
@@ -9215,6 +9641,27 @@ export function App() {
               keep their own width until 返回. */}
           {dockExpanded && dockPage === null && <DockResizeGrip />}
           {dockPage === "memo" && renderMemoBox(() => setDockPage(null))}
+          {dockPage === "usage" && (
+            <div className="usage-dock-page">
+              <UsagePage onClose={() => setDockPage(null)} />
+            </div>
+          )}
+          {dockPage === "doc" && activeDocPath && (
+            <div className="doc-dock-page">
+              {renderDocPage(activeDocPath, () => setDockPage(null), false, false)}
+            </div>
+          )}
+          {dockPage === "browser" && (
+            <div className="browser-dock-page">
+              <BrowserPage
+                tabs={browserTabs}
+                activeTabId={activeBrowserTabId}
+                onSelectTab={setActiveBrowserTabId}
+                visible
+                onExit={() => setDockPage(null)}
+              />
+            </div>
+          )}
         </>
       )}
       {permissionPrompt && (
@@ -9223,6 +9670,30 @@ export function App() {
           busy={permissionBusy}
           onChoose={(optionId) => void handlePermissionChoose(optionId)}
         />
+      )}
+      {browserPermission && !IS_DETACHED_WINDOW && (
+        <BrowserPermissionDialog
+          request={browserPermission}
+          sessionLabel={
+            availableSessions.find((session) => session.id === browserPermission.sessionId)?.label ?? null
+          }
+          onClose={(decision) => {
+            const request = browserPermission;
+            setBrowserPermission(null);
+            // "Remember" flips the tab's own grant; the CU path (tab_id
+            // "computer") carries no tab to flip — allow once stands alone.
+            if (decision === "remember" && request.tabId !== "computer") {
+              void browserShareTab(request.tabId, "control");
+            }
+            void browserPermissionRespond(request.requestId, decision !== "deny");
+          }}
+        />
+      )}
+      {usageDialogOpen && (
+        <UsageAnalysisDialog onClose={() => setUsageDialogOpen(false)} />
+      )}
+      {computerShareOpen && !IS_DETACHED_WINDOW && (
+        <ComputerShareDialog onClose={() => setComputerShareOpen(false)} />
       )}
       {appUpdate && (
         <div className="update-banner" role="status">

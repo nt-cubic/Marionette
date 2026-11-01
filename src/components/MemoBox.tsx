@@ -17,6 +17,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Check, File as FileIcon, FileText, Image as ImageIcon, Link2, MessageSquarePlus, Search, Trash2, Type } from "lucide-react";
 import { isTauriRuntime, openExternal } from "../lib/api";
+import { isDocPath, openInDocTabIfEligible } from "../lib/openFile";
 import { isPageDragSource, onDragText } from "../lib/dragText";
 import {
   formatMemoAge,
@@ -307,6 +308,9 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
   };
 
   const openTarget = (target: string) => {
+    // Memo file paths are absolute; markdown/text opens in the doc tab, links
+    // and other kinds fall through to the OS handler.
+    if (isDocPath(target) && openInDocTabIfEligible(target)) return;
     void openExternal(target)
       .then((result) => {
         if (!result?.opened) {

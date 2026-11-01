@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { openExternal, resolveLinkTarget, revealInFileManager, type LinkResolution } from "../lib/api";
 import { normalizeWindowsDrivePath, stripFileUri } from "../lib/imageAttachments";
 import { linkLabel, splitLinkSegments, type LinkTarget } from "../lib/linkTargets";
+import { isDocPath, openInDocTabIfEligible } from "../lib/openFile";
 
 /**
  * Paths and URLs inside agent text become clickable.
@@ -76,6 +77,11 @@ export function useLinkMenu() {
       }
       if (resolution.risky) {
         void openMenu(event, target, "Executable file — confirm below to launch it.");
+        return;
+      }
+      // Markdown/text renders in the in-app document tab (the right-click menu
+      // keeps the OS-handler route for the same link).
+      if (resolution.kind === "file" && isDocPath(resolution.target) && openInDocTabIfEligible(resolution.target)) {
         return;
       }
       const result = await openExternal(actionPath, cwd).catch(() => null);

@@ -1109,6 +1109,43 @@ export async function revealInFileManager(target: string, cwd?: string | null): 
   await invoke("reveal_in_file_manager", { target, cwd: cwd ?? null });
 }
 
+// ─── In-app document tab (markdown/text viewer) ─────────────────────────────
+
+export type DocFile = {
+  /** The absolute path actually read (near-miss resolution already applied). */
+  path: string;
+  content: string;
+  size: number;
+  mtimeMs: number;
+};
+
+export type DocSaveResult = {
+  saved: boolean;
+  /** `stale` = the file changed on disk since it was loaded (refusal, not error). */
+  reason?: "stale";
+  mtimeMs: number;
+};
+
+export async function readDocFile(path: string, cwd?: string | null): Promise<DocFile> {
+  return invoke<DocFile>("read_doc_file", { path, cwd: cwd ?? null });
+}
+
+export async function saveDocFile(
+  path: string,
+  cwd: string | null,
+  content: string,
+  expectedMtimeMs: number | null,
+  force = false
+): Promise<DocSaveResult> {
+  return invoke<DocSaveResult>("save_doc_file", {
+    path,
+    cwd,
+    content,
+    expectedMtimeMs,
+    force,
+  });
+}
+
 // ─── Provider API Key Management ────────────────────────────────────────────
 
 /**

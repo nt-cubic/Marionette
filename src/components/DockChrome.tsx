@@ -34,12 +34,15 @@ import {
 import type { Session } from "../lib/types";
 import { t, useT, type DictKey } from "../lib/i18n";
 
-export type DockPage = "shelf" | "context" | "memo";
+export type DockPage = "shelf" | "context" | "memo" | "doc" | "browser" | "usage";
 
 const PAGE_TITLES: Record<DockPage, DictKey> = {
   shelf: "dock.pageShelf",
   context: "dock.pageContext",
   memo: "dock.pageMemo",
+  doc: "dock.pageDoc",
+  browser: "dock.pageBrowser",
+  usage: "dock.pageUsage",
 };
 
 type Props = {

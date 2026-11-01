@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Columns2, Copy, FileText, Globe, Inbox, Merge, MessageSquareQuote, Pencil, Plus, Split, Square, SquareArrowOutUpRight, UsersRound, X } from "lucide-react";
+import { BarChart3, Check, ChevronDown, Columns2, Copy, FileText, Globe, Inbox, Merge, MessageSquareQuote, Pencil, Plus, Split, Square, SquareArrowOutUpRight, UsersRound, X } from "lucide-react";
 import {
   memo,
   useCallback,
@@ -190,6 +190,9 @@ export function SessionTabs({
   titlebarDragRegion = false,
   memoTab,
   councilTab,
+  usageTab,
+  docTabs,
+  browserTab,
 }: {
   openSessions: Session[];
   session: Session;
@@ -252,6 +255,39 @@ export function SessionTabs({
    */
   councilTab?: {
     active: boolean;
+    onSelect: () => void;
+    onClose: () => void;
+  };
+  /**
+   * Token 用量 pseudo-tab: same strip semantics as 圆桌 (a page, not a
+   * session — no drag/tear-off/split). No badge.
+   */
+  usageTab?: {
+    active: boolean;
+    onSelect: () => void;
+    onClose: () => void;
+  };
+  /**
+   * Document pseudo-tabs (in-app markdown/text pages): same shape as the
+   * 收纳盒 tab — pages, not sessions, so no drag/tear-off/split either.
+   * Rendered after the memo tab, in strip order.
+   */
+  docTabs?: {
+    path: string;
+    title: string;
+    /** Full path for the tooltip. */
+    titleHint?: string;
+    active: boolean;
+    onSelect: () => void;
+    onClose: () => void;
+  }[];
+  /**
+   * Browser pseudo-tab: the built-in browser page (its own inner tab strip
+   * lives inside the page, so the outer chip is one entry with a count).
+   */
+  browserTab?: {
+    active: boolean;
+    count: number;
     onSelect: () => void;
     onClose: () => void;
   };
@@ -762,6 +798,101 @@ export function SessionTabs({
             onClick={(e) => {
               e.stopPropagation();
               councilTab.onClose();
+            }}
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
+      {usageTab && !detachedMode && (
+        <div
+          className={`editor-tab is-usage${usageTab.active ? " is-active" : ""}`}
+          role="tab"
+          aria-selected={usageTab.active}
+          data-tauri-drag-region="false"
+        >
+          <button
+            className="editor-tab__select"
+            type="button"
+            title={t("usageLedger.analysisTitle")}
+            onClick={usageTab.onSelect}
+          >
+            <BarChart3 size={12} />
+            <span>{t("usageLedger.tabTitle")}</span>
+          </button>
+          <button
+            className="pill-action pill-action--icon pill-action--sm editor-tab__close"
+            type="button"
+            title={t("common.close")}
+            aria-label={t("common.close")}
+            data-tauri-drag-region="false"
+            onClick={(e) => {
+              e.stopPropagation();
+              usageTab.onClose();
+            }}
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
+      {(docTabs ?? []).map((tab) => (
+        <div
+          key={tab.path}
+          className={`editor-tab is-doc${tab.active ? " is-active" : ""}`}
+          role="tab"
+          aria-selected={tab.active}
+          data-tauri-drag-region="false"
+        >
+          <button
+            className="editor-tab__select"
+            type="button"
+            title={tab.titleHint ?? tab.title}
+            onClick={tab.onSelect}
+          >
+            <FileText size={12} />
+            <span>{tab.title}</span>
+          </button>
+          <button
+            className="pill-action pill-action--icon pill-action--sm editor-tab__close"
+            type="button"
+            title={t("doc.close")}
+            aria-label={t("doc.close")}
+            data-tauri-drag-region="false"
+            onClick={(e) => {
+              e.stopPropagation();
+              tab.onClose();
+            }}
+          >
+            <X size={12} />
+          </button>
+        </div>
+      ))}
+      {browserTab && !detachedMode && (
+        <div
+          className={`editor-tab is-browser${browserTab.active ? " is-active" : ""}`}
+          role="tab"
+          aria-selected={browserTab.active}
+          data-tauri-drag-region="false"
+        >
+          <button
+            className="editor-tab__select"
+            type="button"
+            title={t("browser.tabTitle")}
+            onClick={browserTab.onSelect}
+          >
+            <Globe size={12} />
+            <span>{t("browser.tabTitle")}</span>
+            {browserTab.count > 0 && <b className="editor-tab__memo-count">{browserTab.count}</b>}
+          </button>
+          <button
+            className="pill-action pill-action--icon pill-action--sm editor-tab__close"
+            type="button"
+            title={t("browser.closeTab")}
+            aria-label={t("browser.closeTab")}
+            data-tauri-drag-region="false"
+            onClick={(e) => {
+              e.stopPropagation();
+              browserTab.onClose();
             }}
           >
             <X size={12} />

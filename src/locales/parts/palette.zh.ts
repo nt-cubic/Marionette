@@ -32,4 +32,6 @@ export const zh = {
   "palette.openTelegramHint": "手机通知与回复",
   "palette.openModelShare": "模型共享",
   "palette.openModelShareHint": "跨 agent 的模型与额度",
+  "palette.openProxy": "网络代理",
+  "palette.openProxyHint": "HTTP / SOCKS 代理",
 } as const;

@@ -11,13 +11,13 @@ import {
 } from "lucide-react";
 import { memo, useState } from "react";
 import { createPortal } from "react-dom";
-import { openExternal, revealInFileManager } from "../lib/api";
+import { openExternal, revealInFileManager, resolveLinkTarget } from "../lib/api";
+import { isDocPath, openInDocTabIfEligible } from "../lib/openFile";
 import { t, useT } from "../lib/i18n";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { MemorySection } from "./MemorySection";
 import { PluginsSection } from "./PluginsSection";
 import { SessionStatsSection } from "./SessionStatsSection";
-import { UsageLedgerSection } from "./UsageLedgerSection";
 import { dockFooterHost, useDocked } from "../lib/dockFooter";
 import type { PlanEntry } from "../lib/acpPlan";
 import type { BackgroundTaskRow } from "../lib/backgroundTasks";
@@ -400,6 +400,14 @@ function ChangedFileRow({
   const openFile = async () => {
     if (!cwd || deleted) return;
     onNote(null);
+    // Markdown/text renders in the in-app document tab; other files keep the
+    // OS-handler route (risky ones still take the confirm path below).
+    if (isDocPath(file.path)) {
+      const resolution = await resolveLinkTarget(file.path, cwd).catch(() => null);
+      if (resolution?.kind === "file" && !resolution.risky && openInDocTabIfEligible(resolution.target)) {
+        return;
+      }
+    }
     try {
       const result = await openExternal(file.path, cwd);
       if (result.reason === "risky") {
@@ -890,8 +898,6 @@ export const ContextPanel = memo(function ContextPanel({
         </small>
         {sessionStats && <SessionStatsSection stats={sessionStats} />}
       </section>
-
-      <UsageLedgerSection />
 
       <MemorySection activeSessionId={activeSessionId} />
 

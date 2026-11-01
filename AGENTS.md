@@ -53,7 +53,7 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
   （用量与项目收进 ⋯）。
 - **底栏（输入框下面那一栏）**：贴边时左右侧栏都是整页覆盖层，所以两侧栏把各自 footer 子树
   **portal** 到 body 级的 `#dock-footer`（`src/lib/dockFooter.ts` 的 `useDocked` / `dockFooterHost`）：
-  ProjectShelf 出模型共享入口 + 设置齿轮（打开 Ctrl K）+ 主题/通知/代理/Telegram，ContextPanel 出检查更新；它们的 popover
+  ProjectShelf 出模型共享入口 + 设置齿轮（打开 Ctrl K）+ 主题/通知/Telegram（语言与代理收进 Ctrl K），ContextPanel 出检查更新；它们的 popover
   也必须一起 portal（`DockedLayer`），否则 `translateX(100%)` 的 rail 会连 `position: fixed` 的浮层
   一起藏掉。`.dock-mode .app-shell` 预留 40px，整页 bottom 也收 40px。
 - **关闭路径**（2026-10-31 定稿）：× 的行为由用户在 Ctrl K 面板选择（dock prefs 的
@@ -288,6 +288,65 @@ UI 名「圆桌 / 圆桌会议」(en Roundtable);代码模块、路径、事件�
   store 沙箱走 `set_root_override_for_tests` + 全局 `SANDBOX_LOCK`
   串行(store 与 orchestrator 的测试共用一把锁,别各建各的)。
 
+## Token 用量台账与分析面板（2026-11-01，PR #6 接收 + 补齐）
+
+跨会话 token 统计（`docs/research-codeg.md` C11 的 Marionette 落地；基础是社区
+PR #6 的 localStorage 台账,验收后 squash 合入并按产品定案补齐）。改前记红线：
+
+- **记账只有一处**：App.tsx turn/complete 处理器里 `recordTurnUsage`,与
+  turnStats 盖戳共用同一条单窗口不变量（同一轮只被一个窗口处理）。
+  **别为聚合重载转录**（内存压力红线）;O(1) 增量、保留 **180** 天、写入时修剪
+  （`marionette-usage-ledger`）。**多窗口**：撕出的 detached 窗各自记账,落账前
+  重新读盘合并再写回（读-合并-写）,并监听 `storage` 事件跨窗刷新——整文件覆盖
+  仍可能丢最后一毫秒的对端写入,只丢聚合展示、不碰转录真相,可接受,别上锁。
+  台账 day 结构含 `models`（四桶按模型拆分）与 `hours`（24 桶,小时×星期作息热图原料,
+  **有损维度今天不记以后补不回来**）。模型归属 =
+  agent 自报 `currentModel` 兜底会话 `preferredModel`,展示分组用,不是账本真相。
+- **四桶拆分**：`TurnStats.cacheCreation`（缓存写）自 `cache_creation_input_tokens`
+  /`cachedWriteTokens` 拆出;**Grok 路径 `input` 改为新鲜输入**（与 Claude
+  `input_tokens` 语义对齐,原实现把 cacheRead/cacheCreation 折进 input）,
+  `contextUsed` 播种在 `applyGrokLiveContext` 显式加回缓存两桶——改这两处前
+  先跑 `usage-smoke`。agent 不报的桶就是 0/null,不编数。
+- **入口不加主界面按钮**（2026-11-01 定案,同日二次定案伪标签页,11-01 三次
+  定案:**右栏不再放 Token 总览卡**——订阅配额/会话统计仍在右栏,跨会话分析
+  只走独立页）：Ctrl K「Token 用量分析」→ **普通窗口开 `is-usage` 伪标签页**
+  （`usageOpen`/`usageActive`,council 同款:选中对话互斥、Esc/×/Ctrl+W 关、
+  开它关其它整页）;**贴边走 DockPage `usage` 整页、detached 弹窗兜底**
+  （`UsageAnalysisDialog` 包 `UsageAnalysisBody`,两种形态共用本体）。
+  面板内容学 codeg token-usage-page(表面仍走 ui-language):英雄卡大数字+环比芯片+
+  缓存命中环（分母=新鲜输入+缓存写+缓存读,排除输出）→ 连通统计条（轮次/活跃天/
+  生成时长）→ 两色趋势柱（强调色=缓存读,墨色=新算;柱宽封顶 24px,按天/按周）→
+  构成条 + 小时×星期作息热图（`hours` 24 桶、平方根 7 档 ramp、周一首行）→
+  模型/助手排名条（>limit 折叠「其它」,身份靠文字、单强调色）。不要把四桶画成
+  彩虹左边条,也不要环形图冒充分类编码。宽栏 780 以下改单列。
+  App 侧 Ctrl K / `openUsageTab` 是开页入口。
+- **session/new 的 MCP 自愈**（acp.rs,2026-11-01）:适配器可能广告
+  `mcpCapabilities.http:true` 但 session/new 的 zod 只收 sse 形状
+  （OpenCode 1.19.5 实锤:`type:"sse"`、headers 数组）→ 注入被整单拒收、
+  agent 起不来。现在 params 被拒且注入非空时**摘掉 mcpServers 重试一次**,
+  别为这种适配器维护 per-agent 矩阵。
+- **牌价折算**（`src/lib/tokenPrices.ts`）：models.dev `api.json`,**CSP 只放行
+  `https://models.dev` 单域**（tauri.conf.json connect-src,新增外联域先过这里）;
+  24h localStorage 缓存、拉取失败退旧缓存、目录为空整段金额区隐藏。匹配照抄
+  codeg `model-api-rates` 调教:LAB 厂商自家价压过转售价 → 多家同价才折叠 →
+  唯一优先主机（groq/mistral/bedrock/azure）→ 仍歧义=不定价;`marionette\`
+  `marionette::` `vendor/` 命名空间剥离后按 provider/model、裸 id 逐级匹配;
+  未计价 token 如实进覆盖率分母。**文案必须带「API 牌价折算,非订阅实付」**。
+- i18n 片段 `fe-usagedash`（**占位符必须 `{count}`**——t() 按 count 选复数、
+  替换表只认 params 里的键;PR 原版 `{n}` 在两种语言都渲染成字面 `{n}`,
+  已修,别改回去）。样式 `src/styles/usage-panel.css`（main.tsx 引入）,
+  视觉走 ui-language（3px 角、1px 边、无阴影、身份色只做点/条）。
+- 回归：`npx tsx scripts/verify-usage-ledger.mts`（四桶/模型/小时桶/
+  180 天/环比窗口/序列/cacheHitRate 排除输出/trendSeries 按周守恒/
+  hourRampStep/rankedAgents/热图折叠/排名折叠/牌价匹配与覆盖率/词典）+
+  `npx tsx scripts/usage-smoke.mts`（含 cacheCreation 断言）。
+- **图表（2026-11-01 学 codeg charts.tsx,表面走 ui-language）**：手绘在
+  `UsageCharts.tsx`（TrendChart / RingMeter / RankedBars / HourHeatmap）。
+  两色语言 `--u-accent`=缓存、`--u-ink*`=新算;热图 seq ramp 7 档 color-mix。
+  GitHub 式日格子（`activityHeatmap.ts` + `UsageHeatmap.tsx`）仍留着但不挂分析页——
+  分析页主热图是小时×星期。**日期 key 一律本地钟**（dayKeyOf）,别用 `toISOString`。
+  动效零依赖,只 transition transform/opacity,reduced-motion 整段关。
+
 ## 排查「卡退」（崩溃/闪退）—— 第一件事
 
 **用户报「卡退」时，先看 `%USERPROFILE%\.marionette\logs\dev.log`（开发者日志）。**
@@ -505,6 +564,89 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
    不是定时器）。`document.hidden` 时暂停 3s 终端轮询 / 1s live tick / 1s stats /
    12s git 扫描，可见即续（定时发送、挂起巡检等安全类 tick 不受影响）。
 
+## 文档标签页（2026-10-31）
+
+`.md/.markdown/.mdx/.txt` 点击改开 **app 内文档伪标签页**（收纳盒同款形状：中栏切换、
+不进分屏树、detached 窗与右键菜单保留 OS 路线）。改前记四条：
+
+- **路由层是唯一的分流点**：`src/lib/openFile.ts`（`isDocPath` + `setDocTabOpener` /
+  `openInDocTabIfEligible`）。四个调用点（LinkedText primaryAction、TurnDeliveryCard、
+  ContextPanel、MemoBox）都**先照旧 resolve、非 missing 非 risky** 才进标签页——
+  risky/missing 的老菜单流程一字不动。新增「可点文件」的 UI 时走同一个
+  `openInDocTabIfEligible`，别绕过。opener 只在主窗注册（App 挂载 effect），
+  detached 窗自动回落系统应用。
+- **保存的 stale 是返回值不是错误**：`open_target.rs::save_doc_file` 带 mtime 乐观锁，
+  冲突返回 `{saved:false, reason:"stale"}`，前端确认后 `force=true` 重试——
+  与「拒绝是返回值」的权限语义同款，别把它改成 Err。read/save 都是纯 fs，
+  **不许碰 storage 锁**。临时文件名带 pid（两个窗口不互吞 rename）。
+- **DocNavContext 只在文档页提供**：文档内相对 `.md` 链接页内跳转靠
+  `MarkdownBody` 的 `DocNavContext`（默认 null = 转录里的行为不变）；DocPage 拿
+  文档所在目录做 cwd 去 resolve。给别的挂载点加页内导航时照这个 context 模式，
+  不要在 MdLink 里写死调用方。
+- **对照模式是自绘行不是分屏树**：`DocCompareLayout`（对话左/文档右/可拖分隔条，
+  宽度存 `marionette-doc-compare-width`，没实际移动的 pointerup 不落值）。文档页
+  永远不进 SplitWorkspace——伪标签不是 session，拖拽/撕窗/merge 那套全不适用。
+  贴边态开文档 = `DockPage "doc"` 整页，Esc/返回归 dock chrome（`escToClose=false`）。
+
+## 内置浏览器标签（2026-10-31，批次 2）
+
+`docs/plan-browser-computer-use.md` §1 设计稿 + §6 落地偏差记录；行为描述在 `docs/CURRENT.md`。改前先记五条红线：
+
+- **grant 检查只有一处**：读级全走 `browser::tool_read`、Control 级在
+  `tools_mcp.rs` dispatch 的 action 分支——MCP 与工具栏共用 `set_grant`，
+  **任何地方都不要再写第二套授权判断**。「拒绝是返回值不是报错」
+  （`{"error":"browser_grant_required","note":…}`）。
+- **resize hook 是生存条件**：wry 0.55.1 在任何 child webview drop 时无条件摘宿主
+  窗口的 resize subclass——`surface::ensure_resize_hook`（SetWindowSubclass id
+  0xC0DE）必须在第一个浏览器标签之前装上（`create_surface` 自保证，别绕开它建
+  child webview）。**升级 vendor/wry 前先重测「开关浏览器标签后主窗 resize」**。
+- **world/binding 名字保留 codeg**：`WORLD_NAME="codeg"`、`__codegSend`、
+  `__codegAgent`——bundle 是上游 esbuild 压缩产物，改名 = 重放上游构建，不是 sed
+  （`browser/js/VENDOR.md`）。aria 引擎升级照上游 `browser-agent/` 流程重出产物。
+- **持 registry borrow 时绝不 CDP 等待**：`call_and_wait` 泵消息循环，泵期间任何
+  标签生命周期事件都要能进 registry——所有入口先 clone `Rc<Surface>` 出借用再干慢活
+  （`with_surface` 的形状）。wry WebView 非 Send：surface 只活在主线程，
+  外部一律 `run_on_main_thread` + oneshot。
+- **预热面是基础设施不是标签**：`surface::prewarm` 建的隐藏 surface 存注册表之外
+  （`PREWARM_SURFACE`），首个真实标签 `take_prewarmed` 认领才 `register_surface`
+  ——放进注册表 = 每次启动一个关不掉的幽灵「浏览器 1」（2026-11-01 实锤）。
+  **任何 child webview 的创建只准在 setup 预热或事件循环内的短路径**（见
+  plan-browser-computer-use.md §9 嵌套泵红线）；CDP world 懒装到首次读取。
+- **工具通道 = localhost HTTP MCP**（`tools_mcp.rs`，tiny_http + 每会话 Bearer
+  token，注入点在 `acp.rs` session/new 前、仅 supports_http 且 wire policy 放行）。
+  zcode 只收 url 型所以这是唯一通道；新工具加 schema + dispatch 两处，别开新端口。
+  always-approve 镜像只覆盖挂载过 Composer 的会话（后台会话出权限卡，安全方向）。
+
+## Computer Use（2026-10-31，批次 3）
+
+`docs/plan-browser-computer-use.md` §2 设计 + §7 落地偏差；行为在 `docs/CURRENT.md`。红线：
+
+- **封闭 Op 集**：主进程→helper 只有 `computer/protocol.rs` 那 8 个 op；helper→driver
+  的工具名硬编码在 `helper.rs::driver_call` 与各 op 里——**任何地方不得把 agent 给的
+  字符串透传成 driver 工具名**（driver 原生广告杀进程/录输入回放等几十个工具）。
+- **exe SHA 每次启动前校验**（helper.rs DriverProc::spawn）：装完校验挡不住之后被
+  agent 换文件。升级 driver = 改 `computer/driver.rs` 的 pin 常量重审。
+  **zip 是 6 文件整包**（UIA provider/SDK dll/node runtime 必需），解压用系统 tar。
+- **grant 检查只有一处**：`computer/mod.rs` 的 `ensure_read`/`ensure_control`（读/
+  操作各一道，agent 请求走对话内权限卡、always-approve 自动放行）；MCP dispatch
+  只调它们，**别写第二套**。
+- **自己的窗口/黑名单永不共享**：`win.rs::is_own_image`（镜像路径 + marionette.exe
+  名兜底防 dev/正式版并装）+ `keys.rs::DEFAULT_BLOCKLIST`（系统设置/凭据 UI/密码
+  管理器族），list 与 share 两处都过。
+- **按键白名单在 `keys.rs`**（表驱动测试）：粘贴拒绝 + 「agent 自写剪贴板且序列号
+  未变」例外（`GetClipboardSequenceNumber`）；桌面和弦（Win*/Alt+Tab/Ctrl+Esc/
+  Ctrl+Alt+*）App 级不放；Win+L/Win+Tab/Ctrl+Alt+Del 任何级不放。
+- **helper = 主 exe 参数分支**（main.rs 顶部，单实例锁之前）；helper 死循环 =
+  stdin 关闭（Marionette 死 → helper 退 → driver 被 Drop 杀）。
+  **锁红线**：`HelperIo`（writer+pending）是独立 `Arc<Mutex>`——等应答的请求方
+  绝不持有 STATE 锁，读线程路由只碰 IO 锁（2026-11-01 自锁实锤：
+  「helper did not answer configure in time」）。已安装的 `install` 早退也必须
+  emit "installed"；`computer_list_shareable` 的列表失败降级为 `helperError`，
+  **永不误报未安装**。
+- 未开的面（协议有、UI/检查没接，做之前重读 plan §7）：App/Screen 共享范围（整屏
+  必须连 paint_over 一起做）、指示条 overlay、foreground 交付、verify/launch_app/
+  hold_key/invoke_menu/set_window_frame 工具。
+
 ## DeepSeek Harness 接入（@openma/deepseek-harness-acp，2026-10-19 起）
 
 Marionette 的 DSH agent 走 `@openma/deepseek-harness-acp`（bin `dsh-acp`），不再用停更的社区适配器
@@ -665,7 +807,7 @@ ZCode 官方**没有** ACP（CLI 0.16.x 无 `--acp`，ACP registry 未收录）�
   `useLocale()`，`useSyncExternalStore` 订阅）。词典在 `src/locales/`：`zh-CN.ts`/`en.ts`
   合并 `parts/*.{zh,en}.ts` 片段（en `satisfies Record<keyof typeof zh, string>` ——
   **en 缺键 tsc 直接红**）。偏好键 `marionette-language`（首启按 `navigator.language`
-  自动检测），入口：Ctrl K「切换语言 / Switch language」+ 侧栏底栏 Languages 按钮。
+  自动检测），入口：Ctrl K「切换语言 / Switch language」（侧栏底栏不再放语言按钮）。
   **useMemo/useCallback 里算字符串必须把 `locale` 加进依赖数组**，否则切语言不重算
   （参照 `CommandPalette.tsx` 的 groups memo）。
 - **Rust**：`src-tauri/src/loc.rs` 的 `ts!` 宏就地双语（zh 字面量即 key，两个字面量

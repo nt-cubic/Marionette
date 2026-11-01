@@ -265,3 +265,50 @@ Codeg 的 `docs/agents/zcode.md`（他们唯一的 per-agent 文档）确认了�
 5. **防御性复查**（拿坑清单对我们的库过一遍）：退出路径同步 kill_tree；子进程输出 lossy 读 + spawn 入口强制 UTF-8；按字节切片复查；虚拟列表底部抖动/跳转与吸底锁打架预防；`Path/PATH` 双键注入；panic hook 覆盖面。
 
 > 分报告（8 份，含更细的文件行号证据）在本文件派生过程的探索代理输出中；深挖任何一块时直接到 `D:\Projects\codeg` 对应文件。
+
+## 2026-10-31 复核（v0.40.0 → v0.41.3）：两模块零变更 + Windows 坑补遗
+
+上游六天 140 个提交（499 文件 +80491/-14625），**browser 与 computer 模块几乎冻结**：
+
+- `src-tauri/src/browser/` 两 ref 的 tree hash 完全一致——Rust 浏览器模块**零提交零 diff**；
+  `browser-agent/`（aria 引擎）、`src/browser-injected/`、`js/agent.bundle.js` 同样未动，
+  vendored Playwright 仍 v1.63.0。涉及浏览器前端的仅 2 提交，全是 worktree-scoped tabs
+  重构的连带适配（`5d3f7667` 关 tab 改 `allScopes:true`；`040b5dc3` 修恢复的浏览器 tab
+  在状态 updater 内注册 scope 被孤儿化）。
+- computer 模块仅 1 提交（`567bf4f1`）：修 spawn.rs ExitWatch 在子进程已死路径上的
+  **kqueue fd 双重释放**——macOS-only，Windows 移植无关。cua-driver pin 仍 0.36.0。
+- **结论：本文 D5/D6 的全部架构事实对 0.41.3 仍然成立。**
+
+本次深挖补到 file:line 级、且 D5/D6 原文没写清的几条（移植时照抄）：
+
+1. **wry 关 child webview 摘宿主 resize subclass**（wry 0.55.1–0.57.0，Marionette 正是
+   0.55.1）：关一个浏览器 tab 会让 app 自己的 webview 卡在旧尺寸。Codeg 在第一个 tab
+   前用 `SetWindowSubclass`（id `0xC0DE`）装自己的 `WM_SIZE/WM_MOVE/WM_SETFOCUS` hook
+   （`browser/shim/windows.rs:1714-1815`）。
+2. **popup 必须复用 opener 的 `ICoreWebView2Environment`**（`surface_child.rs:682`）——
+   WebView2 拒绝跨 environment 开新窗口，否则 `window.opener` 断。
+3. **授权模型骨架三件事**（连注释一起搬）：grant 无闲置 TTL（`browser/agent.rs:125-128`，
+   只因用户撤销/离开 origin/listener 替换而终）；「拒绝是返回值不是报错」
+   （`acp/browser_tools.rs:16-19`，14 个 `browser_*` slug + 教 agent 转述的话术）；
+   未授权页面不注入读取代码（`agent.rs:494-502`，agent.bundle.js 只在第一次有授权
+   读取时进 isolated world）。eval 的代码跑**页面自己的 world**（不是 codeg world——
+   否则被批准的代码可替换 snapshot 原型伪造后续答案，`eval.rs:25-31`）。
+4. **localhost pin 故意不 pin pid**（nodemon/cargo watch 每次保存换 pid，
+   `agent.rs:71-83`），pin「程序+工作目录」；**没人监听不撤销**（dev server 重启间隙）。
+5. **Windows 输入注入 = CDP**（isolated world 名 + `Runtime.addBinding` +
+   `Page.addScriptToExecuteOnNewDocument`，`shim/windows.rs:314-385`）；aria 引擎与
+   picker 共用「probe→install」装载协议。
+6. **CU 的 Windows 必抄两处**：指示条/动作标记一律 `SW_SHOWNOACTIVATE` 直调
+   ShowWindow（tao 0.37.1 的 `WebviewWindow::show` 无视 `WS_EX_NOACTIVATE` 抢键盘焦点，
+   `computer/overlay.rs`）；遮挡判定 `DwmGetWindowAttribute(DWMWA_CLOAKED)` +
+   `IVirtualDesktopManager`（`computer/hwnd.rs`）。
+7. **helper 帧协议**：Windows/Linux 就是普通 stdio 管道 + 长度前缀 JSON（16MiB 上限），
+   `PROTOCOL_VERSION` 握手 + helper 先发 Ready；**HelperOp/WindowAction 封闭清单、
+   不透传 driver 工具名**（driver 原生广告几十个工具含杀进程/录输入回放，
+   `computer/protocol.rs:16-25`）。粘贴拒绝 + 「agent 自己写的剪贴板才许粘」例外
+   （`keys.rs:285`、`ClipboardUse::paste` 时间戳）。
+8. **「挡不住有 shell 的 agent」原文**在 `computer/mod.rs:36-40`：gate 只约束
+   「工具面允许模型做什么」，Windows/X11 上不是安全边界。
+
+Marionette 侧的落地批次与全量实施案：`docs/plan-browser-computer-use.md`；
+文档标签页（本批已落地）见 `docs/CURRENT.md`「文档标签页」。
