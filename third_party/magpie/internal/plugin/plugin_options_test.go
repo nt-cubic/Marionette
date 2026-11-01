@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -44,14 +45,18 @@ func TestPluginOptions(t *testing.T) {
 	if len(opts) != 16 {
 		t.Fatalf("optco has %d options, want 16: %+v", len(opts), opts)
 	}
-	if opts[0] != (Option{Key: "auto-claim", Label: "Claim rewards", Description: "Claims the daily reward when usage is read.", Default: true}) {
+	if want := (Option{Key: "auto-claim", Label: "Claim rewards", Description: "Claims the daily reward when usage is read.", Default: true,
+		Descriptions: map[string]string{"zh": "读取用量时领取每日奖励。"}, FiltersModels: true}); !reflect.DeepEqual(opts[0], want) {
 		t.Errorf("first = %+v", opts[0])
 	}
-	if opts[1] != (Option{Key: "beta", Label: "Beta models", Confirm: "Beta models may be withdrawn."}) {
+	// plugins#590: the words in other languages, without what isn't one
+	if want := (Option{Key: "beta", Label: "Beta models", Confirm: "Beta models may be withdrawn.",
+		Labels: map[string]string{"zh": "测试版模型", "de": "Beta-Modelle"}, Confirms: map[string]string{"zh": "测试版模型可能会下线。"}}); !reflect.DeepEqual(opts[1], want) {
 		t.Errorf("second = %+v", opts[1])
 	}
-	if o := opts[2]; o.Key != "long" || len([]rune(o.Label)) > 60 || len([]rune(o.Description)) > 300 || o.Default {
-		t.Errorf("long = %q (%d), %d, default %v", o.Key, len([]rune(o.Label)), len([]rune(o.Description)), o.Default)
+	if o := opts[2]; o.Key != "long" || len([]rune(o.Label)) > 60 || len([]rune(o.Description)) > 300 || o.Default || o.FiltersModels || o.Labels != nil ||
+		len([]rune(o.Descriptions["zh"])) != 300 || len(o.Confirms) != 16 {
+		t.Errorf("long = %q (%d), %d, default %v, filters %v, labels %v, %d, %d confirms", o.Key, len([]rune(o.Label)), len([]rune(o.Description)), o.Default, o.FiltersModels, o.Labels, len([]rune(o.Descriptions["zh"])), len(o.Confirms))
 	}
 	if opts[15].Key != "o12" {
 		t.Errorf("last = %q, want o12", opts[15].Key)

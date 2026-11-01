@@ -101,6 +101,47 @@ func TestCodexCreditsSwitch(t *testing.T) {
 	}
 }
 
+// Spending credits last is a third way, kept by account whatever its
+// case: set, the account still spends them (nothing holds it), and off
+// or on clears it; a mode not known is refused, nothing written.
+func TestCodexCreditsLastMode(t *testing.T) {
+	signIn(t)
+	if CodexCreditsMode("me@example.com") != CreditsOn || CodexCreditsLast("me@example.com") {
+		t.Fatal("last before it was set")
+	}
+	if err := SetCodexCreditsMode(" Me@Example.com ", CreditsLast); err != nil {
+		t.Fatal(err)
+	}
+	s := settings.Load()
+	if !slices.Equal(s.CodexCreditsLast, []string{"me@example.com"}) || len(s.CodexNoCredits) != 0 {
+		t.Fatalf("kept last %v, off %v", s.CodexCreditsLast, s.CodexNoCredits)
+	}
+	if !CodexCreditsLast("ME@example.com") || !CodexCredits("me@example.com") || CodexCreditsMode("me@example.com") != CreditsLast || CodexCreditsLast("other@example.com") {
+		t.Fatal("read back wrong")
+	}
+	if share, _ := HoldCaps(Provider{ID: "codex"}, "codex", "me@example.com").Of("5 hours"); share != 0 {
+		t.Fatalf("held at %d: last still spends them", share)
+	}
+	if err := SetCodexCreditsMode("me@example.com", "sometimes"); err == nil || !CodexCreditsLast("me@example.com") {
+		t.Fatalf("a mode not known: %v", err)
+	}
+	if err := SetCodexCredits("me@example.com", false); err != nil {
+		t.Fatal(err)
+	}
+	if s := settings.Load(); len(s.CodexCreditsLast) != 0 || CodexCreditsMode("me@example.com") != CreditsOff {
+		t.Fatalf("off kept last: %v", s.CodexCreditsLast)
+	}
+	if err := SetCodexCreditsMode("me@example.com", CreditsLast); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetCodexCredits("me@example.com", true); err != nil {
+		t.Fatal(err)
+	}
+	if s := settings.Load(); len(s.CodexCreditsLast)+len(s.CodexNoCredits) != 0 || CodexCreditsMode("me@example.com") != CreditsOn {
+		t.Fatalf("on kept last: %v", s.CodexCreditsLast)
+	}
+}
+
 // A reset spent starts an account's windows again: what was read of them
 // before is forgotten, so what holds the account at a share of them (its
 // cap, its credits not spent) holds it no more, and they are read again

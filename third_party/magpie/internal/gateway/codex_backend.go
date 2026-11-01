@@ -1487,6 +1487,16 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 			// (codex.out) and the Codex app is told without a restart
 			codexMayBeUsedUp(relayedAcct)
 		}
+	} else if said := codexStreamCut(res, sniff, began, r.Context()); said != "" {
+		// the stream's bytes stopped mid-reply, no failure said and no
+		// last event reached: the client still there hears it as the
+		// stream's failure, not a bare EOF to puzzle over, and the row
+		// says why instead of a clean 200 with no usage (#3377)
+		call.Status, call.Error = http.StatusBadGateway, said
+		// after a blank line, so a line the cut left half written can't
+		// take the events streamError writes into its data (#2446, #2580)
+		w.Write([]byte("\n\n"))
+		streamError(w, provider.Responses, call.Model, call.Status, said)
 	}
 	end(call.Status, call.Error, uu.Input+uu.Output+uu.CacheRead+uu.CacheWrite, uu.Output)
 	call.Route = tr.ID
@@ -1645,8 +1655,14 @@ func codexRelayedAccount(base string, h http.Header, on *provider.Provider) (pro
 var unreadableItem = regexp.MustCompile(`(?i)(?:encrypted content for item|item with id) '?([A-Za-z]+_[A-Za-z0-9_-]+)'?`)
 
 // withoutUnreadable is body without what OpenAI's refusal msg says it
-// can't read: the item it names, or the reasoning another account sealed.
+// can't read: the item it names, the reasoning another account sealed, or
+// a member of Codex's passthrough it doesn't know.
 func withoutUnreadable(body, msg []byte) ([]byte, bool) {
+	if f, ok := refusedPassthrough(msg); ok {
+		// a member of Codex's passthrough the backend doesn't know yet
+		// (passthrough_refused.go)
+		return withoutPassthrough(body, f)
+	}
 	if !foreignReasoning.Match(msg) && !bytes.Contains(bytes.ToLower(msg), []byte("not found")) {
 		return nil, false
 	}
@@ -1781,6 +1797,23 @@ func codexSaidNothing(rest, model, who string, res *http.Response, msg []byte) (
 	return who + " answered " + what + " for " + model + " " + res.Status + said +
 		". " + model + " is one of Codex's own models, which goes to OpenAI, not to a provider in magpie; try again later, " +
 		"or pick one of magpie's models in Codex (provider/model, or set it in magpie's Agents view)", true
+}
+
+// codexStreamCut says when a relayed stream was cut mid-reply: an SSE reply
+// whose bytes stopped with no failure said and no last event reached, its
+// client still there to hear of it. Left alone the reply just ends: Codex
+// read a bare EOF, "stream disconnected before completion", and the row
+// recorded a clean 200 with nothing of why — every reply the ChatGPT
+// backend cut about two minutes in said nothing else for days (#3377).
+// The text carries how long the stream had gone, so a cut's fixed shape
+// shows in the log.
+func codexStreamCut(res *http.Response, sniff *usageSniffer, began time.Time, ctx context.Context) string {
+	if res.StatusCode >= 400 || !sniff.sse || sniff.failed != "" || sniff.whole() || ctx.Err() != nil {
+		return ""
+	}
+	return "OpenAI closed the stream " + time.Since(began).Round(time.Second).String() + " into the reply, " +
+		"before its last event: response.completed never came, and the usage with it. " +
+		"The reply is lost, and asking again sends the turn whole"
 }
 
 // routeOf is the id of the route a Codex relay opened, so the call it
@@ -2913,14 +2946,20 @@ var keepsSeal = map[string]bool{`"reasoning"`: true, `"compaction"`: true, `"com
 // configuration_update items (the last one's effort at the top instead),
 // output.encrypted_content in its include,
 // and the sealed output (encrypted_content) on a message or call that an
-// OpenAI model wrote earlier in the conversation.
+// OpenAI model wrote earlier in the conversation; and, for a summary ask
+// of magpie's own (compaction, codexCompact), with its developer messages
+// as the system ones they are (developerItemsAsSystem) — Codex's own turns
+// keep the role, which a relay may be checking them by (#350, #1758).
 // A relay that checks it is Codex's turned the lot away ("invalid codex
 // request", #292), and Copilot the include (echo_ts). OpenAI's API and the
 // ChatGPT backend get it as it came; so does anything else, byte for byte,
 // when none of them is in it.
-func forVendor(p provider.Provider, body []byte) []byte {
+func forVendor(p provider.Provider, body []byte, compaction bool) []byte {
 	if p.Account != nil && p.Account.Agent == "codex" || strings.HasSuffix(p.Host(), "openai.com") {
 		return body
+	}
+	if compaction {
+		body = developerItemsAsSystem(body)
 	}
 	if !slices.ContainsFunc(openaiOnly, func(k []byte) bool { return bytes.Contains(body, k) }) || !forVendorChanges(body) {
 		return body
@@ -3062,6 +3101,56 @@ func forVendorChanges(body []byte) bool {
 	})
 }
 
+// developerItemsAsSystem turns the developer messages of a Responses
+// request into system ones, where they stand. A provider that isn't
+// OpenAI's may not take the role: its Responses answered a Codex
+// compaction 400 "developer is not one of ['system', 'assistant', 'user',
+// 'tool', 'function']", the chat-only vendor behind it knowing chat roles
+// alone (#2955) — every retry Codex made failed the same, while the turns
+// around it, carrying no developer message, passed. Zed's cloud turned
+// the whole request away over one (ZedBody), and a Chat Completions
+// upstream is given the messages as system for the same reason
+// (developerAsSystem). A developer message says what a system one says,
+// and every Responses backend takes system; the ChatGPT backend, which
+// takes developer alone, never comes here. The message stays where it
+// stood, so a thread's cached prefix keeps its shape (#502).
+func developerItemsAsSystem(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`"developer"`)) {
+		return body
+	}
+	var q map[string]json.RawMessage
+	if json.Unmarshal(body, &q) != nil {
+		return body
+	}
+	var items []json.RawMessage
+	if json.Unmarshal(q["input"], &items) != nil {
+		return body
+	}
+	changed := false
+	out := make([]json.RawMessage, 0, len(items))
+	for _, raw := range items {
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber() // a number goes back as it came, not as a float
+		var it map[string]any
+		if dec.Decode(&it) == nil && (it["type"] == nil || it["type"] == "message") && it["role"] == "developer" {
+			it["role"] = "system"
+			if b, err := marshalPlain(it); err == nil {
+				raw, changed = b, true
+			}
+		}
+		out = append(out, raw)
+	}
+	if !changed {
+		return body
+	}
+	q["input"], _ = marshalPlain(out)
+	nb, err := marshalPlain(q)
+	if err != nil {
+		return body
+	}
+	return nb
+}
+
 func userMessage(text string) map[string]any { return codexsummary.UserMessage(text) }
 
 // codexCompact compacts a conversation held by a magpie model: the model
@@ -3085,9 +3174,13 @@ func userMessage(text string) map[string]any { return codexsummary.UserMessage(t
 //
 // The summary is asked for whole (askWhole): a reply that breaks off, or
 // ends incomplete, is a failure the next account or member answers, as
-// one that fails before it begins, and is never taken for the summary;
-// when none is left Codex is told so. One conversation's compaction that
-// keeps failing stops being asked for a while (compactFails, #2274).
+// one that fails before it begins, and is never taken for the summary.
+// When none is left and the last one's stream broke off, the summary is
+// magpie's own (#3526): Codex, told a 502, asked the same huge summary
+// over until the guard held it, and the conversation could neither compact
+// nor go on. One that ended incomplete is still told so. One conversation's
+// compaction that keeps failing stops being asked for a while
+// (compactFails, #2274).
 func (s *Server) codexCompact(w http.ResponseWriter, r *http.Request, body []byte) {
 	key, model := compactKey(body), modelOf(body)
 	// Codex's compaction on the model a thread is leaving, under magpie's
@@ -3107,6 +3200,7 @@ func (s *Server) codexCompact(w http.ResponseWriter, r *http.Request, body []byt
 		r.Header.Set(turnMetadataHeader, turn)
 	}
 	r = askWhole(r)
+	r = askCompaction(r)
 	ask := func(b []byte) (*recorder, compactResult, error) {
 		rec := &recorder{header: http.Header{}, status: 200}
 		s.serve(rec, r, provider.Responses, b)
@@ -3124,7 +3218,7 @@ func (s *Server) codexCompact(w http.ResponseWriter, r *http.Request, body []byt
 	rec, res, err := ask(body)
 	local := ""
 	if first := rec.status; lacksEndpoint(first) || itemNotFound(rec) || upstreamFailed(rec) || protectionRefused(first, rec.body.Bytes()) ||
-		err != nil && protectionWords.MatchString(err.Error()) {
+		summaryTooLarge(rec) || err != nil && protectionWords.MatchString(err.Error()) {
 		who, msg := compactFailure(body, rec)
 		if err != nil {
 			msg = "broken off: " + err.Error()
@@ -3154,6 +3248,25 @@ func (s *Server) codexCompact(w http.ResponseWriter, r *http.Request, body []byt
 		}
 		log.Printf("codex compaction: %s answered %d (%s) on the model the thread is leaving; compacting locally", who, rec.status, msg)
 		local = localSummary(body, fmt.Sprintf("%s answered %d to the summary request: %s", who, rec.status, msg))
+		rec, res, err = &recorder{header: http.Header{}, status: 200}, compactResult{}, nil
+	}
+	if local == "" && (err != nil && strings.HasSuffix(err.Error(), errEndedShort.Error()) || summaryEndedShort(rec)) {
+		// nobody left, and the last one's stream broke off before its end
+		// (#2274): the words before the cut are no summary, and Codex,
+		// told a 502, asked the same huge summary over, three times, until
+		// the guard held it and the conversation could neither compact nor
+		// go on (#3526). A translated reply that stopped short comes as a
+		// 502 saying so (summaryEndedShort), the same cut. The summary is
+		// magpie's own, as when no model can be asked at all; the summary
+		// as text isn't tried, the cut was in what the model wrote, not in
+		// what it was asked
+		who, _ := compactFailure(body, rec)
+		why := provider.APIError(rec.body.Bytes(), "")
+		if err != nil {
+			why = err.Error()
+		}
+		log.Printf("codex compaction: %s: %s; compacting locally", who, why)
+		local = localSummary(body, why)
 		rec, res, err = &recorder{header: http.Header{}, status: 200}, compactResult{}, nil
 	}
 	if rec.status >= 400 {
@@ -3287,6 +3400,13 @@ func lacksEndpoint(status int) bool {
 	return status == http.StatusNotFound || status == http.StatusMethodNotAllowed || status == http.StatusNotImplemented
 }
 
+// summaryEndedShort is a summary ask answered 502 because the reply
+// stopped before its end: a translated one serve held whole and found
+// cut (errEndedShort, #3526, Edward4226's third shape).
+func summaryEndedShort(rec *recorder) bool {
+	return rec.status == http.StatusBadGateway && strings.HasSuffix(provider.APIError(rec.body.Bytes(), ""), errEndedShort.Error())
+}
+
 // upstreamFailed is a relay's own word that the provider behind it turned
 // the request away, without saying why: "flyapi: Upstream request failed"
 // came as a 404 (#866), "apex: Upstream request failed" as a 400
@@ -3300,6 +3420,20 @@ func upstreamFailed(rec *recorder) bool {
 }
 
 var upstreamFailedWords = regexp.MustCompile(`(?i)upstream request failed`)
+
+// summaryTooLarge is a summary request refused for its size: past the
+// vendor's byte cap (413; DeepSeek's "Failed to buffer the request body:
+// length limit exceeded", celestial_eagle_99230 on Discord) or past the
+// model's window. Codex's remote compaction asks nothing smaller after
+// either (it trims only by its token estimate against the catalog's
+// window, and a 1M window holds more bytes than the cap takes), so told
+// of it, Codex could neither compact nor go on. The summary is asked
+// again as text, its images left out and long outputs cut
+// (plainCompact), and compacted without a model when that is refused
+// too.
+func summaryTooLarge(rec *recorder) bool {
+	return rec.status == http.StatusRequestEntityTooLarge || overflowed(rec.status, rec.body.Bytes())
+}
 
 // itemNotFound is a 400 refusing an item of the input by its id, as Azure
 // OpenAI's and OpenAI's API answer one they never stored ("Item with id

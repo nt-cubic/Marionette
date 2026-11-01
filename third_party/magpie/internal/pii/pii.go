@@ -52,20 +52,17 @@ var (
 // oldTags are the tags pinned before, newest first: one of theirs on disk
 // is run until serveTag's is downloaded (upgrade).
 var (
-	serveTag  = "pf-v2"
-	oldTags   = []string{"pf-v1"}
+	serveTag  = "pf-v3"
+	oldTags   = []string{"pf-v2", "pf-v1"}
 	serveBase = "https://github.com/yetone/magpie/releases/download/"
 	serveSHA  = map[string]string{
-		"darwin-amd64":  "4b68c9f06b14b909ec35e491ba58fcb06df500a5a0985465dd1115f9e7a5d753",
-		"darwin-arm64":  "13ea258cc139dd0fc024f8eab70ee3566aa12ce6b5ab71f890b68bc8507159d3",
-		"linux-amd64":   "ff0af5cd1a3d350e7c93ca45c0b5285088c9666340826e87fbb14e5dcb23f772",
-		"linux-arm64":   "05970f7c5ba202e0e577cb22e0d12f009789c321583574a1ae1196d9522f7181",
-		"windows-amd64": "f4993000cc09500c907d3dd7042d783fa0b9310f272bc0bdf323ba9d012556f0",
+		"darwin-amd64":  "5d9277d6852b7e3dcc30d102f43c21bf54a5c3199e0f9f998d965ec7a30ea6d7",
+		"darwin-arm64":  "b45951751bb26633a5ca3827fbf3718f10dfd5c313da6b4f6ba786755353cb4b",
+		"linux-amd64":   "b2b231209d8806648ec8dfe2d7b1a06c4cc273d1de4d50325e7a1638e63c7cc4",
+		"linux-arm64":   "9812356fcb311c351c094aa9a587da3d54166382699b59e9f1c92ab08abae792",
+		"windows-amd64": "8fd8f7295743197311d13ed34aa9fb7be891f4e2586dfda6c4a3335e6cef52f3",
 	}
 )
-
-// target is this system's name in serveSHA.
-func target() string { return runtime.GOOS + "-" + runtime.GOARCH }
 
 // Supported says pf-serve is built for this system.
 func Supported() bool { return serveSHA[target()] != "" }
@@ -88,6 +85,17 @@ func serveDir() string { return tagDir(serveTag) }
 
 func tagDir(tag string) string { return filepath.Join(dir(), tag+"-"+target()) }
 
+// tagDirs are where tag's pf-serve may be on disk: tagDir, and under
+// Rosetta also the Intel one's, which magpie fetched there before it
+// fetched Apple silicon's (target).
+func tagDirs(tag string) []string {
+	ds := []string{tagDir(tag)}
+	if osArch != target() {
+		ds = append(ds, filepath.Join(dir(), tag+"-"+osArch))
+	}
+	return ds
+}
+
 // exe is a program of pf-serve's: serveTag's, or, until that is
 // downloaded, the newest of oldTags' on disk.
 func exe(name string) string { return exeIn(binDir(), name) }
@@ -101,8 +109,10 @@ func exeIn(d, name string) string {
 
 func binDir() string {
 	for _, tag := range append([]string{serveTag}, oldTags...) {
-		if _, err := os.Stat(exeIn(tagDir(tag), "pf-serve")); err == nil {
-			return tagDir(tag)
+		for _, d := range tagDirs(tag) {
+			if _, err := os.Stat(exeIn(d, "pf-serve")); err == nil {
+				return d
+			}
 		}
 	}
 	return serveDir()

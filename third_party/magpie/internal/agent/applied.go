@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -13,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/provider"
@@ -174,11 +175,12 @@ func (a *Agent) Drift() *Drift {
 		return nil
 	}
 	vals := a.Values()
+	opts := fieldOptions{}
 	// the field on one of magpie's models: where drift shows, and what
 	// setting it again sets
 	on, onMagpie := a.Fields[0], false
 	for _, f := range a.Fields {
-		if magpieValue(a, f, vals[f.Key], vals) {
+		if magpieValueIn(a, f, vals[f.Key], vals, opts) {
 			on, onMagpie = f, true
 			break
 		}
@@ -212,7 +214,7 @@ func (a *Agent) Drift() *Drift {
 		if now == "" && f.Follows != "" {
 			now = vals[f.Follows]
 		}
-		if !ok || picked || now == want || !magpieValue(a, f, want, vals) || magpieValue(a, f, now, vals) || sameGroup(want, now) {
+		if !ok || picked || now == want || !magpieValueIn(a, f, want, vals, opts) || magpieValueIn(a, f, now, vals, opts) || sameGroup(want, now) {
 			continue
 		}
 		return &Drift{Kind: "replaced", Field: f.Key, Now: vals[f.Key], Want: want,
@@ -266,11 +268,15 @@ func (a *Agent) theInstalled() bool {
 	if !elsewhere() || a.Path == "" {
 		return false
 	}
-	b, err := edit.Read(a.Path)
+	// the bytes filememo keeps, looked at in place: a copy of the file and
+	// two strings of it for each field's drift was 5 MB a poll of a Codex
+	// config.toml of 1.5 MB, in a magpie beside the installed one (a dev
+	// build)
+	b, err := filememo.Read("bytes", a.Path, func(b []byte) ([]byte, error) { return b, nil })
 	if err != nil {
 		return false
 	}
-	return strings.Contains(string(b), hostOf(installedURL())) && !strings.Contains(string(b), hostOf(gateway.URL()))
+	return bytes.Contains(b, []byte(hostOf(installedURL()))) && !bytes.Contains(b, []byte(hostOf(gateway.URL())))
 }
 
 // bypassed: the agent was used — while this gateway was up and after magpie
@@ -291,6 +297,30 @@ func bypassed(used, applied, seen time.Time) bool {
 // its suffix after the model (SplitSuffix) aside; a list of models is the
 // user's own.
 func magpieValue(a *Agent, f Field, v string, vals map[string]string) bool {
+	return magpieValueIn(a, f, v, vals, nil)
+}
+
+// fieldOptions keeps each field's options, by its key, for one look at an
+// agent's values: Drift asks magpieValue up to three times a field, and
+// Claude Code's options (claudeViaMagpie, its own models) were made anew
+// each time, 35 MB of what forty polls with real accounts allocated.
+type fieldOptions map[string][]Option
+
+func (o fieldOptions) of(f Field, vals map[string]string) []Option {
+	if o == nil {
+		return f.Options(vals)
+	}
+	opts, ok := o[f.Key]
+	if !ok {
+		opts = f.Options(vals)
+		o[f.Key] = opts
+	}
+	return opts
+}
+
+// magpieValueIn is magpieValue reading a field's options from opts, made
+// for the same vals; nil reads them anew.
+func magpieValueIn(a *Agent, f Field, v string, vals map[string]string, opts fieldOptions) bool {
 	if v == "" {
 		return false
 	}
@@ -309,7 +339,7 @@ func magpieValue(a *Agent, f Field, v string, vals map[string]string) bool {
 	if f.Options == nil {
 		return false
 	}
-	for _, o := range f.Options(vals) {
+	for _, o := range opts.of(f, vals) {
 		if o.Value == v {
 			return o.Ref != ""
 		}
@@ -441,7 +471,7 @@ func (a *Agent) forgetSetUp() {
 // keeps an entry in). A field set in magpie to a model of the agent's own,
 // or its thinking level, doesn't set it up.
 func (a *Agent) setUp() bool {
-	if stashLoad()[a.ID+".connect.was"] != "" {
+	if stashShared()[a.ID+".connect.was"] != "" {
 		return true
 	}
 	rec := appliedOf(a.ID)
@@ -603,7 +633,7 @@ const disconnectedKey = ".disconnected"
 
 // Disconnected reports whether the user disconnected the agent and hasn't
 // connected it since.
-func (a *Agent) Disconnected() bool { return stashLoad()[a.ID+disconnectedKey] == "1" }
+func (a *Agent) Disconnected() bool { return stashShared()[a.ID+disconnectedKey] == "1" }
 
 // noModelLeft says why there is no model of magpie's to connect the agent
 // to: none added yet (NoModelsError), or every one taken out of its lists

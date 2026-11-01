@@ -246,7 +246,7 @@ function maskTurnOn(e) {
     .then(() => {
       const back = maskWasPersonal;
       maskWasPersonal = false;
-      if (back) window.hideAccounts?.set(true);
+      if (back) window.hideAccounts?.set(true, true);
       return savePrefs({ ...prefsKeep(prefs), redact: true, ...(back ? { redactPersonal: true } : {}) });
     })
     .then(() => { maskDrawn = ""; drawMaskCard(); })

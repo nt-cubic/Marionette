@@ -2,8 +2,12 @@ package gui
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http/httptest"
+	"runtime"
 	"testing"
 
 	"github.com/yetone/magpie/internal/sessions"
@@ -43,32 +47,64 @@ func TestStatsAnswerWritesWhatEncodeDid(t *testing.T) {
 	}
 }
 
-// A long answer is written into a buffer kept from the last, not one grown
-// from nothing each poll.
-func TestAnswerBufferKeptForTheNext(t *testing.T) {
-	answerBuffers.Lock()
-	answerBuffers.free = nil
-	answerBuffers.Unlock()
-	big := bytes.Repeat([]byte("x"), 1<<20)
-	w := httptest.NewRecorder()
-	writeSame(w, httptest.NewRequest("GET", "/x", nil), func(b *bytes.Buffer) error {
-		b.Write(big)
+// writeSame holds no answer-sized buffer, and keeps none for the next:
+// the stats' answers were 12.5 MB of a warm start's live heap (#2278).
+// What it sends, and its tag, are the bytes write gave.
+func TestSameAnswerNotHeldWhole(t *testing.T) {
+	big := bytes.Repeat([]byte("x"), 4<<20)
+	write := func(w io.Writer) error {
+		for i := 0; i < len(big); i += 64 << 10 {
+			if _, err := w.Write(big[i : i+64<<10]); err != nil {
+				return err
+			}
+		}
 		return nil
-	})
-	if !bytes.Equal(w.Body.Bytes(), big) {
-		t.Fatalf("answer of %d bytes, want %d", w.Body.Len(), len(big))
 	}
-	b := answerBuffer()
-	if b.Len() != 0 || b.Cap() < len(big) {
-		t.Fatalf("next buffer holds %d, room for %d: not the last answer's", b.Len(), b.Cap())
+	w := httptest.NewRecorder()
+	tag := writeSame(w, httptest.NewRequest("GET", "/x", nil), write) // warm
+	sum := sha256.Sum256(big)
+	if !bytes.Equal(w.Body.Bytes(), big) || tag != hex.EncodeToString(sum[:16]) {
+		t.Fatalf("answer of %d bytes, tag %q: not what write gave", w.Body.Len(), tag)
 	}
-	keepAnswer(b)
-	rows := []rowsBufRow{{Name: string(big)}}
-	writeJSONRows(httptest.NewRecorder(), httptest.NewRequest("GET", "/x", nil), "kept-test", rows, struct{}{})
-	answerBuffers.Lock()
-	n := len(answerBuffers.free)
-	answerBuffers.Unlock()
-	if n == 0 {
-		t.Fatal("writeJSONRows kept no buffer for the next answer")
+	var before, after runtime.MemStats
+	w = httptest.NewRecorder()
+	w.Body.Grow(len(big) + 1<<20) // the recorder's copy isn't magpie's
+	runtime.ReadMemStats(&before)
+	writeSame(w, httptest.NewRequest("GET", "/x", nil), write)
+	runtime.ReadMemStats(&after)
+	if got := after.TotalAlloc - before.TotalAlloc; got > uint64(len(big)/4) {
+		t.Fatalf("writeSame allocated %d bytes for a %d-byte answer", got, len(big))
+	}
+	same := httptest.NewRequest("GET", "/x", nil)
+	same.Header.Set("X-Magpie-Had", tag)
+	w = httptest.NewRecorder()
+	writeSame(w, same, write)
+	if w.Header().Get("X-Magpie-Same") != "1" || w.Body.Len() != 0 {
+		t.Fatalf("asked with its own tag: same %q, %d bytes", w.Header().Get("X-Magpie-Same"), w.Body.Len())
+	}
+}
+
+// writeJSONRows holds no answer-sized buffer: the list goes out a row at a
+// time, and the whole answer was 25 MB of a warm start's live heap (#2278).
+func TestJSONRowsNotHeldWhole(t *testing.T) {
+	if raceOn {
+		t.Skip("-race: sync.Pool drops what it holds, so allocations are not what a build allocates")
+	}
+	big := string(bytes.Repeat([]byte("x"), 64<<10))
+	rows := make([]rowsBufRow, 64)
+	for i := range rows {
+		rows[i] = rowsBufRow{Name: big, N: float64(i)}
+	}
+	w := httptest.NewRecorder()
+	writeJSONRows(w, httptest.NewRequest("GET", "/x", nil), "rows", rows, struct{}{}) // warm
+	var before, after runtime.MemStats
+	w = httptest.NewRecorder()
+	w.Body.Grow(len(rows)*len(big) + 1<<20) // the recorder's copy isn't magpie's
+	runtime.ReadMemStats(&before)
+	writeJSONRows(w, httptest.NewRequest("GET", "/x", nil), "rows", rows, struct{}{})
+	runtime.ReadMemStats(&after)
+	answer := uint64(w.Body.Len())
+	if got := after.TotalAlloc - before.TotalAlloc; got > answer/4 {
+		t.Fatalf("writeJSONRows allocated %d bytes for a %d-byte answer", got, answer)
 	}
 }

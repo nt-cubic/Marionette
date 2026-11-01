@@ -82,8 +82,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.ok(!(await page.locator("#floating").textContent()).includes(MAIL[1]));
         assert.ok(!(await page.locator("#floating").getAttribute("title")).includes("dev.two"));
 
-        // turned off in Settings › Privacy's switch: back as they were
-        await page.evaluate(() => window.hideAccounts.set(false));
+        // turned off with the Providers page's own switch (under the
+        // editor here): back as they were
+        await page.evaluate(() => document.querySelector("#pvMask").click());
         await page.waitForFunction(() => !document.querySelector(".pii"));
         assert.equal(await page.locator("#floating").textContent(), "Switch to " + MAIL[1]);
         assert.equal(await page.locator("#floating").getAttribute("title"), MAIL[1]);

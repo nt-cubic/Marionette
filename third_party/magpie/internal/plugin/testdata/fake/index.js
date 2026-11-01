@@ -164,6 +164,12 @@ export const FakePlugin = async ({ client }) => ({
       // Trae's levels as Our Free Model's plugin lists them (nianshou5)
       cfg.provider[ID].models["fake-trae"] = { name: "Fake Trae", reasoning: true, variants: levels(["light", "high", "extra_high"]), limit: { context: 1000, output: 100 } }
     }
+    // $FAKE_TEMP: a model whose vendor turns temperature and top_p away,
+    // said as Factory 0.1.31's config models say it of its OpenAI route
+    // (plugins#154); fake-1 beside it says nothing and takes them
+    if (process.env.FAKE_TEMP) {
+      cfg.provider[ID].models["fake-cold"] = { name: "Fake Cold", temperature: false, limit: { context: 1000, output: 100 } }
+    }
     // $FAKE_ZEN: a model as opencode-zen-free 0.1.3's config hook writes
     // it, from models.opencode.ai on 2026-10-11 (#1595, tkhs101): it
     // takes audio, video and pdf too, at five levels (its api left to ours)

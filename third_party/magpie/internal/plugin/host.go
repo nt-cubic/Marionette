@@ -63,6 +63,9 @@ type message struct {
 	Title    string `json:"title"`
 	Variant  string `json:"variant"`
 	Count    int    `json:"count"`
+	// Loads is a "load" event's models and how busy each is, a percent;
+	// -1 clears one (magpie.load in host.js)
+	Loads map[string]float64 `json:"loads"`
 }
 
 type callState uint8
@@ -1178,6 +1181,8 @@ func (h *host) dispatch(m message) {
 				// account's lapse into logins.json (#1935)
 				tell(func() { f(m.Provider, m.Account, m.Said) })
 			}
+		case "load":
+			noteLoads(m.Provider, m.Loads, time.Now())
 		case "toast":
 			log.Printf("plugin: %s %s", m.Title, m.Message)
 		case "log":

@@ -27,6 +27,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/desktopdir"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/netproxy"
@@ -670,7 +671,7 @@ var grokReleases = []string{"https://x.ai/cli/", "https://storage.googleapis.com
 // installer's GROK_CHANNEL or grok update --alpha, kept under [cli] in its
 // config.toml (stable when none).
 func grokLatest() string {
-	dir := os.Getenv("GROK_HOME")
+	dir := appdir.Getenv("GROK_HOME")
 	if dir == "" {
 		home, _ := os.UserHomeDir()
 		dir = filepath.Join(home, ".grok")

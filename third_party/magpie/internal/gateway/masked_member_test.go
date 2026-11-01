@@ -159,8 +159,8 @@ func TestMemberWriterWrittenAfterFinish(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			m := &memberWriter{w: rec}
-			m.setMember("fake/m1")
+			m := &memberWriter{w: rec, naming: nameMember, paths: memberPaths}
+			m.setMember("fake/m1", "m1")
 			m.Header().Set("Content-Type", tc.ct)
 			m.WriteHeader(200)
 			m.finish()

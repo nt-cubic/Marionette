@@ -16,7 +16,6 @@ import (
 	"math"
 	"net/url"
 	"os"
-	"path/filepath"
 	"reflect"
 	"regexp"
 	"runtime"
@@ -301,6 +300,12 @@ type Settings struct {
 	// groups and fallbacks, where by default the vendor answers on its
 	// credits (see provider.CodexCredits).
 	CodexNoCredits []string `json:"codexNoCredits,omitempty"`
+	// CodexCreditsLast are the ChatGPT accounts (lower-case) that spend
+	// their credits only after everything else: once a usage window is
+	// used up, routing tries the account after every account, key and
+	// fallback not on its credits, instead of in its place. Not one of
+	// CodexNoCredits: an account set not to spend them is held.
+	CodexCreditsLast []string `json:"codexCreditsLast,omitempty"`
 	// WorkBuddyCheckin presses WorkBuddy's daily check-in (签到) for each
 	// signed-in WorkBuddy (China) account once a Beijing day, claiming the
 	// credits it gives while its event runs.
@@ -335,9 +340,14 @@ type Settings struct {
 	CheckinOff []string `json:"checkinOff,omitempty"`
 	// MemberModel has a reply's model name the routing group's member
 	// that answered, as magpie's provider/model id (workbuddy/glm-5.3-flash),
-	// rather than the vendor's own name for it, for agents that count
-	// usage by the reply's model (#822). Claude Code, Claude Desktop and
-	// Codex always get the vendor's name: they read it themselves.
+	// for agents that count usage by the reply's model (#822). Off, as by
+	// default, a reply sent under another name than the one asked for (a
+	// group's member, a model's own id, a provider/model id) names the
+	// model the agent asked for (issennknight on Discord: an agent warned
+	// that deepseek-v4.1-flash came back as deepseek-v4.1-flash-1017);
+	// one the vendor named as asked keeps the vendor's name, a dated one
+	// too. Claude Code, Claude Desktop and Codex never get the member's
+	// id: they read the name themselves (gateway's replyNamingOf).
 	MemberModel bool `json:"memberModel,omitempty"`
 	// NoLoopGuard lets a streamed reply run on when its reasoning or text
 	// is stuck in a loop of the same few lines (#1359). Off, as by
@@ -356,6 +366,13 @@ type Settings struct {
 	// images, safeguards or client cache marks): the plan counts a -p
 	// request at about twice an interactive one.
 	ClaudePrintMode bool `json:"claudePrintMode,omitempty"`
+	// ClaudeTUIOnly has a Claude subscription's model requests never run
+	// as `claude -p`: one the interactive mode can't take (safeguards, a
+	// JSON schema, …), or whose interactive mode doesn't come up, fails,
+	// saying why, where it would otherwise be -p. Reading the plan's
+	// allowance (/usage, no model request) is still -p. ClaudePrintMode,
+	// when set too, wins.
+	ClaudeTUIOnly bool `json:"claudeTUIOnly,omitempty"`
 	// ClaudeRunsMost is how many Claude Code processes a Claude
 	// subscription may have running at once: conversations' runs, those
 	// waiting for a next turn or on tool results, and one-off tests and
@@ -456,12 +473,24 @@ type Settings struct {
 	// haiku needed more than 8): from 1 to ClassifyTimeoutMost, 0 for
 	// ClassifyTimeoutDefault. ClassifyWait reads it.
 	ClassifyTimeout int `json:"classifyTimeout,omitempty"`
+	// BusyLoad puts a model whose plugin reports it busier than this
+	// percent behind the others it could go to (plugin.ModelLoad,
+	// axelburks on Discord): from 1 to BusyLoadMost-1, past 100 for a
+	// vendor that queues, 0 for off. A model with no
+	// load reported, or one older than plugin.LoadFresh, keeps its place.
+	BusyLoad int `json:"busyLoad,omitempty"`
 	// Searcher is the provider that searches the web for a model that
 	// can't: "<provider>" with the small model magpie picks of it,
 	// "<provider>/<model>", or empty for the one magpie picks
 	// (gateway.searcher). "off" allows only configured search APIs.
 	// One that is gone, off or can't search gives way to magpie's pick.
 	Searcher string `json:"searcher,omitempty"`
+	// SearcherThen are the searchers asked in turn, in this order, when
+	// the one Searcher names fails or finds nothing, each written as
+	// Searcher is (axelburks on Discord: a second provider when the first
+	// fails). Read only while Searcher names one; magpie's own pick hands
+	// on to the next it would pick by itself.
+	SearcherThen []string `json:"searcherThen,omitempty"`
 	// SearcherEffort is how hard the searcher's model thinks as it searches
 	// (MOMO on Discord): a level of catalog.EffortRank, fitted to the
 	// model's own levels when it is asked, or empty to send none, the
@@ -1094,6 +1123,10 @@ func (s Settings) ResetLead() time.Duration {
 	return time.Duration(m) * time.Minute
 }
 
+// BusyLoadMost is past the highest BusyLoad: plugin.LoadMost, the most a
+// plugin's reported load is kept at, so a threshold at it moves nothing.
+const BusyLoadMost = 10000
+
 // ClassifyTimeoutDefault is the seconds a classifier is given when
 // ClassifyTimeout is 0, and ClassifyTimeoutMost the most it can be set to:
 // the turn waits on it before it goes anywhere, with nothing sent to its
@@ -1394,7 +1427,7 @@ func renameInMap(m reflect.Value, from, to string) bool {
 }
 
 // Path is the settings file.
-func Path() string { return filepath.Join(Dir(), "settings.json") }
+func Path() string { return appdir.Join(Dir(), "settings.json") }
 
 // Dir is the folder every magpie file lives in: the data folder beside a
 // portable magpie (appdir.Portable), else ~/.config/magpie.
@@ -1680,7 +1713,7 @@ func GatewayAddr() string {
 // magpie whose settings these are, which one the variable moves (magpie-dev,
 // a sandbox) runs beside.
 func SavedAddr() string {
-	p := Load().Port
+	p := Shared().Port
 	if p == 0 || CheckPort(p) != nil {
 		p = DefaultPort
 	}
@@ -1943,6 +1976,9 @@ func saveOwn(s Settings, recording, reads bool) error {
 	if s.ClassifyTimeout < 0 || s.ClassifyTimeout > ClassifyTimeoutMost {
 		return fmt.Errorf("a routing group's classifier is given from 1 to %d seconds, or 0 for %d, not %d", ClassifyTimeoutMost, ClassifyTimeoutDefault, s.ClassifyTimeout)
 	}
+	if s.BusyLoad < 0 || s.BusyLoad >= BusyLoadMost {
+		return fmt.Errorf("busy models go last over a load from 1 to %d%%, or 0 for off, not %d", BusyLoadMost-1, s.BusyLoad)
+	}
 	if s.UsageAlert < 0 || s.UsageAlert > 100 {
 		return fmt.Errorf("a usage alert is at a percentage from 1 to 100, or 0 for off, not %d", s.UsageAlert)
 	}
@@ -2012,6 +2048,13 @@ func saveOwn(s Settings, recording, reads bool) error {
 		return fmt.Errorf("%q is not a reasoning effort for Claude Desktop's subagents", e)
 	}
 	s.Searcher = strings.TrimSpace(s.Searcher)
+	var then []string
+	for _, v := range s.SearcherThen {
+		if v = strings.TrimSpace(v); v != "" && v != "off" && v != s.Searcher && !slices.Contains(then, v) {
+			then = append(then, v)
+		}
+	}
+	s.SearcherThen = then
 	for _, e := range []*string{&s.VisionEffort, &s.SearcherEffort} {
 		if *e = strings.ToLower(strings.TrimSpace(*e)); *e != "" && !slices.Contains(catalog.EffortRank, *e) {
 			return fmt.Errorf("a model's reasoning must be one of %s, or empty for the default, not %q", strings.Join(catalog.EffortRank, ", "), *e)
@@ -2065,6 +2108,10 @@ func saveOwn(s Settings, recording, reads bool) error {
 		s.CodexNoCredits[i] = strings.ToLower(u)
 	}
 	s.CodexNoCredits = ids(s.CodexNoCredits)
+	for i, u := range s.CodexCreditsLast {
+		s.CodexCreditsLast[i] = strings.ToLower(u)
+	}
+	s.CodexCreditsLast = ids(s.CodexCreditsLast)
 	s.TrayUsage = ""
 	if len(s.TrayUsages) > 0 {
 		s.TrayUsage = s.TrayUsages[0]

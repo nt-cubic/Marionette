@@ -819,17 +819,96 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 			}
 		}
 	}
+	// localRef is the schema a local $ref names in root: a JSON pointer
+	// ("#", "#/properties/func/properties/triggers/items", as dsh's tool
+	// parameters carry one, #4561) or, when it is none, a $defs or
+	// definitions name; ok false where it names nothing here
+	localRef := func(ref string) (any, bool) {
+		if rest, ok := strings.CutPrefix(ref, "#/"); ok {
+			cur := any(root)
+			for _, tok := range strings.Split(rest, "/") {
+				tok = strings.ReplaceAll(strings.ReplaceAll(tok, "~1", "/"), "~0", "~")
+				switch m := cur.(type) {
+				case map[string]any:
+					cur = m[tok]
+				case []any:
+					n, err := strconv.Atoi(tok)
+					if err != nil || n < 0 || n >= len(m) {
+						return nil, false
+					}
+					cur = m[n]
+				default:
+					return nil, false
+				}
+				if cur == nil {
+					// named nowhere the pointer says: its last
+					// segment as a $defs or definitions name, as
+					// before pointers were walked
+					d, ok := defs[ref[strings.LastIndex(ref, "/")+1:]]
+					return d, ok
+				}
+			}
+			return cur, true
+		}
+		if ref == "#" {
+			return root, true
+		}
+		d, ok := defs[ref[strings.LastIndex(ref, "/")+1:]]
+		return d, ok
+	}
 	// resolve is a member as its local $ref names it, nil when it is no
 	// schema
 	resolve := func(v any) map[string]any {
 		m, _ := v.(map[string]any)
 		if ref, ok := m["$ref"].(string); ok {
-			m, _ = defs[ref[strings.LastIndex(ref, "/")+1:]].(map[string]any)
+			if d, ok := localRef(ref); ok {
+				m, _ = d.(map[string]any)
+			} else {
+				m = nil
+			}
 		}
 		return m
 	}
-	var walk func(v any, depth int) any
-	walk = func(v any, depth int) any {
+	// selfRef is whether a local $ref names the site it sits at or one
+	// of its containers: in a tree, a reference to an ancestor is a
+	// self-reference
+	selfRef := func(ref, path string) bool {
+		if strings.HasPrefix(ref, "#") {
+			// whole segments: "#/properties/a" is no container of
+			// /properties/ab
+			r := ref[1:]
+			return r == "" || path == r || strings.HasPrefix(path, r+"/")
+		}
+		return false
+	}
+	// refPath is the path a $ref's target is walked at: its own pointer
+	// where the ref is a JSON pointer, the site's where it is none (a
+	// $defs name, whose place the pointer doesn't say)
+	refPath := func(ref, path string) string {
+		if strings.HasPrefix(ref, "#") {
+			return ref[1:]
+		}
+		return path
+	}
+	// expanding is the $ref chain being walked, a self-reference caught
+	// before it recurses
+	expanding := map[string]bool{}
+	// schemaTypeOf is the type a schema's own shape says, what a
+	// self-reference stops at: the target's type alone
+	schemaTypeOf := func(m map[string]any) string {
+		if t, ok := m["type"].(string); ok {
+			return t
+		}
+		if m["properties"] != nil {
+			return "object"
+		}
+		if m["items"] != nil {
+			return "array"
+		}
+		return "object"
+	}
+	var walk func(v any, depth int, path string) any
+	walk = func(v any, depth int, path string) any {
 		switch x := v.(type) {
 		case bool:
 			// a boolean schema, which JSON Schema has wherever a schema
@@ -846,7 +925,7 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 		case []any:
 			out := make([]any, len(x))
 			for i, e := range x {
-				out[i] = walk(e, depth)
+				out[i] = walk(e, depth, path)
 			}
 			return out
 		case map[string]any:
@@ -854,9 +933,19 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 				return map[string]any{"type": "object"}
 			}
 			if ref, ok := x["$ref"].(string); ok {
-				name := ref[strings.LastIndex(ref, "/")+1:]
-				if d, ok := defs[name]; ok {
-					return walk(d, depth+1)
+				if d, found := localRef(ref); found {
+					if expanding[ref] || selfRef(ref, path) {
+						// a self-reference stops at the target's
+						// type alone
+						if m, ok := d.(map[string]any); ok {
+							return map[string]any{"type": schemaTypeOf(m)}
+						}
+						return map[string]any{"type": "object"}
+					}
+					expanding[ref] = true
+					out := walk(d, depth+1, refPath(ref, path))
+					delete(expanding, ref)
+					return out
 				}
 				return map[string]any{"type": "object"}
 			}
@@ -875,7 +964,7 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 					// alone, a member that only requires ({"required":["a"]})
 					// has no properties to keep its names for
 					required = append(required, requiredNames(resolve(e)["required"])...)
-					if m, ok := walk(e, depth+1).(map[string]any); ok {
+					if m, ok := walk(e, depth+1, path+"/allOf").(map[string]any); ok {
 						for k, v := range m {
 							if k == "required" {
 								continue
@@ -898,7 +987,7 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 				if len(required) > 0 {
 					merged["required"] = distinctNames(required)
 				}
-				return walk(merged, depth+1)
+				return walk(merged, depth+1, path)
 			}
 			if (x["anyOf"] != nil || x["oneOf"] != nil) && ownShape(x) {
 				// a schema with its own type or properties beside an anyOf
@@ -908,7 +997,7 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 				// for the whole, sent it as {"type":"string"}; Claude on
 				// Antigravity answered 400 "input_schema.type: Input should
 				// be 'object'" (#4046, imuxin)
-				return walk(foldUnion(x, resolve), depth+1)
+				return walk(foldUnion(x, resolve), depth+1, path)
 			}
 			// anyOf / oneOf with nothing of its own beside it: the first
 			// member that isn't null, nullable
@@ -926,7 +1015,7 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 					}
 					out := map[string]any{}
 					if pick != nil {
-						if m, ok := walk(pick, depth+1).(map[string]any); ok {
+						if m, ok := walk(pick, depth+1, path+"/"+k).(map[string]any); ok {
 							out = m
 						}
 					}
@@ -982,14 +1071,15 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 							// a property whose schema is false is one the
 							// call may not have: it is left out, and so is
 							// its name in required
-							if w := walk(pv, depth+1); w != nil {
+							at := strings.ReplaceAll(strings.ReplaceAll(pk, "~", "~0"), "/", "~1")
+							if w := walk(pv, depth+1, path+"/properties/"+at); w != nil {
 								props[pk] = w
 							}
 						}
 					}
 					out[k] = props
 				case "items":
-					if w := walk(v, depth+1); w != nil {
+					if w := walk(v, depth+1, path+"/items"); w != nil {
 						out[k] = w
 					} else if x["maxItems"] == nil {
 						// items false: an array with nothing in it
@@ -1074,7 +1164,7 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 		}
 		return v
 	}
-	b, err := json.Marshal(walk(root, 0))
+	b, err := json.Marshal(walk(root, 0, ""))
 	if err != nil {
 		return raw
 	}

@@ -102,6 +102,12 @@ func DisconnectPreview(a *Agent, exe string) ([]FileChange, error) {
 	if appdir.Portable() != "" {
 		return nil, errors.New("no preview for a portable magpie")
 	}
+	// A portable VS Code's folder is found through its launcher, on the
+	// PATH the preview's process keeps, not through home: that process
+	// would disconnect the build's own files, not the copy (#4151).
+	if vscodePortableFile(a.Path) {
+		return nil, errors.New("no preview for a portable VS Code")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err

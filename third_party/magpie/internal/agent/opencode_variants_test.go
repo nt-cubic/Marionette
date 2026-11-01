@@ -132,6 +132,69 @@ func TestOpenCodeVariantsInOrder(t *testing.T) {
 	}
 }
 
+// modelKeys are the ids of magpie's models in an opencode config at path,
+// in the order the file's bytes list them.
+func modelKeys(t *testing.T, path string) []string {
+	t.Helper()
+	raw, ok := edit.GetJSON(path, "provider.magpie.models")
+	if !ok {
+		t.Fatalf("no models of magpie's in %s", path)
+	}
+	var out []string
+	for _, p := range objectPairs([]byte(raw)) {
+		out = append(out, p.k)
+	}
+	return out
+}
+
+// TestOpenCodeModelsInOrder: opencode.json lists magpie's models in the
+// order the user dragged them to on the Agents page (#4575); they were
+// alphabetical — the models were a map, whose keys marshal sorted, and a
+// pure re-ordering wasn't even written, the file and the new block sorting
+// alike. The variants under each model kept theirs since #713.
+func TestOpenCodeModelsInOrder(t *testing.T) {
+	home := syncHome(t)
+	// a provider the catalog lists after relay's, whose models sort before:
+	// magpie's own order and the alphabetical one differ
+	if err := provider.Save(provider.Provider{ID: "aaa", Name: "AAA", Key: "k", Chat: "http://127.0.0.1:1/v1", Models: []string{"m1"}}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, ".config", "opencode", "opencode.json")
+	writeFile(t, path, `{"theme":"dark"}`)
+	if err := opencode(home, filepath.Join(home, ".config")).Field("model").Set("magpie/relay/glm-4.6"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"relay/glm-4.6", "aaa/m1"}
+	if got := modelKeys(t, path); !slices.Equal(got, want) {
+		t.Fatalf("written: %v, want %v\n%s", got, want, readFile(path))
+	}
+	if err := provider.SetModelOrder("opencode", []string{"aaa/m1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := opencode(home, filepath.Join(home, ".config")).Sync(); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	if got := modelKeys(t, path); !slices.Equal(got, []string{"aaa/m1", "relay/glm-4.6"}) {
+		t.Fatalf("reordered: %v, want aaa/m1 first\n%s", got, b)
+	}
+	if err := opencode(home, filepath.Join(home, ".config")).Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if b2, _ := os.ReadFile(path); !bytes.Equal(b, b2) {
+		t.Fatalf("rewritten though in order:\n%s\n%s", b, b2)
+	}
+	if err := provider.SetModelOrder("opencode", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := opencode(home, filepath.Join(home, ".config")).Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if got := modelKeys(t, path); !slices.Equal(got, want) {
+		t.Fatalf("default: %v, want %v\n%s", got, want, readFile(path))
+	}
+}
+
 func mustJSON(t *testing.T, v any) string {
 	t.Helper()
 	b, err := json.Marshal(v)

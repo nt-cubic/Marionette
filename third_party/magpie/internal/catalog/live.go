@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/filememo"
 )
 
@@ -26,7 +27,7 @@ import (
 
 // LivePath is where the fetched model list of one provider is kept.
 func LivePath(provider string) string {
-	return filepath.Join(filepath.Dir(CachePath()), "models", provider+".json")
+	return appdir.JoinFile(appdir.Join(filepath.Dir(CachePath()), "models"), provider, ".json")
 }
 
 type liveFile struct {
@@ -90,6 +91,24 @@ func LiveByID(provider, model string) []Model {
 		return nil
 	}
 	return slices.Clone(f.byID[model])
+}
+
+// LiveByIDShared is LiveByID without the copy, for a caller that only
+// reads it: asked for a model's APIs, price or tiers for every model a
+// page lists, the copies were 32 MB of a live magpie's 2.6 GB in a minute
+// and a half.
+func LiveByIDShared(provider, model string) []Model {
+	f, err := readLive(provider)
+	if err != nil {
+		return nil
+	}
+	return slices.Clip(f.byID[model])
+}
+
+// LiveListed is whether Live lists any model, without the list copied.
+func LiveListed(provider string) bool {
+	f, err := readLive(provider)
+	return err == nil && len(f.byID) > 0
 }
 
 // Live returns the model list last fetched from the provider, if any: the

@@ -21,6 +21,7 @@ magpie.plugin("usage", (ctx) => {
     <div class="segs" id="period"></div>
     <div class="segs" id="sessRange" hidden></div>
     <span class="ctx-range" id="ctxRange" hidden></span>
+    <button class="usage-range-menu" id="usageRangeMenu" type="button" aria-haspopup="menu" hidden></button>
     <span class="grow"></span>
     <span class="usage-refresh" id="usageRefresh">
       <button class="icon" id="usageReload" type="button" aria-label="Refresh now" data-tt><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"/></svg></button>

@@ -1,10 +1,12 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -74,6 +76,54 @@ func TestKimiToolEnumTypes(t *testing.T) {
 	}
 	if b := got["other.test"]; !strings.Contains(b, tools) {
 		t.Errorf("another provider was sent:\n%s", b)
+	}
+}
+
+// A tool schema with items and a string enum goes to Kimi typed from
+// its items, an array, not from its values, a string: the node was read
+// from its enum first and went on with items beside a string, as a
+// Gemini one did before geminiSchemaType read its keywords first
+// (d71362af; yetone, #3867). A $ref's target is typed the same way. An
+// enum with no items or properties is still typed from its values.
+func TestKimiToolEnumTypesItemsBeforeEnum(t *testing.T) {
+	kimi, err := provider.FromPreset("kimi-code-cn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ask := `{"model":"kimi/m","tools":[{"type":"function","function":{"name":"show","description":"show rows","parameters":{"type":"object","properties":{` +
+		`"display":{"description":"columns to display","items":{"type":"string"},"enum":["name","size","date"]},` +
+		`"filter":{"description":"a filter","properties":{"q":{"type":"string"}},"const":"x"},` +
+		`"limit":{"type":"integer"},"m":{"enum":["a","b"]}}}}}]}`
+
+	out := kimiToolEnumTypes(kimi, provider.Chat, []byte(ask))
+	if !json.Valid(out) {
+		t.Fatalf("Kimi was sent invalid JSON: %s", out)
+	}
+	props := gjson.GetBytes(out, "tools.0.function.parameters.properties")
+	if got := props.Get("display.type").String(); got != "array" {
+		t.Errorf("display typed %q, want array: %s", got, props.Get("display").Raw)
+	}
+	if it := props.Get("display.items"); !it.Exists() || it.Get("type").String() != "string" {
+		t.Errorf("display's items: %s", it.Raw)
+	}
+	if got := props.Get("filter.type").String(); got != "object" {
+		t.Errorf("filter typed %q, want object: %s", got, props.Get("filter").Raw)
+	}
+	if got := props.Get("m.type").String(); got != "string" {
+		t.Errorf("an enum without items typed %q, want string", got)
+	}
+
+	ref := `{"model":"kimi/m","tools":[{"type":"function","function":{"name":"show","parameters":{"type":"object","properties":{"a":{"$ref":"#/$defs/choice"}},"$defs":{"choice":{"description":"a choice","items":{"type":"string"},"enum":["a","b"]}}}}}]}`
+	out = kimiToolRefTypes(kimi, provider.Chat, []byte(ref))
+	if !json.Valid(out) {
+		t.Fatalf("Kimi was sent invalid JSON: %s", out)
+	}
+	choice := gjson.GetBytes(out, "tools.0.function.parameters.$defs.choice")
+	if got := choice.Get("type").String(); got != "array" {
+		t.Errorf("the $ref's target typed %q, want array: %s", got, choice.Raw)
+	}
+	if it := choice.Get("items"); !it.Exists() || it.Get("type").String() != "string" {
+		t.Errorf("the target's items: %s", it.Raw)
 	}
 }
 
@@ -167,6 +217,82 @@ func TestKimiToolRefTypes(t *testing.T) {
 	}
 }
 
+// A $ref whose target is itself a $ref goes without a type beside it:
+// Moonshot refuses one there, 400 "At path '$defs.__schema14': when using
+// $ref, type should be defined in the referenced schema instead of the
+// parent schema" (#3205), and the whole request fails. Codex writes such
+// defs beside what it changed of a reused one — its automation_update's
+// targetThreadId reaches {"format":"uuid","description":"tt","$ref":
+// "#/$defs/__schema1"} (the fixture is what ChatGPT.app 26.930's zod
+// builds) — so the chain is resolved to the final target and the type, if
+// one is due, is written there; __schema1 has a type, so the def goes as
+// Codex sent it.
+func TestKimiToolRefTypesRefChain(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	kimi, err := provider.FromPreset("kimi-code-cn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kimi.ID, kimi.Key, kimi.Models = "kimi", "k", []string{"m"}
+	if err := provider.Save(kimi); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := os.ReadFile("../provider/testdata/codex_automation_update_schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	s := New()
+	s.client = &http.Client{Transport: countTransport(func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		got[r.URL.Host+r.URL.Path] = string(b)
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{"id":"c","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))}, nil
+	})}
+	body := `{"model":"kimi/m","messages":[{"role":"user","content":"hi"}],` +
+		`"tools":[{"type":"function","function":{"name":"mcp__codex_app__automation_update","parameters":` + string(schema) + `}}]}`
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body)))
+	if rec.Code != 200 {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	b := got["api.kimi.com/coding/v1/chat/completions"]
+	if b == "" {
+		t.Fatal("nothing was sent to Kimi")
+	}
+	if !json.Valid([]byte(b)) {
+		t.Fatalf("Kimi was sent invalid JSON:\n%s", b)
+	}
+	sent := gjson.Get(b, "tools.0.function.parameters")
+	if !sent.Exists() {
+		t.Fatalf("no parameters were sent:\n%s", b)
+	}
+	// Moonshot's check, as an assertion: nothing it refuses may be left —
+	// no type beside a $ref anywhere in the schema as it goes.
+	var besideRef []string
+	walkSchema(sent, func(s gjson.Result) {
+		if s.Get("type").Exists() && s.Get(`\$ref`).Type == gjson.String {
+			besideRef = append(besideRef, s.Raw)
+		}
+	})
+	if len(besideRef) > 0 {
+		t.Errorf("Kimi was sent a type beside a $ref, refused 400 \"when using $ref, type should be defined in the referenced schema instead of the parent schema\":\n%s",
+			strings.Join(besideRef, "\n"))
+	}
+	if def := sent.Get(`$defs.__schema14`); !def.Exists() {
+		t.Error("Codex's format-and-$ref def is gone")
+	} else {
+		var buf bytes.Buffer
+		if err := json.Compact(&buf, []byte(def.Raw)); err != nil {
+			t.Fatal(err)
+		}
+		if buf.String() != `{"format":"uuid","description":"tt","$ref":"#/$defs/__schema1"}` {
+			t.Errorf("Codex's format-and-$ref def was rewritten:\n%s", def.Raw)
+		}
+	}
+}
+
 // A request to a model whose server locks temperature and top_p — Kimi
 // Code's kimi-for-coding and k3*, kimi-k2.5 and later on either Kimi
 // platform — goes without them: the whitelist refuses the ones clients
@@ -192,8 +318,14 @@ func TestKimiLockedSampling(t *testing.T) {
 	}
 	moonshot.ID, moonshot.Key = "moonshot", "k"
 	moonshot.Models = []string{"moonshot-v1-8k", "kimi-k2.5", "kimi-k2.6", "kimi-k2-0905-preview", "kimi-k2-thinking", "moonshotai/kimi-k2.6"}
+	volc, err := provider.FromPreset("volcengine")
+	if err != nil {
+		t.Fatal(err)
+	}
+	volc.ID, volc.Key, volc.Models = "volc", "k", []string{"kimi-k3.1-pro", "kimi-k2.8-preview", "doubao-seed-2.1-pro"}
+	arkpay := provider.Provider{ID: "arkpay", Name: "Ark pay", Key: "k", Chat: "https://ark.ap-southeast.volces.com/api/v3", Models: []string{"kimi-k3"}}
 	other := provider.Provider{ID: "other", Name: "Other", Key: "k", Chat: "https://other.test/v1", Models: []string{"m"}}
-	for _, p := range []provider.Provider{kimi, moonshot, other} {
+	for _, p := range []provider.Provider{kimi, moonshot, volc, arkpay, other} {
 		if err := provider.Save(p); err != nil {
 			t.Fatal(err)
 		}
@@ -312,6 +444,43 @@ func TestKimiLockedSampling(t *testing.T) {
 		}
 		if v := gjson.Get(got.body, "temperature"); !v.Exists() || v.Raw != "0.1" {
 			t.Errorf("kimi-k2-thinking's temperature was not kept: %s", got.body)
+		}
+	})
+	// #4495: Volcengine Ark locks the same models' sampling the same way
+	// ("Volcengine Ark: `temperature` only 1 is allowed for this model"),
+	// at its coding plan and — an Ark host being an Ark host — wherever
+	// else its Kimi models are served.
+	t.Run("volcengine's coding plan drops the fields", func(t *testing.T) {
+		got := post(t, "/v1/chat/completions", `{"model":"volc/kimi-k3.1-pro","messages":[{"role":"user","content":"hi"}],"temperature":0.6,"top_p":0.95}`)
+		if got.host != "ark.cn-beijing.volces.com" {
+			t.Fatalf("the request went to %s", got.host)
+		}
+		if gjson.Get(got.body, "temperature").Exists() || gjson.Get(got.body, "top_p").Exists() {
+			t.Errorf("Ark was sent the sampling fields: %s", got.body)
+		}
+	})
+	t.Run("volcengine's anthropic endpoint drops the fields", func(t *testing.T) {
+		got := post(t, "/v1/messages", `{"model":"volc/kimi-k3.1-pro","messages":[{"role":"user","content":"hi"}],"temperature":0.6,"top_p":0.95,"max_tokens":5}`)
+		if got.host != "ark.cn-beijing.volces.com" {
+			t.Fatalf("the request went to %s", got.host)
+		}
+		if gjson.Get(got.body, "temperature").Exists() || gjson.Get(got.body, "top_p").Exists() {
+			t.Errorf("Ark was sent the sampling fields: %s", got.body)
+		}
+	})
+	t.Run("volcengine keeps the fields for a model its server doesn't lock", func(t *testing.T) {
+		got := post(t, "/v1/chat/completions", `{"model":"volc/doubao-seed-2.1-pro","messages":[{"role":"user","content":"hi"}],"temperature":0.6,"top_p":0.95}`)
+		if !strings.Contains(got.body, `"temperature":0.6`) {
+			t.Errorf("doubao was not sent its temperature: %s", got.body)
+		}
+	})
+	t.Run("a provider added by hand on an Ark host drops the fields", func(t *testing.T) {
+		got := post(t, "/v1/chat/completions", `{"model":"arkpay/kimi-k3","messages":[{"role":"user","content":"hi"}],"temperature":0.6,"top_p":0.95}`)
+		if got.host != "ark.ap-southeast.volces.com" {
+			t.Fatalf("the request went to %s", got.host)
+		}
+		if gjson.Get(got.body, "temperature").Exists() || gjson.Get(got.body, "top_p").Exists() {
+			t.Errorf("Ark was sent the sampling fields: %s", got.body)
 		}
 	})
 	t.Run("another provider is sent the body as it was", func(t *testing.T) {

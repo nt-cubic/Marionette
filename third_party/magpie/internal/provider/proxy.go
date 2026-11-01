@@ -97,7 +97,7 @@ func ViaSignedIn(ctx context.Context, id string) context.Context {
 }
 
 func storedPicks(id string) (Provider, bool) {
-	for _, p := range load().Providers {
+	for _, p := range storedFile().Providers {
 		if p.ID == id {
 			return p, true
 		}

@@ -39,7 +39,7 @@ func empryoIn(at place) *Agent { return empryoAt(at) }
 // does.
 func empryoAt(at place) *Agent {
 	gatewayV1 := at.v1
-	dir := filepath.Join(at.home, ".empryo")
+	dir := at.join(".empryo")
 	path := filepath.Join(dir, "config.json")
 	keyModel := "empryo:" + path + ":" + empryoModel
 	// keyNew marks a file magpie made, which goes again once magpie's
@@ -170,7 +170,7 @@ func empryoAt(at place) *Agent {
 					_, id, _ := strings.Cut(c, "/")
 					own = append(own, Option{Value: c, Icon: modelIcon("", id)})
 				}
-				return append(group("Empryo", own), viaMagpie("empryo", magpieID+"/")...)
+				return withVia(group("Empryo", own), "empryo", magpieID+"/")
 			},
 		}},
 	}, path)

@@ -22,15 +22,15 @@ func TestWSLCopilotHome(t *testing.T) {
 		map[string]string{"Ubuntu": "home:/home/jia\ndir:.copilot\n", "Debian": "home:/home/me\n"},
 		map[string]string{"Ubuntu": root, "Debian": t.TempDir()}))
 
-	want := filepath.Join(root, "home", "jia")
-	if got := provider.CopilotWSLHomes(); !slices.Equal(got, []string{want}) {
+	want := filepath.Join(root, "home", "jia", ".copilot")
+	if got := provider.CopilotWSLDirs(); !slices.Equal(got, []string{want}) {
 		t.Fatalf("homes %q, want %q", got, want)
 	}
 	if len(wslAgents()) != 0 {
 		t.Fatalf("the Copilot CLI's folder made an agent row: %v", wslAgents())
 	}
 	StopFakeWSL("Ubuntu")
-	if got := provider.CopilotWSLHomes(); len(got) != 0 {
+	if got := provider.CopilotWSLDirs(); len(got) != 0 {
 		t.Fatalf("a stopped distro is read: %q", got)
 	}
 }

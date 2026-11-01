@@ -2,10 +2,14 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/provider"
@@ -145,5 +149,46 @@ func TestCodexAppRouteKeepsThroughListFlaps(t *testing.T) {
 	writeFile(t, codexCat, `{"models":[{"slug":"glm`)
 	if r := route(); r != before {
 		t.Errorf("a catalog that can't be read changed the route:\n%s\nto\n%s", before, r)
+	}
+}
+
+// Asked every 3s, the route reads Codex's config.toml through filememo
+// alone: Codex keeps every project's trust level there, and a live 1.5 MB
+// one read whole on each look was 1.55 GB in 53 minutes. A config that
+// can't be read is still an unknown route.
+func TestCodexAppRouteReadsNoWholeConfig(t *testing.T) {
+	var cfg strings.Builder
+	cfg.WriteString("model = \"gpt-5.5\"\n")
+	for i := range 20000 {
+		fmt.Fprintf(&cfg, "[projects.\"/Users/someone/work/project-%05d\"]\ntrust_level = \"trusted\"\n", i)
+	}
+	home, _ := codexHome(t, `{"tokens":{"access_token":"x","id_token":"x.e30.x"}}`, cfg.String())
+	path := filepath.Join(home, ".codex", "config.toml")
+	if fi, err := os.Stat(path); err != nil || fi.Size() < 1<<20 {
+		t.Fatalf("config of %v bytes: %v", fi.Size(), err)
+	}
+	// written a while ago, as the live one: filememo compares the bytes of
+	// a file written just now
+	old := time.Now().Add(-time.Hour)
+	os.Chtimes(path, old, old)
+	if _, _, known := codexAppRoute(); !known {
+		t.Fatal("route not known")
+	}
+	var m0, m1 runtime.MemStats
+	runtime.ReadMemStats(&m0)
+	for range 10 {
+		codexAppRoute()
+	}
+	runtime.ReadMemStats(&m1)
+	if n := m1.TotalAlloc - m0.TotalAlloc; n > 1<<20 {
+		t.Fatalf("10 looks at an unchanged config allocated %d bytes", n)
+	}
+	if runtime.GOOS == "windows" || os.Getuid() == 0 {
+		return // a mode doesn't stop the read
+	}
+	os.Chmod(path, 0)
+	defer os.Chmod(path, 0o600)
+	if _, _, known := codexAppRoute(); known {
+		t.Fatal("a config that can't be read gave a route")
 	}
 }

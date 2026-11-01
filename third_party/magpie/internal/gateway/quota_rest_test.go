@@ -78,8 +78,11 @@ func TestQuotaRestsUntilItsReset(t *testing.T) {
 		t.Fatalf("a month off: %v", time.Until(r.Until))
 	}
 
-	// a Codex reset spent on a@x.com brings it back, and it alone
+	// a Codex reset spent on a@x.com brings it back, and it alone: a
+	// reset spent tells both hooks (provider.renewedNow), the refusal's
+	// own time included
 	renewed("codex", "A@x.com")
+	restarted("codex", "A@x.com")
 	if _, ok := restOf(acct("a@x.com").restKey()); ok {
 		t.Fatal("still resting after its windows started again")
 	}

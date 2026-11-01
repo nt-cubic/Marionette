@@ -481,6 +481,57 @@ func TestDshFillNewProfilesFillsABareProfile(t *testing.T) {
 	}
 }
 
+// zyh6036 on X: DeepSeek Harness Desktop's picker listed only "DeepSeek 账号"
+// while the web profile, wired, started on one of dsh's own models. A new
+// profile was filled only when a wired one started on magpie's route, so
+// the desktop app's stayed dsh's empty template. It now gets magpie's route
+// beside dsh's own models, and no start model: the user's pick stays theirs.
+func TestDshFillNewProfilesWhenTheStartIsTheUsers(t *testing.T) {
+	home, dir, web := dshRouteHome(t)
+	desktop := filepath.Join(dir, "profiles", "desktop", "cordis.patch.yml")
+	os.MkdirAll(filepath.Dir(desktop), 0o755)
+	os.WriteFile(web, []byte("# Your patch layer for this dsh profile.\n"+
+		dshRouteFixture("deepseek/pro", "deepseek/flash")+
+		"- id: agent-default-model\n  config:\n    provider: deepseek-account\n    model: deepseek-v4-pro\n"), 0o644)
+	os.WriteFile(desktop, []byte(dshProfileTemplate), 0o644)
+	if err := dshSync(dir, gateway.URL()); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(desktop)
+	for _, want := range []string{"id: llm-pi-ai", "displayName: Magpie", "      magpie:", "id: deepseek/pro"} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("the desktop profile not given %q:\n%s", want, b)
+		}
+	}
+	if strings.Contains(string(b), "agent-default-model") {
+		t.Fatalf("a start model written where the user had picked theirs:\n%s", b)
+	}
+	if d := dsh(home).Check(); d != "" {
+		t.Fatalf("check: %s", d)
+	}
+
+	// the serving round, for a profile the app makes while magpie runs
+	os.WriteFile(desktop, []byte(dshProfileTemplate), 0o644)
+	if trouble := dshWiredOnce(); trouble != "" {
+		t.Fatal(trouble)
+	}
+	if b, _ := os.ReadFile(desktop); !strings.Contains(string(b), "apiKeyEnv: "+dshKeyRef) {
+		t.Fatalf("the round left the desktop profile bare:\n%s", b)
+	}
+
+	// no profile wired, dsh not set up through magpie: none is filled
+	os.WriteFile(web, []byte(dshProfileTemplate), 0o644)
+	os.WriteFile(desktop, []byte(dshProfileTemplate), 0o644)
+	if err := dshSync(dir, gateway.URL()); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{web, desktop} {
+		if b, _ := os.ReadFile(f); string(b) != dshProfileTemplate {
+			t.Fatalf("%s filled with nothing wired:\n%s", f, b)
+		}
+	}
+}
+
 func TestDshWriteErrorReadsTheSameEveryRound(t *testing.T) {
 	one := dshWriteError(&os.PathError{Op: "open", Path: "/x/.cordis.patch.yml.4236419057.tmp", Err: os.ErrPermission})
 	two := dshWriteError(&os.PathError{Op: "open", Path: "/x/.cordis.patch.yml.3958428140.tmp", Err: os.ErrPermission})
@@ -814,5 +865,42 @@ func TestDshPickSaysOldSessionsKeepTheirModel(t *testing.T) {
 	t.Setenv("HOME", h2)
 	if n := dsh(h2).Notice(); strings.Contains(n, "dsh") {
 		t.Fatalf("an old dsh not running was told something: %q", n)
+	}
+}
+
+// zyh6036 on X: dsh's desktop app showed no model picked, while its patch
+// list was full of magpie's routes. magpie had set it to start on a found
+// group by the id it had then, group/auto-<slug>; the group is listed as
+// auto/<model> since, and dsh finds a start by the id on its route, so it
+// found none. The start moves onto the id the route lists, in each
+// profile, the desktop app's too, and in the home layer; the effort stays.
+func TestDshStartOnAFoundGroupsOldIdMovesOntoItsId(t *testing.T) {
+	_, dir, web := dshRouteHome(t)
+	dshKeyFixture(dir)
+	// deepseek and spare both serve pro: magpie finds the group
+	if err := provider.Save(provider.Provider{ID: "spare", Name: "Spare", Key: "k", Chat: "http://127.0.0.1:1/v1", Models: []string{"pro"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := provider.PublicRef("group/auto-pro"); got != "auto/pro" {
+		t.Fatalf("the found group is listed as %q", got)
+	}
+	desktop := filepath.Join(dir, "profiles", "desktop", "cordis.patch.yml")
+	os.MkdirAll(filepath.Dir(desktop), 0o755)
+	start := "- id: agent-default-model\n  config:\n    provider: magpie\n    model: \"group/auto-pro\"\n    reasoningEffort: \"high\"\n"
+	for _, f := range []string{web, desktop} {
+		os.WriteFile(f, []byte("# Your patch layer for this dsh profile.\n"+dshRouteFixture("auto/pro")+start), 0o644)
+	}
+	home := dshHomePatch(dir)
+	os.WriteFile(home, []byte(dshRouteFixture("auto/pro")+start), 0o644)
+	dshWiredOnce()
+	for _, f := range []string{web, desktop, home} {
+		b, _ := os.ReadFile(f)
+		s := string(b)
+		if !strings.Contains(s, "- id: auto/pro") {
+			t.Fatalf("%s: the route has not the group:\n%s", f, s)
+		}
+		if strings.Contains(s, "group/auto-pro") || !strings.Contains(s, "    provider: magpie\n    model: \"auto/pro\"\n    reasoningEffort: \"high\"\n") {
+			t.Fatalf("%s: the start is not on the id its route lists:\n%s", f, s)
+		}
 	}
 }

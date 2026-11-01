@@ -229,6 +229,9 @@ func hash(s string) string {
 // the user edited in the file is left alone until the library's text for
 // that agent changes; then it is replaced, the file kept aside first.
 func (l *Library) syncInstructions(t *Target, b *backups, res *Result) {
+	if res.unreached(t) {
+		return
+	}
 	if t.Instructions == "" {
 		return
 	}

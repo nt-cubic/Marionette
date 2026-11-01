@@ -127,3 +127,54 @@ func TestRPMCmd(t *testing.T) {
 		t.Fatalf("off: %d", n)
 	}
 }
+
+// magpie provider at-once sets how many of a provider's keys take requests
+// at the same time (01huadalang on Discord, ZCode), off for no limit and
+// default for the plugin's; a number out of range is an error.
+func TestAtOnceCmd(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("DSH_HOME", "")
+	if err := provider.Save(provider.Provider{ID: "zc", Name: "ZC", Key: "k1", Chat: "http://127.0.0.1:1/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	set := func() *int {
+		p, err := provider.Find("zc")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p.MaxAccounts
+	}
+	if err := providerCmd([]string{"provider", "at-once", "zc", "2"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := set(); n == nil || *n != 2 {
+		t.Fatalf("set: %v, want 2", n)
+	}
+	if err := providerCmd([]string{"provider", "at-once", "zc"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range [][]string{{"-1"}, {"20000"}, {"x"}, {"2", "3"}} {
+		if err := providerCmd(append([]string{"provider", "at-once", "zc"}, bad...)); err == nil {
+			t.Fatalf("%v taken", bad)
+		}
+	}
+	if n := set(); n == nil || *n != 2 {
+		t.Fatalf("after refused ones: %v, want 2", n)
+	}
+	if err := providerCmd([]string{"provider", "at-once", "zc", "off"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := set(); n == nil || *n != 0 {
+		t.Fatalf("off: %v, want 0 kept as the user's own", n)
+	}
+	if err := providerCmd([]string{"provider", "at-once", "zc", "default"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := set(); n != nil {
+		t.Fatalf("default: %v, want none of the user's own", *n)
+	}
+}

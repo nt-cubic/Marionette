@@ -2,7 +2,7 @@
 // A sign-in for another account, left unfinished, can be put away (#526:
 // 当我点击添加第二个账号，但最后没添加时，这个请在浏览器中完成登录的窗口状态不会释放，
 // 无论我点击底部的移除、取消、保存都没办法 — 希望在"重新打开"按钮旁边再添加一个"关闭"按钮).
-// In Qoder's editor, Add another account → Sign in anyway waits on the
+// In Qoder's editor, Add another account (no warning: it has accounts) waits on the
 // browser with Qoder's long device link. The box's Cancel stays inside the
 // account list, the link never pushing it out of sight: it tells magpie to
 // drop the sign-in (signin/<id>/cancel), stops asking after it, and the Add
@@ -59,8 +59,8 @@ function serve(lang, ctl) {
 }
 
 const W = {
-  en: { add: "Add another Qoder (international) account", anyway: "Sign in anyway", wait: "Finish signing in to Qoder (international) in your browser", again: "Open again", close: "Close", cancel: "Cancel", stop: "Stop waiting for this sign-in" },
-  zh: { add: "添加另一个 Qoder 国际版 (qoder.com) 账号", anyway: "仍然登录", wait: "请在浏览器中完成 Qoder 国际版 (qoder.com) 登录", again: "重新打开", close: "关闭", cancel: "取消", stop: "不再等待这次登录" },
+  en: { add: "Add another Qoder (international) account", wait: "Finish signing in to Qoder (international) in your browser", again: "Open again", close: "Close", cancel: "Cancel", stop: "Stop waiting for this sign-in" },
+  zh: { add: "添加另一个 Qoder 国际版 (qoder.com) 账号", wait: "请在浏览器中完成 Qoder 国际版 (qoder.com) 登录", again: "重新打开", close: "关闭", cancel: "取消", stop: "不再等待这次登录" },
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
@@ -93,7 +93,6 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const begin = async () => {
         const add = await open();
         await add.click();
-        await page.locator(".editor .accts .signing button", { hasText: w.anyway }).click();
         const box = page.locator(".editor .accts .signing");
         await box.locator(".n", { hasText: w.wait }).waitFor();
         return box;

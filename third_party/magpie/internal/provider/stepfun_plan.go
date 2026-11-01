@@ -37,8 +37,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/lastgood"
 )
 
@@ -230,6 +232,7 @@ func renameStepFun(from, to string) error {
 }
 
 func saveStepFun(all map[string]stepfunSession) error {
+	defer filememo.Forget() // read again, where a request holds it
 	b, err := json.MarshalIndent(all, "", "  ")
 	if err != nil {
 		return err
@@ -276,11 +279,29 @@ func (c stepfunClaims) account() string {
 }
 
 // StepFunSignedIn reports whether magpie has a sign-in for the provider.
+// StepFunSignedIn reads the file once until it changes: a provider list
+// asks it for each StepFun provider on every poll, and each read was a
+// file open, most often of a file that isn't there. One with a site's
+// session from before #2384 is moved first, under the lock.
 func StepFunSignedIn(id string) bool {
-	stepfunMu.Lock()
-	defer stepfunMu.Unlock()
-	return loadStepFun()[id].Access != ""
+	all, err := filememo.Read("stepfun-auth", stepfunPath(), func(b []byte) (map[string]stepfunSession, error) {
+		stepfunParses.Add(1)
+		m := map[string]stepfunSession{}
+		return m, json.Unmarshal(b, &m)
+	})
+	if err != nil {
+		return false // no file, or one that doesn't parse: no session, as loadStepFun
+	}
+	if slices.ContainsFunc(stepfunOldSites, func(s string) bool { _, ok := all[s]; return ok }) {
+		stepfunMu.Lock()
+		defer stepfunMu.Unlock()
+		return loadStepFun()[id].Access != ""
+	}
+	return all[id].Access != ""
 }
+
+// stepfunParses counts StepFunSignedIn's parses, for a test.
+var stepfunParses atomic.Int64
 
 // SaveStepFunSession keeps the session the sign-in page ended in, once
 // the platform has taken it: a page that isn't signed in yet has an

@@ -202,4 +202,25 @@ async function settled(page) {
   await page.waitForFunction(() => !document.getAnimations().some((a) => a.playState === "running" && Number.isFinite(a.effect?.getComputedTiming().endTime)));
 }
 
-module.exports = { settled, inView, reach, wheelTo, click, openPart, watchSettingsReads, settingsDrawn, agentRow, openAgentSettings };
+// pickItem presses an item of an open picker where the reader sees it.
+// A model picker is drawn again when its first read of /api/model-speeds
+// answers (readSpeeds, once a minute and after every load), so an item
+// found before that is detached by the time its box is asked for, and
+// Playwright gives null (#4274: searcher-pick's Automatic after a reload).
+// The item is found again each frame until its box is the same twice.
+async function pickItem(page, locator) {
+  let last = "";
+  for (let i = 0; i < 200; i++) {
+    const b = await locator.boundingBox().catch(() => null);
+    const now = JSON.stringify(b);
+    if (b && now === last) {
+      await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
+      return;
+    }
+    last = now;
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  }
+  throw new Error("the picker's item never settled: " + last);
+}
+
+module.exports = { settled, inView, reach, wheelTo, click, openPart, watchSettingsReads, settingsDrawn, agentRow, openAgentSettings, pickItem };

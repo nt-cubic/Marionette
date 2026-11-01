@@ -26,7 +26,12 @@ import (
 // DeepSeek Harness's (a session's folder, and its listing's cached row) and
 // Droid's (a transcript and its .settings.json, and its subagents'; Droid's
 // own session index is a cache it rebuilds from those files, as it does
-// when it deletes an empty draft itself; zachzhao1984 on Discord).
+// when it deletes an empty draft itself; zachzhao1984 on Discord) and
+// Antigravity CLI's (agy: a conversation's brain folder, conversations/<id>.db
+// and annotations/<id>.pbtxt, what agy's own delete removes; ysm119 on
+// Discord). agy's conversation_summaries.db and jetbox_summaries_proto.pb,
+// which it keeps open, keep the row, and agy lists no conversation whose
+// files are gone, as a restore brings it back to its /resume list.
 // Hermes's and Alma's are rows in a database the agent keeps open and
 // writes, so they are only listed, and so are OpenCode's and ZCode's, and
 // Cline's, whose sessions.db lists a session whose files are gone. Grok
@@ -70,7 +75,7 @@ type AgentCount struct {
 // those kept as files of their own, in a layout magpie knows whole.
 func Deletable(agent string) bool {
 	switch agent {
-	case "claude", "qoder", "qoder-cn", "workbuddy", "codebuddy", "codex", "pi", "raft", "omp", "cursor", "dsh", "droid":
+	case "claude", "qoder", "qoder-cn", "workbuddy", "codebuddy", "codex", "pi", "raft", "cindy", "omp", "cursor", "dsh", "droid", "agy":
 		return true
 	}
 	return false
@@ -193,7 +198,7 @@ func readFor(want, all []file, quick bool) (pending map[string]bool, done func()
 // session's file, not taken from its name (as assemble does).
 func idInFile(agent string) bool {
 	switch agent {
-	case "codex", "pi", "raft", "omp", "dsh", "grok", "droid":
+	case "codex", "pi", "raft", "cindy", "omp", "dsh", "grok", "droid":
 		return true
 	}
 	return false
@@ -411,6 +416,11 @@ func Delete(agent, id string) (Trashed, error) {
 			return Trashed{}, ErrActive
 		}
 	}
+	// agy holds a conversation's presence lock while it has it open, idle
+	// for longer than a minute too
+	if agent == "agy" && agyHeld(filepath.Join(agyDataDir(fs), "presence", id+".lock")) {
+		return Trashed{}, ErrActive
+	}
 	t := Trashed{Agent: agent, ID: id, Title: s.Title, Cwd: s.Cwd, Last: s.Last, Deleted: now}
 	name := now.UTC().Format("20060102T150405.000000000") + "-" + id
 	dir := filepath.Join(TrashDir(), agent, name)
@@ -482,6 +492,22 @@ func sessionPaths(agent, id string, fs []file) []string {
 		}
 		return out
 	}
+	if agent == "agy" {
+		// what agy's own delete (its /resume picker) removes: the
+		// conversation's brain folder, its trajectory database with the
+		// journal files SQLite keeps beside it, and its annotations
+		dir := agyDataDir(fs)
+		if dir == "" {
+			return nil
+		}
+		add(filepath.Join(dir, "brain", id))
+		db := filepath.Join(dir, "conversations", id+".db")
+		for _, p := range []string{db, db + "-wal", db + "-shm", db + "-journal"} {
+			add(p)
+		}
+		add(filepath.Join(dir, "annotations", id+".pbtxt"))
+		return out
+	}
 	if agent == "dsh" {
 		// each session's own folder (the parent's and its subagents'), and
 		// the row dsh caches of it for its listing; none at all when one
@@ -506,7 +532,7 @@ func sessionPaths(agent, id string, fs []file) []string {
 			}
 			// the folder beside it: a Claude Code session's subagents and
 			// tool results, an omp session's artifacts
-			if agent != "codex" && agent != "pi" && agent != "raft" {
+			if agent != "codex" && agent != "pi" && agent != "raft" && agent != "cindy" {
 				if d := strings.TrimSuffix(f.path, ".jsonl"); d != f.path {
 					if fi, err := os.Stat(d); err == nil && fi.IsDir() {
 						add(d)

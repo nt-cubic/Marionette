@@ -164,10 +164,17 @@ func TestWholeSessionSpreadLeavesTheNearlyUsedAndFallbacks(t *testing.T) {
 			if got[0].who() != cs[0].who() {
 				t.Errorf("a new session went to %s, %s", got[0].who(), c.name)
 			}
-			// in turn spreads to it as it did
+			// in turn spreads to one used past lowShare as it did, but
+			// never to a fallback while the provider's own model leads
+			// (standsIn; 01huadalang on Discord, 10-31): then to the one
+			// of the provider's the fewest are on, k2 (k1 holds a and c)
+			want := cs[2]
+			if c.last.Fallback {
+				want = cs[1]
+			}
 			got, _ = leastHeld(scope, scope+"|d", cs, planned{order: []Weighed{{}, {}, c.last}}, false)
-			if got[0].who() != cs[2].who() {
-				t.Errorf("in turn, a new conversation went to %s, not the one none are on", got[0].who())
+			if got[0].who() != want.who() {
+				t.Errorf("in turn, a new conversation went to %s, want %s", got[0].who(), want.who())
 			}
 		})
 	}

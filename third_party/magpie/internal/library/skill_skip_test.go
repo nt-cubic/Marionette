@@ -52,13 +52,15 @@ func TestInstallSetSkipsOneInTheWay(t *testing.T) {
 	write(t, filepath.Join(skillDir("caveman-commit"), "notes.md"), "keep me")
 
 	r := ok(t)(InstallSkills("owner/caveman", []string{"skills/caveman", "skills/caveman-commit", "skills/caveman-review"}, []string{"claude"}))
-	if !slices.Equal(r.Installed, []string{"caveman-review"}) {
+	// the repository's caveman-commit goes in beside the user's, by a
+	// name of its own (mora1n on Discord)
+	if !slices.Equal(r.Installed, []string{"caveman-commit-owner", "caveman-review"}) {
 		t.Errorf("installed %v", r.Installed)
 	}
 	if !slices.Equal(r.Had, []string{"caveman"}) {
 		t.Errorf("had %v", r.Had)
 	}
-	if !slices.Equal(skipped(r), []string{"caveman-commit"}) || !strings.Contains(r.Skipped[0].Error, "left as it is") {
+	if len(r.Skipped) != 0 {
 		t.Errorf("skipped %+v", r.Skipped)
 	}
 	if got := read(t, filepath.Join(skillDir("caveman"), "SKILL.md")); got != edited {
@@ -77,6 +79,9 @@ func TestInstallSetSkipsOneInTheWay(t *testing.T) {
 	if l.skill("caveman-commit") != nil {
 		t.Error("the user's own caveman-commit was listed as the repository's")
 	}
+	if s := l.skill("caveman-commit-owner"); s == nil || s.Called != "caveman-commit" || s.Source.Path != "skills/caveman-commit" {
+		t.Errorf("the repository's caveman-commit is %+v", s)
+	}
 
 	// a set whose every skill is had already is no error
 	r = ok(t)(InstallSkills("owner/caveman", []string{"skills/caveman", "skills/caveman-review"}, []string{"claude"}))
@@ -84,7 +89,7 @@ func TestInstallSetSkipsOneInTheWay(t *testing.T) {
 		t.Errorf("again: installed %v had %v", r.Installed, r.Had)
 	}
 	// one skill alone that can't be installed still fails, saying why
-	if _, err := InstallSkills("owner/caveman", []string{"skills/caveman-commit"}, nil); err == nil || !strings.Contains(err.Error(), "left as it is") {
+	if _, err := InstallSkills("owner/caveman", []string{"skills/nowhere"}, nil); err == nil || !strings.Contains(err.Error(), "no skill at") {
 		t.Errorf("alone: %v", err)
 	}
 	// the market's install of one the library has is had, not an error
@@ -122,9 +127,10 @@ func TestInstallListsItsOwnLeftoverFolder(t *testing.T) {
 	}
 }
 
-// A skill by that name the library lists from somewhere else is the
-// user's: left as it is and said, the rest installed.
-func TestInstallSetSkipsAnotherByTheSameName(t *testing.T) {
+// A skill by that name the library lists from somewhere else is another
+// skill: it stays as it is, and the repository's goes in beside it by a
+// name of its own (mora1n on Discord).
+func TestInstallSetPutsAnotherByTheSameNameBeside(t *testing.T) {
 	h := sandbox(t)
 	cavemanRepo(t)
 	src := filepath.Join(h, "src")
@@ -132,7 +138,7 @@ func TestInstallSetSkipsAnotherByTheSameName(t *testing.T) {
 	ok(t)(InstallSkills(src, []string{"caveman"}, []string{"claude"}))
 
 	r := ok(t)(InstallSkills("owner/caveman", []string{"skills/caveman", "skills/caveman-review"}, []string{"claude"}))
-	if !slices.Equal(r.Installed, []string{"caveman-review"}) || !slices.Equal(skipped(r), []string{"caveman"}) {
+	if !slices.Equal(r.Installed, []string{"caveman-owner", "caveman-review"}) || len(r.Skipped) != 0 {
 		t.Errorf("installed %v skipped %+v", r.Installed, r.Skipped)
 	}
 	l, _ := load()
@@ -141,5 +147,13 @@ func TestInstallSetSkipsAnotherByTheSameName(t *testing.T) {
 	}
 	if got := read(t, filepath.Join(skillDir("caveman"), "SKILL.md")); !strings.Contains(got, "Another caveman") {
 		t.Errorf("caveman's SKILL.md is now %q", got)
+	}
+	if got := read(t, filepath.Join(skillDir("caveman-owner"), "SKILL.md")); !strings.HasPrefix(got, "---\nname: caveman-owner\n") || !strings.Contains(got, "Talk like caveman") {
+		t.Errorf("caveman-owner's SKILL.md is %q", got)
+	}
+	for _, n := range []string{"caveman", "caveman-owner"} {
+		if !ours(filepath.Join(h, ".claude/skills", n), n) {
+			t.Errorf("claude wasn't given %s", n)
+		}
 	}
 }

@@ -52,6 +52,8 @@ func TestPortMovesEveryAgent(t *testing.T) {
 	// AstrBot is connected once it has written its settings
 	os.MkdirAll(filepath.Join(home, ".astrbot", "data"), 0o755)
 	os.WriteFile(filepath.Join(home, ".astrbot", "data", "cmd_config.json"), []byte(astrbotConfig), 0o644)
+	// QwenPaw, once it has written its agents' settings
+	qwenpawFixture(t, home)
 	setPort(t, 3591)
 	if gateway.URL() != "http://127.0.0.1:3591" {
 		t.Fatalf("Settings' port isn't the gateway's: %s", gateway.URL())

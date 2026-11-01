@@ -173,7 +173,7 @@ func newMaxEntryFor(gw string) newMaxEntry {
 	e := newMaxEntry{ID: newMaxID, Name: "magpie", BaseURL: gw, APIKey: key, APIKeys: []string{key},
 		APIKeyField: "ANTHROPIC_AUTH_TOKEN", APIFormat: "anthropic", Models: []string{}, Enabled: true, CanDelete: true}
 	seen := map[string]bool{}
-	for _, m := range magpieModels("newmax") {
+	for _, m := range sharedModels("newmax") {
 		if m.ID == "" || seen[m.ID] {
 			continue
 		}

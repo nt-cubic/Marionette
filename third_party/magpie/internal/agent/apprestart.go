@@ -238,11 +238,19 @@ func (a *Agent) appReads() (files []string, reads func() string) {
 		return files, func() string {
 			var b strings.Builder
 			for _, p := range ps {
-				m, _ := edit.GetJSON(p.config, "deploymentMode")
-				m3, _ := edit.GetJSON(p.config3p, "deploymentMode")
 				id, _ := edit.GetJSON(p.meta, "appliedId")
+				applied := p.prof
+				if f := desktopAppliedGateway(p); f != "" {
+					applied = f
+				}
+				// the mode Desktop starts in, not the files' words: it
+				// drops a stored deploymentMode itself (desktop3p)
+				mode := "1p"
+				if desktop3p(p, applied) {
+					mode = "3p"
+				}
 				prof, _ := edit.Read(p.prof)
-				b.WriteString(m + "\n" + m3 + "\n" + id + "\n")
+				b.WriteString(mode + "\n" + id + "\n")
 				b.Write(prof)
 				b.WriteString("\n")
 				// a profile of the user's for magpie's gateway, applied

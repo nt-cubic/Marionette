@@ -10,6 +10,11 @@ const Command = "claude-tui-helper"
 // answer in their own Claude Code, and the run is -p.
 const TrustEnv = "MAGPIE_CLAUDE_TUI_TRUST"
 
+// OnlyEnv, "1", has the shim never become -p: a run whose interactive
+// mode doesn't come up ends with why (the user's "Interactive only",
+// settings.ClaudeTUIOnly), and one after a failure tries it again.
+const OnlyEnv = "MAGPIE_CLAUDE_TUI_ONLY"
+
 // WSLEnv holds, as JSON (WSL), how to run a Claude Code that is in a WSL
 // distro: the helper, on Windows, runs wsl.exe in its pseudo console.
 const WSLEnv = "MAGPIE_CLAUDE_TUI_WSL"

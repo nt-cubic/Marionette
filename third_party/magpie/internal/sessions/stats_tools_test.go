@@ -3,7 +3,9 @@ package sessions
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+	"time"
 )
 
 // The messages each way, the tools called and the skills called up are
@@ -106,6 +108,90 @@ func TestStatsToolsAndSkills(t *testing.T) {
 	}
 	if day < 0 || o.Messages[day] != 4 || o.Output[day] != 5+1+5 { // the subagent's reply too
 		t.Fatalf("messages %v output %v", o.Messages, o.Output)
+	}
+}
+
+// TestToolUseMergesSpellings: the callers spell a tool's name either way
+// ("bash" and "Bash", "read" and "Read"), so the card's detail list counts
+// one tool apiece whatever the case: its spellings are one row, shown as its
+// summary spells it, a session that called both ways counted once; tools
+// that only share a kind stay apart, spelled as called.
+func TestToolUseMergesSpellings(t *testing.T) {
+	bash := func(n int) []Summary {
+		in := []Summary{}
+		for i := 0; i < n; i++ {
+			in = append(in, Summary{ToolCalls: 70, tools: countsOf(map[string]int{"bash": 70}, nil)})
+		}
+		return in
+	}
+	tests := []struct {
+		name  string
+		in    []Summary
+		top   []ToolStat // the card's rows, in its order
+		cats  []ToolStat // the summary's rows, when said
+		calls int
+		sess  int
+	}{
+		{
+			// the issue's shape: 1.4K "bash" calls beside 779 "Bash" ones,
+			// read as the summary reads them, "Bash 2.2K"
+			name:  "one tool spelled two ways is one row, spelled as its summary does",
+			in:    append(bash(20), Summary{ToolCalls: 779, tools: countsOf(map[string]int{"Bash": 779}, nil)}),
+			top:   []ToolStat{{Name: "Bash", Category: "Bash", Calls: 2179, Sessions: 21}},
+			cats:  []ToolStat{{Name: "Bash", Calls: 2179, Sessions: 21}},
+			calls: 2179,
+			sess:  21,
+		},
+		{
+			name: "a session that called both ways counts once",
+			in: []Summary{
+				{ToolCalls: 12, tools: countsOf(map[string]int{"read": 12}, nil)},
+				{ToolCalls: 123, tools: countsOf(map[string]int{"read": 12, "Read": 111}, nil)},
+			},
+			top:   []ToolStat{{Name: "Read", Category: "Read", Calls: 135, Sessions: 2}},
+			calls: 135,
+			sess:  2,
+		},
+		{
+			// the legend counts each spelling under its own kind, as the
+			// weeks do, whichever spelling came first: "task" is Other,
+			// "Task" is Task
+			name: "the legend keeps each spelling's own kind",
+			in: []Summary{
+				{ToolCalls: 3, tools: countsOf(map[string]int{"task": 3}, nil)},
+				{ToolCalls: 5, tools: countsOf(map[string]int{"Task": 5}, nil)},
+			},
+			top:   []ToolStat{{Name: "Task", Category: "Task", Calls: 8, Sessions: 2}},
+			cats:  []ToolStat{{Name: "Task", Calls: 5, Sessions: 1}, {Name: "Other", Calls: 3, Sessions: 1}},
+			calls: 8,
+			sess:  2,
+		},
+		{
+			name: "tools that only share a kind stay apart",
+			in:   []Summary{{ToolCalls: 12, tools: countsOf(map[string]int{"mcp__github__create_issue": 5, "mcp__github__list_issues": 7}, nil)}},
+			top: []ToolStat{
+				{Name: "mcp__github__list_issues", Category: "Tool", Calls: 7, Sessions: 1},
+				{Name: "mcp__github__create_issue", Category: "Tool", Calls: 5, Sessions: 1},
+			},
+			calls: 12,
+			sess:  1,
+		},
+	}
+	for _, test := range tests {
+		ins := make([]*Summary, len(test.in))
+		for i := range test.in {
+			ins[i] = &test.in[i]
+		}
+		tu := toolUse(ins, time.Time{}, 10)
+		if tu.Calls != test.calls || tu.Sessions != test.sess {
+			t.Errorf("%s: %d calls, %d sessions, want %d and %d", test.name, tu.Calls, tu.Sessions, test.calls, test.sess)
+		}
+		if !reflect.DeepEqual(tu.Top, test.top) {
+			t.Errorf("%s: top %+v, want %+v", test.name, tu.Top, test.top)
+		}
+		if test.cats != nil && !reflect.DeepEqual(tu.Categories, test.cats) {
+			t.Errorf("%s: categories %+v, want %+v", test.name, tu.Categories, test.cats)
+		}
 	}
 }
 

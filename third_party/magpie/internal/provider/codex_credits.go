@@ -21,6 +21,7 @@ package provider
 // (the gateway's autoReset) where a cap never does.
 
 import (
+	"fmt"
 	"slices"
 
 	"github.com/yetone/magpie/internal/settings"
@@ -32,13 +33,63 @@ func CodexCredits(user string) bool {
 	return !slices.Contains(settings.Load().CodexNoCredits, accountKey(user))
 }
 
-// SetCodexCredits turns that on or off for user.
-func SetCodexCredits(user string, on bool) error {
+// CodexCreditsLast says whether the Codex account user, which spends its
+// credits, spends them only after everything else: once a usage window is
+// used up, routing tries it after every account, key and fallback not on
+// its credits (gateway's creditsLast) rather than in its place. Off unless
+// the user set it, so a setting saved before it keeps its order.
+func CodexCreditsLast(user string) bool {
 	user = accountKey(user)
 	s := settings.Load()
-	s.CodexNoCredits = slices.DeleteFunc(s.CodexNoCredits, func(u string) bool { return u == user })
-	if !on && user != "" {
-		s.CodexNoCredits = append(s.CodexNoCredits, user)
+	return user != "" && slices.Contains(s.CodexCreditsLast, user) && !slices.Contains(s.CodexNoCredits, user)
+}
+
+// Ways a Codex account spends its credits, for SetCodexCreditsMode.
+const (
+	CreditsOn   = "on"   // in its place, the default
+	CreditsLast = "last" // after everything else
+	CreditsOff  = "off"  // never: held when a window is used up
+)
+
+// SetCodexCredits turns that on or off for user. On is in its place:
+// it clears "last" too.
+func SetCodexCredits(user string, on bool) error {
+	if on {
+		return SetCodexCreditsMode(user, CreditsOn)
+	}
+	return SetCodexCreditsMode(user, CreditsOff)
+}
+
+// CodexCreditsMode is how user spends its credits: CreditsOn,
+// CreditsLast or CreditsOff.
+func CodexCreditsMode(user string) string {
+	switch {
+	case !CodexCredits(user):
+		return CreditsOff
+	case CodexCreditsLast(user):
+		return CreditsLast
+	}
+	return CreditsOn
+}
+
+// SetCodexCreditsMode sets how user spends its credits: CreditsOn,
+// CreditsLast or CreditsOff.
+func SetCodexCreditsMode(user, mode string) error {
+	if mode != CreditsOn && mode != CreditsLast && mode != CreditsOff {
+		return fmt.Errorf("credits: %q is not on, last or off", mode)
+	}
+	user = accountKey(user)
+	s := settings.Load()
+	not := func(u string) bool { return u == user }
+	s.CodexNoCredits = slices.DeleteFunc(s.CodexNoCredits, not)
+	s.CodexCreditsLast = slices.DeleteFunc(s.CodexCreditsLast, not)
+	if user != "" {
+		switch mode {
+		case CreditsOff:
+			s.CodexNoCredits = append(s.CodexNoCredits, user)
+		case CreditsLast:
+			s.CodexCreditsLast = append(s.CodexCreditsLast, user)
+		}
 	}
 	return settings.Save(s)
 }

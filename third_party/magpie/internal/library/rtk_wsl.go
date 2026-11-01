@@ -53,11 +53,26 @@ func rtkHome(a *agent.Agent) string {
 	return home()
 }
 
+// rtkAt is a path under rtkHome(a): in a distro, opened where a link
+// there leads (agent.WSLOpen, #4502), as nothing below one can be opened
+// through \\wsl.localhost; as it is when the link couldn't be resolved,
+// which rtkInstall says.
+func rtkAt(a *agent.Agent, elem ...string) string {
+	p := filepath.Join(append([]string{rtkHome(a)}, elem...)...)
+	if a == nil || a.WSL == "" {
+		return p
+	}
+	if o, err := agent.WSLOpen(a, p); err == nil {
+		return o
+	}
+	return p
+}
+
 // rtkClaudeDir is Claude Code's folder for a: ~/.claude in a distro, whose
 // CLAUDE_CONFIG_DIR magpie can't read (as wslTargetOf).
 func rtkClaudeDir(a *agent.Agent) string {
 	if a != nil && a.WSL != "" {
-		return filepath.Join(a.Home, ".claude")
+		return rtkAt(a, ".claude")
 	}
 	return claudeDir()
 }
@@ -65,7 +80,7 @@ func rtkClaudeDir(a *agent.Agent) string {
 // rtkCodexDir is Codex's folder for a: ~/.codex in a distro.
 func rtkCodexDir(a *agent.Agent) string {
 	if a != nil && a.WSL != "" {
-		return filepath.Join(a.Home, ".codex")
+		return rtkAt(a, ".codex")
 	}
 	return codexDir()
 }

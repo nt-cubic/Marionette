@@ -182,14 +182,17 @@ var grokTools = map[string]bool{"function": true, "web_search": true, "x_search"
 // user's message, its sender and recipient said first (grokAgentMessage).
 func grokBody(body []byte) []byte { return grokShaped(body, false) }
 
-// grokPluginBody is grokBody for the Grok plugin, but a tool_choice "none"
-// with no tools stays: a request that turned tools off says so to the
-// plugin, which reads it before adding a tool of its own (x_search) and
-// leaves a lone tool_choice out before the request goes to Grok
-// (@magpie-community/opencode-grok-auth 0.1.18, #3110).
+// grokPluginBody is grokBody for the Grok plugin, but the tool_choice the
+// plugin reads stays: a lone "none" (a request that turned tools off says
+// so to the plugin, which reads it before adding a tool of its own
+// (x_search) and leaves a lone tool_choice out before the request goes to
+// Grok; @magpie-community/opencode-grok-auth 0.1.18, #3110), and an object
+// of a type Grok's backend doesn't take, an allowed_tools naming the
+// client's own tools among them, which the plugin reads the same way and
+// leaves out before Grok (#3153).
 func grokPluginBody(body []byte) []byte { return grokShaped(body, true) }
 
-func grokShaped(body []byte, keepNone bool) []byte {
+func grokShaped(body []byte, forPlugin bool) []byte {
 	if !bytes.Contains(body, []byte(`"tools"`)) && !bytes.Contains(body, []byte(`"reasoning"`)) && !bytes.Contains(body, []byte(`"tool_choice"`)) && !bytes.Contains(body, []byte(`"namespace"`)) && !bytes.Contains(body, []byte(`"agent_message"`)) {
 		return body
 	}
@@ -231,13 +234,17 @@ func grokShaped(body []byte, keepNone bool) []byte {
 			if flatCall(tc) {
 				dirty = true
 			}
-			if ty, _ := tc["type"].(string); !grokTools[ty] {
+			// a type the backend turns the request away over goes for the
+			// plugin to read, as the lone "none" does: it leaves an
+			// unsupported one out before Grok instead of adding x_search
+			// over it (#3153). The built-in is Grok's last stop.
+			if ty, _ := tc["type"].(string); !grokTools[ty] && !forPlugin {
 				delete(m, "tool_choice")
 				dirty = true
 			}
 		}
 	}
-	if tools, _ := m["tools"].([]any); len(tools) == 0 && !(keepNone && m["tool_choice"] == "none") {
+	if tools, _ := m["tools"].([]any); len(tools) == 0 && !(forPlugin && m["tool_choice"] == "none") {
 		if _, ok := m["tool_choice"]; ok {
 			delete(m, "tool_choice")
 			dirty = true

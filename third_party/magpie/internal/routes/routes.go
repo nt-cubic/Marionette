@@ -5,7 +5,8 @@
 // failover itself; a Strategy only says the order.
 //
 // Smart, the default, is the core's. The others a provider or group can be
-// routed by (order, rotate, usage, pace, weight, free, fast) are here for a plugin to
+// routed by (order, rotate, usage, pace, weight, free, fast, cheap,
+// drain) are here for a plugin to
 // register: plugins/rotation does, and off, a pool routed by one of them is
 // tried in its listed order, as an unknown routing always was.
 package routes
@@ -44,6 +45,9 @@ type Seat struct {
 	Weight int
 	// Resting: it rests after a failure now
 	Resting bool
+	// Spent: it rests because it is out of quota or credit, not for a
+	// rate limit or a failure. Drain goes on from it.
+	Spent bool
 	// Tokens is what magpie sent it lately, decayed by an hour's half-life
 	Tokens float64
 	// Free: the model this seat would be asked for costs nothing on it —

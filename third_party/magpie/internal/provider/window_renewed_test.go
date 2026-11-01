@@ -111,6 +111,13 @@ func TestNextLoginTakesAPassedResetAsRenewed(t *testing.T) {
 			if err := SetLoginOn(agent, spare, true); err != nil {
 				t.Fatal(err)
 			}
+			// Claude Code goes back to the first only In order
+			// (returnsToFirst)
+			if agent == "claude" {
+				if err := SetRouting(agent, Ordered); err != nil {
+					t.Fatal(err)
+				}
+			}
 			t.Cleanup(func() { LoginUsageVia(nil) })
 			for _, c := range cases {
 				var asOf *time.Time

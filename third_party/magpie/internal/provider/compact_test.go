@@ -110,3 +110,32 @@ func TestSetCompactAt(t *testing.T) {
 		t.Errorf("full window: %d", s.Compact())
 	}
 }
+
+// The own-models switch reaches an agent's own config too (Claude Code's
+// modelPicker says replaceBuiltInOptions, #4548), so flipping it tells the
+// agents, as a hidden model's change does; a flip to where it already is
+// tells them nothing.
+func TestOwnModelsSwitchTellsTheAgents(t *testing.T) {
+	limitsHome(t)
+	told := 0
+	catalog.Changed = func() { told++ }
+	t.Cleanup(func() { catalog.Changed = nil })
+	if err := SetOwnModelsHidden("claude", true); err != nil {
+		t.Fatal(err)
+	}
+	if told != 1 || !OwnModelsHidden("claude") {
+		t.Fatalf("hidden: told %d times, hidden=%v; want once, true", told, OwnModelsHidden("claude"))
+	}
+	if err := SetOwnModelsHidden("claude", true); err != nil {
+		t.Fatal(err)
+	}
+	if told != 1 {
+		t.Fatalf("told %d times for a flip that changed nothing; want once in all", told)
+	}
+	if err := SetOwnModelsHidden("claude", false); err != nil {
+		t.Fatal(err)
+	}
+	if told != 2 || OwnModelsHidden("claude") {
+		t.Fatalf("shown: told %d times, hidden=%v; want twice, false", told, OwnModelsHidden("claude"))
+	}
+}

@@ -28,24 +28,65 @@ var arkSearchFields = map[string]bool{"type": true, "sources": true, "limit": tr
 // region and country, beside OpenAI's type. OpenAI's timezone isn't one.
 var arkLocationFields = map[string]bool{"type": true, "country": true, "region": true, "city": true}
 
+// arkIncludes are the include values Ark's Responses API takes. Its
+// 创建 Response page (docs.volcengine.com/docs/82379/1569618) names the
+// parameter but no values; asked with a real key (2026-11-01, model
+// deepseek-v4-1-flash-260910), it took reasoning.encrypted_content and
+// refused the whole request over each of OpenAI's others with 400 "The
+// parameter `include` specified in the request are not valid: unknown
+// type: <value>": web_search_call.action.sources, web_search_call.results,
+// file_search_call.results, message.input_image.image_url,
+// computer_call_output.output.image_url, code_interpreter_call.outputs and
+// message.output_text.logprobs (axelburks on Discord: every search on Ark
+// failed over the sources magpie asked for).
+var arkIncludes = map[string]bool{"reasoning.encrypted_content": true}
+
+// includeTaken is whether a Responses request built for host may ask for
+// the include value v: Ark's only what arkIncludes names, any other host's
+// all of them.
+func includeTaken(host, v string) bool {
+	return host != arkHost || arkIncludes[v]
+}
+
 // forArkSearch gives Ark's Responses API the web_search tool in the shape
 // its docs give: OpenAI's members Ark doesn't name (Codex's
 // external_web_access, search_context_size, filters, a location's
-// timezone) are left out, and web_search_preview is web_search. Any other
-// provider's body, or one with no such tool, goes as it came.
+// timezone) are left out, and web_search_preview is web_search. An
+// include value Ark refuses (arkIncludes) is left out too: the AI SDK's
+// OpenAI provider (OpenCode's) adds web_search_call.action.sources to
+// every request offering web_search. Any other provider's body, or one
+// with neither, goes as it came.
 func forArkSearch(p provider.Provider, body []byte) []byte {
-	if p.Account != nil || provider.HostOf(p.Base(provider.Responses)) != arkHost || !bytes.Contains(body, []byte("web_search")) {
+	if p.Account != nil || provider.HostOf(p.Base(provider.Responses)) != arkHost ||
+		!bytes.Contains(body, []byte("web_search")) && !bytes.Contains(body, []byte(`"include"`)) {
 		return body
 	}
 	q, err := rawObject(body)
 	if err != nil {
 		return body
 	}
-	tools, err := rawArray(q["tools"])
-	if err != nil {
-		return body
-	}
 	changed := false
+	if raw, ok := q["include"]; ok {
+		var inc []string
+		if json.Unmarshal(raw, &inc) == nil {
+			kept := make([]string, 0, len(inc))
+			for _, v := range inc {
+				if arkIncludes[v] {
+					kept = append(kept, v)
+				}
+			}
+			if len(kept) < len(inc) {
+				if len(kept) == 0 {
+					delete(q, "include")
+				} else if q["include"], err = marshalPlain(kept); err != nil {
+					return body
+				}
+				changed = true
+			}
+		}
+	}
+	tools, _ := rawArray(q["tools"])
+	toolsChanged := false
 	for i, raw := range tools {
 		t, err := rawObject(raw)
 		if err != nil {
@@ -90,13 +131,15 @@ func forArkSearch(p provider.Provider, body []byte) []byte {
 		if err != nil {
 			continue
 		}
-		tools[i], changed = b, true
+		tools[i], toolsChanged = b, true
 	}
-	if !changed {
+	if !changed && !toolsChanged {
 		return body
 	}
-	if q["tools"], err = marshalPlain(tools); err != nil {
-		return body
+	if toolsChanged {
+		if q["tools"], err = marshalPlain(tools); err != nil {
+			return body
+		}
 	}
 	b, err := marshalPlain(q)
 	if err != nil {

@@ -254,7 +254,7 @@ func plugged(home string, p *agentplug.Agent) *Agent {
 	at := here(home)
 	saved := func() (pluggedStash, bool) {
 		var st pluggedStash
-		v := stashLoad()[key]
+		v := stashShared()[key]
 		return st, v != "" && json.Unmarshal([]byte(v), &st) == nil
 	}
 	save := func(st pluggedStash) {
@@ -276,7 +276,7 @@ func plugged(home string, p *agentplug.Agent) *Agent {
 	wire := func(ref string) error {
 		var model map[string]any
 		var models []map[string]any
-		for _, m := range magpieModels(id) {
+		for _, m := range sharedModels(id) {
 			j := map[string]any{"id": m.ID, "name": m.Name, "context": m.Context, "output": m.Output, "images": m.Images, "efforts": m.Efforts}
 			if j["efforts"] == nil {
 				j["efforts"] = []string{}
@@ -420,7 +420,7 @@ func plugged(home string, p *agentplug.Agent) *Agent {
 				return f.set([]edit.KV{{Path: d.Model, Value: v}})
 			},
 			Options: func(cur map[string]string) []Option {
-				return append(ownOptions("", cur["model"]), viaMagpie(id, magpieID+"/")...)
+				return withVia(ownOptions("", cur["model"]), id, magpieID+"/")
 			},
 		}},
 		// the catalog changed: what connect writes for the model may too

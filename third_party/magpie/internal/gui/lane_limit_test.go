@@ -180,3 +180,78 @@ func TestRPMSave(t *testing.T) {
 		t.Fatalf("null: %d %s, limit %d", w.Code, w.Body, rpm())
 	}
 }
+
+// The editor's save sets how many of a provider's keys or accounts take
+// requests at once (01huadalang on Discord: ZCode bans an address three of
+// its accounts are used from at once), shows it in the providers' state,
+// keeps it when a save leaves it out, takes null for the plugin's and 0
+// for no limit, and refuses one out of range.
+func TestAtOnceSave(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	if err := provider.Save(provider.Provider{ID: "once", Name: "Once", Chat: "https://example.invalid/v1", Key: "a", Keys: []provider.KeyAccount{{Key: "b"}, {Key: "c"}}}); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	providerRoutes(mux, nil)
+	post := func(body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest("POST", "/api/provider/save", strings.NewReader(body)))
+		return w
+	}
+	set := func() *int {
+		got, err := provider.Find("once")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got.MaxAccounts
+	}
+	const form = `{"id":"once","name":"Once","chat":"https://example.invalid/v1"`
+	if w := post(form + `,"maxAccounts":2}`); w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	if n := set(); n == nil || *n != 2 {
+		t.Fatalf("set to 2: %v", n)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest("GET", "/api/providers", nil))
+	var state providersJSON
+	if err := json.Unmarshal(w.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	shown := false
+	for _, q := range state.Providers {
+		if q.ID == "once" {
+			shown = q.MaxAccounts != nil && *q.MaxAccounts == 2
+		}
+	}
+	if !shown {
+		t.Fatalf("the providers' state doesn't tell it: %s", w.Body)
+	}
+	if w := post(form + `}`); w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	if n := set(); n == nil || *n != 2 {
+		t.Fatalf("a save leaving it out lost it: %v", n)
+	}
+	if w := post(form + `,"maxAccounts":0}`); w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	if n := set(); n == nil || *n != 0 {
+		t.Fatalf("set to no limit: %v", n)
+	}
+	if w := post(form + `,"maxAccounts":null}`); w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	if n := set(); n != nil {
+		t.Fatalf("null kept %d", *n)
+	}
+	for _, bad := range []string{`-1`, `1001`, `"x"`, `1.5`} {
+		if w := post(form + `,"maxAccounts":` + bad + `}`); w.Code == 200 {
+			t.Fatalf("maxAccounts %s taken", bad)
+		}
+	}
+}

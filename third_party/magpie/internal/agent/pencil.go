@@ -99,7 +99,7 @@ func pencilApp(home string) bool {
 // spend being counted by magpie.
 func pencilProviderJSON(gw string) map[string]any {
 	ms := []map[string]any{}
-	for _, m := range magpieModels("pencil") {
+	for _, m := range sharedModels("pencil") {
 		e := piModelJSON(m, gw, false)
 		if _, ok := e["input"]; !ok {
 			e["input"] = []string{"text"}

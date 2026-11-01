@@ -559,7 +559,7 @@ func foldHistories(folds [][]int, ps []Provider) {
 	balanceHistMu.Unlock()
 	quotaHistMu.Lock()
 	if _, err := os.Stat(quotaHistPath()); err == nil {
-		h := readQuotaHist()
+		h := heldQuotaHist()
 		changed := false
 		for k, lines := range h {
 			if to, ok := moved(k); ok {

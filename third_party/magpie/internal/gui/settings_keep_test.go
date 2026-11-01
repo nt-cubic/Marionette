@@ -173,6 +173,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		CodexAutoResetOnly:   map[string]string{"me@example.com": "expiring"},
 		CodexResetLead:       180,
 		CodexNoCredits:       []string{"me@example.com"},
+		CodexCreditsLast:     []string{"two@example.com"},
 		CodexWarmAtOf:        map[string]string{"me@example.com": "09:00"},
 		TextSize:             125,
 		UpdateSkip:           "0.1.500",
@@ -185,6 +186,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		GuideHidden:          true,
 		GatewayMode:          "off",
 		QuotaReads:           "asked",
+		SearchAll:            true,
 		NoAccountDiscovery:   true,
 		RedactModel:          true,
 		RedactModelName:      "astrlink-guard",
@@ -198,6 +200,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 	was.RequestArchiveLocal, was.RequestArchiveLocalMB = true, 256
 	was.ProxyCustom = "http://me:secret@proxy.example:8080"
 	was.PanelShortcut = "Ctrl+Alt+K"
+	was.SearcherThen = []string{"fake/m1", "fake/m2"} // set in its own row
 	if err := settings.Save(was); err != nil {
 		t.Fatal(err)
 	}

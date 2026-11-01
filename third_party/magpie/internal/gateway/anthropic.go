@@ -921,17 +921,19 @@ func anthropicBody(r *Request, model, host string, replay bool) []byte {
 			switch p.Kind {
 			case Text:
 				if strings.TrimSpace(p.Text) != "" {
-					rest = append(rest, aBlock{Type: "text", Text: p.Text})
+					rest = append(rest, aBlock{Type: "text", Text: p.Text, CacheControl: partMark(p.cache)})
 				}
 			case File:
 				rest = append(rest, aBlock{Type: "text", Text: attachmentText(p)})
 			case Image:
-				rest = append(rest, imageBlock(p))
+				b := imageBlock(p)
+				b.CacheControl = partMark(p.cache)
+				rest = append(rest, b)
 			case ToolCall:
 				// Anthropic takes a tool_use id only of [A-Za-z0-9_-]:
 				// another vendor's call (Devin's "Bash:0#…") goes as
 				// anthropicOutID makes it, its result named the same
-				rest = append(rest, aBlock{Type: "tool_use", ID: anthropicOutID(p.ID), Name: p.Name, Input: argsOf(p)})
+				rest = append(rest, aBlock{Type: "tool_use", ID: anthropicOutID(p.ID), Name: p.Name, Input: argsOf(p), CacheControl: partMark(p.cache)})
 			case ToolResult:
 				c, _ := json.Marshal(p.Text)
 				if len(p.Images) > 0 {
@@ -945,7 +947,7 @@ func anthropicBody(r *Request, model, host string, replay bool) []byte {
 					}
 					c, _ = json.Marshal(blocks)
 				}
-				results = append(results, aBlock{Type: "tool_result", ToolUseID: anthropicOutID(p.CallID), Content: c, IsError: p.IsError})
+				results = append(results, aBlock{Type: "tool_result", ToolUseID: anthropicOutID(p.CallID), Content: c, IsError: p.IsError, CacheControl: partMark(p.cache)})
 			case Thinking:
 				if p.sealedBy(sealAnthropic) {
 					rest = append(rest, aBlock{Type: "redacted_thinking", sealed: p.Sealed})
@@ -971,13 +973,33 @@ func anthropicBody(r *Request, model, host string, replay bool) []byte {
 	// conversation so far is marked at its last block, so the next turn,
 	// which only adds to it, reads it from the cache; thinking can't be
 	// marked. Two marks at most, with the one Claude's sign-in adds kept
-	// within Anthropic's four.
+	// within Anthropic's four. A request that brought cache_control of its
+	// own (parseTranslated, #4571) is rebuilt with those instead: the
+	// blocks the client marked stand marked again (the parts loop), the
+	// tail and the system take the client's ttl, and none of magpie's own
+	// are added — a mark the client put on thinking, which Anthropic does
+	// not mark, or on a block the rebuild drops is left out. A request
+	// that marks nothing (one that only mentions the field in its text)
+	// is magpie's to mark, as before.
 	mark := addedMark(r, model)
-	if n := len(msgs); n > 0 {
+	var tail, systemMark map[string]string
+	if c := r.clientCache; c == nil || c.count == 0 {
+		tail, systemMark = mark, mark
+	} else {
+		if c.tail != "" {
+			tail = cacheMark(c.tail)
+		}
+		if n := len(c.system); n > 0 {
+			// the system's blocks are one text block in the rebuild: a
+			// fixed system needs only its end marked, the last mark's ttl
+			systemMark = cacheMark(c.system[n-1].TTL)
+		}
+	}
+	if n := len(msgs); n > 0 && tail != nil {
 		c := msgs[n-1].Content
 		for i := len(c) - 1; i >= 0; i-- {
 			if c[i].Type != "thinking" && c[i].Type != "redacted_thinking" {
-				c[i].CacheControl = mark
+				c[i].CacheControl = tail
 				break
 			}
 		}
@@ -987,7 +1009,7 @@ func anthropicBody(r *Request, model, host string, replay bool) []byte {
 	if r.System != "" {
 		// the tools and system prompt, the same every turn, are cached
 		// apart from the conversation
-		out["system"] = []aBlock{{Type: "text", Text: r.System, CacheControl: mark}}
+		out["system"] = []aBlock{{Type: "text", Text: r.System, CacheControl: systemMark}}
 	}
 	maxTokens := r.MaxTokens
 	if maxTokens <= 0 {
@@ -1074,8 +1096,8 @@ func anthropicBody(r *Request, model, host string, replay bool) []byte {
 			}
 			tools = append(tools, map[string]any{"name": t.Name, "description": t.Description, "input_schema": schema})
 		}
-		if r.System == "" && len(tools) > 0 {
-			tools[len(tools)-1]["cache_control"] = mark
+		if r.System == "" && len(tools) > 0 && systemMark != nil {
+			tools[len(tools)-1]["cache_control"] = systemMark
 		}
 		if r.WebSearch {
 			tools = append(tools, map[string]any{"type": "web_search_20250305", "name": "web_search", "max_uses": 5})

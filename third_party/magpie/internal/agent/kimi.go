@@ -45,14 +45,14 @@ func kimiDir(at place) (dir string, legacy bool) {
 	if d := at.getenv("KIMI_CODE_HOME"); d != "" {
 		return d, false
 	}
-	code := filepath.Join(at.home, ".kimi-code")
+	code := at.join(".kimi-code")
 	if at.isDir(code) {
 		return code, false
 	}
 	if d := at.getenv("KIMI_SHARE_DIR"); d != "" {
 		return d, true
 	}
-	if d := filepath.Join(at.home, ".kimi"); at.isDir(d) {
+	if d := at.join(".kimi"); at.isDir(d) {
 		return d, true
 	}
 	return code, false
@@ -66,7 +66,7 @@ func kimiModelTables(path string, legacy bool, wrote map[string]map[string]strin
 	var out []edit.Table
 	now := map[string]map[string]string{}
 	names, _ := edit.TOMLTables(path)
-	for _, m := range magpieModels("kimi") {
+	for _, m := range sharedModels("kimi") {
 		name := "models." + strconv.Quote(magpieID+"/"+m.ID)
 		ctx := m.Context
 		if ctx <= 0 {
@@ -177,7 +177,7 @@ func kimiWroteKey(path string) string { return "kimi:" + path + ":wrote" }
 
 func kimiWrote(path string) map[string]map[string]string {
 	out := map[string]map[string]string{}
-	if v := stashLoad()[kimiWroteKey(path)]; v != "" {
+	if v := stashShared()[kimiWroteKey(path)]; v != "" {
 		json.Unmarshal([]byte(v), &out)
 	}
 	return out
@@ -361,7 +361,7 @@ func kimiIn(at place) *Agent {
 				return dropMagpie()
 			},
 			Options: func(cur map[string]string) []Option {
-				return append(kimiOwnOptions(path, cur["model"]), viaMagpie("kimi", magpieID+"/")...)
+				return withVia(kimiOwnOptions(path, cur["model"]), "kimi", magpieID+"/")
 			},
 		}},
 	}, path)

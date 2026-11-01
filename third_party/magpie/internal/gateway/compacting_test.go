@@ -330,3 +330,55 @@ func TestCompactingAsksWhereTheAgentPutsThem(t *testing.T) {
 		}
 	}
 }
+
+// Alma's compaction ask, as the report on #2833 quotes it: the first bytes
+// of the last user message, the conversation behind it.
+const almaCompactAsk = "Merge the previous summary with the new conversation. Produce the <analysis>, then the merged structured summary exactly as instructed. The conversation continues after your summary — do not conclude it."
+
+// Alma compacting is recognised by its ask, at the start of the last user
+// message (#2833): a group's compact rule sends it to its model and says so
+// in X-Magpie-Model, while a note that only quotes the ask further into a
+// long message goes by the rule that matches it, as compactLead bounds it.
+func TestRuleCompactAlma(t *testing.T) {
+	s, _, _ := ruled(t, provider.Rule{Use: "a/small", Compact: true}, provider.Rule{Use: "b/big", Tokens: 1})
+	post := func(body string) (*httptest.ResponseRecorder, Route) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+		req.Header.Set("x-session-id", "alma")
+		s.Handler().ServeHTTP(rec, req)
+		return rec, lastRoute(s)
+	}
+	alma := func(text string) string {
+		return `{"model":"group/r","messages":[{"role":"user","content":` + quote(text) + `}]}`
+	}
+
+	rec, r := post(alma(almaCompactAsk + "\n\n[user]: tidy up my desktop\n[assistant]: done"))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "from ka") ||
+		rec.Header().Get(modelHeader) != "a/small" || r.Rule == nil || !r.Rule.Compact || r.Rule.N != 1 {
+		t.Fatalf("Alma compacting: %d %s %q %+v", rec.Code, rec.Body.String(), rec.Header().Get(modelHeader), r.Rule)
+	}
+
+	// a long message that quotes the ask deep in is no compaction: only
+	// compactLead keeps it from being one, as it does the agents' own asks
+	history := strings.Repeat("[user]: tidy up my desktop\n[assistant]: done\n", 200)
+	rec, r = post(alma(history + "\n" + almaCompactAsk + "\nWhat does this line in my log mean?"))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "from kb") ||
+		rec.Header().Get(modelHeader) != "b/big" || r.Rule == nil || r.Rule.Compact || r.Rule.N != 2 {
+		t.Fatalf("a quoted Alma ask: %d %s %q %+v", rec.Code, rec.Body.String(), rec.Header().Get(modelHeader), r.Rule)
+	}
+
+	// Alma's first compaction, which has no summary to merge (0.4.335's
+	// own prompts), by its ask and by its system prompt alone
+	first := "Here is the full conversation to compact. Produce the <analysis>, then the structured summary exactly as instructed. The conversation continues after your summary — do not conclude it.\n\n<conversation>\n[user]: tidy up my desktop\n</conversation>"
+	for name, body := range map[string]string{
+		"first ask":    alma(first),
+		"first system": `{"model":"group/r","messages":[{"role":"system","content":"You are compacting a long conversation so it can continue WITHOUT losing context. Your summary will REPLACE the earlier messages."},{"role":"user","content":"tidy up"}]}`,
+		"merge system": `{"model":"group/r","messages":[{"role":"system","content":"You are UPDATING an existing conversation summary with new activity so the conversation can continue WITHOUT losing context."},{"role":"user","content":"tidy up"}]}`,
+	} {
+		rec, r = post(body)
+		if rec.Code != 200 || rec.Header().Get(modelHeader) != "a/small" || r.Rule == nil || !r.Rule.Compact {
+			t.Errorf("Alma %s: %d %s %q %+v", name, rec.Code, rec.Body.String(), rec.Header().Get(modelHeader), r.Rule)
+		}
+	}
+}

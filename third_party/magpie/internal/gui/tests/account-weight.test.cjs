@@ -109,12 +109,16 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.locator(".editor .accts").screenshot({ path: path.join(process.env.ARTIFACT_DIR, `${engine}-${web ? "web-" : ""}${width}-account-weight.png`) });
       }
 
-      // a click edits it in place, Enter saves it
+      // a click edits it in place, Enter saves it; the chip is brought into
+      // view first (By weight can be a screen below it on a phone), as the
+      // click would, so what is measured is the click's own scrolling
+      await chip("pro@example.com").scrollIntoViewIfNeeded();
+      const atChip = await scrolled();
       await chip("pro@example.com").click();
       const box = page.locator('.editor .acc[data-account-id="pro@example.com"] .key-weight-in');
       await box.waitFor();
       assert.equal(await box.getAttribute("aria-label"), await say(page, lang, "Account weight"), at);
-      assert.equal(await scrolled(), sc, `${at}: a click scrolled`);
+      assert.equal(await scrolled(), atChip, `${at}: a click scrolled`);
       await box.fill("2");
       await box.press("Enter");
       for (let i = 0; i < 60 && !posts.length; i++) await new Promise((r) => setTimeout(r, 50));

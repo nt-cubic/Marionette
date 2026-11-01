@@ -48,19 +48,34 @@ var peakBills = []peakBill{
 // (treeman on Discord: its DeepSeek models showed no peak hours). Empty
 // for any other provider or model.
 func (p Provider) PeakOf(model string) catalog.Peak {
-	urls := slices.DeleteFunc([]string{p.Chat, p.Responses, p.Anthropic}, func(u string) bool {
-		return strings.TrimSpace(u) == "" || strings.HasPrefix(u, pluginBase)
-	})
 	m := strings.ToLower(strings.TrimSpace(model))
 	m = m[strings.LastIndexByte(m, '/')+1:]
+	// the model first: the Providers page asks this of every model of
+	// every list, and few are billed by the hour, while telling a vendor by
+	// its URLs parses each of them (HostOf)
+	var buf [3]string
+	var urls []string
+	looked := false
 	for _, b := range peakBills {
+		if b.models != nil && !slices.Contains(b.models, m) {
+			continue
+		}
+		if !looked {
+			urls = buf[:0]
+			for _, u := range [...]string{p.Chat, p.Responses, p.Anthropic} {
+				if strings.TrimSpace(u) != "" && !strings.HasPrefix(u, pluginBase) {
+					urls = append(urls, u)
+				}
+			}
+			looked = true
+		}
 		var is bool
 		if len(urls) > 0 {
 			is = slices.ContainsFunc(urls, b.at)
 		} else {
 			is = slices.Contains(b.ids, cmp.Or(p.Preset, p.ID))
 		}
-		if is && (b.models == nil || slices.Contains(b.models, m)) {
+		if is {
 			return b.peak
 		}
 	}

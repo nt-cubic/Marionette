@@ -12,8 +12,9 @@ import (
 )
 
 // OpenCode Zen's free models answer 403 "OpenCode's free tier can only be
-// used from within OpenCode" unless the request says it is OpenCode's: its
-// User-Agent (1.18.0 or newer) and a session id of its form, as OpenCode
+// used from within OpenCode", and since late October 2026 429 "Free models
+// work in OpenCode" to 1.x's shape (#3491), unless the request says it is
+// OpenCode 2's: its User-Agent and a session id of its form, as OpenCode
 // sends them to a provider whose id starts with "opencode". Requests to
 // OpenCode's gateway carry them, those to anyone else don't, and the body
 // goes as the caller sent it either way.
@@ -64,26 +65,21 @@ func TestOpenCodeClientHeaders(t *testing.T) {
 	if len(zen) != 3 || len(other) != 1 {
 		t.Fatalf("requests: %v", got)
 	}
-	id := regexp.MustCompile(`^(ses|msg)_[0-9a-f]{12}[0-9A-Za-z]{14}$`)
+	id := regexp.MustCompile(`^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$`)
 	for i, r := range zen {
-		if ua := r.h.Get("User-Agent"); ua != provider.OpenCodeUserAgent {
+		if ua := r.h.Get("User-Agent"); ua != provider.OpenCodeUserAgent() {
 			t.Errorf("zen %d: User-Agent %q", i, ua)
 		}
-		if !id.MatchString(r.h.Get("x-opencode-session")) || !id.MatchString(r.h.Get("x-opencode-request")) ||
-			!strings.HasPrefix(r.h.Get("x-opencode-session"), "ses_") || !strings.HasPrefix(r.h.Get("x-opencode-request"), "msg_") {
+		if !id.MatchString(r.h.Get("x-opencode-session")) || r.h.Get("x-opencode-request") != "" {
 			t.Errorf("zen %d: session %q request %q", i, r.h.Get("x-opencode-session"), r.h.Get("x-opencode-request"))
 		}
-		if v := r.h.Get("x-opencode-session-id"); v != r.h.Get("x-opencode-session") {
-			t.Errorf("zen %d: x-opencode-session-id %q, x-opencode-session %q", i, v, r.h.Get("x-opencode-session"))
-		}
-		// OpenCode 1.19.0 sends Zen neither, and Zen's free tier answers 403
-		// FreeTierError to a request carrying x-session-affinity
-		for _, h := range []string{"x-session-affinity", "X-Session-Id"} {
-			if v := r.h.Get(h); v != "" {
-				t.Errorf("zen %d: %s %q went to Zen", i, h, v)
+		// OpenCode 2.2.5 sends the session in all four
+		for _, h := range []string{"x-opencode-session-id", "x-session-affinity", "X-Session-Id"} {
+			if v := r.h.Get(h); v != r.h.Get("x-opencode-session") {
+				t.Errorf("zen %d: %s %q, x-opencode-session %q", i, h, v, r.h.Get("x-opencode-session"))
 			}
 		}
-		if r.h.Get("x-opencode-client") != "cli" || r.h.Get("x-opencode-project") != "global" {
+		if r.h.Get("x-opencode-client") != "cli" || len(r.h.Get("x-opencode-project")) != 40 || r.h.Get("b3") == "" || r.h.Get("traceparent") == "" {
 			t.Errorf("zen %d: client %q project %q", i, r.h.Get("x-opencode-client"), r.h.Get("x-opencode-project"))
 		}
 		if r.h.Get("Authorization") != "Bearer public" {
@@ -93,10 +89,11 @@ func TestOpenCodeClientHeaders(t *testing.T) {
 			t.Errorf("zen %d: body changed:\n%s\nvs\n%s", i, r.body, other[0].body)
 		}
 	}
-	// one conversation, one session; each request its own id
-	if zen[0].h.Get("x-opencode-session") != zen[1].h.Get("x-opencode-session") || zen[0].h.Get("x-opencode-request") == zen[1].h.Get("x-opencode-request") {
-		t.Errorf("session %q %q, request %q %q", zen[0].h.Get("x-opencode-session"), zen[1].h.Get("x-opencode-session"),
-			zen[0].h.Get("x-opencode-request"), zen[1].h.Get("x-opencode-request"))
+	// one conversation, one session and trace; each request its own span
+	if zen[0].h.Get("x-opencode-session") != zen[1].h.Get("x-opencode-session") || zen[0].h.Get("traceparent")[:35] != zen[1].h.Get("traceparent")[:35] ||
+		zen[0].h.Get("traceparent") == zen[1].h.Get("traceparent") {
+		t.Errorf("session %q %q, traceparent %q %q", zen[0].h.Get("x-opencode-session"), zen[1].h.Get("x-opencode-session"),
+			zen[0].h.Get("traceparent"), zen[1].h.Get("traceparent"))
 	}
 	if s := zen[2].h.Get("x-opencode-session"); s != "ses_ecc5d8f28ffe9Cy14V8Em7lI2u" {
 		t.Errorf("OpenCode's own session became %q", s)

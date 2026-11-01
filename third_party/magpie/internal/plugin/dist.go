@@ -61,40 +61,89 @@ var (
 	distIdx  *distIndex
 	distAt   time.Time // when distIdx was read, or last failed to be
 	distOK   bool      // whether the last read was distIdx's
+	distErr  error     // why the last read failed, when it did
 	distKeep = 10 * time.Minute
 	distWait = time.Minute // after a read failed, before asking again
+	// distReading is closed when the read under way ends, nil when none is
+	distReading chan struct{}
+	// distReadFor is how long a read of the index is given: its own
+	// time, not one package's ask's. index.json is ~1.6MB, which a slow
+	// link took longer than npmEach's 6s to bring, and a read cut off
+	// there said the branch had nothing (ferock on Discord: the Chat
+	// page plugin, on the dist branch only, showed Coming soon). A read
+	// that ends after its asker stopped waiting is kept for the next ask.
+	distReadFor = 2 * time.Minute
 )
+
+// errDistUnread is a package the dist branch may have, unknown for the
+// branch not having been read.
+var errDistUnread = errors.New("the community repo's dist branch can't be read")
 
 // distFile is a file the index may name: one tarball under tgz/, nothing
 // that leaves the branch or plugins/dist.
 var distFile = regexp.MustCompile(`^tgz/[A-Za-z0-9._-]+\.tgz$`)
 
-// distPkg is what the dist branch has of the package, nil when it has
-// none, the package isn't one of its scope, or the branch can't be read.
-func distPkg(ctx context.Context, name string) *distPackage {
+// distPkg is what the dist branch has of the package: nil with no error
+// when the branch was read and has none, or the package isn't one of its
+// scope; an error wrapping errDistUnread when that isn't known, as the
+// branch couldn't be read (a failed read is not "it has none"). The read
+// goes on apart from ctx, and ctx ending is waited for no longer: what
+// was read last answers, and a package it doesn't have is unknown.
+func distPkg(ctx context.Context, name string) (*distPackage, error) {
 	if !strings.HasPrefix(name, distScope) || distBase == "" {
-		return nil
+		return nil, nil
+	}
+	distMu.Lock()
+	stale := distIdx == nil || time.Since(distAt) > distKeep
+	if stale && distReading == nil && (distOK || distAt.IsZero() || time.Since(distAt) > distWait) {
+		distReading = make(chan struct{})
+		go readDist(context.WithoutCancel(ctx), distReading)
+	}
+	reading := distReading
+	distMu.Unlock()
+	var waited error
+	if reading != nil {
+		select {
+		case <-reading:
+		case <-ctx.Done():
+			waited = ctx.Err()
+		}
 	}
 	distMu.Lock()
 	defer distMu.Unlock()
-	stale := distIdx == nil || time.Since(distAt) > distKeep
-	if stale && (distOK || distAt.IsZero() || time.Since(distAt) > distWait) {
-		if idx, err := readDistIndex(ctx); err == nil {
-			distIdx, distOK = idx, true
-		} else {
-			// what was read last stays, until a read works
-			distOK = false
+	if distIdx != nil {
+		if p, ok := distIdx.Packages[name]; ok {
+			return &p, nil
 		}
-		distAt = time.Now()
 	}
-	if distIdx == nil {
-		return nil
+	switch {
+	case waited != nil:
+		return nil, fmt.Errorf("%w: %w", errDistUnread, waited)
+	case !distOK && distErr != nil:
+		return nil, fmt.Errorf("%w: %w", errDistUnread, distErr)
+	case !distOK:
+		return nil, errDistUnread
 	}
-	p, ok := distIdx.Packages[name]
-	if !ok {
-		return nil
+	return nil, nil
+}
+
+// readDist reads the index into distIdx, closing done when it has: the
+// last read kept until one works. ctx gives it values only, not its time.
+func readDist(ctx context.Context, done chan struct{}) {
+	c, cancel := context.WithTimeout(ctx, distReadFor)
+	idx, err := readDistIndex(c)
+	cancel()
+	distMu.Lock()
+	if err == nil {
+		distIdx, distOK, distErr = idx, true, nil
+	} else {
+		// what was read last stays, until a read works
+		distOK, distErr = false, err
 	}
-	return &p
+	distAt = time.Now()
+	distReading = nil
+	distMu.Unlock()
+	close(done)
 }
 
 var (
@@ -208,23 +257,24 @@ func mergeDist(a, b *distIndex) *distIndex {
 }
 
 // distInfo is the package's newest version on the dist branch, as npm's
-// /latest would say it, and whether there is one.
-func distInfo(ctx context.Context, name string) (NPM, bool) {
-	d := distPkg(ctx, name)
+// /latest would say it, and whether there is one; an error (distPkg's)
+// when that isn't known.
+func distInfo(ctx context.Context, name string) (NPM, bool, error) {
+	d, err := distPkg(ctx, name)
 	if d == nil {
-		return NPM{}, false
+		return NPM{}, false, err
 	}
 	v, ok := d.Versions[d.Latest]
 	if !ok {
-		return NPM{}, false
+		return NPM{}, false, nil
 	}
 	var l npmLatest
 	if json.Unmarshal(v.Manifest, &l) != nil {
-		return NPM{}, false
+		return NPM{}, false, nil
 	}
 	info := npmOf(l)
 	info.Version = d.Latest
-	return info, true
+	return info, true, nil
 }
 
 // distWanted is the package and version an npm spec asks for, when the
@@ -255,9 +305,12 @@ var exactVersion = regexp.MustCompile(`^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0
 // plugins/dist (bun.lock names it there, and a later bun add installs it
 // again from it), and added with bun. installMu held.
 func installDist(ctx context.Context, bun, name, version string) error {
-	d := distPkg(ctx, name)
+	d, err := distPkg(ctx, name)
+	if err != nil {
+		return err
+	}
 	if d == nil {
-		return fmt.Errorf("the community repo's dist branch has no %s, or can't be read", name)
+		return fmt.Errorf("the community repo's dist branch has no %s", name)
 	}
 	if version == "latest" {
 		version = d.Latest

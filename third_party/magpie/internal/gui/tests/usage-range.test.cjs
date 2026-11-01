@@ -70,14 +70,24 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.route("**/*", serve(lang, asked));
       await page.goto("http://magpie.test/?view=usage");
       const opt = page.locator("#period .range-opt");
-      await opt.waitFor();
+      // a phone's days are the head's menu over a hidden strip: its last item is the range opt
+      const head = page.locator("#usageRangeMenu");
+      await head.waitFor();
+      assert.equal(await page.locator("#period").isVisible(), false, "the strip is behind the menu");
+      const item = async (at) => {
+        await head.click();
+        const items = page.locator(".proto-menu .pm-item");
+        await items.first().waitFor();
+        await items.nth(at === "last" ? (await items.count()) - 1 : at).click();
+      };
+      const openDays = () => item("last");
       await page.waitForFunction(() => !document.querySelector("#period .opt:disabled"));
       assert.equal(await opt.getAttribute("aria-haspopup"), "dialog");
       const scrollY = () => page.evaluate(() => [scrollY, document.querySelector("#view-usage").scrollTop]);
       const y = await scrollY();
 
       // the menu: the app's own, never a native select, whole on the page
-      await opt.click();
+      await openDays();
       const menu = page.locator(".range-menu");
       await menu.waitFor();
       assert.equal(await menu.locator(".pm-head").textContent(), w.head);
@@ -97,7 +107,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
       // first day then last, in either order: from the earlier
       const first = back(9), last = back(3);
-      await opt.click();
+      await openDays();
       await menu.waitFor();
       const day = async (d) => {
         for (let i = 0; i < 3 && !(await menu.locator(`.rm-day[data-day="${dayKey(d)}"]`).count()); i++) await menu.locator(".rm-step").first().click();
@@ -115,11 +125,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await page.locator("#period .opt.on").count(), 1, "one opt is on");
       const label = (await opt.textContent()).trim();
       assert.match(label, /–/, "the opt names the days picked: " + label);
+      assert.equal((await head.textContent()).trim(), label, "the menu names them too");
       // the empty page says so of the days picked
       await page.waitForFunction((none) => document.querySelector("#view-usage").textContent.includes(none), w.none);
 
       // the menu again opens on the days picked, and a span is a click away
-      await opt.click();
+      await openDays();
       await menu.waitFor();
       assert.equal(await menu.locator(".rm-day.end").count() >= 1, true);
       asked.length = 0;
@@ -130,11 +141,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.doesNotMatch((await opt.textContent()).trim(), /–/, "one day is named alone");
 
       // a click outside closes it, and back to a preset
-      await opt.click();
+      await openDays();
       await menu.waitFor();
       await page.mouse.click(380, 740);
       await menu.waitFor({ state: "detached" });
-      await page.locator("#period .opt").first().click();
+      await item(0);
       await page.waitForFunction(() => !document.querySelector("#period .range-opt.on"));
       assert.equal((await opt.textContent()).trim(), w.custom);
       assert.deepEqual(await scrollY(), y, "a click scrolled the page");

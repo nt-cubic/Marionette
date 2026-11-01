@@ -119,7 +119,7 @@ func TestMessagesThinkingIsSigned(t *testing.T) {
 
 // TestSignedThinkingRelayedAsItCame: a reply whose thinking is signed
 // already (Anthropic's own) goes to the client byte for byte, its
-// signature as Anthropic wrote it.
+// signature as Anthropic wrote it; only its model is the one asked for.
 func TestSignedThinkingRelayedAsItCame(t *testing.T) {
 	signed := strings.NewReplacer(
 		`"content_block":{"type":"thinking","thinking":""}`, `"content_block":{"type":"thinking","thinking":"","signature":""}`,
@@ -140,7 +140,7 @@ func TestSignedThinkingRelayedAsItCame(t *testing.T) {
 			if code != 200 {
 				t.Fatalf("status %d: %s", code, body)
 			}
-			if body != tt.reply {
+			if body != namedAs(tt.reply, "fake/m1") {
 				t.Errorf("signed reply changed on its way:\n got %s\nwant %s", body, tt.reply)
 			}
 		})

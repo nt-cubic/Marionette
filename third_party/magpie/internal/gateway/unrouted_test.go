@@ -2,8 +2,6 @@ package gateway
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -297,19 +295,12 @@ func TestUnroutedSlotWaitNotCutOff(t *testing.T) {
 // returned, closed to let it go with text.
 func heldSight(t *testing.T, s *Server) (release func(text string)) {
 	t.Helper()
-	model, ok := seer()
-	if !ok {
+	if _, ok := seer(); !ok {
 		t.Fatal("no model to describe images with")
 	}
-	sum := sha256.Sum256([]byte(model + "\x00" + visionEffort(model) + "\x00" + "data:image/png;base64,aGVsbG8="))
-	key := hex.EncodeToString(sum[:])
 	e := &sight{done: make(chan struct{})}
 	s.sightMu.Lock()
-	if s.sights == nil {
-		s.sights = map[string]*sight{}
-	}
-	s.sights[key] = e
-	s.sightOrder = append(s.sightOrder, key)
+	s.keepSightLocked(sightKey("data:image/png;base64,aGVsbG8="), e)
 	s.sightMu.Unlock()
 	closed := false
 	t.Cleanup(func() {

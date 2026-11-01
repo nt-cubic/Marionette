@@ -106,6 +106,22 @@ func (tc *gThinking) effort() string {
 	return ""
 }
 
+// geminiBodyEffort is the reasoning a Gemini request's generationConfig
+// asks for through its thinkingConfig, as parseGemini reads it (#4529):
+// the level it names, else its budget as the level it is nearest. ""
+// when it asks for none, or there is no thinkingConfig.
+func geminiBodyEffort(body []byte) string {
+	var g struct {
+		GenerationConfig *struct {
+			ThinkingConfig *gThinking `json:"thinkingConfig"`
+		} `json:"generationConfig"`
+	}
+	if decodeJSON(geminiCamel(body), &g) != nil || g.GenerationConfig == nil || g.GenerationConfig.ThinkingConfig == nil {
+		return ""
+	}
+	return g.GenerationConfig.ThinkingConfig.effort()
+}
+
 // buildGemini is a generateContent body for an upstream that speaks Gemini
 // itself (Factory's /api/llm/g). The contents are the ones Code Assist
 // sends inside its envelope. systemInstruction has no role: droid sends

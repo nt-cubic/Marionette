@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -670,5 +671,30 @@ func TestCodexSocketOtherPaths(t *testing.T) {
 	New().Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusUpgradeRequired {
 		t.Errorf("%d", rec.Code)
+	}
+}
+
+// TestHeldTurnOwnsItsInput: a held reply's input was a view into the
+// frame it was read from, which kept the whole frame (Codex's tools and
+// instructions too) for as long as the socket held the reply. Written
+// over, the frame leaves what is held as it was.
+func TestHeldTurnOwnsItsInput(t *testing.T) {
+	frame := []byte(`{"input":[{"type":"message","role":"user","content":"hi"},{"type":"message","role":"user","content":"again"}],"tools":["x"]}`)
+	var q map[string]json.RawMessage
+	if err := decodeJSONView(frame, &q); err != nil {
+		t.Fatal(err)
+	}
+	_, fresh := prevInput(q["input"])
+	prior := []json.RawMessage{json.RawMessage(`{"type":"message","role":"user","content":"before"}`)}
+	reply := []json.RawMessage{json.RawMessage(`{"type":"message","role":"assistant","content":"ok"}`)}
+	rs := &responsesSocket{}
+	rs.keep("resp_1", prior, fresh, reply)
+	want := `[{"type":"message","role":"user","content":"before"},{"type":"message","role":"user","content":"hi"},{"type":"message","role":"user","content":"again"},{"type":"message","role":"assistant","content":"ok"}]`
+	for i := range frame {
+		frame[i] = 'x'
+	}
+	items, ok := rs.held("resp_1")
+	if got, _ := json.Marshal(items); !ok || string(got) != want {
+		t.Fatalf("held after the frame was written over: %s", got)
 	}
 }

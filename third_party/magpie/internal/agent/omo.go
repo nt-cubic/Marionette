@@ -36,5 +36,5 @@ func omoDir(at place) string {
 			}
 		}
 	}
-	return filepath.Join(at.home, ".omo", "agent")
+	return at.join(".omo", "agent")
 }

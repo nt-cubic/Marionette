@@ -32,6 +32,13 @@ func keyWeight(c candidate) int {
 	return max(c.p.KeyWeight, 1)
 }
 
+// spentRest says whether c rests out of its quota or its credit, not for
+// a rate limit or a failure: routes.Seat.Spent, what Drain goes on from.
+func spentRest(c candidate) bool {
+	r, ok := restingOf(c)
+	return ok && (r.Why == failQuota || r.Why == failCredit)
+}
+
 // resting says whether c rests now, as restLast will find.
 func resting(c candidate) bool {
 	if _, ok := restOf(c.restKey()); ok {

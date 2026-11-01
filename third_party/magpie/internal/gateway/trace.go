@@ -341,6 +341,14 @@ type Weighed struct {
 	// credits, and is let spend them: all but used up, it still answers,
 	// and goes before those used up with nothing to go on with
 	Credits bool `json:"credits,omitempty"`
+	// CreditsLast: such an account, on its credits now, that the user set
+	// to spend them only after everything else: tried after every
+	// candidate not on its credits (restLast)
+	CreditsLast bool `json:"creditsLast,omitempty"`
+	// Busy: the load its plugin reported for the model, a percent over
+	// the user's settings.BusyLoad, so it was tried after every ready
+	// candidate that isn't (restLast)
+	Busy float64 `json:"busy,omitempty"`
 	// Rank: its place in its provider's own list of accounts or keys, the
 	// order the provider's page shows and a drag sets (#217); routing may
 	// weigh them in another
@@ -348,6 +356,10 @@ type Weighed struct {
 	// Aside: a key made for another protocol than the keys routed over,
 	// tried only after them
 	Aside bool `json:"aside,omitempty"`
+	// Reserve: an account or key held back, its provider's accounts at
+	// once (provider.AtOnce, this many) taken by those before it in the
+	// user's order: tried, aside, only after they all failed
+	Reserve int `json:"reserve,omitempty"`
 	// NoURL: its keys are all set to this protocol, which its provider has
 	// no URL for, so it was tried on the URLs it has (#1702)
 	NoURL provider.Protocol `json:"noURL,omitempty"`
@@ -479,7 +491,7 @@ type planned struct {
 
 func weighed(c candidate, p provider.Provider, wg weighing, fallback bool, from provider.Protocol) Weighed {
 	w := Weighed{ID: c.rest, Provider: p.ID, Name: p.Name, Icon: p.Icon, Preset: p.Preset, Model: c.model, Fixed: c.effort, Fast: c.fast,
-		Routing: p.Routing, Fallback: fallback, Shared: c.rest != p.ID, Rank: c.rank, NoURL: c.noURL}
+		Routing: p.Routing, Fallback: fallback, Shared: c.rest != p.ID, Rank: c.rank, NoURL: c.noURL, Reserve: c.reserve}
 	switch {
 	case c.p.Account != nil:
 		w.Kind, w.Who, w.Agent, w.Plan = "account", c.p.Account.User, c.p.Account.Agent, c.p.Account.Plan

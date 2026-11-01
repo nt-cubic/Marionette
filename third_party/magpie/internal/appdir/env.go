@@ -1,7 +1,9 @@
 package appdir
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -87,7 +89,7 @@ func usable(name, v string) bool {
 	}
 	switch name {
 	case "PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "HANA_HOME", "T3CODE_HOME",
-		"OPENCLAW_HOME", "OPENCLAW_STATE_DIR", "OPENCLAW_CONFIG_PATH":
+		"OPENCLAW_HOME", "OPENCLAW_STATE_DIR", "OPENCLAW_CONFIG_PATH", "QWENPAW_WORKING_DIR", "QWENPAW_SECRET_DIR":
 		return v == "~" || strings.HasPrefix(v, "~/") || (runtime.GOOS == "windows" && strings.HasPrefix(v, `~\`))
 	}
 	return false
@@ -98,9 +100,11 @@ func usable(name, v string) bool {
 // one, so no file of magpie's or an agent's is written under the working
 // folder. The environment is left as it is: the programs magpie starts get
 // the variable as the user set it. The variables a login shell lends the
-// desktop app (proc.UserPath) are read through here too.
+// desktop app (proc.UserPath) are read through here too. On Windows an
+// agent's variable is the registry's now, not the one magpie started with
+// (follow.go).
 func LookupEnv(name string) (string, bool) {
-	v, ok := os.LookupEnv(name)
+	v, ok := lookupEnv(name)
 	if ok && v != "" && pathVars()[name] && !usable(name, v) {
 		return "", false
 	}
@@ -124,4 +128,59 @@ func CheckEnv() (ignored []string, err error) {
 	}
 	_, err = Home()
 	return ignored, err
+}
+
+// GoneError is a folder an agent's variable names that isn't there, so
+// what magpie writes into it isn't written: making it again would put
+// the agent's config where the agent no longer looks, as Pi's models.json
+// and settings.json went back into the AgentDir bm_rabbit had moved and
+// deleted. The variable is fixed, or the folder made, by the user.
+type GoneError struct {
+	Var, Dir string
+}
+
+func (e *GoneError) Error() string {
+	return fmt.Sprintf("%s names %s, which doesn't exist and neither does the folder above it: create that folder, or point %s at the folder the agent uses now", e.Var, e.Dir, e.Var)
+}
+
+// Gone is a GoneError when dir, about to be made, is the folder an
+// agent's variable names, or in it, and neither that folder nor the one
+// it sits in exists; nil otherwise. The named folder itself is made when
+// its parent is there, as mkdir would (a CODEX_HOME set before the agent
+// first ran), but not a tree of missing folders above it: that is a
+// folder, or a whole drive's data, the user deleted or moved (F:\piData
+// for bm_rabbit). An agent's default folder (~/.pi/agent, ~/.codex) is
+// made as before.
+func Gone(dir string) error {
+	if !rooted(dir) {
+		return nil
+	}
+	dir = filepath.Clean(dir)
+	for _, name := range agentenv.Vars {
+		if agentenv.NotPaths[name] {
+			continue
+		}
+		v := Getenv(name)
+		if v == "~" || strings.HasPrefix(v, "~/") || (runtime.GOOS == "windows" && strings.HasPrefix(v, `~\`)) {
+			h, err := Home()
+			if err != nil {
+				continue
+			}
+			v = filepath.Join(h, v[1:])
+		}
+		if v == "" || !rooted(v) {
+			continue
+		}
+		v = filepath.Clean(v)
+		if !within(dir, v) {
+			continue
+		}
+		if _, err := os.Stat(v); !errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if _, err := os.Stat(filepath.Dir(v)); errors.Is(err, fs.ErrNotExist) {
+			return &GoneError{Var: name, Dir: v}
+		}
+	}
+	return nil
 }

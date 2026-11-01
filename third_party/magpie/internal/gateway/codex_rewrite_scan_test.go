@@ -61,7 +61,7 @@ var codexRewrites = func() []codexRewrite {
 			}
 			return wasWithModel(b, "gpt-5.5<&>")
 		}},
-		{"forVendor", func(b []byte) []byte { return forVendor(relay, b) }, func(b []byte) []byte { return wasForVendor(relay, b) }},
+		{"forVendor", func(b []byte) []byte { return forVendor(relay, b, false) }, func(b []byte) []byte { return wasForVendor(relay, b) }},
 	}
 	for _, magpie := range []bool{false, true} {
 		for _, native := range []bool{false, true} {
@@ -97,10 +97,10 @@ func TestCodexRewritesLeaveTurnUndecoded(t *testing.T) {
 	plain := codexSession(60, func(_ int, it map[string]any) { delete(it, "internal_chat_message_metadata_passthrough") })
 	plain = append(plain[:len(plain)-1], []byte(`,"note":"internal_chat_message_metadata_passthrough"}`)...)
 	relay := provider.Provider{Responses: "https://relay.example/v1"}
-	if got := forVendor(relay, plain); !bytes.Equal(got, plain) {
+	if got := forVendor(relay, plain, false); !bytes.Equal(got, plain) {
 		t.Fatal("forVendor changed a body with nothing to leave out")
 	}
-	if a := testing.AllocsPerRun(5, func() { forVendor(relay, plain) }); a > 10 {
+	if a := testing.AllocsPerRun(5, func() { forVendor(relay, plain, false) }); a > 10 {
 		t.Errorf("forVendor: %v allocations for a body it leaves as it came", a)
 	}
 }

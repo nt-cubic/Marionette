@@ -450,8 +450,14 @@ func (m *model) openProbe(p *library.Probe) {
 	var items []agent.Option
 	for _, c := range p.Candidates {
 		note := c.Description
-		if c.Have {
+		switch {
+		case c.Have && c.As != "":
+			note = "in the library as " + c.As + " · " + note
+		case c.Have:
 			note = "in the library already · " + note
+		case c.As != "":
+			// another skill from elsewhere has its name
+			note = "adds as " + c.As + " · " + note
 		}
 		v := c.Path
 		if v == "" {

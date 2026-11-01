@@ -118,7 +118,7 @@ func gooseProviderPath(cfg string) string {
 // place, its models the catalog as Goose is shown it.
 func gooseProviderJSON(at place) map[string]any {
 	models := []map[string]any{}
-	for _, m := range magpieModels("goose") {
+	for _, m := range sharedModels("goose") {
 		e := map[string]any{"name": m.ID, "reasoning": gooseThinks.MatchString(m.ID)}
 		if m.Context > 0 {
 			e["context_limit"] = m.Context

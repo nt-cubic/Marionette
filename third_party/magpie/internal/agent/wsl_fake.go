@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -100,4 +101,18 @@ func FakeWSLRuns(name string) int {
 	fakeCalls.Lock()
 	defer fakeCalls.Unlock()
 	return fakeCalls.in[name]
+}
+
+// FakeWSLDrives, for other packages' tests, has Windows' drives ("C:")
+// opened at roots' folder for each, where a link in a FakeWSL distro to
+// /mnt/c leads (distro.open); the returned func puts it back.
+func FakeWSLDrives(roots map[string]string) func() {
+	was := wslDrive
+	wslDrive = func(drive string) string {
+		if r, ok := roots[drive]; ok {
+			return r + string(filepath.Separator)
+		}
+		return was(drive)
+	}
+	return func() { wslDrive = was }
 }

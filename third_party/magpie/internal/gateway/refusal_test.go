@@ -259,7 +259,7 @@ func TestRefusalAfterContentPassesThrough(t *testing.T) {
 	scriptedOn(t, "b", provider.Anthropic, b)
 	refusalGroup(t, "a/m", "b/m")
 	code, body := sendTo(New(), "/v1/messages", `{"model":"group/g","max_tokens":10,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
-	if code != 200 || body != late || b.n != 0 {
+	if code != 200 || body != namedAs(late, "group/g") || b.n != 0 {
 		t.Fatalf("messages: %d %s (b %d)", code, body, b.n)
 	}
 	// translated for Codex, it is the incomplete reply it was
@@ -276,13 +276,13 @@ func TestRefusalAfterContentPassesThrough(t *testing.T) {
 	scriptedOn(t, "b", provider.Anthropic, b)
 	refusalGroup(t, "a/m", "b/m")
 	code, body = sendTo(New(), "/v1/messages", `{"model":"group/g","max_tokens":10,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
-	if code != 200 || body != anthropicAnswer || b.n != 0 {
+	if code != 200 || body != namedAs(anthropicAnswer, "group/g") || b.n != 0 {
 		t.Fatalf("answer: %d %s (b %d)", code, body, b.n)
 	}
 	whole := `{"id":"m2","type":"message","role":"assistant","model":"m","content":[{"type":"text","text":"whole"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2}}`
 	a.replies = []reply{{200, "", whole}}
 	code, body = sendTo(New(), "/v1/messages", `{"model":"group/g","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`)
-	if code != 200 || strings.TrimSpace(body) != whole || b.n != 0 {
+	if code != 200 || strings.TrimSpace(body) != namedAs(whole, "group/g") || b.n != 0 {
 		t.Fatalf("whole: %d %s (b %d)", code, body, b.n)
 	}
 }

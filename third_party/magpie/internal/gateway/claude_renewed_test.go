@@ -25,6 +25,7 @@ func TestClaudeAccountBackOnceItsWindowRenews(t *testing.T) {
 	window := time.Now().Add(2 * time.Hour).Truncate(time.Second)
 	var mu sync.Mutex
 	used := map[string]float64{a: 100, b: 100}
+	back := map[string]time.Time{a: window, b: window}
 	provider.LoginUsageVia(func(_ context.Context, agent string) map[string]provider.SubscriptionQuota {
 		out := map[string]provider.SubscriptionQuota{}
 		if agent != "claude" {
@@ -33,8 +34,9 @@ func TestClaudeAccountBackOnceItsWindowRenews(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		for u, n := range used {
+			end := back[u]
 			out[u] = provider.SubscriptionQuota{Provider: "claude", Windows: []provider.QuotaWindow{
-				{Name: "5 hours", Used: n, Span: 5 * time.Hour, ResetsAt: &window},
+				{Name: "5 hours", Used: n, Span: 5 * time.Hour, ResetsAt: &end},
 				{Name: "7 days", Used: 40, Span: 7 * 24 * time.Hour},
 			}}
 		}
@@ -81,9 +83,11 @@ func TestClaudeAccountBackOnceItsWindowRenews(t *testing.T) {
 	}
 
 	// a's five hours started again (a new /usage, what Claude Code says
-	// as it answers); routing reads it a minute on
+	// as it answers, the window standing a new, later cycle); routing
+	// reads it a minute on
 	mu.Lock()
 	used[a] = 4
+	back[a] = time.Now().Add(5 * time.Hour).Truncate(time.Second)
 	mu.Unlock()
 	deadline := time.Now().Add(10 * time.Second)
 	for {

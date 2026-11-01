@@ -3,6 +3,7 @@ package catalog
 import (
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // SameModel is a model's name as vendors agree on it: lowercase, without
@@ -29,14 +30,22 @@ func SameModel(id string) string {
 	if i := strings.LastIndex(k, "/"); i >= 0 {
 		k = k[i+1:]
 	}
-	k = strings.Trim(modelGaps.ReplaceAllString(k, "-"), "-")
-	b := []byte(k)
-	for i := 1; i+1 < len(b); i++ {
-		if (b[i] == '.' || b[i] == 'p') && digit(b[i-1]) && digit(b[i+1]) {
-			b[i] = '-'
-		}
+	// most ids have no gap but single dashes and no version dot: the
+	// Providers page asks this of every model of every list, and each was
+	// copied twice and matched against modelGaps all the same
+	if !singleDashes(k) {
+		k = modelGaps.ReplaceAllString(k, "-")
 	}
-	k = string(b)
+	k = strings.Trim(k, "-")
+	if i := versionDot(k, 1); i > 0 {
+		b := []byte(k)
+		for ; i+1 < len(b); i++ {
+			if (b[i] == '.' || b[i] == 'p') && digit(b[i-1]) && digit(b[i+1]) {
+				b[i] = '-'
+			}
+		}
+		k = string(b)
+	}
 	if i := strings.LastIndexAny(k, "-@"); i > 0 && snapshotDate(k[i+1:]) {
 		k = k[:i]
 	}
@@ -63,6 +72,31 @@ func snapshotDate(s string) bool {
 // modelGaps are what SameModel spells as one "-": a run of spaces (a
 // no-break one too), "_" and "-".
 var modelGaps = regexp.MustCompile(`[\s\p{Zs}_-]+`)
+
+// singleDashes is whether modelGaps leaves k as it is: no gap in it but
+// single "-"s.
+func singleDashes(k string) bool {
+	for i, r := range k {
+		switch {
+		case r == '_' || r == '\t' || r == '\n' || r == '\f' || r == '\r' || unicode.Is(unicode.Zs, r):
+			return false
+		case r == '-' && i+1 < len(k) && k[i+1] == '-':
+			return false
+		}
+	}
+	return true
+}
+
+// versionDot is the first index from i of a version's dot (or "p") in k,
+// between two digits, 0 with none.
+func versionDot(k string, i int) int {
+	for ; i+1 < len(k); i++ {
+		if (k[i] == '.' || k[i] == 'p') && digit(k[i-1]) && digit(k[i+1]) {
+			return i
+		}
+	}
+	return 0
+}
 
 func atoi2(s string) int { return int(s[0]-'0')*10 + int(s[1]-'0') }
 

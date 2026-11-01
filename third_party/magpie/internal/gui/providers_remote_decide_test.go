@@ -89,3 +89,29 @@ func TestBailianTokenPlanDecisionPicker(t *testing.T) {
 		t.Fatalf("editor models: %v", got)
 	}
 }
+
+// coeo91 on Discord: OpenRouter's inception/mercury-decide:free, picked by
+// hand, is a variant of a model OpenRouter's decisions list names once.
+// The editor is told it is a decision model, so it is tested and marked as
+// one, and a free chat model's :free stays a chat model.
+func TestOpenRouterDecisionVariantPicker(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	const base = "https://openrouter.ai/api/v1"
+	const variant = "inception/mercury-decide:free"
+	if err := provider.Save(provider.Provider{ID: "openrouter", Name: "OpenRouter", Preset: "openrouter", Key: "k",
+		Chat: base, Models: []string{"liquid/lfm-2.5-2.6b:free", variant}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.SaveLive("openrouter", base, []catalog.Model{{ID: "liquid/lfm-2.5-2.6b:free"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.SaveLive("openrouter.decisions", base, []catalog.Model{{ID: "inception/mercury-decide"}}); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := provider.Find("openrouter")
+	out := providerInfo(*p, nil)
+	if out.Deciders == nil || !slices.Contains(*out.Deciders, variant) || slices.Contains(*out.Deciders, "liquid/lfm-2.5-2.6b:free") {
+		t.Fatalf("editor decisions: %v", out.Deciders)
+	}
+}

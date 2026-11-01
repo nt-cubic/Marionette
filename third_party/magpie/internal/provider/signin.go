@@ -888,6 +888,16 @@ func addLogin(l savedLogin) (using bool, err error) {
 	}()
 	loginsMu.Lock()
 	defer loginsMu.Unlock()
+	if l.Agent == "claude" {
+		// the sign-in Claude Code has is read, kept and maybe written
+		// over below: not while it refreshes it (#4532)
+		release, err := claudeRefreshLocks()
+		if err != nil {
+			return false, err
+		}
+		defer release()
+		forgetClaudeCredential()
+	}
 	l.Seen = time.Now().UTC().Truncate(time.Second)
 	live, signedIn := liveLogin(l.Agent)
 	ls := readLogins()
@@ -927,9 +937,10 @@ func addLogin(l savedLogin) (using bool, err error) {
 	// a second account is in use beside the first straight away, as a
 	// second key is: it takes over when the first runs out
 	l.On = !using
-	if err := writeLogins(upsertLogin(ls, l)); err != nil {
-		return false, err
-	}
+	// the credential is stored first: a keychain write that fails (the
+	// login keychain out of reach over ssh, #4563) leaves logins.json as
+	// it was, the account not kept, so signing in again or importing the
+	// same file another time isn't told it is already there
 	if held != "" {
 		if err := saveCodexLogin(held, l.Auth); err != nil {
 			return false, err
@@ -947,6 +958,9 @@ func addLogin(l savedLogin) (using bool, err error) {
 		if err != nil {
 			return false, err
 		}
+	}
+	if err := writeLogins(upsertLogin(ls, l)); err != nil {
+		return false, err
 	}
 	if l.Agent == "claude" {
 		// signed in afresh: what Claude Code kept for it beside the

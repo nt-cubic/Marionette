@@ -233,6 +233,9 @@ func toolRule(how toolsOffHow, server, tool string) string {
 // tools turned off of the servers the agent has (given): Claude Code's
 // permissions.deny, OpenCode's tools map.
 func (l *Library) syncToolRules(t *Target, how toolsOffHow, given []string, b *backups, res *Result) {
+	if res.unreached(t) {
+		return
+	}
 	id := t.Agent.ID
 	a := l.applied(id)
 	var want []string

@@ -127,7 +127,7 @@ type raycastProvider struct {
 // effort on a model with effort levels.
 func raycastProviderYAML(gw string) raycastProvider {
 	ms := []raycastModel{}
-	for _, m := range magpieModels("raycast") {
+	for _, m := range sharedModels("raycast") {
 		ms = append(ms, raycastModel{ID: m.ID, Name: cmp.Or(m.Name, m.ID), Context: m.Context, Abilities: raycastAbilities{
 			Temperature:     raycastSupported{m.Temperature == nil || *m.Temperature},
 			Vision:          raycastSupported{m.Images},

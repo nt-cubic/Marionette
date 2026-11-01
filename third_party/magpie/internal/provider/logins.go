@@ -180,7 +180,7 @@ func LoginID(agent, user string) string {
 	return loginID(savedLogin{Agent: agent, User: user})
 }
 
-func loginsPath() string { return filepath.Join(filepath.Dir(Path()), "logins.json") }
+func loginsPath() string { return appdir.Join(filepath.Dir(Path()), "logins.json") }
 
 // lastLogins is the accounts last read from logins.json: a read that fails
 // (a file half there, one magpie can't open for a moment) is them, not no
@@ -214,6 +214,18 @@ func validLogins(b []byte) bool {
 }
 
 func readLogins() []savedLogin {
+	loginsCopied.Add(1)
+	return slices.Clone(sharedLogins()) // callers change theirs
+}
+
+// loginsCopied counts readLogins' copies, for a test.
+var loginsCopied atomic.Int64
+
+// sharedLogins is readLogins without the caller's own copy: the accounts
+// as kept, read only. A page's state lists a dozen agents' accounts, and
+// a copy of the whole list for each was 61 MB of what twenty window polls
+// allocated.
+func sharedLogins() []savedLogin {
 	if settings.AccountDiscoveryOff() {
 		return nil
 	}
@@ -243,7 +255,7 @@ func readLogins() []savedLogin {
 			log.Printf("logins.json: %v; %v", err, ferr)
 		}
 	}
-	return slices.Clone(ls) // callers change theirs
+	return slices.Clip(ls) // an append makes the caller's own
 }
 
 // unreadBytes are a file's bytes, nil when it can't be read: for the log
@@ -808,7 +820,7 @@ func sameRefresh(x, y json.RawMessage) bool {
 // accountRemoved: the user removed the agent's account from magpie, which
 // then neither saves its sign-ins nor keeps them renewed.
 func accountRemoved(agent string) bool {
-	return slices.ContainsFunc(load().Providers, func(p Provider) bool { return p.ID == agent && p.Hidden })
+	return slices.ContainsFunc(storedFile().Providers, func(p Provider) bool { return p.ID == agent && p.Hidden })
 }
 
 func rememberLogins(force bool) {
@@ -934,8 +946,19 @@ func (p Provider) SignedOut() bool {
 }
 
 // Logins lists the remembered accounts of an agent ("" for every one),
-// the active one flagged.
+// the active one flagged. A request lists an agent's once: /api/providers
+// asks it of every provider, twice with its account models, and each
+// took logins.json's lock, a file opened across magpies (a seventh of
+// the list's CPU). The caller gets its own copy.
 func Logins(agent string) []Login {
+	return slices.Clone(heldOf("logins\x00"+agent, func() []Login { return loginsNow(agent) }))
+}
+
+// loginsRuns counts the lists Logins made (a test reads it).
+var loginsRuns atomic.Int64
+
+func loginsNow(agent string) []Login {
+	loginsRuns.Add(1)
 	if settings.AccountDiscoveryOff() {
 		return nil
 	}
@@ -1007,7 +1030,9 @@ func Logins(agent string) []Login {
 	}
 	back := map[string]string{}
 	for a, user := range active {
-		if r, ok := loginReturnOf(a, user); ok {
+		// only where magpie goes back to it (returnsToFirst): a return
+		// kept from before stays on record, for In order or KeepLogin
+		if r, ok := loginReturnOf(a, user); ok && returnsToFirst(a) {
 			back[a] = r.Back
 		}
 	}
@@ -1246,6 +1271,15 @@ func switchSavedLogin(agent, user string) (from string, _ error) {
 	}
 	want := *target
 	if agent == "claude" {
+		// not while Claude Code refreshes its sign-in: the one read below
+		// to keep would be the refresh token that refresh is spending
+		// (#4532). Held till the new sign-in is written, so the refresh
+		// that follows starts from it.
+		release, err := claudeRefreshLocks()
+		if err != nil {
+			return "", err
+		}
+		defer release()
 		// the credentials as Claude Code has them this moment, not as last
 		// looked at: one it refreshed since has a new refresh token and the
 		// old one is dead (0xAncientTwo on X: signed out again and again)
@@ -1296,6 +1330,8 @@ func switchSavedLogin(agent, user string) (from string, _ error) {
 	return from, nil
 }
 
+// putClaudeLogin signs Claude Code in to l. The caller holds Claude Code's
+// refresh locks (claudeRefreshLocks).
 func putClaudeLogin(l savedLogin) error {
 	if claudeSetupToken(l.Auth) != "" {
 		return fmt.Errorf(errClaudeTokenSwitch, l.User)
@@ -1322,6 +1358,13 @@ func putClaudeLogin(l savedLogin) error {
 	if len(l.Profile) == 0 {
 		return nil
 	}
+	// read and written back under the lock Claude Code saves the file
+	// under, or a save of its own between the two is lost
+	release, err := claudeConfigLock()
+	if err != nil {
+		return err
+	}
+	defer release()
 	m, err := readClaudeProfile()
 	if err != nil {
 		if !os.IsNotExist(err) {

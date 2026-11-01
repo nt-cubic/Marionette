@@ -67,7 +67,34 @@ func bareModel(m string) string {
 // (RelayRenamed).
 func Swapped(sent, served string) bool {
 	a, b := bareModel(sent), bareModel(served)
-	return a != "" && b != "" && squash(a) != squash(b) && a != "auto" && squash(bareModel(provider.EffortFamily(a))) != squash(b) && !GroupRouted(sent, served) && !ServingName(sent, served) && !RelayRenamed(sent, served)
+	return a != "" && b != "" && squash(a) != squash(b) && a != "auto" && squash(bareModel(provider.EffortFamily(a))) != squash(b) && !GroupRouted(sent, served) && !ServingName(sent, served) && !RelayRenamed(sent, served) && !VendorAlias(sent, served)
+}
+
+// vendorAlias is a vendor's own alias for one of its models, as the
+// vendor's docs state it, spelled as squash spells it: DeepSeek renamed
+// its V4.1 Flash deepseek-flash (api-docs.deepseek.com/updates,
+// 2026-09-10: "Change the model name to deepseek-flash to call the latest
+// V4.1 Flash model", the name its later entries keep answering under), so
+// a request for either is answered under whichever name the deployment
+// writes (#4593, chowyuan1314). A name the docs retire or route elsewhere
+// (deepseek-v4-flash to V4.1 Flash) is another model, not an alias.
+var vendorAlias = map[string]string{
+	"deepseekflash": "deepseekv41flash",
+}
+
+// VendorAlias reports whether served is the vendor's own alias for the
+// model sent — an official name its docs give one of its models, not
+// another model swapped in. Both ways: a request under the alias answered
+// under the name it stands for is the same model too. A vendor may rename
+// a model over time, and what its name stands for is its docs' word, so
+// only pairs the docs state go here; catalog's SameModel keeps the two ids
+// apart (the catalog lists deepseek-flash as an id of its own).
+func VendorAlias(sent, served string) bool {
+	a, b := squash(bareModel(sent)), squash(bareModel(served))
+	if a == "" || b == "" {
+		return false
+	}
+	return vendorAlias[a] == b || vendorAlias[b] == a
 }
 
 // ListedAs reports whether served is the name the provider's own model

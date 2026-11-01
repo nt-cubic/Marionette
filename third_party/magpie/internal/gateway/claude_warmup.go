@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/yetone/magpie/internal/claudetui"
 	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/provider"
@@ -42,6 +43,9 @@ func askClaude(ctx context.Context, configDir, model string) error {
 	if err != nil {
 		return err
 	}
+	if claudeTUIOnly() {
+		return askClaudeTUI(ctx, binary, configDir, model)
+	}
 	tmp, err := os.MkdirTemp("", "magpie-claude-")
 	if err != nil {
 		return err
@@ -72,6 +76,90 @@ func askClaude(ctx context.Context, configDir, model string) error {
 		return errors.New("Claude Code: " + clip(msg))
 	}
 	return nil
+}
+
+// askClaudeTUI is askClaude where the user has model requests never be
+// -p (ClaudeTUIOnly): the "hi" is said in Claude Code's interactive mode,
+// through its helper as the bridge runs it, and the run ends at its
+// result.
+func askClaudeTUI(ctx context.Context, binary claudeCLI, configDir, model string) error {
+	if _, why := claudeMachineWhy(binary); why != "" {
+		return claudeOnlyErr(why)
+	}
+	if binary.wsl != nil {
+		if dir := binary.tuiWSLUnread(configDir); dir != "" {
+			return claudeOnlyErr("Windows can't read " + dir + ", where Claude Code in WSL writes its transcripts")
+		}
+	}
+	tmp, err := os.MkdirTemp("", "magpie-claude-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	cmd, err := binary.tuiCommand(ctx, claudeTUIWarmArgs(model)...)
+	if err != nil {
+		return err
+	}
+	cmd.Dir = tmp
+	env, err := binary.proxied(ctx, cleanClaudeEnv(os.Environ()))
+	if err != nil {
+		return err
+	}
+	// the folder is magpie's own: asked whether to trust it, say yes
+	env = append(env, claudetui.TrustEnv+"=1")
+	cmd.Env = binary.tuiEnv(binary.env(binary.asRoot(env), configDir), configDir)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+	b, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": "hi"}}}})
+	go func() { _, _ = stdin.Write(append(b, '\n')) }()
+	// the run ends once it has its result, its input closed
+	out := &resultLines{done: func() { _ = stdin.Close() }}
+	var stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = out, &stderr
+	runErr := runClaudeTree(ctx, cmd, "a Claude Code test on "+model)
+	if out.res != nil {
+		if out.res.IsError {
+			return errors.New("Claude Code: " + clip(out.res.Result))
+		}
+		return nil
+	}
+	if msg := strings.TrimSpace(stderr.String()); msg != "" {
+		return errors.New("Claude Code: " + clip(msg))
+	}
+	if runErr != nil {
+		return runErr
+	}
+	return errors.New("Claude Code ended with no answer")
+}
+
+// resultLines reads the helper's stream-json for its first result, and
+// calls done once it has it.
+type resultLines struct {
+	buf  []byte
+	res  *claudeRun
+	done func()
+}
+
+func (w *resultLines) Write(p []byte) (int, error) {
+	if w.res != nil {
+		return len(p), nil
+	}
+	w.buf = append(w.buf, p...)
+	for w.res == nil {
+		i := bytes.IndexByte(w.buf, '\n')
+		if i < 0 {
+			break
+		}
+		var r claudeRun
+		if json.Unmarshal(w.buf[:i], &r) == nil && r.Type == "result" {
+			w.res = &r
+			w.done()
+		}
+		w.buf = w.buf[i+1:]
+	}
+	return len(p), nil
 }
 
 func init() {
@@ -192,6 +280,13 @@ func claudeUsageArgs() []string {
 func claudeWarmArgs(model string) []string {
 	return []string{"-p", "--output-format", "json", "--model", model,
 		"--tools", "", "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence"}
+}
+
+// claudeTUIWarmArgs are claudeWarmArgs for the interactive mode's
+// helper, which takes the bridge's stream-json.
+func claudeTUIWarmArgs(model string) []string {
+	return []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--model", model,
+		"--tools", "", "--strict-mcp-config", "--setting-sources", ""}
 }
 
 func clip(s string) string {

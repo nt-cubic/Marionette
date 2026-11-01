@@ -250,7 +250,7 @@ func addCells(a, b *chunkPart) *chunkPart {
 func (ps *pairedRows) cellsBefore(pass *cellPass, cut time.Time) *chunkPart {
 	before := *ps
 	before.until = cut
-	var rows chunkRows
+	rows := lentRows() // part keeps unique's handles
 	defer rows.release()
 	var r Row
 	out := &chunkPart{}

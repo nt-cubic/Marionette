@@ -158,7 +158,7 @@ func entryModel(m Member) string {
 // model id, "*" for all of them: what its editor's Compact at shows.
 func CompactsOf(providerID string) map[string]int {
 	out := map[string]int{}
-	for k, n := range settings.Load().ModelCompacts {
+	for k, n := range settings.Shared().ModelCompacts {
 		if model, ok := strings.CutPrefix(k, providerID+"/"); ok && model != "" && n > 0 {
 			out[model] = n
 		}

@@ -6,7 +6,7 @@
 // on X saw a red dot on its node and a red dotted wire from magpie and read
 // them as something wrong ("这个红色颜色，让人以为是状态异常"). Red on this
 // page means a failure (an answer ringed red, a request that failed), so no
-// agent's colour may look like it: every colour hueOf can give sits well
+// agent's colour may look like it: every colour hueOf can give (PALETTE) sits well
 // away from --red, in the light theme and the dark, and the reporter's
 // agent, drawn on the stage in the dark theme, is marked in one of them.
 // Every language and narrow windows; the API is faked.
@@ -51,11 +51,9 @@ async function redsOf() {
 test("no colour an agent can be marked with reads as the failure red", async () => {
   const reds = await redsOf();
   const js = await fs.readFile(path.join(assets, "plugins/routing/client.js"), "utf8");
-  const hues = js.match(/const HUES = \{([\s\S]*?)\};/);
-  const spare = js.match(/const SPARE = \[([^\]]*)\]/);
-  assert(hues && spare, "hueOf's palette not found in routing/client.js");
-  const all = [...hues[1].matchAll(/(\w+):\s*"(#[0-9a-f]{6})"/gi)].map((m) => [m[1], m[2]])
-    .concat([...spare[1].matchAll(/"(#[0-9a-f]{6})"/gi)].map((m) => ["spare", m[1]]));
+  const palette = js.match(/const PALETTE = \[([^\]]*)\]/);
+  assert(palette, "hueOf's palette not found in routing/client.js");
+  const all = [...palette[1].matchAll(/"(#[0-9a-f]{6})"/gi)].map((m, i) => [i, m[1]]);
   assert(all.length > 10, "palette too small: " + JSON.stringify(all));
   const red = all.filter(([, c]) => reads(c, reds));
   assert.deepEqual(red, [], "agent colours that read as --red " + reds.join("/"));

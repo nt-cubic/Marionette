@@ -76,7 +76,7 @@ func droidEntries() []droidEntry { return droidEntriesAt(gateway.URL()) }
 // droidEntriesAt are droidEntries for a droid reaching the gateway at gw.
 func droidEntriesAt(gw string) []droidEntry {
 	var out []droidEntry
-	for _, m := range magpieModels("droid") {
+	for _, m := range sharedModels("droid") {
 		e := droidEntry{Model: m.ID, ID: droidID + m.ID, APIKey: keyAt(gw),
 			Provider: "generic-chat-completion-api", MaxContextLimit: m.Context, MaxOutputTokens: maxTokens(m), NoImageSupport: !m.Images}
 		switch want := droidWants(m.ID); {
@@ -283,7 +283,7 @@ func droidIn(at place) *Agent {
 		home = h
 	}
 	droidEntries := func() []droidEntry { return droidEntriesAt(at.gw()) }
-	dir := filepath.Join(home, ".factory")
+	dir := at.open(filepath.Join(home, ".factory"))
 	path := filepath.Join(dir, "settings.json")
 	legacy := filepath.Join(dir, "config.json")
 	key := "droid:" + path + ":" + droidModel
@@ -320,7 +320,7 @@ func droidIn(at place) *Agent {
 			ms = append(ms, c.raw)
 		}
 		if with {
-			saved := stashLoad()[keyWrote]
+			saved := stashShared()[keyWrote]
 			var last map[string]map[string]json.RawMessage
 			json.Unmarshal([]byte(saved), &last)
 			wrote := map[string]map[string]json.RawMessage{}
@@ -450,7 +450,7 @@ func droidIn(at place) *Agent {
 				if c := cur["model"]; c != "" && !usesMagpie(c) && !seen[c] {
 					own = append([]Option{{Value: c, Icon: modelIcon("", c)}}, own...)
 				}
-				return append(group("Droid", own), viaMagpie("droid", magpieID+"/")...)
+				return withVia(group("Droid", own), "droid", magpieID+"/")
 			},
 		}},
 	}

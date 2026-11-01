@@ -31,7 +31,7 @@ func (s *shim) start(path string, args []string) error {
 	// wide, so a line of Claude Code's screen is a line
 	_ = unix.IoctlSetWinsize(int(tty.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: 50, Col: 200})
 	cmd := proc.Command(path, args...)
-	cmd.Env = childEnv()
+	cmd.Env = childEnv(s.env...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
 	// its own session, the terminal its controlling one: the shim ending
 	// closes the terminal, and Claude Code is hung up on with it

@@ -45,7 +45,7 @@ func codebuddy(home string) *Agent { return codebuddyIn(here(home)) }
 func codebuddyIn(at place) *Agent {
 	dir := at.getenv("CODEBUDDY_CONFIG_DIR")
 	if dir == "" {
-		dir = filepath.Join(at.home, ".codebuddy")
+		dir = at.join(".codebuddy")
 	}
 	path := filepath.Join(dir, "models.json")
 	write := func(on bool) error { return buddyWriteAt(path, "codebuddy", on, at) }
@@ -104,7 +104,7 @@ func codebuddyIn(at place) *Agent {
 				if v := cur["model"]; v != "" && !usesMagpie(v) {
 					out = append(out, Option{Value: v, Icon: modelIcon("", v)})
 				}
-				return append(out, viaMagpie("codebuddy", magpieID+"/")...)
+				return withVia(out, "codebuddy", magpieID+"/")
 			},
 		}},
 	}

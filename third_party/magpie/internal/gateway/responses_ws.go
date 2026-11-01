@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -398,11 +399,35 @@ func (rs *responsesSocket) held(id string) ([]json.RawMessage, bool) {
 	return nil, false
 }
 
-func (rs *responsesSocket) keep(t heldTurn) {
+// keep holds the reply id ends: the conversation before this turn (held
+// already), the turn's own input and the reply's items. The input is
+// copied out of the frame it was read from: a view kept it whole, with
+// Codex's tools and instructions, on every turn a socket held, ~39 MB of
+// a long session's live heap.
+func (rs *responsesSocket) keep(id string, prior, fresh, reply []json.RawMessage) {
+	t := heldTurn{id: id, items: make([]json.RawMessage, 0, len(prior)+len(fresh)+len(reply))}
+	t.items = append(t.items, prior...)
+	t.items = append(t.items, ownItems(fresh)...)
+	t.items = append(t.items, reply...)
 	rs.turns = append(rs.turns, t)
 	if len(rs.turns) > socketKeep {
 		rs.turns = append(rs.turns[:0:0], rs.turns[len(rs.turns)-socketKeep:]...)
 	}
+}
+
+// ownItems are items copied into one buffer of their own.
+func ownItems(items []json.RawMessage) []json.RawMessage {
+	n := 0
+	for _, it := range items {
+		n += len(it)
+	}
+	buf := make([]byte, 0, n)
+	out := make([]json.RawMessage, len(items))
+	for i, it := range items {
+		buf = append(buf, it...)
+		out[i] = buf[len(buf)-len(it) : len(buf) : len(buf)]
+	}
+	return out
 }
 
 // turn serves one response.create.
@@ -420,6 +445,7 @@ func (rs *responsesSocket) turn(ctx context.Context, t *socketTurnRun, frame []b
 		return
 	}
 	input := fresh
+	var held []json.RawMessage
 	if raw := q["previous_response_id"]; len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
 		var id string
 		json.Unmarshal(raw, &id)
@@ -430,7 +456,7 @@ func (rs *responsesSocket) turn(ctx context.Context, t *socketTurnRun, frame []b
 				"Previous response with id '"+id+"' not found.", "previous_response_id")
 			return
 		}
-		input = append(prior[:len(prior):len(prior)], fresh...)
+		held, input = prior, append(prior[:len(prior):len(prior)], fresh...)
 		rs.continued++
 	}
 	// a warmup (generate false) asks for no reply: Codex sends it with
@@ -453,7 +479,7 @@ func (rs *responsesSocket) turn(ctx context.Context, t *socketTurnRun, frame []b
 		resp["usage"] = map[string]any{"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 		b, _ = json.Marshal(map[string]any{"type": "response.completed", "response": resp})
 		if rs.write(ctx, b) == nil {
-			rs.keep(heldTurn{id: id, items: input})
+			rs.keep(id, held, fresh, nil)
 		}
 		return
 	}
@@ -461,13 +487,7 @@ func (rs *responsesSocket) turn(ctx context.Context, t *socketTurnRun, frame []b
 	delete(q, "type")
 	delete(q, "previous_response_id")
 	delete(q, "generate")
-	in, err := json.Marshal(input)
-	if err != nil {
-		rs.writeError(ctx, http.StatusBadRequest, "invalid_request_error", "invalid_value", err.Error(), "input")
-		return
-	}
-	q["input"] = in
-	body, err := json.Marshal(q)
+	body, err := turnBody(q, input)
 	if err != nil {
 		rs.writeError(ctx, http.StatusBadRequest, "invalid_request_error", "invalid_json", err.Error(), "")
 		return
@@ -485,8 +505,80 @@ func (rs *responsesSocket) turn(ctx context.Context, t *socketTurnRun, frame []b
 		return
 	}
 	if out.id != "" && out.completed {
-		rs.keep(heldTurn{id: out.id, items: append(input[:len(input):len(input)], out.items...)})
+		rs.keep(out.id, held, fresh, out.items)
 	}
+}
+
+// turnBody is json.Marshal(q) with input, as json.Marshal writes it, for
+// q's input, written once into a slice of about its size. A turn wrote
+// its conversation with json.Marshal twice, the list and then q around
+// it, through encoding/json's scanner a byte at a time and a buffer that
+// doubles and is copied out: about five copies of a long conversation on
+// every turn, the garbage that sets the peak (marshalRaw has the rest).
+func turnBody(q map[string]json.RawMessage, input []json.RawMessage) ([]byte, error) {
+	q["input"] = nil
+	n := 2
+	keys := make([]string, 0, len(q))
+	for k, raw := range q {
+		n += len(k) + escapedSize(raw) + 4
+		keys = append(keys, k)
+	}
+	for _, raw := range input {
+		n += escapedSize(raw) + 1
+	}
+	slices.Sort(keys)
+	dst := make([]byte, 0, n)
+	dst = append(dst, '{')
+	ok := true
+	for i, k := range keys {
+		if i > 0 {
+			dst = append(dst, ',')
+		}
+		if dst, ok = appendJSONKey(dst, k, true); !ok {
+			break
+		}
+		dst = append(dst, ':')
+		if k != "input" {
+			if dst, ok = appendRawJSON(dst, q[k], true); !ok {
+				break
+			}
+			continue
+		}
+		if input == nil {
+			dst = append(dst, "null"...)
+			continue
+		}
+		dst = append(dst, '[')
+		for j, raw := range input {
+			if j > 0 {
+				dst = append(dst, ',')
+			}
+			if dst, ok = appendRawJSON(dst, raw, true); !ok {
+				break
+			}
+		}
+		if !ok {
+			break
+		}
+		dst = append(dst, ']')
+	}
+	if ok {
+		return append(dst, '}'), nil
+	}
+	// a value encoding/json refuses: it says why
+	in, err := json.Marshal(input)
+	if err != nil {
+		return nil, err
+	}
+	q["input"] = in
+	return json.Marshal(q)
+}
+
+// escapedSize is about what appendRawJSON writes of raw: its length, and
+// the five bytes each <, > and & grows by as \u003c and the like. Code
+// is full of them, and a slice that grows doubles.
+func escapedSize(raw []byte) int {
+	return len(raw) + 5*(bytes.Count(raw, []byte("<"))+bytes.Count(raw, []byte(">"))+bytes.Count(raw, []byte("&")))
 }
 
 // request is the POST a turn stands for: the upgrade's own request, its

@@ -411,6 +411,9 @@ input.lib-setname:focus { border-color: var(--accent); box-shadow: 0 0 0 3px col
 .lib-pick .who { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .lib-pick .name { font-size: 13px; font-weight: 500; }
 .lib-pick .sub { font-size: 11.5px; color: var(--muted); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+/* "adds as skill-creator-openai": a name can be 64 letters long, so the
+   tag gives way to the skill's own name and is cut short, its title whole */
+.lib-pick > .lib-tag { flex: 0 1 auto; min-width: 0; max-width: 45%; display: block; line-height: 20px; overflow: hidden; text-overflow: ellipsis; }
 .lib-probefoot { display: flex; align-items: center; gap: 8px; padding: 8px 4px 0; border-top: 1px solid var(--line-2); flex-wrap: wrap; }
 .lib-probefoot .note { font-size: 12px; color: var(--muted); }
 
@@ -536,6 +539,8 @@ input.lib-setname:focus { border-color: var(--accent); box-shadow: 0 0 0 3px col
 .mk-badge { flex: none; display: inline-flex; align-items: center; gap: 3px; height: 17px; padding: 0 6px; border-radius: 5px; background: var(--pill); color: var(--fg-2); font-size: 10.5px; font-family: var(--code-font, var(--code)); }
 :where(html[data-fonts]) .mk-badge { font-style: var(--code-style, inherit); font-weight: var(--code-weight, inherit); font-stretch: var(--code-stretch, 100%); }
 .mk-badge.mk-needs { width: 17px; padding: 0; justify-content: center; }
+/* one of magpie's own whose model or search isn't set up (matrix0487): the badge gives way before the row runs wide */
+.mk-badge.mk-unready { flex: 0 1 auto; min-width: 0; display: block; line-height: 17px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .mk-official { flex: none; display: inline-grid; place-items: center; width: 13px; height: 13px; border-radius: 50%; background: var(--fg); color: var(--card); }
 .mk-desc { margin: 0; min-height: 2.9em; font-size: 12px; line-height: 1.45; color: var(--fg-2); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .mk-desc.wait { background: linear-gradient(90deg, var(--pill) 25%, var(--pill-hover) 45%, var(--pill) 65%); background-size: 240% 100%; animation: skeleton-shift 1.4s ease-in-out infinite; border-radius: 5px; min-height: 0; height: 8px; margin: 6px 20% 10px 0; }
@@ -755,3 +760,8 @@ input.lib-setname:focus { border-color: var(--accent); box-shadow: 0 0 0 3px col
 .lib-ag.always::before { background: var(--card); box-shadow: 0 0 0 1px var(--line); }
 .lib-ag.always::after { background: var(--fg-2); -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M5 7V5.5a3 3 0 0 1 6 0V7h.3a1 1 0 0 1 1 1v4.7a1 1 0 0 1-1 1H4.7a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1zm1.6 0h2.8V5.5a1.4 1.4 0 0 0-2.8 0z'/%3E%3C/svg%3E") center / 7px no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M5 7V5.5a3 3 0 0 1 6 0V7h.3a1 1 0 0 1 1 1v4.7a1 1 0 0 1-1 1H4.7a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1zm1.6 0h2.8V5.5a1.4 1.4 0 0 0-2.8 0z'/%3E%3C/svg%3E") center / 7px no-repeat; }
 .lib-foldall[hidden] { display: none; }
+.mk-sheet .mk-browser { grid-column: 1 / -1; display: grid; gap: 8px; justify-items: start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
+.mk-sheet .mk-browser-state { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.mk-sheet .mk-browser-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.mk-sheet .mk-browser-dot.on { background: var(--green); }
+.mk-sheet .mk-browser-steps { margin: 0; padding-left: 18px; font-size: 12px; color: var(--muted); display: grid; gap: 2px; }

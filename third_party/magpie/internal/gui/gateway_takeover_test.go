@@ -1,6 +1,7 @@
 package gui
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,14 +19,36 @@ import (
 
 // fakeOlderGateway is the test binary run as another process holding the
 // gateway's port and answering as magpie 0.1.550 would, until it is ended.
+// MAGPIE_TEST_FAKE_VERSION and MAGPIE_TEST_FAKE_SERVES make it another
+// version, started another way: then it also says its pid, streams
+// /stream as an agent's reply (20 lines, 100ms apart) and tells
+// /v1/magpie/concurrency how many of those are in flight, as a magpie
+// since 3b6ca0557 does.
 func fakeOlderGateway(addr string) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		os.Exit(3)
 	}
+	version, serves := os.Getenv("MAGPIE_TEST_FAKE_VERSION"), os.Getenv("MAGPIE_TEST_FAKE_SERVES")
+	var streams atomic.Int32
 	http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"name":"magpie","version":"0.1.550","models":3}`)
+		switch {
+		case version == "":
+			io.WriteString(w, `{"name":"magpie","version":"0.1.550","models":3}`)
+		case r.URL.Path == "/stream":
+			streams.Add(1)
+			defer streams.Add(-1)
+			for i := range 20 {
+				fmt.Fprintf(w, "line %d\n", i)
+				w.(http.Flusher).Flush()
+				time.Sleep(100 * time.Millisecond)
+			}
+		case r.URL.Path == "/v1/magpie/concurrency":
+			fmt.Fprintf(w, `{"object":"concurrency","data":{},"requests":%d,"waiting":0,"tools":0,"active":[]}`, streams.Load())
+		default:
+			fmt.Fprintf(w, `{"name":"magpie","version":%q,"models":3,"pid":%d,"serves":%q}`, version, os.Getpid(), serves)
+		}
 	}))
 }
 

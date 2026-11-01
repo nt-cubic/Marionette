@@ -37,7 +37,7 @@ func sideLogins(agent, ownUser string, usable func(savedLogin) bool) []sideLogin
 	// logins.json.lock all the same (#1665: every page's read lists a
 	// dozen agents' accounts, each a lock). logins.json is only ever
 	// replaced whole (writePrivate), so the read is one write's file.
-	ls := readLogins()
+	ls := sharedLogins() // only looked at: a change reads its own copy
 	if _, change := keepSideLogins(ls, agent, ownUser, true); change {
 		loginsMu.Lock()
 		ls, _ = keepSideLogins(readLogins(), agent, ownUser, false)

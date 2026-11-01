@@ -69,6 +69,8 @@ func reverseProxyIsStillMagpie(t *testing.T, proxy string) {
 	os.WriteFile(filepath.Join(home, ".hanako", "agents", "hana", "config.yaml"), []byte("agent:\n  name: Hana\n"), 0o644)
 	t.Setenv("ASTRBOT_ROOT", "")
 	writeFile(t, filepath.Join(home, ".astrbot", "data", "cmd_config.json"), astrbotConfig)
+	// QwenPaw, once it has written its agents' settings
+	qwenpawFixture(t, home)
 	setPort(t, 3591)
 	var agents []*Agent
 	for _, a := range All() {

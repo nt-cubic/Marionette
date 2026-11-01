@@ -64,7 +64,7 @@ func TestCodexResetsCounted(t *testing.T) {
 		{"never expire", 2, map[string]any{"available_count": 2, "credits": []any{
 			map[string]any{"id": "a", "reset_type": "codex_rate_limits", "status": "available", "granted_at": "2026-09-01T00:00:00Z", "expires_at": nil},
 			map[string]any{"id": "b", "reset_type": "codex_rate_limits", "status": "available", "granted_at": "2026-09-02T00:00:00Z"},
-		}}, &ResetCredits{Count: 2, Each: []ResetCard{{}, {}}}, 1},
+		}}, &ResetCredits{Count: 2, Each: []ResetCard{{ID: "a"}, {ID: "b"}}}, 1},
 		{"soonest of those left", 2, map[string]any{"available_count": 2, "credits": []any{
 			map[string]any{"id": "a", "status": "available", "granted_at": "2026-09-01T00:00:00Z", "expires_at": later},
 			map[string]any{"id": "b", "status": "redeemed", "granted_at": "2026-09-01T00:00:00Z", "expires_at": "2026-09-20T00:00:00Z"},
@@ -78,7 +78,7 @@ func TestCodexResetsCounted(t *testing.T) {
 			map[string]any{"id": "b", "status": "redeemed", "granted_at": "2026-09-01T00:00:00Z", "expires_at": "2026-09-20T00:00:00Z"},
 			map[string]any{"id": "d", "status": "available", "granted_at": "2026-09-02T00:00:00Z", "expires_at": nil},
 			map[string]any{"id": "c", "status": "available", "granted_at": "2026-09-02T00:00:00Z", "expires_at": soon},
-		}}, &ResetCredits{Count: 3, Until: ptrTime(soon), Each: []ResetCard{{Until: ptrTime(soon)}, {Until: ptrTime(later)}, {}}}, 1},
+		}}, &ResetCredits{Count: 3, Until: ptrTime(soon), Each: []ResetCard{{Until: ptrTime(soon), ID: "c"}, {Until: ptrTime(later), ID: "a"}, {ID: "d"}}}, 1},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			asked := fakeCodexResets(t, c.count, c.details)
@@ -109,7 +109,7 @@ func sameResets(a, b *ResetCredits) bool {
 		return false
 	}
 	for i := range a.Each {
-		if a.Each[i].Window != b.Each[i].Window || !sameTime(a.Each[i].Until, b.Each[i].Until) {
+		if a.Each[i].Window != b.Each[i].Window || a.Each[i].ID != b.Each[i].ID || !sameTime(a.Each[i].Until, b.Each[i].Until) {
 			return false
 		}
 	}
@@ -254,5 +254,50 @@ func TestUseCodexReset(t *testing.T) {
 	listed = false
 	if _, err := UseCodexReset(context.Background(), "me@example.com"); err == nil || consumed.Load() != 2 {
 		t.Fatalf("spent blind: %v", err)
+	}
+}
+
+// UseCodexResetCard spends the reset the user chose, not the one that
+// runs out first (01huadalang on Discord), and only while the account still
+// holds it: one used meanwhile, or never the account's, spends none, nor
+// any other in its place. No credit named is the one that runs out first.
+func TestUseCodexResetCard(t *testing.T) {
+	signIn(t)
+	var spent []string
+	credits := map[string]any{"available_count": 3, "credits": []any{
+		map[string]any{"id": "never", "status": "available", "expires_at": nil},
+		map[string]any{"id": "late", "status": "available", "expires_at": "2026-12-01T00:00:00Z"},
+		map[string]any{"id": "used", "status": "redeemed", "expires_at": "2026-10-01T00:00:00Z"},
+		map[string]any{"id": "soon", "status": "available", "expires_at": "2026-10-05T00:00:00Z"},
+	}}
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/backend-api/wham/rate-limit-reset-credits":
+			json.NewEncoder(w).Encode(credits)
+		case "/backend-api/wham/rate-limit-reset-credits/consume":
+			var body map[string]string
+			json.NewDecoder(r.Body).Decode(&body)
+			spent = append(spent, body["credit_id"])
+			json.NewEncoder(w).Encode(map[string]any{"code": "reset", "windows_reset": 2})
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer fake.Close()
+	old := CodexBase
+	CodexBase = fake.URL + "/backend-api/codex"
+	t.Cleanup(func() { CodexBase = old })
+
+	for _, c := range []struct{ credit, want string }{{"late", "late"}, {"never", "never"}, {"", "soon"}} {
+		out, err := UseCodexResetCard(context.Background(), "me@example.com", c.credit)
+		if err != nil || out.Code != "reset" || len(spent) == 0 || spent[len(spent)-1] != c.want {
+			t.Fatalf("asked for %q: spent %v, %+v %v", c.credit, spent, out, err)
+		}
+	}
+	n := len(spent)
+	for _, credit := range []string{"used", "someone-elses"} {
+		if _, err := UseCodexResetCard(context.Background(), "me@example.com", credit); err == nil || len(spent) != n {
+			t.Fatalf("%q isn't held, yet spent %v: %v", credit, spent[n:], err)
+		}
 	}
 }

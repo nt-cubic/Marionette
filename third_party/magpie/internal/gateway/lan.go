@@ -381,6 +381,13 @@ func lanGuard(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// a CI job's OIDC token traded for a key carries the token, not a
+		// key: the handler verifies it, and counts one it refuses against
+		// tooManyAuthFails (oidc_keys.go)
+		if remote && oidcExchange(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if remote || managedKey(r) {
 			var ok bool
 			r, ok = identifyCaller(w, r)

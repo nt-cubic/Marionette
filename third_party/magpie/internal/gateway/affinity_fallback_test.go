@@ -105,10 +105,13 @@ func TestFallbackGivesTheConversationBackOnceTheMainIsReady(t *testing.T) {
 	}
 }
 
-// A routing group keeps its own affinity: of two members, the one that
-// answered while the other was down keeps the conversation, cached, once
-// the other is back. Only a provider's fallback gives it back.
-func TestGroupMemberKeepsTheConversationOnceAnotherIsBack(t *testing.T) {
+// A member of a Smart group that answered while the one listed ahead of
+// it was down stood in for it: once that one is back, the next turn goes
+// to it, whatever the stand-in cached, as a provider's fallback gives it
+// back (01huadalang on Discord, a Codex session kept on the group's MiMo
+// backup by its cache). Before, the stand-in kept it for good. One put
+// first on its merits keeps it (TestGroupMemberPutFirstOnItsMeritsKeepsItsCache).
+func TestGroupMemberGivesTheConversationBackOnceTheOneAheadIsBack(t *testing.T) {
 	fresh(t)
 	const (
 		first = `{"model":"group/g","messages":[{"role":"user","content":"hi"}]}`
@@ -143,10 +146,10 @@ func TestGroupMemberKeepsTheConversationOnceAnotherIsBack(t *testing.T) {
 	}
 	restingUntil.Unlock()
 	code, body := postAs(t, s, "s1", again)
-	if code != 200 || !strings.Contains(body, "from b-key") {
-		t.Fatalf("next turn %d %s, want b kept", code, body)
+	if code != 200 || !strings.Contains(body, "from a-key") {
+		t.Fatalf("next turn %d %s, want a's answer", code, body)
 	}
-	if aff := s.trace.routes[len(s.trace.routes)-1].Affinity; aff == nil || aff.Why != "cache" {
-		t.Fatalf("affinity %+v, want cache", aff)
+	if aff := s.trace.routes[len(s.trace.routes)-1].Affinity; aff == nil || aff.Why != "back" {
+		t.Fatalf("affinity %+v, want back", aff)
 	}
 }

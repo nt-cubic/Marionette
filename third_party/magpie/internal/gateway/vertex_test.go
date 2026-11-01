@@ -703,7 +703,7 @@ func TestVertexGeminiClients(t *testing.T) {
 	const safety = `[{"category":"HARM_CATEGORY_HARASSMENT","threshold":"BLOCK_NONE"}]`
 	out = vertexAsk(t, s, "/v1beta/models/google-vertex/gemini-2.5-flash:generateContent",
 		`{"contents":[{"role":"user","parts":[{"text":"List three primary colours."}]}],"safetySettings":`+safety+`,"generationConfig":`+gen+`}`)
-	if out != vertexColours {
+	if out != namedAs(vertexColours, "google-vertex/gemini-2.5-flash") {
 		t.Errorf("answered whole %s", out)
 	}
 	a = v.last(t)

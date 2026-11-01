@@ -22,7 +22,9 @@ import (
 // subscription, two accounts, no gateway in between. Switch-only is kept on
 // Codex's subscription; with it on, the account Codex is signed in to
 // running out still signs Codex in to the next one with room, in its own
-// auth.json, and back once the first has room again. A providers.json
+// auth.json, and stays there till that one is spent too: the sign-in is
+// what spends the accounts, so going back at the first's reset would
+// leave the next part used (returnsToFirst). A providers.json
 // that can't be read
 // says switch-only: the user's choice is unknown, and failover through the
 // gateway, magpie's own idea, isn't taken up on it.
@@ -80,10 +82,15 @@ func TestCodexSwitchOnlyStillSwitchesTheSignIn(t *testing.T) {
 	if to := switched(); to != "spare@example.com" || signedIn() != "r-spare" {
 		t.Fatalf("switched to %q, Codex signed in with %q", to, signedIn())
 	}
-	// the first has room again: back to it
+	// the first has room again: Codex stays on the spare
 	used["acct-me@example.com"] = 10
+	if to := switched(); to != "" || signedIn() != "r-spare" {
+		t.Fatalf("moved off the spare to %q, Codex signed in with %q", to, signedIn())
+	}
+	// the spare spent in turn: on to the first
+	used["acct-spare@example.com"] = 99
 	if to := switched(); !strings.HasPrefix(to, "me@example.com") || signedIn() != "r-1" {
-		t.Fatalf("back to %q, Codex signed in with %q", to, signedIn())
+		t.Fatalf("on to %q, Codex signed in with %q", to, signedIn())
 	}
 	if !SwitchOnly("codex") {
 		t.Fatal("switch-only lost on a switch")

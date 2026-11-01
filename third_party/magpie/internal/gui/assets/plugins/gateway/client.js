@@ -135,6 +135,75 @@ function gatewayFixSays(o) {
   return t("The gateway couldn't be served here: {error}", p);
 }
 
+// gatewaySkewLine: a magpie of another version serves the gateway in this
+// one's place (gui/gateway_older.go). matrix0487 on Discord: the app wrote pi
+// a model its older gateway didn't know, pi said 404 "add a provider in
+// magpie first", and only the Gateway page told of the older magpie. Said
+// over the Agents list, in the panel and the window, until it is gone: an
+// older copy of the app is taken over by itself once idle; any other is
+// the user's to update or quit, here with the Gateway page's own button.
+let gwSkewFix = { busy: false, err: "", pid: 0 };
+function gatewaySkewLine(list) {
+  let box = $("#gwSkew");
+  const o = state.gatewayOther;
+  if (!o || !o.version) {
+    if (box) box.hidden = true;
+    return;
+  }
+  if (!box) {
+    box = el("div", "gw-skew");
+    box.id = "gwSkew";
+    ($("#agentsLead") || list).before(box);
+  }
+  box.hidden = false;
+  if (gwSkewFix.pid !== (o.pid || 0)) gwSkewFix = { busy: false, err: "", pid: o.pid || 0 };
+  const p = { v: o.version, mine: o.mine, n: o.busy || 0 };
+  let head, why, quit = false;
+  if (o.replacing) {
+    head = t("magpie {v}, an older copy of this app, still serves the gateway", p);
+    why = o.busy > 0
+      ? t(o.busy === 1 ? "This magpie ({mine}) takes it over once its {n} request in flight finishes; until then agents' requests go through magpie {v}." : "This magpie ({mine}) takes it over once its {n} requests in flight finish; until then agents' requests go through magpie {v}.", p)
+      : o.busy < 0
+        ? t("This magpie ({mine}) takes it over once it has no request in flight; until then agents' requests go through magpie {v}.", p)
+        : t("This magpie ({mine}) takes it over in a moment.", p);
+  } else if (o.older) {
+    head = t("The gateway is served by magpie {v}, older than this app ({mine})", p);
+    why = o.serves === "serve"
+      ? t("It runs as magpie serve, in a terminal or as the service. Agents' requests go through it without this version's fixes, and models set up here may not reach them. Update that magpie and start it again (magpie daemon restart, for the service), or quit it here and this app serves the gateway.", p)
+      : t("Agents' requests go through it without this version's fixes, and models set up here may not reach them. Quit it here and this app serves the gateway at once.", p);
+    quit = true;
+  } else if (o.newer) {
+    head = t("The gateway is served by magpie {v}, newer than this app ({mine})", p);
+    why = t("Agents' requests go through it, and what this app writes for them may not match it. Update this magpie, or quit the newer one there.", p);
+  } else {
+    head = t("The gateway is served by magpie {v}, a different build from this app ({mine})", p);
+    why = t("Agents' requests go through it, and what this app writes for them may not match it. Quit it there for this app to serve the gateway.", p);
+  }
+  const card = el("div", "deprecation");
+  card.setAttribute("role", "note");
+  const body = el("div", "dep-body");
+  body.append(el("div", "dep-head", head), el("p", "dep-why", why));
+  if (gwSkewFix.err) body.append(el("p", "dep-why gw-skew-err", gwSkewFix.err));
+  card.append(el("span", "dep-dot"), body);
+  if (quit) {
+    const acts = el("div", "dep-acts");
+    const b = el("button", "text action", gwSkewFix.busy ? t("Quitting magpie {v}…", p) : t("Quit magpie {v} and take over", p));
+    b.disabled = b.classList.toggle("busy", gwSkewFix.busy);
+    b.onclick = async () => {
+      gwSkewFix = { busy: true, err: "", pid: o.pid || 0 };
+      gatewaySkewLine(list);
+      let out;
+      try { out = await api("gateway/take-over", {}); } catch (e) { out = { reason: "error", error: e.message }; }
+      gwSkewFix = { busy: false, err: out?.ok ? "" : gatewayFixSays(out || {}), pid: o.pid || 0 };
+      try { state = await api("state"); } catch {}
+      renderAgents();
+    };
+    acts.append(b);
+    card.append(acts);
+  }
+  box.replaceChildren(card);
+}
+
 // The status card: the gateway's mark, its state and what it does, and the
 // button that fixes what stands in its way.
 const GW_GLYPH = '<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="14" height="5" rx="1.5"/><rect x="3" y="11" width="14" height="5" rx="1.5"/></g><circle class="led" cx="6.2" cy="6.5" r="1.1"/><circle class="led" cx="6.2" cy="13.5" r="1.1"/></svg>';

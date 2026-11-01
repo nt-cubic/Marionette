@@ -224,6 +224,75 @@ func TestMaskJSONKeepsClaudeBlocks(t *testing.T) {
 	}
 }
 
+// In a tool call's arguments a field named for a secret holds one,
+// whatever its value looks like (#2946): the rules judge a value by its
+// shape, so {"api_key": "…"} with a value no rule knows went out as it
+// was, and access_key_id's _id kept even an AKIA from the value's own
+// rule. A name that only ends in key is no secret: a sort key, a cache
+// key, a public key stay, and so does a data: value.
+func TestMaskJSONNamedSecrets(t *testing.T) {
+	o := Options{Secrets: true}
+	for _, c := range []struct {
+		key, value string
+		gone       bool
+	}{
+		{"api_key", "Qm27wVb9nLx4tRk8Ps3d", true},
+		{"client_secret", "randomvalue42x", true},
+		{"db_pass", "Hr7jTm2qwXz94", true},
+		{"access_key_id", "AKIAIOSFODNN7EXAMPLE", true},
+		{"Authorization", "Bearer zq83Mw2vNx7kRt5", true},
+		{"Cookie", "sid=Yn41Pc8wLd2mQs6", true},
+		{"apiKey", "plainrandomvalue1", true},
+		{"sort_key", "created_at_2024", false},
+		{"cache_key", "lru_items_01", false},
+		{"prompt_cache_key", "conv_12345678", false},
+		{"public_key", "04a1b2c3d4e5f6a7", false},
+		{"password", "${DB_PASSWORD}", false},
+		{"password", "short", false},
+	} {
+		for wire, body := range map[string]string{
+			"anthropic tool_use":      `{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"deploy","input":{"` + c.key + `":"` + c.value + `"}}]}]}`,
+			"gemini functionCall":     `{"contents":[{"role":"model","parts":[{"functionCall":{"name":"deploy","args":{"cfg":{"` + c.key + `":"` + c.value + `"}}}}]}]}`,
+			"gemini functionResponse": `{"contents":[{"role":"user","parts":[{"functionResponse":{"name":"env","response":{"` + c.key + `":"` + c.value + `"}}}]}]}`,
+		} {
+			out, n := MaskJSON([]byte(body), o)
+			if !c.gone {
+				if n != 0 || string(out) != body {
+					t.Errorf("%s %s: %d masked: %s", wire, c.key, n, out)
+					continue
+				}
+			} else if strings.Contains(string(out), c.value) || !strings.Contains(string(out), "{{SECRET_") {
+				t.Errorf("%s %s: not masked as a secret: %s", wire, c.key, out)
+				continue
+			}
+			if back := RestoreJSON(out); string(back) != body {
+				t.Errorf("%s %s: restored %s", wire, c.key, back)
+			}
+		}
+	}
+}
+
+// A key the vendor's protocol names is the vendor's to read, whatever it
+// is called: masked by its name, Anthropic's MCP connector would get a
+// placeholder for its server's token, and a top-level field the vendor
+// reads would break the same way. Only a value's shape masks there. And
+// with secret masking off, no name masks anything (#2946).
+func TestMaskJSONSecretNamesOnlyInToolArgs(t *testing.T) {
+	for _, body := range []string{
+		`{"mcp_servers":[{"type":"url","url":"https://mcp.example.com/sse","name":"ex","authorization_token":"opaquevalue42abc"}],"messages":[{"role":"user","content":"hi"}]}`,
+		`{"api_key":"opaquevalue42abc","messages":[{"role":"user","content":"hi"}]}`,
+		`{"metadata":{"session_token":"opaquevalue42abc"}}`,
+	} {
+		if out, n := MaskJSON([]byte(body), Options{Secrets: true}); n != 0 || string(out) != body {
+			t.Errorf("a protocol key was masked by its name: %d %s", n, out)
+		}
+	}
+	body := `{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"deploy","input":{"api_key":"opaquevalue42abc"}}]}]}`
+	if out, n := MaskJSON([]byte(body), Options{Personal: true}); n != 0 || string(out) != body {
+		t.Errorf("secret masking off, a name masked: %d %s", n, out)
+	}
+}
+
 // An id goes as the vendor gave it, on both sides of what it matches.
 func TestMaskJSONKeepsIDs(t *testing.T) {
 	o := Options{Secrets: true, Personal: true}

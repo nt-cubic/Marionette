@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"path/filepath"
 	"time"
 
 	"github.com/yetone/magpie/internal/proc"
@@ -14,7 +13,7 @@ func aside(home string) *Agent { return asideIn(here(home)) }
 
 func asideIn(at place) *Agent {
 	c := newAsideConnection(at)
-	a := &Agent{ID: "aside", Name: "Aside", Icon: "aside", Bin: "aside", Path: c.path, Spelled: prefixed, Dir: filepath.Join(at.home, ".aside"), Sync: c.sync}
+	a := &Agent{ID: "aside", Name: "Aside", Icon: "aside", Bin: "aside", Path: c.path, Spelled: prefixed, Dir: at.join(".aside"), Sync: c.sync}
 	a.Native = &NativeConnection{Read: c.state, Connect: c.connect, Apply: c.apply, Stage: c.stage, Disconnect: c.plan, Execute: c.execute, ExecuteOffline: c.executeOffline}
 	a.Check = func() string {
 		status, detail := c.provider()
@@ -55,7 +54,7 @@ func asideIn(at place) *Agent {
 				}
 				return opts
 			}
-			return append(asideOwnOptions(c.models, cur[key]), viaMagpie("aside", "magpie/")...)
+			return withVia(asideOwnOptions(c.models, cur[key]), "aside", "magpie/")
 		}
 		a.Fields = append(a.Fields, f)
 	}

@@ -180,6 +180,13 @@ function renderSearch(s, keep) {
   const mcp = row(t("MCP server"), t("Cursor, Claude Desktop and other agents can add this search as an MCP server (Streamable HTTP), with a web_search tool and a web_fetch tool that reads a page by its URL. From another computer, send a gateway key as Authorization: Bearer <key>."),
     el("code", "", mcpURL), copyBtn(mcpURL, t("Address")));
   mcp.id = "searchMcpRow";
+  // The Library gives this search to the agents picked for it, as Magpie
+  // Web Search, and lists it under its MCP servers: an address alone had
+  // the reader look for it there and not find it (lutra_fs on Discord).
+  // As Images' Magpie Image (#2091), the row says how to get there from
+  // where the reader is: gateway mode has no Library, and the Library can
+  // be turned off
+  mcp.querySelector(".who").append(...libWay("magpie-web-search", t("Give agents Magpie Web Search…"), "search-mcp-lib"));
 }
 
 // searchArrange: the search APIs are asked in the order they are listed,
@@ -322,7 +329,7 @@ function renderSearcher(s, keep, box) {
   const icOf = (id) => choices.find((x) => x.id === id.split("/")[0])?.icon;
   const r = el("div", "row pref searcher-row");
   const who = el("div", "who");
-  const sub = el("div", "sub", off ? (s.searchAll ? t("When provider search is off, only configured Search APIs are used, for every model. Without a Search API, magpie does not add a search tool.") : t("When provider search is off, only configured Search APIs are used. Without a Search API, magpie does not add a search tool. Providers' native web search is unchanged.")) : t("When a model can't search the web directly, the selected provider searches for it and returns the results. Searches may use the service's quota or incur charges; if the provider magpie picks fails, it tries other available sources, but a provider you select here is never replaced by another provider, only by your Search APIs."));
+  const sub = el("div", "sub", off ? (s.searchAll ? t("When provider search is off, only configured Search APIs are used, for every model. Without a Search API, magpie does not add a search tool.") : t("When provider search is off, only configured Search APIs are used. Without a Search API, magpie does not add a search tool. Providers' native web search is unchanged.")) : t("When a model can't search the web directly, the selected provider searches for it and returns the results. Searches may use the service's quota or incur charges; if the provider magpie picks fails, it tries other available sources, but a provider you select here is replaced only by the ones you add after it, in their order, then by your Search APIs."));
   if (!off && v && s.searchUnused) {
     const why = { gone: t("it is no longer in magpie"), off: t("it is turned off"), cant: t("it can't search the web by itself"), nomodel: t("it lists no model") }[s.searchUnused] || s.searchUnused;
     sub.append(" · ", el("span", "warn searcher-unused", t("{who} isn't used: {why}, so magpie picks one", { who: named(v), why })));
@@ -334,7 +341,10 @@ function renderSearcher(s, keep, box) {
   const failed = s.searchFailed;
   if (!off && v && !s.searchUnused && failed) {
     const why = failed.notSearched ? t("it answered without searching the web, so its account or plan may not offer web search") : failed.nothingFound ? t("its reply named no page it found") : failed.why || t("it failed");
-    sub.prepend(el("span", "warn searcher-failed", t("{who} didn't search {when}: {why}. No other provider searched in its place; pick Automatic or another provider, or add a Search API.", { who: named(v), when: ago(failed.at), why })), " · ");
+    const said = failed.instead ? t("{who} didn't search {when}: {why}. {next} searched in its place.", { who: named(failed.searcher), when: ago(failed.at), why, next: named(failed.instead) })
+      : (s.searcherThen || []).length ? t("{who} didn't search {when}: {why}. The ones after it didn't search either; add another provider after it, or a Search API.", { who: named(v), when: ago(failed.at), why })
+      : t("{who} didn't search {when}: {why}. No other provider searched in its place; pick Automatic or another provider, or add a Search API.", { who: named(v), when: ago(failed.at), why });
+    sub.prepend(el("span", "warn searcher-failed", said), " · ");
   }
   const plans = choices.filter((c) => c.service).map((c) => c.name);
   if (!off && plans.length) sub.append(" · ", el("span", "searcher-own",
@@ -380,6 +390,43 @@ function renderSearcher(s, keep, box) {
   val.append(b);
   if (!off) sideEffortChip(val, s.searchEfforts, s.searcherEffort || "", s.searchEffortNow, "searcher-effort",
     "none sent, the model's own", (e) => savePrefs({ ...keep, searcherEffort: e }));
+  r.append(who, val);
+  box.append(r);
+  if (!off && v && !s.searchUnused) renderSearcherThen(s, keep, box, options, named, icOf);
+}
+
+// renderSearcherThen: the providers asked, in their order, when the one
+// named above fails to search, and no other (axelburks on Discord: "代搜
+// 供应商能不能支持设置多个，这样可以一个失败了换另一个供应商"). Each
+// is a chip that changes or removes it, and Add puts one at the end.
+function renderSearcherThen(s, keep, box, options, named, icOf) {
+  const v = s.searcher || "";
+  const then = s.searcherThen || [];
+  const save = (list) => savePrefs({ ...keep, searcherThen: list });
+  // what can still be added: not the one above, nor one listed already
+  const free = (keepOne) => options.filter((o) => !o.reset && o.value !== v && (o.value === keepOne || !then.includes(o.value)));
+  const r = el("div", "row pref searcher-then");
+  const who = el("div", "who");
+  who.append(el("div", "name", t("If it fails")),
+    el("div", "sub", t("These providers search in its place, in this order, when the one above fails; no other provider does.")));
+  const val = el("div", "val searcher-then-list");
+  then.forEach((x, n) => {
+    const b = el("button", "rt-cond on searcher-then-pick");
+    b.type = "button";
+    b.append(el("span", "searcher-then-n", `${n + 1}.`), icon(icOf(x) || "generic"), el("span", "", named(x)));
+    b.onclick = (ev) => openPicker({ id: "", name: "", fields: [] }, { key: "searcherThen", label: "model", value: x,
+      options: [{ value: "", label: t("Remove"), reset: true }, ...free(x)],
+      onPick: (id) => { if (id !== x) save(id ? then.map((y, i) => i === n ? id : y) : then.filter((_, i) => i !== n)); } }, b, ev);
+    val.append(b);
+  });
+  const left = free("");
+  if (left.length) {
+    const add = el("button", "text searcher-then-add", t("Add"));
+    add.type = "button";
+    add.onclick = (ev) => openPicker({ id: "", name: "", fields: [] }, { key: "searcherThen", label: "model", value: "", options: left,
+      onPick: (id) => { if (id) save([...then, id]); } }, add, ev);
+    val.append(add);
+  }
   r.append(who, val);
   box.append(r);
 }

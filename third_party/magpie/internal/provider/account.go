@@ -128,10 +128,15 @@ type Account struct {
 // Claude models on Chat and Anthropic's. nil is not known, and every API
 // the provider speaks may be tried. One the user set for the model
 // (SetModelAPI) is the only one.
-func (p Provider) APIs(model string) []Protocol {
+func (p Provider) APIs(model string) []Protocol { return p.apisAmong(p.Speaks(), model) }
+
+// apisAmong is APIs with the protocols p speaks found already.
+func (p Provider) apisAmong(speaks []Protocol, model string) []Protocol {
 	// the one the user said it is asked on, whatever the list says
-	if proto, ok := p.ModelAPI(model); ok {
-		return []Protocol{proto}
+	if proto, ok := p.apiSet(model); ok {
+		if proto, ok := p.modelAPIAmong(len(speaks), proto); ok {
+			return []Protocol{proto}
+		}
 	}
 	return p.ListedAPIs(model)
 }

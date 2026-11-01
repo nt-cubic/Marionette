@@ -87,3 +87,78 @@ func TestAllowancesBeforeFirstReading(t *testing.T) {
 		}
 	}
 }
+
+// Under Unwaited, the first ask answers from what was last known without
+// waiting firstWait for the vendor: each agent's model list asks whether a
+// model sees images, and each first ask held magpie's start for firstWait.
+func TestUnwaitedAllowancesDontWait(t *testing.T) {
+	signIn(t)
+	rememberLogins(true)
+	reset := func() {
+		loginUsageCache.Lock()
+		loginUsageCache.m = nil
+		loginUsageCache.Unlock()
+		usedCache.Lock()
+		usedCache.m, usedCache.at, usedCache.loading = map[string]map[string]Allowance{}, map[string]time.Time{}, map[string]chan struct{}{}
+		usedCache.stale = nil
+		usedCache.Unlock()
+		lastQuotas.Lock()
+		lastQuotas.m, lastQuotas.loaded = nil, false
+		lastQuotas.Unlock()
+	}
+	reset()
+	t.Cleanup(reset)
+
+	hold := make(chan struct{})
+	var slow atomic.Bool
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if slow.Load() {
+			select {
+			case <-hold:
+			case <-r.Context().Done():
+			}
+			w.WriteHeader(503)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"plan_type": "pro", "rate_limit": map[string]any{
+			"primary_window": map[string]any{"used_percent": 12, "limit_window_seconds": 18000}}})
+	}))
+	t.Cleanup(fake.Close)
+	old := CodexBase
+	CodexBase = fake.URL + "/backend-api/codex"
+	t.Cleanup(func() { CodexBase = old })
+	oldWait := firstWait
+	firstWait = time.Minute
+	t.Cleanup(func() { firstWait = oldWait })
+	var reading chan struct{}
+	t.Cleanup(func() {
+		close(hold)
+		if reading != nil {
+			<-reading
+		}
+	})
+
+	if u := LoginUsage(context.Background(), "codex"); len(u) != 1 {
+		t.Fatalf("usage %+v", u)
+	}
+	reset()
+	slow.Store(true)
+	release := Unwaited()
+	began := time.Now()
+	a := Allowances("codex")
+	took := time.Since(began)
+	release()
+	release() // a second release changes nothing
+	usedCache.Lock()
+	reading = usedCache.loading["codex"]
+	usedCache.Unlock()
+	if took > 10*time.Second {
+		t.Fatalf("Allowances under Unwaited took %v", took)
+	}
+	if got, _ := a["me@example.com"].For("gpt-5.5", time.Now()); got != 12 {
+		t.Fatalf("under Unwaited: used %v, want the last 12 (%+v)", got, a)
+	}
+	if n := unwaited.Load(); n != 0 {
+		t.Fatalf("unwaited left at %d after release", n)
+	}
+}

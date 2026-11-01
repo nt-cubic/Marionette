@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/yetone/magpie/internal/provider"
@@ -157,5 +158,89 @@ func TestResponsesSealedReasoningStaysWithResponses(t *testing.T) {
 		if !bytes.Contains(b, []byte("Checking the weather")) {
 			t.Fatalf("%s client lost the summary: %s", from, b)
 		}
+	}
+}
+
+// withID is a reasoning item raw under another id.
+func withID(t *testing.T, raw, id string) string {
+	t.Helper()
+	var m map[string]any
+	if err := decodeJSON([]byte(raw), &m); err != nil {
+		t.Fatal(err)
+	}
+	m["id"] = id
+	b, _ := json.Marshal(m)
+	return string(b)
+}
+
+// cpStream is responsesSealedStream from an upstream whose reasoning ids
+// aren't OpenAI's rs_ … (Copilot's begin Cp6820…): the item that streams
+// its summary went out added and in every delta by one id, and comes back
+// done as the sealed item by another (the same one when the upstream's ids
+// are stable, as the summary's raw on done carries).
+func cpStream(t *testing.T, summarizedAdded, summarizedDone, sealedAdded, sealedDone string) []string {
+	t.Helper()
+	rp := strings.NewReplacer(
+		rsSummarized, withID(t, rsSummarized, summarizedDone),
+		"rs_6820f383d7c08191846711c5df8233bc0ac5ba57aafcbac7", summarizedAdded,
+		rsSealed, withID(t, rsSealed, sealedDone),
+		"rs_6820f3b2e9fc8191a5c7d0ab1c8e2f4a0ac5ba57aafcbac7", sealedAdded,
+	)
+	out := make([]string, len(responsesSealedStream))
+	for i, l := range responsesSealedStream {
+		out[i] = rp.Replace(l)
+	}
+	return out
+}
+
+// A reasoning item the upstream seals at its done is the one that streamed
+// its summary, whatever id it went by: the client reads the summary once.
+// The old encoder knew its streamed item only by an OpenAI rs_ id, closed
+// it unsealed at the seal, then added the sealed item again, so a client
+// of the translated path read the summary as two items (#2974).
+func TestResponsesStreamForeignReasoningIDNotDoubled(t *testing.T) {
+	for name, ids := range map[string]struct{ sumA, sumD, sealA, sealD string }{
+		"stable ids":                {sumA: "Cp6820f38x", sumD: "Cp6820f38x", sealA: "Cp6820f3bx", sealD: "Cp6820f3bx"},
+		"ids that change per event": {sumA: "Cp6820f38a", sumD: "Cp6820f38b", sealA: "Cp6820f3ba", sealD: "Cp6820f3bb"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			evs := translateStream(t, provider.Responses, provider.Responses,
+				cpStream(t, ids.sumA, ids.sumD, ids.sealA, ids.sealD)...)
+			var added []string
+			var done, completed []any
+			deltas := 0
+			for _, ev := range evs {
+				item, _ := ev["item"].(map[string]any)
+				switch ev["type"] {
+				case "response.output_item.added":
+					if item["type"] == "reasoning" {
+						added = append(added, item["id"].(string))
+					}
+				case "response.output_item.done":
+					if item["type"] == "reasoning" {
+						done = append(done, item)
+					}
+				case "response.reasoning_summary_text.delta":
+					deltas++
+				case "response.completed":
+					for _, it := range ev["response"].(map[string]any)["output"].([]any) {
+						if it.(map[string]any)["type"] == "reasoning" {
+							completed = append(completed, it)
+						}
+					}
+				}
+			}
+			if deltas == 0 {
+				t.Fatal("the summary never streamed")
+			}
+			if len(added) != 2 || !strings.HasPrefix(added[0], "rs_") || added[1] != ids.sealD {
+				t.Fatalf("added reasoning ids %v, want the streamed item under the encoder's rs_ id and %s", added, ids.sealD)
+			}
+			for form, items := range map[string][]any{"done": done, "completed": completed} {
+				if len(items) != 2 || !jsonIs(t, items[0], withID(t, rsSummarized, ids.sumD)) || !jsonIs(t, items[1], withID(t, rsSealed, ids.sealD)) {
+					t.Fatalf("%s reasoning items %v, want 2: %s sealed by %s, then %s", form, items, rsSummarized, ids.sumD, rsSealed)
+				}
+			}
+		})
 	}
 }

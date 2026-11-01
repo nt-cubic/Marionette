@@ -2,6 +2,7 @@ package provider
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/yetone/magpie/internal/settings"
@@ -31,18 +32,24 @@ func CodexSubagentModel() string {
 // may be put on, the ones Codex's own lists show (a model taken out of
 // them, or not picked, isn't offered here either): the ChatGPT accounts'
 // first, as they open a task sealed for them too, then the rest in the
-// catalog's order.
+// catalog's order. The list is kept while the catalog is held, only for
+// reading: Codex's Agents row asked it each poll, a copy of Codex's whole
+// catalog and the list made from it, 17 MB of forty polls with real
+// accounts.
 func CodexSubagentModels() []Entry {
+	return keptOf("codex-subagent-models", codexSubagentModels)
+}
+
+func codexSubagentModels() []Entry {
 	var chatgpt, rest []Entry
-	shown, _ := CatalogFor("codex")
-	for _, e := range shown {
+	for _, e := range catalogKept("codex").shown {
 		if chatGPTEntry(e) {
 			chatgpt = append(chatgpt, e)
 		} else {
 			rest = append(rest, e)
 		}
 	}
-	return append(chatgpt, rest...)
+	return slices.Clip(append(chatgpt, rest...))
 }
 
 func chatGPTEntry(e Entry) bool {

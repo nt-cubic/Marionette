@@ -3,7 +3,6 @@
 package gui
 
 import (
-	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -42,25 +41,20 @@ func TestDiscoverTerminalsOffersRex(t *testing.T) {
 	if rex < 0 || found.Apps[rex].Path != "/opt/rex/bin/rex" || found.Apps[rex].Name != "Rex" {
 		t.Fatalf("Rex not offered with its CLI found: %+v", found.Apps)
 	}
-	var ran [][]string
-	wasRun, wasShow := rexRun, rexShow
-	t.Cleanup(func() { rexRun, rexShow = wasRun, wasShow })
-	rexRun = func(_ context.Context, bin string, args ...string) ([]byte, error) {
-		ran = append(ran, append([]string{bin}, args...))
-		return nil, nil
-	}
-	rexShow = func() {}
+	f := &fakeRex{t: t, sessions: []fakeRexSession{{id: "session:a1", label: "work"}, {id: "session:a2", label: "notes"}}}
+	f.use(t)
 	if err := openTerminal("cd '/tmp' && claude --resume x", "Fix the build", rexBundleID); err != nil {
 		t.Fatal(err)
 	}
-	if len(ran) != 1 || ran[0][0] != "/opt/rex/bin/rex" || ran[0][1] != "run" || !slices.Contains(ran[0], "Fix the build") {
-		t.Fatalf("rex ran %q, want one rex run labelled with the session's title", ran)
+	if f.bin != "/opt/rex/bin/rex" || len(f.sessions) != 3 || f.sessions[2].label != "magpie" || !slices.Equal(f.sessions[2].windows, []string{"Fix the build"}) {
+		t.Fatalf("rex ran %q, sessions %+v: want a magpie session, its tab named for the session's title", f.ran, f.sessions)
 	}
+	ran := len(f.ran)
 	rexFound = func() string { return "" }
 	if err := openTerminal("claude", "", rexBundleID); err == nil || !strings.Contains(err.Error(), "no longer available") {
 		t.Fatalf("Rex chosen with no CLI found: %v, want it said to be unavailable", err)
 	}
-	if len(ran) != 1 {
-		t.Fatalf("rex ran again with none found: %q", ran)
+	if len(f.ran) != ran {
+		t.Fatalf("rex ran again with none found: %q", f.ran)
 	}
 }

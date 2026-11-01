@@ -60,6 +60,14 @@ const L = {
     more: "插件中还有更多" },
 };
 
+// The notice after a load is the page's own boot, not an action on a
+// loaded page (#3484): goto returns at the load event, and only then are
+// /api/state and /api/providers read and the rows drawn. Under the whole
+// suite's load that boot ran past the 5s default meant for actions; it is
+// timed as the navigation it finishes (60s, #4470), while the waits inside
+// a loaded page keep the quick 5s.
+const boot = 60000;
+
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   for (const lang of ["en", "zh"]) {
     test(`${engine} ${lang}: deprecated built-in subscriptions are badged and explained`, async (t) => {
@@ -70,14 +78,20 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.setDefaultTimeout(5000);
       page.setDefaultNavigationTimeout(60000);
       const errors = [];
-      page.on("pageerror", (e) => errors.push(e.message));
+      // A reload kills the page's own background reads (the web update
+      // poll, What's new), and WebKit reports each killed fetch as a page
+      // error on the page it leaves (#1350, #3484): not this test's.
+      page.on("pageerror", (e) => {
+        if (engine === "webkit" && /^Fetch API cannot load .* due to access control checks/.test(e.message)) return;
+        errors.push(e.message);
+      });
       const calls = [];
       await page.route("**/*", serve(lang, calls));
       await page.goto("http://magpie.test/?view=providers");
 
       // the notice: the signed-in deprecated ones, and why
       const notice = page.locator("#movable .deprecation");
-      await notice.waitFor();
+      await notice.waitFor({ timeout: boot });
       const said = await notice.innerText();
       assert.ok(said.includes(w.head), `the notice doesn't name Cursor and Kiro: ${said}`);
       assert.ok(said.includes(w.why), "the notice doesn't say why");
@@ -116,11 +130,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
       // Not now hides the notice, and it stays hidden on the next load
       await page.goto("http://magpie.test/?view=providers");
-      await notice.waitFor();
+      await notice.waitFor({ timeout: boot });
       await notice.locator("button", { hasText: w.later }).click();
       await page.locator("#movable").waitFor({ state: "hidden" });
       await page.goto("http://magpie.test/?view=providers");
-      await page.locator('.row.provider[data-id="cursor"] .badge.deprecated').waitFor();
+      await page.locator('.row.provider[data-id="cursor"] .badge.deprecated').waitFor({ timeout: boot });
       assert.equal(await page.locator("#movable").isHidden(), true, "the notice came back");
       assert.deepEqual(errors, []);
     });

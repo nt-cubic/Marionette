@@ -3,12 +3,14 @@ package gui
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -20,10 +22,8 @@ import (
 // Rex (superlogical.com/rex, a terminal multiplexer) claims no .command
 // file, only public.item and rex://, so Launch Services never lists it as
 // a terminal and `open -a` can't hand it a script (StringKe, #4565). Its
-// own CLI opens a command in it: `rex run` adds a tab to the session the
-// app shows, running the command; with no session to add to (exit 3, a
-// target not found) `rex new` makes one. Rex is offered when its CLI is
-// found, on PATH or in the app.
+// own CLI opens a command in it, in a tab of a Rex session of magpie's own
+// (openInRex). Rex is offered when its CLI is found, on PATH or in the app.
 const rexBundleID = "com.superlogical.rex"
 
 // rexFound is the rex CLI, or "" with none: a var so a test puts a fake.
@@ -133,18 +133,12 @@ func withRex(found terminalDiscovery) terminalDiscovery {
 	return found
 }
 
-// rexArgs is how rex starts command in a new tab labelled label: the
-// command in sh, as the .command file runs it, then the login shell, so
-// the tab stays when the agent quits. Nothing is parsed by a shell on the
-// way: the label and the script are arguments of their own.
-func rexArgs(verb, command, label string) []string {
-	script := command + "\nexec \"${SHELL:-/bin/zsh}\" -l"
-	args := []string{verb}
-	if verb == "new" {
-		args = append(args, label) // the new session's label
-	}
-	args = append(args, "--label", label, "--", "/bin/sh", "-c", script)
-	return args
+// rexScript is what a Rex tab runs: the command in sh, as the .command
+// file runs it, then the login shell, so the tab stays when the agent
+// quits. It and the label reach rex as arguments of their own, never
+// parsed by a shell on the way.
+func rexScript(command string) []string {
+	return []string{"--", "/bin/sh", "-c", command + "\nexec \"${SHELL:-/bin/zsh}\" -l"}
 }
 
 // rexLabel is a tab's label: the session's or agent's name on one line,
@@ -160,34 +154,188 @@ func rexLabel(s string) string {
 	return s
 }
 
-// rexRun runs the rex CLI, a var so a test runs none.
+// rexRun runs the rex CLI and gives its standard output; a failure is an
+// *exec.ExitError holding what it wrote to standard error. A var so a test
+// runs none.
 var rexRun = func(ctx context.Context, bin string, args ...string) ([]byte, error) {
-	return proc.CommandContext(ctx, bin, args...).CombinedOutput()
+	return proc.CommandContext(ctx, bin, args...).Output()
 }
 
 // rexShow brings Rex forward, a var so a test opens nothing.
 var rexShow = func() { proc.Command("open", "-b", rexBundleID).Run() }
 
+// rexSessionLabel labels the Rex session magpie opens its tabs in.
+const rexSessionLabel = "magpie"
+
 // openInRex opens command in a new tab of Rex, through its CLI at bin.
+//
+// Outside Rex the CLI has no session of its own, and `rex run` with no -s
+// takes the only session there is: with none, or more than one (the usual
+// case), it exits 3, which means a target not found or ambiguous (StringKe,
+// #4565). Nor can the CLI tell which session the app shows. So magpie keeps
+// a session of its own, labelled magpie: found by `rex ls`, given by its full
+// ID (a label can be shared), a tab added with `rex run -s` and named for
+// the session or agent with `rex window rename` (run's --label names the
+// block, not the tab). With none, `rex new magpie --window <label>` makes it,
+// its first tab so named; so does a 3 from run, the session having ended
+// since the list.
+//
+// A tab added from outside shows only in the app's sidebar: the app keeps
+// the tab it was on, and `open -b` only brings its window forward
+// (StringKe, #4565). So the app client is then asked to go to the new tab
+// (rexSelect).
 func openInRex(bin, command, label string) error {
 	label = rexLabel(label)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	out, err := rexRun(ctx, bin, rexArgs("run", command, label)...)
-	if ee := (*exec.ExitError)(nil); errors.As(err, &ee) && ee.ExitCode() == 3 {
-		// no session to add a tab to: a session of its own
-		out, err = rexRun(ctx, bin, rexArgs("new", command, label)...)
-	}
+	id, err := rexOwnSession(ctx, bin)
 	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		if ee := (*exec.ExitError)(nil); errors.As(err, &ee) && ee.ExitCode() == 4 {
-			return errors.New("rex couldn't reach the Rex server: open Rex and try again")
+		return rexError(err)
+	}
+	if id != "" {
+		out, err := rexRun(ctx, bin, append([]string{"run", "-s", id, "--label=" + label, "--json"}, rexScript(command)...)...)
+		if err == nil {
+			var made struct {
+				WindowID string `json:"window_id"`
+			}
+			if json.Unmarshal(out, &made) == nil && made.WindowID != "" {
+				// the tab's name only: the tab is open either way
+				rexRun(ctx, bin, "window", "rename", "-s", id, "--", made.WindowID, label)
+			}
+			rexShow()
+			rexSelect(ctx, bin, id, made.WindowID)
+			return nil
 		}
-		if msg != "" {
-			return fmt.Errorf("rex: %s", msg)
+		if rexExit(err) != 3 {
+			return rexError(err)
 		}
-		return fmt.Errorf("rex: %w", err)
+	}
+	out, err := rexRun(ctx, bin, append([]string{"new", rexSessionLabel, "--window=" + label, "--json"}, rexScript(command)...)...)
+	if err != nil {
+		return rexError(err)
 	}
 	rexShow()
+	var made struct {
+		SessionID string `json:"session_id"`
+		Windows   []struct {
+			WindowID string `json:"window_id"`
+		} `json:"initial_windows"`
+	}
+	if json.Unmarshal(out, &made) == nil && made.SessionID != "" {
+		w := ""
+		if len(made.Windows) > 0 {
+			w = made.Windows[0].WindowID
+		}
+		rexSelect(ctx, bin, made.SessionID, w)
+	}
 	return nil
+}
+
+// rexSelectWait bounds rexSelect. A client that doesn't answer an action
+// keeps `rex do` waiting 10s ("did not answer within 10s", tried on rex
+// 0.0.1793420730 with a CLI client), and the GUI waits for the open; the
+// window is already forward by then. A var so a test waits less.
+var rexSelectWait = 3 * time.Second
+
+// rexSelect asks the Rex app to show window (a tab) of session, with
+// `rex -C <app client> do session.select session_id=… window_id=…`, the
+// app's own "Go to Session" action. The app client is the one of kind app
+// in `rex client list --json` attached to session, else the last app to
+// connect; one whose connection is lost is passed over. An app action is
+// refused unless Remote Control is on in Rex's settings, and there may be
+// no app at all (the CLI starts a server of its own): the tab is open
+// either way, so a missing client, a refusal or a slow answer is let go.
+// It runs after rexShow, so the window comes forward without waiting.
+func rexSelect(ctx context.Context, bin, session, window string) {
+	ctx, cancel := context.WithTimeout(ctx, rexSelectWait)
+	defer cancel()
+	out, err := rexRun(ctx, bin, "client", "list", "--json")
+	if err != nil {
+		return
+	}
+	var list struct {
+		Clients []struct {
+			ID    string `json:"client_id"`
+			State string `json:"connection_state"`
+			Info  struct {
+				Kind string `json:"kind"`
+			} `json:"info"`
+			Sessions []string `json:"session_ids"`
+		} `json:"clients"`
+	}
+	if json.Unmarshal(out, &list) != nil {
+		return
+	}
+	app := ""
+	for _, c := range list.Clients {
+		if c.ID == "" || c.Info.Kind != "app" || c.State == "lost" {
+			continue
+		}
+		if slices.Contains(c.Sessions, session) {
+			app = c.ID
+			break
+		}
+		app = c.ID // in the order they connected: the last one so far
+	}
+	if app == "" {
+		return
+	}
+	args := []string{"-C", app, "do", "session.select", "session_id=" + session}
+	if window != "" {
+		args = append(args, "window_id="+window)
+	}
+	rexRun(ctx, bin, args...)
+}
+
+// rexOwnSession is the full ID of magpie's own Rex session, "" with none:
+// one labelled exactly magpie, else one so labelled in another case.
+func rexOwnSession(ctx context.Context, bin string) (string, error) {
+	out, err := rexRun(ctx, bin, "ls", "--json")
+	if err != nil {
+		return "", err
+	}
+	var list struct {
+		Sessions []struct {
+			ID    string `json:"session_id"`
+			Label string `json:"label"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(out, &list); err != nil {
+		return "", fmt.Errorf("rex ls --json: %w", err)
+	}
+	id := ""
+	for _, s := range list.Sessions {
+		if s.ID == "" {
+			continue
+		}
+		if s.Label == rexSessionLabel {
+			return s.ID, nil
+		}
+		if id == "" && strings.EqualFold(s.Label, rexSessionLabel) {
+			id = s.ID
+		}
+	}
+	return id, nil
+}
+
+// rexExit is the exit status of a rex that ran and failed, else -1.
+func rexExit(err error) int {
+	if ee := (*exec.ExitError)(nil); errors.As(err, &ee) {
+		return ee.ExitCode()
+	}
+	return -1
+}
+
+// rexError says why rex failed: its own words, or that Rex's server
+// couldn't be reached (exit 4).
+func rexError(err error) error {
+	if rexExit(err) == 4 {
+		return errors.New("rex couldn't reach the Rex server: open Rex and try again")
+	}
+	if ee := (*exec.ExitError)(nil); errors.As(err, &ee) {
+		if msg := strings.TrimSpace(string(ee.Stderr)); msg != "" {
+			return fmt.Errorf("rex: %s", msg)
+		}
+	}
+	return fmt.Errorf("rex: %w", err)
 }

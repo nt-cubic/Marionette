@@ -72,7 +72,7 @@ type tuneLong struct {
 }
 
 func tuneLongStashed() (tuneLong, bool) {
-	raw := stashLoad()[tuneLongKey]
+	raw := stashShared()[tuneLongKey]
 	var st tuneLong
 	if raw == "" || json.Unmarshal([]byte(raw), &st) != nil {
 		return tuneLong{}, false
@@ -313,14 +313,14 @@ func claudeLongEnv(path, v string) bool {
 // user's own.
 func claudeLongWindow(path, key, stashKey string) bool {
 	v, ok := edit.GetJSON(path, key)
-	if !ok || v == "" || v != stashLoad()[stashKey] {
+	if !ok || v == "" || v != stashShared()[stashKey] {
 		return false
 	}
 	return v == longValue(settings.Load())
 }
 
 func tuneStashed(agent, knob, model string) (tuneStash, bool) {
-	raw := stashLoad()[tuneKey(agent, knob, model)]
+	raw := stashShared()[tuneKey(agent, knob, model)]
 	if raw == "" {
 		return tuneStash{}, false
 	}
@@ -474,7 +474,7 @@ type tuneAsyncStash struct {
 }
 
 func asyncStashed() (tuneAsyncStash, bool) {
-	raw := stashLoad()[tuneAsyncKey]
+	raw := stashShared()[tuneAsyncKey]
 	var st tuneAsyncStash
 	if raw == "" || json.Unmarshal([]byte(raw), &st) != nil {
 		return tuneAsyncStash{}, false

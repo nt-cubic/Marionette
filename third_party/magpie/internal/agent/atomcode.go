@@ -55,7 +55,7 @@ func atomcode(home string) *Agent { return atomcodeIn(here(home)) }
 // (see wsl.go), where ATOMCODE_HOME isn't read and its account names the
 // gateway as the distro reaches it, with the key it takes from there.
 func atomcodeIn(at place) *Agent {
-	dir := filepath.Join(at.home, ".atomcode")
+	dir := at.join(".atomcode")
 	if h := at.getenv("ATOMCODE_HOME"); filepath.IsAbs(h) {
 		dir = filepath.Clean(h)
 	}
@@ -221,7 +221,7 @@ func atomcodeIn(at place) *Agent {
 				return nil
 			},
 			Options: func(c map[string]string) []Option {
-				return append(atomcodeOwnModels(path, c["model"]), viaMagpie("atomcode", magpieID+"/")...)
+				return withVia(atomcodeOwnModels(path, c["model"]), "atomcode", magpieID+"/")
 			},
 		}, {
 			// the current model table's reasoning_effort, sent with every
@@ -262,7 +262,7 @@ func atomcodeIn(at place) *Agent {
 				}
 				ref := strings.TrimPrefix(k, magpieID+"/")
 				var offered []string
-				for _, m := range magpieModels("atomcode") {
+				for _, m := range sharedModels("atomcode") {
 					if m.ID == ref {
 						offered = atomcodeSupportedEfforts(m.Efforts)
 						break
@@ -275,7 +275,7 @@ func atomcodeIn(at place) *Agent {
 			},
 			Options: func(c map[string]string) []Option {
 				if ref, ok := strings.CutPrefix(c["model"], magpieID+"/"); ok {
-					for _, m := range magpieModels("atomcode") {
+					for _, m := range sharedModels("atomcode") {
 						if m.ID == ref {
 							return static(atomcodeSupportedEfforts(m.Efforts)...)
 						}
@@ -307,7 +307,7 @@ func atomcodeTablesAt(path, v1, key string) []edit.Table {
 		{Path: "base_url", Value: v1},
 		{Path: "api_key", Value: key},
 	}}}
-	for _, m := range magpieModels("atomcode") {
+	for _, m := range sharedModels("atomcode") {
 		ctx := m.Context
 		if ctx <= 0 {
 			ctx = atomcodeContext

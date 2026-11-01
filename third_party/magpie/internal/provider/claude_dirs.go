@@ -389,7 +389,7 @@ func claudeSignedOut(l savedLogin) string {
 		}
 		return l.Lapsed
 	}
-	if _, ok := parseClaudeCredentials(l.Auth); ok || claudeSetupToken(l.Auth) != "" {
+	if claudeAuthOf(l.Auth).ok || claudeSetupToken(l.Auth) != "" {
 		return ""
 	}
 	return claudeGoneLapse

@@ -164,7 +164,8 @@ function renderPeriod(loading) {
   if (range) b.title = t("Days picked: {days}", { days: rangeName(range) });
   b.onclick = () => {
     if (b.classList.contains("open")) return closeProtoMenu();
-    openRangeMenu(b, range, (from, to) => {
+    // on a phone the strip is hidden behind the head's menu, which opens it
+    openRangeMenu(b.offsetParent ? b : $("#usageRangeMenu"), range, (from, to) => {
       for (const x of seg.querySelectorAll(".opt")) x.classList.toggle("on", x === b);
       b.lastChild.textContent = rangeName({ from, to });
       b.title = t("Days picked: {days}", { days: rangeName({ from, to }) });
@@ -175,6 +176,39 @@ function renderPeriod(loading) {
   };
   seg.append(b);
   slide(seg, "period");
+}
+
+// On a phone the head's period, Sessions' range and Context's days are
+// one menu, "7 days ⌄", over whichever of them the tab shows, so the tabs
+// are the head's one strip there (app.css hides the strips). It follows
+// that strip as each tab redraws its own, and a pick clicks the strip's
+// option, so every choice keeps the one handler it has.
+{
+  const b = $("#usageRangeMenu");
+  const strips = ["#period", "#sessRange", "#ctxRange"].map((q) => $(q));
+  const shown = () => {
+    const box = strips.find((x) => !x.hidden);
+    const seg = box && (box.matches(".segs") ? box : box.querySelector(".segs"));
+    return seg ? [...seg.querySelectorAll(":scope > .opt")] : [];
+  };
+  const draw = () => {
+    const opts = shown();
+    b.hidden = !opts.length;
+    if (!opts.length) return;
+    const on = opts.find((o) => o.classList.contains("on")) || opts[0];
+    b.disabled = opts.every((o) => o.disabled);
+    b.replaceChildren(el("span", "", on.textContent.trim()), svg(CHEV, 11, 1.8));
+  };
+  b.onclick = (e) => {
+    e.stopPropagation();
+    if (b.classList.contains("open")) return closeProtoMenu();
+    const opts = shown();
+    const on = opts.findIndex((o) => o.classList.contains("on"));
+    openProtoMenu(b, opts.map((o, i) => ({ v: String(i), name: o.textContent.trim(), literalName: true, note: "" })), String(on), (v) => opts[+v]?.click(), "Time range", "sess-menu");
+  };
+  const watch = new MutationObserver(draw);
+  for (const x of strips) watch.observe(x, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["class", "hidden", "disabled"] });
+  draw();
 }
 
 function pickPeriod(id) {
@@ -3889,6 +3923,7 @@ function renderUsageEvery() {
   const cur = USAGE_EVERY.find(([n]) => n === usageEvery);
   const b = $("#usageEvery");
   b.replaceChildren(el("span", "", t(cur[1])), svg(CHEV, 11, 1.6));
+  b.classList.toggle("live", usageEvery > 0); // a phone's dot: it reads again by itself
   b.title = t("Refresh every");
   b.onclick = (e) => {
     e.stopPropagation();

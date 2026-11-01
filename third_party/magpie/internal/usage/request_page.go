@@ -356,8 +356,8 @@ func (c *rowChunk) row(i int) Row {
 	for i, s := range rowText(&r) {
 		*s = c.Strings[t[i]]
 	}
-	if r.Swapped && p.Flags&swapKnown == 0 && (SameSpelled(r.Model, r.Served) || ServingName(r.Model, r.Served) || RelayRenamed(r.Model, r.Served)) {
-		r.Swapped = false // kept before a name spelled otherwise, a vendor's serving name or a relay's rename was the same
+	if r.Swapped && p.Flags&swapKnown == 0 && (SameSpelled(r.Model, r.Served) || ServingName(r.Model, r.Served) || RelayRenamed(r.Model, r.Served) || VendorAlias(r.Model, r.Served)) {
+		r.Swapped = false // kept before a name spelled otherwise, a vendor's serving name, a relay's rename or the vendor's own alias was the same
 	} else if r.Swapped && ListedAs(r.Provider, r.Model, r.Served) {
 		r.Swapped = false // the name the provider's list gives the model asked for
 	}

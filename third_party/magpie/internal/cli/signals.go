@@ -7,10 +7,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/sessions"
 )
 
 // endProbesOnSignal: the probes magpie asks a CLI with lead a session of
@@ -43,10 +45,31 @@ func endProbesOnSignal() {
 			if !handled {
 				provider.FlushServed() // a gateway's last answers, noted and not yet written
 				gateway.FlushSticks()  // and who answered which conversation
+				// and the session index, or the next start reads every
+				// file a scan read since the last save again
+				savedWithin(sessionsSaved, saveOnSignal)
 				die(s)
 			}
 		}
 	}(onSignal)
+}
+
+// saveOnSignal bounds how long a signal waits for the session index to be
+// written: a long history's takes a second or two, and a signal is asked to
+// end magpie now.
+var saveOnSignal = 5 * time.Second
+
+// sessionsSaved is sessions.Saved; a var so tests can hold it.
+var sessionsSaved = sessions.Saved
+
+// savedWithin runs save and waits for it up to d.
+func savedWithin(save func(), d time.Duration) {
+	done := make(chan struct{})
+	go func() { save(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(d):
+	}
 }
 
 // caught are the signals endProbesOnSignal asked for; onSignal is where

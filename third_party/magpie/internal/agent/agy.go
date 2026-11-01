@@ -128,10 +128,10 @@ func agyFunction(kind, prog string) string {
 // distro's ZDOTDIR and XDG_CONFIG_HOME aren't read.
 func agyDistroProfiles(at place) []update.ShellProfile {
 	login := distroLoginShell(at)
-	fish := filepath.Join(at.home, ".config", "fish", "config.fish")
+	fish := at.join(".config", "fish", "config.fish")
 	return []update.ShellProfile{
-		{Kind: "posix", Path: filepath.Join(at.home, ".bashrc"), Create: login == "bash"},
-		{Kind: "posix", Path: filepath.Join(at.home, ".zshrc"), Create: login == "zsh"},
+		{Kind: "posix", Path: at.join(".bashrc"), Create: login == "bash"},
+		{Kind: "posix", Path: at.join(".zshrc"), Create: login == "zsh"},
 		{Kind: "fish", Path: fish, Create: login == "fish" || at.isDir(filepath.Dir(fish))},
 	}
 }
@@ -208,7 +208,7 @@ func agy(home string) *Agent { return agyIn(here(home)) }
 // shells get a function of their own (agyDistroFunction).
 func agyIn(at place) *Agent {
 	home := at.home
-	dir := filepath.Join(home, ".gemini", "antigravity-cli")
+	dir := at.open(filepath.Join(home, ".gemini", "antigravity-cli"))
 	path := filepath.Join(dir, "settings.json")
 	get := jsonGet(path, "model")
 	provider := jsonGet(path, "modelProvider")
@@ -223,7 +223,7 @@ func agyIn(at place) *Agent {
 			}
 		}
 		if with {
-			for _, m := range magpieModels("agy") {
+			for _, m := range sharedModels("agy") {
 				ms[magpieID+"/"+m.ID] = map[string]string{"apiProvider": "API_PROVIDER_GOOGLE_GEMINI", "modelName": m.ID}
 			}
 		}
@@ -391,7 +391,7 @@ func agyIn(at place) *Agent {
 				if c := cur["model"]; c != "" && !usesMagpie(c) && custom[c] == nil {
 					own = append([]Option{{Value: c, Icon: modelIcon("", c), Direct: "Google"}}, own...)
 				}
-				return append(group("Antigravity CLI", own), viaMagpie("agy", magpieID+"/")...)
+				return withVia(group("Antigravity CLI", own), "agy", magpieID+"/")
 			},
 		}},
 	}

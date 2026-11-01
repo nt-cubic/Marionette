@@ -42,6 +42,7 @@ import (
 // piCallFiles are Pi's and omp's session files, here and in WSL.
 func piCallFiles() []file {
 	out := append(piFiles(), raftFiles()...)
+	out = append(out, cindyFiles()...)
 	out = append(out, ompFiles()...)
 	return append(out, wslFiles("pi", "raft", "omp")...)
 }

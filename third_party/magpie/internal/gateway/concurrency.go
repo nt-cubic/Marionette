@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -162,7 +163,9 @@ func (l *lanes) free(who string, limit int) bool {
 // and room in its minute — another key or account of cands[i]'s provider,
 // or in a routing group any member — when cands[i]'s key or account is
 // full, or has sent its MaxRPM in the last minute; -1 when it isn't
-// full, gave way once already, or none has room.
+// full, gave way once already, or none has room. A reserve is never one
+// (keepAtOnce): it is held back for its provider not to be used from more
+// accounts at once than it lets be, and a full lane is not a failure.
 func (s *Server) laneMate(cands []candidate, i int, group bool, gave map[string]bool) int {
 	c := cands[i]
 	who := c.who()
@@ -171,7 +174,7 @@ func (s *Server) laneMate(cands []candidate, i int, group bool, gave map[string]
 	}
 	for j := i + 1; j < len(cands); j++ {
 		m := cands[j]
-		if m.who() == who || !group && m.p.ID != c.p.ID {
+		if m.who() == who || !group && m.p.ID != c.p.ID || m.reserve > 0 {
 			continue
 		}
 		if s.ready(m) {
@@ -179,6 +182,13 @@ func (s *Server) laneMate(cands []candidate, i int, group bool, gave map[string]
 		}
 	}
 	return -1
+}
+
+// dropReserves leaves out, of the candidates after i, the reserves of
+// provider id (keepAtOnce).
+func dropReserves(cands []candidate, i int, id string) []candidate {
+	tail := slices.DeleteFunc(slices.Clone(cands[i+1:]), func(m candidate) bool { return m.reserve > 0 && m.p.ID == id })
+	return append(slices.Clone(cands[:i+1]), tail...)
 }
 
 // ready is whether c's request would go at once: a slot free in its lane,

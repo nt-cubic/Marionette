@@ -30,6 +30,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 )
@@ -72,6 +73,18 @@ type candidate struct {
 	// members' busy failures, the group asked for only those that set none;
 	// 0 falls back to the asked group's Waits, PatienceOff skips replan
 	patience int
+	// member is the member of the group asked for it is of, as the group
+	// spells it (Member.Path[0]): a group in the group is one member.
+	// place is that member's place in the group's list, 1 for its first,
+	// 0 for one not of a group (planGroup): what the user put first is
+	// what a member listed after it stands in for (standsInFor)
+	member string
+	place  int
+	// reserve is set, to the provider's AtOnce, on an account or key held
+	// back past the first that many (keepAtOnce): tried after them, never
+	// given a request for want of a slot (laneMate) nor kept on by a
+	// conversation (affine)
+	reserve int
 }
 
 // capHold is how an account is held at its usage cap: the cap of the
@@ -223,6 +236,71 @@ func perKeyOf(p provider.Provider, model string, from provider.Protocol) (out, a
 // serve the model (provider.AccountModels, #474): never tried, whatever
 // else there is — none, when every one of them is.
 func perKeyBarred(p provider.Provider, model string, from provider.Protocol) (out, aside, left, barred []candidate) {
+	out, aside, left, barred = perKeyEvery(p, model, from)
+	out, aside = keepAtOnce(p.AtOnce(), out, aside)
+	return out, aside, left, barred
+}
+
+// keepAtOnce keeps, of a provider's accounts or keys routed over, the
+// first n in the user's own order (rank, the order the provider's page
+// shows and a drag sets), and holds the rest back as reserves: tried after
+// them, the way a key for another protocol is (aside), and marked so
+// (candidate.reserve). 01huadalang on Discord: ZCode bans the address
+// that three of its accounts are used from at once, while two are let
+// be, and In order alone still spread over all three under load (a full
+// lane gave way to the next account, laneMate, and every busy refusal
+// rested one). The ones kept are those not resting first, so an account
+// at the end of its quota hands its seat to the next in the list, and
+// gets it back once it is back; those resting fill seats only when fewer
+// than n are not. The user's order, not routing's, says who is first, so
+// the set stays the same request to request under In turn or By usage.
+// n of 0 keeps them all.
+func keepAtOnce(n int, out, aside []candidate) ([]candidate, []candidate) {
+	if n <= 0 || len(out)+len(aside) <= n {
+		return out, aside
+	}
+	all := append(slices.Clone(out), aside...)
+	byRank := make([]int, len(all))
+	for i := range byRank {
+		byRank[i] = i
+	}
+	slices.SortStableFunc(byRank, func(a, b int) int { return all[a].rank - all[b].rank })
+	resting := make([]bool, len(all))
+	for i, c := range all {
+		_, resting[i] = restingOf(c)
+	}
+	keep := make([]bool, len(all))
+	kept := 0
+	for _, rested := range []bool{false, true} {
+		for _, i := range byRank {
+			if kept < n && resting[i] == rested && !keep[i] {
+				keep[i], kept = true, kept+1
+			}
+		}
+	}
+	var reserves []candidate
+	for _, i := range byRank {
+		if !keep[i] {
+			c := all[i]
+			c.reserve = n
+			reserves = append(reserves, c)
+		}
+	}
+	keptOf := func(cs []candidate, from int) []candidate {
+		var o []candidate
+		for i, c := range cs {
+			if keep[from+i] {
+				o = append(o, c)
+			}
+		}
+		return o
+	}
+	return keptOf(out, 0), append(keptOf(aside, len(out)), reserves...)
+}
+
+// perKeyEvery is perKeyBarred with every account or key routed over, the
+// provider's AtOnce aside.
+func perKeyEvery(p provider.Provider, model string, from provider.Protocol) (out, aside, left, barred []candidate) {
 	if _, off := provider.ModelDisabled(p.ID, model); off || provider.DisabledUnknown() {
 		return nil, nil, nil, nil // the user disabled it (#1867): never planned, a fallback no more than the model asked
 	}
@@ -529,7 +607,23 @@ func (s *Server) planGroup(g provider.Group, ms []provider.Member, from provider
 	if len(out) == 0 {
 		return nil, pl
 	}
+	placed(ms, out)
+	placed(ms, pl.unlisted)
 	return restLast(out, pl)
+}
+
+// placed sets each of cs's place: where its member is in ms, the group's
+// models in the order its list has them, a group in the group by its first.
+func placed(ms []provider.Member, cs []candidate) {
+	at := map[string]int{}
+	for _, m := range ms {
+		if len(m.Path) > 0 && at[m.Path[0]] == 0 {
+			at[m.Path[0]] = len(at) + 1
+		}
+	}
+	for i := range cs {
+		cs[i].place = at[cs[i].member]
+	}
 }
 
 // innerFirstToken is the FirstToken of the innermost group m is in
@@ -568,6 +662,9 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 				l[i].effort, l[i].levels, l[i].fast = m.Effort, m.Levels, m.Fast
 				l[i].firstToken = innerFirstToken(m)
 				l[i].patience = innerPatience(m)
+				if len(m.Path) > 0 {
+					l[i].member = m.Path[0]
+				}
 			}
 		}
 		pl.left = append(pl.left, barredOf(barred, m.Provider, false, from, m.Groups())...)
@@ -985,26 +1082,57 @@ func asideOf(cs []candidate, q provider.Provider, fallback bool, from provider.P
 	return out
 }
 
-// restLast moves those resting after a recent failure behind the rest.
+// restLast moves those resting after a recent failure behind the rest,
+// and a Codex account set to spend its credits last that has gone onto
+// them (creditsLast) behind both, those in their own order. Ahead of the
+// resting, a model its plugin says is busier than the user's
+// settings.BusyLoad (busyOf) goes behind the ready ones: it answers, only
+// after a wait in its vendor's queue (axelburks on Discord).
 func restLast(out []candidate, pl planned) ([]candidate, planned) {
 	if len(out) == 1 {
 		if r, ok := restingOf(out[0]); ok {
 			pl.order[0].Rest = &r // tried all the same: there is no other
 		}
+		pl.order[0].CreditsLast = out[0].creditsLast(time.Now())
 		return out, pl
 	}
-	var ready, resting []candidate
-	var wReady, wResting []Weighed
+	now := time.Now()
+	over := settings.Shared().BusyLoad
+	var ready, busy, resting, last []candidate
+	var wReady, wBusy, wResting, wLast []Weighed
 	for i, c := range out {
-		if r, ok := restingOf(c); ok {
+		r, isResting := restingOf(c)
+		if isResting {
 			pl.order[i].Rest = &r
+		}
+		load, isBusy := busyOf(c, over, now)
+		switch {
+		case c.creditsLast(now):
+			pl.order[i].CreditsLast = true
+			last, wLast = append(last, c), append(wLast, pl.order[i])
+		case isResting:
 			resting, wResting = append(resting, c), append(wResting, pl.order[i])
-		} else {
+		case isBusy:
+			pl.order[i].Busy = load
+			busy, wBusy = append(busy, c), append(wBusy, pl.order[i])
+		default:
 			ready, wReady = append(ready, c), append(wReady, pl.order[i])
 		}
 	}
-	pl.order = append(wReady, wResting...)
-	return append(ready, resting...), pl
+	pl.order = append(append(append(wReady, wBusy...), wResting...), wLast...)
+	return append(append(append(ready, busy...), resting...), last...), pl
+}
+
+// busyOf is the load c's plugin last reported for its model, and whether
+// that is over the percent over (settings.BusyLoad; 0 is off). A model
+// with no load reported, or none within plugin.LoadFresh, isn't busy:
+// unknown is never taken for idle nor for busy.
+func busyOf(c candidate, over int, now time.Time) (float64, bool) {
+	if over <= 0 {
+		return 0, false
+	}
+	load, _, ok := plugin.ModelLoad(c.p.PluginProvider(), c.model, now)
+	return load, ok && load > float64(over)
 }
 
 // probeOne keeps, of the candidates resting after a failure, only the one
@@ -1799,6 +1927,40 @@ func matesFirst(left []candidate, c candidate) {
 	copy(left, append(mates, others...))
 }
 
+// retellMost is the size, in tokens, of a refused conversation past which
+// another Claude subscription account isn't told it again: each is a new
+// Claude Code that writes the whole of it to that account's cache.
+const retellMost = 100_000
+
+// claudeAccount is whether c is a Claude subscription account, served
+// through Claude Code (serveClaudeSubscription).
+func (c candidate) claudeAccount() bool {
+	return c.p.Account != nil && c.p.Account.Agent == "claude"
+}
+
+// tooBigToRetell is whether a conversation is too big to be told again to
+// another Claude subscription account after one refused it (retellMost),
+// and its size in tokens as estimate counts it.
+func tooBigToRetell(from provider.Protocol, body []byte) (int, bool) {
+	req, err := parse(from, body)
+	if err != nil {
+		return 0, false
+	}
+	n := estimate(req)
+	return n, n >= retellMost
+}
+
+// otherThanClaudeAccounts is left without its Claude subscription accounts.
+func otherThanClaudeAccounts(left []candidate) []candidate {
+	var kept []candidate
+	for _, x := range left {
+		if !x.claudeAccount() {
+			kept = append(kept, x)
+		}
+	}
+	return kept
+}
+
 // matesLast puts last, of the candidates left, the other keys or accounts
 // of the member c is of: what turns one of them away is in the request, so
 // it turns them all away the same, and the group is better spent on a
@@ -1877,7 +2039,9 @@ type holdWriter struct {
 	// refusal may still end: held longer (holdThinking)
 	thinking bool
 	// thinkingShown: the model's vendor never refuses after reasoning
-	// (refusesAfterThinking), so its reasoning goes through as it comes
+	// (refusesAfterThinking), or the member has gone on from its thinking
+	// to an answer enough times running (holdsThinking), so its reasoning
+	// goes through as it comes
 	thinkingShown bool
 	// thoughtThrough: the try went through on its reasoning alone
 	// (thinkingShown) while the request could still have asked again, so
@@ -1957,6 +2121,12 @@ type holdWriter struct {
 	// upstreamKeys are the headers of the vendor's reply heardUpstream put
 	// in header (#4145)
 	upstreamKeys []string
+
+	// over, when another candidate stands behind the try, reads what
+	// passes before its answer begins for a refusal to hand to the next
+	// one in the same stream (refusalHandover); handedOver says it was
+	over       *refusalHandover
+	handedOver bool
 }
 
 // onLoop sets what is told of a loop before it ends the reply (reask),
@@ -2051,6 +2221,9 @@ func (h *holdWriter) Write(b []byte) (int, error) {
 	if h.looped != "" || h.relooped {
 		return 0, errLooped
 	}
+	if h.handedOver {
+		return 0, errHandedOver
+	}
 	if h.status == 0 {
 		h.writeHeader(http.StatusOK)
 	}
@@ -2085,6 +2258,14 @@ func (h *holdWriter) Write(b []byte) (int, error) {
 			}
 		}
 	}
+	if h.overActive() {
+		// nothing said yet: a refusal is handed to the next candidate
+		h.passOver(b)
+		if h.handedOver {
+			return 0, errHandedOver
+		}
+		return len(b), nil
+	}
 	if h.first.first != 0 || h.passing {
 		h.refusalAfter(b)
 	}
@@ -2095,6 +2276,9 @@ func (h *holdWriter) Write(b []byte) (int, error) {
 	n, err := h.held.Write(b)
 	if h.stream && h.failure == 0 {
 		h.scan()
+	}
+	if h.handedOver {
+		return 0, errHandedOver
 	}
 	return n, err
 }
@@ -2286,7 +2470,76 @@ func refusesAfterThinking(model string) bool {
 	if i := strings.LastIndex(m, "/"); i >= 0 {
 		m = m[i+1:]
 	}
-	return strings.HasPrefix(m, "gemini") || strings.HasPrefix(m, "deepseek")
+	return strings.HasPrefix(m, "gemini") || deepseekAfterThinking(m)
+}
+
+// deepseekAfterThinking tells whether the model is DeepSeek's, the one
+// vendor whose reasoning the refusal hold lets go once the member has
+// gone on from its thinking to an answer enough times running
+// (holdsThinking): Claude's, GPT's and Gemini's is held whatever the
+// member has answered lately (#248).
+func deepseekAfterThinking(model string) bool {
+	m := strings.ToLower(model)
+	if i := strings.LastIndex(m, "/"); i >= 0 {
+		m = m[i+1:]
+	}
+	return strings.HasPrefix(m, "deepseek")
+}
+
+// thoughtCleanMost is how many thinking replies in a row that went on to
+// an answer trust a DeepSeek member with its reasoning as it comes
+// (holdsThinking): its filter refuses after thinking hardly ever (#4512:
+// one content_filter in 33,245 group requests over 7 days), and held,
+// every one of those requests kept the agent waiting its whole thinking
+// out. A refusal of its own takes the trust back (thoughtRefused).
+const thoughtCleanMost = 3
+
+// holdsThinking tells whether the try's reasoning is held back for a
+// refusal after it while another candidate could answer. DeepSeek's is,
+// until the member's thinking has gone on to an answer thoughtCleanMost
+// times running; past that it goes through as it comes, GLM's way.
+// Claude's, GPT's and Gemini's is held whatever the member answered
+// lately (#248).
+func (s *Server) holdsThinking(c candidate) bool {
+	if !refusesAfterThinking(c.model) {
+		return false
+	}
+	if !deepseekAfterThinking(c.model) {
+		return true
+	}
+	s.thoughtMu.Lock()
+	defer s.thoughtMu.Unlock()
+	return s.thoughtClean[c.p.ID+"/"+c.model] < thoughtCleanMost
+}
+
+// thoughtAnswered counts a thinking reply that went on to an answer, for
+// holdsThinking's trust to run out on.
+func (s *Server) thoughtAnswered(c candidate) {
+	if !deepseekAfterThinking(c.model) {
+		return
+	}
+	s.thoughtMu.Lock()
+	defer s.thoughtMu.Unlock()
+	if s.thoughtClean == nil {
+		s.thoughtClean = make(map[string]int)
+	}
+	s.thoughtClean[c.p.ID+"/"+c.model]++
+}
+
+// thoughtRefused takes the trust back: the member's filter refused a
+// reply after (or beside) its thinking (plugins #540), so its reasoning
+// is held again for the next requests, until it has answered
+// thoughtCleanMost times running.
+func (s *Server) thoughtRefused(c candidate) {
+	if !deepseekAfterThinking(c.model) {
+		return
+	}
+	s.thoughtMu.Lock()
+	defer s.thoughtMu.Unlock()
+	if s.thoughtClean == nil {
+		s.thoughtClean = make(map[string]int)
+	}
+	s.thoughtClean[c.p.ID+"/"+c.model] = 0
 }
 
 // scan reads the held stream's events so far: an error before any content
@@ -2406,6 +2659,8 @@ type keptAlive struct {
 	// it asked; streams, whether it asked for a stream
 	told    time.Time
 	streams bool
+	// codex, whether Codex sent the request (fromCodex)
+	codex bool
 	// Only opted-in Claude cache reporting can defer initial keepalives.
 	// Selection releases it before process startup; expiry keeps the stream alive.
 	cacheReportUntil time.Time
@@ -2421,6 +2676,18 @@ type keptAlive struct {
 // Discord). Each try was held for up to holdThinking or holdLead by
 // itself, so a second held try, or a group's pause (#1418), went past it.
 var agentQuietMost = 4 * time.Minute
+
+// compactsInStream says a refusal of a request too large to be taken —
+// past the vendor's byte cap (413) or the model's window (tooLong) — goes
+// to the agent in its stream though none was sent yet: Codex compacts on
+// response.failed context_length_exceeded alone. Told by status, it takes
+// a 413 for an unexpected status and a 400 context_length_exceeded for an
+// invalid request, and either ends the turn with nothing compacted, a
+// compaction refused the same way failing outright (codex-rs codex-api
+// api_bridge.rs). Another client keeps the status.
+func (a *keptAlive) compactsInStream(status int, msg string) bool {
+	return a.codex && a.streams && a.proto == provider.Responses && (status == http.StatusRequestEntityTooLarge || tooLong(status, msg))
+}
 
 // tooQuiet says whether a Responses agent that has had no event of its
 // reply would go agentQuietMost without one after d more.
@@ -2542,11 +2809,21 @@ func mayRefuse(ev []byte) bool {
 var refusalSays = [][]byte{
 	[]byte(`error`), []byte(`failed`), []byte(`refusal`), []byte(`filter`),
 	[]byte(`incomplete`), []byte(`finishReason`), []byte(`blockReason`),
+	[]byte(`"sensitive"`), // Zhipu's finish_reason
 }
 
 // flow lets a held stream through, and what follows it.
 func (h *holdWriter) flow() {
+	if h.handedOver {
+		return
+	}
 	h.pass()
+	if h.overActive() {
+		held := bytes.Clone(h.held.Bytes())
+		h.held.Reset()
+		h.passOver(held)
+		return
+	}
 	h.sent(h.held.Bytes())
 	h.w.Write(h.held.Bytes())
 	h.held.Reset()
@@ -2652,6 +2929,13 @@ func (h *holdWriter) thoughtOnly() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.thoughtThrough
+}
+
+// sawThinking tells whether the try reasoned at all, held or as it came.
+func (h *holdWriter) sawThinking() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.thinking || h.thoughtThrough
 }
 
 // handBack sends a refusal held with nothing said as the vendor's own
@@ -2959,11 +3243,17 @@ var filterReasons = map[string]string{
 	// agent took it for a failed sign-in (sweanng on Discord, ZCode:
 	// "Provider authentication failed", reason=auth_failed status=403)
 	"content_policy_rejected": "content_policy_rejected",
-	"SAFETY":                  "safety",
-	"PROHIBITED_CONTENT":      "safety",
-	"BLOCKLIST":               "safety",
-	"SPII":                    "safety",
-	"IMAGE_SAFETY":            "safety",
+	// Zhipu's finish_reason when its filter stops GLM's reply, and
+	// DashScope's error code when Alibaba's stops Qwen's: both after the
+	// reasoning went to the agent, which had it end there (yhwangl on X)
+	"sensitive":              "sensitive",
+	"data_inspection_failed": "data_inspection_failed",
+	"DataInspectionFailed":   "data_inspection_failed",
+	"SAFETY":                 "safety",
+	"PROHIBITED_CONTENT":     "safety",
+	"BLOCKLIST":              "safety",
+	"SPII":                   "safety",
+	"IMAGE_SAFETY":           "safety",
 }
 
 // finishFailed is what a 200 stream the vendor ends with finish_reason
@@ -3371,6 +3661,12 @@ func errorCode(raw json.RawMessage) string {
 // risk"), cyber_policy and the like (#248).
 var policyCode = regexp.MustCompile(`^[a-z]+_policy$`)
 
+// sensitiveCode is how Volcengine Ark's errors say its filter refused the
+// input or the reply: InputTextSensitiveContentDetected,
+// OutputTextSensitiveContentDetected, SensitiveContentDetected and the
+// image and video kinds of them.
+var sensitiveCode = regexp.MustCompile(`SensitiveContentDetected$`)
+
 // flaggedWords are how OpenAI's invalid_prompt says the prompt was held to
 // its usage policy, rather than malformed.
 var flaggedWords = regexp.MustCompile(`(?i)flagged|usage polic`)
@@ -3418,8 +3714,11 @@ func policyRefusal(raw []byte) (string, bool) {
 	switch r, ok := filterReasons[c]; {
 	case ok:
 		return note(r)
-	case policyCode.MatchString(c):
+	case policyCode.MatchString(c), sensitiveCode.MatchString(c):
 		return note(c)
+	case c == "1301" && strings.Contains(msg, "敏感"):
+		// Zhipu's: "系统检测到输入或生成内容可能包含不安全或敏感内容"
+		return note("sensitive")
 	case c == "invalid_prompt" && flaggedWords.MatchString(msg):
 		return note(c)
 	case strings.TrimSpace(msg) == highRiskRefusal:

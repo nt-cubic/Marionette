@@ -763,6 +763,12 @@ func userWords(text string) string {
 	return t
 }
 
+// saysAnything is whether userSaid has anything, without joining the
+// words of a long turn only to see they are there
+func saysAnything(m Message) bool {
+	return slices.ContainsFunc(m.Parts, func(p Part) bool { return p.Kind == Text && userSays(p.Text) })
+}
+
 // userSaid is what the user said in a message: the words of its texts.
 func userSaid(m Message) string {
 	var said []string

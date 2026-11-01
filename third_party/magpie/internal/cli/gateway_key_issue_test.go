@@ -75,3 +75,48 @@ func TestGatewayKeyIssueCLI(t *testing.T) {
 		t.Fatal("help:", help)
 	}
 }
+
+// magpie gateway-key oidc adds, lists and removes the rules a CI job's
+// token is traded by; a rule open to every repository is refused.
+func TestGatewayKeyOIDCCLI(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", os.Getenv("HOME"))
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	call := func(args ...string) (string, error) {
+		var out bytes.Buffer
+		err := gatewayKeysTo(&out, append([]string{"gateway-key"}, args...))
+		return strings.TrimSpace(out.String()), err
+	}
+	call("add", "CI")
+	keys, _ := access.List()
+	id := keys[0].ID
+	if _, err := call("oidc", "add", "--key", id, "--repo", "acme/app"); err == nil || !strings.Contains(err.Error(), "issuer "+id+" on") {
+		t.Fatal("a key not let issue:", err)
+	}
+	call("issuer", id, "on")
+	for _, bad := range [][]string{{"oidc", "add", "--key", id, "--ref", "refs/heads/main"}, {"oidc", "add", "--key", id, "--owner", "*"},
+		{"oidc", "add", "--repo", "acme/app"}, {"oidc", "add", "--key", id, "--repo"}, {"oidc", "add", "--key", id, "--repo", "acme/app", "--ttl", "soon"},
+		{"oidc", "add", "--key", id, "--repo", "acme/app", "--ttl", "100ms"}, {"oidc", "add", "--key", id, "--what", "x"}, {"oidc", "remove"}, {"oidc", "maybe"}} {
+		if _, err := call(bad...); err == nil {
+			t.Error("accepted", bad)
+		}
+	}
+	got, err := call("oidc", "add", "--key", id, "--repo", "acme/app", "--environment", "prod", "--ttl", "30m")
+	if err != nil || !strings.Contains(got, "audience magpie-") || !strings.Contains(got, "30m0s") {
+		t.Fatal(got, err)
+	}
+	list, _ := call("oidc", "list")
+	if !strings.Contains(list, "environment=prod repository=acme/app") || !strings.Contains(list, "token.actions.githubusercontent.com") {
+		t.Fatal("list:", list)
+	}
+	ruleID := strings.Fields(strings.Split(list, "\n")[1])[0]
+	if _, err := call("oidc", "remove", ruleID); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ := call("oidc"); !strings.Contains(list, "No OIDC rules") {
+		t.Fatal("after remove:", list)
+	}
+	if help := helpFor([]string{"gateway-key", "--help"}); !strings.Contains(help, "gateway-key oidc add") {
+		t.Fatal("help:", help)
+	}
+}

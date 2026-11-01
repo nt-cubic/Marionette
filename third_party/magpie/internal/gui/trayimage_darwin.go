@@ -27,9 +27,28 @@ typedef struct {
 static const CGFloat mpLogo = 14, mpLogoGap = 3, mpCellGap = 8, mpBirdGap = 2, mpRowGap = 3.5,
 	mpPlainGap = 3, mpSepGap = 5, mpSep = 1, mpSepHigh = 13;
 
+// mpRowFont is the digits' font, in the weight the menu bar's other
+// figures use (Surge's speeds, iStat Menus'): two stacked rows in the small
+// system font, a lone row in the menu bar's own font (13pt), both regular
+// and with digits of one width, so a figure that changes doesn't shift its
+// neighbours. Semibold 9.5pt stacked and medium 11pt alone read heavier
+// than everything beside them (qingnianxiaozhe on X).
 static NSFont *mpRowFont(int rows) {
-	if (rows > 1) return [NSFont monospacedDigitSystemFontOfSize:9.5 weight:NSFontWeightSemibold];
-	return [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightMedium];
+	if (rows > 1) return [NSFont monospacedDigitSystemFontOfSize:10 weight:NSFontWeightRegular];
+	return [NSFont monospacedDigitSystemFontOfSize:[NSFont menuBarFontOfSize:0].pointSize weight:NSFontWeightRegular];
+}
+
+// mpRowFontInfo says what mpRowFont gives for rows: its size, its weight
+// trait, and whether "1" is as wide as "8".
+static void mpRowFontInfo(int rows, CGFloat *size, CGFloat *weight, int *mono, CGFloat *menuBar) {
+	@autoreleasepool {
+		NSFont *f = mpRowFont(rows);
+		*size = f.pointSize;
+		*weight = [[[f.fontDescriptor objectForKey:NSFontTraitsAttribute] objectForKey:NSFontWeightTrait] doubleValue];
+		NSDictionary *a = @{NSFontAttributeName: f};
+		*mono = [@"1111" sizeWithAttributes:a].width == [@"8888" sizeWithAttributes:a].width;
+		*menuBar = [NSFont menuBarFontOfSize:0].pointSize;
+	}
 }
 
 // mpCells reads the cells Go sends into dictionaries the drawing keeps.
@@ -633,6 +652,16 @@ func trayImagePNG(cells []trayCell, bird []byte, h, scale float64, dark, bg bool
 		w, ht = int(pw), int(ph)
 	})
 	return png, w, ht
+}
+
+// trayRowFont is the font mpRowFont draws n rows in: its size, its weight
+// trait (0 regular, about 0.23 medium, 0.3 semibold), whether its digits
+// are of one width, and the menu bar font's size.
+func trayRowFont(n int) (size, weight float64, mono bool, menuBar float64) {
+	var s, w, m C.CGFloat
+	var mo C.int
+	C.mpRowFontInfo(C.int(n), &s, &w, &mo, &m)
+	return float64(s), float64(w), mo != 0, float64(m)
 }
 
 func cBool(b bool) C.int {

@@ -13,6 +13,28 @@
     },
     "canonical_model_id": "moonshotai/kimi-k3"
    },
+   "kimi-k3.1-pro": {
+    "id": "kimi-k3.1-pro",
+    "name": "Kimi K3.1 Pro",
+    "cost": {
+     "input": 2,
+     "output": 10,
+     "cache_read": 0.2,
+     "cache_write": 2
+    },
+    "canonical_model_id": "moonshotai/kimi-k3.1-pro"
+   },
+   "kimi-k3.1-pro-highspeed": {
+    "id": "kimi-k3.1-pro-highspeed",
+    "name": "Kimi K3.1 Pro Highspeed",
+    "cost": {
+     "input": 4,
+     "output": 20,
+     "cache_read": 0.2,
+     "cache_write": 4
+    },
+    "canonical_model_id": "moonshotai/kimi-k3.1-pro"
+   },
    "kimi-k2.7-code-highspeed": {
     "id": "kimi-k2.7-code-highspeed",
     "name": "Kimi K2.7 Code HighSpeed",
@@ -90,6 +112,28 @@
      "cache_write": 0
     },
     "canonical_model_id": "moonshotai/kimi-k3"
+   },
+   "k3.1-pro": {
+    "id": "k3.1-pro",
+    "name": "Kimi K3.1 Pro",
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cache_read": 0,
+     "cache_write": 0
+    },
+    "canonical_model_id": "moonshotai/kimi-k3.1-pro"
+   },
+   "k3.1-pro-highspeed": {
+    "id": "k3.1-pro-highspeed",
+    "name": "Kimi K3.1 Pro Highspeed",
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cache_read": 0,
+     "cache_write": 0
+    },
+    "canonical_model_id": "moonshotai/kimi-k3.1-pro"
    }
   }
  },
@@ -139,6 +183,28 @@
      "cache_write": 0
     },
     "canonical_model_id": "moonshotai/kimi-k3"
+   },
+   "k3.1-pro": {
+    "id": "k3.1-pro",
+    "name": "Kimi K3.1 Pro",
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cache_read": 0,
+     "cache_write": 0
+    },
+    "canonical_model_id": "moonshotai/kimi-k3.1-pro"
+   },
+   "k3.1-pro-highspeed": {
+    "id": "k3.1-pro-highspeed",
+    "name": "Kimi K3.1 Pro Highspeed",
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cache_read": 0,
+     "cache_write": 0
+    },
+    "canonical_model_id": "moonshotai/kimi-k3.1-pro"
    }
   }
  },

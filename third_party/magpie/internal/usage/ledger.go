@@ -525,8 +525,15 @@ var ownPrice catalog.Price
 // vendor's bill still does. A record inside one of its provider's rate
 // windows (#2463) is priced at that window's rate, its own time read
 // against the windows, so calls either side of a boundary price apart.
+//
+// A local session's call has no provider of ours to price at (its billing
+// provider is the unknown one) but its file names the route it went
+// through; that name prices the call when the catalog lists the very model
+// id under it, and never otherwise: a name models.dev doesn't know, or
+// one whose other models alone would stand for this call's, prices
+// nothing (#4278).
 func Pricer() func(Record) *catalog.Price {
-	prices := map[[3]string]*catalog.Price{}
+	prices := map[[4]string]*catalog.Price{}
 	// each provider's rate windows as the same read of the prices saw
 	// them: the windows are held once (BasePriceIn), each record's rate
 	// read at its own time (provider.RateAt), so a window that opens
@@ -542,7 +549,7 @@ func Pricer() func(Record) *catalog.Price {
 			served = ""
 		}
 		id := r.priceID()
-		k := [3]string{id, r.Model, served}
+		k := [4]string{id, r.Model, served, r.SessionProvider}
 		if pr, ok := prices[k]; ok {
 			return atWindow(pr, windows[id], r.Time)
 		}
@@ -554,7 +561,25 @@ func Pricer() func(Record) *catalog.Price {
 		if ok {
 			pr = &v
 			windows[id] = ws
-		} else {
+		} else if r.Provider == UnknownProvider && r.SessionProvider != "" {
+			// A session file's usage entry names the provider the call went
+			// through (omp's model_usage: provider openrouter, model
+			// typesafe/jev-1.14, #4278), which its billing provider, the
+			// unknown one, never says. The name is the file's word for the
+			// route, not an account of ours, so it prices only what the
+			// catalog itself lists under it: this very model id, at that
+			// provider, at a price. A provider models.dev doesn't know, a
+			// model it lists that provider without, and a listing with no
+			// price are none: the row stays unpriced, its CSV cost empty,
+			// rather than priced at another entry's guess.
+			if v, ok := catalog.PriceOf(r.SessionProvider, r.Model); ok {
+				pr = &v
+				// the failed lookup's windows are the billing provider's,
+				// not the session provider's: none holds for this price
+				ws = nil
+			}
+		}
+		if pr == nil {
 			catalog.Missing() // models.dev may list it by now
 		}
 		prices[k] = pr

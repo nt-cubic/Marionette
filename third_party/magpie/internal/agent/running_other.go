@@ -8,9 +8,9 @@ import (
 	"github.com/yetone/magpie/internal/proc"
 )
 
-// listRunning lists the processes a pgrep -f pattern matches, with how
+// listRunningNow lists the processes a pgrep -f pattern matches, with how
 // long each has run and its command line, from ps.
-func listRunning(pat string) []runningProc {
+func listRunningNow(pat string) []runningProc {
 	out, _ := proc.Command("pgrep", "-f", pat).Output()
 	pids := strings.Fields(string(out))
 	if len(pids) == 0 {

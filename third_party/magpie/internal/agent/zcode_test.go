@@ -220,7 +220,11 @@ func TestZCodeOutputAndReasoning(t *testing.T) {
 	b, _ := os.ReadFile(path)
 	for _, want := range []string{
 		`"limit":{"context":204800,"output":128000}`,
-		`"reasoning":{"defaultVariant":"high","enabled":true,"variants":["disabled","low","high","max"]}`,
+		// the reasoning keys ZCode reads (#3852): levels and defaultLevel,
+		// with thinking sent per level, at the level's budget (a Claude
+		// before 4.6 refuses "enabled" without one), and off for the level
+		// named disabled
+		`"reasoning":{"defaultLevel":"high","enabled":true,"levels":["disabled","low","high","max"],"providerOptionsByLevel":{"disabled":{"thinking":{"type":"disabled"}},"high":{"thinking":{"budget_tokens":24000,"type":"enabled"}},"low":{"thinking":{"budget_tokens":4096,"type":"enabled"}},"max":{"thinking":{"budget_tokens":32000,"type":"enabled"}}}}`,
 		`"GLM-5-Turbo":{"reasoning":{"enabled":true,"variants":["enabled","off"],"defaultVariant":"enabled"},"limit":{"context":200000,"output":64000}}`,
 	} {
 		if !strings.Contains(string(b), want) {

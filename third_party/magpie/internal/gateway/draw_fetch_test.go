@@ -155,10 +155,9 @@ func TestVendorThatStopsMidAnswerIsSaid(t *testing.T) {
 	s, _ := relayed(t, func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, `{"created":1,"data":[`)
 		w.(http.Flusher).Flush()
-		select {
-		case <-r.Context().Done():
-		case <-time.After(5 * time.Second):
-		}
+		// only the gateway's deadline may end the answer: a timer of the
+		// fake's could end it first under load and be read as a 502 (#4245)
+		<-r.Context().Done()
 	})
 	code, _, raw := postImages(t, s, "/v1/images/generations", "application/json", `{"model":"relay/gpt-image-2.5-sunburst","prompt":"a 4K city"}`)
 	if code != 504 || !strings.Contains(raw, "Relay began answering after 0s (200 OK) but hadn't sent all of its answer in 300ms: what came doesn't yet say whether the image was coming as a url or as b64_json; 21 B had come") {
@@ -183,10 +182,8 @@ func TestStalledAnswerSaysUrlOrB64(t *testing.T) {
 			s, _ := relayed(t, func(w http.ResponseWriter, r *http.Request) {
 				io.WriteString(w, c.sent)
 				w.(http.Flusher).Flush()
-				select {
-				case <-r.Context().Done():
-				case <-time.After(5 * time.Second):
-				}
+				// only the gateway's deadline may end the answer (#4245)
+				<-r.Context().Done()
 			})
 			code, _, raw := postImages(t, s, "/v1/images/generations", "application/json", `{"model":"relay/gpt-image-2.5-sunburst","prompt":"a 2K city","size":"2048x1152"}`)
 			if code != 504 || !strings.Contains(raw, c.want) {

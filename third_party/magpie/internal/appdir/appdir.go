@@ -228,9 +228,9 @@ func Config() string {
 		return p
 	}
 	if x := os.Getenv("XDG_CONFIG_HOME"); rooted(x) {
-		return filepath.Join(x, "magpie")
+		return Join(x, "magpie")
 	}
-	return filepath.Join(mustHome(), ".config", "magpie")
+	return Join(Join(mustHome(), ".config"), "magpie")
 }
 
 // Redirected is the folder magpie keeps its files in when it is opened
@@ -257,12 +257,12 @@ func Redirected() string {
 // catalog, exchange rates, market lists).
 func Cache() string {
 	if p := Portable(); p != "" {
-		return filepath.Join(p, "cache")
+		return Join(p, "cache")
 	}
 	if x := os.Getenv("XDG_CACHE_HOME"); rooted(x) {
-		return filepath.Join(x, "magpie")
+		return Join(x, "magpie")
 	}
-	return filepath.Join(mustHome(), ".cache", "magpie")
+	return Join(Join(mustHome(), ".cache"), "magpie")
 }
 
 // Logs is the folder the desktop app writes its log in, where each system

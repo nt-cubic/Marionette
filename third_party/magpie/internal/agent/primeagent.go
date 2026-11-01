@@ -19,8 +19,6 @@ package agent
 // subagentDefaultModel.
 
 import (
-	"path/filepath"
-
 	"github.com/yetone/magpie/internal/appdir"
 )
 
@@ -42,5 +40,5 @@ func primeAgentDir(at place) string {
 			return d
 		}
 	}
-	return filepath.Join(at.home, ".prime", "agent")
+	return at.join(".prime", "agent")
 }

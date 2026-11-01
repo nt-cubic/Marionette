@@ -143,3 +143,90 @@ func TestTightGCRetunesAfterACollection(t *testing.T) {
 		t.Fatalf("GOGC after the read = %d, want 100", got)
 	}
 }
+
+// TestSteadyPercent: between reads the heap grows by half of what it
+// holds, by 32 MB when that is more, and never by more than Go's default.
+func TestSteadyPercent(t *testing.T) {
+	for _, c := range []struct {
+		live int64
+		want int
+	}{
+		{0, 50},
+		{60 << 20, 53},
+		{64 << 20, 50},
+		{16 << 20, 100},
+		{32 << 20, 100},
+		{500 << 20, 50},
+	} {
+		if got := steadyPercent(c.live); got != c.want {
+			t.Errorf("steadyPercent(%d MB) = %d, want %d", c.live>>20, got, c.want)
+		}
+	}
+}
+
+// steadyOff puts back what steadyGCStart set, for the tests after.
+func steadyOff(t *testing.T) {
+	before := gcPercent()
+	t.Cleanup(func() {
+		tightGC.Lock()
+		tightGC.steady = false
+		tightGC.Unlock()
+		debug.SetGCPercent(before)
+	})
+}
+
+// TestSteadyGCKeepsTheUsersGOGC: a GOGC the user set is what the process
+// runs under.
+func TestSteadyGCKeepsTheUsersGOGC(t *testing.T) {
+	steadyOff(t)
+	t.Setenv("GOGC", "200")
+	debug.SetGCPercent(200)
+	steadyGCStart()
+	if got := gcPercent(); got != 200 {
+		t.Fatalf("GOGC=200 set by the user, magpie runs under %d", got)
+	}
+	tightGC.Lock()
+	steady := tightGC.steady
+	tightGC.Unlock()
+	if steady {
+		t.Fatal("a GOGC the user set is retuned after each collection")
+	}
+}
+
+// TestSteadyGCRetunesAfterACollection: from the start GOGC is half, each
+// collection sets it for the heap it left (a test's heap is under the
+// room: Go's 100), a read under a tight GC still sets its tenth, and after
+// the read the next collection sets it for the heap again.
+func TestSteadyGCRetunesAfterACollection(t *testing.T) {
+	steadyOff(t)
+	t.Setenv("GOGC", "")
+	debug.SetGCPercent(100)
+	steadyGCStart()
+	if got := gcPercent(); got != steadyGCPercent {
+		t.Fatalf("GOGC before a collection = %d, want %d", got, steadyGCPercent)
+	}
+	collectUntil := func(want int) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for gcPercent() != want {
+			if time.Now().After(deadline) {
+				t.Fatalf("GOGC after collections = %d, want %d", gcPercent(), want)
+			}
+			runtime.GC()
+			time.Sleep(time.Millisecond)
+		}
+	}
+	collectUntil(100)
+	debug.SetGCPercent(steadyGCPercent)
+	undo := tightenGC()
+	if got := gcPercent(); got != tightGCPercent {
+		t.Fatalf("a read under a tight GC runs under %d, want %d", got, tightGCPercent)
+	}
+	runtime.GC()
+	runtime.GC()
+	if got := gcPercent(); got != tightGCPercent {
+		t.Fatalf("a read under a tight GC runs under %d after collections, want %d", got, tightGCPercent)
+	}
+	undo()
+	collectUntil(100)
+}

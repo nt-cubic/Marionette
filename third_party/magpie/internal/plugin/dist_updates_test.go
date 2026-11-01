@@ -90,7 +90,7 @@ func TestDistIndexFromTheMirrorAloneWhenGitHubFails(t *testing.T) {
 	t.Cleanup(func() { distMirror = was })
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if info, ok := distInfo(ctx, pkg); !ok || info.Version != "0.2.4" {
+	if info, ok, _ := distInfo(ctx, pkg); !ok || info.Version != "0.2.4" {
 		t.Fatalf("distInfo = %+v, %v; want the mirror's 0.2.4", info, ok)
 	}
 }
@@ -111,7 +111,7 @@ func TestDistIndexDoesntWaitOutAHangingGitHub(t *testing.T) {
 	t.Cleanup(func() { distMirror, distGrace = was, grace })
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	if info, ok := distInfo(ctx, pkg); !ok || info.Version != "0.2.4" {
+	if info, ok, _ := distInfo(ctx, pkg); !ok || info.Version != "0.2.4" {
 		t.Fatalf("distInfo = %+v, %v; want the mirror's 0.2.4", info, ok)
 	}
 	if ctx.Err() != nil {

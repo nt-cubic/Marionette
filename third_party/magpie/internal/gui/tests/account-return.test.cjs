@@ -25,6 +25,21 @@ const codex = (returns) => ({
   },
 });
 
+// hxy920830 on X: Claude Code's sign-in stays on the account magpie moved
+// it to till that one is spent too (provider.returnsToFirst)
+const claude = () => ({
+  id: "claude", name: "Claude", icon: "claude-color", chat: "", responses: "", anthropic: "", catalog: "", routing: "smart",
+  models: [{ id: "claude-fable-5", name: "Fable 5", on: true }], agents: [], fallback: [], headers: {}, keyList: [],
+  account: {
+    agent: "claude", agentName: "Claude Code", user: "spare@example.com", plan: "MAX",
+    logins: [
+      { user: "spare@example.com", plan: "MAX", active: true, on: true },
+      { user: "work@example.com", plan: "MAX", on: true },
+    ],
+  },
+});
+const stays = "Routing picks the account for each request through magpie; {agent} on its own uses the one it is signed in to, which magpie moves to the next ticked account with room once it is 98% used, and keeps it there till that one is 98% used too.";
+
 function serve(lang, list) {
   const providers = { providers: list, presets: [], excluded: [], gateway: { running: true, window: true } };
   const state = { agents: [], profiles: [], settings: { lang, theme: "light" } };
@@ -45,14 +60,14 @@ function serve(lang, list) {
 }
 
 const words = {
-  en: { first: "First", now: "First for now", again: "First again once it has room", note: /and back to the first once that has room again/, why: /work@example\.com was nearly used up/ },
-  zh: { first: "首选", now: "暂为首选", again: "额度恢复后切回首选", note: /首选账号恢复后切回/, why: /work@example\.com 额度将尽/ },
+  en: { first: "First", now: "First for now", again: "First again once it has room", note: /and back to the first once that has room again/, why: /work@example\.com was nearly used up/, stays: /keeps it there till that one is 98% used too/ },
+  zh: { first: "首选", now: "暂为首选", again: "额度恢复后切回首选", note: /首选账号恢复后切回/, why: /work@example\.com 额度将尽/, stays: /直到它也用到 98%/ },
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   for (const lang of ["en", "zh"]) {
     const w = words[lang];
-    const open = async (t, returns) => {
+    const open = async (t, returns, list) => {
       const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
       t.after(() => browser.close());
       const page = await (await browser.newContext({ viewport: { width: 900, height: 760 }, reducedMotion: "reduce" })).newPage();
@@ -60,9 +75,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.setDefaultNavigationTimeout(60000);
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
-      await page.route("**/*", serve(lang, [codex(returns)]));
+      const p = list || codex(returns);
+      await page.route("**/*", serve(lang, [p]));
       await page.goto("http://magpie.test/?view=providers");
-      await page.locator(".row.provider", { hasText: "Codex" }).first().click();
+      await page.locator(".row.provider", { hasText: p.name }).first().click();
       await page.locator(".editor .acc").first().waitFor();
       return { page, errors };
     };
@@ -86,6 +102,17 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.deepEqual(missing, [], "every string has its Chinese");
       await work.locator(".using").click();
       assert.equal(await page.evaluate(() => document.scrollingElement.scrollTop), top, "the page doesn't move");
+      assert.deepEqual(errors, []);
+    });
+
+    test(`${engine} ${lang}: Claude Code stays on the account it was moved to, and the note says so`, async (t) => {
+      const { page, errors } = await open(t, false, claude());
+      const note = await page.locator(".editor").textContent();
+      assert.match(note, w.stays);
+      assert.doesNotMatch(note, w.note);
+      assert.equal(await page.locator(".editor .acc", { hasText: "work@example.com" }).locator(".using").count(), 0);
+      const missing = await page.evaluate((k) => ["zh", "zh-TW", "ja", "de"].filter((l) => !I18N[l][k]), stays);
+      assert.deepEqual(missing, [], "every language has the note");
       assert.deepEqual(errors, []);
     });
 

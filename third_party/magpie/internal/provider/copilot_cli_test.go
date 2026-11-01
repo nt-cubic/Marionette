@@ -133,12 +133,12 @@ func TestCopilotCLIInWSL(t *testing.T) {
   "loggedInUsers": [{"host": "https://github.com", "login": "jia2"}],
   "copilotTokens": {"https://github.com:jia2": "gho_wsl"}
 }`), 0o600)
-	oldHomes := CopilotWSLHomes
-	homes := []string{filepath.Join(t.TempDir(), "other"), distro}
-	CopilotWSLHomes = func() []string { return homes }
+	oldDirs := CopilotWSLDirs
+	homes := []string{filepath.Join(t.TempDir(), "other", ".copilot"), filepath.Join(distro, ".copilot")}
+	CopilotWSLDirs = func() []string { return homes }
 	copilotWSL.at = time.Time{}
 	defer func() {
-		copilotCLISecret, CopilotWSLHomes = oldSecret, oldHomes
+		copilotCLISecret, CopilotWSLDirs = oldSecret, oldDirs
 		copilotWSL.at = time.Time{}
 	}()
 

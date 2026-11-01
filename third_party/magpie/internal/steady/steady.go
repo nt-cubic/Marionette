@@ -11,6 +11,7 @@ package steady
 
 import (
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -91,6 +92,41 @@ func ReadThere(p string) ([]byte, error) {
 		return err
 	})
 	return b, err
+}
+
+// ReadThereInto is ReadThere into buf's room, grown when the file needs
+// more: for a caller that reads one file again and again only to compare
+// it, which a new buffer each time made the bulk of what magpie allocated
+// as it started (a 1.5 MB config.toml read 150 times over).
+func ReadThereInto(p string, buf []byte) ([]byte, error) {
+	var b []byte
+	err := retryGone(func() (err error) {
+		b, err = readInto(p, buf[:0])
+		return err
+	})
+	return b, err
+}
+
+// readInto is os.ReadFile into buf; a test stands in for it.
+var readInto = func(p string, buf []byte) ([]byte, error) {
+	f, err := os.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	for {
+		if len(buf) == cap(buf) {
+			buf = append(buf, 0)[:len(buf)]
+		}
+		n, err := f.Read(buf[len(buf):cap(buf)])
+		buf = buf[:len(buf)+n]
+		if err == io.EOF {
+			return buf, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
 }
 
 // ReadFile is os.ReadFile, waiting out a file being replaced.

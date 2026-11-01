@@ -89,12 +89,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           const r = document.querySelector("#searchList #searchMcpRow");
           r.scrollIntoView({ block: "nearest" });
           return { name: r.querySelector(".name").textContent, sub: r.querySelector(".sub").textContent,
-            code: r.querySelector("code").textContent, buttons: r.querySelectorAll("button").length };
+            code: r.querySelector("code").textContent, buttons: r.querySelectorAll(".val button").length };
         });
         assert.equal(row.name, w.name);
         assert.match(row.sub, w.sub);
         assert.equal(row.code, address);
-        assert.equal(row.buttons, 1, "a copy button");
+        assert.equal(row.buttons, 1, "a copy button (the way to the Library is under the words)");
         // nothing spills out of the window at a narrow width
         assert(await page.evaluate(() => document.scrollingElement.scrollWidth <= innerWidth + 1), `no sideways scroll at ${width}px`);
         assert.deepEqual(errors, []);

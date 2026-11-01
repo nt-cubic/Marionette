@@ -190,3 +190,30 @@ func TestToolsOffWithoutToolsPerBuilder(t *testing.T) {
 		}
 	}
 }
+
+// #3153: the Grok plugin must see the client's allowed list before it
+// decides whether to add its own server-side search tool.
+func TestAllowedToolsReachesGrokPlugin(t *testing.T) {
+	var mu sync.Mutex
+	var sent []byte
+	pid := besideFake(t, "grok", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		sent = b
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, noneReply)
+	}))
+	const choice = `{"type":"allowed_tools","mode":"auto","tools":[{"type":"function","name":"read_file"}]}`
+	code, body := postTo(t, New(), "/v1/responses", `{"model":"`+pid+`/fake-resp","stream":true,"input":"hi","tools":[{"type":"function","name":"read_file","parameters":{"type":"object","properties":{}}}],"tool_choice":`+choice+`}`)
+	if code != 200 {
+		t.Fatalf("%d %s", code, body)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(sent, &got); err != nil {
+		t.Fatal(err)
+	}
+	sameJSON(t, got["tool_choice"], choice)
+}

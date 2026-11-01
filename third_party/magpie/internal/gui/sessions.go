@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"errors"
+	"io"
 	"maps"
 	"math"
 	"net/http"
@@ -121,40 +122,44 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 		for _, g := range gateway {
 			ext = append(ext, gatewayListed(g, title))
 		}
-		list = sessions.MergeExternal(list, ext)
-		if len(list) > n {
-			list = list[:n]
-		}
-		var modelEffort map[string][]sessions.ModelEffort
-		for _, s := range list {
-			if s.Agent == "codex" {
-				modelEffort = usage.CodexModelEffort(usage.All)
-				break
+		// made to size: up to sessions.All rows, grown by append each poll
+		// was copied through every size on the way, ~140 MB of eight (#2278).
+		// The rows are made from the list and the gateway's sessions as
+		// they merge, not from a merged copy of the list.
+		out.Sessions = make([]sessionJSON, 0, min(n, len(list)+len(ext)))
+		codex := false
+		sessions.EachMerged(list, ext, func(s *sessions.Session) bool {
+			if len(out.Sessions) == n {
+				return false
 			}
-		}
-		for i := range list {
-			addCodexModelEffort(&list[i], modelEffort)
+			codex = codex || s.Agent == "codex"
+			out.Sessions = append(out.Sessions, sessionJSON{Session: *s})
+			return true
+		})
+		var modelEffort map[string][]sessions.ModelEffort
+		if codex {
+			modelEffort = usage.CodexModelEffort(usage.All)
 		}
 		since := time.Now()
-		for _, s := range list {
+		for i := range out.Sessions {
+			s := &out.Sessions[i].Session
+			addCodexModelEffort(s, modelEffort)
 			if !s.Start.IsZero() && s.Start.Before(since) {
 				since = s.Start
 			}
 		}
 		vias := usage.Vias(since.Add(-time.Minute))
-		// made to size: up to sessions.All rows, grown by append each poll
-		// was copied through every size on the way, ~140 MB of eight (#2278)
-		out.Sessions = make([]sessionJSON, 0, len(list))
-		for _, s := range list {
+		for i := range out.Sessions {
+			j := &out.Sessions[i]
+			s := j.Session
 			// drawn as the agent it ran in: Claude Desktop's Code tab's
 			// sessions are in Claude Code's folder (Session.App)
-			j := sessionJSON{Session: s, Name: s.Agent, Icon: "generic", Via: viaOf(vias, s)}
+			j.Name, j.Icon, j.Via = s.Agent, "generic", viaOf(vias, s)
 			if a := agents[cmp.Or(s.App, s.Agent)]; a != nil {
 				j.Name, j.Icon = a.SharedName(), a.Icon
 			}
 			j.Name = wslName(j.Name, s)
 			j.Path = tilde(j.Path)
-			out.Sessions = append(out.Sessions, j)
 		}
 		writeJSONRows(rw, r, "sessions", out.Sessions, struct {
 			Terminal bool     `json:"terminal"`
@@ -192,7 +197,7 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			rw.WriteHeader(http.StatusOK)
 			return
 		}
-		tag := writeSame(rw, r, func(b *bytes.Buffer) error { return statsAnswer(b, st, agents) })
+		tag := writeSame(rw, r, func(w io.Writer) error { return statsAnswer(w, st, agents) })
 		if tag != "" {
 			statsTags.Lock()
 			if statsTags.m == nil || len(statsTags.m) >= statsMemoMost {
@@ -665,6 +670,7 @@ func warmSessions() {
 var warmOnce sync.Once
 
 func warmStart() {
+	steadyGCStart()
 	go func() {
 		// a fresh install reads no agent's sessions until asked; one
 		// that read them before keeps reading them (decided once)
@@ -794,6 +800,7 @@ var tightGC struct {
 	n      int  // reads under it
 	was    int  // GOGC before the first
 	hooked bool // a retightenGC is waiting for the next collection
+	steady bool // steadyGCStart has run: retightenGC sets steadyPercent between reads
 }
 
 // tightenGC begins a read under a tight GC; undo ends it.
@@ -862,16 +869,62 @@ func tightPercent(live int64, was int) int {
 func retightenGC() {
 	tightGC.Lock()
 	defer tightGC.Unlock()
-	if tightGC.n == 0 {
+	if tightGC.n == 0 && !tightGC.steady {
 		tightGC.hooked = false
 		return
 	}
 	s := []metrics.Sample{{Name: "/gc/heap/live:bytes"}}
 	metrics.Read(s)
 	if s[0].Value.Kind() == metrics.KindUint64 {
-		debug.SetGCPercent(tightPercent(int64(s[0].Value.Uint64()), tightGC.was))
+		live := int64(s[0].Value.Uint64())
+		if tightGC.n > 0 {
+			debug.SetGCPercent(tightPercent(live, tightGC.was))
+		} else {
+			debug.SetGCPercent(steadyPercent(live))
+		}
 	}
 	afterNextGC(retightenGC)
+}
+
+// steadyGCStart has the heap grow by half of what it holds before a
+// collection, or by steadyGCRoom when that is more, not Go's default of
+// all of it, for the life of the process; a GOGC the user set is kept.
+// A window resting on ~60 MB live polls /api/state, /api/drift and
+// /api/providers, ~10 MB thrown away a round, so at the default its
+// footprint peaked at 138 MB; under half, 107-108 MB, for ~9% more CPU in
+// the polls. Reads under a tight GC still set their tenth while they run.
+func steadyGCStart() {
+	if os.Getenv("GOGC") != "" {
+		return
+	}
+	tightGC.Lock()
+	defer tightGC.Unlock()
+	tightGC.steady = true
+	if tightGC.n == 0 {
+		debug.SetGCPercent(steadyPercent(0))
+	}
+	if !tightGC.hooked {
+		tightGC.hooked = true
+		afterNextGC(retightenGC)
+	}
+}
+
+// steadyGCPercent is the half steadyGCStart lets the heap grow by.
+const steadyGCPercent = 50
+
+// steadyGCRoom is the least it grows by: half of a small heap is a few
+// MB, and a heap under 64 MB grows by 32 MB, never by more than Go's
+// default.
+const steadyGCRoom = 32 << 20
+
+// steadyPercent is the GOGC steadyGCStart sets on a live heap of live
+// bytes (0 before the first collection: steadyGCPercent).
+func steadyPercent(live int64) int {
+	p := steadyGCPercent
+	if live > 0 {
+		p = max(p, int(min(steadyGCRoom*100/live, 100)))
+	}
+	return p
 }
 
 // afterNextGC runs fn on the finalizer goroutine once the next collection
@@ -966,52 +1019,75 @@ func viaOf(x usage.ViaIndex, s sessions.Session) []usage.Via {
 	return nil
 }
 
-// statsAnswer writes the stats answer into b as an Encoder of
-// struct{ sessions.Stats; Agents } does, its days one at a time: encoded
-// whole, the Encoder's own buffer grew to the ~6 MB answer from nothing
-// after each collection, ~200 MB of 90 s of polls while an agent worked
-// (#2278).
-func statsAnswer(b *bytes.Buffer, st sessions.Stats, agents map[string]string) error {
-	enc := json.NewEncoder(b)
+// statsAnswer writes the stats answer to w as an Encoder of
+// struct{ sessions.Stats; Agents } does, a part at a time: encoded whole,
+// the Encoder's own buffer grew to the ~6 MB answer from nothing after
+// each collection, ~200 MB of 90 s of polls while an agent worked, and a
+// buffer kept for the next held it between polls (#2278).
+func statsAnswer(w io.Writer, st sessions.Stats, agents map[string]string) error {
+	var part bytes.Buffer
+	enc := json.NewEncoder(&part)
 	// v as Marshal writes it: Encode ends it with a newline
 	put := func(v any) error {
+		part.Reset()
 		if err := enc.Encode(v); err != nil {
 			return err
 		}
-		b.Truncate(b.Len() - 1)
-		return nil
+		_, err := w.Write(part.Bytes()[:part.Len()-1])
+		return err
 	}
-	b.WriteString(`{"from":`)
+	text := func(s string) error {
+		_, err := io.WriteString(w, s)
+		return err
+	}
+	if err := text(`{"from":`); err != nil {
+		return err
+	}
 	if err := put(st.From); err != nil {
 		return err
 	}
-	b.WriteString(`,"to":`)
+	if err := text(`,"to":`); err != nil {
+		return err
+	}
 	if err := put(st.To); err != nil {
 		return err
 	}
-	b.WriteString(`,"days":`)
+	if err := text(`,"days":`); err != nil {
+		return err
+	}
 	if st.Days == nil {
-		b.WriteString("null")
+		if err := text("null"); err != nil {
+			return err
+		}
 	} else {
-		b.WriteByte('[')
+		if err := text("["); err != nil {
+			return err
+		}
 		for i := range st.Days {
 			if i > 0 {
-				b.WriteByte(',')
+				if err := text(","); err != nil {
+					return err
+				}
 			}
 			if err := put(&st.Days[i]); err != nil {
 				return err
 			}
 		}
-		b.WriteByte(']')
+		if err := text("]"); err != nil {
+			return err
+		}
 	}
-	b.WriteString(`,"keys":`)
+	if err := text(`,"keys":`); err != nil {
+		return err
+	}
 	if err := put(st.Keys); err != nil {
 		return err
 	}
-	b.WriteString(`,"agents":`)
+	if err := text(`,"agents":`); err != nil {
+		return err
+	}
 	if err := put(agents); err != nil {
 		return err
 	}
-	b.WriteString("}\n")
-	return nil
+	return text("}\n")
 }
