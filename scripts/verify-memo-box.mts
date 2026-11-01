@@ -203,9 +203,12 @@ function session(partial: Partial<Session> & { id: string }): Session {
   const tabs = readFileSync(join(here, "../src/components/SessionView.tsx"), "utf8");
   check(
     "收纳盒选中时对话标签不再 is-active",
-    tabs.includes("memoOwnsStrip") &&
-      tabs.includes("openSession.id === session.id && !memoOwnsStrip") &&
-      tabs.includes("openSession.id === session.id && !memoTab?.active"),
+    // extraOwnsStrip 泛化后五种伪标签(memo/council/usage/doc/browser)共用;
+    // memo 必须仍在条件里,usage 是 2026-11-01 补进来的。
+    tabs.includes("extraOwnsStrip") &&
+      tabs.includes("openSession.id === session.id && !extraOwnsStrip") &&
+      tabs.includes("memoTab?.active ||") &&
+      tabs.includes("usageTab?.active ||"),
   );
 }
 

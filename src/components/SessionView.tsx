@@ -558,9 +558,16 @@ export function SessionTabs({
 
   const tabClassById = useMemo(() => {
     const map = new Map<string, string>();
-    // 收纳盒 / 圆桌伪标签占用这条时，对话标签全部退成未选中——current session id
-    // 仍记着，点回去即切回；两边同时 is-active 会看起来像两个当前页。
-    const extraOwnsStrip = Boolean(memoTab?.active || councilTab?.active);
+    // 任一伪标签（收纳盒 / 圆桌 / 用量 / 文档 / 浏览器）占用中栏时，对话标签
+    // 全部退成未选中——current session id 仍记着，点回去即切回；两边同时
+    // is-active 会看起来像两个当前页。
+    const extraOwnsStrip = Boolean(
+      memoTab?.active ||
+        councilTab?.active ||
+        usageTab?.active ||
+        browserTab?.active ||
+        (docTabs ?? []).some((tab) => tab.active),
+    );
     for (const openSession of openSessions) {
       map.set(
         openSession.id,
@@ -577,7 +584,18 @@ export function SessionTabs({
       );
     }
     return map;
-  }, [openSessions, session.id, draggingTabId, ghost, doneUnreadIds, memoTab?.active, councilTab?.active]);
+  }, [
+    openSessions,
+    session.id,
+    draggingTabId,
+    ghost,
+    doneUnreadIds,
+    memoTab?.active,
+    councilTab?.active,
+    usageTab?.active,
+    browserTab?.active,
+    docTabs,
+  ]);
 
   return (
     <>
