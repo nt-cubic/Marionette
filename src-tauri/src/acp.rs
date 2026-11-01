@@ -1389,6 +1389,7 @@ impl AcpService {
             &session_id,
             agent_id.as_deref(),
             caps.current_model.as_deref(),
+            caps.current_effort_id.as_deref(),
         );
 
         emit_acp_event(
@@ -1474,6 +1475,17 @@ impl AcpService {
             .and_then(|map| map.get(session_id).cloned())
     }
 
+    fn session_codex_engine_bound(&self, session_id: &str) -> bool {
+        let agent = self
+            .session_agents
+            .lock()
+            .ok()
+            .and_then(|map| map.get(session_id).cloned())
+            .unwrap_or_default();
+        crate::model_bridge::classify_agent(&agent) == crate::model_bridge::BridgeAgent::Codex
+            && crate::model_bridge::session_has_engine_binding(session_id)
+    }
+
     /// Caps of a process that is still alive. Stale caps after a crash or park
     /// must not look like a live session — the UI's `ensureAcpReady` would skip
     /// spawn and the next prompt would fail with "ACP session is not running".
@@ -1527,10 +1539,31 @@ impl AcpService {
             {
                 continue;
             }
+            // Bridged Codex: providers/set empties availableModels, so any
+            // session/set_model (gpt-5.6-luna[xhigh] or codex/gpt-6.1-terra[xhigh])
+            // 404s. Keep Codex on its builtin name; the magpie group pick is
+            // what actually receives traffic. Engine ids must not become
+            // current_model (that is how the terra[xhigh] 404 was born).
+            let bridged_codex = self.session_codex_engine_bound(session_id);
+            if bridged_codex
+                && update.target == ConfigTarget::Model
+                && update
+                    .value
+                    .as_str()
+                    .is_some_and(|id| id.contains('/'))
+            {
+                last_result = json!({});
+                continue;
+            }
             let skip_config_option = process
                 .config_option_unsupported
                 .load(Ordering::Relaxed);
-            let attempted = match &update.config_id {
+            let attempted = if bridged_codex
+                && matches!(update.target, ConfigTarget::Model | ConfigTarget::Effort)
+            {
+                Ok(json!({}))
+            } else {
+                match &update.config_id {
                 // Already know this agent has no set_config_option — don't probe again.
                 Some(_) if skip_config_option => self.legacy_set_config(
                     &process,
@@ -1594,6 +1627,7 @@ impl AcpService {
                 }
                 // No advertised config id: legacy RPC is the only transport.
                 None => self.legacy_set_config(&process, &agent_session_id, session_id, &update),
+            }
             };
             last_result = attempted?;
 
@@ -1644,13 +1678,26 @@ impl AcpService {
                     .lock()
                     .ok()
                     .and_then(|map| map.get(session_id).cloned());
-                let builtin = self
-                    .get_capabilities(session_id)
-                    .and_then(|caps| caps.current_model);
+                let caps = self.get_capabilities(session_id);
                 crate::model_bridge::sync_codex_engine_alias(
                     session_id,
                     agent_of_session.as_deref(),
-                    builtin.as_deref(),
+                    caps.as_ref().and_then(|c| c.current_model.as_deref()),
+                    caps.as_ref().and_then(|c| c.current_effort_id.as_deref()),
+                );
+            }
+            if update.target == ConfigTarget::Effort && self.session_codex_engine_bound(session_id) {
+                let agent_of_session = self
+                    .session_agents
+                    .lock()
+                    .ok()
+                    .and_then(|map| map.get(session_id).cloned());
+                let caps = self.get_capabilities(session_id);
+                crate::model_bridge::sync_codex_engine_alias(
+                    session_id,
+                    agent_of_session.as_deref(),
+                    caps.as_ref().and_then(|c| c.current_model.as_deref()),
+                    caps.as_ref().and_then(|c| c.current_effort_id.as_deref()),
                 );
             }
         }
@@ -1716,6 +1763,28 @@ impl AcpService {
         }
 
         let desired = effort_for_model(&caps, &model_id);
+        if self.session_codex_engine_bound(session_id) {
+            // Shared Codex cannot session/set_model; pin the level on the alias.
+            if let Some(effort) = desired.as_deref() {
+                let agent_of_session = self
+                    .session_agents
+                    .lock()
+                    .ok()
+                    .and_then(|map| map.get(session_id).cloned());
+                crate::model_bridge::sync_codex_engine_alias(
+                    session_id,
+                    agent_of_session.as_deref(),
+                    Some(model_id.as_str()),
+                    Some(effort),
+                );
+                caps.current_effort_id = Some(effort.to_string());
+                caps.current_effort = effort.parse().ok();
+                if let Ok(mut map) = self.capabilities.lock() {
+                    map.insert(session_id.to_string(), caps);
+                }
+            }
+            return;
+        }
         let current = caps.current_effort_id.clone();
         let already_sent_with_model = process
             .config_option_unsupported
@@ -2596,8 +2665,11 @@ fn send_effort_for_model(
 
 /// Wire model id for `session/set_model`. Codex 2.x wants `base[effort]`;
 /// Grok (and everyone else) wants the bare catalog id.
+/// Engine share ids (`codex/gpt-6.1-terra`) must stay bare — Codex's catalog
+/// after `providers/set` does not list them, and magpie members pin effort
+/// with `:xhigh`, not `[xhigh]`.
 fn wire_model_id(caps: &CapabilitySnapshot, model_id: &str, effort: Option<&str>) -> String {
-    if caps.effort_in_model_id {
+    if caps.effort_in_model_id && !model_id.contains('/') {
         combine_model_effort_id(model_id, effort)
     } else {
         split_combined_model_id(model_id).0
@@ -4893,6 +4965,11 @@ mod tests {
         assert_eq!(
             wire_model_id(&caps, "gpt-5.4", reassertable_effort(&caps).as_deref()),
             "gpt-5.4[xhigh]"
+        );
+        assert_eq!(
+            wire_model_id(&caps, "codex/gpt-6.1-terra", Some("xhigh")),
+            "codex/gpt-6.1-terra",
+            "engine share ids must not grow a [effort] suffix"
         );
         assert_eq!(
             split_combined_model_id("gpt-5.6-luna[xhigh]"),

@@ -775,8 +775,8 @@ fn install_embedded_engine_at(bytes: &[u8], version: &str, dir: &Path) -> Result
         installed_at: now_epoch_millis(),
     };
     save_manifest_at(dir, &manifest)?;
-    // 内嵌产物是种子（marionette_seed 构建，无 provider CLI）：落短路标记，
-    // 注册/同步链不再为每个 provider 白起注定失败的子进程。
+    // 内嵌产物是种子（marionette_seed 构建）：落短路标记，TUI/quota 等完整
+    // CLI 不再白起子进程。自定义来源走种子自己的 provider 命令。
     mark_cli_absent(dir);
     crate::debug_log::append(
         "engine",
@@ -1258,21 +1258,9 @@ fn register_key_providers(exe: &Path) {
     if test_register_hook().is_some() {
         return;
     }
-    // 种子引擎没有 provider CLI：注册链整体短路（订阅由引擎 discovery 自己
-    // 发现，不损失功能）。面板上的「更新引擎后自动注册」提示由菜单路径的
-    // sync_discovered_sources 负责给出。
-    if let Some(dir) = exe.parent() {
-        if cli_absent_seed(dir) {
-            crate::debug_log::append(
-                "engine",
-                "info",
-                "",
-                "engine provider registration skipped (seed engine has no provider CLI)",
-                None,
-            );
-            return;
-        }
-    }
+    // 种子自带精简 provider add/set/key/rm/refresh/models，自定义来源和
+    // preset 钥匙走同一条注册链。cli-absent.marker 只挡 TUI/quota 等完整
+    // CLI，不再整段跳过注册。
     let _ = sync_sources_at(exe, false);
     let Some(home) = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
@@ -1545,10 +1533,10 @@ fn sync_sources_at(exe: &Path, force_refresh: bool) -> Vec<String> {
                 fingerprints.insert(id.clone(),fingerprint); kept.push(id.clone()); changed = true;
                 maybe_refresh_source_live(exe, &id, true, &mut changed);
             }
-            // 种子引擎（精简纯网关）刻意不含 provider CLI——给出可操作指引
-            // 而不是含混的"刷新重试"。装上完整引擎后下一轮同步自动补齐。
+            // 过旧的种子二进制还没有精简 provider 命令。新种子已经自带，
+            // 不必去下上游完整 magpie。
             Err(error) if error.contains("engine seed") => {
-                warnings.push(crate::ts!("引擎种子不含来源注册（provider CLI）——在「模型共享」中把引擎更新到完整版后自动注册", "The slim engine seed ships without source registration (provider CLI) — update the engine to the full build in Model Sharing and it registers automatically"));
+                warnings.push(crate::ts!("当前内嵌引擎过旧，还不能登记自定义来源。重新安装本应用出厂引擎即可，不必下载上游完整版", "This embedded engine is too old to register custom sources. Reinstall the factory engine shipped with this app; a full upstream magpie download is not required"));
                 if ledger.contains(&id) {kept.push(id.clone());}
             }
             Err(_) => { warnings.push(crate::ts!("{label} 来源注册失败，可刷新重试", "{label} source registration failed; refresh to retry", label = source.view.label)); if ledger.contains(&id) {kept.push(id.clone());} }
@@ -2206,11 +2194,11 @@ fn idle_watchdog() {
 /// （refresh 失败保持旧清单，语义不变）。
 const MAGPIE_CLI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// 种子引擎（精简纯网关）不含 provider CLI。装内嵌种子时落这个标记，注册/
-/// 同步链一眼看穿直接短路——否则每个 provider 都要白起一遍注定失败的子进程
-/// （实测一轮注册 7.7s 全耗在种子拒绝上，还每轮重试）。GitHub 完整引擎落位
-/// 时摘标记。已部署的旧种子没有标记：第一次真实 CLI 失败（stderr 含
-/// "engine seed"）后自学习补写，下一轮起短路。
+/// 种子引擎不含完整 CLI（TUI / quota / agent 安装器）。装内嵌种子时落这个
+/// 标记，那些命令一眼短路——否则每个都会白起一遍注定失败的子进程。
+/// `provider` / `group` / `models` 是种子自带的精简命令，见
+/// `seed_cli_passthrough`。GitHub 完整引擎落位时摘标记。旧种子第一次真实
+/// CLI 失败（stderr 含 "engine seed"）后自学习补写。
 fn cli_absent_marker_path(dir: &Path) -> PathBuf {
     dir.join("cli-absent.marker")
 }
@@ -2261,6 +2249,14 @@ fn run_magpie_cli_capture(exe: &Path, args: &[&str]) -> Result<String, String> {
     String::from_utf8(output.stdout).map_err(|e| crate::ts!("magpie 输出不是 UTF-8: {e}", "magpie output is not UTF-8: {e}"))
 }
 
+/// 种子二进制自带的精简命令。其余 CLI（TUI / quota / agent 安装器）仍短路。
+fn seed_cli_passthrough(args: &[&str]) -> bool {
+    matches!(
+        args.first().copied(),
+        Some("group") | Some("provider") | Some("models")
+    )
+}
+
 /// 跑一个短命 magpie CLI 命令（.portable 围栏由 exe 位置决定，无需 env）。
 /// 测试构建下先查 CLI 缝（别名组测试记录参数用），有缝就不真的拉子进程。
 fn run_magpie_cli(exe: &Path, args: &[&str]) -> Result<(), String> {
@@ -2268,13 +2264,13 @@ fn run_magpie_cli(exe: &Path, args: &[&str]) -> Result<(), String> {
     if let Some(hook) = test_cli_hook() {
         return hook(args);
     }
-    // 种子短路：标记在（种子引擎，无 provider CLI）就不再起子进程，直接以
-    // 种子口径失败——错误串带 "engine seed"，下游的警告分类照旧成立。
+    // 种子短路：标记在就跳过 TUI/quota 等完整 CLI。`provider` / `group` /
+    // `models` 是种子自己的精简命令，必须放行——自定义来源登记靠它们。
     if let Some(dir) = exe.parent() {
-        if cli_absent_seed(dir) {
+        if cli_absent_seed(dir) && !seed_cli_passthrough(args) {
             return Err(crate::ts!(
-                "magpie: provider is not in the Marionette engine seed — update the engine (Marionette model share) for the full CLI",
-                "magpie: provider is not in the Marionette engine seed — update the engine (Marionette model share) for the full CLI"
+                "magpie: this command is not in the Marionette engine seed",
+                "magpie: this command is not in the Marionette engine seed"
             ));
         }
     }
@@ -2314,7 +2310,7 @@ fn remember_seed_rejection(exe: &Path, stderr: &str) {
                     "engine",
                     "info",
                     "",
-                    "seed engine detected via CLI rejection; provider calls will short-circuit",
+                    "seed engine detected via CLI rejection; TUI/quota CLI will short-circuit",
                     None,
                 );
             }
@@ -2355,6 +2351,51 @@ fn peel_combined_model_id(id: &str) -> &str {
     id
 }
 
+/// Magpie member effort suffixes (`provider/model:xhigh`). Keep in lockstep
+/// with `third_party/magpie/internal/provider/groupeffort.go` MemberEfforts.
+const MEMBER_EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+fn peel_combined_effort(id: &str) -> Option<&str> {
+    let id = id.trim();
+    let open = id.rfind('[')?;
+    if !id.ends_with(']') || open == 0 {
+        return None;
+    }
+    let inner = id[open + 1..id.len() - 1].trim();
+    MEMBER_EFFORTS
+        .iter()
+        .copied()
+        .find(|e| e.eq_ignore_ascii_case(inner))
+}
+
+fn split_member_effort(id: &str) -> (&str, Option<&str>) {
+    let id = id.trim();
+    let Some(colon) = id.rfind(':') else {
+        return (id, None);
+    };
+    if colon == 0 {
+        return (id, None);
+    }
+    let suffix = &id[colon + 1..];
+    if MEMBER_EFFORTS
+        .iter()
+        .any(|e| e.eq_ignore_ascii_case(suffix))
+    {
+        (&id[..colon], Some(suffix))
+    } else {
+        (id, None)
+    }
+}
+
+/// Pin `:effort` on a magpie member id. Empty effort leaves the bare model.
+pub(crate) fn with_member_effort(engine_model: &str, effort: Option<&str>) -> String {
+    let (base, existing) = split_member_effort(engine_model);
+    match effort.map(str::trim).filter(|s| !s.is_empty()).or(existing) {
+        Some(level) => format!("{base}:{level}"),
+        None => base.to_string(),
+    }
+}
+
 /// 组 id 规则对齐 magpie CLI 的校验（小写字母 / 数字 / 点 / 横线）；codex
 /// 内建名本身全小写，这里只做防御性归一，不合法的名字直接拒（留痕）。
 fn codex_group_id(builtin: &str) -> Option<String> {
@@ -2389,7 +2430,9 @@ fn owned_serve_exe() -> Option<PathBuf> {
 pub fn codex_alias_sync(session_id: &str, builtin: &str, engine_model: &str) {
     note_engine_needed();
     // Codex encodes effort as `gpt-5.6-luna[xhigh]`; magpie group ids reject `[`.
+    let effort = peel_combined_effort(builtin);
     let builtin = peel_combined_model_id(builtin);
+    let engine_model = with_member_effort(engine_model, effort);
     let Some(group_id) = codex_group_id(builtin) else {
         crate::debug_log::append(
             "engine",
@@ -2405,7 +2448,7 @@ pub fn codex_alias_sync(session_id: &str, builtin: &str, engine_model: &str) {
         let map = alias_map().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if map
             .get(session_id)
-            .is_some_and(|(id, model)| id == &group_id && model == engine_model)
+            .is_some_and(|(id, model)| id == &group_id && model == &engine_model)
         {
             return;
         }
@@ -2431,17 +2474,7 @@ pub fn codex_alias_sync(session_id: &str, builtin: &str, engine_model: &str) {
         .get(session_id)
         .cloned();
     let name = format!("{CODEX_GROUP_PREFIX}{group_id}");
-    let result = run_magpie_cli(
-        &exe,
-        &[
-            "group",
-            "add",
-            &name,
-            &format!("models={engine_model}"),
-            &format!("id={group_id}"),
-            &format!("pick={engine_model}"),
-        ],
-    );
+    let result = write_codex_alias_group(&exe, &name, &group_id, &engine_model);
     match result {
         Ok(()) => {
             let mut map = alias_map().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -2480,6 +2513,34 @@ pub fn codex_alias_sync(session_id: &str, builtin: &str, engine_model: &str) {
             drop_codex_alias_group(&old_id);
         }
     }
+}
+
+/// `group add` upserts on the seed (SaveGroup). Stock magpie CLI errors if
+/// the id already exists — fall back to `group set` so effort re-pins and
+/// rebinds still land.
+fn write_codex_alias_group(
+    exe: &Path,
+    name: &str,
+    group_id: &str,
+    engine_model: &str,
+) -> Result<(), String> {
+    let models = format!("models={engine_model}");
+    let id = format!("id={group_id}");
+    let pick = format!("pick={engine_model}");
+    match run_magpie_cli(exe, &["group", "add", name, &models, &id, &pick]) {
+        Ok(()) => Ok(()),
+        Err(error) if group_already_exists(&error) => run_magpie_cli(
+            exe,
+            &["group", "set", group_id, &models, &pick],
+        )
+        .map_err(|set_err| format!("{error}; group set: {set_err}")),
+        Err(error) => Err(error),
+    }
+}
+
+fn group_already_exists(error: &str) -> bool {
+    let e = error.to_ascii_lowercase();
+    e.contains("already") || e.contains("there is a group")
 }
 
 /// 会话解绑 / 会话侧清理入口：移除该会话登记的别名，组在无人引用时删掉。
@@ -3750,6 +3811,17 @@ mod tests {
         assert_eq!(glm[0].2, "region=coding");
     }
 
+    #[test]
+    fn seed_cli_passthrough_allows_provider_group_and_models() {
+        assert!(seed_cli_passthrough(&["provider", "add"]));
+        assert!(seed_cli_passthrough(&["provider", "set", "x", "key=k"]));
+        assert!(seed_cli_passthrough(&["group", "add"]));
+        assert!(seed_cli_passthrough(&["models"]));
+        assert!(!seed_cli_passthrough(&["quota"]));
+        assert!(!seed_cli_passthrough(&["serve"]));
+        assert!(!seed_cli_passthrough(&[]));
+    }
+
     /// 注册对账：账本减去本次计划 = 引擎侧应回收的名字；计划里的不动。
     #[test]
     fn reconcile_removals_only_reclaims_ledger_names_missing_from_the_plan() {
@@ -3946,11 +4018,67 @@ mod tests {
             Some("gpt-5.6-luna".into())
         );
         let cli = CliRecorder::install(Vec::new());
-        codex_alias_sync("s1", "gpt-5.6-luna[xhigh]", "grok/grok-4.7");
+        codex_alias_sync("s1", "gpt-5.6-luna[xhigh]", "codex/gpt-6.1-terra");
+        let add = &cli.calls()[0];
+        assert!(add.iter().any(|a| a == "id=gpt-5.6-luna"), "{add:?}");
         assert!(
-            cli.calls()[0].iter().any(|a| a == "id=gpt-5.6-luna"),
-            "{:?}",
-            cli.calls()[0]
+            add.iter().any(|a| a == "pick=codex/gpt-6.1-terra:xhigh"),
+            "share pick must pin Codex effort on the magpie member: {add:?}"
+        );
+        assert!(add.iter().any(|a| a == "models=codex/gpt-6.1-terra:xhigh"));
+    }
+
+    #[test]
+    fn with_member_effort_pins_and_replaces() {
+        assert_eq!(
+            with_member_effort("codex/gpt-6.1-terra", Some("xhigh")),
+            "codex/gpt-6.1-terra:xhigh"
+        );
+        assert_eq!(
+            with_member_effort("codex/gpt-6.1-terra:high", Some("max")),
+            "codex/gpt-6.1-terra:max"
+        );
+        assert_eq!(
+            with_member_effort("codex/gpt-6.1-terra:xhigh", None),
+            "codex/gpt-6.1-terra:xhigh"
+        );
+        assert_eq!(
+            with_member_effort("openrouter/deepseek-r1:free", Some("high")),
+            "openrouter/deepseek-r1:free:high"
+        );
+    }
+
+    #[test]
+    fn codex_alias_add_falls_back_to_set_when_group_exists() {
+        let calls: std::sync::Arc<std::sync::Mutex<Vec<Vec<String>>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = calls.clone();
+        let _engine = test_running_with_cli(
+            Vec::new(),
+            std::sync::Arc::new(move |args| {
+                recorder
+                    .lock()
+                    .unwrap()
+                    .push(args.iter().map(|s| s.to_string()).collect());
+                if args.first().copied() == Some("group") && args.get(1).copied() == Some("add")
+                {
+                    return Err("there is a group gpt-5.6-luna already".into());
+                }
+                Ok(())
+            }),
+        );
+        codex_alias_sync("s1", "gpt-5.6-luna", "codex/gpt-6.1-terra:xhigh");
+        let got = calls.lock().unwrap().clone();
+        assert_eq!(got[0][..2], ["group".to_string(), "add".to_string()]);
+        assert_eq!(
+            got[1],
+            vec![
+                "group".to_string(),
+                "set".to_string(),
+                "gpt-5.6-luna".to_string(),
+                "models=codex/gpt-6.1-terra:xhigh".to_string(),
+                "pick=codex/gpt-6.1-terra:xhigh".to_string(),
+            ]
         );
     }
 

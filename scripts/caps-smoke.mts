@@ -223,7 +223,7 @@ check("effort chip is reconstructed when live advertised none", () => {
   )!;
   assert.deepEqual(
     caps.effortOptions.map((o) => o.id),
-    ["xhigh", "high", "medium", "low", "minimal", "none"],
+    ["max", "xhigh", "high", "medium", "low"],
   );
   assert.equal(caps.currentEffortId, "xhigh");
   assert.equal(caps.effortConfigId, null);

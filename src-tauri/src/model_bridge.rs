@@ -2692,14 +2692,17 @@ pub(crate) fn codex_bridge_route(selection: &BridgeSelection) -> Option<(String,
 /// codex × 引擎绑定：把会话当前内建名同步成引擎路由组别名。调用点 = acp.rs
 /// 的 session/new 之后、codex 原生切模型之后；解绑清理走 `bind_session_at`。
 /// 非 codex / 未绑引擎 / caps 没报当前模型 → 静默 no-op（codex 的 model
-/// select 必带 currentValue，None 只是防御）。
+/// select 必带 currentValue，None 只是防御）。`current_effort` 钉到 magpie
+/// 组成员 `provider/model:effort` 上——共享会话不能对 Codex 发 set_model
+/// （providers/set 之后 availableModels 为空，组合 id 一律 404）。
 pub(crate) fn sync_codex_engine_alias(
     session_id: &str,
     agent_id: Option<&str>,
     current_model: Option<&str>,
+    current_effort: Option<&str>,
 ) {
     let Some(path) = bindings_path() else { return };
-    sync_codex_engine_alias_at(&path, session_id, agent_id, current_model);
+    sync_codex_engine_alias_at(&path, session_id, agent_id, current_model, current_effort);
 }
 
 fn sync_codex_engine_alias_at(
@@ -2707,6 +2710,7 @@ fn sync_codex_engine_alias_at(
     session_id: &str,
     agent_id: Option<&str>,
     current_model: Option<&str>,
+    current_effort: Option<&str>,
 ) {
     if classify_agent(agent_id.unwrap_or("")) != BridgeAgent::Codex {
         return;
@@ -2718,7 +2722,13 @@ fn sync_codex_engine_alias_at(
     if selection.entry_id != crate::engine::ENGINE_ENTRY_ID {
         return;
     }
-    crate::engine::codex_alias_sync(session_id, current, &selection.model_id);
+    let pick = crate::engine::with_member_effort(&selection.model_id, current_effort);
+    crate::engine::codex_alias_sync(session_id, current, &pick);
+}
+
+pub(crate) fn session_has_engine_binding(session_id: &str) -> bool {
+    binding_for(session_id)
+        .is_some_and(|s| s.entry_id == crate::engine::ENGINE_ENTRY_ID)
 }
 
 /// initialize 应答是否声明了 `agentCapabilities.providers`（providers/set 的
@@ -3869,14 +3879,14 @@ official_marketplace_auto_installed = true\n";
         ));
 
         // 非 codex / 无当前模型 / 未绑定的会话 → 零 CLI。
-        sync_codex_engine_alias_at(&bindings, "s1", Some("claude-code"), Some("m"));
-        sync_codex_engine_alias_at(&bindings, "s1", Some("codex"), None);
-        sync_codex_engine_alias_at(&bindings, "s-other", Some("codex"), Some("m"));
+        sync_codex_engine_alias_at(&bindings, "s1", Some("claude-code"), Some("m"), None);
+        sync_codex_engine_alias_at(&bindings, "s1", Some("codex"), None, None);
+        sync_codex_engine_alias_at(&bindings, "s-other", Some("codex"), Some("m"), None);
         assert!(calls.lock().unwrap().is_empty(), "门控条件下不能碰引擎");
 
         // codex + 引擎绑定 → 组处方（id=内建名、pick=引擎模型、manual 路由
         // 由 pick 自带）；幂等重放不重复跑 CLI。
-        sync_codex_engine_alias_at(&bindings, "s1", Some("codex"), Some("gpt-5.2-codex"));
+        sync_codex_engine_alias_at(&bindings, "s1", Some("codex"), Some("gpt-5.2-codex"), None);
         assert_eq!(
             calls.lock().unwrap()[0],
             vec![
@@ -3888,15 +3898,32 @@ official_marketplace_auto_installed = true\n";
                 "pick=grok/grok-4.7".to_string(),
             ]
         );
-        sync_codex_engine_alias_at(&bindings, "s1", Some("codex"), Some("gpt-5.2-codex"));
+        sync_codex_engine_alias_at(&bindings, "s1", Some("codex"), Some("gpt-5.2-codex"), None);
         assert_eq!(calls.lock().unwrap().len(), 1, "同会话同模型重放是 no-op");
+
+        // 档位变化 → pick 带 :effort，重跑 add。
+        sync_codex_engine_alias_at(
+            &bindings,
+            "s1",
+            Some("codex"),
+            Some("gpt-5.2-codex"),
+            Some("xhigh"),
+        );
+        assert_eq!(calls.lock().unwrap().len(), 2, "effort re-pin must rewrite the group");
+        assert!(
+            calls.lock().unwrap()[1]
+                .iter()
+                .any(|a| a == "pick=grok/grok-4.7:xhigh"),
+            "{:?}",
+            calls.lock().unwrap()[1]
+        );
 
         // 解绑（None）→ codex 分支清别名（无人引用即删组）。
         bind_session_at(&bindings, &credentials, &grok_config, &scan, "s1", Some("codex"), None)
             .unwrap();
         let calls = calls.lock().unwrap();
         assert_eq!(
-            calls[1],
+            calls[2],
             vec!["group".to_string(), "rm".to_string(), "gpt-5.2-codex".to_string()]
         );
 

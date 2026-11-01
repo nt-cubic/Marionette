@@ -101,11 +101,34 @@ if ($mainText -notmatch '(?m)^//go:build !marionette_seed') {
     Write-Output '[import] seed patch: main.go already carries the guard (upstream merged it?)'
 }
 
+# Codex ACP encodes effort as model[effort] (gpt-5.6-luna[xhigh]). Stock magpie
+# GroupFor only peels Claude Code's [1m] window mark, so a share alias saved
+# under the bare builtin name 404s. Replay the helper + swap the stock peels.
+$providerDir = Join-Path $dest 'internal\provider'
+$peelSrc = Join-Path $PSScriptRoot 'magpie-seed\marionette_peel.go'
+$peelTest = Join-Path $PSScriptRoot 'magpie-seed\marionette_peel_test.go'
+if (-not (Test-Path $peelSrc)) { throw 'tools\magpie-seed\marionette_peel.go missing — Codex effort peel cannot be applied' }
+Copy-Item -Force $peelSrc (Join-Path $providerDir 'marionette_peel.go')
+if (Test-Path $peelTest) {
+    Copy-Item -Force $peelTest (Join-Path $providerDir 'marionette_peel_test.go')
+}
+Get-ChildItem $providerDir -Filter *.go | ForEach-Object {
+    if ($_.Name -eq 'marionette_peel.go' -or $_.Name -eq 'marionette_peel_test.go') { return }
+    $text = [IO.File]::ReadAllText($_.FullName)
+    $next = $text.Replace('strings.TrimSuffix(strings.TrimSpace(id), "[1m]")', 'peelAgentModelMark(id)')
+    $next = $next.Replace('strings.TrimSuffix(strings.TrimSpace(ref), "[1m]")', 'peelAgentModelMark(ref)')
+    if ($next -ne $text) {
+        [IO.File]::WriteAllText($_.FullName, $next)
+        Write-Output ("[import] seed patch: Codex [effort] peel in {0}" -f $_.Name)
+    }
+}
+
 @(
     "Vendored from https://github.com/yetone/magpie (MIT) at tag $Tag on $(Get-Date -Format yyyy-MM-dd).",
     "Imported by tools\import-magpie.ps1 — default Tag is GitHub latest stable; pass -Tag or MAGPIE_TAG to pin.",
     "Subset only: build inputs for the nogui CLI. Upstream site/, build/, .github/, docs/ are intentionally absent.",
     "Marionette patch: main_seed.go (build tag marionette_seed) is the slim gateway-only main; import re-applies it. See tools\magpie-seed\main_seed.go.",
+    "Marionette patch: marionette_peel.go peels Codex [effort] (and Claude [1m]) in GroupFor so share aliases match. See tools\magpie-seed\marionette_peel.go.",
     "License: LICENSE (MIT) in this folder."
 ) | Set-Content (Join-Path $dest 'MARIONETTE-VENDOR.md')
 
