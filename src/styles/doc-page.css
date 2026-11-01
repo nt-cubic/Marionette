@@ -1,0 +1,247 @@
+/* ── In-app document tab (markdown/text viewer + editor) ─────────────────
+   Doc pages are pseudo-tabs like the 收纳盒: they replace the conversation
+   column only (shelf / context panel stay), and in docked mode they mount as
+   the dock full page below the strip chrome. */
+
+/* Document pseudo-tab chip in the session tab strip (mirrors .is-memo). */
+.editor-tab.is-doc .editor-tab__select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.editor-tab.is-doc svg {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+
+.editor-tab.is-doc.is-active svg {
+  color: var(--accent);
+}
+
+.editor-tab.is-doc .editor-tab__select span {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Floating window, tab form: the page fills the conversation column only. */
+.doc-tab-page {
+  position: absolute;
+  inset: 0;
+  /* Below the edge-reveal chevrons (z 10) so the side panels stay reachable. */
+  z-index: 5;
+  display: flex;
+  min-height: 0;
+}
+
+.doc-page {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--workspace-bg);
+}
+
+.doc-page__bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.doc-page__bar > svg {
+  color: var(--text-faint);
+}
+
+.doc-page__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.doc-page__dirty {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.doc-page__actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.doc-page__mode {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.doc-page__mode-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 7px;
+  border: 0;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.doc-page__mode-btn + .doc-page__mode-btn {
+  border-left: 1px solid var(--border);
+}
+
+.doc-page__mode-btn.is-active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.doc-page__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.doc-page__preview {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 18px 22px 40vh; /* long tail room so deep anchors aren't glued to the seam */
+}
+
+/* Keep the reading measure narrow on wide pages; documents are not walls. */
+.doc-page__preview .md-body {
+  max-width: 860px;
+  margin: 0 auto;
+}
+
+.doc-page__editor {
+  flex: 1 1 auto;
+  min-width: 0;
+  resize: none;
+  border: 0;
+  outline: none;
+  padding: 14px 16px;
+  background: var(--workspace-bg);
+  color: var(--text);
+  font-family: var(--font-mono, ui-monospace, "Cascadia Mono", Consolas, monospace);
+  font-size: 12.5px;
+  line-height: 1.6;
+  tab-size: 2;
+  white-space: pre;
+}
+
+.doc-page.is-error {
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: var(--text-muted);
+}
+
+.doc-page.is-error .doc-page__bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+}
+
+.doc-page__error {
+  font-weight: 600;
+}
+
+.doc-page__error-detail {
+  max-width: 70%;
+  font-size: 12px;
+  color: var(--text-faint);
+  word-break: break-all;
+  text-align: center;
+}
+
+/* ── Compare layout: conversation left, document right ─────────────────── */
+
+.doc-compare-row {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  min-height: 0;
+}
+
+.doc-compare__chat {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Inside the compare cell the conversation is stacked, not gridded. */
+.doc-compare__chat > .session-pane {
+  flex: 1 1 auto;
+  height: auto;
+}
+
+.doc-compare__seam {
+  flex: 0 0 7px;
+  cursor: col-resize;
+  background: color-mix(in srgb, var(--border) 42%, var(--workspace-bg));
+  transition: background var(--dur-fast, 120ms) ease;
+}
+
+.doc-compare__seam:hover,
+.doc-compare__seam:active {
+  background: color-mix(in srgb, var(--accent) 45%, var(--workspace-bg));
+}
+
+.doc-compare__doc {
+  flex: 0 0 auto;
+  width: 50%;
+  min-width: 280px;
+  display: flex;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+}
+
+.doc-compare__doc .doc-page {
+  flex: 1 1 auto;
+}
+
+/* ── Docked mode: the document takes the full page below the strip chrome ── */
+
+.doc-dock-page {
+  position: fixed;
+  top: 32px; /* below the strip chrome, same geometry as the memo box page */
+  left: 0;
+  right: 0;
+  bottom: 40px; /* above the dock footer */
+  z-index: 75;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 8px;
+  overflow: hidden;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  outline: none;
+  animation: dock-page-in var(--dur-slow, 280ms) var(--ease-out, ease-out);
+}
+
+.doc-dock-page .doc-page {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
