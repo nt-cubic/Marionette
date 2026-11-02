@@ -81,4 +81,9 @@ export const en = {
   "usageLedger.sessionsCount_one": "{count} turn",
   "usageLedger.sessionsCount_other": "{count} turns",
   "usageLedger.peakDay": "Busiest day: {day} · {tokens}",
+  "usageLedger.exportCsv": "Export CSV",
+  "usageLedger.csvPreparing": "Generating CSV…",
+  "usageLedger.csvOk": "Exported {name}",
+  "usageLedger.csvReveal": "Show file",
+  "usageLedger.csvError": "Export failed: {error}",
 } satisfies Record<keyof typeof zh, string>;
