@@ -1681,21 +1681,40 @@ export function App() {
     if (appUpdateBusy) return;
     void (async () => {
       setAppUpdateBusy(true);
+      // 17MB 资产要十几秒到几分钟:先给进行中的 toast。旧实现只写 debug 日志,
+      // 用户点完按钮界面毫无反应,实际下载已失败并停在旧版本。
+      const version = appUpdate?.latestVersion ?? "";
+      const progress = showToast({
+        text: t("appUpdate.downloading", { version }),
+        tone: "info",
+        duration: 300_000,
+      });
       try {
         await downloadAppUpdate();
+        dismissToast(progress);
+        showToast({ text: t("appUpdate.applying"), tone: "info", duration: 60_000 });
         await applyAppUpdateAndRelaunch();
       } catch (error) {
+        dismissToast(progress);
+        const message = error instanceof Error ? error.message : String(error);
         pushDebug({
           sessionId: currentSessionId ?? "",
           level: "error",
           source: "update",
           summary: "app update failed",
-          detail: error instanceof Error ? error.message : String(error),
+          detail: message,
+        });
+        // 失败必须可见:带原因 + 最常见处方(网络中断 → 启用代理后重试)。
+        showToast({
+          text: t("appUpdate.failed", { error: message }),
+          detail: t("appUpdate.failedHint"),
+          tone: "error",
+          duration: 12_000,
         });
         setAppUpdateBusy(false);
       }
     })();
-  }, [appUpdateBusy, currentSessionId, pushDebug]);
+  }, [appUpdate?.latestVersion, appUpdateBusy, currentSessionId, pushDebug, t]);
 
   /**
    * Explorer "在此处打开 Marionette" / `--open-path`:

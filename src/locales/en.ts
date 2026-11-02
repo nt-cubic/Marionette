@@ -23,6 +23,7 @@ import { en as enFeLibB } from "./parts/fe-libB.en";
 import { en as enFeLibC } from "./parts/fe-libC.en";
 import { en as enFeCouncil } from "./parts/fe-council.en";
 import { en as enFeExport } from "./parts/fe-export.en";
+import { en as enFeUpdate } from "./parts/fe-update.en";
 import { en as enFeUsagedash } from "./parts/fe-usagedash.en";
 
 export const en = {
@@ -45,5 +46,6 @@ export const en = {
   ...enFeLibC,
   ...enFeCouncil,
   ...enFeExport,
+  ...enFeUpdate,
   ...enFeUsagedash,
 } satisfies Record<keyof typeof zh, string>;
