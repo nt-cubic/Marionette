@@ -414,7 +414,10 @@
 .project-dialog-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 20;
+  /* App-chrome top layer: the edge-dock page overlays (70/75) and footer (78)
+     live inside .app-shell, so a dialog at 20 opened underneath them while the
+     strip was docked. */
+  z-index: 9960;
   display: grid;
   place-items: center;
   padding: 24px;
@@ -570,8 +573,10 @@
   color: #fff;
 }
 
+/* Shares .project-dialog-backdrop, so it sits one step above it: a confirm is
+   usually raised *from* an open dialog (delete project, discard edits). */
 .confirm-dialog-backdrop {
-  z-index: 60;
+  z-index: 9970;
 }
 
 .confirm-dialog {

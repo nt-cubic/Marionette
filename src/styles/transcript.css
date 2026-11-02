@@ -3636,7 +3636,10 @@
 .permission-dialog-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 40;
+  /* App-chrome top layer (same reason as .project-dialog-backdrop): a 贴边
+     strip's page overlays sit at 70/75, so a tool-permission prompt rendered
+     at 40 would be invisible while the agent waits on the answer. */
+  z-index: 9950;
   display: grid;
   place-items: center;
   padding: 24px;
