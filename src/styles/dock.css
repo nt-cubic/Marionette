@@ -584,16 +584,19 @@ body::after {
   background: var(--accent);
 }
 
-/* ⋯ menu: undock / update / quit, out of sight until asked for. */
+/* ⋯ menu: undock / update / quit, out of sight until asked for.
+   Portaled to <body> (DockChrome's DockMenuLayer) because .dock-chrome owns a
+   stacking context (z 40) — inside it the menu could never clear the page
+   overlays (70/75). Top/left/max-height are written inline from the anchor. */
 .dock-menu-anchor {
   position: relative;
 }
 
 .dock-menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  z-index: 90;
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 10040;
   display: flex;
   flex-direction: column;
   min-width: 196px;
@@ -656,10 +659,9 @@ body::after {
 }
 
 /* Left-anchored variant (新建对话 destination picker sits at the strip's
-   left edge — the base .dock-menu is right:0 and would spill off-screen). */
+   left edge). Placement is inline from DockMenuLayer, which already clamps
+   both sides into the viewport; only the growth origin differs. */
 .dock-menu--left {
-  right: auto;
-  left: 0;
   transform-origin: top left;
 }
 

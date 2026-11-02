@@ -56,6 +56,15 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
   ProjectShelf 出模型共享入口 + 设置齿轮（打开 Ctrl K）+ 主题/通知/Telegram（语言与代理收进 Ctrl K），ContextPanel 出检查更新；它们的 popover
   也必须一起 portal（`DockedLayer`），否则 `translateX(100%)` 的 rail 会连 `position: fixed` 的浮层
   一起藏掉。`.dock-mode .app-shell` 预留 40px，整页 bottom 也收 40px。
+- **贴边浮层必须逃出 `.dock-chrome` 的层叠上下文（2026-11-03 修）**：整页覆盖层在 70/75，
+  而 `.dock-chrome` 自己是 `position:fixed; z-index:40` —— **形成独立层叠上下文**，里面的
+  `.dock-menu`/对话框再写多高都出不了 40，表现为「点了 ⋯ 没反应 / Add project 看不见」。
+  现在窄条的两个菜单（⋯ 与 新建对话）走 `DockChrome.tsx` 的 `DockMenuLayer`：`createPortal`
+  到 `<body>`、`position:fixed` 由锚点 rect 现算（左右按 `align` 对齐并夹进视口 8px、高度取
+  剩余空间），`z-index:10040`；portal 之后面板不在锚点里，**外部点击守卫必须把
+  `morePanelRef`/`newPanelRef` 一起算进去**。对话框走 9950–9970 一段（权限 9950 / 通用
+  `.project-dialog-backdrop` 9960 / confirm 9970），顺序记在 `src/styles/base-chrome.css`
+  的 z-index 表里。新加贴边浮层的照这个形状做，**别把 `z-index` 往 `.dock-chrome` 里面加**。
 - **关闭路径**（2026-10-31 定稿）：× 的行为由用户在 Ctrl K 面板选择（dock prefs 的
   `autoHideOnClose`，Rust AtomicBool 镜像；**默认 false = 直接退出**）。退出 → `shutdown_and_exit`；
   「后台常驻」→ **Rust 在 CloseRequested 里直接 hide 主窗**（`main.as_ref().hide()` webview 级先行，
