@@ -418,8 +418,22 @@
      live inside .app-shell, so a dialog at 20 opened underneath them while the
      strip was docked. */
   z-index: 9960;
-  display: grid;
-  place-items: center;
+  /* Flex + safe centering, same reason as .permission-dialog-backdrop: dialog
+     content is agent- or user-supplied (a confirm with a whole error message,
+     a credentials list of forty providers). A centered grid item taller than
+     the window is clipped at BOTH edges with no scrollable ancestor, so its
+     buttons become unreachable. `safe center` centers while the dialog fits
+     and pins it to the top when it does not; the backdrop scrolls as the last
+     resort. */
+  display: flex;
+  align-items: center;
+  align-items: safe center;
+  justify-content: center;
+  /* Same escape hatch on the horizontal axis: a dialog with a wide min-width
+     in a narrow detached window overflows to the left, where a centered flex
+     container cannot scroll. */
+  justify-content: safe center;
+  overflow: auto;
   padding: 24px;
   background: rgba(0, 0, 0, 0.32);
 }
@@ -427,6 +441,11 @@
 .project-dialog {
   display: grid;
   width: min(420px, 100%);
+  /* Never taller than the viewport. Dialogs that manage their own scroll body
+     (model library, usage, credentials) keep doing so; the rest get one
+     scrollbar on the panel instead of cutting their actions off. */
+  max-height: 100%;
+  overflow: auto;
   gap: 18px;
   padding: 18px;
   border: 1px solid var(--border-strong);

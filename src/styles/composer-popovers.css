@@ -675,6 +675,12 @@
   position: fixed;
   z-index: 1200;
   width: 276px;
+  /* Anchored to a footer button and grown upward with `bottom`, so an
+     over-tall panel (a long provider list, a big model-share report) would run
+     off the top of the window with no way to scroll to its first rows. */
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 10px;
   border: 1px solid var(--border);
   border-radius: 10px;

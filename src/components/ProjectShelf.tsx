@@ -49,6 +49,21 @@ function DockedLayer({ docked, children }: { docked: boolean; children: ReactNod
 const SESSION_LIST_PREVIEW = 5;
 const EMPTY_DONE_UNREAD: ReadonlySet<string> = new Set();
 
+/**
+ * Shelf popovers open upward from a footer button (`bottom` = distance above
+ * the window floor). Their content is list-shaped and unbounded — model share,
+ * Telegram settings, a long provider list — so the panel is capped to the
+ * space above its anchor; past that the popover scrolls instead of running off
+ * the top of the screen where its first rows could never be reached.
+ */
+function popoverAnchorStyle(anchor: { left: number; top: number }) {
+  return {
+    left: anchor.left,
+    bottom: window.innerHeight - anchor.top + 6,
+    maxHeight: Math.max(0, anchor.top - 12),
+  };
+}
+
 /** Per-project memo cache: a keyed derived value recomputes only when a dep changes. */
 function memoPerProject<T>(
   cache: Map<string, { deps: unknown[]; value: unknown }>,
@@ -1937,7 +1952,7 @@ export function ProjectShelf({
           className="proxy-popover"
           role="dialog"
           aria-label={t("shelf.proxySettings")}
-          style={{ left: proxyAnchor.left, bottom: window.innerHeight - proxyAnchor.top + 6 }}
+          style={popoverAnchorStyle(proxyAnchor)}
         >
           <div className="proxy-popover__header">
             <span className="proxy-popover__title">{t("shelf.proxySettings")}</span>
@@ -2013,7 +2028,7 @@ export function ProjectShelf({
           className="proxy-popover engine-panel"
           role="dialog"
           aria-label={t("shelf.modelShare")}
-          style={{ left: engineAnchor.left, bottom: window.innerHeight - engineAnchor.top + 6 }}
+          style={popoverAnchorStyle(engineAnchor)}
         >
           <div className="proxy-popover__header">
             <span className="proxy-popover__title">{t("shelf.modelShare")}</span>
@@ -2199,7 +2214,7 @@ export function ProjectShelf({
           className="proxy-popover tg-popover"
           role="dialog"
           aria-label={t("shelf.tgPanelAria")}
-          style={{ left: tgAnchor.left, bottom: window.innerHeight - tgAnchor.top + 6 }}
+          style={popoverAnchorStyle(tgAnchor)}
         >
           <div className="proxy-popover__header">
             <span className="proxy-popover__title">{t("shelf.tgRemote")}</span>

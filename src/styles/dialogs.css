@@ -2,7 +2,10 @@
 
 /* ── Provider Config Dialog ────────────────────────────────────────────── */
 .provider-dialog {
-  min-width: 400px;
+  /* 400px on a normal window, but never wider than the viewport: the shared
+     .project-dialog caps itself at 100%, and a hard min-width would beat that
+     cap and push the dialog's right edge off a narrow pane. */
+  min-width: min(400px, 100%);
 }
 
 .provider-dialog__field {
@@ -211,7 +214,9 @@
 .credentials-dialog {
   /* Wide enough for `引用`/`扫描` badges to sit on one line beside a long name. */
   width: min(560px, calc(100vw - 40px));
-  min-width: 440px;
+  /* Clamp the floor to the pane too: a hard 440px beat the width above in a
+     narrow detached window and pushed the dialog's content off both edges. */
+  min-width: min(440px, 100%);
 }
 
 .credentials-dialog__scan {
