@@ -3640,16 +3640,38 @@
      strip's page overlays sit at 70/75, so a tool-permission prompt rendered
      at 40 would be invisible while the agent waits on the answer. */
   z-index: 9950;
-  display: grid;
-  place-items: center;
+  /* Flex + safe centering instead of grid `place-items: center`: an agent can
+     put a whole file (or a long command) into a permission prompt, and a
+     centered grid item taller than the viewport gets its top clipped with no
+     way to scroll to it. `safe center` keeps the dialog centered while it
+     fits and pins it to the top when it does not; the backdrop scrolls as the
+     last resort so the answer buttons are never out of reach. */
+  display: flex;
+  align-items: center;
+  align-items: safe center;
+  justify-content: center;
+  /* Same escape hatch on the horizontal axis: a dialog with a wide min-width
+     in a narrow detached window overflows to the left, where a centered flex
+     container cannot scroll. */
+  justify-content: safe center;
+  overflow: auto;
   padding: 24px;
   background: rgba(0, 0, 0, 0.4);
 }
 
 .permission-dialog {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   width: min(440px, 100%);
-  gap: 14px;
+  /* Everything the agent sent can be arbitrarily long (a whole command as the
+     title, a whole file as the detail, a dozen options). The dialog never
+     grows past the viewport, and the answer row never scrolls away: the header
+     and detail scroll inside __scroll, the actions stay pinned at the bottom.
+     Before this, a long prompt pushed ［允许］/［拒绝］ below the screen edge
+     with nothing scrollable at all. */
+  max-height: 100%;
+  overflow: hidden;
+  gap: 12px;
   padding: 16px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
@@ -3657,8 +3679,21 @@
   box-shadow: 0 20px 48px rgba(0, 0, 0, 0.35);
 }
 
+.permission-dialog__scroll {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  overflow: auto;
+  /* The scrollbar would otherwise sit on top of the header's rounded edge. */
+  margin: -2px;
+  padding: 2px;
+}
+
 /* Claude Code ExitPlanMode: a readable plan page, not a 160px JSON dump. */
 .permission-dialog--plan {
+  display: grid;
   width: min(960px, 96vw);
   height: min(90vh, 960px);
   max-height: min(90vh, 960px);
@@ -3671,6 +3706,7 @@
 
 .permission-dialog__header {
   display: flex;
+  flex: 0 0 auto;
   gap: 10px;
   align-items: flex-start;
   color: var(--text);
@@ -3683,6 +3719,10 @@
 }
 
 .permission-dialog__header strong {
+  /* The title can be a whole shell command. It scrolls with the rest of the
+     content (inside __scroll) instead of getting a second scrollbar of its
+     own. */
+  display: block;
   color: var(--text-strong);
   font-size: 13.5px;
   font-weight: 600;
@@ -3704,7 +3744,12 @@
 }
 
 .permission-dialog__detail {
-  max-height: 160px;
+  /* A whole command or file can land here. Cap it so the answers stay in
+     view, and let it give up height (down to a few lines) when the header is
+     tall too — the block scrolls internally for the rest. */
+  flex: 0 1 auto;
+  min-height: 72px;
+  max-height: min(160px, 32vh);
   margin: 0;
   padding: 10px;
   overflow: auto;
@@ -3760,8 +3805,16 @@
 
 .permission-dialog__actions {
   display: flex;
+  flex: 0 0 auto;
   flex-wrap: wrap;
+  align-content: flex-start;
   gap: 8px;
+  /* The answer row is the point of the dialog, so it keeps its natural height.
+     A pathological option list (a dozen long labels) is capped to a slice of
+     the window and scrolls itself, so the prompt above keeps readable room. A
+     percentage max-height cannot do this: the panel's height is auto. */
+  max-height: min(46vh, 320px);
+  overflow: auto;
   justify-content: flex-end;
 }
 
