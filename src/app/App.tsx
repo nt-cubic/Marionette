@@ -149,7 +149,7 @@ import {
   formatImageMarksForSend,
   type ImageAttachment,
 } from "../lib/imageAttachments";
-import { foldSessionStats } from "../lib/sessionStats";
+import { foldSessionStats, measureTurnDecodeMs } from "../lib/sessionStats";
 import { isRuntimeMetadataOnly } from "../lib/markdownText";
 import {
   isInjectedPromptText,
@@ -2558,25 +2558,33 @@ export function App() {
           sessionsRef.current.find((s) => s.id === payload.sessionId)?.status === "running";
 
         // End-of-turn token split. Most agents put it in the prompt RPC
-        // response; Grok puts nothing there — its usage arrives per model call
-        // on `_x.ai/session_notification`, so fall back to that accumulation.
-        const promptTokens = extractTurnTokens(payload.data);
+        // response. Grok's per-call `response_completed` accumulation is the
+        // turn total; its prompt `_meta.usage` is a session-lifetime snapshot
+        // (numTurns/modelCalls) and must not win when the accumulator has
+        // anything. extractTurnTokens skips that snapshot and reads the
+        // sibling per-turn fields as a fallback.
         const grokAccum = grokTurnUsageToTurnTokens(
           grokTurnUsageRef.current[payload.sessionId]
         );
-        const usedGrokAccum = promptTokens == null && grokAccum != null;
-        const turnTokens = promptTokens ?? grokAccum;
+        const promptTokens = extractTurnTokens(payload.data);
+        const usedGrokAccum = grokAccum != null;
+        const turnTokens = grokAccum ?? promptTokens;
         delete grokTurnUsageRef.current[payload.sessionId];
         const firstChunkAt = turnStartedAtRef.current[payload.sessionId] ?? null;
         const sentAt = turnSentAtRef.current[payload.sessionId] ?? null;
         delete turnSentAtRef.current[payload.sessionId];
         const endedAt = Date.now();
+        const decodeMs = measureTurnDecodeMs(
+          eventsBySessionRef.current.get(payload.sessionId) ?? [],
+          payload.sessionId,
+          endedAt,
+        );
         // Timings are local and may be missing (e.g. a turn with no streamed
         // assistant text); build stats whenever tokens exist — buildTurnStats
         // leaves the absent timings null rather than inventing numbers.
         const turnStats =
           turnTokens != null
-            ? buildTurnStats(turnTokens, { sentAt, firstChunkAt, endedAt })
+            ? buildTurnStats(turnTokens, { sentAt, firstChunkAt, endedAt, decodeMs })
             : null;
         // 跨会话用量台账:每轮落一笔(今天/7天/30天聚合,见 usageLedger)。
         // 与上面的盖戳共用同一条单窗口不变量——同一轮只被一个窗口处理。
@@ -2655,7 +2663,10 @@ export function App() {
             state = emptySessionUsage();
           }
           if (!state) return current;
-          const tokens = state.turnTokens ?? turnTokens;
+          // grokAccum (per-call sum) lives on `turnTokens`; extractTurnTokens
+          // on Grok's prompt result is the last call / sibling fields. The
+          // accumulator must win so output is the turn total, not one call.
+          const tokens = turnTokens ?? state.turnTokens;
           if (!tokens && !turnStats) return current;
           // Grok has no usage_update; the latest call's input (incl. cache)
           // is tokens currently in context and must overwrite, not seed-once.
