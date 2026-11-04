@@ -424,7 +424,7 @@ function keysSumTip(subs) {
 function quotaWho(q) {
   const out = [];
   if (q.alias) {
-    const a = el("span", "user quota-alias", q.alias);
+    const a = el("span", "user quota-alias" + (q.named ? " own-name" : ""), q.alias);
     a.title = q.user ? q.alias + " · " + q.user : q.alias;
     out.push(a);
     if (q.user) {
@@ -523,10 +523,11 @@ function usageParts(texts) {
   return out;
 }
 
-// The Overview's token totals count what went in and out; the cache's
+// The Usage pages' token totals count what went in and out; the cache's
 // tokens, read and written, can be counted in them too (#2378), as the
-// Requests tab's total always has them. Kept as the reader left it
-// (magpie.usageWithCache).
+// Requests tab's total always has them — the Overview's tiles, chart and
+// lists and, since #2591, the Sessions tab's alike. Kept as the reader
+// left it (magpie.usageWithCache).
 let usageWithCache = false;
 try { usageWithCache = localStorage.getItem("magpie.usageWithCache") === "1"; } catch {}
 const cacheOf = (x) => (x.cache_read || 0) + (x.cache_write || 0);
@@ -547,7 +548,9 @@ function usageTokensPick() {
     ], usageWithCache ? "1" : "", (v) => {
       usageWithCache = v === "1";
       try { localStorage.setItem("magpie.usageWithCache", usageWithCache ? "1" : "0"); } catch {}
-      renderUsage();
+      // the tab it was picked on follows; the pick lives on the Overview's
+      // and the Sessions tab's tokens tiles (#2591)
+      (usageTab === "sessions" ? renderSessions : renderUsage)();
     }, "Token totals", "sess-menu");
   };
   return b;
@@ -2967,7 +2970,9 @@ function hexA(hex, a) {
   return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`;
 }
 const sessKey = (s) => s.agent + ":" + s.id;
-const sessTokens = (s) => s.input + s.output;
+// counted the way the tokens tiles count, cache and all when the reader
+// asked for it (#2591); both lists' rows spend it (sessSpent)
+const sessTokens = (s) => usageTokens(s);
 // a session's cost: "—" when none of its models has a known price
 function sessCost(s) {
   if (!s.models.some((m) => m.priced && (m.input || m.output || m.cache_read || m.cache_write))) return "—";
@@ -3029,7 +3034,7 @@ function renderSessions() {
   const byFolder = (x) => !sessFolder || x.cwd === sessFolder;
   const spent = (list, key) => {
     const m = new Map();
-    for (const r of list) if (r[key]) m.set(r[key], (m.get(r[key]) || 0) + r.input + r.output);
+    for (const r of list) if (r[key]) m.set(r[key], (m.get(r[key]) || 0) + usageTokens(r));
     return [...m.entries()].sort((a, b) => b[1] - a[1]);
   };
   const models = spent(rows.filter((r) => byAgent(r) && byFolder(r)), "model").map(([v, n]) => ({ v, name: v, note: t("{n} tokens", { n: fmtN(n) }) }));
@@ -3123,15 +3128,22 @@ function renderSessions() {
       if (cls?.includes("dur")) for (const part of n.split(/(\d+)/)) part && b.append(/^\d+$/.test(part) ? part : el("i", "u", part.trim()));
       else b.textContent = n;
       b.title = n;
-      e.append(b, el("span", "", label));
-      if (sub) e.append(el("small", "", sub));
+      e.append(b, typeof label === "string" ? el("span", "", label) : label);
+      // a line in parts keeps each whole, wrapping between them rather
+      // than cutting the last off, as the Overview's tiles do
+      if (Array.isArray(sub)) {
+        const s = el("small", "parts");
+        s.append(...usageParts(sub));
+        e.append(s);
+      } else if (sub) e.append(el("small", "", sub));
       stats.append(e);
     };
     const days = new Set(used.map((r) => r.date)).size;
     // how many sessions, and what the middle one and the one in ten spent
     tile(ov.count == null ? "—" : fmtN(ov.count), t("sessions"), ov.count ? t("median {m} · p90 {p}", { m: fmtN(ov.median), p: fmtN(ov.p90) }) : "",
       t("Tokens in and out per session: the middle session's, and what nine in ten stay under"), stale ? "stale" : "");
-    tile(fmtN(tot.input + tot.output), t("tokens"), t("{a} in · {b} out", { a: fmtN(tot.input), b: fmtN(tot.output) }));
+    // counted as the Overview's tokens tile is, by the same pick (#2591)
+    tile(fmtN(usageTokens(tot)), usageTokensPick(), [t("{a} in · {b} out", { a: fmtN(tot.input), b: fmtN(tot.output) }), ...(usageWithCache && cacheOf(tot) ? [t("{a} cache", { a: fmtN(cacheOf(tot)) })] : [])]);
     tile(c ? "≈" + c : "—", t("cost"), unpricedModels || t("at effective prices"), unpricedNote);
     // input leaves out what was read from the cache and written to it
     const prompt = tot.input + tot.cache_read + tot.cache_write;
@@ -3195,7 +3207,7 @@ function sessSums(list, key) {
   for (const r of list) {
     if (!r[key]) continue;
     const s = m.get(r[key]) || { v: r[key], n: 0, cost: 0, unpriced: 0 };
-    s.n += r.input + r.output;
+    s.n += usageTokens(r);
     s.cost += r.cost;
     if (!r.priced) s.unpriced++;
     m.set(r[key], s);
@@ -3259,7 +3271,7 @@ function renderSessChart(chart, st, used, ov, acts) {
   if (chart.hidden) { chart.dataset.drawn = ""; return; }
   const days = [], at = new Map();
   for (let i = 0, d = new Date(first); i < n; i++, d.setDate(d.getDate() + 1)) {
-    const x = { day: new Date(d), input: 0, output: 0, cost: 0, unpriced: 0, sessions: perDay?.length === n ? perDay[i] : 0,
+    const x = { day: new Date(d), input: 0, output: 0, cache_read: 0, cache_write: 0, cost: 0, unpriced: 0, sessions: perDay?.length === n ? perDay[i] : 0,
       messages: msgs?.length === n ? msgs[i] : 0, active: 0 };
     days.push(x);
     at.set(sessISO(d), x);
@@ -3268,16 +3280,17 @@ function renderSessChart(chart, st, used, ov, acts) {
     const x = at.get(r.date);
     if (!x) continue;
     x.input += r.input; x.output += r.output; x.cost += r.cost;
+    x.cache_read += r.cache_read || 0; x.cache_write += r.cache_write || 0;
     if (!r.priced) x.unpriced++;
   }
   for (const a of acts || []) { const x = at.get(a.date); if (x) x.active += a.seconds; }
   const off = { sessions: perDay?.length === n ? "" : t("Still counting"), messages: msgs?.length === n ? "" : t("Still counting"), active: acts ? "" : t("not kept by model") };
   const metric = off[sessMetric] ? "tokens" : sessMetric;
   const value = (x) => metric === "cost" ? x.cost : metric === "sessions" ? x.sessions : metric === "messages" ? x.messages :
-    metric === "active" ? x.active : metric === "output" ? x.output : x.input + x.output;
+    metric === "active" ? x.active : metric === "output" ? x.output : usageTokens(x);
   const show = (v) => metric === "cost" ? "≈" + fmtCost({ cost: v }) : metric === "active" ? fmtDur(v) : fmtN(v);
   const tip = (x, when) => {
-    const parts = [x.input + x.output ? t("{n} tokens", { n: fmtN(x.input + x.output) }) : "", x.cost && fmtCost(x) ? "≈" + fmtCost(x) : "",
+    const parts = [usageTokens(x) ? t("{n} tokens", { n: fmtN(usageTokens(x)) }) : "", x.cost && fmtCost(x) ? "≈" + fmtCost(x) : "",
       x.messages ? t(x.messages === 1 ? "{n} message" : "{n} messages", { n: fmtN(x.messages) }) : "",
       x.sessions ? t(x.sessions === 1 ? "{n} session" : "{n} sessions", { n: x.sessions }) : "", x.active ? t("{d} active", { d: fmtDur(x.active) }) : ""].filter(Boolean);
     return parts.length ? when + " · " + parts.join(" · ") : t("{when} · nothing", { when });
@@ -3321,8 +3334,8 @@ function renderSessChart(chart, st, used, ov, acts) {
   const step = shape === "week" ? 7 : 1;
   const buckets = [];
   for (let i = 0; i < n; i += step) {
-    const b = { day: days[i].day, input: 0, output: 0, cost: 0, unpriced: 0, sessions: 0, messages: 0, active: 0 };
-    for (const x of days.slice(i, i + step)) for (const k of ["input", "output", "cost", "unpriced", "sessions", "messages", "active"]) b[k] += x[k];
+    const b = { day: days[i].day, input: 0, output: 0, cache_read: 0, cache_write: 0, cost: 0, unpriced: 0, sessions: 0, messages: 0, active: 0 };
+    for (const x of days.slice(i, i + step)) for (const k of ["input", "output", "cache_read", "cache_write", "cost", "unpriced", "sessions", "messages", "active"]) b[k] += x[k];
     buckets.push(b);
   }
   const peak = Math.max(metric === "cost" ? 0.001 : 1, ...buckets.map(value));
@@ -3330,7 +3343,9 @@ function renderSessChart(chart, st, used, ov, acts) {
     const [top, low] = bar.children;
     if (metric === "tokens") {
       top.style.height = (100 * b.output / peak).toFixed(1) + "%";
-      low.style.height = (100 * b.input / peak).toFixed(1) + "%";
+      // the input's bar carries the cache's tokens too, as the Overview's
+      // chart does (#2591)
+      low.style.height = (100 * (usageTokens(b) - b.output) / peak).toFixed(1) + "%";
     } else top.style.height = (100 * value(b) / peak).toFixed(1) + "%";
     const label = sessDay(b.day);
     bar.title = tip(b, step === 7 ? t("week of {label}", { label }) : label);
@@ -3457,7 +3472,7 @@ function sessCalSide(days, value, show) {
     if (sub) f.append(el("small", "", sub));
     side.append(f);
   };
-  const busy = (x) => x.input + x.output || x.active || x.sessions;
+  const busy = (x) => usageTokens(x) || x.active || x.sessions;
   let run = 0, streak = 0, best = null;
   for (const x of days) {
     run = busy(x) ? run + 1 : 0;
@@ -3525,7 +3540,10 @@ function renderSessTop() {
   head.append(el("span", "grow"), seg);
   box.append(head);
   slide(seg, "sessTop");
-  const list = ov.top?.[sessTopBy] || [];
+  let list = ov.top?.[sessTopBy] || [];
+  // ranked without the cache, shown with it: ranked again by the count the
+  // reader sees, so the numbers still run down (#2591)
+  if (sessTopBy === "tokens" && usageWithCache) list = [...list].sort((a, b) => usageTokens(b) - usageTokens(a));
   const body = el("div", "sess-tops");
   if (!list.length) body.append(el("div", "sess-none", ov.top ? t("Nothing in this range.") : "…"));
   const icons = new Map((sessions?.sessions || []).map((s) => [s.app || s.agent, s.icon]));
@@ -3545,7 +3563,7 @@ function renderSessTop() {
     who.append(sub);
     r.append(who);
     const fc = fmtCost({ cost: s.cost, unpriced: !s.priced });
-    const v = sessTopBy === "cost" ? (fc ? "≈" + fc : "—") : sessTopBy === "active" ? fmtDur(s.active) : fmtN(s.input + s.output);
+    const v = sessTopBy === "cost" ? (fc ? "≈" + fc : "—") : sessTopBy === "active" ? fmtDur(s.active) : fmtN(usageTokens(s));
     r.append(el("div", "v", v));
     r.onclick = () => {
       if (window.getSelection()?.toString()) return;

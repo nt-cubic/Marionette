@@ -57,6 +57,8 @@ type imageAt struct {
 	Src string
 	// Last is set on one in the latest turn, Tool on one a tool gave back.
 	Last, Tool bool
+	// Block is the image's block as it is in the body.
+	Block json.RawMessage
 }
 
 // Current is whether the image is one the user gives the model now, which
@@ -237,7 +239,7 @@ func swapImageBlocks(proto provider.Protocol, raw json.RawMessage, last, tool bo
 		decodeJSON(block["type"], &kind)
 		src, isImage := imageSrc(proto, kind, block)
 		if isImage {
-			out, err := swap(imageAt{Src: src, Last: last, Tool: tool})
+			out, err := swap(imageAt{Src: src, Last: last, Tool: tool, Block: rawBlock})
 			if err != nil {
 				return raw, false, err
 			}

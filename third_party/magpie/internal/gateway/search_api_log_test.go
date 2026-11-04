@@ -32,7 +32,9 @@ func searchRows(t *testing.T) ([]usage.Record, string) {
 // The query is in no row, not even where the API said it back in an error.
 func TestSearchAPIAsksAreLogged(t *testing.T) {
 	fresh(t)
-	const query = "kangaroo orbit 7781"
+	// letters only: a number could be in the server's random port
+	// (127.0.0.1:37817 held "7781" on the Linux box)
+	const query = "kangaroo orbit quokkavex"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var q struct {
 			Query string `json:"query"`

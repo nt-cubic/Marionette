@@ -103,7 +103,7 @@ async function open(engine, width, t, name) {
 }
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
-  for (const width of [420, 900]) {
+  for (const width of [390, 900]) {
     for (const lang of Object.keys(want)) {
       const w = want[lang];
       test(`${engine} ${width} ${lang}: a model's load shows by it`, async (t) => {
@@ -139,12 +139,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.deepEqual(errors, []);
       });
 
-      test(`${engine} ${width} ${lang}: busy models go last, or not`, async (t) => {
-        const page = await open(engine, width, t, `${lang}-busy-load`);
+      // in the window as well as on the web page, whose narrow rows wrap by
+      // themselves (body.web): only the window's squeezed the words
+      for (const web of [true, false]) test(`${engine} ${width} ${lang} ${web ? "web page" : "window"}: busy models go last, or not`, async (t) => {
+        const page = await open(engine, width, t, `${lang}-${web ? "web" : "window"}-busy-load`);
         const errors = [], posted = [];
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", server(lang, posted));
         await watchSettingsReads(page);
+        if (!web) await page.route("**/boot.js", (r) => r.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light"};` }));
         await page.goto("http://magpie.test/?view=settings&tab=network");
         await settingsDrawn(page);
         const segs = page.locator("#busyLoadSegs .opt");
@@ -159,6 +162,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert(await page.locator("#view-settings").evaluate((v) => v.scrollWidth <= v.clientWidth + 1), "the settings scroll sideways");
         const rb = await row.boundingBox(), sb = await page.locator("#busyLoadSegs").boundingBox();
         assert(sb.x + sb.width <= rb.x + rb.width + 1, "the switch runs out of its row");
+        // the choices never squeeze the words beside them: at a phone's width
+        // they once left the words a word a line, the row 2.3k px tall
+        const who = await row.locator(".who").boundingBox();
+        assert(who.width >= Math.min(220, rb.width - 30), `the words are squeezed to ${Math.round(who.width)}px`);
+        assert(rb.height < 200, `the row is ${Math.round(rb.height)}px tall`);
 
         await wheelTo(page, segs.nth(3), 200);
         const before = await view(page);

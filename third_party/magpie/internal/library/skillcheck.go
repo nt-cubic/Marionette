@@ -203,6 +203,10 @@ func apiGet(u string, max int64) ([]byte, int, bool, error) {
 	if resp.StatusCode == 200 && int64(len(body)) > max {
 		return nil, resp.StatusCode, token, fmt.Errorf("GitHub's answer was over %s: %w", mb(max), errOverCap)
 	}
+	// an empty 200 kept for a 304 would answer nothing forever (#3045)
+	if resp.StatusCode == 200 && len(body) == 0 {
+		return nil, resp.StatusCode, token, fmt.Errorf("GitHub answered nothing")
+	}
 	if et := resp.Header.Get("ETag"); resp.StatusCode == 200 && et != "" && int64(len(body)) <= cacheBody {
 		etags.Lock()
 		etags.m[u] = etagged{etag: et, body: body}

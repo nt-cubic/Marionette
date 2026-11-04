@@ -127,3 +127,32 @@ func TestTrayTotalIsTheLedgers(t *testing.T) {
 		t.Fatalf("%q %q", q.Balance, q.Name)
 	}
 }
+
+// #4366: the menu bar is read again seconds apart, and a total is summed
+// at most once a minute, again on another day.
+func TestTrayTotalSummedOnceAMinute(t *testing.T) {
+	var n int
+	old := trayQuerySum
+	trayQuerySum = func(p usage.Period) usage.Totals { n++; return usage.Totals{Calls: n} }
+	t.Cleanup(func() { trayQuerySum = old })
+	var m trayTotalMemo
+	at := time.Date(2026, 11, 1, 23, 58, 0, 0, time.Local)
+	for i := range 20 {
+		if got := m.sum(usage.Today, at.Add(time.Duration(i)*2*time.Second)); got.Calls != 1 {
+			t.Fatalf("read %d: summed %d times", i, got.Calls)
+		}
+	}
+	if m.sum(usage.Week, at).Calls != 2 {
+		t.Fatalf("7d was given today's sum")
+	}
+	if m.sum(usage.Today, at.Add(trayTotalFresh)).Calls != 3 {
+		t.Fatalf("a minute old and not summed again")
+	}
+	// past midnight, under a minute after: the new day is summed
+	if m.sum(usage.Today, at.Add(trayTotalFresh+90*time.Second)).Calls != 4 {
+		t.Fatalf("a new day was given yesterday's total")
+	}
+	if m.sum(usage.Today, at.Add(trayTotalFresh+100*time.Second)).Calls != 4 {
+		t.Fatalf("summed again within the minute")
+	}
+}

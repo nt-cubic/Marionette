@@ -24,12 +24,19 @@
               stacking context.
    • 1200     Fixed floating popovers above all app content
               (e.g. .proxy-popover = 1200).
+   • 70-80    Edge-dock overlays, position:fixed, inside .app-shell:
+              70 dock side rails/pages, 75 dock content pages (memo/doc/
+              browser/usage), 78 dock footer, 80 dock title band.
    • 9980+    App-chrome top layer, strictly ordered, all position:fixed:
+              9950 permission dialog (.permission-dialog-backdrop)
+              9960 project/app dialogs (.project-dialog-backdrop)
+              9970 confirm dialog on top of those (.confirm-dialog-backdrop)
               9980 shelf hover peek (.shelf-peek)
               9985 toasts (with --toast-depth ordering)
               9990 pane split-drop overlay (.split-drop-overlay)
               9995 split-beside context menu (.split-beside-menu)
-              10000 tab tear-off ghost (.tab-tear-ghost) — topmost
+              10000 tab tear-off ghost (.tab-tear-ghost)
+              10040 edge-dock strip menus (.dock-menu, portaled to <body>)
    ────────────────────────────────────────────────────────────────────────/* ── prefers-reduced-motion：用户要求减少动效时关停全部动画/过渡 ──────── */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

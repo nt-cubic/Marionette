@@ -51,6 +51,22 @@ type loginImport struct {
 	// claudeOrgName is the organization's name, as oauthAccount has it;
 	// alias the name the tool it came from gave the account (cswap's)
 	claudeOrgName, alias string
+	// expiresAt is when the file's Claude access token runs out, in
+	// milliseconds, 0 when it doesn't say: a refresh gives a later one,
+	// so it tells which of two sign-ins of one account is the newer
+	expiresAt int64
+}
+
+// jsonMillis is the number under key, 0 when there is none.
+func jsonMillis(x map[string]any, key string) int64 {
+	switch n := x[key].(type) {
+	case float64:
+		return int64(n)
+	case json.Number:
+		i, _ := n.Int64()
+		return i
+	}
+	return 0
 }
 
 // claudeImportScopes are what Claude Code's sign-in asks for, taken when a
@@ -152,6 +168,9 @@ func loginEntry(agent string, x map[string]any) loginImport {
 	e.refreshToken = jsonStr(src, "refresh_token", "refreshToken")
 	e.accountID = jsonStr(src, "account_id", "accountId")
 	e.scopes = importScopes(src["scopes"])
+	if agent == "claude" {
+		e.expiresAt = jsonMillis(src, "expiresAt")
+	}
 	typ := strings.ToLower(jsonStr(x, "type"))
 	switch {
 	case typ != "" && typ != agent:
@@ -197,6 +216,7 @@ func cswapEntry(agent string, x map[string]any) loginImport {
 	e.accessToken = jsonStr(src, "accessToken", "access_token")
 	e.refreshToken = jsonStr(src, "refreshToken", "refresh_token")
 	e.scopes = importScopes(src["scopes"])
+	e.expiresAt = jsonMillis(src, "expiresAt")
 	if e.refreshToken == "" && e.accessToken != "" {
 		e.err = accessOnly
 	}
@@ -449,6 +469,39 @@ func loginRefreshToken(l savedLogin) string {
 	return ""
 }
 
+// claudeImportOlder is why a Claude sign-in in a file wasn't taken.
+const claudeImportOlder = "magpie has a newer sign-in for this account (Claude Code's own, when it is signed in to it): kept, not replaced by this file's"
+
+// claudeNewerKept is the account in kept that l, a Claude sign-in read
+// from a file, is the same account as, when what magpie has for it is no
+// older than the file's and can still be used. Its refresh token differs
+// (ImportLogins answers "exists" for the same one), so one of the two is
+// spent or about to be: Claude Code refreshes its own and the tool the
+// file came from (claude-swap) its copy. An export made before the last
+// refresh written over Claude Code's live sign-in, or a saved one, signed
+// the account out (#4532). The newer is the one with the later expiresAt,
+// as each refresh gives a later one; a file that doesn't say is never
+// taken over a sign-in that can be used. A saved account's own config
+// directory, where Claude Code may have refreshed it since, counts too.
+func claudeNewerKept(e loginImport, kept []savedLogin, l savedLogin) (savedLogin, bool) {
+	for _, k := range kept {
+		if k.Agent != "claude" || !sameLogin(k, l) || claudeSignedOut(k) != "" {
+			continue
+		}
+		var at int64
+		if c, ok := parseClaudeCredentials(k.Auth); ok {
+			at = c.OAuth.ExpiresAt
+		}
+		if c, ok := readClaudeDir(claudeAccountDir(k.User)); ok && c.OAuth.ExpiresAt > at {
+			at = c.OAuth.ExpiresAt
+		}
+		if e.expiresAt <= at {
+			return k, true
+		}
+	}
+	return savedLogin{}, false
+}
+
 // importLogin checks one account as a sign-in is finished and keeps it.
 func importLogin(ctx context.Context, agent string, e loginImport, name string, kept []savedLogin) ImportedAccount {
 	fail := func(msg string) ImportedAccount {
@@ -501,6 +554,11 @@ func importLogin(ctx context.Context, agent string, e loginImport, name string, 
 			acct["organizationName"] = e.claudeOrgName
 		}
 		l, err = claudeLogin(c, acct)
+		if err == nil {
+			if k, ok := claudeNewerKept(e, kept, l); ok {
+				return ImportedAccount{User: k.User, Status: "exists", Plan: k.Plan, Error: claudeImportOlder}
+			}
+		}
 	}
 	if err != nil {
 		return fail(err.Error())

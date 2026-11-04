@@ -39,6 +39,7 @@ func (t *translator) row(b []byte) {
 	var r struct {
 		Type          string          `json:"type"`
 		Subtype       string          `json:"subtype"`
+		UUID          string          `json:"uuid"`
 		IsSidechain   bool            `json:"isSidechain"`
 		IsMeta        bool            `json:"isMeta"`
 		RequestID     string          `json:"requestId"`
@@ -83,6 +84,11 @@ func (t *translator) row(b []byte) {
 			t.tap.before(m.ID)
 		}
 		line := map[string]any{"type": "assistant", "message": r.Message}
+		// the row's place in the session, as -p tells it: the bridge
+		// branches a conversation off there (cutSession)
+		if r.UUID != "" {
+			line["uuid"] = r.UUID
+		}
 		if r.RequestID != "" {
 			line["request_id"] = r.RequestID
 		}

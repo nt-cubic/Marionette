@@ -3,7 +3,7 @@
 // model it went to (the owner): the agent's icon and name, then the model's
 // lab icon before its id. A model from a lab magpie doesn't know gets no
 // icon, so a wrong logo never stands for it. In a narrow card the agent's
-// name and the › go first and its icon stays; folded, the route is still in
+// name and the › go first and its icon stays, at the head's 14px; folded, the route is still in
 // the head. Nothing in the head runs past the card. Every GUI language,
 // Chromium and WebKit.
 const assert = require("node:assert/strict");
@@ -62,7 +62,7 @@ const look = (page) => page.evaluate(() => {
   const past = [...head.querySelectorAll("*")].filter((e) => shown(e) && getComputedStyle(e).overflow !== "hidden" && e.getBoundingClientRect().right > hr.right + 0.5).map((e) => e.className);
   return {
     name: q(".ctx-who-n")?.textContent, nameShown: shown(q(".ctx-who-n")), sepShown: shown(q(".ctx-sep")),
-    agentIcon: q(".ctx-who .ic")?.dataset.icon, agentIconShown: shown(q(".ctx-who .ic")),
+    agentIcon: q(".ctx-who .ic")?.dataset.icon, agentIconShown: shown(q(".ctx-who .ic")), agentIconW: q(".ctx-who .ic")?.getBoundingClientRect().width,
     labIcons: [...head.querySelectorAll(".ctx-what .ic")].map((e) => e.dataset.icon), model: q(".ctx-model")?.textContent, modelShown: shown(q(".ctx-model")),
     routeShown: shown(q(".ctx-route")), stateShown: shown(q(".ctx-state")),
     inCard: hr.right <= cr.right + 0.5, past, headH: hr.height,
@@ -100,6 +100,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           assert.equal(lab$.name, "Claude Code");
           assert.ok(lab$.nameShown && lab$.sepShown, "a wide card names the agent before the ›");
           assert.equal(lab$.agentIcon, "claudecode-color");
+          // the head's 14px, not the Context tab's 20px agent cards (the owner: Pi's icon was oversized)
+          assert.ok(Math.abs(lab$.agentIconW - 14) < 0.5, `the agent icon is 14px wide (${lab$.agentIconW})`);
           assert.deepEqual(lab$.labIcons, lab ? [lab] : [], "the model's lab icon, none when the lab isn't known");
           assert.equal(lab$.model, model);
           assert.ok(lab$.modelShown && lab$.stateShown && lab$.inCard, JSON.stringify(lab$));

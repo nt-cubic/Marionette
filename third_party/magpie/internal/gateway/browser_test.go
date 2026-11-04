@@ -32,6 +32,12 @@ func browserPost(h http.Handler, addr, body string, hdr ...string) *httptest.Res
 // and answers each call with answer.
 func fakeExtension(t *testing.T, base string, answer func(id, session, tool string, args map[string]any) any) {
 	t.Helper()
+	fakeExtensionAs(t, base, "Chrome/140", answer)
+}
+
+// fakeExtensionAs is fakeExtension in the browser whose User-Agent is agent.
+func fakeExtensionAs(t *testing.T, base, agent string, answer func(id, session, tool string, args map[string]any) any) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+BrowserExtensionPath,
 		&websocket.DialOptions{HTTPHeader: http.Header{"Origin": {browserext.Origin}}})
@@ -41,7 +47,7 @@ func fakeExtension(t *testing.T, base string, answer func(id, session, tool stri
 	}
 	done := make(chan struct{})
 	t.Cleanup(func() { cancel(); c.CloseNow(); <-done })
-	if err := c.Write(ctx, websocket.MessageText, []byte(`{"type":"hello","version":"0.1.0","agent":"Chrome/140"}`)); err != nil {
+	if err := c.Write(ctx, websocket.MessageText, []byte(`{"type":"hello","version":"0.1.0","agent":"`+agent+`"}`)); err != nil {
 		t.Fatal(err)
 	}
 	go func() {
@@ -233,6 +239,75 @@ func TestBrowserToolsAreTheExtensions(t *testing.T) {
 		name := tl.(map[string]any)["name"].(string)
 		if !strings.Contains(string(src), "  async "+name+"(session, args) {") {
 			t.Errorf("%s isn't in background.js's TOOLS", name)
+		}
+	}
+}
+
+// With Magpie Browser in two browsers (packinggoodsllc_07668 on Discord:
+// which one is used?), calls go to the last to connect until a session
+// picks the other with browser_tabs use; another session stays where it
+// was, the list of tabs says whose they are, and browsers lists both.
+func TestBrowserMCPPicksAmongBrowsers(t *testing.T) {
+	fresh(t)
+	s := New()
+	srv := httptest.NewServer(lanGuard(s.Handler()))
+	t.Cleanup(srv.Close)
+	in := func(name string) func(_, _, _ string, _ map[string]any) any {
+		return func(_, _, _ string, _ map[string]any) any {
+			return map[string]any{"content": []any{map[string]any{"type": "text", "text": "tabs of " + name}}}
+		}
+	}
+	chrome := "Mozilla/5.0 (Macintosh) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.7390.54 Safari/537.36"
+	fakeExtensionAs(t, srv.URL, chrome, in("chrome"))
+	browserConnected(t, s)
+	fakeExtensionAs(t, srv.URL, chrome+" Edg/141.0.3537.57", in("edge"))
+	for deadline := time.Now().Add(10 * time.Second); len(s.browser.all()) < 2; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the second extension never connected")
+		}
+	}
+	tabs := func(session string, args map[string]any) (string, bool) {
+		t.Helper()
+		w := browserPost(lanGuard(s.Handler()), "127.0.0.1:5000", imageToolCall("browser_tabs", args), BrowserSessionHeader, session)
+		m := readImageReply(t, w)
+		var all []string
+		for _, c := range m.Result.Content {
+			all = append(all, c.Text)
+		}
+		return strings.Join(all, "\n"), m.Result.IsError
+	}
+	if got, _ := tabs("s1", map[string]any{}); !strings.Contains(got, "tabs of edge") || !strings.Contains(got, "b2's tabs (Edge 141); 2 browsers") {
+		t.Fatalf("s1 before picking: %q", got)
+	}
+	if got, _ := tabs("s1", map[string]any{"action": "browsers"}); !strings.Contains(got, "  b1 Chrome 141, extension 0.1.0") || !strings.Contains(got, "* b2 Edge 141, extension 0.1.0") {
+		t.Fatalf("browsers: %q", got)
+	}
+	if got, bad := tabs("s1", map[string]any{"action": "use", "browser": "Chrome"}); bad || !strings.Contains(got, "b1 (Chrome 141)") {
+		t.Fatalf("use chrome: %q", got)
+	}
+	if got, _ := tabs("s1", map[string]any{"action": "list"}); !strings.Contains(got, "tabs of chrome") || !strings.Contains(got, "b1's tabs") {
+		t.Fatalf("s1 after picking chrome: %q", got)
+	}
+	if got, _ := tabs("s2", map[string]any{}); !strings.Contains(got, "tabs of edge") {
+		t.Fatalf("s2 was moved too: %q", got)
+	}
+	if got, bad := tabs("s2", map[string]any{"action": "use", "browser": "firefox"}); !bad || !strings.Contains(got, `no connected browser is "firefox"`) {
+		t.Fatalf("use firefox: %q", got)
+	}
+	if got, bad := tabs("s2", map[string]any{"action": "use", "browser": "b1"}); bad || !strings.Contains(got, "b1") {
+		t.Fatalf("use b1: %q", got)
+	}
+}
+
+func TestBrowserName(t *testing.T) {
+	for ua, want := range map[string]string{
+		"Chrome/140": "Chrome 140",
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.3537.57": "Edge 141",
+		"Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 OPR/124.0.0.0":                                   "Opera 124",
+		"": "a Chromium browser",
+	} {
+		if got := browserName(ua); got != want {
+			t.Errorf("browserName(%q) = %q, want %q", ua, got, want)
 		}
 	}
 }

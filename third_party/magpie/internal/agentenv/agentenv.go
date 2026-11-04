@@ -38,6 +38,8 @@ var Vars = []string{
 	"CODEX_SQLITE_HOME",
 	// Gemini CLI's session/config home
 	"GEMINI_CLI_HOME",
+	// Antigravity's gateway, which wins over its settings.json
+	"AGY_LLM_GATEWAY_URL",
 	// Cline: its folder, its data, its sessions and its MCP settings file
 	"CLINE_DIR", "CLINE_DATA_DIR", "CLINE_SESSION_DATA_DIR", "CLINE_MCP_SETTINGS_PATH",
 	// Pi and its forks (OmO, Senpi), whose profile and config are apart

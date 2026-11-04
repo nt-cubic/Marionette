@@ -53,6 +53,7 @@ import (
 	"github.com/yetone/magpie/internal/redact"
 	"github.com/yetone/magpie/internal/sessions"
 	"github.com/yetone/magpie/internal/settings"
+	"github.com/yetone/magpie/internal/settingsapi"
 	"github.com/yetone/magpie/internal/update"
 	"github.com/yetone/magpie/internal/usage"
 )
@@ -1361,231 +1362,19 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		writeJSON(rw, settingsState())
 	})
 	mux.HandleFunc("POST /api/settings", func(rw http.ResponseWriter, r *http.Request) {
-		var body json.RawMessage
-		var in settings.Settings
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			fail(rw, err)
-			return
-		}
-		if err := json.Unmarshal(body, &in); err != nil {
-			fail(rw, err)
-			return
-		}
-		// the Settings page sends its own choices; how the agents are
-		// arranged is the Agents page's, and the window's size its own; both stay as they are.
-		// Unreadable settings are never carried as the defaults (an empty
-		// allow list, every address let in): Save would refuse them too.
-		cur, err := settings.LoadChecked()
+		// read, checked and saved as `magpie settings set` saves (#4745)
+		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			fail(rw, err)
 			return
 		}
-		var fields map[string]json.RawMessage
-		_ = json.Unmarshal(body, &fields)
-		// Older pages do not send fonts. An explicit null restores the
-		// default, while an omitted field (or a browser save) preserves it.
-		if _, sent := fields["uiFont"]; !sent || isWeb(w) {
-			in.UIFont = cur.UIFont
-		}
-		if _, sent := fields["codeFont"]; !sent || isWeb(w) {
-			in.CodeFont = cur.CodeFont
-		}
-		// and pages from before it do not send how often a refusal is asked
-		// again, which null sets back to every one left
-		if _, sent := fields["refusalRetries"]; !sent {
-			in.RefusalRetries = cur.RefusalRetries
-		}
-		// nor whether updates download by themselves (#2296)
-		if _, sent := fields["noAutoDownload"]; !sent {
-			in.NoAutoDownload = cur.NoAutoDownload
-		}
-		// nor the update channel (ssharpcc on X)
-		if _, sent := fields["updateChannel"]; !sent {
-			in.UpdateChannel = cur.UpdateChannel
-		}
-		// nor whether the masked words match in any case
-		if _, sent := fields["redactWordsAnyCase"]; !sent {
-			in.RedactWordsAnyCase = cur.RedactWordsAnyCase
-		}
-		// nor whether they match only as whole words
-		if _, sent := fields["redactWordsWhole"]; !sent {
-			in.RedactWordsWhole = cur.RedactWordsWhole
-		}
-		// nor whether a key goes as a made-up one of its form
-		if _, sent := fields["redactShape"]; !sent {
-			in.RedactShape = cur.RedactShape
-		}
-		// nor how long an image is given to be drawn
-		if _, sent := fields["imageTimeout"]; !sent {
-			in.ImageTimeout = cur.ImageTimeout
-		}
-		// nor how long a routing group's classifier is given (#2934)
-		if _, sent := fields["classifyTimeout"]; !sent {
-			in.ClassifyTimeout = cur.ClassifyTimeout
-		}
-		// nor whether animations are stilled (#3813)
-		if _, sent := fields["reduceMotion"]; !sent {
-			in.ReduceMotion = cur.ReduceMotion
-		}
-		// nor whether the loading bird is kept off
-		if _, sent := fields["noBird"]; !sent {
-			in.NoBird = cur.NoBird
-		}
-		// nor whether a value masked for the first time is told (Must2333)
-		if _, sent := fields["maskAlert"]; !sent {
-			in.MaskAlert = cur.MaskAlert
-		}
-		in.AgentOrder, in.AgentsHidden, in.AgentsShown = cur.AgentOrder, cur.AgentsHidden, cur.AgentsShown
-		in.Window, in.WindowMaximised, in.WindowAt = cur.Window, cur.WindowMaximised, cur.WindowAt // the window's own, as it was last resized and moved
-		// and what other pages keep here: which models an agent is shown, and
-		// everything the user said of a model anywhere else in the app, set on
-		// its own. The per-model maps are carried whole rather than named one
-		// by one, so a map added later is not silently dropped here.
-		//
-		// HiddenModels, PickedModels and OrderedModels are the other way
-		// round — keyed by agent, not by "<provider>/<model>" — so they are
-		// not among them, and belong to the Agents page.
-		in.Visible, in.HiddenModels, in.OrderedModels = cur.Visible, cur.HiddenModels, cur.OrderedModels
-		in.PickedModels = cur.PickedModels       // "only models I pick" (#1337)
-		in.OwnModelsHidden = cur.OwnModelsHidden // an agent's own models left out (#1642)
-		in.FastPicks = cur.FastPicks             // switched in the agents' pickers (#954)
-		in.UltraPicks = cur.UltraPicks           // and sent Ultrafast (#1954)
-		in.AgentEfforts = cur.AgentEfforts       // picked in an agent's row (#1003)
-		in.PluginCheckins = cur.PluginCheckins   // set on its own (plugin-checkin below)
-		in.PluginOptions = cur.PluginOptions     // set on its own (plugin-option below)
-		in.CheckinOff = cur.CheckinOff           // set on its own (checkin-account below)
-		settings.CarryPerModel(&in, &cur)
-		in.LAN, in.LANKey = cur.LAN, cur.LANKey
-		in.LANKeyID = cur.LANKeyID
-		in.Port = cur.Port                                 // set on its own (port below), which moves the gateway
-		in.CORSOrigins = cur.CORSOrigins                   // set on its own (cors below)
-		in.AllowIPs = cur.AllowIPs                         // set on its own (allowips below)
-		in.FetchPrivate = cur.FetchPrivate                 // in settings.json only
-		in.GitHubToken = cur.GitHubToken                   // set on its own (github-token below), never sent to the page
-		in.ProxyCustom = cur.ProxyCustom                   // set by settings.Save from the proxy, never by the page
-		in.RequestArchive = cur.RequestArchive             // the Gateway page's, set on its own
-		in.RequestArchiveMaxMB = cur.RequestArchiveMaxMB   // in settings.json only
-		in.ClaudeRunsMost = cur.ClaudeRunsMost             // magpie claude-code runs, or settings.json (#2956)
-		in.GatewayConversations = cur.GatewayConversations // Sessions' explicit recording consent
-		in.RedactRules = cur.RedactRules                   // the masking rules, set on their own
-		in.RedactModel = cur.RedactModel                   // set on its own (privacy-model)
-		in.RedactModelName = cur.RedactModelName           // set on its own (privacy-model)
-		in.RedactModelScore = cur.RedactModelScore         // set on its own (privacy-model)
-		in.RedactModelOff = cur.RedactModelOff             // set on its own (privacy-model)
-		in.RedactModelAuto = cur.RedactModelAuto           // set on its own (masking)
-		in.RedactActions = cur.RedactActions               // set on their own (redact-actions below)
-		in.RedactAllow = cur.RedactAllow                   // set on its own (redact-allow below)
-		in.DisabledModels = cur.DisabledModels             // set on their own (disabled-models below, #1867)
-		// the request archive on this computer: the archive's switch while no
-		// S3 bucket, and its size in settings.json only
-		in.RequestArchiveLocal, in.RequestArchiveLocalMB = cur.RequestArchiveLocal, cur.RequestArchiveLocalMB
-		// used or left is the Usage page's toggle as much as Settings', set on its own
-		in.QuotaLeft = cur.QuotaLeft
-		in.QuotaReads = cur.QuotaReads // set on its own (quota-reads below)
-		in.SearchAll = cur.SearchAll   // set on its own (search-all below)
-		in.UsageOrder = cur.UsageOrder // the Usage page's, dragged there
-		// and what the tray panel's Allowances tab leaves out, set there
-		in.PanelUsageHidden = cur.PanelUsageHidden
-		// and the clients the Usage page's Agents list leaves out, set there
-		in.UsageAgentsHidden = cur.UsageAgentsHidden
-		// and the allowance cards the Usage page's Overview leaves out, set there
-		in.UsageCardsHidden = cur.UsageCardsHidden
-		// and the names models' usage is counted under (magpie model alias)
-		in.UsageAliases = cur.UsageAliases
-		// and the clears of usage made on the Usage page
-		in.UsageCleared = cur.UsageCleared
-		// and the clients it counts as agents, set there too (#1958)
-		in.ClientAgents = cur.ClientAgents
-		// how agents' lists name models, set on its own for the agents to be told
-		in.PlainNames, in.PlainOwnNames = cur.PlainNames, cur.PlainOwnNames
-		in.BareModelIDs = cur.BareModelIDs // set on its own (bare-ids below)
-		in.BusyLoad = cur.BusyLoad         // and so is this (busy-load below)
-		in.CodexAgentsV1 = cur.CodexAgentsV1
-		in.FullContext = cur.FullContext // set on its own (full-context below)
-		in.CompactAt = cur.CompactAt     // and so is the threshold
-		// Codex's background compaction, set on its own (codex-async-compact below)
-		in.CodexAsyncCompact, in.CodexAsyncCompactPercent = cur.CodexAsyncCompact, cur.CodexAsyncCompactPercent
-		// Claude Desktop's list, set in its row on the Agents page
-		in.DesktopLongest = cur.DesktopLongest
-		// and the Get started card put away, from the card itself
-		in.GuideHidden = cur.GuideHidden
-
-		in.CodexTitles = cur.CodexTitles             // set on its own (codex-titles below)
-		in.CodexDescriptions = cur.CodexDescriptions // set on its own (codex-descriptions below)
-		in.CodexPredictions = cur.CodexPredictions   // and codex-predictions
-		// and so is the model Codex's auto-review runs on (codex-auto-review)
-		in.CodexAutoReview = cur.CodexAutoReview
-		// and the models Codex's and Desktop's subagents are put on, set
-		// in their Agents rows
-		in.CodexSubagentModel = cur.CodexSubagentModel
-		in.DesktopSubagentModel = cur.DesktopSubagentModel
-		// and the model for requests masking would change (redact-route)
-		in.RedactRouteTo = cur.RedactRouteTo
-		in.DesktopSubagentEffort = cur.DesktopSubagentEffort
-		in.ChinaMirror = cur.ChinaMirror // the Plugins page's, set on its own
-		in.NPMRegistry = cur.NPMRegistry // and its npm registry
-		// which Codex accounts spend a reset by themselves, set on the Usage card
-		in.CodexAutoReset = cur.CodexAutoReset
-		in.CodexAutoResetOnly = cur.CodexAutoResetOnly // and at which of the two times
-		in.CodexResetLead = cur.CodexResetLead         // and how early before one expires (codex-reset-lead)
-		// and which of them spend their credits, set there too
-		in.CodexNoCredits = cur.CodexNoCredits
-		in.CodexCreditsLast = cur.CodexCreditsLast // and which only after everything else
-		// and each Codex account's own daily warm-up (codex-warm-at below)
-		in.CodexWarmAtOf = cur.CodexWarmAtOf
-		// and the text size, which the keyboard changes too (text-size below)
-		in.TextSize = cur.TextSize
-		// and the quick panel's shortcut, set on its own (panel-shortcut below)
-		in.PanelShortcut = cur.PanelShortcut
-		// the Dock choice's reading, which the page never sets: the file's
-		// as read (settings.DockSettled), so a save from the page doesn't
-		// read its With window as an older file's Hide
-		in.DockSettled = cur.DockSettled
-		// the version the Update pill was hidden for, set from the pill
-		in.UpdateSkip = cur.UpdateSkip
-		// the GitHub mirror updates come through, set by magpie update mirror
-		in.UpdateMirror = cur.UpdateMirror
-		// gateway mode, set on its own (gateway-mode)
-		in.GatewayMode = cur.GatewayMode
-		in.NoAccountDiscovery = cur.NoAccountDiscovery // set on its own (account-discovery below, or the CLI)
-		if v := strings.TrimSpace(in.Vision); v != "" && v != "off" && v != cur.Vision {
-			if _, _, ok := provider.Resolve(v); !ok {
-				fail(rw, fmt.Errorf("no model %s to describe images", v))
-				return
-			}
-		}
-		if v := strings.TrimSpace(in.ImageGen); v != "" && v != "off" && v != cur.ImageGen {
-			if _, _, ok := provider.Resolve(v); !ok {
-				fail(rw, fmt.Errorf("no model %s to generate images", v))
-				return
-			}
-		}
-		// the searchers after the one named, set in their own row: a save
-		// that doesn't send them (prefsKeep has none) keeps them, and an
-		// empty list clears them
-		if in.SearcherThen == nil {
-			in.SearcherThen = cur.SearcherThen
-		}
-		for _, v := range append([]string{in.Searcher}, in.SearcherThen...) {
-			if v = strings.TrimSpace(v); v != "" && v != "off" && v != cur.Searcher && !slices.Contains(cur.SearcherThen, v) {
-				id, _, _ := strings.Cut(v, "/")
-				if !slices.ContainsFunc(gateway.Searchers(), func(c gateway.SearcherChoice) bool { return c.Provider.ID == id }) {
-					fail(rw, fmt.Errorf("%s can't search the web for other models", id))
-					return
-				}
-			}
-		}
-		if err := settings.Save(in); err != nil {
+		in, cur, err := settingsapi.Apply(body, isWeb(w))
+		if err != nil {
 			fail(rw, err)
 			return
 		}
 		if onFonts != nil && (!sameFont(in.UIFont, cur.UIFont) || !sameFont(in.CodeFont, cur.CodeFont)) {
 			onFonts()
-		}
-		// whether agents are told every model takes images follows Vision
-		// (provider.Described)
-		if strings.TrimSpace(in.Vision) != strings.TrimSpace(cur.Vision) {
-			catalog.Touched()
 		}
 		if (in.Dock != cur.Dock || in.DockWindow != cur.DockWindow || in.DockNever != cur.DockNever) && onDock != nil {
 			onDock(in)
@@ -2998,11 +2787,12 @@ const sentRowsKept = 4
 // hasn't got. The whole answer, built in a buffer to hash and send, was
 // 25 MB of a warm start's 183 MB live heap over a full history (16,600
 // sessions), kept between polls and grown again by each (#2278).
-func writeJSONRows[T any](rw http.ResponseWriter, r *http.Request, key string, rows []T, rest any) {
+// It returns the tag, or "" when a row could not be encoded.
+func writeJSONRows[T any](rw http.ResponseWriter, r *http.Request, key string, rows []T, rest any) string {
 	tail, err := json.Marshal(rest)
 	if err != nil {
 		fail(rw, err)
-		return
+		return ""
 	}
 	k, _ := json.Marshal(key)
 	head := append(append([]byte{'{'}, k...), ":["...)
@@ -3032,7 +2822,7 @@ func writeJSONRows[T any](rw http.ResponseWriter, r *http.Request, key string, r
 		b, err := encode(i)
 		if err != nil {
 			fail(rw, err)
-			return
+			return ""
 		}
 		if i > 0 {
 			whole.Write([]byte{','})
@@ -3048,7 +2838,7 @@ func writeJSONRows[T any](rw http.ResponseWriter, r *http.Request, key string, r
 	if had == tag {
 		rw.Header().Set("X-Magpie-Same", "1")
 		rw.WriteHeader(http.StatusOK)
-		return
+		return tag
 	}
 	sentRows.Lock()
 	was, ok := sentRows.rows[had]
@@ -3081,12 +2871,12 @@ func writeJSONRows[T any](rw http.ResponseWriter, r *http.Request, key string, r
 			b, err := encode(i)
 			if err != nil {
 				// the first pass encoded it: nothing else changes a row
-				return
+				return tag
 			}
 			item(b)
 		}
 		out.Write(end)
-		return
+		return tag
 	}
 	at := make(map[[16]byte][]int, len(was))
 	for j, s := range was {
@@ -3106,7 +2896,7 @@ func writeJSONRows[T any](rw http.ResponseWriter, r *http.Request, key string, r
 			run()
 			b, err := encode(i)
 			if err != nil {
-				return
+				return tag
 			}
 			item(b)
 			continue
@@ -3122,6 +2912,7 @@ func writeJSONRows[T any](rw http.ResponseWriter, r *http.Request, key string, r
 	}
 	run()
 	out.Write(end)
+	return tag
 }
 
 func fail(rw http.ResponseWriter, err error) {

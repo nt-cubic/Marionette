@@ -187,10 +187,7 @@ func loadNet(path string) (*net, error) {
 // quant is DynamicQuantizeLinear: x as uint8 over its range (0 always in
 // it), with its scale and zero point, as ONNX Runtime computes them.
 func quant(x []float32) (q []uint8, scale float32, zp int32) {
-	lo, hi := float32(0), float32(0)
-	for _, v := range x {
-		lo, hi = min(lo, v), max(hi, v)
-	}
+	lo, hi := rangeOf(x)
 	scale = float32(1)
 	if hi != lo {
 		scale = (hi - lo) / 255
@@ -338,10 +335,7 @@ func (nt *net) encode(x []float32, n, procs int) []float32 {
 		h := l.up.matmul(x, n, procs)
 		for t := 0; t < n; t++ {
 			row := h[t*inter : t*inter+inter]
-			for i, v := range row {
-				v += l.upBias[i]
-				row[i] = gelu(v) * l.smooth[i]
-			}
+			geluRow(row, l.upBias, l.smooth)
 		}
 		o := l.down.matmul(h, n, procs)
 		skipNorm(o, x, n, l.downBias, l.ln2w, l.ln2b)
@@ -404,14 +398,10 @@ func attention(qkv []float32, n, procs int) []float32 {
 			}
 			scores(&qs, kt[h*d*np:(h+1)*d*np], p)
 			ps := p[:n]
-			mx := float32(math.Inf(-1))
-			for _, s := range ps {
-				mx = max(mx, s)
-			}
+			mx := maxOf(ps)
+			expSub(ps, mx)
 			var sum float32
-			for u, s := range ps {
-				e := expf(s - mx)
-				ps[u] = e
+			for _, e := range ps {
 				sum += e
 			}
 			inv := 1 / sum

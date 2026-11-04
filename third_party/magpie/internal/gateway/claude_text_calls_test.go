@@ -239,3 +239,31 @@ func TestClaudeTextToolCallsUnstreamed(t *testing.T) {
 		t.Fatalf("reply %q stop %q, run ended %q %v, told %q:\n%s", text, stop, ended, ok, told(), raw)
 	}
 }
+
+// Claude's own call written out as text (packinggoodsllc_07668: Claude Code
+// through a group of Claude models) is held back and asked for, as a
+// "[tool call …]" line is: bare or in its <function_calls>.
+func TestClaudeTextInvokeCallsAreMadeForReal(t *testing.T) {
+	for _, written := range []string{
+		invokeReported,
+		"<function_calls>\n" + `<invoke name="ToolSearch"><parameter name="query">select:mcp__magpie__magpie-browser__browser_navigate</parameter></invoke>` + "\n</function_calls>",
+	} {
+		run := &subscriptionRun{}
+		told := stdinOf(t, run)
+		lines := append(textCallTurn("msg_text", "好的。\n", written[:5], written[5:]), realCallTurn...)
+		text, stop, _, _, raw, ended, ok := claudeReply(t, run, lines, true)
+		if strings.Contains(raw, "invoke") || strings.Contains(raw, "Result:") {
+			t.Fatalf("the client was shown the calls written as text:\n%s", raw)
+		}
+		if text != "好的。\n[mcp__ccd_turn__update_plan]" || stop != "tool_use" || ended != "tool" || !ok || len(told()) != 1 {
+			t.Fatalf("reply %q stop %q, run ended %q %v, told %q:\n%s", text, stop, ended, ok, told(), raw)
+		}
+	}
+	// a line that only names the form mid-line, or starts like it, goes on
+	var c textCalls
+	words := "use <invoke name=\"x\"> to call\n<invoked> later\n<function_call"
+	shown := c.push(words)
+	if held, seen := c.end(); seen || shown+held != words {
+		t.Fatalf("shown %q, held %q (%v)", shown, held, seen)
+	}
+}

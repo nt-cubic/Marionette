@@ -694,6 +694,9 @@ func (c *collector) add(ev Event) {
 	case KUsage:
 		c.res.Usage.add(ev.Usage)
 		c.res.Usage.add(Usage{RequestID: ev.RequestID})
+		if ev.Model != "" {
+			c.res.Model = ev.Model // another model went on with the reply
+		}
 	case KError:
 		c.err, c.errStatus, c.errCode, c.errSaid = ev.Text, ev.Status, ev.Code, ev.Said
 	case KSearch:

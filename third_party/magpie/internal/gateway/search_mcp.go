@@ -103,6 +103,14 @@ func serveMCP(w http.ResponseWriter, r *http.Request, what, server string, limit
 	}
 	// one request, by a client that takes an event stream back, may be
 	// answered by one, for the server to ask the client something first
+	// a client that initializes is given a session id, which it sends on
+	// every request after (Streamable HTTP's Mcp-Session-Id): magpie keeps
+	// nothing by it and never refuses a request for it, but tells two
+	// clients of one server apart by it, as Magpie Browser does to give
+	// each its own tab (browserSession, hubSession)
+	if r.Header.Get("Mcp-Session-Id") == "" && slices.ContainsFunc(msgs, func(m mcpMessage) bool { return m.Method == "initialize" }) {
+		w.Header().Set("Mcp-Session-Id", newMCPSession())
+	}
 	x := &mcpExchange{w: w, canStream: !batch && strings.Contains(r.Header.Get("Accept"), "text/event-stream")}
 	r = r.WithContext(context.WithValue(r.Context(), mcpExchangeKey{}, x))
 	var out []any

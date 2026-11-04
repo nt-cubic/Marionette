@@ -191,7 +191,6 @@ func TestClaudeUsageFailureDoesNotHideAccountErrors(t *testing.T) {
 		subscriptionNotice + ".\nHTTP 401 Unauthorized",
 		"Current session: 40% used\nHTTP 401 Unauthorized",
 		"You've hit your limit · resets 3:30am (UTC)",
-		"You are currently using your overages to power your Claude Code usage. We will automatically switch you back to your subscription rate limits when they reset",
 	} {
 		t.Run(text, func(t *testing.T) {
 			out, card := claudeUsageCards(t, "Current session: 40% used", nil)

@@ -41,10 +41,10 @@ import (
 )
 
 // ReadyWait is how long Claude Code may take to show its prompt before
-// the helper becomes -p (printMode). The bridge's wait for the helper's
-// answer to its initialize request is longer by as much as -p takes to
-// answer it (#4504): a wait shorter than this one ended the helper as it
-// waited, before it became -p, and the turn was answered 502.
+// the helper ends, saying why. The bridge's wait for the helper's answer
+// to its initialize request is longer (#4504): a wait shorter than this
+// one ended the helper as it waited, and the turn was answered 502 with
+// no reason.
 const ReadyWait = 45 * time.Second
 
 // how long Claude Code may take to show its prompt, a pasted message to
@@ -104,9 +104,9 @@ type shim struct {
 // Run runs Claude Code at path, args being the bridge's `claude -p` ones,
 // with stream-json on standard input and output: interactive, with the
 // same model, tools and settings (interactiveArgs). One that doesn't come
-// up becomes the -p run it stands for (printMode), reading the input
-// still unread, unless the user has it never be -p (OnlyEnv): then it
-// ends, saying why.
+// up ends, saying why: it never becomes the -p run it stands for, as a -p
+// request counts against the plan as another client's would, and starts
+// without the interactive mode's cache.
 func Run(args []string) error {
 	if len(args) < 1 {
 		return errors.New("usage: magpie " + Command + " <claude> [claude -p's arguments]")
@@ -121,19 +121,9 @@ func Run(args []string) error {
 		// wsl.exe's own arguments, then Claude Code's
 		pargs = append(slices.Clone(wsl.Args), pargs...)
 	}
-	only := os.Getenv(OnlyEnv) == "1"
-	// fallBack is the -p run, or with OnlyEnv the end, for why
-	fallBack := func(why string) error {
-		if only {
-			fmt.Fprintf(os.Stderr, "claude-tui: %s; the interactive mode only is set, so this run doesn't fall back to -p\n", why)
-			return fmt.Errorf("Claude Code's interactive mode didn't run, and magpie is set to use only it: %s", why)
-		}
-		fmt.Fprintf(os.Stderr, "claude-tui: %s; this run is -p\n", why)
-		return printMode(path, pargs)
-	}
-	if since, ok := BrokenSince(); ok && !only {
-		fmt.Fprintf(os.Stderr, "claude-tui: Claude Code's interactive mode failed to start %s ago; this run is -p\n", time.Since(since).Round(time.Second))
-		return printMode(path, pargs)
+	fail := func(why string) error {
+		fmt.Fprintf(os.Stderr, "claude-tui: %s\n", why)
+		return fmt.Errorf("Claude Code's interactive mode didn't run: %s", why)
 	}
 	args = interactiveArgs(pargs[len(wslArgs(wsl)):])
 	s := &shim{out: os.Stdout, changed: make(chan struct{}, 1), rowsCh: make(chan struct{}, 1), exited: make(chan struct{}), wsl: wsl}
@@ -167,8 +157,7 @@ func Run(args []string) error {
 	defer s.tap.drop()
 	if err := s.start(path, append(slices.Clone(wslArgs(wsl)), args...)); err != nil {
 		s.tap.drop()
-		MarkBroken()
-		return fallBack(fmt.Sprintf("Claude Code's interactive mode could not start (%v)", err))
+		return fail(fmt.Sprintf("Claude Code's interactive mode could not start (%v)", err))
 	}
 	defer s.stop()
 	defer s.dropImages()
@@ -183,15 +172,11 @@ func Run(args []string) error {
 		os.Exit(1)
 	}()
 	if err := s.ready(); err != nil {
-		if !errors.Is(err, errUntrusted) {
-			MarkBroken()
-		}
 		signal.Reset()
 		s.stop()
 		s.tap.drop()
-		return fallBack(err.Error())
+		return fail(err.Error())
 	}
-	clearBroken()
 	s.emit(map[string]any{"type": "system", "subtype": "init", "session_id": s.sid})
 	go s.tail(from)
 	return s.input(os.Stdin)
@@ -866,79 +851,4 @@ func interactiveArgs(pargs []string) []string {
 		out = append(out, a)
 	}
 	return append(out, "--permission-mode", "default", "--allowedTools", strings.Join(allowed, ","), "--no-chrome")
-}
-
-// broken is where a failed start is kept: for a while after it
-// (brokenFor), runs go straight to -p, rather than each waiting out
-// readyWait. It holds how many starts in a row failed.
-func broken() string {
-	dir, err := os.UserCacheDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(dir, "magpie", "claude-tui-broken")
-}
-
-// brokenFor is how long runs go to -p after the interactive mode failed
-// to start n times in a row: 30 minutes, doubled with each failure after,
-// to a day. A machine where it never starts (a container whose Claude Code
-// is signed in for -p only, #4504) waits out readyWait about once a day.
-func brokenFor(n int) time.Duration {
-	d := 30 * time.Minute
-	for i := 1; i < n && d < 24*time.Hour; i++ {
-		d *= 2
-	}
-	return min(d, 24*time.Hour)
-}
-
-func brokenRead() (time.Time, int, bool) {
-	p := broken()
-	if p == "" {
-		return time.Time{}, 0, false
-	}
-	fi, err := os.Stat(p)
-	if err != nil {
-		return time.Time{}, 0, false
-	}
-	b, _ := os.ReadFile(p)
-	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	if err != nil || n < 1 {
-		// a mark from before the count, or one half written
-		n = 1
-	}
-	return fi.ModTime(), n, true
-}
-
-// BrokenSince is when the interactive mode last failed to start, while
-// runs go to -p for it.
-func BrokenSince() (time.Time, bool) {
-	at, n, ok := brokenRead()
-	if !ok || time.Since(at) > brokenFor(n) {
-		return time.Time{}, false
-	}
-	return at, true
-}
-
-// MarkBroken notes that the interactive mode failed to start: by the
-// helper, and by the bridge when the helper didn't answer in time.
-func MarkBroken() {
-	p := broken()
-	if p == "" {
-		return
-	}
-	n := 1
-	if _, was, ok := brokenRead(); ok {
-		n = was + 1
-	}
-	_ = os.MkdirAll(filepath.Dir(p), 0o700)
-	_ = os.WriteFile(p, []byte(strconv.Itoa(n)), 0o600)
-	now := time.Now()
-	_ = os.Chtimes(p, now, now)
-}
-
-// clearBroken forgets failed starts once one shows its prompt.
-func clearBroken() {
-	if p := broken(); p != "" {
-		_ = os.Remove(p)
-	}
 }

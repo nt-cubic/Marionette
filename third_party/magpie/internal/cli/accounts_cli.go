@@ -672,7 +672,11 @@ func importAccounts(args []string) error {
 			fmt.Println(green.Render("✓"), who, muted.Render("· in magpie already, now with this sign-in"))
 		case "exists":
 			took++
-			fmt.Println(muted.Render("="), who, muted.Render("· in magpie already with this sign-in, left as it is"))
+			why := "in magpie already with this sign-in, left as it is"
+			if r.Error != "" {
+				why = r.Error
+			}
+			fmt.Println(muted.Render("="), who, muted.Render("· "+why))
 		default:
 			fmt.Println(bold.Render("✗"), who+":", r.Error)
 		}

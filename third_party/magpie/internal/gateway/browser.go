@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,21 +51,44 @@ const BrowserSessionHeader = "X-Magpie-Browser-Session"
 // page to settle.
 const browserCallWait = 100 * time.Second
 
-// browserRelay is the extensions connected, the last one first served.
+// browserRelay is the extensions connected: each browser that has Magpie
+// Browser (Chrome and Edge both, two profiles of one). A session goes on in
+// the one it picked (browser_tabs use), else the last to connect.
 type browserRelay struct {
 	mu      sync.Mutex
 	conns   []*browserConn
+	chosen  map[string]*browserConn // session → the browser it picked
 	pending map[string]chan json.RawMessage
 	next    uint64
+	ids     uint64
 }
 
 type browserConn struct {
 	c       *websocket.Conn
+	id      string // b1, b2: in the order they connected, while magpie runs
 	version string
 	agent   string
 	since   time.Time
 	wmu     sync.Mutex
 }
+
+// browserName is the browser a User-Agent names, with its major version:
+// Edge, Opera, Vivaldi and Yandex say so; Brave, Arc and the rest of
+// Chromium's say only Chrome.
+func browserName(ua string) string {
+	for _, b := range []struct{ token, name string }{{"Edg/", "Edge"}, {"OPR/", "Opera"}, {"Vivaldi/", "Vivaldi"}, {"YaBrowser/", "Yandex"}, {"Chrome/", "Chrome"}} {
+		if i := strings.Index(ua, b.token); i >= 0 {
+			v := ua[i+len(b.token):]
+			if j := strings.IndexAny(v, ". "); j >= 0 {
+				v = v[:j]
+			}
+			return strings.TrimSpace(b.name + " " + v)
+		}
+	}
+	return "a Chromium browser"
+}
+
+func (c *browserConn) name() string { return browserName(c.agent) }
 
 func (c *browserConn) send(ctx context.Context, v any) error {
 	b, err := json.Marshal(v)
@@ -76,17 +102,65 @@ func (c *browserConn) send(ctx context.Context, v any) error {
 	return c.c.Write(ctx, websocket.MessageText, b)
 }
 
-func (b *browserRelay) current() *browserConn {
+func (b *browserRelay) current() *browserConn { return b.forSession("") }
+
+// forSession is the browser a session's calls go to: the one it picked
+// while that one is connected, else the last to connect.
+func (b *browserRelay) forSession(session string) *browserConn {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if c := b.chosen[session]; c != nil && session != "" {
+		return c
+	}
 	if len(b.conns) == 0 {
 		return nil
 	}
 	return b.conns[len(b.conns)-1]
 }
 
+// all is every connected browser, the first to connect first
+func (b *browserRelay) all() []*browserConn {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.conns)
+}
+
+// choose has a session's calls go to the connected browser named by its id
+// (b2) or, failing that, the one whose name has it (edge), when only one
+// does.
+func (b *browserRelay) choose(session, which string) (*browserConn, error) {
+	which = strings.ToLower(strings.TrimSpace(which))
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var by []*browserConn
+	for _, c := range b.conns {
+		if c.id == which {
+			by = []*browserConn{c}
+			break
+		}
+		if which != "" && strings.Contains(strings.ToLower(c.name()), which) {
+			by = append(by, c)
+		}
+	}
+	switch {
+	case len(b.conns) == 0:
+		return nil, errBrowserAway
+	case len(by) == 0:
+		return nil, fmt.Errorf("no connected browser is %q: browser_tabs with action browsers lists them", which)
+	case len(by) > 1:
+		return nil, fmt.Errorf("%d connected browsers are %q: pick one by its id (browser_tabs with action browsers lists them)", len(by), which)
+	}
+	if b.chosen == nil {
+		b.chosen = map[string]*browserConn{}
+	}
+	b.chosen[session] = by[0]
+	return by[0], nil
+}
+
 func (b *browserRelay) add(c *browserConn) {
 	b.mu.Lock()
+	b.ids++
+	c.id = "b" + strconv.FormatUint(b.ids, 10)
 	b.conns = append(b.conns, c)
 	b.mu.Unlock()
 }
@@ -97,6 +171,11 @@ func (b *browserRelay) remove(c *browserConn) {
 		if x == c {
 			b.conns = append(b.conns[:i], b.conns[i+1:]...)
 			break
+		}
+	}
+	for k, v := range b.chosen {
+		if v == c {
+			delete(b.chosen, k)
 		}
 	}
 	b.mu.Unlock()
@@ -114,7 +193,7 @@ func (b *browserRelay) answered(id string, result json.RawMessage) {
 
 // call hands a tool call to the extension and waits for its MCP result.
 func (b *browserRelay) call(ctx context.Context, session, tool string, args json.RawMessage) (json.RawMessage, error) {
-	c := b.current()
+	c := b.forSession(session)
 	if c == nil {
 		return nil, errBrowserAway
 	}
@@ -256,7 +335,22 @@ func (s *Server) browserMCPCall(r *http.Request, m mcpMessage) (any, map[string]
 		if !browserToolNamed(p.Name) {
 			return nil, map[string]any{"code": -32602, "message": "unknown tool " + p.Name}
 		}
-		out, err := s.browser.call(r.Context(), browserSession(r), p.Name, p.Arguments)
+		session := browserSession(r)
+		var tabs struct{ Action, Browser string }
+		if p.Name == "browser_tabs" {
+			json.Unmarshal(p.Arguments, &tabs)
+			switch tabs.Action {
+			case "browsers":
+				return toolResult(s.browser.list(session), false), nil
+			case "use":
+				c, err := s.browser.choose(session, tabs.Browser)
+				if err != nil {
+					return toolResult(err.Error(), true), nil
+				}
+				return toolResult("Calls now go to "+c.id+" ("+c.name()+"). browser_tabs lists its tabs.", false), nil
+			}
+		}
+		out, err := s.browser.call(r.Context(), session, p.Name, p.Arguments)
 		if err != nil {
 			return toolResult(err.Error(), true), nil
 		}
@@ -264,9 +358,37 @@ func (s *Server) browserMCPCall(r *http.Request, m mcpMessage) (any, map[string]
 		if json.Unmarshal(out, &result) != nil || result["content"] == nil {
 			return toolResult("Magpie Browser answered with something that isn't a tool result: update it (magpie's Library → Magpie Browser)", true), nil
 		}
+		// with two browsers connected, the list of tabs says whose they are
+		if p.Name == "browser_tabs" && (tabs.Action == "" || tabs.Action == "list") {
+			if all := s.browser.all(); len(all) > 1 {
+				if c := s.browser.forSession(session); c != nil {
+					if content, ok := result["content"].([]any); ok {
+						result["content"] = append([]any{map[string]any{"type": "text", "text": fmt.Sprintf("These are %s's tabs (%s); %d browsers are connected: browser_tabs with action browsers lists them.", c.id, c.name(), len(all))}}, content...)
+					}
+				}
+			}
+		}
 		return result, nil
 	}
 	return nil, map[string]any{"code": -32601, "message": "method not found: " + m.Method}
+}
+
+// list is the connected browsers, the one session's calls go to marked *.
+func (b *browserRelay) list(session string) string {
+	all := b.all()
+	if len(all) == 0 {
+		return errBrowserAway.Error()
+	}
+	mine := b.forSession(session)
+	lines := []string{fmt.Sprintf("%d browsers with Magpie Browser are connected (* is the one calls go to; browser_tabs with action use and browser picks another, by id or name):", len(all))}
+	for _, c := range all {
+		mark := " "
+		if c == mine {
+			mark = "*"
+		}
+		lines = append(lines, fmt.Sprintf("%s %s %s, extension %s, connected %s", mark, c.id, c.name(), c.version, c.since.Format("15:04")))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // browserSession is which agent session a call is from: the header the

@@ -315,6 +315,14 @@ func entriesAt(ms []catalog.Model, after int, effort string) []any {
 			if w < c {
 				e.AutoCompact = &w
 			}
+		} else if w := cmp.Or(m.Compact, work.Compact()); w > 0 {
+			// a window magpie doesn't know (a relay listing none, a
+			// model models.dev lacks): Codex compacts at no point on an
+			// entry with neither a window nor a limit, and after the
+			// vendor's "too long" it only errors again until a manual
+			// /compact (jiangguochao666 on X). The threshold alone is
+			// one Codex compacts at (ModelInfo::auto_compact_token_limit)
+			e.AutoCompact = &w
 		}
 		e.Truncation.Mode, e.Truncation.Limit = "tokens", 10000
 		if deepSeek(m.ID) {
@@ -956,6 +964,19 @@ func listedEntry(m catalog.Model, priority int, work settings.Settings, autoRevi
 			w = work.Working(c)
 		}
 		if w < c {
+			e["auto_compact_token_limit"] = w
+		}
+	} else if w := m.Compact; w > 0 || work.CompactAt > 0 && !work.FullContext {
+		w = cmp.Or(w, work.CompactAt)
+		// no window magpie knows: the user's threshold still holds,
+		// under the vendor's own window and limit where it says them
+		if n, ok := e["context_window"].(float64); ok && n > 0 && int(n) <= w {
+			w = 0
+		}
+		if l, ok := e["auto_compact_token_limit"].(float64); ok && l > 0 && int(l) < w {
+			w = 0
+		}
+		if w > 0 {
 			e["auto_compact_token_limit"] = w
 		}
 	}

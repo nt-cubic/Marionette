@@ -16,7 +16,8 @@
  * home view of an expanded strip.
  */
 
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { Archive, ChevronLeft, MoreHorizontal, Pause, Plus, Search } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { EngineQuotaEntry, EngineQuotaWindow } from "../lib/api";
@@ -210,6 +211,67 @@ function QuotaMeters({ rows, onOpen }: { rows: EngineQuotaEntry[]; onOpen: () =>
   );
 }
 
+/**
+ * Strip menus portal to <body>. `.dock-chrome` carries its own z-index (40),
+ * which makes it a stacking context — a menu inside the band can never paint
+ * above the page overlays (70/75), so 全部对话 opened *over* the ⋯ rows and the
+ * menu looked like it never opened. Fixed to the anchor's rect keeps the same
+ * look while escaping that context; the panel ref feeds the outside-click guard
+ * (a portaled node is no longer inside the anchor).
+ */
+function DockMenuLayer({
+  anchorRef,
+  align = "right",
+  panelRef,
+  className,
+  children,
+}: {
+  anchorRef: RefObject<HTMLDivElement | null>;
+  align?: "left" | "right";
+  /** Writable: the panel node is handed back for the outside-click guard. */
+  panelRef: { current: HTMLDivElement | null };
+  className?: string;
+  children: ReactNode;
+}) {
+  const localRef = useRef<HTMLDivElement | null>(null);
+  const [box, setBox] = useState<{ top: number; left: number; maxHeight: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const place = () => {
+      const anchor = anchorRef.current;
+      const panel = localRef.current;
+      if (!anchor) return;
+      const rect = anchor.getBoundingClientRect();
+      const width = panel?.offsetWidth || 196;
+      const rawLeft = align === "left" ? rect.left : rect.right - width;
+      const top = rect.bottom + 4;
+      setBox({
+        top,
+        left: Math.min(Math.max(8, rawLeft), Math.max(8, window.innerWidth - width - 8)),
+        maxHeight: Math.max(160, window.innerHeight - top - 12),
+      });
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [anchorRef, align]);
+
+  return createPortal(
+    <div
+      ref={(node) => {
+        localRef.current = node;
+        panelRef.current = node;
+      }}
+      className={className ? `dock-menu ${className}` : "dock-menu"}
+      role="menu"
+      style={box ? { position: "fixed", top: box.top, left: box.left, right: "auto", maxHeight: box.maxHeight } : { visibility: "hidden" }}
+    >
+      {children}
+    </div>,
+    document.body,
+  );
+}
+
 export const DockChrome = memo(function DockChrome({
   page,
   onPage,
@@ -238,6 +300,9 @@ export const DockChrome = memo(function DockChrome({
   const bandRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const newChatRef = useRef<HTMLDivElement>(null);
+  /** Portaled panels — outside the anchors, so the close guard needs them too. */
+  const morePanelRef = useRef<HTMLDivElement | null>(null);
+  const newPanelRef = useRef<HTMLDivElement | null>(null);
   /** One popover at a time: the ⋯ menu or the new-chat destination picker. */
   const [openMenu, setOpenMenu] = useState<"more" | "new" | null>(null);
   /** 侧边栏常驻 — mirrored from prefs so the ⋯ row can draw its state. */
@@ -292,7 +357,12 @@ export const DockChrome = memo(function DockChrome({
     if (!openMenu) return;
     const onDown = (event: MouseEvent) => {
       const target = event.target as Node;
-      if (!menuRef.current?.contains(target) && !newChatRef.current?.contains(target)) {
+      if (
+        !menuRef.current?.contains(target) &&
+        !newChatRef.current?.contains(target) &&
+        !morePanelRef.current?.contains(target) &&
+        !newPanelRef.current?.contains(target)
+      ) {
         setOpenMenu(null);
       }
     };
@@ -352,7 +422,7 @@ export const DockChrome = memo(function DockChrome({
             {updateAvailable && <span className="dock-icon__pip" aria-hidden />}
           </button>
           {openMenu === "more" && (
-            <div className="dock-menu" role="menu">
+            <DockMenuLayer anchorRef={menuRef} panelRef={morePanelRef}>
               <button
                 type="button"
                 role="menuitem"
@@ -417,7 +487,7 @@ export const DockChrome = memo(function DockChrome({
                 {t("dock.quit")}
                 <small>{t("dock.quitHint")}</small>
               </button>
-            </div>
+            </DockMenuLayer>
           )}
         </div>
       </div>
@@ -438,7 +508,7 @@ export const DockChrome = memo(function DockChrome({
             {t("dock.newChat")}
           </button>
           {openMenu === "new" && (
-            <div className="dock-menu dock-menu--left" role="menu" aria-label={t("dock.newChatTo")}>
+            <DockMenuLayer anchorRef={newChatRef} align="left" panelRef={newPanelRef}>
               <button
                 type="button"
                 role="menuitem"
@@ -479,7 +549,7 @@ export const DockChrome = memo(function DockChrome({
                 {t("dock.pageShelf")} ›
                 <small>{t("dock.allChatsHint")}</small>
               </button>
-            </div>
+            </DockMenuLayer>
           )}
         </div>
         <button type="button" className="dock-btn" onClick={() => onPage("memo")} title={t("dock.memoButtonTitle")}>

@@ -125,6 +125,28 @@ func imageFrom(b []byte, wd string) []byte {
 	return out
 }
 
+// callerSession is the browser session a message goes on in: the hub's
+// caller's, which magpie's MCP router names in a call's _meta
+// (gateway.HubSessionMeta) since it runs this one process for every agent
+// behind it, else this process's own. Two agents behind the router then
+// work in tabs of their own, as two given this server directly do.
+func callerSession(b []byte, own string) string {
+	var m struct {
+		Method string `json:"method"`
+		Params struct {
+			Meta map[string]json.RawMessage `json:"_meta"`
+		} `json:"params"`
+	}
+	var v string
+	if json.Unmarshal(b, &m) != nil || m.Method != "tools/call" || json.Unmarshal(m.Params.Meta[gateway.HubSessionMeta], &v) != nil {
+		return own
+	}
+	if v = strings.TrimSpace(v); v == "" {
+		return own
+	}
+	return "hub:" + v
+}
+
 func relay(in io.Reader, s *bridge) error {
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 64<<10), max(s.most, 16<<20))
@@ -191,7 +213,7 @@ func (s *bridge) pass(m message, body []byte) {
 	r.Header.Set("Accept", "application/json")
 	r.Header.Set("Authorization", "Bearer "+gateway.Token)
 	if s.session != "" {
-		r.Header.Set(gateway.BrowserSessionHeader, s.session)
+		r.Header.Set(gateway.BrowserSessionHeader, callerSession(body, s.session))
 	}
 	resp, err := s.client.Do(r)
 	if err != nil {

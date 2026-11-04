@@ -111,6 +111,19 @@
   color: var(--text-faint);
   line-height: 1.45;
   margin: 4px 0 0;
+  /* 价目日期与导出按钮一起靠右;两个 auto 让 ranges 独占左侧。 */
+  margin-left: auto;
+}
+
+.usage-analysis__export {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.usage-analysis__export:disabled {
+  opacity: 0.6;
 }
 
 .usage-analysis__panel {

@@ -95,6 +95,14 @@ func TestUsageSameTickRewriteIsNotCached(t *testing.T) {
 					if appendAfter {
 						Append(Record{Time: clock, Agent: "codex", Provider: "relay", Model: "m", Input: 19})
 					}
+					if !afterSettle && !appendAfter {
+						// Inside the tick the read before the rewrite may
+						// stand, as a read a moment earlier would have had
+						// it; the first read once the tick settles checks
+						// it (#4368).
+						Summarize(All)
+						afterSettle = true
+					}
 					if afterSettle {
 						logIndexNow = func() time.Time { return tick.Add(time.Hour) }
 					}

@@ -653,3 +653,65 @@ func TestHubGivesMagpieImage(t *testing.T) {
 		t.Errorf("no roots: called as %q", got)
 	}
 }
+
+// The router runs one Magpie Browser for every agent behind it, so each
+// call names its caller's session in _meta, for the browser to keep each
+// caller in a tab of its own; another server is sent no session, and a
+// call with none (a caller not told apart) is sent none.
+func TestHubTellsMagpieBrowserItsCaller(t *testing.T) {
+	h := hubSandbox(t)
+	write(t, filepath.Join(h, ".claude.json"), `{"mcpServers": {}}`)
+	br := fakeStdio(t, "ok", nil)
+	br.Name, br.Args, br.Agents = browserServerName, []string{"mcp", "browser"}, []string{"claude"}
+	ok(t)(SaveServer("", *br))
+	other := fakeStdio(t, "ok", nil)
+	other.Agents = []string{"claude"}
+	ok(t)(SaveServer("", *other))
+	ok(t)(SetMCPHub(true))
+	hub := theHub{}
+	ctx := context.Background()
+
+	for _, s := range []string{"hub-claude-one", "hub-claude-two"} {
+		res, err := hub.Call(gateway.WithHubCaller(ctx, gateway.HubCaller{Session: s}), "claude", browserServerName, "a", json.RawMessage(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := hubText(t, res); !strings.Contains(got, `meta={"magpie/session":"`+s+`"}`) {
+			t.Errorf("browser called as %q, want session %s", got, s)
+		}
+	}
+	res, err := hub.Call(gateway.WithHubCaller(ctx, gateway.HubCaller{Session: "hub-claude-one"}), "claude", "fake", "a", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := hubText(t, res); strings.Contains(got, "meta=") {
+		t.Errorf("another server was sent the session: %q", got)
+	}
+	res, err = hub.Call(ctx, "claude", browserServerName, "a", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := hubText(t, res); strings.Contains(got, "meta=") {
+		t.Errorf("no session: called as %q", got)
+	}
+}
+
+// Another magpie's router is sent the session too, to pass on to its
+// Magpie Browser; any other URL isn't.
+func TestKeepsSession(t *testing.T) {
+	for _, c := range []struct {
+		s    Server
+		want bool
+	}{
+		{Server{Transport: "stdio", Command: "/Applications/Magpie.app/Contents/MacOS/magpie", Args: []string{"mcp", "browser"}}, true},
+		{Server{Transport: "stdio", Command: "magpie", Args: []string{"mcp", "image"}}, false},
+		{Server{Transport: "http", URL: "http://10.0.0.2:3425/mcp/magpie/hub"}, true},
+		{Server{Transport: "http", URL: "http://10.0.0.2:3425/mcp/magpie/hub/claude"}, true},
+		{Server{Transport: "http", URL: "https://mcp.example.com/mcp"}, false},
+		{Server{Transport: "http", URL: "https://example.com/x/mcp/magpie/hub"}, false},
+	} {
+		if got := keepsSession(&c.s); got != c.want {
+			t.Errorf("%+v: %v, want %v", c.s, got, c.want)
+		}
+	}
+}

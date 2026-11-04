@@ -78,12 +78,17 @@ func TestPluginAccountShownByItsUsageUser(t *testing.T) {
 		if len(keys) != 1 || keys[0] != id+"/"+want {
 			t.Fatalf("%s: a gateway key's accounts read %q", why, keys)
 		}
-		alias := withAccountNames([]SubscriptionQuota{{Provider: id, User: iam}})[0].Alias
+		card := withAccountNames([]SubscriptionQuota{{Provider: id, User: iam}})[0]
 		if want == iam {
 			want = ""
 		}
-		if alias != want {
-			t.Fatalf("%s: the card's alias is %q, not %q", why, alias, want)
+		if card.Alias != want {
+			t.Fatalf("%s: the card's alias is %q, not %q", why, card.Alias, want)
+		}
+		// the plugin's name for the account is the account's, hidden
+		// with it; only a name of the user's own is Named (#3656)
+		if card.Named != (want == "Work") {
+			t.Fatalf("%s: %q read as the user's own: %v", why, card.Alias, card.Named)
 		}
 	}
 	shown(iam, "nothing read yet")

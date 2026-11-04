@@ -5,27 +5,28 @@ import (
 )
 
 // The provider editor's row says how the last run went: the interactive
-// mode, -p with claudeTUI's code, or -p after the helper couldn't start
-// the interactive mode.
+// mode, or -p with claudeTUI's code. A helper that couldn't start the
+// interactive mode doesn't become -p, and says nothing that reads as a -p
+// run.
 func TestClaudeModeLast(t *testing.T) {
 	claudeLast.Lock()
 	before := claudeLast.run
 	claudeLast.Unlock()
 	t.Cleanup(func() { claudeLast.Lock(); claudeLast.run = before; claudeLast.Unlock() })
 
-	noteClaudeRun("schema")
-	if m := ClaudeModeNow(); m.Last == nil || m.Last.TUI || m.Last.Why != "schema" || m.Last.At.IsZero() {
-		t.Fatalf("after a schema run: %+v", m.Last)
+	noteClaudeRun("off")
+	if m := ClaudeModeNow(); m.Last == nil || m.Last.TUI || m.Last.Why != "off" || m.Last.At.IsZero() {
+		t.Fatalf("after a -p run: %+v", m.Last)
 	}
 	noteClaudeRun("")
 	if m := ClaudeModeNow(); m.Last == nil || !m.Last.TUI || m.Last.Why != "" {
 		t.Fatalf("after an interactive run: %+v", m.Last)
 	}
-	// the helper becoming -p after it started is the last run's mode too
+	// the helper failing to start is no -p run
 	w := &lockedWriter{run: &subscriptionRun{}}
-	_, _ = w.Write([]byte("claude-tui: Claude Code ended before it showed its prompt (exit status 1): B; this run is -p\n"))
-	if m := ClaudeModeNow(); m.Last == nil || m.Last.TUI || m.Last.Why != "start" {
-		t.Fatalf("after the helper became -p: %+v", m.Last)
+	_, _ = w.Write([]byte("claude-tui: Claude Code's interactive mode didn't run: Claude Code ended before it showed its prompt (exit status 1): B\n"))
+	if m := ClaudeModeNow(); m.Last == nil || !m.Last.TUI {
+		t.Fatalf("after the helper failed: %+v", m.Last)
 	}
 }
 

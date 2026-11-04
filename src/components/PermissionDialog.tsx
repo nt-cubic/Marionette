@@ -59,16 +59,18 @@ export function PermissionDialog({ prompt, busy = false, onChoose }: PermissionD
         aria-labelledby="permission-dialog-title"
         aria-describedby="permission-dialog-desc"
       >
-        <div className="permission-dialog__header">
-          <ShieldAlert size={18} aria-hidden />
-          <div>
-            <span className="permission-dialog__eyebrow">{t("perm.eyebrow")}</span>
-            <strong id="permission-dialog-title">{prompt.title || "Permission required"}</strong>
+        <div className="permission-dialog__scroll">
+          <div className="permission-dialog__header">
+            <ShieldAlert size={18} aria-hidden />
+            <div>
+              <span className="permission-dialog__eyebrow">{t("perm.eyebrow")}</span>
+              <strong id="permission-dialog-title">{prompt.title || "Permission required"}</strong>
+            </div>
           </div>
+          {prompt.detail && (
+            <pre className="permission-dialog__detail" id="permission-dialog-desc">{prompt.detail}</pre>
+          )}
         </div>
-        {prompt.detail && (
-          <pre className="permission-dialog__detail" id="permission-dialog-desc">{prompt.detail}</pre>
-        )}
         <div className="permission-dialog__actions">
           {options.map((opt, index) => {
             const tone = permissionOptionTone(opt.kind, opt.name);

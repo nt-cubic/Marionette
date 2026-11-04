@@ -14,9 +14,9 @@ import (
 // a temp dir of their own: what they leave in it is theirs, and a skill's
 // download left there fails the run (#2321).
 func TestMain(m *testing.M) {
-	// started as magpie's own image server (Args mcp image): the fake
-	// server, for the hub to take it for magpie-image
-	if len(os.Args) >= 3 && os.Args[1] == "mcp" && os.Args[2] == "image" {
+	// started as magpie's own image or browser server (Args mcp image,
+	// mcp browser): the fake server, for the hub to take it for that one
+	if len(os.Args) >= 3 && os.Args[1] == "mcp" && (os.Args[2] == "image" || os.Args[2] == "browser") {
 		os.Args = []string{os.Args[0], "-test.run=^TestFakeMCPServer$"}
 	}
 	if os.Getenv(testenv.Marker) != "" {

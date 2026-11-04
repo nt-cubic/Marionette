@@ -23,7 +23,9 @@ import { zh as zhFeLibB } from "./parts/fe-libB.zh";
 import { zh as zhFeLibC } from "./parts/fe-libC.zh";
 import { zh as zhFeCouncil } from "./parts/fe-council.zh";
 import { zh as zhFeExport } from "./parts/fe-export.zh";
+import { zh as zhFeUpdate } from "./parts/fe-update.zh";
 import { zh as zhFeUsagedash } from "./parts/fe-usagedash.zh";
+import { zh as zhFeFind } from "./parts/fe-find.zh";
 
 export const zh = {
   ...zhCommon,
@@ -45,5 +47,7 @@ export const zh = {
   ...zhFeLibC,
   ...zhFeCouncil,
   ...zhFeExport,
+  ...zhFeUpdate,
   ...zhFeUsagedash,
+  ...zhFeFind,
 } as const;

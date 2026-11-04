@@ -132,3 +132,62 @@ func TestCodexWindowShownCompactApart(t *testing.T) {
 		"relay/big-listed":            {float64(1000000), nil},
 	})
 }
+
+// A model whose window magpie doesn't know (a relay listing none, one
+// models.dev lacks) still compacts where the user set: Codex reads an
+// entry with neither context_window nor auto_compact_token_limit as one
+// it never compacts, so it ran into the vendor's "too long" and only a
+// manual /compact got the conversation going again (jiangguochao666 on
+// X: "自动压缩设置之后还是不会启动"). Full window leaves it uncompacted,
+// and a vendor's own entry keeps a window or limit under the threshold.
+func TestCodexCompactsWithNoKnownWindow(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", os.Getenv("HOME"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(os.Getenv("HOME"), ".config"))
+	bare := json.RawMessage(`{"slug":"bare","display_name":"Bare","base_instructions":"x","auto_compact_token_limit":null,"supported_reasoning_levels":[]}`)
+	small := json.RawMessage(`{"slug":"small","display_name":"Small","base_instructions":"x","context_window":64000,"supported_reasoning_levels":[]}`)
+	check := func(what string, want map[string][2]any) {
+		t.Helper()
+		var got struct {
+			Models []map[string]any `json:"models"`
+		}
+		json.Unmarshal(Catalog([]catalog.Model{
+			{ID: "relay/plain", Name: "plain"},
+			{ID: "relay/own", Name: "own", Compact: 50000},
+			{ID: "relay/bare", Name: "Bare", Codex: bare},
+			{ID: "relay/small", Name: "Small", Codex: small},
+		}), &got)
+		have := map[string][2]any{}
+		for _, e := range got.Models {
+			have[e["slug"].(string)] = [2]any{e["context_window"], e["auto_compact_token_limit"]}
+		}
+		for id, w := range want {
+			if have[id] != w {
+				t.Errorf("%s: %s told window/compact %v; want %v", what, id, have[id], w)
+			}
+		}
+	}
+	check("default", map[string][2]any{
+		"relay/plain": {nil, float64(settings.WorkingWindow)},
+		"relay/own":   {nil, float64(50000)},
+		"relay/bare":  {nil, nil},
+		"relay/small": {float64(64000), nil},
+	})
+	if err := settings.Save(settings.Settings{CompactAt: 80000}); err != nil {
+		t.Fatal(err)
+	}
+	check("compact at 80K", map[string][2]any{
+		"relay/plain": {nil, float64(80000)},
+		"relay/own":   {nil, float64(50000)},
+		"relay/bare":  {nil, float64(80000)},
+		"relay/small": {float64(64000), nil},
+	})
+	if err := settings.Save(settings.Settings{CompactAt: 80000, FullContext: true}); err != nil {
+		t.Fatal(err)
+	}
+	check("full window", map[string][2]any{
+		"relay/plain": {nil, nil},
+		"relay/own":   {nil, float64(50000)},
+		"relay/bare":  {nil, nil},
+	})
+}

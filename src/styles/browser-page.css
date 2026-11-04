@@ -212,8 +212,13 @@
 /* ── Permission card ──────────────────────────────────────────────────── */
 
 .browser-permission {
-  min-width: 340px;
+  /* The shared .project-dialog-backdrop pins a too-tall dialog to the top and
+     scrolls, but this card is its own surface: cap it here too so a long
+     origin/action summary can never push 允许/拒绝 off the screen. */
+  min-width: min(340px, 100%);
   max-width: 460px;
+  max-height: 100%;
+  overflow: auto;
   padding: 16px;
   border-radius: 12px;
   border: 1px solid var(--border);
@@ -225,16 +230,23 @@
 }
 
 .browser-permission__title {
+  flex: 0 0 auto;
   font-weight: 700;
   font-size: 13px;
 }
 
 .browser-permission__session {
+  flex: 0 0 auto;
   color: var(--text-faint);
   font-size: 12px;
 }
 
 .browser-permission__body {
+  /* The summary is agent-supplied and unbounded; it scrolls so the answer row
+     below it stays pinned in view. */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
   color: var(--text);
   font-size: 12.5px;
   line-height: 1.55;
@@ -243,6 +255,7 @@
 
 .browser-permission__actions {
   display: flex;
+  flex: 0 0 auto;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 4px;

@@ -18,6 +18,8 @@
 | [`research-codeg.md`](./research-codeg.md) | **调研（2026-10-25）**：同类产品 Codeg 全量分析（克隆在 `D:\Projects\codeg`）——可抄功能（活动胶囊/steer 队列/富内容渲染/MCP·Skills 分发/收菜任务/@委托/微信 iLink 通道…）、坑清单（进程管理/编码/Windows/流式 UI/适配器漂移…带 commit 证据）、ZCode 同桥情报（`ZCODE_ACP_RUNTIME` 等）、行动优先级 |
 | [`plan-codeg-borrow.md`](./plan-codeg-borrow.md) | **路线图（2026-10-25）**：从 Codeg 借什么、什么不借——对照现状（代理层/跨 agent handoff/12 parser/registry 安装/Ctrl K 搜索已对齐）分 P0 速赢→P1 对话流骨架→P2 数据与能力分发→P3 协作与远程→P4 按需，含明确不做清单、依赖关系与工程纪律 |
 | [`plan-browser-computer-use.md`](./plan-browser-computer-use.md) | **实施案（2026-10-31 定稿）**：浏览器共享 + Computer Use 两批全量方案——child webview（wry resize-subclass 坑）、vendor aria 引擎、localhost HTTP MCP（每会话 token，zcode 通吃）、授权与对话权限模式吻合（agent 自开页自动读/Control 走权限卡）、CU 的 cua-driver 按需下载 + helper 单二进制 + 按键白名单。批次 1（文档标签页）已落地，行为见 `CURRENT.md` |
+| [`research-council-convergence-hallucination.md`](./research-council-convergence-hallucination.md) | **调研（2026-11-02）**：圆桌的收敛与幻觉治理——现状审计（辩论确实已实现、star 拓扑、已有防护清单）+ 两个断点（`Rebuttal` 死通道、`PlanStep` 无来源字段）+ 文献结论（轮次收益止于 2 轮、收敛到一致≠正确、共识放大幻觉、LLM 引用捏造率 78–90%） |
+| [`plan-council-convergence-guardrails.md`](./plan-council-convergence-guardrails.md) | **实施方案（草案）**：P0 接线 Rebuttal / 综合三段式+强制溯源 / 收益衰减提前终止（Jaccard 纯字符串）→ P1 确定性符号核验 / isolation guard / 置信度加权 → P2 构造反命题 / ABSTAIN；含明确不做与分批验收口径 |
 | `archive/` | 历史归档（2026-07 前后的策划、路线图、规格与调研）。**不是**待办清单 |
 | `screenshots/` | 根 README 用的界面截图 |
 
