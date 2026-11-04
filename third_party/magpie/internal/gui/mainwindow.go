@@ -72,7 +72,7 @@ func (h *host) hideMain() {
 	application.InvokeSync(func() {
 		if h.main != nil {
 			h.main.ExecJS(mainClosedJS)
-			h.main.Hide()
+			hideWebview(h.main)
 		}
 	})
 	h.dock(settings.Load(), false)

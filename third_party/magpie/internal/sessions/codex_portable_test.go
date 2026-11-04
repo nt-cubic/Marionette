@@ -175,6 +175,44 @@ func TestPortCodexRollouts(t *testing.T) {
 	}
 }
 
+// #4735: a pass over a rollout with nothing of magpie's in it only reads
+// it. It wrote each one out again, compressed for a .zst, and threw that
+// away, which cost a pass more than the read. A line longer than the read
+// buffer is read whole, and one of magpie's after it is still written.
+func TestPortCodexRolloutsOnlyReadsWhatHasNothingToChange(t *testing.T) {
+	long := `{"timestamp":"2026-10-20T07:06:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"` + strings.Repeat("x", 300<<10) + `"}]}}`
+	for _, zst := range []bool{false, true} {
+		t.Run(map[bool]string{false: "plain", true: "zst"}[zst], func(t *testing.T) {
+			all := portRolloutLines("Progress: done.")
+			lines := []string{all[0], all[1], long, all[5], all[6]}
+			home, path := portHome(t, lines, zst)
+			before, _ := os.ReadFile(path)
+			was := rolloutWrites.Load()
+			res, err := PortCodexRollouts(context.Background(), home)
+			if err != nil || !res.Done || len(res.Rewritten) != 0 {
+				t.Fatalf("pass: %+v, %v", res, err)
+			}
+			if n := rolloutWrites.Load() - was; n != 0 {
+				t.Errorf("%d rollouts written out for nothing", n)
+			}
+			if after, _ := os.ReadFile(path); !bytes.Equal(after, before) {
+				t.Error("the rollout changed")
+			}
+
+			lines = []string{all[0], all[1], long, all[2], all[6]}
+			home, path = portHome(t, lines, zst)
+			res, err = PortCodexRollouts(context.Background(), home)
+			if err != nil || len(res.Rewritten) != 1 {
+				t.Fatalf("pass: %+v, %v", res, err)
+			}
+			got := readRollout(t, path)
+			if len(got) != len(lines) || got[2] != long || got[4] != lines[4] || strings.Contains(got[3], codexsummary.Mark) {
+				t.Errorf("rewritten: %d lines, long kept %v, item %.200s", len(got), len(got) > 2 && got[2] == long, got[min(3, len(got)-1)])
+			}
+		})
+	}
+}
+
 // A rollout whose thread a Codex has open (its writer lock held) is never
 // written under it: it is left as it was, kept for a later pass, and
 // written once the Codex lets it go. A Codex home without

@@ -28,6 +28,7 @@ func TestSearchQueueKeepsCodexAlive(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			fresh(t)
 			release, stopped := make(chan struct{}), make(chan struct{})
+			proceed := make(chan struct{})
 			var once sync.Once
 			finish := func() { once.Do(func() { close(release) }) }
 			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -47,6 +48,7 @@ func TestSearchQueueKeepsCodexAlive(t *testing.T) {
 					http.Error(w, "missing tools", 400)
 					return
 				}
+				<-proceed
 				w.Header().Set("Content-Type", "text/event-stream")
 				io.WriteString(w, "data: "+`{"type":"response.created","response":{"id":"queued","model":"m1","status":"in_progress"}}`+"\n\n")
 				w.(http.Flusher).Flush()
@@ -101,8 +103,23 @@ func TestSearchQueueKeepsCodexAlive(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer res.Body.Close()
-			idle := time.AfterFunc(300*time.Millisecond, cancel)
-			defer idle.Stop()
+			// #2547: the idle window starts at the first data line, not at
+			// the headers: a loaded machine's path to the first translated
+			// event is not the client's idle, and the hard cap still ends a
+			// stream that never speaks.
+			var idle *time.Timer
+			defer func() {
+				if idle != nil {
+					idle.Stop()
+				}
+			}()
+			// Hold the queue's first event back past the fixed window the
+			// idle once started at headers with, so silent keeps a red if
+			// the window ever starts ahead of the state again.
+			if mode == "silent" {
+				time.Sleep(500 * time.Millisecond)
+			}
+			close(proceed)
 			var body strings.Builder
 			pings, completed := 0, false
 			sc := bufio.NewScanner(res.Body)
@@ -110,7 +127,11 @@ func TestSearchQueueKeepsCodexAlive(t *testing.T) {
 				line := sc.Text()
 				body.WriteString(line + "\n")
 				if strings.HasPrefix(line, "data:") {
-					idle.Reset(300 * time.Millisecond)
+					if idle == nil {
+						idle = time.AfterFunc(300*time.Millisecond, cancel)
+					} else {
+						idle.Reset(300 * time.Millisecond)
+					}
 				}
 				if strings.Contains(line, `"type":"response.in_progress"`) {
 					pings++

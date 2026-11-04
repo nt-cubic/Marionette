@@ -3076,7 +3076,7 @@ func entryIn(entries []Entry, id string) (Entry, bool) {
 func Resolve(id string) (Provider, string, bool) {
 	// Claude Code's mark for a model with a 1M window; it drops it before
 	// asking, but a value in its settings still has it
-	id = strings.TrimSuffix(strings.TrimSpace(id), "[1m]")
+	id = peelAgentModelMark(id)
 	if IsGroupRef(id) {
 		// the groups' entries first: Catalog copies every entry, and was
 		// built for each group an agent's settings name (the window's drift

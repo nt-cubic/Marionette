@@ -43,3 +43,36 @@ func TestClaudeHandOverLetsGoOfTheAccountsRuns(t *testing.T) {
 		t.Fatalf("idle runs after the hand-over: %d, moved kept %v", n, kept)
 	}
 }
+
+// #4532: a run in a turn as its account is handed over isn't kept for the
+// next turn when this one ends: kept, it waited up to idleLongest in the
+// removed directory with the refresh token that is Claude Code's now.
+// Another account's run in a turn is kept as before.
+func TestClaudeHandOverEndsTheAccountsBusyRuns(t *testing.T) {
+	b := newSubscriptionBridge()
+	run := func(owner string) *subscriptionRun {
+		r := &subscriptionRun{bridge: b, token: owner, pending: map[string]chan mcpToolResult{}}
+		r.owner.Store(&owner)
+		b.mu.Lock()
+		b.runs[owner] = r // in a turn: a run, not waiting
+		b.mu.Unlock()
+		return r
+	}
+	moved := run("claude\x00b@example.com")
+	other := run("claude\x00a@example.com")
+
+	provider.ClaudeHandedOver("b@example.com")
+
+	if b.keepIdle(moved, "next", "") || !moved.closed {
+		t.Fatal("a run of the handed-over account was kept for its next turn")
+	}
+	if !b.keepIdle(other, "other", "") || other.closed {
+		t.Fatal("another account's run in a turn was let go")
+	}
+	b.mu.Lock()
+	_, kept := b.idle["next"]
+	b.mu.Unlock()
+	if kept {
+		t.Fatal("the handed-over account's run waits for a next turn")
+	}
+}

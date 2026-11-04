@@ -1697,6 +1697,7 @@ magpie.plugin("library", (ctx) => {
     connect.classList.add("lib-hubconnect");
     at.append(glyph(GLYPH.web), aw, copyBtn(hubURL(), t("Address")), connect);
     list.append(at);
+    list.append(hubNoteRow());
     const names = (why) => hubAgents().filter((a) => a.hub === why).map((a) => a.name).join(", ");
     const why = [
       ["no-remote", "{agents} reaches no MCP server over HTTP, so it keeps each server's own entry."],
@@ -1712,6 +1713,51 @@ magpie.plugin("library", (ctx) => {
       }
     }
     return out;
+  }
+  // What the router says of itself to the agents (packinggoodsllc_07668 on
+  // Discord: one magpie in China and one in Los Angeles serve the same
+  // tools, and an agent fetching Google should pick Los Angeles): before
+  // each tool's description and in what it tells an agent connecting.
+  // Empty, an agent on another computer is told this computer's name,
+  // shown as the placeholder. Saved on Enter or leaving the field, this
+  // computer's own (settings' routerNote).
+  function hubNoteRow() {
+    const row = el("div", "row lib-row lib-hubnoterow");
+    const who = el("div", "who");
+    who.append(el("div", "name", t("Router name")));
+    who.append(el("div", "sub wraps", t("Agents connected to more than one router tell them apart by it. Empty, agents on other computers are told this computer's name.")));
+    const f = el("input", "lib-filter lib-hubname");
+    f.type = "text";
+    f.value = lib.hubNote || "";
+    f.placeholder = lib.hubName || "";
+    f.maxLength = 80;
+    f.spellcheck = false;
+    f.autocomplete = "off";
+    f.setAttribute("aria-label", t("Router name"));
+    let saved = lib.hubNote || "";
+    const save = () => {
+      const note = f.value.trim().replace(/\s+/g, " ");
+      if (note === saved) return;
+      const was = saved;
+      saved = note;
+      // a change of settings, not of the agents' files: no result to report
+      change("servers/hub-note", { note }).then((ok) => {
+        if (!ok) { saved = was; return; }
+        status(note
+          ? t("Agents are told this router is {name} — restart them to read it", { name: note })
+          : t("Agents on other computers are told this computer's name — restart them to read it"), "ok");
+      });
+    };
+    f.onkeydown = (e) => {
+      e.stopPropagation();
+      // an Enter that ends an input method's composition is the IME's
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key === "Enter") { e.preventDefault(); f.blur(); }
+      if (e.key === "Escape") { e.preventDefault(); f.value = saved; f.blur(); }
+    };
+    f.onblur = save;
+    row.append(glyph(GLYPH.doc), who, f);
+    return row;
   }
   // every server is behind the hub, magpie's own image server too, but one
   // the user keeps direct (#4382): each agent's own entry (inHub in
@@ -5643,9 +5689,11 @@ magpie.plugin("library", (ctx) => {
   // What the market offers: popular and featured ones until the reader
   // searches. Kept across renders; asked for the first time a tab shows it.
   const market = {
-    mcp: { q: "", items: null, error: "", loading: false, seq: 0, timer: 0, custom: null },
-    skills: { q: "", items: null, error: "", loading: false, seq: 0, timer: 0 },
+    mcp: { q: "", items: null, error: "", loading: false, seq: 0, timer: 0, custom: null, shown: 0 },
+    skills: { q: "", items: null, error: "", loading: false, seq: 0, timer: 0, shown: 0 },
   };
+  // how many cards a list shows at first, and each Show more adds
+  const MARKET_PAGE = 60;
   const asked = new Set(); // skills whose description has been asked for
 
   async function fetchMarket(kind) {
@@ -5657,6 +5705,7 @@ magpie.plugin("library", (ctx) => {
       const r = await api("library/market/" + (kind === "mcp" ? "servers" : "skills") + "?q=" + encodeURIComponent(m.q.trim()));
       if (seq !== m.seq) return;
       m.items = r.items || [];
+      m.shown = MARKET_PAGE;
       m.error = r.error || "";
       // the source that didn't answer when the rest did (#1589)
       m.failed = r.failed ? { source: r.failed, cause: r.cause || "" } : null;
@@ -5769,7 +5818,25 @@ magpie.plugin("library", (ctx) => {
       grid.append(el("div", "mk-msg", q ? t("Nothing matches “{q}”.", { q }) : t("Nothing to show.")));
       return;
     }
-    for (const x of m.items) grid.append(kind === "mcp" ? serverCard(x) : skillCard(x));
+    for (const x of m.items.slice(0, m.shown)) grid.append(kind === "mcp" ? serverCard(x) : skillCard(x));
+    moreCards(kind, grid);
+  }
+
+  // The rest of a long list, a page at a time: the cards added under the
+  // ones shown, which stay where they are.
+  function moreCards(kind, grid) {
+    const m = market[kind];
+    const left = m.items.length - m.shown;
+    if (left <= 0) return;
+    const more = button(t("Show more ({n} left)", { n: left.toLocaleString(intlLang()) }), "mk-more", () => {
+      const from = m.shown;
+      m.shown += MARKET_PAGE;
+      more.before(...m.items.slice(from, m.shown).map((x) => kind === "mcp" ? serverCard(x) : skillCard(x)));
+      more.remove();
+      moreCards(kind, grid);
+      if (kind === "skills") describeSkills();
+    });
+    grid.append(more);
   }
 
   // An address searched for that nothing listed is at: say so, over the
@@ -5966,13 +6033,32 @@ magpie.plugin("library", (ctx) => {
       steps.replaceChildren(
         el("li", "", t("Open chrome://extensions (edge://extensions in Edge) in the browser you use every day.")),
         el("li", "", t("Turn on Developer mode.")),
-        el("li", "", t("Click Load unpacked and choose {dir}.", { dir: tilde(b.dir) })),
+        el("li", "", b.drag ? t("Drag the folder below onto that page.")
+          : t("Drag the folder from the window that opened onto that page, or click Load unpacked and choose {dir}.", { dir: tilde(b.dir) })),
       );
+      folder.title = t("Drag onto chrome://extensions");
+      folder.lastChild.textContent = tilde(b.dir);
+      folder.dataset.drag = b.drag ? "1" : "";
       if (b.connected) steps.hidden = true;
       else if (b.written) steps.hidden = false;
+      folder.hidden = steps.hidden || !b.drag;
     };
+    // the folder itself, dragged out of the window as Finder drags it: the
+    // mouse that goes down on it and moves hands it to the system's drag
+    const folder = el("div", "mk-browser-folder");
+    folder.append(svg(GLYPH.folder, 22, 1.2), el("span", "mk-browser-folder-name", "Magpie Browser Extension"), el("span", "mk-browser-folder-path mono"));
+    let from = null;
+    folder.addEventListener("pointerdown", (e) => { if (e.button === 0) { from = [e.clientX, e.clientY]; e.preventDefault(); } });
+    folder.addEventListener("pointermove", (e) => {
+      if (!from || Math.hypot(e.clientX - from[0], e.clientY - from[1]) < 4) return;
+      from = null;
+      api("library/browser/drag", {}).catch((err) => status(err.message, "err"));
+    });
+    for (const ev of ["pointerup", "pointercancel"]) folder.addEventListener(ev, () => { from = null; });
+    folder.addEventListener("dragstart", (e) => e.preventDefault());
     steps.hidden = true;
-    box.append(state, steps, go);
+    folder.hidden = true;
+    box.append(state, steps, folder, go);
     const poll = async () => {
       if (!box.isConnected) return;
       try { draw(await api("library/browser")); } catch {}
@@ -6007,7 +6093,8 @@ magpie.plugin("library", (ctx) => {
     d.title = x.description || "";
     const foot = el("div", "mk-foot");
     // magpie's own skill has no count until skills.sh lists it
-    if (!x.featured || x.installs) {
+    // a trending skill's recent count isn't all its installs: none is told
+    if (x.installs) {
       const n = el("span", "mk-installs");
       n.append(svg(GLYPH.down, 11, 1.5), el("span", "", compact(x.installs)));
       n.title = t("{n} installs", { n: x.installs.toLocaleString(intlLang()) });
@@ -6037,7 +6124,7 @@ magpie.plugin("library", (ctx) => {
     who.append(el("div", "mk-name big", x.name));
     const meta = el("div", "mk-meta");
     meta.append(el("span", "mk-pub", x.source));
-    if (!x.featured || x.installs) meta.append(el("span", "mk-badge", t("{n} installs", { n: compact(x.installs) })));
+    if (x.installs) meta.append(el("span", "mk-badge", t("{n} installs", { n: compact(x.installs) })));
     if (x.official) meta.append(el("span", "mk-badge", t("Official")));
     who.append(meta);
     head.append(logo(x.icon, x.source), who);

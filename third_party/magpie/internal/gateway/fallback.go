@@ -3262,6 +3262,25 @@ var filterReasons = map[string]string{
 // taken for content it reached the agent and the try stood as a success.
 const finishFailed = `the reply ended with finish_reason "error"`
 
+// emptyCompleted is what a 200 Responses stream the vendor ends with a
+// response.completed that named its output empty and its usage zero
+// (#2471, MurmuredVelpro) says of itself, in the failure the hold keeps:
+// the turn was answered with nothing, as a translated reply that said
+// nothing and counted nothing is (repliesCounted, #2086), and the
+// group's next member answers it, while taken for a reply's end it
+// reached the agent as a completed turn and the try stood as a success.
+// One that counted a token stays a reply, as Claude's own empty end_turn
+// does; one that names neither field is taken as it came, a relay's
+// completed carrying neither — the fields said are what is read.
+const emptyCompleted = `the reply completed with nothing in it and counted no tokens`
+
+// outputEmpty tells whether a Responses reply named its output as carrying
+// nothing: an empty list, or null — the field said, not left out.
+func outputEmpty(raw json.RawMessage) bool {
+	raw = bytes.TrimSpace(raw)
+	return string(raw) == "null" || string(raw) == "[]"
+}
+
 // refusedNote is what a refusal is noted as: the vendor's own reason.
 func refusedNote(reason string) string {
 	return "safety filter: " + reason
@@ -3388,6 +3407,8 @@ func streamEvent(ev []byte) (kind, status int, msg string) {
 			IncompleteDetails *struct {
 				Reason string `json:"reason"`
 			} `json:"incomplete_details"`
+			Output json.RawMessage `json:"output"`
+			Usage  *rUsage         `json:"usage"`
 		} `json:"response"`
 		Choices *[]struct {
 			Delta        map[string]any `json:"delta"`
@@ -3486,6 +3507,16 @@ func streamEvent(ev []byte) (kind, status int, msg string) {
 				return refusal(r)
 			}
 		}
+	case typ == "response.completed" && v.Response.Status != "incomplete" &&
+		outputEmpty(v.Response.Output) && v.Response.Usage != nil && uncounted(v.Response.Usage.usage()):
+		// completed, and the reply named its output empty and its usage
+		// zero (#2471, MurmuredVelpro): no reply at all, as a translated
+		// one that said nothing and counted nothing is (repliesCounted,
+		// #2086). An event this reaches is one nothing was said before —
+		// the hold lets the first content through and reads no event
+		// beside it — so nothing of the try has reached the agent, and
+		// the failure is still held for the group's next candidate
+		return eventError, streamStatus(emptyCompleted), emptyCompleted
 	case typ == "" && v.Candidates != nil:
 		// a Gemini chunk
 		if r, ok := filterReasons[v.PromptFeedback.BlockReason]; ok {

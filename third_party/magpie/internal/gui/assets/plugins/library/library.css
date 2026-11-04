@@ -67,6 +67,10 @@ body.window .lib-head { top: -2px; margin: -2px 0 0; padding: 8px 0 4px; --bleed
 .lib-hubat .who { min-width: 0; }
 .lib-hubat .lib-hubURL { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: text; }
 .lib-hubat .lib-hubconnect { flex: none; }
+.lib-list .row.lib-hubnoterow { flex-wrap: nowrap; align-items: center; }
+.lib-hubnoterow > .lib-glyph { align-self: center; margin-top: 0; }
+.lib-hubnoterow .who { min-width: 0; }
+.lib-hubnoterow .lib-hubname { flex: 0 1 200px; min-width: 96px; margin: 0; }
 /* Connect an app: Agents | Other apps, as System Settings draws a pane:
    one line of where things stand, then inset groups with hairlines */
 /* one column: the dialog's body (.ebody) is the editor's label/field grid */
@@ -551,6 +555,8 @@ input.lib-setname:focus { border-color: var(--accent); box-shadow: 0 0 0 3px col
 .mk-add.busy { color: var(--muted); }
 .mk-have { flex: none; display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 4px; font-size: 12px; color: var(--muted); }
 .mk-card.have .mk-icon { opacity: .9; }
+/* the rest of a long list, a page at a time, across the grid under it */
+.mk-more { grid-column: 1 / -1; justify-self: center; margin-top: 4px; }
 .mk-msg { grid-column: 1 / -1; padding: 22px 12px; text-align: center; font-size: 12px; color: var(--muted); }
 .mk-msg.mk-custom { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px 12px; padding: 14px 12px; overflow-wrap: anywhere; }
 .mk-msg.mk-partial { padding: 4px 2px 2px; text-align: left; line-height: 1.45; overflow-wrap: anywhere; }
@@ -765,3 +771,8 @@ input.lib-setname:focus { border-color: var(--accent); box-shadow: 0 0 0 3px col
 .mk-sheet .mk-browser-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
 .mk-sheet .mk-browser-dot.on { background: var(--green); }
 .mk-sheet .mk-browser-steps { margin: 0; padding-left: 18px; font-size: 12px; color: var(--muted); display: grid; gap: 2px; }
+.mk-sheet .mk-browser-folder { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; align-items: center; max-width: 100%; box-sizing: border-box; padding: 8px 12px; border: 1px dashed var(--line); border-radius: 8px; background: var(--card); cursor: grab; user-select: none; -webkit-user-select: none; touch-action: none; }
+.mk-sheet .mk-browser-folder[hidden] { display: none; }
+.mk-sheet .mk-browser-folder > svg { grid-row: span 2; color: var(--fg-2); }
+.mk-sheet .mk-browser-folder-name { font-size: 12.5px; font-weight: 500; }
+.mk-sheet .mk-browser-folder-path { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }

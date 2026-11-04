@@ -1,6 +1,7 @@
 package guard
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"testing"
@@ -92,6 +93,111 @@ func TestExpfAndGelu(t *testing.T) {
 		w := 0.5 * float64(x) * (1 + math.Erf(float64(x)/math.Sqrt2))
 		if e := math.Abs(float64(gelu(x)) - w); e > 2e-6 {
 			t.Fatalf("gelu(%v) = %v, want %v", x, gelu(x), w)
+		}
+	}
+}
+
+// The softmax's exponentials, the GELU and the scores give the Go's very
+// bits with the kernels (AVX2 on amd64), not only values near them: what
+// the model finds, and so what is masked, is the same on every CPU.
+func TestKernelsSameBits(t *testing.T) {
+	if expSubFast == nil || geluFast == nil {
+		t.Log("no exp or gelu kernel on this CPU; the Go runs both sides")
+	}
+	r := rand.New(rand.NewSource(2))
+	same := func(what string, got, want []float32) {
+		t.Helper()
+		for i := range got {
+			if math.Float32bits(got[i]) != math.Float32bits(want[i]) {
+				t.Fatalf("%s [%d]: %v (%#x), Go %v (%#x)", what, i, got[i], math.Float32bits(got[i]), want[i], math.Float32bits(want[i]))
+			}
+		}
+	}
+	edges := []float32{0, float32(math.Copysign(0, -1)), -87.2, -87.3, -87.4, -100, -1e30, 88.6, 88.7, 88.8, 1e-40, -1e-40, 1, -1}
+	for _, n := range []int{1, 8, 13, 512, 1536 + 5} {
+		x := make([]float32, n)
+		for i := range x {
+			switch {
+			case i < len(edges) && n > len(edges):
+				x[i] = edges[i]
+			case i%3 == 0:
+				x[i] = -r.Float32() * 90
+			default:
+				x[i] = (r.Float32()*2 - 1) * 12
+			}
+		}
+		mx := float32(r.Float32())
+		got, want := append([]float32(nil), x...), append([]float32(nil), x...)
+		expSub(got, mx)
+		f := expSubFast
+		expSubFast = nil
+		expSub(want, mx)
+		expSubFast = f
+		same(fmt.Sprintf("expSub over %d", n), got, want)
+
+		bias, smooth := make([]float32, n), make([]float32, n)
+		for i := range bias {
+			bias[i] = r.Float32()*0.2 - 0.1
+			smooth[i] = r.Float32() + 0.5
+		}
+		got, want = append([]float32(nil), x...), append([]float32(nil), x...)
+		geluRow(got, bias, smooth)
+		g := geluFast
+		geluFast = nil
+		geluRow(want, bias, smooth)
+		geluFast = g
+		same(fmt.Sprintf("geluRow over %d", n), got, want)
+	}
+	for _, n := range []int{1, 16, 17, 33, 48, 512} {
+		np := (n + 15) &^ 15
+		var q [32]float32
+		for i := range q {
+			q[i] = r.Float32()*2 - 1
+		}
+		kt := make([]float32, 32*np)
+		for i := range kt {
+			kt[i] = r.Float32()*2 - 1
+		}
+		got, want := make([]float32, np), make([]float32, np)
+		scores(&q, kt, got)
+		f := scoresFast
+		scoresFast = nil
+		scores(&q, kt, want)
+		scoresFast = f
+		same(fmt.Sprintf("scores over %d keys", n), got, want)
+	}
+}
+
+// maxOf and rangeOf give what the builtins give, to a zero's sign: NaN
+// for a NaN anywhere.
+func TestMaxAndRangeAsBuiltins(t *testing.T) {
+	r := rand.New(rand.NewSource(3))
+	nan, neg0 := float32(math.NaN()), float32(math.Copysign(0, -1))
+	for c := 0; c < 2000; c++ {
+		x := make([]float32, r.Intn(40))
+		for i := range x {
+			switch r.Intn(12) {
+			case 0:
+				x[i] = 0
+			case 1:
+				x[i] = neg0
+			case 2:
+				if c%10 == 0 {
+					x[i] = nan
+				}
+			default:
+				x[i] = (r.Float32()*2 - 1) * 50
+			}
+		}
+		mx, lo, hi := float32(math.Inf(-1)), float32(0), float32(0)
+		for _, v := range x {
+			mx = max(mx, v)
+			lo, hi = min(lo, v), max(hi, v)
+		}
+		eq := func(a, b float32) bool { return a == b || a != a && b != b }
+		gl, gh := rangeOf(x)
+		if !eq(maxOf(x), mx) || !eq(gl, lo) || !eq(gh, hi) {
+			t.Fatalf("%v: maxOf %v rangeOf %v %v, builtins %v %v %v", x, maxOf(x), gl, gh, mx, lo, hi)
 		}
 	}
 }

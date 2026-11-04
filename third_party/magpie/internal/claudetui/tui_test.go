@@ -398,43 +398,16 @@ func TestDropLeft(t *testing.T) {
 	}
 }
 
-func TestShimFallsBackToPrint(t *testing.T) {
-	for _, c := range []struct {
-		name   string
-		env    []string
-		broken bool
-	}{
-		{"failed start", []string{"FAKE_FAIL=1"}, true},
-		{"untrusted folder", []string{"FAKE_TRUST=1"}, false},
-		// at once, not after readyWait: runShim waits 30s (#4504)
-		{"asks to sign in", []string{"FAKE_LOGIN=1"}, true},
-		{"first-run notes", []string{"FAKE_NOTES=1"}, true},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			out := runShim(t, c.env, append([]string{fakePath(t)}, pArgs...), []string{"hello"}, 1)
-			if out[0]["result"] != "print mode" {
-				t.Fatalf("got %v, want the -p run's answer", out)
-			}
-			home := filepath.Dir(os.Getenv("MAGPIE_TUI_TEST_CFG"))
-			m, _ := filepath.Glob(filepath.Join(home, "*", "*", "magpie", "claude-tui-broken"))
-			m2, _ := filepath.Glob(filepath.Join(home, "*", "magpie", "claude-tui-broken"))
-			if got := len(m)+len(m2) > 0; got != c.broken {
-				t.Fatalf("marked broken: %v, want %v", got, c.broken)
-			}
-		})
-	}
-}
-
-// runOnly runs the shim with OnlyEnv, in home, told "hello", until it
+// runEnds runs the shim in home, told "hello", until it
 // exits or answers: what it wrote, its stderr, and how it ended.
-func runOnly(t *testing.T, home string, env []string) (out, stderr string, err error) {
+func runEnds(t *testing.T, home string, env []string) (out, stderr string, err error) {
 	t.Helper()
 	exe, _ := os.Executable()
 	cfg := filepath.Join(home, "claude")
 	tmp := filepath.Join(home, "tmp")
 	_ = os.Mkdir(tmp, 0o700)
 	cmd := exec.Command(exe, append([]string{fakePath(t)}, pArgs...)...)
-	cmd.Env = append(os.Environ(), "MAGPIE_TUI_TEST=shim", OnlyEnv+"=1", "HOME="+home, "XDG_CACHE_HOME="+filepath.Join(home, "cache"), "LOCALAPPDATA="+filepath.Join(home, "cache"),
+	cmd.Env = append(os.Environ(), "MAGPIE_TUI_TEST=shim", "HOME="+home, "XDG_CACHE_HOME="+filepath.Join(home, "cache"), "LOCALAPPDATA="+filepath.Join(home, "cache"),
 		"TMPDIR="+tmp, "TMP="+tmp, "TEMP="+tmp, "CLAUDE_CONFIG_DIR="+cfg)
 	cmd.Env = append(cmd.Env, env...)
 	stdin, _ := cmd.StdinPipe()
@@ -473,103 +446,36 @@ func runOnly(t *testing.T, home string, env []string) (out, stderr string, err e
 	return out, errb.String(), err
 }
 
-// With OnlyEnv (the user's "Interactive only"), an interactive mode that
-// doesn't come up ends the run, saying why, and never becomes -p; a
-// machine marked broken tries it again.
-func TestShimOnlyNeverPrints(t *testing.T) {
+// An interactive mode that doesn't come up ends the run, saying why, and
+// never becomes -p: a -p request counts against the plan as another
+// client's would, and starts without the interactive mode's cache. Nothing
+// is kept for the next run, which tries the interactive mode again.
+func TestShimNeverPrints(t *testing.T) {
 	for _, c := range []struct {
-		name string
-		env  []string
+		name, why string
+		env       []string
 	}{
-		{"failed start", []string{"FAKE_FAIL=1"}},
-		{"untrusted folder", []string{"FAKE_TRUST=1"}},
-		{"asks to sign in", []string{"FAKE_LOGIN=1"}},
-		{"first-run notes", []string{"FAKE_NOTES=1"}},
+		{"failed start", "something went wrong", []string{"FAKE_FAIL=1"}},
+		{"untrusted folder", "trust the folder", []string{"FAKE_TRUST=1"}},
+		// at once, not after readyWait: runEnds waits 30s (#4504)
+		{"asks to sign in", "sign", []string{"FAKE_LOGIN=1"}},
+		{"first-run notes", "notes", []string{"FAKE_NOTES=1"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			out, stderr, err := runOnly(t, t.TempDir(), c.env)
+			home := t.TempDir()
+			out, stderr, err := runEnds(t, home, c.env)
 			if err == nil || strings.Contains(out, "print mode") {
 				t.Fatalf("ended %v, wrote %q", err, out)
 			}
-			if !strings.Contains(stderr, "doesn't fall back to -p") || !strings.Contains(stderr, "magpie is set to use only it") {
+			if !strings.Contains(stderr, "claude-tui: ") || !strings.Contains(strings.ToLower(stderr), c.why) || strings.Contains(stderr, "-p") {
 				t.Fatalf("stderr %q", stderr)
 			}
+			// the next run, Claude Code fixed, is the interactive mode
+			out, stderr, err = runEnds(t, home, nil)
+			if err != nil || strings.Contains(out, "print mode") || !strings.Contains(out, "echo: hello") {
+				t.Fatalf("the next run ended %v, wrote %q, stderr %q", err, out, stderr)
+			}
 		})
-	}
-	t.Run("marked broken", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("HOME", home)
-		t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
-		t.Setenv("LOCALAPPDATA", filepath.Join(home, "cache"))
-		MarkBroken()
-		if _, ok := BrokenSince(); !ok {
-			t.Fatal("no mark")
-		}
-		out, stderr, err := runOnly(t, home, nil)
-		if err != nil || strings.Contains(out, "print mode") || !strings.Contains(out, "echo: hello") {
-			t.Fatalf("ended %v, wrote %q, stderr %q", err, out, stderr)
-		}
-	})
-}
-
-// Each failed start in a row keeps runs on -p longer, to a day; one that
-// shows its prompt forgets them.
-func TestBrokenGrows(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
-	t.Setenv("LOCALAPPDATA", filepath.Join(home, "cache"))
-	for n, want := range map[int]time.Duration{1: 30 * time.Minute, 2: time.Hour, 3: 2 * time.Hour, 6: 16 * time.Hour, 7: 24 * time.Hour, 40: 24 * time.Hour} {
-		if got := brokenFor(n); got != want {
-			t.Errorf("brokenFor(%d) = %s, want %s", n, got, want)
-		}
-	}
-	if _, ok := BrokenSince(); ok {
-		t.Fatal("broken with no mark")
-	}
-	MarkBroken()
-	MarkBroken()
-	if _, n, _ := brokenRead(); n != 2 {
-		t.Fatalf("count %d, want 2", n)
-	}
-	// 45 minutes ago: past one failure's 30 minutes, within two's hour
-	old := time.Now().Add(-45 * time.Minute)
-	_ = os.Chtimes(broken(), old, old)
-	if _, ok := BrokenSince(); !ok {
-		t.Fatal("two failures 45 minutes ago went back to the interactive mode")
-	}
-	_ = os.WriteFile(broken(), nil, 0o600) // a mark from before the count
-	_ = os.Chtimes(broken(), old, old)
-	if _, ok := BrokenSince(); ok {
-		t.Fatal("an old mark 45 minutes ago still holds")
-	}
-	clearBroken()
-	if _, _, ok := brokenRead(); ok {
-		t.Fatal("cleared, the mark stayed")
-	}
-}
-
-// A start that shows its prompt removes the mark of earlier failures, so
-// the next failure counts from one.
-func TestShimStartClearsBroken(t *testing.T) {
-	home := t.TempDir()
-	env := []string{"HOME=" + home, "XDG_CACHE_HOME=" + filepath.Join(home, "cache"), "LOCALAPPDATA=" + filepath.Join(home, "cache")}
-	for _, e := range env {
-		k, v, _ := strings.Cut(e, "=")
-		t.Setenv(k, v)
-	}
-	// three failures, the last a day and a half ago: past its 2 hours
-	MarkBroken()
-	MarkBroken()
-	MarkBroken()
-	old := time.Now().Add(-36 * time.Hour)
-	_ = os.Chtimes(broken(), old, old)
-	out := runShim(t, env, append([]string{fakePath(t)}, pArgs...), []string{"hello"}, 3)
-	if out[0]["subtype"] != "init" {
-		t.Fatalf("got %v, want an interactive turn", out)
-	}
-	if _, _, ok := brokenRead(); ok {
-		t.Fatal("a start that showed its prompt left the mark")
 	}
 }
 
@@ -633,6 +539,19 @@ func TestTranslatorAPIError(t *testing.T) {
 	}
 	if r := l.out[2]; r["is_error"] != true || r["result"] != "You've hit your limit" || r["api_error_status"] != float64(429) {
 		t.Fatalf("result %v", r)
+	}
+}
+
+// An assistant row is told with its uuid, its place in the session, as
+// -p tells it: the bridge cuts a branch of the session there (bbfatx on
+// X). Told without it, no branch could be made of an interactive run's
+// session.
+func TestTranslatorTellsTheRowsUUID(t *testing.T) {
+	l := &lines{}
+	tr := newTranslator(l)
+	tr.row([]byte(`{"type":"assistant","uuid":"row-1","message":{"id":"m","model":"claude-opus-5-5","content":[{"type":"tool_use","id":"toolu_1","name":"mcp__magpie__Read","input":{}}]}}`))
+	if len(l.out) != 1 || l.out[0]["uuid"] != "row-1" {
+		t.Fatalf("got %v", l.out)
 	}
 }
 

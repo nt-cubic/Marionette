@@ -212,6 +212,10 @@ func t3InstanceJSON(path, gw string) map[string]any {
 	if !claudeReviewed([]string{"t3code"}) {
 		environment = append(environment, map[string]any{"name": claudeReviewEnv, "value": "0", "sensitive": false})
 	}
+	// tool search on, as for Claude Code itself (claudeSearchEnv): the
+	// Claude Code T3 runs may be one from before 2.1.304, which sends every
+	// MCP tool's definition on each request behind magpie
+	environment = append(environment, map[string]any{"name": claudeSearchEnv, "value": "true", "sensitive": false})
 	return map[string]any{
 		"driver": "claudeAgent", "displayName": "magpie", "enabled": true,
 		"environment": environment,
@@ -220,7 +224,8 @@ func t3InstanceJSON(path, gw string) map[string]any {
 }
 
 // t3Env is the environment variables of magpie's instance that magpie
-// sets: the gateway's address and key, and auto mode's review.
+// sets: the gateway's address and key, and auto mode's review. Tool search
+// (claudeSearchEnv) is magpie's only until the user gives it a value there.
 var t3Env = []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", claudeReviewEnv}
 
 // t3EnvOf is the value of the environment variable named k on magpie's
@@ -275,6 +280,9 @@ func t3Merged(path, gw string) any {
 	if json.Unmarshal(have["environment"], &theirs) == nil {
 		env := want["environment"].([]map[string]any)
 		for _, v := range theirs {
+			if n, _ := v["name"].(string); n == claudeSearchEnv {
+				env = slices.DeleteFunc(env, func(m map[string]any) bool { return m["name"] == claudeSearchEnv })
+			}
 			// a provider switch would take magpie's instance past the
 			// gateway (claudeClouds), so it doesn't stay on magpie's
 			if n, _ := v["name"].(string); n != "" && !slices.Contains(t3Env, n) && !slices.Contains(agentenv.ClaudeProviders, n) {

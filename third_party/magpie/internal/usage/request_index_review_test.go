@@ -92,7 +92,7 @@ func TestQueryPageIOOutsideCacheLock(t *testing.T) {
 func TestPackedGatewayRetainsOversizedSnapshot(t *testing.T) {
 	c := &rowChunk{}
 	now := time.Now().Round(0)
-	for i := 0; i < 170000; i++ {
+	for i := 0; i < 180000; i++ {
 		c.add(Row{Record: Record{Time: now.Add(time.Duration(i) * time.Second), Agent: "codex", Provider: "relay", Model: "m", Input: 10, RequestID: fmt.Sprint(i)}}, "", int64(i), false)
 	}
 	if c.Bytes <= 32<<20 {

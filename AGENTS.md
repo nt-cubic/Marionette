@@ -56,6 +56,15 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
   ProjectShelf 出模型共享入口 + 设置齿轮（打开 Ctrl K）+ 主题/通知/Telegram（语言与代理收进 Ctrl K），ContextPanel 出检查更新；它们的 popover
   也必须一起 portal（`DockedLayer`），否则 `translateX(100%)` 的 rail 会连 `position: fixed` 的浮层
   一起藏掉。`.dock-mode .app-shell` 预留 40px，整页 bottom 也收 40px。
+- **贴边浮层必须逃出 `.dock-chrome` 的层叠上下文（2026-11-03 修）**：整页覆盖层在 70/75，
+  而 `.dock-chrome` 自己是 `position:fixed; z-index:40` —— **形成独立层叠上下文**，里面的
+  `.dock-menu`/对话框再写多高都出不了 40，表现为「点了 ⋯ 没反应 / Add project 看不见」。
+  现在窄条的两个菜单（⋯ 与 新建对话）走 `DockChrome.tsx` 的 `DockMenuLayer`：`createPortal`
+  到 `<body>`、`position:fixed` 由锚点 rect 现算（左右按 `align` 对齐并夹进视口 8px、高度取
+  剩余空间），`z-index:10040`；portal 之后面板不在锚点里，**外部点击守卫必须把
+  `morePanelRef`/`newPanelRef` 一起算进去**。对话框走 9950–9970 一段（权限 9950 / 通用
+  `.project-dialog-backdrop` 9960 / confirm 9970），顺序记在 `src/styles/base-chrome.css`
+  的 z-index 表里。新加贴边浮层的照这个形状做，**别把 `z-index` 往 `.dock-chrome` 里面加**。
 - **关闭路径**（2026-10-31 定稿）：× 的行为由用户在 Ctrl K 面板选择（dock prefs 的
   `autoHideOnClose`，Rust AtomicBool 镜像；**默认 false = 直接退出**）。退出 → `shutdown_and_exit`；
   「后台常驻」→ **Rust 在 CloseRequested 里直接 hide 主窗**（`main.as_ref().hide()` webview 级先行，
@@ -472,8 +481,10 @@ magpie 120–160MB——前两个是「运行时入场费」，调不掉，能�
    `serve`；`import-magpie.ps1` 每次导入后自动重放补丁（拷 main_seed.go + 给上游
    main.go 加 `!marionette_seed` guard），`build-portable.bat` 用
    `-tags "nogui marionette_seed"` 编。**上游重构 serve 路径 = 编译报错（响亮）**。
-   种子刻意不做：agent 管理、`magpie quota --json` CLI（配额走 HTTP
-   `/v1/magpie/quotas` 主路径）、codex 目录保鲜 goroutine（会拖回整个 internal/agent；
+   种子自带精简 `provider add|set|key|rm|refresh|models` 与 `group add|rm`（写
+   `providers.json`，自定义来源和 preset 钥匙不需要上游完整 magpie）。刻意不做：
+   agent 管理、`magpie quota --json` CLI（配额走 HTTP `/v1/magpie/quotas`）、
+   TUI/OAuth、codex 目录保鲜 goroutine（会拖回整个 internal/agent；
    `catalog.KeepFresh`+`provider.FetchNew` 仍在）。用户「更新引擎」装完整版后种子让位。
    **0.5.3 起 release exe ≈ 15.9MB**（壳+dist UPX ~4.7 + 种子 12.0）。
 
@@ -494,8 +505,8 @@ magpie 120–160MB——前两个是「运行时入场费」，调不掉，能�
    横线——`provider set`（不存在）与 `provider add`（id 非法）两头失败，面板永远
    "来源注册失败，可刷新重试"。现在 CLI 前过 `provider_id_slug`（合法 id 恒等，
    账本无缝）。顺手：`run_magpie_cli` 错误带 stderr；`provider rm` 报 "no provider"
-   视为已回收（曾每秒刷屏 dev.log）；种子引擎拒绝 provider 子命令时给"更新引擎"
-   指引而不是含混重试提示。
+   视为已回收（曾每秒刷屏 dev.log）；过旧种子二进制拒绝 provider 时提示重装出厂
+   引擎，不要求去下上游完整 magpie。
 5. **来源模型清单 live 化**（`engine.rs`，同日）：旧注册把发现时的模型清单**钉死**
    （`models=`），中央中转（opencode.ai 免费池、openrouter `:free`）新模型永远
    进不来——grok 里只剩老快照。现在注册不带 `models=`（add 自动抓厂商 live
@@ -561,9 +572,10 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
 7. **启动链解卡**（0.5.4 用户机实测 start_acp_session→ready 58–60s，0.5.3 <3s）：
    `run_magpie_cli` 全线 10s 超时（`process_util::output_with_kill_timeout`，超时杀
    子进程）；注册/来源同步移出 enable 关键路径（`spawn_provider_registration` 后台
-   线程，Running 状态先行、目录靠 drift 事件跟上）；**种子引擎短路**——
-   `engine/cli-absent.marker`：装内嵌种子落标记、GitHub 完整版摘标记、真实 CLI 被
-   拒（stderr 含 "engine seed"）自学习补写；注册账本 `save_registered_ledger` 落盘
+   线程，Running 状态先行、目录靠 drift 事件跟上）；**种子引擎短路**只挡 TUI/quota
+   等完整 CLI——`engine/cli-absent.marker`：装内嵌种子落标记、GitHub 完整版摘标记、
+   真实 CLI 被拒（stderr 含 "engine seed"）自学习补写；`provider`/`group`/`models`
+   是种子自带命令，注册链照跑。注册账本 `save_registered_ledger` 落盘
    前去重排序（`opencode-go` 曾累积 41 份，存量脏账本下次保存自愈）；
    `maybe_refresh_source_live` 失败退避 10min（成功 6h）；菜单路径
    `sync_discovered_sources(false)` 不排队不强制（try-lock 让位），手动面板刷新才

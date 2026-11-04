@@ -10,9 +10,17 @@ import "strings"
 // (Zhenzhen on Discord, Claude Desktop on Fable 5.1).
 const textCallOpen = "[tool call "
 
+// textCallOpens are the lines that open a call told in text: the form
+// above, and Claude's own call written out (packinggoodsllc_07668 on
+// Discord: Claude Code through a routing group of Claude models was shown
+// <invoke name="ToolSearch"><parameter name="query">…</parameter></invoke>
+// and a "*Result: …*" the model made up, with nothing run), bare or in
+// its <function_calls>.
+var textCallOpens = []string{textCallOpen, "<invoke name=", "<function_calls>"}
+
 // textCallsAsk is what a run whose reply wrote its calls as text is told,
 // once, so it makes them (readOutput).
-const textCallsAsk = `Your last message wrote tool calls out as text ("[tool call …]" lines). ` +
+const textCallsAsk = `Your last message wrote tool calls out as text instead of calling the tools. ` +
 	`Text like that runs nothing: no tool ran, and the user doesn't see those lines. Make the calls with your tools now.`
 
 // pastCallsNote ends a prompt that tells past calls as text: the lines
@@ -21,7 +29,7 @@ const pastCallsNote = "(The \"[tool call …]\" and \"[tool result …]\" lines 
 	"Writing such a line calls nothing: call a tool only with the tool itself.)"
 
 // textCalls holds back a reply's words from the first line that opens as a
-// call told in text (textCallOpen), so the client isn't shown it. Words up
+// call told in text (textCallOpens), so the client isn't shown it. Words up
 // to that line go on as they come; a line is held only while it could
 // still open so.
 type textCalls struct {
@@ -48,13 +56,18 @@ func (c *textCalls) push(s string) string {
 		}
 		line := c.line + s[i:i+1] // a byte, as a UTF-8 rune may be cut across chunks
 		open := strings.TrimLeft(line, " \t")
+		opens, may := false, false
+		for _, o := range textCallOpens {
+			opens = opens || strings.HasPrefix(open, o)
+			may = may || strings.HasPrefix(o, open)
+		}
 		switch {
-		case strings.HasPrefix(open, textCallOpen):
+		case opens:
 			c.seen, c.line = true, ""
 			c.held.WriteString(line)
 			c.held.WriteString(s[i+1:])
 			return out.String()
-		case strings.HasPrefix(textCallOpen, open):
+		case may:
 			c.line = line
 		default:
 			out.WriteString(line)

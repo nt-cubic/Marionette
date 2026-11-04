@@ -5,6 +5,19 @@ const params = new URLSearchParams(location.search);
 const mode = params.get("mode") || "window";
 // focus without a scroll, as every focus call here asks
 const NO_SCROLL = { preventScroll: true };
+// a Mac window hidden by orderOut leaves its page drawing: the app says so (#4293)
+let outOfSight = false;
+for (const [k, off] of [["hidden", true], ["visibilityState", "hidden"]]) {
+  const own = Object.getOwnPropertyDescriptor(Document.prototype, k)?.get;
+  try { own && Object.defineProperty(Document.prototype, k, { configurable: true, get() { return outOfSight ? off : own.call(this); } }); } catch {}
+}
+window.magpieWindowVisibility = (v) => {
+  if (outOfSight !== v) return;
+  outOfSight = !v;
+  document.documentElement.classList.toggle("magpie-out-of-sight", outOfSight);
+  document.dispatchEvent(new Event("visibilitychange"));
+};
+addEventListener("focus", () => magpieWindowVisibility(true)); // focused is on screen
 // kept: magpie.<k> in localStorage, read as JSON; d when it holds none, or
 // not d's kind, or can't be read. keep writes one, for this time only if
 // it can't be kept
@@ -6149,7 +6162,7 @@ function renderProviders(quiet) {
     } else if (p.account) {
       // the row names the vendor: a plan too long for the pill goes without it
       const plan = accountPlan(p.account), bare = plan.startsWith(p.name + " ") ? plan.slice(p.name.length + 1) : "";
-      key = el("span", "key acct", bare && plan.length > 15 ? bare : plan);
+      key = el("span", "key acct acct-plan", bare && plan.length > 15 ? bare : plan);
       key.title = t("{agent} is signed in; its models are here for every other agent", { agent: p.account.agentName });
     } else if (p.vertex) {
       // Vertex AI signs with the user's Google credentials, never a key;
@@ -13829,7 +13842,7 @@ function accountNameButton(p, user) {
   const wrap = el("span", "acct-who");
   // a span, not a button: the address stays selectable, and a drag that
   // selects it renames nothing
-  const name = el("span", "n rename", accountShownOf(p, user));
+  const name = el("span", "n rename" + (own ? " own-name" : ""), accountShownOf(p, user));
   name.tabIndex = 0;
   name.setAttribute("role", "button");
   name.title = own || vend ? t("{user} · click to rename", { user }) : t("Name this account");
@@ -14129,6 +14142,8 @@ function quotaFill(w) {
 function quotaText(w) {
   if (w.unlimited) return t("Unlimited");
   if (w.balance != null) return t("{n} left", { n: (countFormat.format(w.balance) + " " + t(w.unit || "")).trim() });
+  // a text row used 100 is Claude's overages (claudeOveragesWindow): "In use", said in the reader's language
+  if (w.text && w.used >= 100) return t("In use");
   if (quotaNoShare(w)) return w.display || t("No allowance reported");
   const used = to100(w.used);
   const n = quotaLeft ? 100 - used : used;
@@ -17340,14 +17355,14 @@ function panelBalances(bals) {
     const parts = balanceShown(q) || [{ text: q.balance }];
     for (const [i, p] of parts.entries()) {
       let amount;
-      if (!i && !p.label) card.append(amount = el("b", "pq-amt", p.text));
+      if (!i && !p.label) card.append(amount = el("b", "pq-amt", balanceText(p)));
       else if (!i) {
         amount = el("span", "pq-lead");
-        amount.append(el("b", "pq-amt", p.text), el("span", "", p.label));
+        amount.append(el("b", "pq-amt", balanceText(p)), el("span", "", p.label));
         card.append(amount);
       } else {
         amount = el("span", "pq-sub pq-bp");
-        amount.append(el("span", "", p.label || ""), el("b", "", p.text));
+        amount.append(el("span", "", p.label || ""), el("b", "", balanceText(p)));
         card.append(amount);
       }
       // an amount the reply hadn't, "—": why, on hover (#1993)
@@ -17464,7 +17479,7 @@ function panelQuotaCard(q) {
   // in for (#1515), before the account itself
   // and its eye while Hide accounts is on, as on the Usage page (yogurt36)
   const who = el("span", "pq-who");
-  who.append(el("span", "pq-user", q.alias || q.user || q.name));
+  who.append(el("span", "pq-user" + (q.alias && q.named ? " own-name" : ""), q.alias || q.user || q.name));
   if ((q.user || q.alias) && window.hideAccounts) who.append(hideAccounts.eye(q.user || q.alias, q.provider));
   card.append(who);
   card.title = [q.name, q.alias, q.user, q.seat && q.seat !== q.alias && "≡ " + q.seat, q.plan, q.until ? planTerm(q) : "", q.balance && t("Balance") + " " + q.balance].filter(Boolean).join(" · ");
@@ -18165,7 +18180,7 @@ function balanceRow(sub, why, when = true) {
   if (!parts?.length) b.append(el("span", "", t("Balance")), el("b", "", sub.balance));
   for (const [i, p] of (parts || []).entries()) {
     const row = el("div", "bal-part" + (i ? "" : " lead"));
-    row.append(el("span", "", p.label || (i ? "" : t("Balance"))), el("b", "", p.text));
+    row.append(el("span", "", p.label || (i ? "" : t("Balance"))), el("b", "", balanceText(p)));
     // an amount the reply hadn't, "—": why, on hover (#1993)
     if (p.error) row.title = p.error;
     if (p.percent != null) row.append(balanceMeter(p.percent));
@@ -18186,14 +18201,22 @@ function balanceShown(q) {
   return [{ text: q.balance }, ...q.balanceSplit.map((p) => ({ ...p, label: t(p.label) }))];
 }
 
-// balanceMeter: a balance field's percent, as a meter.
+// balanceMeter: a balance field's percent, as a meter, filled as Left or
+// Used says (#3193)
 function balanceMeter(percent) {
-  const share = to100(percent);
-  const track = el("div", "quota-track" + (share >= 90 ? " full" : ""));
+  const used = to100(percent);
+  const track = el("div", "quota-track" + (used >= 90 ? " full" : ""));
   const fill = el("i");
-  fill.style.width = share + "%";
+  fill.style.width = (quotaLeft ? 100 - used : used) + "%";
   track.append(fill);
   return track;
+}
+
+// balanceText: a part's figure; a percent one on Left says what is left
+function balanceText(p) {
+  if (p.percent == null || !quotaLeft) return p.text;
+  const n = 100 - to100(p.percent);
+  return t("{n} left", { n: (Number.isInteger(n) ? n : n.toFixed(1)) + "%" });
 }
 
 // readWhen: when a card's figures were read, quietly under them: "As of
@@ -21620,11 +21643,10 @@ function renderReplies(s, keep) {
     t("A Claude subscription answers with the agent's own instructions as its system prompt, in place of Claude Code's, about 1K fewer tokens each request. Still the real Claude Code, but its requests look less like Claude Code's own, which can put the account more at risk"),
     onOff, s.claudeLeanPrompt ? "on" : "off", (v) => savePrefs({ ...keep, claudeLeanPrompt: v === "on" }));
   // a Claude run as Claude Code's interactive mode, -p when off (the plan
-  // counts a -p request at about twice); only: never -p, failing instead
+  // counts a -p request at about twice); on, nothing is ever -p
   const u = segRow("claudeTuiRow", t("Claude Code's interactive mode"),
-    t("A Claude subscription runs Claude Code as a person does, in its interactive mode, where the plan counts a request at about half of what -p uses. Off runs it as claude -p. Interactive only never sends a model request as -p: one the interactive mode can't take fails, saying why (reading the plan's allowance asks no model and stays -p)"),
-    [...onOff, ["only", t("Interactive only")]], s.claudePrintMode ? "off" : s.claudeTUIOnly ? "only" : "on",
-    (v) => { claudeMode = null; savePrefs({ ...keep, claudePrintMode: v === "off", claudeTUIOnly: v === "only" }); });
+    t("A Claude subscription runs Claude Code as a person does, in its interactive mode, where the plan counts a request at about half of what -p uses. On, no request ever runs as -p. Off runs every request as claude -p"),
+    onOff, s.claudePrintMode ? "off" : "on", (v) => { claudeMode = null; savePrefs({ ...keep, claudePrintMode: v === "off" }); });
   box.append(r, l, f, k, c, u);
 }
 
@@ -22634,7 +22656,7 @@ function prefsKeep(s) {
     redact: !!s.redact, redactPersonal: !!s.redactPersonal, redactKinds: s.redactKinds || {}, redactWords: s.redactWords || [], redactWordsAnyCase: !!s.redactWordsAnyCase, redactWordsWhole: !!s.redactWordsWhole, redactShape: !!s.redactShape, codexWarmup: s.codexWarmup || "",
     claudeWarmup: s.claudeWarmup || "", codexWarmAt: s.codexWarmAt || "", claudeWarmAt: s.claudeWarmAt || "",
     codexWarmAts: warmTimes(s.codexWarmAts, s.codexWarmAt), claudeWarmAts: warmTimes(s.claudeWarmAts, s.claudeWarmAt), workbuddyCheckin: !!s.workbuddyCheckin, traeCheckin: !!s.traeCheckin, minimaxCheckin: !!s.minimaxCheckin, qoderCheckin: !!s.qoderCheckin, noStats: !!s.noStats, noUsageStats: !!s.noUsageStats, signInLinkOnly: !!s.signInLinkOnly,
-    memberModel: !!s.memberModel, noLoopGuard: !!s.noLoopGuard, claudeLeanPrompt: !!s.claudeLeanPrompt, claudePrintMode: !!s.claudePrintMode, claudeTUIOnly: !!s.claudeTUIOnly, refusalRetries: s.refusalRetries ?? null,
+    memberModel: !!s.memberModel, noLoopGuard: !!s.noLoopGuard, claudeLeanPrompt: !!s.claudeLeanPrompt, claudePrintMode: !!s.claudePrintMode, refusalRetries: s.refusalRetries ?? null,
     noUpdatePill: !!s.noUpdatePill, noAutoUpdate: !!s.noAutoUpdate, updateEvery: s.updateEvery || 360, autoRestart: !!s.autoRestart, noAutoDownload: !!s.noAutoDownload, updateChannel: s.updateChannel || "",
     trayUsage: s.trayUsage || "", trayUsageEvery: s.trayUsageEvery || 3, trayNoLogos: !!s.trayNoLogos, trayNoBird: !!s.trayNoBird, trayPace: !!s.trayPace, trayNoCost: !!s.trayNoCost, trayWindows: s.trayWindows || {}, vision: s.vision || "", visionEffort: s.visionEffort || "", searcherEffort: s.searcherEffort || "", imageGen: s.imageGen || "", imageTimeout: s.imageTimeout || 0, classifyTimeout: s.classifyTimeout || 0, searcher: s.searcher || "", searchFirst: s.searchFirst || "", currency: s.currency || "usd",
     chineseUnits: !!s.chineseUnits, usageAlert: s.usageAlert || 0, balanceAlert: s.balanceAlert || 0, resetReminder: s.resetReminder || 0,
@@ -24154,42 +24176,30 @@ renderPluginDot();
 window.addEventListener("focus", renderPluginDot);
 setInterval(renderPluginDot, 15 * 60 * 1000);
 // ---------- hiding accounts, for a screenshot to share ----------
-// Routing and Usage each have a Hide accounts button, one setting for both,
-// which the tray panel follows too. Each account on the page — an email
-// address, or a name that isn't one (WorkBuddy's nickname or phone number,
-// a plugin's account id, #568), in a row, a sentence, a tooltip — is
-// swapped for blurred stand-in letters while it's on, as the page redraws
-// too; the account itself is kept aside to put back.
-//
-// accountNames are the names of subscription accounts magpie has told the
-// page of (noteAccounts, from what the API answered), beside the accounts
-// of the providers and allowances it holds now.
+// While on, each account on the page (an address, or a name: a nickname,
+// a phone, a plugin's id, #568) in a row, sentence or tooltip is swapped for
+// blurred stand-in letters, the account kept aside to put back. accountNames:
+// the accounts the API's answers named (noteAccounts).
 const accountNames = new Set();
-// generic words an account can't be named, lest every one of them on the
-// page is hidden
-// "api key" and "signed in" are what magpie calls a plugin's account that
-// has no name (pluginLabels), "(2)" after one a second such: words of a
-// sentence too, a plugin's summary among them (outloudvi on Discord: Kiro's
-// "…or an API key" blurred)
+// words no account is named, lest each is hidden: "api key", "signed in"
+// (and "(2)") name a plugin's nameless account (pluginLabels, outloudvi)
 const NOT_ACCOUNTS = new Set(["default", "own", "desktop", "account", "main", "local", "unknown", "none", "free", "pro", "api key", "signed in"]);
 function noteAccount(s) {
   if (typeof s !== "string") return;
   s = s.trim();
   if (s.length >= 2 && s.length <= 80 && !/[\n\r]/.test(s)) accountNames.add(s);
 }
-// noteAccounts takes the accounts out of an answer of the API: a user, an
-// account named, or a route's account (kind "account", who)
+// noteAccounts: an answer's user, account, or route account (kind account)
 function noteAccounts(x, depth = 0) {
   if (!x || typeof x !== "object" || depth > 8) return;
   if (Array.isArray(x)) { for (const v of x) noteAccounts(v, depth + 1); return; }
-  // for…in, not Object.entries: every answer is walked, Routing's trace a
-  // second, and entries made an array for each object and each key in it,
-  // ~8 MB of garbage a minute on Routing alone (#1481)
+  // for…in, not Object.entries: ~8 MB of garbage a minute on Routing (#1481)
   for (const k in x) {
     if (!Object.hasOwn(x, k)) continue;
     const v = x[k];
     if (typeof v === "string") {
-      if (k === "user" || k === "account" || k === "alias" || (k === "who" && x.kind === "account")) noteAccount(v);
+      // an alias, not the user's own (named, #3656)
+      if (k === "user" || k === "account" || (k === "alias" && !x.named) || (k === "who" && x.kind === "account")) noteAccount(v);
     } else if (k === "who" && x.kind === "account" && Array.isArray(v)) for (const w of v) noteAccount(w);
     else if (v && typeof v === "object") noteAccounts(v, depth + 1);
   }
@@ -24214,8 +24224,8 @@ window.noteAccounts = noteAccounts;
     for (const p of providers?.providers || []) {
       for (const n of [p.id, p.name, p.account?.agentName, p.account?.agent]) if (n) not.add(String(n).toLowerCase());
       if (p.account) { all.add((p.account.user || "").trim()); for (const l of p.account.logins || []) all.add((l.user || "").trim()); }
-      // the names the user gave accounts (#1515), as the accounts are
-      for (const n of [...Object.values(p.accountNames || {}), ...Object.values(p.accountUsers || {})]) all.add(String(n).trim());
+      // a plugin's name for one (#4416), not the user's (#3656)
+      for (const n of Object.values(p.accountUsers || {})) all.add(String(n).trim());
     }
     // a plugin's provider, signed in or not, is a provider too: its name
     // on the Plugins page and the add sheet is no account (lileo0668)
@@ -24223,7 +24233,7 @@ window.noteAccounts = noteAccounts;
     for (const q of quotas || []) {
       for (const n of [q.provider, q.name, q.plan]) if (n) not.add(String(n).toLowerCase());
       all.add((q.user || "").trim());
-      if (q.alias && q.alias !== q.seat) all.add(q.alias.trim());
+      if (q.alias && !q.named && q.alias !== q.seat) all.add(q.alias.trim());
     }
     for (const a of state?.agents || []) for (const n of [a.id, a.name]) if (n) not.add(String(n).toLowerCase());
     return [...all].filter((n) => n.length >= 2 && !IS_EMAIL.test(n) && !not.has(n.toLowerCase().replace(/ \(\d+\)$/, ""))).sort((a, b) => b.length - a.length);
@@ -24272,12 +24282,12 @@ window.noteAccounts = noteAccounts;
   const SKIP = new Set(["SCRIPT", "STYLE", "OPTION", "TEXTAREA"]);
   // a demo's made-up text (data-no-pii) is never hidden (outloudvi)
   const KEEP = "[data-no-pii]";
-  // Usage's Sessions and Context are read from the agents' own logs, which
-  // name no account (their answers aren't looked through for one, see api):
-  // a project, a session or a prompt there that has an account's name in
-  // it is no account, so only an address is hidden there (#1973: the
-  // project lingting-react-ui with the account lingting)
+  // Sessions and Context come from the agents' logs, which name no account:
+  // only an address is hidden there (#1973, a project lingting-react-ui)
   const NAMELESS = "#sessionsPane, #contextPane";
+  // labels (the user's own name, a plan, a model, a card's title) hide an
+  // address only, not "Google" of "Google AI Pro" (#3656); TIPS, tooltips
+  const LABELS = ".own-name, .plan, .acct-plan, .model-value, .subscription-head > b", TIPS = ".plan, .acct-plan, .model-value";
   // A switch's chosen is the choice made here; till then accounts hide
   // while Privacy masks personal data (inaction). The whole window
   // follows the switch of the page in sight: Routing's and Usage's, or
@@ -24294,7 +24304,7 @@ window.noteAccounts = noteAccounts;
   const page = (() => {
     const view = document.body;
     function mask(root = view) {
-      const all = finder(), reOf = (e) => e?.closest(NAMELESS) ? EMAIL : all;
+      const all = finder(), reOf = (e) => e?.closest(NAMELESS) || e?.closest?.(LABELS) ? EMAIL : all;
       const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT), found = [];
       for (let n; (n = walk.nextNode());) {
         if (n.data.length < 2 || SKIP.has(n.parentElement?.tagName) || n.parentElement?.closest(".pii, " + KEEP)) continue;
@@ -24323,7 +24333,7 @@ window.noteAccounts = noteAccounts;
         // one masked already reads as an account too, its stars and all
         if (!e.dataset || "piiTitle" in e.dataset || !e.title || e.closest(KEEP)) continue;
         let out = "", last = 0;
-        for (const m of hits(e.title, reOf(e), e)) {
+        for (const m of hits(e.title, e.matches?.(TIPS) || e.closest?.(NAMELESS) ? EMAIL : all, e)) {
           out += e.title.slice(last, m.index) + m[0].replace(m[0].includes("@") ? /[^@.]/g : /./gu, "•"); // a tooltip can't blur
           last = m.index + m[0].length;
         }

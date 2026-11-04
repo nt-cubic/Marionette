@@ -120,7 +120,7 @@ pub fn check_for_update() -> AppUpdateInfo {
     let current = current_version();
     let failed_note = updates_dir().ok().and_then(|d| read_apply_result(&d));
     let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
-    let agent = match crate::http_client::agent() {
+    let agent = match crate::http_client::agent_with_proxy() {
         Ok(a) => a,
         Err(e) => {
             return AppUpdateInfo {
@@ -270,19 +270,59 @@ pub fn download_latest() -> Result<(PathBuf, String), String> {
     let dest = dir.join(format!("Marionette-{version}.exe"));
     let meta_path = dir.join("pending.json");
 
-    let resp = crate::http_client::agent()?
-        .get(&url)
-        .set("User-Agent", USER_AGENT)
-        .set("Accept", "application/octet-stream")
-        .timeout(Duration::from_secs(120))
-        .call()
-        .map_err(|e| format!("Download failed: {e}"))?;
-
+    // 下载走应用代理(设置里启用时):GitHub Releases 在大陆网络直连时通时不通
+    // (实测 os error 10060 超时),而 Telegram 桥早就用 agent_with_proxy()。
+    // 未启用代理时 agent_with_proxy() 原样返回直连 agent,行为不变。
+    let agent = crate::http_client::agent_with_proxy()?;
+    // 16MB 资产在抖动网络下单发必失败:最多 3 次,指数退避(2s/4s)。
+    // 只有传输层/超时类错误重试;HTTP 4xx/5xx 直接失败(重试无意义)。
+    let mut last_err = String::new();
     let mut bytes: Vec<u8> = Vec::new();
-    resp.into_reader()
-        .take(200 * 1024 * 1024)
-        .read_to_end(&mut bytes)
-        .map_err(|e| format!("Read download failed: {e}"))?;
+    for attempt in 0..3u32 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_secs(2 * attempt as u64));
+        }
+        let resp = match agent
+            .get(&url)
+            .set("User-Agent", USER_AGENT)
+            .set("Accept", "application/octet-stream")
+            .timeout(Duration::from_secs(180))
+            .call()
+        {
+            Ok(r) => r,
+            Err(ureq::Error::Status(code, _)) => {
+                // 服务端明确拒绝:不重试。
+                return Err(format!("Download failed: HTTP {code}"));
+            }
+            Err(e) => {
+                last_err = format!("Download failed: {e}");
+                continue;
+            }
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        match resp
+            .into_reader()
+            .take(200 * 1024 * 1024)
+            .read_to_end(&mut buf)
+        {
+            Ok(_) => {
+                bytes = buf;
+                break;
+            }
+            Err(e) => {
+                // 读到一半断流是网络抖动,重试整份下载。
+                last_err = format!("Read download failed: {e}");
+                continue;
+            }
+        }
+    }
+    if bytes.is_empty() {
+        return Err(if last_err.is_empty() {
+            "Download failed: no response".to_string()
+        } else {
+            format!("{last_err}(已重试 3 次;可在设置里启用代理后重试)")
+        });
+    }
     if bytes.len() < 1024 {
         return Err("Downloaded file looks too small to be an exe".into());
     }
@@ -512,5 +552,40 @@ mod tests {
             !bare.contains('\n') && !bare.contains('\r'),
             "bat must not contain line endings other than CRLF"
         );
+    }
+
+    /// 真机下载冒烟:实际下载最新 release 资产,验证重试路径与落盘。
+    /// 需要外网(或已启用代理);`cargo test app_update -- --ignored --nocapture`。
+    ///
+    /// 覆盖 2026-11-02 的现场故障:单发 `read_to_end` 在连接抖动时
+    /// `os error 10060` 超时 → pending.json 从未写成 → 用户点「下载并重启」
+    /// 后仍在旧版本且看不到任何提示。
+    #[test]
+    #[ignore = "需要访问 GitHub Releases(live 下载冒烟)"]
+    fn live_download_writes_pending_meta() {
+        let (dest, version) = download_latest().expect("下载应成功(失败则看错误里的重试说明)");
+        assert!(dest.is_file(), "下载的 exe 应落盘:{}", dest.display());
+        let size = fs::metadata(&dest).unwrap().len();
+        assert!(
+            size > 1024 * 1024,
+            "资产应是完整 exe(>1MB),实际 {size} 字节"
+        );
+        let meta_path = dest.parent().unwrap().join("pending.json");
+        let meta: Value = serde_json::from_str(&fs::read_to_string(&meta_path).expect("pending.json 应写出"))
+            .expect("pending.json 应是合法 JSON");
+        assert_eq!(meta.get("version").and_then(Value::as_str), Some(version.as_str()));
+        assert_eq!(
+            meta.get("path").and_then(Value::as_str),
+            Some(dest.to_string_lossy().as_ref())
+        );
+        println!(
+            "live 下载成功:{} → {} ({:.1} MB)",
+            version,
+            dest.display(),
+            size as f64 / 1_048_576.0
+        );
+        // 收尾:删掉刚下载的包,免得留下一个过期的 pending.json 干扰真实更新。
+        let _ = fs::remove_file(&meta_path);
+        let _ = fs::remove_file(&dest);
     }
 }

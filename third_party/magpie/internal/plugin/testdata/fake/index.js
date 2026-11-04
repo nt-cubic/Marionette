@@ -112,6 +112,9 @@ export const FakePlugin = async ({ client }) => ({
       cfg.provider[ID].models["gemini-3-flash-canvas"] = { ...g, name: "Gemini 3 Flash Canvas", modalities: { input: ["text", "image"], output: ["text", "image"] } }
       cfg.provider[ID].models["imagen-4.0-generate-001"] = { ...g, name: "Imagen 4", modalities: { input: ["text"], output: ["image"] } }
     }
+    // $FAKE_SEES: a model on the provider's openai-compatible that takes
+    // images, as WorkBuddy's plugin serves its models
+    if (process.env.FAKE_SEES) cfg.provider[ID].models["fake-sees"] = { name: "Fake Sees", modalities: { input: ["text", "image"], output: ["text"] }, limit: { context: 1000, output: 100 } }
     // $FAKE_DEEPSEEK: a DeepSeek model, as Cline's cline-pass/deepseek-v4-pro
     if (process.env.FAKE_DEEPSEEK) cfg.provider[ID].models["deepseek-v4-pro"] = { name: "DeepSeek V4 Pro", limit: { context: 1000, output: 100 } }
     // $FAKE_GLM: a GLM model, as Cline's cline-pass/glm-5.3

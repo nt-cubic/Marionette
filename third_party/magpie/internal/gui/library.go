@@ -14,6 +14,7 @@ import (
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/library"
 	"github.com/yetone/magpie/internal/mcpauth"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // The problems of the last change to the library stay on the page until the
@@ -457,6 +458,7 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			Subagent library.Subagent
 			Agent    string            // the agent whose own skill is in the library's way
 			App      string            // the app the MCP hub is added to (servers/hub-open)
+			Note     string            // what the MCP router says of itself (servers/hub-note)
 			ID       string            // a market server's, or a market skill's in its repository
 			Values   map[string]string // what a market server needs
 			Dir      string            // a project's folder
@@ -489,6 +491,10 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 		case "servers/hub":
 			// magpie as the agents' one MCP server (#2679)
 			res, err = library.SetMCPHub(in.On)
+		case "servers/hub-note":
+			// what the router says of itself to the agents, this
+			// computer's own (settings.RouterNote)
+			err = settings.SetRouterNote(in.Note)
 		case "servers/hub-open":
 			// the hub added to another app through its install link,
 			// built here: the page names the app, never the link

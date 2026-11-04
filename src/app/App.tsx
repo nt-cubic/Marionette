@@ -1681,21 +1681,40 @@ export function App() {
     if (appUpdateBusy) return;
     void (async () => {
       setAppUpdateBusy(true);
+      // 17MB 资产要十几秒到几分钟:先给进行中的 toast。旧实现只写 debug 日志,
+      // 用户点完按钮界面毫无反应,实际下载已失败并停在旧版本。
+      const version = appUpdate?.latestVersion ?? "";
+      const progress = showToast({
+        text: t("appUpdate.downloading", { version }),
+        tone: "info",
+        duration: 300_000,
+      });
       try {
         await downloadAppUpdate();
+        dismissToast(progress);
+        showToast({ text: t("appUpdate.applying"), tone: "info", duration: 60_000 });
         await applyAppUpdateAndRelaunch();
       } catch (error) {
+        dismissToast(progress);
+        const message = error instanceof Error ? error.message : String(error);
         pushDebug({
           sessionId: currentSessionId ?? "",
           level: "error",
           source: "update",
           summary: "app update failed",
-          detail: error instanceof Error ? error.message : String(error),
+          detail: message,
+        });
+        // 失败必须可见:带原因 + 最常见处方(网络中断 → 启用代理后重试)。
+        showToast({
+          text: t("appUpdate.failed", { error: message }),
+          detail: t("appUpdate.failedHint"),
+          tone: "error",
+          duration: 12_000,
         });
         setAppUpdateBusy(false);
       }
     })();
-  }, [appUpdateBusy, currentSessionId, pushDebug]);
+  }, [appUpdate?.latestVersion, appUpdateBusy, currentSessionId, pushDebug, t]);
 
   /**
    * Explorer "在此处打开 Marionette" / `--open-path`:
@@ -5052,6 +5071,26 @@ export function App() {
       });
     }
   }, [displaySession, t]);
+
+  // Ctrl F = 在当前(主)对话中查找。WebView2 没有原生查找栏,这个键此前无人用;
+  // 具体哪个 SessionView 打开浮条由 marionette:open-find 的 sessionId 分发。
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        !event.shiftKey &&
+        !event.altKey &&
+        (event.key === "f" || event.key === "F")
+      ) {
+        event.preventDefault();
+        window.dispatchEvent(
+          new CustomEvent("marionette:open-find", { detail: { sessionId: displaySession.id } }),
+        );
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [displaySession.id]);
 
   /** Create a new Chat session in the current/default working folder. `origin:
    *  "memo"` files it under the shelf's 收纳盒 group. */
@@ -9084,6 +9123,16 @@ export function App() {
                       label: t("export.paletteAction"),
                       hint: "Markdown",
                       run: () => void handleExportTranscript(),
+                    },
+                    {
+                      id: "find-in-conversation",
+                      label: t("find.paletteOpen"),
+                      hint: "Ctrl F",
+                      run: () => {
+                        window.dispatchEvent(
+                          new CustomEvent("marionette:open-find", { detail: { sessionId: displaySession.id } }),
+                        );
+                      },
                     },
                   ]
                 : []),

@@ -287,6 +287,38 @@ func init() {
 // registryURL is the MCP Registry's; a variable for tests.
 var registryURL = "https://registry.modelcontextprotocol.io/v0/servers"
 
+//go:embed market_servers.json
+var serversSnapshot []byte
+
+// popularServers are the registry's servers whose repositories have the
+// most stars on GitHub, most first, offered after the featured ones before
+// anything is searched. The registry lists tens of thousands, by name, so
+// they come from a crawl of it shipped with magpie (market_servers.json).
+// One a featured server already is, or two that start the same thing, is
+// offered once.
+var popularServers = sync.OnceValue(func() []MarketServer { return readPopular(serversSnapshot) })
+
+func readPopular(b []byte) []MarketServer {
+	var snap []registryServer
+	if json.Unmarshal(b, &snap) != nil {
+		return nil
+	}
+	out := []MarketServer{}
+	seen := map[string]bool{}
+	for _, m := range featured {
+		seen[serverKey(&m.server)] = true
+	}
+	for i := range snap {
+		m, ok := fromRegistry(&snap[i])
+		if !ok || seen[serverKey(&m.server)] {
+			continue
+		}
+		seen[serverKey(&m.server)] = true
+		out = append(out, m)
+	}
+	return out
+}
+
 // seenServers are the registry's servers the page was last shown, for one to
 // be installed by its id.
 var seenServers = struct {
@@ -295,37 +327,55 @@ var seenServers = struct {
 }{m: map[string]MarketServer{}}
 
 // MarketServers is what the market shows for a search: the featured servers
-// that match it, then the registry's. A search that is an address — a
-// repository, a page, an endpoint, a package — finds the ones at it.
+// that match it, then the registry's, then the popular ones that do; with no
+// search, the featured and every popular one. A search that is an address —
+// a repository, a page, an endpoint, a package — finds the ones at it.
 func MarketServers(q string) ([]MarketServer, error) {
 	raw := strings.TrimSpace(q)
 	q = strings.ToLower(raw)
 	addr := address(q)
 	var out []MarketServer
-	for _, m := range featured {
-		switch {
-		case addr != "":
-			if addrScore(addr, m.addrs) > 0 {
-				m.Match = true
-				out = append(out, m)
-			}
-		case q == "" || strings.Contains(strings.ToLower(m.Title+" "+m.ID+" "+m.Publisher+" "+m.Description+" "+packageOf(&m.server)), q):
-			out = append(out, m)
-		}
-	}
-	var err error
-	if q != "" {
-		var found []MarketServer
-		if addr != "" {
-			found, err = searchAt(raw, addr)
-		} else {
-			found, err = searchWords(q)
-		}
-		for _, f := range found {
-			if !slices.ContainsFunc(out, func(m MarketServer) bool { return serverKey(&m.server) == serverKey(&f.server) }) {
+	seen := map[string]bool{}
+	add := func(list []MarketServer) {
+		for _, f := range list {
+			if k := serverKey(&f.server); !seen[k] {
+				seen[k] = true
 				out = append(out, f)
 			}
 		}
+	}
+	pick := func(list []MarketServer) []MarketServer {
+		var got []MarketServer
+		for _, m := range list {
+			switch {
+			case addr != "":
+				if addrScore(addr, m.addrs) > 0 {
+					m.Match = true
+					got = append(got, m)
+				}
+			case q == "" || strings.Contains(strings.ToLower(m.Title+" "+m.ID+" "+m.Publisher+" "+m.Description+" "+packageOf(&m.server)), q):
+				got = append(got, m)
+			}
+		}
+		return got
+	}
+	add(pick(featured))
+	var err error
+	switch {
+	case q == "":
+		add(popularServers())
+	case addr != "":
+		add(pick(popularServers()))
+		var found []MarketServer
+		found, err = searchAt(raw, addr)
+		add(found)
+	default:
+		// the registry's, ranked by name first; then the popular ones
+		// whose words have it
+		found, ferr := searchWords(q)
+		err = ferr
+		add(found)
+		add(pick(popularServers()))
 	}
 	if out == nil {
 		out = []MarketServer{}
@@ -515,7 +565,7 @@ func offer(list []scored) []MarketServer {
 		clear(seenServers.m)
 	}
 	for i, s := range list {
-		if i == 30 {
+		if i == 100 {
 			break
 		}
 		seenServers.m[s.m.ID] = s.m
@@ -717,6 +767,10 @@ func marketServer(id string) (MarketServer, bool) {
 	if i := slices.IndexFunc(featured, func(m MarketServer) bool { return m.ID == id }); i >= 0 {
 		return featured[i], true
 	}
+	list := popularServers()
+	if i := slices.IndexFunc(list, func(m MarketServer) bool { return m.ID == id }); i >= 0 {
+		return list[i], true
+	}
 	seenServers.Lock()
 	defer seenServers.Unlock()
 	m, ok := seenServers.m[id]
@@ -891,8 +945,8 @@ func marketCache(name string) string {
 }
 
 // popularSkills are skills.sh's most installed, read off its front page,
-// which lists them for itself; kept for six hours, and on disk for when
-// it can't be reached, else what magpie shipped with.
+// then the ones trending there that aren't among them; kept for six hours,
+// and on disk for when it can't be reached, else what magpie shipped with.
 func popularSkills() []skillsShEntry {
 	popular.Lock()
 	defer popular.Unlock()
@@ -916,8 +970,33 @@ func popularSkills() []skillsShEntry {
 	return list
 }
 
+// fetchPopular is skills.sh's front page's list, its 600 most installed,
+// then its trending page's that aren't on it. A trending skill's count is
+// of its recent installs, not all of them, so it isn't told.
 func fetchPopular() ([]skillsShEntry, error) {
-	b, err := get(skillsShURL+"/", "text/html", 8<<20)
+	list, err := skillsShList("/")
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	for _, e := range list {
+		seen[e.Source+"/"+e.SkillID] = true
+	}
+	if more, err := skillsShList("/trending"); err == nil {
+		for _, e := range more {
+			if !seen[e.Source+"/"+e.SkillID] {
+				seen[e.Source+"/"+e.SkillID] = true
+				e.Installs = 0
+				list = append(list, e)
+			}
+		}
+	}
+	return list, nil
+}
+
+// skillsShList is the list of skills a skills.sh page has in its data.
+func skillsShList(path string) ([]skillsShEntry, error) {
+	b, err := get(skillsShURL+path, "text/html", 8<<20)
 	if err != nil {
 		return nil, err
 	}
@@ -939,7 +1018,7 @@ func searchSkillsSh(q string) ([]skillsShEntry, error) {
 	var body struct {
 		Skills []skillsShEntry `json:"skills"`
 	}
-	if err := getJSON(skillsShURL+"/api/search?"+url.Values{"q": {q}, "limit": {"40"}}.Encode(), &body); err != nil {
+	if err := getJSON(skillsShURL+"/api/search?"+url.Values{"q": {q}, "limit": {"200"}}.Encode(), &body); err != nil {
 		return nil, &SearchError{Source: "skills.sh", Err: err}
 	}
 	return slices.DeleteFunc(body.Skills, func(e skillsShEntry) bool { return !repoRe.MatchString(e.Source) || e.SkillID == "" }), nil
@@ -958,10 +1037,7 @@ func MarketSkills(q string) ([]MarketSkill, error) {
 		}
 	}
 	if q == "" {
-		// a few each from the repositories with the most, for the first page
-		// not to be one author's
-		per := map[string]int{}
-		list = slices.DeleteFunc(list, func(e skillsShEntry) bool { per[e.Source]++; return per[e.Source] > 4 })
+		list = byRepo(list)
 	}
 	if len(q) >= 2 {
 		var found []skillsShEntry
@@ -971,9 +1047,6 @@ func MarketSkills(q string) ([]MarketSkill, error) {
 				list = append(list, f)
 			}
 		}
-	}
-	if len(list) > 60 {
-		list = list[:60]
 	}
 	about := cachedAbout()
 	l, _ := loadLocked()
@@ -1009,6 +1082,23 @@ func MarketSkills(q string) ([]MarketSkill, error) {
 		out = append(out, ms)
 	}
 	return out, err
+}
+
+// byRepo is the most installed of each repository first, then each one's
+// second, and so on, for the first page not to be one author's; all of
+// them are there for the reader to go on to.
+func byRepo(list []skillsShEntry) []skillsShEntry {
+	nth := map[string]int{}
+	rounds := [][]skillsShEntry{}
+	for _, e := range list {
+		n := nth[e.Source]
+		nth[e.Source]++
+		if n == len(rounds) {
+			rounds = append(rounds, nil)
+		}
+		rounds[n] = append(rounds[n], e)
+	}
+	return slices.Concat(rounds...)
 }
 
 func (l *Library) haveSkill(source, id, name string) string {
@@ -1167,7 +1257,7 @@ func offered(u string) bool {
 	if !strings.HasPrefix(u, "https://") {
 		return false
 	}
-	if slices.ContainsFunc(featured, func(m MarketServer) bool { return m.Icon == u }) {
+	if slices.ContainsFunc(featured, func(m MarketServer) bool { return m.Icon == u }) || slices.ContainsFunc(popularServers(), func(m MarketServer) bool { return m.Icon == u }) {
 		return true
 	}
 	if rest, ok := strings.CutPrefix(u, "https://github.com/"); ok && strings.HasSuffix(rest, ".png?size=96") && !strings.Contains(strings.TrimSuffix(rest, ".png?size=96"), "/") {

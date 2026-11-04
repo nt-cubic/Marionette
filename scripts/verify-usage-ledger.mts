@@ -26,6 +26,7 @@ import {
   foldHourWeek,
   freshTokens,
   hourRampStep,
+  ledgerToCsv,
   mondayFirstHourGrid,
   peakHourOf,
   pruneLedger,
@@ -36,6 +37,7 @@ import {
   topAgents7,
   totalTokens,
   trendSeries,
+  usageCsvFileName,
   type UsageLedger,
 } from "../src/lib/usageLedger";
 import {
@@ -409,6 +411,56 @@ check("dayKeyOf 格式", dayKeyOf(NOW) === "2026-10-31" && dayKeyOf(day(1)) === 
     en["usageLedger.turns_one"] === "{count} turn" && en["usageLedger.turns_other"] === "{count} turns",
   );
   check("en:费用文案非实付声明", en["usageLedger.costNote"].includes("not what your plan paid"));
+  check(
+    "en:CSV 导出文案",
+    en["usageLedger.exportCsv"] === "Export CSV" &&
+      en["usageLedger.csvOk"] === "Exported {name}" &&
+      en["usageLedger.csvReveal"] === "Show file",
+  );
+}
+
+// ── CSV 导出(ledgerToCsv) ──────────────────────────────────────────────
+{
+  let ledger: UsageLedger = { version: 1, days: {} };
+  ledger = recordTurnUsageInto(
+    ledger,
+    { agentId: "a", modelId: "claude/claude-opus-4", stats: stats({ input: 1000, output: 500, cached: 2000, cacheCreation: 120, durationMs: 30_000 }), endedAt: day(0).getTime() },
+  );
+  ledger = recordTurnUsageInto(
+    ledger,
+    { agentId: "a", modelId: "z-ai/glm-5.3", stats: stats({ input: 100, output: 50 }), endedAt: day(0).getTime() },
+  );
+  ledger = recordTurnUsageInto(
+    ledger,
+    { agentId: "a", stats: stats({ input: 10, output: 5 }), endedAt: day(1).getTime() }, // 无 modelId
+  );
+
+  const csv = ledgerToCsv(ledger);
+  const lines = csv.split("\r\n");
+  check("CSV:表头列序", lines[0] === "date,scope,model,turns,input,output,cached,cache_creation,reasoning,ms");
+  check("CSV:空台账返回空串", ledgerToCsv({ version: 1, days: {} }) === "");
+  check("CSV:无记录日不出行", !csv.includes("2026-10-25"));
+
+  const totalRow = lines.find((l) => l.startsWith("2026-10-31,total,"))!;
+  check(
+    "CSV:日合计行含 ms 与四桶",
+    totalRow === "2026-10-31,total,,2,1100,550,2000,120,0,30000",
+    totalRow,
+  );
+  const modelRows = lines.filter((l) => l.startsWith("2026-10-31,model,"));
+  check("CSV:模型行按四桶总量降序", modelRows[0]!.includes("claude/claude-opus-4") && modelRows[1]!.includes("z-ai/glm-5.3"), modelRows.join(" | "));
+  check("CSV:模型行 reasoning/ms 留空", modelRows[0]!.endsWith(",,"));
+  const unattributedDay = lines.find((l) => l.startsWith("2026-10-30,total,"))!;
+  check("CSV:无模型归属的日只有 total 行", unattributedDay === "2026-10-30,total,,1,10,5,0,0,0,0" && lines.filter((l) => l.startsWith("2026-10-30,model,")).length === 0);
+  check("CSV:结尾单换行(CRLF)", csv.endsWith("\r\n") && !csv.endsWith("\r\n\r\n"));
+
+  // 转义:模型 id 含逗号/引号
+  let escaped: UsageLedger = { version: 1, days: {} };
+  escaped = recordTurnUsageInto(escaped, { agentId: "a", modelId: 'weird,"model",x', stats: stats({ output: 1 }), endedAt: day(0).getTime() }, NOW);
+  check("CSV:逗号/引号字段被引号包裹并翻倍", ledgerToCsv(escaped).includes('"weird,""model"",x"'));
+
+  // 文件名
+  check("CSV:文件名带日期后缀", usageCsvFileName(new Date(2026, 10, 1, 9, 5)) === "marionette-token-usage-20261101.csv");
 }
 
 console.log(failures === 0 ? "\n全部通过" : `\n${failures} 项失败`);

@@ -16,6 +16,11 @@ import (
 // a tier, which Desktop reads at start-up, still says it.
 func TestDesktopSubagentModelNotice(t *testing.T) {
 	testenv.SetHome(t, t.TempDir())
+	// magpie's own files (the providers, the settings, Desktop's tiers)
+	// live in the XDG config folder, which SetHome doesn't move; a run
+	// that leaves the tier pick there wires Desktop for the next run
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	if err := provider.Save(provider.Provider{ID: "fake", Name: "Fake", Key: "k", Chat: "http://127.0.0.1:1/v1", Models: []string{"m1"}}); err != nil {
 		t.Fatal(err)
 	}

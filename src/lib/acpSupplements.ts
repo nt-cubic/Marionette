@@ -126,12 +126,11 @@ const SUPPLEMENTS: Record<string, AcpSupplement> = {
     // Rust peels the suffix; this list fills the chip. A live
     // `reasoning_effort` config still wins (see mergeAcpCapabilities).
     effortOptions: [
+      { id: "max", label: "Max" },
       { id: "xhigh", label: "Extra High" },
       { id: "high", label: "High" },
       { id: "medium", label: "Medium" },
       { id: "low", label: "Low" },
-      { id: "minimal", label: "Minimal" },
-      { id: "none", label: "None" },
     ],
     effortViaLegacyModel: true,
     defaultEffortId: "medium",

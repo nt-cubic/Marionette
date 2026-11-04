@@ -2121,7 +2121,7 @@ func SetOff(id string, off bool) error {
 // names: as "provider/model", or a model only switched-off providers list.
 // A request for it is refused as that, not as a model magpie doesn't know.
 func SwitchedOff(id string) (Provider, bool) {
-	id = strings.TrimSuffix(strings.TrimSpace(id), "[1m]")
+	id = peelAgentModelMark(id)
 	if pid, _, ok := strings.Cut(id, "/"); ok {
 		if p, err := Find(pid); err == nil && (p.Off || p.KeptToAgent()) {
 			return *p, true

@@ -34,6 +34,10 @@ type tuneAdvice struct {
 	// window in Long conversations doesn't move it (hoobnn on Discord: a
 	// card said "In use" for 170K beside "Now 430K")
 	Own *tuneOwn `json:"own,omitempty"`
+	// Apart are the models of the range with a Compact at of their own
+	// beside others Long conversations moves: a Use moves those others,
+	// and these keep compacting where they did (hoobnn on Discord, 11-01)
+	Apart []tuneOwn `json:"apart,omitempty"`
 	// Async is Codex's background compaction at the advice, its foreground
 	// limit kept as the backstop; nil where it can't help
 	Async *tuneAsync `json:"async,omitempty"`
@@ -163,7 +167,7 @@ func adviseOf(by map[string][]tune.Call, days int, home string) tuneState {
 				continue
 			}
 			st := settings.Load()
-			window, told, own := codexWindow(calls, st, provider.Catalog(), provider.GroupFinder())
+			window, told, own, apart := codexWindow(calls, st, provider.Catalog(), provider.GroupFinder())
 			// Long conversations' value is the setting; where Codex runs
 			// now is that as magpie tells it for these models (their
 			// windows, a provider's own Compact at)
@@ -177,6 +181,9 @@ func adviseOf(by map[string][]tune.Call, days int, home string) tuneState {
 				ad := tuneAdvice{Knob: agent.TuneCompact, Setting: s, Compact: r}
 				if own != "" && s.Source == agent.TuneLong && r.Current == told {
 					ad.Own = &tuneOwn{Model: own, Value: told}
+				}
+				if s.Source == agent.TuneLong {
+					ad.Apart = apart
 				}
 				if pct, v, ok := codexAsyncAt(r); ok {
 					as, _ := agent.TuneRead(home, name, agent.TuneAsync, "")
@@ -192,23 +199,31 @@ func adviseOf(by map[string][]tune.Call, days int, home string) tuneState {
 
 // codexWindow is the window Codex runs the calls' models to, and where
 // magpie has it compact them when its config.toml says nothing (told: the
-// largest of the models magpie tells a window, 0 when it tells none). A
-// model outside the catalog, or one whose window magpie doesn't know,
-// leaves told to the others: it once made told 0 for the whole range, so
-// "Now" was guessed from the prompts instead, and the same setting read
-// 380K over 7 days and 430K today (hoobnn on Discord). own is the model
-// told comes from when that is its own threshold over Long conversations
-// (provider.CompactFor with a Compact at of its own set), which Long
-// conversations doesn't move. A model of magpie's catalog
-// has the window it is listed with, one the user typed or the vendor's,
-// and is told the threshold the user set on it, else Settings › Long
-// conversations (provider.CompactFor, as codexcat writes it). One whose
-// window magpie doesn't know caps nothing (window 0): the largest prompt
-// it had been sent was taken for its window, and a 1M model set to
-// compact at 750K was offered no more than 412K (zhemu on Discord).
-// Codex's own models, outside magpie's catalog, run to 272K or the
-// largest prompt seen, as before.
-func codexWindow(calls []tune.Call, st settings.Settings, entries []provider.Entry, find func(string) (provider.Group, []provider.Member, bool)) (window, told int, own string) {
+// largest of the models Long conversations moves, 0 when magpie tells it
+// none). A model outside the catalog, or one whose window magpie doesn't
+// know, leaves told to the others: it once made told 0 for the whole
+// range, so "Now" was guessed from the prompts instead, and the same
+// setting read 380K over 7 days and 430K today (hoobnn on Discord).
+//
+// A model with a Compact at of its own (provider.CompactSetIn, on it or
+// its provider) compacts there whatever Long conversations says, so it
+// isn't in told while another model is: over 7 days such a model's 430K
+// was "Now", a Use moved every other model to the advice, and the card
+// still read 430K (hoobnn, 11-01). Those models are apart, each with
+// where it compacts. Only when every model of the range has one is told
+// the largest of theirs, and own the model it comes from: no Use moves
+// it. A window the user typed is not one of these: it gives way to a size
+// tune puts in Long conversations (CompactFor's rule).
+//
+// A model of magpie's catalog has the window it is listed with, one the
+// user typed or the vendor's, and is told the threshold the user set on
+// it, else Settings › Long conversations (provider.CompactFor, as
+// codexcat writes it). One whose window magpie doesn't know caps nothing
+// (window 0): the largest prompt it had been sent was taken for its
+// window, and a 1M model set to compact at 750K was offered no more than
+// 412K (zhemu on Discord). Codex's own models, outside magpie's catalog,
+// run to 272K or the largest prompt seen, as before.
+func codexWindow(calls []tune.Call, st settings.Settings, entries []provider.Entry, find func(string) (provider.Group, []provider.Member, bool)) (window, told int, own string, apart []tuneOwn) {
 	byID := make(map[string]provider.Entry, len(entries))
 	for _, e := range entries {
 		byID[strings.ToLower(e.ID)] = e
@@ -217,7 +232,7 @@ func codexWindow(calls []tune.Call, st settings.Settings, entries []provider.Ent
 	for _, c := range calls {
 		peak[c.Model] = max(peak[c.Model], c.Prompt)
 	}
-	unknown := false
+	unknown, moved, held := false, false, 0
 	for m, p := range peak {
 		e, ok := byID[strings.TrimPrefix(m, "magpie/")]
 		switch {
@@ -227,27 +242,33 @@ func codexWindow(calls []tune.Call, st settings.Settings, entries []provider.Ent
 			unknown = true
 		default:
 			window = max(window, e.Context, p)
+			if n := provider.CompactSetIn(st, e.ID, find); n > 0 {
+				at := min(e.Context, n)
+				apart = append(apart, tuneOwn{Model: e.ID, Value: at})
+				held = max(held, at)
+				continue
+			}
 			at := st.Working(e.Context)
 			if n := provider.CompactFor(st, e, find); n > 0 {
 				at = min(e.Context, n)
 			}
-			// past what Long conversations has it at, with a size of the
-			// user's in Long conversations: the model's own Compact at
-			// (with none, a window the user typed gives way to one tune
-			// puts in, CompactFor's rule)
-			mine := st.CompactAt > 0 && at > st.Working(e.Context)
-			if at > told || at == told && own != "" && (!mine || e.ID < own) {
-				told, own = at, ""
-				if mine {
-					own = e.ID
-				}
-			}
+			told, moved = max(told, at), true
 		}
+	}
+	// the same models, in the same order, in every read
+	slices.SortFunc(apart, func(a, b tuneOwn) int {
+		if a.Value != b.Value {
+			return b.Value - a.Value
+		}
+		return strings.Compare(a.Model, b.Model)
+	})
+	if !moved && len(apart) > 0 {
+		told, own, apart = held, apart[0].Model, nil
 	}
 	if unknown {
 		window = 0
 	}
-	return window, told, own
+	return window, told, own, apart
 }
 
 func tuneRoutes(mux *http.ServeMux) {

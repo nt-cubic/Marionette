@@ -1283,9 +1283,8 @@
     const same = String(cur) === String(best);
     const saves = r.cost > 0 ? (r.cost - r.low) / r.cost : 0;
     const set = a.setting || {};
-    // a model's own Compact at is where Codex runs, over Long conversations:
-    // the value put in there isn't "In use", and putting another in moves
-    // nothing (hoobnn on Discord: "In use" for 170K beside "Now 430K")
+    // a model's own Compact at is where Codex runs, over Long conversations
+    // (hoobnn on Discord: "In use" for 170K beside "Now 430K")
     const own = a.own;
     const held = !!(set.locked || own);
     const applied = !own && set.ours && String(set.value) === String(best);
@@ -1347,6 +1346,8 @@
       why.textContent = t("{quick} of your calls came within 5 minutes of the one before, {pause} after a pause of 5 to 60 minutes.", { quick: pct(f.quick || 0), pause: pct(f.pause || 0) });
     }
     row.append(why);
+    // one with its own Compact at, which Use doesn't move (hoobnn)
+    for (const m of a.apart || []) row.append(el("p", "ctx-tune-caveat ctx-tune-apart", t("{model} compacts at its own {value}, which this doesn't move", { model: m.model, value: fmtK(m.value) })));
     // a window advised is weighed by tokens alone: what a compaction loses of
     // the task isn't measured, and a smaller one compacts more often (#1854)
     if (a.compact && (!same || lean)) row.append(el("p", "ctx-tune-caveat", timed

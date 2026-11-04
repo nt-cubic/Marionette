@@ -170,3 +170,53 @@ func mustStat(t *testing.T) os.FileInfo {
 	}
 	return info
 }
+
+// Each append wakes several readers at once (the menu bar, the pages), all
+// inside the change stamp's tick. Each of them hashed the whole log again,
+// and so did the read that built the snapshot and the first read once it
+// settled: four times the log for one request (#4368). The read once it
+// settles is the one that checks it.
+func TestUsageReadersOfOneAppendHashTheLogOnce(t *testing.T) {
+	pageHome(t)
+	holdClock(t, time.Now())
+	historyLog(t, 20000)
+	now := logIndexNow
+	t.Cleanup(func() { logIndexNow = now })
+	later := func() time.Time { return time.Now().Add(2 * logStampSettle) }
+	logIndexNow = later
+	Summarize(Today)
+	hash := logRecordHash
+	var hashed int64
+	logRecordHash = func(path string, n int64) string {
+		hashed += n
+		return hash(path, n)
+	}
+	t.Cleanup(func() { logRecordHash = hash })
+	const cycles = 5
+	for range cycles {
+		Append(Record{Agent: "codex", Provider: "relay", Model: "m", Input: 1, Status: 200})
+		info, err := os.Stat(Path())
+		if err != nil {
+			t.Fatal(err)
+		}
+		// the readers come within the tick, whatever the machine's speed
+		logIndexNow = func() time.Time { return logChangeTime(info) }
+		for range 3 {
+			Summarize(Today)
+		}
+		logIndexNow = later
+		Summarize(Today)
+	}
+	info, err := os.Stat(Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	perCycle := hashed / cycles
+	t.Logf("log %d bytes: %d bytes hashed per append and four reads (%.2f× the log)", info.Size(), perCycle, float64(perCycle)/float64(info.Size()))
+	if perCycle > info.Size()+info.Size()/10 {
+		t.Fatalf("an append and its readers hashed %d bytes over a %d-byte log, more than the one check once it settles", perCycle, info.Size())
+	}
+	if s := Summarize(Today); s.Calls != 1+cycles {
+		t.Fatalf("calls today: %d", s.Calls)
+	}
+}

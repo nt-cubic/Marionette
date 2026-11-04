@@ -186,6 +186,7 @@ func TestLongTextKeepsPiecesWhenStopped(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c := findAsync(ctx, text)
+	waitForStart(t, log)
 	waitFor(t, "a first piece asked", func() bool { return len(fakeLines(t, log, "request")) >= 1 })
 	cancel()
 	if r := <-c; r.err == nil {
@@ -207,6 +208,7 @@ func TestShortRequestGoesBetweenPieces(t *testing.T) {
 	text := numbered(1500)
 	n := len(pieces(text))
 	long := findAsync(context.Background(), text)
+	waitForStart(t, log)
 	waitFor(t, "a first piece asked", func() bool { return len(fakeLines(t, log, "request")) >= 1 })
 	short := findAsync(context.Background(), "hi Alice")
 	var r found

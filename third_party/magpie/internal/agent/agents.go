@@ -220,6 +220,7 @@ func onMachine(home, cfg string) []*Agent {
 		codex(home),
 		gemini(home),
 		agy(home),
+		antigravity(home),
 		opencode(home, cfg),
 		openChamber(home, cfg),
 		mimocode(home, cfg),

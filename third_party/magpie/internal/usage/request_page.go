@@ -67,10 +67,9 @@ type RequestPage struct {
 }
 
 type packedRow struct {
-	// at is the row's time in unix ns, and loc its zone (Time): a
-	// time.Time was 24 of a row's bytes (#2278)
-	at  int64
-	loc *time.Location
+	// at is the row's time in unix ns, and zone its zone in rowZones
+	// (Time): a time.Time was 24 of a row's bytes (#2278)
+	at int64
 	// Varied are the strings of rowVaried, and Shape the chunk's Shapes
 	// entry that holds the row's other strings
 	Varied [len(rowVaried)]uint32
@@ -90,6 +89,69 @@ type packedRow struct {
 	Masking                    int32 // ms (Record.Masking)
 	Status, Tries              int32
 	Flags                      uint16
+	zone                       uint16
+}
+
+// rowZones are the zones rows' times are in, by a row's zone; 0 is the
+// zero time. A row held its *time.Location, and that one pointer made
+// every []packedRow a slice the collector scans: the pages' and the kept
+// buffers' hundreds of thousands of rows, on every cycle, while calls
+// came in (#4737). A zone is known by its name and offset, not its
+// pointer: a time parsed with an offset, or a chunk read from disk, has
+// a new FixedZone each.
+var rowZones struct {
+	sync.Mutex
+	list atomic.Pointer[[]*time.Location]
+	ids  map[rowZoneKey]uint16
+	seen map[*time.Location]uint16
+}
+
+type rowZoneKey struct {
+	name   string
+	offset int
+}
+
+// zoneUTC is UTC's id. time.Local is a zone as any other: a test sets
+// it, and a row keeps the zone it was written in.
+const zoneUTC = 1
+
+func init() {
+	list := []*time.Location{nil, time.UTC}
+	rowZones.list.Store(&list)
+	rowZones.ids = map[rowZoneKey]uint16{}
+	rowZones.seen = map[*time.Location]uint16{}
+}
+
+// zoneOf is loc's id in rowZones, added when it is new. Past the most a
+// row's zone holds, a new zone's times are kept in UTC: the same
+// instants, read in another zone.
+func zoneOf(loc *time.Location) uint16 {
+	if loc == time.UTC || loc == nil {
+		return zoneUTC
+	}
+	rowZones.Lock()
+	defer rowZones.Unlock()
+	if id, ok := rowZones.seen[loc]; ok {
+		return id
+	}
+	_, offset := time.Unix(0, 0).In(loc).Zone()
+	key := rowZoneKey{loc.String(), offset}
+	id, ok := rowZones.ids[key]
+	if !ok {
+		list := *rowZones.list.Load()
+		if len(list) > math.MaxUint16 {
+			return zoneUTC
+		}
+		id = uint16(len(list))
+		next := append(list[:len(list):len(list)], loc)
+		rowZones.list.Store(&next)
+		rowZones.ids[key] = id
+	}
+	if len(rowZones.seen) >= 1024 { // a pointer each parse: kept bounded
+		clear(rowZones.seen)
+	}
+	rowZones.seen[loc] = id
+	return id
 }
 
 // msOf is a time in ms as a packedRow keeps it: one past 24 days, which
@@ -101,19 +163,28 @@ func tokensOf(n int64) int32 { return int32(max(min(n, math.MaxInt32), math.MinI
 
 // Time is the row's time, in the zone it was written in.
 func (p *packedRow) Time() time.Time {
-	if p.loc == nil {
+	if p.zone == 0 {
 		return time.Time{}
 	}
-	return time.Unix(0, p.at).In(p.loc)
+	return time.Unix(0, p.at).In((*rowZones.list.Load())[p.zone])
 }
 
 // setTime keeps t as the row's time. The zero time stays zero.
 func (p *packedRow) setTime(t time.Time) {
 	if t.IsZero() {
-		p.at, p.loc = 0, nil
+		p.at, p.zone = 0, 0
 		return
 	}
-	p.at, p.loc = t.UnixNano(), t.Location()
+	p.setTimeIn(t, zoneOf(t.Location()))
+}
+
+// setTimeIn is setTime of a time in zone, which zoneOf gave.
+func (p *packedRow) setTimeIn(t time.Time, zone uint16) {
+	if t.IsZero() {
+		p.at, p.zone = 0, 0
+		return
+	}
+	p.at, p.zone = t.UnixNano(), zone
 }
 
 // rowHandedOn is the Flags bit of Record.HandedOn, rowReasoningHidden
@@ -540,11 +611,10 @@ func (r *chunkRows) of(c *rowChunk) *rowChunk {
 			r.b = rowBufferFor()
 		}
 		b := r.b
-		var lent *[]byte
-		if r.lent {
-			lent = &b.decoded
-		}
-		open := c.unpackReusing(&b.open, b.rows, b.strs, b.shapes, lent)
+		// the block is decoded into b's buffer either way: a pass that
+		// copies its strings took one from a sync.Pool, which each
+		// collection empties, and grew it again (#4372)
+		open := c.unpackReusing(&b.open, b.rows, b.strs, b.shapes, &b.decoded, r.lent)
 		if open == nil { // never written so: pack wrote it in this process
 			b.open = rowChunk{Source: c.Source, Computer: c.Computer}
 			open = &b.open

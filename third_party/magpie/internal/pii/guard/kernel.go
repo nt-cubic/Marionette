@@ -89,6 +89,37 @@ func mix(c *[32]float32, p, v []float32) {
 	}
 }
 
+// maxOf is the largest of p (-Inf for none), and rangeOf the smallest
+// and largest of x and 0: what min and max over them give, but compared
+// in a plain loop. The builtins' order of NaN and of -0 against +0 took
+// a third of the model's time outside its matrix products. A NaN gives
+// NaN as they do; where they would give -0 these may give +0, which
+// neither caller tells apart (s-mx and 0-lo/scale come out the same).
+func maxOf(p []float32) float32 {
+	mx := float32(math.Inf(-1))
+	for _, s := range p {
+		if s > mx {
+			mx = s
+		} else if s != s {
+			return s
+		}
+	}
+	return mx
+}
+
+func rangeOf(x []float32) (lo, hi float32) {
+	for _, v := range x {
+		if v < lo {
+			lo = v
+		} else if v > hi {
+			hi = v
+		} else if v != v {
+			return v, v
+		}
+	}
+	return lo, hi
+}
+
 // expf is e^x in float32, to about an ulp (Cephes' expf), for the
 // softmax's x ≤ 0 and the GELU's erf.
 func expf(x float32) float32 {
@@ -105,6 +136,40 @@ func expf(x float32) float32 {
 	y := ((((1.9875691500e-4*x+1.3981999507e-3)*x+8.3334519073e-3)*x+4.1665795894e-2)*x+1.6666665459e-1)*x + 5.0000001201e-1
 	y = y*z + x + 1
 	return math.Float32frombits(math.Float32bits(y) + uint32(int32(n))<<23)
+}
+
+// expSubFast and geluFast, where the CPU has the instructions for them,
+// do what expSub and geluRow do for the first len&^7 of their values, the
+// same float32 operations in the same order, so the same bits.
+var (
+	expSubFast func(p []float32, mx float32)
+	geluFast   func(row, bias, smooth []float32)
+)
+
+// expSub sets p[u] to expf(p[u]-mx): a softmax row's exponentials.
+func expSub(p []float32, mx float32) {
+	i := 0
+	if expSubFast != nil && len(p) >= 8 {
+		i = len(p) &^ 7
+		expSubFast(p[:i], mx)
+	}
+	for ; i < len(p); i++ {
+		p[i] = expf(p[i] - mx)
+	}
+}
+
+// geluRow sets row[i] to gelu(row[i]+bias[i])·smooth[i]: the feed
+// forward's activation.
+func geluRow(row, bias, smooth []float32) {
+	bias, smooth = bias[:len(row)], smooth[:len(row)]
+	i := 0
+	if geluFast != nil && len(row) >= 8 {
+		i = len(row) &^ 7
+		geluFast(row[:i], bias[:i], smooth[:i])
+	}
+	for ; i < len(row); i++ {
+		row[i] = gelu(row[i]+bias[i]) * smooth[i]
+	}
 }
 
 // gelu is x·Φ(x), with erf from Abramowitz and Stegun 7.1.26 (absolute

@@ -38,7 +38,8 @@ type QuotaWindow struct {
 	// (AutoClaw's 积分余额 and 每日签到, Cursor's on-demand spend, ZCode's
 	// gift to claim), which plugins send set aside with used 0 and no
 	// count. Its Used is no reading, so it is told as its text, never as
-	// "100% left".
+	// "100% left". Claude's "Extra usage" row (claudeOveragesWindow) is
+	// the one Text window with Used 100: the account counts as spent.
 	Text bool `json:"text,omitempty"`
 	// Amount of Limit is the window's own count in Unit, when the vendor
 	// counts it so (WorkBuddy's credits): Used is Amount as a share of
@@ -221,6 +222,11 @@ type SubscriptionQuota struct {
 	// handed out, never cached.
 	Alias string `json:"alias,omitempty"`
 	Seat  string `json:"seat,omitempty"`
+	// Named is set when Alias is the user's own name (AccountNames), not
+	// the plugin's name for the account (PluginUserOf, a masked phone) or
+	// Seat: the GUI's Hide accounts keeps the user's own name in sight
+	// and hides the others as accounts (#3656).
+	Named bool `json:"named,omitempty"`
 	// GatewayKey is set on the card of a gateway key a remote magpie gave
 	// this computer (#1547, remote_key_limits.go): the limit that magpie
 	// holds the key to, beside the windows that show it.

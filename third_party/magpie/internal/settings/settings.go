@@ -208,6 +208,14 @@ type Settings struct {
 	// from wherever (gateway.publicClient). In settings.json only; it names
 	// this computer's own network, so it isn't synced (KeepOwn).
 	FetchPrivate []string `json:"fetchPrivate,omitempty"`
+	// RouterNote is what this computer's MCP router says of itself to the
+	// agents that connect to it (packinggoodsllc_07668 on Discord: two
+	// magpies, one in China and one in Los Angeles, serve the same tools,
+	// and an agent fetching Google should pick the one in Los Angeles):
+	// in its initialize instructions, its serverInfo title, and before each
+	// tool's description (gateway.hubWhere). "" is this computer's name, said
+	// only to an agent on another computer. This computer's own (KeepOwn).
+	RouterNote string `json:"routerNote,omitempty"`
 	// Port is the gateway's port on this computer, 0 for DefaultPort.
 	// MAGPIE_ADDR, where it is set, comes first (GatewayAddr).
 	Port int `json:"port,omitempty"`
@@ -361,18 +369,15 @@ type Settings struct {
 	// default, the run is the shape every Claude Code run has.
 	ClaudeLeanPrompt bool `json:"claudeLeanPrompt,omitempty"`
 	// ClaudePrintMode runs a Claude subscription's Claude Code as `claude
-	// -p` always. Off, as by default, a run is Claude Code's interactive
-	// mode, as a person runs it, where it can be (macOS and Linux, no
-	// images, safeguards or client cache marks): the plan counts a -p
-	// request at about twice an interactive one.
+	// -p` always. Off, as by default, a model request runs in Claude
+	// Code's interactive mode, as a person runs it, and never as -p: the
+	// plan counts a -p request at about twice an interactive one, and a -p
+	// run starts without the interactive mode's cache. A request it can't
+	// take (safeguards, a JSON schema, …), or one it doesn't start for,
+	// fails saying why. Reading the plan's allowance (/usage, no model
+	// request) is -p either way. (An "Interactive only" claudeTUIOnly,
+	// v0.1.2448, is what Off is now, and is no longer read.)
 	ClaudePrintMode bool `json:"claudePrintMode,omitempty"`
-	// ClaudeTUIOnly has a Claude subscription's model requests never run
-	// as `claude -p`: one the interactive mode can't take (safeguards, a
-	// JSON schema, …), or whose interactive mode doesn't come up, fails,
-	// saying why, where it would otherwise be -p. Reading the plan's
-	// allowance (/usage, no model request) is still -p. ClaudePrintMode,
-	// when set too, wins.
-	ClaudeTUIOnly bool `json:"claudeTUIOnly,omitempty"`
 	// ClaudeRunsMost is how many Claude Code processes a Claude
 	// subscription may have running at once: conversations' runs, those
 	// waiting for a next turn or on tool results, and one-off tests and
@@ -1291,9 +1296,9 @@ func (s Settings) Compact() int {
 // KeepOwn puts back cur's settings that are this computer's own, which a
 // sync or a restored backup never brings from another: the window's size,
 // place and whether it was maximised, the proxy, the gateway's port, whether it
-// is shared on the local network and the addresses let in to it, the
-// Dock, gateway mode, whether WSL is looked in, whether agents' sign-ins
-// are read, when allowances are read, the terminal app a session resumes
+// is shared on the local network and the addresses let in to it, what
+// its MCP router says of itself, the Dock, gateway mode, whether WSL is
+// looked in, whether agents' sign-ins are read, when allowances are read, the terminal app a session resumes
 // in, the quick panel's shortcut, whether the local masking model is on
 // (it is downloaded on this computer alone), how many Claude Code processes may run (its memory),
 // and what the menu bar or tray shows beside magpie's icon (yoooo on
@@ -1315,6 +1320,7 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.QuotaReads = cur.QuotaReads
 	s.NoAccountDiscovery = cur.NoAccountDiscovery
 	s.LAN, s.AllowIPs = cur.LAN, cur.AllowIPs
+	s.RouterNote = cur.RouterNote
 	s.FetchPrivate = cur.FetchPrivate
 	s.SessionTerminal = cur.SessionTerminal
 	s.PanelShortcut = cur.PanelShortcut
@@ -1590,6 +1596,13 @@ func loadChecked() (Settings, error) {
 	return parse(b)
 }
 
+// Defaults are the settings of a new install, with no settings.json:
+// what `magpie settings list` shows as each one's default, and what
+// `magpie settings reset` puts back.
+func Defaults() Settings {
+	return Settings{DockSettled: true}.normal()
+}
+
 // settleDock reads a Dock choice written before With window was the
 // default (DockSettled unset) as that magpie did: no choice is Hide.
 func (s Settings) settleDock() Settings {
@@ -1775,6 +1788,32 @@ func SetGatewayConversations(on bool) error {
 	defer lockFile()()
 	s := load()
 	s.GatewayConversations = on
+	return save(s, true)
+}
+
+// RouterNoteMost is how many characters RouterNote keeps: a few words,
+// said before every tool's description.
+const RouterNoteMost = 80
+
+// CleanRouterNote is note as RouterNote keeps it: one line, its spaces
+// collapsed, RouterNoteMost characters at most.
+func CleanRouterNote(note string) string {
+	note = strings.Join(strings.Fields(note), " ")
+	if r := []rune(note); len(r) > RouterNoteMost {
+		note = strings.TrimSpace(string(r[:RouterNoteMost]))
+	}
+	return note
+}
+
+// SetRouterNote sets RouterNote alone, from what the file holds now. A
+// settings file that can't be read is left as it is, with the error.
+func SetRouterNote(note string) error {
+	defer lockFile()()
+	s, err := loadChecked()
+	if err != nil {
+		return err
+	}
+	s.RouterNote = CleanRouterNote(note)
 	return save(s, true)
 }
 

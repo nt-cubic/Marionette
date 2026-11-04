@@ -249,10 +249,29 @@ func (theHub) Call(ctx context.Context, agentID, server, tool string, args json.
 	if isSelf(s) {
 		meta = imageMeta(gateway.HubCallerOf(ctx))
 	}
+	if c := gateway.HubCallerOf(ctx); c.Session != "" && keepsSession(s) {
+		if meta == nil {
+			meta = map[string]any{}
+		}
+		meta[gateway.HubSessionMeta] = c.Session
+	}
 	if s.Plugin != "" {
 		return pluginHubCall(ctx, agentID, s, tool, args)
 	}
 	return backendOf(s).call(ctx, tool, args, meta)
+}
+
+// keepsSession is whether s is told which of the hub's callers a call is
+// from: Magpie Browser, which works in a tab of each caller's own (one
+// process serves every agent behind the hub, so its own session would be
+// all of theirs), and another magpie's router, which passes it on to its
+// Magpie Browser. No other server is sent it.
+func keepsSession(s *Server) bool {
+	if s.Remote() {
+		u, err := url.Parse(s.URL)
+		return err == nil && strings.HasPrefix(u.Path, gateway.HubMCPAll)
+	}
+	return len(s.Args) >= 2 && s.Args[0] == "mcp" && s.Args[1] == "browser"
 }
 
 // imageMeta is the _meta a call of magpie's image server is made with:
