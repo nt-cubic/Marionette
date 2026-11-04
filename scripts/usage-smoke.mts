@@ -18,6 +18,7 @@ import {
   extractUsageFromAcpData,
   formatTurnStatsTag,
   grokTurnUsageToTurnTokens,
+  generatedOutputTokens,
   mergeGrokBilling,
   mergeGrokCallUsage,
   mergeUsageFromAcp,
@@ -30,6 +31,8 @@ import {
   parseGrokCostText,
   applyModelContextSize,
 } from "../src/lib/usage.ts";
+import { measureTurnDecodeMs, tokenBuckets } from "../src/lib/sessionStats.ts";
+import type { SessionEvent } from "../src/lib/types.ts";
 
 let passed = 0;
 function check(name: string, fn: () => void) {
@@ -167,7 +170,7 @@ check("Grok: _meta token counts, no usage_update anywhere", () => {
     },
   });
   assert.deepEqual(tokens, {
-    input: 12729,
+    input: 9913,
     output: 29,
     cached: 2816,
     cacheCreation: null,
@@ -260,11 +263,62 @@ check("Grok _x.ai/session_notification turn_completed.usage", () => {
       },
     },
   });
-  assert.equal(tokens?.input, 12826);
+  assert.equal(tokens?.input, 10010);
   assert.equal(tokens?.output, 37);
   assert.equal(tokens?.cached, 2816);
   assert.equal(tokens?.reasoning, 32);
   assert.equal(tokens?.total, 12863);
+});
+
+check("Grok nested _meta.usage session snapshot is not this turn", () => {
+  // Live capture (grok-build, session-1793715015013): sibling fields are this
+  // turn; `_meta.usage` is the whole-dialog running total (numTurns=234).
+  const tokens = extractTurnTokens({
+    result: {
+      stopReason: "end_turn",
+      _meta: {
+        totalTokens: 119936,
+        modelId: "source-eb6e68d5c47ab23e/deepseek-v4.1-flash",
+        inputTokens: 119291,
+        outputTokens: 645,
+        cachedReadTokens: 119168,
+        reasoningTokens: 0,
+        usage: {
+          inputTokens: 25361233,
+          outputTokens: 297922,
+          totalTokens: 25659155,
+          cachedReadTokens: 25164672,
+          cacheCreationTokens: 0,
+          reasoningTokens: 0,
+          modelCalls: 234,
+          numTurns: 234,
+        },
+      },
+    },
+  });
+  assert.equal(tokens?.output, 645, "must not take the 297922 session total");
+  assert.equal(tokens?.cached, 119168);
+  assert.equal(tokens?.total, 119936);
+  assert.equal(tokens?.input, 123, "Grok input is fresh: 119291 − 119168 cache");
+});
+
+check("OpenCode PromptResponse.usage stays a per-turn split", () => {
+  const tokens = extractTurnTokens({
+    result: {
+      stopReason: "end_turn",
+      usage: {
+        inputTokens: 5376,
+        outputTokens: 527,
+        totalTokens: 152452,
+        thoughtTokens: 2677,
+        cachedReadTokens: 143872,
+      },
+    },
+  });
+  assert.equal(tokens?.input, 5376);
+  assert.equal(tokens?.output, 527);
+  assert.equal(tokens?.cached, 143872);
+  assert.equal(tokens?.reasoning, 2677);
 });
 
 check("usage_update stays authoritative for contextUsed", () => {
@@ -450,8 +504,90 @@ check("buildTurnStats derives TTFT and both speeds from local timings", () => {
   });
   assert.equal(stats.ttftMs, 1200, "TTFT = first chunk − send");
   assert.equal(stats.durationMs, 5000, "generation window = end − first chunk");
+  assert.equal(tokens.input, 9913, "Grok input is fresh (cache netted out)");
   assert.ok(Math.abs(stats.outputTps! - 5.8) < 0.01, `29 out / 5s ≈ 5.8 tok/s, got ${stats.outputTps}`);
-  assert.ok(Math.abs(stats.ppTps! - 10607.5) < 0.01, `12729 in / 1.2s, got ${stats.ppTps}`);
+  assert.ok(Math.abs(stats.ppTps! - 10607.5) < 0.01, `billed prompt 12729 / 1.2s, got ${stats.ppTps}`);
+});
+
+check("OpenCode thoughtTokens count toward tok/s, Grok reasoning already in output does not", () => {
+  assert.equal(
+    generatedOutputTokens({
+      input: 5376,
+      output: 527,
+      cached: 143872,
+      cacheCreation: null,
+      reasoning: 2677,
+      total: 152452,
+    }),
+    3204,
+  );
+  assert.equal(
+    generatedOutputTokens({
+      input: 10010,
+      output: 37,
+      cached: 2816,
+      cacheCreation: null,
+      reasoning: 32,
+      total: 12863,
+    }),
+    37,
+  );
+});
+
+check("buildTurnStats pairs output with decodeMs, not the tool-wait wall", () => {
+  const stats = buildTurnStats(
+    { input: 100, output: 100, cached: 0, cacheCreation: null, reasoning: null, total: 200 },
+    {
+      sentAt: 0,
+      firstChunkAt: 1_000,
+      endedAt: 11_000,
+      decodeMs: 2_000,
+    }
+  );
+  assert.equal(stats.durationMs, 10_000, "wall clock still first-chunk → end");
+  assert.ok(Math.abs(stats.outputTps! - 50) < 0.01, `100 out / 2s decode, got ${stats.outputTps}`);
+});
+
+check("measureTurnDecodeMs skips tool waits between steps", () => {
+  const sid = "s1";
+  const events: SessionEvent[] = [
+    { type: "user_message", sessionId: sid, text: "go", createdAt: "2026-01-01T00:00:00.000Z" },
+    { type: "thought", sessionId: sid, text: "…", createdAt: "2026-01-01T00:00:01.000Z" },
+    {
+      type: "tool_call",
+      sessionId: sid,
+      text: "read",
+      createdAt: "2026-01-01T00:00:02.000Z",
+      completedAt: "2026-01-01T00:00:12.000Z",
+    },
+    { type: "assistant_message", sessionId: sid, text: "done", createdAt: "2026-01-01T00:00:12.000Z" },
+  ];
+  const endedAt = Date.parse("2026-01-01T00:00:15.000Z");
+  assert.equal(measureTurnDecodeMs(events, sid, endedAt), 4_000);
+});
+
+check("tokenBuckets treats input as fresh and keeps cache write", () => {
+  const grok = tokenBuckets({
+    input: 123,
+    output: 645,
+    cached: 119168,
+    cacheCreation: 0,
+    reasoning: 0,
+    total: 119936,
+  });
+  assert.equal(grok.uncachedInputTokens, 123);
+  assert.equal(grok.cacheReadTokens, 119168);
+  assert.equal(grok.outputTokens, 645);
+  const oc = tokenBuckets({
+    input: 2,
+    output: 4,
+    cached: 0,
+    cacheCreation: 38061,
+    reasoning: null,
+    total: 38067,
+  });
+  assert.equal(oc.uncachedInputTokens, 2);
+  assert.equal(oc.cacheWriteTokens, 38061);
 });
 
 check("buildTurnStats keeps speeds null when timings are missing", () => {

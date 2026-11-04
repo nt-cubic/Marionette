@@ -159,11 +159,11 @@ export type TurnStats = {
   total?: number | null;
   /** Send → first streamed chunk (perceived TTFT), ms. */
   ttftMs?: number | null;
-  /** First chunk → turn end, ms. */
+  /** First chunk → turn end, ms (wall clock; includes tool waits). */
   durationMs?: number | null;
-  /** Output tokens / generation window (tok/s, includes tool-call time). */
+  /** Output tokens / generation window (tok/s; tool waits excluded when known). */
   outputTps?: number | null;
-  /** Input tokens / TTFT — apparent prompt-processing speed (tok/s). */
+  /** Billed prompt tokens / TTFT — apparent prompt-processing speed (tok/s). */
   ppTps?: number | null;
 };
 

@@ -22,7 +22,7 @@
 
 import { t } from "./i18n";
 import type { SessionEvent, TurnStats } from "./types";
-import type { TurnTokens } from "./usage";
+import { generatedOutputTokens, type TurnTokens } from "./usage";
 
 /** Disjoint token buckets, matching how providers bill a prompt. */
 export type TokenBuckets = {
@@ -31,9 +31,9 @@ export type TokenBuckets = {
   /** Prompt tokens served from the provider's cache. */
   cacheReadTokens: number;
   /**
-   * Prompt tokens spent populating the cache. No agent Marionette talks to
-   * reports this separately (Grok folds it into the billed input), so it stays
-   * 0 and its row never renders — a figure we cannot prove is not shown.
+   * Prompt tokens spent populating the cache. OpenCode/Claude report this;
+   * Grok folds it into the billed prompt and it stays 0 when the agent
+   * doesn't split it out.
    */
   cacheWriteTokens: number;
   outputTokens: number;
@@ -99,26 +99,18 @@ function nonNegative(value: number): number {
 }
 
 /**
- * Grok reports each model call with `input_tokens` already net of nothing —
- * its billed prompt is `input + cache_read + cache_creation`, and the turn
- * accumulator folds all three into `input`. Every other adapter follows the
- * ACP/Anthropic shape, where `input` is the uncached remainder.
- */
-function reportsBilledInput(agentId: string | null | undefined): boolean {
-  return agentId === "grok" || agentId === "grok-build";
-}
-
-/**
  * Split one turn's reported tokens into disjoint prompt buckets.
  *
- * `total` settles the shape when present (total − output is the billed prompt),
- * which keeps a mislabelled adapter from silently skewing the cache-hit share;
- * otherwise the agent's convention decides. Cache read is clamped to the billed
- * prompt so adapter noise cannot produce a share above 100%.
+ * `input` is fresh-only for every agent (Grok's billed-including-cache shape is
+ * netted in `extractTurnTokens`). `total` settles the billed prompt when
+ * present (total − output), which keeps a mislabelled adapter from silently
+ * skewing the cache-hit share. Cache read/write are clamped to that prompt so
+ * adapter noise cannot produce a share above 100%.
  */
-export function tokenBuckets(tokens: TurnTokens, agentId?: string | null): TokenBuckets {
+export function tokenBuckets(tokens: TurnTokens): TokenBuckets {
   const output = nonNegative(tokens.output ?? 0);
   const cacheRead = nonNegative(tokens.cached ?? 0);
+  const cacheWrite = nonNegative(tokens.cacheCreation ?? 0);
   const input = tokens.input;
   let billedPrompt: number | null = null;
   if (tokens.total != null && tokens.output != null) {
@@ -126,16 +118,22 @@ export function tokenBuckets(tokens: TurnTokens, agentId?: string | null): Token
     if (Number.isFinite(derived) && derived >= 0) billedPrompt = derived;
   }
   if (billedPrompt == null && input != null) {
-    billedPrompt = reportsBilledInput(agentId) ? input : input + cacheRead;
+    billedPrompt = input + cacheRead + cacheWrite;
   }
   if (billedPrompt == null) {
-    return { uncachedInputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: output };
+    return {
+      uncachedInputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: cacheWrite,
+      outputTokens: output,
+    };
   }
   const read = Math.min(cacheRead, Math.max(0, billedPrompt));
+  const write = Math.min(cacheWrite, Math.max(0, billedPrompt - read));
   return {
-    uncachedInputTokens: Math.max(0, billedPrompt - read),
+    uncachedInputTokens: Math.max(0, billedPrompt - read - write),
     cacheReadTokens: read,
-    cacheWriteTokens: 0,
+    cacheWriteTokens: write,
     outputTokens: output,
   };
 }
@@ -219,8 +217,8 @@ type OpenStep = {
  *   Grok reports usage once per model call, so a multi-step turn has real
  *   numbers before it ends; the estimate then only has to cover the step still
  *   streaming. Every other agent reports at turn end, so this stays null.
- * @param options.agentId - agent owning the dialog; decides how a reported
- *   `input` is read when no card has carried an id yet.
+ * @param options.agentId - agent owning the dialog; kept for call-site
+ *   compatibility (token buckets no longer branch on it).
  * @returns totals; all zero for a dialog that never ran a step.
  */
 export function foldSessionStats(
@@ -245,7 +243,6 @@ export function foldSessionStats(
   let turnSteps = 0;
   let turnDecodeMs = 0;
   let turnTokens: TurnTokens | null = null;
-  let turnAgentId: string | null = options?.agentId ?? null;
   /** End of the turn's last card, when the turn stamped one. */
   let lastCardEndMs: number | null = null;
   /** Tool that has not reported a terminal status yet. */
@@ -281,7 +278,7 @@ export function foldSessionStats(
     if (turnSteps > 0 || liveCounts != null) {
       totals.turns += 1;
       const reported = turnTokens ?? liveCounts;
-      const buckets = reported != null ? tokenBuckets(reported, turnAgentId) : null;
+      const buckets = reported != null ? tokenBuckets(reported) : null;
       if (buckets) {
         totals.uncachedInputTokens += buckets.uncachedInputTokens;
         totals.cacheReadTokens += buckets.cacheReadTokens;
@@ -291,10 +288,13 @@ export function foldSessionStats(
       // Only pair tokens with decode time we actually measured, so TPS stays a
       // ratio of two real numbers instead of a guess. A running turn has no
       // billed count yet, so its streamed estimate stands in for one.
-      const output = (buckets?.outputTokens ?? 0) + liveTokens;
-      if (turnDecodeMs > 0 && output > 0) {
+      const billedGenerated = reported
+        ? generatedOutputTokens(reported)
+        : buckets?.outputTokens ?? 0;
+      const generated = billedGenerated + liveTokens;
+      if (turnDecodeMs > 0 && generated > 0) {
         totals.decodeMs += turnDecodeMs;
-        totals.decodeTokens += buckets?.outputTokens ?? 0;
+        totals.decodeTokens += billedGenerated;
         totals.liveOutputTokens += liveTokens;
       }
     }
@@ -302,7 +302,6 @@ export function foldSessionStats(
     turnSteps = 0;
     turnDecodeMs = 0;
     turnTokens = null;
-    turnAgentId = options?.agentId ?? null;
     lastCardEndMs = null;
     step = null;
     stepText = "";
@@ -338,7 +337,6 @@ export function foldSessionStats(
       // their own, so the estimate has to cover them or the rate reads low.
       turnText += event.text ?? "";
       if (event.type === "assistant_message") {
-        if (event.agentId) turnAgentId = event.agentId;
         if (event.turnStats) turnTokens = statsToTokens(event.turnStats);
       }
       const ended = timeMs(event.endedAt);
@@ -389,6 +387,62 @@ export function foldSessionStats(
   }
   closeTurn(options?.settled === true, liveTokens, liveCounts);
   return totals;
+}
+
+/**
+ * Generation window of the dialog's last turn (first token → step end, tool
+ * waits excluded). Used to pair billed output with decode time for tok/s —
+ * wall-clock first-chunk → turn end includes every tool wait and reads as a
+ * few tok/s on a long tool loop.
+ *
+ * `endedAt` closes the last step: at `turn/complete` the tail card has not
+ * been stamped yet, so the fold's `endedAt` on that card is still missing.
+ */
+export function measureTurnDecodeMs(
+  events: readonly SessionEvent[],
+  sessionId: string,
+  endedAt: number,
+): number | null {
+  let lastUserIdx = -1;
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (event && event.sessionId === sessionId && event.type === "user_message") {
+      lastUserIdx = i;
+      break;
+    }
+  }
+  if (lastUserIdx < 0) return null;
+
+  let decodeMs = 0;
+  let stepFirstChunkMs: number | null = null;
+  let lastCardEndMs: number | null = null;
+
+  const closeStep = (endMs: number | null): void => {
+    if (stepFirstChunkMs == null) return;
+    const first = stepFirstChunkMs;
+    stepFirstChunkMs = null;
+    if (endMs == null) return;
+    decodeMs += Math.max(0, endMs - first);
+  };
+
+  for (let i = lastUserIdx + 1; i < events.length; i += 1) {
+    const event = events[i];
+    if (!event || event.sessionId !== sessionId) continue;
+    if (event.type === "user_message") break;
+
+    if (event.type === "assistant_message" || event.type === "thought") {
+      if (stepFirstChunkMs == null) stepFirstChunkMs = timeMs(event.createdAt);
+      const ended = timeMs(event.endedAt);
+      if (ended != null) lastCardEndMs = ended;
+      continue;
+    }
+
+    if (event.type === "tool_call") {
+      closeStep(timeMs(event.createdAt));
+    }
+  }
+  closeStep(lastCardEndMs ?? endedAt);
+  return decodeMs > 0 ? decodeMs : null;
 }
 
 /**
