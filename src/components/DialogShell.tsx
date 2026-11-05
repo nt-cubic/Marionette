@@ -83,6 +83,8 @@ export function DialogShell({
     closingRef.current = true;
     if (prefersReducedMotion()) {
       onCloseRef.current();
+      // A refused close (busy guard) must leave the dialog closable again.
+      if (mountedRef.current) closingRef.current = false;
       return;
     }
     setClosing(true);
