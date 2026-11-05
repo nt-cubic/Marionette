@@ -62,6 +62,14 @@ export type SessionStats = TokenBuckets & {
   /** Output tokens of the same turns — the TPS numerator. */
   decodeTokens: number;
   /**
+   * Prompt tokens the model actually had to process (fresh input + cache
+   * writes; cache reads are served, not processed) over turns that also have a
+   * first-token reading — the prefill-speed numerator.
+   */
+  prefillTokens: number;
+  /** Summed first-token latency of those same turns' steps, ms — the denominator. */
+  prefillMs: number;
+  /**
    * Output tokens of the step still streaming, estimated from its text. ACP
    * reports token counts only when a call ends, so this is the one figure here
    * that is a guess; the UI marks it `~` and the provider's own count replaces
@@ -80,6 +88,8 @@ export function emptySessionStats(): SessionStats {
     ttftSteps: 0,
     decodeMs: 0,
     decodeTokens: 0,
+    prefillTokens: 0,
+    prefillMs: 0,
     liveOutputTokens: 0,
     uncachedInputTokens: 0,
     cacheReadTokens: 0,
@@ -242,6 +252,8 @@ export function foldSessionStats(
   let stepText = "";
   let turnSteps = 0;
   let turnDecodeMs = 0;
+  /** First-token latency summed over this turn's steps. */
+  let turnTtftMs = 0;
   let turnTokens: TurnTokens | null = null;
   /** End of the turn's last card, when the turn stamped one. */
   let lastCardEndMs: number | null = null;
@@ -259,8 +271,10 @@ export function foldSessionStats(
     if (open.startMs != null) totals.llmMs += Math.max(0, endMs - open.startMs);
     if (open.firstChunkMs != null) {
       if (open.startMs != null) {
-        totals.ttftMs += Math.max(0, open.firstChunkMs - open.startMs);
+        const ttft = Math.max(0, open.firstChunkMs - open.startMs);
+        totals.ttftMs += ttft;
         totals.ttftSteps += 1;
+        turnTtftMs += ttft;
       }
       turnDecodeMs += Math.max(0, endMs - open.firstChunkMs);
     }
@@ -284,6 +298,13 @@ export function foldSessionStats(
         totals.cacheReadTokens += buckets.cacheReadTokens;
         totals.cacheWriteTokens += buckets.cacheWriteTokens;
         totals.outputTokens += buckets.outputTokens;
+        // Prefill pairs the turn's processed prompt with the time its model
+        // calls spent before the first token. Only turns with both count.
+        const processed = buckets.uncachedInputTokens + buckets.cacheWriteTokens;
+        if (processed > 0 && turnTtftMs > 0) {
+          totals.prefillTokens += processed;
+          totals.prefillMs += turnTtftMs;
+        }
       }
       // Only pair tokens with decode time we actually measured, so TPS stays a
       // ratio of two real numbers instead of a guess. A running turn has no
@@ -301,6 +322,7 @@ export function foldSessionStats(
     inTurn = false;
     turnSteps = 0;
     turnDecodeMs = 0;
+    turnTtftMs = 0;
     turnTokens = null;
     lastCardEndMs = null;
     step = null;
@@ -473,6 +495,19 @@ export function outputTokensPerSecond(stats: SessionStats): number | null {
   const tokens = stats.decodeTokens + stats.liveOutputTokens;
   if (stats.decodeMs <= 0 || tokens <= 0) return null;
   return tokens / (stats.decodeMs / 1000);
+}
+
+/**
+ * Prefill (prompt-processing) speed in tok/s. ACP exposes no prefill timer, so
+ * this is derived: processed prompt tokens (fresh input + cache writes) of each
+ * turn ÷ the first-token latency of that turn's model calls, summed over the
+ * session. A multi-step turn reports one prompt total across all its calls, so
+ * the time side is likewise the sum over those calls. null until a turn has
+ * both numbers — never guessed.
+ */
+export function prefillTokensPerSecond(stats: SessionStats): number | null {
+  if (stats.prefillMs <= 0 || stats.prefillTokens <= 0) return null;
+  return stats.prefillTokens / (stats.prefillMs / 1000);
 }
 
 /** Average first-token latency; null until a step recorded one. */
