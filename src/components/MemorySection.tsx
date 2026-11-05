@@ -138,8 +138,8 @@ export const MemorySection = memo(function MemorySection({
           <button
             className="pill-action pill-action--icon pill-action--sm"
             type="button"
-            title="Refresh memory"
-            aria-label="Refresh memory"
+            title={t("rail.memoryRefresh")}
+            aria-label={t("rail.memoryRefresh")}
             onClick={() => void refresh()}
           >
             <RefreshCw size={11} />
@@ -156,7 +156,7 @@ export const MemorySection = memo(function MemorySection({
       {entries.length === 0 ? (
         <>
           <p className="context-card__empty" style={{ marginTop: 8 }}>
-            No agent memory files found yet.
+            {t("rail.memoryEmpty")}
           </p>
           {probed && probed.length > 0 ? (
             <ul
@@ -225,7 +225,7 @@ export const MemorySection = memo(function MemorySection({
             className="pill-action"
             type="button"
             disabled={draftBusy}
-            title="Distill lasting notes from this session"
+            title={t("rail.memoryDistillTitle")}
             onClick={() => void handleDistill()}
           >
             <Sparkles size={11} />
@@ -340,8 +340,8 @@ function MemoryRow({
         <button
           className="pill-action pill-action--icon pill-action--sm"
           type="button"
-          title="Edit"
-          aria-label={`Edit memory ${entry.title}`}
+          title={t("rail.memoryEdit")}
+          aria-label={t("rail.memoryEditNamed", { name: entry.title })}
           onClick={onEdit}
         >
           <Pencil size={11} />
@@ -349,8 +349,8 @@ function MemoryRow({
         <button
           className="pill-action pill-action--icon pill-action--sm"
           type="button"
-          title="Delete"
-          aria-label={`Delete memory ${entry.title}`}
+          title={t("rail.memoryDelete")}
+          aria-label={t("rail.memoryDeleteNamed", { name: entry.title })}
           disabled={busy}
           onClick={onDelete}
         >
