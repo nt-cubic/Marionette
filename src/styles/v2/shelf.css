@@ -360,3 +360,22 @@
     transition: none;
   }
 }
+
+/* Review fixes: the open project carries no tint; the footer's model-sharing entry
+   takes the free width and truncates instead of running into the icon row. */
+.project-tree .project-row.is-active {
+  background: transparent;
+}
+.sidebar-dock .engine-entry.engine-entry {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.sidebar-dock .engine-entry .engine-entry__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-dock .sidebar-footer {
+  flex: none;
+}
