@@ -708,3 +708,56 @@
     grid-template-columns: 200px minmax(0, 1fr);
   }
 }
+
+/* Narrow diff page: nothing wraps into a column of single characters. Sizes key off the
+   page itself (split panes and narrow windows), not the viewport. */
+.diff-page {
+  container-type: inline-size;
+}
+
+.diff-page__scope,
+.diff-page__text-btn,
+.diff-page__summary,
+.diff-page__file-name {
+  flex: none;
+  white-space: nowrap;
+}
+
+.diff-page__summary {
+  flex: 0 1 auto;
+}
+
+@container (max-width: 720px) {
+  .diff-page__btn-label,
+  .diff-page__branch,
+  .diff-page__file-dir {
+    display: none;
+  }
+
+  .diff-page__text-btn {
+    width: 28px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .diff-page__file-name {
+    margin-right: auto;
+  }
+
+  .diff-page__body {
+    grid-template-columns: 200px minmax(0, 1fr);
+  }
+}
+
+@container (max-width: 560px) {
+  .diff-page__body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .diff-page__files {
+    max-height: 168px;
+    border-right: 0;
+    border-bottom: 1px solid var(--hairline);
+  }
+}
