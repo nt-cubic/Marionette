@@ -59,4 +59,6 @@ export const en = {
   "rail.handoffTarget": "Target: {agent}",
   "rail.handoffHint": "One file per conversation under .marionette/handoff/, prefilled in the composer (not auto-sent).",
   "rail.handoffEmpty": "Switching agent writes .marionette/handoff/<session>.md and prefills the composer.",
+  "rail.shareRescanTitle": "Rescan agent configs and skill folders",
+  "rail.shareRescanAria": "Rescan project context",
 } satisfies Record<keyof typeof zh, string>;

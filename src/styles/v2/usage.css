@@ -1,1 +1,500 @@
-/* UI v2 overrides: usage. Loaded after every legacy sheet (src/main.tsx); see docs/ui-language.md. */
+/* UI v2 overrides: usage. Loaded after every legacy sheet (src/main.tsx); see docs/ui-language.md.
+ * Scope: everything under .usage-analysis (page / dock page / detached dialog share it)
+ * plus the .usage-heat daily grid (no legacy sheet exists for it). Tokens only. */
+
+/* ── base type ─────────────────────────────────────────────────────── */
+.usage-analysis {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* ── chips: ranges / day-week / model-agent / export ───────────────── */
+.usage-analysis .composer-mode-chip {
+  --tone: var(--text-muted);
+  color: var(--text-muted);
+  border-color: transparent;
+  background: transparent;
+  border-radius: var(--radius-sm);
+}
+
+.usage-analysis .composer-mode-chip:hover {
+  color: var(--text);
+  border-color: transparent;
+  background: var(--panel-soft);
+}
+
+.usage-analysis .composer-mode-chip.is-active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* ── section heads ─────────────────────────────────────────────────── */
+.usage-analysis .usage-analysis__kicker {
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.usage-analysis .usage-analysis__sub {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* ── hero card: number first, faint noun centred below ─────────────── */
+.usage-analysis__hero-card,
+.usage-analysis__strip,
+.usage-analysis__panel,
+.usage-analysis__empty {
+  border-radius: var(--radius);
+  box-shadow: none;
+}
+
+.usage-analysis .usage-analysis__hero-main,
+.usage-analysis .usage-analysis__hero-cache {
+  padding: 10px;
+}
+
+.usage-analysis .usage-analysis__cell {
+  padding: 10px;
+}
+
+.usage-analysis__hero-main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.usage-analysis__hero-main .usage-analysis__hero {
+  order: 1;
+  justify-content: center;
+  margin-top: 0;
+}
+
+.usage-analysis__hero-main .usage-analysis__cell-label {
+  order: 2;
+  margin-top: 2px;
+}
+
+.usage-analysis__hero-main .usage-analysis__cost-inline {
+  order: 3;
+}
+
+.usage-analysis__hero-main .usage-analysis__cost-note {
+  order: 4;
+}
+
+.usage-analysis .usage-analysis__total {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-strong);
+}
+
+.usage-analysis .usage-analysis__cell-value {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-strong);
+}
+
+/* delta is a chip, status = text colour only (stays neutral) */
+.usage-analysis .usage-analysis__delta {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-analysis .usage-analysis__cost-inline {
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-analysis .usage-analysis__cost-note {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* ring meter: accent stroke on a soft track */
+.usage-analysis .usage-ring__svg circle:nth-of-type(1) {
+  stroke: var(--panel-soft);
+}
+
+.usage-analysis .usage-ring__value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-analysis .usage-ring__caption {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* ── stat strip: hairline separators, centred 字 blocks ────────────── */
+.usage-analysis__strip .usage-analysis__cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.usage-analysis__strip .usage-analysis__cell-value {
+  order: 1;
+  margin-top: 0;
+}
+
+.usage-analysis__strip .usage-analysis__cell-label {
+  order: 2;
+  margin-top: 2px;
+}
+
+.usage-analysis__strip .usage-analysis__cell-hint {
+  order: 3;
+}
+
+.usage-analysis .usage-analysis__cell:nth-child(2n) {
+  border-left: 1px solid var(--hairline);
+}
+
+.usage-analysis .usage-analysis__cell:nth-child(n + 3) {
+  border-top: 1px solid var(--hairline);
+}
+
+@container usage (min-width: 780px) {
+  .usage-analysis .usage-analysis__cell:nth-child(n) {
+    border-top: 0;
+    border-left: 1px solid var(--hairline);
+  }
+
+  .usage-analysis .usage-analysis__cell:first-child {
+    border-left: 0;
+  }
+
+  .usage-analysis .usage-analysis__hero-card.has-cache .usage-analysis__hero-cache {
+    border-top: 0;
+    border-left: 1px solid var(--hairline);
+  }
+}
+
+.usage-analysis .usage-analysis__hero-cache {
+  border-top-color: var(--hairline);
+}
+
+/* ── empty state ───────────────────────────────────────────────────── */
+.usage-analysis .usage-analysis__empty p:first-child {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+/* ── ranked lists: 28px hairline rows, 4px bars, neutral names ─────── */
+.usage-analysis .usage-rank {
+  gap: 0;
+}
+
+.usage-analysis .usage-rank__item {
+  padding: 2px 0;
+}
+
+.usage-analysis .usage-rank__item + .usage-rank__item {
+  border-top: 1px solid var(--hairline);
+}
+
+.usage-analysis .usage-rank__line {
+  min-height: 16px;
+}
+
+.usage-analysis .usage-rank__name {
+  color: var(--text);
+}
+
+.usage-analysis .usage-rank__n {
+  font-size: 11px;
+}
+
+.usage-analysis .usage-rank__value {
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-analysis .usage-rank__pct {
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-analysis .usage-rank__track {
+  height: 4px;
+  margin-top: 2px;
+  border-radius: 1px;
+  background: var(--panel-soft);
+}
+
+.usage-analysis .usage-rank__track > i {
+  border-radius: 1px;
+}
+
+/* ── hour × weekday rhythm ─────────────────────────────────────────── */
+.usage-analysis .usage-rhythm__hours,
+.usage-analysis .usage-rhythm__wd,
+.usage-analysis .usage-rhythm__legend {
+  font-size: 11px;
+}
+
+.usage-analysis .usage-rhythm__wd {
+  line-height: 14px;
+}
+
+.usage-analysis .usage-rhythm__swatch {
+  border-radius: 2px;
+}
+
+.usage-analysis .usage-rhythm__ring {
+  outline-color: var(--accent);
+}
+
+/* ── popovers (shared tooltip) ─────────────────────────────────────── */
+.usage-analysis .usage-tip {
+  background: var(--panel-raised);
+  border-color: var(--border-strong);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+.usage-analysis .usage-tip__value,
+.usage-analysis .usage-tip__row span:last-child {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ══ daily heatmap (.usage-heat) — no legacy sheet; full styles ═════ */
+.usage-heat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.usage-heat__summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.usage-heat__total {
+  font-weight: 600;
+  color: var(--text-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-updated {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-heat__scroller {
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.usage-heat__canvas {
+  /* width comes inline (weeks * pitch); columns = labels | plot */
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  align-items: start;
+}
+
+.usage-heat__months {
+  grid-column: 1 / -1;
+  position: relative;
+  height: 12px;
+  margin-bottom: 4px;
+}
+
+.usage-heat__month {
+  position: absolute;
+  top: 0;
+  left: 0;
+  font-size: 11px;
+  line-height: 12px;
+  color: var(--text-faint);
+}
+
+.usage-heat__row--labels {
+  grid-column: 1;
+  grid-row: 2;
+  display: grid;
+  grid-auto-flow: row;
+  grid-auto-rows: 11px;
+  row-gap: 2px;
+  margin-right: 4px;
+}
+
+.usage-heat__weekday {
+  font-size: 10px;
+  line-height: 11px;
+  color: var(--text-faint);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.usage-heat__plot {
+  grid-column: 2;
+  grid-row: 2;
+  position: relative;
+}
+
+.usage-heat__row {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 11px;
+  gap: 2px;
+}
+
+.usage-heat__row + .usage-heat__row {
+  margin-top: 2px;
+}
+
+.usage-heat__cell {
+  width: 11px;
+  height: 11px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--panel-soft) 70%, transparent);
+}
+
+.usage-heat__cell[data-lv="1"] { background: var(--u-seq-1, var(--accent-soft)); }
+.usage-heat__cell[data-lv="2"] { background: var(--u-seq-2, var(--accent-soft)); }
+.usage-heat__cell[data-lv="3"] { background: var(--u-seq-4, var(--accent-soft)); }
+.usage-heat__cell[data-lv="4"] { background: var(--u-seq-6, var(--accent)); }
+
+.usage-heat__cell:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+  z-index: 1;
+}
+
+/* level filter: days that do not match recede */
+.usage-heat__grid[data-highlight="0"] .usage-heat__cell:not([data-lv="0"]):not([data-empty]) { opacity: 0.25; }
+.usage-heat__grid[data-highlight="1"] .usage-heat__cell:not([data-lv="1"]):not([data-empty]) { opacity: 0.25; }
+.usage-heat__grid[data-highlight="2"] .usage-heat__cell:not([data-lv="2"]):not([data-empty]) { opacity: 0.25; }
+.usage-heat__grid[data-highlight="3"] .usage-heat__cell:not([data-lv="3"]):not([data-empty]) { opacity: 0.25; }
+.usage-heat__grid[data-highlight="4"] .usage-heat__cell:not([data-lv="4"]):not([data-empty]) { opacity: 0.25; }
+
+/* one absolutely positioned selection ring, transform-driven */
+.usage-heat__ring {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 11px;
+  height: 11px;
+  border-radius: 2px;
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+  pointer-events: none;
+  transition: transform var(--dur-fast, 120ms) var(--ease-out, ease-out);
+}
+
+/* shared tooltip, opacity-driven */
+.usage-heat__tip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: -30px 0 0 8px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  pointer-events: none;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity var(--dur-fast, 120ms) var(--ease-out, ease-out);
+}
+
+.usage-heat__tip[data-open] {
+  opacity: 1;
+}
+
+.usage-heat__tip-primary {
+  font-weight: 600;
+  color: var(--text-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-heat__tip-secondary {
+  color: var(--text-faint);
+}
+
+/* legend = level filter */
+.usage-heat__legend {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.usage-heat__sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.usage-heat__caption {
+  margin-right: auto;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.usage-heat__scale {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.usage-heat__legend-text {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.usage-heat__swatch {
+  width: 10px;
+  height: 10px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--panel-soft) 70%, transparent);
+  cursor: pointer;
+}
+
+.usage-heat__swatch[data-lv="1"] { background: var(--u-seq-1, var(--accent-soft)); }
+.usage-heat__swatch[data-lv="2"] { background: var(--u-seq-2, var(--accent-soft)); }
+.usage-heat__swatch[data-lv="3"] { background: var(--u-seq-4, var(--accent-soft)); }
+.usage-heat__swatch[data-lv="4"] { background: var(--u-seq-6, var(--accent)); }
+
+.usage-heat__swatch[aria-pressed="true"] {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .usage-heat__ring,
+  .usage-heat__tip {
+    transition: none;
+  }
+}

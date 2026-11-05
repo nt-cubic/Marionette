@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { isTauriRuntime, readImageDataUrl } from "../lib/api";
+import { useT } from "../lib/i18n";
 import type { ImageAttachment, ImageMark } from "../lib/imageAttachments";
 import { ImageLightbox } from "./ImageLightbox";
 
@@ -59,11 +60,12 @@ function UserImageThumb({ attachment }: { attachment: ImageAttachment }) {
   const [dataUrl, setDataUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
+  const t = useT();
 
   useEffect(() => {
     let cancelled = false;
     if (!isTauriRuntime()) {
-      setError("preview unavailable");
+      setError(t("v2transcript.previewUnavailable"));
       return;
     }
     void readImageDataUrl(attachment.path)

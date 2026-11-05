@@ -1,1 +1,411 @@
 /* UI v2 overrides: composer. Loaded after every legacy sheet (src/main.tsx); see docs/ui-language.md. */
+
+/* ── Surface: full width, flush, only a 1px top border ──────────────── */
+.composer {
+  background: var(--composer-bg);
+}
+
+.composer__field {
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--composer-bg);
+}
+
+.composer textarea {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-strong);
+}
+
+.composer textarea::placeholder {
+  color: var(--text-faint);
+}
+
+/* ── Expand button: 24x22 quiet icon button, top-right ──────────────── */
+.composer .composer-expand {
+  top: 7px;
+  right: 8px;
+  width: 24px;
+  height: 22px;
+  border: 0;
+  color: var(--text-muted);
+  background: transparent;
+}
+
+.composer .composer-expand:hover {
+  border: 0;
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+.composer .composer-expand[aria-pressed="true"] {
+  border: 0;
+  color: var(--accent);
+  background: transparent;
+}
+
+/* ── Toolbar chips: 22px, transparent, hover fill ───────────────────── */
+.composer .composer-tool,
+.composer .composer-select,
+.composer .composer-dock-hub,
+.composer .composer-mode-chip {
+  height: 22px;
+  border-color: transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+}
+
+.composer .composer-tool:hover,
+.composer .composer-select:hover,
+.composer .composer-dock-hub:hover {
+  color: var(--text);
+  border-color: transparent;
+  background: var(--panel-soft);
+}
+
+.composer .composer-select[aria-expanded="true"],
+.composer .composer-dock-hub[aria-expanded="true"] {
+  color: var(--text);
+  border-color: transparent;
+  background: var(--panel-soft);
+}
+
+/* Attach: 24px icon button (Plus 14 from TSX) */
+.composer .composer-tool {
+  width: 24px;
+  height: 22px;
+  justify-content: center;
+  padding: 0;
+  color: var(--text-muted);
+}
+
+/* Mode chip shows the active mode: accent chip style */
+.composer .composer-mode-chip {
+  --tone: var(--accent);
+}
+
+/* Permission / always-approve chips are statuses, text colour only */
+.composer .composer-mode-chip--perm,
+.composer .composer-mode-chip--perm-readonly,
+.composer .composer-mode-chip--always-off {
+  --tone: var(--text-faint);
+  color: var(--text-muted);
+  border-color: transparent;
+  background: transparent;
+}
+
+.composer .composer-mode-chip--perm:hover,
+.composer .composer-mode-chip--perm-readonly:hover,
+.composer .composer-mode-chip--always-off:hover {
+  color: var(--text);
+  border-color: transparent;
+  background: var(--panel-soft);
+}
+
+.composer .composer-mode-chip--perm-loose,
+.composer .composer-mode-chip--always-on {
+  --tone: var(--yellow);
+  color: var(--yellow);
+  border-color: transparent;
+  background: transparent;
+}
+
+.composer .composer-mode-chip--perm-loose:hover,
+.composer .composer-mode-chip--always-on:hover {
+  color: var(--yellow);
+  border-color: transparent;
+  background: var(--panel-soft);
+}
+
+/* Model / agent chip internals */
+.composer .composer-select__source {
+  color: var(--text-faint);
+}
+
+.composer .composer-select__name,
+.composer .composer-select__agent-label {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.composer .composer-select__effort {
+  margin-left: 6px;
+  padding: 0;
+  color: var(--text-muted);
+  background: transparent;
+  font-weight: 500;
+}
+
+.composer .composer-select__agent-version {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.composer .composer-select__agent-update {
+  display: inline-grid;
+  place-items: center;
+  color: var(--yellow);
+}
+
+/* ── Send button: 26x22, quiet until there is something to send ─────── */
+.composer .send-button {
+  min-width: 26px;
+  width: 26px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: var(--panel-raised);
+}
+
+.composer .send-button:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--panel-raised);
+}
+
+.composer .send-button.is-ready,
+.composer .send-button.is-ready:hover:not(:disabled) {
+  color: var(--bg);
+  border-color: transparent;
+  background: var(--accent);
+}
+
+.composer .send-button.is-interrupting {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 30%, transparent);
+  background: color-mix(in srgb, var(--red) 12%, var(--panel-raised));
+}
+
+.composer .send-button.is-interrupting:hover:not(:disabled) {
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 22%, var(--panel-raised));
+}
+
+.composer .send-button svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* ── Menus and popovers: v2 popover rules ───────────────────────────── */
+.composer .composer-menu {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+.composer .composer-menu button {
+  min-height: 28px;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.composer .composer-menu button:hover {
+  color: var(--text-strong);
+  background: var(--panel-soft);
+}
+
+/* Mode / permission rows: label left, check right */
+.composer .composer-menu--mode button,
+.composer .composer-menu--permission button {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+/* Selected row: check icon + strong text, no tinted fill */
+.composer .composer-menu button.is-selected {
+  color: var(--text-strong);
+  background: transparent;
+}
+
+.composer .composer-menu button.is-selected:hover {
+  background: var(--panel-soft);
+}
+
+.composer .composer-menu__row-check,
+.composer .composer-menu__model-check {
+  display: inline-grid;
+  flex: 0 0 14px;
+  place-items: center;
+  margin-left: auto;
+  color: var(--text-strong);
+}
+
+.composer .composer-menu__effort-inline .composer-menu__row-check {
+  flex: 0 0 auto;
+  margin-left: 4px;
+}
+
+/* Group labels: 11px/600, no shout */
+.composer .composer-menu__label {
+  padding: 6px 8px 4px;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.composer .composer-menu__divider {
+  margin: 4px 8px;
+  background: var(--hairline);
+}
+
+/* Search inside menus: a flush row, not a boxed field */
+.composer .composer-menu__search {
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-bottom: 1px solid var(--hairline);
+  border-radius: 0;
+  background: transparent;
+}
+
+.composer .composer-menu__search input {
+  font-size: 12.5px;
+}
+
+/* Slash / delegate dropdown: same popover treatment */
+.composer .composer-slash {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+.composer .composer-slash__hint {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.composer .composer-slash__item {
+  min-height: 28px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+}
+
+.composer .composer-slash__item.is-active {
+  color: var(--text-strong);
+  background: var(--panel-soft);
+}
+
+.composer .composer-slash__desc {
+  color: var(--text-faint);
+}
+
+/* ── Error / notice strip: one 28px text row, no box ────────────────── */
+.composer-error-strip {
+  gap: 10px;
+  align-items: center;
+  min-height: 28px;
+  margin-bottom: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.composer-error-strip__copy {
+  flex: 1 1 auto;
+  flex-direction: row;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.composer-error-strip__copy strong {
+  color: var(--red);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.composer-error-strip[data-kind="upgrade"] .composer-error-strip__copy strong,
+.composer-error-strip[data-kind="auth_transient"] .composer-error-strip__copy strong,
+.composer-error-strip[data-kind="timeout"] .composer-error-strip__copy strong,
+.composer-error-strip[data-kind="archived"] .composer-error-strip__copy strong,
+.composer-error-strip[data-kind="limit"] .composer-error-strip__copy strong {
+  color: var(--yellow);
+}
+
+.composer-error-strip__copy span {
+  overflow: hidden;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-error-strip__actions {
+  gap: 2px;
+}
+
+.composer-error-strip__actions button {
+  height: 22px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.composer-error-strip__actions button:hover {
+  border: 0;
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+.composer-error-strip__dismiss,
+.composer-error-strip__dismiss:hover {
+  color: var(--text-faint) !important;
+}
+
+/* Agent advisory strip: same 28px text row language */
+.session-notice {
+  gap: 10px;
+  align-items: center;
+  min-height: 28px;
+  margin-bottom: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.session-notice__copy strong {
+  color: var(--yellow);
+  font-weight: 500;
+}
+
+.session-notice--error .session-notice__copy strong {
+  color: var(--red);
+}
+
+.session-notice__copy span {
+  color: var(--text-muted);
+}
+
+.session-notice__dismiss {
+  height: 22px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.session-notice__dismiss:hover {
+  background: var(--panel-soft);
+}

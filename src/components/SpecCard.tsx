@@ -239,7 +239,7 @@ function PieChart({ series }: { series: { name?: string; points: SpecPoint[] }[]
   });
   return (
     <div className="md-spec__pie">
-      <svg className="md-spec__pie-svg" viewBox="0 0 100 100" role="img" aria-label="pie chart">
+      <svg className="md-spec__pie-svg" viewBox="0 0 100 100" role="img" aria-label={t("v2pages.specPieChart")}>
         {arcs.map((arc, index) => (
           <circle
             key={index}

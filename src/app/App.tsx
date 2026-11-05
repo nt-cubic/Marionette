@@ -9903,19 +9903,18 @@ export function App() {
           <form className="project-dialog" role="dialog" aria-modal="true" aria-labelledby="project-dialog-title" onSubmit={(event) => { event.preventDefault(); void handleAddProject(); }}>
             <div className="project-dialog__header">
               <div>
-                <strong id="project-dialog-title">Add project</strong>
-                <span>Open a local folder as a project</span>
+                <strong id="project-dialog-title">{t("v2dialogs.addProject")}</strong>
               </div>
               <button className="project-dialog__close" type="button" title="Close" aria-label="Close" onClick={() => setProjectDialogOpen(false)} disabled={projectAdding}><X size={14} /></button>
             </div>
             <label className="project-dialog__field">
-              <span>Folder path</span>
+              <span>{t("v2dialogs.folder")}</span>
               <div className="project-dialog__path-row">
                 <input
                   autoFocus
                   value={projectPath}
                   onChange={(event) => setProjectPath(event.target.value)}
-                  placeholder="D:\\Work\\MyProject"
+                  placeholder="D:\\Projects\\MyProject"
                   spellCheck={false}
                 />
                 <button
@@ -9934,15 +9933,16 @@ export function App() {
                     })();
                   }}
                 >
-                  <FolderOpen size={14} />
-                  <span>Browse</span>
+                  <FolderOpen size={13} strokeWidth={1.5} />
+                  <span>{t("v2dialogs.browse")}</span>
                 </button>
               </div>
             </label>
+            <p className="project-dialog__helper">{t("v2dialogs.folderHelper")}</p>
             {projectError && <p className="project-dialog__error">{projectError}</p>}
             <div className="project-dialog__actions">
-              <button type="button" className="project-dialog__cancel" onClick={() => setProjectDialogOpen(false)} disabled={projectAdding}>Cancel</button>
-              <button type="submit" className="project-dialog__submit" disabled={projectAdding}>{projectAdding ? "Adding..." : "Add project"}</button>
+              <button type="button" className="project-dialog__cancel" onClick={() => setProjectDialogOpen(false)} disabled={projectAdding}>{t("common.cancel")}</button>
+              <button type="submit" className="project-dialog__submit" disabled={projectAdding}>{projectAdding ? t("v2dialogs.adding") : t("v2dialogs.add")}</button>
             </div>
           </form>
         </div>

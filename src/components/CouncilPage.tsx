@@ -11,7 +11,7 @@
  * (--radius 3px / 1px 边 / 无阴影),不要收纳盒 8px 卡。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ChevronLeft, CircleStop, Crown, Minus, Pause, Play, Plus, ShieldAlert, Trash2 } from "lucide-react";
 import { MarkdownBody } from "./MarkdownBody";
@@ -35,7 +35,6 @@ import {
   groupTimeline,
   isTerminalPhase,
   kindLabel,
-  memberColor,
   memberLabel,
   memberModelLabel,
   memberStatusText,
@@ -64,6 +63,7 @@ import {
   type TeamTemplate,
 } from "../lib/councilTemplates";
 import { isTauriRuntime, listAgents } from "../lib/api";
+import { agentInkStyle } from "../lib/agentInk";
 import { t as tr, useT } from "../lib/i18n";
 import { showToast } from "../lib/toast";
 import { taskStatusLabel, type AgentLite } from "../lib/council";
@@ -131,6 +131,19 @@ function modeHint(id: CouncilMode): string {
 
 function seatColor(index: number): string {
   return `var(--council-m${(index % 8) + 1})`;
+}
+
+/** v2 墨色:成员没有 agent 字段,用模型 id 前缀推断 agent(同 agent = 同墨)。 */
+function memberAgentId(model: string): string {
+  const m = model.toLowerCase();
+  if (m.startsWith("claude")) return "claude-code";
+  if (m.includes("codex") || m.startsWith("gpt")) return "codex";
+  if (m.startsWith("zcode") || m.startsWith("glm")) return "zcode";
+  if (m.startsWith("grok")) return "grok";
+  if (m.startsWith("deepseek")) return "deepseek";
+  if (m.startsWith("opencode")) return "opencode";
+  if (m.startsWith("gemini")) return "gemini";
+  return model;
 }
 
 function pickUnusedModel(models: CouncilModelInfo[], taken: Iterable<string>): string {
@@ -951,11 +964,11 @@ function CouncilSetupView(props: { prefill?: string; onBack: () => void; onCreat
                 <p className="council-seats__note">{t("council.setup.membersFewModels")}</p>
               )}
               <div className="council-members">
-                {drafts.map((draft, index) => (
+                {drafts.map((draft) => (
                   <div
                     key={draft.key}
                     className={`council-member${draft.isChair ? " is-chair" : ""}`}
-                    style={{ "--seat": seatColor(index) } as CSSProperties}
+                    style={agentInkStyle(memberAgentId(draft.model))}
                   >
                     <div className="council-member__row">
                       <input
@@ -1125,11 +1138,21 @@ function CouncilRunView(props: { detail: RunDetail; onBack: () => void; onReload
 
   const budgetLimit = spec.budget.maxRequests ?? 0;
   const budgetPct = budgetLimit > 0 ? Math.min(100, (state.budgetUsage.requests / budgetLimit) * 100) : 0;
+  const chairInk = agentInkStyle(memberAgentId(spec.members.find((m) => m.isChair)?.model ?? ""));
+  const wallClockLimit = spec.budget.wallClockSecs ?? 0;
+  const fmtClock = (secs: number) => `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+  const elapsedSecs = Math.max(0, Math.round((state.updatedAt - state.budgetUsage.startedAt) / 1000));
+  const requestsValue = budgetLimit > 0 ? `${state.budgetUsage.requests} / ${budgetLimit}` : `${state.budgetUsage.requests}`;
+  const tokensValue =
+    spec.budget.maxTokens != null
+      ? `${state.budgetUsage.tokensEst.toLocaleString()} / ${spec.budget.maxTokens.toLocaleString()}`
+      : state.budgetUsage.tokensEst.toLocaleString();
+  const wallclockValue = wallClockLimit > 0 ? `${fmtClock(elapsedSecs)} / ${fmtClock(wallClockLimit)}` : fmtClock(elapsedSecs);
 
   return (
     <div className="council-run">
       <div className="council-run__head">
-        <div className="council-frame council-frame--wide">
+        <div className="council-frame council-frame--wide" style={chairInk}>
           <div className="council-run__head-row">
             <button type="button" className="council-back" onClick={onBack}>
               <ChevronLeft size={14} /> {t("council.run.back")}
@@ -1183,28 +1206,30 @@ function CouncilRunView(props: { detail: RunDetail; onBack: () => void; onReload
               <div
                 key={member.id}
                 className={`council-member-chip${working ? " is-working" : ""}${member.isChair ? " is-chair" : ""}`}
+                style={agentInkStyle(memberAgentId(member.model))}
               >
-                <span className="council-member-chip__dot" style={{ background: memberColor(spec.members, member.id) }} />
                 <span className="council-member-chip__name">{member.displayName}</span>
                 {member.isChair ? <span className="council-member-chip__chair">{t("council.setup.memberChair")}</span> : null}
-                {member.tier === "contributor" ? (
-                  <span className="council-member-chip__tier">{tierLabel(member.tier)}</span>
-                ) : null}
-                <span className="council-member-chip__model">{member.model}</span>
+                <span className="council-member-chip__model">
+                  {member.model} · {tierLabel(member.tier)}
+                </span>
                 <span className="council-member-chip__status">{memberStatusText(status)}</span>
               </div>
             );
           })}
           <div className="council-budget">
-            <span>
-              {t("council.run.budget", { requests: state.budgetUsage.requests, tokens: state.budgetUsage.tokensEst.toLocaleString() })}
-              {spec.budget.maxRequests ? t("council.run.budgetLimit", { limit: spec.budget.maxRequests }) : ""}
-            </span>
-            {budgetLimit > 0 && (
-              <span className="council-budget__bar" aria-hidden>
-                <span style={{ width: `${budgetPct}%` }} />
-              </span>
-            )}
+            <div className="council-kv">
+              <span>{t("v2council.budget.requests")}</span>
+              <b className={budgetPct >= 80 ? "is-warn" : undefined}>{requestsValue}</b>
+            </div>
+            <div className="council-kv">
+              <span>{t("v2council.budget.tokens")}</span>
+              <b>{tokensValue}</b>
+            </div>
+            <div className="council-kv">
+              <span>{t("v2council.budget.wallclock")}</span>
+              <b>{wallclockValue}</b>
+            </div>
           </div>
         </div>
 
@@ -1265,7 +1290,6 @@ function CouncilRunView(props: { detail: RunDetail; onBack: () => void; onReload
 
 function CouncilMessageCard(props: { msg: CouncilMessage; spec: RunDetail["spec"]; arriving?: boolean }) {
   const { msg, spec, arriving } = props;
-  const color = memberColor(spec.members, msg.from);
   const isSystem = msg.from === "system";
   const kind = msg.kind as CouncilMessageKind;
   const verdict = typeof msg.meta?.verdict === "string" ? msg.meta.verdict : "";
@@ -1281,13 +1305,10 @@ function CouncilMessageCard(props: { msg: CouncilMessage; spec: RunDetail["spec"
   return (
     <article
       className={`council-msg${arriving ? " is-arriving" : ""}${endorseClass}`}
-      style={{ "--seat": color } as CSSProperties}
+      style={agentInkStyle(memberAgentId(memberModelLabel(spec.members, msg.from)))}
     >
       <header className="council-msg__head">
-        <span className="council-msg__dot" style={{ background: color }} />
-        <span className="council-msg__author" style={{ color }}>
-          {memberLabel(spec.members, msg.from)}
-        </span>
+        <span className="council-msg__author">{memberLabel(spec.members, msg.from)}</span>
         <span className="council-msg__model">{memberModelLabel(spec.members, msg.from)}</span>
         <span className="council-msg__kind">{kindLabel(kind)}</span>
         <span className="council-msg__time">{new Date(msg.timestamp).toLocaleTimeString()}</span>
@@ -1317,18 +1338,7 @@ function CouncilPlanView(props: {
       {gating && <p className="council-plan__banner">{t("council.run.planReady")}</p>}
       <header className="council-plan__head">
         <h3>{t("council.plan.title")}</h3>
-        {gating ? (
-          <div className="council-plan__actions">
-            <button type="button" className="council-btn" onClick={() => onApprove("reject")}>
-              {t("council.plan.reconsider")}
-            </button>
-            <button type="button" className="council-btn council-btn--primary" onClick={() => onApprove("accept")}>
-              {t("council.plan.accept")}
-            </button>
-          </div>
-        ) : (
-          <span className="council-badge council-badge--done">{phaseLabel(phase)}</span>
-        )}
+        {!gating && <span className="council-badge council-badge--done">{phaseLabel(phase)}</span>}
       </header>
       <p className="council-plan__summary">{plan.summary}</p>
       <ol className="council-plan__steps">
@@ -1365,6 +1375,19 @@ function CouncilPlanView(props: {
             ))}
           </ul>
         </div>
+      )}
+      {gating && (
+        <footer className="council-plan__gate">
+          <span className="council-plan__gate-hint">{t("v2council.plan.gateHint")}</span>
+          <div className="council-plan__actions">
+            <button type="button" className="council-btn" onClick={() => onApprove("reject")}>
+              {t("council.plan.reconsider")}
+            </button>
+            <button type="button" className="council-btn council-btn--primary" onClick={() => onApprove("accept")}>
+              {t("council.plan.accept")}
+            </button>
+          </div>
+        </footer>
       )}
     </section>
   );

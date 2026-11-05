@@ -57,4 +57,6 @@ export const zh = {
   "rail.handoffTarget": "目标：{agent}",
   "rail.handoffHint": "每个对话一份文件，在 .marionette/handoff/ 下，已预填进输入框（不会自动发送）。",
   "rail.handoffEmpty": "切换 agent 时会写 .marionette/handoff/<会话>.md 并预填输入框。",
+  "rail.shareRescanTitle": "重新扫描 agent 配置和技能文件夹",
+  "rail.shareRescanAria": "重新扫描项目上下文",
 } as const;
