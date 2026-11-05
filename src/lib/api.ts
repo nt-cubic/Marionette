@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { t } from "./i18n";
 import { normalizeCredentialScan } from "./credentialScan";
 import { agents as mockAgents, projects as mockProjects, sessions as mockSessions, memoryStore as mockMemoryStore, dshPlugins as mockDshPlugins } from "./mockData";
-import type { AgentConfig, AgentCommandStatus, CapabilitySnapshot, Project, ProviderInfo, ProxyConfig, ProxyTestResult, Session, SessionLabelSource } from "./types";
+import type { AgentConfig, AgentCommandStatus, CapabilitySnapshot, PluginProbe, Project, ProviderInfo, ProxyConfig, ProxyTestResult, Session, SessionLabelSource, UniversalPlugin, UniversalPluginSpec } from "./types";
 
 export function isTauriRuntime() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -1686,4 +1686,31 @@ export async function dshPluginAdd(spec: string): Promise<{ summary: string }> {
 
 export async function dshPluginRemove(name: string): Promise<void> {
   await invoke("dsh_plugin_remove", { name });
+}
+
+// ── 共通插件层（plugins.rs / plugin_host.rs） ───────────────────────────
+// Install once, every agent gets it: enabled plugins ride the tools-mcp
+// loopback server as url-type session/new entries (zcode included).
+
+export async function universalPluginsList(): Promise<UniversalPlugin[]> {
+  if (!isTauriRuntime()) return [];
+  // 防御：后端形状异常时给空清单，不让面板整页崩掉。
+  const list = await invoke<unknown>("plugins_list");
+  return Array.isArray(list) ? (list as UniversalPlugin[]) : [];
+}
+
+export async function universalPluginAdd(spec: UniversalPluginSpec): Promise<UniversalPlugin> {
+  return await invoke("plugins_add", { spec });
+}
+
+export async function universalPluginRemove(id: string): Promise<void> {
+  await invoke("plugins_remove", { id });
+}
+
+export async function universalPluginSetEnabled(id: string, enabled: boolean): Promise<void> {
+  await invoke("plugins_set_enabled", { id, enabled });
+}
+
+export async function universalPluginProbe(id: string): Promise<PluginProbe> {
+  return await invoke("plugins_probe", { id });
 }

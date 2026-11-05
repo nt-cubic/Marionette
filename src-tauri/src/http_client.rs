@@ -28,6 +28,33 @@ pub fn agent() -> Result<Agent, String> {
     Ok(AGENT.get_or_init(|| built).clone())
 }
 
+/// Agent with an explicit overall timeout and optional app-proxy following.
+///
+/// ureq only accepts timeouts at agent build time, so per-class timeouts
+/// (plugin relay: 15s control / 300s tool calls) need their own agents. The
+/// proxy wiring mirrors `agent_with_proxy`; loopback relays must pass
+/// `follow_proxy = false` so they never enter the proxy.
+pub fn agent_with_timeout(timeout: std::time::Duration, follow_proxy: bool) -> Result<Agent, String> {
+    let connector = ureq::native_tls::TlsConnector::new()
+        .map_err(|e| format!("TLS init failed (native-tls/schannel): {e}"))?;
+    let mut builder = ureq::AgentBuilder::new()
+        .try_proxy_from_env(false)
+        .timeout(timeout)
+        .tls_connector(Arc::new(connector));
+    if follow_proxy {
+        let config = crate::proxy::load_proxy_config();
+        if config.enabled {
+            let url = config.url.trim();
+            // Do not fall back to direct traffic or include proxy credentials in errors.
+            let proxy = ureq::Proxy::new(url).map_err(|_| {
+                "the app's proxy URL is invalid; check proxy settings".to_string()
+            })?;
+            builder = builder.proxy(proxy);
+        }
+    }
+    Ok(builder.build())
+}
+
 /// External requests that follow the app proxy setting (e.g. Telegram).
 /// Read settings on every call; reuse connections only for the same proxy URL.
 /// Keep `agent()` direct so loopback callers never enter the proxy.

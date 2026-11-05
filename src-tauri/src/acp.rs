@@ -17,7 +17,7 @@ use tauri::{AppHandle, Emitter, Manager};
 mod acp_capabilities;
 use acp_capabilities::*;
 #[path = "acp_transport.rs"]
-mod acp_transport;
+pub(crate) mod acp_transport;
 use acp_transport::*;
 
 const ACP_EVENT: &str = "acp-event";
@@ -1310,10 +1310,60 @@ impl AcpService {
         // that advertised http can take it — zcode's session/new accepts
         // nothing else. Gated by the same wire policy as lent MCP servers.
         let mut mcp_servers = mcp_servers;
-        if supports_http && crate::agent_registry::should_inject_mcp(agent_id.as_deref()) {
-            if let Some(entry) = crate::tools_mcp::session_entry(&app, &session_id) {
-                mcp_servers.push(entry);
+        let mut mcp_skipped = mcp_skipped;
+        // Universal plugins (docs/plan-plugin-layer.md) ride the same loopback
+        // server. A lent server colliding with an installed plugin name would
+        // register twice inside the agent — the plugin wins, the lent twin is
+        // dropped (Zed's dual-source confusion is the cautionary tale).
+        let plugin_ids = crate::plugins::enabled_ids();
+        if !plugin_ids.is_empty() {
+            mcp_servers.retain(|server| {
+                let name = server.get("name").and_then(Value::as_str).unwrap_or("");
+                !plugin_ids.iter().any(|id| id == name)
+            });
+        }
+        if crate::agent_registry::should_inject_mcp(agent_id.as_deref()) {
+            let (plugin_entries, plugin_notes) = if supports_http {
+                // url-type entries — the one shape every adapter accepts.
+                let mut injected = Vec::new();
+                if let Some(entry) = crate::tools_mcp::session_entry(&app, &session_id) {
+                    injected.push(entry);
+                }
+                let (entries, notes) = crate::plugins::proxy_session_entries(&app, &session_id);
+                injected.extend(entries);
+                (injected, notes)
+            } else if crate::agent_registry::accepts_stdio_mcp(agent_id.as_deref()) {
+                // Agent without http MCP: hand stdio plugins over natively.
+                crate::plugins::stdio_fallback_entries()
+            } else {
+                (Vec::new(), Vec::new())
+            };
+            if !plugin_entries.is_empty() || !plugin_notes.is_empty() {
+                // Names only — the loopback token is a credential.
+                let names: Vec<&str> = plugin_entries
+                    .iter()
+                    .filter_map(|entry| entry.get("name").and_then(Value::as_str))
+                    .collect();
+                let joined = if names.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    names.join(", ")
+                };
+                let skipped_note = if plugin_notes.is_empty() {
+                    None
+                } else {
+                    Some(plugin_notes.join(", "))
+                };
+                crate::debug_log::append(
+                    "plugins",
+                    "info",
+                    &session_id,
+                    &format!("plugin inject: {joined}"),
+                    skipped_note.as_deref(),
+                );
             }
+            mcp_servers.extend(plugin_entries);
+            mcp_skipped.extend(plugin_notes);
         }
 
         // Self-healing MCP fallback: some adapters advertise mcpCapabilities.http
@@ -2346,6 +2396,10 @@ impl AcpService {
             let _ = child.wait();
         }
         self.terminals.clear_session(session_id);
+        // Universal-plugin children belong to the session, not the agent
+        // process — stop() is one of the two teardown points (the other is
+        // the stdout-EOF path in read_stdout).
+        crate::plugin_host::release_session(session_id);
         // Dropping the sender lets the dispatch thread flush its backlog and
         // exit. Done here rather than in the reader's teardown so a restart
         // cannot race and unregister the *new* session's queue.
@@ -3213,6 +3267,9 @@ fn read_stdout(
         &permissions,
         &elicitations,
     );
+    // Agent died on its own (stop() never ran): its plugin children must not
+    // outlive the session. Second of the two teardown points.
+    crate::plugin_host::release_session(&session_id);
     let _ = process.child.lock().map(|mut child| {
         let _ = child.try_wait();
     });

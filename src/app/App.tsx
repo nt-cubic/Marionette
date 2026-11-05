@@ -9059,6 +9059,25 @@ export function App() {
                 : []),
               { id: "new-chat", label: t("palette.newChat"), run: () => void handleCreateChatSession() },
               {
+                // 共通插件：装一次全 agent 生效（docs/plan-plugin-layer.md）。
+                // 展开右栏滚到该卡片；贴边态切到 context 整页。
+                id: "open-universal-plugins",
+                label: t("allPlugins.paletteOpen"),
+                hint: t("allPlugins.paletteOpenHint"),
+                run: () => {
+                  if (dockActive) {
+                    setDockPage("context");
+                  } else {
+                    setRightCollapsed(false);
+                  }
+                  window.setTimeout(() => {
+                    document
+                      .getElementById("context-universal-plugins")
+                      ?.scrollIntoView({ block: "start" });
+                  }, 160);
+                },
+              },
+              {
                 id: "open-council",
                 label: t("council.paletteOpen"),
                 hint: t("council.paletteOpenHint"),
