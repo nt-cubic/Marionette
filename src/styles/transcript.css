@@ -3674,6 +3674,9 @@
   gap: 12px;
   padding: 16px;
   border: 1px solid var(--border-strong);
+  /* v2: a 3px ink bar on the left says which agent is asking. Falls back to
+     the accent when no agent ink is set on the element. */
+  border-left: 3px solid var(--agent-ink, var(--accent));
   border-radius: var(--radius-sm);
   background: var(--panel-raised);
   box-shadow: 0 20px 48px rgba(0, 0, 0, 0.35);

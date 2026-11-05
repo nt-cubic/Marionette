@@ -18,16 +18,16 @@
 .provider-dialog__label {
   font-size: 13px;
   font-weight: 500;
-  color: var(--text-secondary);
+  color: var(--text-muted);
 }
 
 .provider-dialog__select,
 .provider-dialog__input {
   padding: 8px 10px;
-  border-radius: 6px;
+  border-radius: var(--radius);
   border: 1px solid var(--border);
-  background: var(--surface-secondary);
-  color: var(--text-primary);
+  background: var(--panel-soft);
+  color: var(--text-strong);
   font-size: 14px;
   outline: none;
   transition: border-color 0.15s;
@@ -39,7 +39,7 @@
 }
 
 .provider-dialog__error {
-  color: var(--danger);
+  color: var(--red);
   font-size: 13px;
   padding: 6px 0;
 }
@@ -52,15 +52,13 @@
   display: block;
   font-size: 12px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--text-tertiary);
+  color: var(--text-faint);
   margin-bottom: 8px;
 }
 
 .provider-dialog__empty {
   font-size: 13px;
-  color: var(--text-tertiary);
+  color: var(--text-faint);
   padding: 8px 0 16px;
 }
 
@@ -76,8 +74,8 @@
   align-items: center;
   justify-content: space-between;
   padding: 6px 8px;
-  border-radius: 6px;
-  background: var(--surface-secondary);
+  border-radius: var(--radius);
+  background: var(--panel-soft);
 }
 
 .provider-dialog__item-name {
@@ -88,7 +86,7 @@
   min-width: 0;
   font-size: 13px;
   font-weight: 500;
-  color: var(--text-primary);
+  color: var(--text-strong);
 }
 
 .provider-dialog__item-dot {
@@ -101,17 +99,17 @@
 
 .provider-dialog__delete-btn {
   padding: 2px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: none;
-  color: var(--danger, #ef4444);
+  color: var(--red);
   font-size: 12px;
   cursor: pointer;
   transition: background 0.15s;
 }
 
 .provider-dialog__delete-btn:hover {
-  background: color-mix(in srgb, var(--danger, #ef4444) 10%, transparent);
+  background: color-mix(in srgb, var(--red) 10%, transparent);
 }
 
 .provider-dialog__delete-btn:disabled {
@@ -121,8 +119,8 @@
 
 /* Second click arms the actual delete — filled so it cannot be mistaken. */
 .provider-dialog__delete-btn.is-confirming {
-  background: var(--danger, #ef4444);
-  border-color: var(--danger, #ef4444);
+  background: var(--red);
+  border-color: var(--red);
   color: #fff;
 }
 
@@ -130,12 +128,10 @@
 .provider-dialog__item-badge {
   margin-left: 6px;
   padding: 1px 5px;
-  border-radius: 3px;
+  border-radius: var(--radius);
   border: 1px solid var(--border);
   font-size: 10px;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  color: var(--text-tertiary);
+  color: var(--text-faint);
   /* A narrow dialog used to break these into "引 / 用" stacked cells. */
   white-space: nowrap;
   flex-shrink: 0;
@@ -144,10 +140,10 @@
 .provider-dialog__warning {
   margin-top: 8px;
   padding: 8px 10px;
-  border-radius: 6px;
-  border: 1px solid color-mix(in srgb, var(--danger, #ef4444) 40%, var(--border));
-  background: color-mix(in srgb, var(--danger, #ef4444) 8%, transparent);
-  color: var(--text-secondary);
+  border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, var(--red) 40%, var(--border));
+  background: color-mix(in srgb, var(--red) 8%, transparent);
+  color: var(--text-muted);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -155,28 +151,26 @@
 .provider-dialog__warning code {
   font-size: 11px;
   padding: 0 3px;
-  border-radius: 3px;
-  background: var(--bg-tertiary, rgba(127, 127, 127, 0.15));
+  border-radius: var(--radius);
+  background: var(--panel-soft);
 }
 
 .provider-dialog__note {
   padding: 8px 10px;
-  border-radius: 6px;
-  background: var(--bg-tertiary, rgba(127, 127, 127, 0.12));
-  color: var(--text-secondary);
+  border-radius: var(--radius);
+  background: var(--panel-soft);
+  color: var(--text-muted);
   font-size: 12px;
   line-height: 1.5;
 }
 
 .provider-dialog__item-badge--muted {
   opacity: 0.75;
-  text-transform: none;
-  letter-spacing: 0;
 }
 
 .provider-dialog__item-id {
   margin-left: 4px;
-  color: var(--text-faint, var(--text-tertiary));
+  color: var(--text-faint);
   font-size: 10px;
   font-weight: 400;
 }
@@ -184,7 +178,7 @@
 .provider-dialog__lead,
 .provider-dialog__hint {
   margin: 0 0 10px;
-  color: var(--text-muted, var(--text-secondary));
+  color: var(--text-muted);
   font-size: 11px;
   line-height: 1.45;
 }
@@ -230,20 +224,20 @@
   align-items: center;
   gap: 8px;
   padding: 5px 8px;
-  border-radius: 6px;
-  background: var(--surface-secondary);
+  border-radius: var(--radius);
+  background: var(--panel-soft);
 }
 
 .credentials-dialog__scan-name {
   font-size: 13px;
   font-weight: 500;
-  color: var(--text-primary);
+  color: var(--text-strong);
 }
 
 .credentials-dialog__scan-status {
   margin-left: auto;
   font-size: 11px;
-  color: var(--text-tertiary);
+  color: var(--text-faint);
 }
 
 .credentials-dialog__scan-dot {
@@ -274,7 +268,6 @@
   color: var(--text-faint);
   font-size: 10px;
   font-family: var(--font-mono, ui-monospace, monospace);
-  letter-spacing: 0.02em;
 }
 
 /* ── Cross-use (跨用) note in the model menu ──────────────────────────── */
@@ -298,7 +291,6 @@
   font-weight: 500;
   line-height: 15px;
   vertical-align: 1px;
-  letter-spacing: 0;
 }
 
 /* Cross-use group headers: provider name left, 右上角跨用 mark. */
@@ -341,7 +333,7 @@
   font-size: 12px;
   cursor: pointer;
   text-align: left;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .composer-menu__bridge-custom {
@@ -389,18 +381,18 @@
 .composer-menu__empty-title {
   font-size: 14px;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--text-strong);
 }
 
 .composer-menu__empty-desc {
   font-size: 12px;
-  color: var(--text-tertiary);
+  color: var(--text-faint);
   margin-bottom: 4px;
 }
 
 .composer-menu__add-key-btn {
   padding: 6px 16px;
-  border-radius: 6px;
+  border-radius: var(--radius);
   border: none;
   background: var(--accent);
   color: #fff;
@@ -431,9 +423,7 @@
   display: block;
   padding: 4px 8px;
   font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--text-tertiary);
+  color: var(--text-faint);
 }
 
 .composer-menu__recent button {
@@ -444,11 +434,11 @@
   padding: 5px 8px;
   border: none;
   background: none;
-  color: var(--text-primary);
+  color: var(--text-strong);
   font-size: 13px;
   cursor: pointer;
   text-align: left;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .composer-menu__recent button:hover,
@@ -468,8 +458,6 @@
 .composer-menu__model-source {
   font-size: 10px;
   font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
   color: var(--text-muted);
 }
 
@@ -500,7 +488,7 @@
   font-size: 13px;
   cursor: pointer;
   text-align: left;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   gap: 4px;
 }
 
@@ -712,7 +700,7 @@
   height: min(780px, 100%);
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: var(--radius-md, 10px);
+  border-radius: var(--radius);
   background: var(--panel-raised, var(--panel));
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.35);
 }
@@ -790,7 +778,7 @@
   user-select: none;
   touch-action: none;
   cursor: crosshair;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .image-annotator__overlay {
@@ -903,7 +891,6 @@
   color: var(--text-muted);
   font-size: 11px;
   font-weight: 700;
-  text-transform: uppercase;
 }
 
 .image-annotator__list {
