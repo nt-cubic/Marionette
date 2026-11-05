@@ -55,7 +55,7 @@ function parseHeaderLines(raw: string): Record<string, string> {
   return out;
 }
 
-export function UniversalPluginsSection() {
+export function UniversalPluginsSection({ onCount }: { onCount?: (count: number) => void } = {}) {
   const t = useT();
   const [plugins, setPlugins] = useState<UniversalPlugin[] | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -185,6 +185,10 @@ export function UniversalPluginsSection() {
   };
 
   const list = Array.isArray(plugins) ? plugins : [];
+  const enabledCount = list.filter((plugin) => plugin.enabled).length;
+  useEffect(() => {
+    onCount?.(enabledCount);
+  }, [enabledCount, onCount]);
 
   return (
     <section className="context-card" id="context-universal-plugins">

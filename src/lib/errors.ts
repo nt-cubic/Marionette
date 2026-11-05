@@ -306,7 +306,7 @@ export function isAuthTransientMessage(message: string): boolean {
  * grok/opencode/pi `marionette/<id>`, DSH `marionette::<id>`, zcode
  * `marionette\<id>`. Must stay in sync with Composer.tsx::isBridgeNativeModel.
  */
-function isBridgeNativeModelId(id: string | null | undefined): boolean {
+export function isBridgeNativeModelId(id: string | null | undefined): boolean {
   const model = id?.trim() ?? "";
   return (
     model.startsWith("marionette/") ||

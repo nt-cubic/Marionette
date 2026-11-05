@@ -27,6 +27,7 @@ import { zh as zhFeUpdate } from "./parts/fe-update.zh";
 import { zh as zhFeUsagedash } from "./parts/fe-usagedash.zh";
 import { zh as zhFeFind } from "./parts/fe-find.zh";
 import { zh as zhFeAllplugins } from "./parts/fe-allplugins.zh";
+import { zh as zhFeRail } from "./parts/fe-rail.zh";
 
 export const zh = {
   ...zhCommon,
@@ -52,4 +53,5 @@ export const zh = {
   ...zhFeUsagedash,
   ...zhFeFind,
   ...zhFeAllplugins,
+  ...zhFeRail,
 } as const;

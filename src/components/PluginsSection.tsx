@@ -13,7 +13,13 @@ import { useT } from "../lib/i18n";
  * 通用插件面板。清单来自 DSH profile `acp`（`dsh plugin --profile acp`）；
  * 任何 agent 下都显示，便于安装/卸载。徽章标明当前 ACP 会话里是否真正生效。
  */
-export function PluginsSection({ activeAgentId }: { activeAgentId?: string | null }) {
+export function PluginsSection({
+  activeAgentId,
+  onCount,
+}: {
+  activeAgentId?: string | null;
+  onCount?: (count: number) => void;
+}) {
   const t = useT();
   const [plugins, setPlugins] = useState<DshPlugin[] | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -70,6 +76,10 @@ export function PluginsSection({ activeAgentId }: { activeAgentId?: string | nul
   };
 
   const list = Array.isArray(plugins) ? plugins : [];
+  const listCount = list.length;
+  useEffect(() => {
+    onCount?.(listCount);
+  }, [listCount, onCount]);
 
   return (
     <section className="context-card" id="context-plugins">

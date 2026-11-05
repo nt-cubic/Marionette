@@ -34,7 +34,14 @@ function sourceLabel(source: string): string {
  * 跨 agent 共享记忆面板。
  * 打开即同步各家全局记忆；勾选 = 注入新会话；保留「从会话提炼」。
  */
-export const MemorySection = memo(function MemorySection({ activeSessionId }: { activeSessionId?: string | null }) {
+export const MemorySection = memo(function MemorySection({
+  activeSessionId,
+  onCount,
+}: {
+  activeSessionId?: string | null;
+  /** Reports how many entries are lent (enabled) — feeds the rail's shared-group summary. */
+  onCount?: (count: number) => void;
+}) {
   const t = useT();
   const [store, setStore] = useState<MemoryStore | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -118,6 +125,10 @@ export const MemorySection = memo(function MemorySection({ activeSessionId }: { 
   };
 
   const entries = store?.entries ?? [];
+  const lentCount = entries.filter((entry) => entry.enabled).length;
+  useEffect(() => {
+    onCount?.(lentCount);
+  }, [lentCount, onCount]);
 
   return (
     <section className="context-card" id="context-memory">
