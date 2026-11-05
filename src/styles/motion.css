@@ -282,7 +282,7 @@
 
 @keyframes m-tab-ink {
   from {
-    box-shadow: inset 0 0 0 var(--accent);
+    box-shadow: inset 0 0 0 var(--agent-ink, var(--accent));
   }
 }
 

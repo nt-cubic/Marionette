@@ -17,6 +17,7 @@ import { ClippedBody } from "./ClippedBody";
 import { MarkdownBody } from "./MarkdownBody";
 import { ToolImageThumbs } from "./ToolImageThumbs";
 import { useT } from "../lib/i18n";
+import { agentInkStyle } from "../lib/agentInk";
 
 function DiffBadge({ diff }: { diff: { add: number; del: number } }) {
   return (
@@ -63,6 +64,8 @@ type FoldProps = {
   summary: ActivitySummary;
   open: boolean;
   live?: boolean;
+  /** Agent whose ink colours the live outline and trace bars. */
+  agentId?: string | null;
   liveIcon?: ReactNode;
   /** Session working directory for relative image paths. */
   cwd?: string | null;
@@ -93,6 +96,7 @@ export function ActivityPanel({
   summary,
   open,
   live = false,
+  agentId,
   liveIcon,
   cwd,
   onToggle,
@@ -101,7 +105,11 @@ export function ActivityPanel({
 }: FoldProps) {
   const t = useT();
   return (
-    <section className={`activity-group${live ? " is-live" : ""}`} aria-label={t("trace.group")}>
+    <section
+      className={`activity-group${live ? " is-live" : ""}`}
+      style={agentInkStyle(agentId)}
+      aria-label={t("trace.group")}
+    >
       {trace}
       <details
         className={`activity-panel${live ? " is-live" : ""}`}
