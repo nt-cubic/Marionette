@@ -17,6 +17,8 @@ import {
   isAssistantNotice,
   userMessageAnchorId,
 } from "../lib/acpTranscript";
+import { agentInkStyle } from "../lib/agentInk";
+import { formatTokenCount } from "../lib/sessionStats";
 import { findConversationMatches } from "../lib/conversationFind";
 import {
   ACTIVITY_THRESHOLDS,
@@ -625,6 +627,7 @@ export function SessionTabs({
               key={openSession.id}
               className={tabClassById.get(openSession.id)}
               role="tab"
+              style={agentInkStyle(openSession.agentId)}
               aria-selected={openSession.id === session.id && !memoTab?.active && !councilTab?.active}
               data-tauri-drag-region="false"
               onContextMenu={(e) => {
@@ -2779,17 +2782,35 @@ function CleanPlaceholder({
             );
           }
 
-          // Handoff: a marker, not a wall of text. The notes themselves ride
-          // along with the next message the user sends (never shown here or
-          // pasted into the composer).
+          // Handoff is a hairline divider with one line of text (ui-language v2);
+          // the dot is the one place an agent dot is allowed.
+          if (event.type === "handoff_prepared") {
+            return (
+              <div
+                className="handoff-rule"
+                key={`handoff-${event.createdAt}-${index}`}
+                role="separator"
+                title={event.handoffPath}
+                style={agentInkStyle(event.targetAgentId)}
+              >
+                <span className="handoff-rule__line" aria-hidden />
+                <span className="handoff-rule__text">
+                  <i className="handoff-rule__dot" aria-hidden />
+                  {t("session.handoffRule", { agent: event.targetAgentId })}
+                </span>
+                <span className="handoff-rule__line" aria-hidden />
+              </div>
+            );
+          }
+
+          // (Handoff notes ride along with the next message the user sends —
+          // never shown here or pasted into the composer; see the divider above.)
           // Assistant/thought only: strip transport footers. Never touch user
           // messages — their You card must stay intact even if they paste status.
           const body =
-            event.type === "handoff_prepared"
-              ? `Notes prepared for **${event.targetAgentId}** — they will be attached to your next message.\n\nFull notes: \`${event.handoffPath}\``
-              : event.type === "assistant_message" || event.type === "thought"
-                ? cleanAssistantText(event.text)
-                : event.text;
+            event.type === "assistant_message" || event.type === "thought"
+              ? cleanAssistantText(event.text)
+              : event.text;
 
           // Status-only /status chunks clean to empty — do not render a hollow Reply.
           if (
@@ -2844,8 +2865,7 @@ function CleanPlaceholder({
           const useMarkdown =
             event.type === "assistant_message" ||
             event.type === "user_message" ||
-            event.type === "thought" ||
-            event.type === "handoff_prepared";
+            event.type === "thought";
 
           // Thought: open while streaming; collapsed when done (user can expand).
           // Tool: collapsed by default. Only shell / subagent tools auto-expand
@@ -3040,6 +3060,16 @@ function CleanPlaceholder({
           }
 
           const isUser = event.type === "user_message";
+          // Reply footer numbers: this turn's generation time and output tokens
+          // (only when the agent reported them; never invented).
+          const replyDurationMs =
+            event.type === "assistant_message"
+              ? (event.durationMs ?? event.turnStats?.durationMs ?? null)
+              : null;
+          const replyTokensRaw =
+            event.type === "assistant_message" ? event.turnStats?.output : null;
+          const replyTokens =
+            replyTokensRaw != null && replyTokensRaw > 0 ? replyTokensRaw : null;
           const userKey = isUser
             ? userMessageAnchorId(event)
             : `${event.type}-${event.createdAt}-${index}`;
@@ -3056,7 +3086,14 @@ function CleanPlaceholder({
           return (
             <article
               className={`event-card event-card--${event.type}${event.type === "assistant_message" && event.webReply ? " is-web-reply" : ""}${isEditing ? " is-editing" : ""}`}
-              style={event.type === "assistant_message" && event.webReply ? { "--web-reply-width": `${webReplyWidthPercent}%` } as CSSProperties : undefined}
+              style={
+                event.type === "assistant_message"
+                  ? {
+                      ...agentInkStyle(event.agentId ?? session.agentId),
+                      ...(event.webReply ? { "--web-reply-width": `${webReplyWidthPercent}%` } : null),
+                    } as CSSProperties
+                  : undefined
+              }
               key={`${event.type}-${event.createdAt}-${index}`}
               id={isUser ? userKey : undefined}
               {...(tone ? { "data-mode-tone": tone } : {})}
@@ -3069,7 +3106,18 @@ function CleanPlaceholder({
               <div className="event-card__main">
                 <div className="event-card__type-row">
                   <span className="event-card__type">
-                    {label}
+                    {event.type === "assistant_message" && !isAssistantNotice(event.text) ? (
+                      <>
+                        <span className="event-card__who">
+                          {event.agentLabel || event.agentId || session.agentId}
+                        </span>
+                        {event.modelLabel && (
+                          <span className="event-card__who-model">{event.modelLabel}</span>
+                        )}
+                      </>
+                    ) : (
+                      label
+                    )}
                     {isUser &&
                       (("forceWebSearch" in event && event.forceWebSearch) ||
                         detectForceWebSearchInText(event.text)) && (
@@ -3241,14 +3289,16 @@ function CleanPlaceholder({
                             </span>
                           </>
                         )}
-                        {event.agentLabel && (
-                          <span className="meta-tag">{event.agentLabel}</span>
-                        )}
-                        {event.modelLabel && (
-                          <span className="meta-tag">{event.modelLabel}</span>
-                        )}
                         {event.effortLabel && (
                           <span className="meta-tag">{event.effortLabel}</span>
+                        )}
+                        {replyDurationMs != null && (
+                          <span className="meta-tag">{formatStepDuration(replyDurationMs)}</span>
+                        )}
+                        {replyTokens != null && (
+                          <span className="meta-tag">
+                            {t("session.replyTokens", { tokens: formatTokenCount(replyTokens) })}
+                          </span>
                         )}
                       </div>
                     ) : (
@@ -3302,6 +3352,7 @@ function CleanPlaceholder({
                 summary={summarizeActivity(unit.items, { liveEvent, untilMs })}
                 open={open}
                 live={live}
+                agentId={session.agentId}
                 liveIcon={liveIcon}
                 cwd={session.cwd}
                 trace={live ? (

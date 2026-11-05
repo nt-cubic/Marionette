@@ -782,12 +782,15 @@
 }
 
 .chat-row.is-active {
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-  border-left: 2px solid var(--accent);
+  background: var(--panel-raised);
+  box-shadow:
+    inset 2px 0 0 var(--agent-ink, var(--accent)),
+    inset 0 1px 0 var(--border),
+    inset 0 -1px 0 var(--border);
 }
 
 .chat-row.is-active strong {
-  color: var(--accent);
+  color: var(--text-strong);
 }
 
 .chat-row.is-done:not(.is-active) {
@@ -805,30 +808,7 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--text-faint);
-  opacity: 0.45;
-}
-
-.chat-row__dot.is-running {
-  background: var(--yellow);
-  opacity: 0.7;
-}
-
-.chat-row__dot.is-waiting {
-  background: var(--yellow);
-  opacity: 0.7;
-}
-
-.chat-row__dot.is-error {
-  background: var(--red);
-  opacity: 0.85;
-}
-
-.chat-row__dot.is-done {
-  background: var(--green);
-  opacity: 1;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 30%, transparent);
-  animation: done-attention 1.15s ease-in-out 2;
+  background: var(--agent-ink, var(--text-faint));
 }
 
 .chat-row__content {
@@ -1583,6 +1563,7 @@ body.is-project-reordering .project-list {
   opacity: 0.45;
 }
 
+/* Status-coloured variants stay for the command palette and dock list. */
 .session-row__dot.is-waiting {
   background: var(--yellow);
   opacity: 0.7;
@@ -1598,6 +1579,49 @@ body.is-project-reordering .project-list {
   opacity: 1;
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 30%, transparent);
   animation: done-attention 1.15s ease-in-out 2;
+}
+
+/* Sidebar rows: the dot names the agent (its ink); status is the word on the right. */
+.session-row__dot.is-ink {
+  background: var(--agent-ink, var(--text-faint));
+  opacity: 1;
+}
+
+.session-row__dot.is-busy {
+  animation: activity-pulse 1.2s ease-in-out infinite;
+}
+
+.session-row__status {
+  margin-right: 6px;
+  color: var(--text-muted);
+}
+
+.session-row__status.is-waiting,
+.chat-row__status.is-waiting {
+  color: var(--yellow);
+}
+
+.session-row__status.is-error,
+.chat-row__status.is-error {
+  color: var(--red);
+}
+
+.session-row__status.is-done,
+.chat-row__status.is-done {
+  color: var(--green);
+}
+
+.chat-row__status {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.chat-row:hover .chat-row__status,
+.chat-row:focus-within .chat-row__status,
+.chat-row.is-more-open .chat-row__status {
+  visibility: hidden;
 }
 
 .session-row__action .is-spinning,
@@ -1819,10 +1843,15 @@ body.is-project-reordering .project-list {
   background: color-mix(in srgb, var(--text) 5%, transparent);
 }
 
+/* Selected: flush raised band, hairlines above and below, 2px agent-ink bar.
+   The bar is an inset shadow so content stays aligned with sibling rows. */
 .project-tree .session-row.is-active {
   border-color: transparent;
-  border-left-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  border-top-color: var(--border);
+  border-bottom-color: var(--border);
+  border-radius: 0;
+  background: var(--panel-raised);
+  box-shadow: inset 2px 0 0 var(--agent-ink, var(--accent));
 }
 
 .project-tree .project-row.is-done:not(.is-active) {
