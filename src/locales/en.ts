@@ -28,6 +28,16 @@ import { en as enFeUsagedash } from "./parts/fe-usagedash.en";
 import { en as enFeFind } from "./parts/fe-find.en";
 import { en as enFeAllplugins } from "./parts/fe-allplugins.en";
 import { en as enFeRail } from "./parts/fe-rail.en";
+import { en as enFeV2Shelf } from "./parts/fe-v2shelf.en";
+import { en as enFeV2Transcript } from "./parts/fe-v2transcript.en";
+import { en as enFeV2Composer } from "./parts/fe-v2composer.en";
+import { en as enFeV2Dialogs } from "./parts/fe-v2dialogs.en";
+import { en as enFeV2Chrome } from "./parts/fe-v2chrome.en";
+import { en as enFeV2Memo } from "./parts/fe-v2memo.en";
+import { en as enFeV2Council } from "./parts/fe-v2council.en";
+import { en as enFeV2Dock } from "./parts/fe-v2dock.en";
+import { en as enFeV2Usage } from "./parts/fe-v2usage.en";
+import { en as enFeV2Pages } from "./parts/fe-v2pages.en";
 
 export const en = {
   ...enCommon,
@@ -54,4 +64,14 @@ export const en = {
   ...enFeFind,
   ...enFeAllplugins,
   ...enFeRail,
+  ...enFeV2Shelf,
+  ...enFeV2Transcript,
+  ...enFeV2Composer,
+  ...enFeV2Dialogs,
+  ...enFeV2Chrome,
+  ...enFeV2Memo,
+  ...enFeV2Council,
+  ...enFeV2Dock,
+  ...enFeV2Usage,
+  ...enFeV2Pages,
 } satisfies Record<keyof typeof zh, string>;
