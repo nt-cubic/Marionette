@@ -1,4 +1,4 @@
-import { BarChart3, Check, ChevronDown, ChevronUp, Columns2, Copy, FileText, Globe, Inbox, Merge, MessageSquareQuote, Pencil, Plus, Search, Split, Square, SquareArrowOutUpRight, UsersRound, X } from "lucide-react";
+import { BarChart3, Check, ChevronDown, ChevronUp, Columns2, Copy, FileText, Globe, Inbox, Merge, MessageSquareQuote, Pencil, Plus, Search, Split, Square, SquareArrowOutUpRight, UsersRound, X, FileDiff } from "lucide-react";
 import {
   memo,
   useCallback,
@@ -194,6 +194,7 @@ export function SessionTabs({
   memoTab,
   councilTab,
   usageTab,
+  diffTab,
   docTabs,
   browserTab,
 }: {
@@ -267,6 +268,13 @@ export function SessionTabs({
    */
   usageTab?: {
     active: boolean;
+    onSelect: () => void;
+    onClose: () => void;
+  };
+  /** 「改动」pseudo-tab (changed files + diff), same strip semantics as 用量. */
+  diffTab?: {
+    active: boolean;
+    count: number;
     onSelect: () => void;
     onClose: () => void;
   };
@@ -568,6 +576,7 @@ export function SessionTabs({
       memoTab?.active ||
         councilTab?.active ||
         usageTab?.active ||
+        diffTab?.active ||
         browserTab?.active ||
         (docTabs ?? []).some((tab) => tab.active),
     );
@@ -596,6 +605,7 @@ export function SessionTabs({
     memoTab?.active,
     councilTab?.active,
     usageTab?.active,
+    diffTab?.active,
     browserTab?.active,
     docTabs,
   ]);
@@ -851,6 +861,38 @@ export function SessionTabs({
             onClick={(e) => {
               e.stopPropagation();
               usageTab.onClose();
+            }}
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
+      {diffTab && !detachedMode && (
+        <div
+          className={`editor-tab is-diff${diffTab.active ? " is-active" : ""}`}
+          role="tab"
+          aria-selected={diffTab.active}
+          data-tauri-drag-region="false"
+        >
+          <button
+            className="editor-tab__select"
+            type="button"
+            title={t("v2pages.diffTab")}
+            onClick={diffTab.onSelect}
+          >
+            <FileDiff size={12} />
+            <span>{t("v2pages.diffTab")}</span>
+            {diffTab.count > 0 ? <span className="editor-tab__memo-count">{diffTab.count}</span> : null}
+          </button>
+          <button
+            className="pill-action pill-action--icon pill-action--sm editor-tab__close"
+            type="button"
+            title={t("common.close")}
+            aria-label={t("common.close")}
+            data-tauri-drag-region="false"
+            onClick={(e) => {
+              e.stopPropagation();
+              diffTab.onClose();
             }}
           >
             <X size={12} />
