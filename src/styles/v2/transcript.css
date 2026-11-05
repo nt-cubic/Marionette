@@ -505,3 +505,13 @@
   min-width: 22px;
   height: 22px;
 }
+
+/* ---- Card shape: square left, round right (2026-11-06) -------------------------------
+   Every card in the stream — You, Reply, the process card, tool/thought, delivery —
+   has square left corners so the 3px identity bar is one clean straight line, and keeps
+   the 3px radius on the right so it still reads as a card, not a table row. */
+.event-list .event-card,
+.event-list .activity-group,
+.event-list .activity-group.is-live::after {
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
