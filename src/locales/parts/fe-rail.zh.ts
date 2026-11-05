@@ -8,6 +8,8 @@ export const zh = {
   "rail.projectTodos": "项目任务",
   "rail.background": "后台",
   "rail.backgroundKill": "终止 {title}",
+  "rail.shared": "跨 agent 共享",
+  "rail.sharedSummary": "{count} 项借给 {agent}",
   "rail.quota": "额度",
   "rail.quotaRefresh": "刷新额度",
   "rail.quotaEmpty": "暂无额度数据，发一条消息或点刷新",
