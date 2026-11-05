@@ -2442,16 +2442,16 @@ function CleanPlaceholder({
             <p className="clean-empty__title">
               {authBanner
                 ? bannerKind === "upgrade"
-                  ? "Update to continue"
-                  : "Sign in to continue"
-                : `Message ${agent.label}`}
+                  ? t("v2transcript.emptyUpdate")
+                  : t("v2transcript.emptySignIn")
+                : t("v2transcript.emptyTitle", { agent: agent.label })}
             </p>
             <p className="clean-empty__hint">
               {authBanner
                 ? bannerKind === "upgrade"
-                  ? `Use the update button above — it runs \`grok update\`. Start a new session when it finishes.`
-                  : `Use the Sign in button above — it opens ${agent.label}’s browser login. Come back here when done.`
-                : "Type below to warm the agent in the background, then send when ready."}
+                  ? t("v2transcript.emptyUpdateHint")
+                  : t("v2transcript.emptySignInHint", { agent: agent.label })
+                : t("v2transcript.emptyHint")}
             </p>
             {authBanner && bannerKind === "upgrade" && onUpdate ? (
               <button
@@ -3841,6 +3841,7 @@ function StallBanner({
   lastActivityAt: number | null;
   onInterrupt?: () => void | Promise<void>;
 }) {
+  const t = useT();
   // Own clock — never lift a ticker into the event list (selection wipe).
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -3864,8 +3865,8 @@ function StallBanner({
     (midTurn
       ? null
       : {
-          title: "Waiting for agent",
-          body: "Message sent. Streaming will show thinking / tools / reply here.",
+          title: t("v2transcript.waitingTitle"),
+          body: t("v2transcript.waitingBody"),
         });
   if (!copy) return null;
 
