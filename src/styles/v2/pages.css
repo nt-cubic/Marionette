@@ -457,3 +457,254 @@
   font-size: 11px;
   color: var(--text-faint);
 }
+
+/* ---- 「改动」pseudo-tab page (docs/design/ui-v2/DiffTab.html) ---------------------- */
+.diff-tab-page {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  min-height: 0;
+  background: var(--panel-raised);
+}
+
+.diff-page {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.diff-page__bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  height: 44px;
+  padding: 0 10px 0 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-muted);
+  font-size: 12.5px;
+}
+
+.diff-page__scope {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-raised);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--text-strong);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.diff-page__summary {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.diff-page__branch {
+  margin-left: 8px;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.diff-page__add {
+  color: var(--green);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+}
+
+.diff-page__del {
+  color: var(--red);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+}
+
+.diff-page__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.diff-page__icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.diff-page__icon:hover {
+  background: var(--panel-soft);
+  color: var(--text-strong);
+}
+
+.diff-page__text-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.diff-page__text-btn:hover {
+  background: var(--panel-soft);
+  color: var(--text-strong);
+}
+
+.diff-page__body {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: 260px minmax(0, 1fr);
+  min-height: 0;
+}
+
+.diff-page__files {
+  margin: 0;
+  padding: 6px 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--hairline);
+  background: var(--panel-muted);
+  list-style: none;
+}
+
+.diff-page__file {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 32px;
+  padding: 0 12px 0 14px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.diff-page__file:hover {
+  background: var(--panel-soft);
+}
+
+.diff-page__file.is-active {
+  background: var(--panel-raised);
+  box-shadow: inset 0 1px 0 var(--hairline), inset 0 -1px 0 var(--hairline);
+  color: var(--text-strong);
+  font-weight: 500;
+}
+
+.diff-page__mark {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+}
+
+.diff-page__mark.is-modified {
+  color: var(--yellow);
+}
+
+.diff-page__mark.is-added,
+.diff-page__mark.is-untracked {
+  color: var(--green);
+}
+
+.diff-page__mark.is-deleted {
+  color: var(--red);
+}
+
+.diff-page__path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.diff-page__delta {
+  white-space: nowrap;
+}
+
+.diff-page__view {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.diff-page__file-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 10px 0 16px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.diff-page__file-icon {
+  color: var(--text-faint);
+}
+
+.diff-page__file-name {
+  color: var(--text-strong);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12.5px;
+}
+
+.diff-page__file-dir {
+  min-width: 0;
+  margin-right: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.diff-page__diff {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.diff-page__empty {
+  margin: 0;
+  padding: 14px 16px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .diff-page__body {
+    grid-template-columns: 200px minmax(0, 1fr);
+  }
+}

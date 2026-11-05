@@ -379,3 +379,19 @@
 .sidebar-dock .sidebar-footer {
   flex: none;
 }
+
+/* Narrow sidebar: the model-sharing entry drops to its icon (label stays in aria-label)
+   and the footer icons tighten to 28px, so nothing gets cut to a half word. */
+.sidebar-dock {
+  container-type: inline-size;
+}
+
+@container (max-width: 260px) {
+  .sidebar-dock .engine-entry .engine-entry__label {
+    display: none;
+  }
+
+  .sidebar-footer .sidebar-footer__button.sidebar-footer__button {
+    width: 28px;
+  }
+}

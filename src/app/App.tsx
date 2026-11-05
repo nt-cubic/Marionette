@@ -81,6 +81,7 @@ import {
 import { recordTurnUsage } from "../lib/usageLedger";
 import { UsageAnalysisDialog } from "../components/UsageAnalysisDialog";
 import { UsagePage } from "../components/UsagePage";
+import { DiffPage } from "../components/DiffPage";
 import {
   bindDesktopNotifyFocusHandlers,
   cancelScheduledDesktopNotify,
@@ -601,6 +602,10 @@ export function App() {
    */
   const [usageOpen, setUsageOpen] = useState(false);
   const [usageActive, setUsageActive] = useState(false);
+  /** 「改动」pseudo-tab: changed files + diff. Main window only; dock/detached keep the dialog. */
+  const [diffTabOpen, setDiffTabOpen] = useState(false);
+  const [diffTabActive, setDiffTabActive] = useState(false);
+  const [diffTabPath, setDiffTabPath] = useState<string | null>(null);
   /** Detached window has no tab strip — analysis opens as a dialog. */
   const [usageDialogOpen, setUsageDialogOpen] = useState(false);
   /** In-app document tabs (markdown/text): entries exist while open. */
@@ -4875,6 +4880,22 @@ export function App() {
     setActiveDocPath(null);
     setBrowserActive(false);
   }, []);
+  /** 打开「改动」伪标签页并选中某个文件；与其它整页互斥。 */
+  const openDiffTab = useCallback((path?: string | null) => {
+    setDiffTabOpen(true);
+    setDiffTabActive(true);
+    if (path) setDiffTabPath(path);
+    setUsageActive(false);
+    setMemoActive(false);
+    setCouncilActive(false);
+    setActiveDocPath(null);
+    setBrowserActive(false);
+  }, []);
+  useEffect(() => {
+    if (diffTabActive && (memoActive || councilActive || usageActive || activeDocPath || browserActive)) {
+      setDiffTabActive(false);
+    }
+  }, [diffTabActive, memoActive, councilActive, usageActive, activeDocPath, browserActive]);
   // 反向互斥:任何其它整页接管中栏时,用量页退回未选中(标签保留)。
   useEffect(() => {
     if (usageActive && (memoActive || councilActive || activeDocPath || browserActive)) {
@@ -4890,6 +4911,7 @@ export function App() {
     setMemoActive(false);
     setCouncilActive(false);
     setUsageActive(false);
+    setDiffTabActive(false);
     setActiveDocPath(null);
     setBrowserActive(false);
     setViewMode("clean");
@@ -5859,10 +5881,16 @@ export function App() {
   const handleOpenDiff = useCallback(
     async (path: string) => {
       if (!currentProjectId || currentProjectId === CHAT_PROJECT_ID) return;
+      // Main window: the 改动 tab page. The dock strip / detached windows are too
+      // narrow for its two columns and keep the dialog.
+      if (!dockActive && !IS_DETACHED_WINDOW) {
+        openDiffTab(path);
+        return;
+      }
       const text = await getFileDiff(currentProjectId, path);
       setDiffPreview({ path, text: text || "(empty diff)" });
     },
-    [currentProjectId]
+    [currentProjectId, dockActive, openDiffTab]
   );
 
   const handlePermissionChoose = useCallback(async (optionId: string) => {
@@ -6843,6 +6871,12 @@ export function App() {
           event.preventDefault();
           setUsageOpen(false);
           setUsageActive(false);
+          return;
+        }
+        if (diffTabActive) {
+          event.preventDefault();
+          setDiffTabOpen(false);
+          setDiffTabActive(false);
           return;
         }
         if (councilActive) {
@@ -9330,6 +9364,19 @@ export function App() {
                     },
                   }
             }
+            diffTab={
+              IS_DETACHED_WINDOW || !diffTabOpen
+                ? undefined
+                : {
+                    active: diffTabActive,
+                    count: changedFiles.length,
+                    onSelect: () => openDiffTab(),
+                    onClose: () => {
+                      setDiffTabOpen(false);
+                      setDiffTabActive(false);
+                    },
+                  }
+            }
             usageTab={
               IS_DETACHED_WINDOW || !usageOpen
                 ? undefined
@@ -9569,6 +9616,23 @@ export function App() {
                   setCouncilOpen(false);
                   setCouncilActive(false);
                 }}
+              />
+            </div>
+          ) : diffTabActive && !dockActive && !IS_DETACHED_WINDOW ? (
+            <div className="diff-tab-page" aria-label={t("v2pages.diffTab")}>
+              <DiffPage
+                projectId={currentProjectId && currentProjectId !== CHAT_PROJECT_ID ? currentProjectId : null}
+                projectRoot={currentProject?.rootPath ?? null}
+                files={changedFiles}
+                branch={gitBranch}
+                selectedPath={diffTabPath}
+                onSelect={setDiffTabPath}
+                onClose={() => {
+                  setDiffTabOpen(false);
+                  setDiffTabActive(false);
+                }}
+                onRefresh={() => void refreshChangedFiles()}
+                onCommitAndPush={handleCommitAndPush}
               />
             </div>
           ) : usageActive && !dockActive && !IS_DETACHED_WINDOW ? (
