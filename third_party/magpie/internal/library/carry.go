@@ -33,6 +33,10 @@ type Bundle struct {
 	// carried, which knew nothing of this computer's: Put keeps them. Collect
 	// always sets it, empty too, so taking the last one out is carried.
 	Subagents *[]*Subagent `json:"subagents,omitempty"`
+	// Hooks are nil in a bundle from a magpie before they were carried,
+	// as Subagents are: Put keeps this computer's. Applied.Hooks, the
+	// entries magpie wrote into each agent here, stays out.
+	Hooks *[]*Hook `json:"hooks,omitempty"`
 }
 
 // CarriedSkill is a skill with its folder's files.
@@ -45,6 +49,8 @@ type CarriedSkill struct {
 	Left   []string          `json:"left,omitempty"` // files too big to carry
 	// Called is the name its SKILL.md gives, when that isn't Name
 	Called string `json:"called,omitempty"`
+	// Note is the user's note on it (Skill.Note)
+	Note string `json:"note,omitempty"`
 }
 
 // A skill's file bigger than maxCarried is left out, and so are the
@@ -104,7 +110,7 @@ func Collect() (*Bundle, error) {
 	}
 	for i, c := range readSkills(dirs) {
 		s := skills[i]
-		c.Name, c.Source, c.Agents, c.Called = s.Name, s.Source, orNone(slices.Sorted(slices.Values(s.Agents))), s.Called
+		c.Name, c.Source, c.Agents, c.Called, c.Note = s.Name, s.Source, orNone(slices.Sorted(slices.Values(s.Agents))), s.Called, s.Note
 		b.Skills = append(b.Skills, c)
 	}
 	subs := []*Subagent{}
@@ -115,6 +121,13 @@ func Collect() (*Bundle, error) {
 		subs = append(subs, &c)
 	}
 	b.Subagents = &subs
+	hooks := []*Hook{}
+	for _, h := range sorted(l.Hooks, func(h *Hook) string { return h.Name }) {
+		c := *h
+		c.Agents = orNone(slices.Sorted(slices.Values(h.Agents)))
+		hooks = append(hooks, &c)
+	}
+	b.Hooks = &hooks
 	return b, nil
 }
 
@@ -260,6 +273,27 @@ func (b *Bundle) check() error {
 				return fmt.Errorf("the subagent %s twice", s.Name)
 			}
 			seen[s.Name] = true
+		}
+	}
+	if b.Hooks != nil {
+		seen := map[string]bool{}
+		for _, h := range *b.Hooks {
+			if h == nil {
+				return fmt.Errorf("an empty hook")
+			}
+			// the event and agents are left as they come: one a newer
+			// magpie knows and this one doesn't is a problem on the
+			// agent it is given to (syncHooks), not a refused library
+			if err := checkName("hook", h.Name); err != nil {
+				return err
+			}
+			if strings.TrimSpace(h.Command) == "" {
+				return fmt.Errorf("the hook %s has no command", h.Name)
+			}
+			if seen[h.Name] {
+				return fmt.Errorf("the hook %s twice", h.Name)
+			}
+			seen[h.Name] = true
 		}
 	}
 	return nil
@@ -416,7 +450,7 @@ func Put(b *Bundle) (*Result, error) {
 		for _, s := range b.Skills {
 			// turned off here stays off here: that is this computer's own
 			off := l.skill(s.Name) != nil && l.skill(s.Name).OffHere
-			skills = append(skills, &Skill{Name: s.Name, Source: s.Source, Agents: slices.Clone(orNone(s.Agents)), OffHere: off, Called: s.Called})
+			skills = append(skills, &Skill{Name: s.Name, Source: s.Source, Agents: slices.Clone(orNone(s.Agents)), OffHere: off, Called: s.Called, Note: s.Note})
 			if keep[s.Name] {
 				continue
 			}
@@ -498,6 +532,17 @@ func Put(b *Bundle) (*Result, error) {
 				subs = append(subs, &c)
 			}
 			l.Subagents = subs
+		}
+		// the same for hooks: Applied.Hooks decides, entry by entry,
+		// what magpie takes out of each agent's file here
+		if b.Hooks != nil {
+			hooks := []*Hook{}
+			for _, h := range *b.Hooks {
+				c := *h
+				c.Agents = slices.Clone(orNone(h.Agents))
+				hooks = append(hooks, &c)
+			}
+			l.Hooks = hooks
 		}
 		return nil
 	})

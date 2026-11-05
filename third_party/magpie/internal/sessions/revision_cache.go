@@ -9,7 +9,15 @@ import (
 // Recent sources take priority over idle windows, then compete by reparse
 // cost (source size). Cold-only historical Claude sources keep no window;
 // an already retained idle window can use spare capacity. Codex still expires.
-const revisionIdle = 5 * time.Minute
+//
+// A Codex window lives an hour past its file's last change, as a working
+// Claude one does. At five minutes, the turn after any longer pause read
+// the whole rollout again from its first line, for the summary and the
+// calls alike (#4369: a 21 MB real rollout read whole for one line). The
+// windows held are bounded as before (revisionFiles, revisionEntries,
+// revisionActiveFiles): only how long an idle one is held grew, so the
+// most held is what one working session held already.
+const revisionIdle = time.Hour
 const revisionFiles = 8
 const revisionEntries = 8192
 

@@ -52,14 +52,15 @@ func canSearchFor(p provider.Provider) bool {
 }
 
 // searchesOwn is whether p searches for its own models: by its Kimi Code
-// plan's or WorkBuddy plan's search service (#1798), or a Google sign-in's
-// own Gemini. Never with provider search Off in Settings (#1483), which
+// plan's, GLM Coding Plan's (glmSearches) or WorkBuddy plan's search
+// service (#1798), or a Google sign-in's
+// or an AI Studio key's own Gemini (geminiKeySearches). Never with provider search Off in Settings (#1483), which
 // leaves the search APIs alone, nor with plugins/search off.
 func searchesOwn(p provider.Provider) bool {
 	if !searchServed() || settings.Load().Searcher == "off" {
 		return false
 	}
-	return provider.KimiCodeSearch(p) != "" || wbSearches(p) || googleAccount(p) && searcherModel(p) != ""
+	return provider.KimiCodeSearch(p) != "" || glmSearches(p) || wbSearches(p) || (googleAccount(p) || geminiKeySearches(p)) && searcherModel(p) != ""
 }
 
 // searchingOn is ctx for the searches made for a model of p.
@@ -80,16 +81,13 @@ func ownSearcher(ctx context.Context) (provider.Provider, bool) {
 // ownSearch searches with the conversation's own provider (ownSearcher).
 func (s *Server) ownSearch(ctx context.Context, p provider.Provider, query string) (string, []Hit, error) {
 	if provider.KimiCodeSearch(p) != "" {
-		start := time.Now()
-		said, hits, err := s.kimiSearch(ctx, p, query)
-		logOwnSearch(ctx, p, provider.KimiCodeSearch(p), query, start, len(hits), err)
-		return said, hits, err
+		return s.askOwnSearch(ctx, p, provider.KimiCodeSearch(p), query, s.kimiSearch)
+	}
+	if glmSearches(p) {
+		return s.glmSearch(ctx, p, query)
 	}
 	if wbSearches(p) {
-		start := time.Now()
-		said, hits, err := s.wbSearch(ctx, p, query)
-		logOwnSearch(ctx, p, p.Origin(ctx), query, start, len(hits), err)
-		return said, hits, err
+		return s.askOwnSearch(ctx, p, p.Origin(ctx), query, s.wbSearch)
 	}
 	ctx, cancel := context.WithTimeout(context.WithValue(ctx, searchingKey{}, true), searchTimeout)
 	defer cancel()
@@ -97,10 +95,16 @@ func (s *Server) ownSearch(ctx context.Context, p provider.Provider, query strin
 }
 
 // searchBy searches with one searcher: a Kimi Code plan by its search
-// service, any other by its model.
+// service, a ChatGPT account named with codexSearchModel by the backend's
+// search, any other by its model.
 func (s *Server) searchBy(ctx context.Context, p provider.Provider, model, query, effort string) (string, []Hit, error) {
+	// a Kimi Code plan picked to search for another's model is its
+	// search service's ask, logged as one for its own model is
 	if provider.KimiCodeSearch(p) != "" {
-		return s.kimiSearch(ctx, p, query)
+		return s.askOwnSearch(ctx, p, provider.KimiCodeSearch(p), query, s.kimiSearch)
+	}
+	if model == codexSearchModel && codexSearches(p) {
+		return s.codexSearchBy(ctx, p, query)
 	}
 	return s.searchWith(ctx, p, model, query, effort)
 }
@@ -108,8 +112,19 @@ func (s *Server) searchBy(ctx context.Context, p provider.Provider, model, query
 // logOwnSearch writes the request log's row of a search a plan's own
 // search service (Kimi Code's, WorkBuddy's) ran, at where (#3528): the
 // plan's provider by name, and how it ended.
-func logOwnSearch(ctx context.Context, p provider.Provider, where, query string, start time.Time, found int, err error) {
-	logSearch(ctx, usage.Record{Provider: p.ID, Requested: p.Name, Host: provider.HostOf(where)}, query, start, found, err)
+func (s *Server) logOwnSearch(ctx context.Context, p provider.Provider, where, query string, start time.Time, found int, err error) {
+	s.logSearch(ctx, usage.Record{Provider: p.ID, Requested: p.Name, Host: provider.HostOf(where)}, query, start, found, err)
+}
+
+// askOwnSearch asks p's plan's search service at where with ask, and
+// logs it (logOwnSearch), its exchange kept as ask sends it (tapSearch).
+func (s *Server) askOwnSearch(ctx context.Context, p provider.Provider, where, query string,
+	ask func(context.Context, provider.Provider, string) (string, []Hit, error)) (string, []Hit, error) {
+	ctx, _ = withSearchWire(ctx, p.Key)
+	start := time.Now()
+	said, hits, err := ask(ctx, p, query)
+	s.logOwnSearch(ctx, p, where, query, start, len(hits), err)
+	return said, hits, err
 }
 
 // kimiSearch asks a Kimi Code plan's search service.
@@ -135,6 +150,7 @@ func (s *Server) kimiSearch(ctx context.Context, p provider.Provider, query stri
 		r.Header.Set("X-Msh-Tool-Call-Id", id)
 	}
 	res, err := s.client.Do(r)
+	res = tapSearch(ctx, r, body, res)
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", nil, fmt.Errorf("%s: no answer in time", p.Name)

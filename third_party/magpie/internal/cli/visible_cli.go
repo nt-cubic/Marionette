@@ -19,7 +19,8 @@ const visibleUsage = `usage:
   magpie visible <agent> <name>[,<name>…] show the agent only these: families (a tag set with
                                           magpie provider set <id> family=relay, or magpie group set),
                                           provider ids and group ids
-  magpie visible <agent> all              show the agent every model again
+  magpie visible <agent> all              show the agent every model again, the ones taken out of
+                                          its list one by one too
   magpie visible <agent> --only-picked    show the agent only the models ticked for it now; a model
                                           that comes later, of any provider, stays off until it is
                                           ticked in its list on the Agents page
@@ -102,6 +103,12 @@ func visibleCmd(args []string) error {
 	list := splitList(strings.Join(args[1:], ","))
 	if len(list) == 1 && strings.EqualFold(list[0], "all") {
 		delete(s.Visible, id)
+		// all is the recovery the hints point at (magpie models, the
+		// gateway's refusal to name a model): the models taken out of the
+		// agent's list one by one, and the only-picked switch, keep it
+		// shown none or fewer unless these go too (#4587)
+		delete(s.HiddenModels, id)
+		delete(s.PickedModels, id)
 	} else {
 		known := visibleNames()
 		for i, n := range list {

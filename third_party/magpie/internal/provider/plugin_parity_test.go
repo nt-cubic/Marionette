@@ -75,6 +75,34 @@ func TestPluginCatalogPriceAndImages(t *testing.T) {
 	}
 }
 
+// A plugin's word on what its model takes stands whether or not it spoke
+// of images (Command Code's plans, #4436): it is the plugin's own word
+// that counts (InputsSaid), not the host's default for a model nothing
+// was said of, whose input is text alone whether the model takes it or
+// not (#1595).
+func TestPluginCatalogInputModalities(t *testing.T) {
+	pp := plugin.Provider{ID: "fakeco", Models: []plugin.Model{
+		{ID: "text-only", Inputs: []string{"text"}, InputsSaid: true},
+		{ID: "said-image", Image: true, ImageSaid: true, Inputs: []string{"text", "image"}, InputsSaid: true},
+		// the host's word on a model the plugin said nothing of, as the
+		// host sends it: inputs listed, none of it the plugin's
+		{ID: "host-default", Inputs: []string{"text"}},
+	}}
+	got := map[string]catalog.Model{}
+	for _, m := range pluginCatalog(pp) {
+		got[m.ID] = m
+	}
+	if in := got["text-only"].InputModalities; !slices.Equal(in, []string{"text"}) {
+		t.Errorf("a model said text alone: input modalities %v, want [text]", in)
+	}
+	if in := got["said-image"].InputModalities; !slices.Equal(in, []string{"text", "image"}) {
+		t.Errorf("a model said text and image: input modalities %v, want [text image]", in)
+	}
+	if in := got["host-default"].InputModalities; in != nil {
+		t.Errorf("a model the host alone spoke of: input modalities %v, want none", in)
+	}
+}
+
 // A built-in moved onto its plugin stands where the built-in stood among
 // the accounts; a plugin's own provider goes last.
 func TestMovedAccountKeepsItsPlace(t *testing.T) {

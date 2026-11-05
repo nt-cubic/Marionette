@@ -344,6 +344,15 @@ func modelFits(s string, a, b int, kind string) bool {
 		}
 		return strings.IndexFunc(v, unicode.IsLetter) >= 0
 	case "SECRET":
+		// a name a call is made on is no value: gctx.GetInt64 in
+		// gctx.GetInt64("user_id") went as a made-up key (#4444). Only a
+		// name the '(' touches is a call's: in prose a secret may stand
+		// before a bracket of words ("the token is k3Xq9vB2mZ (rotated)"),
+		// and the model is asked about prose too, so notCode's wider
+		// reading of the rules' values isn't taken here
+		if b < len(s) && s[b] == '(' && identPath.MatchString(v) {
+			return false
+		}
 		if !wordByte(v[0]) || patternWords(v) || regexpLike(v) || idAfter(s, a) || strings.ContainsRune(v, ' ') && clockIn.MatchString(v) || uuidIn.MatchString(v) || strings.Contains(v, `": `) || strings.Contains(v, `", "`) || linkRe.MatchString(v) {
 			return false
 		}
@@ -638,11 +647,25 @@ func underPackages(s string, a int) bool {
 // missingModuleAt says s[a:b] is quoted after the words an error names a
 // module it could not load with: tsc's and Node's Cannot find module
 // 'x', Python's No module named 'x', a bundler's Can't resolve 'x'.
+//
+// The words stand right before the quote, and what is read of what is
+// before them is the last 64 bytes of it, as assignedSecret reads the 64
+// before the value it judges (above). The whole text before the quote was
+// read and lowered here, once for each place a known value turns up at in
+// a session's body (knownSpans asks packageAt), so a long session paid its
+// whole length again for every value already masked in it — a 555 KB turn
+// held minutes in the masking and was answered 504 (#4766). The spaces
+// before the quote are trimmed first, so the window ends at the words
+// however many stand between. Lowering is rune by rune with no context,
+// so lowering the window gives the same last bytes as lowering the whole
+// text: a body written in Chinese, or one a rune cut at the window's
+// start, is read the same way and as cheaply.
 func missingModuleAt(s string, a, b int) bool {
 	if a == 0 || b >= len(s) || !strings.ContainsRune("'\"`", rune(s[a-1])) || s[b] != s[a-1] {
 		return false
 	}
-	q := strings.ToLower(strings.TrimRight(s[:a-1], " \t"))
+	t := strings.TrimRight(s[:a-1], " \t")
+	q := strings.ToLower(t[max(0, len(t)-64):])
 	for _, w := range []string{"find module", "find package", "module named", "resolve", "resolve import", "resolve module"} {
 		if wordEnd(q, w) {
 			return true

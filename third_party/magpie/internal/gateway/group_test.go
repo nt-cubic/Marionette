@@ -64,6 +64,7 @@ func fresh(t *testing.T) {
 	provider.ForgetCopilotForTest()
 	provider.ForgetRemoteCardsForTest()
 	provider.ForgetKeptCardsForTest()
+	provider.ForgetCodexClientsForTest()
 	remoteRefreshes.Lock()
 	remoteRefreshes.at = map[string]time.Time{}
 	remoteRefreshes.Unlock()
@@ -77,7 +78,7 @@ func fresh(t *testing.T) {
 // rather than a turn on, or with a failure already counted.
 func forgetRouting() {
 	routed.Lock()
-	routed.used, routed.failures, routed.slow = map[string]tokenUse{}, map[string]int{}, map[string]slowRun{}
+	routed.used, routed.failures, routed.slow, routed.answered = map[string]tokenUse{}, map[string]int{}, map[string]slowRun{}, map[string]time.Time{}
 	routed.Unlock()
 	routes.Forget()
 }

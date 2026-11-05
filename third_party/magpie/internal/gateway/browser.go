@@ -55,6 +55,7 @@ const browserCallWait = 100 * time.Second
 // Browser (Chrome and Edge both, two profiles of one). A session goes on in
 // the one it picked (browser_tabs use), else the last to connect.
 type browserRelay struct {
+	recs    browserRecs
 	mu      sync.Mutex
 	conns   []*browserConn
 	chosen  map[string]*browserConn // session → the browser it picked
@@ -276,6 +277,15 @@ func (s *Server) browserExtension(w http.ResponseWriter, r *http.Request) {
 				added = true
 				log.Printf("Magpie Browser %s connected", m.Version)
 			}
+			if browserext.Older(m.Version, browserext.Version()) {
+				// an older extension: its folder gets this magpie's, which
+				// the browser reads when it starts again (or the extension's
+				// reload on chrome://extensions). The extension isn't told
+				// to reload itself: an unpacked one that calls
+				// chrome.runtime.reload() doesn't come back (Chrome for
+				// Testing 1234, headless and not, loaded either way).
+				browserext.Refresh(URL())
+			}
 		case m.Type == "ping":
 			c.send(ctx, map[string]string{"type": "pong"})
 		case m.ID != "":
@@ -323,7 +333,7 @@ func (s *Server) browserMCPCall(r *http.Request, m mcpMessage) (any, map[string]
 	case "ping":
 		return map[string]any{}, nil
 	case "tools/list":
-		return map[string]any{"tools": browserTools()}, nil
+		return map[string]any{"tools": []any{browserOneTool()}}, nil
 	case "tools/call":
 		var p struct {
 			Name      string          `json:"name"`
@@ -332,8 +342,26 @@ func (s *Server) browserMCPCall(r *http.Request, m mcpMessage) (any, map[string]
 		if err := json.Unmarshal(m.Params, &p); err != nil {
 			return nil, map[string]any{"code": -32602, "message": "invalid params: " + err.Error()}
 		}
-		if !browserToolNamed(p.Name) {
+		one, shot := p.Name == "browser", false
+		acted := map[string]any{} // the arguments, for a recording's frame
+		if one {
+			tool, args, wants, err := browserUnfold(p.Arguments)
+			if err != nil {
+				return toolResult(err.Error(), true), nil
+			}
+			json.Unmarshal(p.Arguments, &acted)
+			if tool == browserRecordTool {
+				return s.browserRecord(r, browserSession(r), acted["action"] == "record_stop"), nil
+			}
+			p.Name, p.Arguments, shot = tool, args, wants
+		} else if !browserToolNamed(p.Name) {
 			return nil, map[string]any{"code": -32602, "message": "unknown tool " + p.Name}
+		}
+		said := func(r map[string]any) map[string]any {
+			if one {
+				browserSays(r)
+			}
+			return r
 		}
 		session := browserSession(r)
 		var tabs struct{ Action, Browser string }
@@ -341,18 +369,18 @@ func (s *Server) browserMCPCall(r *http.Request, m mcpMessage) (any, map[string]
 			json.Unmarshal(p.Arguments, &tabs)
 			switch tabs.Action {
 			case "browsers":
-				return toolResult(s.browser.list(session), false), nil
+				return said(toolResult(s.browser.list(session), false)), nil
 			case "use":
 				c, err := s.browser.choose(session, tabs.Browser)
 				if err != nil {
-					return toolResult(err.Error(), true), nil
+					return said(toolResult(err.Error(), true)), nil
 				}
-				return toolResult("Calls now go to "+c.id+" ("+c.name()+"). browser_tabs lists its tabs.", false), nil
+				return said(toolResult("Calls now go to "+c.id+" ("+c.name()+"). browser_tabs lists its tabs.", false)), nil
 			}
 		}
 		out, err := s.browser.call(r.Context(), session, p.Name, p.Arguments)
 		if err != nil {
-			return toolResult(err.Error(), true), nil
+			return said(toolResult(err.Error(), true)), nil
 		}
 		var result map[string]any
 		if json.Unmarshal(out, &result) != nil || result["content"] == nil {
@@ -368,9 +396,60 @@ func (s *Server) browserMCPCall(r *http.Request, m mcpMessage) (any, map[string]
 				}
 			}
 		}
-		return result, nil
+		rec := s.browser.recs.on(session) && result["isError"] != true && browserRecWorth(p.Name, tabs.Action)
+		if (shot || rec) && result["isError"] != true {
+			data, why := s.browserPicture(r, session)
+			if shot {
+				s.browserShot(result, data, why)
+			}
+			if rec && data != "" {
+				name := strings.TrimPrefix(p.Name, "browser_")
+				if a, _ := acted["action"].(string); a != "" {
+					name = a
+				}
+				if f, err := browserRecFrame(data, browserRecSay(s.browser.recs.count(session)+1, name, acted)); err == nil {
+					s.browser.recs.add(session, f)
+				}
+			}
+		}
+		return said(result), nil
 	}
 	return nil, map[string]any{"code": -32601, "message": "method not found: " + m.Method}
+}
+
+// browserPicture is a picture of session's window (base64), or why there
+// is none.
+func (s *Server) browserPicture(r *http.Request, session string) (data, why string) {
+	out, err := s.browser.call(r.Context(), session, "browser_screenshot", nil)
+	if err != nil {
+		return "", err.Error()
+	}
+	var shot struct {
+		Content []struct{ Type, Data string }
+		IsError bool
+	}
+	if json.Unmarshal(out, &shot) == nil && !shot.IsError {
+		for _, c := range shot.Content {
+			if c.Type == "image" && c.Data != "" {
+				return c.Data, ""
+			}
+		}
+	}
+	return "", "it didn't answer with a picture"
+}
+
+// browserShot adds a small picture of the window, data, to an action's
+// result. One that couldn't be taken says why; the action still happened.
+func (s *Server) browserShot(result map[string]any, data, why string) {
+	content, _ := result["content"].([]any)
+	if data != "" {
+		if small, ok := browserSmall(data); ok {
+			result["content"] = append(content, map[string]any{"type": "image", "data": small, "mimeType": "image/jpeg"})
+			return
+		}
+		why = "it didn't answer with a picture"
+	}
+	result["content"] = append(content, map[string]any{"type": "text", "text": "(no screenshot: " + why + ")"})
 }
 
 // list is the connected browsers, the one session's calls go to marked *.

@@ -80,7 +80,11 @@ func FetchIcon(ctx context.Context, rawURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fetchIcon(ctx, iconClient(), iconproxy.URL(u))
+	c := iconClient()
+	// the client is this fetch's alone: the connection it made, left idle
+	// in the transport's pool, is dropped by nobody else (#4824)
+	defer c.CloseIdleConnections()
+	return fetchIcon(ctx, c, iconproxy.URL(u))
 }
 
 // iconClient is the client FetchIcon uses; tests point it at a local proxy.

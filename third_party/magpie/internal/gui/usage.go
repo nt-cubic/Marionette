@@ -270,6 +270,9 @@ func usageRoutes(mux *http.ServeMux, w Windows) {
 		qs = usage.WithWindowHolds(qs, usage.Clock())
 		// and when each began, for its Pace number (fflake33)
 		qs = provider.WithWindowStarts(qs, usage.Clock())
+		// and which an account can't spend for another window used up,
+		// for the accounts' sum (#4791)
+		qs = provider.WithHeldWindows(qs, usage.Clock())
 		// and which the menu bar can show, by kind, for Settings to pick
 		// among (settings.TrayWindows)
 		qs = withTrayKinds(qs)
@@ -292,7 +295,7 @@ func usageRoutes(mux *http.ServeMux, w Windows) {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 		provider.RefreshUsage(ctx, id, r.URL.Query().Get("user"))
-		writeJSON(rw, withTrayKinds(provider.WithWindowStarts(usage.WithWindowHolds(provider.InProviderOrder(provider.WithCheckins(provider.Quotas(ctx))), usage.Clock()), usage.Clock())))
+		writeJSON(rw, withTrayKinds(provider.WithHeldWindows(provider.WithWindowStarts(usage.WithWindowHolds(provider.InProviderOrder(provider.WithCheckins(provider.Quotas(ctx))), usage.Clock()), usage.Clock()), usage.Clock())))
 	})
 	// WorkBuddy's daily check-in pressed now, from the Usage card, for
 	// each account not in yet today, as `magpie accounts checkin` does; the
@@ -351,6 +354,24 @@ func usageRoutes(mux *http.ServeMux, w Windows) {
 		}
 		writeJSON(rw, rs)
 	})
+	// and one account's, from Settings' Check in now (xiaowu_95660), by
+	// its vendor and key as /api/settings lists them: asked once now,
+	// whatever its switch says, which it leaves as it is
+	mux.HandleFunc("POST /api/usage/checkin-account", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ By, Key string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Key == "" {
+			fail(rw, errors.New("no account"))
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+		defer cancel()
+		rs := provider.CheckInAccount(ctx, in.By, in.Key)
+		if len(rs) == 0 {
+			fail(rw, errors.New("No daily check-in reaches this account"))
+			return
+		}
+		writeJSON(rw, rs[0])
+	})
 	// what was left of each window over time, for the quota cards' curves
 	// (#651); ?days= back
 	mux.HandleFunc("GET /api/usage/quotas/history", func(rw http.ResponseWriter, r *http.Request) {
@@ -378,31 +399,31 @@ func usageRoutes(mux *http.ServeMux, w Windows) {
 	// spends one of a Codex account's rate-limit resets, which the page
 	// has asked the user about first: the one they chose (Credit, an id
 	// of its resets.each), else the one that runs out first; what it did
-	// comes back
+	// comes back. A card from a remote magpie (Provider "office/codex")
+	// has that magpie spend it, on its account (#3850)
 	mux.HandleFunc("POST /api/usage/codex-reset", func(rw http.ResponseWriter, r *http.Request) {
-		var in struct{ User, Credit string }
+		var in struct{ Provider, User, Credit string }
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			fail(rw, err)
 			return
 		}
+		if in.Provider != "" && in.Provider != "codex" {
+			ctx, cancel := context.WithTimeout(r.Context(), provider.RemoteResetWait+10*time.Second)
+			defer cancel()
+			out, err := provider.UseRemoteCodexReset(ctx, in.Provider, in.User, in.Credit)
+			if err != nil {
+				fail(rw, err)
+				return
+			}
+			writeJSON(rw, out)
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 		defer cancel()
-		out, err := provider.UseCodexResetCard(ctx, in.User, in.Credit)
+		out, err := provider.SpendCodexReset(ctx, in.User, in.Credit)
 		if err != nil {
 			fail(rw, err)
 			return
-		}
-		if out.Code == "reset" {
-			// routing and the Providers page know the windows started
-			// again by the time the page hears so, not at a later
-			// request's reading (#1491)
-			who := in.User
-			if who == "" {
-				who, _ = provider.CodexSignedIn()
-			}
-			wait, done := context.WithTimeout(ctx, 10*time.Second)
-			provider.AwaitAllowance(wait, "codex", who)
-			done()
 		}
 		writeJSON(rw, out)
 	})

@@ -297,7 +297,7 @@ function gatewayKeysArrange(list, rows) {
 // (zytszone on X: a department shares one magpie, whose app its people
 // can't be given). Its address is the one other machines reach.
 function gatewayKeyPage() {
-  const g = providers?.gateway, lan = g?.lanURLs || [];
+  const g = providers?.gateway, lan = gwFar(g);
   const at = g?.publicURL || (lan.includes(connectURL) ? connectURL : lan[0]);
   if (!at || !gatewayKeys?.length) return null;
   const url = at.replace(/\/+$/, "") + "/me";
@@ -356,6 +356,16 @@ function askGatewayKey(k, rotate) {
   ed.append(head, el("p", "lib-confirm", t(rotate
     ? "Clients using {name} will need the new key. Its name and usage history stay the same."
     : "Clients using {name} will lose access from other computers. Its usage history is kept.", { name: k.name })));
+  // a value of one's own in place of the one magpie makes (isaac_bai on
+  // Discord: one easy to remember and pass on)
+  let own = null;
+  if (rotate) {
+    own = input("", t("Your own key (optional)"), "password");
+    own.setAttribute("aria-label", t("Gateway key value"));
+    own.title = t("Leave empty and magpie makes a key. Or enter one your clients already send, from another gateway, so they keep working.");
+    own.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") go.click(); else if (e.key === "Escape") closeConfirmAsk(); };
+    ed.append(el("label", "", t("Gateway key")), own);
+  }
   const bar = el("div", "bar");
   const cancel = el("button", "text", t("Cancel"));
   cancel.onclick = (e) => { e.stopPropagation(); closeConfirmAsk(); };
@@ -364,10 +374,11 @@ function askGatewayKey(k, rotate) {
     e.stopPropagation();
     if (go.disabled) return;
     go.disabled = true;
-    const out = await gatewayKeyAction(rotate ? "rotate-key" : "remove-key", { key: k.id });
+    const mine = !!own?.value.trim();
+    const out = await gatewayKeyAction(rotate ? "rotate-key" : "remove-key", mine ? { key: k.id, secret: own.value } : { key: k.id });
     if (!out) { go.disabled = false; return; }
     closeConfirmAsk();
-    if (rotate) status(t("Gateway key rotated. Update clients on other computers."), "ok");
+    if (rotate) status(t(mine ? "Gateway key changed. Clients that send this key reach magpie now." : "Gateway key rotated. Update clients on other computers."), "ok");
   };
   bar.append(el("span", "grow"), cancel, go);
   ed.append(bar);
@@ -467,7 +478,11 @@ function gatewayModelsBadge(k) {
         seen.add(m.provider);
         opts.push({ v: m.provider + "/*", name: t("Every {provider} model", { provider: m.providerName }), note: m.provider + "/*", literalName: true });
       }
-      opts.push({ v: m.id, name: m.name, note: m.id, literalName: true });
+      // a decision model (Jev, Clef…) no agent lists: a routing group
+      // asks it whatever the key may use, and the key may ask it itself
+      // (/v1/systemone, another magpie's list) only when it is picked
+      // (Kautism on Discord)
+      opts.push({ v: m.id, name: m.name, note: m.decides ? m.id + " · " + t("Decision model: a routing group asks it whatever this key may use; pick it so the key may ask it itself") : m.id, literalName: true });
     }
     endBlock();
     // a provider with accounts and no model in the list (one kept

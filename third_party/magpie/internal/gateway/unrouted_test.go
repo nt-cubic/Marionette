@@ -1,14 +1,17 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"weak"
 
 	"github.com/yetone/magpie/internal/gwmw"
 	"github.com/yetone/magpie/internal/settings"
@@ -49,12 +52,31 @@ func watchedHold(t *testing.T, s *Server) *unroutedHold {
 		}
 		s.active.mu.Unlock()
 		if u != nil {
+			// a hold magpie answered writes its report after the answer,
+			// from its timer: the test's temp HOME stays until it has
+			t.Cleanup(func() { holdReported(t, u) })
 			return u
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("no request was held before routing")
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// holdReported waits for u's report when magpie answered it.
+func holdReported(t *testing.T, u *unroutedHold) {
+	t.Helper()
+	u.f.mu.Lock()
+	ended := u.ended
+	u.f.mu.Unlock()
+	if !ended {
+		return
+	}
+	select {
+	case <-u.saved:
+	case <-time.After(30 * time.Second):
+		t.Error("a held request's report was never written")
 	}
 }
 
@@ -590,4 +612,31 @@ func TestUnroutedCodexPathShowsItsModel(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatal("never answered once masked")
 	}
+}
+
+// TestUnroutedTimersLetGoOfRequest: a stopped timer is not gone. The
+// runtime keeps it, and its func, in the timer heap of the P that set it
+// until its time comes or that P tidies its heap, so a timer that reached
+// the request kept its body up to unroutedMost after the handler returned
+// (#5250). The test holds the stopped timers as that heap does.
+func TestUnroutedTimersLetGoOfRequest(t *testing.T) {
+	body := make([]byte, 64<<10)
+	gone := weak.Make(&body[0])
+	f := &inflight{}
+	r := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	body = nil
+	_, r, unwatch := (&Server{}).watchUnrouted(httptest.NewRecorder(), r, f)
+	f.mu.Lock()
+	u := f.unrouted
+	f.mu.Unlock()
+	u.wmu.Lock()
+	timers := []*time.Timer{u.unknown, u.most}
+	u.wmu.Unlock()
+	unwatch()
+	u, r, f = nil, nil, nil
+	runtime.GC()
+	if gone.Value() != nil {
+		t.Fatal("a stopped unrouted timer still reaches its request's body")
+	}
+	runtime.KeepAlive(timers)
 }

@@ -64,6 +64,50 @@ func TestPeakHours(t *testing.T) {
 	}
 }
 
+// Ollama Cloud's peak hours are 12:00 to 18:00 UTC, Monday to Friday,
+// holidays too: each edge a minute either side, on a weekday, a weekend
+// day and a Chinese holiday, in whatever zone the time is written in.
+func TestOllamaPeakHours(t *testing.T) {
+	far := []*time.Location{time.UTC, time.FixedZone("+14", 14*3600), time.FixedZone("-11", -11*3600), time.FixedZone("+0545", 5*3600+45*60)}
+	edges := map[string]bool{
+		"11:59": false, "12:00": true, "17:59": true, "18:00": false,
+		"00:00": false, "02:00": false, "23:59": false, "15:30": true,
+	}
+	for _, c := range []struct {
+		day     string
+		weekday bool
+	}{
+		{"2026-10-28", true},  // a Wednesday
+		{"2026-10-26", true},  // a Monday
+		{"2026-10-30", true},  // a Friday
+		{"2026-10-05", true},  // a Monday in China's National Day break
+		{"2026-10-31", false}, // a Saturday
+		{"2026-11-01", false}, // a Sunday
+	} {
+		for hm, peak := range edges {
+			v, err := time.Parse("2006-01-02 15:04", c.day+" "+hm)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, z := range far {
+				if got := PeakOllama.At(v.In(z)); got != (peak && c.weekday) {
+					t.Errorf("ollama %s %s UTC in %s: peak %v", c.day, hm, z, got)
+				}
+			}
+		}
+	}
+	if PeakOllama.At(time.Time{}) {
+		t.Error("a call with no time is at peak")
+	}
+	pro := Price{Input: 0.66, Output: 1.98, CacheRead: 0.022, Peak: PeakOllama}
+	if got, want := pro.In(time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)), (Price{Input: 1.32, Output: 3.96, CacheRead: 0.044}); !got.Same(want) {
+		t.Errorf("peak: %+v, want %+v", got, want)
+	}
+	if got, want := pro.In(time.Date(2026, 10, 28, 11, 59, 0, 0, time.UTC)), (Price{Input: 0.66, Output: 1.98, CacheRead: 0.022}); !got.Same(want) {
+		t.Errorf("off-peak: %+v, want %+v", got, want)
+	}
+}
+
 // A price with no Peak holds at every hour; a peak-billed one doubles in
 // its peak hours, every part of it, tiers too, and the price In gives is
 // one that holds (In again doesn't double it twice).

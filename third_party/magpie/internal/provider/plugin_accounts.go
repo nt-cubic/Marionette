@@ -420,6 +420,18 @@ func keepPluginPlan(pp plugin.Provider, key, plan string) {
 	}
 }
 
+// PluginAccountUser is who the plugin id's account at key is (an email, a
+// login), as the Routing trace and the request log name it: "" when no
+// account is kept there.
+func PluginAccountUser(id, key string) string {
+	for _, l := range readLogins() {
+		if l.Agent == "plugin:"+id && l.Home == key {
+			return l.User
+		}
+	}
+	return ""
+}
+
 // notePluginLapse marks the account at key lapsed when its vendor refused
 // a request (401), as a built-in's refused sign-in is marked, and clears
 // the mark once one goes through.

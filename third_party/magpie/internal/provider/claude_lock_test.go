@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yetone/magpie/internal/claudelock"
 	"github.com/yetone/magpie/internal/filelock"
 )
 
@@ -134,9 +135,9 @@ func TestClaudeSwitchStaleAndHeldLocks(t *testing.T) {
 	})
 	t.Run("held", func(t *testing.T) {
 		home, cred := claudeLockAccounts(t)
-		w := claudeLockWait
-		claudeLockWait = 300 * time.Millisecond
-		t.Cleanup(func() { claudeLockWait = w })
+		w := claudelock.Wait
+		claudelock.Wait = 300 * time.Millisecond
+		t.Cleanup(func() { claudelock.Wait = w })
 		if err := os.Mkdir(home+"/.claude.lock", 0o755); err != nil {
 			t.Fatal(err)
 		}

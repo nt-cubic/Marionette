@@ -92,7 +92,7 @@
     <button class="icon" id="sync" title="Look for agents on this computer again: one just installed or removed, or its settings changed" data-tt>
       <svg viewBox="0 0 16 16" width="14" height="14"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2v3h-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
-    <button class="icon" id="open" title="Open as a window" data-tt>
+    <button class="icon" id="open" title="Open the main window" data-tt>
       <svg viewBox="0 0 16 16" width="14" height="14"><path d="M6 3H3.5A1.5 1.5 0 0 0 2 4.5v8A1.5 1.5 0 0 0 3.5 14h8a1.5 1.5 0 0 0 1.5-1.5V10M9 2h5v5M14 2 8 8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
     <button class="icon" id="prefs" title="Settings" data-tt data-keys="⌘,|Ctrl+,">
@@ -131,7 +131,7 @@
     <div class="who" role="status" aria-live="polite"><b id="providerDiscoveryCount"></b><span id="providerDiscoverySources"></span></div>
     <div class="actions"><button class="text primary" id="reviewProviderDiscovery">Review and import…</button><button class="text" id="dismissProviderDiscovery" data-t data-tt="Hide these configurations until they change">Ignore</button></div>
   </aside>
-  <div class="pv-head" id="pvHead" hidden><input class="sess-filter pv-q" id="pvQ" type="search" spellcheck="false" autocomplete="off" placeholder="Find a provider" aria-label="Find a provider" data-tp><button class="text rt-mask" id="pvMask" aria-pressed="false" data-tt="Mask the accounts on this page — email addresses and account names — for a screenshot to share"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.9 4.2A10.4 10.4 0 0 1 12 4c6.5 0 10 8 10 8a17.6 17.6 0 0 1-2.2 3.2M6.6 6.6C3.9 8.4 2 12 2 12s3.5 8 10 8a9.7 9.7 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20"/></svg><span data-t>Hide accounts</span></button></div>
+  <div class="pv-head" id="pvHead" hidden><input class="sess-filter pv-q" id="pvQ" type="search" spellcheck="false" autocomplete="off" placeholder="Find a provider" aria-label="Find a provider" data-tp><button class="text rt-mask" id="pvMask" aria-pressed="false" data-tt="Mask the accounts on every page — email addresses and account names — for a screenshot to share"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.9 4.2A10.4 10.4 0 0 1 12 4c6.5 0 10 8 10 8a17.6 17.6 0 0 1-2.2 3.2M6.6 6.6C3.9 8.4 2 12 2 12s3.5 8 10 8a9.7 9.7 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20"/></svg><span data-t>Hide accounts</span></button></div>
   <p class="set-none pv-none" id="pvNone" role="status" hidden></p>
   <div class="list" id="providers"></div>
   <div class="row-head off-head" id="offHead" hidden><button class="fold" id="foldOff" aria-expanded="false" aria-controls="offProviders"><span class="label" data-t>Turned off</span><span class="note" id="offCount"></span></button></div>
@@ -232,6 +232,10 @@
         <div class="who"><div class="name" data-t>Open at login</div></div>
         <div id="loginSegs"></div>
       </div>
+      <div class="row pref app-only" id="quitAskRow">
+        <div class="who"><div class="name" data-t>Ask before quitting</div><div class="sub" data-t>While agents go through magpie, Quit names them and asks first</div></div>
+        <div id="quitAskSegs"></div>
+      </div>
       <div class="row pref" id="dockRow" hidden>
         <div class="who"><div class="name" data-t>Show in Dock</div></div>
         <div id="dockSegs"></div>
@@ -283,6 +287,10 @@
       <div class="row pref" id="trayCostRow">
         <div class="who"><div class="name" data-t>Menu bar cost</div><div class="sub" data-t>What magpie's requests cost, beside their tokens in the menu bar and its tooltip; off, the tokens alone</div></div>
         <div id="trayCostSegs"></div>
+      </div>
+      <div class="row pref" id="trayNumberRow" hidden>
+        <div class="who"><div class="name" data-t>Tray icon number</div><div class="sub" data-t>The first allowance's figure as magpie's tray icon, used or left as Allowance display has it, every one when pointing at it; off, magpie's icon</div></div>
+        <div id="trayNumberSegs"></div>
       </div>
       <div class="row pref">
         <div class="who"><div class="name" data-t>Allowance display</div><div class="sub" data-t>How much of each window is used, or how much is left, on the Usage page, the panel and the menu bar</div></div>
@@ -465,6 +473,7 @@
   <span id="pqAge" class="pq-age" hidden></span>
   <span id="status" class="status" role="status" aria-atomic="true"></span>
   <span class="grow"></span>
+  <button class="text" id="openMain" data-t>Open the main window</button>
   <button class="text" id="quit" data-t>Quit</button>
 </footer>
 

@@ -253,7 +253,8 @@ var savedPrompts, codexCLIPrompts promptFile
 
 // codexInstructions is what Codex CLI would send as a model's
 // instructions: the account's model list's, Codex CLI's own copy of it
-// when magpie hasn't asked yet, else Codex's generic prompt.
+// when magpie hasn't asked yet, else its bundled catalog's for the model,
+// or Codex's prompt for a model it doesn't know (codexcat.Official).
 func codexInstructions(model string) string {
 	if s, ok := savedPrompts.get(codexPromptsPath(), model, func(b []byte) map[string]string {
 		var m map[string]string
@@ -265,7 +266,7 @@ func codexInstructions(model string) string {
 	if s, ok := codexCLIPrompts.get(catalog.CodexModelsCache(), model, codexPrompts); ok {
 		return s
 	}
-	return codexcat.Prompt
+	return codexcat.Official(model)
 }
 
 // codexBody makes a Responses request the one Codex CLI would send: it
@@ -329,6 +330,9 @@ func codexBody(body []byte) []byte {
 	m["stream"] = true
 	m["tool_choice"] = "auto"
 	declareSearch(m, false)
+	// a call's name the backend refuses, in a history another provider's
+	// model wrote, turned the whole request away (codex_names.go)
+	codexToolNames(m)
 	if _, ok := m["parallel_tool_calls"]; !ok {
 		m["parallel_tool_calls"] = true
 	}

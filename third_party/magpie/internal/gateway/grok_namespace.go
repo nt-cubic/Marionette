@@ -13,6 +13,9 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
+
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // Codex groups some tools in a namespace (collaboration's spawn_agent,
@@ -71,8 +74,11 @@ func namespacedIn(body []byte) map[string]nsTool {
 // held whole and gone through at the end.
 type nsTidy struct {
 	named map[string]nsTool
-	sse   bool
-	buf   []byte
+	// back maps a declared tool's name a ChatGPT account was given in its
+	// place to the agent's own (codexRenamedIn)
+	back map[string]string
+	sse  bool
+	buf  []byte
 }
 
 func (t *nsTidy) write(b []byte) []byte {
@@ -102,7 +108,7 @@ func (t *nsTidy) flush() []byte {
 }
 
 func (t *nsTidy) lines(b []byte) []byte {
-	if !bytes.Contains(b, []byte(`"function_call"`)) {
+	if !t.carries(b) {
 		return append([]byte(nil), b...)
 	}
 	var out []byte
@@ -115,7 +121,7 @@ func (t *nsTidy) lines(b []byte) []byte {
 		}
 		body := bytes.TrimRight(line, "\r\n")
 		data, ok := bytes.CutPrefix(body, []byte("data:"))
-		if !ok || !bytes.Contains(data, []byte(`"function_call"`)) {
+		if !ok || !t.carries(data) {
 			out = append(out, line...)
 			continue
 		}
@@ -164,16 +170,54 @@ func (t *nsTidy) restore(data []byte) ([]byte, bool) {
 	return nb, true
 }
 
+// carries reports whether b may hold a call restore names again: a
+// function call, or a custom tool's to one renamed.
+func (t *nsTidy) carries(b []byte) bool {
+	return bytes.Contains(b, []byte(`"function_call"`)) || t.back != nil && bytes.Contains(b, []byte(`"custom_tool_call"`))
+}
+
 // call names a function_call to a namespaced function by its name and
-// namespace, and reports whether it was one.
+// namespace, or a call to a tool renamed for a ChatGPT account by the
+// agent's name, and reports whether it was one. A call whose namespace
+// the upstream said itself (a vendor asked as Codex sends it, #3183)
+// needs no naming, only the word that its arguments are not sealed: Codex
+// reads a namespaced call without the empty list as sealed, and the
+// plain-text task would reach its subagent as ciphertext.
 func (t *nsTidy) call(it map[string]any) bool {
-	if it == nil || it["type"] != "function_call" || it["namespace"] != nil {
+	if it == nil || it["type"] != "function_call" && it["type"] != "custom_tool_call" {
 		return false
 	}
 	name, _ := it["name"].(string)
+	if ns, _ := it["namespace"].(string); ns != "" {
+		for _, q := range t.named {
+			if q.Namespace == ns && q.Name == name {
+				if _, ok := it["encrypted_function_args"]; !ok {
+					it["encrypted_function_args"] = []any{}
+					return true
+				}
+				break
+			}
+		}
+		return false
+	}
+	if n, ok := t.back[name]; ok {
+		it["name"] = n
+		return true
+	}
+	if it["type"] != "function_call" {
+		return false
+	}
 	if _, ok := t.named[name]; !ok {
 		return false
 	}
 	callTo(it, name, t.named)
 	return true
+}
+
+// sealsItsOwn says p is OpenAI's own Responses API (openai.com, Azure) or a
+// ChatGPT account: it answers a namespaced call's seal itself, and its
+// replies go back as they came, never given the empty
+// encrypted_function_args a relay's are (#3183).
+func sealsItsOwn(p provider.Provider) bool {
+	return accountAgent(p) == "codex" || strings.HasSuffix(p.Host(), "openai.com") || p.IsAzure()
 }

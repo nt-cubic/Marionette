@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -75,9 +76,12 @@ func antigravityTurnsAway(system string) bool {
 //     conversation's first developer message, and a thread begun on a GPT
 //     model keeps it when it is switched to another (/model, resume -m) or
 //     forked as an agent's thread, so such a thread on an Antigravity model
-//     never got an answer (Jodiezzzzzz on X, 10-27). magpie's own Codex
-//     prompt for other models ("You are Codex, based on GPT-5."), "an AI
-//     agent based on GPT-5" and GPT-6's prompt go through;
+//     never got an answer (Jodiezzzzzz on X, 10-27). The prompt magpie
+//     handed other models until 11-01 ("You are Codex, based on GPT-5."),
+//     "an AI agent based on GPT-5" and GPT-6's prompt go through. Codex's
+//     prompt for a model it doesn't know, which other models carry since
+//     ("You are a coding agent running in the Codex CLI"), has not been
+//     tried on a real account;
 //   - Hermes Agent's earlier default persona (its SOUL.md until Hermes
 //     replaced it: "You are Hermes Agent, an intelligent AI assistant
 //     created by Nous Research. …"), which a SOUL.md the user edited keeps
@@ -337,7 +341,13 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 	}
 	names := map[string]string{}
 	var contents []map[string]any
-	for _, m := range dropSecondAnswers(r.Messages) {
+	msgs := dropSecondAnswers(r.Messages)
+	if ag {
+		// a model turn that carried its call written out in the text goes
+		// as the answer it repeated (dropPseudoCalls)
+		msgs = dropPseudoCalls(msgs, r.Tools)
+	}
+	for _, m := range msgs {
 		role := "user"
 		if m.Role == "assistant" {
 			role = "model"
@@ -907,6 +917,28 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 		}
 		return "object"
 	}
+	// oneSays is the schema every member of a tuple that says anything
+	// says alike ({} and whatever isn't an object say nothing), or nil when
+	// they differ or none says anything: one member's schema would tell the
+	// model every item is that kind, and a [field, op, value] is not three
+	// fields
+	oneSays := func(members []any) any {
+		var one map[string]any
+		for _, m := range members {
+			s, ok := m.(map[string]any)
+			if !ok || len(s) == 0 {
+				continue
+			}
+			if one != nil && !reflect.DeepEqual(one, s) {
+				return nil
+			}
+			one = s
+		}
+		if one == nil {
+			return nil
+		}
+		return one
+	}
 	var walk func(v any, depth int, path string) any
 	walk = func(v any, depth int, path string) any {
 		switch x := v.(type) {
@@ -1087,15 +1119,25 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 						out["maxItems"] = 0
 					}
 				case "enum":
-					// Google takes string enums only
+					// Google takes string enums only, and none of them
+					// blank: Portainer's "" (no operation running) turned
+					// the whole turn away ("enum[3]: cannot be empty",
+					// #5235). A blank value is left out; an enum with
+					// nothing else in it is left out whole.
 					if es, ok := v.([]any); ok {
 						strs := make([]any, 0, len(es))
+						all := true
 						for _, e := range es {
-							if s, ok := e.(string); ok {
+							s, ok := e.(string)
+							if !ok {
+								all = false
+								break
+							}
+							if strings.TrimSpace(s) != "" {
 								strs = append(strs, s)
 							}
 						}
-						if len(strs) == len(es) {
+						if all && len(strs) > 0 {
 							out[k] = strs
 						}
 					}
@@ -1106,7 +1148,7 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 				}
 			}
 			if c, ok := x["const"]; ok {
-				if s, ok := c.(string); ok {
+				if s, ok := c.(string); ok && strings.TrimSpace(s) != "" {
 					out["enum"] = []any{s}
 				}
 			}
@@ -1118,12 +1160,30 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 					out["type"] = "array"
 				}
 			}
-			if out["type"] == "array" && out["items"] == nil {
-				// Google wants items on every array, and turns the whole
-				// request away over one with none ("…properties[batch].
-				// items: missing field", Claude Desktop's own MCP tools,
-				// plugins#375): any item is what JSON Schema means by none
-				out["items"] = map[string]any{}
+			if out["type"] == "array" {
+				if t, ok := out["items"].([]any); ok {
+					// a tuple (draft 07's items as an array) stands as one
+					// schema: Gemini takes an items object and nothing
+					// else, so members alike are said once, and members
+					// that differ as any item ({} below)
+					out["items"] = oneSays(t)
+				}
+				if out["items"] == nil {
+					// the members prefixItems said are gone from the subset;
+					// when they are alike, their schema stands in for them
+					if pfx, _ := x["prefixItems"].([]any); len(pfx) > 0 {
+						if s := oneSays(pfx); s != nil {
+							out["items"] = walk(s, depth+1, path+"/items")
+						}
+					}
+					if out["items"] == nil {
+						// an array says what its members are, or Google turns
+						// the whole request away over the missing field (#2826;
+						// plugins#375): any item is what JSON Schema means by
+						// none, and {} answers 200
+						out["items"] = map[string]any{}
+					}
+				}
 			}
 			if t, ok := out["type"].(string); ok {
 				// JSON Schema reads an array's keywords only on an array
@@ -1313,7 +1373,10 @@ func (d *codeAssistDecoder) decode(data string, emit func(Event)) error {
 		return nil
 	}
 	if ch.Error != nil {
-		emit(Event{Kind: KError, Text: cmp.Or(ch.Error.Message, streamErrorText(data))})
+		// at the status it names, Google's code: a 400 INVALID_ARGUMENT
+		// is the request's fault, never asked again nor the account's
+		// (sse_bare.go)
+		emit(Event{Kind: KError, Text: cmp.Or(ch.Error.Message, streamErrorText(data)), Status: namedStatus([]byte(data))})
 		return nil
 	}
 	c := ch.geminiChunk

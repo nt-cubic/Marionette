@@ -74,7 +74,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       }
       assert.equal(await row.locator(".name").textContent(), w.name);
       assert((await row.locator(".sub").textContent()).includes(w.sub));
-      for (const part of [".name", ".sub", ".segs"]) {
+      // its explanation rests out of sight, shown whole in the row's hover card
+      // (settings-hints.test.cjs)
+      assert.equal(await row.locator(".sub").first().evaluate((e) => getComputedStyle(e).getPropertyValue("--hint").trim()), "1", "the explanation shows at rest");
+      for (const part of [".name", ".segs"]) {
         const fit = await row.locator(part).first().evaluate((e) => {
           const r = e.getBoundingClientRect();
           return e.scrollWidth <= e.clientWidth + 1 && r.width > 0 && r.right <= innerWidth + 1;
@@ -93,7 +96,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       for (let i = 0; i < 50 && !saved.length; i++) await page.waitForTimeout(50);
       assert.equal(saved.length, 1, "saved once");
       assert.equal(saved[0].noLoopGuard, true);
-      assert.equal(saved[0].memberModel, false, "the row beside it kept");
+      assert.equal(saved[0].replyModel, "", "the row beside it kept");
       assert.equal(saved[0].redact, true, "the rest kept");
       assert.equal(saved[0].lang, lang);
       assert.deepEqual(await page.evaluate(() => [scrollX, scrollY, document.scrollingElement.scrollTop]), before, "the click moved nothing");

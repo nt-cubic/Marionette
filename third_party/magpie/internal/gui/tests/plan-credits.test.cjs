@@ -32,7 +32,9 @@ function ledger(period) {
   const all = [GEM, FREE, OTHER];
   const s = (k) => all.reduce((a, x) => a + (x[k] || 0), 0);
   return {
-    period, rows: [row(0, "gemini-3.5-flash", "workbuddy-ai"), row(1, "glm-5.2", "zai")], offset: 0, total: 2,
+    // a WorkBuddy reply that said 0.01 credits, one of another provider that
+    // said none, and a priced one whose reply said credits too
+    period, rows: [{ ...row(0, "gemini-3.5-flash", "workbuddy-ai"), credits: 0.01 }, row(1, "glm-5.2", "zai"), { ...row(2, "kimi-k2.6", "workbuddy-ai"), cost: 0.002, priced: true, credits: 2.5 }], offset: 0, total: 3,
     calls: s("calls"), errors: 0, input: s("input"), output: s("output"), cache_read: 0, cache_write: 0, cost: 0, unpriced: 74, credits: 0.7, credited: 71,
     by: { model: all }, bucket: "hour",
     series: [{ label: "", time: hour(0), calls: s("calls"), input: s("input"), output: s("output"), by: { model: Object.fromEntries(all.map((x) => [x.id, { calls: x.calls, tokens: x.input + x.output, cost: 0 }])) } }],
@@ -49,7 +51,15 @@ const SESSION = {
   via: [{ provider: "workbuddy-ai", model: "gemini-3.5-flash", calls: 70, tokens: 1470, credits: 0.7000000000000005, credited: 70 }, { provider: "zai", model: "glm-5.2", calls: 3, tokens: 10 }],
 };
 
-function server(lang) {
+// the Overview's summary: two WorkBuddy accounts whose replies said
+// credits, and one Codex account's that said none (lcyksp on Discord: the
+// 积分 each account spent, not only its tokens)
+const acct = (id, provider, sub, calls, credits, credited) => ({ id: provider + "@" + id, provider, account: id, name: id, sub, icon: "generic", calls, errors: 0, input: 900 * calls, output: 100 * calls, cache_read: 0, cache_write: 0, cost: 0, ...(credited ? { credits, credited } : {}) });
+const ACCOUNTS = [acct("a@x.com", "workbuddy", "WorkBuddy", 70, 35, 70), acct("b@x.com", "workbuddy", "WorkBuddy", 2, 2.25, 1), acct("c@x.com", "codex", "Codex", 5)];
+const OVERVIEW = { calls: 77, errors: 0, input: 69300, output: 7700, reasoning: 0, unpriced: 77, cost: 0, cache_read: 0, cache_write: 0, credits: 37.25, credited: 71, bucket: "day", series: [], agents: [], models: [], accounts: ACCOUNTS, callerKeys: [], path: "~/.config/magpie/usage.jsonl" };
+const EMPTY = { calls: 0, errors: 0, input: 0, output: 0, reasoning: 0, unpriced: 0, cost: 0, bucket: "day", series: [], agents: [], models: [], path: "" };
+
+function server(lang, usage = EMPTY) {
   return async (route) => {
     const url = new URL(route.request().url());
     const json = (data) => route.fulfill({ json: data });
@@ -58,7 +68,7 @@ function server(lang) {
     if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings: { lang, theme: "light" } });
     if (url.pathname === "/api/usage/requests") return json(ledger(url.searchParams.get("period")));
     if (url.pathname === "/api/usage/quotas") return json([]);
-    if (url.pathname === "/api/usage") return json({ calls: 0, errors: 0, input: 0, output: 0, reasoning: 0, unpriced: 0, cost: 0, bucket: "day", series: [], agents: [], models: [], path: "" });
+    if (url.pathname === "/api/usage") return json(usage);
     if (url.pathname === "/api/providers") return json({ providers: [], presets: [], excluded: [], models: [], gateway: { running: false } });
     if (url.pathname === "/api/sessions") return json({ sessions: [SESSION], terminal: true, dirs: ["~/.codex/sessions"] });
     if (url.pathname === "/api/sessions/stats") return json({ from: "", to: "", days: [], agents: {} });
@@ -82,6 +92,63 @@ const L = {
   ja: ["0.7 クレジット", "0 クレジット", /クレジット/],
   de: ["0,7 Credits", "0 Credits", /Credits/],
 };
+
+// each language's 0.01 and 2.5 credits, and the detail's Credits
+const R = {
+  en: ["0.01 credits", "2.5 credits", "Credits"],
+  zh: ["0.01 积分", "2.5 积分", "积分"],
+  "zh-TW": ["0.01 積分", "2.5 積分", "積分"],
+  ja: ["0.01 クレジット", "2.5 クレジット", "クレジット"],
+  de: ["0,01 Credits", "2,5 Credits", "Credits"],
+};
+
+// each language's 35, 2.25 and 37.25 credits
+const A = {
+  en: ["35 credits", "2.25 credits", "37.25 credits"],
+  zh: ["35 积分", "2.25 积分", "37.25 积分"],
+  "zh-TW": ["35 積分", "2.25 積分", "37.25 積分"],
+  ja: ["35 クレジット", "2.25 クレジット", "37.25 クレジット"],
+  de: ["35 Credits", "2,25 Credits", "37,25 Credits"],
+};
+
+for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
+  test(engine + ": the Overview says each account's credits and the period's", async (t) => {
+    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+    t.after(() => browser.close());
+    for (const [lang, [a, b, all]] of Object.entries(A)) {
+      await t.test(lang, async () => {
+        const errors = [];
+        const ctx = await browser.newContext({ viewport: { width: 1100, height: 800 }, reducedMotion: "reduce" });
+        const p = await ctx.newPage();
+        p.setDefaultTimeout(5000);
+        p.setDefaultNavigationTimeout(60000);
+        p.on("pageerror", (e) => errors.push(e.message));
+        await p.route("**/*", server(lang, OVERVIEW));
+        await p.goto("http://magpie.test/?view=usage");
+        await p.locator("#usageAccounts .row").first().waitFor();
+        const subs = await p.locator("#usageAccounts .sub").allTextContents();
+        assert.equal(subs.length, 3, subs.join(" | "));
+        assert(subs[0].includes(a), "a@x.com's line: " + subs[0]);
+        assert(subs[1].includes(b), "b@x.com's line: " + subs[1]);
+        assert(!/credit|积分|積分|クレジット/i.test(subs[2]), "an account no reply said credits for: " + subs[2]);
+        const kpi = (await p.locator("#stats .kpi").nth(3).textContent()).trim();
+        assert(kpi.includes(all), "the calls tile: " + kpi);
+        assert.equal(await p.locator("#stats .kpi").count(), 4, "no tile is added");
+        // a narrow window keeps each line inside its row
+        await p.setViewportSize({ width: 420, height: 800 });
+        await p.waitForTimeout(150);
+        const fits = await p.locator("#usageAccounts .row").evaluateAll((rs) => rs.every((r) => r.scrollWidth <= r.clientWidth + 1));
+        assert(fits, "the accounts' rows fit a 420px window");
+        if (process.env.ARTIFACT_DIR) {
+          await fs.mkdir(process.env.ARTIFACT_DIR, { recursive: true });
+          await p.screenshot({ path: path.join(process.env.ARTIFACT_DIR, `${engine}-${lang}-account-credits.png`), fullPage: true });
+        }
+        assert.deepEqual(errors, []);
+        await ctx.close();
+      });
+    }
+  });
+}
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   test(engine + ": the credits WorkBuddy's replies said, by model and by session", async (t) => {
@@ -136,6 +203,59 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         if (process.env.ARTIFACT_DIR) {
           await fs.mkdir(process.env.ARTIFACT_DIR, { recursive: true });
           await p.screenshot({ path: path.join(process.env.ARTIFACT_DIR, `${engine}-${lang}-plan-credits.png`) });
+        }
+        assert.deepEqual(errors, []);
+        await ctx.close();
+      });
+    }
+  });
+}
+
+// Each request's own row says what its reply said it cost in credits
+// (jiabubu on Discord: each request's line said its credits, and now
+// none does): in the cost column in place of a plan model's dash, or
+// under a price, and in the row's details; a row whose reply said none
+// keeps its dash.
+for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
+  test(engine + ": each request's row says the credits its reply said", async (t) => {
+    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+    t.after(() => browser.close());
+    for (const [lang, [one, priced, dt]] of Object.entries(R)) {
+      await t.test(lang, async () => {
+        const errors = [];
+        const ctx = await browser.newContext({ viewport: { width: 1400, height: 800 }, reducedMotion: "reduce" });
+        const p = await ctx.newPage();
+        p.setDefaultTimeout(5000);
+        p.setDefaultNavigationTimeout(60000);
+        p.on("pageerror", (e) => errors.push(e.message));
+        await p.route("**/*", server(lang));
+        await p.goto("http://magpie.test/");
+        await p.locator('[data-view="usage"]').first().click();
+        await p.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
+        const rows = p.locator("#ledWrap .led tbody tr:not(.led-detail)");
+        await rows.nth(2).waitFor();
+        const cost = (i) => rows.nth(i).locator("td.cost");
+        const a = (await cost(0).innerText()).trim();
+        assert.equal(a, one, "the WorkBuddy row's cost cell");
+        assert(!(await cost(0).getAttribute("class")).includes("faint"), "said, not faint");
+        const tip = await cost(0).getAttribute("title");
+        assert(tip && tip.length > 0, "its title says what it is");
+        assert.equal((await cost(1).innerText()).trim(), "—", "a reply that said none keeps its dash");
+        const c = await cost(2).innerText();
+        assert(c.includes("$") && c.includes(priced), "a priced row says both: " + c);
+        // its details say it, at a narrow width too, where the row is cut
+        await rows.nth(0).click();
+        const det = p.locator("#ledWrap .led-detail").first();
+        await det.waitFor();
+        const text = await det.innerText();
+        assert(text.includes(dt) && text.includes(one), "the details: " + text);
+        await p.setViewportSize({ width: 420, height: 800 });
+        await p.waitForTimeout(200);
+        const fits = await det.locator(".led-dl").evaluate((d) => d.scrollWidth <= d.clientWidth + 1);
+        assert(fits, "the details fit a 420px window");
+        if (process.env.ARTIFACT_DIR) {
+          await fs.mkdir(process.env.ARTIFACT_DIR, { recursive: true });
+          await p.screenshot({ path: path.join(process.env.ARTIFACT_DIR, `${engine}-${lang}-row-credits.png`) });
         }
         assert.deepEqual(errors, []);
         await ctx.close();

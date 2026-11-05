@@ -235,7 +235,8 @@ func claudeSubscriptionRefusing(t *testing.T) string {
 }
 
 // claudeSubscriptionFirstSays is claudeSubscriptionRefusing with the first
-// account's run writing first, shell lines, for each turn.
+// account's run writing first, shell lines, for each turn. Control
+// requests (the interactive mode's initialize) are acknowledged.
 func claudeSubscriptionFirstSays(t *testing.T, first string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -269,6 +270,12 @@ if [ "$1" = auth ]; then echo '{"loggedIn":true,"authMethod":"oauth_token","apiP
 TOK=; [ -n "$CLAUDE_CONFIG_DIR" ] && TOK=$(sed -n 's/.*"accessToken": *"\([^"]*\)".*/\1/p' "$CLAUDE_CONFIG_DIR/.credentials.json")
 echo "${TOK:-own}" >> ` + log + `
 while read -r line; do
+  case $line in *'"type":"control_request"'*)
+    # acknowledged as Claude Code does: the interactive mode's initialize
+    id=$(printf '%s' "$line" | sed 's/.*"request_id":"\([^"]*\)".*/\1/')
+    echo '{"type":"control_response","response":{"subtype":"success","request_id":"'$id'"}}'
+    continue ;;
+  esac
   if [ -z "$TOK" ] || [ "$TOK" = tok-me ]; then
 ` + first + `  else
     echo '{"type":"stream_event","event":{"type":"message_start","message":{"id":"m","model":"claude-sonnet-5","usage":{"input_tokens":1}}}}'

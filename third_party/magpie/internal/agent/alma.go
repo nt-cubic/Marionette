@@ -212,10 +212,39 @@ func almaProviders() ([]almaProvider, error) {
 	return ps, err
 }
 
+// almaProvidersSeen is almaProviders as almaLook has them, decoded once
+// per answer: the answer is kept 5s (almaReadFor), and the Agents page's
+// model field, its check and the options each decoded it again, all of
+// Alma's providers with their models, 390MB in 37 minutes of a live
+// magpie. What it gives is shared, only for reading.
 func almaProvidersSeen() ([]almaProvider, error) {
+	if almaAPI == "" {
+		return nil, errAlmaDown
+	}
+	b, err := almaSend("GET", "/api/providers", nil, true)
+	if err != nil {
+		return nil, err
+	}
+	almaSeen.Lock()
+	defer almaSeen.Unlock()
+	if len(b) > 0 && len(b) == len(almaSeen.body) && &b[0] == &almaSeen.body[0] {
+		return almaSeen.ps, nil
+	}
 	var ps []almaProvider
-	err := almaLook("/api/providers", &ps)
-	return ps, err
+	if len(bytes.TrimSpace(b)) > 0 {
+		if err := json.Unmarshal(b, &ps); err != nil {
+			return nil, err
+		}
+	}
+	almaSeen.body, almaSeen.ps = b, ps
+	return ps, nil
+}
+
+// almaSeen is the answer almaProvidersSeen decoded last, by its bytes.
+var almaSeen struct {
+	sync.Mutex
+	body []byte
+	ps   []almaProvider
 }
 
 // almaMagpie is magpie's provider among Alma's: the one named magpie, or

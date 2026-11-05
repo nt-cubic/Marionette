@@ -545,6 +545,49 @@ func TestPluginCheckinQoderRechecksCampaigns(t *testing.T) {
 	}
 }
 
+// plugins#503 (MiniFullC): a ZCode account whose claim asked for the
+// app's captcha was asked again every 30 minutes, the claim posted and
+// answered 3007 each time, six more times in one evening. A captcha, or
+// an own-app answer, waits on the user, so the loop leaves it for the
+// day under a recheck too; a press still asks, and the next day asks.
+func TestPluginCheckinRecheckLeavesCaptcha(t *testing.T) {
+	for _, id := range []string{"zcode", "qoder"} {
+		for _, first := range []string{CheckinCaptcha, CheckinOwnApp} {
+			t.Run(id+"/"+first, func(t *testing.T) {
+				claudeHome(t)
+				now := time.Date(2026, 11, 3, 14, 16, 0, 0, time.UTC) // 22:16 Beijing
+				outcome, calls := first, 0
+				p := pluginCheckinCounter(id, &outcome, &calls)
+				run := func(press bool) WorkBuddyCheckin {
+					t.Helper()
+					got := p.checkiner(func() time.Time { return now }).checkinNow(context.Background(), press)
+					if len(got) != 1 {
+						t.Fatalf("at %s: %+v", now, got)
+					}
+					return got[0]
+				}
+				run(false)
+				outcome = CheckinClaimed
+				for _, step := range []time.Duration{31 * time.Minute, 31 * time.Minute, 30 * time.Minute} {
+					now = now.Add(step)
+					if r := run(false); r.Outcome != first || calls != 1 {
+						t.Fatalf("loop at %s: %+v after %d asks; want %s kept after 1", now.In(beijing).Format(time.TimeOnly), r, calls, first)
+					}
+				}
+				if r := run(true); r.Outcome != CheckinClaimed || calls != 2 {
+					t.Fatalf("press: %+v after %d asks", r, calls)
+				}
+				outcome = first
+				now = time.Date(2026, 11, 4, 14, 0, 0, 0, time.UTC) // the next Beijing day
+				run(false)
+				if calls != 3 {
+					t.Fatalf("the next day: %d asks, want 3", calls)
+				}
+			})
+		}
+	}
+}
+
 // Every other plugin's check-in is settled for the Beijing day by a claim,
 // or by a done, inactive or ineligible answered from noon Beijing on: the
 // loop doesn't ask again after 30 minutes (#2696 changes Qoder's, plugins#503 ZCode's).
@@ -771,5 +814,47 @@ func TestPluginCheckinAsksAgainAtUntil(t *testing.T) {
 				t.Fatalf("after the gap, pressed %q", p)
 			}
 		})
+	}
+}
+
+// The provider editor's account rows have each account's check-in as its
+// Usage card does, with the key its own Check in now presses by
+// (xwoffice_91592): a press of one account's asks that account alone.
+func TestLoginCheckinsPressOneAccount(t *testing.T) {
+	keys := []string{"ck-claim", "ck-done"}
+	presses := pluginCheckinSandbox(t, keys...)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	ps := pluginCheckinProviders()
+	if len(ps) != 1 || len(ps[0].accounts) != len(keys) {
+		t.Fatalf("the plugins that check in: %+v", ps)
+	}
+	for _, agent := range []string{PluginID("fakeco"), "plugin:fakeco"} {
+		m := map[string]SubscriptionQuota{}
+		for _, a := range ps[0].accounts {
+			m[a.User] = SubscriptionQuota{Plan: "Credits"}
+		}
+		got := LoginCheckins(agent, m)
+		for u, q := range got {
+			if !q.Checkins || q.CheckinBy != "plugin:fakeco" || q.CheckinKey == "" || q.Plan != "Credits" {
+				t.Fatalf("%s: %s: %+v", agent, u, q)
+			}
+		}
+		if m[ps[0].accounts[0].User].Checkins {
+			t.Fatal("LoginCheckins changed the map it was given")
+		}
+	}
+	a := ps[0].accounts[1]
+	q := LoginCheckins(PluginID("fakeco"), map[string]SubscriptionQuota{a.User: {}})[a.User]
+	rs := CheckInAccount(ctx, q.CheckinBy, q.CheckinKey)
+	if len(rs) != 1 || rs[0].Outcome != CheckinDone && rs[0].Outcome != CheckinClaimed {
+		t.Fatalf("the press: %+v", rs)
+	}
+	if p := pressed(t, presses); len(p) != 1 || p[0] != "ck-done" {
+		t.Fatalf("pressed %q", p)
+	}
+	// another provider's accounts are not marked
+	if q := LoginCheckins("codex", map[string]SubscriptionQuota{a.User: {}})[a.User]; q.Checkins || q.CheckinKey != "" {
+		t.Fatalf("codex: %+v", q)
 	}
 }

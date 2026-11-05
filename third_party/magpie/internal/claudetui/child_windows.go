@@ -55,7 +55,7 @@ func (s *shim) start(path string, args []string) error {
 	}
 	var console windows.Handle
 	// wide, so a line of Claude Code's screen is a line
-	err := windows.CreatePseudoConsole(windows.Coord{X: 200, Y: 50}, inR, outW, 0, &console)
+	err := windows.CreatePseudoConsole(windows.Coord{X: screenCols, Y: screenRows}, inR, outW, 0, &console)
 	// the console has its own of these
 	windows.CloseHandle(inR)
 	windows.CloseHandle(outW)
@@ -77,12 +77,13 @@ func (s *shim) start(path string, args []string) error {
 	go func() {
 		_, _ = windows.WaitForSingleObject(h, windows.INFINITE)
 		var code uint32
+		var exit error
 		if err := windows.GetExitCodeProcess(h, &code); err != nil {
-			s.exit = err
+			exit = err
 		} else if code != 0 {
-			s.exit = fmt.Errorf("exit status %d", code)
+			exit = fmt.Errorf("exit status %d", code)
 		}
-		close(s.exited)
+		s.ended(exit, true)
 	}()
 	go s.read()
 	return nil

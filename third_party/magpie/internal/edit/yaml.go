@@ -3,11 +3,14 @@ package edit
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"strings"
 
 	"github.com/tidwall/jsonc"
+	"github.com/yetone/magpie/internal/filememo"
 	"gopkg.in/yaml.v3"
 )
 
@@ -287,20 +290,36 @@ func JSONToYAML(src, dst string) error {
 // Unrelated duplicate keys, complex keys or invalid tags must not hide a
 // readable model setting. Writers use loadYAMLForEdit to validate the whole file.
 func loadYAML(path string) (*yaml.Node, error) {
-	raw, err := readHeld(path)
-	if err != nil || len(bytes.TrimSpace(raw)) == 0 {
-		return nil, err
+	root, err := filememo.Read("yaml root", path, parseYAMLRoot)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return root, nil
+}
+
+// parseYAMLRoot is loadYAML's parse, made once each time the file is read
+// and shared by every look (GetYAML, GetYAMLMap, GetYAMLList,
+// GetYAMLText), so read only. Each look parsed the file again: dsh's
+// 80 KB settings.yaml, read per field by every /api/drift poll, was
+// 465 MB of what a live magpie allocated in 37 minutes.
+func parseYAMLRoot(b []byte) (*yaml.Node, error) {
+	raw := TrimBOM(b)
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, nil
 	}
 	var doc yaml.Node
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, err
 	}
 	if len(doc.Content) == 0 {
 		return nil, nil
 	}
 	root := doc.Content[0]
 	if root.Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("%s: top level is not a YAML mapping", path)
+		return nil, errors.New("top level is not a YAML mapping")
 	}
 	if doc.HeadComment != "" && root.HeadComment == "" {
 		root.HeadComment = doc.HeadComment
@@ -470,6 +489,33 @@ func blockStyle(n *yaml.Node) {
 	}
 }
 
+// blockSequence is whether raw's first document is a block list: its
+// first line past blank ones, comments, directives and a "---" starts
+// with "- ". BlockList has nothing to do for one, and decoding the whole
+// file to learn so was most of what reading a dsh patch list cost (every
+// /api/drift poll reads each profile's: 444 MB in 37 minutes of a live
+// magpie).
+func blockSequence(raw string) bool {
+	for len(raw) > 0 {
+		line, rest, _ := strings.Cut(raw, "\n")
+		raw = rest
+		t := strings.TrimLeft(strings.TrimRight(line, "\r"), " \t")
+		switch {
+		case t == "", strings.HasPrefix(t, "#"), strings.HasPrefix(line, "%"):
+			continue
+		case line == "---" || strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "---\t") || strings.HasPrefix(line, "---\r"):
+			// a document start: what follows it on the line is the
+			// document's first
+			t = strings.TrimLeft(strings.TrimRight(line[3:], "\r"), " \t")
+			if t == "" || strings.HasPrefix(t, "#") {
+				continue
+			}
+		}
+		return t == "-" || strings.HasPrefix(t, "- ") || strings.HasPrefix(t, "-\t")
+	}
+	return false
+}
+
 // BlockList is raw, a file whose one document is a top-level sequence
 // written in flow style ([ {id: a}, {id: b} ], what dsh's own writers keep
 // a file that starts as []), with that sequence written as a block list
@@ -479,6 +525,9 @@ func blockStyle(n *yaml.Node) {
 // raw is left to the caller, for anything else: a block list, a mapping,
 // several documents, or text that isn't YAML.
 func BlockList(raw string) (string, bool) {
+	if blockSequence(raw) {
+		return "", false
+	}
 	raw = strings.ReplaceAll(raw, "\r\n", "\n")
 	dec := yaml.NewDecoder(strings.NewReader(raw))
 	var doc, more yaml.Node

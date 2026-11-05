@@ -90,3 +90,57 @@ func TestCodexMemoryCallsGoWhereItsTurnsGo(t *testing.T) {
 		t.Fatalf("a review on an unknown model: %d", rec.Code)
 	}
 }
+
+// #4765 (raphael-y7): Codex's memory consolidation asks for its own bare
+// default (gpt-5.6-terra), and a provider of magpie's happened to serve a
+// model under that same name: the call went to it — the only one with the
+// name — and its account refused the model (400, three tries, the memory
+// lost) while the conversation ran on another provider's model. With
+// Codex's config naming no model for its memories, the call follows the
+// conversation's, as it does on the ChatGPT backend's path (codexFollowTo);
+// a model Codex's config names, and a turn of Codex's on the name, go as
+// they came.
+func TestCodexMemoryOnACollidingBareNameFollowsTheSession(t *testing.T) {
+	fresh(t)
+	relay := &relayOfChatGPT{}
+	wb := httptest.NewServer(relay)
+	t.Cleanup(wb.Close)
+	if err := provider.Save(provider.Provider{ID: "wb", Name: "WB", Key: "sk-wb", Models: []string{"gpt-5.6-terra"}, Responses: wb.URL + "/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	session := relayOn(t, "third")
+	was := CodexSideSet
+	CodexSideSet = func(string) bool { return false }
+	t.Cleanup(func() { CodexSideSet = was })
+	s := New()
+	if rec := codexCall(t, s, "third/gpt-6-astra", ""); rec.Code != 200 {
+		t.Fatalf("the turn: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := codexCall(t, s, "gpt-5.6-terra", "memory_consolidation"); rec.Code != 200 {
+		t.Fatalf("memory: %d %s", rec.Code, rec.Body.String())
+	}
+	if reqs := relay.requests(); len(reqs) != 0 {
+		t.Fatalf("the provider with the name got the memory (%d requests)", len(reqs))
+	}
+	reqs := session.requests()
+	if len(reqs) != 2 || modelOf([]byte(reqs[1])) != "gpt-6-astra" {
+		t.Fatalf("the session's provider got %d requests, the last on %q", len(reqs), modelOf([]byte(reqs[len(reqs)-1])))
+	}
+
+	// a model Codex's config names is the user's own pick: as it came
+	CodexSideSet = func(string) bool { return true }
+	if rec := codexCall(t, s, "gpt-5.6-terra", "memory_consolidation"); rec.Code != 200 {
+		t.Fatalf("memory on the config's model: %d %s", rec.Code, rec.Body.String())
+	}
+	if reqs := relay.requests(); len(reqs) != 1 || modelOf([]byte(reqs[0])) != "gpt-5.6-terra" {
+		t.Fatalf("the provider with the name got %d requests on the config's pick", len(reqs))
+	}
+
+	// a turn of Codex's on the name is the user's own pick of it: as it resolves
+	if rec := codexCall(t, s, "gpt-5.6-terra", ""); rec.Code != 200 {
+		t.Fatalf("a turn on the name: %d %s", rec.Code, rec.Body.String())
+	}
+	if reqs := relay.requests(); len(reqs) != 2 {
+		t.Fatalf("the provider with the name got %d requests, the turn among them", len(reqs))
+	}
+}

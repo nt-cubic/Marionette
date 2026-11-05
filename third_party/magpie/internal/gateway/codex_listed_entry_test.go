@@ -169,7 +169,7 @@ func TestCodexListedEntry(t *testing.T) {
 		// says it has none in Codex's shape
 		relay.manifest.Store(relay.plain.Load())
 		fetchRelay(t)
-		if e := codexEntry(t, "relay/gpt-6.1-terra"); e["base_instructions"] != codexcat.Prompt {
+		if e := codexEntry(t, "relay/gpt-6.1-terra"); e["base_instructions"] != codexcat.Official("gpt-6.1-terra") {
 			t.Errorf("an entry Codex can't read was kept: %.80v", e["base_instructions"])
 		}
 		relay.manifest.Store(`{"models":[` + terraEntry + `]}`)

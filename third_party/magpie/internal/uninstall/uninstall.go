@@ -282,6 +282,20 @@ func Run(ctx context.Context) *Report {
 	return r
 }
 
+// KeepData is Run without Data: every agent put back as it was and
+// magpie's service, login item and shortcuts removed, with its settings,
+// providers and usage kept for a magpie installed again. install.sh
+// --uninstall runs it, so an agent never stays pointed at a gateway the
+// script took away (whimsical_wolf_15477 on Discord: Codex after
+// uninstalling).
+func KeepData(ctx context.Context) *Report {
+	r := &Report{}
+	System(r)
+	Agents(ctx, r)
+	r.Exe, _ = executable()
+	return r
+}
+
 // AfterExit waits for process pid to end, for up to wait, then removes
 // magpie's files: what the app starts as it quits.
 func AfterExit(pid int, wait time.Duration) *Report {
@@ -299,10 +313,7 @@ func AfterExit(pid int, wait time.Duration) *Report {
 var startAfter = func(cmd *exec.Cmd) error {
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
 	detach(cmd)
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	return cmd.Process.Release()
+	return proc.StartReaped(cmd)
 }
 
 // DataAfterExit starts `magpie uninstall --data-after <this pid>`, which

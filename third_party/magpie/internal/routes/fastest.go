@@ -63,7 +63,7 @@ var Fastest = Strategy{BySpeed: true, Order: func(pool string, seats []Seat) []i
 		switch {
 		case s.Resting:
 			resting = append(resting, i)
-		case tier(s.Used) == 2:
+		case seatTier(s) == 2:
 			spent = append(spent, i)
 		case s.TTFT > 0:
 			fast = append(fast, i)

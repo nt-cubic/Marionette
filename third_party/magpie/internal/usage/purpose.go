@@ -35,6 +35,7 @@ var purposeKinds = func() map[string]PurposeKind {
 	add("Detect APIs", "api_detect")            // probelog.KindDetect
 	add("Model list", "model_list")             // probelog.KindList
 	add("MCP tool", KindMCP)                    // an MCP tool call (SourceMCP)
+	add("Cache keep-alive", KindKeepalive)      // a plugin's own ping (plugin_calls.go)
 	return out
 }()
 

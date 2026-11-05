@@ -54,6 +54,19 @@ type KeyInfo struct {
 	// Rest is why the gateway passes it over now, after a failure, and
 	// until when; nil while it takes requests.
 	Rest *KeyRest `json:"rest,omitempty"`
+	// Spend is the spend cap set on it and what it has spent in its
+	// period; nil with none.
+	Spend *KeySpend `json:"spend,omitempty"`
+}
+
+// KeySpend is a key's spend cap as its row tells it: the cap, what magpie
+// counted spent in its period, when that renews (none for a cap in all),
+// and whether routing holds the key at it now.
+type KeySpend struct {
+	SpendCap
+	Spent float64    `json:"spent"`
+	Reset *time.Time `json:"reset,omitempty"`
+	Held  bool       `json:"held,omitempty"`
 }
 
 // KeyRest is a key's rest as the gateway keeps it: failQuota, failRate…,
@@ -66,6 +79,14 @@ type KeyRest struct {
 	// Probed: the gateway asks it again in the background, and lifts the
 	// rest as soon as it answers (gateway/rest_probe.go)
 	Probed bool `json:"probed,omitempty"`
+	// By: what set how long (gateway.Rest.By): "resets" or "retry-after"
+	// when the vendor named the time
+	By string `json:"by,omitempty"`
+	// Model: the one model resting, the account still answering its
+	// others; "" for the whole account or key
+	Model string `json:"model,omitempty"`
+	// Error: what the vendor said
+	Error string `json:"error,omitempty"`
 }
 
 // RestKey is what the gateway rests the key k of a provider by: the
@@ -315,7 +336,7 @@ func (p *Provider) setFirst(k KeyAccount) {
 
 func keyProtocolOK(proto Protocol) error {
 	switch proto {
-	case "", Chat, Responses, Anthropic:
+	case "", Chat, Responses, Anthropic, Gemini:
 		return nil
 	}
 	return fmt.Errorf("unknown protocol %q", proto)
@@ -428,6 +449,11 @@ func (p Provider) WithKey(k KeyAccount) Provider {
 					p.Anthropic = ""
 				}
 			}
+		}
+		// a custom provider's Gemini API, kept for a key made for it only
+		// (a relay's key per protocol, corddis_114 on Discord)
+		if k.Protocol != Gemini {
+			p.Gemini = ""
 		}
 	}
 	return p
@@ -633,8 +659,10 @@ func ReplaceKey(id, keyRef, key string) (was, now string, err error) {
 		p.Keys[i].Key = key
 	}
 	moveKeyed(p.AccountModels, keyRef, now)
+	moveKeyed(p.AccountModelsAll, keyRef, now)
 	moveKeyed(p.AccountProxies, keyRef, now)
 	moveKeyed(p.AccountConcurrency, keyRef, now)
+	moveKeyed(p.KeySpendCaps, keyRef, now)
 	return keyRef, now, Save(*p)
 }
 

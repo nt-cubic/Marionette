@@ -38,7 +38,10 @@ function fixtures(now) {
 }
 
 function serve(lang, data) {
-  const settings = { theme: "light", lang, tray: "panel", quotaLeft: false, currency: "usd" };
+  // Codex's credits off: its card has no credits lines, so how many there
+  // are doesn't decide whether the balance's card (held down to the
+  // column beside it) has room to grow
+  const settings = { theme: "light", lang, tray: "panel", quotaLeft: false, currency: "usd", codexNoCredits: ["a@x.com"] };
   return async (route) => {
     const url = new URL(route.request().url());
     const json = (body) => route.fulfill({ json: body });

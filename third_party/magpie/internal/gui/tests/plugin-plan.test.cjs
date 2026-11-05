@@ -1,7 +1,7 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
 // A plugin's account beside a built-in subscription (cursor-plugin, the
 // account's builtin "cursor") reads its plan as the built-in's does:
-// "Cursor Pro", "SuperGrok" with no plan told, not "Pro" or "signed in".
+// "Cursor Pro", "Grok" with no plan told, not an invented "SuperGrok" tier.
 // A plugin of its own keeps its plan as told. English and Chinese; no
 // backend, the API is faked here.
 const assert = require("node:assert/strict");
@@ -51,7 +51,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         accountPlan({ agent: "copilot", plan: "Pro+" }),
         accountPlan({ agent: "copilot" }),
       ]);
-      assert.deepEqual(plans.slice(0, 4), ["Cursor Pro", "Cursor Pro", "SuperGrok", "SuperGrok"]);
+      assert.deepEqual(plans.slice(0, 4), ["Cursor Pro", "Cursor Pro", "Grok", "Grok"]);
       assert.equal(plans[4], "Max");
       assert.deepEqual(plans.slice(5), ["GitHub Education", "GitHub Pro+", "GitHub"]);
       assert.equal(await page.evaluate(() => quotaText({ unlimited: true, display: "Unlimited", used: 0 })), lang === "zh" ? "无限" : "Unlimited");

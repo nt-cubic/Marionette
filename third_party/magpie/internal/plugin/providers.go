@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -100,6 +102,11 @@ type Model struct {
 	// route, plugins#154), models.dev's own, or the models hook's. Unsaid
 	// is nil, which keeps what the client sent.
 	Temperature *bool `json:"temperature,omitempty"`
+	// InputsSaid is whether capabilities.input is someone's word on what
+	// the model takes (models.dev, the config, the plugin's own models
+	// hook): the host's default for a config model said nothing of, input
+	// {"text": true} alone, is nobody's word (#1595, #4436)
+	InputsSaid bool `json:"inputsSaid,omitempty"`
 	// Fast is set by the plugin on a model it runs in its vendor's fast
 	// mode when the request says service_tier "priority" (m.fast: Cursor's
 	// plugin from 0.2.2, for a model Cursor has a fast variant of)
@@ -136,6 +143,13 @@ type Provider struct {
 	// Checkin says the plugin presses its vendor's daily check-in for each
 	// account (auth.checkin)
 	Checkin bool `json:"checkin,omitempty"`
+	// Renews says the plugin renews its accounts' sign-ins through magpie
+	// (auth.refresh) and lets the gateway's magpie do it in the background
+	// as each comes due (auth.keepAlive not false); RenewLead is how long
+	// before a token expires it is due, in milliseconds (auth.refreshLead,
+	// 5 minutes when not said), as the host reckons it (RenewAt).
+	Renews    bool  `json:"renews,omitempty"`
+	RenewLead int64 `json:"renewLead,omitempty"`
 	// Options are the switches the plugin declares for the provider
 	// (auth.options, #2038), as the host checked them
 	Options []Option `json:"options,omitempty"`
@@ -200,6 +214,10 @@ type Option struct {
 	// the switch is on (WorkBuddy's "Free models only"): the editor says
 	// so by the models
 	FiltersModels bool `json:"filtersModels,omitempty"`
+	// Placement is where the editor draws the switch: "top" under the
+	// accounts, above Routing, for a switch about the whole plugin
+	// (#5269); "" under the models
+	Placement string `json:"placement,omitempty"`
 }
 
 // OptionOn is option o of a provider as it stands with the user's values
@@ -286,7 +304,7 @@ func forgetProviders() {
 // need be, and keeps the answer for Cached.
 func Providers(ctx context.Context) ([]Provider, error) {
 	var ps []Provider
-	if err := Call(ctx, "providers", map[string]any{"proxies": listingProxies()}, &ps); err != nil {
+	if err := Call(ctx, "providers", listingArgs(), &ps); err != nil {
 		return nil, err
 	}
 	ps = commitProviders(ps, nil)
@@ -356,7 +374,7 @@ var (
 // under still stood. Tests replace it to stall or fail an ask without Bun.
 var refreshProviders = func(ctx context.Context, epoch uint64) error {
 	var ps []Provider
-	if err := callWithTimeout(ctx, "providers", map[string]any{"proxies": listingProxies()}, &ps, refreshDeadline); err != nil {
+	if err := callWithTimeout(ctx, "providers", listingArgs(), &ps, refreshDeadline); err != nil {
 		return err
 	}
 	commitProviders(ps, &epoch)
@@ -421,6 +439,26 @@ func refreshProvidersInBackground(ctx context.Context, epoch uint64) {
 // account at key, or of the provider for key "": set by the providers
 // magpie keeps, which know them.
 var ProxyFor func(provider, key string) string
+
+// ListingOff is the plugin providers (by the plugin's own id) switched off
+// in magpie: set by the providers magpie keeps, which know them. A
+// listing asks none of them their models (ChangQiu on Discord): Off means no request
+// goes to the provider, and a models hook asks its vendor, renewing the
+// sign-in first.
+var ListingOff func() []string
+
+// listingArgs is what a providers call is given: the proxies each list is
+// asked through, and the providers not to ask (ListingOff), which keep the
+// list they told last.
+func listingArgs() map[string]any {
+	args := map[string]any{"proxies": listingProxies()}
+	if ListingOff != nil {
+		if off := ListingOff(); len(off) > 0 {
+			args["off"] = off
+		}
+	}
+	return args
+}
 
 // listingProxies are the proxies each provider's model list is asked
 // through, by provider and account key ("" the provider's own): a
@@ -692,13 +730,72 @@ func Cached() []Provider {
 }
 
 type storedAuth struct {
-	Type      string `json:"type"`
-	AccountID string `json:"accountId"`
-	Email     string `json:"email"`
-	Key       string `json:"key"`
+	Type string `json:"type"`
+	// Expires is when an OAuth sign-in's token ends, in epoch
+	// milliseconds, as the host reads it (a number, or a string of one)
+	Expires   json.RawMessage `json:"expires"`
+	AccountID string          `json:"accountId"`
+	Email     string          `json:"email"`
+	Key       string          `json:"key"`
 	Metadata  struct {
 		Email string `json:"email"`
 	} `json:"metadata"`
+}
+
+// RenewAt is when the sign-in kept under key, an account of p, comes due
+// to be renewed in the background, as host.js's renewAt reckons it: an
+// OAuth sign-in's expires less p.RenewLead. False when it never does: p
+// doesn't renew in the background, the sign-in isn't OAuth, has no
+// expiry or isn't kept.
+func RenewAt(p Provider, key string) (time.Time, bool) {
+	if !p.Renews {
+		return time.Time{}, false
+	}
+	a, ok := readAuth()[key]
+	if !ok || a.Type != "oauth" {
+		return time.Time{}, false
+	}
+	exp, ok := expiresOf(a.Expires)
+	if !ok {
+		return time.Time{}, false
+	}
+	return time.UnixMilli(max(1, exp-p.RenewLead)), true
+}
+
+// expiresOf is a sign-in's expires as JavaScript's Number reads it, when
+// it is a time after the epoch.
+func expiresOf(raw json.RawMessage) (int64, bool) {
+	v := strings.TrimSpace(string(raw))
+	if s, err := strconv.Unquote(v); err == nil {
+		v = strings.TrimSpace(s)
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) || f <= 0 || f > math.MaxInt64/2 {
+		return 0, false
+	}
+	return int64(f), true
+}
+
+// KeptSignedIn is what came of KeepSignedIn: Due false, the sign-in
+// wasn't due (renewed meanwhile); Renewed, it is a new one; else Err is
+// why it couldn't be, Gone whether the vendor turned it away for good
+// (the host marks the account, as OnSignIn tells), and Waiting that a
+// renewal failed lately and isn't tried again yet.
+type KeptSignedIn struct {
+	Due     bool   `json:"due"`
+	Renewed bool   `json:"renewed"`
+	Waiting bool   `json:"waiting"`
+	Gone    bool   `json:"gone"`
+	Err     string `json:"error"`
+}
+
+// KeepSignedIn renews account's sign-in of provider if it is due, as a
+// request on it would, under the same once-at-a-time renewal and lock,
+// and waits for it.
+func KeepSignedIn(ctx context.Context, provider, account string) (KeptSignedIn, error) {
+	var k KeptSignedIn
+	err := Call(ctx, "keepSignedIn", map[string]any{"provider": provider, "account": account, "proxy": proxyOf(ctx)}, &k)
+	return k, err
 }
 
 // ProviderOf is the provider an account key is one of.
@@ -862,10 +959,21 @@ const NewAccount = "new"
 // Authorize begins an OAuth sign-in to account (a key, or NewAccount),
 // through the proxy ctx names (netproxy.With): the plugin's requests for
 // it, there and in Finish, go through that one (#1663).
+// A plugin that can't start one says why ({ type: "failed", error }), and
+// that is the error (plugins#658).
 func Authorize(ctx context.Context, provider string, method int, inputs map[string]string, account string) (Authorization, error) {
-	var a Authorization
-	err := Call(ctx, "authorize", map[string]any{"provider": provider, "method": method, "inputs": inputs, "account": account, "proxy": proxyOf(ctx)}, &a)
-	return a, err
+	var r struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+		Authorization
+	}
+	if err := Call(ctx, "authorize", map[string]any{"provider": provider, "method": method, "inputs": inputs, "account": account, "proxy": proxyOf(ctx)}, &r); err != nil {
+		return Authorization{}, err
+	}
+	if !r.OK {
+		return Authorization{}, failure(r.Error)
+	}
+	return r.Authorization, nil
 }
 
 // Saved is where a sign-in was kept: the provider (a plugin may sign in

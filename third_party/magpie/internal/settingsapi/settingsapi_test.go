@@ -213,3 +213,82 @@ func TestRefusedValueWritesNothing(t *testing.T) {
 		t.Error("Body took port, which has a route of its own")
 	}
 }
+
+// "Don't ask again" on the Quit question (zhujiu on Discord) holds across
+// a save from a page that doesn't send quitNoAsk (the tray panel, or a
+// page from before it), and Settings › General's Ask before quitting
+// sending it false turns the question back on.
+func TestQuitNoAskKeptUnlessSent(t *testing.T) {
+	cur := settings.Defaults()
+	cur.QuitNoAsk = true
+	in, err := Merge([]byte(`{"theme":"dark"}`), cur, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !in.QuitNoAsk {
+		t.Error("a save that didn't send quitNoAsk turned the Quit question back on")
+	}
+	in, err = Merge([]byte(`{"theme":"dark","quitNoAsk":false}`), cur, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.QuitNoAsk {
+		t.Error("quitNoAsk sent false left the Quit question off")
+	}
+}
+
+// What a reply's model name says is replyModel (ZoeCats on Discord). The
+// page sends it; a page from before it sends memberModel, which changes
+// it only when that page's switch was moved, so its save keeps a vendor
+// name it can't show; and `magpie settings reset replyModel` (Body over
+// a file with memberModel written beside it) is the model asked for.
+func TestReplyModelSaves(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		cur  string // replyModel saved now
+		body string
+		want string // replyModel saved, "" the model asked for
+	}{
+		{"page picks vendor", settings.ReplyMember, `{"replyModel":"vendor","memberModel":true}`, settings.ReplyVendor},
+		{"page picks asked", settings.ReplyMember, `{"replyModel":""}`, ""},
+		{"page picks member", "", `{"replyModel":"member"}`, settings.ReplyMember},
+		{"old page, vendor kept", settings.ReplyVendor, `{"memberModel":false}`, settings.ReplyVendor},
+		{"old page turns it on", settings.ReplyVendor, `{"memberModel":true}`, settings.ReplyMember},
+		{"old page turns it off", settings.ReplyMember, `{"memberModel":false}`, ""},
+		{"old page, member kept", settings.ReplyMember, `{"memberModel":true}`, settings.ReplyMember},
+		{"another page's save", settings.ReplyVendor, `{"theme":"dark"}`, settings.ReplyVendor},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			home(t)
+			if err := settings.Save(settings.Settings{ReplyModel: c.cur}); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := Apply([]byte(c.body), false); err != nil {
+				t.Fatal(err)
+			}
+			if got := settings.Load().ReplyModel; got != c.want {
+				t.Errorf("replyModel %q, want %q", got, c.want)
+			}
+		})
+	}
+	t.Run("reset", func(t *testing.T) {
+		home(t)
+		if err := settings.Save(settings.Settings{ReplyModel: settings.ReplyMember}); err != nil {
+			t.Fatal(err)
+		}
+		cur := settings.Load()
+		if !cur.MemberModel {
+			t.Fatal("memberModel isn't written beside replyModel member")
+		}
+		body, err := Body(cur, "replyModel", json.RawMessage(`""`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := Apply(body, false); err != nil {
+			t.Fatal(err)
+		}
+		if got := settings.Load().ReplyModel; got != "" {
+			t.Errorf("reset left replyModel %q", got)
+		}
+	})
+}

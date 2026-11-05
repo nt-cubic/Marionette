@@ -199,6 +199,11 @@ func TestCodexInstructionsSaved(t *testing.T) {
 	if got := codexInstructions("gpt-9"); got != codexcat.Prompt {
 		t.Fatalf("unknown model: %q", got)
 	}
+	// a model neither list has but Codex's bundled catalog does: that
+	// catalog's, as Codex CLI sends it, not its prompt for an unknown model
+	if got := codexInstructions("gpt-6-astra"); got != codexcat.Official("gpt-6-astra") || got == codexcat.Prompt {
+		t.Fatalf("bundled model: %.60q", got)
+	}
 	saveCodexPrompts([]byte(`{"models":[{"slug":"gpt-5.5","model_messages":{"instructions_template":"fetched"}},{"slug":"gpt-4","base_instructions":"base"}]}`))
 	if got := codexInstructions("gpt-5.5"); got != "fetched" {
 		t.Fatalf("after a fetch: %q", got)

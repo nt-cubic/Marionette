@@ -24,9 +24,11 @@ func TestPackedRolloutReadOnceForSessionsAndCalls(t *testing.T) {
 	}
 	// nothing kept: neither the summaries nor the calls' shards
 	forget := func() {
+		// Reset first: it writes a save still pending, which would put
+		// back a cache file removed before it
+		Reset()
 		os.Remove(CachePath())
 		os.RemoveAll(callCacheDir())
-		Reset()
 	}
 
 	var mu sync.Mutex

@@ -60,11 +60,11 @@ function server(lang, web, saved, posts) {
 }
 
 const L = {
-  en: { hide: "Hide from Overview", bal: "Hide its balance from Overview", n: (n) => `${n} hidden`, unhide: "Unhide", all: "Show all", balance: "Balance" },
-  zh: { hide: "从概览中隐藏", bal: "从概览中隐藏它的余额", n: (n) => `已隐藏 ${n} 个`, unhide: "取消隐藏", all: "全部显示", balance: "余额" },
-  "zh-TW": { hide: "從概覽中隱藏", bal: "從概覽中隱藏它的餘額", n: (n) => `已隱藏 ${n} 個`, unhide: "取消隱藏", all: "全部顯示", balance: "餘額" },
-  ja: { hide: "概要から隠す", bal: "残高を概要から隠す", n: (n) => `${n} 件非表示`, unhide: "再表示", all: "すべて表示", balance: "残高" },
-  de: { hide: "In der Übersicht ausblenden", bal: "Sein Guthaben in der Übersicht ausblenden", n: (n) => `${n} ausgeblendet`, unhide: "Einblenden", all: "Alle anzeigen", balance: "Guthaben" },
+  en: { more: (n) => `Show ${n} Hidden`, hide: "Hide from Overview", bal: "Hide its balance from Overview", n: (n) => `${n} hidden`, unhide: "Unhide", all: "Show all", balance: "Balance" },
+  zh: { more: (n) => `显示已隐藏的 ${n} 个`, hide: "从概览中隐藏", bal: "从概览中隐藏它的余额", n: (n) => `已隐藏 ${n} 个`, unhide: "取消隐藏", all: "全部显示", balance: "余额" },
+  "zh-TW": { more: (n) => `顯示已隱藏的 ${n} 個`, hide: "從概覽中隱藏", bal: "從概覽中隱藏它的餘額", n: (n) => `已隱藏 ${n} 個`, unhide: "取消隱藏", all: "全部顯示", balance: "餘額" },
+  ja: { more: (n) => `非表示の ${n} 件を表示`, hide: "概要から隠す", bal: "残高を概要から隠す", n: (n) => `${n} 件非表示`, unhide: "再表示", all: "すべて表示", balance: "残高" },
+  de: { more: (n) => `${n} ausgeblendete anzeigen`, hide: "In der Übersicht ausblenden", bal: "Sein Guthaben in der Übersicht ausblenden", n: (n) => `${n} ausgeblendet`, unhide: "Einblenden", all: "Alle anzeigen", balance: "Guthaben" },
 };
 const SIZES = [{ width: 1200, web: false }, { width: 560, web: false }, { width: 390, web: true }];
 
@@ -133,7 +133,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await reader.inView(p, card(p, "stepfun"));
           at = await top(p);
           await card(p, "stepfun").locator(".subscription-head").click({ button: "right" });
-          assert.deepEqual(await items(p), [w.hide, w.bal]);
+          assert.deepEqual(await items(p), [w.hide, w.bal, w.more(1)], "with one hidden, the menu offers the way back too");
           await p.locator(".row-menu .rm-item", { hasText: w.bal }).click();
           await p.waitForFunction(() => !/42\.00/.test(document.querySelector('#subscriptionUsage > [data-provider="stepfun"]').textContent));
           await savedAs(["stepfun-2|balance", "stepfun|balance"]);
@@ -185,8 +185,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           // a whole card hidden too, then Show all has every card back
           await reader.inView(p, card(p, "claude"));
           await card(p, "claude").locator(".subscription-head").click({ button: "right" });
-          assert.deepEqual(await items(p), [w.hide]);
-          await p.locator(".row-menu .rm-item").click();
+          assert.deepEqual(await items(p), [w.hide, w.more(1)]);
+          await p.locator(".row-menu .rm-item", { hasText: w.hide }).click();
           await p.waitForFunction(() => !document.querySelector('#subscriptionUsage > [data-provider="claude"]'));
           await savedAs(["stepfun|balance", "claude|plan"]);
           await reader.click(p, p.locator("#quotaHid .us-hidline"));

@@ -1,7 +1,7 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
 // #819 (ITea312: 图形界面找不到给某个模型单独定价，只能用全局倍率): a model's
 // price, which only `magpie model price` set, is given in the provider
-// editor's Names & levels, beside its name. Each box shows the model's list
+// editor's Names, prices & levels, beside its name. Each box shows the model's list
 // price until one is typed, a part left empty takes the list's, and
 // Restore default gives it its list price again; all made with the
 // provider's Save. A Remote magpie's model says its list price is what the
@@ -27,6 +27,8 @@ function serve(lang, posts) {
     // billed by the hour (treeMan on Discord): the list price is off-peak
     { id: "model-5", name: "Model 5", on: true, efforts: [], images: false, list: { ...list, peak: "deepseek" } },
     { id: "model-6", name: "Model 6", on: true, efforts: [], images: false, list: { ...list, peak: "weekdays" } },
+    // Ollama Cloud's: its own hours, 12:00 to 18:00 UTC (hayden4608 on Discord)
+    { id: "model-7", name: "Model 7", on: true, efforts: [], images: false, list: { ...list, peak: "ollama" } },
   ];
   const provider = { id: "relay", name: "Relay", icon: "generic", chat: "https://relay.example/v1", responses: "", anthropic: "", models, agents: [], key: { set: true, masked: "sk-…1234" }, ready: true };
   const providers = { providers: [provider], presets: [], excluded: [], gateway: { running: true, window: true } };
@@ -50,7 +52,7 @@ function serve(lang, posts) {
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   for (const lang of ["en", "zh"]) {
-    test(`${engine} ${lang}: a model's price is set in Names & levels, its list price shown`, async (t) => {
+    test(`${engine} ${lang}: a model's price is set in Names, prices & levels, its list price shown`, async (t) => {
       const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL || "chromium" }));
       const page = await (await browser.newContext({ viewport: { width: 900, height: 900 }, reducedMotion: "reduce" })).newPage();
       t.after(async () => {
@@ -67,7 +69,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.route("**/*", serve(lang, posts));
       await page.goto("http://magpie.test/?view=providers");
       const zh = lang === "zh";
-      const L = { names: zh ? "名称与推理档位" : "Names & levels", price: zh ? "价格（$ / 百万 tokens）" : "Price, $ / 1M tokens", input: zh ? "输入" : "Input", output: zh ? "输出" : "Output",
+      const L = { names: zh ? "名称、价格与推理档位" : "Names, prices & levels", price: zh ? "价格（$ / 百万 tokens）" : "Price, $ / 1M tokens", input: zh ? "输入" : "Input", output: zh ? "输出" : "Output",
         unsaved: zh ? "未保存" : "unsaved", save: zh ? "保存" : "Save", reset: zh ? "恢复默认" : "Restore default", nolist: zh ? "model-3 没有官方价格：请填写输入和输出价格" : "model-3 has no list price: give its input and output prices" };
       await page.locator(".row.provider").click();
       if (!(await page.locator(".mnames:not([hidden])").count())) await page.getByRole("button", { name: L.names, exact: true }).click();
@@ -91,6 +93,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.match(await row("model-5").locator(".mprice").getAttribute("title"), holiday);
       assert.match(await row("model-6").locator(".mprice").getAttribute("title"), peak);
       assert.doesNotMatch(await row("model-6").locator(".mprice").getAttribute("title"), holiday);
+      const ollama = await row("model-7").locator(".mprice").getAttribute("title");
+      assert.match(ollama, peak);
+      assert.match(ollama, zh ? /周一至周五 UTC 12:00–18:00/ : /from 12:00 to 18:00 UTC, Monday to Friday/);
+      assert.doesNotMatch(ollama, /01:00/);
+      assert.doesNotMatch(ollama, holiday);
+      assert.doesNotMatch(await row("model-6").locator(".mprice").getAttribute("title"), /12:00/);
 
       // a part typed, the others the list's; Restore default drops a price
       const y = await page.evaluate(() => scrollY);

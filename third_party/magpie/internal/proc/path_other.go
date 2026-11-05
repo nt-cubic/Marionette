@@ -224,13 +224,7 @@ func npmPrefix(home string) string {
 // 找到，我终端环境使用的fish). Their PATH comes after the login shell's, and
 // a variable the login shell leaves empty is taken from them.
 func shellEnv() (string, map[string]string) {
-	sh := os.Getenv("SHELL")
-	if sh == "" || !filepath.IsAbs(sh) {
-		sh = "/bin/zsh"
-		if _, err := os.Stat(sh); err != nil {
-			sh = "/bin/sh"
-		}
-	}
+	sh := loginShell()
 	asks := append([]string{sh}, termShells(sh)...)
 	paths := make([]string, len(asks))
 	vars := make([]map[string]string, len(asks))
@@ -244,6 +238,18 @@ func shellEnv() (string, map[string]string) {
 	}
 	wg.Wait()
 	return mergeShellEnv(paths, vars)
+}
+
+// loginShell is the user's login shell: $SHELL, else zsh, else sh.
+func loginShell() string {
+	sh := os.Getenv("SHELL")
+	if sh == "" || !filepath.IsAbs(sh) {
+		sh = "/bin/zsh"
+		if _, err := os.Stat(sh); err != nil {
+			sh = "/bin/sh"
+		}
+	}
+	return sh
 }
 
 // termShells are the shells other than the login shell sh that a terminal
@@ -378,13 +384,20 @@ func askShell(sh string) (string, map[string]string) {
 var shellAsk = 5 * time.Second
 
 func askShellAs(sh, flags string) (string, map[string]string) {
+	return parseShellEnv(askShellRaw(sh, flags, shellProbe(sh)), shellMark)
+}
+
+// askShellRaw is what sh run with flags and the command probe prints, as
+// askShell runs it: a probe of its own, MAGPIE_SHELL_PROBE=1, shellAsk
+// at most.
+func askShellRaw(sh, flags, probe string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), shellAsk)
 	defer cancel()
-	cmd := ProbeContext(ctx, sh, flags, shellProbe(sh))
+	cmd := ProbeContext(ctx, sh, flags, probe)
 	cmd.Stdin = nil
 	cmd.Env = append(os.Environ(), "MAGPIE_SHELL_PROBE=1")
 	out, _ := cmd.Output()
-	return parseShellEnv(string(out), shellMark)
+	return string(out)
 }
 
 // ShellPath is the PATH the shell sh (zsh, bash, fish) has in a terminal
@@ -470,4 +483,165 @@ func parseShellEnv(s, mark string) (string, map[string]string) {
 		vars[v] = f[k+1]
 	}
 	return f[0], vars
+}
+
+// varName is a variable's name a shell can be asked for: letters, digits
+// and _, not starting with a digit, so it goes into shellNamedProbe as it is.
+func varName(n string) bool {
+	if n == "" || n[0] >= '0' && n[0] <= '9' {
+		return false
+	}
+	for _, c := range n {
+		if c != '_' && (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+var named struct {
+	sync.Mutex
+	// who is the SHELL and HOME the answers are for
+	who  string
+	vals map[string]namedVal
+}
+
+type namedVal struct {
+	v   string
+	set bool
+	at  time.Time
+}
+
+// LoginVars are the values a terminal opened now has for names, the ones
+// set there (empty ones too): what the login shell exports, or fish's or
+// nushell's when a terminal opens those (shellEnv's shells, the login
+// shell's answer first). A ${NAME} in an MCP server's headers or
+// environment is read so where magpie's own environment hasn't it: a
+// magpie opened from the Finder or the Dock has none of the profile's
+// variables, so a server whose token is in .zshrc showed no tools (Cyrus
+// on Discord). Each answer, unset too, is kept a minute; the values are
+// only returned, never set in magpie's environment or logged. A name that
+// isn't a variable's is never asked.
+func LoginVars(names []string) map[string]string {
+	who := os.Getenv("SHELL") + "\x00" + os.Getenv("HOME")
+	out := map[string]string{}
+	var ask []string
+	named.Lock()
+	if named.who != who {
+		named.who, named.vals = who, nil
+	}
+	for _, n := range names {
+		if !varName(n) || slices.Contains(ask, n) {
+			continue
+		}
+		if a, ok := named.vals[n]; ok && time.Since(a.at) < time.Minute {
+			if a.set {
+				out[n] = a.v
+			}
+			continue
+		}
+		ask = append(ask, n)
+	}
+	named.Unlock()
+	if len(ask) == 0 {
+		return out
+	}
+	got := shellNamed(ask)
+	now := time.Now()
+	named.Lock()
+	if named.who == who {
+		if named.vals == nil {
+			named.vals = map[string]namedVal{}
+		}
+		for _, n := range ask {
+			v, set := got[n]
+			named.vals[n] = namedVal{v: v, set: set, at: now}
+		}
+	}
+	named.Unlock()
+	for n, v := range got {
+		out[n] = v
+	}
+	return out
+}
+
+// shellNamed asks shellEnv's shells for names, as shellEnv asks them for
+// PATH: the set ones, each from the first shell that has it set.
+func shellNamed(names []string) map[string]string {
+	sh := loginShell()
+	asks := append([]string{sh}, termShells(sh)...)
+	answers := make([]map[string]string, len(asks))
+	var wg sync.WaitGroup
+	for i, s := range asks {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			answers[i] = askNamed(s, names)
+		}()
+	}
+	wg.Wait()
+	out := map[string]string{}
+	for _, a := range answers {
+		for k, v := range a {
+			if _, have := out[k]; !have {
+				out[k] = v
+			}
+		}
+	}
+	return out
+}
+
+// askNamed asks the shell sh for names as askShell asks it for PATH; nil
+// when it doesn't answer.
+func askNamed(sh string, names []string) map[string]string {
+	for _, flags := range []string{"-ilc", "-lc"} {
+		if vars := parseNamed(askShellRaw(sh, flags, shellNamedProbe(sh, names)), names); vars != nil {
+			return vars
+		}
+	}
+	return nil
+}
+
+// shellNamedProbe is the command sh runs to print, for each of names,
+// whether it is exported ("1" or "") and its value, NUL-parted between
+// two marks, as shellProbe prints PATH: /bin/sh expands them.
+func shellNamedProbe(sh string, names []string) string {
+	var format, args string
+	for i, n := range names {
+		if i > 0 {
+			format += `\0`
+		}
+		format += `%s\0%s`
+		args += ` "${` + n + `+1}" "$` + n + `"`
+	}
+	cmd := `/bin/sh -c 'printf "` + shellMark + format + shellMark + `"` + args + `'`
+	if filepath.Base(sh) == "nu" {
+		return "^" + cmd
+	}
+	return cmd
+}
+
+// parseNamed reads shellNamedProbe's answer: the set names' values; nil
+// when there is no answer, or one of another length.
+func parseNamed(s string, names []string) map[string]string {
+	i := strings.Index(s, shellMark)
+	if i < 0 {
+		return nil
+	}
+	s = s[i+len(shellMark):]
+	j := strings.Index(s, shellMark)
+	if j < 0 {
+		return nil
+	}
+	f := strings.Split(s[:j], "\x00")
+	if len(f) != 2*len(names) {
+		return nil
+	}
+	out := map[string]string{}
+	for k, n := range names {
+		if f[2*k] == "1" {
+			out[n] = f[2*k+1]
+		}
+	}
+	return out
 }

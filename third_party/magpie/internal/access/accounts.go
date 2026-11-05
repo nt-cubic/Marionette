@@ -2,7 +2,6 @@ package access
 
 import (
 	"errors"
-	"fmt"
 	"slices"
 	"strings"
 
@@ -32,24 +31,10 @@ func CleanAccounts(in []string) ([]string, error) {
 		if len(a) > 300 {
 			return nil, errors.New("A key's account is at most 300 characters")
 		}
-		p, err := provider.Find(pid)
+		kept, err := provider.ResolveAccount(pid, ref)
 		if err != nil {
 			return nil, err
 		}
-		id := ""
-		for _, r := range p.AccountIDs() {
-			if strings.EqualFold(r.ID, ref) || strings.EqualFold(r.User, ref) {
-				id = r.ID
-				break
-			}
-		}
-		if id == "" {
-			if p.Account == nil {
-				return nil, fmt.Errorf("%s has no key %q", p.Name, ref)
-			}
-			return nil, fmt.Errorf("%s has no account %q", p.Name, ref)
-		}
-		kept := p.ID + "/" + id
 		if !slices.ContainsFunc(out, func(o string) bool { return strings.EqualFold(o, kept) }) {
 			out = append(out, kept)
 		}
@@ -80,6 +65,64 @@ func (who Identity) AllowsAccount(pid, ref string) bool {
 		}
 	}
 	return !named
+}
+
+// heldToNone is the account an entry "<provider>/<heldToNone>" names: none
+// a provider has, so the list names the provider and allows none of it.
+const heldToNone = "\x00"
+
+// HeldToGroup is who held to a routing group's accounts too (accounts,
+// a Group's Accounts, in the key's form): a provider the group names is
+// used only on the accounts the group names that the key may use as well,
+// none when the two share none, never one either leaves out; a provider
+// only the key names, on the key's; one neither names, on every account
+// it has. Group is set to the group's name, for the error to say whose
+// accounts held the request. A group naming no account is who as it is.
+// Everything that holds a request to its key's accounts
+// (AllowsAccount) holds it to the group's then, by the one rule.
+func (who Identity) HeldToGroup(group string, accounts []string) Identity {
+	named := map[string][]string{} // a provider the group names, in lower case: its entries as written
+	var order []string
+	for _, a := range accounts {
+		a = strings.TrimSpace(a)
+		pid, ref, ok := strings.Cut(a, "/")
+		if pid = strings.ToLower(pid); !ok || pid == "" || ref == "" {
+			continue
+		}
+		if _, seen := named[pid]; !seen {
+			order = append(order, pid)
+		}
+		named[pid] = append(named[pid], a)
+	}
+	if len(order) == 0 {
+		return who
+	}
+	var out []string
+	for _, a := range who.Accounts {
+		if pid, _, _ := strings.Cut(strings.TrimSpace(a), "/"); named[strings.ToLower(pid)] == nil {
+			out = append(out, a)
+		}
+	}
+	for _, pid := range order {
+		some := false
+		for _, a := range named[pid] {
+			_, ref, _ := strings.Cut(a, "/")
+			if who.AllowsAccount(pid, ref) && !slices.ContainsFunc(out, func(o string) bool { return strings.EqualFold(o, a) }) {
+				out, some = append(out, a), true
+			}
+		}
+		if !some {
+			out = append(out, pid+"/"+heldToNone)
+		}
+	}
+	who.Accounts, who.Group = out, group
+	return who
+}
+
+// ShownAccounts is who's accounts as a message lists them: the entries
+// HeldToGroup adds to name a provider with none of its accounts left out.
+func (who Identity) ShownAccounts() []string {
+	return slices.DeleteFunc(slices.Clone(who.Accounts), func(a string) bool { return strings.HasSuffix(a, "/"+heldToNone) })
 }
 
 // ReplaceAccount moves every key's account list from one of provider
