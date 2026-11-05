@@ -287,31 +287,6 @@
 
 /* ── Message outline: tick rail + popover panel ──────────────────────────── */
 
-.message-outline__rail {
-  min-width: 0;
-  padding: 8px 6px;
-  border: 0;
-  border-radius: var(--radius);
-  background: transparent;
-  box-shadow: none;
-}
-
-.message-outline.is-open .message-outline__rail {
-  border: 0;
-  background: transparent;
-}
-
-.message-outline__rail-dot {
-  width: 12px;
-  height: 2px;
-  border-radius: 1px;
-  background: var(--hairline);
-}
-
-.message-outline__rail-dot:last-child {
-  background: var(--text-muted);
-}
-
 .message-outline__panel {
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
@@ -343,26 +318,6 @@
 .message-outline__panel-foot {
   justify-content: center;
   border-top: 1px solid var(--hairline);
-}
-
-.message-outline__item {
-  gap: 8px;
-  min-height: 26px;
-  padding: 4px 10px;
-  border-bottom: 1px solid var(--hairline);
-  font-size: 12px;
-}
-
-.message-outline__item:hover,
-.message-outline__item:focus-visible {
-  background: var(--panel-soft);
-}
-
-.message-outline__idx {
-  color: var(--text-faint);
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1.6;
 }
 
 /* ---- Accent, v2 final (2026-11-06) ---------------------------------------------------

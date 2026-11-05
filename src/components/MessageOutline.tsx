@@ -115,7 +115,7 @@ export function MessageOutline({ events, sessionId }: MessageOutlineProps) {
           ref={listRef}
           className="message-outline__list custom-scrollbar scrollbar-autohide"
           // ~6 rows visible; wheel scrolls the rest
-          style={{ maxHeight: `calc(${VISIBLE_ROWS} * 26px + 8px)` }}
+          style={{ maxHeight: `calc(${VISIBLE_ROWS} * 34px + 8px)` }}
         >
           {items.map((event, index) => {
             const id = userMessageAnchorId(event);

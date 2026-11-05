@@ -608,3 +608,18 @@
     transition: none;
   }
 }
+
+/* ---- Process card: grey identity bar (2026-11-06) -------------------------------------
+   Same 3px left bar as You / Reply, in muted ink, so the three cards read as one family;
+   keyboard focus is a 1px accent ring on the card, not the browser's black box. */
+.event-list .activity-group {
+  border-left: 3px solid color-mix(in srgb, var(--text-muted) 70%, var(--border));
+}
+
+.activity-panel > .activity-panel__summary:focus-visible {
+  outline: none;
+}
+
+.event-list .activity-group:has(> .activity-panel > .activity-panel__summary:focus-visible) {
+  box-shadow: 0 0 0 1px var(--accent);
+}
