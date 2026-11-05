@@ -302,28 +302,36 @@
     box-shadow: 0 0 0 0 transparent;
   }
 }
-.quota-cur__title,
+/* Header row: name (shrinks, ellipsis) · "经 X" note · reset time pinned right. One line. */
 .quota-cur__name {
   display: flex;
   align-items: baseline;
   gap: 6px;
+  min-width: 0;
   height: 28px;
   padding: 0 12px;
+  white-space: nowrap;
 }
 .quota-cur__title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 14px;
   font-weight: 600;
   color: var(--text-strong);
-  white-space: nowrap;
 }
 .quota-cur__note {
+  flex: none;
   font-size: 11px;
   color: var(--text-faint);
 }
 .quota-cur__reset {
+  flex: none;
   margin-left: auto;
   font-size: 11px;
   color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
 }
 .quota-cur__balance {
   display: flex;
