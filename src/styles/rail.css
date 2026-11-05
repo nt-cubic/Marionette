@@ -1001,3 +1001,47 @@
     transition: none;
   }
 }
+
+/* Legacy stream-cards.css pins the meta to grid-column 2 (under the name); put it back in
+   its own right-hand column so it truncates instead of running past the panel edge. */
+.context-panel .rail-shared.rail-shared .context-lend__name,
+.context-panel .rail-shared.rail-shared .context-lend__meta {
+  grid-column: auto;
+  grid-row: auto;
+}
+
+/* Rows as flex, not grid: the legacy sheet fights every grid placement. Name shrinks to
+   60% at most, the meta takes the rest and truncates from the right. */
+.context-panel .rail-shared.rail-shared .context-lend__row {
+  display: flex;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.context-panel .rail-shared.rail-shared .context-lend__row > input[type="checkbox"] {
+  flex: none;
+}
+.context-panel .rail-shared.rail-shared .context-lend__name {
+  flex: 0 1 auto;
+  max-width: 60%;
+}
+.context-panel .rail-shared.rail-shared .context-lend__meta {
+  flex: 1 1 0;
+  width: auto;
+  max-width: none;
+}
+
+/* Legacy lists are display:grid, so each <li> sized to its content and pushed the row past
+   the panel. Plain blocks with shrinkable items keep every row inside the rail. */
+.context-panel .rail-shared.rail-shared .context-lend__list,
+.context-panel .rail-shared.rail-shared .panel-entry-list {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+}
+.context-panel .rail-shared.rail-shared .context-lend__list > li,
+.context-panel .rail-shared.rail-shared .panel-entry-list > li {
+  min-width: 0;
+  max-width: 100%;
+}

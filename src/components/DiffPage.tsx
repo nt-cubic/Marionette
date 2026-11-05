@@ -106,9 +106,9 @@ export function DiffPage({
             </button>
           ) : null}
           {onCommitAndPush ? (
-            <button type="button" className="diff-page__text-btn" onClick={onCommitAndPush}>
+            <button type="button" className="diff-page__text-btn" title={t("v2pages.diffCommit")} onClick={onCommitAndPush}>
               <GitCommitHorizontal size={13} aria-hidden />
-              {t("v2pages.diffCommit")}
+              <span className="diff-page__btn-label">{t("v2pages.diffCommit")}</span>
             </button>
           ) : null}
           <button type="button" className="diff-page__icon" title={t("common.close")} aria-label={t("common.close")} onClick={onClose}>
@@ -152,10 +152,11 @@ export function DiffPage({
                   <button
                     type="button"
                     className="diff-page__text-btn"
+                    title={t("v2pages.diffReveal")}
                     onClick={() => void revealInFileManager(joinPath(projectRoot, currentPath))}
                   >
                     <FolderOpen size={13} aria-hidden />
-                    {t("v2pages.diffReveal")}
+                    <span className="diff-page__btn-label">{t("v2pages.diffReveal")}</span>
                   </button>
                 ) : null}
               </div>
