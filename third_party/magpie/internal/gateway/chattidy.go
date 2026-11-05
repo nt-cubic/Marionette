@@ -77,7 +77,21 @@ import (
 // own log says the reply went (AricRedemption). A nameless call runs
 // nowhere, so it is no call, as a written block naming no offered tool
 // is; a name of another kind on a later fragment is left out, the first
-// one's kept.
+// one's kept. And a finish of tool_calls no delta ever carried a call
+// for (#4944, Hermes: a reply of text alone whose upstream ends it
+// "tool_calls" all the same) ends stop too — a client that reads
+// finish_reason took the turn for one whose calls were dropped and
+// re-prompted, three times a reply.
+//
+// And a legacy function_call that carries nothing — a name and arguments
+// both empty — is left out too (#4659): WorkBuddy's stream ends a reply
+// of plain text on a frame with "function_call":{"name":"","arguments":""}
+// where the contract has null, and a client that checks the shape of
+// every frame reads the empty object for a legacy call and refuses the
+// whole turn, so every text reply a tools-carrying request got was a
+// turn lost (jinccc-ctrl). An empty one runs nowhere, as a nameless call
+// is no call; a null goes as it came, and a call whose name or arguments
+// hold something is one a client may still be reading.
 //
 // Lines pass whole, as they came, unless one has any of them.
 type chatTidy struct {
@@ -98,6 +112,7 @@ var (
 	contentParts      = []byte(`"content":[`)
 	contentPartsSpace = []byte(`"content": [`)
 	toolCallsField    = []byte(`"tool_calls"`)
+	functionCallField = []byte(`"function_call":{`)
 )
 
 // write takes what was read and gives back what to send on: every line
@@ -146,7 +161,8 @@ func needsTidy(line []byte) bool {
 		bytes.Contains(line, emptyToolCalls) ||
 		bytes.Contains(line, contentParts) ||
 		bytes.Contains(line, contentPartsSpace) ||
-		bytes.Contains(line, toolCallsField)
+		bytes.Contains(line, toolCallsField) ||
+		bytes.Contains(line, functionCallField)
 }
 
 // needs is needsTidy, a finish_reason once a choice made a call, and a
@@ -279,7 +295,21 @@ func (t *chatTidy) line(line []byte) []byte {
 		if calls, ok := delta["tool_calls"]; ok && string(calls) == "[]" {
 			delete(delta, "tool_calls")
 			inDelta = true
-		} else if ok {
+		}
+		if fc, ok := delta["function_call"]; ok {
+			if fullFunctionCall(fc) {
+				// a legacy call a client may still be reading (#4659)
+				// keeps a finish that says the turn ended in a call
+				if t.named == nil {
+					t.named = map[int]bool{}
+				}
+				t.named[choice] = true
+			} else if emptyFunctionCall(fc) {
+				delete(delta, "function_call")
+				inDelta = true
+			}
+		}
+		if calls, ok := delta["tool_calls"]; ok {
 			if t.indexes == nil {
 				t.indexes = streamCallIndexes{}
 			}
@@ -321,20 +351,19 @@ func (t *chatTidy) line(line []byte) []byte {
 			c["delta"], _ = json.Marshal(delta)
 			changed = true
 		}
-		if t.called[choice] {
-			switch end := string(bytes.TrimSpace(c["finish_reason"])); end {
-			case `"stop"`:
-				if t.named[choice] {
-					c["finish_reason"] = json.RawMessage(`"tool_calls"`)
-					changed = true
-				}
-			case `"tool_calls"`:
-				if !t.named[choice] {
-					// the call the finish named named no function: it ends
-					// stop, as a reply that made no call (#1475)
-					c["finish_reason"] = json.RawMessage(`"stop"`)
-					changed = true
-				}
+		switch end := string(bytes.TrimSpace(c["finish_reason"])); end {
+		case `"stop"`:
+			if t.called[choice] && t.named[choice] {
+				c["finish_reason"] = json.RawMessage(`"tool_calls"`)
+				changed = true
+			}
+		case `"tool_calls"`:
+			if !t.named[choice] {
+				// the call the finish named named no function, or no call
+				// was ever made and no delta carried the key (#4944): it
+				// ends stop, as a reply that made no call (#1475)
+				c["finish_reason"] = json.RawMessage(`"stop"`)
+				changed = true
 			}
 		}
 	}
@@ -349,6 +378,37 @@ func (t *chatTidy) line(line []byte) []byte {
 		return line
 	}
 	return append(append([]byte("data: "), nb...), end...)
+}
+
+// emptyFunctionCall reports whether raw is a legacy function_call
+// carrying nothing: a name and arguments both empty strings or nulls,
+// either absent (#4659). A null is the contract's own nothing and is not
+// this; a name or arguments of another kind than a string is not read,
+// and the call goes as it came.
+func emptyFunctionCall(raw json.RawMessage) bool {
+	if string(bytes.TrimSpace(raw)) == "null" {
+		return false
+	}
+	var fc struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	}
+	return decodeJSON(raw, &fc) == nil && fc.Name == "" && fc.Arguments == ""
+}
+
+// fullFunctionCall reports whether raw is a legacy function_call a client
+// may still be reading: a name or arguments that hold something (#4659).
+// A null is the contract's own nothing and an unreadable shape is no call
+// a client reads.
+func fullFunctionCall(raw json.RawMessage) bool {
+	if string(bytes.TrimSpace(raw)) == "null" {
+		return false
+	}
+	var fc struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	}
+	return decodeJSON(raw, &fc) == nil && (fc.Name != "" || fc.Arguments != "")
 }
 
 // withoutEmptyNames drops the empty "name" on a delta's tool-call

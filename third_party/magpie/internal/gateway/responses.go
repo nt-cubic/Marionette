@@ -77,6 +77,9 @@ type rTool struct {
 	Tools       []rTool         `json:"tools,omitempty"` // a namespace's
 	Execution   string          `json:"execution,omitempty"`
 	Format      *rFormat        `json:"format,omitempty"` // a custom tool's
+	// ExternalWebAccess is a web_search tool's mode: false is Codex's
+	// "cached", true its "live"
+	ExternalWebAccess json.RawMessage `json:"external_web_access,omitempty"`
 }
 
 // rFormat is what a custom (freeform) tool's input is: "text", or a
@@ -346,6 +349,9 @@ func readResponsesFor(body []byte, facts, keepInstructions bool) (*Request, erro
 	// a Responses client's turns go to Claude with hour-long cache marks,
 	// unless it asked for its prompt to be kept in memory only
 	r.hourMarks = q.PromptCacheRetention != "in_memory"
+	// the instruction roles the client sent stand where they stood, and go
+	// back as they came (#2532)
+	r.instructionsKept = keepInstructions
 	if q.Reasoning != nil {
 		r.Effort = effortOf(q.Reasoning.Effort)
 		r.Thinking = true
@@ -520,6 +526,9 @@ func readResponsesFor(body []byte, facts, keepInstructions bool) (*Request, erro
 	for i, t := range append(q.Tools, found...) {
 		if strings.HasPrefix(t.Type, "web_search") {
 			r.WebSearch = true
+			if len(t.ExternalWebAccess) > 0 {
+				r.WebAccess = t.ExternalWebAccess
+			}
 		}
 		switch t.Type {
 		case "function":
@@ -1304,6 +1313,18 @@ func sealedReasoning(p Part) bool {
 
 // buildResponses renders a request for a Responses upstream.
 func buildResponses(r *Request, model, host string, rejectTemp bool) []byte {
+	// A translated request's system or developer message (Claude Code's
+	// environment as a {role: "system"} message) is the harness's, not an
+	// instruction item of a Responses client's own: it is folded into the
+	// instructions as the Chat and Anthropic builds fold it
+	// (responseInstructions) — a backend that takes user, assistant and
+	// developer alone refuses the role with a 400 the agent sees (#4632).
+	// A Responses client's own instruction items were kept by the read
+	// (#2532) and go where they stood; so do a codex account's, which its
+	// send says as developer ones in place (codexBody, buildFor).
+	if !r.instructionsKept {
+		r = responseInstructions(r)
+	}
 	// A turn's reasoning goes back as a reasoning item, as a model that
 	// thinks between tool calls wants it (DeepSeek: "The reasoning_text in
 	// the thinking mode must be passed back", #388). Only a DeepSeek model

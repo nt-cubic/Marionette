@@ -61,4 +61,16 @@ func TestImageGenCodexOneEntry(t *testing.T) {
 	if s := settingsState(); s.ImageGenShown != "" {
 		t.Fatalf("a listed pick is shown as %q", s.ImageGenShown)
 	}
+	// its editor's Image models says why it lists one (ChangQiu on
+	// Discord looked there for gpt-image-2.5)
+	p, err := provider.Find("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j := providerInfo(*p, nil); !j.DrawPicks || len(j.DrawIDs) != 1 {
+		t.Fatalf("editor's drawIds %v, drawPicks %v", j.DrawIDs, j.DrawPicks)
+	} else if j.DrawNames[j.DrawIDs[0]] != "GPT Image" {
+		// StarBits on X read the chip's gpt-image-2 as an old model
+		t.Fatalf("editor shows %q by %v", j.DrawIDs[0], j.DrawNames)
+	}
 }

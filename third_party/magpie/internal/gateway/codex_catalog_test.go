@@ -123,10 +123,12 @@ func TestCodexCatalogForAGatewayKey(t *testing.T) {
 	}
 }
 
-// Codex reads at most 1 MiB of a model_catalog_url and refuses the whole
-// list past it; every entry carries Codex's prompt (~8 KB), so a gateway
-// with hundreds of models hands Codex as many as fit, and says how many it
-// left out, rather than a list Codex loads none of.
+// Codex before 0.166 reads at most 1 MiB of a model_catalog_url and
+// refuses the whole list past it; every entry carries the instructions
+// official Codex sends its model (~21 KB), so a gateway with hundreds of
+// models hands such a Codex as many as fit, and says how many it left out,
+// rather than a list Codex loads none of. Codex 0.166, which says so in
+// its ?client_version=, reads the list whole and gets every model.
 func TestCodexCatalogFitsCodexsLimit(t *testing.T) {
 	fresh(t)
 	var ms []string
@@ -149,10 +151,27 @@ func TestCodexCatalogFitsCodexsLimit(t *testing.T) {
 	}
 	out, _ := strconv.Atoi(w.Header().Get("X-Magpie-Left-Out"))
 	t.Logf("%d listed in %d bytes, %d left out", len(list.Models), w.Body.Len(), out)
-	if len(list.Models) < 100 || out == 0 || len(list.Models)+out != 300 {
+	if len(list.Models) < 40 || out == 0 || len(list.Models)+out != 300 {
 		t.Fatalf("%d listed, %d left out", len(list.Models), out)
 	}
 	if first := *list.Models[0].Slug; !strings.HasPrefix(first, "many/model-000") {
 		t.Fatalf("the first kept is %s", first)
+	}
+	for _, v := range []string{"0.165.0", "0.99.1", "", "x"} {
+		w := httptest.NewRecorder()
+		New().Handler().ServeHTTP(w, httptest.NewRequest("GET", CodexCatalogPath+"?client_version="+v, nil))
+		if w.Body.Len() > codexCatalogMost || w.Header().Get("X-Magpie-Left-Out") == "" {
+			t.Errorf("client_version %q: %d bytes, %q left out", v, w.Body.Len(), w.Header().Get("X-Magpie-Left-Out"))
+		}
+	}
+	for _, v := range []string{"0.166.0", "0.167.0-alpha.1", "1.0.0"} {
+		w := httptest.NewRecorder()
+		New().Handler().ServeHTTP(w, httptest.NewRequest("GET", CodexCatalogPath+"?client_version="+v, nil))
+		if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+			t.Fatal(err)
+		}
+		if len(list.Models) != 300 || w.Header().Get("X-Magpie-Left-Out") != "" {
+			t.Errorf("client_version %s: %d listed, %q left out", v, len(list.Models), w.Header().Get("X-Magpie-Left-Out"))
+		}
 	}
 }

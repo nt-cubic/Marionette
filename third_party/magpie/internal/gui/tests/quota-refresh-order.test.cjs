@@ -25,6 +25,7 @@ function page(m = "window") {
     const usageAcctKey = q => q.provider + "\\n" + (q.user || "").toLowerCase();
     const quotaCycleHolds = new Map(); // past cycles' estimates (#2009), cleared by a refresh
     const t = x => x;
+    const quotaError = err => err;
     const calm = () => true;
     const document = { querySelectorAll: () => [] };
     const el = () => ({ dataset: {}, classList: { add() {}, remove() {}, toggle() {} }, setAttribute() {} });
@@ -109,6 +110,50 @@ test("a card that comes back under another key still shows the reply", async () 
   p.answer(0, [card("a@x.com", 32)]); await refresh;
   assert.deepEqual(plain(p.cards()).map(q => [q.user, q.windows[0].used]), [["a@x.com", 32]], "the refreshed card's reply was dropped");
 });
+
+test("refresh errors: a newly named account reports the reading's failure", async () => {
+  const p = page(), unnamed = card("", 0), other = { ...card("b@x.com", 0), provider: "codex" };
+  p.seed([unnamed, other]);
+  const refresh = p.refresh(unnamed);
+  const failed = { ...card("a@x.com", 0), error: "this Claude account needs setup", windows: [] };
+  p.answer(0, [failed, { ...other, error: "another provider failed" }]); await refresh;
+  assert.deepEqual(plain(p.errors), [failed.error]);
+  assert.equal(p.cards()[0].error, failed.error);
+});
+
+test("refresh errors: a remote summary reports its failed child, not a local card", async () => {
+  const p = page(), summary = { ...card("", 0), provider: "home", from: "Home" };
+  const local = { ...card("b@x.com", 0), provider: "codex" };
+  p.seed([summary, local]);
+  const refresh = p.refresh(summary);
+  const failed = { ...card("a@x.com", 0), provider: "home/claude", from: "Home", error: "remote account needs setup", windows: [] };
+  p.answer(0, [{ ...local, error: "local account failed" }, failed]); await refresh;
+  assert.deepEqual(plain(p.errors), [failed.error]);
+  assert.equal(p.cards().find(q => q.provider === "home/claude").error, failed.error);
+});
+
+test("refresh errors: a missing named account doesn't report another account's error", async () => {
+  const p = page(), a = card("a@x.com", 0);
+  p.seed([a]);
+  const refresh = p.refresh(a);
+  p.answer(0, [{ ...card("b@x.com", 0), error: "another account failed", windows: [] }]); await refresh;
+  assert.deepEqual(plain(p.errors), []);
+});
+
+for (const newerFailed of [false, true]) {
+  test(`refresh errors: a renamed reply cannot report an older error over a newer ${newerFailed ? "failure" : "reading"}`, async () => {
+    const p = page(), unnamed = card("", 0), b = card("b@x.com", 0);
+    p.seed([unnamed, b]);
+    const first = p.refresh(unnamed), second = p.refresh(b);
+    const newer = newerFailed ? { ...card("b@x.com", 0), error: "newer failure", windows: [] } : card("b@x.com", 61);
+    p.answer(1, [card("", 0), newer]); await second;
+    // Distinct objects, as separate JSON replies are. The first read's
+    // old error is discarded by keepRefreshedQuotas, not shown anew.
+    p.answer(0, [card("a@x.com", 32), { ...card("b@x.com", 0), error: "older failure", windows: [] }]); await first;
+    assert.deepEqual(plain(p.errors), newerFailed ? [newer.error] : []);
+    assert.deepEqual(plain(p.cards().find(q => q.user === b.user)), newer);
+  });
+}
 
 test("an account first named by refresh survives an older whole-page reply", async () => {
   const p = page(), unnamed = card("", 0);

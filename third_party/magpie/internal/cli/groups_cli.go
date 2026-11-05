@@ -113,7 +113,9 @@ const groupUsage = `usage:
                    asked in words — rates how hard it is, and the turn's requests
                    reason at low, medium, high or xhigh in place of the agent's level; only those
                    the agent asked to reason, never one it turned off (none). A route's effort
-                   is what the agent asked, each try's what its model was sent
+                   is what the agent asked, each try's what its model was sent. A group in the
+                   group, effort=auto of its own, is asked only when this one gave no pick:
+                   the outermost pick stands
 
   e.g. magpie group add "Opus anywhere" models=claude/claude-opus-5-5,copilot/claude-opus-5.5 routing=order
        magpie group set opus-anywhere stays=session models+=openrouter/anthropic/claude-opus-5.5
@@ -127,6 +129,7 @@ const groupUsage = `usage:
        magpie group set deepseek-anywhere routing=fast   # the provider that answered it fastest lately first
        magpie group set deepseek-anywhere routing=cheap  # the provider it costs least on now first (DeepSeek's off-peak hours)
        magpie group set free-pool routing=drain          # one account until it is used up, then the next, never back
+       magpie group set checkins routing=expiring        # free quota first, the soonest to expire first; paid only when none is left
        magpie group pick opus-anywhere copilot/claude-opus-5.5
        magpie claude group/opus-anywhere`
 
@@ -146,6 +149,7 @@ var routingNames = []struct {
 	{provider.Fastest, "fast", []string{"fastest", "speed", "speed-first"}},
 	{provider.Cheapest, "cheap", []string{"cheapest", "cheapest-first", "price", "cost"}},
 	{provider.Drain, "drain", []string{"until-used-up", "use-up", "sticky"}},
+	{provider.FreeExpiring, "expiring", []string{"free-expiring", "free-expiry", "free-soonest", "soonest-free"}},
 	{provider.Manual, "manual", []string{"pick", "picked", "pinned"}},
 }
 

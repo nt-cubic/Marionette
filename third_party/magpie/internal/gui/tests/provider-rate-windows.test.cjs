@@ -105,7 +105,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert(zh.label && zh.add && zh.hint && zh.bad, "every string has its Chinese");
       // the vendors whose list price has its peak already are named under
       // the windows, in the page's own language
-      const peak = "DeepSeek's own API, Command Code and OpenCode Go already count their DeepSeek models' peak hours at double: don't add those hours as a window, or they count twice.";
+      const peak = "DeepSeek's own API, Command Code, OpenCode Go and Ollama Cloud already count their DeepSeek models' peak hours at double: don't add those hours as a window, or they count twice.";
       const peakText = await page.evaluate(([lang, k]) => lang === "en" ? k : I18N[lang]?.[k], [lang, peak]);
       assert(peakText, "the peak note has its " + lang);
       assert((await page.locator(".editor .rate-windows + .hint").innerText()).includes(peakText.trim()), "the peak note is shown");

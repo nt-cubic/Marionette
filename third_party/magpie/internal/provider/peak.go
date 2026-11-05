@@ -25,6 +25,9 @@ type peakBill struct {
 	// models are the ids it bills so, without a maker's prefix
 	// ("deepseek/"); nil: every model it serves
 	models []string
+	// tagged: a listed model with a tag after a colon is the same model
+	// (Ollama's dated deepseek-v4.1-flash:1017 beside deepseek-v4.1-flash)
+	tagged bool
 }
 
 var peakBills = []peakBill{
@@ -39,6 +42,12 @@ var peakBills = []peakBill{
 	// OpenCode Go's (https://opencode.ai/docs/go): Off-Peak and Peak rows
 	{at: func(b string) bool { return openCodeGateway(b) == "go" }, ids: []string{"opencode-go"}, peak: catalog.PeakWeekdays,
 		models: []string{"deepseek-v4.1-flash", "deepseek-v4-pro"}},
+	// Ollama Cloud's (https://ollama.com/pricing): the two models with an
+	// Off-Peak row, at half the price 12:00 to 18:00 UTC on weekdays,
+	// which models.dev lists as their price; every other model there is
+	// one price at every hour
+	{at: func(b string) bool { return HostOf(b) == "ollama.com" }, ids: []string{"ollama-cloud"}, peak: catalog.PeakOllama,
+		models: []string{"deepseek-v4.1-flash", "deepseek-v4-pro"}, tagged: true},
 }
 
 // PeakOf is the hours a call to model at p is billed double in, by the
@@ -58,7 +67,9 @@ func (p Provider) PeakOf(model string) catalog.Peak {
 	looked := false
 	for _, b := range peakBills {
 		if b.models != nil && !slices.Contains(b.models, m) {
-			continue
+			if i := strings.IndexByte(m, ':'); !b.tagged || i < 0 || !slices.Contains(b.models, m[:i]) {
+				continue
+			}
 		}
 		if !looked {
 			urls = buf[:0]

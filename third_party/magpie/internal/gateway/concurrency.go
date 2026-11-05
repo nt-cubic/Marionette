@@ -31,6 +31,48 @@ import (
 type lanes struct {
 	mu sync.Mutex
 	m  map[string]*lane
+	// freed is closed, and made afresh, each time a slot of any lane is
+	// given back or a rest is lifted (signal): a request waiting in one
+	// lane looks then for another with room (waitMate)
+	freed chan struct{}
+}
+
+// signalLocked wakes every request waiting in a lane to look for another
+// with room. l.mu is held.
+func (l *lanes) signalLocked() {
+	if l.freed != nil {
+		close(l.freed)
+		l.freed = nil
+	}
+}
+
+// signal is signalLocked, taking l.mu.
+func (l *lanes) signal() {
+	l.mu.Lock()
+	l.signalLocked()
+	l.mu.Unlock()
+}
+
+// tryTake takes one of who's slots if one is free now and nobody waits
+// for it: no limit, or room. false takes none.
+func (l *lanes) tryTake(who string, limit int) (release func(), ok bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.m == nil {
+		l.m = map[string]*lane{}
+	}
+	ln := l.m[who]
+	if ln == nil {
+		ln = &lane{}
+		l.m[who] = ln
+	}
+	if limit > 0 && (ln.busy >= limit || len(ln.queue) > 0) {
+		l.drop(who, ln)
+		return nil, false
+	}
+	ln.limit = max(limit, 0)
+	ln.busy++
+	return l.releaser(who, ln), true
 }
 
 // lane is one key's or account's: how many are out, and who waits, first
@@ -53,11 +95,20 @@ type lane struct {
 //
 // A full one gives way first. Where the request has another key or
 // account of the same provider, or another member of its routing group,
-// with a slot free now, that one is asked first and the full one keeps its
-// place after it (laneMate): a group spreads its requests over members
-// with room before any waits. A fallback provider is never asked for want
-// of a slot — it is another vendor, often a paid one — and a request whose
-// keys and accounts are all full waits for the one routing chose.
+// with a slot free now and not resting, that one is asked first and the
+// full one keeps its place after it (laneMate): a group spreads its
+// requests over members with room before any waits. A fallback provider is
+// never asked for want of a slot — it is another vendor, often a paid one
+// — and a request whose keys and accounts are all full waits in the queue
+// of the one routing chose, but not for it alone: each time a slot of any
+// lane is given back (lanes.freed), a rest of one of the others ends or is
+// lifted, it looks again, and the first of the others in routing's order
+// with a slot free, not resting and not held back as a reserve as its
+// provider's accounts stand now (waitMate) takes it, its slot taken for
+// it as it leaves the queue (errMoved). 01huadalang on Discord: three
+// ZCode accounts at three at once, the first two resting after a 405; once
+// they were back, the requests already waiting for the third waited on
+// behind its long turns, in every routing, until its own were cut by hand.
 
 // errQueueFull and errQueueWait turn a request away from a lane: its queue
 // at its bound, or the request waited as long as it may.
@@ -66,12 +117,21 @@ var (
 	errQueueWait = errors.New("waited too long")
 )
 
+// errMoved is a request that left its lane's queue for another key or
+// account with room (waitMate): nobody failed, and it is asked there.
+var errMoved = errors.New("gave way to one with room")
+
+// laneRecheck is how often a request waiting in a lane looks again for
+// another with room with nothing given back meanwhile: a minute's room
+// (MaxRPM) comes back with nothing said.
+const laneRecheck = 5 * time.Second
+
 // acquire waits for one of who's limit slots, in turn, with no bound on
 // the queue or the wait. It answers the release, to call once the request
 // is done with the vendor, and false with no slot taken when ctx ended
 // first. A limit of 0 never waits; the request is only counted.
 func (l *lanes) acquire(ctx context.Context, who string, limit int) (release func(), ok bool) {
-	release, _, err := l.take(ctx, who, limit, 0, 0)
+	release, _, err := l.take(ctx, who, limit, 0, 0, nil)
 	return release, err == nil
 }
 
@@ -80,7 +140,11 @@ func (l *lanes) acquire(ctx context.Context, who string, limit int) (release fun
 // error when it ended first, with no slot taken. waited is how long it
 // stood in the queue: 0 when a slot was free at once or there is no
 // limit, so a request that never queued never reads as queued (#2153).
-func (l *lanes) take(ctx context.Context, who string, limit, queue int, wait time.Duration) (release func(), waited time.Duration, err error) {
+// move, when not nil, is asked while it waits — at once, each time a slot
+// of any lane is given back, at the time it names and every laneRecheck —
+// whether the request goes to another key or account instead (waitMate,
+// which takes that one's slot): true leaves the queue with errMoved.
+func (l *lanes) take(ctx context.Context, who string, limit, queue int, wait time.Duration, move func() (bool, time.Time)) (release func(), waited time.Duration, err error) {
 	l.mu.Lock()
 	if l.m == nil {
 		l.m = map[string]*lane{}
@@ -122,13 +186,9 @@ func (l *lanes) take(ctx context.Context, who string, limit, queue int, wait tim
 		defer t.Stop()
 		timeout = t.C
 	}
-	select {
-	case <-ch:
+	err = l.await(ctx, ch, timeout, move)
+	if err == nil {
 		return l.releaser(who, ln), time.Since(queued), nil
-	case <-ctx.Done():
-		err = ctx.Err()
-	case <-timeout:
-		err = errQueueWait
 	}
 	waited = time.Since(queued)
 	l.mu.Lock()
@@ -144,7 +204,64 @@ func (l *lanes) take(ctx context.Context, who string, limit, queue int, wait tim
 	ln.busy--
 	ln.grant()
 	l.drop(who, ln)
+	l.signalLocked()
 	return nil, waited, err
+}
+
+// await waits for ch, the request's turn in its lane: nil then, else
+// ctx's error, errQueueWait at timeout, or errMoved once move says it goes
+// elsewhere.
+func (l *lanes) await(ctx context.Context, ch chan struct{}, timeout <-chan time.Time, move func() (bool, time.Time)) error {
+	for {
+		var freed chan struct{}
+		var again <-chan time.Time
+		var t *time.Timer
+		if move != nil {
+			l.mu.Lock()
+			if l.freed == nil {
+				l.freed = make(chan struct{})
+			}
+			freed = l.freed
+			l.mu.Unlock()
+			select {
+			case <-ch:
+				return nil // its turn came first: it goes where it waited
+			default:
+			}
+			ok, next := move()
+			if ok {
+				return errMoved
+			}
+			d := laneRecheck
+			if !next.IsZero() {
+				d = min(d, max(time.Until(next), time.Millisecond))
+			}
+			t = time.NewTimer(d)
+			again = t.C
+		}
+		select {
+		case <-ch:
+			if t != nil {
+				t.Stop()
+			}
+			return nil
+		case <-ctx.Done():
+			if t != nil {
+				t.Stop()
+			}
+			return ctx.Err()
+		case <-timeout:
+			if t != nil {
+				t.Stop()
+			}
+			return errQueueWait
+		case <-freed:
+		case <-again:
+		}
+		if t != nil {
+			t.Stop()
+		}
+	}
 }
 
 // free says whether a request for who would be sent at once: no limit, or
@@ -165,7 +282,10 @@ func (l *lanes) free(who string, limit int) bool {
 // full, or has sent its MaxRPM in the last minute; -1 when it isn't
 // full, gave way once already, or none has room. A reserve is never one
 // (keepAtOnce): it is held back for its provider not to be used from more
-// accounts at once than it lets be, and a full lane is not a failure.
+// accounts at once than it lets be, and a full lane is not a failure. Nor
+// is one resting: its lane is free because it is resting, and a request
+// handed to it for want of a slot would only ask it again before its rest
+// is out.
 func (s *Server) laneMate(cands []candidate, i int, group bool, gave map[string]bool) int {
 	c := cands[i]
 	who := c.who()
@@ -177,11 +297,112 @@ func (s *Server) laneMate(cands []candidate, i int, group bool, gave map[string]
 		if m.who() == who || !group && m.p.ID != c.p.ID || m.reserve > 0 {
 			continue
 		}
+		if _, resting := restedUntil(m); resting {
+			continue
+		}
 		if s.ready(m) {
 			return j
 		}
 	}
 	return -1
+}
+
+// restedUntil is when c's rest ends, and whether it rests now: its key's
+// or account's, else its model's (restingOf, without reading a key's
+// allowance again).
+func restedUntil(c candidate) (time.Time, bool) {
+	r, ok := restOf(c.restKey())
+	if !ok && c.restID() != c.restKey() {
+		r, ok = restOf(c.restID())
+	}
+	return r.Until, ok
+}
+
+// waitMate is, for a request waiting in the full lane of cands[i], the
+// first other candidate in routing's order that would take it now, with
+// its slot taken for it (release): another key or account of cands[i]'s
+// provider, or in a routing group any member, not tried yet by this
+// request, not one that gave way (gave), not resting, with a slot free and
+// room in its minute, and not held back as a reserve as its provider's
+// accounts stand now (keepAtOnce over them as the rests are now, so a
+// reserve that took a seat while the first rested gives it back once they
+// are back). Those after i come first, then those of planned that probeOne
+// left out for resting, back now. ok is false when none would; next is
+// then when the soonest of those left out only for resting is back (zero
+// for none), for the request to look again then. A fallback provider is
+// never one, as with laneMate.
+func (s *Server) waitMate(cands []candidate, i int, group bool, gave map[string]bool, planned []candidate) (mate candidate, release func(), next time.Time, ok bool) {
+	c := cands[i]
+	who := c.who()
+	seat := func(m candidate) string { return m.who() + "|" + m.model }
+	seen := map[string]bool{}
+	for _, m := range cands[:i+1] {
+		seen[seat(m)] = true
+	}
+	var pool []candidate
+	for _, m := range append(slices.Clone(cands[i+1:]), planned...) {
+		if !seen[seat(m)] {
+			seen[seat(m)] = true
+			pool = append(pool, m)
+		}
+	}
+	// the reserves of each provider of the pool with accounts at once, as
+	// its accounts' rests are now
+	reserves := map[string]map[string]bool{}
+	reserveNow := func(m candidate) bool {
+		k := m.p.ID + "|" + m.model
+		set, done := reserves[k]
+		if !done {
+			n := m.p.AtOnce()
+			if n > 0 {
+				var all []candidate
+				for _, o := range append(slices.Clone(cands), planned...) {
+					if o.p.ID == m.p.ID && o.model == m.model && !slices.ContainsFunc(all, func(a candidate) bool { return a.who() == o.who() }) {
+						all = append(all, o)
+					}
+				}
+				_, held := keepAtOnce(n, all, nil)
+				set = map[string]bool{}
+				for _, o := range held {
+					set[o.who()] = true
+				}
+			}
+			reserves[k] = set
+		}
+		return set[m.who()]
+	}
+	for _, m := range pool {
+		if m.who() == who || gave[m.who()] || !group && m.p.ID != c.p.ID {
+			continue
+		}
+		if until, resting := restedUntil(m); resting {
+			if next.IsZero() || until.Before(next) {
+				next = until
+			}
+			continue
+		}
+		if reserveNow(m) || !s.rpms.free(m.who(), m.p.RPMLimit()) {
+			continue
+		}
+		if rel, took := s.lanes.tryTake(m.who(), m.p.LaneLimit()); took {
+			m.reserve = 0
+			return m, rel, time.Time{}, true
+		}
+	}
+	return candidate{}, nil, next, false
+}
+
+// movedAhead is cands with m at i, ahead of the one there, which keeps its
+// place after it, and m left out where it stood after i.
+func movedAhead(cands []candidate, i int, m candidate) []candidate {
+	cs := slices.Clone(cands)
+	for j := i + 1; j < len(cs); j++ {
+		if cs[j].who() == m.who() && cs[j].model == m.model {
+			cs = slices.Delete(cs, j, j+1)
+			break
+		}
+	}
+	return slices.Insert(cs, i, m)
 }
 
 // dropReserves leaves out, of the candidates after i, the reserves of
@@ -219,6 +440,7 @@ func (l *lanes) releaser(who string, ln *lane) func() {
 			ln.busy--
 			ln.grant()
 			l.drop(who, ln)
+			l.signalLocked()
 			l.mu.Unlock()
 		})
 	}

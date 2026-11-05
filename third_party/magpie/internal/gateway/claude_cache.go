@@ -23,8 +23,14 @@ type clientCache struct {
 	messages        int
 	droppedSystem   int
 	droppedMessages int
+	systemMarks     int // the system's marks, as the request has them
 	fresh           bool
-	report          func()
+	// pasted: the run is Claude Code's interactive mode, which is pasted
+	// the words with none of their marks (claudetui's userPieces), and
+	// keeps its own prompt caching (startRun): every mark but the tools'
+	// is dropped
+	pasted bool
+	report func()
 }
 
 func wantsClientCache(r *http.Request, from provider.Protocol) bool {
@@ -51,6 +57,7 @@ func (c *clientCache) selected(fresh bool) {
 		return
 	}
 	c.fresh = fresh
+	c.pasted = claudeTUIOn()
 	if c.report != nil {
 		c.report()
 	}
@@ -175,6 +182,7 @@ func readClientCache(a aRequest) (*clientCache, error) {
 			return nil, err
 		}
 		if ttl != "" {
+			c.systemMarks++
 			prefix, _ := json.Marshal(system[:i+1])
 			end := len(stringOrText(prefix))
 			if end <= lastEnd {
@@ -247,12 +255,18 @@ func cacheDropped(w http.ResponseWriter, req *Request) {
 	if c.tools > 0 {
 		fields = append(fields, fmt.Sprintf("tools:%d", c.tools))
 	}
-	if c.droppedSystem > 0 {
-		fields = append(fields, fmt.Sprintf("system:%d", c.droppedSystem))
-	}
-	messages := c.messages
+	system, messages := c.droppedSystem, c.messages
 	if c.fresh {
 		messages = c.droppedMessages
+	}
+	if c.pasted {
+		system, messages = c.systemMarks, c.messages
+		if c.tail != "" {
+			messages++
+		}
+	}
+	if system > 0 {
+		fields = append(fields, fmt.Sprintf("system:%d", system))
 	}
 	if messages > 0 {
 		fields = append(fields, fmt.Sprintf("messages:%d", messages))

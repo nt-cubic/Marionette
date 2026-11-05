@@ -79,6 +79,9 @@ func TestPluginModelModalities(t *testing.T) {
 	if m := got[pid+"/fake-1"]; m.Modalities != nil && m.Modalities.Input != nil {
 		t.Errorf("fake-1, not said of, takes %v", m.Modalities.Input)
 	}
+	// a model the plugin says what it takes of, with no word of images
+	// (Command Code's plans, #4436): its word on the inputs stands
+	check(got, "cc-plan-1", []string{"text"}, []string{"text"}, []string{})
 
 	// the user says mimo takes no images: the rest it takes stays
 	no := false

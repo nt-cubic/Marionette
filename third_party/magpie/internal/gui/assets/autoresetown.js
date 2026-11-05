@@ -18,6 +18,10 @@ window.autoResetOwnPaint = function (s) {
   const users = [...(s.codexUsers || [])];
   for (const u of on) if (!users.some((x) => x.toLowerCase() === u)) users.push(u);
   head.hidden = !users.length;
+  // each account's resets, read as the providers' editor reads them,
+  // with Use beside them (husky_bobo on X looked for it here)
+  const held = users.length ? loginUsageOf("codex") : null;
+  if (users.length && !held) loginUsage.codex?.loading?.then(() => { if (!head.hidden && loginUsage.codex?.data) autoResetOwnPaint(prefs || s); });
   let after = head;
   for (const user of users) {
     const r = el("div", "row pref ar-own");
@@ -26,6 +30,17 @@ window.autoResetOwnPaint = function (s) {
     const name = el("div", "name", user);
     name.title = user;
     who.append(name);
+    const q = held && Object.entries(held).find(([u]) => u.toLowerCase() === user.toLowerCase())?.[1];
+    if (q?.resets?.count && !q.error && !q.resets.byWindow) {
+      const qu = { ...q, provider: "codex", user };
+      const sub = el("div", "sub ar-own-resets");
+      const use = el("button", "text", t("Use a reset"));
+      use.title = resetUseTitle(qu);
+      use.setAttribute("aria-haspopup", "dialog");
+      use.onclick = (e) => { e.stopPropagation(); askReset(qu); };
+      sub.append(resetsWords(qu.resets, qu), " ", use);
+      who.append(sub);
+    }
     // each of the two times its own Off/On (#2078)
     const was = on.includes(user.toLowerCase()) ? autoResetWhenOf(s.codexAutoResetOnly?.[user.toLowerCase()]) : { week: false, expiring: false };
     const cases = el("div", "ar-own-cases");

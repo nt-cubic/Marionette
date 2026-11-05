@@ -490,6 +490,7 @@ func add(ctx context.Context, spec, version string) (Entry, error) {
 	if err := save(l); err != nil {
 		return Entry{}, err
 	}
+	settleWaiting()
 	Restart()
 	return e, nil
 }
@@ -587,6 +588,7 @@ func Update(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("%s: %w", e.Spec, err))
 		}
 	}
+	settleWaiting()
 	Restart()
 	return errors.Join(errs...)
 }
@@ -967,6 +969,7 @@ func reinstall(ctx context.Context, spec string) error {
 	if err := refreshGitCache(ctx, spec); err != nil {
 		return err
 	}
+	was := GitCommit(spec)
 	out, err := runBun(ctx, bun, "update", "--ignore-scripts", name)
 	if err != nil {
 		if hint := missingLibs(string(out)); hint != "" {
@@ -980,14 +983,17 @@ func reinstall(ctx context.Context, spec string) error {
 	// what the checks saw the repository at (the page's, before the
 	// reader pressed update) is what the update was to install: bun
 	// exiting 0 has meant the old commit stayed before, and the reader is
-	// to hear so rather than be told the update is done (#2954)
+	// to hear so rather than be told the update is done (#2954). One
+	// that moved has installed what bun resolved, newer than the answer
+	// when the repository moved on after it (#4802): it isn't told it
+	// stayed because the repository couldn't be asked again.
 	if head := GitHeadCached(spec); head != "" && GitBehind(spec, head) {
 		// the answer stood for a while: the repository may have moved on
 		// again since, so it is asked now before this is reported
 		if now, err := GitHead(ctx, spec, true); err == nil && now != "" {
 			head = now
 		}
-		if GitBehind(spec, head) {
+		if GitBehind(spec, head) && SameCommit(GitCommit(spec), was) {
 			return fmt.Errorf("bun update %s left it at %s, though its repository is at %s", name, short(GitCommit(spec)), short(head))
 		}
 	}

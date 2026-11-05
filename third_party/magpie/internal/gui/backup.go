@@ -5,14 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/backup"
 	"github.com/yetone/magpie/internal/davsync"
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 )
 
@@ -24,6 +27,7 @@ func backupRoutes(mux *http.ServeMux, w Windows) {
 			Pass    string
 			Keys    bool
 			Library *bool // nil is yes
+			SignIns bool  // the subscriptions' and plugins' sign-ins too
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			fail(rw, err)
@@ -36,6 +40,12 @@ func backupRoutes(mux *http.ServeMux, w Windows) {
 		}
 		if in.Library != nil && !*in.Library {
 			b.Library = nil
+		}
+		if in.SignIns {
+			if err := backup.WithSignIns(&b); err != nil {
+				fail(rw, fmt.Errorf("the sign-ins couldn't be read, so no backup was made: %w", err))
+				return
+			}
 		}
 		data, err := backup.Seal(b, in.Pass)
 		if err != nil {
@@ -56,7 +66,7 @@ func backupRoutes(mux *http.ServeMux, w Windows) {
 		}
 		os.Chmod(name, 0o600)
 		_ = w.OpenFolder(dir) // saved either way; the path is in the answer
-		writeJSON(rw, map[string]any{"path": tilde(name), "providers": len(b.Providers), "profiles": len(b.Profiles), "agents": len(b.Agents), "library": b.Library != nil})
+		writeJSON(rw, map[string]any{"path": tilde(name), "providers": len(b.Providers), "profiles": len(b.Profiles), "agents": len(b.Agents), "library": b.Library != nil, "signIns": signInCount(b.SignIns)})
 	})
 	mux.HandleFunc("POST /api/backup/import", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct {
@@ -64,6 +74,7 @@ func backupRoutes(mux *http.ServeMux, w Windows) {
 			Pass    string
 			Agents  bool
 			Library *bool // nil is yes
+			SignIns *bool // nil is yes: the backup's sign-ins, when it has them
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			fail(rw, err)
@@ -82,12 +93,98 @@ func backupRoutes(mux *http.ServeMux, w Windows) {
 		parts := backup.All
 		parts.Agents = in.Agents
 		parts.Library = in.Library == nil || *in.Library
+		parts.SignIns = in.SignIns == nil || *in.SignIns
 		res, err := backup.Restore(b, parts)
 		if err != nil {
 			fail(rw, err)
 			return
 		}
 		writeJSON(rw, res)
+	})
+
+	// backups made by themselves into a folder here, and putting one back
+	// (jwaitq on Discord)
+	mux.HandleFunc("GET /api/autobackup", func(rw http.ResponseWriter, r *http.Request) {
+		writeJSON(rw, autoView())
+	})
+	mux.HandleFunc("POST /api/autobackup/{action}", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			On    *bool
+			Hours *int
+			Keep  *int
+			Dir   *string // "" is the default folder
+			Name  string
+			// SignIns puts the sign-ins in the backups, sealed with
+			// Passphrase ("" keeps the one set)
+			SignIns    *bool
+			Passphrase string
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil && !errors.Is(err, io.EOF) {
+			fail(rw, err)
+			return
+		}
+		set := func(f func(*backup.AutoConfig)) error {
+			c, err := backup.LoadAuto()
+			if err != nil {
+				return err
+			}
+			f(&c)
+			return backup.SaveAuto(c)
+		}
+		var err error
+		switch r.PathValue("action") {
+		case "set": // only what was sent: the rest stays as the user set it
+			err = set(func(c *backup.AutoConfig) {
+				if in.On != nil {
+					c.Off = !*in.On
+				}
+				if in.Hours != nil {
+					c.Hours = *in.Hours
+				}
+				if in.Keep != nil {
+					c.Keep = *in.Keep
+				}
+				if in.Dir != nil && *in.Dir == "" {
+					c.Dir = ""
+				}
+				if in.Passphrase != "" {
+					c.Passphrase = in.Passphrase
+				}
+				if in.SignIns != nil {
+					c.SignIns = *in.SignIns
+				}
+			})
+		case "choose": // a folder from the system's picker, checked writable
+			var dir string
+			if dir, err = w.ChooseFolder("Choose a folder for backups"); err == nil && dir != "" {
+				if err = writable(dir); err == nil {
+					err = set(func(c *backup.AutoConfig) { c.Dir = dir })
+				}
+			}
+		case "now":
+			_, err = backup.AutoNow(Version)
+		case "reveal":
+			dir := backup.AutoStatus().Dir
+			if err = os.MkdirAll(dir, 0o700); err == nil {
+				err = w.OpenFolder(dir)
+			}
+		case "restore": // what is here is backed up first, to undo it
+			res, before, err := backup.AutoRestore(in.Name, Version)
+			if err != nil {
+				fail(rw, err)
+				return
+			}
+			writeJSON(rw, map[string]any{"view": autoView(), "result": res, "before": before.Name})
+			return
+		default:
+			http.NotFound(rw, r)
+			return
+		}
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, autoView())
 	})
 
 	mux.HandleFunc("GET /api/davsync", func(rw http.ResponseWriter, r *http.Request) {
@@ -155,6 +252,23 @@ func backupRoutes(mux *http.ServeMux, w Windows) {
 	})
 }
 
+// autoView is backup.AutoStatus with the folder as the page shows it.
+func autoView() backup.AutoView {
+	v := backup.AutoStatus()
+	v.Dir = tilde(v.Dir)
+	return v
+}
+
+// writable says whether a file can be made in dir.
+func writable(dir string) error {
+	f, err := os.CreateTemp(dir, ".magpie-backup-*.tmp")
+	if err != nil {
+		return err
+	}
+	f.Close()
+	return os.Remove(f.Name())
+}
+
 // busy is what of a sync's failure the status doesn't hold: that it waited
 // its time out for another magpie's. The rest is in the status.
 func busy(err error) error {
@@ -164,12 +278,16 @@ func busy(err error) error {
 	return nil
 }
 
-// downloads is where an export is saved: the Downloads folder, or home
-// when there is none.
+// downloads is where an export is saved: the Downloads folder the system
+// keeps (appdir.Downloads: Windows' known folder, the XDG one on Linux,
+// which 1Shin on Discord had moved off home\Downloads), else
+// home\Downloads, else home when there is none.
 func downloads() string {
 	home, _ := os.UserHomeDir()
-	if d := filepath.Join(home, "Downloads"); isDir(d) {
-		return d
+	for _, d := range []string{appdir.Downloads(), filepath.Join(home, "Downloads")} {
+		if d != "" && isDir(d) {
+			return d
+		}
 	}
 	return home
 }
@@ -177,4 +295,12 @@ func downloads() string {
 func isDir(p string) bool {
 	fi, err := os.Stat(p)
 	return err == nil && fi.IsDir()
+}
+
+// signInCount is how many sign-ins a backup carries.
+func signInCount(s *provider.SignIns) int {
+	if s == nil {
+		return 0
+	}
+	return len(s.Logins) + len(s.Plugins)
 }

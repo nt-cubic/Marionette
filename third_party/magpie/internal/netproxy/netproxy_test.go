@@ -272,3 +272,77 @@ func TestDispatchHTTP1(t *testing.T) {
 		t.Fatalf("asked\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
+
+// A switch of the global proxy leaves the connections its transport kept
+// through the old one behind: an HTTP/2 connection is pooled by the
+// target's authority alone, so the request after the save rode the old
+// proxy's connection and left by the old exit while the new proxy was
+// the one shown (#4523). The dispatch closes the idle connections when
+// the setting moves, so the request after it dials through the proxy in
+// force.
+func TestGlobalSwitchDropsTheOldProxyConnections(t *testing.T) {
+	clearProxyEnv(t)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "exit") }))
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+	a, na := fakeSOCKS(t, "", "")
+	b, nb := fakeSOCKS(t, "", "")
+	d := Dispatch(&http.Transport{
+		// For, not Func: the test servers live on the loopback Func skips
+		Proxy:             func(r *http.Request) (*url.URL, error) { return For(r.URL) },
+		ForceAttemptHTTP2: true,
+		TLSClientConfig:   &tls.Config{RootCAs: pool},
+	}).(*dispatch)
+	t.Cleanup(d.CloseIdleConnections)
+	c := &http.Client{Transport: d, Timeout: 10 * time.Second}
+	get := func() {
+		res, err := c.Get(srv.URL)
+		if err != nil {
+			t.Fatalf("through the proxy: %v", err)
+		}
+		io.Copy(io.Discard, res.Body)
+		res.Body.Close()
+		if res.ProtoMajor != 2 {
+			t.Fatalf("the request went over %s, want HTTP/2", res.Proto)
+		}
+	}
+	if err := settings.Save(settings.Settings{Proxy: a.String()}); err != nil {
+		t.Fatal(err)
+	}
+	get()
+	if na.Load() != 1 || nb.Load() != 0 {
+		t.Fatalf("the first request: %d connections through A, %d through B", na.Load(), nb.Load())
+	}
+	if err := settings.Save(settings.Settings{Proxy: b.String()}); err != nil {
+		t.Fatal(err)
+	}
+	get()
+	if nb.Load() != 1 || na.Load() != 1 {
+		t.Fatalf("after the switch: %d connections through A, %d through B, want the fresh dial through B and no new one through A", na.Load(), nb.Load())
+	}
+}
+
+// Each check Watch hands out keeps its own last value: a move is seen,
+// once, by every check, on the first call it makes after it (#4824).
+func TestWatchSeesTheGlobalProxyMove(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	w := Watch()
+	settings.Save(settings.Settings{Proxy: "socks5://127.0.0.1:1080"})
+	if w() {
+		t.Fatal("the first call sees a move")
+	}
+	settings.Save(settings.Settings{Proxy: "direct"})
+	if !w() {
+		t.Fatal("the move went unseen")
+	}
+	if w() {
+		t.Fatal("the setting standing is a move the second time")
+	}
+	v := Watch()
+	if v() {
+		t.Fatal("a check of its own starts in the middle")
+	}
+}

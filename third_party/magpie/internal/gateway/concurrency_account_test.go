@@ -253,8 +253,10 @@ func TestLaneReleasedOnFailure(t *testing.T) {
 }
 
 // A full member of a routing group gives way to one with a slot free (no
-// waiting while another member has room), while a provider's fallback is
-// never asked for want of a slot: the request waits for its own.
+// waiting while another member has room), and a request of the group
+// waiting for one goes to another once that one has room again (waitMate),
+// while a provider's fallback is never asked for want of a slot: the
+// request waits for its own.
 func TestFullMemberGivesWay(t *testing.T) {
 	fresh(t)
 	v1, up1 := slowUp(t)
@@ -292,11 +294,20 @@ func TestFullMemberGivesWay(t *testing.T) {
 	if r := g.reply(); r.tag != "b" || !strings.Contains(r.body, "from b") {
 		t.Fatalf("b = %+v", r)
 	}
-	time.Sleep(50 * time.Millisecond)
+	// second has room again: c, waiting for first, goes there (waitMate);
+	// d, which second is only the fallback of, waits on for first
+	within(t, "c at second", func() bool { return slices.Contains(v2.seen(), "c") })
+	if l := firstLane(); l.Waiting != 1 {
+		t.Fatalf("first's lane = %+v, want d alone waiting", l)
+	}
 	if slices.Contains(v2.seen(), "d") {
 		t.Fatal("d went to first's fallback for want of a slot")
 	}
-	for _, tag := range []string{"a", "c", "d"} {
+	close(v2.gate("c"))
+	if r := g.reply(); r.tag != "c" || !strings.Contains(r.body, "[DONE]") {
+		t.Fatalf("c = %+v", r)
+	}
+	for _, tag := range []string{"a", "d"} {
 		close(v1.gate(tag))
 		if r := g.reply(); r.tag != tag || !strings.Contains(r.body, "[DONE]") {
 			t.Fatalf("%s = %+v", tag, r)

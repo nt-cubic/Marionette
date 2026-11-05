@@ -2,6 +2,7 @@ package redact
 
 import (
 	"encoding/json"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -102,5 +103,89 @@ func TestPackageShapesKeepSecrets(t *testing.T) {
 		if out, _ := Mask(s, Options{Secrets: true}); strings.Contains(out, "Zq8hunterPass42") {
 			t.Errorf("known secret left in %q", out)
 		}
+	}
+}
+
+// The words that name a module an error could not load are read where
+// they stand, right before the quote — not by reading everything before
+// them. A session's body holds a place a known value turns up at for each
+// turn it has been in it, and knownSpans asks packageAt at each: reading
+// the whole text before the quote there paid the body's length again for
+// every value already masked in it, so a long session's turn held minutes
+// in the masking and was answered 504 (#4766). What is read is the last
+// 64 bytes of it now, as assignedSecret reads the 64 before the value it
+// judges.
+func TestMissingModuleReadsOnlyTheWordsBeforeTheQuote(t *testing.T) {
+	const cue = "Cannot find module "
+	const name = "drizzle-orm"
+	run := func(s string, a int) bool { return missingModuleAt(s, a, a+len(name)) }
+	for _, pad := range []int{10, 200, 200000} {
+		s := strings.Repeat("x", pad) + " " + cue + "'" + name + "' or its type declarations"
+		if !run(s, len(strings.Repeat("x", pad)+" "+cue)+1) {
+			t.Fatalf("%d bytes before it: not named by the error", pad)
+		}
+	}
+	// a value quoted under no such words is not a module
+	s := strings.Repeat("x", 200000) + " " + `"drizzle-orm"`
+	if run(s, len(strings.Repeat("x", 200000)+" ")) {
+		t.Fatal("a plain quoted value named by the error")
+	}
+	// the words are read as a word's end: one that only ends in them is not
+	s = strings.Repeat("x", 200000) + " Cannot find moduleX'" + name + "'"
+	if run(s, len(strings.Repeat("x", 200000)+" Cannot find moduleX")+1) {
+		t.Fatal("a word that only ends in the error's words named by it")
+	}
+	// the words stand whole, however long the text before them is
+	s = "Python says: ModuleNotFoundError: No module named '" + name + "'"
+	if !run(s, len("Python says: ModuleNotFoundError: No module named '")) {
+		t.Fatal("No module named: not named by the error")
+	}
+	s = strings.Repeat("x", 200000) + " Can't resolve '" + name + "'"
+	if !run(s, len(strings.Repeat("x", 200000)+" Can't resolve '")) {
+		t.Fatal("Can't resolve: not named by the error")
+	}
+	// a letter a lower case folds wider than in the text before: read as
+	// before, and still named
+	s = "İSTANBUL " + strings.Repeat("x", 128) + " " + cue + "'" + name + "'"
+	if !run(s, len("İSTANBUL "+strings.Repeat("x", 128)+" "+cue)+1) {
+		t.Fatal("a wider fold before it: not named by the error")
+	}
+
+	// the bytes one call makes: a string of everything before the quote,
+	// twice lowered, is what made a long turn hold. Nothing of the size
+	// of the text before it is made now.
+	s = strings.Repeat("x", 400000) + " " + cue + "'" + name + "'"
+	a := len(strings.Repeat("x", 400000)+" "+cue) + 1
+	run(s, a) // once, so lazy init is no part of the count
+	var m0, m1 runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&m0)
+	run(s, a)
+	runtime.ReadMemStats(&m1)
+	if made := m1.TotalAlloc - m0.TotalAlloc; made > 8<<10 {
+		t.Fatalf("judging the words made %d bytes, 8 KiB at most: the text before the quote is being read whole", made)
+	}
+
+	// a session written in Chinese is read as cheaply: the text before the
+	// words is not read whole because it is not ASCII
+	zh := strings.Repeat("找不到模块", 30000) + "：" + cue
+	s = zh + "'" + name + "'"
+	a = len(zh) + 1
+	if !run(s, a) {
+		t.Fatal("after Chinese text: not named by the error")
+	}
+	runtime.GC()
+	runtime.ReadMemStats(&m0)
+	run(s, a)
+	runtime.ReadMemStats(&m1)
+	if made := m1.TotalAlloc - m0.TotalAlloc; made > 8<<10 {
+		t.Fatalf("after Chinese text, judging the words made %d bytes, 8 KiB at most", made)
+	}
+
+	// spaces between the words and the quote, more than the window, still
+	// leave the words read
+	sp := strings.Repeat("x", 1000) + " " + cue + strings.Repeat(" ", 100)
+	if !run(sp+"'"+name+"'", len(sp)+1) {
+		t.Fatal("many spaces before the quote: not named by the error")
 	}
 }

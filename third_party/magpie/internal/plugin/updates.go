@@ -128,24 +128,61 @@ func writeUpdates(b []byte) error {
 	return writeWhole(updatesPath(), b)
 }
 
+// waitsNoMore is whether an update the last look found waits no more: the
+// plugin was updated, removed or switched off since. A git one waits only
+// while the commit installed is still the one the look saw installed and
+// its repository's commit then is another: the repository may move on
+// between the look and the reader's Update, which then installs a commit
+// newer than the look's, and that kept the dot and Update all up till the
+// next look, an hour later, Update only saying it was up to date
+// (matrix0487, #4802: fdaa691 installed, 3b411a5 found, ba898e7 updated to).
+func waitsNoMore(have map[string]Entry) func(Waiting) bool {
+	return func(w Waiting) bool {
+		e, ok := have[w.Package]
+		if ok && w.Git {
+			return e.Off || e.Spec != w.Spec || !GitBehind(e.Spec, w.Latest) || !SameCommit(GitCommit(e.Spec), w.Version)
+		}
+		return !ok || e.Off || !update.Newer(w.Latest, Installed(e.Spec))
+	}
+}
+
+// installedNow is each plugin on the list by its package.
+func installedNow() map[string]Entry {
+	have := map[string]Entry{}
+	for _, e := range Load().Plugins {
+		have[Name(e.Spec)] = e
+	}
+	return have
+}
+
+// settleWaiting writes plugin-updates.json again without the updates that
+// wait no more, after an install or update: what the reader has just
+// updated isn't kept on file as waiting until the next look rewrites it.
+func settleWaiting() {
+	updatesMu.Lock()
+	defer updatesMu.Unlock()
+	u := readUpdates()
+	n := len(u.Waiting)
+	if n == 0 {
+		return
+	}
+	if u.Waiting = slices.DeleteFunc(u.Waiting, waitsNoMore(installedNow())); len(u.Waiting) == n {
+		return
+	}
+	if b, err := json.MarshalIndent(u, "", "  "); err == nil {
+		if err := os.MkdirAll(settings.Dir(), 0o700); err == nil {
+			_ = writeUpdates(b)
+		}
+	}
+}
+
 // PendingUpdates is what the last look found, less what has changed since:
 // a plugin updated, removed or switched off since waits no more.
 func PendingUpdates() Updates {
 	updatesMu.Lock()
 	defer updatesMu.Unlock()
 	u := readUpdates()
-	have := map[string]Entry{}
-	for _, e := range Load().Plugins {
-		have[Name(e.Spec)] = e
-	}
-	u.Waiting = slices.DeleteFunc(u.Waiting, func(w Waiting) bool {
-		e, ok := have[w.Package]
-		if ok && w.Git {
-			// updated since: the commit installed is the one it was at
-			return e.Off || e.Spec != w.Spec || !GitBehind(e.Spec, w.Latest)
-		}
-		return !ok || e.Off || !update.Newer(w.Latest, Installed(e.Spec))
-	})
+	u.Waiting = slices.DeleteFunc(u.Waiting, waitsNoMore(installedNow()))
 	if u.Waiting == nil {
 		u.Waiting = []Waiting{}
 	}
@@ -268,6 +305,7 @@ func InstallMissing(ctx context.Context) (int, error) {
 		n++
 	}
 	if n > 0 {
+		settleWaiting()
 		Restart()
 	}
 	return n, errors.Join(errs...)

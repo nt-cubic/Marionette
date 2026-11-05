@@ -8,15 +8,19 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/yetone/magpie/internal/netproxy"
 )
 
 // A sync is never given a time to end in: a backup of tens of MB to a
-// server on a slow line takes minutes (#657, 43 MB at 305 KB/s). What ends
-// a request is a server that stops: the backup's GET and PUT (and S3's)
-// fail once nothing has moved, either way, for stallAfter — a body still
-// coming in or going out, however slowly, keeps them going. The other
-// requests (PROPFIND, MKCOL, MOVE, DELETE…) move a few KB at most and have
-// metaLimit in all.
+// server on a slow line takes minutes (#657, 43 MB at 305 KB/s), and one
+// part of a GitHub backup may take as long to go up (#4576, 16 MiB of file
+// as about 21 MB of base64 through a POST). What ends a request is a
+// server that stops: a GET or a PUT (S3's too, and GitHub's blob POSTs,
+// which haul those parts) fails once nothing has moved, either way, for
+// stallAfter — a body still coming in or going out, however slowly, keeps
+// it going. The other requests (PROPFIND, MKCOL, MOVE, DELETE…) move a
+// few KB at most and have metaLimit in all.
 var (
 	stallAfter = 60 * time.Second
 	metaLimit  = 30 * time.Second
@@ -39,12 +43,36 @@ func (e *errStalled) Error() string {
 // syncClient is the client WebDAV and S3 are reached with.
 var syncClient = &http.Client{Transport: stallTransport{http.DefaultTransport}}
 
-// stallTransport gives each request its watchdog: for a GET or a PUT one
-// put back each time bytes move, for the rest one that isn't.
+// moved is whether the global proxy moved since the last sync request:
+// the sync rides http.DefaultTransport, whose idle connections a switch
+// would otherwise leave behind until some DefaultClient request dropped
+// them (#4824). The request after a move drops them itself, and dials
+// through the proxy in force.
+var moved = netproxy.Watch()
+
+// bigBody says whether the request hauls a body that a live but slow line
+// may take longer than the whole metaLimit to send: GitHub's blob POSTs
+// carry up to 16 MiB of file, about 21 MB of base64, where a flat 30 s
+// needs 550 KB/s and a line under it never gets a part through (#4576),
+// while the metadata requests (PROPFIND's query, the GitHub tree, commit
+// and ref JSON) stay kilobytes small — a good way under the 64 KiB that
+// takes a line under 2 KB/s the whole limit to send.
+func bigBody(req *http.Request) bool {
+	return req.Body != nil && req.Body != http.NoBody && req.ContentLength >= 64<<10
+}
+
+// stallTransport gives each request its watchdog: for a GET, a PUT or a
+// request hauling a big body one put back each time bytes move, for the
+// rest one that isn't.
 type stallTransport struct{ base http.RoundTripper }
 
 func (t stallTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	moving := req.Method == http.MethodGet || req.Method == http.MethodPut
+	if moved() {
+		if tr, ok := t.base.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
+	}
+	moving := req.Method == http.MethodGet || req.Method == http.MethodPut || bigBody(req)
 	after := metaLimit
 	if moving {
 		after = stallAfter

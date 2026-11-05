@@ -208,7 +208,8 @@ func TestMergeQuotaHistory(t *testing.T) {
 // at this pace" line, as its rows are its pools' windows, which are aside
 // for routing, and its models' own windows are a family's. Each pool's
 // window is kept under its pool's name, as the card's line looks it up;
-// the models' windows still aren't, nor another window set aside.
+// the models' windows still aren't. Another measured window set aside for
+// routing keeps its own line too (chowyuan1314, #4612).
 func TestQuotaHistoryKeepsAntigravityPools(t *testing.T) {
 	testenv.SetHome(t, t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -227,8 +228,8 @@ func TestQuotaHistoryKeepsAntigravityPools(t *testing.T) {
 	noteQuotaHistory(card(10), t0)
 	noteQuotaHistory(card(30), t0.Add(time.Hour))
 	hs := QuotaHistories(t0.Add(-time.Hour), "", "")
-	if len(hs) != 1 || len(hs[0].Lines) != 3 {
-		t.Fatalf("histories = %+v, want the three pool windows' lines", hs)
+	if len(hs) != 1 || len(hs[0].Lines) != 4 {
+		t.Fatalf("histories = %+v, want the three pool windows' lines and Extra", hs)
 	}
 	five := lineOf(t, hs, "m@x.com", "Gemini · 5 hours")
 	if len(five) != 2 || five[0].Left != 90 || five[1].Left != 70 || five[0].Start == nil || !five[0].Start.Equal(r5.Add(-5*time.Hour)) {
@@ -239,5 +240,8 @@ func TestQuotaHistoryKeepsAntigravityPools(t *testing.T) {
 	}
 	if cl := lineOf(t, hs, "m@x.com", "Claude & GPT · 5 hours"); len(cl) != 2 || cl[0].Left != 60 {
 		t.Errorf("Claude & GPT · 5 hours = %+v", cl)
+	}
+	if extra := lineOf(t, hs, "m@x.com", "Extra"); len(extra) != 2 || extra[0].Left != 90 || extra[1].Left != 90 {
+		t.Errorf("Extra = %+v", extra)
 	}
 }

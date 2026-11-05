@@ -123,29 +123,40 @@ type cmdSeen struct {
 // ---- allowance ----------------------------------------------------------------
 
 // cmdPlans names the plans as the CLI does, by their id's start, longest
-// first, with the dollars of credits each gives a month (its getPlanInfo;
-// "individual-pro-v1" is the old Pro, $80 of them).
+// first, with the credits each gives a month (its getPlanInfo, unchanged
+// in command-code 1.88.2; "individual-pro-v1" is the old Pro, 80 of
+// them), and whether those credits are usage-value units. On Go, GOAT
+// and Pro a credit is not a dollar: Command Code's usage limits page says
+// "on Go, GOAT and Pro, credits are usage-value units - full-allowance
+// models like GLM-5.2 get $1 of usage per credit, and lower-allowance
+// models draw proportionally more credits per dollar". GOAT's 70 credits
+// are the "$100 on DeepSeek V4.1 Flash" (and on Ling 3.1 Flash) its
+// pricing page says, and $70 on GLM-5.2; Pro's 80 are "up to $110". So
+// the month of those plans is said in credits, as the Command Code
+// plugin does since 0.1.20 (plugins #556). Provider is pay as you go,
+// $15 a month for API access with no credits in it: no month of credits.
 var cmdPlans = []struct {
 	id, name string
 	monthly  float64
+	units    bool // credits are usage-value units, not dollars
 }{
-	{"individual-provider", "Provider", 15}, {"individual-pro-v1", "Pro", 80}, {"individual-goat", "GOAT", 70},
-	{"individual-ultra", "Ultra", 300}, {"individual-max", "Max", 150}, {"individual-pro", "Pro", 30},
-	{"individual-go", "Go", 10}, {"teams-pro", "Teams Pro", 40},
+	{"individual-provider", "Provider", 0, false}, {"individual-pro-v1", "Pro", 80, true}, {"individual-goat", "GOAT", 70, true},
+	{"individual-ultra", "Ultra", 300, false}, {"individual-max", "Max", 150, false}, {"individual-pro", "Pro", 30, true},
+	{"individual-go", "Go", 10, true}, {"teams-pro", "Teams Pro", 40, false},
 }
 
-func cmdPlanOf(id string) (name string, monthly float64) {
+func cmdPlanOf(id string) (name string, monthly float64, units bool) {
 	id = strings.ReplaceAll(strings.ToLower(id), "_", "-")
 	for _, p := range cmdPlans {
 		if strings.HasPrefix(id, p.id) {
-			return p.name, p.monthly
+			return p.name, p.monthly, p.units
 		}
 	}
-	return "", 0
+	return "", 0, false
 }
 
 func cmdPlanName(id string) string {
-	name, _ := cmdPlanOf(id)
+	name, _, _ := cmdPlanOf(id)
 	return name
 }
 
@@ -251,9 +262,12 @@ func cmdLeft(c cmdCredits) (monthly, left float64, ok bool) {
 // the panel and the TUI. The dollars are a window when the plan is known,
 // used of the CLI's pool (the plan's month of credits, or what is left of
 // it if more, and the bought and free ones) as its /usage bar is; a reply
-// with neither windows nor a plan is a Balance still.
+// with neither windows nor a plan is a Balance still. On a plan whose
+// credits are usage-value units (Go, GOAT, Pro) the bar is the month's
+// credits alone, said as credits, and the bought and free ones, dollars
+// at model cost, are said beside it, not added to a pool of another unit.
 func cmdQuotaOf(q SubscriptionQuota, c cmdCredits, until *time.Time) SubscriptionQuota {
-	name, planMonthly := cmdPlanOf(c.Credits.PlanID)
+	name, planMonthly, units := cmdPlanOf(c.Credits.PlanID)
 	if name != "" {
 		q.Plan = name
 	}
@@ -261,6 +275,14 @@ func cmdQuotaOf(q SubscriptionQuota, c cmdCredits, until *time.Time) Subscriptio
 	monthly, left, known := cmdLeft(c)
 	switch {
 	case !known:
+	case planMonthly > 0 && units:
+		pool := max(planMonthly, monthly)
+		display := money("", pool-monthly) + " / " + money("", pool) + " credits"
+		if extra := left - monthly; extra > 0 {
+			display += " + " + money("$", extra) + " extra"
+		}
+		q.Windows = append(q.Windows, QuotaWindow{Name: "Credits", Used: min(100, 100*(pool-monthly)/pool),
+			Display: display, ResetsAt: until})
 	case planMonthly > 0:
 		pool := max(planMonthly, monthly) + left - monthly
 		q.Windows = append(q.Windows, QuotaWindow{Name: "Credits", Used: min(100, 100*(pool-left)/pool),

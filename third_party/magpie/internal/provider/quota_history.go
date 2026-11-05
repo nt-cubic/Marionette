@@ -10,7 +10,8 @@ package provider
 // Kept in quota-history.json, by provider and account name, and by window:
 // the figures only — no token, no prompt, nothing else of the vendor's. A
 // reading kept from before (AsOf) or failed isn't a new one; a window with no
-// limit, or one set aside, has nothing to draw. Points come at least
+// limit, or one told as its text alone, has nothing to draw — aside is for
+// routing. Points come at least
 // quotaHistGap apart within a cycle (a nearer one moves the last instead),
 // and a run of the same figure is its first and last point only. A cycle
 // ends where the window starts again: its reset passed, or moved further
@@ -219,12 +220,16 @@ func newCycle(a, b QuotaPoint) bool {
 }
 
 // pointOf is what w, read at at, says, if it is something to draw; a
-// reset told in seconds counts from now, when the windows were made. A
-// pool's window is drawn though it is aside for routing: it is the row
-// the card shows, where its models' own windows are not (max2020 on
-// Discord: an Antigravity card had no curve and no "runs out" line).
+// reset told in seconds counts from now, when the windows were made.
+// Aside is for routing, not history: a measured window is drawn though
+// using it up wouldn't stop the account, as a pool's window always was
+// (max2020 on Discord: an Antigravity card had no curve and no "runs
+// out" line; chowyuan1314, #4612: the Cursor plugin's Weekly and Grok
+// Bot are aside and had no curve). A window told as its text alone has
+// no share to draw, and neither has one set aside whose Used is 0 for
+// want of a share said (noShare, #4825).
 func pointOf(w QuotaWindow, at, now time.Time) (QuotaPoint, bool) {
-	if w.Unlimited || w.Aside && !w.PoolWindow() || w.Family != "" || w.Name == "" || math.IsNaN(w.Used) {
+	if w.Unlimited || w.Text || w.noShare || w.Family != "" || w.Name == "" || math.IsNaN(w.Used) {
 		return QuotaPoint{}, false
 	}
 	p := QuotaPoint{At: at.UTC().Truncate(time.Second), Left: math.Round(max(0, min(100, 100-w.Used))*100) / 100}

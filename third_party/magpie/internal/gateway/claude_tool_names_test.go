@@ -27,7 +27,7 @@ func TestClaudeToolNamesComeBackAsDeclared(t *testing.T) {
 		t.Skip("a shell script stands in for Claude Code")
 	}
 	long := "tools.example.com/" + strings.Repeat("very_long_segment.", 5) + "end"
-	declared := []string{"spawn.agent", "fs/read", "has space", long, "a.b", "a_b"}
+	declared := []string{"spawn.agent", "fs/read", "has space", long, "a.b", "a_b", "mcp__magpie__magpie-browser__browser_click"}
 
 	dir := t.TempDir()
 	offered := filepath.Join(dir, "offered")
@@ -155,5 +155,54 @@ done
 	}
 	if !strings.Contains(text.String(), "[tool call mcp__magpie__"+bridgeToolName(long)+" id=c2 ") || len("mcp__magpie__"+bridgeToolName(long)) > 64 {
 		t.Errorf("history tells the long name as %q", text.String())
+	}
+}
+
+// packinggoods (Discord, 11-01): Claude Code with magpie's Library MCP
+// names its tools mcp__magpie__<server>__<tool>, and through the Claude
+// bridge the run's model was shown
+// mcp__magpie__mcp__magpie__magpie-browser__browser_click for each tool
+// sent up front, while the deferred ones its text named kept one prefix.
+// The run's Claude Code is offered each such tool under the client's own
+// name, in the tool list, a tool choice and the history alike, and a call
+// of it comes back under the declared name.
+func TestClaudeBridgeKeepsMagpieMCPNames(t *testing.T) {
+	declared := []string{
+		"mcp__magpie__magpie-browser__browser_click",
+		"mcp__magpie__magpie-vision__analyze_image",
+		"mcp__magpie__magpie-web-search__web_search",
+		"mcp__linear__get_issue",
+		"Read",
+	}
+	var tools []Tool
+	for _, n := range declared {
+		tools = append(tools, Tool{Name: n})
+	}
+	req := &Request{Tools: tools}
+	names := bridgeNames(tools)
+	for i, offer := range bridgeTools(req) {
+		n := declared[i]
+		seen := "mcp__magpie__" + offer.Name
+		if strings.HasPrefix(n, "mcp__magpie__") && seen != n {
+			t.Errorf("%s is shown to the run's model as %s", n, seen)
+		}
+		if strings.Contains(seen, "mcp__magpie__mcp__magpie__") {
+			t.Errorf("%s is offered with mcp__magpie__ twice: %s", n, seen)
+		}
+		if got := declaredName(names, offer.Name); got != n {
+			t.Errorf("a call of %s (offered %s) comes back as %s", n, offer.Name, got)
+		}
+		if bridgeName(n) != seen {
+			t.Errorf("history and tool choice name %s as %s, the tool list as %s", n, bridgeName(n), seen)
+		}
+	}
+	var text strings.Builder
+	renderParts(nil, &text, []Part{{Kind: ToolCall, ID: "c1", Name: declared[0], Args: json.RawMessage(`{}`)}}, offeredTools(tools))
+	if !strings.Contains(text.String(), "[tool call "+declared[0]+" id=c1 ") {
+		t.Errorf("history tells %s as %q", declared[0], text.String())
+	}
+	req.ToolChoice = "name:" + declared[0]
+	if got := toolChoiceAsk(req); !strings.Contains(got, "You must call the "+declared[0]+" tool.") {
+		t.Errorf("tool choice %q", got)
 	}
 }

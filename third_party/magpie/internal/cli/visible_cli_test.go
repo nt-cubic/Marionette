@@ -37,6 +37,75 @@ func TestVisibleKeyLowered(t *testing.T) {
 	}
 }
 
+// all shows the agent every model again: the models taken out of its list
+// one by one (HiddenModels) go with the narrowing, or the recovery the
+// hints point at doesn't. An agent shown none of them — only the models
+// picked for it, and none picked — stayed none through --show-new (which
+// keeps what it is shown by taking the rest out) and through all, and only
+// deleting hiddenModels.<agent> from settings.json brought the models
+// back (#4587: a DSH behind a Docker gateway saw an empty model list).
+func TestVisibleAllShowsTakenOutModels(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
+	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k", Chat: "http://127.0.0.1:1/v1", Models: []string{"m1", "m2", "m3"}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { provider.Delete("relay") })
+	if err := provider.SetOnlyPicked("dsh", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.SetPickedModels("dsh", nil); err != nil {
+		t.Fatal(err)
+	}
+	if shown, _ := provider.CatalogFor("dsh"); len(shown) != 0 {
+		t.Fatalf("want none picked, shown none; got %d", len(shown))
+	}
+	if err := visibleCmd([]string{"dsh", "--show-new"}); err != nil {
+		t.Fatal(err)
+	}
+	if ids := settings.Load().HiddenModels["dsh"]; len(ids) != 3 {
+		t.Fatalf("--show-new keeps what is shown by taking the rest out; hidden: %v", ids)
+	}
+	if shown, _ := provider.CatalogFor("dsh"); len(shown) != 0 {
+		t.Fatalf("want still none shown after --show-new; got %d", len(shown))
+	}
+	if err := visibleCmd([]string{"dsh", "all"}); err != nil {
+		t.Fatal(err)
+	}
+	if ids := settings.Load().HiddenModels["dsh"]; len(ids) != 0 {
+		t.Fatalf("all left %d taken out: %v", len(ids), ids)
+	}
+	if shown, _ := provider.CatalogFor("dsh"); len(shown) != 3 {
+		t.Fatalf("all shows %d of 3: %v", len(shown), shown)
+	}
+}
+
+// all takes the only-picked switch out too: an agent shown only the models
+// picked for it kept the ones not picked off through all, though the error
+// naming it says all shows it every model (#3432: zcode/GLM-5.3 stayed off
+// Claude Code after all).
+func TestVisibleAllTakesOnlyPickedOut(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
+	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k", Chat: "http://127.0.0.1:1/v1", Models: []string{"m1", "m2", "m3"}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { provider.Delete("relay") })
+	if err := provider.SetOnlyPicked("claude", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.SetPickedModels("claude", []string{"m1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := visibleCmd([]string{"claude", "all"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, only := provider.PickedModels("claude"); only {
+		t.Fatal("all left claude shown only the models picked for it")
+	}
+	if shown, _ := provider.CatalogFor("claude"); len(shown) != 3 {
+		t.Fatalf("all shows %d of 3: %v", len(shown), shown)
+	}
+}
+
 // magpie models and magpie visible take a WSL agent by its id, in the
 // distro's own case or any other: before, both lowered what was typed and
 // then matched it exactly against ids that keep the distro's case (#271).

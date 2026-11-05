@@ -100,6 +100,10 @@ type host struct {
 	// screen; it is hidden once it has
 	closing atomic.Bool
 
+	// quitAt is when a Quit the user chose last asked first (AskQuit, unix
+	// nanoseconds)
+	quitAt atomic.Int64
+
 	ready     chan struct{} // closed once the main window can be shown
 	readyOnce sync.Once
 
@@ -297,6 +301,7 @@ func (h *host) zoomWindows() {
 // stays there, so what the pages kept isn't lost. The browser arguments
 // the user set in WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, which Wails' loader
 // blanks before WebView2 can read them, are merged into Wails' own (#2753).
+// Display changes are read with a callback made once (screens_windows.go).
 func windowsOptions() application.WindowsOptions {
 	disabled, enabled, other := webView2Args(webview2env.Args)
 	return application.WindowsOptions{
@@ -305,6 +310,7 @@ func windowsOptions() application.WindowsOptions {
 		DisabledFeatures:              disabled,
 		EnabledFeatures:               enabled,
 		AdditionalBrowserArgs:         other,
+		WndProcInterceptor:            screensWndProc,
 	}
 }
 
@@ -457,6 +463,7 @@ func Run(version string, showMain bool, link string) error {
 	if !webView2Check(h.app) {
 		return nil
 	}
+	var appQuit *application.MenuItem // the Mac's app menu's Quit
 	// Wails' default Learn More replaces the current window with wails.io.
 	// Keep the native menus, but open magpie's help in the system browser.
 	// macOS only: it is the one that shows a menu bar unasked; on Linux a
@@ -466,6 +473,10 @@ func Run(version string, showMain bool, link string) error {
 		help := appMenu.FindByRole(application.HelpMenu).GetSubmenu()
 		help.Clear()
 		help.Add("Learn More").OnClick(func(*application.Context) { _ = h.OpenURL("https://usemagpie.ai") })
+		// Command-Q asks first while agents are connected (quitask.go). The
+		// role's item sends terminate:, which logging out and shutting down
+		// send too, so it is replaced rather than the app's ShouldQuit set
+		appQuit = askingQuit(appMenu, trayText(trayLang(settings.Load().Lang, systemLang), "Quit magpie"), func() { go h.AskQuit() })
 		h.app.Menu.Set(appMenu)
 	}
 	if Started != nil {
@@ -506,7 +517,7 @@ func Run(version string, showMain bool, link string) error {
 		}
 		updates.restartAsked(now)
 	})
-	quit := menu.Add(labels.quit).OnClick(func(*application.Context) { h.app.Quit() })
+	quit := menu.Add(labels.quit).OnClick(func(*application.Context) { go h.AskQuit() })
 	var ready string // the version waiting for a restart; on the main thread
 	relabel := func() {
 		l := trayMenuLabels(trayLang(settings.Load().Lang, systemLang), version, ready)
@@ -518,6 +529,9 @@ func Run(version string, showMain bool, link string) error {
 		restart.SetLabel(l.restart)
 		quit.SetLabel(l.quit)
 		menu.Update()
+		if appQuit != nil {
+			appQuit.SetLabel(l.quit)
+		}
 	}
 	onLang = func() { application.InvokeSync(relabel) }
 	updates.onReady = func(v string) {
@@ -549,8 +563,9 @@ func Run(version string, showMain bool, link string) error {
 			}
 		}
 		// a set kept in a file of the user's (~/.agents/AGENTS.md) is
-		// edited outside magpie: the agents get each change
-		library.KeepLinked(30 * time.Second)
+		// edited outside magpie: the agents get each change, until this
+		// one has handed the gateway to the new version (#4938)
+		library.KeepLinked(backendCtx, 30*time.Second)
 	}()
 
 	// before the item is made, which starts as hidden as AppKit kept it
@@ -604,9 +619,22 @@ func Run(version string, showMain bool, link string) error {
 	h.setTrayInBar(barIcon(h)["on"])
 	go h.lighten()
 	h.watchAlerts()
+	// a double-click opens the main window where the tray tells one apart
+	// (trayDoubleClicks: Windows); its first click opened the panel, which
+	// openMain hides, and its last release is no click of its own
+	var double trayDouble
+	if trayDoubleClicks(runtime.GOOS) {
+		h.tray.OnDoubleClick(func() {
+			double.doubled(time.Now())
+			h.ShowMain("")
+		})
+	}
 	// the quick panel by the icon, or the main window if the user would
 	// rather (Settings → Click the tray icon to)
 	h.tray.OnClick(func() {
+		if double.swallow(time.Now()) {
+			return
+		}
 		if cmdClick() {
 			return // Command-drag moves the icon; the system handles it
 		}
@@ -896,9 +924,29 @@ func (h *host) togglePanelNow() {
 		}
 		_ = h.tray.PositionWindow(h.panel, 6)
 		showWebview(h.panel).Focus()
+		h.tellPanelSide()
 		return
 	}
 	h.tray.ToggleWindow()
+	if h.panel.IsVisible() {
+		h.tellPanelSide()
+	}
+}
+
+// tellPanelSide tells the panel, just placed, which of its edges opens the
+// main window: the one nearest the tray (panelOpenAt). Wayland doesn't say
+// where the compositor put a window, so there it goes by the system.
+func (h *host) tellPanelSide() {
+	b := h.panel.Bounds()
+	panel := panelRect{b.X, b.Y, b.Width, b.Height}
+	var screen panelRect
+	known := !waylandSession(runtime.GOOS, os.Getenv)
+	if s, err := h.panel.GetScreen(); err == nil && s != nil {
+		screen = panelRect{s.Bounds.X, s.Bounds.Y, s.Bounds.Width, s.Bounds.Height}
+	} else {
+		known = false
+	}
+	h.panel.ExecJS(panelOpenAtJS(panelOpenAt(runtime.GOOS, panel, screen, known)))
 }
 
 // placePanel puts the panel, about to open, under Hyprland's bar at the

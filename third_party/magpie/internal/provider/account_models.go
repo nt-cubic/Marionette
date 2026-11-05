@@ -11,6 +11,7 @@ package provider
 import (
 	"cmp"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 )
@@ -105,6 +106,27 @@ func (p Provider) AccountIDs() []AccountRef {
 	return out
 }
 
+// ResolveAccount is the entry "<provider>/<id>" an account list — a
+// gateway key's (#905), a routing group's — keeps for provider pid's
+// account or key ref: an account named by its stable id or the name it
+// is shown by, resolved to that id, a key by its fingerprint. It fails
+// for a provider magpie doesn't have, or one with no such account or key.
+func ResolveAccount(pid, ref string) (string, error) {
+	p, err := Find(pid)
+	if err != nil {
+		return "", err
+	}
+	for _, r := range p.AccountIDs() {
+		if strings.EqualFold(r.ID, ref) || strings.EqualFold(r.User, ref) {
+			return p.ID + "/" + r.ID, nil
+		}
+	}
+	if p.Account == nil {
+		return "", fmt.Errorf("%s has no key %q", p.Name, ref)
+	}
+	return "", fmt.Errorf("%s has no account %q", p.Name, ref)
+}
+
 // AccountID is the stable id of p's account or key as a gateway key's
 // account list knows it (#905): the account's, kept through renames, or
 // a key's fingerprint.
@@ -184,7 +206,10 @@ func SetAccountModels(id, ref string, models []string) error {
 		return fmt.Errorf("%s has no account %q", p.Name, ref)
 	}
 	ms := normalModels(models)
-	if len(ms) == 0 && p.AccountModels[accountKey(r)] == nil {
+	// a key set to every model by the user is remembered as theirs, so a
+	// Fetch models doesn't tick its own list for it again
+	all := len(ms) == 0 && p.Account == nil
+	if len(ms) == 0 && p.AccountModels[accountKey(r)] == nil && (!all || p.AccountModelsAll[accountKey(r)]) {
 		return nil
 	}
 	am := map[string][]string{}
@@ -197,6 +222,16 @@ func SetAccountModels(id, ref string, models []string) error {
 		am[accountKey(r)] = ms
 	}
 	p.AccountModels = am
+	ma := maps.Clone(p.AccountModelsAll)
+	if all {
+		if ma == nil {
+			ma = map[string]bool{}
+		}
+		ma[accountKey(r)] = true
+	} else {
+		delete(ma, accountKey(r))
+	}
+	p.AccountModelsAll = ma
 	return Save(*p)
 }
 
@@ -238,6 +273,23 @@ func normalModels(ms []string) []string {
 		if m = strings.TrimSpace(m); m != "" && !slices.Contains(out, m) {
 			out = append(out, m)
 		}
+	}
+	return out
+}
+
+// normalModelsAll is the keys set back to every model as they are kept:
+// in lower case, and only those with no models of their own in am.
+func normalModelsAll(m map[string]bool, am map[string][]string) map[string]bool {
+	var out map[string]bool
+	for u, on := range m {
+		u = accountKey(u)
+		if !on || u == "" || am[u] != nil {
+			continue
+		}
+		if out == nil {
+			out = map[string]bool{}
+		}
+		out[u] = true
 	}
 	return out
 }
