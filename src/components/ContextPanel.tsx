@@ -17,6 +17,7 @@ import { t, useT } from "../lib/i18n";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { MemorySection } from "./MemorySection";
 import { PluginsSection } from "./PluginsSection";
+import { UniversalPluginsSection } from "./UniversalPluginsSection";
 import { SessionStatsSection } from "./SessionStatsSection";
 import { dockFooterHost, useDocked } from "../lib/dockFooter";
 import type { PlanEntry } from "../lib/acpPlan";
@@ -900,6 +901,8 @@ export const ContextPanel = memo(function ContextPanel({
       </section>
 
       <MemorySection activeSessionId={activeSessionId} />
+
+      <UniversalPluginsSection />
 
       <PluginsSection activeAgentId={activeAgentId} />
 

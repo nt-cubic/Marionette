@@ -668,6 +668,38 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
   必须连 paint_over 一起做）、指示条 overlay、foreground 交付、verify/launch_app/
   hold_key/invoke_menu/set_window_frame 工具。
 
+## 共通插件层（2026-11-05 落地）
+
+安装一次、**所有 agent 生效**的插件层（设计稿 `docs/plan-plugin-layer.md`，行为在
+`docs/CURRENT.md`）。改前先记五条红线：
+
+- **不写任何 agent 自有配置**：扇出写回（codeg 路线，`commands/mcp.rs` 1 万行
+  per-agent 特判）已被设计稿明确推翻；共通性来自把插件**归一成 url 型条目**挂在
+  `tools_mcp` 的 localhost server（`/mcp/p/<id>` 路由）——那是一条已被全 adapter
+  （含只收 url 型的 zcode）实测的通道。插件条目形状必须与
+  `tools_mcp::session_entry` 同形（`name/url/headers{Authorization}/type:"http"`）。
+- **密钥不外流**：插件 env/header 值永不进 debug_log（只记方法名/计数）、永不进
+  url 型注入条目——agent 唯一可见凭据是 loopback 会话 token。stdio 回退条目（给
+  不支持 http 的 agent）含 env 值，与 stdio 借贷同姿态，别「顺手脱敏」破坏它。
+- **`plugin_host::release_session` 两个挂点成对**：`AcpService::stop()` 与
+  `read_stdout` 的 EOF teardown（agent 自崩路径）——漏任何一个都会漏杀该会话的
+  插件子进程。禁用/卸载走 `kill_plugin` 跨会话杀。
+- **持 `CHILDREN` 锁绝不等待子进程**（HelperIo 自锁教训）：`resolve_spawn_command`
+  （含 where.exe，秒级）与一切 request 等待都在锁外；锁内只查表/插入。
+- **插件的 JSON-RPC error 原样透传**（那是插件自己的应答）；只有宿主侧失败
+  （spawn/超时/进程退出）才编 -32000。child→agent 的 server 主动请求
+  （sampling/roots）一律回 -32601，agent 在 HTTP 请求边界后面没法应答。
+
+登记处 `~/.marionette/plugins/index.json`（`plugins.rs`，fail-open 读 + 原子写 +
+损坏留档 `.corrupt-{ts}`；`load_at/save_at` 收 `&Path`，测试零全局 override）；
+`plugin_host.rs` 的 stdio 子进程按会话懒起（`resolve_spawn_command` 解 npx/.cmd、
+CREATE_NO_WINDOW、Job Object kill-on-close）、懒握手（agent 的 initialize 原样
+转发）；http 插件纯中继（远端 `Mcp-Session-Id` 宿主代持，`Accept:
+application/json`——流式 only 的服务要响亮失败）。全局 skills 目录
+`~/.marionette/plugins/skills/`（default-on prompt 借贷）。`zcode_mcp_bridge`
+原样保留服务旧借贷，插件层不碰它。回归：`cargo test --bin marionette plugins
+plugin_host tools_mcp zcode_mcp_bridge` + `npx tsc --noEmit`。
+
 ## DeepSeek Harness 接入（@openma/deepseek-harness-acp，2026-10-19 起）
 
 Marionette 的 DSH agent 走 `@openma/deepseek-harness-acp`（bin `dsh-acp`），不再用停更的社区适配器

@@ -638,6 +638,16 @@ pub fn scan(project_root: &Path) -> ContextInventory {
         scan_skills_dir(&home.join(".grok/skills"), "grok-build", Some("grok-build"), &mut out);
         scan_skills_dir(&home.join(".codex/skills"), "codex", Some("codex"), &mut out);
         scan_skills_dir(&home.join(".zcode/cli/skills"), "zcode", Some("zcode"), &mut out);
+        // Universal-plugin skills (docs/plan-plugin-layer.md): one global dir,
+        // default-on lending — install once, every agent sees it.
+        if let Ok(marionette_root) = crate::app_paths::global_dir() {
+            scan_skills_dir(
+                &marionette_root.join("plugins").join("skills"),
+                "marionette",
+                None,
+                &mut out,
+            );
+        }
     }
 
     // Project: these travel with the repo, so they win on relevance.
