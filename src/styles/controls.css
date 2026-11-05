@@ -435,7 +435,8 @@
   justify-content: safe center;
   overflow: auto;
   padding: 24px;
-  background: rgba(0, 0, 0, 0.32);
+  /* v2 scrim: ink at 18%, no blur (docs/design/ui-v2/DialogV2.html). */
+  background: rgba(17, 17, 19, 0.18);
 }
 
 .project-dialog {
@@ -448,10 +449,11 @@
   overflow: auto;
   gap: 18px;
   padding: 18px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
+  /* v2 panel: the card edge (border-strong pulled 30% toward border), 3px corner, short shadow. */
+  border: 1px solid color-mix(in srgb, var(--border-strong) 70%, var(--border));
+  border-radius: var(--radius);
   background: var(--panel-raised);
-  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 12px 32px rgba(17, 17, 19, 0.1);
 }
 
 .project-dialog__header,
@@ -461,31 +463,40 @@
   justify-content: space-between;
 }
 
+/* Header: 46px, no divider. Negative margins pull it to the panel edges; the
+   panel's own gap keeps the body 18px below it. */
+.project-dialog__header {
+  flex: none;
+  height: 46px;
+  margin: -18px -18px 0;
+  padding: 0 10px 0 18px;
+}
+
 .project-dialog__header > div {
   display: grid;
   gap: 4px;
 }
 
 .project-dialog__header strong {
-  color: var(--text);
+  color: var(--text-strong);
   font-size: 14px;
+  font-weight: 600;
 }
 
-.project-dialog__header span,
-.project-dialog__field span {
+.project-dialog__header span {
   color: var(--text-muted);
   font-size: 12px;
 }
 
 .project-dialog__close {
   display: grid;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
+  border-radius: var(--radius);
+  color: var(--text-faint);
   background: transparent;
   font-size: 18px;
   line-height: 1;
@@ -497,9 +508,24 @@
   background: var(--panel-soft);
 }
 
+/* Form as a table: one field per row, label left (84px), value right, hairline
+   between rows. The value is borderless; focus only accents the row's bottom line. */
 .project-dialog__field {
   display: grid;
-  gap: 7px;
+  grid-template-columns: 84px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-height: 42px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.project-dialog__field:focus-within {
+  border-bottom-color: var(--accent);
+}
+
+.project-dialog__field span {
+  color: var(--text-muted);
+  font-size: 12.5px;
 }
 
 .project-dialog__path-row {
@@ -512,18 +538,18 @@
 .project-dialog__field input {
   width: 100%;
   height: 32px;
-  padding: 0 9px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
   outline: none;
-  color: var(--text);
-  background: var(--panel-soft);
+  color: var(--text-strong);
+  background: transparent;
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .project-dialog__field input:focus {
-  border-color: var(--accent);
+  border-color: transparent;
 }
 
 .project-dialog__browse {
@@ -558,36 +584,47 @@
   font-size: 12px;
 }
 
+/* Footer: 52px, hairline top, buttons on the right. Same negative-margin pull
+   as the header so the hairline runs edge to edge. */
 .project-dialog__actions {
+  flex: none;
   justify-content: flex-end;
   gap: 8px;
+  height: 52px;
+  margin: 0 -18px -18px;
+  padding: 0 14px 0 18px;
+  border-top: 1px solid var(--hairline);
 }
 
 .project-dialog__cancel,
 .project-dialog__submit {
-  height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--radius);
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
 }
 
+/* Secondary: soft fill, no border. Light theme uses the v2 literal #f1f1f3. */
 .project-dialog__cancel {
-  color: var(--text-muted);
-  background: transparent;
+  color: var(--text);
+  background: var(--panel-soft);
 }
 
+:root[data-theme="white"] .project-dialog__cancel {
+  background: #f1f1f3;
+}
+
+/* Primary: accent fill. Text is --bg (white in the light theme, dark ink on dark). */
 .project-dialog__submit {
-  border-color: var(--accent);
   color: var(--bg);
   background: var(--accent);
   font-weight: 600;
 }
 
 .project-dialog__submit--danger {
-  border-color: var(--red);
   background: var(--red);
   color: #fff;
 }

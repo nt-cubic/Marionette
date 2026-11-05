@@ -162,6 +162,13 @@
   animation: m-pop var(--dur-slow) var(--ease-out) backwards;
 }
 
+/* Exit (DialogShell): fade only, no travel, 120ms. JS waits the same 120ms
+   before it calls onClose. */
+.project-dialog-backdrop[data-state="closing"],
+.project-dialog[data-state="closing"] {
+  animation: m-dialog-out var(--dur-fast) var(--ease-standard) forwards;
+}
+
 .command-palette,
 .composer-menu,
 .link-menu,
@@ -249,7 +256,13 @@
 @keyframes m-pop {
   from {
     opacity: 0;
-    transform: translateY(6px) scale(0.985);
+    transform: translateY(4px) scale(0.985);
+  }
+}
+
+@keyframes m-dialog-out {
+  to {
+    opacity: 0;
   }
 }
 
