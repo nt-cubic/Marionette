@@ -1,4 +1,4 @@
-import { ArrowUpCircle, ChevronRight, PanelRightClose, PanelRightOpen, RefreshCw } from "lucide-react";
+import { ArrowUpCircle, ChevronRight, RefreshCw } from "lucide-react";
 import { memo, useState } from "react";
 import { createPortal } from "react-dom";
 import { t, useT } from "../lib/i18n";
@@ -121,8 +121,6 @@ function mcpServerLine(server: McpServerSpec, nativeHere: boolean): string {
 
 export const ContextPanel = memo(function ContextPanel({
   collapsed,
-  onCollapse,
-  onExpand,
   usage,
   onUsageRefresh,
   changedFiles = [],
@@ -406,9 +404,6 @@ export const ContextPanel = memo(function ContextPanel({
       </section>
 
       <div className="context-panel__footer">
-        <button className="pill-action pill-action--icon pill-action--sm" type="button" title={collapsed ? "Pin information panel open" : "Collapse information panel"} aria-label={collapsed ? "Pin information panel open" : "Collapse information panel"} onClick={collapsed ? onExpand : onCollapse}>
-          {collapsed ? <PanelRightOpen size={13} /> : <PanelRightClose size={13} />}
-        </button>
         {docked && updateButton ? createPortal(updateButton, dockFooterHost()) : updateButton}
       </div>
     </aside>

@@ -9227,6 +9227,11 @@ export function App() {
                 run: () => setLeftCollapsed((value) => !value),
               },
               {
+                id: "toggle-right",
+                label: rightCollapsed ? t("v2dialogs.expandRight") : t("v2dialogs.collapseRight"),
+                run: () => setRightCollapsed((value) => !value),
+              },
+              {
                 id: "theme",
                 label: t("palette.toggleTheme"),
                 run: () =>
