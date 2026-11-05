@@ -1055,17 +1055,8 @@
 }
 
 /* ---- Accent, v2 final (2026-11-06) ---------------------------------------------------
-   Each rail section heading opens with a short 2px accent tick; the heading's icon
+   The section headings's icon
    buttons answer in accent on hover; the open shared group's chevron is accent. */
-.context-panel .rail-sh::before {
-  content: "";
-  flex: none;
-  width: 2px;
-  height: 10px;
-  margin-right: -2px;
-  border-radius: 1px;
-  background: var(--accent);
-}
 
 .context-panel .rail-ib:hover {
   color: var(--accent);
@@ -1074,4 +1065,32 @@
 .context-panel .rail-shared details[open] > summary svg:first-child,
 .context-panel .rail-shared.is-open .rail-shared__chev {
   color: var(--accent);
+}
+
+/* ---- Current quota block: breathing room (2026-11-06) --------------------------------
+   The billing-source title no longer sits on the block's top edge: 10px above, 8px under
+   it before the meters, 14px from the ink bar. The title is 13.5px / 600 on one line
+   with the note and reset hint on its baseline. */
+.context-panel .quota-cur {
+  padding: 10px 0 10px;
+}
+
+.context-panel .quota-cur__name {
+  align-items: baseline;
+  height: auto;
+  min-height: 20px;
+  margin-bottom: 8px;
+  padding: 0 12px 0 14px;
+  line-height: 20px;
+}
+
+.context-panel .quota-cur__title {
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.context-panel .quota-cur .quota-wr,
+.context-panel .quota-cur__balance {
+  padding-left: 14px;
 }

@@ -411,13 +411,9 @@
 }
 
 /* ---- Composer, v2 final (2026-11-06) -------------------------------------------------
-   No mode rail down the left edge: the mode lives in its chip. The chips that carry a
+   The mode rail on the left edge stays (the input box keeps its green bar). The chips that carry a
    state (mode, always-approve / loose permissions) are tinted chips, not bare coloured
    words; the composer's top edge picks up the accent while you are typing in it. */
-.composer .composer__mode-rail {
-  display: none;
-}
-
 .composer .composer__field {
   transition: border-color var(--dur-fast) var(--ease-standard);
 }

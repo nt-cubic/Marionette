@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
-import { Archive, Bell, BellOff, ChevronRight, CloudMoon, Download, Folder, FolderOpen, GripVertical, KeyRound, MoreHorizontal, Network, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, Settings, SlidersHorizontal, SunMedium, Trash2, UsersRound, X, Zap } from "lucide-react";
+import { Archive, Bell, BellOff, ChevronRight, CloudMoon, Download, Folder, FolderOpen, GripVertical, KeyRound, MessageSquare, MoreHorizontal, Network, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, Settings, SlidersHorizontal, SunMedium, Trash2, UsersRound, X, Zap } from "lucide-react";
 // Refresh on a project row folds CLI history into the normal session list.
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { t, useLocale, useT, type DictKey } from "../lib/i18n";
@@ -1909,6 +1909,7 @@ export function ProjectShelf({
             title={defaultFolderPath ? t("shelf.chatWorkdir", { path: defaultFolderPath }) : t("shelf.chatWorkdirDefault")}
           >
             <span className="chat-section__title">
+              <MessageSquare size={13} aria-hidden />
               {t("v2shelf.chats")}
             </span>
             {onNewChat && (

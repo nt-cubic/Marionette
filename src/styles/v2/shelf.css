@@ -584,3 +584,53 @@
 .project-tree .chat-list__empty.chat-list__empty {
   padding-left: 34px;
 }
+
+/* ---- Legacy dividers + green icons back (2026-11-06) ---------------------------------
+   The old sidebar's structure lines and accent icons return: a full divider above the
+   收纳盒 / 圆桌 block and above the 聊天 section, one between the two entries and one under
+   the 聊天 header; the entry icons, the chat header's icon and the on-state model-sharing
+   icon are green, as is the "open here" project frame and "show more" on hover. */
+.project-tree .shelf-memo-entry.shelf-memo-entry {
+  border-top: 1px solid var(--border);
+}
+
+.project-tree .shelf-memo-entry.shelf-memo-entry + .shelf-memo-entry.shelf-memo-entry {
+  border-top: 1px solid var(--hairline);
+}
+
+.project-tree .shelf-memo-entry svg {
+  color: var(--accent);
+}
+
+.project-tree .chat-section.chat-section {
+  border-top: 1px solid var(--border);
+}
+
+.project-tree .chat-section__header.chat-section__header {
+  margin-top: 0;
+  height: 30px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.project-tree .chat-section__title.chat-section__title {
+  gap: 6px;
+  color: var(--text-strong);
+  font-size: 12px;
+}
+
+.project-tree .chat-section__title svg {
+  color: var(--accent);
+}
+
+.engine-entry.engine-entry.is-on .engine-entry__icon {
+  color: var(--accent);
+}
+
+.project-tree .project-row.is-open-here {
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.shelf-clip__more.shelf-clip__more:hover,
+.shelf-clip__more.shelf-clip__more:hover .shelf-clip__count {
+  color: var(--accent);
+}
