@@ -1,4 +1,4 @@
-import { Power, Puzzle, RefreshCw, Trash2, Zap } from "lucide-react";
+import { Plus, Power, RefreshCw, Trash2, Zap } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import {
   universalPluginAdd,
@@ -213,14 +213,13 @@ export function UniversalPluginsSection({ onCount }: { onCount?: (count: number)
             disabled={operating}
             onClick={() => setFormOpen((open) => !open)}
           >
-            <Puzzle size={11} />
+            <Plus size={12} />
           </button>
         </div>
       </div>
 
       {list.length === 0 && !formOpen ? (
         <p className="context-card__empty" style={{ marginTop: 8 }}>
-          <Puzzle size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
           {t("allPlugins.empty")}
         </p>
       ) : null}
@@ -361,7 +360,7 @@ export function UniversalPluginsSection({ onCount }: { onCount?: (count: number)
         </div>
       ) : null}
 
-      <p className="panel-note" style={{ opacity: 0.75 }}>{t("allPlugins.applyHint")}</p>
+      <p className="panel-note panel-note--hint" title={t("allPlugins.applyHint")}>{t("allPlugins.applyHint")}</p>
 
       {note ? (
         <p className="panel-note" style={{ whiteSpace: "pre-wrap" }}>

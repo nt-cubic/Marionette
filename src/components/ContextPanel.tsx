@@ -165,7 +165,10 @@ export const ContextPanel = memo(function ContextPanel({
   /** Docked: the update control joins the strip's footer bar below the composer. */
   const docked = useDocked();
   const [sharedOpen, setSharedOpen] = useState(false);
-  const [memoryCount, setMemoryCount] = useState(0);
+  // Plugin / memory counts are only known once their sections mounted (memory syncs on
+  // mount); null = not loaded yet, so the summary leaves them out instead of showing 0.
+  const [memoryCount, setMemoryCount] = useState<number | null>(null);
+  const [pluginCount, setPluginCount] = useState<number | null>(null);
   // Same "enabled" logic as the MCP / skills list: mcp defaults off, skills default on.
   const sharedMcpCount = projectContext
     ? projectContext.inventory.mcpServers.filter((server) => projectContext.selection.mcpServers[server.id] ?? false)
@@ -174,7 +177,14 @@ export const ContextPanel = memo(function ContextPanel({
   const sharedSkillCount = projectContext
     ? projectContext.inventory.skills.filter((skill) => projectContext.selection.skills[skill.id] ?? true).length
     : 0;
-  const sharedCount = sharedMcpCount + sharedSkillCount + memoryCount;
+  const sharedSummary = [
+    projectContext ? t("rail.sharedMcp", { count: sharedMcpCount }) : null,
+    projectContext ? t("rail.sharedSkills", { count: sharedSkillCount }) : null,
+    pluginCount != null ? t("rail.sharedPlugins", { count: pluginCount }) : null,
+    memoryCount != null ? t("rail.sharedMemory", { count: memoryCount }) : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   /** Right rail's only footer control besides collapse; docked it moves below. */
   const updateButton = onCheckAppUpdate ? (
@@ -241,9 +251,12 @@ export const ContextPanel = memo(function ContextPanel({
           onClick={() => setSharedOpen(!sharedOpen)}
         >
           <ChevronRight size={12} className={"rail-shared__chevron" + (sharedOpen ? " is-open" : "")} aria-hidden />
-          <span>{t("rail.shared")}</span>
-          <span className="rail-shared__summary">
-            {t("rail.sharedSummary", { count: sharedCount, agent: activeAgentLabel ?? "" })}
+          <span className="rail-shared__title">{t("rail.shared")}</span>
+          <span
+            className="rail-shared__summary"
+            title={activeAgentLabel ? t("rail.sharedTo", { agent: activeAgentLabel }) : undefined}
+          >
+            {sharedSummary}
           </span>
         </button>
         {sharedOpen && (
@@ -365,7 +378,7 @@ export const ContextPanel = memo(function ContextPanel({
         )}
       </section>
 
-      <PluginsSection activeAgentId={activeAgentId} />
+      <PluginsSection activeAgentId={activeAgentId} onCount={setPluginCount} />
 
       <UniversalPluginsSection />
 

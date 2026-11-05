@@ -1,4 +1,4 @@
-import { Puzzle, RefreshCw, Trash2 } from "lucide-react";
+import { Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import {
   dshPluginAdd,
@@ -6,7 +6,7 @@ import {
   dshPluginsList,
   type DshPlugin,
 } from "../lib/api";
-import { BADGE_COLORS, BADGE_LABELS, badgeFor } from "../lib/pluginBadges";
+import { BADGE_LABELS, badgeFor } from "../lib/pluginBadges";
 import { useT } from "../lib/i18n";
 
 /**
@@ -85,12 +85,13 @@ export function PluginsSection({
     <section className="context-card" id="context-plugins">
       <div className="context-card__heading">
         <span>{t("plugins.title")}</span>
+        <span className="rail-shared__scope">DeepSeek Harness</span>
         <div className="context-card__heading-actions">
           <button
             className="pill-action pill-action--icon pill-action--sm"
             type="button"
-            title="Refresh plugins"
-            aria-label="Refresh plugins"
+            title={t("rail.pluginsRefresh")}
+            aria-label={t("rail.pluginsRefresh")}
             disabled={busy || operating}
             onClick={() => void refresh()}
           >
@@ -101,50 +102,45 @@ export function PluginsSection({
 
       {list.length === 0 ? (
         <p className="context-card__empty" style={{ marginTop: 8 }}>
-          <Puzzle size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
-          No plugins installed. Paste a package name below.
+          {t("rail.pluginsEmpty")}
         </p>
       ) : (
         <ul className="panel-entry-list">
           {list.map((plugin) => {
             const info = badgeFor(plugin.name);
             const effectiveHere = onDsh && info.badge !== "web";
+            const scopeNote = onDsh
+              ? effectiveHere
+                ? t("rail.pluginActiveHere")
+                : t("rail.pluginNotHere")
+              : t("rail.pluginDshOnly");
             return (
               <li
                 className="panel-entry"
                 key={`${plugin.name}@${plugin.version}`}
+                title={`${plugin.name} ${plugin.version}
+${info.reason}
+${scopeNote}`}
               >
                 <div className="panel-entry__head">
                   <span className="panel-entry__title" title={plugin.name}>
                     {plugin.name}
                   </span>
                   <span className="panel-entry__version">{plugin.version}</span>
-                  <span
-                    className="panel-entry__badge"
-                    style={{ background: BADGE_COLORS[info.badge] }}
-                    title={info.reason}
-                  >
+                  <span className={`panel-entry__badge is-${info.badge}`}>
                     {BADGE_LABELS[info.badge]}
                   </span>
                   <button
                     className="pill-action pill-action--icon pill-action--sm"
                     type="button"
-                    title="Uninstall"
-                    aria-label={`Remove ${plugin.name}`}
+                    title={t("rail.pluginRemove")}
+                    aria-label={t("rail.pluginRemoveNamed", { name: plugin.name })}
                     disabled={operating}
                     onClick={() => void handleRemove(plugin.name)}
                   >
                     <Trash2 size={11} />
                   </button>
                 </div>
-                <p className="panel-entry__text" title={info.reason}>
-                  {info.reason}
-                  {onDsh
-                    ? effectiveHere
-                      ? " · active in this ACP"
-                      : " · not effective in this ACP"
-                    : " · applies to DeepSeek Harness sessions"}
-                </p>
               </li>
             );
           })}
@@ -152,9 +148,11 @@ export function PluginsSection({
       )}
 
       <div className="panel-install">
+        <Plus size={12} aria-hidden className="panel-install__icon" />
         <input
           className="panel-form__input"
-          placeholder="package (e.g. dsh-pet) / github:owner/repo"
+          placeholder={t("rail.pluginInstallPlaceholder")}
+          aria-label={t("rail.pluginInstallPlaceholder")}
           value={spec}
           disabled={operating}
           onChange={(e) => setSpec(e.target.value)}
@@ -168,7 +166,7 @@ export function PluginsSection({
           disabled={!spec.trim() || operating}
           onClick={() => void handleAdd()}
         >
-          {operating ? "…" : "Install"}
+          {operating ? "…" : t("rail.pluginInstall")}
         </button>
       </div>
 

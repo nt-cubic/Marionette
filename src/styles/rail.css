@@ -586,3 +586,418 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ---- Shared group, v2 final (2026-11-06) ------------------------------------------
+   One grammar for every block inside the shared fold (project context, DSH plugins,
+   universal plugins, memory, handoff): a 30px sub-header, 26px rows that truncate
+   instead of overflowing, flush add-rows, one-line hints with the full text in a
+   tooltip. The doubled .rail-shared outranks the earlier per-block overrides. */
+.context-panel .rail-shared.rail-shared {
+  padding-bottom: 6px;
+}
+
+.context-panel .rail-shared.rail-shared .rail-shared__toggle {
+  height: 34px;
+  gap: 8px;
+  padding: 0 10px 0 12px;
+  outline: none;
+  white-space: nowrap;
+}
+
+.context-panel .rail-shared.rail-shared .rail-shared__toggle:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.context-panel .rail-shared.rail-shared .rail-shared__title {
+  flex: none;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.context-panel .rail-shared.rail-shared .rail-shared__summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Sub-blocks: flat, separated by a hairline, no card chrome. */
+.context-panel .rail-shared.rail-shared .context-card {
+  margin: 0;
+  padding: 0 0 4px;
+  border: 0;
+  border-top: 1px solid var(--hairline);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.context-panel .rail-shared.rail-shared .context-card__heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  margin: 0;
+  padding: 0 6px 0 12px;
+  color: var(--text-strong);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.context-panel .rail-shared.rail-shared .context-card__heading-actions {
+  display: flex;
+  gap: 0;
+  margin-left: auto;
+}
+
+.context-panel .rail-shared.rail-shared .rail-shared__scope {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+/* Icon buttons: 22px squares, no pill. Text pills become accent text buttons. */
+.context-panel .rail-shared.rail-shared .pill-action--icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: transparent;
+}
+
+.context-panel .rail-shared.rail-shared .pill-action--icon:hover:not(:disabled) {
+  background: var(--panel-soft);
+  color: var(--text-strong);
+}
+
+.context-panel .rail-shared.rail-shared .pill-action:not(.pill-action--icon) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.context-panel .rail-shared.rail-shared .pill-action:disabled {
+  opacity: 0.45;
+}
+
+/* Hints, notes, empty lines: one 11px line, full text on hover. */
+.context-panel .rail-shared.rail-shared .context-card__empty,
+.context-panel .rail-shared.rail-shared .panel-note,
+.context-panel .rail-shared.rail-shared .context-lend__hint,
+.context-panel .rail-shared.rail-shared .handoff-block__hint {
+  margin: 0;
+  padding: 0 12px 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap !important;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 18px;
+  opacity: 1;
+}
+
+.context-panel .rail-shared.rail-shared .context-lend__hint code {
+  padding: 0;
+  background: none;
+  font-size: 10.5px;
+}
+
+/* Errors from installs keep their wrapping so the message stays readable. */
+.context-panel .rail-shared.rail-shared .panel-note:not(.panel-note--hint) {
+  white-space: pre-wrap !important;
+  color: var(--text-muted);
+}
+
+/* Project context: MCP / skills lists. */
+.context-panel .rail-shared.rail-shared .context-lend {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.context-panel .rail-shared.rail-shared .context-lend__labelrow,
+.context-panel .rail-shared.rail-shared .context-lend > .context-lend__label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  margin: 2px 0 0;
+  padding: 0 6px 0 12px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.context-panel .rail-shared.rail-shared .context-lend__labelrow .context-lend__label {
+  color: inherit;
+  font: inherit;
+}
+
+.context-panel .rail-shared.rail-shared .context-lend__reconnect {
+  margin-left: auto;
+}
+
+.context-panel .rail-shared.rail-shared .context-lend__list {
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  list-style: none;
+}
+
+.context-panel .rail-shared.rail-shared .context-lend__row {
+  display: grid;
+  grid-template-columns: 13px minmax(0, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.context-panel .rail-shared.rail-shared .context-lend__row:hover {
+  background: var(--panel-soft);
+}
+
+.context-panel .rail-shared.rail-shared .context-lend__row input[type="checkbox"] {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.context-panel .rail-shared.rail-shared .context-lend__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.context-panel .rail-shared.rail-shared .context-lend__meta {
+  min-width: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+/* Plugin rows (DSH + universal): name, version, status word, hover actions. */
+.context-panel .rail-shared.rail-shared .panel-entry-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.context-panel .rail-shared.rail-shared .panel-entry {
+  margin: 0;
+  padding: 0 6px 0 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.context-panel .rail-shared.rail-shared .panel-entry:hover {
+  background: var(--panel-soft);
+}
+
+.context-panel .rail-shared.rail-shared .panel-entry__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+}
+
+.context-panel .rail-shared.rail-shared .panel-entry__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.context-panel .rail-shared.rail-shared .panel-entry__version {
+  flex: none;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.context-panel .rail-shared.rail-shared .panel-entry__badge {
+  flex: none;
+  margin-left: auto;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.context-panel .rail-shared.rail-shared .panel-entry__badge.is-full {
+  display: none;
+}
+
+.context-panel .rail-shared.rail-shared .panel-entry__badge.is-partial {
+  color: var(--yellow);
+}
+
+.context-panel .rail-shared.rail-shared .panel-entry__badge.is-full + .pill-action--icon {
+  margin-left: auto;
+}
+
+.context-panel .rail-shared.rail-shared .panel-entry__head .pill-action--icon,
+.context-panel .rail-shared.rail-shared .panel-entry__foot {
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-standard);
+}
+
+.context-panel .rail-shared.rail-shared .panel-entry:hover .pill-action--icon,
+.context-panel .rail-shared.rail-shared .panel-entry:focus-within .pill-action--icon,
+.context-panel .rail-shared.rail-shared .memory-entry:hover .panel-entry__foot,
+.context-panel .rail-shared.rail-shared .memory-entry:focus-within .panel-entry__foot {
+  opacity: 1;
+}
+
+.context-panel .rail-shared.rail-shared .panel-entry__text {
+  display: none;
+}
+
+/* Install / add rows: flush, a Plus glyph, borderless input, accent text button. */
+.context-panel .rail-shared.rail-shared .panel-install {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  margin: 0;
+  padding: 0 10px 0 12px;
+  border: 0;
+  background: transparent;
+}
+
+.context-panel .rail-shared.rail-shared .panel-install__icon {
+  flex: none;
+  color: var(--text-faint);
+}
+
+.context-panel .rail-shared.rail-shared .panel-form__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.context-panel .rail-shared.rail-shared .panel-form__input::placeholder {
+  color: var(--text-faint);
+}
+
+.context-panel .rail-shared.rail-shared .panel-form__input:focus {
+  border-bottom-color: var(--accent);
+}
+
+/* The universal-plugin form stacks several fields: each becomes its own flush row. */
+.context-panel .rail-shared.rail-shared .panel-install[style*="column"] {
+  gap: 0 !important;
+  padding: 2px 12px 6px;
+}
+
+.context-panel .rail-shared.rail-shared .panel-install[style*="column"] > * {
+  border-bottom: 1px solid var(--hairline);
+}
+
+.context-panel .rail-shared.rail-shared .panel-install[style*="column"] > .pill-action {
+  align-self: flex-end;
+  border-bottom: 0;
+}
+
+/* Memory rows reuse the lend row; edit / delete appear on hover. */
+.context-panel .rail-shared.rail-shared .memory-entry {
+  position: relative;
+}
+
+.context-panel .rail-shared.rail-shared .memory-entry .panel-entry__foot {
+  position: absolute;
+  top: 2px;
+  right: 6px;
+  display: flex;
+  gap: 0;
+  background: var(--panel-soft);
+}
+
+.context-panel .rail-shared.rail-shared .panel-actions {
+  display: flex;
+  padding: 0 12px;
+}
+
+/* Handoff: three quiet lines. */
+.context-panel .rail-shared.rail-shared .handoff-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 12px 4px;
+  font-size: 12px;
+}
+
+.context-panel .rail-shared.rail-shared .handoff-block strong,
+.context-panel .rail-shared.rail-shared .handoff-block small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-panel .rail-shared.rail-shared .handoff-block strong {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.context-panel .rail-shared.rail-shared .handoff-block small {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .context-panel .rail-shared.rail-shared .panel-entry__head .pill-action--icon,
+  .context-panel .rail-shared.rail-shared .panel-entry__foot {
+    transition: none;
+  }
+}
