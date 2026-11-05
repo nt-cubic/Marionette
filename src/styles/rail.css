@@ -1053,3 +1053,25 @@
   min-width: 0;
   max-width: 100%;
 }
+
+/* ---- Accent, v2 final (2026-11-06) ---------------------------------------------------
+   Each rail section heading opens with a short 2px accent tick; the heading's icon
+   buttons answer in accent on hover; the open shared group's chevron is accent. */
+.context-panel .rail-sh::before {
+  content: "";
+  flex: none;
+  width: 2px;
+  height: 10px;
+  margin-right: -2px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+
+.context-panel .rail-ib:hover {
+  color: var(--accent);
+}
+
+.context-panel .rail-shared details[open] > summary svg:first-child,
+.context-panel .rail-shared.is-open .rail-shared__chev {
+  color: var(--accent);
+}

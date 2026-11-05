@@ -364,3 +364,21 @@
   font-weight: 500;
   line-height: 1.6;
 }
+
+/* ---- Accent, v2 final (2026-11-06) ---------------------------------------------------
+   The active tab wears a 2px accent line on its top edge: the app's green marks "current"
+   in the tab row the same way it does in the sidebar. */
+.editor-tabs__tablist .editor-tab.is-active {
+  position: relative;
+}
+
+.editor-tabs__tablist .editor-tab.is-active::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}

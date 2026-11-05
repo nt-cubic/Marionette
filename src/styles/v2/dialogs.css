@@ -1023,3 +1023,9 @@
     transition: none;
   }
 }
+
+/* ---- Accent, v2 final (2026-11-06) ---------------------------------------------------
+   Every dialog panel carries a 2px accent line across its top edge. */
+.project-dialog {
+  border-top: 2px solid var(--accent);
+}
