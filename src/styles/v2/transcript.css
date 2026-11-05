@@ -515,3 +515,34 @@
 .event-list .activity-group.is-live::after {
   border-radius: 0 var(--radius) var(--radius) 0;
 }
+
+/* ---- Reply header / footer split (2026-11-06) -----------------------------------------
+   Header: who replied (the agent), nothing else. Footer: how it ran: mode (its tone)
+   · model · effort in muted ink, then a hairline, then the measurements (time, tokens)
+   in faint ink, tabular. */
+.event-card--assistant_message .event-card__who {
+  font-size: 13px;
+}
+
+.event-card--assistant_message .meta-tag--model,
+.event-card--assistant_message .meta-tag--effort {
+  color: var(--text-muted);
+}
+
+.event-card--assistant_message .meta-tag--stat {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.event-card--assistant_message .meta-tag:not(.meta-tag--stat) + .meta-tag--stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.event-card--assistant_message .meta-tag:not(.meta-tag--stat) + .meta-tag--stat::before {
+  content: "";
+  width: 1px;
+  height: 10px;
+  background: var(--border);
+}

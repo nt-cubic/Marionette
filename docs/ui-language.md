@@ -94,7 +94,7 @@
 
 - **你**：raised 卡 + 3px `--accent` 左边条，卡头「你 · 时间」。
 - **调用块**（`.activity-group`）：灰底卡，标题是 tally（`10 thoughts, 7 commands…`）。运行中：描边 `color-mix(--agent-ink 40%, --border)`，一段淡光沿边框绕一圈后隐去（6s 一轮，`@property` 角度 + conic-gradient + mask），块内轨迹面板正在进行的那段用 `--agent-ink`，九点呼吸图标用 `--agent-ink`。完成后折回 tally，描边回中性。
-- **回复**：raised 卡 + 3px `--agent-ink` 左边条。**卡头左上写 agent 名 + 模型**（`ZCode glm-5.3`，名字 12px/700 中性色，模型 400 辅助灰，无圆点），右上时间。**卡底一行元信息**：`Standard · high · 12.4s · 1.8K tok`（模式、推理档位不加「推理」二字、本条耗时、token），右侧分叉 / 复制。
+- **回复**：raised 卡 + 3px `--agent-ink` 左边条。**卡头左上只写 agent 名**（13px/600 最深墨，无圆点、不上色），右上时间。**卡底一行「怎么跑的」**：`▣ Build · Grok 4.6 · High │ 0.4s · 146 tok`——模式（模式色）、模型、推理档位（不加「推理」二字）用辅助灰，细竖线后是本条耗时与 token（最淡、等宽数字）；全部 11px，右侧 22px 的分叉 / 复制。卡片左直右圆（左上/左下 0，右侧 `--radius`），身份色条是一根直线。
 - **交接分隔线**：两条细线中间 `● ZCode → ● 交接给 Claude · 带上摘要和 1 处改动`，圆点是唯一允许出现的 agent 圆点。
 - 交付卡、计划卡、提问卡保持现状。
 

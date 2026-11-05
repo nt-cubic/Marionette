@@ -3153,9 +3153,6 @@ function CleanPlaceholder({
                         <span className="event-card__who">
                           {event.agentLabel || event.agentId || session.agentId}
                         </span>
-                        {event.modelLabel && (
-                          <span className="event-card__who-model">{event.modelLabel}</span>
-                        )}
                       </>
                     ) : (
                       label
@@ -3331,14 +3328,17 @@ function CleanPlaceholder({
                             </span>
                           </>
                         )}
+                        {event.modelLabel && (
+                          <span className="meta-tag meta-tag--model">{event.modelLabel}</span>
+                        )}
                         {event.effortLabel && (
-                          <span className="meta-tag">{event.effortLabel}</span>
+                          <span className="meta-tag meta-tag--effort">{event.effortLabel}</span>
                         )}
                         {replyDurationMs != null && (
-                          <span className="meta-tag">{formatStepDuration(replyDurationMs)}</span>
+                          <span className="meta-tag meta-tag--stat">{formatStepDuration(replyDurationMs)}</span>
                         )}
                         {replyTokens != null && (
-                          <span className="meta-tag">
+                          <span className="meta-tag meta-tag--stat">
                             {t("session.replyTokens", { tokens: formatTokenCount(replyTokens) })}
                           </span>
                         )}
