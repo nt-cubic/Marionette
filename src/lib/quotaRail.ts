@@ -221,7 +221,16 @@ export function resetHint(window: UsageWindow | null): string | null {
     .split(" · ")
     .map((s) => s.trim())
     .find((s) => /重置|resets?\b/i.test(s));
-  return part ?? null;
+  if (!part) return null;
+  // Sources word this differently ("resets 11月7日 21:09", "10/30 00:07 重置"): keep only
+  // the moment, so the rail prints one short "11/7 21:09" form through rail.resetAt.
+  const cn = part.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*(\d{1,2}:\d{2})?/);
+  if (cn) return [`${Number(cn[1])}/${Number(cn[2])}`, cn[3]].filter(Boolean).join(" ");
+  const slash = part.match(/(\d{1,2})\/(\d{1,2})(?:\s+(\d{1,2}:\d{2}))?/);
+  if (slash) return [`${Number(slash[1])}/${Number(slash[2])}`, slash[3]].filter(Boolean).join(" ");
+  const time = part.match(/\b(\d{1,2}:\d{2}(?:\s*[AP]M)?)\b/i);
+  if (time?.[1]) return time[1];
+  return part.replace(/resets?(\s+at)?|重置于?/gi, "").trim() || null;
 }
 
 /** Colour class for a percentage: ≥95 red, ≥80 yellow, otherwise neutral / ink. */

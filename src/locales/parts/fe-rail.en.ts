@@ -82,4 +82,5 @@ export const en = {
   "rail.memoryEditNamed": "Edit memory {name}",
   "rail.memoryDelete": "Delete",
   "rail.memoryDeleteNamed": "Delete memory {name}",
+  "rail.resetAt": "resets {when}",
 } satisfies Record<keyof typeof zh, string>;

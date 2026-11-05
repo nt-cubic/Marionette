@@ -270,32 +270,39 @@ function InfoPopover({
       </div>
 
       <div className="session-info__sub">{t("composer.info.overview")}</div>
-      <div className="session-info__g3">
-        <span>
-          {t("composer.info.decode")} {f.decode}
-        </span>
-        <span>
-          {t("composer.info.prefill")} {f.prefill}
-        </span>
-        <span>
-          {t("composer.info.firstToken")} {f.firstToken}
-        </span>
-      </div>
-      <div className="session-info__g3">
-        <span>
-          {t("composer.info.changes")}{" "}
-          {f.changeAdd != null && f.changeDel != null ? (
-            <>
-              <i className="is-add">{f.changeAdd}</i> <i className="is-del">{f.changeDel}</i>
-            </>
-          ) : (
-            "—"
-          )}
-        </span>
-        <span>{turnsText}</span>
-        <span>
-          {t("composer.info.cacheHit")} {f.cacheHit}
-        </span>
+      <div className="session-info__stats">
+        <div className="session-info__stat">
+          <b>{f.decode}</b>
+          <span>{t("composer.info.decode")}</span>
+        </div>
+        <div className="session-info__stat">
+          <b>{f.prefill}</b>
+          <span>{t("composer.info.prefill")}</span>
+        </div>
+        <div className="session-info__stat">
+          <b>{f.firstToken}</b>
+          <span>{t("composer.info.firstToken")}</span>
+        </div>
+        <div className="session-info__stat">
+          <b>
+            {f.changeAdd != null && f.changeDel != null ? (
+              <>
+                <i className="is-add">{f.changeAdd}</i> <i className="is-del">{f.changeDel}</i>
+              </>
+            ) : (
+              "—"
+            )}
+          </b>
+          <span>{t("composer.info.changes")}</span>
+        </div>
+        <div className="session-info__stat">
+          <b>{f.turnsSteps ? `${f.turnsSteps.turns} · ${f.turnsSteps.steps}` : "—"}</b>
+          <span>{t("composer.info.turns")}</span>
+        </div>
+        <div className="session-info__stat">
+          <b>{f.cacheHit}</b>
+          <span>{t("composer.info.cacheHit")}</span>
+        </div>
       </div>
 
       <div className="session-info__sub session-info__sub--detail">

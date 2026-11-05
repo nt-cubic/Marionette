@@ -80,4 +80,5 @@ export const zh = {
   "rail.memoryEditNamed": "编辑记忆 {name}",
   "rail.memoryDelete": "删除",
   "rail.memoryDeleteNamed": "删除记忆 {name}",
+  "rail.resetAt": "{when} 重置",
 } as const;

@@ -1274,3 +1274,201 @@
 .model-library-dialog__btn--primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, #000); }
 @media (max-width: 760px) { .model-library-dialog__body { grid-template-columns: 190px minmax(0, 1fr); } }
 @media (prefers-reduced-motion: reduce) { .model-library-dialog__switch, .model-library-dialog__switch i, .model-library-dialog__win i span { transition: none; } }
+
+/* ---- Session info popover, v2 final (2026-11-06) --------------------------------
+   Quiet header, a 4px context meter, six big-number stats with the noun under each,
+   then a compact four-row breakdown. Mirrors docs/design/ui-v2/LightC.html. */
+.composer .composer-menu.composer-menu--info {
+  width: 300px;
+  padding: 14px 16px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  font-size: 12.5px;
+}
+
+.composer .composer-menu--info .session-info__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.composer .composer-menu--info .session-info__title {
+  flex: none;
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.composer .composer-menu--info .session-info__meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+
+.composer .composer-menu--info .session-info__copy {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-right: -6px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.composer .composer-menu--info .session-info__copy:hover {
+  background: var(--panel-soft);
+  color: var(--text-strong);
+}
+
+.composer .composer-menu--info .session-info__ctx {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.composer .composer-menu--info .session-info__ctx-pair {
+  margin-left: auto;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.composer .composer-menu--info .session-info__ctx b {
+  color: var(--text-strong);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.composer .composer-menu--info .session-info__bar {
+  height: 4px;
+  margin: 6px 0 14px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--agent-ink, var(--accent)) 14%, var(--panel-soft));
+  overflow: hidden;
+}
+
+.composer .composer-menu--info .session-info__bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--agent-ink, var(--accent));
+}
+
+.composer .composer-menu--info .session-info__bar.is-warn > span {
+  background: var(--yellow);
+}
+
+.composer .composer-menu--info .session-info__bar.is-hot > span {
+  background: var(--red);
+}
+
+.composer .composer-menu--info .session-info__sub {
+  display: flex;
+  align-items: baseline;
+  margin: 0 0 6px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.composer .composer-menu--info .session-info__sub-meta {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-weight: 400;
+}
+
+/* Six stats: value on top, noun under it, hairline grid. */
+.composer .composer-menu--info .session-info__stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0 0 14px;
+  border-top: 1px solid var(--hairline);
+  border-left: 1px solid var(--hairline);
+}
+
+.composer .composer-menu--info .session-info__stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 4px 7px;
+  border-right: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.composer .composer-menu--info .session-info__stat b {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-strong);
+  font-size: 13.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.composer .composer-menu--info .session-info__stat b i {
+  font-style: normal;
+}
+
+.composer .composer-menu--info .session-info__stat b .is-add {
+  color: var(--green);
+}
+
+.composer .composer-menu--info .session-info__stat b .is-del {
+  color: var(--red);
+}
+
+.composer .composer-menu--info .session-info__stat > span {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+/* Breakdown: compact key/value rows. */
+.composer .composer-menu--info .session-info__kv {
+  display: flex;
+  align-items: center;
+  height: 26px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.composer .composer-menu--info .session-info__kv:last-child {
+  border-bottom: 0;
+}
+
+.composer .composer-menu--info .session-info__kv b {
+  margin-left: auto;
+  color: var(--text);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The ring button: no browser focus box; a thin accent outline for keyboard focus only. */
+.session-info-ring {
+  outline: none;
+}
+
+.session-info-ring:focus-visible {
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.session-info-ring[aria-expanded="true"] {
+  background: var(--panel-soft);
+}

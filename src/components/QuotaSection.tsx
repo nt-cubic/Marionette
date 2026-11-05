@@ -50,7 +50,7 @@ function PrimaryBlock({
       <div className="quota-cur__name">
         <span className="quota-cur__title">{name}</span>
         {note && <span className="quota-cur__note">{note}</span>}
-        {reset && <span className="quota-cur__reset">{reset}</span>}
+        {reset && <span className="quota-cur__reset">{t("rail.resetAt", { when: reset })}</span>}
       </div>
       {balance != null ? (
         <div className="quota-cur__balance">

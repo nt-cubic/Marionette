@@ -1387,6 +1387,7 @@ export function ProjectShelf({
           "chat-row",
           isActive ? "is-active" : "",
           busy ? "is-running" : "",
+          `is-${session.status}`,
           pinned ? "is-pinned" : "",
           doneUnread ? "is-done" : "",
           moreMenu?.session.id === session.id ? "is-more-open" : "",

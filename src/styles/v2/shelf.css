@@ -395,3 +395,69 @@
     width: 28px;
   }
 }
+
+/* Only live conversations (starting / running / waiting / error) show their agent ink.
+   A conversation whose process has ended (parked, or not started this run) goes grey,
+   so the rows that light up are the ones actually doing something. */
+.project-tree .session-row.is-exited .session-row__dot,
+.project-tree .chat-row.is-exited .chat-row__dot {
+  background: color-mix(in srgb, var(--text-faint) 45%, transparent);
+  animation: none;
+}
+
+.project-tree .session-row.is-exited:not(.is-active),
+.project-tree .chat-row.is-exited:not(.is-active) {
+  color: var(--text-muted);
+}
+
+.project-tree .session-row.is-exited:not(.is-active) .session-row__label,
+.project-tree .session-row.is-exited:not(.is-active) .session-row__select,
+.project-tree .chat-row.is-exited:not(.is-active) .chat-row__label,
+.project-tree .chat-row.is-exited:not(.is-active) .chat-row__select {
+  color: var(--text-muted);
+}
+
+/* Footer state reads from the icon colour itself, not a pip pinned to the corner (the pip
+   drifted once the buttons shrank, and a dot is the wrong signal anyway). */
+.sidebar-footer .sidebar-footer__button.sidebar-footer__button::after {
+  content: none;
+}
+
+.sidebar-footer .sidebar-footer__button.sidebar-footer__button.is-notify-on,
+.sidebar-footer .sidebar-footer__button.sidebar-footer__button.is-proxy-on,
+.sidebar-footer .sidebar-footer__button.sidebar-footer__button.is-engine-on {
+  color: var(--accent);
+  opacity: 1;
+}
+
+.sidebar-footer .sidebar-footer__button.sidebar-footer__button.is-notify-off {
+  color: var(--text-faint);
+  opacity: 1;
+}
+
+.sidebar-dock .engine-entry .engine-entry__dot {
+  display: none;
+}
+
+.sidebar-dock .engine-entry.engine-entry .engine-entry__icon {
+  color: var(--text-faint);
+}
+
+.sidebar-dock .engine-entry.engine-entry.is-on .engine-entry__icon {
+  color: var(--accent);
+}
+
+.sidebar-dock .engine-entry.engine-entry.is-busy .engine-entry__icon {
+  color: var(--yellow);
+  animation: activity-pulse 1.2s ease-in-out infinite;
+}
+
+.sidebar-dock .engine-entry.engine-entry.is-fail .engine-entry__icon {
+  color: var(--red);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-dock .engine-entry.engine-entry.is-busy .engine-entry__icon {
+    animation: none;
+  }
+}

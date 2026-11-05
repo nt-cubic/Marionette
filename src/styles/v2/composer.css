@@ -409,3 +409,61 @@
 .session-notice__dismiss:hover {
   background: var(--panel-soft);
 }
+
+/* ---- Composer, v2 final (2026-11-06) -------------------------------------------------
+   No mode rail down the left edge: the mode lives in its chip. The chips that carry a
+   state (mode, always-approve / loose permissions) are tinted chips, not bare coloured
+   words; the composer's top edge picks up the accent while you are typing in it. */
+.composer .composer__mode-rail {
+  display: none;
+}
+
+.composer .composer__field {
+  transition: border-color var(--dur-fast) var(--ease-standard);
+}
+
+.composer:focus-within .composer__field {
+  border-top-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+
+.composer .composer-mode-chip:not(.composer-mode-chip--perm):not(.composer-mode-chip--perm-readonly):not(.composer-mode-chip--always-off) {
+  --tone: var(--mode-chip, var(--accent));
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--tone) 30%, transparent);
+  color: var(--tone);
+  background: color-mix(in srgb, var(--tone) 11%, transparent);
+}
+
+.composer .composer-mode-chip:not(.composer-mode-chip--perm):not(.composer-mode-chip--perm-readonly):not(.composer-mode-chip--always-off):hover,
+.composer .composer-mode-chip[aria-expanded="true"]:not(.composer-mode-chip--always-off) {
+  border-color: color-mix(in srgb, var(--tone) 48%, transparent);
+  background: color-mix(in srgb, var(--tone) 18%, transparent);
+}
+
+.composer .composer-mode-chip.composer-mode-chip--perm-loose,
+.composer .composer-mode-chip.composer-mode-chip--always-on {
+  --tone: var(--yellow);
+}
+
+.composer .composer-expand {
+  color: var(--text-faint);
+}
+
+/* Suggestion replies: the same 22px chip as the toolbar, not a 999px pill. */
+.composer .composer__suggestion-chip {
+  min-height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-raised);
+  backdrop-filter: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.composer .composer__suggestion-chip:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel-raised));
+  color: var(--accent);
+}
