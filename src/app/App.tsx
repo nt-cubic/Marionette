@@ -150,6 +150,7 @@ import {
   type ImageAttachment,
 } from "../lib/imageAttachments";
 import { foldSessionStats, measureTurnDecodeMs } from "../lib/sessionStats";
+import { sessionChangeLines } from "../lib/sessionInfo";
 import { isRuntimeMetadataOnly } from "../lib/markdownText";
 import {
   isInjectedPromptText,
@@ -8802,6 +8803,18 @@ export function App() {
           sessionId={session.id}
           sessionStatus={session.status}
           docked={dockActive}
+          contextUsed={sessionUsageById[session.id]?.contextUsed ?? null}
+          contextSize={sessionUsageById[session.id]?.contextSize ?? null}
+          getSessionInfo={() => {
+            // The focused dialog reuses the live fold the usage state already
+            // drives; another pane's dialog is folded on demand (popover open).
+            const stats =
+              session.id === displaySession.id
+                ? sessionStats
+                : foldSessionStats(events, session.id, { settled: true, agentId: session.agentId });
+            const lines = sessionChangeLines(events, session.id);
+            return { stats, changeAdd: lines?.add ?? null, changeDel: lines?.del ?? null };
+          }}
           onRestartAgentSession={handleRestartAgentSession}
           autoFocus={
             composerAutoFocus &&

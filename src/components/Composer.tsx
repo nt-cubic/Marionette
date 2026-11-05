@@ -94,6 +94,8 @@ import { ProviderConfigDialog } from "./ProviderConfigDialog";
 import { ModelLibraryDialog } from "./ModelLibraryDialog";
 import { CredentialsDialog } from "./CredentialsDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { SessionInfoRing } from "./SessionInfoRing";
+import type { SessionInfoData } from "../lib/sessionInfo";
 import { ImageAnnotator } from "./ImageAnnotator";
 import { CustomAgentDialog } from "./CustomAgentDialog";
 import { recordModelUsage, getRecentModels, recordLastUsedDefaults } from "../lib/recentModels";
@@ -248,6 +250,17 @@ type ComposerProps = {
    * absent = auto), double-click the handle returns to auto.
    */
   docked?: boolean;
+  /**
+   * Context-window occupancy (ACP `usage_update`) for the session-info ring.
+   * Null/absent draws an empty ring.
+   */
+  contextUsed?: number | null;
+  contextSize?: number | null;
+  /**
+   * Whole-dialog statistics for the ring popover, called only while it is
+   * open. Null/absent shows every figure as `—`.
+   */
+  getSessionInfo?: (() => SessionInfoData | null) | null;
 };
 
 /**
@@ -603,6 +616,9 @@ export function Composer({
   isFocused = true,
   onEmptyActivate,
   docked = false,
+  contextUsed = null,
+  contextSize = null,
+  getSessionInfo = null,
 }: ComposerProps) {
   const t = useT();
   /**
@@ -671,7 +687,7 @@ export function Composer({
   /** True once caps came from a live agent — cached caps must not act as live. */
   const [capsLive, setCapsLive] = useState(false);
   const [menu, setMenu] = useState<
-    "mode" | "model" | "effort" | "permission" | "agent" | "send" | "hub" | null
+    "mode" | "model" | "effort" | "permission" | "agent" | "send" | "hub" | "info" | null
   >(null);
   const [scheduleCustom, setScheduleCustom] = useState("");
   const [modelQuery, setModelQuery] = useState("");
@@ -2291,6 +2307,11 @@ export function Composer({
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [caps, currentMode, commitUpdate, pinOptions, unpinOption],
+  );
+
+  const closeInfoMenu = useCallback(
+    () => setMenu((current) => (current === "info" ? null : current)),
+    [],
   );
 
   const warmIfNeeded = useCallback(
@@ -3958,6 +3979,26 @@ export function Composer({
                 </div>
               )}
             </div>
+
+            {/* ── Session info ring: context occupancy + popover. Stays next to
+                send in the compact hub layout too (it is not a hub row). ── */}
+            <SessionInfoRing
+              agentId={agent.id}
+              agentLabel={agent.label}
+              modelName={
+                bridgeChipLabel ??
+                displayLibraryModel?.row.label ??
+                displayModelDef?.label ??
+                displayModel ??
+                null
+              }
+              contextUsed={contextUsed}
+              contextSize={contextSize}
+              open={menu === "info"}
+              onToggle={() => setMenu(menu === "info" ? null : "info")}
+              onClose={closeInfoMenu}
+              getInfo={getSessionInfo}
+            />
 
             {/* ── Send / Interrupt (Esc×2 also interrupts) ──
                 While the agent is running: non-empty draft → interrupt + send;
