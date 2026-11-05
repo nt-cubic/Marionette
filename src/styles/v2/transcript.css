@@ -43,8 +43,7 @@
 /* ── 3 · Activity / tool cards ─────────────────────────────────────────── */
 
 .event-card--thought,
-.event-card--tool_call,
-.activity-group {
+.event-card--tool_call {
   border-color: var(--border);
   background: color-mix(in srgb, var(--panel-soft) 70%, var(--panel-raised));
   box-shadow: none;
@@ -426,4 +425,83 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: none;
+}
+
+/* ---- Activity group + Reply typography, v2 final (2026-11-06) ------------------------
+   The activity group between You and Reply is a card of the same rank: the legacy frame
+   (border pulled toward muted ink, panel-soft fill) so it reads as an object, not a grey
+   band in the ground. Its summary is 12px / 600 in body ink; counts and time are faint.
+
+   Reply cards use one type scale: agent 12.5/600 strong, model 12/400 faint, body
+   13.5 in body ink, footer meta 11 faint, mode in its tone. The footer is a 22px row
+   with 22px icon buttons, so the card no longer ends in a tall empty strip. */
+.activity-group {
+  border-color: color-mix(in srgb, var(--border) 80%, var(--text-muted));
+  background: color-mix(in srgb, var(--panel-soft) 88%, transparent);
+}
+
+.activity-group .event-card__preview,
+.activity-group > .event-card__summary {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.event-card--assistant_message .event-card__who {
+  color: var(--text-strong);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.event-card--assistant_message .event-card__who-model {
+  margin-left: 2px;
+  color: var(--text-faint);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.event-card--assistant_message .event-card__timestamp {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.event-card--assistant_message .md-body {
+  margin-top: 4px;
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.event-card--assistant_message .event-card__footer {
+  min-height: 22px;
+  margin-top: 4px;
+  margin-bottom: -4px;
+  gap: 4px 12px;
+}
+
+.event-card--assistant_message .event-card__meta {
+  gap: 0 8px;
+}
+
+.event-card--assistant_message .meta-tag {
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 22px;
+}
+
+.event-card--assistant_message .meta-tag--mode {
+  color: var(--mode-chip, var(--text-faint));
+  font-weight: 500;
+}
+
+.event-card--assistant_message .meta-tag__symbol {
+  font-size: 9px;
+  line-height: 22px;
+  margin-right: -3px;
+}
+
+.event-card--assistant_message .event-card__footer .pill-action--icon {
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
 }
