@@ -357,7 +357,7 @@ export function UsageAnalysisBody() {
             disabled={csvExporting}
             onClick={() => void handleExportCsv()}
           >
-            <Download size={11} strokeWidth={2.25} aria-hidden />
+            <Download size={14} strokeWidth={1.5} aria-hidden />
             {t("usageLedger.exportCsv")}
           </button>
         )}

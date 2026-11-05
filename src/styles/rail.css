@@ -184,7 +184,7 @@
 .rail-empty {
   margin: 0;
   padding: 4px 12px 6px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-faint);
 }
 .rail-merge {
@@ -454,4 +454,135 @@
   .rail-shared__toggle * {
     transition: none;
   }
+}
+
+/* ----- shared group: rail-row restyle of the legacy .context-card blocks ----- */
+.context-panel .rail-shared .context-card {
+  padding: 0;
+  border: 0;
+  border-bottom: 0;
+  background: transparent;
+}
+/* section header matches .rail-sh */
+.context-panel .rail-shared .context-card__heading {
+  height: 32px;
+  min-height: 32px;
+  margin-bottom: 0;
+  padding: 0 6px 0 12px;
+  justify-content: flex-start;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-strong);
+}
+.context-panel .rail-shared .context-card__heading-actions {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+/* actions: 22px icon buttons */
+.context-panel .rail-shared .pill-action--icon {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+}
+.context-panel .rail-shared .pill-action--icon:hover,
+.context-panel .rail-shared .pill-action--icon:focus-visible {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+/* pills with text become text buttons */
+.context-panel .rail-shared .pill-action:not(.pill-action--icon) {
+  height: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+.context-panel .rail-shared .pill-action:not(.pill-action--icon):hover {
+  background: transparent;
+  border: 0;
+  color: var(--text-strong);
+}
+/* empty states / notes: one faint line */
+.context-panel .rail-shared .context-card__empty {
+  margin: 0;
+  padding: 4px 12px 6px;
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+.context-panel .rail-shared .context-card__empty svg {
+  display: none;
+}
+/* long hint paragraphs collapse to one faint line (full text in title tooltip) */
+.context-panel .rail-shared .context-lend__hint {
+  margin: 2px 12px 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 30px sub-header rows */
+.context-panel .rail-shared .context-lend {
+  gap: 2px;
+}
+.context-panel .rail-shared .context-lend__labelrow {
+  justify-content: flex-start;
+  height: 30px;
+  padding: 0 12px;
+}
+.context-panel .rail-shared .context-lend__label {
+  margin-top: 0;
+  color: var(--text-strong);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.context-panel .rail-shared .context-lend__count {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+/* items: 26px rows, name left / meta right, hairline separators */
+.context-panel .rail-shared .context-lend__list {
+  gap: 0;
+}
+.context-panel .rail-shared .context-lend__list li + li {
+  border-top: 1px solid var(--hairline);
+}
+.context-panel .rail-shared .context-lend__row {
+  display: flex;
+  gap: 8px;
+  min-height: 26px;
+  padding: 0 12px;
+  border-radius: 0;
+}
+.context-panel .rail-shared .context-lend__row input[type="checkbox"] {
+  flex: none;
+}
+.context-panel .rail-shared .context-lend__meta {
+  grid-column: auto;
+  margin-left: auto;
+  font-size: 11px;
+}
+/* handoff block */
+.context-panel .rail-shared .handoff-block {
+  padding: 0 12px 8px;
+}
+.context-panel .rail-shared .handoff-block__hint {
+  margin: 2px 0 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

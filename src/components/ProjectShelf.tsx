@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
-import { Archive, Bell, BellOff, ChevronRight, CloudMoon, Download, Folder, FolderOpen, GripVertical, KeyRound, MessageSquare, MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, Settings, SlidersHorizontal, SunMedium, Trash2, UsersRound, X, Zap } from "lucide-react";
+import { Archive, Bell, BellOff, ChevronRight, CloudMoon, Download, Folder, FolderOpen, GripVertical, KeyRound, MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, Settings, SlidersHorizontal, SunMedium, Trash2, UsersRound, X, Zap } from "lucide-react";
 // Refresh on a project row folds CLI history into the normal session list.
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { t, useLocale, useT, type DictKey } from "../lib/i18n";
@@ -1110,12 +1110,8 @@ export function ProjectShelf({
           : "pill-action pill-action--icon pill-action--sm sidebar-footer__button is-notify-off"
       }
       type="button"
-      title={
-        desktopNotifyEnabled
-          ? "Desktop notify on · completion chime even while focused; taskbar flash when away"
-          : "Desktop notify off · click to enable"
-      }
-      aria-label={desktopNotifyEnabled ? "Disable desktop notifications" : "Enable desktop notifications"}
+      title={desktopNotifyEnabled ? t("v2shelf.notifyOn") : t("v2shelf.notifyOff")}
+      aria-label={desktopNotifyEnabled ? t("v2shelf.notifyDisable") : t("v2shelf.notifyEnable")}
       aria-pressed={desktopNotifyEnabled}
       onClick={onToggleDesktopNotify}
     >
@@ -1198,6 +1194,7 @@ export function ProjectShelf({
       aria-label={t("shelf.modelShareStatus", { state: engineHeadline })}
       aria-haspopup="dialog"
       aria-expanded={engineOpen}
+      title={engineEntryHint || undefined}
       onClick={() => {
         const rect = engineBtnRef.current?.getBoundingClientRect();
         setEngineAnchor(rect ? { left: rect.left, top: rect.top } : null);
@@ -1215,10 +1212,9 @@ export function ProjectShelf({
         }
       }}
     >
-      <Network size={13} aria-hidden className="engine-entry__icon" />
+      <Network size={14} aria-hidden className="engine-entry__icon" />
       <span className="engine-entry__label">{t("shelf.modelShare")}</span>
       <span className="engine-entry__dot" aria-hidden />
-      <span className="engine-entry__hint">{engineEntryHint}</span>
     </button>
   );
 
@@ -1279,7 +1275,7 @@ export function ProjectShelf({
         {notifyButton}
         {telegramButton}
         {!docked && (
-          <button className="pill-action pill-action--icon pill-action--sm sidebar-footer__button sidebar-footer__button--collapse" type="button" title={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} aria-label={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} onClick={collapsed ? onExpand : onCollapse}>
+          <button className="pill-action pill-action--icon pill-action--sm sidebar-footer__button sidebar-footer__button--collapse" type="button" title={collapsed ? t("v2shelf.pinOpen") : t("v2shelf.collapseAll")} aria-label={collapsed ? t("v2shelf.pinOpen") : t("v2shelf.collapseAll")} onClick={collapsed ? onExpand : onCollapse}>
             {collapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}
           </button>
         )}
@@ -1428,7 +1424,7 @@ export function ProjectShelf({
               ref={renameInputRef}
               className="chat-row__rename-input"
               value={renameDraft}
-              aria-label="Rename chat"
+                              aria-label={t("v2shelf.renameChat")}
               onChange={(event) => setRenameDraft(event.target.value)}
               onBlur={() => commitRename()}
               onKeyDown={(event) => {
@@ -1494,14 +1490,15 @@ export function ProjectShelf({
         {/* Full-bleed drag layer behind the field; input sits above so typing still works. */}
         <div className="titlebar-drag-layer" data-tauri-drag-region />
         <label className="sidebar-search sidebar-search--input sidebar-search--titlebar">
-          <Search size={13} aria-hidden />
+          <Search size={14} aria-hidden />
           <input
             type="search"
             value={query}
-            placeholder="Search threads…"
-            aria-label="Search thread titles"
+            placeholder={t("v2shelf.search")}
+            aria-label={t("v2shelf.searchAria")}
             onChange={(event) => setQuery(event.target.value)}
           />
+          <span className="shelf-search__hint" aria-hidden>{t("v2shelf.searchHint")}</span>
         </label>
       </div>
 
@@ -1543,18 +1540,26 @@ export function ProjectShelf({
           </button>
         </div>
       )}
-      <button className="project-add" type="button" title="Add project" onClick={onAddProject}>
-        <Plus size={13} />
-        Add project
-      </button>
+      <div className="shelf-group">
+        <span className="shelf-group__label">{t("v2shelf.projects")}</span>
+        <button
+          className="shelf-group__add"
+          type="button"
+          title={t("v2shelf.addProject")}
+          aria-label={t("v2shelf.addProject")}
+          onClick={onAddProject}
+        >
+          <Plus size={12} />
+        </button>
+      </div>
 
-      <div className="project-list custom-scrollbar scrollbar-autohide" aria-label="Projects with sessions">
+      <div className="project-list custom-scrollbar scrollbar-autohide" aria-label={t("v2shelf.projectsAria")}>
         {allVisibleProjects.length === 0 && !searching && (
-          <div className="project-list__empty">No projects yet</div>
+          <div className="project-list__empty">{t("v2shelf.noProjects")}</div>
         )}
         {noShelfMatch && (
           <div className="project-list__empty">
-            {query.trim() ? `No threads match “${query.trim()}”` : t("shelf.noMatchInFilter")}
+            {query.trim() ? t("v2shelf.noMatchQuery", { name: query.trim() }) : t("shelf.noMatchInFilter")}
           </div>
         )}
         {allVisibleProjects.map((project) => {
@@ -1627,8 +1632,8 @@ export function ProjectShelf({
                   <button
                     className="project-row__grip"
                     type="button"
-                    title="Drag to reorder projects"
-                    aria-label={`Reorder ${project.name}`}
+                    title={t("v2shelf.dragReorder")}
+                    aria-label={t("v2shelf.reorder", { name: project.name })}
                     onPointerDown={(e) => onProjectGripPointerDown(project.id, e)}
                     onPointerMove={onProjectGripPointerMove}
                     onPointerUp={onProjectGripPointerUp}
@@ -1639,8 +1644,8 @@ export function ProjectShelf({
                 ) : (
                   <span className="project-row__grip project-row__grip--spacer" aria-hidden />
                 )}
-                <button className="project-row__toggle" type="button" title={projectExpanded ? "Collapse project" : "Expand project"} aria-label={projectExpanded ? `Collapse ${project.name}` : `Expand ${project.name}`} aria-expanded={projectExpanded} onClick={() => toggleProject(project.id)}>
-                  <ChevronRight size={13} className={`project-row__chev${projectExpanded ? " is-open" : ""}`} />
+                <button className="project-row__toggle" type="button" title={projectExpanded ? t("v2shelf.collapseProject") : t("v2shelf.expandProject")} aria-label={projectExpanded ? t("v2shelf.collapseNamed", { name: project.name }) : t("v2shelf.expandNamed", { name: project.name })} aria-expanded={projectExpanded} onClick={() => toggleProject(project.id)}>
+                  <ChevronRight size={14} className={`project-row__chev${projectExpanded ? " is-open" : ""}`} />
                 </button>
                 <button
                   className="project-row__select"
@@ -1673,7 +1678,7 @@ export function ProjectShelf({
                   </span>
                 </button>
                 <span className="project-row__actions">
-                  <button className="project-row__action" type="button" title="New session" onClick={() => onNewSession(project.id)}>
+                  <button className="project-row__action" type="button" title={t("v2shelf.newSession")} aria-label={t("v2shelf.newSession")} onClick={() => onNewSession(project.id)}>
                     <Plus size={13} />
                   </button>
                   {onRefreshExternal && (
@@ -1681,7 +1686,7 @@ export function ProjectShelf({
                       className="project-row__action"
                       type="button"
                       title={t("shelf.refreshExternal")}
-                      aria-label={`Refresh conversations for ${project.name}`}
+                      aria-label={t("v2shelf.refreshConversations", { name: project.name })}
                       disabled={externalScanning}
                       onClick={(e) => {
                         e.stopPropagation();
@@ -1694,8 +1699,8 @@ export function ProjectShelf({
                   <button
                     className="project-row__action project-row__action--danger"
                     type="button"
-                    title={`Remove project ${project.name}`}
-                    aria-label={`Remove project ${project.name}`}
+                    title={t("v2shelf.removeProject", { name: project.name })}
+                    aria-label={t("v2shelf.removeProject", { name: project.name })}
                     onClick={() => {
                       setPendingDelete({ kind: "project", id: project.id, label: project.name });
                     }}
@@ -1706,8 +1711,8 @@ export function ProjectShelf({
                     <button
                       className="project-row__action"
                       type="button"
-                      title={`Reveal ${project.name} in file manager`}
-                      aria-label={`Reveal ${project.name} in file manager`}
+                      title={t("v2shelf.revealProject", { name: project.name })}
+                      aria-label={t("v2shelf.revealProject", { name: project.name })}
                       onClick={(e) => {
                         e.stopPropagation();
                         onRevealProject(project);
@@ -1728,7 +1733,7 @@ export function ProjectShelf({
               {projectExpanded && (
                 <div className="project-sessions">
                   {projectSessions.length === 0 && !activeStatusFilter && (
-                    <div className="session-row session-row--empty">No sessions</div>
+                    <div className="session-row session-row--empty">{t("v2shelf.noSessions")}</div>
                   )}
                   {visibleSessions.map((session) => {
                     const dayLabel = dayHeads.get(session.id);
@@ -1792,7 +1797,7 @@ export function ProjectShelf({
                               ref={renameInputRef}
                               className="session-row__rename-input"
                               value={renameDraft}
-                              aria-label="Rename session"
+                              aria-label={t("v2shelf.renameSession")}
                               onChange={(e) => setRenameDraft(e.target.value)}
                               onBlur={() => commitRename()}
                               onKeyDown={(e) => {
@@ -1847,8 +1852,8 @@ export function ProjectShelf({
                       <button
                         className="shelf-clip__more"
                         type="button"
-                        title={`Show ${hiddenSessionCount} more session${hiddenSessionCount === 1 ? "" : "s"}`}
-                        aria-label={`Show ${hiddenSessionCount} more sessions`}
+                        title={t("v2shelf.showMoreSessions", { n: hiddenSessionCount })}
+                        aria-label={t("v2shelf.showMoreSessions", { n: hiddenSessionCount })}
                         onClick={() => {
                           setSessionsExpandedByProject((current) => {
                             const next = new Set(current);
@@ -1857,7 +1862,7 @@ export function ProjectShelf({
                           });
                         }}
                       >
-                        Show more
+                        {t("v2shelf.showMore")}
                         <span className="shelf-clip__count">{hiddenSessionCount}</span>
                       </button>
                     </div>
@@ -1869,8 +1874,8 @@ export function ProjectShelf({
                         <button
                           className="shelf-clip__more"
                           type="button"
-                          title="Show fewer sessions"
-                          aria-label="Show fewer sessions"
+                          title={t("v2shelf.showFewer")}
+                          aria-label={t("v2shelf.showFewer")}
                           onClick={() => {
                             setSessionsExpandedByProject((current) => {
                               const next = new Set(current);
@@ -1879,7 +1884,7 @@ export function ProjectShelf({
                             });
                           }}
                         >
-                          Show less
+                          {t("v2shelf.showLess")}
                         </button>
                       </div>
                     )}
@@ -1911,29 +1916,25 @@ export function ProjectShelf({
             title={defaultFolderPath ? t("shelf.chatWorkdir", { path: defaultFolderPath }) : t("shelf.chatWorkdirDefault")}
           >
             <span className="chat-section__title">
-              <MessageSquare size={13} aria-hidden />
-              {t("common.chat")}
+              {t("v2shelf.chats")}
             </span>
             {onNewChat && (
               <button
                 className="pill-action pill-action--icon pill-action--sm chat-section__new"
                 type="button"
                 title={t("shelf.newChat")}
-                aria-label="New chat"
+                aria-label={t("v2shelf.newChatAria")}
                 onClick={() => onNewChat()}
               >
-                <Plus size={13} />
+                <Plus size={12} />
               </button>
             )}
           </div>
           <div
             className="chat-list custom-scrollbar scrollbar-autohide"
-            aria-label="Chat conversations"
+            aria-label={t("v2shelf.chatListAria")}
             style={{ ["--chat-list-preview" as string]: String(SESSION_LIST_PREVIEW) }}
           >
-            {visibleChatSessions.length === 0 && !searching && (
-              <div className="chat-list__empty">{t("shelf.noChats")}</div>
-            )}
             {sortSessionsNewestFirst(visibleChatSessions).map(renderChatRow)}
           </div>
         </section>
@@ -2246,7 +2247,7 @@ export function ProjectShelf({
             <>
               <div className="proxy-popover__row">
                 <label className="proxy-popover__field">
-                  <span className="proxy-popover__field-label">Bot token</span>
+                  <span className="proxy-popover__field-label">{t("v2shelf.botToken")}</span>
                   <input
                     className="proxy-popover__input"
                     type="text"

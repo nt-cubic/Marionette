@@ -1,1 +1,459 @@
 /* UI v2 overrides: pages. Loaded after every legacy sheet (src/main.tsx); see docs/ui-language.md. */
+
+/* ── 1 · Doc page ───────────────────────────────────────────────────────── */
+
+.doc-page.doc-page {
+  background: var(--panel-muted);
+}
+
+/* Toolbar: a 40px flush row. */
+.doc-page .doc-page__bar {
+  flex: 0 0 40px;
+  height: 40px;
+  gap: 8px;
+  padding: 0 8px 0 12px;
+  background: var(--panel);
+}
+
+/* Path: 12.5px mono strong, directory suffix 11px faint. */
+.doc-page .doc-page__title {
+  font-family: var(--font-mono, ui-monospace, "Cascadia Mono", Consolas, monospace);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-strong);
+}
+
+.doc-page__title-dir {
+  margin-right: 4px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-faint);
+}
+
+/* Mode toggle: chips, not a boxed segmented control. */
+.doc-page .doc-page__mode {
+  gap: 2px;
+  border: 0;
+  border-radius: var(--radius-sm);
+}
+
+.doc-page .doc-page__mode-btn {
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+}
+
+.doc-page .doc-page__mode-btn + .doc-page__mode-btn {
+  border-left: 1px solid transparent;
+}
+
+.doc-page .doc-page__mode-btn.is-active {
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* Actions: plain text/icon buttons — no pill chrome. */
+.doc-page .pill-action.pill-action {
+  height: 26px;
+  min-width: 26px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.doc-page .pill-action.pill-action:hover {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.doc-page .pill-action.pill-action:disabled {
+  background: transparent;
+  color: var(--text-faint);
+  opacity: 0.6;
+}
+
+.doc-page .pill-action.pill-action.is-active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* Editor area sits on the raised ground. */
+.doc-page .doc-page__editor {
+  padding: 12px 16px;
+  background: var(--panel-raised);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+/* Compare splitter: a 1px border line with a 4px hover hit area. */
+.doc-compare-row .doc-compare__seam {
+  position: relative;
+  flex: 0 0 5px;
+  background: transparent;
+  transition: none;
+}
+
+.doc-compare-row .doc-compare__seam::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  background: var(--border);
+}
+
+.doc-compare-row .doc-compare__seam:hover::after,
+.doc-compare-row .doc-compare__seam:active::after {
+  background: var(--accent);
+}
+
+.doc-compare-row .doc-compare__doc {
+  border-left: 0;
+}
+
+/* ── 2 · Browser page ───────────────────────────────────────────────────── */
+
+.browser-page .browser-page__bar {
+  gap: 0;
+  padding: 0 8px;
+  background: var(--panel);
+}
+
+.browser-page .browser-page__tabs {
+  gap: 2px;
+}
+
+/* Mini tab strip: 34px full-height tabs; active = --panel-muted + 2px top bar. */
+.browser-page .browser-tab {
+  position: relative;
+  height: 34px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.browser-page .browser-tab.is-active {
+  border: 0;
+  background: var(--panel-muted);
+}
+
+.browser-page .browser-tab.is-active::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+}
+
+.browser-page .browser-tab__select {
+  height: 34px;
+  padding: 0 6px 0 10px;
+}
+
+.browser-page .browser-tab__select span {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.browser-page .browser-tab.is-active .browser-tab__select span {
+  color: var(--text-strong);
+  font-weight: 500;
+}
+
+.browser-page .browser-tab__close {
+  margin-right: 4px;
+}
+
+/* Grant badge: an 18px chip, status colour only. */
+.browser-page .browser-tab__grant {
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: transparent;
+}
+
+.browser-page .browser-tab__grant.is-read {
+  border-color: color-mix(in srgb, var(--green) 35%, transparent);
+  background: color-mix(in srgb, var(--green) 14%, transparent);
+}
+
+.browser-page .browser-tab__grant.is-control {
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+/* Address row: flush, hairline-separated — no boxed input. */
+.browser-page .browser-page__nav {
+  height: 34px;
+  margin: 0 -8px;
+  padding: 0 8px;
+  border-top: 1px solid var(--hairline);
+}
+
+.browser-page .browser-page__address {
+  height: 26px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.browser-page .browser-page__address:focus {
+  border: 0;
+  outline: none;
+}
+
+.browser-page .pill-action.pill-action {
+  height: 26px;
+  min-width: 26px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.browser-page .pill-action.pill-action:hover {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+/* Share chip: 22px, chip rules. */
+.browser-page .browser-page__share-btn.browser-page__share-btn {
+  height: 22px;
+  min-width: 0;
+  padding: 0 7px;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.browser-page .browser-page__share-btn.browser-page__share-btn.is-control {
+  border: 0;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.browser-page .browser-page__share-btn.browser-page__share-btn.is-read {
+  border: 0;
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+/* Share popover: v2 menu. */
+.browser-page .browser-share-menu {
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+.browser-page .browser-share-menu button {
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.browser-page .browser-share-menu button:hover {
+  background: var(--panel-soft);
+}
+
+.browser-page .browser-share-menu button + button {
+  border-top: 1px solid var(--hairline);
+  border-radius: 0;
+}
+
+.browser-page .browser-share-menu button:first-child {
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+
+.browser-page .browser-share-menu button:last-child {
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+}
+
+.browser-page .browser-page__empty {
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
+
+/* ── 3 · Code blocks ────────────────────────────────────────────────────── */
+
+.md-body .md-code.md-code {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-muted);
+  box-shadow: none;
+}
+
+.md-body .md-code .md-code__bar {
+  height: 24px;
+  min-height: 24px;
+  padding: 0 4px 0 10px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.md-body .md-code .pill-action.md-code__copy {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.md-body .md-code .pill-action.md-code__copy:hover {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.md-body .md-code .pill-action.md-code__copy.is-copied {
+  background: transparent;
+  color: var(--green);
+}
+
+.md-body .md-code pre code {
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.md-body .md-code__more {
+  border-top: 1px solid var(--hairline);
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.md-body .md-code__more:hover,
+.md-body .md-code__more:focus-visible {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+/* ── 4 · Diff view ──────────────────────────────────────────────────────── */
+
+.file-diff-card__line.file-diff-card__line {
+  font-family: var(--font-mono, ui-monospace, "Cascadia Mono", Consolas, monospace);
+  font-size: 12.5px;
+  line-height: 22px;
+}
+
+.file-diff-card__line.is-add {
+  border-left-color: transparent;
+  background: color-mix(in srgb, var(--green) 12%, transparent);
+}
+
+.file-diff-card__line.is-del {
+  border-left-color: transparent;
+  background: color-mix(in srgb, var(--red) 10%, transparent);
+}
+
+/* Hunk header: a 28px --panel row between hairlines. */
+.file-diff-card__line.is-hunk {
+  height: 28px;
+  line-height: 28px;
+  padding: 0 8px;
+  background: var(--panel);
+  border-top: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.file-diff-card__line.is-hunk .file-diff-card__code {
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Line-number gutter: two 44px columns, faint, right-aligned. */
+.file-diff-card__gutter {
+  grid-template-columns: 44px 44px;
+  gap: 0;
+  margin-right: 8px;
+}
+
+.file-diff-card__ln {
+  padding-right: 8px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  opacity: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Collapsed gap row: centred, quiet. */
+.file-diff-card__line.is-elide {
+  height: 24px;
+  line-height: 24px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.file-diff-card__line.is-elide .file-diff-card__gutter {
+  display: none;
+}
+
+.file-diff-card__line.is-elide .file-diff-card__code {
+  flex: 1 1 auto;
+  text-align: center;
+  cursor: default;
+}
+
+/* ── 5 · Spec cards & mermaid ───────────────────────────────────────────── */
+
+.md-body .md-spec.md-spec {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  box-shadow: none;
+}
+
+.md-body .md-spec .md-spec__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+/* Spec action buttons: v2 secondary buttons. */
+.md-body .md-spec .pill-action.md-spec__action {
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--panel-soft);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.md-body .md-spec .pill-action.md-spec__action:hover {
+  background: color-mix(in srgb, var(--text) 6%, var(--panel-soft));
+}
+
+.md-body .md-mermaid.md-mermaid {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  box-shadow: none;
+}
+
+.md-body .md-mermaid .md-mermaid__note {
+  font-size: 11px;
+  color: var(--text-faint);
+}

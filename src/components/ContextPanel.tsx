@@ -255,8 +255,8 @@ export const ContextPanel = memo(function ContextPanel({
             <button
               className="pill-action pill-action--icon pill-action--sm"
               type="button"
-              title="Rescan agent configs and skill folders"
-              aria-label="Rescan project context"
+              title={t("rail.shareRescanTitle")}
+              aria-label={t("rail.shareRescanAria")}
               onClick={onRescanProjectContext}
             >
               <RefreshCw size={11} />
@@ -265,21 +265,18 @@ export const ContextPanel = memo(function ContextPanel({
         </div>
         {projectContext == null ? (
           <p className="context-card__empty">
-            {projectContextScanning ? "Scanning…" : "Open a project to scan MCP servers and skills."}
+            {projectContextScanning ? t("rail.shareScanning") : t("rail.shareOpenProject")}
           </p>
         ) : (
           <div className="context-lend">
-            <p className="context-lend__hint">
-              Lend these to agents that don’t have them. Checked items go into the next
-              connection — MCP servers via <code>session/new</code>, skills as a pointer
-              list. ZCode’s adapter rejects stdio servers over ACP, so checked stdio
-              servers are also merged into <code>~/.zcode/cli/config.json</code> for
-              ZCode to load natively (machine-wide, all projects’ checked servers).
+            <p className="context-lend__hint" title={t("rail.shareHint")}>
+              {t("rail.shareHint")}
             </p>
 
             <div className="context-lend__labelrow">
-              <span className="context-lend__label">
-                MCP servers ({projectContext.inventory.mcpServers.length})
+              <span className="context-lend__label">{t("rail.shareMcp")}</span>
+              <span className="context-lend__count">
+                {projectContext.inventory.mcpServers.length}
               </span>
               {onReconnectAgent && (
                 <button
@@ -287,19 +284,15 @@ export const ContextPanel = memo(function ContextPanel({
                   className="pill-action context-lend__reconnect"
                   disabled={reconnecting}
                   onClick={onReconnectAgent}
-                  title={
-                    "Restart the agent connection so MCP servers that came up late can attach.\n" +
-                    "Servers are only offered at session/new, so one that was not listening then " +
-                    "stays unavailable until the session is replaced. Your conversation is kept."
-                  }
+                  title={t("rail.shareReconnectTitle")}
                 >
                   <RefreshCw size={11} className={reconnecting ? "is-spinning" : undefined} aria-hidden />
-                  {reconnecting ? "Reconnecting…" : "Reconnect"}
+                  {reconnecting ? t("rail.shareReconnecting") : t("rail.shareReconnect")}
                 </button>
               )}
             </div>
             {projectContext.inventory.mcpServers.length === 0 ? (
-              <p className="context-card__empty">None found in agent configs.</p>
+              <p className="context-card__empty">{t("rail.shareNoMcp")}</p>
             ) : (
               <ul className="context-lend__list custom-scrollbar scrollbar-autohide">
                 {projectContext.inventory.mcpServers.map((server) => {
@@ -326,11 +319,14 @@ export const ContextPanel = memo(function ContextPanel({
               </ul>
             )}
 
-            <span className="context-lend__label">
-              Skills ({projectContext.inventory.skills.length})
-            </span>
+            <div className="context-lend__labelrow">
+              <span className="context-lend__label">{t("rail.shareSkills")}</span>
+              <span className="context-lend__count">
+                {projectContext.inventory.skills.length}
+              </span>
+            </div>
             {projectContext.inventory.skills.length === 0 ? (
-              <p className="context-card__empty">No SKILL.md folders found.</p>
+              <p className="context-card__empty">{t("rail.shareNoSkills")}</p>
             ) : (
               <ul className="context-lend__list custom-scrollbar scrollbar-autohide">
                 {projectContext.inventory.skills.map((skill) => {
@@ -352,7 +348,7 @@ export const ContextPanel = memo(function ContextPanel({
                         <span className="context-lend__name">{skill.name}</span>
                         <span className="context-lend__meta">
                           {skill.sources.join(", ")}
-                          {native ? " · native here" : ""}
+                          {native ? ` · ${t("rail.shareNativeHere")}` : ""}
                         </span>
                       </label>
                     </li>
@@ -382,16 +378,14 @@ export const ContextPanel = memo(function ContextPanel({
         {handoff ? (
           <div className="handoff-block">
             <strong title={handoff.handoffPath}>{handoff.summary || handoff.prompt.slice(0, 80)}</strong>
-            <small>Target: {handoff.targetAgentId}</small>
+            <small>{t("rail.handoffTarget", { agent: handoff.targetAgentId })}</small>
             <small title={handoff.handoffPath}>{handoff.handoffPath}</small>
-            <p className="handoff-block__hint">
-              Per-dialog file under `.marionette/handoff/` · prefill in Composer (not auto-sent).
+            <p className="handoff-block__hint" title={t("rail.handoffHint")}>
+              {t("rail.handoffHint")}
             </p>
           </div>
         ) : (
-          <p className="context-card__empty">
-            Switch agent to write `.marionette/handoff/&lt;session&gt;.md` and prefill Composer.
-          </p>
+          <p className="context-card__empty">{t("rail.handoffEmpty")}</p>
         )}
       </section>
           </>

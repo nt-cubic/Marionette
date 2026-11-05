@@ -449,7 +449,7 @@ export function CredentialsDialog({ agents, onClose }: Props) {
               <p className="provider-dialog__hint">{t("creds.endpointHint")}</p>
             </>}
             <label className="provider-dialog__field">
-              <span className="provider-dialog__label">API Key{preset === "custom" ? t("creds.apiKeyOptional") : ""}</span>
+              <span className="provider-dialog__label">{t("v2dialogs.apiKey")}{preset === "custom" ? t("creds.apiKeyOptional") : ""}</span>
               <input
                 className="provider-dialog__input"
                 type="password"

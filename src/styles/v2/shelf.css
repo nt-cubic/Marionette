@@ -1,1 +1,362 @@
 /* UI v2 overrides: shelf. Loaded after every legacy sheet (src/main.tsx); see docs/ui-language.md. */
+
+/* ── 0 · Ground: sidebar on --panel, 1px right border. ── */
+.project-tree.project-tree {
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+}
+
+.project-tree .sidebar-title.titlebar-row {
+  padding: 0;
+  background: var(--panel);
+}
+
+.project-tree__body.project-tree__body {
+  padding: 6px 0;
+}
+
+/* Row hover fill (project rows only; session rows keep their own v2 state). */
+.project-tree .project-row:not(.is-active):hover {
+  background: var(--panel-soft);
+}
+
+/* ── 1 · Search row: flush in the titlebar, 34px, hairline below. ── */
+.sidebar-search--titlebar.sidebar-search--titlebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 12px;
+}
+
+.sidebar-search--titlebar.sidebar-search--titlebar > svg {
+  width: 14px;
+  height: 14px;
+  color: var(--text-faint);
+}
+
+.sidebar-search--titlebar.sidebar-search--titlebar input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 12px;
+}
+
+.sidebar-search--titlebar.sidebar-search--titlebar input::placeholder {
+  color: var(--text-faint);
+}
+
+.sidebar-search .shelf-search__hint.shelf-search__hint {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  font-weight: 400;
+}
+
+/* ── 2 · Status filter: plain text items, counts tabular. ── */
+.shelf-status.shelf-status {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 30px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+}
+
+.shelf-status .shelf-status__chip.shelf-status__chip {
+  gap: 5px;
+  height: auto;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 400;
+}
+
+.shelf-status .shelf-status__chip.shelf-status__chip:hover {
+  background: transparent;
+  color: var(--text);
+}
+
+.shelf-status .shelf-status__chip.is-active {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: var(--text-strong);
+  font-weight: 500;
+}
+
+.shelf-status .shelf-status__dot {
+  display: none;
+}
+
+.shelf-status .shelf-status__count {
+  color: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.shelf-filter-note.shelf-filter-note {
+  padding: 2px 12px;
+  font-size: 11px;
+}
+
+/* ── 3 · Group labels ("项目" / "聊天") with a 22px Plus icon button. ── */
+.shelf-group.shelf-group {
+  display: flex;
+  align-items: center;
+  height: 26px;
+  margin-top: 10px;
+  padding: 0 12px;
+}
+
+.project-tree__body > .shelf-group:first-child {
+  margin-top: 0;
+}
+
+.shelf-group__label {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.shelf-group__add.shelf-group__add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  margin-right: -6px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.shelf-group__add.shelf-group__add:hover {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.chat-section.chat-section {
+  border-top: 0;
+}
+
+.chat-section__header.chat-section__header {
+  height: 26px;
+  margin: 10px 0 0;
+  padding: 0 12px;
+  border-bottom: 0;
+}
+
+.chat-section__title.chat-section__title {
+  gap: 0;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.chat-section__new.chat-section__new {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-faint);
+  opacity: 1;
+}
+
+.chat-section__new.chat-section__new:hover {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+/* ── 4 · Project rows. ── */
+.project-tree .project-row.is-open-here {
+  border-color: transparent;
+}
+
+.project-tree .project-row__chev {
+  transition: transform var(--dur-base, 180ms) var(--ease-out, ease-out);
+}
+
+.project-tree .project-row__chev.is-open {
+  transform: rotate(90deg);
+}
+
+.project-tree .project-row__content strong {
+  color: var(--text-strong);
+  font-weight: 600;
+}
+
+.project-list__empty,
+.chat-list__empty {
+  padding: 6px 12px;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.shelf-clip__more.shelf-clip__more {
+  height: 26px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.shelf-clip__more.shelf-clip__more:hover {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.shelf-clip__count {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 5 · Bottom block: plain 28px rows, hairline above the block. ── */
+.shelf-memo-entry.shelf-memo-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 12px;
+  border-top: 1px solid var(--hairline);
+  border-radius: 0;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 400;
+}
+
+.shelf-memo-entry.shelf-memo-entry + .shelf-memo-entry.shelf-memo-entry {
+  border-top: 0;
+}
+
+.shelf-memo-entry.shelf-memo-entry:hover {
+  background: var(--panel-soft);
+}
+
+.shelf-memo-entry svg {
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+}
+
+/* ── 6 · Footer bar: one 34px row — model sharing left, icons right. ── */
+.sidebar-dock.sidebar-dock {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  padding: 0;
+  border-top: 1px solid var(--border);
+}
+
+.sidebar-dock .sidebar-footer.sidebar-footer {
+  flex: 0 0 auto;
+  gap: 0;
+  height: 34px;
+  min-height: 34px;
+  margin-left: auto;
+  padding: 0;
+  border-top: 0;
+  background: transparent;
+}
+
+.sidebar-footer .sidebar-footer__button.sidebar-footer__button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.sidebar-footer .sidebar-footer__button.sidebar-footer__button:hover {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.sidebar-footer .sidebar-footer__button.sidebar-footer__button.is-notify-on {
+  color: var(--accent);
+}
+
+.sidebar-footer .sidebar-footer__button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.engine-entry.engine-entry {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: auto;
+  height: 34px;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.engine-entry.engine-entry:hover,
+.engine-entry.engine-entry.is-open {
+  border-color: transparent;
+  background: var(--panel-soft);
+}
+
+.engine-entry .engine-entry__icon {
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+}
+
+.engine-entry.engine-entry.is-on .engine-entry__icon {
+  color: var(--text-muted);
+}
+
+.engine-entry .engine-entry__label {
+  font-weight: 400;
+}
+
+.engine-entry .engine-entry__dot {
+  width: 5px;
+  height: 5px;
+  margin-left: 2px;
+}
+
+.engine-entry.engine-entry.is-on .engine-entry__dot {
+  background: var(--green);
+}
+
+/* ── Motion: honour reduced motion. ── */
+@media (prefers-reduced-motion: reduce) {
+  .project-tree .project-row__chev {
+    transition: none;
+  }
+}

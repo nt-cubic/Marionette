@@ -95,7 +95,7 @@ export function UnifiedDiffView({
                   <span className="file-diff-card__ln" />
                 </span>
                 <span className="file-diff-card__code">
-                  {showTruncation ? t("md.elidedMiddleLines", { n: elidedMiddle }) : "⋮"}
+                  {showTruncation ? t("md.elidedMiddleLines", { n: elidedMiddle }) : "⋯"}
                 </span>
               </span>
             )}

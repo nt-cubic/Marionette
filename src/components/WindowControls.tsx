@@ -3,6 +3,7 @@ import { ArrowRightToLine, Minus, Square, X } from "lucide-react";
 import { useCallback, useEffect, useState, type MouseEvent } from "react";
 import { isTauriRuntime } from "../lib/api";
 import { enterDock } from "../lib/dockMode";
+import { useT } from "../lib/i18n";
 
 type WindowControlsProps = {
   className?: string;
@@ -13,6 +14,7 @@ type WindowControlsProps = {
  * `data-tauri-drag-region` — drag steals mousedown and clicks never fire.
  */
 export function WindowControls({ className = "" }: WindowControlsProps) {
+  const t = useT();
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
@@ -100,49 +102,49 @@ export function WindowControls({ className = "" }: WindowControlsProps) {
     <div
       className={`window-controls ${className}`.trim()}
       role="group"
-      aria-label="Window controls"
+      aria-label={t("v2chrome.winControlsAria")}
       onMouseDown={guard}
       onPointerDown={guard}
     >
       <button
         className="window-controls__btn window-controls__btn--dock"
         type="button"
-        title="Dock to edge"
-        aria-label="Dock to edge"
+        title={t("v2chrome.dockToEdge")}
+        aria-label={t("v2chrome.dockToEdge")}
         onMouseDown={guard}
         onClick={dockToEdge}
       >
-        <ArrowRightToLine size={12} strokeWidth={2.2} />
+        <ArrowRightToLine size={14} strokeWidth={1.5} />
       </button>
       <button
         className="window-controls__btn"
         type="button"
-        title="Minimize"
-        aria-label="Minimize"
+        title={t("v2chrome.minimize")}
+        aria-label={t("v2chrome.minimize")}
         onMouseDown={guard}
         onClick={minimize}
       >
-        <Minus size={12} strokeWidth={2.2} />
+        <Minus size={14} strokeWidth={1.5} />
       </button>
       <button
         className="window-controls__btn"
         type="button"
-        title={maximized ? "Restore" : "Maximize"}
-        aria-label={maximized ? "Restore" : "Maximize"}
+        title={maximized ? t("v2chrome.restore") : t("v2chrome.maximize")}
+        aria-label={maximized ? t("v2chrome.restore") : t("v2chrome.maximize")}
         onMouseDown={guard}
         onClick={toggleMax}
       >
-        <Square size={10} strokeWidth={2.2} />
+        <Square size={14} strokeWidth={1.5} />
       </button>
       <button
         className="window-controls__btn window-controls__btn--close"
         type="button"
-        title="Close"
-        aria-label="Close"
+        title={t("v2chrome.close")}
+        aria-label={t("v2chrome.close")}
         onMouseDown={guard}
         onClick={close}
       >
-        <X size={12} strokeWidth={2.2} />
+        <X size={14} strokeWidth={1.5} />
       </button>
     </div>
   );
