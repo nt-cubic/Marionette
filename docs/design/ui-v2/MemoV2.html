@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>v2 收纳盒</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#1f8a76}a:hover{color:#166b5c}
+.mono{font-family:"JetBrains Mono",ui-monospace,monospace}
+.f{font-size:11px;color:#8a8a92}
+.srow{display:flex;align-items:center;gap:8px;height:28px;padding:0 12px;font-size:12px;color:#5c5c63}
+.card{position:relative;overflow:hidden;border:1px solid #e2e2e6;border-radius:3px;background:#fff;font-size:13px;color:#2c2c30}
+.sel{border-color:color-mix(in srgb,#1f8a76 45%,#e2e2e6);box-shadow:inset 3px 0 0 #1f8a76}
+.meta{display:flex;align-items:center;gap:8px;font-size:11px;color:#8a8a92}
+.cb{width:14px;height:14px;box-sizing:border-box;border-radius:2px;border:1px solid #c8c8ce;background:#fff;display:grid;place-items:center;flex:none}
+.cb.on{background:#1f8a76;border-color:#1f8a76}
+.day{display:flex;align-items:center;gap:10px;height:28px;font-size:11.5px;color:#8a8a92}
+.day::after{content:"";flex:1;height:1px;background:#e2e2e6}
+.fc{display:inline-flex;align-items:center;height:24px;padding:0 9px;border-radius:2px;font-size:12px;font-weight:500;color:#5c5c63}
+.fc.on{color:#111113;background:#f1f1f3;box-shadow:inset 0 0 0 1px #e2e2e6}
+.btn{height:30px;padding:0 14px;border:0;border-radius:3px;font:inherit;font-size:13px;background:#f1f1f3;color:#2c2c30}
+.btn.p{background:#1f8a76;color:#fff;font-weight:600}
+</style>
+</helmet>
+<div style="width:1440px;height:900px;box-sizing:border-box;background:#f7f7f8;color:#2c2c30;font-family:Inter,system-ui,sans-serif;font-size:13px;line-height:1.5;display:grid;grid-template-columns:240px minmax(0,1fr) 300px">
+
+<div style="display:flex;flex-direction:column;background:#f4f4f5;border-right:1px solid #e2e2e6">
+<div style="height:34px;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid #e2e2e6;color:#8a8a92;font-size:12px"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>搜索对话…</div>
+<div style="padding:6px 0;display:flex;flex-direction:column">
+<div class="srow" style="font-size:11px;font-weight:600;color:#8a8a92">项目</div>
+<div class="srow" style="color:#111113;font-weight:600;padding-left:12px">demo-app</div>
+<div class="srow" style="padding-left:30px">greet 中英文两版</div>
+<div class="srow" style="padding-left:30px">README 补安装说明</div>
+<div class="srow" style="font-size:11px;font-weight:600;color:#8a8a92;margin-top:10px">聊天</div>
+<div class="srow" style="padding-left:30px">周报润色</div>
+<div class="srow" style="font-size:11px;font-weight:600;color:#8a8a92;margin-top:10px">收纳盒</div>
+<div class="srow" style="padding-left:30px">整理：导出格式调研</div>
+</div>
+<div style="flex:1"></div>
+<div class="srow" style="height:34px;background:#fff;color:#111113;font-weight:500;box-shadow:inset 2px 0 0 #1f8a76,inset 0 1px 0 #e2e2e6"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5c5c63" stroke-width="1.5" aria-hidden="true"><rect x="2.5" y="3" width="11" height="3" rx=".5"/><path d="M3.5 6v7h9V6M6.5 9h3"/></svg>收纳盒<span class="f" style="margin-left:auto">6</span></div>
+</div>
+
+<div style="display:flex;flex-direction:column;min-width:0;min-height:0">
+<div style="height:34px;display:flex;align-items:stretch;border-bottom:1px solid #e2e2e6;background:#f4f4f5;flex:none">
+<div style="display:flex;align-items:center;padding:0 14px;font-size:12px;color:#5c5c63;border-right:1px solid #e2e2e6">greet 中英文两版</div>
+<div style="display:flex;align-items:center;gap:6px;padding:0 14px;font-size:12px;color:#111113;background:#f7f7f8;box-shadow:inset 0 2px 0 #1f8a76;margin-bottom:-1px;border-bottom:1px solid #f7f7f8;border-right:1px solid #e2e2e6">收纳盒<span class="f">6</span><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#8a8a92" stroke-width="1.5" aria-hidden="true" style="margin-left:6px"><path d="M4 4l8 8M12 4l-8 8"/></svg></div>
+</div>
+
+<div style="flex:none;display:flex;align-items:center;gap:10px;height:44px;padding:0 20px;border-bottom:1px solid #e2e2e6;background:#fff">
+<span style="color:#8a8a92;font-size:13px">写一条，或粘贴链接…</span><span class="f" style="margin-left:auto">Ctrl+Enter 保存 · 也可以把文件、文字拖到窗口任意位置</span>
+</div>
+<div style="flex:none;display:flex;align-items:center;gap:4px;height:40px;padding:0 20px">
+<span class="fc on">全部 6</span><span class="fc">文字 2</span><span class="fc">链接 2</span><span class="fc">图片 1</span><span class="fc">文件 1</span>
+<span class="f" style="margin-left:auto;font-size:12px">已选 2 · 点卡片左侧勾选</span>
+</div>
+
+<div style="flex:1;min-height:0;overflow:hidden;padding:0 20px 12px;display:flex;flex-direction:column;gap:6px">
+<div class="day">今天</div>
+<div class="card sel" style="padding:10px 12px 10px 15px;display:grid;grid-template-columns:14px minmax(0,1fr);gap:10px">
+<span class="cb on" style="margin-top:3px"><svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="2.6" aria-hidden="true"><path d="M3 8.5l3 3 7-7"/></svg></span>
+<div style="display:flex;flex-direction:column;gap:6px"><div style="color:#111113">导出要兼顾三件事：agent 能读、人能读、以后能再导回收纳盒。YAML 头可以有，但解析失败必须能退化，不能把条目覆盖掉。</div><div class="meta"><span>文字</span><span>14:20</span></div></div>
+</div>
+<div class="card sel" style="padding:10px 12px 10px 15px;display:grid;grid-template-columns:14px minmax(0,1fr);gap:10px">
+<span class="cb on" style="margin-top:3px"><svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="2.6" aria-hidden="true"><path d="M3 8.5l3 3 7-7"/></svg></span>
+<div style="display:flex;flex-direction:column;gap:3px"><div style="font-weight:500;color:#111113">Front Matter · Hugo 文档</div><div class="mono" style="font-size:11.5px;color:#5c5c63">gohugo.io/content-management/front-matter</div><div class="meta" style="margin-top:3px"><span>链接</span><span>13:58</span></div></div>
+</div>
+<div class="card" style="padding:10px 12px 10px 15px;display:grid;grid-template-columns:14px minmax(0,1fr);gap:10px">
+<span class="cb" style="margin-top:3px"></span>
+<div style="display:flex;flex-direction:column;gap:8px"><div style="height:150px;max-width:420px;border-radius:2px;background:linear-gradient(135deg,#eef0f3,#e3e6ea);display:grid;place-items:center" class="f">截图 · 1280×640，按横竖比完整显示</div><div class="meta"><span>图片</span><span>11:32</span></div></div>
+</div>
+<div class="day">昨天</div>
+<div class="card" style="padding:8px 12px 8px 15px;display:grid;grid-template-columns:14px 28px minmax(0,1fr) auto;gap:10px;align-items:center">
+<span class="cb"></span>
+<span style="width:28px;height:28px;border-radius:2px;background:#f1f1f3;display:grid;place-items:center"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5c5c63" stroke-width="1.5" aria-hidden="true"><path d="M4 2.5h5l3 3v8H4z"/><path d="M9 2.5v3h3"/></svg></span>
+<div style="display:flex;flex-direction:column"><span style="color:#111113">memo-export-notes.md</span><span class="f">文件 · 4.2 KB · 可直接拖进输入框</span></div>
+<span class="f">昨天 18:04</span>
+</div>
+<div class="card" style="padding:10px 12px 10px 15px;display:grid;grid-template-columns:14px minmax(0,1fr);gap:10px">
+<span class="cb" style="margin-top:3px"></span>
+<div style="display:flex;flex-direction:column;gap:6px"><div style="color:#2c2c30">圆桌那边说图片要复制到 docs/notes/assets/，记得问一下相对路径在 Windows 上是不是反斜杠。</div><div class="meta"><span>文字</span><span>昨天 16:40</span></div></div>
+</div>
+</div>
+
+<div style="flex:none;display:flex;align-items:center;gap:8px;height:56px;padding:0 20px;border-top:1px solid #e2e2e6;background:#fff">
+<span style="font-size:13px;color:#2c2c30">已选 <b style="font-weight:600">2</b> 条</span><span class="f" style="font-size:12px">· 预填进输入框，不会自动发送</span>
+<div style="flex:1"></div>
+<button type="button" class="btn" style="background:transparent;color:#5c5c63">取消选择</button>
+<button type="button" class="btn">整理成文档</button>
+<button type="button" class="btn p">开新对话</button>
+</div>
+</div>
+
+<div style="border-left:1px solid #e2e2e6;background:#fff;padding:32px 26px;display:flex;flex-direction:column;gap:14px">
+<div class="f">v2 · 收纳盒</div>
+<div style="font-size:16px;font-weight:650;color:#111113">并回主语言</div>
+<div style="font-size:12.5px;color:#5c5c63;line-height:1.6">收纳盒不再用自己那套 8px 大圆角，改用对话卡的 3px 角和 1px 边，帖子流和按天分段保留。</div>
+<div style="display:flex;flex-direction:column;border-top:1px solid #ececee;font-size:12.5px">
+<div style="display:flex;padding:9px 0;border-bottom:1px solid #ececee"><span style="width:64px;color:#5c5c63">写一条</span><span>整条贴在顶部，不是一张输入卡</span></div>
+<div style="display:flex;padding:9px 0;border-bottom:1px solid #ececee"><span style="width:64px;color:#5c5c63">分段</span><span>「今天 / 昨天」和圆桌阶段线同一种写法</span></div>
+<div style="display:flex;padding:9px 0;border-bottom:1px solid #ececee"><span style="width:64px;color:#5c5c63">选中</span><span>强调色描边 + 左边条，复选框常驻左侧</span></div>
+<div style="display:flex;padding:9px 0;border-bottom:1px solid #ececee"><span style="width:64px;color:#5c5c63">类型</span><span>只写在卡底小字里，不另配图标色</span></div>
+<div style="display:flex;padding:9px 0"><span style="width:64px;color:#5c5c63">操作</span><span>多选后才出现底栏，主操作「开新对话」</span></div>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic { renderVals() { return {}; } }
+</script>
+</body>
+</html>

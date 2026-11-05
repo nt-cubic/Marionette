@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>改动标签页</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#1f8a76}a:hover{color:#166b5c}
+.mono{font-family:"JetBrains Mono",ui-monospace,monospace}
+.f{font-size:11px;color:#8a8a92}
+.srow{display:flex;align-items:center;gap:8px;height:28px;padding:0 12px;font-size:12px;color:#5c5c63}
+.fc{display:inline-flex;align-items:center;height:24px;padding:0 9px;border-radius:2px;font-size:12px;font-weight:500;color:#5c5c63}
+.fc.on{color:#111113;background:#fff;box-shadow:inset 0 0 0 1px #e2e2e6}
+.file{position:relative;display:grid;grid-template-columns:12px minmax(0,1fr) auto;gap:8px;align-items:center;height:32px;padding:0 12px 0 14px;font-size:12.5px;color:#2c2c30}
+.file .who{position:absolute;left:0;top:7px;bottom:7px;width:2px}
+.dl{display:grid;grid-template-columns:44px 44px 18px minmax(0,1fr);height:22px;align-items:center;font-family:"JetBrains Mono",monospace;font-size:12.5px;color:#2c2c30;white-space:pre}
+.dl .n{color:#a1a1a8;text-align:right;padding-right:10px;font-size:11.5px}
+.dl.add{background:#e9f5ec}.dl.add .s{color:#2d7d42}
+.dl.del{background:#fbecec}.dl.del .s{color:#c03d45}
+.hunk{display:flex;align-items:center;gap:10px;height:28px;padding:0 12px;background:#f4f4f5;border-top:1px solid #ececee;border-bottom:1px solid #ececee;font-size:11.5px;color:#5c5c63}
+.btn{height:26px;padding:0 10px;border:0;border-radius:3px;background:#f1f1f3;color:#2c2c30;font:inherit;font-size:12px}
+</style>
+</helmet>
+<div style="width:1440px;height:880px;box-sizing:border-box;background:#fff;color:#2c2c30;font-family:Inter,system-ui,sans-serif;font-size:13px;line-height:1.45;display:grid;grid-template-columns:240px minmax(0,1fr)">
+
+<div style="display:flex;flex-direction:column;background:#f4f4f5;border-right:1px solid #e2e2e6">
+<div style="height:34px;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid #e2e2e6;color:#8a8a92;font-size:12px"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>搜索对话…<span class="mono" style="margin-left:auto;font-size:10.5px">Ctrl K</span></div>
+<div style="padding:6px 0;display:flex;flex-direction:column">
+<div class="srow" style="height:30px;font-size:12.5px;color:#8a8a92">项目</div>
+<div class="srow" style="color:#111113;font-weight:600;padding-left:12px">demo-app</div>
+<div class="srow" style="padding-left:30px;background:#fff;color:#111113;box-shadow:inset 2px 0 0 #9a5b43,inset 0 1px 0 #e2e2e6,inset 0 -1px 0 #e2e2e6">greet 中英文两版<span class="f" style="margin-left:auto">运行中</span></div>
+<div class="srow" style="padding-left:30px">README 补安装说明</div>
+</div>
+<div style="flex:1"></div>
+<div style="padding:16px 14px;border-top:1px solid #e2e2e6;display:flex;flex-direction:column;gap:8px;background:#fff">
+<div class="f">改动标签页 · 新</div>
+<div style="font-size:14px;font-weight:600;color:#111113">从弹窗挪进标签页</div>
+<div style="font-size:12px;color:#5c5c63;line-height:1.6">点交付卡或右栏的文件，打开「改动」伪标签（和收纳盒同一种）。左右侧栏照常在，可以一边看 diff 一边接着对话。每个文件左边的细条是改它的 agent。</div>
+</div>
+</div>
+
+<div style="display:flex;flex-direction:column;min-width:0;min-height:0">
+<div style="height:34px;display:flex;align-items:stretch;border-bottom:1px solid #e2e2e6;background:#f4f4f5;flex:none">
+<div style="display:flex;align-items:center;gap:8px;padding:0 14px;font-size:12px;color:#5c5c63;border-right:1px solid #e2e2e6">greet 中英文两版</div>
+<div style="display:flex;align-items:center;gap:8px;padding:0 14px;font-size:12px;color:#111113;background:#fff;box-shadow:inset 0 2px 0 #1f8a76;margin-bottom:-1px;border-bottom:1px solid #fff;border-right:1px solid #e2e2e6">改动<span class="f">4</span><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#8a8a92" stroke-width="1.5" aria-hidden="true" style="margin-left:6px"><path d="M4 4l8 8M12 4l-8 8"/></svg></div>
+</div>
+
+<div style="flex:none;display:flex;align-items:center;gap:4px;height:44px;padding:0 16px;border-bottom:1px solid #e2e2e6;background:#f7f7f8">
+<span class="fc">本轮</span><span class="fc">本会话</span><span class="fc on">相对 main</span>
+<span style="margin-left:10px;font-size:12.5px;color:#5c5c63">4 个文件 <span class="mono" style="color:#2d7d42">+48</span> <span class="mono" style="color:#c03d45">−6</span></span>
+<div style="flex:1"></div>
+<span class="fc">并排</span><span class="fc on">合并</span>
+<button type="button" class="btn" style="margin-left:8px">让 AI 写 commit</button>
+</div>
+
+<div style="flex:1;min-height:0;display:grid;grid-template-columns:260px minmax(0,1fr)">
+<div style="border-right:1px solid #ececee;background:#f7f7f8;padding:6px 0">
+<div class="file" style="background:#fff;box-shadow:inset 0 1px 0 #ececee,inset 0 -1px 0 #ececee;font-weight:500"><span class="who" style="background:#9a5b43"></span><span class="mono" style="font-size:11px;color:#9a7410">M</span><span>README.md</span><span class="mono f">+12 −4</span></div>
+<div class="file"><span class="who" style="background:#4d5c95"></span><span class="mono" style="font-size:11px;color:#9a7410">M</span><span>src/greeting.ts</span><span class="mono f">+3</span></div>
+<div class="file"><span class="who" style="background:#4d5c95"></span><span class="mono" style="font-size:11px;color:#2d7d42">A</span><span>src/greeting.test.ts</span><span class="mono f">+31</span></div>
+<div class="file"><span class="who" style="background:#9a5b43"></span><span class="mono" style="font-size:11px;color:#c03d45">D</span><span>scripts/old-test.sh</span><span class="mono f">−2</span></div>
+<div class="f" style="padding:14px 14px 0;line-height:1.7"><span style="display:inline-block;width:10px;height:2px;background:#4d5c95;vertical-align:middle;margin-right:5px"></span>ZCode　<span style="display:inline-block;width:10px;height:2px;background:#9a5b43;vertical-align:middle;margin:0 5px 0 6px"></span>Claude</div>
+</div>
+
+<div style="display:flex;flex-direction:column;min-height:0;overflow:hidden">
+<div style="display:flex;align-items:center;gap:10px;height:40px;padding:0 16px;border-bottom:1px solid #ececee">
+<span class="mono" style="font-size:12.5px;color:#111113">README.md</span><span class="f">demo-app/</span>
+<span class="mono" style="font-size:11.5px;color:#2d7d42">+12</span><span class="mono" style="font-size:11.5px;color:#c03d45">−4</span>
+<span class="f" style="margin-left:6px">Claude 改的 · 12:35</span>
+<div style="flex:1"></div>
+<span style="font-size:12px;color:#5c5c63">在编辑器打开</span><span style="font-size:12px;color:#5c5c63;margin-left:10px">撤销这个文件</span>
+</div>
+<div class="hunk"><span class="mono">@@ -14,9 +14,17 @@</span><span>## 用法</span></div>
+<div class="dl"><span class="n">14</span><span class="n">14</span><span class="s"></span><span>## 用法</span></div>
+<div class="dl"><span class="n">15</span><span class="n">15</span><span class="s"></span><span></span></div>
+<div class="dl del"><span class="n">16</span><span class="n"></span><span class="s">−</span><span>调用 `greet(name)` 返回问候语。</span></div>
+<div class="dl add"><span class="n"></span><span class="n">16</span><span class="s">+</span><span>两种调用：</span></div>
+<div class="dl add"><span class="n"></span><span class="n">17</span><span class="s">+</span><span></span></div>
+<div class="dl add"><span class="n"></span><span class="n">18</span><span class="s">+</span><span>- `greet(name)`   → "Hello, name"</span></div>
+<div class="dl add"><span class="n"></span><span class="n">19</span><span class="s">+</span><span>- `greetZh(name)` → "你好，name"</span></div>
+<div class="dl"><span class="n">17</span><span class="n">20</span><span class="s"></span><span></span></div>
+<div class="dl"><span class="n">18</span><span class="n">21</span><span class="s"></span><span>```ts</span></div>
+<div class="dl del"><span class="n">19</span><span class="n"></span><span class="s">−</span><span>import { greet } from "./greeting";</span></div>
+<div class="dl add"><span class="n"></span><span class="n">22</span><span class="s">+</span><span>import { greet, greetZh } from "./greeting";</span></div>
+<div class="dl"><span class="n">20</span><span class="n">23</span><span class="s"></span><span>console.log(greet("world"));</span></div>
+<div class="dl add"><span class="n"></span><span class="n">24</span><span class="s">+</span><span>console.log(greetZh("世界"));</span></div>
+<div class="dl"><span class="n">21</span><span class="n">25</span><span class="s"></span><span>```</span></div>
+<div class="hunk" style="justify-content:center;cursor:pointer"><span>⋯ 展开 18 行未改动</span></div>
+<div class="hunk"><span class="mono">@@ -40,6 +62,10 @@</span><span>## Windows 注意事项</span></div>
+<div class="dl"><span class="n">40</span><span class="n">62</span><span class="s"></span><span>## Windows 注意事项</span></div>
+<div class="dl del"><span class="n">41</span><span class="n"></span><span class="s">−</span><span>暂无。</span></div>
+<div class="dl del"><span class="n">42</span><span class="n"></span><span class="s">−</span><span></span></div>
+<div class="dl add"><span class="n"></span><span class="n">63</span><span class="s">+</span><span>测试脚本用 `node --test`，不要用 bash。</span></div>
+<div class="dl add"><span class="n"></span><span class="n">64</span><span class="s">+</span><span>路径里有空格时记得加引号。</span></div>
+<div class="dl add"><span class="n"></span><span class="n">65</span><span class="s">+</span><span></span></div>
+<div class="dl add"><span class="n"></span><span class="n">66</span><span class="s">+</span><span>旧的 scripts/old-test.sh 已删除。</span></div>
+</div>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":880}}'>
+class Component extends DCLogic { renderVals() { return {}; } }
+</script>
+</body>
+</html>

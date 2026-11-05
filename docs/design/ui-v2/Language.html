@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>设计语言 v2</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#1f8a76}a:hover{color:#166b5c}
+.mono{font-family:"JetBrains Mono",ui-monospace,monospace}
+.f{font-size:11px;color:#8a8a92}
+.h{font-size:13.5px;font-weight:600;color:#111113;margin:0 0 10px}
+.blk{display:flex;flex-direction:column}
+.sw{display:flex;flex-direction:column;gap:4px;font-size:11px;color:#5c5c63}
+.sw i{display:block;height:34px;border-radius:3px;border:1px solid #e2e2e6}
+.card{border:1px solid #e2e2e6;border-radius:3px;background:#fff;padding:9px 10px;position:relative;overflow:hidden;font-size:12px;color:#2c2c30}
+.bar{position:absolute;left:0;top:0;bottom:0;width:3px}
+.kv{display:flex;align-items:center;height:28px;border-bottom:1px solid #ececee;font-size:12.5px;color:#5c5c63}
+.kv b{margin-left:auto;font-weight:400;color:#2c2c30;font-variant-numeric:tabular-nums}
+.rule{display:grid;grid-template-columns:22px minmax(0,1fr);gap:8px;padding:8px 0;border-bottom:1px solid #ececee;font-size:12.5px;line-height:1.5;color:#2c2c30}
+.rule span:first-child{font-variant-numeric:tabular-nums;color:#8a8a92}
+.chip{display:inline-flex;align-items:center;height:22px;padding:0 7px;border-radius:2px;border:1px solid transparent;font-size:12px;font-weight:500;color:#5c5c63}
+.btn{display:inline-flex;align-items:center;height:28px;padding:0 12px;border-radius:3px;font-size:12.5px;border:0}
+</style>
+</helmet>
+<div style="width:1440px;height:960px;box-sizing:border-box;padding:36px 44px;background:#f7f7f8;color:#2c2c30;font-family:Inter,system-ui,sans-serif;font-size:13px;line-height:1.45;display:grid;grid-template-columns:400px minmax(0,1fr) minmax(0,1fr);gap:40px">
+
+<div class="blk" style="gap:22px">
+<div>
+<div class="f">MARIONETTE · 设计语言 v2 · 白天版为主</div>
+<div style="font-size:18px;font-weight:650;color:#111113;margin:6px 0 8px">卡片流是骨架，身份色是唯一的点缀</div>
+<div style="font-size:12.5px;color:#5c5c63;line-height:1.6">横平竖直、克制、结论先行。界面本身是中性灰阶，只有「谁在做」用颜色说话，而且是压低饱和的墨色。</div>
+</div>
+<div class="blk">
+<div class="h">八条规则</div>
+<div class="rule"><span>01</span><span>对话流一轮三段：<b>你</b> → <b>调用块</b>（轨迹、思考、工具都在块里）→ <b>回复</b>。卡距 6px、圆角 3px、1px 边、无阴影。</span></div>
+<div class="rule"><span>02</span><span>身份色只上三处：3px 左边条、运行中的描边与流光、当前项的进度条。名字和状态用中性色。</span></div>
+<div class="rule"><span>03</span><span>控件贴着表面长，不做独立的框：搜索在标题行里，输入框是整条，表单是一行一行的表。</span></div>
+<div class="rule"><span>04</span><span>结论先行：一行写结论（26% / 已满 / 4 个文件），细节点开或悬停再看。</span></div>
+<div class="rule"><span>05</span><span>主数字大、名词小：数字 15–20px / 600，名词 11px 居中写在下面。</span></div>
+<div class="rule"><span>06</span><span>主次靠粗细和灰度：主条 4–6px agent 色，次条 2px 浅灰；主值加粗，次值辅助灰。</span></div>
+<div class="rule"><span>07</span><span>状态只写在文字上：黄 = 快满 / 等你，红 = 已满 / 出错，绿 = 增行 / 通过。不占圆点。</span></div>
+<div class="rule" style="border-bottom:0"><span>08</span><span>动效只说明「从哪来、到哪去、谁在跑」：进出成对，只动 transform / opacity，循环只给 live 元素。</span></div>
+</div>
+</div>
+
+<div class="blk" style="gap:26px">
+<div class="blk">
+<div class="h">中性灰阶</div>
+<div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px">
+<div class="sw"><i style="background:#f4f4f5"></i>侧栏 #f4f4f5</div>
+<div class="sw"><i style="background:#f7f7f8"></i>地面 #f7f7f8</div>
+<div class="sw"><i style="background:#ffffff"></i>卡片 #ffffff</div>
+<div class="sw"><i style="background:#ececee"></i>悬停 #ececee</div>
+<div class="sw"><i style="background:#e2e2e6"></i>边 #e2e2e6</div>
+<div class="sw"><i style="background:#ececee;border-color:#ececee"></i>表内细线 #ececee</div>
+<div class="sw"><i style="background:#c8c8ce"></i>浮层边 #c8c8ce</div>
+<div class="sw"><i style="background:#1f8a76"></i>强调：你 / 主操作</div>
+</div>
+<div style="display:flex;gap:14px;margin-top:10px;font-size:12px"><span style="color:#111113">标题 #111113</span><span style="color:#2c2c30">正文 #2c2c30</span><span style="color:#5c5c63">次要 #5c5c63</span><span style="color:#8a8a92">辅助 #8a8a92</span></div>
+</div>
+<div class="blk">
+<div class="h">agent 墨色</div>
+<div style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px">
+<div class="sw"><i style="background:#9a5b43"></i>Claude</div>
+<div class="sw"><i style="background:#535b66"></i>Codex</div>
+<div class="sw"><i style="background:#4d5c95"></i>ZCode</div>
+<div class="sw"><i style="background:#6b5b91"></i>Grok</div>
+<div class="sw"><i style="background:#3d6e8f"></i>DeepSeek</div>
+<div class="sw"><i style="background:#806836"></i>OpenCode</div>
+<div class="sw"><i style="background:#8c4d68"></i>Gemini</div>
+</div>
+<div style="display:flex;gap:14px;margin-top:10px;font-size:12px"><span style="color:#9a7410">快满 / 等你</span><span style="color:#c03d45">已满 / 出错</span><span style="color:#2d7d42">+增行 / 通过</span><span class="f" style="font-size:12px">状态色只上文字</span></div>
+</div>
+<div class="blk">
+<div class="h">字</div>
+<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-top:1px solid #ececee;border-bottom:1px solid #ececee;background:#fff">
+<div style="display:flex;flex-direction:column;align-items:center;padding:10px 0"><b style="font-size:20px;font-weight:600;color:#111113;font-variant-numeric:tabular-nums">103</b><span class="f">解码 tok/s</span></div>
+<div style="display:flex;flex-direction:column;align-items:center;padding:10px 0;border-left:1px solid #ececee"><b style="font-size:20px;font-weight:600;color:#111113">12.9K</b><span class="f">Token</span></div>
+<div style="display:flex;flex-direction:column;align-items:center;padding:10px 0;border-left:1px solid #ececee"><b style="font-size:20px;font-weight:600;color:#111113">74%</b><span class="f">缓存命中</span></div>
+</div>
+<div style="display:flex;flex-direction:column;gap:4px;margin-top:10px">
+<div style="font-size:14px;font-weight:600;color:#111113">当前项 14 / 600 —— Claude</div>
+<div style="font-size:13.5px;font-weight:500;color:#111113">小标题 13.5 / 500 —— 本会话、明细</div>
+<div style="font-size:13px">正文 13 / 1.5 —— 对话、说明</div>
+<div style="font-size:12px;font-weight:500;color:#5c5c63">控件 12 / 500 —— 芯片、按钮</div>
+<div class="f">辅助 11 —— 时间、单位、重置</div>
+</div>
+</div>
+</div>
+
+<div class="blk" style="gap:26px">
+<div class="blk">
+<div class="h">对话流的一轮</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<div class="card" style="padding-left:12px"><div class="bar" style="background:#1f8a76"></div><div style="font-weight:700;color:#5c5c63;font-size:11.5px;margin-bottom:2px">你</div>把 greet 拆成中英文两个版本。</div>
+<div class="card" style="background:#f4f4f5;border-color:color-mix(in srgb,#9a5b43 40%,#e2e2e6);display:flex;align-items:center;gap:8px;height:30px;box-sizing:border-box;padding:0 10px"><span class="f">▸</span>3 thoughts, 2 commands, 1 edit<span class="f">14s</span></div>
+<div class="card" style="padding-left:12px"><div class="bar" style="background:#9a5b43"></div><div style="font-weight:700;color:#2c2c30;font-size:12px;margin-bottom:2px">Claude <span style="font-weight:400;color:#8a8a92">opus-5.5</span></div>两个函数放在同一文件，共用导出。<div class="f" style="margin-top:6px">Standard · high · 12.4s · 1.8K tok</div></div>
+</div>
+</div>
+<div class="blk">
+<div class="h">基础件</div>
+<div style="display:flex;flex-direction:column;gap:0;background:#fff;border:1px solid #e2e2e6;border-radius:3px;padding:2px 12px 8px">
+<div class="kv"><span>键值行</span><b>48k / 200k</b></div>
+<div class="kv"><span>进度 · 主</span><span style="margin-left:auto;width:140px;height:4px;background:#ece3df;border-radius:1px"><span style="display:block;width:34%;height:100%;background:#9a5b43"></span></span></div>
+<div class="kv"><span>进度 · 次</span><span style="margin-left:auto;width:140px;height:2px;background:#e9e9ec"><span style="display:block;width:12%;height:100%;background:#b5b5bb"></span></span></div>
+<div class="kv"><span style="font-size:10px;color:#8a8a92;margin-right:6px">›</span>折叠行<b style="color:#5c5c63">17 项借给 Claude</b></div>
+<div style="display:flex;gap:6px;align-items:center;margin-top:10px">
+<span class="chip" style="color:#1f8a76;background:rgba(31,138,118,.10);border-color:rgba(31,138,118,.3)">Agent</span>
+<span class="chip">high</span>
+<span class="btn" style="background:#1f8a76;color:#fff;font-weight:600;margin-left:auto">主操作</span>
+<span class="btn" style="background:#f1f1f3;color:#2c2c30">次操作</span>
+<span class="btn" style="color:#5c5c63">文字</span>
+</div>
+</div>
+</div>
+<div class="blk">
+<div class="h">动效 token</div>
+<div style="background:#fff;border:1px solid #e2e2e6;border-radius:3px;padding:2px 12px">
+<div class="kv"><span>120ms 快</span><b>悬停、按压、退场</b></div>
+<div class="kv"><span>180ms 基</span><b>菜单、弹窗、折叠</b></div>
+<div class="kv"><span>240ms 慢</span><b>卡片到达、贴边滑入</b></div>
+<div class="kv" style="border-bottom:0"><span>6s 循环</span><b>运行中描边流光（后半段隐去）</b></div>
+</div>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":960}}'>
+class Component extends DCLogic { renderVals() { return {}; } }
+</script>
+</body>
+</html>

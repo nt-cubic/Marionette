@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>v2 圆桌</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#1f8a76}a:hover{color:#166b5c}
+.f{font-size:11px;color:#8a8a92}
+.card{position:relative;overflow:hidden;border:1px solid #e2e2e6;border-radius:3px;background:#fff;padding:10px 12px 10px 13px;font-size:13px;color:#2c2c30}
+.bar{position:absolute;left:0;top:0;bottom:0;width:3px}
+.who{display:flex;align-items:baseline;gap:6px;font-size:12px;font-weight:700;color:#2c2c30;margin-bottom:4px}
+.who em{font-style:normal;font-weight:400;color:#8a8a92}
+.tag{display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:2px;background:#f1f1f3;font-size:11px;font-weight:500;color:#5c5c63}
+.seat{position:relative;display:flex;flex-direction:column;gap:2px;padding:9px 14px 9px 16px;border-bottom:1px solid #ececee}
+.seat::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--c)}
+.phase{display:flex;align-items:center;gap:10px;height:26px;font-size:11.5px;color:#8a8a92}
+.phase::before,.phase::after{content:"";flex:1;height:1px;background:#e2e2e6}
+.kv{display:flex;align-items:center;height:28px;border-bottom:1px solid #ececee;font-size:12.5px;color:#5c5c63;padding:0 14px}
+.kv b{margin-left:auto;font-weight:400;color:#2c2c30;font-variant-numeric:tabular-nums}
+.btn{height:30px;padding:0 14px;border:0;border-radius:3px;font:inherit;font-size:13px;background:#f1f1f3;color:#2c2c30}
+.btn.p{background:#1f8a76;color:#fff;font-weight:600}
+@property --run{syntax:'<angle>';inherits:false;initial-value:0deg}
+.live{border-color:color-mix(in srgb,#535b66 40%,#e2e2e6)}
+.live::after{content:"";position:absolute;inset:0;border-radius:3px;padding:1px;pointer-events:none;background:conic-gradient(from var(--run),transparent 0 78%,rgba(83,91,102,.7) 88%,transparent 98%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;animation:run 6s linear infinite}
+@keyframes run{0%{--run:0deg;opacity:0}8%{opacity:1}55%{opacity:1}65%{--run:360deg;opacity:0}100%{--run:360deg;opacity:0}}
+@media (prefers-reduced-motion: reduce){.live::after{animation:none;opacity:0}}
+.step{display:flex;align-items:center;gap:6px;font-size:12px}
+</style>
+</helmet>
+<div style="width:1440px;height:900px;box-sizing:border-box;background:#f7f7f8;color:#2c2c30;font-family:Inter,system-ui,sans-serif;font-size:13px;line-height:1.45;display:flex;flex-direction:column">
+
+<div style="height:34px;display:flex;align-items:stretch;border-bottom:1px solid #e2e2e6;background:#f4f4f5;flex:none">
+<div style="display:flex;align-items:center;gap:8px;padding:0 14px;font-size:12px;color:#5c5c63;border-right:1px solid #e2e2e6">greet 中英文两版</div>
+<div style="display:flex;align-items:center;gap:8px;padding:0 14px;font-size:12px;color:#111113;background:#f7f7f8;box-shadow:inset 0 2px 0 #1f8a76;margin-bottom:-1px;border-bottom:1px solid #f7f7f8;border-right:1px solid #e2e2e6">圆桌 · 收纳盒导出格式</div>
+<div style="flex:1"></div>
+<div style="display:flex;align-items:center;padding:0 16px" class="f">v2 · 圆桌运行页</div>
+</div>
+
+<div style="flex:1;min-height:0;display:grid;grid-template-columns:280px minmax(0,1fr)">
+
+<div style="border-right:1px solid #e2e2e6;background:#fff;display:flex;flex-direction:column">
+<div style="padding:14px 14px 10px;display:flex;align-items:center"><span style="font-size:13.5px;font-weight:600;color:#111113">席位</span><span class="f" style="margin-left:auto;font-size:12px">标准圆桌 · 4 人</span></div>
+<div style="border-top:1px solid #ececee">
+<div class="seat" style="--c:#535b66;background:linear-gradient(90deg,rgba(83,91,102,.06),transparent 70%)"><div style="display:flex;align-items:center;gap:8px"><span style="font-size:13.5px;font-weight:600;color:#111113">Codex</span><span class="tag">主席</span><span style="margin-left:auto;font-size:11.5px;color:#535b66">综合中</span></div><span class="f">gpt-5.5 · 主导</span></div>
+<div class="seat" style="--c:#9a5b43"><div style="display:flex;align-items:center;gap:8px"><span style="font-size:13px;font-weight:500;color:#111113">Claude</span><span style="margin-left:auto" class="f">已修订</span></div><span class="f">opus-5.5 · 主导</span></div>
+<div class="seat" style="--c:#4d5c95"><div style="display:flex;align-items:center;gap:8px"><span style="font-size:13px;font-weight:500;color:#111113">ZCode</span><span style="margin-left:auto" class="f">已修订</span></div><span class="f">glm-5.3 · 主导</span></div>
+<div class="seat" style="--c:#3d6e8f"><div style="display:flex;align-items:center;gap:8px"><span style="font-size:13px;font-weight:500;color:#111113">DeepSeek</span><span style="margin-left:auto;color:#9a7410;font-size:11.5px">待背书</span></div><span class="f">v4-reasoner · 协办</span></div>
+</div>
+<div style="padding:18px 14px 8px;font-size:13.5px;font-weight:600;color:#111113">预算</div>
+<div style="border-top:1px solid #ececee">
+<div class="kv"><span>请求</span><b>23 / 60</b></div>
+<div class="kv"><span>Token</span><b>184K / 600K</b></div>
+<div class="kv"><span>墙钟</span><b>6:12 / 20:00</b></div>
+</div>
+<div style="flex:1"></div>
+<div style="display:flex;gap:6px;padding:12px 14px;border-top:1px solid #ececee"><button type="button" class="btn" style="flex:1">暂停</button><button type="button" class="btn" style="flex:1;background:transparent;color:#c03d45">取消</button></div>
+</div>
+
+<div style="display:flex;flex-direction:column;min-height:0">
+<div style="padding:12px 20px 0">
+<div class="card" style="padding-left:14px"><div class="bar" style="background:#1f8a76"></div>
+<div style="display:flex;align-items:center;margin-bottom:4px"><span style="font-size:12px;font-weight:700;color:#5c5c63">议题</span><span class="f" style="margin-left:auto">仅审议 · 2 轮质询</span></div>
+<div style="color:#111113">收纳盒「整理成文档」要导出成什么格式？要兼顾 agent 读、人读、以后能再导回收纳盒。</div>
+<div style="display:flex;align-items:center;gap:14px;margin-top:10px;padding-top:8px;border-top:1px solid #ececee">
+<span class="step" style="color:#8a8a92">✓ 独立提案</span><span class="step" style="color:#8a8a92">✓ 交叉质询</span><span class="step" style="color:#8a8a92">✓ 修订</span><span class="step" style="color:#111113;font-weight:600"><span style="width:6px;height:6px;border-radius:50%;background:#535b66"></span>主席综合</span><span class="step" style="color:#8a8a92">计划门</span>
+</div>
+</div>
+</div>
+
+<div style="flex:1;min-height:0;overflow:hidden;padding:4px 20px 16px;display:flex;flex-direction:column;gap:6px">
+<div class="phase">独立提案 · 4 / 4 · 互相不可见</div>
+<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px">
+<div class="card"><div class="bar" style="background:#9a5b43"></div><div class="who">Claude <em>opus-5.5</em></div>Markdown + 顶部 YAML 头记来源 id，正文按主题分节；导回时按 id 合并，不重复建条目。</div>
+<div class="card"><div class="bar" style="background:#4d5c95"></div><div class="who">ZCode <em>glm-5.3</em></div>纯 Markdown，来源写成脚注链接。YAML 头对人不友好，agent 也不一定按头解析。</div>
+<div class="card"><div class="bar" style="background:#3d6e8f"></div><div class="who">DeepSeek <em>v4-reasoner</em> <span class="tag">协办</span></div>补充：图片条目导出为相对路径，原图复制到 docs/notes/assets/。</div>
+<div class="card"><div class="bar" style="background:#535b66"></div><div class="who">Codex <em>gpt-5.5</em> <span class="tag">主席</span></div>先列三方分歧点：头部元数据 / 来源写法 / 图片落盘。</div>
+</div>
+<div class="phase">交叉质询 · 2 轮</div>
+<div class="card"><div class="bar" style="background:#4d5c95"></div><div class="who">ZCode <em>→ 质询 Claude</em></div>YAML 头一旦被人手改坏，导回就失败；有没有降级方案？</div>
+<div class="card"><div class="bar" style="background:#9a5b43"></div><div class="who">Claude <em>→ 回应 ZCode</em></div>解析失败就按正文脚注退化匹配，最差新建条目，绝不覆盖。已修订提案。</div>
+<div class="phase">主席综合</div>
+<div class="card live" style="background:#f4f4f5"><div class="who" style="color:#2c2c30">Codex <em>gpt-5.5 · 正在综合</em><span class="f" style="margin-left:auto;font-weight:400">0:41</span></div>
+<div style="font-size:12.5px;color:#5c5c63;line-height:1.55">采纳 Markdown 正文 + 可选 YAML 头；来源同时写脚注做降级；图片按 DeepSeek 的相对路径方案。遗留不确定性：导回时同 id 冲突的合并策略……</div></div>
+</div>
+
+<div style="flex:none;display:flex;align-items:center;gap:10px;height:56px;padding:0 20px;border-top:1px solid #e2e2e6;background:#fff">
+<span style="font-size:13px;color:#2c2c30">综合完成后进入<b style="font-weight:600"> 计划门 </b>，由你批准或驳回</span>
+<span class="f">· 1 条协办产出待主导背书</span>
+<div style="flex:1"></div>
+<button type="button" class="btn" disabled style="opacity:.5">驳回</button>
+<button type="button" class="btn p" disabled style="opacity:.5">批准计划</button>
+</div>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic { renderVals() { return {}; } }
+</script>
+</body>
+</html>
