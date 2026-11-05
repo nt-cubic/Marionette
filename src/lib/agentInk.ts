@@ -27,6 +27,25 @@ export function agentInkVar(agentId: string | null | undefined): string {
   return `var(${name})`;
 }
 
+const DISPLAY_NAME: Record<string, string> = {
+  "claude-code": "Claude",
+  codex: "Codex",
+  zcode: "ZCode",
+  "grok-build": "Grok",
+  deepseek: "DeepSeek",
+  "web-deepseek": "DeepSeek",
+  opencode: "OpenCode",
+  pi: "Pi",
+  hermes: "Hermes",
+  "web-chatgpt": "ChatGPT",
+};
+
+/** Short name for places that only carry an agent id (handoff events); falls back to the id. */
+export function agentDisplayName(agentId: string | null | undefined): string {
+  if (!agentId) return "";
+  return DISPLAY_NAME[agentId.toLowerCase()] ?? agentId;
+}
+
 /** Inline style that exposes the agent's ink to CSS as `--agent-ink`. */
 export function agentInkStyle(agentId: string | null | undefined): CSSProperties {
   return { "--agent-ink": agentInkVar(agentId) } as CSSProperties;
