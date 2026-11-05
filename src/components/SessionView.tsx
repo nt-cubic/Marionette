@@ -17,7 +17,7 @@ import {
   isAssistantNotice,
   userMessageAnchorId,
 } from "../lib/acpTranscript";
-import { agentInkStyle } from "../lib/agentInk";
+import { agentDisplayName, agentInkStyle } from "../lib/agentInk";
 import { formatTokenCount } from "../lib/sessionStats";
 import { findConversationMatches } from "../lib/conversationFind";
 import {
@@ -2796,7 +2796,7 @@ function CleanPlaceholder({
                 <span className="handoff-rule__line" aria-hidden />
                 <span className="handoff-rule__text">
                   <i className="handoff-rule__dot" aria-hidden />
-                  {t("session.handoffRule", { agent: event.targetAgentId })}
+                  {t("session.handoffRule", { agent: agentDisplayName(event.targetAgentId) })}
                 </span>
                 <span className="handoff-rule__line" aria-hidden />
               </div>
