@@ -5,6 +5,7 @@ import { Archive, Bell, BellOff, ChevronRight, CloudMoon, Download, Folder, Fold
 // Refresh on a project row folds CLI history into the normal session list.
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { t, useLocale, useT, type DictKey } from "../lib/i18n";
+import { agentInkStyle } from "../lib/agentInk";
 import { themeToggleTitle, type ThemeMode } from "../lib/theme";
 import { collapsedShelfSessions, pinStamp, sortSessionsNewestFirst } from "../lib/sessionOrder";
 import { suspendControl } from "../lib/sessionSuspend";
@@ -305,6 +306,21 @@ function shelfDayHeaders(list: Session[], nowMs: number, minRows: number): Map<s
     last = label;
   }
   return heads;
+}
+
+/**
+ * Row status as right-hand text (docs/ui-language.md v2: state lives in words,
+ * the dot is the agent's ink). Running stays neutral, waiting yellow, error red.
+ */
+function sessionStatusWord(
+  session: Session,
+  doneUnread: boolean,
+): { tone: "running" | "waiting" | "error" | "done"; text: string } | null {
+  if (sessionIsBusy(session.status)) return { tone: "running", text: t("shelf.running") };
+  if (session.status === "error") return { tone: "error", text: t("shelf.error") };
+  if (doneUnread) return { tone: "done", text: t("shelf.done") };
+  if (session.status === "waiting") return { tone: "waiting", text: t("shelf.waiting") };
+  return null;
 }
 
 const SESSION_STATUS_WORD: Record<string, DictKey> = {
@@ -1375,14 +1391,8 @@ export function ProjectShelf({
       setRenamingId(session.id);
       setRenameDraft(session.label);
     };
-    const chatDot = (
-      <span
-        className={`chat-row__dot${busy ? ` is-${session.status}` : doneUnread ? " is-done" : ""}`}
-        title={doneUnread ? t("shelf.taskDone") : undefined}
-        aria-label={doneUnread ? t("shelf.taskDone") : undefined}
-        aria-hidden={!doneUnread}
-      />
-    );
+    const chatDot = <span className="chat-row__dot" aria-hidden />;
+    const chatStatus = sessionStatusWord(session, doneUnread);
     return (
       <div
         className={[
@@ -1394,6 +1404,7 @@ export function ProjectShelf({
           moreMenu?.session.id === session.id ? "is-more-open" : "",
         ].filter(Boolean).join(" ")}
         key={session.id}
+        style={agentInkStyle(session.agentId)}
         onContextMenu={(event) => {
           if (!onOpenBeside) return;
           event.preventDefault();
@@ -1447,6 +1458,9 @@ export function ProjectShelf({
               {pinned && <PinnedMark className="chat-row__pin" />}
               <strong>{session.label}</strong>
             </span>
+            {chatStatus && (
+              <span className={`chat-row__status is-${chatStatus.tone}`}>{chatStatus.text}</span>
+            )}
           </button>
         )}
         {renderRowActions(session, "chat-row")}
@@ -1727,22 +1741,14 @@ export function ProjectShelf({
                       setRenamingId(session.id);
                       setRenameDraft(session.label);
                     };
-                    const statusMark = busy ? (
+                    // Dot = which agent (its ink); status is the word on the right.
+                    const statusMark = (
                       <span
-                        className={`session-row__pulse is-${session.status}`}
-                        aria-label={session.status}
-                      />
-                    ) : doneUnread ? (
-                      <span
-                        className="session-row__dot is-done"
-                        aria-label={t("shelf.taskDone")}
-                      />
-                    ) : (
-                      <span
-                        className={`session-row__dot is-${session.status}`}
+                        className={`session-row__dot is-ink${busy ? " is-busy" : ""}`}
                         aria-hidden
                       />
                     );
+                    const statusWord = sessionStatusWord(session, doneUnread);
                     return (
                       <Fragment key={session.id}>
                       {dayLabel && <div className="shelf-day">{dayLabel}</div>}
@@ -1757,6 +1763,7 @@ export function ProjectShelf({
                         ]
                           .filter(Boolean)
                           .join(" ")}
+                        style={agentInkStyle(session.agentId)}
                         onMouseEnter={(event) => {
                           if (!isRenaming) hoverRow(session, event.currentTarget);
                         }}
@@ -1817,7 +1824,14 @@ export function ProjectShelf({
                               <strong>{session.label}</strong>
                             </span>
                             <span className="session-row__time">
-                              {shelfRecency(session.lastActiveAt, Date.now())}
+                              {statusWord && (
+                                <span className={`session-row__status is-${statusWord.tone}`}>
+                                  {statusWord.text}
+                                </span>
+                              )}
+                              {statusWord?.tone !== "running" &&
+                                statusWord?.tone !== "error" &&
+                                shelfRecency(session.lastActiveAt, Date.now())}
                             </span>
                           </button>
                         )}

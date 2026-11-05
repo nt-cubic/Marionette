@@ -21,6 +21,8 @@ export const zh = {
   "session.diffNote": "当前工作区 diff · 行号与 git 对齐 · 点代码行可加评论",
   "session.webReplyWidthTitle": "GPT 回复宽度：{n}%",
   "session.webReplyWidth": "GPT 回复宽度",
+  "session.replyTokens": "{tokens} tok",
+  "session.handoffRule": "交接给 {agent} · 摘要随下一条消息发送",
   "session.subtaskRunning": "进行中",
   "session.subtaskStop": "停止",
   "session.durationSeconds": "{n}秒",
