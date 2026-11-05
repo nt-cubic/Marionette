@@ -924,3 +924,284 @@
 .model-library-dialog__environment input { width: 100%; box-sizing: border-box; background: var(--bg); border: 1px solid var(--border); padding: 8px; color: var(--text); border-radius: var(--radius); }
 .model-library-dialog__environment small, .model-library-dialog__environment [role="alert"] { width: 100%; }
 
+/* ── Session info ring + popover (docs/ui-language.md v2 "输入框", LightC.html) ──
+   Ring: 16px, fill = context occupancy, agent ink; yellow from 80%, red from 95%.
+   Popover is a .composer-menu so the Composer clamp pass keeps it in the window. */
+.composer-menu-anchor--info {
+  display: flex;
+  align-items: center;
+}
+
+.session-info-ring {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+  --ring-ink: var(--agent-ink, var(--accent));
+}
+
+.session-info-ring.is-warn {
+  --ring-ink: var(--yellow);
+}
+
+.session-info-ring.is-full {
+  --ring-ink: var(--red);
+}
+
+.session-info-ring:hover,
+.session-info-ring[aria-expanded="true"] {
+  background: var(--panel-soft);
+}
+
+.session-info-ring svg {
+  display: block;
+}
+
+.session-info-ring__track,
+.session-info-ring__fill {
+  fill: none;
+  stroke-width: 2;
+}
+
+.session-info-ring__track {
+  stroke: color-mix(in srgb, var(--agent-ink, var(--accent)) 15%, var(--panel-soft));
+}
+
+.session-info-ring__fill {
+  stroke: var(--ring-ink);
+  transition: stroke var(--dur-fast) var(--ease-standard);
+}
+
+.composer-menu.composer-menu--info {
+  display: block;
+  box-sizing: border-box;
+  width: 316px;
+  min-width: 0;
+  max-width: calc(100vw - 16px);
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  color: var(--text);
+  font-size: 13px;
+  left: auto;
+  right: 0;
+  bottom: calc(100% + 6px);
+  transform-origin: bottom right;
+  animation: session-info-in var(--dur-base) var(--ease-out);
+}
+
+.composer-menu.composer-menu--info.is-closing {
+  animation: session-info-out var(--dur-fast) var(--ease-standard) forwards;
+  pointer-events: none;
+}
+
+@keyframes session-info-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes session-info-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(4px) scale(0.97);
+  }
+}
+
+.session-info__head {
+  display: flex;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.session-info__title {
+  flex: none;
+  color: var(--text-strong);
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.session-info__meta {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-menu--info .session-info__copy {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  min-height: 22px;
+  height: 22px;
+  margin: 0 -6px 0 6px;
+  padding: 0;
+  color: var(--text-muted);
+}
+
+.composer-menu--info .session-info__copy:hover {
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+.session-info__ctx {
+  display: flex;
+  align-items: baseline;
+  color: var(--text-muted);
+}
+
+.session-info__ctx-pair {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.session-info__ctx b {
+  margin-left: 8px;
+  color: var(--text-strong);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.session-info__bar {
+  height: 6px;
+  margin: 6px 0 18px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--agent-ink, var(--accent)) 15%, var(--panel-raised));
+}
+
+.session-info__bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--agent-ink, var(--accent));
+  transition: width var(--dur-slow) var(--ease-out);
+}
+
+.session-info__bar.is-warn > span {
+  background: var(--yellow);
+}
+
+.session-info__bar.is-full > span {
+  background: var(--red);
+}
+
+.session-info__sub {
+  display: flex;
+  align-items: baseline;
+  margin-bottom: 4px;
+  color: var(--text-strong);
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.session-info__sub--detail {
+  margin-top: 18px;
+}
+
+.session-info__sub-meta {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.session-info__g3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  align-items: center;
+  height: 30px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.session-info__g3 > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-info__g3 i {
+  font-style: normal;
+}
+
+.session-info__g3 .is-add {
+  color: var(--green);
+}
+
+.session-info__g3 .is-del {
+  color: var(--red);
+}
+
+.session-info__kv {
+  display: flex;
+  align-items: center;
+  height: 30px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-muted);
+}
+
+.session-info__kv b {
+  margin-left: auto;
+  color: var(--text);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Ring stays beside send in the compact (hub) layout: the pair is pushed
+   right together, so send gives up its own auto margin. */
+.composer.is-compact .composer-menu-anchor--info {
+  order: 98;
+  margin-left: auto;
+}
+
+.composer.is-compact .composer-menu-anchor--info + .composer-menu-anchor--send {
+  margin-left: 0;
+}
+
+@container composer (max-width: 580px) {
+  .composer-menu-anchor--info {
+    order: 98;
+    margin-left: auto;
+  }
+
+  .composer-menu-anchor--info + .composer-menu-anchor--send {
+    margin-left: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-menu.composer-menu--info,
+  .composer-menu.composer-menu--info.is-closing {
+    animation: none;
+  }
+
+  .session-info__bar > span,
+  .session-info-ring__fill {
+    transition: none;
+  }
+}
