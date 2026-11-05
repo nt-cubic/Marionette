@@ -9641,6 +9641,7 @@ export function App() {
           usage={usage}
           onUsageRefresh={handleUsageRefreshForce}
           sessionStats={sessionStats}
+          activeModelId={activeModelId ?? sessionCapabilities?.currentModel ?? null}
           changedFiles={changedFiles}
           changedFilesNote={changedFilesNote}
           onRefreshChangedFiles={() => void refreshChangedFiles()}

@@ -10,6 +10,8 @@ export const en = {
   "rail.projectTodos": "Project tasks",
   "rail.background": "Background",
   "rail.backgroundKill": "Stop {title}",
+  "rail.shared": "Shared across agents",
+  "rail.sharedSummary": "{count} lent to {agent}",
   "rail.quota": "Quota",
   "rail.quotaRefresh": "Refresh quota",
   "rail.quotaEmpty": "No quota data yet — send a message or refresh",
