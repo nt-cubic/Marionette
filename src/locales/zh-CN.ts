@@ -28,6 +28,16 @@ import { zh as zhFeUsagedash } from "./parts/fe-usagedash.zh";
 import { zh as zhFeFind } from "./parts/fe-find.zh";
 import { zh as zhFeAllplugins } from "./parts/fe-allplugins.zh";
 import { zh as zhFeRail } from "./parts/fe-rail.zh";
+import { zh as zhFeV2Shelf } from "./parts/fe-v2shelf.zh";
+import { zh as zhFeV2Transcript } from "./parts/fe-v2transcript.zh";
+import { zh as zhFeV2Composer } from "./parts/fe-v2composer.zh";
+import { zh as zhFeV2Dialogs } from "./parts/fe-v2dialogs.zh";
+import { zh as zhFeV2Chrome } from "./parts/fe-v2chrome.zh";
+import { zh as zhFeV2Memo } from "./parts/fe-v2memo.zh";
+import { zh as zhFeV2Council } from "./parts/fe-v2council.zh";
+import { zh as zhFeV2Dock } from "./parts/fe-v2dock.zh";
+import { zh as zhFeV2Usage } from "./parts/fe-v2usage.zh";
+import { zh as zhFeV2Pages } from "./parts/fe-v2pages.zh";
 
 export const zh = {
   ...zhCommon,
@@ -54,4 +64,14 @@ export const zh = {
   ...zhFeFind,
   ...zhFeAllplugins,
   ...zhFeRail,
+  ...zhFeV2Shelf,
+  ...zhFeV2Transcript,
+  ...zhFeV2Composer,
+  ...zhFeV2Dialogs,
+  ...zhFeV2Chrome,
+  ...zhFeV2Memo,
+  ...zhFeV2Council,
+  ...zhFeV2Dock,
+  ...zhFeV2Usage,
+  ...zhFeV2Pages,
 } as const;

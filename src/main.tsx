@@ -7,6 +7,16 @@ import "./styles/motion.css";
 import "./styles/dock.css";
 import "./styles/usage-panel.css";
 import "./styles/rail.css";
+import "./styles/v2/shelf.css";
+import "./styles/v2/transcript.css";
+import "./styles/v2/composer.css";
+import "./styles/v2/dialogs.css";
+import "./styles/v2/chrome.css";
+import "./styles/v2/memo.css";
+import "./styles/v2/council.css";
+import "./styles/v2/dock.css";
+import "./styles/v2/usage.css";
+import "./styles/v2/pages.css";
 
 /** Prevent a single component crash from turning the whole window pure black. */
 class RootErrorBoundary extends React.Component<
