@@ -12,4 +12,6 @@ export const zh = {
   "v2dialogs.permFallback": "需要授权",
   "v2dialogs.desktopOnly": "图片预览需要桌面端",
   "v2dialogs.loadingImage": "正在加载图片…",
+  "v2dialogs.expandRight": "展开右栏",
+  "v2dialogs.collapseRight": "收起右栏",
 } as const;

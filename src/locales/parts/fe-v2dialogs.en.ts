@@ -13,4 +13,6 @@ export const en = {
   "v2dialogs.permFallback": "Permission required",
   "v2dialogs.desktopOnly": "Image preview requires the desktop app",
   "v2dialogs.loadingImage": "Loading image…",
+  "v2dialogs.expandRight": "Expand right panel",
+  "v2dialogs.collapseRight": "Collapse right panel",
 } satisfies Record<keyof typeof zh, string>;

@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
-import { Archive, Bell, BellOff, ChevronRight, CloudMoon, Download, Folder, FolderOpen, GripVertical, KeyRound, MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, Settings, SlidersHorizontal, SunMedium, Trash2, UsersRound, X, Zap } from "lucide-react";
+import { Archive, Bell, BellOff, ChevronRight, CloudMoon, Download, Folder, FolderOpen, GripVertical, KeyRound, MoreHorizontal, Network, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, Settings, SlidersHorizontal, SunMedium, Trash2, UsersRound, X, Zap } from "lucide-react";
 // Refresh on a project row folds CLI history into the normal session list.
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { t, useLocale, useT, type DictKey } from "../lib/i18n";
@@ -369,9 +369,6 @@ export function ProjectShelf({
   onProjectSelect,
   onSessionSelect,
   onOpenBeside,
-  collapsed,
-  onCollapse,
-  onExpand,
   onAddProject,
   onNewSession,
   theme,
@@ -1274,11 +1271,6 @@ export function ProjectShelf({
         {themeButton}
         {notifyButton}
         {telegramButton}
-        {!docked && (
-          <button className="pill-action pill-action--icon pill-action--sm sidebar-footer__button sidebar-footer__button--collapse" type="button" title={collapsed ? t("v2shelf.pinOpen") : t("v2shelf.collapseAll")} aria-label={collapsed ? t("v2shelf.pinOpen") : t("v2shelf.collapseAll")} onClick={collapsed ? onExpand : onCollapse}>
-            {collapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}
-          </button>
-        )}
       </div>
     </div>
   );
