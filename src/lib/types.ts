@@ -438,6 +438,9 @@ export type UniversalPluginSpec = {
 export type ChangedFile = {
   path: string;
   changeType: "added" | "modified" | "deleted" | "untracked";
+  /** Line counts (git numstat). Optional: the status scan does not supply them yet. */
+  additions?: number | null;
+  deletions?: number | null;
 };
 
 export type HandoffResult = {
