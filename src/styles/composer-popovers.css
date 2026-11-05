@@ -842,6 +842,10 @@
 }
 
 .tg-popover__pair {
+  justify-content: flex-start;
+  gap: 8px;
+}
+
 .credentials-dialog__source-detail { font-size: 12px; line-height: 1.6; padding: 8px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
 .credentials-dialog__source-detail div { color: var(--text-muted); }
 .credentials-dialog__source-detail code { color: var(--text-muted); font-size: 11px; }
