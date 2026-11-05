@@ -27,6 +27,7 @@ import { en as enFeUpdate } from "./parts/fe-update.en";
 import { en as enFeUsagedash } from "./parts/fe-usagedash.en";
 import { en as enFeFind } from "./parts/fe-find.en";
 import { en as enFeAllplugins } from "./parts/fe-allplugins.en";
+import { en as enFeRail } from "./parts/fe-rail.en";
 
 export const en = {
   ...enCommon,
@@ -52,4 +53,5 @@ export const en = {
   ...enFeUsagedash,
   ...enFeFind,
   ...enFeAllplugins,
+  ...enFeRail,
 } satisfies Record<keyof typeof zh, string>;

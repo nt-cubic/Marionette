@@ -1,0 +1,457 @@
+/* rail.css — context rail: tasks / quota / changes sections + shared group */
+
+/* ----- section shell + header ----- */
+.rail-sec {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+}
+.rail-sh {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 6px 0 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+.rail-sh__meta {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-faint);
+}
+.rail-act {
+  margin-left: auto;
+  display: flex;
+}
+
+/* ----- icon buttons ----- */
+.rail-ib {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.rail-ib:hover {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+.rail-ib.is-on {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+.rail-ib--sm {
+  width: 22px;
+  height: 22px;
+}
+
+/* ----- rows (generic line / task / background / file) ----- */
+.rail-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.rail-ln,
+.rail-task,
+.rail-bg,
+.rail-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  padding: 0 12px;
+  font-size: 12px;
+  color: var(--text);
+}
+.rail-ln__text,
+.rail-task__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* right-aligned values */
+.rail-ln__r,
+.rail-file__delta,
+.rail-bg__state {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ----- tasks ----- */
+.rail-task__mark {
+  width: 12px;
+  flex: none;
+  text-align: center;
+}
+.rail-task__toggle {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.rail-task.is-doing .rail-task__mark {
+  color: var(--text);
+}
+.rail-task.is-done {
+  color: var(--text-faint);
+}
+.rail-task.is-done .rail-task__text {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+/* row-scoped actions: hidden until the row is hovered or focused */
+.rail-task__remove,
+.rail-file__actions {
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-standard);
+}
+.rail-ln:hover .rail-task__remove,
+.rail-ln:focus-within .rail-task__remove,
+.rail-ln:hover .rail-file__actions,
+.rail-ln:focus-within .rail-file__actions {
+  opacity: 1;
+}
+.rail-file__actions {
+  display: flex;
+}
+
+/* ----- add-task flush row ----- */
+.rail-add {
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 12px;
+}
+.rail-add__input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+}
+.rail-add__input::placeholder {
+  color: var(--text-faint);
+}
+
+/* ----- text button rows ----- */
+.rail-textbtns {
+  display: flex;
+  gap: 10px;
+  padding: 4px 12px 0;
+}
+.rail-tb {
+  border: 0;
+  background: none;
+  padding: 0;
+  font-size: 11.5px;
+  color: var(--accent);
+  cursor: pointer;
+}
+.rail-tb:hover {
+  color: var(--text-strong);
+}
+.rail-tb.is-primary {
+  font-weight: 600;
+}
+
+/* ----- placeholders / empty / merge block ----- */
+.rail-ph {
+  padding: 6px 12px 2px;
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rail-branch {
+  font-variant-numeric: tabular-nums;
+}
+.rail-empty {
+  margin: 0;
+  padding: 4px 12px 6px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.rail-merge {
+  margin: 2px 6px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.rail-merge__list {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 2px;
+}
+
+/* ----- background task rows ----- */
+.rail-bg__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.rail-bg.is-running .rail-bg__state {
+  color: var(--text-muted);
+}
+.rail-bg.is-failed .rail-bg__state {
+  color: var(--red);
+}
+
+/* ----- changed files ----- */
+.rail-file__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.rail-file__badge {
+  width: 10px;
+  flex: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.rail-file__badge.is-modified {
+  color: var(--yellow);
+}
+.rail-file__badge.is-added,
+.rail-file__badge.is-untracked {
+  color: var(--green);
+}
+.rail-file__badge.is-deleted {
+  color: var(--red);
+}
+.rail-file__path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rail-plus {
+  color: var(--green);
+}
+.rail-minus {
+  color: var(--red);
+}
+
+/* ----- quota: current window highlight ----- */
+.quota-cur {
+  position: relative;
+  margin: 0 0 6px;
+  padding: 2px 0 6px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--agent-ink, var(--accent)) 8%, transparent),
+    transparent 70%
+  );
+}
+.quota-cur::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--agent-ink, var(--accent));
+  animation: rail-flash 1.6s var(--ease-out) 1;
+}
+@keyframes rail-flash {
+  0% {
+    width: 2px;
+    box-shadow: 0 0 0 0 transparent;
+  }
+  25% {
+    width: 3px;
+    box-shadow: 0 0 8px 1px
+      color-mix(in srgb, var(--agent-ink, var(--accent)) 45%, transparent);
+  }
+  100% {
+    width: 2px;
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+.quota-cur__title,
+.quota-cur__name {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+}
+.quota-cur__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-strong);
+  white-space: nowrap;
+}
+.quota-cur__note {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.quota-cur__reset {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.quota-cur__balance {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 12px 0;
+}
+.quota-cur__big {
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-strong);
+}
+
+/* ----- quota window meters ----- */
+.quota-wr {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 40px;
+  gap: 8px;
+  align-items: center;
+  height: 20px;
+  padding: 0 12px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.quota-wr i {
+  display: block;
+  height: 2px;
+  background: var(--panel-soft);
+  border-radius: 1px;
+  overflow: hidden;
+}
+.quota-wr i > span {
+  display: block;
+  height: 100%;
+  background: #b5b5bb;
+}
+.quota-wr em {
+  font-style: normal;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* tightest window = primary meter */
+.quota-wr.is-primary,
+.quota-wr.is-tight {
+  color: var(--text);
+}
+.quota-wr.is-primary i,
+.quota-wr.is-tight i {
+  height: 4px;
+  background: color-mix(
+    in srgb,
+    var(--agent-ink, var(--accent)) 15%,
+    var(--panel-soft)
+  );
+}
+.quota-wr.is-primary i > span,
+.quota-wr.is-tight i > span {
+  background: var(--agent-ink, var(--accent));
+}
+.quota-wr.is-primary em,
+.quota-wr.is-tight em {
+  font-weight: 600;
+  color: var(--text-strong);
+}
+/* tones: on meter rows, summary values and primary fills */
+.quota-wr.is-warn em {
+  color: var(--yellow);
+}
+.quota-wr.is-hot em {
+  color: var(--red);
+}
+.quota-wr.is-primary.is-warn i > span,
+.quota-wr.is-tight.is-warn i > span {
+  background: var(--yellow);
+}
+.quota-wr.is-primary.is-hot i > span,
+.quota-wr.is-tight.is-hot i > span {
+  background: var(--red);
+}
+.rail-ln__r.is-warn {
+  color: var(--yellow);
+}
+.rail-ln__r.is-hot {
+  color: var(--red);
+}
+
+/* ----- shared group toggle ----- */
+.rail-shared__toggle {
+  width: 100%;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+}
+.rail-shared__toggle:hover {
+  background: var(--panel-soft);
+}
+.rail-shared__toggle > :first-child {
+  transition: transform var(--dur-base) var(--ease-out);
+}
+.rail-shared__toggle.is-open > :first-child,
+.rail-shared__toggle[aria-expanded="true"] > :first-child {
+  transform: rotate(90deg);
+}
+.rail-shared__toggle > span:last-child {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ----- reduced motion ----- */
+@media (prefers-reduced-motion: reduce) {
+  .quota-cur::before {
+    animation: none;
+  }
+  .rail-sec *,
+  .rail-shared__toggle * {
+    transition: none;
+  }
+}
