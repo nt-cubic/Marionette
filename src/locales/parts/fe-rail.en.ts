@@ -83,4 +83,8 @@ export const en = {
   "rail.memoryDelete": "Delete",
   "rail.memoryDeleteNamed": "Delete memory {name}",
   "rail.resetAt": "resets {when}",
+  "rail.showMore": "Show more",
+  "rail.showLess": "Show less",
+  "rail.showMoreItems": "Show {n} more",
+  "rail.pluginsAllAgents": "All agents",
 } satisfies Record<keyof typeof zh, string>;

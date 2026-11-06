@@ -24,7 +24,7 @@ export const zh = {
   "allPlugins.urlPlaceholder": "https://…/mcp",
   "allPlugins.headersPlaceholder": "请求头，每行一条 Key: Value（可选）",
   "allPlugins.applyHint":
-    "插件在建立会话时注入：新会话自动生效，进行中的会话重连后生效。共通插件对所有 agent 可用；下方「项目上下文」是按项目借贷的另一套。",
-  "allPlugins.paletteOpen": "共通插件",
+    "插件在建立会话时注入：新会话自动生效，进行中的会话重连后生效。所有 agent 都能用的挂在上面；DeepSeek Harness 专用的挂在下面。项目上下文是按项目借贷的另一套。",
+  "allPlugins.paletteOpen": "插件",
   "allPlugins.paletteOpenHint": "装一次 · 全 agent",
 } as const;

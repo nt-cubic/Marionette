@@ -9049,6 +9049,7 @@ export function App() {
             onNewChat={shelfStable.onNewChat}
             onOpenPalette={shelfStable.onOpenPalette}
             onExportSession={shelfStable.onExportSession}
+            memoCount={memoCount}
             onOpenMemo={dockActive ? undefined : () => {
               setMemoOpen(true);
               setMemoActive(true);
@@ -9106,7 +9107,7 @@ export function App() {
                 : []),
               { id: "new-chat", label: t("palette.newChat"), run: () => void handleCreateChatSession() },
               {
-                // 共通插件：装一次全 agent 生效（docs/plan-plugin-layer.md）。
+                // 插件：装一次全 agent 生效（docs/plan-plugin-layer.md）。
                 // 展开右栏滚到该卡片；贴边态切到 context 整页。
                 id: "open-universal-plugins",
                 label: t("allPlugins.paletteOpen"),
@@ -9119,7 +9120,7 @@ export function App() {
                   }
                   window.setTimeout(() => {
                     document
-                      .getElementById("context-universal-plugins")
+                      .getElementById("context-plugins")
                       ?.scrollIntoView({ block: "start" });
                   }, 160);
                 },

@@ -182,7 +182,7 @@ agent 可以看/操作**其它 Windows 应用**的窗口（浏览器之外的原
 **安装一个插件，所有 agent 都生效**（设计稿 `docs/plan-plugin-layer.md`）：
 
 - **登记处**：`~/.marionette/plugins/index.json`（Marionette 自有，不写任何 agent
-  的配置）；安装即全局默认启用。入口：右栏「共通插件」卡片 + Ctrl K「共通插件」。
+  的配置）；安装即全局默认启用。入口：右栏「插件」卡片（所有 agent + DeepSeek Harness 两块）+ Ctrl K「插件」。
   stdio 型填 command/args/env，http 型填 url/headers；安装时自动**探活**
   （initialize + tools/list，探活失败不拦安装，结果记在 `lastProbe`）。
 - **生效方式**：每个启用插件在 `session/new` 时以 **url 型**条目注入（与

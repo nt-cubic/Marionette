@@ -16,9 +16,12 @@ import { useT } from "../lib/i18n";
 export function PluginsSection({
   activeAgentId,
   onCount,
+  embedded = false,
 }: {
   activeAgentId?: string | null;
   onCount?: (count: number) => void;
+  /** Skip the outer card chrome — parent already titled this block 「插件」. */
+  embedded?: boolean;
 }) {
   const t = useT();
   const [plugins, setPlugins] = useState<DshPlugin[] | null>(null);
@@ -76,34 +79,45 @@ export function PluginsSection({
   };
 
   const list = Array.isArray(plugins) ? plugins : [];
-  const listCount = list.length;
   useEffect(() => {
-    onCount?.(listCount);
-  }, [listCount, onCount]);
+    if (plugins == null) return;
+    onCount?.(plugins.length);
+  }, [plugins, onCount]);
 
-  return (
-    <section className="context-card" id="context-plugins">
-      <div className="context-card__heading">
-        <span>{t("plugins.title")}</span>
-        <span className="rail-shared__scope">DeepSeek Harness</span>
-        <div className="context-card__heading-actions">
-          <button
-            className="pill-action pill-action--icon pill-action--sm"
-            type="button"
-            title={t("rail.pluginsRefresh")}
-            aria-label={t("rail.pluginsRefresh")}
-            disabled={busy || operating}
-            onClick={() => void refresh()}
-          >
-            <RefreshCw size={11} />
-          </button>
-        </div>
+  const heading = (
+    <div className={embedded ? "context-lend__labelrow" : "context-card__heading"}>
+      {embedded ? (
+        <span className="context-lend__label">DeepSeek Harness</span>
+      ) : (
+        <>
+          <span>{t("plugins.title")}</span>
+          <span className="rail-shared__scope">DeepSeek Harness</span>
+        </>
+      )}
+      <div className="context-card__heading-actions">
+        <button
+          className="pill-action pill-action--icon pill-action--sm"
+          type="button"
+          title={t("rail.pluginsRefresh")}
+          aria-label={t("rail.pluginsRefresh")}
+          disabled={busy || operating}
+          onClick={() => void refresh()}
+        >
+          <RefreshCw size={11} />
+        </button>
       </div>
+    </div>
+  );
 
+  const body = (
+    <>
+      {heading}
       {list.length === 0 ? (
-        <p className="context-card__empty" style={{ marginTop: 8 }}>
-          {t("rail.pluginsEmpty")}
-        </p>
+        embedded ? null : (
+          <p className="context-card__empty" style={{ marginTop: 8 }}>
+            {t("rail.pluginsEmpty")}
+          </p>
+        )
       ) : (
         <ul className="panel-entry-list">
           {list.map((plugin) => {
@@ -175,6 +189,13 @@ ${scopeNote}`}
           {note}
         </p>
       ) : null}
+    </>
+  );
+
+  if (embedded) return <div className="plugin-block">{body}</div>;
+  return (
+    <section className="context-card" id="context-plugins">
+      {body}
     </section>
   );
 }

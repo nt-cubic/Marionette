@@ -24,7 +24,7 @@ export const en = {
   "allPlugins.urlPlaceholder": "https://…/mcp",
   "allPlugins.headersPlaceholder": "headers, one Key: Value per line (optional)",
   "allPlugins.applyHint":
-    "Plugins ride session creation: new sessions pick them up automatically; reconnect an open session to attach. These reach every agent; the project-context card below is the per-project lending layer.",
-  "allPlugins.paletteOpen": "Plugins (all agents)",
+    "Plugins ride session creation: new sessions pick them up automatically; reconnect an open session to attach. All-agent plugins sit above; DeepSeek Harness ones below. Project context is the per-project lending layer.",
+  "allPlugins.paletteOpen": "Plugins",
   "allPlugins.paletteOpenHint": "install once · every agent",
 } as const;
