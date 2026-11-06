@@ -195,6 +195,13 @@ if errorlevel 1 (
 )
 del /q "%STAGE%" >nul 2>&1
 
+rem Update the stable shortcut only after the final executable was written.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0set-current-build.ps1" -Target "%SHIP%" -ExpectedVersion "%APP_VER%"
+if errorlevel 1 (
+  echo  [error] could not record current build for the shortcut
+  goto fail
+)
+
 for %%A in ("%SHIP%") do set "BYTES=%%~zA"
 set /a "KB=%BYTES%/1024"
 set /a "MB_X10=%BYTES%*10/1024/1024"
