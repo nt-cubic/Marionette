@@ -2,6 +2,7 @@ package gui
 
 import (
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,7 +28,7 @@ func TestTrayWindowsPicked(t *testing.T) {
 	}}
 	cards := []provider.SubscriptionQuota{claude, codex}
 	rows := func(pick map[string][]string) ([][]string, string) {
-		cells, _, tip := trayCardsView(cards, now, false, false, pick)
+		cells, _, tip := trayCardsView("en", cards, now, false, false, pick)
 		var out [][]string
 		for _, c := range cells {
 			out = append(out, c.Rows)
@@ -56,7 +57,7 @@ func TestTrayWindowsPicked(t *testing.T) {
 		t.Fatalf("gone: %q", got)
 	}
 	// the Linux tray's text follows it too
-	if _, label, _ := trayCardsView(cards, now, true, false, map[string][]string{"claude": {"5h"}}); label != "58% | 90% · 80%" {
+	if _, label, _ := trayCardsView("en", cards, now, true, false, map[string][]string{"claude": {"5h"}}); label != "58% | 90% · 80%" {
 		t.Fatalf("text: %q", label)
 	}
 }
@@ -83,23 +84,86 @@ func TestTrayWindowKind(t *testing.T) {
 	}
 }
 
-// Settings is told each window the menu bar can show by its kind, and only
-// those: not one a single model's use counts, nor money aside; the cards
-// the cache keeps are left as they were.
+// Settings is told every window the menu bar can say as a percent by a
+// kind of its own: those it shows unpicked by their span, and one it shows
+// only when picked (a single model's, money aside) by its model or name
+// too, marked extra; a row of text gets none. The cards the cache keeps
+// are left as they were.
 func TestWithTrayKinds(t *testing.T) {
 	qs := []provider.SubscriptionQuota{{Provider: "claude", Windows: []provider.QuotaWindow{
 		{Name: "5 hours", Span: 5 * time.Hour},
 		{Name: "Opus", Span: 7 * 24 * time.Hour, Model: "opus"},
-		{Name: "Extra", Span: 30 * 24 * time.Hour, Aside: true},
+		{Name: "Extra", Span: 30 * 24 * time.Hour, Aside: true, Used: 3},
+		{Name: "Note", Text: true, Aside: true},
 	}}, {Provider: "deepseek", Balance: "¥5"}}
 	out := withTrayKinds(qs)
-	if ws := out[0].Windows; ws[0].TrayKind != "5h" || ws[1].TrayKind != "" || ws[2].TrayKind != "" {
-		t.Fatalf("kinds: %+v", ws)
+	ws := out[0].Windows
+	for i, want := range []struct {
+		kind  string
+		extra bool
+	}{{"5h", false}, {"7d:opus", true}, {"month:extra", true}, {"", false}} {
+		if ws[i].TrayKind != want.kind || ws[i].TrayExtra != want.extra {
+			t.Fatalf("%s: %q extra %v, want %q %v", ws[i].Name, ws[i].TrayKind, ws[i].TrayExtra, want.kind, want.extra)
+		}
 	}
 	if qs[0].Windows[0].TrayKind != "" {
 		t.Fatal("the cache's window was written")
 	}
 	if out[1].Balance != "¥5" {
 		t.Fatalf("balance card: %+v", out[1])
+	}
+}
+
+// Every window a card reports can be picked alone (CrazyJal on X: Cursor's
+// Grok Bot wasn't offered). Cursor's plugin reports Grok Bot aside, so it
+// isn't stopping Cursor's models, with the same 7 days as a weekly plan's
+// Included window: each gets a kind of its own, Grok Bot alone shows it
+// alone, and unpicked the card is as it was, Grok Bot left out. Two
+// windows shown unpicked with one span are told apart by name.
+func TestTrayWindowsPickAside(t *testing.T) {
+	now := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	week := 7 * 24 * time.Hour
+	cursor := provider.SubscriptionQuota{Provider: "cursor", Name: "Cursor", User: "a@b.c", Windows: []provider.QuotaWindow{
+		{Name: "Weekly", Used: 30, Span: week},
+		{Name: "Grok Bot", Used: 64, Span: week, Aside: true},
+		{Name: "Free usage", Display: "+$5 on us", Aside: true},
+		{Name: "Total", Used: 30, Aside: true},
+	}}
+	out := withTrayKinds([]provider.SubscriptionQuota{cursor})[0].Windows
+	if out[0].TrayKind != "7d" || out[1].TrayKind != "7d:grok bot" || !out[1].TrayExtra || out[2].TrayKind != "" || out[3].TrayKind != "name:total" {
+		t.Fatalf("kinds: %+v", out)
+	}
+	rows := func(pick []string) []string {
+		cells, _, _ := trayCardsView("en", []provider.SubscriptionQuota{cursor}, now, false, false, map[string][]string{"cursor": pick})
+		return cells[0].Rows
+	}
+	if got := rows(nil); !slices.Equal(got, []string{"30%"}) {
+		t.Fatalf("unpicked: %q", got)
+	}
+	if got := rows([]string{"7d:grok bot"}); !slices.Equal(got, []string{"64%"}) {
+		t.Fatalf("Grok Bot alone: %q", got)
+	}
+	if got := rows([]string{"7d"}); !slices.Equal(got, []string{"30%"}) {
+		t.Fatalf("Weekly alone: %q", got)
+	}
+	if got := rows([]string{"7d", "7d:grok bot"}); !slices.Equal(got, []string{"30%", "64%"}) {
+		t.Fatalf("both: %q", got)
+	}
+	_, _, tip := trayCardsView("en", []provider.SubscriptionQuota{cursor}, now, false, false, map[string][]string{"cursor": {"7d:grok bot"}})
+	if !strings.Contains(tip, "Grok Bot 64%") {
+		t.Fatalf("tooltip: %q", tip)
+	}
+
+	// two windows shown unpicked, one span: each picked alone
+	two := provider.SubscriptionQuota{Provider: "x", Name: "X", Windows: []provider.QuotaWindow{
+		{Name: "Requests", Used: 10, Span: week},
+		{Name: "Tokens", Used: 20, Span: week},
+	}}
+	if ws := withTrayKinds([]provider.SubscriptionQuota{two})[0].Windows; ws[0].TrayKind != "7d:requests" || ws[1].TrayKind != "7d:tokens" {
+		t.Fatalf("one span twice: %+v", ws)
+	}
+	cells, _, _ := trayCardsView("en", []provider.SubscriptionQuota{two}, now, false, false, map[string][]string{"x": {"7d:tokens"}})
+	if !slices.Equal(cells[0].Rows, []string{"20%"}) {
+		t.Fatalf("Tokens alone: %q", cells[0].Rows)
 	}
 }

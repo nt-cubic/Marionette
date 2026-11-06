@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>v2 动效</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#1f8a76}a:hover{color:#166b5c}
+.f{font-size:11px;color:#8a8a92}
+.tile{border:1px solid #e2e2e6;border-radius:3px;background:#fff;display:flex;flex-direction:column;overflow:hidden}
+.th{display:flex;align-items:center;gap:8px;height:38px;padding:0 8px 0 14px;border-bottom:1px solid #ececee}
+.tt{font-size:12.5px;font-weight:600;color:#111113}
+.stage{position:relative;height:190px;background:#f7f7f8;display:grid;place-items:center;overflow:hidden}
+.foot{padding:9px 14px;font-size:11.5px;color:#5c5c63;line-height:1.5;min-height:52px;box-sizing:border-box}
+.btn{height:26px;padding:0 10px;border:0;border-radius:3px;background:#f1f1f3;color:#2c2c30;font:inherit;font-size:12px;cursor:pointer;transition:transform 120ms cubic-bezier(.22,1,.36,1),background-color 120ms}
+.btn:hover{background:#e7e7ea}.btn:active{transform:scale(.96)}
+.card{position:relative;overflow:hidden;border:1px solid #e2e2e6;border-radius:3px;background:#fff}
+.ln{height:6px;border-radius:1px;background:#ececee}
+@property --run{syntax:'<angle>';inherits:false;initial-value:0deg}
+.live{border-color:color-mix(in srgb,#9a5b43 40%,#e2e2e6)}
+.live::after{content:"";position:absolute;inset:0;border-radius:3px;padding:1px;pointer-events:none;background:conic-gradient(from var(--run),transparent 0 78%,rgba(154,91,67,.75) 88%,transparent 98%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;animation:run 6s linear infinite}
+@keyframes run{0%{--run:0deg;opacity:0}8%{opacity:1}55%{opacity:1}65%{--run:360deg;opacity:0}100%{--run:360deg;opacity:0}}
+.press{height:30px;padding:0 16px;border:0;border-radius:3px;background:#1f8a76;color:#fff;font:inherit;font-size:13px;font-weight:600;cursor:pointer;transition:transform 120ms cubic-bezier(.22,1,.36,1)}
+.press:active{transform:scale(.96)}
+.kv{display:grid;grid-template-columns:150px 170px minmax(0,1fr);gap:12px;align-items:center;height:30px;border-bottom:1px solid #ececee;font-size:12.5px;color:#5c5c63}
+.kv b{font-weight:500;color:#111113}
+@media (prefers-reduced-motion: reduce){.live::after{animation:none;opacity:0}}
+</style>
+</helmet>
+<div style="width:1440px;height:900px;box-sizing:border-box;padding:32px 44px;background:#f7f7f8;color:#2c2c30;font-family:Inter,system-ui,sans-serif;font-size:13px;line-height:1.45;display:flex;flex-direction:column;gap:18px">
+<div style="display:flex;align-items:flex-end;gap:20px">
+<div><div class="f">v2 · 动效</div><div style="font-size:16px;font-weight:650;color:#111113;margin-top:4px">动效只回答三件事：从哪来、到哪去、谁在跑</div></div>
+<div style="flex:1"></div>
+<div class="f" style="max-width:440px;font-size:11.5px">每格的按钮都能点。只动 transform / opacity（数据条的宽度除外）；循环只给运行中的元素；系统开了减少动态效果时保留状态、去掉位移和循环。</div>
+</div>
+
+<div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px">
+
+<div class="tile">
+<div class="th"><span class="tt">谁在跑 · 描边流光</span></div>
+<div class="stage"><div class="card live" style="width:220px;padding:10px 12px;background:#f4f4f5;display:flex;flex-direction:column;gap:6px"><div class="ln" style="width:70%;background:#d4d4d8"></div><div class="ln"></div><div class="ln" style="width:55%"></div></div></div>
+<div class="foot">运行中的调用块：描边用 agent 色，一段淡光绕一圈后隐去，6s 一轮。</div>
+</div>
+
+<div class="tile">
+<div class="th"><span class="tt">切换 agent · 竖条亮一下</span><div style="flex:1"></div><button type="button" class="btn" onClick="{{swap}}">切换</button></div>
+<div class="stage"><div style="width:220px;background:#fff;border:1px solid #e2e2e6;border-radius:3px;padding:8px 0"><div style="{{curStyle}}"><div style="font-size:14px;font-weight:600;color:#111113">{{agent}}</div><div style="height:4px;margin-top:6px;background:#ececee;border-radius:1px;overflow:hidden"><span style="{{curBar}}"></span></div></div><div style="padding:8px 12px 0;font-size:12px;color:#5c5c63">Codex<span style="float:right">26%</span></div></div></div>
+<div class="foot">当前 agent 变了：左侧竖条换色并短暂加粗发光 600ms，进度条宽度跟着过渡。</div>
+</div>
+
+<div class="tile">
+<div class="th"><span class="tt">弹窗 · 进 / 出</span><div style="flex:1"></div><button type="button" class="btn" onClick="{{toggleDlg}}">{{dlgLabel}}</button></div>
+<div class="stage"><div style="{{dimStyle}}"></div><div class="card" style="{{dlgStyle}}"><div style="padding:12px;display:flex;flex-direction:column;gap:7px;width:170px"><div class="ln" style="width:60%;background:#d4d4d8"></div><div class="ln"></div><div class="ln" style="width:80%"></div></div><div style="height:28px;border-top:1px solid #ececee;display:flex;justify-content:flex-end;align-items:center;gap:4px;padding:0 8px"><span style="width:30px;height:14px;border-radius:2px;background:#f1f1f3"></span><span style="width:30px;height:14px;border-radius:2px;background:#1f8a76"></span></div></div></div>
+<div class="foot">进 180ms 上浮 4px；退 120ms 只淡出。先放完退场再卸载。</div>
+</div>
+
+<div class="tile">
+<div class="th"><span class="tt">浮层 · 从锚点长出</span><div style="flex:1"></div><button type="button" class="btn" onClick="{{togglePop}}">{{popLabel}}</button></div>
+<div class="stage" style="place-items:end end;padding:0 24px 18px;box-sizing:border-box">
+<div style="position:relative">
+<div class="card" style="{{popStyle}}"><div style="padding:10px 12px;display:flex;flex-direction:column;gap:7px;width:150px"><div class="ln" style="width:40%;background:#d4d4d8"></div><div style="height:5px;border-radius:3px;background:#ece3df"><span style="display:block;width:24%;height:100%;border-radius:3px;background:#9a5b43"></span></div><div class="ln"></div><div class="ln"></div></div></div>
+<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="#ece3df" stroke-width="2"/><circle cx="8" cy="8" r="6" fill="none" stroke="#9a5b43" stroke-width="2" stroke-dasharray="9 38" transform="rotate(-90 8 8)"/></svg>
+</div>
+</div>
+<div class="foot">原点在锚点（小圆圈右下）：scale .97 → 1 + 上移 4px，180ms；收起 120ms。</div>
+</div>
+
+<div class="tile">
+<div class="th"><span class="tt">调用块 · 展开 / 折回</span><div style="flex:1"></div><button type="button" class="btn" onClick="{{toggleFold}}">{{foldLabel}}</button></div>
+<div class="stage" style="place-items:start stretch;padding:18px;box-sizing:border-box">
+<div class="card" style="background:#f4f4f5"><div style="display:flex;align-items:center;gap:8px;height:30px;padding:0 10px;font-size:12px;color:#2c2c30"><span style="{{chev}}">›</span>3 thoughts, 2 commands<span class="f" style="margin-left:auto">14s</span></div>
+<div style="{{foldStyle}}"><div style="overflow:hidden;min-height:0"><div style="padding:0 10px 10px;display:flex;flex-direction:column;gap:5px"><div style="height:5px;background:#ececee;position:relative"><span style="position:absolute;left:0;width:30%;height:100%;background:#bdbdc3"></span></div><div style="height:5px;background:#ececee;position:relative"><span style="position:absolute;left:30%;width:40%;height:100%;background:#7b7b82"></span></div><div class="ln" style="width:85%;background:#e2e2e6"></div></div></div></div></div>
+</div>
+<div class="foot">整轮结束自动折回 tally：行高 0fr ↔ 1fr 180ms。对话流里的虚拟列表不做高度动画。</div>
+</div>
+
+<div class="tile">
+<div class="th"><span class="tt">新卡片 · 到达</span><div style="flex:1"></div><button type="button" class="btn" onClick="{{toggleList}}">{{listLabel}}</button></div>
+<div class="stage" style="place-items:stretch;padding:16px;box-sizing:border-box"><div style="display:flex;flex-direction:column;gap:6px"><sc-for list="{{cards}}" as="c" hint-placeholder-count="3"><div class="card" style="{{c.style}}"><div style="{{c.bar}}"></div><div class="ln" style="{{c.ln}}"></div></div></sc-for></div></div>
+<div class="foot">240ms 上移 6px，交付卡逐行 30ms 错峰。只有在屏幕上新到的卡才放。</div>
+</div>
+
+<div class="tile">
+<div class="th"><span class="tt">数据 · 跟着走</span><div style="flex:1"></div><button type="button" class="btn" onClick="{{bump}}">+ 用量</button></div>
+<div class="stage"><div style="width:220px;display:flex;flex-direction:column;gap:8px"><div style="display:flex;font-size:12px;color:#2c2c30">5 小时<b style="margin-left:auto;font-weight:600;font-variant-numeric:tabular-nums;{{pctColor}}">{{pct}}%</b></div><div style="height:4px;background:#ece3df;border-radius:1px;overflow:hidden"><span style="{{pctBar}}"></span></div></div></div>
+<div class="foot">进度条宽度 280ms 跟着数字走；跨过 80% / 95% 时颜色淡入黄 / 红。</div>
+</div>
+
+<div class="tile">
+<div class="th"><span class="tt">按压</span></div>
+<div class="stage"><button type="button" class="press">按住我</button></div>
+<div class="foot">按下 scale .96，120ms。不做悬停上浮、不做涟漪。</div>
+</div>
+</div>
+
+<div style="background:#fff;border:1px solid #e2e2e6;border-radius:3px;padding:2px 16px">
+<div class="kv"><span>token</span><span>值</span><span>用在</span></div>
+<div class="kv"><b>--dur-fast</b><span>120ms</span><span>悬停、按压、所有退场、颜色</span></div>
+<div class="kv"><b>--dur-base</b><span>180ms</span><span>菜单、浮层、弹窗进场、折叠、开关</span></div>
+<div class="kv"><b>--dur-slow</b><span>240ms</span><span>卡片到达、贴边滑入、数据条</span></div>
+<div class="kv" style="border-bottom:0"><b>--live-loop</b><span>6s · 2.4s · 1.4s</span><span>描边流光 · 标题扫光 · 九点呼吸（都只给运行中）</span></div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+var OUT = 'cubic-bezier(.22,1,.36,1)', STD = 'cubic-bezier(.2,0,0,1)';
+var AG = [{ n: 'Claude', c: '#9a5b43', t: '#ece3df', p: 34 }, { n: 'ZCode', c: '#4d5c95', t: '#e1e4ef', p: 58 }];
+class Component extends DCLogic {
+  constructor(props) { super(props); this.state = { dlg: true, pop: true, fold: false, list: true, ag: 0, flash: false, pct: 72 }; }
+  flip(k) { var s = {}; s[k] = !this.state[k]; this.setState(s); }
+  renderVals() {
+    var self = this, st = this.state, a = AG[st.ag];
+    var pc = st.pct >= 95 ? '#c03d45' : (st.pct >= 80 ? '#9a7410' : '#9a5b43');
+    return {
+      swap: function () { self.setState({ ag: 1 - st.ag, flash: true }); setTimeout(function () { self.setState({ flash: false }); }, 600); },
+      agent: a.n,
+      curStyle: 'position:relative;padding:4px 12px 8px;box-shadow:inset ' + (st.flash ? 4 : 2) + 'px 0 0 ' + a.c + (st.flash ? ',-2px 0 10px ' + a.c + '66' : '') + ';transition:box-shadow 600ms ' + OUT,
+      curBar: 'display:block;height:100%;width:' + a.p + '%;background:' + a.c + ';transition:width 280ms ' + OUT + ',background-color 280ms',
+      toggleDlg: function () { self.flip('dlg'); }, dlgLabel: st.dlg ? '关闭' : '打开',
+      dimStyle: 'position:absolute;inset:0;background:rgba(17,17,19,.18);transition:opacity ' + (st.dlg ? 180 : 120) + 'ms ' + STD + ';opacity:' + (st.dlg ? 1 : 0),
+      dlgStyle: 'transition:opacity ' + (st.dlg ? 180 : 120) + 'ms ' + (st.dlg ? OUT : STD) + ',transform ' + (st.dlg ? 180 : 120) + 'ms ' + OUT + ';box-shadow:0 12px 32px rgba(17,17,19,.10);opacity:' + (st.dlg ? 1 : 0) + ';transform:translateY(' + (st.dlg ? 0 : 4) + 'px)',
+      togglePop: function () { self.flip('pop'); }, popLabel: st.pop ? '收起' : '打开',
+      popStyle: 'position:absolute;right:0;bottom:24px;transform-origin:bottom right;box-shadow:0 8px 24px rgba(0,0,0,.08);transition:opacity ' + (st.pop ? 180 : 120) + 'ms ' + OUT + ',transform ' + (st.pop ? 180 : 120) + 'ms ' + OUT + ';opacity:' + (st.pop ? 1 : 0) + ';transform:' + (st.pop ? 'none' : 'translateY(4px) scale(.97)'),
+      toggleFold: function () { self.flip('fold'); }, foldLabel: st.fold ? '折回' : '展开',
+      chev: 'display:inline-block;color:#8a8a92;transition:transform 180ms ' + OUT + ';transform:rotate(' + (st.fold ? 90 : 0) + 'deg)',
+      foldStyle: 'display:grid;transition:grid-template-rows 180ms ' + OUT + ',opacity 180ms;grid-template-rows:' + (st.fold ? '1fr' : '0fr') + ';opacity:' + (st.fold ? 1 : 0),
+      toggleList: function () { self.flip('list'); }, listLabel: st.list ? '重置' : '播放',
+      cards: [0, 1, 2].map(function (i) {
+        var d = st.list ? i * 60 : 0;
+        var bars = ['#1f8a76', '#f4f4f5', '#9a5b43'];
+        return {
+          style: 'padding:10px 12px;' + (i === 1 ? 'background:#f4f4f5;' : '') + 'transition:opacity 240ms ' + OUT + ' ' + d + 'ms,transform 240ms ' + OUT + ' ' + d + 'ms;opacity:' + (st.list ? 1 : 0) + ';transform:translateY(' + (st.list ? 0 : 6) + 'px)',
+          bar: i === 1 ? 'display:none' : 'position:absolute;left:0;top:0;bottom:0;width:3px;background:' + bars[i],
+          ln: 'width:' + [70, 90, 55][i] + '%'
+        };
+      }),
+      bump: function () { self.setState({ pct: st.pct >= 100 ? 34 : Math.min(100, st.pct + 9) }); },
+      pct: st.pct, pctColor: 'color:' + (pc === '#9a5b43' ? '#111113' : pc) + ';transition:color 240ms',
+      pctBar: 'display:block;height:100%;width:' + st.pct + '%;background:' + pc + ';transition:width 280ms ' + OUT + ',background-color 240ms'
+    };
+  }
+}
+</script>
+</body>
+</html>

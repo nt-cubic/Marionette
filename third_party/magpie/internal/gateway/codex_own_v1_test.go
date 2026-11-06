@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // codexOwnOffMagpieSetup: Codex signed in to ChatGPT, its models cache
@@ -137,6 +139,133 @@ func TestCodexOwnModelOnMagpieThreadSaysWhy(t *testing.T) {
 	for _, want := range []string{"one of Codex's own models", "started while magpie was Codex's model provider", "subscription accounts are off", "Start a new thread"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("answer lacks %q: %s", want, body)
+		}
+	}
+}
+
+// codexOwnSideCall is one of Codex's hidden side calls (a thread's title
+// or description) sent to magpie's own /v1 on one of Codex's own models,
+// as it is when the thread was started while magpie was Codex's provider
+// (model_provider = "magpie", whose base_url is magpie's /v1) and Codex
+// asks on its own title model, gpt-5.6-luna.
+func codexOwnSideCall(t *testing.T, kind, model string) *httptest.ResponseRecorder {
+	t.Helper()
+	var text, schema string
+	switch kind {
+	case "thread_title":
+		text = "Generate a concise title. User prompt:\nfix the login bug"
+		schema = `{"type":"object","properties":{"title":{"type":"string","minLength":1,"maxLength":36}},"required":["title"],"additionalProperties":false}`
+	case "thread_description":
+		text = "Describe the thread"
+		schema = `{"type":"object","properties":{"description":{"type":"string","minLength":1}},"required":["description"],"additionalProperties":false}`
+	}
+	body := `{"model":"` + model + `","stream":true,"reasoning":{"effort":"low"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":` + strconvQuote(text) + `}]}],` +
+		`"text":{"format":{"type":"json_schema","name":"codex_output_schema","strict":true,"schema":` + schema + `}}}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:51000"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "codex_cli_rs/0.164.0 (Mac OS 26.2.0; arm64) Terminal")
+	req.Header.Set("Originator", "codex_cli_rs")
+	req.Header.Set("Authorization", "Bearer "+Token)
+	req.Header.Set("session_id", kind+"-thread")
+	req.Header.Set("x-codex-turn-metadata", `{"thread_source":"`+kind+`","parent_thread_id":"main-chat"}`)
+	New().Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// codexOwnSideCallEnv is shruru's machine for #4590: Codex never signed in
+// to ChatGPT (no ~/.codex/auth.json, on purpose), so magpie can read no
+// sign-in of its; its models cache still lists gpt-5.6-luna, and magpie
+// has no ChatGPT account either. The titles and descriptions settings name
+// a model of magpie's.
+func codexOwnSideCallEnv(t *testing.T) *fake {
+	t.Helper()
+	fresh(t) // no agent signed in anywhere
+	f := &fake{t: t}
+	setup(t, provider.Chat, f)
+	home := os.Getenv("HOME")
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".codex", "models_cache.json"),
+		[]byte(`{"etag":"e1","models":[{"slug":"gpt-5.6-luna","display_name":"gpt-5.6-luna","priority":1}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	provider.ForgetAccounts()
+	t.Cleanup(provider.ForgetAccounts)
+	save := func(name, v string) {
+		t.Helper()
+		st := settings.Load()
+		switch name {
+		case "titles":
+			st.CodexTitles = v
+		case "descriptions":
+			st.CodexDescriptions = v
+		}
+		if err := settings.Save(st); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save("titles", "fake/m1")
+	save("descriptions", "fake/m1")
+	return f
+}
+
+// A hidden side call of Codex's that lands on /v1 on one of Codex's own
+// models — a thread's title or description, the thread started while
+// magpie was Codex's provider — is magpie's to answer (codexTitlesTo and
+// codexDescriptionsTo, further down handle), never to put on Codex's
+// ChatGPT sign-in: with no sign-in to be had (no ChatGPT account in
+// magpie, Codex itself never signed in) the request was answered 404 and
+// Codex named the thread after its first message, whatever the settings
+// said (#4590).
+func TestCodexSideCallOnOwnModelNotPutOnSignIn(t *testing.T) {
+	t.Run("title", func(t *testing.T) {
+		f := codexOwnSideCallEnv(t)
+		f.reply = sse(
+			`data: {"id":"c1","choices":[{"index":0,"delta":{"content":"Fix login bug"}}]}`,
+			`data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":30,"completion_tokens":4}}`,
+			`data: [DONE]`)
+		rec := codexOwnSideCall(t, "thread_title", "gpt-5.6-luna")
+		if text, _ := outputText(t, rec.Body.String()); rec.Code != 200 || text != `{"title":"Fix login bug"}` || f.calls != 1 {
+			t.Fatalf("a title on gpt-5.6-luna: %d %q, upstream %d", rec.Code, rec.Body.String(), f.calls)
+		}
+		var sent struct {
+			Model string `json:"model"`
+		}
+		json.Unmarshal(f.got, &sent)
+		if sent.Model != "m1" {
+			t.Errorf("the titles model was asked for %q", sent.Model)
+		}
+	})
+	t.Run("description", func(t *testing.T) {
+		f := codexOwnSideCallEnv(t)
+		f.reply = sse(
+			`data: {"id":"c1","choices":[{"index":0,"delta":{"content":"Reviewed the routing change"}}]}`,
+			`data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":30,"completion_tokens":8}}`,
+			`data: [DONE]`)
+		rec := codexOwnSideCall(t, "thread_description", "gpt-5.6-luna")
+		if text, _ := outputText(t, rec.Body.String()); rec.Code != 200 || text != `{"description":"Reviewed the routing change"}` || f.calls != 1 {
+			t.Fatalf("a description on gpt-5.6-luna: %d %q, upstream %d", rec.Code, rec.Body.String(), f.calls)
+		}
+	})
+}
+
+// With no setting naming where a side call goes, a title asked on one of
+// Codex's own models still goes on Codex's sign-in, as every turn of the
+// thread does: magpie has nothing of its own to answer it with, and
+// before #4590 that is where it was answered.
+func TestCodexSideCallOnOwnModelUnsetGoesOnSignIn(t *testing.T) {
+	_, models := codexOwnOffMagpieSetup(t, false)
+	for _, kind := range []string{"thread_title", "thread_description", "thread_summary", "composer_predictions"} {
+		*models = nil
+		req := codexOnMagpieRequest("127.0.0.1:51000")
+		req.Header.Set("x-codex-turn-metadata", `{"thread_source":"`+kind+`","parent_thread_id":"main-chat"}`)
+		rec := httptest.NewRecorder()
+		New().Handler().ServeHTTP(rec, req)
+		if len(*models) != 1 || (*models)[0] != "gpt-6.1-sol" {
+			t.Errorf("%s with no setting: %d %s, backend asked for %v", kind, rec.Code, rec.Body.String(), *models)
 		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -21,8 +22,10 @@ type fakeHub struct {
 	mu    sync.Mutex
 	on    bool
 	tools map[string][]HubTool // by agent
-	calls []string
-	call  func(ctx context.Context, server, tool string) (json.RawMessage, error)
+	// servers are what Servers says, by agent
+	servers map[string][]HubServer
+	calls   []string
+	call    func(ctx context.Context, server, tool string) (json.RawMessage, error)
 }
 
 func (f *fakeHub) On() bool { f.mu.Lock(); defer f.mu.Unlock(); return f.on }
@@ -31,6 +34,12 @@ func (f *fakeHub) Tools(_ context.Context, agent string) []HubTool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.tools[agent]
+}
+
+func (f *fakeHub) Servers(agent string) []HubServer {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.servers[agent]
 }
 
 func (f *fakeHub) Call(ctx context.Context, agent, server, tool string, args json.RawMessage) (json.RawMessage, error) {
@@ -150,6 +159,47 @@ func TestHubMCPListsAndRoutes(t *testing.T) {
 	}
 	if m := readMCP(t, hubPost(h, "claude", here, `{"jsonrpc":"2.0","id":4,"method":"resources/list"}`)); m.Error == nil || m.Error.Code != -32601 {
 		t.Errorf("resources/list: %+v", m)
+	}
+}
+
+// A tool name the agent listed before its server's list changed (Magpie
+// Browser's browser_tabs, now the browser tool's tabs action) or while
+// the server's list failed still goes to that server when it is switched
+// on for the agent, for the server to run or refuse; another agent's
+// server, or one no server's name starts, is still unknown.
+func TestHubMCPCallsAToolNoLongerListed(t *testing.T) {
+	fresh(t)
+	f := &fakeHub{on: true,
+		tools: map[string][]HubTool{
+			"claude": {{Server: "magpie-browser", Tool: "browser", Spec: hubSpec("browser")}},
+		},
+		servers: map[string][]HubServer{
+			"claude": {{Name: "magpie-browser"}, {Name: "my.fs"}},
+			"codex":  {{Name: "github"}},
+		},
+	}
+	withHub(t, f)
+	h := lanGuard(New().Handler())
+	for _, c := range []struct{ name, ran string }{
+		{"magpie-browser__browser_tabs", "ran magpie-browser browser_tabs"},
+		{"magpie-browser__browser", "ran magpie-browser browser"},
+		// listed nothing just now, and its name in the hub's characters
+		{"my-fs__read", "ran my.fs read"},
+	} {
+		m := readMCP(t, hubPost(h, "claude", here, toolsCall(c.name, `{"action":"tabs"}`)))
+		if m.Error != nil || m.Result.IsError || m.Result.Content[0].Text != c.ran {
+			t.Errorf("%s: %+v", c.name, m)
+		}
+	}
+	for _, c := range []struct{ agent, name string }{{"claude", "github__create_issue"}, {"claude", "magpie-browser__"}, {"codex", "magpie-browser__browser_tabs"}, {"claude", "nope__x"}} {
+		m := readMCP(t, hubPost(h, c.agent, here, toolsCall(c.name, `{}`)))
+		if m.Error == nil || m.Error.Code != -32602 || !strings.Contains(m.Error.Message, "unknown tool "+c.name) {
+			t.Errorf("%s's %s: %+v", c.agent, c.name, m)
+		}
+	}
+	want := `claude magpie-browser browser_tabs {"action":"tabs"}|claude magpie-browser browser {"action":"tabs"}|claude my.fs read {"action":"tabs"}`
+	if got := strings.Join(f.ran(), "|"); got != want {
+		t.Errorf("ran %q, want %q", got, want)
 	}
 }
 
@@ -345,6 +395,73 @@ func TestHubMCPHeldToKeyLimit(t *testing.T) {
 	}
 	if len(f.ran()) != 0 {
 		t.Errorf("ran %q", f.ran())
+	}
+}
+
+// An agent that shows the router as its instructions' first line (Pi,
+// cut at 250 characters) learns from that line which servers are behind
+// it and what each is for: a Pi asked about a GitHub repository cloned
+// it rather than ask the DeepWiki behind the router, told only "The tools
+// of the MCP servers in magpie's Library" (11-01). Every server is named
+// and what it is for cut to fit, then said whole below.
+func TestHubMCPNamesItsServers(t *testing.T) {
+	fresh(t)
+	t.Setenv("MAGPIE_ADDR", "")
+	t.Setenv("MAGPIE_PUBLIC_URL", "")
+	five := []HubServer{
+		{Name: "context7", About: "Up-to-date documentation and code examples for any library, straight into the prompt."},
+		{Name: "deepwiki", About: "Ask questions about any public GitHub repository and read its generated wiki."},
+		{Name: "fetch", About: "Fetch a web page and hand it over as Markdown."},
+		{Name: "notes"},
+		{Name: "playwright", About: "Drive a real browser: open pages, click, type and read them through the accessibility tree."},
+		{Name: "time", About: "The current time anywhere, and conversions between time zones."},
+	}
+	var many []HubServer
+	for i := range 40 {
+		many = append(many, HubServer{Name: fmt.Sprintf("server-%02d", i), About: "Does one thing well."})
+	}
+	f := &fakeHub{on: true, servers: map[string][]HubServer{"claude": five}}
+	withHub(t, f)
+	h := lanGuard(New().Handler())
+
+	say, _, _ := whereReply(t, h, here)
+	first, rest, _ := strings.Cut(say, "\n")
+	if n := len([]rune(first)); n > 250 {
+		t.Errorf("the first line is %d characters: %q", n, first)
+	}
+	for _, s := range five {
+		if !strings.Contains(first, s.Name) {
+			t.Errorf("the first line doesn't name %s: %q", s.Name, first)
+		}
+		if s.About != "" && !strings.Contains(rest, "- "+s.Name+": "+s.About+"\n") {
+			t.Errorf("%s isn't said whole: %q", s.Name, rest)
+		}
+	}
+	for _, w := range []string{"documentation", "GitHub repository", "web page", "real browser", "current time"} {
+		if !strings.Contains(first, w) {
+			t.Errorf("the first line doesn't say %q: %q", w, first)
+		}
+	}
+	if !strings.Contains(rest, "each named <server>__<tool>") {
+		t.Errorf("how its tools are named is gone: %q", say)
+	}
+
+	// too many to say each: as many names as fit, the rest counted
+	f.mu.Lock()
+	f.servers["claude"] = many
+	f.mu.Unlock()
+	say, _, _ = whereReply(t, h, here)
+	first, _, _ = strings.Cut(say, "\n")
+	if n := len([]rune(first)); n > 250 || !strings.Contains(first, "server-00") || !strings.Contains(first, " more") {
+		t.Errorf("40 servers: %d characters, %q", n, first)
+	}
+
+	// none: as before
+	f.mu.Lock()
+	f.servers["claude"] = nil
+	f.mu.Unlock()
+	if say, _, _ = whereReply(t, h, here); !strings.HasPrefix(say, "The tools of the MCP servers") {
+		t.Errorf("no server: %q", say)
 	}
 }
 

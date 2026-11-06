@@ -1,0 +1,572 @@
+/* UI v2 overrides: transcript (conversation stream cards).
+   Loads after every legacy sheet (src/main.tsx); see docs/ui-language.md.
+   Tokens only, never hex, so light and dark both keep working. */
+
+/* ── 1 · Ground + card chrome ──────────────────────────────────────────── */
+
+.event-list {
+  gap: 6px;
+  background: var(--panel-muted);
+}
+
+.event-card {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  box-shadow: none;
+}
+
+.event-card__type {
+  text-transform: none;
+}
+
+/* Prompt wrappers keep the same card padding (legacy 12/14). */
+.event-card--plan_prompt,
+.event-card--ask_prompt {
+  padding: 10px;
+}
+
+/* ── 2 · You card ──────────────────────────────────────────────────────── */
+
+.event-card--user_message .event-card__type {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.event-card--user_message .event-card__timestamp {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* ── 3 · Activity / tool cards ───────────────────────────────────────────
+   The process card is the 0.6 gray chip plus v2 identity chrome: ▸ that
+   turns, 3px agent-ink rail, square left / round right. Inner tool/thought
+   rows keep 0.6 padding so they are not squeezed into a 30px <details>
+   widget, and stay full-radius chips with no second rail. Thumbs on a
+   closed tally stay 16px so they cannot stretch the chip. */
+
+.event-card--thought,
+.event-card--tool_call {
+  border-color: color-mix(in srgb, var(--border) 80%, var(--text-muted));
+  background: color-mix(in srgb, var(--panel-soft) 88%, transparent);
+  box-shadow: none;
+}
+
+.activity-group.is-live {
+  border-color: color-mix(in srgb, var(--agent-ink, var(--accent)) 40%, var(--border));
+}
+
+.event-card--collapsible:not([open]) .tool-thumb,
+.activity-panel:not([open]) .tool-thumb,
+.activity-kind:not([open]) .tool-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-sm);
+}
+
+.event-card__tool-diff {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.event-card__tool-diff-add {
+  color: var(--green);
+}
+
+.event-card__tool-diff-del {
+  color: var(--red);
+}
+
+/* ── 4 · Inline code + code blocks ─────────────────────────────────────── */
+
+.md-body code {
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  font-size: 12px;
+}
+
+.md-body pre {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-muted);
+}
+
+.md-body .md-code {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-muted);
+}
+
+.md-code__bar {
+  min-height: 22px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+/* ── 5 · Turn delivery card ────────────────────────────────────────────── */
+
+.event-card.event-card--turn_delivery {
+  border-left-width: 3px;
+  border-left-color: var(--text-faint);
+}
+
+/* Collapsed: a 36px receipt row. */
+.event-card.event-card--turn_delivery:not(.is-open) {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.event-card.event-card--turn_delivery:not(.is-open) .turn-delivery__bar {
+  min-height: 36px;
+}
+
+.turn-delivery__fold {
+  display: grid;
+  place-items: center;
+  color: var(--text-faint);
+  transition: transform var(--dur-fast, 120ms) var(--ease-standard, ease);
+}
+
+.turn-delivery__headline {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text-strong);
+  letter-spacing: normal;
+}
+
+.turn-delivery__peek {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* Headline ratio: 26×3 mini bar, green leads (red tail stays for del-only). */
+.turn-delivery__bar .turn-delivery__ratio {
+  width: 26px;
+  height: 3px;
+  border-radius: 1px;
+}
+
+.turn-delivery__bar .turn-delivery__ratio i.is-add {
+  background: var(--green);
+}
+
+.turn-delivery__bar .turn-delivery__ratio i.is-del {
+  background: var(--red);
+}
+
+/* Undo is a text button now — no pill. */
+.turn-delivery__undo {
+  height: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.turn-delivery__undo:hover,
+.turn-delivery__undo:focus-visible {
+  border: 0;
+  background: transparent;
+  color: var(--text-strong);
+}
+
+/* Expanded file rows: 24px, hairline-separated. */
+.turn-delivery__files {
+  gap: 0;
+}
+
+.turn-delivery__row {
+  min-height: 24px;
+  padding: 0 6px;
+  border-radius: 0;
+}
+
+.turn-delivery__row + .turn-delivery__row {
+  border-top: 1px solid var(--hairline);
+}
+
+.turn-delivery__row:hover,
+.turn-delivery__row:focus-within {
+  background: var(--panel-soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .turn-delivery__fold {
+    transition: none;
+  }
+}
+
+/* ── 6 · Ask / plan-approval / settled prompt cards ────────────────────── */
+
+.event-card--plan_prompt.is-pending,
+.event-card--ask_prompt.is-pending {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: var(--panel-raised);
+}
+
+.plan-approval-card__header > svg,
+.ask-card__header > svg,
+.stream-prompt__head > svg {
+  color: var(--text-muted);
+}
+
+.plan-approval-card__header strong,
+.ask-card__header strong,
+.stream-prompt__head strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.plan-approval-card__header span,
+.ask-card__header span {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* Buttons: v2 rules — primary accent, danger red, secondary soft, no borders. */
+.plan-approval-card__btn,
+.ask-card__btn {
+  min-height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.plan-approval-card__btn:hover:not(:disabled),
+.ask-card__btn:hover:not(:disabled) {
+  border: 0;
+}
+
+.plan-approval-card__btn--primary,
+.ask-card__btn--primary {
+  color: var(--bg);
+  background: var(--accent);
+  border: 0;
+  font-weight: 600;
+}
+
+.plan-approval-card__btn--primary:hover:not(:disabled),
+.ask-card__btn--primary:hover:not(:disabled) {
+  opacity: 0.9;
+  background: var(--accent);
+}
+
+.plan-approval-card__btn--danger {
+  color: #fff;
+  background: var(--red);
+  border: 0;
+}
+
+.plan-approval-card__btn--danger:hover:not(:disabled) {
+  opacity: 0.9;
+  background: var(--red);
+}
+
+.plan-approval-card__btn--ghost,
+.ask-card__btn--ghost {
+  color: var(--text);
+  background: var(--panel-soft);
+  border: 0;
+}
+
+.plan-approval-card__btn--ghost:hover:not(:disabled),
+.ask-card__btn--ghost:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text) 8%, var(--panel-soft));
+}
+
+/* Plan reading pane: muted ground, card border. */
+.plan-approval-card__plan {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-muted);
+}
+
+.plan-approval-card__error {
+  color: var(--red);
+}
+
+/* Option rows: 28px hairline-separated rows, not boxes. */
+.ask-card__options {
+  gap: 0;
+}
+
+.ask-card__options > li + li {
+  border-top: 1px solid var(--hairline);
+}
+
+.ask-card__option {
+  min-height: 28px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 0;
+}
+
+.ask-card__option.is-selected {
+  border: 0;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
+.ask-card__qnum {
+  border-radius: var(--radius-sm);
+}
+
+.ask-card__chip {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.ask-card__rec {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.ask-card__hint {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.ask-card__option-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* "Other" input sits flush in its hairline row — no box. */
+.ask-card__other {
+  padding-top: 4px;
+  border-top: 1px solid var(--hairline);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.ask-card__other input {
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: 12px;
+}
+
+.ask-card__other input:focus {
+  outline: none;
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+/* Settled status is text colour only — no pill. */
+.stream-prompt__chip {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* ── 7 · Image cards ───────────────────────────────────────────────────── */
+
+.user-image-card__frame {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: none;
+}
+
+/* ---- Activity group + Reply typography, v2 final (2026-11-06) ------------------------
+   The activity group between You and Reply is a card of the same rank: the legacy frame
+   (border pulled toward muted ink, panel-soft fill) so it reads as an object, not a grey
+   band in the ground. Its summary is 12px / 600 in body ink; counts and time are faint.
+
+   Reply cards use one type scale: agent 12.5/600 strong, model 12/400 faint, body
+   13.5 in body ink, footer meta 11 faint, mode in its tone. The footer is a 22px row
+   with 22px icon buttons, so the card no longer ends in a tall empty strip. */
+.activity-group {
+  border-color: color-mix(in srgb, var(--border) 80%, var(--text-muted));
+  background: color-mix(in srgb, var(--panel-soft) 88%, transparent);
+}
+
+.event-card--assistant_message .event-card__who {
+  color: var(--text-strong);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.event-card--assistant_message .event-card__who-model {
+  margin-left: 2px;
+  color: var(--text-faint);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.event-card--assistant_message .event-card__timestamp {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.event-card--assistant_message .md-body {
+  margin-top: 4px;
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.event-card--assistant_message .event-card__footer {
+  min-height: 22px;
+  margin-top: 4px;
+  margin-bottom: -4px;
+  gap: 4px 12px;
+}
+
+.event-card--assistant_message .event-card__meta {
+  gap: 0 8px;
+}
+
+.event-card--assistant_message .meta-tag {
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 22px;
+}
+
+.event-card--assistant_message .meta-tag--mode {
+  color: var(--mode-chip, var(--text-faint));
+  font-weight: 500;
+}
+
+.event-card--assistant_message .meta-tag__symbol {
+  font-size: 9px;
+  line-height: 22px;
+  margin-right: -3px;
+}
+
+.event-card--assistant_message .event-card__footer .pill-action--icon {
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
+}
+
+/* ---- Card shape: square left, round right (2026-11-06) -------------------------------
+   You / Reply / delivery / process card have a 3px identity rail, so the
+   left corners stay square and the bar is one straight line. Nested
+   tool/thought rows inside the process card stay chips (full radius, no
+   second rail). */
+.event-list .event-card--user_message,
+.event-list .event-card--assistant_message,
+.event-list .event-card--turn_delivery,
+.event-list .activity-group,
+.event-list .activity-group.is-live::after,
+.event-list__virt-item > .event-card--tool_call,
+.event-list__virt-item > .event-card--thought {
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+.event-list .activity-group::before,
+.event-list__virt-item > .event-card--tool_call::before,
+.event-list__virt-item > .event-card--thought::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--agent-ink, color-mix(in srgb, var(--text-muted) 70%, var(--border)));
+  pointer-events: none;
+  z-index: 1;
+}
+
+.event-list__virt-item > .event-card--tool_call,
+.event-list__virt-item > .event-card--thought {
+  position: relative;
+}
+
+/* ---- Reply header / footer split (2026-11-06) -----------------------------------------
+   Header: who replied (the agent), nothing else. Footer: how it ran: mode (its tone)
+   · model · effort in muted ink, then a hairline, then the measurements (time, tokens)
+   in faint ink, tabular. */
+.event-card--assistant_message .event-card__who {
+  font-size: 13px;
+}
+
+.event-card--assistant_message .meta-tag--model,
+.event-card--assistant_message .meta-tag--effort {
+  color: var(--text-muted);
+}
+
+.event-card--assistant_message .meta-tag--stat {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.event-card--assistant_message .meta-tag:not(.meta-tag--stat) + .meta-tag--stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.event-card--assistant_message .meta-tag:not(.meta-tag--stat) + .meta-tag--stat::before {
+  content: "";
+  width: 1px;
+  height: 10px;
+  background: var(--border);
+}
+
+/* ---- One label voice + process chip (2026-11-06) -------------------------------------
+   "You" and the agent name are the same label: 12px / 600 in body ink. The
+   process card is the 0.6 gray chip: ▸ glyph (motion.css turns it), 12px/600
+   tally, faint elapsed. Keyboard focus is a 1px accent ring on the card, not
+   the browser's black box. The footer drops the ▣ mark. */
+.event-card--user_message .event-card__type,
+.event-card--assistant_message .event-card__who {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.activity-panel__title {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.activity-panel__elapsed {
+  color: var(--text-faint);
+  font-size: 11.5px;
+  font-weight: 400;
+}
+
+.event-card--assistant_message .meta-tag__symbol {
+  display: none;
+}
+
+.activity-panel > .activity-panel__summary:focus-visible {
+  outline: none;
+}
+
+.event-list .activity-group:has(> .activity-panel > .activity-panel__summary:focus-visible) {
+  box-shadow: 0 0 0 1px var(--accent);
+}

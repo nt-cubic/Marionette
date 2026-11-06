@@ -11,7 +11,8 @@ import (
 )
 
 // Shares of an allowance past which an account is kept for when the others
-// can't take a request: low, and all but used up — where the agent signed
+// can't take a request: low (in Smart and Use before expiry, of a rate cap:
+// Seat.WeekLow), and all but used up — where the agent signed
 // in to it is signed in to another, too (provider.SpentShare).
 const (
 	LowShare  = 90
@@ -25,6 +26,23 @@ func tier(share float64) int {
 		return 2
 	case share >= LowShare:
 		return 1
+	}
+	return 0
+}
+
+// seatTier is tier of the seat's share used, but 0 for one set to spend
+// its credits before another account (Seat.First): a window it uses up
+// doesn't send its requests elsewhere (jojonas_xyz on X). Running low on
+// its week alone (Seat.WeekLow) is 0 too: Smart and Use before expiry
+// spend what is lost at the reset, and a week at 90% renewing today was
+// kept for last behind one renewing tomorrow (ysicing_01858 on Discord).
+// All but used up is 2 whatever the window.
+func seatTier(s Seat) int {
+	if s.First {
+		return 0
+	}
+	if t := tier(s.Used); t != 1 || !s.WeekLow {
+		return t
 	}
 	return 0
 }
@@ -121,7 +139,7 @@ var Smart = Strategy{Order: func(_ string, seats []Seat) []int {
 	left := byLeft(seats, nil)
 	var fine, low, spent []int
 	for i, s := range seats {
-		switch tier(s.Used) {
+		switch seatTier(s) {
 		case 2:
 			spent = append(spent, i)
 		case 1:
@@ -224,7 +242,9 @@ func Drained(key string) {
 // it on the first not used up, in the listed order. Asking again with
 // nothing changed gives the same order, so a preview moves nothing.
 var Drain = Strategy{Exact: true, Order: func(pool string, seats []Seat) []int {
-	spent := func(s Seat) bool { return s.Spent || s.Known && s.Used >= provider.SpentShareOf(provider.Drain) }
+	spent := func(s Seat) bool {
+		return s.Spent || !s.First && s.Known && s.Used >= provider.SpentShareOf(provider.Drain)
+	}
 	drains.Lock()
 	defer drains.Unlock()
 	on := drains.m[pool]
@@ -261,12 +281,54 @@ var Rotate = Strategy{Order: func(pool string, seats []Seat) []int {
 // share of its allowance used, as the vendor says; then, and for other
 // keys, by what magpie sent it lately; prepaid wallets, which have no
 // share, by what they have left first (Seat.Left). Of those all but used up, one that
-// goes on on its credits goes first (spentBefore).
+// goes on on its credits goes first (spentBefore). A seat that tells no
+// share — a pay-as-you-go key, a wallet, an account whose use wasn't read
+// — has Used read 0, and by that 0 alone it went first, burning paid
+// balance while subscription quota sat idle (#4535): it goes after those
+// whose share was told and has room, and before those running low or
+// spent, as Smart and Pace keep the unknown. One not known that tells
+// what it has left as it answers goes first, once, as in Smart and Pace.
 var LeastUsed = Strategy{ByUse: true, Order: func(_ string, seats []Seat) []int {
 	left := byLeft(seats, fewerTokens)
+	// shared: the seat's share of its allowance was told — a use past 0
+	// read from it, or a window it renews by. Without one, Used reads 0
+	// because it isn't known, not because there is room.
+	shared := func(s Seat) bool {
+		if !s.Known {
+			return false
+		}
+		if s.Used > 0 {
+			return true
+		}
+		for _, at := range s.Soon {
+			if !at.IsZero() {
+				return true
+			}
+		}
+		return false
+	}
+	// where the seat lands: a learning account first, once, as in Smart
+	// and Pace; then those with room whose share was told; then the
+	// shareless, kept for their cost before a share nearly gone; then
+	// those running low, then spent
+	place := func(s Seat) int {
+		switch t := tier(s.Used); {
+		case s.Learns:
+			return 0
+		case t == 0 && shared(s):
+			return 1
+		case t == 0:
+			return 2
+		default:
+			return t + 2
+		}
+	}
 	idx := identity(len(seats))
 	sort.SliceStable(idx, func(a, b int) bool {
 		sa, sb := seats[idx[a]], seats[idx[b]]
+		if pa, pb := place(sa), place(sb); pa != pb {
+			return pa < pb
+		}
 		if ta, tb := tier(sa.Used), tier(sb.Used); ta == 2 && tb == 2 && sa.Credits != sb.Credits {
 			return sa.Credits
 		}
@@ -288,9 +350,11 @@ var LeastUsed = Strategy{ByUse: true, Order: func(_ string, seats []Seat) []int 
 // the most left alone (least used) sends a fresh account ahead of one with
 // 80% left and an hour to go, and the soonest reset alone (smart) sends one
 // with 3% left and an hour to go ahead of one with 90% and two. The tiers
-// are Smart's: one at 90% or more of any window that counts the model — the
-// five hours too, a rate cap it would be sent into before its allowance was
-// read again — waits until the others can't answer, one all but used up
+// are Smart's: one at 90% or more of a rate cap that counts the model —
+// the five hours, which it would be sent into before its allowance was
+// read again — waits until the others can't answer (a week at 90% alone
+// doesn't: what it has left is lost at its reset, Seat.WeekLow), one all
+// but used up
 // until nothing else can; each tier by the share used, one all but used up
 // that goes on on its credits first (spentBefore). Among the rest, one
 // not known that tells what it has left as it answers goes first while it
@@ -311,7 +375,7 @@ var Pace = Strategy{ByUse: true, Order: func(_ string, seats []Seat) []int {
 	// band's top and part two alike behind it
 	var byPace []int
 	for i, s := range seats {
-		if tier(s.Used) == 0 && !s.Learns {
+		if seatTier(s) == 0 && !s.Learns {
 			byPace = append(byPace, i)
 		}
 	}
@@ -332,7 +396,7 @@ var Pace = Strategy{ByUse: true, Order: func(_ string, seats []Seat) []int {
 	idx := identity(len(seats))
 	sort.SliceStable(idx, func(a, b int) bool {
 		sa, sb := seats[idx[a]], seats[idx[b]]
-		if ta, tb := tier(sa.Used), tier(sb.Used); ta != tb {
+		if ta, tb := seatTier(sa), seatTier(sb); ta != tb {
 			return ta < tb
 		} else if ta == 2 && sa.Credits != sb.Credits {
 			return sa.Credits
@@ -407,6 +471,74 @@ var FreeFirst = Strategy{ByFree: true, Order: func(_ string, seats []Seat) []int
 	return append(free, paid...)
 }}
 
+// FreeExpiring spends free quota before paid, and of the free, what is
+// lost soonest first (wowbbs on Discord: check-in accounts of WorkBuddy,
+// MiniMax, Trae and Qoder in one group, each given quota that lapses on
+// its own day). A seat is free when its model costs nothing there (Free)
+// or its account's plan is a free one (FreePlan). The order is:
+//
+//   - the free seats with quota left, by when it is lost first, to the
+//     hour (Expires: the soonest of its windows' renewals and of its
+//     credits' lapse); one that tells neither after those that do, those
+//     alike in their listed order;
+//   - the paid seats with quota left, as Smart orders them;
+//   - the used up, free or paid (a known window all but used up, or
+//     resting out of quota or credit), as Smart orders its used up.
+//
+// So a free account is spent until it is used up or expires, then the
+// next free one, and a paid one only once no free one has quota left.
+// Rests and failover are as for every routing.
+var FreeExpiring = Strategy{ByFree: true, ByPlan: true, Order: func(pool string, seats []Seat) []int {
+	var free, paid, spent []int
+	for i, s := range seats {
+		switch {
+		case s.Spent || seatTier(s) == 2:
+			spent = append(spent, i)
+		case s.Free || s.FreePlan:
+			free = append(free, i)
+		default:
+			paid = append(paid, i)
+		}
+	}
+	sort.SliceStable(free, func(i, j int) bool {
+		x, y := Expires(seats[free[i]]).Truncate(time.Hour), Expires(seats[free[j]]).Truncate(time.Hour)
+		if x.Equal(y) {
+			return false
+		}
+		if x.IsZero() || y.IsZero() {
+			return y.IsZero()
+		}
+		return x.Before(y)
+	})
+	if len(paid) > 1 {
+		sub := make([]Seat, len(paid))
+		for k, i := range paid {
+			sub[k] = seats[i]
+		}
+		by := Smart.Order(pool, sub)
+		ordered := make([]int, len(paid))
+		for k, i := range by {
+			ordered[k] = paid[i]
+		}
+		paid = ordered
+	}
+	sort.SliceStable(spent, func(i, j int) bool { return spentBefore(seats[spent[i]], seats[spent[j]]) })
+	return append(append(free, paid...), spent...)
+}}
+
+// Expires is when the soonest of what a seat has left is lost: the first
+// of its windows' renewals (Soon) and its credits' lapse (Lapse), zero
+// when it tells neither.
+func Expires(s Seat) time.Time {
+	var t time.Time
+	for _, x := range append(slices.Clip(s.Soon), s.Lapse) {
+		if !x.IsZero() && (t.IsZero() || x.Before(t)) {
+			t = x
+		}
+	}
+	return t
+}
+
 // Cheapest sends a request where its model costs least at the request's
 // time: the priced seats by Cost (a million tokens in and a million out),
 // those that cost the same by CacheCost, then the seats whose price isn't
@@ -452,13 +584,14 @@ func sameCost(a, b float64) bool {
 // Builtin are the routings besides Smart and their strategies, as
 // plugins/rotation registers them.
 var Builtin = map[string]Strategy{
-	provider.Ordered:   Ordered,
-	provider.Rotate:    Rotate,
-	provider.LeastUsed: LeastUsed,
-	provider.Pace:      Pace,
-	provider.Weighted:  Weighted,
-	provider.FreeFirst: FreeFirst,
-	provider.Fastest:   Fastest,
-	provider.Cheapest:  Cheapest,
-	provider.Drain:     Drain,
+	provider.Ordered:      Ordered,
+	provider.Rotate:       Rotate,
+	provider.LeastUsed:    LeastUsed,
+	provider.Pace:         Pace,
+	provider.Weighted:     Weighted,
+	provider.FreeFirst:    FreeFirst,
+	provider.Fastest:      Fastest,
+	provider.Cheapest:     Cheapest,
+	provider.Drain:        Drain,
+	provider.FreeExpiring: FreeExpiring,
 }

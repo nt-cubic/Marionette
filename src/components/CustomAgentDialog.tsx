@@ -240,7 +240,7 @@ export function CustomAgentDialog({
                       <span>
                         {entry.id}
                         {entry.version ? ` · ${entry.version}` : ""}
-                        {entry.installable ? "" : " · binary"}
+                        {entry.installable ? "" : ` · ${t("v2dialogs.binary")}`}
                       </span>
                       {entry.description ? <em>{entry.description}</em> : null}
                     </div>

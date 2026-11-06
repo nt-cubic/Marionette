@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, ExternalLink, FolderOpen, Undo2 } from "lucide-react";
+import { ChevronDown, ChevronRight, ExternalLink, FolderOpen, Undo2 } from "lucide-react";
 import {
   CHAT_PROJECT_ID,
   getFileDiff,
@@ -332,7 +332,7 @@ export function TurnDeliveryCard({
             onClick={() => setOpen((value) => !value)}
           >
             <span className={`turn-delivery__fold${open ? " is-open" : ""}`} aria-hidden>
-              ▸
+              <ChevronRight size={12} strokeWidth={1.5} />
             </span>
             <span className="turn-delivery__headline">
               {headline}

@@ -34,6 +34,8 @@ mod model_bridge;
 mod model_sources;
 mod open_target;
 mod parsers;
+mod plugin_host;
+mod plugins;
 mod preflight;
 mod process_util;
 mod provider_usage;
@@ -683,6 +685,11 @@ fn main() {
             memos::memo_save_paths,
             memos::memo_save_text,
             memos::memo_delete,
+            plugins::plugins_list,
+            plugins::plugins_add,
+            plugins::plugins_remove,
+            plugins::plugins_set_enabled,
+            plugins::plugins_probe,
             commands::council_create,
             commands::council_list_runs,
             commands::council_get_run,

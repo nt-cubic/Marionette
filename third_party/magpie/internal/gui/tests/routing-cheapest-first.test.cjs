@@ -82,7 +82,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const price = await say("{in} in, {out} out a million tokens", { in: "$0.150", out: "$0.600" });
       assert.equal(await why(), await say("Cheapest first: {model} costs least on {who} now — {price}.", { who: "ollama-cloud", model: "deepseek-v4-flash", price }));
       assert.equal((await page.locator(".rt-mode").textContent()).trim(),
-        await say("Requests go to the member whose model costs least now, by its price a million tokens in and out at this hour — DeepSeek's peak hours count double — and the cheaper cache read when two cost the same; those that cost the same keep their listed order, and one with no known price goes last."));
+        await say("Requests go to the member whose model costs least now, by its price a million tokens in and out at this hour — a vendor's peak hours count double where it bills them so, as DeepSeek and Ollama Cloud do — and the cheaper cache read when two cost the same; those that cost the same keep their listed order, and one with no known price goes last."));
       if (lang !== "en") assert.notEqual(await say("Cheapest first"), "Cheapest first", `${lang} names Cheapest first`);
       assert.deepEqual(errors, []);
     });

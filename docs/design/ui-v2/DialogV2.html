@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>v2 弹窗</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#1f8a76}a:hover{color:#166b5c}
+.mono{font-family:"JetBrains Mono",ui-monospace,monospace}
+.f{font-size:11px;color:#8a8a92}
+.dlg{position:relative;display:flex;flex-direction:column;border:1px solid #dcdce1;border-radius:3px;background:#fff;box-shadow:0 12px 32px rgba(17,17,19,.10);overflow:hidden}
+.dh{display:flex;align-items:center;gap:10px;height:46px;padding:0 10px 0 18px;flex:none}
+.dt{font-size:14px;font-weight:600;color:#111113}
+.db{padding:0 18px 16px;display:flex;flex-direction:column;font-size:13px;color:#2c2c30}
+.df{display:flex;align-items:center;gap:8px;height:52px;padding:0 14px 0 18px;border-top:1px solid #ececee;flex:none}
+.btn{height:30px;padding:0 14px;border:0;border-radius:3px;font:inherit;font-size:13px;cursor:pointer}
+.b2{background:#f1f1f3;color:#2c2c30}
+.b1{background:#1f8a76;color:#fff;font-weight:600}
+.bd{background:#c03d45;color:#fff;font-weight:600}
+.x{width:28px;height:28px;margin-left:auto;display:grid;place-items:center;border:0;border-radius:3px;background:transparent;color:#8a8a92}
+.row{display:grid;grid-template-columns:84px minmax(0,1fr);align-items:center;gap:12px;min-height:42px;border-bottom:1px solid #ececee}
+.row > span:first-child{font-size:12.5px;color:#5c5c63}
+.inp{width:100%;border:0;outline:none;background:transparent;font:inherit;font-size:13px;color:#111113;padding:0}
+.chip{display:inline-flex;align-items:center;height:24px;padding:0 9px;border-radius:2px;font-size:12px;font-weight:500;color:#5c5c63;border:1px solid transparent}
+.chip.on{color:#111113;background:#f1f1f3;border-color:#e2e2e6}
+.sw{width:30px;height:18px;border-radius:9px;position:relative;flex:none}
+.sw i{position:absolute;top:2px;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.2)}
+.kbd{font-family:"JetBrains Mono",monospace;font-size:10.5px;color:#8a8a92;border:1px solid #e2e2e6;border-radius:2px;padding:0 4px;line-height:16px}
+.note{font-size:12.5px;color:#5c5c63;line-height:1.6}
+</style>
+</helmet>
+<div style="width:1440px;height:900px;box-sizing:border-box;background:#f7f7f8;color:#2c2c30;font-family:Inter,system-ui,sans-serif;font-size:13px;line-height:1.45;display:grid;grid-template-columns:330px minmax(0,1fr)">
+
+<div style="padding:36px 32px 36px 44px;display:flex;flex-direction:column;gap:18px;border-right:1px solid #e2e2e6;background:#fff">
+<div class="f">v2 · 弹窗</div>
+<div style="font-size:16px;font-weight:650;color:#111113">一个壳，表单是一张表</div>
+<div class="note">弹窗沿用对话卡的边与角，只多一层短投影。标题直接写在顶部，不再加分隔条；正文里的表单不画输入框，一行一个字段，用细线隔开，和小圆圈浮层的明细表是同一种写法。</div>
+<div style="display:flex;flex-direction:column;border-top:1px solid #ececee">
+<div class="row" style="grid-template-columns:70px 1fr"><span>宽度</span><span>360 确认 · 480 表单 · 880 模型共享</span></div>
+<div class="row" style="grid-template-columns:70px 1fr"><span>头</span><span>46px，标题 14 / 600，右侧 ×</span></div>
+<div class="row" style="grid-template-columns:70px 1fr"><span>字段</span><span>标签左 84px · 值右 · 行高 42 · 细线</span></div>
+<div class="row" style="grid-template-columns:70px 1fr"><span>脚</span><span>52px，细线；键位提示靠左，按钮靠右</span></div>
+<div class="row" style="grid-template-columns:70px 1fr"><span>按钮</span><span>主操作强调绿 / 危险红 / 其余浅灰底</span></div>
+<div class="row" style="grid-template-columns:70px 1fr"><span>agent 发起</span><span>左边 3px 墨色条，标题写 agent 名</span></div>
+<div class="row" style="grid-template-columns:70px 1fr"><span>遮罩</span><span>#111113 18%，不模糊</span></div>
+</div>
+</div>
+
+<div style="position:relative;overflow:hidden">
+<div style="position:absolute;inset:0;background:rgba(17,17,19,.18)"></div>
+<div style="position:relative;height:100%;box-sizing:border-box;padding:40px;display:grid;grid-template-columns:480px 400px;grid-template-rows:auto auto;gap:28px;align-content:start;justify-content:center">
+
+<div class="dlg" style="grid-row:span 2">
+<div class="dh"><span class="dt">添加项目</span><button type="button" class="x" aria-label="关闭"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></div>
+<div class="db" style="padding-bottom:20px">
+<div style="border-top:1px solid #ececee"></div>
+<label class="row"><span>文件夹</span><span style="display:flex;align-items:center;gap:8px"><input class="inp mono" style="font-size:12.5px" value="D:\Projects\Marionette"><span style="color:#1f8a76;font-size:12.5px;white-space:nowrap">浏览…</span></span></label>
+<div style="padding:0 0 8px 96px;margin-top:-6px" class="f">git 仓库 · master · 未提交 0</div>
+<label class="row" style="border-top:1px solid #ececee"><span>名称</span><input class="inp" value="Marionette"></label>
+<div class="row"><span>默认 agent</span><span style="display:flex;gap:4px;flex-wrap:wrap;padding:8px 0"><span class="chip on" style="box-shadow:inset 2px 0 0 #9a5b43">Claude</span><span class="chip">Codex</span><span class="chip">ZCode</span><span class="chip">Grok</span><span class="chip">DeepSeek</span></span></div>
+<div class="row"><span>上下文</span><span style="display:flex;align-items:center">读取 AGENTS.md<span class="sw" style="margin-left:auto;background:#1f8a76"><i style="left:14px"></i></span></span></div>
+<div class="row"><span></span><span style="display:flex;align-items:center">借用全局 MCP<span class="sw" style="margin-left:auto;background:#dcdce1"><i style="left:2px"></i></span></span></div>
+</div>
+<div class="df"><span class="f" style="display:flex;align-items:center;gap:6px"><span class="kbd">Esc</span>关闭<span class="kbd">Enter</span>添加</span><div style="flex:1"></div><button type="button" class="btn b2">取消</button><button type="button" class="btn b1">添加</button></div>
+</div>
+
+<div class="dlg">
+<div class="dh"><span class="dt">删除项目「magpie」？</span></div>
+<div class="db"><div class="note">只移除 Marionette 里的记录和 2 条对话，磁盘上的文件不动。</div></div>
+<div class="df" style="justify-content:flex-end"><button type="button" class="btn b2" style="box-shadow:0 0 0 2px #fff,0 0 0 3px #1f8a76">取消</button><button type="button" class="btn bd">删除</button></div>
+</div>
+
+<div class="dlg">
+<div style="position:absolute;left:0;top:0;bottom:0;width:3px;background:#9a5b43"></div>
+<div class="dh"><span class="dt">Claude 想运行命令</span><span class="f" style="margin-left:auto;margin-right:8px">opus-5.5</span></div>
+<div class="db" style="gap:10px">
+<div class="mono" style="font-size:12px;line-height:1.6;padding:9px 12px;background:#f7f7f8;border-radius:3px;color:#111113">npm run test -- --grep greetZh</div>
+<div class="f" style="font-size:12px">在 D:\Projects\demo-app 里运行 · 只读以外的命令都会先问你</div>
+</div>
+<div class="df"><button type="button" class="btn" style="padding:0;color:#5c5c63;background:transparent">拒绝</button><div style="flex:1"></div><button type="button" class="btn b2">总是允许</button><button type="button" class="btn b1">允许一次</button></div>
+</div>
+
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic { renderVals() { return {}; } }
+</script>
+</body>
+</html>

@@ -283,8 +283,22 @@ func joinConvs(routes []ctxRec, list func() []sessions.Session) {
 	if !loose {
 		return
 	}
+	of := convOwners(list())
+	for i, r := range routes {
+		if r.Session == "" && r.Parent == "" && r.Conv != "" {
+			if id := of[r.Agent+"\x00"+r.Conv]; id != "" {
+				routes[i].Session = id
+			}
+		}
+	}
+}
+
+// convOwners is each agent's conversation id (agent, NUL, the gateway's
+// id) and the session of that agent it was read from (sessions' Convs);
+// "" for an id two sessions share, which stays as it is.
+func convOwners(list []sessions.Session) map[string]string {
 	of := map[string]string{}
-	for _, s := range list() {
+	for _, s := range list {
 		for _, c := range s.Convs {
 			k := s.Agent + "\x00" + c
 			if id, ok := of[k]; ok && id != s.ID {
@@ -294,13 +308,7 @@ func joinConvs(routes []ctxRec, list func() []sessions.Session) {
 			}
 		}
 	}
-	for i, r := range routes {
-		if r.Session == "" && r.Parent == "" && r.Conv != "" {
-			if id := of[r.Agent+"\x00"+r.Conv]; id != "" {
-				routes[i].Session = id
-			}
-		}
-	}
+	return of
 }
 
 // compacted says a prompt is a compaction of the one before it: under 60%
@@ -766,7 +774,8 @@ func contextRoutesAPI(mux *http.ServeMux) {
 	// the text of a part of a request's prompt (masaka on Discord): the
 	// part's items, and one item's text when item is given. From the
 	// gateway this GUI runs, which keeps the last requests' masked bodies
-	// in memory only; 404 when the request's is no longer kept.
+	// in memory only, else from the request archive; 404 with why when
+	// neither has it.
 	mux.HandleFunc("GET /api/context/text", func(rw http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		id, err := strconv.ParseInt(q.Get("id"), 10, 64)
@@ -781,15 +790,17 @@ func contextRoutesAPI(mux *http.ServeMux) {
 				return
 			}
 		}
-		gw := served.Load()
-		if gw == nil {
-			http.Error(rw, "not kept", http.StatusNotFound)
-			return
+		var pt gateway.PromptText
+		ok := false
+		if gw := served.Load(); gw != nil {
+			pt, ok = gw.PromptText(id, q.Get("kind"), item >= 0)
 		}
-		pt, ok := gw.PromptText(id, q.Get("kind"), item >= 0)
 		if !ok {
-			http.Error(rw, "not kept", http.StatusNotFound)
-			return
+			// gone from memory: the request archive's copy, when it
+			// kept one (context_archive.go)
+			if pt, ok = archivedPromptText(rw, r, id, q.Get("kind"), item >= 0); !ok {
+				return
+			}
 		}
 		if item >= 0 {
 			// the one item's text; the rest by name and size only
@@ -809,4 +820,5 @@ func contextRoutesAPI(mux *http.ServeMux) {
 		rw.Header().Set("Cache-Control", "no-store")
 		writeJSON(rw, pt)
 	})
+	contextReplyAPI(mux)
 }

@@ -641,7 +641,7 @@ func affine(scope, mode string, rotate, spread, inOrder bool, in http.Header, fr
 		// its cache as before; within a turn it stays, and Stays:
 		// Session or Strict, the user's own, keep it where it is
 		a.Why = "back"
-	case at > 0 && pl.order[at].Known && pl.order[at].Used >= provider.SpentShareOf(cs[at].p.Routing):
+	case at > 0 && pl.order[at].Known && pl.order[at].Used >= provider.SpentShareOf(cs[at].p.Routing) && !pl.order[at].CreditsFirst:
 		// all but used up, and put behind another: first still — the
 		// one key or account it has (#1016), or every one used up — it
 		// doesn't move
@@ -761,7 +761,7 @@ func standsInFor(c candidate, cs []candidate, order []Weighed) bool {
 		}
 		for _, w := range order {
 			if w.ID == o.rest && w.Model == o.model && w.Fixed == o.effort {
-				if w.Rest != nil || w.Known && w.Used >= provider.SpentShareOf(o.p.Routing) {
+				if w.Rest != nil || w.Known && w.Used >= provider.SpentShareOf(o.p.Routing) && !w.CreditsFirst {
 					return true
 				}
 				break
@@ -852,10 +852,12 @@ func leastHeld(scope, key string, cs []candidate, pl planned, ready bool) ([]can
 // readyForNew says whether order[i], behind order[0], is one routing would
 // put a new conversation on: not resting, nor a key for another protocol,
 // nor a fallback while the provider's own model leads, nor used past
-// lowShare.
+// lowShare unless it spends its credits first (Weighed.CreditsFirst) or
+// is that low on its week alone, which Smart and Use before expiry keep
+// with those that have room (Weighed.WeekLow).
 func readyForNew(order []Weighed, i int) bool {
 	w := order[i]
-	return w.Rest == nil && !w.Aside && !standsIn(order, i) && !(w.Known && w.Used >= lowShare) && !lastBehind(order, i) && !busyBehind(order, i)
+	return w.Rest == nil && !w.Aside && !standsIn(order, i) && !(w.Known && w.Used >= lowShare && !w.CreditsFirst && !(w.WeekLow && w.Used < usedShare)) && !lastBehind(order, i) && !busyBehind(order, i)
 }
 
 // standsIn says whether order[i] is a provider's fallback while one of the
@@ -912,7 +914,7 @@ func withLead(key string, cs []candidate, pl planned) ([]candidate, planned) {
 // spreadsSessions says whether new conversations kept for the whole
 // session (Stays: Session or Strict) go to the key, account or member the
 // fewest others are on (leastHeld), under a routing that picks by what
-// each has left: Smart, Least used first, Weekly pace. Several sessions
+// each has left: Smart, Least used first, Use before expiry. Several sessions
 // started side by side then each keep an account of their own until its
 // allowance runs out, as a user picking the mode with several accounts
 // expects (connor_yang on Discord: three sessions on two of three
@@ -1022,21 +1024,30 @@ func unanswered(key string, c candidate) {
 
 // foreignReasoning is how a vendor refuses reasoning another account (or
 // organization, or vendor) sealed: OpenAI's "The encrypted content for
-// item rs_… could not be verified", invalid_encrypted_content; xAI's
+// item rs_… could not be verified", invalid_encrypted_content, and for a
+// web search another ChatGPT account ran "Encrypted content could not be
+// decrypted or parsed." (#3887); xAI's
 // (Grok's API and a SuperGrok account alike) "Could not decrypt the
 // provided encrypted_content. Ensure the value is the unmodified
 // encrypted_content from a previous response."; Azure's (through a relay
 // in front of a deployment, snowshadow) "invalid encrypted summary",
-// which names no item and spells it with spaces.
-var foreignReasoning = regexp.MustCompile(`(?i)invalid_encrypted_content|invalid[ _]encrypted[ _](summary|content)|encrypted[ _]content.{0,80}could not be (verified|decrypted)|could not (decrypt|verify).{0,40}encrypted[ _]content`)
+// which names no item and spells it with spaces; xAI's compaction-blob
+// refusal, as a key relay that proxies Grok hands it back for the
+// reasoning item Codex writes with "content": null beside its
+// encrypted_content (zminds #4412) — "Could not decode the compaction
+// blob", which names no item and says nothing of encrypted content,
+// where the #3392 shaping (xaiBody's) never runs because the relay's
+// host isn't api.x.ai.
+var foreignReasoning = regexp.MustCompile(`(?i)invalid_encrypted_content|invalid[ _]encrypted[ _](summary|content)|encrypted[ _]content.{0,80}could not be (verified|decrypted)|could not (decrypt|verify).{0,40}encrypted[ _]content|could not (decode|decrypt).{0,20}compaction[ _]blob`)
 
 // refusedSeals remembers, per conversation and the key or account that
-// refused it, the sealed reasoning another one wrote. Codex hands every
-// earlier turn's reasoning back on each request, so once a conversation
-// has moved, what was sealed before it moved is left out of its later
-// requests there up front, rather than refused and asked again each turn.
-// Reasoning the one it moved to sealed itself still goes along, for its
-// cache and its train of thought.
+// refused it, what another one sealed: its reasoning, and the sealed copy
+// output token replay keeps of each message, call and web search (#3887).
+// Codex hands every earlier turn's items back on each request, so once a
+// conversation has moved, what was sealed before it moved is left out of
+// its later requests there up front, rather than refused and asked again
+// each turn. What the one it moved to sealed itself still goes along, for
+// its cache and its train of thought.
 var refusedSeals = struct {
 	sync.Mutex
 	m map[string]sealsRefused // scope|conversation|who → what it refused
@@ -1047,7 +1058,7 @@ type sealsRefused struct {
 	seals map[[sha256.Size]byte]bool
 }
 
-// sealedItem is what's read of an input item to tell sealed reasoning.
+// sealedItem is what's read of an input item to tell what it has sealed.
 type sealedItem struct {
 	Type string `json:"type"`
 	Enc  string `json:"encrypted_content"`
@@ -1056,14 +1067,15 @@ type sealedItem struct {
 // sealedKinds are the input items a vendor seals for itself: its
 // reasoning, and the compaction a conversation's earlier turns were
 // folded into (OpenAI's, when Codex compacts on its own models; magpie's
-// own is text by the time a request is sent).
+// own is text by the time a request is sent). Refused, they go whole;
+// any other item loses its sealed copy alone (withoutItemSeal).
 var sealedKinds = map[string]bool{"reasoning": true, "compaction": true, "compaction_summary": true}
 
 var compactionKinds = []string{"compaction", "compaction_summary"}
 
-// seals are the sealed reasoning and compactions (encrypted_content) in a
-// Responses request's input, of these types.
-func seals(body []byte, kinds ...string) [][sha256.Size]byte {
+// seals are what is sealed (encrypted_content) in a Responses request's
+// input, item by item.
+func seals(body []byte) [][sha256.Size]byte {
 	var q struct {
 		Input []sealedItem `json:"input"`
 	}
@@ -1072,17 +1084,27 @@ func seals(body []byte, kinds ...string) [][sha256.Size]byte {
 	}
 	var out [][sha256.Size]byte
 	for _, it := range q.Input {
-		if slices.Contains(kinds, it.Type) && it.Enc != "" {
+		if it.Enc != "" {
 			out = append(out, sha256.Sum256([]byte(it.Enc)))
 		}
 	}
 	return out
 }
 
-// refused notes that who turned away the sealed items of these types in
-// body, in the conversation key names.
-func refused(key, who string, body []byte, kinds ...string) {
-	ss := seals(body, kinds...)
+// refused notes, in the conversation key names, that who turned away the
+// seals taken out of sent, the request it refused, to make left, the one
+// asked in its place.
+func refused(key, who string, sent, left []byte) {
+	kept := map[[sha256.Size]byte]bool{}
+	for _, s := range seals(left) {
+		kept[s] = true
+	}
+	noteRefused(key, who, slices.DeleteFunc(seals(sent), func(s [sha256.Size]byte) bool { return kept[s] }))
+}
+
+// noteRefused notes that who turned away the sealed items of these hashes
+// in the conversation key.
+func noteRefused(key, who string, ss [][sha256.Size]byte) {
 	if len(ss) == 0 {
 		return
 	}
@@ -1108,9 +1130,9 @@ func refused(key, who string, body []byte, kinds ...string) {
 	}
 }
 
-// withoutRefused takes out of a Responses request the sealed reasoning
-// and compactions who already refused in this conversation; the rest
-// stays as it is.
+// withoutRefused takes out of a Responses request what who already
+// refused in this conversation: sealed reasoning and compactions whole,
+// any other item's sealed copy alone; the rest stays as it is.
 func withoutRefused(key, who string, body []byte) ([]byte, bool) {
 	k := key + "|" + who
 	refusedSeals.Lock()
@@ -1131,15 +1153,21 @@ func withoutRefused(key, who string, body []byte) ([]byte, bool) {
 	if !isList {
 		return nil, false
 	}
-	kept := items[:0:0]
+	kept, changed := items[:0:0], false
 	for _, it := range items {
 		var t sealedItem
-		if decodeJSONView(it, &t) == nil && sealedKinds[t.Type] && t.Enc != "" && r.seals[sha256.Sum256([]byte(t.Enc))] {
-			continue
+		if decodeJSONView(it, &t) == nil && t.Enc != "" && r.seals[sha256.Sum256([]byte(t.Enc))] {
+			if sealedKinds[t.Type] {
+				changed = true
+				continue
+			}
+			if b, ok := withoutItemSeal(it); ok {
+				it, changed = b, true
+			}
 		}
 		kept = append(kept, it)
 	}
-	if len(kept) == len(items) {
+	if !changed {
 		return nil, false
 	}
 	q["input"], _ = json.Marshal(kept)
@@ -1147,11 +1175,56 @@ func withoutRefused(key, who string, body []byte) ([]byte, bool) {
 	return b, err == nil
 }
 
-// withoutReasoning takes the sealed reasoning out of a Responses request's
-// input — what another account wrote and this one can't read. What was
-// said and done stays; only the model's private notes to itself go.
-func withoutReasoning(body []byte) ([]byte, bool) {
-	return withoutKinds(body, "reasoning")
+// withoutSeals takes out of a Responses request's input what is sealed,
+// but a compaction, for one that can't read what another account sealed:
+// the sealed reasoning, the model's private notes to itself, and the
+// sealed copy output token replay keeps of each item answered, a message,
+// a call or a web search (#3887, hheei: the reasoning alone went, and the
+// web search another ChatGPT account ran was refused again). What was
+// said and done stays.
+func withoutSeals(body []byte) ([]byte, bool) {
+	var q map[string]json.RawMessage
+	if decodeJSONView(body, &q) != nil {
+		return nil, false
+	}
+	items, isList := inputList(q["input"])
+	if !isList {
+		return nil, false
+	}
+	kept, changed := items[:0:0], false
+	for _, it := range items {
+		var t struct {
+			Type string `json:"type"`
+		}
+		if decodeJSONView(it, &t) == nil && t.Type == "reasoning" {
+			changed = true
+			continue
+		}
+		if b, ok := withoutItemSeal(it); ok {
+			it, changed = b, true
+		}
+		kept = append(kept, it)
+	}
+	if !changed {
+		return nil, false
+	}
+	q["input"], _ = json.Marshal(kept)
+	b, err := marshalJSON(q)
+	return b, err == nil
+}
+
+// withoutItemSeal is an input item without its sealed copy
+// (encrypted_content), every other byte as it came; false for one with
+// nothing sealed, and for reasoning and a compaction (keepsSeal), whose
+// seal is all there is of them.
+func withoutItemSeal(it []byte) ([]byte, bool) {
+	if keepsSeal[string(memberOrNil(it, "type"))] {
+		return nil, false
+	}
+	if s, ok := stringBytes(memberOrNil(it, "encrypted_content")); !ok || len(s) == 0 {
+		return nil, false
+	}
+	return withoutTopMember(it, "encrypted_content"), true
 }
 
 // withoutCompaction takes out of a Responses request's input the sealed
@@ -1305,4 +1378,25 @@ func withoutKinds(body []byte, kinds ...string) ([]byte, bool) {
 	q["input"], _ = json.Marshal(kept)
 	b, err := marshalJSON(q)
 	return b, err == nil
+}
+
+// keptAgain says whether c, having failed through hw, is asked once more
+// after a moment before the request moves on, and how long that moment is:
+// c is the key or account (and model) the conversation was kept on for
+// what its vendor cached of it (aff.Kept: Stays Auto with a warm cache,
+// Session, or within a turn), not asked again so already (asked), and the
+// failure is one that may be gone a moment later (busy: overloaded, a 5xx
+// that says nothing of quota, timed out) and not a rate limit, which rests
+// and moves as before. Moved at once, the next one is sent the whole
+// conversation uncached, and within a turn may refuse the reasoning the
+// first sealed; a moment's wait costs far less. Strict needs none of it:
+// its one is the last left, asked again as the last one is.
+func keptAgain(aff *Affinity, c candidate, hw *holdWriter, asked bool) (time.Duration, bool) {
+	if asked || aff == nil || !aff.Kept || aff.Why == "strict" || c.rest != aff.Last {
+		return 0, false
+	}
+	if !hw.failed() || hw.turnedAway || hw.refused || hw.code() == http.StatusTooManyRequests || !busy(hw.code(), hw.errBody()) {
+		return 0, false
+	}
+	return passing(hw.code(), hw.header, hw.errBody(), 0)
 }

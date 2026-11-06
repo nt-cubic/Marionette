@@ -6,7 +6,7 @@
 //
 // Smart, the default, is the core's. The others a provider or group can be
 // routed by (order, rotate, usage, pace, weight, free, fast, cheap,
-// drain) are here for a plugin to
+// drain, expiring) are here for a plugin to
 // register: plugins/rotation does, and off, a pool routed by one of them is
 // tried in its listed order, as an unknown routing always was.
 package routes
@@ -28,10 +28,18 @@ type Seat struct {
 	// Known: its allowance is known. Used, Soon and Pace are read from it
 	Known bool
 	// Learns: an account not known yet, of an agent that tells what it has
-	// left as it answers (Claude Code's rate_limit_event)
+	// left as it answers (Claude Code's rate_limit_event, Codex's x-codex-*
+	// headers)
 	Learns bool
 	// Used is the share of its allowance used that counts the model, 0–100
 	Used float64
+	// WeekLow: Used is at LowShare or more for its budget windows alone
+	// (a day or longer: the week), no rate cap of it near full
+	// (provider.Allowance.CapUsed). Smart and Use before expiry keep it
+	// with those that have room: what the week has left is lost at its
+	// reset, and kept for last a week at 90% renewing today went unused
+	// (ysicing_01858 on Discord).
+	WeekLow bool
 	// Soon is when its windows renew, the biggest first (Allowance.Renewal)
 	Soon []time.Time
 	// Lapse is when the soonest of what it has left is lost, apart from
@@ -54,10 +62,19 @@ type Seat struct {
 	// its vendor serves that model at no cost to the subscription's
 	// allowance or credits (catalog.Model's Free). FreeFirst goes by it.
 	Free bool
+	// FreePlan: an account whose plan is a free one (provider.FreePlan:
+	// "Free", "Free plan", a trial), as its vendor or plugin names it.
+	// FreeExpiring spends it, as it does Free, before a paid one.
+	FreePlan bool
 	// Credits: a Codex account that goes on past its allowance on its
 	// credits, and is let spend them. All but used up, it goes before
 	// those used up with nothing to go on with.
 	Credits bool
+	// First: such an account the user set to spend its credits before
+	// another account (provider.CodexCreditsFirst): its windows running
+	// out never put it behind the others (seatTier), so it keeps the
+	// place an account with room has.
+	First bool
 	// TTFT is how long it took lately to the first of its reply, in ms,
 	// for the model this seat would be asked for: a decayed average of its
 	// recent streamed answers, 0 when it hasn't answered one lately.
@@ -100,6 +117,9 @@ type Strategy struct {
 	// model costs nothing there, and the routing trace then shows it.
 	// Only when set: working it out reads each provider's model list.
 	ByFree bool
+	// ByPlan: it weighs by FreePlan, so the gateway reads each account's
+	// plan, and the routing trace then shows a free one as free.
+	ByPlan bool
 	// BySpeed: it weighs by TTFT and TPS, so the gateway reads each seat's
 	// recent speed, and the routing trace then shows it.
 	BySpeed bool

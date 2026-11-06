@@ -144,7 +144,7 @@ func TestBrowserMCPSaysWhenNoBrowser(t *testing.T) {
 	var list struct {
 		Result struct{ Tools []struct{ Name string } }
 	}
-	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &list) != nil || len(list.Result.Tools) != len(browserTools()) {
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &list) != nil || len(list.Result.Tools) != 1 || list.Result.Tools[0].Name != "browser" {
 		t.Fatalf("tools/list: %d %s", w.Code, w.Body.String())
 	}
 	m := readImageReply(t, browserPost(h, "127.0.0.1:5000", imageToolCall("browser_snapshot", nil)))

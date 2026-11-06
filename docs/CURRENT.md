@@ -177,6 +177,31 @@ agent 可以看/操作**其它 Windows 应用**的窗口（浏览器之外的原
   不是沙箱（同 Codeg 立场）。整屏共享/App 范围在协议里但未开 UI（整屏要连
   paint_over 一起做才安全）。偏差清单见 plan §7。
 
+## 共通插件层（2026-11-05）
+
+**安装一个插件，所有 agent 都生效**（设计稿 `docs/plan-plugin-layer.md`）：
+
+- **登记处**：`~/.marionette/plugins/index.json`（Marionette 自有，不写任何 agent
+  的配置）；安装即全局默认启用。入口：右栏「插件」卡片（所有 agent + DeepSeek Harness 两块）+ Ctrl K「插件」。
+  stdio 型填 command/args/env，http 型填 url/headers；安装时自动**探活**
+  （initialize + tools/list，探活失败不拦安装，结果记在 `lastProbe`）。
+- **生效方式**：每个启用插件在 `session/new` 时以 **url 型**条目注入（与
+  marionette-tools 同形，挂在同一个 localhost server 的 `/mcp/p/<id>` 路由）——
+  这是唯一被全部 adapter 接受的形状，**zcode 也吃**；不支持 http 但收 stdio 的
+  agent 回退注入原始 stdio spec。新会话自动生效，进行中的会话重连后生效；与借贷
+  条目同名时插件赢（防双注册）。
+- **stdio 插件**：Marionette 自己起子进程（按会话懒起、`resolve_spawn_command`
+  解析 npx/.cmd、Job Object 兜底），把 MCP stdio 翻译成 HTTP；**会话停止/agent
+  崩溃即杀**；禁用/卸载跨会话杀。
+- **http 插件**：纯中继——**真实凭据只留在 Marionette**，agent 只拿 loopback URL
+  + 会话 token；远端 `Mcp-Session-Id` 由宿主代持；只收 JSON 应答（流式 only 的
+  服务会明确失败）。
+- **skills**：`~/.marionette/plugins/skills/` 是全局技能目录（default-on prompt
+  借贷），装一次全 agent 可见。
+- 边界：child→agent 的 server 主动请求（sampling 等）不支持（-32601）；pi/web 壳
+  照旧不注入；不做 marketplace（registry/Smithery 安装与 codeg 式 junction skills
+  矩阵记为后续）。插件自己的 JSON-RPC error 原样透传给 agent。
+
 ## 明确不做 / 暂缓
 
 - 内嵌 llama.cpp / 本地推理 runtime

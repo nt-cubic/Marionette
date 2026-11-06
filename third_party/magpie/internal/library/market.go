@@ -871,6 +871,37 @@ func serverIcon(l *Library, s *Server) string {
 	return ""
 }
 
+// serverAbout is what a server is for, where the market says: the
+// featured or registry server it is, or the featured one it is named
+// after; "" for the rest.
+func serverAbout(s *Server) string {
+	k := serverKey(s)
+	for _, m := range featured {
+		if serverKey(&m.server) == k {
+			return m.Description
+		}
+	}
+	for _, m := range popularServers() {
+		if serverKey(&m.server) == k {
+			return m.Description
+		}
+	}
+	seenServers.Lock()
+	for _, m := range seenServers.m {
+		if serverKey(&m.server) == k {
+			seenServers.Unlock()
+			return m.Description
+		}
+	}
+	seenServers.Unlock()
+	for _, m := range featured {
+		if strings.EqualFold(m.ID, s.Name) {
+			return m.Description
+		}
+	}
+	return ""
+}
+
 // skillIcon is its repository owner's avatar, for a skill from GitHub.
 func skillIcon(s *Skill) string {
 	if s.Source == nil || s.Source.Kind != "github" {

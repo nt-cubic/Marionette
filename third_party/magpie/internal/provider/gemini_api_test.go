@@ -110,3 +110,76 @@ func TestFactoryGeminiUnchanged(t *testing.T) {
 		t.Errorf("factory auth %v", h)
 	}
 }
+
+// An AI Studio key (the Google Gemini preset, or a provider at AI Studio's
+// OpenAI-compatible URL) speaks AI Studio's Gemini API too, with the same
+// key, so a Gemini client and Google Search reach it (cocoasoda on
+// Discord); one's own Gemini URL is kept, and nothing else gets one.
+func TestAIStudioSpeaksGemini(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	for _, p := range []Provider{
+		{ID: "google", Name: "Google Gemini", Preset: "google", Chat: AIStudioChat, Key: "AIza-k"},
+		{ID: "studio", Name: "Studio", Chat: AIStudioChat + "/", Key: "AIza-k"},
+		{ID: "relay", Name: "Relay", Chat: AIStudioChat, Gemini: "https://relay.example/v1beta", Key: "AIza-k"},
+		{ID: "other", Name: "Other", Chat: "https://relay.example/v1beta/openai", Key: "k"},
+	} {
+		if err := Save(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := map[string]string{"google": AIStudioGemini, "studio": AIStudioGemini, "relay": "https://relay.example/v1beta", "other": ""}
+	for id, base := range want {
+		p, err := Find(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Gemini != base {
+			t.Errorf("%s: Gemini = %q, want %q", id, p.Gemini, base)
+		}
+		if speaks := p.Speaks(); slices.Contains(speaks, Gemini) != (base != "") || !slices.Contains(speaks, Chat) {
+			t.Errorf("%s speaks %v", id, speaks)
+		}
+		if p.AIStudioPair() != (id == "google" || id == "studio") {
+			t.Errorf("%s: AIStudioPair = %v", id, p.AIStudioPair())
+		}
+	}
+}
+
+// The Gemini URL magpie gives an AI Studio key is filled in once: one the
+// user clears stays empty, on every load and save after.
+func TestAIStudioGeminiClearedStays(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	if err := Save(Provider{ID: "google", Name: "Google Gemini", Preset: "google", Chat: AIStudioChat, Key: "AIza-k"}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Find("google")
+	if err != nil || p.Gemini != AIStudioGemini || !p.GeminiFilled {
+		t.Fatalf("filled: %+v %v", p, err)
+	}
+	// one 3e61d814e filled in, before GeminiFilled, is recorded too
+	p.GeminiFilled = false
+	if err := Save(*p); err != nil {
+		t.Fatal(err)
+	}
+	if p, err = Find("google"); err != nil || p.Gemini != AIStudioGemini || !p.GeminiFilled {
+		t.Fatalf("an earlier fill isn't recorded: %+v %v", p, err)
+	}
+	p.Gemini = ""
+	if err := Save(*p); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		got, err := Find("google")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Gemini != "" || slices.Contains(got.Speaks(), Gemini) {
+			t.Fatalf("the cleared Gemini URL came back: %q", got.Gemini)
+		}
+		if err := Save(*got); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

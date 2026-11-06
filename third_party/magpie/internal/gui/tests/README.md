@@ -12,6 +12,13 @@ checks that request hooks have no provider badge. `MAGPIE_GATEWAY_ASSETS` select
 an older asset directory for a failing regression comparison; user settings and
 live gateways are never accessed.
 
+`plugin-provider-options.test.cjs` checks the same JSON options editor on a
+provider plugin's Installed row (plugins#592: Devin's keep-alive interval and
+pings): shown when its package suggests options, starting from them; absent
+for a plugin with none and one switched off; Save and a confirmed Clear post
+through the real page, in all five languages, at 980px and 420px, on Chromium
+and WebKit. The API is faked.
+
 `settings-proxy-auth.test.cjs` checks a proxy's optional username and
 password in Settings, in fields of their own for SOCKS5/SOCKS5h, HTTP,
 HTTPS and bare host:port proxies alike, using the real page with isolated
@@ -345,6 +352,13 @@ the Models field's chips that the list is filtered, inside the editor; off,
 none. A WorkBuddy moved onto its plugin, Chromium and WebKit, 1100 and 420
 wide, every language.
 
+`plugin-option-placement.test.cjs` checks a plugin option that says
+`placement: "top"` (#5269): drawn under the accounts, above Routing, while
+the rest stay under the models; a plugin with no placement, or one magpie
+doesn't know, drawn as before; the note with the first block only; the top
+switch saved like any other. Chromium and WebKit, 1100 and 420 wide, every
+language.
+
 `plugin-move-overflow.test.cjs` checks a Plugins card that offers a
 built-in's accounts: the button is one word beside the name, as Install is
 ("Move", its title saying whose accounts and how many), on one line, and it
@@ -635,7 +649,7 @@ name. The groups' own New group has the plus too. No left-border accent.
 `name-suffix-where-named.test.cjs` checks the setting that says whether a
 provider's name or "· routing group" follows a name in the agents' lists (#868)
 where names are given, in Chromium and WebKit, English and Chinese. The
-provider editor's Names & levels has its three choices and says what the lists
+provider editor's Names, prices & levels has its three choices and says what the lists
 show. For the groups it is one setting for all of them, so it sits over the
 groups on Routing (PAMI on Discord: in one group's editor it read as that
 group's): a group's editor has no choices, only what its group will be called
@@ -1435,6 +1449,21 @@ found skill with a byte copy in another agent shows both agents' icons and
 no "differs in"; one that really differs still says so. Chromium and
 WebKit, in English and Chinese, with `/api/plugins` faked.
 
+`library-problems-hide.test.cjs` opens the Library with Grok Build's
+AGENTS.md failing to stat at every sync (Zachary-wW, #3745), the API
+answering as `library.go` does, the error texts as magpie's own sync gave
+them in a sandbox. The card's × hides what it lists on every tab, sends
+nothing and moves no view; a read, and in the window an Instructions
+change and a chip's change that fail only on what was hidden, keep it
+hidden, the toast still naming the failure, and so does the same failure
+under a temp file named anew at each write. A failure not hidden, one whose item was written in
+between, or one after none stood brings the card back with all it lists.
+An agent's own skills stay, under their own title, with no ×, and the
+keyboard's focus goes to the card's next button or the tab open. The × is
+named and inside the card in English, Chinese (both), Japanese and German,
+in a browser at 980, 440 and 320px (44px wide on a phone) and in the
+window at 980 and 560px, the title's words whole. Chromium and WebKit.
+
 `model-pick.test.cjs` picks Claude Code's model with the Agents page
 scrolled while a faked `/api/set` takes 2.5s to answer: the row shows the
 new model at once, in the window and in the tray panel's opened row and its
@@ -1483,7 +1512,7 @@ Chromium and WebKit, English and Chinese: Detect APIs' "Each picked model"
 posts provider/detect with every model picked (detectModels) and shows model
 by API, each a ✓ with the time or a ✗ with why; "Use these" sets the URLs
 that answered and gives each model that answered on one API only that API in
-Names & levels, unsaved, sending nothing until the Save carries them as
+Names, prices & levels, unsaved, sending nothing until the Save carries them as
 modelPrefs, while a model answering on two stays Auto. A chip's right-click
 Test says the API it was asked on ("answered via Responses"). No click moves
 the page, nothing has a left-border accent, and every string has its
@@ -2022,6 +2051,13 @@ nothing without one, a key magpie refuses is said in the row with the API
 and what was typed kept, and Remove posts `{vendor, remove: true}`. No click
 moves the page. English and Chinese, Chromium and WebKit, with `/api/plugins`
 faked.
+
+`search-signs-in.test.cjs` checks a plugin's search API that signs in as the
+plugin's provider (axelburks on Discord): the add row says "Signs in with
+{provider}" where the key field and Get a key were, Add posts it with no key,
+and each added one's row says how many of the provider's accounts are on, or,
+as an error, that none is signed in or none is on. All five languages, 980px
+and 420px, Chromium and WebKit, the API faked.
 
 `searcher-pick.test.cjs` checks the Web search section's "Searches for other
 models" row (01huadalang on Discord: pick which provider searches for a model
@@ -2654,3 +2690,15 @@ hasn't.
 ```sh
 node --test internal/gui/tests/nav-timeout.test.cjs
 ```
+
+## Logos that show on both grounds
+
+`icon-one-tone.test.cjs` draws every logo that `icon()` shows as a picture
+(`*-color.svg` and the PNG set) on the dark and the light card, and measures
+from a screenshot how much of each stands apart from the ground. It also
+opens the Plugins page's Installed row for Open Design, whose picture
+(`fixtures/opendesign-favicon.svg`, the real open-design.ai favicon) is one
+tone, #26251E. It checks that the row draws that picture as a mask in the
+text colour, and that it shows in both themes, all five languages, at 980px
+and 420px, in Chromium and WebKit (chen2652). `ARTIFACT_DIR` keeps the row's
+screenshots.

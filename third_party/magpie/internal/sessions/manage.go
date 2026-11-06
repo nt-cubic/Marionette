@@ -54,6 +54,11 @@ type Managed struct {
 	Messages  int   `json:"messages"`
 	Files     int   `json:"files"`
 	Deletable bool  `json:"deletable"`
+	// Undeletable: why a session of an agent whose sessions can be deleted
+	// can't be: "cursor-editor", a chat Cursor's editor keeps in its own
+	// database, or "read-only" (rowDeletable). The page says it on the
+	// row's delete, never by leaving the control out (ysm119 on Discord).
+	Undeletable string `json:"undeletable,omitempty"`
 	// Pending: a file of it is still being read for the first time, and
 	// what it spent and its messages aren't counted yet (the Sessions page
 	// answers before such a read, manage_quick.go)
@@ -75,10 +80,32 @@ type AgentCount struct {
 // those kept as files of their own, in a layout magpie knows whole.
 func Deletable(agent string) bool {
 	switch agent {
-	case "claude", "qoder", "qoder-cn", "workbuddy", "codebuddy", "codex", "pi", "raft", "cindy", "omp", "cursor", "dsh", "droid", "agy":
+	case "claude", "qoder", "qoder-cn", "workbuddy", "workbuddy-ai", "codebuddy", "codex", "pi", "raft", "cindy", "omp", "cursor", "dsh", "droid", "agy":
 		return true
 	}
 	return false
+}
+
+// rowDeletable says whether one session of an agent can be moved to the
+// trash, and, for one that can't of an agent whose sessions can, why. A
+// read-only session can't, except a Cursor editor transcript whose chat
+// the editor keeps no longer (fileMore.loose): it is files of its own.
+func rowDeletable(agent string, s Session, fs []file) (bool, string) {
+	if !Deletable(agent) {
+		return false, ""
+	}
+	if !s.ReadOnly {
+		return true, ""
+	}
+	if agent != "cursor" {
+		return false, "read-only"
+	}
+	for _, f := range fs {
+		if f.readOnly && !f.m().loose {
+			return false, "cursor-editor"
+		}
+	}
+	return true, ""
 }
 
 // ActiveWindow is how recently a session's file may have been written for
@@ -278,7 +305,8 @@ func listAgentWith(agent string, all []file, quick bool) []Managed {
 		setSessionCodexTaskTitle(&s, taskTitles)
 		listed(&s)
 		// a WSL distro's too (TJHHHH): moved out over \\wsl.localhost
-		m := Managed{Session: s, Files: len(fs), Deletable: Deletable(agent) && !s.ReadOnly}
+		m := Managed{Session: s, Files: len(fs)}
+		m.Deletable, m.Undeletable = rowDeletable(agent, s, fs)
 		for _, f := range fs {
 			m.Size += f.size
 			m.Pending = m.Pending || pending[f.path]
@@ -391,7 +419,10 @@ func Delete(agent, id string) (Trashed, error) {
 	if len(fs) == 0 {
 		return Trashed{}, errors.New("no such session")
 	}
-	if s.ReadOnly {
+	if ok, why := rowDeletable(agent, s, fs); !ok {
+		if why == "cursor-editor" {
+			return Trashed{}, errors.New("Cursor's editor keeps this chat in its own database: delete it in Cursor")
+		}
 		return Trashed{}, errors.New("this session is read only")
 	}
 	paths := sessionPaths(agent, id, fs)
@@ -482,6 +513,13 @@ func sessionPaths(agent, id string, fs []file) []string {
 		// transcripts Cursor wrote of it
 		cwd := ""
 		for _, f := range fs {
+			if f.readOnly {
+				// an editor transcript, never the folder it is in
+				for _, p := range cursorEditorPaths(f, id) {
+					add(p)
+				}
+				continue
+			}
 			add(filepath.Dir(f.path))
 			if st := cache[f.path]; st != nil && f.main {
 				cwd = st.Cwd
@@ -698,6 +736,11 @@ func Trash() []Trashed {
 		if err != nil || json.Unmarshal(b, &t) != nil {
 			continue
 		}
+		// gateway mode lists what the gateway kept, not this computer's
+		// agents' sessions (OwnOff)
+		if !t.Gateway && ownOff() {
+			continue
+		}
 		dir := filepath.Dir(p)
 		t.Key = filepath.Base(filepath.Dir(dir)) + "/" + filepath.Base(dir)
 		if t.Gateway {
@@ -728,6 +771,9 @@ func Purge(key string) error {
 	if dir == "" {
 		return errors.New("no such deleted session")
 	}
+	if !isGatewayKey(key) && ownOff() {
+		return ErrNotRead
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	for _, p := range []string{filepath.Dir(dir), dir} {
@@ -754,6 +800,9 @@ func Restore(key string) (Trashed, error) {
 		return Trashed{}, errors.New("no such deleted session")
 	}
 	t.Key = key
+	if !isGatewayKey(key) && ownOff() {
+		return Trashed{}, ErrNotRead
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	if isGatewayKey(key) {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -21,10 +22,12 @@ import (
 // A reply from a group says which member answered it (#822): its
 // X-Magpie-Provider and X-Magpie-Model headers always, relayed or
 // translated, streamed or not, after a failover too; its body's model the
-// group the agent asked for, unless MemberModel (or the request's
+// group the agent asked for, unless ReplyModel member (or the request's
 // X-Magpie-Response-Model: member) asks for magpie's provider/model id
 // there — never for Claude Code or Codex, which read it themselves — or
-// X-Magpie-Response-Model: vendor for the vendor's own name.
+// ReplyModel or X-Magpie-Response-Model vendor for the vendor's own name,
+// for every agent. memberModel in a file from before ReplyModel still
+// names the member; X-Magpie-Response-Model: asked the model asked for.
 func TestReplyNamesMember(t *testing.T) {
 	bodies := map[string]string{
 		"/v1/messages":         `{"model":"group/auto","max_tokens":100,"messages":[{"role":"user","content":"hi"}]`,
@@ -48,18 +51,33 @@ func TestReplyNamesMember(t *testing.T) {
 		for _, stream := range []bool{false, true} {
 			for _, c := range []struct {
 				name   string
-				on     bool   // MemberModel
+				reply  string // Settings' ReplyModel; old: memberModel in a file from before it
 				header string // X-Magpie-Response-Model
 				token  string // the agent's key
 				want   string // the model the body names
 			}{
-				{"default", false, "", "", "group/auto"},
-				{"on", true, "", "", "b/glm-5.3-flash"},
-				{"asked", false, "member", "", "b/glm-5.3-flash"},
-				{"on, vendor asked", true, "vendor", "", served},
-				{"vendor asked", false, "vendor", "", served},
-				{"on, codex", true, "", TokenFor("codex"), "group/auto"},
-				{"on, claude code", true, "", TokenFor("claude"), "group/auto"},
+				{"default", "", "", "", "group/auto"},
+				{"on", "member", "", "", "b/glm-5.3-flash"},
+				{"old file on", "old", "", "", "b/glm-5.3-flash"},
+				{"asked", "", "member", "", "b/glm-5.3-flash"},
+				{"on, vendor asked", "member", "vendor", "", served},
+				{"vendor asked", "", "vendor", "", served},
+				// ZoeCats on Discord (after v0.1.2760): member picked in
+				// Settings names the member to Claude Code and Codex too,
+				// as vendor does; they got the name asked for
+				{"on, codex", "member", "", TokenFor("codex"), "b/glm-5.3-flash"},
+				{"on, claude code", "member", "", TokenFor("claude"), "b/glm-5.3-flash"},
+				{"on, claude desktop", "member", "", TokenFor("claude-desktop"), "b/glm-5.3-flash"},
+				{"old file on, codex", "old", "", TokenFor("codex"), "b/glm-5.3-flash"},
+				{"on, codex, name asked", "member", "asked", TokenFor("codex"), "group/auto"},
+				// ZoeCats on Discord: the vendor's own name, as before the
+				// asked-for name, for every agent and every request
+				{"vendor", "vendor", "", "", served},
+				{"vendor, codex", "vendor", "", TokenFor("codex"), served},
+				{"vendor, claude code", "vendor", "", TokenFor("claude"), served},
+				{"vendor, member asked", "vendor", "member", "", "b/glm-5.3-flash"},
+				{"vendor, name asked", "vendor", "asked", "", "group/auto"},
+				{"on, name asked", "member", "asked", "", "group/auto"},
 			} {
 				name := pa.name + "/" + c.name
 				if stream {
@@ -97,8 +115,17 @@ func TestReplyNamesMember(t *testing.T) {
 					if err := provider.SaveGroup(provider.Group{Name: "auto", Routing: provider.Ordered, Members: []string{"a/glm-5.3-flash", "b/glm-5.3-flash"}}); err != nil {
 						t.Fatal(err)
 					}
-					if c.on {
-						if err := settings.Save(settings.Settings{MemberModel: true}); err != nil {
+					switch c.reply {
+					case "":
+					case "old":
+						if err := os.MkdirAll(settings.Dir(), 0o700); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.WriteFile(settings.Path(), []byte(`{"memberModel":true}`), 0o600); err != nil {
+							t.Fatal(err)
+						}
+					default:
+						if err := settings.Save(settings.Settings{ReplyModel: c.reply}); err != nil {
 							t.Fatal(err)
 						}
 					}
@@ -305,39 +332,106 @@ func TestReplyNamesAskedModel(t *testing.T) {
 	}
 }
 
+// A reply to a request that came in under one of magpie's own aliases for
+// Claude Desktop or Claude Science keeps the vendor's own name (#4667):
+// the alias — magpie-<n>.anthropic.claude-opus-5-5 among them — is
+// magpie's deployment name, not one the vendor knows, and naming the reply
+// with it put that name in Claude Code's usage records, where ccusage
+// counts it as a model of its own instead of the one the subscription
+// served. Before the asked-name rule these ids were served the vendor's
+// name, as every other agent still is.
+func TestReplyToMagpieAliasKeepsVendorName(t *testing.T) {
+	const served = "opus-5-5" // what the subscription's reply says
+	aliases := []string{
+		"magpie-" + aliasNumber("sub/claude-opus-5-5") + desktopClaudeInfix + "claude-opus-5-5",
+		"magpie-" + aliasNumber("sub/claude-opus-5-5") + desktopClaudeInfix + "claude-opus-5-5[1m]",
+		aliasFor("sub/claude-opus-5-5"),
+		desktopEffortAlias + aliasNumber("sub/claude-opus-5-5"),
+		scienceAlias + aliasNumber("sub/claude-opus-5-5"),
+	}
+	for _, stream := range []bool{false, true} {
+		for _, asked := range aliases {
+			name := asked
+			if stream {
+				name += "/stream"
+			}
+			t.Run(name, func(t *testing.T) {
+				fresh(t)
+				up := httptest.NewServer(servedBy(provider.Anthropic, served))
+				t.Cleanup(up.Close)
+				if err := provider.Save(provider.Provider{ID: "sub", Name: "Sub", Key: "k", Anthropic: up.URL, Models: []string{"claude-opus-5-5"}}); err != nil {
+					t.Fatal(err)
+				}
+				m, _ := json.Marshal(asked)
+				body := `{"model":` + string(m) + `,"max_tokens":100,"messages":[{"role":"user","content":"hi"}]`
+				if stream {
+					body += `,"stream":true`
+				}
+				rec := httptest.NewRecorder()
+				s := New()
+				s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body+"}")))
+				if rec.Code != 200 || !strings.Contains(rec.Body.String(), "hi") {
+					t.Fatalf("%d %s", rec.Code, rec.Body)
+				}
+				names := modelsNamed(rec.Body.String(), stream)
+				if len(names) == 0 {
+					t.Fatalf("no model named in %s", rec.Body)
+				}
+				for _, n := range names {
+					if n != served {
+						t.Fatalf("the reply names %q, want the vendor's %q:\n%s", n, served, rec.Body)
+					}
+				}
+				if r := lastRoute(s); r.Served != served {
+					t.Errorf("the route says %q served it, want the vendor's %q", r.Served, served)
+				}
+				if calls := s.Recent(); len(calls) == 0 || calls[0].Usage.Served != served {
+					t.Errorf("the log says %+v served it, want the vendor's %q", calls, served)
+				}
+			})
+		}
+	}
+}
+
 // A Gemini agent asks in the URL, and the reply's modelVersion names that
 // model when the request went out under another name.
 func TestGeminiReplyNamesAskedModel(t *testing.T) {
-	for _, stream := range []bool{false, true} {
-		t.Run(fmt.Sprint("stream ", stream), func(t *testing.T) {
-			fresh(t)
-			up := httptest.NewServer(servedBy(provider.Chat, "deepseek-v4.1-flash-1017"))
-			t.Cleanup(up.Close)
-			if err := provider.Save(provider.Provider{ID: "d", Name: "D", Key: "k", Chat: up.URL + "/v1", Models: []string{"deepseek-v4.1-flash"}}); err != nil {
-				t.Fatal(err)
-			}
-			if err := settings.Save(settings.Settings{ModelIDs: map[string]string{"d/deepseek-v4.1-flash": "deepseek-v4.1-flash-1017"}}); err != nil {
-				t.Fatal(err)
-			}
-			path := "/v1beta/models/deepseek-v4.1-flash:generateContent"
-			if stream {
-				path = "/v1beta/models/deepseek-v4.1-flash:streamGenerateContent?alt=sse"
-			}
-			rec := httptest.NewRecorder()
-			New().Handler().ServeHTTP(rec, httptest.NewRequest("POST", path, strings.NewReader(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)))
-			if rec.Code != 200 || !strings.Contains(rec.Body.String(), "hi") {
-				t.Fatalf("%d %s", rec.Code, rec.Body)
-			}
-			names := modelsNamed(rec.Body.String(), stream)
-			if len(names) == 0 {
-				t.Fatalf("no model named in %s", rec.Body)
-			}
-			for _, n := range names {
-				if n != "deepseek-v4.1-flash" {
-					t.Fatalf("the reply names %q:\n%s", n, rec.Body)
+	for _, c := range []struct{ reply, want string }{
+		{"", "deepseek-v4.1-flash"},
+		{"member", "d/deepseek-v4.1-flash"},
+		{"vendor", "deepseek-v4.1-flash-1017"},
+	} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprint(c.reply, " stream ", stream), func(t *testing.T) {
+				fresh(t)
+				up := httptest.NewServer(servedBy(provider.Chat, "deepseek-v4.1-flash-1017"))
+				t.Cleanup(up.Close)
+				if err := provider.Save(provider.Provider{ID: "d", Name: "D", Key: "k", Chat: up.URL + "/v1", Models: []string{"deepseek-v4.1-flash"}}); err != nil {
+					t.Fatal(err)
 				}
-			}
-		})
+				if err := settings.Save(settings.Settings{ReplyModel: c.reply, ModelIDs: map[string]string{"d/deepseek-v4.1-flash": "deepseek-v4.1-flash-1017"}}); err != nil {
+					t.Fatal(err)
+				}
+				path := "/v1beta/models/deepseek-v4.1-flash:generateContent"
+				if stream {
+					path = "/v1beta/models/deepseek-v4.1-flash:streamGenerateContent?alt=sse"
+				}
+				rec := httptest.NewRecorder()
+				New().Handler().ServeHTTP(rec, httptest.NewRequest("POST", path, strings.NewReader(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)))
+				if rec.Code != 200 || !strings.Contains(rec.Body.String(), "hi") {
+					t.Fatalf("%d %s", rec.Code, rec.Body)
+				}
+				names := modelsNamed(rec.Body.String(), stream)
+				if len(names) == 0 {
+					t.Fatalf("no model named in %s", rec.Body)
+				}
+				for _, n := range names {
+					if n != c.want {
+						t.Fatalf("the reply names %q, want %q:\n%s", n, c.want, rec.Body)
+					}
+				}
+			})
+		}
 	}
 }
 

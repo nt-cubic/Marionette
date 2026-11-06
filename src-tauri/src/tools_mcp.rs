@@ -56,18 +56,33 @@ pub fn session_entry(app: &AppHandle, session_id: &str) -> Option<Value> {
         return None;
     }
     let port = ensure_started(app)?;
-    let token = mint_token(session_id);
-    if let Ok(mut guard) = TOKENS.write() {
-        guard
-            .get_or_insert_with(HashMap::new)
-            .insert(token.clone(), session_id.to_string());
-    }
+    let token = register_session_token(session_id);
     Some(json!({
         "name": "marionette-tools",
         "url": format!("http://127.0.0.1:{port}/mcp"),
         "headers": { "Authorization": format!("Bearer {token}") },
         "type": "http",
     }))
+}
+
+/// Mint a bearer token that names `session_id` on this server. Shared by the
+/// built-in tool surface and the universal plugin layer (plugins must keep
+/// working when the browser tool surface is toggled off, so they mint their
+/// own token instead of piggybacking on `session_entry`).
+pub(crate) fn register_session_token(session_id: &str) -> String {
+    let token = mint_token(session_id);
+    if let Ok(mut guard) = TOKENS.write() {
+        guard
+            .get_or_insert_with(HashMap::new)
+            .insert(token.clone(), session_id.to_string());
+    }
+    token
+}
+
+/// Make sure the localhost listener exists and return its port. Independent of
+/// the browser tool toggle — the plugin routes live on the same server.
+pub(crate) fn ensure_listening(app: &AppHandle) -> Option<u16> {
+    ensure_started(app)
 }
 
 fn ensure_started(app: &AppHandle) -> Option<u16> {
@@ -135,6 +150,15 @@ fn handle_request(mut request: tiny_http::Request) {
             return;
         }
     };
+    // Universal plugin routes live under /mcp/p/<id>. They own their whole
+    // message lifecycle: notifications relay to the plugin (stdio child or
+    // remote) instead of the bare 202 the built-in surface answers, and a
+    // plugin's own JSON-RPC errors pass through verbatim.
+    let path = request.url().to_string();
+    if let Some(plugin_id) = plugin_route(&path) {
+        crate::plugin_host::proxy_handle(plugin_id, session_id, message, request);
+        return;
+    }
     // Notifications (no id) get a bare accepted — there is nothing to answer.
     let id = message.get("id").cloned();
     if id.is_none() {
@@ -160,6 +184,18 @@ fn bearer_session(request: &tiny_http::Request) -> Option<String> {
     let token = value.strip_prefix("Bearer ").map(str::trim_start)?;
     let guard = TOKENS.read().ok()?;
     guard.as_ref()?.get(token).cloned()
+}
+
+/// `/mcp/p/<plugin-id>` → plugin id. Anything else (including the bare `/mcp`
+/// built-in route) is `None`. One path segment only; query strings ignored.
+fn plugin_route(url: &str) -> Option<&str> {
+    let path = url.split('?').next().unwrap_or(url);
+    let rest = path.strip_prefix("/mcp/p/")?;
+    let id = rest.trim_end_matches('/');
+    if id.is_empty() || id.contains('/') {
+        return None;
+    }
+    Some(id)
 }
 
 fn route(method: &str, params: &Value, session_id: &str) -> Result<Value, Value> {

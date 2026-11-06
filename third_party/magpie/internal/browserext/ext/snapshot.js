@@ -2,7 +2,7 @@
 // each element it can act on given a ref (e3) that stays the element's
 // from one snapshot to the next, for as long as the page keeps it.
 
-import { send } from "./cdp.js";
+import { fault, send } from "./cdp.js";
 
 const INTERACTIVE = new Set([
   "button", "link", "textbox", "searchbox", "checkbox", "radio", "combobox",
@@ -61,27 +61,48 @@ async function clickables(tabId) {
   return ids;
 }
 
-// frames of the page's own process, read beside the main one; a frame
-// from another site runs in a process of its own, which this tab's
-// debugger doesn't reach
-async function frames(tabId) {
-  const out = new Map(); // owner element's backendNodeId → nodes
-  let tree;
-  try { tree = (await send(tabId, "Page.getFrameTree")).frameTree; } catch { return out; }
-  const kids = [];
-  (function walk(f) { for (const c of f.childFrames || []) { kids.push(c.frame); walk(c); } })(tree);
-  await Promise.all(kids.slice(0, 20).map(async (f) => {
-    try {
-      const owner = await send(tabId, "DOM.getFrameOwner", { frameId: f.id });
-      const { nodes } = await send(tabId, "Accessibility.getFullAXTree", { frameId: f.id });
-      out.set(owner.backendNodeId, nodes);
-    } catch {
+// the page's frames, read beside the main one: a frame of the page's own
+// process through the tab, a frame from another site (a process of its
+// own) through its session. Keyed by the session the owner element is in
+// and its backendNodeId, since each process numbers its nodes itself.
+async function frames(t) {
+  const out = new Map(); // "session:backend" → { nodes, sid, frame } | null
+  const done = new Set();
+  let left = 30;
+  const read = async (sid, depth) => {
+    if (depth > 4) return;
+    let tree;
+    try { tree = (await send(t.tabId, "Page.getFrameTree", {}, sid)).frameTree; } catch { return; }
+    const kids = [];
+    (function walk(f) { for (const c of f.childFrames || []) { kids.push(c.frame); walk(c); } })(tree);
+    // a frame from another site is left out of its parent's tree: it is
+    // known by the session attached for it
+    for (const [, v] of t.frameOf) if ((v.parent || undefined) === sid && !kids.some((k) => k.id === v.frame)) kids.push({ id: v.frame });
+    await Promise.all(kids.map(async (f) => {
+      if (done.has(f.id)) return;
+      let owner;
+      // a frame whose element is in another process is read from there
+      try { owner = (await send(t.tabId, "DOM.getFrameOwner", { frameId: f.id }, sid)).backendNodeId; } catch { return; }
+      if (done.has(f.id) || left <= 0) return;
+      done.add(f.id);
+      left--;
+      const key = (sid || "") + ":" + owner;
+      const own = t.children.get(f.id);
       try {
-        const owner = await send(tabId, "DOM.getFrameOwner", { frameId: f.id });
-        out.set(owner.backendNodeId, null);
-      } catch {}
-    }
-  }));
+        if (own) {
+          const { nodes } = await send(t.tabId, "Accessibility.getFullAXTree", {}, own);
+          out.set(key, { nodes, sid: own, frame: f.id });
+          await read(own, depth + 1);
+        } else {
+          const { nodes } = await send(t.tabId, "Accessibility.getFullAXTree", { frameId: f.id }, sid);
+          out.set(key, { nodes, sid, frame: f.id });
+        }
+      } catch {
+        out.set(key, null);
+      }
+    }));
+  };
+  await read(undefined, 0);
   return out;
 }
 
@@ -95,7 +116,7 @@ export async function take(t, opts = {}) {
   const [{ nodes }, clickable, inner, info] = await Promise.all([
     send(tabId, "Accessibility.getFullAXTree"),
     clickables(tabId),
-    frames(tabId),
+    frames(t),
     send(tabId, "Runtime.evaluate", { expression: "[location.href, document.title]", returnByValue: true }).then((r) => r.result.value).catch(() => ["", ""]),
   ]);
   const [url, title] = info;
@@ -117,6 +138,9 @@ export async function take(t, opts = {}) {
     return m;
   };
 
+  // where a ref's element is: the session (a frame from another site)
+  // and the frame its document is
+  let sid, frame;
   const refFor = (role, name, backend) => {
     const k = role + "|" + name;
     const nth = seen.get(k) || 0;
@@ -127,7 +151,7 @@ export async function take(t, opts = {}) {
       ref = "e" + t.next++;
       t.keys.set(key, ref);
     }
-    refs.set(ref, { backend, role, name, key });
+    refs.set(ref, { backend, role, name, key, ...(sid ? { sid } : {}), ...(frame ? { frame } : {}) });
     return ref;
   };
 
@@ -166,18 +190,20 @@ export async function take(t, opts = {}) {
       return;
     }
     const backend = n.backendDOMNodeId;
-    const isClick = backend && clickable.has(backend);
+    // the pointer-cursor scan reads the main document only
+    const isClick = backend && !sid && !frame && clickable.has(backend);
+    const at = (sid || "") + ":" + backend;
     const props = {};
     for (const p of n.properties || []) props[p.name] = p.value && p.value.value;
     const acts = INTERACTIVE.has(role) || isClick || (props.focusable && props.editable);
     if (TRANSPARENT.has(role) && !name && !acts) {
       // an iframe's document is read under its element
-      if (backend && inner.has(backend)) return frame(backend, depth);
+      if (backend && inner.has(at)) return inFrame(at, depth);
       return children();
     }
     if (role === "Iframe" || role === "iframe") {
       lines.push("  ".repeat(depth) + "- iframe" + (name ? " " + q(name) : ""));
-      if (backend && inner.has(backend)) frame(backend, depth + 1);
+      if (backend && inner.has(at)) inFrame(at, depth + 1);
       return;
     }
     let shown = isClick && TRANSPARENT.has(role) ? "clickable" : role;
@@ -204,25 +230,35 @@ export async function take(t, opts = {}) {
     for (const c of n.childIds || []) walk(byId, byId.get(c), opts.interactive ? depth : depth + 1, under);
   };
 
-  const frame = (backend, depth) => {
-    const list = inner.get(backend);
-    if (!list) {
-      lines.push("  ".repeat(depth) + "- (a frame from another site: not readable here; use a screenshot, or open its address in a tab)");
+  const inFrame = (at, depth) => {
+    const f = inner.get(at);
+    if (!f) {
+      lines.push("  ".repeat(depth) + "- (a frame this browser doesn't let Magpie Browser read: use a screenshot, or open its address in a tab)");
       return;
     }
-    const byId = index(list);
-    walk(byId, list.find((n) => !n.parentId) || list[0], depth, "");
+    const was = [sid, frame];
+    [sid, frame] = [f.sid, f.frame];
+    try {
+      const byId = index(f.nodes);
+      walk(byId, f.nodes.find((n) => !n.parentId) || f.nodes[0], depth, "");
+    } finally {
+      [sid, frame] = was;
+    }
   };
 
-  const byId = index(nodes);
+  let list = nodes;
   let root = nodes.find((n) => !n.parentId) || nodes[0];
   if (opts.ref) {
     const r = t.refs.get(opts.ref);
-    const n = r && nodes.find((x) => x.backendDOMNodeId === r.backend);
-    if (!n) throw new Error(`ref ${opts.ref} isn't on the page now: take a snapshot without ref`);
+    // the ref's own document: the main one, or the frame it is in
+    const f = r && (r.sid || r.frame) ? [...inner.values()].find((x) => x && x.sid === r.sid && x.frame === r.frame) : null;
+    if (f) { list = f.nodes; [sid, frame] = [f.sid, f.frame]; }
+    const n = r && list.find((x) => x.backendDOMNodeId === r.backend);
+    if (!n) throw fault("STALE_REF", `ref ${opts.ref} isn't on the page now: take a snapshot without ref`);
     root = n;
   }
-  walk(byId, root, 0, "");
+  walk(index(list), root, 0, "");
+  [sid, frame] = [undefined, undefined];
   // the old refs stay good for elements still on the page that this
   // snapshot didn't show (a scoped one)
   if (opts.ref) for (const [k, v] of refs) t.refs.set(k, v);
@@ -244,13 +280,13 @@ export async function take(t, opts = {}) {
 // that says what the page has.
 export async function find(t, ref) {
   const m = /^(?:ref=)?(e\d+)$/i.exec(String(ref || "").trim());
-  if (!m) throw new Error(`"${ref}" isn't a ref: refs look like e12, from the latest snapshot`);
+  if (!m) throw fault("BAD_ARGS", `"${ref}" isn't a ref: refs look like e12, from the latest snapshot`);
   ref = m[1].toLowerCase();
   const r = t.refs.get(ref);
-  if (!r) throw new Error(`ref ${ref} isn't in the latest snapshot of this tab: take a snapshot and use a ref from it`);
+  if (!r) throw fault("STALE_REF", `ref ${ref} isn't in the latest snapshot of this tab: take a snapshot and use a ref from it`);
   try {
-    const o = await send(t.tabId, "DOM.resolveNode", { backendNodeId: r.backend, objectGroup: "magpie-act" });
-    const c = await send(t.tabId, "Runtime.callFunctionOn", { objectId: o.object.objectId, functionDeclaration: "function(){return this.isConnected}", returnByValue: true });
+    const o = await send(t.tabId, "DOM.resolveNode", { backendNodeId: r.backend, objectGroup: "magpie-act" }, r.sid);
+    const c = await send(t.tabId, "Runtime.callFunctionOn", { objectId: o.object.objectId, functionDeclaration: "function(){return this.isConnected}", returnByValue: true }, r.sid);
     if (c.result.value) return { ...r, ref, objectId: o.object.objectId };
   } catch {}
   // the page drew it again: the same role and name, if only one has it
@@ -258,9 +294,9 @@ export async function find(t, ref) {
   const same = [...t.refs].filter(([, v]) => v.role === r.role && v.name === r.name);
   if (same.length === 1) {
     const [nref, v] = same[0];
-    const o = await send(t.tabId, "DOM.resolveNode", { backendNodeId: v.backend, objectGroup: "magpie-act" });
+    const o = await send(t.tabId, "DOM.resolveNode", { backendNodeId: v.backend, objectGroup: "magpie-act" }, v.sid);
     return { ...v, ref: nref, objectId: o.object.objectId };
   }
-  if (same.length > 1) throw new Error(`${ref} (${r.role} "${r.name}") was redrawn and ${same.length} elements now match it: take a snapshot and pick one`);
-  throw new Error(`${ref} (${r.role} "${r.name}") is no longer on the page: take a snapshot`);
+  if (same.length > 1) throw fault("AMBIGUOUS", `${ref} (${r.role} "${r.name}") was redrawn and ${same.length} elements now match it: take a snapshot and pick one`);
+  throw fault("STALE_REF", `${ref} (${r.role} "${r.name}") is no longer on the page: take a snapshot`);
 }

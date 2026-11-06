@@ -187,7 +187,8 @@ func DesktopID(e provider.Entry) string { return claudeLooking(e) }
 // display_name, which carries the provider already. Only a Claude model
 // with reasoning levels, listed as magpie-<number>.anthropic.<model>
 // (claudeLooking), is named after Desktop's own catalog ("Opus 5.5"), so
-// two providers' rows read alike and the menu tells them apart by that id.
+// two providers' rows read alike and the menu tells them apart by that id
+// and by the provider in its description (desktopSaidBy).
 // Every other id is the model's own (no number) or an alias Desktop
 // doesn't know (mythos-magpie-<n>, anthropic/magpie-<n>), named by
 // display_name.
@@ -208,7 +209,8 @@ func DesktopNumber(e provider.Entry) string {
 // it keeps (claudeLooking), named as the agents' lists name models
 // (desktopNames: the Provider in model names setting, so its menu reads
 // like Codex's, #1746). Desktop shows the name, not the id, and its
-// description after it, so none is given but a 1M entry's (desktop1M); it
+// description after it, so none is given but a 1M entry's (desktop1M) and
+// the provider of a row Desktop names after its catalog (desktopSaidBy); it
 // folds rows of one name into one entry, so no two of one name read the
 // same (desktopNames). A model of 1M or more is listed by its "[1m]" id
 // under settings.DesktopLongest, described as Desktop's own 1M entry is
@@ -225,14 +227,9 @@ func desktopModels(entries []provider.Entry, knowsMythos bool) []map[string]any 
 	// chat was on AgentRouter's gpt-6.1-sol (cybercaius on Discord).
 	// Untagged, Claude Code asks for its own id of the tier, which
 	// desktopTurn keeps on the chat's provider (servedBeside).
-	picked := DesktopTiers()
-	tierOf := map[string]string{}
-	for _, t := range DesktopTierNames {
-		if id := picked[t]; id != "" && tierOf[id] == "" {
-			tierOf[id] = t
-		}
-	}
+	tierOf := desktopTierOf(DesktopTiers())
 	longest := settings.Load().DesktopLongest
+	labels := provider.Labels(entries)
 	data := make([]map[string]any, 0, len(entries))
 	for i, e := range entries {
 		m := modelObject(e)
@@ -242,9 +239,16 @@ func desktopModels(entries []provider.Entry, knowsMythos bool) []map[string]any 
 			id = aliasFor(e.ID)
 		}
 		m["id"] = id
+		var said []string
 		if desktopListed1M(e, longest) {
 			m["id"] = m["id"].(string) + "[1m]"
-			m["description"] = desktop1MSaid
+			said = append(said, desktop1MSaid)
+		}
+		if by := desktopSaidBy(e, labels[i]); by != "" {
+			said = append(said, by)
+		}
+		if len(said) > 0 {
+			m["description"] = strings.Join(said, " · ")
 		}
 		if t := tierOf[e.ID]; t != "" {
 			m["anthropic_family_tier"], m["is_family_default"] = t, true
@@ -286,6 +290,28 @@ func DesktopListed1M(e provider.Entry) bool {
 // desktop1MSaid is the description Claude Desktop gives the 1M entry it
 // adds (WLt in its app.asar, 2.7032).
 const desktop1MSaid = "1M context window"
+
+// desktopSaidBy is the provider Claude Desktop's menu says under e, where
+// the name it shows can't: "" but for a row Desktop names after its own
+// model catalog (DesktopNumber), whose label, by the Provider in model
+// names setting, has its provider after it.
+//
+// Desktop 4.4212 labels a picker row by its catalog's name before the
+// gateway's display_name (ngn in its app.asar: labelOverride, then the
+// catalog's name, then display_name; only an admin's inferenceModels list
+// has labelOverride), so every provider's claude-opus-5-5 read "Opus 5.5"
+// and the menu told them apart only by the tail of the id, "(…7922287072
+// .anthropic.claude-opus-5-5)" (4 v5 on Discord: 老林夕, 新林夕, 百德 and
+// chatflowsai's alike). The row's description is the gateway's before the
+// catalog's, which has none for these models, and Desktop shows it under
+// the name, so the provider goes there. The id stays as it was, for a
+// session or a pick saved on it.
+func desktopSaidBy(e provider.Entry, label string) string {
+	if DesktopNumber(e) == "" || e.Provider.Name == "" || !strings.HasSuffix(label, " · "+e.Provider.Name) {
+		return ""
+	}
+	return e.Provider.Name
+}
 
 // Claude Desktop's Code tab runs Claude Code with ANTHROPIC_DEFAULT_<TIER>_MODEL
 // set to "" for every tier, unless the gateway's /v1/models tags a model
@@ -425,32 +451,49 @@ func desktopNames(entries []provider.Entry) []string {
 // or without Claude Code's "[1m]"; or Claude Science's,
 // claude-magpie-<number>.
 func aliased(id string) (string, bool) {
-	id = strings.TrimSuffix(id, "[1m]")
-	var number string
-	if n, ok := strings.CutPrefix(id, desktopAlias); ok {
-		number = n
-	} else if n, ok := strings.CutPrefix(id, desktopEffortAlias); ok {
-		number = n
-	} else if n, ok := strings.CutPrefix(id, scienceAlias); ok {
-		// Claude Science's (science.go)
-		number = n
-	} else if rest, ok := strings.CutPrefix(id, "magpie-"); ok {
-		if i := strings.Index(rest, desktopClaudeInfix); i > 0 {
-			number = rest[:i]
-		}
-	}
+	number := aliasDigits(id)
 	if len(number) != 10 {
 		return "", false
 	}
-	// the catalog Desktop and Science are listed from: a signed-in
-	// subscription's model a group listing alone keeps out of Catalog
-	// is still theirs (provider.SubscriptionKept)
+	// the catalog Desktop and Science are listed from
 	for _, e := range provider.CatalogOf("claude-desktop") {
 		if aliasNumber(e.ID) == number {
 			return e.ID, true
 		}
 	}
 	return "", false
+}
+
+// magpieAliasAsked says asked is one of magpie's own alias ids for Claude
+// Desktop or Claude Science (aliased's forms, with or without Claude
+// Code's "[1m]"): anthropic/magpie-<number>, mythos-magpie-<number>,
+// magpie-<number>.anthropic.<Claude model> or claude-magpie-<number>, the
+// number one of magpie's own (aliasNumber's ten digits). Whether the
+// catalog still lists a model under it is not asked: a session saved on an
+// old alias is served all the same, and a reply to it must not name the
+// alias either (#4667).
+func magpieAliasAsked(id string) bool {
+	n := aliasDigits(id)
+	return len(n) == 10 && strings.IndexFunc(n, func(r rune) bool { return r < '0' || r > '9' }) < 0
+}
+
+// aliasDigits is the number in one of magpie's alias ids (aliased's forms,
+// with or without Claude Code's "[1m]"), "" when id has none of the forms.
+func aliasDigits(id string) string {
+	id = strings.TrimSuffix(id, "[1m]")
+	if n, ok := strings.CutPrefix(id, desktopAlias); ok {
+		return n
+	} else if n, ok := strings.CutPrefix(id, desktopEffortAlias); ok {
+		return n
+	} else if n, ok := strings.CutPrefix(id, scienceAlias); ok {
+		// Claude Science's (science.go)
+		return n
+	} else if rest, ok := strings.CutPrefix(id, "magpie-"); ok {
+		if i := strings.Index(rest, desktopClaudeInfix); i > 0 {
+			return rest[:i]
+		}
+	}
+	return ""
 }
 
 // isClaudeDesktop is a request from Claude Desktop's own gateway client: its

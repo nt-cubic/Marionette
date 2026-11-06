@@ -8,8 +8,11 @@
 // github:yuweihao17/codearts showed Update all the time, and still did
 // right after updating it): at the same commit there is no Update, nor
 // Update all; once the repository moves on, Check for updates shows New
-// commits and an Update that fetches it again, and after it there is none.
-// Its
+// commits and an Update that fetches it again, and after it there is none,
+// even when the repository moved on again after the check and the update
+// installed a commit newer than the one it found (matrix0487, #4802: New
+// commits and Update all stayed, and Update said it was up to date; these
+// are the reporter's commits). Its
 // page is the README it was installed with, with no npm link and a Source
 // link to the repository. A click scrolls nothing. English and Chinese; the
 // API is faked here.
@@ -22,8 +25,9 @@ const { chromium, webkit } = require("playwright");
 const assets = path.resolve(__dirname, "../assets");
 
 const SPEC = "github:owner/repo";
-const HAVE = "c594984";
-const NEXT = "8fd2d9a";
+const HAVE = "fdaa691";
+const NEXT = "3b411a5"; // what Check for updates finds
+const LATER = "ba898e7"; // pushed after it: what Update installs
 const README = ["# my-oc-plugin", "", "A plugin installed from its repository."].join("\n");
 
 function server(lang, asked, repo) {
@@ -62,7 +66,11 @@ function server(lang, asked, repo) {
     }
     if (url.pathname === "/api/plugins/upgrade") {
       asked.push(["upgrade", body()]);
-      installed[0].commit = repo.head; // the version in its package.json stays
+      // bun installs what the repository is at now, and the update asks
+      // the repository again, as the plugins' own head says; the version
+      // in its package.json stays
+      if (repo.after) repo.head = repo.after;
+      installed[0].commit = installed[0].head = repo.head;
       return json({});
     }
     if (url.pathname === "/api/open") { asked.push(["open", body()]); return route.fulfill({ status: 204 }); }
@@ -75,8 +83,8 @@ function server(lang, asked, repo) {
 }
 
 const L = {
-  en: { hint: "npm package, GitHub repo (github:owner/repo) or a folder", install: "Install", installed: "Installed", update: "Update", check: "Check for updates", all: "Update all", fresh: "New commits", done: "my-oc-plugin is up to date", source: "Source" },
-  zh: { hint: "npm 包名、GitHub 仓库（github:owner/repo）或本机文件夹", install: "安装", installed: "已安装", update: "更新", check: "检查更新", all: "全部更新", fresh: "有新提交", done: "my-oc-plugin 已是最新", source: "源码" },
+  en: { hint: "npm package, GitHub repo (github:owner/repo) or a folder", install: "Install", installed: "Installed", update: "Update", check: "Check for updates", all: "Update all", fresh: "New commits", done: "my-oc-plugin updated to " + LATER, source: "Source" },
+  zh: { hint: "npm 包名、GitHub 仓库（github:owner/repo）或本机文件夹", install: "安装", installed: "已安装", update: "更新", check: "检查更新", all: "全部更新", fresh: "有新提交", done: "my-oc-plugin 已更新到 " + LATER, source: "源码" },
 };
 
 const shot = async (loc, name) => {
@@ -152,13 +160,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.match(await bar.locator("button", { hasText: w.all }).innerText(), /1/);
         await shot(view, `plugins-git-installed-${engine}-${lang}`);
         const before2 = await scrolls(page);
+        // the repository moves on again after the check, before Update
+        repo.after = LATER;
         await up.click();
-        await page.waitForFunction((n) => [...document.querySelectorAll("#view-plugins .pm-row .pm-ver")].some((x) => x.textContent.trim() === n), NEXT);
+        await page.waitForFunction((n) => [...document.querySelectorAll("#view-plugins .pm-row .pm-ver")].some((x) => x.textContent.trim() === n), LATER);
         assert.deepEqual(asked.find(([k]) => k === "upgrade")[1], { spec: SPEC });
         assert.equal(await scrolls(page), before2, "Update scrolls nothing");
         assert.match(await page.locator("body").innerText(), new RegExp(w.done));
         // updated: no Update stays behind (it did, before)
-        assert.deepEqual(await vers(), ["v1.0.0", NEXT]);
+        assert.deepEqual(await vers(), ["v1.0.0", LATER]);
         assert.equal(await up.count(), 0, "updated, there is nothing to update");
         assert.equal(await row.locator(".pm-chip", { hasText: w.fresh }).count(), 0);
         assert.equal(await bar.locator("button", { hasText: w.all }).count(), 0);

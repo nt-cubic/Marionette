@@ -137,6 +137,7 @@ func (h *host) makePanel() *application.WebviewWindow {
 	trayOwnClicks()
 	w.OnWindowEvent(events.Mac.WindowShow, func(*application.WindowEvent) { trayHighlight(true) })
 	w.OnWindowEvent(events.Mac.WindowHide, func(*application.WindowEvent) { trayHighlight(false) })
+	sayWailsHides(w)
 	// The system's close hides the panel, as Escape does: a title bar's X
 	// (KWin's, #1283), Alt+F4 or the window manager's close key. Closed, it
 	// was gone while the tray still opened it, and the icon did nothing
@@ -215,7 +216,10 @@ func (h *host) lighten() {
 	<-h.ready
 	var ticks [2]int // the main window's, the panel's
 	for range time.Tick(lightEvery) {
-		on := settings.Load().LightweightOn()
+		// a magpie that handed the gateway to the new version lets its
+		// hidden pages go as lightweight mode does: their polls kept it
+		// asking for usage beside the new one while it drained (#4938)
+		on := settings.Load().LightweightOn() || handedOver.Load()
 		var let []*application.WebviewWindow
 		h.winMu.Lock()
 		application.InvokeSync(func() {

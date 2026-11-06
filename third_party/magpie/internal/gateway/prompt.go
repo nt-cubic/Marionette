@@ -720,12 +720,12 @@ var (
 	myRequest = regexp.MustCompile(`(?m)^## My request(?: for Codex)?:[ \t]*\n?`)
 	// injected are how a text the agent put in as the user begins, beside
 	// agentsFor and the reminders: Codex's and the Codex app's context,
-	// Claude Code's and ZCode's notices, plugin metadata, agent lists and
-	// todo nudges.
+	// Reasonix's snapshot of the workspace, Claude Code's and ZCode's
+	// notices, plugin metadata, agent lists and todo nudges.
 	injected = []string{
 		"<system-reminder", "<environment_context>", "<user_instructions>", "<turn_aborted>",
 		"<user_shell_command>", "<subagent_notification>", "<in-app-browser-context",
-		"<external_codex_apps_open_page>",
+		"<external_codex_apps_open_page>", "<session-context",
 		"<task-notification>", "<subagent-notification>", "<plugin_reference>",
 		"Available agent types for the Agent tool:", "Available agent types and the tools they have access to:",
 		"New agent types are now available for the Agent tool:",
@@ -1229,6 +1229,21 @@ func windowFor(id, model string) int {
 	return windowOf(*p, model)
 }
 
+// livePrompt is p as a route still answering shows it: in the window of
+// the model its try went to, read as the try went out (packinggoods on
+// Discord: a request in flight on a remote magpie's claude-opus-5-5 said
+// the model's window isn't known, its window set only once it was done).
+// p itself is left as it is, for the route's end to scale and give the
+// window of the model that answered.
+func livePrompt(p *Prompt, window int) *Prompt {
+	if p == nil || window <= 0 || p.Window == window {
+		return p
+	}
+	c := *p
+	c.Window = window
+	return &c
+}
+
 // inspectPrompt reads the request's prompt beside it, putting the estimate
 // in the trace as soon as it is read; wait returns it, for the route's
 // end to scale to what was counted. masked is the body as the vendor would
@@ -1242,7 +1257,7 @@ func (s *Server) inspectPrompt(tr *Route, from provider.Protocol, body, masked [
 			s.trace.keepBody(tr.ID, from, masked, plain)
 			s.trace.update(tr, func(t *Route) {
 				if t.Prompt == nil {
-					t.Prompt = p
+					t.Prompt = livePrompt(p, t.window)
 				}
 			})
 		}

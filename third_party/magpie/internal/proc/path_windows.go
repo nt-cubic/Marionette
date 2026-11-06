@@ -101,3 +101,42 @@ func LoginEnvKnown(string) string { return "" }
 // ShellPath is LoginPath on Windows: PowerShell and cmd both take the
 // registry's PATH.
 func ShellPath(string) []string { return LoginPath() }
+
+// LoginVars are the values the registry has now for names, the user's
+// over the machine's: what a terminal opened now gets, and what a magpie
+// started before the variable was set (setx, the Environment Variables
+// dialog) doesn't. A ${NAME} in an MCP server's headers or environment is
+// read so where magpie's own environment hasn't it. The values are only
+// returned, never set in magpie's environment or logged.
+func LoginVars(names []string) map[string]string {
+	out := map[string]string{}
+	for _, k := range []struct {
+		root registry.Key
+		path string
+	}{
+		{registry.CURRENT_USER, `Environment`},
+		{registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Control\Session Manager\Environment`},
+	} {
+		key, err := registry.OpenKey(k.root, k.path, registry.QUERY_VALUE)
+		if err != nil {
+			continue
+		}
+		for _, n := range names {
+			if _, have := out[n]; have || n == "" {
+				continue
+			}
+			v, typ, err := key.GetStringValue(n)
+			if err != nil {
+				continue
+			}
+			if typ == registry.EXPAND_SZ {
+				if x, err := registry.ExpandString(v); err == nil {
+					v = x
+				}
+			}
+			out[n] = v
+		}
+		key.Close()
+	}
+	return out
+}

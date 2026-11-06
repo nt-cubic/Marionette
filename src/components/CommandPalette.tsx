@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Search } from "lucide-react";
-import { useLocale, useT } from "../lib/i18n";
+import { ChevronRight, CornerDownRight, Search } from "lucide-react";
+import { t as baseT, useLocale, useT } from "../lib/i18n";
 import type { Project, Session } from "../lib/types";
 
 export type PaletteAction = {
@@ -54,7 +54,7 @@ function shortRecency(iso: string, nowMs: number): string {
   const ms = Date.parse(iso);
   if (!Number.isFinite(ms)) return "";
   const min = Math.floor((nowMs - ms) / 60_000);
-  if (min < 1) return "now";
+  if (min < 1) return baseT("v2chrome.recencyNow");
   if (min < 60) return `${min}m`;
   const hr = Math.floor(min / 60);
   if (hr < 24) return `${hr}h`;
@@ -251,7 +251,7 @@ export function CommandPalette({
                     ) : row.kind === "project" ? (
                       <>
                         <span className="command-palette__glyph" aria-hidden>
-                          ▸
+                          <ChevronRight size={12} strokeWidth={1.5} />
                         </span>
                         <span className="command-palette__title">{row.project.name}</span>
                         <span className="command-palette__meta">{row.project.rootPath}</span>
@@ -259,7 +259,7 @@ export function CommandPalette({
                     ) : (
                       <>
                         <span className="command-palette__glyph" aria-hidden>
-                          ›
+                          <CornerDownRight size={12} strokeWidth={1.5} />
                         </span>
                         <span className="command-palette__title">{row.action.label}</span>
                         {row.action.hint && <span className="command-palette__hint">{row.action.hint}</span>}

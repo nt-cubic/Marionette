@@ -74,7 +74,24 @@ func (s *Server) codexMemoryStandIn(r *http.Request, who, agent, kind, asked str
 		return ""
 	}
 	if _, _, ok := provider.Resolve(asked); ok {
-		return ""
+		// A memory call on one of Codex's own bare defaults that a
+		// provider of magpie's happens to serve under the same name:
+		// the name is Codex's own, not a pick of that provider's model,
+		// and the account it resolves to may refuse the model outright
+		// (400, three tries, the memory lost, #4765). With Codex's
+		// config naming no model for its memories, the call follows the
+		// conversation's, as it does on the ChatGPT backend's path
+		// (codexFollowTo). "" keeps it where the name resolves: any
+		// other call, the config's own pick, a call whose config magpie
+		// can't read, or no conversation of magpie's to follow.
+		if !isMemoryKind(kind) || CodexSideSet == nil || CodexSideSet("memories") {
+			return ""
+		}
+		to := s.codexMemorySession(r, body)
+		if to == "" || to == asked {
+			return ""
+		}
+		return to
 	}
 	if isMemoryKind(kind) {
 		if m := s.codexLeads.sideOf(r, body, true); m != "" && m != asked {

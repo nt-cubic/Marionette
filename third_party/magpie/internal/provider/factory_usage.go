@@ -92,7 +92,10 @@ func factoryQuota(l factoryLimits) []QuotaWindow {
 	add(l.Limits.Standard, "", false)
 	add(l.Limits.Core, "Droid Core · ", true)
 	if l.Extra != nil && *l.Extra > 0 {
-		out = append(out, QuotaWindow{Name: "Extra usage", Display: fmt.Sprintf("$%.2f", *l.Extra/100), Aside: true})
+		// a balance in cents, its display alone: no share, as Claude's
+		// "Extra usage" row is (claudeOveragesWindow), and no history
+		// point of a fictitious 100% left (#4612)
+		out = append(out, QuotaWindow{Name: "Extra usage", Display: fmt.Sprintf("$%.2f", *l.Extra/100), Aside: true, Text: true})
 	}
 	return out
 }

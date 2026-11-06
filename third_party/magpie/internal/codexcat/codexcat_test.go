@@ -40,8 +40,8 @@ func TestCodexCatalogKeepsOwnEntries(t *testing.T) {
 		own["context_window"] != float64(272000) || len(own["input_modalities"].([]any)) != 2 {
 		t.Errorf("own entry: %v", own)
 	}
-	if own["base_instructions"] != Prompt {
-		t.Error("own entry without base_instructions")
+	if own["base_instructions"] != codexOwn(t)["gpt-5.5"] {
+		t.Error("own entry without Codex's own base_instructions for it")
 	}
 	if _, ok := own["upgrade"]; ok {
 		t.Error("upgrade prompt kept")

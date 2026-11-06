@@ -1,0 +1,763 @@
+/* UI v2 overrides: pages. Loaded after every legacy sheet (src/main.tsx); see docs/ui-language.md. */
+
+/* ── 1 · Doc page ───────────────────────────────────────────────────────── */
+
+.doc-page.doc-page {
+  background: var(--panel-muted);
+}
+
+/* Toolbar: a 40px flush row. */
+.doc-page .doc-page__bar {
+  flex: 0 0 40px;
+  height: 40px;
+  gap: 8px;
+  padding: 0 8px 0 12px;
+  background: var(--panel);
+}
+
+/* Path: 12.5px mono strong, directory suffix 11px faint. */
+.doc-page .doc-page__title {
+  font-family: var(--font-mono, ui-monospace, "Cascadia Mono", Consolas, monospace);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-strong);
+}
+
+.doc-page__title-dir {
+  margin-right: 4px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-faint);
+}
+
+/* Mode toggle: chips, not a boxed segmented control. */
+.doc-page .doc-page__mode {
+  gap: 2px;
+  border: 0;
+  border-radius: var(--radius-sm);
+}
+
+.doc-page .doc-page__mode-btn {
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+}
+
+.doc-page .doc-page__mode-btn + .doc-page__mode-btn {
+  border-left: 1px solid transparent;
+}
+
+.doc-page .doc-page__mode-btn.is-active {
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* Actions: plain text/icon buttons — no pill chrome. */
+.doc-page .pill-action.pill-action {
+  height: 26px;
+  min-width: 26px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.doc-page .pill-action.pill-action:hover {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.doc-page .pill-action.pill-action:disabled {
+  background: transparent;
+  color: var(--text-faint);
+  opacity: 0.6;
+}
+
+.doc-page .pill-action.pill-action.is-active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* Editor area sits on the raised ground. */
+.doc-page .doc-page__editor {
+  padding: 12px 16px;
+  background: var(--panel-raised);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+/* Compare splitter: a 1px border line with a 4px hover hit area. */
+.doc-compare-row .doc-compare__seam {
+  position: relative;
+  flex: 0 0 5px;
+  background: transparent;
+  transition: none;
+}
+
+.doc-compare-row .doc-compare__seam::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  background: var(--border);
+}
+
+.doc-compare-row .doc-compare__seam:hover::after,
+.doc-compare-row .doc-compare__seam:active::after {
+  background: var(--accent);
+}
+
+.doc-compare-row .doc-compare__doc {
+  border-left: 0;
+}
+
+/* ── 2 · Browser page ───────────────────────────────────────────────────── */
+
+.browser-page .browser-page__bar {
+  gap: 0;
+  padding: 0 8px;
+  background: var(--panel);
+}
+
+.browser-page .browser-page__tabs {
+  gap: 2px;
+}
+
+/* Mini tab strip: 34px full-height tabs; active = --panel-muted + 2px top bar. */
+.browser-page .browser-tab {
+  position: relative;
+  height: 34px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.browser-page .browser-tab.is-active {
+  border: 0;
+  background: var(--panel-muted);
+}
+
+.browser-page .browser-tab.is-active::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+}
+
+.browser-page .browser-tab__select {
+  height: 34px;
+  padding: 0 6px 0 10px;
+}
+
+.browser-page .browser-tab__select span {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.browser-page .browser-tab.is-active .browser-tab__select span {
+  color: var(--text-strong);
+  font-weight: 500;
+}
+
+.browser-page .browser-tab__close {
+  margin-right: 4px;
+}
+
+/* Grant badge: an 18px chip, status colour only. */
+.browser-page .browser-tab__grant {
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: transparent;
+}
+
+.browser-page .browser-tab__grant.is-read {
+  border-color: color-mix(in srgb, var(--green) 35%, transparent);
+  background: color-mix(in srgb, var(--green) 14%, transparent);
+}
+
+.browser-page .browser-tab__grant.is-control {
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+/* Address row: flush, hairline-separated — no boxed input. */
+.browser-page .browser-page__nav {
+  height: 34px;
+  margin: 0 -8px;
+  padding: 0 8px;
+  border-top: 1px solid var(--hairline);
+}
+
+.browser-page .browser-page__address {
+  height: 26px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.browser-page .browser-page__address:focus {
+  border: 0;
+  outline: none;
+}
+
+.browser-page .pill-action.pill-action {
+  height: 26px;
+  min-width: 26px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.browser-page .pill-action.pill-action:hover {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+/* Share chip: 22px, chip rules. */
+.browser-page .browser-page__share-btn.browser-page__share-btn {
+  height: 22px;
+  min-width: 0;
+  padding: 0 7px;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.browser-page .browser-page__share-btn.browser-page__share-btn.is-control {
+  border: 0;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.browser-page .browser-page__share-btn.browser-page__share-btn.is-read {
+  border: 0;
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+/* Share popover: v2 menu. */
+.browser-page .browser-share-menu {
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+.browser-page .browser-share-menu button {
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.browser-page .browser-share-menu button:hover {
+  background: var(--panel-soft);
+}
+
+.browser-page .browser-share-menu button + button {
+  border-top: 1px solid var(--hairline);
+  border-radius: 0;
+}
+
+.browser-page .browser-share-menu button:first-child {
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+
+.browser-page .browser-share-menu button:last-child {
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+}
+
+.browser-page .browser-page__empty {
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
+
+/* ── 3 · Code blocks ────────────────────────────────────────────────────── */
+
+.md-body .md-code.md-code {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-muted);
+  box-shadow: none;
+}
+
+.md-body .md-code .md-code__bar {
+  height: 24px;
+  min-height: 24px;
+  padding: 0 4px 0 10px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.md-body .md-code .pill-action.md-code__copy {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.md-body .md-code .pill-action.md-code__copy:hover {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.md-body .md-code .pill-action.md-code__copy.is-copied {
+  background: transparent;
+  color: var(--green);
+}
+
+.md-body .md-code pre code {
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.md-body .md-code__more {
+  border-top: 1px solid var(--hairline);
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.md-body .md-code__more:hover,
+.md-body .md-code__more:focus-visible {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+/* ── 4 · Diff view ──────────────────────────────────────────────────────── */
+
+.file-diff-card__line.file-diff-card__line {
+  font-family: var(--font-mono, ui-monospace, "Cascadia Mono", Consolas, monospace);
+  font-size: 12.5px;
+  line-height: 22px;
+}
+
+.file-diff-card__line.is-add {
+  border-left-color: transparent;
+  background: color-mix(in srgb, var(--green) 12%, transparent);
+}
+
+.file-diff-card__line.is-del {
+  border-left-color: transparent;
+  background: color-mix(in srgb, var(--red) 10%, transparent);
+}
+
+/* Hunk header: a 28px --panel row between hairlines. */
+.file-diff-card__line.is-hunk {
+  height: 28px;
+  line-height: 28px;
+  padding: 0 8px;
+  background: var(--panel);
+  border-top: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.file-diff-card__line.is-hunk .file-diff-card__code {
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Line-number gutter: two 44px columns, faint, right-aligned. */
+.file-diff-card__gutter {
+  grid-template-columns: 44px 44px;
+  gap: 0;
+  margin-right: 8px;
+}
+
+.file-diff-card__ln {
+  padding-right: 8px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  opacity: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Collapsed gap row: centred, quiet. */
+.file-diff-card__line.is-elide {
+  height: 24px;
+  line-height: 24px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.file-diff-card__line.is-elide .file-diff-card__gutter {
+  display: none;
+}
+
+.file-diff-card__line.is-elide .file-diff-card__code {
+  flex: 1 1 auto;
+  text-align: center;
+  cursor: default;
+}
+
+/* ── 5 · Spec cards & mermaid ───────────────────────────────────────────── */
+
+.md-body .md-spec.md-spec {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  box-shadow: none;
+}
+
+.md-body .md-spec .md-spec__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+/* Spec action buttons: v2 secondary buttons. */
+.md-body .md-spec .pill-action.md-spec__action {
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--panel-soft);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.md-body .md-spec .pill-action.md-spec__action:hover {
+  background: color-mix(in srgb, var(--text) 6%, var(--panel-soft));
+}
+
+.md-body .md-mermaid.md-mermaid {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  box-shadow: none;
+}
+
+.md-body .md-mermaid .md-mermaid__note {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* ---- 「改动」pseudo-tab page (docs/design/ui-v2/DiffTab.html) ---------------------- */
+.diff-tab-page {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  min-height: 0;
+  background: var(--panel-raised);
+}
+
+.diff-page {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.diff-page__bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  height: 44px;
+  padding: 0 10px 0 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-muted);
+  font-size: 12.5px;
+}
+
+.diff-page__scope {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-raised);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--text-strong);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.diff-page__summary {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.diff-page__branch {
+  margin-left: 8px;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.diff-page__add {
+  color: var(--green);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+}
+
+.diff-page__del {
+  color: var(--red);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+}
+
+.diff-page__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.diff-page__icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.diff-page__icon:hover {
+  background: var(--panel-soft);
+  color: var(--text-strong);
+}
+
+.diff-page__text-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.diff-page__text-btn:hover {
+  background: var(--panel-soft);
+  color: var(--text-strong);
+}
+
+.diff-page__body {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: 260px minmax(0, 1fr);
+  min-height: 0;
+}
+
+.diff-page__files {
+  margin: 0;
+  padding: 6px 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--hairline);
+  background: var(--panel-muted);
+  list-style: none;
+}
+
+.diff-page__file {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 32px;
+  padding: 0 12px 0 14px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.diff-page__file:hover {
+  background: var(--panel-soft);
+}
+
+.diff-page__file.is-active {
+  background: var(--panel-raised);
+  box-shadow: inset 0 1px 0 var(--hairline), inset 0 -1px 0 var(--hairline);
+  color: var(--text-strong);
+  font-weight: 500;
+}
+
+.diff-page__mark {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+}
+
+.diff-page__mark.is-modified {
+  color: var(--yellow);
+}
+
+.diff-page__mark.is-added,
+.diff-page__mark.is-untracked {
+  color: var(--green);
+}
+
+.diff-page__mark.is-deleted {
+  color: var(--red);
+}
+
+.diff-page__path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.diff-page__delta {
+  white-space: nowrap;
+}
+
+.diff-page__view {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.diff-page__file-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 10px 0 16px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.diff-page__file-icon {
+  color: var(--text-faint);
+}
+
+.diff-page__file-name {
+  color: var(--text-strong);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12.5px;
+}
+
+.diff-page__file-dir {
+  min-width: 0;
+  margin-right: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.diff-page__diff {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.diff-page__empty {
+  margin: 0;
+  padding: 14px 16px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .diff-page__body {
+    grid-template-columns: 200px minmax(0, 1fr);
+  }
+}
+
+/* Narrow diff page: nothing wraps into a column of single characters. Sizes key off the
+   page itself (split panes and narrow windows), not the viewport. */
+.diff-page {
+  container-type: inline-size;
+}
+
+.diff-page__scope,
+.diff-page__text-btn,
+.diff-page__summary,
+.diff-page__file-name {
+  flex: none;
+  white-space: nowrap;
+}
+
+.diff-page__summary {
+  flex: 0 1 auto;
+}
+
+@container (max-width: 720px) {
+  .diff-page__btn-label,
+  .diff-page__branch,
+  .diff-page__file-dir {
+    display: none;
+  }
+
+  .diff-page__text-btn {
+    width: 28px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .diff-page__file-name {
+    margin-right: auto;
+  }
+
+  .diff-page__body {
+    grid-template-columns: 200px minmax(0, 1fr);
+  }
+}
+
+@container (max-width: 560px) {
+  .diff-page__body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .diff-page__files {
+    max-height: 168px;
+    border-right: 0;
+    border-bottom: 1px solid var(--hairline);
+  }
+}

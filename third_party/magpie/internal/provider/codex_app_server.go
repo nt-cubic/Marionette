@@ -47,7 +47,8 @@ import (
 // a new list at its next launch, or on the Agents row's Restart.
 //
 // The app-server is ended as a clean exit (proc.End): the app reads any
-// other exit as a crash and shows it.
+// other exit as a crash and shows it. A signed-in ChatGPT app can show its
+// error page all the same; codex_app_crash.go reopens it then.
 
 // CodexAppRoute is set by the agent package: what in Codex's config the
 // app-server reads as it starts and magpie writes (its provider and base
@@ -255,6 +256,9 @@ var codexApp struct {
 	sync.Mutex
 	seen  bool
 	route string
+	// out: whether the route last seen was magpie as Codex's provider for
+	// its used-up account (CodexAppRoute's out)
+	out bool
 	// stale: the app-servers started before Codex's provider last changed,
 	// each with how often it was ended
 	stale map[int]int
@@ -263,8 +267,13 @@ var codexApp struct {
 	// switched: Codex's ChatGPT account changed since the app-servers were
 	// last listed (codexAppAccountSwitched)
 	switched bool
-	// spent: the switch was off an account used up (SwitchWhenSpent), so a
-	// turn the app-servers left open can't be served by them any more
+	// auto: every switch since then magpie made by itself
+	// (SwitchWhenSpent), none the user made
+	auto bool
+	// spent: the app-servers are on an account used up, so a turn they
+	// left open can't be served by them any more: Codex was switched off
+	// it (SwitchWhenSpent, or by hand off one known held, noteCodexSwitch),
+	// or magpie became Codex's provider for it (out)
 	spent bool
 	// ended: the app-servers ended and no new one seen since, and by when
 	// one has to start (codexAppBackWait after the last end)
@@ -274,6 +283,68 @@ var codexApp struct {
 	// when they are ended, so a crash a user reports can be put down to
 	// an account switch, a route change or a used-up account (#4550)
 	why string
+	// back: the app-servers left running on magpie as Codex's provider
+	// when magpie gave Codex back its ChatGPT account at the reset, with
+	// Restart the Codex app to follow off (CodexAppBack), and when they
+	// were last listed
+	back   map[int]bool
+	backAt time.Time
+	// crashSince, crashBy: magpie last ended the app's app-server at
+	// crashSince, and until crashBy its logs are read for the page the
+	// app shows when it can't take another (codexAppCrashStep); snag:
+	// the app showed that page and magpie couldn't reopen it, while the
+	// app-servers in snagPids (those running then) run
+	crashSince, crashBy time.Time
+	snag                bool
+	snagPids            []int
+}
+
+// codexAppBackEvery is how often the app-servers left on the takeover
+// are listed again to see whether they went: a listing is a PowerShell
+// run on Windows.
+var codexAppBackEvery = 30 * time.Second
+
+// CodexAppBack is whether the Codex app still runs on the app-server it
+// started while magpie was Codex's provider for its used-up account, now
+// that magpie gave Codex back its ChatGPT account and left the app
+// running (Restart the Codex app to follow off, #4550). That app-server
+// read account/read as it started, when Codex's provider took no ChatGPT
+// account, so the app shows no account, no usage meter and none of its
+// ChatGPT side until it restarts: the Agents row says so and offers the
+// restart (練習^1.0beta by mail, 11-04: the panels loaded only after
+// `magpie codex default` and a restart).
+func CodexAppBack() bool {
+	c := &codexApp
+	c.Lock()
+	defer c.Unlock()
+	return len(c.back) > 0
+}
+
+// checkCodexAppBack forgets the app-servers left on the takeover that are
+// gone: the app started another, which reads the account afresh, or was
+// quit. A listing that fails keeps what was known.
+func checkCodexAppBack(ctx context.Context, now time.Time, home string) {
+	c := &codexApp
+	c.Lock()
+	due := len(c.back) > 0 && now.Sub(c.backAt) >= codexAppBackEvery
+	c.Unlock()
+	if !due {
+		return
+	}
+	lctx, cancel := context.WithTimeout(ctx, codexAppListWait)
+	pids, err := codexAppServersOn(lctx, home)
+	cancel()
+	if err != nil {
+		return
+	}
+	c.Lock()
+	defer c.Unlock()
+	c.backAt = now
+	for p := range c.back {
+		if !slices.Contains(pids, p) {
+			delete(c.back, p)
+		}
+	}
 }
 
 // CodexAppStuck is whether a Codex app is left on the provider it started
@@ -302,21 +373,23 @@ func CodexAppStuck() bool {
 // one, listed ahead of the app's on the owner's Mac) or none when ps was
 // slow, and then nothing was ended and the app stayed grey on the used-up
 // account till the user restarted it (danzi002 on Discord).
-func codexAppAccountSwitched() {
-	c := &codexApp
-	c.Lock()
-	defer c.Unlock()
-	c.switched = true
-}
+func codexAppAccountSwitched() { codexAppSwitched(false, false) }
 
 // codexAppSpentSwitch is codexAppAccountSwitched for a switch off an
 // account that was used up: a turn the app-server left open is restarted
 // past too once it has gone quiet (codexTurnStuckAfter).
-func codexAppSpentSwitch() {
+func codexAppSpentSwitch() { codexAppSwitched(true, false) }
+
+// codexAppSwitched notes a switch of Codex's account: spent, off one used
+// up; byMagpie, made by magpie itself (SwitchWhenSpent). magpie's switch
+// back restarts the app only with RestartApp on; its switch off a spent
+// account, and one the user made among them, restart it all the same.
+func codexAppSwitched(spent, byMagpie bool) {
 	c := &codexApp
 	c.Lock()
 	defer c.Unlock()
-	c.switched, c.spent = true, true
+	c.auto = byMagpie && (!c.switched || c.auto)
+	c.switched, c.spent = true, c.spent || spent
 }
 
 // KeepCodexAppOnItsProvider runs codexAppStep every codexAppEvery till
@@ -342,6 +415,7 @@ func KeepCodexAppOnItsProvider(ctx context.Context, busy func() (int, time.Time)
 // have opened before: its app-servers are ended too. It says which pids it
 // ended.
 func codexAppStep(ctx context.Context, now time.Time, busy func() (int, time.Time)) []int {
+	codexAppCrashStep(ctx, now, busy)
 	if CodexAppRoute == nil {
 		return nil
 	}
@@ -367,10 +441,62 @@ func codexAppStep(ctx context.Context, now time.Time, busy func() (int, time.Tim
 	// at the first look only a used-up account's app-servers are ended:
 	// what the others read before magpie started isn't known
 	changed := !c.seen && out || c.seen && c.route != route || c.switched
+	// magpie becoming Codex's provider for the used-up account: the
+	// app-servers are on that account, and a turn left open on it when
+	// quota ran out mid-turn would hold their restart, and the app's grey
+	// Send, for up to codexTurnWindow (xiaoq6285 on Discord)
+	into := changed && out && (!c.seen || !c.out)
+	// what changed magpie changed by itself and the app works without:
+	// the switch back once the account has room, and the takeover out at
+	// the reset. The ChatGPT app shows the end of its app-server as an
+	// error and relaunches (#4550), so that waits for the user to restart
+	// it unless they asked magpie to (RestartApp; atom0964 on Discord: both
+	// of Codex's sign-in ticks off, and magpie still restarted the app to
+	// switch accounts). A switch the user made, a Connect or a Disconnect
+	// is theirs, and restarts it. So does whatever leaves the app-server on
+	// a used-up account: the takeover in, the first look on one and a
+	// switch off one. The app greys Send for every model while that
+	// account's rate limit says not allowed and reads the account only as
+	// its app-server starts (8b0132b3d), so nothing magpie serves would
+	// reach it until a restart.
+	byHand := c.switched && !c.auto || c.seen && c.route != route && c.out == out
+	needed := into || c.switched && c.spent
+	// left on the takeover: the app-servers it started while magpie was
+	// Codex's provider, which show no account till they restart
+	leftBack := false
+	if changed && !byHand && !needed && !codexRestartsApp() {
+		why := "magpie switched Codex's ChatGPT account back"
+		if !c.switched {
+			why = "magpie gave Codex back its ChatGPT account after the reset"
+			leftBack = c.out && !out
+		}
+		log.Printf("codex: %s; the Codex app's app-server is left running (Restart the Codex app to follow is off), and the app follows once it is restarted", why)
+		c.switched, c.auto = false, false
+		changed = false
+	}
 	if !changed {
-		c.seen, c.route = true, route
+		c.seen, c.route, c.out = true, route, out
+	}
+	if changed {
+		// whatever restarts them now ends the takeover's too
+		c.back = nil
 	}
 	c.Unlock()
+	if leftBack {
+		lctx, cancel := context.WithTimeout(ctx, codexAppListWait)
+		pids, err := codexAppServersOn(lctx, home)
+		cancel()
+		if err == nil && len(pids) > 0 {
+			c.Lock()
+			c.back, c.backAt = map[int]bool{}, now
+			for _, p := range pids {
+				c.back[p] = true
+			}
+			c.Unlock()
+		}
+	} else {
+		checkCodexAppBack(ctx, now, home)
+	}
 	if changed {
 		lctx, cancel := context.WithTimeout(ctx, codexAppListWait)
 		pids, err := codexAppServersOn(lctx, home)
@@ -384,12 +510,13 @@ func codexAppStep(ctx context.Context, now time.Time, busy func() (int, time.Tim
 		switch {
 		case c.switched:
 			c.why = "Codex's ChatGPT account was switched"
-		case !c.seen:
+		case into:
 			c.why = "Codex's account is used up, so magpie serves it"
 		default:
 			c.why = "where Codex's config sends it changed"
 		}
-		c.seen, c.route, c.switched = true, route, false
+		c.spent = c.spent || into
+		c.seen, c.route, c.out, c.switched, c.auto = true, route, out, false, false
 		c.stale, c.stuck = map[int]int{}, false
 		for _, p := range pids {
 			c.stale[p] = 0
@@ -497,6 +624,7 @@ func codexAppStep(ctx context.Context, now time.Time, busy func() (int, time.Tim
 	}
 	if len(ended) > 0 {
 		log.Printf("codex: ended the Codex app's app-server %v for the app to start another: %s", ended, c.why)
+		watchCodexAppCrashLocked(now)
 	}
 	return ended
 }
@@ -640,6 +768,7 @@ func RestartCodexApp(ctx context.Context, bundle string) error {
 			return err
 		}
 		ended = append(ended, p.PID)
+		watchCodexAppCrash(time.Now())
 	}
 	if len(ended) == 0 {
 		return errors.New("the Codex app's app-server isn't running")
@@ -788,6 +917,7 @@ func RestartSwitchedCodexApp(ctx context.Context) error {
 			log.Printf("codex: restarting the Codex app's app-server %d for the account switched to: %v", p, err)
 			return ErrCodexAppNoEnd
 		}
+		watchCodexAppCrash(time.Now())
 	}
 	// waitFor lists the app-servers until ok holds of them, for at most limit
 	waitFor := func(limit time.Duration, ok func([]int) bool) (bool, error) {
@@ -837,5 +967,8 @@ func RestartSwitchedCodexApp(ctx context.Context) error {
 		}
 	}
 	DismissCodexApp()
+	codexApp.Lock()
+	codexApp.back = nil // the new one reads the account (CodexAppBack)
+	codexApp.Unlock()
 	return nil
 }

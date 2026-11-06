@@ -12,6 +12,7 @@ import (
 
 	"github.com/yetone/magpie/internal/backup"
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // ErrOff is a Restore, Undo or SetAuto asked for with sync off.
@@ -76,7 +77,8 @@ func Restore(ctx context.Context) ([]string, error) {
 		if err != nil {
 			return err
 		}
-		L, R := hashes(local), hashes(remote)
+		here := withHere(nil, hereOf(c, local)) // an agent's picks kept here are no change
+		L, R := hashesOwn(local, here), hashesOwn(remote, here)
 		for _, p := range Parts {
 			if L[p] == R[p] || !c.syncs(p) || (p == "library" && remote.Library == nil) {
 				continue
@@ -85,7 +87,7 @@ func Restore(ctx context.Context) ([]string, error) {
 		}
 		st := loadState()
 		if st.Key != stateKey(c) {
-			st = state{Key: stateKey(c), Brought: st.Brought, Replaced: st.Replaced, Own: st.Own}
+			st = state{Key: stateKey(c), Brought: st.Brought, Replaced: st.Replaced, Own: st.Own, Here: st.Here}
 		}
 		if len(brought) > 0 {
 			kept, err := keepHere(c)
@@ -96,7 +98,7 @@ func Restore(ctx context.Context) ([]string, error) {
 				if p == "agents" {
 					// the server's whole, the fields kept here too: they
 					// follow the others again, as Follow leaves them
-					got, err := bringAgents(remote.Agents, nil)
+					got, err := bringAgents(remote.Agents, here)
 					broughtIn(&st, got)
 					st.Own, st.Follow = nil, false
 					if err != nil {
@@ -114,9 +116,22 @@ func Restore(ctx context.Context) ([]string, error) {
 			st.Undo = kept
 			st.Notice = &Notice{At: time.Now(), Here: brought, Saved: filepath.Dir(kept), Restored: true}
 		}
+		// the server's sign-ins, when they go: put in as a backup's are,
+		// nothing renewed later here written over
+		if c.SignIns && remote.SignIns != nil {
+			if _, err := provider.RestoreSignIns(remote.SignIns); err != nil {
+				return fmt.Errorf("bringing in the sign-ins: %w", err)
+			}
+			if local, err = collect(c); err != nil {
+				return err
+			}
+			st.SignIns = nil
+		}
 		// as a sync that brought them in leaves it: the next one has
 		// nothing to push back
-		st.Local, st.Remote, st.Sum, st.Server = hashesOwn(local, st.Own), hashesOwn(remote, st.Own), sum(data), ver
+		st.Here = hereOf(c, local)
+		own := withHere(st.Own, st.Here)
+		st.Local, st.Remote, st.Sum, st.Server = hashesOwn(local, own), hashesOwn(remote, own), sum(data), ver
 		st.Blind = nil // what is here now is what the server has
 		remember(data)
 		st.Last, st.Error = time.Now(), ""
@@ -186,10 +201,12 @@ func Upload(ctx context.Context) error {
 		}
 		st := loadState()
 		if st.Key != stateKey(c) {
-			st = state{Key: stateKey(c), Brought: st.Brought, Replaced: st.Replaced, Own: st.Own}
+			st = state{Key: stateKey(c), Brought: st.Brought, Replaced: st.Replaced, Own: st.Own, Here: st.Here}
 		}
 		// as the first sync to an empty server leaves it
-		st.Local, st.Remote, st.Sum, st.Server = hashesOwn(local, st.Own), hashesOwn(b, st.Own), sum(sealed), v
+		st.Here = hereOf(c, local)
+		own := withHere(st.Own, st.Here)
+		st.Local, st.Remote, st.Sum, st.Server = hashesOwn(local, own), hashesOwn(b, own), sum(sealed), v
 		st.Blind = nil // it replaced what wasn't a backup: nothing to merge again
 		remember(sealed)
 		st.Last, st.Error, st.File = time.Now(), "", nil

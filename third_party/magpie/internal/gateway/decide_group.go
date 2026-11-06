@@ -90,6 +90,7 @@ func (s *Server) serveDecisionGroup(w http.ResponseWriter, r *http.Request, body
 		return
 	}
 	g = g.Live()
+	r = heldByGroup(r, g) // held to the group's accounts, if it is
 	keyWho, keyHeld := keyHolds(r)
 	accWho, accHeld := accountHolds(r)
 	// a gateway key held to some models (#882) names the group, or the
@@ -151,8 +152,24 @@ func (s *Server) decideKeys(p provider.Provider, model string) ([]candidate, pla
 // group it was asked by, nil for a provider).
 func (s *Server) serveDecideTries(w http.ResponseWriter, r *http.Request, body []byte, asked string, start time.Time, cs []candidate, pl planned, group *GroupRef) {
 	who := callerOf(r)
+	// the call is in Recent calls, and with the request archive on is kept
+	// there, as a chat's is (wangb on Discord: 请求存档开启, 但是 systemone
+	// 的请求没有记录下来): the route names it from the start, as the
+	// Routing page reads it once Recent calls has let it go
+	capture := &captureResponseWriter{ResponseWriter: w}
+	w = capture
+	call := Call{Time: start, From: provider.Chat, To: provider.Chat, Model: asked, Provider: cs[0].p.ID, Agent: who.agent, Via: who.via,
+		wire: archiving(r, capture, start, body), headers: headerLogOf(r.Context())}
+	call.RequestBody, call.RequestTruncated = captureRequestBody(body)
+	defer discardArchive(capture)
 	tr := s.trace.beginFor(r, Route{Time: start, Agent: who.agent, Session: sessionOf(r.Header), Model: asked, Provider: cs[0].p.ID,
-		Group: group, Order: pl.order, Left: pl.left})
+		Group: group, Order: pl.order, Left: pl.left, Archive: call.archiveName()})
+	call.Route = tr.ID
+	defer func() {
+		call.ResponseBody, call.ResponseTruncated = capture.body.text(), capture.body.truncated
+		call.Millis = time.Since(start).Milliseconds()
+		s.record(call)
+	}()
 	var skipped []string
 	for i, c := range cs {
 		last := i == len(cs)-1
@@ -173,7 +190,9 @@ func (s *Server) serveDecideTries(w http.ResponseWriter, r *http.Request, body [
 				}
 			})
 		}
-		status, b, header, err := s.postDecide(r.Context(), c.p, c.model, withModel(body, c.model))
+		d, err := s.postDecideSent(r.Context(), c.p, c.model, withModel(body, c.model))
+		status, b, header := d.status, d.answer, d.header
+		call.Provider = c.p.ID
 		if err != nil {
 			fail, rest := failOther, (*Rest)(nil)
 			var tooMany *errRPM
@@ -192,6 +211,7 @@ func (s *Server) serveDecideTries(w http.ResponseWriter, r *http.Request, body [
 			if len(skipped) > 0 {
 				msg += " (tried first: " + strings.Join(skipped, "; ") + ")"
 			}
+			call.Status, call.Error = http.StatusBadGateway, msg
 			writeError(w, provider.Chat, http.StatusBadGateway, msg)
 			return
 		}
@@ -227,9 +247,11 @@ func (s *Server) serveDecideTries(w http.ResponseWriter, r *http.Request, body [
 		if c.p.Account == nil && c.p.Key != "" {
 			keyID, keyName = provider.KeyID(c.p.Key), c.p.KeyName
 		}
+		call.Status, call.Error, call.Fallback = status, errMsg, strings.Join(skipped, "; ")
+		call.Usage = Usage{Input: use.Usage.Input, Output: use.Usage.Output, Served: use.Model}
 		appendUsage(r, usage.Record{RouteID: tr.ID, Time: start, Agent: who.agent, Via: who.via, Provider: c.p.ID, Host: c.p.Where(), Model: c.model, Requested: asked, Served: use.Model,
 			ProviderKeyID: keyID, ProviderKeyName: keyName, ProviderAccount: accountOf(c.p),
-			Input: use.Usage.Input, Output: use.Usage.Output, Millis: took, Status: status})
+			Input: use.Usage.Input, Output: use.Usage.Output, Millis: took, Status: status, Archive: call.archiveName()})
 		ctype := header.Get("Content-Type")
 		if ctype == "" || status < 300 {
 			ctype = "application/json"
@@ -272,6 +294,9 @@ func (s *Server) askDecisionGroup(wait time.Duration, model string, intents []st
 	g = g.Live()
 	ms, _ = provider.PausedOut(g, ms, RouterAgent, "", ruleClock())
 	cs, _, _ := s.decideTries(g, ms)
+	// held to the group's own accounts, if it is: no request carries a
+	// caller here to hold (heldByGroup)
+	cs = slices.DeleteFunc(cs, func(c candidate) bool { return groupHeld(c, []provider.Group{g}) != "" })
 	cs = probeOne(cs) // of those resting, only the one back soonest (#1799)
 	if len(cs) == 0 {
 		return verdict{}, true, fmt.Errorf("no decision model of the group %s can be asked now", g.Name)

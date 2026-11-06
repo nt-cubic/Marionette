@@ -191,7 +191,7 @@ function session(partial: Partial<Session> & { id: string }): Session {
   const box = readFileSync(join(here, "../src/components/MemoBox.tsx"), "utf8");
   const css = readFileSync(join(here, "../src/styles/dock.css"), "utf8");
   // Compose card copy lives in the i18n fragment since the 2026-10-30 conversion.
-  check("顶上有写一条输入卡", box.includes("memo-box__compose") && box.includes('t("memo.composePlaceholder")'));
+  check("顶上有写一条输入卡", box.includes("memo-box__compose") && (box.includes('t("memo.composePlaceholder")') || box.includes('t("v2memo.compose")')));
   check(
     "四种帖子卡都在",
     ["memo-box__card--text", "memo-box__card--image", "memo-box__card--link", "memo-box__card--file"].every((cls) =>
@@ -199,7 +199,28 @@ function session(partial: Partial<Session> & { id: string }): Session {
     ),
   );
   check("不再渲染 40px 文件行", !box.includes("memo-box__row") && !css.includes(".memo-box__row"));
-  check("Ctrl+Enter 保存写下的内容", box.includes("memo.composePlaceholder") && box.includes('event.key !== "Enter"'));
+  check("Ctrl+Enter 保存写下的内容", (box.includes("memo.composePlaceholder") || box.includes("v2memo.compose")) && box.includes('event.key !== "Enter"'));
+  const shelf = readFileSync(join(here, "../src/components/ProjectShelf.tsx"), "utf8");
+  check(
+    "收纳盒入口常显数量",
+    shelf.includes("shelf-memo-entry__count") &&
+      shelf.includes("memoCount") &&
+      /aria-label=\{`\$\{t\("shelf.memoBox"\)\} \$\{memoCount\}`\}/.test(shelf),
+  );
+  const panel = readFileSync(join(here, "../src/components/ContextPanel.tsx"), "utf8");
+  check(
+    "MCP/技能超过 8 条走显示更多",
+    panel.includes("LEND_LIST_PREVIEW = 8") &&
+      panel.includes("LendClip") &&
+      panel.includes("shelf-clip--lend"),
+  );
+  check(
+    "插件与共通插件合并成一块",
+    panel.includes('id="context-plugins"') &&
+      panel.includes("UniversalPluginsSection embedded") &&
+      panel.includes("PluginsSection embedded"),
+  );
+
   const tabs = readFileSync(join(here, "../src/components/SessionView.tsx"), "utf8");
   check(
     "收纳盒选中时对话标签不再 is-active",

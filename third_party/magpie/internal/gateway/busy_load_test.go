@@ -146,3 +146,33 @@ func TestBusyModelNotKeptAtNewTurn(t *testing.T) {
 		t.Fatal("a new conversation may go to the busy one")
 	}
 }
+
+// A plugin reports a model's load by its own id. One the user lists by
+// another (Listed as) is judged busy by that load all the same (axelburks
+// on Discord: a renamed model was never busy, the others were).
+func TestBusyModelListedAsAnotherID(t *testing.T) {
+	plugin.ForgetLoads()
+	t.Cleanup(plugin.ForgetLoads)
+	s := settings.Load()
+	was := s.ModelIDs
+	s.ModelIDs = map[string]string{"inhouse-plugin/fast": "big", "inhouse-plugin/grok": "grok-4.7@256k"}
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s := settings.Load(); s.ModelIDs = was; settings.Save(s) })
+	now := time.Now()
+	plugin.NoteLoadsForTest("inhouse", map[string]float64{"big": 92, "grok-4.7": 95}, now)
+	p := provider.PluginForTest("inhouse-plugin", "inhouse")
+	if own := p.OwnModelID("fast"); own != "big" {
+		t.Fatalf("OwnModelID(fast) = %q", own)
+	}
+	for _, model := range []string{"fast", "grok", "big"} {
+		load, busy := busyOf(candidate{p: p, model: model, rest: "inhouse-plugin/" + model}, 80, now)
+		if !busy || load < 92 {
+			t.Errorf("%s: load %v busy %v, want busy over 80", model, load, busy)
+		}
+	}
+	if load, busy := busyOf(candidate{p: p, model: "other", rest: "inhouse-plugin/other"}, 80, now); busy || load != 0 {
+		t.Errorf("other: load %v busy %v, want none", load, busy)
+	}
+}

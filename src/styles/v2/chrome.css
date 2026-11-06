@@ -1,0 +1,339 @@
+/* UI v2 overrides: chrome. Loaded after every legacy sheet (src/main.tsx); see docs/ui-language.md. */
+
+/* ── Title / tab row ─────────────────────────────────────────────────────── */
+
+.session-pane__tabs {
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.session-pane__tabs .editor-tabs__tablist {
+  padding: 0;
+  /* Active tabs merge into the content, so nothing may clip their 1px overhang. */
+  overflow: visible;
+}
+
+.editor-tabs__tablist .editor-tab {
+  flex: 0 1 220px;
+  min-width: 0;
+  gap: 8px;
+  padding: 0 6px 0 12px;
+  border-right: 1px solid var(--border);
+  color: var(--text-muted);
+  background: transparent;
+  font-size: 12px;
+}
+
+/* v2 drops the floating mid-tab separators; the right edge is the divider. */
+.editor-tabs__tablist .editor-tab + .editor-tab::before {
+  display: none;
+}
+
+.editor-tabs__tablist .editor-tab:not(.is-active):not(.is-done):hover {
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+.editor-tabs__tablist .editor-tab.is-done:not(.is-active) {
+  color: var(--green);
+  background: transparent;
+}
+
+.editor-tabs__tablist .editor-tab.is-active {
+  /* Merges into the conversation ground below the bar. */
+  margin-bottom: -1px;
+  border-bottom: 1px solid var(--panel-muted);
+  color: var(--text-strong);
+  background: var(--panel-muted);
+}
+
+.editor-tabs__tablist .editor-tab:not(.is-active):not(:hover):not(:focus-within) .editor-tab__close {
+  display: none;
+}
+
+/* In-tab icon buttons: bare glyphs, no pill chrome. */
+.editor-tabs__tablist .editor-tab .pill-action {
+  min-width: 24px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: transparent;
+  opacity: 1;
+}
+
+.editor-tabs__tablist .editor-tab .pill-action:hover {
+  color: var(--text);
+  background: var(--panel-soft);
+  opacity: 1;
+}
+
+.editor-tabs__tablist .editor-tab .pill-action svg {
+  width: 12px;
+  height: 12px;
+}
+
+.editor-tabs__tablist .editor-tab__new {
+  width: 30px;
+  height: 30px;
+  min-width: 30px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: transparent;
+  opacity: 1;
+}
+
+.editor-tabs__tablist .editor-tab__new:hover {
+  color: var(--text);
+  background: var(--panel-soft);
+  opacity: 1;
+}
+
+.editor-tabs__tablist .editor-tab__new svg {
+  width: 14px;
+  height: 14px;
+}
+
+.editor-tabs__tablist .editor-tab__memo-count {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.editor-tabs__tablist .editor-tab.is-active .editor-tab__memo-count {
+  color: var(--text-faint);
+}
+
+/* ── Window controls ─────────────────────────────────────────────────────── */
+
+.window-controls .window-controls__btn {
+  width: 32px;
+  height: 34px;
+  color: var(--text-muted);
+  background: transparent;
+}
+
+.window-controls .window-controls__btn:hover {
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+.window-controls .window-controls__btn--close:hover {
+  color: #fff;
+  background: var(--red);
+}
+
+/* ── Command palette ─────────────────────────────────────────────────────── */
+
+.command-palette {
+  width: min(560px, 92vw);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 32px rgba(17, 17, 19, 0.1);
+}
+
+.command-palette__search {
+  height: 44px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.command-palette__kbd {
+  border: 0;
+  padding: 0;
+  color: var(--text-faint);
+  font-family: var(--font-mono, ui-monospace, Consolas, monospace);
+  font-size: 10.5px;
+  line-height: inherit;
+}
+
+.command-palette__group + .command-palette__group {
+  border-top: 1px solid var(--hairline);
+}
+
+.command-palette__label {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.command-palette__row {
+  min-height: 32px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+}
+
+.command-palette__row.is-active {
+  color: var(--text-strong);
+  background: var(--panel-soft);
+}
+
+.command-palette__glyph {
+  width: auto;
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-faint);
+}
+
+.command-palette__glyph svg {
+  width: 12px;
+  height: 12px;
+}
+
+.command-palette__hint {
+  color: var(--text-faint);
+  font-family: var(--font-mono, ui-monospace, Consolas, monospace);
+  font-size: 10.5px;
+}
+
+.command-palette__foot {
+  border-top: 1px solid var(--hairline);
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.command-palette__foot b {
+  color: var(--text-muted);
+  font-family: var(--font-mono, ui-monospace, Consolas, monospace);
+  font-weight: 500;
+}
+
+/* ── Toasts: status is a 3px left bar, not a dot or a fill ───────────────── */
+
+.toast {
+  position: relative;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  font-size: 12.5px;
+}
+
+.toast__dot {
+  display: none;
+}
+
+.toast::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  border-radius: var(--radius) 0 0 var(--radius);
+  background: var(--text-faint);
+}
+
+.toast.is-ok::before {
+  background: var(--green);
+}
+
+.toast.is-error::before {
+  background: var(--red);
+}
+
+.toast.is-warn::before {
+  background: var(--yellow);
+}
+
+.toast__detail {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.toast__action {
+  height: 24px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.toast__action:hover {
+  color: var(--text-strong);
+  background: var(--panel-soft);
+}
+
+/* ── Small menus: split-beside + link ────────────────────────────────────── */
+
+.split-beside-menu,
+.link-menu {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+.split-beside-menu button,
+.link-menu button {
+  min-height: 28px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.split-beside-menu button:hover,
+.split-beside-menu button:focus-visible,
+.link-menu button:hover:not(:disabled) {
+  color: var(--text-strong);
+  background: var(--panel-soft);
+}
+
+/* ── Message outline: tick rail + popover panel ──────────────────────────── */
+
+.message-outline__panel {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+.message-outline__panel-head,
+.message-outline__panel-foot {
+  padding: 6px 10px;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
+  background: transparent;
+}
+
+.message-outline__panel-head {
+  border-bottom: 1px solid var(--hairline);
+}
+
+.message-outline__panel-head strong {
+  color: var(--text-strong);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.message-outline__panel-foot {
+  justify-content: center;
+  border-top: 1px solid var(--hairline);
+}
+
+/* ---- Accent, v2 final (2026-11-06) ---------------------------------------------------
+   The active tab wears a 2px accent line on its top edge: the app's green marks "current"
+   in the tab row the same way it does in the sidebar. */
+.editor-tabs__tablist .editor-tab.is-active {
+  position: relative;
+}
+
+.editor-tabs__tablist .editor-tab.is-active::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}

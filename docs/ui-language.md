@@ -1,118 +1,162 @@
-# Marionette 视觉语言
+# Marionette 视觉语言 v2
 
-2026-10-31 定稿。对话流就是设计系统。改任何用户可见界面（布局、样式、新页、空态、表单、卡片）前先读本文，再动手。
+2026-11-05 定稿，取代 2026-10-31 的 v1。改任何用户可见界面（布局、样式、新页、空态、表单、卡片）前先读本文，再动手。
 
-质感来自**跟 You / Reply / composer 共用一套表面**，不是另起皮肤、也不是把收纳盒的 8px 卡搬过来。圆桌走过「收纳盒卡 → 大标题深井 → 分段控件」，看起来像另一个产品；收到 You 卡（3px 通高左边条 + 底栏芯片）之后才和主界面对上。以后新页直接按这个做。
+**一句话**：卡片流是骨架，身份色是唯一的点缀。横平竖直、克制、结论先行。白天版（`[data-theme="white"]`）是主展示主题。
 
-## 对照物（动手前打开看）
+设计稿在 `docs/design/ui-v2/`（Design 画布导出的源文件，用浏览器打开只能看源码，看效果去画布）。数值以本文为准，稿子用来对照形状：
 
-| 角色 | 文件 | 看什么 |
-|---|---|---|
-| token | `src/styles/tokens.css` | 色、`--radius`、`--radius-sm` |
-| 动效 | `src/styles/motion.css` | `--dur-*` / `--ease-*`，`m-arrive` / `m-pop` |
-| 卡片 | `src/styles/transcript.css` `.event-card` | 10px 垫、1px 边、3px 角、You 卡左边条 |
-| 控件 | `src/styles/stream-cards.css` `.composer-mode-chip` / `.composer-select` / `.composer__field` | 22px 芯片、底栏 |
-| 范例 | `src/components/CouncilPage.tsx` + `src/styles/council.css` | 会议室版式仍走对话流表面 |
+| 稿子 | 内容 |
+|---|---|
+| `Language.html` | 本文的视觉总表 |
+| `LightC.html` | 主窗口：侧栏 / 对话流 / 右栏 / 输入框 |
+| `QuotaRule.html` | 右栏额度高亮规则 |
+| `AgentColors.html` | agent 墨色表（白天 / 夜间） |
+| `DialogV2.html` | 弹窗 |
+| `MotionV2.html` | 动效 |
+| `ModelShareV2.html` | 模型共享 |
+| `CouncilV2.html` | 圆桌运行页 |
+| `MemoV2.html` | 收纳盒 |
+| `DockV2.html` | 贴边窄条 |
+| `DiffTab.html` | 改动标签页 |
 
-`ui-ux-pro-max` 是通用设计库，**禁止**用它给 Marionette 生成第二套圆角/阴影/字体。
+## 八条规则
 
-## Token（禁止发明）
+1. **对话流一轮三段**：你 → 调用块（轨迹面板、思考预览、工具子卡都在块里）→ 回复。卡距 6px、圆角 `--radius` 3px、1px 边、卡片无阴影。
+2. **身份色只上三处**：卡片 3px 左边条；运行中调用块的描边与流光；当前项的进度条 / 竖条。agent 名字、状态文字用中性色，**不给名字上色，不在名字前加圆点**。
+3. **控件贴着表面长**：搜索在标题行里，输入框是整条（只有顶边一根线），弹窗表单是一行一行的表。不画独立的框。
+4. **结论先行**：一行写结论（`26%` / `已满` / `4 个文件 +48 −6`），细节点开、悬停或进二级页再看。
+5. **主数字大、名词小**：数字 15–20px / 600 / tabular-nums，名词 11px 居中写在数字下面。
+6. **主次靠粗细和灰度**：主进度条 4–6px agent 色，次进度条 2px 浅灰；主值 600，次值辅助灰。
+7. **状态只写在文字上**：黄 = 快满 / 等你，红 = 已满 / 出错，绿 = 增行 / 通过。不占圆点，不填底色。
+8. **动效只回答三件事**：从哪来、到哪去、谁在跑。进出成对，只动 transform / opacity（数据条宽度除外），循环只给运行中的元素，尊重 `prefers-reduced-motion`。
 
-从 `tokens.css` 取，不要写死 hex（主题切换靠这些变量）。
+## Token
+
+从 `src/styles/tokens.css` 取，不要写死 hex。
+
+### 中性灰阶（白天版）
 
 | 用途 | 变量 | 值 |
 |---|---|---|
-| 卡片圆角 | `--radius` | **3px** |
-| 芯片 / 小控件 | `--radius-sm` | **2px** |
-| 页面地面 | `--panel-muted` | |
-| 卡片 | `--panel-raised` | |
-| 悬停填 | `--panel-soft` | |
-| 输入底栏 | `--composer-bg` | |
-| 边 | `--border` / `--border-strong` | 1px solid |
-| 强调 | `--accent` / `--accent-soft` | |
-| 身份辅色 | `--orange` `--red` `--yellow` `--green` `--blue` | 只做点、名、左边条 |
+| 侧栏 / 标签行 | `--panel` | `#f4f4f5` |
+| 对话地面 | `--panel-muted` | `#f7f7f8` |
+| 卡片 / 输入框 / 弹窗 | `--panel-raised` | `#ffffff` |
+| 悬停填 | `--panel-soft` | `#ececee` |
+| 边 | `--border` | `#e2e2e6` |
+| 表内细线 | `--hairline` | `#ececee` |
+| 浮层边 | `--border-strong` | `#c8c8ce` |
+| 标题 / 正文 / 次要 / 辅助 | `--text-strong` / `--text` / `--text-muted` / `--text-faint` | `#111113` / `#2c2c30` / `#5c5c63` / `#8a8a92` |
+| 强调：「你」、主操作、选中 | `--accent` | `#1f8a76` |
 
-卡片**无阴影**。`--shadow` 留给极少数浮层，不要铺在对话卡、席位卡、计划卡上。
+### agent 墨色
 
-动效：`--dur-fast` 120ms / `--dur-base` 180ms / `--dur-slow` 280ms；`--ease-standard` / `--ease-out`。入场用已有 `m-arrive` / `m-pop` / `activity-pulse`。只动 transform/opacity。尊重 `prefers-reduced-motion`。
+低饱和，像墨水不是荧光笔。对比度：白天版在白底和 `#f4f4f5` 上 ≥ 4.8:1，夜间版在 `#2c333b` 上 ≥ 4.8:1。
 
-## 卡片
+| agent id | 变量 | 白天 | 夜间 |
+|---|---|---|---|
+| `claude-code` | `--agent-claude` | `#9a5b43` | `#c99580` |
+| `codex` | `--agent-codex` | `#535b66` | `#a9b1bb` |
+| `zcode` | `--agent-zcode` | `#4d5c95` | `#9aa6d6` |
+| `grok-build` | `--agent-grok` | `#6b5b91` | `#ad9fd0` |
+| `deepseek` / `web-deepseek` | `--agent-deepseek` | `#3d6e8f` | `#8db5cf` |
+| `opencode` | `--agent-opencode` | `#806836` | `#c4ad7c` |
+| （预留）gemini | `--agent-gemini` | `#8c4d68` | `#c98ea8` |
+| 其它（pi / hermes / web-chatgpt / custom） | `--agent-other` | `#6b6b73` | `#9aa4ae` |
 
-```css
-padding: 10px;
-border: 1px solid var(--border);
-border-radius: var(--radius);
-background: var(--panel-raised);
-overflow: hidden; /* 左边条才能贴圆角裁切 */
-```
+**用法只有一种**：`src/lib/agentInk.ts` 的 `agentInkStyle(agentId)` 在元素上设 `--agent-ink`，CSS 里写 `var(--agent-ink, var(--accent))`。不要在组件里按 agent id 写 if/else 选颜色。浅色底用 `color-mix(in srgb, var(--agent-ink) 8%, transparent)`，描边用 `color-mix(in srgb, var(--agent-ink) 40%, var(--border))`。
 
-卡与卡之间 **6px**（`.event-list` 的 `gap`）。工具/思考卡可以略灰：`color-mix(in srgb, var(--panel-soft) 88%, transparent)`。
+### 动效
 
-工具卡是 `30px | 1fr` 网格、`gap: 9px`，左列 30×30 图标（`--radius-sm` + `--accent-soft`）。You / Reply **没有**图标列。
+| token | 值 | 用在 |
+|---|---|---|
+| `--dur-fast` | 120ms | 悬停、按压、**所有退场**、颜色 |
+| `--dur-base` | 180ms | 菜单、浮层、弹窗进场、折叠、开关 |
+| `--dur-slow` | 240ms | 卡片到达、贴边滑入、数据条 |
+| 循环 | 6s / 2.4s / 1.4s | 描边流光 / 标题扫光 / 九点呼吸，只给运行中 |
 
-## 身份色 = You 卡左边条
+`--ease-out` 用于进场，`--ease-standard` 用于退场和颜色。弹窗进场上浮 4px，退场只淡出；浮层从锚点 `scale(.97)` 长出。
 
-```css
-position: relative;
-overflow: hidden;
-/* padding 仍是 10px，条子叠在左缘上，不占文档流 */
-.card::before {
-  content: "";
-  position: absolute;
-  left: 0; top: 0; bottom: 0;
-  width: 3px;
-  pointer-events: none;
-  z-index: 1;
-  background: var(--seat, var(--accent));
-}
-```
+## 字
 
-You 卡用模式色；席位/发言用成员色。成员色只出现在：**3px 左边条、7px 圆点、名字**。不要整卡填色、不要 inset box-shadow、不要 2px 且上下缩进的轨。
+根 14px / 1.4。不要 `letter-spacing`，不要大写小标题。
 
-## 芯片与选择
+| 级 | 尺寸 / 字重 | 例 |
+|---|---|---|
+| 当前项名字 | 14 / 600 | 右栏当前 agent「Claude」 |
+| 小标题 | 13.5 / 500–600 | 「本会话」「明细」「额度」 |
+| 正文 | 13 / 1.5 | 对话、说明 |
+| 控件 | 12 / 500 | 芯片、按钮 |
+| 辅助 | 11 | 时间、单位、重置 |
+| 大数字 | 15–20 / 600 tabular | `103` `12.9K` `74%` |
 
-对标 `.composer-mode-chip` / `.composer-select`：
+## 对话流
 
-- 高 **22px**，`padding: 0 7px`，`--radius-sm`，字 12px / 500
-- 静息透明或极淡；悬停 `--panel-soft` + `--border`
-- 选中：`color: var(--accent)`，边 `color-mix(in srgb, var(--accent) 30%, transparent)`，底 `color-mix(in srgb, var(--accent) 12%, transparent)`
-- 一排离散芯片，**不要**连成三段分段条
-- 原生 `<select>`：`appearance: none` + 自定义 chevron，背景透明，不要系统深井
+- **你**：raised 卡 + 3px `--accent` 左边条，卡头「你 · 时间」。
+- **调用块**（`.activity-group`）：灰底卡，左直右圆，3px `--agent-ink` 左边条（和 Reply 同一根身份色；没有 ink 时退回中性灰）。标题是 tally（`10 thoughts, 7 commands…`），左侧 `▸` 三角（展开转 90°）。运行中：描边 `color-mix(--agent-ink 40%, --border)`，一段淡光沿边框绕一圈后隐去（6s 一轮，`@property` 角度 + conic-gradient + mask），块内轨迹面板正在进行的那段用 `--agent-ink`，九点呼吸图标用 `--agent-ink`。完成后折回 tally，描边回中性。内层工具/思考行仍是四角圆芯片 + `▸`，不再套第二根轨。
+- **回复**：raised 卡 + 3px `--agent-ink` 左边条。**卡头左上只写 agent 名**（与 You 同一种标签：12px/600 正文墨，无圆点、不上色），右上时间。**卡底一行「怎么跑的」**：`Build · Grok 4.6 · High │ 0.4s · 146 tok`——模式（模式色字，不加 ▣）、模型、推理档位（不加「推理」二字）用辅助灰，细竖线后是本条耗时与 token（最淡、等宽数字）；全部 11px，右侧 22px 的分叉 / 复制。卡片左直右圆（左上/左下 0，右侧 `--radius`），身份色条是一根直线。
+- **交接分隔线**：两条细线中间 `● ZCode → ● 交接给 Claude · 带上摘要和 1 处改动`，圆点是唯一允许出现的 agent 圆点。
+- 交付卡、计划卡、提问卡保持现状。
 
-`.pill-action` 的 **999px** 只给复制/刷新这类悬停才显形的铬按钮。状态徽标、主席、模式、阶段标签一律 `--radius-sm`。
+## 侧栏
 
-步进器、筛选、次要操作也走 22px 芯片密度：标签 11px faint + `− 值 +`，不要各自套一张小卡。
+- 标题行 34px，搜索无框贴在里面，右侧 `Ctrl K`。
+- 筛选行：`全部 / 运行中 1 / 等你 1`，纯文字，不加状态点。
+- 对话行 28px，左侧 6px 圆点 = **该对话所用 agent 的墨色**；状态写在右侧文字（运行中 / 等你黄字 / 时间）。
+- 选中行：整行白底 + 上下 1px 细线 + 左 2px `--agent-ink`，不凸出、缩进与兄弟行对齐。
+- 图标统一 1.5px 线条 SVG（lucide），不要字符图标。
 
-## 表单 = 一张 You 卡 + composer 底栏
+## 右栏（自上而下，只放结论）
 
-新页如果要「填完再提交」，不要做成设置页：
+1. **任务**：标题行右侧 `+`；agent 的 todo（✓ 划掉 / ◐ / ○），后台任务作最后一行跟在后面。
+2. **额度**：
+   - **高亮块 = 本轮计费来源**（不是 agent）：自家模型 → agent 自己的订阅；经模型共享的模型（id 带 `marionette` 前缀，见 `errors.ts::isBridgeNativeModelId`）→ 反查到的来源；查不到 → 退回 agent 订阅并写「来源未知」。
+   - 高亮块：左 2px `--agent-ink` 竖条 + 8% 同色渐隐底；来源名 14/600，旁边小字「经 Claude」；右侧重置倒计时。最紧的窗口画 4px `--agent-ink` 粗条 + 600 百分比，另一个 2px 浅灰细条。纯余额来源写大数字余额。
+   - 换模型 / 换 agent 时竖条加粗发光 600ms 一次。
+   - 下面其它来源一行一个：名字 + 百分比（≥80 黄，≥95 红「已满」），被高亮的那家不重复出现。
+3. **改动文件**：常显，一文件一行（M/A/D + 路径 + 增删），标题行 `+48 −6`、提交按钮。
+4. **跨 agent 共享**：贴底一行折叠，`17 项借给 Claude`，展开为 MCP / 技能 / 插件 / 记忆 / 交接五行。
+5. 会话统计、Token 明细**不在右栏**，进输入框的信息圆圈。
 
-1. 地面 `--panel-muted`
-2. 主输入是**一张** raised 卡：标题（13px / 650，底部分割线）+ 正文（13px / 1.45，`field-sizing: content`，`min-height` 约 64px，不要 8 行空井）
-3. 卡底一栏芯片（模式、规则、次要旋钮），顶部分割线，像 composer 工具条
-4. 页脚钉住：`--composer-bg`、顶边 1px `--border`、主按钮 28px / 12px / 600，主色走 `--accent`
-5. 列表项（席位、任务、历史）是同一套 event-card，元信息一行（模型 + 职责 = composer-select 那行）
+## 输入框
 
-宽栏可以左右分间（召集页：左简报 / 右席位），两列的踢脚（11px / 18px 高 / `--text-faint`）必须齐顶。容器窄于约 780px 改单列。内容铺满中栏，**不要** `max-width` 居中。
+- 整条贴底，顶边 1px，右上角放大按钮。
+- 底栏：`+` · Agent 模式芯片 · `Claude · opus-5.5` · `high` · …… · **信息圆圈** · 发送。
+- **信息圆圈**：16px 圆环，填充比例 = 上下文占用，颜色 `--agent-ink`。点开浮层（宽 316，padding 16/18，13px）：标题行「本会话」+ 右侧 `agent · 模型` + 复制；上下文一行 + 6px 圆头进度条；「概况」两行三列网格（解码 tok/s · 预填充 · 首字 / 改动 +− · 轮·步 · 缓存命中），行间细线；「明细」四行右对齐（新输入 / 输出 / 缓存读 / 缓存写）。无底部按钮。
 
-## 字号
+## 弹窗
 
-根 14px / 400 / 1.4。正文 13px / 1.45–1.55。芯片 12px。踢脚、时间、辅助 11px `--text-faint`。标题 13–14px / 650，空态可以 16px，**不要** 18–22px 营销标题。不要 `letter-spacing`。
+- 壳：`DialogShell`。边 1px `#dcdce1`、3px 角、阴影 `0 12px 32px rgba(17,17,19,.10)`；遮罩 `rgba(17,17,19,.18)` 不模糊。
+- 宽度三档：360 确认 / 480 表单 / 880 大面板。
+- 头 46px：标题 14/600 直接写，不加分隔条；右侧 28px ×。
+- **表单是一张表**：一行一个字段，标签左 84px（12.5px `--text-muted`），值右，行高 42，行间 `--hairline`；输入框无边框。
+- 脚 52px，顶边细线；键位提示靠左，按钮靠右。按钮 30px / 13px / 3px 角：主操作 `--accent` 白字、危险 `--red` 白字、其余 `#f1f1f3` 底。危险确认默认焦点在取消。
+- agent 发起的弹窗（权限）：左 3px `--agent-ink`，标题写「Claude 想运行命令」。
+- 进场 180ms 上浮 4px，退场 120ms 淡出后再卸载。
 
-## 收纳盒例外
+## 收纳盒（不再是例外）
 
-`.memo-box` 的 8px 卡、帖子流、大圆角是收纳盒页自己的语言。其它产品面（对话、圆桌、用量、设置、贴边窄条）不要抄它。
+并回主语言：3px 角、1px 边，不再用 8px 大圆角。帖子流与「今天 / 昨天」分段保留，分段线与圆桌阶段线同写法；「写一条」贴顶整条；选中 = `--accent` 描边 + 左边条，复选框常驻；多选后才出现底栏，主操作「开新对话」。
+
+## 圆桌
+
+席位、发言卡、主席综合卡全部用 `--agent-ink`（同 agent 多席位时颜色相同，靠名字区分）。阶段用细线分段（`独立提案 · 4 / 4 · 互相不可见`），主席综合中的卡用运行中描边流光，计划门在底栏。
+
+## 芯片、按钮
+
+- 芯片 22px，`padding 0 7px`，`--radius-sm`，12/500；选中：`--accent` 字 + 12% 底 + 30% 边。一排离散芯片，不连成分段条。
+- `.pill-action` 的 999px 只给悬停才显形的铬按钮。
 
 ## 新页检查单
 
-- [ ] 地面 `--panel-muted`，卡 `--panel-raised` + `--radius` + 1px 边，无阴影
-- [ ] 身份色是 3px 通高左边条
-- [ ] 可点控件 22px / `--radius-sm`，选中态像 composer-mode-chip
-- [ ] 卡距 6px；表单不是分段条 + 深井 + 小卡步进器
-- [ ] 动效用现有 token 和 `m-arrive`；有 reduced-motion
+- [ ] 白天版先看；地面 / 卡片 / 边全走 token
+- [ ] 身份色只在左边条、运行描边、当前进度条；名字不上色
+- [ ] 控件没有独立的框；表单是表
+- [ ] 每块先给结论
+- [ ] 动效用 token，进出成对，有 reduced-motion
 - [ ] 文案走 i18n（`docs/i18n-guide.md`）
-- [ ] 对照一屏真对话流（You 卡 + composer 芯片）看边角和对齐
+- [ ] 对照 `docs/design/ui-v2/` 对应稿子看边角和对齐
 
 ## 回归
 
-没有单独的视觉测试。改表面之后至少：相关 `npx tsx scripts/verify-*.mts`、`npx tsc --noEmit`。圆桌范例：`npx tsx scripts/verify-council.mts`。
+改表面后至少：相关 `npx tsx scripts/verify-*.mts`、`npx tsc --noEmit`；圆桌 `npx tsx scripts/verify-council.mts`；收纳盒 `npx tsx scripts/verify-memo-box.mts`。

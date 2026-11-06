@@ -45,10 +45,16 @@ type Tagged struct {
 	// it as, its version, and whether it is gateway middleware or an agent
 	Package string `json:"package,omitempty"`
 	Version string `json:"version,omitempty"`
-	Kind    string `json:"kind,omitempty"` // "middleware", "agent", "page" or "hooks" when that is all it is
+	Kind    string `json:"kind,omitempty"` // "agent" when it adds an agent (a module of its own too or not); "middleware", "page" or "hooks" when that is all it is
 	// its package.json's magpie.icon, as an installed plugin gives its
 	// provider one: an https URL or a data:image URI, as it is written
 	Icon string `json:"icon,omitempty"`
+	// Name and Summary are what its own package.json says it is
+	// (magpie.name, magpie.summary): its card shows them as the package's
+	// own words, never as reviewed, and they never resolve a name (#3608).
+	// npm's copy says them when the card installs from npm.
+	Name    string            `json:"name,omitempty"`
+	Summary map[string]string `json:"summary,omitempty"`
 }
 
 // Where GitHub is asked, moved by tests.
@@ -427,7 +433,10 @@ func readTagged(pc context.Context, t Tagged, branch string) (Tagged, bool, bool
 			Agent      string `json:"agent"`
 			Hooks      string `json:"hooks"`
 			Icon       string `json:"icon"`
-			Page       struct {
+			Name       string `json:"name"`
+			// a map of language to sentence, anything else read as none
+			Summary json.RawMessage `json:"summary"`
+			Page    struct {
 				File string `json:"file"`
 			} `json:"page"`
 		} `json:"magpie"`
@@ -447,20 +456,26 @@ func readTagged(pc context.Context, t Tagged, branch string) (Tagged, bool, bool
 	// a picture, as host.js's iconOf takes one: magpie checks and
 	// keeps it before the page shows it (the GUI's /api/plugins/github)
 	t.Icon = ownIcon(pj.Magpie.Icon)
-	if pj.Main == "" && len(pj.Exports) == 0 {
-		switch {
-		case strings.TrimSpace(pj.Magpie.Middleware) != "":
-			t.Kind = "middleware"
-		case strings.TrimSpace(pj.Magpie.Agent) != "":
-			t.Kind = "agent"
-		case strings.TrimSpace(pj.Magpie.Page.File) != "":
-			t.Kind = "page"
-		// gateway hooks alone (magpie.hooks) need no entry of their
-		// own, as the host loads them: the hooks file is the one to
-		// find (#3821)
-		case strings.TrimSpace(pj.Magpie.Hooks) != "":
-			t.Kind = "hooks"
-		}
+	// and what it says of itself, shown on its card as its own words
+	// rather than the community's (#3608)
+	t.Name, t.Summary = ownName(pj.Magpie.Name), ownSummary(pj.Magpie.Summary)
+	// runs is whether Bun loads a module of its own (main, exports)
+	runs := pj.Main != "" || len(pj.Exports) > 0
+	switch {
+	case !runs && strings.TrimSpace(pj.Magpie.Middleware) != "":
+		t.Kind = "middleware"
+	// a package that adds an agent is an agent plugin, its Bun module
+	// (main) only what keeps the agent working, not a provider
+	// (plugins#737)
+	case strings.TrimSpace(pj.Magpie.Agent) != "":
+		t.Kind = "agent"
+	case !runs && strings.TrimSpace(pj.Magpie.Page.File) != "":
+		t.Kind = "page"
+	// gateway hooks alone (magpie.hooks) need no entry of their
+	// own, as the host loads them: the hooks file is the one to
+	// find (#3821)
+	case !runs && strings.TrimSpace(pj.Magpie.Hooks) != "":
+		t.Kind = "hooks"
 	}
 	// published to npm from this repository: npm's copy is the one
 	// built to be installed (a repository often leaves its dist out,
@@ -478,6 +493,14 @@ func readTagged(pc context.Context, t Tagged, branch string) (Tagged, bool, bool
 		var l npmLatest
 		if json.Unmarshal(b, &l) == nil && l.Version != "" && strings.EqualFold(githubRepo(repoURL(l.Repository)), t.Repo) {
 			t.Spec, t.Version = pj.Name, l.Version
+			// the copy installed says what it is: its words when it
+			// says any, else the repository's
+			if n := ownName(l.Magpie.Name); n != "" {
+				t.Name = n
+			}
+			if s := ownSummary(l.Magpie.Summary); s != nil {
+				t.Summary = s
+			}
 			npmNames = l.Main != "" || len(l.Exports) > 0
 		}
 	}
@@ -490,17 +513,22 @@ func readTagged(pc context.Context, t Tagged, branch string) (Tagged, bool, bool
 	// that is only a command (bin), an MCP server, has none and
 	// would never load (#1327)
 	if IsGit(t.Spec) || !npmNames {
-		entry := pj.Magpie.Middleware
-		if t.Kind == "agent" {
-			entry = pj.Magpie.Agent
-		} else if t.Kind == "page" {
-			entry = pj.Magpie.Page.File
-		} else if t.Kind == "hooks" {
-			entry = pj.Magpie.Hooks
-		} else if t.Kind != "middleware" {
-			entry = pkgEntry(pj.Exports, pj.Main)
-			if !IsGit(t.Spec) {
-				entry = pkgEntry(nil, "")
+		// a package with a module of its own loads that module, an
+		// agent plugin's too; else the one file it declares
+		entry := pkgEntry(pj.Exports, pj.Main)
+		if !IsGit(t.Spec) {
+			entry = pkgEntry(nil, "")
+		}
+		if !runs {
+			switch t.Kind {
+			case "middleware":
+				entry = pj.Magpie.Middleware
+			case "agent":
+				entry = pj.Magpie.Agent
+			case "page":
+				entry = pj.Magpie.Page.File
+			case "hooks":
+				entry = pj.Magpie.Hooks
 			}
 		}
 		if path.Ext(entry) != "" {

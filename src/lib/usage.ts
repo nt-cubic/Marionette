@@ -175,10 +175,20 @@ export function cumulativeFromEvents(
  * Combine the agent-reported token split with locally measured timings into
  * one display-ready stat set. Speeds are null whenever their inputs are
  * missing (never invent a number).
+ *
+ * `outputTps` pairs billed output with the generation window (`decodeMs` when
+ * the caller measured it — tool waits excluded — otherwise first-chunk → end).
+ * `durationMs` stays the wall-clock first-chunk → end so the footer can still
+ * show how long the turn took.
  */
 export function buildTurnStats(
   tokens: TurnTokens,
-  timing: { sentAt: number | null; firstChunkAt: number | null; endedAt: number }
+  timing: {
+    sentAt: number | null;
+    firstChunkAt: number | null;
+    endedAt: number;
+    decodeMs?: number | null;
+  }
 ): TurnStats {
   const stats: TurnStats = {
     input: tokens.input,
@@ -191,15 +201,20 @@ export function buildTurnStats(
   if (timing.firstChunkAt != null) {
     const durationMs = Math.max(0, timing.endedAt - timing.firstChunkAt);
     stats.durationMs = durationMs;
-    if (tokens.output != null && durationMs > 0) {
-      stats.outputTps = tokens.output / (durationMs / 1000);
+    const genMs =
+      timing.decodeMs != null && timing.decodeMs > 0 ? timing.decodeMs : durationMs;
+    const generated = generatedOutputTokens(tokens);
+    if (generated > 0 && genMs > 0) {
+      stats.outputTps = generated / (genMs / 1000);
     }
   }
   if (timing.sentAt != null && timing.firstChunkAt != null) {
     const ttftMs = Math.max(0, timing.firstChunkAt - timing.sentAt);
     stats.ttftMs = ttftMs;
-    if (tokens.input != null && ttftMs > 0) {
-      stats.ppTps = tokens.input / (ttftMs / 1000);
+    const billedPrompt =
+      (tokens.input ?? 0) + (tokens.cached ?? 0) + (tokens.cacheCreation ?? 0);
+    if (billedPrompt > 0 && ttftMs > 0) {
+      stats.ppTps = billedPrompt / (ttftMs / 1000);
     }
   }
   return stats;
@@ -888,6 +903,9 @@ export function mergeUsageFromAcp(
  * Shapes seen in the wild:
  * - ACP `PromptResponse.usage`: `{ inputTokens, outputTokens, totalTokens, … }`
  * - Grok:  `_meta.{ totalTokens, inputTokens, outputTokens, cachedReadTokens }`
+ *   Grok *also* nests a session-lifetime snapshot at `_meta.usage` (`numTurns`,
+ *   `modelCalls`, `modelUsage`) — that is the whole dialog, not this turn.
+ *   Prefer the sibling per-turn fields and skip the lifetime object.
  * - Grok `response_completed` (per call, via `_x.ai/session_notification`):
  *   `{ input_tokens, output_tokens, cache_read_input_tokens, reasoning_tokens }`
  *   — prefer `parseGrokCallUsage` + the per-turn accumulator for this one.
@@ -917,56 +935,153 @@ export function extractTurnTokens(data: unknown): TurnTokens | null {
   }
 
   const meta = asRecord(result._meta);
+  // Per-turn fields before nested `_meta.usage`. Grok 0.2+ puts this turn's
+  // counts on `_meta` itself and the session running total on `_meta.usage`
+  // (`numTurns`/`modelCalls`). Picking the nested object first stamped every
+  // Reply with the whole-dialog total, and the usage panel summed those.
+  // Read each object as a whole — never mix input from one snapshot with
+  // cached from another.
   const candidates = [
     asRecord(result.usage),
-    asRecord(meta?.usage),
     meta,
-    result,
     asRecord(asRecord(meta?.quota)?.token_count),
     asRecord(asRecord(meta?.quota)?.tokenCount),
-  ].filter(Boolean) as Record<string, unknown>[];
-  if (candidates.length === 0) return null;
+    asRecord(meta?.usage),
+    result,
+  ].filter((source): source is Record<string, unknown> => Boolean(source));
 
+  let chosen: TurnTokens | null = null;
+  const extras: TurnTokens[] = [];
+  for (const source of candidates) {
+    if (isLifetimeUsage(source)) continue;
+    const parsed = tokensFromObject(source);
+    if (parsed.input == null && parsed.output == null && parsed.total == null) {
+      extras.push(parsed);
+      continue;
+    }
+    if (!chosen) chosen = parsed;
+    else extras.push(parsed);
+  }
+  if (!chosen) return null;
+  const cached = chosen.cached ?? firstExtra(extras, "cached");
+  const cacheCreation = chosen.cacheCreation ?? firstExtra(extras, "cacheCreation");
+  const reasoning = chosen.reasoning ?? firstExtra(extras, "reasoning");
+  const input = netFreshInput(
+    chosen.input,
+    cached,
+    cacheCreation,
+    chosen.output,
+    chosen.total
+  );
+  return {
+    input,
+    output: chosen.output,
+    cached,
+    cacheCreation,
+    reasoning,
+    total: chosen.total,
+  };
+}
+
+function tokensFromObject(source: Record<string, unknown>): TurnTokens {
   const pick = (...keys: string[]): number | null => {
-    for (const source of candidates) {
-      for (const key of keys) {
-        const n = asNumber(source[key]);
-        if (n != null) return n;
-      }
+    for (const key of keys) {
+      const n = asNumber(source[key]);
+      if (n != null) return n;
     }
     return null;
   };
+  return {
+    input: pick("inputTokens", "input_tokens"),
+    output: pick("outputTokens", "output_tokens"),
+    cached: pick(
+      "cachedReadTokens",
+      "cached_read_tokens",
+      "cachedInputTokens",
+      "cached_input_tokens",
+      "cacheReadInputTokens",
+      "cache_read_input_tokens"
+    ),
+    cacheCreation: pick(
+      "cachedWriteTokens",
+      "cached_write_tokens",
+      "cacheCreationInputTokens",
+      "cache_creation_input_tokens",
+      "cacheCreationTokens",
+      "cache_creation_tokens"
+    ),
+    reasoning: pick(
+      "thoughtTokens",
+      "thought_tokens",
+      "reasoningOutputTokens",
+      "reasoning_output_tokens",
+      "reasoningTokens",
+      "reasoning_tokens"
+    ),
+    total: pick("totalTokens", "total_tokens"),
+  };
+}
 
-  const input = pick("inputTokens", "input_tokens");
-  const output = pick("outputTokens", "output_tokens");
-  const cached = pick(
-    "cachedReadTokens",
-    "cached_read_tokens",
-    "cachedInputTokens",
-    "cached_input_tokens",
-    // Grok `_x.ai/session_notification` response_completed (per model call):
-    // { input_tokens, output_tokens, cache_read_input_tokens, reasoning_tokens }
-    "cacheReadInputTokens",
-    "cache_read_input_tokens"
-  );
-  const cacheCreation = pick(
-    "cachedWriteTokens",
-    "cached_write_tokens",
-    "cacheCreationInputTokens",
-    "cache_creation_input_tokens"
-  );
-  const reasoning = pick(
-    "thoughtTokens",
-    "thought_tokens",
-    "reasoningOutputTokens",
-    "reasoning_output_tokens",
-    "reasoningTokens",
-    "reasoning_tokens"
-  );
-  const total = pick("totalTokens", "total_tokens");
+function firstExtra(
+  extras: readonly TurnTokens[],
+  key: "cached" | "cacheCreation" | "reasoning"
+): number | null {
+  for (const extra of extras) {
+    if (extra[key] != null) return extra[key];
+  }
+  return null;
+}
 
-  if (input == null && output == null && total == null) return null;
-  return { input, output, cached, cacheCreation, reasoning, total };
+/**
+ * Grok (and a few others) report `inputTokens` as the billed prompt — cache
+ * already inside — while Claude / OpenCode / Codex report fresh input and a
+ * separate cache bucket. `total ≈ input + output` is the tell: cache is not
+ * an extra addend, so subtract it to keep `input` fresh-only (four-bucket
+ * split, same as `parseGrokCallUsage`).
+ */
+function netFreshInput(
+  input: number | null,
+  cached: number | null,
+  cacheCreation: number | null,
+  output: number | null,
+  total: number | null
+): number | null {
+  if (input == null) return null;
+  const cache = (cached ?? 0) + (cacheCreation ?? 0);
+  // Fresh-input agents report cache as an extra bucket (often >> input).
+  // Billed-including-cache agents (Grok `_meta`) keep cache inside `input`.
+  if (cache <= 0 || cache > input) return input;
+  if (total == null || output == null) return input;
+  if (Math.abs(total - (input + output)) > 1) return input;
+  return Math.max(0, input - cache);
+}
+
+/**
+ * Tokens that actually streamed this turn — billed `output`, plus `reasoning`
+ * when the agent reports thinking as its own bucket (OpenCode `thoughtTokens`
+ * sits next to output; Claude/Grok fold thinking into output). Pair this with
+ * decode time for tok/s so a think-heavy turn is not a handful of reply
+ * tokens over a long generation window.
+ */
+export function generatedOutputTokens(tokens: TurnTokens): number {
+  const output = tokens.output ?? 0;
+  const reasoning = tokens.reasoning ?? 0;
+  if (!(output > 0 || reasoning > 0)) return 0;
+  if (reasoning <= 0) return output;
+  const billedPrompt = (tokens.input ?? 0) + (tokens.cached ?? 0) + (tokens.cacheCreation ?? 0);
+  if (tokens.total != null && Math.abs(tokens.total - (billedPrompt + output + reasoning)) <= 1) {
+    return output + reasoning;
+  }
+  return output;
+}
+
+/** Session-lifetime snapshot, not this turn — Grok `_meta.usage` / `turn_completed.usage`. */
+function isLifetimeUsage(source: Record<string, unknown>): boolean {
+  if ((asNumber(source.numTurns) ?? 0) > 1) return true;
+  // `modelUsage` + many `modelCalls` is the dialog-level breakdown Grok nests
+  // next to the per-turn sibling fields. A single turn's usage has neither.
+  if (asRecord(source.modelUsage) && (asNumber(source.modelCalls) ?? 0) > 1) return true;
+  return false;
 }
 
 /**

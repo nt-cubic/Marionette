@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+
+	"github.com/yetone/magpie/internal/plugin"
 )
 
 // SearchAPI is a web search API the user gave magpie a key to.
@@ -50,7 +52,21 @@ type SearchVendor struct {
 	// gateway's askSearchAPI): a base URL given ending in one of them is
 	// that base, so the path isn't asked twice (/search/search, #509)
 	Paths []string
+	// Plugin is the spec of the plugin that gives this API (its search
+	// hook), "" for one of magpie's own; PluginID is its id there. The
+	// plugin asks it (plugin.RunSearch); ID is plugin.PluginSearch.VendorID.
+	Plugin, PluginID string
+	// NeedURL: a plugin's API the user gives an address for, as a SearXNG
+	NeedURL bool
+	// Auth: a plugin's API that signs in as the same plugin's provider of
+	// this id (plugin.SearchDef.Auth), taking no key: each search is one
+	// of that provider's accounts that are on (SearchSignIn)
+	Auth string
 }
+
+// WantsURL is whether the user must give its address (a SearXNG's, or a
+// plugin's that asked for one).
+func (v SearchVendor) WantsURL() bool { return v.Base == "" && (v.Plugin == "" || v.NeedURL) }
 
 // YouFreeSearch is You.com's search that takes no key (#1626): 100
 // searches a day for each address, then 429. With a key, You.com is
@@ -75,13 +91,33 @@ var SearchVendors = []SearchVendor{
 	{ID: "searxng", Name: "SearXNG", KeyOptional: true, Paths: []string{"/search"}},
 }
 
-// SearchVendorOf is the vendor by its id.
+// AllSearchVendors are SearchVendors and the search APIs the plugins that
+// are on give (their search hook), after them. A plugin note that can't be
+// read adds none.
+func AllSearchVendors() []SearchVendor {
+	out := slices.Clone(SearchVendors)
+	ps, _ := plugin.NotedSearches()
+	for _, p := range ps {
+		out = append(out, SearchVendor{ID: p.VendorID(), Name: p.Name, KeysURL: p.KeysURL, KeyOptional: p.KeyOptional,
+			Plugin: p.Spec, PluginID: p.ID, NeedURL: p.NeedURL, Auth: p.Auth})
+	}
+	return out
+}
+
+// SearchVendorOf is the vendor by its id: one of magpie's, or a plugin's.
 func SearchVendorOf(id string) (SearchVendor, bool) {
 	i := slices.IndexFunc(SearchVendors, func(v SearchVendor) bool { return v.ID == id })
-	if i < 0 {
+	if i >= 0 {
+		return SearchVendors[i], true
+	}
+	if !strings.Contains(id, ":") {
 		return SearchVendor{}, false
 	}
-	return SearchVendors[i], true
+	all := AllSearchVendors()
+	if i := slices.IndexFunc(all[len(SearchVendors):], func(v SearchVendor) bool { return v.ID == id }); i >= 0 {
+		return all[len(SearchVendors)+i], true
+	}
+	return SearchVendor{}, false
 }
 
 // Keys are the keys in Key: one, or several the user gave separated by
@@ -149,10 +185,12 @@ func (a SearchAPI) ownBase() string {
 }
 
 // Ready is whether it can be asked: a vendor magpie knows, at an address,
-// with a key where it needs one (a SearXNG, You.com, may not).
+// with a key where it needs one (a SearXNG, You.com, may not; one that
+// signs in never does: signed out, a search says so and the next API is
+// asked).
 func (a SearchAPI) Ready() bool {
 	v, known := SearchVendorOf(a.Vendor)
-	return known && a.Base() != "" && (a.Key != "" || v.KeyOptional)
+	return known && (a.Base() != "" || (v.Plugin != "" && !v.NeedURL)) && (a.Key != "" || v.KeyOptional || v.Auth != "")
 }
 
 // check says what is wrong with a search API the user gives.
@@ -160,7 +198,7 @@ func (a SearchAPI) check() error {
 	v, ok := SearchVendorOf(a.Vendor)
 	if !ok {
 		var ids []string
-		for _, v := range SearchVendors {
+		for _, v := range AllSearchVendors() {
 			ids = append(ids, v.ID)
 		}
 		return fmt.Errorf("no search API %q: one of %s", a.Vendor, strings.Join(ids, ", "))
@@ -182,7 +220,10 @@ func (a SearchAPI) check() error {
 	if a.Vendor == "searxng" && a.URL == "" {
 		return fmt.Errorf("SearXNG needs its address, as url=https://…")
 	}
-	if a.Key == "" && !v.KeyOptional {
+	if v.Plugin != "" && v.NeedURL && a.URL == "" {
+		return fmt.Errorf("%s needs its address, as url=https://…", a.Name())
+	}
+	if a.Key == "" && !v.KeyOptional && v.Auth == "" {
 		return fmt.Errorf("%s needs its API key", a.Name())
 	}
 	return nil

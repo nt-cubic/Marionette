@@ -199,7 +199,12 @@ func (s *Server) serveResponsesSocket(w http.ResponseWriter, r *http.Request) bo
 		log.Printf("responses socket from %s: %v", r.RemoteAddr, err)
 		return true
 	}
-	c.SetReadLimit(defaultBodyLimit)
+	// a turn on a new socket is the conversation whole (codexBodyLimit)
+	most := int64(defaultBodyLimit)
+	if strings.HasPrefix(r.URL.Path, CodexPath+"/") {
+		most = s.codexLimitOf()
+	}
+	c.SetReadLimit(most)
 	sock := &responsesSocket{s: s, o: o, path: r.URL.Path, c: c, ctx: o.ctx}
 	if !s.sockets.add(sock) {
 		c.Close(websocket.StatusGoingAway, "magpie is restarting")
@@ -493,6 +498,9 @@ func (rs *responsesSocket) turn(ctx context.Context, t *socketTurnRun, frame []b
 		return
 	}
 	rs.sent += int64(len(body))
+	if socketTurnBody != nil {
+		socketTurnBody(body)
+	}
 	req := rs.request(ctx, body)
 	out := &socketTurnWriter{rs: rs, ctx: ctx, run: t, h: http.Header{}}
 	rs.o.via.ServeHTTP(out, req)
@@ -508,6 +516,10 @@ func (rs *responsesSocket) turn(ctx context.Context, t *socketTurnRun, frame []b
 		rs.keep(out.id, held, fresh, out.items)
 	}
 }
+
+// socketTurnBody, set by the tests, is handed each body a turn is served
+// with, to see that nothing keeps it once the turn is over.
+var socketTurnBody func(body []byte)
 
 // turnBody is json.Marshal(q) with input, as json.Marshal writes it, for
 // q's input, written once into a slice of about its size. A turn wrote

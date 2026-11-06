@@ -12,14 +12,23 @@ package gateway
 // a provider/model id, a name the user gave the model upstream — since
 // agents compare it with what they asked and warn when it differs
 // (issennknight on Discord: deepseek-v4.1-flash served as
-// deepseek-v4.1-flash-1017). A request that went out under the name it
-// asked for keeps the vendor's text, a dated name included. Settings'
-// MemberModel, or a request's X-Magpie-Response-Model: member, has the
-// body's model say magpie's id instead, except for the agents that read
-// it themselves (vendorNamed); X-Magpie-Response-Model: vendor keeps the
-// vendor's text. The vendor's own name is still in the usage log
-// (Record.Served) and on the Routing page: the request's capture is
-// inside this writer.
+// deepseek-v4.1-flash-1017). One of magpie's own aliases for Claude
+// Desktop or Science (magpieAliasAsked) is not among these: it names the
+// model only to Desktop and its Code tab, and a reply that carried it put
+// magpie's deployment name in the agent's usage records, where ccusage
+// counted it as a model of its own (#4667), so such a request keeps the
+// vendor's text, as every reply did before the asked-name rule. A request
+// that went out under the name it asked for keeps the vendor's text, a
+// dated name included. Settings' ReplyModel says what the body's model
+// is for every request and every agent: the model asked for (""),
+// magpie's id ("member"), or the vendor's text ("vendor", as before the
+// asked-for name). Both were asked for by ZoeCats on Discord, whose
+// Claude Code was given the name asked for under "member" until it named
+// the member to Claude Code, Claude Desktop and Codex too: the user's
+// pick wins, and the id is a provider/model as a name asked for is. A request's X-Magpie-Response-Model (asked,
+// member or vendor) says it for that request alone. The vendor's
+// own name is still in the usage log (Record.Served) and on the Routing
+// page: the request's capture is inside this writer.
 
 import (
 	"bytes"
@@ -37,13 +46,8 @@ import (
 const (
 	providerHeader      = "X-Magpie-Provider"
 	modelHeader         = "X-Magpie-Model"
-	responseModelHeader = "X-Magpie-Response-Model" // a request's: member, or vendor
+	responseModelHeader = "X-Magpie-Response-Model" // a request's: asked, member or vendor
 )
-
-// vendorNamed are the agents whose replies never name the member: they
-// read the body's model themselves (Claude Code its features, Codex its
-// catalog), so they get the name they asked for, or the vendor's.
-var vendorNamed = []string{"claude", "claude-desktop", "codex"}
 
 type memberKey struct{}
 
@@ -67,9 +71,10 @@ func noteMember(w http.ResponseWriter, r *http.Request, p provider.Provider, mod
 }
 
 // replyNaming is what the reply to r has its body's model say: the
-// member's id (namesMember), the vendor's own text (asked for with
-// X-Magpie-Response-Model: vendor), or else the model the agent asked
-// for, when the request went out under another name.
+// member's id, the vendor's own text, or else the model
+// the agent asked for, when the request went out under another name.
+// The request's X-Magpie-Response-Model says which, else Settings'
+// ReplyModel.
 type replyNaming int
 
 const (
@@ -78,28 +83,26 @@ const (
 	nameVendor
 )
 
-func replyNamingOf(r *http.Request, agent string) replyNaming {
+func replyNamingOf(r *http.Request) replyNaming {
+	// a request's own ask is as it says, for every agent
 	switch strings.ToLower(strings.TrimSpace(r.Header.Get(responseModelHeader))) {
-	case "member":
+	case settings.ReplyAsked:
+		return nameAsked
+	case settings.ReplyMember:
 		return nameMember
-	case "vendor":
+	case settings.ReplyVendor:
 		return nameVendor
 	}
-	if !settings.Shared().MemberModel {
-		return nameAsked
+	// the user's pick, for every agent: Claude Code, Claude Desktop and
+	// Codex take a provider/model id back as they take the group or
+	// provider/model they asked for (ZoeCats on Discord)
+	switch settings.Shared().ReplyModel {
+	case settings.ReplyVendor:
+		return nameVendor
+	case settings.ReplyMember:
+		return nameMember
 	}
-	for _, a := range vendorNamed {
-		if agent == a {
-			return nameAsked
-		}
-	}
-	return nameMember
-}
-
-// namesMember is whether the reply to r has its body's model say the
-// member's id.
-func namesMember(r *http.Request, agent string) bool {
-	return replyNamingOf(r, agent) == nameMember
+	return nameAsked
 }
 
 // withMemberNames wraps w in a memberWriter, which the tries tell their
@@ -107,8 +110,8 @@ func namesMember(r *http.Request, agent string) bool {
 // asked for model asked. The func returned writes what it holds, once
 // the handler is done.
 func withMemberNames(w http.ResponseWriter, r *http.Request, from provider.Protocol, asked string) (http.ResponseWriter, *http.Request, func()) {
-	naming := replyNamingOf(r, agentOf(r))
-	if naming == nameVendor || naming == nameAsked && asked == "" {
+	naming := replyNamingOf(r)
+	if naming == nameVendor || naming == nameAsked && (asked == "" || magpieAliasAsked(asked)) {
 		return w, r, func() {}
 	}
 	mw := &memberWriter{w: w, naming: naming, asked: asked, paths: memberPathsOf(from)}

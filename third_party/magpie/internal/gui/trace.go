@@ -96,9 +96,19 @@ func pricedRoutes(routes []gateway.Route) []routeJSON {
 		}
 	}
 	titles := sessions.CodexTitles(ids)
+	var loose []string
+	for _, r := range routes {
+		if k := looseConv(r); k != "" {
+			loose = append(loose, k)
+		}
+	}
+	owners := convSessions(loose)
 	pub := publicRefs()
 	for _, r := range routes {
 		r = publicRoute(r, pub)
+		if k := looseConv(r); k != "" && owners[k] != "" {
+			r.Session = owners[k]
+		}
 		r.Usage = cacheCounted(r.Usage)
 		recs := make([]usage.Record, len(r.Usage))
 		for i, u := range r.Usage {
@@ -118,6 +128,58 @@ func pricedRoutes(routes []gateway.Route) []routeJSON {
 		out = append(out, routeJSON{Route: r, SessionTitle: name, Cost: sum.Cost, Priced: priced, Unpriced: sum.Unpriced})
 	}
 	return out
+}
+
+// convAgents are the agents whose own session files say which of the
+// gateway's conversation ids are theirs (sessions' Convs): dsh's, whose
+// chat-completions and messages routes send no session id
+// (changqiu4890 on Discord: Routing put every dsh request under "No
+// session ID").
+var convAgents = map[string]bool{"dsh": true}
+
+// looseConv is the agent and conversation id (convOwners' key) of a route
+// of such an agent that names no session, "" for any other.
+func looseConv(r gateway.Route) string {
+	if r.Session != "" || r.ParentSession != "" || r.Conv == "" || !convAgents[r.Agent] {
+		return ""
+	}
+	return r.Agent + "\x00" + r.Conv
+}
+
+// routeConvs is convOwners of the sessions listed, for every trace the
+// Routing page polls: listing the sessions reads every agent's folder, so
+// it is made again only when it is convsKept old, or convsFresh old and a
+// route's conversation isn't in it (a session begun since).
+var routeConvs struct {
+	sync.Mutex
+	at time.Time
+	of map[string]string // replaced, never changed: read outside the lock
+}
+
+var convsFresh, convsKept = 2 * time.Second, time.Minute
+
+// convSessions is convOwners for keys (looseConv's), nil when there are
+// none, so a page with no such route lists nothing.
+func convSessions(keys []string) map[string]string {
+	if len(keys) == 0 {
+		return nil
+	}
+	routeConvs.Lock()
+	defer routeConvs.Unlock()
+	age := time.Since(routeConvs.at)
+	stale := routeConvs.of == nil || age >= convsKept
+	if !stale && age >= convsFresh {
+		for _, k := range keys {
+			if _, ok := routeConvs.of[k]; !ok {
+				stale = true
+				break
+			}
+		}
+	}
+	if stale {
+		routeConvs.of, routeConvs.at = convOwners(sessions.List(0)), time.Now()
+	}
+	return routeConvs.of
 }
 
 // cacheCounted marks the usage of a vendor that counts no cache as such,
@@ -284,6 +346,59 @@ func quotaView(id string) string {
 	return view
 }
 
+// withGatewayTitles fills in, for each agent:id key the agent's own files
+// left without a title, the first words its user said through the gateway,
+// as the Sessions page heads a session it knows only from there
+// (flandern1211_58540 on Discord: Routing named a session by its folder and
+// id). Nothing is read that the Sessions page doesn't show already.
+func withGatewayTitles(out map[string]string, keys []string) map[string]string {
+	var title func(agent, id string) string
+	for _, k := range keys {
+		agent, id, ok := strings.Cut(k, ":")
+		if !ok || id == "" || out[k] != "" {
+			continue
+		}
+		if title == nil {
+			title = sessions.GatewayTitler()
+		}
+		// recorded under the agent its User-Agent named, as a route's
+		// agent may not have been
+		name := title(agent, id)
+		if name == "" {
+			if a := usage.AgentOf(agent); a != agent {
+				name = title(a, id)
+			}
+		}
+		if name != "" {
+			out[k] = name
+		}
+	}
+	return out
+}
+
+// codexReadableTitles is each Codex thread's name from Codex's index, else
+// the title its own files give (its first prompt, as the Sessions page
+// heads it), else the first words recorded through the gateway: a thread
+// never named was headed by its folder and id alone.
+func codexReadableTitles(ids []string) map[string]string {
+	out := sessions.CodexTitles(ids)
+	var keys []string
+	for _, id := range ids {
+		if id != "" && out[id] == "" {
+			keys = append(keys, "codex:"+id)
+		}
+	}
+	if len(keys) == 0 {
+		return out
+	}
+	for k, name := range withGatewayTitles(sessions.Titles(keys), keys) {
+		if name != "" {
+			out[strings.TrimPrefix(k, "codex:")] = name
+		}
+	}
+	return out
+}
+
 // traceRoutes serves the routing trace for the Gateway view to play: it
 // waits up to 25 s for something to change after the seq it is given, so
 // the page hears of a request as it happens.
@@ -307,7 +422,7 @@ func traceRoutes(mux *http.ServeMux) {
 			return
 		}
 		if len(in.Sessions) > 0 && len(in.IDs) == 0 {
-			writeJSON(rw, map[string]any{"titles": sessions.Titles(in.Sessions)})
+			writeJSON(rw, map[string]any{"titles": withGatewayTitles(sessions.Titles(in.Sessions), in.Sessions)})
 			return
 		}
 		if !in.Groups {
@@ -344,7 +459,7 @@ func traceRoutes(mux *http.ServeMux) {
 				in.IDs = append(in.IDs, row.ParentSession)
 			}
 		}
-		writeJSON(rw, map[string]any{"names": sessions.CodexTitles(in.IDs), "parents": parents, "matched": matched,
+		writeJSON(rw, map[string]any{"names": codexReadableTitles(in.IDs), "parents": parents, "matched": matched,
 			"resetInferred": in.Day != "" && rows == nil})
 	})
 	mux.HandleFunc("GET /api/gateway/route", func(rw http.ResponseWriter, r *http.Request) {

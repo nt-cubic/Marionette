@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>方案 C · 卡片流不动，身份色做签名</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#1f8a76}a:hover{color:#166b5c}
+.mono{font-family:"JetBrains Mono",ui-monospace,monospace}
+.f{font-size:11px;color:#8a8a92}
+.ico{width:14px;height:14px;flex:none}
+.top{height:34px;box-sizing:border-box;display:flex;align-items:stretch;border-bottom:1px solid #e2e2e6;flex:none}
+.tb{display:grid;place-items:center;width:32px;border:0;padding:0;background:transparent;color:#5c5c63;cursor:pointer}
+.tb:hover{background:#ececee;color:#111113}
+.srow{display:flex;align-items:center;gap:8px;height:28px;padding:0 12px;font-size:12px;color:#5c5c63}
+.srow:hover{background:#ececee}
+.dot{width:6px;height:6px;border-radius:50%;flex:none}
+.card{border:1px solid #e2e2e6;border-radius:3px;background:#fff;padding:10px;position:relative;overflow:hidden}
+.bar{position:absolute;left:0;top:0;bottom:0;width:3px}
+.ty{font-size:12px;font-weight:700;color:#5c5c63;display:flex;align-items:center;gap:6px}
+.who{font-size:12px;font-weight:700;color:#2c2c30;display:flex;align-items:center;gap:6px}
+.tm{font-size:11px;color:#8a8a92;margin-left:auto}
+.ic{font-family:"JetBrains Mono",monospace;font-size:12px;background:#f4f4f5;border:1px solid #e2e2e6;border-radius:2px;padding:0 4px;color:#111113}
+.lr{display:grid;grid-template-columns:56px minmax(0,1fr) 28px;column-gap:8px;align-items:center;height:15px;font-size:11px;color:#5c5c63}
+.lr em{font-style:normal;text-align:right;font-variant-numeric:tabular-nums;color:#5c5c63}
+.lane{position:relative;height:15px}
+.lane::before{content:"";position:absolute;left:0;right:0;top:5px;height:5px;background:#f1f1f3}
+.lane i{position:absolute;top:5px;height:5px}
+.t1{background:#bdbdc3}.t2{background:#7b7b82}
+.sh{display:flex;align-items:center;gap:8px;height:32px;padding:0 6px 0 12px;font-size:12px;font-weight:600;color:#111113}
+.sh .act{margin-left:auto;display:flex;align-items:center}
+.ln{display:flex;align-items:center;gap:8px;height:24px;padding:0 12px;font-size:12px;color:#2c2c30}
+.ln .r{margin-left:auto;font-variant-numeric:tabular-nums;color:#5c5c63}
+.trk{height:3px;background:#e9e9ec;border-radius:1px;overflow:hidden;margin:2px 12px 0}
+.trk span{display:block;height:100%;background:#5c5c63}
+.sec{border-bottom:1px solid #e2e2e6;padding-bottom:8px}
+.wr{display:grid;grid-template-columns:44px minmax(0,1fr) 36px;gap:8px;align-items:center;height:20px;padding:0 12px 0 26px;font-size:11px;color:#8a8a92}
+.wr i{display:block;height:3px;background:#e9e9ec;border-radius:1px;overflow:hidden}
+.wr i span{display:block;height:100%;background:#5c5c63}
+.wr em{font-style:normal;text-align:right;font-variant-numeric:tabular-nums;color:#2c2c30}
+.pop{position:absolute;right:40px;bottom:36px;z-index:5;width:316px;box-sizing:border-box;padding:16px 18px;border:1px solid #e2e2e6;border-radius:3px;background:#fff;box-shadow:0 8px 24px rgba(0,0,0,.08);font-size:13px}
+.pt{font-size:13.5px;font-weight:500;color:#111113}
+.g3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;height:30px;align-items:center;border-bottom:1px solid #ececee;font-size:12.5px;color:#5c5c63;white-space:nowrap}
+.kv{display:flex;align-items:center;height:30px;border-bottom:1px solid #ececee;font-size:13px;color:#5c5c63}
+.kv b{margin-left:auto;font-weight:400;color:#2c2c30;font-variant-numeric:tabular-nums}
+.sbtn{height:30px;padding:0 12px;border:0;border-radius:3px;background:#f1f1f3;color:#2c2c30;font:inherit;font-size:13px;cursor:pointer}
+.sbtn:hover{background:#e7e7ea}
+.pr{display:flex;align-items:center;height:24px;padding:0 12px;color:#5c5c63}
+.pr b{margin-left:auto;font-weight:500;color:#111113;font-variant-numeric:tabular-nums}
+.pg{border-top:1px solid #ececee;margin:4px 0}
+.ph{height:22px;display:flex;align-items:center;padding:0 12px;font-size:11px;color:#8a8a92}
+.cur{position:relative;margin:0 0 6px;padding:2px 0 6px;background:linear-gradient(90deg,rgba(154,91,67,.06),transparent 70%)}
+.cur::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:#9a5b43;animation:curflash 1.6s cubic-bezier(.22,1,.36,1) 1}
+@keyframes curflash{0%{width:2px;box-shadow:0 0 0 0 rgba(154,91,67,0)}25%{width:3px;box-shadow:0 0 8px 1px rgba(154,91,67,.45)}100%{width:2px;box-shadow:0 0 0 0 rgba(154,91,67,0)}}
+@property --run{syntax:'<angle>';inherits:false;initial-value:0deg}
+.live{border-color:color-mix(in srgb,#9a5b43 40%,#e2e2e6)}
+.live::after{content:"";position:absolute;inset:0;border-radius:3px;padding:1px;pointer-events:none;background:conic-gradient(from var(--run),transparent 0 78%,rgba(154,91,67,.7) 88%,transparent 98%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;animation:run 6s linear infinite}
+@keyframes run{0%{--run:0deg;opacity:0}8%{opacity:1}55%{opacity:1}65%{--run:360deg;opacity:0}100%{--run:360deg;opacity:0}}
+.nine{display:grid;grid-template-columns:repeat(3,3px);gap:2px}
+.nine i{width:3px;height:3px;border-radius:50%;background:#9a5b43;animation:nine 1.4s ease-in-out infinite}
+.nine i:nth-child(2n){animation-delay:.2s}.nine i:nth-child(3n){animation-delay:.4s}
+@keyframes nine{0%,100%{opacity:.25}50%{opacity:1}}
+@media (prefers-reduced-motion: reduce){.live::after{animation:none;opacity:0}.nine i{animation:none;opacity:.6}}
+</style>
+</helmet>
+<div style="width:1440px;height:880px;box-sizing:border-box;background:#fff;color:#2c2c30;font-family:Inter,system-ui,sans-serif;font-size:13px;line-height:1.45;display:grid;grid-template-columns:240px minmax(0,1fr) 272px">
+
+<div style="display:flex;flex-direction:column;background:#f4f4f5;border-right:1px solid #e2e2e6;min-height:0">
+<div class="top">
+<label style="flex:1;display:flex;align-items:center;gap:8px;padding:0 12px;color:#8a8a92">
+<svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>
+<input aria-label="搜索对话" placeholder="搜索对话…" style="flex:1;min-width:0;border:0;background:transparent;color:#2c2c30;font:inherit;font-size:12px;outline:none">
+<span class="mono" style="font-size:10.5px">Ctrl K</span>
+</label>
+</div>
+<div style="display:flex;align-items:center;gap:14px;height:30px;padding:0 12px;border-bottom:1px solid #e2e2e6;font-size:11.5px">
+<span style="color:#111113;font-weight:500">全部</span>
+<span style="color:#5c5c63">运行中 1</span>
+<span style="color:#5c5c63">等你 1</span>
+</div>
+<div style="flex:1;min-height:0;padding:6px 0;display:flex;flex-direction:column">
+<div class="srow" style="height:26px;color:#8a8a92;font-size:11px;font-weight:600">项目<button type="button" class="tb" aria-label="添加项目" style="margin-left:auto;width:22px;height:22px;margin-right:-6px"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" style="width:12px;height:12px"><path d="M8 3v10M3 8h10"/></svg></button></div>
+<div class="srow" style="color:#111113;padding-left:8px"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="#8a8a92" stroke-width="1.5" aria-hidden="true" style="transform:rotate(90deg)"><path d="M6 4l4 4-4 4"/></svg><span style="font-weight:600">demo-app</span><span class="f" style="margin-left:auto">3</span></div>
+<div class="srow" style="padding-left:30px;background:#fff;color:#111113;box-shadow:inset 2px 0 0 #9a5b43,inset 0 1px 0 #e2e2e6,inset 0 -1px 0 #e2e2e6"><span class="dot" style="background:#9a5b43"></span><span style="font-weight:500">greet 中英文两版</span><span class="f" style="margin-left:auto;color:#5c5c63">运行中</span></div>
+<div class="srow" style="padding-left:30px"><span class="dot" style="background:#4d5c95"></span>README 补安装说明<span class="f" style="margin-left:auto">2h</span></div>
+<div class="srow" style="padding-left:30px"><span class="dot" style="background:#535b66"></span>测试改成 vitest<span class="f" style="margin-left:auto;color:#9a7410">等你</span></div>
+<div class="srow" style="padding-left:8px"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="#8a8a92" stroke-width="1.5" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg>Marionette<span class="f" style="margin-left:auto">12</span></div>
+<div class="srow" style="height:26px;margin-top:10px;color:#8a8a92;font-size:11px;font-weight:600">聊天<button type="button" class="tb" aria-label="新建聊天" style="margin-left:auto;width:22px;height:22px;margin-right:-6px"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" style="width:12px;height:12px"><path d="M8 3v10M3 8h10"/></svg></button></div>
+<div class="srow" style="padding-left:30px"><span class="dot" style="background:#535b66"></span>周报润色<span class="f" style="margin-left:auto">1d</span></div>
+<div style="flex:1"></div>
+<div class="srow" style="color:#2c2c30"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="#5c5c63" stroke-width="1.5" aria-hidden="true"><rect x="2.5" y="3" width="11" height="3" rx=".5"/><path d="M3.5 6v7h9V6M6.5 9h3"/></svg>收纳盒<span class="f" style="margin-left:auto">6</span></div>
+</div>
+<div style="height:34px;border-top:1px solid #e2e2e6;display:flex;align-items:stretch;flex:none">
+<button type="button" class="tb" style="width:auto;padding:0 12px;display:flex;gap:7px;font:inherit;font-size:12px;color:#2c2c30"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="#5c5c63" stroke-width="1.5" aria-hidden="true"><path d="M2.5 5.5h11M2.5 10.5h11"/><circle cx="5.5" cy="5.5" r="1.5" fill="#f4f4f5"/><circle cx="10.5" cy="10.5" r="1.5" fill="#f4f4f5"/></svg>模型共享<span class="dot" style="background:#2d7d42"></span></button>
+<div style="flex:1"></div>
+<button type="button" class="tb" aria-label="通知"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 11V7a4 4 0 0 1 8 0v4l1 1.5H3zM6.5 14h3"/></svg></button>
+<button type="button" class="tb" aria-label="设置"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/></svg></button>
+</div>
+</div>
+
+<div style="display:flex;flex-direction:column;background:#f7f7f8;min-width:0;min-height:0">
+<div class="top" style="background:#f4f4f5">
+<div style="flex:0 1 220px;min-width:0;display:flex;align-items:center;gap:8px;padding:0 12px;background:#f7f7f8;box-shadow:inset 0 2px 0 #9a5b43;margin-bottom:-1px;border-bottom:1px solid #f7f7f8;border-right:1px solid #e2e2e6;font-size:12px;color:#111113"><span class="dot" style="background:#9a5b43"></span>greet 中英文两版<svg class="ico" viewBox="0 0 16 16" fill="none" stroke="#8a8a92" stroke-width="1.5" aria-hidden="true" style="margin-left:auto;width:12px;height:12px"><path d="M4 4l8 8M12 4l-8 8"/></svg></div>
+<div style="flex:0 1 220px;min-width:0;display:flex;align-items:center;gap:8px;padding:0 12px;border-right:1px solid #e2e2e6;font-size:12px;color:#5c5c63"><span class="dot" style="background:#4d5c95"></span>README 补安装说明</div>
+<button type="button" class="tb" aria-label="新标签"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" style="width:12px;height:12px"><path d="M8 3v10M3 8h10"/></svg></button>
+</div>
+<div style="flex:1;min-height:0;padding:8px 12px;display:flex;flex-direction:column;gap:6px;overflow:hidden">
+<div class="card" style="padding-left:12px"><div class="bar" style="background:#1f8a76"></div><div style="display:flex;margin-bottom:4px"><span class="ty">你</span><span class="tm">12:30</span></div><div style="color:#111113">把 greet 拆成中英文两个版本：greet 保持英文，新增 greetZh 返回「你好，世界」，再给中文版补一条测试。</div></div>
+<div class="card" style="height:30px;box-sizing:border-box;padding:0 12px;display:flex;align-items:center;gap:8px;background:#f4f4f5"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="#8a8a92" stroke-width="1.5" aria-hidden="true" style="width:11px;height:11px"><path d="M6 4l4 4-4 4"/></svg><span style="font-size:12px;color:#2c2c30">1 thought, 1 read, 1 edit, 1 command</span><span class="f">30s</span><span class="mono" style="font-size:10.5px;color:#2d7d42">+3</span></div>
+<div class="card" style="padding-left:12px"><div class="bar" style="background:#4d5c95"></div><div style="display:flex;margin-bottom:4px"><span class="who">ZCode<span style="font-weight:400;color:#8a8a92">glm-5.3</span></span><span class="tm">12:31</span></div>
+<div style="color:#111113"><span class="ic">greetZh</span> 和 <span class="ic">greet</span> 放在同一个文件里，共用导出；测试补了一条中文用例，<span class="ic">node src/greeting.test.ts</span> 输出 ok。</div>
+<div style="display:flex;align-items:center;gap:10px;margin-top:8px;font-size:11px;color:#8a8a92"><span>Standard</span><span>high</span><span>12.4s · 1.8K tok</span><span style="margin-left:auto;display:flex;gap:12px"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" style="width:12px;height:12px"><path d="M5 3v4a3 3 0 0 0 3 3h0a3 3 0 0 0 3-3V3M8 10v3"/></svg><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" style="width:12px;height:12px"><rect x="5" y="5" width="8" height="8" rx="1"/><path d="M3 11V3h8"/></svg></span></div></div>
+<div class="card" style="height:36px;box-sizing:border-box;padding:0 12px 0 14px;display:flex;align-items:center;gap:8px;background:#f4f4f5"><div class="bar" style="background:#8a8a92"></div><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="#8a8a92" stroke-width="1.5" aria-hidden="true" style="width:11px;height:11px"><path d="M6 4l4 4-4 4"/></svg><span style="font-size:12.5px;font-weight:700;color:#111113">1 个文件已更改</span><span class="mono" style="font-size:10.5px;color:#2d7d42">+3</span><span style="width:26px;height:3px;background:#2d7d42"></span><span class="f">greeting.ts</span><span style="margin-left:auto;font-size:11.5px;color:#5c5c63">撤销</span></div>
+<div style="display:flex;align-items:center;gap:8px;height:24px;font-size:11px;color:#8a8a92"><span style="flex:1;height:1px;background:#e2e2e6"></span><span class="dot" style="background:#4d5c95"></span>ZCode<svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" style="width:11px;height:11px"><path d="M3 8h10M9 4l4 4-4 4"/></svg><span class="dot" style="background:#9a5b43"></span><span style="color:#2c2c30;font-weight:600">交接给 Claude</span><span>· 带上摘要和 1 处改动</span><span style="flex:1;height:1px;background:#e2e2e6"></span></div>
+<div class="card" style="padding-left:12px"><div class="bar" style="background:#1f8a76"></div><div style="display:flex;margin-bottom:4px"><span class="ty">你</span><span class="tm">12:34</span></div><div style="color:#111113">输入法测试里 but 那条为什么没有中文候选？查一下再改。</div></div>
+
+<div class="card live" style="padding:9px 12px 8px 12px;display:flex;flex-direction:column;gap:8px;background:#f4f4f5">
+<div style="font-size:11px;font-weight:600;color:#5c5c63">轨迹面板</div>
+<div style="display:flex;flex-direction:column;gap:0">
+<div class="lr"><span>thought</span><div class="lane"><i class="t1" style="left:0;width:4%"></i><i class="t1" style="left:10%;width:.8%"></i><i class="t1" style="left:15%;width:.8%"></i><i class="t1" style="left:20.5%;width:3.4%"></i><i class="t1" style="left:32%;width:1.3%"></i><i class="t1" style="left:36%;width:5.3%"></i><i class="t1" style="left:52.5%;width:5.4%"></i><i class="t1" style="left:63.5%;width:.8%"></i><i class="t1" style="left:69%;width:.8%"></i><i style="left:95%;width:5%;background:#9a5b43"></i></div><em>10</em></div>
+<div class="lr"><span>command</span><div class="lane"><i class="t2" style="left:4%;width:6%"></i><i class="t2" style="left:10.8%;width:4.2%"></i><i class="t2" style="left:15.8%;width:4.7%"></i><i class="t2" style="left:23.9%;width:8.1%"></i><i class="t2" style="left:64.3%;width:6.6%"></i><i class="t2" style="left:70.9%;width:21%"></i></div><em>7</em></div>
+<div class="lr"><span>read</span><div class="lane"><i class="t2" style="left:33.3%;width:2.7%"></i><i class="t2" style="left:41.3%;width:11.2%"></i><i class="t2" style="left:91.9%;width:3.1%"></i></div><em>5</em></div>
+<div class="lr"><span>edit</span><div class="lane"><i class="t2" style="left:58%;width:5.5%"></i></div><em>1</em></div>
+<div class="lr" style="height:18px"><span></span><div style="display:flex;justify-content:space-between;font-size:10.5px;color:#8a8a92"><span>0s</span><span>1m 1s</span></div><span></span></div>
+</div>
+<div style="border-top:1px solid #e2e2e6;padding-top:8px;display:flex;flex-direction:column;gap:4px">
+<div class="f" style="color:#5c5c63">正在思考</div>
+<div style="font-size:12.5px;line-height:1.55;color:#2c2c30;height:58px;overflow:hidden">也许测试工具输入的是 <span class="ic">but</span>，但输入法把 <span class="ic">but</span> 当成英文单词，首选 "but" 被降权，中文候选因为 but 不是合法拼音所以没生成？可截图里明明生成了。也许是改成 <span class="ic">reduce_english_filter/mode: all</span> 之后，过滤器把 "but" 挪走，首选变成了一个空格占位……</div>
+</div>
+<div style="display:flex;align-items:center;gap:8px;font-size:12px"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="#5c5c63" stroke-width="1.5" aria-hidden="true" style="width:11px;height:11px"><path d="M6 4l4 4-4 4"/></svg><span style="font-weight:600;color:#2c2c30">10 thoughts, 7 commands, 5 reads, 1 edit</span><span class="f">1m 1s</span><span class="mono" style="font-size:10.5px;color:#2d7d42">+3</span><span class="mono" style="font-size:10.5px;color:#c03d45">−75</span><span class="nine" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></div>
+</div>
+</div>
+<div style="position:relative;height:104px;box-sizing:border-box;border-top:1px solid #e2e2e6;background:#fff;padding:10px 12px 8px;display:flex;flex-direction:column;flex:none">
+<div class="pop" role="dialog" aria-label="本会话信息">
+<div style="display:flex;align-items:center;margin-bottom:14px"><span class="pt">本会话</span><span class="f" style="margin-left:auto;font-size:12px">Claude · opus-5.5</span><button type="button" class="tb" aria-label="复制统计" style="width:24px;height:22px;margin-left:6px;margin-right:-6px"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" style="width:13px;height:13px"><rect x="5" y="5" width="8" height="8" rx="1"/><path d="M3 11V3h8"/></svg></button></div>
+<div style="display:flex;align-items:baseline;font-size:13px;color:#5c5c63"><span>上下文</span><span style="margin-left:auto">48k / 200k</span><b style="margin-left:8px;font-weight:500;color:#111113;font-variant-numeric:tabular-nums">24%</b></div>
+<div style="height:6px;margin:6px 0 18px;border-radius:3px;background:#ece3df;overflow:hidden"><span style="display:block;width:24%;height:100%;border-radius:3px;background:#9a5b43"></span></div>
+<div class="pt" style="margin-bottom:4px">概况</div>
+<div class="g3"><span>解码 103 tok/s</span><span>预填充 2.1k/s</span><span>首字 1.2s</span></div>
+<div class="g3"><span>改动 <i style="font-style:normal;color:#2d7d42">+48</i> <i style="font-style:normal;color:#c03d45">−6</i></span><span>2 轮 · 5 步</span><span>缓存命中 74%</span></div>
+<div style="display:flex;align-items:baseline;margin:18px 0 4px"><span class="pt">明细</span><span style="margin-left:auto;font-size:13px;color:#5c5c63">opus-5.5</span></div>
+<div class="kv"><span>新输入</span><b>4.1K</b></div>
+<div class="kv"><span>输出</span><b>1.8K</b></div>
+<div class="kv"><span>缓存读</span><b>8.0K</b></div>
+<div class="kv"><span>缓存写</span><b>0.8K</b></div>
+
+</div>
+<div style="display:flex;align-items:flex-start;color:#8a8a92">给 Claude 发消息 · / 命令 · Tab 切换模式<button type="button" class="tb" aria-label="放大输入框" style="margin-left:auto;width:24px;height:22px;margin-top:-2px;margin-right:-4px"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" style="width:12px;height:12px"><path d="M9.5 2.5h4v4M13.5 2.5L9 7M6.5 13.5h-4v-4M2.5 13.5L7 9"/></svg></button></div><div style="flex:1"></div>
+<div style="display:flex;align-items:center;gap:4px;font-size:12px">
+<button type="button" class="tb" aria-label="附加文件" style="width:24px;height:22px"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg></button>
+<span style="display:inline-flex;align-items:center;height:22px;padding:0 7px;border-radius:2px;color:#1f8a76;background:rgba(31,138,118,.10);border:1px solid rgba(31,138,118,.3);font-weight:500">Agent</span>
+<span style="display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 7px;color:#2c2c30;font-weight:500"><span class="dot" style="background:#9a5b43"></span>Claude · opus-5.5</span>
+<span style="display:inline-flex;align-items:center;height:22px;padding:0 7px;color:#5c5c63;font-weight:500">high</span>
+<button type="button" aria-label="本会话信息：上下文 24%" aria-expanded="true" style="margin-left:auto;margin-right:4px;width:24px;height:22px;border:0;border-radius:2px;background:#ececee;display:grid;place-items:center;padding:0"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="#ece3df" stroke-width="2"/><circle cx="8" cy="8" r="6" fill="none" stroke="#9a5b43" stroke-width="2" stroke-dasharray="9.05 37.7" transform="rotate(-90 8 8)"/></svg></button>
+<button type="button" aria-label="发送" style="width:26px;height:22px;border:1px solid #e2e2e6;border-radius:2px;background:#fff;color:#5c5c63;display:grid;place-items:center"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" style="width:12px;height:12px"><path d="M2.5 8L13.5 3l-3 10-2.5-4z"/></svg></button>
+</div>
+</div>
+</div>
+
+<div style="display:flex;flex-direction:column;background:#f7f7f8;border-left:1px solid #e2e2e6;min-height:0">
+<div class="top" style="background:#f4f4f5;justify-content:flex-end">
+<button type="button" class="tb" aria-label="最小化"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 8h10"/></svg></button>
+<button type="button" class="tb" aria-label="最大化"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9"/></svg></button>
+<button type="button" class="tb" aria-label="关闭"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+</div>
+
+<div class="sec">
+<div class="sh">任务<span class="f" style="font-weight:400">2 / 4</span><span class="act"><button type="button" class="tb" aria-label="添加任务" style="width:26px;height:26px"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" style="width:12px;height:12px"><path d="M8 3v10M3 8h10"/></svg></button></span></div>
+<div class="ln" style="color:#8a8a92"><span style="width:12px;text-align:center;color:#2d7d42">✓</span><span style="text-decoration:line-through">复现 but 无候选</span></div>
+<div class="ln" style="color:#8a8a92"><span style="width:12px;text-align:center;color:#2d7d42">✓</span><span style="text-decoration:line-through">定位 reduce_english_filter</span></div>
+<div class="ln"><span style="width:12px;text-align:center;color:#1f8a76">◐</span>改过滤规则</div>
+<div class="ln"><span style="width:12px;text-align:center;color:#c8c8ce">○</span>补回归测试</div>
+<div class="ln" style="color:#5c5c63"><span style="width:12px;text-align:center;color:#5c5c63">⋯</span>后台 · 跑 rime 测试<span class="r f">42s</span></div>
+</div>
+
+<div class="sec">
+<div class="sh">额度<span class="act"><button type="button" class="tb" aria-label="刷新额度" style="width:26px;height:26px"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" style="width:12px;height:12px"><path d="M13 8a5 5 0 1 1-1.5-3.5M13 2.5v3h-3"/></svg></button></span></div>
+<div class="cur">
+<div class="ln" style="height:28px;font-size:14px;font-weight:600;color:#111113">Claude<span class="r f" style="font-weight:400">1:42 后重置</span></div>
+<div class="wr" style="padding-left:12px;color:#2c2c30"><span>5 小时</span><i style="height:4px;background:#ece3df"><span style="width:34%;background:#9a5b43"></span></i><em style="font-weight:600;color:#111113">34%</em></div>
+<div class="wr" style="padding-left:12px"><span>7 天</span><i style="height:2px"><span style="width:12%;background:#b5b5bb"></span></i><em style="color:#8a8a92">12%</em></div>
+</div>
+<div class="ln">Codex<span class="r">26%</span></div>
+<div class="ln">智谱 GLM<span class="r" style="color:#9a7410">87%</span></div>
+<div class="ln">Grok<span class="r">30%</span></div>
+<div class="ln">opencode.ai<span class="r" style="color:#c03d45">已满</span></div>
+</div>
+
+<div class="sec">
+<div class="sh">改动文件<span class="f" style="font-weight:400"><span style="color:#2d7d42">+48</span> <span style="color:#c03d45">−6</span></span><span class="act"><button type="button" class="tb" aria-label="提交" style="width:26px;height:26px"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" style="width:12px;height:12px"><circle cx="8" cy="8" r="2.5"/><path d="M1.5 8h4M10.5 8h4"/></svg></button></span></div>
+<div class="ln"><span class="mono" style="width:10px;font-size:11px;color:#9a7410">M</span>rime/default.yaml<span class="r f">+3 −75</span></div>
+<div class="ln"><span class="mono" style="width:10px;font-size:11px;color:#9a7410">M</span>README.md<span class="r f">+12 −4</span></div>
+<div class="ln"><span class="mono" style="width:10px;font-size:11px;color:#2d7d42">A</span>test/but.test.ts<span class="r f">+31</span></div>
+</div>
+
+<div style="flex:1"></div>
+<div style="border-top:1px solid #e2e2e6">
+<div class="ln" style="height:32px;white-space:nowrap"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="#8a8a92" stroke-width="1.5" aria-hidden="true" style="width:11px;height:11px"><path d="M6 4l4 4-4 4"/></svg>跨 agent 共享<span class="r f">17 项借给 Claude</span></div>
+</div>
+<div style="height:34px;border-top:1px solid #e2e2e6;display:flex;align-items:center;flex:none;padding-left:12px">
+<div style="flex:1"></div>
+<button type="button" class="tb" aria-label="检查更新" style="height:34px"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M8 2.5v8M4.5 7L8 10.5 11.5 7M3 13.5h10"/></svg></button>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":880}}'>
+class Component extends DCLogic { renderVals() { return {}; } }
+</script>
+</body>
+</html>

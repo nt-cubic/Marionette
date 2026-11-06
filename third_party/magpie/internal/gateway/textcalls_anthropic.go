@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"bytes"
 	"encoding/json"
 	"strings"
 )
@@ -18,11 +17,15 @@ import (
 // reply stops for tool_use. Held text that isn't calls goes on as it came.
 // A reply that came whole (no stream) is read as wholeTextCalls reads a
 // Chat one.
+//
+// A reply carrying auto mode's review (safeguard_results, automode.go)
+// goes as it came: Anthropic judged the calls it made by their ids, and a
+// call made here would have an id it never judged, which Claude Code
+// can't match to a verdict (xybio on Discord). Its text goes as text.
 type anthropicTextCalls struct {
 	names map[string]bool
 	sse   bool
 	buf   []byte
-	ev    []byte // the lines of the event being read
 
 	idx       int    // the open text block's index
 	text      bool   // a text block is being read
@@ -40,45 +43,22 @@ func (t *anthropicTextCalls) write(b []byte) []byte {
 	if !t.sse {
 		return nil
 	}
-	i := bytes.LastIndexByte(t.buf, '\n')
-	if i < 0 {
-		return nil
-	}
-	var out []byte
-	for _, line := range bytes.SplitAfter(t.buf[:i+1], []byte("\n")) {
-		out = append(out, t.line(line)...)
-	}
-	t.buf = append(t.buf[:0], t.buf[i+1:]...)
+	out, rest := tidyEvents(t.buf, t.event)
+	t.buf = rest
 	return out
 }
 
 func (t *anthropicTextCalls) flush() []byte {
+	b := t.buf
+	t.buf = nil
 	if !t.sse {
-		b := t.buf
-		t.buf = nil
 		return t.whole(b)
 	}
 	var out []byte
-	if len(t.buf) > 0 {
-		out = t.line(t.buf)
-		t.buf = nil
-	}
-	if len(t.ev) > 0 {
-		out = append(out, t.event(t.ev)...)
-		t.ev = nil
+	if len(b) > 0 {
+		out = t.event(b)
 	}
 	return append(out, t.release()...)
-}
-
-// line gathers an event's lines; a blank one ends it.
-func (t *anthropicTextCalls) line(line []byte) []byte {
-	t.ev = append(t.ev, line...)
-	if len(bytes.TrimSpace(line)) > 0 {
-		return nil
-	}
-	ev := t.ev
-	t.ev = nil
-	return t.event(ev)
 }
 
 // messagesEvent is a Messages stream event of v.
@@ -94,12 +74,7 @@ func (t *anthropicTextCalls) textDelta(s string) []byte {
 
 // event is one whole event, given on, held or made into others.
 func (t *anthropicTextCalls) event(ev []byte) []byte {
-	var data []byte
-	for _, l := range bytes.Split(ev, []byte("\n")) {
-		if d, ok := bytes.CutPrefix(bytes.TrimRight(l, "\r"), []byte("data:")); ok {
-			data = bytes.TrimSpace(d)
-		}
-	}
+	data := eventData(ev)
 	var m map[string]json.RawMessage
 	if len(data) == 0 || decodeJSON(data, &m) != nil || m == nil {
 		return ev
@@ -121,7 +96,7 @@ func (t *anthropicTextCalls) event(ev []byte) []byte {
 			t.native = true
 		}
 		if cb.Type == "text" && cb.Text == "" {
-			t.idx, t.text, t.startHeld = index, true, ev
+			t.idx, t.text, t.startHeld = index, true, append([]byte(nil), ev...)
 			return pre
 		}
 		t.text = false
@@ -158,7 +133,7 @@ func (t *anthropicTextCalls) event(ev []byte) []byte {
 			return ev
 		}
 		if t.holding || t.pending != "" {
-			t.stopHeld = ev
+			t.stopHeld = append([]byte(nil), ev...)
 			return nil
 		}
 		out := t.startHeld
@@ -166,7 +141,7 @@ func (t *anthropicTextCalls) event(ev []byte) []byte {
 		return append(out, ev...)
 	case "message_delta":
 		var pre []byte
-		if t.holding && !t.native {
+		if t.holding && !t.native && !hasReview(m["delta"]) {
 			if calls, rest, ok := parseTextCalls(t.held, t.names); ok {
 				t.held, t.holding = "", false
 				rest = t.pending + rest
@@ -248,6 +223,9 @@ func (t *anthropicTextCalls) whole(b []byte) []byte {
 	if decodeJSON(b, &reply) != nil || reply == nil {
 		return b
 	}
+	if _, ok := reply["safeguard_results"]; ok {
+		return b
+	}
 	var content []map[string]json.RawMessage
 	if decodeJSON(reply["content"], &content) != nil || len(content) == 0 {
 		return b
@@ -292,6 +270,17 @@ func (t *anthropicTextCalls) whole(b []byte) []byte {
 		return b
 	}
 	return nb
+}
+
+// hasReview reports whether a stream's message_delta delta carries auto
+// mode's review results.
+func hasReview(delta json.RawMessage) bool {
+	var d map[string]json.RawMessage
+	if decodeJSON(delta, &d) != nil {
+		return false
+	}
+	_, ok := d["safeguard_results"]
+	return ok
 }
 
 func mustPlain(v any) json.RawMessage {

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/claudetui"
+	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/testenv"
 )
@@ -33,9 +35,16 @@ func printMode(t *testing.T, print bool) {
 // 11-01). Turned off, the same request runs as -p.
 func TestClaudeTUIOnRefusesPrint(t *testing.T) {
 	h, started := tuiHelperHarness(t, "")
-	big := strings.Repeat("the codebase as read so far. ", 15000) // over tuiPromptMost
-	code, msg := h.askCode("rules", big)
-	if code == 200 || !strings.Contains(msg, "a first message over 400KB") || !strings.Contains(msg, "never runs it as claude -p") {
+	// an image known by its URL the interactive mode can't download (this
+	// computer's, which magpie never fetches): -p's Claude Code sends the
+	// URL as it is
+	body := `{"model":"claude-sonnet-5","max_tokens":100,"messages":[{"role":"user","content":[{"type":"image","source":{"type":"url","url":"http://127.0.0.1:1/a.png"}},{"type":"text","text":"what is it?"}]}]}`
+	ask := func() (int, string) {
+		var u Usage
+		return h.s.serveClaudeSubscription(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body)), provider.Anthropic, h.p, "claude-sonnet-5", []byte(body), &u)
+	}
+	code, msg := ask()
+	if code != 400 || !strings.Contains(msg, "couldn't fetch the image") {
 		t.Fatalf("%d %.300s", code, msg)
 	}
 	if runs := h.runs(); len(runs) != 0 {
@@ -45,11 +54,26 @@ func TestClaudeTUIOnRefusesPrint(t *testing.T) {
 		t.Fatalf("the helper started %d times for a refused request", n)
 	}
 	printMode(t, true)
-	if code, msg := h.askCode("rules", big); code != 200 {
-		t.Fatalf("turned off, -p: %d %.300s", code, msg)
+	if _, msg := ask(); strings.Contains(msg, "couldn't fetch the image") || len(h.runs()) == 0 {
+		t.Fatalf("turned off, it didn't run as -p: %.300s", msg)
 	}
 	if n := helperStarts(started); n != 0 {
 		t.Fatalf("turned off, the helper started %d times", n)
+	}
+}
+
+// A first message of any length runs in the interactive mode: a
+// conversation of a week, told whole to a new Claude Code, was refused
+// over 400KB with a 502 (@crosscn on X, 11-01), while a paste carries it
+// (a real 500KB one was answered whole, a 3MB one taken in).
+func TestClaudeTUIBigFirstMessage(t *testing.T) {
+	h, started := tuiHelperHarness(t, "")
+	big := strings.Repeat("the codebase as read so far. ", 40000) // ~1.1MB
+	if code, msg := h.askCode("rules", big); code != 200 {
+		t.Fatalf("%d %.300s", code, msg)
+	}
+	if n := helperStarts(started); n != 1 {
+		t.Fatalf("the helper started %d times, want once", n)
 	}
 }
 
@@ -86,6 +110,9 @@ exec "$claude" "$@"
 	}
 	if want := "-p --output-format stream-json --input-format stream-json --verbose --model haiku --tools  --strict-mcp-config --setting-sources "; !strings.Contains(args, want) {
 		t.Fatalf("Claude Code ran with %q", args)
+	}
+	if want := `--settings {"disableDeepLinkRegistration":"disable"}`; !strings.Contains(args, want) {
+		t.Fatalf("Claude Code registers no URL handler, ran with %q", args)
 	}
 	if !strings.Contains(told, `told {"message":{"content":[{"text":"hi","type":"text"}],"role":"user"},"type":"user"}`) {
 		t.Fatalf("Claude Code was told:\n%s", told)

@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -127,5 +128,40 @@ func TestAccountPinnedResting(t *testing.T) {
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "from acct-2") {
 		t.Fatalf("unpinned: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// An account whose user isn't ASCII (StockRabbit's 北冥, plugins#615) is
+// named percent-encoded, as fetch can send no other header value; it is
+// pinned as its user, on magpie's endpoint and on Codex's, and the trace
+// names it decoded.
+func TestAccountPinnedPercentEncoded(t *testing.T) {
+	heads := twoAccounts(t)
+	codexSignedIn(t, "北冥")
+	s := New()
+	for path, model := range pinPaths {
+		*heads = nil
+		code, body := pinnedPost(t, s, path, model, url.PathEscape("北冥"))
+		if code != 200 || !strings.Contains(body, "from acct-2") {
+			t.Fatalf("%s: %d %s", path, code, body)
+		}
+		if len(*heads) != 1 || (*heads)[0].Get("chatgpt-account-id") != "acct-2" {
+			t.Fatalf("%s: upstream %v", path, *heads)
+		}
+		if r := s.trace.routes[len(s.trace.routes)-1]; r.Pinned != "北冥" || len(r.Order) != 1 || r.Order[0].Who != "北冥" {
+			t.Errorf("%s: route pinned %q order %+v", path, r.Pinned, r.Order)
+		}
+	}
+	// one it doesn't have is named decoded in the error
+	code, body := pinnedPost(t, s, "/v1/responses", "codex/gpt-5.5", url.PathEscape("南海"))
+	if code != 404 || !strings.Contains(body, "南海") || !strings.Contains(body, "北冥") {
+		t.Fatalf("unknown: %d %s", code, body)
+	}
+	// a value that isn't an encoding is the name as written
+	if got := pinnedName("50%off"); got != "50%off" {
+		t.Errorf("pinnedName(50%%off) = %q", got)
+	}
+	if got := pinnedName("%E5%8C"); got != "%E5%8C" {
+		t.Errorf("pinnedName(half a rune) = %q", got)
 	}
 }

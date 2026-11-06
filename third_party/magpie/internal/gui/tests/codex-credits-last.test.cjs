@@ -96,7 +96,7 @@ const words = {
 const keys = [
   "Only after every other account, key and fallback",
   "On: past its windows, it goes after every other account, key and fallback, so its credits are spent last. Click to turn it off.",
-  "Off: past its windows, it keeps its place and answers on its credits there.",
+  "Off: past its windows, it answers on its credits when Routing comes to it.",
   "{who} spends its credits when its windows run out",
   "{who} spends its credits only after everything else",
   "On, after everything else",

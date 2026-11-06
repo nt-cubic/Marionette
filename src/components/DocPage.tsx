@@ -274,6 +274,7 @@ export function DocPage({
         <div className="doc-page__bar">
           <FileText size={13} />
           <span className="doc-page__title" title={path}>
+            <span className="doc-page__title-dir">{parentDirOf(path)}{" / "}</span>
             {fileNameOf(path)}
           </span>
           <div className="doc-page__actions">
@@ -306,6 +307,7 @@ export function DocPage({
       <div className="doc-page__bar">
         <FileText size={13} />
         <span className="doc-page__title" title={path}>
+          <span className="doc-page__title-dir">{parentDirOf(path)}{" / "}</span>
           {fileNameOf(path)}
         </span>
         {dirty && (

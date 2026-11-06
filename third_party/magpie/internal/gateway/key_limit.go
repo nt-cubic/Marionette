@@ -48,7 +48,12 @@ func keyLimited(next http.Handler) http.Handler {
 		// a compressed body (#1223) is reserved at its decoded size and model
 		costCap := slices.ContainsFunc(limits, func(l *access.Limit) bool { return l.Cost > 0 })
 		if enc := r.Header.Get("Content-Encoding"); costCap || size < 0 || (enc != "" && !strings.EqualFold(enc, "identity")) {
-			b, status, err := readBoundedRequestBody(w, r, requestLimits{})
+			// a turn on Codex's own path reads to its own limit (codexBackend)
+			var most int64
+			if strings.HasPrefix(r.URL.Path, CodexPath+"/") {
+				most = codexBodyLimit()
+			}
+			b, status, err := readBoundedRequestBody(w, r, requestLimits{body: most})
 			if err != nil {
 				writeError(w, protoOfPath(r.URL.Path), status, err.Error())
 				return
@@ -116,9 +121,44 @@ func protoOfPath(path string) provider.Protocol {
 // none or a request without one. "limits" is each of a key's limits
 // (#2227), and "limit" the one holding it most (budget.Binding), which is
 // what a magpie from before them reads.
+//
+// A key held to a budget, models or accounts is told so as well, so this
+// agrees with the quotas and the status line (steven_4422: a key held to
+// Claude's models read {"limited":false} here and 403 gateway_key_held
+// there): "heldTo" what holds it ("budget", "models", "accounts"),
+// "models" the models it may use, and "quotas" whether it is told any
+// quota, with "quotaProviders" the providers it is told those of
+// (scopeQuotas). An account is not named: a key its owner tells no quota
+// is told no account either. A key held to nothing has none of these.
 func (s *Server) keyLimit(w http.ResponseWriter, r *http.Request) {
 	who := access.Caller(r.Context())
 	out := map[string]any{"limited": false, "key": who.KeyName}
+	if heldKey(who) {
+		var heldTo []string
+		if who.Limited() {
+			heldTo = append(heldTo, "budget")
+		}
+		if len(who.Models) > 0 && !who.AccountModels {
+			heldTo = append(heldTo, "models")
+		}
+		if len(who.Accounts) > 0 {
+			heldTo = append(heldTo, "accounts")
+		}
+		out["heldTo"], out["quotas"] = heldTo, who.Quotas
+		if len(who.Models) > 0 {
+			out["models"] = who.Models
+		}
+		if who.Quotas {
+			ps := []string{}
+			for id, every := range newQuotaScope(who, provider.Catalog()).every {
+				if every {
+					ps = append(ps, id)
+				}
+			}
+			slices.Sort(ps)
+			out["quotaProviders"] = ps
+		}
+	}
 	// an issued key is held to the limits of the key it was issued under
 	// too, which count every key issued under it: "issuerLimits"
 	if who.KeyID != "" && who.Issuer != nil && len(who.Issuer.Limits()) > 0 {

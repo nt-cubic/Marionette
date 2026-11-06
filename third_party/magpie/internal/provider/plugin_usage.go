@@ -30,7 +30,7 @@ var movedCards = map[string]struct{ name, icon, site string }{
 	"workbuddy":       {"WorkBuddy", "workbuddy-color", "https://www.codebuddy.cn"},
 	WorkBuddyAIID:     {"WorkBuddy AI", "workbuddy-color", "https://www.workbuddy.ai"},
 	"cursor":          {"Cursor", "cursor", "https://cursor.com"},
-	"grok":            {"Grok (SuperGrok)", "xai", "https://x.ai/cli"},
+	"grok":            {"Grok", "xai", "https://x.ai/cli"},
 	"devin":           {"Devin", "devin", "https://devin.ai"},
 }
 
@@ -175,7 +175,12 @@ func quotaOfPlugin(q SubscriptionQuota, u plugin.Usage) SubscriptionQuota {
 		}
 		if used != nil {
 			w.Used = *used
-		} else if !x.Aside && x.Balance == nil {
+		} else if x.Aside {
+			// a window set aside that says no share: its Used is 0 for want
+			// of one said, not a reading at 0, which quota history drew as
+			// a flat 100% left line (#4825)
+			w.noShare = true
+		} else if x.Balance == nil {
 			// the plugin didn't say how much of it is used: its text is all
 			// there is, and routing has no share to count (#3650)
 			w.Text, w.Aside = true, true

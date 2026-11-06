@@ -81,6 +81,7 @@ import {
 import { recordTurnUsage } from "../lib/usageLedger";
 import { UsageAnalysisDialog } from "../components/UsageAnalysisDialog";
 import { UsagePage } from "../components/UsagePage";
+import { DiffPage } from "../components/DiffPage";
 import {
   bindDesktopNotifyFocusHandlers,
   cancelScheduledDesktopNotify,
@@ -149,7 +150,8 @@ import {
   formatImageMarksForSend,
   type ImageAttachment,
 } from "../lib/imageAttachments";
-import { foldSessionStats } from "../lib/sessionStats";
+import { foldSessionStats, measureTurnDecodeMs } from "../lib/sessionStats";
+import { sessionChangeLines } from "../lib/sessionInfo";
 import { isRuntimeMetadataOnly } from "../lib/markdownText";
 import {
   isInjectedPromptText,
@@ -600,6 +602,10 @@ export function App() {
    */
   const [usageOpen, setUsageOpen] = useState(false);
   const [usageActive, setUsageActive] = useState(false);
+  /** 「改动」pseudo-tab: changed files + diff. Main window only; dock/detached keep the dialog. */
+  const [diffTabOpen, setDiffTabOpen] = useState(false);
+  const [diffTabActive, setDiffTabActive] = useState(false);
+  const [diffTabPath, setDiffTabPath] = useState<string | null>(null);
   /** Detached window has no tab strip — analysis opens as a dialog. */
   const [usageDialogOpen, setUsageDialogOpen] = useState(false);
   /** In-app document tabs (markdown/text): entries exist while open. */
@@ -2566,25 +2572,33 @@ export function App() {
           sessionsRef.current.find((s) => s.id === payload.sessionId)?.status === "running";
 
         // End-of-turn token split. Most agents put it in the prompt RPC
-        // response; Grok puts nothing there — its usage arrives per model call
-        // on `_x.ai/session_notification`, so fall back to that accumulation.
-        const promptTokens = extractTurnTokens(payload.data);
+        // response. Grok's per-call `response_completed` accumulation is the
+        // turn total; its prompt `_meta.usage` is a session-lifetime snapshot
+        // (numTurns/modelCalls) and must not win when the accumulator has
+        // anything. extractTurnTokens skips that snapshot and reads the
+        // sibling per-turn fields as a fallback.
         const grokAccum = grokTurnUsageToTurnTokens(
           grokTurnUsageRef.current[payload.sessionId]
         );
-        const usedGrokAccum = promptTokens == null && grokAccum != null;
-        const turnTokens = promptTokens ?? grokAccum;
+        const promptTokens = extractTurnTokens(payload.data);
+        const usedGrokAccum = grokAccum != null;
+        const turnTokens = grokAccum ?? promptTokens;
         delete grokTurnUsageRef.current[payload.sessionId];
         const firstChunkAt = turnStartedAtRef.current[payload.sessionId] ?? null;
         const sentAt = turnSentAtRef.current[payload.sessionId] ?? null;
         delete turnSentAtRef.current[payload.sessionId];
         const endedAt = Date.now();
+        const decodeMs = measureTurnDecodeMs(
+          eventsBySessionRef.current.get(payload.sessionId) ?? [],
+          payload.sessionId,
+          endedAt,
+        );
         // Timings are local and may be missing (e.g. a turn with no streamed
         // assistant text); build stats whenever tokens exist — buildTurnStats
         // leaves the absent timings null rather than inventing numbers.
         const turnStats =
           turnTokens != null
-            ? buildTurnStats(turnTokens, { sentAt, firstChunkAt, endedAt })
+            ? buildTurnStats(turnTokens, { sentAt, firstChunkAt, endedAt, decodeMs })
             : null;
         // 跨会话用量台账:每轮落一笔(今天/7天/30天聚合,见 usageLedger)。
         // 与上面的盖戳共用同一条单窗口不变量——同一轮只被一个窗口处理。
@@ -2663,7 +2677,10 @@ export function App() {
             state = emptySessionUsage();
           }
           if (!state) return current;
-          const tokens = state.turnTokens ?? turnTokens;
+          // grokAccum (per-call sum) lives on `turnTokens`; extractTurnTokens
+          // on Grok's prompt result is the last call / sibling fields. The
+          // accumulator must win so output is the turn total, not one call.
+          const tokens = turnTokens ?? state.turnTokens;
           if (!tokens && !turnStats) return current;
           // Grok has no usage_update; the latest call's input (incl. cache)
           // is tokens currently in context and must overwrite, not seed-once.
@@ -4871,6 +4888,22 @@ export function App() {
     setActiveDocPath(null);
     setBrowserActive(false);
   }, []);
+  /** 打开「改动」伪标签页并选中某个文件；与其它整页互斥。 */
+  const openDiffTab = useCallback((path?: string | null) => {
+    setDiffTabOpen(true);
+    setDiffTabActive(true);
+    if (path) setDiffTabPath(path);
+    setUsageActive(false);
+    setMemoActive(false);
+    setCouncilActive(false);
+    setActiveDocPath(null);
+    setBrowserActive(false);
+  }, []);
+  useEffect(() => {
+    if (diffTabActive && (memoActive || councilActive || usageActive || activeDocPath || browserActive)) {
+      setDiffTabActive(false);
+    }
+  }, [diffTabActive, memoActive, councilActive, usageActive, activeDocPath, browserActive]);
   // 反向互斥:任何其它整页接管中栏时,用量页退回未选中(标签保留)。
   useEffect(() => {
     if (usageActive && (memoActive || councilActive || activeDocPath || browserActive)) {
@@ -4886,6 +4919,7 @@ export function App() {
     setMemoActive(false);
     setCouncilActive(false);
     setUsageActive(false);
+    setDiffTabActive(false);
     setActiveDocPath(null);
     setBrowserActive(false);
     setViewMode("clean");
@@ -5855,10 +5889,16 @@ export function App() {
   const handleOpenDiff = useCallback(
     async (path: string) => {
       if (!currentProjectId || currentProjectId === CHAT_PROJECT_ID) return;
+      // Main window: the 改动 tab page. The dock strip / detached windows are too
+      // narrow for its two columns and keep the dialog.
+      if (!dockActive && !IS_DETACHED_WINDOW) {
+        openDiffTab(path);
+        return;
+      }
       const text = await getFileDiff(currentProjectId, path);
       setDiffPreview({ path, text: text || "(empty diff)" });
     },
-    [currentProjectId]
+    [currentProjectId, dockActive, openDiffTab]
   );
 
   const handlePermissionChoose = useCallback(async (optionId: string) => {
@@ -6839,6 +6879,12 @@ export function App() {
           event.preventDefault();
           setUsageOpen(false);
           setUsageActive(false);
+          return;
+        }
+        if (diffTabActive) {
+          event.preventDefault();
+          setDiffTabOpen(false);
+          setDiffTabActive(false);
           return;
         }
         if (councilActive) {
@@ -8799,6 +8845,18 @@ export function App() {
           sessionId={session.id}
           sessionStatus={session.status}
           docked={dockActive}
+          contextUsed={sessionUsageById[session.id]?.contextUsed ?? null}
+          contextSize={sessionUsageById[session.id]?.contextSize ?? null}
+          getSessionInfo={() => {
+            // The focused dialog reuses the live fold the usage state already
+            // drives; another pane's dialog is folded on demand (popover open).
+            const stats =
+              session.id === displaySession.id
+                ? sessionStats
+                : foldSessionStats(events, session.id, { settled: true, agentId: session.agentId });
+            const lines = sessionChangeLines(events, session.id);
+            return { stats, changeAdd: lines?.add ?? null, changeDel: lines?.del ?? null };
+          }}
           onRestartAgentSession={handleRestartAgentSession}
           autoFocus={
             composerAutoFocus &&
@@ -8999,6 +9057,7 @@ export function App() {
             onNewChat={shelfStable.onNewChat}
             onOpenPalette={shelfStable.onOpenPalette}
             onExportSession={shelfStable.onExportSession}
+            memoCount={memoCount}
             onOpenMemo={dockActive ? undefined : () => {
               setMemoOpen(true);
               setMemoActive(true);
@@ -9055,6 +9114,25 @@ export function App() {
                   ]
                 : []),
               { id: "new-chat", label: t("palette.newChat"), run: () => void handleCreateChatSession() },
+              {
+                // 插件：装一次全 agent 生效（docs/plan-plugin-layer.md）。
+                // 展开右栏滚到该卡片；贴边态切到 context 整页。
+                id: "open-universal-plugins",
+                label: t("allPlugins.paletteOpen"),
+                hint: t("allPlugins.paletteOpenHint"),
+                run: () => {
+                  if (dockActive) {
+                    setDockPage("context");
+                  } else {
+                    setRightCollapsed(false);
+                  }
+                  window.setTimeout(() => {
+                    document
+                      .getElementById("context-plugins")
+                      ?.scrollIntoView({ block: "start" });
+                  }, 160);
+                },
+              },
               {
                 id: "open-council",
                 label: t("council.paletteOpen"),
@@ -9192,6 +9270,11 @@ export function App() {
                 run: () => setLeftCollapsed((value) => !value),
               },
               {
+                id: "toggle-right",
+                label: rightCollapsed ? t("v2dialogs.expandRight") : t("v2dialogs.collapseRight"),
+                run: () => setRightCollapsed((value) => !value),
+              },
+              {
                 id: "theme",
                 label: t("palette.toggleTheme"),
                 run: () =>
@@ -9287,6 +9370,19 @@ export function App() {
                     onClose: () => {
                       setCouncilOpen(false);
                       setCouncilActive(false);
+                    },
+                  }
+            }
+            diffTab={
+              IS_DETACHED_WINDOW || !diffTabOpen
+                ? undefined
+                : {
+                    active: diffTabActive,
+                    count: changedFiles.length,
+                    onSelect: () => openDiffTab(),
+                    onClose: () => {
+                      setDiffTabOpen(false);
+                      setDiffTabActive(false);
                     },
                   }
             }
@@ -9531,6 +9627,23 @@ export function App() {
                 }}
               />
             </div>
+          ) : diffTabActive && !dockActive && !IS_DETACHED_WINDOW ? (
+            <div className="diff-tab-page" aria-label={t("v2pages.diffTab")}>
+              <DiffPage
+                projectId={currentProjectId && currentProjectId !== CHAT_PROJECT_ID ? currentProjectId : null}
+                projectRoot={currentProject?.rootPath ?? null}
+                files={changedFiles}
+                branch={gitBranch}
+                selectedPath={diffTabPath}
+                onSelect={setDiffTabPath}
+                onClose={() => {
+                  setDiffTabOpen(false);
+                  setDiffTabActive(false);
+                }}
+                onRefresh={() => void refreshChangedFiles()}
+                onCommitAndPush={handleCommitAndPush}
+              />
+            </div>
           ) : usageActive && !dockActive && !IS_DETACHED_WINDOW ? (
             // Token 用量 pseudo-tab: same center-column takeover as 圆桌.
             <div className="usage-tab-page" aria-label={t("usageLedger.analysisTitle")}>
@@ -9619,6 +9732,7 @@ export function App() {
           usage={usage}
           onUsageRefresh={handleUsageRefreshForce}
           sessionStats={sessionStats}
+          activeModelId={activeModelId ?? sessionCapabilities?.currentModel ?? null}
           changedFiles={changedFiles}
           changedFilesNote={changedFilesNote}
           onRefreshChangedFiles={() => void refreshChangedFiles()}
@@ -9872,19 +9986,18 @@ export function App() {
           <form className="project-dialog" role="dialog" aria-modal="true" aria-labelledby="project-dialog-title" onSubmit={(event) => { event.preventDefault(); void handleAddProject(); }}>
             <div className="project-dialog__header">
               <div>
-                <strong id="project-dialog-title">Add project</strong>
-                <span>Open a local folder as a project</span>
+                <strong id="project-dialog-title">{t("v2dialogs.addProject")}</strong>
               </div>
               <button className="project-dialog__close" type="button" title="Close" aria-label="Close" onClick={() => setProjectDialogOpen(false)} disabled={projectAdding}><X size={14} /></button>
             </div>
             <label className="project-dialog__field">
-              <span>Folder path</span>
+              <span>{t("v2dialogs.folder")}</span>
               <div className="project-dialog__path-row">
                 <input
                   autoFocus
                   value={projectPath}
                   onChange={(event) => setProjectPath(event.target.value)}
-                  placeholder="D:\\Work\\MyProject"
+                  placeholder="D:\\Projects\\MyProject"
                   spellCheck={false}
                 />
                 <button
@@ -9903,15 +10016,16 @@ export function App() {
                     })();
                   }}
                 >
-                  <FolderOpen size={14} />
-                  <span>Browse</span>
+                  <FolderOpen size={13} strokeWidth={1.5} />
+                  <span>{t("v2dialogs.browse")}</span>
                 </button>
               </div>
             </label>
+            <p className="project-dialog__helper">{t("v2dialogs.folderHelper")}</p>
             {projectError && <p className="project-dialog__error">{projectError}</p>}
             <div className="project-dialog__actions">
-              <button type="button" className="project-dialog__cancel" onClick={() => setProjectDialogOpen(false)} disabled={projectAdding}>Cancel</button>
-              <button type="submit" className="project-dialog__submit" disabled={projectAdding}>{projectAdding ? "Adding..." : "Add project"}</button>
+              <button type="button" className="project-dialog__cancel" onClick={() => setProjectDialogOpen(false)} disabled={projectAdding}>{t("common.cancel")}</button>
+              <button type="submit" className="project-dialog__submit" disabled={projectAdding}>{projectAdding ? t("v2dialogs.adding") : t("v2dialogs.add")}</button>
             </div>
           </form>
         </div>

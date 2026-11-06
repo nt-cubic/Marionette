@@ -73,7 +73,12 @@ func importAppsRoutes(mux *http.ServeMux) {
 			fail(rw, err)
 			return
 		}
+		had := provider.KeysHeld()
 		added, err := provider.ImportFromApps(in.Picks)
+		// a key imported beside others is given the models its own list
+		// has, as one added by hand is (PrefillNewKeys); those an import
+		// that stopped part way added too
+		provider.PrefillNewKeys(r.Context(), had)
 		if err != nil {
 			fail(rw, err)
 			return

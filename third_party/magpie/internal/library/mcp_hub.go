@@ -104,11 +104,19 @@ func ServerHub(name string, direct bool) (*Result, error) {
 // hubServerFor is the entry agent t is given for the hub, at the address
 // the agent reaches the gateway at, with a key when it reaches it from
 // another machine (a WSL distro under NAT, a computer on the LAN).
-func hubServerFor(t *Target) *Server {
+func (l *Library) hubServerFor(t *Target) *Server {
 	base := strings.TrimRight(gatewayOf(t), "/")
 	s := &Server{Name: HubEntry, Transport: "http", URL: base + gateway.HubMCPPath + url.PathEscape(t.Agent.ID)}
 	if k := agent.KeyAt(base); k != gateway.Token {
 		s.Headers = map[string]string{"Authorization": "Bearer " + k}
+	}
+	// Pi connects to a server it doesn't wait for (the hub's, reached by
+	// codemode) while the first prompt is already written, so only a
+	// description gives that prompt its line of what the hub serves
+	// (extensions/mcp, serverSummary): told the router's instructions
+	// alone, a Pi asked about a repository never saw DeepWiki (11-01)
+	if t.MCP != nil && t.MCP.Format == fmtPiNative {
+		s.about = gateway.HubLine(hubAbouts(l.hubServers(t.Agent.ID)))
 	}
 	return s
 }
@@ -151,7 +159,7 @@ func (l *Library) hubFor(t *Target, a *Applied, entries map[string]map[string]an
 	if !slices.ContainsFunc(l.MCP, func(s *Server) bool { return slices.Contains(s.Agents, id) && inHub(s, id) }) {
 		return nil, ""
 	}
-	hs := hubServerFor(t)
+	hs := l.hubServerFor(t)
 	if err := t.MCP.supports(hs); err != nil {
 		return nil, hubNoRemote
 	}
@@ -187,6 +195,11 @@ func hubServers(agentID string) []*Server {
 	if err != nil || !l.MCPHub {
 		return nil
 	}
+	return l.hubServers(agentID)
+}
+
+// hubServers are the servers the hub gives agentID from l, by name.
+func (l *Library) hubServers(agentID string) []*Server {
 	var out []*Server
 	for _, s := range l.MCP {
 		if (agentID == "" || slices.Contains(s.Agents, agentID)) && inHub(s, agentID) {
@@ -194,6 +207,17 @@ func hubServers(agentID string) []*Server {
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+func (theHub) Servers(agentID string) []gateway.HubServer { return hubAbouts(hubServers(agentID)) }
+
+// hubAbouts are ss as an agent is told of them.
+func hubAbouts(ss []*Server) []gateway.HubServer {
+	out := make([]gateway.HubServer, len(ss))
+	for i, s := range ss {
+		out[i] = hubServerOf(s)
+	}
 	return out
 }
 
@@ -206,15 +230,19 @@ func (theHub) Tools(ctx context.Context, agentID string) []gateway.HubTool {
 		go func() {
 			defer wg.Done()
 			var ts []map[string]json.RawMessage
+			var says serverSays
 			var err error
 			if s.Plugin != "" {
 				ts, err = pluginHubTools(ctx, s)
 			} else {
-				ts, err = backendOf(s).tools(ctx)
+				b := backendOf(s)
+				ts, err = b.tools(ctx)
+				says = b.said()
 			}
 			if err != nil {
 				return
 			}
+			noteCard(s, says, ts)
 			for _, t := range ts {
 				var name string
 				if json.Unmarshal(t["name"], &name) != nil || name == "" || slices.Contains(s.DisabledTools, name) {
@@ -381,6 +409,8 @@ type hubConn interface {
 	ask(ctx context.Context, method string, params any) (*rpcMsg, error)
 	alive() bool
 	close()
+	// said is what the server said of itself in initialize's result
+	said() serverSays
 }
 
 // backend is one server the hub uses: its connection while it has one,
@@ -395,6 +425,7 @@ type backend struct {
 	err     error         // why the last connection failed
 	list    []map[string]json.RawMessage
 	listed  bool
+	says    serverSays // what the server said of itself when it was connected to
 	busy    int
 	idle    *time.Timer
 	stopped bool
@@ -457,7 +488,17 @@ func (b *backend) start(ready chan struct{}) {
 		c = nil
 	}
 	b.conn, b.err, b.ready = c, err, nil
+	if c != nil {
+		b.says = c.said()
+	}
 	close(ready)
+}
+
+// said is what the server said of itself when it was last connected to.
+func (b *backend) said() serverSays {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.says
 }
 
 // relist forgets the tools the server listed: it said they changed.
@@ -659,6 +700,7 @@ func dialHub(ctx context.Context, s *Server, changed func()) (hubConn, error) {
 		c.close()
 		return nil, err
 	}
+	c.says = saysOf(m.Result)
 	return c, nil
 }
 
@@ -730,6 +772,7 @@ type streamConn struct {
 	send    func(ctx context.Context, b []byte) error
 	stopped func()
 	once    sync.Once
+	says    serverSays
 }
 
 // read takes one message off the stream: a reply is its request's, a
@@ -796,6 +839,8 @@ func (c *streamConn) ask(ctx context.Context, method string, params any) (*rpcMs
 
 func (c *streamConn) alive() bool { return c.w.err() == nil }
 
+func (c *streamConn) said() serverSays { return c.says }
+
 func (c *streamConn) close() {
 	c.once.Do(func() {
 		c.w.end(errHubStopped)
@@ -806,7 +851,7 @@ func (c *streamConn) close() {
 // dialStdio starts the command s runs, as the check starts it.
 func dialStdio(s *Server, changed func()) (*streamConn, error) {
 	// the hub's server lives until the hub ends it, not with a request
-	tree, stdin, stdout, errs, stop, bad := startServer(context.Background(), s, "")
+	tree, stdin, stdout, errs, stop, bad := startServer(context.Background(), s, "", "")
 	if bad != nil {
 		return nil, healthErr(*bad)
 	}
@@ -960,6 +1005,12 @@ func dialHTTP(ctx context.Context, s *Server) (*httpConn, error) {
 	hc := &httpConn{c: c}
 	hc.ids.Store(1)
 	return hc, nil
+}
+
+func (h *httpConn) said() serverSays {
+	h.c.mu.Lock()
+	defer h.c.mu.Unlock()
+	return saysOf(h.c.init)
 }
 
 func (h *httpConn) ask(ctx context.Context, method string, params any) (*rpcMsg, error) {

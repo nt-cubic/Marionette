@@ -51,6 +51,11 @@ type Library struct {
 	// copy (#896, skill_how.go)
 	CopySkills bool              `json:"copySkills,omitempty"`
 	SkillHow   map[string]string `json:"skillHow,omitempty"`
+	// SharedSkills puts every skill on here in ~/.agents/skills too, as
+	// magpie's link to the library's folder, for every agent and tool
+	// that reads it (usrname1833, skills_shared.go). This computer's
+	// own: Collect doesn't carry it
+	SharedSkills bool `json:"sharedSkills,omitempty"`
 	// MCPHub gives each agent that can reach it magpie's one MCP server,
 	// which hands each call on to the library's servers ticked for it, in
 	// place of their own entries (#2679, mcp_hub.go)
@@ -75,6 +80,9 @@ type Library struct {
 	// blockedSkills are copies takeEdits couldn't scan, kept in place for
 	// this sync rather than replaced or removed. Keys are physical paths.
 	blockedSkills map[string]bool
+	// stored are the skills this sync made sure of in a WSL distro's
+	// store, by path (storeSkill), with what went wrong
+	stored map[string]error
 }
 
 // Instructions are one shared text, and for each agent whether it gets it

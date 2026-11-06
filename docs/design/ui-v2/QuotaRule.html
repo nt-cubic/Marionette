@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>额度高亮规则</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#1f8a76}a:hover{color:#166b5c}
+.f{font-size:11px;color:#8a8a92}
+.col{display:flex;flex-direction:column;gap:10px}
+.cap{font-size:13px;font-weight:600;color:#111113}
+.ctx{display:flex;align-items:center;gap:8px;height:30px;padding:0 10px;border:1px solid #e2e2e6;border-radius:3px;background:#fff;font-size:12px;color:#2c2c30;position:relative;overflow:hidden}
+.panel{background:#f7f7f8;border:1px solid #e2e2e6;border-radius:3px;padding:4px 0 10px}
+.sh{display:flex;align-items:center;height:32px;padding:0 12px;font-size:12px;font-weight:600;color:#111113}
+.cur{position:relative;margin:0 0 6px;padding:2px 0 6px}
+.cur .nm{display:flex;align-items:baseline;gap:6px;height:28px;padding:0 12px;font-size:14px;font-weight:600;color:#111113}
+.cur .nm span{font-size:11px;font-weight:400;color:#8a8a92}
+.cur .nm b{margin-left:auto;font-size:11px;font-weight:400;color:#8a8a92}
+.wr{display:grid;grid-template-columns:44px minmax(0,1fr) 36px;gap:8px;align-items:center;height:20px;padding:0 12px;font-size:11px;color:#8a8a92}
+.wr i{display:block;background:#e9e9ec;border-radius:1px;overflow:hidden}
+.wr i span{display:block;height:100%}
+.wr em{font-style:normal;text-align:right;font-variant-numeric:tabular-nums}
+.ln{display:flex;align-items:center;height:24px;padding:0 12px;font-size:12px;color:#2c2c30}
+.ln b{margin-left:auto;font-weight:400;color:#5c5c63;font-variant-numeric:tabular-nums}
+.rule{display:grid;grid-template-columns:22px minmax(0,1fr);gap:8px;padding:8px 0;border-bottom:1px solid #ececee;font-size:12.5px;line-height:1.55;color:#2c2c30}
+.rule span:first-child{color:#8a8a92;font-variant-numeric:tabular-nums}
+</style>
+</helmet>
+<div style="width:1440px;height:900px;box-sizing:border-box;padding:34px 44px;background:#fff;color:#2c2c30;font-family:Inter,system-ui,sans-serif;font-size:13px;line-height:1.45;display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) 360px;gap:28px">
+
+<div class="col">
+<div class="f">情况 1 · 自家订阅</div>
+<div class="cap">Claude Code 用自己的 opus</div>
+<div class="ctx"><span style="position:absolute;left:0;top:0;bottom:0;width:3px;background:#9a5b43"></span><span style="padding-left:4px;font-weight:700">Claude</span><span class="f">opus-5.5</span></div>
+<div class="panel">
+<div class="sh">额度</div>
+<div class="cur" style="background:linear-gradient(90deg,rgba(154,91,67,.06),transparent 70%);box-shadow:inset 2px 0 0 #9a5b43">
+<div class="nm">Claude 订阅<span>Claude Code 自带</span><b>1:42 后重置</b></div>
+<div class="wr" style="color:#2c2c30"><span>5 小时</span><i style="height:4px;background:#ece3df"><span style="width:34%;background:#9a5b43"></span></i><em style="font-weight:600;color:#111113">34%</em></div>
+<div class="wr"><span>7 天</span><i style="height:2px"><span style="width:12%;background:#b5b5bb"></span></i><em>12%</em></div>
+</div>
+<div class="ln">Codex<b>26%</b></div>
+<div class="ln">智谱 GLM<b style="color:#9a7410">87%</b></div>
+<div class="ln">DeepSeek 余额<b>¥28.30</b></div>
+</div>
+</div>
+
+<div class="col">
+<div class="f">情况 2 · 经模型共享</div>
+<div class="cap">Claude Code 里用 DeepSeek</div>
+<div class="ctx"><span style="position:absolute;left:0;top:0;bottom:0;width:3px;background:#9a5b43"></span><span style="padding-left:4px;font-weight:700">Claude</span><span class="f">deepseek-v4 · 模型共享</span></div>
+<div class="panel">
+<div class="sh">额度</div>
+<div class="cur" style="background:linear-gradient(90deg,rgba(154,91,67,.06),transparent 70%);box-shadow:inset 2px 0 0 #9a5b43">
+<div class="nm">DeepSeek<span>经 Claude</span><b>按量计费</b></div>
+<div style="display:flex;align-items:baseline;gap:8px;padding:2px 12px 0"><span style="font-size:18px;font-weight:600;color:#111113;font-variant-numeric:tabular-nums">¥28.30</span><span class="f">余额 · 本会话已花 ¥0.12</span></div>
+</div>
+<div class="ln">Claude 订阅<b>34%</b></div>
+<div class="ln">Codex<b>26%</b></div>
+<div class="ln">智谱 GLM<b style="color:#9a7410">87%</b></div>
+</div>
+</div>
+
+<div class="col">
+<div class="f">情况 3 · 经模型共享</div>
+<div class="cap">Codex 里用 GLM</div>
+<div class="ctx"><span style="position:absolute;left:0;top:0;bottom:0;width:3px;background:#535b66"></span><span style="padding-left:4px;font-weight:700">Codex</span><span class="f">glm-5.3 · 模型共享</span></div>
+<div class="panel">
+<div class="sh">额度</div>
+<div class="cur" style="background:linear-gradient(90deg,rgba(83,91,102,.06),transparent 70%);box-shadow:inset 2px 0 0 #535b66">
+<div class="nm">智谱 GLM<span>经 Codex</span><b>10/30 00:07 重置</b></div>
+<div class="wr"><span>5 小时</span><i style="height:2px"><span style="width:6%;background:#b5b5bb"></span></i><em>6%</em></div>
+<div class="wr" style="color:#2c2c30"><span>7 天</span><i style="height:4px;background:#f1ecdd"><span style="width:87%;background:#9a7410"></span></i><em style="font-weight:600;color:#9a7410">87%</em></div>
+</div>
+<div class="ln">Claude 订阅<b>34%</b></div>
+<div class="ln">Codex 订阅<b>26%</b></div>
+<div class="ln">DeepSeek 余额<b>¥28.30</b></div>
+</div>
+</div>
+
+<div style="display:flex;flex-direction:column;border-left:1px solid #ececee;padding-left:28px">
+<div class="f">额度高亮规则</div>
+<div style="font-size:16px;font-weight:650;color:#111113;margin:6px 0 10px">高亮的是「这一轮在花谁的钱」</div>
+<div class="rule"><span>01</span><span><b>名字 = 计费来源</b>：自家模型就是 agent 自己的订阅；经模型共享的模型，按 <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px">marionette</span> 前缀的 id 反查到来源（DeepSeek、智谱……）。</span></div>
+<div class="rule"><span>02</span><span><b>竖条和底色 = 当前 agent 的墨色</b>：意思是「当前对话正在用的这一份」。名字旁边小字写「经 Claude」。</span></div>
+<div class="rule"><span>03</span><span><b>主条跟着最紧的那个窗口</b>：哪个窗口快满（情况 3 是 7 天 87%），哪个就画粗条，另一个退成细灰条。只有余额的来源直接写大数字。</span></div>
+<div class="rule"><span>04</span><span><b>被高亮的那家从下面的列表里拿走</b>，列表只剩其它来源，不重复出现。</span></div>
+<div class="rule"><span>05</span><span><b>中途换模型</b>：高亮块换成新的来源，竖条亮一下。同一个 agent，竖条颜色不变。</span></div>
+<div class="rule" style="border-bottom:0"><span>06</span><span><b>对不上来源时</b>（agent 自报的模型 id 查不到）：退回 agent 自家订阅，小字写「来源未知」，不猜。</span></div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic { renderVals() { return {}; } }
+</script>
+</body>
+</html>

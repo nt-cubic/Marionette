@@ -43,7 +43,15 @@ func Install() {
 
 // PingAfter and PingWait: an HTTP/2 connection that has had no frame for
 // PingAfter is pinged, and dropped when no answer comes within PingWait.
-var PingAfter, PingWait = 20 * time.Second, 10 * time.Second
+// The health check is the only probe of a connection whose path has died
+// silently, so a turn in flight on it waits for the next one: PingAfter is
+// how long a vendor's silence before a turn's first byte can cost (#4936,
+// a first try read EOF 20.5s in on a connection whose tunnel a NAT or a
+// relay had dropped). The budget PingAfter+PingWait is also the margin a
+// body under uploadBytes needs on a slow uplink, a ping queued behind it
+// answered only after the last byte (#3909): 20s covers 64KB at about
+// 3KB/s.
+var PingAfter, PingWait = 10 * time.Second, 10 * time.Second
 
 // HTTP2Health is the HTTP/2 setting of a transport to the vendors. Every
 // request to one host shares one HTTP/2 connection, and one gone silent
@@ -154,20 +162,27 @@ var HTTP1 func(u *url.URL) bool
 // base kept for that proxy alone. Connections are so reused among the
 // requests going through one proxy and never carried to another — HTTP/2
 // ones, which a transport shares by host whatever proxy they were dialled
-// through, among them. A request HTTP1 names goes through a clone kept
-// for HTTP/1.1 (http1Only), and one to a host whose certificate the
-// provider's user said not to check (WithUncheckedTLS) through a clone
-// kept for that host alone (uncheckTLS). A host whose IPv6 is taken but
-// goes nowhere is dialed over IPv4 (v4Fallback).
+// through, among them. A move of the global proxy (the settings) drops
+// the idle connections the old one dialled, which a transport, pooling
+// by target host alone, would have carried over the switch (#4523). A
+// request HTTP1 names goes through a clone kept for HTTP/1.1
+// (http1Only), and one to a host whose certificate the provider's user
+// said not to check (WithUncheckedTLS) through a clone kept for that
+// host alone (uncheckTLS). A host whose IPv6 is taken but goes nowhere
+// is dialed over IPv4 (v4Fallback).
 func Dispatch(base *http.Transport) http.RoundTripper {
 	v4Fallback(base)
-	return &dispatch{base: base, own: map[route]*http.Transport{}}
+	return &dispatch{base: base, own: map[route]*http.Transport{}, moved: Watch()}
 }
 
 type dispatch struct {
 	base *http.Transport
 	mu   sync.Mutex
 	own  map[route]*http.Transport
+	// moved is whether the global proxy moved since the dispatch's last
+	// request: a move drops the idle connections, which would carry the
+	// requests after a switch through the old proxy (#4523).
+	moved func() bool
 }
 
 // route is what a request needs of its transport other than base: a
@@ -180,11 +195,41 @@ type route struct {
 }
 
 func (d *dispatch) RoundTrip(req *http.Request) (*http.Response, error) {
+	if d.moved() {
+		d.CloseIdleConnections()
+	}
 	r := route{choice: choiceOf(req.Context()), h1: HTTP1 != nil && HTTP1(req.URL), unchecked: uncheckedHost(req)}
 	if r == (route{}) {
 		return v4Retry(d.base, req)
 	}
 	return v4Retry(d.transport(r), req)
+}
+
+// Watch is a check a transport of its own makes before each request: it
+// says the global proxy in magpie's settings moved since the check's last
+// call, and the caller closes its transport's idle connections, which
+// would carry the request after a switch through the old proxy. The
+// setting is read at dial time (Func), but a transport pools by target
+// host, and its HTTP/2 connections by the authority alone, so a
+// connection dialled through the old proxy carries the requests after a
+// switch too, until it is dropped. Dropping the idle connections sends
+// the request after it through the proxy in force; one a request is
+// still reading is left to finish. Each check keeps its own last value,
+// so each transport sees, and answers, a move on the first request it
+// sends after it (#4523, #4824). The first call sees no move.
+func Watch() func() bool {
+	var mu sync.Mutex
+	var proxy string
+	var seen bool
+	return func() bool {
+		// Shared, not Load: this runs on every request
+		now := strings.TrimSpace(settings.Shared().Proxy)
+		mu.Lock()
+		defer mu.Unlock()
+		moved := seen && proxy != now
+		proxy, seen = now, true
+		return moved
+	}
 }
 
 func (d *dispatch) transport(r route) *http.Transport {

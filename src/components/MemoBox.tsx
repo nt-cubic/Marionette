@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Check, File as FileIcon, FileText, Image as ImageIcon, Link2, MessageSquarePlus, Search, Trash2, Type } from "lucide-react";
+import { Check, FileText, Image as ImageIcon, Link2, MessageSquarePlus, Search, Trash2, Type } from "lucide-react";
 import { isTauriRuntime, openExternal } from "../lib/api";
 import { isDocPath, openInDocTabIfEligible } from "../lib/openFile";
 import { isPageDragSource, onDragText } from "../lib/dragText";
@@ -44,11 +44,18 @@ const FILTERS: ReadonlyArray<{ id: MemoKind | "all"; label: DictKey }> = [
   { id: "file", label: "memo.kindFile" },
 ];
 
+const KIND_LABELS: Record<MemoKind, DictKey> = {
+  link: "memo.kindLink",
+  text: "memo.kindText",
+  image: "memo.kindImage",
+  file: "memo.kindFile",
+};
+
 function kindIcon(kind: MemoKind) {
   if (kind === "link") return <Link2 size={14} />;
   if (kind === "image") return <ImageIcon size={14} />;
   if (kind === "text") return <Type size={14} />;
-  return <FileIcon size={14} />;
+  return <FileText size={14} />;
 }
 
 function memoFileSrc(path: string): string {
@@ -56,8 +63,8 @@ function memoFileSrc(path: string): string {
   return `file:///${path.replace(/\\/g, "/")}`;
 }
 
-function fileMeta(entry: MemoEntry): string {
-  return [formatMemoSize(entry.size), entry.source].filter(Boolean).join(" · ");
+function fileMeta(entry: MemoEntry, kindLabel: string): string {
+  return [kindLabel, formatMemoSize(entry.size), entry.source].filter(Boolean).join(" · ");
 }
 
 type Props = {
@@ -357,7 +364,7 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
         <textarea
           ref={composeRef}
           rows={2}
-          placeholder={t("memo.composePlaceholder")}
+          placeholder={t("v2memo.compose")}
           aria-label={t("memo.composeAria")}
           value={draft}
           disabled={busy}
@@ -373,7 +380,7 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
           }}
         />
         <div className="memo-box__compose-bar">
-          <span>Ctrl + Enter</span>
+          <span className="memo-box__compose-hint">{t("v2memo.composeHint")}</span>
           <button
             type="button"
             className="memo-box__compose-save"
@@ -386,7 +393,7 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
       </div>
       <div className="memo-box__head">
         <label className="memo-box__search">
-          <Search size={12} />
+          <Search size={14} />
           <input
             type="search"
             placeholder={t("memo.searchPlaceholder")}
@@ -443,7 +450,10 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
                     picked={picked.has(entry.id)}
                     textOpen={openTextId === entry.id}
                     onClick={(event) => onCardClick(event, entry)}
-                    onToggle={() => toggle(entry.id)}
+                    onToggle={() => {
+                      if (!selecting) setSelecting(true);
+                      toggle(entry.id);
+                    }}
                     onDelete={() => remove(entry.id)}
                   />
                 ))}
@@ -454,16 +464,18 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
       </div>
       {selecting ? (
         <div className="memo-box__selbar">
-          <span>
-            {t("memo.picked")} <b>{picked.size}</b>
-          </span>
+          <span>{t("v2memo.selected", { n: picked.size })}</span>
+          <span className="memo-box__sel-hint">{t("v2memo.selHint")}</span>
           <span className="memo-box__spacer" />
+          <button type="button" className="memo-box__act memo-box__act--ghost" onClick={exitSelect}>
+            {t("v2memo.cancelSelect")}
+          </button>
           <button type="button" className="memo-box__act" disabled={!picked.size} onClick={() => use("doc")}>
-            <FileText size={12} />
+            <FileText size={14} />
             {t("memo.makeDoc")}
           </button>
           <button type="button" className="memo-box__act is-primary" disabled={!picked.size} onClick={() => use("dialog")}>
-            <MessageSquarePlus size={12} />
+            <MessageSquarePlus size={14} />
             {t("memo.newDialog")}
           </button>
         </div>
@@ -537,20 +549,18 @@ function MemoCard({ entry, selecting, picked, textOpen, onClick, onToggle, onDel
             : `${entry.path ?? entry.title}${draggable ? `\n${t("memo.dragHint")}` : ""}`
       }
     >
-      {selecting && (
-        <button
-          type="button"
-          className={picked ? "memo-box__check is-on" : "memo-box__check"}
-          aria-label={picked ? t("memo.unpickAria", { title: entry.title }) : t("memo.pickAria", { title: entry.title })}
-          aria-pressed={picked}
-          onClick={(event) => {
-            event.stopPropagation();
-            onToggle();
-          }}
-        >
-          {picked && <Check size={10} strokeWidth={3} />}
-        </button>
-      )}
+      <button
+        type="button"
+        className={picked ? "memo-box__check is-on" : "memo-box__check"}
+        aria-label={picked ? t("memo.unpickAria", { title: entry.title }) : t("memo.pickAria", { title: entry.title })}
+        aria-pressed={picked}
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggle();
+        }}
+      >
+        {picked && <Check size={10} strokeWidth={3} />}
+      </button>
       {entry.kind === "image" && entry.path && !imageBroken ? (
         <>
           <div className="memo-box__shot-wrap">
@@ -597,7 +607,7 @@ function MemoCard({ entry, selecting, picked, textOpen, onClick, onToggle, onDel
             </span>
             <span className="memo-box__body">
               <span className="memo-box__title">{entry.title}</span>
-              {fileMeta(entry) && <span className="memo-box__meta">{fileMeta(entry)}</span>}
+              {fileMeta(entry, t("memo.kindFile")) && <span className="memo-box__meta">{fileMeta(entry, t("memo.kindFile"))}</span>}
             </span>
           </div>
           <CardFoot entry={entry} selecting={selecting} onDelete={onDelete} />
@@ -619,6 +629,7 @@ function CardFoot({
   const t = useT();
   return (
     <div className="memo-box__foot">
+      {entry.kind !== "file" && <span className="memo-box__meta">{t(KIND_LABELS[entry.kind])}</span>}
       <span className="memo-box__age">{formatMemoAge(entry.createdAt)}</span>
       {!selecting && (
         <button
@@ -632,7 +643,7 @@ function CardFoot({
           }}
           onMouseDown={(event) => event.stopPropagation()}
         >
-          <Trash2 size={12} />
+          <Trash2 size={14} />
         </button>
       )}
     </div>

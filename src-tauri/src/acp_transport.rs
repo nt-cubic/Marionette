@@ -88,7 +88,8 @@ pub(super) fn request_with_timeout(
     }
 }
 
-pub(super) fn json_rpc_id_as_u64(id: &Value) -> Option<u64> {
+/// Also used by plugin_host (relay id bookkeeping) — crate-visible on purpose.
+pub(crate) fn json_rpc_id_as_u64(id: &Value) -> Option<u64> {
     id.as_u64()
         .or_else(|| id.as_i64().and_then(|n| u64::try_from(n).ok()))
         .or_else(|| id.as_str()?.parse().ok())
@@ -113,7 +114,8 @@ pub(super) fn notify(process: &Arc<AcpProcess>, method: &str, params: Value) -> 
 /// a write failure has no caller left to return an error to — `on_fail` is how
 /// that surfaces instead. Without it a dropped `session/prompt` would leave the
 /// UI streaming forever against a pipe nobody is reading.
-pub(super) fn spawn_stdin_writer(
+/// Generic over the write side, so plugin_host reuses it for plugin children.
+pub(crate) fn spawn_stdin_writer(
     mut stdin: impl Write + Send + 'static,
     session_id: String,
     on_fail: impl FnOnce(String) + Send + 'static,

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { userMessageAnchorId } from "../lib/acpTranscript";
+import { t as baseT, useT } from "../lib/i18n";
 import type { SessionEvent } from "../lib/types";
 
 type MessageOutlineProps = {
@@ -12,7 +13,7 @@ const VISIBLE_ROWS = 6;
 
 function previewText(text: string, max = 72): string {
   const one = text.replace(/\s+/g, " ").trim();
-  if (!one) return "(empty)";
+  if (!one) return baseT("v2chrome.outlineEmpty");
   return one.length > max ? `${one.slice(0, max - 1)}…` : one;
 }
 
@@ -44,6 +45,7 @@ export function MessageOutline({ events, sessionId }: MessageOutlineProps) {
     [events, sessionId]
   );
 
+  const t = useT();
   const [open, setOpen] = useState(false);
   const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -101,13 +103,13 @@ export function MessageOutline({ events, sessionId }: MessageOutlineProps) {
       <div
         className="message-outline__panel"
         role="navigation"
-        aria-label="Jump to user messages"
+        aria-label={t("v2chrome.outlineAria")}
         aria-hidden={!open}
         hidden={!open}
       >
         <div className="message-outline__panel-head">
-          <strong>You</strong>
-          <span>{items.length} messages</span>
+          <strong>{t("v2chrome.outlineYou")}</strong>
+          <span>{t("v2chrome.outlineCount", { count: String(items.length) })}</span>
         </div>
         <div
           ref={listRef}
@@ -136,7 +138,7 @@ export function MessageOutline({ events, sessionId }: MessageOutlineProps) {
           })}
         </div>
         {items.length > VISIBLE_ROWS && (
-          <div className="message-outline__panel-foot">Scroll for more</div>
+          <div className="message-outline__panel-foot">{t("v2chrome.outlineScrollMore")}</div>
         )}
       </div>
     </div>

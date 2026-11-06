@@ -18,8 +18,9 @@
 
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import { Archive, ChevronLeft, MoreHorizontal, Pause, Plus, Search } from "lucide-react";
+import { ChevronDown, ChevronLeft, MoreHorizontal, Pause, Search } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { agentInkStyle } from "../lib/agentInk";
 import type { EngineQuotaEntry, EngineQuotaWindow } from "../lib/api";
 import { lastActiveMs } from "../lib/sessionSuspend";
 import {
@@ -143,65 +144,99 @@ function windowsOf(row: EngineQuotaEntry): Array<{ w: EngineQuotaWindow; used: n
 }
 
 /**
- * One source as a mini card — name, the tightest window's percentage, and a
- * single 3px bar. QuotaBar's rule: the headline is one number, the windows
- * live in the hover/usage page; nesting two arcs in 40px read as noise.
+ * The v2 quota pattern (docs/design/ui-v2/DockV2.html): the tightest source is
+ * one block — name 14px/600, reset faint right, then a 4px ink bar row for its
+ * tightest window and 2px grey rows for the rest — and every other source
+ * collapses into one line of 12px text items. Details stay on hover
+ * (quotaTitle) / the usage page. quotaRows carries no agent→provider mapping,
+ * so the block carries the current session agent's ink.
  */
-function QuotaMeter({ row, onOpen }: { row: EngineQuotaEntry; onOpen: () => void }) {
+function QuotaMeter({ row, agentId, onOpen }: { row: EngineQuotaEntry; agentId: string | null; onOpen: () => void }) {
   const t = useT();
-  const peak = windowsOf(row)[0]?.used ?? null;
+  const windows = windowsOf(row);
+  const peak = windows[0]?.used ?? null;
   const name = shortName(row.name);
+  const reset = resetLabel(windows[0]?.w.resetsAt);
   return (
     <button
       type="button"
-      className={`dock-meter ${tone(peak)}`}
+      className={`dock-quota__main ${tone(peak)}`}
+      style={agentInkStyle(agentId)}
       title={quotaTitle(row)}
       aria-label={`${name} ${peak == null ? t("dock.noQuotaData") : `${Math.round(peak)}%`} · ${t("dock.openDetails")}`}
       onClick={onOpen}
     >
-      <span className="dock-meter__name">{name}</span>
-      <span className="dock-meter__pct">{peak == null ? "—" : `${Math.round(peak)}%`}</span>
-      <span className="dock-meter__bar" aria-hidden>
-        <i style={{ width: `${peak ?? 0}%` }} />
+      <span className="dock-quota__head">
+        <span className="dock-quota__name">{name}</span>
+        {reset && <span className="dock-quota__reset">{reset.slice(3)}</span>}
       </span>
+      {windows.map((x, i) => (
+        <span key={x.w.name} className={i === 0 ? "dock-quota__wr is-main" : "dock-quota__wr"}>
+          <span className="dock-quota__wr-name">{x.w.name}</span>
+          <i aria-hidden>
+            <b style={{ width: `${x.used}%` }} />
+          </i>
+          <em>{Math.round(x.used)}%</em>
+        </span>
+      ))}
     </button>
   );
 }
 
-function QuotaMeters({ rows, onOpen }: { rows: EngineQuotaEntry[]; onOpen: () => void }) {
+/** One line of 12px items: `Codex 26%  GLM 87%(yellow)  opencode 已满(red)`. */
+function QuotaLineItems({ rows, onOpen }: { rows: EngineQuotaEntry[]; onOpen: () => void }) {
+  const t = useT();
+  return (
+    <div className="dock-quota__line">
+      {rows.map((row) => {
+        const peak = windowsOf(row)[0]?.used ?? null;
+        const full = peak != null && peak >= 100;
+        return (
+          <button
+            key={`${row.provider}:${row.name}`}
+            type="button"
+            className={full ? "is-full" : peak != null && peak >= 75 ? "is-warm" : undefined}
+            title={quotaTitle(row)}
+            aria-label={`${shortName(row.name)} ${peak == null ? t("dock.noQuotaData") : `${Math.round(peak)}%`} · ${t("dock.openDetails")}`}
+            onClick={onOpen}
+          >
+            {shortName(row.name)} {peak == null ? "—" : full ? t("v2dock.quotaFull") : `${Math.round(peak)}%`}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function QuotaMeters({ rows, agentId, onOpen }: { rows: EngineQuotaEntry[]; agentId: string | null; onOpen: () => void }) {
   const t = useT();
   const sorted = useMemo(() => {
     const peak = (row: EngineQuotaEntry) => windowsOf(row)[0]?.used ?? -1;
     return [...rows].sort((a, b) => peak(b) - peak(a));
   }, [rows]);
   if (sorted.length === 0) return null;
-  // A balance-only source gets a chip on its own line (QuotaBar shows the
-  // amount, not an empty 0% bar); sources with windows — or with neither —
-  // get a meter card.
+  // The tightest source with windows becomes the block; balance-only sources
+  // (the amount is the whole story, not an empty 0% bar) join the line too.
   const balances = sorted.filter((row) => row.balance && windowsOf(row).length === 0);
   const meters = sorted.filter((row) => !balances.includes(row));
+  const [primary, ...rest] = meters;
   return (
     <div className="dock-quota">
-      {meters.length > 0 && (
-        <div className="dock-meters">
-          {meters.map((row) => (
-            <QuotaMeter key={`${row.provider}:${row.name}`} row={row} onOpen={onOpen} />
-          ))}
-        </div>
-      )}
+      {primary && <QuotaMeter row={primary} agentId={agentId} onOpen={onOpen} />}
+      {rest.length > 0 && <QuotaLineItems rows={rest} onOpen={onOpen} />}
       {balances.length > 0 && (
-        <div className="dock-balances">
-          <span className="dock-balances__label">{t("dock.balanceLabel")}</span>
+        <div className="dock-quota__line">
+          <span className="dock-quota__line-label">{t("dock.balanceLabel")}</span>
           {balances.map((row) => (
             <button
               key={`${row.provider}:${row.name}`}
               type="button"
-              className="dock-balance"
+              className="dock-quota__bal"
               title={quotaTitle(row)}
               aria-label={`${shortName(row.name)} ${t("dock.balanceLabel")} ${row.balance} · ${t("dock.openDetails")}`}
               onClick={onOpen}
             >
-              <span>{shortName(row.name)}</span>
+              {shortName(row.name)}
               <b>{row.balance}</b>
             </button>
           ))}
@@ -310,6 +345,8 @@ export const DockChrome = memo(function DockChrome({
   useEffect(() => subscribeDockPrefs((prefs) => setPinned(prefs.pinned)), []);
   const now = Date.now();
   const anyRunning = active.some(isBusy);
+  /** quotaRows has no agent→provider mapping; the current agent's ink stands in. */
+  const currentAgent = active.find((session) => session.id === currentSessionId)?.agentId ?? null;
 
   /**
    * The strip's title bar is the QQ-style "drag it off the edge" handle.
@@ -405,7 +442,7 @@ export const DockChrome = memo(function DockChrome({
         <span className="dock-bar__spacer" />
         {!page && (
           <button type="button" className="dock-icon" title={t("dock.searchTitle")} aria-label={t("dock.searchAria")} onClick={onOpenPalette}>
-            <Search size={13} />
+            <Search size={14} />
           </button>
         )}
         <div className="dock-menu-anchor" ref={menuRef}>
@@ -504,8 +541,8 @@ export const DockChrome = memo(function DockChrome({
             aria-expanded={openMenu === "new"}
             onClick={() => setOpenMenu(openMenu === "new" ? null : "new")}
           >
-            <Plus size={13} />
             {t("dock.newChat")}
+            <ChevronDown size={10} />
           </button>
           {openMenu === "new" && (
             <DockMenuLayer anchorRef={newChatRef} align="left" panelRef={newPanelRef}>
@@ -553,13 +590,12 @@ export const DockChrome = memo(function DockChrome({
           )}
         </div>
         <button type="button" className="dock-btn" onClick={() => onPage("memo")} title={t("dock.memoButtonTitle")}>
-          <Archive size={13} />
           {t("dock.pageMemo")}
           {memoCount > 0 && <span className="dock-btn__count">{memoCount > 99 ? "99+" : memoCount}</span>}
         </button>
       </div>
 
-      <QuotaMeters rows={quotaRows} onOpen={() => onPage("context")} />
+      <QuotaMeters rows={quotaRows} agentId={currentAgent} onOpen={() => onPage("context")} />
 
       <div className="dock-active">
         <div className="dock-active__head">
@@ -579,12 +615,16 @@ export const DockChrome = memo(function DockChrome({
             const busy = isBusy(session);
             const done = !busy && doneUnreadIds.has(session.id);
             const alive = isAlive(session);
+            const waiting = session.status === "waiting";
+            const errored = session.status === "error";
+            const since = recency(session, now);
             return (
               <div
                 key={session.id}
                 role="button"
                 tabIndex={0}
                 className={session.id === currentSessionId ? "dock-active__row is-current" : "dock-active__row"}
+                style={agentInkStyle(session.agentId)}
                 title={session.label}
                 onClick={() => onOpenSession(session)}
                 onKeyDown={(event) => {
@@ -602,7 +642,27 @@ export const DockChrome = memo(function DockChrome({
                   aria-hidden
                 />
                 <span className="dock-active__title">{session.label}</span>
-                <span className="dock-active__time">{alive ? recency(session, now) : t("dock.notStarted")}</span>
+                <span
+                  className={`dock-active__time${
+                    busy ? " is-running" : waiting ? " is-waiting" : errored ? " is-errored" : done ? " is-done" : ""
+                  }`}
+                >
+                  {busy
+                    ? since
+                      ? `${t("v2dock.running")} · ${since}`
+                      : t("v2dock.running")
+                    : waiting
+                      ? t("v2dock.waiting")
+                      : errored
+                        ? t("v2dock.errored")
+                        : done
+                          ? since
+                            ? `${t("v2dock.done")} · ${since}`
+                            : t("v2dock.done")
+                          : alive
+                            ? since
+                            : t("dock.notStarted")}
+                </span>
                 {alive && (
                   <button
                     type="button"
@@ -614,7 +674,7 @@ export const DockChrome = memo(function DockChrome({
                       onSuspendSession(session.id);
                     }}
                   >
-                    <Pause size={11} />
+                    <Pause size={12} />
                   </button>
                 )}
               </div>

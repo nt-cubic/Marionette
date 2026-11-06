@@ -6,7 +6,9 @@
 // takes it: the release's manifest.json names each platform's SHA-256 and
 // size, and the binary is checked against both before it is kept. It is
 // kept in magpie's cache folder, not on PATH, so it stands in for no agent:
-// it is only what the bridge and the sign-in run.
+// it is only what the bridge and the sign-in run. While magpie serves, it
+// keeps that download at the newest release (KeepCurrent), as Claude
+// Code's own updater would, which magpie's runs turn off.
 package claudecode
 
 import (
@@ -215,6 +217,15 @@ func get(ctx context.Context, url string, limit int64) ([]byte, error) {
 // has none of its own; the versions downloaded before are removed. progress,
 // when set, is told the bytes so far. It returns the binary's path.
 func Install(ctx context.Context, r Release, progress func(done int64)) (string, error) {
+	exe, err := install(ctx, r, progress)
+	if err == nil {
+		prune(r.Version)
+	}
+	return exe, err
+}
+
+// install is Install without removing the versions before it.
+func install(ctx context.Context, r Release, progress func(done int64)) (string, error) {
 	dir := filepath.Join(Root(), r.Version)
 	if !versionRe.MatchString(r.Version) {
 		return "", fmt.Errorf("not a version: %q", r.Version)
@@ -232,14 +243,26 @@ func Install(ctx context.Context, r Release, progress func(done int64)) (string,
 		os.Remove(tmp)
 		return "", err
 	}
-	// one version kept: what a run takes is the newest, and each is ~240 MB
+	return exe, nil
+}
+
+// prune removes every version but kept: what a run takes is the newest, and
+// each is ~240 MB. A folder with a download under way (a .part) stays.
+// Removing the binary of a Claude Code still running is fine on Linux and
+// macOS (the run keeps its file); on Windows that one stays, for the next
+// prune.
+func prune(kept string) {
 	ents, _ := os.ReadDir(Root())
 	for _, e := range ents {
-		if e.IsDir() && e.Name() != r.Version && versionRe.MatchString(e.Name()) {
-			_ = os.RemoveAll(filepath.Join(Root(), e.Name()))
+		if !e.IsDir() || e.Name() == kept || !versionRe.MatchString(e.Name()) {
+			continue
 		}
+		dir := filepath.Join(Root(), e.Name())
+		if _, err := os.Stat(filepath.Join(dir, exeName(runtime.GOOS)+".part")); err == nil {
+			continue
+		}
+		_ = os.RemoveAll(dir)
 	}
-	return exe, nil
 }
 
 func download(ctx context.Context, r Release, to string, progress func(int64)) error {

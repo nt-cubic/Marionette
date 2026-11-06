@@ -159,11 +159,11 @@ export type TurnStats = {
   total?: number | null;
   /** Send → first streamed chunk (perceived TTFT), ms. */
   ttftMs?: number | null;
-  /** First chunk → turn end, ms. */
+  /** First chunk → turn end, ms (wall clock; includes tool waits). */
   durationMs?: number | null;
-  /** Output tokens / generation window (tok/s, includes tool-call time). */
+  /** Output tokens / generation window (tok/s; tool waits excluded when known). */
   outputTps?: number | null;
-  /** Input tokens / TTFT — apparent prompt-processing speed (tok/s). */
+  /** Billed prompt tokens / TTFT — apparent prompt-processing speed (tok/s). */
   ppTps?: number | null;
 };
 
@@ -403,9 +403,44 @@ export type ProjectContext = {
   selection: ContextSelection;
 };
 
+// ─── Universal plugins (install once, every agent) ──────────────────────────
+
+export type PluginProbe = {
+  ok: boolean;
+  toolCount?: number;
+  note: string;
+  at: string;
+};
+
+export type UniversalPlugin = {
+  id: string;
+  transport: "stdio" | "http";
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+  enabled: boolean;
+  addedAt?: string;
+  lastProbe?: PluginProbe | null;
+};
+
+export type UniversalPluginSpec = {
+  id: string;
+  transport: "stdio" | "http";
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+};
+
 export type ChangedFile = {
   path: string;
   changeType: "added" | "modified" | "deleted" | "untracked";
+  /** Line counts (git numstat). Optional: the status scan does not supply them yet. */
+  additions?: number | null;
+  deletions?: number | null;
 };
 
 export type HandoffResult = {

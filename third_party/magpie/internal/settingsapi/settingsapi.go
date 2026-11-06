@@ -31,9 +31,9 @@ var Keys = []string{
 	"theme", "colorblind", "reduceMotion", "noBird", "lang", "uiFont", "codeFont",
 	// the tray, the Dock and this computer
 	"tray", "dock", "dockWindow", "dockNever", "lightweight", "keepAwake", "keepAwakeDisplay",
-	"noWSLAgents", "sessionTerminal", "signInLinkOnly",
+	"noWSLAgents", "sessionTerminal", "signInLinkOnly", "quitNoAsk",
 	// the menu bar's allowance cards
-	"trayUsages", "trayUsage", "trayUsageEvery", "trayNoLogos", "trayNoBird", "trayPace", "trayNoCost", "trayWindows",
+	"trayUsages", "trayUsage", "trayUsageEvery", "trayNoLogos", "trayNoBird", "trayNoNumber", "trayPace", "trayNoCost", "trayWindows",
 	// usage and alerts
 	"currency", "chineseUnits", "usageAlert", "balanceAlert", "resetReminder", "turnDoneAlert", "maskAlert",
 	// network
@@ -45,7 +45,7 @@ var Keys = []string{
 	"codexWarmup", "claudeWarmup", "codexWarmAt", "claudeWarmAt", "codexWarmAts", "claudeWarmAts",
 	"workbuddyCheckin", "traeCheckin", "minimaxCheckin", "qoderCheckin",
 	// models: replies, vision, images, search
-	"memberModel", "noLoopGuard", "claudeLeanPrompt", "claudePrintMode", "refusalRetries",
+	"replyModel", "noLoopGuard", "claudeLeanPrompt", "claudePrintMode", "refusalRetries",
 	"vision", "visionEffort", "imageGen", "imageTimeout", "classifyTimeout",
 	"searcher", "searcherThen", "searcherEffort", "searchFirst",
 	// updates
@@ -67,6 +67,7 @@ var Choices = map[string][]string{
 	"updateChannel":  {settings.UpdateStable},
 	"updateEvery":    ints(settings.UpdateEveries),
 	"searchFirst":    {settings.SearchFirstModel, settings.SearchFirstAPI},
+	"replyModel":     settings.ReplyModels,
 }
 
 func ints(v []int) []string {
@@ -214,11 +215,32 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	if _, sent := fields["noBird"]; !sent {
 		in.NoBird = cur.NoBird
 	}
+	// nor whether a Quit asks first while agents go through magpie
+	// (zhujiu on Discord), which the Quit question sets too
+	if _, sent := fields["quitNoAsk"]; !sent {
+		in.QuitNoAsk = cur.QuitNoAsk
+	}
+	// nor what a reply's model name says, which they sent as memberModel:
+	// a change of it is that, and else the name stays as it is (vendor
+	// too, which they can't show). memberModel itself is only ever
+	// written beside replyModel (settings' normal).
+	if _, sent := fields["replyModel"]; sent {
+		in.MemberModel = false
+	} else {
+		in.ReplyModel = cur.ReplyModel
+		if _, sent := fields["memberModel"]; sent && in.MemberModel != (cur.ReplyModel == settings.ReplyMember) {
+			in.ReplyModel = settings.ReplyAsked
+			if in.MemberModel {
+				in.ReplyModel = settings.ReplyMember
+			}
+		}
+		in.MemberModel = false
+	}
 	// nor whether a value masked for the first time is told (Must2333)
 	if _, sent := fields["maskAlert"]; !sent {
 		in.MaskAlert = cur.MaskAlert
 	}
-	in.AgentOrder, in.AgentsHidden, in.AgentsShown = cur.AgentOrder, cur.AgentsHidden, cur.AgentsShown
+	in.AgentOrder, in.AgentsHidden, in.AgentsShown, in.AgentsHere = cur.AgentOrder, cur.AgentsHidden, cur.AgentsShown, cur.AgentsHere
 	in.Window, in.WindowMaximised, in.WindowAt = cur.Window, cur.WindowMaximised, cur.WindowAt // the window's own, as it was last resized and moved
 	// and what other pages keep here: which models an agent is shown, and
 	// everything the user said of a model anywhere else in the app, set on
@@ -245,6 +267,7 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	in.AllowIPs = cur.AllowIPs                         // set on its own (allowips)
 	in.FetchPrivate = cur.FetchPrivate                 // in settings.json only
 	in.RouterNote = cur.RouterNote                     // set on its own (the Library's servers/hub-note)
+	in.RouterAllTools = cur.RouterAllTools             // set on its own (the Library's servers/hub-tools)
 	in.GitHubToken = cur.GitHubToken                   // set on its own (github-token), never sent to the page
 	in.ProxyCustom = cur.ProxyCustom                   // set by settings.Save from the proxy, never by the page
 	in.RequestArchive = cur.RequestArchive             // the Gateway page's, set on its own
@@ -285,8 +308,9 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	in.BareModelIDs = cur.BareModelIDs // set on its own (bare-ids)
 	in.BusyLoad = cur.BusyLoad         // and so is this (busy-load)
 	in.CodexAgentsV1 = cur.CodexAgentsV1
-	in.FullContext = cur.FullContext // set on its own (full-context)
-	in.CompactAt = cur.CompactAt     // and so is the threshold
+	in.FullContext = cur.FullContext     // set on its own (full-context)
+	in.CompactAt = cur.CompactAt         // and so is the threshold
+	in.AgentCompacts = cur.AgentCompacts // and each agent's own (agent-compact)
 	// Codex's background compaction, set on its own (codex-async-compact)
 	in.CodexAsyncCompact, in.CodexAsyncCompactPercent = cur.CodexAsyncCompact, cur.CodexAsyncCompactPercent
 	// Claude Desktop's list, set in its row on the Agents page
@@ -314,7 +338,8 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	in.CodexResetLead = cur.CodexResetLead         // and how early before one expires (codex-reset-lead)
 	// and which of them spend their credits, set there too
 	in.CodexNoCredits = cur.CodexNoCredits
-	in.CodexCreditsLast = cur.CodexCreditsLast // and which only after everything else
+	in.CodexCreditsLast = cur.CodexCreditsLast   // and which only after everything else
+	in.CodexCreditsFirst = cur.CodexCreditsFirst // and which before another account
 	// and each Codex account's own daily warm-up (codex-warm-at)
 	in.CodexWarmAtOf = cur.CodexWarmAtOf
 	// and the text size, which the keyboard changes too (text-size)

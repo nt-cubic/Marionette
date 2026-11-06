@@ -41,3 +41,33 @@ func TestGatewayPluginOptionsAndKind(t *testing.T) {
 		t.Fatalf("disabled gateway: %+v", p)
 	}
 }
+
+// A provider plugin's package options are its row's too (plugins#592:
+// Devin's cacheKeepaliveInterval and cacheKeepaliveMaxPings), so the
+// Installed tab can offer the options editor without plugins.json.
+func TestProviderPluginOptionsExample(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("MAGPIE_PLUGIN_MARKET", "off")
+	t.Cleanup(plugin.Settle)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"name":"provider-fixture","main":"index.js","magpie":{"options":{"cacheKeepaliveInterval":285,"cacheKeepaliveMaxPings":6}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.js"), []byte(`export default async () => ({ auth: { provider: "fixture", methods: [] } })`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := plugin.Add(t.Context(), dir); err != nil {
+		t.Fatal(err)
+	}
+	state := pluginsState(t.Context(), nil)
+	if len(state.Plugins) != 1 {
+		t.Fatalf("plugins: %+v", state)
+	}
+	p := state.Plugins[0]
+	if p.IsMiddleware || p.IsGateway || p.OptionsExample["cacheKeepaliveInterval"] != float64(285) || p.OptionsExample["cacheKeepaliveMaxPings"] != float64(6) {
+		t.Fatalf("provider plugin's options example: %+v", p)
+	}
+}

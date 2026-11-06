@@ -255,6 +255,7 @@ func readJev(b []byte, intents []string, levels bool, prev before) (verdict, err
 	var v verdict
 	if a, ok := out.Answers["intent"]; ok && len(intents) > 0 && !levels {
 		v.Sure = sureOf(a.Confidence, a.Probabilities)
+		v.Said = a.Choice // as it said it, no intent come of it or not (#4598)
 		if a.Choice != noIntent && v.Sure >= jevSure {
 			v.Intent = intentNamed(intents, a.Choice)
 		}
@@ -265,6 +266,7 @@ func readJev(b []byte, intents []string, levels bool, prev before) (verdict, err
 		// (继续，再加一个基准测试 after a 复杂任务 came out 0.54 to 0.46),
 		// and a turn with none before takes the likelier
 		v.Sure = sureOf(a.Confidence, a.Probabilities)
+		v.Said = a.Choice
 		v.Intent = intentNamed(intents, a.Choice)
 		if was := intentNamed(intents, prev.Intent); v.Sure < jevSure && was != "" {
 			v.Intent = was
@@ -414,10 +416,25 @@ func maskedState(ctx context.Context, text, user, reply string) (string, string,
 
 // systemOne posts body to p's System One API and returns the answer,
 // counting it in the usage as magpie's own. A gateway serving Jev is asked
-// and answers in its own way (decideAsk, decideAnswer).
+// and answers in its own way (decideAsk, decideAnswer). With the request
+// archive on it keeps the call as it keeps one a client sent (wangb on
+// Discord: 请求存档开启, 但是 systemone 的请求没有记录下来), its usage row
+// naming it.
 func (s *Server) systemOne(ctx context.Context, p provider.Provider, model string, body []byte) ([]byte, error) {
 	start := time.Now()
-	status, b, header, err := s.postDecide(ctx, p, model, body)
+	d, err := s.postDecideSent(ctx, p, model, body)
+	status, b, header := d.status, d.answer, d.header
+	archived := ""
+	if d.sent != nil {
+		c := Call{Time: start, From: provider.Chat, To: provider.Chat, Model: p.ID + "/" + model, Provider: p.ID,
+			Agent: usage.AgentOf(RouterAgent), Kind: "routing", Millis: time.Since(start).Milliseconds()}
+		if err != nil {
+			c.Error = err.Error()
+		} else if status >= 300 {
+			c.Error = provider.APIError(b, fmt.Sprintf("%d %s", status, http.StatusText(status)))
+		}
+		archived = archiveOwn(c, d.sent, d.body, status, header, b)
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, errNoAnswer
@@ -441,31 +458,42 @@ func (s *Server) systemOne(ctx context.Context, p provider.Provider, model strin
 	}
 	usage.Append(usage.Record{Time: start, Agent: usage.AgentOf(RouterAgent), Kind: "routing", Provider: p.ID, Host: p.Where(), Model: model, Requested: model, Served: use.Model,
 		ProviderKeyID: keyID, ProviderKeyName: keyName, ProviderAccount: accountOf(p),
-		Input: use.Usage.Input, Output: use.Usage.Output, Millis: time.Since(start).Milliseconds(), Status: status})
+		Input: use.Usage.Input, Output: use.Usage.Output, Millis: time.Since(start).Milliseconds(), Status: status, Archive: archived})
 	return b, nil
 }
 
-// postDecide posts body to p's decision API and returns the status, body
-// and headers (its Content-Type, a refusal's Retry-After). A success is rewritten into System One's shape when
-// the provider answers in another one. DecideURL and Sign errors are as
-// they are; a transport error is named with p.
-func (s *Server) postDecide(ctx context.Context, p provider.Provider, model string, body []byte) (int, []byte, http.Header, error) {
+// decided is a decision call as it went and came back: the request magpie
+// sent and its body (in the provider's own shape), for the request archive,
+// and the answer's status, body and headers.
+type decided struct {
+	sent   *http.Request
+	body   []byte
+	status int
+	answer []byte
+	header http.Header
+}
+
+// postDecideSent posts body to p's System One API as model (DecideAsk),
+// and turns its answer back into Jev's shape when the provider answers in
+// another one. DecideURL and Sign errors are as they are; a transport
+// error is named with p. The request it sent is there once one was.
+func (s *Server) postDecideSent(ctx context.Context, p provider.Provider, model string, body []byte) (decided, error) {
 	// every decision call goes through here — System One, a group rule's
 	// classifier, a decision group's members: a model the user disabled
 	// (#1867) is never asked
 	if msg, off := modelOff(p, model, p.ID+"/"+model); off {
-		return 0, nil, nil, errors.New(msg)
+		return decided{}, errors.New(msg)
 	}
 	ctx = s.metered(p.Via(ctx), p, "") // counted against its MaxRPM (rpm.go)
 	u, err := p.DecideModelURL(ctx, model)
 	if err != nil {
-		return 0, nil, nil, err
+		return decided{}, err
 	}
 	via := p.DecideVia()
 	body = provider.DecideAsk(via, model, body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
 	if err != nil {
-		return 0, nil, nil, err
+		return decided{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", RouterAgent)
@@ -482,18 +510,18 @@ func (s *Server) postDecide(ctx context.Context, p provider.Provider, model stri
 		req.Header.Set("ai-evaluation-model-specification-version", "4")
 	}
 	if err := p.Sign(ctx, req, provider.Chat, body); err != nil {
-		return 0, nil, nil, err
+		return decided{}, err
 	}
 	res, err := p.Do(s.client, req)
 	if err != nil {
-		return 0, nil, nil, fmt.Errorf("%s: %v", p.Name, err)
+		return decided{sent: req, body: body}, fmt.Errorf("%s: %v", p.Name, err)
 	}
 	defer res.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if res.StatusCode < 300 {
 		b = provider.DecideAnswer(via, b)
 	}
-	return res.StatusCode, b, res.Header, nil
+	return decided{sent: req, body: body, status: res.StatusCode, answer: b, header: res.Header}, nil
 }
 
 // maxSystemOneBody is the most a System One request may be; larger is 413
@@ -676,6 +704,20 @@ func requestEffort(proto provider.Protocol, body []byte) string {
 		return e
 	}
 	return effortOfBudget(v.Thinking.Budget)
+}
+
+// outputConfigEffort is the effort an Anthropic request's output_config
+// names, whatever it asks of thinking; "" when it names none.
+func outputConfigEffort(body []byte) string {
+	var v struct {
+		OutputConfig struct {
+			Effort string `json:"effort"`
+		} `json:"output_config"`
+	}
+	if decodeJSON(body, &v) != nil {
+		return ""
+	}
+	return effortOf(v.OutputConfig.Effort)
 }
 
 // sentEffort is the reasoning a request goes to model at: what it asks
