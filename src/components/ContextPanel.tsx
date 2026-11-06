@@ -1,13 +1,13 @@
 import { ArrowUpCircle, ChevronRight, RefreshCw } from "lucide-react";
-import { memo, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { t, useT } from "../lib/i18n";
 import { ChangesSection } from "./ChangesSection";
 import { MemorySection } from "./MemorySection";
-import { PluginsSection } from "./PluginsSection";
 import { QuotaSection } from "./QuotaSection";
 import { TasksSection } from "./TasksSection";
 import { UniversalPluginsSection } from "./UniversalPluginsSection";
+import { UniversalSkillsSection } from "./UniversalSkillsSection";
 import { dockFooterHost, useDocked } from "../lib/dockFooter";
 import type { PlanEntry } from "../lib/acpPlan";
 import type { BackgroundTaskRow } from "../lib/backgroundTasks";
@@ -225,14 +225,35 @@ export const ContextPanel = memo(function ContextPanel({
   // Plugin / memory counts are only known once their sections mounted (memory syncs on
   // mount); null = not loaded yet, so the summary leaves them out instead of showing 0.
   const [memoryCount, setMemoryCount] = useState<number | null>(null);
-  const [dshPluginCount, setDshPluginCount] = useState<number | null>(null);
   const [universalPluginCount, setUniversalPluginCount] = useState<number | null>(null);
+  const [skillCount, setSkillCount] = useState<number | null>(null);
   const pluginCount =
-    dshPluginCount == null && universalPluginCount == null
+    universalPluginCount == null && skillCount == null
       ? null
-      : (dshPluginCount ?? 0) + (universalPluginCount ?? 0);
-  const pluginsLoaded = dshPluginCount != null && universalPluginCount != null;
-  const pluginsEmpty = (dshPluginCount ?? 0) === 0 && (universalPluginCount ?? 0) === 0;
+      : (universalPluginCount ?? 0) + (skillCount ?? 0);
+  const pluginsLoaded = universalPluginCount != null && skillCount != null;
+  const pluginsEmpty = pluginCount === 0;
+
+  /**
+   * Ctrl K「插件」的落点（P3，2026-11-06）：插件卡在「共享」折叠区内，
+   * 未展开时 #context-plugins 根本不在 DOM——App 侧只 scrollTo 会落空。
+   * App 派发 marionette:reveal-plugins，这里展开共享卡并滚到位（贴边
+   * context 整页是同一组件实例，一并修好）。
+   */
+  useEffect(() => {
+    const reveal = () => {
+      setSharedOpen(true);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          document
+            .getElementById("context-plugins")
+            ?.scrollIntoView({ block: "start", behavior: "smooth" });
+        });
+      });
+    };
+    window.addEventListener("marionette:reveal-plugins", reveal);
+    return () => window.removeEventListener("marionette:reveal-plugins", reveal);
+  }, []);
   const mcpServers = projectContext?.inventory.mcpServers ?? [];
   const mcpSlice = previewSlice(mcpServers, mcpExpanded);
   const skillItems = projectContext?.inventory.skills ?? [];
@@ -477,7 +498,7 @@ export const ContextPanel = memo(function ContextPanel({
           </p>
         ) : null}
         <UniversalPluginsSection embedded onCount={setUniversalPluginCount} />
-        <PluginsSection embedded activeAgentId={activeAgentId} onCount={setDshPluginCount} />
+        <UniversalSkillsSection embedded onCount={setSkillCount} />
         <p className="panel-note panel-note--hint" title={t("allPlugins.applyHint")}>
           {t("allPlugins.applyHint")}
         </p>

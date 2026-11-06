@@ -7,7 +7,8 @@
 「安装一个插件，所有 agent 都生效」。此前这个能力散在五条互不相通的管道上：
 `context_inventory` 借贷（按项目 opt-in、MCP 默认关、stdio 一条就能毒死 zcode 的
 session/new）、`zcode_mcp_bridge`（zcode 专属 stdio 旁路）、`tools_mcp`（只装自家
-23 个工具）、`dsh_plugins`（DSH 专属）、skills prompt 借贷（只扫各 agent 自家目录）。
+23 个工具）、`dsh_plugins`（DSH 专属；**2026-11-06 已删**，见落地偏差）、skills
+prompt 借贷（只扫各 agent 自家目录）。
 Marionette 没有「插件」的一等概念——MCP 清单只是对 agent 配置文件的扫描。
 
 ## 业界对标（2026-11-04 调研）
@@ -65,6 +66,10 @@ skills + 矩阵记为后续项。
 - **撞名**：借贷条目与启用插件同名时借贷让位（插件赢），防 agent 内重名双注册。
 - **skills**：`~/.marionette/plugins/skills/` 作为全局源进 `context_inventory::scan`
   （default-on，与其它 skills 同走 prompt 借贷）——装一次、全 agent 见。
+  **2026-11-06 起可从界面装**：插件卡「技能」块（`UniversalSkillsSection`）从
+  文件夹安装/停用/删除；登记处就是目录本身（含 SKILL.md 的子目录，不进
+  index.json），全局停用 = 目录内 `.disabled` 标记文件（`scan_skills_dir` 跳过
+  带标记的目录，「项目上下文→技能」与注入同步消失）。
 - **协议边界**：child→agent 的 server 主动请求（sampling/roots）一律 -32601
   （agent 在 HTTP 请求边界后面，没法应答）；远端中继只收 JSON（`Accept:
   application/json`，流式 only 的服务会响亮地 406）。
@@ -98,6 +103,13 @@ skills + 矩阵记为后续项。
   agent 构建期设超时，控制面 15s / 工具调用 300s / 通知中继 10s 各建各的。
 - inventory-zh `--check` 在本批前后均为同一预存失败（18 文件 120 行，与 HEAD
   持平），未新增。
+- **2026-11-06 收口批**：右栏「DeepSeek Harness」插件块（`PluginsSection` +
+  `pluginBadges` + Rust `dsh_plugins.rs` 三命令）整体删除——统一入口只剩
+  「所有 agent」MCP 块与「技能」块；Ctrl K「插件」改为派发
+  `marionette:reveal-plugins` 事件（ContextPanel 展开共享卡并滚动，修「折叠态
+  滚不到」）。dsh 跨用桥与 spawn 链一字未动。skills 安装的复制树复用
+  `memos::copy_tree`、frontmatter 解析复用 `context_inventory::
+  parse_skill_front_matter`（均放宽 pub(crate)）。
 
 ## 回归
 

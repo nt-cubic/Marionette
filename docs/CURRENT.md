@@ -151,7 +151,9 @@ app 内置一个浏览器页（伪标签，与收纳盒/文档同款形状），
 - **aria 引擎** vendor 自 Codeg（Apache-2.0，`src-tauri/src/browser/js/`）：
   快照按元素 ref 操作（非像素坐标），只在第一次有授权读取时注入 isolated world。
 - **体积/内存**：不捆绑浏览器引擎（复用 WebView2 运行时，独立 profile
-  `~/.marionette/browser-profiles/`）；无标签零开销，标签关掉 renderer 回收。
+  `~/.marionette/browser-profiles/`）；**标签懒建**（2026-11-06：启动不再预热
+  about:blank 子 webview——那会常驻一整套 WebView2 进程组；首标签走
+  `create_surface` 直建，关掉标签 renderer 回收）。
 - 已知边界与偏差见 `docs/plan-browser-computer-use.md` §6（人→agent 手递、listener
   pin、eval、下载接管、前进后退为后续批次）。
 
@@ -177,12 +179,14 @@ agent 可以看/操作**其它 Windows 应用**的窗口（浏览器之外的原
   不是沙箱（同 Codeg 立场）。整屏共享/App 范围在协议里但未开 UI（整屏要连
   paint_over 一起做才安全）。偏差清单见 plan §7。
 
-## 共通插件层（2026-11-05）
+## 共通插件层（2026-11-05；2026-11-06 收口）
 
 **安装一个插件，所有 agent 都生效**（设计稿 `docs/plan-plugin-layer.md`）：
 
 - **登记处**：`~/.marionette/plugins/index.json`（Marionette 自有，不写任何 agent
-  的配置）；安装即全局默认启用。入口：右栏「插件」卡片（所有 agent + DeepSeek Harness 两块）+ Ctrl K「插件」。
+  的配置）；安装即全局默认启用。入口：右栏「插件」卡片（「所有 agent」MCP 块 +
+  「技能」块；2026-11-06 起 **DSH 专属插件块已删**，统一入口只此一处）+ Ctrl K
+  「插件」（自动展开「共享」卡并滚到位）。
   stdio 型填 command/args/env，http 型填 url/headers；安装时自动**探活**
   （initialize + tools/list，探活失败不拦安装，结果记在 `lastProbe`）。
 - **生效方式**：每个启用插件在 `session/new` 时以 **url 型**条目注入（与
@@ -196,11 +200,18 @@ agent 可以看/操作**其它 Windows 应用**的窗口（浏览器之外的原
 - **http 插件**：纯中继——**真实凭据只留在 Marionette**，agent 只拿 loopback URL
   + 会话 token；远端 `Mcp-Session-Id` 由宿主代持；只收 JSON 应答（流式 only 的
   服务会明确失败）。
-- **skills**：`~/.marionette/plugins/skills/` 是全局技能目录（default-on prompt
-  借贷），装一次全 agent 可见。
+- **skills（2026-11-06 起可从界面装）**：`~/.marionette/plugins/skills/` 是全局
+  技能目录（default-on prompt 借贷），装一次全 agent 可见。插件卡「技能」块支持
+  **从文件夹安装 / 停用 / 删除**：登记处就是目录本身（每个含 SKILL.md 的子目录
+  即一个技能，不进 index.json）；全局停用 = 目录里放 `.disabled` 标记文件，
+  `context_inventory` 扫描跳过带标记的目录——「项目上下文→技能」清单与注入
+  同步消失，两个入口看同一份真相。安装 = 复制整棵源文件夹（源里带着的
+  `.disabled` 不随拷贝，装上即启用）。
 - 边界：child→agent 的 server 主动请求（sampling 等）不支持（-32601）；pi/web 壳
   照旧不注入；不做 marketplace（registry/Smithery 安装与 codeg 式 junction skills
-  矩阵记为后续）。插件自己的 JSON-RPC error 原样透传给 agent。
+  矩阵记为后续）。插件自己的 JSON-RPC error 原样透传给 agent。DSH 自家的
+  `dsh plugin` 面板已随统一入口移除（已装进 profile 的 DSH 插件对 dsh 自家
+  照常生效，跨用桥与 spawn 链不动）。
 
 ## 明确不做 / 暂缓
 

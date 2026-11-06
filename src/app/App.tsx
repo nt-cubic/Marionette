@@ -31,7 +31,7 @@ import { engineQuota as fetchEngineQuota, type EngineQuotaEntry } from "../lib/a
 import { TELEGRAM_COMMAND_EVENT, telegramRemoteResult, type TelegramCommand } from "../lib/api";
 import { invalidateBridgeModels } from "../lib/bridge";
 import { useLatestCallback } from "../lib/useLatestCallback";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, killAcpTerminal, listAcpTerminals, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, loadTranscriptPage, loadTranscriptWindow, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, quitApp, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, setUiLocale, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID } from "../lib/api";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, killAcpTerminal, listAcpTerminals, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, loadTranscriptPage, loadTranscriptWindow, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, quitApp, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, setUiLocale, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, trimSessionWorkingSet, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID } from "../lib/api";
 import {
   bindDetachedWindowReaper,
   DETACHED_HIDDEN_EVENT,
@@ -215,7 +215,7 @@ import {
   type SplitWorkspaceState,
 } from "../lib/splitWorkspace";
 import type { QuotePin } from "../lib/quoteComment";
-import { canPark, lastActiveMs, shouldAutoSuspend } from "../lib/sessionSuspend";
+import { canPark, lastActiveMs, shouldAutoSuspend, TRIM_QUIET_MS, TRIM_REPEAT_MS } from "../lib/sessionSuspend";
 import { listLiveSubagents, sessionHasLiveSubagents, sessionProcessAlive } from "../lib/liveSubagents";
 import { forkCopyEvents, forkCutIndex } from "../lib/sessionFork";
 import { type AskQuestionPrompt } from "../components/AskQuestionCard";
@@ -988,6 +988,8 @@ export function App() {
   const lastActivityByIdRef = useRef(lastActivityById);
   lastActivityByIdRef.current = lastActivityById;
   const sessionsRef = useRef(availableSessions);
+  /** X3：每会话上次工作集压制的时间戳（节流 + 会话消失后回收）。 */
+  const lastTrimByIdRef = useRef(new Map<string, number>());
   const agentsRef = useRef(availableAgents);
   const projectsRef = useRef(availableProjects);
   const currentSessionIdRef = useRef(currentSessionId);
@@ -1290,6 +1292,7 @@ export function App() {
     applyStreamPart,
     publishedEventsForView,
     notePersisted,
+    isPersistClean,
   } = useSessionRails({
     transcriptSaveTimers,
     ownsAcpSession,
@@ -2200,6 +2203,14 @@ export function App() {
         clearTimeout(pending);
         transcriptSaveTimers.current.delete(sessionId);
       }
+      // X4（2026-11-06）：内容自上次落盘一字未变 → 磁盘已是最新，直接丢
+      // rail，跳过 persistRailsNow（它会 ensureFullTranscript 把截断头整段
+      // 装回内存再全量重写——每 2 分钟一次的秒级卡顿源，HDD + Defender
+      // 尤甚）。判定与流式落盘的前缀比对同口径（引用全等，不克隆）。
+      if (isPersistClean(sessionId)) {
+        flushed.push(sessionId);
+        continue;
+      }
       const events = persistableEventsForSession(
         shadowBySessionRef.current.get(sessionId) ?? EMPTY_EVENTS,
         sessionId,
@@ -2218,6 +2229,9 @@ export function App() {
     const drop = new Set(flushed);
     for (const id of drop) {
       transcriptLoadedRef.current.delete(id);
+      // olderHeads 的截断起点随 rail 一起丢（重开时 tail 加载自动重播种；
+      // 原先从不清理，是每会话一条的小泄漏）。
+      delete olderHeadsRef.current[id];
     }
     dropSessionRails(drop);
     setSessionUsageById((current) => {
@@ -3317,6 +3331,12 @@ export function App() {
         release();
         return;
       }
+      // X4：内容与磁盘一致时不再全量重写（撕窗隐藏高频发生，别每次都
+      // ensureFullTranscript + 整文件重写）。
+      if (isPersistClean(DETACHED_SESSION_ID)) {
+        release();
+        return;
+      }
       void persistRailsNow(DETACHED_SESSION_ID).finally(release);
     }).then((fn) => {
       unlisten = fn;
@@ -3532,6 +3552,28 @@ export function App() {
           continue;
         }
         handleSuspendSession(session.id);
+      }
+      // X3（2026-11-06 内存压制批）：不挂起、只压制——waiting 且安静 ≥2 分钟、
+      // 不在 busy 豁免集合（子代理/后台命令/定时发送/待决权限卡）的会话，
+      // 把它那棵 agent 进程树的物理工作集压出去（EmptyWorkingSet，页面转
+      // standby；进程与提交内存不动，下次访问软缺页回热）。同会话 15 分钟
+      // 内不重复压，防抖动。多开 100 个会话时这是主要的物理内存压制手段。
+      for (const session of sessionsRef.current) {
+        if (session.status !== "waiting") continue;
+        if (busySessionIds.has(session.id)) continue;
+        if (pendingSessionIds.has(session.id) || queuedSessionIds.has(session.id)) continue;
+        if (now - lastActiveMs(session) < TRIM_QUIET_MS) continue;
+        const lastTrim = lastTrimByIdRef.current.get(session.id) ?? 0;
+        if (now - lastTrim < TRIM_REPEAT_MS) continue;
+        lastTrimByIdRef.current.set(session.id, now);
+        void trimSessionWorkingSet(session.id);
+      }
+      // 顺手回收：会话从表里消失后清掉 trim 记录，防 map 无界增长。
+      if (lastTrimByIdRef.current.size > sessionsRef.current.length + 8) {
+        const alive = new Set(sessionsRef.current.map((session) => session.id));
+        for (const id of lastTrimByIdRef.current.keys()) {
+          if (!alive.has(id)) lastTrimByIdRef.current.delete(id);
+        }
       }
     }, 60_000);
     return () => clearInterval(timer);
@@ -9116,7 +9158,9 @@ export function App() {
               { id: "new-chat", label: t("palette.newChat"), run: () => void handleCreateChatSession() },
               {
                 // 插件：装一次全 agent 生效（docs/plan-plugin-layer.md）。
-                // 展开右栏滚到该卡片；贴边态切到 context 整页。
+                // 派发事件让 ContextPanel 自己展开「共享」卡并滚动——插件卡
+                // 在折叠区内，未展开时 #context-plugins 不在 DOM，直接
+                // scrollTo 会落空（2026-11-06 修）；贴边态先切 context 整页。
                 id: "open-universal-plugins",
                 label: t("allPlugins.paletteOpen"),
                 hint: t("allPlugins.paletteOpenHint"),
@@ -9127,9 +9171,7 @@ export function App() {
                     setRightCollapsed(false);
                   }
                   window.setTimeout(() => {
-                    document
-                      .getElementById("context-plugins")
-                      ?.scrollIntoView({ block: "start" });
+                    window.dispatchEvent(new CustomEvent("marionette:reveal-plugins"));
                   }, 160);
                 },
               },

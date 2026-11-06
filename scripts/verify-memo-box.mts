@@ -215,10 +215,11 @@ function session(partial: Partial<Session> & { id: string }): Session {
       panel.includes("shelf-clip--lend"),
   );
   check(
-    "插件与共通插件合并成一块",
+    "插件卡只剩统一入口（DSH 专属块已删，2026-11-06）",
     panel.includes('id="context-plugins"') &&
       panel.includes("UniversalPluginsSection embedded") &&
-      panel.includes("PluginsSection embedded"),
+      // 词边界：UniversalPluginsSection 不算命中。
+      !/\bPluginsSection\b/.test(panel),
   );
 
   const tabs = readFileSync(join(here, "../src/components/SessionView.tsx"), "utf8");

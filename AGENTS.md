@@ -451,7 +451,6 @@ icacls D:\Apps\Marionette /setintegritylevel (OI)(CI)Medium
 UPX 载荷 15.4MB（UPX/xz/xz+BCJ 三个压缩器实测打平，**这是熵极限，别再试压缩器**）+
 壳与 dist 的 UPX 压缩。空闲进程树 ≈ 主进程 55.8MB private + WebView2 六进程 ~243MB +
 magpie 120–160MB——前两个是「运行时入场费」，调不掉，能动的杠杆全在本批：
-
 1. **引擎内存**（`engine.rs::spawn_serve`）：注入 `GOMEMLIMIT=128MiB`（Go 软上限，
    用户自设不覆盖），空闲 private 从 ~160 往 ~100 压；同点 `assign_child_to_kill_job`
    把 magpie 挂进 **Job Object（kill-on-close）**——崩溃/强杀后不再留孤儿 magpie
@@ -487,6 +486,59 @@ magpie 120–160MB——前两个是「运行时入场费」，调不掉，能�
    TUI/OAuth、codex 目录保鲜 goroutine（会拖回整个 internal/agent；
    `catalog.KeepFresh`+`provider.FetchNew` 仍在）。用户「更新引擎」装完整版后种子让位。
    **0.5.3 起 release exe ≈ 15.9MB**（壳+dist UPX ~4.7 + 种子 12.0）。
+
+## 内存压制批（2026-11-06：多开不涨 / 空闲会话压工作集 / 卡顿源）
+
+家里 Win10 实测 ~2GB 且卡后的定调：**不做会话数量上限、不强制挂起**（开几个是用户
+的主权）；方向是 ①单个对话极轻 ②多开时尽可能压制**物理**占用 ③修卡顿源。诚实的硬
+底线：WebView2 运行时本身 ~250MB（browser/GPU/renderer），Web UI 不弃总量就到不了
+100MB——**换原生 UI 是独立重写项目，别在本批里顺手做**。本批承诺：空闲基线（无会话、
+引擎回收、未开浏览器标签）≈300MB；主窗最小化再降 150–250MB；空闲等待中的会话进程树
+物理工作集压到个位数 MB 级（逻辑内存不动、软缺页回热）。
+
+1. **浏览器预热已删（懒建）**：v0.6.0 起每次启动常驻一套 browser-profiles WebView2
+   进程组（估 70–130MB，没开过标签也在）——`main.rs` setup 的 `surface::prewarm`
+   连同 `PREWARM_SURFACE`/`take_prewarmed` 整体移除，首标签走 `create_surface`
+   直落 `build_surface`（即旧「第 2+ 个标签」路径，resize hook 自保证）。风险：
+   首标签是「首次建 WebContext + 事件循环内 build」（plan-browser §9 D 组不完全
+   同形）；**若首标签冻死，回退 = 在 setup 里恢复一次 prewarm**。真机回归：不开
+   标签无 browser-profiles 进程组；开/关标签、关后主窗 resize 正常。
+2. **ACP 会话进程树挂 per-session Job Object**（`process_util::KillJobGuard`）：
+   适配器 node assign 进 kill-on-close job，孙进程（codex.exe/MCP）自动继承；
+   `stop()`/stdout EOF 各关一次（terminate 幂等，Drop 兜底）——agent 崩溃、
+   Marionette 被强杀都不再留孤儿树。**与 engine.rs 的共享 job 是两回事**（那个
+   句柄故意持有到进程退出；这个每会话一个、RAII）。沙箱收编 Assign 失败 →
+   warn 降级为旧行为。红线：**JobGuard 只许 RAII/terminate()，禁止手动
+   CloseHandle**。
+3. **空闲会话工作集压制（X3）**：前端 60s 巡逻 tick 对「waiting 且安静 ≥2 分钟
+   （`sessionSuspend` 的 `TRIM_QUIET_MS`）且不在 busy 豁免集合（子代理/ACP 终端/
+   定时发送/待决权限卡）」的会话调 `trim_session_working_set` ——Rust 经 job 枚举
+   进程树逐个 `EmptyWorkingSet`（页面转 standby，任务管理器「专用工作集」列肉眼
+   可见回落；提交内存不变）。同会话 15 分钟不重复。**红线：只许打在 waiting 会话
+   的树上，禁止对 running 会话/主进程/WebView2 进程调用**（活跃流会疯狂换页）。
+   不做 LRU 数量上限（用户主权，2026-11-06 定案——别再提）。
+4. **主窗最小化 → webview TrySuspend**（main.rs `MINIMIZE_SUSPENDED`）：Resized
+   事件看 `is_minimized()`，最小化 webview 级 hide、还原 show；Focused(true) 兜底
+   resume。**check-then-clear，绝不先 swap 再查最小化**（清了账本却没 resume =
+   白屏）。贴边窗口不会最小化，天然不进这条。
+5. **冷淘汰免全量重写（X4）**：`useSessionRails` 新导出 `isPersistClean`
+   （`lastPersistedRef` 前缀引用全等，与流式落盘同口径，**不得克隆事件**）；
+   `pruneColdSessionMemory` 与撕窗隐藏 flush 干净即跳过 `persistRailsNow`
+   （那条链会 `ensureFullTranscript` 把截断头整段装回内存再全量重写——每 2 分钟
+   一次的秒级卡顿源，HDD+Defender 尤甚）。顺手补漏：淘汰时 `olderHeadsRef` 条目
+   一起删（原先从不清理）。
+6. **读转录移出 storage 锁（X5）**：`load_transcript`/`load_transcript_window`
+   拆出路径版关联函数（`load_transcript_file` / `load_transcript_window_file`，
+   `&self` 原方法保留薄包装），命令层锁内 `transcript_path_for` 拿路径、锁外读
+   ——与写路径（2026-10-31）同款。24MB 转录的顺序读是秒级 IO，别再持全局锁跑。
+7. **不做并记录**：撕窗 destroy（paint-assert 红线；隐藏已 TrySuspend，够了）；
+   `additionalBrowserArguments` 调参（会整体替换 wry 默认参数，不同 args 还强制
+   分裂 data directory）。
+
+回归：`cargo test --bin marionette`（475 项）+ 真机手册（见 docs/CURRENT.md 引用的
+批次清单）：冷启动无 browser-profiles 组、空闲会话 2–3 分钟后工作集回落、挂起杀
+整树、强杀无 node/codex.exe 残留、最小化/还原白屏检查、冷会话转录 mtime 不再
+周期变。
 
 ## 2026-10-30 修复批（面板可关 / effort 档位 / 来源注册三连）
 
@@ -628,11 +680,12 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
   标签生命周期事件都要能进 registry——所有入口先 clone `Rc<Surface>` 出借用再干慢活
   （`with_surface` 的形状）。wry WebView 非 Send：surface 只活在主线程，
   外部一律 `run_on_main_thread` + oneshot。
-- **预热面是基础设施不是标签**：`surface::prewarm` 建的隐藏 surface 存注册表之外
-  （`PREWARM_SURFACE`），首个真实标签 `take_prewarmed` 认领才 `register_surface`
-  ——放进注册表 = 每次启动一个关不掉的幽灵「浏览器 1」（2026-11-01 实锤）。
-  **任何 child webview 的创建只准在 setup 预热或事件循环内的短路径**（见
-  plan-browser-computer-use.md §9 嵌套泵红线）；CDP world 懒装到首次读取。
+- **预热面已删（2026-11-06 懒建）**：曾用 `surface::prewarm`（存 `PREWARM_SURFACE`，
+  首标签 `take_prewarmed` 认领——曾因泄进注册表出过幽灵「浏览器 1」，2026-11-01
+  实锤）；后因常驻第二套 WebView2 进程组（估 70–130MB，没开过标签也在）整体移除，
+  每个标签（含首个）都走 `create_surface` 直建。**任何 child webview 的创建只准在
+  事件循环内的短路径**（见 plan-browser-computer-use.md §9 嵌套泵红线与 2026-11-06
+  偏差记录）；CDP world 懒装到首次读取。若首标签冻死，回退 = setup 里恢复 prewarm。
 - **工具通道 = localhost HTTP MCP**（`tools_mcp.rs`，tiny_http + 每会话 Bearer
   token，注入点在 `acp.rs` session/new 前、仅 supports_http 且 wire policy 放行）。
   zcode 只收 url 型所以这是唯一通道；新工具加 schema + dispatch 两处，别开新端口。
@@ -668,7 +721,7 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
   必须连 paint_over 一起做）、指示条 overlay、foreground 交付、verify/launch_app/
   hold_key/invoke_menu/set_window_frame 工具。
 
-## 共通插件层（2026-11-05 落地）
+## 共通插件层（2026-11-05 落地；2026-11-06 收口）
 
 安装一次、**所有 agent 生效**的插件层（设计稿 `docs/plan-plugin-layer.md`，行为在
 `docs/CURRENT.md`）。改前先记五条红线：
@@ -699,6 +752,16 @@ application/json`——流式 only 的服务要响亮失败）。全局 skills �
 `~/.marionette/plugins/skills/`（default-on prompt 借贷）。`zcode_mcp_bridge`
 原样保留服务旧借贷，插件层不碰它。回归：`cargo test --bin marionette plugins
 plugin_host tools_mcp zcode_mcp_bridge` + `npx tsc --noEmit`。
+
+**2026-11-06 收口**：右栏「DeepSeek Harness」插件块整体删除（前端
+`PluginsSection.tsx`/`pluginBadges.ts`/`api.ts` 三函数 + Rust `dsh_plugins.rs`
+及其命令——**别把它加回来**，统一入口只有插件卡）；**技能可从界面装**
+（`UniversalSkillsSection`：`pick_folder` → `skill_install` 复制整树进
+`plugins/skills/<id>/`，登记处就是目录、不进 index.json；**全局停用 = 目录内
+`.disabled` 标记文件**，`context_inventory::scan_skills_dir` 跳过带标记目录，
+「项目上下文→技能」与注入同步消失——别给 index.json 加技能记录类）。Ctrl K
+「插件」派发 `marionette:reveal-plugins`（ContextPanel 展开共享卡再滚——插件卡
+在折叠区内，直接 scrollTo 会落空）。dsh 跨用桥与 spawn 链不动。
 
 ## DeepSeek Harness 接入（@openma/deepseek-harness-acp，2026-10-19 起）
 

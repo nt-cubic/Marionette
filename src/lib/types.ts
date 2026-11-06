@@ -435,6 +435,15 @@ export type UniversalPluginSpec = {
   headers?: Record<string, string>;
 };
 
+/** Skills under plugins/skills/（2026-11-06 并入插件层；目录即登记处）。 */
+export type UniversalSkill = {
+  id: string;
+  name: string;
+  description?: string;
+  dir: string;
+  enabled: boolean;
+};
+
 export type ChangedFile = {
   path: string;
   changeType: "added" | "modified" | "deleted" | "untracked";

@@ -174,10 +174,12 @@ fn read_jsonc(path: &Path) -> Option<Value> {
     serde_json::from_str(&strip_jsonc_comments(&raw)).ok()
 }
 
-struct Collector {
-    servers: Vec<McpServerSpec>,
-    skills: Vec<SkillSpec>,
-    notes: Vec<String>,
+/// pub(crate)（仅测试跨模块用）：插件层的 skills 测试直接跑技能目录扫描。
+#[derive(Default)]
+pub(crate) struct Collector {
+    pub(crate) servers: Vec<McpServerSpec>,
+    pub(crate) skills: Vec<SkillSpec>,
+    pub(crate) notes: Vec<String>,
 }
 
 impl Collector {
@@ -543,7 +545,8 @@ fn scan_mcp_json(path: &Path, source: &str, agent: Option<&str>, out: &mut Colle
 }
 
 /// `name:` / `description:` out of a SKILL.md frontmatter block.
-fn parse_skill_front_matter(text: &str) -> (Option<String>, Option<String>) {
+/// pub(crate)：插件层的 skills_list 用同一口径读技能卡（2026-11-06）。
+pub(crate) fn parse_skill_front_matter(text: &str) -> (Option<String>, Option<String>) {
     let mut name = None;
     let mut description = None;
     let mut in_front = false;
@@ -568,11 +571,25 @@ fn parse_skill_front_matter(text: &str) -> (Option<String>, Option<String>) {
     (name, description)
 }
 
+/// pub(crate)（仅测试跨模块用）：见 Collector。
+pub(crate) fn scan_skills_dir_for_test(
+    dir: &Path,
+    source: &str,
+    out: &mut Collector,
+) {
+    scan_skills_dir(dir, source, None, out)
+}
+
 fn scan_skills_dir(dir: &Path, source: &str, agent: Option<&str>, out: &mut Collector) {
     let Ok(entries) = fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_dir() {
+            continue;
+        }
+        // 插件层的全局停用标记（2026-11-06）：带 .disabled 的技能不进清单、
+        // 不注入——「项目上下文→技能」与插件卡因此看同一份真相。
+        if path.join(".disabled").exists() {
             continue;
         }
         let skill_file = path.join("SKILL.md");
