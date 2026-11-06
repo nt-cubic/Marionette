@@ -534,6 +534,34 @@ magpie 120–160MB——前两个是「运行时入场费」，调不掉，能�
 7. **不做并记录**：撕窗 destroy（paint-assert 红线；隐藏已 TrySuspend，够了）；
    `additionalBrowserArguments` 调参（会整体替换 wry 默认参数，不同 args 还强制
    分裂 data directory）。
+8. **引擎懒启动（2026-11-06 第二批）**：`main.rs` setup 的无条件
+   `engine::enable()` 换成 `engine::startup_lazy()`——只做 `place_and_prep`
+   （恢复/收割/**内嵌种子离线落位**，便携版首装不破），**仅
+   `engine_binding_count()>0`（与空闲回收同源信号）才 serve**。配套：
+   ①`bridge_list_models` 的 5s 唤醒加同一道门——**纯浏览菜单不得拉引擎**
+   （绑定>0 才等）；②引擎目录落 `~/.marionette/engine-catalog.json`
+   （live 非空回写，停机回放——菜单 marionette 组不随引擎睡眠整组消失，
+   `catalog_direct_or_cached()`）；③右栏额度卡引擎行改快照保留
+   （absent 不清空 + localStorage `marionette-quota` + 「引擎未运行 · 快照」
+   标注，`quotaCache.ts`）；④前端 bridge/modelLibrary 刷新做**内容级
+   比较**（等价不换对象/不通知），Composer 开菜单 effect 的 deps 去掉
+   `modelSources`（消灭双拉）；⑤启动清扫**僵尸绑定**（`model_bridge::
+   drop_dead_bindings`——指向已删会话的绑定行作废，`storage::
+   known_session_ids` 供清单；**空世界守卫**：清单为空且绑定非空时不清，
+   清单读失败与「真没会话」分不清，fail-open 宁可多养引擎不误删）。**显式入口保留**：网关按钮 / `bridge_bind`
+   （唯一合法隐式 enable，含首装下载）/ dsh·pi·zcode·opencode 的 spawn
+   wake / council——别把它们也门掉。测试红线：engine 缝没挂 `dir` 时
+   `catalog_cache_path` 必须返回 None（绝不读写真实 `~/.marionette/`）。
+10. **auto/ 全面隐藏（2026-11-06 产品定案：「不再出现任何 auto」）**：引擎目录
+   的 `auto/` 路由组与 `group/` 一并从所有面消失——engine.rs 的
+   `catalog_direct` / `catalog_direct_entries` 是**唯一过滤点**（跨用菜单 /
+   opencode 注入 / dsh 路由 / pi models.json / zcode 桥 / council / 目录
+   缓存回写全走它），**别在消费点各自再滤一遍**；目录缓存**读侧**也剥
+   auto（旧 engine-catalog.json 不用手删）。存量 auto 绑定由
+   `model_bridge::drop_auto_bindings`（main.rs setup 挂一次）清掉，受影响
+   会话回落 agent 原生默认；引擎里残留的 codex 别名组（`group/…`）不进
+   任何菜单，无害。回归：`cargo test catalog_direct_hides_auto` +
+   `drop_auto_bindings_clears_only_auto_rows`。
 
 回归：`cargo test --bin marionette`（475 项）+ 真机手册（见 docs/CURRENT.md 引用的
 批次清单）：冷启动无 browser-profiles 组、空闲会话 2–3 分钟后工作集回落、挂起杀

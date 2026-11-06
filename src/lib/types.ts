@@ -479,6 +479,10 @@ export type UsageSnapshot = {
   /** Human-readable footnote about data freshness / source. */
   note?: string | null;
   cost?: { amount: number; currency: string } | null;
+  /** 引擎订阅配额行的快照时间（懒启动配套：引擎停着时行保留并标注）。 */
+  engineQuotaFetchedAt?: number | null;
+  /** 引擎当前是否 Running（false + 有引擎行 = 显示离线快照标注）。 */
+  engineOnline?: boolean;
 };
 
 // ─── ACP Capability Types ───────────────────────────────────────────────────

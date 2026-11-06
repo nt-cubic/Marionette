@@ -67,7 +67,13 @@ export async function refreshModelSources(): Promise<SourceScan> {
   if (!isTauriRuntime()) return scan;
   scanPromise = invoke<SourceScan>("model_library_scan");
   try {
-    scan = await scanPromise; scannedAt = Date.now(); invalidateBridgeModels(); notify();
+    const next = await scanPromise;
+    // 内容级比较（2026-11-06）：等价的 scan 不再 invalidate + notify——那次
+    // 通知会让所有挂载的 picker 白拉一轮 bridge_list_models，菜单当场闪变
+    // （多源异步换装的次因）。跨窗口广播照发，对端有自己的同款比较。
+    const changed = JSON.stringify(scan) !== JSON.stringify(next);
+    scan = next; scannedAt = Date.now();
+    if (changed) { invalidateBridgeModels(); notify(); }
     await emit(SOURCES_EVENT, scan);
     return scan;
   }

@@ -28,6 +28,7 @@ import {
   unfinishedDelegateChildrenFromMeta,
 } from "../lib/acpRenderBudget";
 import { engineQuota as fetchEngineQuota, type EngineQuotaEntry } from "../lib/api";
+import { cacheEngineQuota, cachedEngineQuota } from "../lib/quotaCache";
 import { TELEGRAM_COMMAND_EVENT, telegramRemoteResult, type TelegramCommand } from "../lib/api";
 import { invalidateBridgeModels } from "../lib/bridge";
 import { useLatestCallback } from "../lib/useLatestCallback";
@@ -1541,12 +1542,34 @@ export function App() {
     }
   }, []);
 
-  /** Engine subscription quotas (`magpie quota`) merged into the Usage panel. */
-  const [engineQuotaRows, setEngineQuotaRows] = useState<EngineQuotaEntry[]>([]);
+  /** Engine subscription quotas (`magpie quota`) merged into the Usage panel.
+   * 懒启动配套（2026-11-06）：初始值从 localStorage 快照恢复；引擎停着
+   * （absent/failed）不再清空——保留上次行 + 时间戳，面板标注离线快照。 */
+  const [engineQuotaRows, setEngineQuotaRows] = useState<EngineQuotaEntry[]>(
+    () => cachedEngineQuota()?.entries ?? [],
+  );
+  const [engineQuotaFetchedAt, setEngineQuotaFetchedAt] = useState<number | null>(
+    () => cachedEngineQuota()?.savedAt ?? null,
+  );
+  const [engineOnline, setEngineOnline] = useState(false);
+  const engineOnlineRef = useRef(false);
+  const setEngineOnlineTracked = (online: boolean) => {
+    engineOnlineRef.current = online;
+    setEngineOnline(online);
+  };
   const refreshEngineQuota = useCallback((force = false) => {
     const apply = (rows: EngineQuotaEntry[] | null | undefined, replaceEmpty: boolean) => {
-      if (rows && rows.length > 0) setEngineQuotaRows(rows);
-      else if (replaceEmpty) setEngineQuotaRows([]);
+      if (rows && rows.length > 0) {
+        setEngineQuotaRows(rows);
+        setEngineQuotaFetchedAt(Date.now());
+        // 非空行只能来自运行中的引擎（engine_quota 非 Running 恒空）。
+        setEngineOnlineTracked(true);
+        cacheEngineQuota(rows);
+      } else if (replaceEmpty && engineOnlineRef.current) {
+        // 引擎在线却说没有配额行（订阅真没了/被清）才清空；引擎停着时
+        // engine_quota 空是「不在运行」，不是「没有配额」——保留快照。
+        setEngineQuotaRows([]);
+      }
     };
     // kept=1 几乎立刻从网关缓存刷出 Grok / Codex / Go 等行；点刷新再跟一发现场查询。
     void fetchEngineQuota(false)
@@ -1569,6 +1592,8 @@ export function App() {
    * engine-less result even after the user woke the gateway (2026-10-17).
    * Reaching running also pulls subscription quotas into Usage (the first
    * fetch on mount often races the engine still starting).
+   * 懒启动（2026-11-06）：absent/failed 不再清空配额行——保留上次快照
+   * （面板标注「引擎未运行 · 快照时间」），厂商直连余额行本就不受影响。
    */
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -1577,8 +1602,12 @@ export function App() {
     void listen<{ state?: string }>("engine-state-changed", (event) => {
       invalidateBridgeModels();
       const state = event.payload?.state;
-      if (state === "running") refreshEngineQuota();
-      else if (state === "absent" || state === "failed") setEngineQuotaRows([]);
+      if (state === "running") {
+        setEngineOnlineTracked(true);
+        refreshEngineQuota();
+      } else if (state === "absent" || state === "failed") {
+        setEngineOnlineTracked(false);
+      }
     }).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;
@@ -1606,8 +1635,10 @@ export function App() {
       state: activeSession ? sessionUsageById[activeSession.id] : undefined,
       connected,
       engineQuota: engineQuotaRows,
+      engineQuotaFetchedAt,
+      engineOnline,
     });
-  }, [availableAgents, availableSessions, currentSessionId, sessionUsageById, engineQuotaRows]);
+  }, [availableAgents, availableSessions, currentSessionId, sessionUsageById, engineQuotaRows, engineQuotaFetchedAt, engineOnline]);
 
   // Portable app update check — delayed so it never stalls first paint.
   useEffect(() => {
