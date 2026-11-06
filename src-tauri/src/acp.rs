@@ -4227,6 +4227,17 @@ mod tests {
     use super::*;
     use std::sync::mpsc::Receiver;
 
+    #[test]
+    fn dsh_package_found_from_unwrapped_npm_launcher() {
+        let root = std::env::temp_dir().join(format!("marionette-dsh-lookup-{}", std::process::id()));
+        let package = root.join("node_modules").join("@deepseek-ai").join("dsh");
+        fs::create_dir_all(package.join("lib")).unwrap();
+        fs::write(package.join("package.json"), "{}").unwrap();
+        assert_eq!(dsh_package_from_resolved(&package.join("lib").join("bin.js")), Some(package.clone()));
+        assert_eq!(dsh_package_from_resolved(&root.join("dsh.cmd")), None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     /// ZCode desktop installs hide in custom dirs; the install dir has to come
     /// out of the Start-Menu shortcut's UTF-16 LocalBasePath run, with or
     /// without the trailing executable name.
@@ -6143,10 +6154,23 @@ pub fn spawn_pipeline_watchdog() {
 /// keep `<prefix>/dsh.cmd` and `<prefix>/node_modules/@deepseek-ai/dsh` side by
 /// side, so walk from the `dsh` launcher on PATH, with the default Windows npm
 /// prefix as fallback.
+fn dsh_package_from_resolved(path: &Path) -> Option<PathBuf> {
+    path.ancestors().find(|ancestor| {
+        ancestor.file_name().is_some_and(|name| name == "dsh")
+            && ancestor.join("package.json").is_file()
+            && ancestor.parent().and_then(|p| p.file_name()).is_some_and(|name| name == "@deepseek-ai")
+    }).map(Path::to_path_buf)
+}
+
 fn dsh_runtime_dir() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(resolved) = crate::process_util::resolve_spawn_command("dsh") {
-        if let Some(bin_dir) = PathBuf::from(&resolved.resolved_path).parent() {
+        let resolved_path = PathBuf::from(&resolved.resolved_path);
+        // npm shims can resolve inside the package rather than beside node_modules.
+        if let Some(package) = dsh_package_from_resolved(&resolved_path) {
+            candidates.push(package);
+        }
+        if let Some(bin_dir) = resolved_path.parent() {
             candidates.push(
                 bin_dir
                     .join("node_modules")
