@@ -6,6 +6,7 @@
 | 脚本 | 用途 |
 |---|---|
 | `build-portable.bat` | 打便携版：内置引擎，产物在 `release\<版本号>\Marionette.exe`（按版本分目录，运行中的旧版不会锁住新构建）。打开即拉起 magpie。默认会先 `import-magpie.ps1` 拉 **GitHub latest 稳定版** 再编。环境变量：`SKIP_UPX=1`（内嵌 magpie 仍需要 UPX）、`REQUIRE_UPX=1`、`INSTALL_UPX=1`、`NOPAUSE=1`、`SKIP_MAGPIE_IMPORT=1`（沿用已有 `third_party\magpie`）、`MAGPIE_TAG=v…`（钉死种子版本） |
+| `launch-latest.vbs` / `.ps1` | Stable shortcut launcher; reads `release/current-build.txt`, which is updated after a successful portable build. Use `.ps1 -ShowTarget` to inspect the target; exit an older instance before launching a new one. |
 | `publish-release.bat` | 把 `release\<版本号>\Marionette.exe` 发到 GitHub Release（`gh`）。已有同 tag 则 `--clobber` 覆盖资产。可选 `-NotesFile`、`-Draft` |
 | `import-magpie.ps1` | 吸纳/更新内置引擎源码进 `third_party\magpie`（只留构建子集）。不传 `-Tag` 时取上游 **latest 稳定 release**；可 `-Tag v…` 或环境变量 `MAGPIE_TAG`。`build-portable.bat` 默认会调用。**导入后自动重放引擎种子补丁**（`magpie-seed\main_seed.go` → `main_seed.go` + 给上游 `main.go` 加 `!marionette_seed` guard）：便携版内嵌的是精简"纯网关"magpie（绕过 `internal/cli` 整个 agent 管理器，UPX 载荷 ~12MB vs 完整 ~19.6MB），上游重构导致补丁失配会在编译时报错，不会静默 |
 | `magpie-seed/` | 引擎种子补丁源：`main_seed.go`（build tag `marionette_seed`）只挂 gateway/routing/usage 三个插件，跑 `serve` 以及精简 `provider`/`group`/`models`（自定义来源登记不需要上游完整 magpie）。改插件集/启动序列在这里改，`import-magpie.ps1` 会把它拷进 `third_party\magpie` |
