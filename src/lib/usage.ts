@@ -1314,6 +1314,10 @@ export function buildUsageSnapshot(args: {
   cumulative?: CumulativeTokens | null;
   /** Engine subscription quotas (merged rows; the agent's own family is skipped). */
   engineQuota?: EngineQuotaEntry[] | null;
+  /** 引擎配额快照时间戳（ms）；引擎停着时行保留、面板标注离线。 */
+  engineQuotaFetchedAt?: number | null;
+  /** 引擎当前是否 Running。 */
+  engineOnline?: boolean;
 }): UsageSnapshot {
   const { agentId, agentLabel, state, connected } = args;
   const windows: UsageWindow[] = [];
@@ -1474,5 +1478,7 @@ export function buildUsageSnapshot(args: {
       state?.costAmount != null
         ? { amount: state.costAmount, currency: state.costCurrency ?? "USD" }
         : null,
+    engineQuotaFetchedAt: args.engineQuotaFetchedAt ?? null,
+    engineOnline: args.engineOnline ?? true,
   };
 }

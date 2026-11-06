@@ -263,6 +263,29 @@ impl StorageService {
         read_json_with_recovery(&file, "sessions")
     }
 
+    /// 所有项目 + 聊天目录里**存在**的会话 id 集合（含 @-delegate 子会话）。
+    /// 僵尸绑定清扫用（model_bridge）：绑定指向已删除的会话时该行作废，
+    /// engine_binding_count 因此只被活会话推高——懒启动的门与 30 分钟空闲
+    /// 回收的计数都随之变准（2026-11-06）。
+    pub fn known_session_ids(&self) -> std::collections::HashSet<String> {
+        let mut ids = std::collections::HashSet::new();
+        let projects: Vec<Project> =
+            read_json_with_recovery(&self.projects_file, "projects").unwrap_or_default();
+        for project in &projects {
+            let file = sessions_file(Path::new(&project.root_path));
+            if !file.exists() {
+                continue;
+            }
+            if let Ok(all) = read_json_with_recovery::<Vec<Session>>(&file, "sessions") {
+                ids.extend(all.into_iter().map(|session| session.id));
+            }
+        }
+        if let Ok(chats) = self.read_chat_sessions_all() {
+            ids.extend(chats.into_iter().map(|session| session.id));
+        }
+        ids
+    }
+
     /// Sessions with the stored live status repaired.
     ///
     /// `status` is runtime state: a stored `running` only means the previous run

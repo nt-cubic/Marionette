@@ -3251,18 +3251,24 @@ pub fn bridge_list_models(agent_id: String) -> crate::model_bridge::BridgeModels
     // 带上引擎源；睡过头（>5s）就按当前状态答（note 有指引）。
     // 2026-10-20 补课：dsh / pi 接入当天漏把这两家加进唤醒名单——DSH 菜单
     // 打开引擎纹丝不动，直接按「未运行」回答（用户实测踩坑）。
-    if matches!(
-        crate::model_bridge::classify_agent(&agent_id),
-        crate::model_bridge::BridgeAgent::ClaudeCode
-            | crate::model_bridge::BridgeAgent::GrokBuild
-            | crate::model_bridge::BridgeAgent::Codex
-            | crate::model_bridge::BridgeAgent::Opencode
-            | crate::model_bridge::BridgeAgent::Deepseek
-            | crate::model_bridge::BridgeAgent::Pi
-            // 2026-10-23：zcode 接入当天同样漏登记——引擎睡着时它的菜单直接
-            // 按「未运行」回答，与 DSH/Pi 那次是同一个坑。
-            | crate::model_bridge::BridgeAgent::Zcode
-    ) {
+    // 2026-11-06 懒启动门：纯浏览菜单不再拉引擎——仅当存在引擎模型
+    // 绑定（engine_binding_count>0，与空闲回收同源信号）才等唤醒。绑定=在
+    // 用引擎模型（引擎意外死掉时菜单打开即自愈）；无绑定的浏览走离线缓存
+    // 目录（model_bridge 回放 engine-catalog.json），引擎保持零进程。
+    if crate::engine::engine_binding_count() > 0
+        && matches!(
+            crate::model_bridge::classify_agent(&agent_id),
+            crate::model_bridge::BridgeAgent::ClaudeCode
+                | crate::model_bridge::BridgeAgent::GrokBuild
+                | crate::model_bridge::BridgeAgent::Codex
+                | crate::model_bridge::BridgeAgent::Opencode
+                | crate::model_bridge::BridgeAgent::Deepseek
+                | crate::model_bridge::BridgeAgent::Pi
+                // 2026-10-23：zcode 接入当天同样漏登记——引擎睡着时它的菜单直接
+                // 按「未运行」回答，与 DSH/Pi 那次是同一个坑。
+                | crate::model_bridge::BridgeAgent::Zcode
+        )
+    {
         crate::engine::ensure_bridge_ready_if_installed(std::time::Duration::from_secs(5));
     }
     // 被动路径（非强制）：不排队等同步锁、不强制 live 重抓——菜单打开不该

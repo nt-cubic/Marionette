@@ -414,18 +414,26 @@ fn main() {
                     Some(&err),
                 ),
             }
+            // 产品决定（2026-11-06）：auto/ 路由模型全面隐藏——存量 auto 绑定
+            // 清掉，受影响会话回落 agent 原生默认。随后清扫僵尸绑定（指向已
+            // 删除会话的行）——engine_binding_count 只被活会话推高，懒启动的
+            // 门与空闲回收的计数随之变准。两条都幂等、fail-open。
+            model_bridge::drop_auto_bindings();
+            model_bridge::drop_dead_bindings();
             // Startup is the only safe moment: no session exists yet, so an
             // upgrade cannot replace a binary an agent is mid-turn on.
             commands::auto_update_agents_in_background();
-            // 无脑可用：翻译引擎随应用启动自动拉起。便携版（embedded-engine）
-            // 离线落位内嵌 magpie 再 serve；开发构建未装则后台下载。
-            // enable 幂等；失败只落 Failed 状态（左下角可见/可重试），不阻塞启动。
-            if let Err(error) = engine::enable() {
+            // 懒启动（2026-11-06 用户定案：不用模型共享就不启动引擎）：
+            // 便携版内嵌种子照旧离线落位（磁盘操作，不起进程）；仅当存在
+            // 引擎模型绑定（与 30 分钟空闲回收同一个信号）才拉起 serve——
+            // 纯 GPT/codex 用户引擎零进程。显式入口（网关按钮 / 绑定引擎
+            // 模型 / 跨用 agent spawn / council）照旧能拉起，失败只落日志。
+            if let Err(error) = engine::startup_lazy() {
                 debug_log::append(
                     "engine",
                     "warn",
                     "",
-                    "engine auto-start at launch failed",
+                    "engine lazy startup at launch failed",
                     Some(&error),
                 );
             }

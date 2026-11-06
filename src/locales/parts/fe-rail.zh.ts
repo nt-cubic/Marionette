@@ -65,6 +65,7 @@ export const zh = {
   "rail.sharedMemory": "记忆 {count}",
   "rail.sharedTo": "勾选的会在下次连接时借给 {agent}",
   "rail.pluginsEmpty": "还没有装插件",
+  "rail.quotaEngineOffline": "引擎未运行 · 配额为 {when} 的快照",
   "rail.memoryRefresh": "刷新记忆",
   "rail.memoryEmpty": "还没有找到 agent 的记忆文件",
   "rail.memoryDistillTitle": "从这场对话里提炼值得长期记住的内容",
