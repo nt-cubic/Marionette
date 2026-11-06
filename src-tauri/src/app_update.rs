@@ -218,9 +218,7 @@ pub fn check_for_update() -> AppUpdateInfo {
         .unwrap_or((None, None));
 
     let update_available = !latest.is_empty() && is_newer(&latest, &current) && asset_url.is_some();
-    let note = if update_available {
-        None
-    } else if failed_note.is_some() {
+    let note = if failed_note.is_some() {
         failed_note
     } else if asset_url.is_none() && !latest.is_empty() {
         Some("Release has no matching portable build".into())
