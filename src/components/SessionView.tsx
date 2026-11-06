@@ -2774,8 +2774,6 @@ function CleanPlaceholder({
             event.type === "thought" ? (
               thoughtLive && thoughtStartMs != null ? (
                 <ThoughtDurationLabel startMs={thoughtStartMs} live />
-              ) : thoughtDurationSec != null && thoughtDurationSec > 0 ? (
-                `Thought · ${thoughtDurationSec}s`
               ) : (
                 "Thought"
               )
@@ -3063,6 +3061,12 @@ function CleanPlaceholder({
                       className="event-card__thumbs"
                     />
                   ) : null}
+                  {event.type === "thought" &&
+                    !thoughtLive &&
+                    thoughtDurationSec != null &&
+                    thoughtDurationSec > 0 && (
+                      <span className="event-card__outcome">{`${thoughtDurationSec}s`}</span>
+                    )}
                   {toolOutcome && (
                     <span className={`event-card__outcome${toolOutcome.failed ? " is-failed" : ""}`}>
                       {toolOutcome.text}
