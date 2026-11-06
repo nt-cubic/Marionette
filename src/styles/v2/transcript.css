@@ -42,16 +42,25 @@
 
 /* ── 3 · Activity / tool cards ───────────────────────────────────────────
    The process card is the 0.6 gray chip plus v2 identity chrome: ▸ that
-   turns, 3px agent-ink rail, square left / round right. Inner tool/thought
-   rows keep 0.6 padding so they are not squeezed into a 30px <details>
-   widget, and stay full-radius chips with no second rail. Thumbs on a
+   turns, 3px agent-ink rail, square left / round right.
+
+   `.event-card { padding: 10px }` above would make every tool/thought row as
+   wide as You / Reply. Collapsible chips beat that here. Nested rows inside
+   the process card are one 28px chip (full radius, no second rail) so a
+   kind-group, a thought, and a command are the same size. Thumbs on a
    closed tally stay 16px so they cannot stretch the chip. */
 
-.event-card--thought,
-.event-card--tool_call {
+.event-card.event-card--thought,
+.event-card.event-card--tool_call {
+  padding: 5px 10px;
   border-color: color-mix(in srgb, var(--border) 80%, var(--text-muted));
   background: color-mix(in srgb, var(--panel-soft) 88%, transparent);
   box-shadow: none;
+}
+
+.event-list__virt-item > .event-card--thought,
+.event-list__virt-item > .event-card--tool_call {
+  padding-left: 12px;
 }
 
 .activity-group.is-live {
@@ -501,6 +510,58 @@
 .event-list__virt-item > .event-card--tool_call,
 .event-list__virt-item > .event-card--thought {
   position: relative;
+}
+
+/* Inner process rows: one compact chip. Closed height is locked so a
+   "2 tools" kind-group, a Thought, and a Ran-a-command row match. */
+.activity-group .event-card--thought:not([open]),
+.activity-group .event-card--tool_call:not([open]),
+.activity-group .activity-kind:not([open]) {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  min-height: 28px;
+  max-height: 28px;
+  padding: 0 8px;
+  border-radius: var(--radius);
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.activity-group .event-card--thought[open],
+.activity-group .event-card--tool_call[open],
+.activity-group .activity-kind[open] {
+  display: block;
+  height: auto;
+  max-height: none;
+  padding: 5px 8px;
+  border-radius: var(--radius);
+}
+
+.activity-group .event-card--thought::before,
+.activity-group .event-card--tool_call::before {
+  content: none;
+}
+
+.activity-group .event-card--thought:not([open]) > .event-card__summary,
+.activity-group .event-card--tool_call:not([open]) > .event-card__summary,
+.activity-group .activity-kind:not([open]) > .activity-panel__summary {
+  width: 100%;
+  min-height: 0;
+  height: 28px;
+  gap: 6px;
+}
+
+.activity-group .activity-panel__body,
+.activity-group .activity-kind__body,
+.activity-group .activity-panel__items {
+  gap: 4px;
+}
+
+.activity-group .event-card__type,
+.activity-group .activity-kind .activity-panel__title {
+  font-size: 12px;
+  font-weight: 600;
 }
 
 /* ---- Reply header / footer split (2026-11-06) -----------------------------------------
