@@ -15,6 +15,12 @@ import { t } from "./i18n";
 /** How long a warm, idle dialog may sit untouched before it is parked. */
 export const SUSPEND_IDLE_MS = 2 * 60 * 60 * 1000;
 
+// X3（2026-11-06 内存压制批）：不挂起、只压物理内存。waiting 且安静超过
+// TRIM_QUIET_MS 的会话，把 agent 进程树的工作集压出去（EmptyWorkingSet）；
+// 同会话 TRIM_REPEAT_MS 内不重复压。进程、挂起策略、用户体验全都不动。
+export const TRIM_QUIET_MS = 2 * 60 * 1000;
+export const TRIM_REPEAT_MS = 15 * 60 * 1000;
+
 export type SuspendableSession = {
   id: string;
   status: string;

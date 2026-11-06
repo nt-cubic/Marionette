@@ -207,6 +207,136 @@ pub fn enabled_plugin(id: &str) -> Option<PluginRecord> {
     load().into_iter().find(|plugin| plugin.enabled && plugin.id == id)
 }
 
+// ─── Skills（plugins/skills 的安装/停用/删除，2026-11-06） ─────────────────
+//
+// 技能不是 MCP server，不进 index.json：登记处就是 skills/ 目录本身——
+// 每个含 SKILL.md 的子目录即一个技能（context_inventory 按同一口径扫描，
+// 注入链「per-project 默认 on 借贷」不变，本轮只补管理入口）。全局停用 =
+// 目录里放一个 `.disabled` 标记文件：scan_skills_dir 跳过带标记的目录，
+// 「项目上下文→技能」清单与注入同步消失——两个入口看同一份真相，
+// 永不打架（也比给 index.json 加记录类少一次 schema 演进）。
+
+#[derive(Clone, Debug, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillRecord {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub dir: String,
+    pub enabled: bool,
+}
+
+/// Marker file name that globally disables a skill directory.
+const SKILL_DISABLED_MARKER: &str = ".disabled";
+
+pub fn skills_dir() -> Result<PathBuf, String> {
+    Ok(plugins_dir()?.join("skills"))
+}
+
+fn skill_record_at(dir: &Path) -> Option<SkillRecord> {
+    let skill_file = dir.join("SKILL.md");
+    if !dir.is_dir() || !skill_file.exists() {
+        return None;
+    }
+    let id = dir.file_name()?.to_str()?.to_string();
+    if id.is_empty() {
+        return None;
+    }
+    let text = std::fs::read_to_string(&skill_file).unwrap_or_default();
+    let (name, description) = crate::context_inventory::parse_skill_front_matter(&text);
+    let fallback_name = id.clone();
+    Some(SkillRecord {
+        id,
+        name: name.unwrap_or(fallback_name),
+        description: description.unwrap_or_default(),
+        dir: dir.display().to_string(),
+        enabled: !dir.join(SKILL_DISABLED_MARKER).exists(),
+    })
+}
+
+/// List skills under `root` (one SKILL.md folder = one skill, disabled ones
+/// included so the UI can show/toggle them).
+pub fn list_skills_at(root: &Path) -> Vec<SkillRecord> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut skills: Vec<SkillRecord> = entries
+        .flatten()
+        .filter_map(|entry| skill_record_at(&entry.path()))
+        .collect();
+    skills.sort_by(|a, b| a.id.cmp(&b.id));
+    skills
+}
+
+/// Copy a skill folder (must contain SKILL.md) into `root/<id>`. Installing is
+/// enabling: a `.disabled` marker in the source is not carried over.
+pub fn install_skill_at(source: &Path, id: Option<String>, root: &Path) -> Result<SkillRecord, String> {
+    if !source.is_dir() {
+        return Err(format!("source folder not found: {}", source.display()));
+    }
+    if !source.join("SKILL.md").exists() {
+        return Err(format!(
+            "no SKILL.md in {} (a skill is a folder that contains one)",
+            source.display()
+        ));
+    }
+    let id = match id {
+        Some(explicit) if !explicit.trim().is_empty() => explicit.trim().to_lowercase(),
+        _ => source
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_lowercase(),
+    };
+    if !valid_plugin_id(&id) {
+        return Err(format!(
+            "invalid skill id `{id}` (lowercase slug, 1-64 chars: a-z 0-9 . _ -)"
+        ));
+    }
+    let target = root.join(&id);
+    if target.exists() {
+        return Err(format!("skill `{id}` already exists (remove it first)"));
+    }
+    crate::memos::copy_tree(source, &target)?;
+    // Install = enabled; drop any marker the source happened to carry.
+    let marker = target.join(SKILL_DISABLED_MARKER);
+    if marker.exists() {
+        let _ = std::fs::remove_file(marker);
+    }
+    skill_record_at(&target).ok_or_else(|| "installed skill folder unreadable".to_string())
+}
+
+pub fn remove_skill_at(id: &str, root: &Path) -> Result<(), String> {
+    if !valid_plugin_id(id) {
+        return Err(format!("invalid skill id `{id}`"));
+    }
+    let target = root.join(id);
+    if !target.is_dir() {
+        return Err(format!("skill `{id}` not found"));
+    }
+    std::fs::remove_dir_all(&target).map_err(|e| format!("remove skill failed: {e}"))
+}
+
+pub fn set_skill_enabled_at(id: &str, enabled: bool, root: &Path) -> Result<(), String> {
+    if !valid_plugin_id(id) {
+        return Err(format!("invalid skill id `{id}`"));
+    }
+    let target = root.join(id);
+    if !target.is_dir() {
+        return Err(format!("skill `{id}` not found"));
+    }
+    let marker = target.join(SKILL_DISABLED_MARKER);
+    if enabled {
+        if marker.exists() {
+            std::fs::remove_file(&marker).map_err(|e| format!("enable skill failed: {e}"))?;
+        }
+    } else if !marker.exists() {
+        std::fs::write(&marker, b"").map_err(|e| format!("disable skill failed: {e}"))?;
+    }
+    Ok(())
+}
+
 // ─── Injection payloads ──────────────────────────────────────────────────────
 
 /// url-type entries on the shared loopback server — the exact entry shape
@@ -344,6 +474,28 @@ pub fn plugins_probe(id: String) -> Result<ProbeRecord, String> {
     Ok(probe)
 }
 
+// ── Skills commands（skills/ 目录即登记处；停用 = .disabled 标记） ──
+
+#[tauri::command]
+pub fn skills_list() -> Result<Vec<SkillRecord>, String> {
+    Ok(list_skills_at(&skills_dir()?))
+}
+
+#[tauri::command(async)]
+pub fn skill_install(source_path: String, id: Option<String>) -> Result<SkillRecord, String> {
+    install_skill_at(std::path::Path::new(&source_path), id, &skills_dir()?)
+}
+
+#[tauri::command(async)]
+pub fn skill_remove(id: String) -> Result<(), String> {
+    remove_skill_at(&id, &skills_dir()?)
+}
+
+#[tauri::command(async)]
+pub fn skill_set_enabled(id: String, enabled: bool) -> Result<(), String> {
+    set_skill_enabled_at(&id, enabled, &skills_dir()?)
+}
+
 fn now_ms() -> String {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -390,6 +542,94 @@ mod tests {
         assert!(!valid_plugin_id("has space"));
         assert!(!valid_plugin_id("a/b"));
         assert!(!valid_plugin_id(&"x".repeat(65)));
+    }
+
+    // ── Skills（2026-11-06）：目录即登记处，.disabled 即全局停用 ──
+
+    /// A source skill folder with frontmatter + one asset file.
+    fn skill_source(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "Marionette-skill-src-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: Demo Skill\ndescription: A demo.\n---\nBody here.\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("assets").join("note.txt"), "asset").unwrap();
+        dir
+    }
+
+    #[test]
+    fn skill_install_list_toggle_remove_round_trip() {
+        let root = temp_dir_for("skills");
+        let source = skill_source("roundtrip");
+
+        let record = install_skill_at(&source, Some("demo".into()), &root).unwrap();
+        assert_eq!(record.id, "demo");
+        assert_eq!(record.name, "Demo Skill");
+        assert!(record.enabled);
+        assert!(root.join("demo").join("assets").join("note.txt").exists());
+
+        // Duplicate ids are refused, not overwritten.
+        assert!(install_skill_at(&source, Some("demo".into()), &root).is_err());
+
+        // Disable via marker; list still shows it (UI needs the toggle).
+        set_skill_enabled_at("demo", false, &root).unwrap();
+        let listed = list_skills_at(&root);
+        assert_eq!(listed.len(), 1);
+        assert!(!listed[0].enabled);
+        assert!(root.join("demo").join(".disabled").exists());
+
+        set_skill_enabled_at("demo", true, &root).unwrap();
+        assert!(list_skills_at(&root)[0].enabled);
+        assert!(!root.join("demo").join(".disabled").exists());
+
+        remove_skill_at("demo", &root).unwrap();
+        assert!(list_skills_at(&root).is_empty());
+        assert!(!root.join("demo").exists());
+    }
+
+    #[test]
+    fn skill_install_requires_skill_md_and_slug_id() {
+        let root = temp_dir_for("skills-invalid");
+        // Folder without SKILL.md.
+        let bare = std::env::temp_dir().join(format!(
+            "Marionette-skill-bare-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&bare);
+        std::fs::create_dir_all(&bare).unwrap();
+        assert!(install_skill_at(&bare, None, &root).is_err());
+        // Bad explicit id (path traversal shape).
+        let source = skill_source("invalid");
+        assert!(install_skill_at(&source, Some("../escape".into()), &root).is_err());
+        // Marker from the source is not carried over: install = enabled.
+        // Default id = lowercased source folder name.
+        std::fs::write(source.join(".disabled"), b"").unwrap();
+        let record = install_skill_at(&source, None, &root).unwrap();
+        assert!(record.enabled);
+        assert!(record.id.starts_with("marionette-skill-src-invalid"));
+    }
+
+    #[test]
+    fn disabled_marker_hides_skill_from_inventory_scan() {
+        use crate::context_inventory::Collector;
+        let dir = temp_dir_for("skills-scan");
+        let source = skill_source("scan");
+        install_skill_at(&source, Some("scan-demo".into()), &dir).unwrap();
+
+        let mut visible = Collector::default();
+        crate::context_inventory::scan_skills_dir_for_test(&dir, "marionette", &mut visible);
+        assert_eq!(visible.skills.len(), 1);
+
+        set_skill_enabled_at("scan-demo", false, &dir).unwrap();
+        let mut hidden = Collector::default();
+        crate::context_inventory::scan_skills_dir_for_test(&dir, "marionette", &mut hidden);
+        assert!(hidden.skills.is_empty());
     }
 
     #[test]

@@ -3083,8 +3083,9 @@
   line-height: 1.4;
 }
 
-/* ── Shared memory & DSH plugins cards (narrow context column) ───────
-   Entry cards, forms and sub-panels for MemorySection / PluginsSection.
+/* ── Shared memory & plugins cards (narrow context column) ────────────
+   Entry cards, forms and sub-panels for MemorySection /
+   UniversalPluginsSection / UniversalSkillsSection.
    Text buttons use .pill-action (24px pill); --sm stays icon-only. */
 
 .panel-toggle {

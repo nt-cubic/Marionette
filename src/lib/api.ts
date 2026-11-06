@@ -1,8 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { t } from "./i18n";
 import { normalizeCredentialScan } from "./credentialScan";
-import { agents as mockAgents, projects as mockProjects, sessions as mockSessions, memoryStore as mockMemoryStore, dshPlugins as mockDshPlugins } from "./mockData";
-import type { AgentConfig, AgentCommandStatus, CapabilitySnapshot, PluginProbe, Project, ProviderInfo, ProxyConfig, ProxyTestResult, Session, SessionLabelSource, UniversalPlugin, UniversalPluginSpec } from "./types";
+import { agents as mockAgents, projects as mockProjects, sessions as mockSessions, memoryStore as mockMemoryStore } from "./mockData";
+import type { AgentConfig, AgentCommandStatus, CapabilitySnapshot, PluginProbe, Project, ProviderInfo, ProxyConfig, ProxyTestResult, Session, SessionLabelSource, UniversalPlugin, UniversalSkill, UniversalPluginSpec } from "./types";
 
 export function isTauriRuntime() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -680,6 +680,21 @@ export async function cancelAcpSession(sessionId: string): Promise<void> {
 export async function stopAcpSession(sessionId: string): Promise<void> {
   if (!isTauriRuntime()) return;
   await invoke("stop_acp_session", { sessionId });
+}
+
+/** X3（内存压制批）：空闲会话进程树物理工作集压出去（EmptyWorkingSet）。 */
+export async function trimSessionWorkingSet(
+  sessionId: string,
+): Promise<{ trimmed: number; total: number } | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await invoke<{ trimmed: number; total: number }>("trim_session_working_set", {
+      sessionId,
+    });
+  } catch {
+    // 机械压制，失败就等下一轮 tick——不值得打扰 UI。
+    return null;
+  }
 }
 
 // ─── 后台任务面板（ACP terminal/* 宿主） ────────────────────────────────────
@@ -1666,31 +1681,10 @@ export async function memoryDistill(sessionId: string): Promise<{ draft: string 
   return await invoke("memory_distill", { sessionId });
 }
 
-// ── DSH 插件面板（dsh_plugins.rs） ──────────────────────────────────────
-
-export type DshPlugin = {
-  name: string;
-  version: string;
-};
-
-export async function dshPluginsList(): Promise<DshPlugin[]> {
-  if (!isTauriRuntime()) return mockDshPlugins;
-  // 防御：后端形状异常时给空清单，不让面板整页崩掉。
-  const list = await invoke<unknown>("dsh_plugins_list");
-  return Array.isArray(list) ? (list as DshPlugin[]) : [];
-}
-
-export async function dshPluginAdd(spec: string): Promise<{ summary: string }> {
-  return await invoke("dsh_plugin_add", { spec });
-}
-
-export async function dshPluginRemove(name: string): Promise<void> {
-  await invoke("dsh_plugin_remove", { name });
-}
-
 // ── 共通插件层（plugins.rs / plugin_host.rs） ───────────────────────────
 // Install once, every agent gets it: enabled plugins ride the tools-mcp
 // loopback server as url-type session/new entries (zcode included).
+// （DSH 专属插件面板 2026-11-06 已删——统一入口只此一处。）
 
 export async function universalPluginsList(): Promise<UniversalPlugin[]> {
   if (!isTauriRuntime()) return [];
@@ -1713,4 +1707,24 @@ export async function universalPluginSetEnabled(id: string, enabled: boolean): P
 
 export async function universalPluginProbe(id: string): Promise<PluginProbe> {
   return await invoke("plugins_probe", { id });
+}
+
+// ── 技能（skills/，目录即登记处；停用 = .disabled 标记，2026-11-06） ──
+
+export async function universalSkillsList(): Promise<UniversalSkill[]> {
+  if (!isTauriRuntime()) return [];
+  const list = await invoke<unknown>("skills_list");
+  return Array.isArray(list) ? (list as UniversalSkill[]) : [];
+}
+
+export async function skillInstall(sourcePath: string, id?: string): Promise<UniversalSkill> {
+  return await invoke("skill_install", { sourcePath, id: id ?? null });
+}
+
+export async function skillRemove(id: string): Promise<void> {
+  await invoke("skill_remove", { id });
+}
+
+export async function skillSetEnabled(id: string, enabled: boolean): Promise<void> {
+  await invoke("skill_set_enabled", { id, enabled });
 }

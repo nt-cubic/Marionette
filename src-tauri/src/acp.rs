@@ -302,6 +302,13 @@ struct AcpProcess {
     memory_card_sent: AtomicBool,
     /// Explicit local file picks may be passed only to an opt-in local adapter.
     local_file_upload: AtomicBool,
+    /// 每会话 kill-on-close Job Object（2026-11-06 内存压制批）：句柄一关
+    /// （terminate/Drop）内核带走整棵进程树——含 codex.exe / MCP 这些
+    /// `child.kill()` 够不到的孙进程；Marionette 自己被强杀也一样收摊。
+    /// None = 沙箱收编等场景 Assign 失败，降级为旧行为（warn 已记）。
+    /// 红线：只许 RAII 持有 / terminate()，禁止手动 CloseHandle。
+    #[cfg(target_os = "windows")]
+    job: Option<crate::process_util::KillJobGuard>,
 }
 
 struct PendingPermission {
@@ -990,6 +997,11 @@ impl AcpService {
             .ok_or_else(|| "ACP agent stderr is unavailable".to_string())?;
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let in_flight_prompt_id = Arc::new(AtomicU64::new(0));
+        // Assign inside the lock is fine: a microsecond-level kernel call, no
+        // waiting on the child (「锁内不等子进程」红线针对的是 git/管道那种
+        // 秒级阻塞)。失败（沙箱收编）= None，stop()/EOF 退回旧行为。
+        #[cfg(target_os = "windows")]
+        let job = crate::process_util::KillJobGuard::create(&child, &session_id);
         let stdin_tx = {
             // A failed write happens after its caller already got `Ok`, so the
             // only way it reaches anyone is from in here.
@@ -1046,6 +1058,8 @@ impl AcpService {
             in_flight_prompt_id,
             memory_card_sent: AtomicBool::new(false),
             local_file_upload: AtomicBool::new(false),
+            #[cfg(target_os = "windows")]
+            job,
         });
         sessions.insert(session_id.clone(), Arc::clone(&process));
         drop(sessions);
@@ -1493,6 +1507,26 @@ impl AcpService {
         let sessions = self.sessions.lock().ok()?;
         let process = sessions.get(session_id)?;
         process.agent_session_id.lock().ok().and_then(|guard| guard.clone())
+    }
+
+    /// X3（2026-11-06 内存压制批）：把一个会话进程树的物理工作集压出去
+    /// （EmptyWorkingSet：页面转 standby 列表，进程、逻辑内存、提交大小都
+    /// 不动，下次访问软缺页自动回热）。调用方（前端 60s 巡逻 tick）负责
+    /// 保证该会话 waiting、安静≥2min、不在 busy 豁免集合——这里只做机械
+    /// 执行。返回 (trimmed, total)；None = 会话不在表 / job 降级路径。
+    #[cfg(target_os = "windows")]
+    pub fn trim_session_tree(&self, session_id: &str) -> Option<(usize, usize)> {
+        let process = self.sessions.lock().ok()?.get(session_id).cloned()?;
+        let job = process.job.as_ref()?;
+        let ids = job.process_ids();
+        if ids.is_empty() {
+            return None;
+        }
+        let trimmed = ids
+            .iter()
+            .filter(|pid| crate::process_util::trim_working_set(**pid))
+            .count();
+        Some((trimmed, ids.len()))
     }
 
     /// Caps of a live process for this session, if any. The caller must hold
@@ -2394,6 +2428,14 @@ impl AcpService {
                 .map_err(|_| "ACP child lock poisoned".to_string())?;
             let _ = child.kill();
             let _ = child.wait();
+            drop(child);
+            // Close the session job → KILL_ON_JOB_CLOSE takes down the whole
+            // tree (grandchildren included). Belt and braces with the kill
+            // above; idempotent when Drop runs later.
+            #[cfg(target_os = "windows")]
+            if let Some(job) = process.job.as_ref() {
+                job.terminate();
+            }
         }
         self.terminals.clear_session(session_id);
         // Universal-plugin children belong to the session, not the agent
@@ -3273,6 +3315,13 @@ fn read_stdout(
     let _ = process.child.lock().map(|mut child| {
         let _ = child.try_wait();
     });
+    // The adapter is gone — its grandchildren (codex.exe / MCP servers that
+    // never noticed stdin EOF) must not linger until the session is parked or
+    // the app exits. Closing the job handle takes the tree down now.
+    #[cfg(target_os = "windows")]
+    if let Some(job) = process.job.as_ref() {
+        job.terminate();
+    }
     if process.intentional_stop.load(Ordering::SeqCst) {
         emit_event(
             &app,

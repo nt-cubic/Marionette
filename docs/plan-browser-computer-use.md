@@ -394,6 +394,15 @@ paint assert）就是同一颗雷的另一种踩法。
 **遗留**：第 2+ 个标签仍在事件循环内创建（短泵；D 组证明裸创建可存活，
 world 已不在该路径）——如再出冻死，把 prewarm 池扩到 N 个即可。
 
+> **2026-11-06 偏差：预热已整体移除（懒建）。** 启动预热让第二套 WebView2
+> 进程组（browser-profiles 的 browser/GPU/utility）**常驻整个进程生命周期**，
+> 哪怕用户从没开过浏览器标签（内存压制批 X1）。首标签现在走 `create_surface`
+> 直落 `build_surface`——即上文「第 2+ 个标签」的既有路径（`ensure_resize_hook`
+> 在其中自保证）。风险按 §9 矩阵看是「首次建 WebContext + 事件循环内 build」，
+> 与 D 组（复用 WebContext）不完全同形；若首标签再出冻死，回退 = 恢复
+> main.rs setup 里的 `surface::prewarm` 调用（prewarm/`PREWARM_SURFACE`/
+> `take_prewarmed` 已随本批删除）。
+
 ## 10. 2026-11-01 CU 面板修复批（状态机自锁 + 全流程演练台）
 
 用户实测三个症状：装完回到未安装态 / 二次点击卡「下载中…」/「helper did not answer

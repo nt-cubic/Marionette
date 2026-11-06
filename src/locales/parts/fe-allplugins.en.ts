@@ -24,7 +24,19 @@ export const en = {
   "allPlugins.urlPlaceholder": "https://…/mcp",
   "allPlugins.headersPlaceholder": "headers, one Key: Value per line (optional)",
   "allPlugins.applyHint":
-    "Plugins ride session creation: new sessions pick them up automatically; reconnect an open session to attach. All-agent plugins sit above; DeepSeek Harness ones below. Project context is the per-project lending layer.",
+    "Plugins ride session creation: new sessions pick them up automatically; reconnect an open session to attach. MCP plugins and skills apply to every agent; project context is the per-project lending layer.",
   "allPlugins.paletteOpen": "Plugins",
   "allPlugins.paletteOpenHint": "install once · every agent",
+  // ── Skills (merged into the plugin layer 2026-11-06: SKILL.md folders under plugins/skills/) ──
+  "allPlugins.skillTitle": "Skills",
+  "allPlugins.skillEmpty": "No skills yet. Install one from a folder (must contain SKILL.md).",
+  "allPlugins.skillInstall": "Install from folder…",
+  "allPlugins.skillInstalling": "Installing…",
+  "allPlugins.skillInstalled": "Installed {name}",
+  "allPlugins.skillRemoved": "Removed {name}",
+  "allPlugins.skillEnable": "Enable",
+  "allPlugins.skillDisable": "Disable (no longer injected into any session)",
+  "allPlugins.skillDisabledTag": "disabled",
+  "allPlugins.skillRemove": "Delete",
+  "allPlugins.skillRemoveNamed": "Delete skill {name}",
 } as const;

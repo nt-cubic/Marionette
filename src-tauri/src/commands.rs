@@ -1156,30 +1156,40 @@ pub fn set_stream_interests(levels: HashMap<String, u8>) {
 
 /// 窗口化读取：`tail = Some(n)` → 只取末尾 n 行（首开秒开超长转录）；
 /// `tail = None` → 全量（导出 / 编辑重发补头 / 标签修复等全量消费者）。
+/// 路径解析在锁内、文件读在锁外（2026-11-06）：24MB 转录的顺序读是秒级
+/// IO，持全局 storage 锁跑会饿死所有其它命令（写路径早已同款）。
 #[tauri::command(async)]
 pub fn load_transcript(
     session_id: String,
     tail: Option<usize>,
     state: State<'_, AppState>,
 ) -> Result<crate::storage::TranscriptPage, String> {
-    let storage = state
-        .storage
-        .lock()
-        .map_err(|_| "Storage lock poisoned".to_string())?;
+    let path = {
+        let storage = state
+            .storage
+            .lock()
+            .map_err(|_| "Storage lock poisoned".to_string())?;
+        storage.transcript_path_for(&session_id)?
+    };
     match tail {
         None => {
-            let events = storage.load_transcript(&session_id)?;
+            let events = crate::storage::StorageService::load_transcript_file(&path, &session_id)?;
             Ok(crate::storage::TranscriptPage {
                 total_lines: events.len(),
                 first_line: 0,
                 events,
             })
         }
-        Some(count) => storage.load_transcript_window(&session_id, None, count),
+        Some(count) => crate::storage::StorageService::load_transcript_window_file(
+            &path,
+            &session_id,
+            None,
+            count,
+        ),
     }
 }
 
-/// 向上翻页：读 `[first_line, first_line + count)`。
+/// 向上翻页：读 `[first_line, first_line + count)`。锁外读，同上。
 #[tauri::command(async)]
 pub fn load_transcript_window(
     session_id: String,
@@ -1187,11 +1197,19 @@ pub fn load_transcript_window(
     count: usize,
     state: State<'_, AppState>,
 ) -> Result<crate::storage::TranscriptPage, String> {
-    let storage = state
-        .storage
-        .lock()
-        .map_err(|_| "Storage lock poisoned".to_string())?;
-    storage.load_transcript_window(&session_id, Some(first_line), count)
+    let path = {
+        let storage = state
+            .storage
+            .lock()
+            .map_err(|_| "Storage lock poisoned".to_string())?;
+        storage.transcript_path_for(&session_id)?
+    };
+    crate::storage::StorageService::load_transcript_window_file(
+        &path,
+        &session_id,
+        Some(first_line),
+        count,
+    )
 }
 
 /// 流式落盘快路径：把**纯新增**事件追加到文件尾（见 storage 的
@@ -2518,6 +2536,26 @@ pub async fn stop_acp_session(session_id: String, state: State<'_, AppState>) ->
     storage.update_session_status(&session_id, "exited")
 }
 
+/// X3（2026-11-06 内存压制批）：把空闲会话进程树的物理工作集压出去。
+/// 前端巡逻 tick 已保证 waiting + 安静≥2min + 非 busy；这里纯机械执行，
+/// 不碰进程生死。返回 {trimmed, total}；total=0 表示会话不在表或 job
+/// 降级（沙箱收编）——前端把它当「这次没什么可压」即可。
+#[tauri::command]
+#[cfg(target_os = "windows")]
+pub async fn trim_session_working_set(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let acp = state.acp.clone();
+    tauri::async_runtime::spawn_blocking(move || acp.trim_session_tree(&session_id))
+        .await
+        .map_err(|error| format!("trim task failed: {error}"))
+        .map(|counts| {
+            let (trimmed, total) = counts.unwrap_or((0, 0));
+            serde_json::json!({ "trimmed": trimmed, "total": total })
+        })
+}
+
 #[tauri::command(async)]
 pub fn append_debug_log(
     source: String,
@@ -3487,25 +3525,8 @@ pub fn memory_distill(
     Ok(serde_json::json!({ "draft": draft }))
 }
 
-// ── DSH 插件面板（dsh_plugins.rs） ─────────────────────────────────────
-
-#[tauri::command(async)]
-pub fn dsh_plugins_list() -> Result<Vec<crate::dsh_plugins::DshPlugin>, String> {
-    // 直接返回 Vec：别再套 serde_json::to_value —— 那会把 Ok(vec) 变成
-    // {"Ok": [...]} 对象，前端 .map 直接崩（2026-10-20 实测）。
-    crate::dsh_plugins::list()
-}
-
-#[tauri::command(async)]
-pub fn dsh_plugin_add(spec: String) -> Result<serde_json::Value, String> {
-    let summary = crate::dsh_plugins::add(&spec)?;
-    Ok(serde_json::json!({ "summary": summary }))
-}
-
-#[tauri::command(async)]
-pub fn dsh_plugin_remove(name: String) -> Result<(), String> {
-    crate::dsh_plugins::remove(&name).map(|_| ())
-}
+// （DSH 专属插件面板 2026-11-06 随统一插件层收口移除；dsh 跨用桥与 spawn
+// 链不受影响——已装进 profile 的 DSH 插件对 dsh 自家照常生效。）
 
 #[cfg(test)]
 mod tests {
