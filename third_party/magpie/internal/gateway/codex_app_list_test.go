@@ -87,7 +87,9 @@ func TestCodexModelListKeepsUsedModelsInTheAppsHundred(t *testing.T) {
 }
 
 // The catalog a Codex on another computer reads puts the models that key's
-// Codex used in the first 100, and no other key's.
+// Codex used in the first 100, and no other key's. Codex 0.166 reads the
+// catalog whole; an older one is held to 1 MiB, about 48 entries
+// (TestCodexCatalogFitsCodexsLimit).
 func TestCodexCatalogKeepsTheKeysUsedModelsFirst(t *testing.T) {
 	fresh(t)
 	var ms []string
@@ -100,7 +102,7 @@ func TestCodexCatalogKeepsTheKeysUsedModelsFirst(t *testing.T) {
 	usage.Append(usage.Record{Time: time.Now().Add(-time.Hour), Agent: "codex", Provider: "many", Requested: "many/model-110", Status: 200})
 	usage.Append(usage.Record{Time: time.Now().Add(-time.Hour), Agent: "codex", Provider: "many", Requested: "many/model-111", CallerKeyID: "someone-else", Status: 200})
 	w := httptest.NewRecorder()
-	New().Handler().ServeHTTP(w, httptest.NewRequest("GET", CodexCatalogPath, nil))
+	New().Handler().ServeHTTP(w, httptest.NewRequest("GET", CodexCatalogPath+"?client_version=0.166.0", nil))
 	var list struct {
 		Models []map[string]any `json:"models"`
 	}

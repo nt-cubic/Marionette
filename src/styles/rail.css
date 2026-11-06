@@ -1,0 +1,1120 @@
+/* rail.css — context rail: tasks / quota / changes sections + shared group */
+
+/* ----- section shell + header ----- */
+.rail-sec {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+}
+.rail-sh {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 6px 0 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+.rail-sh__meta {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-faint);
+}
+.rail-act {
+  margin-left: auto;
+  display: flex;
+}
+
+/* ----- icon buttons ----- */
+.rail-ib {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.rail-ib:hover {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+.rail-ib.is-on {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+.rail-ib--sm {
+  width: 22px;
+  height: 22px;
+}
+
+/* ----- rows (generic line / task / background / file) ----- */
+.rail-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.rail-ln,
+.rail-task,
+.rail-bg,
+.rail-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  padding: 0 12px;
+  font-size: 12px;
+  color: var(--text);
+}
+.rail-ln__text,
+.rail-task__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* right-aligned values */
+.rail-ln__r,
+.rail-file__delta,
+.rail-bg__state {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ----- tasks ----- */
+.rail-task__mark {
+  width: 12px;
+  flex: none;
+  text-align: center;
+}
+.rail-task__toggle {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.rail-task.is-doing .rail-task__mark {
+  color: var(--text);
+}
+.rail-task.is-done {
+  color: var(--text-faint);
+}
+.rail-task.is-done .rail-task__text {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+/* row-scoped actions: hidden until the row is hovered or focused */
+.rail-task__remove,
+.rail-file__actions {
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-standard);
+}
+.rail-ln:hover .rail-task__remove,
+.rail-ln:focus-within .rail-task__remove,
+.rail-ln:hover .rail-file__actions,
+.rail-ln:focus-within .rail-file__actions {
+  opacity: 1;
+}
+.rail-file__actions {
+  display: flex;
+}
+
+/* ----- add-task flush row ----- */
+.rail-add {
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 12px;
+}
+.rail-add__input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+}
+.rail-add__input::placeholder {
+  color: var(--text-faint);
+}
+
+/* ----- text button rows ----- */
+.rail-textbtns {
+  display: flex;
+  gap: 10px;
+  padding: 4px 12px 0;
+}
+.rail-tb {
+  border: 0;
+  background: none;
+  padding: 0;
+  font-size: 11.5px;
+  color: var(--accent);
+  cursor: pointer;
+}
+.rail-tb:hover {
+  color: var(--text-strong);
+}
+.rail-tb.is-primary {
+  font-weight: 600;
+}
+
+/* ----- placeholders / empty / merge block ----- */
+.rail-ph {
+  padding: 6px 12px 2px;
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rail-branch {
+  font-variant-numeric: tabular-nums;
+}
+.rail-empty {
+  margin: 0;
+  padding: 4px 12px 6px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+.rail-merge {
+  margin: 2px 6px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.rail-merge__list {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 2px;
+}
+
+/* ----- background task rows ----- */
+.rail-bg__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.rail-bg.is-running .rail-bg__state {
+  color: var(--text-muted);
+}
+.rail-bg.is-failed .rail-bg__state {
+  color: var(--red);
+}
+
+/* ----- changed files ----- */
+.rail-file__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.rail-file__badge {
+  width: 10px;
+  flex: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.rail-file__badge.is-modified {
+  color: var(--yellow);
+}
+.rail-file__badge.is-added,
+.rail-file__badge.is-untracked {
+  color: var(--green);
+}
+.rail-file__badge.is-deleted {
+  color: var(--red);
+}
+.rail-file__path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rail-plus {
+  color: var(--green);
+}
+.rail-minus {
+  color: var(--red);
+}
+
+/* ----- quota: current window highlight ----- */
+.quota-cur {
+  position: relative;
+  margin: 0 0 6px;
+  padding: 2px 0 6px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--agent-ink, var(--accent)) 8%, transparent),
+    transparent 70%
+  );
+}
+.quota-cur::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--agent-ink, var(--accent));
+  animation: rail-flash 1.6s var(--ease-out) 1;
+}
+@keyframes rail-flash {
+  0% {
+    width: 2px;
+    box-shadow: 0 0 0 0 transparent;
+  }
+  25% {
+    width: 3px;
+    box-shadow: 0 0 8px 1px
+      color-mix(in srgb, var(--agent-ink, var(--accent)) 45%, transparent);
+  }
+  100% {
+    width: 2px;
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+/* Header row: name (shrinks, ellipsis) · "经 X" note · reset time pinned right. One line. */
+.quota-cur__name {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  height: 28px;
+  padding: 0 12px;
+  white-space: nowrap;
+}
+.quota-cur__title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+.quota-cur__note {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.quota-cur__reset {
+  flex: none;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.quota-cur__balance {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 12px 0;
+}
+.quota-cur__big {
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-strong);
+}
+
+/* ----- quota window meters ----- */
+.quota-wr {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 40px;
+  gap: 8px;
+  align-items: center;
+  height: 20px;
+  padding: 0 12px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.quota-wr i {
+  display: block;
+  height: 2px;
+  background: var(--panel-soft);
+  border-radius: 1px;
+  overflow: hidden;
+}
+.quota-wr i > span {
+  display: block;
+  height: 100%;
+  background: #b5b5bb;
+}
+.quota-wr em {
+  font-style: normal;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* tightest window = primary meter */
+.quota-wr.is-primary,
+.quota-wr.is-tight {
+  color: var(--text);
+}
+.quota-wr.is-primary i,
+.quota-wr.is-tight i {
+  height: 4px;
+  background: color-mix(
+    in srgb,
+    var(--agent-ink, var(--accent)) 15%,
+    var(--panel-soft)
+  );
+}
+.quota-wr.is-primary i > span,
+.quota-wr.is-tight i > span {
+  background: var(--agent-ink, var(--accent));
+}
+.quota-wr.is-primary em,
+.quota-wr.is-tight em {
+  font-weight: 600;
+  color: var(--text-strong);
+}
+/* tones: on meter rows, summary values and primary fills */
+.quota-wr.is-warn em {
+  color: var(--yellow);
+}
+.quota-wr.is-hot em {
+  color: var(--red);
+}
+.quota-wr.is-primary.is-warn i > span,
+.quota-wr.is-tight.is-warn i > span {
+  background: var(--yellow);
+}
+.quota-wr.is-primary.is-hot i > span,
+.quota-wr.is-tight.is-hot i > span {
+  background: var(--red);
+}
+.rail-ln__r.is-warn {
+  color: var(--yellow);
+}
+.rail-ln__r.is-hot {
+  color: var(--red);
+}
+
+/* ----- shared group toggle ----- */
+.rail-shared__toggle {
+  width: 100%;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+}
+.rail-shared__toggle:hover {
+  background: var(--panel-soft);
+}
+.rail-shared__toggle > :first-child {
+  transition: transform var(--dur-base) var(--ease-out);
+}
+.rail-shared__toggle.is-open > :first-child,
+.rail-shared__toggle[aria-expanded="true"] > :first-child {
+  transform: rotate(90deg);
+}
+.rail-shared__toggle > span:last-child {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ----- reduced motion ----- */
+@media (prefers-reduced-motion: reduce) {
+  .quota-cur::before {
+    animation: none;
+  }
+  .rail-sec *,
+  .rail-shared__toggle * {
+    transition: none;
+  }
+}
+
+/* ----- shared group: rail-row restyle of the legacy .context-card blocks ----- */
+.context-panel .rail-shared .context-card {
+  padding: 0;
+  border: 0;
+  border-bottom: 0;
+  background: transparent;
+}
+/* section header matches .rail-sh */
+.context-panel .rail-shared .context-card__heading {
+  height: 32px;
+  min-height: 32px;
+  margin-bottom: 0;
+  padding: 0 6px 0 12px;
+  justify-content: flex-start;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-strong);
+}
+.context-panel .rail-shared .context-card__heading-actions {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+/* actions: 22px icon buttons */
+.context-panel .rail-shared .pill-action--icon {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+}
+.context-panel .rail-shared .pill-action--icon:hover,
+.context-panel .rail-shared .pill-action--icon:focus-visible {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+/* pills with text become text buttons */
+.context-panel .rail-shared .pill-action:not(.pill-action--icon) {
+  height: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+.context-panel .rail-shared .pill-action:not(.pill-action--icon):hover {
+  background: transparent;
+  border: 0;
+  color: var(--text-strong);
+}
+/* empty states / notes: one faint line */
+.context-panel .rail-shared .context-card__empty {
+  margin: 0;
+  padding: 4px 12px 6px;
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+.context-panel .rail-shared .context-card__empty svg {
+  display: none;
+}
+/* long hint paragraphs collapse to one faint line (full text in title tooltip) */
+.context-panel .rail-shared .context-lend__hint {
+  margin: 2px 12px 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 30px sub-header rows */
+.context-panel .rail-shared .context-lend {
+  gap: 2px;
+}
+.context-panel .rail-shared .context-lend__labelrow {
+  justify-content: flex-start;
+  height: 30px;
+  padding: 0 12px;
+}
+.context-panel .rail-shared .context-lend__label {
+  margin-top: 0;
+  color: var(--text-strong);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.context-panel .rail-shared .context-lend__count {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+/* items: 26px rows, name left / meta right, hairline separators */
+.context-panel .rail-shared .context-lend__list {
+  gap: 0;
+}
+.context-panel .rail-shared .context-lend__list li + li {
+  border-top: 1px solid var(--hairline);
+}
+.context-panel .rail-shared .context-lend__row {
+  display: flex;
+  gap: 8px;
+  min-height: 26px;
+  padding: 0 12px;
+  border-radius: 0;
+}
+.context-panel .rail-shared .context-lend__row input[type="checkbox"] {
+  flex: none;
+}
+.context-panel .rail-shared .context-lend__meta {
+  grid-column: auto;
+  margin-left: auto;
+  font-size: 11px;
+}
+/* handoff block */
+.context-panel .rail-shared .handoff-block {
+  padding: 0 12px 8px;
+}
+.context-panel .rail-shared .handoff-block__hint {
+  margin: 2px 0 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- Shared group, v2 final (2026-11-06) ------------------------------------------
+   One grammar for every block inside the shared fold (project context, DSH plugins,
+   universal plugins, memory, handoff): a 30px sub-header, 26px rows that truncate
+   instead of overflowing, flush add-rows, one-line hints with the full text in a
+   tooltip. The doubled .rail-shared outranks the earlier per-block overrides. */
+.context-panel .rail-shared.rail-shared {
+  padding-bottom: 6px;
+}
+
+.context-panel .rail-shared.rail-shared .rail-shared__toggle {
+  height: 34px;
+  gap: 8px;
+  padding: 0 10px 0 12px;
+  outline: none;
+  white-space: nowrap;
+}
+
+.context-panel .rail-shared.rail-shared .rail-shared__toggle:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.context-panel .rail-shared.rail-shared .rail-shared__title {
+  flex: none;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.context-panel .rail-shared.rail-shared .rail-shared__summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Sub-blocks: flat, separated by a hairline, no card chrome. */
+.context-panel .rail-shared.rail-shared .context-card {
+  margin: 0;
+  padding: 0 0 4px;
+  border: 0;
+  border-top: 1px solid var(--hairline);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.context-panel .rail-shared.rail-shared .context-card__heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  margin: 0;
+  padding: 0 6px 0 12px;
+  color: var(--text-strong);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.context-panel .rail-shared.rail-shared .context-card__heading-actions {
+  display: flex;
+  gap: 0;
+  margin-left: auto;
+}
+
+.context-panel .rail-shared.rail-shared .rail-shared__scope {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+/* Icon buttons: 22px squares, no pill. Text pills become accent text buttons. */
+.context-panel .rail-shared.rail-shared .pill-action--icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: transparent;
+}
+
+.context-panel .rail-shared.rail-shared .pill-action--icon:hover:not(:disabled) {
+  background: var(--panel-soft);
+  color: var(--text-strong);
+}
+
+.context-panel .rail-shared.rail-shared .pill-action:not(.pill-action--icon) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.context-panel .rail-shared.rail-shared .pill-action:disabled {
+  opacity: 0.45;
+}
+
+/* Hints, notes, empty lines: one 11px line, full text on hover. */
+.context-panel .rail-shared.rail-shared .context-card__empty,
+.context-panel .rail-shared.rail-shared .panel-note,
+.context-panel .rail-shared.rail-shared .context-lend__hint,
+.context-panel .rail-shared.rail-shared .handoff-block__hint {
+  margin: 0;
+  padding: 0 12px 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap !important;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 18px;
+  opacity: 1;
+}
+
+.context-panel .rail-shared.rail-shared .context-lend__hint code {
+  padding: 0;
+  background: none;
+  font-size: 10.5px;
+}
+
+/* Errors from installs keep their wrapping so the message stays readable. */
+.context-panel .rail-shared.rail-shared .panel-note:not(.panel-note--hint) {
+  white-space: pre-wrap !important;
+  color: var(--text-muted);
+}
+
+/* Project context: MCP / skills lists. */
+.context-panel .rail-shared.rail-shared .context-lend {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.context-panel .rail-shared.rail-shared .context-lend__labelrow,
+.context-panel .rail-shared.rail-shared .context-lend > .context-lend__label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  margin: 2px 0 0;
+  padding: 0 6px 0 12px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.context-panel .rail-shared.rail-shared .context-lend__labelrow .context-lend__label {
+  color: inherit;
+  font: inherit;
+}
+
+.context-panel .rail-shared.rail-shared .context-lend__reconnect {
+  margin-left: auto;
+}
+
+.context-panel .rail-shared.rail-shared .context-lend__list {
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  list-style: none;
+}
+
+.context-panel .rail-shared.rail-shared .context-lend__row {
+  display: grid;
+  grid-template-columns: 13px minmax(0, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.context-panel .rail-shared.rail-shared .context-lend__row:hover {
+  background: var(--panel-soft);
+}
+
+.context-panel .rail-shared.rail-shared .context-lend__row input[type="checkbox"] {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.context-panel .rail-shared.rail-shared .context-lend__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.context-panel .rail-shared.rail-shared .context-lend__meta {
+  min-width: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+/* Plugin rows (DSH + universal): name, version, status word, hover actions. */
+.context-panel .rail-shared.rail-shared .panel-entry-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.context-panel .rail-shared.rail-shared .panel-entry {
+  margin: 0;
+  padding: 0 6px 0 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.context-panel .rail-shared.rail-shared .panel-entry:hover {
+  background: var(--panel-soft);
+}
+
+.context-panel .rail-shared.rail-shared .panel-entry__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+}
+
+.context-panel .rail-shared.rail-shared .panel-entry__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.context-panel .rail-shared.rail-shared .panel-entry__version {
+  flex: none;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.context-panel .rail-shared.rail-shared .panel-entry__badge {
+  flex: none;
+  margin-left: auto;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.context-panel .rail-shared.rail-shared .panel-entry__badge.is-full {
+  display: none;
+}
+
+.context-panel .rail-shared.rail-shared .panel-entry__badge.is-partial {
+  color: var(--yellow);
+}
+
+.context-panel .rail-shared.rail-shared .panel-entry__badge.is-full + .pill-action--icon {
+  margin-left: auto;
+}
+
+.context-panel .rail-shared.rail-shared .panel-entry__head .pill-action--icon,
+.context-panel .rail-shared.rail-shared .panel-entry__foot {
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-standard);
+}
+
+.context-panel .rail-shared.rail-shared .panel-entry:hover .pill-action--icon,
+.context-panel .rail-shared.rail-shared .panel-entry:focus-within .pill-action--icon,
+.context-panel .rail-shared.rail-shared .memory-entry:hover .panel-entry__foot,
+.context-panel .rail-shared.rail-shared .memory-entry:focus-within .panel-entry__foot {
+  opacity: 1;
+}
+
+.context-panel .rail-shared.rail-shared .panel-entry__text {
+  display: none;
+}
+
+/* Install / add rows: flush, a Plus glyph, borderless input, accent text button. */
+.context-panel .rail-shared.rail-shared .panel-install {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  margin: 0;
+  padding: 0 10px 0 12px;
+  border: 0;
+  background: transparent;
+}
+
+.context-panel .rail-shared.rail-shared .panel-install__icon {
+  flex: none;
+  color: var(--text-faint);
+}
+
+.context-panel .rail-shared.rail-shared .panel-form__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.context-panel .rail-shared.rail-shared .panel-form__input::placeholder {
+  color: var(--text-faint);
+}
+
+.context-panel .rail-shared.rail-shared .panel-form__input:focus {
+  border-bottom-color: var(--accent);
+}
+
+/* The universal-plugin form stacks several fields: each becomes its own flush row. */
+.context-panel .rail-shared.rail-shared .panel-install[style*="column"] {
+  gap: 0 !important;
+  padding: 2px 12px 6px;
+}
+
+.context-panel .rail-shared.rail-shared .panel-install[style*="column"] > * {
+  border-bottom: 1px solid var(--hairline);
+}
+
+.context-panel .rail-shared.rail-shared .panel-install[style*="column"] > .pill-action {
+  align-self: flex-end;
+  border-bottom: 0;
+}
+
+/* Memory rows reuse the lend row; edit / delete appear on hover. */
+.context-panel .rail-shared.rail-shared .memory-entry {
+  position: relative;
+}
+
+.context-panel .rail-shared.rail-shared .memory-entry .panel-entry__foot {
+  position: absolute;
+  top: 2px;
+  right: 6px;
+  display: flex;
+  gap: 0;
+  background: var(--panel-soft);
+}
+
+.context-panel .rail-shared.rail-shared .panel-actions {
+  display: flex;
+  padding: 0 12px;
+}
+
+/* Handoff: three quiet lines. */
+.context-panel .rail-shared.rail-shared .handoff-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 12px 4px;
+  font-size: 12px;
+}
+
+.context-panel .rail-shared.rail-shared .handoff-block strong,
+.context-panel .rail-shared.rail-shared .handoff-block small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-panel .rail-shared.rail-shared .handoff-block strong {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.context-panel .rail-shared.rail-shared .handoff-block small {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .context-panel .rail-shared.rail-shared .panel-entry__head .pill-action--icon,
+  .context-panel .rail-shared.rail-shared .panel-entry__foot {
+    transition: none;
+  }
+}
+
+/* Legacy stream-cards.css pins the meta to grid-column 2 (under the name); put it back in
+   its own right-hand column so it truncates instead of running past the panel edge. */
+.context-panel .rail-shared.rail-shared .context-lend__name,
+.context-panel .rail-shared.rail-shared .context-lend__meta {
+  grid-column: auto;
+  grid-row: auto;
+}
+
+/* Rows as flex, not grid: the legacy sheet fights every grid placement. Name shrinks to
+   60% at most, the meta takes the rest and truncates from the right. */
+.context-panel .rail-shared.rail-shared .context-lend__row {
+  display: flex;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.context-panel .rail-shared.rail-shared .context-lend__row > input[type="checkbox"] {
+  flex: none;
+}
+.context-panel .rail-shared.rail-shared .context-lend__name {
+  flex: 0 1 auto;
+  max-width: 60%;
+}
+.context-panel .rail-shared.rail-shared .context-lend__meta {
+  flex: 1 1 0;
+  width: auto;
+  max-width: none;
+}
+
+/* Legacy lists are display:grid, so each <li> sized to its content and pushed the row past
+   the panel. Plain blocks with shrinkable items keep every row inside the rail. */
+.context-panel .rail-shared.rail-shared .context-lend__list,
+.context-panel .rail-shared.rail-shared .panel-entry-list {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+}
+.context-panel .rail-shared.rail-shared .shelf-clip--lend .shelf-clip__more {
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
+.context-panel .rail-shared.rail-shared .shelf-clip--lend .shelf-clip__fade {
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--panel) 0%, transparent),
+    color-mix(in srgb, var(--panel) 94%, transparent)
+  );
+}
+
+.context-panel .rail-shared.rail-shared .context-lend__labelrow .context-card__heading-actions {
+  display: flex;
+  flex: none;
+  gap: 0;
+  margin-left: auto;
+}
+
+.context-panel .rail-shared.rail-shared .plugin-block + .plugin-block {
+  border-top: 1px solid var(--hairline);
+}
+
+.context-panel .rail-shared.rail-shared .context-lend__list > li,
+.context-panel .rail-shared.rail-shared .panel-entry-list > li {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* ---- Accent, v2 final (2026-11-06) ---------------------------------------------------
+   The section headings's icon
+   buttons answer in accent on hover; the open shared group's chevron is accent. */
+
+.context-panel .rail-ib:hover {
+  color: var(--accent);
+}
+
+.context-panel .rail-shared details[open] > summary svg:first-child,
+.context-panel .rail-shared.is-open .rail-shared__chev {
+  color: var(--accent);
+}
+
+/* ---- Current quota block: breathing room (2026-11-06) --------------------------------
+   The billing-source title no longer sits on the block's top edge: 10px above, 8px under
+   it before the meters, 14px from the ink bar. The title is 13.5px / 600 on one line
+   with the note and reset hint on its baseline. */
+.context-panel .quota-cur {
+  padding: 10px 0 10px;
+}
+
+.context-panel .quota-cur__name {
+  align-items: baseline;
+  height: auto;
+  min-height: 20px;
+  margin-bottom: 8px;
+  padding: 0 12px 0 14px;
+  line-height: 20px;
+}
+
+.context-panel .quota-cur__title {
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.context-panel .quota-cur .quota-wr,
+.context-panel .quota-cur__balance {
+  padding-left: 14px;
+}

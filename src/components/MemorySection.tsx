@@ -34,7 +34,14 @@ function sourceLabel(source: string): string {
  * 跨 agent 共享记忆面板。
  * 打开即同步各家全局记忆；勾选 = 注入新会话；保留「从会话提炼」。
  */
-export const MemorySection = memo(function MemorySection({ activeSessionId }: { activeSessionId?: string | null }) {
+export const MemorySection = memo(function MemorySection({
+  activeSessionId,
+  onCount,
+}: {
+  activeSessionId?: string | null;
+  /** Reports how many entries are lent (enabled) — feeds the rail's shared-group summary. */
+  onCount?: (count: number) => void;
+}) {
   const t = useT();
   const [store, setStore] = useState<MemoryStore | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -118,6 +125,10 @@ export const MemorySection = memo(function MemorySection({ activeSessionId }: { 
   };
 
   const entries = store?.entries ?? [];
+  const lentCount = entries.filter((entry) => entry.enabled).length;
+  useEffect(() => {
+    onCount?.(lentCount);
+  }, [lentCount, onCount]);
 
   return (
     <section className="context-card" id="context-memory">
@@ -127,8 +138,8 @@ export const MemorySection = memo(function MemorySection({ activeSessionId }: { 
           <button
             className="pill-action pill-action--icon pill-action--sm"
             type="button"
-            title="Refresh memory"
-            aria-label="Refresh memory"
+            title={t("rail.memoryRefresh")}
+            aria-label={t("rail.memoryRefresh")}
             onClick={() => void refresh()}
           >
             <RefreshCw size={11} />
@@ -145,7 +156,7 @@ export const MemorySection = memo(function MemorySection({ activeSessionId }: { 
       {entries.length === 0 ? (
         <>
           <p className="context-card__empty" style={{ marginTop: 8 }}>
-            No agent memory files found yet.
+            {t("rail.memoryEmpty")}
           </p>
           {probed && probed.length > 0 ? (
             <ul
@@ -214,7 +225,7 @@ export const MemorySection = memo(function MemorySection({ activeSessionId }: { 
             className="pill-action"
             type="button"
             disabled={draftBusy}
-            title="Distill lasting notes from this session"
+            title={t("rail.memoryDistillTitle")}
             onClick={() => void handleDistill()}
           >
             <Sparkles size={11} />
@@ -329,8 +340,8 @@ function MemoryRow({
         <button
           className="pill-action pill-action--icon pill-action--sm"
           type="button"
-          title="Edit"
-          aria-label={`Edit memory ${entry.title}`}
+          title={t("rail.memoryEdit")}
+          aria-label={t("rail.memoryEditNamed", { name: entry.title })}
           onClick={onEdit}
         >
           <Pencil size={11} />
@@ -338,8 +349,8 @@ function MemoryRow({
         <button
           className="pill-action pill-action--icon pill-action--sm"
           type="button"
-          title="Delete"
-          aria-label={`Delete memory ${entry.title}`}
+          title={t("rail.memoryDelete")}
+          aria-label={t("rail.memoryDeleteNamed", { name: entry.title })}
           disabled={busy}
           onClick={onDelete}
         >

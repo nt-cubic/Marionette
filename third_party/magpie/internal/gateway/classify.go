@@ -68,7 +68,12 @@ type before struct {
 
 // verdict is what a classifier said.
 type verdict struct {
-	Intent string  // "" for none
+	Intent string // "" for none
+	// Said: the answer as it said it — a chat model's number, or the
+	// choice a decision model named — kept even when no intent came of
+	// it, so the trace tells "said none" from an answer the rules
+	// couldn't take (#4598)
+	Said   string
 	Effort string  // the reasoning the turn wants; "" when not asked
 	Score  float64 // how hard the classifier took the turn to be, from 0 (low) to 3 (xhigh)
 	Sure   float64 // how confident Jev was of the intent, from 0 to 1
@@ -387,20 +392,22 @@ func writePrior(b *strings.Builder, prev before) {
 var firstNumber = regexp.MustCompile(`\d+`)
 
 // readIntent is the intent a classifier's answer names: its first number,
-// 0 for none.
-func readIntent(answer string, intents []string) (string, error) {
+// 0 for none. The number is given back as it was said (said), so the
+// trace tells what a classifier that said none answered (#4598).
+func readIntent(answer string, intents []string) (string, string, error) {
 	n, err := strconv.Atoi(firstNumber.FindString(answer))
 	if err != nil || n < 0 || n > len(intents) {
 		a := []rune(strings.TrimSpace(answer))
 		if len(a) > 80 {
 			a = append(a[:80], '…')
 		}
-		return "", answerError{fmt.Errorf("it answered %q, not a number from 0 to %d", string(a), len(intents))}
+		return "", "", answerError{fmt.Errorf("it answered %q, not a number from 0 to %d", string(a), len(intents))}
 	}
+	said := strconv.Itoa(n)
 	if n == 0 {
-		return "", nil
+		return "", said, nil
 	}
-	return intents[n-1], nil
+	return intents[n-1], said, nil
 }
 
 // classifyEffort is the reasoning model is asked to classify at: none,
@@ -514,7 +521,7 @@ func (s *Server) askClassifierIn(wait time.Duration, model string, intents []str
 			defer wg.Done()
 			var a string
 			if a, ierr = s.askLeast(wait, model, func(effort string) []byte { return classifyBody(model, effort, intents, prev, text) }); ierr == nil {
-				v.Intent, ierr = readIntent(a, intents)
+				v.Intent, v.Said, ierr = readIntent(a, intents)
 			}
 		}()
 	}

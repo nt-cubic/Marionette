@@ -14,7 +14,9 @@ import (
 // A built-in moved onto its plugin offers the reasoning levels it did for
 // a model its vendor lists none for (Command Code's, Grok's, WorkBuddy's):
 // its maker's, as the built-in borrowed them; a plugin of its own gives
-// what it says.
+// what it says: the variants it lists, and nothing for a model it doesn't
+// say thinks (one it says thinks with no variants borrows,
+// TestPluginThinkingModelBorrowsEfforts).
 func TestMovedKeepsEfforts(t *testing.T) {
 	movedPlugin(t, "grok", map[string]map[string]any{})
 	os.MkdirAll(filepath.Dir(catalog.CachePath()), 0o755)
@@ -31,6 +33,11 @@ func TestMovedKeepsEfforts(t *testing.T) {
 		t.Fatalf("moved: %s's efforts %v, want %v", id, got, borrowedEfforts(id))
 	}
 	pp.ID = "someplugin"
+	pp.Models[0].Variants = []string{"high"}
+	if got := pluginCatalog(pp)[0].Efforts; !slices.Equal(got, []string{"high"}) {
+		t.Fatalf("a plugin's own provider's variants: %v", got)
+	}
+	pp.Models[0].Variants, pp.Models[0].Reasoning = nil, false
 	if got := pluginCatalog(pp)[0].Efforts; len(got) != 0 {
 		t.Fatalf("a plugin's own provider borrowed %v", got)
 	}

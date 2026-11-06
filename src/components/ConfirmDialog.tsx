@@ -1,6 +1,6 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 import { TriangleAlert } from "lucide-react";
-import { DialogShell } from "./DialogShell";
+import { DialogShell, useDialogRequestClose } from "./DialogShell";
 import { useT } from "../lib/i18n";
 
 type ConfirmDialogProps = {
@@ -81,14 +81,7 @@ export function ConfirmDialog({
         </div>
         {description && <p className="confirm-dialog__desc">{description}</p>}
         <div className="project-dialog__actions">
-          <button
-            ref={cancelRef}
-            type="button"
-            className="project-dialog__cancel"
-            onClick={onCancel}
-          >
-            {cancelText}
-          </button>
+          <ConfirmCancelButton buttonRef={cancelRef} label={cancelText} onCancel={onCancel} />
           <button
             type="button"
             className={
@@ -102,5 +95,28 @@ export function ConfirmDialog({
           </button>
         </div>
     </DialogShell>
+  );
+}
+
+/** Cancel goes through the shell's exit fade (same path as Esc / backdrop). */
+function ConfirmCancelButton({
+  buttonRef,
+  label,
+  onCancel,
+}: {
+  buttonRef: RefObject<HTMLButtonElement>;
+  label: string;
+  onCancel: () => void;
+}) {
+  const requestClose = useDialogRequestClose();
+  return (
+    <button
+      ref={buttonRef}
+      type="button"
+      className="project-dialog__cancel"
+      onClick={() => (requestClose ? requestClose() : onCancel())}
+    >
+      {label}
+    </button>
   );
 }

@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>v2 模型共享</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#1f8a76}a:hover{color:#166b5c}
+.mono{font-family:"JetBrains Mono",ui-monospace,monospace}
+.f{font-size:11px;color:#8a8a92}
+.btn{height:30px;padding:0 14px;border:0;border-radius:3px;font:inherit;font-size:13px;cursor:pointer;background:#f1f1f3;color:#2c2c30}
+.btn.p{background:#1f8a76;color:#fff;font-weight:600}
+.wq{display:grid;grid-template-columns:52px minmax(0,1fr) 40px;gap:10px;align-items:center;height:20px;font-size:11.5px;color:#8a8a92}
+.wq i{display:block;background:#e9e9ec;border-radius:1px;overflow:hidden}
+.wq i span{display:block;height:100%}
+.wq em{font-style:normal;text-align:right;font-variant-numeric:tabular-nums}
+.src{display:flex;align-items:center;gap:8px;width:100%;height:48px;padding:0 14px;border:0;font:inherit;font-size:12.5px;text-align:left;cursor:pointer;transition:background-color 120ms}
+.src:hover{background:#ececee}
+.mrow{display:grid;grid-template-columns:16px minmax(0,1fr) auto;align-items:center;gap:12px;width:100%;height:40px;padding:0 18px;border:0;border-bottom:1px solid #ececee;background:transparent;font:inherit;text-align:left;cursor:pointer;transition:background-color 120ms}
+.mrow:hover{background:#fafafa}
+.box{width:14px;height:14px;box-sizing:border-box;border-radius:2px;display:grid;place-items:center;transition:background-color 120ms,border-color 120ms}
+.sw{width:30px;height:18px;border-radius:9px;position:relative;border:0;padding:0;cursor:pointer;transition:background-color 180ms}
+.sw i{position:absolute;top:2px;left:0;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.2);transition:transform 180ms cubic-bezier(.22,1,.36,1)}
+.fc{display:inline-flex;align-items:center;height:24px;padding:0 9px;border-radius:2px;border:1px solid transparent;font:inherit;font-size:12px;font-weight:500;cursor:pointer}
+.ag{display:inline-flex;align-items:center;height:22px;padding:0 8px;border-radius:2px;background:#f4f4f5;font-size:12px;color:#2c2c30}
+.inp{border:0;outline:none;background:transparent;font:inherit;font-size:12.5px;color:#111113}
+.note{font-size:12.5px;color:#5c5c63;line-height:1.6}
+</style>
+</helmet>
+<div style="width:1440px;height:900px;box-sizing:border-box;background:#f7f7f8;color:#2c2c30;font-family:Inter,system-ui,sans-serif;font-size:13px;line-height:1.45;display:grid;grid-template-columns:330px minmax(0,1fr)">
+
+<div style="padding:36px 32px 36px 44px;display:flex;flex-direction:column;gap:16px;border-right:1px solid #e2e2e6;background:#fff">
+<div class="f">v2 · 模型共享（L 880）</div>
+<div style="font-size:16px;font-weight:650;color:#111113">来源在左，模型在右</div>
+<div class="note">左栏只列来源和一个结论（已共享数，或「需要钥匙」这类问题）。右栏是一张表：顶上写这个来源借给了哪些 agent，下面一行一个模型，勾选即共享。</div>
+<div class="note">「借给」用 agent 墨色的 2px 左边条标出，和左侧栏对话、回复卡用的是同一种记号。问题写成黄字，就地给出输入框。</div>
+<div class="f" style="font-size:12px">可以点：切来源、切过滤、勾模型、开关整源。</div>
+</div>
+
+<div style="position:relative;display:grid;place-items:center">
+<div style="position:absolute;inset:0;background:rgba(17,17,19,.18)"></div>
+<div style="position:relative;width:880px;height:700px;display:flex;flex-direction:column;border:1px solid #dcdce1;border-radius:3px;background:#fff;box-shadow:0 12px 32px rgba(17,17,19,.10);overflow:hidden">
+
+<div style="display:flex;align-items:center;gap:10px;height:48px;padding:0 10px 0 18px;flex:none;border-bottom:1px solid #ececee">
+<span style="font-size:14px;font-weight:600;color:#111113">模型共享</span>
+<span class="f" style="font-size:12px">引擎运行中 · 6 个来源</span>
+<div style="flex:1"></div>
+<button type="button" class="btn" style="height:28px;padding:0 10px;background:transparent;color:#5c5c63">重新扫描</button>
+<button type="button" aria-label="关闭" style="width:28px;height:28px;display:grid;place-items:center;border:0;border-radius:3px;background:transparent;color:#8a8a92"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+</div>
+
+<div style="flex:1;min-height:0;display:grid;grid-template-columns:240px minmax(0,1fr)">
+<div style="border-right:1px solid #ececee;background:#f7f7f8;display:flex;flex-direction:column">
+<label style="display:flex;align-items:center;gap:8px;height:38px;padding:0 14px;border-bottom:1px solid #ececee;color:#8a8a92"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg><input aria-label="搜索模型" class="inp" placeholder="搜索来源或模型…" style="flex:1;min-width:0"></label>
+<div style="padding:6px 0;display:flex;flex-direction:column">
+<sc-for list="{{sources}}" as="s" hint-placeholder-count="5">
+<button type="button" class="src" style="{{s.rowStyle}}" onClick="{{s.pick}}">
+<span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:1px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{s.name}}</span><span class="f" style="font-weight:400">{{s.shareLabel}}</span></span>
+<span style="{{s.quotaStyle}}">{{s.quotaLabel}}</span>
+</button>
+</sc-for>
+</div>
+<div style="flex:1"></div>
+<div style="padding:10px 14px;border-top:1px solid #ececee;font-size:12.5px;color:#1f8a76">管理来源与凭据 ›</div>
+</div>
+
+<div style="display:flex;flex-direction:column;min-height:0">
+<div style="padding:16px 18px 12px;display:flex;flex-direction:column;gap:10px;border-bottom:1px solid #ececee">
+<div style="display:flex;align-items:center;gap:10px">
+<span style="font-size:14px;font-weight:600;color:#111113">{{cur.name}}</span>
+<span class="f" style="font-size:12px">{{cur.proto}}</span>
+<div style="flex:1"></div>
+<span class="f" style="font-size:12px">共享此来源</span>
+<button type="button" class="sw" aria-label="共享此来源" aria-pressed="{{cur.allPressed}}" style="{{cur.swStyle}}" onClick="{{cur.toggleAll}}"><i style="{{cur.knobStyle}}"></i></button>
+</div>
+<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span class="f" style="font-size:12px;margin-right:2px">借给</span>
+<sc-for list="{{cur.agents}}" as="a" hint-placeholder-count="2"><span class="ag" style="{{a.style}}">{{a.name}}</span></sc-for>
+<span class="mono f" style="margin-left:auto">{{cur.endpoint}}</span></div>
+<sc-if value="{{cur.hasWin}}" hint-placeholder-val="{{true}}">
+<div style="display:flex;flex-direction:column;gap:2px;padding:8px 0 2px;border-top:1px solid #ececee">
+<div style="display:flex;align-items:baseline;margin-bottom:2px"><span style="font-size:12.5px;font-weight:500;color:#111113">剩余额度</span><span class="f" style="margin-left:auto">{{cur.quotaNote}}</span></div>
+<sc-for list="{{cur.wins}}" as="w" hint-placeholder-count="2"><div class="wq" style="{{w.rowStyle}}"><span>{{w.label}}</span><i style="{{w.trackStyle}}"><span style="{{w.barStyle}}"></span></i><em style="{{w.pctStyle}}">{{w.pct}}</em></div></sc-for>
+</div>
+</sc-if>
+<sc-if value="{{cur.hasBal}}" hint-placeholder-val="{{false}}">
+<div style="display:flex;align-items:baseline;gap:10px;padding:8px 0 2px;border-top:1px solid #ececee"><span style="font-size:12.5px;font-weight:500;color:#111113">余额</span><span style="font-size:15px;font-weight:600;color:#111113;font-variant-numeric:tabular-nums">{{cur.bal}}</span><span class="f" style="margin-left:auto">{{cur.quotaNote}}</span></div>
+</sc-if>
+<sc-if value="{{cur.hasIssue}}" hint-placeholder-val="{{false}}">
+<div style="display:flex;flex-direction:column;border-top:1px solid #ececee;padding-top:10px;gap:4px">
+<div style="font-size:12.5px;color:#9a7410">{{cur.issue}}</div>
+<label style="display:grid;grid-template-columns:140px minmax(0,1fr) auto;align-items:center;gap:12px;height:40px;border-bottom:1px solid #ececee"><span class="mono" style="font-size:12px;color:#5c5c63">OLLAMA_API_KEY</span><input type="password" class="inp mono" aria-label="OLLAMA_API_KEY" placeholder="粘贴钥匙"><span style="font-size:12.5px;color:#1f8a76">保存并应用</span></label>
+</div>
+</sc-if>
+<div style="display:flex;gap:4px">
+<sc-for list="{{filters}}" as="x" hint-placeholder-count="3"><button type="button" class="fc" style="{{x.style}}" onClick="{{x.pick}}">{{x.label}}</button></sc-for>
+</div>
+</div>
+<div style="flex:1;min-height:0;overflow:auto">
+<sc-for list="{{models}}" as="m" hint-placeholder-count="5">
+<button type="button" class="mrow" aria-pressed="{{m.pressed}}" onClick="{{m.toggle}}">
+<span class="box" style="{{m.boxStyle}}"><sc-if value="{{m.on}}" hint-placeholder-val="{{true}}"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="2.4" aria-hidden="true"><path d="M3 8.5l3 3 7-7"/></svg></sc-if></span>
+<span style="display:flex;align-items:baseline;gap:10px;min-width:0"><span style="{{m.nameStyle}}">{{m.name}}</span><span class="f">{{m.caps}}</span></span>
+<span class="mono f">{{m.id}}</span>
+</button>
+</sc-for>
+<sc-if value="{{empty}}" hint-placeholder-val="{{false}}"><div class="f" style="padding:24px 18px;font-size:12.5px">这一栏没有模型。</div></sc-if>
+</div>
+</div>
+</div>
+
+<div style="display:flex;align-items:center;gap:8px;height:54px;padding:0 14px 0 18px;border-top:1px solid #ececee;flex:none">
+<span style="font-size:12.5px;color:#5c5c63">已共享 <b style="font-weight:600;color:#111113">{{sharedTotal}}</b> / {{modelTotal}}</span>
+<sc-if value="{{dirty}}" hint-placeholder-val="{{false}}"><span style="font-size:12.5px;color:#9a7410">· {{dirtyLabel}}</span></sc-if>
+<div style="flex:1"></div>
+<button type="button" class="btn" style="background:transparent;color:#5c5c63" onClick="{{reset}}">恢复默认</button>
+<button type="button" class="btn">取消</button>
+<button type="button" class="btn p">保存</button>
+</div>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+var INK = { Claude: '#9a5b43', Codex: '#535b66', ZCode: '#4d5c95', Grok: '#6b5b91', DeepSeek: '#3d6e8f', OpenCode: '#806836' };
+var SOURCES = [
+  { id: 'zhipu', name: 'BigModel Coding Plan', proto: 'anthropic 协议', agents: ['ZCode', 'Grok', 'Claude'], endpoint: 'open.bigmodel.cn', q: { wins: [['5 小时', 6], ['7 天', 87]], note: '7 天窗口 10/30 00:07 重置' },
+    models: [['glm-5.3', 'GLM 5.3', '1M · 推理', true], ['glm-5.3-air', 'GLM 5.3 Air', '200K', true], ['glm-4.6v', 'GLM 4.6V', '128K · 图像', true], ['glm-5.3-flash', 'GLM 5.3 Flash', '200K', false]] },
+  { id: 'deepseek', name: 'DeepSeek', proto: 'openai 协议', agents: ['DeepSeek', 'OpenCode'], endpoint: 'api.deepseek.com', q: { bal: '¥28.30', note: '2 分钟前刷新' },
+    models: [['deepseek-v4', 'DeepSeek V4', '1M', true], ['deepseek-v4-reasoner', 'DeepSeek V4 Reasoner', '1M · 推理', true]] },
+  { id: 'opencode', name: 'opencode.ai 免费池', proto: 'openai 协议', agents: ['OpenCode'], endpoint: 'opencode.ai/zen', q: { wins: [['月', 100]], note: '11/10 00:23 重置' },
+    models: [['kimi-k2.5', 'Kimi K2.5', '256K', true], ['qwen3-coder', 'Qwen3 Coder', '256K', true], ['minimax-m2', 'MiniMax M2', '200K', false], ['big-pickle', 'Big Pickle', '128K', false], ['gpt-oss-120b', 'GPT OSS 120B', '128K · 推理', false]] },
+  { id: 'openrouter', name: 'OpenRouter :free', proto: 'openai 协议', agents: [], endpoint: 'openrouter.ai', q: { bal: '$15.48', note: '免费模型不扣余额' },
+    models: [['llama-4-maverick:free', 'Llama 4 Maverick', '1M · 图像', false], ['gemma-3-27b:free', 'Gemma 3 27B', '128K · 图像', false]] },
+  { id: 'ollama', name: 'Ollama Cloud', proto: 'openai 协议', agents: ['OpenCode'], endpoint: 'ollama.com', issue: '缺少 OLLAMA_API_KEY，模型清单拉不下来', models: [] }
+];
+function tight(s) { return s.q && s.q.wins ? Math.max.apply(null, s.q.wins.map(function (w) { return w[1]; })) : null; }
+function quotaLabel(s) { if (!s.q) return '—'; if (s.q.bal) return s.q.bal; var t = tight(s); return t >= 100 ? '已满' : (100 - t) + '% 剩'; }
+function quotaColor(s) { var t = tight(s); if (t == null) return s.q ? '#2c2c30' : '#8a8a92'; return t >= 95 ? '#c03d45' : (t >= 80 ? '#9a7410' : '#2c2c30'); }
+function base() { var o = {}; SOURCES.forEach(function (s) { s.models.forEach(function (m) { o[s.id + '/' + m[0]] = m[3]; }); }); return o; }
+class Component extends DCLogic {
+  constructor(props) { super(props); this.state = { sel: 'zhipu', filter: 'all', on: base() }; }
+  renderVals() {
+    var self = this, st = this.state, on = st.on, b = base(), shared = 0, total = 0, changed = 0;
+    Object.keys(on).forEach(function (k) { total++; if (on[k]) shared++; if (on[k] !== b[k]) changed++; });
+    var sources = SOURCES.map(function (s) {
+      var n = s.models.filter(function (m) { return on[s.id + '/' + m[0]]; }).length, sel = s.id === st.sel;
+      return {
+        name: s.name,
+        shareLabel: s.issue ? '需要钥匙' : (n === 0 ? '未共享' : '已共享 ' + n + ' / ' + s.models.length),
+        quotaLabel: quotaLabel(s),
+        quotaStyle: 'font-size:12.5px;font-weight:500;font-variant-numeric:tabular-nums;color:' + quotaColor(s),
+        rowStyle: sel ? 'background:#fff;color:#111113;font-weight:500;box-shadow:inset 0 1px 0 #ececee,inset 0 -1px 0 #ececee' : 'background:transparent;color:#2c2c30',
+        pick: function () { self.setState({ sel: s.id, filter: 'all' }); }
+      };
+    });
+    var src = SOURCES.filter(function (s) { return s.id === st.sel; })[0];
+    var onCount = src.models.filter(function (m) { return on[src.id + '/' + m[0]]; }).length, allOn = onCount > 0;
+    var cur = {
+      name: src.name, proto: src.proto, endpoint: src.endpoint, hasIssue: !!src.issue, issue: src.issue || '',
+      hasWin: !!(src.q && src.q.wins), hasBal: !!(src.q && src.q.bal), bal: src.q && src.q.bal || '', quotaNote: src.q ? src.q.note : '',
+      wins: (src.q && src.q.wins || []).map(function (w, i) {
+        var c = w[1] >= 95 ? '#c03d45' : (w[1] >= 80 ? '#9a7410' : '#5c5c63');
+        var main = i === (src.q.wins.length - 1) || w[1] >= 80;
+        return { label: w[0], pct: w[1] >= 100 ? '已满' : (100 - w[1]) + '% 剩',
+          rowStyle: main ? 'color:#2c2c30' : '',
+          trackStyle: 'height:' + (main ? 4 : 2) + 'px',
+          barStyle: 'width:' + w[1] + '%;background:' + (main ? c : '#b5b5bb'),
+          pctStyle: 'color:' + (w[1] >= 80 ? c : (main ? '#111113' : '#8a8a92')) + (main ? ';font-weight:600' : '') };
+      }),
+      agents: src.agents.length ? src.agents.map(function (a) { return { name: a, style: 'box-shadow:inset 2px 0 0 ' + INK[a] }; }) : [{ name: '还没有 agent 用它', style: 'background:transparent;color:#8a8a92;padding:0' }],
+      allPressed: allOn ? 'true' : 'false',
+      swStyle: 'background:' + (allOn ? '#1f8a76' : '#dcdce1'),
+      knobStyle: 'transform:translateX(' + (allOn ? 14 : 2) + 'px)',
+      toggleAll: function () { var n = Object.assign({}, on); src.models.forEach(function (m) { n[src.id + '/' + m[0]] = !allOn; }); self.setState({ on: n }); }
+    };
+    var filters = [['all', '全部 ' + src.models.length], ['on', '已共享 ' + onCount], ['off', '未共享 ' + (src.models.length - onCount)]].map(function (f) {
+      var a = f[0] === st.filter;
+      return { label: f[1], style: a ? 'color:#111113;background:#f1f1f3;border-color:#e2e2e6' : 'color:#5c5c63;background:transparent', pick: function () { self.setState({ filter: f[0] }); } };
+    });
+    var models = src.models.filter(function (m) { var v = on[src.id + '/' + m[0]]; return st.filter === 'all' || (st.filter === 'on' ? v : !v); }).map(function (m) {
+      var k = src.id + '/' + m[0], v = !!on[k];
+      return {
+        id: m[0], name: m[1], caps: m[2], on: v, pressed: v ? 'true' : 'false',
+        boxStyle: v ? 'background:#1f8a76;border:1px solid #1f8a76' : 'background:#fff;border:1px solid #c8c8ce',
+        nameStyle: 'font-size:13px;white-space:nowrap;color:' + (v ? '#111113' : '#8a8a92'),
+        toggle: function () { var n = Object.assign({}, on); n[k] = !v; self.setState({ on: n }); }
+      };
+    });
+    return { sources: sources, cur: cur, filters: filters, models: models, empty: models.length === 0, sharedTotal: shared, modelTotal: total, dirty: changed > 0, dirtyLabel: changed + ' 处未保存', reset: function () { self.setState({ on: base() }); } };
+  }
+}
+</script>
+</body>
+</html>

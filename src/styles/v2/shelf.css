@@ -1,0 +1,652 @@
+/* UI v2 overrides: shelf. Loaded after every legacy sheet (src/main.tsx); see docs/ui-language.md. */
+
+/* ── 0 · Ground: sidebar on --panel, 1px right border. ── */
+.project-tree.project-tree {
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+}
+
+.project-tree .sidebar-title.titlebar-row {
+  padding: 0;
+  background: var(--panel);
+}
+
+.project-tree__body.project-tree__body {
+  padding: 6px 0;
+}
+
+/* Row hover fill (project rows only; session rows keep their own v2 state). */
+.project-tree .project-row:not(.is-active):hover {
+  background: var(--panel-soft);
+}
+
+/* ── 1 · Search row: flush in the titlebar, 34px, hairline below. ── */
+.sidebar-search--titlebar.sidebar-search--titlebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 12px;
+}
+
+.sidebar-search--titlebar.sidebar-search--titlebar > svg {
+  width: 14px;
+  height: 14px;
+  color: var(--text-faint);
+}
+
+.sidebar-search--titlebar.sidebar-search--titlebar input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 12px;
+}
+
+.sidebar-search--titlebar.sidebar-search--titlebar input::placeholder {
+  color: var(--text-faint);
+}
+
+.sidebar-search .shelf-search__hint.shelf-search__hint {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  font-weight: 400;
+}
+
+/* ── 2 · Status filter: plain text items, counts tabular. ── */
+.shelf-status.shelf-status {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 30px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+}
+
+.shelf-status .shelf-status__chip.shelf-status__chip {
+  gap: 5px;
+  height: auto;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 400;
+}
+
+.shelf-status .shelf-status__chip.shelf-status__chip:hover {
+  background: transparent;
+  color: var(--text);
+}
+
+.shelf-status .shelf-status__chip.is-active {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: var(--text-strong);
+  font-weight: 500;
+}
+
+.shelf-status .shelf-status__dot {
+  display: none;
+}
+
+.shelf-status .shelf-status__count {
+  color: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.shelf-filter-note.shelf-filter-note {
+  padding: 2px 12px;
+  font-size: 11px;
+}
+
+/* ── 3 · Group labels ("项目" / "聊天") with a 22px Plus icon button. ── */
+.shelf-group.shelf-group {
+  display: flex;
+  align-items: center;
+  height: 26px;
+  margin-top: 10px;
+  padding: 0 12px;
+}
+
+.project-tree__body > .shelf-group:first-child {
+  margin-top: 0;
+}
+
+.shelf-group__label {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.shelf-group__add.shelf-group__add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  margin-right: -6px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.shelf-group__add.shelf-group__add:hover {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.chat-section.chat-section {
+  border-top: 0;
+}
+
+.chat-section__header.chat-section__header {
+  height: 26px;
+  margin: 10px 0 0;
+  padding: 0 12px;
+  border-bottom: 0;
+}
+
+.chat-section__title.chat-section__title {
+  gap: 0;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.chat-section__new.chat-section__new {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-faint);
+  opacity: 1;
+}
+
+.chat-section__new.chat-section__new:hover {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+/* ── 4 · Project rows. ── */
+.project-tree .project-row.is-open-here {
+  border-color: transparent;
+}
+
+.project-tree .project-row__chev {
+  transition: transform var(--dur-base, 180ms) var(--ease-out, ease-out);
+}
+
+.project-tree .project-row__chev.is-open {
+  transform: rotate(90deg);
+}
+
+.project-tree .project-row__content strong {
+  color: var(--text-strong);
+  font-weight: 600;
+}
+
+.project-list__empty,
+.chat-list__empty {
+  padding: 6px 12px;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.shelf-clip__more.shelf-clip__more {
+  height: 26px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.shelf-clip__more.shelf-clip__more:hover {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.shelf-clip__count {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 5 · Bottom block: plain 28px rows, hairline above the block. ── */
+.shelf-memo-entry.shelf-memo-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 12px;
+  border-top: 1px solid var(--hairline);
+  border-radius: 0;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 400;
+}
+
+.shelf-memo-entry.shelf-memo-entry + .shelf-memo-entry.shelf-memo-entry {
+  border-top: 0;
+}
+
+.shelf-memo-entry.shelf-memo-entry:hover {
+  background: var(--panel-soft);
+}
+
+.shelf-memo-entry svg {
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+}
+
+.shelf-memo-entry__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shelf-memo-entry__count {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 6 · Footer bar: one 34px row — model sharing left, icons right. ── */
+.sidebar-dock.sidebar-dock {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  padding: 0;
+  border-top: 1px solid var(--border);
+}
+
+.sidebar-dock .sidebar-footer.sidebar-footer {
+  flex: 0 0 auto;
+  gap: 0;
+  height: 34px;
+  min-height: 34px;
+  margin-left: auto;
+  padding: 0;
+  border-top: 0;
+  background: transparent;
+}
+
+.sidebar-footer .sidebar-footer__button.sidebar-footer__button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.sidebar-footer .sidebar-footer__button.sidebar-footer__button:hover {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.sidebar-footer .sidebar-footer__button.sidebar-footer__button.is-notify-on {
+  color: var(--accent);
+}
+
+.sidebar-footer .sidebar-footer__button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.engine-entry.engine-entry {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: auto;
+  height: 34px;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.engine-entry.engine-entry:hover,
+.engine-entry.engine-entry.is-open {
+  border-color: transparent;
+  background: var(--panel-soft);
+}
+
+.engine-entry .engine-entry__icon {
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+}
+
+.engine-entry.engine-entry.is-on .engine-entry__icon {
+  color: var(--text-muted);
+}
+
+.engine-entry .engine-entry__label {
+  font-weight: 400;
+}
+
+.engine-entry .engine-entry__dot {
+  width: 5px;
+  height: 5px;
+  margin-left: 2px;
+}
+
+.engine-entry.engine-entry.is-on .engine-entry__dot {
+  background: var(--green);
+}
+
+/* ── Motion: honour reduced motion. ── */
+@media (prefers-reduced-motion: reduce) {
+  .project-tree .project-row__chev {
+    transition: none;
+  }
+}
+
+/* Review fixes: the open project carries no tint; the footer's model-sharing entry
+   takes the free width and truncates instead of running into the icon row. */
+.project-tree .project-row.is-active {
+  background: transparent;
+}
+.sidebar-dock .engine-entry.engine-entry {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.sidebar-dock .engine-entry .engine-entry__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-dock .sidebar-footer {
+  flex: none;
+}
+
+/* Narrow sidebar: the model-sharing entry drops to its icon (label stays in aria-label)
+   and the footer icons tighten to 28px, so nothing gets cut to a half word. */
+.sidebar-dock {
+  container-type: inline-size;
+}
+
+@container (max-width: 260px) {
+  .sidebar-dock .engine-entry .engine-entry__label {
+    display: none;
+  }
+
+  .sidebar-footer .sidebar-footer__button.sidebar-footer__button {
+    width: 28px;
+  }
+}
+
+/* Only live conversations (starting / running / waiting / error) show their agent ink.
+   A conversation whose process has ended (parked, or not started this run) goes grey,
+   so the rows that light up are the ones actually doing something. */
+.project-tree .session-row.is-exited .session-row__dot,
+.project-tree .chat-row.is-exited .chat-row__dot {
+  background: color-mix(in srgb, var(--text-faint) 45%, transparent);
+  animation: none;
+}
+
+.project-tree .session-row.is-exited:not(.is-active),
+.project-tree .chat-row.is-exited:not(.is-active) {
+  color: var(--text-muted);
+}
+
+.project-tree .session-row.is-exited:not(.is-active) .session-row__label,
+.project-tree .session-row.is-exited:not(.is-active) .session-row__select,
+.project-tree .chat-row.is-exited:not(.is-active) .chat-row__label,
+.project-tree .chat-row.is-exited:not(.is-active) .chat-row__select {
+  color: var(--text-muted);
+}
+
+/* Footer state reads from the icon colour itself, not a pip pinned to the corner (the pip
+   drifted once the buttons shrank, and a dot is the wrong signal anyway). */
+.sidebar-footer .sidebar-footer__button.sidebar-footer__button::after {
+  content: none;
+}
+
+.sidebar-footer .sidebar-footer__button.sidebar-footer__button.is-notify-on,
+.sidebar-footer .sidebar-footer__button.sidebar-footer__button.is-proxy-on,
+.sidebar-footer .sidebar-footer__button.sidebar-footer__button.is-engine-on {
+  color: var(--accent);
+  opacity: 1;
+}
+
+.sidebar-footer .sidebar-footer__button.sidebar-footer__button.is-notify-off {
+  color: var(--text-faint);
+  opacity: 1;
+}
+
+.sidebar-dock .engine-entry .engine-entry__dot {
+  display: none;
+}
+
+.sidebar-dock .engine-entry.engine-entry .engine-entry__icon {
+  color: var(--text-faint);
+}
+
+.sidebar-dock .engine-entry.engine-entry.is-on .engine-entry__icon {
+  color: var(--accent);
+}
+
+.sidebar-dock .engine-entry.engine-entry.is-busy .engine-entry__icon {
+  color: var(--yellow);
+  animation: activity-pulse 1.2s ease-in-out infinite;
+}
+
+.sidebar-dock .engine-entry.engine-entry.is-fail .engine-entry__icon {
+  color: var(--red);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-dock .engine-entry.engine-entry.is-busy .engine-entry__icon {
+    animation: none;
+  }
+}
+
+/* ---- Sidebar rhythm + accent, v2 final (2026-11-06) ---------------------------------
+   One left gutter (12px) for every top-level row; every conversation row, inside a
+   project or in the chat list, puts its dot at 28px and its text at 42px; every row keeps
+   12px on the right and the lists reserve the scrollbar's lane so text never touches it.
+   The accent marks what is current: the selected conversation, the open project,
+   the active filter, the focused search. Agent ink stays on the dots. */
+.project-tree .project-list,
+.project-tree .chat-list,
+.project-tree .memo-list {
+  padding-right: 0;
+  scrollbar-gutter: stable;
+}
+
+.project-tree .project-row.project-row {
+  min-height: 28px;
+  padding-left: 6px;
+  padding-right: 12px;
+}
+
+.project-tree .session-row.session-row:not(.session-row--empty),
+.project-tree .chat-row.chat-row {
+  min-height: 28px;
+  padding-left: 28px;
+  padding-right: 12px;
+  border-radius: 0;
+}
+
+.project-tree .session-row.session-row:not(.session-row--empty) .session-row__dot,
+.project-tree .chat-row.chat-row .chat-row__dot {
+  flex: none;
+  margin: 0 8px 0 0;
+}
+
+.project-tree .session-row--empty.session-row--empty,
+.project-tree .chat-list__empty {
+  padding-left: 42px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.project-tree .shelf-memo-entry.shelf-memo-entry {
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
+/* Selection = accent: a 2px bar and a faint accent wash; ink stays on the dot. */
+.project-tree .session-row.session-row.is-active,
+.project-tree .chat-row.chat-row.is-active {
+  background: color-mix(in srgb, var(--accent) 7%, var(--panel-raised));
+  box-shadow:
+    inset 2px 0 0 var(--accent),
+    inset 0 1px 0 var(--hairline),
+    inset 0 -1px 0 var(--hairline);
+  color: var(--text-strong);
+}
+
+/* The open project: its folder icon carries the accent. */
+.project-tree .project-row.is-active .lucide-folder {
+  color: var(--accent);
+}
+
+/* Active status filter and the focused search pick up the accent too. */
+.project-tree .shelf-status__chip.is-active,
+.project-tree .shelf-status__chip[aria-pressed="true"] {
+  color: var(--accent);
+}
+
+.sidebar-search--titlebar:focus-within {
+  box-shadow: inset 0 -1px 0 var(--accent);
+}
+
+.sidebar-search--titlebar:focus-within svg {
+  color: var(--accent);
+}
+
+/* The group "+" buttons answer in accent. */
+.project-tree .shelf-group__add:hover,
+.project-tree .chat-section__new:hover {
+  color: var(--accent);
+}
+
+/* ---- Chat list = the same rows as 收纳盒 / 圆桌 (2026-11-06) ----------------------------
+   Top-level chats are not nested: the dot sits in the 14px icon column at the 12px gutter
+   and the title starts where the entry labels start (34px). Rows are 28px, so the list's
+   preview height is computed from 28px rows and the last row is never cut in half. */
+.project-tree .chat-list {
+  --chat-row-h: 28px;
+}
+
+.project-tree .chat-row.chat-row {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.project-tree .chat-row .chat-row__select,
+.project-tree .chat-row .chat-row__rename {
+  gap: 8px;
+  min-height: 28px;
+  padding: 0 12px;
+}
+
+.project-tree .chat-row.chat-row .chat-row__dot {
+  margin: 0 4.5px;
+}
+
+.project-tree .chat-row .chat-row__content strong {
+  font-size: 12.5px;
+  font-weight: 400;
+}
+
+.project-tree .chat-row.is-active .chat-row__content strong {
+  color: var(--text-strong);
+  font-weight: 500;
+}
+
+.project-tree .chat-row .chat-row__actions {
+  right: 8px;
+}
+
+.project-tree .chat-list__empty.chat-list__empty {
+  padding-left: 34px;
+}
+
+/* ---- Legacy dividers + green icons back (2026-11-06) ---------------------------------
+   The old sidebar's structure lines and accent icons return: a full divider above the
+   收纳盒 / 圆桌 block and above the 聊天 section, one between the two entries and one under
+   the 聊天 header; the entry icons, the chat header's icon and the on-state model-sharing
+   icon are green, as is the "open here" project frame and "show more" on hover. */
+.project-tree .shelf-memo-entry.shelf-memo-entry {
+  border-top: 1px solid var(--border);
+}
+
+.project-tree .shelf-memo-entry.shelf-memo-entry + .shelf-memo-entry.shelf-memo-entry {
+  border-top: 1px solid var(--hairline);
+}
+
+.project-tree .shelf-memo-entry svg {
+  color: var(--accent);
+}
+
+.project-tree .chat-section.chat-section {
+  border-top: 1px solid var(--border);
+}
+
+.project-tree .chat-section__header.chat-section__header {
+  margin-top: 0;
+  height: 30px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.project-tree .chat-section__title.chat-section__title {
+  gap: 6px;
+  color: var(--text-strong);
+  font-size: 12px;
+}
+
+.project-tree .chat-section__title svg {
+  color: var(--accent);
+}
+
+.engine-entry.engine-entry.is-on .engine-entry__icon {
+  color: var(--accent);
+}
+
+.project-tree .project-row.is-open-here {
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.shelf-clip__more.shelf-clip__more:hover,
+.shelf-clip__more.shelf-clip__more:hover .shelf-clip__count {
+  color: var(--accent);
+}

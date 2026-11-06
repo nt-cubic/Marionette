@@ -21,6 +21,8 @@ export const en = {
   "session.diffNote": "Workspace diff · line numbers match git · click a code line to comment",
   "session.webReplyWidthTitle": "GPT reply width: {n}%",
   "session.webReplyWidth": "GPT reply width",
+  "session.replyTokens": "{tokens} tok",
+  "session.handoffRule": "Handoff to {agent} · notes go with your next message",
   "session.subtaskRunning": "Running",
   "session.subtaskStop": "Stop",
   "session.durationSeconds": "{n}s",

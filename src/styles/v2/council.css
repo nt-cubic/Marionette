@@ -1,0 +1,338 @@
+/* UI v2 overrides: council. Loaded after every legacy sheet (src/main.tsx); see docs/ui-language.md. */
+
+/* ── 席位行(运行视图 .council-member-chip):平铺行,2px agent 墨条,无席位卡 ── */
+
+.council-run__members {
+  display: block;
+  border-top: 1px solid var(--hairline);
+}
+
+.council-member-chip {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  padding: 8px 12px 8px 14px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--hairline);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.council-member-chip::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--agent-ink, var(--accent));
+  pointer-events: none;
+}
+
+.council-member-chip__dot {
+  display: none;
+}
+
+.council-member-chip__name {
+  order: 1;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.council-member-chip:not(.is-chair) .council-member-chip__name {
+  font-weight: 500;
+}
+
+.council-member-chip__chair,
+.council-member-chip__tier {
+  order: 2;
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.council-member-chip__status {
+  order: 3;
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.council-member-chip.is-working .council-member-chip__status {
+  color: var(--yellow);
+}
+
+.council-member-chip__model {
+  order: 10;
+  flex-basis: 100%;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* 主席行:6% 墨色渐变底。 */
+.council-member-chip.is-chair {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--agent-ink, var(--accent)) 6%, transparent), transparent 70%);
+}
+
+/* 主席综合中:墨色描边 + 复用全局 run-light(activity-run / --run 已全局注册)。 */
+.council-member-chip.is-working {
+  border-color: color-mix(in srgb, var(--agent-ink, var(--accent)) 40%, var(--border));
+}
+
+.council-member-chip.is-working::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  border-radius: var(--radius);
+  pointer-events: none;
+  background: conic-gradient(
+    from var(--run),
+    transparent 0 78%,
+    color-mix(in srgb, var(--agent-ink, var(--accent)) 75%, transparent) 88%,
+    transparent 98%
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: activity-run 6s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .council-member-chip.is-working::after {
+    animation: none;
+    opacity: 0;
+  }
+}
+
+/* ── 召集视图成员行(.council-member):同为平铺行,不再是内衬卡 ── */
+
+.council-member {
+  position: relative;
+  padding: 8px 12px 8px 14px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--hairline);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.council-member::before {
+  width: 2px;
+  background: var(--agent-ink, var(--accent));
+}
+
+.council-member.is-chair {
+  border-color: var(--hairline);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--agent-ink, var(--accent)) 6%, transparent), transparent 70%);
+}
+
+/* ── 发言 / 提案卡:3px 墨条;头部「名字 模型」中性色;角色 = 18px chip ── */
+
+.council-msg::before {
+  background: var(--agent-ink, var(--accent));
+}
+
+.council-msg__dot {
+  display: none;
+}
+
+.council-msg__author {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.council-msg__model {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-faint);
+}
+
+.council-msg__kind {
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.council-msg__time {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 阶段分隔:居中 11.5px faint,两侧 hairline ── */
+
+.council-tgroup__title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 26px;
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--text-faint);
+}
+
+.council-tgroup__title::before,
+.council-tgroup__title::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--hairline);
+}
+
+/* ── 议题卡(You 卡:3px accent 左条) + 阶段步进行 ── */
+
+.council-run__head .council-frame--wide {
+  position: relative;
+  padding: 10px 12px 10px 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  box-shadow: none;
+}
+
+.council-run__head .council-frame--wide::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.council-run__title strong {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.council-run__title .council-badge {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* 步进行:完成/未到 faint,当前 text-strong 600 + 6px 墨点。 */
+.council-rail {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 8px 0 0;
+  padding: 8px 0 0;
+  border-top: 1px solid var(--hairline);
+}
+
+.council-rail__step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.council-rail__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--hairline);
+}
+
+.council-rail__label {
+  font-size: 12px;
+}
+
+.council-rail__line {
+  display: none;
+}
+
+.council-rail__step.is-done .council-rail__dot {
+  background: var(--border);
+}
+
+.council-rail__step.is-current {
+  color: var(--text-strong);
+  font-weight: 600;
+}
+
+.council-rail__step.is-current .council-rail__dot {
+  background: var(--agent-ink, var(--accent));
+}
+
+.council-rail__step.is-error {
+  color: var(--red);
+}
+
+.council-rail__step.is-error .council-rail__dot {
+  background: var(--red);
+}
+
+/* ── 预算:key/value 行,28px,hairline 分隔 ── */
+
+.council-budget {
+  display: block;
+  padding: 0;
+  background: none;
+  border: 0;
+}
+
+.council-kv {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  border-bottom: 1px solid var(--hairline);
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.council-kv b {
+  margin-left: auto;
+  font-weight: 400;
+  color: var(--text-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.council-kv b.is-warn {
+  color: var(--yellow);
+}
+
+/* ── 计划门:底部 56px 操作条(顶部 hairline,批准计划 primary / 驳回 secondary) ── */
+
+.council-plan__gate {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 56px;
+  margin: 10px -10px -10px;
+  padding: 0 12px 0 13px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.council-plan__gate-hint {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.council-plan__actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}

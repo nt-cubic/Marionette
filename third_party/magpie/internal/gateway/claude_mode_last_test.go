@@ -36,11 +36,11 @@ func TestClaudeTUICodes(t *testing.T) {
 	was := claudeTUIRuns
 	claudeTUIRuns = true
 	t.Cleanup(func() { claudeTUIRuns = was })
-	req := &Request{Messages: []Message{{Role: "user", Parts: []Part{{Kind: Text, Text: "hi"}}}}, Safeguards: []byte(`{"a":1}`)}
-	if tui, code := claudeTUI(req, claudeCLI{path: "/usr/local/bin/claude"}, []map[string]any{{"type": "text", "text": "hi"}}); tui || code != "safeguards" {
-		t.Fatalf("with safeguards: %v %q", tui, code)
+	req := &Request{Messages: []Message{{Role: "user", Parts: []Part{{Kind: Image, URL: "https://example.com/a.png"}}}}}
+	if tui, code := claudeTUI(req, claudeCLI{path: "/usr/local/bin/claude"}); tui || code != "image" {
+		t.Fatalf("an image by its URL: %v %q", tui, code)
 	}
-	if tui, code := claudeTUI(req, claudeCLI{}, nil); tui || code != "missing" {
+	if tui, code := claudeTUI(req, claudeCLI{}); tui || code != "missing" {
 		t.Fatalf("no Claude Code: %v %q", tui, code)
 	}
 }

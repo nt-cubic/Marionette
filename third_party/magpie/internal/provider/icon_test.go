@@ -12,7 +12,9 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestStoreIcon(t *testing.T) {
@@ -287,5 +289,40 @@ func TestGuardClientThroughLocalProxy(t *testing.T) {
 	}
 	if len(asked) != 1 {
 		t.Fatalf("the proxy was asked for a private site: %v", asked)
+	}
+}
+
+// A fetch's client is that fetch's alone: the connection it made, left in
+// the transport's pool, is dropped by nobody else (#4824). The fetch
+// ends, the connection goes.
+func TestFetchIconLeavesNoIdleConnection(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	png := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+	var closed atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(png)
+	}))
+	srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		if s == http.StateClosed {
+			closed.Add(1)
+		}
+	}
+	srv.Start()
+	t.Cleanup(srv.Close)
+	t.Setenv("MAGPIE_ICON_PROXY", srv.URL+"/api/icon")
+	old := iconClient
+	iconClient = srv.Client
+	t.Cleanup(func() { iconClient = old })
+	if _, err := FetchIcon(context.Background(), "https://author.invalid/logo.png"); err != nil {
+		t.Fatal(err)
+	}
+	for now := time.Now(); closed.Load() == 0 && time.Since(now) < 20*time.Second; time.Sleep(5 * time.Millisecond) {
+	}
+	if closed.Load() == 0 {
+		t.Fatal("the fetch's connection is still idle: its pool was not closed")
 	}
 }

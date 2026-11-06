@@ -72,6 +72,11 @@ const (
 
 var siwcClient = &http.Client{Timeout: 30 * time.Second}
 
+// siwcNoUsage is what a ChatGPT API account's usage line says: OpenAI's
+// API tells no plan usage, and the account added as ChatGPT (Codex's
+// backend) does.
+const siwcNoUsage = "a ChatGPT API account's usage isn't told through OpenAI's API, only at " + SIWCUsageURL + "; the same account added as ChatGPT shows it here"
+
 // ErrSIWCSignIn is an account OpenAI no longer refreshes: it must be
 // signed in again.
 var ErrSIWCSignIn = errors.New("the ChatGPT sign-in has expired — sign in again")
@@ -113,6 +118,9 @@ func siwcLoginList() []Login {
 	for i := range ls {
 		if ls[i].Lapsed == "" {
 			ls[i].Lapsed = ls[i].saved.Lapsed
+		}
+		if c, ok := siwcSaved(ls[i].saved); ok {
+			ls[i].Until = chatgptUntil(time.Now(), c.IDToken, c.Access)
 		}
 	}
 	return loginsOf(ls)

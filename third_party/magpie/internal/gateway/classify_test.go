@@ -251,7 +251,7 @@ func TestIntentNotAskedWhenItCantMatter(t *testing.T) {
 	hit := ruleFor("img", g, ms, img, "claude", func(string, []string, before, bool, string) (verdict, error) {
 		asked++
 		return verdict{Intent: "debugging"}, nil
-	})
+	}, "")
 	if hit.N != 0 || hit.Classified == nil || !strings.Contains(hit.Classified.Error, "no words") || asked != 0 {
 		t.Fatalf("image: %+v %+v", hit, hit.Classified)
 	}
@@ -433,12 +433,16 @@ func TestUserText(t *testing.T) {
 		t.Fatalf("%d", len(got))
 	}
 	for in, want := range map[string]string{"1": "x", "2": "y", " 0 ": "", "2\n": "y"} {
-		if got, err := readIntent(in, []string{"x", "y"}); err != nil || got != want {
+		got, said, err := readIntent(in, []string{"x", "y"})
+		if err != nil || got != want {
 			t.Fatalf("%q: %q %v", in, got, err)
+		}
+		if said != strings.TrimSpace(in) {
+			t.Fatalf("%q: said %q", in, said)
 		}
 	}
 	for _, in := range []string{"3", "-", "none", ""} {
-		if _, err := readIntent(in, []string{"x", "y"}); err == nil {
+		if _, _, err := readIntent(in, []string{"x", "y"}); err == nil {
 			t.Fatalf("%q read", in)
 		}
 	}

@@ -724,7 +724,7 @@
         parts = cur = null;
         return;
       }
-      rid = r.id;
+      rid = r;
       const window = p.window || 0;
       const full = window ? p.tokens / window : 0;
       const live = !r.done;
@@ -790,8 +790,13 @@
         if (r.agent) route.append(el("span", "ctx-sep", "›"));
         route.append(what);
       }
-      head.append(route);
-      head.append(st);
+      // the route and the state go together: where the title leaves them
+      // too little room they take a line of their own, the model id cut
+      // to fit there, and nothing is drawn over the title (packinggoods on
+      // Discord: in a narrow window the provider's icon sat on it)
+      const end = el("span", "ctx-end");
+      end.append(route, st);
+      head.append(end);
 
       // how full, and the cache
       const top = el("div", "ctx-top");
@@ -971,11 +976,7 @@
 
   // A part of the card clicked opens what the request sent there, read
   // from the request's body: an item alone (a tool, a file, a turn), or
-  // the part's items, each opened to its text. magpie keeps the last few
-  // requests' bodies, masked, in memory only, so an older one's text is
-  // gone. A long text comes a stretch at a time, so a prompt of megabytes
-  // doesn't hold the window up.
-  // in ctxtext.js, loaded when a part is first opened
+  // the part's items, each opened to its text (ctxtext.js, loaded then)
   const openCtxText = (...a) => import("./ctxtext.js").then((m) => m.open({ fmtK, partName, itemName, itemLabel, tagOf }, ...a)).catch(statusErr);
   window.openCtxText = openCtxText;
   window.ctxFmt = fmtK;
@@ -1355,11 +1356,13 @@
       : t("A token estimate only: it doesn't measure how well the agent keeps the task after a compaction. The lower the window, the more often it compacts.")));
 
     const foot = el("div", "ctx-tune-foot");
+    // the advice magpie put in is "In use" in every range, Now at it too
+    // (hoobnn: over 7 and 30 days it read "Already the leanest")
     const verdict = !lean && (same || applied)
       ? el("span", "ctx-chip good", "")
       : el("span", "ctx-chip info", "");
     verdict.append(el("i"), lean ? t("Not the leanest: {range} spends the fewest tokens", { range: bandName })
-      : same ? t("Already the leanest for how you work") : applied ? t("In use") : t("{pct} fewer tokens · {tokens} over the range", { pct: pct(saves), tokens: fmtK(Math.round(r.cost - r.low)) }));
+      : applied ? t("In use") : same ? t("Already the leanest for how you work") : t("{pct} fewer tokens · {tokens} over the range", { pct: pct(saves), tokens: fmtK(Math.round(r.cost - r.low)) }));
     foot.append(verdict, el("span", "grow"));
     const note = el("div", "ctx-tune-src");
     title.after(note);
@@ -1409,7 +1412,9 @@
       foot.append(go);
     }
     // a window of the reader's own (#1860), from the same replay: each
-    // value's tokens past the leanest and compactions, both estimates
+    // value's tokens against the setting now, which the reader picks away
+    // from (hayden4608 on Discord: against the leanest, every line read as
+    // more), and compactions, both estimates
     const pts = (a.compact && a.compact.curve) || [];
     if (pts.length > 1 && !held) {
       const other = el("button", "text ctx-tune-pick", t("Other window…"));
@@ -1419,24 +1424,27 @@
       other.setAttribute("aria-expanded", "false");
       other.onclick = (e) => {
         e.stopPropagation();
-        // timed, the advice may spend over the cheapest to wait no
-        // longer, so each value is said against the cheapest
+        // the fewest tokens: timed, the advice may spend over the cheapest
+        // to wait no longer, so the cheapest
         const cheapest = pts.reduce((x, p) => p.cost < x.cost ? p : x, pts[0]);
-        const base = timed ? cheapest.cost : (pts.find((p) => p.value === best) || {}).cost ?? r.low;
+        const fewest = timed ? cheapest.value : best;
         const now = set.ours && set.value != null ? +set.value : cur;
         const near = pts.reduce((x, p) => Math.abs(p.value - now) < Math.abs(x.value - now) ? p : x, pts[0]);
+        // the setting now's cost: its own point, else the replay's at it
+        const base = near.value === now ? near.cost : r.cost > 0 ? r.cost : near.cost;
         const opts = pts.map((p) => {
-          const extra = Math.max(0, p.cost - base);
-          const spend = p.value === (timed ? cheapest.value : best) ? t("Fewest tokens")
-            : base > 0 && extra / base < 0.005 ? t("As few tokens")
-            : t("+{tokens} tokens (+{pct})", { tokens: fmtK(extra), pct: pct(base > 0 ? extra / base : 0) });
+          const diff = p.cost - base, share = base > 0 ? Math.abs(diff) / base : 0;
+          const spend = p.value === now ? t("Your setting now")
+            : share < 0.005 ? t("As few tokens")
+            : diff < 0 ? t("−{tokens} tokens (−{pct})", { tokens: fmtK(-diff), pct: pct(share) })
+            : t("+{tokens} tokens (+{pct})", { tokens: fmtK(diff), pct: pct(share) });
           const often = p.compacts == null ? "" : p.compacts ? count(p.compacts, "about 1 compaction", "about {n} compactions") : t("no compaction");
           const wait = timed && p.compacts ? t("about {d} waiting", { d: fmtDur(p.wait || 0) }) : "";
-          return { v: String(p.value), name: show(p.value), literalName: true, note: [spend, often, wait].filter(Boolean).join(" · ") };
+          return { v: String(p.value), name: show(p.value), literalName: true, note: [spend, p.value === fewest ? t("Fewest tokens") : "", often, wait].filter(Boolean).join(" · ") };
         });
         openProtoMenu(other, opts, String(near.value), (v) => {
           if (v !== String(now)) send("apply", v);
-        }, "Compact at · estimated from your calls of the range", "ctx-tune-menu");
+        }, "Compact at · against the setting now, from your calls of the range", "ctx-tune-menu");
       };
       foot.append(other);
     }

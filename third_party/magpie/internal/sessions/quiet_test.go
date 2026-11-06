@@ -69,6 +69,11 @@ func TestWarmReadsOnlyInItsSlots(t *testing.T) {
 	if got := len(List(0)); got < 12 {
 		t.Fatalf("%d sessions listed", got)
 	}
+	// the index read each file's calls along (callsRide): a line more in
+	// each leaves the calls something of their own to read
+	for _, s := range CallSources() {
+		appendText(t, s.Path, "\n")
+	}
 	warm("the calls", func() {
 		for _, s := range CallSources() {
 			ReadCallSource(s)

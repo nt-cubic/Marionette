@@ -25,7 +25,7 @@ export function ComposerErrorStrip({
 }: ComposerErrorStripProps) {
   const t = useT();
   return (
-    <div className="composer-error-strip" role="alert">
+    <div className="composer-error-strip" role="alert" data-kind={error.kind}>
       <div className="composer-error-strip__copy">
         <strong>{error.title}</strong>
         <span>{error.actionHint || error.message}</span>
@@ -36,7 +36,7 @@ export function ComposerErrorStrip({
         </button>
         {canSignIn && onSignIn && error.kind === "auth" ? (
           <button type="button" onClick={onSignIn}>
-            Sign in
+            {t("v2composer.signIn")}
           </button>
         ) : null}
         {onUpdate && error.kind === "upgrade" ? (

@@ -46,7 +46,7 @@ export function ImageAnnotator({ attachment, onClose, onSave }: Props) {
     setError(null);
     setDataUrl(null);
     if (!isTauriRuntime()) {
-      setError("Image preview requires the desktop app");
+      setError(t("v2dialogs.desktopOnly"));
       return;
     }
     void readImageDataUrl(attachment.path)
@@ -169,8 +169,8 @@ export function ImageAnnotator({ attachment, onClose, onSave }: Props) {
           <button
             type="button"
             className="image-annotator__icon-btn"
-            title="Close"
-            aria-label="Close"
+            title={t("common.close")}
+            aria-label={t("common.close")}
             onClick={onClose}
           >
             <X size={16} />
@@ -180,7 +180,7 @@ export function ImageAnnotator({ attachment, onClose, onSave }: Props) {
         <div className="image-annotator__body">
           <div className="image-annotator__stage">
             {error && <p className="image-annotator__error">{error}</p>}
-            {!error && !dataUrl && <p className="image-annotator__muted">Loading image…</p>}
+            {!error && !dataUrl && <p className="image-annotator__muted">{t("v2dialogs.loadingImage")}</p>}
             {dataUrl && (
               <div className="image-annotator__frame">
                 <img
@@ -326,7 +326,7 @@ export function ImageAnnotator({ attachment, onClose, onSave }: Props) {
                       title={t("common.delete")}
                       onClick={() => removeMark(m.id)}
                     >
-                      ✕
+                      <X size={14} strokeWidth={1.5} />
                     </button>
                   </li>
                 ))}

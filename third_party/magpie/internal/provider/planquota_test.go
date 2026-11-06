@@ -119,10 +119,24 @@ func TestCommandCodeQuotaShowsWindows(t *testing.T) {
 	if q.Balance != "" || q.Plan != "GOAT" || len(q.Windows) != 3 {
 		t.Fatalf("%+v", q)
 	}
-	// the CLI's pool: $70 a month, $41.20 of it left, and $5 bought
+	// GOAT's month is 70 usage-value credits, not $70 (they are "$100 on
+	// DeepSeek V4.1 Flash", $70 on GLM-5.2): 41.20 of them left, and the
+	// $5 bought, dollars at model cost, said beside them, not in the pool
 	cr := q.Windows[2]
-	if cr.Name != "Credits" || cr.Display != "$28.80 / $75.00" || math.Abs(cr.Used-38.4) > 1e-9 || cr.Span != 0 {
+	if cr.Name != "Credits" || cr.Display != "28.80 / 70.00 credits + $5.00 extra" || math.Abs(cr.Used-100*28.8/70) > 1e-9 || cr.Span != 0 {
 		t.Errorf("credits: %+v", cr)
+	}
+	// Max's credits are dollars: the CLI's pool, the month and the bought
+	var maxPlan cmdCredits
+	_ = json.Unmarshal([]byte(strings.Replace(cmdCreditsReply, "individual-goat-monthly", "individual-max-monthly", 1)), &maxPlan)
+	if q := cmdQuotaOf(SubscriptionQuota{}, maxPlan, nil); q.Plan != "Max" || len(q.Windows) != 3 || q.Windows[2].Display != "$108.80 / $155.00" {
+		t.Errorf("max: %+v", q)
+	}
+	// Provider is pay as you go: its $15 carries no credits, so no month
+	var provider cmdCredits
+	_ = json.Unmarshal([]byte(strings.Replace(cmdCreditsReply, "individual-goat-monthly", "individual-provider", 1)), &provider)
+	if q := cmdQuotaOf(SubscriptionQuota{}, provider, nil); q.Plan != "Provider" || len(q.Windows) != 2 {
+		t.Errorf("provider: %+v", q)
 	}
 	// no plan and no windows: what is left is all there is to show
 	var none cmdCredits

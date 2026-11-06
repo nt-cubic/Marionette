@@ -282,7 +282,7 @@ export function ProviderConfigDialog({ onClose, onKeysChanged, restartPending }:
             ) : (
               <>
                 <label className="provider-dialog__field">
-                  <span className="provider-dialog__label">Provider id</span>
+                  <span className="provider-dialog__label">{t("v2dialogs.providerId")}</span>
                   <input
                     className="provider-dialog__input"
                     value={customId}
@@ -314,7 +314,7 @@ export function ProviderConfigDialog({ onClose, onKeysChanged, restartPending }:
               </>
             )}
             <label className="provider-dialog__field">
-              <span className="provider-dialog__label">API Key</span>
+              <span className="provider-dialog__label">{t("v2dialogs.apiKey")}</span>
               <input
                 className="provider-dialog__input"
                 type="password"

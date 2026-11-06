@@ -21,10 +21,17 @@ const (
 	// and OpenCode Go (https://opencode.ai/docs/go) bill DeepSeek's models
 	// at, neither of which names a holiday
 	PeakWeekdays Peak = "weekdays"
+	// PeakOllama is Ollama Cloud's: 12:00 to 18:00 UTC, Monday to Friday
+	// (https://ollama.com/pricing: off-peak outside 12:00 and 18:00 UTC on
+	// weekdays, and all of Saturday and Sunday), where its
+	// off-peak rows are half its peak ones and models.dev lists the
+	// off-peak row as the price. It names no holiday.
+	PeakOllama Peak = "ollama"
 )
 
 // PeakFactor is what a call in the peak hours costs, times the off-peak
-// list price: DeepSeek's off-peak rates are half its peak rates.
+// list price: DeepSeek's off-peak rates are half its peak rates, and so
+// are Ollama Cloud's.
 const PeakFactor = 2
 
 // At is whether a call made at t is in the peak hours. A zero time, a
@@ -37,7 +44,11 @@ func (k Peak) At(t time.Time) bool {
 	if wd := u.Weekday(); wd == time.Saturday || wd == time.Sunday {
 		return false
 	}
-	if h := u.Hour(); !(h >= 1 && h < 4 || h >= 6 && h < 10) {
+	h := u.Hour()
+	if k == PeakOllama {
+		return h >= 12 && h < 18
+	}
+	if !(h >= 1 && h < 4 || h >= 6 && h < 10) {
 		return false
 	}
 	// the peak hours are 09:00 to 18:00 in China, so a holiday's date is

@@ -232,7 +232,7 @@ func claudeCodeStatus() error {
 		}
 	case path != "":
 		fmt.Println(green.Render("●"), "Claude Code", v, muted.Render(path), muted.Render("· downloaded by magpie"))
-		fmt.Println(muted.Render("  magpie claude-code install gets the newest · magpie claude-code remove deletes it"))
+		fmt.Println(muted.Render("  magpie keeps it at the newest release while it runs (DISABLE_AUTOUPDATER=1 holds it) · magpie claude-code remove deletes it"))
 	default:
 		fmt.Println(amber.Render("○"), "no Claude Code here: a Claude subscription can't be signed in to or answered")
 		fmt.Println(muted.Render("  install it (https://code.claude.com/docs), or magpie claude-code install downloads Anthropic's own build for magpie"))

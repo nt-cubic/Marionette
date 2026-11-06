@@ -74,7 +74,7 @@ export function PlanApprovalCard({
           : "plan-approval-card"
       }
       role="region"
-      aria-label="Plan approval"
+      aria-label={t("v2transcript.planApprovalRegion")}
     >
       <div className="plan-approval-card__header">
         <ListTodo size={16} aria-hidden />

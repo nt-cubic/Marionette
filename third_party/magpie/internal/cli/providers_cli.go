@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"maps"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/stats"
@@ -87,6 +89,10 @@ const providerUsage = `usage:
   magpie provider account-concurrency <id> [account|key [n|off|default]]
                                           how many requests one account or key has out at once, over every model,
                                           routing group and agent: its own, off for none, default for the provider's
+  magpie provider spend-cap <id> [key [usd [day|month|total]|off]]
+                                          how much an API key may spend, in USD as the Usage page prices its calls,
+                                          a day (the default), a month or in all from now: at it, routing takes the
+                                          key for used up and goes on to the other keys and the fallbacks
   magpie provider account-weight <id> [account [n|default]]
                                           a subscription account's share of the requests with routing=weight:
                                           one weighing 3 takes three for each one weighing 1 takes (default 1)
@@ -631,6 +637,8 @@ func providerCmd(args []string) error {
 		return poolCmd(rest)
 	case "account-concurrency", "account-limit":
 		return accountConcurrencyCmd(rest)
+	case "spend-cap", "spend-caps":
+		return spendCapCmd(rest)
 	case "account-weight", "account-weights":
 		return accountWeightCmd(rest)
 	case "queue":
@@ -1078,7 +1086,8 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 			for _, r := range pr.Regions {
 				ids = append(ids, r.ID)
 			}
-			i := slices.IndexFunc(pr.Regions, func(r provider.Region) bool { return strings.EqualFold(r.ID, v) })
+			id := provider.RegionID(p.Preset, v)
+			i := slices.IndexFunc(pr.Regions, func(r provider.Region) bool { return strings.EqualFold(r.ID, id) })
 			if i < 0 {
 				return fmt.Errorf("%s=%s: %s's are %s", k, v, pr.Name, strings.Join(ids, ", "))
 			}
@@ -1244,9 +1253,10 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 			if err != nil {
 				return err
 			}
-			if r == provider.Manual || r == provider.Cheapest {
+			if r == provider.Manual || r == provider.Cheapest || r == provider.FreeExpiring {
 				// cheap: its keys and accounts all bill the provider's one
-				// price, so there is nothing to weigh
+				// price, so there is nothing to weigh; expiring weighs
+				// several subscriptions' free quota, a group's members
 				return fmt.Errorf("routing=%s is a group's: a provider's keys or accounts are routed smart, order, rotate, usage, pace, weight, free, fast or drain", r)
 			}
 			p.Routing = r
@@ -1338,20 +1348,12 @@ func ago(t time.Time) string {
 	}
 }
 
-// refreshLive re-fetches the model list of every ready provider; `magpie sync`
-// calls it after the catalog download.
+// refreshLive re-fetches the model list of every ready provider not
+// switched off; `magpie sync` calls it after the catalog download.
 func refreshLive(ctx context.Context) {
 	var names []string
-	for _, p := range provider.All() {
-		if !p.Ready() {
-			continue
-		}
-		c, cancel := context.WithTimeout(ctx, 8*time.Second)
-		ms, err := p.Fetch(c)
-		cancel()
-		if err == nil {
-			names = append(names, fmt.Sprintf("%s (%d)", p.ID, len(ms)))
-		}
+	for _, l := range provider.RefreshLists(ctx) {
+		names = append(names, fmt.Sprintf("%s (%d)", l.ID, l.Models))
 	}
 	if len(names) > 0 {
 		fmt.Println(green.Render("✓"), "model lists:", strings.Join(names, ", "))
@@ -1373,8 +1375,19 @@ func keyNote() string {
 }
 
 // containerNote follows the addresses magpie finds for itself in a
-// container, which are the container's own.
+// container, which are the container's own: other machines reach it at
+// the host's, and other containers on the host at the bridge's gateway
+// (jiezhengj on Discord: 172.17.0.1 on a NAS), containerLine's.
 const containerNote = "these are the container's own addresses: other machines use the host's, and MAGPIE_PUBLIC_URL=http://<host>:<port> puts it here"
+
+// containerLine is where other containers on this host reach the gateway
+// while magpie runs in one, "" when that isn't known.
+func containerLine() string {
+	if u := gateway.ContainerHostURL(); u != "" {
+		return muted.Render("  other containers on this host ") + u
+	}
+	return ""
+}
 
 // shareLines are where other machines reach the gateway while it is shared
 // from Settings, for the banner.
@@ -1388,6 +1401,9 @@ func shareLines() []string {
 	}
 	if gateway.ContainerAddrs() {
 		out = append(out, muted.Render("  "+containerNote))
+	}
+	if l := containerLine(); l != "" {
+		out = append(out, l)
 	}
 	return out
 }
@@ -1444,7 +1460,24 @@ func serve() error {
 			fmt.Println(amber.Render("!"), x.Agent+":", x.Why)
 		}
 	}
-	return s.ListenAndServe(context.Background())
+	// an update put in where this runs from is restarted into
+	// (serve_follow.go)
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	follow := newServeFollow(s, stop)
+	if follow != nil {
+		gateway.SetRestarter(follow.answer)
+		go follow.run(ctx)
+	}
+	err := s.ListenAndServe(ctx)
+	if exe := follow.restartTo(); exe != "" {
+		// the plugin hosts end, waited for, first, as magpie web's
+		// reexec does (#3285)
+		plugin.EndHosts()
+		log.Printf("magpie serve: restarting into %s", exe)
+		return serveReexec(exe, os.Args[1:], os.Environ())
+	}
+	return err
 }
 
 // importCmd adds the provider a magpie://import link describes, after

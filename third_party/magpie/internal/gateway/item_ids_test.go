@@ -1,8 +1,10 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -54,10 +56,21 @@ func (u *idChecker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	u.mu.Unlock()
 	for i, it := range q.Input {
 		id, ok := it["id"].(string)
-		if u.check && ok && !openaiItemID.MatchString(id) {
+		if !u.check || !ok {
+			continue
+		}
+		if !openaiItemID.MatchString(id) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			io.WriteString(w, `{"error":{"message":"Invalid 'input[`+mustString(int64(i))+`].id': '`+id+`'. Expected an ID that contains letters, numbers, underscores, or dashes, but this value contained additional characters.","type":"invalid_request_error","param":"input[`+mustString(int64(i))+`].id","code":"invalid_value"}}`)
+			return
+		}
+		// and one longer than the 64 an id may have, word for word as
+		// isnine got it (#4525), ghjkllasdf-fake's 444 alike (#4527)
+		if len(id) > 64 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `{"error":{"message":"Invalid 'input[`+mustString(int64(i))+`].id': string too long. Expected a string with maximum length 64, but got a string with length `+mustString(int64(len(id)))+` instead.","type":"invalid_request_error","param":"input[`+mustString(int64(i))+`].id","code":"string_too_long"}}`)
 			return
 		}
 	}
@@ -216,4 +229,235 @@ func TestCodexOwnModelTakesAnotherVendorsItemIDs(t *testing.T) {
 		t.Fatalf("asked the backend %d times", len(asked))
 	}
 	checkSent(t, asked[0])
+}
+
+// copilotLongMessageID and copilotLongReasoningID are ids of the lengths
+// Copilot hands out and Codex carries back: 444 as ghjkllasdf-fake
+// recorded from an approval session (#4527), 420 as isnine's three
+// sessions each showed (#4525) — every one of the characters OpenAI
+// takes an id of, so only their length makes an upstream that checks
+// ids turn the request away.
+var (
+	copilotLongMessageID   = "msg_" + strings.Repeat("A", 440)
+	copilotLongReasoningID = "rs_" + strings.Repeat("b", 417)
+)
+
+// copilotOverlongConversation is a conversation Codex sends Copilot on a
+// later turn: the user's ask, Copilot's own reasoning (sealed, its to
+// read), Copilot's answer under its overlong id, and the next ask.
+var copilotOverlongConversation = `{"type":"message","role":"user","content":[{"type":"input_text","text":"Reply exactly OK."}]},
+  {"type":"reasoning","id":"` + copilotLongReasoningID + `","summary":[{"type":"summary_text","text":"thinking"}],"encrypted_content":"gAAAA"},
+  {"type":"message","id":"` + copilotLongMessageID + `","role":"assistant","status":"completed","content":[{"type":"output_text","text":"OK"}]},
+  {"type":"message","role":"user","content":[{"type":"input_text","text":"Reply exactly OK again."}]}`
+
+// checkBoundSent fails unless input is copilotOverlongConversation as an
+// id checker takes it: every item there, each id of at most 64 of the
+// characters OpenAI takes, and Copilot's reasoning kept — it made that
+// one, its seal is its own to read, unlike another vendor's.
+func checkBoundSent(t *testing.T, input []map[string]any) {
+	t.Helper()
+	var types []string
+	for _, it := range input {
+		types = append(types, it["type"].(string))
+		id, _ := it["id"].(string)
+		if id == "" {
+			continue
+		}
+		if len(id) > 64 {
+			t.Errorf("item id of %d characters sent: %v", len(id), it)
+		}
+		if !openaiItemID.MatchString(id) {
+			t.Errorf("item id %q sent", id)
+		}
+	}
+	if got := strings.Join(types, ","); got != "message,reasoning,message,message" {
+		t.Errorf("items sent: %s", got)
+	}
+	var reasoning bool
+	for _, it := range input {
+		if it["type"] == "reasoning" {
+			reasoning = true
+			if enc, _ := it["encrypted_content"].(string); enc != "gAAAA" {
+				t.Errorf("Copilot's reasoning sent without its seal: %v", it)
+			}
+		}
+	}
+	if !reasoning {
+		t.Error("Copilot's reasoning not sent: it made that one, its seal is its own to read")
+	}
+}
+
+// isnine (#4525) and ghjkllasdf-fake (#4527), in Codex: a conversation on
+// Copilot, whose items come with ids hundreds of characters long, goes
+// back with them on every later turn, and Copilot turns the whole request
+// away "Invalid 'input[N].id': string too long … maximum length 64". The
+// ids go shortened from the first ask, the same way each turn, and
+// Copilot's own reasoning keeps its place with its seal.
+func TestCopilotTakesAnotherVendorsOverlongItemIDs(t *testing.T) {
+	fresh(t)
+	cfg := os.Getenv("XDG_CONFIG_HOME")
+	os.MkdirAll(filepath.Join(cfg, "github-copilot"), 0o755)
+	os.WriteFile(filepath.Join(cfg, "github-copilot", "apps.json"), mustJSON(map[string]any{
+		"github.com:Iv1.x": map[string]any{"user": "echo", "oauth_token": "gho_echo"},
+	}), 0o600)
+	up := &idChecker{check: true}
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/models":
+			io.WriteString(w, `{"data":[{"id":"gpt-6.1","name":"GPT-6.1","model_picker_enabled":true,"policy":{"state":"enabled"},"supported_endpoints":["/responses"],"capabilities":{"type":"chat","supports":{"reasoning_effort":["low","medium","high"]}}}]}`)
+		case "/responses":
+			up.ServeHTTP(w, r)
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer api.Close()
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/token") {
+			json.NewEncoder(w).Encode(map[string]any{"token": "sess", "expires_at": time.Now().Add(time.Hour).Unix(), "endpoints": map[string]string{"api": api.URL}})
+			return
+		}
+		io.WriteString(w, `{"copilot_plan":"individual"}`)
+	}))
+	defer gh.Close()
+	oldTok, oldUser := provider.CopilotTokenURL, provider.CopilotUserURL
+	provider.CopilotTokenURL, provider.CopilotUserURL = gh.URL+"/token", gh.URL+"/user"
+	defer func() { provider.CopilotTokenURL, provider.CopilotUserURL = oldTok, oldUser }()
+
+	body := `{"model":"copilot/gpt-6.1","stream":true,"store":false,"include":["reasoning.encrypted_content"],
+	  "input":[` + copilotOverlongConversation + `]}`
+	s := New()
+	for turn := range 2 {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body))
+		s.Handler().ServeHTTP(rec, req)
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), "DONE") {
+			t.Fatalf("turn %d: %d %s", turn, rec.Code, rec.Body.String())
+		}
+	}
+	asked := up.asked()
+	if len(asked) != 2 {
+		t.Fatalf("asked Copilot %d times", len(asked))
+	}
+	for _, input := range asked {
+		checkBoundSent(t, input)
+	}
+	// the same long id goes to the same shorter one every turn: an item
+	// named by its id on one turn is still found on the next
+	first, next := map[string]bool{}, map[string]bool{}
+	for _, it := range asked[0] {
+		if id, _ := it["id"].(string); id != "" {
+			first[id] = true
+		}
+	}
+	for _, it := range asked[1] {
+		if id, _ := it["id"].(string); id != "" {
+			next[id] = true
+		}
+	}
+	if !maps.Equal(first, next) {
+		t.Errorf("ids of turn 2 differ from turn 1's: %v then %v", first, next)
+	}
+}
+
+// An id of 64 of the characters OpenAI takes goes as it came; one of 65
+// goes shorter, as its kind's prefix and the sha256 of the whole of it,
+// the same every time and never two ids to one — a plain cut could share
+// its first 64, as ids of a vendor can begin alike. Copilot's own
+// reasoning, overlong and sealed, keeps its place; another vendor's
+// (Muse's, its id joined with a colon) still goes. One cut stays cut.
+func TestPlainItemIDsBoundItemIDs(t *testing.T) {
+	at64 := "msg_" + strings.Repeat("a", 60)
+	body := []byte(`{"model":"copilot/gpt-6.1","store":false,"input":[
+	  {"type":"message","role":"user","id":"` + at64 + `","content":[{"type":"input_text","text":"hi"}]}]}`)
+	if got := plainItemIDs(body); !bytes.Equal(got, body) {
+		t.Fatalf("an id of 64 characters was changed: %s", got)
+	}
+
+	long := "msg_" + strings.Repeat("A", 440)
+	like := "msg_" + strings.Repeat("A", 435) + "1111"
+	other := "msg_" + strings.Repeat("A", 435) + "2222"
+	rs := "rs_" + strings.Repeat("b", 417)
+	body = []byte(`{"model":"copilot/gpt-6.1","store":false,"input":[
+	  {"type":"message","role":"user","id":"msg_keep","content":[{"type":"input_text","text":"hi"}]},
+	  {"type":"message","role":"assistant","id":"` + long + `","status":"completed","content":[{"type":"output_text","text":"OK"}]},
+	  {"type":"reasoning","id":"` + rs + `","summary":[],"encrypted_content":"gAAAA"},
+	  {"type":"reasoning","id":"` + museReasoningID + `","summary":[],"encrypted_content":"muse-sealed"},
+	  {"type":"function_call","id":"` + like + `","call_id":"call_1","name":"shell","arguments":"{}"},
+	  {"type":"function_call","id":"` + other + `","call_id":"call_2","name":"shell","arguments":"{}"}]}`)
+	got := plainItemIDs(body)
+	var q struct {
+		Input []map[string]any `json:"input"`
+	}
+	if json.Unmarshal(got, &q) != nil {
+		t.Fatalf("not a request any more: %s", got)
+	}
+	var types []string
+	var bound string
+	for i, it := range q.Input {
+		typ, _ := it["type"].(string)
+		types = append(types, typ)
+		id, _ := it["id"].(string)
+		if id == "" {
+			continue
+		}
+		if len(id) > 64 || !openaiItemID.MatchString(id) {
+			t.Errorf("id %q sent as an upstream that checks ids takes them", id)
+		}
+		if i == 1 {
+			bound = id
+		}
+	}
+	if got := strings.Join(types, ","); got != "message,message,reasoning,function_call,function_call" {
+		t.Fatalf("items: %s", got)
+	}
+	if q.Input[0]["id"] != "msg_keep" {
+		t.Errorf("an id that fits was changed: %q", q.Input[0]["id"])
+	}
+	if bound == "" || !strings.HasPrefix(bound, "msg_") {
+		t.Errorf("the message's id not bound under its kind's prefix: %q", bound)
+	}
+	if bound == copilotLongMessageID {
+		t.Errorf("the message's id sent as it came: %q", bound)
+	}
+	if bound == copilotLongReasoningID {
+		t.Errorf("the reasoning's id sent as it came")
+	}
+	boundRS, _ := q.Input[2]["id"].(string)
+	if boundRS == "" || !strings.HasPrefix(boundRS, "rs_") {
+		t.Errorf("Copilot's own reasoning not sent under its kind's prefix: %q", boundRS)
+	}
+	if boundRS == copilotLongReasoningID {
+		t.Errorf("the reasoning's id sent as it came: %q", boundRS)
+	}
+	// Copilot's seal kept (the item is its own to read back)
+	if !bytes.Contains(got, []byte("gAAAA")) {
+		t.Error("Copilot's reasoning sent without its seal")
+	}
+	// two ids that begin alike go to two (a plain cut of 64 would share
+	// its first 440, so these two would land on one)
+	var callIDs []string
+	for _, it := range q.Input {
+		if it["type"] == "function_call" {
+			id, _ := it["id"].(string)
+			callIDs = append(callIDs, id)
+		}
+	}
+	if len(callIDs) != 2 || callIDs[0] == callIDs[1] {
+		t.Errorf("two ids that begin alike went to one: %v", callIDs)
+	}
+	got = plainItemIDs(got)
+	var q2 struct {
+		Input []map[string]any `json:"input"`
+	}
+	if json.Unmarshal(got, &q2) != nil {
+		t.Fatalf("not a request any more: %s", got)
+	}
+	for i, it := range q2.Input {
+		id, _ := it["id"].(string)
+		want, _ := q.Input[i]["id"].(string)
+		if id != want {
+			t.Errorf("a cut id was cut again: %q then %q", want, id)
+		}
+	}
 }

@@ -1166,6 +1166,12 @@ func ledgerSeriesAt(p Period, rows []Row, now time.Time) (bucket string, pts []S
 // does so itself).
 func Visit(since time.Time, fn func(Record)) { readLogSnapshot().visit(since, fn) }
 
+// VisitSessions is Visit for the records whose Session or NativeSession
+// is one of sessions, read without making a Record of any other.
+func VisitSessions(since time.Time, sessions []string, fn func(Record)) {
+	readLogSnapshot().visitSessions(since, sessions, fn)
+}
+
 // NewCoster prices one record at a time at the effective prices the
 // ledger uses, read once: its cost in USD, and false for a call with
 // tokens but no known price.

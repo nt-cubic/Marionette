@@ -60,6 +60,11 @@ type otelExporter struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	client     *http.Client
+	// moved is whether the global proxy moved since the exporter's last
+	// send: its transport is its own, not a dispatch, and pools an HTTPS
+	// collector's HTTP/2 connection by the collector alone, so a switch
+	// left the batches after it on the old proxy's connection (#4824)
+	moved      func() bool
 	salt       [8]byte
 	last       time.Time
 	dropped    atomic.Uint64
@@ -107,7 +112,7 @@ func (x *Exporter) Serve() func() {
 func newOTelExporter() *otelExporter {
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &otelExporter{queue: make(chan otelItem, otelQueueSize), stop: make(chan struct{}), done: make(chan struct{}), ctx: ctx, cancel: cancel,
-		last: time.Now(), client: &http.Client{Timeout: 3 * time.Second,
+		last: time.Now(), moved: netproxy.Watch(), client: &http.Client{Timeout: 3 * time.Second,
 			Transport:     &http.Transport{Proxy: netproxy.Func, MaxIdleConnsPerHost: 2, IdleConnTimeout: 90 * time.Second},
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	rand.Read(e.salt[:])
@@ -338,6 +343,9 @@ func (e *otelExporter) send(config settings.OTel, signal string, payload any) {
 			req.Header.Set(k, v)
 		}
 		req.Header.Set("Content-Type", "application/json")
+		if e.moved != nil && e.moved() {
+			e.client.CloseIdleConnections()
+		}
 		res, err := e.client.Do(req)
 		retry := err != nil
 		if res != nil {

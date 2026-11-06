@@ -43,13 +43,17 @@ var builtinParsed = sync.OnceValue(func() []Listing {
 // "off" keeps to the built-in copy.
 const MarketURL = "https://raw.githubusercontent.com/magpie-community/plugins/main/registry.json"
 
-// Listing is a plugin the market suggests.
+// Listing is a plugin the market suggests. One not Community is an
+// author's own package the list names, published from their repository
+// (the owner on magpie-community/plugins#479: PinK, WispTerm): the page
+// shows it to a search alone, under its publisher; it is never browsed,
+// suggested as an agent or called by a short name.
 type Listing struct {
 	Package   string            `json:"package"`
 	Name      string            `json:"name"`
 	Icon      string            `json:"icon,omitempty"`
 	Providers []string          `json:"providers,omitempty"` // OpenCode's ids of those it signs in to
-	Community bool              `json:"community,omitempty"` // written by magpie's community
+	Community bool              `json:"community,omitempty"` // written by magpie's community; see Listing
 	Replaces  string            `json:"replaces,omitempty"`  // the built-in subscription it does the work of
 	Kind      string            `json:"kind,omitempty"`      // "middleware" for gateway middleware, "agent" for an agent, "tools" for tools alone, "page" for a page alone; none for a provider
 	Summary   map[string]string `json:"summary,omitempty"`   // by language: en, zh
@@ -183,9 +187,11 @@ func parseMarket(b []byte) ([]Listing, error) {
 	}
 	out := r.Plugins[:0]
 	for _, l := range r.Plugins {
-		// magpie's community's alone: others' OpenCode plugins weren't
-		// written against magpie's sign-ins, and are found by a search
-		if l.Package != "" && pkgName.MatchString(l.Package) && l.Community {
+		// an author's own package is kept too, marked as not the
+		// community's (Community false): the page shows it to a search
+		// alone, and only the community's are browsed, suggested as
+		// agents or called by a short name (Community)
+		if l.Package != "" && pkgName.MatchString(l.Package) {
 			if l.Name == "" {
 				l.Name = l.Package
 			}
@@ -196,6 +202,17 @@ func parseMarket(b []byte) ([]Listing, error) {
 		return nil, errors.New("the list has no plugins")
 	}
 	return out, nil
+}
+
+// Community is the listings of l magpie's community wrote, in l's order.
+func Community(l []Listing) []Listing {
+	out := []Listing{}
+	for _, x := range l {
+		if x.Community {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 // Market is the list of plugins magpie suggests: fetched at most every six
@@ -415,7 +432,9 @@ type npmLatest struct {
 		Name string `json:"name"`
 	} `json:"_npmUser"`
 	Magpie struct {
-		Icon string `json:"icon"`
+		Icon    string          `json:"icon"`
+		Name    string          `json:"name"`
+		Summary json.RawMessage `json:"summary"`
 	} `json:"magpie"`
 }
 
@@ -788,12 +807,51 @@ func ownName(said string) string {
 	return n
 }
 
+// ownSummary is what a package.json's magpie.summary says of the package,
+// by language ("en", "zh"), as its card shows it (#3608): a sentence a
+// language, trimmed, of at most 300 bytes on one line, with nothing that
+// could make it read as other text (control or format characters, a bidi
+// override); a language that says anything else is left out, and nil is
+// none. Not an object of strings at all is none too, never a failed read
+// of the whole package.json.
+func ownSummary(raw json.RawMessage) map[string]string {
+	var said map[string]any
+	if len(raw) == 0 || json.Unmarshal(raw, &said) != nil {
+		return nil
+	}
+	out := map[string]string{}
+	for lang, v := range said {
+		s, ok := v.(string)
+		l, t := strings.TrimSpace(lang), strings.TrimSpace(s)
+		if !ok || l == "" || len(l) > 12 || t == "" || len(t) > 300 || !utf8.ValidString(t) || !utf8.ValidString(l) {
+			continue
+		}
+		bad := false
+		for _, r := range l + t {
+			if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+				bad = true
+				break
+			}
+		}
+		if !bad {
+			out[l] = t
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // Upgrade installs the newest version of one plugin: npm's, or its git
 // repository's commit now. One bun won't install says why.
 func Upgrade(ctx context.Context, name string) error {
 	for _, e := range Load().Plugins {
 		if (Name(e.Spec) == name || e.Spec == name) && IsGit(e.Spec) {
 			err := reinstall(ctx, e.Spec)
+			if err == nil {
+				settleWaiting()
+			}
 			Restart()
 			return err
 		}
@@ -833,7 +891,7 @@ func Icon(spec, id string) string {
 	if ic, ok := otherIcons[pkg]; ok {
 		return ic
 	}
-	for _, x := range l {
+	for _, x := range Community(l) {
 		for _, p := range x.Providers {
 			if p == id && x.Icon != "" {
 				return x.Icon

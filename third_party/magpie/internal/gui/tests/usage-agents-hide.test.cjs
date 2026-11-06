@@ -67,11 +67,11 @@ function server(lang, web, saved, posts) {
 }
 
 const L = {
-  en: { hide: "Hide from this list", n: (n) => `${n} hidden`, unhide: "Unhide" },
-  zh: { hide: "从列表中隐藏", n: (n) => `已隐藏 ${n} 个`, unhide: "取消隐藏" },
-  "zh-TW": { hide: "從列表中隱藏", n: (n) => `已隱藏 ${n} 個`, unhide: "取消隱藏" },
-  ja: { hide: "この一覧から隠す", n: (n) => `${n} 件非表示`, unhide: "再表示" },
-  de: { hide: "In dieser Liste ausblenden", n: (n) => `${n} ausgeblendet`, unhide: "Einblenden" },
+  en: { more: (n) => `Show ${n} Hidden`, hide: "Hide from this list", n: (n) => `${n} hidden`, unhide: "Unhide" },
+  zh: { more: (n) => `显示已隐藏的 ${n} 个`, hide: "从列表中隐藏", n: (n) => `已隐藏 ${n} 个`, unhide: "取消隐藏" },
+  "zh-TW": { more: (n) => `顯示已隱藏的 ${n} 個`, hide: "從列表中隱藏", n: (n) => `已隱藏 ${n} 個`, unhide: "取消隱藏" },
+  ja: { more: (n) => `非表示の ${n} 件を表示`, hide: "この一覧から隠す", n: (n) => `${n} 件非表示`, unhide: "再表示" },
+  de: { more: (n) => `${n} ausgeblendete anzeigen`, hide: "In dieser Liste ausblenden", n: (n) => `${n} ausgeblendet`, unhide: "Einblenden" },
 };
 const SIZES = [{ width: 1200, web: false }, { width: 560, web: false }, { width: 390, web: true }];
 
@@ -123,8 +123,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           let at = await top(p);
           await more.click();
           const item = p.locator(".row-menu .rm-item");
-          assert.deepEqual(await item.allTextContents(), [w.hide]);
-          await item.click();
+          assert.deepEqual(await item.allTextContents(), [w.hide, w.more(1)], "with one hidden, the menu offers the way back too");
+          await item.filter({ hasText: w.hide }).click();
           await p.waitForFunction(() => !document.querySelector('#usageAgents .row.stat[data-id="curl"]'));
           assert.deepEqual(posts.at(-1), { agentsHidden: ["python-httpx", "curl"] });
           assert.equal((await line.textContent()).trim(), w.n(2));

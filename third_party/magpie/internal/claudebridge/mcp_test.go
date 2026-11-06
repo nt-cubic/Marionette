@@ -89,3 +89,60 @@ func TestNewToolsListedBeforeTheAnswer(t *testing.T) {
 	}
 	inW.Close()
 }
+
+// Told a file for it, the helper writes it once it has answered Claude
+// Code's tools/list, and not before: the interactive mode's first message
+// waits for it (claudetui.MCPCommand; MinhuWang on X).
+func TestToolsListedFileWritten(t *testing.T) {
+	dir := t.TempDir()
+	toolsPath := filepath.Join(dir, "tools.json")
+	os.WriteFile(toolsPath, []byte(`[{"name":"read","inputSchema":{"type":"object"}}]`), 0o600)
+	listed := filepath.Join(dir, "listed")
+	inR, inW, _ := os.Pipe()
+	outR, outW, _ := os.Pipe()
+	oldIn, oldOut := os.Stdin, os.Stdout
+	os.Stdin, os.Stdout = inR, outW
+	defer func() { os.Stdin, os.Stdout = oldIn, oldOut }()
+	ended := make(chan error, 1)
+	go func() { ended <- RunMCP([]string{"http://127.0.0.1:9/x", toolsPath, listed}); outW.Close() }()
+	sc := bufio.NewScanner(outR)
+	next := func() map[string]any {
+		t.Helper()
+		got := make(chan map[string]any, 1)
+		go func() {
+			var m map[string]any
+			if sc.Scan() {
+				_ = json.Unmarshal(sc.Bytes(), &m)
+			}
+			got <- m
+		}()
+		select {
+		case m := <-got:
+			return m
+		case err := <-ended:
+			t.Fatalf("the helper ended: %v", err)
+		case <-time.After(3 * time.Second):
+			t.Fatal("no message from the helper")
+		}
+		return nil
+	}
+	inW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}` + "\n"))
+	next()
+	if _, err := os.Stat(listed); err == nil {
+		t.Fatal("written before the tools were listed")
+	}
+	inW.Write([]byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}` + "\n"))
+	if m := next(); m["id"] != float64(2) {
+		t.Fatalf("tools/list answered %v", m)
+	}
+	for by := time.Now().Add(3 * time.Second); ; {
+		if _, err := os.Stat(listed); err == nil {
+			break
+		}
+		if time.Now().After(by) {
+			t.Fatal("the listed file wasn't written")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	inW.Close()
+}

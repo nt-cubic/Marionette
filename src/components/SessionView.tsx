@@ -1,4 +1,4 @@
-import { BarChart3, Check, ChevronDown, ChevronUp, Columns2, Copy, FileText, Globe, Inbox, Merge, MessageSquareQuote, Pencil, Plus, Search, Split, Square, SquareArrowOutUpRight, UsersRound, X } from "lucide-react";
+import { BarChart3, Check, ChevronDown, ChevronUp, Columns2, Copy, FileText, Globe, Inbox, Merge, MessageSquareQuote, Pencil, Plus, Search, Split, Square, SquareArrowOutUpRight, UsersRound, X, FileDiff } from "lucide-react";
 import {
   memo,
   useCallback,
@@ -17,6 +17,8 @@ import {
   isAssistantNotice,
   userMessageAnchorId,
 } from "../lib/acpTranscript";
+import { agentDisplayName, agentInkStyle } from "../lib/agentInk";
+import { formatTokenCount } from "../lib/sessionStats";
 import { findConversationMatches } from "../lib/conversationFind";
 import {
   ACTIVITY_THRESHOLDS,
@@ -192,6 +194,7 @@ export function SessionTabs({
   memoTab,
   councilTab,
   usageTab,
+  diffTab,
   docTabs,
   browserTab,
 }: {
@@ -265,6 +268,13 @@ export function SessionTabs({
    */
   usageTab?: {
     active: boolean;
+    onSelect: () => void;
+    onClose: () => void;
+  };
+  /** 「改动」pseudo-tab (changed files + diff), same strip semantics as 用量. */
+  diffTab?: {
+    active: boolean;
+    count: number;
     onSelect: () => void;
     onClose: () => void;
   };
@@ -566,6 +576,7 @@ export function SessionTabs({
       memoTab?.active ||
         councilTab?.active ||
         usageTab?.active ||
+        diffTab?.active ||
         browserTab?.active ||
         (docTabs ?? []).some((tab) => tab.active),
     );
@@ -594,6 +605,7 @@ export function SessionTabs({
     memoTab?.active,
     councilTab?.active,
     usageTab?.active,
+    diffTab?.active,
     browserTab?.active,
     docTabs,
   ]);
@@ -625,6 +637,7 @@ export function SessionTabs({
               key={openSession.id}
               className={tabClassById.get(openSession.id)}
               role="tab"
+              style={agentInkStyle(openSession.agentId)}
               aria-selected={openSession.id === session.id && !memoTab?.active && !councilTab?.active}
               data-tauri-drag-region="false"
               onContextMenu={(e) => {
@@ -848,6 +861,38 @@ export function SessionTabs({
             onClick={(e) => {
               e.stopPropagation();
               usageTab.onClose();
+            }}
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
+      {diffTab && !detachedMode && (
+        <div
+          className={`editor-tab is-diff${diffTab.active ? " is-active" : ""}`}
+          role="tab"
+          aria-selected={diffTab.active}
+          data-tauri-drag-region="false"
+        >
+          <button
+            className="editor-tab__select"
+            type="button"
+            title={t("v2pages.diffTab")}
+            onClick={diffTab.onSelect}
+          >
+            <FileDiff size={12} />
+            <span>{t("v2pages.diffTab")}</span>
+            {diffTab.count > 0 ? <span className="editor-tab__memo-count">{diffTab.count}</span> : null}
+          </button>
+          <button
+            className="pill-action pill-action--icon pill-action--sm editor-tab__close"
+            type="button"
+            title={t("common.close")}
+            aria-label={t("common.close")}
+            data-tauri-drag-region="false"
+            onClick={(e) => {
+              e.stopPropagation();
+              diffTab.onClose();
             }}
           >
             <X size={12} />
@@ -2439,16 +2484,16 @@ function CleanPlaceholder({
             <p className="clean-empty__title">
               {authBanner
                 ? bannerKind === "upgrade"
-                  ? "Update to continue"
-                  : "Sign in to continue"
-                : `Message ${agent.label}`}
+                  ? t("v2transcript.emptyUpdate")
+                  : t("v2transcript.emptySignIn")
+                : t("v2transcript.emptyTitle", { agent: agent.label })}
             </p>
             <p className="clean-empty__hint">
               {authBanner
                 ? bannerKind === "upgrade"
-                  ? `Use the update button above — it runs \`grok update\`. Start a new session when it finishes.`
-                  : `Use the Sign in button above — it opens ${agent.label}’s browser login. Come back here when done.`
-                : "Type below to warm the agent in the background, then send when ready."}
+                  ? t("v2transcript.emptyUpdateHint")
+                  : t("v2transcript.emptySignInHint", { agent: agent.label })
+                : t("v2transcript.emptyHint")}
             </p>
             {authBanner && bannerKind === "upgrade" && onUpdate ? (
               <button
@@ -2779,17 +2824,35 @@ function CleanPlaceholder({
             );
           }
 
-          // Handoff: a marker, not a wall of text. The notes themselves ride
-          // along with the next message the user sends (never shown here or
-          // pasted into the composer).
+          // Handoff is a hairline divider with one line of text (ui-language v2);
+          // the dot is the one place an agent dot is allowed.
+          if (event.type === "handoff_prepared") {
+            return (
+              <div
+                className="handoff-rule"
+                key={`handoff-${event.createdAt}-${index}`}
+                role="separator"
+                title={event.handoffPath}
+                style={agentInkStyle(event.targetAgentId)}
+              >
+                <span className="handoff-rule__line" aria-hidden />
+                <span className="handoff-rule__text">
+                  <i className="handoff-rule__dot" aria-hidden />
+                  {t("session.handoffRule", { agent: agentDisplayName(event.targetAgentId) })}
+                </span>
+                <span className="handoff-rule__line" aria-hidden />
+              </div>
+            );
+          }
+
+          // (Handoff notes ride along with the next message the user sends —
+          // never shown here or pasted into the composer; see the divider above.)
           // Assistant/thought only: strip transport footers. Never touch user
           // messages — their You card must stay intact even if they paste status.
           const body =
-            event.type === "handoff_prepared"
-              ? `Notes prepared for **${event.targetAgentId}** — they will be attached to your next message.\n\nFull notes: \`${event.handoffPath}\``
-              : event.type === "assistant_message" || event.type === "thought"
-                ? cleanAssistantText(event.text)
-                : event.text;
+            event.type === "assistant_message" || event.type === "thought"
+              ? cleanAssistantText(event.text)
+              : event.text;
 
           // Status-only /status chunks clean to empty — do not render a hollow Reply.
           if (
@@ -2844,8 +2907,7 @@ function CleanPlaceholder({
           const useMarkdown =
             event.type === "assistant_message" ||
             event.type === "user_message" ||
-            event.type === "thought" ||
-            event.type === "handoff_prepared";
+            event.type === "thought";
 
           // Thought: open while streaming; collapsed when done (user can expand).
           // Tool: collapsed by default. Only shell / subagent tools auto-expand
@@ -2913,6 +2975,7 @@ function CleanPlaceholder({
                     ? " is-revealing"
                     : ""
                 }`}
+                style={agentInkStyle(session.agentId)}
                 // Remount when thought/tool leaves "live force-open" so the
                 // browser details widget cannot keep a stale open=true.
                 key={`${event.type}-${event.createdAt}-${index}${
@@ -3040,6 +3103,16 @@ function CleanPlaceholder({
           }
 
           const isUser = event.type === "user_message";
+          // Reply footer numbers: this turn's generation time and output tokens
+          // (only when the agent reported them; never invented).
+          const replyDurationMs =
+            event.type === "assistant_message"
+              ? (event.durationMs ?? event.turnStats?.durationMs ?? null)
+              : null;
+          const replyTokensRaw =
+            event.type === "assistant_message" ? event.turnStats?.output : null;
+          const replyTokens =
+            replyTokensRaw != null && replyTokensRaw > 0 ? replyTokensRaw : null;
           const userKey = isUser
             ? userMessageAnchorId(event)
             : `${event.type}-${event.createdAt}-${index}`;
@@ -3056,7 +3129,14 @@ function CleanPlaceholder({
           return (
             <article
               className={`event-card event-card--${event.type}${event.type === "assistant_message" && event.webReply ? " is-web-reply" : ""}${isEditing ? " is-editing" : ""}`}
-              style={event.type === "assistant_message" && event.webReply ? { "--web-reply-width": `${webReplyWidthPercent}%` } as CSSProperties : undefined}
+              style={
+                event.type === "assistant_message"
+                  ? {
+                      ...agentInkStyle(event.agentId ?? session.agentId),
+                      ...(event.webReply ? { "--web-reply-width": `${webReplyWidthPercent}%` } : null),
+                    } as CSSProperties
+                  : undefined
+              }
               key={`${event.type}-${event.createdAt}-${index}`}
               id={isUser ? userKey : undefined}
               {...(tone ? { "data-mode-tone": tone } : {})}
@@ -3069,7 +3149,15 @@ function CleanPlaceholder({
               <div className="event-card__main">
                 <div className="event-card__type-row">
                   <span className="event-card__type">
-                    {label}
+                    {event.type === "assistant_message" && !isAssistantNotice(event.text) ? (
+                      <>
+                        <span className="event-card__who">
+                          {event.agentLabel || event.agentId || session.agentId}
+                        </span>
+                      </>
+                    ) : (
+                      label
+                    )}
                     {isUser &&
                       (("forceWebSearch" in event && event.forceWebSearch) ||
                         detectForceWebSearchInText(event.text)) && (
@@ -3241,14 +3329,19 @@ function CleanPlaceholder({
                             </span>
                           </>
                         )}
-                        {event.agentLabel && (
-                          <span className="meta-tag">{event.agentLabel}</span>
-                        )}
                         {event.modelLabel && (
-                          <span className="meta-tag">{event.modelLabel}</span>
+                          <span className="meta-tag meta-tag--model">{event.modelLabel}</span>
                         )}
                         {event.effortLabel && (
-                          <span className="meta-tag">{event.effortLabel}</span>
+                          <span className="meta-tag meta-tag--effort">{event.effortLabel}</span>
+                        )}
+                        {replyDurationMs != null && (
+                          <span className="meta-tag meta-tag--stat">{formatStepDuration(replyDurationMs)}</span>
+                        )}
+                        {replyTokens != null && (
+                          <span className="meta-tag meta-tag--stat">
+                            {t("session.replyTokens", { tokens: formatTokenCount(replyTokens) })}
+                          </span>
                         )}
                       </div>
                     ) : (
@@ -3302,6 +3395,7 @@ function CleanPlaceholder({
                 summary={summarizeActivity(unit.items, { liveEvent, untilMs })}
                 open={open}
                 live={live}
+                agentId={session.agentId}
                 liveIcon={liveIcon}
                 cwd={session.cwd}
                 trace={live ? (
@@ -3790,6 +3884,7 @@ function StallBanner({
   lastActivityAt: number | null;
   onInterrupt?: () => void | Promise<void>;
 }) {
+  const t = useT();
   // Own clock — never lift a ticker into the event list (selection wipe).
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -3813,8 +3908,8 @@ function StallBanner({
     (midTurn
       ? null
       : {
-          title: "Waiting for agent",
-          body: "Message sent. Streaming will show thinking / tools / reply here.",
+          title: t("v2transcript.waitingTitle"),
+          body: t("v2transcript.waitingBody"),
         });
   if (!copy) return null;
 

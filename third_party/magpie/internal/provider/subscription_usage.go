@@ -97,6 +97,10 @@ type QuotaWindow struct {
 	// CapID is, beside Capped, how the window is known to a cap of its
 	// own (WindowCapID), for the GUI to set and show one.
 	CapID string `json:"capId,omitempty"`
+	// OwnCap is set beside Capped on a window set aside: only a cap the
+	// user set on it itself holds the account there (WindowCaps.own),
+	// never the account's, and the GUI offers none new.
+	OwnCap bool `json:"ownCap,omitempty"`
 	// Holds is what the whole window holds, reckoned from magpie's own
 	// calls through the account (usage.WithWindowHolds), for the GUI and,
 	// through ReckonHolds, magpie quota --json and /v1/magpie/quotas
@@ -114,8 +118,19 @@ type QuotaWindow struct {
 	StartsAt *time.Time `json:"startsAt,omitempty"`
 	// TrayKind is, for the GUI only, how Settings names the window among
 	// those the menu bar can show (gui.withTrayKinds): "5h", "7d",
-	// "month"; empty on one the menu bar leaves out.
+	// "month", "7d:grok bot"; empty on one the menu bar can't say as a
+	// percent.
 	TrayKind string `json:"trayKind,omitempty"`
+	// TrayExtra is, for the GUI only, set on a window with a TrayKind that
+	// the menu bar shows only when picked (gui.trayChoices): money aside,
+	// one model's window, Cursor's Grok Bot.
+	TrayExtra bool `json:"trayExtra,omitempty"`
+	// HeldBy is, for the GUI only (WithHeldWindows), the name of another
+	// window of the account that is used up and stops it for every model
+	// ("7 days"): what is left of this one can't be used until that one
+	// starts again, so a sum over accounts counts it as nothing left
+	// (#4791).
+	HeldBy string `json:"heldBy,omitempty"`
 	// matches further scopes pools whose membership isn't one model word.
 	matches func(string) bool
 	// partial is set on the windows of a reading that may leave some out:
@@ -123,6 +138,11 @@ type QuotaWindow struct {
 	// rate_limit_event names one window at a time), never read whole by
 	// /usage — five hours alone there needn't mean no week.
 	partial bool
+	// noShare is set on a window set aside whose used the plugin left
+	// out: its Used is 0 for want of a share said, not a reading at 0, so
+	// quota history keeps no line for it (#4825). The card still tells
+	// the row's text and routing still sets it aside.
+	noShare bool
 }
 
 // SubscriptionQuota is provider-reported allowance usage. This is separate
@@ -205,6 +225,9 @@ type SubscriptionQuota struct {
 	// CheckinOff is set on such an account the user left out of its
 	// vendor's check-in (settings.CheckinOff, #1902): it isn't checked in.
 	CheckinOff bool `json:"checkinOff,omitempty"`
+	// CheckinKey is such an account's entry in its vendor's check-in, the
+	// key Check in now presses it by (CheckInAccount).
+	CheckinKey string `json:"checkinKey,omitempty"`
 	// Kind is the card's kind as another magpie is told it (CachedCards):
 	// subscription, plan or balance; "" here.
 	Kind string `json:"kind,omitempty"`
@@ -312,7 +335,7 @@ func SubscriptionUsage(ctx context.Context) []SubscriptionQuota {
 		go func() {
 			out := fetchSubscriptionUsage(readCtx)
 			noteDailyCredits(out, time.Now())
-			noteQuotaHistory(out, time.Now())
+			noteCardHistory(out, time.Now())
 			c.Lock()
 			c.data = cacheCards(c.data, out, seq, false)
 			c.at, c.pending = time.Now(), nil
@@ -903,6 +926,8 @@ func claudeWindows(ctx context.Context, user string, active bool) ([]QuotaWindow
 		}
 		return ws, err
 	}
+	// a whole reading: a window it leaves out hasn't started
+	ws = claudeWithUnstarted(ws)
 	c.Lock()
 	if c.m == nil {
 		c.m = map[string]claudeUsageEntry{}
@@ -1000,12 +1025,25 @@ func codexUntil(auth []byte, now time.Time) *time.Time {
 	if json.Unmarshal(auth, &a) != nil {
 		return nil
 	}
-	s := claimString(jwtClaims(a.Tokens.IDToken), "https://api.openai.com/auth", "chatgpt_subscription_active_until")
-	t, err := time.Parse(time.RFC3339, s)
-	if err != nil || !t.After(now) {
-		return nil
+	return chatgptUntil(now, a.Tokens.IDToken)
+}
+
+// chatgptUntil is when the ChatGPT plan the first of tokens to name one
+// is paid until (chatgpt_subscription_active_until), nil when none does
+// or the time it names is gone by.
+func chatgptUntil(now time.Time, tokens ...string) *time.Time {
+	for _, tok := range tokens {
+		s := claimString(jwtClaims(tok), "https://api.openai.com/auth", "chatgpt_subscription_active_until")
+		if s == "" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, s)
+		if err != nil || !t.After(now) {
+			return nil
+		}
+		return &t
 	}
-	return &t
+	return nil
 }
 
 // codexWindows is the plan, allowance, rate-limit resets and credits of
@@ -1018,7 +1056,7 @@ func codexWindows(ctx context.Context, token, accountID string) (plan string, ou
 	base := strings.TrimSuffix(CodexBase, "/codex")
 	out = []QuotaWindow{}
 	if err = accountJSON(ctx, base+"/wham/usage", token, codexAccountHeaders(accountID), &data); err != nil {
-		return "", out, nil, "", false, err
+		return "", out, nil, "", false, codexUsageWords(err)
 	}
 	if c := data.Credits; c != nil && c.Has && !c.Unlimited {
 		if n, perr := strconv.ParseFloat(strings.TrimSpace(c.Balance), 64); perr == nil && n > 0 {
@@ -1076,9 +1114,11 @@ type codexUsage struct {
 	RateLimit struct {
 		// false once its allowance is used up; held only with no credits
 		// to go on with (codexHeld)
-		Allowed   *bool        `json:"allowed"`
-		Primary   *codexWindow `json:"primary_window"`
-		Secondary *codexWindow `json:"secondary_window"`
+		Allowed *bool `json:"allowed"`
+		// the backend's own word that a limit is hit
+		LimitReached *bool        `json:"limit_reached"`
+		Primary      *codexWindow `json:"primary_window"`
+		Secondary    *codexWindow `json:"secondary_window"`
 	} `json:"rate_limit"`
 	SpendControl *struct {
 		Reached bool `json:"reached"`
@@ -1134,7 +1174,7 @@ var codexReservePlans = []string{"team", "self_serve_business_prolite"}
 // says held: wrongly held costs the app its ChatGPT extras while magpie
 // serves the turn, wrongly not held leaves it sending nothing at all.
 func codexHeld(u codexUsage) bool {
-	if u.RateLimit.Allowed == nil || *u.RateLimit.Allowed {
+	if !codexAtLimit(u) {
 		return false
 	}
 	c := u.Credits
@@ -1149,6 +1189,28 @@ func codexHeld(u codexUsage) bool {
 		return false
 	}
 	return true
+}
+
+// codexAtLimit is whether the reading says the allowance is used up as
+// the Codex app's composer reads it: rate_limit.allowed false, and that
+// alone. Not said is not at the limit, and neither is allowed true with a
+// window at 100%: the app's gate returns open on anything but allowed
+// false (ChatGPT.app 26.1029.61003, the macOS build of the version
+// xiaoq6285 runs on Windows, async chunk "a6kU": search
+// "n.rate_limit?.allowed!==!1||"; the same in OpenAI.Codex 26.1027 on the
+// Windows box and in 26.1021), and its remaining-percent reading keeps a
+// window of an allowed account at 1% or more (search
+// "Math.max(100-e,+(!0===t))"), so to the app such an account still has
+// room. Holding it would take the app out of ChatGPT (durable threads,
+// remote control, its usage meter, #996) for no Send it would grey.
+//
+// A used-up 5h window with the week open is held through allowed: the
+// backend says allowed false and limit_reached true there (the real Team
+// reply in testdata, 5h at 100% and the week at 63%), which is what
+// greys the app's Send.
+func codexAtLimit(u codexUsage) bool {
+	a := u.RateLimit.Allowed
+	return a != nil && !*a
 }
 
 type codexWindow struct {

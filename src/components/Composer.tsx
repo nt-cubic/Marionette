@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Check, ChevronRight, Expand, Plus, Search, SendHorizontal, Settings2, Shrink, SlidersHorizontal, Square } from "lucide-react";
+import { ArrowUp, Check, ChevronRight, KeyRound, Maximize2, Minimize2, Plus, Search, SendHorizontal, Settings2, SlidersHorizontal, Square } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -94,6 +94,8 @@ import { ProviderConfigDialog } from "./ProviderConfigDialog";
 import { ModelLibraryDialog } from "./ModelLibraryDialog";
 import { CredentialsDialog } from "./CredentialsDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { SessionInfoRing } from "./SessionInfoRing";
+import type { SessionInfoData } from "../lib/sessionInfo";
 import { ImageAnnotator } from "./ImageAnnotator";
 import { CustomAgentDialog } from "./CustomAgentDialog";
 import { recordModelUsage, getRecentModels, recordLastUsedDefaults } from "../lib/recentModels";
@@ -248,6 +250,17 @@ type ComposerProps = {
    * absent = auto), double-click the handle returns to auto.
    */
   docked?: boolean;
+  /**
+   * Context-window occupancy (ACP `usage_update`) for the session-info ring.
+   * Null/absent draws an empty ring.
+   */
+  contextUsed?: number | null;
+  contextSize?: number | null;
+  /**
+   * Whole-dialog statistics for the ring popover, called only while it is
+   * open. Null/absent shows every figure as `—`.
+   */
+  getSessionInfo?: (() => SessionInfoData | null) | null;
 };
 
 /**
@@ -603,6 +616,9 @@ export function Composer({
   isFocused = true,
   onEmptyActivate,
   docked = false,
+  contextUsed = null,
+  contextSize = null,
+  getSessionInfo = null,
 }: ComposerProps) {
   const t = useT();
   /**
@@ -671,7 +687,7 @@ export function Composer({
   /** True once caps came from a live agent — cached caps must not act as live. */
   const [capsLive, setCapsLive] = useState(false);
   const [menu, setMenu] = useState<
-    "mode" | "model" | "effort" | "permission" | "agent" | "send" | "hub" | null
+    "mode" | "model" | "effort" | "permission" | "agent" | "send" | "hub" | "info" | null
   >(null);
   const [scheduleCustom, setScheduleCustom] = useState("");
   const [modelQuery, setModelQuery] = useState("");
@@ -2293,6 +2309,11 @@ export function Composer({
     [caps, currentMode, commitUpdate, pinOptions, unpinOption],
   );
 
+  const closeInfoMenu = useCallback(
+    () => setMenu((current) => (current === "info" ? null : current)),
+    [],
+  );
+
   const warmIfNeeded = useCallback(
     (opts?: { force?: boolean }) => {
       // Never start ACP mid-IME — parent status updates re-render and freeze composition.
@@ -2396,7 +2417,7 @@ export function Composer({
     ? [modelProviderGroup(displayModelDef), displayModelDef.label || displayModelDef.id, displayModelDef.id]
         .filter((value, index, list) => value && list.indexOf(value) === index)
         .join("\n")
-    : (displayModelFull ?? "Choose model");
+    : (displayModelFull ?? t("v2composer.chooseModel"));
   /** Cross-use chip display — local state, independent of agent advertisement.
    *  Stale bindings (agent reports a different shared id) hide the chip so the
    *  generic model chip shows what is actually running. */
@@ -2627,7 +2648,7 @@ export function Composer({
       try {
         // Windows locks the running binary — release it before `npm install -g`.
         if (upgrade && touchesCurrent && onAgentBinaryUpdated) {
-          setInstallNote(`Stopping ${agent.label} so the binary can be replaced…`);
+          setInstallNote(t("v2composer.stoppingForUpdate", { agent: agent.label }));
           await onAgentBinaryUpdated(agentId, "stop");
         }
         setInstallNote(
@@ -2840,7 +2861,7 @@ export function Composer({
         type="button"
         className="composer__resize"
         aria-label="Resize composer height"
-        title={docked ? "Drag to resize · double-click to reset" : "Drag to resize"}
+        title={docked ? t("v2composer.resizeDock") : t("v2composer.resize")}
         onMouseDown={(event) => {
           event.preventDefault();
           setResizingComposer(true);
@@ -2858,7 +2879,7 @@ export function Composer({
       {isWarming && (
         <div className="composer__warming" role="status" aria-live="polite">
           <span className="composer__warming-pulse" aria-hidden />
-          <span>Agent connecting in background…</span>
+          <span>{t("v2composer.warmingToast")}</span>
         </div>
       )}
       {/* Fixed-height chip tray — opacity only, never resizes the composer. */}
@@ -2900,8 +2921,8 @@ export function Composer({
         <button
           className="composer-expand"
           type="button"
-          title={isTall ? "Collapse composer height" : "Expand composer height"}
-          aria-label={isTall ? "Collapse composer height" : "Expand composer height"}
+          title={isTall ? t("v2composer.collapse") : t("v2composer.expand")}
+          aria-label={isTall ? t("v2composer.collapse") : t("v2composer.expand")}
           aria-pressed={isTall}
           onMouseDown={(event) => {
             event.preventDefault();
@@ -2917,9 +2938,9 @@ export function Composer({
             requestAnimationFrame(() => textareaRef.current?.focus());
           }}
         >
-          {isTall ? <Shrink size={13} /> : <Expand size={13} />}
+          {isTall ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
         </button>
-        {dropActive && <div className="composer__drop-hint">Drop to insert file path</div>}
+        {dropActive && <div className="composer__drop-hint">{t("v2composer.dropHint")}</div>}
         {/* Pills live inside the field (Codex-style), not above it next to suggestions. */}
         {imageAttachments.length > 0 && (
           <div ref={attachmentsRef} className="composer__attachments" aria-label="Image attachments">
@@ -3010,10 +3031,8 @@ export function Composer({
           autoFocus={autoFocus}
           placeholder={
             isWarming && !composingRef.current
-              ? "Agent connecting in background… keep typing"
-              : sendOnEnter
-                ? "Message the Agent (Enter to send · Shift+Enter newline) · / commands · Tab cycles mode"
-                : "Message the Agent (Ctrl+Enter to send) · / commands · Tab cycles mode"
+              ? t("v2composer.warming")
+              : t("v2composer.placeholder", { agent: agent.label })
           }
           rows={docked ? 2 : isTall ? 10 : 2}
           value={draft}
@@ -3188,7 +3207,7 @@ export function Composer({
             <button
               className="pill-action pill-action--icon composer-tool"
               type="button"
-              title="Add files or context"
+              title={t("v2composer.attach")}
               onClick={() => {
                 if (isTauriRuntime()) {
                   void pickFiles().then((paths) => {
@@ -3279,7 +3298,7 @@ export function Composer({
                       className="composer-menu__hub-row"
                       onClick={() => setMenu("agent")}
                     >
-                      <span className="composer-menu__hub-name">Agent</span>
+                      <span className="composer-menu__hub-name">{t("v2composer.agentHub")}</span>
                       <span className="composer-menu__hub-value">{agent.label}</span>
                       <ChevronRight size={13} aria-hidden />
                     </button>
@@ -3292,14 +3311,14 @@ export function Composer({
                 <button
                   className="composer-mode-chip"
                   type="button"
-                  title="Execution mode (Tab to cycle)"
+                  title={t("v2composer.modeTitle")}
                   aria-expanded={menu === "mode"}
                   onClick={() => setMenu(menu === "mode" ? null : "mode")}
                 >
                   <span className="composer-mode-chip__label">{displayModeLabel}</span>
                 </button>
                 {menu === "mode" && (
-                  <div className="composer-menu composer-menu--mode" role="menu" aria-label="Execution mode">
+                  <div className="composer-menu composer-menu--mode" role="menu" aria-label={t("v2composer.modeMenu")}>
                     {caps!.modes.map((m) => (
                       <button
                         key={m.id}
@@ -3320,6 +3339,9 @@ export function Composer({
                       >
                         <span className="composer-menu__mode-dot" aria-hidden />
                         {m.label}
+                        <span className="composer-menu__row-check" aria-hidden>
+                          {displayMode === m.id ? <Check size={12} strokeWidth={2.5} /> : null}
+                        </span>
                       </button>
                     ))}
                   </div>
@@ -3379,6 +3401,9 @@ export function Composer({
                       >
                         <span className="composer-menu__mode-dot" aria-hidden />
                         {option.label}
+                        <span className="composer-menu__row-check" aria-hidden>
+                          {currentPermission === option.id ? <Check size={12} strokeWidth={2.5} /> : null}
+                        </span>
                       </button>
                     ))}
                   </div>
@@ -3423,7 +3448,7 @@ export function Composer({
                   onClick={() => setMenu(menu === "model" ? null : "model")}
                 >
                     <ModelChipLabel
-                      text={bridgeChipLabel ?? displayModelLabel ?? "Choose model"}
+                      text={bridgeChipLabel ?? displayModelLabel ?? t("v2composer.chooseModel")}
                       effort={displayEffort != null && hasEffort ? String(displayEffort) : null}
                     />
                 </button>
@@ -3442,7 +3467,7 @@ export function Composer({
                         effort. */}
                     {!hasModels && showKeyPrompt && (
                       <div className="composer-menu__empty-state">
-                        <div className="composer-menu__empty-icon">🔑</div>
+                        <div className="composer-menu__empty-icon"><KeyRound size={14} strokeWidth={1.5} aria-hidden /></div>
                         <div className="composer-menu__empty-title">{t("composer.noApiKeyTitle")}</div>
                         <div className="composer-menu__empty-desc">
                           {t("composer.noApiKeyDesc")}
@@ -3468,7 +3493,7 @@ export function Composer({
                                 ref={modelSearchRef}
                                 type="search"
                                 value={modelQuery}
-                                placeholder="Search provider or model…"
+                                placeholder={t("v2composer.searchModels")}
                                 aria-label="Search models"
                                 onChange={(e) => setModelQuery(e.target.value)}
                                 onKeyDown={(e) => {
@@ -3635,7 +3660,7 @@ export function Composer({
                         {hasEffort && (
                           <div className="composer-menu__effort-inline">
                             <span className="composer-menu__label">
-                              {hasStringEffort ? "Effort" : "Response strength"}
+                              {hasStringEffort ? t("v2composer.effort") : t("v2composer.strength")}
                             </span>
                             {hasStringEffort
                               ? effortOptions.map((opt) => (
@@ -3655,6 +3680,9 @@ export function Composer({
                                     }}
                                   >
                                     {prettyEffortLabel(opt.label, opt.id)}
+                                    <span className="composer-menu__row-check" aria-hidden>
+                                      {currentEffortId === opt.id ? <Check size={12} strokeWidth={2.5} /> : null}
+                                    </span>
                                   </button>
                                 ))
                               : numericEffortPresets.map((preset) => (
@@ -3692,9 +3720,9 @@ export function Composer({
                 )}
 
                 {menu === "effort" && hasEffort && (
-                  <div className="composer-menu" role="menu" aria-label="Effort">
+                  <div className="composer-menu" role="menu" aria-label={t("v2composer.effort")}>
                     <span className="composer-menu__label">
-                      {hasStringEffort ? "Effort" : "Response strength"}
+                      {hasStringEffort ? t("v2composer.effort") : t("v2composer.strength")}
                     </span>
                     {hasStringEffort
                       ? effortOptions.map((opt) => (
@@ -3761,7 +3789,7 @@ export function Composer({
                     ? currentHasUpdate
                       ? `${agent.label} v${currentAgentVersion.installed} · update ${currentAgentVersion.latest} available`
                       : `${agent.label} v${currentAgentVersion.installed}`
-                    : `Agent for this dialog (bound to session · ${agent.id})`
+                    : t("v2composer.agentTitle", { id: agent.id })
                 }
                 aria-expanded={menu === "agent"}
                 onClick={() => setMenu(menu === "agent" ? null : "agent")}
@@ -3773,13 +3801,13 @@ export function Composer({
                     </span>
                   )}
                   {currentHasUpdate && (
-                    <span className="composer-select__agent-update" aria-label="Update available">
-                      ↑
+                    <span className="composer-select__agent-update" aria-label={t("v2composer.updateAvailable")}>
+                      <ArrowUp size={12} strokeWidth={1.5} aria-hidden />
                     </span>
                   )}
               </button>
               {menu === "agent" && (
-                <div className="composer-menu composer-menu--agent" role="listbox" aria-label="Switch agent">
+                <div className="composer-menu composer-menu--agent" role="listbox" aria-label={t("v2composer.switchAgent")}>
                   {agents
                     .filter((candidate) => candidate.enabled)
                     .map((candidate) => {
@@ -3959,6 +3987,26 @@ export function Composer({
               )}
             </div>
 
+            {/* ── Session info ring: context occupancy + popover. Stays next to
+                send in the compact hub layout too (it is not a hub row). ── */}
+            <SessionInfoRing
+              agentId={agent.id}
+              agentLabel={agent.label}
+              modelName={
+                bridgeChipLabel ??
+                displayLibraryModel?.row.label ??
+                displayModelDef?.label ??
+                displayModel ??
+                null
+              }
+              contextUsed={contextUsed}
+              contextSize={contextSize}
+              open={menu === "info"}
+              onToggle={() => setMenu(menu === "info" ? null : "info")}
+              onClose={closeInfoMenu}
+              getInfo={getSessionInfo}
+            />
+
             {/* ── Send / Interrupt (Esc×2 also interrupts) ──
                 While the agent is running: non-empty draft → interrupt + send;
                 empty draft → interrupt. Right-click toggles Enter shortcut. */}
@@ -3976,19 +4024,19 @@ export function Composer({
                   isBusy && (draft.trim() || imageAttachments.length > 0)
                     ? t("composer.interruptAndSendTitle")
                     : isBusy && canCancel
-                      ? "Interrupt (or double-press Esc)"
+                      ? t("v2composer.interruptEsc")
                       : isBusy && !canCancel
-                        ? "Agent is busy"
+                        ? t("v2composer.busy")
                         : t("composer.sendHint")
                 }
                 aria-label={
                   isBusy && (draft.trim() || imageAttachments.length > 0)
-                    ? "Interrupt turn and send"
+                    ? t("v2composer.interruptAndSend")
                     : isBusy && canCancel
-                      ? "Interrupt conversation"
+                      ? t("v2composer.interrupt")
                       : isBusy && !canCancel
-                        ? "Agent is busy"
-                        : "Send"
+                        ? t("v2composer.busy")
+                        : t("v2composer.send")
                 }
                 aria-haspopup="menu"
                 aria-expanded={menu === "send"}
@@ -4021,7 +4069,7 @@ export function Composer({
                 imageAttachments.length === 0 ? (
                   <Square size={12} fill="currentColor" />
                 ) : (
-                  <SendHorizontal size={15} />
+                  <SendHorizontal size={12} />
                 )}
               </button>
               {menu === "send" && (

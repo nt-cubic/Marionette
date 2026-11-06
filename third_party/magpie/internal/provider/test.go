@@ -307,6 +307,13 @@ func (p Provider) drawsOnImages(model string) bool {
 	return p.Account == nil && p.Chat != "" && catalog.ImagesAPI(model)
 }
 
+// chatGPTDraws is whether model is one of the GPT Image family a ChatGPT
+// account draws with at its Codex backend's images API (the gateway's
+// drawsCodex and drawsFamily): the backend takes any gpt-image-* name.
+func (p Provider) chatGPTDraws(model string) bool {
+	return p.Account != nil && p.Account.Agent == "codex" && p.Base(Responses) != "" && strings.HasPrefix(model, "gpt-image-")
+}
+
 // tinyDrawing is the smallest images request for model: one picture of
 // next to nothing, at the lowest quality gpt-image offers, at the size
 // the vendor draws by default (the smallest one takes differs by model).
@@ -375,6 +382,15 @@ func (p Provider) testOne(ctx context.Context, model string) Result {
 	}
 	if p.isClaudeAccount() {
 		return p.testClaude(ctx, model)
+	}
+	if client == "" && p.chatGPTDraws(model) {
+		// a ChatGPT account's GPT Image draws on its Codex backend's images
+		// API, as the gateway draws it (drawImages): asked as a chat on
+		// /responses it is refused, "The 'gpt-image-2.5' model is not
+		// supported when using Codex with a ChatGPT account" (ChangQiu on
+		// Discord)
+		b, _ := json.Marshal(map[string]any{"model": model, "prompt": "a dot", "n": 1, "quality": "low"})
+		return probe(ctx, p, Chat, strings.TrimRight(p.Base(Responses), "/")+"/images/generations", b, model, drawWait)
 	}
 	if p.testsTranslated() || client == "" && p.pluginTranslated(model) {
 		return p.testTranslated(ctx, model)
@@ -710,6 +726,14 @@ func probeOnce(ctx context.Context, p Provider, proto Protocol, url string, body
 		r.Error = err.Error()
 		return r
 	}
+	if p.chatGPTDraws(model) && strings.HasSuffix(req.URL.Path, "/images/generations") {
+		// as the gateway asks it: the images API answers in JSON, not the
+		// stream Codex's signing asks of its Responses, with Codex CLI's
+		// own ids (codex-rs ext/image-generation)
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("x-codex-imagegen-request-id", randomUUID())
+		req.Header.Set("x-codex-image-turn-id", randomUUID())
+	}
 	start := time.Now()
 	// each request sent, a retry's too, is a row; the last one carries
 	// what the test came to
@@ -935,45 +959,74 @@ var verifyLink = regexp.MustCompile(verifyAdvice + `: open (https://[^\s"\\]+) i
 
 // Verification says whether an error body is Google's refusal of an account
 // it wants verified first — Cloud Code Assist's 403 whose details say
-// VALIDATION_REQUIRED with a validation_url in their metadata (#152) — and
-// the https link to verify it at, when the body has one.
+// VALIDATION_REQUIRED (#152) — and the https link to verify it at, when the
+// body has one. The link is taken as Gemini CLI takes it
+// (classifyValidationRequiredError): the google.rpc.Help detail's link
+// first, past a "Learn more" one, then the ErrorInfo's validation_link,
+// then its validation_url.
 func Verification(b []byte) (link string, ok bool) {
 	var v struct {
 		Error struct {
 			Details []struct {
-				Reason   string            `json:"reason"`
-				Metadata map[string]string `json:"metadata"`
+				Reason   string         `json:"reason"`
+				Metadata map[string]any `json:"metadata"`
 				Links    []struct {
-					URL string `json:"url"`
+					Description string `json:"description"`
+					URL         string `json:"url"`
 				} `json:"links"` // google.rpc.Help
 			} `json:"details"`
 		} `json:"error"`
 	}
-	if json.Unmarshal(b, &v) == nil {
-		help := ""
+	parsed := json.Unmarshal(b, &v) == nil
+	if parsed {
+		help, meta := "", ""
+		said := func(m map[string]any, k string) string { s, _ := m[k].(string); return s }
 		for _, d := range v.Error.Details {
 			if d.Reason == "VALIDATION_REQUIRED" {
 				ok = true
-				link = cmp.Or(link, d.Metadata["validation_url"], d.Metadata["validationUrl"])
+				meta = cmp.Or(meta, said(d.Metadata, "validation_link"), said(d.Metadata, "validation_url"), said(d.Metadata, "validationUrl"))
 			}
 			for _, l := range d.Links {
-				help = cmp.Or(help, l.URL)
+				if !learnMore(l.Description, l.URL) {
+					help = cmp.Or(help, l.URL)
+				}
 			}
 		}
-		if ok && link == "" {
-			link = help
+		if ok {
+			link = cmp.Or(help, meta)
 		}
 	}
 	if !ok && !verifyWords.Match(b) {
 		return "", false
 	}
-	if m := verifyLink.FindSubmatch(b); link == "" && m != nil {
-		link = string(m[1]) // said already, by VerifyMessage
+	if link == "" {
+		// said already, by VerifyMessage: in the body's words, which a
+		// JSON error body holds escaped (& as \u0026, cut at the \ when
+		// read raw)
+		words := b
+		if parsed {
+			words = []byte(apiError(b, ""))
+		}
+		if m := verifyLink.FindSubmatch(words); m != nil {
+			link = string(m[1])
+		} else if m := verifyLink.FindSubmatch(b); m != nil {
+			link = string(m[1])
+		}
 	}
 	if u, err := url.Parse(link); err != nil || u.Scheme != "https" || u.Host == "" {
 		link = ""
 	}
 	return link, true
+}
+
+// learnMore is a google.rpc.Help link to Google's help on verifying, which
+// Gemini CLI tells from the link to verify at by its words or its host.
+func learnMore(desc, link string) bool {
+	if strings.EqualFold(strings.TrimSpace(desc), "learn more") {
+		return true
+	}
+	u, err := url.Parse(link)
+	return err == nil && u.Hostname() == "support.google.com"
 }
 
 // verifyAdvice marks a message VerifyMessage has already added to.

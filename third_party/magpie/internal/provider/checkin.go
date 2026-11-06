@@ -3,9 +3,9 @@ package provider
 // A daily check-in, whichever vendor's: WorkBuddy's (workbuddy_checkin.go)
 // and Trae CN's (trae_checkin.go). Each account in use is checked in once
 // a Beijing day, except Qoder's campaigns and ZCode's gift plans,
-// rechecked every 30 minutes,
-// and an answer that may be the vendor's day before (provisional, #3326),
-// asked again every 30 minutes until a claim or an answer from noon on.
+// rechecked every 30 minutes but for a captcha or own-app answer, which
+// waits on the user, and an answer that may be the vendor's day before
+// (provisional, #3326), asked again every 30 minutes until a claim or an answer from noon on.
 // A press asks the vendor again for a done, inactive or ineligible one.
 // What came of it is kept in the vendor's file by its key for reuse
 // (see workbuddy_checkin.go for when a failure is tried again).
@@ -42,6 +42,10 @@ type checkiner struct {
 	label    string // the vendor in the log
 	recheck  bool   // its campaigns can change before the Beijing day ends
 	accounts func() []checkinAcct
+	// only, of a press for one account (CheckInAccount), is its key: the
+	// others are neither asked nor said, and it is asked even while left
+	// out of the daily check-in, whose switch it leaves as it is
+	only string
 }
 
 // checkinRunner is a check-in the daily loop runs.
@@ -79,7 +83,7 @@ func (c checkiner) checkinNow(ctx context.Context, soon bool) []WorkBuddyCheckin
 	// or a press (#1902)
 	off := checkinOff()
 	for _, a := range c.accounts() {
-		if !a.On || a.key == "" || asked[a.key] || off[a.key] {
+		if !a.On || a.key == "" || asked[a.key] || !c.reaches(a.key, off) {
 			continue
 		}
 		// nor, by the loop, one whose provider is switched off or removed
@@ -104,7 +108,13 @@ func (c checkiner) checkinNow(ctx context.Context, soon bool) []WorkBuddyCheckin
 			settled = now.Sub(prev.At) < wbCheckinEvery
 		}
 		if c.recheck {
-			settled = settled && !soon && now.Sub(prev.At) < wbCheckinEvery
+			// a captcha or own-app answer waits on the user, in the
+			// vendor's app, so the loop leaves it for the day: asked
+			// again every 30 minutes, ZCode's claim only answered 3007
+			// again, and the reporter's accounts went on to 3012
+			// (plugins#503). A press still asks.
+			waits := prev.Outcome == CheckinCaptcha || prev.Outcome == CheckinOwnApp
+			settled = settled && !soon && (waits || now.Sub(prev.At) < wbCheckinEvery)
 			if prev.Checked() && !prev.ValidUntil.IsZero() {
 				settled = settled && now.Before(prev.ValidUntil)
 			}
@@ -155,13 +165,22 @@ func (c checkiner) unread(now time.Time, err error) []WorkBuddyCheckin {
 	listed := map[string]bool{}
 	off := checkinOff()
 	for _, a := range c.accounts() {
-		if !a.On || a.key == "" || listed[a.key] || off[a.key] {
+		if !a.On || a.key == "" || listed[a.key] || !c.reaches(a.key, off) {
 			continue
 		}
 		listed[a.key] = true
 		out = append(out, WorkBuddyCheckin{User: a.User, By: c.by, Day: wbCheckinDay(now), At: now, Outcome: CheckinFailed, Msg: err.Error()})
 	}
 	return out
+}
+
+// reaches says whether a run of c asks the account at key: one the user
+// left out (off) only by a press for it alone (only).
+func (c checkiner) reaches(key string, off map[string]bool) bool {
+	if c.only != "" {
+		return key == c.only
+	}
+	return !off[key]
 }
 
 // checkinOff are the accounts left out of their vendor's daily check-in
@@ -190,15 +209,7 @@ type CheckinAccount struct {
 // reaches, WorkBuddy's, Trae CN's, MiniMax Code's, Qoder's and the
 // plugins' that check in themselves, each once; asks nothing.
 func CheckinAccounts() []CheckinAccount {
-	cs := []checkiner{
-		newWBCheckiner().checkiner(),
-		newTraeCheckiner(traeCheckinAccounts),
-		newMiniMaxCheckiner(miniMaxCheckinAccounts),
-		newQoderCheckiner(qoderCheckinAccounts, time.Now),
-	}
-	for _, p := range pluginCheckinProviders() {
-		cs = append(cs, p.checkiner(time.Now))
-	}
+	cs := checkiners()
 	off := checkinOff()
 	var out []CheckinAccount
 	seen := map[string]bool{}
@@ -215,4 +226,53 @@ func CheckinAccounts() []CheckinAccount {
 		out = append(out, mine...)
 	}
 	return out
+}
+
+// checkiners are every vendor's check-in: WorkBuddy's, Trae CN's, MiniMax
+// Code's, Qoder's and each plugin's that checks in itself, with its name
+// (a plugin's provider's, for WorkBuddyCheckin.Vendor; "" for a built-in).
+func checkiners() []checkiner {
+	cs, _ := namedCheckiners()
+	return cs
+}
+
+func namedCheckiners() ([]checkiner, []string) {
+	cs := []checkiner{
+		newWBCheckiner().checkiner(),
+		newTraeCheckiner(traeCheckinAccounts),
+		newMiniMaxCheckiner(miniMaxCheckinAccounts),
+		newQoderCheckiner(qoderCheckinAccounts, time.Now),
+	}
+	names := make([]string, len(cs))
+	for _, p := range pluginCheckinProviders() {
+		cs = append(cs, p.checkiner(time.Now))
+		names = append(names, p.Name)
+	}
+	return cs, names
+}
+
+// CheckInAccount checks one account in for today now, as a press of Check
+// in now does for its vendor's (CheckinAccount's By and Key): asked again
+// unless claimed today, even while left out of the daily check-in, and
+// no switch changed (xiaowu_95660: 手动签到一次). It says how the account
+// stands, or nothing for an account no check-in reaches.
+func CheckInAccount(ctx context.Context, by, key string) []WorkBuddyCheckin {
+	if key == "" {
+		return nil
+	}
+	cs, names := namedCheckiners()
+	for i, c := range cs {
+		if c.by != by {
+			continue
+		}
+		c.only = key
+		rs := c.checkinNow(ctx, true)
+		for j := range rs {
+			if names[i] != "" {
+				rs[j].Vendor = names[i]
+			}
+		}
+		return rs
+	}
+	return nil
 }

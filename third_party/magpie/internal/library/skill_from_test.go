@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func repoIn(t *testing.T) map[string]string {
@@ -471,5 +472,117 @@ func TestPastedRepoBindsSameCopy(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(skillDir("extra"), "mine.md")); string(b) != "my own notes\n" {
 		t.Errorf("extra's own file: %q", b)
+	}
+}
+
+// A skill the skills CLI installed (npx skills add) and that was brought
+// in and handed over kept only a From label, and update said it "isn't
+// from GitHub or a git repository" (#4645, Apri1qing): the lock that
+// names where it came from for grouping names it for updating too, and
+// one updated that way is the repository's own from then on.
+func TestSkillLockOriginUpdates(t *testing.T) {
+	h := sandbox(t)
+	noGoose(t, h)
+	installed := time.Now().Add(-time.Hour).UTC()
+	ts := installed.Format(time.RFC3339Nano)
+	// npx skills add mattpocock/skills --skill grill-me -g: in
+	// ~/.agents/skills, the lock saying where it came from
+	skill(t, filepath.Join(h, ".agents/skills/grill-me"), "grill-me", "old")
+	writtenAt(t, filepath.Join(h, ".agents/skills/grill-me"), installed)
+	write(t, filepath.Join(h, ".agents/.skill-lock.json"), `{"version":3,"skills":{
+		"grill-me":{"source":"mattpocock/skills","sourceType":"github","sourceUrl":"https://github.com/mattpocock/skills.git","skillPath":"skills/grill-me/SKILL.md","installedAt":"`+ts+`","updatedAt":"`+ts+`"}}}`)
+	var rmu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rmu.Lock()
+		defer rmu.Unlock()
+		w.Write(tarball(t, map[string]string{
+			"skills/grill-me/SKILL.md": "---\nname: grill-me\ndescription: new\n---\n",
+		}))
+	}))
+	defer srv.Close()
+	old := tarballURL
+	tarballURL = func(repo, ref string) string { return srv.URL + "/" + repo + "/" + ref }
+	defer func() { tarballURL = old }()
+
+	ok(t)(ImportSkills([]string{"grill-me"}))
+	ok(t)(HandOverSkills([]string{"grill-me"}))
+	// handed over, it is the library's own, with only a From label
+	if s := mustLoad(t).skill("grill-me"); s.Source != nil {
+		t.Fatalf("handed over: source %+v, want none", s.Source)
+	}
+	// the row says where the lock says it came from
+	v, err := Read(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range v.Skills {
+		if s.Name == "grill-me" && s.Origin != "https://github.com/mattpocock/skills" {
+			t.Errorf("grill-me's origin: %q, want https://github.com/mattpocock/skills", s.Origin)
+		}
+	}
+	if _, err := UpdateSkill("grill-me", false); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	s := mustLoad(t).skill("grill-me")
+	if s.Source == nil || s.Source.Kind != "github" || s.Source.Repo != "mattpocock/skills" {
+		t.Errorf("after: source %+v, want github mattpocock/skills", s.Source)
+	}
+	if b, _ := os.ReadFile(filepath.Join(skillDir("grill-me"), "SKILL.md")); !strings.Contains(string(b), "new") {
+		t.Errorf("grill-me after an update: %q", b)
+	}
+}
+
+// A lock entry left by a skill of the same name since deleted isn't where
+// the library's copy came from (AzheRise on X): a folder the CLI didn't
+// write isn't updated from the entry's repository, and one an old lock
+// without a time names tells no skill of that name apart (it groups, and
+// it stays as it is).
+func TestSkillLockOriginStale(t *testing.T) {
+	h := sandbox(t)
+	noGoose(t, h)
+	skill(t, filepath.Join(h, ".agents/skills/grill-me"), "grill-me", "mine, made today")
+	skill(t, filepath.Join(h, ".agents/skills/undated"), "undated", "An old lock's")
+	write(t, filepath.Join(h, ".agents/.skill-lock.json"), `{"version":3,"skills":{
+		"grill-me":{"source":"other/skills","sourceType":"github","updatedAt":"2020-01-01T00:00:00Z"},
+		"undated":{"source":"other/undated","sourceType":"github"}}}`)
+	ok(t)(ImportSkills([]string{"grill-me", "undated"}))
+	if _, err := UpdateSkill("grill-me", false); err == nil || !strings.Contains(err.Error(), "isn't from GitHub or a git repository") {
+		t.Errorf("a folder the CLI didn't write: %v, want isn't from GitHub or a git repository", err)
+	}
+	if _, err := UpdateSkill("undated", false); err == nil || !strings.Contains(err.Error(), "isn't from GitHub or a git repository") {
+		t.Errorf("a lock without a time: %v, want isn't from GitHub or a git repository", err)
+	}
+}
+
+// A skill installed from a folder of the user's own is theirs, whatever a
+// lock entry of its name says: an update doesn't turn it into the
+// repository's, and its row names no GitHub origin (#4645's lockOrigin,
+// held to the grouping's rule: no source, or one in ~/.agents/skills).
+func TestSkillLockOriginLeavesUsersFolder(t *testing.T) {
+	h := sandbox(t)
+	noGoose(t, h)
+	installed := time.Now().Add(-time.Hour).UTC()
+	ts := installed.Format(time.RFC3339Nano)
+	src := filepath.Join(h, "mine/skills")
+	skill(t, filepath.Join(src, "grill-me"), "grill-me", "mine")
+	ok(t)(InstallSkills(src, []string{"grill-me"}, nil))
+	writtenAt(t, realDir(skillDir("grill-me")), installed)
+	write(t, filepath.Join(h, ".agents/.skill-lock.json"), `{"version":3,"skills":{
+		"grill-me":{"source":"mattpocock/skills","sourceType":"github","installedAt":"`+ts+`","updatedAt":"`+ts+`"}}}`)
+	if s := mustLoad(t).skill("grill-me"); s.Source == nil || s.Source.Kind != "folder" {
+		t.Fatalf("installed from a folder: source %+v", s.Source)
+	}
+	v, err := Read(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range v.Skills {
+		if s.Name == "grill-me" && strings.Contains(s.Origin, "github.com") {
+			t.Errorf("a folder of the user's: origin %q", s.Origin)
+		}
+	}
+	UpdateSkill("grill-me", false)
+	if s := mustLoad(t).skill("grill-me"); s.Source == nil || s.Source.Kind != "folder" {
+		t.Errorf("after an update: source %+v, want the user's folder", s.Source)
 	}
 }

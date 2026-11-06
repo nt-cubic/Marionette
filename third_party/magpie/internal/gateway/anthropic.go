@@ -804,7 +804,12 @@ func AdaptiveThinking(model string) bool { return adaptiveOnly(model) }
 // are asked the same way as MiniMax Code asks them: a budget alone gave
 // medium to max one budget under an 8192 cap, so the level was lost
 // (shin4 on plugins#316).
-var effortInOutputConfig = regexp.MustCompile(`(?i)glm-5\.[23](?:$|[-.:/\[])|minimax-m3\.1-flash(?:$|[-.:/\[])`)
+//
+// GPT models are asked so too, on whatever Messages endpoint serves them (a
+// relay the user set up): a relay that maps Messages onto OpenAI reads the
+// level from output_config.effort, and a budget alone left every request at
+// its default, medium (zxz8009195489 on Discord, 2026-11-04).
+var effortInOutputConfig = regexp.MustCompile(`(?i)glm-5\.[23](?:$|[-.:/\[])|minimax-m3\.1-flash(?:$|[-.:/\[])|(?:^|[^a-z0-9])gpt-\d`)
 
 // deepseekHost is DeepSeek's own API, whose Anthropic endpoint
 // (api.deepseek.com/anthropic) takes the effort in output_config.
@@ -1504,7 +1509,15 @@ func anthropicOutID(id string) string {
 	return safeCallID(anthropicIDMark, id)
 }
 
-func anthropicInID(id string) string { return rawCallID(anthropicIDMark, id) }
+func anthropicInID(id string) string {
+	// an id a relayed reply's was salted to (saltCallID, #4910) goes to a
+	// translated upstream as the client holds it: unique, and safe as it
+	// is, where decoding it would hand the upstream the salt's NUL
+	if _, salted := unsaltCallID(id); salted {
+		return id
+	}
+	return rawCallID(anthropicIDMark, id)
+}
 
 // safeCallID is id as one of [A-Za-z0-9_-] only: an id with another
 // character, or one beginning with mark, is mark and its base64url, which

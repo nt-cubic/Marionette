@@ -44,7 +44,7 @@ export const en = {
   "spec.invalidJson": "Not valid JSON: {message}",
   "spec.mustBeObject": "spec must be a JSON object",
   "badge.full": "Full support",
-  "badge.partial": "Some features limited",
+  "badge.partial": "Limited",
   "badge.web": "Web-only",
   "badge.unknown": "Unknown",
   "badge.dshPet": "Desktop pet lives on the desktop (own mini window) and follows session state",

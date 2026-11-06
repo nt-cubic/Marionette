@@ -78,3 +78,32 @@ func TestClaudeTUIHungHelperNeverPrint(t *testing.T) {
 		t.Fatalf("the helper started %d times, want twice: the next turn didn't try the interactive mode", n)
 	}
 }
+
+// A caller's folder the user hasn't trusted in their own Claude Code is
+// one only they answer for: the interactive mode asked and ended there,
+// and the turn was a 502, which a Claude Code client (paseo) asked again
+// and again, so the turn hung (lwjef on X). The turn goes in magpie's own
+// folder, told the caller's, and that folder is passed over for the
+// conversation's next turns rather than asked about again.
+func TestClaudeTUIUntrustedFolderAnswered(t *testing.T) {
+	caller := t.TempDir()
+	cwds := filepath.Join(t.TempDir(), "cwds")
+	h, started := tuiHelperHarness(t, `if [ "$`+claudetui.TrustEnv+`" != 1 ]; then
+  echo "claude-tui: `+claudetui.Untrusted+`, which only its user answers" >&2
+  exit 1
+fi
+pwd >> '`+cwds+`'`)
+	h.ask("Primary working directory: "+caller, "hi") // fails the test on anything but 200
+	b, _ := os.ReadFile(cwds)
+	ran := strings.Fields(string(b))
+	if len(ran) != 1 || evalSymlinks(ran[0]) == evalSymlinks(caller) {
+		t.Fatalf("the answered run ran in %q, the caller's folder %s", ran, caller)
+	}
+	if n := helperStarts(started); n != 2 {
+		t.Fatalf("the helper started %d times, want twice: in the caller's folder, then magpie's", n)
+	}
+	h.ask("Primary working directory: "+caller, "another")
+	if n := helperStarts(started); n != 3 {
+		t.Fatalf("the helper started %d times, want three: the caller's folder was asked about again", n)
+	}
+}

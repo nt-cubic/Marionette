@@ -53,8 +53,9 @@ func TestCommandCodeKeyCardHasCredits(t *testing.T) {
 	if ws[0].Name != "5 hours" || ws[1].Name != "Weekly" {
 		t.Errorf("windows: %+v", ws)
 	}
-	// Go gives $10 a month; $5.22 of it is left
-	if c := ws[2]; c.Name != "Credits" || c.Display != "$4.78 / $10.00" || c.Used < 47.7 || c.Used > 47.8 {
+	// Go gives 10 credits a month, usage-value units, not dollars; 5.22
+	// of them are left
+	if c := ws[2]; c.Name != "Credits" || c.Display != "4.78 / 10.00 credits" || c.Used < 47.7 || c.Used > 47.8 {
 		t.Errorf("credits: %+v", c)
 	}
 

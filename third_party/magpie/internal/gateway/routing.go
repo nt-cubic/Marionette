@@ -13,12 +13,14 @@ package gateway
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,10 +40,11 @@ const usageHalfLife = time.Hour
 
 var routed = struct {
 	sync.Mutex
-	used     map[string]tokenUse // candidate restKey → tokens it served
-	failures map[string]int      // candidate restKey → failures since it last answered
-	slow     map[string]slowRun  // candidate restID → its slow starts since it last answered (restSlow)
-}{used: map[string]tokenUse{}, failures: map[string]int{}, slow: map[string]slowRun{}}
+	used     map[string]tokenUse  // candidate restKey → tokens it served
+	failures map[string]int       // candidate restKey → failures since it last answered
+	slow     map[string]slowRun   // candidate restID → its slow starts since it last answered (restSlow)
+	answered map[string]time.Time // provider ID → when one of its candidates last answered (answeringLately)
+}{used: map[string]tokenUse{}, failures: map[string]int{}, slow: map[string]slowRun{}, answered: map[string]time.Time{}}
 
 // slowRun is a model's slow starts in a row on one account or key, and
 // when the last of them was.
@@ -80,6 +83,9 @@ func served(rest, key string, tokens int) {
 // when it has one, the candidate's model-specific rest.
 func servedCandidate(c candidate, tokens int) {
 	served(c.restKey(), c.restKey(), tokens)
+	routed.Lock()
+	routed.answered[c.p.ID] = time.Now()
+	routed.Unlock()
 	provider.NoteServed(c.p, time.Now())
 	provider.Unretire(c.p.ID, c.model) // back in service, if it was said retired
 	if id := c.restID(); id != c.restKey() {
@@ -91,12 +97,14 @@ func servedCandidate(c candidate, tokens int) {
 	}
 }
 
-// forbidden is a plain 403 one request was given, and the rest it took:
-// what forbiddenAlike and unforbid read.
+// forbidden is a plain 403, or a plain 5xx (plainUnavailable), one
+// request was given, and the rest it took: what forbiddenAlike and
+// unforbid read.
 type forbidden struct {
-	c    candidate
-	rest Rest
-	try  int // its index in the route's Tries, -1 untraced
+	c     candidate
+	rest  Rest
+	try   int    // its index in the route's Tries, -1 untraced
+	words string // a 5xx's status and words (refusalWords); "" for a 403
 }
 
 // plainForbidden says a reply is a 403 that says nothing of why: no
@@ -107,17 +115,75 @@ func plainForbidden(c candidate, status int, body []byte) bool {
 		!modelRefused(status, body) && !codeAssistModelMissing(c.p, status, body)
 }
 
+// plainUnavailable says a reply is a 500, 502 or 503 that says nothing
+// the account is at fault for, nor that the vendor is busy: no quota,
+// credit, rate, overload (vendorOverloaded), no proxy down, not ChatGPT's
+// reset (codexReset) or its protection refusal, each read on its own
+// path. Such a 5xx may be an outage or the request's: an upstream, or a
+// plugin putting its upstream's error in its own words, refusing a
+// request it will always refuse (mycf_711 on Discord: 127 of one
+// provider's 128 503s, "AIError AI服务异常" word for word, were one
+// agent's request with an empty tool schema, and each walked every
+// account into backoff). forbiddenAlike tells them apart: the same words
+// from two accounts, while the provider answers other requests.
+func plainUnavailable(c candidate, status int, body []byte) bool {
+	switch carriedStatus(status, body) {
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable:
+	default:
+		return false
+	}
+	return failureOf(c, status, body) == failOther && !vendorOverloaded(status, body) &&
+		!codexReset(status, body) && !protectionRefused(status, body) &&
+		!bytes.Contains(body, []byte(didNotStream)) && refusalWords(status, body) != ""
+}
+
+// idRun is a run in an error's words that differs from one try to the
+// next: a request or trace id, a timestamp.
+var idRun = regexp.MustCompile(`[0-9a-fA-F][0-9a-fA-F-]{11,}|\d{6,}`)
+
+// refusalWords is a 5xx's status and the words it said, ids left out
+// (idRun), for two tries' to be compared; "" when it said nothing, as a
+// bare 502 from a proxy down does, which proves nothing alike.
+func refusalWords(status int, body []byte) string {
+	w := strings.Join(strings.Fields(string(wordsOf(body))), " ")
+	if w == "" {
+		return ""
+	}
+	w = idRun.ReplaceAllString(w, "#")
+	if len(w) > 512 {
+		w = w[:512]
+	}
+	return strconv.Itoa(carriedStatus(status, body)) + " " + w
+}
+
+// answeringLately is how recently a provider must have answered a request
+// for the same 5xx from two of its accounts to read as the request's: a
+// provider answering others is up. One that answered nothing in it may be
+// down, and rests as before, so an outage is backed off once this has
+// passed since its last answer.
+const answeringLately = 5 * time.Minute
+
+// answeredLately says one of provider id's candidates answered a request
+// within answeringLately.
+func answeredLately(id string) bool {
+	routed.Lock()
+	at := routed.answered[id]
+	routed.Unlock()
+	return !at.IsZero() && time.Since(at) < answeringLately
+}
+
 // forbiddenAlike is the plain 403s of c's mates earlier in the request:
 // another key or account of its provider, asked the same model at the
 // same reasoning. Two of them refusing one request alike, it is the
 // request that is refused, not each account (plugins#243,
 // zygs1083-dotcom: Factory's 403 for a Claude Code wrapper it refused
 // rested every account in turn, and the next requests found them all in
-// backoff).
+// backoff). A plain 5xx (words, refusalWords) is alike only to one of
+// the same status and words; a 403 (words "") only to a 403.
 // The rest of seen is returned beside them, for the request to keep.
-func forbiddenAlike(seen []forbidden, c candidate) (alike, others []forbidden) {
+func forbiddenAlike(seen []forbidden, c candidate, words string) (alike, others []forbidden) {
 	for _, f := range seen {
-		if f.c.p.ID == c.p.ID && f.c.model == c.model && f.c.effort == c.effort && f.c.who() != c.who() {
+		if f.c.p.ID == c.p.ID && f.c.model == c.model && f.c.effort == c.effort && f.c.who() != c.who() && f.words == words {
 			alike = append(alike, f)
 		} else {
 			others = append(others, f)
@@ -182,6 +248,12 @@ const (
 	// and a day over
 	longestQuota = 8 * 24 * time.Hour
 	longestRetry = 10 * time.Minute // failing again and again
+	// overloadRest: a vendor too busy for the request (vendorOverloaded)
+	// rests the model on that account this long when it says nothing of
+	// when, and no longer than overloadRestMost when it does: the same
+	// every time, never a step on the backoff ladder
+	overloadRest     = 30 * time.Second
+	overloadRestMost = time.Minute
 	// longestRateRest is the most a rate limit that keeps coming back as
 	// soon as its rest is over is waited out, when the vendor says nothing
 	// of when (rateRest)
@@ -372,8 +444,8 @@ const (
 	failAuth   = "auth"
 	// failCanceled: the agent went away before the answer came
 	failCanceled = "canceled"
-	// failForeign: the conversation's reasoning was sealed by another
-	// account, and is sent again without it
+	// failForeign: the conversation's reasoning, or another item's sealed
+	// copy, was sealed by another account, and is sent again without it
 	failForeign = "foreign"
 	// failFloor: the request asked for a shorter reply than the provider
 	// gives, and is sent again asking for the least it takes
@@ -402,7 +474,9 @@ const (
 	// asked for (#520) — another account is asked, and nobody rests
 	failEffort = "effort"
 	// failProxy: the proxy magpie sends through (its own setting, the
-	// *_PROXY variables, the system's) didn't take the connection (#381) —
+	// *_PROXY variables, the system's) didn't take the connection (#381),
+	// or the network closed each new connection before the request went
+	// out (errClosedUnsent) —
 	// nothing reached the vendor, so the next one is asked, and nobody rests
 	failProxy = "proxy"
 	// failOffline: this computer had no network (offline.go) — nothing
@@ -459,12 +533,17 @@ func wordsOf(body []byte) []byte { return catalog.Words(body) }
 // 200 it came with, OpenAI's "Rate limit reached for gpt-6.1-sol … on
 // tokens per min (TPM) … Please try again in 6ms." held usedUpWords'
 // "limit reached" and rested the account as out of quota (monater on
-// Discord), where its 429 is a minute's rate limit. Words streamStatus
-// doesn't know (its 502) keep the 200, and read as before; any other
-// status is the reply's own.
+// Discord), where its 429 is a minute's rate limit. The status the error
+// object names for itself comes first (#4855: a plugin's in-stream frame
+// is the only place its runtime can say one); words streamStatus doesn't
+// know (its 502) keep the 200, and read as before; any other status is
+// the reply's own.
 func carriedStatus(status int, body []byte) int {
 	if status < 200 || status >= 400 {
 		return status
+	}
+	if said := namedStatus(body); said != 0 {
+		return said
 	}
 	if said := streamStatus(string(wordsOf(body))); said != http.StatusBadGateway {
 		return said
@@ -475,7 +554,13 @@ func carriedStatus(status int, body []byte) int {
 // failure says why a reply failed.
 func failure(status int, body []byte) string {
 	status = carriedStatus(status, body)
-	if status == http.StatusBadGateway && proxyDown.Match(body) {
+	if status == http.StatusBadGateway && (proxyDown.Match(body) || bytes.Contains(body, []byte(closedUnsentWords))) {
+		// the proxy didn't take the connection, or the network closed
+		// each new one before the request was sent (errClosedUnsent):
+		// nothing reached the vendor, and the account is as good as it
+		// was. Read as the account's failure, it rested ChatGPT accounts
+		// whose window was full till the window renewed, days off,
+		// shown as "502 · 失败" (dealyang_ on X)
 		return failProxy
 	}
 	if _, ok := provider.Verification(body); ok && (status == 401 || status == 403) {
@@ -819,6 +904,32 @@ var (
 // passed over now, while it is.
 func RestOf(key string) (Rest, bool) { return restOf(key) }
 
+// RestsUnder are the rests in force now of what rests by a key starting
+// with prefix — a subscription's accounts by "<provider>@", each its own
+// (provider@user) and each of its models' (provider@user/model) — with
+// Key, and Model for a model's, filled in, soonest back first. The
+// Providers page shows them on the account's row (maxleebeta on Discord:
+// WorkBuddy's 429 "将在 … 重置" rested a model with credits left, and
+// nothing there said so).
+func RestsUnder(prefix string) []Rest {
+	restingUntil.Lock()
+	defer restingUntil.Unlock()
+	now := time.Now()
+	var out []Rest
+	for k, until := range restingUntil.m {
+		if !strings.HasPrefix(k, prefix) || !now.Before(until) {
+			continue
+		}
+		r := restingUntil.note[k]
+		r.Key, r.Until = k, until
+		out = append(out, r)
+	}
+	slices.SortFunc(out, func(a, b Rest) int {
+		return cmp.Or(a.Until.Compare(b.Until), strings.Compare(a.Key, b.Key))
+	})
+	return out
+}
+
 // Unrest lifts the rest of what rests by key — an account just verified
 // with its vendor, say — so the next request asks it again: rate limited
 // with Sink on, it is no longer sent to the back of the order either.
@@ -837,6 +948,7 @@ func (s *Server) Unrest(key string) bool {
 	}
 	unsink(key)
 	s.trace.lifted()
+	s.lanes.signal() // a request waiting in a full lane may go to it now (waitMate)
 	return ok
 }
 
@@ -862,6 +974,7 @@ func (s *Server) UnrestAll(key string) int {
 	}
 	unsinkAll(key)
 	s.trace.lifted()
+	s.lanes.signal() // a request waiting in a full lane may go to it now (waitMate)
 	return n
 }
 
@@ -1182,8 +1295,9 @@ func (s *Server) restAfter(c candidate, status int, header http.Header, body []b
 // translation without putting it in the response sent to the client.
 func (s *Server) restAfterMarked(c candidate, status int, header http.Header, body []byte, sharedPool bool) Rest {
 	// an error carried under a 200 rests as its own status would, and
-	// says that status where the rest is shown
-	status = carriedStatus(status, body)
+	// says that status where the rest is shown — first among equals the
+	// one its stream's error frame named outright (#4855)
+	status = failedNamed(header, carriedStatus(status, body))
 	now := time.Now()
 	d := fallbackCooldown
 	why := failureOf(c, status, body)
@@ -1203,6 +1317,23 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		// this computer had no network: the provider is as good as it
 		// was, and is asked again once the network is back (offline.go)
 		return Rest{Why: failOffline, Status: status, By: "off", Until: now}
+	}
+	if regionRefused(status, wordsOf(body)) {
+		// the vendor refused where the request came from (regionWords):
+		// the network's doing, and the edge's the connection reached, not
+		// the account's. Every account asked on that connection was
+		// refused the same, and all of them rested, while a new
+		// connection answered seconds later (#5182). None is set aside
+		// and the failure counts nowhere; the next try goes out on a new
+		// connection (regionFresh)
+		return Rest{Why: why, Status: status, By: "off", Until: now}
+	}
+	if status == http.StatusBadRequest && signatureRefused.Match(wordsOf(body)) {
+		// Google turned a thought signature away as one it didn't give
+		// (signatureRefused): the history's doing, not the account's. A
+		// group that moved from Vertex AI to AI Studio was refused on every
+		// account alike (mimi001234); none is set aside
+		return Rest{Why: why, Status: status, By: "off", Until: now}
 	}
 	if status == http.StatusBadGateway && bytes.Contains(body, []byte(openCodeBare)) {
 		// OpenCode's bare 400 (openCodeBareRefusal, #3740) is about the
@@ -1236,6 +1367,9 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	// trial entry zcode.z.ai's firewall blocked (zcodeTrialBlocked): the
 	// account's GLM Coding Plan goes to another host
 	unserved := why == failOther && (modelRefused(status, body) || codeAssistModelMissing(c.p, status, body) || zcodeTrialBlocked(c, status, body))
+	// the vendor too busy for the request: the model's moment, not the
+	// account's fault (vendorOverloaded)
+	overloaded := why == failOther && !unserved && c.model != "" && vendorOverloaded(status, body)
 	r := Rest{Why: why, Status: status, By: "cooldown", Error: restError(status, body)}
 	// out of allowance or credit for as long as magpie guessed: the vendor
 	// named no time, nor did the user (asksAt)
@@ -1385,6 +1519,21 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 			r.By, r.Until = "off", now
 			return r
 		}
+		if overloaded {
+			// the vendor's servers too busy for anyone (celestial_eagle_99230
+			// on Discord: ChatGPT's 529 server_is_overloaded on gpt-6-sol
+			// rested eight Plus accounts each up to the 10-minute cap,
+			// "failed 5 times in a row", and left nothing to answer). It
+			// says nothing of the account: its model sits out a moment on
+			// it, as long as the vendor's Retry-After asks up to a minute,
+			// and no failure is counted, so the next overload rests it as
+			// briefly and its own failures climb as they did
+			d, r.By = overloadRest, "cooldown"
+			if w := retryAfter(header, now); w > 0 {
+				d, r.By = min(w, overloadRestMost), "retry-after"
+			}
+			break
+		}
 		counted := c.restKey()
 		if unserved {
 			counted = c.restID()
@@ -1465,7 +1614,7 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	// a refusal that names its reset and points to the account's other
 	// models is the model's limit: the others still answer (WorkBuddy's
 	// "您也可以切换其他模型继续使用", #1669)
-	if pooled || unserved || modelBackoff || why == failQuota && resetsWhen.Match(wordsOf(body)) && otherModels.Match(wordsOf(body)) {
+	if pooled || unserved || modelBackoff || overloaded || why == failQuota && resetsWhen.Match(wordsOf(body)) && otherModels.Match(wordsOf(body)) {
 		id = c.restID()
 	}
 	// Cline's daily limit of one free model is that model's: its others,
@@ -1549,6 +1698,15 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		go narrowWhenRead(c, r)
 	}
 	return r
+}
+
+// vendorOverloaded says a failure is the vendor's servers too busy for
+// the request — a 529 (Anthropic's overloaded_error, the ChatGPT backend's
+// server_is_overloaded), or a 5xx whose words say overloaded (Gemini's
+// 503 "The model is overloaded") — which any account of it would have
+// met alike (saidOverloaded).
+func vendorOverloaded(status int, body []byte) bool {
+	return saidOverloaded(status, string(wordsOf(body)))
 }
 
 // modelCooledDown is a relay's refusal of one model whose pooled
@@ -1843,6 +2001,23 @@ const refusedHeader = "X-Magpie-Refused"
 // leaves it out; one written straight to the agent carries it, harmlessly.
 const resetsHeader = "X-Magpie-Resets-At"
 
+// namedStatusHeader carries, from a relayed stream's error frame to the
+// routing loop and restAfter, the status the frame named for itself
+// (#4855): a plugin that already sent its 200 can only say what went
+// wrong in the frame, and the status it names there — not the one its
+// message's words guess — is what the failure rests as. The client never
+// sees it.
+const namedStatusHeader = "X-Magpie-Named-Status"
+
+// failedNamed is status, or the status a relayed stream's error frame named
+// for itself (#4855, namedStatusHeader), which the failure reads as.
+func failedNamed(h http.Header, status int) int {
+	if n, err := strconv.Atoi(h.Get(namedStatusHeader)); err == nil && n >= 400 && n < 600 {
+		return n
+	}
+	return status
+}
+
 // resetsNoted is how long until the time keepRetry noted, if it did.
 func resetsNoted(h http.Header, now time.Time) time.Duration {
 	n, err := strconv.ParseInt(h.Get(resetsHeader), 10, 64)
@@ -1910,6 +2085,11 @@ type weighing struct {
 	// only when the routing weighs by it (routes.Strategy.ByFree)
 	free map[string]bool
 
+	// expires is when each free seat's quota is first lost (routes.Expires),
+	// by rest key: filled only when the routing weighs by plan
+	// (routes.Strategy.ByPlan, Free quota by expiry)
+	expires map[string]time.Time
+
 	// speed is each seat's speed lately, by restID (a group's heads can
 	// be two models on one key): filled only when the routing weighs by
 	// it (routes.Strategy.BySpeed)
@@ -1941,8 +2121,11 @@ func (c candidate) allowanceKey() allowanceKey {
 }
 
 type left struct {
-	used   float64
-	renews []time.Time
+	used float64
+	// weekLow: used is at lowShare or more for its budget windows alone,
+	// no rate cap of it near full (Allowance.CapUsed, routes.Seat.WeekLow)
+	weekLow bool
+	renews  []time.Time
 	// fullest: when the window used is the share of renews
 	// (Allowance.Fullest), zero when not known
 	fullest time.Time
@@ -1952,16 +2135,18 @@ type left struct {
 	due     time.Time   // when the window that pace went by renews; zero when not known
 	// restarts: when an auto-used reset starts its windows again
 	// (Allowance.Restarts), zero when none will; dueRestart: due is that,
-	// sooner than the window renews by itself
-	restarts   time.Time
-	dueRestart bool
+	// sooner than the window renews by itself; dueExpiry: due is when
+	// credits in it expire, sooner than it renews (Allowance.Pace)
+	restarts              time.Time
+	dueRestart, dueExpiry bool
 	// the count used is the share of, when the vendor counts it so
 	// (Allowance.Count): amount of of, in unit
 	amount, of float64
 	unit       string
 	// credits: a Codex account that goes on on its credits once its
-	// allowance is used up (spendsCredits)
-	credits bool
+	// allowance is used up (spendsCredits); first: one set to spend them
+	// before another account (provider.CodexCreditsFirst)
+	credits, first bool
 	// bal is a prepaid wallet's balance in balUnit (Allowance.Left,
 	// #3950); balIn says whose wallet it is, provider and unit, and is
 	// empty when no balance was told: routes.Seat.LeftIn
@@ -1970,10 +2155,26 @@ type left struct {
 }
 
 // learns: c is a subscription whose allowance isn't known yet, of an agent
-// that tells it as it answers (Claude Code's rate_limit_event).
+// that tells it as it answers (Claude Code's rate_limit_event; a ChatGPT
+// account's x-codex-* headers, provider.NoteCodexLimits). A Codex account
+// only while it hasn't answered lately (codexAnswered): its reply makes it
+// known when it tells the week, and one that told nothing isn't sent
+// every request first. Not known and kept after those known, an account
+// whose usage can't be read was never sent one, under Use before expiry
+// (a whole week ahead of it) and Smart alike (peterpark8527 on Discord).
 func learns(c candidate, lefts map[allowanceKey]left) bool {
-	_, known := lefts[c.allowanceKey()]
-	return !known && c.p.Account != nil && c.p.Account.Agent == "claude"
+	if _, known := lefts[c.allowanceKey()]; known || c.p.Account == nil {
+		return false
+	}
+	switch c.p.Account.Agent {
+	case "claude":
+		return true
+	case "codex":
+		// only behind one known: of accounts none known, the order stands,
+		// and no week is started before it is needed
+		return len(lefts) > 0 && !codexAnsweredLately(c.p.Account.UsageAgent(), c.p.Account.User, time.Now())
+	}
+	return false
 }
 
 // weigh orders one provider's candidates as its routing says, and tells
@@ -1997,6 +2198,14 @@ func routingOf(routing string) string {
 		return routing
 	}
 	return provider.Ordered
+}
+
+// keepsWeek: routed so, a pool keeps an account running low on its week
+// alone with those that have room (routes.Seat.WeekLow): Smart and Use
+// before expiry, which spend what a reset would lose.
+func keepsWeek(routing string) bool {
+	r := routingOf(routing)
+	return r == "" || r == provider.Pace
 }
 
 // goesRound: routed so, a pool goes round by itself (in turn, by weight),
@@ -2042,6 +2251,9 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 			rs := a.Restarts(now)
 			l := left{used: u, renews: r, fullest: a.Fullest(c.model, now), soon: a.Renewal(c.model, now), lapse: a.Lapse(c.model, now), pace: pc, due: due, amount: amt, of: of, unit: unit,
 				restarts: rs, dueRestart: !rs.IsZero() && due.Equal(rs), credits: spendsCredits(c.p, a)} // one not known counts as unused
+			l.dueExpiry = !l.dueRestart && !l.lapse.IsZero() && due.Equal(l.lapse)
+			l.weekLow = u >= lowShare && u < usedShare && a.CapUsed(c.model, now) < lowShare
+			l.first = l.credits && provider.CodexCreditsFirst(c.p.Account.User)
 			if b, bu, has := a.Left(c.model); has {
 				// a wallet's figure is weighed only against the same
 				// provider's in the same unit (routes.Seat.LeftIn)
@@ -2068,7 +2280,7 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 			pace = provider.FreshPace
 		}
 		seats[i] = routes.Seat{Key: c.rest, Account: c.p.Account != nil, Known: known, Learns: learns(c, wg.lefts),
-			Used: l.used, Soon: l.soon, Lapse: l.lapse, Pace: pace, Weight: keyWeight(c), Resting: resting(c), Tokens: routed.used[c.restKey()].now(now), Credits: l.credits,
+			Used: l.used, WeekLow: l.weekLow, Soon: l.soon, Lapse: l.lapse, Pace: pace, Weight: keyWeight(c), Resting: resting(c), Tokens: routed.used[c.restKey()].now(now), Credits: l.credits, First: l.first,
 			Left: l.bal, LeftIn: l.balIn, Spent: spentRest(c)}
 	}
 	routed.Unlock()
@@ -2085,6 +2297,26 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 		for i, c := range cs {
 			free := c.p.FreeModel(c.model)
 			seats[i].Free, wg.free[c.rest] = free, free
+		}
+	}
+	if st.ByPlan {
+		// an account's plan as its vendor or plugin named it
+		// (Account.Plan): a free one is spent before a paid one, and the
+		// trace tells it free with when its quota is first lost
+		if wg.free == nil {
+			wg.free = map[string]bool{}
+		}
+		wg.expires = map[string]time.Time{}
+		for i, c := range cs {
+			seats[i].FreePlan = c.p.Account != nil && provider.FreePlan(c.p.Account.Plan)
+			if seats[i].FreePlan {
+				wg.free[c.rest] = true
+			}
+			if wg.free[c.rest] {
+				if t := routes.Expires(seats[i]); !t.IsZero() {
+					wg.expires[c.rest] = t
+				}
+			}
 		}
 	}
 	if st.BySpeed {

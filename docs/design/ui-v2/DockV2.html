@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>v2 贴边窄条</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#1f8a76}a:hover{color:#166b5c}
+.f{font-size:11px;color:#8a8a92}
+.tb{display:grid;place-items:center;width:30px;height:30px;border:0;background:transparent;color:#5c5c63;padding:0}
+.sh{display:flex;align-items:center;height:30px;padding:0 12px;font-size:11px;font-weight:600;color:#8a8a92}
+.row{position:relative;display:flex;align-items:center;gap:8px;height:30px;padding:0 12px;font-size:12.5px;color:#2c2c30}
+.row .r{margin-left:auto;font-size:11.5px;color:#8a8a92;font-variant-numeric:tabular-nums}
+.card{position:relative;overflow:hidden;border:1px solid #e2e2e6;border-radius:3px;background:#fff;padding:8px 10px 8px 12px;font-size:12.5px;color:#2c2c30}
+.bar{position:absolute;left:0;top:0;bottom:0;width:3px}
+.wr{display:grid;grid-template-columns:40px minmax(0,1fr) 34px;gap:8px;align-items:center;height:18px;padding:0 12px;font-size:11px;color:#8a8a92}
+.wr i{display:block;height:3px;background:#e9e9ec;border-radius:1px;overflow:hidden}
+.wr em{font-style:normal;text-align:right;font-variant-numeric:tabular-nums}
+.handle{animation:breathe 1.8s ease-in-out infinite}
+@keyframes breathe{0%,100%{opacity:.45}50%{opacity:1}}
+@property --run{syntax:'<angle>';inherits:false;initial-value:0deg}
+.live{border-color:color-mix(in srgb,#9a5b43 40%,#e2e2e6)}
+.live::after{content:"";position:absolute;inset:0;border-radius:3px;padding:1px;pointer-events:none;background:conic-gradient(from var(--run),transparent 0 78%,rgba(154,91,67,.7) 88%,transparent 98%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;animation:run 6s linear infinite}
+@keyframes run{0%{--run:0deg;opacity:0}8%{opacity:1}55%{opacity:1}65%{--run:360deg;opacity:0}100%{--run:360deg;opacity:0}}
+@media (prefers-reduced-motion: reduce){.handle,.live::after{animation:none}}
+</style>
+</helmet>
+<div style="width:1440px;height:900px;box-sizing:border-box;background:#dfe3e8;color:#2c2c30;font-family:Inter,system-ui,sans-serif;font-size:13px;line-height:1.45;position:relative;overflow:hidden">
+
+<div style="position:absolute;left:44px;top:40px;width:520px;display:flex;flex-direction:column;gap:12px">
+<div class="f" style="color:#5c5c63">v2 · 贴边窄条（400px，可拖 320–560）</div>
+<div style="font-size:16px;font-weight:650;color:#111113">同一套语言压进一条</div>
+<div style="font-size:12.5px;color:#3a3a40;line-height:1.65">从上到下：标题栏 → 操作行 → 当前 agent 额度 → 进行中 → 对话 → 输入框 → 底栏。每块都只给结论：额度一行一家，进行中一行一个对话，左边条是 agent 墨色，状态写在右边的字上。</div>
+<div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
+<div class="f" style="color:#5c5c63">收起时：屏边只留 6px 淡轨 + 一根把手</div>
+<div style="display:flex;gap:28px;align-items:center">
+<div style="display:flex;flex-direction:column;align-items:center;gap:6px"><div style="width:6px;height:120px;background:rgba(255,255,255,.7);border-radius:3px 0 0 3px;position:relative"><span style="position:absolute;left:1px;top:42px;width:4px;height:36px;border-radius:2px;background:#8a8a92"></span></div><span class="f" style="color:#5c5c63">空闲</span></div>
+<div style="display:flex;flex-direction:column;align-items:center;gap:6px"><div style="width:6px;height:120px;background:rgba(255,255,255,.7);border-radius:3px 0 0 3px;position:relative"><span class="handle" style="position:absolute;left:1px;top:42px;width:4px;height:36px;border-radius:2px;background:#9a5b43"></span></div><span class="f" style="color:#5c5c63">Claude 在跑：把手呼吸</span></div>
+</div>
+</div>
+</div>
+
+<div style="position:absolute;right:0;top:0;bottom:0;width:400px;background:#f7f7f8;border-left:1px solid #c8c8ce;display:flex;flex-direction:column">
+<div style="height:36px;display:flex;align-items:center;gap:4px;padding:0 4px 0 12px;border-bottom:1px solid #e2e2e6;background:#f4f4f5">
+<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#1f8a76" stroke-width="1.5" aria-hidden="true"><path d="M3 13V3l5 5 5-5v10"/></svg>
+<span style="font-size:12.5px;font-weight:600;color:#111113;margin-left:4px">Marionette</span>
+<div style="flex:1"></div>
+<button type="button" class="tb" aria-label="搜索"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg></button>
+<button type="button" class="tb" aria-label="更多"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3.5" cy="8" r="1.1"/><circle cx="8" cy="8" r="1.1"/><circle cx="12.5" cy="8" r="1.1"/></svg></button>
+</div>
+<div style="display:flex;align-items:center;gap:6px;height:38px;padding:0 10px;border-bottom:1px solid #e2e2e6">
+<span style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:3px;background:#1f8a76;color:#fff;font-size:12.5px;font-weight:600">新建对话<svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></span>
+<span style="display:inline-flex;align-items:center;height:26px;padding:0 10px;border-radius:3px;background:#f1f1f3;font-size:12.5px">收纳盒 <span class="f" style="margin-left:5px">6</span></span>
+</div>
+
+<div style="border-bottom:1px solid #e2e2e6;padding:4px 0 8px">
+<div style="position:relative;padding:4px 0 4px;background:linear-gradient(90deg,rgba(154,91,67,.06),transparent 70%);box-shadow:inset 2px 0 0 #9a5b43">
+<div class="row" style="height:26px;font-size:14px;font-weight:600;color:#111113">Claude<span class="r" style="font-weight:400">1:42 后重置</span></div>
+<div class="wr" style="color:#2c2c30"><span>5 小时</span><i style="height:4px;background:#ece3df"><span style="display:block;width:34%;height:100%;background:#9a5b43"></span></i><em style="font-weight:600;color:#111113">34%</em></div>
+<div class="wr"><span>7 天</span><i style="height:2px"><span style="display:block;width:12%;height:100%;background:#b5b5bb"></span></i><em>12%</em></div>
+</div>
+<div style="display:flex;gap:14px;padding:6px 12px 0;font-size:12px;color:#5c5c63;white-space:nowrap"><span>Codex 26%</span><span style="color:#9a7410">GLM 87%</span><span>Grok 30%</span><span style="color:#c03d45">opencode 已满</span></div>
+</div>
+
+<div style="border-bottom:1px solid #e2e2e6;padding-bottom:4px">
+<div class="sh">进行中<span style="margin-left:auto;font-weight:400">3</span></div>
+<div class="row" style="background:#fff;box-shadow:inset 2px 0 0 #9a5b43,inset 0 1px 0 #ececee,inset 0 -1px 0 #ececee;font-weight:500;color:#111113">输入法 but 无候选<span class="r" style="color:#5c5c63">运行中 · 1:01</span></div>
+<div class="row" style="box-shadow:inset 2px 0 0 #4d5c95">README 补安装说明<span class="r" style="color:#9a7410">等你</span></div>
+<div class="row" style="box-shadow:inset 2px 0 0 #535b66">测试改成 vitest<span class="r">完成 · 5m</span></div>
+</div>
+
+<div style="flex:1;min-height:0;overflow:hidden;padding:8px 10px;display:flex;flex-direction:column;gap:6px">
+<div class="card"><div class="bar" style="background:#1f8a76"></div><div style="font-size:11.5px;font-weight:700;color:#5c5c63;margin-bottom:2px">你</div>but 那条为什么没有中文候选？查一下再改。</div>
+<div class="card live" style="background:#f4f4f5;padding:8px 10px;display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;flex-direction:column;gap:3px">
+<div style="height:5px;background:#ececee;position:relative"><span style="position:absolute;left:0;width:20%;height:100%;background:#bdbdc3"></span><span style="position:absolute;left:88%;width:12%;height:100%;background:#9a5b43"></span></div>
+<div style="height:5px;background:#ececee;position:relative"><span style="position:absolute;left:20%;width:30%;height:100%;background:#7b7b82"></span></div>
+<div style="height:5px;background:#ececee;position:relative"><span style="position:absolute;left:52%;width:24%;height:100%;background:#7b7b82"></span></div>
+</div>
+<div style="font-size:12px;color:#5c5c63;line-height:1.5;height:36px;overflow:hidden">过滤器把 "but" 挪走之后，首选变成了一个空格占位……先看 reduce_english_filter 的规则。</div>
+<div style="font-size:12px;font-weight:600;color:#2c2c30">10 thoughts, 7 commands, 5 reads <span class="f" style="font-weight:400">1m 1s</span></div>
+</div>
+</div>
+
+<div style="border-top:1px solid #e2e2e6;background:#fff;padding:8px 10px 6px;display:flex;flex-direction:column;gap:8px">
+<div style="color:#8a8a92;font-size:12.5px">给 Claude 发消息…</div>
+<div style="display:flex;align-items:center;gap:4px">
+<button type="button" class="tb" aria-label="附加文件" style="width:24px;height:24px"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg></button>
+<span style="display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:2px;font-size:12px;font-weight:500;color:#2c2c30"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="#5c5c63" stroke-width="1.5" aria-hidden="true"><path d="M2.5 5h11M2.5 11h11"/><circle cx="6" cy="5" r="1.5" fill="#fff"/><circle cx="10" cy="11" r="1.5" fill="#fff"/></svg>opus-5.5 · high</span>
+<div style="flex:1"></div>
+<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="#ece3df" stroke-width="2"/><circle cx="8" cy="8" r="6" fill="none" stroke="#9a5b43" stroke-width="2" stroke-dasharray="9 38" transform="rotate(-90 8 8)"/></svg>
+<span style="width:26px;height:22px;margin-left:4px;border:1px solid #e2e2e6;border-radius:2px;display:grid;place-items:center;color:#5c5c63"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2.5 8L13.5 3l-3 10-2.5-4z"/></svg></span>
+</div>
+</div>
+<div style="height:36px;display:flex;align-items:center;gap:2px;padding:0 4px 0 12px;border-top:1px solid #e2e2e6;background:#f4f4f5;font-size:12px;color:#2c2c30">
+<span style="display:flex;align-items:center;gap:6px">模型共享<span style="width:5px;height:5px;border-radius:50%;background:#2d7d42"></span></span>
+<div style="flex:1"></div>
+<button type="button" class="tb" aria-label="通知"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 11V7a4 4 0 0 1 8 0v4l1 1.5H3zM6.5 14h3"/></svg></button>
+<button type="button" class="tb" aria-label="设置"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/></svg></button>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic { renderVals() { return {}; } }
+</script>
+</body>
+</html>

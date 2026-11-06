@@ -924,7 +924,7 @@ fn spawn_log_thread<R: Read + Send + 'static>(reader: R) {
 /// 别的 job 收编（沙箱启动器，breakaway 受限），AssignProcess 会失败——
 /// 这只是兜底机制，失败记一条日志即可。
 #[cfg(target_os = "windows")]
-fn assign_child_to_kill_job(child: &std::process::Child) {
+pub(crate) fn assign_child_to_kill_job(child: &std::process::Child) {
     use std::sync::OnceLock;
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,

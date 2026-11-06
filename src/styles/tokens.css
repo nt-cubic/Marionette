@@ -39,6 +39,18 @@
   --editor-toolbar-bg: #22282f;
   --terminal-bg: #1c2127;
   --composer-bg: #1c2126;
+  --hairline: color-mix(in srgb, var(--border) 70%, transparent);
+
+  /* Agent ink: the only identity colour (left bar, live outline, current meter).
+     Set per element via agentInkStyle() as --agent-ink; never colour names. */
+  --agent-claude: #c99580;
+  --agent-codex: #a9b1bb;
+  --agent-zcode: #9aa6d6;
+  --agent-grok: #ad9fd0;
+  --agent-deepseek: #8db5cf;
+  --agent-opencode: #c4ad7c;
+  --agent-gemini: #c98ea8;
+  --agent-other: #9aa4ae;
 
   --scrollbar-width: 4px;
   --scrollbar-track: transparent;
@@ -73,6 +85,16 @@
   --editor-toolbar-bg: #f4f4f5;
   --terminal-bg: #fafafa;
   --composer-bg: #ffffff;
+  --hairline: #ececee;
+
+  --agent-claude: #9a5b43;
+  --agent-codex: #535b66;
+  --agent-zcode: #4d5c95;
+  --agent-grok: #6b5b91;
+  --agent-deepseek: #3d6e8f;
+  --agent-opencode: #806836;
+  --agent-gemini: #8c4d68;
+  --agent-other: #6b6b73;
 }
 
 * {

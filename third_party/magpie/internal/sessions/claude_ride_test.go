@@ -25,9 +25,11 @@ func TestClaudeSessionReadOnceForSessionsAndCalls(t *testing.T) {
 	}
 	writeLines(t, path, lines...)
 	forget := func() {
+		// Reset first: it writes a save still pending, which would put
+		// back a cache file removed before it
+		Reset()
 		os.Remove(CachePath())
 		os.RemoveAll(callCacheDir())
-		Reset()
 	}
 
 	var mu sync.Mutex

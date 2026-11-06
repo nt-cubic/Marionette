@@ -51,6 +51,16 @@ const vscodeDefault = `chat\.defaultModel`
 // can't change.
 const vscodeUA = "githubcopilotchat"
 
+// vscodeAgentHostUA is VS Code's Agents window: its agent host runs
+// `codex app-server` with clientInfo named vscode_agent_host (VS Code's
+// src/vs/platform/agentHost/node/codex/codexAgent.ts), and Codex makes
+// that its originator and the start of its User-Agent
+// ("vscode_agent_host/0.163.0 (Mac OS …; arm64) … (vscode_agent_host;
+// 0.1.0)"). Its calls were listed under that raw name beside VS Code's
+// (justruman on Discord). Insiders' and VSCodium's agent host send the
+// same name, so they are counted as VS Code too.
+const vscodeAgentHostUA = "vscode_agent_host"
+
 // The providers magpie's group can be written for: VS Code's Custom
 // Endpoint, and the OpenAI Compatible one of the Copilot Chat VSCodium
 // installs.
@@ -99,7 +109,7 @@ type vscodeKind struct {
 }
 
 var (
-	vscodeStable   = vscodeKind{id: "vscode", name: "VS Code", folder: "Code", bin: "code", aliases: []string{"vs-code", "copilot-chat", "vscode-chat"}, ua: []string{vscodeUA}}
+	vscodeStable   = vscodeKind{id: "vscode", name: "VS Code", folder: "Code", bin: "code", aliases: []string{"vs-code", "copilot-chat", "vscode-chat"}, ua: []string{vscodeUA, vscodeAgentHostUA}}
 	vscodeInsiders = vscodeKind{id: "vscode-insiders", name: "VS Code Insiders", folder: "Code - Insiders", bin: "code-insiders", aliases: []string{"vs-code-insiders", "code-insiders"}}
 	vscodiumKind   = vscodeKind{id: "vscodium", name: "VSCodium", folder: "VSCodium", bin: "codium", aliases: []string{"codium", "vscodium-chat"}, exts: ".vscode-oss"}
 )

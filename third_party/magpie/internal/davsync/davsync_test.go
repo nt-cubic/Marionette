@@ -191,7 +191,7 @@ func TestSync(t *testing.T) {
 	a, b := newComputer(t), newComputer(t)
 	a.use(t)
 	provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com/v1", Key: "k1"})
-	settings.Save(settings.Settings{Theme: "dark", Proxy: "http://127.0.0.1:7890", Window: []int{900, 700}, TrayUsages: []string{"claude|a@b.c"}, TrayUsageEvery: 5, TrayNoLogos: true, TrayNoBird: true, TrayPace: true, TrayNoCost: true, TrayWindows: map[string][]string{"claude": {"5h"}}})
+	settings.Save(settings.Settings{Theme: "dark", Proxy: "http://127.0.0.1:7890", Window: []int{900, 700}, TrayUsages: []string{"claude|a@b.c"}, TrayUsageEvery: 5, TrayNoLogos: true, TrayNoBird: true, TrayNoNumber: true, TrayPace: true, TrayNoCost: true, TrayWindows: map[string][]string{"claude": {"5h"}}})
 	profile.Save("work", profile.Profile{Fields: map[string]string{"claude.model": "x"}})
 	same := cfg
 	same.Passphrase = cfg.Password
@@ -236,7 +236,7 @@ func TestSync(t *testing.T) {
 	}
 	// nor does a's menu bar: what shows beside the icon is b's own (yoooo
 	// on Discord)
-	if s := settings.Load(); len(s.TrayUsages) != 0 || s.TrayUsage != "" || s.TrayUsageEvery == 5 || s.TrayNoLogos || s.TrayNoBird || s.TrayPace || s.TrayNoCost || s.TrayWindows != nil {
+	if s := settings.Load(); len(s.TrayUsages) != 0 || s.TrayUsage != "" || s.TrayUsageEvery == 5 || s.TrayNoLogos || s.TrayNoBird || s.TrayNoNumber || s.TrayPace || s.TrayNoCost || s.TrayWindows != nil {
 		t.Fatalf("b's menu bar: %+v", s)
 	}
 	if ps, _ := profile.Load(); len(ps) != 1 {
@@ -265,8 +265,20 @@ func TestSync(t *testing.T) {
 	if got := ids(); !slices.Equal(got, []string{"deepseek=k1", "kimi=k2"}) {
 		t.Fatalf("b after a added: %v", got)
 	}
+	// b renames a profile: a has it under the new name alone, what it
+	// held the same (#2721)
+	if err := profile.Rename("work", "desk"); err != nil {
+		t.Fatal(err)
+	}
+	now(t)
+	a.use(t)
+	now(t)
+	if ps, _ := profile.Load(); len(ps) != 1 || ps["desk"].Fields["claude.model"] != "x" {
+		t.Fatalf("a after b renamed: %v", ps)
+	}
+	b.use(t)
 	provider.Delete("deepseek")
-	profile.Delete("work")
+	profile.Delete("desk")
 	now(t)
 	a.use(t)
 	if v := now(t); v.Notice != nil {

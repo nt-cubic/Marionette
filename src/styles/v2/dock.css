@@ -1,0 +1,453 @@
+/* UI v2 overrides: dock. Loaded after every legacy sheet (src/main.tsx); see docs/ui-language.md. */
+
+/* ── 0 · Band: flush sections separated by 1px borders, no card chrome. ── */
+.dock-chrome.dock-chrome {
+  gap: 0;
+  padding: 0;
+  background: var(--panel);
+}
+
+/* ── 1 · Title bar: 36px, brand mark + name 12.5/600, 30px icon buttons. ── */
+.dock-chrome .dock-bar {
+  height: 36px;
+  margin: 0;
+  gap: 2px;
+  padding: 0 4px 0 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.dock-chrome .dock-bar__brand {
+  gap: 8px;
+  color: var(--text-strong);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+/* Brand mark: the v2 "M" (DockV2.html) — the live state breathes opacity. */
+.dock-chrome .dock-bar__brand i {
+  width: 14px;
+  height: 14px;
+  border-radius: 0;
+  background: var(--accent);
+  transition: none;
+  clip-path: polygon(13.75% 86.25%, 13.75% 13.75%, 22.5% 13.75%, 50% 45%, 77.5% 13.75%, 86.25% 13.75%, 86.25% 86.25%, 77.5% 86.25%, 77.5% 28.75%, 50% 60%, 22.5% 28.75%, 22.5% 86.25%);
+}
+
+.dock-chrome .dock-bar__brand.is-live i {
+  animation: v2dock-breathe 1.8s var(--ease-standard, ease) infinite;
+}
+
+@keyframes v2dock-breathe {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dock-chrome .dock-bar__brand.is-live i {
+    animation: none;
+  }
+}
+
+.dock-chrome .dock-bar__back {
+  height: 26px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
+.dock-chrome .dock-bar__back:hover {
+  color: var(--text-strong);
+  background: var(--panel-soft);
+}
+
+.dock-chrome .dock-bar__title {
+  margin-left: 4px;
+  font-size: 12.5px;
+}
+
+.dock-chrome .dock-icon.dock-icon {
+  width: 30px;
+  height: 30px;
+  color: var(--text-muted);
+}
+
+.dock-chrome .dock-icon.dock-icon:hover {
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+.dock-chrome .dock-icon.dock-icon.is-on {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* ── 2 · Action row: 38px; primary 26px accent, secondary 26px soft. ── */
+.dock-chrome .dock-actions {
+  height: 38px;
+  gap: 6px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.dock-chrome .dock-btn.dock-btn {
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--panel-soft);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.dock-chrome .dock-btn.dock-btn:hover {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--text) 6%, var(--panel-soft));
+}
+
+.dock-chrome .dock-btn--primary.dock-btn--primary {
+  flex: 0 0 auto;
+  background: var(--accent);
+  color: var(--bg);
+  font-weight: 600;
+}
+
+.dock-chrome .dock-btn--primary.dock-btn--primary:hover {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--accent) 90%, var(--panel));
+}
+
+.dock-chrome .dock-btn__count.dock-btn__count {
+  min-width: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1;
+}
+
+/* ── 3 · Quota: tightest source as one block, the rest on one 12px line. ── */
+.dock-chrome .dock-quota.dock-quota {
+  gap: 0;
+  padding: 4px 0 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.dock-chrome .dock-quota__main {
+  display: block;
+  width: 100%;
+  padding: 4px 0;
+  border: 0;
+  border-radius: 0;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--agent-ink, var(--accent)) 6%, transparent), transparent 70%);
+  box-shadow: inset 2px 0 0 var(--agent-ink, var(--accent));
+  text-align: left;
+  transition: opacity var(--dur-fast, 120ms) var(--ease-standard, ease);
+}
+
+.dock-chrome .dock-quota__main:hover {
+  background-color: color-mix(in srgb, var(--panel-soft) 60%, transparent);
+}
+
+.dock-chrome .dock-quota__head {
+  display: flex;
+  align-items: baseline;
+  height: 26px;
+  padding: 0 12px;
+}
+
+.dock-chrome .dock-quota__name {
+  overflow: hidden;
+  color: var(--text-strong);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 26px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.dock-chrome .dock-quota__reset {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding-left: 8px;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Window rows: 4px ink bar for the tightest window, 2px grey for the rest. */
+.dock-chrome .dock-quota__wr {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) 34px;
+  gap: 8px;
+  align-items: center;
+  height: 18px;
+  padding: 0 12px;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.dock-chrome .dock-quota__wr.is-main {
+  color: var(--text);
+}
+
+.dock-chrome .dock-quota__wr-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.dock-chrome .dock-quota__wr i {
+  display: block;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 1px;
+  background: var(--border);
+}
+
+.dock-chrome .dock-quota__wr.is-main i {
+  height: 4px;
+  background: color-mix(in srgb, var(--agent-ink, var(--accent)) 18%, var(--border));
+}
+
+.dock-chrome .dock-quota__wr i b {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--agent-ink, var(--accent));
+  transition: width var(--dur-slow, 240ms) var(--ease-out, ease-out);
+}
+
+.dock-chrome .dock-quota__wr em {
+  color: var(--text-faint);
+  font-style: normal;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.dock-chrome .dock-quota__wr.is-main em {
+  color: var(--text-strong);
+  font-weight: 600;
+}
+
+.dock-chrome .dock-quota__main.is-warm .dock-quota__wr.is-main i b {
+  background: var(--yellow);
+}
+
+.dock-chrome .dock-quota__main.is-warm .dock-quota__wr.is-main em {
+  color: var(--yellow);
+}
+
+.dock-chrome .dock-quota__main.is-hot .dock-quota__wr.is-main i b {
+  background: var(--red);
+}
+
+.dock-chrome .dock-quota__main.is-hot .dock-quota__wr.is-main em {
+  color: var(--red);
+}
+
+/* The rest on one line: `Codex 26%  GLM 87%(yellow)  opencode 已满(red)`. */
+.dock-chrome .dock-quota__line.dock-quota__line {
+  display: flex;
+  gap: 14px;
+  padding: 6px 12px 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.dock-chrome .dock-quota__line-label {
+  flex-shrink: 0;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.dock-chrome .dock-quota__line button {
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.dock-chrome .dock-quota__line button:hover {
+  color: var(--text);
+  background: transparent;
+}
+
+.dock-chrome .dock-quota__line button.is-warm {
+  color: var(--yellow);
+}
+
+.dock-chrome .dock-quota__line button.is-full {
+  color: var(--red);
+}
+
+.dock-chrome .dock-quota__bal b {
+  margin-left: 5px;
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 4 · 进行中: 11px/600 faint label + count; 30px rows, 2px agent ink. ── */
+.dock-chrome .dock-active.dock-active {
+  gap: 0;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.dock-chrome .dock-active__head {
+  height: 30px;
+  padding: 0 12px;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.dock-chrome .dock-active__head b {
+  color: var(--text-faint);
+  font-weight: 400;
+}
+
+.dock-chrome .dock-active__hint {
+  font-weight: 400;
+}
+
+.dock-chrome .dock-active__all {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.dock-chrome .dock-active__list.dock-active__list {
+  gap: 0;
+}
+
+.dock-chrome .dock-active__row.dock-active__row {
+  flex: 0 0 30px;
+  gap: 8px;
+  padding: 0 12px;
+  border-radius: 0;
+  color: var(--text);
+  font-size: 12.5px;
+  box-shadow: inset 2px 0 0 var(--agent-ink, var(--accent));
+}
+
+.dock-chrome .dock-active__row.dock-active__row:hover {
+  color: var(--text-strong);
+  background: var(--panel-soft);
+}
+
+/* Current row: raised ground, hairline top/bottom, ink bar full height. */
+.dock-chrome .dock-active__row.dock-active__row.is-current {
+  color: var(--text-strong);
+  font-weight: 500;
+  background: var(--panel-raised);
+  box-shadow:
+    inset 2px 0 0 var(--agent-ink, var(--accent)),
+    inset 0 1px 0 var(--hairline),
+    inset 0 -1px 0 var(--hairline);
+}
+
+.dock-chrome .dock-active__row.is-current::before {
+  display: none;
+}
+
+/* The 2px ink bar carries identity now; the dot/pulse before the name is noise. */
+.dock-chrome .dock-active__row .session-row__dot,
+.dock-chrome .dock-active__row .session-row__pulse {
+  display: none;
+}
+
+.dock-chrome .dock-active__time.dock-active__time {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.dock-chrome .dock-active__time.is-running {
+  color: var(--text-muted);
+}
+
+.dock-chrome .dock-active__time.is-waiting {
+  color: var(--yellow);
+}
+
+.dock-chrome .dock-active__time.is-errored {
+  color: var(--red);
+}
+
+.dock-chrome .dock-active__park.dock-active__park {
+  border-radius: var(--radius-sm);
+}
+
+.dock-chrome .dock-active__park:hover {
+  color: var(--text-strong);
+  background: var(--panel-soft);
+}
+
+/* ── 5 · Popovers (portaled to body): v2 popover chrome, 28px rows. ── */
+.dock-menu.dock-menu {
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+.dock-menu.dock-menu button {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.dock-menu.dock-menu button small {
+  flex: 1;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 11px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dock-menu.dock-menu button:hover:not(:disabled) {
+  background: var(--panel-soft);
+}
+
+.dock-menu.dock-menu button.is-accent {
+  color: var(--accent);
+}
+
+.dock-menu.dock-menu button.is-danger:hover:not(:disabled) {
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 10%, transparent);
+}
+
+.dock-menu.dock-menu .dock-menu__sep {
+  background: var(--hairline);
+}
+
+.dock-menu.dock-menu .dock-menu__hint {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+/* ── 6 · Drop veil: the band half tracks the 36px title bar. ── */
+.dock-drop-veil.is-band {
+  height: 36px;
+}

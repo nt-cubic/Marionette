@@ -44,7 +44,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--agent-ink, var(--accent));
   opacity: 0.25;
   animation: nine-dot-pulse 1.05s ease-in-out infinite;
 }
@@ -185,7 +185,7 @@
   /* No chip border any more: the raised fill alone is too subtle on the dark
      chrome, so the accent bar carries the selection. */
   background: var(--panel-raised);
-  box-shadow: inset 0 2px 0 var(--accent);
+  box-shadow: inset 0 2px 0 var(--agent-ink, var(--accent));
 }
 
 .editor-tab span {
@@ -1313,8 +1313,10 @@
   user-select: none;
 }
 
-.event-card__summary::-webkit-details-marker {
+.event-card__summary::-webkit-details-marker,
+.event-card__summary::marker {
   display: none;
+  content: none;
 }
 
 .event-card__summary::before {
@@ -1374,8 +1376,11 @@
 }
 
 .activity-panel__summary::-webkit-details-marker,
-.activity-kind .activity-panel__summary::-webkit-details-marker {
+.activity-kind .activity-panel__summary::-webkit-details-marker,
+.activity-panel__summary::marker,
+.activity-kind .activity-panel__summary::marker {
   display: none;
+  content: none;
 }
 
 .activity-panel__summary::before,
@@ -1513,8 +1518,67 @@
   background: color-mix(in srgb, var(--panel-soft) 88%, transparent);
 }
 
+.activity-group {
+  position: relative;
+}
+
 .activity-group.is-live {
-  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-color: color-mix(in srgb, var(--agent-ink, var(--accent)) 40%, var(--border));
+}
+
+/* Running: a soft light travels once round the outline (6s, hidden for the
+   second half of each lap). Ported from docs/design/ui-v2/MotionV2.html. */
+@property --run {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.activity-group.is-live::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  border-radius: var(--radius);
+  pointer-events: none;
+  background: conic-gradient(
+    from var(--run),
+    transparent 0 78%,
+    color-mix(in srgb, var(--agent-ink, var(--accent)) 75%, transparent) 88%,
+    transparent 98%
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: activity-run 6s linear infinite;
+}
+
+@keyframes activity-run {
+  0% {
+    --run: 0deg;
+    opacity: 0;
+  }
+  8% {
+    opacity: 1;
+  }
+  55% {
+    opacity: 1;
+  }
+  65% {
+    --run: 360deg;
+    opacity: 0;
+  }
+  100% {
+    --run: 360deg;
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-group.is-live::after {
+    animation: none;
+    opacity: 0;
+  }
 }
 
 .activity-group > .activity-panel {
@@ -1627,7 +1691,7 @@
 }
 
 .activity-timeline__span.is-open {
-  background: var(--accent);
+  background: var(--agent-ink, var(--accent));
 }
 
 .activity-timeline__span:hover {
@@ -2004,6 +2068,74 @@
 .event-card--user_message .event-card__icon,
 .event-card--assistant_message .event-card__icon {
   display: none;
+}
+
+/* Handoff divider: hairline, one line of text, the only allowed agent dot. */
+.handoff-rule {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 2px 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.handoff-rule__line {
+  flex: 1 1 0;
+  height: 1px;
+  background: var(--hairline, var(--border));
+}
+
+.handoff-rule__text {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.handoff-rule__dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--agent-ink, var(--accent));
+}
+
+/* Reply card: 3px left bar in the replying agent's ink (--agent-ink set inline). */
+.event-card--assistant_message {
+  position: relative;
+}
+
+.event-card--assistant_message::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--agent-ink, var(--accent));
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Reply header: agent name 12/700 neutral, model 400 faint. No dot, no colour. */
+.event-card__who {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: none;
+}
+
+.event-card__who-model {
+  color: var(--text-faint);
+  font-size: 12px;
+  font-weight: 400;
+  text-transform: none;
 }
 
 /* You card: 3px left color bar (mode accent) */
@@ -3674,6 +3806,9 @@
   gap: 12px;
   padding: 16px;
   border: 1px solid var(--border-strong);
+  /* v2: a 3px ink bar on the left says which agent is asking. Falls back to
+     the accent when no agent ink is set on the element. */
+  border-left: 3px solid var(--agent-ink, var(--accent));
   border-radius: var(--radius-sm);
   background: var(--panel-raised);
   box-shadow: 0 20px 48px rgba(0, 0, 0, 0.35);

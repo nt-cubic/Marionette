@@ -142,9 +142,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           // one asking for a sign-in is signed in to with a click
           assert.equal(await status(n).getAttribute("title"), tip + "\n" + (n === "linear" ? w.signin : w.again), n);
           assert.equal(await status(n).evaluate((b, c) => b.classList.contains(c), cls[n]), true, n);
-          // a dot, not a coloured stripe
+          // a dot, not a coloured stripe; a failed one is the dot's box
+          // drawn as an x, so it isn't told by its red alone
           assert.equal(await status(n).evaluate((b) => getComputedStyle(b).borderLeftWidth), "0px");
-          assert.equal(await status(n).evaluate((b) => getComputedStyle(b, "::before").borderRadius), "50%");
+          const dot = await status(n).evaluate((b) => { const s = getComputedStyle(b, "::before"); return { r: s.borderRadius, mask: s.maskImage && s.maskImage !== "none" ? s.maskImage : s.webkitMaskImage || "none" }; });
+          if (cls[n] === "err") { assert.equal(dot.r, "0px", n); assert.match(dot.mask, /data:image\/svg\+xml/, n); }
+          else { assert.equal(dot.r, "50%", n); assert.equal(dot.mask, "none", n); }
         }
         // it stays on the row's name line, one line high
         const box = await status("fetch").boundingBox();

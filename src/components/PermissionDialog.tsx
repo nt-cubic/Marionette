@@ -64,7 +64,7 @@ export function PermissionDialog({ prompt, busy = false, onChoose }: PermissionD
             <ShieldAlert size={18} aria-hidden />
             <div>
               <span className="permission-dialog__eyebrow">{t("perm.eyebrow")}</span>
-              <strong id="permission-dialog-title">{prompt.title || "Permission required"}</strong>
+              <strong id="permission-dialog-title">{prompt.title || t("v2dialogs.permFallback")}</strong>
             </div>
           </div>
           {prompt.detail && (
