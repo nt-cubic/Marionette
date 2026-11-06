@@ -81,4 +81,8 @@ export const zh = {
   "rail.memoryDelete": "删除",
   "rail.memoryDeleteNamed": "删除记忆 {name}",
   "rail.resetAt": "{when} 重置",
+  "rail.showMore": "显示更多",
+  "rail.showLess": "收起",
+  "rail.showMoreItems": "再显示 {n} 项",
+  "rail.pluginsAllAgents": "所有 agent",
 } as const;

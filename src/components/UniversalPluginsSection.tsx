@@ -55,7 +55,14 @@ function parseHeaderLines(raw: string): Record<string, string> {
   return out;
 }
 
-export function UniversalPluginsSection({ onCount }: { onCount?: (count: number) => void } = {}) {
+export function UniversalPluginsSection({
+  onCount,
+  embedded = false,
+}: {
+  onCount?: (count: number) => void;
+  /** Skip the outer card chrome — parent already titled this block 「插件」. */
+  embedded?: boolean;
+} = {}) {
   const t = useT();
   const [plugins, setPlugins] = useState<UniversalPlugin[] | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -185,40 +192,48 @@ export function UniversalPluginsSection({ onCount }: { onCount?: (count: number)
   };
 
   const list = Array.isArray(plugins) ? plugins : [];
-  const enabledCount = list.filter((plugin) => plugin.enabled).length;
   useEffect(() => {
-    onCount?.(enabledCount);
-  }, [enabledCount, onCount]);
+    if (plugins == null) return;
+    onCount?.(plugins.length);
+  }, [plugins, onCount]);
 
-  return (
-    <section className="context-card" id="context-universal-plugins">
-      <div className="context-card__heading">
+  const heading = (
+    <div className={embedded ? "context-lend__labelrow" : "context-card__heading"}>
+      {embedded ? (
+        <span className="context-lend__label">{t("rail.pluginsAllAgents")}</span>
+      ) : (
         <span>{t("allPlugins.title")}</span>
-        <div className="context-card__heading-actions">
-          <button
-            className="pill-action pill-action--icon pill-action--sm"
-            type="button"
-            title={t("allPlugins.refresh")}
-            aria-label={t("allPlugins.refresh")}
-            disabled={busy || operating}
-            onClick={() => void refresh()}
-          >
-            <RefreshCw size={11} />
-          </button>
-          <button
-            className="pill-action pill-action--icon pill-action--sm"
-            type="button"
-            title={t("allPlugins.add")}
-            aria-label={t("allPlugins.add")}
-            disabled={operating}
-            onClick={() => setFormOpen((open) => !open)}
-          >
-            <Plus size={12} />
-          </button>
-        </div>
+      )}
+      <div className="context-card__heading-actions">
+        <button
+          className="pill-action pill-action--icon pill-action--sm"
+          type="button"
+          title={t("allPlugins.refresh")}
+          aria-label={t("allPlugins.refresh")}
+          disabled={busy || operating}
+          onClick={() => void refresh()}
+        >
+          <RefreshCw size={11} />
+        </button>
+        <button
+          className="pill-action pill-action--icon pill-action--sm"
+          type="button"
+          title={t("allPlugins.add")}
+          aria-label={t("allPlugins.add")}
+          disabled={operating}
+          onClick={() => setFormOpen((open) => !open)}
+        >
+          <Plus size={12} />
+        </button>
       </div>
+    </div>
+  );
 
-      {list.length === 0 && !formOpen ? (
+  const inner = (
+    <>
+      {heading}
+
+      {list.length === 0 && !formOpen && !embedded ? (
         <p className="context-card__empty" style={{ marginTop: 8 }}>
           {t("allPlugins.empty")}
         </p>
@@ -360,13 +375,24 @@ export function UniversalPluginsSection({ onCount }: { onCount?: (count: number)
         </div>
       ) : null}
 
-      <p className="panel-note panel-note--hint" title={t("allPlugins.applyHint")}>{t("allPlugins.applyHint")}</p>
+      {embedded ? null : (
+        <p className="panel-note panel-note--hint" title={t("allPlugins.applyHint")}>
+          {t("allPlugins.applyHint")}
+        </p>
+      )}
 
       {note ? (
         <p className="panel-note" style={{ whiteSpace: "pre-wrap" }}>
           {note}
         </p>
       ) : null}
+    </>
+  );
+
+  if (embedded) return <div className="plugin-block">{inner}</div>;
+  return (
+    <section className="context-card" id="context-universal-plugins">
+      {inner}
     </section>
   );
 }
