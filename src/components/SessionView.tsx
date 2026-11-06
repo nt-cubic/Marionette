@@ -2975,6 +2975,7 @@ function CleanPlaceholder({
                     ? " is-revealing"
                     : ""
                 }`}
+                style={agentInkStyle(session.agentId)}
                 // Remount when thought/tool leaves "live force-open" so the
                 // browser details widget cannot keep a stale open=true.
                 key={`${event.type}-${event.createdAt}-${index}${

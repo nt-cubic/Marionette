@@ -40,12 +40,17 @@
   color: var(--text-faint);
 }
 
-/* ── 3 · Activity / tool cards ─────────────────────────────────────────── */
+/* ── 3 · Activity / tool cards ───────────────────────────────────────────
+   The process card is the 0.6 gray chip plus v2 identity chrome: ▸ that
+   turns, 3px agent-ink rail, square left / round right. Inner tool/thought
+   rows keep 0.6 padding so they are not squeezed into a 30px <details>
+   widget, and stay full-radius chips with no second rail. Thumbs on a
+   closed tally stay 16px so they cannot stretch the chip. */
 
 .event-card--thought,
 .event-card--tool_call {
-  border-color: var(--border);
-  background: color-mix(in srgb, var(--panel-soft) 70%, var(--panel-raised));
+  border-color: color-mix(in srgb, var(--border) 80%, var(--text-muted));
+  background: color-mix(in srgb, var(--panel-soft) 88%, transparent);
   box-shadow: none;
 }
 
@@ -53,24 +58,12 @@
   border-color: color-mix(in srgb, var(--agent-ink, var(--accent)) 40%, var(--border));
 }
 
-/* Collapsed row: 30px flush bar (legacy pads 6px top/bottom). */
-.event-card--collapsible:not([open]) {
-  padding: 0 10px;
-}
-
-.event-card--collapsible > .event-card__summary {
-  min-height: 30px;
-}
-
-.event-card--collapsible .event-card__icon {
-  color: var(--text-muted);
-  background: transparent;
-}
-
-.event-card--collapsible .event-card__preview {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text);
+.event-card--collapsible:not([open]) .tool-thumb,
+.activity-panel:not([open]) .tool-thumb,
+.activity-kind:not([open]) .tool-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-sm);
 }
 
 .event-card__tool-diff {
@@ -84,29 +77,6 @@
 
 .event-card__tool-diff-del {
   color: var(--red);
-}
-
-/* Disclosure glyph → a chevron drawn with borders, rotated when open. */
-.event-card__summary::before {
-  content: "";
-  flex: 0 0 auto;
-  width: 6px;
-  height: 6px;
-  border-right: 1.5px solid var(--text-muted);
-  border-bottom: 1.5px solid var(--text-muted);
-  transform: rotate(-45deg);
-  transition: transform var(--dur-fast, 120ms) var(--ease-standard, ease);
-}
-
-.event-card--collapsible[open] > .event-card__summary::before {
-  content: "";
-  transform: rotate(45deg);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .event-card__summary::before {
-    transition: none;
-  }
 }
 
 /* ── 4 · Inline code + code blocks ─────────────────────────────────────── */
@@ -440,13 +410,6 @@
   background: color-mix(in srgb, var(--panel-soft) 88%, transparent);
 }
 
-.activity-group .event-card__preview,
-.activity-group > .event-card__summary {
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 600;
-}
-
 .event-card--assistant_message .event-card__who {
   color: var(--text-strong);
   font-size: 12.5px;
@@ -507,13 +470,37 @@
 }
 
 /* ---- Card shape: square left, round right (2026-11-06) -------------------------------
-   Every card in the stream — You, Reply, the process card, tool/thought, delivery —
-   has square left corners so the 3px identity bar is one clean straight line, and keeps
-   the 3px radius on the right so it still reads as a card, not a table row. */
-.event-list .event-card,
+   You / Reply / delivery / process card have a 3px identity rail, so the
+   left corners stay square and the bar is one straight line. Nested
+   tool/thought rows inside the process card stay chips (full radius, no
+   second rail). */
+.event-list .event-card--user_message,
+.event-list .event-card--assistant_message,
+.event-list .event-card--turn_delivery,
 .event-list .activity-group,
-.event-list .activity-group.is-live::after {
+.event-list .activity-group.is-live::after,
+.event-list__virt-item > .event-card--tool_call,
+.event-list__virt-item > .event-card--thought {
   border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+.event-list .activity-group::before,
+.event-list__virt-item > .event-card--tool_call::before,
+.event-list__virt-item > .event-card--thought::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--agent-ink, color-mix(in srgb, var(--text-muted) 70%, var(--border)));
+  pointer-events: none;
+  z-index: 1;
+}
+
+.event-list__virt-item > .event-card--tool_call,
+.event-list__virt-item > .event-card--thought {
+  position: relative;
 }
 
 /* ---- Reply header / footer split (2026-11-06) -----------------------------------------
@@ -547,11 +534,11 @@
   background: var(--border);
 }
 
-/* ---- One label voice + quieter process card (2026-11-06) -----------------------------
-   "You" and the agent name are the same label: 12px / 600 in body ink. The process card
-   is a light card (raised ground with a touch of soft fill), its summary 12px / 500 in
-   muted ink with a drawn chevron, not a glyph; the footer drops the ▣ mark and lets the
-   mode word carry its tone. */
+/* ---- One label voice + process chip (2026-11-06) -------------------------------------
+   "You" and the agent name are the same label: 12px / 600 in body ink. The
+   process card is the 0.6 gray chip: ▸ glyph (motion.css turns it), 12px/600
+   tally, faint elapsed. Keyboard focus is a 1px accent ring on the card, not
+   the browser's black box. The footer drops the ▣ mark. */
 .event-card--user_message .event-card__type,
 .event-card--assistant_message .event-card__who {
   color: var(--text);
@@ -560,37 +547,10 @@
   letter-spacing: 0;
 }
 
-.event-list .activity-group {
-  background: color-mix(in srgb, var(--panel-soft) 55%, var(--panel-raised));
-}
-
-.activity-panel > .activity-panel__summary {
-  min-height: 32px;
-}
-
-.activity-panel__summary::before,
-.activity-kind .activity-panel__summary::before,
-.activity-panel[open] > .activity-panel__summary::before,
-.activity-kind[open] > .activity-panel__summary::before {
-  content: "";
-  width: 5px;
-  height: 5px;
-  margin: 0 3px 0 1px;
-  border-right: 1.5px solid var(--text-faint);
-  border-bottom: 1.5px solid var(--text-faint);
-  transform: rotate(-45deg);
-  transition: transform var(--dur-fast, 120ms) var(--ease-standard, ease);
-}
-
-.activity-panel[open] > .activity-panel__summary::before,
-.activity-kind[open] > .activity-panel__summary::before {
-  transform: rotate(45deg);
-}
-
 .activity-panel__title {
   color: var(--text-muted);
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .activity-panel__elapsed {
@@ -601,19 +561,6 @@
 
 .event-card--assistant_message .meta-tag__symbol {
   display: none;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .activity-panel__summary::before {
-    transition: none;
-  }
-}
-
-/* ---- Process card: grey identity bar (2026-11-06) -------------------------------------
-   Same 3px left bar as You / Reply, in muted ink, so the three cards read as one family;
-   keyboard focus is a 1px accent ring on the card, not the browser's black box. */
-.event-list .activity-group {
-  border-left: 3px solid color-mix(in srgb, var(--text-muted) 70%, var(--border));
 }
 
 .activity-panel > .activity-panel__summary:focus-visible {
