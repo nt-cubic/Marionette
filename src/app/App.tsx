@@ -959,6 +959,8 @@ export function App() {
   const [planApprovalBusy, setPlanApprovalBusy] = useState(false);
   const [appUpdate, setAppUpdate] = useState<AppUpdateInfo | null>(null);
   const [appUpdateBusy, setAppUpdateBusy] = useState(false);
+  const [appUpdatePhase, setAppUpdatePhase] = useState<"download" | "restart" | null>(null);
+  const [appUpdateError, setAppUpdateError] = useState<string | null>(null);
   /** MCP servers + skills found for the active project (needs 5). */
   const [projectContext, setProjectContext] = useState<ProjectContext | null>(null);
   const [projectContextScanning, setProjectContextScanning] = useState(false);
@@ -1611,6 +1613,7 @@ export function App() {
 
   const handleCheckAppUpdate = useCallback(() => {
     if (!isTauriRuntime() || appUpdateBusy) return;
+    setAppUpdateError(null);
     setAppUpdateBusy(true);
     void (async () => {
       try {
@@ -1689,14 +1692,18 @@ export function App() {
         tone: "info",
         duration: 300_000,
       });
+      setAppUpdateError(null);
+      setAppUpdatePhase("download");
       try {
         await downloadAppUpdate();
         dismissToast(progress);
         showToast({ text: t("appUpdate.applying"), tone: "info", duration: 60_000 });
+        setAppUpdatePhase("restart");
         await applyAppUpdateAndRelaunch();
       } catch (error) {
         dismissToast(progress);
         const message = error instanceof Error ? error.message : String(error);
+        setAppUpdateError(message);
         pushDebug({
           sessionId: currentSessionId ?? "",
           level: "error",
@@ -1712,6 +1719,7 @@ export function App() {
           duration: 12_000,
         });
         setAppUpdateBusy(false);
+        setAppUpdatePhase(null);
       }
     })();
   }, [appUpdate?.latestVersion, appUpdateBusy, currentSessionId, pushDebug, t]);
@@ -9754,6 +9762,11 @@ export function App() {
               : appUpdate.note ||
                 t("app.upToDate", { version: appUpdate.currentVersion || "" }).trim()}
           </span>
+          {(appUpdateError || (appUpdate.updateAvailable && appUpdate.note)) && (
+            <div className="update-banner__error" role="alert">
+              {appUpdateError ? t("app.updateFailed", { error: appUpdateError }) : appUpdate.note}
+            </div>
+          )}
           <div className="update-banner__actions">
             {appUpdate.updateAvailable && appUpdate.releaseUrl && (
               <a
@@ -9775,14 +9788,14 @@ export function App() {
                 disabled={appUpdateBusy}
                 onClick={handleUpdateAndRelaunch}
               >
-                {appUpdateBusy ? t("app.downloading") : t("app.downloadAndRestart")}
+                {appUpdatePhase === "restart" ? t("app.updateRestarting") : appUpdateBusy ? t("app.downloading") : t("app.downloadAndRestart")}
               </button>
             )}
             <button
               type="button"
               className="update-banner__btn update-banner__btn--ghost"
               disabled={appUpdateBusy}
-              onClick={() => setAppUpdate(null)}
+              onClick={() => { setAppUpdate(null); setAppUpdateError(null); }}
             >
               {appUpdate.updateAvailable ? t("app.later") : t("common.close")}
             </button>
