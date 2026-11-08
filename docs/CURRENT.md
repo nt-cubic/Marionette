@@ -71,7 +71,8 @@ Agent 在回合结束后自己续跑（它起的后台指令回来了，触发�
 目标：**用户无脑打开软件就能用**——任何一个来源的模型，任何一个 agent 的会话里直接选。
 
 - **key 型直连**（OpenCode Go / DeepSeek / GLM / Kimi / OpenRouter / xAI）：claude-code 走 spawn env、grok 走 owned 配置表，不过网关；来源含凭据库手存的 key 和 opencode `auth.json` 的只读扫描引用（引用只在直连注入瞬间读钥匙，不复制）。
-- **订阅型 + codex 全场景**：经内嵌翻译引擎（[yetone/magpie](https://github.com/yetone/magpie)，MIT，Go）。引擎**按需唤醒**：打开跨用菜单（最多等 5s）、绑定共享模型（最多等 20s）、启动已接桥的 agent 会话都会自动拉起；30 分钟无绑定且无需求自动停 serve。key-plan 与扫描引用的 api key 自动注册进引擎；Grok / ChatGPT 订阅由引擎 discovery 自己发现。codex 只接引擎源（协议约束），经 `providers/set` 改道 + 路由组把内建模型名别名到所选引擎模型。
+- **订阅型 + codex 全场景**：经内嵌翻译引擎（[yetone/magpie](https://github.com/yetone/magpie)，MIT，Go）。引擎**懒启动（2026-11-06）**：随应用启动只做落位/清障（便携版种子照旧离线落位，不起进程）——**存在引擎模型绑定才自动拉起 serve**，纯 GPT/键 key 直连用户引擎零进程。按需唤醒入口：网关按钮、绑定共享模型（最多等 20s）、启动已接桥的 agent 会话（dsh/pi/zcode/opencode）；30 分钟无绑定且无需求自动停 serve。key-plan 与扫描引用的 api key 自动注册进引擎；Grok / ChatGPT 订阅由引擎 discovery 自己发现。codex 只接引擎源（协议约束），经 `providers/set` 改道 + 路由组把内建模型名别名到所选引擎模型。
+- **引擎模型目录与配额的离线快照（2026-11-06）**：引擎不在 Running 时模型菜单的 marionette 组回放 `~/.marionette/engine-catalog.json`（live 非空时自动回写；note 标「引擎未运行 · 离线目录」，离线选中会经绑定链自动拉起引擎）；右栏额度卡的引擎配额行保留上次快照并标注「引擎未运行 · 快照时间」（localStorage `marionette-quota`，7 天过期）——引擎睡眠/唤醒不再让菜单组与配额行整组消失/插回。纯浏览菜单**不再唤醒引擎**（仅存在绑定时才等 5s 唤醒）。引擎目录只列**具体来源**的模型：`group/` 与 `auto/` 路由组一律隐藏（2026-11-06 起 auto 与 group 同罪；存量 auto 绑定启动时清绑，受影响会话回落 agent 原生默认）。
 - **DSH（@openma/deepseek-harness-acp）跨用（2026-10-20）**：spawn 时把 llm-pi-ai 托管路由 `marionette`（openai-completions → 引擎 `/v1`）写进 `~/.dsh/cordis.patch.yml`（文本外科手术、幂等、保用户内容），令牌常量进 `~/.dsh/.credentials.yaml` refs + spawn env；模型经 dsh-acp 原生目录广告（id `marionette::provider/model`）。引擎停用即移除路由；home patch 被 dsh Web/desktop 共享，Web 里也能走这条路由。写入器在 `dsh_bridge.rs`，调研定稿见 `research-dsh-cross-use.md` §8。
 - **pi（pi-acp）跨用（2026-10-20）**：spawn 时把 provider `marionette` 合并进 `~/.pi/agent/models.json`（pi 官方兼容端点机制，`apiKey` 用 `$MARIONETTE_ENGINE_TOKEN` env 插值、凭据不落盘；语义幂等、保用户 provider）；模型经 pi-acp 原生目录广告（id `marionette/<engineId>`，与 grok/opencode 前缀同形），`set_config_option` 直接切。引擎停用即移除托管段。写入器在 `model_bridge.rs`（`refresh_pi_marionette_route`）。
 - **Roster 收束（2026-10-20）**：内置 agent 收为「五跨用（claude-code / grok / codex / opencode / deepseek）+ **pi + hermes + zcode**」；cline / gemini / kimi / codebuddy / openclaw / cursor / omp 退出内置名单（cursor 封闭无口子、gemini 协议锁死，其余用户面小——可接性矩阵见 `research-acp-cross-use-matrix.md`）。退出者可经「自定义 agent」随时加回；历史会话导入的 parsers 与登录探针保留未动。hermes 的跨用桥待装好 hermes 后按矩阵处方接（config.yaml providers，双协议面）。
@@ -151,7 +152,9 @@ app 内置一个浏览器页（伪标签，与收纳盒/文档同款形状），
 - **aria 引擎** vendor 自 Codeg（Apache-2.0，`src-tauri/src/browser/js/`）：
   快照按元素 ref 操作（非像素坐标），只在第一次有授权读取时注入 isolated world。
 - **体积/内存**：不捆绑浏览器引擎（复用 WebView2 运行时，独立 profile
-  `~/.marionette/browser-profiles/`）；无标签零开销，标签关掉 renderer 回收。
+  `~/.marionette/browser-profiles/`）；**标签懒建**（2026-11-06：启动不再预热
+  about:blank 子 webview——那会常驻一整套 WebView2 进程组；首标签走
+  `create_surface` 直建，关掉标签 renderer 回收）。
 - 已知边界与偏差见 `docs/plan-browser-computer-use.md` §6（人→agent 手递、listener
   pin、eval、下载接管、前进后退为后续批次）。
 
@@ -177,12 +180,14 @@ agent 可以看/操作**其它 Windows 应用**的窗口（浏览器之外的原
   不是沙箱（同 Codeg 立场）。整屏共享/App 范围在协议里但未开 UI（整屏要连
   paint_over 一起做才安全）。偏差清单见 plan §7。
 
-## 共通插件层（2026-11-05）
+## 共通插件层（2026-11-05；2026-11-06 收口）
 
 **安装一个插件，所有 agent 都生效**（设计稿 `docs/plan-plugin-layer.md`）：
 
 - **登记处**：`~/.marionette/plugins/index.json`（Marionette 自有，不写任何 agent
-  的配置）；安装即全局默认启用。入口：右栏「共通插件」卡片 + Ctrl K「共通插件」。
+  的配置）；安装即全局默认启用。入口：右栏「插件」卡片（「所有 agent」MCP 块 +
+  「技能」块；2026-11-06 起 **DSH 专属插件块已删**，统一入口只此一处）+ Ctrl K
+  「插件」（自动展开「共享」卡并滚到位）。
   stdio 型填 command/args/env，http 型填 url/headers；安装时自动**探活**
   （initialize + tools/list，探活失败不拦安装，结果记在 `lastProbe`）。
 - **生效方式**：每个启用插件在 `session/new` 时以 **url 型**条目注入（与
@@ -196,11 +201,18 @@ agent 可以看/操作**其它 Windows 应用**的窗口（浏览器之外的原
 - **http 插件**：纯中继——**真实凭据只留在 Marionette**，agent 只拿 loopback URL
   + 会话 token；远端 `Mcp-Session-Id` 由宿主代持；只收 JSON 应答（流式 only 的
   服务会明确失败）。
-- **skills**：`~/.marionette/plugins/skills/` 是全局技能目录（default-on prompt
-  借贷），装一次全 agent 可见。
+- **skills（2026-11-06 起可从界面装）**：`~/.marionette/plugins/skills/` 是全局
+  技能目录（default-on prompt 借贷），装一次全 agent 可见。插件卡「技能」块支持
+  **从文件夹安装 / 停用 / 删除**：登记处就是目录本身（每个含 SKILL.md 的子目录
+  即一个技能，不进 index.json）；全局停用 = 目录里放 `.disabled` 标记文件，
+  `context_inventory` 扫描跳过带标记的目录——「项目上下文→技能」清单与注入
+  同步消失，两个入口看同一份真相。安装 = 复制整棵源文件夹（源里带着的
+  `.disabled` 不随拷贝，装上即启用）。
 - 边界：child→agent 的 server 主动请求（sampling 等）不支持（-32601）；pi/web 壳
   照旧不注入；不做 marketplace（registry/Smithery 安装与 codeg 式 junction skills
-  矩阵记为后续）。插件自己的 JSON-RPC error 原样透传给 agent。
+  矩阵记为后续）。插件自己的 JSON-RPC error 原样透传给 agent。DSH 自家的
+  `dsh plugin` 面板已随统一入口移除（已装进 profile 的 DSH 插件对 dsh 自家
+  照常生效，跨用桥与 spawn 链不动）。
 
 ## 明确不做 / 暂缓
 

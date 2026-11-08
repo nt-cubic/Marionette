@@ -124,17 +124,29 @@ const SITES = {
       el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
       return JSON.stringify({ ok: true });
     })()`,
-    submitJs: (preferButton) => `(() => {
+    submitJs: (preferButton, expectedAttachments = 0) => `(() => {
       const el = document.querySelector('#prompt-textarea, div.ProseMirror[contenteditable="true"]');
       if (!el) return JSON.stringify({ ok: false });
       if (${preferButton ? "true" : "false"}) {
         const scope = el.closest('form') || el.closest('[data-composer-surface-variant], [data-composer-root]') || document;
+        const cards = scope.querySelectorAll('[data-composer-attachments] .composer-attachment-surface[role="button"]').length;
+        if (cards !== ${expectedAttachments}) return JSON.stringify({ ok: false, why: "attachments changed" });
+        if (scope.querySelector('[data-composer-attachments] [role="progressbar"], [data-composer-attachments] [aria-busy="true"]')) return JSON.stringify({ ok: false, why: "upload busy" });
+        const busy = [...scope.querySelectorAll('[role="progressbar"], [aria-busy="true"], [class*="spinner" i], [class*="spin_" i], [data-testid*="loading" i], .animate-spin')].some(e => {
+          const rect = e.getBoundingClientRect();
+          if (!rect.width || !rect.height) return false;
+          if (typeof e.checkVisibility === 'function' && !e.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false;
+          for (let n = e; n; n = n.parentElement) {
+            const style = getComputedStyle(n);
+            if (n.hidden || n.getAttribute('aria-hidden') === 'true' || style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse' || Number(style.opacity) === 0) return false;
+          }
+          return true;
+        });
+        if (busy) return JSON.stringify({ ok: false, why: "upload busy" });
         const btn = scope.querySelector('button[data-testid="send-button"], button[aria-label="发送"], button[aria-label="发送消息"], button[aria-label="发送提示"], button[aria-label="Send"], button[aria-label="Send prompt"], button[aria-label="Send message"], button[type="submit"]');
         if (btn && !btn.disabled && btn.getAttribute("aria-disabled") !== "true") { btn.click(); return JSON.stringify({ ok: true, method: "button" }); }
       }
-      const ev = new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true });
-      el.dispatchEvent(ev);
-      return JSON.stringify({ ok: true, method: "enter" });
+      return JSON.stringify({ ok: false, why: "send button unavailable" });
     })()`,
     // 「这条消息真的发出去了吗」：composer 空了 = 发出去了。
     composerLenJs: `(() => {
@@ -848,6 +860,15 @@ async function runTurn(agentSessionId, text, blocks, filePaths, emitChunk) {
     if (pending.length) {
       throw new Error("上次的附件尚未确认发送。请在浏览器移除输入框中的附件并刷新该标签页，再重发。");
     }
+    if (SITE_KEY === "chatgpt") {
+      const draft = await evalJson(pageRef, `(() => {
+        const el = document.querySelector('#prompt-textarea, div.ProseMirror[contenteditable="true"]');
+        const scope = el?.closest('form') || el?.closest('[data-composer-surface-variant], [data-composer-root]');
+        return JSON.stringify({ text: (el?.innerText || "").trim().length,
+          attachments: scope?.querySelectorAll('[data-composer-attachments] .composer-attachment-surface[role="button"]').length || 0 });
+      })()`);
+      if (draft.text || draft.attachments) throw new Error("网页输入框已有草稿或附件，请先在浏览器处理后再发送，避免混入本次消息。");
+    }
     attachments = prepareAttachments(blocks, filePaths);
     // File paths in the Composer become readable filenames on the website.
     for (const file of filePaths) text = text.split(file).join(path.basename(file));
@@ -860,6 +881,13 @@ async function runTurn(agentSessionId, text, blocks, filePaths, emitChunk) {
       return "end_turn";
     }
 
+    if (SITE_KEY === "chatgpt") {
+      const inserted = await evalJson(pageRef, `(() => {
+        const el = document.querySelector('#prompt-textarea, div.ProseMirror[contenteditable="true"]');
+        return JSON.stringify({ text: el?.innerText || "" });
+      })()`);
+      if (inserted.text.trim() !== message.trim()) throw new Error("网页输入框未完整接收文字，消息未发送。请检查网页草稿后重试。");
+    }
     if (attachments.files.length) {
       if (!(await uploadAttachments(pageRef, SITE_KEY, attachments.files, evalJson, () => cancelledRef.value))) {
         await note("已取消附件发送；附件可能还留在网页输入框中，请移除并刷新该标签页后继续。");
@@ -876,11 +904,24 @@ async function runTurn(agentSessionId, text, blocks, filePaths, emitChunk) {
     const thoughtBaseline = site.thoughtExtractJs
       ? await evalJson(pageRef, site.thoughtExtractJs) : [];
     const preUrl = pre.url || "";
-    let submitted = await evalJson(pageRef, site.submitJs(true));
+    let submitted;
+    if (SITE_KEY === "chatgpt") {
+      const deadline = Date.now() + 15_000;
+      while (!cancelledRef.value && Date.now() < deadline) {
+        submitted = await evalJson(pageRef, site.submitJs(true, attachments.files.length));
+        if (submitted.ok) break;
+        await sleep(250);
+      }
+      if (!submitted?.ok && !cancelledRef.value) throw new Error("网页发送按钮不可用，消息未发送。请检查网页状态后重试。");
+    } else {
+      submitted = await evalJson(pageRef, site.submitJs(true));
+    }
+    if (cancelledRef.value) return "cancelled";
     const confirmStart = Date.now();
     const confirmed = async () => {
       const comp = await evalJson(pageRef, site.composerLenJs);
       if (comp.len === 0) return true;
+      if (SITE_KEY === "chatgpt") return false;
       const now = await evalJson(pageRef, site.pollJs);
       rememberConversation(context, now.url);
       const grew = now.lens.some((n, i) => n > (pre.lens[i] ?? 0)) || now.lens.length > pre.lens.length;

@@ -60,7 +60,7 @@ pub fn session_entry(app: &AppHandle, session_id: &str) -> Option<Value> {
     Some(json!({
         "name": "marionette-tools",
         "url": format!("http://127.0.0.1:{port}/mcp"),
-        "headers": { "Authorization": format!("Bearer {token}") },
+        "headers": [{ "name": "Authorization", "value": format!("Bearer {token}") }],
         "type": "http",
     }))
 }

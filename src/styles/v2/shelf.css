@@ -260,6 +260,22 @@
   color: var(--text-muted);
 }
 
+.shelf-memo-entry__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shelf-memo-entry__count {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ── 6 · Footer bar: one 34px row — model sharing left, icons right. ── */
 .sidebar-dock.sidebar-dock {
   display: flex;

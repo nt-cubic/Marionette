@@ -24,7 +24,19 @@ export const zh = {
   "allPlugins.urlPlaceholder": "https://…/mcp",
   "allPlugins.headersPlaceholder": "请求头，每行一条 Key: Value（可选）",
   "allPlugins.applyHint":
-    "插件在建立会话时注入：新会话自动生效，进行中的会话重连后生效。共通插件对所有 agent 可用；下方「项目上下文」是按项目借贷的另一套。",
-  "allPlugins.paletteOpen": "共通插件",
+    "插件在建立会话时注入：新会话自动生效，进行中的会话重连后生效。MCP 插件与技能对所有 agent 生效；项目上下文是按项目借贷的另一套。",
+  "allPlugins.paletteOpen": "插件",
   "allPlugins.paletteOpenHint": "装一次 · 全 agent",
+  // ── 技能（skills，2026-11-06 并入插件层：装在 plugins/skills/ 的 SKILL.md 目录） ──
+  "allPlugins.skillTitle": "技能",
+  "allPlugins.skillEmpty": "还没有技能。从文件夹装一个（需含 SKILL.md）。",
+  "allPlugins.skillInstall": "从文件夹安装",
+  "allPlugins.skillInstalling": "正在安装…",
+  "allPlugins.skillInstalled": "已安装 {name}",
+  "allPlugins.skillRemoved": "已删除 {name}",
+  "allPlugins.skillEnable": "启用",
+  "allPlugins.skillDisable": "停用（任何会话都不再注入）",
+  "allPlugins.skillDisabledTag": "已停用",
+  "allPlugins.skillRemove": "删除",
+  "allPlugins.skillRemoveNamed": "删除技能 {name}",
 } as const;

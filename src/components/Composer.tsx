@@ -2476,12 +2476,16 @@ export function Composer({
     .map(source => ({ entryId: source.entryId, sampleModelId: "provider-model-id", hasPresetModels: false, label: source.label })) : [] }), [bridgeCatalog, effectiveModelPreferences, modelAliases, allLibraryGroups]);
 
   // Reopening the menu also picks up sources changed in another window.
+  // deps 故意不含 `modelSources`（2026-11-06）：scan 完成换新对象会把本 effect
+  // 再拉一轮 bridge（一次开菜单双拉、异步换装闪变的根因之一）。scan 有变化
+  // 时 reloadBridgeCatalog 的订阅（invalidateBridgeModels 通知）已经覆盖。
   useEffect(() => {
     if (menu !== "model") return;
     let cancelled = false;
     void ensureModelSources().then(() => getBridgeModels(agent.id)).then(catalog => { if (!cancelled) setBridgeCatalog(catalog); }).catch(error => { if (!cancelled) flash(String(error)); });
     return () => { cancelled = true; };
-  }, [menu, agent.id, modelSources]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [menu, agent.id]);
 
   /** Backend explanation when cross-use is not available for this agent (e.g. codex M2). */
   const bridgeNote = bridgeCatalog?.note?.trim() || null;

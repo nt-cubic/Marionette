@@ -1,13 +1,13 @@
 import { ArrowUpCircle, ChevronRight, RefreshCw } from "lucide-react";
-import { memo, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { t, useT } from "../lib/i18n";
 import { ChangesSection } from "./ChangesSection";
 import { MemorySection } from "./MemorySection";
-import { PluginsSection } from "./PluginsSection";
 import { QuotaSection } from "./QuotaSection";
 import { TasksSection } from "./TasksSection";
 import { UniversalPluginsSection } from "./UniversalPluginsSection";
+import { UniversalSkillsSection } from "./UniversalSkillsSection";
 import { dockFooterHost, useDocked } from "../lib/dockFooter";
 import type { PlanEntry } from "../lib/acpPlan";
 import type { BackgroundTaskRow } from "../lib/backgroundTasks";
@@ -119,6 +119,63 @@ function mcpServerLine(server: McpServerSpec, nativeHere: boolean): string {
   return [where, owners].filter(Boolean).join(" · ");
 }
 
+/** Visible MCP / skill rows before the fade + "Show more", matching the left shelf clip. */
+const LEND_LIST_PREVIEW = 8;
+
+function previewSlice<T>(items: T[], expanded: boolean, limit = LEND_LIST_PREVIEW): { visible: T[]; hidden: number } {
+  if (expanded || items.length <= limit) return { visible: items, hidden: 0 };
+  return { visible: items.slice(0, limit), hidden: items.length - limit };
+}
+
+function LendClip({
+  total,
+  hidden,
+  expanded,
+  onExpand,
+  onCollapse,
+}: {
+  total: number;
+  hidden: number;
+  expanded: boolean;
+  onExpand: () => void;
+  onCollapse: () => void;
+}) {
+  const t = useT();
+  if (!expanded && hidden > 0) {
+    return (
+      <div className="shelf-clip shelf-clip--lend">
+        <div className="shelf-clip__fade" aria-hidden />
+        <button
+          className="shelf-clip__more"
+          type="button"
+          title={t("rail.showMoreItems", { n: hidden })}
+          aria-label={t("rail.showMoreItems", { n: hidden })}
+          onClick={onExpand}
+        >
+          {t("rail.showMore")}
+          <span className="shelf-clip__count">{hidden}</span>
+        </button>
+      </div>
+    );
+  }
+  if (expanded && total > LEND_LIST_PREVIEW) {
+    return (
+      <div className="shelf-clip shelf-clip--lend shelf-clip--expanded">
+        <button
+          className="shelf-clip__more"
+          type="button"
+          title={t("rail.showLess")}
+          aria-label={t("rail.showLess")}
+          onClick={onCollapse}
+        >
+          {t("rail.showLess")}
+        </button>
+      </div>
+    );
+  }
+  return null;
+}
+
 export const ContextPanel = memo(function ContextPanel({
   collapsed,
   usage,
@@ -163,10 +220,44 @@ export const ContextPanel = memo(function ContextPanel({
   /** Docked: the update control joins the strip's footer bar below the composer. */
   const docked = useDocked();
   const [sharedOpen, setSharedOpen] = useState(false);
+  const [mcpExpanded, setMcpExpanded] = useState(false);
+  const [skillsExpanded, setSkillsExpanded] = useState(false);
   // Plugin / memory counts are only known once their sections mounted (memory syncs on
   // mount); null = not loaded yet, so the summary leaves them out instead of showing 0.
   const [memoryCount, setMemoryCount] = useState<number | null>(null);
-  const [pluginCount, setPluginCount] = useState<number | null>(null);
+  const [universalPluginCount, setUniversalPluginCount] = useState<number | null>(null);
+  const [skillCount, setSkillCount] = useState<number | null>(null);
+  const pluginCount =
+    universalPluginCount == null && skillCount == null
+      ? null
+      : (universalPluginCount ?? 0) + (skillCount ?? 0);
+  const pluginsLoaded = universalPluginCount != null && skillCount != null;
+  const pluginsEmpty = pluginCount === 0;
+
+  /**
+   * Ctrl K「插件」的落点（P3，2026-11-06）：插件卡在「共享」折叠区内，
+   * 未展开时 #context-plugins 根本不在 DOM——App 侧只 scrollTo 会落空。
+   * App 派发 marionette:reveal-plugins，这里展开共享卡并滚到位（贴边
+   * context 整页是同一组件实例，一并修好）。
+   */
+  useEffect(() => {
+    const reveal = () => {
+      setSharedOpen(true);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          document
+            .getElementById("context-plugins")
+            ?.scrollIntoView({ block: "start", behavior: "smooth" });
+        });
+      });
+    };
+    window.addEventListener("marionette:reveal-plugins", reveal);
+    return () => window.removeEventListener("marionette:reveal-plugins", reveal);
+  }, []);
+  const mcpServers = projectContext?.inventory.mcpServers ?? [];
+  const mcpSlice = previewSlice(mcpServers, mcpExpanded);
+  const skillItems = projectContext?.inventory.skills ?? [];
+  const skillsSlice = previewSlice(skillItems, skillsExpanded);
   // Same "enabled" logic as the MCP / skills list: mcp defaults off, skills default on.
   const sharedMcpCount = projectContext
     ? projectContext.inventory.mcpServers.filter((server) => projectContext.selection.mcpServers[server.id] ?? false)
@@ -287,7 +378,7 @@ export const ContextPanel = memo(function ContextPanel({
             <div className="context-lend__labelrow">
               <span className="context-lend__label">{t("rail.shareMcp")}</span>
               <span className="context-lend__count">
-                {projectContext.inventory.mcpServers.length}
+                {mcpServers.length}
               </span>
               {onReconnectAgent && (
                 <button
@@ -302,70 +393,88 @@ export const ContextPanel = memo(function ContextPanel({
                 </button>
               )}
             </div>
-            {projectContext.inventory.mcpServers.length === 0 ? (
+            {mcpServers.length === 0 ? (
               <p className="context-card__empty">{t("rail.shareNoMcp")}</p>
             ) : (
-              <ul className="context-lend__list custom-scrollbar scrollbar-autohide">
-                {projectContext.inventory.mcpServers.map((server) => {
-                  const enabled = projectContext.selection.mcpServers[server.id] ?? false;
-                  const native = activeAgentId ? server.agents.includes(activeAgentId) : false;
-                  return (
-                    <li key={server.id}>
-                      <label className="context-lend__row" title={server.sourcePaths.join("\n")}>
-                        <input
-                          type="checkbox"
-                          checked={enabled}
-                          onChange={(event) =>
-                            onToggleProjectContext?.("mcp", server.id, event.target.checked)
-                          }
-                        />
-                        <span className="context-lend__name">{server.name}</span>
-                        <span className="context-lend__meta">
-                          {mcpServerLine(server, native)}
-                        </span>
-                      </label>
-                    </li>
-                  );
-                })}
-              </ul>
+              <>
+                <ul className="context-lend__list custom-scrollbar scrollbar-autohide">
+                  {mcpSlice.visible.map((server) => {
+                    const enabled = projectContext.selection.mcpServers[server.id] ?? false;
+                    const native = activeAgentId ? server.agents.includes(activeAgentId) : false;
+                    return (
+                      <li key={server.id}>
+                        <label className="context-lend__row" title={server.sourcePaths.join("\n")}>
+                          <input
+                            type="checkbox"
+                            checked={enabled}
+                            onChange={(event) =>
+                              onToggleProjectContext?.("mcp", server.id, event.target.checked)
+                            }
+                          />
+                          <span className="context-lend__name">{server.name}</span>
+                          <span className="context-lend__meta">
+                            {mcpServerLine(server, native)}
+                          </span>
+                        </label>
+                      </li>
+                    );
+                  })}
+                </ul>
+                <LendClip
+                  total={mcpServers.length}
+                  hidden={mcpSlice.hidden}
+                  expanded={mcpExpanded}
+                  onExpand={() => setMcpExpanded(true)}
+                  onCollapse={() => setMcpExpanded(false)}
+                />
+              </>
             )}
 
             <div className="context-lend__labelrow">
               <span className="context-lend__label">{t("rail.shareSkills")}</span>
               <span className="context-lend__count">
-                {projectContext.inventory.skills.length}
+                {skillItems.length}
               </span>
             </div>
-            {projectContext.inventory.skills.length === 0 ? (
+            {skillItems.length === 0 ? (
               <p className="context-card__empty">{t("rail.shareNoSkills")}</p>
             ) : (
-              <ul className="context-lend__list custom-scrollbar scrollbar-autohide">
-                {projectContext.inventory.skills.map((skill) => {
-                  const enabled = projectContext.selection.skills[skill.id] ?? true;
-                  const native = activeAgentId ? skill.agents.includes(activeAgentId) : false;
-                  return (
-                    <li key={skill.id}>
-                      <label
-                        className="context-lend__row"
-                        title={`${skill.description || skill.name}\n${skill.file}`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={enabled}
-                          onChange={(event) =>
-                            onToggleProjectContext?.("skill", skill.id, event.target.checked)
-                          }
-                        />
-                        <span className="context-lend__name">{skill.name}</span>
-                        <span className="context-lend__meta">
-                          {skill.sources.join(", ")}
-                          {native ? ` · ${t("rail.shareNativeHere")}` : ""}
-                        </span>
-                      </label>
-                    </li>
-                  );
-                })}
-              </ul>
+              <>
+                <ul className="context-lend__list custom-scrollbar scrollbar-autohide">
+                  {skillsSlice.visible.map((skill) => {
+                    const enabled = projectContext.selection.skills[skill.id] ?? true;
+                    const native = activeAgentId ? skill.agents.includes(activeAgentId) : false;
+                    return (
+                      <li key={skill.id}>
+                        <label
+                          className="context-lend__row"
+                          title={`${skill.description || skill.name}\n${skill.file}`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={enabled}
+                            onChange={(event) =>
+                              onToggleProjectContext?.("skill", skill.id, event.target.checked)
+                            }
+                          />
+                          <span className="context-lend__name">{skill.name}</span>
+                          <span className="context-lend__meta">
+                            {skill.sources.join(", ")}
+                            {native ? ` · ${t("rail.shareNativeHere")}` : ""}
+                          </span>
+                        </label>
+                      </li>
+                    );
+                  })}
+                </ul>
+                <LendClip
+                  total={skillItems.length}
+                  hidden={skillsSlice.hidden}
+                  expanded={skillsExpanded}
+                  onExpand={() => setSkillsExpanded(true)}
+                  onCollapse={() => setSkillsExpanded(false)}
+                />
+              </>
             )}
             {projectContext.inventory.notes.map((note) => (
               <p className="context-card__empty" key={note}>
@@ -376,9 +485,24 @@ export const ContextPanel = memo(function ContextPanel({
         )}
       </section>
 
-      <PluginsSection activeAgentId={activeAgentId} onCount={setPluginCount} />
-
-      <UniversalPluginsSection />
+      <section className="context-card" id="context-plugins">
+        <div className="context-card__heading">
+          <span>{t("plugins.title")}</span>
+          {pluginCount != null ? (
+            <span className="context-lend__count">{pluginCount}</span>
+          ) : null}
+        </div>
+        {pluginsLoaded && pluginsEmpty ? (
+          <p className="context-card__empty" style={{ marginTop: 8 }}>
+            {t("rail.pluginsEmpty")}
+          </p>
+        ) : null}
+        <UniversalPluginsSection embedded onCount={setUniversalPluginCount} />
+        <UniversalSkillsSection embedded onCount={setSkillCount} />
+        <p className="panel-note panel-note--hint" title={t("allPlugins.applyHint")}>
+          {t("allPlugins.applyHint")}
+        </p>
+      </section>
 
       <MemorySection activeSessionId={activeSessionId} onCount={setMemoryCount} />
 

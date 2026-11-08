@@ -239,9 +239,18 @@ export const QuotaSection = memo(function QuotaSection({
   const t = useT();
   const view = buildQuotaView({ windows: usage.windows, agentLabel: usage.agentLabel, modelId });
   const empty = !view.primary && view.others.length === 0;
+  // 懒启动配套（2026-11-06）：引擎停着时配额行来自上次快照——标注出来，
+  // 别让静止的数字冒充实时额度。
+  const hasEngineRows = usage.windows.some((w) => w.id.startsWith("engine:"));
+  const engineOfflineNote =
+    !usage.engineOnline && hasEngineRows && usage.engineQuotaFetchedAt
+      ? t("rail.quotaEngineOffline", {
+          when: new Date(usage.engineQuotaFetchedAt).toLocaleString(),
+        })
+      : null;
   const refreshTitle = [
     t("rail.quotaRefresh"),
-    [usage.note, usage.refreshedAt].filter((part, i, all): part is string => Boolean(part) && all.indexOf(part) === i).join(" · "),
+    [usage.note, usage.refreshedAt, engineOfflineNote].filter((part, i, all): part is string => Boolean(part) && all.indexOf(part) === i).join(" · "),
   ]
     .filter(Boolean)
     .join("\n");
@@ -256,6 +265,7 @@ export const QuotaSection = memo(function QuotaSection({
           </button>
         </span>
       </div>
+      {engineOfflineNote && <p className="rail-empty">{engineOfflineNote}</p>}
       {view.primary && <PrimaryBlock primary={view.primary} agentId={agentId} agentLabel={usage.agentLabel} />}
       {view.others.length > 0 && <OtherDials groups={view.others} agentLabel={usage.agentLabel} />}
       {empty && <p className="rail-empty">{t("rail.quotaEmpty")}</p>}

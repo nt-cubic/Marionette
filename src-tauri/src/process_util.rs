@@ -877,6 +877,182 @@ pub fn output_with_kill_timeout(
     Ok(std::process::Output { status, stdout, stderr })
 }
 
+// ─── 每会话 kill-on-close Job Object（2026-11-06 内存压制批）─────────────────
+//
+// ACP 会话的进程树是「适配器 node → 引擎/启动器 → codex.exe / MCP server」三层。
+// `stop()` 的 child.kill() 只够到第一层，孙进程只能靠 stdin EOF 自退——agent
+// 崩溃/我们被强杀时就变成孤儿（2026-11-06 实测：每棵 100-250MB，跨重启累积）。
+// 每个会话一个 kill-on-close job：直接子进程 assign 进去，孙进程出生即继承；
+// 句柄一关（RAII Drop / terminate）内核带走整树，Marionette 自己被杀也一样。
+// 与 engine.rs 那个「进程级共享 job」不同：那个句柄故意持有到进程退出（引擎
+// 可反复重启共用），这里每个会话各自一个、随会话生命周期。
+
+#[cfg(target_os = "windows")]
+pub(crate) struct KillJobGuard {
+    /// HANDLE 存 isize（Send/Sync）。0 = 已 terminate / 创建失败。
+    handle: std::sync::atomic::AtomicIsize,
+}
+
+#[cfg(target_os = "windows")]
+impl KillJobGuard {
+    /// 创建 job 并把 `child` 挂进去。创建/assign 失败（沙箱把本进程收编进
+    /// 别的 job 时 Assign 会失败，engine.rs 同款先例）返回 None，调用方降级
+    /// 为现状——这是兜底机制，不许报错炸启动。
+    pub(crate) fn create(child: &std::process::Child, session_id: &str) -> Option<KillJobGuard> {
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+        // SAFETY: plain Win32 calls; the handle is ours alone and only ever
+        // closed through `terminate`.
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                crate::debug_log::append(
+                    "acp",
+                    "warn",
+                    session_id,
+                    "session kill job: CreateJobObjectW failed (crash cleanup lost)",
+                    None,
+                );
+                return None;
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const core::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            ) == 0
+            {
+                crate::debug_log::append(
+                    "acp",
+                    "warn",
+                    session_id,
+                    "session kill job: SetInformationJobObject failed (crash cleanup lost)",
+                    None,
+                );
+                windows_sys::Win32::Foundation::CloseHandle(job);
+                return None;
+            }
+            use std::os::windows::io::AsRawHandle;
+            if AssignProcessToJobObject(job, child.as_raw_handle()) == 0 {
+                // 沙箱收编等场景：job 建了但挂不上，等于没有。warn 后降级。
+                crate::debug_log::append(
+                    "acp",
+                    "warn",
+                    session_id,
+                    "session kill job: assign failed (already inside a job?)",
+                    None,
+                );
+                windows_sys::Win32::Foundation::CloseHandle(job);
+                return None;
+            }
+            Some(KillJobGuard {
+                handle: std::sync::atomic::AtomicIsize::new(job as isize),
+            })
+        }
+    }
+
+    /// Close the job handle exactly once → KILL_ON_JOB_CLOSE takes the whole
+    /// tree down. Idempotent.
+    pub(crate) fn terminate(&self) {
+        use std::sync::atomic::Ordering;
+        let handle = self.handle.swap(0, Ordering::AcqRel);
+        if handle != 0 {
+            // SAFETY: the handle came from CreateJobObjectW and is closed
+            // exactly here (swap guarantees single execution).
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(handle as _) };
+        }
+    }
+
+    /// PIDs currently in the job (adapter + grandchildren). Empty when the
+    /// guard already terminated. Used by the idle working-set trim.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn process_ids(&self) -> Vec<u32> {
+        use std::sync::atomic::Ordering;
+        use windows_sys::Win32::System::JobObjects::{
+            JobObjectBasicProcessIdList, QueryInformationJobObject,
+        };
+        let handle = self.handle.load(Ordering::Acquire);
+        if handle == 0 {
+            return Vec::new();
+        }
+        // Layout after the buffer: [NumberOfProcessIdsInList: u32,
+        // NumberOfAssignedProcesses: u32, ProcessIdList: usize[]] — the
+        // struct's own [1] array is only the first list slot, so the header
+        // offset is 8 bytes, NOT size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>().
+        let header = std::mem::size_of::<u32>() * 2;
+        let slot = std::mem::size_of::<usize>();
+        // SAFETY: query into a buffer sized for the common case; the API
+        // reports the true total when the buffer is too small, in which case
+        // we retry with the reported size (bounded — a dying tree can shrink
+        // the counts between queries).
+        unsafe {
+            let mut capacity = 32usize;
+            for _ in 0..3 {
+                let mut buffer = vec![0u8; header + capacity * slot];
+                let ok = QueryInformationJobObject(
+                    handle as _,
+                    JobObjectBasicProcessIdList,
+                    buffer.as_mut_ptr() as *mut core::ffi::c_void,
+                    buffer.len() as u32,
+                    std::ptr::null_mut(),
+                );
+                if ok == 0 {
+                    return Vec::new();
+                }
+                let in_list = u32::from_ne_bytes(buffer[0..4].try_into().unwrap()) as usize;
+                let assigned = u32::from_ne_bytes(buffer[4..8].try_into().unwrap()) as usize;
+                if in_list == assigned {
+                    return buffer[header..]
+                        .chunks_exact(slot)
+                        .take(in_list)
+                        .filter_map(|chunk| {
+                            let value = usize::from_ne_bytes(chunk.try_into().ok()?);
+                            u32::try_from(value).ok()
+                        })
+                        .collect();
+                }
+                capacity = assigned.max(in_list).max(capacity + 1);
+            }
+            Vec::new()
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for KillJobGuard {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
+/// Trim an idle session tree's physical working set. Pages move to the
+/// standby list — committed memory and the processes are untouched; the next
+/// soft fault pages them back in. Red-line (AGENTS 2026-11-06): only ever
+/// called for sessions that are `waiting`, quiet ≥2min and not in the busy
+/// set. Returns (trimmed, skipped) process counts.
+#[cfg(target_os = "windows")]
+pub(crate) fn trim_working_set(pid: u32) -> bool {
+    use windows_sys::Win32::System::ProcessStatus::EmptyWorkingSet;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA,
+    };
+    // SAFETY: handle opened and closed within this function.
+    unsafe {
+        let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return false;
+        }
+        let ok = EmptyWorkingSet(process) != 0;
+        windows_sys::Win32::Foundation::CloseHandle(process);
+        ok
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

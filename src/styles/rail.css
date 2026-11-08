@@ -665,15 +665,6 @@
   margin-left: auto;
 }
 
-.context-panel .rail-shared.rail-shared .rail-shared__scope {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-faint);
-  font-size: 11px;
-  font-weight: 400;
-}
-
 /* Icon buttons: 22px squares, no pill. Text pills become accent text buttons. */
 .context-panel .rail-shared.rail-shared .pill-action--icon {
   display: grid;
@@ -1048,6 +1039,30 @@
   min-width: 0;
   overflow: hidden;
 }
+.context-panel .rail-shared.rail-shared .shelf-clip--lend .shelf-clip__more {
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
+.context-panel .rail-shared.rail-shared .shelf-clip--lend .shelf-clip__fade {
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--panel) 0%, transparent),
+    color-mix(in srgb, var(--panel) 94%, transparent)
+  );
+}
+
+.context-panel .rail-shared.rail-shared .context-lend__labelrow .context-card__heading-actions {
+  display: flex;
+  flex: none;
+  gap: 0;
+  margin-left: auto;
+}
+
+.context-panel .rail-shared.rail-shared .plugin-block + .plugin-block {
+  border-top: 1px solid var(--hairline);
+}
+
 .context-panel .rail-shared.rail-shared .context-lend__list > li,
 .context-panel .rail-shared.rail-shared .panel-entry-list > li {
   min-width: 0;

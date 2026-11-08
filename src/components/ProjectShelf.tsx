@@ -250,6 +250,8 @@ type ProjectShelfProps = {
   onNewChat?: () => void;
   /** Open the memo page from the entry above the Chat section. */
   onOpenMemo?: () => void;
+  /** How many items are in the memo box — always shown on the entry, like the tab badge. */
+  memoCount?: number;
   /** Council Mode(多模型审议)整页入口。 */
   onOpenCouncil?: () => void;
   /** Open the Ctrl+K command palette (footer settings button). */
@@ -391,6 +393,7 @@ export function ProjectShelf({
   onChatSessionSelect,
   onNewChat,
   onOpenMemo,
+  memoCount = 0,
   onOpenCouncil,
   onOpenPalette,
   onExportSession,
@@ -1889,9 +1892,15 @@ export function ProjectShelf({
       </div>
 
       {onOpenMemo && (
-        <button className="shelf-memo-entry" type="button" onClick={onOpenMemo}>
+        <button
+          className="shelf-memo-entry"
+          type="button"
+          onClick={onOpenMemo}
+          aria-label={`${t("shelf.memoBox")} ${memoCount}`}
+        >
           <Archive size={13} aria-hidden />
-          {t("shelf.memoBox")}
+          <span className="shelf-memo-entry__label">{t("shelf.memoBox")}</span>
+          <span className="shelf-memo-entry__count">{memoCount}</span>
         </button>
       )}
       {onOpenCouncil && (

@@ -70,6 +70,27 @@ export function useSessionRails(env: SessionRailsEnv) {
     lastPersistedRef.current.set(sessionId, events);
   };
 
+  /**
+   * X4（2026-11-06 内存压制批）：rail 自上次成功落盘后是否一字未变——与
+   * `armTranscriptTimer` 的前缀比对同口径、同样**禁止克隆事件**（引用全等
+   * 是判定本身，克隆会让它永远不成立——2026-10-31 的教训）。冷会话淘汰 /
+   * 撕窗隐藏 flush 用它跳过 `persistRailsNow`（那会 ensureFullTranscript
+   * 把截断头整段装回内存再全量重写文件，每 2 分钟一次的秒级卡顿源）：
+   * 干净 = 磁盘本来就是最新，直接丢 rail 即可。
+   * - rail 为空 → 干净（没有可写内容；真要写空表反而会清掉磁盘历史）。
+   * - 从未落过盘（或上次写失败回滚了账本）→ 不干净，保守走全量。
+   */
+  const isPersistClean = (sessionId: string): boolean => {
+    const events = persistableEventsForSession(
+      shadowBySessionRef.current.get(sessionId) ?? EMPTY_EVENTS,
+      sessionId,
+    );
+    if (events.length === 0) return true;
+    const last = lastPersistedRef.current.get(sessionId);
+    if (last == null) return false;
+    return events.length === last.length && last.every((ev, i) => events[i] === ev);
+  };
+
   const armTranscriptTimer = (sessionId: string) => {
     if (!isTauriRuntime()) return;
     if (!env.ownsAcpSession(sessionId)) return;
@@ -225,5 +246,6 @@ export function useSessionRails(env: SessionRailsEnv) {
     applyStreamPart,
     publishedEventsForView,
     notePersisted,
+    isPersistClean,
   };
 }

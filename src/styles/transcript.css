@@ -1313,8 +1313,10 @@
   user-select: none;
 }
 
-.event-card__summary::-webkit-details-marker {
+.event-card__summary::-webkit-details-marker,
+.event-card__summary::marker {
   display: none;
+  content: none;
 }
 
 .event-card__summary::before {
@@ -1374,8 +1376,11 @@
 }
 
 .activity-panel__summary::-webkit-details-marker,
-.activity-kind .activity-panel__summary::-webkit-details-marker {
+.activity-kind .activity-panel__summary::-webkit-details-marker,
+.activity-panel__summary::marker,
+.activity-kind .activity-panel__summary::marker {
   display: none;
+  content: none;
 }
 
 .activity-panel__summary::before,
@@ -3078,8 +3083,9 @@
   line-height: 1.4;
 }
 
-/* ── Shared memory & DSH plugins cards (narrow context column) ───────
-   Entry cards, forms and sub-panels for MemorySection / PluginsSection.
+/* ── Shared memory & plugins cards (narrow context column) ────────────
+   Entry cards, forms and sub-panels for MemorySection /
+   UniversalPluginsSection / UniversalSkillsSection.
    Text buttons use .pill-action (24px pill); --sm stays icon-only. */
 
 .panel-toggle {

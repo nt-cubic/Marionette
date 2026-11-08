@@ -25,6 +25,17 @@ type CacheEntry = {
 
 const cache = new Map<string, CacheEntry>();
 const inFlight = new Map<string, Promise<BridgeModelsResult>>();
+/** 上次返回给调用方的结果对象（等价刷新时复用引用，防 state 换新闪变）。 */
+const lastResults = new Map<string, BridgeModelsResult>();
+
+function sameCatalog(a: CacheEntry | undefined, b: BridgeModelsResult): boolean {
+  if (!a) return false;
+  if (a.note !== (b.note ?? null)) return false;
+  return (
+    JSON.stringify(a.models) === JSON.stringify(b.models) &&
+    JSON.stringify(a.sources ?? null) === JSON.stringify(b.sources ?? null)
+  );
+}
 
 /**
  * Mounted pickers subscribe here so an invalidation reaches open dialogs.
@@ -57,19 +68,33 @@ export async function getBridgeModels(agentId: string): Promise<BridgeModelsResu
   });
   inFlight.set(agentId, request);
   const result = await request;
+  // 内容级比较（2026-11-06）：TTL 过期后的重拉若与缓存等价，复用上次返回的
+  // 结果对象——setBridgeCatalog 拿到相同引用就不触发重渲，菜单不再闪变。
+  // （「引擎睡眠时 marionette 组整组消失」的大头已在 Rust 侧用磁盘缓存治了，
+  // 这里挡的是等价刷新换对象这一层。）
+  if (sameCatalog(cache.get(agentId), result)) {
+    const previous = lastResults.get(agentId);
+    if (previous) return previous;
+  }
   cache.set(agentId, {
     models: result.models,
     sources: result.sources ?? null,
     note: result.note,
     savedAt: Date.now(),
   });
-  return result;
+  const stable: BridgeModelsResult = {
+    models: result.models,
+    sources: result.sources,
+    note: result.note,
+  };
+  lastResults.set(agentId, stable);
+  return stable;
 }
 
 /** Drop cached catalogs (all agents, or one) — called after credential changes. */
 export function invalidateBridgeModels(agentId?: string): void {
-  if (agentId) cache.delete(agentId);
-  else cache.clear();
+  if (agentId) { cache.delete(agentId); lastResults.delete(agentId); }
+  else { cache.clear(); lastResults.clear(); }
   for (const listener of [...listeners]) listener();
 }
 

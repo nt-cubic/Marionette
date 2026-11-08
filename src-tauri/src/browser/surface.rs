@@ -750,22 +750,19 @@ fn profile_dir() -> Result<std::path::PathBuf, String> {
 }
 
 /// Create a tab webview as a child of the main window. Main thread only.
+/// Lazy since 2026-11-06: no startup prewarm anymore (it kept a whole second
+/// WebView2 process group resident for the process lifetime even when no tab
+/// was ever opened); every tab — including the first — builds here through
+/// `build_surface`, the path 2nd+ tabs always took.
 pub fn create_surface(app: &AppHandle, url: &str, opened_by_agent: bool) -> Result<String, String> {
-    // The setup-time prewarm (see `prewarm`) hands its surface to the first
-    // tab: zero creation inside the running event loop.
-    if let Some(result) = take_prewarmed(app, url, opened_by_agent) {
-        return result;
-    }
     let surface = build_surface(app, url, opened_by_agent)?;
     let id = surface.id.clone();
     register_surface(app, &surface);
     Ok(id)
 }
 
-/// Build the webview and its Surface WITHOUT touching the registry. The
-/// prewarm path uses this directly (its surface stays invisible to the
-/// frontend until a real tab claims it); `create_surface` registers
-/// immediately after.
+/// Build the webview and its Surface WITHOUT touching the registry;
+/// `create_surface` registers immediately after.
 fn build_surface(app: &AppHandle, url: &str, opened_by_agent: bool) -> Result<Rc<Surface>, String> {
     let window = app
         .get_webview_window("main")
@@ -887,62 +884,11 @@ pub fn normalize_url(raw: &str) -> Result<String, String> {
     }
 }
 
-thread_local! {
-    /// A surface built during app setup (BEFORE the tao event loop runs — the
-    /// only window where wry's nested creation pump is the outermost loop and
-    /// therefore safe on our tao build). Deliberately NOT in SURFACES: the
-    /// frontend must never see it (a phantom tab at every boot, 2026-11-01);
-    /// the first real tab claims and registers it.
-    static PREWARM_SURFACE: RefCell<Option<Rc<Surface>>> = const { RefCell::new(None) };
-}
-
-/// Take the prewarmed surface for `url`, if it is still there. Main thread.
-fn take_prewarmed(app: &AppHandle, url: &str, opened_by_agent: bool) -> Option<Result<String, String>> {
-    PREWARM_SURFACE.with(|slot| {
-        let surface = slot.borrow_mut().take()?;
-        // Re-point the dummy at the real address; plain Navigate is
-        // synchronous fire, no nested pump.
-        if let Err(error) = surface.webview.load_url(url) {
-            return Some(Err(format!("navigate failed: {error}")));
-        }
-        let origin = url_origin(url);
-        *surface.url.borrow_mut() = url.to_string();
-        *surface.origin.borrow_mut() = origin.clone();
-        *surface.grant.borrow_mut() = if opened_by_agent {
-            Some(AgentGrant { level: GrantLevel::Read, origin, granted_at_ms: now_ms() })
-        } else {
-            None
-        };
-        surface.console.borrow_mut().clear();
-        surface.nav_epoch.set(surface.nav_epoch.get() + 1);
-        surface.world_ctx.set(None);
-        let id = surface.id.clone();
-        register_surface(app, &surface);
-        Some(Ok(id))
-    })
-}
-
-/// Build the prewarm surface NOW (call from tauri setup, on the main thread,
-/// before the event loop starts). It stays OUT of the registry — invisible to
-/// the frontend — until a real tab claims it. A failure is logged and
-/// swallowed: opening a tab then just builds the slow way.
-pub fn prewarm(app: &AppHandle) {
-    match build_surface(app, "about:blank", false) {
-        Ok(surface) => {
-            let _ = surface.webview.set_visible(false);
-            PREWARM_SURFACE.with(|slot| *slot.borrow_mut() = Some(surface));
-        }
-        Err(error) => {
-            crate::debug_log::append(
-                "browser",
-                "warn",
-                "",
-                "prewarm failed; tabs will build the slow way",
-                Some(&error),
-            );
-        }
-    }
-}
+// (No prewarm machinery since 2026-11-06: startup prewarm kept a second
+// WebView2 process group resident for the whole process lifetime even when no
+// browser tab was ever opened. Tabs are built lazily in `create_surface`; the
+// documented fallback if first-tab creation ever freezes on our tao build is
+// restoring a startup prewarm pool — see plan-browser-computer-use.md §9.)
 
 /// Drop a tab. Main thread. The wry Drop detaches the parent subclass —
 /// exactly the case `ensure_resize_hook` exists for.

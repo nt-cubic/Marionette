@@ -435,6 +435,15 @@ export type UniversalPluginSpec = {
   headers?: Record<string, string>;
 };
 
+/** Skills under plugins/skills/（2026-11-06 并入插件层；目录即登记处）。 */
+export type UniversalSkill = {
+  id: string;
+  name: string;
+  description?: string;
+  dir: string;
+  enabled: boolean;
+};
+
 export type ChangedFile = {
   path: string;
   changeType: "added" | "modified" | "deleted" | "untracked";
@@ -470,6 +479,10 @@ export type UsageSnapshot = {
   /** Human-readable footnote about data freshness / source. */
   note?: string | null;
   cost?: { amount: number; currency: string } | null;
+  /** 引擎订阅配额行的快照时间（懒启动配套：引擎停着时行保留并标注）。 */
+  engineQuotaFetchedAt?: number | null;
+  /** 引擎当前是否 Running（false + 有引擎行 = 显示离线快照标注）。 */
+  engineOnline?: boolean;
 };
 
 // ─── ACP Capability Types ───────────────────────────────────────────────────
