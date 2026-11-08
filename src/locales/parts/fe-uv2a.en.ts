@@ -1,0 +1,33 @@
+import type { zh } from "./fe-uv2a.zh";
+
+/** English mirror of the fe-uv2a fragment. */
+export const en = {
+  "usageV2.hero.empty": "No token usage recorded in this range.",
+  "usageV2.hero.total.noun": "tokens · all four buckets",
+  "usageV2.hero.total.delta": "{delta} vs previous period",
+  "usageV2.hero.cost.noun": "List-price conversion · not what you pay",
+  "usageV2.hero.cost.covered": "{pct} of tokens priced",
+  "usageV2.hero.cost.unpriced": "No list prices for these models",
+  "usageV2.hero.hit.noun": "Cache hit",
+  "usageV2.hero.hit.formula": "reads ÷ (fresh + writes + reads)",
+  "usageV2.hero.turns.noun": "turns · {sessions} conversations",
+  "usageV2.hero.turns.detail": "{agents} agents · {models} models",
+  "usageV2.hero.time.noun": "Active time",
+  "usageV2.hero.time.both": "{tps} tok/s output · {ttft} to first token",
+  "usageV2.hero.time.tps": "{tps} tok/s output",
+  "usageV2.hero.time.ttft": "{ttft} to first token",
+  "usageV2.trend.title": "Daily usage",
+  "usageV2.trend.meta": "Four buckets stacked · dashed line is list-price cost (right axis)",
+  "usageV2.trend.grain": "Grouping",
+  "usageV2.trend.day": "Daily",
+  "usageV2.trend.week": "Weekly",
+  "usageV2.trend.chart": "Stacked token usage chart, {n} points; dashed line is list-price cost",
+  "usageV2.trend.col": "{date}: {tokens} tokens, {usd}, {turns} turns",
+  "usageV2.trend.cached": "Cache reads",
+  "usageV2.trend.cacheWrite": "Cache writes",
+  "usageV2.trend.fresh": "Fresh input",
+  "usageV2.trend.output": "Output (incl. thinking)",
+  "usageV2.trend.tipFoot": "{usd} list price · {turns} turns",
+  "usageV2.trend.peak": "Peak {label} · {tokens} tokens",
+  "usageV2.trend.empty": "Nothing recorded in this range",
+} satisfies Record<keyof typeof zh, string>;

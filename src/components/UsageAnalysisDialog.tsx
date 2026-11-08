@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { UsageV2Body } from "./usage/UsageV2Body";
 import { ArrowDownRight, ArrowUpRight, Download, X } from "lucide-react";
 import { useLocale, useT } from "../lib/i18n";
 import { formatDurationCompact, formatTokenCount } from "../lib/sessionStats";
@@ -579,7 +580,7 @@ export function UsageAnalysisDialog({ onClose }: { onClose: () => void }) {
           </button>
         </div>
         <div className="project-dialog__body">
-          <UsageAnalysisBody />
+          <UsageV2Body />
         </div>
       </div>
     </div>

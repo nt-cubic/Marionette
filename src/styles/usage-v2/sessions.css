@@ -1,0 +1,131 @@
+/* Token usage v2 · sessions list (UsageSessions) + provenance footer (UsageLegend). */
+
+/* ── Conversation rows: 44px grid bands, 3px agent-ink bar on the band's left edge ── */
+
+.uv2-sessions__row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) 64px 72px 72px 84px;
+  gap: 14px;
+  align-items: center;
+  width: 100%;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--hairline);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+/* Agent ink bar sits inside the band's 28px side padding. */
+.uv2-sessions__row::before {
+  content: "";
+  position: absolute;
+  left: calc(-1 * var(--uv2-gap));
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 1px;
+  background: var(--agent-ink, var(--accent));
+}
+
+.uv2-sessions__row.is-click {
+  cursor: pointer;
+}
+
+.uv2-sessions__row.is-click:hover {
+  background: color-mix(in srgb, var(--agent-ink) 5%, transparent);
+}
+
+.uv2-sessions__row.is-click:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* Context ring + percentage. */
+.uv2-sessions__ring {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.uv2-sessions__pct {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Label over the agent · project line. */
+.uv2-sessions__t {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.uv2-sessions__label {
+  overflow: hidden;
+  color: var(--text-strong);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uv2-sessions__sub {
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Expand / collapse toggle under the list. */
+.uv2-sessions__more {
+  display: block;
+  margin: 8px auto 0;
+  padding: 2px 8px;
+  border: 0;
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.uv2-sessions__more:hover {
+  color: var(--text);
+}
+
+.uv2-sessions__empty {
+  margin: 0;
+  color: var(--text-faint);
+}
+
+/* ── Provenance footer: three equal columns, no band background ── */
+
+.uv2-legend {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 24px;
+  padding: 16px var(--uv2-gap) 0;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.uv2-legend .uv2-tag {
+  margin-right: 6px;
+}
+
+.uv2-legend__sub {
+  margin: 4px 0 0;
+  color: var(--text-faint);
+}
+
+@container uv2 (max-width: 620px) {
+  .uv2-legend {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+}

@@ -9666,6 +9666,10 @@ export function App() {
                   setUsageOpen(false);
                   setUsageActive(false);
                 }}
+                onOpenSession={(id) => {
+                  const target = sessionsRef.current.find((item) => item.id === id);
+                  if (target) openSessionRef.current(target);
+                }}
               />
             </div>
           ) : browserActive && !dockActive && !IS_DETACHED_WINDOW ? (

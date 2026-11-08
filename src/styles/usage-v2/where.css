@@ -1,0 +1,193 @@
+/* Token usage page v2 ·「Token 去向 / 时间去向」(UsageWhere).
+   Mirrors the mockup's .tm / .cr / .ribbon / .stack / .pct rules with uv2-where-* classes. */
+
+.uv2-where-empty {
+  margin: 0;
+  font-size: 11.5px;
+}
+
+/* -- Token treemap ------------------------------------------------- */
+
+.uv2-where-tm {
+  display: grid;
+  gap: 3px;
+  height: 168px;
+  margin: 0 0 12px;
+}
+
+.uv2-where-tmb {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.uv2-where-tmrow {
+  display: flex;
+  gap: 3px;
+  flex: 0 0 48px;
+  margin-top: auto; /* keeps the small-parts row on the baseline when the rows above are short */
+  min-height: 0;
+}
+
+.uv2-where-blk {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 1px;
+  min-width: 0;
+  min-height: 0;
+  padding: 8px 10px;
+  border-radius: 2px;
+  overflow: hidden;
+  color: var(--text);
+}
+
+.uv2-where-blk.is-ink {
+  color: var(--panel-raised);
+}
+
+.uv2-where-blk.is-sm {
+  padding: 6px 8px;
+}
+
+.uv2-where-blk > b {
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uv2-where-blk > span:not(.uv2-tag) {
+  font-size: 11px;
+  opacity: 0.85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uv2-where-blk > .uv2-tag {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+}
+
+/* -- Provenance / timing rows -------------------------------------- */
+
+.uv2-where-row {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto minmax(0, 1.1fr) 56px 64px;
+  gap: 10px;
+  align-items: center;
+  height: 28px;
+  border-bottom: 1px solid var(--hairline);
+  font-size: 12px;
+}
+
+/* No SourceTag column: all times are measured locally. */
+.uv2-where-row--time {
+  grid-template-columns: 10px minmax(0, 1.1fr) minmax(0, 1.4fr) 56px 64px;
+}
+
+.uv2-where-rows > :last-child {
+  border-bottom: 0;
+}
+
+.uv2-where-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uv2-where-how {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.uv2-where-note {
+  margin: 10px 0 0;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+/* -- Daily ribbon / overall stack ----------------------------------- */
+
+.uv2-where-daily {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 40px;
+}
+
+.uv2-where-day {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-width: 0;
+  border-radius: 2px 2px 0 0;
+  overflow: hidden;
+}
+
+.uv2-where-day > i {
+  flex-basis: 0;
+}
+
+/* A day with no recorded time still shows a 2px mark on the baseline. */
+.uv2-where-stub {
+  flex: 1 1 0;
+  height: 2px;
+  background: var(--hairline);
+}
+
+.uv2-where-axis {
+  display: flex;
+  justify-content: space-between;
+  margin: 4px 0 0;
+  font-size: 10.5px;
+}
+
+.uv2-where-stack {
+  display: flex;
+  height: 10px;
+  margin: 12px 0;
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--panel-soft);
+}
+
+/* -- Percentile cells ----------------------------------------------- */
+
+.uv2-where-pct {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 14px;
+  border-top: 1px solid var(--hairline);
+}
+
+.uv2-where-pct > div {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 10px 0 0;
+}
+
+.uv2-where-pct b {
+  color: var(--text-strong);
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.uv2-where-pct span {
+  color: var(--text-muted);
+  font-size: 11px;
+}
