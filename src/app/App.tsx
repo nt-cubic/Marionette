@@ -79,6 +79,7 @@ import {
   type SessionUsageState,
 } from "../lib/usage";
 import { recordTurnUsage } from "../lib/usageLedger";
+import { digestTurn } from "../lib/usageDigest";
 import { UsageAnalysisDialog } from "../components/UsageAnalysisDialog";
 import { UsagePage } from "../components/UsagePage";
 import { DiffPage } from "../components/DiffPage";
@@ -660,6 +661,9 @@ export function App() {
   const [eventsTick, setEventsTick] = useState<Record<string, number>>({});
   /** Per-session usage from ACP `usage_update` + opportunistic rate-limit text. */
   const [sessionUsageById, setSessionUsageById] = useState<Record<string, SessionUsageState>>({});
+  // Turn/complete reads the last context reading for the usage ledger; state is stale in that closure.
+  const sessionUsageByIdRef = useRef(sessionUsageById);
+  sessionUsageByIdRef.current = sessionUsageById;
   /** Per-session ACP-advertised slash commands (`available_commands_update`). */
   const [slashCommandsById, setSlashCommandsById] = useState<Record<string, AvailableCommand[]>>({});
   /**
@@ -2598,6 +2602,11 @@ export function App() {
         // 展示分组用,不是账本真相(真相是 turnStats 本身)。
         if (turnStats) {
           const ledgerSession = sessionsRef.current.find((s) => s.id === payload.sessionId);
+          const ledgerUsage = sessionUsageByIdRef.current[payload.sessionId];
+          const ledgerProject =
+            ledgerSession && ledgerSession.projectId !== CHAT_PROJECT_ID
+              ? projectsRef.current.find((p) => p.id === ledgerSession.projectId)?.name ?? null
+              : null;
           recordTurnUsage({
             agentId: ledgerSession?.agentId,
             modelId:
@@ -2606,6 +2615,20 @@ export function App() {
               null,
             stats: turnStats,
             endedAt,
+            sentAt,
+            // What this turn did (time split, tools, commands, edits), folded from
+            // the events of this turn only: never a transcript reload.
+            digest: digestTurn(eventsBySessionRef.current.get(payload.sessionId) ?? [], payload.sessionId, {
+              stats: turnStats,
+              sentAt,
+              endedAt,
+            }),
+            ctx: ledgerUsage
+              ? { used: ledgerUsage.contextUsed ?? null, size: ledgerUsage.contextSize ?? null }
+              : null,
+            session: ledgerSession
+              ? { id: ledgerSession.id, label: ledgerSession.label, project: ledgerProject }
+              : null,
           });
         }
 

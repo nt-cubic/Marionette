@@ -18,6 +18,7 @@
 import { useSyncExternalStore } from "react";
 import { saveTextFile } from "./api";
 import type { TurnStats } from "./types";
+import type { Tally, TimingSplit, TurnDigest } from "./usageDigest";
 
 export type LedgerAgentUsage = { output: number; turns: number };
 
@@ -28,6 +29,8 @@ export type LedgerModelUsage = {
   cached: number;
   cacheCreation: number;
   turns: number;
+  /** v2:最近一次落账时的 agent(按 agent 分组的模型表用)。 */
+  agent?: string;
 };
 
 export type LedgerDay = {
@@ -43,13 +46,71 @@ export type LedgerDay = {
   models: Record<string, LedgerModelUsage>;
   /** 24 桶:当天各小时落账的轮数(活动节奏热图的原料;按查看者本地钟)。 */
   hours: number[];
+  /**
+   * v2(2026-11-08)按 agent 的完整明细:时间去向、首字/速度直方图、上下文占用分布、
+   * 工具/命令/技能计数、改动行数、可见输入估算。旧账没有这个键,读出来就是空表。
+   */
+  detail?: Record<string, AgentDayDetail>;
+  /** 当天有落账的会话 id(去重,上限 SESSION_IDS_CAP)。 */
+  sessionIds?: string[];
+};
+
+/** 一个 agent 一天的完整明细(Token 用量页 v2 的原料)。 */
+export type AgentDayDetail = {
+  input: number;
+  output: number;
+  cached: number;
+  cacheCreation: number;
+  reasoning: number;
+  turns: number;
+  /** 有 sentAt 的轮次的墙钟时长之和(send → turn end)。 */
+  wallMs: number;
+  timing: TimingSplit;
+  /** 首字延迟直方图(TTFT_EDGES_MS 分桶)。 */
+  ttftHist: number[];
+  /** 输出速度直方图(TPS_EDGES 分桶)。 */
+  tpsHist: number[];
+  /** 轮末上下文占用直方图(10 桶,0–10% … 90–100%)。 */
+  ctxHist: number[];
+  tools: Record<string, Tally>;
+  cmds: Record<string, Tally>;
+  skills: Record<string, Tally>;
+  edits: { ops: number; add: number; del: number };
+  est: { user: number; attach: number; toolIo: number };
+};
+
+/** 最近活跃的会话摘要(对话列表的原料;按 last 修剪到 SESSIONS_CAP)。 */
+export type LedgerSession = {
+  label: string;
+  agentId: string;
+  modelId: string | null;
+  project: string | null;
+  turns: number;
+  input: number;
+  output: number;
+  cached: number;
+  cacheCreation: number;
+  /** 最近一轮结束时的上下文占用 %(agent 没报就是 null)。 */
+  ctxPct: number | null;
+  /** 最近一轮结束的时间戳(ms)。 */
+  last: number;
 };
 
 export type UsageLedger = {
   version: 1;
   /** key = 本地日期 YYYY-MM-DD。 */
   days: Record<string, LedgerDay>;
+  /** v2:会话摘要,key = session id。旧账没有这个键。 */
+  sessions?: Record<string, LedgerSession>;
 };
+
+/** 首字延迟分桶上沿(ms);最后一桶开放。 */
+export const TTFT_EDGES_MS = [250, 500, 750, 1000, 1500, 2000, 3000, 4000, 6000, 8000, 12000, 16000, 24000, 32000, 60000];
+/** 输出速度分桶上沿(tok/s);最后一桶开放。 */
+export const TPS_EDGES = [5, 10, 15, 20, 30, 40, 50, 60, 80, 100, 130, 160, 200, 260, 340];
+const SESSION_IDS_CAP = 400;
+const SESSIONS_CAP = 300;
+const TALLY_CAP = 60;
 
 const LEDGER_KEY = "marionette-usage-ledger";
 const RETAIN_DAYS = 180;
@@ -72,7 +133,128 @@ function normalizeDay(raw: unknown): LedgerDay | null {
     agents: d.agents ?? {},
     models: d.models ?? {},
     hours: Array.isArray(d.hours) && d.hours.length === 24 ? d.hours : new Array(24).fill(0),
+    detail: normalizeDetailMap(d.detail),
+    sessionIds: Array.isArray(d.sessionIds) ? d.sessionIds.filter((v) => typeof v === "string") : [],
   };
+}
+
+function numArray(raw: unknown, length: number): number[] {
+  const out = new Array(length).fill(0);
+  if (Array.isArray(raw)) for (let i = 0; i < length; i++) out[i] = Number(raw[i]) || 0;
+  return out;
+}
+
+function tallyMap(raw: unknown): Record<string, Tally> {
+  const out: Record<string, Tally> = {};
+  if (typeof raw !== "object" || raw == null) return out;
+  for (const [k, v] of Object.entries(raw as Record<string, Partial<Tally>>)) {
+    if (!v || typeof v !== "object") continue;
+    out[k] = { n: Number(v.n) || 0, fail: Number(v.fail) || 0, ms: Number(v.ms) || 0 };
+  }
+  return out;
+}
+
+export function emptyDetail(): AgentDayDetail {
+  return {
+    input: 0,
+    output: 0,
+    cached: 0,
+    cacheCreation: 0,
+    reasoning: 0,
+    turns: 0,
+    wallMs: 0,
+    timing: { ttft: 0, think: 0, answer: 0, tool: 0, other: 0 },
+    ttftHist: new Array(TTFT_EDGES_MS.length + 1).fill(0),
+    tpsHist: new Array(TPS_EDGES.length + 1).fill(0),
+    ctxHist: new Array(10).fill(0),
+    tools: {},
+    cmds: {},
+    skills: {},
+    edits: { ops: 0, add: 0, del: 0 },
+    est: { user: 0, attach: 0, toolIo: 0 },
+  };
+}
+
+function normalizeDetail(raw: unknown): AgentDayDetail {
+  const d = (typeof raw === "object" && raw != null ? raw : {}) as Partial<AgentDayDetail>;
+  const base = emptyDetail();
+  const t = (d.timing ?? {}) as Partial<TimingSplit>;
+  const e = (d.edits ?? {}) as Partial<AgentDayDetail["edits"]>;
+  const s = (d.est ?? {}) as Partial<AgentDayDetail["est"]>;
+  return {
+    input: Number(d.input) || 0,
+    output: Number(d.output) || 0,
+    cached: Number(d.cached) || 0,
+    cacheCreation: Number(d.cacheCreation) || 0,
+    reasoning: Number(d.reasoning) || 0,
+    turns: Number(d.turns) || 0,
+    wallMs: Number(d.wallMs) || 0,
+    timing: {
+      ttft: Number(t.ttft) || 0,
+      think: Number(t.think) || 0,
+      answer: Number(t.answer) || 0,
+      tool: Number(t.tool) || 0,
+      other: Number(t.other) || 0,
+    },
+    ttftHist: numArray(d.ttftHist, base.ttftHist.length),
+    tpsHist: numArray(d.tpsHist, base.tpsHist.length),
+    ctxHist: numArray(d.ctxHist, 10),
+    tools: tallyMap(d.tools),
+    cmds: tallyMap(d.cmds),
+    skills: tallyMap(d.skills),
+    edits: { ops: Number(e.ops) || 0, add: Number(e.add) || 0, del: Number(e.del) || 0 },
+    est: { user: Number(s.user) || 0, attach: Number(s.attach) || 0, toolIo: Number(s.toolIo) || 0 },
+  };
+}
+
+function normalizeDetailMap(raw: unknown): Record<string, AgentDayDetail> {
+  const out: Record<string, AgentDayDetail> = {};
+  if (typeof raw !== "object" || raw == null) return out;
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) out[k] = normalizeDetail(v);
+  return out;
+}
+
+function normalizeSessions(raw: unknown): Record<string, LedgerSession> {
+  const out: Record<string, LedgerSession> = {};
+  if (typeof raw !== "object" || raw == null) return out;
+  for (const [id, v] of Object.entries(raw as Record<string, Partial<LedgerSession>>)) {
+    if (!v || typeof v !== "object") continue;
+    out[id] = {
+      label: typeof v.label === "string" ? v.label : id,
+      agentId: typeof v.agentId === "string" ? v.agentId : "unknown",
+      modelId: typeof v.modelId === "string" ? v.modelId : null,
+      project: typeof v.project === "string" ? v.project : null,
+      turns: Number(v.turns) || 0,
+      input: Number(v.input) || 0,
+      output: Number(v.output) || 0,
+      cached: Number(v.cached) || 0,
+      cacheCreation: Number(v.cacheCreation) || 0,
+      ctxPct: typeof v.ctxPct === "number" && Number.isFinite(v.ctxPct) ? v.ctxPct : null,
+      last: Number(v.last) || 0,
+    };
+  }
+  return out;
+}
+
+/** Index of the bucket a value falls into (edges are upper bounds; the last bucket is open). */
+export function histBucket(value: number, edges: readonly number[]): number {
+  for (let i = 0; i < edges.length; i++) if (value < edges[i]!) return i;
+  return edges.length;
+}
+
+function addTallies(into: Record<string, Tally>, from: Record<string, Tally>): Record<string, Tally> {
+  const out: Record<string, Tally> = { ...into };
+  for (const [k, v] of Object.entries(from)) {
+    const cur = out[k] ?? { n: 0, fail: 0, ms: 0 };
+    out[k] = { n: cur.n + v.n, fail: cur.fail + v.fail, ms: cur.ms + v.ms };
+  }
+  // A runaway agent inventing tool names must not grow the ledger without bound.
+  const keys = Object.keys(out);
+  if (keys.length > TALLY_CAP) {
+    keys.sort((a, b) => out[b]!.n - out[a]!.n);
+    for (const k of keys.slice(TALLY_CAP)) delete out[k];
+  }
+  return out;
 }
 
 function loadLedger(): UsageLedger {
@@ -90,7 +272,7 @@ function loadLedger(): UsageLedger {
       const day = normalizeDay(value);
       if (day) days[key] = day;
     }
-    return { version: 1, days };
+    return { version: 1, days, sessions: normalizeSessions(parsed.sessions) };
   } catch {
     return empty;
   }
@@ -160,6 +342,8 @@ function emptyDay(): LedgerDay {
     agents: {},
     models: {},
     hours: new Array(24).fill(0),
+    detail: {},
+    sessionIds: [],
   };
 }
 
@@ -171,12 +355,7 @@ function hasTokenFigures(stats: TurnStats): boolean {
 /** 纯函数:把一轮记进台账(不改原对象),返回新台账。 */
 export function recordTurnUsageInto(
   target: UsageLedger,
-  entry: {
-    agentId?: string | null;
-    modelId?: string | null;
-    stats: TurnStats;
-    endedAt: number;
-  },
+  entry: TurnUsageEntry,
   now: Date = new Date(entry.endedAt),
 ): UsageLedger {
   if (!hasTokenFigures(entry.stats)) return target;
@@ -219,7 +398,102 @@ export function recordTurnUsageInto(
     };
   }
   next.hours[now.getHours()] = (next.hours[now.getHours()] ?? 0) + 1;
-  return { version: 1, days: { ...target.days, [key]: next } };
+  if (modelId) next.models[modelId] = { ...next.models[modelId]!, agent: agentId };
+
+  // ── v2 per-agent detail ──
+  const detailMap = { ...(day.detail ?? {}) };
+  const prev = detailMap[agentId] ?? emptyDetail();
+  const dg = entry.digest ?? null;
+  const ctx = entry.ctx;
+  const ctxPct =
+    ctx && ctx.used != null && ctx.size != null && ctx.size > 0
+      ? Math.min(100, Math.max(0, (ctx.used / ctx.size) * 100))
+      : null;
+  const ttftHist = [...prev.ttftHist];
+  if (s.ttftMs != null && s.ttftMs >= 0) ttftHist[histBucket(s.ttftMs, TTFT_EDGES_MS)]! += 1;
+  const tpsHist = [...prev.tpsHist];
+  if (s.outputTps != null && s.outputTps > 0) tpsHist[histBucket(s.outputTps, TPS_EDGES)]! += 1;
+  const ctxHist = [...prev.ctxHist];
+  if (ctxPct != null) ctxHist[Math.min(9, Math.floor(ctxPct / 10))]! += 1;
+  const wall = entry.sentAt != null ? Math.max(0, entry.endedAt - entry.sentAt) : 0;
+  detailMap[agentId] = {
+    input: prev.input + (s.input ?? 0),
+    output: prev.output + (s.output ?? 0),
+    cached: prev.cached + (s.cached ?? 0),
+    cacheCreation: prev.cacheCreation + (s.cacheCreation ?? 0),
+    reasoning: prev.reasoning + (s.reasoning ?? 0),
+    turns: prev.turns + 1,
+    wallMs: prev.wallMs + wall,
+    timing: dg
+      ? {
+          ttft: prev.timing.ttft + dg.timing.ttft,
+          think: prev.timing.think + dg.timing.think,
+          answer: prev.timing.answer + dg.timing.answer,
+          tool: prev.timing.tool + dg.timing.tool,
+          other: prev.timing.other + dg.timing.other,
+        }
+      : prev.timing,
+    ttftHist,
+    tpsHist,
+    ctxHist,
+    tools: dg ? addTallies(prev.tools, dg.tools) : prev.tools,
+    cmds: dg ? addTallies(prev.cmds, dg.cmds) : prev.cmds,
+    skills: dg ? addTallies(prev.skills, dg.skills) : prev.skills,
+    edits: dg
+      ? { ops: prev.edits.ops + dg.edits.ops, add: prev.edits.add + dg.edits.add, del: prev.edits.del + dg.edits.del }
+      : prev.edits,
+    est: dg
+      ? { user: prev.est.user + dg.est.user, attach: prev.est.attach + dg.est.attach, toolIo: prev.est.toolIo + dg.est.toolIo }
+      : prev.est,
+  };
+  next.detail = detailMap;
+
+  const sid = entry.session?.id;
+  const ids = day.sessionIds ?? [];
+  next.sessionIds = sid && !ids.includes(sid) && ids.length < SESSION_IDS_CAP ? [...ids, sid] : ids;
+
+  let sessions = target.sessions;
+  if (entry.session) {
+    const cur = target.sessions?.[entry.session.id];
+    const row: LedgerSession = {
+      label: entry.session.label || cur?.label || entry.session.id,
+      agentId,
+      modelId: modelId ?? cur?.modelId ?? null,
+      project: entry.session.project ?? cur?.project ?? null,
+      turns: (cur?.turns ?? 0) + 1,
+      input: (cur?.input ?? 0) + (s.input ?? 0),
+      output: (cur?.output ?? 0) + (s.output ?? 0),
+      cached: (cur?.cached ?? 0) + (s.cached ?? 0),
+      cacheCreation: (cur?.cacheCreation ?? 0) + (s.cacheCreation ?? 0),
+      ctxPct: ctxPct ?? cur?.ctxPct ?? null,
+      last: entry.endedAt,
+    };
+    sessions = trimSessions({ ...(target.sessions ?? {}), [entry.session.id]: row });
+  }
+  return { version: 1, days: { ...target.days, [key]: next }, ...(sessions ? { sessions } : {}) };
+}
+
+/** What App hands the recorder at turn/complete. */
+export type TurnUsageEntry = {
+  agentId?: string | null;
+  modelId?: string | null;
+  stats: TurnStats;
+  endedAt: number;
+  /** When the prompt went over the wire (wall-time anchor); null when unknown. */
+  sentAt?: number | null;
+  /** usageDigest.digestTurn over this turn's events; null → token figures only. */
+  digest?: TurnDigest | null;
+  /** Context occupancy at turn end, as the agent last reported it. */
+  ctx?: { used: number | null; size: number | null } | null;
+  session?: { id: string; label: string; project: string | null } | null;
+};
+
+/** Keep the SESSIONS_CAP most recently active sessions. */
+function trimSessions(map: Record<string, LedgerSession>): Record<string, LedgerSession> {
+  const ids = Object.keys(map);
+  if (ids.length <= SESSIONS_CAP) return map;
+  ids.sort((a, b) => map[b]!.last - map[a]!.last);
+  return Object.fromEntries(ids.slice(0, SESSIONS_CAP).map((id) => [id, map[id]!]));
 }
 
 /** 修剪超期日(保留最近 RETAIN_DAYS 个自然日,含今天),返回新台账。 */
@@ -230,16 +504,16 @@ export function pruneLedger(target: UsageLedger, now: Date = new Date()): UsageL
   const days = Object.fromEntries(
     Object.entries(target.days).filter(([key]) => key >= cutoffKey),
   );
-  return { version: 1, days };
+  if (!target.sessions) return { version: 1, days };
+  const cutoffMs = cutoff.setHours(0, 0, 0, 0);
+  const sessions = Object.fromEntries(
+    Object.entries(target.sessions).filter(([, s]) => s.last >= cutoffMs),
+  );
+  return { version: 1, days, sessions };
 }
 
 /** 落账入口:App 的 turn/complete 处理器调用。 */
-export function recordTurnUsage(entry: {
-  agentId?: string | null;
-  modelId?: string | null;
-  stats: TurnStats;
-  endedAt: number;
-}): void {
+export function recordTurnUsage(entry: TurnUsageEntry): void {
   // 读-合并-写:先拾起其它窗口可能刚写的账,再并进这一笔(detached 窗并存)。
   const fresh = storageOk ? loadLedger() : ledger;
   ledger = pruneLedger(recordTurnUsageInto(fresh, entry));
