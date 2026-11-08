@@ -1,0 +1,20 @@
+/** Token 用量页 v2 · 页面外壳与共用片段(来源标签、范围、过滤、空态)。 */
+export const zh = {
+  "usageV2.title": "Token 用量",
+  "usageV2.source.measured": "实测",
+  "usageV2.source.estimated": "估算",
+  "usageV2.source.derived": "推算",
+  "usageV2.source.priced": "折算",
+  "usageV2.source.clock": "本机计时",
+  "usageV2.range.label": "时间范围",
+  "usageV2.range.1": "今天",
+  "usageV2.range.7": "7 天",
+  "usageV2.range.30": "30 天",
+  "usageV2.range.90": "90 天",
+  "usageV2.range.180": "180 天",
+  "usageV2.filter.label": "按 agent 过滤",
+  "usageV2.filter.all": "全部",
+  "usageV2.export": "导出 CSV",
+  "usageV2.empty": "还没有用量记录。发一条消息、等这一轮结束，这里就会开始累计。",
+  "usageV2.noDetail": "这段时间的记录来自旧版台账，只有 token 数字；时间去向、工具与命令从 0.7.1 起开始累计。",
+} as const;

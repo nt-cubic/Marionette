@@ -1,0 +1,30 @@
+import type { zh } from "./fe-uv2e.zh";
+
+/** English mirror of the fe-uv2e fragment. */
+export const en = {
+  "usageV2.sessions.title": "Conversations",
+  "usageV2.sessions.meta": "{count} total · ring = context use at the end of the last turn",
+  "usageV2.sessions.sortLabel": "Sort conversations",
+  "usageV2.sessions.sort.last": "Recent",
+  "usageV2.sessions.sort.total": "Tokens",
+  "usageV2.sessions.sort.usd": "Cost",
+  "usageV2.sessions.sort.ctx": "Context",
+  "usageV2.sessions.sub": "{agent}",
+  "usageV2.sessions.subProject": "{agent} · {project}",
+  "usageV2.sessions.turns": "{turns} turns",
+  "usageV2.sessions.relNow": "Just now",
+  "usageV2.sessions.relMin": "{n} min ago",
+  "usageV2.sessions.relHour": "{n} h ago",
+  "usageV2.sessions.relYesterday": "Yesterday",
+  "usageV2.sessions.relDate": "{m}/{d}",
+  "usageV2.sessions.showAll": "Show all {count}",
+  "usageV2.sessions.showLess": "Show less",
+  "usageV2.sessions.empty": "No conversations in this range.",
+  "usageV2.legend.measured": "Usage reported by the agent (fresh input, cache reads, cache writes, output, thinking), plus timings measured on this machine.",
+  "usageV2.legend.measuredSub": "Hover a number to see how it was counted.",
+  "usageV2.legend.estimated": "Visible text is estimated at 4 characters ≈ 1 token, images at about 1k each; ",
+  "usageV2.legend.derived": "derived = the reported total minus the known parts.",
+  "usageV2.legend.estimatedSub": "Estimates always reconcile with the measured total; no tokens appear out of thin air.",
+  "usageV2.legend.priced": "Converted at public list prices from models.dev, 24-hour cache; not what your subscription actually charges.",
+  "usageV2.legend.pricedSub": "Data stays on this machine and is kept for 180 days.",
+} satisfies Record<keyof typeof zh, string>;

@@ -1,0 +1,247 @@
+/* Token usage v2 · task A — hero summary row (UsageHero) + daily trend chart (UsageTrend).
+   Flush bands, 1px separators, theme tokens only; shared pieces live in base.css. */
+
+/* ── hero: five equal columns on raised ground ─────────────────────── */
+
+.uv2-hero {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-raised);
+}
+
+.uv2-hero__col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  padding: 22px 12px 18px;
+  border-right: 1px solid var(--hairline);
+}
+
+.uv2-hero__col:last-child {
+  border-right: 0;
+}
+
+.uv2-hero__col .uv2-spark {
+  margin-bottom: 6px;
+}
+
+.uv2-hero__num {
+  color: var(--text-strong);
+  font-size: 26px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+}
+
+.uv2-hero__noun {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.uv2-hero__det {
+  min-height: 15px;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.uv2-hero__det.is-up {
+  color: var(--accent);
+}
+
+.uv2-hero--empty {
+  display: block;
+  padding: 16px var(--uv2-gap);
+}
+
+.uv2-hero__empty {
+  margin: 0;
+  color: var(--text-faint);
+}
+
+/* 5 → 3 + 2 columns when the page container is narrow. */
+@container uv2 (max-width: 760px) {
+  .uv2-hero {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .uv2-hero__col:nth-child(3n) {
+    border-right: 0;
+  }
+
+  .uv2-hero__col:nth-child(n + 4) {
+    border-top: 1px solid var(--hairline);
+  }
+}
+
+/* ── trend: stacked daily columns + dashed cost overlay ────────────── */
+
+.uv2-trend__chart {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  height: 170px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.uv2-trend__col {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: default;
+}
+
+.uv2-trend__col:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.uv2-trend__col:hover .uv2-trend__stack {
+  outline: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
+}
+
+.uv2-trend__stack {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 24px;
+}
+
+.uv2-trend__seg {
+  display: block;
+  width: 100%;
+}
+
+.uv2-trend__seg--top {
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+
+.uv2-trend__x {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 50%;
+  transform: translateX(-50%);
+  color: var(--text-faint);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.uv2-trend__cost {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+}
+
+/* Callout: to the right of a left-half column, to the left of a right-half one. */
+.uv2-trend__tip {
+  position: absolute;
+  top: 4px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 176px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--text) 14%, transparent);
+  color: var(--text-muted);
+  font-size: 11.5px;
+  text-align: left;
+}
+
+.uv2-trend__col--lh .uv2-trend__tip {
+  left: calc(100% + 10px);
+}
+
+.uv2-trend__col--rh .uv2-trend__tip {
+  right: calc(100% + 10px);
+}
+
+.uv2-trend__tip b {
+  margin-bottom: 2px;
+  color: var(--text-strong);
+  font-weight: 600;
+}
+
+.uv2-trend__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.uv2-trend__row .uv2-key {
+  width: 7px;
+  height: 7px;
+}
+
+.uv2-trend__row em {
+  margin-left: auto;
+  font-style: normal;
+  color: var(--text);
+}
+
+.uv2-trend__tipfoot {
+  margin-top: 3px;
+  padding-top: 4px;
+  border-top: 1px solid var(--hairline);
+  color: var(--uv2-cost);
+}
+
+/* Bucket key colours, shared by segments, callout rows and the legend. */
+.uv2-trend__k-cached {
+  background: var(--uv2-cache-read);
+}
+
+.uv2-trend__k-write {
+  background: var(--uv2-cache-write);
+}
+
+.uv2-trend__k-fresh {
+  background: var(--uv2-fresh);
+}
+
+.uv2-trend__k-output {
+  background: var(--uv2-output);
+}
+
+.uv2-trend__legend {
+  display: flex;
+  gap: 16px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.uv2-trend__legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.uv2-trend__peak {
+  margin-left: auto;
+  color: var(--text-faint);
+}
+
+.uv2-trend__empty {
+  margin: 0;
+  color: var(--text-faint);
+}

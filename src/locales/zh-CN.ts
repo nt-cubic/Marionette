@@ -38,6 +38,12 @@ import { zh as zhFeV2Council } from "./parts/fe-v2council.zh";
 import { zh as zhFeV2Dock } from "./parts/fe-v2dock.zh";
 import { zh as zhFeV2Usage } from "./parts/fe-v2usage.zh";
 import { zh as zhFeV2Pages } from "./parts/fe-v2pages.zh";
+import { zh as zhFeUv2Shell } from "./parts/fe-uv2shell.zh";
+import { zh as zhFeUv2A } from "./parts/fe-uv2a.zh";
+import { zh as zhFeUv2B } from "./parts/fe-uv2b.zh";
+import { zh as zhFeUv2C } from "./parts/fe-uv2c.zh";
+import { zh as zhFeUv2D } from "./parts/fe-uv2d.zh";
+import { zh as zhFeUv2E } from "./parts/fe-uv2e.zh";
 
 export const zh = {
   ...zhCommon,
@@ -74,4 +80,10 @@ export const zh = {
   ...zhFeV2Dock,
   ...zhFeV2Usage,
   ...zhFeV2Pages,
+  ...zhFeUv2Shell,
+  ...zhFeUv2A,
+  ...zhFeUv2B,
+  ...zhFeUv2C,
+  ...zhFeUv2D,
+  ...zhFeUv2E,
 } as const;

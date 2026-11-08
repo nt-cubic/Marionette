@@ -16,6 +16,12 @@ import "./styles/v2/memo.css";
 import "./styles/v2/council.css";
 import "./styles/v2/dock.css";
 import "./styles/v2/usage.css";
+import "./styles/usage-v2/base.css";
+import "./styles/usage-v2/hero.css";
+import "./styles/usage-v2/where.css";
+import "./styles/usage-v2/agents.css";
+import "./styles/usage-v2/activity.css";
+import "./styles/usage-v2/sessions.css";
 import "./styles/v2/pages.css";
 
 /** Prevent a single component crash from turning the whole window pure black. */

@@ -1,0 +1,276 @@
+/* Token usage page v2 — shared base (docs/ui-language.md; canvas board「v2 · Token 用量」).
+   Sections are flush bands separated by 1px lines; no boxed cards, no shadows except the
+   trend callout. Colours come from theme tokens only, so light and dark both work.
+   Section stylesheets live next to this file, one per component. */
+
+.uv2 {
+  /* Palette of the page. Two-colour token language: green family = cache, ink = fresh/output. */
+  --uv2-cache-read: color-mix(in srgb, var(--accent) 42%, var(--panel-raised));
+  --uv2-cache-write: var(--accent);
+  --uv2-fresh: color-mix(in srgb, var(--text-muted) 70%, var(--panel-raised));
+  --uv2-output: var(--text-strong);
+  --uv2-think: var(--accent);
+  --uv2-tool: color-mix(in srgb, var(--text-muted) 60%, var(--panel-raised));
+  --uv2-wait: color-mix(in srgb, var(--text-strong) 70%, var(--panel-raised));
+  --uv2-other: var(--border);
+  --uv2-derived: color-mix(in srgb, var(--text-strong) 72%, var(--panel-raised));
+  --uv2-cost: var(--yellow);
+  --uv2-gap: 28px;
+
+  min-width: 0;
+  color: var(--text);
+  background: var(--panel-muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.uv2 .num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.uv2 .faint {
+  color: var(--text-faint);
+}
+
+/* A section band: raised ground, 1px line under it. */
+.uv2-sec {
+  min-width: 0;
+  padding: 18px var(--uv2-gap) 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-raised);
+}
+
+/* Two / three bands side by side; collapse to one column when the page is narrow. */
+.uv2-cols {
+  display: grid;
+  grid-template-columns: repeat(var(--uv2-cols, 2), minmax(0, 1fr));
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-raised);
+}
+
+.uv2-cols > .uv2-sec {
+  border-bottom: 0;
+}
+
+.uv2-cols > .uv2-sec + .uv2-sec {
+  border-left: 1px solid var(--border);
+}
+
+@container uv2 (max-width: 620px) {
+  .uv2-cols {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .uv2-cols > .uv2-sec + .uv2-sec {
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+}
+
+.uv2-sh {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  margin: 0 0 12px;
+}
+
+.uv2-sh h2 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.uv2-sh__meta {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uv2-sh__right {
+  display: flex;
+  gap: 14px;
+  margin-left: auto;
+}
+
+.uv2-seg {
+  display: inline-flex;
+  gap: 14px;
+}
+
+.uv2-seg button {
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: inset 0 -2px 0 transparent;
+}
+
+.uv2-seg button:hover {
+  color: var(--text);
+}
+
+.uv2-seg button.is-on {
+  color: var(--text-strong);
+  font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.uv2-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 2px;
+  font-size: 10.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.uv2-tag--measured,
+.uv2-tag--clock {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: color-mix(in srgb, var(--accent) 80%, var(--text-strong));
+}
+
+.uv2-tag--estimated,
+.uv2-tag--priced {
+  background: var(--panel-soft);
+  color: var(--text-muted);
+}
+
+.uv2-tag--derived {
+  background: color-mix(in srgb, var(--yellow) 14%, transparent);
+  color: color-mix(in srgb, var(--yellow) 85%, var(--text-strong));
+}
+
+.uv2-spark {
+  display: block;
+  flex: none;
+}
+
+/* Small colour key square used by legends and composition rows. */
+.uv2-key {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .uv2 * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* ── Top bar: title · range · agent chips · CSV ── */
+.uv2 {
+  /* Section stylesheets query this container (@container uv2). */
+  container: uv2 / inline-size;
+}
+
+.usage-page__scroll.usage-page__scroll--flush {
+  padding: 0;
+}
+
+.uv2-top {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+  min-height: 44px;
+  padding: 0 var(--uv2-gap);
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-raised);
+}
+
+.uv2-top h1 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.uv2-top .uv2-seg button {
+  height: 44px;
+}
+
+.uv2-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.uv2-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-raised);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.uv2-chip i {
+  width: 2px;
+  height: 10px;
+  border-radius: 1px;
+  background: var(--agent-ink, var(--text-faint));
+}
+
+.uv2-chip:hover {
+  color: var(--text);
+}
+
+.uv2-chip.is-on {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel-raised));
+  color: var(--text-strong);
+}
+
+.uv2-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  margin-left: auto;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.uv2-ghost:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  color: var(--accent);
+}
+
+.uv2-empty {
+  margin: 0;
+  padding: 40px var(--uv2-gap);
+  color: var(--text-faint);
+  text-align: center;
+}

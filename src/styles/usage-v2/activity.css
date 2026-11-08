@@ -1,0 +1,254 @@
+/* Token usage page v2 · UsageActivity (rankings) and UsageRhythm (hour grid +
+   context histogram). Flush bands, 1px hairline separators, theme tokens only. */
+
+/* ── UsageActivity: ranked lists ── */
+
+.uv2-act__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 48px;
+  grid-template-rows: auto 3px auto;
+  column-gap: 8px;
+  padding: 5px 0 6px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.uv2-act__row:last-child {
+  border-bottom: 0;
+}
+
+.uv2-act__name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.uv2-act__name svg {
+  flex: none;
+  color: var(--text-muted);
+}
+
+.uv2-act__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uv2-act__label--mono {
+  font-family: var(--font-mono, ui-monospace, "Cascadia Mono", Consolas, monospace);
+}
+
+.uv2-act__n {
+  color: var(--text-strong);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.uv2-act__bar {
+  grid-column: 1 / -1;
+  display: block;
+  height: 3px;
+  margin: 3px 0 2px;
+  border-radius: 1px;
+  background: var(--panel-soft);
+}
+
+.uv2-act__bar s {
+  display: block;
+  height: 100%;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--accent) 65%, var(--panel-raised));
+  text-decoration: none;
+}
+
+.uv2-act__x {
+  grid-column: 1 / -1;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.uv2-act__fail {
+  color: var(--red);
+  font-weight: 500;
+}
+
+.uv2-act__more {
+  display: block;
+  padding: 6px 0 0;
+  border: 0;
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.uv2-act__more:hover {
+  color: var(--text);
+}
+
+.uv2-act__empty {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.uv2-act__files {
+  display: flex;
+  gap: 18px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--hairline);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.uv2-act__files b {
+  color: var(--text-strong);
+  font-weight: 600;
+}
+
+.uv2-act__add {
+  color: var(--green);
+}
+
+.uv2-act__del {
+  color: var(--red);
+}
+
+/* ── UsageRhythm: hour × weekday grid ── */
+
+.uv2-rhythm__hm {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.uv2-rhythm__hmrow {
+  display: grid;
+  grid-template-columns: 18px repeat(24, minmax(0, 1fr));
+  gap: 3px;
+  align-items: center;
+}
+
+.uv2-rhythm__hmrow > span {
+  color: var(--text-faint);
+  font-size: 10.5px;
+}
+
+.uv2-rhythm__cell {
+  display: block;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--panel-soft);
+}
+
+.uv2-rhythm__cell.s1 {
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel-raised));
+}
+
+.uv2-rhythm__cell.s2 {
+  background: color-mix(in srgb, var(--accent) 28%, var(--panel-raised));
+}
+
+.uv2-rhythm__cell.s3 {
+  background: color-mix(in srgb, var(--accent) 42%, var(--panel-raised));
+}
+
+.uv2-rhythm__cell.s4 {
+  background: color-mix(in srgb, var(--accent) 58%, var(--panel-raised));
+}
+
+.uv2-rhythm__cell.s5 {
+  background: color-mix(in srgb, var(--accent) 76%, var(--panel-raised));
+}
+
+.uv2-rhythm__cell.s6 {
+  background: var(--accent);
+}
+
+.uv2-rhythm__hmaxis {
+  display: grid;
+  grid-template-columns: 18px repeat(24, minmax(0, 1fr));
+  gap: 3px;
+  margin-top: 4px;
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+/* ── UsageRhythm: context histogram + stats ── */
+
+.uv2-rhythm__pkw {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  height: 100px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.uv2-rhythm__pk {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  height: 100%;
+  min-width: 0;
+}
+
+.uv2-rhythm__pk i {
+  display: block;
+  width: 100%;
+  max-width: 28px;
+  border-radius: 2px 2px 0 0;
+  background: var(--uv2-cache-read);
+}
+
+.uv2-rhythm__pk.is-hot i {
+  background: color-mix(in srgb, var(--yellow) 55%, var(--panel-raised));
+}
+
+.uv2-rhythm__pk span {
+  position: absolute;
+  bottom: -16px;
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.uv2-rhythm__ev {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 22px;
+}
+
+.uv2-rhythm__ev > div {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.uv2-rhythm__ev b {
+  color: var(--text-strong);
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.uv2-rhythm__ev span {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.uv2-rhythm__empty {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 12px;
+}

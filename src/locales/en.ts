@@ -38,6 +38,12 @@ import { en as enFeV2Council } from "./parts/fe-v2council.en";
 import { en as enFeV2Dock } from "./parts/fe-v2dock.en";
 import { en as enFeV2Usage } from "./parts/fe-v2usage.en";
 import { en as enFeV2Pages } from "./parts/fe-v2pages.en";
+import { en as enFeUv2Shell } from "./parts/fe-uv2shell.en";
+import { en as enFeUv2A } from "./parts/fe-uv2a.en";
+import { en as enFeUv2B } from "./parts/fe-uv2b.en";
+import { en as enFeUv2C } from "./parts/fe-uv2c.en";
+import { en as enFeUv2D } from "./parts/fe-uv2d.en";
+import { en as enFeUv2E } from "./parts/fe-uv2e.en";
 
 export const en = {
   ...enCommon,
@@ -74,4 +80,10 @@ export const en = {
   ...enFeV2Dock,
   ...enFeV2Usage,
   ...enFeV2Pages,
+  ...enFeUv2Shell,
+  ...enFeUv2A,
+  ...enFeUv2B,
+  ...enFeUv2C,
+  ...enFeUv2D,
+  ...enFeUv2E,
 } satisfies Record<keyof typeof zh, string>;

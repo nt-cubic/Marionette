@@ -365,6 +365,16 @@ PR #6 的 localStorage 台账,验收后 squash 合入并按产品定案补齐）
   分析页主热图是小时×星期。**日期 key 一律本地钟**（dayKeyOf）,别用 `toISOString`。
   动效零依赖,只 transition transform/opacity,reduced-motion 整段关。
 
+## Token 用量页 v2（2026-11-08，对标 dsh-context）
+
+设计稿：画布「v2 · Token 用量」。上面「Token 用量台账」一节的红线全部仍然成立；v2 在其上加了三层，改前先记：
+
+- **数据层只有三个文件**：`lib/usageDigest.ts`（turn/complete 时把**本轮自己的事件**折成时间去向 / 工具·命令·技能计数 / 改动行数 / 可见输入估算——只扫本轮，绝不重载转录）→ `lib/usageLedger.ts`（`LedgerDay.detail[agentId]` 存按 agent 的完整明细 + 首字/速度/上下文直方图，`UsageLedger.sessions` 存会话摘要；全部字段可选，旧账读出来补默认值，**不迁移**）→ `lib/usageInsights.ts::aggregateInsights`（页面唯一数据源）。新指标照这条链加：digest 折 → ledger 累加 → insights 汇总，别在组件里读台账。
+- **口径必须带来源**：`measured`（agent 上报 / 本机计时）、`estimated`（文本 ÷ 4，每图 1k）、`derived`（实测总量 − 已知估算）、`priced`（models.dev 牌价）。估算项**按实测总量封顶**（`composition` 合计恒等于 v2 天的四桶合计），工具输出上游被截断，`toolIo` 是下限。「等你确认」时长与压缩次数**没有数据源**，页面不显示——别编。
+- **百分位来自直方图**（`TTFT_EDGES_MS` / `TPS_EDGES`，桶内线性插值）；改桶边界 = 旧数据失真，只能追加不能改。tally 每表封顶 60 个键，会话摘要 300 个，`sessionIds` 每天 400 个。
+- **组件**在 `components/usage/`：`UsageV2Body`（顶栏 + 拼装）+ 七个分区，共用件只在 `primitives.tsx`（`fmt*` / `SourceTag` / `Sparkline` / `SectionHead` / `Seg`），样式在 `styles/usage-v2/`（`base.css` 是共用调色 `--uv2-*`；`.uv2` 是 `container: uv2`，分区按 `@container uv2` 断点：并排列 620px 以下堆叠、英雄 760px 以下 3+2）。中栏在双侧栏 + 1400 宽时只有 ~830px，断点按这个宽度调，别按整窗。i18n 片段 `fe-uv2{shell,a..e}`。
+- 回归：`npx tsx scripts/verify-usage-insights.mts`（digest 时间切分与夹零、命令程序识别、MCP/技能键、直方图百分位、v2 累加与旧账兼容、构成合计、agent 过滤、会话修剪）+ 原有 `verify-usage-ledger` / `usage-smoke`。
+
 ## 排查「卡退」（崩溃/闪退）—— 第一件事
 
 **用户报「卡退」时，先看 `%USERPROFILE%\.marionette\logs\dev.log`（开发者日志）。**

@@ -1,0 +1,169 @@
+/* Token usage v2 · per agent / model table (UsageAgents). CSS grid rows, not a <table>;
+   the agent's ink (--agent-ink, set inline per row) colours the identity bar, token bar,
+   hover tint and sparkline. Flush rows separated by 1px hairlines, as elsewhere on the page. */
+
+.uv2-agents__th,
+.uv2-agents__row,
+.uv2-agents__sub {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr) 96px 72px 80px 64px 72px 80px;
+  gap: 14px;
+  align-items: center;
+}
+
+.uv2-agents__th {
+  height: 26px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.uv2-agents__th > span:not(:first-child):not(:nth-child(2)) {
+  text-align: right;
+}
+
+.uv2-agents__empty {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+
+/* The agent row is a full-width button; hovering tints it with its own ink. */
+.uv2-agents__row {
+  position: relative;
+  width: 100%;
+  height: 32px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--hairline);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.uv2-agents__row:hover {
+  background: color-mix(in srgb, var(--agent-ink) 4%, transparent);
+}
+
+.uv2-agents__row:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.uv2-agents__sub {
+  position: relative;
+  height: 26px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+/* 3px identity bar on the row's left edge (full height minus 8px); fainter on model rows. */
+.uv2-agents__row::before,
+.uv2-agents__sub::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 3px;
+  background: var(--agent-ink);
+}
+
+.uv2-agents__sub::before {
+  opacity: 0.35;
+}
+
+.uv2-agents__who {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding-left: 10px;
+}
+
+.uv2-agents__who b {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-strong);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uv2-agents__who em {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Model ids line up under the agent name, past the chevron column. */
+.uv2-agents__who--sub {
+  padding-left: 30px;
+}
+
+.uv2-agents__chev {
+  flex: none;
+  color: var(--text-faint);
+  transition: transform 0.12s ease;
+}
+
+.uv2-agents__chev.is-open {
+  transform: rotate(90deg);
+}
+
+.uv2-agents__tok {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.uv2-agents__tok i {
+  display: block;
+  height: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--agent-ink);
+  opacity: 0.85;
+}
+
+.uv2-agents__tok b {
+  flex: none;
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.uv2-agents__spark {
+  display: flex;
+  align-items: center;
+}
+
+/* Narrow page: drop the trend and the two speed columns (they are per agent anyway). */
+@container uv2 (max-width: 760px) {
+  .uv2-agents__th,
+  .uv2-agents__row,
+  .uv2-agents__sub {
+    grid-template-columns: 200px minmax(0, 1fr) 72px 80px 64px;
+  }
+
+  .uv2-agents__th > :nth-child(3),
+  .uv2-agents__th > :nth-child(7),
+  .uv2-agents__th > :nth-child(8),
+  .uv2-agents__row > :nth-child(3),
+  .uv2-agents__row > :nth-child(7),
+  .uv2-agents__row > :nth-child(8),
+  .uv2-agents__sub > :nth-child(3),
+  .uv2-agents__sub > :nth-child(7),
+  .uv2-agents__sub > :nth-child(8) {
+    display: none;
+  }
+}
