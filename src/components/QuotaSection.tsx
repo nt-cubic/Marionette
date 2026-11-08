@@ -1,5 +1,5 @@
-import { ChevronRight, RefreshCw } from "lucide-react";
-import { memo, useCallback, useState } from "react";
+import { RefreshCw } from "lucide-react";
+import { memo, useState } from "react";
 import { agentInkStyle } from "../lib/agentInk";
 import { useT } from "../lib/i18n";
 import {
@@ -8,6 +8,7 @@ import {
   formatPct,
   groupBalance,
   pctLevel,
+  periodHours,
   periodLabel,
   resetHint,
   tightestWindow,
@@ -25,26 +26,6 @@ type QuotaSectionProps = {
   modelId?: string | null;
   onRefresh: () => void;
 };
-
-const OPEN_KEY = "marionette-quota-open";
-
-function readOpen(): string[] {
-  try {
-    const raw = localStorage.getItem(OPEN_KEY);
-    const list = raw ? (JSON.parse(raw) as unknown) : [];
-    return Array.isArray(list) ? list.filter((v): v is string => typeof v === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeOpen(keys: string[]): void {
-  try {
-    localStorage.setItem(OPEN_KEY, JSON.stringify(keys));
-  } catch {
-    /* per-viewer convenience only */
-  }
-}
 
 /** One window: period · bar · used % · when it resets (today = time only). */
 function MeterRow({ window: w, source, tight }: { window: UsageWindow; source: string; tight: boolean }) {
@@ -142,45 +123,111 @@ function otherValue(
   return { text: balance ? t("rail.balanceOf", { balance }) : "", level: "ok" };
 }
 
-/**
- * Another source, folded to one line (name · tightest % · its reset); click opens
- * every window of it with its own bar and reset time. Open state is remembered.
- */
-function OtherGroup({
-  group,
-  label,
-  open,
-  onToggle,
-}: {
-  group: UsageGroup;
-  label: string;
-  open: boolean;
-  onToggle: (key: string) => void;
-}) {
-  const t = useT();
-  const value = otherValue(group, t);
-  const tight = tightestWindow(group);
-  const reset = compactReset(resetHint(tight));
+/** Concentric arcs, one per window: the shortest window outermost (Apple-activity style). */
+function Dial({ group, tight }: { group: UsageGroup; tight: UsageWindow | null }) {
+  const bars = group.windows
+    .filter((w) => w.percentage != null)
+    .map((w) => ({ w, h: periodHours(usagePeriod(w, group.name)) ?? 9999 }))
+    .sort((x, y) => x.h - y.h)
+    .slice(0, 3);
+  const size = 52;
+  const c = size / 2;
   return (
-    <div className={`quota-other${open ? " is-open" : ""}`}>
-      <button
-        type="button"
-        className="rail-ln quota-other__head"
-        aria-expanded={open}
-        onClick={() => onToggle(group.key)}
-      >
-        <ChevronRight size={12} strokeWidth={1.75} className="quota-other__chev" aria-hidden />
-        <span className="rail-ln__text">{label}</span>
-        {!open && reset && <span className="quota-other__reset">{reset}</span>}
-        <span className={`rail-ln__r is-${value.level}`}>{value.text}</span>
-      </button>
-      {open && (
-        <div className="quota-other__body">
-          <GroupRows group={group} tight={tight} />
+    <svg className="quota-dial__svg" width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
+      {bars.map(({ w }, i) => {
+        const r = 24 - i * 4.5;
+        const len = 2 * Math.PI * r;
+        const pct = Math.min(100, Math.max(0, w.percentage as number));
+        const level = pctLevel(pct);
+        return (
+          <g key={w.id}>
+            <circle className="quota-dial__track" cx={c} cy={c} r={r} />
+            {pct > 0 && (
+              <circle
+                className={`quota-dial__arc is-${level}${w === tight ? " is-tight" : ""}`}
+                cx={c}
+                cy={c}
+                r={r}
+                strokeDasharray={`${((pct / 100) * len).toFixed(2)} ${len.toFixed(2)}`}
+                transform={`rotate(-90 ${c} ${c})`}
+              />
+            )}
+          </g>
+        );
+      })}
+      {bars.length === 0 && <circle className="quota-dial__track is-balance" cx={c} cy={c} r={24} />}
+    </svg>
+  );
+}
+
+/**
+ * Every other source as a dial in a three-up grid (no boxes): rings = its windows,
+ * centre = the tightest %, or the balance; under it the name and the next reset.
+ * Picking a dial lays its windows out as bars in one strip under the grid.
+ */
+function OtherDials({ groups, agentLabel }: { groups: UsageGroup[]; agentLabel: string }) {
+  const t = useT();
+  const [picked, setPicked] = useState<string | null>(null);
+  const current = groups.find((g) => g.key === picked) ?? null;
+  return (
+    <div className="quota-dials">
+      <div className="quota-dials__grid" role="list">
+        {groups.map((group) => {
+          const tight = tightestWindow(group);
+          const value = otherValue(group, t);
+          const balance = group.peak == null ? groupBalance(group) : null;
+          const reset = compactReset(resetHint(tight));
+          const label = group.key === "agent" ? t("rail.ownSub", { agent: agentLabel }) : group.name;
+          const on = group.key === picked;
+          return (
+            <button
+              key={group.key}
+              type="button"
+              role="listitem"
+              className={`quota-dial${on ? " is-on" : ""} is-${value.level}`}
+              aria-pressed={on}
+              title={groupTitle(group)}
+              onClick={() => setPicked(on ? null : group.key)}
+            >
+              <span className="quota-dial__ring">
+                <Dial group={group} tight={tight} />
+                <b className="quota-dial__value">
+                  {balance != null
+                    ? "¥"
+                    : group.peak == null
+                      ? "—"
+                      : group.peak >= 99.5
+                        ? t("rail.full")
+                        : `${Math.round(group.peak)}%`}
+                </b>
+              </span>
+              <span className="quota-dial__name">{label}</span>
+              <span className="quota-dial__reset">{balance ?? reset ?? " "}</span>
+            </button>
+          );
+        })}
+      </div>
+      {current && (
+        <div className="quota-dials__detail">
+          <div className="quota-dials__detail-head">
+            <span>{current.key === "agent" ? t("rail.ownSub", { agent: agentLabel }) : current.name}</span>
+          </div>
+          <GroupRows group={current} tight={tightestWindow(current)} />
         </div>
       )}
     </div>
   );
+}
+
+function groupTitle(group: UsageGroup): string | undefined {
+  const lines = group.windows
+    .map((w: UsageWindow) => {
+      const bal = windowBalance(w);
+      const when = resetHint(w);
+      return [w.label, w.percentage != null ? formatPct(w.percentage) : bal, when].filter(Boolean).join(" · ");
+    })
+    .filter(Boolean);
+  return lines.length > 0 ? lines.join("\n") : undefined;
 }
 
 export const QuotaSection = memo(function QuotaSection({
@@ -190,14 +237,6 @@ export const QuotaSection = memo(function QuotaSection({
   onRefresh,
 }: QuotaSectionProps) {
   const t = useT();
-  const [openKeys, setOpenKeys] = useState<string[]>(readOpen);
-  const toggle = useCallback((key: string) => {
-    setOpenKeys((cur) => {
-      const next = cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key];
-      writeOpen(next);
-      return next;
-    });
-  }, []);
   const view = buildQuotaView({ windows: usage.windows, agentLabel: usage.agentLabel, modelId });
   const empty = !view.primary && view.others.length === 0;
   const refreshTitle = [
@@ -218,15 +257,7 @@ export const QuotaSection = memo(function QuotaSection({
         </span>
       </div>
       {view.primary && <PrimaryBlock primary={view.primary} agentId={agentId} agentLabel={usage.agentLabel} />}
-      {view.others.map((group) => (
-        <OtherGroup
-          key={group.key}
-          group={group}
-          label={group.key === "agent" ? t("rail.ownSub", { agent: usage.agentLabel }) : group.name}
-          open={openKeys.includes(group.key)}
-          onToggle={toggle}
-        />
-      ))}
+      {view.others.length > 0 && <OtherDials groups={view.others} agentLabel={usage.agentLabel} />}
       {empty && <p className="rail-empty">{t("rail.quotaEmpty")}</p>}
     </section>
   );
