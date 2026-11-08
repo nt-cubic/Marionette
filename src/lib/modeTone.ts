@@ -4,7 +4,9 @@
  * Standard / PTC / Minimal / Creator are not all gray.
  */
 export function modeTone(modeId: string | null | undefined): string {
-  const id = (modeId ?? "").trim().toLowerCase();
+  // Ids (`full-access`) and display labels (`Full access`) must land on the same tone:
+  // the You card and reply footer pass the label, the composer passes the id.
+  const id = (modeId ?? "").trim().toLowerCase().replace(/[\s_]+/g, "-");
   if (!id) return "default";
 
   // DeepSeek Harness agent presets (configOption id `agent`).
