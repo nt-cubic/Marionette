@@ -63,8 +63,6 @@ export const zh = {
   "memory.discard": "丢弃",
   "memory.saveAsMemory": "存为记忆",
   "plugins.title": "插件",
-  "plugins.installed": "已安装 {name}（重启 DSH 会话生效）",
-  "plugins.removed": "已卸载 {name}（重启 DSH 会话后彻底生效）",
   "stats.turnsSteps": "{turns} 轮 {steps} 步",
   "stats.llmTime": "模型用时",
   "stats.toolTime": "工具调用用时",

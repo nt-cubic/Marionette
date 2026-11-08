@@ -65,8 +65,6 @@ export const en = {
   "memory.discard": "Discard",
   "memory.saveAsMemory": "Save as Memory",
   "plugins.title": "Plugins",
-  "plugins.installed": "{name} installed (takes effect after a DSH session restart)",
-  "plugins.removed": "{name} uninstalled (fully effective after a DSH session restart)",
   "stats.turnsSteps": "{turns} turns · {steps} steps",
   "stats.llmTime": "Model time",
   "stats.toolTime": "Tool time",

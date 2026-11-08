@@ -57,6 +57,8 @@ export const en = {
   "app.updateCurrentSuffix": " (current {version})",
   "app.updateDetails": "Details",
   "app.downloading": "Downloading…",
+  "app.updateRestarting": "Applying update and restarting…",
+  "app.updateFailed": "Update failed: {error}",
   "app.downloadAndRestart": "Download & Restart",
   "app.later": "Later",
   "app.pathGrantTitle": "Paths outside the project",

@@ -93,7 +93,7 @@
 ## 对话流
 
 - **你**：raised 卡 + 3px `--accent` 左边条 + **1px 主题绿外框**（`--accent` 55% 混边框色，一眼分出「你」；不用底纹 / 噪点），卡头「你 · 时间」。
-- **调用块**（`.activity-group`）：灰底卡，标题是 tally（`10 thoughts, 7 commands…`）。运行中：描边 `color-mix(--agent-ink 40%, --border)`，一段淡光沿边框绕一圈后隐去（6s 一轮，`@property` 角度 + conic-gradient + mask），块内轨迹面板正在进行的那段用 `--agent-ink`，九点呼吸图标用 `--agent-ink`。完成后折回 tally，描边回中性。
+- **调用块**（`.activity-group`）：灰底卡，左直右圆，3px `--agent-ink` 左边条（和 Reply 同一根身份色；没有 ink 时退回中性灰）。标题是 tally（`10 thoughts, 7 commands…`），左侧 `▸` 三角（展开转 90°）。运行中：描边 `color-mix(--agent-ink 40%, --border)`，一段淡光沿边框绕一圈后隐去（6s 一轮，`@property` 角度 + conic-gradient + mask），块内轨迹面板正在进行的那段用 `--agent-ink`，九点呼吸图标用 `--agent-ink`。完成后折回 tally，描边回中性。内层工具/思考/命令行是同一枚 28px 四角圆芯片 + `▸`（耗时一律靠右），不再套第二根轨，也不再用 You/Reply 的 10px 宽卡内边距。
 - **回复**：raised 卡 + 3px `--agent-ink` 左边条。**卡头左上只写 agent 名**（与 You 同一种标签：12px/600 正文墨，无圆点、不上色），右上时间。**卡底一行「怎么跑的」**：`Build · Grok 4.6 · High │ 0.4s · 146 tok`——模式（模式色字，不加 ▣）、模型、推理档位（不加「推理」二字）用辅助灰，细竖线后是本条耗时与 token（最淡、等宽数字）；全部 11px，右侧 22px 的分叉 / 复制。卡片左直右圆（左上/左下 0，右侧 `--radius`），身份色条是一根直线。
 - **交接分隔线**：两条细线中间 `● ZCode → ● 交接给 Claude · 带上摘要和 1 处改动`，圆点是唯一允许出现的 agent 圆点。
 - 交付卡、计划卡、提问卡保持现状。

@@ -200,8 +200,9 @@ fn walk_stat(root: &Path) -> String {
     acc
 }
 
-fn copy_tree(source: &Path, target: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(target).map_err(|e| format!("create memo folder failed: {e}"))?;
+/// pub(crate)：插件层装技能复用同一棵复制树（2026-11-06）。
+pub(crate) fn copy_tree(source: &Path, target: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(target).map_err(|e| format!("create folder failed: {e}"))?;
     let entries = std::fs::read_dir(source).map_err(|e| format!("read folder failed: {e}"))?;
     for entry in entries.flatten() {
         let to = target.join(entry.file_name());
@@ -209,7 +210,7 @@ fn copy_tree(source: &Path, target: &Path) -> Result<(), String> {
             copy_tree(&entry.path(), &to)?;
         } else {
             std::fs::copy(entry.path(), &to)
-                .map_err(|e| format!("copy into memo folder failed: {e}"))?;
+                .map_err(|e| format!("copy into folder failed: {e}"))?;
         }
     }
     Ok(())

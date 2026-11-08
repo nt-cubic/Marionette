@@ -263,6 +263,29 @@ impl StorageService {
         read_json_with_recovery(&file, "sessions")
     }
 
+    /// 所有项目 + 聊天目录里**存在**的会话 id 集合（含 @-delegate 子会话）。
+    /// 僵尸绑定清扫用（model_bridge）：绑定指向已删除的会话时该行作废，
+    /// engine_binding_count 因此只被活会话推高——懒启动的门与 30 分钟空闲
+    /// 回收的计数都随之变准（2026-11-06）。
+    pub fn known_session_ids(&self) -> std::collections::HashSet<String> {
+        let mut ids = std::collections::HashSet::new();
+        let projects: Vec<Project> =
+            read_json_with_recovery(&self.projects_file, "projects").unwrap_or_default();
+        for project in &projects {
+            let file = sessions_file(Path::new(&project.root_path));
+            if !file.exists() {
+                continue;
+            }
+            if let Ok(all) = read_json_with_recovery::<Vec<Session>>(&file, "sessions") {
+                ids.extend(all.into_iter().map(|session| session.id));
+            }
+        }
+        if let Ok(chats) = self.read_chat_sessions_all() {
+            ids.extend(chats.into_iter().map(|session| session.id));
+        }
+        ids
+    }
+
     /// Sessions with the stored live status repaired.
     ///
     /// `status` is runtime state: a stored `running` only means the previous run
@@ -966,15 +989,23 @@ impl StorageService {
     }
 
     pub fn load_transcript(&self, session_id: &str) -> Result<Vec<serde_json::Value>, String> {
-        let session = self
-            .find_session(session_id)?
-            .ok_or_else(|| format!("Session not found: {session_id}"))?;
-        let path = PathBuf::from(&session.transcript_path);
+        let path = self.transcript_path_for(session_id)?;
+        Self::load_transcript_file(&path, session_id)
+    }
+
+    /// 纯文件读（无 &self）：命令层先在 storage 锁内 `transcript_path_for`
+    /// 拿路径、锁外调这里——24MB 转录的顺序读 + 逐行 parse 是秒级 IO，
+    /// 持全局 storage 锁跑会饿死所有其它命令（写路径 2026-10-31 已同款
+    /// 挪出锁外，这是读路径补齐，2026-11-06）。
+    pub fn load_transcript_file(
+        path: &Path,
+        session_id_for_logs: &str,
+    ) -> Result<Vec<serde_json::Value>, String> {
         if !path.exists() {
             return Ok(Vec::new());
         }
         // 逐行流式读：超长转录不再整文件 materialize 成 String 再拆行。
-        let file = std::fs::File::open(&path)
+        let file = std::fs::File::open(path)
             .map_err(|error| format!("Read transcript failed: {error}"))?;
         let reader = BufReader::new(file);
         let mut events = Vec::new();
@@ -996,7 +1027,7 @@ impl StorageService {
             crate::debug_log::append(
                 "storage",
                 "warn",
-                session_id,
+                session_id_for_logs,
                 &format!("transcript load skipped {corrupt} corrupt line(s)"),
                 None,
             );
@@ -1015,15 +1046,22 @@ impl StorageService {
         first_line: Option<usize>,
         count: usize,
     ) -> Result<TranscriptPage, String> {
-        let session = self
-            .find_session(session_id)?
-            .ok_or_else(|| format!("Session not found: {session_id}"))?;
-        let path = PathBuf::from(&session.transcript_path);
+        let path = self.transcript_path_for(session_id)?;
+        Self::load_transcript_window_file(&path, session_id, first_line, count)
+    }
+
+    /// 纯文件读（无 &self）：同 `load_transcript_file`，命令层锁外调用。
+    pub fn load_transcript_window_file(
+        path: &Path,
+        session_id_for_logs: &str,
+        first_line: Option<usize>,
+        count: usize,
+    ) -> Result<TranscriptPage, String> {
         if !path.exists() || count == 0 {
             let total = if !path.exists() {
                 0
             } else {
-                self.count_transcript_lines(&path)
+                Self::count_transcript_lines_at(path)
             };
             return Ok(TranscriptPage {
                 events: Vec::new(),
@@ -1031,7 +1069,7 @@ impl StorageService {
                 first_line: first_line.unwrap_or(total),
             });
         }
-        let file = std::fs::File::open(&path)
+        let file = std::fs::File::open(path)
             .map_err(|error| format!("Read transcript failed: {error}"))?;
         let reader = BufReader::new(file);
         // tail 模式用环形缓冲只留最后 count 行（窗口要读完整个文件才知道边界）；
@@ -1076,7 +1114,7 @@ impl StorageService {
             crate::debug_log::append(
                 "storage",
                 "warn",
-                session_id,
+                session_id_for_logs,
                 &format!("transcript window load skipped {corrupt} corrupt line(s)"),
                 None,
             );
@@ -1089,6 +1127,10 @@ impl StorageService {
     }
 
     fn count_transcript_lines(&self, path: &Path) -> usize {
+        Self::count_transcript_lines_at(path)
+    }
+
+    fn count_transcript_lines_at(path: &Path) -> usize {
         std::fs::read_to_string(path)
             .map(|text| text.lines().filter(|line| !line.trim().is_empty()).count())
             .unwrap_or(0)

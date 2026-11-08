@@ -2745,8 +2745,6 @@ function CleanPlaceholder({
             event.type === "thought" ? (
               thoughtLive && thoughtStartMs != null ? (
                 <ThoughtDurationLabel startMs={thoughtStartMs} live />
-              ) : thoughtDurationSec != null && thoughtDurationSec > 0 ? (
-                `Thought · ${thoughtDurationSec}s`
               ) : (
                 "Thought"
               )
@@ -2946,6 +2944,7 @@ function CleanPlaceholder({
                     ? " is-revealing"
                     : ""
                 }`}
+                style={agentInkStyle(session.agentId)}
                 // Remount when thought/tool leaves "live force-open" so the
                 // browser details widget cannot keep a stale open=true.
                 key={`${event.type}-${event.createdAt}-${index}${
@@ -3033,6 +3032,12 @@ function CleanPlaceholder({
                       className="event-card__thumbs"
                     />
                   ) : null}
+                  {event.type === "thought" &&
+                    !thoughtLive &&
+                    thoughtDurationSec != null &&
+                    thoughtDurationSec > 0 && (
+                      <span className="event-card__outcome">{`${thoughtDurationSec}s`}</span>
+                    )}
                   {toolOutcome && (
                     <span className={`event-card__outcome${toolOutcome.failed ? " is-failed" : ""}`}>
                       {toolOutcome.text}

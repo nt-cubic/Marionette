@@ -483,8 +483,11 @@ fn engine_bridge_source() -> BridgeSource {
 }
 
 /// 保留引擎完整目录。显示范围和顺序统一交给模型库偏好。
+/// 懒启动配套（2026-11-06）：live 目录优先，引擎不在 Running 时回放
+/// `engine-catalog.json` 磁盘缓存——菜单的 marionette 组不再随引擎
+/// 睡眠/唤醒整组消失/插回。返回是否来自缓存（离线目录）。
 fn push_engine_models(models: &mut Vec<BridgeModel>) -> bool {
-    let engine_ids = crate::engine::catalog_direct();
+    let (engine_ids, from_cache) = crate::engine::catalog_direct_or_cached();
     for model_id in &engine_ids {
         // Visibility belongs to the model library; do not silently cut off
         // models before the user can choose which ones should be shown.
@@ -495,7 +498,7 @@ fn push_engine_models(models: &mut Vec<BridgeModel>) -> bool {
             model_id: model_id.clone(),
         });
     }
-    false
+    from_cache
 }
 
 
@@ -1025,27 +1028,22 @@ fn list_models_at(
         // —— 绑定 = providers/set 指引擎 `/v1` + 路由组把内建名别名到所选
         // 引擎模型（engine::codex_alias_sync）。
         BridgeAgent::Codex => {
-            if !crate::engine::bridge_ready() {
-                return BridgeModelsResult {
-                    models: Vec::new(),
-                    sources: Vec::new(),
-                    note: Some(crate::ts!("模型共享需要翻译引擎 — 请先在设置的凭据页启用（引擎运行中后重开此菜单）", "Model Share needs the translation engine — enable it on the Credentials page in Settings first (reopen this menu once the engine is running)")),
-                };
-            }
+            // 懒启动配套（2026-11-06）：引擎不在 Running 时回放磁盘缓存目录
+            // （engine-catalog.json），菜单不再整组消失；离线选中 →
+            // bridge_bind 的 ensure 链把引擎拉起，Running 后缓存失效重拉。
             let mut models = Vec::new();
-            let truncated = push_engine_models(&mut models);
-            let mut note = if models.is_empty() {
-                Some(crate::ts!("引擎还没有可用模型（订阅发现进行中，稍后重试）", "No models from the engine yet (subscription discovery in progress; retry later)"))
+            let offline = push_engine_models(&mut models);
+            let mut note = if offline && !models.is_empty() {
+                Some(crate::ts!("引擎未运行 · 离线目录（选用时会自动启动引擎）", "Engine offline · cached catalog (selecting a model starts the engine)"))
+            } else if models.is_empty() {
+                if offline {
+                    Some(crate::ts!("模型共享需要翻译引擎 — 请先在设置的凭据页启用（引擎运行中后重开此菜单）", "Model Share needs the translation engine — enable it on the Credentials page in Settings first (reopen this menu once the engine is running)"))
+                } else {
+                    Some(crate::ts!("引擎还没有可用模型（订阅发现进行中，稍后重试）", "No models from the engine yet (subscription discovery in progress; retry later)"))
+                }
             } else {
                 None
             };
-            if truncated {
-                let suffix = crate::ts!("目录过长已截断，更多模型请用「自定义模型」输入", "Catalog truncated; use the Custom model input for more models");
-                note = Some(match note {
-                    Some(existing) => crate::ts!("{existing}；{suffix}", "{existing}; {suffix}"),
-                    None => suffix.to_string(),
-                });
-            }
             BridgeModelsResult {
                 models,
                 sources: vec![engine_bridge_source()],
@@ -1073,27 +1071,21 @@ fn list_models_at(
         // `marionette\<engineId>`（适配器 configOptions 的 `provider\model`
         // 拼法，反斜杠分隔）。
         BridgeAgent::Opencode | BridgeAgent::Deepseek | BridgeAgent::Pi | BridgeAgent::Zcode => {
+            // 懒启动配套（2026-11-06）：引擎源不再「没跑就整组不给」——停着时
+            // 回放 engine-catalog.json 磁盘缓存，菜单/注入链的成员保持稳定。
             let mut models = Vec::new();
-            let mut truncated = false;
             let mut sources = Vec::new();
-            if crate::engine::bridge_ready() {
-                sources.push(engine_bridge_source());
-                truncated = push_engine_models(&mut models);
-            }
-            let mut note = if crate::engine::bridge_ready() {
-                None
-            } else {
+            sources.push(engine_bridge_source());
+            let offline = push_engine_models(&mut models);
+            let mut note = if offline && !models.is_empty() {
+                Some(crate::ts!("引擎未运行 · 离线目录（选用时会自动启动引擎）", "Engine offline · cached catalog (selecting a model starts the engine)"))
+            } else if offline {
                 Some(
-                    crate::ts!("模型共享未运行 — Grok/GPT 等订阅模型暂不可见；点左下角模型共享按钮启动（或稍候自动唤醒）后重开此菜单", "Model Share is not running — subscription models such as Grok/GPT are hidden for now; start it via the Model Share button in the bottom-left corner (or wait for auto-wake), then reopen this menu"),
+                    crate::ts!("模型共享未运行 — Grok/GPT 等订阅模型暂不可见；点左下角模型共享按钮启动后重开此菜单", "Model Share is not running — subscription models such as Grok/GPT are hidden for now; start it via the Model Share button in the bottom-left corner, then reopen this menu"),
                 )
+            } else {
+                None
             };
-            if truncated {
-                let suffix = crate::ts!("目录过长已截断，更多模型请用「自定义模型」输入", "Catalog truncated; use the Custom model input for more models");
-                note = Some(match note {
-                    Some(existing) => crate::ts!("{existing}；{suffix}", "{existing}; {suffix}"),
-                    None => suffix.to_string(),
-                });
-            }
             BridgeModelsResult {
                 models,
                 sources,
@@ -1406,7 +1398,9 @@ fn fetch_models_from_endpoint(chat_base: &str, key: &str) -> Vec<String> {
 }
 
 /// 引擎 `/v1/models` 的一条模型（magpie 网关形态）。窗口/输出为 0 = 引擎没说。
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// （serde 供 engine-catalog.json 磁盘缓存序列化，2026-11-06。）
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct CatalogModelRow {
     pub id: String,
     /// `context_window`（magpie 同时写 `context_length` / `max_input_tokens`，
@@ -1689,6 +1683,93 @@ pub fn save_bindings_at(path: &Path, file: &BindingFile) -> Result<(), String> {
     let body = serde_json::to_string_pretty(file)
         .map_err(|e| crate::ts!("序列化 bridge-bindings.json 失败: {e}", "Failed to serialize bridge-bindings.json: {e}"))?;
     write_text_atomic(path, &format!("{body}\n"))
+}
+
+/// 产品决定（2026-11-06）：`auto/` 路由模型从所有面隐藏（engine
+/// `catalog_direct*` 同步过滤）。存量 auto 绑定指向的模型已不可见——启动时
+/// 清绑，受影响会话回落到 agent 原生默认模型。幂等；引擎里残留的 codex
+/// 别名组（`group/…`）不进任何菜单，且绑定已无、不会再被 sync 重建，无害。
+pub fn drop_auto_bindings_at(path: &Path) -> Result<usize, String> {
+    let mut file = load_bindings_at(path)?;
+    let before = file.bindings.len();
+    file.bindings
+        .retain(|_, selection| !selection.model_id.starts_with("auto/"));
+    let removed = before - file.bindings.len();
+    if removed > 0 {
+        save_bindings_at(path, &file)?;
+    }
+    Ok(removed)
+}
+
+/// `drop_auto_bindings_at` 的默认路径包装（main.rs setup 调一次）。
+pub fn drop_auto_bindings() {
+    let Some(path) = bindings_path() else { return };
+    match drop_auto_bindings_at(&path) {
+        Ok(removed) if removed > 0 => crate::debug_log::append(
+            "bridge",
+            "info",
+            "",
+            &format!("dropped {removed} auto/* binding(s) — auto is hidden from catalogs (2026-11-06)"),
+            None,
+        ),
+        Ok(_) => {}
+        Err(error) => crate::debug_log::append(
+            "bridge",
+            "warn",
+            "",
+            "auto binding cleanup failed",
+            Some(&error),
+        ),
+    }
+}
+
+/// 僵尸绑定清扫（2026-11-06）：绑定指向的会话已删除 → 该行作废。只删行、
+/// 幂等。**空世界守卫**：`alive` 为空而绑定非空时一律不清——清单读取失败
+/// 与「真没有会话」无法区分时，宁可多养引擎也不误删活绑定（fail-open）。
+pub fn drop_dead_bindings_at(
+    path: &Path,
+    alive: &std::collections::HashSet<String>,
+) -> Result<usize, String> {
+    let mut file = load_bindings_at(path)?;
+    if file.bindings.is_empty() {
+        return Ok(0);
+    }
+    if alive.is_empty() {
+        return Ok(0);
+    }
+    let before = file.bindings.len();
+    file.bindings.retain(|session_id, _| alive.contains(session_id));
+    let removed = before - file.bindings.len();
+    if removed > 0 {
+        save_bindings_at(path, &file)?;
+    }
+    Ok(removed)
+}
+
+/// `drop_dead_bindings_at` 的默认路径包装（main.rs setup，紧跟 auto 清扫）。
+pub fn drop_dead_bindings() {
+    let Some(path) = bindings_path() else { return };
+    let Ok(storage) = crate::storage::StorageService::new() else { return };
+    let alive = storage.known_session_ids();
+    match drop_dead_bindings_at(&path, &alive) {
+        Ok(removed) if removed > 0 => crate::debug_log::append(
+            "bridge",
+            "info",
+            "",
+            &format!(
+                "dropped {removed} dead binding(s) — bound sessions no longer exist (2026-11-06)"
+            ),
+            None,
+        ),
+        Ok(_) => {}
+        Err(error) => crate::debug_log::append(
+            "bridge",
+            "warn",
+            "",
+            "dead binding cleanup failed",
+            Some(&error),
+        ),
+    }
 }
 
 /// 查一个会话的绑定（acp.rs spawn 注入的入口；默认路径包装）。
@@ -2770,6 +2851,73 @@ mod tests {
         dir
     }
 
+    /// 产品决定（2026-11-06）：auto/ 从所有面隐藏——存量 auto 绑定启动清绑，
+    /// 只动 auto 行、其余保留，幂等。
+    #[test]
+    fn drop_auto_bindings_clears_only_auto_rows() {
+        let dir = temp_dir("auto-bindings");
+        let path = dir.join("bridge-bindings.json");
+        let mut file = load_bindings_at(&path).unwrap();
+        file.bindings.insert(
+            "s1".into(),
+            BridgeSelection { entry_id: "engine".into(), model_id: "auto/gpt-6-luna".into() },
+        );
+        file.bindings.insert(
+            "s2".into(),
+            BridgeSelection { entry_id: "engine".into(), model_id: "codex/gpt-6-luna".into() },
+        );
+        file.bindings.insert(
+            "s3".into(),
+            BridgeSelection { entry_id: "opencode/deepseek".into(), model_id: "deepseek-flash".into() },
+        );
+        save_bindings_at(&path, &file).unwrap();
+
+        assert_eq!(drop_auto_bindings_at(&path).unwrap(), 1);
+        let after = load_bindings_at(&path).unwrap();
+        assert!(!after.bindings.contains_key("s1"), "auto 行必须清掉");
+        assert!(after.bindings.contains_key("s2") && after.bindings.contains_key("s3"));
+        // 幂等。
+        assert_eq!(drop_auto_bindings_at(&path).unwrap(), 0);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 僵尸绑定清扫：只删「会话已不存在」的行；空世界守卫——清单意外为空
+    /// 时宁可不清（fail-open），防误删活绑定。
+    #[test]
+    fn drop_dead_bindings_removes_only_unknown_sessions() {
+        let dir = temp_dir("dead-bindings");
+        let path = dir.join("bridge-bindings.json");
+        let mut file = load_bindings_at(&path).unwrap();
+        file.bindings.insert(
+            "alive-1".into(),
+            BridgeSelection { entry_id: "engine".into(), model_id: "codex/gpt-6-luna".into() },
+        );
+        file.bindings.insert(
+            "dead-1".into(),
+            BridgeSelection { entry_id: "engine".into(), model_id: "auto/gpt-6-luna".into() },
+        );
+        file.bindings.insert(
+            "dead-2".into(),
+            BridgeSelection { entry_id: "opencode/deepseek".into(), model_id: "deepseek-flash".into() },
+        );
+        save_bindings_at(&path, &file).unwrap();
+
+        let mut alive = std::collections::HashSet::new();
+        alive.insert("alive-1".to_string());
+        assert_eq!(drop_dead_bindings_at(&path, &alive).unwrap(), 2);
+        let after = load_bindings_at(&path).unwrap();
+        assert_eq!(after.bindings.len(), 1);
+        assert!(after.bindings.contains_key("alive-1"));
+        // 幂等。
+        assert_eq!(drop_dead_bindings_at(&path, &alive).unwrap(), 0);
+
+        // 空世界守卫：alive 为空且绑定非空 → 一个都不清。
+        let empty = std::collections::HashSet::new();
+        assert_eq!(drop_dead_bindings_at(&path, &empty).unwrap(), 0);
+        assert_eq!(load_bindings_at(&path).unwrap().bindings.len(), 1);
+        fs::remove_dir_all(&dir).ok();
+    }
+
     // ─── presets 完整性 ─────────────────────────────────────────────────────
 
     /// 每个 preset 至少一个非 None base（否则它谁也服务不了）；id 唯一；
@@ -3466,7 +3614,7 @@ official_marketplace_auto_installed = true\n";
         assert!(opencode.models.is_empty());
         assert_eq!(
             opencode.note.as_deref(),
-            Some("模型共享未运行 — Grok/GPT 等订阅模型暂不可见；点左下角模型共享按钮启动（或稍候自动唤醒）后重开此菜单")
+            Some("模型共享未运行 — Grok/GPT 等订阅模型暂不可见；点左下角模型共享按钮启动后重开此菜单")
         );
 
         // dsh（2026-10-20）：与 opencode 同一引擎源通道（注入面在
@@ -3790,18 +3938,20 @@ official_marketplace_auto_installed = true\n";
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// codex 跨用目录只含引擎源：引擎不在 → note 指引（不自动拉起）；Running
-    /// → 仅 engine 源 + 引擎模型（key/reference 端点进不了 codex，§4.4 S2）。
+    /// codex 跨用目录只含引擎源：引擎不在 → **源恒在、模型来自磁盘缓存**
+    /// （无缓存=空 + 指引 note；有缓存=离线回放 + 离线 note，2026-11-06 懒启动
+    /// 后菜单不再整组消失）；Running → 仅 engine 源 + 引擎模型（key/reference
+    /// 端点进不了 codex，§4.4 S2）。
     #[test]
     fn codex_lists_the_engine_source_only() {
         let dir = temp_dir("codexsrc");
         let credentials = dir.join("credentials.json");
         let scan = crate::credentials::scan_opencode_at(&dir);
 
-        // 不 Running：空目录 + 指引 note。absent 守卫杜绝并行 Running 缝。
+        // 不 Running 且无缓存：模型空 + 指引 note（absent 守卫杜绝并行 Running 缝）。
         let absent = crate::engine::test_absent_guard();
         let result = list_models_at(&credentials, &scan, "codex");
-        assert!(result.sources.is_empty() && result.models.is_empty());
+        assert!(result.models.is_empty());
         assert!(
             result.note.as_deref().unwrap_or_default().contains("翻译引擎"),
             "unexpected note: {:?}",
@@ -4752,13 +4902,15 @@ Connection: close
             assert!(leaked.contains("\"fromScan\":true"), "{agent}");
         }
 
-        // 宿主 opencode 自己：空 + 原生管理文案（去重规则不变）。
+        // 宿主 opencode 自己：引擎源恒在（懒启动后不随引擎睡眠消失）、模型空
+        // （无缓存）+ 原生管理文案（去重规则不变）。
         let self_view = list_models_at(&credentials, &scan, "opencode");
         assert!(self_view.models.is_empty());
-        assert!(self_view.sources.is_empty());
+        assert_eq!(self_view.sources.len(), 1, "引擎源应恒在: {:?}", self_view.sources);
+        assert_eq!(self_view.sources[0].entry_id, crate::engine::ENGINE_ENTRY_ID);
         assert_eq!(
             self_view.note.as_deref(),
-            Some("模型共享未运行 — Grok/GPT 等订阅模型暂不可见；点左下角模型共享按钮启动（或稍候自动唤醒）后重开此菜单")
+            Some("模型共享未运行 — Grok/GPT 等订阅模型暂不可见；点左下角模型共享按钮启动后重开此菜单")
         );
 
         // 扫描失败（auth.json 损坏）→ 静默跳过该家，store 条目照常。

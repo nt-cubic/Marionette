@@ -55,6 +55,8 @@ export const zh = {
   "app.updateCurrentSuffix": "（当前 {version}）",
   "app.updateDetails": "说明",
   "app.downloading": "下载中…",
+  "app.updateRestarting": "正在应用更新并重启…",
+  "app.updateFailed": "更新失败：{error}",
   "app.downloadAndRestart": "下载并重启",
   "app.later": "稍后",
   "app.pathGrantTitle": "项目外路径",

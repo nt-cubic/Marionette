@@ -1852,7 +1852,14 @@ fn engine_binding_count_at(path: &Path) -> usize {
         .unwrap_or(0)
 }
 
-fn engine_binding_count() -> usize {
+/// pub(crate)（2026-11-06 懒启动）：commands 的 `bridge_list_models` 用同一
+/// 信号决定「菜单打开要不要等引擎醒来」——绑定=在用引擎模型，纯浏览不拉。
+/// 测试构建先问 seams（真实路径读用户 home，并行测试不可控）。
+pub(crate) fn engine_binding_count() -> usize {
+    #[cfg(test)]
+    if let Some(count) = test_bindings_hook() {
+        return count();
+    }
     let Some(home) = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
@@ -2630,7 +2637,20 @@ pub fn enable() -> Result<EngineStatus, String> {
     Ok(initial)
 }
 
-fn enable_pipeline(dir: &Path) -> Result<(), String> {
+/// `place_and_prep` 的结果。
+enum PrepOutcome {
+    /// 默认端口上有可复用的用户自装实例（已就地转 Running），无需再做任何事。
+    Reused,
+    /// 本机安装就绪（可能刚落位内嵌种子），可进入 serve。
+    Ready,
+    /// 本机未安装且 `allow_download=false`（懒启动不惊喜下载，静默跳过）。
+    NotInstalled,
+}
+
+/// enable_pipeline 的 0–3 步：恢复中断替换、收割孤儿、复用探测、安装落位。
+/// `enable_pipeline` 与 `startup_lazy` 共用——懒启动只做到这里（Reused 例外，
+/// 白捡的），有引擎绑定才继续 serve。
+fn place_and_prep(dir: &Path, allow_download: bool) -> Result<PrepOutcome, String> {
     // 0. replace_engine_exe 两步 rename 之间崩溃会把 magpie.exe 挪走（target
     //    缺位、aside 里躺着旧镜像）。先把旧镜像找回来，避免「内嵌引擎落位后
     //    仍不完整」的必死错误和状态倒退到工厂版本。
@@ -2657,7 +2677,7 @@ fn enable_pipeline(dir: &Path) -> Result<(), String> {
                 version,
                 reused: true,
             });
-            return Ok(());
+            return Ok(PrepOutcome::Reused);
         }
         crate::debug_log::append(
             "engine",
@@ -2682,9 +2702,19 @@ fn enable_pipeline(dir: &Path) -> Result<(), String> {
         if embedded_version().is_some() {
             return Err(crate::ts!("内嵌引擎落位后仍不完整", "Embedded engine still incomplete after placement"));
         }
+        if !allow_download {
+            // 懒启动（startup_lazy）：没装过就没装过，绝不惊喜下载。
+            return Ok(PrepOutcome::NotInstalled);
+        }
         let plan = resolve_latest_release()?;
         download_and_install(&plan, dir)?;
     }
+    Ok(PrepOutcome::Ready)
+}
+
+/// enable_pipeline 的 4–6 步：serve + 健康 + Running + provider 注册 + 桥
+/// 端口刷新 + 空闲回收巡检。
+fn serve_and_run(dir: &Path) -> Result<(), String> {
     // 4. 拉起 + 等健康。
     set_status(EngineStatus::Starting);
     let exe = exe_path(dir);
@@ -2760,6 +2790,80 @@ fn enable_pipeline(dir: &Path) -> Result<(), String> {
         .name("engine-idle-watchdog".into())
         .spawn(idle_watchdog);
     Ok(())
+}
+
+fn enable_pipeline(dir: &Path) -> Result<(), String> {
+    match place_and_prep(dir, true)? {
+        PrepOutcome::Reused => Ok(()),
+        PrepOutcome::Ready => serve_and_run(dir),
+        // allow_download=true 时不可达：未安装会先走下载分支。
+        PrepOutcome::NotInstalled => Ok(()),
+    }
+}
+
+/// 启动期懒策略（2026-11-06 用户定案：不用模型共享就不启动引擎）。
+/// 只做清障 + 落位（便携版首装照旧离线落位；默认端口有现成实例就白捡），
+/// **仅当存在引擎模型绑定**（`engine_binding_count()>0`——与 30 分钟空闲
+/// 回收同一个信号）才拉起 serve。纯 GPT/codex 用户：引擎零进程、零内存。
+/// 显式入口（网关按钮 `engine_enable` / `bridge_bind` / 跨用 agent spawn /
+/// council）不经此函数，照旧能拉起。文件 IO（种子解包）在后台线程跑，
+/// 不挡启动。绑定数在调用线程先取好——后台线程不再碰全局状态判定。
+pub fn startup_lazy() -> Result<(), String> {
+    let dir = engine_dir()?;
+    let bindings = engine_binding_count();
+    std::thread::Builder::new()
+        .name("engine-startup-lazy".into())
+        .spawn(move || startup_lazy_run(&dir, bindings))
+        .map(|_| ())
+        .map_err(|e| crate::ts!("启动引擎懒加载线程失败: {e}", "Failed to spawn engine lazy-start thread: {e}"))
+}
+
+/// `startup_lazy` 的线程体（独立出来供测试同步调用）。
+fn startup_lazy_run(dir: &Path, bindings: usize) {
+    match place_and_prep(dir, false) {
+        Ok(PrepOutcome::Reused) => {}
+        Ok(PrepOutcome::Ready) => {
+            if bindings > 0 {
+                // 老用户（有绑定）无感：照常 enable（claim 幂等，
+                // prep 二跑是廉价幂等操作）。
+                if let Err(error) = enable() {
+                    crate::debug_log::append(
+                        "engine",
+                        "warn",
+                        "",
+                        "engine lazy start (bindings present) failed",
+                        Some(&error),
+                    );
+                }
+            } else {
+                crate::debug_log::append(
+                    "engine",
+                    "info",
+                    "",
+                    "engine lazy: placed, not started (no engine bindings)",
+                    Some("explicit entry points (gateway button / model bind) still start it"),
+                );
+            }
+        }
+        Ok(PrepOutcome::NotInstalled) => {
+            crate::debug_log::append(
+                "engine",
+                "info",
+                "",
+                "engine lazy: not installed; skipping (no surprise downloads)",
+                None,
+            );
+        }
+        Err(error) => {
+            crate::debug_log::append(
+                "engine",
+                "warn",
+                "",
+                "engine startup (lazy) prep failed",
+                Some(&error),
+            );
+        }
+    }
 }
 
 // ─── 对外查询 / 生命周期 ────────────────────────────────────────────────────
@@ -2894,9 +2998,12 @@ pub fn catalog() -> Vec<String> {
 /// 面向用户/agent 的引擎目录：剥掉 `group/` 自动路由组（magpie 的跨来源
 /// 路由入口，目录里自标 "routing group"）。2026-10-20 产品决定：菜单只列
 /// 具体来源的模型，人直接选 `grok/grok-4.7` 这类；路由组是给程序用的抽象，
-/// 进菜单只有困惑（「auto-grok-4-7 完全不懂」）。想要时仍可用自定义模型
+/// 进菜单只有困惑（「auto-grok-4-7 完全懂不了」）。想要时仍可用自定义模型
 /// 输入 `group/…` id。桥的所有消费点（跨用菜单 / opencode 配置 / dsh 路由 /
 /// pi models.json）统一走这里。
+/// 2026-11-06 产品决定：`auto/` 路由组**一并隐藏**（用户定案「不再出现任何
+/// auto」——`auto/gpt-6-luna` 这类跨渠道路由入口与 `group/` 同罪，菜单/
+/// 桥/圆桌全部只留具体来源模型；存量 auto 绑定由 model_bridge 启动清绑）。
 ///
 /// 顺序规矩（2026-10-24 事故加）：按量计费（balance key）来源的条目一律
 /// 沉底。引擎目录原样透传时 `auto/deepseek-v4-pro` 顶在首位，成了 zcode
@@ -2908,7 +3015,7 @@ pub fn catalog_direct() -> Vec<String> {
     pay_per_use_last(
         catalog()
             .into_iter()
-            .filter(|id| !id.starts_with("group/"))
+            .filter(|id| !id.starts_with("group/") && !id.starts_with("auto/"))
             .collect(),
         |id| id.as_str(),
     )
@@ -2921,9 +3028,107 @@ pub fn catalog_direct_entries() -> Vec<crate::model_bridge::CatalogModelRow> {
     pay_per_use_last(
         catalog_entries()
             .into_iter()
-            .filter(|row| !row.id.starts_with("group/"))
+            .filter(|row| !row.id.starts_with("group/") && !row.id.starts_with("auto/"))
             .collect(),
         |row| row.id.as_str(),
+    )
+}
+
+// ─── 引擎目录磁盘缓存（懒启动配套，2026-11-06）─────────────────────────────
+//
+// 引擎不在 Running 时目录为空（`fetch_catalog` 只打运行中实例），懒启动 +
+// 30 分钟空闲回收后模型菜单的 marionette 组会整组消失/唤醒再插回——既是
+// 菜单抖动的最大头，也让「不用模型共享」的用户永远看不到引擎模型。这里
+// 把 live 目录非空时落一份 `~/.marionette/engine-catalog.json`，停机时回放。
+
+const CATALOG_CACHE_VERSION: u32 = 1;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogCacheFile {
+    version: u32,
+    /// Unix millis（紧凑可排序，house style）。
+    fetched_at: String,
+    rows: Vec<crate::model_bridge::CatalogModelRow>,
+}
+
+fn catalog_cache_path() -> Option<std::path::PathBuf> {
+    // 测试沙箱：跟 seam 的 engine dir 同处；**没挂 dir 缝就不做任何缓存
+    // IO**——绝不读写真实 ~/.marionette（AGENTS 测试红线）。
+    #[cfg(test)]
+    {
+        return test_engine_dir().map(|dir| dir.join("engine-catalog.json"));
+    }
+    #[allow(unreachable_code)]
+    crate::app_paths::global_dir()
+        .ok()
+        .map(|dir| dir.join("engine-catalog.json"))
+}
+
+fn save_catalog_cache(rows: &[crate::model_bridge::CatalogModelRow]) {
+    let Some(path) = catalog_cache_path() else { return };
+    let file = CatalogCacheFile {
+        version: CATALOG_CACHE_VERSION,
+        fetched_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis().to_string())
+            .unwrap_or_else(|_| "0".to_string()),
+        rows: rows.to_vec(),
+    };
+    let Ok(body) = serde_json::to_string(&file) else { return };
+    // tmp + rename（manifest.json 同款原子写；失败只记 warn——缓存写坏不致命）。
+    let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    if std::fs::write(&temp, body).is_err() {
+        return;
+    }
+    if let Err(error) = std::fs::rename(&temp, &path) {
+        crate::debug_log::append(
+            "engine",
+            "warn",
+            "",
+            "engine catalog cache rename failed",
+            Some(&error.to_string()),
+        );
+    }
+}
+
+/// fail-open：读不到/版本不对/损坏 → 空表（调用方按「没有缓存」处理）。
+/// 读侧同样过滤 `auto/`（2026-11-06 产品决定）——旧缓存文件里可能还存着
+/// auto 行，读出来前剥掉，下次 live 回写自然换成净化后的目录。
+pub fn cached_catalog_entries() -> Vec<crate::model_bridge::CatalogModelRow> {
+    let Some(path) = catalog_cache_path() else {
+        return Vec::new();
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let Ok(file) = serde_json::from_str::<CatalogCacheFile>(&text) else {
+        return Vec::new();
+    };
+    if file.version != CATALOG_CACHE_VERSION {
+        return Vec::new();
+    }
+    file.rows
+        .into_iter()
+        .filter(|row| !row.id.starts_with("auto/"))
+        .collect()
+}
+
+/// 菜单装配用：live 目录优先（非空时顺手回写缓存文件）；引擎不在 Running
+/// 或 live 尚为空（刚拉起、订阅发现未跟上）时回放缓存。返回 (ids, offline)。
+/// 判定走 `bridge_ready()`（生产 = Running；测试 = seam 的 bridge_visible）。
+pub fn catalog_direct_or_cached() -> (Vec<String>, bool) {
+    if bridge_ready() {
+        let rows = catalog_direct_entries();
+        if !rows.is_empty() {
+            save_catalog_cache(&rows);
+            return (rows.into_iter().map(|row| row.id).collect(), false);
+        }
+    }
+    let offline = cached_catalog_entries();
+    (
+        offline.into_iter().map(|row| row.id).collect(),
+        true,
     )
 }
 
@@ -2974,6 +3179,8 @@ type BoxReuse = std::sync::Arc<dyn Fn(u16) -> Option<Option<String>> + Send + Sy
 #[cfg(test)]
 type BoxVoid = std::sync::Arc<dyn Fn() + Send + Sync>;
 #[cfg(test)]
+type BoxBindings = std::sync::Arc<dyn Fn() -> usize + Send + Sync>;
+#[cfg(test)]
 pub(crate) type BoxCli = std::sync::Arc<dyn Fn(&[&str]) -> Result<(), String> + Send + Sync>;
 #[cfg(test)]
 pub(crate) type BoxCliCapture =
@@ -2996,6 +3203,8 @@ struct Seams {
     cli: Option<BoxCli>,
     /// 带输出捕获的 CLI 缝（quota 用）。
     cli_capture: Option<BoxCliCapture>,
+    /// 引擎绑定数缝（懒启动：startup_lazy / bridge_list_models 的门）。
+    bindings: Option<BoxBindings>,
 }
 
 #[cfg(test)]
@@ -3013,6 +3222,7 @@ impl Default for Seams {
             bridge_visible: false,
             cli: None,
             cli_capture: None,
+            bindings: None,
         }
     }
 }
@@ -3140,6 +3350,11 @@ fn test_health_hook() -> Option<BoxHealth> {
 #[cfg(test)]
 fn test_reuse_hook() -> Option<BoxReuse> {
     seams().and_then(|guard| guard.as_ref().and_then(|s| s.reuse.clone()))
+}
+
+#[cfg(test)]
+fn test_bindings_hook() -> Option<BoxBindings> {
+    seams().and_then(|guard| guard.as_ref().and_then(|s| s.bindings.clone()))
 }
 
 #[cfg(test)]
@@ -3672,6 +3887,154 @@ mod tests {
             "重复 enable 不能再拉起 serve"
         );
 
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 已安装引擎目录（假 exe + 对得上的 sha）——懒启动测试的公共夹具。
+    fn installed_engine_dir(tag: &str) -> PathBuf {
+        let dir = temp_dir(tag);
+        let bytes = b"fake magpie exe bytes for lazy-start test";
+        fs::write(exe_path(&dir), bytes).unwrap();
+        fs::write(dir.join(".portable"), b"").unwrap();
+        save_manifest_at(
+            &dir,
+            &EngineManifest {
+                version: "9.9.9".into(),
+                sha256: sha256_hex(bytes),
+                installed_at: "1".into(),
+            },
+        )
+        .unwrap();
+        dir
+    }
+
+    /// 懒启动（2026-11-06）：无引擎绑定时启动期只落位/清障，绝不拉 serve。
+    #[test]
+    fn startup_lazy_without_bindings_places_but_never_serves() {
+        let dir = installed_engine_dir("lazy-nobind");
+        let launches = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hook = launches.clone();
+        let _seams = install_test_seams(Seams {
+            dir: Some(dir.clone()),
+            reuse: Some(std::sync::Arc::new(|_| None)),
+            launch: Some(std::sync::Arc::new(move |_port| {
+                hook.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })),
+            health: Some(std::sync::Arc::new(|_| true)),
+            register: Some(std::sync::Arc::new(|| {})),
+            ..Seams::default()
+        });
+        // 同步跑线程体（bindings=0）：状态留在 Absent，serve 从未被拉起。
+        startup_lazy_run(&dir, 0);
+        assert!(
+            matches!(status(), EngineStatus::Absent),
+            "无绑定时不能进入 serve 态: {:?}",
+            status()
+        );
+        assert_eq!(
+            launches.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "无绑定时不能 spawn serve"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 懒启动：有引擎绑定（老用户）时照常拉起——无感升级。
+    #[test]
+    fn startup_lazy_with_bindings_serves() {
+        let dir = installed_engine_dir("lazy-bind");
+        let _seams = install_test_seams(Seams {
+            dir: Some(dir.clone()),
+            reuse: Some(std::sync::Arc::new(|_| None)),
+            launch: Some(std::sync::Arc::new(|_port| Ok(()))),
+            health: Some(std::sync::Arc::new(|_| true)),
+            register: Some(std::sync::Arc::new(|| {})),
+            ..Seams::default()
+        });
+        startup_lazy_run(&dir, 1);
+        let reached = wait_for_terminal(5);
+        assert!(
+            matches!(reached, EngineStatus::Running { .. }),
+            "有绑定时应到 Running，实际 {reached:?}"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 目录磁盘缓存（懒启动配套）：live 非空时落盘；引擎停着时回放同一份
+    /// id 清单（offline=true）——菜单的 marionette 组不随引擎睡眠消失。
+    #[test]
+    fn catalog_cache_round_trip_and_offline_replay() {
+        let dir = temp_dir("catalog-cache");
+        let _live = install_test_seams(Seams {
+            dir: Some(dir.clone()),
+            bridge_visible: true,
+            catalog: Some(vec!["grok/grok-4.7".into(), "glm/glm-5.3".into()]),
+            ..Seams::default()
+        });
+        let (live_ids, offline) = catalog_direct_or_cached();
+        assert!(!offline);
+        assert_eq!(live_ids, vec!["grok/grok-4.7", "glm/glm-5.3"]);
+        assert!(
+            dir.join("engine-catalog.json").exists(),
+            "live 非空时应回写缓存文件"
+        );
+        drop(_live);
+        // 引擎睡了（bridge_visible=false / 无 catalog 缝）：回放缓存。
+        let _sleeping = install_test_seams(Seams {
+            dir: Some(dir.clone()),
+            ..Seams::default()
+        });
+        let (cached_ids, offline) = catalog_direct_or_cached();
+        assert!(offline, "引擎不在时应标记离线目录");
+        assert_eq!(cached_ids, live_ids, "离线回放的 id 清单应与 live 一致");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 产品决定（2026-11-06）：`auto/` 路由组与 `group/` 一并从引擎目录
+    /// 隐藏；旧缓存文件里残留的 auto 行在读侧剥掉。
+    #[test]
+    fn catalog_direct_hides_auto_routing_groups() {
+        let dir = temp_dir("no-auto");
+        let _live = install_test_seams(Seams {
+            dir: Some(dir.clone()),
+            bridge_visible: true,
+            catalog: Some(vec![
+                "auto/gpt-6-luna".into(),
+                "auto/deepseek-v4-pro".into(),
+                "group/auto-grok-4-7".into(),
+                "codex/gpt-6-luna".into(),
+                "grok/grok-4.7".into(),
+            ]),
+            ..Seams::default()
+        });
+        let ids = catalog_direct();
+        assert_eq!(ids, vec!["codex/gpt-6-luna", "grok/grok-4.7"]);
+        // live 回写缓存时也不带 auto。
+        let (via_cache, offline) = catalog_direct_or_cached();
+        assert!(!offline);
+        assert_eq!(via_cache, ids);
+        drop(_live);
+
+        // 读侧：旧缓存文件里手工塞回一行 auto，读出来必须剥掉。
+        let cache_body = serde_json::json!({
+            "version": 1,
+            "fetchedAt": "1",
+            "rows": [
+                { "id": "auto/gpt-6-luna", "contextWindow": 0, "maxOutput": 0, "images": false },
+                { "id": "grok/grok-4.7", "contextWindow": 0, "maxOutput": 0, "images": false },
+            ],
+        });
+        fs::write(dir.join("engine-catalog.json"), cache_body.to_string()).unwrap();
+        let _sleeping = install_test_seams(Seams {
+            dir: Some(dir.clone()),
+            ..Seams::default()
+        });
+        let cached = cached_catalog_entries();
+        assert_eq!(
+            cached.into_iter().map(|row| row.id).collect::<Vec<_>>(),
+            vec!["grok/grok-4.7".to_string()]
+        );
         fs::remove_dir_all(&dir).ok();
     }
 

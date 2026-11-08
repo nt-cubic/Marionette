@@ -254,11 +254,3 @@ export const memoryStore: import("./api").MemoryStore = {
   ]
 };
 
-/** Browser mock for the DSH plugins card (desktop runs `dsh plugin --profile acp list`). */
-export const dshPlugins: import("./api").DshPlugin[] = [
-  { name: "dsh-pet", version: "0.3.1" },
-  { name: "billion-context", version: "1.9.0" },
-  { name: "dsh-context", version: "0.6.2" },
-  { name: "dsh-better-sidebar", version: "2.1.4" }
-];
-

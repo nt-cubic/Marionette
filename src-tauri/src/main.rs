@@ -20,7 +20,6 @@ mod debug_log;
 mod dock_support;
 mod drag_text;
 mod dsh_bridge;
-mod dsh_plugins;
 mod engine;
 mod git_service;
 mod grok_dialect;
@@ -192,6 +191,14 @@ fn is_tao_paint_assert(panic_message: &str) -> bool {
     panic_message.contains("flush_paint_messages")
 }
 
+/// X6（2026-11-06 内存压制批）：主窗最小化期间 webview 是否处于挂起态。
+/// 最小化本身不会让 WebView2 省内存（controller 仍 visible，vendor/wry
+/// TrySuspend 补丁只在 set_visible(false) 时触发）——所以最小化 → webview 级
+/// hide（实测省 150–250MB），还原 → show。show/hide 必须严格成对（白屏
+/// 红线），这个标志就是那条对的账本。贴边停靠窗口不会最小化（屏外但
+/// visible），天然不进这条。
+static MINIMIZE_SUSPENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,15 +330,16 @@ fn main() {
             }
             // 文字/链接拖放：vendor wry 补丁的钩子 → marionette-drag-text 事件。
             drag_text::init(app.handle());
-            // Browser tab prewarm: build one child webview NOW, before the
-            // tao event loop starts — creation's nested pump is outermost
-            // here, the only safe window on our tao build (2026-11-01).
-            #[cfg(target_os = "windows")]
-            {
-                let handle = app.handle().clone();
-                // setup runs on the main thread before the loop: build inline.
-                crate::browser::surface::prewarm(&handle);
-            }
+            // Browser tab surfaces are created lazily on first `browser_open_tab`
+            // (run_on_main_thread → create_surface → build_surface, the same path
+            // 2nd+ tabs already take). We deliberately do NOT prewarm at startup:
+            // an eager about:blank child webview keeps a whole second WebView2
+            // process group (browser-profiles) resident for the entire process
+            // lifetime even if no tab is ever opened (2026-11-06). First-tab
+            // creation is "fresh WebContext + in-event-loop build" — a shape §9
+            // of docs/plan-browser-computer-use.md flagged as slightly riskier
+            // than reusing one; if that ever freezes, the documented fallback
+            // is restoring a startup prewarm pool.
             // Test hook (no UI): MARIONETTE_AUTO_BROWSER_TAB=1 opens a browser
             // tab a moment after boot so E2E tooling can exercise the child
             // webview without clicking (tools/browser-tab-repro.py).
@@ -406,18 +414,26 @@ fn main() {
                     Some(&err),
                 ),
             }
+            // 产品决定（2026-11-06）：auto/ 路由模型全面隐藏——存量 auto 绑定
+            // 清掉，受影响会话回落 agent 原生默认。随后清扫僵尸绑定（指向已
+            // 删除会话的行）——engine_binding_count 只被活会话推高，懒启动的
+            // 门与空闲回收的计数随之变准。两条都幂等、fail-open。
+            model_bridge::drop_auto_bindings();
+            model_bridge::drop_dead_bindings();
             // Startup is the only safe moment: no session exists yet, so an
             // upgrade cannot replace a binary an agent is mid-turn on.
             commands::auto_update_agents_in_background();
-            // 无脑可用：翻译引擎随应用启动自动拉起。便携版（embedded-engine）
-            // 离线落位内嵌 magpie 再 serve；开发构建未装则后台下载。
-            // enable 幂等；失败只落 Failed 状态（左下角可见/可重试），不阻塞启动。
-            if let Err(error) = engine::enable() {
+            // 懒启动（2026-11-06 用户定案：不用模型共享就不启动引擎）：
+            // 便携版内嵌种子照旧离线落位（磁盘操作，不起进程）；仅当存在
+            // 引擎模型绑定（与 30 分钟空闲回收同一个信号）才拉起 serve——
+            // 纯 GPT/codex 用户引擎零进程。显式入口（网关按钮 / 绑定引擎
+            // 模型 / 跨用 agent spawn / council）照旧能拉起，失败只落日志。
+            if let Err(error) = engine::startup_lazy() {
                 debug_log::append(
                     "engine",
                     "warn",
                     "",
-                    "engine auto-start at launch failed",
+                    "engine lazy startup at launch failed",
                     Some(&error),
                 );
             }
@@ -504,6 +520,65 @@ fn main() {
                         shutdown_and_exit(&app);
                     }
                 }
+                // X6：主窗最小化 → webview 级 hide（TrySuspend）；还原 → show。
+                // 只碰 webview 层，不动窗口本身（最小化的窗口 hide 会有奇怪的
+                // 任务栏行为）。严格成对：MINIMIZE_SUSPENDED 记账。
+                #[cfg(target_os = "windows")]
+                tauri::WindowEvent::Resized(_) => {
+                    if window.label() == "main" {
+                        use std::sync::atomic::Ordering;
+                        let minimized = window.is_minimized().unwrap_or(false);
+                        let suspended = MINIMIZE_SUSPENDED.load(Ordering::Acquire);
+                        if minimized != suspended {
+                            if let Some(main) = window.app_handle().get_webview_window("main") {
+                                if minimized {
+                                    let _ = main.as_ref().hide();
+                                } else {
+                                    let _ = main.as_ref().show();
+                                }
+                            }
+                            MINIMIZE_SUSPENDED.store(minimized, Ordering::Release);
+                            crate::debug_log::append(
+                                "window",
+                                "info",
+                                "",
+                                if minimized {
+                                    "main window minimized: webview suspended (TrySuspend)"
+                                } else {
+                                    "main window restored: webview resumed"
+                                },
+                                None,
+                            );
+                        }
+                    }
+                }
+                // Belt and braces for a missed Resized: focus implies restored.
+                // Check-then-clear (never swap first): clearing while still
+                // minimized would orphan the suspended state → white screen.
+                #[cfg(target_os = "windows")]
+                tauri::WindowEvent::Focused(focused) => {
+                    use std::sync::atomic::Ordering;
+                    if *focused
+                        && window.label() == "main"
+                        && MINIMIZE_SUSPENDED.load(Ordering::Acquire)
+                        && !window.is_minimized().unwrap_or(false)
+                    {
+                        MINIMIZE_SUSPENDED.store(false, Ordering::Release);
+                        if let Some(main) = window.app_handle().get_webview_window("main") {
+                            let _ = main.as_ref().show();
+                        }
+                        crate::debug_log::append(
+                            "window",
+                            "info",
+                            "",
+                            "main window focused: webview resumed (fallback path)",
+                            None,
+                        );
+                    }
+                }
+                // Belt and braces wildcard: on Windows the remaining
+                // WindowEvent variants (Moved / ThemeChanged / DragDrop / …)
+                // land here; exhaustive matching is not worth the cfg games.
                 _ => {}
             }
         })
@@ -578,9 +653,7 @@ fn main() {
             commands::memory_import_preview,
             commands::memory_import_run,
             commands::memory_distill,
-            commands::dsh_plugins_list,
-            commands::dsh_plugin_add,
-            commands::dsh_plugin_remove,
+
             commands::start_agent_login,
             commands::start_grok_update,
             commands::start_acp_session,
@@ -590,6 +663,7 @@ fn main() {
             commands::save_pasted_image,
             commands::cancel_acp_session,
             commands::stop_acp_session,
+            commands::trim_session_working_set,
             commands::list_acp_terminals,
             commands::kill_acp_terminal,
             commands::get_session_capabilities,
@@ -690,6 +764,10 @@ fn main() {
             plugins::plugins_remove,
             plugins::plugins_set_enabled,
             plugins::plugins_probe,
+            plugins::skills_list,
+            plugins::skill_install,
+            plugins::skill_remove,
+            plugins::skill_set_enabled,
             commands::council_create,
             commands::council_list_runs,
             commands::council_get_run,
