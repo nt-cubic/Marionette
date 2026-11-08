@@ -623,3 +623,11 @@
 .event-list .activity-group:has(> .activity-panel > .activity-panel__summary:focus-visible) {
   box-shadow: 0 0 0 1px var(--accent);
 }
+
+/* ---- You card: thin accent outline (2026-11-08) ---------------------------------------
+   What tells "You" from a reply at a glance is a 1px theme-green outline all round
+   (its left bar stays), not a fill or a texture: Reply and process cards keep the
+   neutral edge. */
+.event-list .event-card--user_message {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}

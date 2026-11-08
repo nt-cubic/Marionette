@@ -1094,3 +1094,90 @@
 .context-panel .quota-cur__balance {
   padding-left: 14px;
 }
+
+/* ---- Quota: every window readable, with its reset (2026-11-08) -----------------------
+   Meter rows gain a fourth column, the reset moment (today = "21:09", later = "11/9").
+   Other sources fold to one line (chevron · name · reset · tightest %); a click opens
+   each of their windows with its own neutral bar and reset, indented under the name. */
+.context-panel .quota-wr {
+  grid-template-columns: 38px minmax(0, 1fr) 38px 40px;
+  gap: 6px;
+}
+
+.context-panel .quota-wr i > span {
+  background: var(--text-faint);
+}
+
+.context-panel .quota-wr.is-tight i > span {
+  background: var(--agent-ink, var(--accent));
+}
+
+.context-panel .quota-wr__reset {
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-panel .quota-wr--balance {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.context-panel .quota-wr--balance em {
+  color: var(--text);
+}
+
+.context-panel .quota-other__head {
+  width: 100%;
+  padding-left: 8px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.context-panel .quota-other__head:hover {
+  background: var(--panel-soft);
+}
+
+.context-panel .quota-other__chev {
+  flex: none;
+  color: var(--text-faint);
+  transition: transform var(--dur-fast, 120ms) var(--ease-standard, ease);
+}
+
+.context-panel .quota-other.is-open .quota-other__chev {
+  transform: rotate(90deg);
+}
+
+.context-panel .quota-other__reset {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.context-panel .quota-other__reset + .rail-ln__r {
+  margin-left: 6px;
+}
+
+.context-panel .quota-other__body {
+  padding: 0 0 6px 8px;
+}
+
+.context-panel .quota-other.is-open .quota-other__head .rail-ln__text {
+  color: var(--text-strong);
+  font-weight: 500;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .context-panel .quota-other__chev {
+    transition: none;
+  }
+}

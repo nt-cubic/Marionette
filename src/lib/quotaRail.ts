@@ -233,6 +233,20 @@ export function resetHint(window: UsageWindow | null): string | null {
   return part.replace(/resets?(\s+at)?|重置于?/gi, "").trim() || null;
 }
 
+/**
+ * Per-row reset time, as short as it can be: `21:09` when the reset is today,
+ * `11/9` (or `11/9 21:09` with `withTime`) otherwise. Anything resetHint could not
+ * normalise is returned as-is.
+ */
+export function compactReset(hint: string | null, now: Date = new Date(), withTime = false): string | null {
+  if (!hint) return null;
+  const m = /^(\d{1,2})\/(\d{1,2})(?:\s+(\S+))?$/.exec(hint);
+  if (!m) return hint;
+  const today = Number(m[1]) === now.getMonth() + 1 && Number(m[2]) === now.getDate();
+  if (today && m[3]) return m[3];
+  return withTime && m[3] ? `${m[1]}/${m[2]} ${m[3]}` : `${m[1]}/${m[2]}`;
+}
+
 /** Colour class for a percentage: ≥95 red, ≥80 yellow, otherwise neutral / ink. */
 export function pctLevel(pct: number | null | undefined): "hot" | "warn" | "ok" {
   if (pct == null) return "ok";

@@ -56,7 +56,7 @@
 | agent id | 变量 | 白天 | 夜间 |
 |---|---|---|---|
 | `claude-code` | `--agent-claude` | `#9a5b43` | `#c99580` |
-| `codex` | `--agent-codex` | `#535b66` | `#a9b1bb` |
+| `codex` | `--agent-codex` | `#557a33` | `#a3bd86` |
 | `zcode` | `--agent-zcode` | `#4d5c95` | `#9aa6d6` |
 | `grok-build` | `--agent-grok` | `#6b5b91` | `#ad9fd0` |
 | `deepseek` / `web-deepseek` | `--agent-deepseek` | `#3d6e8f` | `#8db5cf` |
@@ -92,7 +92,7 @@
 
 ## 对话流
 
-- **你**：raised 卡 + 3px `--accent` 左边条，卡头「你 · 时间」。
+- **你**：raised 卡 + 3px `--accent` 左边条 + **1px 主题绿外框**（`--accent` 55% 混边框色，一眼分出「你」；不用底纹 / 噪点），卡头「你 · 时间」。
 - **调用块**（`.activity-group`）：灰底卡，标题是 tally（`10 thoughts, 7 commands…`）。运行中：描边 `color-mix(--agent-ink 40%, --border)`，一段淡光沿边框绕一圈后隐去（6s 一轮，`@property` 角度 + conic-gradient + mask），块内轨迹面板正在进行的那段用 `--agent-ink`，九点呼吸图标用 `--agent-ink`。完成后折回 tally，描边回中性。
 - **回复**：raised 卡 + 3px `--agent-ink` 左边条。**卡头左上只写 agent 名**（与 You 同一种标签：12px/600 正文墨，无圆点、不上色），右上时间。**卡底一行「怎么跑的」**：`Build · Grok 4.6 · High │ 0.4s · 146 tok`——模式（模式色字，不加 ▣）、模型、推理档位（不加「推理」二字）用辅助灰，细竖线后是本条耗时与 token（最淡、等宽数字）；全部 11px，右侧 22px 的分叉 / 复制。卡片左直右圆（左上/左下 0，右侧 `--radius`），身份色条是一根直线。
 - **交接分隔线**：两条细线中间 `● ZCode → ● 交接给 Claude · 带上摘要和 1 处改动`，圆点是唯一允许出现的 agent 圆点。
