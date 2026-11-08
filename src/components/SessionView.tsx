@@ -1,4 +1,4 @@
-import { BarChart3, Check, ChevronDown, ChevronUp, Columns2, Copy, FileText, Globe, Inbox, Merge, MessageSquareQuote, Pencil, Plus, Search, Split, Square, SquareArrowOutUpRight, UsersRound, X, FileDiff } from "lucide-react";
+import { BarChart3, Check, ChevronDown, ChevronUp, Copy, FileText, Globe, Inbox, Merge, MessageSquareQuote, Pencil, Plus, Search, Split, Square, UsersRound, X, FileDiff } from "lucide-react";
 import {
   memo,
   useCallback,
@@ -641,7 +641,7 @@ export function SessionTabs({
               aria-selected={openSession.id === session.id && !memoTab?.active && !councilTab?.active}
               data-tauri-drag-region="false"
               onContextMenu={(e) => {
-                if (detachedMode || !onOpenBeside || openSessions.length <= 1) return;
+                if (detachedMode || (!onTabPopOut && (!onOpenBeside || openSessions.length <= 1))) return;
                 e.preventDefault();
                 e.stopPropagation();
                 tabDragRef.current = null;
@@ -732,37 +732,6 @@ export function SessionTabs({
                   }}
                 >
                   <Merge size={11} />
-                </button>
-              )}
-              {onOpenBeside && !detachedMode && (openSessions.length > 1 || frozenTabWidth != null) && (
-                <button
-                  className="pill-action pill-action--icon pill-action--sm editor-tab__split"
-                  type="button"
-                  title={t("session.openRight")}
-                  aria-label={`Open ${openSession.label} to the right`}
-                  disabled={openSessions.length <= 1}
-                  style={openSessions.length <= 1 ? { visibility: "hidden" } : undefined}
-                  data-tauri-drag-region="false"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onOpenBeside(openSession, "right");
-                  }}
-                >
-                  <Columns2 size={11} />
-                </button>
-              )}
-              {onTabPopOut && !detachedMode && (
-                <button
-                  className="pill-action pill-action--icon pill-action--sm editor-tab__popout"
-                  type="button"
-                  title={`Open ${openSession.label} in new window`}
-                  aria-label={`Open ${openSession.label} in new window`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onTabPopOut(openSession, false);
-                  }}
-                >
-                  <SquareArrowOutUpRight size={11} />
                 </button>
               )}
               {!detachedMode && (
@@ -987,11 +956,13 @@ export function SessionTabs({
         </div>,
         document.body
       )}
-    {besideMenu && onOpenBeside && (
+    {besideMenu && (onOpenBeside || onTabPopOut) && (
       <SplitBesideMenu
         x={besideMenu.x}
         y={besideMenu.y}
-        onPick={(edge: OpenBesideEdge) => onOpenBeside(besideMenu.session, edge)}
+        canSplit={Boolean(onOpenBeside) && openSessions.length > 1}
+        onPick={(edge: OpenBesideEdge) => onOpenBeside?.(besideMenu.session, edge)}
+        onPopOut={onTabPopOut ? () => onTabPopOut(besideMenu.session, false) : undefined}
         onClose={() => setBesideMenu(null)}
       />
     )}

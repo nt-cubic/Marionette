@@ -15,6 +15,7 @@ export const en = {
   "split.releaseCancel": "Release to cancel",
   "split.openRight": "Open on Right",
   "split.openBottom": "Open Below",
+  "split.openWindow": "Open in New Window",
   "ui.collapse": "Collapse",
   "ui.expandFullText": "Show full text",
   "ui.copyValue": "Copy value",

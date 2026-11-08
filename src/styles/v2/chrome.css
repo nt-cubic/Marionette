@@ -337,3 +337,10 @@
   background: var(--accent);
   pointer-events: none;
 }
+
+/* Tab right-click menu: split items stay listed but greyed when there is only one tab. */
+.split-beside-menu button:disabled {
+  color: var(--text-faint);
+  background: transparent;
+  cursor: default;
+}

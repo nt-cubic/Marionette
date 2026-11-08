@@ -15,6 +15,7 @@ export const zh = {
   "split.releaseCancel": "松开以取消",
   "split.openRight": "在右侧打开",
   "split.openBottom": "在下方打开",
+  "split.openWindow": "在新窗口打开",
   "ui.collapse": "收起",
   "ui.expandFullText": "展开全文",
   "ui.copyValue": "复制值",
