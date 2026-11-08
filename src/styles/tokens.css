@@ -44,7 +44,7 @@
   /* Agent ink: the only identity colour (left bar, live outline, current meter).
      Set per element via agentInkStyle() as --agent-ink; never colour names. */
   --agent-claude: #c99580;
-  --agent-codex: #a9b1bb;
+  --agent-codex: #a3bd86;
   --agent-zcode: #9aa6d6;
   --agent-grok: #ad9fd0;
   --agent-deepseek: #8db5cf;
@@ -88,7 +88,7 @@
   --hairline: #ececee;
 
   --agent-claude: #9a5b43;
-  --agent-codex: #535b66;
+  --agent-codex: #557a33;
   --agent-zcode: #4d5c95;
   --agent-grok: #6b5b91;
   --agent-deepseek: #3d6e8f;
