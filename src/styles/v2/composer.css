@@ -303,10 +303,12 @@
   align-items: center;
   min-height: 28px;
   margin-bottom: 6px;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
+  /* Floats over the transcript tail (.composer-slot__notices is absolute),
+     so it must be opaque or the delivery card underneath bleeds through. */
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
   box-shadow: none;
   color: var(--text);
   font-size: 12px;
@@ -373,10 +375,10 @@
   align-items: center;
   min-height: 28px;
   margin-bottom: 6px;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
   box-shadow: none;
   font-size: 12px;
   line-height: 1.4;
