@@ -1207,8 +1207,12 @@ func (s *Server) quotaCardsRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, user := r.URL.Query().Get("provider"), r.URL.Query().Get("user")
-	if strings.Contains(id, "/") || provider.IsRemoteCard(id) { // a card this magpie has from another: not passed on
-		writeError(w, provider.Chat, http.StatusBadRequest, "this magpie reads only its own cards again")
+	// a card this magpie has from a Remote magpie of its own, which it
+	// passes on (provider.CachedCards), is read again there; the card
+	// standing for that remote itself, and any other id with a "/", is
+	// none this magpie tells
+	if remote := provider.IsRemoteCard(id); strings.Contains(id, "/") && !remote || remote && !strings.Contains(id, "/") {
+		writeError(w, provider.Chat, http.StatusBadRequest, "this magpie reads again only the cards it tells")
 		return
 	}
 	// a key told only some cards (#2216) has only those read again: a
@@ -2804,14 +2808,25 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	} else {
 		// a routing group among the fallbacks is routed as a request to it
 		// would be, its pause rules too (pausedOut's)
-		cands, pl = s.planPaused(p, model, from, func(fg provider.Group, fms []provider.Member) []provider.Member {
+		pausedIn := func(fg provider.Group, fms []provider.Member) []provider.Member {
 			folder := ""
 			if provider.PausesByFolder(fg, fms) {
 				folder = factsOf(from, body).dir
 			}
 			kept, _ := provider.PausedOut(fg, fms, agent, folder, ruleClock())
 			return kept
-		})
+		}
+		cands, pl = s.planPaused(p, model, from, pausedIn)
+		if len(cands) == 0 && len(pl.capped) > 0 && !p.CapStop || handedOnOf(r) != nil {
+			// every account held at the usage cap the user set, or Codex's
+			// own sign-in handed on (codexFallBack), and no fallback left:
+			// the groups the user built with this model in them go on from
+			// it, as a request to the group would (the Codex app asks
+			// Codex's own model, never the group)
+			if q, ok := groupsAfter(p, model); ok {
+				cands, pl = s.planPaused(q, model, from, pausedIn)
+			}
+		}
 		if handedOnOf(r) != nil {
 			// Codex's own sign-in, asked as often as it is asked: only
 			// the fallbacks are left (codexFallBack)
@@ -3199,7 +3214,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		unlisted, unlistedW = nil, nil
 	}
 	// what the tries' held streams sent the agent ahead of a reply (#751)
-	kept := &keptAlive{proto: from, model: askedFor, told: start, whole: wantsWhole(r.Context())}
+	kept := &keptAlive{proto: from, model: askedFor, told: start, whole: wantsWhole(r.Context()), clientEnd: clientEnd(r.Header, start)}
 	if k := handedOnOf(r); k != nil && !kept.whole {
 		// Codex's own sign-in waited for first, with Codex kept alive
 		kept = k
@@ -4857,7 +4872,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			if memberWait == 0 {
 				memberWait = patience
 			}
-			if next, wait, ok := replan(busyNow, rounds, waitFrom, patienceFallback); ok && !kept.tooQuiet(wait) {
+			if next, wait, ok := replan(busyNow, rounds, waitFrom, patienceFallback); ok && !kept.tooQuiet(wait) && !kept.outlives(wait) {
 				try.Fail, try.Again = failureOf(c, hw.code(), hw.errBody()), wait.Milliseconds()
 				if lastSpent {
 					rest := s.restAfterMarked(c, hw.code(), hw.header, hw.errBody(), hw.sharedPool)
@@ -4881,7 +4896,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				break
 			}
 		}
-		if wait, ok := passing(hw.code(), hw.header, hw.errBody(), again); ok && !protected && !sameRefusal && !hw.turnedAway && hw.failed() && waitFrom.IsZero() && !kept.tooQuiet(wait) {
+		if wait, ok := passing(hw.code(), hw.header, hw.errBody(), again); ok && !protected && !sameRefusal && !hw.turnedAway && hw.failed() && waitFrom.IsZero() && !kept.tooQuiet(wait) && !kept.outlives(wait) {
 			// nobody else is left: the same one again, after a moment (not
 			// what Antigravity turned away: it turns it away again; nor
 			// once the group's patience is spent)
@@ -6132,7 +6147,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	// asked streamed, the stream read here (gathered)
 	var gather *gathered
 	if gathers(p, proto, body) {
-		gather = &gathered{h: http.Header{}, status: http.StatusOK}
+		gather = &gathered{h: http.Header{}, status: http.StatusOK, capped: int(gjson.GetBytes(body, "max_output_tokens").Int())}
 		body = withFields(body, map[string]any{"stream": true})
 	}
 	searchFn := false            // Codex's tool search sent as a function
@@ -6958,6 +6973,14 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	if proto == provider.Anthropic {
 		toolIDs = &toolUseIDs{seen: toolSeen, sse: sse}
 	}
+	// anything the backend says outside the Responses event enum (the
+	// account's codex.* events, response.metadata, keepalive), which only
+	// Codex has a name for (responses_enum.go); any other client gets the
+	// reply without it
+	var enumTidy *responsesEnumTidy
+	if proto == provider.Responses && sse && !fromCodex(r.Header) && agentOf(r) != "codex" {
+		enumTidy = &responsesEnumTidy{}
+	}
 	// out is what a filter let through, through ids, phases, toolIDs and
 	// thinkSigs
 	out := func(b []byte) []byte {
@@ -7125,6 +7148,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			if thinkSigs != nil {
 				out = thinkSigs.write(out)
 			}
+			if enumTidy != nil {
+				out = enumTidy.write(out)
+			}
 			if _, werr := write(out); werr != nil {
 				return res.StatusCode, "", true
 			}
@@ -7240,6 +7266,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	}
 	if thinkSigs != nil {
 		write(thinkSigs.flush())
+	}
+	if enumTidy != nil {
+		write(enumTidy.flush())
 	}
 	if sse {
 		sniff.drain()
@@ -8677,9 +8706,13 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 	}
 	var col collector
 	ended := false // the upstream said its reply ended
+	spent := false // the reply spent some of its tokens (endsAtProbeCap)
 	var tail chatTail
 	var found searchTally // the searches it ran by itself
-	see, held := written(zenSee(zen, col.add))
+	see, held := written(zenSee(zen, func(ev Event) {
+		spent = spent || spends(ev)
+		col.add(ev)
+	}))
 	err = readSSE(rd, func(_, data string) error {
 		tail.see([]byte(data))
 		found.see(actual, []byte(data))
@@ -8731,6 +8764,13 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		// the vendor failing, with the status its words would have come
 		// with: a minute limit in a 200 stream is a 429, not a 502
 		return writeVendorError(w, from, cmp.Or(col.errStatus, streamStatus(said)), p.Name+": "+said, col.errSaid), said
+	}
+	if col.err == "" && !ended && saysItsEnd(p, actual, model) && r.Context().Err() == nil && endsAtProbeCap(actual, request.MaxTokens, spent) {
+		// a short probe's reply that stopped at its own small limit with
+		// no end said (endsAtProbeCap, plugins#827): ended at its length,
+		// as the vendor should have said
+		col.add(Event{Kind: KStop, Stop: "length"})
+		ended = true
 	}
 	if col.err == "" && !ended && saysItsEnd(p, actual, model) && r.Context().Err() == nil {
 		// an Anthropic stream that just stopped — no stop_reason, no
