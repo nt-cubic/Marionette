@@ -1,13 +1,13 @@
 # tools — Windows 启动 / 构建 / 发布
 
-根目录只保留一个双击入口（`..\start-marionette.bat`），其余批处理都在这里。
+根目录的 GUI 双击入口只有 `..\start-marionette.bat`，其余脚本都在这里；根目录的另一个文件 `install.ps1` 是发布资产（一行安装器，`releases/latest/download/install.ps1` 靠它），属有意例外。
 本目录同时用来放本地二进制：`build-portable.bat` 会优先找 `upx.exe` 或 `upx\upx.exe`。
 
 | 脚本 | 用途 |
 |---|---|
 | `build-portable.bat` | 打便携版：内置引擎，产物在 `release\<版本号>\Marionette.exe`（按版本分目录，运行中的旧版不会锁住新构建）。打开即拉起 magpie。默认会先 `import-magpie.ps1` 拉 **GitHub latest 稳定版** 再编。环境变量：`SKIP_UPX=1`（内嵌 magpie 仍需要 UPX）、`REQUIRE_UPX=1`、`INSTALL_UPX=1`、`NOPAUSE=1`、`SKIP_MAGPIE_IMPORT=1`（沿用已有 `third_party\magpie`）、`MAGPIE_TAG=v…`（钉死种子版本） |
 | `launch-latest.vbs` / `.ps1` | Stable shortcut launcher; reads `release/current-build.txt`, which is updated after a successful portable build. Use `.ps1 -ShowTarget` to inspect the target; exit an older instance before launching a new one. |
-| `publish-release.bat` | 把 `release\<版本号>\Marionette.exe` 发到 GitHub Release（`gh`）。已有同 tag 则 `--clobber` 覆盖资产。可选 `-NotesFile`、`-Draft` |
+| `publish-release.bat` | 把 `release\<版本号>\Marionette.exe` 发到 GitHub Release（`gh`）。**同时上传仓库根的 `install.ps1`**（一行安装器，`releases/latest/download/install.ps1` 这个地址靠它成立）。已有同 tag 则 `--clobber` 覆盖资产。可选 `-NotesFile`、`-Draft` |
 | `import-magpie.ps1` | 吸纳/更新内置引擎源码进 `third_party\magpie`（只留构建子集）。不传 `-Tag` 时取上游 **latest 稳定 release**；可 `-Tag v…` 或环境变量 `MAGPIE_TAG`。`build-portable.bat` 默认会调用。**导入后自动重放引擎种子补丁**（`magpie-seed\main_seed.go` → `main_seed.go` + 给上游 `main.go` 加 `!marionette_seed` guard）：便携版内嵌的是精简"纯网关"magpie（绕过 `internal/cli` 整个 agent 管理器，UPX 载荷 ~12MB vs 完整 ~19.6MB），上游重构导致补丁失配会在编译时报错，不会静默 |
 | `magpie-seed/` | 引擎种子补丁源：`main_seed.go`（build tag `marionette_seed`）只挂 gateway/routing/usage 三个插件，跑 `serve` 以及精简 `provider`/`group`/`models`（自定义来源登记不需要上游完整 magpie）。改插件集/启动序列在这里改，`import-magpie.ps1` 会把它拷进 `third_party\magpie` |
 | `rebuild-quick.bat` | 增量重建 debug 二进制并重启；Vite 还在跑就只重启 exe |
@@ -22,6 +22,7 @@
 | 环境钩子 `MARIONETTE_AUTO_BROWSER_TAB=1` / `MARIONETTE_AUTO_CU_CHECK=1` | E2E 演练：开机自动开浏览器标签（冻死复现）/ 自动跑 CU 面板全流程（日志看 `[cu-check]`；冻死检测口径 = 数 `ui-heartbeat`，60s 一条，停跳即 JS 冻死） |
 | `demo-instance.bat` / `.ps1` | 起一个隔离的演示实例：`USERPROFILE` 与 `WEBVIEW2_USER_DATA_FOLDER` 都指向临时 profile，只看得见预置的 `demo-app`，用于截图与试用 |
 | `build-now.ps1` | 本地快捷打便携版（设 `SKIP_MAGPIE_IMPORT=1` + `NOPAUSE=1` 后转发 `build-portable.bat`）；路径基于 `$PSScriptRoot`，可从任意工作目录调用 |
+| `install-app.ps1` | 把 `release\current-build.txt` 指向的构建**装成正式应用**：拷进 `%LOCALAPPDATA%\Programs\Marionette`、建开始菜单快捷方式、目录加进用户 PATH。免管理员；重跑即升级（安装路径不变，应用内更新 `app_update.rs` 也原地替换这个 exe，快捷方式永不失效）。`-Uninstall` 卸载（保留 `~\.marionette` 用户数据）。**面向最终用户的一行版是仓库根的 `install.ps1`**（从 GitHub Release 下载 exe 而不是拷 `release\`，两者逻辑同步维护） |
 | `web-chat-bridge\` | 内置 ChatGPT / DeepSeek **网页版**聊天桥的源码（随 exe 编译携带，无需手动注册；CDP 驱动浏览器，不经引擎、无工具）。见其 `README.md` |
 
 `ensure-*.bat` 由其它脚本 `call`，一般不单独双击。

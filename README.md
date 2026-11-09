@@ -33,7 +33,7 @@ Claude 用 Claude Code，Grok 用 Grok Build，GPT 用 Codex，DeepSeek 用 Deep
 
 你不需要一个 Agent 做所有事。你只需要一个窗口，让它们各司其职。
 
-Marionette 是一个 Windows 本地多 Agent 图形壳：只负责启动、展示、切换与记录 Agent，不实现 Agent runtime。**单文件便携版，下载双击即用。**
+Marionette 是一个 Windows 本地多 Agent 图形壳：只负责启动、展示、切换与记录 Agent，不实现 Agent runtime。**单文件，下载即用，也可一行安装。**
 
 ## 一个窗口，所有 Agent
 
@@ -129,7 +129,21 @@ Agent 收到的是带编号的标记和你的说明——不用再写「就是�
 
 ## 快速上手
 
-> [下载](https://github.com/nt-cubic/Marionette/releases/latest) `Marionette.exe`，双击即可。需要 WebView2 Runtime（Win11 与更新过的 Win10 自带）。
+**一行安装（推荐）** — 装进 `%LOCALAPPDATA%\Programs\Marionette`，加入开始菜单，终端里也有 `marionette` 命令；之后应用内更新会原地替换，不用重装：
+
+```powershell
+irm https://github.com/nt-cubic/Marionette/releases/latest/download/install.ps1 | iex
+```
+
+不需要管理员权限。卸载（先退出应用）：
+
+```powershell
+curl.exe -fsSLo install.ps1 https://github.com/nt-cubic/Marionette/releases/latest/download/install.ps1
+powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall
+del install.ps1
+```
+
+或者 [下载](https://github.com/nt-cubic/Marionette/releases/latest) `Marionette.exe` 直接双击（便携版，不进开始菜单）。两种方式都需要 WebView2 Runtime（Win11 与更新过的 Win10 自带）。
 
 <details>
 <summary>从源码运行</summary>
