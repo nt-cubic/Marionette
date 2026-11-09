@@ -669,6 +669,7 @@ fn main() {
             commands::set_stream_interests,
             commands::read_image_data_url,
             commands::save_pasted_image,
+            commands::clipboard_files,
             commands::cancel_acp_session,
             commands::stop_acp_session,
             commands::trim_session_working_set,

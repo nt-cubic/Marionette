@@ -672,6 +672,24 @@ export async function savePastedImage(
   });
 }
 
+/** 文件清单剪贴板（CF_HDROP）的一条：资源管理器复制的文件。 */
+export type ClipboardFileEntry = {
+  path: string;
+  name: string;
+  size: number;
+  isDir: boolean;
+};
+
+/** 粘贴时读 OS 剪贴板的文件清单（无文件或非桌面环境返回空表）。 */
+export async function readClipboardFiles(): Promise<ClipboardFileEntry[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    return await invoke<ClipboardFileEntry[]>("clipboard_files");
+  } catch {
+    return [];
+  }
+}
+
 export async function cancelAcpSession(sessionId: string): Promise<void> {
   if (!isTauriRuntime()) return;
   await invoke("cancel_acp_session", { sessionId });

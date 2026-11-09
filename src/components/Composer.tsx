@@ -29,6 +29,7 @@ import {
   listAgentCommands,
   listCustomAgents,
   pickFiles,
+  readClipboardFiles,
   readImageDataUrl,
   removeCustomAgent,
   savePastedImage,
@@ -38,6 +39,7 @@ import {
   type BridgeModelsResult,
   type PreflightResult,
 } from "../lib/api";
+import { pairPastedFilesWithPaths } from "../lib/pastedFiles";
 import {
   bridgePresetFor,
   getBridgeModels,
@@ -1990,8 +1992,11 @@ export function Composer({
   };
 
   /**
-   * Clipboard paste: screenshots / "Copy Image" → temp file → image pills.
-   * Plain text (and non-image files without a path we can use) keep the default paste.
+   * Clipboard paste:
+   * - Explorer copy → pair the pasted `File`s (name+size, no path) with the
+   *   OS clipboard's CF_HDROP entries and attach by real path, as a drop is.
+   * - Screenshots / "Copy Image" (no file behind them) → temp file → pills.
+   * - Plain text keeps the default paste.
    */
   const onComposerPaste = useCallback(
     (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
@@ -2004,7 +2009,8 @@ export function Composer({
       );
 
       // Also pick up FileList entries that look like images (Explorer copy + paste).
-      const fileListImages = Array.from(dt.files ?? []).filter(
+      const pastedFiles = Array.from(dt.files ?? []);
+      const fileListImages = pastedFiles.filter(
         (f) =>
           (f.type && f.type.startsWith("image/")) ||
           isImagePath(f.name) ||
@@ -2012,7 +2018,11 @@ export function Composer({
       );
 
       const hasImagePayload = imageItems.length > 0 || fileListImages.length > 0;
-      if (!hasImagePayload) return; // text paste → default
+      // Any pasted File may have a real file behind it (Explorer copy); the
+      // path pairing needs the desktop clipboard.
+      const wantsFileAttach =
+        isTauriRuntime() && pastedFiles.length > 0 && imageItems.length === 0;
+      if (!hasImagePayload && !wantsFileAttach) return; // text paste → default
 
       event.preventDefault();
 
@@ -2048,6 +2058,38 @@ export function Composer({
             }
           };
 
+          // 1) Explorer copy: pair each pasted File with its OS clipboard
+          //    entry and attach by the real path, as a drop does (also for
+          //    images — the real path beats a byte copy). Rest has no file
+          //    behind it: screenshots materialize as below, nothing else does.
+          if (pastedFiles.length > 0) {
+            const entries = await readClipboardFiles();
+            if (entries.length > 0) {
+              const paired = pairPastedFilesWithPaths(pastedFiles, entries);
+              for (const p of paired.paths) {
+                const key = p.toLowerCase();
+                if (!seen.has(key)) {
+                  seen.add(key);
+                  paths.push(p);
+                }
+              }
+              for (const file of paired.rest) {
+                if (
+                  (file.type && file.type.startsWith("image/")) ||
+                  isImagePath(file.name)
+                ) {
+                  await absorbFile(file);
+                }
+              }
+              if (paths.length > 0) {
+                insertDroppedPaths(paths);
+                return;
+              }
+            }
+          }
+
+          // 2) Bitmap paste without a file behind it.
+          if (!hasImagePayload) return;
           if (imageItems.length > 0) {
             for (const item of imageItems) {
               await absorbFile(item.getAsFile());

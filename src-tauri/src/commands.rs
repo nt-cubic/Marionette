@@ -2348,6 +2348,26 @@ fn resolve_image_path(path: &str) -> Result<std::path::PathBuf, String> {
     Err(not_found())
 }
 
+/// 文件清单剪贴板（CF_HDROP，资源管理器复制）：粘贴时把 webview 给的
+/// `File`（只有名字和大小，没有路径）配上真实路径，按路径附加（与拖放同款）。
+#[tauri::command(async)]
+pub fn clipboard_files() -> Result<Vec<serde_json::Value>, String> {
+    let mut out = Vec::new();
+    for path in crate::computer::win::clipboard_file_paths() {
+        // 大小与目录标记在粘贴配对时用：名字 NFC 相同 +（普通文件）大小相同。
+        let meta = std::fs::metadata(&path).ok();
+        let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+        let name = path
+            .rsplit(['\\', '/'])
+            .next()
+            .unwrap_or(&path)
+            .to_string();
+        out.push(serde_json::json!({ "path": path, "name": name, "size": size, "isDir": is_dir }));
+    }
+    Ok(out)
+}
+
 /// Materialize a clipboard/paste image (base64) under `~/.marionette/clipboard/`.
 /// Returns an absolute path so the rest of the path-based image pipeline can reuse it.
 #[tauri::command(async)]
