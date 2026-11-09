@@ -226,7 +226,7 @@ agent 可以看/操作**其它 Windows 应用**的窗口（浏览器之外的原
 
 - 前端：`src/`
 - 后端：`src-tauri/src/`
-- 启动：`start-marionette.bat`（根目录唯一入口）/ `npm run tauri dev`
+- 启动：`start-marionette.bat`（根目录唯一的 GUI 入口；`install.ps1` 是发布资产，不算入口）/ `npm run tauri dev`
 - 便携构建：`tools/build-portable.bat` → `release/<版本号>/Marionette.exe`
 - 引擎源码吸纳/升级：`tools\import-magpie.ps1`（默认 latest 稳定；或 `-Tag <上游tag>`）
 - 验证脚本：`scripts/`；Windows 脚本：`tools/`（各目录索引见其中的 `README.md`）

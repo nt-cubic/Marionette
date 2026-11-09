@@ -33,7 +33,7 @@ Claude belongs in Claude Code, Grok in Grok Build, GPT in Codex, DeepSeek in Dee
 
 You don't need one agent that does everything. You need one window where each does what it's best at.
 
-Marionette is a local multi-agent GUI shell for Windows: it starts, shows, switches and records agents — it does not implement an agent runtime. **Single-file portable build — download and double-click.**
+Marionette is a local multi-agent GUI shell for Windows: it starts, shows, switches and records agents — it does not implement an agent runtime. **Single file: download and run, or install with one line.**
 
 ## One window, every agent
 
@@ -129,7 +129,21 @@ Reply in Telegram and it lands in that session through the exact same pipeline a
 
 ## Quick start
 
-> [Download](https://github.com/nt-cubic/Marionette/releases/latest) `Marionette.exe` and double-click. Requires the WebView2 Runtime (preinstalled on Win11 and updated Win10).
+**One-line install (recommended)** — installs into `%LOCALAPPDATA%\Programs\Marionette`, adds a Start menu entry and a `marionette` command on PATH. In-app updates replace it in place, no reinstall.
+
+```powershell
+irm https://github.com/nt-cubic/Marionette/releases/latest/download/install.ps1 | iex
+```
+
+No admin needed. To uninstall (quit the app first):
+
+```powershell
+curl.exe -fsSLo install.ps1 https://github.com/nt-cubic/Marionette/releases/latest/download/install.ps1
+powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall
+del install.ps1
+```
+
+Or [download](https://github.com/nt-cubic/Marionette/releases/latest) `Marionette.exe` and double-click it (portable, no Start menu entry). Both require the WebView2 Runtime (preinstalled on Win11 and updated Win10).
 
 <details>
 <summary>Run from source</summary>
