@@ -1,4 +1,5 @@
 import { t } from "./i18n";
+import { isExitAnswer, readCommandExit, signalOfExitCode } from "./exitMeaning";
 
 /**
  * 后台任务面板的数据聚合层（纯函数，无 React 依赖）。
@@ -67,6 +68,8 @@ export type TerminalRowRaw = {
   running: boolean;
   startedAtMs: number;
   exitStatus?: { exitCode?: number; signal?: string };
+  /** PTY 输出尾部（Rust 截好的 ~2KB）：读退出码的含义用（无匹配 vs 报错）。 */
+  outputTail?: string;
 };
 
 /** 面板排序：需要你 > 跑动中 > 排队 > 已结束；同级按开始时间新→旧。 */
@@ -188,17 +191,37 @@ export function buildBackgroundTaskRows(input: BuildBackgroundTasksInput): Backg
   // 2) ACP terminal/* 后台命令。结束的行保留（退出码一目了然），排序沉底。
   for (const term of input.terminals) {
     const exit = term.exitStatus;
+    // 退出码人话：grep exit 1 = 无匹配、test exit 1 = 不成立……（读自 codeg
+    // exit-meaning 的保守解析；答案类退出按完成着色，不再标红）。
+    const meaning =
+      !term.running && exit
+        ? readCommandExit(
+            term.command,
+            { code: exit.exitCode ?? null, signal: exit.signal ?? null },
+            term.outputTail ?? "",
+          )
+        : null;
+    const codeSignal = exit?.signal ?? signalOfExitCode(exit?.exitCode ?? null);
     rows.push({
       key: `terminal:${term.terminalId}`,
       kind: "terminal",
-      state: term.running ? "running" : exit?.exitCode === 0 ? "done" : "failed",
+      state: term.running
+        ? "running"
+        : isExitAnswer(meaning) || exit?.exitCode === 0
+          ? "done"
+          : "failed",
       sessionId: term.sessionId,
       title: clip(term.command, 80) || term.terminalId,
       detail: term.running
         ? undefined
-        : exit?.signal
-          ? t("tasks.signal", { signal: exit.signal })
-          : t("tasks.exitCode", { code: exit?.exitCode ?? "?" }),
+        : codeSignal
+          ? t("tasks.signal", { signal: codeSignal })
+          : meaning
+            ? t("tasks.exitMeaning.withCode", {
+                meaning: t(`tasks.exitMeaning.${meaning}`),
+                code: exit?.exitCode ?? "?",
+              })
+            : t("tasks.exitCode", { code: exit?.exitCode ?? "?" }),
       startedAtMs: term.startedAtMs || now,
     });
   }

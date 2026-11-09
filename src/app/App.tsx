@@ -420,19 +420,23 @@ const EMPTY_EVENTS: SessionEvent[] = [];
 /** 尾部优先加载的窗口大小（行）：首开只装末尾这么多的转录事件。 */
 const TRANSCRIPT_TAIL_EVENTS = 800;
 
-/** 后台任务面板：终端快照轮询 3s 一次，浅比较避免无变化时击穿下游 memo。 */
+/** 后台任务面板：终端快照轮询 3s 一次，浅比较避免无变化时击穿下游 memo。
+ * 运行中的行忽略 outputTail（还在长，只影响含义判读，运行中不显示）；
+ * 已退出的行把它算进比较——退出后残余输出还会补写进来。 */
 function sameTerminals(prev: AcpTerminalRow[], next: AcpTerminalRow[]): boolean {
   if (prev.length !== next.length) return false;
   for (let i = 0; i < prev.length; i++) {
     const a = prev[i]!;
     const b = next[i]!;
+    const aExited = a.exitStatus?.exitCode !== undefined || a.exitStatus?.signal !== undefined;
     if (
       a.terminalId !== b.terminalId ||
       a.running !== b.running ||
       a.command !== b.command ||
       a.sessionId !== b.sessionId ||
       a.exitStatus?.exitCode !== b.exitStatus?.exitCode ||
-      a.exitStatus?.signal !== b.exitStatus?.signal
+      a.exitStatus?.signal !== b.exitStatus?.signal ||
+      (aExited && a.outputTail !== b.outputTail)
     ) {
       return false;
     }

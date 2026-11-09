@@ -311,6 +311,21 @@ fn exit_status_json(code: Option<i32>, signal: Option<&str>) -> Value {
     Value::Object(m)
 }
 
+/// Tail of the PTY buffer for the tasks panel's exit-code reading (a search
+/// that matched nothing prints nothing; a shell complaint prints itself).
+/// Char-boundary safe — a mid-codepoint slice panics the app on send.
+fn output_tail_json(output: &str) -> Value {
+    const TAIL: usize = 2_000;
+    if output.len() <= TAIL {
+        return json!(output);
+    }
+    let mut start = output.len() - TAIL;
+    while start > 0 && !output.is_char_boundary(start) {
+        start -= 1;
+    }
+    json!(&output[start..])
+}
+
 fn spawn_reader<R: Read + Send + 'static>(
     mut reader: R,
     terminal: Arc<TerminalInstance>,
@@ -481,11 +496,12 @@ impl TerminalRuntime {
                     "running": !exited,
                     "startedAtMs": term.created_at_ms,
                 });
-                if let Some(snap) = snap {
+                if let Some(snap) = snap.as_ref() {
                     if snap.exit_code.is_some() || snap.signal.is_some() {
                         row["exitStatus"] =
                             exit_status_json(snap.exit_code, snap.signal.as_deref());
                     }
+                    row["outputTail"] = output_tail_json(&snap.output);
                 }
                 row
             })

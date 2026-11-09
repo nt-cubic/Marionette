@@ -706,6 +706,8 @@ export type AcpTerminalRow = {
   running: boolean;
   startedAtMs: number;
   exitStatus?: { exitCode?: number; signal?: string };
+  /** PTY 输出尾部（Rust 截好的 ~2KB）：退出码含义判读用。 */
+  outputTail?: string;
 };
 
 export async function listAcpTerminals(): Promise<AcpTerminalRow[]> {
