@@ -100,6 +100,7 @@ import { ImageAnnotator } from "./ImageAnnotator";
 import { CustomAgentDialog } from "./CustomAgentDialog";
 import { recordModelUsage, getRecentModels, recordLastUsedDefaults } from "../lib/recentModels";
 import {
+  applyMarksById,
   attachmentFromPath,
   isImagePath,
   type ImageAttachment,
@@ -4165,22 +4166,17 @@ export function Composer({
           </div>
         </div>
       </div>
-      {annotatingId &&
-        (() => {
-          const att = imageAttachments.find((a) => a.id === annotatingId);
-          if (!att) return null;
-          return (
-            <ImageAnnotator
-              attachment={att}
-              onClose={() => setAnnotatingId(null)}
-              onSave={(marks: ImageMark[]) => {
-                setImageAttachments((cur) =>
-                  cur.map((a) => (a.id === att.id ? { ...a, marks } : a)),
-                );
-              }}
-            />
-          );
-        })()}
+      {annotatingId && imageAttachments.some((a) => a.id === annotatingId) && (
+        <ImageAnnotator
+          attachments={imageAttachments}
+          startId={annotatingId}
+          onClose={() => setAnnotatingId(null)}
+          onSave={(marksById: Record<string, ImageMark[]>) => {
+            // One 完成 saves the marks of every image the user paged through.
+            setImageAttachments((cur) => applyMarksById(cur, marksById));
+          }}
+        />
+      )}
       {showCustomAgentDialog && (
         <CustomAgentDialog
           agents={agents}

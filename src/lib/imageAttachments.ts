@@ -191,3 +191,53 @@ export function clamp01(n: number): number {
   if (!Number.isFinite(n)) return 0;
   return Math.min(1, Math.max(0, n));
 }
+
+// ── Multi-image annotation session (the annotator edits all attachments at once) ──
+
+/** A region the user has picked but not yet commented on. */
+export type PendingMark =
+  | { kind: "point"; nx: number; ny: number }
+  | { kind: "rect"; nx: number; ny: number; nw: number; nh: number };
+
+/** Turn a pending region + its comment into a mark; null while the comment is blank. */
+export function markFromPending(pending: PendingMark, comment: string): ImageMark | null {
+  const text = comment.trim();
+  if (!text) return null;
+  const id = newMarkId();
+  return pending.kind === "point"
+    ? { id, kind: "point", nx: pending.nx, ny: pending.ny, comment: text }
+    : { id, kind: "rect", nx: pending.nx, ny: pending.ny, nw: pending.nw, nh: pending.nh, comment: text };
+}
+
+/** Working copy of every attachment's marks, keyed by attachment id. */
+export function marksByIdOf(list: readonly ImageAttachment[]): Record<string, ImageMark[]> {
+  const out: Record<string, ImageMark[]> = {};
+  for (const att of list) out[att.id] = att.marks;
+  return out;
+}
+
+/** Write an annotation session's marks back; attachments it does not know keep theirs. */
+export function applyMarksById(
+  list: readonly ImageAttachment[],
+  byId: Readonly<Record<string, ImageMark[]>>,
+): ImageAttachment[] {
+  return list.map((att) => {
+    const marks = byId[att.id];
+    return marks ? { ...att, marks } : att;
+  });
+}
+
+/** Footer progress: images with at least one mark, image count, total marks. */
+export function annotationProgress(
+  list: readonly ImageAttachment[],
+  byId: Readonly<Record<string, ImageMark[]>>,
+): { done: number; total: number; marks: number } {
+  let done = 0;
+  let marks = 0;
+  for (const att of list) {
+    const n = (byId[att.id] ?? att.marks).length;
+    if (n > 0) done += 1;
+    marks += n;
+  }
+  return { done, total: list.length, marks };
+}
