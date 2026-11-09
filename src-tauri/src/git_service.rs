@@ -46,7 +46,12 @@ pub fn get_changed_files(project_root: &Path) -> Result<Vec<ChangedFile>, String
         return Err(format!("Not a directory: {}", project_root.display()));
     }
 
-    let output = run_git(project_root, &["status", "--porcelain", "-uall"])?;
+    // `core.quotePath=false`: git C-quotes non-ASCII paths by default
+    // (`"docs/\351\234\200..."`), which the UI would display verbatim.
+    let output = run_git(
+        project_root,
+        &["-c", "core.quotePath=false", "status", "--porcelain", "-uall"],
+    )?;
     let code = output.status.code().unwrap_or(-1);
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -201,7 +206,10 @@ pub fn get_file_diff(project_root: &Path, path: &str) -> Result<String, String> 
         text = String::from_utf8_lossy(&working_tree.stdout).to_string();
     }
     if text.trim().is_empty() {
-        let untracked = run_git(project_root, &["status", "--porcelain", "--", &path])?;
+        let untracked = run_git(
+            project_root,
+            &["-c", "core.quotePath=false", "status", "--porcelain", "--", &path],
+        )?;
         let st = String::from_utf8_lossy(&untracked.stdout);
         if st.trim().starts_with("??") {
             // `git diff` does not include untracked files. `--no-index` gives
@@ -836,11 +844,7 @@ fn parse_porcelain(stdout: &str) -> Vec<ChangedFile> {
         }
         let status = &line[..2];
         let path_part = line[2..].trim_start();
-        let path = if let Some((_, new_path)) = path_part.split_once(" -> ") {
-            new_path.trim().to_string()
-        } else {
-            path_part.trim().trim_matches('"').to_string()
-        };
+        let path = porcelain_path_after_rename(path_part).unwrap_or_else(|| unquote_git_path(path_part));
         if path.is_empty() {
             continue;
         }
@@ -850,6 +854,53 @@ fn parse_porcelain(stdout: &str) -> Vec<ChangedFile> {
         });
     }
     files
+}
+
+/// Strip the C-quotes git puts around one path when it holds spaces, tabs,
+/// quotes or (with `core.quotePath` on) non-ASCII bytes. Inner `"`/`\` are
+/// backslash-escaped inside the quotes, so an unescaped trailing quote is the
+/// closing one — strip exactly one pair.
+fn unquote_git_path(side: &str) -> String {
+    let trimmed = side.trim();
+    trimmed
+        .strip_prefix('"')
+        .and_then(|inner| inner.strip_suffix('"'))
+        .unwrap_or(trimmed)
+        .to_string()
+}
+
+/// A porcelain path field is `<from> -> <to>` for a rename or copy, with EACH
+/// side quoted on its own (`"my notes.md" -> "notes/my notes.md"`), so a
+/// quoted `<from>` can itself contain ` -> `. Find the separator outside the
+/// quotes (escaping-aware) and return the new side unquoted.
+fn porcelain_path_after_rename(field: &str) -> Option<String> {
+    const SEP: &str = " -> ";
+    let field = field.trim();
+    let sep_at = if field.starts_with('"') {
+        let quoted = &field[1..];
+        let mut close = None;
+        let mut chars = quoted.char_indices();
+        while let Some((i, c)) = chars.next() {
+            match c {
+                // Inside quotes git escapes `"` and `\` with a backslash.
+                '\\' => {
+                    chars.next();
+                }
+                '"' => {
+                    // +2 in `field` coordinates: the opening quote is one byte back.
+                    close = Some(i + 2);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        close.filter(|&end| field[end..].starts_with(SEP))
+    } else {
+        // An unquoted `<from>` has no spaces (status would have quoted it),
+        // so the first separator is the real one.
+        field.find(SEP)
+    }?;
+    Some(unquote_git_path(&field[sep_at + SEP.len()..]))
 }
 
 fn map_status(xy: &str) -> String {
@@ -1002,6 +1053,30 @@ mod tests {
         assert_eq!(files[1].change_type, "added");
         assert_eq!(files[2].change_type, "untracked");
         assert_eq!(files[3].change_type, "deleted");
+    }
+
+    /// With `core.quotePath=false` non-ASCII paths come through raw; paths
+    /// with spaces still carry one pair of C-quotes per side.
+    #[test]
+    fn parses_porcelain_non_ascii_and_quoted_paths() {
+        let raw = "?? docs/需求.md\nM  \"my notes.txt\"\n";
+        let files = parse_porcelain(raw);
+        assert_eq!(files[0].path, "docs/需求.md");
+        assert_eq!(files[1].path, "my notes.txt");
+    }
+
+    /// A rename quotes each side on its own; the separator must be found
+    /// outside the quotes because a quoted `<from>` can contain ` -> `.
+    #[test]
+    fn parses_porcelain_rename_sides_unquoted() {
+        let files = parse_porcelain("R  \"my notes.md\" -> \"notes/my notes.md\"\n");
+        assert_eq!(files[0].path, "notes/my notes.md");
+        let files = parse_porcelain("R  plain.txt -> \"with space.txt\"\n");
+        assert_eq!(files[0].path, "with space.txt");
+        let files = parse_porcelain("R  \"a -> b.txt\" -> \"c.txt\"\n");
+        assert_eq!(files[0].path, "c.txt");
+        let files = parse_porcelain("R  old.rs -> new.rs\n");
+        assert_eq!(files[0].path, "new.rs");
     }
 
     /// Diffs with CJK content are multi-byte; a fixed byte cap often lands
