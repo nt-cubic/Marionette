@@ -1,0 +1,278 @@
+/* Seen images · full-screen viewer: dark veil, arrows, filmstrip, action row.
+   The veil is the one near-black surface (color-mix of --text-strong); every
+   light-on-dark tint below is a color-mix of --panel-raised, the "white overlay"
+   analog, so the whole thing inverts correctly with the theme. */
+
+.seen-viewer {
+  --sv-ink: color-mix(in srgb, var(--panel-raised) 92%, transparent);
+  --sv-ink-soft: color-mix(in srgb, var(--panel-raised) 80%, transparent);
+  --sv-ink-faint: color-mix(in srgb, var(--panel-raised) 60%, transparent);
+  --sv-line: color-mix(in srgb, var(--panel-raised) 16%, transparent);
+  --sv-line-strong: color-mix(in srgb, var(--panel-raised) 28%, transparent);
+  --sv-hover: color-mix(in srgb, var(--panel-raised) 8%, transparent);
+  position: fixed;
+  inset: 0;
+  z-index: 90; /* same layer as .image-lightbox */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--text-strong) 88%, transparent);
+  color: var(--sv-ink);
+  font-size: 12.5px;
+  cursor: zoom-out;
+  overscroll-behavior: none;
+}
+
+/* ── Top bar: counter · source chip · time · close ────────────────────── */
+
+.seen-viewer__top {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 14px;
+  height: 40px;
+  padding: 0 10px 0 16px;
+  font-size: 12px;
+}
+
+.seen-viewer__n {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.seen-viewer__src {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--sv-ink-soft);
+}
+
+.seen-viewer__src i {
+  width: 2px;
+  height: 10px;
+  border-radius: 1px;
+  background: var(--agent-ink, var(--accent));
+}
+
+.seen-viewer__src i.is-you {
+  background: var(--accent);
+}
+
+.seen-viewer__meta {
+  color: var(--sv-ink-faint);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.seen-viewer__x {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--sv-ink-soft);
+  cursor: pointer;
+}
+
+.seen-viewer__x:hover {
+  background: var(--sv-hover);
+  color: var(--sv-ink);
+}
+
+/* ── Main: arrows around the zoom/pan stage and its caption ───────────── */
+
+.seen-viewer__main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 0;
+  padding: 0 14px;
+}
+
+.seen-viewer__arrow {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 60px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--panel-raised) 6%, transparent);
+  color: var(--sv-ink);
+  cursor: pointer;
+}
+
+.seen-viewer__arrow:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--panel-raised) 14%, transparent);
+}
+
+.seen-viewer__arrow:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.seen-viewer__center {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.seen-viewer__stage {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  line-height: 0;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  transform-origin: center center;
+  will-change: transform;
+}
+
+.seen-viewer__stage.is-dragging {
+  cursor: grabbing;
+}
+
+.seen-viewer__img {
+  display: block;
+  max-width: calc(100vw - 170px);
+  max-height: calc(100vh - 250px);
+}
+
+/* SeenImageImg swaps itself for this span-sized placeholder when nothing loads. */
+.seen-viewer__img.is-broken {
+  width: 320px;
+  height: 200px;
+  border-radius: var(--radius);
+  background: var(--sv-hover);
+}
+
+.seen-viewer__cap {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 8px;
+  width: min(760px, 92%);
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.seen-viewer__cap-name {
+  flex: none;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.seen-viewer__cap-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--sv-ink-faint);
+  font-size: 11px;
+}
+
+/* ── Bottom: filmstrip + action row ───────────────────────────────────── */
+
+.seen-viewer__bot {
+  flex: none;
+  padding: 8px 16px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--panel-raised) 10%, transparent);
+}
+
+.seen-viewer__strip {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  margin-bottom: 10px;
+  padding-bottom: 2px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--sv-line) transparent;
+}
+
+.seen-viewer__strip::-webkit-scrollbar {
+  height: 6px;
+}
+
+.seen-viewer__strip::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: var(--sv-line);
+}
+
+.seen-viewer__strip::-webkit-scrollbar-track {
+  background: none;
+}
+
+.seen-viewer__acts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.seen-viewer__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--sv-line);
+  border-radius: var(--radius);
+  background: none;
+  color: var(--sv-ink);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.seen-viewer__btn:hover {
+  border-color: var(--sv-line-strong);
+  background: var(--sv-hover);
+}
+
+.seen-viewer__btn.is-main {
+  border-color: color-mix(in srgb, var(--accent) 75%, transparent);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.seen-viewer__btn.is-main:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.seen-viewer__btn kbd {
+  margin-left: 2px;
+  padding: 1px 4px;
+  border: 1px solid var(--sv-line-strong);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 10.5px;
+  color: var(--sv-ink-soft);
+}
+
+.seen-viewer__keys {
+  margin-left: auto;
+  color: var(--sv-ink-faint);
+  font-size: 11px;
+}
+
+/* One accent ring for everything interactive (thumbs keep their base.css ring). */
+.seen-viewer :focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}

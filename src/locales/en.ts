@@ -44,6 +44,9 @@ import { en as enFeUv2B } from "./parts/fe-uv2b.en";
 import { en as enFeUv2C } from "./parts/fe-uv2c.en";
 import { en as enFeUv2D } from "./parts/fe-uv2d.en";
 import { en as enFeUv2E } from "./parts/fe-uv2e.en";
+import { en as enFeSeenshell } from "./parts/fe-seenshell.en";
+import { en as enFeSeenrail } from "./parts/fe-seenrail.en";
+import { en as enFeSeenview } from "./parts/fe-seenview.en";
 import { en as enFeUv2F } from "./parts/fe-uv2f.en";
 
 export const en = {
@@ -87,5 +90,8 @@ export const en = {
   ...enFeUv2C,
   ...enFeUv2D,
   ...enFeUv2E,
+  ...enFeSeenshell,
+  ...enFeSeenrail,
+  ...enFeSeenview,
   ...enFeUv2F,
 } satisfies Record<keyof typeof zh, string>;

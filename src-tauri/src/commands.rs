@@ -3192,6 +3192,15 @@ pub fn bridge_delete_entry(id: String) -> Result<(), String> {
     result
 }
 
+/// Which engine-catalog models take images (id → bool; only ids the catalog actually
+/// described). Read-only and never wakes the engine — feeds the "can this model see
+/// images" state of the right-rail 图片 section.
+#[tauri::command(async)]
+pub fn engine_model_images() -> std::collections::HashMap<String, bool> {
+    let _trace = crate::debug_log::CmdTrace::new("engine_model_images");
+    crate::engine::catalog_image_flags()
+}
+
 /// Cross-use models one agent may borrow (dedup per the product table: M1
 /// lists key-plan models for Claude Code / Grok only; codex needs the M2
 /// engine; opencode uses its native provider manager).

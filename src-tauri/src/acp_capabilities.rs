@@ -503,6 +503,12 @@ pub(super) fn carry_forward_unsaid(next: &mut CapabilitySnapshot, prev: &Capabil
     if next.model_context_sizes.is_empty() {
         next.model_context_sizes = prev.model_context_sizes.clone();
     }
+    if next.model_images.is_empty() {
+        next.model_images = prev.model_images.clone();
+    }
+    if next.agent_prompt_image.is_none() {
+        next.agent_prompt_image = prev.agent_prompt_image;
+    }
     if next.model_effort_menus.is_empty() {
         next.model_effort_menus = prev.model_effort_menus.clone();
     }
@@ -556,6 +562,9 @@ pub(super) fn merge_legacy_models_field(session_response: &Value, caps: &mut Cap
     // model, not just the current one, so the meter can follow a later switch.
     if caps.model_context_sizes.is_empty() {
         caps.model_context_sizes = advertised_model_context_sizes(session_response);
+    }
+    if caps.model_images.is_empty() {
+        caps.model_images = advertised_model_images(session_response);
     }
     if caps.model_effort_menus.is_empty() {
         let (menus, defaults) = advertised_model_effort_catalog(session_response);
@@ -848,6 +857,8 @@ pub(super) fn parse_capabilities_from_typed(
         current_permission,
         permission_label,
         prompt_image: true,
+        agent_prompt_image: None,
+        model_images: HashMap::new(),
         model_context_sizes: HashMap::new(),
         model_effort_menus: HashMap::new(),
         model_default_efforts: HashMap::new(),
@@ -1044,6 +1055,8 @@ pub(super) fn parse_capabilities_fallback(
         current_permission,
         permission_label,
         prompt_image: true,
+        agent_prompt_image: None,
+        model_images: HashMap::new(),
         model_context_sizes: HashMap::new(),
         model_effort_menus: HashMap::new(),
         model_default_efforts: HashMap::new(),

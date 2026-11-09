@@ -1,0 +1,105 @@
+/* Seen images (right-rail 图片 section + viewer) — shared thumbnail look.
+   Flush, 3px radius, 1px edge. Source tick: theme green = you attached it,
+   agent ink = a tool produced it. Colours from theme tokens only. */
+
+.seen-th {
+  position: relative;
+  display: block;
+  flex: none;
+  box-sizing: border-box;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-soft);
+  cursor: default;
+}
+
+button.seen-th {
+  cursor: pointer;
+}
+
+button.seen-th:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+
+button.seen-th:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.seen-th.is-active {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.seen-th__img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.seen-th__img.is-broken {
+  background: repeating-linear-gradient(45deg, var(--panel-soft), var(--panel-soft) 4px, var(--panel-muted) 4px, var(--panel-muted) 8px);
+}
+
+.seen-th__tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: var(--agent-ink, var(--text-muted));
+}
+
+.seen-th.is-you .seen-th__tick {
+  background: var(--accent);
+}
+
+.seen-th__time {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  padding: 0 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--panel-raised) 88%, transparent);
+  color: var(--text-muted);
+  font-size: 9.5px;
+  font-style: normal;
+  line-height: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.seen-th.is-dim .seen-th__img {
+  filter: grayscale(1);
+  opacity: 0.42;
+}
+
+/* "在对话中定位": the render unit that holds the image's card flashes once (1.4s), then the
+   class is removed by SessionView. Same wrapper trick as find hits, so card layout is untouched. */
+.event-list__virt-item.is-locate-hit {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  animation: seen-locate-fade 1.4s var(--ease-out, ease-out) forwards;
+}
+
+@keyframes seen-locate-fade {
+  0%, 60% {
+    outline-color: var(--accent);
+    background-color: color-mix(in srgb, var(--accent) 10%, transparent);
+  }
+  100% {
+    outline-color: transparent;
+    background-color: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .event-list__virt-item.is-locate-hit {
+    animation: none;
+  }
+}
