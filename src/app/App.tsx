@@ -32,7 +32,7 @@ import { cacheEngineQuota, cachedEngineQuota } from "../lib/quotaCache";
 import { TELEGRAM_COMMAND_EVENT, telegramRemoteResult, type TelegramCommand } from "../lib/api";
 import { invalidateBridgeModels } from "../lib/bridge";
 import { useLatestCallback } from "../lib/useLatestCallback";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, killAcpTerminal, listAcpTerminals, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, loadTranscriptPage, loadTranscriptWindow, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, quitApp, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, setUiLocale, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, trimSessionWorkingSet, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID } from "../lib/api";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, engineModelImages, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, killAcpTerminal, listAcpTerminals, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, loadTranscriptPage, loadTranscriptWindow, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, quitApp, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, setUiLocale, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, trimSessionWorkingSet, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID } from "../lib/api";
 import {
   bindDetachedWindowReaper,
   DETACHED_HIDDEN_EVENT,
@@ -84,6 +84,11 @@ import {
 import { recordTurnUsage, appendTurnSessionRow, applyTurnGitEdits } from "../lib/usageLedger";
 import { isDeepSeekPeak } from "../lib/tokenPrices";
 import { digestTurn } from "../lib/usageDigest";
+import { useSeenImages } from "../lib/useSeenImages";
+import { bridgeCatalogId, resolveImageSupport } from "../lib/imageSupport";
+import type { SeenImage } from "../lib/seenImages";
+import { prettyModelTrigger } from "../lib/modelLabel";
+import { SeenImageViewer } from "../components/seen/SeenImageViewer";
 import { UsageAnalysisDialog } from "../components/UsageAnalysisDialog";
 import { UsagePage } from "../components/UsagePage";
 import { DiffPage } from "../components/DiffPage";
@@ -4832,6 +4837,47 @@ export function App() {
   const currentEvents = useMemo(() => {
     return eventsBySessionRef.current.get(displaySession.id) ?? EMPTY_EVENTS;
   }, [displaySessionTick, displaySession.id]);
+
+  // 「图片」小节：本对话里给 agent 看过的图（工具读图 / 截图 + 你附的），从现有事件
+  // 现算（节流，不新增存储）。能不能看图是三态，只信 agent / 模型目录报的，不按名字猜。
+  const seenImages = useSeenImages(currentEvents, displaySession.cwd, displaySession.id);
+  const seenModelId = activeModelId ?? sessionCapabilities?.currentModel ?? null;
+  const [engineImages, setEngineImages] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    // 只有桥接模型（marionette/…）要查引擎目录；读缓存目录，不会拉起引擎。
+    if (!bridgeCatalogId(seenModelId)) return;
+    let alive = true;
+    void engineModelImages().then((flags) => {
+      if (alive) setEngineImages(flags);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [seenModelId]);
+  const seenImageSupport = useMemo(
+    () =>
+      resolveImageSupport({
+        agentPromptImage: sessionCapabilities?.agentPromptImage ?? null,
+        modelId: seenModelId,
+        modelImages: sessionCapabilities?.modelImages ?? null,
+        engineImages,
+      }),
+    [sessionCapabilities?.agentPromptImage, sessionCapabilities?.modelImages, seenModelId, engineImages],
+  );
+  const [seenViewerIndex, setSeenViewerIndex] = useState<number | null>(null);
+  useEffect(() => {
+    setSeenViewerIndex(null);
+  }, [displaySession.id]);
+  const locateSeenImage = useCallback(
+    (image: SeenImage) => {
+      window.dispatchEvent(
+        new CustomEvent("marionette-locate-seen", {
+          detail: { sessionId: displaySession.id, ref: image.ref },
+        }),
+      );
+    },
+    [displaySession.id],
+  );
 
   const sessionRunning =
     displaySession.status === "running" || displaySession.status === "starting";
@@ -9914,6 +9960,16 @@ export function App() {
           )}
         </section>
 
+        {seenViewerIndex != null && seenImages.length > 0 && (
+          <SeenImageViewer
+            images={seenImages}
+            startIndex={Math.min(seenViewerIndex, seenImages.length - 1)}
+            agentId={currentAgent.id}
+            onClose={() => setSeenViewerIndex(null)}
+            onLocate={locateSeenImage}
+          />
+        )}
+
         <ContextPanel
           collapsed={rightCollapsed && !dockActive}
           onCollapse={() => setRightCollapsed(true)}
@@ -9928,6 +9984,17 @@ export function App() {
           gitBranch={gitBranch}
           onCommitAndPush={handleCommitAndPush}
           onOpenDiff={(path) => void handleOpenDiff(path)}
+          seenImages={seenImages}
+          seenImagesSupport={seenImageSupport}
+          seenImagesNotSentText={
+            seenImageSupport === "no"
+              ? sessionCapabilities?.agentPromptImage === false
+                ? t("seenImages.notSentAgent", { agent: currentAgent.label })
+                : t("seenImages.notSentModel", { model: prettyModelTrigger(null, seenModelId) })
+              : null
+          }
+          seenImagesTruncated={isHeadTruncated(displaySession.id)}
+          onOpenSeenImage={setSeenViewerIndex}
           projectRoot={currentProject?.rootPath ?? null}
           handoff={lastHandoff}
           projectContext={projectContext}

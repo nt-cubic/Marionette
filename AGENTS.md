@@ -394,6 +394,16 @@ PR #6 的 localStorage 台账,验收后 squash 合入并按产品定案补齐）
 - **usage-smoke 在非中文系统会假红**：Node ≥24 默认语言来自 OS（本机 ja-JP），断言是中文——脚本开头 `await applyLocale("zh-CN")` 钉住。别的脚本要断言文案时照做。
 - 回归：`verify-usage-insights.mts` 新增了高峰窗口/自报费用优先/非 DeepSeek 不加倍/会话按窗取数/失败与压缩计数/文件活动断言。
 
+## 对话图片小节（2026-11-09，右栏「图片」+ 大图查看器）
+
+设计稿：画布「v2 · 图片（对话里读到的图）」。改前先记：
+
+- **数据现算，不新增存储**：`lib/seenImages.ts::collectSeenImages` 从当前对话事件折出（You 卡 `attachments` + `tool_call` 的 `images` / 路径），同一张图只算一次、时间与定位取最近一次；`useSeenImages` 节流（1.5s 前沿 + 后沿，结果没变不换引用）——流式每个分块都会 bump events，别在 App 里直接 `useMemo` 扫。只统计**已加载**的对话（`isHeadTruncated` → 页脚提示），更早的随「加载更早」增加。文案口径是「读到 / 附上的图」，**不是「模型看过」**——我们只知道发了什么。
+- **「在对话中定位」**：App 派发 `marionette-locate-seen`（`{sessionId, ref}`），SessionView 用 `findSeenEventIndex(visibleEvents, ref)` + 与查找命中同一套 renderUnit 定位，给该单元加 `is-locate-hit` 1.4s。**下标必须按 `visibleEvents`（去掉 file_change）算**，renderUnit 的 index 就是它的下标，别换成 displayEvents。图在折叠的过程卡里时闪的是整张过程卡。
+- **能不能看图 = 三态，只信别人报的**（`lib/imageSupport.ts`：`yes` / `no` / `unknown`，只有明确 `no` 才变灰并写「没送到它那里」，`unknown` 什么都不提示）。来源：agent 层是 ACP initialize 的 `promptCapabilities.image` → Rust `CapabilitySnapshot.agent_prompt_image: Option<bool>`（None = 没说）；模型层是 `availableModels[]` 里的 `model_entry_images`（尽力而为：布尔 `supportsImage(s)`/`vision`、`inputModalities`/`modalities[.input]`、`capabilities.*`，**没有任何按模型名猜的表**）→ `model_images`；桥接模型（`marionette/…`）走引擎目录的 `engine_model_images` 命令（读缓存目录，不拉起引擎）。**坑**：magpie 对没有任何元数据的条目（`context_window == 0`）把 `images` 默认成 false，那是「不知道」不是「不能」——`image_flags_from_rows` 只报 `images == true` 或带元数据的条目。**旧字段 `prompt_image: bool` 仍恒为 true（发送路径不变），别把它当 agent 的真实声明读**；agent 明确报 `image:false` 时发送仍会带图块（与以前一致），要不要拦是单独的产品决定。本机日志实测：目前见到的 agent 都报 `image:true`，原生 agent 的模型列表里没有见到任何模态字段，所以原生模型多数是 `unknown`。
+- **组件**在 `components/seen/`：`SeenThumb`（共用缩略图，左缘 2px 来源色条：绿 = 你附的、`--agent-ink` = 工具产生的）、`SeenImagesSection`（右栏小节：默认一行 4 张 + 「+N」，展开 3 列按「刚刚/今天/昨天/M·D」分组、可切 全部·你的·工具，一次最多 60 张；开合存 localStorage `marionette-seen-images-open`）、`SeenImageViewer`（← → 翻页、L 定位、Esc 关；缩放拖拽用 `lib/usePanZoom`，`ImageLightbox` 也改用同一个 hook，行为不变）。图片走 asset 协议懒加载（`SeenImageImg`，失败回退 Rust 读取），**别把整库解成 data URL 放进内存**。样式 `styles/seen-images/`，i18n 片段 `fe-seen{shell,rail,view}`。分区组件由 GLM 5.3 子代理按简报实现。
+- 回归：`npx tsx scripts/verify-seen-images.mts`（收集 / 去重 / 分组 / 定位 / 三态）+ `cargo test --bin marionette -- model_entry_images model_images_come_from image_flags_skip`。
+
 ## 排查「卡退」（崩溃/闪退）—— 第一件事
 
 **用户报「卡退」时，先看 `%USERPROFILE%\.marionette\logs\dev.log`（开发者日志）。**

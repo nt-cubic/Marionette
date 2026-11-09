@@ -554,6 +554,16 @@ export type CapabilitySnapshot = {
    * ceiling for the model the session is actually on.
    */
   modelContextSizes?: Record<string, number> | null;
+  /**
+   * What the agent said in initialize about image prompts (ACP `promptCapabilities.image`):
+   * false = it takes none, null/absent = it did not say. See lib/imageSupport.ts.
+   */
+  agentPromptImage?: boolean | null;
+  /**
+   * Per-model "accepts images" from the agent's own model catalog, only for models whose
+   * entry says so (best effort; ACP has no standard field). See lib/imageSupport.ts.
+   */
+  modelImages?: Record<string, boolean> | null;
 };
 
 /**

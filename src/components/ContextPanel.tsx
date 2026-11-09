@@ -3,6 +3,9 @@ import { memo, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { t, useT } from "../lib/i18n";
 import { ChangesSection } from "./ChangesSection";
+import { SeenImagesSection } from "./seen/SeenImagesSection";
+import type { SeenImage } from "../lib/seenImages";
+import type { ImageSupport } from "../lib/imageSupport";
 import { MemorySection } from "./MemorySection";
 import { QuotaSection } from "./QuotaSection";
 import { TasksSection } from "./TasksSection";
@@ -42,6 +45,16 @@ type ContextPanelProps = {
   /** Ask the active agent to commit local changes and push. */
   onCommitAndPush?: () => void;
   onOpenDiff?: (path: string) => void;
+  /** Images this conversation has shown the agent (newest first); empty = no section. */
+  seenImages?: SeenImage[];
+  /** Whether the current model can take images (three-state; only "no" changes the look). */
+  seenImagesSupport?: ImageSupport;
+  /** Already-translated "not delivered" sentence for support === "no". */
+  seenImagesNotSentText?: string | null;
+  /** Only part of the conversation is loaded (earlier messages not paged in yet). */
+  seenImagesTruncated?: boolean;
+  /** Open the viewer at this index of `seenImages`. */
+  onOpenSeenImage?: (index: number) => void;
   /** Project root used to open / reveal changed files. */
   projectRoot?: string | null;
   handoff?: HandoffResult | null;
@@ -186,6 +199,11 @@ export const ContextPanel = memo(function ContextPanel({
   gitBranch = null,
   onCommitAndPush,
   onOpenDiff,
+  seenImages,
+  seenImagesSupport = "unknown",
+  seenImagesNotSentText = null,
+  seenImagesTruncated = false,
+  onOpenSeenImage,
   projectRoot = null,
   handoff = null,
   projectContext = null,
@@ -331,6 +349,17 @@ export const ContextPanel = memo(function ContextPanel({
         onOpenDiff={onOpenDiff}
         projectRoot={projectRoot}
       />
+
+      {seenImages && seenImages.length > 0 && onOpenSeenImage && (
+        <SeenImagesSection
+          images={seenImages}
+          support={seenImagesSupport}
+          notSentText={seenImagesNotSentText}
+          agentId={activeAgentId}
+          truncated={seenImagesTruncated}
+          onOpen={onOpenSeenImage}
+        />
+      )}
 
       <section className="rail-sec rail-shared">
         <button

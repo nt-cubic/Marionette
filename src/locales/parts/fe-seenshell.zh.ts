@@ -1,0 +1,23 @@
+/** 对话里读到的图（右栏「图片」小节 + 大图查看器）· 共用文案。 */
+export const zh = {
+  "seenImages.title": "图片",
+  "seenImages.open": "查看 {name}",
+  "seenImages.via.you": "你附的",
+  "seenImages.via.browser": "浏览器截图",
+  "seenImages.via.computer": "桌面截图",
+  "seenImages.via.read": "读取的图",
+  "seenImages.group.now": "刚刚",
+  "seenImages.group.today": "今天",
+  "seenImages.group.yesterday": "昨天",
+  "seenImages.group.day": "{month}/{day}",
+  "seenImages.filter.all": "全部 {total}",
+  "seenImages.filter.you": "你的 {total}",
+  "seenImages.filter.tool": "工具 {total}",
+  "seenImages.meta": "{total} · ≈ {tokens} token",
+  "seenImages.partial": "已加载部分 · 更早的随「加载更早」补进来",
+  "seenImages.tip": "{via} · {time}",
+  "seenImages.notSentModel": "当前模型 {model} 的目录写明只收文字：这些图没有送到它那里。",
+  "seenImages.notSentAgent": "{agent} 不接收图片：这些图没有送到它那里。",
+  "seenImages.switchModel": "换成能看图的模型",
+  "seenImages.locateMissing": "找不到这张图所在的卡：更早的对话还没加载，先点「加载更早」。",
+} as const;

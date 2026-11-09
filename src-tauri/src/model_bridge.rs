@@ -1415,6 +1415,19 @@ pub(crate) struct CatalogModelRow {
     pub images: bool,
 }
 
+/// 模型 id → 是否收图，给前端的「能不能看图」用（2026-11-09）。
+///
+/// 只报「目录真的说了」的条目：`images == true` 是肯定的陈述；`false` 只有在条目带了
+/// 元数据（`context_window > 0`）时才是真的「不收图」——magpie 对没有任何元数据的条目
+/// 会把 `images` 默认成 false，那是「不知道」，不能当「不能」往外报（本机实测：
+/// `deepseek-v4.1-local` 这类 0 窗口条目全是这样）。
+pub(crate) fn image_flags_from_rows(rows: &[CatalogModelRow]) -> std::collections::HashMap<String, bool> {
+    rows.iter()
+        .filter(|row| row.images || row.context_window > 0)
+        .map(|row| (row.id.clone(), row.images))
+        .collect()
+}
+
 /// 目录 JSON → 模型行（保序去重，带窗口/输出上限）。engine.rs 的引擎目录共用。
 pub(crate) fn parse_models_catalog_rows(text: &str) -> Vec<CatalogModelRow> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
@@ -4812,6 +4825,25 @@ Connection: close
         assert_eq!(rows[1].max_output, 0);
         assert_eq!(rows[2].context_window, 500_000);
         assert_eq!(rows[2].max_output, 0, "max_output_tokens 0 = 未披露");
+    }
+
+    /// 目录没元数据的条目是「不知道」，不能报成「不收图」。
+    #[test]
+    fn image_flags_skip_unknowns_but_keep_real_noes() {
+        let rows = vec![
+            CatalogModelRow { id: "p/vision".into(), context_window: 1_000_000, max_output: 1, images: true },
+            // metadata present + images false = the catalog really says text-only
+            CatalogModelRow { id: "p/text".into(), context_window: 1_000_000, max_output: 1, images: false },
+            // no metadata at all: magpie defaults images to false — that is "unknown", not "no"
+            CatalogModelRow { id: "src/local".into(), context_window: 0, max_output: 0, images: false },
+            // images true is a positive statement even without a window
+            CatalogModelRow { id: "src/odd".into(), context_window: 0, max_output: 0, images: true },
+        ];
+        let flags = image_flags_from_rows(&rows);
+        assert_eq!(flags.get("p/vision"), Some(&true));
+        assert_eq!(flags.get("p/text"), Some(&false));
+        assert_eq!(flags.get("src/odd"), Some(&true));
+        assert!(!flags.contains_key("src/local"));
     }
 
     /// 图片能力来自 `modalities.input`（magpie `/v1/models` 的形状）：DSH 桥

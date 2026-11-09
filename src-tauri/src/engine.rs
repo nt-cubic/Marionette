@@ -3132,6 +3132,18 @@ pub fn catalog_direct_or_cached() -> (Vec<String>, bool) {
     )
 }
 
+/// 引擎目录里每个模型「收不收图」（见 `model_bridge::image_flags_from_rows`）。同
+/// `catalog_direct_or_cached`：引擎在跑用 live，停着回放磁盘缓存；绝不为此拉起引擎。
+pub fn catalog_image_flags() -> std::collections::HashMap<String, bool> {
+    if bridge_ready() {
+        let rows = catalog_direct_entries();
+        if !rows.is_empty() {
+            return crate::model_bridge::image_flags_from_rows(&rows);
+        }
+    }
+    crate::model_bridge::image_flags_from_rows(&cached_catalog_entries())
+}
+
 /// 按量计费来源的模型 id：官方 DeepSeek provider 直供条目（`deepseek/…`），
 /// 以及可能路由到它的 auto 组条目（`auto/deepseek…`——组内套餐渠道配额
 /// 用尽时会落到官方按量 key）。opencode-go 下的 deepseek 是套餐渠道，

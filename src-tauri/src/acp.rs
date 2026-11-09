@@ -226,6 +226,14 @@ pub struct CapabilitySnapshot {
     /// Agent accepts `ContentBlock::Image` in session/prompt (from initialize).
     /// Defaults true so vision-capable CLIs work before we re-parse caps.
     pub prompt_image: bool,
+    /// What the agent *said* in initialize (`agentCapabilities.promptCapabilities.image`):
+    /// `Some(false)` = it takes no images, `None` = it did not say. Unlike
+    /// `prompt_image` (which stays permissive so sending is unchanged) this is the raw
+    /// report, so the UI can tell "no" from "unknown".
+    pub agent_prompt_image: Option<bool>,
+    /// Per-model "accepts images" read from the agent's own `availableModels[]` entries
+    /// (best effort — ACP has no standard field). Only models whose entry says so appear.
+    pub model_images: HashMap<String, bool>,
     /// Per-model context ceiling from the session/new catalog
     /// (`availableModels[]._meta.totalContextTokens`), keyed by model id.
     ///
@@ -1430,7 +1438,10 @@ impl AcpService {
             .map_err(|_| "ACP session id lock poisoned".to_string())? =
             Some(agent_session_id.clone());
 
-        let caps = parse_session_capabilities(&new_session);
+        let mut caps = parse_session_capabilities(&new_session);
+        caps.agent_prompt_image = initialized
+            .pointer("/agentCapabilities/promptCapabilities/image")
+            .and_then(Value::as_bool);
         // ACP does not currently require a title in `session/new`, but a few
         // agents return one (or expose it under their response metadata). Pass
         // it through the ready event so the UI can use it when available.
@@ -2796,6 +2807,80 @@ fn model_entry_context_size(entry: &Value) -> Option<u64> {
         }
     }
     None
+}
+
+/// Whether one `availableModels[]` entry says the model takes images, if it says anything.
+///
+/// ACP has no standard model-modality field, so this reads the shapes agents and model
+/// catalogs actually use, on the entry and on its `_meta`: a boolean
+/// (`supportsImage(s)` / `vision`), a modality list (`inputModalities`, `modalities`
+/// as a list or `{ input: [...] }`), or `capabilities` (`image` / `vision` flag or an
+/// `input` list). An empty list is "not said". There is no model-name table here.
+pub(crate) fn model_entry_images(entry: &Value) -> Option<bool> {
+    fn from_list(list: &[Value]) -> Option<bool> {
+        let words: Vec<String> = list
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|s| s.to_ascii_lowercase())
+            .collect();
+        if words.is_empty() {
+            None
+        } else {
+            Some(words.iter().any(|w| w == "image" || w == "images"))
+        }
+    }
+    fn from_node(node: &Value) -> Option<bool> {
+        for key in ["supportsImage", "supportsImages", "supports_image", "vision", "supportsVision"] {
+            if let Some(b) = node.get(key).and_then(Value::as_bool) {
+                return Some(b);
+            }
+        }
+        for key in ["inputModalities", "input_modalities"] {
+            if let Some(found) = node.get(key).and_then(Value::as_array).and_then(|l| from_list(l)) {
+                return Some(found);
+            }
+        }
+        if let Some(m) = node.get("modalities") {
+            let list = m.as_array().or_else(|| m.get("input").and_then(Value::as_array));
+            if let Some(found) = list.and_then(|l| from_list(l)) {
+                return Some(found);
+            }
+        }
+        if let Some(caps) = node.get("capabilities") {
+            for key in ["image", "images", "vision"] {
+                if let Some(b) = caps.get(key).and_then(Value::as_bool) {
+                    return Some(b);
+                }
+            }
+            if let Some(found) = caps.get("input").and_then(Value::as_array).and_then(|l| from_list(l)) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    from_node(entry).or_else(|| entry.get("_meta").and_then(from_node))
+}
+
+/// Per-model "accepts images" flags from the `session/new` catalog, keyed by model id.
+fn advertised_model_images(session_response: &Value) -> HashMap<String, bool> {
+    let mut flags = HashMap::new();
+    let Some(list) = session_response
+        .get("models")
+        .and_then(|models| {
+            models
+                .get("availableModels")
+                .or_else(|| models.get("available_models"))
+        })
+        .and_then(Value::as_array)
+    else {
+        return flags;
+    };
+    for entry in list {
+        if let (Some(id), Some(flag)) = (model_entry_id(entry), model_entry_images(entry)) {
+            flags.insert(id.to_string(), flag);
+        }
+    }
+    flags
 }
 
 /// Per-model context ceilings from the `session/new` catalog, keyed by model id.
@@ -4398,6 +4483,8 @@ mod tests {
             current_permission: None,
             permission_label: None,
             prompt_image: true,
+            agent_prompt_image: None,
+            model_images: HashMap::new(),
             model_context_sizes: HashMap::new(),
             model_effort_menus: HashMap::new(),
             model_default_efforts: HashMap::new(),
@@ -5601,6 +5688,54 @@ mod tests {
         );
         assert_eq!(session_id_from_detached_label("main"), None);
         assert_eq!(session_id_from_detached_label("detached-"), None);
+    }
+
+    /// Per-model "accepts images" is read from whatever shape the agent / its model
+    /// catalog uses — never from the model's name.
+    #[test]
+    fn model_entry_images_reads_the_shapes_catalogs_use() {
+        // booleans, on the entry or in _meta
+        assert_eq!(model_entry_images(&json!({ "modelId": "a", "supportsImage": true })), Some(true));
+        assert_eq!(model_entry_images(&json!({ "modelId": "a", "_meta": { "vision": false } })), Some(false));
+        // modality lists
+        assert_eq!(model_entry_images(&json!({ "inputModalities": ["text", "image"] })), Some(true));
+        assert_eq!(model_entry_images(&json!({ "_meta": { "modalities": { "input": ["text"], "output": ["text"] } } })), Some(false));
+        assert_eq!(model_entry_images(&json!({ "modalities": ["Text", "IMAGE"] })), Some(true));
+        // capabilities block
+        assert_eq!(model_entry_images(&json!({ "capabilities": { "image": true } })), Some(true));
+        assert_eq!(model_entry_images(&json!({ "capabilities": { "input": ["text"] } })), Some(false));
+        // not said: empty list, unrelated keys, a vision-sounding name
+        assert_eq!(model_entry_images(&json!({ "inputModalities": [] })), None);
+        assert_eq!(model_entry_images(&json!({ "modelId": "deepseek-v4-vision", "name": "Vision" })), None);
+        assert_eq!(model_entry_images(&json!({})), None);
+    }
+
+    #[test]
+    fn model_images_come_from_the_session_catalog_and_survive_an_echo() {
+        let response = json!({
+            "sessionId": "s1",
+            "models": {
+                "currentModelId": "grok-4.6",
+                "availableModels": [
+                    { "modelId": "grok-4.6", "name": "Grok 4.6", "_meta": { "inputModalities": ["text", "image"] } },
+                    { "modelId": "text-only", "name": "Text only", "_meta": { "modalities": { "input": ["text"] } } },
+                    { "modelId": "silent", "name": "Silent" }
+                ]
+            }
+        });
+        let caps = parse_session_capabilities(&response);
+        assert_eq!(caps.model_images.get("grok-4.6"), Some(&true));
+        assert_eq!(caps.model_images.get("text-only"), Some(&false));
+        assert!(!caps.model_images.contains_key("silent"), "an unstated model stays unknown");
+        // a set_config_option echo that says nothing about models keeps the flags
+        let mut echo = parse_session_capabilities(&json!({ "sessionId": "s1" }));
+        let mut prev = caps.clone();
+        prev.agent_prompt_image = Some(false);
+        carry_forward_unsaid(&mut echo, &prev);
+        assert_eq!(echo.model_images.get("grok-4.6"), Some(&true));
+        assert_eq!(echo.agent_prompt_image, Some(false));
+        // initialize said nothing → None, not false
+        assert_eq!(parse_session_capabilities(&json!({ "sessionId": "s1" })).agent_prompt_image, None);
     }
 
     /// deepseek-acp 0.9.0 initialize: close/fork only. No additionalDirectories.

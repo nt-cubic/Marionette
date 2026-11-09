@@ -78,6 +78,8 @@ import { WebReplyBody } from "./WebReplyBody";
 import { MessageOutline } from "./MessageOutline";
 import { MessageTimestamp } from "./MessageTimestamp";
 import { ToolImageStrip } from "./ToolImageStrip";
+import { findSeenEventIndex, type SeenImageRef } from "../lib/seenImages";
+import { showToast } from "../lib/toast";
 import { ToolImageThumbs } from "./ToolImageThumbs";
 import { TurnDeliveryCard } from "./TurnDeliveryCard";
 import { UnifiedDiffView } from "./UnifiedDiffView";
@@ -1920,6 +1922,8 @@ function CleanPlaceholder({
   const [findQuery, setFindQuery] = useState("");
   const [findHitPos, setFindHitPos] = useState(0);
   const [findHitKey, setFindHitKey] = useState<string | null>(null);
+  // 「在对话中定位」（图片查看器）：滚到那张卡所在的渲染单元并闪一下，1.4 秒后恢复。
+  const [locateKey, setLocateKey] = useState<string | null>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
   const findMatches = useMemo(
     () => findConversationMatches(displayEvents, findQuery),
@@ -2332,6 +2336,49 @@ function CleanPlaceholder({
     window.addEventListener("marionette-outline-jump", onJump);
     return () => window.removeEventListener("marionette-outline-jump", onJump);
   }, [renderUnits, useVirtual, virtual.offsetOf]);
+
+  // 图片查看器的「在对话中定位」：滚到该图最近一次出现的那张卡（或它所在的过程卡）并闪一下。
+  useEffect(() => {
+    const onLocate = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ sessionId?: string; ref?: SeenImageRef }>).detail;
+      if (!detail?.ref || detail.sessionId !== session.id) return;
+      const eventIndex = findSeenEventIndex(visibleEvents, detail.ref);
+      if (eventIndex < 0) {
+        showToast({ text: t("seenImages.locateMissing"), tone: "info" });
+        return;
+      }
+      // 与查找命中同一套：渲染单元按起始事件下标排序，取最后一个起点不超过目标的单元。
+      let unitIdx = -1;
+      let unitKey: string | null = null;
+      for (let i = 0; i < renderUnits.length; i += 1) {
+        const unit = renderUnits[i]!;
+        const start =
+          unit.kind === "activity"
+            ? unit.items[0]!.index
+            : unit.kind === "delivery"
+              ? unit.anchorIndex
+              : unit.index;
+        if (start <= eventIndex) {
+          unitIdx = i;
+          unitKey = unit.key;
+        } else break;
+      }
+      const el = listRef.current;
+      if (unitIdx < 0 || !unitKey || !el) return;
+      stickToBottomRef.current = false;
+      setAtBottom(false);
+      setLocateKey(unitKey);
+      if (useVirtual) {
+        el.scrollTop = Math.max(0, virtual.offsetOf(unitIdx) - el.clientHeight / 4);
+      } else {
+        el.querySelector(`[data-unit-key="${CSS.escape(unitKey)}"]`)?.scrollIntoView({ block: "center" });
+      }
+      const key = unitKey;
+      window.setTimeout(() => setLocateKey((cur) => (cur === key ? null : cur)), 1400);
+    };
+    window.addEventListener("marionette-locate-seen", onLocate);
+    return () => window.removeEventListener("marionette-locate-seen", onLocate);
+  }, [visibleEvents, renderUnits, session.id, t, useVirtual, virtual.offsetOf]);
 
   return (
     // Relative paths in agent text resolve against this dialog's project root.
@@ -3440,6 +3487,9 @@ function CleanPlaceholder({
             }
             if (unit.key === findHitKey) {
               rowClass = rowClass ? `${rowClass} is-find-hit` : "is-find-hit";
+            }
+            if (unit.key === locateKey) {
+              rowClass = rowClass ? `${rowClass} is-locate-hit` : "is-locate-hit";
             }
             const node =
               unit.kind === "delivery" ? (

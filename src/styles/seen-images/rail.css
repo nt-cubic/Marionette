@@ -1,0 +1,154 @@
+/* seen-images · right-rail 「图片」 section (SeenImagesSection).
+   Flush bands + 1px lines; the thumbnail look itself lives in base.css (.seen-th). */
+
+/* closed: one band of four 56x42 thumbs + the "+N" tile */
+.seen-rail__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px 2px;
+}
+
+.seen-rail__more {
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 56px;
+  height: 42px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-soft);
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.seen-rail__more:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.seen-rail__more:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* open: text-only filter tabs, active = 2px accent underline */
+.seen-rail__seg {
+  display: flex;
+  gap: 14px;
+  height: 26px;
+  padding: 0 12px;
+}
+
+.seen-rail__seg button {
+  height: 26px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: inset 0 -2px 0 transparent;
+}
+
+.seen-rail__seg button:hover {
+  color: var(--accent);
+}
+
+.seen-rail__seg button.is-on {
+  color: var(--text-strong);
+  font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.seen-rail__seg button:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* age band: faint label + 3-column grid */
+.seen-rail__gl {
+  padding: 8px 12px 4px;
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+
+.seen-rail__grid {
+  display: grid;
+  grid-template-columns: repeat(3, 84px);
+  gap: 6px;
+  padding: 0 12px;
+}
+
+/* "show more" text button */
+.seen-rail__morebar {
+  padding: 8px 12px 0;
+}
+
+.seen-rail__morebar button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.seen-rail__morebar button:hover {
+  color: var(--accent);
+}
+
+.seen-rail__morebar button:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* empty-filter line + partial-load footer */
+.seen-rail__empty,
+.seen-rail__foot {
+  padding: 10px 12px 0;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* model cannot take images: dimmed note under the row / filter row */
+.seen-rail__offnote {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.seen-rail__offnote > svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--text-faint);
+}
+
+.seen-rail__switch {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.seen-rail__switch:hover {
+  text-decoration: underline;
+}
+
+.seen-rail__switch:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}

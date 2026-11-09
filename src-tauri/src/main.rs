@@ -711,6 +711,7 @@ fn main() {
             commands::bridge_add_key,
             commands::bridge_delete_entry,
             commands::bridge_list_models,
+            commands::engine_model_images,
             commands::bridge_add_custom_provider,
             commands::model_library_scan,
             commands::model_library_check_source,

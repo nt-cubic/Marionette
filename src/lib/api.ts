@@ -1301,6 +1301,16 @@ export async function bridgeDeleteEntry(id: string): Promise<void> {
   await invoke("bridge_delete_entry", { id });
 }
 
+/** Engine-catalog models that take images (id → bool). Empty outside the desktop app; never wakes the engine. */
+export async function engineModelImages(): Promise<Record<string, boolean>> {
+  if (!isTauriRuntime()) return {};
+  try {
+    return await invoke<Record<string, boolean>>("engine_model_images");
+  } catch {
+    return {};
+  }
+}
+
 export async function bridgeListModels(agentId: string): Promise<BridgeModelsResult> {
   if (!isTauriRuntime()) return { models: [], note: null };
   try {

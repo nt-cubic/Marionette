@@ -44,6 +44,9 @@ import { zh as zhFeUv2B } from "./parts/fe-uv2b.zh";
 import { zh as zhFeUv2C } from "./parts/fe-uv2c.zh";
 import { zh as zhFeUv2D } from "./parts/fe-uv2d.zh";
 import { zh as zhFeUv2E } from "./parts/fe-uv2e.zh";
+import { zh as zhFeSeenshell } from "./parts/fe-seenshell.zh";
+import { zh as zhFeSeenrail } from "./parts/fe-seenrail.zh";
+import { zh as zhFeSeenview } from "./parts/fe-seenview.zh";
 import { zh as zhFeUv2F } from "./parts/fe-uv2f.zh";
 
 export const zh = {
@@ -87,5 +90,8 @@ export const zh = {
   ...zhFeUv2C,
   ...zhFeUv2D,
   ...zhFeUv2E,
+  ...zhFeSeenshell,
+  ...zhFeSeenrail,
+  ...zhFeSeenview,
   ...zhFeUv2F,
 } as const;
