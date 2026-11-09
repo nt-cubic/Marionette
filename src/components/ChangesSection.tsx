@@ -139,6 +139,8 @@ type ChangesSectionProps = {
 };
 
 const NO_FILES: ChangedFile[] = [];
+/** Rows shown before "Show more" — full review lives in the diff page. */
+const CHANGES_PREVIEW = 10;
 
 export const ChangesSection = memo(function ChangesSection({
   changedFiles = NO_FILES,
@@ -152,6 +154,10 @@ export const ChangesSection = memo(function ChangesSection({
   const t = useT();
   const [riskyOpenPath, setRiskyOpenPath] = useState<string | null>(null);
   const [fileActionNote, setFileActionNote] = useState<string | null>(null);
+
+  const [expanded, setExpanded] = useState(false);
+  const visibleFiles = expanded ? changedFiles : changedFiles.slice(0, CHANGES_PREVIEW);
+  const hiddenFiles = changedFiles.length - visibleFiles.length;
 
   const counted = changedFiles.some((f) => f.additions != null || f.deletions != null);
   const added = changedFiles.reduce((sum, f) => sum + (f.additions ?? 0), 0);
@@ -200,7 +206,7 @@ export const ChangesSection = memo(function ChangesSection({
         <p className="rail-empty">{changedFilesNote ?? t("rail.noChanges")}</p>
       ) : (
         <ul className="rail-list">
-          {changedFiles.map((file) => (
+          {visibleFiles.map((file) => (
             <ChangedFileRow
               key={`${file.changeType}:${file.path}`}
               file={file}
@@ -211,6 +217,28 @@ export const ChangesSection = memo(function ChangesSection({
             />
           ))}
         </ul>
+      )}
+      {!expanded && hiddenFiles > 0 && (
+        <div className="shelf-clip shelf-clip--lend">
+          <div className="shelf-clip__fade" aria-hidden />
+          <button
+            className="shelf-clip__more"
+            type="button"
+            title={t("rail.showMoreItems", { n: hiddenFiles })}
+            aria-label={t("rail.showMoreItems", { n: hiddenFiles })}
+            onClick={() => setExpanded(true)}
+          >
+            {t("rail.showMore")}
+            <span className="shelf-clip__count">{hiddenFiles}</span>
+          </button>
+        </div>
+      )}
+      {expanded && changedFiles.length > CHANGES_PREVIEW && (
+        <div className="shelf-clip shelf-clip--lend shelf-clip--expanded">
+          <button className="shelf-clip__more" type="button" onClick={() => setExpanded(false)}>
+            {t("rail.showLess")}
+          </button>
+        </div>
       )}
       {fileActionNote ? <p className="rail-empty">{fileActionNote}</p> : null}
 

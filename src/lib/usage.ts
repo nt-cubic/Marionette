@@ -1085,6 +1085,29 @@ function isLifetimeUsage(source: Record<string, unknown>): boolean {
 }
 
 /**
+ * Grok `turn_completed.usage.costUsdTicks` → USD (1 tick = 1e-10 USD, the invoice
+ * denominator). Session-lifetime snapshot — the caller records the delta between
+ * turns. Accepts both the notification envelope and a bare turn result.
+ */
+export function extractTurnCostUsd(data: unknown): number | null {
+  const root = asRecord(data);
+  if (!root) return null;
+  let usage: Record<string, unknown> | null = null;
+  if (typeof root.method === "string") {
+    const params = asRecord(root.params);
+    const update = asRecord(params?.update);
+    usage = asRecord(update?.usage) ?? asRecord(params?.usage);
+  } else {
+    const update = asRecord(root.update);
+    usage = asRecord(update?.usage) ?? asRecord(root.usage);
+  }
+  if (!usage) return null;
+  const ticks = asNumber(usage.costUsdTicks);
+  if (ticks == null || ticks <= 0) return null;
+  return ticks * 1e-10;
+}
+
+/**
  * Merge a turn result into usage state.
  *
  * `contextUsed` is only *seeded* here, never overwritten: `usage_update` is the

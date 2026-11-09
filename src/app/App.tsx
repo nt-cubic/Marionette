@@ -66,6 +66,8 @@ import {
   buildUsageSnapshot,
   cumulativeFromEvents,
   emptyGrokTurnUsage,
+  extractTurnCostUsd,
+  extractUsageFromAcpData,
   emptySessionUsage,
   extractTurnTokens,
   grokTurnUsageToTurnTokens,
@@ -79,7 +81,8 @@ import {
   type GrokTurnUsage,
   type SessionUsageState,
 } from "../lib/usage";
-import { recordTurnUsage } from "../lib/usageLedger";
+import { recordTurnUsage, appendTurnSessionRow, applyTurnGitEdits } from "../lib/usageLedger";
+import { isDeepSeekPeak } from "../lib/tokenPrices";
 import { digestTurn } from "../lib/usageDigest";
 import { UsageAnalysisDialog } from "../components/UsageAnalysisDialog";
 import { UsagePage } from "../components/UsagePage";
@@ -185,7 +188,7 @@ import {
 } from "../lib/errors";
 import { prettyEffortLabel } from "../lib/modelLabel";
 import { classifyToolCall } from "../lib/turnActivity";
-import { selectTurnWorkspaceChanges } from "../lib/turnDelivery";
+import { selectTurnWorkspaceChanges, type TurnWorkspaceChange } from "../lib/turnDelivery";
 import { getLastUsedDefaults } from "../lib/recentModels";
 import { pickRestoredSession, saveUiRestore, saveQueuedSends, loadQueuedSends, saveScheduledSends, loadScheduledSends, saveClosedTabs, loadClosedTabs } from "../lib/uiRestore";
 import {
@@ -665,6 +668,20 @@ export function App() {
   // Turn/complete reads the last context reading for the usage ledger; state is stale in that closure.
   const sessionUsageByIdRef = useRef(sessionUsageById);
   sessionUsageByIdRef.current = sessionUsageById;
+  /**
+   * Usage-ledger live inputs (2026-11-09): whether this turn's context reading
+   * was actually live-updated (usage_update / Grok per-call — a frozen seeded
+   * value must not enter the occupancy chart), compactions observed mid-turn
+   * (ACP compaction_update completed), Grok's previous turn-cost snapshot
+   * (costUsdTicks is session-lifetime; the ledger records the delta), the last
+   * recorded turn end (agent re-entry digest dedupe), and the turn's pending
+   * git finalize promise (its rows back-fill git-truth edit lines).
+   */
+  const ctxFreshTurnRef = useRef<Record<string, boolean>>({});
+  const turnCompactionsRef = useRef<Record<string, number>>({});
+  const grokPrevCostUsdRef = useRef<Record<string, number>>({});
+  const ledgerLastRecordRef = useRef<Record<string, number>>({});
+  const turnFinalizeRef = useRef<Record<string, Promise<Array<{ add: number | null; del: number | null }> | null>>>({});
   /** Per-session ACP-advertised slash commands (`available_commands_update`). */
   const [slashCommandsById, setSlashCommandsById] = useState<Record<string, AvailableCommand[]>>({});
   /**
@@ -1406,19 +1423,21 @@ export function App() {
    * `file_change` per file. Files that were already dirty before the turn are
    * only kept when the turn's own tools touched them, so a second conversation
    * (or the user's editor) on the same project cannot land in this card.
+   * Resolves to this turn's rows (null when there is no git truth) — the usage
+   * ledger's git-truth edit lines come from that return value.
    */
-  const finalizeTurnFileChanges = useCallback(async (sessionId: string) => {
+  const finalizeTurnFileChanges = useCallback(async (sessionId: string): Promise<TurnWorkspaceChange[] | null> => {
     const baseline = turnBaselineRef.current[sessionId];
-    if (!baseline) return;
-    if (turnBaselinePublishedRef.current[sessionId] === baseline.token) return;
+    if (!baseline) return null;
+    if (turnBaselinePublishedRef.current[sessionId] === baseline.token) return null;
     // Claim the baseline synchronously: the queued-next-prompt flush can start a
     // new baseline before this async work finishes, and that one must not be
     // diffed against this turn's start.
     delete turnBaselineRef.current[sessionId];
     const started = await baseline.snapshot.catch(() => null);
     // Not a git work tree, or the baseline itself failed: no git truth at all.
-    if (!started) return;
-    if (turnBaselinePublishedRef.current[sessionId] === baseline.token) return;
+    if (!started) return null;
+    if (turnBaselinePublishedRef.current[sessionId] === baseline.token) return null;
     let delta: TurnSnapshotEnd;
     try {
       delta = await endWorkspaceSnapshot(started.snapshotId);
@@ -1430,7 +1449,7 @@ export function App() {
         summary: "turn delta failed — no file chips for this turn",
         detail: error instanceof Error ? error.message : String(error),
       });
-      return;
+      return null;
     }
     turnBaselinePublishedRef.current[sessionId] = baseline.token;
     const changes = selectTurnWorkspaceChanges(
@@ -1478,6 +1497,7 @@ export function App() {
       }, { publish: true });
     }
     await refreshProjectChangedFiles(sessionId);
+    return changes;
   }, [collectTurnTouchedPaths, refreshProjectChangedFiles]);
 
   const finalizeTurnFileChangesRef = useRef(finalizeTurnFileChanges);
@@ -2401,7 +2421,7 @@ export function App() {
         if (!keepSuppressed) {
           streamSuppressedRef.current.delete(payload.sessionId);
         }
-        void finalizeTurnFileChangesRef.current(payload.sessionId);
+        turnFinalizeRef.current[payload.sessionId] = finalizeTurnFileChangesRef.current(payload.sessionId);
         // Finalize @-delegate child when its turn ends.
         if (delegateMetaRef.current.has(payload.sessionId)) {
           if (payload.method === "process/ended" || payload.method === "process/stopped") {
@@ -2457,6 +2477,12 @@ export function App() {
       // onto session/update with `_meta["opencode/child-session"]`.
       if (payload.method === "session/update") {
         // Context window / cost / vendor rate-limit meta
+        // A live context reading inside this turn marks the turn's ledger entry
+        // ctx-fresh (frozen seeded values must not enter the occupancy chart).
+        const liveCtx = extractUsageFromAcpData(payload.data);
+        if (liveCtx && liveCtx.contextUsed != null) {
+          ctxFreshTurnRef.current[payload.sessionId] = true;
+        }
         setSessionUsageById((current) => {
           const merged = mergeUsageFromAcp(current[payload.sessionId], payload.data);
           if (!merged) return current;
@@ -2464,6 +2490,11 @@ export function App() {
         });
 
         const update = getSessionUpdate(payload.data);
+        // compaction_update (stable ACP since v1.25; we advertise session.compaction):
+        // count completions for the turn's ledger entry. No summary text is kept.
+        if (update && getSessionUpdateKind(update) === "compaction_update" && (update as { status?: unknown }).status === "completed") {
+          turnCompactionsRef.current[payload.sessionId] = (turnCompactionsRef.current[payload.sessionId] ?? 0) + 1;
+        }
         const title = extractAcpSessionTitle(payload.data);
         if (title) applyAgentSessionTitle(payload.sessionId, title);
 
@@ -2598,6 +2629,8 @@ export function App() {
           );
           const tokens = grokTurnUsageToTurnTokens(grokTurnUsageRef.current[sid]);
           if (tokens) {
+            // Grok's per-call numbers ARE a live context reading for this turn.
+            ctxFreshTurnRef.current[sid] = true;
             setSessionUsageById((current) => ({
               ...current,
               [sid]: applyGrokLiveContext(current[sid], tokens),
@@ -2660,7 +2693,32 @@ export function App() {
             ledgerSession && ledgerSession.projectId !== CHAT_PROJECT_ID
               ? projectsRef.current.find((p) => p.id === ledgerSession.projectId)?.name ?? null
               : null;
-          recordTurnUsage({
+          // Agent-reported cost: Grok's turn_completed.usage.costUsdTicks is a
+          // session-lifetime snapshot — record the delta from the previous turn.
+          const turnCostUsd = extractTurnCostUsd(payload.data);
+          let reportedUsd: number | null = null;
+          if (turnCostUsd != null) {
+            const prevCost = grokPrevCostUsdRef.current[payload.sessionId];
+            grokPrevCostUsdRef.current[payload.sessionId] = turnCostUsd;
+            reportedUsd = Math.max(0, turnCostUsd - (prevCost ?? 0));
+          }
+          // DeepSeek peak (UTC+8 weekday windows) — only turns whose cost the agent
+          // did not report; the agent's own figure already includes any peak math.
+          const peak =
+            reportedUsd == null && isDeepSeekPeak(endedAt)
+              ? {
+                  input: turnStats.input ?? 0,
+                  output: turnStats.output ?? 0,
+                  cached: turnStats.cached ?? 0,
+                  cacheCreation: turnStats.cacheCreation ?? 0,
+                }
+              : null;
+          // A context reading counts only when live-updated during THIS turn.
+          const ctxFresh = ctxFreshTurnRef.current[payload.sessionId] ?? false;
+          delete ctxFreshTurnRef.current[payload.sessionId];
+          const compactions = turnCompactionsRef.current[payload.sessionId] ?? 0;
+          delete turnCompactionsRef.current[payload.sessionId];
+          const ledgerEntry = {
             agentId: ledgerSession?.agentId,
             modelId:
               capsByIdRef.current[payload.sessionId]?.currentModel ??
@@ -2670,18 +2728,45 @@ export function App() {
             endedAt,
             sentAt,
             // What this turn did (time split, tools, commands, edits), folded from
-            // the events of this turn only: never a transcript reload.
+            // the events of this turn only: never a transcript reload. Agent
+            // re-entry continues without a turn boundary — skip anything created
+            // before the previous recorded turn ended (it was digested already).
             digest: digestTurn(eventsBySessionRef.current.get(payload.sessionId) ?? [], payload.sessionId, {
               stats: turnStats,
               sentAt,
               endedAt,
+              sinceMs: ledgerLastRecordRef.current[payload.sessionId] ?? null,
             }),
             ctx: ledgerUsage
               ? { used: ledgerUsage.contextUsed ?? null, size: ledgerUsage.contextSize ?? null }
               : null,
+            ctxFresh,
             session: ledgerSession
               ? { id: ledgerSession.id, label: ledgerSession.label, project: ledgerProject }
               : null,
+            outcome:
+              payload.kind === "error" || stopReason === "error" || stopReason === "refusal"
+                ? ("failed" as const)
+                : stopReason === "cancelled"
+                  ? ("cancelled" as const)
+                  : ("ended" as const),
+            compactions,
+            reportedUsd,
+            peak,
+          };
+          recordTurnUsage(ledgerEntry);
+          ledgerLastRecordRef.current[payload.sessionId] = endedAt;
+          appendTurnSessionRow(ledgerSession?.id ?? payload.sessionId, ledgerEntry);
+          // Git-truth edit lines: the turn finalize diff (started at turn end)
+          // resolves after this point; its rows overwrite the tool-text estimate.
+          void turnFinalizeRef.current[payload.sessionId]?.then((rows) => {
+            delete turnFinalizeRef.current[payload.sessionId];
+            if (!rows || rows.length === 0) return;
+            applyTurnGitEdits(ledgerSession?.id ?? payload.sessionId, endedAt, {
+              ops: rows.length,
+              add: rows.reduce((sum, row) => sum + (row.add ?? 0), 0),
+              del: rows.reduce((sum, row) => sum + (row.del ?? 0), 0),
+            });
           });
         }
 
@@ -9914,7 +9999,14 @@ export function App() {
           {dockPage === "memo" && renderMemoBox(() => setDockPage(null))}
           {dockPage === "usage" && (
             <div className="usage-dock-page">
-              <UsagePage onClose={() => setDockPage(null)} />
+              <UsagePage
+                onClose={() => setDockPage(null)}
+                onOpenSession={(id) => {
+                  const target = sessionsRef.current.find((item) => item.id === id);
+                  if (target) openSessionRef.current(target);
+                  setDockPage(null);
+                }}
+              />
             </div>
           )}
           {dockPage === "doc" && activeDocPath && (

@@ -3024,14 +3024,6 @@ function CleanPlaceholder({
                       <span className="event-card__tool-diff-del">−{toolDiff.del}</span>
                     </span>
                   )}
-                  {event.type === "tool_call" ? (
-                    <ToolImageThumbs
-                      srcs={collectToolImageSrcs(event)}
-                      cwd={session.cwd}
-                      max={2}
-                      className="event-card__thumbs"
-                    />
-                  ) : null}
                   {event.type === "thought" &&
                     !thoughtLive &&
                     thoughtDurationSec != null &&
@@ -3043,6 +3035,14 @@ function CleanPlaceholder({
                       {toolOutcome.text}
                     </span>
                   )}
+                  {event.type === "tool_call" ? (
+                    <ToolImageThumbs
+                      srcs={collectToolImageSrcs(event)}
+                      cwd={session.cwd}
+                      max={3}
+                      className="event-card__thumbs"
+                    />
+                  ) : null}
                 </summary>
                 {/* Lazy body: closed cards mount summary only — 500+ tool rows stay cheap. */}
                 {detailOpen && (

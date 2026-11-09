@@ -47,8 +47,9 @@
    `.event-card { padding: 10px }` above would make every tool/thought row as
    wide as You / Reply. Collapsible chips beat that here. Nested rows inside
    the process card are one 28px chip (full radius, no second rail) so a
-   kind-group, a thought, and a command are the same size. Thumbs on a
-   closed tally stay 16px so they cannot stretch the chip. */
+   kind-group, a thought, and a command are the same size. Image thumbs are
+   a 28px film strip flush to the right edge — same size open or closed, so
+   the tally line never jumps when the fold opens. */
 
 .event-card.event-card--thought,
 .event-card.event-card--tool_call {
@@ -63,16 +64,61 @@
   padding-left: 12px;
 }
 
+.event-list__virt-item > .event-card--tool_call:has(.tool-thumbs) {
+  padding-right: 0;
+}
+
+.event-list__virt-item > .event-card--tool_call > .event-card__summary {
+  min-height: 28px;
+  max-height: 28px;
+  height: 28px;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
 .activity-group.is-live {
   border-color: color-mix(in srgb, var(--agent-ink, var(--accent)) 40%, var(--border));
 }
 
-.event-card--collapsible:not([open]) .tool-thumb,
-.activity-panel:not([open]) .tool-thumb,
-.activity-kind:not([open]) .tool-thumb {
-  width: 16px;
-  height: 16px;
-  border-radius: var(--radius-sm);
+/* Film-cell thumbs: fill the 28px chip on the right, open or closed.
+   Parent overflow + radius clips them to the round right corners. */
+.tool-thumbs {
+  align-self: stretch;
+  align-items: stretch;
+  height: 28px;
+  gap: 0;
+}
+
+.tool-thumb {
+  align-self: stretch;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--panel-muted);
+}
+
+.tool-thumb:hover:not(.tool-thumb--more) {
+  border-color: var(--border);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.tool-thumb--more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0;
+  background: color-mix(in srgb, var(--panel-soft) 70%, var(--panel-muted));
+}
+
+.event-card__summary:has(.tool-thumbs) .event-card__outcome,
+.activity-panel__summary:has(.tool-thumbs) .activity-panel__failed {
+  margin-left: 0;
 }
 
 .event-card__tool-diff {
@@ -534,8 +580,14 @@
   display: block;
   height: auto;
   max-height: none;
-  padding: 5px 8px;
+  padding: 0 8px 6px;
   border-radius: var(--radius);
+}
+
+.activity-group .event-card--thought:has(.tool-thumbs),
+.activity-group .event-card--tool_call:has(.tool-thumbs),
+.activity-group .activity-kind:has(.tool-thumbs) {
+  padding-right: 0;
 }
 
 .activity-group .event-card--thought::before,
@@ -543,13 +595,16 @@
   content: none;
 }
 
-.activity-group .event-card--thought:not([open]) > .event-card__summary,
-.activity-group .event-card--tool_call:not([open]) > .event-card__summary,
-.activity-group .activity-kind:not([open]) > .activity-panel__summary {
+.activity-group .event-card--thought > .event-card__summary,
+.activity-group .event-card--tool_call > .event-card__summary,
+.activity-group .activity-kind > .activity-panel__summary {
   width: 100%;
   min-height: 0;
   height: 28px;
+  max-height: 28px;
   gap: 6px;
+  flex-wrap: nowrap;
+  overflow: hidden;
 }
 
 .activity-group .activity-panel__body,
@@ -562,6 +617,31 @@
 .activity-group .activity-kind .activity-panel__title {
   font-size: 12px;
   font-weight: 600;
+}
+
+/* Outer tally is the same 28px row open or closed. Thumbs eat the right
+   padding so the film strip sits on the card edge. */
+.activity-group > .activity-panel {
+  padding: 0;
+}
+
+.activity-group > .activity-panel > .activity-panel__summary {
+  height: 28px;
+  min-height: 28px;
+  max-height: 28px;
+  padding: 0 10px;
+  box-sizing: border-box;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.activity-group > .activity-panel:has(.tool-thumbs) > .activity-panel__summary {
+  padding-right: 0;
+}
+
+.activity-group > .activity-panel > .activity-panel__body {
+  margin: 0;
+  padding: 6px 10px 8px;
 }
 
 /* ---- Reply header / footer split (2026-11-06) -----------------------------------------

@@ -413,7 +413,7 @@ const IMAGE_HINT = /\.(?:png|jpe?g|gif|webp|bmp|avif|svg)\b/i;
  * Skips tools with no direct image path and no image-looking input: parsing
  * every shell command's JSON on each stream tick would make long runs crawl.
  */
-function summaryImages(items: ActivityDetailItem[], max = 3): string[] {
+function summaryImages(items: ActivityDetailItem[], max = 8): string[] {
   const srcs: string[] = [];
   const seen = new Set<string>();
   for (const item of items) {

@@ -44,6 +44,8 @@ mod storage;
 mod telegram_remote;
 mod terminal_runtime;
 mod tools_mcp;
+mod usage_backfill;
+mod usage_store;
 mod webview2_gate;
 mod zcode_mcp_bridge;
 
@@ -602,6 +604,12 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             loc::set_ui_locale,
+            usage_store::usage_ledger_load,
+            usage_store::usage_ledger_save,
+            usage_store::usage_session_append,
+            usage_store::usage_session_read,
+            usage_backfill::usage_backfill_scan,
+            usage_backfill::usage_grok_composition,
             commands::list_projects,
             commands::list_providers,
             commands::navigate_webview,

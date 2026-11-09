@@ -49,13 +49,13 @@ function FoldSummary({
         <span className="activity-panel__elapsed">{summary.elapsed}</span>
       ) : null}
       {summary.diff ? <DiffBadge diff={summary.diff} /> : null}
+      {summary.failed ? <span className="activity-panel__failed">{summary.failed} failed</span> : null}
+      {liveIcon}
       <ToolImageThumbs
         srcs={summary.images}
         cwd={cwd}
         className="activity-panel__thumbs"
       />
-      {summary.failed ? <span className="activity-panel__failed">{summary.failed} failed</span> : null}
-      {liveIcon}
     </summary>
   );
 }

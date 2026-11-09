@@ -1,5 +1,5 @@
 /**
- * usageLedger — 跨会话 token 用量台账(纯前端,localStorage)。
+ * usageLedger — 跨会话 token 用量台账。
  *
  * 每轮 turn/complete 时把 turnStats 增量记进按「本地日」聚合的台账
  * (turnStats 已盖在 assistant_message 上随转录持久化,这里另记一份聚合,
@@ -7,18 +7,28 @@
  * O(1) 写入、跨重启,绝不为了聚合去重载转录(内存压力红线)。
  * 保留 180 个自然日(90 天趋势与作息热图的窗口上限),写入时修剪。
  *
+ * 存放位置(usageStore.ts):桌面版在 `~/.marionette/usage/`(磁盘,乐观 rev 写),
+ * 浏览器预览退 localStorage,Node 脚本退内存。启动时把 localStorage 里的旧账
+ * 迁到磁盘,只在迁移成功后删旧键。写失败会记日志并在下一个事件重试
+ * (旧版是悄悄关掉记录,丢到上一次成功写为止的全部账)。
+ *
  * 记账挂在 turn/complete 处理器里,与事件盖戳共用同一条单窗口不变量
  * (同一轮只被一个窗口处理,否则转录本身就会重复)。**多窗口合并**:
- * 撕出的 detached 窗口同样会记账,而每个窗口各持一份内存副本——落账前
- * 重新读盘、把自己的这笔并进去再写回(读-合并-写),并监听 `storage`
- * 事件让其它窗口的写入立刻反映到本窗 UI;整文件覆盖写仍可能丢最后一
- * 毫秒的对端写入,概率极低且只丢聚合展示,不碰转录真相。
+ * 落账前重新读盘、把自己的这笔并进去再写回(读-合并-写);别的窗口保存后
+ * 会广播事件,本窗收到后重读并刷新 UI。乐观 rev 撞车时 reload-merge-retry。
  */
 
 import { useSyncExternalStore } from "react";
 import { saveTextFile } from "./api";
 import type { TurnStats } from "./types";
 import type { Tally, TimingSplit, TurnDigest } from "./usageDigest";
+import {
+  clearLegacyLocalLedger,
+  pickBackend,
+  readLegacyLocalLedger,
+  type LedgerBackend,
+} from "./usageStore";
+import { appendDebugLog } from "./api";
 
 export type LedgerAgentUsage = { output: number; turns: number };
 
@@ -31,6 +41,26 @@ export type LedgerModelUsage = {
   turns: number;
   /** v2:最近一次落账时的 agent(按 agent 分组的模型表用)。 */
   agent?: string;
+  /** v3:DeepSeek 高峰时段(北京时间工作日 9–12/14–18)的桶(只在没有自报费用的轮次上记)。 */
+  peak?: { input: number; output: number; cached: number; cacheCreation: number };
+  /** v3:agent 自报费用的那部分轮次的桶(费用金额在 repUsd)。 */
+  rep?: { input: number; output: number; cached: number; cacheCreation: number; turns: number };
+  /** v3:agent 自报费用合计(USD;如 Grok turn_completed.usage.costUsdTicks,仅增量部分)。 */
+  repUsd?: number;
+};
+
+/** v3(2026-11-09):一天里某个会话的用量(按天记,对话列表不再把整段历史算进短时间窗)。 */
+export type SessionDayUsage = {
+  input: number;
+  output: number;
+  cached: number;
+  cacheCreation: number;
+  turns: number;
+  /** models<modelId, turns> 当天该会话每个模型的轮次(按各自牌价算费用)。 */
+  models: Record<string, number>;
+  last: number;
+  /** 当天 agent 自报费用(USD);列表按时间窗取数时费用也随窗走。 */
+  repUsd?: number;
 };
 
 export type LedgerDay = {
@@ -53,6 +83,8 @@ export type LedgerDay = {
   detail?: Record<string, AgentDayDetail>;
   /** 当天有落账的会话 id(去重,上限 SESSION_IDS_CAP)。 */
   sessionIds?: string[];
+  /** v3:当天各会话的用量(key = session id;分析页的对话列表按时间窗取这里)。 */
+  sessions?: Record<string, SessionDayUsage>;
 };
 
 /** 一个 agent 一天的完整明细(Token 用量页 v2 的原料)。 */
@@ -75,8 +107,19 @@ export type AgentDayDetail = {
   tools: Record<string, Tally>;
   cmds: Record<string, Tally>;
   skills: Record<string, Tally>;
+  /** 工具文本口径的改动行数(v3 起仅作估算展示;账面真数在 gitEdits)。 */
   edits: { ops: number; add: number; del: number };
   est: { user: number; attach: number; toolIo: number };
+  /** v3:git 对账出的改动行数(轮末交付卡同一来源,只记被本轮工具碰过的文件)。 */
+  gitEdits?: { ops: number; add: number; del: number };
+  /** v3:压缩事件数(ACP compaction_update,completed 记 1)。 */
+  compactions?: number;
+  /** v3:失败轮数 / 中断轮数(区分工具失败:一个轮可以工具全成但轮失败)。 */
+  turnFails?: number;
+  turnCancels?: number;
+  /** v3:文件活动,按文件聚合(读次数 / 编辑次数与行数,cap 见 PATHS_PER_DAY)。 */
+  reads?: Record<string, number>;
+  edited?: Record<string, { n: number; add: number; del: number }>;
 };
 
 /** 最近活跃的会话摘要(对话列表的原料;按 last 修剪到 SESSIONS_CAP)。 */
@@ -90,10 +133,14 @@ export type LedgerSession = {
   output: number;
   cached: number;
   cacheCreation: number;
-  /** 最近一轮结束时的上下文占用 %(agent 没报就是 null)。 */
+  /** 最近一轮结束时的上下文占用 %(没有实时读数就是 null,冻结值不算)。 */
   ctxPct: number | null;
   /** 最近一轮结束的时间戳(ms)。 */
   last: number;
+  /** v3:按天用量的 key 列表(升序;对话列表按时间窗从这里取数)。 */
+  dayKeys?: string[];
+  /** v3:agent 自报费用合计(USD)。 */
+  repUsd?: number;
 };
 
 export type UsageLedger = {
@@ -111,8 +158,9 @@ export const TPS_EDGES = [5, 10, 15, 20, 30, 40, 50, 60, 80, 100, 130, 160, 200,
 const SESSION_IDS_CAP = 400;
 const SESSIONS_CAP = 300;
 const TALLY_CAP = 60;
+/** 一天里最多记多少个不同文件(超出丢弃最不活跃的,防 runaway 扫盘)。 */
+const PATHS_PER_DAY = 240;
 
-const LEDGER_KEY = "marionette-usage-ledger";
 const RETAIN_DAYS = 180;
 
 // ── 模块级 store(useSyncExternalStore 订阅,语言无关) ──────────────────
@@ -135,6 +183,7 @@ function normalizeDay(raw: unknown): LedgerDay | null {
     hours: Array.isArray(d.hours) && d.hours.length === 24 ? d.hours : new Array(24).fill(0),
     detail: normalizeDetailMap(d.detail),
     sessionIds: Array.isArray(d.sessionIds) ? d.sessionIds.filter((v) => typeof v === "string") : [],
+    sessions: normalizeSessionDayMap(d.sessions),
   };
 }
 
@@ -152,6 +201,21 @@ function tallyMap(raw: unknown): Record<string, Tally> {
     out[k] = { n: Number(v.n) || 0, fail: Number(v.fail) || 0, ms: Number(v.ms) || 0 };
   }
   return out;
+}
+
+function editedMap(raw: unknown): Record<string, { n: number; add: number; del: number }> {
+  const out: Record<string, { n: number; add: number; del: number }> = {};
+  if (typeof raw !== "object" || raw == null) return out;
+  for (const [k, v] of Object.entries(raw as Record<string, Partial<{ n: number; add: number; del: number }>>)) {
+    if (!v || typeof v !== "object") continue;
+    out[k] = { n: Number(v.n) || 0, add: Number(v.add) || 0, del: Number(v.del) || 0 };
+  }
+  return out;
+}
+
+/** 有限值或 0(计数/金额聚合用,负数与 NaN 不进账)。 */
+function countOf(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0;
 }
 
 export function emptyDetail(): AgentDayDetail {
@@ -181,6 +245,7 @@ function normalizeDetail(raw: unknown): AgentDayDetail {
   const t = (d.timing ?? {}) as Partial<TimingSplit>;
   const e = (d.edits ?? {}) as Partial<AgentDayDetail["edits"]>;
   const s = (d.est ?? {}) as Partial<AgentDayDetail["est"]>;
+  const g = (d.gitEdits ?? {}) as Partial<NonNullable<AgentDayDetail["gitEdits"]>>;
   return {
     input: Number(d.input) || 0,
     output: Number(d.output) || 0,
@@ -204,13 +269,47 @@ function normalizeDetail(raw: unknown): AgentDayDetail {
     skills: tallyMap(d.skills),
     edits: { ops: Number(e.ops) || 0, add: Number(e.add) || 0, del: Number(e.del) || 0 },
     est: { user: Number(s.user) || 0, attach: Number(s.attach) || 0, toolIo: Number(s.toolIo) || 0 },
+    gitEdits: { ops: countOf(g.ops), add: countOf(g.add), del: countOf(g.del) },
+    compactions: countOf(d.compactions),
+    turnFails: countOf(d.turnFails),
+    turnCancels: countOf(d.turnCancels),
+    reads: editedCounts(d.reads),
+    edited: editedMap(d.edited),
   };
+}
+
+function editedCounts(raw: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (typeof raw !== "object" || raw == null) return out;
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === "number" && Number.isFinite(v) && v > 0) out[k] = v;
+  }
+  return out;
 }
 
 function normalizeDetailMap(raw: unknown): Record<string, AgentDayDetail> {
   const out: Record<string, AgentDayDetail> = {};
   if (typeof raw !== "object" || raw == null) return out;
   for (const [k, v] of Object.entries(raw as Record<string, unknown>)) out[k] = normalizeDetail(v);
+  return out;
+}
+
+function normalizeSessionDayMap(raw: unknown): Record<string, SessionDayUsage> {
+  const out: Record<string, SessionDayUsage> = {};
+  if (typeof raw !== "object" || raw == null) return out;
+  for (const [k, v] of Object.entries(raw as Record<string, Partial<SessionDayUsage>>)) {
+    if (!v || typeof v !== "object") continue;
+    out[k] = {
+      input: Number(v.input) || 0,
+      output: Number(v.output) || 0,
+      cached: Number(v.cached) || 0,
+      cacheCreation: Number(v.cacheCreation) || 0,
+      turns: Number(v.turns) || 0,
+      models: editedCounts(v.models),
+      last: Number(v.last) || 0,
+      repUsd: typeof v.repUsd === "number" && Number.isFinite(v.repUsd) && v.repUsd > 0 ? v.repUsd : undefined,
+    };
+  }
   return out;
 }
 
@@ -231,9 +330,30 @@ function normalizeSessions(raw: unknown): Record<string, LedgerSession> {
       cacheCreation: Number(v.cacheCreation) || 0,
       ctxPct: typeof v.ctxPct === "number" && Number.isFinite(v.ctxPct) ? v.ctxPct : null,
       last: Number(v.last) || 0,
+      dayKeys: Array.isArray(v.dayKeys) ? v.dayKeys.filter((k) => typeof k === "string") : [],
+      repUsd: typeof v.repUsd === "number" && Number.isFinite(v.repUsd) && v.repUsd > 0 ? v.repUsd : undefined,
     };
   }
   return out;
+}
+
+/** Parse the whole ledger JSON (disk / localStorage / tests); null on garbage. */
+export function parseLedgerText(text: string | null | undefined): UsageLedger | null {
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text) as UsageLedger;
+    if (parsed?.version !== 1 || typeof parsed.days !== "object" || !parsed.days) {
+      return null;
+    }
+    const days: Record<string, LedgerDay> = {};
+    for (const [key, value] of Object.entries(parsed.days)) {
+      const day = normalizeDay(value);
+      if (day) days[key] = day;
+    }
+    return { version: 1, days, sessions: normalizeSessions(parsed.sessions) };
+  } catch {
+    return null;
+  }
 }
 
 /** Index of the bucket a value falls into (edges are upper bounds; the last bucket is open). */
@@ -243,11 +363,7 @@ export function histBucket(value: number, edges: readonly number[]): number {
 }
 
 function addTallies(into: Record<string, Tally>, from: Record<string, Tally>): Record<string, Tally> {
-  const out: Record<string, Tally> = { ...into };
-  for (const [k, v] of Object.entries(from)) {
-    const cur = out[k] ?? { n: 0, fail: 0, ms: 0 };
-    out[k] = { n: cur.n + v.n, fail: cur.fail + v.fail, ms: cur.ms + v.ms };
-  }
+  const out = Record_add(into, from);
   // A runaway agent inventing tool names must not grow the ledger without bound.
   const keys = Object.keys(out);
   if (keys.length > TALLY_CAP) {
@@ -257,54 +373,302 @@ function addTallies(into: Record<string, Tally>, from: Record<string, Tally>): R
   return out;
 }
 
-function loadLedger(): UsageLedger {
-  const empty: UsageLedger = { version: 1, days: {} };
-  if (!HAS_WINDOW) return empty;
-  try {
-    const raw = window.localStorage.getItem(LEDGER_KEY);
-    if (!raw) return empty;
-    const parsed = JSON.parse(raw) as UsageLedger;
-    if (parsed?.version !== 1 || typeof parsed.days !== "object" || !parsed.days) {
-      return empty;
-    }
-    const days: Record<string, LedgerDay> = {};
-    for (const [key, value] of Object.entries(parsed.days)) {
-      const day = normalizeDay(value);
-      if (day) days[key] = day;
-    }
-    return { version: 1, days, sessions: normalizeSessions(parsed.sessions) };
-  } catch {
-    return empty;
+function Record_add(into: Record<string, Tally>, from: Record<string, Tally>): Record<string, Tally> {
+  const out = { ...into };
+  for (const [k, v] of Object.entries(from)) {
+    const cur = out[k] ?? { n: 0, fail: 0, ms: 0 };
+    out[k] = { n: cur.n + v.n, fail: cur.fail + v.fail, ms: cur.ms + v.ms };
   }
+  return out;
 }
 
-let ledger: UsageLedger = loadLedger();
-let storageOk = true;
+function addCounts(into: Record<string, number>, from: Record<string, number>): Record<string, number> {
+  if (Object.keys(from).length === 0) return into;
+  const out = { ...into };
+  for (const [k, v] of Object.entries(from)) {
+    if (v <= 0) continue;
+    if (out[k] != null || Object.keys(out).length < PATHS_PER_DAY) out[k] = (out[k] ?? 0) + v;
+  }
+  const keys = Object.keys(out);
+  if (keys.length > PATHS_PER_DAY) {
+    keys.sort((a, b) => out[b]! - out[a]!);
+    for (const k of keys.slice(PATHS_PER_DAY)) delete out[k];
+  }
+  return out;
+}
+
+function addEdited(
+  into: Record<string, { n: number; add: number; del: number }>,
+  from: Record<string, { n: number; add: number; del: number }>,
+): Record<string, { n: number; add: number; del: number }> {
+  if (Object.keys(from).length === 0) return into;
+  const out = { ...into };
+  for (const [k, v] of Object.entries(from)) {
+    if (v.n <= 0) continue;
+    if (out[k] != null || Object.keys(out).length < PATHS_PER_DAY) {
+      const cur = out[k] ?? { n: 0, add: 0, del: 0 };
+      out[k] = { n: cur.n + v.n, add: cur.add + v.add, del: cur.del + v.del };
+    }
+  }
+  const keys = Object.keys(out);
+  if (keys.length > PATHS_PER_DAY) {
+    keys.sort((a, b) => out[b]!.n - out[a]!.n);
+    for (const k of keys.slice(PATHS_PER_DAY)) delete out[k];
+  }
+  return out;
+}
+
+// ── 磁盘/localStorage 后端(usageStore.ts)上的 store ─────────────────
+
+const backend: LedgerBackend = pickBackend();
+let loadedOnce = false;
+let loadedValue: UsageLedger = { version: 1, days: {} };
+let rev = 0;
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let saveInFlight = false;
+let dirtyJson: string | null = null;
 const listeners = new Set<() => void>();
 
 function emit() {
   for (const listener of listeners) listener();
 }
 
-function persist() {
-  if (!storageOk || !HAS_WINDOW) return;
-  try {
-    window.localStorage.setItem(LEDGER_KEY, JSON.stringify(ledger));
-  } catch {
-    storageOk = false;
-  }
+function logStorageIssue(summary: string, detail: string) {
+  void appendDebugLog({ source: "usage", level: "warn", summary, detail }).catch(() => {});
 }
 
-/** 另一个窗口写了台账 → 重读并通知订阅者(detached 窗同享一份账)。 */
-if (HAS_WINDOW) {
+/**
+ * Load once at module init (async). Until it resolves the page shows an empty
+ * ledger — the same one-frame blank every other persisted store already has.
+ */
+async function initialLoad(): Promise<void> {
+  if (loadedOnce || !HAS_WINDOW) return;
+  loadedOnce = true;
   try {
-    window.addEventListener("storage", (event) => {
-      if (event.key !== LEDGER_KEY) return;
-      ledger = loadLedger();
-      emit();
-    });
-  } catch {
-    /* storage 不可用(极端环境)——单窗口语义照常 */
+    const stored = await backend.load();
+    rev = stored.rev;
+    let parsed = parseLedgerText(stored.json);
+    // Desktop: a ledger still in localStorage predates the disk move. Migrate
+    // it (disk wins on conflict — it is the newer backend's truth), and only
+    // drop the legacy key after the merged ledger is on disk.
+    const legacyText = backend.kind === "disk" ? readLegacyLocalLedger() : null;
+    if (legacyText) {
+      const legacy = parseLedgerText(legacyText);
+      if (legacy && (!parsed || backend.kind !== "disk" || stored.json == null)) {
+        parsed = mergeLedgers(legacy, parsed);
+      } else if (legacy) {
+        parsed = mergeLedgers(parsed!, legacy);
+      }
+    }
+    loadedValue = parsed ?? { version: 1, days: {} };
+    if (legacyText && backend.kind === "disk") {
+      await flushNow().catch(() => {});
+      clearLegacyLocalLedger();
+    }
+  } catch (error) {
+    logStorageIssue(
+      "usage ledger load failed",
+      error instanceof Error ? error.message : String(error),
+    );
+    loadedValue = { version: 1, days: {} };
+  }
+  emit();
+}
+
+/** mergeLedgers: union of days (per-day fields summed) and sessions. */
+function mergeLedgers(a: UsageLedger, b: UsageLedger | null): UsageLedger {
+  if (!b) return a;
+  const days = { ...b.days };
+  for (const [key, dayA] of Object.entries(a.days)) {
+    const dayB = days[key];
+    days[key] = dayB ? addDays(dayA, dayB) : dayA;
+  }
+  return { version: 1, days, sessions: { ...(b.sessions ?? {}), ...(a.sessions ?? {}) } };
+}
+
+function addDaySum<K extends keyof LedgerDay>(a: LedgerDay, b: LedgerDay, key: K): void {
+  (a[key] as number) = ((a[key] as number) ?? 0) + ((b[key] as number) ?? 0);
+}
+
+function addDays(a: LedgerDay, b: LedgerDay): LedgerDay {
+  const out: LedgerDay = { ...a };
+  for (const key of ["input", "output", "cached", "cacheCreation", "reasoning", "turns", "ms"] as const) {
+    addDaySum(out, b, key);
+  }
+  out.hours = a.hours.map((v, i) => v + (b.hours[i] ?? 0));
+  out.agents = { ...a.agents };
+  for (const [id, agent] of Object.entries(b.agents)) {
+    const cur = out.agents[id] ?? { output: 0, turns: 0 };
+    out.agents[id] = { output: cur.output + agent.output, turns: cur.turns + agent.turns };
+  }
+  out.models = { ...a.models };
+  for (const [id, model] of Object.entries(b.models)) {
+    const cur = out.models[id] ?? { input: 0, output: 0, cached: 0, cacheCreation: 0, turns: 0 };
+    out.models[id] = {
+      input: cur.input + model.input,
+      output: cur.output + model.output,
+      cached: cur.cached + model.cached,
+      cacheCreation: cur.cacheCreation + model.cacheCreation,
+      turns: cur.turns + model.turns,
+      peak: addPeak(cur.peak, model.peak),
+      rep: model.rep ?? cur.rep,
+      repUsd: (cur.repUsd ?? 0) + (model.repUsd ?? 0),
+    };
+  }
+  if (a.detail || b.detail) {
+    out.detail = { ...(a.detail ?? {}) };
+    for (const [id, detailB] of Object.entries(b.detail ?? {})) {
+      const cur = out.detail[id] ?? emptyDetail();
+      out.detail[id] = addDetails(cur, detailB);
+    }
+  }
+  out.sessionIds = [...new Set([...(a.sessionIds ?? []), ...(b.sessionIds ?? [])])].slice(0, SESSION_IDS_CAP);
+  if (a.sessions || b.sessions) {
+    out.sessions = { ...(a.sessions ?? {}) };
+    for (const [id, dayUsage] of Object.entries(b.sessions ?? {})) {
+      const cur = out.sessions[id];
+      out.sessions[id] = cur
+        ? {
+            input: cur.input + dayUsage.input,
+            output: cur.output + dayUsage.output,
+            cached: cur.cached + dayUsage.cached,
+            cacheCreation: cur.cacheCreation + dayUsage.cacheCreation,
+            turns: cur.turns + dayUsage.turns,
+            models: addCounts({ ...cur.models }, dayUsage.models),
+            last: Math.max(cur.last, dayUsage.last),
+          }
+        : dayUsage;
+    }
+  }
+  return out;
+}
+
+function addPeak(
+  a: { input: number; output: number; cached: number; cacheCreation: number } | undefined,
+  b: { input: number; output: number; cached: number; cacheCreation: number } | undefined,
+) {
+  if (!a) return b;
+  if (!b) return a;
+  return { input: a.input + b.input, output: a.output + b.output, cached: a.cached + b.cached, cacheCreation: a.cacheCreation + b.cacheCreation };
+}
+
+function addDetails(a: AgentDayDetail, b: AgentDayDetail): AgentDayDetail {
+  return {
+    input: a.input + b.input,
+    output: a.output + b.output,
+    cached: a.cached + b.cached,
+    cacheCreation: a.cacheCreation + b.cacheCreation,
+    reasoning: a.reasoning + b.reasoning,
+    turns: a.turns + b.turns,
+    wallMs: a.wallMs + b.wallMs,
+    timing: {
+      ttft: a.timing.ttft + b.timing.ttft,
+      think: a.timing.think + b.timing.think,
+      answer: a.timing.answer + b.timing.answer,
+      tool: a.timing.tool + b.timing.tool,
+      other: a.timing.other + b.timing.other,
+    },
+    ttftHist: a.ttftHist.map((v, i) => v + (b.ttftHist[i] ?? 0)),
+    tpsHist: a.tpsHist.map((v, i) => v + (b.tpsHist[i] ?? 0)),
+    ctxHist: a.ctxHist.map((v, i) => v + (b.ctxHist[i] ?? 0)),
+    tools: addTallies(a.tools, b.tools),
+    cmds: addTallies(a.cmds, b.cmds),
+    skills: addTallies(a.skills, b.skills),
+    edits: {
+      ops: a.edits.ops + b.edits.ops,
+      add: a.edits.add + b.edits.add,
+      del: a.edits.del + b.edits.del,
+    },
+    est: {
+      user: a.est.user + b.est.user,
+      attach: a.est.attach + b.est.attach,
+      toolIo: a.est.toolIo + b.est.toolIo,
+    },
+    gitEdits: {
+      ops: (a.gitEdits?.ops ?? 0) + (b.gitEdits?.ops ?? 0),
+      add: (a.gitEdits?.add ?? 0) + (b.gitEdits?.add ?? 0),
+      del: (a.gitEdits?.del ?? 0) + (b.gitEdits?.del ?? 0),
+    },
+    compactions: (a.compactions ?? 0) + (b.compactions ?? 0),
+    turnFails: (a.turnFails ?? 0) + (b.turnFails ?? 0),
+    turnCancels: (a.turnCancels ?? 0) + (b.turnCancels ?? 0),
+    reads: addCounts({ ...(a.reads ?? {}) }, b.reads ?? {}),
+    edited: addEdited({ ...(a.edited ?? {}) }, b.edited ?? {}),
+  };
+}
+
+if (HAS_WINDOW) {
+  void initialLoad();
+  backend.subscribe(() => {
+    // Some window saved; re-read so this one stays current.
+    void (async () => {
+      try {
+        const stored = await backend.load();
+        rev = stored.rev;
+        const parsed = parseLedgerText(stored.json);
+        if (parsed) {
+          loadedValue = parsed;
+          emit();
+        }
+      } catch {
+        /* keep showing what we have */
+      }
+    })();
+  });
+}
+
+function schedulePersist() {
+  if (saveTimer != null) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    void flushNow();
+  }, 450);
+}
+
+/** Serialize + save (rev-checked); on a lost race: reload, merge, retry once. */
+async function flushNow(): Promise<void> {
+  if (saveInFlight || dirtyJson == null) return;
+  const body = dirtyJson;
+  dirtyJson = null;
+  saveInFlight = true;
+  try {
+    let result = await backend.save(body, rev);
+    if (!result.ok) {
+      // Lost the rev race: pick up the other window's ledger, merge ours in, retry.
+      try {
+        const stored = await backend.load();
+        rev = stored.rev;
+        const theirs = parseLedgerText(stored.json);
+        const mine = parseLedgerText(body);
+        if (theirs && mine) {
+          const merged = mergeLedgers(theirs, mine);
+          const retry = await backend.save(JSON.stringify(merged), rev);
+          if (!retry.ok) {
+            rev = retry.rev;
+            dirtyJson = JSON.stringify(merged);
+            throw new Error("optimistic-rev retry failed");
+          }
+          loadedValue = merged;
+          rev = retry.rev;
+          return;
+        }
+      } catch (error) {
+        dirtyJson = body;
+        throw error;
+      }
+      dirtyJson = body;
+      throw new Error("save rejected and merge path unavailable");
+    }
+    rev = result.rev;
+  } catch (error) {
+    // Log once per failing streak; retry on the next recorded turn.
+    logStorageIssue(
+      "usage ledger save failed (will retry on next turn)",
+      error instanceof Error ? error.message : String(error),
+    );
+    schedulePersist();
+  } finally {
+    saveInFlight = false;
   }
 }
 
@@ -314,7 +678,7 @@ export function subscribeUsageLedger(listener: () => void): () => void {
 }
 
 export function getUsageLedger(): UsageLedger {
-  return ledger;
+  return loadedValue;
 }
 
 /** React 侧订阅;record 替换整个 ledger 对象保证引用变化。 */
@@ -344,6 +708,7 @@ function emptyDay(): LedgerDay {
     hours: new Array(24).fill(0),
     detail: {},
     sessionIds: [],
+    sessions: {},
   };
 }
 
@@ -381,6 +746,12 @@ export function recordTurnUsageInto(
     turns: agent.turns + 1,
   };
   const modelId = entry.modelId?.trim();
+  const turnBuckets = {
+    input: s.input ?? 0,
+    output: s.output ?? 0,
+    cached: s.cached ?? 0,
+    cacheCreation: s.cacheCreation ?? 0,
+  };
   if (modelId) {
     const model = next.models[modelId] ?? {
       input: 0,
@@ -390,23 +761,38 @@ export function recordTurnUsageInto(
       turns: 0,
     };
     next.models[modelId] = {
-      input: model.input + (s.input ?? 0),
-      output: model.output + (s.output ?? 0),
-      cached: model.cached + (s.cached ?? 0),
-      cacheCreation: model.cacheCreation + (s.cacheCreation ?? 0),
+      input: model.input + turnBuckets.input,
+      output: model.output + turnBuckets.output,
+      cached: model.cached + turnBuckets.cached,
+      cacheCreation: model.cacheCreation + turnBuckets.cacheCreation,
       turns: model.turns + 1,
+      agent: agentId,
+      // Peak / reported split per model row (see TurnUsageEntry.reportedUsd).
+      peak: entry.reportedUsd != null ? model.peak : addPeak(model.peak, entry.peak ?? undefined),
+      rep:
+        entry.reportedUsd != null
+          ? {
+              input: (model.rep?.input ?? 0) + turnBuckets.input,
+              output: (model.rep?.output ?? 0) + turnBuckets.output,
+              cached: (model.rep?.cached ?? 0) + turnBuckets.cached,
+              cacheCreation: (model.rep?.cacheCreation ?? 0) + turnBuckets.cacheCreation,
+              turns: (model.rep?.turns ?? 0) + 1,
+            }
+          : model.rep,
+      repUsd: (model.repUsd ?? 0) + (entry.reportedUsd ?? 0),
     };
   }
   next.hours[now.getHours()] = (next.hours[now.getHours()] ?? 0) + 1;
-  if (modelId) next.models[modelId] = { ...next.models[modelId]!, agent: agentId };
 
   // ── v2 per-agent detail ──
   const detailMap = { ...(day.detail ?? {}) };
   const prev = detailMap[agentId] ?? emptyDetail();
   const dg = entry.digest ?? null;
   const ctx = entry.ctx;
+  // Only a reading that changed during THIS turn counts as a context sample —
+  // a stale frozen value (agents that report once) must not pile into the chart.
   const ctxPct =
-    ctx && ctx.used != null && ctx.size != null && ctx.size > 0
+    entry.ctxFresh && ctx && ctx.used != null && ctx.size != null && ctx.size > 0
       ? Math.min(100, Math.max(0, (ctx.used / ctx.size) * 100))
       : null;
   const ttftHist = [...prev.ttftHist];
@@ -445,6 +831,18 @@ export function recordTurnUsageInto(
     est: dg
       ? { user: prev.est.user + dg.est.user, attach: prev.est.attach + dg.est.attach, toolIo: prev.est.toolIo + dg.est.toolIo }
       : prev.est,
+    gitEdits: entry.gitEdits
+      ? {
+          ops: (prev.gitEdits?.ops ?? 0) + entry.gitEdits.ops,
+          add: (prev.gitEdits?.add ?? 0) + entry.gitEdits.add,
+          del: (prev.gitEdits?.del ?? 0) + entry.gitEdits.del,
+        }
+      : prev.gitEdits,
+    compactions: (prev.compactions ?? 0) + (entry.compactions ?? 0),
+    turnFails: (prev.turnFails ?? 0) + (entry.outcome === "failed" ? 1 : 0),
+    turnCancels: (prev.turnCancels ?? 0) + (entry.outcome === "cancelled" ? 1 : 0),
+    reads: dg ? addCounts({ ...(prev.reads ?? {}) }, dg.reads) : prev.reads ?? {},
+    edited: dg ? addEdited({ ...(prev.edited ?? {}) }, dg.edited) : prev.edited ?? {},
   };
   next.detail = detailMap;
 
@@ -452,25 +850,46 @@ export function recordTurnUsageInto(
   const ids = day.sessionIds ?? [];
   next.sessionIds = sid && !ids.includes(sid) && ids.length < SESSION_IDS_CAP ? [...ids, sid] : ids;
 
-  let sessions = target.sessions;
+  // v3: per-session per-day usage (the sessions list shows range-scoped numbers).
+  let sessionsMap = target.sessions;
   if (entry.session) {
-    const cur = target.sessions?.[entry.session.id];
-    const row: LedgerSession = {
-      label: entry.session.label || cur?.label || entry.session.id,
+    if (sid) {
+      const cur = day.sessions?.[sid];
+      const modelTurns = { ...(cur?.models ?? {}) };
+      if (modelId) modelTurns[modelId] = (modelTurns[modelId] ?? 0) + 1;
+      const dayUsage: SessionDayUsage = {
+        input: (cur?.input ?? 0) + turnBuckets.input,
+        output: (cur?.output ?? 0) + turnBuckets.output,
+        cached: (cur?.cached ?? 0) + turnBuckets.cached,
+        cacheCreation: (cur?.cacheCreation ?? 0) + turnBuckets.cacheCreation,
+        turns: (cur?.turns ?? 0) + 1,
+        models: modelTurns,
+        last: entry.endedAt,
+        repUsd: (cur?.repUsd ?? 0) + (entry.reportedUsd ?? 0) || undefined,
+      };
+      next.sessions = { ...(day.sessions ?? {}), [sid]: dayUsage };
+    }
+    const prevSummary = target.sessions?.[entry.session.id];
+    const summary: LedgerSession = {
+      label: entry.session.label || prevSummary?.label || entry.session.id,
       agentId,
-      modelId: modelId ?? cur?.modelId ?? null,
-      project: entry.session.project ?? cur?.project ?? null,
-      turns: (cur?.turns ?? 0) + 1,
-      input: (cur?.input ?? 0) + (s.input ?? 0),
-      output: (cur?.output ?? 0) + (s.output ?? 0),
-      cached: (cur?.cached ?? 0) + (s.cached ?? 0),
-      cacheCreation: (cur?.cacheCreation ?? 0) + (s.cacheCreation ?? 0),
-      ctxPct: ctxPct ?? cur?.ctxPct ?? null,
+      modelId: modelId ?? prevSummary?.modelId ?? null,
+      project: entry.session.project ?? prevSummary?.project ?? null,
+      turns: (prevSummary?.turns ?? 0) + 1,
+      input: (prevSummary?.input ?? 0) + turnBuckets.input,
+      output: (prevSummary?.output ?? 0) + turnBuckets.output,
+      cached: (prevSummary?.cached ?? 0) + turnBuckets.cached,
+      cacheCreation: (prevSummary?.cacheCreation ?? 0) + turnBuckets.cacheCreation,
+      ctxPct: ctxPct ?? prevSummary?.ctxPct ?? null,
       last: entry.endedAt,
+      dayKeys: [...new Set([...(prevSummary?.dayKeys ?? []), key])].sort().slice(-RETAIN_DAYS),
+      repUsd: (prevSummary?.repUsd ?? 0) + (entry.reportedUsd ?? 0) || undefined,
     };
-    sessions = trimSessions({ ...(target.sessions ?? {}), [entry.session.id]: row });
+    sessionsMap = trimSessions({ ...(target.sessions ?? {}), [entry.session.id]: summary });
   }
-  return { version: 1, days: { ...target.days, [key]: next }, ...(sessions ? { sessions } : {}) };
+
+  const days = { ...target.days, [key]: next };
+  return { version: 1, days, ...(sessionsMap ? { sessions: sessionsMap } : {}) };
 }
 
 /** What App hands the recorder at turn/complete. */
@@ -485,7 +904,23 @@ export type TurnUsageEntry = {
   digest?: TurnDigest | null;
   /** Context occupancy at turn end, as the agent last reported it. */
   ctx?: { used: number | null; size: number | null } | null;
+  /** True when the context reading was updated DURING this turn (live usage_update / Grok per-call); a frozen seeded value does not count. */
+  ctxFresh?: boolean;
   session?: { id: string; label: string; project: string | null } | null;
+  /** v3: this turn's stop reason (end_turn | cancelled | error | refusal …). */
+  outcome?: "ended" | "cancelled" | "failed";
+  /** v3: git-truth edits of this turn (turn delivery card's numbers). */
+  gitEdits?: { ops: number; add: number; del: number } | null;
+  /** v3: compaction_update completions observed during this turn. */
+  compactions?: number;
+  /**
+   * v3: agent-reported cost for THIS turn in USD (Grok's per-turn costUsdTicks
+   * delta), and the DeepSeek-peak-hour subset of this turn's buckets. Reported
+   * cost wins over list price for its tokens; peak only applies to turns whose
+   * cost was not reported.
+   */
+  reportedUsd?: number | null;
+  peak?: { input: number; output: number; cached: number; cacheCreation: number } | null;
 };
 
 /** Keep the SESSIONS_CAP most recently active sessions. */
@@ -515,12 +950,106 @@ export function pruneLedger(target: UsageLedger, now: Date = new Date()): UsageL
 /** 落账入口:App 的 turn/complete 处理器调用。 */
 export function recordTurnUsage(entry: TurnUsageEntry): void {
   // 读-合并-写:先拾起其它窗口可能刚写的账,再并进这一笔(detached 窗并存)。
-  const fresh = storageOk ? loadLedger() : ledger;
-  ledger = pruneLedger(recordTurnUsageInto(fresh, entry));
-  persist();
+  loadedValue = pruneLedger(recordTurnUsageInto(loadedValue, entry));
+  dirtyJson = JSON.stringify(loadedValue);
+  if (!loadedOnce && HAS_WINDOW) {
+    void initialLoad().then(() => {
+      loadedValue = pruneLedger(recordTurnUsageInto(loadedValue, entry));
+      dirtyJson = JSON.stringify(loadedValue);
+      schedulePersist();
+      emit();
+    });
+    return;
+  }
+  schedulePersist();
   emit();
 }
 
+/** 一轮的会话行(usage_store.rs 的 sessions/<id>.jsonl 追加一行;纯数据)。 */
+export function turnSessionRow(entry: TurnUsageEntry): string {
+  const s = entry.stats;
+  const ctx = entry.ctxFresh && entry.ctx ? { used: entry.ctx.used, size: entry.ctx.size } : null;
+  const row = {
+    t: entry.endedAt,
+    model: entry.modelId ?? null,
+    agent: entry.agentId ?? null,
+    in: s.input ?? null,
+    out: s.output ?? null,
+    cach: s.cached ?? null,
+    cachw: s.cacheCreation ?? null,
+    ctx,
+    outcome: entry.outcome ?? "ended",
+    comp: entry.compactions ?? 0,
+    tools: entry.digest?.tools ?? null,
+    cmds: entry.digest?.cmds ?? null,
+    edits: entry.gitEdits ?? entry.digest?.edits ?? null,
+  };
+  return JSON.stringify(row);
+}
+
+/** 把一行追加进会话用量文件(磁盘后端;后台失败只记日志,不挡记账)。 */
+export function appendTurnSessionRow(sessionId: string | null | undefined, entry: TurnUsageEntry): void {
+  if (!sessionId) return;
+  void backend.appendSession(sessionId, [turnSessionRow(entry)]).catch((error) => {
+    logStorageIssue(
+      "usage session row append failed",
+      error instanceof Error ? error.message : String(error),
+    );
+  });
+}
+
+/**
+ * 轮末 git 对账的改动行数回填(recordTurnUsage 之后异步到达,同一轮只调一次)。
+ * 记在当天的 agent 明细上;找不到当天的账(极端:跨天竞态/无 session 摘要)就丢弃
+ * ——工具文本口径的估算仍在,不比没有差。
+ */
+export function applyTurnGitEdits(
+  sessionId: string,
+  endedAt: number,
+  git: { ops: number; add: number; del: number },
+): void {
+  if (git.ops <= 0) return;
+  const key = dayKeyOf(new Date(endedAt));
+  const agentId = loadedValue.sessions?.[sessionId]?.agentId;
+  const detail = agentId ? loadedValue.days[key]?.detail?.[agentId] : undefined;
+  if (!agentId || !detail) return;
+  loadedValue = {
+    ...loadedValue,
+    days: {
+      ...loadedValue.days,
+      [key]: {
+        ...loadedValue.days[key]!,
+        detail: {
+          ...(loadedValue.days[key]!.detail ?? {}),
+          [agentId]: {
+            ...detail,
+            gitEdits: {
+              ops: (detail.gitEdits?.ops ?? 0) + git.ops,
+              add: (detail.gitEdits?.add ?? 0) + git.add,
+              del: (detail.gitEdits?.del ?? 0) + git.del,
+            },
+          },
+        },
+      },
+    },
+  };
+  dirtyJson = JSON.stringify(loadedValue);
+  schedulePersist();
+  emit();
+}
+
+/** 读取一个会话的轮次行(详情视图;空数组 = 没有记录)。 */
+export async function readSessionRows(sessionId: string): Promise<string[]> {
+  try {
+    return await backend.readSession(sessionId);
+  } catch (error) {
+    logStorageIssue(
+      "usage session rows read failed",
+      error instanceof Error ? error.message : String(error),
+    );
+    return [];
+  }
+}
 // ── 聚合(UI 消费) ───────────────────────────────────────────────────
 
 export type LedgerAggregate = LedgerDay & { days: number };
@@ -920,7 +1449,7 @@ export async function exportUsageCsv(): Promise<{
   csv: string;
   savedPath: string | null;
 }> {
-  const csv = ledgerToCsv(ledger);
+  const csv = ledgerToCsv(loadedValue);
   if (!csv) throw new Error("no usage records");
   const fileName = usageCsvFileName();
   const savedPath = await saveTextFile(fileName, csv);

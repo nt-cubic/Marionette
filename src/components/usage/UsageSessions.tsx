@@ -1,9 +1,11 @@
 /**
  * UsageSessions — 最近对话列表(Token 用量页 v2 · e 区块)。
  * 每行:上下文占用圆环、标题、轮数、token、折算费用、相对时间;左缘 3px agent 墨色条。
- * 传入 onOpenSession 时整行可点;下方 UsageLegend 是页面末尾的口径脚注。
+ * 行尾「详情」打开单会话按轮面板;整行可点时(主窗/贴边)点行打开该对话。
+ * 支持按标题 / agent / 项目过滤(大小写不敏感)。
  */
 import { useMemo, useState } from "react";
+import { Search, ChartLine } from "lucide-react";
 import type { SessionRow, UsageInsights } from "../../lib/usageInsights";
 import { agentDisplayName, agentInkStyle } from "../../lib/agentInk";
 import { useT } from "../../lib/i18n";
@@ -86,7 +88,17 @@ function relText(rel: RelTime, t: ReturnType<typeof useT>): string {
 }
 
 /** 一行对话;onOpenSession 存在时渲染为按钮,否则是普通 div。 */
-function SessionLine({ row, now, onOpenSession }: { row: SessionRow; now: number; onOpenSession?: (id: string) => void }) {
+function SessionLine({
+  row,
+  now,
+  onOpenSession,
+  onOpenDetail,
+}: {
+  row: SessionRow;
+  now: number;
+  onOpenSession?: (id: string) => void;
+  onOpenDetail: (row: SessionRow) => void;
+}) {
   const t = useT();
   const agent = agentDisplayName(row.agentId);
   const sub =
@@ -104,6 +116,18 @@ function SessionLine({ row, now, onOpenSession }: { row: SessionRow; now: number
       <span className="num">{fmtTokens(row.total)}</span>
       <span className="num">{fmtUsd(row.usd)}</span>
       <span className="num faint">{relText(relTime(row.last, now), t)}</span>
+      <button
+        type="button"
+        className="uv2-sessions__detail"
+        title={t("usageV2.sessions.detailOpen")}
+        aria-label={`${t("usageV2.sessions.detailOpen")} · ${row.label}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpenDetail(row);
+        }}
+      >
+        <ChartLine size={13} strokeWidth={1.5} aria-hidden="true" />
+      </button>
     </>
   );
   return onOpenSession ? (
@@ -117,15 +141,35 @@ function SessionLine({ row, now, onOpenSession }: { row: SessionRow; now: number
   );
 }
 
-export function UsageSessions({ ins, onOpenSession }: { ins: UsageInsights; onOpenSession?: (id: string) => void }) {
+export function UsageSessions({
+  ins,
+  onOpenSession,
+  onOpenDetail,
+}: {
+  ins: UsageInsights;
+  onOpenSession?: (id: string) => void;
+  onOpenDetail: (row: SessionRow) => void;
+}) {
   const t = useT();
   const [sort, setSort] = useState<SortKey>("last");
   const [expanded, setExpanded] = useState(false);
-  const rows = useMemo(() => sortSessions(ins.sessions, sort), [ins.sessions, sort]);
+  const [query, setQuery] = useState("");
   const now = Date.now();
+  const rows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const scoped = q
+      ? ins.sessions.filter(
+          (row) =>
+            row.label.toLowerCase().includes(q) ||
+            agentDisplayName(row.agentId).toLowerCase().includes(q) ||
+            (row.project ?? "").toLowerCase().includes(q),
+        )
+      : ins.sessions;
+    return sortSessions(scoped, sort);
+  }, [ins.sessions, query, sort]);
   const visible = expanded ? rows : rows.slice(0, PREVIEW);
 
-  if (rows.length === 0) {
+  if (rows.length === 0 && !query.trim()) {
     return (
       <section className="uv2-sec uv2-sessions">
         <SectionHead title={t("usageV2.sessions.title")} />
@@ -146,11 +190,33 @@ export function UsageSessions({ ins, onOpenSession }: { ins: UsageInsights; onOp
       <SectionHead
         title={t("usageV2.sessions.title")}
         meta={t("usageV2.sessions.meta", { count: rows.length })}
-        right={<Seg value={sort} onChange={setSort} options={options} label={t("usageV2.sessions.sortLabel")} />}
+        right={
+          <>
+            <label className="uv2-sessions__search">
+              <Search size={12} strokeWidth={1.5} aria-hidden="true" />
+              <input
+                type="search"
+                value={query}
+                placeholder={t("usageV2.sessions.search")}
+                title={t("usageV2.sessions.searchTitle")}
+                aria-label={t("usageV2.sessions.search")}
+                onChange={(event) => {
+                  setQuery(event.target.value);
+                  setExpanded(false);
+                }}
+              />
+            </label>
+            <Seg value={sort} onChange={setSort} options={options} label={t("usageV2.sessions.sortLabel")} />
+          </>
+        }
       />
-      {visible.map((row) => (
-        <SessionLine key={row.id} row={row} now={now} onOpenSession={onOpenSession} />
-      ))}
+      {rows.length === 0 && query.trim() ? (
+        <p className="uv2-sessions__empty">{t("usageV2.sessions.searchEmpty", { q: query.trim() })}</p>
+      ) : (
+        visible.map((row) => (
+          <SessionLine key={row.id} row={row} now={now} onOpenSession={onOpenSession} onOpenDetail={onOpenDetail} />
+        ))
+      )}
       {rows.length > PREVIEW && (
         <button type="button" className="uv2-sessions__more" onClick={() => setExpanded((v) => !v)}>
           {expanded ? t("usageV2.sessions.showLess") : t("usageV2.sessions.showAll", { count: rows.length })}

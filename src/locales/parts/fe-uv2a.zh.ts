@@ -28,4 +28,6 @@ export const zh = {
   "usageV2.trend.tipFoot": "折算 {usd} · {turns} 轮",
   "usageV2.trend.peak": "峰值 {label} · {tokens} token",
   "usageV2.trend.empty": "这段时间没有记录",
+  "usageV2.hero.cost.reported": "含 {usd} agent 自报",
+  "usageV2.hero.cost.peak": "含 {usd} DeepSeek 高峰 ×2",
 } as const;

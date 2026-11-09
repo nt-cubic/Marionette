@@ -1826,11 +1826,11 @@
 .tool-thumb {
   display: block;
   flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: var(--panel-soft);
   overflow: hidden;
   cursor: zoom-in;

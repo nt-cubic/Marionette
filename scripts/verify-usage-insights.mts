@@ -91,7 +91,7 @@ let ledger: UsageLedger = { version: 1, days: {} };
 const stats = { input: 1000, output: 400, cached: 9000, cacheCreation: 600, reasoning: 150, ttftMs: 900, outputTps: 45, durationMs: 8000 };
 ledger = recordTurnUsageInto(
   ledger,
-  { agentId: "claude-code", modelId: "opus", stats, endedAt: day.getTime(), sentAt: day.getTime() - 15_000, digest: dg, ctx: { used: 85_000, size: 100_000 }, session: { id: "s1", label: "Fix bug", project: "Marionette" } },
+  { agentId: "claude-code", modelId: "opus", stats, endedAt: day.getTime(), sentAt: day.getTime() - 15_000, digest: dg, ctx: { used: 85_000, size: 100_000 }, ctxFresh: true, session: { id: "s1", label: "Fix bug", project: "Marionette" } },
   day,
 );
 ledger = recordTurnUsageInto(
@@ -157,6 +157,91 @@ check("legacy-only: no detail, no composition", !legacyOnly.hasDetail && legacyO
 
 const prevCheck = aggregateInsights(ledger, { range: 7, now: day });
 check("delta: previous week had the legacy day", prevCheck.previous.turns === 0 || prevCheck.delta.total !== undefined);
+
+
+// ── v3 (2026-11-09): peak ×2 / reported cost / scoped sessions / outcomes / files ──
+{
+  const { buildRateIndex, costOfModelUsage, isDeepSeekPeak } = await import("../src/lib/tokenPrices.ts");
+  // Beijing = UTC+8; 2026-11-09 is a Monday.
+  const ms = (hUtc: number) => Date.UTC(2026, 10, 9, hUtc, 30);
+  check("peak: Mon 10:30 Beijing is peak", isDeepSeekPeak(ms(2)) === true);
+  check("peak: Mon 13:30 Beijing (lunch) is off-peak", isDeepSeekPeak(ms(5)) === false);
+  check("peak: Mon 15:30 Beijing is peak", isDeepSeekPeak(ms(7)) === true);
+  check("peak: Saturday is off-peak", isDeepSeekPeak(Date.UTC(2026, 10, 14, 2, 30)) === false);
+
+  const rates = buildRateIndex({
+    deepseek: { models: { "ds-1": { cost: { input: 1, output: 2, cache_read: 0.1, cache_write: 0.5 } } } },
+    grok: { models: { "grok-4.6": { cost: { input: 3, output: 8 } } } },
+  });
+  const dsRate = rates.byProviderModel.get("deepseek/ds-1")![0]!;
+  const grokRate = rates.byProviderModel.get("grok/grok-4.6")![0]!;
+  // reported cost wins for its tokens: 1M/1M at list would be far more than the claimed $0.50
+  const reported = costOfModelUsage(
+    { input: 1_000_000, output: 1_000_000, cached: 0, cacheCreation: 0, rep: { input: 1_000_000, output: 1_000_000, cached: 0, cacheCreation: 0 }, repUsd: 0.5 },
+    dsRate,
+  );
+  check("cost: agent-reported usd wins", near(reported.usd!, 0.5) && reported.reportedUsd === 0.5, reported);
+  // peak ×2 only for DeepSeek lab rates and only un-reported tokens
+  const peak = costOfModelUsage(
+    { input: 1_000_000, output: 0, cached: 0, cacheCreation: 0, peak: { input: 1_000_000, output: 0, cached: 0, cacheCreation: 0 } },
+    dsRate,
+  );
+  check("cost: deepseek peak doubles", near(peak.usd!, 2), peak);
+  const otherPeak = costOfModelUsage(
+    { input: 1_000_000, output: 0, cached: 0, cacheCreation: 0, peak: { input: 1_000_000, output: 0, cached: 0, cacheCreation: 0 } },
+    grokRate,
+  );
+  check("cost: non-deepseek never doubles", near(otherPeak.usd!, 3) && otherPeak.peakExtraUsd === 0, otherPeak);
+
+  // scoped sessions: a session spans two days, a 1-day window only counts today
+  const t0 = Date.UTC(2026, 10, 7, 10, 0);
+  const t1 = Date.UTC(2026, 10, 9, 10, 0);
+  let twoDays: UsageLedger = { version: 1, days: {} };
+  const mkStats = { input: 100, output: 50, cached: 0, cacheCreation: 0 };
+  twoDays = recordTurnUsageInto(twoDays, { agentId: "grok-build", modelId: "grok-4.6", stats: mkStats, endedAt: t0, session: { id: "sg", label: "Long run", project: null } }, new Date(t0));
+  twoDays = recordTurnUsageInto(twoDays, { agentId: "grok-build", modelId: "grok-4.6", stats: mkStats, endedAt: t1, session: { id: "sg", label: "Long run", project: null } }, new Date(t1));
+  twoDays = recordTurnUsageInto(twoDays, {
+    agentId: "grok-build", modelId: "grok-4.6", stats: mkStats, endedAt: t1,
+    outcome: "failed", compactions: 1, reportedUsd: 0.25,
+    session: { id: "sg", label: "Long run", project: null },
+    digest: { ...dg, reads: { "src/a.ts": 2 }, edited: { "src/b.ts": { n: 1, add: 3, del: 1 } } },
+  }, new Date(t1));
+  const dayView = aggregateInsights(twoDays, { range: 1, now: new Date(t1 + 3_600_000) });
+  const sg = dayView.sessions.find((row) => row.id === "sg");
+  check("scoped: 1-day window counts only today's turns", sg?.turns === 2 && sg?.total === 300, sg);
+  check("scoped: reported usd is window-scoped", near(sg!.reportedUsd, 0.25), sg);
+  const weekView = aggregateInsights(twoDays, { range: 7, now: new Date(t1 + 3_600_000) });
+  const sgWeek = weekView.sessions.find((row) => row.id === "sg");
+  check("scoped: week window sees all turns", sgWeek?.turns === 3 && sgWeek?.total === 450, sgWeek);
+  check("outcomes: failed + compactions counted", dayView.turnFails === 1 && dayView.compactions === 1, { fails: dayView.turnFails, comp: dayView.compactions });
+  check("files: read + edited paths rank", dayView.files[0]?.path === "src/a.ts" && dayView.files[0]?.reads === 2, dayView.files);
+  check("files: edit lines carried", dayView.files.some((f) => f.path === "src/b.ts" && f.edits === 1 && f.add === 3 && f.del === 1), dayView.files);
+}
+
+
+// ── composition scaling (grok 对话组成; Rust 侧单测覆盖解析,这里管前端校准) ──
+{
+  const mod = await import("../src/lib/usageBackfill.ts");
+  const scaleComposition = mod.scaleComposition;
+  type BackfillComposition = mod.BackfillComposition;
+  const mk = (over: Partial<BackfillComposition>): BackfillComposition => ({
+    system: 1800, toolDefs: 10600, inject: 26000, user: 6700, attach: 3000,
+    assistant: 400, reasoning: 22000, toolCalls: 300, toolResults: 31000,
+    measuredPrompt: null, ...over,
+  });
+  const anchored = scaleComposition(mk({ measuredPrompt: 130386 }));
+  check("comp: scaled parts sum to the measured anchor", anchored.calibrated && near(anchored.parts.reduce((s, p) => s + p.tokens, 0), 130386, 2), anchored.total);
+  // Per-part Math.round leaves the shares a hair under 1 — allow 1e-4.
+  check("comp: shares sum to 1", near(anchored.parts.reduce((s, p) => s + p.share, 0), 1, 1e-4));
+  check("comp: coverage = est/anchor", near(anchored.coverage ?? 0, 101800 / 130386, 1e-3));
+  const raw = scaleComposition(mk({}));
+  check("comp: no anchor keeps the raw estimate", !raw.calibrated && raw.coverage == null && near(raw.total, 101800, 2));
+  check("comp: shares still sum to 1 without anchor", near(raw.parts.reduce((s, p) => s + p.share, 0), 1, 1e-9));
+  const empty = scaleComposition({ system: 0, toolDefs: 0, inject: 0, user: 0, attach: 0, assistant: 0, reasoning: 0, toolCalls: 0, toolResults: 0, measuredPrompt: 500 });
+  check("comp: all-zero never divides by zero", empty.parts.every((p) => p.share === 0) && empty.total === 500);
+  const capped = scaleComposition(mk({ measuredPrompt: 10 }));
+  check("comp: coverage caps at 1 when estimate exceeds anchor", capped.coverage === 1);
+}
 
 console.log(failed === 0 ? "\n全部通过" : `\n${failed} 项失败`);
 process.exit(failed === 0 ? 0 : 1);

@@ -15,9 +15,9 @@ type ToolImageThumbsProps = {
 };
 
 /**
- * Tiny image chips on collapsed tool / activity rows (Claude-style). The asset
- * protocol serves local files without loading their bytes into JS; the Rust
- * reader is only the fallback for a near-miss filename or refused format.
+ * Film-cell thumbs on tool / activity rows. Local files go through the asset
+ * protocol; the Rust reader is only the fallback for a near-miss filename or
+ * refused format.
  */
 export function ToolImageThumbs({
   srcs,
@@ -33,14 +33,20 @@ export function ToolImageThumbs({
     if (seen.has(key)) continue;
     seen.add(key);
     unique.push(src);
-    if (unique.length >= max) break;
   }
   if (unique.length === 0) return null;
+  const overflow = unique.length > max ? unique.length - (max - 1) : 0;
+  const shown = overflow > 0 ? unique.slice(0, max - 1) : unique;
   return (
     <span className={className ? `tool-thumbs ${className}` : "tool-thumbs"}>
-      {unique.map((src) => (
+      {shown.map((src) => (
         <ToolThumb key={src} src={src} cwd={cwd} />
       ))}
+      {overflow > 0 ? (
+        <span className="tool-thumb tool-thumb--more" title={`${overflow} more`}>
+          +{overflow}
+        </span>
+      ) : null}
     </span>
   );
 }

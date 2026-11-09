@@ -30,4 +30,6 @@ export const en = {
   "usageV2.trend.tipFoot": "{usd} list price · {turns} turns",
   "usageV2.trend.peak": "Peak {label} · {tokens} tokens",
   "usageV2.trend.empty": "Nothing recorded in this range",
+  "usageV2.hero.cost.reported": "incl. {usd} agent-reported",
+  "usageV2.hero.cost.peak": "incl. {usd} DeepSeek peak ×2",
 } satisfies Record<keyof typeof zh, string>;

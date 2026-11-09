@@ -75,9 +75,17 @@ export function UsageHero({ ins }: { ins: UsageInsights }) {
         value={ins.usd.value == null ? "—" : `≈ ${fmtUsd(ins.usd.value)}`}
         noun={t("usageV2.hero.cost.noun")}
         detail={
-          ins.usd.value == null
-            ? t("usageV2.hero.cost.unpriced")
-            : t("usageV2.hero.cost.covered", { pct: fmtPct(ins.usd.coverage, 0) })
+          <>
+            {ins.usd.value == null
+              ? t("usageV2.hero.cost.unpriced")
+              : t("usageV2.hero.cost.covered", { pct: fmtPct(ins.usd.coverage, 0) })}
+            {ins.usd.reported > 0 && (
+              <span className="uv2-hero__det-seg">{t("usageV2.hero.cost.reported", { usd: fmtUsd(ins.usd.reported) })}</span>
+            )}
+            {ins.usd.peakExtra > 0 && (
+              <span className="uv2-hero__det-seg">{t("usageV2.hero.cost.peak", { usd: fmtUsd(ins.usd.peakExtra) })}</span>
+            )}
+          </>
         }
         tag="priced"
       />
