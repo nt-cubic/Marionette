@@ -8,12 +8,14 @@
  * - anything inside a fenced block is code, never prose (bash `$$` must not
  *   load the math engine);
  * - a fence's info string classifies it (`mermaid`, `spec`);
- * - math hint delimiters (`$$`, `\[`) outside fences load katex. Single `$`
- *   is deliberately NOT a hint — the renderer runs with
- *   `singleDollarTextMath: false`, so dollar amounts in prose stay literal.
+ * - math hint delimiters (`$$`, `\[`) outside fences load katex. A bare `$`
+ *   stays a non-hint — but a *guarded* `$x^2$` candidate (see
+ *   inlineDollarMath.ts) is one: the renderer rewrites those to `$$` inline.
  *
  * No imports from React: scripts/verify-rich-markdown.mts runs this directly.
  */
+
+import { hasInlineDollarMathCandidate } from "./inlineDollarMath";
 
 export type RichFeatures = {
   /** At least one fenced code block → shiki is worth loading. */
@@ -52,6 +54,7 @@ export function scanRichFeatures(text: string): RichFeatures {
   const features: RichFeatures = { code: false, math: false, mermaid: false, spec: false };
   if (!text) return features;
   const fence: FenceState = { marker: null, length: 0 };
+  const outsideLines: string[] = [];
   for (const rawLine of text.replace(/\r\n?/g, "\n").split("\n")) {
     const inFence = fence.marker != null;
     if (!inFence) {
@@ -62,11 +65,19 @@ export function scanRichFeatures(text: string): RichFeatures {
         const info = open[2]!.trim().toLowerCase().split(/\s+/)[0];
         if (info === "mermaid") features.mermaid = true;
         else if (info === "spec") features.spec = true;
+        if (!features.math) outsideLines.push(rawLine);
       } else if (!features.math && MATH_HINT_RE.test(rawLine)) {
         features.math = true;
+      } else if (!features.math) {
+        outsideLines.push(rawLine);
       }
     }
     updateFenceState(rawLine, fence);
+  }
+  // A guarded `$x^2$` candidate outside fences is real inline math once the
+  // renderer rewrites it; plain `$` amounts never match the guard.
+  if (!features.math && hasInlineDollarMathCandidate(outsideLines.join("\n"))) {
+    features.math = true;
   }
   return features;
 }
