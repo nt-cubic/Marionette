@@ -2998,6 +2998,10 @@ export function App() {
                 type: "assistant_message" as const,
                 sessionId: payload.sessionId,
                 text: body,
+                // Stamp the agent that actually failed — otherwise the card
+                // falls back to session.agentId and relabels after a switch.
+                agentId: sessAgentId,
+                agentLabel: sessAgent?.label,
                 createdAt: new Date().toISOString(),
               },
             ];
