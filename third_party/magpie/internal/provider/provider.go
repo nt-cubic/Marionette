@@ -142,6 +142,16 @@ type Provider struct {
 	// goes round already. See gateway.sink.
 	Sink bool `json:"sink,omitempty"`
 
+	// UseFirst puts its keys or accounts ahead of the other providers'
+	// where Smart weighs them together: a group of several providers'
+	// models (hzh_1119 on Discord: an OpenAI API key's monthly credit
+	// spent before the ChatGPT subscription serving the same models). One
+	// resting after a failure, out of credit or out of quota (a 429
+	// insufficient_quota) is passed over as ever, and one all but used up
+	// goes with the others that are. Off, the default, Smart goes as it
+	// always has (routes.Seat.Lead).
+	UseFirst bool `json:"useFirst,omitempty"`
+
 	// Affinity is how long a conversation stays with the key or account
 	// that answered it, so the vendor's prompt cache it filled is read
 	// again rather than lost (see Affinities): "" auto, "session",
@@ -318,6 +328,12 @@ type Provider struct {
 	// fitting, which a backend that isn't OpenAI's needs (#350).
 	CodexAsSent bool `json:"codexAsSent,omitempty"`
 
+	// ImageFilesOff, `image-files=off`, has DeepSeek's own API sent an
+	// agent's inline images inline on every turn. By default each goes up
+	// once through DeepSeek's Files API, for a day, and the turns name it
+	// by its file id (gateway's deepseek_files.go, #5407).
+	ImageFilesOff bool `json:"imageFilesOff,omitempty"`
+
 	// PromptAsWritten, on Antigravity's subscription, has the system prompt
 	// go to Google exactly as the agent wrote it. By default the few lines
 	// Google answers with a 429 "Resource has been exhausted" whatever
@@ -343,6 +359,18 @@ type Provider struct {
 	// the top-level tools even where magpie's default would send the item.
 	AdditionalToolsOff bool `json:"additionalToolsOff,omitempty"`
 
+	// PassErrors, `errors=pass`, is the user's word that the client, not
+	// magpie, deals with what the provider's errors say (ne9ko9 on
+	// Discord): a request to it is asked once, its error goes to the
+	// agent as it came (its status, and its body as written where the
+	// agent's API is the provider's own, else in the agent's shape with
+	// the vendor's type, code and words), nothing about it is inferred
+	// (a prompt too long, a busy relay), it is not asked again in place
+	// or of a fallback or a group's next member, and none of its keys
+	// rests for it. Off, the default, magpie handles them. Only a provider
+	// of a key takes it (TakesPassErrors).
+	PassErrors bool `json:"passErrors,omitempty"`
+
 	// Patience is how many seconds more a request to this provider alone,
 	// not through a group, may be kept once it has failed in a way that
 	// passes (overloaded, unavailable, rate limited for a moment) and the
@@ -365,21 +393,26 @@ type Provider struct {
 	// keeps magpie's summary.
 	NativeCompaction bool `json:"nativeCompaction,omitempty"`
 
-	// PassUserAgent has a request go to the vendor with the User-Agent the
-	// agent that sent it gave (pi, opencode, Claude Code…), in place of
-	// magpie's own (#1851): a coding plan that serves only agents it names
-	// knows them by it. One the agent didn't give, or magpie's own
-	// requests, go as magpie. Off, the default, every request goes as
-	// magpie. Only a key+URL provider takes it: a signed-in account, a
-	// plugin's and one that goes as a client of its vendor's own keep the
-	// identity their signing gives (see PassesUserAgent).
-	PassUserAgent bool `json:"passUserAgent,omitempty"`
+	// MagpieUserAgent has every request go to the vendor with magpie's own
+	// User-Agent (magpie/<version>). Off, the default, a key+URL provider is
+	// sent the User-Agent the agent gave (pi, opencode, Claude Code…) as it
+	// gave it (#1851, nb5p on Discord): a coding plan that serves only
+	// agents it names, or the user's own gateway behind magpie, knows them
+	// by it. One the agent didn't give, and magpie's own requests, go as
+	// magpie either way. A signed-in account, a plugin's and one that goes
+	// as a client of its vendor's own keep the identity their signing
+	// gives (see PassesUserAgent). The opt-in "passUserAgent" it replaces
+	// is the default now, so a file that still says it reads the same.
+	MagpieUserAgent bool `json:"magpieUserAgent,omitempty"`
 
 	// PinUpstream, on the Cline API, has its DeepSeek models answered only
 	// by DeepSeek's own API (White Immortal on Discord) and its GLM models
 	// only by Z.ai's (sdytman on Discord): Cline routes a model through an
 	// AI gateway that may serve it from any host, and the maker's own
-	// keeps its prompt cache. See ClinePin.
+	// keeps its prompt cache. Since 2026-11-06 Cline refuses the
+	// providerOptions field that pinned all but glm-5.3-flash, so only
+	// that model is pinned now (#5442); the saved value is kept as set.
+	// See ClinePin.
 	PinUpstream bool `json:"pinUpstream,omitempty"`
 
 	// AuthHeader is which header the key goes in on a third-party
@@ -409,6 +442,14 @@ type Provider struct {
 	// added takes it (TakesInsecureTLS), and only for the hosts of its own
 	// base URLs (UncheckedHosts); see Via.
 	InsecureTLS bool `json:"insecureTLS,omitempty"`
+
+	// HTTP1 has magpie speak HTTP/1.1 to the provider's own hosts, never
+	// HTTP/2 (kepner_53726 on Discord: a company gateway whose HTTP/2
+	// connections broke mid-reply with "tls: bad record MAC" while
+	// HTTP/1.1 to it held). Only a provider the user added takes it
+	// (TakesInsecureTLS), for the hosts of its own base URLs
+	// (UncheckedHosts); see Via.
+	HTTP1 bool `json:"http1,omitempty"`
 
 	// Proxy is the proxy magpie's requests to this provider go through
 	// (#237: Codex through one, a vendor at home without): "" follows
@@ -465,6 +506,11 @@ type Provider struct {
 	// a day, a month or in all, by its KeyID: past it, routing takes the
 	// key for used up until the period renews (see key_spend.go).
 	KeySpendCaps map[string]SpendCap `json:"keySpendCaps,omitempty"`
+	// KeyOwnBalances is, for a provider of API keys whose vendor tells no
+	// balance, what the user typed is left on each key, by its KeyID: the
+	// key's card shows it less what magpie priced its calls at since
+	// (see key_balance_own.go).
+	KeyOwnBalances map[string]OwnBalance `json:"keyOwnBalances,omitempty"`
 
 	// BalanceURL, when set, is where the vendor tells what is left on a
 	// key, asked with the key the way a chat request carries it; BalancePath
@@ -496,6 +542,14 @@ type Provider struct {
 	// that lists them away from the base URL requests go to (Xiaomi MiMo's
 	// plans are served at their own hosts, the list at api.xiaomimimo.com).
 	ModelsURL string `json:"modelsURL,omitempty"`
+	// ListOff is the editor's Fetch the model list unticked (axelburks on
+	// Discord): the vendor's list is never asked for, by a Fetch, a
+	// Refresh, a test or a schedule, and the models served are the ids the
+	// user added alone, not models.dev's nor a list fetched before. For a
+	// vendor whose list names models by ids that can't be asked for
+	// (Volcengine Ark's, where each is asked by an endpoint id the user
+	// made). A key's provider only (ListsOff).
+	ListOff bool `json:"listOff,omitempty"`
 
 	// Models the user chose to expose. Empty means "the preset's picks, or
 	// everything the vendor lists when that list is short" — unless NoModels.
@@ -791,20 +845,38 @@ func store(f file) error {
 // item or a CLI's among them, and Codex's /models asked for it seven times
 // over, past the 5 s Codex waits for the list (#746).
 func All() []Provider {
+	shared := sharedAll()
+	out := make([]Provider, len(shared))
+	for i, p := range shared {
+		out[i] = p.clone() // callers change theirs, Keys[i] and Headers included
+	}
+	return out
+}
+
+// sharedAll is All without its copies, only for reading: the providers a
+// request holds, less the accounts discovery off leaves out. Find, a
+// model's price and a value resolved each copied every provider, every
+// account's keys and headers, to read one (~15 MB in 2 minutes of an
+// idle magpie with its window open).
+func sharedAll() []Provider {
 	held := heldOf("all", allProviders)
-	out := make([]Provider, 0, len(held))
 	// asked once, from the settings a held look has read already: asked for
 	// each account, settings.json was parsed for every account of every
 	// model's price (agent.magpieModels, the GUI's drift every 15s and dsh's
 	// round every 30s), most of an idle magpie's CPU (xsw on Discord)
 	off := sync.OnceValue(func() bool { return settings.AccountDiscoveryOffIn(heldSettings()) })
-	for _, p := range held {
+	for i, p := range held {
 		if p.Account != nil && off() && !p.publicAccount() {
-			continue
+			out := held[:i:i] // the first append copies
+			for _, p := range held[i+1:] {
+				if p.Account == nil || p.publicAccount() {
+					out = append(out, p)
+				}
+			}
+			return out
 		}
-		out = append(out, p.clone()) // callers change theirs, Keys[i] and Headers included
 	}
-	return out
+	return held
 }
 
 // clone is p with its settings unshared: slices, maps and pointers copied.
@@ -825,6 +897,7 @@ func (p Provider) clone() Provider {
 	p.AccountCaps = maps.Clone(p.AccountCaps)
 	p.AccountNames = maps.Clone(p.AccountNames)
 	p.KeySpendCaps = maps.Clone(p.KeySpendCaps)
+	p.KeyOwnBalances = maps.Clone(p.KeyOwnBalances)
 	if p.AccountWindowCaps != nil {
 		m := make(map[string]map[string]int, len(p.AccountWindowCaps))
 		for k, v := range p.AccountWindowCaps {
@@ -865,8 +938,14 @@ func (p Provider) clone() Provider {
 // AllBuilt counts the times All built the list anew, for tests.
 var AllBuilt atomic.Int64
 
+// AllBuiltAt is when the build All last counted was asked for (allProviders
+// entered, the hold's rule read at once after), for a test to judge a build
+// by when it was asked, not by when the request that asked began (#2965).
+var AllBuiltAt atomic.Int64
+
 func allProviders() []Provider {
 	AllBuilt.Add(1)
+	AllBuiltAt.Store(time.Now().UnixNano())
 	f := load()
 	out, picks := ownOf(f)
 	for _, a := range Accounts() {
@@ -934,6 +1013,7 @@ func accountSettings(a, pk Provider) Provider {
 	a.Proxy, a.AccountProxies, a.AccountModels, a.AccountModelsAll = pk.Proxy, pk.AccountProxies, pk.AccountModels, pk.AccountModelsAll
 	a.AccountCaps, a.AccountWindowCaps = pk.AccountCaps, pk.AccountWindowCaps
 	a.CapStop, a.CapCareful = pk.CapStop, pk.CapCareful
+	a.UseFirst = pk.UseFirst
 	a.AccountNames = pk.AccountNames
 	a.MaxConcurrency, a.PinUpstream = pk.MaxConcurrency, pk.PinUpstream
 	a.MaxAccounts = pk.MaxAccounts
@@ -994,7 +1074,12 @@ func find(ps []Provider, id string) (Provider, bool) {
 
 // Find looks a provider up by id (or name, case-insensitively).
 func Find(id string) (*Provider, error) {
-	return findIn(All(), id)
+	p, err := findIn(sharedAll(), id)
+	if p != nil {
+		c := p.clone() // the caller's to change, as All's are
+		p = &c
+	}
+	return p, err
 }
 
 func findIn(all []Provider, id string) (*Provider, error) {
@@ -1116,6 +1201,9 @@ func Save(p Provider) error {
 		}
 		if p.InsecureTLS && !p.TakesInsecureTLS() {
 			return fmt.Errorf("%s is a preset's: only a provider you added with your own base URL can skip the certificate check", p.Name)
+		}
+		if p.HTTP1 && !p.TakesInsecureTLS() {
+			return fmt.Errorf("%s is a preset's: only a provider you added with your own base URL can be held to HTTP/1.1", p.Name)
 		}
 		if strings.Contains(p.Decide, WorkspaceID) {
 			return errors.New("Bailian's decision model is asked at your workspace's host: give its workspace ID (workspace=… or the editor's Workspace ID), or pick the Token Plan")
@@ -1352,7 +1440,7 @@ func AddCopy(p Provider, from string) (string, error) {
 	p.Unredacted = p.Unredacted || src.Unredacted
 	p.CountFree = p.CountFree || src.CountFree
 	p.NativeCompaction = p.NativeCompaction || src.NativeCompaction
-	p.PassUserAgent = p.PassUserAgent || src.PassUserAgent
+	p.MagpieUserAgent = p.MagpieUserAgent || src.MagpieUserAgent
 	if p.Website == "" {
 		p.Website = src.Website
 	}
@@ -1591,6 +1679,7 @@ func normalize(p Provider) Provider {
 	p.AccountWindowCaps = normalWindowCaps(p.AccountWindowCaps)
 	p.AccountNames = normalAccountNames(p.AccountNames)
 	p.KeySpendCaps = normalKeySpendCaps(p.KeySpendCaps)
+	p.KeyOwnBalances = normalKeyOwnBalances(p.KeyOwnBalances)
 	if len(p.Models) > 0 {
 		p.NoModels = false // a pick is no longer Select none
 	}

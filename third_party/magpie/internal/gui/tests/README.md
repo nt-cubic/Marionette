@@ -1,5 +1,13 @@
 # Dropdown browser regression
 
+`agent-details-ready.test.cjs` holds the first settings read and the lazy
+Long conversations module on the main window's Agents → Details path. It
+checks a complete first and warm opening without a final height jump in all
+five languages, wide and narrow, Chromium and WebKit. It also covers Claude
+Code and Grok Build, failed-read retry, a superseding agent click, navigation
+away and reduced motion. `MAGPIE_ASSETS` selects older assets for the failing
+regression comparison; `ARTIFACT_DIR` retains Chinese desktop screenshots.
+
 `modal-backdrop.test.cjs` checks the modal's computed backdrop filter using
 the real stylesheet and platform marker: Windows desktop windows and panels
 keep the dimming veil without filtering, while browser pages, macOS and Linux
@@ -638,22 +646,31 @@ model's name (#968): a new group named "GPT 6.1 Sol" is said and sent as
 `group/gpt-6.1-sol`, and `groupSlug` folds a run of dots and trims them at the
 ends as `provider.GroupSlug` does, in English and Chinese, Chromium and WebKit.
 
-`group-new-head.test.cjs` checks that a routing group of any models can be
-made from the top of the Routing page, in Chromium and WebKit, English and
+`group-new-head.test.cjs` checks that a routing group of any models is made
+from the Routing groups page's toolbar, in Chromium and WebKit, English and
 Chinese (mintonight, #944: the groups' New group sat below the requests, so
-only found groups were used). The page's head has New group with a plus and a
-tooltip saying what a group is, in sight while the groups are below the fold;
-its click opens an empty group's editor, brings it into view and focuses its
-name. The groups' own New group has the plus too. No left-border accent.
+only found groups were used). New group is in sight on arrival, with a plus
+and a tooltip saying what a group is; its click opens an empty group's
+editor, brings it into view and focuses its name, and a draft is replaced
+only after Discard. No left-border accent.
+
+`routing-groups-page.test.cjs` checks that routing groups have a page of
+their own, after Routing in the sidebar: its toolbar holds the filter, how
+many groups there are and how many are on, Import, Select and New group as
+the one filled button, in sight on arrival; the list follows, then Settings
+(found groups, the names in agents' lists). The Routing page has no groups
+and no jump to them. A request's group opens the groups page on its row, and
+`?view=groups&newgroup=` opens a new group there. Every language, Chromium
+and WebKit, at 1280px, 640px and 420px, with no sideways scroll.
 
 `name-suffix-where-named.test.cjs` checks the setting that says whether a
 provider's name or "· routing group" follows a name in the agents' lists (#868)
 where names are given, in Chromium and WebKit, English and Chinese. The
-provider editor's Names, prices & levels has its three choices and says what the lists
-show. For the groups it is one setting for all of them, so it sits over the
-groups on Routing (PAMI on Discord: in one group's editor it read as that
-group's): a group's editor has no choices, only what its group will be called
-and that it is set above; a pick there posts settings/plain-names once and the
+provider editor's Model settings has its three choices and says what the lists
+show. For the groups it is one setting for all of them, so it sits under the
+list on the Routing groups page (PAMI on Discord: in one group's editor it read
+as that group's): a group's editor has no choices, only what its group will be
+called and that it is set under the list; a pick there posts settings/plain-names once and the
 open editor's line follows it with its unsaved name. No click scrolls, nothing
 native, no left border, and every string has its Chinese, Japanese and German.
 
@@ -705,13 +722,6 @@ without the provider" (love1sbug on X): off by default, On posts
 back, neither click scrolls the page, the row is drawn in gateway mode, and
 nothing runs out of the row or the page sideways at 420px and 900px. Every
 language, Chromium and WebKit.
-
-`routing-steady.test.cjs` scrolls the Routing page down to its routing groups,
-opens one in its editor and types into its name, then streams six requests in
-from the trace (new agents and accounts on the stage, failures and retries in
-the story, the lists growing): the groups and the editor stay where they are
-on the screen on every layout and scroll, the view's scrollTop moving by just
-what grew above them, and the field keeps its focus and what was typed.
 
 `routing-flood.test.cjs` takes the Routing page out of sight three ways
 (#302): the window hidden, the window covered and drawing no frames
@@ -838,6 +848,15 @@ Tools tab of the contents lists only tools; nothing scrolls sideways — in
 Chromium and WebKit, in English, Chinese, Japanese and German, at 1100px and
 420px. With the state answering after the history, the cards drawn by the
 agents' ids take their names once it is in, though the history is the same.
+
+`sessions-context-line.test.cjs` opens a session's details on the Sessions
+page (liang_yongxiang on Discord): one the gateway sent calls of asks
+`/api/context/session` once, with its first and last, and draws a Context
+line, a point a request telling its share of the window and the fullest
+share beside it, toned; a point clicked opens that request in Routing with
+its card; one the gateway kept no prompt of, or never saw, has no line, and
+the second isn't asked; opened again it is drawn without asking — in
+Chromium and WebKit, in all five languages, at 1100px and 420px.
 
 `tray-usages.test.cjs` picks several of the Usage page's cards for the menu
 bar in Settings: the menu keeps open as Codex and Claude Code are ticked
@@ -1251,6 +1270,15 @@ status; its models are the one asked for, the one sent as asked and the one that
 do the same, text selected in the details is not a click, and the rows stay open
 when the list is asked for again; in English and Chinese.
 
+`usage-ledger-bytes.test.cjs` checks that Requests says what a request sent
+up and got back (faithleysath): a row's details name "Sent upstream",
+"Received" and what DeepSeek's image files saved (#5407), a row from before
+they were kept shows none of them, and a saving below 0 shows none. Under
+the Requests card the period reads "↑ up · ↓ down" with the saving beside
+it, and nothing for a period with no bytes. At 1180 and 420 wide nothing
+scrolls sideways; Chromium and WebKit, every language. The old page.js
+shows it failing.
+
 `ledger-cache-tokens.test.cjs` (#1839) opens a request's details and finds its
 tokens there at every width: in, out, cache read and cache creation, 0 said as
 0 for a prompt that missed the cache, with what was written for an hour; a
@@ -1512,7 +1540,7 @@ Chromium and WebKit, English and Chinese: Detect APIs' "Each picked model"
 posts provider/detect with every model picked (detectModels) and shows model
 by API, each a ✓ with the time or a ✗ with why; "Use these" sets the URLs
 that answered and gives each model that answered on one API only that API in
-Names, prices & levels, unsaved, sending nothing until the Save carries them as
+Model settings, unsaved, sending nothing until the Save carries them as
 modelPrefs, while a model answering on two stays Auto. A chip's right-click
 Test says the API it was asked on ("answered via Responses"). No click moves
 the page, nothing has a left-border accent, and every string has its
@@ -1943,7 +1971,11 @@ the OpenAI/Anthropic switch keeps that host and doesn't move the page. Opened
 at localhost, the container's address stays and the row says it is the
 container's own and to set `MAGPIE_PUBLIC_URL`. Outside a container nothing
 changes. No coloured left border; English and Chinese, Chromium and WebKit,
-with `/api/plugins` faked.
+with `/api/plugins` faked. With `MAGPIE_PUBLIC_URL` at the NAS's private
+192.168.31.218 (jiezhengj on Discord), the Gateway page's list, Connect's
+menu and About name it the local network's, not "Public address", and the
+Docker bridge's 172.17.0.1 other containers'; an internet address is named
+the internet's. Every language, at 1100 and 420 wide.
 
 `routing-time.test.cjs` checks a routing group's rule for hours of the day
 (Discord: send a provider's peak-price hours, DeepSeek's or GLM's, to
@@ -1960,9 +1992,9 @@ groups" (只通过路由分组使用; 悠悠哥 on Discord: hy4 vanished from th
 The model picker's filter, finding such a model, says why it isn't offered:
 hy3, in the group Mine, is reached by picking Mine ("Pick Mine" sets it);
 hy4, in no group, can't be used, and "Make a routing group of it" opens the
-Routing page on a new group of it, added with `members: ["hunyuan/hy4"]`.
+Routing groups page on a new group of it, added with `members: ["hunyuan/hy4"]`.
 The provider's editor names its models in no group under the tick (not once
-unticked), each a click from a group; `?view=routing&newgroup=` opens the
+unticked), each a click from a group; `?view=groups&newgroup=` opens the
 window on one, and the tray panel asks `window/main` for it. The page doesn't
 move, no left-border accent; English and Chinese, Chromium and WebKit.
 
@@ -2095,7 +2127,7 @@ with nothing shared), and a network address that needs an enabled gateway
 key. English and Chinese, Chromium and WebKit, with `/api/plugins` faked.
 
 `public-url-default.test.cjs` checks that Connect starts at MAGPIE_PUBLIC_URL,
-labelled Public address, with the snippets on it, until an address is
+labelled Public address (对外地址) when it is a name, with the snippets on it, until an address is
 picked, and that a pick (this computer's) is kept after a reload (#1551).
 About shows the public URL beside the local one; magpie web shows it as the
 gateway's address and the MCP server's, the app keeps those local. Without
@@ -2473,10 +2505,10 @@ node --test internal/gui/tests/cli-path.test.cjs
 ```
 
 `update-mirror.test.cjs` checks Settings › About › Download source (#893):
-the row says updates come from GitHub; Use a mirror… opens an address field,
+the row says updates come from usemagpie.ai, then GitHub; Use a mirror… opens an address field,
 an http:// address is refused with the reason in red and the draft kept, an
 https:// one saved with Enter posts `/api/settings/update-mirror` and is
-shown, and Use GitHub posts an empty mirror. A download that failed through
+shown, and Remove mirror posts an empty mirror. A download that failed through
 the mirror says so on the Version row and offers Download from GitHub, which
 posts the empty mirror then `/api/update/install`. No native select, no left
 border, no click scrolls. English and Chinese, Chromium and WebKit; the API

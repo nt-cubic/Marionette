@@ -204,6 +204,7 @@ button.row.lib-hubfolded:hover { background: var(--pill); }
 .lib-hereline > .lib-tag.lib-offhere { cursor: pointer; margin-left: 0; flex: 0 1 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .lib-tag.lib-offhere:hover { color: var(--fg); }
 .lib-icon.lib-here.on { color: var(--accent); }
+.lib-icon.lib-routedirect.on { color: var(--accent); }
 .lib-src { display: flex; align-items: center; gap: 5px; margin-top: 3px; font-size: 11px; color: var(--faint); min-width: 0; }
 /* "linked from" stays whole, one line, and the path beside it gives way:
    CJK can break after any character, so the label shrank to a column of
@@ -329,6 +330,7 @@ input.lib-setname:focus { border-color: var(--accent); box-shadow: 0 0 0 3px col
 .lib-ag.asleep .ic, .lib-row.asleep > .ic { opacity: .55; filter: grayscale(1); }
 .lib-row.asleep .lib-path:hover { color: var(--muted); text-decoration: none; }
 .lib-row.asleep .lib-switch[aria-disabled="true"] { opacity: .35; cursor: default; }
+.lib-localbox .lib-switch[aria-disabled="true"] { opacity: .35; cursor: default; }
 .lib-ag:active:not(.blocked) { transform: scale(.92); }
 .editor .lib-agents { max-width: none; justify-content: flex-start; gap: 5px; }
 .editor .lib-ag { padding: 0 9px 0 6px; border-color: var(--line); }
@@ -797,6 +799,8 @@ input.lib-setname:focus { border-color: var(--accent); box-shadow: 0 0 0 3px col
 .mk-sheet .mk-browser-state { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
 .mk-sheet .mk-browser-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
 .mk-sheet .mk-browser-dot.on { background: var(--green); }
+.mk-sheet .mk-browser-update { margin: 0; font-size: 12px; color: var(--fg-2); }
+.mk-sheet .mk-browser-update[hidden] { display: none; }
 .mk-sheet .mk-browser-steps { margin: 0; padding-left: 18px; font-size: 12px; color: var(--muted); display: grid; gap: 2px; }
 .mk-sheet .mk-browser-folder { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; align-items: center; max-width: 100%; box-sizing: border-box; padding: 8px 12px; border: 1px dashed var(--line); border-radius: 8px; background: var(--card); cursor: grab; user-select: none; -webkit-user-select: none; touch-action: none; }
 .mk-sheet .mk-browser-folder[hidden] { display: none; }
@@ -840,3 +844,14 @@ body.window .lib-list .lib-row { --lib-indent: 38px; }
 @media (max-width: 760px), (pointer: coarse) and (max-width: 1024px) {
   body.web .lib-editor :is(.lib-cmd, .lib-notein) { min-height: 44px; font-size: 16px; line-height: 22px; padding: 10px 9px; }
 }
+
+/* the ⋯ at a list's heading (ryanpascal on Discord), and its Remove all red as the bar's was */
+#view-library .row-head .lib-barmore { display: inline-flex; align-items: center; justify-content: center; padding: 0 7px; }
+.row-menu .rm-item.lib-everyrm, .row-menu .rm-item.lib-everyrm svg { color: var(--red); }
+.row-menu .rm-item.lib-everyrm:not(:disabled):is(:hover, :focus) { background: var(--red-soft); }
+
+/* a long "In your agents" list folded to its first rows */
+.lib-foundmore { display: flex; align-items: center; justify-content: center; gap: 5px; width: 100%; border: 0; border-top: 1px solid var(--line-2); background: none; font: inherit; font-size: 12px; color: var(--muted); padding: 9px; cursor: pointer; transition: color .2s ease, background-color .2s ease; }
+.lib-foundmore span { display: inline-flex; }
+.lib-foundmore.open .chev { transform: rotate(180deg); }
+@media (hover: hover) and (pointer: fine) { .lib-foundmore:hover { color: var(--fg); background: var(--card-2); } }

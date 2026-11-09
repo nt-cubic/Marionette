@@ -60,6 +60,14 @@ var (
 	// resetExpiryFar is the longest an account goes unread: a reset
 	// granted meanwhile is seen by then
 	resetExpiryFar = 6 * time.Hour
+	// resetExpiryRetry is how soon a read or spend that failed within the
+	// lead is tried again once the reset runs out within resetExpiryLast:
+	// a five-minute lead has room for several tries, not one
+	resetExpiryRetry = time.Minute
+	// resetExpiryLast is how close to running out a failure is tried again
+	// every resetExpiryRetry, not resetExpiryClose: a long lead failing all
+	// along isn't read every minute for hours
+	resetExpiryLast = 15 * time.Minute
 )
 
 // errResetsUntilUnread: the account holds resets, but when they run out
@@ -76,6 +84,9 @@ type expiringResets struct {
 	sync.Mutex
 	next  map[string]time.Time // by account, when to read it again
 	until map[string]time.Time // by account, when its soonest reset runs out, as last read
+	// pass is the accounts check was asked about since the loop last
+	// woke (wake): the ones whose next look it waits for
+	pass map[string]bool
 }
 
 // check spends one of user's resets, if its windows have been used, when
@@ -92,6 +103,10 @@ func (e *expiringResets) check(user string, now time.Time, look func() ([]QuotaW
 	if e.until == nil {
 		e.until = map[string]time.Time{}
 	}
+	if e.pass == nil {
+		e.pass = map[string]bool{}
+	}
+	e.pass[key] = true
 	if now.Before(e.next[key]) {
 		return ResetOutcome{}, nil
 	}
@@ -106,7 +121,7 @@ func (e *expiringResets) check(user string, now time.Time, look func() ([]QuotaW
 		// tried again by the reset last read, soon when it is near
 		e.next[key] = now.Add(resetExpiryWatch)
 		if u, ok := e.until[key]; ok {
-			e.next[key] = nextResetLook(u, now)
+			e.next[key] = retryResetLook(u, now)
 		}
 		return ResetOutcome{}, err
 	}
@@ -132,7 +147,11 @@ func (e *expiringResets) check(user string, now time.Time, look func() ([]QuotaW
 		return ResetOutcome{}, nil
 	}
 	out, err := spend()
-	if err != nil || out.Code != "reset" {
+	if err != nil {
+		e.next[key] = retryResetLook(until, now)
+		return out, err
+	}
+	if out.Code != "reset" {
 		e.next[key] = nextResetLook(until, now)
 		return out, err
 	}
@@ -145,12 +164,48 @@ func (e *expiringResets) check(user string, now time.Time, look func() ([]QuotaW
 // is looked at next: every resetExpiryClose within resetExpiryNear of
 // that, every resetExpiryWatch before then but never past its start — so
 // the reset is looked at several times within resetLead, a look missed
-// or failed there still spends it in time.
+// or failed there still spends it in time. Never past when the lead
+// starts either: the look lands on it, not up to resetExpiryClose after,
+// which a lead as short as five minutes couldn't spare.
 func nextResetLook(until, now time.Time) time.Time {
-	if near := until.Add(-resetExpiryNear(resetLead())); near.After(now) {
+	lead := resetLead()
+	if near := until.Add(-resetExpiryNear(lead)); near.After(now) {
 		return minTime(now.Add(resetExpiryWatch), near)
 	}
-	return now.Add(resetExpiryClose)
+	next := now.Add(resetExpiryClose)
+	if at := until.Add(-lead); at.After(now) {
+		return minTime(next, at)
+	}
+	return next
+}
+
+// retryResetLook is when a read or spend that failed is tried again: every
+// resetExpiryRetry once the reset runs out within resetExpiryLast and its
+// lead has started, so a short lead gets several tries; nextResetLook
+// otherwise.
+func retryResetLook(until, now time.Time) time.Time {
+	if !until.Add(-resetLead()).After(now) && until.Sub(now) <= resetExpiryLast {
+		return now.Add(resetExpiryRetry)
+	}
+	return nextResetLook(until, now)
+}
+
+// wake is how long the loop (KeepResetsFromRunningOut) sleeps after a pass
+// ending at now: until the soonest look due of the accounts the pass went
+// over, resetExpiryClose at most, a second at least. A look due at a
+// lead's start is made then, not at the next five-minute pass, and a retry
+// due while the pass still ran (a try hung to its bound) is made at once.
+// An account the pass skipped (auto-use turned off) waits for nothing.
+func (e *expiringResets) wake(now time.Time) time.Duration {
+	now = now.Round(0)
+	e.Lock()
+	defer e.Unlock()
+	d := resetExpiryClose
+	for key := range e.pass {
+		d = min(d, e.next[key].Sub(now))
+	}
+	clear(e.pass)
+	return max(d, time.Second)
 }
 
 // expiringResetSpent is when a reset that runs out at until is spent by
@@ -234,10 +289,15 @@ func SpendExpiringCodexResets(ctx context.Context) {
 			// read again under the lock: the week's used-up one may have
 			// been spent since the look, and a held-up account freed by it
 			// isn't one to spend another on
-			if !stillExpiring(ctx, who) {
+			credit, ok := stillExpiring(ctx, who)
+			if !ok {
 				return ResetOutcome{}, nil
 			}
-			return useCodexReset(ctx, who, ResetUsedExpiring)
+			// the checks and the spend are of the same reset (#5555): the
+			// spend's own read of the cards is no place to pick another —
+			// the one the checks passed that has vanished there spends
+			// nothing, not the one that runs out later
+			return spendCodexReset(ctx, who, credit, ResetUsedExpiring)
 		})
 		switch {
 		case err != nil:
@@ -249,26 +309,42 @@ func SpendExpiringCodexResets(ctx context.Context) {
 }
 
 // stillExpiring reads who's windows and resets again and says whether
-// check would still spend one now; a var so tests can stand in for it.
-var stillExpiring = func(ctx context.Context, who string) bool {
+// check would still spend one now, and which: the reset that runs out
+// first, so the spend is of the very one the checks passed, never
+// another read afresh at the spend (#5555); "" when the cards' list
+// isn't the count, the spend then picking as before. A var so tests can
+// stand in for it.
+var stillExpiring = func(ctx context.Context, who string) (credit string, ok bool) {
 	_, windows, resets, err := codexUserWindows(ctx, who)
-	return err == nil && spendExpiringNow(windows, resets, time.Now())
+	if err != nil {
+		return "", false
+	}
+	return spendExpiringNow(windows, resets, time.Now())
 }
 
 // spendExpiringNow: the soonest of resets is due to be spent by now
-// (expiringResetSpent) and windows have been used.
-func spendExpiringNow(windows []QuotaWindow, resets *ResetCredits, now time.Time) bool {
+// (expiringResetSpent) and windows have been used. credit is the id of
+// that soonest one, "" when the list read isn't the count (Each).
+func spendExpiringNow(windows []QuotaWindow, resets *ResetCredits, now time.Time) (credit string, ok bool) {
 	if resets == nil || resets.Count <= 0 || resets.Until == nil || !windowsUsed(windows) {
-		return false
+		return "", false
 	}
 	q := SubscriptionQuota{Windows: windows}
 	at := expiringResetSpent(resets.Until.Round(0), now, usedUp(q, now), BackAt(q, now))
-	return !at.IsZero() && !at.After(now)
+	if at.IsZero() || at.After(now) {
+		return "", false
+	}
+	// the soonest first (each sorts them so), from the same read as Until
+	if len(resets.Each) == resets.Count {
+		credit = resets.Each[0].ID
+	}
+	return credit, true
 }
 
 // KeepResetsFromRunningOut spends the Codex resets about to run out unused
-// (SpendExpiringCodexResets), three minutes after it starts and every
-// resetExpiryClose after that, until ctx ends.
+// (SpendExpiringCodexResets), three minutes after it starts and then as
+// soon as a look is due (wake: a lead's start, a retry), every
+// resetExpiryClose at most, until ctx ends.
 func KeepResetsFromRunningOut(ctx context.Context) {
 	t := time.NewTimer(3 * time.Minute)
 	defer t.Stop()
@@ -281,6 +357,6 @@ func KeepResetsFromRunningOut(ctx context.Context) {
 		c, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		SpendExpiringCodexResets(c)
 		cancel()
-		t.Reset(resetExpiryClose)
+		t.Reset(expiring.wake(time.Now()))
 	}
 }

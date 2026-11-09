@@ -122,13 +122,17 @@ type Affinity struct {
 	// everything else, and one not on its credits leads: lastBehind),
 	// "busy" (its plugin says the model is busier than settings.BusyLoad
 	// and one that isn't leads, at a new turn: busyBehind),
-	// "strict" (Stays: Strict, kept whatever it is).
+	// "strict" (Stays: Strict, kept whatever it is), "lead" (put with the
+	// key or account its session's main conversation is on: withSession).
 	Why string `json:"why"`
 	// Main is, for a conversation kept strictly on a provider's fallback,
 	// the provider's own key or account that is ready again: it would have
 	// gone back to it ("main") but for Stays: Strict, which the Routing
 	// page says.
 	Main *Weighed `json:"main,omitempty"`
+	// LeadModel is, for Why "lead", the model of the session's main
+	// conversation, whose key or account this call went to (withSession).
+	LeadModel string `json:"leadModel,omitempty"`
 }
 
 type stick struct {
@@ -522,7 +526,7 @@ func strictOnly(cs []candidate, pl planned, at int) ([]candidate, planned) {
 // the session's as before, so what is kept of it, and Codex's leadFirst,
 // which reads a lead's stick by its thread id, are as they were.
 func stickKey(scope string, in http.Header, body []byte) string {
-	key := scope + "|" + conversationID(in, body)
+	key := scope + "|" + affinityID(in, body)
 	if sub := subOf(in); sub != "" {
 		key += "|agent:" + sub
 	}
@@ -535,7 +539,8 @@ func stickKey(scope string, in http.Header, body []byte) string {
 // (dirOf): one parse of a held body serves both (factsOf), where counting
 // it in the masked body parsed the conversation a second time, ~27 MB
 // more for each 4 MB Codex request in flight. inOrder: the request is to
-// a routing group set to In order, whose order the user chose (backToFirst).
+// a routing group, or a provider's keys or accounts, set to In order,
+// whose order the user chose (backToFirst).
 func affine(scope, mode string, rotate, spread, inOrder bool, in http.Header, from provider.Protocol, body, written []byte, cs []candidate, pl planned) ([]candidate, planned, *Affinity, string) {
 	key := stickKey(scope, in, body)
 	a := &Affinity{Mode: mode}
@@ -614,7 +619,7 @@ func affine(scope, mode string, rotate, spread, inOrder bool, in http.Header, fr
 		// for it, which the provider can't read, and the whole prompt is
 		// sent afresh to the provider at the next turn all the same
 		a.Why = "main"
-	case !a.Within && inOrder && mode == "" && backToFirst(cs, pl.order, at):
+	case !a.Within && inOrder && mode == "" && backToFirst(cs, pl.order, at, !strings.HasPrefix(scope, provider.GroupPrefix)) && (strings.HasPrefix(scope, provider.GroupPrefix) || cacheHolds(st, cs[at].p)):
 		// a group set to In order tries its members in the order the user
 		// put them in: a conversation that went to a later member while
 		// the first couldn't take it (a 429, a 5xx, a rest) goes back to
@@ -625,7 +630,10 @@ func affine(scope, mode string, rotate, spread, inOrder bool, in http.Header, fr
 		// Discord: an API key first, a Claude subscription second, 8 of 10
 		// requests on the subscription). Within a turn it stays, on the
 		// reasoning the later member sealed; Stays: Session or Strict,
-		// the user's own, keep it where it is
+		// the user's own, keep it where it is. A provider's own keys or
+		// accounts routed In order do the same (CryptoSarom on X); only
+		// a cache that would keep it is overridden, so one gone cold or
+		// never written is still told as that
 		a.Why = "order"
 	case !a.Within && !inOrder && !rotate && mode == "" && st.stoodIn && backFromStandIn(cs, pl.order, at):
 		// a member listed after another, in a group routed Smart or any
@@ -698,6 +706,9 @@ func affine(scope, mode string, rotate, spread, inOrder bool, in http.Header, fr
 			cs, pl = leastHeld(scope, key, cs, pl, true)
 		}
 	}
+	if !rotate {
+		cs, pl = withSession(scope, key, sessionNamed(in), a, st, had, cs, pl)
+	}
 	return cs, pl, a, key
 }
 
@@ -714,11 +725,16 @@ func backToMain(order []Weighed, at int) bool {
 // first, order[0], is a member of the group ahead of the member that
 // answered last, cs[at]: another member, not another key or account of
 // the same one (a provider's keys, a group in the group, keep their own
-// affinity). restLast puts a resting one behind every ready one, so the
+// affinity). accounts: a provider's own keys or accounts routed In order,
+// where the first is another key or account of the provider's own, not a
+// fallback. restLast puts a resting one behind every ready one, so the
 // first is ready only when it isn't resting.
-func backToFirst(cs []candidate, order []Weighed, at int) bool {
+func backToFirst(cs []candidate, order []Weighed, at int, accounts bool) bool {
 	if at <= 0 || at >= len(order) || at >= len(cs) || order[0].Rest != nil || order[0].Aside {
 		return false
+	}
+	if accounts {
+		return !order[0].Fallback && !order[at].Fallback && cs[0].who() != cs[at].who()
 	}
 	member := func(i int) string {
 		if len(order[i].Via) > 0 {
@@ -909,6 +925,104 @@ func withLead(key string, cs []candidate, pl planned) ([]candidate, planned) {
 		}
 	}
 	return cs, pl
+}
+
+// withSession puts first, for a conversation of a session whose main
+// conversation is with another model, the key or account that main
+// conversation is on (#5655, jerrychoi; iamnil on Discord): Claude
+// Desktop's own Sonnet calls beside an Opus chat (desktop-beside), Claude
+// Code's auto mode classifier, a title. A model's conversation is kept
+// apart from the session's other models' (scope), so such a call was
+// routed as a session of its own: put by leastHeld, or by Smart's order
+// once its cache was cold, on the account the fewest others were on, it
+// ran the session on two accounts at once, and the second one's 5 hours
+// drained on calls the user never made there. One session is billed to
+// one account, as a user who picked one in the menu expects, and as the
+// vendor sees one client.
+//
+// The session's main conversation is its largest under another model's
+// scope (what its vendor read and wrote of it), answered within heldFor,
+// by the session's own id: a subagent (withLead) and a conversation known
+// only by its body's hash have none (sessionNamed), since two unrelated
+// conversations that open alike share a hash. A main conversation with
+// less than cacheWorth kept has no cache to stay for, and goes where its
+// own next turn is sent: it leads nothing. It leads only while larger than this
+// one's, so the two never take turns following each other. It is
+// followed while this conversation isn't held where it is otherwise:
+// Stays: Strict, mid-turn on the reasoning one account sealed, or a
+// rest, a reserve, credits a fallback routing put first for its own
+// reason; and only to one routing would put a new conversation on
+// (readyForNew), as the model routing put first. A conversation it moves
+// off its own cache writes that once, where the session goes on reading
+// it.
+func withSession(scope, key string, named bool, a *Affinity, own stick, had bool, cs []candidate, pl planned) ([]candidate, planned) {
+	switch a.Why {
+	case "first", "gone", "cold", "no-cache", "cache", "session":
+	default:
+		return cs, pl
+	}
+	if !named || a.Within && a.Kept || len(cs) < 2 || len(pl.order) < len(cs) || strings.Contains(key, "|agent:") {
+		return cs, pl
+	}
+	id := strings.TrimPrefix(key, scope+"|")
+	if id == key || id == "" {
+		return cs, pl
+	}
+	size := 0
+	if had {
+		size = own.cacheRead + own.cacheWrite
+	}
+	now := time.Now()
+	sticks.Lock()
+	defer sticks.Unlock()
+	var lead stick
+	found := false
+	for k, st := range sticks.m {
+		if k == key || !strings.HasSuffix(k, "|"+id) || strings.Contains(k, "|agent:") || now.Sub(st.at) > heldFor {
+			continue
+		}
+		if n := st.cacheRead + st.cacheWrite; n >= cacheWorth && n > size && (!found || n > lead.cacheRead+lead.cacheWrite) {
+			lead, found = st, true
+		}
+	}
+	if !found {
+		return cs, pl
+	}
+	// of the model routing put first: in a group, another member on the
+	// lead's account is another model, which following never picks
+	i := slices.IndexFunc(cs, func(c candidate) bool {
+		return c.who() == lead.who && c.model == cs[0].model && c.effort == cs[0].effort
+	})
+	if i < 0 || i > 0 && !readyForNew(pl.order, i) {
+		return cs, pl
+	}
+	if i > 0 {
+		cs = append(append([]candidate{cs[i]}, cs[:i]...), cs[i+1:]...)
+		pl.order = append(append([]Weighed{pl.order[i]}, pl.order[:i]...), pl.order[i+1:]...)
+		for j := range pl.order {
+			pl.order[j].Turn = false
+		}
+		if _, opening := sticks.opening[key]; opening {
+			sticks.opening[key] = stick{rest: cs[0].rest, who: cs[0].who(), model: cs[0].model, effort: cs[0].effort, at: now}
+		}
+	}
+	if a.Kept && i == 0 || !a.Kept && i == 0 && pl.order[0].Rest != nil {
+		return cs, pl // where it is already
+	}
+	a.Kept, a.Why, a.LeadModel = false, "lead", lead.model
+	return cs, pl
+}
+
+// sessionNamed reports whether the request names its session in a header
+// (sessionHeaders or X-Magpie-Session), where affinityID would otherwise
+// be the hash of how the conversation opens.
+func sessionNamed(in http.Header) bool {
+	for _, h := range sessionHeaders {
+		if strings.TrimSpace(in.Get(h)) != "" {
+			return true
+		}
+	}
+	return strings.TrimSpace(in.Get(SessionHeader)) != ""
 }
 
 // spreadsSessions says whether new conversations kept for the whole
@@ -1399,4 +1513,12 @@ func keptAgain(aff *Affinity, c candidate, hw *holdWriter, asked bool) (time.Dur
 		return 0, false
 	}
 	return passing(hw.code(), hw.header, hw.errBody(), 0)
+}
+
+// cacheHolds says whether what the conversation has cached would keep it
+// where it is: enough written or read (cacheWorth), and not gone cold
+// (coldAfter, or kept for an hour: #2302). The "no-cache" and "cold"
+// cases of affine read the same.
+func cacheHolds(st stick, p provider.Provider) bool {
+	return st.cacheRead+st.cacheWrite >= cacheWorth && (time.Since(st.at) <= coldAfter(p) || st.hour.warm(time.Now()))
 }

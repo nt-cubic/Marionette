@@ -10,7 +10,7 @@ import (
 
 // mediaMembers is the routing group ref with its members ready now for
 // an API that is no chat, kind's (catalog.Serves*, provider.KindVideo):
-// embeddings, rerank, speech, transcriptions and videos.
+// embeddings, rerank, speech, transcriptions, videos and decisions.
 //
 // A group the user made: a provider's picks are of its chat models, and
 // these models are in no chat list (a fetched list keeps them apart,
@@ -57,10 +57,13 @@ func bareRef(ref string) bool {
 // servesKind says whether a provider serves a model of kind's under that
 // id: its fetched list says so (catalog.LiveServing; Videomakers for
 // videos), its chat list has an id that says so (another magpie's list,
-// which keeps them as it lists them), or, for embeddings, its plan names
-// it (PlanEmbeddings).
+// which keeps them as it lists them), or, for embeddings and rerank, its
+// preset names it (PlanRetrieval).
 func servesKind(kind string) func(p provider.Provider, model string) bool {
 	is := func(m catalog.Model, model string) bool { return m.ID == model }
+	if kind == kindDecision {
+		return servesDecision
+	}
 	if kind == provider.KindVideo {
 		return func(p provider.Provider, model string) bool {
 			return slices.ContainsFunc(Videomakers(p), func(m catalog.Model) bool { return is(m, model) })
@@ -73,7 +76,7 @@ func servesKind(kind string) func(p provider.Provider, model string) bool {
 		if catalog.ServesOf(model) == kind && slices.ContainsFunc(provider.KeptListing(p).Available, func(m catalog.Model) bool { return is(m, model) }) {
 			return true
 		}
-		return kind == catalog.ServesEmbedding && slices.ContainsFunc(p.PlanEmbeddings(), func(m catalog.Model) bool { return is(m, model) })
+		return slices.ContainsFunc(p.PlanRetrieval(kind), func(m catalog.Model) bool { return is(m, model) })
 	}
 }
 
@@ -87,6 +90,8 @@ func retrievalKind(operation string) string {
 		return catalog.ServesSpeech
 	case "transcriptions", "translations":
 		return catalog.ServesTranscription
+	case "decisions":
+		return kindDecision
 	}
 	return catalog.ServesEmbedding
 }

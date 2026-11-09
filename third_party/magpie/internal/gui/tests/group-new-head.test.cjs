@@ -2,11 +2,12 @@
 // A routing group of any models is made with New group, which sat only at
 // the routing groups' head, below the requests: out of sight on a first
 // look, so a user used the found groups for days without knowing their
-// own could be made (mintonight, #944). The Routing page's head has a New
-// group too, by Hide accounts, with a plus and a tooltip saying what a
-// group is; its click opens an empty group's editor and brings it into
-// view, its name field focused. The groups' own New group has the plus as
-// well. No left-border accent. In English and Chinese, Chromium and WebKit.
+// own could be made (mintonight, #944). The groups have a page of their
+// own since 11-06, and New group is its toolbar's filled button, in sight
+// on arrival, with a plus and a tooltip saying what a group is; its click
+// opens an empty group's editor and brings it into view, its name field
+// focused. No left-border accent. In English and Chinese, Chromium and
+// WebKit.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -20,6 +21,8 @@ const models = [
 ];
 const info = (ids) => ids.map((id) => ({ id, ready: true }));
 const found = { id: "auto-m", name: "Model M", members: ["a/m", "b/m"], auto: true, ready: true, memberInfo: info(["a/m", "b/m"]) };
+// a second group, so Select sits beside New group as with any two
+const found2 = { ...found, id: "auto-n", name: "Model N" };
 
 const words = {
   en: { btn: "New group", tip: "Make a routing group of any models you like — agents pick it as one model" },
@@ -47,7 +50,7 @@ function serve(lang) {
       return json({ mine: true, now: new Date().toISOString(), seq: 30, totals: { requests: 30, rerouted: 0, errors: 0 }, routes });
     }
     if (url.pathname === "/api/gateway/history") return json({ cut: false, days: [], routes: [] });
-    if (url.pathname === "/api/groups") return json({ models, pools: [], deciders: [], found: true, groups: [found] });
+    if (url.pathname === "/api/groups") return json({ models, pools: [], deciders: [], found: true, groups: [found, found2] });
     if (url.pathname === "/api/providers") return json({ providers: [], presets: [], excluded: [], gateway: { running: true, window: true, url: "http://127.0.0.1:3999" } });
     if (url.pathname.startsWith("/api/")) return json({});
     const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
@@ -59,7 +62,7 @@ function serve(lang) {
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   for (const lang of ["en", "zh"]) {
     const w = words[lang];
-    test(`${engine} ${lang}: New group in the Routing page's head`, async (t) => {
+    test(`${engine} ${lang}: New group on the groups page`, async (t) => {
       const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
       const page = await (await browser.newContext({ viewport: { width: 1000, height: 560 }, reducedMotion: "reduce" })).newPage();
       t.after(async () => {
@@ -74,27 +77,33 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang));
-      await page.goto("http://magpie.test/?view=routing");
+      await page.goto("http://magpie.test/?view=groups");
       await page.locator(".rt-group", { hasText: "Model M" }).waitFor({ state: "attached" });
 
-      // the groups' own New group: with a plus
-      const inList = page.locator(".rt-gsec > .row-head button", { hasText: w.btn });
-      assert.equal(await inList.count(), 1);
-      assert.equal(await inList.locator("svg").count(), 1, "the groups' New group has a plus");
-
-      // the page's head: a New group in sight on arrival, the groups not
-      const head = page.locator("#view-routing > .row-head #rtNewGroup");
+      // the groups page's New group: in sight on arrival, with a plus
+      await page.evaluate(() => window.show("groups"));
+      const head = page.locator("#view-groups .rt-gsec > .row-head .rt-gnew");
       await head.waitFor();
+      assert.equal(await page.locator(".rt-gsec > .row-head button", { hasText: w.btn }).count(), 1);
       assert.equal((await head.textContent()).trim(), w.btn);
       assert.equal(await head.getAttribute("title"), w.tip);
-      assert.equal(await head.locator("svg").count(), 1);
+      assert.equal(await head.locator("svg").count(), 1, "New group has a plus");
       const vh = await page.evaluate(() => innerHeight);
       const hb = await head.boundingBox();
-      assert(hb && hb.y >= 0 && hb.y + hb.height <= vh, "the head's New group is in sight");
-      const gTop = await page.locator(".rt-gsec").evaluate((e) => e.getBoundingClientRect().top);
-      assert(gTop > vh, `the groups are below the fold here (${gTop} > ${vh})`);
+      assert(hb && hb.y >= 0 && hb.y + hb.height <= vh, "New group is in sight");
       const border = await head.evaluate((e) => { const c = getComputedStyle(e); return c.borderLeftWidth !== c.borderRightWidth || c.borderLeftColor !== c.borderRightColor; });
       assert.equal(border, false, "no left-border accent");
+      // the toolbar's buttons stand apart: Select and the filled New group
+      // touched (11-08)
+      assert.equal(await page.locator(".rt-gsec > .row-head .rt-gselect").count(), 1, "Select is there");
+      const gaps = await page.evaluate(() => {
+        const bs = [...document.querySelectorAll("#view-groups .rt-gsec > .row-head:first-child > button")].filter((b) => b.offsetParent);
+        return bs.slice(1).map((b, i) => ({ pair: bs[i].className + " | " + b.className, gap: b.getBoundingClientRect().left - bs[i].getBoundingClientRect().right }));
+      });
+      assert(gaps.length >= 2, JSON.stringify(gaps));
+      for (const g of gaps) assert(g.gap >= 4, `${g.pair} touch: ${g.gap}px`);
+      const last = gaps[gaps.length - 1];
+      assert(/rt-gselect/.test(last.pair) && last.gap >= 8, `New group ${last.gap}px from Select`);
 
       await head.click();
       const ed = page.locator(".rt-gsec .rt-gedit");
@@ -107,10 +116,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       });
       assert.equal(await ed.locator("input").first().inputValue(), "");
       assert.equal(await ed.evaluate((e) => e.contains(document.activeElement) && document.activeElement.tagName), "INPUT");
-      // Both New group entrances replace the same draft only after Discard.
+      // New group replaces the draft only after Discard.
       const name = ed.locator("input").first();
       const ask = page.locator("dialog.action-confirm[open]");
-      for (const entrance of [inList, head]) {
+      for (const entrance of [head]) {
         await name.fill("Unsaved group");
         await page.mouse.move(500, 300);
         for (let i = 0; i < 20; i++) {
@@ -128,7 +137,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.waitForFunction(() => document.querySelector(".rt-gedit input")?.value === "");
         assert.equal(await ask.count(), 0, "Discard opens a clean new group");
       }
-      // The model picker's entry must protect the same draft as both buttons.
+      // The model picker's entry protects the same draft as the button.
       await name.fill("Unsaved group");
       const fromModel = () => page.evaluate(() => { window.newGroupWith("a/m", "Model A"); });
       await fromModel();

@@ -33,14 +33,13 @@ const providerUsage = `usage:
   magpie provider <id>                    show one provider and its models
   magpie provider add <preset> <key>      add a preset vendor   e.g. magpie provider add deepseek sk-…
                                           again, it adds another (deepseek-2); k=v pairs too: id, name, header.X-Foo
-  magpie provider add <name> k=v…         add a custom vendor   k: url, anthropic, responses, gemini, decide, key, models, catalog, icon, header.X-Foo, balance, balance.path, balance.method, balance.token, models.url, search, user-agent,
+  magpie provider add <name> k=v…         add a custom vendor   k: url, anthropic, responses, gemini, decide, key, models, catalog, icon, header.X-Foo, balance, balance.path, balance.method, balance.token, models.url, list, search, user-agent,
                                           access.key, access.secret (a Volcengine access key, or a Tencent Cloud SecretId and SecretKey, for its plan's windows)
   magpie provider set <id> k=v…           change a provider's settings, with the same k=v pairs as add;
                                           codex=as-sent sends Codex's Responses requests as Codex sent them
                                           (a relay that checks they are Codex's own), codex=default fits them;
-                                          user-agent=agent sends the User-Agent the agent gave (pi, opencode…)
-                                          in place of magpie's, for a plan that serves only agents it names;
-                                          user-agent=magpie, the default, sends magpie's;
+                                          user-agent=agent, the default, sends the User-Agent the agent gave
+                                          (pi, opencode…); user-agent=magpie sends magpie's in its place;
                                           compaction=native asks the provider Codex's own compaction and hands
                                           Codex its sealed item as it came (a Responses API, a ChatGPT account,
                                           Copilot), compaction=magpie, the default, has magpie summarise
@@ -55,10 +54,16 @@ const providerUsage = `usage:
                                           keeps the cache); OpenAI's API and a ChatGPT (Codex) account do so by
                                           default; additional-tools=off puts it with the other tools,
                                           additional-tools=default is magpie's
+                                          image-files=off sends DeepSeek's API an agent's images inline on every
+                                          turn; image-files=on, the default, uploads each once (for a day)
+                                          and names it by its file id
                                           patience=2m keeps a request to it alone (not through a group) that long
                                           while it is busy or briefly rate limited, asking again after a pause
                                           (at most 4m); patience=off hands the agent the error at once;
                                           patience=default, 1m
+                                          errors=pass sends the agent its errors as the vendor sent them:
+                                          asked once, nothing read into them, no other provider tried;
+                                          errors=magpie, the default, has magpie handle them
   magpie provider key <id> <key>          change the API key
   magpie provider icon <id> <file|name>   give a custom provider a picture (PNG, JPEG, SVG…) or a built-in icon
   magpie provider fallback <id> <provider/model>…   where requests go when it's out of quota or down (none clears)
@@ -93,6 +98,12 @@ const providerUsage = `usage:
                                           how much an API key may spend, in USD as the Usage page prices its calls,
                                           a day (the default), a month or in all from now: at it, routing takes the
                                           key for used up and goes on to the other keys and the fallbacks
+  magpie provider key-balance <id> [key [usd|¥cny|off] [--refill monthly[:day]|weekly[:mon…sun]|off] [--expiring amount@yyyy-mm-dd|off]… [--expiring-remove [amount@]yyyy-mm-dd]…]
+                                          the balance on an API key whose vendor tells none, typed from its own page
+                                          in USD or in yuan (¥100): the Usage page shows it less what magpie prices the
+                                          key's calls at since; with --refill it is whole again each month or week;
+                                          --expiring adds credit that counts through a day and is spent first
+                                          (each one a grant, the soonest spent first; off takes every one off)
   magpie provider account-weight <id> [account [n|default]]
                                           a subscription account's share of the requests with routing=weight:
                                           one weighing 3 takes three for each one weighing 1 takes (default 1)
@@ -145,6 +156,8 @@ const providerUsage = `usage:
                                    (a System One API, POST …/systemone: it routes groups, its models are never an agent's)
        magpie provider add anthropic sk-… id=anthropic-ws2 name="Anthropic WS2" header.anthropic-workspace-id=wrkspc_…
        magpie provider set my-relay models.url=https://relay.example.com/api/models catalog=
+       magpie provider set volcengine list=off models=ep-20261108-abcde
+                                   (its model list is never asked for: only the models given by id are served)
        magpie provider set my-relay search=yes
                                    (the relay answers Claude Code's WebSearch and Codex's web_search itself:
                                     those go to it as sent, not through magpie's own search)
@@ -637,6 +650,8 @@ func providerCmd(args []string) error {
 		return poolCmd(rest)
 	case "account-concurrency", "account-limit":
 		return accountConcurrencyCmd(rest)
+	case "key-balance", "key-balances":
+		return keyBalanceCmd(rest)
 	case "spend-cap", "spend-caps":
 		return spendCapCmd(rest)
 	case "account-weight", "account-weights":
@@ -821,7 +836,9 @@ func announce(id string) error {
 	fmt.Println(green.Render("✓"), "added", saved.Name, muted.Render("("+saved.ID+")"))
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if ms, err := saved.Fetch(ctx); err == nil {
+	if saved.ListsOff() {
+		// its list is never asked for: the models given by id are its
+	} else if ms, err := saved.Fetch(ctx); err == nil {
 		fmt.Println(green.Render("✓"), len(ms), "models from", fetchedFrom(*saved))
 	} else if !saved.DecideOnly() {
 		// the URLs asked and what they said; the base stays as given
@@ -841,7 +858,12 @@ func announce(id string) error {
 	return nil
 }
 
-func showProvider(p provider.Provider) error {
+func showProvider(p provider.Provider) error { return showProviderAsking(p, true) }
+
+// showProviderAsking is showProvider; with ask false (an import not yet
+// confirmed) the balance query is named, not asked: nothing goes out with
+// the key before the user says yes.
+func showProviderAsking(p provider.Provider, ask bool) error {
 	kv := func(k, v string) {
 		// a plugin's provider is reached through the plugin, not a URL
 		if v != "" && !strings.HasPrefix(v, "plugin://") {
@@ -860,12 +882,11 @@ func showProvider(p provider.Provider) error {
 	if p.Searches {
 		kv("search", "by itself"+muted.Render("  a client's web search goes to it as sent"))
 	}
-	if p.PassUserAgent {
-		why := "  the User-Agent the agent gave, not magpie's"
-		if !p.PassesUserAgent() {
-			why = "  but magpie's: it goes as a client of " + p.Name + "'s own"
-		}
-		kv("user-agent", "agent's"+muted.Render(why))
+	if p.PassesErrors() {
+		kv("errors", "pass"+muted.Render("  sent to the agent as the vendor sent them, asked once"))
+	}
+	if p.MagpieUserAgent {
+		kv("user-agent", "magpie's"+muted.Render("  not the one the agent gave"))
 	}
 	if p.Unredacted {
 		why := "  Settings' redaction leaves its requests as written"
@@ -923,8 +944,18 @@ func showProvider(p provider.Provider) error {
 	kv("catalog", p.Catalog)
 	kv("website", p.Website)
 	kv("keys", p.KeysURL)
+	if !ask {
+		if u, field := provider.BalanceQuery(p); u != "" {
+			if p.BalanceMethod != "" {
+				u = strings.ToUpper(p.BalanceMethod) + " " + u
+			}
+			kv("balance", u+" "+muted.Render(field+"  asked once added"))
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	if amount, ok, err := provider.Balance(ctx, p); ok {
+	if !ask {
+		cancel()
+	} else if amount, ok, err := provider.Balance(ctx, p); ok {
 		from := ""
 		// where it was asked: a panel's key query when its account query
 		// has no token left to ask with
@@ -1132,6 +1163,17 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 			p.SecretAccessKey = v
 		case "models.url":
 			p.ModelsURL = v
+		case "list":
+			// off: the vendor's model list is never asked for, and only
+			// the models given by id are served (axelburks on Discord)
+			switch strings.ToLower(strings.TrimSpace(v)) {
+			case "off", "no":
+				p.ListOff = true
+			case "on", "yes", "":
+				p.ListOff = false
+			default:
+				return fmt.Errorf("list=on|off, not %q", v)
+			}
 		case "codex":
 			// as-sent: Codex's requests go to it as Codex sent them, for
 			// a relay that checks they are Codex's own (#1758)
@@ -1142,6 +1184,17 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 				p.CodexAsSent = false
 			default:
 				return fmt.Errorf("codex=as-sent|default, not %q", v)
+			}
+		case "image-files":
+			// off: DeepSeek's own API is sent an agent's images inline on
+			// every turn, not uploaded once and named by file id (#5407)
+			switch strings.ToLower(v) {
+			case "off", "no", "inline":
+				p.ImageFilesOff = true
+			case "on", "yes", "default":
+				p.ImageFilesOff = false
+			default:
+				return fmt.Errorf("image-files=on|off, not %q", v)
 			}
 		case "prompt":
 			// as-written: Antigravity's subscription is sent the system
@@ -1180,10 +1233,26 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 				return err
 			}
 			p.Patience = n
+		case "errors":
+			// pass: its errors go to the agent as the vendor sent them,
+			// asked once, nothing inferred, no other provider tried and
+			// none rested for (ne9ko9 on Discord); magpie: handled by
+			// magpie, the default
+			var on bool
+			switch strings.ToLower(v) {
+			case "pass", "pass-through", "passthrough", "on", "yes":
+				on = true
+			case "magpie", "default", "off", "no":
+			default:
+				return fmt.Errorf("errors=pass|magpie, not %q", v)
+			}
+			if on && !p.TakesPassErrors() {
+				return fmt.Errorf("%s isn't a provider with an API key; errors= is for one", p.Name)
+			}
+			p.PassErrors = on
 		case "user-agent", "ua":
-			// agent: a request goes with the User-Agent the agent that
-			// sent it gave, for a coding plan that serves only agents it
-			// names (#1851); magpie: magpie's own, as by default. A
+			// agent, the default: a request goes with the User-Agent the
+			// agent that sent it gave (#1851); magpie: magpie's own. A
 			// header.User-Agent the user set stands over both
 			var on bool
 			switch strings.ToLower(v) {
@@ -1196,7 +1265,8 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 			if on && p.Account != nil {
 				return fmt.Errorf("%s signs in as its own client, which sends the User-Agent it does; user-agent= is for a provider with an API key", p.Name)
 			}
-			p.PassUserAgent = on
+			// an account goes as its own client either way
+			p.MagpieUserAgent = !on && p.Account == nil
 		case "search":
 			// yes: the vendor searches the web by itself, a web search a
 			// client offers going to it as it was sent (a relay in front of
@@ -1469,6 +1539,10 @@ func serve() error {
 		gateway.SetRestarter(follow.answer)
 		go follow.run(ctx)
 	}
+	// another magpie using this one updated (serve_update.go), and this
+	// one's own Remote magpies follow it
+	gateway.SetUpdater(serveUpdateAsked(follow))
+	go provider.KeepRemotesUpdated(ctx, version)
 	err := s.ListenAndServe(ctx)
 	if exe := follow.restartTo(); exe != "" {
 		// the plugin hosts end, waited for, first, as magpie web's
@@ -1500,7 +1574,7 @@ func importCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := showProvider(p); err != nil {
+	if err := showProviderAsking(p, false); err != nil {
 		return err
 	}
 	if old, err := provider.Find(p.ID); err == nil {

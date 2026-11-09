@@ -4,8 +4,8 @@ package gateway
 // disk so the Routing view can show and replay a day long gone — the trace
 // holds only the last few, and only since the gateway started. A day is a
 // file of its own, one route a line; a day that is over is gzipped, the
-// routes being much alike. Kept historyDays days and historyBytes in all,
-// the oldest days going first.
+// routes being much alike. Kept historyDays days, and historyBytes for the
+// days that are over, the oldest days going first.
 
 import (
 	"bufio"
@@ -90,6 +90,7 @@ var historyClock = time.Now
 // the history must never break a call.
 func saveRoute(r Route) {
 	r.Seq = 0
+	r.LastConvs = nil // a live request's, named by its reply once done
 	b, err := json.Marshal(r)
 	if err != nil {
 		return
@@ -113,10 +114,10 @@ func saveRoute(r Route) {
 }
 
 // pruneHistory gzips the days that are over, and drops the days older than
-// historyDays, then the oldest until what is left fits historyBytes. A day
-// goes whole, as it does once its late routes are in its .gz: a late route's
-// file left beside the .gz (gzipFile) goes with it. A file that can't be
-// removed stays.
+// historyDays, then the oldest until the days that are over fit
+// historyBytes. A day goes whole, as it does once its late routes are in
+// its .gz: a late route's file left beside the .gz (gzipFile) goes with it.
+// A file that can't be removed stays.
 func pruneHistory(dir string, now time.Time) {
 	// a .gz.tmp left by a magpie stopped before renaming it (gzipFile) goes
 	// once it is an hour old: a younger one may be another magpie's, still
@@ -138,9 +139,16 @@ func pruneHistory(dir string, now time.Time) {
 	}
 	oldest := now.Local().AddDate(0, 0, -historyDays+1).Format(dayForm)
 	days := historyFiles(dir)
+	// the days that are over, held to historyBytes: today's file isn't
+	// counted, being kept whatever its size and written plain, at many
+	// times the size it is gzipped at once it is over. Counted, a busy
+	// day's plain file took the room of the days before it, and the
+	// Context tab showed only today's sessions (linkaww on Discord)
 	var total int64
 	for _, d := range days {
-		total += d.size
+		if d.day != today {
+			total += d.size
+		}
 	}
 	drop := ""               // the day being dropped, whole: historyFiles puts its files next to each other
 	for _, d := range days { // oldest first
@@ -363,6 +371,7 @@ func appendRoute(routes []Route, line []byte) []Route {
 	}
 	r.routedAgain()
 	r.Prompt.skillsApart()
+	r.Canceled = usage.CanceledBy(r.Status, r.Error) // kept before Canceled was
 	return append(routes, r)
 }
 
@@ -678,6 +687,9 @@ func foldTally(tallies map[string]*Tally, line []byte) {
 			if f == "" {
 				f = "other"
 			}
+			if f == failQuota && tr.Rest != nil && tr.Rest.Rate {
+				f = failRate // counted as the vendor called it
+			}
 			if a.Fails == nil {
 				a.Fails = map[string]int{}
 			}
@@ -711,6 +723,7 @@ func HistoryRoute(id int64, day time.Time) (Route, bool) {
 				}
 				found.routedAgain()
 				found.Prompt.skillsApart()
+				found.Canceled = usage.CanceledBy(found.Status, found.Error)
 				return false
 			})
 			if found.ID != 0 {

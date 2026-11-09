@@ -160,9 +160,9 @@ func upgrade() {
 		return
 	}
 	defer upgrading.Store(false)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	if err := ensureServe(ctx); err != nil {
+	// no bound on the whole, as the model's download has none: get's
+	// stall timer ends one that stops sending (#5572)
+	if err := ensureServe(context.Background()); err != nil {
 		return
 	}
 	stopWhenFree()
@@ -254,6 +254,16 @@ func fetch(ctx context.Context, url, path string, size int64, want string, done 
 	}
 	if size < 0 || have < size {
 		got, err := get(ctx, url, part, have, done)
+		if err != nil && ctx.Err() == nil && netproxy.BrokeOff(err) {
+			// once more over HTTP/1.1, from what is on disk: a proxy
+			// that cuts HTTP/2 streams part way carries HTTP/1.1 whole
+			// (netproxy.OverHTTP1)
+			have = 0
+			if fi, serr := os.Stat(part); serr == nil {
+				have = fi.Size()
+			}
+			got, err = get(netproxy.OverHTTP1(ctx), url, part, have, done)
+		}
 		if err != nil {
 			return err
 		}

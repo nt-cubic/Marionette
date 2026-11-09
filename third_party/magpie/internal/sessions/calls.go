@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
+	"unsafe"
 
 	"github.com/tidwall/gjson"
 	"github.com/yetone/magpie/internal/desktopdir"
@@ -70,6 +72,9 @@ type callFile struct {
 	Claude      *claudeUsageState
 	ContentHash string
 	dirty       map[int]bool
+	// readSize is the size of the file being read (prepareCalls), for
+	// growCalls
+	readSize int64
 	// bigFrame: read from a frame of more than framePatches (loadCalls)
 	bigFrame bool
 	Size     int64
@@ -341,6 +346,7 @@ func callSourcesInto(out []file, codex []file) []file {
 	lists := append(callFileLists(codex), openCodeCallFiles(), zcodeCallFiles(), dshCallFiles(),
 		minimaxCallFiles(), kimiCallFiles(), wslFiles("kimi"), piCallFiles(), codebuddyCallFiles(), workbuddyAIFiles(),
 		agyCallFiles(),                        // #2097
+		antigravityCallFiles(),                // #2190
 		workbuddyCallFiles(), grokCallFiles()) // #4423
 	if out == nil {
 		return allowed(distinctOf(lists...))
@@ -406,7 +412,26 @@ func prepareCalls(f file, old *callFile, owned bool) *callFile {
 	}
 	st.dirty = map[int]bool{}
 	st.Head, st.HeadSize, st.Path = hashHead(head), len(head), f.path
+	st.readSize = f.size
 	return st
+}
+
+// growCalls makes room in st.Calls, when it is full, for the calls the
+// rest of the file holds at the rate read so far: append grows a long
+// list by a quarter at a time, and a Claude session's calls were copied
+// into ~5 lists their size on the way (616 MB of a cold start's reading
+// on mote, ~13% of all it allocated). The room is at most twice the
+// calls so far, as append's own doubling of a short list.
+func growCalls(st *callFile) {
+	n := len(st.Calls)
+	if n < cap(st.Calls) || n < 256 || st.End <= 0 || st.readSize <= st.End {
+		return
+	}
+	// what the rest is likely to hold, and an eighth more
+	want := min(int(int64(n)*st.readSize/st.End)*9/8, 2*n)
+	if want > n+n/4+1 {
+		st.Calls = slices.Grow(st.Calls, want-n)
+	}
 }
 
 func (st *callFile) clone() *callFile {
@@ -629,6 +654,15 @@ func (st *callFile) str(s string) string {
 type ccStr string
 
 func (s *ccStr) UnmarshalJSON(b []byte) error {
+	// a string with nothing escaped is its bytes: json.Unmarshal made a
+	// decoder of its own for each, six to a reply line (29 MB on a first
+	// start's 21 GB history, #2278). The line was checked whole before
+	// this is called, and bytes that aren't UTF-8 are left to it, which
+	// writes U+FFFD for them.
+	if n := len(b); n >= 2 && b[0] == '"' && b[n-1] == '"' && bytes.IndexByte(b[1:n-1], '\\') < 0 && utf8.Valid(b[1:n-1]) {
+		*s = ccStr(b[1 : n-1])
+		return nil
+	}
 	var v string
 	if json.Unmarshal(b, &v) == nil {
 		*s = ccStr(v)
@@ -683,7 +717,7 @@ func claudeCallLine(st *callFile, b []byte) {
 		}
 	}
 	var l ccCall
-	if json.Unmarshal(ccWithoutContent(b), &l) != nil || l.Type != "assistant" {
+	if ccDecode(b, &l) != nil || l.Type != "assistant" {
 		if reply && !bytes.Contains(b, ccAssistant) {
 			ccOtherCallLine(st, b)
 		}
@@ -738,20 +772,48 @@ func ccReplyHead(b []byte) bool {
 	return i >= 0 && bytes.HasPrefix(msg[i+len(ccRole):], []byte(`assistant"`))
 }
 
-// ccWithoutContent is b with its message's content null, when it has one:
-// a reply's usage, ids and model are decoded without its text, thinking
-// and tools' input, which encoding/json read twice over (checked, then
-// decoded) for fields it doesn't keep.
-func ccWithoutContent(b []byte) []byte {
-	c := gjson.GetBytes(b, "message.content")
-	if !c.Exists() || c.Index <= 0 || c.Index+len(c.Raw) > len(b) {
-		return b
-	}
-	out := make([]byte, 0, len(b)-len(c.Raw)+4)
-	out = append(out, b[:c.Index]...)
-	out = append(out, "null"...)
-	return append(out, b[c.Index+len(c.Raw):]...)
+// ccDecode is json.Unmarshal of b into l with its message's content
+// null, when it has one: a reply's usage, ids and model are decoded
+// without its text, thinking and tools' input, which encoding/json read
+// twice over (checked, then decoded) for fields it doesn't keep. The line
+// without its content is made in a buffer kept for the next line, and the
+// content is found without gjson.GetBytes's copy of it: a first start's
+// read of a 21 GB history made 82 MB of those lines and 27 MB of copies
+// of their content, which nothing kept (#2278).
+func ccDecode(b []byte, l *ccCall) error {
+	_, err := ccDecodeLess(b, l)
+	return err
 }
+
+// ccDecodeLess is ccDecode into any v: json.Unmarshal(b, v) with the
+// message's content null, the content given as the bytes of b that hold
+// it (nil when b has none, and v was decoded from b whole). v keeps no
+// byte of the line decoded: its strings are copies.
+func ccDecodeLess(b []byte, v any) ([]byte, error) {
+	if len(b) == 0 {
+		return nil, json.Unmarshal(b, v)
+	}
+	c := gjson.Get(unsafe.String(&b[0], len(b)), "message.content")
+	if !c.Exists() || c.Index <= 0 || c.Index+len(c.Raw) > len(b) {
+		return nil, json.Unmarshal(b, v)
+	}
+	p := ccLines.Get().(*[]byte)
+	out := append((*p)[:0], b[:c.Index]...)
+	out = append(out, "null"...)
+	out = append(out, b[c.Index+len(c.Raw):]...)
+	err := json.Unmarshal(out, v)
+	if cap(out) <= ccLineKept {
+		*p = out
+		ccLines.Put(p)
+	}
+	return b[c.Index : c.Index+len(c.Raw) : c.Index+len(c.Raw)], err
+}
+
+// ccLines holds the buffers ccDecode makes its lines in; one grown past
+// ccLineKept, for a reply line with a long head, is left to the GC.
+var ccLines = sync.Pool{New: func() any { return new([]byte) }}
+
+const ccLineKept = 64 << 10
 
 // ccOtherCallLine reads a line of Claude Code's that is not a reply.
 func ccOtherCallLine(st *callFile, b []byte) {
@@ -927,6 +989,7 @@ func claudeCall(st *callFile, b []byte, l *ccCall) {
 	if c.Error == "" {
 		c.Compact, st.CompactMs = st.CompactMs, 0
 	}
+	growCalls(st)
 	st.Calls = append(st.Calls, c)
 }
 

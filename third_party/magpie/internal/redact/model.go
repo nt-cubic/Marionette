@@ -84,7 +84,7 @@ func modelSpans(s string, o Options) []span {
 		if kind == "PERSON" {
 			a, b = zhTrim(s, a, b)
 		}
-		if a < b && utf8.ValidString(s[a:b]) && modelTakes(kind, s[a:b]) && modelFits(s, a, b, kind) && !(kind == "PERSON" && zhWordNotName(s, a, b)) {
+		if a < b && utf8.ValidString(s[a:b]) && modelTakes(kind, s[a:b]) && modelFits(s, a, b, kind, o.args) && !(kind == "PERSON" && zhWordNotName(s, a, b)) {
 			out = append(out, span{a, b, kind, ByModel, f.Score, false})
 		}
 	}
@@ -120,6 +120,9 @@ func delimiter(c byte) bool { return isSpace(c) || strings.IndexByte(`"',;:`, c)
 // the local model was turned off (#3144). Such a word is a protocol's or a
 // program's, wherever it is: a setting, a tool's argument, code.
 func modelTakes(kind, v string) bool {
+	if hexLiteral.MatchString(v) {
+		return false
+	}
 	switch kind {
 	case "SECRET":
 		return len(v) >= 8 && !madeID(v) && !namesThing(v) && !versionValue(v)
@@ -307,7 +310,7 @@ func withModel(o Options, texts []string) Options {
 // A name's words each start with a capital, but for the particles names
 // have (van, de, bin): "local LLM", "User yetone" and claudeKeychain are
 // a program's or a log's words.
-func modelFits(s string, a, b int, kind string) bool {
+func modelFits(s string, a, b int, kind string, args bool) bool {
 	if a > 0 && wordByte(s[a-1]) && wordByte(s[a]) || b < len(s) && wordByte(s[b-1]) && wordByte(s[b]) {
 		return false
 	}
@@ -325,7 +328,7 @@ func modelFits(s string, a, b int, kind string) bool {
 	}
 	switch kind {
 	case "PERSON":
-		return personFits(s, a, b, v)
+		return personFits(s, a, b, v, args)
 	case "ACCOUNT":
 		if hexRe.MatchString(v) && strings.ContainsAny(v, "abcdef") || versionRe.MatchString(v) || !numberLike(v) {
 			return false
@@ -739,7 +742,7 @@ func wordByte(c byte) bool {
 	return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
 }
 
-func personFits(s string, a, b int, v string) bool {
+func personFits(s string, a, b int, v string, args bool) bool {
 	if strings.ContainsAny(v, "0123456789/\\@<>|=_") || strings.IndexFunc(v, unicode.IsUpper) < 0 && isASCII(v) {
 		return false
 	}
@@ -759,6 +762,13 @@ func personFits(s string, a, b int, v string) bool {
 	// an acronym (CI, API), a product's name in camel case (CodeRabbit,
 	// OpenAI) and a site's (Greptile beside app.greptile.com) are no one's
 	if w := strings.Fields(v); len(w) == 1 && (strings.Trim(v, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") == "" || camelProduct(v) || hostIn(s, v)) {
+		return false
+	}
+	// an app's or a product's name the model took for a first name, where
+	// its sentence speaks of a thing (thingname.go); never in a tool
+	// call's arguments, which name whom a tool acts for
+	// ({"recipient":"Rina"})
+	if w := strings.Fields(v); len(w) == 1 && isASCII(v) && !args && thingNamed(s, a, b) {
 		return false
 	}
 	for i, w := range strings.Fields(v) {
@@ -893,6 +903,17 @@ var (
 	// mixed (EIP-55's checksum)
 	evmRe     = regexp.MustCompile(`^0[xX][0-9a-fA-F]{40}$`)
 	decimalRe = regexp.MustCompile(`^\d+\.\d+$`)
+	// a number written in hex as code and notes write one, of 64 bits at
+	// most: a memory address (0x004EA5E0), a constant, a flag. The model
+	// took such an address in reverse-engineering notes for a secret, and
+	// the vendor's model read {{SECRET_…}} where the address was
+	// (TakaNaShi_ShiKi on X); as an account number it went as
+	// {{ACCOUNT_…}}. modelTakes takes one as no kind. No key is that
+	// short, and a cue isn't asked as for a bare hex run (secretCued): the
+	// function at an address is often named for a key (DecryptKey:
+	// 0x004EA5E0). A key written so is longer (0x and 64 hex digits) and
+	// is masked still.
+	hexLiteral = regexp.MustCompile(`^0[xX][0-9a-fA-F]{1,16}$`)
 	// a time of day in words the model took for a passphrase (release
 	// about 17:05Z)
 	clockIn   = regexp.MustCompile(`(?:^|\s)\d{1,2}:\d{2}(?::\d{2})?Z?(?:\s|$)`)

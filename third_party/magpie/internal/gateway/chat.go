@@ -939,6 +939,38 @@ func thinkingEffort(body []byte) []byte {
 	return withFields(body, map[string]any{"reasoning_effort": effort, "thinking": v.Thinking})
 }
 
+// cacheKeyCamel names OpenCode 1's camelCase promptCacheKey, which it
+// writes into a Chat body when its provider sets setCacheKey (#5468), as
+// the prompt_cache_key every Chat API reads: a key of the request's own,
+// for every route, and no field an upstream doesn't know. A
+// prompt_cache_key the body has already is the one kept.
+func cacheKeyCamel(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`"promptCacheKey"`)) {
+		return body
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var m map[string]any
+	if dec.Decode(&m) != nil {
+		return body
+	}
+	key, ok := m["promptCacheKey"]
+	if !ok {
+		return body
+	}
+	delete(m, "promptCacheKey")
+	if _, has := m["prompt_cache_key"]; !has && key != nil {
+		m["prompt_cache_key"] = key
+	}
+	var out bytes.Buffer
+	enc := json.NewEncoder(&out)
+	enc.SetEscapeHTML(false) // <, > and & as the agent wrote them
+	if enc.Encode(m) != nil {
+		return body
+	}
+	return bytes.TrimSuffix(out.Bytes(), []byte("\n"))
+}
+
 // thinkingConfigField is Gemini's thinking_config as unfit remembers a
 // provider that refused it.
 const thinkingConfigField = "thinking_config"
@@ -1126,10 +1158,10 @@ const leadSpace = " \t\r\n"
 
 // thoughtTags are the tags a leading block of thinking comes between in a
 // Chat reply's text, by its opening tag.
-var thoughtTags = map[string]string{"<thought>": "</thought>", "<think>": "</think>"}
+var thoughtTags = map[string]string{"<thought>": "</thought>", "<thinking>": "</thinking>", "<think>": "</think>"}
 
-// text sends a piece of the reply's text, a leading <thought> or <think>
-// block of it as thinking.
+// text sends a piece of the reply's text, a leading <thought>, <thinking> or
+// <think> block of it as thinking.
 func (d *chatDecoder) text(s string, emit func(Event)) {
 	if !d.past && !d.thought {
 		d.lead += s
@@ -1244,16 +1276,22 @@ func (m *mdCode) find(s, close string, last bool) (at, hold int) {
 	return -1, 0
 }
 
-// afterThought is t without a leading <think>…</think> block, a whole
-// reply's thinking where its API leaves it in the text; t when it has none.
+// afterThought is t without a leading thinking block (any of thoughtTags,
+// as a streamed reply's is read), a whole reply's thinking where its API
+// leaves it in the text; t when it has none. No opening tag is a prefix of
+// another's whole tag, so at most one matches.
 func afterThought(t string) string {
-	rest, ok := strings.CutPrefix(strings.TrimLeft(t, leadSpace), "<think>")
-	if !ok {
+	lead := strings.TrimLeft(t, leadSpace)
+	for open, end := range thoughtTags {
+		rest, ok := strings.CutPrefix(lead, open)
+		if !ok {
+			continue
+		}
+		var m mdCode
+		if i, _ := m.find(rest, end, true); i >= 0 {
+			return strings.TrimSpace(rest[i+len(end):])
+		}
 		return t
-	}
-	var m mdCode
-	if i, _ := m.find(rest, "</think>", true); i >= 0 {
-		return strings.TrimSpace(rest[i+len("</think>"):])
 	}
 	return t
 }

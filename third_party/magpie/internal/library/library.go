@@ -60,11 +60,24 @@ type Library struct {
 	// which hands each call on to the library's servers ticked for it, in
 	// place of their own entries (#2679, mcp_hub.go)
 	MCPHub bool `json:"mcpHub,omitempty"`
+	// SkillRouter gives each agent that can take it magpie's one skill,
+	// magpie-skills, listing the library's skills ticked for it, in place
+	// of a link of each (skill_router.go). This computer's own: Collect
+	// doesn't carry it
+	SkillRouter bool `json:"skillRouter,omitempty"`
 	// PluginsOffered are the plugins (plugin.Name) given a server of their
 	// tools, for one the user removed not to come back (plugin_tools.go)
 	PluginsOffered []string `json:"pluginsOffered,omitempty"`
-	// SeenSkills are, by repository and ref ("owner/repo@ref"), the
-	// folders of skills there the page has offered: picked or not at
+	// BridgesOffered are the Remote magpies (provider ids) whose MCP
+	// router was given a server, for one the user removed not to come
+	// back (bridge_mcp.go)
+	BridgesOffered []string `json:"bridgesOffered,omitempty"`
+	// BridgesOn are the Remote magpies (provider ids) the user asked to
+	// give their router a server, in the editor's switch (bridge_mcp.go)
+	BridgesOn []string `json:"bridgesOn,omitempty"`
+	// SeenSkills are, by repository and ref ("owner/repo@ref", or a git
+	// address and ref), or by a folder the user added ("folder:<path>"),
+	// the folders of skills there the page has offered: picked or not at
 	// install, or set aside after a check. A check offers only the others
 	// as new (skillnew.go).
 	SeenSkills map[string][]string `json:"seenSkills,omitempty"`
@@ -128,6 +141,16 @@ type Applied struct {
 	// entry (Codex's startup_timeout_sec): one there other than this is
 	// the user's
 	Startup map[string]float64 `json:"startup,omitempty"`
+	// Picked are the skills magpie picked in the agent's own list of
+	// those it uses (LiveAgent's skills-settings.json, liveagent.go): one
+	// the user unpicked since stays unpicked
+	Picked []string `json:"picked,omitempty"`
+	// Router: magpie put the skill router's entry, magpie-skills, in the
+	// agent's skills folder
+	Router bool `json:"router,omitempty"`
+	// RouterRules are the rules magpie put in Claude Code's
+	// permissions.allow so it reads a listed skill without asking.
+	RouterRules []string `json:"routerRules,omitempty"`
 }
 
 // empty is whether a holds nothing magpie wrote: a sync that only looked
@@ -137,7 +160,7 @@ type Applied struct {
 func (a *Applied) empty() bool {
 	return !a.Instructions && a.InstrHash == "" && len(a.MCP) == 0 && len(a.Skills) == 0 &&
 		len(a.ToolsOff) == 0 && len(a.ToolRules) == 0 && len(a.Hooks) == 0 &&
-		len(a.Subagents) == 0 && len(a.Startup) == 0
+		len(a.Subagents) == 0 && len(a.Startup) == 0 && len(a.Picked) == 0 && !a.Router && len(a.RouterRules) == 0
 }
 
 var mu lock // one change at a time, from the page or the CLI's process
@@ -179,6 +202,12 @@ func load() (*Library, error) {
 
 func (l *Library) save() error {
 	sort.Slice(l.MCP, func(i, j int) bool { return l.MCP[i].Name < l.MCP[j].Name })
+	// a paused server given an agent, however, is on again
+	for _, s := range l.MCP {
+		if len(s.Agents) > 0 {
+			s.Hidden, s.Paused = false, nil
+		}
+	}
 	sort.Slice(l.Skills, func(i, j int) bool { return l.Skills[i].Name < l.Skills[j].Name })
 	sort.Slice(l.Projects, func(i, j int) bool { return l.Projects[i].Dir < l.Projects[j].Dir })
 	sort.Slice(l.Hooks, func(i, j int) bool { return l.Hooks[i].Name < l.Hooks[j].Name })

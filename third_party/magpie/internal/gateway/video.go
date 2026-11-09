@@ -1050,7 +1050,7 @@ func (s *Server) videosCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	keyWho, keyHeld := keyHolds(r)
 	if keyHeld && named && (isGroup && !groupAllowed(keyWho, g, ms) || !isGroup && !modelAllowed(keyWho, p, model)) {
-		fail(403, keyModelError(keyWho, f.Model))
+		fail(keyModelRefusal(w, keyWho, f.Model))
 		return
 	}
 	if msg, off := modelOff(p, model, f.Model); off { // disabled by the user (#1867)
@@ -1073,7 +1073,7 @@ func (s *Server) videosCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		t := s.drawingTries(g, ms, keeps, servesKind(provider.KindVideo))
 		if len(t) == 0 && keeps != nil {
-			fail(403, keyModelError(keyWho, f.Model))
+			fail(keyGroupRefusal(w, keyWho, f.Model, ms))
 			return
 		}
 		if len(t) > 0 {
@@ -1215,6 +1215,8 @@ type videoStart struct {
 // failure before any vendor is asked (the model makes no videos, a key may
 // use none of the provider's keys) has asked unset.
 func (s *Server) startVideo(ctx context.Context, r *http.Request, p provider.Provider, model string, f filming) (videoStart, int, error) {
+	// the headers the user gave the video model
+	ctx = provider.WithModel(ctx, p.ID, model)
 	// the provider's other keys to start the video on, when the first
 	// says it doesn't serve the model
 	var keys []candidate
@@ -1535,6 +1537,7 @@ func (s *Server) remoteVideoContent(ctx context.Context, w http.ResponseWriter, 
 		// vendors are told no caller
 		req.Header.Set("User-Agent", "magpie/"+Version)
 		passOnCaller(ctx, req)
+		passOnUA(req, callerUA(ctx))
 	}
 	if err := p.Sign(ctx, req, provider.Chat, nil); err != nil {
 		writeError(w, provider.Chat, 502, err.Error())

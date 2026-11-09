@@ -3,6 +3,7 @@ package sessions
 import (
 	"bytes"
 	"encoding/json"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -76,6 +77,9 @@ func claudeLine(s *state, b []byte, main bool) {
 			// a message laid out type first
 		case "ai-title", "custom-title", "summary":
 			claudeFull(s, b, main)
+			return
+		case "relocated":
+			ccRelocated(s, b, main)
 			return
 		default:
 			s.saw(tsAt(b, true), main)
@@ -184,6 +188,44 @@ func ccWhere(s *state, b []byte) {
 	}
 }
 
+var ccRelocatedCwd = []byte(`"relocatedCwd":"`)
+
+// ccRelocated reads the line Claude Code's /cd adds when it moves a session
+// to another folder: it moves the file into that folder's project and
+// writes {"type":"relocated","relocatedCwd":…}, while the lines before keep
+// the old cwd. The session is then the new folder's, the last move's.
+func ccRelocated(s *state, b []byte, main bool) {
+	s.saw(tsAt(b, true), main)
+	if !main {
+		return
+	}
+	if c := strAt(b, ccRelocatedCwd); c != "" {
+		s.Cwd = c
+	}
+}
+
+// ccStale reports whether a Claude Code session's kept parse was made by a
+// magpie that didn't read /cd's relocated lines, and the folder it names is
+// not the project the file is in: the session was moved with /cd, and its
+// parse names the folder it left. Read again once, the parse is current.
+func ccStale(f file, s *state) bool {
+	if f.agent != "claude" || !f.main || s == nil || s.CdRead || s.Cwd == "" {
+		return false
+	}
+	return !ccInProject(filepath.Base(filepath.Dir(f.path)), s.Cwd)
+}
+
+// ccInProject reports whether dir is the name Claude Code gives cwd's
+// project folder: cwd with each UTF-16 unit not a letter or digit as "-",
+// past 200 of them cut and a hash added.
+func ccInProject(dir, cwd string) bool {
+	n := claudeSlug(cwd)
+	if len(n) <= 200 {
+		return dir == n
+	}
+	return strings.HasPrefix(dir, n[:200]+"-")
+}
+
 // strAt is the string after the last key in b.
 func strAt(b, key []byte) string {
 	i := lastIndex(b, key)
@@ -234,7 +276,10 @@ func ccTools(s *state, m *claudeContribution, at time.Time, b []byte) {
 		}
 		var tool struct {
 			ID, Name string
-			Input    struct{ Skill any }
+			Input    struct {
+				Skill    any
+				FilePath string `json:"file_path"`
+			}
 		}
 		end := objectEnd(rest[i:])
 		if end < 0 || json.Unmarshal(rest[i:i+end], &tool) != nil {
@@ -244,6 +289,9 @@ func ccTools(s *state, m *claudeContribution, at time.Time, b []byte) {
 		skill, _ := tool.Input.Skill.(string)
 		if tool.Name != "Skill" {
 			skill = ""
+		}
+		if tool.Name == "Read" {
+			skill = routedSkill(tool.Input.FilePath)
 		}
 		ccTool(s, m, at, tool.ID, tool.Name, skill)
 	}
@@ -303,15 +351,9 @@ func ccReply(s *state, at time.Time, msg, b []byte, main bool) {
 	if i == len(b) || model == "<synthetic>" {
 		return
 	}
-	var u struct {
-		Input      int              `json:"input_tokens"`
-		Output     int              `json:"output_tokens"`
-		CacheRead  int              `json:"cache_read_input_tokens"`
-		CacheWrite int              `json:"cache_creation_input_tokens"`
-		Creation   *ccCacheCreation `json:"cache_creation"`
-	}
+	var u ccUsageFields
 	usage := b[i+len(ccUsage)-1:]
-	if end := objectEnd(usage); end < 0 || json.Unmarshal(usage[:end], &u) != nil {
+	if end := objectEnd(usage); end < 0 || ccDecodeUsage(usage[:end], &u) != nil {
 		return
 	}
 	ccCount(s, m, at, model, ccTokens(u.Input, u.Output, u.CacheRead, u.CacheWrite, u.Creation), main)
@@ -328,9 +370,15 @@ func claudeFull(s *state, b []byte, main bool) {
 	if !want {
 		return
 	}
+	// its content, a prompt's pasted text and images, is read where the
+	// line holds it, not copied for each line (#2278)
 	var l ccLine
-	if json.Unmarshal(b, &l) != nil {
+	content, err := ccDecodeLess(b, &l)
+	if err != nil {
 		return
+	}
+	if content != nil {
+		l.Message.Content = content
 	}
 	if s.Cwd == "" && l.Cwd != "" {
 		s.Cwd, s.Entry = l.Cwd, l.Entrypoint
@@ -376,7 +424,10 @@ func claudeFull(s *state, b []byte, main bool) {
 		defer s.Claude.finish(m)
 		var blocks []struct {
 			Type, ID, Name string
-			Input          struct{ Skill any }
+			Input          struct {
+				Skill    any
+				FilePath string `json:"file_path"`
+			}
 		}
 		if json.Unmarshal(l.Message.Content, &blocks) == nil {
 			for _, c := range blocks {
@@ -384,6 +435,9 @@ func claudeFull(s *state, b []byte, main bool) {
 					skill, _ := c.Input.Skill.(string)
 					if c.Name != "Skill" {
 						skill = ""
+					}
+					if c.Name == "Read" {
+						skill = routedSkill(c.Input.FilePath)
 					}
 					ccTool(s, m, at, c.ID, c.Name, skill)
 				}

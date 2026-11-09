@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -66,6 +67,9 @@ type place struct {
 	// chmod takes the group's and others' bits off a file under home, where
 	// magpie's own mode doesn't hold (a distro's: see ownerOnly); nil: here
 	chmod func(string) error
+	// dir is the agent's config folder when magpie keeps one of its own
+	// for it (claude-magpie's launch file, claude_launch.go); "": its own
+	dir string
 }
 
 func here(home string) place { return place{home: home} }
@@ -117,6 +121,9 @@ func (p place) codexHome() string {
 // this machine (appdir.ClaudeDir), ~/.claude in a distro, whose variables
 // magpie can't read.
 func (p place) claudeDir() string {
+	if p.dir != "" {
+		return p.dir
+	}
 	if p.spell != nil {
 		return p.join(".claude")
 	}
@@ -660,7 +667,7 @@ var wslKinds = []wslKind{
 			}
 			return func(cur map[string]string) []Option {
 				if ref, ok := strings.CutPrefix(cur["model"], magpieID+"/"); ok {
-					return static(dshLevels(ref)...)
+					return static(dshLevels("dsh", ref)...)
 				}
 				return static(dshEfforts...)
 			}
@@ -1270,7 +1277,10 @@ var wslRun = func(timeout time.Duration, args ...string) ([]byte, error) {
 	cmd := proc.CommandContext(ctx, "wsl.exe", args...)
 	// wsl.exe speaks UTF-16 unless told otherwise; either is read
 	cmd.Env = append(os.Environ(), "WSL_UTF8=1")
-	return cmd.Output()
+	out, err := cmd.Output()
+	// one that says WSL must be updated isn't run again for hours
+	proc.WSLSaid(out, err)
+	return out, err
 }
 
 // wslRoot is where magpie opens a running distro's / from; a var for tests.
@@ -1527,7 +1537,13 @@ func wslLastSeen(name, key string) string {
 // with its mirrored networking settled, ready for a read of its files.
 // Only magpie's memory of them and which run (wslRunningLocked) are
 // asked — nothing is probed, and a stopped distro is never opened.
+// Detection off (wslLooks) reads none: a request's stand-in asks wsl.exe
+// nothing, which on a machine without WSL would answer with a console
+// window asking to install it (#4872).
 func wslReady(kind string) []distro {
+	if !wslLooks() {
+		return nil
+	}
 	wsl.Lock()
 	wslRunningLocked()
 	var ds []distro
@@ -1558,8 +1574,11 @@ func wslClaudeStandIn(model string) string {
 }
 
 // wslClaudeClassifier is ClassifierStandIn for a Claude Code in a running
-// distro, known by the same User-Agent.
+// distro, known by the same User-Agent. Detection off reads none (#4872).
 func wslClaudeClassifier(model string) string {
+	if !wslLooks() {
+		return ""
+	}
 	wsl.Lock()
 	wslRunningLocked()
 	var ds []distro
@@ -1593,9 +1612,15 @@ func wslCodexStandIn() string {
 }
 
 // wslList is the names wsl.exe lists with args; ok is false when it
-// couldn't say (no WSL, or none installed).
+// couldn't say (no WSL, or none installed). With no distro registered at
+// all wsl.exe isn't run (proc.ErrNoWSLDistro), and that is an answer:
+// none. One refused while WSL asks to be updated is not, so nothing
+// remembered of a distro is forgotten for it.
 func wslList(args ...string) (names []string, ok bool) {
 	b, err := wslRun(10*time.Second, args...)
+	if errors.Is(err, proc.ErrNoWSLDistro) {
+		return nil, true
+	}
 	if err != nil {
 		return nil, false
 	}
@@ -1626,18 +1651,39 @@ const wslProbeVersion = 2
 // highest first. The glob this replaced took them in name order, so a
 // command under v18 was found before the default v22's, and v9's after
 // both (as proc.UserPath did on a Mac or Linux, 9f407cafa).
+//
+// The folders are those of proc.UserBinDirs: fnm's default and then its
+// versions, mise's installs, ~/.npmrc's prefix and Homebrew's among them
+// (千里不再 on Discord: a WSL Pi from fnm, not run yet so with no ~/.pi,
+// wasn't found). The shell isn't asked interactively for the PATH ~/.bashrc
+// builds: under timeout(1) an interactive bash stops itself on the
+// terminal (state T) and outlived its timeout on WSL (Ubuntu 24.04).
+//
+// A command on Windows' drives isn't the distro's (parseProbe), so one
+// there is looked past (wslwin): WSL puts Windows' PATH on the distro's,
+// and a Pi npm installed on Windows hid the distro's own from wslbin.
 var wslProbeScript = func() string {
 	s := `nv="${NVM_DIR:-$HOME/.nvm}"; nd=; [ -s "$nv/nvm.sh" ] && command -v bash >/dev/null 2>&1 && nd=$(NVM_DIR="$nv" timeout 10 bash -c '. "$NVM_DIR/nvm.sh" --no-use >/dev/null 2>&1; nvm_version default 2>/dev/null' </dev/null 2>/dev/null); ` +
+		// Windows' drives, as /proc/mounts has them (C:\ written C:\134)
+		`wm=$(awk '$1 ~ /^[A-Za-z]:/ {print $2}' /proc/mounts 2>/dev/null); ` +
+		`wslwin() { case "$1" in /mnt/[A-Za-z]/*) return 0;; esac; for m in $wm; do case "$1/" in "$m"/*) return 0;; esac; done; return 1; }; ` +
+		`inpath() { o=$IFS; IFS=:; r=; for d in $2; do case "$d" in /*) wslwin "$d" || { [ -f "$d/$1" ] && [ -x "$d/$1" ] && { r="$d/$1"; break; }; };; esac; done; IFS=$o; [ -n "$r" ] && echo "$r"; }; ` +
+		`np=$(sed -n 's/^[[:space:]]*prefix[[:space:]]*=[[:space:]]*//p' "$HOME/.npmrc" 2>/dev/null | head -n1 | tr -d "\"'\r"); case "$np" in "~/"*) np="$HOME/${np#??}";; /*) ;; *) np=;; esac; ` +
+		`fr=; for r in "$FNM_DIR" "${XDG_DATA_HOME:-$HOME/.local/share}/fnm" "$HOME/.fnm"; do case "$r" in /*) [ -d "$r/node-versions" ] && { fr=$r; break; };; esac; done; ` +
+		`vs() { ls "$1" 2>/dev/null | sed 's/^v*\(.*\)$/\1 &/' | sort -t. -k1,1nr -k2,2nr -k3,3nr | cut -d' ' -f2; }; ` +
 		`wslbin() { for d in "$HOME/.bun/bin" "$HOME/.local/bin" "$HOME/.npm-global/bin" "$HOME/.volta/bin" "$HOME/.local/share/pnpm"; do [ -x "$d/$1" ] && { echo "$d/$1"; return 0; }; done; ` +
 		`for v in $nd $(ls "$nv/versions/node" 2>/dev/null | sort -t. -k1.2,1nr -k2,2nr -k3,3nr); do d="$nv/versions/node/$v/bin"; [ -x "$d/$1" ] && { echo "$d/$1"; return 0; }; done; ` +
-		`for d in "$HOME/.local/share/mise/shims" "$HOME/.asdf/shims"; do [ -x "$d/$1" ] && { echo "$d/$1"; return 0; }; done; return 1; }; `
+		`if [ -n "$fr" ]; then for d in "$fr/aliases/default/bin" $(vs "$fr/node-versions" | sed "s|.*|$fr/node-versions/&/installation/bin|"); do [ -x "$d/$1" ] && { echo "$d/$1"; return 0; }; done; fi; ` +
+		`for d in $(vs "$HOME/.local/share/mise/installs/node" | sed "s|.*|$HOME/.local/share/mise/installs/node/&/bin|"); do [ -x "$d/$1" ] && { echo "$d/$1"; return 0; }; done; ` +
+		`for d in "$HOME/.local/share/mise/shims" "$HOME/.asdf/shims" "$HOME/.npm/bin" ${np:+"$np/bin"} "$HOME/.cargo/bin" "$HOME/.deno/bin" /home/linuxbrew/.linuxbrew/bin "$HOME/.linuxbrew/bin"; do [ -x "$d/$1" ] && { echo "$d/$1"; return 0; }; done; return 1; }; ` +
+		`wslcmd() { p=$(command -v "$1" 2>/dev/null) && case "$p" in /*) wslwin "$p" || { echo "$p"; return 0; };; esac; inpath "$1" "$PATH" || wslbin "$1"; }; `
 	s += `echo "home:$HOME"; `
 	for _, k := range wslKinds {
 		if k.dir != "" {
 			s += `[ -d "$HOME/` + k.dir + `" ] && echo dir:` + k.dir + `; `
 		}
 		if k.bin != "" {
-			s += `p=$(command -v ` + k.bin + ` 2>/dev/null || wslbin ` + k.bin + `) && echo "bin:` + k.bin + ` $p"`
+			s += `p=$(wslcmd ` + k.bin + `) && echo "bin:` + k.bin + ` $p"`
 			if k.version {
 				// not one on Windows' drives (WSL's /mnt/c), which isn't the distro's
 				s += ` && case "$p" in /mnt/*) ;; *) echo "ver:` + k.id + ` $(PATH="${p%/*}:$PATH" timeout 10 "$p" --version </dev/null 2>&1 | head -n1)";; esac`
@@ -1788,10 +1834,11 @@ func parseProbe(name, out string) *distro {
 	// the default route of a distro whose 127.0.0.1 is Windows' is
 	// Windows' own next hop (consomme: 198.18.0.2 under a TUN proxy,
 	// #1230), not Windows: an agent left on it is moved to 127.0.0.1
-	// (wslMovedFrom)
-	if wslrun.HostLoopback(d.Net) {
-		d.Gateway = ""
-	}
+	// (wslMovedFrom). A bridged distro's is the LAN's router: Windows is
+	// at its address on the bridge's adapter (wslrun.HostAt), and an agent
+	// an older magpie pointed at the router is written over on the next
+	// sync, the router being among the addresses it was seen at (Was)
+	d.Gateway = wslrun.HostAt(d.Net, d.Gateway, gateway.WSLNets())
 	return d
 }
 

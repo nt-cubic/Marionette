@@ -41,6 +41,10 @@ type tuneAdvice struct {
 	// Async is Codex's background compaction at the advice, its foreground
 	// limit kept as the backstop; nil where it can't help
 	Async *tuneAsync `json:"async,omitempty"`
+	// Few: a setting tune put in, or Claude Code's cache as it is here,
+	// kept on the card with nothing to advise (too few calls in the
+	// range), so its Undo, or its way back to 5 minutes, is still there
+	Few bool `json:"few,omitempty"`
 }
 
 // tuneAsync is the advice as Codex's background compaction takes it: a
@@ -92,6 +96,11 @@ type tuneAgent struct {
 type tuneState struct {
 	Days   int         `json:"days"`
 	Agents []tuneAgent `json:"agents"`
+	// Gateway: in gateway mode the agents are on other computers, and
+	// their session files and settings aren't here to replay or change
+	// (linkaww on Discord: a Docker magpie's Claude Code card said 0
+	// calls beside the requests it routed); the page leaves the card out
+	Gateway bool `json:"gateway,omitempty"`
 }
 
 // tuneOf works the advice out of the calls the agents' files hold.
@@ -108,9 +117,22 @@ func tuneOf(cs []sessions.Call, days int, home string) tuneState {
 // adviseOf is tuneOf from each agent's calls made tune's already.
 func adviseOf(by map[string][]tune.Call, days int, home string) tuneState {
 	out := tuneState{Days: days, Agents: []tuneAgent{}}
+	weigh := pricedWeights(settings.Load())
 	for _, name := range []string{"claude", "codex"} {
 		calls := by[name]
-		if len(calls) == 0 {
+		kept := agent.TuneKept(home, name)
+		if name == "claude" {
+			// the cache this computer's Claude Code keeps, with or without
+			// calls read here, its way back to 5 minutes with it
+			here := agent.TuneCacheHere(home)
+			for _, k := range kept {
+				if !slices.ContainsFunc(here, func(o agent.TuneKnob) bool { return o.Knob == k.Knob && o.Model == k.Model }) {
+					here = append(here, k)
+				}
+			}
+			kept = here
+		}
+		if len(calls) == 0 && len(kept) == 0 {
 			continue
 		}
 		ta := tuneAgent{Agent: name, Calls: len(calls), Advice: []tuneAdvice{}}
@@ -141,7 +163,7 @@ func adviseOf(by map[string][]tune.Call, days int, home string) tuneState {
 					}
 				}
 				cur, _ := strconv.Atoi(s.Value)
-				o := tune.CompactOpts{Min: 100000, Max: 1000000, Step: 10000, Reserve: 33000, Window: window, Current: cur}
+				o := tune.CompactOpts{Min: 100000, Max: 1000000, Step: 10000, Reserve: 33000, Window: window, Current: cur, Weigh: weigh}
 				if r := tune.Compact(mc, o); r != nil {
 					ta.Advice = append(ta.Advice, tuneAdvice{Knob: agent.TuneCompact, Model: m, Setting: s, Compact: r})
 				}
@@ -157,7 +179,7 @@ func adviseOf(by map[string][]tune.Call, days int, home string) tuneState {
 				if err != nil {
 					continue
 				}
-				if r := tune.CacheTTL(k.calls, s.Value); r != nil {
+				if r := tune.CacheTTL(k.calls, s.Value, weigh); r != nil {
 					ta.Advice = append(ta.Advice, tuneAdvice{Knob: k.knob, Setting: s, TTL: r})
 				}
 			}
@@ -176,7 +198,7 @@ func adviseOf(by map[string][]tune.Call, days int, home string) tuneState {
 				cur = told
 			}
 			// a value the user chose is never past the last one offered
-			o := tune.CompactOpts{Min: 50000, Max: max(1000000, window, cur, st.CompactAt), Step: 10000, Window: window, Current: cur}
+			o := tune.CompactOpts{Min: 50000, Max: max(1000000, window, cur, st.CompactAt), Step: 10000, Window: window, Current: cur, Weigh: weigh}
 			if r := tune.Compact(calls, o); r != nil {
 				ad := tuneAdvice{Knob: agent.TuneCompact, Setting: s, Compact: r}
 				if own != "" && s.Source == agent.TuneLong && r.Current == told {
@@ -192,9 +214,46 @@ func adviseOf(by map[string][]tune.Call, days int, home string) tuneState {
 				ta.Advice = append(ta.Advice, ad)
 			}
 		}
+		// what tune put in stays on the card, Undo with it, when the range
+		// has too few calls to advise on it (linkaww on Discord), and so
+		// does Claude Code's cache as it is here
+		for _, k := range kept {
+			if !slices.ContainsFunc(ta.Advice, func(a tuneAdvice) bool { return a.Knob == k.Knob && a.Model == k.Model }) {
+				ta.Advice = append(ta.Advice, tuneAdvice{Knob: k.Knob, Model: k.Model, Setting: k.Setting, Few: true})
+			}
+		}
 		out.Agents = append(out.Agents, ta)
 	}
 	return out
+}
+
+// pricedWeights weighs a model's calls at what magpie bills them where the
+// agent asked for a model magpie wrote into its config (provider/model, as
+// Claude Code is given it, dashed): the price of the provider it resolves
+// to, as the usage pages count it, so a Claude model on Copilot has its
+// hour at the 5-minute write Copilot bills and one on Anthropic at 2× input
+// (#3435). By its name alone a provider/model id was weighed as no Claude
+// model, its hour costing what a 5-minute write does. A model the agent
+// named itself never went through magpie and is weighed at its maker's list
+// (tune.WeightsFor), as is one magpie has no cache price for.
+func pricedWeights(st settings.Settings) tune.Weigh {
+	memo := map[string]tune.Weights{}
+	return func(model string) tune.Weights {
+		if w, ok := memo[model]; ok {
+			return w
+		}
+		w := tune.WeightsFor(model)
+		if strings.Contains(model, "/") {
+			if p, m, ok := provider.Resolve(provider.ClaudeRead(model)); ok {
+				if pr, ok := provider.EffectivePriceIn(st, p.ID, m); ok && pr.Input > 0 && pr.Output > 0 && pr.CacheRead > 0 && pr.CacheWrite > 0 {
+					w = tune.Weights{Read: pr.CacheRead / pr.Input, Write: pr.CacheWrite / pr.Input,
+						Write1h: pr.OneHour() / pr.Input, Out: pr.Output / pr.Input}
+				}
+			}
+		}
+		memo[model] = w
+		return w
+	}
 }
 
 // codexWindow is the window Codex runs the calls' models to, and where
@@ -277,12 +336,28 @@ func tuneRoutes(mux *http.ServeMux) {
 		if days <= 0 || days > 30 {
 			days = 7
 		}
+		if ownSessionsOff() {
+			writeJSON(rw, tuneState{Days: days, Agents: []tuneAgent{}, Gateway: true})
+			return
+		}
 		writeJSON(rw, tuneFor(days))
 	})
+	// what Tuned for you changes is this computer's agents' settings,
+	// which in gateway mode serve none of the requests it was shown for
+	gatewayRefused := func(rw http.ResponseWriter) bool {
+		if !ownSessionsOff() {
+			return false
+		}
+		http.Error(rw, "gateway mode: the agents are on other computers; tune them there", http.StatusConflict)
+		return true
+	}
 	type change struct {
 		Agent, Knob, Model, Value string
 	}
 	mux.HandleFunc("POST /api/tune/apply", func(rw http.ResponseWriter, r *http.Request) {
+		if gatewayRefused(rw) {
+			return
+		}
 		var in change
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			fail(rw, err)
@@ -296,7 +371,25 @@ func tuneRoutes(mux *http.ServeMux) {
 		s, _ := agent.TuneRead("", in.Agent, in.Knob, in.Model)
 		writeJSON(rw, s)
 	})
+	// Claude Code's prompt cache picked in its settings: "5m", "1h", or ""
+	// for Claude Code's own default (agent.ClaudeCacheSet)
+	mux.HandleFunc("POST /api/settings/claude-cache", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Knob, Value string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		if err := agent.ClaudeCacheSet("", in.Knob, in.Value); err != nil {
+			fail(rw, err)
+			return
+		}
+		tuneForget()
+		writeJSON(rw, settingsState())
+	})
 	mux.HandleFunc("POST /api/tune/undo", func(rw http.ResponseWriter, r *http.Request) {
+		if gatewayRefused(rw) {
+			return
+		}
 		var in change
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			fail(rw, err)
@@ -441,4 +534,25 @@ func tuneCallsSince(since time.Time) map[string][]tune.Call {
 		slices.SortStableFunc(cs, func(a, b tune.Call) int { return b.Time.Compare(a.Time) })
 	}
 	return by
+}
+
+// claudeCacheJSON is one of Claude Code's prompt-cache lifetimes: its
+// knob (agent.TuneCache, agent.TuneSubCache), the value it runs at ("" for
+// Claude Code's own default), and the variable that sets it, when one does.
+type claudeCacheJSON struct {
+	Knob   string `json:"knob"`
+	Value  string `json:"value,omitempty"`
+	Locked string `json:"locked,omitempty"`
+}
+
+func claudeCacheState() []claudeCacheJSON {
+	var out []claudeCacheJSON
+	for _, knob := range []string{agent.TuneCache, agent.TuneSubCache} {
+		s, err := agent.TuneRead("", "claude", knob, "")
+		if err != nil {
+			continue
+		}
+		out = append(out, claudeCacheJSON{Knob: knob, Value: s.Value, Locked: s.Locked})
+	}
+	return out
 }

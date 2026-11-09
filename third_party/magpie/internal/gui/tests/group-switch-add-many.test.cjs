@@ -3,7 +3,7 @@
 // and a group was made one model at a time, not seeing which groups a
 // model was in already.
 // - A group of the user's has a switch on its card: off, it posts
-//   groups/switch with on false, the card is dimmed but for the switch and
+//   groups/switch with on false, the card's logos go grey and it
 //   says "switched off", and the keyboard stays on the switch; on again
 //   posts on true. A group magpie found has no switch (it is removed).
 // - justacati on X: a group switched off is listed after the ones on, and
@@ -81,7 +81,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const errors = [], posts = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang, posts));
-      await page.goto("http://magpie.test/?view=routing");
+      await page.goto("http://magpie.test/?view=groups");
       const card = (id) => page.locator(`.rt-group[data-id="${id}"]`);
       await card("g").waitFor();
       await page.locator(".rt-gsec").evaluate((x) => x.scrollIntoView({ block: "center" })); // as the reader would
@@ -110,8 +110,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await down.first().evaluate((b) => b.disabled || b.getAttribute("aria-disabled") === "true" || b.classList.contains("off")), true, "Move down offered on the last group on");
       await page.keyboard.press("Escape");
       await sw().focus();
-      const dim = await card("g").evaluate((r) => [...r.children].map((c) => [c.classList.contains("rt-gon"), getComputedStyle(c).opacity]));
-      for (const [isSw, o] of dim) assert.equal(o, isSw ? "1" : "0.5");
+      // off, its logos are grey and its words stay readable, not dimmed
+      // (jiabubu on Discord; group-disabled-contrast measures them)
+      const dim = await card("g").evaluate((r) => [...r.children].map((c) => [c.classList.contains("rt-ghandle"), getComputedStyle(c).opacity, getComputedStyle(c).filter]));
+      for (const [isLogo, o, f] of dim) assert.deepEqual([o, f], isLogo ? ["0.6", "grayscale(1)"] : ["1", "none"]);
       assert.equal(await page.locator(".rt-gedit").count(), 0, "the switch opened the editor");
       await sw().click();
       await page.waitForFunction(() => !document.querySelector('.rt-group[data-id="g"]')?.classList.contains("disabled"));

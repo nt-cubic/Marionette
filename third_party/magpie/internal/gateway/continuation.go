@@ -434,6 +434,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 	said, stop := false, ""
 	var kept []Event       // the reply's end, while nothing is said in it
 	var before, this Usage // what the tries before this one billed, and this try
+	tried := false         // a try began: the next one's prompt is the reply's (restart)
 	// spoke: the reply has said something, a text or a call; relooped: this
 	// try's reasoning was found stuck in a loop before it had, and it is
 	// let go to ask again (loopReasks)
@@ -445,7 +446,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 			// only reasoning nobody acts on: a text or a call the agent
 			// has would be said twice, and a continuation's prefill would
 			// be asked to go on with the loop
-			if !t.reasoning || spoke || cont.resume || reasks >= loopReasks || r.Context().Err() != nil {
+			if !t.reasoning || spoke || cont.resume || reasks >= loopReasks || r.Context().Err() != nil || p.PassesErrors() {
 				return false
 			}
 			reasks++
@@ -483,11 +484,14 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 			}
 			errSent = true
 		case KStart:
-			// the tries are each billed, so their usages are summed into
-			// the reply's — the client's and the ledger's (a cut try's is
+			// the tries are each billed: the earlier ones' prompts as the
+			// reply's Deferred, their output with this one's (after); the
+			// client is told this try's prompt (a cut try's counts are
 			// only what it said before the cut)
 			this = ev.Usage
-			ev.Usage = ev.Usage.plus(before, false)
+			ev.Usage = ev.Usage.after(before, false)
+			ev.Usage.restart = tried
+			tried = true
 			u.add(ev.Usage)
 			u.add(Usage{Served: ev.Model}) // the model the vendor says answered
 		case KUsage:
@@ -541,6 +545,11 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 			empty, counts = emptyFails(actual), repliesCounted(actual)
 			voids = cutVoidAt(actual)
 		}
+		if err == nil && res.StatusCode >= 400 && !cont.resume && p.PassesErrors() {
+			// the user leaves its errors to the client (errors=pass)
+			defer res.Body.Close()
+			return passError(w, p, from, actual, res, u)
+		}
 		if err == nil && res.StatusCode >= 400 {
 			b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 			res.Body.Close()
@@ -571,7 +580,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 				if turnedAway {
 					u.ErrType = turnedAwayErrType
 				}
-				return writeVendorError(w, from, res.StatusCode, failed, b), failed
+				return writeVendorErrorFrom(w, from, actual, p, res, failed, b), failed
 			}
 		}
 		if err == nil && res.StatusCode < 400 {
@@ -674,7 +683,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 				held()
 			}
 			if (empty || counts && uncounted(this)) && !said && answersNothing(stop) {
-				if empties < emptyRetries(w, r.Context()) && r.Context().Err() == nil {
+				if empties < emptyRetries(w, r.Context()) && r.Context().Err() == nil && !p.PassesErrors() {
 					// asked again here first, for the agent to have the
 					// answer rather than the error: Gemini on a long
 					// conversation now and then ends with only its
@@ -718,7 +727,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 		// an error the client already has ends the reply: nothing of it
 		// goes on after it (a group member's mid-reply error fails the
 		// try at once, for the group's next member, #733)
-		if errSent || !cont.again(failedStatus, failedCode, again, r.Context()) {
+		if errSent || p.PassesErrors() || !cont.again(failedStatus, failedCode, again, r.Context()) {
 			if held != nil {
 				// what was held goes as the text it is, as it used to;
 				// a reply that goes on reads it again instead

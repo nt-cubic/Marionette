@@ -78,7 +78,7 @@ func updateAutoCmd(args []string) error {
 }
 
 // updateMirrorCmd is `magpie update mirror [<prefix>|off]`: the GitHub
-// download mirror every update goes through, the app's own among them
+// download mirror an update goes through when usemagpie.ai's file fails, the app's own among them
 // (settings.UpdateMirror). With nothing, it says which.
 func updateMirrorCmd(args []string) error {
 	s := settings.Load()
@@ -100,10 +100,10 @@ func updateMirrorCmd(args []string) error {
 		}
 	}
 	if s.UpdateMirror == "" {
-		fmt.Println("updates are downloaded from GitHub", muted.Render("· magpie update mirror <prefix> has them come through a mirror; the checksum is still usemagpie.ai's"))
+		fmt.Println("updates are downloaded from usemagpie.ai, and from GitHub when that fails", muted.Render("· magpie update mirror <prefix> has GitHub's come through a mirror; the checksum is still usemagpie.ai's"))
 		return nil
 	}
-	fmt.Println("updates are downloaded through", bold.Render(s.UpdateMirror), muted.Render("· each is checked against usemagpie.ai's checksum · magpie update mirror off goes back to GitHub"))
+	fmt.Println("updates are downloaded from usemagpie.ai, and through", bold.Render(s.UpdateMirror), "when that fails", muted.Render("· each is checked against usemagpie.ai's checksum · magpie update mirror off goes back to GitHub"))
 	return nil
 }
 
@@ -190,10 +190,13 @@ func updateCmd(args []string) error {
 	if len(args) > 2 || len(args) == 2 && args[1] != "check" {
 		return fmt.Errorf("usage: magpie update [check] [--proxy <url>] [--mirror <prefix>]")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	// the check is bounded; the download after it is not: a slow one
+	// still moving goes on, and one that stops sending is ended by
+	// update's stall timer (#5572)
+	ctx := update.WithMirror(update.WithProxy(context.Background(), proxy), mirror)
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
-	ctx = update.WithMirror(update.WithProxy(ctx, proxy), mirror)
-	rel, err := update.Latest(ctx)
+	rel, err := update.Latest(cctx)
 	if err != nil {
 		return err
 	}

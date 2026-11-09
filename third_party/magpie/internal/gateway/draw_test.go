@@ -256,6 +256,65 @@ func TestViaFor(t *testing.T) {
 	}
 }
 
+// A model added by hand to a custom provider and marked Makes: Image model
+// (a relay's jimeng-4.0, named for nothing magpie knows) is asked at the
+// provider's images API, as the editor's menu says, not on chat
+// completions first; listed under Image generation, it draws as the
+// Settings' pick. On a provider with no images API (404) it is drawn on
+// chat completions all the same.
+func TestMarkedImageModelDrawsAtTheImagesAPI(t *testing.T) {
+	s, e := easeled(t)
+	p, _ := provider.Find("art")
+	p.Models = append(p.Models, "jimeng-4.0")
+	if err := provider.Save(*p); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.SetModelKind("art/jimeng-4.0", provider.KindImage); err != nil {
+		t.Fatal(err)
+	}
+	p, _ = provider.Find("art")
+	if !slices.ContainsFunc(Drawers(*p), func(m catalog.Model) bool { return m.ID == "jimeng-4.0" }) {
+		t.Fatalf("not listed to draw: %v", Drawers(*p))
+	}
+	st := settings.Load()
+	st.ImageGen = "art/jimeng-4.0"
+	if err := settings.Save(st); err != nil {
+		t.Fatal(err)
+	}
+	code, a, raw := postImages(t, s, "/v1/images/generations", "application/json", `{"prompt":"a magpie"}`)
+	if code != 200 || a.Model != "art/jimeng-4.0" || len(a.Data) != 1 {
+		t.Fatalf("%d %s", code, raw)
+	}
+	if got := e.got("/v1/images/generations"); len(got) != 1 || !strings.Contains(got[0], `"model":"jimeng-4.0"`) {
+		t.Fatalf("images API sent %v", got)
+	}
+	if got := e.got("/v1/chat/completions"); len(got) != 0 {
+		t.Fatalf("asked on chat first: %v", got)
+	}
+
+	// a relay with chat completions alone: the 404 sends it there
+	chat := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			w.WriteHeader(404)
+			io.WriteString(w, `{"error":{"message":"not found"}}`)
+			return
+		}
+		b64 := base64.StdEncoding.EncodeToString(pngBytes)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok","images":[{"type":"image_url","image_url":{"url":"data:image/png;base64,`+b64+`"}}]}}]}`)
+	}))
+	t.Cleanup(chat.Close)
+	if err := provider.Save(provider.Provider{ID: "talk", Name: "Talk", Chat: chat.URL + "/v1", Key: "key", Models: []string{"painter-x"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.SetModelKind("talk/painter-x", provider.KindImage); err != nil {
+		t.Fatal(err)
+	}
+	if code, a, raw := postImages(t, s, "/v1/images/generations", "application/json", `{"model":"talk/painter-x","prompt":"a magpie"}`); code != 200 || len(a.Data) != 1 {
+		t.Fatalf("chat-only relay: %d %s", code, raw)
+	}
+}
+
 func TestOpenRouterImagesAPIDrawsImageModels(t *testing.T) {
 	fresh(t)
 	p := provider.Provider{ID: "openrouter", Name: "OpenRouter", Chat: "https://openrouter.ai/api/v1", Key: "key", Models: []string{"openai/gpt-image-2"}}
@@ -294,6 +353,63 @@ func TestOpenRouterImagesAPIDrawsImageModels(t *testing.T) {
 	}
 	if got.Model != "openai/gpt-image-2" || got.Prompt != "a magpie" || len(got.InputReferences) != 1 || got.InputReferences[0].Type != "image_url" || got.InputReferences[0].ImageURL.URL != ref {
 		t.Fatalf("OpenRouter request: %s", requestBody)
+	}
+}
+
+// An OpenRouter image model whose id names no images API (Riverflow,
+// Recraft) draws at its /images when its list says it answers with an
+// image alone, as /images/models lists it (iwinux on Discord); a chat image
+// model stays on chat completions. A size in pixels goes as aspect_ratio
+// and resolution: Riverflow V2 answered "1024x1024" with 400 "does not
+// support explicit pixel sizes" on 2026-11-06.
+func TestOpenRouterImageOnlyModelsDrawAtItsImageAPI(t *testing.T) {
+	fresh(t)
+	if err := provider.Save(provider.Provider{ID: "openrouter", Name: "OpenRouter", Chat: "https://openrouter.ai/api/v1", Key: "key"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.SaveLive("openrouter", "https://openrouter.ai/api/v1", []catalog.Model{
+		{ID: "sourceful/riverflow-v2-fast", Draws: true, OutputModalities: []string{"image"}},
+		{ID: "recraft/recraft-v4-vector", Draws: true, OutputModalities: []string{"image"}},
+		{ID: "google/gemini-2.5-flash-image", Draws: true, OutputModalities: []string{"image", "text"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := provider.Find("openrouter")
+	for model, want := range map[string]drawVia{
+		"sourceful/riverflow-v2-fast":   viaImages,
+		"recraft/recraft-v4-vector":     viaImages,
+		"google/gemini-2.5-flash-image": viaChat,
+		"openai/gpt-5-image":            viaChat,
+	} {
+		if got := viaFor(*p, model); got != want {
+			t.Errorf("%s: %s, want %s", model, got, want)
+		}
+	}
+	var path string
+	var got map[string]any
+	s := New()
+	s.client = &http.Client{Transport: countTransport(func(r *http.Request) (*http.Response, error) {
+		path = r.URL.Path
+		json.NewDecoder(r.Body).Decode(&got)
+		response := `{"created":1,"data":[{"b64_json":"` + base64.StdEncoding.EncodeToString(pngBytes) + `","media_type":"image/png"}],"usage":{"prompt_tokens":0,"completion_tokens":1,"total_tokens":1,"cost":0.02}}`
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(response))}, nil
+	})}
+	for size, want := range map[string]map[string]any{
+		"1024x1024": {"aspect_ratio": "1:1"},
+		"1536x1024": {"aspect_ratio": "3:2", "resolution": "2K"},
+		"16:9":      {"aspect_ratio": "16:9"},
+		"auto":      {"size": "auto"},
+	} {
+		got, path = nil, ""
+		code, _, raw := postImages(t, s, "/v1/images/generations", "application/json", `{"model":"openrouter/sourceful/riverflow-v2-fast","prompt":"a magpie","size":"`+size+`"}`)
+		if code != http.StatusOK || path != "/api/v1/images" {
+			t.Fatalf("%s: %d at %q: %s", size, code, path, raw)
+		}
+		for _, k := range []string{"size", "aspect_ratio", "resolution"} {
+			if got[k] != want[k] {
+				t.Errorf("%s: %s = %v, want %v (%v)", size, k, got[k], want[k], got)
+			}
+		}
 	}
 }
 

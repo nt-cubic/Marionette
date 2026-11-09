@@ -71,6 +71,8 @@ func TestEveryVendorsOverflow(t *testing.T) {
 		{400, "Please reduce the length of the messages or completion"},
 		{400, "Input length 2000 exceeds the maximum allowed input length of 1000 tokens."},
 		{400, "The input (2000 tokens) is longer than the model's context length (1000 tokens)."},
+		// the reporter's vendor (#4040): no 's on the model
+		{400, "The message is longer than the model context length"},
 		{400, "the request exceeds the available context size, try increasing it"},
 		{400, "tokens to keep from the initial prompt is greater than the context length"},
 		{400, "prompt token count of 2000 exceeds the limit of 1000"},
@@ -146,6 +148,10 @@ func TestChineseNotTooLong(t *testing.T) {
 // A spent budget, like a used-up plan (pi's retry.ts lists both as not to
 // be retried), goes to the next account at once rather than being asked
 // again in place: "out of budget" was a rate limit, asked three times.
+// LiteLLM's spent key answers 429 "Budget has been exceeded! Key=… (sk-…),
+// Current cost: …, Max budget: …" (#5111, wuxiaoqiang12): its "has been"
+// sat between the two words the list knew, and the key was asked again
+// every half an hour, the user's quota-rest never read.
 func TestOutOfBudgetIsntRetriedInPlace(t *testing.T) {
 	for _, tc := range []struct {
 		status int
@@ -153,6 +159,8 @@ func TestOutOfBudgetIsntRetriedInPlace(t *testing.T) {
 	}{
 		{429, "out of budget"},
 		{400, "Budget exceeded for this key"},
+		{429, `{"error":{"message":"Budget has been exceeded! Key=sk-1234 (my-relay), Current cost: 0.0023, Max budget: 0.002"}}`},
+		{429, "Budget has been exceeded! Current cost: 0.0023, Max budget: 0.002"},
 		{429, `{"error":{"type":"GoUsageLimitError","message":"Monthly usage limit reached"}}`},
 		{429, `{"error":{"code":"subscription_sharing_usage_limit_exceeded"}}`},
 	} {
@@ -168,5 +176,9 @@ func TestOutOfBudgetIsntRetriedInPlace(t *testing.T) {
 	}
 	if _, again := passing(429, nil, []byte("Rate limit reached for requests"), 0); !again {
 		t.Error("a rate limit isn't asked again")
+	}
+	// the relay's own per-minute limit names no budget, and stays a rate
+	if f := failure(429, []byte("LiteLLM: Rate limit exceeded")); f != failRate {
+		t.Errorf(`"LiteLLM: Rate limit exceeded" is a %s failure`, f)
 	}
 }

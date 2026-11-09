@@ -3,6 +3,8 @@ package gateway
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -32,9 +34,123 @@ func TestClaudeInstructionsCachedApart(t *testing.T) {
 	if len(blocks) != 1 || blocks[0]["cache_control"] != nil {
 		t.Fatalf("no instructions: %v", blocks)
 	}
-	env := cleanClaudeEnv([]string{"CLAUDE_CODE_PROMPT_CACHE_TTL=5m"})
-	if !slices.Contains(env, "CLAUDE_CODE_PROMPT_CACHE_TTL=1h") || slices.Contains(env, "CLAUDE_CODE_PROMPT_CACHE_TTL=5m") {
+	// a value Claude Code doesn't take is no pick: the hour stays
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	env := cleanClaudeEnv([]string{"CLAUDE_CODE_PROMPT_CACHE_TTL=7d"})
+	if !slices.Contains(env, "CLAUDE_CODE_PROMPT_CACHE_TTL=1h") || slices.Contains(env, "CLAUDE_CODE_PROMPT_CACHE_TTL=7d") {
 		t.Fatalf("env: %q", env)
+	}
+}
+
+// A bridge run keeps its prompt cache as long as the user picked for
+// Claude Code's main conversation, in the Agents page (settings.json's
+// promptCacheTtl) or a variable, and the marks magpie puts in its first
+// message are as long, since Anthropic refuses a 1h mark after a 5m one.
+// With nothing picked it is an hour, as before. linkaww: 5m picked, the
+// run was given CLAUDE_CODE_PROMPT_CACHE_TTL=1h, and 237 of 241 relayed
+// requests wrote an hour's cache.
+func TestClaudeRunKeepsTheUsersCacheTTL(t *testing.T) {
+	for _, c := range []struct {
+		name, settings, env, force, marks, want string
+		// who the request is recorded as (claudeTTLOf): the pick another
+		// magpie named for its Claude Code, or this computer's Claude Code
+		who *caller
+	}{
+		{name: "nothing picked", want: "1h"},
+		// the client's own marks: its Claude Code marks as its user
+		// picked, five minutes by default (Linka: a Docker magpie's
+		// relay wrote an hour's cache for a Mac set to 5m)
+		{name: "client marks 5m", marks: `{"type":"ephemeral"}`, want: "5m"},
+		{name: "client marks 5m over this computer's 1h", marks: `{"type":"ephemeral","ttl":"5m"}`, settings: `{"promptCacheTtl":"1h"}`, want: "5m"},
+		{name: "client marks 1h over this computer's 5m", marks: `{"type":"ephemeral","ttl":"1h"}`, settings: `{"promptCacheTtl":"5m"}`, want: "1h"},
+		{name: "forced 5m over client marks 1h", marks: `{"type":"ephemeral","ttl":"1h"}`, force: "1", want: "5m"},
+		{name: "agents page 5m", settings: `{"promptCacheTtl":"5m"}`, want: "5m"},
+		{name: "agents page 1h", settings: `{"promptCacheTtl":"1h"}`, want: "1h"},
+		{name: "settings env", settings: `{"env":{"CLAUDE_CODE_PROMPT_CACHE_TTL":"5m"},"promptCacheTtl":"1h"}`, want: "5m"},
+		{name: "magpie's env", env: "5m", want: "5m"},
+		{name: "forced 5m", force: "1", settings: `{"promptCacheTtl":"1h"}`, want: "5m"},
+		// linkaww's Mac → Docker magpie: Claude Code marks five minutes
+		// with no ttl whether its user picked them or not, so the Mac's
+		// magpie names the pick (ClaudeCacheTTLHeader)
+		{name: "the Mac's 5m, a side call unmarked, this computer's 1h", who: &caller{agent: "claude", cacheTTL: "5m"}, settings: `{"promptCacheTtl":"1h"}`, want: "5m"},
+		{name: "the Mac's 5m, unmarked, nothing here", who: &caller{agent: "claude", cacheTTL: "5m"}, want: "5m"},
+		{name: "the Mac's 5m, marked", who: &caller{agent: "claude", cacheTTL: "5m"}, marks: `{"type":"ephemeral"}`, settings: `{"promptCacheTtl":"1h"}`, want: "5m"},
+		{name: "the Mac's 1h, marked with no ttl", who: &caller{agent: "claude", cacheTTL: "1h"}, marks: `{"type":"ephemeral"}`, want: "1h"},
+		{name: "nothing picked on the Mac, marked with no ttl", who: &caller{agent: "claude", cacheTTL: "default"}, marks: `{"type":"ephemeral"}`, want: "1h"},
+		{name: "nothing picked on the Mac, this computer's 5m", who: &caller{agent: "claude", cacheTTL: "default"}, marks: `{"type":"ephemeral"}`, settings: `{"promptCacheTtl":"5m"}`, want: "5m"},
+		{name: "marks naming the hour over the Mac's 5m", who: &caller{agent: "claude", cacheTTL: "5m"}, marks: `{"type":"ephemeral","ttl":"1h"}`, want: "1h"},
+		{name: "forced 5m over the Mac's 1h", who: &caller{agent: "claude", cacheTTL: "1h"}, force: "1", want: "5m"},
+		// Claude Code on this computer: its user's pick is read here
+		{name: "Claude Code here, nothing picked, marked", who: &caller{agent: "claude", claudeHere: true}, marks: `{"type":"ephemeral"}`, want: "1h"},
+		{name: "Claude Code here, 5m picked, unmarked", who: &caller{agent: "claude", claudeHere: true}, settings: `{"promptCacheTtl":"5m"}`, want: "5m"},
+		// a settings.json that can't be parsed says nothing of a pick: the
+		// marks decide, as without magpie's word
+		{name: "Claude Code here, settings unreadable, marked", who: &caller{agent: "claude", claudeHere: true}, marks: `{"type":"ephemeral"}`, settings: `{"promptCacheTtl":`, want: "5m"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newScriptHarness(t, "ok", `echo "ttl ${CLAUDE_CODE_PROMPT_CACHE_TTL-unset} force ${FORCE_PROMPT_CACHING_5M-unset}" >> $log`)
+			if c.settings != "" {
+				if err := os.MkdirAll(h.config, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(h.config, "settings.json"), []byte(c.settings), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if c.env != "" {
+				t.Setenv("CLAUDE_CODE_PROMPT_CACHE_TTL", c.env)
+			}
+			if c.force != "" {
+				t.Setenv("FORCE_PROMPT_CACHING_5M", c.force)
+			}
+			if c.marks != "" {
+				h.extra = `"cache_control":` + c.marks + `,`
+			}
+			h.who = c.who
+			h.ask("rules", "hello", "next")
+			runs := h.runs()
+			if len(runs) != 1 {
+				t.Fatalf("runs: %d", len(runs))
+			}
+			for _, log := range runs {
+				if !strings.Contains(log, "ttl "+c.want+" force unset") {
+					t.Fatalf("run's environment, want %s:\n%s", c.want, log)
+				}
+				var told string
+				for _, line := range strings.Split(log, "\n") {
+					if strings.HasPrefix(line, "told ") {
+						told = line
+						break
+					}
+				}
+				other := map[string]string{"5m": "1h", "1h": "5m"}[c.want]
+				if !strings.Contains(told, `"ttl":"`+c.want+`"`) || strings.Contains(told, `"ttl":"`+other+`"`) {
+					t.Fatalf("first message's marks, want %s: %s", c.want, told)
+				}
+			}
+		})
+	}
+}
+
+// The TTL a Messages request asks for is its longest mark's, wherever it
+// is: Claude Code marks its system blocks and its last message (Linka).
+func TestAskedCacheTTL(t *testing.T) {
+	for _, c := range []struct{ body, want string }{
+		{`{"model":"m","messages":[{"role":"user","content":"hi"}]}`, ""},
+		{`{"model":"m","system":"rules","messages":[{"role":"user","content":"cache_control"}]}`, ""},
+		{`{"model":"m","system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.319"},{"type":"text","text":"You are Claude Code.","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}}]}]}`, "5m"},
+		{`{"model":"m","system":[{"type":"text","text":"You are Claude Code.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","ttl":"1h"}}]}]}`, "1h"},
+		{`{"model":"m","tools":[{"name":"read","input_schema":{},"cache_control":{"type":"ephemeral","ttl":"1h"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}}]}]}`, "1h"},
+		{`{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","ttl":"1h"}}]}]}`, "1h"},
+		{`{"model":"m","cache_control":{"type":"ephemeral"},"messages":[{"role":"user","content":"hi"}]}`, "5m"},
+	} {
+		req, err := parseAnthropic([]byte(c.body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if req.askedTTL != c.want {
+			t.Errorf("%s: %q, want %q", c.body, req.askedTTL, c.want)
+		}
 	}
 }
 
@@ -205,4 +321,49 @@ func mustRender(t *testing.T, req *Request) []map[string]any {
 		t.Fatal(err)
 	}
 	return blocks
+}
+
+// pickFiveMinutes sets the test's Claude Code (CLAUDE_CONFIG_DIR) to a 5m
+// prompt cache for its main conversation, as the Agents page writes it.
+func pickFiveMinutes(t *testing.T) {
+	t.Helper()
+	dir := os.Getenv("CLAUDE_CONFIG_DIR")
+	if dir == "" {
+		t.Fatal("no CLAUDE_CONFIG_DIR")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{"promptCacheTtl":"5m"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// everyRunKept5m checks that each run whose log is in logs (a stand-in
+// Claude Code's, "ttl <CLAUDE_CODE_PROMPT_CACHE_TTL>" on a line) and whose
+// arguments resume a session was given a 5m cache, and that there was
+// one. A run that goes on from a branch of a session keeps its parent's
+// lifetime: the branches the side question, a fork and a turn sent again
+// make were given none, and an hour came back under a 5m pick (linkaww).
+func everyRunKept5m(t *testing.T, logs string) {
+	t.Helper()
+	entries, _ := os.ReadDir(logs)
+	resumed := 0
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".") {
+			continue
+		}
+		b, _ := os.ReadFile(filepath.Join(logs, e.Name()))
+		log := string(b)
+		if !strings.Contains(log, "--resume ") {
+			continue
+		}
+		resumed++
+		if !strings.Contains(log, "\nttl 5m\n") {
+			t.Errorf("a branch's run, want a 5m cache as its parent's:\n%.400s", log)
+		}
+	}
+	if resumed == 0 {
+		t.Error("no run went on from a session")
+	}
 }

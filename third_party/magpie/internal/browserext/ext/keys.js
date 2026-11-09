@@ -75,37 +75,32 @@ export async function press(t, combo) {
   for (const m of mods) if (!(m in MODS)) throw new Error(`"${m}" isn't a modifier: use Control, Alt, Shift or Meta`);
   let modifiers = mods.reduce((a, m) => a | MODS[m], 0);
   const k = describe(keyName, !!(modifiers & 8));
+  // a modifier pressed alone is the left one, as on a keyboard
+  if (/Left$/.test(k.code)) k.location = 1;
   const commands = [];
   if (mac && (modifiers & 4) && MAC_COMMANDS[k.key.toLowerCase()]) commands.push(MAC_COMMANDS[k.key.toLowerCase()]);
+  // held as a hand holds them: the modifiers a moment first, the key
+  // down for as long as a press lasts
+  const hold = (a, b) => sleep(a + Math.random() * (b - a));
   let held = 0;
   for (const m of mods) {
     held |= MODS[m];
-    await send(t.tabId, "Input.dispatchKeyEvent", { type: "rawKeyDown", modifiers: held, key: m, code: KEYS[m].code, windowsVirtualKeyCode: KEYS[m].keyCode });
+    await send(t.tabId, "Input.dispatchKeyEvent", { type: "rawKeyDown", modifiers: held, key: m, code: KEYS[m].code, location: 1, windowsVirtualKeyCode: KEYS[m].keyCode });
+    await hold(30, 80);
   }
   // a chord with Control, Alt or Meta types no text
   const typed = k.text && !(modifiers & 7);
   await send(t.tabId, "Input.dispatchKeyEvent", {
-    type: typed ? "keyDown" : "rawKeyDown", modifiers, key: k.key, code: k.code,
-    windowsVirtualKeyCode: k.keyCode, nativeVirtualKeyCode: k.keyCode,
+    type: typed ? "keyDown" : "rawKeyDown", modifiers, key: k.key, code: k.code, location: k.location || 0,
+    windowsVirtualKeyCode: k.keyCode,
     ...(typed ? { text: k.text, unmodifiedText: k.text } : {}),
     ...(commands.length ? { commands } : {}),
   });
-  await sleep(20);
-  await send(t.tabId, "Input.dispatchKeyEvent", { type: "keyUp", modifiers, key: k.key, code: k.code, windowsVirtualKeyCode: k.keyCode });
+  await hold(50, 120);
+  await send(t.tabId, "Input.dispatchKeyEvent", { type: "keyUp", modifiers, key: k.key, code: k.code, location: k.location || 0, windowsVirtualKeyCode: k.keyCode });
   for (const m of mods.reverse()) {
+    await hold(20, 60);
     held &= ~MODS[m];
-    await send(t.tabId, "Input.dispatchKeyEvent", { type: "keyUp", modifiers: held, key: m, code: KEYS[m].code, windowsVirtualKeyCode: KEYS[m].keyCode });
-  }
-}
-
-// typeSlowly types text a key at a time, for a field that listens to
-// each key (an autocomplete, a field that formats as you type).
-export async function typeSlowly(t, text) {
-  for (const ch of String(text)) {
-    if (ch === "\n") { await press(t, "Enter"); continue; }
-    const k = /^[a-z0-9]$/i.test(ch) ? describe(ch.toLowerCase(), ch !== ch.toLowerCase()) : { key: ch, code: "", keyCode: 0, text: ch };
-    await send(t.tabId, "Input.dispatchKeyEvent", { type: "keyDown", key: k.key, code: k.code, windowsVirtualKeyCode: k.keyCode, text: k.text, unmodifiedText: k.text, modifiers: /[A-Z]/.test(ch) ? 8 : 0 });
-    await send(t.tabId, "Input.dispatchKeyEvent", { type: "keyUp", key: k.key, code: k.code, windowsVirtualKeyCode: k.keyCode });
-    await sleep(30 + Math.random() * 50);
+    await send(t.tabId, "Input.dispatchKeyEvent", { type: "keyUp", modifiers: held, key: m, code: KEYS[m].code, location: 1, windowsVirtualKeyCode: KEYS[m].keyCode });
   }
 }

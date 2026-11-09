@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -14,13 +15,37 @@ import (
 	"github.com/yetone/magpie/internal/provider"
 )
 
-func TestDsh(t *testing.T) {
+// dshHome is a temp home a dsh test runs in, with magpie's own files kept
+// under it: the env vars point at it, and it is given up before the test
+// returns. Its removal is tried here until it is really gone, for a short
+// while: Save replaces providers.json by renaming a file over it, and on
+// Windows a scanner holding the file that was just renamed over keeps its
+// entry listed while it is pending deletion, so .config/magpie reads as
+// not empty for a moment — t.TempDir's own cleanup retries a sharing
+// violation but not a "not empty" one, and gave up on that once (test
+// passed, process failed; once on a Windows box, #2982). Past the short
+// wait the folder is left to t.TempDir's cleanup, which reports what it
+// sees.
+func dshTempHome(t *testing.T) string {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("DSH_HOME", "")
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Cleanup(func() {
+		for end := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+			if err := os.RemoveAll(home); err == nil || time.Now().After(end) {
+				return
+			}
+		}
+	})
+	return home
+}
+
+func TestDsh(t *testing.T) {
+	home := dshTempHome(t)
 	if err := provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com/v1", Key: "k", Models: []string{"pro", "flash"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -91,12 +116,7 @@ func TestDsh(t *testing.T) {
 // Since 0.1.5 each profile has its own patch list, the key is a credential
 // and new sessions start on agent-default-model.
 func TestDshProfiles(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("DSH_HOME", "")
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	home := dshTempHome(t)
 	if err := provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com/v1", Key: "k", Models: []string{"pro", "flash"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -177,12 +197,7 @@ func TestDshSettingsEndpoint(t *testing.T) {
 // Without them dsh takes every model for a text-only one with a million
 // tokens of context and 256K out.
 func TestDshModelLimits(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("DSH_HOME", "")
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	dshTempHome(t)
 	visionOff(t) // else v/see describes images to v/plain, which takes them then
 	if err := provider.Save(provider.Provider{ID: "v", Name: "V", Chat: "https://example.test/v1", Key: "k", Models: []string{"see", "plain"}}); err != nil {
 		t.Fatal(err)
@@ -212,12 +227,7 @@ func TestDshModelLimits(t *testing.T) {
 // the web version lists magpie's models, the desktop one DeepSeek's alone)
 // is reported and, on the next sync, given the model the web's has.
 func TestDshProfileMadeLater(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("DSH_HOME", "")
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	home := dshTempHome(t)
 	if err := provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com/v1", Key: "k", Models: []string{"pro", "flash"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -267,12 +277,7 @@ func TestDshProfileMadeLater(t *testing.T) {
 // is nothing to write into that entry, so the effort change is refused rather
 // than blanking the models magpie put there.
 func TestDshSetEffortLeavesALegacyEntryWithNoCatalogAlone(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("DSH_HOME", "")
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	home := dshTempHome(t)
 	if n := len(magpieModels("dsh")); n != 0 {
 		t.Fatalf("a catalog to write from: %d models", n)
 	}
@@ -285,7 +290,7 @@ func TestDshSetEffortLeavesALegacyEntryWithNoCatalogAlone(t *testing.T) {
 	if err := os.WriteFile(path, []byte(own), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := dshSetEffort(dir, "high", gateway.URL(), false); err == nil {
+	if err := dshSetEffort(dir, "high", gateway.URL(), ""); err == nil {
 		t.Fatal("an empty catalog should refuse the write")
 	}
 	if b, _ := os.ReadFile(path); string(b) != own {
@@ -295,12 +300,7 @@ func TestDshSetEffortLeavesALegacyEntryWithNoCatalogAlone(t *testing.T) {
 
 // With a catalog the legacy entry is rewritten as before.
 func TestDshSetEffortWritesALegacyEntryWithTheCatalog(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("DSH_HOME", "")
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	home := dshTempHome(t)
 	if err := provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com/v1", Key: "k", Models: []string{"pro", "flash"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +312,7 @@ func TestDshSetEffortWritesALegacyEntryWithTheCatalog(t *testing.T) {
 	if err := os.WriteFile(path, []byte("# mine\n- id: llm-deepseek # magpie\n  config:\n    models:\n      - id: \"deepseek/pro\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := dshSetEffort(dir, "high", gateway.URL(), false); err != nil {
+	if err := dshSetEffort(dir, "high", gateway.URL(), ""); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(path)
@@ -331,12 +331,7 @@ func TestDshSetEffortWritesALegacyEntryWithTheCatalog(t *testing.T) {
 // window, so the user's 1M is what dsh is told, and maxTokens follows from
 // it (dshMaxTokens). The models.dev bytes are opencode's own entry.
 func TestDshToldTheWindowSetForACustomProvider(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("DSH_HOME", "")
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	dshTempHome(t)
 	if err := os.MkdirAll(filepath.Dir(catalog.CachePath()), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -372,4 +367,54 @@ func TestDshToldTheWindowSetForACustomProvider(t *testing.T) {
 			t.Errorf("%v: llm-deepseek entry, want contextWindow: %d:\n%s", c.cx, c.window, lines)
 		}
 	}
+}
+
+// dsh's own models are the ones dsh ships, named as dsh names them
+// (@deepseek-ai/dsh-llm-deepseek's DEFAULT_MODELS, 0.2.1 on):
+// deepseek-flash is DeepSeek-V4.1-Flash, and deepseek-v4-flash, gone from
+// dsh since 0.1.6, isn't offered (Kylin_Cloud on X). A profile that still
+// starts on it is read as it is and not rewritten.
+func TestDshOwnModelsAreDshs(t *testing.T) {
+	home := dshTempHome(t)
+	saveDeepseek(t)
+	dir := filepath.Join(home, ".dsh")
+	web := filepath.Join(dir, "profiles", "web", "cordis.patch.yml")
+	os.MkdirAll(filepath.Dir(web), 0o755)
+	os.WriteFile(web, []byte("# Your patch layer for this dsh profile.\n[]\n"), 0o644)
+	settings := filepath.Join(dir, "settings.yaml")
+	saved := "agent-default-model:\n  provider: deepseek-official\n  model: deepseek-v4-flash\n"
+	os.WriteFile(settings, []byte(saved), 0o644)
+
+	want := map[string]string{"deepseek-flash": "DeepSeek-V4.1-Flash", "deepseek-v4-pro": "DeepSeek-V4-Pro"}
+	own := func(name string, opts []Option) {
+		t.Helper()
+		got := map[string]string{}
+		for _, o := range opts {
+			if !strings.HasPrefix(o.Value, magpieID+"/") {
+				got[o.Value] = o.Label
+			}
+		}
+		if len(got) != len(want) {
+			t.Fatalf("%s: dsh's own models %v, want %v", name, got, want)
+		}
+		for v, l := range want {
+			if got[v] != l {
+				t.Fatalf("%s: %s is %q, want %q (all: %v)", name, v, got[v], l, got)
+			}
+		}
+	}
+
+	f := dsh(home).Field("model")
+	own("dsh", f.Options(nil))
+	if f.Get() != "deepseek-v4-flash" {
+		t.Fatalf("the saved start: %q", f.Get())
+	}
+	if b, _ := os.ReadFile(settings); string(b) != saved {
+		t.Fatalf("the saved start was rewritten:\n%s", b)
+	}
+
+	// a stopped distro's dsh lists the same
+	d := distro{Name: "Stopped", Root: t.TempDir(), Home: "/home/me", Gateway: "172.20.0.1"}
+	k := wslKindOf("dsh")
+	own("dsh in a stopped distro", asleep(wslAgent(k, d), k, d).Field("model").Options(nil))
 }

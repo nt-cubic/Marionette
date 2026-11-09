@@ -137,6 +137,10 @@ func (p Provider) DecidesModel(model string) bool {
 	if p.DecideOnly() {
 		return true
 	}
+	// one the user set to be asked on System One (DecideAPI)
+	if p.decideSet(model) {
+		return true
+	}
 	if p.bailianApart() {
 		m, _ := vendorDecision(p.Decide)
 		return model == m.ID
@@ -406,7 +410,15 @@ func (p Provider) Jev() string {
 // list when fetched, else Jev's aliases (a gateway's one Jev), each with
 // its window and whether it takes images where its vendor's docs say.
 func (p Provider) decideModels() []catalog.Model {
-	return withDecideFacts(p.decideListed())
+	ms := p.decideListed()
+	// and the ones the user set to be asked on System One, first
+	if set := p.decideSetModels(); len(set) > 0 {
+		set = slices.DeleteFunc(set, func(m catalog.Model) bool {
+			return slices.ContainsFunc(ms, func(l catalog.Model) bool { return l.ID == m.ID })
+		})
+		ms = append(set, ms...)
+	}
+	return withDecideFacts(ms)
 }
 
 // A decision model's window and whether it reads images, as its vendor's
@@ -601,7 +613,7 @@ func (p Provider) cloudflareAccount(ctx context.Context) (string, error) {
 	if err := p.Sign(ctx, req, Chat, nil); err != nil {
 		return "", err
 	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := Keyed(http.DefaultClient).Do(req)
 	if err != nil {
 		return "", fmt.Errorf("%s: %v", p.Name, err)
 	}
@@ -919,7 +931,7 @@ func (p Provider) fetchDecide(ctx context.Context) ([]catalog.Model, error) {
 	if err := p.Sign(ctx, req, Chat, nil); err != nil {
 		return nil, err
 	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := Keyed(http.DefaultClient).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -997,6 +1009,8 @@ func (p Provider) decideAsked(ctx context.Context) ([]catalog.Model, error) {
 // AskSystemOne sends model the smallest System One question at p's
 // decision API, and says why it wasn't answered.
 func (p Provider) AskSystemOne(ctx context.Context, model string) error {
+	// the model's own headers
+	ctx = WithModel(ctx, p.ID, model)
 	if pat, off := ModelDisabled(p.ID, model); off { // never asked (#1867)
 		return fmt.Errorf("model %s/%s is disabled in magpie (it matches %q)", p.ID, model, pat)
 	}
@@ -1131,7 +1145,7 @@ func (p Provider) checkKey(ctx context.Context, u string) error {
 	if err := p.Sign(ctx, req, Chat, nil); err != nil {
 		return err
 	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := Keyed(http.DefaultClient).Do(req)
 	if err != nil {
 		return fmt.Errorf("%s: %v", p.Name, err)
 	}

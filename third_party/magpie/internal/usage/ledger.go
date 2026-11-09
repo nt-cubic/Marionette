@@ -46,8 +46,42 @@ type Row struct {
 
 // Failed is whether the call failed: the agent was answered an error status,
 // or, for a call read from a session file, which has no status, the file
-// says an error ended it.
-func (r Record) Failed() bool { return r.Status >= 400 || r.Error != "" }
+// says an error ended it. A call the agent canceled itself (Canceled) didn't
+// fail: the agent left before an answer, and was told no error.
+func (r Record) Failed() bool { return (r.Status >= 400 || r.Error != "") && !r.Canceled() }
+
+// AgentCanceled is what the usage log says of a request the agent canceled
+// before it was answered (the gateway's canceled), with the status
+// StatusCanceled.
+const AgentCanceled = "the agent canceled the request"
+
+// StatusCanceled is the status a request the agent canceled is logged
+// with: nginx's 499, the client closed the request.
+const StatusCanceled = 499
+
+// CanceledBy is whether a call that ended with status and error was
+// canceled by its agent: a person stopped the reply, or sent the next
+// message while it was coming and the agent asked again. Not magpie's own
+// limit running out on a request it asked of itself ("magpie stopped
+// waiting", #2318), which is logged 499 too and stays a failure.
+func CanceledBy(status int, err string) bool { return status == StatusCanceled && err == AgentCanceled }
+
+// CanceledErrType is the error type a call its agent canceled is logged
+// with (CanceledBy), as LoopErrType is a looping reply's: the record keeps
+// that it was the agent's cancel, whatever its message says.
+const CanceledErrType = "agent_canceled"
+
+// Canceled is whether the agent canceled the call before it was answered:
+// neither failed nor answered, counted apart (Totals.Canceled). A record
+// logged before CanceledErrType was is told by its status and message.
+func (r Record) Canceled() bool {
+	return r.Status == StatusCanceled && (r.ErrType == CanceledErrType || CanceledBy(r.Status, r.Error))
+}
+
+// Answered is whether the call ended with an answer: it neither failed nor
+// was canceled, so how long it took to its first token and its speed tell
+// something.
+func (r Record) Answered() bool { return !r.Failed() && !r.Canceled() }
 
 // Filter narrows the ledger: to a route, one agent (its id, as AgentOf gives it), to
 // one provider, to the failed calls, and to the rows whose models, provider, host or
@@ -520,11 +554,16 @@ var ownPrice catalog.Price
 // A model no price is known for is priced as the model the vendor's reply
 // said answered (Served), at the same provider, when that one has a price:
 // a relay that sells kimi-k3 as moonshot-kimi-k3 answers as kimi-k3, which
-// is listed (#1498). The model asked for keeps its own price whenever it
-// has one, a zero set by the user included, so a ledger that matched the
-// vendor's bill still does. A record inside one of its provider's rate
-// windows (#2463) is priced at that window's rate, its own time read
-// against the windows, so calls either side of a boundary price apart.
+// is listed (#1498). So is a call the vendor genuinely answered with
+// another model than the one asked for — the swap the ledger marks, no
+// rename in either name (#5340): the vendor billed for the one that ran,
+// and the asked-for model's rate describes nothing that happened. A price
+// the user set for the model asked for keeps its say either way, a zero
+// included, so a ledger that matched the vendor's bill still does, and a
+// served model with no price leaves the asked-for one's standing. A record
+// inside one of its provider's rate windows (#2463) is priced at that
+// window's rate, its own time read against the windows, so calls either
+// side of a boundary price apart.
 //
 // A local session's call has no provider of ours to price at (its billing
 // provider is the unknown one) but its file names the route it went
@@ -533,13 +572,14 @@ var ownPrice catalog.Price
 // one whose other models alone would stand for this call's, prices
 // nothing (#4278).
 func Pricer() func(Record) *catalog.Price {
-	prices := map[[4]string]*catalog.Price{}
+	prices := map[[5]string]*catalog.Price{}
 	// each provider's rate windows as the same read of the prices saw
 	// them: the windows are held once (BasePriceIn), each record's rate
 	// read at its own time (provider.RateAt), so a window that opens
 	// mid-page prices only the calls inside it (#2463)
 	windows := map[string][]provider.RateWindow{}
 	s := settings.Load()
+	wires := s.Wires()
 	return func(r Record) *catalog.Price {
 		if r.OwnCost != nil {
 			return &ownPrice // CostAt answers its own cost (#1874)
@@ -549,12 +589,29 @@ func Pricer() func(Record) *catalog.Price {
 			served = ""
 		}
 		id := r.priceID()
-		k := [4]string{id, r.Model, served, r.SessionProvider}
+		k := [5]string{id, r.Model, served, r.SessionProvider, r.Effort}
 		if pr, ok := prices[k]; ok {
 			return atWindow(pr, windows[id], r.Time)
 		}
 		var pr *catalog.Price
-		v, ok, ws := provider.BasePriceIn(s, id, r.Model)
+		var v catalog.Price
+		var ws []provider.RateWindow
+		var ok bool
+		// the swap the ledger marks: the reply named another model than
+		// asked, no rename of it (#5340)
+		if servedInstead(wires, id, r.Model, r.Effort, served) {
+			// a price the user set for the model asked for still says what
+			// that model costs them, a zero included
+			if v, ok, ws = provider.UserBasePriceIn(s, id, r.Model); !ok {
+				// the model that ran is priced as itself, what the vendor
+				// billed; with none, the asked-for one's price stands
+				if v, ok, ws = provider.BasePriceIn(s, id, served); !ok {
+					v, ok, ws = provider.BasePriceIn(s, id, r.Model)
+				}
+			}
+		} else {
+			v, ok, ws = provider.BasePriceIn(s, id, r.Model)
+		}
 		if !ok && served != "" {
 			v, ok, ws = provider.BasePriceIn(s, id, served)
 		}
@@ -585,6 +642,20 @@ func Pricer() func(Record) *catalog.Price {
 		prices[k] = pr
 		return atWindow(pr, ws, r.Time)
 	}
+}
+
+// servedInstead reports whether the vendor answered a call on model with
+// another model, served, and not the same one under a name of its own: the
+// swap the ledger marks (#5340). It is judged on the model the record is
+// priced by and on the name that went out (a provider's wires can send the
+// model under another id), and holds only when both read as another model,
+// so a row the ledger does not mark swapped is never priced as one.
+func servedInstead(wires map[string]string, providerID, model, effort, served string) bool {
+	if served == "" || !Swapped(model, served) || ListedAs(providerID, model, served) {
+		return false
+	}
+	sent := provider.SentNameIn(wires, providerID, model, effort)
+	return sent == model || Swapped(sent, served)
 }
 
 // atWindow prices one record: the base price at the rate of the window
@@ -628,7 +699,8 @@ var CSVHeader = []string{"time", "agent", "requested_model", "provider", "host",
 // 5-minute and 1-hour writes): times in RFC 3339 with
 // their offset, the cost in USD at the effective price (empty when unknown), error
 // "true" for a call that failed: answered with a status of 400 or more, or
-// ended by an error a session file tells. tries is how many tries the
+// ended by an error a session file tells (not one its agent canceled, whose
+// status is 499: Record.Failed). tries is how many tries the
 // gateway made at the request the row ends, when more than one, and
 // handed_on "true" for the row of a try that failed and handed the request
 // on: the request's outcome is the row with the same route_id after it.
@@ -774,7 +846,7 @@ func bucketIndex(bucket string, since, t time.Time) int {
 
 // addRow adds a ledger row, at the cost it already has.
 func (t *Totals) addRow(r Row) {
-	if r.TTFT > 0 && !r.Failed() {
+	if r.TTFT > 0 && r.Answered() {
 		t.Timed++
 		t.TTFT += r.TTFT
 		if n, w := r.Decode(); w > 0 {
@@ -796,6 +868,7 @@ func (t *Totals) addRow(r Row) {
 	t.CacheWrite1h += r.CacheWrite1h
 	t.countCache(r.Record)
 	t.Reasoning += r.Reasoning
+	t.addBytes(&r.Record)
 	switch {
 	case r.Priced:
 		t.Cost += r.Cost
@@ -811,6 +884,7 @@ func (t *Totals) plus(d *Totals) {
 	t.Calls += d.Calls
 	t.Errors += d.Errors
 	t.Retried += d.Retried
+	t.Canceled += d.Canceled
 	t.Loops += d.Loops
 	t.Input += d.Input
 	t.Output += d.Output
@@ -832,6 +906,9 @@ func (t *Totals) plus(d *Totals) {
 	t.FloorOut += d.FloorOut
 	t.FloorMs += d.FloorMs
 	t.FloorN += d.FloorN
+	t.UpBytes += d.UpBytes
+	t.DownBytes += d.DownBytes
+	t.ImageFilesSaved += d.ImageFilesSaved
 }
 
 // FloorAgents are the agents whose session files time a call from what
@@ -906,7 +983,7 @@ func (r Row) Decode() (tokens int, w int64) {
 // of the time to tell anything (Fallmonkey on Discord: 11 tokens in 2.75 s
 // read ≥4 tok/s while an 815-token Claude Code reply told nothing).
 func (r Row) Floor() (tokens int, ms int64) {
-	if r.Source != "log" || !FloorAgents[r.Agent] || r.Failed() {
+	if r.Source != "log" || !FloorAgents[r.Agent] || !r.Answered() {
 		return 0, 0
 	}
 	if _, w := r.Decode(); w > 0 {
@@ -1064,7 +1141,7 @@ func (p *Part) add(r Row) {
 	if r.Priced {
 		p.Cost += r.Cost
 	}
-	if r.TTFT > 0 && !r.Failed() {
+	if r.TTFT > 0 && r.Answered() {
 		p.Timed++
 		p.TTFT += r.TTFT
 		if n, w := r.Decode(); w > 0 {

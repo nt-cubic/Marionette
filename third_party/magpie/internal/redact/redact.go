@@ -87,6 +87,9 @@ type Options struct {
 
 	// found are the spans Model found, by text, for one request's texts
 	found map[string][]Found
+	// args is masking a tool call's arguments (MaskJSON): the model's
+	// one-word name there is never taken for an app's (thingNamed)
+	args bool
 	// sent is masking for a vendor (Mask, MaskJSON): a text masked
 	// before on Route has the model's finds and the known values it had
 	// then (sentSpans)
@@ -332,9 +335,10 @@ func keyValue(v string) bool {
 // time.
 func keyAt(s string, a, b int) bool {
 	v := s[a:b]
-	if pathValue(v) || versionValue(v) {
-		// where a key is kept: 私钥 ~/.ssh/id_ed25519, or a release's
-		// version: token 是 0.15.0-rc1 (fieldvalue.go)
+	if pathValue(v) || versionValue(v) || timestampValue(v) {
+		// where a key is kept: 私钥 ~/.ssh/id_ed25519, a release's
+		// version: token 是 0.15.0-rc1, or a moment: 令牌是
+		// 2026-08-30T11:44:31 (fieldvalue.go)
 		return false
 	}
 	if keyValue(v) {
@@ -576,7 +580,16 @@ func realEmail(v string) bool {
 	if !mailHost(v[:at], host) {
 		return false
 	}
-	if fileHost(host) || docFiles[host] || !mailTLD(host[strings.LastIndexByte(host, '.')+1:]) {
+	if fileHost(host) {
+		// the end of a file's name: an address before its extension
+		// (alice.smith@acme.com.pdf, export-rina.k@fastmail.com.png) is
+		// someone's all the same; a scale or a word (@2x.jpg, @final.pdf)
+		// is no domain
+		if host = fileStem(host); !strings.Contains(host, ".") || fileHost(host) || !mailHost(v[:at], host) {
+			return false
+		}
+	}
+	if docFiles[host] || !mailTLD(host[strings.LastIndexByte(host, '.')+1:]) {
 		return false
 	}
 	for _, fake := range []string{"example.com", "example.org", "example.net", "localhost", ".test", ".invalid", ".example"} {
@@ -673,6 +686,18 @@ func fileHost(host string) bool {
 	dot := strings.LastIndexByte(host, '.')
 	ext := host[dot+1:]
 	return fileExt[ext] || dot > 0 && scaleExt[ext] && scaleRe.MatchString(host[:dot])
+}
+
+// fileStem is host with the file extensions at its end taken off
+// (acme.com.tar.gz is acme.com), for a host fileHost took for a file's.
+func fileStem(host string) string {
+	for {
+		dot := strings.LastIndexByte(host, '.')
+		if dot < 0 || !fileExt[host[dot+1:]] {
+			return host
+		}
+		host = host[:dot]
+	}
 }
 
 func chineseID(v string) bool {
@@ -1554,6 +1579,12 @@ func (r rule) takes(s string, a, b int, ok func(string) bool) bool {
 // first and longest where they overlap, nothing inside a placeholder. A
 // value o allows is left as it is, and one of a kind o warns of is left
 // and told. o.Seen, where set, is told of each.
+//
+// The user's Masked words win over Never mask: a value on both lists is
+// masked, and so is a word inside a value Never mask lets go, since of
+// two things the user asked for the one that keeps the value from the
+// vendor is the safe one. Never mask wins over everything else, the
+// user's own rules too: a value it names is the exception to them.
 func apply(s string, found []span, put func(kind, v string) string, o Options) (string, int) {
 	if len(found) == 0 {
 		return s, 0
@@ -1579,15 +1610,17 @@ func apply(s string, found []span, put func(kind, v string) string, o Options) (
 	})
 	var b strings.Builder
 	last, next, n := 0, 0, 0 // next: where the next value may start
+	kept := 0                // the end of a value let go; only a word is masked before it
 	for _, f := range found {
-		if f.start < next {
+		if f.start < next || f.start < kept && f.by != ByWord {
+			continue
+		}
+		v := s[f.start:f.end]
+		if f.by != ByWord && o.allows(v) {
+			kept = max(kept, f.end)
 			continue
 		}
 		next = f.end
-		v := s[f.start:f.end]
-		if o.allows(v) {
-			continue
-		}
 		act := o.Actions[f.kind]
 		if act != Warn && act != Block {
 			act = ""

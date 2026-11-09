@@ -213,6 +213,14 @@ func parseLogins(b []byte) ([]savedLogin, error) {
 	// doesn't allow its subscription used outside its client), so one
 	// signed in before is left out, and gone from the file at its next write
 	out = slices.DeleteFunc(out, func(l savedLogin) bool { return l.Agent == "dimagent" })
+	for i := range out {
+		// a Max 20x saved before it was named Ultra
+		if out[i].Agent == "claude" && out[i].Plan == "max" {
+			if c, ok := parseClaudeCredentials(out[i].Auth); ok {
+				out[i].Plan = claudePlan(out[i].Plan, c.OAuth.RateLimitTier)
+			}
+		}
+	}
 	return nameAlike(dedupeLogins(out)), nil
 }
 
@@ -620,6 +628,43 @@ func claudeProfileAccount() (map[string]any, bool) {
 	return acct, err == nil && acct != nil
 }
 
+// ClaudeTrustedProjects are the projects keys of the folders the user
+// told Claude Code to trust (hasTrustDialogAccepted), in the state file of
+// the account it is signed in to (claudeProfilePath, so CLAUDE_CONFIG_DIR's
+// when set), read again only when the file changes. Only read, never
+// written: the answers are the user's. A file that isn't there trusts
+// nothing; one that can't be read or parsed, which Claude Code may be
+// writing, or account discovery turned off, is an error: unknown. What it
+// returns is shared and must not be changed.
+func ClaudeTrustedProjects() (map[string]bool, error) {
+	if settings.AccountDiscoveryOff() {
+		return nil, errAccountDiscoveryOff
+	}
+	trusted, err := filememo.Read("claude trusted projects", claudeProfilePath(), func(b []byte) (map[string]bool, error) {
+		var m struct {
+			Projects map[string]struct {
+				Trusted any `json:"hasTrustDialogAccepted"`
+			} `json:"projects"`
+		}
+		if err := json.Unmarshal(b, &m); err != nil {
+			return nil, err
+		}
+		out := map[string]bool{}
+		for k, p := range m.Projects {
+			// Claude Code counts only true (=== true, or truthy: a
+			// bool either way in what it writes)
+			if t, _ := p.Trusted.(bool); t {
+				out[k] = true
+			}
+		}
+		return out, nil
+	})
+	if errors.Is(err, fs.ErrNotExist) {
+		return map[string]bool{}, nil
+	}
+	return trusted, err
+}
+
 // claudeSignedInUser names the account Claude Code is signed in to, by the
 // one name both the account (claudeAccount) and its saved login (liveLogin)
 // go by: ~/.claude.json's, or status, what `claude auth status` said, when
@@ -717,9 +762,9 @@ func liveLogin(agent string) (savedLogin, bool) {
 		if signedOut {
 			return savedLogin{}, false
 		}
-		l := savedLogin{Agent: agent, Plan: c.OAuth.SubscriptionType, Auth: b}
+		l := savedLogin{Agent: agent, Plan: c.OAuth.plan(), Auth: b}
 		var acct map[string]any
-		if l.User, acct = claudeSignedInUser(l.Plan, plan, user); acct != nil {
+		if l.User, acct = claudeSignedInUser(c.OAuth.SubscriptionType, plan, user); acct != nil {
 			l.Profile, _ = json.Marshal(acct)
 			l.HeldAs = claudeProfileKey(l.Profile)
 		}
@@ -1282,6 +1327,14 @@ func switchSavedLogin(agent, user string) (from string, _ error) {
 	// given the refresh token that refresh is spending
 	savedTokenMu.Lock()
 	defer savedTokenMu.Unlock()
+	if agent == "codex" {
+		// nor while Codex's own sign-in is being refreshed
+		// (codexTokenRenewing): the one saved below as the account being
+		// replaced would hold the refresh token that refresh is spending,
+		// and the refresh would write its account back over the switch
+		codexMu.Lock()
+		defer codexMu.Unlock()
+	}
 	loginsMu.Lock()
 	defer loginsMu.Unlock()
 	ls := readLogins()
@@ -1727,7 +1780,7 @@ func claudeRenewedHeld(ls []savedLogin, l savedLogin) (savedLogin, bool) {
 		if h.Agent != "claude" || !h.Held || h.HeldAs != key || sameLogin(h, l) || claudeSetupToken(h.Auth) != "" {
 			continue
 		}
-		if plan := c.OAuth.SubscriptionType; plan != "" && h.Plan != "" && !strings.EqualFold(plan, h.Plan) {
+		if plan := c.OAuth.plan(); plan != "" && h.Plan != "" && !strings.EqualFold(plan, h.Plan) {
 			return savedLogin{}, false
 		}
 		return h, true

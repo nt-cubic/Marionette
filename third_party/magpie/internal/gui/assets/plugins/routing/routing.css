@@ -21,24 +21,29 @@
 /* a flowing wire is drawn by its copy in .rt-flows, a layer of its own, so
    the wires that don't move aren't drawn again each frame (#3164) */
 .rt-wires path.flown { visibility: hidden; animation: none; }
-.rt-flows { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; will-change: transform; }
-.rt-flows path { fill: none; stroke: var(--agent, var(--muted)); stroke-width: 1.5; stroke-dasharray: 3 5; animation: rtflow .7s linear infinite; }
+.rt-flows { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; will-change: transform; opacity: var(--rt-fade, 1); }
+/* its dashes move by --rt-dash, which a timer sets 15 times a second
+   (slowTick): an animated offset was drawn again every frame. With motion
+   reduced they stand still and the layer fades by --rt-fade instead */
+.rt-flows path { fill: none; stroke: var(--agent, var(--muted)); stroke-width: 1.5; stroke-dasharray: 3 5; stroke-dashoffset: var(--rt-dash, 0); }
 @keyframes rtflow { to { stroke-dashoffset: -8; } }
 /* the magpies: one carries each request out, another brings its answer
-   back — the dot at the tip of its beak. They fly along the wires and
-   under the cards, through magpie's box rather than over its words: over
-   them, with two agents sending at once one sat on the hub's address and
-   another on a member's row (penershu on X). Each flight starts and ends
-   a dot clear of the card at either end of its wire (pose). */
-.rt-sky { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+   back — the dot at the tip of its beak. They fly over the cards (the
+   owner, 11-09: under them, 869c4d112, a magpie vanished crossing
+   magpie's box), but off their words: each flight starts and ends a dot
+   clear of the card at either end of its wire (pose), so a dot held at
+   its seat or waiting at magpie sits beside it, not on its address
+   (penershu on X), and the way through magpie keeps to its edge (via). */
+.rt-sky { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 /* each agent's requests and answers fly in its colour: a request filled
    with it, an answer ringed with it, a failure ringed red */
 .rt-sky .pkt { fill: var(--agent, var(--fg)); filter: drop-shadow(0 0 3px var(--agent, var(--muted))); }
 .rt-sky .pkt.back { fill: var(--card); stroke: var(--agent, var(--fg)); stroke-width: 2.25; }
 .rt-sky .pkt.back.err { fill: var(--agent, var(--card)); stroke: var(--red); }
 .rt-sky path.via { fill: none; stroke: none; }
-.rt-sky .pkt.held { animation: rtheld 1.2s ease-in-out infinite; }
-@keyframes rtheld { 50% { opacity: .45; } }
+/* a dot held at an account fades by --rt-held, from the same timer: an
+   animated opacity under its shadow was drawn again every frame */
+.rt-sky .pkt.held { opacity: var(--rt-held, 1); }
 .rt-flier { color: var(--fg); }
 .rt-flier .body, .rt-flier .tail, .rt-flier .wing path:first-child, .rt-flier .wing.far { fill: currentColor; }
 .rt-flier .wing.far { opacity: .45; }
@@ -138,12 +143,29 @@
 .rt-accts li.on em { color: var(--fg); }
 .rt-accts li.on .bar i { background: var(--fg); }
 .rt-accts li.on .dot { background: var(--fg); border-color: var(--fg); }
-.rt-accts li.now .dot { animation: rtlive 1.8s infinite; }
-@keyframes rtlive { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--fg) 40%, transparent); } 70%, 100% { box-shadow: 0 0 0 6px transparent; } }
+/* A live dot's pulse: a disk 6px wider all round grows from the dot and
+   fades. It moves by transform and opacity, on the compositor: as a
+   box-shadow it repainted the page every frame while requests were in
+   flight, and 64 of them kept a core half busy (unscientific9). A muted
+   dot's disk goes behind it, in a parent that isolates it; a filled one's
+   is the dot's own colour, so it may lie on top. */
+.rt-accts li.now .dot, .rt-livedot.on, :is(.rt-req, .rt-probe).wait .to i, .ps-dst.wait > i { position: relative; }
+.rt-accts li.now .dot::after, .rt-livedot.on::after, :is(.rt-req, .rt-probe).wait .to i::after, .ps-dst.wait > i::after, .rt-steps li.wait::after {
+  content: ""; position: absolute; inset: 0; border-radius: 50%; background: color-mix(in srgb, var(--fg) 40%, transparent); opacity: 0; pointer-events: none;
+  animation: rtlive 1.8s infinite;
+}
+.rt-accts li.now .dot::after { inset: -1.5px; animation-name: rtlive-dot; }
+:is(.rt-req, .rt-probe).wait .to, .ps-dst.wait, .rt-steps li.wait { isolation: isolate; }
+:is(.rt-req, .rt-probe).wait .to i::after, .ps-dst.wait > i::after, .rt-steps li.wait::after { z-index: -1; }
+.rt-steps li.wait::after { inset: auto; left: 5px; top: .5em; width: 6px; height: 6px; }
+/* 6px each side: a 6px dot grows to 18px, the 8px account dot to 20px */
+@keyframes rtlive { 0% { transform: scale(1); opacity: 1; } 70%, 100% { transform: scale(3); opacity: 0; } }
+@keyframes rtlive-dot { 0% { transform: scale(1); opacity: 1; } 70%, 100% { transform: scale(2.5); opacity: 0; } }
 .rt-accts li.low em { color: var(--fg-2); }
 .rt-accts li.rest { border-style: dashed; }
 /* a reply still out with no content for 15s: the dot stops pulsing */
-.rt-accts li.quiet .dot { background: var(--amber); border-color: var(--amber); animation: none; }
+.rt-accts li.quiet .dot { background: var(--amber); border-color: var(--amber); }
+.rt-accts li.quiet .dot::after { animation: none; }
 .rt-accts li.rest > :not(.tag) { opacity: .5; }
 .rt-accts li.rest em { color: var(--red); opacity: .85; }
 .rt-accts li.left { border-style: dotted; }
@@ -176,7 +198,11 @@
    lit as a picked request is */
 .rt-ctx-sess { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 180px), 1fr)); gap: 8px; margin-top: 12px; }
 .rt-ctx-sess[hidden] { display: none; }
-.rt-ctx-s { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 8px 10px; font: inherit; font-size: 12px; text-align: left; color: var(--fg-2); background: transparent; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+/* a block is a grid, not a flex column: WebKit up to Safari 17 (macOS 14)
+   puts a flex <button>'s children in a box of its own as wide as the
+   longest line, so a long name ran past its block over the next ones
+   (tz_188 on Discord); a grid button has no such box */
+.rt-ctx-s { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 4px; min-width: 0; padding: 8px 10px; font: inherit; font-size: 12px; text-align: left; color: var(--fg-2); background: transparent; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
 .rt-ctx-s[aria-pressed="true"] { background: var(--card-2); color: var(--fg); }
 .rt-ctx-s .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .rt-ctx-s .sub { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -204,7 +230,7 @@
 .rt-steps li.aside::before { background: none; border: 1px solid var(--muted); width: 4px; height: 4px; }
 .rt-steps li.ok::before { background: var(--green); }
 .rt-steps li.bad::before { background: var(--red); -webkit-mask: var(--x-mark) center / contain no-repeat; mask: var(--x-mark) center / contain no-repeat; border-radius: 0; transform: scale(1.5); }
-.rt-steps li.wait::before { animation: rtlive 1.8s infinite; }
+
 /* where a try's time went: one stacked bar, magpie's, the network's and
    the vendor's told apart by a swatch, each part named with its time */
 .rt-time { display: grid; gap: 5px; max-width: 560px; }
@@ -221,7 +247,8 @@
 .rt-time .vendor { --rt-time: var(--fg-2); }
 .rt-off { padding: 18px 4px; text-align: center; color: var(--muted); font-size: 13px; }
 @media (prefers-reduced-motion: reduce) {
-  .rt-accts li.now .dot, .rt-wires path.live, .rt-flows path, .rt-sky .pkt.held, .rt-accts li.new, .rt-accts li.hit, .rt-hub.tick, .rt-src.tick, .rt-cap.in, .rt-steps li.wait::before, .masking .pii { animation: none; }
+  .rt-wires path.live, .rt-accts li.new, .rt-accts li.hit, .rt-hub.tick, .rt-src.tick, .rt-cap.in, .masking .pii { animation: none; }
+  .rt-accts li.now .dot::after, .rt-steps li.wait::after { animation: none; }
   .rt-accts li { transition: none; }
 }
 /* The narrow and wide layouts below go by a box's own width, as container
@@ -248,20 +275,25 @@
 .rt-accts:where(.max460, .max560) li > em { text-align: left; }
 :where(.rt.max560) .rt-stats { gap: 14px; }
 /* the Routing view */
-#view-routing .row-head { margin: 14px 0 6px; padding: 0 2px; gap: 0; }
-#view-routing .row-head .note { font-size: 11px; color: var(--faint); margin-left: 8px; }
+/* the Routing view, and the Routing groups view beside it */
+:is(#view-routing, #view-groups) .row-head { margin: 14px 0 6px; padding: 0 2px; gap: 0; }
+:is(#view-routing, #view-groups) .row-head .note { font-size: 11px; color: var(--faint); margin-left: 8px; }
 #view-routing .row-head .rt-livedot + .note { margin-left: 8px; }
-.rt-newgroup, .rt-gogroups { display: inline-flex; align-items: center; gap: 5px; }
-.rt-newgroup svg, .rt-gogroups svg { width: 13px; height: 13px; flex: none; }
-/* the routing groups, far below with many models: the head goes to them */
-.rt-gogroups { margin-right: 6px; flex: none; }
-.rt-gogroups[data-fit="icon"] > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.rt-gogroups[data-fit="none"] { display: none; }
-.rt-gsec:focus { outline: none; }
-/* the routing groups' New group, at the top too: the groups sit below the
-   requests, out of sight on a first look (#944) */
-.rt-newgroup { margin-right: 6px; }
 .rt-gnew { display: inline-flex; align-items: center; gap: 4px; }
+/* the groups page's toolbar: the filter first, then how many */
+.rt-gsec > .row-head:first-child .rt-gfilter { flex: 0 1 300px; width: auto; margin: 0; }
+.rt-gsec > .row-head:first-child .rt-gcount { margin-left: 10px; white-space: nowrap; }
+.rt-gsec > .row-head:first-child .rt-gfilter + .rt-gcount { margin-left: 10px; }
+/* its buttons on the right apart, so one's hover never meets the next,
+   and New group, the filled one, a little further */
+.rt-gsec > .row-head:first-child > .grow ~ * + * { margin-left: 4px; }
+.rt-gsec > .row-head:first-child > .grow ~ .rt-gnew { margin-left: 8px; }
+/* the way back to Routing (gBack): beside the sidebar only when the page was opened from Routing */
+.rt-gsec > .row-head:first-child .rt-gback { flex: none; margin-right: 8px; white-space: nowrap; }
+body.side-nav #view-groups:not(.rt-gfrom) .rt-gback { display: none; }
+/* the settings for every group, a card under the list */
+.rt-gset > :is(.rt-gfound, .rt-gnames, .rt-gdef) { padding: 12px 14px; }
+.rt-gset > :is(.rt-gnames, .rt-gdef) { border-top: 1px solid var(--line-2); }
 /* an email, hidden: stand-in letters of its shape, softly blurred —
    coming in out of focus when asked for */
 .pii { filter: blur(2.2px); opacity: .5; user-select: none; }
@@ -342,7 +374,9 @@
 :is(.rt-req, .rt-probe).moved .to i { background: var(--accent); }
 :is(.rt-req, .rt-probe).bad .to { color: var(--red); }
 :is(.rt-req, .rt-probe).bad .to i { background: var(--red); -webkit-mask: var(--x-mark) center / contain no-repeat; mask: var(--x-mark) center / contain no-repeat; border-radius: 0; transform: scale(1.5); }
-:is(.rt-req, .rt-probe).wait .to i { background: var(--muted); animation: rtlive 1.8s infinite; }
+:is(.rt-req, .rt-probe).wait .to i { background: var(--muted); }
+/* one its agent canceled: neither an answer's dot nor a failure's mark */
+.rt-req.gone .to i { background: var(--muted); }
 /* the reasoning keeps to its own box: what it was asked at is cut first,
    then what it was sent at, never drawn over the numbers beside it (#435) */
 :is(.rt-req, .rt-probe) .to .ef { flex: 0 1 auto; display: flex; min-width: 0; margin-left: -2px; color: var(--muted); }
@@ -438,6 +472,9 @@ button.rt-session { cursor: pointer; }
    line (danzi002 on Discord), two of them still on a phone */
 :where(.rt-more:not(.min1150)) .rt-acts, .rt-cols.solo .rt-acts { columns: min(240px, 40vw); column-gap: 0; }
 :where(.rt-more:not(.min1150)) .rt-acts > *, .rt-cols.solo .rt-acts > * { break-inside: avoid; }
+:where(.rt-more:not(.min1150)) .rt-pgrp.long, .rt-cols.solo .rt-pgrp.long { break-inside: auto; }
+:where(.rt-more:not(.min1150)) .rt-pgrp.long > *, .rt-cols.solo .rt-pgrp.long > * { break-inside: avoid; }
+:where(.rt-more:not(.min1150)) .rt-pgrp.long > .rt-prov, .rt-cols.solo .rt-pgrp.long > .rt-prov { break-after: avoid; }
 .rt-cols.solo { grid-template-columns: minmax(0, 1fr); }
 .rt-reqs.none { display: block; background: none; border-color: transparent; }
 .rt-reqs.none .empty-state { padding: 14px 12px 18px; font-size: 12px; line-height: 1.6; }
@@ -445,7 +482,11 @@ button.rt-session { cursor: pointer; }
 .rt-prov { display: flex; align-items: center; gap: 7px; padding: 8px 12px 4px; font-size: 12px; }
 .rt-prov .ic, .rt-prov .ic img, .rt-prov .ic svg { width: 14px; height: 14px; }
 .rt-prov > span:last-child { margin-left: auto; font-size: 10.5px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; }
-.rt-acts > :not(:first-child) > .rt-prov:first-child { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 10px; }
+/* a provider's heading and rows, one box (.rt-pgrp); one to a line, a
+   line between providers; in columns a gap instead, a line standing over
+   a column's top */
+.rt-pgrp + .rt-pgrp { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 2px; }
+:where(.rt-more:not(.min1150)) .rt-pgrp + .rt-pgrp, .rt-cols.solo .rt-pgrp + .rt-pgrp { border-top: 0; margin-top: 0; padding-top: 6px; }
 /* a routing named where it can be changed: a way to where it is set */
 .rt-go { cursor: pointer; }
 .rt-go::after { content: " ›"; }
@@ -525,10 +566,9 @@ button.rt-session { cursor: pointer; }
 .rt-act.rt-keys:focus-visible { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent); }
 .rt-livedot { width: 6px; height: 6px; margin-left: 7px; border-radius: 50%; background: var(--green); --fg: var(--green); }
 /* it pulses while a request is under way only (#2827) */
-.rt-livedot.on { animation: rtlive 1.8s infinite; }
-@media (prefers-reduced-motion: reduce) { .rt-livedot.on { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .rt-livedot.on::after { animation: none; } }
 /* routing groups, and the providers routing over several of their own */
-.rt-gsec { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; margin-top: 16px; }
+.rt-gsec { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
 .rt-gsec .row-head .note { margin-right: 6px; }
 /* the groups filtered by name and model, beside Select and New group */
 .rt-gsec .rt-gfilter { width: 190px; min-width: 0; flex: 0 1 190px; height: 24px; margin: 0 6px 0 4px; }
@@ -539,8 +579,13 @@ button.rt-session { cursor: pointer; }
 .rt-group { display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 14px; cursor: pointer; transition: background .12s; }
 .rt-group:hover { background: var(--card-2); }
 .rt-group.off { opacity: .6; }
-/* switched off as a whole: dimmed but for its switch, which brings it back */
-.rt-group.disabled > :not(.rt-gon) { opacity: .5; }
+/* switched off as a whole: its switch, its "switched off" tag and its
+   grey logos say so, and its words stay readable (jiabubu on Discord: at
+   half opacity they were too faint to read), the name a step quieter than
+   an on group's and not dimmed again by .off */
+.rt-group.disabled { opacity: 1; }
+.rt-group.disabled .nm b { color: var(--fg-2); font-weight: 500; }
+.rt-group.disabled > .ics, .rt-group.disabled > .rt-ghandle { filter: grayscale(1); opacity: .6; }
 .rt-group .rt-gon { flex: none; transform: scale(.85); }
 .rt-group .ics { display: flex; gap: 3px; flex: none; min-width: 18px; }
 .rt-group .ics .ic { width: 16px; height: 16px; }
@@ -573,6 +618,12 @@ button.rt-session { cursor: pointer; }
 .rt-gedit button.primary.busy { opacity: .75; display: inline-flex; align-items: center; gap: 6px; }
 .rt-gedit button.primary.busy::before { content: ""; width: 10px; height: 10px; border-radius: 50%; border: 1.6px solid currentColor; border-right-color: transparent; animation: spin .7s linear infinite; }
 @media (prefers-reduced-motion: reduce) { .rt-gedit button.primary.busy::before { animation-duration: 2s; } }
+/* what a group's card and its editor say can be selected and copied
+   (jiabubu on Discord): its name and id, its models, its patterns, what
+   is left of its accounts; a drag across them selects, a click still
+   opens the editor (groupRow). Its controls stay controls. */
+.rt-groups:not(.sorting) > .rt-group :is(.nm b, .nm code.mdl, .mem),
+.rt-gedit .fallback:not(.rt-rules) > .fbl:not(.sorting) > .fbrow > .n, .rt-gaccts > .fbrow > .n { user-select: text; -webkit-user-select: text; }
 .rt-group .mem { margin-top: 2px; font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* a pattern the group finds models by, and how many it matches now */
 .rt-group .mem.pat code, .rt-pats code { font: var(--code-style, normal) 500 11px/1.5 var(--code-font, var(--code)); font-stretch: var(--code-stretch, 100%); color: var(--fg-2); }
@@ -613,12 +664,12 @@ button.rt-session { cursor: pointer; }
 .rt-goffbox { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 14px; }
 .rt-goffwhy { flex: 1 1 260px; min-width: 0; font-size: 12px; line-height: 1.5; color: var(--fg-2); }
 .rt-goffon { flex: none; }
-.rt-gfound, .rt-gnames { display: flex; align-items: center; gap: 12px; padding: 2px 4px 4px; }
-.rt-gfound .txt, .rt-gnames .txt { flex: 1; min-width: 0; display: grid; gap: 2px; }
-.rt-gfound b, .rt-gnames b { font-size: 12.5px; font-weight: 600; }
-.rt-gfound small, .rt-gnames small { font-size: 11.5px; line-height: 1.45; color: var(--muted); }
+.rt-gfound, .rt-gnames, .rt-gdef { display: flex; align-items: center; gap: 12px; padding: 2px 4px 4px; }
+.rt-gfound .txt, .rt-gnames .txt, .rt-gdef .txt { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.rt-gfound b, .rt-gnames b, .rt-gdef b { font-size: 12.5px; font-weight: 600; }
+.rt-gfound small, .rt-gnames small, .rt-gdef small { font-size: 11.5px; line-height: 1.45; color: var(--muted); }
 /* the names setting's three choices go under its words when it is narrow */
-.rt-gnames { flex-wrap: wrap; }
+.rt-gnames, .rt-gdef { flex-wrap: wrap; }
 /* the providers kept out of found groups: a text button under the
    switch's words, its menu the app's */
 .rt-gfound .rt-skip-pick { justify-self: start; display: inline-flex; align-items: center; gap: 3px; max-width: 100%; height: 22px; margin-left: -7px; font-size: 11.5px; }
@@ -626,7 +677,7 @@ button.rt-session { cursor: pointer; }
 .rt-skip-pick svg { flex: none; opacity: .7; transition: transform .15s var(--ease); }
 .rt-skip-pick.open svg { transform: rotate(180deg); }
 .pop.proto-menu.rt-skip-menu { width: 230px; max-width: calc(100vw - 16px); background: var(--card); }
-.rt-gnames .txt { flex-basis: 220px; }
+.rt-gnames .txt, .rt-gdef .txt { flex-basis: 220px; }
 .rt-ghidden { display: flex; align-items: center; padding: 4px 12px 4px 8px; }
 .rt-ghidden .rt-gremoved { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--faint); }
 .rt-ghidden .rt-gremoved:hover, .rt-ghidden .rt-gremoved.open { color: var(--fg-2); }
@@ -709,11 +760,11 @@ body.window .rt-gedit > .bar { --vfoot: 8px; }
 }
 .rt-gsec .segs .opt { white-space: nowrap; }
 /* the groups, in a page 520px wide or less */
-:where(.rt-more.max520) .rt-gsec .row-head .note { display: none; }
-:where(.rt-more.max520) .rt-gsec .rt-gfilter { flex: 1 1 auto; width: auto; }
-:where(.rt-more.max520) .rt-gedit { grid-template-columns: minmax(0, 1fr); gap: 4px; }
-:where(.rt-more.max520) .rt-gedit label { text-align: left; padding-top: 8px; }
-:where(.rt-more.max520) .rt-gedit .segs .opt { padding-left: 9px; padding-right: 9px; }
+:where(.rt-gpage.max520) .rt-gsec .row-head .note { display: none; }
+:where(.rt-gpage.max520) .rt-gsec .rt-gfilter { flex: 1 1 auto; width: auto; }
+:where(.rt-gpage.max520) .rt-gedit { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+:where(.rt-gpage.max520) .rt-gedit label { text-align: left; padding-top: 8px; }
+:where(.rt-gpage.max520) .rt-gedit .segs .opt { padding-left: 9px; padding-right: 9px; }
 /* the models and patterns take the column's width and no more: a grid's
    auto track grows to its widest row's content, so a long model name with
    its chips pushed the rows past the editor's edge, cut off there, and
@@ -976,7 +1027,7 @@ body.window .rt-gedit > .bar { --vfoot: 8px; }
 .ps-name small { margin-left: 4px; font-size: 10.5px; font-weight: 400; color: var(--muted); }
 .ps-dst > i { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
 .ps-dst.bad > i { background: var(--red); -webkit-mask: var(--x-mark) center / contain no-repeat; mask: var(--x-mark) center / contain no-repeat; border-radius: 0; transform: scale(1.5); }
-.ps-dst.wait > i { background: var(--muted); animation: rtlive 1.8s infinite; }
+.ps-dst.wait > i { background: var(--muted); }
 .ps-hub { position: relative; z-index: 1; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; color: var(--fg); background: var(--card); box-shadow: inset 0 0 0 1px var(--line), 0 1px 3px rgba(0, 0, 0, .08); }
 .ps-hub svg { width: 24px; height: 24px; }
 .ps-hub.busy { animation: ps-ring 1.8s ease-out infinite; }
@@ -1026,7 +1077,7 @@ body.window .rt-gedit > .bar { --vfoot: 8px; }
 .pr-line { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; min-width: 0; }
 .pr-line .pr-to { flex: 1 1 auto; }
 .pr-req .meta { flex: none; max-width: 100%; margin-left: auto; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
-@media (prefers-reduced-motion: reduce) { .pr-req.wait .pr-to > i, .ps-dst.wait > i, .ps-hub.busy, .ps-dot.wait { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .pr-req.wait .pr-to > i, .ps-hub.busy, .ps-dot.wait { animation: none; } .ps-dst.wait > i::after { animation: none; } }
 @supports not (grid-template-columns: subgrid) {
   @media (max-width: 700px) {
     .rt-reqs { --rt-tpl: auto minmax(0, 1fr); }

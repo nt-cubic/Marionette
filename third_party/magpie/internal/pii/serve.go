@@ -35,9 +35,15 @@ type hello struct {
 
 // helper is one pf-serve running.
 type helper struct {
-	cmd    *exec.Cmd
-	in     io.WriteCloser
-	out    *bufio.Reader
+	cmd *exec.Cmd
+	in  io.WriteCloser
+	out *bufio.Reader
+	// outf is out's end of the stdout pipe. It is magpie's, not
+	// cmd's: cmd.Wait closes a StdoutPipe as the process exits, so a
+	// read after a death got "read |0: file already closed" in place of
+	// the EOF that says pf-serve died, and the status showed that as why
+	// the GPU was lost (#3741). Closed by kill and end.
+	outf   *os.File
 	stderr *tail
 	hello  hello
 	exited chan struct{}
@@ -278,13 +284,19 @@ func startOne(path string, cpu bool, stop <-chan struct{}) (*helper, error) {
 	if err != nil {
 		return nil, err
 	}
-	out, err := cmd.StdoutPipe()
+	out, w, err := os.Pipe()
 	if err != nil {
+		in.Close()
 		return nil, err
 	}
-	h := &helper{cmd: cmd, in: in, out: bufio.NewReaderSize(out, 64<<10), stderr: &tail{}, exited: make(chan struct{})}
+	cmd.Stdout = w
+	h := &helper{cmd: cmd, in: in, out: bufio.NewReaderSize(out, 64<<10), outf: out, stderr: &tail{}, exited: make(chan struct{})}
 	cmd.Stderr = h.stderr
-	if err := cmd.Start(); err != nil {
+	err = cmd.Start()
+	// pf-serve has its own copy: once it exits, a read here sees EOF
+	w.Close()
+	if err != nil {
+		out.Close()
 		return nil, err
 	}
 	go func() {
@@ -366,6 +378,10 @@ var startup = regexp.MustCompile(`^(ggml_metal_(device_init|library_init|init|fr
 // trouble is a line that says something went wrong, startup's or not.
 var trouble = regexp.MustCompile(`(?i)error|fail|assert|abort|unable|cannot|can't|could not|out of memory|exception|lost`)
 
+// deviceLost is a GPU the driver reset under pf-serve, as ggml's Vulkan
+// says it (vk::DeviceLostError, VK_ERROR_DEVICE_LOST) and Metal's.
+var deviceLost = regexp.MustCompile(`(?i)DeviceLost|device[ _]lost`)
+
 // lastSaid is the last n lines of stderr that say more than ggml's
 // startup, joined.
 func lastSaid(stderr string, n int) string {
@@ -389,6 +405,7 @@ func (h *helper) kill() {
 		h.cmd.Process.Kill()
 	}
 	<-h.exited
+	h.outf.Close()
 }
 
 // Warm starts pf-serve in the background, where the model is on disk, so
@@ -462,17 +479,21 @@ func end(h *helper) {
 	h.in.Close()
 	select {
 	case <-h.exited:
+		h.outf.Close()
 	case <-time.After(5 * time.Second):
 		h.kill()
 	}
 }
 
 // classify asks pf-serve, started if it isn't, what is in texts. One that
-// fails is ended and started again; one that died on the GPU is started
-// on the CPU, until the GPU is tried again. One that magpie ended on the
-// GPU for taking too long is started again on the GPU: a request too
-// slow for its time is no lost GPU. Twice in a row there is, and the CPU
-// is tried for the next. The caller holds turn.
+// fails is ended and started again. One that failed on the GPU is started
+// again on the GPU: one that died there is most often a GPU the driver
+// reset under it (vk::DeviceLostError, kongbai01203's after an idle
+// spell), which a new pf-serve gets a new device of, and one magpie ended
+// for taking too long had a request too slow for its time. Twice in a row
+// the GPU is lost, and the CPU is tried, until the GPU is tried again: at
+// once for one that died, and from the next request for one that hung,
+// whose request has waited twice already. The caller holds turn.
 func classify(texts []string) ([][]redact.Found, error) {
 	out, err := classifyTurn(texts)
 	srv.mu.Lock()
@@ -506,7 +527,7 @@ func heldBack() error {
 
 func classifyTurn(texts []string) ([][]redact.Found, error) {
 	var last error
-	for try := 0; try < 2; try++ {
+	for try := 0; try < 3; try++ {
 		srv.mu.Lock()
 		h, cpu, stop := srv.h, srv.cpu, stopCh()
 		var gone *helper
@@ -564,17 +585,19 @@ func classifyTurn(texts []string) ([][]redact.Found, error) {
 			h.kill()
 			return nil, errStopped
 		}
-		if h.hello.GPU {
-			if h.slow.Load() != nil && try == 0 {
-				// ended for taking too long: a slow request, or a
-				// GPU's hang that a new pf-serve gets past, is no lost
-				// GPU, and the try again is on the GPU
-			} else {
-				lostGPULocked(err.Error())
-			}
+		hung := h.slow.Load() != nil
+		if h.hello.GPU && try > 0 {
+			lostGPULocked(err.Error())
 		}
+		// else the try again is on the GPU: a GPU the driver reset
+		// (device lost), a crash, or a hang that a new pf-serve gets
+		// past, is no lost GPU yet
 		srv.mu.Unlock()
 		h.kill()
+		if try == 1 && (!h.hello.GPU || hung) {
+			// a third try only after the GPU died twice, on the CPU
+			break
+		}
 	}
 	return nil, fmt.Errorf("the local masking model failed: %w", last)
 }
@@ -639,6 +662,7 @@ func (h *helper) classify(texts []string) ([][]redact.Found, error) {
 	if _, err := h.in.Write(b.Bytes()); err != nil {
 		return nil, fmt.Errorf("pf-serve %s (%v)", h.died(), err)
 	}
+	beforeRead(h)
 	r := &reader{r: h.out}
 	status := r.u32()
 	if status == 1 {
@@ -670,6 +694,10 @@ func (h *helper) classify(texts []string) ([][]redact.Found, error) {
 	}
 	return out, nil
 }
+
+// beforeRead runs between sending a request and reading its answer, for
+// a test to read after pf-serve has exited (TestGPUDeathReadAfterExit).
+var beforeRead = func(*helper) {}
 
 type reader struct {
 	r   *bufio.Reader
