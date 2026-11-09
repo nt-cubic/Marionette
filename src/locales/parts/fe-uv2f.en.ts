@@ -1,0 +1,32 @@
+import type { zh } from "./fe-uv2f.zh";
+
+/** English mirror of the fe-uv2f fragment. */
+export const en = {
+  "usageV2.backfill.title": "History (local logs)",
+  "usageV2.backfill.meta": "Scans each agent CLI's own session store — including conversations opened outside Marionette",
+  "usageV2.backfill.scan": "Scan",
+  "usageV2.backfill.rescan": "Rescan",
+  "usageV2.backfill.scanning": "Scanning…",
+  "usageV2.backfill.failed": "Scan failed: {error}",
+  "usageV2.backfill.empty": "No historical sessions found to count.",
+  "usageV2.backfill.duplicate": "already live-counted",
+  "usageV2.backfill.totals": "{sessions} sessions · {turns} turns · {tokens} tokens",
+  "usageV2.backfill.repUsd": "reported {usd}",
+  "usageV2.backfill.sourceOk": "{agent}: {sessions} sessions / {turns} turns / {ms}ms",
+  "usageV2.backfill.sourceErr": "{agent}: {error}",
+  "usageV2.backfill.note": "Backfill numbers are attributed by when each usage record happened. Sessions the live ledger already counts (matched by the agent's own session id) are listed but not summed. Stores that record no usage (e.g. zcode) only list sessions.",
+  "usageV2.comp.title": "Composition (at end)",
+  "usageV2.comp.calibrated": "estimate calibrated to the measured anchor ({pct} coverage)",
+  "usageV2.comp.anchor": "total = measured final context",
+  "usageV2.comp.estimateOnly": "total = estimate (no measured reading for this session)",
+  "usageV2.comp.none": "No composition for this session — only Grok's local store keeps the raw request material today.",
+  "usageV2.comp.k.system": "system prompt",
+  "usageV2.comp.k.toolDefs": "tool definitions",
+  "usageV2.comp.k.inject": "injected context",
+  "usageV2.comp.k.user": "your input",
+  "usageV2.comp.k.attach": "image attachments",
+  "usageV2.comp.k.assistant": "replies",
+  "usageV2.comp.k.reasoning": "reasoning",
+  "usageV2.comp.k.toolCalls": "tool calls",
+  "usageV2.comp.k.toolResults": "tool results",
+} satisfies Record<keyof typeof zh, string>;

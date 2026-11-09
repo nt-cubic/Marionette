@@ -1,6 +1,6 @@
 [package]
 name = "marionette"
-version = "0.7.1"
+version = "0.7.2"
 description = "Marionette — agent harness, all in one. Lightweight local shell for multiple agent CLIs."
 authors = ["Marionette"]
 edition = "2021"
@@ -50,6 +50,9 @@ tauri-plugin-global-shortcut = "2"
 wry = { path = "vendor/wry", default-features = false }
 # Browser-tab screenshot shrink loop (decode → narrow → re-encode, codeg capture.rs shape).
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# Token-usage history backfill: DSH session logs are zstd-compressed JSONL
+# (pure-Rust decoder, no C bindings, streams multi-frame archives).
+ruzstd = "0.7"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

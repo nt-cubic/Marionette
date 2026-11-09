@@ -33,11 +33,11 @@ Claude 用 Claude Code，Grok 用 Grok Build，GPT 用 Codex，DeepSeek 用 Deep
 
 你不需要一个 Agent 做所有事。你只需要一个窗口，让它们各司其职。
 
-Marionette 是一个 Windows 本地多 Agent 图形壳：只负责启动、展示、切换与记录 Agent，不实现 Agent runtime。**单文件便携版，下载双击即用。**
+Marionette 是一个 Windows 本地多 Agent 图形壳：只负责启动、展示、切换与记录 Agent，不实现 Agent runtime。**单文件，下载即用，也可一行安装。**
 
 ## 一个窗口，所有 Agent
 
-OpenCode、Claude Code、Codex、Grok Build、ZCode、DeepSeek Harness、Pi、Hermes——一个窗口，全部装下。
+OpenCode、Claude Code、Codex、Grok Build、ZCode、DeepSeek Harness、Pi——一个窗口，全部装下。其它支持 ACP 协议的 Agent，经「自定义 Agent」随时加进来。
 
 ChatGPT 和 DeepSeek 的网页版也在里面：登录一次网页，它们就是两个纯聊天 Agent。
 
@@ -66,6 +66,7 @@ Agent 在边上继续跑：谁在跑、跑到哪一步、刚改了哪几个文�
 
 - **跳转**：按会话名搜索并切换，方向键选择、回车进入
 - **新建对话**：在默认文件夹开一个新会话
+- **全景**：圆桌、Token 用量分析、插件管理，都在这里开
 - **贴边 / 解除贴边**：切换窄带模式（与标题栏贴边按钮等效）
 - **关闭行为**：选择点 × 是**直接退出**（默认）还是**后台常驻**（窗口藏起来，会话与引擎继续跑，再启动一次唤回）
 - **侧栏常驻**：贴边时左侧面板不自动收回
@@ -84,7 +85,7 @@ Agent 在边上继续跑：谁在跑、跑到哪一步、刚改了哪几个文�
 
 OpenCode Go、DeepSeek、GLM、Kimi、OpenRouter、xAI 的钥匙，Grok 与 ChatGPT 的订阅，都能出现在任意一个会话的模型菜单里。不用为每个 Agent 配一遍。
 
-MCP、Skills、长期记忆——扫描一次，统一管理。同一个工具，这个 Agent 能用，那个也能用；你的偏好在换人时跟着走。
+MCP、Skills、插件、长期记忆——扫描一次，统一管理。插件装一次就对所有 Agent 生效，同一个工具，这个 Agent 能用，那个也能用；你的偏好在换人时跟着走。
 
 ## 收纳盒
 
@@ -97,6 +98,10 @@ MCP、Skills、长期记忆——扫描一次，统一管理。同一个工具�
 截图贴进输入框，自动打开批注：点一下是标记，拖一下是框选，每个标记配一句话。
 
 Agent 收到的是带编号的标记和你的说明——不用再写「就是那个按钮右边那个」。
+
+## 文档标签页
+
+对话里点开 `.md` / `.txt`，直接在应用里读，不用切回编辑器。长文档开**对照模式**：左边对话流、右边文档，分隔条随便拖；一边读一边让 Agent 改，改动就在旁边。文档内的相对链接页内跳转，改完保存带冲突检测。
 
 ## 内置浏览器
 
@@ -112,7 +117,13 @@ Agent 收到的是带编号的标记和你的说明——不用再写「就是�
 
 ## Token 用量
 
-跨会话的 token 台账：新算、缓存读、缓存写、输出四本账分开记，按模型、按小时、按天拆开看。API 牌价折算成钱（牌价，不是订阅实付）；缓存命中率一眼可见——模型有没有真的在替你省钱，这里看得到。
+跨会话的 token 台账 + 分析页（Ctrl K →「Token 用量分析」）：
+
+- **四桶记账**——新算、缓存读、缓存写、输出，按天、按模型分开记；API 牌价折算成钱（牌价，不是订阅实付），缓存命中环一眼可见模型有没有真的在替你省钱
+- **去向拆解**——每个会话的 token 构成（系统提示词、工具定义、注入上下文、对话）、时间去向（哪些工具、哪些命令、哪些技能、改了多少行）
+- **作息热图**——小时×星期，什么时候烧的 token 一目了然
+- **对话列表**——每个会话的用量与花费，中途换过模型就按轮次分摊
+- **诚实账本**——台账落盘保留 180 天，还能只读回填各家 Agent 自己的会话历史；每个指标都带口径标签（实测 / 估算 / 推导 / 牌价），不编数
 
 ## Telegram
 
@@ -123,13 +134,30 @@ Agent 收到的是带编号的标记和你的说明——不用再写「就是�
 ## 还有更多
 
 - **并行子代理**：各干各的，不刷屏
+- **编辑重发**：改一句说过的话，后面的对话重新来
+- **分叉**：从任意一条回复分叉出新会话，历史原样带走
+- **实时轨迹**：泳道时间图看 Agent 每一步花的时间，整轮结束折回摘要
 - **富文本渲染**：公式、流程图、代码高亮，在对话流里直接呈现
 - **定时发送**：写好，到点自动发
 - **会话挂起**：闲置两小时自动挂起，回来一条消息接上
 
 ## 快速上手
 
-> [下载](https://github.com/nt-cubic/Marionette/releases/latest) `Marionette.exe`，双击即可。需要 WebView2 Runtime（Win11 与更新过的 Win10 自带）。
+**一行安装（推荐）** — 装进 `%LOCALAPPDATA%\Programs\Marionette`，加入开始菜单，终端里也有 `marionette` 命令；之后应用内更新会原地替换，不用重装：
+
+```powershell
+irm https://github.com/nt-cubic/Marionette/releases/latest/download/install.ps1 | iex
+```
+
+不需要管理员权限。卸载（先退出应用）：
+
+```powershell
+curl.exe -fsSLo install.ps1 https://github.com/nt-cubic/Marionette/releases/latest/download/install.ps1
+powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall
+del install.ps1
+```
+
+或者 [下载](https://github.com/nt-cubic/Marionette/releases/latest) `Marionette.exe` 直接双击（便携版，不进开始菜单）。两种方式都需要 WebView2 Runtime（Win11 与更新过的 Win10 自带）。
 
 <details>
 <summary>从源码运行</summary>

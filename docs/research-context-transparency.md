@@ -78,7 +78,7 @@ L1 与 L2 互补：L1 保"从今以后全 agent 一致口径"，L2 保"历史回
 
 ### zcode（`~/.zcode/cli/db/db.sqlite`）
 
-- 库在本机存在（含 -shm/-wal）。`parsers/zcode.rs` 已掌握 session/message/part 三表结构（导入用）；**message/part 行里有没有 usage 字段尚未探测**——parsers 升级时顺手查（SQLite 直查，勿信文档）。系统提示词大概率不落盘。
+- **2026-11-09 回填实现时实锤：库里有完整用量表**——`model_usage`（每请求五桶，input_tokens 含缓存要减）+ `turn_usage`（每轮）+ `session`（parent_id/title/directory）；子代理（`sess_subagent_agent_*`）带 parent 输出为独立会话；标题生成请求计入 requests 不计 turns；无 ctx_window 列。`usage_backfill/zcode.rs` 已按此实现。
 
 ### 其它
 
@@ -100,6 +100,10 @@ L1 与 L2 互补：L1 保"从今以后全 agent 一致口径"，L2 保"历史回
 - **P1（Rust 提取器，grok-build 先行）**：`parsers/` 加 `stats()` 提取通道，grok 第一个吃：`signals.json` + `updates.jsonl` 的 turn_completed（含 costUsdTicks 官方成本）+ `chat_history.jsonl`/`system_prompt.txt`/`tool_definitions.json` 做真组成。→ **grok 会话的组成环形图 + 官方成本对账**，dsh-context 的招牌功能在 grok 上先复刻。
 - **P2（提取器铺开）**：claude（四桶趋势 + compact_boundary，防双计）、codex（六桶）、dsh（zstd V4）、opencode（sqlite）。统一成 `UsageFacts` 形状喂分析页，与台账并存（台账=自家会话实时账，提取器=全历史含非 Marionette 会话）。
 - **P3（组成估算通用化）**：chars/4+4 密度启发式组件（dsh-context 同款公式），给没有原生日志的 agent（zcode 等）从转录估组成；有官方三分/原文的（dsh/grok）用真值锚定。
+
+## 5.5 落地状态（2026-11-09 更新）
+
+P0 已全部落地 + 修正批（详见 AGENTS.md「Token 用量页 v2 修正批」）：台账搬磁盘（`~/.marionette/usage/`，写失败记日志重试）、压缩事件（compaction_update）、会话按天记账与按窗展示、失败/中断轮、文件活动、改动行数 git 对账优先、Grok 自报费用（costUsdTicks 差值）、DeepSeek 高峰 ×2、上下文占用只认本轮实时读数、会话搜索 + 单会话按轮详情（上下文曲线/压缩/结局）。P2 的 Rust 提取器（历史回填）与页面区块已接线：`usage_backfill/` 扫六家本机会话库（grok/claude/codex/dsh/opencode/zcode），按会话自报编号与实时账去重。**组成拆分（P1）已做 Grok 版（2026-11-09）**：composition.rs 读三件套出九类真数组成（系统提示词/工具定义/注入/输入/附件/回复/思考/工具调用/结果），按 signals 的最终上下文读数校准；挂在会话详情面板与回填行。其它 agent 的估算版（P3）未做。
 
 ## 6. 诚实的边界
 

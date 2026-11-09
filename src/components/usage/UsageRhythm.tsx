@@ -100,6 +100,26 @@ function CtxChart({ hist, hot }: { hist: readonly number[]; hot: number }) {
   );
 }
 
+/** Turn outcomes under the context chart: compactions, failed and cancelled turns. */
+function OutcomeCells({ ins }: { ins: UsageInsights }) {
+  const t = useT();
+  const cells: Array<[number, string]> = [
+    [ins.compactions, t("usageV2.rhythm.compactions")],
+    [ins.turnFails, t("usageV2.rhythm.fails")],
+    [ins.turnCancels, t("usageV2.rhythm.cancels")],
+  ];
+  return (
+    <div className="uv2-rhythm__ev uv2-rhythm__ev--outcomes">
+      {cells.map(([n, label]) => (
+        <div key={label}>
+          <b>{n.toLocaleString()}</b>
+          <span>{label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function UsageRhythm({ ins }: { ins: UsageInsights }) {
   const t = useT();
   return (
@@ -111,6 +131,7 @@ export function UsageRhythm({ ins }: { ins: UsageInsights }) {
       <section className="uv2-sec">
         <SectionHead title={t("usageV2.rhythm.ctx")} meta={t("usageV2.rhythm.ctxMeta")} />
         <CtxChart hist={ins.ctxHist} hot={ins.ctxHot} />
+        <OutcomeCells ins={ins} />
       </section>
     </div>
   );

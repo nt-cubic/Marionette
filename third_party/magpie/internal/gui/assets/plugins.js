@@ -1,12 +1,7 @@
-// Plugins: the market of OpenCode provider plugins — subscriptions magpie
-// signs in to through someone else's code. Discover lists the plugins
-// magpie suggests (the community repo's list, with what npm says of each
-// now) and finds the rest on npm; Installed is what was added, to sign in
-// with, update, switch off or remove. Each part is drawn as it comes
-// (#488): what's installed from /api/plugins, the plugins suggested from
-// /api/plugins/listings, and what npm says of them (versions, downloads)
-// from /api/plugins/npm after; a sign-in happens in the Providers add
-// sheet, as every other subscription's does.
+// Plugins: the market of OpenCode plugins. Discover lists the suggested
+// ones and finds the rest on npm; Installed is what was added. Each part is
+// drawn as it comes (#488): /api/plugins, /api/plugins/listings, then
+// /api/plugins/npm; a sign-in happens in the Providers add sheet.
 (() => {
   const page = $("#view-plugins");
   if (!page) return;
@@ -169,11 +164,8 @@
     own: !!(r.name || r.summary),
     npm: { version: r.version || "", publisher: r.owner, repository: r.url, license: r.license, weekly: 0 },
   });
-  // A failed ask is said, with why, whether or not a list was had before:
-  // an empty list was read as there being no unofficial plugins (till on
-  // Discord: GitHub unreachable from their desktop, the section gone).
-  // A list had before stands through a failed ask that brings none.
-  // again: Try again, which has magpie ask GitHub at once.
+  // A failed ask is said, with why, list or not (till on Discord); a list
+  // had before stands. again: Try again, which asks GitHub at once.
   async function loadTagged(again) {
     try {
       const r = await api("plugins/github" + (again ? "?again=1" : ""));
@@ -1272,7 +1264,7 @@
     if (mw && !e.off && !ask) who.append(mwLine(mw));
     if (gw && !e.off && !ask) who.append(gatewayLine(gw));
     if (ag && !e.off && !ask) who.append(agentLine(ag));
-    if (e.tools?.length && !e.off && !ask) who.append(toolsLine(e.tools));
+    if (e.tools?.length && !e.off && !ask) who.append(toolsLine(e.tools, e));
     // off too: what its page may read is said before it is turned on
     if (e.page && !ask) who.append(pageLine(e.page));
     if (e.panels?.length && !ask) who.append(panelsLine(e.panels, e.panelReads));
@@ -1328,6 +1320,8 @@
       r.append(val);
       return r;
     }
+    const flip = e.tools?.length && !e.off && toolsFlip(e);
+    if (flip) val.append(flip);
     if ((e.isGateway || (mw && !mw.error) || ownOpts) && !e.off && editing?.pkg !== pkg) {
       const o = el("button", "text", t("Options"));
       o.title = e.options ? t("The options it runs with") : t("It runs with no options; its package suggests some");
@@ -1477,15 +1471,30 @@
   // toolsLine is the tools a plugin gives, which magpie's plugin tools MCP
   // server offers every agent: each by the name an agent sees, its
   // description on hover, and the server's address to copy into an agent
-  function toolsLine(tools) {
-    const d = el("div", "sub pm-mw pm-tools");
-    d.append(el("span", "", t("Tools for every agent: {names}", { names: tools.map((x) => x.mcp || x.name).join(t(", ")) })));
+  // and, with its Library server (toolsServer), a switch for every agent
+  function toolsLine(tools, e) {
+    const d = el("div", "sub pm-mw pm-tools"), sv = e.toolsServer;
+    const names = tools.map((x) => x.mcp || x.name).join(t(", "));
+    d.append(el("span", "", t(!sv ? "Tools for every agent: {names}" : sv.on ? "Tools for agents: {names}" : "Tools, hidden from agents: {names}", { names })));
     d.title = tools.map((x) => (x.mcp || x.name) + (x.description ? " — " + x.description : "")).join("\n");
     const url = mcpAddress(state.settings || {}, "/mcp/magpie/tools");
     const b = copyBtn(url, t("MCP server address"));
     b.title = t("Copy the MCP server's address ({url}): add it to an agent as an MCP server (Streamable HTTP)", { url });
     d.append(b);
     return d;
+  }
+  // toolsFlip gives a plugin's tools to every agent or hides them, among
+  // the row's buttons (on the tools line it sat a line below them)
+  function toolsFlip(e) {
+    const sv = e.toolsServer;
+    if (!sv || gatewayMode || featuresOff.has("library")) return null;
+    const f = el("button", "text pm-tools-flip", t(sv.on ? "Hide from agents" : "Give to agents"));
+    f.onclick = (ev) => {
+      ev.stopPropagation();
+      f.disabled = true;
+      api("library/servers/plugin-on", { name: sv.plugin, on: !sv.on }).then(refresh, (err) => { f.disabled = false; statusErr(err); });
+    };
+    return f;
   }
 
   // what a plugin's page may read of magpie's: what its package.json's
@@ -1782,8 +1791,8 @@
         wait.leave();
       }
       holdModal();
-      d.animate([{ height: h + "px", top: y, overflow: "hidden" }, { height: d.offsetHeight + "px", top: d.style.top, overflow: "hidden" }], { duration: 570, easing: SPRING });
-      n.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 300, easing: "ease-out" });
+      d.animate([{ height: h + "px", top: y, overflow: "hidden" }, { height: d.offsetHeight + "px", top: d.style.top, overflow: "hidden" }], { duration: 460, easing: SPRING });
+      n.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 240, easing: "ease-out" });
     };
     try {
       const p = await api("plugins/page?name=" + encodeURIComponent(l.package));

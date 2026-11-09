@@ -36,7 +36,6 @@ const DISPLAY_NAME: Record<string, string> = {
   "web-deepseek": "DeepSeek",
   opencode: "OpenCode",
   pi: "Pi",
-  hermes: "Hermes",
   "web-chatgpt": "ChatGPT",
 };
 

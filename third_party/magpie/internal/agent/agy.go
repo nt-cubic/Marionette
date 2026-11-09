@@ -40,6 +40,7 @@ import (
 
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/update"
 )
 
@@ -115,9 +116,16 @@ func agyFunction(kind, prog string) string {
 }`
 	}
 	q := "'" + strings.ReplaceAll(prog, "'", `'\''`) + "'"
-	// "function": a name the user aliased isn't expanded where it is defined
-	return "function agy {\n  if [ -x " + q + " ]; then " + q + ` agy run "$@"; else command agy "$@"; fi` + "\n}"
+	return agyPosixHead + "  if [ -x " + q + " ]; then " + q + ` agy run "$@"; else command agy "$@"; fi` + "\n}"
 }
+
+// agyPosixHead opens the function agy in a POSIX shell's profile. It is
+// "agy() {", not bash's "function agy {", which dash refuses: a ~/.profile
+// that reads ~/.bashrc is read by sh -lc too, as Debian's dash (ljlwlcz on
+// X: fnOS, where an SSH probe's sh -lc failed on it). An alias named agy
+// would be expanded in "agy()", so it is taken out first, on a line of its
+// own, since a shell expands aliases a line at a time.
+const agyPosixHead = "unalias agy 2>/dev/null || true\nagy() {\n"
 
 // agyDistroProfiles are the profiles of a WSL distro's shells the
 // function goes in, as magpie opens them: bash's ~/.bashrc (which the
@@ -179,7 +187,7 @@ func agyDistroFunction(kind, key, gw string) string {
 			"    if test -n \"$m\"\n        set argv --model $m $argv\n    end\n" +
 			"    env GEMINI_API_KEY=" + fq(key) + " GOOGLE_GEMINI_BASE_URL=" + fq(gw) + " agy $argv\nend"
 	}
-	return "function agy {\n" +
+	return agyPosixHead +
 		"  local m a\n" +
 		"  m=$(sed -n " + q(agyDistroModel) + " " + settings + " 2>/dev/null | head -n 1)\n" +
 		`  if [ -z "$m" ]; then command agy "$@"; return; fi` + "\n" +
@@ -393,7 +401,31 @@ func agyIn(at place) *Agent {
 				}
 				return withVia(group("Antigravity CLI", own), "agy", magpieID+"/")
 			},
-		}},
+		}, agyEffortField(func() bool { return !at.cold && usesMagpie(get()) })},
+	}
+}
+
+// agyEffortField is how hard agy's models reason, picked in its row. agy
+// 1.5 has --effort for one session only, which it allows for a model
+// whose name it knows and turns away for magpie's ("not adjustable" in
+// /effort, xyenon on Discord), and settings.json has no key for it
+// (--settings: unknown setting "effort"). Its request asks
+// thinkingBudget -1, the model's own choice. The gateway asks its
+// requests for the level picked here (provider.AgentEffort), as the
+// model takes it (withGeminiEffort); with none they go as agy asks.
+// Shown only while agy is on magpie's models, and never read at a
+// stopped distro (#3896).
+func agyEffortField(on func() bool) Field {
+	return Field{
+		Key: "effort", Label: "effort",
+		Get: func() string { return provider.AgentEffort("agy") },
+		Set: func(v string) error { return provider.SetAgentEffort("agy", v) },
+		Options: func(map[string]string) []Option {
+			if !on() {
+				return nil
+			}
+			return pickedEfforts("agy")
+		},
 	}
 }
 

@@ -300,6 +300,26 @@ function lanShown(urls, container, bridge) {
 function gwLAN(g) {
   return lanShown(g?.lan && g.lanURLs || [], !!g?.container, g?.lan && g.containerHost || "");
 }
+// addrWho: the words every list of the gateway's addresses names one by,
+// for g (providers' gateway, or Settings' read as one): this computer's,
+// the one other containers on this host use, one on the internet, and
+// MAGPIE_PUBLIC_URL by its kind, a private address being the local
+// network's like the rest. jiezhengj on Discord: Connect called the NAS's
+// 192.168.31.218 "Public address" (公网地址) and the Docker bridge's
+// 172.17.0.1 "Local network", while the list above it said otherwise.
+function addrWho(g, u, others = []) {
+  if (u === g.url) return t("This computer");
+  if (others.includes(u)) return t("Other containers on this host");
+  if ((g.lanPublic || []).includes(u) || u === g.publicURL && g.publicKind === "internet") return t("On the internet");
+  if (u === g.publicURL && g.publicKind !== "local") return t("Public address");
+  return t("Local network");
+}
+// pubWho: About's MAGPIE_PUBLIC_URL row, from /api/settings, by addrWho
+// (a private address is the local network's; jiezhengj on Discord)
+function pubWho(s) {
+  return addrWho({ url: s.gateway, publicURL: s.publicURL, publicKind: s.publicKind, lanPublic: s.lanPublic }, s.publicURL,
+    s.lanContainerHost ? [s.lanContainerHost] : []);
+}
 // gwFar: where other machines reach the gateway, for the sidebar and the
 // key page: other containers' address only when there is no other
 function gwFar(g) {

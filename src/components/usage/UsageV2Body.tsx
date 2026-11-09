@@ -3,7 +3,7 @@ import { Download } from "lucide-react";
 import { useT } from "../../lib/i18n";
 import { agentDisplayName, agentInkStyle } from "../../lib/agentInk";
 import { exportUsageCsv, useUsageLedger } from "../../lib/usageLedger";
-import { aggregateInsights, type InsightRange } from "../../lib/usageInsights";
+import { aggregateInsights, type InsightRange, type SessionRow } from "../../lib/usageInsights";
 import { fetchPriceCatalog, type RateIndex } from "../../lib/tokenPrices";
 import { revealInFileManager } from "../../lib/api";
 import { dismissToast, showToast } from "../../lib/toast";
@@ -15,6 +15,8 @@ import { UsageAgents } from "./UsageAgents";
 import { UsageActivity } from "./UsageActivity";
 import { UsageRhythm } from "./UsageRhythm";
 import { UsageSessions } from "./UsageSessions";
+import { UsageSessionDetail } from "./UsageSessionDetail";
+import { UsageBackfill } from "./UsageBackfill";
 import { UsageLegend } from "./UsageLegend";
 
 /**
@@ -33,6 +35,7 @@ export function UsageV2Body({ onOpenSession }: { onOpenSession?: (id: string) =>
   const [agent, setAgent] = useState<string | null>(null);
   const [prices, setPrices] = useState<RateIndex | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [detail, setDetail] = useState<SessionRow | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -122,7 +125,16 @@ export function UsageV2Body({ onOpenSession }: { onOpenSession?: (id: string) =>
           <UsageAgents ins={ins} />
           <UsageActivity ins={ins} />
           <UsageRhythm ins={ins} />
-          <UsageSessions ins={ins} onOpenSession={onOpenSession} />
+          <UsageSessions ins={ins} onOpenSession={onOpenSession} onOpenDetail={setDetail} />
+          {detail && (
+            <UsageSessionDetail
+              sessionId={detail.id}
+              label={detail.label}
+              agentId={detail.agentId}
+              onClose={() => setDetail(null)}
+            />
+          )}
+          <UsageBackfill range={range} agent={agent} />
           <UsageLegend />
         </>
       )}

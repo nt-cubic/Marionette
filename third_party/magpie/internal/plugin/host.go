@@ -120,7 +120,7 @@ type call struct {
 	// the body's reader takes them: the host's reader queues them without
 	// ever waiting on one request's consumer (see push).
 	stream      bool
-	cancellable bool // a gateway request or sign-in step owns asynchronous I/O, without a stream slot
+	cancellable bool // asynchronous I/O of its own, without a stream slot: an aborted call is told to the host
 	mu          sync.Mutex
 	queue       []message
 	queued      int           // the queued chunks' decoded bytes
@@ -498,6 +498,9 @@ type host struct {
 	// fake hosts, which have no child
 	output *proc.Output
 	waited func() error
+	// tree is the child with what it starts (Output.StartTree), ended
+	// together; nil in the fake hosts
+	tree *proc.Tree
 }
 
 // wait is the child's end: what Wait said, once it has ended and the
@@ -923,8 +926,21 @@ func (h *host) stop() {
 		case <-tick.C:
 		}
 	}
+	h.kill()
+}
+
+// kill ends the host's child and every process it started: a plugin's
+// headless browser or daemon outlived a host killed alone, with no parent
+// to end it (620 msedge.exe and 57GB of temp profiles in an hour on one
+// Windows machine, #5402). The tree is the host's session on Unix and its
+// job on Windows (proc.StartTree), so nothing outside it is reached.
+func (h *host) kill() {
+	if h.tree != nil {
+		h.tree.Kill()
+		return
+	}
 	if h.cmd.Process != nil {
-		h.cmd.Process.Kill()
+		_ = h.cmd.Process.Kill()
 	}
 }
 
@@ -1094,7 +1110,8 @@ func startOn(ctx context.Context, bun string) (*host, bool, error) {
 		output.Close()
 		return nil, false, errHostsEnded
 	}
-	waited, err := output.Start(cmd)
+	// in a tree of its own: what its plugins start is ended with it
+	tree, waited, err := output.StartTree(cmd)
 	if err != nil {
 		live.Unlock()
 		return nil, false, err
@@ -1116,6 +1133,7 @@ func startOn(ctx context.Context, bun string) (*host, bool, error) {
 		addr:     addr,
 		output:   output,
 		waited:   waited,
+		tree:     tree,
 	}
 	live.hosts[h] = true
 	live.Unlock()
@@ -1165,6 +1183,11 @@ func startOn(ctx context.Context, bun string) (*host, bool, error) {
 		"plugins":       items,
 		"loadMillis":    pluginLoadWait.Milliseconds(),
 		"listMillis":    pluginListWait.Milliseconds(),
+		"heavy": map[string]any{
+			"mb":          heavyMB,
+			"afterMillis": heavyAfter.Milliseconds(),
+			"everyMillis": heavyEvery.Milliseconds(),
+		},
 	}, &res)
 	if err != nil {
 		crashed := !h.alive()
@@ -1236,6 +1259,41 @@ var (
 	pluginListWait = 20 * time.Second
 )
 
+// heavyMB is how much memory a host may hold before it is replaced:
+// past it, and still past it after a full collection, the host says so
+// ("heavy") and a new host takes the calls made from then on while the
+// old one finishes its own (recycle). A plugin that holds on to what
+// its requests leave behind grows the shared host until the system ends
+// it: 783 MiB after 2h25m on a small Linux server, where the kernel's
+// OOM killer took it, with four plugins and their requests going through
+// it. Measured with every plugin of that report loaded and 3000 600KB
+// requests, 4 at a time, a host holds 84 to 236 MiB, so the bound leaves
+// room for that twice over. The host checks every heavyEvery, once it
+// has been up heavyAfter; tests shorten all three.
+var (
+	heavyMB    = 512
+	heavyAfter = 10 * time.Minute
+	heavyEvery = time.Minute
+)
+
+// recycle replaces h, when it is still the host calls go to, as a plugin
+// update does (Restart): the calls h is answering finish on it, and the
+// next call starts a new host. recycles counts the hosts it replaced.
+func (h *host) recycle() {
+	hostMu.Lock()
+	if current != h {
+		hostMu.Unlock()
+		return
+	}
+	current = nil
+	hostMu.Unlock()
+	recycles.Add(1)
+	h.retire()
+	changed()
+}
+
+var recycles atomic.Int64
+
 // drainStderr logs the child's stderr a line at a time. A line over 4 MiB
 // stops the scanner; the rest is read and dropped, so the child is never left
 // blocked on a pipe nobody reads, and the log says from where.
@@ -1265,9 +1323,7 @@ func (h *host) read(out io.Reader) {
 		if errors.Is(err, errLineTooLong) {
 			// a child that never ends a line: stop it rather than allocate
 			h.fail(fmt.Errorf("the plugin host sent a line longer than %d bytes", h.lineLimit()))
-			if h.cmd.Process != nil {
-				_ = h.cmd.Process.Kill()
-			}
+			h.kill()
 			break
 		}
 		if err != nil {
@@ -1371,6 +1427,9 @@ func (h *host) dispatch(m message) {
 			log.Printf("plugin: %s %s", m.Title, m.Message)
 		case "log":
 			log.Printf("plugin [%s]: %s", m.Level, m.Message)
+		case "heavy":
+			log.Printf("plugin: the host holds %d MiB after a collection; a new one takes the next calls", m.Count)
+			go h.recycle()
 		}
 		return
 	}
@@ -1735,11 +1794,6 @@ func (h *host) releaseSlot(c *call) {
 	}
 }
 
-// cancellable are the methods whose work the host ends when their caller
-// gives up: a gateway request's I/O, and a sign-in's steps, so a sign-in
-// cancelled or timed out saves nothing the plugin answers after (#5016).
-var cancellable = map[string]bool{"gatewayRequest": true, "authorize": true, "callback": true, "apiKey": true}
-
 // call asks the host method with params and reads its answer into out.
 func (h *host) call(ctx context.Context, method string, params, out any) error {
 	id, c, err := h.begin(false)
@@ -1747,7 +1801,14 @@ func (h *host) call(ctx context.Context, method string, params, out any) error {
 		return err
 	}
 	c.mu.Lock()
-	c.cancellable = cancellable[method]
+	// An ordinary RPC is cancellable too: a caller whose context ends has
+	// the host told, so its plugin work is not left running unseen (#4678).
+	// A gateway request and a sign-in's steps were already; now every other
+	// call but init is as well, and a sign-in cancelled or timed out still
+	// saves nothing the plugin answers after (#5016). init is the exception:
+	// a start that overruns is stopped whole, and aborting it would only
+	// interrupt its own load.
+	c.cancellable = method != "init"
 	c.mu.Unlock()
 	if err := h.enqueueCall(ctx, map[string]any{"id": id, "method": method, "params": params}, nil, c); err != nil {
 		c.settle(err)

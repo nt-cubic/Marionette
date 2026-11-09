@@ -42,6 +42,12 @@ type Seat struct {
 	WeekLow bool
 	// Soon is when its windows renew, the biggest first (Allowance.Renewal)
 	Soon []time.Time
+	// Unreached is how many of Soon's windows, the biggest first, can no
+	// longer be used up before they renew unless the next one's left is
+	// used before that renews (provider.Allowance.Unreached): Smart ranks
+	// it by the next one, as what that leaves at its reset is lost
+	// (#5639). 0 for every account whose windows don't tell their counts.
+	Unreached int
 	// Lapse is when the soonest of what it has left is lost, apart from
 	// its windows' renewals (Allowance.Lapse): zero when not told. Smart
 	// goes by it when Soon ties.
@@ -75,6 +81,10 @@ type Seat struct {
 	// out never put it behind the others (seatTier), so it keeps the
 	// place an account with room has.
 	First bool
+	// Lead: its provider is set to be used first (provider.Provider.
+	// UseFirst). Smart puts such seats ahead of the others while they have
+	// quota (seatTier below 2), in Smart's own order among themselves.
+	Lead bool
 	// TTFT is how long it took lately to the first of its reply, in ms,
 	// for the model this seat would be asked for: a decayed average of its
 	// recent streamed answers, 0 when it hasn't answered one lately.

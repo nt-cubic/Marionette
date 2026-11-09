@@ -1251,7 +1251,6 @@ pub fn probe_agent_auth(
         "cline" => probe_cline_auth(),
         "gemini" => probe_gemini_auth(),
         "pi" => probe_pi_auth(),
-        "hermes" => probe_hermes_auth(),
         "codebuddy" => probe_codebuddy_auth(),
         "opencode" => probe_opencode_auth(model_id.as_deref()),
         "deepseek" | "deepseek-acp" => probe_deepseek_auth(),
@@ -1681,47 +1680,6 @@ fn probe_pi_auth() -> Result<serde_json::Value, String> {
     }
 }
 
-fn probe_hermes_auth() -> Result<serde_json::Value, String> {
-    let Some(hermes) = home_dir().map(|h| h.join(".hermes")) else {
-        return Ok(auth_result(
-            "hermes",
-            "logged_out",
-            "Hermes is not configured (run `hermes acp --setup`)",
-        ));
-    };
-    let has_oauth = hermes.join("auth.json").exists();
-    let env_has_key = fs::read_to_string(hermes.join(".env"))
-        .unwrap_or_default()
-        .lines()
-        .any(|line| {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                return false;
-            }
-            let Some(eq) = line.find('=') else {
-                return false;
-            };
-            let key = line[..eq].trim().to_ascii_uppercase();
-            let value = line[eq + 1..].trim();
-            (key.contains("API_KEY") || key.contains("TOKEN"))
-                && !value.is_empty()
-                && !value.starts_with("${")
-        });
-    if has_oauth || env_has_key {
-        Ok(auth_result(
-            "hermes",
-            "logged_in",
-            "Hermes credentials found (~/.hermes)",
-        ))
-    } else {
-        Ok(auth_result(
-            "hermes",
-            "logged_out",
-            "Hermes has no credentials (run `hermes acp --setup`)",
-        ))
-    }
-}
-
 /// CodeBuddy keeps credentials in the OS keyring — only env vars or local
 /// storage can be probed; absence is "unknown", never "logged_out".
 fn probe_codebuddy_auth() -> Result<serde_json::Value, String> {
@@ -2037,12 +1995,6 @@ pub fn start_agent_login(agent_id: String) -> Result<serde_json::Value, String> 
             &[][..],
             "pi",
             "Opened Pi — run `/login` in the terminal window, then return here.",
-        ),
-        "hermes" => (
-            "hermes",
-            &["acp", "--setup"][..],
-            "hermes",
-            "Opened Hermes setup — configure provider and sign in in the terminal window, then return here.",
         ),
         "codebuddy" => (
             "codebuddy",

@@ -44,6 +44,7 @@ import { en as enFeUv2B } from "./parts/fe-uv2b.en";
 import { en as enFeUv2C } from "./parts/fe-uv2c.en";
 import { en as enFeUv2D } from "./parts/fe-uv2d.en";
 import { en as enFeUv2E } from "./parts/fe-uv2e.en";
+import { en as enFeUv2F } from "./parts/fe-uv2f.en";
 
 export const en = {
   ...enCommon,
@@ -86,4 +87,5 @@ export const en = {
   ...enFeUv2C,
   ...enFeUv2D,
   ...enFeUv2E,
+  ...enFeUv2F,
 } satisfies Record<keyof typeof zh, string>;

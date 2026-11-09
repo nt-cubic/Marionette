@@ -74,22 +74,6 @@ pub fn run_preflight_with_cmd(agent_id: &str, command_override: Option<&str>) ->
         DistributionKind::Npx => {
             checks.extend(check_node_npm(meta.node_required));
         }
-        DistributionKind::Uvx => {
-            checks.extend(check_uv(meta.uv_required));
-            if command_missing("hermes") && command_missing("uvx") && command_missing("uv") {
-                // already covered by individual checks; add summary warn if uv missing
-            }
-            if let Some(py) = meta.python_pin {
-                checks.push(CheckItem {
-                    check_id: "python_pin".into(),
-                    label: "Python for uvx".into(),
-                    status: CheckStatus::Pass,
-                    message: format!(
-                        "uvx should use --python {py} (Hermes requires <3.14)"
-                    ),
-                });
-            }
-        }
         DistributionKind::Binary | DistributionKind::Manual => {
             // binary_cache / vendor installer later — only PATH matters for now
         }
@@ -115,13 +99,6 @@ pub fn run_preflight_with_cmd(agent_id: &str, command_override: Option<&str>) ->
         passed,
         checks,
     }
-}
-
-fn command_missing(cmd: &str) -> bool {
-    matches!(
-        process_util::resolve_command_display_path(cmd),
-        Ok(None) | Err(_)
-    )
 }
 
 fn command_on_path(check_id: &str, cmd: &str, label: &str) -> CheckItem {
@@ -193,51 +170,6 @@ fn check_node_npm(node_required: Option<&str>) -> Vec<CheckItem> {
     out
 }
 
-fn check_uv(uv_required: Option<&str>) -> Vec<CheckItem> {
-    let mut out = Vec::new();
-    // `uv` or `uvx` on PATH is enough to install/run Hermes.
-    let uv_ver = run_version("uv", &["--version"]).or_else(|| {
-        run_version("uvx", &["--version"]).map(|s| {
-            // uvx --version may say "uvx 0.x" — keep raw
-            s
-        })
-    });
-    match uv_ver {
-        Some(v) => {
-            out.push(CheckItem {
-                check_id: "uv_available".into(),
-                label: "uv / uvx".into(),
-                status: CheckStatus::Pass,
-                message: v,
-            });
-            if let Some(req) = uv_required {
-                // Best-effort parse first semver-like token
-                if let Some(sem) = first_semver_token(
-                    &out
-                        .last()
-                        .map(|c| c.message.clone())
-                        .unwrap_or_default(),
-                ) {
-                    out.push(version_at_least_check(
-                        "uv_version",
-                        "uv version",
-                        &sem,
-                        req,
-                    ));
-                }
-            }
-        }
-        None => out.push(CheckItem {
-            check_id: "uv_available".into(),
-            label: "uv / uvx".into(),
-            status: CheckStatus::Fail,
-            message: "uv/uvx not found — install https://docs.astral.sh/uv/ to run Hermes via uvx"
-                .into(),
-        }),
-    }
-    out
-}
-
 fn run_version(cmd: &str, args: &[&str]) -> Option<String> {
     let resolved = process_util::resolve_spawn_command(cmd).ok()?;
     let mut cmd = Command::new(&resolved.program);
@@ -300,24 +232,6 @@ fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
     let minor = nums.next().unwrap_or("0").parse().unwrap_or(0);
     let patch = nums.next().unwrap_or("0").parse().unwrap_or(0);
     Some((major, minor, patch))
-}
-
-fn first_semver_token(s: &str) -> Option<String> {
-    for token in s.split_whitespace() {
-        let t = token.trim_start_matches('v');
-        if parse_semver(t).is_some() {
-            return Some(t.to_string());
-        }
-        // "uv 0.6.1" style — skip word, next may be version
-    }
-    // try any substring matching N.N
-    for word in s.split(|c: char| c.is_whitespace() || c == ',') {
-        let t = word.trim_start_matches('v');
-        if parse_semver(t).is_some() {
-            return Some(t.to_string());
-        }
-    }
-    None
 }
 
 #[cfg(test)]

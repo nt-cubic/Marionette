@@ -28,13 +28,13 @@ func init() { provider.ReckonHolds = WithWindowHolds }
 func WithWindowHolds(qs []provider.SubscriptionQuota, now time.Time) []provider.SubscriptionQuota {
 	since, ok := holdsSince(qs, now)
 	if !ok { // none can be reckoned: each one only says why
-		return windowHolds(qs, now, time.Time{}, nil, provider.Renames{}, nil, func(func(Record)) {})
+		return windowHolds(qs, now, time.Time{}, nil, provider.Renames{}, nil, nil, func(func(Record)) {})
 	}
 	s := readLogSnapshot()
 	hist := provider.QuotaHistories(since, "", "")
 	started := withRecordedWindowStarts(qs, hist, now)
 	dry := dryRuns(started, hist, now)
-	out := windowHolds(started, now, s.firstOwn, apiPricer(), provider.UsageRenames(), dry, func(fn func(Record)) { s.visit(since, fn) })
+	out := windowHolds(started, now, s.firstOwn, apiPricer(), provider.UsageRenames(), provider.SamePlanAccounts(), dry, func(fn func(Record)) { s.visit(since, fn) })
 	return withSpansOf(out, qs)
 }
 
@@ -180,8 +180,11 @@ func dryRuns(qs []provider.SubscriptionQuota, hist []provider.QuotaHistory, now 
 // it has calls magpie can't see, and isn't reckoned. Nor is a window with a
 // call in one of its account's dry runs that may have been paid otherwise:
 // one where the vendor answered a call after a reading of none left, or
-// where no reading with some left is known before it.
-func windowHolds(qs []provider.SubscriptionQuota, now, first time.Time, priceOf func(Record) *catalog.Price, renamed provider.Renames, dry map[string][]dryRun, read func(func(Record))) []provider.SubscriptionQuota {
+// where no reading with some left is known before it. same maps an account
+// to the one whose card reads the plan it draws on (a ChatGPT API account
+// to the same ChatGPT account in Codex, provider.SamePlanAccounts): its
+// calls are counted as that one's.
+func windowHolds(qs []provider.SubscriptionQuota, now, first time.Time, priceOf func(Record) *catalog.Price, renamed provider.Renames, same map[string]string, dry map[string][]dryRun, read func(func(Record))) []provider.SubscriptionQuota {
 	type slot struct{ q, w int }
 	type span struct{ start, end time.Time }
 	want := map[slot]span{}
@@ -231,6 +234,9 @@ func windowHolds(qs []provider.SubscriptionQuota, now, first time.Time, priceOf 
 			who = r.ProviderKeyName
 		}
 		acct := r.Provider + "\x00" + strings.ToLower(who)
+		if to, ok := same[acct]; ok {
+			acct = to
+		}
 		var runs []runKey
 		for i, d := range dry[acct] {
 			if !d.holds(r.Time) {
@@ -308,10 +314,13 @@ func windowHolds(qs []provider.SubscriptionQuota, now, first time.Time, priceOf 
 // is the same as (provider.SamePriceIn), never a price the user set for the
 // subscription (which may well be nothing) nor a rate it bills at. A model
 // none of those prices is priced as the model the reply named (Served), as
-// the ledger is (#1498). A price of nothing at all is no API price.
+// the ledger is (#1498), and so is a call the vendor answered with another
+// model (servedInstead, #5340) when that one has a price. A price of
+// nothing at all is no API price.
 func apiPricer() func(Record) *catalog.Price {
 	st := settings.Load()
-	prices := map[[3]string]*catalog.Price{}
+	wires := st.Wires()
+	prices := map[[4]string]*catalog.Price{}
 	one := func(providerID, model string) *catalog.Price {
 		v, ok := provider.MakerPrice(model)
 		if !ok || v.Cost(1e6, 1e6, 0, 0) == 0 {
@@ -335,11 +344,20 @@ func apiPricer() func(Record) *catalog.Price {
 			served = ""
 		}
 		id := r.priceID()
-		k := [3]string{id, r.Model, served}
+		k := [4]string{id, r.Model, served, r.Effort}
 		if pr, ok := prices[k]; ok {
 			return pr
 		}
-		pr := one(id, r.Model)
+		// a call the vendor answered with another model is priced as the
+		// model that ran (#5340), the asked-for one's price standing when
+		// that one has none
+		var pr *catalog.Price
+		if servedInstead(wires, id, r.Model, r.Effort, served) {
+			pr = one(id, served)
+		}
+		if pr == nil {
+			pr = one(id, r.Model)
+		}
 		if pr == nil && served != "" {
 			pr = one(id, served)
 		}

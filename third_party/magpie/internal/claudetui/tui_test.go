@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -194,6 +195,47 @@ func fakeOnboard(r *bufio.Reader, how string) {
 	_ = os.WriteFile(filepath.Join(cfg, "onboarded"), nil, 0o600)
 }
 
+// fakeChrome shows Claude Code 2.1.319's Claude in Chrome offer, drawn
+// where the extension is found and no answer is recorded: "No, keep
+// browser tools off" chosen. As 2.1.319's dialogs do, it turns away a key
+// that comes within refuse of its opening and draws nothing again for it;
+// a later Esc is the offer declined, recorded in the config folder, and
+// it isn't shown again. With "deaf" it takes no key.
+func fakeChrome(r *bufio.Reader, how string) {
+	cfg := os.Getenv("CLAUDE_CONFIG_DIR")
+	if _, err := os.Stat(filepath.Join(cfg, "chrome-declined")); err == nil {
+		return
+	}
+	const refuse = 700 * time.Millisecond
+	fmt.Print("\x1b[2J\x1b[H\r\n ╭───────────────────────────────────────╮\r\n │\x1b[1CClaude\x1b[1Cin\x1b[1CChrome\x1b[1Cextension\x1b[1Cdetected\r\n │\r\n │ Claude will use your Chrome browser by default — navigating sites,\r\n │ filling forms, and capturing screenshots in your existing session.\r\n │\r\n │\x1b[1C\x1b[38;2;177;185;249m❯\x1b[39m\x1b[1CNo,\x1b[1Ckeep\x1b[1Cbrowser\x1b[1Ctools\x1b[1Coff\r\n │   Yes, use my browser\r\n ╰───────────────────────────────────────╯\r\n  Enter to confirm · Esc to keep browser tools off\r\n")
+	opened := time.Now()
+	for {
+		c, err := r.ReadByte()
+		if err != nil {
+			os.Exit(0)
+		}
+		if how == "deaf" || time.Since(opened) < refuse {
+			continue
+		}
+		if c == 0x1b {
+			_ = os.MkdirAll(cfg, 0o700)
+			_ = os.WriteFile(filepath.Join(cfg, "chrome-declined"), nil, 0o600)
+			fmt.Print("\x1b[2J\x1b[H")
+			return
+		}
+	}
+}
+
+// namesImage is pasted words with a line Claude Code 2.1.318 tries as an
+// image file before it takes them in: one that ends naming one.
+var namesImage = regexp.MustCompile(`(?im)\.(png|jpe?g|gif|webp)[ \t]*$`)
+
+// nameWait is how long the fake takes words that name an image file to
+// take in. Claude Code took 0.45s, asking the clipboard for the file; the
+// fake's is longer than its image's 200ms and the Enter after it, for an
+// Enter that doesn't wait for the words to come before them.
+const nameWait = time.Second
+
 func fakeClaude(args []string) {
 	if slices.Contains(args, "-p") {
 		sc := bufio.NewScanner(os.Stdin)
@@ -211,6 +253,19 @@ func fakeClaude(args []string) {
 		fmt.Print("\r\nStarting up…\r\n")
 		time.Sleep(time.Minute)
 		os.Exit(0)
+	}
+	if v := os.Getenv("FAKE_KEYCHAIN"); v != "" {
+		// reads its Keychain sign-in before it draws anything, as Claude
+		// Code does, and the read never answers (sowhynot)
+		c := exec.Command(v, "find-generic-password", "-a", "u", "-w", "-s", "Claude Code-credentials")
+		c.Stdin = os.Stdin
+		_ = c.Run()
+		os.Exit(1)
+	}
+	if os.Getenv("FAKE_SILENT") == "1" {
+		// draws nothing, and runs nothing meanwhile
+		time.Sleep(time.Minute)
+		os.Exit(1)
 	}
 	if os.Getenv("FAKE_LOGIN") == "1" {
 		// signed in for -p alone: the interactive mode asks how to sign in
@@ -237,6 +292,9 @@ func fakeClaude(args []string) {
 	if v := os.Getenv("FAKE_BYPASS"); v != "" {
 		fakeBypass(r, v == "deaf")
 	}
+	if v := os.Getenv("FAKE_CHROME"); v != "" {
+		fakeChrome(r, v)
+	}
 	// what it was started with, for the test to read
 	_ = os.WriteFile(filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), "args"), []byte(strings.Join(args, "\n")), 0o600)
 	// FAKE_TAP: Bun loads the tap BUN_OPTIONS names, which says so, and
@@ -260,12 +318,36 @@ func fakeClaude(args []string) {
 	}
 	streams := 0
 	fmt.Print("\r\n❯ ")
-	// the prompt's words; an image file's path pasted alone is read a
-	// moment later and becomes "[Image #<n>:<its bytes>]" where the
-	// prompt's words end then
+	// the prompt's words, and the prompt as drawn, again as a paste
+	// starts and as one is taken in. As Claude Code 2.1.318 does, it draws
+	// a paste of over 800 bytes or 2 line breaks as "[Pasted text #<n>
+	// +<breaks> lines]", numbered with the images. An image file's path
+	// pasted alone is read a moment later and becomes "[Image #<n>:<its
+	// bytes>]" where the prompt's words end then; words with a line that
+	// names an image file are tried as one first, and taken in after
+	// nameWait. One mark of a paste being taken in stands for all of them,
+	// and is cleared as any is taken in: an Enter while it is set is lost,
+	// as the one Claude Code holds is when a read ends, and an Enter after
+	// sends the prompt as it stands.
 	var mu sync.Mutex
-	var typed, paste strings.Builder
-	pasting, images := false, 0
+	var typed, drawn, paste strings.Builder
+	pasting, taking, pasted := false, false, 0
+	take := func(text, draw string) {
+		typed.WriteString(text)
+		drawn.WriteString(draw)
+		taking = false
+		fmt.Print("\r❯ " + drawn.String())
+	}
+	takeText := func(p string) {
+		mu.Lock()
+		defer mu.Unlock()
+		draw := p
+		if breaks := strings.Count(p, "\n"); len(p) > 800 || breaks > 2 {
+			pasted++
+			draw = fmt.Sprintf("[Pasted text #%d +%d lines]", pasted, breaks)
+		}
+		take(p, draw)
+	}
 	// retry is what an "r" draws while /usage's panel says it couldn't
 	// load the figures, nil when it says nothing of the kind
 	var retry []byte
@@ -286,22 +368,25 @@ func fakeClaude(args []string) {
 				continue
 			}
 			p := paste.String()
+			mu.Lock()
+			taking = true
+			fmt.Print("\r❯ " + drawn.String())
+			mu.Unlock()
 			if b, err := os.ReadFile(p); err == nil && strings.HasPrefix(filepath.Base(p), "image-") {
-				images++
-				n := images
 				go func() {
 					time.Sleep(200 * time.Millisecond)
 					mu.Lock()
 					defer mu.Unlock()
-					typed.WriteString(fmt.Sprintf("[Image #%d:%s]", n, b))
-					fmt.Printf("[Image #%d]", n)
+					pasted++
+					take(fmt.Sprintf("[Image #%d:%s]", pasted, b), fmt.Sprintf("[Image #%d]", pasted))
 				}()
 				continue
 			}
-			mu.Lock()
-			typed.WriteString(p)
-			mu.Unlock()
-			fmt.Print(p) // drawn in the prompt
+			if namesImage.MatchString(p) {
+				time.AfterFunc(nameWait, func() { takeText(p) })
+				continue
+			}
+			takeText(p)
 			continue
 		case pasting:
 			paste.WriteByte(c)
@@ -313,13 +398,19 @@ func fakeClaude(args []string) {
 		case c != '\r':
 			mu.Lock()
 			typed.WriteByte(c)
+			drawn.WriteByte(c)
 			mu.Unlock()
 			fmt.Printf("%c", c)
 			continue
 		}
 		mu.Lock()
+		if taking {
+			mu.Unlock()
+			continue
+		}
 		line := typed.String()
 		typed.Reset()
+		drawn.Reset()
 		mu.Unlock()
 		if listed != "" {
 			if _, err := os.Stat(listed); err != nil {
@@ -329,6 +420,11 @@ func fakeClaude(args []string) {
 		if tapped != nil {
 			streams++
 			n := streams
+			// FAKE_TAP_LIMITS: the reply's allowance headers, as tap.js
+			// writes them when its stream opens
+			if h := os.Getenv("FAKE_TAP_LIMITS"); h != "" {
+				_, _ = fmt.Fprintf(tapped, `{"s":%d,"open":true,"h":%s}`+"\n", n, h)
+			}
 			for _, e := range []string{`{"type":"message_start","message":{"id":"msg_1","model":"claude-haiku","usage":{"input_tokens":3}}}`,
 				`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
 				`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"echo: "}}`,
@@ -559,7 +655,9 @@ func TestShimPastesImages(t *testing.T) {
 			failed = failed || m["is_error"] == true && strings.Contains(fmt.Sprint(m["result"]), "an image by url")
 		}
 	}
-	if want := `echo: look:\n\n[Image #1:red]\n\nand\n\n[Image #2:blue]\n\nnow"`; !strings.Contains(said, want) {
+	// "and" between its breaks is drawn as pasted text, numbered with the
+	// images
+	if want := `echo: look:\n\n[Image #1:red]\n\nand\n\n[Image #3:blue]\n\nnow"`; !strings.Contains(said, want) {
 		t.Fatalf("Claude Code was sent %s, want %s", said, want)
 	}
 	if !failed {
@@ -570,6 +668,96 @@ func TestShimPastesImages(t *testing.T) {
 	left, _ := filepath.Glob(filepath.Join(filepath.Dir(os.Getenv("MAGPIE_TUI_TEST_CFG")), "tmp", imagesPrefix+"*"))
 	if len(left) > 0 {
 		t.Fatalf("the images are left after their message: %v", left)
+	}
+}
+
+// Words with a line that names an image file ("foo.png" in an ls) are
+// taken in a moment after they are pasted, and an image pasted meanwhile
+// that is taken in first lets Enter send the message without them. Each
+// piece waits for the prompt to show the one before, words as a "[Pasted
+// text" numbered past the paste before them, not one drawn again: the
+// message reaches Claude Code whole, as one whose lines name no image
+// does (#5548).
+func TestShimWaitsForWordsNamingImages(t *testing.T) {
+	image := func(s string) map[string]any {
+		return map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": base64.StdEncoding.EncodeToString([]byte(s))}}
+	}
+	text := func(s string) map[string]any { return map[string]any{"type": "text", "text": s} }
+	for _, ext := range []string{".png", ".txt"} {
+		t.Run(ext, func(t *testing.T) {
+			first := "The codeword is MANGO.\nSome notes.\nfoo" + ext + "\nmore notes."
+			second := "$ ls\nbar" + ext + "\nbaz" + ext + "\nthat is all."
+			last := "(The images above are the tool's results.)\nReply with the codeword."
+			msg, _ := json.Marshal([]any{text(first), image("red"), text(second), image("blue"), text(last)})
+			out := runShim(t, nil, append([]string{fakePath(t)}, pArgs...), []string{string(msg)}, 3)
+			var said string
+			for _, m := range out[1:] {
+				if m["type"] == "assistant" {
+					c, _ := m["message"].(map[string]any)["content"].([]any)
+					said, _ = c[0].(map[string]any)["text"].(string)
+				}
+			}
+			if want := "echo: " + first + "\n\n[Image #2:red]\n\n" + second + "\n\n[Image #4:blue]\n\n" + last; said != want {
+				t.Fatalf("Claude Code was sent %q, want %q", said, want)
+			}
+		})
+	}
+}
+
+// Claude Code 2.1.319 draws a prompt grown past a row again only where
+// it changed, moving the cursor past the cells already right, so what is
+// drawn after a paste can hold a digit of the mark it took: after the
+// 33rd piece of the reporter's message, nineteen images between words,
+// the stream held "3" of "[Image #33]", and the helper waited out
+// pasteWait and ended (#5654, Chapin2018: "ended after 13s (exit status
+// 1)"). Each piece is seen taken on the screen, as Claude Code drew it.
+// The bytes are a real run's, its folder's name changed.
+func TestShimSeesPastesOnAPromptDrawnInPart(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("testdata", "paste-images-2.1.319.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// where the helper cleared the screen, before each paste, and where
+	// the run ended
+	clears := []int{1994, 2794, 3007, 3163, 3281, 3434, 3505, 3605, 3679, 3783, 3857, 3962, 4037, 5372, 5504, 5661, 5733, 5832, 5906, 6011, 6086, 6191, 6266, 7774, 7905, 8062, 8181, 8335, 8407, 8511, 8586, 8691, 8766, 8871, len(b)}
+	// the pieces from the first image on: an image, then words long
+	// enough to be a "[Pasted text", 33 marks in all
+	var images, texts, inPart int
+	for i := 1; i < len(clears); i++ {
+		s := &shim{screen: b[clears[i-1]:clears[i]], grid: newGrid(screenSize())}
+		s.grid.write(b[:clears[i]])
+		on := s.prompt()
+		img, txt := lastMark(imageShown, on), lastMark(textLast, on)
+		switch {
+		case img > 0:
+			images++
+			if n := s.imageTaken(img - 1); n != img {
+				t.Errorf("the paste before %d: image %d not seen taken (%d) on %q", clears[i], img, n, on)
+			}
+			if !strings.Contains(s.plain(), fmt.Sprintf("[Image #%d]", img)) {
+				inPart++
+			}
+		case txt > 0:
+			texts++
+			if n, ok := s.textTaken("", txt-1); !ok || n != txt {
+				t.Errorf("the paste before %d: text %d not seen taken (%d, %v) on %q", clears[i], txt, n, ok, on)
+			}
+			if !textShown.MatchString(s.plain()) {
+				inPart++
+			}
+		}
+	}
+	if images != 17 || texts != 16 {
+		t.Fatalf("read %d images and %d texts (%d in part), want 17 and 16", images, texts, inPart)
+	}
+	// the case this guards: the stream alone misses a mark
+	if inPart == 0 {
+		t.Fatal("every mark was drawn whole: the fixture no longer shows #5654")
+	}
+	s := &shim{screen: b[8871:], grid: newGrid(screenSize())}
+	s.grid.write(b)
+	if n := s.imageTaken(32); n != 33 {
+		t.Fatalf("the last image was seen as %d, want 33, on %q", n, s.prompt())
 	}
 }
 
@@ -761,6 +949,10 @@ func TestShimEndsAtItsCallersDeadline(t *testing.T) {
 		// the disclaimer the spawned claude sat on for 45s, then died in a
 		// loop of them (#5042): said, never "showed no prompt"
 		{"bypass disclaimer unanswered", `{"type":"user","message":{"role":"user","content":"hello"}}`, "asked to accept running in Bypass Permissions mode, not answered in the", "Bypass Permissions mode", []string{"FAKE_BYPASS=deaf", BypassEnv + "=1"}},
+		// the Claude in Chrome offer taking no key: said, with what the
+		// screen shows. Its Esc cleared the screen, and the error ended
+		// on nothing (sowhynot)
+		{"chrome offer unanswered", `{"type":"user","message":{"role":"user","content":"hello"}}`, "asked whether to use Claude in Chrome, not answered in the", "No, keep browser tools off", []string{"FAKE_CHROME=deaf"}},
 		// FAKE_USAGE names no panel: nothing is drawn for /usage
 		{"no /usage panel", `{"type":"command","command":"/usage"}`, "hadn't drawn /usage's panel in the", "", []string{"FAKE_USAGE=" + filepath.Join(t.TempDir(), "none")}},
 		// the banner drawn again and no panel after it: never told as one
@@ -783,6 +975,25 @@ func TestShimEndsAtItsCallersDeadline(t *testing.T) {
 				t.Fatalf("ended after %s, the deadline 3s", d)
 			}
 		})
+	}
+}
+
+// Claude Code 2.1.319's Claude in Chrome offer turns away a key sent just
+// after it opens and draws nothing again: the Esc sent the moment it was
+// drawn was lost, and every run waited on it until its caller gave up,
+// "showed no prompt" and nothing after it (sowhynot, a /usage read and
+// the endpoint test alike). It is declined once it has stayed drawn, and
+// declined again when the screen stays as it was.
+func TestShimDeclinesChromeOffer(t *testing.T) {
+	home := t.TempDir()
+	for run := range 2 {
+		out, stderr, err := runEnds(t, home, []string{"FAKE_CHROME=1"})
+		if err != nil || !strings.Contains(out, "echo: hello") || strings.Contains(out, "print mode") {
+			t.Fatalf("run %d ended %v, wrote %q, stderr %q", run, err, out, stderr)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(home, "claude", "chrome-declined")); err != nil {
+		t.Fatal("the offer wasn't declined")
 	}
 }
 
@@ -958,6 +1169,105 @@ func TestShimReadsUsageBelowTheTwentyFourthRow(t *testing.T) {
 	want := "Current session: 30% used · resets 2pm (Asia/Shanghai)\nCurrent week (all models): 17% used · resets Nov 8 at 4am (Asia/Shanghai)\nCurrent week (Fable): 0% used · resets Nov 8 at 4am (Asia/Shanghai)"
 	if r := out[1]; r["type"] != "result" || r["is_error"] != false || r["result"] != want {
 		t.Fatalf("told %v", r)
+	}
+}
+
+// usagePanel200 is /usage's panel as Claude Code 2.1.316 draws it in the
+// helper's 200 by 50 terminal, from its Usage tab (ko: the tabs, the
+// session's cost, then what gi draws for the plan), a row at a time
+// (CR, ESC[nB). The words are 2.1.316's own; the Enterprise panels below
+// weren't captured from a real account, and are built from them.
+func usagePanel200(t *testing.T, rows ...string) string {
+	t.Helper()
+	var b strings.Builder
+	b.WriteString("\x1b[H\r\x1b[20B   Settings  Status   Config   Usage   Stats\x1b[K")
+	for _, r := range append([]string{"", " Session", "", " Total cost:            $0.0000", " Total duration (API):  0s",
+		" Total duration (wall): 10s", " Total code changes:    0 lines added, 0 lines removed",
+		" Usage:                 0 input, 0 output, 0 cache read, 0 cache write", ""}, rows...) {
+		b.WriteString("\r\x1b[1B   " + r + "\x1b[K")
+	}
+	b.WriteString("\x1b[50;1H")
+	panel := filepath.Join(t.TempDir(), "usage-200x50.bin")
+	if err := os.WriteFile(panel, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return panel
+}
+
+// A Claude Enterprise account with a five-hour window only, idle: its
+// panel draws no window, Anthropic leaving each out until the request that
+// starts it, at most the plan's credit. It was told as the panel's words,
+// and Claude Code's banner above them was the card's error ("Claude Code's
+// usage showed no usage figures: …magpie-claude-work…", koohoko5924,
+// v0.1.3057). It is told as no window started.
+func TestShimReadsUsageWithNoWindow(t *testing.T) {
+	for name, rows := range map[string][]string{
+		"none":                {" Esc to cancel"},
+		"credit":              {" Usage credits", " ████▌" + strings.Repeat(" ", 46) + "12% used", " Resets Dec 1 (Asia/Shanghai)", "", " Esc to cancel"},
+		"what's contributing": {" What's contributing to your usage?", " Approximate · sessions on this machine only", "", " Esc to cancel"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out := runShim(t, []string{"FAKE_USAGE=" + usagePanel200(t, rows...), "FAKE_USAGE_BANNER=0"},
+				append([]string{fakePath(t)}, pArgs...), []string{`raw:{"type":"command","command":"/usage"}`}, 2)
+			if r := out[1]; r["type"] != "result" || r["is_error"] != false || r["result"] != NoUsageWindow {
+				t.Fatalf("told %v", r)
+			}
+		})
+	}
+}
+
+// Anthropic turning the usage page's requests away for a while is a
+// failure to load, told with the panel's own words, retried once: read as
+// a panel with no window, its reason was lost. The banner above the panel
+// is never the reason (koohoko5924).
+func TestShimToldWhyUsageFailed(t *testing.T) {
+	for _, why := range []string{
+		"Failed to load usage data",
+		"Claude is temporarily limiting requests to the usage page (not your usage limit). Try again in a moment.",
+		"Usage endpoint is rate limited until 12:11am.",
+	} {
+		t.Run(why, func(t *testing.T) {
+			failed := usagePanel200(t, " Error: "+why, "", " r to retry · Esc to cancel")
+			out := runShim(t, []string{"FAKE_USAGE=" + failed, "FAKE_USAGE_FIRST=" + failed, "FAKE_USAGE_THEN=retry-fails", "FAKE_USAGE_BANNER=0"},
+				append([]string{fakePath(t)}, pArgs...), []string{`raw:{"type":"command","command":"/usage"}`}, 2)
+			want := "/usage couldn't load the plan's usage: Error: " + why
+			if r := out[1]; r["type"] != "result" || r["is_error"] != true || r["result"] != want {
+				t.Fatalf("told %v, want %q", r, want)
+			}
+		})
+	}
+}
+
+func TestUsageWhy(t *testing.T) {
+	banner := "▐▛███▜▌ Claude Code v2.1.316 ▘▘ ▝▝ /private/var/folders/3d/x/T/magpie-claude-work-501 ──── ❯ /usage ──── "
+	for screen, want := range map[string]string{
+		banner + "Settings Status Config Usage Stats Session Total cost: $0.0000 Usage: 0 input, 0 output, 0 cache read, 0 cache write Error: Failed to load usage data r to retry · Esc to cancel":            "Error: Failed to load usage data",
+		banner + "Settings Status Config Usage Stats Session Total cost: $1.20 Total code changes: 403 lines added, 2 lines removed Usage: 9 input, 0 output, 0 cache read, 0 cache write Loading usage data…": "Settings Status Config Usage Stats Session Loading usage data…",
+		"no panel at all": "no panel at all",
+	} {
+		if got := usageWhy(screen); got != want {
+			t.Errorf("usageWhy(%q) = %q, want %q", screen, got, want)
+		}
+	}
+}
+
+func TestUsageNoWindow(t *testing.T) {
+	tab := "Settings Status Config Usage Stats Session Total cost: $0.0000 Usage: 0 input, 0 output, 0 cache read, 0 cache write "
+	for screen, want := range map[string]bool{
+		tab + "Esc to cancel": true,
+		tab + "Usage credits ██ 12% used Resets Dec 1 Esc to cancel":            true,
+		tab + "Current session ██ 12% used Resets 7pm Esc to cancel":            false,
+		tab + "Current week (all models) █ 3% used Esc to cancel":               false,
+		tab + "Loading usage data…":                                             false,
+		tab + "Error: Usage endpoint is rate limited until 12:11am. r to retry": false,
+		tab + "Refreshing…":                                               false,
+		tab + "Spend limit $50 Esc to cancel":                             false,
+		"Settings Usage /usage is only available for subscription plans.": false,
+		"▐▛███▜▌ Claude Code v2.1.316 /private/var/folders/3d/x/T/magpie-claude-work-501": false,
+	} {
+		if got := usageNoWindow(screen); got != want {
+			t.Errorf("usageNoWindow(%q) = %v, want %v", screen, got, want)
+		}
 	}
 }
 

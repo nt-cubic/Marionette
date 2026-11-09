@@ -44,6 +44,7 @@ import { zh as zhFeUv2B } from "./parts/fe-uv2b.zh";
 import { zh as zhFeUv2C } from "./parts/fe-uv2c.zh";
 import { zh as zhFeUv2D } from "./parts/fe-uv2d.zh";
 import { zh as zhFeUv2E } from "./parts/fe-uv2e.zh";
+import { zh as zhFeUv2F } from "./parts/fe-uv2f.zh";
 
 export const zh = {
   ...zhCommon,
@@ -86,4 +87,5 @@ export const zh = {
   ...zhFeUv2C,
   ...zhFeUv2D,
   ...zhFeUv2E,
+  ...zhFeUv2F,
 } as const;

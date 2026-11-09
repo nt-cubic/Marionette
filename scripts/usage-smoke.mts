@@ -33,6 +33,11 @@ import {
 } from "../src/lib/usage.ts";
 import { measureTurnDecodeMs, tokenBuckets } from "../src/lib/sessionStats.ts";
 import type { SessionEvent } from "../src/lib/types.ts";
+import { applyLocale } from "../src/lib/i18n.ts";
+
+// Node ≥24 derives the default locale from the OS (this machine is ja-JP); the
+// assertions below pin the zh-CN strings a zh user sees. Pin it like the app does.
+await applyLocale("zh-CN");
 
 let passed = 0;
 function check(name: string, fn: () => void) {

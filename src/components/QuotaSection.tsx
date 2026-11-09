@@ -111,6 +111,9 @@ function PrimaryBlock({
   );
 }
 
+/** Dials shown before "Show more" (two rows of three). */
+const DIAL_PREVIEW = 6;
+
 function otherValue(
   group: UsageGroup,
   t: ReturnType<typeof useT>,
@@ -168,11 +171,19 @@ function Dial({ group, tight }: { group: UsageGroup; tight: UsageWindow | null }
 function OtherDials({ groups, agentLabel }: { groups: UsageGroup[]; agentLabel: string }) {
   const t = useT();
   const [picked, setPicked] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
   const current = groups.find((g) => g.key === picked) ?? null;
+  // Nearly-used sources float to the front; exhausted ones sink to the back and stay folded
+  // (nothing left to spend, so they only show on "Show more"). Stable within a level.
+  const rank = (g: UsageGroup) => (g.peak == null ? 1 : pctLevel(g.peak) === "hot" ? 0 : pctLevel(g.peak) === "warn" ? 2 : 1);
+  const ordered = groups.map((g, i) => ({ g, i })).sort((a, b) => rank(b.g) - rank(a.g) || a.i - b.i).map((x) => x.g);
+  const usable = ordered.filter((g) => rank(g) > 0);
+  const shown = expanded ? ordered : usable.slice(0, DIAL_PREVIEW);
+  const hidden = ordered.length - shown.length;
   return (
     <div className="quota-dials">
       <div className="quota-dials__grid" role="list">
-        {groups.map((group) => {
+        {shown.map((group) => {
           const tight = tightestWindow(group);
           const value = otherValue(group, t);
           const balance = group.peak == null ? groupBalance(group) : null;
@@ -207,6 +218,21 @@ function OtherDials({ groups, agentLabel }: { groups: UsageGroup[]; agentLabel: 
           );
         })}
       </div>
+      {!expanded && hidden > 0 && (
+        <div className="shelf-clip shelf-clip--lend">
+          <button className="shelf-clip__more" type="button" onClick={() => setExpanded(true)}>
+            {t("rail.showMore")}
+            <span className="shelf-clip__count">{hidden}</span>
+          </button>
+        </div>
+      )}
+      {expanded && (usable.length < groups.length || groups.length > DIAL_PREVIEW) && (
+        <div className="shelf-clip shelf-clip--lend shelf-clip--expanded">
+          <button className="shelf-clip__more" type="button" onClick={() => setExpanded(false)}>
+            {t("rail.showLess")}
+          </button>
+        </div>
+      )}
       {current && (
         <div className="quota-dials__detail">
           <div className="quota-dials__detail-head">

@@ -132,10 +132,41 @@ export function UsageActivity({ ins }: { ins: UsageInsights }) {
           <span>
             <b>{ins.edits.ops.toLocaleString()}</b>
             {t("usageV2.activity.edits")}
+            <i className="uv2-act__src">{t(ins.edits.git ? "usageV2.activity.editsSource" : "usageV2.activity.editsEstimate")}</i>
           </span>
           <span className="uv2-act__add">{t("usageV2.activity.added", { add: ins.edits.add.toLocaleString() })}</span>
           <span className="uv2-act__del">{t("usageV2.activity.deleted", { del: ins.edits.del.toLocaleString() })}</span>
         </div>
+        <SectionHead
+          title={t("usageV2.activity.files")}
+          meta={t("usageV2.activity.filesMeta")}
+        />
+        {ins.files.length === 0 ? (
+          <p className="uv2-act__empty">{t("usageV2.activity.noFiles")}</p>
+        ) : (
+          <div className="uv2-act__filelist">
+            {ins.files.map((file) => (
+              <div className="uv2-act__row uv2-act__row--file" key={file.path} title={file.path}>
+                <FileText size={13} strokeWidth={1.5} aria-hidden="true" />
+                <span className="uv2-act__label uv2-act__label--mono" title={file.path}>
+                  {file.path.replace(/^.*[\\/]/, "")}
+                </span>
+                {file.reads > 0 && (
+                  <span className="uv2-act__x">{t("usageV2.activity.fileReads", { n: file.reads })}</span>
+                )}
+                {file.edits > 0 && (
+                  <span className="uv2-act__x">
+                    {t("usageV2.activity.fileEdits", { n: file.edits })}
+                    {file.add + file.del > 0 && (
+                      <b className="uv2-act__add"> +{file.add}</b>
+                    )}
+                    {file.del > 0 && <b className="uv2-act__del"> −{file.del}</b>}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </section>
     </div>
   );

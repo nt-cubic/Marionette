@@ -44,11 +44,18 @@ export type TurnDigest = {
   cmds: Record<string, Tally>;
   /** Skills and MCP tools, keyed `skill:<name>` / `mcp:<server> · <tool>`. */
   skills: Record<string, Tally>;
-  /** Edit / write operations and the diff lines they carried. */
+  /** Edit / write operations and the diff lines they carried (tool text — an estimate). */
   edits: { ops: number; add: number; del: number };
   /** Estimated tokens of what this turn put into the context that we can see. */
   est: { user: number; attach: number; toolIo: number };
+  /** Files the turn's read tools opened (path → reads). */
+  reads: Record<string, number>;
+  /** Files the turn's edit / write tools touched, with the diff lines their text carried. */
+  edited: Record<string, { n: number; add: number; del: number }>;
 };
+
+/** Per-turn path maps stay small: a turn reading 300 files keeps the busiest. */
+const PATHS_PER_TURN = 40;
 
 /** ≈ tokens of a text (4 chars ≈ 1 token — the same density dsh-context uses). */
 export function estimateTokens(text: string | null | undefined): number {
@@ -130,8 +137,18 @@ export function skillName(event: ToolCallEvent): string | null {
   return fromTitle || "skill";
 }
 
-/** Events of the turn that just ended: after the last user_message of the session. */
-export function currentTurnEvents(events: readonly SessionEvent[], sessionId: string): SessionEvent[] {
+/**
+ * Events of the turn that just ended: after the last user_message of the session.
+ *
+ * `sinceMs` (the previous turn's end) keeps an agent re-entry segment — the agent
+ * carrying on after turn/complete with no new prompt — from counting the previous
+ * turn's tools again: anything created before it was already digested.
+ */
+export function currentTurnEvents(
+  events: readonly SessionEvent[],
+  sessionId: string,
+  sinceMs: number | null = null,
+): SessionEvent[] {
   let start = -1;
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i]!;
@@ -143,17 +160,26 @@ export function currentTurnEvents(events: readonly SessionEvent[], sessionId: st
   const out: SessionEvent[] = [];
   for (let i = Math.max(0, start); i < events.length; i++) {
     const e = events[i]!;
-    if (e.sessionId === sessionId) out.push(e);
+    if (e.sessionId !== sessionId) continue;
+    if (sinceMs != null) {
+      const at = ms(e.createdAt);
+      if (at != null && at < sinceMs) continue;
+    }
+    out.push(e);
   }
   return out;
+}
+
+function bumpPath(map: Record<string, number>, path: string): void {
+  if (map[path] != null || Object.keys(map).length < PATHS_PER_TURN) map[path] = (map[path] ?? 0) + 1;
 }
 
 export function digestTurn(
   events: readonly SessionEvent[],
   sessionId: string,
-  opts: { stats: TurnStats | null; sentAt: number | null; endedAt: number },
+  opts: { stats: TurnStats | null; sentAt: number | null; endedAt: number; sinceMs?: number | null },
 ): TurnDigest {
-  const turn = currentTurnEvents(events, sessionId);
+  const turn = currentTurnEvents(events, sessionId, opts.sinceMs ?? null);
   const digest: TurnDigest = {
     timing: { ttft: 0, think: 0, answer: 0, tool: 0, other: 0 },
     tools: {},
@@ -161,6 +187,8 @@ export function digestTurn(
     skills: {},
     edits: { ops: 0, add: 0, del: 0 },
     est: { user: 0, attach: 0, toolIo: 0 },
+    reads: {},
+    edited: {},
   };
   const end = opts.endedAt;
   const user = turn[0]?.type === "user_message" ? turn[0] : null;
@@ -196,12 +224,17 @@ export function digestTurn(
       const skill = mcp ? null : skillName(e);
       if (mcp) bump(digest.skills, `mcp:${mcp}`, failed, span);
       else if (skill) bump(digest.skills, `skill:${skill}`, failed, span);
+      if (kind === "read" && e.path) bumpPath(digest.reads, e.path);
       if (kind === "edit" || kind === "write") {
         digest.edits.ops += 1;
         const diff = extractDiffStats(e.detail);
         if (diff) {
           digest.edits.add += diff.add;
           digest.edits.del += diff.del;
+        }
+        if (e.path && (digest.edited[e.path] != null || Object.keys(digest.edited).length < PATHS_PER_TURN)) {
+          const cur = digest.edited[e.path] ?? { n: 0, add: 0, del: 0 };
+          digest.edited[e.path] = { n: cur.n + 1, add: cur.add + (diff?.add ?? 0), del: cur.del + (diff?.del ?? 0) };
         }
       }
     }

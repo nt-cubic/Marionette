@@ -129,3 +129,351 @@
     gap: 10px;
   }
 }
+
+/* ── v3 additions (2026-11-09): search box, detail opener, per-turn panel ── */
+
+.uv2-sessions__search {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 6px;
+  color: var(--text-faint);
+  background: var(--panel-raised);
+}
+
+.uv2-sessions__search input {
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  width: 110px;
+}
+
+.uv2-sessions__search input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+}
+
+.uv2-sessions__detail {
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 3px;
+  display: inline-flex;
+}
+
+.uv2-sessions__detail:hover {
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+/* per-turn session detail panel */
+.uv2-sdet {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.uv2-sdet__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.uv2-sdet__label {
+  font-weight: 600;
+  color: var(--text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uv2-sdet__sub {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.uv2-sdet__head .uv2-ghost {
+  margin-left: auto;
+}
+
+.uv2-sdet__stats {
+  display: flex;
+  gap: 18px;
+}
+
+.uv2-sdet__stats > div {
+  display: flex;
+  flex-direction: column;
+}
+
+.uv2-sdet__stats b {
+  font-size: 15px;
+  color: var(--text-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.uv2-sdet__stats span {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.uv2-sdet__capt {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.uv2-sdet__ctx {
+  width: 100%;
+  height: 64px;
+  display: block;
+}
+
+.uv2-sdet__ctx-hot {
+  stroke: var(--yellow);
+  stroke-width: 0.4;
+  stroke-dasharray: 2 2;
+  opacity: 0.7;
+}
+
+.uv2-sdet__ctx-comp {
+  stroke: var(--text-faint);
+  stroke-width: 0.4;
+  opacity: 0.6;
+}
+
+.uv2-sdet__ctx-line {
+  fill: none;
+  stroke: var(--agent-ink, var(--accent));
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.uv2-sdet__ctx-dot {
+  fill: var(--agent-ink, var(--accent));
+  opacity: 0.8;
+}
+
+.uv2-sdet__ctx-fail {
+  fill: var(--red);
+}
+
+.uv2-sdet__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.uv2-sdet__row {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 70px 44px minmax(70px, auto) auto minmax(52px, auto);
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  padding: 3px 6px;
+  border-radius: 3px;
+}
+
+.uv2-sdet__row:hover {
+  background: var(--panel-soft);
+}
+
+.uv2-sdet__model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.uv2-sdet__out {
+  text-align: right;
+  color: var(--text-faint);
+}
+
+.uv2-sdet__row.is-failed .uv2-sdet__out {
+  color: var(--red);
+}
+
+.uv2-sdet__row.is-cancelled .uv2-sdet__out {
+  color: var(--yellow);
+}
+
+.uv2-sdet__comp {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.uv2-sdet__empty {
+  color: var(--text-faint);
+  font-size: 12px;
+  margin: 0;
+}
+
+/* file activity rows (activity band, third column) */
+.uv2-act__row--file {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.uv2-act__filelist {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.uv2-act__src {
+  font-style: normal;
+  color: var(--text-faint);
+  margin-left: 6px;
+  font-size: 10px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+.uv2-rhythm__ev--outcomes {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+
+.uv2-hero__det-seg {
+  margin-left: 6px;
+  color: var(--text-faint);
+}
+
+/* ── history backfill band ── */
+.uv2-backfill__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.uv2-backfill__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 60px 80px 90px;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  padding: 4px 6px 4px 8px;
+  border-left: 3px solid var(--agent-ink, var(--border));
+  border-radius: 3px;
+}
+
+.uv2-backfill__row.is-dup {
+  opacity: 0.55;
+}
+
+.uv2-backfill__t {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.uv2-backfill__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.uv2-backfill__sub {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.uv2-backfill__srcs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 8px;
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.uv2-backfill__srcs .is-err {
+  color: var(--red);
+}
+
+.uv2-backfill__note {
+  margin: 6px 0 0;
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.uv2-backfill__err {
+  color: var(--red);
+  font-size: 11px;
+}
+
+.uv2-backfill__empty {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.uv2-spin {
+  animation: uv2-spin 1s linear infinite;
+}
+
+@keyframes uv2-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── conversation composition (session detail + backfill rows) ── */
+.uv2-comp__bar {
+  display: flex;
+  height: 14px;
+  gap: 1px;
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+.uv2-comp__bar i {
+  flex-basis: 0;
+  min-width: 2px;
+}
+
+.uv2-comp__bar--mini {
+  height: 5px;
+  margin-top: 3px;
+  border: none;
+  gap: 1px;
+}
+
+.uv2-comp__rows {
+  max-height: none;
+}
+
+.uv2-comp__row {
+  grid-template-columns: 10px minmax(0, 1fr) 48px 80px;
+  cursor: default;
+}
+
+.uv2-comp__total {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-top: 1px dashed var(--border);
+  margin-top: 4px;
+}
+
+.uv2-sdet__comp-note {
+  margin-left: 10px;
+  color: var(--text-faint);
+}

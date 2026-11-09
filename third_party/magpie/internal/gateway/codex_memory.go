@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/yetone/magpie/internal/access"
@@ -49,7 +50,8 @@ func freeOnChatGPT(model, plan string) bool { return provider.ChatGPTReviewFree(
 // codexMemoryStandIn is the model a Codex memory call goes to when magpie
 // knows none by the name it came with (#742): Codex writes and
 // consolidates its memories on models of its own (memories.extract_model
-// and consolidation_model, gpt-5.6-luna and gpt-5.6-terra by default) by
+// and consolidation_model; by default gpt-6-luna and gpt-6.1-terra from
+// Codex 0.167.0, gpt-5.6-luna and gpt-5.6-terra before) by
 // their bare names, whatever it is set to, so with magpie as its provider
 // every one was turned away as an unknown model before it was routed. It
 // goes to the model that Codex's own turns go to — the last one it had
@@ -69,9 +71,13 @@ func freeOnChatGPT(model, plan string) bool { return provider.ChatGPTReviewFree(
 // model was switched: it is read after that turn, as the app's titles are
 // (codexLeads.sideOf, beside), not on the model switched away from
 // (cybercaius on Discord).
-func (s *Server) codexMemoryStandIn(r *http.Request, who, agent, kind, asked string, body []byte) string {
+//
+// why is the move's reason for the trace: movedCodexFollow for a bare
+// default magpie serves that went on the conversation's model instead,
+// movedCodexTurn for a model magpie doesn't serve.
+func (s *Server) codexMemoryStandIn(r *http.Request, who, agent, kind, asked string, body []byte) (to, why string) {
 	if agent != "codex" || !isMemoryKind(kind) && !isReviewCall(kind, asked) {
-		return ""
+		return "", ""
 	}
 	if _, _, ok := provider.Resolve(asked); ok {
 		// A memory call on one of Codex's own bare defaults that a
@@ -84,19 +90,26 @@ func (s *Server) codexMemoryStandIn(r *http.Request, who, agent, kind, asked str
 		// (codexFollowTo). "" keeps it where the name resolves: any
 		// other call, the config's own pick, a call whose config magpie
 		// can't read, or no conversation of magpie's to follow.
-		if !isMemoryKind(kind) || CodexSideSet == nil || CodexSideSet("memories") {
-			return ""
+		//
+		// A "provider/model" id is never one of Codex's defaults, which
+		// are bare: it is the user's pick in memories.extract_model or
+		// consolidation_model, and goes as it came, whatever the config
+		// here says — a Remote magpie can't read the Codex config on the
+		// computer the call came from, and a Codex on a profile or a
+		// CODEX_HOME of its own has its config elsewhere too (#5413).
+		if !isMemoryKind(kind) || strings.Contains(asked, "/") || CodexSideSet == nil || CodexSideSet("memories") {
+			return "", ""
 		}
 		to := s.codexMemorySession(r, body)
 		if to == "" || to == asked {
-			return ""
+			return "", ""
 		}
-		return to
+		return to, movedCodexFollow
 	}
 	if isMemoryKind(kind) {
 		if m := s.codexLeads.sideOf(r, body, true); m != "" && m != asked {
 			if _, _, ok := provider.Resolve(m); ok {
-				return m
+				return m, movedCodexTurn
 			}
 		}
 	}
@@ -104,14 +117,14 @@ func (s *Server) codexMemoryStandIn(r *http.Request, who, agent, kind, asked str
 	if m, ok := s.codexTurns.Load(key); ok {
 		if m, _ := m.(string); m != "" && m != asked {
 			if _, _, ok := provider.Resolve(m); ok {
-				return m
+				return m, movedCodexTurn
 			}
 		}
 	}
 	keyID := access.Caller(r.Context()).KeyID
 	var last usage.Record
 	usage.Visit(time.Now().Add(-7*24*time.Hour), func(rec usage.Record) {
-		if rec.Agent != who || rec.CallerKeyID != keyID || rec.Kind != "" || rec.Rejected || rec.IsReported() || rec.Failed() || rec.Requested == "" {
+		if rec.Agent != who || rec.CallerKeyID != keyID || rec.Kind != "" || rec.Rejected || rec.IsReported() || !rec.Answered() || rec.Requested == "" {
 			return
 		}
 		if rec.Time.After(last.Time) {
@@ -123,10 +136,10 @@ func (s *Server) codexMemoryStandIn(r *http.Request, who, agent, kind, asked str
 		m = id
 	}
 	if m == "" || m == asked {
-		return ""
+		return "", ""
 	}
 	if _, _, ok := provider.Resolve(m); !ok {
-		return ""
+		return "", ""
 	}
-	return m
+	return m, movedCodexTurn
 }

@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -51,8 +52,7 @@ func (p Provider) Test(ctx context.Context) []Result {
 	if client := testClient(ctx); client != "" {
 		// the one endpoint that agent's requests go to
 		proto := clientProto(client, p.Speaks())
-		q, ok := p.keyFor(proto)
-		model := p.testModel(q, proto)
+		q, model, ok := p.testWith(proto)
 		if why := p.TestsAs(client); why != "" {
 			return []Result{{Protocol: proto, Model: model, Error: why}}
 		}
@@ -63,14 +63,18 @@ func (p Provider) Test(ctx context.Context) []Result {
 			return []Result{{Protocol: proto, Error: zenPublicNone}}
 		}
 		url, body := tiny(q, proto, UpstreamName(p, model))
-		ctx, b := q.tested(ctx, asClient(client, proto, body))
+		ctx, b := q.tested(p.loggedAs(ctx, q), url, asClient(client, proto, body))
 		return []Result{probe(ctx, q, proto, url, b, model, testWait)}
 	}
 	if p.isClaudeAccount() {
-		return []Result{p.testClaude(ctx, p.testModel(p, Anthropic))}
+		model := p.testModel(p, Anthropic)
+		q := p.routedTo(model)
+		return []Result{q.testClaude(p.loggedAs(ctx, q), model)}
 	}
 	if p.testsTranslated() {
-		return []Result{p.testTranslated(ctx, p.testModel(p, CodeAssist))}
+		model := p.testModel(p, CodeAssist)
+		q := p.routedTo(model)
+		return []Result{q.testTranslated(p.loggedAs(ctx, q), model)}
 	}
 	var out []Result
 	for _, proto := range p.Speaks() {
@@ -80,8 +84,7 @@ func (p Provider) Test(ctx context.Context) []Result {
 			// on Gemini, and such a model by its own test (TestModel)
 			continue
 		}
-		q, ok := p.keyFor(proto)
-		model := p.testModel(q, proto)
+		q, model, ok := p.testWith(proto)
 		if !ok {
 			out = append(out, Result{Protocol: proto, Model: model, Error: "no key is on for this endpoint"})
 			continue
@@ -92,7 +95,7 @@ func (p Provider) Test(ctx context.Context) []Result {
 			continue
 		}
 		url, body := tiny(q, proto, UpstreamName(p, model))
-		ctx, b := q.tested(ctx, body)
+		ctx, b := q.tested(p.loggedAs(ctx, q), url, body)
 		out = append(out, probe(ctx, q, proto, url, b, model, testWait))
 	}
 	if len(out) == 0 && p.zenPublic() {
@@ -112,6 +115,13 @@ func (p Provider) Test(ctx context.Context) []Result {
 // tiny is the smallest request for model on proto's endpoint, streamed
 // to a backend that only streams.
 func tiny(q Provider, proto Protocol, model string) (url, body string) {
+	if kind := retrievalOf(model); kind != "" && proto == Chat && q.Account == nil {
+		// an embedding or rerank model chats nowhere: it is asked where
+		// the gateway sends it (retrieve), the OpenAI-style base's
+		// /embeddings or /rerank (heatonz on Discord: a relay serving
+		// only those detected nothing, asked on /chat/completions)
+		return tinyRetrieval(q.OpenAIBase(), kind, model)
+	}
 	url, body = tinyBody(q, proto, model)
 	if q.Account != nil && q.Account.Stream && body != "" {
 		body = strings.TrimSuffix(body, "}") + `,"stream":true}`
@@ -123,6 +133,26 @@ func tiny(q Provider, proto Protocol, model string) (url, body string) {
 		body = clineProbe(body)
 	}
 	return url, body
+}
+
+// retrievalOf is the retrieval API model is made for, as its id says
+// (catalog.ServesOf): embeddings or rerank, else "".
+func retrievalOf(model string) string {
+	switch s := catalog.ServesOf(model); s {
+	case catalog.ServesEmbedding, catalog.ServesRerank:
+		return s
+	}
+	return ""
+}
+
+// tinyRetrieval is the smallest request for a model of kind's at an
+// OpenAI-style base: one input to embed, or one document to rank.
+func tinyRetrieval(base, kind, model string) (url, body string) {
+	base = strings.TrimRight(base, "/")
+	if kind == catalog.ServesRerank {
+		return base + "/rerank", fmt.Sprintf(`{"model":%q,"query":"hi","documents":["hi"]}`, model)
+	}
+	return base + "/embeddings", fmt.Sprintf(`{"model":%q,"input":"hi"}`, model)
 }
 
 // clineProbe is the smallest request asked as Cline's own clients ask:
@@ -236,7 +266,9 @@ func tinyBody(q Provider, proto Protocol, model string) (url, body string) {
 // sign-in or ask its vendor more than once before it answers, as it does
 // for the gateway, which gives it no such bound (mingxia_16024 on
 // Discord: every Qoder and WorkBuddy model's test ended at 20s while
-// agents were answered).
+// agents were answered), and for a remote magpie, whose gateway serves
+// such plugins' models in turn and asks again where its own retries do
+// (plugins#827: a plugin model tested in 60s here had 20s through it).
 // connectWait is how long a probe waits for its connection (a TLS
 // handshake done, through any proxy) before it gives up on the host: an
 // address nothing answers at is said in that time, not the whole wait's
@@ -380,6 +412,16 @@ func (p Provider) testOne(ctx context.Context, model string) Result {
 	if why := p.TestsAs(client); why != "" {
 		return Result{Protocol: clientProto(client, p.Speaks()), Model: model, Error: why}
 	}
+	// the account a request for it goes to, not the pool's first: one
+	// the user lets serve it whose own list has it, as routing takes it
+	// (AccountsFor; #4992, scutken: a newapi pool's grok-4.7, served by
+	// its third account alone, was asked of the first and failed 503 "no
+	// available channel" while real requests were answered)
+	acct, ok := p.accountFor(model)
+	if !ok {
+		return Result{Model: model, Error: "every account that's on is set not to serve this model"}
+	}
+	ctx, p = p.loggedAs(ctx, acct), acct
 	if p.isClaudeAccount() {
 		return p.testClaude(ctx, model)
 	}
@@ -414,6 +456,10 @@ func (p Provider) testOne(ctx context.Context, model string) Result {
 		proto = clientProto(client, protos)
 	} else if draws {
 		proto = Chat
+	} else if retrievalOf(model) != "" && slices.Contains(protos, Chat) {
+		// an embedding or rerank model, at the OpenAI-style base's
+		// /embeddings or /rerank, where the gateway sends it (tiny)
+		proto = Chat
 	} else if apis := p.APIs(model); apis != nil {
 		if i := slices.IndexFunc(protos, func(pr Protocol) bool { return slices.Contains(apis, pr) }); i >= 0 {
 			proto = protos[i]
@@ -438,7 +484,7 @@ func (p Provider) testOne(ctx context.Context, model string) Result {
 		r := probe(ctx, q, proto, url, []byte(body), model, drawWait)
 		if !r.OK && ((r.Status == 404 || r.Status == 405) && HostOf(q.Chat) != "openrouter.ai" || r.Status == 400 && catalog.PointsToChat(r.Error)) {
 			url, body := tiny(q, proto, model)
-			ctx, b := q.tested(ctx, body)
+			ctx, b := q.tested(ctx, url, body)
 			if c := probe(ctx, q, proto, url, b, model, testWait); c.OK {
 				return c
 			}
@@ -456,7 +502,7 @@ func (p Provider) testOne(ctx context.Context, model string) Result {
 			return d
 		}
 	}
-	if !r.OK && r.otherAPI && client != ClientClaudeCode {
+	if !r.OK && r.otherAPI && client != ClientClaudeCode && retrievalOf(model) == "" {
 		// the vendor's word that the model isn't served on that API: it
 		// is asked on the next one that may serve it, as the gateway asks
 		// a request there (usable), and that one's answer is the model's
@@ -482,23 +528,95 @@ func (p Provider) testOne(ctx context.Context, model string) Result {
 	return r
 }
 
-// keySeeing is p with the key a test of model on proto goes with: one made
-// for that API, else one made for any, that sees the model. A provider
-// without keys is left as it is.
+// keySeeing is p with the key a test of model on proto goes with: of
+// the keys routing takes the model to (KeysFor: one the user lets serve
+// it, whose plan and list have it), one made for that API, else one made
+// for any. A provider without keys is left as it is.
 func (p Provider) keySeeing(proto Protocol, model string) (Provider, bool) {
-	keys := p.KeysOn()
-	if len(keys) == 0 {
+	if len(p.KeysOn()) == 0 {
 		return p, true
 	}
-	serves := p.Serving(model)
+	keys, _, _, _ := p.KeysFor(model, nil)
 	for _, want := range []Protocol{proto, ""} {
 		for _, k := range keys {
-			if k.Protocol == want && serves(k) {
-				return p.WithKey(k), true
+			if k.Protocol == want {
+				return p.WithKey(k.KeyAccount), true
 			}
 		}
 	}
 	return p, false
+}
+
+// testWith is the key or account an endpoint's test goes with, and the
+// model it asks: the first key on made for proto, else for any, with a
+// model of its to test there (one the user lets it serve, AccountModels),
+// else the first such key with none; a provider without keys, with the
+// model picked from every account's, as the account that serves it
+// (routedTo). ok is false when no key is on for proto.
+func (p Provider) testWith(proto Protocol) (Provider, string, bool) {
+	keys := p.KeysOn()
+	if len(keys) == 0 {
+		model := p.testModel(p, proto)
+		return p.routedTo(model), model, true
+	}
+	var first Provider
+	found := false
+	for _, want := range []Protocol{proto, ""} {
+		for _, k := range keys {
+			if k.Protocol != want {
+				continue
+			}
+			q := p.WithKey(k)
+			if model := p.testModel(q, proto); model != "" {
+				return q, model, true
+			}
+			if !found {
+				first, found = q, true
+			}
+		}
+	}
+	if found {
+		return first, "", true
+	}
+	return p, "", false
+}
+
+// accountFor is p as the account of its accounts on a request for model
+// goes to first (AccountsFor); ok is false when the user set every one
+// not to serve it. A provider of keys is left as it is.
+func (p Provider) accountFor(model string) (Provider, bool) {
+	if p.Account == nil {
+		return p, true
+	}
+	out, _, _ := p.AccountsFor(model, nil)
+	if len(out) == 0 {
+		return p, false
+	}
+	return out[0].Provider, true
+}
+
+// routedTo is q, the key or account an endpoint's test goes with, as the
+// account a request for model goes to: the model is picked from every
+// account's on, and asked of one that serves it (#4992). With no model,
+// or none that may serve it, q is left as it is.
+func (q Provider) routedTo(model string) Provider {
+	if model == "" {
+		return q
+	}
+	if a, ok := q.accountFor(model); ok {
+		return a
+	}
+	return q
+}
+
+// loggedAs is ctx with its test's row in the request log named for q,
+// the account the test asked, when that is another of p's than p (the
+// row says who answered, as the gateway's rows do).
+func (p Provider) loggedAs(ctx context.Context, q Provider) context.Context {
+	if q.Account == nil || p.Account != nil && q.Account.User == p.Account.User {
+		return ctx
+	}
+	return q.ownRequests(ctx, probelog.KindTest)
 }
 
 // testOn is model's test on proto's endpoint with p's key, asked for by
@@ -508,7 +626,7 @@ func (p Provider) testOn(ctx context.Context, client string, proto Protocol, mod
 	if client != "" {
 		body = asClient(client, proto, body)
 	}
-	ctx, b := p.tested(ctx, body)
+	ctx, b := p.tested(ctx, url, body)
 	return probe(ctx, p, proto, url, b, model, testWait)
 }
 
@@ -549,6 +667,11 @@ const zenPublicNone = "no free model of OpenCode Zen is listed for this API: the
 // Responses, and every one failed, though big-pickle answers on chat).
 func (p Provider) testModel(q Provider, proto Protocol) string {
 	k := q.first()
+	// a model the key's vendor lists it, and the user lets it serve
+	// (AccountModels, #474), as routing has it
+	sees := func(id string) bool {
+		return k.Key == "" || p.Serves(k, id) && p.AccountServes(keyID(k.Key), id)
+	}
 	public := q.zenPublic()
 	off := disabledNow() // a model the user disabled is never asked (#1867)
 	var pools [][]catalog.Model
@@ -577,9 +700,20 @@ func (p Provider) testModel(q Provider, proto Protocol) string {
 				if public && !p.OpenCodeFree(m.ID) {
 					continue
 				}
-				if !p.DecidesModel(m.ID) && !off(p.ID, m.ID) && want(m.ID) && (k.Key == "" || p.Serves(k, m.ID)) {
+				if !p.DecidesModel(m.ID) && !off(p.ID, m.ID) && want(m.ID) && sees(m.ID) {
 					return m.ID
 				}
+			}
+		}
+	}
+	if proto == Chat && q.Account == nil && !public {
+		// none to chat with: an embedding or rerank model its list
+		// keeps apart (catalog.LiveServing), asked where the gateway
+		// sends it (heatonz on Discord: a provider serving only those)
+		// or one its preset names (Voyage AI, which lists none)
+		for _, m := range append(catalog.LiveServing(p.ID, ""), p.PlanRetrieval("")...) {
+			if retrievalOf(m.ID) != "" && !off(p.ID, m.ID) && sees(m.ID) {
+				return m.ID
 			}
 		}
 	}
@@ -661,6 +795,7 @@ func probe(ctx context.Context, p Provider, proto Protocol, url string, body []b
 }
 
 func probeOnce(ctx context.Context, p Provider, proto Protocol, url string, body []byte, model string, wait time.Duration) (r Result) {
+	ctx = WithModel(ctx, p.ID, model) // the model's own headers, as its requests carry
 	r = Result{Protocol: proto, Model: model}
 	if model == "" {
 		r.Error = "no model to try: expose one, or refresh the model list"
@@ -672,6 +807,11 @@ func probeOnce(ctx context.Context, p Provider, proto Protocol, url string, body
 		// answers the gateway, not the probe's: a cold host took the
 		// whole of it (mingxia_16024)
 		p.warmPlugin(ctx)
+		wait = max(wait, pluginTestWait)
+	}
+	if p.IsRemoteMagpie() {
+		// it serves plugins' models too, and retries for them
+		// (pluginTestWait)
 		wait = max(wait, pluginTestWait)
 	}
 	ctx, cancel := context.WithTimeout(probelog.WithModel(ctx, model), wait)
@@ -721,6 +861,11 @@ func probeOnce(ctx context.Context, p Provider, proto Protocol, url string, body
 		// a model its vendor has queued is said so at once, not waited
 		// out for minutes as an agent's turn is (Qoder's free models)
 		req.Header.Set(FallbackHeader, "1")
+	}
+	if p.IsRemoteMagpie() {
+		// its gateway takes no pause that ends past the test's wait, and
+		// the test is told the error (WaitHeader, plugins#827)
+		req.Header.Set(WaitHeader, strconv.Itoa(int(wait/time.Second)))
 	}
 	if err := p.Sign(ctx, req, proto, body); err != nil {
 		r.Error = err.Error()

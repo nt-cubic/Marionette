@@ -1212,6 +1212,20 @@
   gap: 2px;
 }
 
+/* "Show more" under the grid: the shared clip pulls up -2px and fades over the row above,
+   which swallowed the last row's 2px selected underline. Keep it clear of the dials. */
+.context-panel .quota-dials .shelf-clip {
+  margin-top: 4px;
+}
+
+.context-panel .quota-dials .shelf-clip__fade {
+  display: none;
+}
+
+.context-panel .quota-dials .shelf-clip__more.shelf-clip__more {
+  padding-left: 4px;
+}
+
 .context-panel .quota-dial {
   display: flex;
   flex-direction: column;

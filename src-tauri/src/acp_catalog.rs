@@ -176,9 +176,10 @@ mod tests {
             unpinned_package("@openma/deepseek-harness-acp@0.4.39"),
             "@openma/deepseek-harness-acp"
         );
+        // PEP-style spec (extras + ==pin) may still arrive from the public registry.
         assert_eq!(
-            unpinned_package("hermes-agent[acp,mcp]==0.21.1"),
-            "hermes-agent"
+            unpinned_package("some-pep-agent[acp,mcp]==0.21.1"),
+            "some-pep-agent"
         );
         assert_eq!(derive_command_name("@scope/agent-cli@1.2.3"), "agent-cli");
     }

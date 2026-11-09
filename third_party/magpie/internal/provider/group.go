@@ -149,15 +149,44 @@ const (
 )
 
 // Waits is how long a request to the group may be kept for its members to
-// come back (Patience), 0 for not at all.
+// come back (Patience), 0 for not at all. A group that sets none follows
+// the default for every group (settings' GroupPatience, jiezhengj on
+// Discord), PatienceDefault while that is unset too.
 func (g Group) Waits() time.Duration {
+	n := g.Patience
+	if n == 0 {
+		n = settings.Load().GroupPatience
+	}
 	switch {
-	case g.Patience < 0:
+	case n < 0:
 		return 0
-	case g.Patience == 0:
+	case n == 0:
 		return PatienceDefault * time.Second
 	}
-	return time.Duration(min(g.Patience, PatienceLongest)) * time.Second
+	return time.Duration(min(n, PatienceLongest)) * time.Second
+}
+
+// FirstTokenWait is a group's FirstToken when the user picked Wait for it
+// itself: every member waited for, whatever the default for every group.
+// 0 is a group that sets nothing, which follows that default.
+const FirstTokenWait = -1
+
+// FirstTokenOr is the seconds the group lets a member take to its first
+// content: its own FirstToken, else the default for every group
+// (settings' GroupFirstToken); 0 or less waits as long as it takes.
+func (g Group) FirstTokenOr() int {
+	if g.FirstToken != 0 {
+		return g.FirstToken
+	}
+	return settings.Load().GroupFirstToken
+}
+
+// Sinks is whether one of the group's accounts or keys rate limited with
+// quota left goes to the back (Sink): the group's own word, Sink or
+// NoSink, else the default for every group (settings' GroupSink). Whether
+// its routing can sink at all is the gateway's to say.
+func (g Group) Sinks() bool {
+	return g.Sink || !g.NoSink && settings.Load().GroupSink
 }
 
 // ContextSmallest is a group's Context when agents are told the window of
@@ -192,19 +221,25 @@ type Group struct {
 	// together: one rate limited with quota left goes behind every other
 	// member's. Not for "rotate" or Manual.
 	Sink bool `json:"sink,omitempty"`
+	// NoSink is the user's Keeps its place for the group itself: none
+	// sinks, whatever the default for every group says (Sinks). Neither
+	// set, the group follows that default.
+	NoSink bool `json:"noSink,omitempty"`
 	// FirstToken is how many seconds a member's streamed reply may take to
 	// its first content — text, reasoning or a tool call — before the next
-	// member is asked instead, nothing of it having reached the agent; 0
-	// waits as long as it takes. The last one left is always waited for,
-	// and the slow one doesn't rest.
+	// member is asked instead, nothing of it having reached the agent;
+	// FirstTokenWait waits as long as it takes, and 0 follows the default
+	// for every group (FirstTokenOr). The last one left is always waited
+	// for, and the slow one doesn't rest.
 	FirstToken int `json:"firstToken,omitempty"`
 	// Patience is how many seconds more a request may be kept, once every
 	// member has failed and nothing of a reply has been sent, for the
 	// members that failed in a way that passes —
 	// busy, overloaded, rate limited for a moment — to be asked again
-	// after a pause, in turn, until one answers (#1418). 0 is
-	// PatienceDefault; PatienceOff gives the agent the last one's error
-	// once each has been asked.
+	// after a pause, in turn, until one answers (#1418). 0 follows the
+	// default for every group, PatienceDefault while that is unset (Waits);
+	// PatienceOff gives the agent the last one's error once each has been
+	// asked.
 	Patience int `json:"patience,omitempty"`
 	// Off are the members switched off: kept where they are in the
 	// order, with their rules, but sent nothing until switched on again,
@@ -223,6 +258,12 @@ type Group struct {
 	// Rules with an intent need one; a small, fast model without reasoning
 	// does.
 	Classifier string `json:"classifier,omitempty"`
+	// IntentSure is how confident a decision model (Jev, from TypeSafe's
+	// decision API) must be of an intent of this group's for it to count:
+	// from 0, its likeliest intent taken however unsure it is ("none of
+	// these" never counting), to 1, certain. nil asks 0.4, as groups have
+	// always asked (#5101).
+	IntentSure *float64 `json:"intentSure,omitempty"`
 	// Effort "auto" has the classifier — Jev, from TypeSafe's decision API,
 	// or any model, asked in words — judge how hard each turn is to think
 	// about as it begins, and the turn asks its model for that much
@@ -252,6 +293,11 @@ type Group struct {
 	// weighs 1. Kept while the group routes otherwise, for when it is by
 	// weight again.
 	Weights map[string]int `json:"weights,omitempty"`
+	// EffortMaps are, for the members (as Members spells them) that
+	// follow the group's effort, the level each sends in place of the one
+	// asked for ("high" → "xhigh"): see groupeffortmap.go. A level not in
+	// a member's map is sent as asked.
+	EffortMaps map[string]map[string]string `json:"effortMaps,omitempty"`
 	// Family is a tag the group goes by in which agents are shown it
 	// (settings' Visible), with its id.
 	Family string `json:"family,omitempty"`
@@ -316,6 +362,10 @@ type Member struct {
 	// sent at the nearest of them. nil for a member fixed at one (Effort)
 	// or following the group.
 	Levels []string
+	// EffortMap is, for a member following the group's effort, the level
+	// it sends in place of the one asked for (Group.EffortMaps); nil
+	// sends it as asked.
+	EffortMap map[string]string
 	// Fast is set on a member the group sends in its vendor's fast mode
 	// (Group.Fast), where its model has one.
 	Fast bool
@@ -385,7 +435,7 @@ func (m Member) Groups() []string {
 // Below is the member as the group at depth (0 the group itself, 1 the
 // group in it Path[0] names, …) has it.
 func (m Member) Below(depth int) Member {
-	out := Member{ID: m.Path[depth], Path: m.Path[depth:], Via: m.Via[depth:], Provider: m.Provider, Model: m.Model, Effort: m.Effort, Levels: m.Levels, Fast: m.Fast, At: m.At}
+	out := Member{ID: m.Path[depth], Path: m.Path[depth:], Via: m.Via[depth:], Provider: m.Provider, Model: m.Model, Effort: m.Effort, Levels: m.Levels, EffortMap: m.EffortMap, Fast: m.Fast, At: m.At}
 	// its other places in the same group at depth
 	for _, o := range m.Also {
 		if len(o.Path) > depth && slices.Equal(o.Path[:depth], m.Path[:depth]) {
@@ -435,6 +485,11 @@ func cloneGroups(gs []Group) []Group {
 		g.Off, g.Levels, g.Fast = slices.Clone(g.Off), slices.Clone(g.Levels), slices.Clone(g.Fast)
 		g.Accounts, g.Seen = slices.Clone(g.Accounts), slices.Clone(g.Seen)
 		g.Weights = maps.Clone(g.Weights)
+		g.EffortMaps = renamedEffortMaps(g.EffortMaps, func(m string) string { return m })
+		if g.IntentSure != nil {
+			v := *g.IntentSure
+			g.IntentSure = &v
+		}
 		if g.Rules != nil {
 			rs := make([]Rule, len(g.Rules))
 			for j, r := range g.Rules {
@@ -539,6 +594,12 @@ func withoutRemoved(g Group, have map[string]bool) Group {
 		}
 		return m
 	})
+	g.EffortMaps = renamedEffortMaps(g.EffortMaps, func(m string) string {
+		if gone(m) {
+			return ""
+		}
+		return m
+	})
 	return g
 }
 
@@ -618,6 +679,7 @@ func (g Group) own() Group {
 	g.Accounts = slices.Clone(g.Accounts)
 	g.Seen = slices.Clone(g.Seen)
 	g.Weights = maps.Clone(g.Weights)
+	g.EffortMaps = renamedEffortMaps(g.EffortMaps, func(m string) string { return m })
 	g.Rules = slices.Clone(g.Rules)
 	for i, r := range g.Rules {
 		g.Rules[i].Agents = slices.Clone(r.Agents)
@@ -939,6 +1001,25 @@ func FallbackModels(p Provider) []Member {
 	return out
 }
 
+// GroupsAfter are the routing groups the user built that have id
+// ("provider/model") in them as a member and another member to go on to,
+// as "group/<id>", in the user's order; one magpie found (Auto), hidden
+// or switched off is none. A request for the model that its own accounts
+// can't take (every one held at its usage cap, or Codex's own sign-in out
+// of its allowance) goes on to these when nothing set as its fallback
+// takes it (adorable_piglet on Discord, v0.1.3354): the Codex app asks
+// Codex's own model, never the group built around it.
+func GroupsAfter(id string) []string {
+	var out []string
+	for _, gid := range MemberGroups()[id] {
+		g, ms, ok := FallbackGroup(gid)
+		if ok && !g.Auto && slices.ContainsFunc(ms, func(m Member) bool { return m.Provider.ID+"/"+m.Model != id }) {
+			out = append(out, gid)
+		}
+	}
+	return out
+}
+
 // GroupFor is the group a model's id without a provider in it names, as
 // "group/<id>": the group of that id, else the group of that model however
 // a vendor spells it ("grok-4.7" is the group grok-4-7 or auto-grok-4-7).
@@ -1108,6 +1189,9 @@ func membersFound(entries []Entry, find entryOf, all []Group, g Group, off func(
 			}
 			fixed, levels := MemberLevels(effort)
 			mem := Member{ID: here[0], Path: here, Via: via, Provider: p, Model: m, Effort: fixed, Levels: levels, Fast: g.IsFast(id), At: at}
+			if fixed == "" && levels == nil {
+				mem.EffortMap = g.MemberEffortMap(id)
+			}
 			at++
 			if i, ok := seen[key]; ok {
 				// asked once, where it was met first; a rule naming this
@@ -1308,6 +1392,12 @@ func buildGroupEntries(entries []Entry) []Entry {
 			} else {
 				e.ImageInput = anyImageInput(e.ImageInput, imageInput)
 			}
+			// a member that sends other levels than the ones asked
+			// (EffortMaps) takes the levels its map is asked for too: the
+			// gateway sends them at the level they map to
+			if len(m.EffortMap) > 0 && !reasonless && !unknown && len(efforts) > 0 {
+				efforts = mappedLevels(efforts, m.EffortMap)
+			}
 			// a member the user gave several levels of its own offers them
 			// (Garydesu on X: one model at a few efforts, the agent picking);
 			// a group in the group that names its own levels offers them for
@@ -1490,7 +1580,10 @@ func SaveGroup(g Group) error {
 	if g.Name == "" {
 		g.Name = g.ID
 	}
-	g.FirstToken = max(g.FirstToken, 0)
+	g.FirstToken = max(g.FirstToken, FirstTokenWait)
+	if g.Sink {
+		g.NoSink = false
+	}
 	if g.Patience < 0 {
 		g.Patience = PatienceOff
 	}
@@ -1555,6 +1648,9 @@ func SaveGroup(g Group) error {
 	}
 	g.Off = off
 	if err := cleanWeights(entries, &g); err != nil {
+		return err
+	}
+	if err := cleanEffortMaps(entries, &g); err != nil {
 		return err
 	}
 	var was []string
@@ -1626,6 +1722,9 @@ func SaveGroup(g Group) error {
 		if _, _, ok := Resolve(g.Classifier); !ok {
 			return fmt.Errorf("magpie knows no model %q to classify with", g.Classifier)
 		}
+	}
+	if g.IntentSure != nil && !(*g.IntentSure >= 0 && *g.IntentSure <= 1) { // NaN too
+		return fmt.Errorf("a group's intent sure is from 0 to 1, not %g", *g.IntentSure)
 	}
 	g.Auto, g.Hidden = false, false
 	g.Members = own // what the patterns match is found again as it is read
@@ -2048,6 +2147,12 @@ func RenameGroup(from, to string) error {
 			}
 		}
 		f.Groups[i].Weights = renamedWeights(f.Groups[i].Weights, func(m string) string {
+			if m == old {
+				return now
+			}
+			return m
+		})
+		f.Groups[i].EffortMaps = renamedEffortMaps(f.Groups[i].EffortMaps, func(m string) string {
 			if m == old {
 				return now
 			}

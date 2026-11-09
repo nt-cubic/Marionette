@@ -28,8 +28,10 @@ function fixture(lang, theme, events, options = {}) {
   const lanURLs = options.lanURLs || ["http://192.168.1.10:3999", "http://10.0.0.10:3999"];
   // options.lanPublic are those of them at an internet address
   const lanPublic = () => lan && options.lanPublic ? { lanPublic: options.lanPublic } : {};
-  // options.publicURL is MAGPIE_PUBLIC_URL's, offered while shared (#1551)
-  const publicURL = () => lan && options.publicURL ? { publicURL: options.publicURL } : {};
+  // options.publicURL is MAGPIE_PUBLIC_URL's, offered while shared (#1551),
+  // and options.publicKind what kind of address it is (gateway.URLKind)
+  const publicURL = () => lan && options.publicURL ? { publicURL: options.publicURL,
+    ...(options.publicKind ? { publicKind: options.publicKind } : {}) } : {};
   // options.container: magpie runs in a container, and lanURLs are its
   // own; options.containerHost is where other containers on the host
   // reach the gateway (the host's Docker bridge address)
@@ -124,6 +126,13 @@ function fixture(lang, theme, events, options = {}) {
       { id: "relay/spare@example.com", name: "spare@example.com", provider: "relay", providerName: "Relay", account: true },
       { id: "openai/k-1a2b3c", name: "k-1a2b3c", provider: "openai", providerName: "OpenAI", key: true },
     ] });
+    // the MCP servers and tools a key may be held to: magpie's own, then
+    // the Library's (wakaka on Discord)
+    if (url.pathname === "/api/caller-keys/mcp") return json({ servers: [
+      { name: "magpie-web-search", title: "Magpie Web Search", tools: ["web_search", "web_fetch"], own: true },
+      { name: "magpie-browser", title: "Magpie Browser", tools: ["browser"], own: true },
+      { name: "github", tools: ["create_issue", "search_code"] },
+    ] });
     if (url.pathname.startsWith("/api/caller-keys/")) {
       const action = url.pathname.split("/").at(-1), body = req.postDataJSON();
       events.push({ action, body });
@@ -154,7 +163,8 @@ function fixture(lang, theme, events, options = {}) {
         const usedOf = (l) => {
           const span = l.period === "hours" ? l.hours * 36e5 : (l.days || 1) * 864e5;
           return { period: l.period, days: l.days, hours: l.hours, start: new Date().toISOString(), reset: new Date(Date.now() + span).toISOString(),
-            calls: 0, tokens: 0, cost: 0, tokenLimit: l.tokens, costLimit: l.cost, tokensLeft: l.tokens, costLeft: l.cost, spent: false };
+            calls: 0, tokens: 0, cost: 0, tokenLimit: l.tokens, costLimit: l.cost, tokensLeft: l.tokens, costLeft: l.cost, spent: false,
+            ...(l.models ? { models: l.models } : {}) };
         };
         // one of several by its index (#2227), as access.Update keeps them;
         // without one, the key's only limit
@@ -181,7 +191,13 @@ function fixture(lang, theme, events, options = {}) {
       }
       if (action === "models-key") k.models = body.models?.length ? body.models : undefined;
       if (action === "accounts-key") k.accounts = body.accounts?.length ? body.accounts : undefined;
+      if (action === "mcp-key") k.mcp = body.mcp?.length ? body.mcp : undefined;
       if (action === "quotas-key") k.quotas = body.quotas || undefined;
+      // as access.Update: a whole number from 0 (no limit) to 1000
+      if (action === "concurrency-key") {
+        if (!Number.isInteger(body.maxConcurrency) || body.maxConcurrency < 0 || body.maxConcurrency > 1000) return route.fulfill({ status: 400, json: { error: "Concurrency: a whole number from 0 to 1000" } });
+        k.maxConcurrency = body.maxConcurrency || undefined;
+      }
       if (action === "access-key") k.readOnly = body.readOnly || undefined;
       // a key put at a place in the list, as access.Update keeps it;
       // options.refuseMove: the store can't be written

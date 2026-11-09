@@ -25,9 +25,14 @@ $tag = "v$version"
 
 $dist = Join-Path $root ('release\' + $version)
 $asset = Join-Path $dist 'Marionette.exe'
+$installer = Join-Path $root 'install.ps1'
 
 if (-not (Test-Path $asset)) {
     Write-Error "missing $asset`nRun tools\build-portable.bat first."
+    exit 1
+}
+if (-not (Test-Path $installer)) {
+    Write-Error "missing $installer`nThe release assets must include the one-line installer."
     exit 1
 }
 
@@ -55,6 +60,7 @@ $sha = Get-Sha256 $asset
 
 Write-Host "publishing $tag"
 Write-Host "  Marionette.exe  $([math]::Round($bytes / 1MB, 2)) MB  $sha"
+Write-Host "  install.ps1     one-line installer"
 
 $gh = Get-Command gh -ErrorAction SilentlyContinue
 if (-not $gh) { Write-Error 'gh not on PATH — install GitHub CLI'; exit 1 }
@@ -66,12 +72,12 @@ $hasRelease = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existi
 
 if ($hasRelease) {
     Write-Host "release $tag already exists — uploading asset (--clobber)"
-    & gh release upload $tag $asset --clobber
+    & gh release upload $tag $asset $installer --clobber
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 } else {
     $args = @(
         'release', 'create', $tag,
-        $asset,
+        $asset, $installer,
         '--title', "Marionette $tag",
         '--latest'
     )
@@ -80,6 +86,10 @@ if ($hasRelease) {
         if (-not (Test-Path $NotesFile)) { Write-Error "notes file missing: $NotesFile"; exit 1 }
         $args += @('--notes-file', $NotesFile)
     } else {
+        # A fence written literally inside a double-quoted here-string is
+        # mangled (``` = escaped backtick + escaped newline). Build it from a
+        # single-quoted literal so the Markdown block stays intact.
+        $fence = '```'
         $notes = @"
 ## Marionette $tag
 
@@ -88,6 +98,12 @@ if ($hasRelease) {
 - 文件：Marionette.exe
 - 体积：$([math]::Round($bytes / 1MB, 1)) MB
 - SHA-256：``$sha``
+
+一行安装（装进开始菜单，之后应用内自动更新）：
+
+${fence}powershell
+irm https://github.com/nt-cubic/Marionette/releases/latest/download/install.ps1 | iex
+$fence
 
 需要 WebView2 Runtime。
 "@

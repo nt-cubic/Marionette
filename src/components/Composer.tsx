@@ -3824,7 +3824,7 @@ export function Composer({
                       const runtimeGate = status?.runtimeGate ?? null;
                       const canInstall =
                         !ready && (status?.installable ?? false) && !busyInstall;
-                      // Grok / Hermes / Cursor: no in-app installer — show setup help instead of a blank gap.
+                      // Grok / Cursor: no in-app installer — show setup help instead of a blank gap.
                       const needsManualSetup =
                         !ready &&
                         !canInstall &&

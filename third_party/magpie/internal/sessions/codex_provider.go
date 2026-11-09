@@ -535,11 +535,16 @@ func codexThreadsOn(home, p string) []string {
 
 // CodexThreadsBusyOn says whether a thread a Codex folder's state
 // databases keep on the provider p was written to in the last
-// ActiveWindow, which a move of p's threads leaves where it is: such a
-// move has more to do once the thread is quiet. A database that can't be
-// read, and a rollout that can't be found, say nothing.
+// ActiveWindow, or is held open by a Codex (its writer lock), which a
+// move of p's threads leaves where it is: such a move has more to do once
+// the thread is quiet and let go. The Codex app holds the lock of every
+// thread it has loaded, the chat on screen among them, for as long as it
+// keeps it (codex-rs rollout recorder, writer_lock.rs), however long ago
+// it was written to. A database that can't be read, and a rollout that
+// can't be found, say nothing.
 func CodexThreadsBusyOn(home, p string) bool {
 	now := time.Now()
+	locked := codexLockedIDs(home)
 	for _, path := range codexStateDBs(home) {
 		u := url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: "mode=ro&_pragma=busy_timeout(2000)"}
 		if len(u.Path) >= 2 && u.Path[1] == ':' {
@@ -550,11 +555,18 @@ func CodexThreadsBusyOn(home, p string) bool {
 			continue
 		}
 		var paths []string
-		rows, err := db.Query(`SELECT rollout_path FROM threads WHERE model_provider = ?`, p)
+		var held bool
+		rows, err := db.Query(`SELECT id, rollout_path FROM threads WHERE model_provider = ?`, p)
 		if err == nil {
 			for rows.Next() {
-				var r string
-				if rows.Scan(&r) == nil && r != "" {
+				var id, r string
+				if rows.Scan(&id, &r) != nil {
+					continue
+				}
+				if locked[strings.ToLower(id)] {
+					held = true
+				}
+				if r != "" {
 					paths = append(paths, r)
 				}
 			}
@@ -566,8 +578,58 @@ func CodexThreadsBusyOn(home, p string) bool {
 				return true
 			}
 		}
+		if held {
+			return true
+		}
 	}
 	return false
+}
+
+// codexLockedIDs are the threads of a Codex home a Codex holds open now:
+// those whose lock file in thread-writer-locks is locked, as
+// holdCodexThread finds them, by lower-case id. Each lock is tried under
+// the home's coordination lock and let go at once, so a Codex taking one
+// meanwhile waits on the coordination lock rather than being turned away;
+// no lock file is made or taken away. A home without thread-writer-locks,
+// or with none held, has none.
+func codexLockedIDs(home string) map[string]bool {
+	if home == "" {
+		return nil
+	}
+	locks := filepath.Join(home, "thread-writer-locks")
+	ents, err := os.ReadDir(locks)
+	if err != nil {
+		return nil
+	}
+	var ids []string
+	for _, e := range ents {
+		if id, ok := strings.CutSuffix(e.Name(), ".lock"); ok && !e.IsDir() && safeID.MatchString(id) {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	unlock, ok := filelock.Lock(filepath.Join(locks, ".coordination.lock"), filelock.Wait)
+	if !ok {
+		return nil
+	}
+	defer unlock()
+	out := map[string]bool{}
+	for _, id := range ids {
+		f, err := os.OpenFile(filepath.Join(locks, id+".lock"), os.O_RDWR, 0)
+		if err != nil {
+			continue
+		}
+		got, err := filelock.TryLock(f)
+		if got {
+			filelock.Unlock(f)
+		} else if err == nil {
+			out[strings.ToLower(id)] = true
+		}
+		f.Close()
+	}
+	return out
 }
 
 // MoveCodexThreads moves every thread of a Codex folder its state database
@@ -584,7 +646,8 @@ func MoveCodexThreads(home, from, to string) ([]CodexMove, error) {
 	if !codexProviderRe.MatchString(from) || !codexProviderRe.MatchString(to) || from == to {
 		return nil, fmt.Errorf("can't move Codex's threads from %q to %q", from, to)
 	}
-	return moveCodexThreadIDs(home, from, to, codexThreadsOn(home, from), 0)
+	moved, _, err := moveCodexThreadIDs(home, from, to, codexThreadsOn(home, from), 0)
+	return moved, err
 }
 
 // MoveCodexThreadIDs moves those of the threads ids that a Codex folder's
@@ -602,16 +665,18 @@ func MoveCodexThreadIDs(home, from, to string, ids []string) ([]CodexMove, error
 			still = append(still, id)
 		}
 	}
-	return moveCodexThreadIDs(home, from, to, still, 0)
+	moved, _, err := moveCodexThreadIDs(home, from, to, still, 0)
+	return moved, err
 }
 
 // moveCodexThreadIDs moves the threads ids of a Codex folder from the
 // provider from to the provider to, as MoveCodexThreads says, in the
 // order given. With a budget over 0 it stops once the files it has moved
-// come to that many bytes, a copy of each kept.
-func moveCodexThreadIDs(home, from, to string, ids []string, budget int64) ([]CodexMove, error) {
+// come to that many bytes, a copy of each kept, and says more when it
+// stopped there with a thread still to move.
+func moveCodexThreadIDs(home, from, to string, ids []string, budget int64) (moved []CodexMove, more bool, first error) {
 	if len(ids) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 	storeMu.Lock()
 	defer storeMu.Unlock()
@@ -635,8 +700,6 @@ func moveCodexThreadIDs(home, from, to string, ids []string, budget int64) ([]Co
 			return nil
 		})
 	}
-	var moved []CodexMove
-	var first error
 	var spent int64
 	now := time.Now()
 	for _, id := range ids {
@@ -644,6 +707,7 @@ func moveCodexThreadIDs(home, from, to string, ids []string, budget int64) ([]Co
 			continue
 		}
 		if budget > 0 && spent >= budget {
+			more = true
 			break
 		}
 		for _, p := range files[id] {
@@ -661,7 +725,7 @@ func moveCodexThreadIDs(home, from, to string, ids []string, budget int64) ([]Co
 		mv.From = from
 		moved = append(moved, mv)
 	}
-	return moved, first
+	return moved, more, first
 }
 
 // MovePackedCodexThreads moves the threads of a Codex folder that
@@ -673,12 +737,14 @@ func moveCodexThreadIDs(home, from, to string, ids []string, budget int64) ([]Co
 // since since, newest first, and no more once the files moved come to
 // budget bytes: a history of thousands of packed threads is gigabytes,
 // and the threads a user goes back to are the recent ones. The rest wait
-// for the next call. A database whose threads have no updated_at (an
+// for the next call, and more says there are some: nothing else may call
+// again for hours, and the Codex app refuses each one left (Lice9735 on
+// X, a chat from 25 days before). A database whose threads have no updated_at (an
 // older Codex) moves none. Codex 0.166 resumes a thread only on the
 // provider it is on now ("This chat uses openai, but your current
 // provider is magpie"), so a packed thread left on OpenAI couldn't be
 // reopened while magpie was Codex's provider.
-func MovePackedCodexThreads(home, from, to string, since time.Time, budget int64) ([]CodexMove, error) {
+func MovePackedCodexThreads(home, from, to string, since time.Time, budget int64) (moved []CodexMove, more bool, err error) {
 	return moveRecentCodexThreads(home, from, to, since, budget, true)
 }
 
@@ -689,13 +755,13 @@ func MovePackedCodexThreads(home, from, to string, since time.Time, budget int64
 // the user's own provider (a relay's, "myrelay") was listed by the Codex
 // app once magpie was its provider, and refused: "This chat uses myrelay,
 // but your current provider is magpie" (hxy920830 on X).
-func MoveRecentCodexThreads(home, from, to string, since time.Time, budget int64) ([]CodexMove, error) {
+func MoveRecentCodexThreads(home, from, to string, since time.Time, budget int64) (moved []CodexMove, more bool, err error) {
 	return moveRecentCodexThreads(home, from, to, since, budget, false)
 }
 
-func moveRecentCodexThreads(home, from, to string, since time.Time, budget int64, packedOnly bool) ([]CodexMove, error) {
+func moveRecentCodexThreads(home, from, to string, since time.Time, budget int64, packedOnly bool) ([]CodexMove, bool, error) {
 	if !codexProviderRe.MatchString(from) || !codexProviderRe.MatchString(to) || from == to || budget <= 0 {
-		return nil, fmt.Errorf("can't move Codex's threads from %q to %q", from, to)
+		return nil, false, fmt.Errorf("can't move Codex's threads from %q to %q", from, to)
 	}
 	var ids []string
 	for _, p := range codexStateDBs(home) {

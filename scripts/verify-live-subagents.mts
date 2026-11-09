@@ -108,7 +108,7 @@ check("Codex collab spawnAgent in_progress is live; wait is not", () => {
     false,
   );
 });
-check("Hermes delegate_task in_progress is live", () => {
+check("delegate_task (generic spawn verb) in_progress is live", () => {
   assert.equal(
     isLiveSubagentEvent(tool({ toolName: "delegate_task", title: "Write the tests", status: "in_progress" })),
     true,

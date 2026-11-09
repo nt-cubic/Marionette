@@ -33,11 +33,11 @@ Claude belongs in Claude Code, Grok in Grok Build, GPT in Codex, DeepSeek in Dee
 
 You don't need one agent that does everything. You need one window where each does what it's best at.
 
-Marionette is a local multi-agent GUI shell for Windows: it starts, shows, switches and records agents — it does not implement an agent runtime. **Single-file portable build — download and double-click.**
+Marionette is a local multi-agent GUI shell for Windows: it starts, shows, switches and records agents — it does not implement an agent runtime. **Single file: download and run, or install with one line.**
 
 ## One window, every agent
 
-OpenCode, Claude Code, Codex, Grok Build, ZCode, DeepSeek Harness, Pi, Hermes — one window holds them all.
+OpenCode, Claude Code, Codex, Grok Build, ZCode, DeepSeek Harness, Pi — one window holds them all. Any other ACP-speaking agent joins any time via a custom-agent entry.
 
 The ChatGPT and DeepSeek web apps are in there too: log into the page once and they become two pure chat agents.
 
@@ -66,6 +66,7 @@ Press **Ctrl K** anywhere to open the command palette. Keyboard-first, it never 
 
 - **Go to**: search sessions by name, arrow keys to pick, Enter to open
 - **New chat**: start a new session in the default folder
+- **Big picture**: Roundtable, token usage analysis and plugin management all open from here
 - **Dock / undock**: toggle the edge strip (same as the titlebar dock button)
 - **Close behavior**: choose whether the close button quits the app (default) or keeps it running in the background — window hidden, sessions and engine alive, launch again to bring it back
 - **Pinned rail**: keep the side panel from retracting while docked
@@ -84,7 +85,7 @@ Chats from the CLI? One click pulls them into the list, ordered by time, ready t
 
 Keys for OpenCode Go, DeepSeek, GLM, Kimi, OpenRouter and xAI, plus Grok and ChatGPT subscriptions, all show up in every session's model menu. Configure once, not once per agent.
 
-MCP, Skills, long-term memory — one scan, one place. The same tool works for every agent; your preferences follow you across switches.
+MCP, Skills, plugins, long-term memory — one scan, one place. A plugin installs once and works for every agent; the same tool works for each of them; your preferences follow you across switches.
 
 ## Memo Box
 
@@ -97,6 +98,10 @@ When you need them, select a few and start a new conversation — the materials 
 Paste a screenshot into the composer and the annotator opens: click to pin a point, drag to box a region, attach one sentence to each mark.
 
 The agent receives numbered marks with your notes — no more "the thing to the right of that button".
+
+## Document tabs
+
+Click a `.md` or `.txt` in the conversation and it opens inside the app — no detour to an editor. Long documents get **compare mode**: conversation on the left, document on the right, draggable divider; read on one side while the agent edits the other. In-document links navigate in place, and saving is guarded against stale-file conflicts.
 
 ## Built-in browser
 
@@ -112,7 +117,13 @@ One topic, several models at the table: they state positions and review each oth
 
 ## Token usage
 
-A cross-session token ledger: fresh input, cache reads, cache writes and output are booked separately, breakable down by model, hour and day. List prices translate it into money (list price — not what your subscription actually charges); the cache-hit rate is right there, so you can see whether the model is actually saving you money.
+A cross-session token ledger plus an analysis page (Ctrl K → "Token usage analysis"):
+
+- **Four buckets** — fresh input, cache reads, cache writes and output, booked by day and model; list prices translate it into money (list price — not what your subscription actually charges), and the cache-hit ring shows whether the model is actually saving you money
+- **Where they went** — per-session token composition (system prompt, tool definitions, injected context, conversation) and time breakdown (which tools, which commands, which skills, how many lines changed)
+- **Work-hours heatmap** — hour × weekday, when the tokens actually burn
+- **Conversation list** — usage and cost per session, split proportionally if you switched models mid-session
+- **An honest ledger** — persisted on disk for 180 days, with read-only backfill from each agent's own session history; every metric carries its source tag (measured / estimated / derived / list price) — nothing invented
 
 ## Telegram
 
@@ -123,13 +134,30 @@ Reply in Telegram and it lands in that session through the exact same pipeline a
 ## More
 
 - **Parallel subagents** — each on its own, no scroll spam
+- **Edit & resend** — change a line you said before; the rest of the conversation starts over
+- **Forking** — fork a new session from any reply, history rides along
+- **Live timeline** — a swimlane time chart of where each step spent its time, folded back into a summary when the turn ends
 - **Rich rendering** — math, diagrams, and syntax highlighting, right in the stream
 - **Scheduled sends** — write it now, it fires on time
 - **Session parking** — idle sessions park after two hours; one message brings them back
 
 ## Quick start
 
-> [Download](https://github.com/nt-cubic/Marionette/releases/latest) `Marionette.exe` and double-click. Requires the WebView2 Runtime (preinstalled on Win11 and updated Win10).
+**One-line install (recommended)** — installs into `%LOCALAPPDATA%\Programs\Marionette`, adds a Start menu entry and a `marionette` command on PATH. In-app updates replace it in place, no reinstall.
+
+```powershell
+irm https://github.com/nt-cubic/Marionette/releases/latest/download/install.ps1 | iex
+```
+
+No admin needed. To uninstall (quit the app first):
+
+```powershell
+curl.exe -fsSLo install.ps1 https://github.com/nt-cubic/Marionette/releases/latest/download/install.ps1
+powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall
+del install.ps1
+```
+
+Or [download](https://github.com/nt-cubic/Marionette/releases/latest) `Marionette.exe` and double-click it (portable, no Start menu entry). Both require the WebView2 Runtime (preinstalled on Win11 and updated Win10).
 
 <details>
 <summary>Run from source</summary>

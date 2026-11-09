@@ -41,7 +41,6 @@ export const zh = {
   "auth.codexHint": "Codex 未登录时可点横幅 Sign in，或终端执行 `codex login` 后新建会话。",
   "auth.grokHint": "Grok 未登录时可点横幅 Sign in，完成后会自动重连；也可终端执行 `grok login`。令牌约 7 天过期。",
   "auth.piHint": "Pi 未登录时可点横幅 Sign in，或启动 `pi` 后在会话内运行 `/login` 后新建会话。",
-  "auth.hermesHint": "Hermes 未登录时可点横幅 Sign in，或终端执行 `hermes acp --setup` 配置凭证后新建会话。",
   "auth.openCodeHint": "OpenCode Zen（opencode/…）要单独登录；已有 Key 的模型用 opencode-go/… 或 deepseek/…。点 Sign in 后会自动重连。",
   "auth.deepSeekHint": "DeepSeek 未配置时可点横幅 Sign in，或在 Provider keys 里填 DEEPSEEK_API_KEY，或终端执行 `dsh-acp login`。",
   "auth.zcodeHint": "ZCode 未登录时可点横幅 Sign in（走浏览器授权），或先安装并登录 ZCode 桌面版 —— 凭据共享自 ~/.zcode。",

@@ -199,6 +199,72 @@ export function costOfBuckets(
   };
 }
 
+// ── DeepSeek 高峰价与 agent 自报费用 ─────────────────────────────────
+
+/**
+ * DeepSeek 官方 API 的高峰时段:北京时间(UTC+8)周一至周五 09:00–12:00、14:00–18:00,
+ * 每一项按低价的 2 倍计费;周末全天低价。models.dev 收录的 DeepSeek 自家价就是低价档
+ * (2026-11-09 核对:deepseek-v4-flash 输入 0.15 / 输出 0.6,与官方低价一致)。
+ * 中国法定节假日官方也按低价算,这里不识别节假日——那几天会多算,文案里写明。
+ */
+export function isDeepSeekPeak(atMs: number): boolean {
+  const beijing = new Date(atMs + 8 * 3_600_000);
+  const weekday = beijing.getUTCDay();
+  if (weekday === 0 || weekday === 6) return false;
+  const hour = beijing.getUTCHours();
+  return (hour >= 9 && hour < 12) || (hour >= 14 && hour < 18);
+}
+
+/** 只有 DeepSeek 自家牌价才有高峰加价(经 OpenRouter 等转售不适用)。 */
+export function isDeepSeekRate(rate: TokenRate | null): boolean {
+  return rate?.providerId === "deepseek";
+}
+
+type Buckets4 = { input: number; output: number; cached: number; cacheCreation: number };
+
+export type ModelUsageCost = BucketCost & {
+  /** agent 自己报的那部分费用(USD;例如 Grok 每轮的 costUsdTicks)。 */
+  reportedUsd: number;
+  /** DeepSeek 高峰时段多出来的那一倍(USD)。 */
+  peakExtraUsd: number;
+};
+
+function minus(a: Buckets4, b: Buckets4 | undefined): Buckets4 {
+  if (!b) return a;
+  return {
+    input: Math.max(0, a.input - b.input),
+    output: Math.max(0, a.output - b.output),
+    cached: Math.max(0, a.cached - b.cached),
+    cacheCreation: Math.max(0, a.cacheCreation - b.cacheCreation),
+  };
+}
+
+/**
+ * 一行模型用量的完整费用:agent 自报的部分(`rep` 桶 + `repUsd` 金额)直接用它的金额;
+ * 其余按牌价折算;其中落在 DeepSeek 高峰时段、且牌价来自 DeepSeek 自家的,再加一倍。
+ * `peak` 只记没有自报费用的轮次(台账记账时保证)。
+ */
+export function costOfModelUsage(
+  row: Buckets4 & { peak?: Buckets4; rep?: Buckets4; repUsd?: number },
+  rate: TokenRate | null,
+): ModelUsageCost {
+  const reportedUsd = row.repUsd ?? 0;
+  const reportedTokens = row.rep
+    ? row.rep.input + row.rep.output + row.rep.cached + row.rep.cacheCreation
+    : 0;
+  const listed = costOfBuckets(minus(row, row.rep), rate);
+  const peakExtraUsd =
+    row.peak && isDeepSeekRate(rate) ? costOfBuckets(row.peak, rate).usd ?? 0 : 0;
+  const anyPrice = listed.usd != null || row.rep != null;
+  return {
+    usd: anyPrice ? (listed.usd ?? 0) + reportedUsd + peakExtraUsd : null,
+    pricedTokens: listed.pricedTokens + reportedTokens,
+    unpricedTokens: listed.unpricedTokens,
+    reportedUsd,
+    peakExtraUsd,
+  };
+}
+
 // ── 目录获取(24h 缓存,失败退旧缓存) ─────────────────────────────────
 
 const PRICE_KEY = "marionette-token-prices";

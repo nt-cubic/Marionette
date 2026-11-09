@@ -139,6 +139,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		UsageAliases:         map[string]string{"deepseek-v4.1-flash": "deepseek-flash"},
 		UsageCleared:         []settings.UsageClear{{Provider: "p", Model: "m", At: 1761600000000}},
 		ModelKinds:           map[string]string{"p/m": "video"},
+		ModelHeaders:         map[string]map[string]string{"p/m": {"X-Endpoint": "ep-1"}},
 		RedactRules:          []redact.Rule{{Kind: "prefix", Prefix: "oc_sk_"}},
 		RedactActions:        map[string]string{"API_KEY": "block", "EMAIL": "warn"},
 		RedactAllow:          []string{"team@kelvarn.io"},
@@ -190,6 +191,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		GatewayMode:          "off",
 		QuotaReads:           "asked",
 		SearchAll:            true,
+		SearchCount:          9,
 		NoAccountDiscovery:   true,
 		RedactModel:          true,
 		RedactModelName:      "astrlink-guard",
@@ -208,6 +210,8 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 	was.RouterNote = "Los Angeles"                    // the Library's servers/hub-note
 	was.RouterAllTools = true                         // the Library's servers/hub-tools
 	was.BusyLoad = 150                                // the Routing page's busy-load
+	// the Routing groups page's defaults for every group (groups/defaults)
+	was.GroupSink, was.GroupFirstToken, was.GroupPatience = true, 30, 120
 	if err := settings.Save(was); err != nil {
 		t.Fatal(err)
 	}

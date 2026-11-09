@@ -6,7 +6,8 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
 ## 常用命令
 
 - 启动开发版：`npm run tauri dev`（或 `start-marionette.bat`）
-- 构建便携版：`tools\build-portable.bat`（内置引擎，产物 `release\<版本号>\Marionette.exe`，按版本分目录，运行中的旧版不会挡住新构建）。默认会先 `import-magpie.ps1` 拉上游 latest 稳定版进 `third_party/magpie`（`SKIP_MAGPIE_IMPORT=1` 跳过；`MAGPIE_TAG=v…` 钉版本）。用户侧也可在「模型共享」里单独更新 magpie。发布：`tools\publish-release.bat`
+- 构建便携版：`tools\build-portable.bat`（内置引擎，产物 `release\<版本号>\Marionette.exe`，按版本分目录，运行中的旧版不会挡住新构建）。默认会先 `import-magpie.ps1` 拉上游 latest 稳定版进 `third_party/magpie`（`SKIP_MAGPIE_IMPORT=1` 跳过；`MAGPIE_TAG=v…` 钉版本）。用户侧也可在「模型共享」里单独更新 magpie。发布：`tools\publish-release.bat`（会把根目录 `install.ps1` 一并作为 Release 资产上传）
+- 安装成正式应用：仓库根 `install.ps1` 是最终用户的一行版（`irm https://github.com/nt-cubic/Marionette/releases/latest/download/install.ps1 | iex`：从 Release 下 exe → `%LOCALAPPDATA%\Programs\Marionette` + 开始菜单快捷方式 + 用户 PATH，免管理员，重跑即升级，`-Uninstall` 卸载）；本地开发装法用 `tools\install-app.ps1`（拷 `release\current-build.txt` 指向的产物，两份逻辑保持同步）
 - 前端构建：`npm run build`（`tsc && vite build`）
 - Rust 检查：`cargo check`（在 `src-tauri/` 下）
 - 发布版本号：`tools\bump-version.ps1`（或 `tools\bump-version.bat`）
@@ -18,7 +19,7 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
 - 后端：`src-tauri/src/`（ACP 服务 `acp.rs`、终端 `terminal_runtime.rs`）
 - 现行产品说明：`docs/CURRENT.md`；索引见 `docs/README.md`，`docs/archive/` 是历史归档，不是现行契约
 - 验证脚本：`scripts/`（清单见 `scripts/README.md`）；Windows 启动/构建/发布：`tools/`（清单见 `tools/README.md`）
-- 根目录只保留 `start-marionette.bat` 一个入口；改 `tools/` 里的脚本时，仓库根一律用 `%~dp0..`
+- 根目录的 GUI 入口只保留 `start-marionette.bat`；`install.ps1` 是 Release 资产（一行安装器），属有意例外，不要挪进 `tools/`。改 `tools/` 里的脚本时，仓库根一律用 `%~dp0..`
 
 ## 视觉语言（2026-10-31）
 
@@ -374,6 +375,24 @@ PR #6 的 localStorage 台账,验收后 squash 合入并按产品定案补齐）
 - **百分位来自直方图**（`TTFT_EDGES_MS` / `TPS_EDGES`，桶内线性插值）；改桶边界 = 旧数据失真，只能追加不能改。tally 每表封顶 60 个键，会话摘要 300 个，`sessionIds` 每天 400 个。
 - **组件**在 `components/usage/`：`UsageV2Body`（顶栏 + 拼装）+ 七个分区，共用件只在 `primitives.tsx`（`fmt*` / `SourceTag` / `Sparkline` / `SectionHead` / `Seg`），样式在 `styles/usage-v2/`（`base.css` 是共用调色 `--uv2-*`；`.uv2` 是 `container: uv2`，分区按 `@container uv2` 断点：并排列 620px 以下堆叠、英雄 760px 以下 3+2）。中栏在双侧栏 + 1400 宽时只有 ~830px，断点按这个宽度调，别按整窗。i18n 片段 `fe-uv2{shell,a..e}`。
 - 回归：`npx tsx scripts/verify-usage-insights.mts`（digest 时间切分与夹零、命令程序识别、MCP/技能键、直方图百分位、v2 累加与旧账兼容、构成合计、agent 过滤、会话修剪）+ 原有 `verify-usage-ledger` / `usage-smoke`。
+
+## Token 用量页 v2 修正批（2026-11-09，修 7 补 7）
+
+用户验收家里做的 v2 后的「都修都补」批。上面两节红线全部仍然成立；本批新增的红线与事实：
+
+- **台账在磁盘，不在 localStorage**：`~/.marionette/usage/`（Rust `usage_store.rs`：`ledger.json` 进程级乐观 rev 写——**撞 rev 是返回值不是错误**，前端 reload-merge-retry；`sessions/<id>.jsonl` 按轮行，append-only，读侧 4000 行封顶）。前端 `lib/usageStore.ts` 三后端：桌面磁盘 / 浏览器预览 localStorage / Node 脚本内存。**写失败必须记 dev.log（source=usage）并重试**——旧版「失败一次就静默关记录到重启」是事故，别改回去。首次启动自动迁移 localStorage 旧账（磁盘优先合并），迁移成功才删旧键。
+- **上下文占用只认本轮实时读数**：`ctxFreshTurnRef` 在 usage_update（used 非空）与 Grok per-call 时置位，turn/complete 消费即删。**冻结的种子值**（mergeUsageFromPromptResult 只 seed 一次的那类）**不算实测**——部分 agent 全程只报一次，旧版把冻结值逐轮堆进占用图是错的。会话列表圆环同理（`ctxPct` null 显示「—」）。
+- **会话列表按时间窗取数**：`LedgerSession.dayKeys` + `LedgerDay.sessions[sessionId]`（四桶+models 轮次+repUsd 按天记）。**别把会话累计塞进短窗口**——dsh-context 按「每条用量的发生日」归因，我们同口径。会话内换过模型的费用按 `models<modelId, turns>` 占比分摊（模型牌价各自查）。
+- **费用三段**：`reportedUsd`（agent 自报，Grok `turn_completed.usage.costUsdTicks` **是会话累计，记相邻轮差值**；其 token 进 `LedgerModelUsage.rep`，不再叠牌价）> `listed`（models.dev）> `peakExtra`（**仅 DeepSeek 自家牌价**且无自报费用的轮次 ×2；北京时间工作日 9–12/14–18，**不含法定节假日**——文案写明略偏高）。`costOfModelUsage` 是唯一算钱入口。
+- **改动行数 git 优先**：轮末 `finalizeTurnFileChanges` 现在**返回本轮行数组**；`.then` 里 `applyTurnGitEdits` 把 ops/add/del 回填进当天 agent 明细（幂等：每轮一次）。工具文本口径（digest.edits）只是没有 git 时的兜底，页面标「git 对账 / 按工具文本估算」。`applyTurnGitEdits` 找不到当天的账就丢弃（不比没有差）。
+- **续跑去重**：agent re-entry（无 turn 边界的自续段）复用上一轮 digest 的口径是 `digestTurn` 的 `sinceMs`（`ledgerLastRecordRef`）——早于上一轮记账时刻的事件已被折过，跳过。**别去掉这个参数**，否则续跑段的工具/时间去向双计。
+- **压缩事件**：ACP `compaction_update`（`session.compaction` 能力早就在 `build_client_capabilities_json` 里声明了）status=completed 计数进 `turnCompactionsRef` → 当轮 `compactions` → 天级 `detail.compactions`。摘要内容不留（隐私+体积）。
+- **失败/中断轮**：turn/complete 的 stopReason（error/refusal → failed，cancelled → cancelled）记进 `detail.turnFails/turnCancels`——**与工具失败是两回事**（一轮可以工具全成但轮失败）。
+- **文件活动**：digest 按轮折 `reads`/`edited` 路径表（每轮 40 路径封顶），天级 240 封顶（`addCounts/addEdited` 丢最不活跃的）。分析页 `ins.files` 前 8 展示。路径是 agent 报什么就是什么（tool_call 的 locations），不做相对化。
+- **历史回填**：Rust `usage_backfill/`（只读扫各 agent CLI 自己的会话库：grok `~/.grok/sessions`、claude `~/.claude/projects`、codex `~/.codex/sessions`、dsh `~/.dsh/sessions`（zstd V4）、opencode `opencode.db`、zcode `db.sqlite`）→ `BackfillReport`（按会话×UTC 小时；桶口径对齐实时账）。前端 `lib/usageBackfill.ts::foldBackfill` 按本地日窗聚合，**去重靠 `Session.nativeSessionIds`**（agent 自报会话编号；`listSessions(chat+全部项目)` 取并集）——重复会话只列不计。缓存 `~/.marionette/usage/backfill-cache.json` 按 (路径,长度,mtime)。**红线：绝不写 agent 自己的目录、SQLite 只读、大文件流式逐行、不持 storage 锁、测试用根目录 override 绝不碰真实 `~/.marionette`**。契约（serde camelCase 字段名）在 `usage_backfill/mod.rs` 头注释，前端 `usageBackfill.ts` 镜像——**两边字段名/语义要同步改**。
+- **对话组成拆分（2026-11-09，Grok 真数）**：`usage_backfill/composition.rs` 从 grok 会话目录的三件套（`system_prompt.txt`/`tool_definitions.json`/`chat_history.jsonl`）折出九类组成（系统提示词/工具定义/注入上下文/你的输入/图片附件/回复/思考/工具调用/工具结果），chars/4 密度估算 + 每条消息 4 token 开销（dsh-context 同款）。**红线**：①chat_history 首行的 system 与 system_prompt.txt 是同一份——文件存在时必须跳过历史里的 system 行（双计实锤过）；②**实测锚 = `signals.json` 的 `contextTokensUsed`（结束时的真实上下文大小），不是 `turn_completed.inputTokens`——那是会话累计费用口径**（26 次调用的总和，拿它当锚会差 27 倍）；③前端 `scaleComposition` 把九类估算按锚等比校准、覆盖率如实展示（估算 79% 就写 79%）；④回填缓存指纹必须把三件套文件也计入（updates.jsonl 没变但 chat_history 变了时缓存不得喂旧组成）。挂点两处：`BackfillSession.composition`（扫描带上）+ 命令 `usage_grok_composition(nativeId)`（实时会话详情按需拉，native id 从 Marionette 会话的 `nativeSessionIds` 查）。
+- **usage-smoke 在非中文系统会假红**：Node ≥24 默认语言来自 OS（本机 ja-JP），断言是中文——脚本开头 `await applyLocale("zh-CN")` 钉住。别的脚本要断言文案时照做。
+- 回归：`verify-usage-insights.mts` 新增了高峰窗口/自报费用优先/非 DeepSeek 不加倍/会话按窗取数/失败与压缩计数/文件活动断言。
 
 ## 排查「卡退」（崩溃/闪退）—— 第一件事
 

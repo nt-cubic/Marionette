@@ -23,8 +23,6 @@ pub enum DistributionKind {
     Npx,
     /// Vendor binary or release zip (binary_cache later).
     Binary,
-    /// Python via `uvx --from …` (Hermes).
-    Uvx,
     /// Vendor installer only (Grok, Cursor).
     Manual,
 }
@@ -49,10 +47,6 @@ pub struct AgentHarnessMeta {
     pub args: &'static [&'static str],
     /// Min Node major.minor.patch when distribution is Npx (`None` = no check).
     pub node_required: Option<&'static str>,
-    /// Min `uv` version when distribution is Uvx.
-    pub uv_required: Option<&'static str>,
-    /// `uvx --python` for Hermes (`<3.14`).
-    pub python_pin: Option<&'static str>,
     /// Extra CLI commands that must exist for the agent to work (e.g. `codex`, `pi`).
     pub requires_commands: &'static [&'static str],
     /// Env vars the launcher may set (name, value). Applied in acp start when present.
@@ -82,7 +76,6 @@ fn dist_label(d: DistributionKind) -> &'static str {
     match d {
         DistributionKind::Npx => "npx",
         DistributionKind::Binary => "binary",
-        DistributionKind::Uvx => "uvx",
         DistributionKind::Manual => "manual",
     }
 }
@@ -101,8 +94,6 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             cmd: "node",
             args: &[],
             node_required: Some("22.0.0"),
-            uv_required: None,
-            python_pin: None,
             requires_commands: &[],
             launch_env: &[],
         },
@@ -117,8 +108,6 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             cmd: "codex-acp",
             args: &[],
             node_required: None,
-            uv_required: None,
-            python_pin: None,
             requires_commands: &["codex"],
             launch_env: &[],
         },
@@ -133,8 +122,6 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             cmd: "claude-agent-acp",
             args: &[],
             node_required: None,
-            uv_required: None,
-            python_pin: None,
             requires_commands: &["claude"],
             launch_env: &[],
         },
@@ -149,8 +136,6 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             cmd: "grok",
             args: &["--trust", "agent", "stdio"],
             node_required: None,
-            uv_required: None,
-            python_pin: None,
             requires_commands: &[],
             launch_env: &[],
         },
@@ -166,8 +151,6 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             cmd: "opencode",
             args: &["acp"],
             node_required: None,
-            uv_required: None,
-            python_pin: None,
             requires_commands: &[],
             launch_env: &[],
         },
@@ -182,27 +165,8 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             cmd: "pi-acp",
             args: &[],
             node_required: Some("22.0.0"),
-            uv_required: None,
-            python_pin: None,
             requires_commands: &["pi"],
             launch_env: &[("PI_ACP_ENABLE_EMBEDDED_CONTEXT", "true")],
-        },
-        "hermes" => AgentHarnessMeta {
-            id: "hermes",
-            label: "Hermes Agent",
-            subagent_transcript: false,
-            mcp_wire: McpWirePolicy::Forward,
-            mcp_wire_label: mcp_label(McpWirePolicy::Forward),
-            distribution: DistributionKind::Uvx,
-            distribution_label: dist_label(DistributionKind::Uvx),
-            // Prefer PATH `hermes acp`; uvx path is install/preflight guidance.
-            cmd: "hermes",
-            args: &["acp"],
-            node_required: None,
-            uv_required: Some("0.5.0"),
-            python_pin: Some("3.13"),
-            requires_commands: &[],
-            launch_env: &[],
         },
         // @openma/deepseek-harness-acp (bin `dsh-acp`) — full-editor ACP over the
         // DSH composition (streaming, tools, MCP, permission presets, plans,
@@ -220,8 +184,6 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             cmd: "dsh-acp",
             args: &[],
             node_required: Some("22.15.0"),
-            uv_required: None,
-            python_pin: None,
             requires_commands: &["dsh"],
             launch_env: &[],
         },
@@ -245,8 +207,6 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             cmd: "zcode-acp-server",
             args: &[],
             node_required: Some("22.0.0"),
-            uv_required: None,
-            python_pin: None,
             requires_commands: &[],
             launch_env: &[],
         },
@@ -261,8 +221,6 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             cmd: "agent",
             args: &[],
             node_required: None,
-            uv_required: None,
-            python_pin: None,
             requires_commands: &[],
             launch_env: &[],
         },
@@ -400,7 +358,6 @@ mod tests {
 
     #[test]
     fn launch_metadata_still_names_the_binaries() {
-        assert_eq!(harness_meta("hermes").python_pin, Some("3.13"));
         assert_eq!(harness_meta("deepseek").cmd, "dsh-acp");
         assert_eq!(harness_meta("pi").node_required, Some("22.0.0"));
         assert_eq!(harness_meta("codex").cmd, "codex-acp");

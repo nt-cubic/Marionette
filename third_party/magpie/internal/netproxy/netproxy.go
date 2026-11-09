@@ -27,7 +27,7 @@ import (
 // Install routes http.DefaultTransport (and so http.DefaultClient) through
 // Func, and http.DefaultClient's requests made on a provider's behalf
 // (With) through a transport of that provider's proxy (Dispatch). Its
-// HTTP/2 connections are checked as the gateway's are (HTTP2Health), and
+// HTTP/2 connections are checked by Go's own pings (HTTP2Health), and
 // the requests magpie sends on its own are written down (probelog).
 func Install() {
 	if t, ok := http.DefaultTransport.(*http.Transport); ok {
@@ -61,7 +61,10 @@ var PingAfter, PingWait = 10 * time.Second, 10 * time.Second
 // (#2843). A ping finds it, and the requests on it fail, so a group moves
 // on and the next request dials anew. A live vendor answers a ping
 // whatever its streams are doing, so a long wait for a first byte is
-// never cut by it.
+// never cut by it. But a ping's answer restarts the clock, so a wait of
+// minutes is pinged every PingAfter, which Google's front end ends the
+// connection for: the gateway's transports ping by CalmHTTP2 instead, and
+// this is for http.DefaultTransport's short requests.
 func HTTP2Health() *http.HTTP2Config {
 	return &http.HTTP2Config{SendPingTimeout: PingAfter, PingTimeout: PingWait}
 }
@@ -119,14 +122,17 @@ func Held(ctx context.Context) error {
 // "direct", #1522) goes through its own provider's proxy, never the one
 // it was made under. A provider's leave not to check its certificate
 // (WithUncheckedTLS) goes the same way: it is the outer provider's, and
-// dropped here.
+// dropped here, and so is its ask for HTTP/1.1 (WithHTTP1).
 func With(ctx context.Context, choice string) context.Context {
-	if choice = strings.TrimSpace(choice); choice == "" && choiceOf(ctx) == "" && uncheckedOf(ctx) == nil {
+	if choice = strings.TrimSpace(choice); choice == "" && choiceOf(ctx) == "" && uncheckedOf(ctx) == nil && http1Of(ctx) == nil {
 		return ctx
 	}
 	ctx = context.WithValue(ctx, choiceKey{}, choice)
 	if uncheckedOf(ctx) != nil {
 		ctx = context.WithValue(ctx, uncheckedKey{}, map[string]bool(nil))
+	}
+	if http1Of(ctx) != nil {
+		ctx = context.WithValue(ctx, http1Key{}, map[string]bool(nil))
 	}
 	return ctx
 }
@@ -165,8 +171,11 @@ var HTTP1 func(u *url.URL) bool
 // through, among them. A move of the global proxy (the settings) drops
 // the idle connections the old one dialled, which a transport, pooling
 // by target host alone, would have carried over the switch (#4523). A
-// request HTTP1 names goes through a clone kept for HTTP/1.1
-// (http1Only), and one to a host whose certificate the provider's user
+// request HTTP1 names, one to a host its provider asked HTTP/1.1 of
+// (WithHTTP1), every request under OverHTTP1 (a download trying again
+// after its HTTP/2 transfer broke off), and one to a host whose HTTP/2
+// connection carried a TLS record that didn't decrypt (recordError, for h2Broken after) go
+// through a clone kept for HTTP/1.1 (http1Only), and one to a host whose certificate the provider's user
 // said not to check (WithUncheckedTLS) through a clone kept for that
 // host alone (uncheckTLS). A host whose IPv6 is taken but goes nowhere
 // is dialed over IPv4 (v4Fallback).
@@ -198,11 +207,25 @@ func (d *dispatch) RoundTrip(req *http.Request) (*http.Response, error) {
 	if d.moved() {
 		d.CloseIdleConnections()
 	}
-	r := route{choice: choiceOf(req.Context()), h1: HTTP1 != nil && HTTP1(req.URL), unchecked: uncheckedHost(req)}
-	if r == (route{}) {
-		return v4Retry(d.base, req)
+	r := route{choice: choiceOf(req.Context()), h1: HTTP1 != nil && HTTP1(req.URL) || http1Asked(req) || overHTTP1(req.Context()) || h2BrokenFor(req), unchecked: uncheckedHost(req)}
+	t := d.base
+	if r != (route{}) {
+		t = d.transport(r)
 	}
-	return v4Retry(d.transport(r), req)
+	res, err := v4Retry(t, req)
+	if r.h1 {
+		return res, err
+	}
+	if err != nil {
+		if recordError(err) {
+			markH2Broken(req)
+		}
+		return res, err
+	}
+	if res.ProtoMajor == 2 && res.Body != nil && res.Body != http.NoBody {
+		res.Body = h2Watch{ReadCloser: res.Body, req: req}
+	}
+	return res, err
 }
 
 // Watch is a check a transport of its own makes before each request: it
@@ -261,6 +284,14 @@ func (d *dispatch) transport(r route) *http.Transport {
 	}
 	if r.unchecked != "" {
 		uncheckTLS(t)
+	}
+	if isCalm(d.base) {
+		// a clone shares base's HTTP/2 connections, dialled through
+		// base's proxy, until it is given its own
+		t.TLSNextProto = nil
+		if !r.h1 {
+			CalmHTTP2(t)
+		}
 	}
 	d.own[r] = t
 	return t

@@ -156,6 +156,9 @@ func readAnthropic(body []byte, clientMarks, facts bool) (*Request, error) {
 	}
 	r := &Request{Model: a.Model, System: stringOrText(a.System), MaxTokens: a.MaxTokens,
 		Temp: a.Temperature, TopP: a.TopP, Stop: a.StopSequences, Stream: a.Stream, Fast: a.Speed == "fast"}
+	if !facts {
+		r.askedTTL = askedCacheTTL(&a)
+	}
 	if clientMarks {
 		var err error
 		r.clientCache, err = readClientCache(a)
@@ -813,7 +816,15 @@ var effortInOutputConfig = regexp.MustCompile(`(?i)glm-5\.[23](?:$|[-.:/\[])|min
 
 // deepseekHost is DeepSeek's own API, whose Anthropic endpoint
 // (api.deepseek.com/anthropic) takes the effort in output_config.
-const deepseekHost = "api.deepseek.com"
+const deepseekHost = provider.DeepSeekHost
+
+// isDeepSeekAnthropic is whether the request goes to DeepSeek's own
+// Anthropic endpoint, whose shape is checked against the host, not the
+// preset: a "deepseek" provider pointed at another host is that host's
+// shape, and it learns from that endpoint's refusals as any other does.
+func isDeepSeekAnthropic(p provider.Provider, to provider.Protocol) bool {
+	return provider.HostOf(p.Base(to)) == deepseekHost
+}
 
 // deepseekEfforts are the levels DeepSeek's models think at: its thinking
 // guide maps minimal to low, medium and xhigh to high, and ultra to max.
@@ -1302,12 +1313,13 @@ func decodeAnthropic(data string, emit func(Event)) error {
 			Signature string `json:"signature"`
 		} `json:"content_block"`
 		Delta struct {
-			Type        string `json:"type"`
-			Text        string `json:"text"`
-			PartialJSON string `json:"partial_json"`
-			Thinking    string `json:"thinking"`
-			Signature   string `json:"signature"`
-			StopReason  string `json:"stop_reason"`
+			Type            string `json:"type"`
+			Text            string `json:"text"`
+			PartialJSON     string `json:"partial_json"`
+			Thinking        string `json:"thinking"`
+			EstimatedTokens *int   `json:"estimated_tokens"`
+			Signature       string `json:"signature"`
+			StopReason      string `json:"stop_reason"`
 			// auto mode's review of the reply's calls (automode.go)
 			SafeguardResults json.RawMessage `json:"safeguard_results"`
 			StopDetails      json.RawMessage `json:"stop_details"`
@@ -1363,7 +1375,7 @@ func decodeAnthropic(data string, emit func(Event)) error {
 		case "input_json_delta":
 			emit(Event{Kind: KToolArgs, Text: ev.Delta.PartialJSON})
 		case "thinking_delta":
-			emit(Event{Kind: KThink, Text: ev.Delta.Thinking})
+			emit(Event{Kind: KThink, Text: ev.Delta.Thinking, Estimated: ev.Delta.EstimatedTokens})
 		case "signature_delta":
 			emit(Event{Kind: KSig, Name: sealAnthropic, Text: ev.Delta.Signature})
 		}
@@ -1397,11 +1409,22 @@ type aUsage struct {
 	// Kiro caches but tells only credits, never tokens (zeewell on X).
 	// It is read, never told: anthropic() leaves it false.
 	CacheUnknown bool `json:"magpie_cache_unknown,omitempty"`
+	// OutputTokensDetails says how many of the output tokens were
+	// thinking, as Copilot counts them on a message_delta: the reasoning
+	// count the other protocols' usage carries (completion_tokens_details,
+	// Gemini's thoughtsTokenCount) and the Claude subscription's cliUsage
+	// reads from Claude Code. A vendor that leaves it out is told by its
+	// stream (hidesReasoning, #4545)
+	OutputTokensDetails *aOutputDetails `json:"output_tokens_details,omitempty"`
 }
 
 type aCacheCreation struct {
 	Ephemeral5m int `json:"ephemeral_5m_input_tokens"`
 	Ephemeral1h int `json:"ephemeral_1h_input_tokens"`
+}
+
+type aOutputDetails struct {
+	ThinkingTokens int `json:"thinking_tokens"`
 }
 
 func (u aUsage) usage() Usage {
@@ -1412,15 +1435,23 @@ func (u aUsage) usage() Usage {
 		out.CacheWrite = max(out.CacheWrite, c.Ephemeral5m+c.Ephemeral1h)
 		out.CacheWrite1h = c.Ephemeral1h
 	}
+	if d := u.OutputTokensDetails; d != nil {
+		out.Reasoning = d.ThinkingTokens
+	}
 	return out
 }
 
 // anthropic is the usage as Anthropic says it, the cache writes split by
-// how long they are kept when upstream reported TTLs or some were for an hour.
+// how long they are kept when upstream reported TTLs or some were for an
+// hour, and the thinking among the output tokens when the upstream counted
+// its reasoning.
 func (u Usage) anthropic() aUsage {
 	out := aUsage{InputTokens: u.Input, OutputTokens: u.Output, CacheReadInputTokens: u.CacheRead, CacheCreationInputTokens: u.CacheWrite}
 	if h := min(u.CacheWrite1h, u.CacheWrite); u.cacheCreationReported || h > 0 {
 		out.CacheCreation = &aCacheCreation{Ephemeral5m: u.CacheWrite - h, Ephemeral1h: h}
+	}
+	if u.Reasoning > 0 {
+		out.OutputTokensDetails = &aOutputDetails{ThinkingTokens: u.Reasoning}
 	}
 	return out
 }
@@ -1658,10 +1689,22 @@ func (e *anthropicEncoder) event(ev Event) {
 		return
 	case KThink:
 		if ev.Text == "" {
+			if ev.Estimated == nil {
+				return
+			}
+			// an empty thinking delta that carries the vendor's progress
+			// count goes to the client as it came: the live beat that says
+			// the think is moving, not silence (#5390)
+			e.thinking()
+			e.delta(map[string]any{"type": "thinking_delta", "thinking": "", "estimated_tokens": *ev.Estimated})
 			return
 		}
 		e.thinking()
-		e.delta(map[string]any{"type": "thinking_delta", "thinking": ev.Text})
+		d := map[string]any{"type": "thinking_delta", "thinking": ev.Text}
+		if ev.Estimated != nil {
+			d["estimated_tokens"] = *ev.Estimated
+		}
+		e.delta(d)
 	case KSig:
 		// a block signed with no text goes as it came, signed (#1445)
 		if e.open == Thinking || e.fresh {
