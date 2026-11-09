@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +22,8 @@ import (
 	"github.com/tidwall/gjson"
 
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/capre"
+	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/filelock"
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/settings"
@@ -41,7 +42,7 @@ import (
 
 // codexProviderRe is what a provider id may be: a key of config.toml's
 // [model_providers], or a built-in one.
-var codexProviderRe = regexp.MustCompile(`^[0-9A-Za-z_.-]{1,64}$`)
+var codexProviderRe = capre.MustCompile(`^[0-9A-Za-z_.-]+$`, 64)
 
 // CodexMove is one session moved to another provider.
 type CodexMove struct {
@@ -114,7 +115,7 @@ type codexConfig struct {
 func readCodexConfig(home string) codexConfig {
 	c, _ := filememo.Read("sessions codex config", filepath.Join(home, "config.toml"), func(b []byte) (codexConfig, error) {
 		var c codexConfig
-		toml.Unmarshal(b, &c)
+		toml.Unmarshal(edit.TOMLWithout(b, "projects"), &c)
 		return c, nil
 	})
 	return c

@@ -57,6 +57,16 @@ type Manifest struct {
 	// "settings.section" otel, "part" groups (whatever the page marks
 	// data-feature="<id>"). The runtime contributes them before Apply.
 	Parts []Part
+	// SetAt is where Settings has its settings, when it has any there: the
+	// tab and the row they start at, "privacy #redactList". Its row in
+	// Plugins › Built-in goes there, and there an off plugin says so
+	// (netube99 on X: masking's switch, settings and page were three
+	// places, none naming the others).
+	SetAt string
+	// Opens is the window page it is used on when it has no page of its
+	// own ("providers" for routing strategies, used in a provider's
+	// editor): its row in Plugins › Built-in leads there
+	Opens string
 	// Defaults is its config before plugins.yml's preset and rows
 	Defaults map[string]any
 	// Settings is a struct of its settings, their defaults its values

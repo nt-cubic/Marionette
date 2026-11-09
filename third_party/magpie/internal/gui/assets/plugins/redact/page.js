@@ -90,7 +90,6 @@ function maskPageOpen() {
 }
 function maskPageLoad(force) {
   maskDrawAll();
-  (prefs ? Promise.resolve() : loadSettings()).then(drawMaskAlert).catch(() => {});
   const sum = maskLoad(force)?.then(() => { drawMaskCard(); drawMaskList(); });
   const recs = maskL.read && force ? maskRefresh() : maskL.read ? null : maskFetch();
   return Promise.all([sum, recs]);
@@ -99,15 +98,6 @@ function maskDrawAll() {
   drawMaskCard();
   drawMaskList();
   if (maskO) drawMaskOne();
-}
-// the Masking alert (Must2333 on X): a notification when a value is
-// masked for the first time, off until turned on. Gateway mode leaves it
-// out, as it does the other alerts its desktop would show
-function drawMaskAlert() {
-  const s = prefs || {};
-  $("#maskPrefs").hidden = gatewayMode;
-  $("#maskAlertSegs").replaceChildren(segs([["off", t("Off")], ["on", t("On")]], s.maskAlert ? "on" : "off",
-    (v) => savePrefs({ ...prefsKeep(s), maskAlert: v === "on" }).then(drawMaskAlert)));
 }
 // while the page is on screen it keeps up with requests as they go
 setInterval(() => {
@@ -143,7 +133,16 @@ function drawMaskCard() {
     b.type = "button";
     b.onclick = maskTurnOn;
     head.append(b);
-  } else head.append(maskOffButton());
+  } else {
+    // back to its settings (netube99 on X), unless Turn off goes there
+    if (!maskSettings().redactWords?.length) {
+      const set = el("button", "text", t("Settings") + " › " + $("#setTab-privacy").textContent);
+      set.type = "button";
+      set.onclick = (e) => openSettingsAt(e, "privacy", "#redactList .row");
+      head.append(set);
+    }
+    head.append(maskOffButton());
+  }
   if (sum?.requests || maskDays === 30) head.append(segs([["7", t("7 days")], ["30", t("30 days")]], String(maskDays), (v) => {
     maskDays = +v;
     try { localStorage.setItem("magpie.maskDays", v); } catch {}
@@ -638,7 +637,7 @@ function maskOneOpen(key, r) {
   if (!key) return;
   maskTipOff();
   const o = maskO = { key, r: r || maskL.records.find((x) => x.key === key) || null, sent: undefined, leaves: null, vals: new Map(), view: "both", pick: "", open: new Set(), whole: new Set() };
-  $("#maskCard").hidden = $("#maskList").hidden = $("#maskDemo").hidden = $("#maskPrefs").hidden = true;
+  $("#maskCard").hidden = $("#maskList").hidden = $("#maskDemo").hidden = true;
   xqd?.wake();
   $("#maskOne").hidden = false;
   drawMaskOne();
@@ -668,7 +667,6 @@ function maskOneClose() {
   $("#maskOne").hidden = true;
   $("#maskOne").replaceChildren();
   $("#maskCard").hidden = $("#maskList").hidden = $("#maskDemo").hidden = false;
-  $("#maskPrefs").hidden = gatewayMode;
   xqd?.wake();
   drawMaskList();
 }

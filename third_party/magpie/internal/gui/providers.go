@@ -136,6 +136,11 @@ type providerJSON struct {
 	// spoken HTTP/1.1 to, never HTTP/2 (provider.HTTP1); taken where
 	// TakesInsecureTLS is
 	HTTP1 bool `json:"http1"`
+	// its Responses turns over the Responses WebSocket (provider.Socket,
+	// #5781): auto, on or ""; TakesSocket: a provider of a key with a
+	// Responses URL
+	Socket      string `json:"socket"`
+	TakesSocket bool   `json:"takesSocket"`
 	// asked as usual after a quota refusal or a 429, never set aside for
 	// it (provider.LimitRestOff)
 	LimitRestOff bool `json:"limitRestOff"`
@@ -181,6 +186,9 @@ type providerJSON struct {
 	// one for that window apart, by the account and then the window's
 	// capId (provider.AccountWindowCaps); 100 is none on that window
 	AccountWindowCaps map[string]map[string]int `json:"accountWindowCaps,omitempty"`
+	// AccountWindowAmounts: a window capped at a fixed amount of its own
+	// unit in place of a share (provider.AccountWindowAmounts)
+	AccountWindowAmounts map[string]map[string]float64 `json:"accountWindowAmounts,omitempty"`
 	// the names the user gave its accounts, by the account in lower
 	// case (provider.AccountNames, #1515), and the name of the key plan
 	// each account was found to stand in for (provider.SeatNameOf): the
@@ -768,7 +776,7 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 		ID: p.ID, Name: p.Name, Icon: p.Icon, IconFrom: p.IconFrom, Preset: p.Preset, Host: p.Host(),
 		Chat: p.Chat, Responses: p.Responses, Anthropic: p.Anthropic, Gemini: p.Gemini, Decide: p.Decide, BaseAPI: p.BaseAPI, ModelTest: p.ModelTest(), TestsAs: p.TestClients(), DecideTest: p.AsksDecideModels(), MarksKinds: p.MarksKinds(),
 		Catalog: p.Catalog, Website: p.Website, KeysURL: p.KeysURL,
-		Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountNames: p.AccountNames, Headers: p.Headers, ExtraBody: p.ExtraBody, ReplyHeaders: p.ReplyHeaders, PassHeaders: p.PassHeaders, Searches: p.Searches, Cline: p.ClinePinnable(), PinUpstream: p.PinUpstream, Unredacted: p.Unredacted, CountFree: p.CountFree, InsecureTLS: p.InsecureTLS, TakesInsecureTLS: p.TakesInsecureTLS(), HTTP1: p.HTTP1, LimitRestOff: p.LimitRestOff, ImageFilesOff: p.ImageFilesOff, TakesImageFiles: p.TakesImageFiles(), NativeCompaction: p.NativeCompaction, CarriesCompaction: p.CarriesCompaction(), PassUserAgent: !p.MagpieUserAgent, OwnClient: p.OwnClient(), PassErrors: p.PassErrors, TakesPassErrors: p.TakesPassErrors(), AuthHeader: p.AuthHeader, BothAuth: p.BothAuth(), BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, BalanceMethod: p.BalanceMethod, ModelsURL: p.ModelsURL, ListOff: p.ListsOff(), TakesListOff: p.Account == nil && !p.IsPlugin() && !p.DecideOnly(), TakesModelHeaders: p.Account == nil, DecideAPIKind: p.DecideAPIKind(),
+		Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountWindowAmounts: p.AccountWindowAmounts, AccountNames: p.AccountNames, Headers: p.Headers, ExtraBody: p.ExtraBody, ReplyHeaders: p.ReplyHeaders, PassHeaders: p.PassHeaders, Searches: p.Searches, Cline: p.ClinePinnable(), PinUpstream: p.PinUpstream, Unredacted: p.Unredacted, CountFree: p.CountFree, InsecureTLS: p.InsecureTLS, TakesInsecureTLS: p.TakesInsecureTLS(), HTTP1: p.HTTP1, Socket: p.Socket, TakesSocket: p.TakesSocket(), LimitRestOff: p.LimitRestOff, ImageFilesOff: p.ImageFilesOff, TakesImageFiles: p.TakesImageFiles(), NativeCompaction: p.NativeCompaction, CarriesCompaction: p.CarriesCompaction(), PassUserAgent: !p.MagpieUserAgent, OwnClient: p.OwnClient(), PassErrors: p.PassErrors, TakesPassErrors: p.TakesPassErrors(), AuthHeader: p.AuthHeader, BothAuth: p.BothAuth(), BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, BalanceMethod: p.BalanceMethod, ModelsURL: p.ModelsURL, ListOff: p.ListsOff(), TakesListOff: p.Account == nil && !p.IsPlugin() && !p.DecideOnly(), TakesModelHeaders: p.Account == nil, DecideAPIKind: p.DecideAPIKind(),
 		Ready: p.Ready(), Chosen: p.PicksOf(avail), Agents: make([]providerAgent, 0, len(agents)),
 		Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, UseFirst: p.UseFirst, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, RestartApp: p.RestartApp, Self: p.SelfAnswered(), KeepSelf: p.KeepSelf, CapStop: p.CapStop, CapCareful: p.CapCareful, Unlisted: p.Unlisted, NoModels: p.ServesNone(), BestInFamily: p.BestInFamily && len(p.Models) == 0 && !p.NoModels, Off: p.Off, Contexts: p.Contexts,
 		MaxConcurrency: p.MaxConcurrency, PluginConcurrency: p.PluginConcurrency(), MaxAccounts: p.MaxAccounts, PluginAccounts: p.PluginAtOnce(), PriceRate: p.PriceRate,
@@ -1096,7 +1104,7 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 		}
 	}
 	// its image models aren't among those agents chat with; the editor
-	// lists them apart, as Settings → Images is where one is picked
+	// lists them apart, as Settings → Models → Images is where one is picked
 	for _, m := range gateway.DrawersOf(p, func() []catalog.Model { return ls.Available }) {
 		out.DrawIDs = append(out.DrawIDs, m.ID)
 		if m.Name != "" && m.Name != m.ID {
@@ -1527,6 +1535,10 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// HTTP1 is whether its own hosts are spoken HTTP/1.1 to; a
 			// save that leaves it out keeps it
 			HTTP1 *bool `json:"http1"`
+			// Socket is how its Responses turns go over the Responses
+			// WebSocket (#5781): auto, on, or "" for HTTP alone; a save
+			// that leaves it out keeps it
+			Socket *string `json:"socket"`
 			// LimitRestOff is whether a quota refusal or a 429 leaves it
 			// asked as usual; a save that leaves it out keeps it
 			LimitRestOff *bool `json:"limitRestOff"`
@@ -1665,6 +1677,10 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// Windows, for windowcap, in place of Window: a family's
 			// windows, which the GUI shows as one meter
 			Windows []string `json:"windows"`
+			// Amount, for windowcap in place of Cap: a fixed amount of the
+			// window's own unit the account is used to at most, 0 to lift it
+			// (provider.AccountWindowAmounts)
+			Amount *float64 `json:"amount"`
 			// Weight, for accountweight: the account's share under By
 			// weight routing, 1 to provider.MaxKeyWeight (0 or 1: none)
 			Weight int `json:"weight"`
@@ -1953,6 +1969,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				if req.HTTP1 != nil {
 					in.HTTP1 = *req.HTTP1
 				}
+				if req.Socket != nil {
+					in.Socket, _ = provider.ParseSocket(*req.Socket)
+				}
 				if req.LimitRestOff != nil {
 					in.LimitRestOff = *req.LimitRestOff
 				}
@@ -1998,6 +2017,11 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 					in.HTTP1 = *req.HTTP1
 				} else if old != nil {
 					in.HTTP1 = old.HTTP1
+				}
+				if req.Socket != nil {
+					in.Socket, _ = provider.ParseSocket(*req.Socket)
+				} else if old != nil {
+					in.Socket = old.Socket
 				}
 				if req.LimitRestOff != nil {
 					in.LimitRestOff = *req.LimitRestOff
@@ -2094,7 +2118,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				// limits on requests at once, with accountconcurrency, and
 				// their weights, with accountweight
 				if old != nil {
-					in.AccountCaps, in.AccountWindowCaps = old.AccountCaps, old.AccountWindowCaps
+					in.AccountCaps, in.AccountWindowCaps, in.AccountWindowAmounts = old.AccountCaps, old.AccountWindowCaps, old.AccountWindowAmounts
 					in.AccountConcurrency = old.AccountConcurrency
 					in.AccountWeights = old.AccountWeights
 					in.AccountNames = old.AccountNames     // with accountname
@@ -2372,7 +2396,12 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			if len(req.Windows) == 0 {
 				req.Windows = []string{req.Window}
 			}
-			if err := provider.SetWindowCaps(in.ID, req.Account, req.Windows, req.Cap); err != nil {
+			set := func() error { return provider.SetWindowCaps(in.ID, req.Account, req.Windows, req.Cap) }
+			if req.Amount != nil {
+				// a fixed amount of the window's unit, 0 to lift it
+				set = func() error { return provider.SetWindowAmount(in.ID, req.Account, req.Windows, *req.Amount) }
+			}
+			if err := set(); err != nil {
 				fail(rw, err)
 				return
 			}

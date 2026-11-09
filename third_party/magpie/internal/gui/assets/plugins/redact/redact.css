@@ -6,8 +6,10 @@
 #view-masking .grow { flex: 1; }
 .msk-card { position: relative; padding: 16px 20px 14px; border-radius: 14px; border: 1px solid var(--line); background: var(--card); }
 .msk-card[hidden], .msk-list[hidden], .msk-one[hidden] { display: none; }
-.msk-head { display: flex; align-items: flex-start; gap: 12px; }
+.msk-head { display: flex; align-items: flex-start; gap: 8px 12px; }
 .msk-title { min-width: 0; }
+/* narrow, its buttons go under the words rather than off the side */
+@media (max-width: 600px) { .msk-head { flex-wrap: wrap; } .msk-title { flex-basis: 100%; } }
 .msk-title h2 { margin: 0; font-size: 13px; font-weight: 600; color: var(--fg); }
 .msk-sub { display: block; margin-top: 3px; font-size: 12px; line-height: 1.4; color: var(--muted); }
 .msk-band { display: grid; grid-template-columns: minmax(0, 240px) minmax(0, 1fr); gap: 36px; align-items: center; margin-top: 12px; }
@@ -86,7 +88,6 @@
 
 /* the list: a bar, facets that narrow it, a day at a time */
 .msk-list { margin-top: 14px; }
-.msk-prefs { margin-top: 14px; border-radius: 14px; }
 .msk-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .msk-live { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--muted); }
 .msk-live i { width: 6px; height: 6px; border-radius: 50%; background: var(--green, var(--accent)); animation: msk-live 2.4s ease-in-out; }

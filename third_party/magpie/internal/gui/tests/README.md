@@ -68,7 +68,9 @@ Chromium and WebKit and every language: a wrong key is told so in the
 page's language and shows nothing; the right one shows its limit, its
 usage and most used model, picks that model, and gives Claude Code, Codex,
 OpenAI-compatible and curl setup at the address the page was opened at,
-with a placeholder until "Put my key in the setup" is ticked. A reload
+with a placeholder until "Put my key in the setup" is ticked. Claude
+Code's setup names the pick as ANTHROPIC_MODEL alone and each tier's
+model as the gateway's `tiers` says, leaving out a tier with none. A reload
 keeps the key in the tab, Forget takes it away, and no request carries the
 key in its address. A read-only key gets no setup. Gateway → Gateway keys
 shows the page's address (the LAN one, or `MAGPIE_PUBLIC_URL`) with a
@@ -391,6 +393,13 @@ one's editor. English and Chinese, Chromium and WebKit, with the API faked.
 the key's field and its placeholder is the field's hint, while a way labelled
 only "API key" keeps "<name> API key"; the provider's own icon shows on its
 row. English and Chinese, Chromium and WebKit, with the API faked.
+
+`plugin-ask-ways.test.cjs` checks a moved subscription whose plugin's
+first way asks a question first (Kiro's sign-in methods): the question
+offers "Other ways to sign in…", which shows every way, the API key among
+them, and a later question doesn't; the plugin's labels, messages and hints
+show in the window's language when it gives them by language, else as
+written. English and Chinese, Chromium and WebKit, with the API faked.
 
 `plugin-market.test.cjs` checks the Plugins tab: Discover lists the
 suggested plugins in their two sections, a card installs its plugin and

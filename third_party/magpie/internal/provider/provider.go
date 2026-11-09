@@ -381,6 +381,16 @@ type Provider struct {
 	// group's own.
 	Patience int `json:"patience,omitempty"`
 
+	// Socket has a Responses API provider's turns go over the Responses
+	// WebSocket magpie speaks to chatgpt.com (#5781, matrix0487 on
+	// Discord): SocketAuto tries it and falls back to HTTP, and leaves the
+	// host to HTTP for a while once it refuses the handshake, as
+	// chatgpt.com is; SocketOn tries it every time and falls back without
+	// that. "", the default, is HTTP alone. Only a provider of a key with a
+	// Responses URL takes it (TakesSocket). Set with `magpie provider set
+	// <id> socket=`.
+	Socket string `json:"socket,omitempty"`
+
 	// NativeCompaction has Codex's compaction_trigger go to the provider
 	// as Codex sent it, and the compaction the provider writes back go to
 	// Codex as it came (#1099), where magpie otherwise asks the model for
@@ -484,6 +494,12 @@ type Provider struct {
 	// and then the window's WindowCapID: 1–99, or 100 for none on it. A
 	// window not in it takes the account's AccountCaps.
 	AccountWindowCaps map[string]map[string]int `json:"accountWindowCaps,omitempty"`
+	// AccountWindowAmounts is, for a subscription, the fixed amount of a
+	// window's own unit (credits, requests, tokens) an account is used to
+	// at most where the user set one in place of a share (9won_25273 on
+	// Discord), by account and window as AccountWindowCaps. A window has
+	// one or the other.
+	AccountWindowAmounts map[string]map[string]float64 `json:"accountWindowAmounts,omitempty"`
 	// CapStop, for a subscription whose accounts are capped, ends there
 	// (plugins#349): while every account is held at its cap, a request is
 	// answered 429, as the vendor would, rather than sent on to Fallback.
@@ -604,13 +620,13 @@ type Provider struct {
 	Unlisted bool `json:"unlisted,omitempty"`
 	// HiddenDrawers are the provider's image models the user unticked in
 	// its editor (321sssrt on X: an OpenAI key lists a dozen): left out of
-	// every list one is picked from (Settings › Images, another magpie's
+	// every list one is picked from (Settings › Models › Images, another magpie's
 	// list, Aside's) and of Automatic's choice, as an unticked chat model
 	// is left out of the agents' lists. A deny list beside Models, not in
 	// it: Models is what agents chat with, empty meaning the vendor's list,
 	// so an image model put there would be offered to chat with, and
 	// hiding one would mean picking every chat model. A request that names
-	// one still draws with it, and so does the one Settings › Images
+	// one still draws with it, and so does the one Settings › Models › Images
 	// names: a hidden pick is shown as picked, and said to be hidden.
 	HiddenDrawers []string `json:"hiddenDrawers,omitempty"`
 	// HiddenVideomakers are its video models unticked in its editor, as
@@ -905,6 +921,13 @@ func (p Provider) clone() Provider {
 		}
 		p.AccountWindowCaps = m
 	}
+	if p.AccountWindowAmounts != nil {
+		m := make(map[string]map[string]float64, len(p.AccountWindowAmounts))
+		for k, v := range p.AccountWindowAmounts {
+			m[k] = maps.Clone(v)
+		}
+		p.AccountWindowAmounts = m
+	}
 	p.AccountConcurrency = maps.Clone(p.AccountConcurrency)
 	p.AccountWeights = maps.Clone(p.AccountWeights)
 	p.Contexts = maps.Clone(p.Contexts)
@@ -1011,7 +1034,7 @@ func accountSettings(a, pk Provider) Provider {
 	// plugin's provider too (isee1_1 on Discord)
 	a.Unredacted = pk.Unredacted
 	a.Proxy, a.AccountProxies, a.AccountModels, a.AccountModelsAll = pk.Proxy, pk.AccountProxies, pk.AccountModels, pk.AccountModelsAll
-	a.AccountCaps, a.AccountWindowCaps = pk.AccountCaps, pk.AccountWindowCaps
+	a.AccountCaps, a.AccountWindowCaps, a.AccountWindowAmounts = pk.AccountCaps, pk.AccountWindowCaps, pk.AccountWindowAmounts
 	a.CapStop, a.CapCareful = pk.CapStop, pk.CapCareful
 	a.UseFirst = pk.UseFirst
 	a.AccountNames = pk.AccountNames
@@ -1440,6 +1463,9 @@ func AddCopy(p Provider, from string) (string, error) {
 	p.Unredacted = p.Unredacted || src.Unredacted
 	p.CountFree = p.CountFree || src.CountFree
 	p.NativeCompaction = p.NativeCompaction || src.NativeCompaction
+	if p.Socket == "" {
+		p.Socket = src.Socket
+	}
 	p.MagpieUserAgent = p.MagpieUserAgent || src.MagpieUserAgent
 	if p.Website == "" {
 		p.Website = src.Website
@@ -1670,6 +1696,11 @@ func normalize(p Provider) Provider {
 		p.Patience = PatienceOff
 	}
 	p.Patience = min(p.Patience, PatienceLongest)
+	if v, ok := ParseSocket(p.Socket); ok {
+		p.Socket = v
+	} else {
+		p.Socket = ""
+	}
 	p.Key = strings.TrimSpace(p.Key)
 	p.Proxy = strings.TrimSpace(p.Proxy)
 	p.AccountProxies = normalAccountProxies(p.AccountProxies)
@@ -1677,6 +1708,7 @@ func normalize(p Provider) Provider {
 	p.AccountModelsAll = normalModelsAll(p.AccountModelsAll, p.AccountModels)
 	p.AccountCaps = normalAccountCaps(p.AccountCaps)
 	p.AccountWindowCaps = normalWindowCaps(p.AccountWindowCaps)
+	p.AccountWindowAmounts = normalWindowAmounts(p.AccountWindowAmounts)
 	p.AccountNames = normalAccountNames(p.AccountNames)
 	p.KeySpendCaps = normalKeySpendCaps(p.KeySpendCaps)
 	p.KeyOwnBalances = normalKeyOwnBalances(p.KeyOwnBalances)

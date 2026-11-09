@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/pluginrt"
+	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // Plugins › Built-in (Lxxyx on X: "功能太多了"): magpie's built-in plugins
@@ -38,6 +41,12 @@ type builtinJSON struct {
 	InUse int             `json:"inUse"`
 	Use   string          `json:"use,omitempty"` // One or Many, by InUse
 	Parts []pluginrt.Part `json:"parts,omitempty"`
+	// SetAt is the manifest's: the Settings tab and row of its settings;
+	// Page the window page it has, on or off, which has its settings
+	// (schema) too; Opens the page it is used on when it has none
+	SetAt string `json:"setAt,omitempty"`
+	Page  string `json:"page,omitempty"`
+	Opens string `json:"opens,omitempty"`
 	// Schema is its settings' (pluginrt/schema.go), which the page draws
 	// a form of; Config their values now
 	Schema *pluginrt.Schema `json:"schema,omitempty"`
@@ -45,6 +54,11 @@ type builtinJSON struct {
 	// Broken is plugins.yml's error when it can't be read: every
 	// plugin runs as it did, and no switch can be changed
 	Broken string `json:"broken,omitempty"`
+	// Searches is, for Web search while it is on, what a model that
+	// can't search is searched with now, in the order asked; none: nothing
+	// searches yet (netube99 on X: the switch, the Library's search
+	// servers and Settings didn't say which does what)
+	Searches []string `json:"searches,omitempty"`
 }
 
 // builtinsState composes plugins.yml again, brings the runtime to it, and
@@ -65,8 +79,17 @@ func builtinsState() []builtinJSON {
 	for _, m := range pluginrt.Registered() {
 		c, s := byID[m.ID], st[m.ID]
 		j := builtinJSON{ID: m.ID, Name: m.Name, Sub: m.Sub, On: s.State == pluginrt.Active, Chosen: c.Chosen, Source: c.Source, State: s.State, Why: s.Why, InUse: c.InUse, Parts: s.Parts, Schema: m.Schema(), Config: c.Config}
+		j.SetAt, j.Opens = m.SetAt, m.Opens
+		for _, p := range m.Parts {
+			if p.Slot == "nav.page" {
+				j.Page = p.Key
+			}
+		}
 		if err != nil {
 			j.Broken, j.Chosen = err.Error(), j.On
+		}
+		if j.ID == "search" && j.On {
+			j.Searches = searchesNow()
 		}
 		switch {
 		case j.InUse == 1:
@@ -77,6 +100,23 @@ func builtinsState() []builtinJSON {
 		out = append(out, j)
 	}
 	return out
+}
+
+// searchesNow names the provider that searches for a model that can't
+// and the search APIs on, in the order a search asks them.
+func searchesNow() []string {
+	var apis []string
+	for _, a := range provider.SearchAPIs() {
+		apis = append(apis, a.Name())
+	}
+	by := gateway.Searcher()
+	switch {
+	case by == "":
+		return apis
+	case settings.Load().SearchFirst == settings.SearchFirstAPI:
+		return append(apis, by)
+	}
+	return append([]string{by}, apis...)
 }
 
 // builtinsOff are the ids of the plugins the window leaves out now, for
