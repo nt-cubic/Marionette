@@ -10,7 +10,7 @@
 //! 等）+ agent 自攒的自动记忆（Claude `~/.claude/projects/*/memory/`、
 //! Grok `~/.grok/memory-v2/`、Codex `~/.codex/memories/`）。路径考证见
 //! `docs/research-agent-memory-locations.md`；阵容对齐 agent_registry（gemini
-//! 已下架；dsh/pi/hermes 无全局记忆文件）。项目级 AGENTS.md/CLAUDE.md 不收：
+//! 已下架；dsh/pi 无全局记忆文件；hermes 2026-11-09 全量移除）。项目级 AGENTS.md/CLAUDE.md 不收：
 //! 各引擎在会话里原生就读项目文件。
 //!
 //! 蒸馏：`memory_distill` 把会话 JSONL 的尾部（user/assistant/thought 的

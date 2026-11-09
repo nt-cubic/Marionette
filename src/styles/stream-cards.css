@@ -2403,7 +2403,7 @@ body.is-composer-resizing .composer {
   border-color: var(--accent);
 }
 
-/* Manual agents (Grok / Hermes / Cursor): setup guide, not npm Install. */
+/* Manual agents (Grok / Cursor): setup guide, not npm Install. */
 .composer-agent-row__install--manual {
   color: var(--text-muted);
   background: transparent;

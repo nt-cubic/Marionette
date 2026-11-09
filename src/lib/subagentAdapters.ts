@@ -14,7 +14,6 @@
  *   ZCode         Agent/Task whose *title* is the prompt; identity in
  *                 `_meta.claudeCode.toolName` / `_meta.subagent`; background
  *                 children are `[background] …` cards (kind other)
- *   Hermes        `delegate_task`
  *   DeepSeek/DSH  `task` / `subagent`
  *   CodeBuddy     `_meta.isSubagent` / teamUpdate members (custom agent)
  *

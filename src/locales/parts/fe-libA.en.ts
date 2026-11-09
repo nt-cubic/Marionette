@@ -38,7 +38,6 @@ export const en = {
   "auth.codexHint": "Codex isn't signed in. Click Sign in on the banner, or run `codex login` in a terminal and start a new session.",
   "auth.grokHint": "Grok isn't signed in. Click Sign in on the banner and it reconnects automatically; you can also run `grok login` in a terminal. The token expires after about 7 days.",
   "auth.piHint": "Pi isn't signed in. Click Sign in on the banner, or launch `pi`, run `/login` inside the session, and start a new session.",
-  "auth.hermesHint": "Hermes isn't signed in. Click Sign in on the banner, or run `hermes acp --setup` in a terminal to set up credentials and start a new session.",
   "auth.openCodeHint": "OpenCode Zen (opencode/…) needs its own sign-in; for models that already have a key, use opencode-go/… or deepseek/…. It reconnects automatically after you click Sign in.",
   "auth.deepSeekHint": "DeepSeek isn't set up. Click Sign in on the banner, enter DEEPSEEK_API_KEY under Provider keys, or run `dsh-acp login` in a terminal.",
   "auth.zcodeHint": "ZCode isn't signed in. Click Sign in on the banner (browser-based authorization), or install and sign in to the ZCode desktop app first — credentials are shared from ~/.zcode.",

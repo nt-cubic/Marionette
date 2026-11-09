@@ -50,14 +50,6 @@ export const AGENT_AUTH: Record<string, AgentAuthSpec> = {
       return t("auth.piHint");
     },
   },
-  hermes: {
-    probe: true,
-    login: true,
-    loginCommand: "hermes acp --setup",
-    get errorHint() {
-      return t("auth.hermesHint");
-    },
-  },
   opencode: {
     probe: true,
     login: true,

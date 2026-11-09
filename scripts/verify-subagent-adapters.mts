@@ -153,7 +153,7 @@ check("parseCodexSubagentActivity ignores a goal-only session_info", () => {
   );
 });
 
-check("Hermes delegate_task is a nested agent", () => {
+check("delegate_task (generic spawn verb) is a nested agent", () => {
   assert.equal(recoverSubagentToolName({ name: "delegate_task" }), "delegate_task");
   assert.equal(isSubagentTool("delegate_task", "Write the tests"), true);
   const part = toolUpdate({

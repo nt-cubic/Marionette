@@ -201,6 +201,8 @@ impl AgentConfig {
             // 退出内置名单 —— 无跨用面或用户面小，装不上的条目比没有更伤。
             // 要用随时可经「自定义 agent」加回（custom_agents.rs）；历史会话
             // 导入的 parsers 保留未动。
+            // 2026-11-09 hermes 全量移除（用户定案：不再支持）——roster 条目、
+            // harness_meta、auth 探针/登录、uvx 预检、会话导入 parser 一并删除。
             Self::new(
                 "pi",
                 "Pi",
@@ -215,17 +217,6 @@ impl AgentConfig {
                         "Pi coding agent",
                         Some("@earendil-works/pi-coding-agent"),
                     )],
-                ),
-            ),
-            Self::new(
-                "hermes",
-                "Hermes Agent",
-                "hermes",
-                vec!["acp".to_string()],
-                "acp",
-                "stdin",
-                AgentInstallSpec::manual(
-                    "Install via uv: uvx --python 3.13 --from 'hermes-agent[acp,mcp]' hermes-acp  (or official Hermes installer). Put `hermes` on PATH. Requires uv ≥0.5.",
                 ),
             ),
             // DeepSeek Harness over @openma/deepseek-harness-acp (bin `dsh-acp`).

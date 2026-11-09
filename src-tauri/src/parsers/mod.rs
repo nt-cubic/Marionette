@@ -11,7 +11,6 @@ pub(crate) mod dedup;
 mod deepseek;
 mod gemini;
 mod grok;
-mod hermes;
 pub(crate) mod jsonl_agents;
 mod opencode;
 pub(crate) mod path_norm;
@@ -87,7 +86,6 @@ fn make_parser(source: &str) -> Option<Box<dyn AgentParser>> {
         "openclaw" => Box::new(jsonl_agents::OpenClawParser),
         "cline" => Box::new(cline::ClineParser),
         "gemini" => Box::new(gemini::GeminiParser),
-        "hermes" => Box::new(hermes::HermesParser),
         "cursor" => Box::new(cursor::CursorParser),
         "deepseek" => Box::new(deepseek::DeepSeekParser),
         "zcode" => Box::new(zcode::ZcodeParser),
@@ -107,7 +105,6 @@ const SOURCES: &[&str] = &[
     "openclaw",
     "cline",
     "gemini",
-    "hermes",
     "cursor",
     "deepseek",
     "zcode",

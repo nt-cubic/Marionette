@@ -62,7 +62,7 @@
 | `deepseek` / `web-deepseek` | `--agent-deepseek` | `#3d6e8f` | `#8db5cf` |
 | `opencode` | `--agent-opencode` | `#806836` | `#c4ad7c` |
 | （预留）gemini | `--agent-gemini` | `#8c4d68` | `#c98ea8` |
-| 其它（pi / hermes / web-chatgpt / custom） | `--agent-other` | `#6b6b73` | `#9aa4ae` |
+| 其它（pi / web-chatgpt / custom） | `--agent-other` | `#6b6b73` | `#9aa4ae` |
 
 **用法只有一种**：`src/lib/agentInk.ts` 的 `agentInkStyle(agentId)` 在元素上设 `--agent-ink`，CSS 里写 `var(--agent-ink, var(--accent))`。不要在组件里按 agent id 写 if/else 选颜色。浅色底用 `color-mix(in srgb, var(--agent-ink) 8%, transparent)`，描边用 `color-mix(in srgb, var(--agent-ink) 40%, var(--border))`。
 
