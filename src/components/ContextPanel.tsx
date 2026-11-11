@@ -32,6 +32,8 @@ type ContextPanelProps = {
   onExpand: () => void;
   usage: UsageSnapshot;
   onUsageRefresh: () => void;
+  /** A usage refresh round is in flight (quota refresh button spins). */
+  usageProbing?: boolean;
   /** Whole-dialog totals folded from the active dialog's transcript. */
   sessionStats?: SessionStats | null;
   changedFiles?: ChangedFile[];
@@ -180,6 +182,7 @@ export const ContextPanel = memo(function ContextPanel({
   collapsed,
   usage,
   onUsageRefresh,
+  usageProbing = false,
   changedFiles = [],
   changedFilesNote = null,
   onRefreshChangedFiles,
@@ -320,7 +323,7 @@ export const ContextPanel = memo(function ContextPanel({
         onKillBackgroundTerminal={onKillBackgroundTerminal}
       />
 
-      <QuotaSection usage={usage} agentId={activeAgentId} modelId={activeModelId} onRefresh={onUsageRefresh} />
+      <QuotaSection usage={usage} agentId={activeAgentId} modelId={activeModelId} onRefresh={onUsageRefresh} refreshing={usageProbing} />
 
       <ChangesSection
         changedFiles={changedFiles}

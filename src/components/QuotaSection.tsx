@@ -25,6 +25,8 @@ type QuotaSectionProps = {
   /** Model the current conversation runs on — decides who is billed this turn. */
   modelId?: string | null;
   onRefresh: () => void;
+  /** A refresh round is in flight (native probe / engine live query). */
+  refreshing?: boolean;
 };
 
 /** One window: period · bar · used % · when it resets (today = time only). */
@@ -261,9 +263,10 @@ export const QuotaSection = memo(function QuotaSection({
   agentId,
   modelId,
   onRefresh,
+  refreshing = false,
 }: QuotaSectionProps) {
   const t = useT();
-  const view = buildQuotaView({ windows: usage.windows, agentLabel: usage.agentLabel, modelId });
+  const view = buildQuotaView({ windows: usage.windows, agentLabel: usage.agentLabel, agentId, modelId });
   const empty = !view.primary && view.others.length === 0;
   // 懒启动配套（2026-11-06）：引擎停着时配额行来自上次快照——标注出来，
   // 别让静止的数字冒充实时额度。
@@ -286,7 +289,14 @@ export const QuotaSection = memo(function QuotaSection({
       <div className="rail-sh">
         <span>{t("rail.quota")}</span>
         <span className="rail-act">
-          <button type="button" className="rail-ib" title={refreshTitle} aria-label={t("rail.quotaRefresh")} onClick={onRefresh}>
+          <button
+            type="button"
+            className={`rail-ib${refreshing ? " is-spinning" : ""}`}
+            title={refreshTitle}
+            aria-label={t("rail.quotaRefresh")}
+            aria-busy={refreshing || undefined}
+            onClick={onRefresh}
+          >
             <RefreshCw size={12} strokeWidth={1.5} />
           </button>
         </span>

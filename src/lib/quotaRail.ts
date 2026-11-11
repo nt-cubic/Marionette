@@ -12,6 +12,49 @@ import type { UsageWindow } from "./types";
  * the component just renders what `buildQuotaView` returns.
  */
 
+/**
+ * Engine subscription family that belongs to each agent — the engine row whose
+ * provider id matches this is the agent's own subscription (codex session →
+ * engine `codex` entry, grok → `grok`, …). Used to (a) keep own-family engine
+ * rows as a fallback behind the native probe rows and (b) let `buildQuotaView`
+ * promote that engine group to the primary block when the native probe has
+ * nothing (2026-11-11: the probe is exactly what fails while a turn is in
+ * flight, so the panel used to go blank for the family you're looking at).
+ */
+export const ENGINE_OWN_FAMILY: Record<string, string> = {
+  codex: "codex",
+  "codex-acp": "codex",
+  "claude-code": "claude",
+  claude: "claude",
+  "grok-build": "grok",
+  grok: "grok",
+};
+
+/**
+ * Semantic window slot shared by native probe rows and engine rows of the same
+ * family: native ids ("five-hour", "weekly", "weekly-opus") and engine window
+ * names ("5 hours", "7 days", "MCP · Month") both normalise to "5h"/"weekly"/…,
+ * so a native row can claim its slot and suppress the engine fallback copy.
+ */
+export function quotaSlotKey(text: string): string {
+  const s = text.trim().toLowerCase();
+  if (!s) return s;
+  if (s.startsWith("five-hour")) return "5h";
+  if (/^mcp\b/.test(s)) return "mcp";
+  // 裸周期词才归槽：`weekly-opus` / `Weekly (Opus)` 是按模型分桶，跟聚合
+  // weekly 不是同一个窗口，不能互相顶替。
+  const bare = s.replace(/\s*(?:limit|usage|used)\s*$/, "").replace(/\s+/g, " ").trim();
+  if (/^(?:weekly|week|7 days?)$/.test(bare)) return "weekly";
+  if (/^(?:monthly|month|30 days?)$/.test(bare)) return "monthly";
+  const h = /(\d+(?:\.\d+)?)\s*[- ]?\s*(?:h|hour)/.exec(bare);
+  if (h) return `${h[1]}h`;
+  const d = /(\d+(?:\.\d+)?)\s*[- ]?\s*(?:d|day)/.exec(bare);
+  if (d) return Number(d[1]) === 7 ? "weekly" : `${d[1]}d`;
+  const m = /(\d+(?:\.\d+)?)\s*[- ]?\s*(?:min|minute)/.exec(bare);
+  if (m) return `${m[1]}m`;
+  return s;
+}
+
 export type UsageTone = "ok" | "warn" | "hot" | "none";
 
 export type UsageGroup = {
@@ -168,10 +211,19 @@ export type QuotaView = {
   others: UsageGroup[];
 };
 
-/** The agent's own (non-engine) subscription / provider group, if it reported any. */
-function ownGroup(groups: UsageGroup[]): UsageGroup | null {
+/**
+ * The agent's own (non-engine) subscription / provider group, if it reported
+ * any. Own-family engine rows (engine fallback, `ENGINE_OWN_FAMILY`) count as
+ * the agent's own subscription too — without a live probe they are the only
+ * own-subscription rows the panel has.
+ */
+function ownGroup(groups: UsageGroup[], ownFamily?: string): UsageGroup | null {
   const agent = groups.find((g) => g.key === "agent");
   if (agent) return agent;
+  if (ownFamily) {
+    const family = groups.find((g) => g.key === ownFamily);
+    if (family) return family;
+  }
   // OpenCode & co. report their provider's balance/limits under the provider's name.
   return groups.find((g) => g.key.startsWith("label:")) ?? null;
 }
@@ -179,11 +231,12 @@ function ownGroup(groups: UsageGroup[]): UsageGroup | null {
 export function buildQuotaView(args: {
   windows: UsageWindow[];
   agentLabel: string;
+  agentId?: string;
   modelId?: string | null;
 }): QuotaView {
-  const { windows, agentLabel, modelId } = args;
+  const { windows, agentLabel, agentId, modelId } = args;
   const groups = groupUsageBySource(windows.filter(isMeaningfulWindow), agentLabel);
-  const own = ownGroup(groups);
+  const own = ownGroup(groups, agentId ? ENGINE_OWN_FAMILY[agentId] : undefined);
   const bridged = isBridgeNativeModelId(modelId);
 
   let primary: QuotaPrimary | null = null;

@@ -2,20 +2,7 @@ import { getSessionUpdate, getSessionUpdateKind } from "./acpTranscript";
 import type { EngineQuotaEntry } from "./api";
 import type { SessionEvent, TurnStats, UsageSnapshot, UsageWindow } from "./types";
 import { t } from "./i18n";
-
-/**
- * Engine quota rows skip the active agent's own subscription family — the
- * agent's own rate-limit rows already cover it (codex reports Codex usage,
- * grok reports Grok weekly, …).
- */
-const ENGINE_OWN_FAMILY: Record<string, string> = {
-  codex: "codex",
-  "codex-acp": "codex",
-  "claude-code": "claude",
-  claude: "claude",
-  "grok-build": "grok",
-  grok: "grok",
-};
+import { ENGINE_OWN_FAMILY, quotaSlotKey } from "./quotaRail";
 
 function formatQuotaReset(iso: string): string {
   const t = new Date(iso);
@@ -24,14 +11,34 @@ function formatQuotaReset(iso: string): string {
   return `${t.getMonth() + 1}/${t.getDate()} ${pad(t.getHours())}:${pad(t.getMinutes())}`;
 }
 
-/** `magpie quota` entries → Usage panel rows (percentage meters). */
-function engineQuotaRows(entries: EngineQuotaEntry[], agentId: string): UsageWindow[] {
+/**
+ * `magpie quota` entries → Usage panel rows (percentage meters).
+ *
+ * Own-family entries (the engine row for *this* agent's subscription, see
+ * `ENGINE_OWN_FAMILY`) are a fallback, not a skip (2026-11-11): the native
+ * probe that should cover them — codex `/status`, grok `_x.ai/billing`, claude
+ * `/usage` — fails exactly when the user goes looking (a turn is in flight →
+ * "interrupt it first"; parked session → no process). Engine rows fill only
+ * the semantic slots (`quotaSlotKey`) the native probe has not already
+ * reported with a live percentage; where both exist the native row wins.
+ */
+function engineQuotaRows(
+  entries: EngineQuotaEntry[],
+  agentId: string,
+  nativeRateWindows: UsageWindow[] = [],
+): UsageWindow[] {
   const ownFamily = ENGINE_OWN_FAMILY[agentId];
+  const nativeSlots = new Set(
+    nativeRateWindows.filter((w) => w.percentage != null).map((w) => quotaSlotKey(w.id)),
+  );
   const rows: UsageWindow[] = [];
   for (const entry of entries) {
-    if (entry.provider === ownFamily) continue;
+    const own = entry.provider === ownFamily;
     if (entry.windows.length === 0) {
-      if (entry.balance) {
+      // Balance-only entry: always shown for other families; for the own
+      // family only when the native probe hasn't reported the subscription
+      // at all (native percentage rows describe the same account).
+      if (entry.balance && (!own || nativeRateWindows.length === 0)) {
         rows.push({
           id: `engine:${entry.provider}:balance`,
           label: entry.name || entry.provider,
@@ -42,8 +49,14 @@ function engineQuotaRows(entries: EngineQuotaEntry[], agentId: string): UsageWin
       }
       continue;
     }
+    const seenSlots = new Set<string>();
     for (const w of entry.windows) {
       if (w.used == null && w.remaining == null && w.resetsAt == null) continue;
+      const slot = quotaSlotKey(w.name);
+      // One row per slot: the engine itself can list aliases of one window.
+      if (seenSlots.has(slot)) continue;
+      seenSlots.add(slot);
+      if (own && nativeSlots.has(slot)) continue;
       const parts: string[] = [];
       if (w.remaining != null) parts.push(t("usage.remainingPercent", { n: Math.round(w.remaining) }));
       if (w.resetsAt) parts.push(t("usage.resetsAt", { time: formatQuotaReset(w.resetsAt) }));
@@ -1443,8 +1456,9 @@ export function buildUsageSnapshot(args: {
   }
 
   // 订阅配额（引擎 · 网关 `/v1/magpie/quotas`）：跨 agent 可见的订阅窗口
-  // 合并进同一面板；当前 agent 自己的家族由它自己的 rate-limit 行负责。
-  const engineWindows = engineQuotaRows(args.engineQuota ?? [], agentId);
+  // 合并进同一面板；当前 agent 自己的家族由它自己的 rate-limit 行负责，
+  // 原生探针没盖住的槽位由引擎行兜底（见 engineQuotaRows）。
+  const engineWindows = engineQuotaRows(args.engineQuota ?? [], agentId, rateWindows);
   windows.push(...engineWindows);
 
   // Honest empty-state labels: never imply a live % when we only know plan ceilings.

@@ -46,6 +46,20 @@
   background: var(--panel-soft);
   color: var(--text);
 }
+/* 额度刷新探针在飞（2026-11-11）：图标转圈做「点到了」的反馈。 */
+.rail-ib.is-spinning svg {
+  animation: rail-spin 0.9s linear infinite;
+}
+@keyframes rail-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rail-ib.is-spinning svg {
+    animation: none;
+  }
+}
 .rail-ib--sm {
   width: 22px;
   height: 22px;

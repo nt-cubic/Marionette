@@ -752,7 +752,7 @@ check("a reported limit still renders", () => {
   assert.equal(weekly?.percentage, 12);
 });
 
-check("engine quota rows merge into Usage and skip the active agent's family", () => {
+check("engine quota rows merge into Usage; own family falls back per slot (2026-11-11)", () => {
   const snap = buildUsageSnapshot({
     agentId: "claude-code",
     agentLabel: "Claude Code",
@@ -782,13 +782,51 @@ check("engine quota rows merge into Usage and skip the active agent's family", (
   const grok = snap.windows.find((w) => w.id === "engine:grok:7 days");
   assert.equal(grok?.percentage, 15);
   assert.match(grok?.detail ?? "", /剩 85%/);
-  assert.ok(
-    !snap.windows.some((w) => w.id.startsWith("engine:claude")),
-    "active Claude family must not duplicate its own rate-limit rows",
-  );
+  // 原生探针一行都没有时（回合进行中 /status 被拒、会话挂起），own-family
+  // 引擎行就是本会话订阅的唯一读数——显示，不再整族跳过。
+  const own = snap.windows.find((w) => w.id === "engine:claude:5 hours");
+  assert.equal(own?.percentage, 10);
   const balance = snap.windows.find((w) => w.id === "engine:deepseek:balance");
   assert.equal(balance?.detail, "余额 12.50");
   assert.doesNotMatch(snap.note ?? "", /Send a message/);
+
+  // 原生行盖住的槽位引擎让位（同槽位不重复）。
+  const withNative = buildUsageSnapshot({
+    agentId: "claude-code",
+    agentLabel: "Claude Code",
+    state: {
+      ...emptySessionUsage(),
+      windows: {
+        "five-hour": {
+          id: "five-hour",
+          label: "5-hour limit",
+          percentage: 42,
+          detail: null,
+          kind: "rate_limit",
+        },
+      },
+    },
+    connected: true,
+    engineQuota: [
+      {
+        provider: "claude",
+        name: "Claude",
+        windows: [
+          { name: "5 hours", used: 10, remaining: 90 },
+          { name: "7 days", used: 30, remaining: 70 },
+        ],
+      },
+    ],
+  });
+  assert.ok(withNative.windows.some((w) => w.id === "five-hour"));
+  assert.ok(
+    !withNative.windows.some((w) => w.id === "engine:claude:5 hours"),
+    "covered slot must not duplicate",
+  );
+  assert.ok(
+    withNative.windows.some((w) => w.id === "engine:claude:7 days"),
+    "uncovered slot is filled by the engine row",
+  );
 });
 
 console.log(`\n${passed} checks passed.`);

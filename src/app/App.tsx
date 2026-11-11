@@ -4234,9 +4234,9 @@ export function App() {
     [pushDebug]
   );
 
-  const handleUsageRefresh = useCallback(() => {
+  const handleUsageRefresh = useCallback((): Promise<unknown> => {
     const sid = currentSessionId;
-    if (!sid) return;
+    if (!sid) return Promise.resolve();
     const active = availableSessions.find((s) => s.id === sid);
     const agent = availableAgents.find((a) => a.id === active?.agentId);
 
@@ -4246,8 +4246,7 @@ export function App() {
         activeModelId ??
         sessionCapabilities?.currentModel ??
         null;
-      void refreshProviderBalance(sid, model);
-      return;
+      return refreshProviderBalance(sid, model);
     }
 
     setSessionUsageById((current) => {
@@ -4262,11 +4261,15 @@ export function App() {
       };
     });
 
+    const probes: Promise<unknown>[] = [];
+
     // Codex (/status) and Claude (/usage) only surface account rate limits as
     // command text. Both are local slash commands — no model turn, no tokens.
-    // Claude's `_claude/rateLimit` meta is not a substitute: it rides on a
+    // Claude’s `_claude/rateLimit` meta is not a substitute: it rides on a
     // `rate_limit_event`, which never fires while you are comfortably inside
     // your plan, so the panel would sit empty exactly when nothing is wrong.
+    // While a real turn is in flight the probe is rejected ("interrupt it
+    // first") — the own-family engine rows now back the panel up (2026-11-11).
     const limitCommand =
       agent?.id === "codex" ? "/status" : agent?.id === "claude-code" ? "/usage" : null;
     if (
@@ -4276,16 +4279,18 @@ export function App() {
       (active.status === "running" || active.status === "waiting")
     ) {
       probeTurnRef.current.add(sid);
-      void sendAcpPrompt(sid, limitCommand, [], true).catch((error) => {
-        probeTurnRef.current.delete(sid);
-        pushDebug({
-          sessionId: sid,
-          level: "warn",
-          source: "usage",
-          summary: `usage refresh ${limitCommand} failed`,
-          detail: error instanceof Error ? error.message : String(error),
-        });
-      });
+      probes.push(
+        sendAcpPrompt(sid, limitCommand, [], true).catch((error) => {
+          probeTurnRef.current.delete(sid);
+          pushDebug({
+            sessionId: sid,
+            level: "warn",
+            source: "usage",
+            summary: `usage refresh ${limitCommand} failed`,
+            detail: error instanceof Error ? error.message : String(error),
+          });
+        }),
+      );
     }
 
     // Grok weekly credits: `_x.ai/billing` (same data as TUI /usage). Sending
@@ -4296,33 +4301,36 @@ export function App() {
       active &&
       (active.status === "running" || active.status === "waiting" || active.status === "starting")
     ) {
-      void (async () => {
-        try {
-          const billing = await probeAcpBilling(sid);
-          if (!billing) return;
-          setSessionUsageById((current) => {
-            const merged = mergeGrokBilling(current[sid], billing);
-            if (!merged) return current;
-            return { ...current, [sid]: merged };
-          });
-          pushDebug({
-            sessionId: sid,
-            level: "info",
-            source: "usage",
-            summary: "grok billing probe ok",
-            detail: JSON.stringify(billing).slice(0, 240),
-          });
-        } catch (error) {
-          pushDebug({
-            sessionId: sid,
-            level: "warn",
-            source: "usage",
-            summary: "grok billing probe failed",
-            detail: error instanceof Error ? error.message : String(error),
-          });
-        }
-      })();
+      probes.push(
+        (async () => {
+          try {
+            const billing = await probeAcpBilling(sid);
+            if (!billing) return;
+            setSessionUsageById((current) => {
+              const merged = mergeGrokBilling(current[sid], billing);
+              if (!merged) return current;
+              return { ...current, [sid]: merged };
+            });
+            pushDebug({
+              sessionId: sid,
+              level: "info",
+              source: "usage",
+              summary: "grok billing probe ok",
+              detail: JSON.stringify(billing).slice(0, 240),
+            });
+          } catch (error) {
+            pushDebug({
+              sessionId: sid,
+              level: "warn",
+              source: "usage",
+              summary: "grok billing probe failed",
+              detail: error instanceof Error ? error.message : String(error),
+            });
+          }
+        })(),
+      );
     }
+    return Promise.allSettled(probes);
   }, [
     activeModelId,
     availableAgents,
@@ -4380,12 +4388,31 @@ export function App() {
     })();
   }, [availableAgents, availableSessions, currentSessionId]);
 
+  // 手动刷新的可见反馈（2026-11-11）：探针在飞时额度按钮转圈。引擎缓存行
+  // 毫秒级就到，但 codex /status 是一次真回合（秒级），不转圈像没点上。
+  const [usageProbing, setUsageProbing] = useState(false);
+  const usageProbeSpinRef = useRef(0);
+  const spinUsageProbe = useCallback((ms: number) => {
+    if (usageProbeSpinRef.current) window.clearTimeout(usageProbeSpinRef.current);
+    setUsageProbing(true);
+    usageProbeSpinRef.current = window.setTimeout(() => {
+      usageProbeSpinRef.current = 0;
+      setUsageProbing(false);
+    }, ms);
+  }, []);
+
   // Manual refresh should re-hit the network even if model unchanged.
   const handleUsageRefreshForce = useCallback(() => {
     lastProviderProbeKey.current = "";
+    const startedAt = Date.now();
+    // 封顶 4s：探针 settle 前先保底转着（防 invoke 悬死转成永动机），settle 后
+    // 收到「最短 600ms」那一刻停。
+    spinUsageProbe(4000);
     refreshEngineQuota(true);
-    handleUsageRefresh();
-  }, [handleUsageRefresh, refreshEngineQuota]);
+    void Promise.resolve(handleUsageRefresh())
+      .catch(() => undefined)
+      .finally(() => spinUsageProbe(Math.max(0, 600 - (Date.now() - startedAt))));
+  }, [handleUsageRefresh, refreshEngineQuota, spinUsageProbe]);
 
   /**
    * After an AI turn ends (`turn/complete`), refresh the Usage panel once.
@@ -4410,7 +4437,7 @@ export function App() {
       window.setTimeout(() => {
         if (sessionId !== currentSessionIdRef.current) return;
         lastProviderProbeKey.current = "";
-        handleUsageRefresh();
+        void handleUsageRefresh();
       }, 350);
     },
     [activeModelId, handleUsageRefresh, sessionCapabilities?.currentModel],
@@ -9916,6 +9943,7 @@ export function App() {
           onExpand={() => setRightCollapsed(false)}
           usage={usage}
           onUsageRefresh={handleUsageRefreshForce}
+          usageProbing={usageProbing}
           sessionStats={sessionStats}
           activeModelId={activeModelId ?? sessionCapabilities?.currentModel ?? null}
           changedFiles={changedFiles}

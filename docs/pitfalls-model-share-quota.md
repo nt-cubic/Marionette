@@ -20,6 +20,16 @@ opencode 凭据，只在 opencode agent 会话驱动）；**B** 引擎行 + 悬�
 （`engine_quota` → `GET /v1/magpie/quotas`，Header `Authorization: Bearer magpie`）。
 「少一行」先打 B 接口看原始 JSON——错误行（windows 空且无 balance）在 UI 上是跳过不显示的。
 
+**own-family 兜底（2026-11-11）**：还有第三条线——codex `/status`、claude `/usage`、
+grok `_x.ai/billing` 这类**原生探针**（不经过引擎）。它恰好在最需要的时候失效：
+codex `/status` 是一次真回合，回合进行中必被「A turn is already in flight … interrupt it
+first」拒绝（dev.log 里 `usage refresh /status failed` 连串就是它），挂起会话又没有进程
+可问——而「等长回合的时候」正是用户去看额度的时刻。所以右栏对**当前 agent 自己的家族**
+（`ENGINE_OWN_FAMILY`）不再整族跳过引擎行，改为按语义槽位（`quotaSlotKey`：`5 hours`↔
+`five-hour`、`7 days`↔`weekly`）兜底：原生探针盖住的槽位原生赢，缺位引擎顶上（网关
+`kept=1` 缓存毫秒级、且**不会为显示额度唤醒引擎**，引擎睡着时退 localStorage 快照）。
+回归：`npx tsx scripts/verify-quota-fallback.mts`。
+
 ## 1. opencode 凭据已迁库：auth.json 是尸体（当天最大坑）
 
 2026-10 起 opencode 把凭据写进 **`~/.local/share/opencode/opencode.db` 的 `credential`

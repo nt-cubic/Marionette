@@ -19,6 +19,7 @@
 | `inventory-zh.mts` | `npx tsx scripts/inventory-zh.mts [--rust] [--lines] [--check]` | i18n 盘点：列出（注释以外）还有中文的源码文件与行号。`--rust` 扫 `src-tauri/src`，`--lines` 给全量行号，`--check` 前端白名单外非零即退出 1。注意：正则密集文件可能误报（正则里的引号会骗过注释剥离器），Rust 侧 `ts!` 调用点按设计保留中文 |
 | `check-locale-fragments.mjs` | `node scripts/check-locale-fragments.mjs src/locales/parts/<batch>.zh.ts …` | i18n 片段对齐快检：每个 en 片段的键必须与对应 zh 片段完全一致（缺键/多键/重复键报错）；权威校验仍是一把梭 `npx tsc --noEmit` |
 | `usage-smoke.mts` | `npx tsx scripts/usage-smoke.mts` | usage 面板解析，断言用的是真实 adapter 抓到的报文 |
+| `verify-quota-fallback.mts` | `npx tsx scripts/verify-quota-fallback.mts` | 额度面板 own-family 兜底（2026-11-11）：原生探针（/status、billing）没盖住的语义槽位由引擎行补（原生在场原生赢、无百分比原生行不认领、per-model 桶不撞聚合槽）、own-family 引擎组可当 primary、非 own 余额行不回归 |
 | `title-smoke.mts` | `npx tsx scripts/title-smoke.mts` | 会话标题：拒绝 Marionette 自己注入的 prompt 抬头被当成标题，修复时从转录里取用户真正打的第一句 |
 | `suspend-smoke.mts` | `npx tsx scripts/suspend-smoke.mts` | 挂起规则两套：手动 ⏸ 按钮对**任何还持有进程**的会话都可按（starting / running / waiting / error，running 时按下去直接中断），只有已挂起的不画按钮；而 2 小时空闲自动挂起仍只碰「热但空闲且没有待办」的会话（子代理/后台命令/定时发送算在运作） |
 | `verify-live-subagents.mts` | `npx tsx scripts/verify-live-subagents.mts` | 嵌套子代理仍在跑：OpenCode/Claude `in_progress` Task、Grok「Subagent started in background」完成桩、ZCode `[background]`、Codex collab `spawnAgent`、通用 spawn 动词 `delegate_task`；`create_goal` / collab `wait` 不算 |
