@@ -62,12 +62,21 @@ func appliedSave(m map[string]applied) {
 	b, _ := json.MarshalIndent(m, "", "  ")
 	os.MkdirAll(filepath.Dir(appliedPath()), 0o755)
 	os.WriteFile(appliedPath(), b, 0o600)
+	filememo.Look(appliedPath())
 }
 
+// appliedOf is what magpie set on agent id. Every look at an agent's
+// drift asks it, for every agent a poll lists, so the file is parsed once
+// a change and the map is shared: callers only read it.
 func appliedOf(id string) applied {
 	appliedMu.Lock()
 	defer appliedMu.Unlock()
-	return appliedLoad()[id]
+	m, _ := filememo.Read("applied", appliedPath(), func(b []byte) (map[string]applied, error) {
+		out := map[string]applied{}
+		json.Unmarshal(b, &out)
+		return out, nil
+	})
+	return m[id]
 }
 
 // record keeps what a field reads after magpie set it; a field put back to
@@ -995,9 +1004,9 @@ func (a *Agent) reconnect(now map[string]string) (bool, error) {
 
 // lastJSONLTime reads the newest Unix timestamp (seconds or milliseconds)
 // under key in the last lines of a prompt log, passing over the lines whose
-// text (under textKey) is a slash command: those an agent answers itself.
-// Zero if there is none.
-func lastJSONLTime(path, key, textKey string) time.Time {
+// text (under textKey) is a slash command: those an agent answers itself,
+// and those skip, when given, says magpie's own. Zero if there is none.
+func lastJSONLTime(path, key, textKey string, skip func(map[string]json.RawMessage) bool) time.Time {
 	f, err := os.Open(path)
 	if err != nil {
 		return time.Time{}
@@ -1017,6 +1026,9 @@ func lastJSONLTime(path, key, textKey string) time.Time {
 		}
 		var text string
 		if json.Unmarshal(m[textKey], &text) == nil && strings.HasPrefix(strings.TrimSpace(text), "/") {
+			continue
+		}
+		if skip != nil && skip(m) {
 			continue
 		}
 		n, err := strconv.ParseInt(string(m[key]), 10, 64)
@@ -1068,4 +1080,27 @@ func whatsOff(name, file, k, v, want string) string {
 	default:
 		return where + " was changed, so magpie's gateway won't take its requests"
 	}
+}
+
+// SetToGroup reports whether magpie set one of the agent's fields to the
+// routing group gid ("group/<id>"), by its id or its model's name (#750),
+// at an effort or not: the user picked that group for the agent. The
+// gateway then keeps a bare name the agent asks for by on the group,
+// rather than on the agent's own subscription. For gateway.SetToGroup.
+func SetToGroup(agent, gid string) bool {
+	if agent == "" || gid == "" {
+		return false
+	}
+	gid = provider.CanonicalRef(gid)
+	for _, v := range appliedOf(agent).Fields {
+		if g := groupNamed(v); g != "" && provider.CanonicalRef(g) == gid {
+			return true
+		}
+		if i := strings.LastIndex(v, ":"); i > 0 && slices.Contains(provider.MemberEfforts, strings.ToLower(v[i+1:])) {
+			if g := groupNamed(v[:i]); g != "" && provider.CanonicalRef(g) == gid {
+				return true
+			}
+		}
+	}
+	return false
 }

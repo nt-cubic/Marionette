@@ -624,6 +624,7 @@ button.rt-session { cursor: pointer; }
    opens the editor (groupRow). Its controls stay controls. */
 .rt-groups:not(.sorting) > .rt-group :is(.nm b, .nm code.mdl, .mem),
 .rt-gedit .fallback:not(.rt-rules) > .fbl:not(.sorting) > .fbrow > .n, .rt-gaccts > .fbrow > .n { user-select: text; -webkit-user-select: text; }
+.rt-group .rt-gnote { margin-top: 1px; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rt-group .mem { margin-top: 2px; font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* a pattern the group finds models by, and how many it matches now */
 .rt-group .mem.pat code, .rt-pats code { font: var(--code-style, normal) 500 11px/1.5 var(--code-font, var(--code)); font-stretch: var(--code-stretch, 100%); color: var(--fg-2); }
@@ -818,6 +819,9 @@ body.window .rt-gedit > .bar { --vfoot: 8px; }
 .rt-gedit .fbrow .rt-gacct { flex: 0 1 auto; min-width: 0; }
 .rt-gedit .fbrow .rt-gacct > span { overflow: hidden; text-overflow: ellipsis; }
 .rt-gedit > .rt-gacc[hidden] { display: none; }
+/* a group bound to gateway keys (Group.Keys): a long key name ellipsizes */
+.rt-gedit > .rt-gkeys[hidden] { display: none; }
+.rt-gkey { min-width: 0; }
 .rt-gadd {
   justify-self: start; display: inline-flex; align-items: center; gap: 6px;
   height: 28px; padding: 0 11px 0 9px; border-radius: 8px;
@@ -957,6 +961,17 @@ body.window .rt-gedit > .bar { --vfoot: 8px; }
 .rt-cond.tm { cursor: text; }
 .rt-cond.tm input.clock, .editor .rt-cond.tm input.clock[type="text"] { width: 5.5ch; text-align: center; }
 .rt-cond.tm.bad { border-style: solid; border-color: var(--amber, var(--muted)); }
+/* how a pill compares (aipha2025 on X): a word in the pill that opens the
+   app's menu, quiet until it is pointed at */
+.rt-aopw { display: contents; }
+.rt-op { display: inline-flex; align-items: center; height: 20px; padding: 0 4px; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; cursor: pointer; flex: none; white-space: nowrap; transition: background-color .15s ease; }
+@media (hover: hover) and (pointer: fine) { .rt-op:hover { background: var(--pill-hover, var(--pill)); } }
+.rt-op:focus-visible { outline: none; background: var(--pill-hover, var(--pill)); }
+.rt-cond.ef { cursor: default; }
+.rt-cond.rt-tx { cursor: text; }
+.rt-cond.rt-tx > span { flex: none; }
+.rt-cond.rt-tx > input { min-width: 0; flex: 0 1 auto; }
+.rt-cond.rt-tx.bad { border-style: solid; border-color: var(--amber, var(--muted)); }
 /* the time zone a rule's hours are in, when the server's clock is another */
 .rt-zone { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .rt-cond[hidden] { display: none; }

@@ -13,7 +13,7 @@ import (
 // genericIcon are the clients magpie has no logo for yet, drawn with the
 // generic cube on purpose (#4487). Each leaves this list when its real
 // logo, from the app or its vendor, is added.
-var genericIcon = map[string]bool{"ante": true, "pencil": true, "openpencil": true, "openbot": true, "newmax": true, "kirocrew": true, "raft": true}
+var genericIcon = map[string]bool{"ante": true, "pencil": true, "openpencil": true, "newmax": true, "kirocrew": true, "raft": true}
 
 // Every client a request can be recorded as is drawn by its own name and
 // icon in the Routing page's request list, Usage and Sessions, which all
@@ -53,6 +53,14 @@ func TestEveryClientHasNameAndIcon(t *testing.T) {
 		case png[a.Icon]:
 			if !exists(a.Icon + ".png") {
 				t.Errorf("%s's icon: pngIcons names %s, with no icons/%[2]s.png", a.ID, a.Icon)
+			}
+		case exists(a.Icon+".svg") && !strings.HasSuffix(a.Icon, "-color"):
+			// an SVG without -color is drawn as a mask: one tone, its
+			// shape. A logo that is a filled tile (OpenMausBot's black
+			// square with a silver cursor) turns into a plain black square.
+			b, _ := os.ReadFile("assets/icons/" + a.Icon + ".svg")
+			if strings.Contains(string(b), "Gradient") {
+				t.Errorf("%s's icon %s has its own colours but isn't named -color, so it is drawn as one-tone mask", a.ID, a.Icon)
 			}
 		case !exists(a.Icon + ".svg"):
 			if exists(a.Icon + ".png") {

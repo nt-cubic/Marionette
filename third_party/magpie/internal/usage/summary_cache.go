@@ -130,8 +130,10 @@ func cloneSummary(s Summary) Summary {
 
 // usagePriceCacheKey invalidates priced views when local prices or provider feeds change.
 func usagePriceCacheKey(now time.Time) string {
+	// one catalog for the providers and the group names read below (#5978)
+	defer provider.Hold()()
 	_, offset := now.Zone()
-	meta := fmt.Sprintf("%s|%s|%s|%s|%s|%s|%d", statKey(settings.Path()), statKey(provider.Path()), statKey(catalog.CachePath()), statKey(catalog.LivePath("antigravity")), now.Format("2006-01-02"), now.Location(), offset)
+	meta := fmt.Sprintf("%s|%s|%s|%s|%s|%s|%d", statKey(settings.Path()), statKey(provider.Path()), statKey(catalog.CachePath()), liveListKey("antigravity"), now.Format("2006-01-02"), now.Location(), offset)
 	// Sign-ins and plugin lists can change independently of providers.json.
 	// Their identity and price feeds affect both grouping and historical costs.
 	h := sha256.New()
@@ -139,8 +141,7 @@ func usagePriceCacheKey(now time.Time) string {
 	prices, _ := json.Marshal(st.ModelPrices)
 	aliases := provider.UsageRenames().Key()
 	// and the names models' usage is counted under, which the groups key on
-	usageAliases, _ := json.Marshal(st.UsageAliases)
-	fmt.Fprint(h, string(prices), string(aliases), string(usageAliases))
+	fmt.Fprint(h, string(prices), string(aliases), provider.UsageNamesKey())
 	for _, current := range provider.All() {
 		fmt.Fprintf(h, "%q:%q:%v:%t:%t:%t;", current.ID, current.Where(), current.Catalogs(), current.IsPlugin(), current.Account == nil, current.Key != "")
 		if current.Account != nil {
@@ -148,7 +149,7 @@ func usagePriceCacheKey(now time.Time) string {
 			// paid ChatGPT plan only (provider.ChatGPTReviewFree)
 			fmt.Fprintf(h, "%q;", current.Account.Plan)
 		}
-		fmt.Fprint(h, statKey(catalog.LivePath(current.ID)))
+		fmt.Fprint(h, liveListKey(current.ID))
 	}
 	meta += fmt.Sprintf("|%x", h.Sum(nil))
 	// and the clients the user counts as agents (#1958)

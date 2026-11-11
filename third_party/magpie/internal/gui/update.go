@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -45,8 +46,11 @@ type updater struct {
 	mirror   string      // error: the mirror the failed download came through (#893)
 	network  bool        // error: the network broke the download off (update.Network)
 	staged   string
-	// stable: latest was found on Settings' Stable channel
+	// stable: latest was found on Settings' Stable channel; newest, the
+	// newest release on every version when that is newer than this one
+	// and Stable has nothing newer (ylspcm on X)
 	stable bool
+	newest string
 	aside  string // Windows: where install moved the running exe, to put back
 	// in a .app: its binary, where this process started from
 	bundleExe string
@@ -75,11 +79,15 @@ type updater struct {
 	// waitMost first (gaveUp). onWait tells the tray what it waits on.
 	waiting  bool
 	waitFrom time.Time
-	waitGen  int
-	gaveUp   bool
-	whenIdle func() bool
-	onWait   func()
-	loops    sync.WaitGroup // the waits going on
+	// drainMost, with a wait `magpie update` armed: past it the restart
+	// goes ahead whatever is in flight (restartDrain); 0 waits as long as
+	// waitMost
+	drainMost time.Duration
+	waitGen   int
+	gaveUp    bool
+	whenIdle  func() bool
+	onWait    func()
+	loops     sync.WaitGroup // the waits going on
 	// With Settings' AutoRestart, the clock has autoRestart run (the app's
 	// or magpie web's restart) once a downloaded update is ready and the
 	// gateway idle (#2096); autoSkip is the version whose wait the user
@@ -116,6 +124,11 @@ type updateJSON struct {
 	// row says so in the app's language instead of the raw error
 	Network bool   `json:"network,omitempty"`
 	Error   string `json:"error,omitempty"`
+	// Channel: "stable" when the answer is Settings' Stable channel's;
+	// latest on it, Newest is the newest version out on every version,
+	// when newer than this one: Stable's "up to date" isn't the newest
+	Channel string `json:"channel,omitempty"`
+	Newest  string `json:"newest,omitempty"`
 	Done    int64  `json:"done,omitempty"` // downloading: bytes so far
 	// downloading: the step under way, "" before the first
 	// (update.StepDownload, StepRetry, StepVerify, StepUnpack,
@@ -139,6 +152,9 @@ type updateJSON struct {
 	// (handover.go): Busy is then the Claude subscription's turns alone,
 	// every other request finishing as the new version takes the next
 	Handover bool `json:"handover,omitempty"`
+	// Using, a restart by itself waits for the user to stop using a
+	// window (inUseAt)
+	Using bool `json:"using,omitempty"`
 }
 
 var updates = &updater{}
@@ -153,7 +169,8 @@ func updateDue(s settings.Settings, last, now time.Time) bool {
 
 func (u *updater) start() {
 	u.place(runtime.GOOS, update.GUI)
-	gateway.SetRestarter(u.restartBeside)               // magpie update in a terminal
+	gateway.SetRestarter(u.restartBesideAsked) // magpie update in a terminal
+	gateway.SetForceRestarter(u.restartBesideNow)
 	gateway.SetUpdater(u.updateAsked)                   // a magpie using this one updated
 	go provider.KeepRemotesUpdated(backendCtx, Version) // and this one's remotes
 	go u.followReplaced(backendCtx)                     // the app's or magpie web's update (visamzh on X)
@@ -422,8 +439,20 @@ func (u *updater) run() {
 	}
 	stable := s.UpdateChannel == settings.UpdateStable
 	rel, err := update.LatestIn(cctx, lang)
+	// Stable has nothing newer than this one: the newest on every version
+	// is asked too, which the version row names. A bare "Up to date" on
+	// Stable, with newer releases out, read as the check being wrong, and
+	// the app was installed again by hand each time (ylspcm on X). Asked
+	// before u.mu, which the pages' reads need.
+	newest := ""
+	if stable && err == nil && !update.Newer(rel.Version, Version) {
+		if every, e := update.LatestEvery(cctx, lang); e == nil && update.Newer(every.Version, Version) {
+			newest = every.Version
+		}
+	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	u.newest = newest
 	if err == nil && u.latest != nil && update.Newer(u.latest.Version, rel.Version) {
 		if stable != u.stable {
 			// an older version than the one found before, on another
@@ -625,6 +654,12 @@ func (u *updater) jsonIn(lang string) updateJSON {
 		}
 	}
 	j := updateJSON{State: u.state, Current: Version, Error: u.err, Retry: u.retry}
+	if u.stable && u.latest != nil {
+		j.Channel = settings.UpdateStable
+		if u.state == "latest" {
+			j.Newest = u.newest
+		}
+	}
 	if u.latestStale() {
 		j.State = "" // not asked lately: no claim to be up to date
 	}
@@ -657,6 +692,7 @@ func (u *updater) jsonIn(lang string) updateJSON {
 	}
 	if j.State == "ready" || u.waiting {
 		j.Waiting, j.GaveUp = u.waiting, u.gaveUp && !u.waiting
+		j.Using = u.waiting && !u.waitAsked && inUseAt(time.Now())
 		j.Handover = handover
 		if busy.Any() {
 			j.Busy = &busy
@@ -699,6 +735,16 @@ func (u *updater) relang(version, lang string) {
 }
 
 func updateRoutes(mux *http.ServeMux, w Windows) {
+	// a page's word of the user's input, which a restart by itself waits
+	// for to end (inUseAt); open: a dialog is open
+	mux.HandleFunc("POST /api/update/using", func(rw http.ResponseWriter, r *http.Request) {
+		var b struct {
+			Open bool `json:"open"`
+		}
+		json.NewDecoder(io.LimitReader(r.Body, 1<<10)).Decode(&b)
+		noteUse(b.Open, time.Now())
+		rw.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("GET /api/update", func(rw http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("fresh") == "1" { // the Version row
 			updates.refreshLatest(settings.Load())
@@ -836,14 +882,15 @@ func restartFrom(w Windows, view string) bool {
 // Off the Mac, the new one opens its window on view when window is set, and
 // only the tray icon when not; the Mac's always opens its window.
 func restartToUpdate(web, window bool, view string) bool {
-	return restartInto(web, window, view, false)
+	return restartInto(web, window, view, false, false)
 }
 
 // restartInto is restartToUpdate; bySelf, Settings' AutoRestart restarts
 // (#2096), and the Mac's new one too opens only its menu bar icon when no
 // window was up, rather than putting up one the user had closed. The new
-// one, by itself, also takes no focus (quiet_restart.go).
-func restartInto(web, window bool, view string, bySelf bool) bool {
+// one, by itself, also takes no focus (quiet_restart.go), and puts the
+// window back minimised when it was (minimised, #3495).
+func restartInto(web, window bool, view string, bySelf, minimised bool) bool {
 	if pending.Load() != nil {
 		return false // a handover under way restarts already
 	}
@@ -859,7 +906,7 @@ func restartInto(web, window bool, view string, bySelf bool) bool {
 	}
 	updatedInApp(version) // its first start leaves the notes to Settings (#525)
 	if bySelf && !web {
-		markQuietRestart() // it comes back without taking focus
+		markQuietRestart(window && minimised) // it comes back without taking focus
 	} else {
 		unmarkQuietRestart() // one asked for comes to the front
 	}

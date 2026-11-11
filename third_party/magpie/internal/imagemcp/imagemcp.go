@@ -22,7 +22,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -30,6 +29,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/settings"
 )
 
@@ -719,7 +719,7 @@ func Target(dir, path, prompt, ext string, i, n int) (string, error) {
 	return target(dir, path, prompt, ext, i, n)
 }
 
-var unslug = regexp.MustCompile(`[^a-z0-9]+`)
+var unslug = lazyre.New(`[^a-z0-9]+`)
 
 // target is where the i-th of n images goes: path as a file (numbered when
 // n > 1) or a folder, else generated-images/<words of the prompt>-<time>.
@@ -1047,7 +1047,7 @@ func (s *server) ask(method string, params any) (json.RawMessage, int, error) {
 // asked.
 func (s *server) modelProps() map[string]any {
 	out := map[string]any{
-		tool:      map[string]any{"type": "string", "description": "The image model to use, as provider/model. Leave it out to use the one set in Magpie (Settings → Images → Image generation)."},
+		tool:      map[string]any{"type": "string", "description": "The image model to use, as provider/model. Leave it out to use the one set in Magpie (Settings → Models → Images → Image generation)."},
 		videoTool: map[string]any{"type": "string", "description": "The video model to use, as provider/model. Leave it out to use the video model set up in Magpie."},
 	}
 	res, _, err := s.ask("tools/list", map[string]any{})

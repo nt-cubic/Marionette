@@ -3,10 +3,10 @@ package provider
 import (
 	"context"
 	"errors"
-	"regexp"
 	"strings"
 	"time"
 
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/settings"
 )
@@ -164,7 +164,7 @@ func (s *signInFlow) pluginBegin(id string, method int, inputs map[string]string
 
 // deviceCode is the code a device sign-in's instructions ask to check on
 // the vendor's page ("Confirm the code ABCD-EFGH on Factory's page").
-var deviceCode = regexp.MustCompile(`(?i:\bcode):?\s+([A-Z0-9]+(?:-[A-Z0-9]+)+|[A-Z0-9]{6,})\b`)
+var deviceCode = lazyre.New(`(?i:\bcode):?\s+([A-Z0-9]+(?:-[A-Z0-9]+)+|[A-Z0-9]{6,})\b`)
 
 // codeIn is that code, shown to copy as the built-in's was.
 func codeIn(instructions string) string {
@@ -224,7 +224,7 @@ func PluginAPIKey(ctx context.Context, id string, method int, inputs map[string]
 	}
 	if strings.TrimSpace(key) == "" {
 		pp, ok := PluginOf(PluginID(id))
-		if !ok || method < 0 || method >= len(pp.Methods) || pp.Methods[method].Type != "api" || !pp.Methods[method].Keyless {
+		if !ok || method < 0 || method >= len(pp.Methods) || pp.Methods[method].Type != "api" || !pp.Methods[method].NoKey() {
 			return "", errors.New("enter the key")
 		}
 	}

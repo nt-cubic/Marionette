@@ -51,11 +51,12 @@ func stubCodexApp(t *testing.T) *codexAppStub {
 		codexApp.crashSince, codexApp.crashBy, codexApp.snag, codexApp.snagPids = time.Time{}, time.Time{}, false, nil
 		codexApp.Unlock()
 	}
-	oldCrashed, oldRelaunch := CodexAppCrashed, CodexAppRelaunch
+	oldCrashed, oldRelaunch, oldOff := CodexAppCrashed, CodexAppRelaunch, CodexTakeoverOff
+	CodexTakeoverOff = nil
 	t.Cleanup(func() {
 		CodexAppRoute, codexAppServersOn, endCodexAppServer, codexTurnRunning = oldOn, oldList, oldEnd, oldTurn
 		CodexAppOpen, CodexAppReopen, codexSessionsQuiet, codexRestartsApp = oldOpen, oldReopen, oldQuiet, oldRestarts
-		CodexAppCrashed, CodexAppRelaunch = oldCrashed, oldRelaunch
+		CodexAppCrashed, CodexAppRelaunch, CodexTakeoverOff = oldCrashed, oldRelaunch, oldOff
 		reset()
 	})
 	// the app's logs as tests find them: no error page, and never reopened
@@ -1177,21 +1178,30 @@ func TestCodexAppLeftRunningForMagpiesOwnChanges(t *testing.T) {
 	s.on = false
 	none("magpie gave Codex back its account at the reset")
 
-	// a switch the user made, alone or after one of magpie's
+	// a switch the user made among accounts with room, alone or beside
+	// one of magpie's: the app's projects are kept per ChatGPT identity,
+	// and a restart onto the new one hid them (Michael25651150 on X)
 	codexAppSwitched(false, true)
 	codexAppAccountSwitched()
-	ends("switched by the user after magpie", 101)
+	none("switched by the user after magpie")
 	codexAppAccountSwitched()
 	codexAppSwitched(false, true)
-	ends("switched by the user, then magpie", 102)
+	none("switched by the user, then magpie")
+	codexAppAccountSwitched()
+	none("switched by the user")
+	// one off a used-up account: the app greys Send till it restarts
+	codexAppSpentSwitch()
+	ends("switched by the user off a used-up account", 101)
 	// a Connect: where Codex's config sends it changed, not by the takeover
 	s.route = "connected"
-	ends("connected", 103)
+	ends("connected", 102)
 
-	// ticked: magpie's changes the app works without restart it as well
+	// ticked: the changes the app works without restart it as well
 	restarts = true
 	codexAppSwitched(false, true)
-	ends("RestartApp on, magpie switched back", 104)
+	ends("RestartApp on, magpie switched back", 103)
+	codexAppAccountSwitched()
+	ends("RestartApp on, switched by the user", 104)
 	s.on = true
 	ends("RestartApp on, magpie took over", 105)
 	s.on = false
@@ -1286,5 +1296,106 @@ func TestCodexAppBackSaidTillItRestarts(t *testing.T) {
 	step()
 	if !CodexAppBack() {
 		t.Fatal("a failed listing read as the app-server gone")
+	}
+}
+
+// The takeover turned off by the user (the takeover note's Keep on
+// ChatGPT, the sign-in's Always ChatGPT, a Disconnect) restarts the Codex
+// app's app-server with Restart the Codex app to follow off too, once no
+// Codex turn runs: the one the takeover started shows no account, so the
+// app's ChatGPT projects and chats stayed gone after the user turned it
+// off to have them back (Herzz____ on X, the Windows app). The reset,
+// magpie's own end of it, still leaves the app running and says so
+// (CodexAppBack). Whether it was turned off is asked only as the takeover
+// ends, not at every look.
+func TestCodexAppRestartedWhenTheTakeoverIsTurnedOff(t *testing.T) {
+	signIn(t)
+	s := stubCodexApp(t)
+	codexRestartsApp = func() bool { return false }
+	off, asked := false, 0
+	CodexTakeoverOff = func() bool { asked++; return off }
+	now := time.Now()
+	idle := func() (int, time.Time) { return 0, now.Add(-time.Minute) }
+	step := func(busy func() (int, time.Time)) []int { return codexAppStep(context.Background(), now, busy) }
+
+	s.running = []int{60}
+	for range 3 {
+		if got := step(idle); got != nil {
+			t.Fatalf("on its account: ended %v", got)
+		}
+	}
+	s.on = true
+	if got := step(idle); !slices.Equal(got, []int{60}) {
+		t.Fatalf("the takeover: ended %v, want [60]", got)
+	}
+	step(idle)
+	if asked != 0 {
+		t.Fatalf("asked whether the takeover is off %d times while it ran", asked)
+	}
+
+	// Keep on ChatGPT, with a Codex request in flight: held till it ends
+	off, s.on = true, false
+	if got := step(func() (int, time.Time) { return 1, now.Add(-time.Minute) }); got != nil {
+		t.Fatalf("a Codex request in flight: ended %v", got)
+	}
+	if got := step(idle); !slices.Equal(got, []int{100}) {
+		t.Fatalf("the takeover turned off by hand: ended %v, want [100]", got)
+	}
+	if CodexAppBack() {
+		t.Fatal("restarted, and still said to be left on the takeover")
+	}
+	if asked != 1 {
+		t.Fatalf("asked %d times, want once as the takeover ended", asked)
+	}
+	for range 3 {
+		if got := step(idle); got != nil {
+			t.Fatalf("after: ended %v", got)
+		}
+	}
+	if asked != 1 {
+		t.Fatalf("asked %d times after the takeover ended, want once in all", asked)
+	}
+
+	// taken over again, and ended by the reset: left running, and said
+	off = false
+	s.on = true
+	if got := step(idle); !slices.Equal(got, []int{101}) {
+		t.Fatalf("the takeover again: ended %v, want [101]", got)
+	}
+	s.on = false
+	if got := step(idle); got != nil {
+		t.Fatalf("the reset with Restart off: ended %v", got)
+	}
+	if !CodexAppBack() {
+		t.Fatal("the app left on the takeover's app-server at the reset isn't said")
+	}
+}
+
+// The chat open in the Codex app is moved to the provider Codex is on by
+// CodexBeforeAppEnd, and that happens before the app-server is ended, since
+// the next app-server resumes the chat at once.
+func TestCodexRouteChangeMovesOpenChatsFirst(t *testing.T) {
+	signIn(t)
+	s := stubCodexApp(t)
+	now := time.Now()
+	idle := func() (int, time.Time) { return 0, now.Add(-time.Minute) }
+	step := func() []int { return codexAppStep(context.Background(), now, idle) }
+	var order []string
+	old := CodexBeforeAppEnd
+	CodexBeforeAppEnd = func(string) { order = append(order, "move") }
+	t.Cleanup(func() { CodexBeforeAppEnd = old })
+	oldEnd := endCodexAppServer
+	endCodexAppServer = func(int) error { order = append(order, "end"); return nil }
+	t.Cleanup(func() { endCodexAppServer = oldEnd })
+
+	s.running = []int{60}
+	s.route = "openai_base_url=http://127.0.0.1:3425/backend-api/codex"
+	step()
+	s.route = "openai_base_url="
+	if got := step(); !slices.Equal(got, []int{60}) {
+		t.Fatalf("ended %v, want [60]", got)
+	}
+	if !slices.Equal(order, []string{"move", "end"}) {
+		t.Fatalf("order %v, want the chats moved before the app-server ends", order)
 	}
 }

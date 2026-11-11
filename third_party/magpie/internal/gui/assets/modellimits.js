@@ -5,9 +5,11 @@
 // sends; Advanced's field is told so it says the same. The placeholder is
 // what Advanced gives every model ("*"), else what is listed. app.js
 // imports this when it draws a model's row, so it weighs nothing on the core.
+// Its own system prompt (liucl on X) is staged as modelPrefs[id].system,
+// in a box shown at the row's end (app.css's order), before unsaved.
 window.modelLimitsFill = function (at, m, p, changed) {
   const id = m.id;
-  return [
+  return [...[
     ["contexts", "Context window", m.listed || m.context, p.contexts, t("The window agents are told {id} takes; empty: the vendor's or models.dev's", { id }), (v) => t("Context window: {v} is not a length like 128k or 1m", { v })],
     ["outputs", "Max output", m.listedOutput || m.output, p.outputs, t("The most a reply of {id} may hold, told to agents as their max tokens and kept to by magpie; empty: the vendor's or models.dev's", { id }), (v) => t("Max output: {v} is not a number of tokens like 32k", { v })],
   ].map(([k, label, listed, saved, tip, said]) => {
@@ -39,5 +41,60 @@ window.modelLimitsFill = function (at, m, p, changed) {
     at.append(box);
     const again = () => { if (document.activeElement !== i) i.value = shownOf(); i.placeholder = placeholder(); };
     return { i, own, again, saved: () => saved?.[id] || 0 };
-  });
+  }), modelSystemFill(at, m, changed)];
+};
+
+function modelSystemFill(at, m, changed) {
+  const id = m.id, prefs = draft.modelPrefs = draft.modelPrefs || {};
+  const own = () => (prefs[id]?.system ?? m.system) || 0;
+  const box = el("label", "msys");
+  const i = el("textarea");
+  i.rows = 2;
+  i.spellcheck = false;
+  i.value = own() || "";
+  box.title = t("Sent with every request for {id}, after the agent’s own system prompt, whichever agent sends it; empty: none", { id });
+  i.oninput = i.onchange = () => {
+    const v = i.value.trim(), x = prefs[id] = prefs[id] || {};
+    if (v === (m.system || "")) delete x.system; else x.system = v;
+    changed();
+  };
+  let was = "";
+  i.onfocus = () => { was = i.value; };
+  i.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Escape") { i.value = was; i.onchange(); i.blur(); } };
+  box.append(el("span", "", t("System prompt")), i);
+  at.append(box);
+  return { i, own, again: () => { if (document.activeElement !== i) i.value = own() || ""; }, saved: () => m.system || 0 };
+}
+
+// The Same as box's picker (timfang4162 on X): a button beside it opens the
+// models of the models.dev catalog magpie has synced (/api/catalog/models) in
+// the app's menu, filtered by id, name and maker. A pick fills the box, which
+// stages it as a typed one does.
+let catalogModels = null;
+window.modelSamePick = (box, same) => {
+  const label = t("Pick from models.dev"), b = el("button", "text action mpick");
+  b.type = "button";
+  b.append(svg(CHEV, 12));
+  b.title = label;
+  b.setAttribute("aria-label", label);
+  b.setAttribute("aria-haspopup", "menu");
+  const wrap = el("div", "msame-wrap");
+  box.replaceWith(wrap);
+  wrap.append(box, b);
+  b.onclick = async (e) => {
+    e.stopPropagation();
+    if (!catalogModels) {
+      try {
+        const got = await api("catalog/models");
+        if (Array.isArray(got) && got.length) catalogModels = got;
+      } catch {}
+    }
+    if (!catalogModels) { status(t("models.dev's list could not be read"), "warn"); return; }
+    const opts = catalogModels.map((c) => ({
+      v: c.id, name: c.id, literalName: true,
+      note: [c.name, c.context ? tokenSize(c.context) : "", c.input || c.cost ? "$" + c.input + " / $" + c.cost : ""].filter(Boolean).join(" · "),
+      find: [c.name, c.maker].filter(Boolean).join(" "),
+    }));
+    openProtoMenu(b, opts, same.value.trim(), (v) => { same.value = v; same.onchange(); }, "Pick from models.dev", "mpick-menu", "left", false, "Filter…");
+  };
 };

@@ -50,7 +50,6 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -62,9 +61,11 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/claudecode"
 	"github.com/yetone/magpie/internal/claudetui"
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/provider"
@@ -215,7 +216,7 @@ type subscriptionRun struct {
 	safeguards    json.RawMessage
 	safeguardBeta string
 	// guard is the file the interactive mode's tap reads its safeguards
-	// from on each request (claudetui.GuardEnv); "" with none
+	// and effort from on each request (claudetui.GuardEnv); "" with none
 	guard       string
 	clientMarks bool
 	lean        bool // started with leanSystem as its system prompt
@@ -298,8 +299,11 @@ type subscriptionRun struct {
 	replied bool
 
 	// effort is the level its Claude Code thinks at, as it started (its
-	// --effort) or was told since (setEffort); "" is Claude Code's own
-	effort string
+	// --effort) or was told since (setEffort, setTUIEffort); "" is Claude
+	// Code's own. ownEffort is the one it started at, which an
+	// interactive run asks at by itself.
+	effort    string
+	ownEffort string
 
 	// loginVersion is the credential the run's account had when it
 	// started (provider.ClaudeLoginVersion), which a refusal it reports is
@@ -585,7 +589,7 @@ func clientNamedWorkDir(req *Request) string {
 // of its own; the move reaches the model in the conversation as the
 // caller said it.
 func clientNamedWorkPlace(req *Request) (dir string, inTurns bool) {
-	look := func(t string, turn bool, re *regexp.Regexp) {
+	look := func(t string, turn bool, re *lazyre.RE) {
 		if dir != "" {
 			return
 		}
@@ -634,7 +638,7 @@ func clientNamedWorkPlace(req *Request) (dir string, inTurns bool) {
 // working directory: /x", a moved folder as "Primary working directory: /y
 // (was /x)"), on a --bare run just "CWD: /x"; OpenCode's, in its <env>;
 // pi's ("Current working directory:"); Codex's and pi's <cwd>.
-var clientSaidWorkDir = regexp.MustCompile(`(?m)^\s*(?:-\s*)?(?:Primary working directory|Working directory|Current working directory|CWD): *([^\r\n]+)$|<cwd>([^<\r\n]+)</cwd>`)
+var clientSaidWorkDir = lazyre.New(`(?m)^\s*(?:-\s*)?(?:Primary working directory|Working directory|Current working directory|CWD): *([^\r\n]+)$|<cwd>([^<\r\n]+)</cwd>`)
 
 // clientTurnWorkDir is where a caller says its working directory is in a
 // turn of the conversation, on a line of its own: Codex's
@@ -643,7 +647,7 @@ var clientSaidWorkDir = regexp.MustCompile(`(?m)^\s*(?:-\s*)?(?:Primary working 
 // message of its own, and --bare's "CWD:" is its whole system prompt, so
 // their forms are not read in a turn: a line a user message quotes —
 // Claude Code's or anyone's — is no caller's word.
-var clientTurnWorkDir = regexp.MustCompile(`(?m)^\s*(?:-\s*)?(?:Working directory|Current working directory): *([^\r\n]+)$|<cwd>([^<\r\n]+)</cwd>`)
+var clientTurnWorkDir = lazyre.New(`(?m)^\s*(?:-\s*)?(?:Working directory|Current working directory): *([^\r\n]+)$|<cwd>([^<\r\n]+)</cwd>`)
 
 func evalSymlinks(path string) string {
 	if p, err := filepath.EvalSymlinks(path); err == nil {
@@ -777,7 +781,7 @@ func (c claudeCLI) asRoot(env []string) []string {
 // claudeEnvVars are the variables magpie sets for a Claude Code run, which
 // one in WSL is handed (wslrun's Env).
 var claudeEnvVars = []string{"ENABLE_CLAUDEAI_MCP_SERVERS", "DISABLE_AUTO_COMPACT", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
-	"DISABLE_TELEMETRY", "DISABLE_ERROR_REPORTING", "DISABLE_AUTOUPDATER", "ANTHROPIC_BETAS",
+	"DISABLE_TELEMETRY", "DO_NOT_TRACK", "DISABLE_ERROR_REPORTING", "DISABLE_AUTOUPDATER", "ANTHROPIC_BETAS",
 	"CLAUDE_CODE_EXTRA_BODY", "DISABLE_PROMPT_CACHING"}
 
 // env is env for a run in config directory configDir ("" for the account
@@ -1009,7 +1013,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	mcpConfig, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{
 		"magpie": map[string]any{"command": exe, "args": []string{claudetui.MCPCommand, callbackPath, toolsPath, filepath.Join(tmp, "listed")}},
 	}})
-	args := claudeCLIArgs(model, string(mcpConfig), req.Effort, req.WebSearch)
+	args := claudeCLIArgs(claudeRunName(model), string(mcpConfig), req.Effort, req.WebSearch)
 	if req.ThinkOff {
 		// the client turned thinking off, as Claude Code's auto mode
 		// classifier and its small asks do: a run at Claude Code's own
@@ -1211,7 +1215,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 		cmd = binary.command(context.Background(), args...)
 	}
 	cmd.Dir = work
-	env, err := binary.proxied(ctx, cleanClaudeEnvTTL(os.Environ(), prefix.runTTL()))
+	env, err := binary.proxied(ctx, claudeRunEnv(os.Environ(), prefix.runTTL()))
 	if err != nil {
 		cleanup()
 		return nil, nil, err
@@ -1229,15 +1233,17 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	// its own environment, which apply_flag_settings or a --settings file
 	// rewritten don't reach once it runs: the run is given the safeguards
 	// here, and a file (guard) its tap puts each later turn's in every
-	// request from (claudetui.GuardEnv, setSafeguards). A client's cache
-	// tail isn't added to Claude Code's own marks, which it keeps
-	// (clientCache.pasted).
-	tuiBody, guard := "", ""
-	if tui && len(req.Safeguards) > 0 {
-		tuiBody = claudeExtraBody(req.Safeguards, "")
-		env = append(env, "CLAUDE_CODE_EXTRA_BODY="+tuiBody)
+	// request from (claudetui.GuardEnv, setSafeguards), with the effort a
+	// later turn asks (setTUIEffort): every run has the file, safeguards
+	// or not. A client's cache tail isn't added to Claude Code's own
+	// marks, which it keeps (clientCache.pasted).
+	guard := ""
+	if tui {
+		if len(req.Safeguards) > 0 {
+			env = append(env, "CLAUDE_CODE_EXTRA_BODY="+claudeExtraBody(req.Safeguards, ""))
+		}
 		guard = filepath.Join(tmp, "guard.json")
-		if writeGuard(guard, tuiBody) == nil {
+		if writeGuard(guard, guardBody(req.Safeguards, "")) == nil {
 			env = append(env, claudetui.GuardEnv+"="+guard)
 		} else {
 			guard = ""
@@ -1291,10 +1297,11 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	run.appended = req.appendPrompt
 	run.tui = tui
 	run.cachePrefix = prefix
-	if tuiBody != "" {
+	if tui {
 		run.safeguards = bytes.Clone(req.Safeguards)
 		run.guard = guard
 	}
+	run.ownEffort = req.Effort
 	run.allowed = allowedTools(req)
 	if user, _ := ownerAccount(owner); user != "" {
 		run.loginVersion = provider.ClaudeLoginVersion(user)
@@ -1665,7 +1672,7 @@ func (r *subscriptionRun) setSafeguards(req *Request) error {
 		// (guardLive): the run goes on, its cache too, and upstream is
 		// sent this turn's classifier context whole (#4804).
 		if len(req.Safeguards) > 0 && r.guardLive() {
-			if err := writeGuard(r.guard, claudeExtraBody(req.Safeguards, "")); err != nil {
+			if err := r.tellGuard(req.Safeguards, r.effort); err != nil {
 				return fmt.Errorf("the turn's safeguards could not be handed to Claude Code (%v); restart it", err)
 			}
 			r.safeguards = bytes.Clone(req.Safeguards)
@@ -1702,6 +1709,31 @@ func (r *subscriptionRun) guardLive() bool {
 	}
 	_, err := os.Stat(r.guard + ".live")
 	return err == nil
+}
+
+// guardBody is a guard file: the extra body the run's Claude Code is to
+// send (claudeExtraBody: its safeguards), and effort beside it, the level
+// the tap asks each main request at in Claude Code's place, "" for the
+// one Claude Code started at.
+func guardBody(safeguards json.RawMessage, effort string) string {
+	body := map[string]any{}
+	if len(safeguards) > 0 {
+		body["safeguards"] = safeguards
+	}
+	if effort != "" {
+		body["effort"] = effort
+	}
+	b, _ := json.Marshal(body)
+	return string(b)
+}
+
+// tellGuard writes the interactive run's guard file for safeguards and
+// effort, the run's own once it is written; settingsMu is held.
+func (r *subscriptionRun) tellGuard(safeguards json.RawMessage, effort string) error {
+	if effort == r.ownEffort {
+		effort = ""
+	}
+	return writeGuard(r.guard, guardBody(safeguards, effort))
 }
 
 // writeGuard replaces the guard file with body whole: the tap reads it as
@@ -1996,12 +2028,11 @@ func (b *subscriptionBridge) resume(req *Request, owner string) (*subscriptionRu
 	// prefix the cache has never seen
 	if req.Effort != run.effort {
 		if run.tui {
-			// the interactive mode takes its effort at its start only:
-			// the run is let go, and one at the new effort started
-			run.abortFor("its effort is set at its start, and the next turn asks another")
-			return nil, nil
-		}
-		if err := run.setEffort(req.Effort); err != nil {
+			if err := run.setTUIEffort(req.Effort); err != nil {
+				run.abortFor(err.Error())
+				return nil, nil
+			}
+		} else if err := run.setEffort(req.Effort); err != nil {
 			run.abortFor("it could not be told the next turn's effort: " + err.Error())
 			return nil, nil
 		}
@@ -2219,6 +2250,33 @@ func (r *subscriptionRun) setEffort(effort string) error {
 		"request": map[string]any{"subtype": "apply_flag_settings", "settings": map[string]any{"effortLevel": effort}}})
 	if err := r.tell(line); err != nil {
 		return err
+	}
+	r.effort = effort
+	return nil
+}
+
+// setTUIEffort has the interactive run think at effort from its next
+// turn: its tap asks each main request at it (guardBody), as Claude Code
+// itself does after a person types /effort, which the run can't do: that
+// saves the level as the user's default for new sessions, in the folder
+// of the account the run is signed in to, where only 'max' is the
+// session's alone (2.1.318). Claude Code's own level, "", can't be asked
+// in place of another, and a Claude Code without the tap (guardLive) is
+// asked at its --effort only: such a run is let go, and one at the new
+// effort started. On the real 2.1.318 (Haiku 5.5) the turn after one
+// asked at high instead of medium read the whole conversation from the
+// cache (55,392 tokens read, 41 written).
+func (r *subscriptionRun) setTUIEffort(effort string) error {
+	if effort == "" && r.ownEffort != "" {
+		return errors.New("its effort is set at its start, and the next turn asks Claude Code's own")
+	}
+	if !r.guardLive() {
+		return errors.New("its effort is set at its start, its Claude Code has no tap to ask another, and the next turn does")
+	}
+	r.settingsMu.Lock()
+	defer r.settingsMu.Unlock()
+	if err := r.tellGuard(r.safeguards, effort); err != nil {
+		return fmt.Errorf("the next turn's effort could not be handed to Claude Code: %v", err)
 	}
 	r.effort = effort
 	return nil
@@ -3464,6 +3522,43 @@ func messageWords(msgs []Message) []string {
 	return out
 }
 
+// claudeKnownLong are the Claude models Claude Code (2.1.316) knows, and
+// runs to their 1M window by their own ids.
+var claudeKnownLong = []string{
+	"claude-fable-5", "claude-fable-5-1", "claude-mythos-5", "claude-mythos-5-1",
+	"claude-opus-5", "claude-opus-5-5", "claude-sonnet-5", "claude-sonnet-5-5", "claude-haiku-5-5",
+}
+
+// claudeGenRe is a Claude model's id, its generation in the first group.
+var claudeGenRe = lazyre.New(`^claude-(?:opus|sonnet|haiku|fable|mythos)-([0-9]+)(?:-[0-9]+)?$`)
+
+// claudeRunName is the name a run asks Claude Code for model by. A Claude
+// model of the 5 generation or later that Claude Code doesn't know (Fable
+// 5.2 on 2.1.316) it holds to 200K, and turned away a longer conversation
+// before Anthropic was asked ("Prompt is too long"), while magpie tells
+// the agent the model's 1M window: Codex, which compacts at 272K, never
+// compacted and failed every turn past 200K instead (magicalaciw18 on X).
+// CLAUDE_CODE_MAX_CONTEXT_TOKENS isn't read for a Claude name; "[1m]" is,
+// and Anthropic serves these models to 1M on a subscription as they are.
+// One Claude Code knows keeps its id, as does every 4 generation one, whose
+// 1M a subscription without usage credits is refused even a short turn
+// on (claude-sonnet-4-6[1m]: "Usage credits required for 1M context"),
+// and one whose window magpie knows to be less.
+func claudeRunName(model string) string {
+	id := strings.ToLower(model)
+	m := claudeGenRe.Regexp().FindStringSubmatch(id)
+	if m == nil || slices.Contains(claudeKnownLong, id) {
+		return model
+	}
+	if gen, _ := strconv.Atoi(m[1]); gen < 5 {
+		return model
+	}
+	if w := catalog.ContextOf(model); w > 0 && w < 1000000 {
+		return model
+	}
+	return model + "[1m]"
+}
+
 // claudeCLIArgs runs Claude Code with none of its own tools but, when the
 // client offered a web search (Claude Code's own WebSearch tool asks for
 // Anthropic's), its WebSearch, which searches as the subscription does.
@@ -3655,6 +3750,53 @@ func cleanClaudeEnvTTL(env []string, ttl string) []string {
 		// Request.cacheTTL) are the same: Anthropic refuses a 1h mark after
 		// a 5m one
 		"CLAUDE_CODE_PROMPT_CACHE_TTL="+ttl)
+}
+
+// claudeQuietVars are the variables that keep Claude Code from fetching
+// its feature flags: with any of them set (CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC,
+// DISABLE_TELEMETRY or DO_NOT_TRACK; 2.1.316's privacy level, "default" only
+// with none) it reads none, and every flag is its default.
+var claudeQuietVars = []string{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "DISABLE_TELEMETRY", "DO_NOT_TRACK"}
+
+// claudeRunEnv is the environment a bridge's run (a caller's turns) starts
+// Claude Code in: cleanClaudeEnvTTL's, but with Claude Code's network as a
+// plain claude has it, so it reads its feature flags for the account. One of
+// them, tengu_curious_tower, is Message Threads: a turn sends only what came
+// after the last reply instead of the whole history, every image in it again
+// (#5963, nylesssssssss; 681KB a turn with a 3MB image, 3KB with threads).
+// Nothing is forced: an account Anthropic hasn't given threads goes whole,
+// as its own claude does. Updates and error reports stay off, which the
+// flags don't need. The quiet variables stay as the user set them, in
+// magpie's environment or in their Claude Code's settings.json env (the run
+// reads no settings of the user's: --setting-sources ""), since they are the
+// user's telemetry choice for Claude Code.
+//
+// The one-off runs (the model test, the warm-up, /usage) keep
+// cleanClaudeEnv's CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: they have no
+// history to send, and an interactive one would otherwise send a model
+// request of its own as it starts (probeQuotaStatus, #5582). A turn's
+// interactive run sends that request too, right before the turn's own,
+// which opens the five-hour window anyway.
+func claudeRunEnv(env []string, ttl string) []string {
+	out := slices.DeleteFunc(cleanClaudeEnvTTL(env, ttl), func(e string) bool {
+		k, _, _ := strings.Cut(e, "=")
+		return slices.Contains(claudeQuietVars, k)
+	})
+	settings := filepath.Join(claudeConfigDir(), "settings.json")
+	for _, k := range claudeQuietVars {
+		v, _ := edit.GetJSON(settings, "env."+k)
+		if v == "" {
+			for _, e := range env {
+				if w, ok := strings.CutPrefix(e, k+"="); ok {
+					v = w
+				}
+			}
+		}
+		if v != "" {
+			out = append(out, k+"="+v)
+		}
+	}
+	return append(out, "DISABLE_AUTOUPDATER=1", "DISABLE_ERROR_REPORTING=1")
 }
 
 type lockedWriter struct{ run *subscriptionRun }
@@ -5062,9 +5204,9 @@ func bridgeToolName(name string) string {
 }
 
 var (
-	bridgeToolNameOK     = regexp.MustCompile(`^[A-Za-z0-9_-]{1,51}$`)
-	bridgeToolNameBad    = regexp.MustCompile(`[^A-Za-z0-9_-]`)
-	bridgeToolNameHashed = regexp.MustCompile(`_[0-9a-f]{12}$`)
+	bridgeToolNameOK     = lazyre.New(`^[A-Za-z0-9_-]{1,51}$`)
+	bridgeToolNameBad    = lazyre.New(`[^A-Za-z0-9_-]`)
+	bridgeToolNameHashed = lazyre.New(`_[0-9a-f]{12}$`)
 )
 
 // bridgeNames is the caller's name of each of tools by the name the MCP
@@ -5123,7 +5265,7 @@ func withoutBillingHeader(system string) string {
 
 // billingHeader is the line with its fields (cc_version=…; cc_entrypoint=…;
 // cch=…;), which the block after follows with no newline between.
-var billingHeader = regexp.MustCompile(`^x-anthropic-billing-header:(\s*[A-Za-z_]+=[^;\s]*;)*\s*`)
+var billingHeader = lazyre.New(`^x-anthropic-billing-header:(\s*[A-Za-z_]+=[^;\s]*;)*\s*`)
 
 // renderClaudeTurn is the messages since a reply in a conversation Claude
 // Code already has, as it would be told them itself. The user's alone go
@@ -5555,7 +5697,7 @@ func saidWithResults(msgs []Message) string {
 // sub-agent, a background command) ended, with the header it puts before
 // it: "[SYSTEM NOTIFICATION - NOT USER INPUT]" … <task-notification>…
 // </task-notification>.
-var taskNotice = regexp.MustCompile(`(?s)(?:\[SYSTEM NOTIFICATION - NOT USER INPUT\][^<]*)?<task-notification>.*?</task-notification>`)
+var taskNotice = lazyre.New(`(?s)(?:\[SYSTEM NOTIFICATION - NOT USER INPUT\][^<]*)?<task-notification>.*?</task-notification>`)
 
 // withTaskNotices hands the run the notifications of background tasks
 // that came after the results (taskNotice), in a reminder at the end of the
@@ -5603,7 +5745,7 @@ func withTaskNotices(results []Part, msgs []Message) []Part {
 
 // skillBody is the text Claude Code sends after a Skill call's result:
 // the skill's SKILL.md, headed with where its files are.
-var skillBody = regexp.MustCompile(`^Base directory for this skill: `)
+var skillBody = lazyre.New(`^Base directory for this skill: `)
 
 // withSkillBodies hands the run each skill's body that came after the
 // results, at the end of its Skill call's result. Claude Code answers a
@@ -5677,21 +5819,21 @@ var (
 	// Claude Code tells its model one: "The user sent a new message while
 	// you were working:" (2.1.296), "The user sent the following message:"
 	// (older).
-	midTurnHead = regexp.MustCompile(`The user sent (?:a new message while you were working|the following message):[ \t]*\n`)
+	midTurnHead = lazyre.New(`The user sent (?:a new message while you were working|the following message):[ \t]*\n`)
 	// midTurnEnd is where the user's words after midTurnHead end: Claude
 	// Code's ask to address them, the reminder's end, or a notice of its
 	// own after them.
-	midTurnEnd = regexp.MustCompile(`\n\n(?:This is how Claude Code surfaces messages the user sends mid-turn|IMPORTANT: After completing your current task, you MUST address the user's message above|Please address this message and continue with your tasks)|</system-reminder>|\n\n<total_tokens>|\n\n` + hookNoticeLead)
+	midTurnEnd = lazyre.New(`\n\n(?:This is how Claude Code surfaces messages the user sends mid-turn|IMPORTANT: After completing your current task, you MUST address the user's message above|Please address this message and continue with your tasks)|</system-reminder>|\n\n<total_tokens>|\n\n` + hookNoticeLead)
 	// hookNotice is a Claude Code hook's output told to the model:
 	// "PreToolUse:Read hook additional context: …", "SessionStart hook
 	// success: …", "Stop hook blocking error from command: …". Only
 	// these kinds: "Stop hook is broken: …" may be the user's.
 	hookNoticeLead = `[A-Z][A-Za-z]+(?::\S+)? hook (?:additional context|success|blocking error(?: from command)?|stopped continuation|feedback):`
-	hookNotice     = regexp.MustCompile(`^` + hookNoticeLead)
+	hookNotice     = lazyre.New(`^` + hookNoticeLead)
 	// tokenCount is Claude Code's count of the tokens left, or used.
-	tokenCount = regexp.MustCompile(`^(?:<total_tokens>[^<]*</total_tokens>|Token usage: \S+; \S+ remaining)$`)
+	tokenCount = lazyre.New(`^(?:<total_tokens>[^<]*</total_tokens>|Token usage: \S+; \S+ remaining)$`)
 	// reminderTag is a <system-reminder> tag, open or close.
-	reminderTag = regexp.MustCompile(`</?system-reminder(?:\s[^>]*)?>`)
+	reminderTag = lazyre.New(`</?system-reminder(?:\s[^>]*)?>`)
 	// desktopNote is an annotation Claude Desktop (its Claude Code) puts
 	// beside what the run reads, telling it about the picture it scaled
 	// down, where a skill's files live, or that a tool of ToolSearch's
@@ -5699,7 +5841,7 @@ var (
 	// the user's — the picture itself rides in the tool result. Wide
 	// images read in parallel bring one note each, which may come as one
 	// text joined by blank lines: every note in it is the agent's.
-	desktopNote = regexp.MustCompile(`(?s)^(?:(?:\[Image: original \d+x\d+, displayed at \d+x\d+\. Multiply coordinates by [\d.]+ to map to original image\.\]|Tool loaded\.)\s*)+$|^Base directory for this skill: `)
+	desktopNote = lazyre.New(`(?s)^(?:(?:\[Image: original \d+x\d+, displayed at \d+x\d+\. Multiply coordinates by [\d.]+ to map to original image\.\]|Tool loaded\.)\s*)+$|^Base directory for this skill: `)
 )
 
 // midTurnSaid is the user's words in each message they sent mid-turn
@@ -6237,7 +6379,7 @@ func cliSchema(raw json.RawMessage) json.RawMessage {
 // given, before it reads its input: not JSON, not an object, or a schema
 // its Ajv won't compile ("strict mode: unknown keyword" for one only a
 // later draft has).
-var cliSchemaWords = regexp.MustCompile(`--json-schema (is not a valid JSON Schema|is not valid JSON|must be a JSON object)`)
+var cliSchemaWords = lazyre.New(`--json-schema (is not a valid JSON Schema|is not valid JSON|must be a JSON object)`)
 
 // cliSchemaRefused is a run's Claude Code ending over the request's schema:
 // it ends the same for the same schema on every account and every try,
@@ -6435,6 +6577,26 @@ func (r *subscriptionRun) owned() string {
 		return *o
 	}
 	return ""
+}
+
+// ownerSaid is an owner as the log tells it (#5767): the provider, and
+// whose account it is, its own sign-in marked, a plan-named one unnamed.
+// "account changed" alone left a reporter guessing at image hashes, when
+// the router had served the request from another account.
+func ownerSaid(owner string) string {
+	f := strings.Split(owner, "\x00")
+	said := f[0]
+	if len(f) < 2 || f[1] == "" {
+		return said
+	}
+	said += " (" + f[1]
+	if len(f) > 2 && f[2] == ownHome {
+		said += ", Claude Code's own sign-in"
+		if len(f) > 3 && f[3] == unnamedOwner {
+			said += ", unnamed"
+		}
+	}
+	return said + ")"
 }
 
 // takeNamedOwner has a run started on Claude Code's own sign-in while it
@@ -6798,8 +6960,9 @@ func (s *Server) serveSubscriptionAs(w http.ResponseWriter, r *http.Request, fro
 	// Claude Code's config, so its tool results come back on the same
 	// sign-in named by its email, and the run goes on under that name.
 	if run != nil && run.owned() != owner && !run.takeNamedOwner(owner) {
+		was := run.owned()
 		run.abort()
-		run, how = nil, accountChanged
+		run, how = nil, accountChanged+": the run was on "+ownerSaid(was)+", this request goes to "+ownerSaid(owner)
 	}
 	// the request's conversation was rewritten since the run's last reply —
 	// the client's own, as Pi does compacting it mid-turn, or another
@@ -7365,6 +7528,11 @@ func relay(w http.ResponseWriter, r *http.Request, from provider.Protocol, name 
 // never seen, and was written to it whole, its tools and system prompt
 // too (bbfatx on X: a title or a summary asked with tool_choice none, of
 // a long conversation). The turn may call none of them (allowedTools).
+// Each schema is folded to an object root (objectSchema), as a Messages
+// request magpie builds is: Claude Code leaves out an MCP tool whose
+// inputSchema has a oneOf, anyOf or allOf at its root, which Anthropic's
+// API refuses, so Codex desktop's browser tool mcp__cua_repl__js, a oneOf
+// of objects, never reached the model (Lee931018 on X).
 func bridgeTools(req *Request) []bridgeTool {
 	tools := make([]bridgeTool, 0, len(req.Tools))
 	for _, t := range req.Tools {
@@ -7375,6 +7543,7 @@ func bridgeTools(req *Request) []bridgeTool {
 		if len(schema) == 0 {
 			schema = json.RawMessage(`{"type":"object","properties":{}}`)
 		}
+		schema = objectSchema(schema)
 		tools = append(tools, bridgeTool{Name: bridgeToolName(t.Name), Description: t.Description, InputSchema: schema})
 	}
 	return tools

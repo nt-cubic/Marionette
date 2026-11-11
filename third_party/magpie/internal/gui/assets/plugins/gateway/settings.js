@@ -1,7 +1,8 @@
 // Settings › Network and sharing's gateway rows (the gateway plugin's part
 // of Settings): its port, model ids without the provider, sharing on the
 // local network and the addresses let in, and the web pages that may call
-// it. Run after app.js, whose helpers it shares (el, segs, input, api,
+// it; and a busy model's place, drawn into Settings › Models › Routing.
+// Run after app.js, whose helpers it shares (el, segs, input, api,
 // writingPrefs), and before start.js draws Settings.
 
 // renderPort: the gateway's address on this computer (Magic_zero on Discord:
@@ -78,13 +79,15 @@ function renderPort(s) {
 // lists each model by its own id as well, gpt-5.6-sol beside
 // codex/gpt-5.6-sol. Posted on its own; off by default.
 function renderBareIds(s) {
-  renderBusyLoad(s); // the row under it
+  renderBusyLoad(s); // Models › Routing's row
+  renderContextCap(s);
   $("#bareIdsSegs").replaceChildren(segs([[false, t("Off")], [true, t("On")]], !!s.bareModelIDs, (on) =>
     writingPrefs(api("settings/bare-ids", { on })).then((ns) => { prefs = state.settings = ns; renderSettings(); })
       .catch((e) => { status(t(e.message), "err"); renderSettings(); })));
 }
 
-// renderBusyLoad: the load past which a model its plugin says is busy
+// renderBusyLoad, in Settings › Models › Routing with the other rows on
+// where a request goes: the load past which a model its plugin says is busy
 // (magpie.load) goes behind the others (settings.BusyLoad, axelburks on
 // Discord). Custom… opens a field for any other number, 1 to 9999, which
 // is then shown as its own choice; Enter or Apply saves it, Escape closes
@@ -129,6 +132,47 @@ function renderBusyLoad(s) {
   }));
 }
 
+// renderContextCap: one longest context for every model (settings.ContextCap,
+// WJaunita45604 on X). A window a model or its provider has set itself wins;
+// empty or "off" takes the cap away.
+function renderContextCap(s) {
+  const field = input(s.contextCap ? contextsText({ "*": s.contextCap }) : "", t("None"));
+  field.className = "words context-cap";
+  field.style.cssText = "width:96px;flex:none";
+  field.setAttribute("aria-label", t("Longest context"));
+  const save = () => {
+    const v = field.value.trim().toLowerCase();
+    let at = 0;
+    if (v && v !== "off") {
+      const r = parseContexts(v);
+      if (r.error || !r.map["*"]) { status(t("Longest context: {v} is not a number of tokens like 272k", { v: field.value }), "err"); return renderContextCap(s); }
+      at = r.map["*"];
+    }
+    if (at === (s.contextCap || 0)) return renderContextCap(s);
+    writingPrefs(api("settings/context-cap", { at })).then((ns) => { prefs = state.settings = ns; renderSettings(); })
+      .catch((e) => { status(t(e.message), "err"); renderSettings(); });
+  };
+  field.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") field.blur(); if (e.key === "Escape") { field.value = s.contextCap ? contextsText({ "*": s.contextCap }) : ""; field.blur(); } };
+  field.onchange = save;
+  // which windows it holds: only models with none of the user's own, or
+  // every model (the shorter of the two is told; settings.ContextCapAll)
+  const mode = el("button", "proto pick context-cap-mode");
+  mode.type = "button";
+  mode.setAttribute("aria-label", t("Longest context holds"));
+  mode.replaceChildren(el("span", "", t(s.contextCapAll ? "Every model" : "Models without their own")), svg(CHEV, 11, 1.6));
+  mode.onclick = (e) => {
+    e.stopPropagation();
+    if (mode.classList.contains("open")) return closeProtoMenu();
+    openProtoMenu(mode, [{ v: "own", name: t("Models without their own") }, { v: "all", name: t("Every model") }], s.contextCapAll ? "all" : "own",
+      (v) => { if ((v === "all") === !!s.contextCapAll) return; writingPrefs(api("settings/context-cap-mode", { all: v === "all" })).then((ns) => { prefs = state.settings = ns; renderSettings(); }).catch((er) => { status(t(er.message), "err"); renderSettings(); }); },
+      "Longest context holds", "context-cap-menu");
+  };
+  const box = el("div", "");
+  box.style.cssText = "display:flex;gap:8px;align-items:center;justify-content:flex-end";
+  box.append(mode, field);
+  $("#contextCapVal").replaceChildren(box);
+}
+
 // renderCORS: the web pages whose scripts may call the gateway from a
 // browser (#1051), by origin — a row to add one, and one row each to take
 // it away. A page listed calls with a gateway key; none listed, no page
@@ -143,6 +187,7 @@ function corsSays(m) {
 }
 function renderCORS(s) {
   renderWebPage(); // Browser access, the section under this one
+  renderRemote(); // Another magpie, under that
   const box = $("#corsList");
   box.replaceChildren();
   const origins = s.corsOrigins || [];
@@ -167,6 +212,16 @@ function renderCORS(s) {
   const who = el("div", "who");
   who.append(el("div", "name", t("Web pages that may call magpie")),
     el("div", "sub" + (d.err ? " err" : ""), d.err || t("Scripts on these origins can call the gateway from a browser, each request with a gateway key from Gateway. A page from any other site is refused; pages on this computer are not")));
+  // where those keys are: the Gateway page shows them once a page is listed
+  const nav = $('#nav [data-view="gateway"]');
+  if (origins.length && nav && !nav.hidden) {
+    const go = el("button", "link", t("Gateway keys"));
+    go.type = "button";
+    go.onclick = () => nav.click();
+    const line = el("div", "sub feat-go");
+    line.append(go);
+    who.append(line);
+  }
   const val = el("div", "val rule-add");
   val.append(field, add);
   r.append(who, val);
@@ -267,6 +322,172 @@ function renderAllow(s) {
   }
 }
 
+// renderMTLS: client certificates (mTLS; hhdaxia on X, #5596), under
+// Allowed addresses. On, other computers reach magpie over https:// only
+// with a certificate issued here, a gateway key or not; this computer
+// always can. A device's certificate is issued by name and saved to
+// Downloads (client.pem, client-key.pem, ca.pem), one row each to revoke.
+let mtlsDraft = { value: "", err: "" };
+function mtlsSays(m) {
+  if (/^this page is open from another computer/.test(m)) return t("This page is open from another computer without a certificate, so turning this on would shut it out: turn it on from the computer magpie runs on");
+  if (/^this page came with that certificate/.test(m)) return t("This page uses that certificate, so it would be shut out: do this from another device, or from the computer magpie runs on");
+  if (/a name can.t hold/.test(m)) return t("A name can’t hold / \\ : * ? \" < > |");
+  return t(m);
+}
+function renderMTLS(s) {
+  const box = $("#mtlsList");
+  if (!box) return;
+  box.replaceChildren();
+  if (!s.lan && !s.onNetwork && !s.mtls) return;
+  const d = mtlsDraft;
+  const post = (what, body, done) => writingPrefs(api("settings/mtls" + what, body))
+    .then((ns) => {
+      prefs = ns; d.err = ""; done?.(); renderSettings();
+      if (ns.mtlsSaved) status(t("Saved to {path}", { path: ns.mtlsSaved }), "ok", 4000);
+    })
+    .catch((e) => { d.err = mtlsSays(e.message); status(d.err, "err"); renderSettings(); });
+  const row = (cls, name, sub, ...tools) => {
+    const r = el("div", "row pref " + cls);
+    const who = el("div", "who");
+    who.append(el("div", "name", name));
+    if (sub) who.append(sub instanceof Node ? sub : el("div", "sub", sub));
+    const val = el("div", "val");
+    val.append(...tools);
+    r.append(who, val);
+    box.append(r);
+    return r;
+  };
+  row("mtls-row", t("Require a client certificate"),
+    d.err ? el("div", "sub err", d.err) : t("Other computers reach magpie over HTTPS only with a certificate issued here, even with a gateway key; this computer always can"),
+    segs([["off", t("Off")], ["on", t("On")]], s.mtls ? "on" : "off", (v) => post("", { on: v === "on" })));
+  const field = input(d.value, t("Device name"));
+  field.className = "words rule-match mtls-name";
+  field.setAttribute("aria-label", t("Device name"));
+  field.autocomplete = "off";
+  field.spellcheck = false;
+  const issue = el("button", "text", t("Issue"));
+  issue.type = "button";
+  issue.onclick = () => {
+    d.value = field.value.trim();
+    if (!d.value) return field.focus();
+    post("/issue", { name: d.value }, () => { d.value = ""; });
+  };
+  field.oninput = () => { d.value = field.value; };
+  field.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") issue.onclick(); };
+  const add = el("div", "val rule-add");
+  add.append(field, issue);
+  const r = row("rule-row mtls-issue", t("Client certificates"),
+    s.mtlsError ? el("div", "sub err", t(s.mtlsError)) : t("Saved to Downloads for the device: the certificate, its key and magpie’s CA"));
+  r.querySelector(".val").replaceWith(add);
+  for (const c of s.mtlsCerts || []) {
+    const until = new Date(c.expires).toLocaleDateString(intlLang(), { year: "numeric", month: "short", day: "numeric" });
+    const x = el("button", "text", t("Revoke"));
+    x.type = "button";
+    x.onclick = () => post("/revoke", { serial: c.serial });
+    row("mtls-cert", c.name, t("Until {date}", { date: until }), x);
+  }
+}
+
+// renderHTTPS: HTTPS for other computers (zhangly1 on X: Claude on another
+// computer on the LAN needed magpie at https://), under Share on local
+// network. On, other computers get the certificate imported here, or one
+// magpie's own CA signs; then the CA's row saves it to Downloads, and the
+// rows under it say how another computer fetches and trusts it. Asked of
+// its own route (https.go), as Browser access is; drawn while magpie
+// answers other computers or the switch is on.
+let httpsState = null;
+function httpsSays(m) {
+  if (/^this page is open from another computer/.test(m)) return t("This page is open from another computer: turn HTTPS on or off from the computer magpie runs on");
+  if (/^a certificate but no private key/.test(m)) return t("A certificate but no private key: choose the key’s file too");
+  if (/^a private key but no certificate/.test(m)) return t("A private key but no certificate: choose the certificate’s file too");
+  if (/^the private key belongs to none/.test(m)) return t("The private key belongs to none of the certificates");
+  if (/^the private key has a passphrase/.test(m)) return t("The private key has a passphrase: choose one without");
+  if (/^no PEM certificate or key/.test(m)) return t("No PEM certificate or key in the files chosen");
+  return t(m);
+}
+function renderHTTPS(s, asked) {
+  const box = $("#httpsList");
+  if (!box) return;
+  if (!asked) api("settings/https").then((h) => { httpsState = h; renderHTTPS(prefs, true); }).catch(() => {});
+  const h = httpsState;
+  if (!s || !h || (!s.lan && !s.onNetwork && !h.on)) return void box.replaceChildren();
+  const post = (what, body) => writingPrefs(api("settings/https" + what, body))
+    .then((nh) => {
+      httpsState = nh; renderHTTPS(prefs, true);
+      if (nh.saved) status(t("Saved to {path}", { path: nh.saved }), "ok", 4000);
+    })
+    .catch((e) => { status(httpsSays(e.message), "err"); renderHTTPS(prefs, true); });
+  const rows = [];
+  const row = (cls, name, sub, ...tools) => {
+    const r = el("div", "row pref " + cls);
+    const who = el("div", "who");
+    who.append(el("div", "name", name));
+    if (sub) who.append(sub instanceof Node ? sub : el("div", "sub", sub));
+    const val = el("div", "val");
+    val.append(...tools);
+    r.append(who, val);
+    rows.push(r);
+    return r;
+  };
+  row("https-row", "HTTPS",
+    h.served && !h.on ? t("Already served over https:// by Require a client certificate or --tls-cert") : t("Other computers call magpie at https://; this computer can still use http://"),
+    segs([["off", t("Off")], ["on", t("On")]], h.on ? "on" : "off", (v) => post("", { on: v === "on" })));
+  if (h.served) {
+    const c = h.cert;
+    const until = c && new Date(c.until).toLocaleDateString(intlLang(), { year: "numeric", month: "short", day: "numeric" });
+    const from = !c ? "" : c.from === "files" ? "--tls-cert " + c.file : c.from === "imported" ? t("Your certificate") : t("Signed by magpie’s CA");
+    const sub = h.certError ? el("div", "sub err", t(h.certError))
+      : el("div", "sub", [from, (c.names || []).join(", "), t("Until {date}", { date: until })].filter(Boolean).join(" · "));
+    sub.title = sub.textContent;
+    const tools = [];
+    if (!h.files) {
+      const file = el("input");
+      file.type = "file";
+      file.multiple = true;
+      file.accept = ".pem,.crt,.cer,.key,application/x-pem-file,application/x-x509-ca-cert";
+      file.hidden = true;
+      file.onchange = async () => {
+        const files = await Promise.all([...file.files].map((f) => f.text()));
+        file.value = "";
+        if (files.length) post("/import", { files });
+      };
+      const pick = el("button", "text", t("Import…"));
+      pick.type = "button";
+      pick.onclick = () => file.click();
+      tools.push(file, pick);
+      if (c?.from === "imported") {
+        const x = el("button", "text", t("Remove"));
+        x.type = "button";
+        x.onclick = () => post("/remove", {});
+        tools.push(x);
+      }
+    }
+    row("https-cert", t("Certificate"), sub, ...tools);
+  }
+  if (h.ca) {
+    const save = el("button", "text", t("Save"));
+    save.type = "button";
+    save.onclick = () => post("/ca", {});
+    const sub = el("div", "sub wraps", t("Trust it once on each computer that calls magpie · SHA-256 {fp}", { fp: h.ca }));
+    row("https-ca", t("magpie’s CA"), sub, save);
+    // the address picked under Share on local network, else the first
+    const at = (h.caURLs || []).find((u) => u.startsWith(lanSelectedURL + "/")) || h.caURLs?.[0];
+    const steps = [
+      at && [t("Download"), "curl -kO " + at],
+      ["macOS", "sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain magpie-ca.crt"],
+      ["Windows", "certutil -addstore -f Root magpie-ca.crt"],
+      ["Linux", "sudo cp magpie-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates"],
+      [t("Claude Code and other Node apps"), "NODE_EXTRA_CA_CERTS=/path/to/magpie-ca.crt"],
+    ];
+    for (const [name, cmd] of steps.filter(Boolean)) {
+      const code = el("code", "sub https-cmd", cmd);
+      code.title = cmd;
+      row("https-step", name, code, copyBtn(cmd, name, t("Copied")));
+    }
+  }
+  box.replaceChildren(...rows);
+}
+
 // renderLAN: the gateway shared on the local network, for agents on other
 // machines. Gateway keys and connection examples live together in Gateway.
 let lanSelectedURL = "", lanProtocol = "openai";
@@ -282,7 +503,19 @@ try { lanWant = localStorage.getItem("magpie.lanAddress") || ""; } catch {}
 // on the host reach it at the host's Docker bridge address, the
 // container's default route (jiezhengj on Discord: other containers on a
 // NAS needed http://172.17.0.1:3425), which follows, said to be theirs.
-function lanShown(urls, container, bridge) {
+//
+// In a LazyCat app (lazy: its domain, and whether the box's LAN addresses
+// are listed), the domain serves only devices with LazyCat's client, and
+// on a bridge network the box's LAN address isn't known, nor is the port
+// there: the line says how to get it there (mtoolstec on X wanted
+// http://192.168.0.100:3425/v1 and was offered the domain and the
+// container bridge's 172.28.3.65).
+function lanShown(urls, container, bridge, lazy = {}) {
+  if (lazy.url && !lazy.box) {
+    const port = lazyPort();
+    return { urls, others: [], head: t("LazyCat"),
+      sub: t("Only devices with the LazyCat client reach this address. For other devices to use the box’s LAN IP on port {port}, forward port {port} to Magpie in LazyCat’s LAN port forwarding app", { port }) };
+  }
   const others = bridge ? [bridge] : [];
   if (!container) return { urls: [...urls, ...others.filter((u) => !urls.includes(u))], others, sub: "" };
   const host = location.hostname, at = urls[0] || bridge ? new URL(urls[0] || bridge) : null;
@@ -298,7 +531,14 @@ function lanShown(urls, container, bridge) {
 // which says whether its addresses are a container's and where other
 // containers reach it
 function gwLAN(g) {
-  return lanShown(g?.lan && g.lanURLs || [], !!g?.container, g?.lan && g.containerHost || "");
+  return lanShown(g?.lan && g.lanURLs || [], !!g?.container, g?.lan && g.containerHost || "",
+    { url: g?.lazyCat || "", box: !!g?.lazyCatBox });
+}
+// lazyPort: the gateway's port, for the LazyCat line: its listen address'
+// (bootPrefs or Settings' gateway), 3425 when it names none
+function lazyPort() {
+  const at = prefs?.gateway || sideGwAt?.url || "";
+  return /:(\d+)\/?$/.exec(at)?.[1] || "3425";
 }
 // addrWho: the words every list of the gateway's addresses names one by,
 // for g (providers' gateway, or Settings' read as one): this computer's,
@@ -310,6 +550,7 @@ function gwLAN(g) {
 function addrWho(g, u, others = []) {
   if (u === g.url) return t("This computer");
   if (others.includes(u)) return t("Other containers on this host");
+  if (u && u === g.lazyCat) return t("LazyCat client");
   if ((g.lanPublic || []).includes(u) || u === g.publicURL && g.publicKind === "internet") return t("On the internet");
   if (u === g.publicURL && g.publicKind !== "local") return t("Public address");
   return t("Local network");
@@ -317,7 +558,7 @@ function addrWho(g, u, others = []) {
 // pubWho: About's MAGPIE_PUBLIC_URL row, from /api/settings, by addrWho
 // (a private address is the local network's; jiezhengj on Discord)
 function pubWho(s) {
-  return addrWho({ url: s.gateway, publicURL: s.publicURL, publicKind: s.publicKind, lanPublic: s.lanPublic }, s.publicURL,
+  return addrWho({ url: s.gateway, publicURL: s.publicURL, publicKind: s.publicKind, lanPublic: s.lanPublic, lazyCat: s.lanLazyCat }, s.publicURL,
     s.lanContainerHost ? [s.lanContainerHost] : []);
 }
 // gwFar: where other machines reach the gateway, for the sidebar and the
@@ -331,7 +572,10 @@ function gwFar(g) {
 // address picked here, else the first
 function sideLAN(g) {
   const u = gwFar(g);
-  return u[0] && (g.publicURL || (u.includes(lanWant) ? lanWant : u[0]));
+  // a LazyCat app's domain is MAGPIE_PUBLIC_URL's too, and the box's LAN
+  // address before it is the one other devices use
+  const pub = g.publicURL && !(g.lazyCatBox && g.publicURL === g.lazyCat) ? g.publicURL : "";
+  return u[0] && (pub || (u.includes(lanWant) ? lanWant : u[0]));
 }
 // the line was drawn from boot.js before this script came
 if (sideGwAt) renderSideGw();
@@ -360,7 +604,8 @@ function renderLAN(s) {
   row(t("Share on local network"), t("Agents on other computers on this network, or through a tunnel to this one such as Cloudflare Tunnel, can use magpie’s models with a gateway key from Gateway"), "",
     segs([["off", t("Off")], ["on", t("On")]], s.lan ? "on" : "off", (v) => set({ on: v === "on" })));
   if (!s.lan) return;
-  const { urls, others, sub } = lanShown(s.lanURLs || [], s.lanContainer, s.lanContainerHost);
+  const { urls, others, sub, head } = lanShown(s.lanURLs || [], s.lanContainer, s.lanContainerHost,
+    { url: s.lanLazyCat || "", box: !!s.lanLazyCatBox });
   if (!urls.length) row(t("Address"), t("This computer has no local network address right now"), "");
   else {
     lanSelectedURL = urls.includes(lanWant) ? lanWant : urls[0];
@@ -377,7 +622,7 @@ function renderLAN(s) {
         e.stopPropagation();
         if (address.classList.contains("open")) return closeProtoMenu();
         const suffix = lanProtocol === "openai" ? "/v1" : "";
-        openProtoMenu(address, urls.map((u) => ({ v: u, name: u + suffix, note: far.has(u) ? t("On the internet") : others.includes(u) ? t("Other containers on this host") : "" })), lanSelectedURL,
+        openProtoMenu(address, urls.map((u) => ({ v: u, name: u + suffix, note: far.has(u) ? t("On the internet") : others.includes(u) ? t("Other containers on this host") : u === s.lanLazyCat ? t("LazyCat client") : "" })), lanSelectedURL,
           (v) => { lanSelectedURL = lanWant = v; keepPick("magpie.lanAddress", v); update(); renderSideGw(); }, "Address", "lan-address-menu");
       };
     }
@@ -405,7 +650,59 @@ function renderLAN(s) {
     addressRow.classList.add("lan-address-row");
     update();
   }
-  if (sub) row(t("In a container"), sub, "").classList.add("lan-container");
+  if (sub) row(head || t("In a container"), sub, "").classList.add("lan-container");
+  renderJoin(s, box);
+}
+
+// renderJoin: Join with a password (EV_John_Liu on X), under the shared
+// address. With a password set, another computer opens <address>/join,
+// types it, and gets a gateway key of its own, named for it in Gateway
+// keys, and the setup for its agents. Only a hash is kept: the field is
+// always empty, and a password typed in it replaces the one set.
+let joinDraft = { value: "", err: "" };
+function renderJoin(s, box) {
+  const d = joinDraft;
+  const set = (password) => writingPrefs(api("settings/join", { password }))
+    .then((ns) => { prefs = ns; joinDraft = { value: "", err: "" }; renderSettings(); status(t("Saved"), "ok", 1500); })
+    .catch((e) => { d.err = t(e.message); status(d.err, "err"); renderSettings(); });
+  const r = el("div", "row pref rule-row join-row");
+  const who = el("div", "who");
+  who.append(el("div", "name", t("Join with a password")),
+    el("div", "sub" + (d.err ? " err" : ""), d.err || t("Other computers open the join link and type this password to get a gateway key of their own and the setup for their agents")));
+  const field = input(d.value, s.joinOn ? t("New password") : t("Password"));
+  field.type = "password";
+  field.className = "words rule-match join-pw";
+  field.setAttribute("aria-label", t("Password"));
+  field.autocomplete = "new-password";
+  field.spellcheck = false;
+  const go = el("button", "text", t("Set"));
+  go.type = "button";
+  go.onclick = () => {
+    d.value = field.value;
+    if (!d.value) return field.focus();
+    set(d.value);
+  };
+  field.oninput = () => { d.value = field.value; };
+  field.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") go.onclick(); };
+  const val = el("div", "val rule-add");
+  val.append(field, go);
+  if (s.joinOn) {
+    const off = el("button", "text join-off", t("Turn off joining"));
+    off.type = "button";
+    off.onclick = () => set("");
+    val.append(off);
+  }
+  r.append(who, val);
+  box.append(r);
+  if (!s.joinOn || !lanSelectedURL) return;
+  const link = lanSelectedURL + "/join";
+  const lr = el("div", "row pref join-link-row");
+  const lw = el("div", "who");
+  lw.append(el("div", "name", t("Join link")));
+  const lv = el("div", "val");
+  lv.append(el("code", "", link), copyBtn(link, t("Join link")));
+  lr.append(lw, lv);
+  box.append(lr);
 }
 
 // renderWebPage: Browser access, the app's own page served to a browser
@@ -476,4 +773,70 @@ function renderWebPage(asked) {
     }
   }
   box.replaceChildren(...rows);
+}
+
+// renderRemote: Another magpie, a magpie on a server (magpie daemon install
+// --web, magpie web, or an app's Browser access) opened in a window of the
+// app's own (xuanwo on X: its routing and usage, read from the desktop).
+// The window is that magpie's web page, signed in with the key in its link
+// as a browser is; the app checks the key before opening it and keeps the
+// address and key on this computer alone (remote.go). The key is never
+// read back into the page. The app's windows alone draw it.
+let remoteState = null, remoteDraft = { url: null, key: "" };
+function remoteSays(m) {
+  let x;
+  if (/^type the other magpie's address/.test(m)) return t("Type the other magpie’s address");
+  if (/^type that magpie's key/.test(m)) return t("Type that magpie’s key: the k= in the link it printed, or its MAGPIE_WEB_KEY");
+  if (/turned the key away/.test(m)) return t("That magpie turned the key away: use the key in the link it printed");
+  if (/doesn't let this computer in/.test(m)) return t("That magpie doesn’t let this computer in: add this computer’s address to its allowed addresses");
+  if ((x = /^(\S+) is a name on the internet/.exec(m))) return t("{host} is a name on the internet: open it over https://, or the key crosses the network unencrypted", { host: x[1] });
+  if ((x = /^(\S+)'s certificate isn't trusted/.exec(m))) return t("{host}’s certificate isn’t trusted by this computer", { host: x[1] });
+  if ((x = /^(\S+) doesn't answer/.exec(m))) return t("{host} doesn’t answer", { host: x[1] });
+  if ((x = /^(\S+) answered .*not as a magpie page/.exec(m))) return t("{host} doesn’t answer as a magpie page: check the address and port (magpie web’s is 3430)", { host: x[1] });
+  if (/^the key is \d+ characters/.test(m)) return t("The key is too short");
+  if (/^the key takes letters/.test(m)) return t("The key takes letters, digits and - . _ ~ only");
+  return t(m);
+}
+function renderRemote(asked) {
+  const head = $("#remoteHead"), box = $("#remoteList");
+  if (!box) return;
+  head.hidden = box.hidden = web;
+  if (web) return;
+  if (!asked) api("remote").then((r) => { remoteState = r; renderRemote(true); }).catch(() => {});
+  const s = remoteState;
+  if (!s) return;
+  const row = (name, ...tools) => {
+    const r = el("div", "row pref");
+    const who = el("div", "who");
+    who.append(el("div", "name", name));
+    const val = el("div", "val");
+    val.append(...tools);
+    r.append(who, val);
+    return r;
+  };
+  const addr = input(remoteDraft.url ?? s.url, "https://magpie.example.com");
+  addr.className = "words remote-url";
+  addr.setAttribute("aria-label", t("Address"));
+  addr.oninput = () => { remoteDraft.url = addr.value; };
+  const key = input(remoteDraft.key, s.hasKey ? t("Kept") : t("The k= in its link"), "password");
+  key.className = "words remote-key";
+  key.setAttribute("aria-label", t("Key"));
+  key.oninput = () => { remoteDraft.key = key.value; };
+  const open = el("button", "text", t("Open"));
+  open.onclick = () => {
+    open.disabled = true;
+    api("remote", { url: addr.value, key: key.value })
+      .then((r) => { remoteState = r; remoteDraft = { url: null, key: "" }; renderRemote(true); })
+      .catch((e) => { open.disabled = false; status(remoteSays(e.message), "err"); });
+  };
+  for (const f of [addr, key]) f.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") open.onclick(); };
+  const tools = [key, open];
+  if (s.url) {
+    const forget = el("button", "text", t("Forget"));
+    forget.onclick = () => api("remote/forget", {})
+      .then((r) => { remoteState = r; remoteDraft = { url: null, key: "" }; renderRemote(true); })
+      .catch(statusTErr);
+    tools.push(forget);
+  }
+  box.replaceChildren(row(t("Address"), addr), row(t("Key"), ...tools));
 }

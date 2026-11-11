@@ -74,7 +74,9 @@ func holdsBounds(q provider.SubscriptionQuota, w provider.QuotaWindow, at time.T
 	// Discord); the models' own windows drawing on it, and a pool whose
 	// models aren't known, aren't.
 	pool := w.PoolWindow() && len(provider.PoolMembers(q.Windows, w)) > 0
-	if w.Unlimited || w.Aside && !pool || w.Family != "" || w.Pool != "" && !pool || math.IsNaN(w.Used) {
+	// a wallet (Balance) has no whole: its Used, on a capped account, is
+	// what it spent in the cap's period (provider's wallet_spend.go)
+	if w.Unlimited || w.Aside && !pool || w.Family != "" || w.Pool != "" && !pool || w.Balance != nil || math.IsNaN(w.Used) {
 		return time.Time{}, time.Time{}, "-"
 	}
 	if w.Used < provider.HoldsFloor {
@@ -265,6 +267,7 @@ func windowHolds(qs []provider.SubscriptionQuota, now, first time.Time, priceOf 
 			h.Routed.CacheWrite += int64(r.CacheWrite)
 			if pr := priceOf(r); pr != nil {
 				h.Routed.Cost += r.CostAt(*pr)
+				h.Routed.BaseCost += r.CostAt(baseRates(*pr))
 			} else {
 				unpriced[s] = true
 			}
@@ -303,10 +306,27 @@ func windowHolds(qs []provider.SubscriptionQuota, now, first time.Time, priceOf 
 		if !unpriced[s] && h.Routed.Cost > 0 {
 			h.Priced = true
 			h.Cost = h.Routed.Cost * scale
+			// told only where a premium was paid: the same figure twice
+			// would ask the reader to tell them apart for nothing
+			if math.Abs(h.Routed.Cost-h.Routed.BaseCost) > 1e-9 {
+				h.BaseCost = h.Routed.BaseCost * scale
+			} else {
+				h.Routed.BaseCost = 0
+			}
+		} else {
+			h.Routed.BaseCost = 0
 		}
 		w.Holds = h
 	}
 	return out
+}
+
+// baseRates is pr without its long-context tiers: every call at the base
+// rates however large its input (WindowHolds.BaseCost, #5861). A peak
+// hour's price is kept, as that is what the vendor's base rate is then.
+func baseRates(pr catalog.Price) catalog.Price {
+	pr.Tiers = nil
+	return pr
 }
 
 // apiPricer is each call's model at its API list price: its maker's, else

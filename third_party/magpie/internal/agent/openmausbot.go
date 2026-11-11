@@ -46,7 +46,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -56,6 +55,7 @@ import (
 	"github.com/yetone/magpie/internal/beat"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -105,7 +105,7 @@ const ombFleet = `{
 // ombModelID is the model id OpenMausBot takes for a Claude endpoint
 // (server/drivers/claude-model-extras.ts's CLAUDE_MODEL_ID); one other id
 // in the list makes it refuse the whole engine.
-var ombModelID = regexp.MustCompile(`(?i)^[a-z0-9][a-z0-9._:/-]*(?:\[1m\])?$`)
+var ombModelID = lazyre.New(`(?i)^[a-z0-9][a-z0-9._:/-]*(?:\[1m\])?$`)
 
 // ombRouting is the environment that picks Claude Code's endpoint and
 // sign-in (config.ts's CLAUDE_ROUTING_ENV): magpie's on its engine, so none
@@ -138,7 +138,7 @@ func openMausBot(home string) *Agent {
 	path := filepath.Join(dir, "config.json")
 	wired := func() bool { _, ok := edit.GetJSON(path, ombInstance); return ok }
 	return atomic(&Agent{
-		ID: "openmausbot", Name: "OpenMausBot", Icon: "openmausbot", Aliases: []string{"omb", "openmaus", "open-maus-bot"},
+		ID: "openmausbot", Name: "OpenMausBot", Icon: "openmausbot-color", Aliases: []string{"omb", "openmaus", "open-maus-bot"},
 		Dir: dir, Path: path,
 		detect: func() bool { return isDir(dir) || macBundle(ombApp) || ombWindowsApp() },
 		Notice: func() string {

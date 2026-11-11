@@ -334,8 +334,8 @@ func hermesFiles() []file {
 			}
 			mod := hermesTime(max(start, end, last, messageAt, usageAt))
 			if i, ok := at[sid]; ok {
-				if mod.After(out[i].mod) {
-					out[i].mod = mod
+				if mod.After(out[i].mod.Time()) {
+					out[i].mod = modOf(mod)
 				}
 				continue
 			}
@@ -346,7 +346,7 @@ func hermesFiles() []file {
 				key:      "hermes:" + id,
 				path:     path + "#" + url.QueryEscape(sid),
 				main:     true,
-				mod:      mod,
+				mod:      modOf(mod),
 				readOnly: true,
 				more: &fileMore{
 					sid:    sid,
@@ -629,7 +629,7 @@ func parseHermes(f file) *state {
 			s.Last = at
 		}
 	}
-	s.DBRevision = f.m().rev
+	s.own().DBRevision = f.m().rev
 	return s
 }
 

@@ -14,11 +14,17 @@ import (
 
 // identityHeaders are what a proxy or tunnel in front of magpie says of
 // the caller: where it is, and with Tailscale Serve who (the user's
-// email, name and picture).
+// email, name and picture). A LazyCat box's ingress (lzc-ingress, in
+// front of every app on the box) says who too: the box account signed
+// in, its role and groups, the device and the sign-in's ticket, as the
+// box's own docs and a request to a probe app on a box (lzcos 1.6.2)
+// name them.
 var identityHeaders = []string{
 	"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP", "Via",
 	"Cf-Connecting-IP", "Cf-Ipcountry", "True-Client-IP",
 	"Tailscale-User-Login", "Tailscale-User-Name", "Tailscale-User-Profile-Pic",
+	"X-Forwarded-By", "X-HC-User-ID", "X-HC-User-Role", "X-HC-User-Groups", "X-HC-User-Ticket", "X-HC-Source",
+	"X-HC-Login-Time", "X-HC-Device-ID", "X-HC-Device-PeerID", "X-HC-Device-Version", "X-HC-Original-Host",
 }
 
 // identityHeadersOn is a request's headers: every identity header, and
@@ -128,5 +134,32 @@ func TestPassthroughDropsProxyIdentity(t *testing.T) {
 	}
 	if l := leakedIdentity(f.Seen); len(l) > 0 {
 		t.Errorf("mcp: the MCP server was told %v", l)
+	}
+}
+
+// The translated routes build the vendor's request themselves, so none of
+// the caller's headers should reach it, a LazyCat box's X-HC-* among them:
+// a Chat completion and an Anthropic Messages turn to a Chat vendor.
+func TestTranslatedRoutesDropProxyIdentity(t *testing.T) {
+	fresh(t)
+	t.Setenv("MAGPIE_TRUST_PROXY", "1")
+	up := newVendorAPI(t)
+	saveVendor(t, provider.Provider{ID: "vendor", Name: "Vendor", Chat: up.URL + "/v1", Key: "vk", Models: []string{"m"}})
+	h := nativeServe(t)
+	for _, c := range []struct{ path, body string }{
+		{"/v1/chat/completions", `{"model":"vendor/m","messages":[{"role":"user","content":"hi"}]}`},
+		{"/v1/messages", `{"model":"vendor/m","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`},
+	} {
+		hdr := append(identityHeadersOn(), "Authorization", "Bearer "+Token)
+		nativeDo(h, "POST", "http://127.0.0.1:3425"+c.path, "127.0.0.1:50000", c.body, hdr...)
+	}
+	seen := up.asked()
+	if len(seen) == 0 {
+		t.Fatal("the vendor was never asked")
+	}
+	for _, s := range seen {
+		if l := leakedIdentity(s.header); len(l) > 0 {
+			t.Errorf("%s: the vendor was told %v", s.uri, l)
+		}
 	}
 }

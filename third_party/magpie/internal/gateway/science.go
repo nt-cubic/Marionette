@@ -4,12 +4,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 )
@@ -56,7 +56,7 @@ func isClaudeScience(r *http.Request) bool {
 
 // scienceSlug is a name Claude Science takes for an internal model's id
 // and leaves out of its picker (kor in its bundle).
-var scienceSlug = regexp.MustCompile(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$`)
+var scienceSlug = lazyre.New(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$`)
 
 // scienceName is a model's name as Claude Science is shown it: a slug's
 // first letter in upper case, which its picker keeps.
@@ -84,7 +84,7 @@ func scienceObject(e provider.Entry, name string) map[string]any {
 // picked for it (provider.CatalogFor) by its alias, named as Claude
 // Desktop's are (desktopNames), no two alike.
 func scienceModels(entries []provider.Entry) []map[string]any {
-	names := desktopNames(entries)
+	names := desktopNames(ScienceID, entries)
 	data := make([]map[string]any, 0, len(entries))
 	for i, e := range entries {
 		data = append(data, scienceObject(e, names[i]))

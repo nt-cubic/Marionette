@@ -115,8 +115,8 @@ func antigravityFilesIn(dir string) []file {
 		}
 		if fi, err := os.Stat(f.path + "-wal"); err == nil {
 			f.size += fi.Size()
-			if fi.ModTime().After(f.mod) {
-				f.mod = fi.ModTime()
+			if fi.ModTime().After(f.mod.Time()) {
+				f.mod = modOf(fi.ModTime())
 			}
 		}
 		if r, ok := rows[id]; ok {
@@ -367,9 +367,9 @@ func parseAntigravity(f file) *state {
 	if err != nil {
 		return &state{}
 	}
-	s := &state{Size: f.size, Mod: f.mod.UnixNano(), DBRevision: f.m().rev}
+	s := &state{Size: f.size, Mod: f.mod.UnixNano(), StateMore: moreOf(StateMore{DBRevision: f.m().rev})}
 	if r := f.m().agy; r != nil {
-		s.Named, s.Title, s.Cwd = title(r.Title), title(r.Preview), r.Cwd
+		s.own().Named, s.Title, s.Cwd = title(r.Title), title(r.Preview), r.Cwd
 	}
 	for _, c := range calls {
 		s.saw(c.at, true)

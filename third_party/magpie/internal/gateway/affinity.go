@@ -32,7 +32,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -40,6 +39,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/steady"
 )
@@ -88,7 +88,7 @@ func coldAfter(p provider.Provider) time.Duration {
 	if p.Account != nil && p.Account.Agent == "codex" {
 		return chatGPTCold
 	}
-	if p.Host() == deepseekHost {
+	if p.VendorHost() == deepseekHost {
 		return deepseekCold
 	}
 	return cacheCold
@@ -117,7 +117,9 @@ type Affinity struct {
 	// again at a new turn: backToFirst), "back" (a member of a group
 	// routed any other way stood in for one listed ahead of it that
 	// couldn't take the conversation, and a member ahead is ready first
-	// at a new turn: backFromStandIn), "credits" (a Codex account gone
+	// at a new turn: backFromStandIn), "hours" (a group's rule by hours
+	// sent its last turn there and they are over: RuleHit.Ended),
+	// "credits" (a Codex account gone
 	// onto its credits answered it, set to spend them only after
 	// everything else, and one not on its credits leads: lastBehind),
 	// "busy" (its plugin says the model is busier than settings.BusyLoad
@@ -394,11 +396,22 @@ func turnOf(from provider.Protocol, body []byte) (turn int, within bool) {
 // todo nudge, an agent list, Codex's context — begins none: after an
 // answer it carries the turn on, and right after the user's own message
 // it leaves that as it was.
+//
+// An image beside the turn's tool results is the result's, as the bridge
+// tells it (match): a client whose tool messages hold text only sends it
+// in a user message after (pi's "Attached image(s) from tool result:").
+// It carries the turn on, a turn of the user's own begun none (#5767):
+// counted one, the router re-decided the conversation's account at every
+// image result, and the bridge let the waiting run go under the other
+// owner ("tool results account changed"), a new Claude Code told the
+// whole conversation, the prompt cache rewritten each time.
 func turnIn(req *Request) (turn int, within bool) {
-	answered := false
+	answered, results := false, false
 	for _, m := range req.Messages {
 		if m.Role == "assistant" {
 			answered = true
+			results = false
+			continue
 		}
 		if m.Role != "user" {
 			continue
@@ -414,6 +427,12 @@ func turnIn(req *Request) (turn int, within bool) {
 		}
 		switch {
 		case result:
+			within = true
+			results = true
+		case results && withImages(m):
+			// the words beside the images are their caption, as match
+			// reads them; the user's words in a message of no images
+			// begin a turn (saidWithResults)
 			within = true
 		case said:
 			turn++
@@ -462,6 +481,7 @@ func strictKeep(scope, mode string, in http.Header, body []byte, cs []candidate,
 		}
 		w := pl.left[i]
 		w.Unlisted, w.Capped, w.CapBack = false, 0, nil
+		w.CapAmount, w.CapCount, w.CapUnit = 0, 0, ""
 		pl.left = slices.Delete(slices.Clone(pl.left), i, i+1)
 		back, order = append(back, c), append(order, w)
 	}
@@ -541,7 +561,7 @@ func stickKey(scope string, in http.Header, body []byte) string {
 // more for each 4 MB Codex request in flight. inOrder: the request is to
 // a routing group, or a provider's keys or accounts, set to In order,
 // whose order the user chose (backToFirst).
-func affine(scope, mode string, rotate, spread, inOrder bool, in http.Header, from provider.Protocol, body, written []byte, cs []candidate, pl planned) ([]candidate, planned, *Affinity, string) {
+func affine(scope, mode string, rotate, spread, inOrder, hoursOver bool, in http.Header, from provider.Protocol, body, written []byte, cs []candidate, pl planned) ([]candidate, planned, *Affinity, string) {
 	key := stickKey(scope, in, body)
 	a := &Affinity{Mode: mode}
 	a.Turn, a.Within = turnOf(from, written)
@@ -649,6 +669,15 @@ func affine(scope, mode string, rotate, spread, inOrder bool, in http.Header, fr
 		// its cache as before; within a turn it stays, and Stays:
 		// Session or Strict, the user's own, keep it where it is
 		a.Why = "back"
+	case !a.Within && hoursOver && !rotate && mode == "" && at > 0:
+		// a rule's hours sent the conversation's last turn here, and they
+		// are over (RuleHit.Ended; MinglunZhu on X: a cheaper provider at
+		// night, the usual one by day): the new turn goes where the group
+		// routes it, whatever this one cached, or a conversation begun at
+		// night stayed on the night's provider all day by its cache.
+		// Within a turn it stays; Stays: Session and Strict, the user's
+		// own, keep it where it is
+		a.Why = "hours"
 	case at > 0 && pl.order[at].Known && pl.order[at].Used >= provider.SpentShareOf(cs[at].p.Routing) && !pl.order[at].CreditsFirst:
 		// all but used up, and put behind another: first still — the
 		// one key or account it has (#1016), or every one used up — it
@@ -1152,7 +1181,7 @@ func unanswered(key string, c candidate) {
 // blob", which names no item and says nothing of encrypted content,
 // where the #3392 shaping (xaiBody's) never runs because the relay's
 // host isn't api.x.ai.
-var foreignReasoning = regexp.MustCompile(`(?i)invalid_encrypted_content|invalid[ _]encrypted[ _](summary|content)|encrypted[ _]content.{0,80}could not be (verified|decrypted)|could not (decrypt|verify).{0,40}encrypted[ _]content|could not (decode|decrypt).{0,20}compaction[ _]blob`)
+var foreignReasoning = lazyre.New(`(?i)invalid_encrypted_content|invalid[ _]encrypted[ _](summary|content)|encrypted[ _]content.{0,80}could not be (verified|decrypted)|could not (decrypt|verify).{0,40}encrypted[ _]content|could not (decode|decrypt).{0,20}compaction[ _]blob`)
 
 // refusedSeals remembers, per conversation and the key or account that
 // refused it, what another one sealed: its reasoning, and the sealed copy

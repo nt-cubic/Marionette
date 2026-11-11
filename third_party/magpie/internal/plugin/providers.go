@@ -28,12 +28,23 @@ import (
 type Method struct {
 	Type  string `json:"type"`
 	Label string `json:"label"`
+	// Labels is Label by the window's language ("zh", "zh-TW", "ja",
+	// "de"), magpie's own field beside OpenCode's (host.js byLang)
+	Labels map[string]string `json:"labels,omitempty"`
 	// Placeholder is the hint an "api" method gives in its key's field
 	// (magpie's own field: OpenCode's says "API key")
 	Placeholder string `json:"placeholder,omitempty"`
 	// Keyless skips personal-key entry; authorize supplies the credential.
 	Keyless bool `json:"keyless,omitempty"`
+	// KeyAsked is an "api" method whose own prompts ask its key: its
+	// authorize turns their answers into it (host.js keyAsked), so no key
+	// is asked beside them.
+	KeyAsked bool `json:"keyAsked,omitempty"`
 }
+
+// NoKey is whether an "api" method is signed in to with no key of
+// magpie's asking: keyless, or its prompts ask the key.
+func (m Method) NoKey() bool { return m.Keyless || m.KeyAsked }
 
 // KeyTitle is what an "api" method's key is asked as: its label, as
 // OpenCode's dialog titles it, unless that only says "API key" (or
@@ -143,6 +154,9 @@ type Provider struct {
 	// Checkin says the plugin presses its vendor's daily check-in for each
 	// account (auth.checkin)
 	Checkin bool `json:"checkin,omitempty"`
+	// Calls says the plugin lists each account's calls made outside
+	// magpie, for the Usage page (auth.calls)
+	Calls bool `json:"calls,omitempty"`
 	// Renews says the plugin renews its accounts' sign-ins through magpie
 	// (auth.refresh) and lets the gateway's magpie do it in the background
 	// as each comes due (auth.keepAlive not false); RenewLead is how long
@@ -921,14 +935,19 @@ func SignedIn(provider string) bool {
 
 // Prompt is a question a sign-in method asks before it starts.
 type Prompt struct {
-	Type        string `json:"type"` // text, select, password (text typed unseen, #1982)
-	Key         string `json:"key"`
-	Message     string `json:"message"`
-	Placeholder string `json:"placeholder,omitempty"`
+	Type    string `json:"type"` // text, select, password (text typed unseen, #1982)
+	Key     string `json:"key"`
+	Message string `json:"message"`
+	// Messages, an option's Labels and Hints are those words by the
+	// window's language, as Method.Labels
+	Messages    map[string]string `json:"messages,omitempty"`
+	Placeholder string            `json:"placeholder,omitempty"`
 	Options     []struct {
-		Label string `json:"label"`
-		Value string `json:"value"`
-		Hint  string `json:"hint,omitempty"`
+		Label  string            `json:"label"`
+		Value  string            `json:"value"`
+		Hint   string            `json:"hint,omitempty"`
+		Labels map[string]string `json:"labels,omitempty"`
+		Hints  map[string]string `json:"hints,omitempty"`
 	} `json:"options,omitempty"`
 }
 
@@ -1242,6 +1261,11 @@ type UsageWindow struct {
 	Models    []string `json:"models"`
 	NotModels []string `json:"notModels"`
 	Aside     bool     `json:"aside"`
+	// Pool is the group of models that share one allowance, and Family the
+	// model family a per-model window belongs to, as Antigravity's quota
+	// says them (QuotaWindow.Pool, QuotaWindow.Family)
+	Pool   string `json:"pool"`
+	Family string `json:"family"`
 	// RunsOutAt (RFC 3339) is when the soonest credits left in the window
 	// are lost, and RunsOut how many, when the vendor's credits expire
 	// apart from the window's reset (WorkBuddy's packages)
@@ -1271,6 +1295,32 @@ func AccountCheckin(ctx context.Context, provider, account string) (Checkin, err
 	var c Checkin
 	err := Call(ctx, "checkin", map[string]any{"provider": provider, "account": account, "proxy": proxyOf(ctx)}, &c)
 	return c, err
+}
+
+// OutsideCall is one call an account made outside magpie, as the plugin's
+// auth.calls said it: RID is the vendor's id of it, T its time (epoch ms),
+// In the input tokens with the cache apart, Cost its USD price as the
+// vendor gave it (nil when not said), Session the conversation it was in.
+type OutsideCall struct {
+	RID        string   `json:"rid"`
+	T          int64    `json:"t"`
+	Model      string   `json:"model"`
+	In         int64    `json:"in"`
+	Out        int64    `json:"out"`
+	CacheRead  int64    `json:"cache_read"`
+	CacheWrite int64    `json:"cache_write"`
+	Cost       *float64 `json:"cost"`
+	Session    string   `json:"session"`
+}
+
+// AccountCalls asks the plugin for account's calls of provider made
+// outside magpie, from since on.
+func AccountCalls(ctx context.Context, provider, account string, since time.Time) ([]OutsideCall, error) {
+	var r struct {
+		Calls []OutsideCall `json:"calls"`
+	}
+	err := Call(ctx, "calls", map[string]any{"provider": provider, "account": account, "proxy": proxyOf(ctx), "since": since.UnixMilli()}, &r)
+	return r.Calls, err
 }
 
 // AccountUsage asks the plugin for account's usage of provider.

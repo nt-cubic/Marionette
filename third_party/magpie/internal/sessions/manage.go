@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 )
 
@@ -155,13 +156,16 @@ func agentCounts(all []file) []AgentCount {
 // ListAgent is every session of one agent, the most recently active first,
 // with no limit; one nothing was said in is listed too, to be cleared away.
 func ListAgent(agent string) []Managed {
+	alias := provider.UsageAlias()
 	storeMu.RLock()
 	defer storeMu.RUnlock()
 	mu.Lock()
 	defer mu.Unlock()
 	loadCache()
 	defer useDBs()()
-	return listAgent(agent, allFiles())
+	out := listAgent(agent, allFiles())
+	aliasManaged(out, alias)
+	return out
 }
 
 // NativeIDs are the ids of every session the agents named keep themselves,
@@ -196,6 +200,7 @@ type ManageView struct {
 // Only native's agents and the one picked are read: a change to another
 // agent's sessions waits for a page that shows it (#2776).
 func Manage(native map[string]bool, pick func([]AgentCount, map[string]map[string]bool) string) ManageView {
+	alias := provider.UsageAlias()
 	storeMu.RLock()
 	defer storeMu.RUnlock()
 	mu.Lock()
@@ -207,6 +212,7 @@ func Manage(native map[string]bool, pick func([]AgentCount, map[string]map[strin
 	v.Agent = pick(v.Agents, v.Native)
 	if v.Agent != "" {
 		v.Sessions = listAgentWith(v.Agent, all, true)
+		aliasManaged(v.Sessions, alias)
 	}
 	return v
 }
@@ -222,10 +228,13 @@ func readFor(want, all []file, quick bool) (pending map[string]bool, done func()
 }
 
 // idInFile says which agents' session ids are read from inside the
-// session's file, not taken from its name (as assemble does).
+// session's file, not taken from its name (as assemble does). ZCode's are:
+// its database rows are the files, a fork's and a subagent's filed under
+// the session they ran in (ocRoots), which a request names by their own ids
+// (subIDs, zcodeBareID).
 func idInFile(agent string) bool {
 	switch agent {
-	case "codex", "pi", "raft", "cindy", "omp", "dsh", "grok", "droid":
+	case "codex", "pi", "raft", "cindy", "omp", "dsh", "grok", "droid", "zcode":
 		return true
 	}
 	return false
@@ -257,10 +266,13 @@ func nativeIDsWith(agents map[string]bool, all []file, quick bool) map[string]ma
 	for _, fs := range groups {
 		id := sessionID(fs)
 		if a := fs[0].agent; agents[a] {
-			out[a][id] = true
-			// its subagents' calls are counted in it (subIDs)
-			for _, sub := range subIDs(fs, id) {
-				out[a][sub] = true
+			// by every id a request can name it (requestIDs, as
+			// GatewayKeys), its subagents' too: their calls are counted in
+			// it (subIDs)
+			for _, sid := range append([]string{id}, subIDs(fs, id)...) {
+				for _, rid := range requestIDs(a, sid) {
+					out[a][rid] = true
+				}
 			}
 		}
 		if fs[0].agent == "raft" && agents["pi"] {
@@ -320,6 +332,7 @@ func listAgentWith(agent string, all []file, quick bool) []Managed {
 	}
 	if agent == "codex" {
 		codexProviders(out, groups)
+		out = keptSubagents(out)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if !out[i].Last.Equal(out[j].Last) {
@@ -328,6 +341,35 @@ func listAgentWith(agent string, all []file, quick bool) []Managed {
 		return out[i].ID < out[j].ID
 	})
 	return out
+}
+
+// keptSubagents drops a Codex subagent thread whose parent thread is not
+// listed: deleting a thread in Codex leaves its review, title and other
+// subagent rollouts behind, and each was a row of its own, titled by the
+// prompt Codex asked it (the guardian's "The following is the Codex agent
+// history whose request action you are assessing…", flandern). Their calls
+// are still counted by Usage.
+func keptSubagents(out []Managed) []Managed {
+	ids := make(map[string]bool, len(out))
+	for _, m := range out {
+		ids[m.ID] = true
+	}
+	for {
+		kept := make([]Managed, 0, len(out))
+		dropped := false
+		for _, m := range out {
+			if m.Role == codexRoleSubagent && !ids[m.ParentSession] {
+				delete(ids, m.ID)
+				dropped = true
+				continue
+			}
+			kept = append(kept, m)
+		}
+		out = kept
+		if !dropped {
+			return out
+		}
+	}
 }
 
 // listed fills in what assemble leaves out of a session nothing was said
@@ -593,7 +635,7 @@ func sessionPaths(agent, id string, fs []file) []string {
 		}
 	}
 	if agent == "claude" {
-		dir := ClaudeDir()
+		dir := claudeDirOf(fs[0].path)
 		if fs[0].m().wsl != "" {
 			// the distro's own ~/.claude
 			if dir = wslHomeOf(fs[0].m().wsl); dir == "" {
@@ -847,4 +889,13 @@ func Restore(key string) (Trashed, error) {
 	os.RemoveAll(dir)
 	wslRelistNow(t.Items)
 	return t, nil
+}
+
+// claudeDirOf is the Claude Code folder a session file at path is kept in
+// (<dir>/projects/<project>/<id>.jsonl), ClaudeDir for one elsewhere.
+func claudeDirOf(path string) string {
+	if p := filepath.Dir(filepath.Dir(path)); filepath.Base(p) == "projects" {
+		return filepath.Dir(p)
+	}
+	return ClaudeDir()
 }

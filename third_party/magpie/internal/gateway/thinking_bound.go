@@ -5,11 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/tidwall/gjson"
 
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -38,10 +39,10 @@ import (
 // boundRefusal is Claude's refusal of a thinking block it didn't sign for
 // this conversation or account: the signature's wording, the newer
 // binding's, and a redacted_thinking block's.
-var boundRefusal = regexp.MustCompile("(?i)invalid `?signature`? in `?thinking`? block|bound to a different conversation|not created in this conversation|invalid data in `?redacted_thinking`? block")
+var boundRefusal = lazyre.New("(?i)invalid `?signature`? in `?thinking`? block|bound to a different conversation|not created in this conversation|invalid data in `?redacted_thinking`? block")
 
 // boundAt is where the refusal says the block is: messages.<m>.content.<b>.
-var boundAt = regexp.MustCompile(`messages\.(\d+)\.content\.(\d+)`)
+var boundAt = lazyre.New(`messages\.(\d+)\.content\.(\d+)`)
 
 // thinkingRefusedMost bounds the signatures remembered; past it the
 // memory starts again, and a conversation still going is mended by one
@@ -179,7 +180,7 @@ func (s *Server) refuseBoundThinking(p provider.Provider, errBody, body []byte) 
 	if !boundRefusal.Match(errBody) {
 		return false
 	}
-	sent := withoutForeignThinking(p, s.withoutRefusedThinking(p, body))
+	sent := s.withoutForeignThinking(p, s.withoutRefusedThinking(p, body))
 	msgs := gjson.GetBytes(sent, "messages").Array()
 	// from the block named, or from the start when it names none, or one
 	// that isn't a thinking block in what was sent
@@ -218,26 +219,58 @@ func (s *Server) refuseBoundThinking(p provider.Provider, errBody, body []byte) 
 // Claude refuses each one, 400 "messages.1.content.0: Invalid `signature`
 // in `thinking` block" (checked on 2026-11-03), which forward mends only
 // where the refusal reaches it as Claude's own 400, and with a request
-// spent. withoutForeignThinking leaves those blocks out of a request to an
-// upstream serving Claude before it sees them: Claude's own signatures are
-// base64 (3,000 of Claude Code's, 800 characters and longer), never a
-// UUID. A block with no signature Claude takes (checked the same day), so
-// it goes as it was, and so does every other vendor's signature, which
-// refuseBoundThinking still mends. Every other upstream, DeepSeek's among
-// them, gets the body byte for byte.
+// spent. A conversation that ran on a model magpie translates for (Grok
+// on Cursor's plugin, a Chat or Responses vendor) holds thinking blocks
+// signed empty: magpie gives every block a client gets a signature, and
+// one it has none for is "" (thinking_signature.go). Claude Code keeps
+// them through a compaction and sends them on to whatever the group
+// picks next (citricdu on Discord: Grok 4.7, then Claude Opus 5.5 on
+// Kiro, which answered 13 turns in a row with a bare
+// invalid_request_error that refuseBoundThinking can't read; the same
+// request without the block was answered). A block with no signature
+// can't be Claude's own, as Claude signs every block it makes, and where
+// it sits in a tool loop Claude checks it.
+//
+// withoutForeignThinking leaves both out of a request to an upstream
+// serving Claude (api.anthropic.com, or a claude- model on any route:
+// a relay, Bedrock's and Vertex AI's ids, a plugin such as Kiro's) before
+// it sees them, and an assistant message left with nothing goes too. Its
+// text, tool calls and the results after them stay. Claude's own
+// signatures (base64, 3,000 of Claude Code's 800 characters and longer)
+// go as they were, as do redacted_thinking and every other vendor's
+// signature, which refuseBoundThinking still mends. Every other upstream,
+// DeepSeek's among them (which wants its thinking back and takes an empty
+// signature), gets the body byte for byte, and so does a model that asked
+// for its tool turns' thinking back (thinking_back.go: DeepSeek behind a
+// name that doesn't say so), whose filled-in blocks are signed empty.
+func (s *Server) withoutForeignThinking(p provider.Provider, body []byte) []byte {
+	if !s.fits(p.ID, thinkingBackNeeded(modelOf(body)), provider.Anthropic) {
+		return body
+	}
+	return withoutForeignThinking(p, body)
+}
+
 func withoutForeignThinking(p provider.Provider, body []byte) []byte {
-	if !bytes.Contains(body, []byte(`"signature"`)) {
+	if !bytes.Contains(body, []byte(`"signature"`)) && !thinkingTyped.Match(body) {
 		return body
 	}
 	model := modelOf(body)
-	if anthropicReplaysThinking(p.Host(), model) || p.Host() != "api.anthropic.com" && !anthropicModel.MatchString(model) {
+	if anthropicReplaysThinking(p.VendorHost(), model) || p.VendorHost() != "api.anthropic.com" && !anthropicModel.MatchString(model) {
 		return body
 	}
 	return withoutThinkingBlocks(body, func(_, _ int, b gjson.Result) bool {
-		return b.Get("type").String() == "thinking" && deepseekSignature.MatchString(b.Get("signature").String())
+		if b.Get("type").String() != "thinking" {
+			return false
+		}
+		sig := b.Get("signature").String()
+		return strings.TrimSpace(sig) == "" || deepseekSignature.MatchString(sig)
 	})
 }
 
+// thinkingTyped is a body with a thinking block in it, for one that says
+// no signature at all.
+var thinkingTyped = lazyre.New(`"type"\s*:\s*"thinking"`)
+
 // deepseekSignature is the signature DeepSeek's Anthropic endpoint gives
 // its thinking: the reply's id, a UUID.
-var deepseekSignature = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+var deepseekSignature = lazyre.New(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)

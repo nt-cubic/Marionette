@@ -187,7 +187,7 @@ code { font: var(--code-style, normal) var(--code-weight, 400) 11.5px var(--code
    they read a size bigger than a line logo beside them, so they are drawn at
    the size Alma's and Cindy's tiles have of their own. icon-tile.test.cjs
    measures every file in icons/ and keeps this list whole. */
-.ic:is([data-icon="aihubmix-color"], [data-icon="atomcode"], [data-icon="cherryin-color"], [data-icon="codebuddy-color"], [data-icon="codex-color"], [data-icon="crush"], [data-icon="geminicli-color"], [data-icon="hanako"], [data-icon="hunyuan-color"], [data-icon="kilo"], [data-icon="kimi-code-desktop"], [data-icon="kiro-color"], [data-icon="lody"], [data-icon="mistermorph-color"], [data-icon="mlx-serve"], [data-icon="monica-color"], [data-icon="penguin-color"], [data-icon="phala-color"], [data-icon="pipellm-color"], [data-icon="qoder"], [data-icon="snow"], [data-icon="targon-color"], [data-icon="typesafe"], [data-icon="workbuddy-color"], [data-icon="yuanbao-color"], [data-icon="zcode"], [data-icon="zoo-code"]) > * { width: 82%; height: 82%; }
+.ic:is([data-icon="aihubmix-color"], [data-icon="atomcode"], [data-icon="avibe"], [data-icon="cherryin-color"], [data-icon="codebuddy-color"], [data-icon="codex-color"], [data-icon="crush"], [data-icon="geminicli-color"], [data-icon="hanako"], [data-icon="hunyuan-color"], [data-icon="kilo"], [data-icon="kimi-code-desktop"], [data-icon="kiro-color"], [data-icon="lody"], [data-icon="mistermorph-color"], [data-icon="mlx-serve"], [data-icon="monica-color"], [data-icon="nanobot-color"], [data-icon="openbot"], [data-icon="penguin-color"], [data-icon="phala-color"], [data-icon="pipellm-color"], [data-icon="qoder"], [data-icon="snow"], [data-icon="targon-color"], [data-icon="typesafe"], [data-icon="workbuddy-color"], [data-icon="yuanbao-color"], [data-icon="zcode"], [data-icon="zoo-code"]) > * { width: 82%; height: 82%; }
 .ic.generic { color: var(--muted); }
 /* maskSpan's shelf: a hidden user of every mask picture loaded, so a logo drawn again paints at once (#1847) */
 .mask-shelf { position: fixed; top: 0; left: 0; width: 0; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
@@ -339,24 +339,43 @@ body:not(.side-nav) #nav button[data-view="groups"], body.side-nav .rt-togroups 
 .top.packed .seg { min-width: 0; flex: 0 1 auto; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
 .top.packed .seg::-webkit-scrollbar { display: none; }
 /* magpie web on a phone, or a browser as narrow (phoneWeb): the magpie and
-   the icons in a row, the tabs at their size in a row of their own under
-   them, sliding sideways when they don't fit (they were squeezed into the
-   room between, too small to read or tap) */
+   the icons in the header, the pages a tab bar at the foot, as an iPhone
+   app's: each tab its mark over its word, five at most, the fifth More
+   when there are more (phonetabs.js). A strip that slid sideways hid the
+   pages past its edge (geraldpppppp on X) */
 @media (max-width: 760px), (pointer: coarse) and (max-width: 1024px) {
+  body.web:not(.panel) { --tabbar: calc(50.5px + env(safe-area-inset-bottom)); padding-bottom: var(--tabbar); }
   body.web .top {
-    height: auto; min-height: 48px; flex-wrap: wrap; gap: 4px 8px;
-    padding: calc(6px + env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 8px max(12px, env(safe-area-inset-left));
+    height: auto; min-height: 48px; gap: 4px 8px;
+    padding: calc(6px + env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 4px max(12px, env(safe-area-inset-left));
   }
   body.web .top .brand, body.web .top .actions { min-height: 40px; align-items: center; }
-  body.web .top #nav {
-    position: relative; left: auto; top: auto; transform: none;
-    order: 3; flex: 0 0 100%; min-width: 0; max-width: 100%;
-    overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: none;
+  body.web:not(.panel) .top #nav {
+    position: fixed; z-index: 15; left: 0; right: 0; top: auto; bottom: 0; transform: none;
+    display: flex; height: var(--tabbar); padding: 0 max(4px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(4px, env(safe-area-inset-left));
+    border-radius: 0; border-top: .5px solid var(--line);
+    background: color-mix(in srgb, var(--bg) 86%, transparent);
+    -webkit-backdrop-filter: saturate(1.6) blur(20px); backdrop-filter: saturate(1.6) blur(20px);
   }
-  body.web .top #nav::-webkit-scrollbar { display: none; }
-  body.web .top #nav button { flex: none; height: 40px; padding: 0 14px; font-size: 14px; }
+  body.web:not(.panel) .top #nav > :is(.thumb, .tb-over), body.web:not(.side-nav, .panel) .top #nav > [data-view="groups"] { display: none; }
+  body.web:not(.panel) .top #nav > button {
+    flex: 1 1 0; min-width: 0; height: 50px; padding: 5px 2px 3px; border-radius: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+    font-size: 10.5px; font-weight: 500; line-height: 1.1; color: var(--muted);
+  }
+  body.web:not(.panel) .top #nav > button.on { color: var(--fg); }
+  body.web:not(.panel) .top #nav > button > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  body.web:not(.panel) .top #nav .nav-ic { display: block; flex: none; width: 23px; height: 23px; }
+  body.web:not(.panel) .top #nav > button.has-dot::after { top: 5px; right: calc(50% - 17px); }
   body.web .top .actions { gap: 4px; }
+  /* a status line comes up over the bar, not under it */
+  html body.web:not(.panel) :is(.foot .status:not(:empty):not(.lift), .status.lift) { bottom: calc(var(--tabbar) + 10px); }
 }
+/* More's menu: each page with its tab's mark */
+.nav-more-menu .pm-head { display: none; }
+.nav-more-menu .pm-item { align-items: center; gap: 10px; padding: 9px 10px; }
+.nav-more-menu .nav-ic { display: block; flex: none; width: 20px; height: 20px; color: var(--fg-2); }
+.nav-more-menu .pm-name { font-size: 14px; }
 @keyframes update-in { from { opacity: 0; max-width: 0; margin-right: 0; padding: 0; } }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -394,7 +413,16 @@ body.side-drag, body.side-drag * { cursor: col-resize !important; user-select: n
    the button and the magpie beside them, level with them (see .top above) */
 body.window.mac .side-top { height: calc(50px / var(--zoom, 1)); padding: calc(2px / var(--zoom, 1)) 0 0 calc(96px / var(--zoom, 1)); }
 .side-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0 10px 10px; }
-.side-foot { flex: none; max-height: 55%; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; padding: 8px 10px 10px; border-top: .5px solid var(--line-2); }
+/* laid from its end, Settings' button and the gateway's line kept where
+   they are as Settings' tabs open over the button and the foot grows up
+   (jen_celeus on X), and a foot too short for them scrolls from its end.
+   The order is the reading order, top down: tabs, Settings, the gateway */
+.side-foot { flex: none; max-height: 55%; overflow-y: auto; display: flex; flex-direction: column-reverse; gap: 1px; padding: 8px 10px 10px; border-top: .5px solid var(--line-2); }
+/* a foot too short for them scrolls, its rows kept whole */
+.side-foot > * { flex: none; }
+.side-foot > .side-gw { order: 0; }
+.side-foot > #prefs { order: 1; }
+.side-foot > .nav-sub { order: 2; }
 /* a short window's sidebar keeps no bar beside its pages: a thin one is laid
    over them while they scroll and fades once they stop, as a Mac's overlay
    scroll bar does (app.js sideBars), the same in WebKit, WebView2 and
@@ -437,11 +465,21 @@ body.side-nav #nav button.has-dot::after { top: 50%; right: 10px; margin-top: -3
 /* the open page's tabs, under it on a thin line */
 .nav-sub { position: relative; display: flex; flex-direction: column; gap: 1px; margin: 2px 0 6px 16px; padding-left: 8px; }
 .nav-sub.moving { overflow: hidden; }
+/* a section's name over its rows, as a Mac source list's */
+.nav-sl { position: relative; z-index: 1; padding: 8px 10px 2px; font-size: 11px; font-weight: 500; letter-spacing: .04em; color: var(--muted); white-space: nowrap; }
+.nav-sl:first-of-type { padding-top: 2px; }
+/* Settings' tabs, over its button at the sidebar's foot (app.js navSubs),
+   close to the button they come from; the foot takes more of a short
+   sidebar while they show */
+.side-foot > .nav-sub { margin: 6px 0 2px 16px; }
+.side-foot:has(> .nav-sub) { max-height: 80%; }
 .nav-sub::before { content: ""; position: absolute; left: 0; top: 3px; bottom: 3px; width: 1px; background: var(--line); }
 /* rows keep their size while the list unrolls or folds: squeezed, a strip
    drawn again then (Installed gets its count) marked the selection a third
    of a row up, over Discover (#1787) */
 .nav-sub > button { position: relative; z-index: 1; flex: none; display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 6px; font-size: 12.5px; color: var(--ctl-fg); text-align: left; white-space: nowrap; transition: color .2s var(--ease); }
+.nav-sub > button > :is(svg, .nav-s-ic) { flex: none; width: 14px; height: 14px; margin-left: -2px; color: var(--muted); transition: color .2s var(--ease); }
+.nav-s:hover:not(.cur) > svg, .nav-s.cur > svg { color: inherit; }
 .nav-sub > button > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .nav-sub > button > em { margin-left: auto; font-style: normal; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 /* an update waiting, in the sidebar's dot colour, as the words the dot means */
@@ -931,6 +969,10 @@ body.window .field.solo { grid-column: auto; }
 .field .chev { color: var(--faint); display: inline-flex; margin-left: auto; padding-left: 1px; }
 .field:hover .chev, .field.open .chev { color: var(--muted); }
 .field.flash, .subscription-card.flash, .pq-card.flash, .row.pref.flash { animation: flash 1.2s ease-out; }
+/* a lit row's ring keeps its corners: the list's rounded clip cut them off
+   (the owner, 11-10), so it is rounded as the list is inside its border */
+.row.pref.flash { border-radius: 11px; }
+body.panel .row.pref.flash { border-radius: 10px; }
 @keyframes flash { 0%, 35% { box-shadow: inset 0 0 0 1px var(--green); background: var(--green-soft); } 100% {} }
 
 /* ---- usage ---------------------------------------------------------------- */
@@ -957,6 +999,7 @@ body.window .field.solo { grid-column: auto; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) :is(.subscription-card, .pq-card) { --muted: inherit; } }
 :root[data-theme="dark"] :is(.subscription-card, .pq-card) { --muted: inherit; }
 .subscription-head { display: flex; align-items: center; gap: 7px; margin-bottom: 9px; }
+.subscription-head:last-child { margin-bottom: 0; }
 .subscription-head .ic { width: 17px; height: 17px; }
 .subscription-head b { font-size: 12.5px; font-weight: 600; }
 .subscription-account { display: flex; align-items: baseline; gap: 7px; margin: 0 0 6px; font-size: 11px; color: var(--fg-2); }
@@ -985,8 +1028,8 @@ body.window .field.solo { grid-column: auto; }
 .quota-windows.brief { row-gap: 5px; }
 .quota-windows.brief .quota-reset { display: none; }
 .quota-windows.brief .quota-labels { margin-bottom: 3px; }
-.subscription-account .plan { margin-left: auto; flex: none; font-size: 10.5px; color: var(--muted); text-transform: capitalize; }
-.subscription-head .plan { margin-left: auto; font-size: 10.5px; color: var(--muted); text-transform: capitalize; }
+/* a plan gives its room up before the account's name does (visamzh on X) */
+.subscription-account .plan, .subscription-head .plan { margin-left: auto; flex: 0 100 auto; min-width: 3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; color: var(--muted); text-transform: capitalize; }
 .quota-windows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px 14px; }
 /* when one window's names wrap, the bars beside it still line up: its
    names are as tall as the tallest beside them (fitQuota). The windows
@@ -1030,6 +1073,7 @@ body.window .field.solo { grid-column: auto; }
 /* a window's whole (WindowHolds): a line of its own under the reset */
 .quota-reset .quota-holds { flex-basis: 100%; display: flex; flex-wrap: wrap; column-gap: 4px; min-width: 0; }
 .quota-reset .quota-holds > span { white-space: normal; min-width: 0; }
+.quota-reset .quota-holds-cost { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
 .quota-reset .quota-holds-why { flex-basis: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help; }
 .quota-track { height: 4px; border-radius: 2px; background: var(--pill); overflow: hidden; }
 .quota-track i { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
@@ -1282,6 +1326,9 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
 /* the last label can be wider than its bar's column: let it spill left, not off the card */
 .chart .labels span:last-child { display: flex; justify-content: flex-end; }
 .row.stat .who { flex: 0 0 180px; }
+/* the line under a name (a sign-in's id, its calls, credits and speed) is
+   read whole at every width, not cut where the column ends */
+.row.stat .who .sub { white-space: normal; overflow-wrap: anywhere; }
 .row.stat .who .name.faint { color: var(--faint); font-weight: 400; }
 .row.stat .share { flex: 1 1 auto; height: 4px; border-radius: 2px; background: var(--pill); overflow: hidden; margin: 0 6px; }
 .row.stat .share i { display: block; height: 100%; border-radius: 2px; background: var(--accent); opacity: .7; }
@@ -1303,6 +1350,19 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
 .row.stat .us-more:focus-visible { opacity: 1; }
 .row.stat .us-more.open { opacity: 1; background: var(--pill); color: var(--fg); }
 @media (hover: none) { .row.stat .us-more { opacity: 1; margin: 0 -4px 0 -2px; } }
+/* a Usage card's ⋯, its menu (jen_celeus on X): at the head's end, over what
+   ends there, on the card's colour, so the head at rest is laid out as it
+   was; where nothing hovers it is always shown, with room kept for it */
+.subscription-head { position: relative; }
+.subscription-head .us-more { position: absolute; top: 50%; right: -6px; width: 22px; height: 22px; margin-top: -11px; background: var(--card); opacity: 0; transition: opacity .12s, background .12s, color .12s; }
+.subscription-head .us-more:hover { background: var(--pill); }
+.subscription-card:hover .subscription-head .us-more { opacity: 1; }
+.subscription-head .us-more:focus-visible { opacity: 1; }
+.subscription-head .us-more.open { opacity: 1; background: var(--pill); color: var(--fg); }
+@media (hover: none) {
+  .subscription-head { padding-right: 18px; }
+  .subscription-head .us-more { opacity: 1; }
+}
 .row.stat .us-unhide { flex: none; margin-right: -4px; }
 /* the action's room comes out of the name's, which ends in "…" */
 .row.stat.acts .who { flex-shrink: 1; }
@@ -1367,6 +1427,9 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
 .led-strip .sub.parts > span, .kpi small.parts > span { display: inline-block; max-width: 100%; vertical-align: bottom; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* the traffic line's parts read whole: one wider than the card wraps in itself, never cut (matrix0487) */
 .led-strip .sub.led-io > span { white-space: normal; }
+/* how fast the traffic flows now, while requests are in flight */
+.led-strip .sub.led-rate { color: var(--fg-2); }
+.led-strip .sub.led-rate[hidden] { display: none; }
 /* not the tile's label: .kpi span is its small capitals */
 .kpi small.parts > span { margin-top: 0; font: inherit; letter-spacing: normal; text-transform: none; color: inherit; }
 .led-strip .led-jump { text-align: start; font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
@@ -1375,6 +1438,21 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
 .led-strip .meter { height: 5px; margin-top: 8px; border-radius: 3px; background: var(--pill); overflow: hidden; }
 .led-strip .meter i { display: block; height: 100%; border-radius: 3px; background: var(--green); }
 .led-trend { padding: 10px 14px 10px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+.led-speed { margin-top: 10px; padding: 10px 14px 6px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+.led-speed[hidden] { display: none; }
+.led-spd-t { font-size: 13px; font-weight: 600; }
+.led-spd-scroll { max-height: 280px; overflow: auto; }
+.led-spd { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.led-spd th, .led-spd td { padding: 5px 0 5px 12px; text-align: right; white-space: nowrap; }
+.led-spd th:first-child, .led-spd td:first-child { padding-left: 0; text-align: left; }
+.led-spd td.nm { width: 100%; max-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+.led-spd thead th { position: sticky; top: 0; background: var(--card); z-index: 1; font-weight: 400; }
+.led-spd tbody td { border-top: 1px solid var(--line-2); }
+.led-spd td.faint { color: var(--faint); }
+.led-spd-h { padding: 2px 0; border: 0; background: none; color: var(--muted); font: inherit; cursor: pointer; }
+.led-spd-h:hover, .led-spd-h.on { color: var(--fg); }
+.led-spd th[aria-sort="descending"] .led-spd-h::after { content: " ↓"; }
+.led-spd th[aria-sort="ascending"] .led-spd-h::after { content: " ↑"; }
 .led-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin-bottom: 8px; }
 .led-bar .grow { flex: 1; }
 .led-by { font-size: 11.5px; color: var(--muted); }
@@ -1413,6 +1491,8 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
 .led-chart .tip i { width: 7px; height: 7px; border-radius: 2px; flex: none; }
 .led-chart .tip em { margin-left: auto; padding-left: 12px; font-style: normal; font-variant-numeric: tabular-nums; }
 .led-chart .tip .sum { margin-top: 3px; padding-top: 3px; border-top: 1px solid var(--line-2); color: var(--muted); }
+/* traffic: under its total, what went up and what came back */
+.led-chart .tip .io { color: var(--muted); }
 /* speed: name, speed and first token in columns, the name whole (#2343) */
 .led-chart .tip.speed { display: grid; grid-template-columns: 7px minmax(0, 1fr) auto auto; column-gap: 6px; align-items: center; max-width: min(400px, 100%); }
 .led-chart .tip.speed b { grid-column: 1 / -1; }
@@ -1555,21 +1635,16 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
 .led .faint { color: var(--faint); }
 .led .muted { color: var(--muted); }
 .led th, .led .when, .led .model-value { color: var(--fg-2); }
-.led .when .text { padding: 0; font: inherit; }
-.led .when .led-route-link { text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
-.led .when .led-route-link:hover { text-decoration-style: solid; }
 #ledRoute { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
 #ledRoute[hidden] { display: none; }
 #ledRouteClear { font-size: 18px; padding: 2px 6px; }
 .led .model, .led .where { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
-/* a window too narrow for every column leaves out those the row's details
-   say (#860), and narrows the names */
-.led.tight .lc-opt, .led:not(.tight) .led-dl .lc-opt { display: none; }
-.led.tight .led-dl .lc-opt { display: block; }
+/* a window too narrow for every column leaves out those the request's
+   page says (#860), and narrows the names */
+.led.tight .lc-opt { display: none; }
 .led.tight .model, .led.tight .where { max-width: 160px; }
 .led.tight th, .led.tight td { padding-left: 6px; padding-right: 6px; }
-.led.tighter .price-reference, .led.tight2 .lc-opt2, .led:not(.tight2) .led-dl .lc-opt2 { display: none; }
-.led.tight2 .led-dl .lc-opt2 { display: block; }
+.led.tighter .price-reference, .led.tight2 .lc-opt2 { display: none; }
 /* the first token, under the duration while its own column is left out */
 .led.tight2 td.duration[data-ttft]::after { content: attr(data-ttft); display: block; margin-top: 1px; font-size: 10.5px; font-weight: 400; color: var(--muted); }
 /* the account's name is cut at 110px, but its column keeps room for the
@@ -1620,10 +1695,23 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
 .led .duration.faint { font-weight: 400; }
 .led tr.led-row { cursor: pointer; }
 .led tr.led-row:focus-visible { outline: 2px solid var(--accent, var(--fg-2)); outline-offset: -2px; }
-.led tr.open td { background: var(--card-2, var(--pill)); }
-.led tr.led-detail td { padding: 0; white-space: normal; background: var(--card-2, var(--pill)); }
-.led-box { position: sticky; left: 0; box-sizing: border-box; width: min(100%, calc(var(--ledw, 720px) - 2px), 900px); padding: 8px 12px 11px; }
-.led-dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; margin: 0; font-size: 11.5px; }
+/* one request on a page of its own, pushed over the list (geesehowardt7) */
+.led-req-bar { display: flex; align-items: center; min-height: 28px; }
+.led-req-back { display: inline-flex; align-items: center; gap: 2px; margin-left: -4px; }
+.led-req-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; margin: 6px 0 10px; }
+.led-req-title { margin: 0; min-width: 0; font-size: 17px; font-weight: 650; color: var(--fg); overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
+.led-req-head .st { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
+.led-req-head .st .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); flex: none; }
+.led-req-head.bad .st { color: var(--red); font-weight: 600; }
+.led-req-head.bad .st .dot { background: var(--red); -webkit-mask: var(--x-mark) center / contain no-repeat; mask: var(--x-mark) center / contain no-repeat; border-radius: 0; transform: scale(1.5); }
+.led-req-head.gone .st .dot { background: var(--muted); }
+.led-req .led-box { box-sizing: border-box; max-width: 900px; padding: 14px 18px; border-radius: 14px; border: 1px solid var(--line); background: var(--card); }
+.led-req .who { display: inline-flex; align-items: center; gap: 6px; }
+.led-req .who .ic { width: 14px; height: 14px; flex: none; }
+.led-req:not([hidden]) { animation: led-req-in 200ms cubic-bezier(.23, 1, .32, 1); }
+@keyframes led-req-in { from { opacity: 0; transform: translateX(12px); } }
+@media (prefers-reduced-motion: reduce) { @keyframes led-req-in { from { opacity: 0; } } }
+.led-dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin: 0; font-size: 12px; }
 .led-dl dt { color: var(--muted); }
 .led-dl dd { margin: 0; min-width: 0; color: var(--fg); overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
 .led-dl dd.bad { color: var(--red); font-weight: 600; }
@@ -1982,7 +2070,14 @@ body.panel .profiles #save { height: 25px; } /* the field's: the line keeps its 
 .pq-gn { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* how many accounts: a quiet count set by the name, on its cap height */
 .pq-count { flex: none; min-width: 16px; height: 15px; padding: 0 5px; box-sizing: border-box; border-radius: 999px; display: inline-grid; place-items: center; background: color-mix(in srgb, var(--fg) 7%, transparent); color: var(--muted); font-size: 9.5px; font-weight: 600; line-height: 1; letter-spacing: 0; font-variant-numeric: tabular-nums; }
-.pq-gnote { flex: none; margin-left: auto; font-size: 12px; font-weight: 400; letter-spacing: 0; text-transform: none; font-variant-numeric: tabular-nums; }
+/* with a vendor's accounts to put first: the count opens their menu */
+.pq-pick { height: 17px; gap: 1px; padding: 0 3px 0 6px; display: inline-flex; align-items: center; cursor: default; transition: background .12s ease, color .12s ease, transform .12s cubic-bezier(.23, 1, .32, 1); }
+.pq-pick svg { flex: none; opacity: .8; }
+.pq-pick:is(:hover, .open) { background: color-mix(in srgb, var(--fg) 12%, transparent); color: var(--fg); }
+.pq-pick:active { transform: scale(.97); }
+/* the account used first: ticked before its name */
+.pq-first { flex: none; display: inline-grid; place-items: center; width: 12px; height: 12px; margin-right: 3px; color: var(--accent); }
+.pq-gnote { flex: 0 100 auto; min-width: 3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; font-size: 12px; font-weight: 400; letter-spacing: 0; text-transform: none; font-variant-numeric: tabular-nums; }
 .pq-gnote.ends { color: var(--amber); }
 /* used or left: a quiet pill at the right, over the rings; lit a moment
    when it turns */
@@ -2518,6 +2613,15 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .gw-keys.sorting > .acc { transition: transform .16s cubic-bezier(.22, 1, .36, 1); cursor: grabbing; }
 .gw-keys.sorting > .acc.dragging { z-index: 2; background: var(--card-2); box-shadow: 0 0 0 1px var(--line); transition: none; will-change: transform; }
 .gw-keys .gw-key-more { flex: none; color: var(--muted); }
+/* the account groups a key's accounts may name (LeiWang_2000 on X) */
+.editor.acct-groups { grid-template-columns: minmax(0, 1fr); }
+.acct-groups .agp-list { margin: 10px 0; }
+.acct-groups .agp-row + .agp-row { border-top: 1px solid var(--line-2); }
+.acct-groups .agp-name { flex: 1 1 8em; min-width: 0; height: 26px; }
+.acct-groups .agp-accounts { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-groups .agp-remove { flex: none; color: var(--muted); }
+.acct-groups .agp-add { display: flex; gap: 8px; align-items: center; }
+.acct-groups .agp-add input { flex: 1; min-width: 0; }
 .gw-keys .gw-key-more:is(:hover, .open) { color: var(--fg); }
 #view-gateway .row-head, #view-usage .row-head { margin: 14px 0 6px; padding: 0 2px; }
 #view-usage .row-head.quota-head { margin: 6px 0 6px; }
@@ -2706,6 +2810,8 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .badge.path.direct { background: var(--pill); color: var(--muted); box-shadow: inset 0 0 0 1px var(--line); }
 .badge.ctx { background: var(--pill); color: var(--muted); box-shadow: inset 0 0 0 1px var(--line); letter-spacing: .02em; }
 .badge.wsl { background: var(--pill); color: var(--muted); box-shadow: inset 0 0 0 1px var(--line); letter-spacing: .02em; text-transform: none; }
+/* how a provider bills, plan or pay as you go (EV_John_Liu on X): grey, a fact */
+.badge.bill { background: var(--pill); color: var(--muted); letter-spacing: .02em; text-transform: none; }
 /* a model's credit rate (0.5×): grey, a fact to pick by; a discount's price before it struck through */
 .badge.rate { background: var(--pill); color: var(--muted); letter-spacing: .02em; text-transform: none; font-variant-numeric: tabular-nums; display: inline-flex; gap: 3px; }
 .badge.rate s { font-weight: 500; opacity: .75; }
@@ -2750,7 +2856,7 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 :where(html[data-fonts]) .key.acct { font-style: var(--ui-style, inherit); font-weight: var(--ui-weight, inherit); font-stretch: var(--ui-stretch, 100%); }
 .acct { display: flex; align-items: center; gap: 8px; min-height: 26px; font-size: 12.5px; }
 .acct .n { font-weight: 500; }
-.acct .plan { color: var(--muted); font-size: 11.5px; padding: 1px 6px; border-radius: 5px; background: var(--pill-hover); }
+.acct .plan { flex: 0 100 auto; min-width: 3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11.5px; padding: 1px 6px; border-radius: 5px; background: var(--pill-hover); }
 /* a subscription's accounts: the one in use first, a way to add another */
 /* a column, not a grid: WebKit kept a grid row at its height from before its readings wrapped, so they ran under the next account (the owner, after a refresh) */
 .accts { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; background: var(--card); overflow: hidden; }
@@ -2758,9 +2864,27 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .acc + .acc, .accts .signing { border-top: 1px solid var(--line-2); }
 /* every row of the box ruled off from the one above it, a setting's too
    (the owner, 10-29: Add another sat unruled under Only switch) */
-.accts > :is(.keep-login, .switch-only, .restart-app, .pool-ends) + .acc { border-top: 1px solid var(--line-2); }
-.editor .accts .keep-login, .editor .accts .switch-only, .editor .accts .restart-app, .editor .accts .pool-ends { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 34px; padding: 6px 11px; font-size: 12px; border-top: 1px solid var(--line-2); }
-.editor .accts .keep-login .keep-as { max-width: 240px; }
+.accts > :is(.auto-switch, .switch-only, .restart-app, .pool-ends) + .acc { border-top: 1px solid var(--line-2); }
+.editor .accts .switch-only, .editor .accts .restart-app, .editor .accts .pool-ends { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 34px; padding: 6px 11px; font-size: 12px; border-top: 1px solid var(--line-2); }
+.editor .accts .auto-switch { display: flex; flex-direction: column; gap: 6px; padding: 8px 11px; font-size: 12px; border-top: 1px solid var(--line-2); }
+.editor .accts .auto-switch .as-head { display: flex; text-align: left; padding-top: 0; align-items: center; gap: 8px; min-height: 18px; cursor: pointer; }
+.editor .accts .auto-switch .as-name { flex: 1; min-width: 0; }
+.editor .accts .auto-switch .as-head .lib-switch { flex: none; }
+/* how the switch works (autoswitchtip.js): its lines rest out of sight and
+   settingshints.js shows them in its card; the mark says one is there. A
+   touch screen, with no hover, keeps the lines in place and no mark */
+.editor .accts .auto-switch .as-head .as-tip { display: none; flex: none; color: var(--muted); }
+.editor .accts .auto-switch > .hint { margin: 0; line-height: 1.5; color: var(--fg-2); }
+@media (hover: hover) {
+  .editor .accts .auto-switch .as-head .as-tip { display: inline-flex; }
+  .editor .accts .auto-switch.hint-row { position: relative; }
+  .editor .accts .auto-switch.hint-row > .hint {
+    --hint: 1; position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
+}
+.editor .accts .auto-switch .sign-in-moves { line-height: 1.5; color: var(--fg-2); }
+.editor .accts .auto-switch .as-keep { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--fg-2); }
+.editor .accts .auto-switch .keep-as { max-width: 240px; }
 /* Claude Code's interactive mode or -p, with why (claudeModeRow) */
 .claude-mode { display: contents; }
 .cc-run { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-height: 26px; }
@@ -3005,11 +3129,14 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 #gatewayKeys .klf input { width: 100%; min-width: 0; height: 28px; padding: 0 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--card); color: var(--fg); font: inherit; font-size: 12px; }
 #gatewayKeys .klf-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-2); }
 #gatewayKeys .klf-err { color: var(--red); }
+#gatewayKeys .klf-off { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--fg-2); margin-bottom: 8px; }
 #gatewayKeys .klf .klf-period, #gatewayKeys .klf .klf-pick { width: 100%; max-width: none; height: 28px; justify-content: space-between; color: var(--fg); }
 #gatewayKeys .klf.with-days { grid-template-columns: minmax(0, 1fr) minmax(0, 0.6fr) minmax(0, 1fr) minmax(0, 1fr); }
 #gatewayKeys .klf-days[hidden] { display: none; }
 #gatewayKeys .klf-models { grid-column: 1 / -1; }
 #gatewayKeys .klf .klf-pick > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.editor .headers.aliases .pair .alias-pick { flex: 6; max-width: none; min-width: 0; height: 27px; justify-content: space-between; }
+.editor .headers.aliases .pair input:first-child { flex: 4; }
 #gatewayKeys .klf-used { display: flex; align-items: center; gap: 8px; min-width: 0; }
 #gatewayKeys .klf-used .key-limit { flex: 1 1 auto; }
 #gatewayKeys .klf-used .klf-reset { flex: none; }
@@ -3055,6 +3182,10 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 /* a menu of actions, where nothing is or can be ticked, keeps no room for
    a tick: its items line up with its heading */
 .proto-menu.pm-bare .pm-tick { display: none; }
+/* a group's heading in a menu of many: it ticks all of its items */
+.proto-menu .pm-group { margin-top: 3px; }
+.proto-menu .pm-group .pm-name { font-size: 11px; font-weight: 600; color: var(--muted); }
+.proto-menu .pm-group.mixed .pm-tick::before { content: ""; width: 8px; height: 1.5px; border-radius: 1px; background: currentColor; }
 .proto-menu .pm-words { display: grid; gap: 1px; min-width: 0; }
 .proto-menu .pm-name { font-size: 12.5px; font-weight: 500; line-height: 16px; }
 .proto-menu .pm-note { font-size: 11px; color: var(--muted); line-height: 15px; }
@@ -3084,6 +3215,13 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .range-menu .rm-day.in { background: color-mix(in srgb, var(--accent) 14%, transparent); border-radius: 0; }
 .range-menu .rm-day.end { background: var(--accent); color: var(--accent-fg, #fff); }
 .range-menu .rm-day:disabled { color: var(--faint); opacity: .5; }
+/* the minutes the first day begins at and the last ends at */
+.range-menu .rm-times { display: flex; align-items: center; gap: 6px; margin-top: 6px; padding: 7px 2px 0; border-top: 1px solid var(--line-2); color: var(--muted); }
+.range-menu .rm-times svg { flex: none; }
+.range-menu .rm-time { width: 52px; height: 24px; padding: 0 6px; border: 1px solid var(--line-2); border-radius: 6px; background: transparent; color: var(--fg); font: inherit; font-size: 12px; font-variant-numeric: tabular-nums; text-align: center; }
+.range-menu .rm-time:focus { outline: none; border-color: var(--accent); }
+.range-menu .rm-time[aria-invalid="true"] { border-color: var(--red); }
+.range-menu .rm-dash { color: var(--faint); }
 @media (max-width: 640px) { .range-opt:not(.on) > span { display: none; } }
 /* a subscription's allowance, under its name */
 .accts .acc.with-aq { flex-wrap: wrap; row-gap: 3px; padding-top: 7px; padding-bottom: 8px; }
@@ -3280,10 +3418,15 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .tile .nm .badge { flex: none; }
 .tile .have { flex: none; width: 6px; height: 6px; border-radius: 3px; background: var(--green); }
 .tile .cnt { flex: none; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.sheet .custom-foot { display: flex; align-items: center; gap: 8px; margin-top: 14px; padding: 10px 2px 0; border-top: 1px solid var(--line-2); }
-.sheet .custom-foot .custom { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 10px 0 6px; border-radius: 8px; color: var(--accent); font-size: 13px; }
-.sheet .custom-foot .custom:hover, .sheet .custom-foot .custom.on { background: var(--accent-soft); }
-.sheet .custom-foot .hint { font-size: 12px; color: var(--muted); }
+.sheet .row-head .custom { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); }
+.sheet .row-head .custom:hover, .sheet .row-head .custom.on { color: var(--accent); background: var(--accent-soft); }
+/* narrow: the search and Custom provider on a line of their own */
+@media (max-width: 760px) {
+  .sheet .row-head { flex-wrap: wrap; height: auto; row-gap: 8px; }
+  .sheet .row-head::after { content: ""; order: 1; flex-basis: 100%; }
+  .sheet .row-head .find { order: 2; flex: 1; width: auto; min-width: 0; }
+  .sheet .row-head .custom { order: 2; }
+}
 /* the provider editor, in a dialog */
 /* the label column is as wide as its longest label, so that label starts
    at the padding and the fields end the same way on the right (the
@@ -3311,6 +3454,13 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .editor .proxy-row .proxy-mode { flex: none; }
 .editor .proxy-row input.proxy-url { flex: 1 1 auto; width: auto; min-width: 0; }
 .editor .proxy-row input.proxy-url.off { visibility: hidden; }
+.editor .proxy-row .gone { display: none; }
+.editor .proxy-row .proxy-saved { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.saved-proxy .sub { overflow-wrap: anywhere; }
+.proxy-form { flex-wrap: wrap; }
+.proxy-form .proxy-controls { justify-content: flex-end; flex: 1 1 100%; }
+.proxy-form .proxy-credential { flex: 1 1 10rem; min-width: 0; }
+.proxy-form .sub.err { flex: 1 1 100%; }
 .editor :is(input.concurrency, input.queue-limit, input.queue-wait)[type] { width: 12em; max-width: 100%; }
 .editor input[type="number"] { -moz-appearance: textfield; }
 .editor input[type="number"]::-webkit-inner-spin-button, .editor input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
@@ -3430,19 +3580,19 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
    which #929 left widening the whole page until its last agent's
    filter was only reachable by dragging the page sideways, and Plugins'
    kinds on GitHub, wider than a 420px window in Japanese */
-.segs.regions, .connect .segs, .pm-ghbar .segs { max-width: 100%; overflow-x: auto; }
+.segs.regions, .connect .segs, .pm-bar .segs { max-width: 100%; overflow-x: auto; }
 /* no scrollbar-width here: Chromium (WebView2) then drops every
    ::-webkit-scrollbar rule and draws Windows' classic bar, arrows and all,
    under the strip; the app's thin thumb instead, slimmer still */
-:where(body:not(.mac)) :is(.segs.regions, .connect .segs, .pm-ghbar .segs)::-webkit-scrollbar { height: 6px; }
-:where(body:not(.mac)) :is(.segs.regions, .connect .segs, .pm-ghbar .segs)::-webkit-scrollbar-thumb { border-width: 1px; }
+:where(body:not(.mac)) :is(.segs.regions, .connect .segs, .pm-bar .segs)::-webkit-scrollbar { height: 6px; }
+:where(body:not(.mac)) :is(.segs.regions, .connect .segs, .pm-bar .segs)::-webkit-scrollbar-thumb { border-width: 1px; }
 /* on a Mac they scroll with no bar, as a Mac's own tab strips do: the
    system's overlay bar showed over the options' lower half for a moment
    after each scroll, and a click there went to the bar, which paged the
    strip sideways and picked nothing (#1620) */
-:where(body.mac) :is(.segs.regions, .connect .segs, .pm-ghbar .segs) { scrollbar-width: none; }
-:where(body.mac) :is(.segs.regions, .connect .segs, .pm-ghbar .segs)::-webkit-scrollbar { display: none; }
-.segs.regions .opt, .connect .segs .opt, .pm-ghbar .segs .opt { flex: none; }
+:where(body.mac) :is(.segs.regions, .connect .segs, .pm-bar .segs) { scrollbar-width: none; }
+:where(body.mac) :is(.segs.regions, .connect .segs, .pm-bar .segs)::-webkit-scrollbar { display: none; }
+.segs.regions .opt, .connect .segs .opt, .pm-bar .segs .opt { flex: none; }
 /* a custom provider's five Base URL APIs wrap to a second row where the
    editor is too narrow for them (#1346); the thumb follows the row */
 .segs.base-apis { max-width: 100%; flex-wrap: wrap; }
@@ -3550,8 +3700,10 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .models { display: flex; flex-direction: column; gap: 6px; }
 .mbulk { display: flex; align-items: center; gap: 6px; }
 .mbulk > input { max-width: 260px; flex: 1; }
-/* a long list scrolls on its own, not the editor with it past its ends */
-.mchips { display: flex; flex-wrap: wrap; gap: 4px; max-height: min(240px, 40vh); overflow-y: auto; overscroll-behavior: contain; padding: 1px; }
+/* a long list scrolls on its own, not the editor with it past its ends
+   (:where(.holds), only while it overflows: Chromium held the wheel in a
+   short list that fits too, and the editor never scrolled under it) */
+.mchips { display: flex; flex-wrap: wrap; gap: 4px; max-height: min(240px, 40vh); overflow-y: auto; padding: 1px; }
 .mchips::-webkit-scrollbar { width: 0; }
 /* let out to its full height (#833): the editor's body scrolls instead */
 .mchips.open { max-height: none; overflow-y: visible; }
@@ -3624,6 +3776,14 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .mnhead { position: sticky; top: -1px; z-index: 1; display: flex; align-items: center; gap: 8px; padding: 2px 8px; background: var(--card); }
 .mnhead b { flex: 1; min-width: 0; font-size: 11.5px; font-weight: 600; color: var(--muted); }
 .mnhead .text.action { flex: none; padding: 2px 7px; font-size: 11.5px; }
+/* a long list's search and Expand (soilzhu80 on X): open, the list is as
+   tall as its rows and the editor scrolls, its head held at the top */
+.mnhead { flex-wrap: wrap; }
+.mnhead.finds b { flex: none; }
+.mnhead .mbig { margin-left: auto; }
+.mnhead .mfind { flex: 1 1 140px; min-width: 0; max-width: 260px; padding: 3px 8px; font-size: 12px; }
+.mnames.open { max-height: none; overflow-y: visible; }
+.mnames > .mnone { padding: 4px 8px; }
 /* how the agents' lists will call them, and the setting that says so (#868) */
 .msuffix { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 2px 8px 4px; font-size: 12px; }
 .msuffix .hint { font-size: 11px; color: var(--faint); overflow-wrap: anywhere; }
@@ -3644,6 +3804,10 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .mname .mapi { flex: none; min-height: 24px; font-size: 11px; }
 .mname .msame { display: flex; align-items: center; gap: 6px; flex: 0 1 230px; min-width: 0; font-size: 11.5px; color: var(--muted); }
 .mname .msame span { flex: none; }
+.mname .msame-wrap { display: flex; align-items: center; gap: 2px; flex: 0 1 260px; min-width: 0; }
+.mname .msame-wrap .msame { flex: 1 1 auto; }
+.mname .mpick { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 25px; height: 25px; padding: 0; color: var(--muted); }
+.mpick-menu { max-width: min(420px, calc(100vw - 16px)); }
 .mname .msame input { flex: 1; min-width: 0; height: 25px; font-size: 11.5px; }
 .mname .mlimits { display: contents; }
 .mname .mlimit { flex: 0 1 170px; }
@@ -3651,6 +3815,11 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .mname .mprice > span { flex: none; }
 .mname .mpart { display: flex; align-items: center; gap: 4px; flex: none; }
 .mname .mpart input { width: 72px; height: 25px; font-size: 11.5px; }
+.price-ask-parts { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px 10px; margin: 4px 0 8px; }
+.price-ask-unit { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
+.price-ask-parts .mpart { display: flex; flex-direction: column; align-items: stretch; gap: 3px; font-size: 12px; color: var(--muted); }
+.price-ask-parts .mpart input { width: 100%; min-width: 0; }
+.price-ask-bad { color: var(--red); margin: 0 0 6px; }
 .mname .mtier { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; flex: 1 1 100%; min-width: 0; }
 .mname .mtier[hidden], .mname .mtier-add[hidden] { display: none; }
 .mname .mtier-add { font-size: 11.5px; padding: 0; }
@@ -3659,6 +3828,14 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .editor .mname .mheaders { flex: 1 1 100%; min-width: 0; gap: 4px; }
 .editor .mname .mheaders .pair input { height: 25px; font-size: 11.5px; }
 .mname .mheader-add { font-size: 11.5px; padding: 0; }
+/* a model's own system prompt, the row's width, in the UI's font, last
+   but for unsaved and Restore default; drawn with the limits, at once, so
+   the row's height is whole when its editor holds the scroll */
+.mname > .munsaved, .mname > .action { order: 2; }
+.mname .msys { order: 1; display: flex; align-items: flex-start; gap: 6px; flex: 1 1 100%; min-width: 0; font-size: 11.5px; color: var(--muted); }
+.mname .msys span { flex: none; padding-top: 5px; }
+.editor .mname .msys textarea { flex: 1; min-width: 0; min-height: 25px; box-sizing: border-box; padding: 4px 8px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--fg); font: inherit; font-size: 11.5px; line-height: 1.45; resize: vertical; outline: none; transition: border-color .12s ease, box-shadow .12s ease; }
+.editor .mname .msys textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
 .editor .mname label.tick { gap: 4px; }
 .mname .text { flex: none; padding: 2px 7px; font-size: 11.5px; }
 
@@ -3897,26 +4074,51 @@ input.words.compact-num { flex: none; width: 76px; font-variant-numeric: tabular
    sends, who the allow list lets in), a line with a button or link in
    it. A touch screen, with no hover, keeps them all. */
 @media (hover: hover) {
-  #view-settings:not(.set-searching) .row.pref > .who > .sub:not(.err, .bad, .say, .proxy-check, .lib-way, .image-gen-hidden, .sync-sign-in, .no-names, .pv-hits, .feat-why, .vision-not-marked, .font-note, .acts, [role="status"], #proxySub):not(#otelSessionsRow *, #allowList *, .disabled-model *) {
-    --hint: 1; position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  :is(#view-settings:not(.set-searching), .editor.roomy .prov-prefs) .row.pref > .who > .sub:not(.err, .bad, .say, .proxy-check, .lib-way, .image-gen-hidden, .sync-sign-in, .no-names, .pv-hits, .feat-why, .vision-not-marked, .video-gen-how, .font-note, .acts, [role="status"], #proxySub):not(#otelSessionsRow *, #allowList *, .disabled-model *) {
+    --hint: 1; position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
   }
+  /* the line held out of sight stays in its row's box: placed against the
+     page it sat at the window's top-left, and a row opened far down
+     (Sessions' Settings ›, scrolled to in Privacy) scrolled the whole page
+     to reach it, the header off the top (kalicyh on X) */
+  :is(#view-settings, .editor.roomy .prov-prefs) .row.pref:not(.lan-address-row) > .who { position: relative; }
   /* a row left with its name alone is as tall as any other: its control
      (a switch, a field, a shortcut) no longer sets it apart */
   #view-settings .row.pref:not(.feat-set) { box-sizing: content-box; min-height: 27px; } /* 51 with its padding, a line above it outside */
+  /* the same in a provider's editor, field by field (yujezhang on X,
+     11-10: "界面只保留完成操作必需的信息"), and on Routing groups'
+     settings: the line that explains a field rests out of sight. A
+     field's lead, the short line of what turning it on costs, stays in
+     its place; so do a warning and a line with a link or control in it */
+  .editor.roomy .fld > .hint.expl:not(.acts, .warn, .err),
+  .hint-row > .txt > .expl {
+    --hint: 1; position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
+  .editor.roomy .fld > .hint.lead { display: block; }
+  /* the line held out of sight stays in its field's box: placed against
+     the page, deep in the editor's scroll it would grow the page a scrollbar */
+  .editor.roomy .fld, .hint-row > .txt { position: relative; }
   /* Check in now's result comes under its name and the row grows down,
      its button held where it was pressed */
   :is(#view-settings, .prov-prefs) .ci-now-row { align-items: flex-start; }
 }
-.set-hint { position: fixed; z-index: 60; max-width: min(380px, calc(100vw - 32px)); padding: 8px 11px; border-radius: 9px; background: var(--pop-bg); box-shadow: var(--shadow); -webkit-backdrop-filter: blur(18px) saturate(1.4); backdrop-filter: blur(18px) saturate(1.4); font-size: 12px; line-height: 1.45; color: var(--fg-2); overflow-wrap: anywhere; pointer-events: none; opacity: 0; transform: translateY(-2px); transition: opacity .14s ease, transform .14s ease; }
+/* a field's lead says again, in short, what its hint says: in sight only
+   where the hint isn't (above, with a mouse) */
+.fld > .hint.lead { display: none; }
+/* the card comes from its row, a little smaller, on the strong ease-out
+   (UI motion rules: a tooltip 125-200ms, never from nothing) */
+.set-hint { position: fixed; z-index: 60; max-width: min(380px, calc(100vw - 32px)); padding: 8px 11px; border-radius: 9px; background: var(--pop-bg); box-shadow: var(--shadow); -webkit-backdrop-filter: blur(18px) saturate(1.4); backdrop-filter: blur(18px) saturate(1.4); font-size: 12px; line-height: 1.45; color: var(--fg-2); overflow-wrap: anywhere; pointer-events: none; opacity: 0; transform: translateY(-2px) scale(.96); transition: opacity .15s ease, transform .15s cubic-bezier(.23, 1, .32, 1); }
 .set-hint.on { opacity: 1; transform: none; }
 .set-hint > p { margin: 0; }
 .set-hint > p + p { margin-top: 4px; }
-@media (prefers-reduced-motion: reduce) { .set-hint { transition: none; transform: none; } }
-:root[data-motion="reduce"] .set-hint { transition: none; transform: none; }
+@media (prefers-reduced-motion: reduce) { .set-hint { transition: opacity .15s ease; transform: none; } }
+:root[data-motion="reduce"] .set-hint { transition: opacity .15s ease; transform: none; }
 .prefs .val.rule-add { flex: 1 1 100%; max-width: none; margin-left: 0; gap: 6px; }
 input.words.rule-kind { flex: none; width: 110px; }
 input.words.gateway-port { flex: none; width: 110px; font-variant-numeric: tabular-nums; }input.words.rule-match { flex: 1 1 auto; width: auto; min-width: 0; }
 input.words.search-key, input.words.search-url { flex: 1 1 120px; width: auto; min-width: 0; }
+input.words.remote-url { width: 280px; }
+input.words.remote-key { width: 160px; }
 /* a search API that signs in as a plugin's provider, in the key's place */
 .search-signs { flex: 1 1 120px; min-width: 0; font-size: 12px; color: var(--fg-2); overflow-wrap: anywhere; }
 /* a search API's base URL (#1580): on a line of its own under the key */
@@ -3989,9 +4191,13 @@ input.words.search-key, input.words.search-url { flex: 1 1 120px; width: auto; m
 .warm-at.times > :not(.warm-times) { flex: none; }
 .warm-at .warm-times { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px 8px; min-width: 0; }
 .warm-at .warm-time { display: inline-flex; align-items: center; gap: 2px; }
+.bark-box { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-left: auto; min-width: 0; max-width: 100%; }
+.bark-box input.words { width: 180px; }
+.bark-box code { font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
 .warm-at .warm-rm, .warm-at .warm-add { min-width: 24px; height: 27px; padding: 0 6px; font-size: 14px; line-height: 1; }
 .row.pref .sub .warn { color: var(--amber); }
 .row.pref .sub.wraps { white-space: normal; }
+.row.pref code.sub.https-cmd { display: block; font-size: 11px; user-select: text; -webkit-user-select: text; overflow-wrap: anywhere; }
 .row.pref .login-allow-open { font: inherit; color: var(--accent); padding: 0; background: none; border: 0; cursor: pointer; }
 .row.pref .login-allow-open:hover { text-decoration: underline; }
 /* the field's clock and picker in the page's own palette */
@@ -4013,6 +4219,7 @@ input.words.search-key, input.words.search-url { flex: 1 1 120px; width: auto; m
 .prefs .val > .side-effort { flex: none; }
 /* Web search's searchers after the one named, in order: chips that wrap */
 .prefs .val.searcher-then-list { flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.prefs .val.unmasked-list { flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
 .prefs .val.searcher-then-list > .rt-cond { min-width: 0; max-width: 100%; }
 .searcher-then-n { color: var(--muted); font-variant-numeric: tabular-nums; }
 .side-effort .effort-ic svg { width: 100%; height: 100%; }
@@ -4114,7 +4321,8 @@ html.theming, html.theming *, html.theming *::before, html.theming *::after {
 /* ---------- modal ---------- */
 .modal {
   position: fixed; inset: 0; z-index: 20;
-  display: flex; align-items: center; justify-content: center; padding: 28px 24px;
+  --grip-h: var(--top-h, 46px);
+  display: flex; align-items: center; justify-content: center; padding: max(28px, var(--grip-h)) 24px;
   background: rgba(0, 0, 0, .28);
   -webkit-backdrop-filter: blur(8px) saturate(1.1); backdrop-filter: blur(8px) saturate(1.1);
 }
@@ -4127,7 +4335,20 @@ html.theming, html.theming *, html.theming *::before, html.theming *::after {
 .modal.out { pointer-events: none; }
 /* open, it holds its place from a top app.js gives it (holdModal) */
 .modal.held { align-items: flex-start; }
-.modal .dialog { position: relative; }
+.modal .dialog { position: relative; z-index: 1; }
+/* the scrim covers the title bar, so the window is still dragged from the
+   top strip while a dialog is open; the dialog lies over it and stays no-drag
+   (the strip is after it in the markup, app.js keeps the dialog the first child).
+   The modal's padding is at least the strip's height, so a tall dialog never
+   lies over the strip's middle (the strip was only free at the sides, and the
+   bar's middle is where a window is taken). */
+.modal-grip { position: absolute; z-index: 0; top: 0; left: 0; right: 0; height: var(--grip-h); }
+body.window.mac .modal { --grip-h: calc(50px / var(--zoom, 1)); }
+/* On the Mac the scrim begins under the bar, and the bar itself (the header,
+   the sidebar's top) is inert while a dialog is open (modalBackground), so
+   nothing there drags: the strip reaches up over it. (A fixed child wouldn't:
+   the scrim's backdrop-filter is its containing block.) */
+body.window.mac .modal-grip { top: calc(-1 * var(--grip-h)); }
 .modal .dialog {
   width: min(600px, 100%); min-width: 0; max-height: 100%; overflow-y: auto;
   border-radius: 14px; background: var(--card);
@@ -4180,7 +4401,7 @@ html.theming, html.theming *, html.theming *::before, html.theming *::after {
 /* Keep native window chrome outside the scrim and dialog. In particular, the
    macOS traffic lights must never sit on top of modal content. */
 body.window.mac .modal { top: calc(50px / var(--zoom, 1)); padding: 16px 24px 24px; }
-body.window .modal { padding: 16px 24px 24px; }
+body.window .modal { padding: max(16px, var(--grip-h)) 24px 24px; }
 body.panel .modal { padding: 16px 12px; }
 @keyframes fade-in { from { opacity: 0; } }
 @keyframes content-in { from { opacity: .5; transform: translateY(2px); } }
@@ -4207,11 +4428,14 @@ body.panel .modal { padding: 16px 12px; }
 @media (max-width: 760px), (pointer: coarse) and (max-width: 1024px) {
   body.web { height: 100%; font-size: 14px; }
   body.web .icon { width: 44px; height: 44px; }
+  /* a Usage card's ⋯ is drawn at its head's size and taken at 44 by its own ::after */
+  body.web .subscription-head .us-more { width: 22px; height: 22px; }
+  body.web .subscription-head .us-more::after { content: ""; position: absolute; inset: -11px -6px -11px -11px; } /* the card's edge, never past it */
   body.web .update { min-height: 36px; }
   body.web .view {
     --view-left: max(12px, env(safe-area-inset-left));
     --view-right: max(12px, env(safe-area-inset-right));
-    padding: 2px max(0px, calc(var(--view-right) - var(--bar, 0px))) max(12px, env(safe-area-inset-bottom)) var(--view-left);
+    padding: 2px max(0px, calc(var(--view-right) - var(--bar, 0px))) 12px var(--view-left); /* the tab bar keeps the home indicator clear */
   }
   body.web .foot .status { min-width: 0; overflow-wrap: anywhere; }
   body.web .row-head { height: auto; min-height: 40px; flex-wrap: wrap; gap: 4px; }
@@ -4225,7 +4449,7 @@ body.panel .modal { padding: 16px 12px; }
   body.web .segs .thumb { border-radius: 6px; }
   body.web .segs .opt { height: 28px; padding: 0 11px; font-size: 13px; }
   body.web .segs .opt::after { content: ""; position: absolute; left: 0; right: 0; top: -8px; bottom: -8px; }
-  body.web :is(.segs.regions, .connect .segs, .pm-ghbar .segs, .ctx-contents-head .segs, .editor.importapps .approw .segs) { overflow-y: hidden; }
+  body.web :is(.segs.regions, .connect .segs, .pm-bar .segs, .ctx-contents-head .segs, .editor.importapps .approw .segs) { overflow-y: hidden; }
   body.web .text { padding: 8px 10px; }
   body.web .copy { min-width: 44px; }
   body.web .fields { width: 100%; grid-template-columns: minmax(0, 1fr) minmax(0, 124px); }
@@ -4251,6 +4475,9 @@ body.panel .modal { padding: 16px 12px; }
   body.web .proxy-controls, body.web .proxy-auth { justify-content: flex-start; }
   body.web .usage-head { height: auto; min-height: 44px; flex-wrap: wrap; gap: 8px; }
   body.web .usage-head > .segs { max-width: 100%; flex-wrap: wrap; }
+  /* Requests' Split by (#4943): its five choices ran 86px past a phone */
+  body.web .led-split { max-width: 100%; flex-wrap: wrap; }
+  body.web .led-split > .segs { max-width: 100%; flex-wrap: wrap; }
   body.web .usage-head > .grow, body.web .sess-tools > .grow { display: none; }
   /* the head on a phone: the tabs across it, and under them one line, the
      days as a menu, the sum, and the refresh as a dot and its figure */
@@ -4284,7 +4511,6 @@ body.panel .modal { padding: 16px 12px; }
   body.web .kpi small { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
   body.web .row.stat { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 6px 8px; }
   body.web .row.stat .who { grid-column: 2; grid-row: 1; }
-  body.web .row.stat .who .sub { white-space: normal; }
   body.web .row.stat .cost { grid-column: 3; grid-row: 1; }
   body.web .row.stat .num { grid-column: 2 / 4; grid-row: 2; min-width: 0; align-items: flex-start; }
   body.web .row.stat .num small { max-width: 100%; white-space: normal; }
@@ -4443,8 +4669,17 @@ body.panel .modal { padding: 16px 12px; }
 .subscription-usage.sorting > .subscription-card { transition: transform .22s cubic-bezier(.22, 1, .36, 1); }
 .subscription-usage.sorting .us-handle { cursor: grabbing; }
 .subscription-usage > .subscription-card.dragging { position: relative; z-index: 2; box-shadow: 0 8px 22px rgba(20, 22, 30, .14), 0 0 0 1px var(--line); transition: none; }
+/* where a dragged card lands (dragCards): a dashed slot its size, gliding
+   to the next place as the others make room */
+.subscription-usage.sorting, .pq-alist.sorting { position: relative; }
+.drag-slot {
+  position: absolute; left: 0; top: 0; box-sizing: border-box; pointer-events: none;
+  border: 1.5px dashed color-mix(in srgb, var(--accent) 55%, transparent); border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  transition: transform .22s cubic-bezier(.23, 1, .32, 1); animation: fade-in .15s cubic-bezier(.23, 1, .32, 1);
+}
 @media (prefers-reduced-motion: reduce) {
-  .accts.sorting > [data-account-id], #agents.sorting > .row, .subscription-usage.sorting > .subscription-card { transition: none; }
+  .accts.sorting > [data-account-id], #agents.sorting > .row, .subscription-usage.sorting > .subscription-card, .pq-alist.sorting > .pq-arow, .drag-slot { transition: none; }
 }
 /* the show while the session files are indexed: the words on the left, a
    field of dots that light up as the files land on the right, a hairline
@@ -4579,6 +4814,17 @@ body.window .row.agent .who.with-models { flex-wrap: wrap; row-gap: 0; }
 .am-ri .rn { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .am-ri .c { flex: none; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
 .am-ri:focus-visible { outline: 1.5px solid var(--accent); outline-offset: -1.5px; }
+/* a provider's tick beside it: every model of it on, some, or none
+   (coolAndyHe on X) */
+.am-rr { display: flex; align-items: center; gap: 2px; }
+.am-rr .am-ri { flex: 1 1 auto; min-width: 0; width: auto; }
+.am-rk { position: relative; flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: none; color: var(--accent-fg); cursor: pointer; }
+.am-rk::before { content: ""; position: absolute; width: 13px; height: 13px; box-sizing: border-box; border: 1.5px solid var(--faint); border-radius: 4px; transition: background-color .12s ease, border-color .12s ease; }
+.am-rk > svg { position: relative; }
+.am-rk.on::before, .am-rk.part::before { background: var(--accent); border-color: var(--accent); }
+.am-rk:disabled { cursor: default; opacity: .45; }
+.am-rk:focus-visible { outline: 1.5px solid var(--accent); outline-offset: -1.5px; }
+@media (hover: hover) and (pointer: fine) { .am-rk:hover:not(:disabled)::before { border-color: var(--accent); } }
 .am-gh { display: flex; align-items: center; margin: 6px 2px 0; }
 .am-fold { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px; border: 0; border-radius: 8px; background: none; color: var(--muted); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
 .am-fold > .ic, .am-fold > svg { width: 14px; height: 14px; flex: none; }
@@ -4790,8 +5036,8 @@ body.window .row + .row.agent.conn > .who { min-height: 41px; } /* the line abov
 .ag-menu-cap > .ag-dot { margin-top: calc(0.8em - 3px); }
 .ag-menu-cap > span:last-child { flex: 1; min-width: 0; }
 /* Claude Desktop's "largest window only" switch (#1272): its words beside it, the hint after them */
-.ag-longest { cursor: pointer; }
-.ag-longest-say { color: var(--fg-2); }
+.ag-longest, .ag-isolated { cursor: pointer; }
+.ag-longest-say, .ag-isolated-say { color: var(--fg-2); }
 /* which copy is left on the old list: a sentence that wraps as one, under the warning's words */
 .ag-vl.ag-stale-copy { display: block; padding-left: 14px; font-size: 12px; line-height: 1.6; color: var(--fg-2); }
 /* Codex's daemon: restarted from its line, a button that sits in the sentence */
@@ -4913,11 +5159,12 @@ input[type="checkbox"]:disabled { opacity: .45; }
 .ag-manage-state { flex: none; }
 .ag-manager > .bar { flex-wrap: wrap; }
 .ag-manage-result { font-size: 13px; overflow-wrap: anywhere; }
+.modal .editor.alias-ask > .ebody { grid-template-columns: minmax(0, 1fr); }
 .modal .editor.ag-manager > .ebody { grid-template-columns: minmax(0, 1fr); grid-auto-rows: max-content; }
 
 /* a disabled model's pattern, as typed (#1867): an id or a glob */
 .disabled-model .name { font-family: var(--code); font-size: 12px; overflow-wrap: anywhere; }
-/* Settings › Images: the way to the Magpie Image tool, under its words (#2091) */
+/* Settings › Models › Images: the way to the Magpie Image tool, under its words (#2091) */
 .lib-way .link { padding-left: 0; padding-right: 0; white-space: normal; text-align: start; }
 /* Settings › Proxy's Test result (#2076): under the row's text */
 .row.pref .sub.proxy-check { margin-top: 3px; white-space: normal; overflow-wrap: anywhere; }
@@ -4938,16 +5185,33 @@ body .row.agent .ag-prefs .row.pref .who { display: block; }
 :is(.ag-prefs, .agent-prefs) .row.pref { flex-wrap: wrap; row-gap: 8px; }
 :is(.ag-prefs, .agent-prefs) .row.pref .who { flex: 1 1 240px; min-width: 0; }
 :is(.ag-prefs, .agent-prefs) .compact-at { flex: 0 1 auto; min-width: 0; flex-wrap: wrap; row-gap: 6px; }
-/* a subscription's warm-ups, check-in and resets (PROV_PREFS), in its
-   provider's editor across both columns from where the fields start, a
-   card each, their lines wrapped as an agent's are */
-.editor .prov-prefs { grid-column: 1 / -1; margin-left: var(--ed-at, 86px); display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.editor .prov-prefs[hidden] { display: none; }
-.prov-prefs .list.prefs { margin: 0; }
-.prov-prefs .list.prefs[hidden] { display: none; }
-.prov-prefs .row.pref .sub { white-space: normal; }
-.prov-prefs .row.pref { flex-wrap: wrap; row-gap: 8px; }
-.prov-prefs .row.pref .who { flex: 1 1 240px; min-width: 0; }
+/* a subscription's warm-ups, check-in and resets (PROV_PREFS): fields of
+   its provider's editor under Advanced, drawn as the editor's own rows
+   (a name, its line as a hint, the control at the end), not Settings'
+   cards */
+.editor .prov-prefs { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding-top: 2px; }
+.editor .prov-prefs .list.prefs { margin: 0; background: none; border: 0; border-radius: 0; overflow: visible; display: flex; flex-direction: column; gap: 10px; }
+/* the name and its control on the first line, its line under both: a line
+   that grows (a check-in's outcome, a longer state) never moves the
+   control just pressed, which the editor can't scroll back as a view does */
+.editor .prov-prefs .row.pref { display: grid; grid-template-columns: minmax(min(40%, 9em), 1fr) auto; align-items: start; min-height: 0; padding: 0; gap: 2px 12px; border: 0; }
+.editor .prov-prefs .row.pref[hidden] { display: none; }
+.editor .prov-prefs .row.pref > .who { display: contents; }
+.editor .prov-prefs .row.pref > .who > * { grid-column: 1 / -1; }
+.editor .prov-prefs .row.pref > .who > .name { grid-column: 1; grid-row: 1; }
+.editor .prov-prefs .row.pref > :not(.who) { grid-column: 2; grid-row: 1; justify-self: end; min-width: 0; margin-left: 0; }
+/* its width is the grid track's: .prefs .val's 60% of an auto track read as the
+   least, and a switch's buttons stacked (Xia5ai on X) */
+.editor .prov-prefs .row.pref > .val { max-width: 100%; }
+.editor .prov-prefs .row.pref .name { font-size: 12.5px; font-weight: 400; line-height: 24px; white-space: normal; }
+.editor .prov-prefs .row.pref .sub { font-size: 11px; line-height: 16px; color: var(--fg-2); margin-top: 0; white-space: normal; }
+/* a time and its picks fit the editor's narrower column: they wrap, at its end */
+.editor .prov-prefs .warm-at { flex: 0 1 auto; min-width: 0; max-width: 100%; flex-wrap: wrap; justify-content: flex-end; row-gap: 6px; }
+/* an account's own time goes under its picks, not above them: a pick pressed stays where it was */
+.editor .prov-prefs .warm-at:not(.times) { flex-wrap: wrap-reverse; }
+/* the editor's Claude Code runs as row switches it; magpie web as a
+   gateway has that row's switch off, so this one shows there */
+.prov-prefs #claudeRunList:not(.gw) #claudeTuiRow { display: none; }
 /* Settings' search finds them; not searching, the links stay out */
 #view-settings:not(.set-searching) :is(#agentPrefLinks, #provPrefLinks) { display: none; }
 
@@ -4969,4 +5233,6 @@ body .row.agent .ag-prefs .row.pref .who { display: block; }
 .sess-pick.led-more svg { transform: none; }
 .sess-tools .led-rename { flex: none; width: 180px; height: 26px; padding: 0 8px; border-radius: 7px; font-size: 12px; }
 /* Settings › About › Open-source licenses: the notices, as written */
-.notices-text { margin: 0; font: 11px/1.5 var(--code); white-space: pre-wrap; overflow-wrap: anywhere; }
+.notices-text { grid-column: 1 / -1; min-width: 0; margin: 0; font: 11px/1.5 var(--code); white-space: pre-wrap; overflow-wrap: anywhere; }
+.client-cert { display: grid; gap: 6px; min-width: 0; }
+.client-cert input { width: 100%; min-width: 0; }

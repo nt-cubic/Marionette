@@ -123,7 +123,10 @@ func TestSearchAPIAsksAreLogged(t *testing.T) {
 // errors say whole: the row says the host and what went wrong, not the URL.
 func TestSearchAPIFailureKeepsNoURL(t *testing.T) {
 	fresh(t)
-	const query = "wombat lattice 4410"
+	// letters only: a number could be in the server's random port
+	// (127.0.0.1:44105 held "4410" on ubuntu CI, #5616) or in the row's
+	// route_id (1794294410888 did on 11-10)
+	const query = "wombat lattice numbatzor"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c, _, err := w.(http.Hijacker).Hijack()
 		if err == nil {

@@ -10,7 +10,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"slices"
 	"sort"
@@ -28,12 +27,14 @@ import (
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/imagemcp"
+	"github.com/yetone/magpie/internal/lazyre"
 )
 
 // Server is one MCP server: a command magpie's agents start, or a URL they
 // reach.
 type Server struct {
-	Name string `json:"name"`
+	Name   string `json:"name"`
+	Bundle string `json:"bundle,omitempty"` // the Claude Code plugin it came with (plugin.go)
 	// Transport is stdio for a command, http (streamable) or sse for a URL.
 	Transport string            `json:"transport"`
 	Command   string            `json:"command,omitempty"`
@@ -64,10 +65,10 @@ type Server struct {
 	// gateway serves them at its URL, and the hub calls the plugin itself
 	// (plugin_tools.go)
 	Plugin string `json:"plugin,omitempty"`
-	// Hidden is a plugin's server whose tools were hidden from every
-	// agent on the Plugins page (PluginServerOn, chengming0v0 on
-	// Discord): no agent is given it, nor an app at the MCP router's
-	// address. Paused are the agents it had, given back when it is shown
+	// Hidden is a server turned off in the Library (ServerOn), or a
+	// plugin's whose tools were hidden from every agent on the Plugins
+	// page (PluginServerOn, chengming0v0 on Discord): no agent is given
+	// it, nor a project, nor an app at the MCP router's address. Paused are the agents it had, given back when it is shown
 	// again. Both go once the server has an agent again (save).
 	Hidden bool     `json:"hidden,omitempty"`
 	Paused []string `json:"paused,omitempty"`
@@ -354,7 +355,7 @@ func (f *mcpFile) supports(s *Server) error {
 
 // windowsPath is a program named as Windows names one: C:/…, a path with a
 // backslash in it, or …/npx.cmd.
-var windowsPath = regexp.MustCompile(`^[A-Za-z]:[\\/]|\\|(?i)\.(?:exe|cmd|bat|ps1)$`)
+var windowsPath = lazyre.New(`^[A-Za-z]:[\\/]|\\|(?i)\.(?:exe|cmd|bat|ps1)$`)
 
 // foreign says why an entry by the server's name that magpie can't read as
 // a server is one it mustn't write over, or nil: Zed's server from an
@@ -1128,7 +1129,8 @@ func (f *mcpFile) parseEntries(raw []byte) (map[string]map[string]any, error) {
 	var err error
 	switch f.Format {
 	case fmtCodex, fmtGrok:
-		err = toml.Unmarshal(raw, &doc)
+		// only the servers' tables are read: not Codex's thousands of projects
+		err = toml.Unmarshal(edit.TOMLWithout(raw, "projects"), &doc)
 	case fmtGoose, fmtHermes:
 		err = yaml.Unmarshal(raw, &doc)
 	default:

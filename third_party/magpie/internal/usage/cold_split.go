@@ -115,10 +115,26 @@ func (c *rowChunk) within(lo, hi time.Time) *rowChunk {
 	if len(ids) > 0 {
 		ids[0], order = 1, append(order, 0)
 	}
+	in := func(p *packedRow) bool {
+		t := p.Time()
+		return t.IsZero() || !t.Before(lo) && t.Before(hi)
+	}
+	// the rows counted first: grown by append, out's rows were 245 MB of
+	// what a real history's start allocated, twice what they needed
+	n := 0
+	for i := range open.Rows {
+		if in(&open.Rows[i]) {
+			n++
+		}
+	}
+	if n == 0 {
+		return nil
+	}
+	out.Rows = make([]packedRow, 0, n)
 	size := 0
 	for i := range open.Rows {
 		p := &open.Rows[i]
-		if t := p.Time(); !t.IsZero() && (t.Before(lo) || !t.Before(hi)) {
+		if !in(p) {
 			continue
 		}
 		t := open.texts(p)
@@ -172,6 +188,7 @@ func (b *blockPricer) alone() *blockPricer {
 // none. A named chunk's is kept by its serial: the page, the heatmap and
 // Codex's effort each ask it of every chunk.
 func chunkFirsts(sets [3][]*rowChunk) func(*rowChunk) time.Time {
+	derivedUsed()
 	firsts.Lock()
 	firsts.turn++
 	turn := firsts.turn

@@ -10,6 +10,12 @@
 //   await magpie.options.set(o)   sets them, and answers with them
 //   await magpie.read(name, p)    a read its package.json's
 //                                 magpie.permissions declares
+//   await magpie.image.copy(png)  puts a PNG (a Blob, as a canvas's
+//                                 toBlob makes it) on the clipboard
+//   await magpie.image.save(png, name)
+//                                 saves it in Downloads as name.png, and
+//                                 answers { path } ("" in magpie web,
+//                                 where the browser downloads it)
 //   magpie.context                where a panel is (P5): { provider: {
 //                                 id, name } } in a provider's editor,
 //                                 else {}; set once magpie.ready is
@@ -91,6 +97,27 @@
     waiting.delete(m.id);
     if (m.error) w.reject(new Error(m.error)); else w.resolve(m.result);
   });
+  // What the page's own code did wrong is what breaks it. Two things that
+  // reach its error handlers are not that: a script the browser put in
+  // the frame (a wallet's or a translator's extension, whose stack names
+  // chrome-extension://…), and a read of the window or another frame the
+  // sandbox shuts out (its storage, "The document is sandboxed and lacks the
+  // 'allow-same-origin' flag"; "Blocked a frame with origin "null" from accessing
+  // a cross-origin frame" in Chromium, "Sandbox access violation" in
+  // WebKit; a SecurityError). The page goes on without
+  // either, and the window's "stopped working" over it was a page that
+  // was fine (a day-card page, magpie 0.1.3702).
+  function foreign(err, file) {
+    const where = String(file || "") + "\n" + String(err?.stack || "");
+    if (/(?:chrome|moz|safari-web)-extension:\/\//i.test(where)) return true;
+    // storage the sandbox has none of: "Failed to read the 'localStorage'
+    // property from 'Window': The document is sandboxed and lacks the
+    // 'allow-same-origin' flag" (Chromium; WebKit says "The operation is
+    // insecure"), read by a script that isn't the page's (nivekxft on X)
+    const why = String(err?.message);
+    if (err?.name === "SecurityError" && (/The operation is insecure/.test(why) || (/(?:local|session)Storage|\bstorage\b|cookie/i.test(why) && /sandboxed|allow-same-origin/i.test(why)))) return true;
+    return err?.name === "SecurityError" && /Blocked a frame (?:with origin|at )/.test(why);
+  }
   function report(err) {
     parent.postMessage({ magpie: 1, method: "error", params: { message: String(err?.message || err) } }, "*");
   }
@@ -106,9 +133,13 @@
   let measuring = false;
   addEventListener("error", (e) => {
     if (/ResizeObserver loop/.test(e.message) || (measuring && !e.error && !e.filename)) { e.preventDefault(); return; }
+    if (foreign(e.error, e.filename)) { e.preventDefault(); return; }
     report(e.error || (e.message === "Script error." ? "" : e.message));
   });
-  addEventListener("unhandledrejection", (e) => report(e.reason));
+  addEventListener("unhandledrejection", (e) => {
+    if (foreign(e.reason)) { e.preventDefault(); return; }
+    report(e.reason);
+  });
   function act(data) {
     try { Promise.resolve(acting(data)).catch(report); } catch (err) { report(err); }
   }
@@ -128,6 +159,10 @@
       set: (options) => call("options.set", { options }),
     },
     read: (name, params) => call("read", { name, params }),
+    image: {
+      copy: (png) => call("image.copy", { png }),
+      save: (png, name) => call("image.save", { png, name }),
+    },
   };
   api.ready = call("hello").then(({ context, service, visible, ...theme }) => {
     api.theme = theme;

@@ -3,7 +3,8 @@
 // plugin's part of Settings). Run after app.js, whose helpers it shares
 // (el, icon, openPicker, modelOpt, prefWrite, api), and before start.js
 // draws Settings. It wraps renderRedact, so app.js carries none of it: the row
-// shows while anything is masked, after the masked-words rows.
+// shows while anything is masked, after the masked-words rows, and then
+// the providers sent unmasked (unmaskedRow).
 
 // redactRouteRow: where a request masking would change goes instead
 // (redactRouteTo, jessyoungyu on X): Off masks it as before; a model whose
@@ -37,6 +38,28 @@ function redactRouteRow(s) {
   r.append(who, val);
   r.id = "redactRouteRow";
   const after = $("#redactWordsWholeRow");
+  if (after) after.after(r); else $("#redactList").append(r);
+}
+// unmaskedRow: the providers the user set to Send requests unmasked
+// (unmaskedProviders), each opening its editor, where the switch is under
+// Advanced; none, it says where the switch is (CrazyMouse_TT on X wanted
+// masking off for their own model and found no way to)
+function unmaskedRow(s) {
+  const ps = s.unmaskedProviders || [];
+  const r = el("div", "row pref"), who = el("div", "who"), val = el("div", "val unmasked-list");
+  who.append(el("div", "name", t("Sent unmasked")), el("div", "sub", ps.length
+    ? t("Requests to these providers go as written. Open one to change it")
+    : t("None. For your own model, turn on Send requests unmasked in its provider's editor, under Advanced")));
+  for (const p of ps) {
+    const b = el("button", "rt-cond on");
+    b.type = "button";
+    b.append(icon(p.icon || "generic"), el("span", "", p.name || p.id));
+    b.onclick = () => openProvider(p.id);
+    val.append(b);
+  }
+  r.append(who, val);
+  r.id = "unmaskedRow";
+  const after = $("#redactRouteRow") || $("#redactWordsWholeRow");
   if (after) after.after(r); else $("#redactList").append(r);
 }
 // wordList: Masked words and Never mask as a list, one row a value
@@ -236,6 +259,22 @@ function redactWordsHidden(r) {
     if (at) at.before(words); else $("#redactList").append(words);
     redactWordsHidden(words);
     const acts = $("#maskActList");
+    // the Masking alert (Must2333 on X) first, with what else happens when
+    // a value is found: it was on the Masking page, away from every other
+    // masking setting (the scattered settings audit after netube99 on X),
+    // and in Settings › Usage before that (nb5p). Gateway mode leaves it
+    // out, as it does the other alerts its desktop would show
+    if (acts && !gatewayMode) {
+      const r = el("div", "row pref");
+      r.id = "maskAlertRow";
+      const who = el("div", "who");
+      who.append(el("div", "name", t("Masking alert")), el("div", "sub wraps", t("A notification when masking swaps a value for the first time: its kind and how many, never the value itself")));
+      const v = el("div", "val");
+      v.id = "maskAlertSegs";
+      v.append(segs([["off", t("Off")], ["on", t("On")]], s.maskAlert ? "on" : "off", (x) => savePrefs({ ...keep, maskAlert: x === "on" })));
+      r.append(who, v);
+      acts.prepend(r);
+    }
     if (acts) {
       const al = wordList("allow", s.redactAllow || [], t("ops@company.com, build-01"), t("Never mask"), (allow) => writingPrefs(api("settings/redact-allow", { allow }))
         .then((ns) => { prefs = ns; renderSettings(); status(t("Saved"), "ok", 1500); })
@@ -244,5 +283,16 @@ function redactWordsHidden(r) {
     }
     wordFocusBack(f);
     if (s.redact || s.redactPersonal || (s.redactWords || []).length) redactRouteRow(s);
+    unmaskedRow(s);
   };
 }
+
+// Plugins › Built-in › Masking's own line (featGo): on, with nothing
+// chosen to mask, it says so beside the way to Settings › Privacy, where
+// what to mask is chosen (the scattered settings audit after netube99 on X)
+featWho.redact = (line, f) => {
+  if (!f.on) return;
+  // Settings' own read: /api/state's has no masking fields
+  const say = () => { const s = prefs; if (s && !(s.redact || s.redactPersonal || s.redactWords?.length)) line.prepend(el("span", "warn", t("Nothing is masked yet")), line.childNodes.length ? " · " : ""); };
+  if (prefs) say(); else loadSettings().then(say, () => {});
+};

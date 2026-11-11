@@ -10,7 +10,7 @@ package agent
 // (custom-provider-store.ts, its zod fileSchema):
 //
 //	{"version":1,"providers":[{"id":"magpie","name":"magpie",
-//	  "baseUrl":"http://127.0.0.1:3425/v1",
+//	  "baseUrl":"http://127.0.0.1:3425/agent/openbot/v1",
 //	  "models":[{"id":"<model>","name":"<name>","contextWindow":<n>},…],
 //	  "secret":null}]}
 //
@@ -20,8 +20,10 @@ package agent
 // with Electron's safeStorage (the Keychain, DPAPI), which magpie doesn't
 // open, so magpie's entry has none: OpenBot hands it to OpenCode keyless
 // (opencode-config.ts, providerEntry), and the gateway takes a request with
-// no key from this computer. OpenCode sends it, so its requests count as
-// OpenCode's. A secret the user gave magpie's entry in OpenBot stays.
+// no key from this computer. OpenCode sends it, with OpenCode's
+// User-Agent, so the address names OpenBot instead: the gateway reads
+// /agent/openbot off it (gateway.AgentPath) and counts the request as
+// OpenBot's. A secret the user gave magpie's entry in OpenBot stays.
 //
 // OpenBot's list decoders fail closed: one entry or model it wouldn't accept
 // empties the whole list. So the models are the ones picked for it, at most
@@ -47,7 +49,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 
 	"github.com/tidwall/gjson"
@@ -55,6 +56,7 @@ import (
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/lazyre"
 )
 
 // openBotFile is the file of OpenBot's custom endpoints in its userData.
@@ -70,7 +72,7 @@ const openBotMaxModels = 64
 
 // openBotModelID is a model id OpenBot lists as magpie/<id>
 // (isAgentModel, ipc-agent-identity.ts).
-var openBotModelID = regexp.MustCompile(`^[A-Za-z0-9._:/\[\],=-]+$`)
+var openBotModelID = lazyre.New(`^[A-Za-z0-9._:/\[\],=-]+$`)
 
 // openBotProc is OpenBot's process: the .app's and the .exe's OpenBot, the
 // AppImage's openbot.
@@ -88,7 +90,7 @@ func openBot(home, cfg string) *Agent {
 		return openBotWire(path, openBotEntry(gateway.URL()))
 	}
 	return atomic(&Agent{
-		ID: "openbot", Name: "OpenBot", Icon: "generic", Aliases: []string{"open-bot"},
+		ID: "openbot", Name: "OpenBot", Icon: "openbot", Aliases: []string{"open-bot"},
 		Dir: dir, Path: path,
 		// its userData folder once it has run, else its app
 		detect: func() bool {
@@ -210,7 +212,7 @@ func openBotEntry(gw string) openBotProvider {
 			break
 		}
 	}
-	return openBotProvider{ID: magpieID, Name: "magpie", BaseURL: gw + "/v1", Models: ms, Secret: json.RawMessage("null")}
+	return openBotProvider{ID: magpieID, Name: "magpie", BaseURL: gateway.AgentURL(gw, "openbot") + "/v1", Models: ms, Secret: json.RawMessage("null")}
 }
 
 // openBotWired says the file has magpie's entry.

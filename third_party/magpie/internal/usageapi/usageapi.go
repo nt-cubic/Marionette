@@ -224,9 +224,12 @@ func PeriodOf(s string) usage.Period {
 	return usage.Month
 }
 
+// FilterOf is the filter a request's query names. A found routing group's
+// model is taken as magpie keeps it (group/auto-…), as the menu offers it
+// by its public auto/<model>, so either id picks the group's calls.
 func FilterOf(q url.Values) usage.Filter {
 	id, _ := strconv.ParseInt(q.Get("route"), 10, 64)
-	return usage.Filter{Day: q.Get("day"), RouteID: id, Model: q.Get("model"), Agent: q.Get("agent"), Provider: q.Get("provider"), Purpose: q.Get("purpose"), Account: q.Get("account"), CallerKey: q.Get("callerKey"), Failed: q.Get("failed") == "1", Retried: q.Get("retried") == "1", Query: q.Get("q"), Computer: q.Get("computer"), Through: viaOf(q.Get("via"))}
+	return usage.Filter{Day: q.Get("day"), RouteID: id, Model: provider.CanonicalRef(q.Get("model")), Agent: q.Get("agent"), Provider: q.Get("provider"), Purpose: q.Get("purpose"), Account: q.Get("account"), CallerKey: q.Get("callerKey"), Failed: q.Get("failed") == "1", Retried: q.Get("retried") == "1", Query: q.Get("q"), Computer: q.Get("computer"), Through: viaOf(q.Get("via"))}
 }
 
 // viaOf is the source a request's ?via= names, "" for both.
@@ -252,6 +255,12 @@ type Row struct {
 	// Canceled: its agent canceled it before it was answered
 	// (usage.Record.Canceled), which the page shows as no failure
 	Canceled bool `json:"canceled,omitempty"`
+}
+
+// ModelSpeed is a usage.ModelSpeed with the name the page shows the model by.
+type ModelSpeed struct {
+	usage.ModelSpeed
+	Name string `json:"name"`
 }
 
 type Ledger struct {
@@ -289,6 +298,11 @@ type Ledger struct {
 	// Computers: this one ("this", no name) and the others whose usage
 	// sync brought (#542), for the filter; none while there are none
 	Computers []Share `json:"computers,omitempty"`
+	// Speeds: the models of the rows the filter keeps by the median speed
+	// of their requests and of their wait for the first token (usage.ModelSpeed)
+	Speeds []ModelSpeed `json:"speeds"`
+	// SpeedMin is the fewest output tokens a request wrote to count in it
+	SpeedMin int `json:"speed_min"`
 }
 
 // Share is a usage.Share with the name and logo the page shows it by.
@@ -361,15 +375,12 @@ func LedgerPage(p usage.Period, f usage.Filter, offset, limit int) Ledger {
 	}
 	// a group magpie found is named as agents pick it, auto/<model>; the
 	// ledger keeps group/auto-<slug> (provider.CanonicalRef)
-	pub := map[string]string{}
+	pub := provider.PublicRefs()
 	for _, r := range page {
 		a := who(r.Agent)
 		lr := Row{Row: r, AgentName: a.Name, Icon: a.Icon, ProviderName: which(r.Provider).Name, Canceled: r.Canceled()}
-		if req := r.Requested; strings.HasPrefix(req, provider.GroupPrefix) {
-			if _, ok := pub[req]; !ok {
-				pub[req] = provider.PublicRef(req)
-			}
-			lr.Requested = pub[req]
+		if pub != nil {
+			lr.Model, lr.Requested = pub(r.Model), pub(r.Requested)
 		}
 		if r.Source != "log" && r.Source != usage.SourceReported {
 			lr.Access = access[r.Provider]
@@ -450,6 +461,15 @@ func LedgerPage(p usage.Period, f usage.Filter, offset, limit int) Ledger {
 	out.By = sharesJSON(l.By)
 	if l.ChartBy != nil {
 		out.ChartBy = sharesJSON(l.ChartBy)
+	}
+	out.Speeds = []ModelSpeed{}
+	out.SpeedMin = usage.MinRankTokens
+	for _, s := range l.Speeds {
+		name := s.Model
+		if pub != nil {
+			name = pub(name)
+		}
+		out.Speeds = append(out.Speeds, ModelSpeed{ModelSpeed: s, Name: name})
 	}
 	for _, s := range l.Computers {
 		ls := Share{Share: s, Name: l.Names[s.ID]}

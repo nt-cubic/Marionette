@@ -154,7 +154,7 @@ func CachedCards(now time.Time) []SubscriptionQuota {
 			}
 		}
 	}
-	return append(out, passedOnCards()...)
+	return oneCardPerAccount(append(out, passedOnCards()...))
 }
 
 // passedOnCards are the cards of each Remote magpie this one uses, as
@@ -266,7 +266,7 @@ func RemoteCards(ctx context.Context) []SubscriptionQuota {
 		}()
 	}
 	wg.Wait()
-	return slices.Concat(got...)
+	return oneCardPerAccount(slices.Concat(got...))
 }
 
 // remoteCards is p's cards, from what was kept here when it is recent and
@@ -308,9 +308,10 @@ func remoteCards(ctx context.Context, p Provider, fresh bool) []SubscriptionQuot
 // model listed that way is (catalog.Loops).
 func namedRemoteCards(p Provider, cards []SubscriptionQuota) []SubscriptionQuota {
 	name := remoteName(p)
+	wanted := remoteCardWanted(p)
 	out := make([]SubscriptionQuota, 0, len(cards))
 	for _, q := range cards {
-		if q.Provider == "" || catalog.Loops(q.Via) {
+		if q.Provider == "" || catalog.Loops(q.Via) || !wanted(q.Provider) {
 			continue
 		}
 		q.Provider = p.ID + "/" + q.Provider
@@ -404,7 +405,8 @@ func keepRemoteCards(id string, asked time.Time, cards []SubscriptionQuota, err 
 	case err != nil:
 		r.err = err.Error()
 	default:
-		r.cards, r.err, r.held = cards, "", false
+		// a card that came back round isn't kept, nor told again
+		r.cards, r.err, r.held = withoutLoops(cards), "", false
 	}
 	if c.m == nil {
 		c.m = map[string]remoteCardsRead{}
@@ -509,6 +511,12 @@ func remoteJSON(ctx context.Context, p Provider, method, path string, wait time.
 // gives back the body of a 2xx answer; any other is an error that says
 // what to do about it.
 func remoteBody(ctx context.Context, p Provider, method, path string, wait time.Duration) ([]byte, error) {
+	return remoteBodyAs(ctx, p, method, path, wait, 8<<20, errRemoteNoShare)
+}
+
+// remoteBodyAs is remoteBody for an answer of up to max bytes, and with
+// noShare as the word for a remote that doesn't have the path.
+func remoteBodyAs(ctx context.Context, p Provider, method, path string, wait time.Duration, max int64, noShare string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, method, p.Anthropic+path, nil)
@@ -522,7 +530,7 @@ func remoteBody(ctx context.Context, p Provider, method, path string, wait time.
 		return nil, fmt.Errorf("%s %s: %w", errRemoteUnreachable, remoteName(p), err)
 	}
 	defer res.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(res.Body, 8<<20))
+	b, err := io.ReadAll(io.LimitReader(res.Body, max))
 	if err != nil && ctx.Err() != nil {
 		return nil, fmt.Errorf("%s %s: %w", errRemoteUnreachable, remoteName(p), ctx.Err())
 	}
@@ -534,7 +542,7 @@ func remoteBody(ctx context.Context, p Provider, method, path string, wait time.
 	}
 	switch {
 	case res.StatusCode == http.StatusNotFound || res.StatusCode == http.StatusMethodNotAllowed:
-		return nil, fmt.Errorf("%s", errRemoteNoShare)
+		return nil, fmt.Errorf("%s", noShare)
 	case res.StatusCode == http.StatusForbidden:
 		json.Unmarshal(b, &e)
 		switch e.Error.Code {

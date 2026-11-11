@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -76,6 +77,8 @@ type host struct {
 	panel *application.WebviewWindow
 	main  *application.WebviewWindow
 	tray  *application.SystemTray
+	// remote shows another magpie's page (remote_app.go); main thread only
+	remote *application.WebviewWindow
 	// flapping is set while the tray bird plays its flap, so a second
 	// click in it doesn't start another over it
 	flapping atomic.Bool
@@ -144,6 +147,16 @@ func (h *host) ShowMain(view string) {
 
 // MainShown says whether the window is up.
 func (h *host) MainShown() bool { return application.InvokeSyncWithResult(h.mainShown) }
+
+// mainUp says whether the window is up and whether it is minimised, read
+// together on the main thread.
+func (h *host) mainUp() (up, minimised bool) {
+	application.InvokeSync(func() {
+		up = h.mainShown()
+		minimised = up && h.main.IsMinimised()
+	})
+	return up, minimised
+}
 
 // Import opens the window on an import link, for the user to confirm.
 func (h *host) Import(link string) {
@@ -348,6 +361,7 @@ func Run(version string, showMain bool, link string) error {
 	// magpie before, which hands it the gateway (handover.go).
 	startExe, _ = update.Executable()
 	handoverHost.Store(true)
+	pausable.Store(true) // the gateway paused from its menu (gatewaypause.go)
 	before := 0
 	if startExe != "" {
 		before = takeOver(startExe)
@@ -363,8 +377,9 @@ func Run(version string, showMain bool, link string) error {
 	}
 	// a restart magpie made by itself: back as it was, taking no focus
 	// (quiet_restart.go)
-	quiet := takeQuietRestart()
+	quiet, minimised := takeQuietRestart()
 	quietShow.Store(quiet && showMain)
+	quietMinimised.Store(quiet && showMain && minimised)
 	// before the first webview, which opens WebKit's data where programName says
 	keepWebData()
 	go func() {
@@ -502,9 +517,26 @@ func Run(version string, showMain bool, link string) error {
 	onFonts = h.fontsChanged
 
 	// the menu in the page's language, relabelled when that changes (#301)
-	labels := trayMenuLabels(trayLang(settings.Load().Lang, systemLang), version, "")
+	labels := trayMenuLabels(trayLang(settings.Load().Lang, systemLang), version, "", pausedNow())
 	menu := h.app.NewMenu()
 	open := menu.Add(labels.open).OnClick(func(*application.Context) { h.ShowMain("") })
+	menu.AddSeparator()
+	// the gateway paused, or resumed, without quitting (gatewaypause.go);
+	// what couldn't be done opens the window on Settings, which says it
+	pause := menu.Add(labels.pause).OnClick(func(*application.Context) {
+		go func() {
+			var r pauseJSON
+			if pausedNow() {
+				r = resumeGateway()
+			} else {
+				r = pauseGateway()
+			}
+			if r.Error != "" || r.Fix != nil {
+				log.Printf("gateway pause: %s %s", r.Agent, r.Error)
+				h.ShowMain("settings")
+			}
+		}()
+	})
 	menu.AddSeparator()
 	ver := menu.Add(labels.version).SetEnabled(false)
 	restart := menu.Add(labels.restart).SetHidden(true)
@@ -522,11 +554,12 @@ func Run(version string, showMain bool, link string) error {
 	quit := menu.Add(labels.quit).OnClick(func(*application.Context) { go h.AskQuit() })
 	var ready string // the version waiting for a restart; on the main thread
 	relabel := func() {
-		l := trayMenuLabels(trayLang(settings.Load().Lang, systemLang), version, ready)
+		l := trayMenuLabels(trayLang(settings.Load().Lang, systemLang), version, ready, pausedNow())
 		if waiting, b := updates.waitingFor(); waiting && ready != "" {
 			l.restart = trayRestartNow(trayLang(settings.Load().Lang, systemLang), b)
 		}
 		open.SetLabel(l.open)
+		pause.SetLabel(l.pause)
 		ver.SetLabel(l.version)
 		restart.SetLabel(l.restart)
 		quit.SetLabel(l.quit)
@@ -536,6 +569,7 @@ func Run(version string, showMain bool, link string) error {
 		}
 	}
 	onLang = func() { application.InvokeSync(relabel) }
+	onPaused = onLang
 	updates.onReady = func(v string) {
 		application.InvokeSync(func() {
 			ready = v
@@ -544,9 +578,11 @@ func Run(version string, showMain bool, link string) error {
 		})
 	}
 	updates.onWait = func() { application.InvokeSync(relabel) }
-	// Settings' AutoRestart: the window comes back only if it was up (#2096)
+	// Settings' AutoRestart: the window comes back only if it was up
+	// (#2096), and minimised if it was (#3495)
 	updates.autoRestart = func() bool {
-		if restartInto(false, h.MainShown(), "", true) {
+		up, minimised := h.mainUp()
+		if restartInto(false, up, "", true, minimised) {
 			leave(h.app.Quit)
 			return true
 		}
@@ -569,6 +605,10 @@ func Run(version string, showMain bool, link string) error {
 		// one has handed the gateway to the new version (#4938)
 		library.KeepLinked(backendCtx, 30*time.Second)
 	}()
+	// conversations read into memory, when switched on (Memory tab)
+	go keepDistilling(backendCtx)
+	// memories read for search by meaning, when switched on
+	go keepEmbedding(backendCtx)
 
 	// before the item is made, which starts as hidden as AppKit kept it
 	hiddenAtStart := bringTrayBack()
@@ -677,7 +717,11 @@ func Run(version string, showMain bool, link string) error {
 		h.whenReady(h.applyZoom)
 	}
 	if showMain {
-		h.whenReady(func() { h.ShowMain(argView(OpenView)) })
+		view := argView(OpenView)
+		if OpenUninstall {
+			view = uninstallView
+		}
+		h.whenReady(func() { h.ShowMain(view) })
 	} else if quiet && settings.Load().Dock {
 		// kept out of the Dock to start (Mac options above), it joins
 		// now without coming to the front
@@ -741,6 +785,8 @@ func singleInstance(h *host) *application.SingleInstanceOptions {
 			case len(args) == 1 && args[0] == "tray":
 			case len(args) == 1 && args[0] == "panel":
 				h.whenReady(func() { application.InvokeAsync(h.togglePanel) })
+			case slices.Equal(args, shortcut.UninstallArgs):
+				h.whenReady(func() { h.ShowMain(uninstallView) })
 			case len(args) == 2 && (args[0] == "gui" || args[0] == "app"):
 				h.whenReady(func() { h.ShowMain(argView(args[1])) })
 			default:
@@ -846,6 +892,14 @@ func panelOptions(goos, theme string) application.WebviewWindowOptions {
 // icon runs it (see omarchy.AddWidget).
 var OpenPanel bool
 
+// OpenUninstall opens the window on Settings › Uninstall magpie, asking
+// (Windows' Installed apps, shortcut.UninstallArgs).
+var OpenUninstall bool
+
+// uninstallView is Settings' About part with Uninstall magpie's question
+// open (uninstallMagpie in app.js).
+const uninstallView = "settings&tab=about&uninstall=1"
+
 // OpenView is the tab the window opens on, as `magpie gui settings` asks:
 // a restart to update comes back where it was asked for.
 var OpenView string
@@ -859,9 +913,14 @@ var Started func()
 // version leaving the menu bar, panel, window and Dock to it while it
 // finishes its requests: one bird. Hidden, the item's visibility is kept by
 // AppKit for the app, the new version's item and every later one too, so it
-// is forgotten once the hide is made.
+// is forgotten once the hide is made. Hiding forgets where the item sits
+// too ("NSStatusItem Preferred Position Item-0"), the place the new
+// version's item shares, so the item is renamed first, as on a quit
+// (keepTrayPlace): every update put the icon back at the default spot,
+// in Ice's hidden section (imty42 on X, #3873).
 func (h *host) leaveMenuBar() {
 	application.InvokeSync(func() {
+		keepTrayPlace()
 		h.tray.Hide()
 		forgetTrayHiddenLater()
 		hideWebview(h.panel)

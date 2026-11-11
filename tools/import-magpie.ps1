@@ -10,7 +10,8 @@
 # SKIP_MAGPIE_IMPORT=1.
 #
 # Kept: main.go, go.mod, go.sum, internal/, plugins/, LICENSE, README.md,
-#       THIRD_PARTY_NOTICES (embedded by main.go; optional so old tags still pin).
+#       THIRD_PARTY_NOTICES (embedded by main.go; optional so old tags still pin),
+#       third_party/ (upstream's own local go.mod replacements; optional, see below).
 # Dropped: site/ (marketing, ~59MB), build/ (per-OS packaging assets),
 #          .github/, docs/ — none of them are needed by the nogui build.
 #
@@ -75,6 +76,37 @@ if (Test-Path $notices) {
     Write-Output "[import] note: $Tag has no THIRD_PARTY_NOTICES (older upstream does not embed it)"
 }
 
+# Upstream vendors patched dependencies under its own third_party/ and points at
+# them from go.mod (`replace ... => ./third_party/jsonschema`, added in
+# v0.1.37xx). Missing that folder kills the Go build with
+# "replacement directory ./third_party/jsonschema does not exist", long before
+# anything Marionette-side runs — so carry it whenever the tag has one.
+# Optional on purpose: older tags have no third_party/ at all and must keep pinning.
+$upstreamThirdParty = Join-Path $tmp 'third_party'
+if (Test-Path $upstreamThirdParty) {
+    Copy-Item -Recurse -Force $upstreamThirdParty $dest
+    $tpNames = (Get-ChildItem $upstreamThirdParty -Name) -join ', '
+    Write-Output "[import] upstream third_party/ vendored (local go.mod replacements): $tpNames"
+} else {
+    Write-Output "[import] note: $Tag has no upstream third_party/ (no local go.mod replacements)"
+}
+
+# Guard: every local path replacement in go.mod must resolve inside the subset we
+# copied. This is what caught the v0.1.3727 break — fail here with a clear message
+# instead of a bare Go error ten minutes into the portable build.
+$goModText = [IO.File]::ReadAllText((Join-Path $dest 'go.mod'))
+$localReplaces = @([regex]::Matches($goModText, '(?m)^replace\s+(\S+)\s*=>\s*(\.\.?[\\/][^\s]*)') |
+    ForEach-Object { [pscustomobject]@{ Module = $_.Groups[1].Value; Path = $_.Groups[2].Value } })
+foreach ($r in $localReplaces) {
+    $resolved = Join-Path $dest $r.Path
+    if (-not (Test-Path $resolved)) {
+        throw "go.mod replaces $($r.Module) with local dir '$($r.Path)' but it was not imported — add that upstream folder to the copy list in tools\import-magpie.ps1"
+    }
+}
+if ($localReplaces.Count -gt 0) {
+    Write-Output ("[import] go.mod local replacements OK: {0}" -f (($localReplaces | ForEach-Object { $_.Path }) -join ', '))
+}
+
 # Version stamp consumed by the portable build (engine-embedded/VERSION).
 [IO.File]::WriteAllText((Join-Path $dest 'VERSION'), "$Tag`n")
 
@@ -126,7 +158,7 @@ Get-ChildItem $providerDir -Filter *.go | ForEach-Object {
 @(
     "Vendored from https://github.com/yetone/magpie (MIT) at tag $Tag on $(Get-Date -Format yyyy-MM-dd).",
     "Imported by tools\import-magpie.ps1 — default Tag is GitHub latest stable; pass -Tag or MAGPIE_TAG to pin.",
-    "Subset only: build inputs for the nogui CLI. Upstream site/, build/, .github/, docs/ are intentionally absent.",
+    "Subset only: build inputs for the nogui CLI, plus upstream third_party/ when the tag ships local go.mod replacements. Upstream site/, build/, .github/, docs/ are intentionally absent.",
     "Marionette patch: main_seed.go (build tag marionette_seed) is the slim gateway-only main; import re-applies it. See tools\magpie-seed\main_seed.go.",
     "Marionette patch: marionette_peel.go peels Codex [effort] (and Claude [1m]) in GroupFor so share aliases match. See tools\magpie-seed\marionette_peel.go.",
     "License: LICENSE (MIT) in this folder."

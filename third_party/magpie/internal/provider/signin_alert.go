@@ -82,6 +82,11 @@ type signInState struct {
 // whether it has to be signed in again, and when a Claude one's sign-in
 // ends.
 func signInStates() []signInState {
+	// one look, held: each account's PluginOf and Logins built the
+	// plugins' list and every login again, 2.5 MB a look with real
+	// accounts, twice every two minutes (the app's alert and the
+	// gateway's hooks each look)
+	defer Hold()()
 	ends := map[string]time.Time{}
 	var out []signInState
 	for _, p := range Accounts() {
@@ -206,4 +211,15 @@ func WatchSignIns(ctx context.Context, send func(SignInAlert)) {
 		}
 		t.Reset(signInAlertEvery)
 	}
+}
+
+// SignInHooksPath keeps what the gateway's request hooks were told, apart
+// from the app's notifications' marks (signInAlertPath): the magpie
+// serving the gateway tells its hooks, and the app the user, each once.
+func SignInHooksPath() string { return filepath.Join(filepath.Dir(Path()), "signin-hooks.json") }
+
+// SignInAlertsAt is one look at the accounts: the sign-in alerts due, as
+// WatchSignIns tells them, with what was told kept in path.
+func SignInAlertsAt(path string) []SignInAlert {
+	return checkSignIns(path, signInStates(), time.Now())
 }

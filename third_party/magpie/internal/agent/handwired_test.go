@@ -138,9 +138,9 @@ func TestPiConnectedBeforeStaysConnected(t *testing.T) {
 // Every agent whose magpie is a provider of its own config (Spelled) holds
 // a provider magpie didn't put there as the user's, as Pi does.
 func TestHandWiredMagpieProviderSiblings(t *testing.T) {
-	ids := []string{"agy", "opencode", "openchamber", "mimocode", "deveco", "pi", "aside", "omo", "prime-agent", "goose", "zed", "vscode",
-		"crush", "dsh", "ds-bot", "commandcode", "fx", "omp", "hermes", "morph", "kimi", "empryo", "minimax-code", "droid",
-		"qoder", "qoder-cn", "grok", "atomcode", "cline", "snow"}
+	ids := []string{"agy", "opencode", "openchamber", "mimocode", "deveco", "pi", "aside", "omo", "prime-agent", "mu", "goose", "zed", "vscode",
+		"crush", "dsh", "ds-bot", "commandcode", "fx", "omp", "hermes", "morph", "kimi", "empryo", "nanobot", "miniq", "paimon", "craft-agents", "minimax-code", "droid",
+		"qoder", "qoder-cn", "grok", "atomcode", "cline", "snow", "tuanjie-cowork"}
 	for _, id := range ids {
 		t.Run(id, func(t *testing.T) {
 			if id == "aside" {
@@ -169,6 +169,9 @@ func TestHandWiredMagpieProviderSiblings(t *testing.T) {
 			}
 			if id == "cline" {
 				hanakoWrite(t, a.Path, `{"version":1,"modes":{},"providers":{},"lastUsedProvider":"openrouter"}`, 0o600)
+			}
+			if id == "craft-agents" {
+				hanakoWrite(t, a.Path, craftUser, 0o644)
 			}
 			// written outside magpie: the field's own Set, nothing recorded
 			if err := a.Fields[0].Set("magpie/relay/glm-4.6"); err != nil {

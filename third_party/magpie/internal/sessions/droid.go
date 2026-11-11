@@ -5,7 +5,6 @@ import (
 	"html"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/tidwall/jsonc"
 
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/lazyre"
 )
 
 // Factory's Droid keeps a session under its sessions folder
@@ -90,7 +90,7 @@ func droidFiles() []file {
 		if !stat(&f) {
 			continue
 		}
-		calling, _ := callers.get(p, f.size, f.mod, func() (string, bool) {
+		calling, _ := callers.get(p, f.size, f.mod.Time(), func() (string, bool) {
 			s, ok := readDroidStart(p)
 			return s.Calling, ok
 		})
@@ -244,8 +244,8 @@ func parseDroid(f file, old *state) *state {
 	var s *state
 	var c droidCarry
 	var off int64
-	if old != nil && old.Droid != nil && old.Droid.Tail.holds(f.path) {
-		s, c, off = old.clone(), *old.Droid, old.Droid.Tail.Off
+	if old != nil && old.more().Droid != nil && old.more().Droid.Tail.holds(f.path) {
+		s, c, off = old.clone(), *old.more().Droid, old.more().Droid.Tail.Off
 		s.dropUse(c.Date, c.Model, c.Tokens)
 	} else {
 		s = &state{}
@@ -273,7 +273,7 @@ func parseDroid(f file, old *state) *state {
 			s.use(c.Date, c.Model, c.Tokens)
 		}
 	}
-	s.Droid = &c
+	s.own().Droid = &c
 	return s
 }
 
@@ -287,9 +287,9 @@ func droidLineOf(s *state, c *droidCarry, b []byte, main bool) {
 		c.Started = true
 		var st droidStart
 		if l.Type == "session_start" && json.Unmarshal(b, &st) == nil {
-			s.ID, s.Cwd, s.Named = st.ID, st.Cwd, title(st.Title)
-			if s.Named == "New Session" {
-				s.Named = "" // Droid's until it names one
+			s.ID, s.Cwd, s.own().Named = st.ID, st.Cwd, title(st.Title)
+			if s.more().Named == "New Session" {
+				s.own().Named = "" // Droid's until it names one
 			}
 			if st.LastCwd != "" {
 				s.Cwd = st.LastCwd
@@ -320,8 +320,8 @@ func droidLineOf(s *state, c *droidCarry, b []byte, main bool) {
 			return
 		}
 		if strings.HasPrefix(strings.TrimSpace(text), "<") {
-			if s.First == "" {
-				s.First = untagged(text)
+			if s.more().First == "" {
+				s.own().First = untagged(text)
 			}
 			return
 		}
@@ -341,7 +341,7 @@ func droidLineOf(s *state, c *droidCarry, b []byte, main bool) {
 
 // droidSlot is the tail droid gives a custom model's id made of its name
 // ("custom:Kimi-K2-[Groq]-0").
-var droidSlot = regexp.MustCompile(`(-\[[^\]]*\])?-\d+$`)
+var droidSlot = lazyre.New(`(-\[[^\]]*\])?-\d+$`)
 
 // droidModelName is a session's model as it is priced: a custom one
 // ("custom:<id>") is the model its entry in droid's settings asks for —

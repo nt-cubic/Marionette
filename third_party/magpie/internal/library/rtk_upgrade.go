@@ -14,13 +14,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/source"
 	"github.com/yetone/magpie/internal/steady"
@@ -350,6 +350,18 @@ func rtkUpgrader(bin string) []string {
 	// winget's own folders: its package, or the link it puts in
 	// WinGet\Links to one installed with --location (#1527)
 	case rtkOnWindows && (strings.Contains(strings.ToLower(slash), "/winget/") || strings.Contains(strings.ToLower(filepath.ToSlash(bin)), "/winget/")):
+		// winget says it has no rtk-ai.rtk installed (0x8A150014, netube99 on
+		// X): the exe was put in its folder, or left there, by something
+		// else, and winget upgrade would fail. rtk's own release is put over
+		// it instead, over the file a WinGet\Links link points to.
+		// A link in WinGet\Links to an exe outside winget's folders was made
+		// by winget (--location, #1527); only the exe inside them is asked.
+		if have("winget") && strings.Contains(strings.ToLower(slash), "/winget/") && wingetDisowns(bin, real) {
+			if rtkArch == "amd64" {
+				return []string{rtkWindowsRelease, real}
+			}
+			return nil
+		}
 		if have("winget") {
 			return wingetUp
 		}
@@ -753,7 +765,7 @@ func UpgradeRTK() (*RTKView, error) {
 		if version == "" {
 			return nil, fmt.Errorf("magpie can't tell which RTK release to install for %s — check the network and try again", bin)
 		}
-		if err := installRTKWindowsRelease(version, bin); err != nil {
+		if err := installRTKWindowsRelease(version, c[1]); err != nil {
 			return nil, err
 		}
 	} else {
@@ -1030,10 +1042,10 @@ func brewError(out string) string {
 }
 
 var (
-	ansiSeq = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+	ansiSeq = lazyre.New(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 	// a line that is only a spinner frame or a progress bar (winget's
 	// ██████▒▒▒ 1.20 MB / 3.40 MB, Homebrew's ###, curl's %)
-	progressLine = regexp.MustCompile(`^(?:[-\\|/]|[█▓▒░#=>.\s]*\d*(?:\.\d+)?\s*(?:[KMG]i?B\s*/\s*\d+(?:\.\d+)?\s*[KMG]i?B|%)?)$`)
+	progressLine = lazyre.New(`^(?:[-\\|/]|[█▓▒░#=>.\s]*\d*(?:\.\d+)?\s*(?:[KMG]i?B\s*/\s*\d+(?:\.\d+)?\s*[KMG]i?B|%)?)$`)
 )
 
 // installerSaid is the last lines an installer printed that say something:

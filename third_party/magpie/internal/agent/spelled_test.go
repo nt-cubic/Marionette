@@ -12,8 +12,8 @@ import (
 // leaving the row connected on the model it went back to (#835, OpenHanako's
 // own deepseek/deepseek-v4-pro).
 func TestOwnProviderNamedAsMagpies(t *testing.T) {
-	ids := []string{"agy", "opencode", "openchamber", "mimocode", "deveco", "pi", "aside", "omo", "prime-agent", "goose", "zed", "vscode",
-		"crush", "dsh", "ds-bot", "commandcode", "fx", "omp", "hermes", "morph", "kimi", "empryo", "minimax-code", "droid",
+	ids := []string{"agy", "opencode", "openchamber", "mimocode", "deveco", "pi", "aside", "omo", "prime-agent", "mu", "goose", "zed", "vscode",
+		"crush", "dsh", "ds-bot", "commandcode", "fx", "omp", "hermes", "morph", "kimi", "empryo", "nanobot", "miniq", "paimon", "craft-agents", "minimax-code", "droid",
 		"qoder", "qoder-cn", "grok", "atomcode", "cline", "snow", "qwenpaw"}
 	for _, id := range ids {
 		t.Run(id, func(t *testing.T) {
@@ -27,6 +27,14 @@ func TestOwnProviderNamedAsMagpies(t *testing.T) {
 				t.Fatal(err)
 			}
 			f := &a.Fields[0]
+			if id == "miniq" {
+				// a provider of the user's own, for its own model to be on
+				hanakoWrite(t, a.Path, `{"provider":{"baseUrl":"https://relay.example/v1","apiKey":"sk-own","model":"glm-4.5","apiProtocol":"auto"}}`, 0o600)
+			}
+			if id == "craft-agents" {
+				// Craft's own config, with a connection of the user's
+				hanakoWrite(t, a.Path, craftUser, 0o644)
+			}
 			if id == "cline" {
 				// a model of OpenRouter's, the provider Cline is on
 				hanakoWrite(t, a.Path, `{"version":1,"modes":{},"providers":{},"lastUsedProvider":"openrouter"}`, 0o600)

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"github.com/tidwall/gjson"
 
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/lazyre"
 )
 
 // Grok Build keeps a session in a folder of its own under its sessions
@@ -119,7 +119,7 @@ func grokFiles() []file {
 			if m.mod.After(f.mod) {
 				f.mod = m.mod
 			}
-			s, ok := kinds.get(m.path, m.size, m.mod, func() (grokKind, bool) {
+			s, ok := kinds.get(m.path, m.size, m.mod.Time(), func() (grokKind, bool) {
 				s, ok := readGrokSummary(m.path)
 				return grokKind{s.Kind, s.Parent}, ok
 			})
@@ -214,8 +214,8 @@ func parseGrok(f file, old *state) *state {
 	}
 	var s *state
 	var off int64
-	if o := old; o != nil && o.Grok != nil && o.Grok.Model == c.Model && o.Grok.Created.Equal(c.Created) && o.Grok.Since.Equal(c.Since) && o.Grok.Tail.holds(f.path) {
-		s, c, off = o.clone(), *o.Grok, o.Grok.Tail.Off
+	if o := old; o != nil && o.more().Grok != nil && o.more().Grok.Model == c.Model && o.more().Grok.Created.Equal(c.Created) && o.more().Grok.Since.Equal(c.Since) && o.more().Grok.Tail.holds(f.path) {
+		s, c, off = o.clone(), *o.more().Grok, o.more().Grok.Tail.Off
 	} else {
 		s = &state{}
 		if hasM {
@@ -223,9 +223,9 @@ func parseGrok(f file, old *state) *state {
 		}
 	}
 	s.Size, s.Mod = f.size, f.mod.UnixNano()
-	s.ID, s.Cwd, s.Named = m.Info.ID, m.Info.Cwd, title(m.GeneratedTitle)
-	if s.Named == "" {
-		s.Named = title(m.SessionSummary)
+	s.ID, s.Cwd, s.own().Named = m.Info.ID, m.Info.Cwd, title(m.GeneratedTitle)
+	if s.more().Named == "" {
+		s.own().Named = title(m.SessionSummary)
 	}
 	end, err := scanAt(f.path, off, nil, func(b []byte, _, _ int64) bool {
 		grokUpdate(s, &c, b, f.main)
@@ -239,11 +239,11 @@ func parseGrok(f file, old *state) *state {
 	if c.InPrompt {
 		t = title(c.Prompt)
 	}
-	s.Title, s.First = t, ""
+	s.Title, s.own().First = t, ""
 	if strings.HasPrefix(t, "<") {
-		s.Title, s.First = "", untagged(t)
+		s.Title, s.own().First = "", untagged(t)
 	}
-	s.Grok = &c
+	s.own().Grok = &c
 	return s
 }
 
@@ -331,7 +331,7 @@ func grokTool(s *state, at time.Time, b []byte) {
 }
 
 // grokSkillName is a name a /<name> prompt can call a skill up by.
-var grokSkillName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+var grokSkillName = lazyre.New(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 
 // grokSlashSkill is the skill a prompt typed as /<name> calls up, "" when
 // it calls up none: no skill or command of that name is in a folder Grok

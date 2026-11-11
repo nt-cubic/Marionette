@@ -1,7 +1,10 @@
 package catalog
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,11 +45,23 @@ type liveFile struct {
 	// Kinded is set on a list saved since lists keep the models made for
 	// another API, tagged (Model.Serves): LiveKinded.
 	Kinded bool `json:"kinded,omitempty"`
+	// Since is when each model of the list was first in it, as the saves
+	// before this one had it: what tells a list fetched before a model
+	// came (another account's list has had it only since) from one that
+	// leaves it out (LiveSince).
+	Since map[string]time.Time `json:"since,omitempty"`
+	// Asked is what the list was asked as, where the vendor's answer
+	// depends on it: the Codex client version a ChatGPT account's list
+	// was asked for (the backend lists a model only to a client new
+	// enough for it). "" when not said, or saved before it was kept.
+	Asked string `json:"asked,omitempty"`
 	// byID is the chat models by their id, in the list's order, made
 	// once a read: asked for every model of a list, a copy and a scan of
 	// the list each time cost 2,500 models' /v1/models seconds (K.Liu on
 	// Discord)
 	byID map[string][]Model
+	// key names what the file holds but for when it was fetched (LiveKey)
+	key string
 }
 
 func readLive(provider string) (liveFile, error) {
@@ -55,6 +70,7 @@ func readLive(provider string) (liveFile, error) {
 		if err := json.Unmarshal(b, &f); err != nil {
 			return f, err
 		}
+		f.key = liveKey(b, f.Since != nil)
 		mendKinds(f.Models)
 		for _, side := range f.Sides {
 			mendKinds(side)
@@ -83,6 +99,40 @@ func mendKinds(ms []Model) {
 			m.ImageInput, m.Images = &yes, true
 		}
 	}
+}
+
+// LiveKey names the list saved for provider by what it holds, not by
+// when it was fetched: each account's list is fetched again every 45
+// minutes and on every start, and saved again with only its fetch time
+// moved (saveLive). Usage keyed its whole index on the file's mtime, so
+// each of those saves dropped it, and every start and every refresh read
+// the whole session history again (~1.5 GB allocated, seconds of CPU).
+// "missing" when there is no list; ok is false when it can't be read.
+func LiveKey(provider string) (key string, ok bool) {
+	f, err := readLive(provider)
+	if errors.Is(err, os.ErrNotExist) {
+		return "missing", true
+	}
+	if err != nil {
+		return "", false
+	}
+	return f.key, true
+}
+
+// liveKey hashes a saved list's bytes without its fetch time, the first
+// key saveLive writes. A list saved before Since was kept is dated by its
+// fetch (LiveSince), so its fetch time is part of what it holds.
+func liveKey(b []byte, dropFetched bool) string {
+	h := sha256.New()
+	if i := bytes.Index(b, []byte(`"fetched":`)); dropFetched && i >= 0 {
+		if j := bytes.IndexByte(b[i:], '\n'); j >= 0 {
+			h.Write(b[:i])
+			h.Write(b[i+j:])
+			return hex.EncodeToString(h.Sum(nil))
+		}
+	}
+	h.Write(b)
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // LiveByID are the models of Live with this id, in the list's order
@@ -224,7 +274,59 @@ func Chat(ms []Model) []Model {
 
 // SaveLive stores a fetched list; an empty list forgets it.
 func SaveLive(provider, base string, models []Model) error {
-	return SaveLiveSides(provider, base, models, nil)
+	return saveLive(provider, base, "", models, nil)
+}
+
+// SaveLiveAsked is SaveLive for a list whose answer depends on what it was
+// asked as (liveFile.Asked), kept beside it for LiveAsked.
+func SaveLiveAsked(provider, base, asked string, models []Model) error {
+	return saveLive(provider, base, asked, models, nil)
+}
+
+// LiveAsked is what the provider's fetched list was asked as
+// (SaveLiveAsked): "" when it wasn't said, or there is no list.
+func LiveAsked(provider string) string {
+	f, err := readLive(provider)
+	if err != nil {
+		return ""
+	}
+	return f.Asked
+}
+
+// LiveSince is when the provider's fetched list first had model, as far
+// as magpie kept it: since the first save that listed it, or, for a list
+// saved before that was kept, since that list's own fetch (no earlier
+// one is known). ok is false when the list doesn't have it, or there is
+// none.
+func LiveSince(provider, model string) (since time.Time, ok bool) {
+	f, err := readLive(provider)
+	if err != nil || !slices.ContainsFunc(f.Models, func(m Model) bool { return m.ID == model }) {
+		return time.Time{}, false
+	}
+	if t, ok := f.Since[model]; ok {
+		return t, true
+	}
+	return f.Fetched, true
+}
+
+// LiveNewest is when the newest model in provider's list was first in it
+// (LiveSince); zero when there is no list.
+func LiveNewest(provider string) time.Time {
+	f, err := readLive(provider)
+	if err != nil {
+		return time.Time{}
+	}
+	var newest time.Time
+	for _, m := range f.Models {
+		t, ok := f.Since[m.ID]
+		if !ok {
+			t = f.Fetched
+		}
+		if t.After(newest) {
+			newest = t
+		}
+	}
+	return newest
 }
 
 // SaveLiveSides is SaveLive, keeping what each endpoint answered with beside
@@ -232,6 +334,10 @@ func SaveLive(provider, base string, models []Model) error {
 // their own asks every base, and a base that can't be asked next time has to
 // know which of the models were its own to keep (#904).
 func SaveLiveSides(provider, base string, models []Model, sides map[string][]Model) error {
+	return saveLive(provider, base, "", models, sides)
+}
+
+func saveLive(provider, base, asked string, models []Model, sides map[string][]Model) error {
 	p := LivePath(provider)
 	if len(models) == 0 {
 		err := os.Remove(p)
@@ -246,12 +352,68 @@ func SaveLiveSides(provider, base string, models []Model, sides map[string][]Mod
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}
-	b, _ := json.MarshalIndent(liveFile{Fetched: time.Now(), Base: base, Models: models, Sides: sides, Kinded: true}, "", "  ")
+	now := time.Now()
+	f := liveFile{Fetched: now, Base: base, Models: models, Sides: sides, Kinded: true,
+		Since: liveSince(provider, models, now), Asked: asked}
+	same := sameLive(p, f)
+	b, _ := json.MarshalIndent(f, "", "  ")
 	if err := os.WriteFile(p, b, 0o644); err != nil {
 		return err
 	}
+	if same {
+		// the list as it was, fetched again (an account's each 45
+		// minutes, KeepAccountsListed): only when it was fetched is other.
+		// Its next read looks at the file, and nothing else is told:
+		// Touched had every agent's lists built and compared again, and
+		// Forget moved the stamp dsh's rounds build magpie's models by,
+		// ~40 MB of allocations a time in a magpie at rest.
+		filememo.Look(p)
+		return nil
+	}
 	Touched()
 	return nil
+}
+
+// sameLive is whether the list saved at p is f but for when it was
+// fetched: the bytes on the disk are f's, written at the time they say.
+func sameLive(p string, f liveFile) bool {
+	old, err := os.ReadFile(p)
+	if err != nil {
+		return false
+	}
+	var at struct {
+		Fetched time.Time `json:"fetched"`
+	}
+	if json.Unmarshal(old, &at) != nil {
+		return false
+	}
+	f.Fetched = at.Fetched
+	b, err := json.MarshalIndent(f, "", "  ")
+	return err == nil && bytes.Equal(b, old)
+}
+
+// liveSince is Since for models about to be saved for provider at now:
+// what the list saved before said of each model it had too, now for one it
+// didn't. A list saved before Since was kept had each of its models since
+// its fetch at least.
+func liveSince(provider string, models []Model, now time.Time) map[string]time.Time {
+	prev, err := readLive(provider)
+	out := make(map[string]time.Time, len(models))
+	for _, m := range models {
+		if _, ok := out[m.ID]; ok || m.ID == "" {
+			continue
+		}
+		out[m.ID] = now
+		if err != nil {
+			continue
+		}
+		if t, ok := prev.Since[m.ID]; ok {
+			out[m.ID] = t
+		} else if slices.ContainsFunc(prev.Models, func(o Model) bool { return o.ID == m.ID }) {
+			out[m.ID] = prev.Fetched
+		}
+	}
+	return out
 }
 
 // Changed, when set, is told that the models magpie offers may be others
@@ -441,8 +603,27 @@ func listURLs(base string, anthropic bool) []string {
 		}
 		add(root + "/v1/models")
 		add(root + "/models")
+		if u := RelayOpenAIList(base); u != "" {
+			add(u)
+		}
 	}
 	return urls
+}
+
+// RelayOpenAIList is the model list of a relay that serves OpenAI's API
+// under …/openai with no /v1 in the base, and its list at the root's
+// /api/v1/models alone: claude-relay-service mounts its unified routes
+// (/v1/chat/completions) and Codex's (/responses, /v1/responses) under
+// /openai, and the models list on /api and /claude only (src/app.js,
+// src/routes/api.js). "" for any other base. A list found there means
+// chat is at the base's /v1 (Cyrus_4433 on X: …/openai was asked
+// …/openai/chat/completions and answered 404 Not Found).
+func RelayOpenAIList(base string) string {
+	base = strings.TrimRight(base, "/")
+	if !strings.HasSuffix(base, "/openai") || Versioned(base) {
+		return ""
+	}
+	return strings.TrimSuffix(base, "/openai") + "/api/v1/models"
 }
 
 // Versioned reports whether an API base URL has a version in its path — a
@@ -647,6 +828,7 @@ func fetchPage(ctx context.Context, url, key string, anthropic bool, headers map
 	// Anthropic's and OpenAI's /v1/models both page with has_more and
 	// last_id.
 	var out []Model
+	vercel := VercelGateway(url)
 	for i, r := range rows {
 		id := r.ID
 		if id == "" {
@@ -697,6 +879,34 @@ func fetchPage(ctx context.Context, url, key string, anthropic bool, headers map
 		if !drawer && !films && !decision && headers["X-Magpie-Drawers"] == "" {
 			serves = ServesOf(id)
 		}
+		// Vercel's AI Gateway says what each row is (its "type"), which
+		// the id and modalities don't always: its decision models
+		// (liquid/d1, typesafe-ai/jev) and realtime voices answer no
+		// chat, its voices and transcribers (elevenlabs/eleven-v3,
+		// elevenlabs/scribe-v2) serve their own APIs. A "-batch" id
+		// (anthropic/claude-sonnet-4.6-batch) is for its batch API alone:
+		// "Synchronous requests don't accept -batch IDs"
+		if vercel {
+			if strings.HasSuffix(id, "-batch") {
+				continue
+			}
+			switch r.Type {
+			case "evaluation", "realtime":
+				continue
+			case "image":
+				drawer, films, serves = true, false, ""
+			case "video":
+				drawer, films, serves = false, true, ""
+			case "embedding":
+				serves = ServesEmbedding
+			case "reranking":
+				serves = ServesRerank
+			case "speech":
+				serves = ServesSpeech
+			case "transcription":
+				serves = ServesTranscription
+			}
+		}
 		if !drawer && !films && !decision && serves == "" && headers["X-Magpie-Drawers"] == "" && !textModel(md) {
 			continue
 		}
@@ -723,10 +933,12 @@ func fetchPage(ctx context.Context, url, key string, anthropic bool, headers map
 		if len(apis) == 0 {
 			apis = targetAPIs(r.TypeTarget)
 		}
-		m := Model{ID: id, Name: name, Plain: plain, ImageInput: input, APIs: apis, Draws: drawer, Films: films, Decides: decision, Serves: serves,
+		m := Model{ID: id, Name: name, Plain: plain, By: strings.TrimSpace(r.By), ImageInput: input, APIs: apis, Draws: drawer, Films: films, Decides: decision, Serves: serves,
 			InputModalities: ins, OutputModalities: outs}
 		if n, ok := r.ContextLength.(float64); ok && n > 0 {
 			m.Context = int(n)
+		} else if n, ok := r.Window.(float64); vercel && ok && n > 0 {
+			m.Context = int(n) // Vercel's context_window
 		}
 		if n, ok := r.Output.(float64); ok && n > 0 {
 			m.Output = int(n)
@@ -812,7 +1024,10 @@ type liveModel struct {
 	// another magpie's name for the model with its provider there after
 	// it, and "image", "video" or "decision" for its other models
 	Label string `json:"magpie_label"`
-	Kind  string `json:"kind"`
+	// the provider serving the model there, the first in a chain of
+	// magpies (Model.By)
+	By   string `json:"magpie_by"`
+	Kind string `json:"kind"`
 	// how another magpie searches the web for the model: "native" or
 	// "magpie" (Model.WebSearch)
 	WebSearch string `json:"web_search"`
@@ -831,6 +1046,11 @@ type liveModel struct {
 	// the protocol family PipeLLM routes the model by: openai, anthropic
 	// or gemini
 	TypeTarget string `json:"type_target"`
+	// what Vercel's AI Gateway says a model is: "language", "image",
+	// "video", "embedding", "reranking", "speech", "transcription",
+	// "realtime" or "evaluation" (read for its list alone; Anthropic's
+	// rows say "model")
+	Type string `json:"type"`
 	// a Codex catalog entry's (CodexEntry): its id, its window and the
 	// most it may be raised to, and what it takes. any, as an odd value
 	// mustn't lose the whole list
@@ -1059,4 +1279,11 @@ func (p Price) sane() bool {
 		}
 	}
 	return true
+}
+
+// VercelGateway reports whether u is at Vercel's AI Gateway
+// (ai-gateway.vercel.sh), whose model list marks each row's type.
+func VercelGateway(u string) bool {
+	x, err := url.Parse(strings.TrimSpace(u))
+	return err == nil && strings.EqualFold(x.Hostname(), "ai-gateway.vercel.sh")
 }

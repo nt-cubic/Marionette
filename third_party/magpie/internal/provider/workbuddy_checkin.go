@@ -40,13 +40,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/settings"
 )
@@ -448,7 +448,7 @@ func wbCheckinFailed(err error) WorkBuddyCheckin {
 
 // unanswered is Bun's and Node's words for a fetch that got no reply: no
 // name lookup, no connection, or one closed before the answer.
-var unanswered = regexp.MustCompile(`\b(ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|ConnectionRefused|ConnectionClosed|FailedToOpenSocket)\b|Unable to connect|socket connection was closed unexpectedly`)
+var unanswered = lazyre.New(`\b(ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|ConnectionRefused|ConnectionClosed|FailedToOpenSocket)\b|Unable to connect|socket connection was closed unexpectedly`)
 
 // CheckInWorkBuddy checks each WorkBuddy (China) account in use in for
 // today now, those not in yet, and says how each stands.
@@ -665,6 +665,10 @@ func (l *wbCheckinLoop) tick(ctx context.Context, c checkinRunner) []WorkBuddyCh
 	cx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	rs := c.checkinNow(cx, false)
+	// and at the user's time of day, when the day's first ask waits for it
+	if g := checkinGate(now); g.After(now) && (l.again.IsZero() || g.Before(l.again)) {
+		l.again = g
+	}
 	for _, r := range rs {
 		due := time.Time{}
 		if r.Outcome == CheckinFailed {

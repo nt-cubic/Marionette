@@ -44,6 +44,22 @@ type Project struct {
 	// MadeFiles are the files magpie made to write servers in, listed in
 	// the .gitignore and taken away again once nothing's left in them
 	MadeFiles []string `json:"madeFiles,omitempty"`
+	// ServersOff and SkillsOff are global servers and skills (given to
+	// the agents themselves) the project turns off, and for which agents
+	// (project_scope.go)
+	ServersOff map[string][]string `json:"serversOff,omitempty"`
+	SkillsOff  map[string][]string `json:"skillsOff,omitempty"`
+	// Claude is what magpie wrote in Claude Code's own record of the
+	// project (~/.claude.json): the router's entry, servers turned off
+	Claude *claudeLocal `json:"claude,omitempty"`
+	// CodexOff are the servers magpie turned off in the project's
+	// .codex/config.toml, Overrides the skills it turned off in
+	// .claude/settings.local.json
+	CodexOff  []string `json:"codexOff,omitempty"`
+	Overrides []string `json:"overrides,omitempty"`
+	// Trees are the project's folder in each other worktree of its git
+	// repository, given the project's set, with what magpie put in each
+	Trees []*Project `json:"trees,omitempty"`
 }
 
 // projectSkillsDirs is where, in a project, each agent reads skills of its
@@ -76,6 +92,7 @@ var projectSkillsDirs = map[string]string{
 	"cursor":      ".agents/skills",
 	"copilot":     ".agents/skills",
 	"agy":         ".agents/skills",
+	"antigravity": ".agents/skills",
 	"kimi":        ".agents/skills",
 	"goose":       ".agents/skills",
 	"grok":        ".agents/skills",
@@ -115,14 +132,29 @@ func (l *Library) syncProjects(res *Result) {
 }
 
 func (l *Library) syncProject(p *Project, res *Result) {
-	fail := func(name string, err error) {
-		res.Problems = append(res.Problems, Problem{Agent: p.Dir, What: "project:" + name, Error: err.Error()})
-	}
 	if fi, err := os.Stat(p.Dir); err != nil || !fi.IsDir() {
-		if len(p.Skills) > 0 || len(p.Placed) > 0 || len(p.Servers) > 0 || len(p.Wrote) > 0 {
-			fail("", fmt.Errorf("the folder is gone"))
+		if len(p.Skills) > 0 || len(p.Servers) > 0 || len(p.ServersOff) > 0 || len(p.SkillsOff) > 0 || p.holds() {
+			res.Problems = append(res.Problems, Problem{Agent: p.Dir, What: "project:", Error: "the folder is gone"})
 		}
 		return
+	}
+	hubs := l.projectHubs(p)
+	l.syncFolder(p, res, hubs)
+	l.syncClaudeLocal(p, hubs["claude"], func(what string, err error) {
+		res.Problems = append(res.Problems, Problem{Agent: p.Dir, What: "project:" + what, Error: err.Error()})
+	})
+	l.syncTrees(p, res, hubs)
+	if err := p.keepOutOfGit(); err != nil {
+		res.Problems = append(res.Problems, Problem{Agent: p.Dir, What: "project:", Error: "keeping it out of git: " + err.Error()})
+	}
+}
+
+// syncFolder places the project's skills and writes its servers, and what
+// it turns off, in one folder: the project's, or its folder in another
+// worktree (syncTrees), whose agents are given the same hub entries.
+func (l *Library) syncFolder(p *Project, res *Result, hubs map[string]*Server) {
+	fail := func(name string, err error) {
+		res.Problems = append(res.Problems, Problem{Agent: p.Dir, What: "project:" + name, Error: err.Error()})
 	}
 	want := map[string]string{} // entry → the skill
 	for name, agents := range p.Skills {
@@ -172,13 +204,32 @@ func (l *Library) syncProject(p *Project, res *Result) {
 	}
 	sort.Strings(placed)
 	p.Placed = placed
-	l.syncProjectMCP(p, func(what string, err error) {
+	l.syncProjectMCP(p, hubs, func(what string, err error) {
 		res.Problems = append(res.Problems, Problem{Agent: p.Dir, What: "project:" + what, Error: err.Error()})
 	})
-	if err := p.writeIgnore(); err != nil {
-		fail("", fmt.Errorf(".gitignore: %w", err))
-	}
+	l.syncSkillsOff(p, fail)
 	p.tidy()
+}
+
+// keepOutOfGit keeps what magpie placed in the project, and in its folder
+// in each other worktree, out of git: in the repository's info/exclude,
+// never in a file of the project's (project_git.go). The lines an older
+// magpie wrote in the project's .gitignore come out of it, and a
+// .gitignore it made goes; a folder outside git gets nothing.
+func (p *Project) keepOutOfGit() error {
+	if err := p.writeIgnore(); err != nil {
+		return fmt.Errorf(".gitignore: %w", err)
+	}
+	g, ok := gitOf(p.Dir)
+	if !ok {
+		return nil
+	}
+	entries := slices.Concat(p.Placed, p.MadeFiles)
+	for _, t := range p.Trees {
+		entries = append(entries, t.Placed...)
+		entries = append(entries, t.MadeFiles...)
+	}
+	return p.writeExclude(g, entries)
 }
 
 var errForeign = errors.New("not magpie's")
@@ -260,72 +311,38 @@ func (p *Project) tidy() {
 	p.Made = kept
 }
 
-// writeIgnore keeps the project's .gitignore listing what magpie placed,
-// between its two lines; the rest of the file is the user's and stays.
-// A .gitignore magpie made is taken away once nothing's left in it.
+// writeIgnore takes the lines an older magpie kept in the project's
+// .gitignore, between its two lines, out of it; the rest of the file is
+// the user's and stays. A .gitignore magpie made is taken away once
+// nothing's left in it.
 func (p *Project) writeIgnore() error {
 	f := filepath.Join(p.Dir, ".gitignore")
 	b, err := os.ReadFile(f)
-	if err != nil && !os.IsNotExist(err) {
+	if os.IsNotExist(err) {
+		p.Gitignore = false
+		return nil
+	}
+	if err != nil {
 		return err
 	}
-	had := err == nil
 	nl := "\n"
 	if strings.Contains(string(b), "\r\n") {
 		nl = "\r\n"
 	}
-	rest := stripIgnore(strings.ReplaceAll(string(b), "\r\n", "\n"))
-	out := rest
-	if ignored := slices.Concat(p.Placed, p.MadeFiles); len(ignored) > 0 {
-		sort.Strings(ignored)
-		if out != "" {
-			out += "\n"
-		}
-		out += ignoreBegin + "\n"
-		for _, e := range ignored {
-			out += "/" + e + "\n"
-		}
-		out += ignoreEnd + "\n"
-	}
-	out = strings.ReplaceAll(out, "\n", nl)
-	switch {
-	case out == string(b) && had:
+	out := strings.ReplaceAll(stripIgnore(strings.ReplaceAll(string(b), "\r\n", "\n")), "\n", nl)
+	if out == string(b) {
 		return nil
-	case strings.TrimSpace(out) == "":
-		if had && p.Gitignore {
-			p.Gitignore = false
-			return os.Remove(f)
-		}
-		if !had {
-			return nil
-		}
-	case !had:
-		p.Gitignore = true
+	}
+	if strings.TrimSpace(out) == "" && p.Gitignore {
+		p.Gitignore = false
+		return os.Remove(f)
 	}
 	return edit.WriteAtomic(f, []byte(out))
 }
 
 // stripIgnore is a .gitignore without magpie's lines, and the blank line
 // left before them.
-func stripIgnore(s string) string {
-	var out []string
-	in := false
-	for _, line := range strings.Split(s, "\n") {
-		switch t := strings.TrimSpace(line); {
-		case t == ignoreBegin:
-			in = true
-		case in && t == ignoreEnd:
-			in = false
-		case !in:
-			out = append(out, line)
-		}
-	}
-	r := strings.TrimRight(strings.Join(out, "\n"), "\n")
-	if r != "" {
-		r += "\n"
-	}
-	return r
-}
+func stripIgnore(s string) string { return stripBlock(s, ignoreBegin) }
 
 // ---- changing -------------------------------------------------------------
 
@@ -385,6 +402,40 @@ func notGlobal(dir string) error {
 	return nil
 }
 
+// ProjectPath is a folder as typed on a command line (~, or relative to
+// where magpie runs) made a full path, as AddProject takes it.
+func ProjectPath(dir string) (string, error) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return "", fmt.Errorf("choose a project's folder")
+	}
+	return filepath.Abs(expand(dir))
+}
+
+// ProjectAt is the listed folder of the project dir is (ProjectPath's
+// way, or the same folder through a link): "" for a folder that isn't one.
+func ProjectAt(dir string) (string, error) {
+	abs, err := ProjectPath(dir)
+	if err != nil {
+		return "", err
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	l, err := load()
+	if err != nil {
+		return "", err
+	}
+	if p := l.project(abs); p != nil {
+		return p.Dir, nil
+	}
+	for _, p := range l.Projects {
+		if realDir(p.Dir) == realDir(abs) {
+			return p.Dir, nil
+		}
+	}
+	return "", nil
+}
+
 // RemoveProject takes every skill magpie placed out of a project, and the
 // project off the list; what's left, it couldn't take away and says why.
 // keep takes the project off the list alone (#514: a project given a few
@@ -408,12 +459,15 @@ func RemoveProject(dir string, keep bool) (*Result, error) {
 		// that answers with an error) isn't known to be gone: its records
 		// stay, and the removal goes as before.
 		if fi, err := os.Stat(p.Dir); errors.Is(err, os.ErrNotExist) || err == nil && !fi.IsDir() {
+			// Claude Code's record of it isn't in the folder
+			p.ServersOff = nil
+			l.syncClaudeLocal(p, nil, func(string, error) {})
 			l.Projects = slices.DeleteFunc(l.Projects, func(x *Project) bool { return x == p })
 			return nil
 		}
-		p.Skills, p.Servers = nil, nil
+		p.Skills, p.Servers, p.ServersOff, p.SkillsOff = nil, nil, nil, nil
 		l.syncProject(p, &Result{})
-		if len(p.Placed) == 0 && len(p.Wrote) == 0 {
+		if !p.holds() && p.Claude == nil && !slices.ContainsFunc(p.Trees, (*Project).holds) {
 			l.Projects = slices.DeleteFunc(l.Projects, func(x *Project) bool { return x == p })
 		}
 		return nil
@@ -423,13 +477,26 @@ func RemoveProject(dir string, keep bool) (*Result, error) {
 // ProjectSkill sets which agents get a library skill in a project; none
 // takes it out of the project.
 func ProjectSkill(dir, name string, agents []string) (*Result, error) {
+	return ProjectSkills(dir, []string{name}, agents)
+}
+
+// ProjectSkills sets which agents get each of some library skills in a
+// project, in one write: the skills a project's card picks from its menu
+// (POM_JUMPING on X). The project's other skills stay as they are; none
+// takes these out of it.
+func ProjectSkills(dir string, names, agents []string) (*Result, error) {
 	return change(func(l *Library) error {
 		p := l.project(dir)
 		if p == nil {
 			return fmt.Errorf("no project %s", dir)
 		}
-		if l.skill(name) == nil {
-			return fmt.Errorf("no skill called %s", name)
+		if len(names) == 0 {
+			return fmt.Errorf("no skills given")
+		}
+		for _, name := range names {
+			if l.skill(name) == nil {
+				return fmt.Errorf("no skill called %s", name)
+			}
 		}
 		var ids []string
 		for _, id := range agents {
@@ -438,14 +505,16 @@ func ProjectSkill(dir, name string, agents []string) (*Result, error) {
 			}
 			ids = set(ids, id, true)
 		}
-		if len(ids) == 0 {
-			delete(p.Skills, name)
-			return nil
+		for _, name := range names {
+			if len(ids) == 0 {
+				delete(p.Skills, name)
+				continue
+			}
+			if p.Skills == nil {
+				p.Skills = map[string][]string{}
+			}
+			p.Skills[name] = slices.Clone(ids)
 		}
-		if p.Skills == nil {
-			p.Skills = map[string][]string{}
-		}
-		p.Skills[name] = ids
 		return nil
 	})
 }
@@ -472,8 +541,15 @@ type ProjectView struct {
 	Placed  []string            `json:"placed"`
 	Servers map[string][]string `json:"servers"`
 	// Wrote are, by the project's file, the servers magpie wrote there
-	Wrote   map[string][]string `json:"wrote"`
-	Missing bool                `json:"missing,omitempty"` // the folder is gone
+	Wrote map[string][]string `json:"wrote"`
+	// ServersOff and SkillsOff are the Library's servers and skills
+	// turned off in this project, each for the agents named
+	ServersOff map[string][]string `json:"serversOff"`
+	SkillsOff  map[string][]string `json:"skillsOff"`
+	// Trees are the project's folder in the repository's other git
+	// worktrees, which follow it
+	Trees   []string `json:"trees,omitempty"`
+	Missing bool     `json:"missing,omitempty"` // the folder is gone
 	// Problems are, by skill ("" for the project's own), what couldn't be done
 	Problems map[string]string `json:"problems,omitempty"`
 }
@@ -491,6 +567,16 @@ func projectViews(l *Library, problems []Problem) []ProjectView {
 		}
 		for k, a := range p.Wrote {
 			v.Wrote[k] = append([]string{}, a...)
+		}
+		v.ServersOff, v.SkillsOff = map[string][]string{}, map[string][]string{}
+		for k, a := range p.ServersOff {
+			v.ServersOff[k] = append([]string{}, a...)
+		}
+		for k, a := range p.SkillsOff {
+			v.SkillsOff[k] = append([]string{}, a...)
+		}
+		for _, t := range p.Trees {
+			v.Trees = append(v.Trees, t.Dir)
 		}
 		if fi, err := os.Stat(p.Dir); err != nil || !fi.IsDir() {
 			v.Missing = true

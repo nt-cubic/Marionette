@@ -200,6 +200,11 @@ button.row.lib-hubfolded:hover { background: var(--pill); }
 /* off on this computer: its agents' ticks are the other computers', shown faded and not to be changed here */
 .lib-skill.offhere > .lib-glyph, .lib-skill.offhere > .lib-logo, .lib-skill.offhere .sub { opacity: .55; }
 .lib-skill.offhere > .lib-agents { opacity: .4; pointer-events: none; }
+/* a server off for everyone (serverSwitch): its switch turns it on again,
+   giving back the agents it had, so its chips wait for that */
+.lib-server.off > .lib-glyph, .lib-server.off > .lib-logo, .lib-server.off .name, .lib-server.off .sub { opacity: .55; }
+.lib-server.off > .lib-agents { opacity: .4; pointer-events: none; }
+.lib-server > .lib-switch { align-self: center; margin-left: 8px; }
 .lib-hereline { display: flex; margin-top: 3px; min-width: 0; }
 .lib-hereline > .lib-tag.lib-offhere { cursor: pointer; margin-left: 0; flex: 0 1 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .lib-tag.lib-offhere:hover { color: var(--fg); }
@@ -234,6 +239,8 @@ button.row.lib-hubfolded:hover { background: var(--pill); }
 .lib-tag.lib-new.link { cursor: pointer; }
 .lib-tag.lib-new.link:hover { background: color-mix(in srgb, var(--accent) 22%, var(--accent-soft)); }
 .lib-tag.lib-unchecked { color: var(--faint); font-weight: 400; }
+.lib-tag.lib-unchecked.link { cursor: pointer; }
+.lib-tag.lib-unchecked.link:hover { color: var(--fg-2); }
 .lib-tag.lib-signed { color: var(--green); background: var(--green-soft); }
 .lib-tag.lib-signed::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 
@@ -277,7 +284,7 @@ input.lib-setname:focus { border-color: var(--accent); box-shadow: 0 0 0 3px col
 .lib-detail { padding: 4px 14px 14px 50px; background: var(--card-2); display: flex; flex-direction: column; gap: 8px; border-top: 0 !important; animation: content-in .2s var(--ease); }
 .lib-lab { font-size: 11.5px; color: var(--muted); }
 .lib-detail .lib-aside { margin: 0; }
-.lib-acts { display: flex; gap: 6px; flex-wrap: wrap; }
+.lib-acts { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .lib-warn { font-size: 12px; line-height: 1.5; color: var(--fg); background: var(--amber-soft); border-radius: 8px; padding: 8px 10px; }
 .lib-warn .lib-path { display: inline; }
 /* what the last change couldn't write: for which agent, and why */
@@ -665,6 +672,7 @@ input.lib-setname:focus { border-color: var(--accent); box-shadow: 0 0 0 3px col
 .lib-tag.lib-dot::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--muted); }
 .lib-projopts { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 12px 8px 49px; border-top: 1px solid var(--line-2); background: var(--card-2); }
 .lib-projopts .note { font-size: 11px; color: var(--faint); line-height: 1.45; min-width: 0; flex: 1 1 220px; }
+.lib-projopts .lib-projpick { height: 26px; color: var(--fg); }
 .lib-projcopy { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--fg-2); cursor: default; }
 .lib-project .lib-projskill { border-top: 1px solid var(--line-2); }
 .lib-projfoot { margin: 0; padding: 8px 12px 10px 49px; border-top: 1px solid var(--line-2); }
@@ -781,6 +789,10 @@ input.lib-setname:focus { border-color: var(--accent); box-shadow: 0 0 0 3px col
 .lib-subagent > .who { flex-basis: 240px; }
 .lib-subagent .lib-subagentdesc { font-size: 12px; line-height: 1.45; color: var(--fg); white-space: normal; overflow-wrap: anywhere; margin-top: 1px; }
 .lib-subagent .lib-subagentuses { white-space: normal; overflow-wrap: anywhere; }
+.lib-plugin > .who { flex-basis: 240px; }
+.lib-plugin.off .name, .lib-plugin.off .lib-subagentdesc { opacity: .55; }
+.lib-plugin .lib-plparts, .lib-plpick .lib-plparts { white-space: normal; overflow-wrap: anywhere; }
+.lib-pldetail .lib-plnames, .lib-pldetail .lib-plsource { white-space: normal; overflow-wrap: anywhere; }
 .lib-subagentedit .lib-menu { max-width: 100%; height: 28px; color: var(--fg); }
 .lib-subagentedit .lib-menu > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lib-subagentedit .lib-subagentdescin, .lib-subagentedit .lib-subagentprompt { width: 100%; box-sizing: border-box; resize: none; font: inherit; font-size: 12.5px; line-height: 1.45; }
@@ -855,3 +867,32 @@ body.window .lib-list .lib-row { --lib-indent: 38px; }
 .lib-foundmore span { display: inline-flex; }
 .lib-foundmore.open .chev { transform: rotate(180deg); }
 @media (hover: hover) and (pointer: fine) { .lib-foundmore:hover { color: var(--fg); background: var(--card-2); } }
+/* Pi's extensions: a heading per Pi, its path beside it */
+.lib-pi-head > .lib-path { flex: 0 1 auto; min-width: 0; }
+.lib-pi-row > .lib-pi-copy { flex: none; }
+.lib-pi + .lib-pi-head { margin-top: 18px; }
+
+/* Memory: the digest switch, a search with its filters, and the memories */
+.lib-memcard { margin-bottom: 12px; }
+.lib-membar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 2px 8px; }
+.lib-membar .lib-memq { flex: 1 1 180px; min-width: 0; max-width: 320px; height: 28px; }
+.lib-membar .lib-menu { height: 28px; max-width: 220px; color: var(--fg); }
+.lib-membar .lib-menu > span:first-child, .lib-memline .lib-menu > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-mems .lib-mem > .who .name { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-weight: 400; }
+.lib-mems .lib-mem.open > .who .name { -webkit-line-clamp: unset; }
+.lib-mems .lib-mem > .who .sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-memdetail { padding-left: 12px; }
+/* Select: a box on each memory, the ones picked tinted, the bar under the list */
+.lib-mems.picking .lib-mem > .chev { display: none; }
+.lib-mems .lib-mem.picked { background: var(--accent-soft); }
+/* a row moved to with ↑ ↓ stops above the bar, not under it */
+.lib-mems.picking .lib-mem { scroll-margin-bottom: 96px; }
+.lib-mems .lib-mem > .lib-pickbox { margin: 0; flex: none; }
+.lib-membar .lib-memselect { height: 28px; }
+.lib-mempickbar .lib-memdel.danger { color: var(--red); }
+.lib-memline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.lib-memline .lib-menu { height: 28px; max-width: 220px; color: var(--fg); }
+.lib-memline .lib-memtags { flex: 1 1 160px; min-width: 0; height: 28px; }
+.lib-memdetail .lib-memwhy { height: 28px; }
+input.lib-memq, input.lib-memtags, input.lib-memwhy { padding: 0 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--fg); font-size: 12.5px; outline: none; box-sizing: border-box; transition: border-color .12s, box-shadow .12s; }
+input.lib-memq:focus, input.lib-memtags:focus, input.lib-memwhy:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }

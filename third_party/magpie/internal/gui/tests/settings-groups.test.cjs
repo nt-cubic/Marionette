@@ -61,11 +61,11 @@ function server(lang, posts, over) {
 
 const L = {
   en: {
-    reset: "Warm up on reset", daily: "Daily warm-up", checkin: "Daily check-in",
+    lean: "Short Claude system prompt", reset: "Warm up on reset", daily: "Daily warm-up", checkin: "Daily check-in",
     on: "On", off: "Off", started: "last started", checked: "Ann checked in today +2, 3-day streak",
   },
   zh: {
-    reset: "窗口重置时预热", daily: "每日定时预热", checkin: "每日自动签到",
+    lean: "精简 Claude 系统提示词", reset: "窗口重置时预热", daily: "每日定时预热", checkin: "每日自动签到",
     on: "开启", off: "关闭", started: "上次启动于", checked: "Ann 今日已签到 +2, 连续 3 天",
   },
 };
@@ -131,12 +131,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           workbuddyCheckins: [{ user: "Ann", day: today, at: new Date().toISOString(), outcome: "claimed", credit: 2, streak: 3 }],
         });
 
-        // Settings' Usage part: its list alone, no service's rows in it
+        // Settings' Usage part: its list and the Alerts, no service's rows
         await page.goto("http://magpie.test/?view=settings&tab=usage");
         await page.locator("#setPage-usage #currencySegs .opt").first().waitFor();
         const parts = await page.evaluate(() => [...document.querySelectorAll("#setPage-usage > *")]
-          .map((h) => h.querySelector("#currencySegs") ? "usage" : h.className));
-        assert.deepEqual(parts, ["usage"]);
+          .map((h) => h.querySelector("#currencySegs") ? "usage" : h.id));
+        assert.deepEqual(parts, ["usage", "alertHead", "alertList"]);
         assert.equal(await page.locator("#warmTabs, .warm-panes").count(), 0, "no tabs left");
         for (const id of ["#warmSegs", "#warmAtSegs", "#claudeWarmSegs", "#claudeWarmAtSegs", "#wbCheckinSegs", "#traeCheckinSegs"]) {
           assert.equal(await page.locator("#setPage-usage").locator(id).count(), 0, id + " is out of Settings");
@@ -145,11 +145,21 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // each editor shows its own service's rows alone
         const visibleRows = () => page.locator(".editor .prov-prefs .row.pref:visible .who .name").allTextContents();
         // each pill shown has its thumb under the option picked, drawn
-        // while its list was in the hidden holder or not
-        const thumbsUnderPicks = async (k) => assert.equal(await page.locator("#" + LISTS[k]).evaluate((l) => [...l.querySelectorAll(".segs")].filter((s) => {
+        // while its list was in the hidden holder or not. A ResizeObserver
+        // refits a thumb after the editor sizes its pill, so wait for that
+        // (on a busy machine it lands after the editor shows, #5839)
+        const thumbsOff = (l) => [...l.querySelectorAll(".segs")].filter((s) => {
           const th = s.querySelector(":scope > .thumb").getBoundingClientRect(), on = s.querySelector(":scope > .on").getBoundingClientRect();
           return !(Math.abs(th.left - on.left) <= 1 && Math.abs(th.width - on.width) <= 1);
-        }).length), 0, k + ": the pills' thumbs under their picks");
+        }).length;
+        const thumbsUnderPicks = async (k) => {
+          const list = await page.locator("#" + LISTS[k]).elementHandle();
+          await page.waitForFunction((l) => [...l.querySelectorAll(".segs")].every((s) => {
+            const th = s.querySelector(":scope > .thumb").getBoundingClientRect(), on = s.querySelector(":scope > .on").getBoundingClientRect();
+            return Math.abs(th.left - on.left) <= 1 && Math.abs(th.width - on.width) <= 1;
+          }), list, { timeout: 3000 }).catch(() => {});
+          assert.equal(await list.evaluate(thumbsOff), 0, k + ": the pills' thumbs under their picks");
+        };
         // no coloured stripe down a list's or a row's left side
         const stripes = () => page.evaluate(() => [...document.querySelectorAll(".editor .prov-prefs .list, .editor .prov-prefs .row")]
           .filter((e) => { const c = getComputedStyle(e); return c.borderLeftWidth !== c.borderRightWidth || c.borderLeftColor !== c.borderRightColor; }).length);
@@ -204,7 +214,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
         await edit("claude");
         assert.deepEqual(await panes(page), ["claude"]);
-        assert.deepEqual(await visibleRows(), [w.reset, w.daily]);
+        // Claude Code's own run row is Claude's too
+        assert.deepEqual(await visibleRows(), [w.lean, w.reset, w.daily]);
         await thumbsUnderPicks("claude");
         await press(page.locator(".editor #claudeWarmSegs .opt").nth(2));
         await last("claudeWarmup", "all");

@@ -22,7 +22,7 @@ const now = Date.now();
 
 const ROWS = [
   // the gateway's, with its bytes: 1.2 MB up, 34 KB down, 72 KB saved
-  { t: new Date(now - 60e3).toISOString(), agent: "claude", agentName: "Claude Code", icon: "claudecode-color", provider: "deepseek", providerName: "DeepSeek", req: "deepseek-flash", model: "deepseek-flash", served: "deepseek-flash", in: 300, out: 40, ms: 2380, status: 200, rid: "req_new", ep: "/v1/chat/completions", cost: 0.01, priced: true, up_bytes: 1_234_567, plain_bytes: 1_234_567, down_bytes: 34_100, image_files_saved: 72_039 },
+  { t: new Date(now - 60e3).toISOString(), agent: "claude", agentName: "Claude Code", icon: "claudecode-color", provider: "deepseek", providerName: "DeepSeek", req: "deepseek-flash", model: "deepseek-flash", served: "deepseek-flash", in: 300, out: 40, ms: 2380, status: 200, rid: "req_new", ep: "/v1/responses", ws: true, cost: 0.01, priced: true, up_bytes: 1_234_567, plain_bytes: 1_234_567, down_bytes: 34_100, image_files_saved: 72_039 },
   // one from before the bytes were kept
   { t: new Date(now - 120e3).toISOString(), agent: "claude", agentName: "Claude Code", icon: "claudecode-color", provider: "deepseek", providerName: "DeepSeek", req: "deepseek-flash", model: "deepseek-flash", served: "deepseek-flash", in: 200, out: 20, ms: 1200, status: 200, rid: "req_old", ep: "/v1/chat/completions", cost: 0.01, priced: true },
   // an upload that cost more than it saved this once
@@ -64,11 +64,11 @@ function server(lang, bytes) {
 }
 
 const L = {
-  en: { up: "Sent upstream", down: "Received", saved: "Saved by image files", line: "↑ 1.3 MB · ↓ 35 KB · 72 KB saved by image files", three: "10 MB (3 images)", one: "72 KB (1 image)", big: ["↑ 13 GB", "↓ 13 MB", "44 MB saved by image files"] },
-  zh: { up: "发往上游", down: "收到", saved: "图片文件省下", line: "↑ 1.3 MB · ↓ 35 KB · 图片文件省下 72 KB", three: "10 MB（3 张）", one: "72 KB（1 张）", big: ["↑ 13 GB", "↓ 13 MB", "图片文件省下 44 MB"] },
-  "zh-TW": { up: "送往上游", down: "收到", saved: "圖片檔案省下", line: "↑ 1.3 MB · ↓ 35 KB · 圖片檔案省下 72 KB", three: "10 MB（3 張）", one: "72 KB（1 張）", big: ["↑ 13 GB", "↓ 13 MB", "圖片檔案省下 44 MB"] },
-  ja: { up: "上流へ送信", down: "受信", saved: "画像ファイルで節約", line: "↑ 1.3 MB · ↓ 35 KB · 画像ファイルで 72 KB 節約", three: "10 MB（3 枚）", one: "72 KB（1 枚）", big: ["↑ 13 GB", "↓ 13 MB", "画像ファイルで 44 MB 節約"] },
-  de: { up: "An den Anbieter gesendet", down: "Empfangen", saved: "Durch Bilddateien gespart", line: "↑ 1.3 MB · ↓ 35 KB · 72 KB durch Bilddateien gespart", three: "10 MB (3 Bilder)", one: "72 KB (1 Bild)", big: ["↑ 13 GB", "↓ 13 MB", "44 MB durch Bilddateien gespart"] },
+  en: { proto: "Protocol", up: "Sent upstream", down: "Received", saved: "Saved by image files", line: "↑ 1.3 MB · ↓ 35 KB · 72 KB saved by image files", three: "10 MB (3 images)", one: "72 KB (1 image)", big: ["↑ 13 GB", "↓ 13 MB", "44 MB saved by image files"] },
+  zh: { proto: "协议", up: "发往上游", down: "收到", saved: "图片文件省下", line: "↑ 1.3 MB · ↓ 35 KB · 图片文件省下 72 KB", three: "10 MB（3 张）", one: "72 KB（1 张）", big: ["↑ 13 GB", "↓ 13 MB", "图片文件省下 44 MB"] },
+  "zh-TW": { proto: "協議", up: "送往上游", down: "收到", saved: "圖片檔案省下", line: "↑ 1.3 MB · ↓ 35 KB · 圖片檔案省下 72 KB", three: "10 MB（3 張）", one: "72 KB（1 張）", big: ["↑ 13 GB", "↓ 13 MB", "圖片檔案省下 44 MB"] },
+  ja: { proto: "プロトコル", up: "上流へ送信", down: "受信", saved: "画像ファイルで節約", line: "↑ 1.3 MB · ↓ 35 KB · 画像ファイルで 72 KB 節約", three: "10 MB（3 枚）", one: "72 KB（1 枚）", big: ["↑ 13 GB", "↓ 13 MB", "画像ファイルで 44 MB 節約"] },
+  de: { proto: "Protokoll", up: "An den Anbieter gesendet", down: "Empfangen", saved: "Durch Bilddateien gespart", line: "↑ 1.3 MB · ↓ 35 KB · 72 KB durch Bilddateien gespart", three: "10 MB (3 Bilder)", one: "72 KB (1 Bild)", big: ["↑ 13 GB", "↓ 13 MB", "44 MB durch Bilddateien gespart"] },
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
@@ -99,27 +99,39 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           assert.equal(await io.getAttribute("title"), `${w.up}: 1,288,567 B\n${w.down}: 35,000 B`.replace(/,/g, lang === "de" ? "." : ","));
 
           const rows = p.locator(".led tbody tr.led-row");
-          const pairs = (n) => p.locator(".led-detail").nth(n).evaluate((d) => Object.fromEntries([...d.querySelectorAll("dt")].map((dt) => [dt.textContent, dt.nextElementSibling.textContent])));
-          await reader.click(p, rows.nth(0));
-          const got = await pairs(0);
+          // a row opens its request's own page; back first if one is open
+          const openRow = async (n) => {
+            if (await p.locator("#ledReqPane").isVisible()) await reader.closeRequest(p);
+            await reader.click(p, rows.nth(n));
+            await p.locator("#ledReqPane .led-detail").waitFor();
+          };
+          const pairs = () => p.locator("#ledReqPane .led-detail").evaluate((d) => Object.fromEntries([...d.querySelectorAll("dt")].map((dt) => [dt.textContent, dt.nextElementSibling.textContent])));
+          await openRow(0);
+          const got = await pairs();
           assert.equal(got[w.up], "1.2 MB");
           assert.equal(got[w.down], "34 KB");
           assert.equal(got[w.saved], "72 KB");
+          // one that went over the Responses WebSocket says so, in its
+          // details and its row's badge (matrix0487); one over HTTP doesn't
+          assert.equal(got[w.proto], "Responses · WebSocket");
+          assert.equal((await rows.nth(0).locator(".proto").textContent()).trim(), "Responses · WS");
+          assert.equal((await rows.nth(1).locator(".proto").textContent()).trim(), "Chat");
           // a row from before: none of them, not 0
-          await reader.click(p, rows.nth(1));
-          const old = await pairs(1);
+          await openRow(1);
+          const old = await pairs();
           for (const k of [w.up, w.down, w.saved]) assert(!(k in old), `an old row shows ${k}: ${old[k]}`);
+          assert.equal(old[w.proto], "Chat");
           // an upload that cost more than it saved says nothing saved
-          await reader.click(p, rows.nth(2));
-          const upload = await pairs(2);
+          await openRow(2);
+          const upload = await pairs();
           assert.equal(upload[w.up], "54 KB");
           assert.equal(upload[w.down], "900 B");
           assert(!(w.saved in upload), "nothing saved is shown for a loss");
           // a row that kept its count: how many images, in the language's unit
-          await reader.click(p, rows.nth(3));
-          assert.equal((await pairs(3))[w.saved], w.three);
-          await reader.click(p, rows.nth(4));
-          assert.equal((await pairs(4))[w.saved], w.one, "one image, singular");
+          await openRow(3);
+          assert.equal((await pairs())[w.saved], w.three);
+          await openRow(4);
+          assert.equal((await pairs())[w.saved], w.one, "one image, singular");
 
           const sideways = await p.evaluate(() => [document.documentElement.scrollWidth - innerWidth, ...[...document.querySelectorAll("#ledKpi .blk")].map((b) => b.scrollWidth - b.clientWidth)]);
           assert(sideways.every((n) => n <= 1), `scrolls sideways: ${sideways}`);

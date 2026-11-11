@@ -391,16 +391,29 @@ type Weighed struct {
 	// Barred: left out as the user set it not to serve the model, its
 	// own list of models leaving it out (#474)
 	Barred bool `json:"barred,omitempty"`
+	// StandIn: left out as its provider never takes another model's
+	// request (provider.NoStandIn), and a provider not so marked was
+	// planned before it (standInsOut)
+	StandIn bool `json:"standIn,omitempty"`
 	// Held: left out as the gateway key asking may not use its account or
 	// key (#905), or a routing group it was reached through is held to
 	// other accounts (Group.Accounts): HeldBy names that group
 	Held   bool   `json:"held,omitempty"`
 	HeldBy string `json:"heldBy,omitempty"`
+	// HeldOwn: HeldBy's group names this model on another account of
+	// its provider (Member.Account, EastonXvii on X), rather than holding
+	// the whole group to some
+	HeldOwn bool `json:"heldOwn,omitempty"`
 	// Capped: left out as held at the usage cap the user set on the
 	// account, this cap in percent; Used is then its fullest window's
 	// share, CapBack when the last window at or past it renews
 	Capped  int        `json:"capped,omitempty"`
 	CapBack *time.Time `json:"capBack,omitempty"`
+	// CapAmount: held (Capped) at a window's fixed amount of its own unit
+	// rather than a share: CapCount of it used, in CapUnit
+	CapAmount float64 `json:"capAmount,omitempty"`
+	CapCount  float64 `json:"capCount,omitempty"`
+	CapUnit   string  `json:"capUnit,omitempty"`
 	// NoCredits: held at 100% (Capped), a Codex account the user set not
 	// to spend its credits once its allowance is used up
 	NoCredits bool `json:"noCredits,omitempty"`

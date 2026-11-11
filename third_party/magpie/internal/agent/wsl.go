@@ -70,6 +70,9 @@ type place struct {
 	// dir is the agent's config folder when magpie keeps one of its own
 	// for it (claude-magpie's launch file, claude_launch.go); "": its own
 	dir string
+	// wsl is the distro of an agent there, for one magpie runs there
+	// itself (Claude Science's daemon); nil on this machine
+	wsl *distro
 }
 
 func here(home string) place { return place{home: home} }
@@ -223,6 +226,10 @@ type distro struct {
 	// Versions is what the CLIs of wslKinds that ask (version) said their
 	// versions are at the last probe, by the kind's id
 	Versions map[string]string `json:"versions,omitempty"`
+	// Paths is where the probe found each command in the distro, by name
+	// ("opencode": /home/me/.opencode/bin/opencode); a distro probed
+	// before this has none until it is probed again
+	Paths map[string]string `json:"paths,omitempty"`
 	// OmpProfiles are the named omp profiles the probe found under
 	// ~/.omp/profiles there: each is an agent of its own (omp#<name>).
 	// Kept so a stopped distro lists them without being started.
@@ -397,7 +404,7 @@ func (d distro) place(id string) place {
 		kind = k
 	}
 	return place{home: d.local(d.Home), id: id, spell: d.native, sys: d.local, base: d.base, cold: !d.Running, version: d.Versions[kind],
-		reach: d.open, unreached: new(error), chmod: d.chmod}
+		reach: d.open, unreached: new(error), chmod: d.chmod, wsl: &d}
 }
 
 // chmod takes the group's and others' bits off local, a file in the distro
@@ -436,9 +443,24 @@ type wslKind struct {
 	// asleep, when set, is a stopped distro's options for a field, which
 	// must read nothing of its files; nil keeps the live agent's
 	asleep func(key string) func(map[string]string) []Option
+	// ownNotice keeps the agent's own notice: one that reaches the gateway
+	// under NAT by a way of its own (Claude Science's relay)
+	ownNotice bool
+}
+
+// served is k with its agent the plugin's, where a plugin that says wsl
+// serves the built-in now (agentMovers).
+func (k wslKind) served() wslKind {
+	if p := movedAgent(k.id); p != nil && p.Desc.WSL {
+		k.in = func(at place) *Agent { return plugged(at, p) }
+	}
+	return k
 }
 
 var wslKinds = []wslKind{
+	// its daemon, which magpie starts there itself (claudescience_wsl.go):
+	// the probe looks in ~/.local/bin, where its installer puts it
+	{id: ScienceID, name: scienceName, dir: ".claude-science", bin: "claude-science", in: scienceIn, ownNotice: true},
 	{id: "codex", name: "Codex", dir: ".codex", bin: "codex", in: codexIn,
 		restart: newNotice("{agent} in WSL {distro} builds its model list at start-up — restart it, the app-server its sessions share ({command} there) and the Codex app's WSL connection to see this."),
 		asleep: func(key string) func(map[string]string) []Option {
@@ -505,6 +527,17 @@ var wslKinds = []wslKind{
 			}
 			return nil
 		}},
+	// mu, Pi's files in ~/.mu/agent: the distro's variables that move it
+	// and its old ~/.kyrn aren't read. No bin: mu is maildir-utils' too
+	{id: "mu", name: "mu", dir: ".mu/agent", in: muIn,
+		asleep: func(key string) func(map[string]string) []Option {
+			if key == "model" {
+				return func(cur map[string]string) []Option {
+					return withVia(ownOptions("", cur["model"]), "mu", magpieID+"/")
+				}
+			}
+			return nil
+		}},
 	{id: "stepcode", name: "StepCode", dir: ".stepcode", in: stepcodeIn,
 		asleep: wslOwnAsleep("stepcode", "model")},
 	// only its settings.json: its sign-in, sessions and prompt history,
@@ -553,7 +586,9 @@ var wslKinds = []wslKind{
 	// this machine, at their default folders: the distro's variables that
 	// move them (OPENCODE_CONFIG_DIR, KIMI_CODE_HOME, HERMES_HOME, …)
 	// aren't read. Each one's restart advice is its own Notice's.
-	{id: "opencode", name: "OpenCode", dir: ".config/opencode", bin: "opencode", in: opencodeIn,
+	// its version says whether its config is written in OpenCode 2's words
+	// (ocFile)
+	{id: "opencode", name: "OpenCode", dir: ".config/opencode", bin: "opencode", in: opencodeIn, version: true,
 		restart: newNotice("{agent} in WSL {distro} reads its config at start-up — restart open opencode sessions to use this."),
 		asleep:  wslOwnAsleep("opencode", "model", "small")},
 	{id: "mimocode", name: "MiMo Code", dir: ".config/mimocode", bin: "mimo", in: mimocodeIn,
@@ -674,6 +709,13 @@ var wslKinds = []wslKind{
 		}},
 	{id: "empryo", name: "Empryo", dir: ".empryo", bin: "empryo", in: empryoIn,
 		restart: newNotice("{agent} in WSL {distro} reads its config at start-up — restart open empryo sessions to use this.")},
+	// no bin: nanobot is other tools' name too
+	{id: "nanobot", name: "nanobot", dir: ".nanobot", in: nanobotIn,
+		restart: newNotice("{agent} in WSL {distro}: its gateway and WebUI take this at their next reply; restart an open `nanobot agent` chat to use it there.")},
+	{id: "paimon", name: "Paimon", dir: ".config/paimon", bin: "paimon", in: paimonIn,
+		restart: newNotice("{agent} in WSL {distro} reads its model at start-up — restart open paimon sessions there to use this.")},
+	{id: "miniq", name: "miniQ", dir: ".local/share/miniq", bin: "miniq", in: miniqIn,
+		restart: newNotice("{agent} in WSL {distro}: magpie tells its running daemon; if it still answers with the old model, restart miniQ there.")},
 	// Ante ships macOS and Linux builds alone, and suggests WSL on Windows,
 	// so a Windows machine's Ante is usually this one
 	{id: "ante", name: "Ante", dir: ".ante", bin: "ante", in: anteIn,
@@ -905,7 +947,11 @@ func wslAgent(k wslKind, d distro) *Agent {
 	// its requests carry the agent's User-Agent and are counted as its
 	// Windows twin's, so a prompt with none of "its" own seen isn't a bypass
 	a.LastUsed = nil
+	own := a.Notice
 	a.Notice = func() string {
+		if k.ownNotice && own != nil {
+			return own()
+		}
 		if !d.Mirrored {
 			return d.notMirrored(k.name)
 		}
@@ -1116,7 +1162,7 @@ func wslAgentsOf(ds []distro) []*Agent {
 		// distro's files opened start it again (#3896)
 		for _, k := range wslKinds {
 			if k.found(d) {
-				out = append(out, wslAgent(k, d))
+				out = append(out, wslAgent(k.served(), d))
 			}
 		}
 		// the named omp profiles the probe remembered: the row is made
@@ -1157,6 +1203,15 @@ func wslHomes() []sessions.WSLHome {
 		out = append(out, sessions.WSLHome{Distro: d.Name, Home: d.local(d.Home), Running: d.Running, Open: open})
 	}
 	return out
+}
+
+// wslAnswered is whether wsl.exe answered the last list of distros, so an
+// empty wslHomes means no distro has an agent (sessions.WSLListed).
+func wslAnswered() bool {
+	wslDistros()
+	wsl.Lock()
+	defer wsl.Unlock()
+	return wsl.listed
 }
 
 // wslCopilotDir is the Copilot CLI's folder under a distro's $HOME: not an
@@ -1627,13 +1682,13 @@ func wslList(args ...string) (names []string, ok bool) {
 	return parseDistros(b), true
 }
 
-// wslProbeVersion is that of wslProbeScript: 2 says where each command is,
+// wslProbeVersion is that of wslProbeScript(): 2 says where each command is,
 // so one from Windows' drives isn't taken for the distro's own.
 // (wslinfo's networking mode came without a new version: a probe that
 // didn't ask leaves Net "", read as .wslconfig says, as before.)
 const wslProbeVersion = 2
 
-// wslProbeScript prints the distro's home, what of each of wslKinds it
+// wslProbeScript() prints the distro's home, what of each of wslKinds it
 // has (each command with where it is), where Windows' drives are mounted,
 // its default route (the Windows host under NAT), and WSL's networking
 // mode as wslinfo (WSL 2.0 on) says it; and the version of each that asks
@@ -1662,7 +1717,7 @@ const wslProbeVersion = 2
 // A command on Windows' drives isn't the distro's (parseProbe), so one
 // there is looked past (wslwin): WSL puts Windows' PATH on the distro's,
 // and a Pi npm installed on Windows hid the distro's own from wslbin.
-var wslProbeScript = func() string {
+var wslProbeScript = sync.OnceValue(func() string {
 	s := `nv="${NVM_DIR:-$HOME/.nvm}"; nd=; [ -s "$nv/nvm.sh" ] && command -v bash >/dev/null 2>&1 && nd=$(NVM_DIR="$nv" timeout 10 bash -c '. "$NVM_DIR/nvm.sh" --no-use >/dev/null 2>&1; nvm_version default 2>/dev/null' </dev/null 2>/dev/null); ` +
 		// Windows' drives, as /proc/mounts has them (C:\ written C:\134)
 		`wm=$(awk '$1 ~ /^[A-Za-z]:/ {print $2}' /proc/mounts 2>/dev/null); ` +
@@ -1707,7 +1762,7 @@ var wslProbeScript = func() string {
 	return s + `ip route show default 2>/dev/null | head -n1 | sed 's/^/route:/'; ` +
 		`grep -m1 '^nameserver' /etc/resolv.conf 2>/dev/null | sed 's/^/ns:/'; ` +
 		`command -v wslinfo >/dev/null 2>&1 && echo "net:$(wslinfo --networking-mode 2>/dev/null)"; true`
-}()
+})
 
 // wslLinkPaths are the paths under a distro's $HOME the probe asks where
 // they lead (distro.Links): each agent's folder and its skills, and the
@@ -1724,7 +1779,7 @@ func wslLinkPaths() []string {
 }
 
 func wslProbe(name string) *distro {
-	b, err := wslRun(30*time.Second, "-d", name, "-e", "sh", "-lc", wslProbeScript)
+	b, err := wslRun(30*time.Second, "-d", name, "-e", "sh", "-lc", wslProbeScript())
 	if err != nil {
 		return nil
 	}
@@ -1738,7 +1793,7 @@ func wslProbe(name string) *distro {
 	return d
 }
 
-// parseProbe reads wslProbeScript's output. A command on one of Windows'
+// parseProbe reads wslProbeScript()'s output. A command on one of Windows'
 // drives — WSL puts Windows' PATH on its own, so Windows npm's pi is
 // /mnt/c/Users/me/AppData/Roaming/npm/pi there — is Windows', not the
 // distro's.
@@ -1826,6 +1881,12 @@ func parseProbe(name, out string) *distro {
 	for bin, path := range bins {
 		if !onWindowsDrive(path, win) {
 			d.Has["bin:"+bin] = true
+			if strings.HasPrefix(path, "/") {
+				if d.Paths == nil {
+					d.Paths = map[string]string{}
+				}
+				d.Paths[bin] = path
+			}
 		}
 	}
 	if d.Gateway == "" {

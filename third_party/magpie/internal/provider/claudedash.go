@@ -1,9 +1,10 @@
 package provider
 
 import (
-	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/yetone/magpie/internal/lazyre"
 )
 
 // Claude Code takes a Claude model by its id's version written with dashes
@@ -19,10 +20,10 @@ import (
 // as Mythos 5. Other vendors' ids are never respelled.
 
 // claudeDotted is a Claude model's version written with a dot.
-var claudeDotted = regexp.MustCompile(`(?i)claude-(?:opus|sonnet|haiku|fable|mythos)-\d+(?:\.\d+)+`)
+var claudeDotted = lazyre.New(`(?i)claude-(?:opus|sonnet|haiku|fable|mythos)-\d+(?:\.\d+)+`)
 
 // claudeDashedish is an id that could be a dotted one respelled.
-var claudeDashedish = regexp.MustCompile(`(?i)claude-(?:opus|sonnet|haiku|fable|mythos)-\d+-\d`)
+var claudeDashedish = lazyre.New(`(?i)claude-(?:opus|sonnet|haiku|fable|mythos)-\d+-\d`)
 
 // ClaudeDashed is id with each dot of a Claude model's version a dash:
 // relay/claude-opus-4.6-us[1m] is relay/claude-opus-4-6-us[1m]. Any other
@@ -127,4 +128,54 @@ func offEntries() []Entry {
 		}
 	}
 	return out
+}
+
+// claudeOwnModel is a Claude model's id as Anthropic names it.
+var claudeOwnModel = lazyre.New(`^claude-(?:opus|sonnet|haiku|fable|mythos)-\d+(?:-\d+)?(?:-\d{8})?$`)
+
+// ClaudeBare is ref (a served "provider/model", with a [1m] mark or not)
+// as Anthropic names it, without the provider, when ref is a Claude model
+// on Claude Code's own subscription in magpie and the bare id goes to that
+// same model (OwnRoute). Claude Desktop's Code tab on the user's own
+// subscription reads the model variables of settings.json and sends them to
+// Anthropic, which turns "anth/claude-haiku-5-5[1m]" away ("There's an
+// issue with the selected model", iryan_sun on X); through magpie the bare
+// id arrives at the same subscription. Haiku has no 1M window to mark, so
+// its mark is taken off. Anything else is as it is: another vendor's model
+// or a relay's has no id Anthropic knows, and one with an effort fixed
+// on it names that effort only through its ref.
+func ClaudeBare(ref string) string {
+	id, rest := claudeSplit(ref)
+	if strings.Contains(rest, ":") {
+		return ref
+	}
+	i := strings.Index(id, "/")
+	if i <= 0 {
+		return ref
+	}
+	model := id[i+1:]
+	if !claudeOwnModel.MatchString(model) {
+		return ref
+	}
+	if to, _, ok := OwnRoute("claude", model); !ok || to != id {
+		return ref
+	}
+	if strings.HasPrefix(model, "claude-haiku-") {
+		return model
+	}
+	return model + rest
+}
+
+// ClaudeUnbare is ClaudeBare taken back: a Claude model of Anthropic's by
+// its bare id, which magpie sends to Claude Code's own subscription, is
+// that subscription's ref. Any other value is as it is.
+func ClaudeUnbare(v string) string {
+	id, rest := claudeSplit(v)
+	if strings.Contains(rest, ":") || !claudeOwnModel.MatchString(id) {
+		return v
+	}
+	if to, _, ok := OwnRoute("claude", id); ok {
+		return to + rest
+	}
+	return v
 }

@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -23,6 +22,7 @@ import (
 	"github.com/yetone/magpie/internal/dirent"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/provider"
 	"gopkg.in/yaml.v3"
 )
@@ -89,12 +89,12 @@ func ompYAMLList(v string) bool { return strings.HasPrefix(v, "[") || strings.Ha
 
 // ompProfileName is a profile name omp takes (pi-utils dirs.ts,
 // normalizeProfileName); it refuses any other.
-var ompProfileName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+var ompProfileName = lazyre.New(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
 // ompReserved is a Windows device name omp refuses on every platform
 // (pi-utils dirs.ts, normalizeProfileName): CON, PRN, AUX, NUL, COM0–COM9,
 // LPT0–LPT9, and the same with a dot and anything after (con.work).
-var ompReserved = regexp.MustCompile(`(?i)^(?:CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(?:\..*)?$`)
+var ompReserved = lazyre.New(`(?i)^(?:CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(?:\..*)?$`)
 
 // ompProfileOK says whether name is one omp takes as a profile (pi-utils
 // dirs.ts): "default" is none, a trailing dot is refused, and so is a
@@ -730,7 +730,7 @@ func ompProviderAt(gw, version string) ompProviderEntry {
 // the whole file away over an api it doesn't list.
 const ompKindSince = "18.7.0"
 
-// ompImageModels are magpie's image models (Settings › Images, as
+// ompImageModels are magpie's image models (Settings › Models › Images, as
 // generate_image offers them) as omp's image role takes them (treeman_26897
 // on Discord): kind image on openai-images, which omp's generate_image
 // posts to the provider's baseUrl + /images/generations, or /images/edits

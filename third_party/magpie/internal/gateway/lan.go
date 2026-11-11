@@ -78,9 +78,57 @@ func logInvalidPublicURL() {
 
 var warnInvalidPublicURL = sync.OnceFunc(logInvalidPublicURL)
 
-// publicURL is the validated MAGPIE_PUBLIC_URL, with a scheme and without
-// trailing slashes. An invalid value is treated as unset and warned once.
+// publicURL is where other machines reach the gateway when the system
+// says so: the validated MAGPIE_PUBLIC_URL, else a LazyCat app's own
+// address (lazyCatURL).
 func publicURL() string {
+	if u := namedPublicURL(); u != "" {
+		return u
+	}
+	return lazyCatURL()
+}
+
+// lazyCatURL is where a LazyCat (懒猫微服, lazycat.cloud) app is reached:
+// LazyCat injects LAZYCAT_APP_DOMAIN (magpie.<box>.heiyu.space) into every
+// container of an app, and serves the app there over HTTPS. Inside, magpie
+// sees only its container's address (172.28.x.x), which nothing outside
+// the box reaches, and Settings offered http://172.28.3.65:3425 under
+// "Share on local network" (mtoolstec on X). The magpie-lzcapp package
+// sets MAGPIE_PUBLIC_URL to the same domain through a manifest template,
+// which a system before lzcos 1.3.8 doesn't render, and another package
+// or a hand-written manifest may not set it at all. "" outside LazyCat,
+// or when the value is no domain.
+func lazyCatURL() string {
+	d := strings.ToLower(strings.TrimSpace(os.Getenv("LAZYCAT_APP_DOMAIN")))
+	if !domainName(d) {
+		return ""
+	}
+	return "https://" + d
+}
+
+// domainName: d is a DNS name of two labels or more, each of letters,
+// digits and hyphens.
+func domainName(d string) bool {
+	if len(d) > 253 || !strings.Contains(d, ".") {
+		return false
+	}
+	for _, l := range strings.Split(d, ".") {
+		if l == "" || len(l) > 63 || l[0] == '-' || l[len(l)-1] == '-' {
+			return false
+		}
+		for _, c := range l {
+			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// namedPublicURL is the validated MAGPIE_PUBLIC_URL, with a scheme and
+// without trailing slashes. An invalid value is treated as unset and
+// warned once.
+func namedPublicURL() string {
 	u := strings.TrimSpace(os.Getenv("MAGPIE_PUBLIC_URL"))
 	if u == "" {
 		return ""
@@ -102,7 +150,8 @@ func publicURL() string {
 	return u
 }
 
-// PublicURL is MAGPIE_PUBLIC_URL, with a scheme; "" when it isn't set.
+// PublicURL is MAGPIE_PUBLIC_URL, with a scheme, else a LazyCat app's
+// address; "" when neither is set.
 func PublicURL() string { return publicURL() }
 
 // OnNetwork: MAGPIE_ADDR puts the gateway beyond loopback (0.0.0.0 in the
@@ -120,7 +169,7 @@ func OnNetwork() bool {
 // gateway key — while the gateway is shared, or listens on the network.
 func remoteKeyed() bool { return settings.Load().LAN || OnNetwork() }
 
-// PublicHost is MAGPIE_PUBLIC_URL's host, "" when it isn't set.
+// PublicHost is PublicURL's host, "" when it isn't set.
 func PublicHost() string {
 	u, err := url.Parse(publicURL())
 	if err != nil {
@@ -174,8 +223,12 @@ var ifaceNames = func() []string {
 // other containers on the NAS needed 172.17.0.1); host.docker.internal is
 // not there on Linux unless a container is given it. "" when magpie is
 // not in a container, is on the host's network, or has no default route.
+//
+// In a LazyCat app it is "" too: the bridge's gateway there is LazyCat's
+// own, where no container port is published, and other LazyCat apps reach
+// magpie at its domain.
 func ContainerHostURL() string {
-	if !inThisContainer() || hostNetwork(ifaceNames()) {
+	if lazyCatURL() != "" || !inThisContainer() || hostNetwork(ifaceNames()) {
 		return ""
 	}
 	gw := defaultGateway(routeTable())
@@ -222,11 +275,23 @@ func defaultGateway(table string) string {
 }
 
 // InContainer: this magpie runs in a container (Docker, Podman, a
-// Kubernetes pod), whose image is what gets updated, not its binary.
-func InContainer() bool { return inContainer("/") }
+// Kubernetes pod, a LazyCat app), whose image is what gets updated, not
+// its binary.
+func InContainer() bool { return lazyCatURL() != "" || inContainer("/") }
 
 // inContainer: the system under root is a container's — Docker's or
-// Podman's marker file, or a container runtime in PID 1's cgroup.
+// Podman's marker file, a container runtime in PID 1's cgroup, a
+// container's init (or magpie itself, as the image starts it) as PID 1,
+// or the root of a cgroup namespace on an overlay root filesystem.
+//
+// Under cgroup v2 with a private cgroup namespace, Docker's default
+// since 20.10, PID 1's cgroup reads "0::/" and names no runtime, and a
+// runtime may write no marker file (a NAS's own, LazyCat's). A host's
+// PID 1 is an init system (systemd, in /init.scope), and a host's root
+// filesystem is rarely an overlay, so neither alone is taken for a
+// container: a read-only overlay root (Raspberry Pi OS, overlayroot)
+// sits under systemd in /init.scope, and an init without cgroups puts
+// "0::/" on an ext4 or btrfs root.
 func inContainer(root string) bool {
 	for _, f := range []string{".dockerenv", "run/.containerenv"} {
 		if _, err := os.Stat(filepath.Join(root, f)); err == nil {
@@ -239,15 +304,60 @@ func inContainer(root string) bool {
 			return true
 		}
 	}
+	comm, _ := os.ReadFile(filepath.Join(root, "proc/1/comm"))
+	switch strings.TrimSpace(string(comm)) {
+	case "magpie", "tini", "docker-init", "dumb-init", "catatonit":
+		return true
+	}
+	if strings.TrimSpace(string(b)) == "0::/" {
+		m, _ := os.ReadFile(filepath.Join(root, "proc/1/mountinfo"))
+		return overlayRoot(string(m))
+	}
+	return false
+}
+
+// overlayRoot: in mountinfo (proc(5)), the filesystem mounted last at "/"
+// is an overlay, as a container's image layers are.
+func overlayRoot(mountinfo string) bool {
+	fs := ""
+	for _, line := range strings.Split(mountinfo, "\n") {
+		f := strings.Fields(line)
+		sep := slices.Index(f, "-")
+		if sep < 5 || sep+1 >= len(f) || f[4] != "/" {
+			continue
+		}
+		fs = f[sep+1]
+	}
+	switch fs {
+	case "overlay", "fuse-overlayfs", "aufs":
+		return true
+	}
 	return false
 }
 
 // LANURLs are the addresses other machines on the network reach the
 // gateway at: MAGPIE_PUBLIC_URL when set, else one per IPv4 address this
-// computer has there.
+// computer has there. In a LazyCat app on the box's network, the box's
+// LAN addresses come first, before the app's domain, which only devices
+// with LazyCat's client reach; a MAGPIE_PUBLIC_URL of the user's own
+// (another domain, an address) stays first.
 func LANURLs() []string {
 	if u := publicURL(); u != "" {
-		return []string{u}
+		lc := lazyCatURL()
+		if lc == "" || pinnedHost() != "" {
+			return []string{u}
+		}
+		var box []string
+		for _, h := range lazyCatBoxHosts() {
+			box = append(box, Scheme()+"://"+net.JoinHostPort(h, Port()))
+		}
+		if len(box) == 0 {
+			return []string{u}
+		}
+		if u == lc {
+			return append(box, lc)
+		}
+		return slices.Concat([]string{u}, box, []string{lc})
 	}
 	// a gateway MAGPIE_ADDR keeps on one host is reached there alone; on
 	// loopback, only through a proxy, whose address MAGPIE_PUBLIC_URL says
@@ -280,9 +390,12 @@ func LANURLs() []string {
 // Settings offered http://198.18.0.1 instead of 192.168.110.x (coeo91 on
 // Discord). It goes by the address, not the interface's name: Tailscale's
 // is a utun too, and its address is reached.
-func LANHosts() []string {
+func LANHosts() []string { return lanHostsOf(hostIPs()) }
+
+// lanHostsOf is LANHosts of the addresses ips.
+func lanHostsOf(ips []net.IP) []string {
 	var home, near, far []string
-	for _, ip := range hostIPs() {
+	for _, ip := range ips {
 		if ip.To4() == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() || fakeIP(ip) {
 			continue
 		}
@@ -401,6 +514,8 @@ func (s *Server) Relisten() error {
 	if s.ln == nil {
 		return nil // not serving
 	}
+	// where it listens now is what a command in another shell is told
+	defer func() { recordListening(s.ln.Addr()) }()
 	to := listenAddr()
 	if s.ln.Addr().String() == to {
 		return nil
@@ -441,13 +556,23 @@ func (s *Server) Relisten() error {
 // including a stale named key.
 func lanGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// with mTLS on, another machine's request needs magpie's client
+		// certificate before anything else is looked at, a callback's
+		// token and a gateway key included (mtls.go)
+		if refuseWithoutClientCert(w, r) {
+			return
+		}
 		if ownCallback(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
 		r = takePagePort(r)
 		// a WSL distro's agent, at the address Windows has on its network
-		// (wsl.go), is one of this computer's
+		// (wsl.go), is one of this computer's; one given the key in its
+		// path (Claude Science's) has it taken off first
+		r = takeWSLPathKey(r)
+		// an agent named in the path (AgentPath) is told by it
+		r = takeAgentPath(r)
 		if fromWSL(r) {
 			r = asFromLoopback(r)
 		}
@@ -493,7 +618,16 @@ func lanGuard(next http.Handler) http.Handler {
 		}
 		// the key page itself is the same bytes for everyone, so it is
 		// opened before the key it asks for is typed; its data isn't
-		if remote && keyPageOpen(r) {
+		// magpie's CA, too: public, and fetched before the computer
+		// asking trusts magpie's https:// (https.go)
+		if remote && (keyPageOpen(r) || caFileOpen(r)) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// so is the join page, and its route carries a password, not a
+		// key: the handler judges the password, the browser that sent it
+		// and how often it is tried (join.go)
+		if remote && (joinPageOpen(r) || joinAsked(r)) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -699,6 +833,8 @@ func identifyCaller(w http.ResponseWriter, r *http.Request) (*http.Request, bool
 	}
 	if ok {
 		r = r.WithContext(access.WithIdentity(r.Context(), who))
+		// the names the key gives models, before any route reads one
+		r = aliasRequest(r, who)
 	}
 	r.Header = r.Header.Clone()
 	r.Header.Set("Authorization", "Bearer "+Token)
@@ -736,6 +872,7 @@ func appendUsage(r *http.Request, rec usage.Record) {
 	who := access.Caller(r.Context())
 	rec.CallerKeyID, rec.CallerKeyName, rec.CallerIssuerID = who.KeyID, who.KeyName, who.IssuerID()
 	rec.Local = local(r)
+	rec.ClientIP = clientIP(r)
 	if r.Context().Value(observedKey{}) != nil {
 		rec.Watched = true
 	}

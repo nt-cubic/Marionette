@@ -9,12 +9,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
 
+	"github.com/yetone/magpie/internal/capre"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/settings"
 )
@@ -32,6 +32,10 @@ type Library struct {
 	// Subagents are agents of their own the agents ticked for each can
 	// hand a task to (subagents.go, #2283)
 	Subagents []*Subagent `json:"subagents,omitempty"`
+	// Plugins are the Claude Code plugins kept as one item each: its
+	// skills, servers, hooks and subagents are the items above marked
+	// with its name (plugin.go)
+	Plugins []*Plugin `json:"plugins,omitempty"`
 	// Applied is what magpie wrote into each agent, so that what it takes
 	// away is only ever its own.
 	Applied map[string]*Applied `json:"applied,omitempty"`
@@ -75,6 +79,12 @@ type Library struct {
 	// BridgesOn are the Remote magpies (provider ids) the user asked to
 	// give their router a server, in the editor's switch (bridge_mcp.go)
 	BridgesOn []string `json:"bridgesOn,omitempty"`
+	// BorrowOn are the Remote magpies (provider ids) whose Library's
+	// skills and prompts this computer uses, and Borrowed what it took
+	// from each (borrow.go). This computer's own: Collect doesn't carry
+	// either.
+	BorrowOn []string             `json:"borrowOn,omitempty"`
+	Borrowed map[string]*Borrowed `json:"borrowed,omitempty"`
 	// SeenSkills are, by repository and ref ("owner/repo@ref", or a git
 	// address and ref), or by a folder the user added ("folder:<path>"),
 	// the folders of skills there the page has offered: picked or not at
@@ -107,6 +117,9 @@ type Instructions struct {
 	// there is the one magpie always had, "default"
 	Sets   []InstrSet `json:"sets,omitempty"`
 	Active string     `json:"active,omitempty"` // the set agents get; "" is "default"
+	// NoMemory leaves memory's digest (memory.Digest) out of what the
+	// agents are written; by default it follows the shared text
+	NoMemory bool `json:"noMemory,omitempty"`
 }
 
 // InstrSet is one set of shared instructions: its text is in its own file.
@@ -276,7 +289,7 @@ func (l *Library) skill(name string) *Skill {
 
 // A name is what a server or a skill is called in every agent's file, and
 // a skill's folder: it has to be a bare key in TOML and a plain file name.
-var nameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
+var nameRe = capre.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`, 64)
 
 func checkName(kind, name string) error {
 	if !nameRe.MatchString(name) {
@@ -285,12 +298,13 @@ func checkName(kind, name string) error {
 	return nil
 }
 
-// agentRe is an agent's id: a name, or one in a WSL distro's
-// (codex@wsl:Ubuntu-24.04).
-var agentRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}(@wsl:[A-Za-z0-9][A-Za-z0-9._-]{0,63})?$`)
+// An agent's id is a name, or one in a WSL distro's
+// (codex@wsl:Ubuntu-24.04): distroRe is the distro's name.
+var distroRe = capre.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`, 64)
 
 func checkAgent(id string) error {
-	if !agentRe.MatchString(id) {
+	name, distro, wsl := strings.Cut(id, "@wsl:")
+	if !nameRe.MatchString(name) || wsl && !distroRe.MatchString(distro) {
 		return fmt.Errorf("agent %q: not an agent's id", id)
 	}
 	return nil

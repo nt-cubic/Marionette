@@ -1,9 +1,10 @@
 package library
 
 import (
-	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/yetone/magpie/internal/lazyre"
 )
 
 // A search in the market can be an address: a server's repository
@@ -20,9 +21,9 @@ var codeHosts = map[string]bool{
 }
 
 var (
-	schemeRe    = regexp.MustCompile(`^[a-z][a-z0-9+.-]*://`)
-	ownerRepoRe = regexp.MustCompile(`^@?[a-z0-9][a-z0-9_.-]*/[a-z0-9_.-]+$`)
-	hostRe      = regexp.MustCompile(`^[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?$`)
+	schemeRe    = lazyre.New(`^[a-z][a-z0-9+.-]*://`)
+	ownerRepoRe = lazyre.New(`^@?[a-z0-9][a-z0-9_.-]*/[a-z0-9_.-]+$`)
+	hostRe      = lazyre.New(`^[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?$`)
 )
 
 // normAddr is an address as it's compared: lower case, with no scheme, user,
@@ -114,12 +115,18 @@ func packageOf(s *Server) string {
 	if s.Command == "docker" {
 		return s.Args[len(s.Args)-1]
 	}
-	for _, a := range s.Args {
+	uv := progName(s.Command) == "uvx"
+	for i := 0; i < len(s.Args); i++ {
+		a := s.Args[i]
+		if uv && a != "--from" && uvOpts[a] { // uvx -p 3.13: the value is not the package
+			i++
+			continue
+		}
 		if a == "" || strings.HasPrefix(a, "-") || a == "run" {
 			continue
 		}
-		if i := strings.LastIndex(a, "@"); i > 0 {
-			a = a[:i]
+		if j := strings.LastIndex(a, "@"); j > 0 {
+			a = a[:j]
 		}
 		return a
 	}

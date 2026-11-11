@@ -9,11 +9,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	toml "github.com/pelletier/go-toml/v2"
 
+	"github.com/yetone/magpie/internal/lazyre"
+	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/source"
@@ -188,7 +189,7 @@ type npmrc struct {
 }
 
 // npmrcVar is a ${VAR} in an .npmrc's value, which npm expands.
-var npmrcVar = regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*\}`)
+var npmrcVar = lazyre.New(`\$\{[A-Za-z_][A-Za-z0-9_]*\}`)
 
 // npmrcOf reads the .npmrc at path; an empty one when it can't be read. A
 // ${VAR} is the environment's, as npm expands it.
@@ -314,6 +315,7 @@ func fetchNPM(ctx context.Context, name, suffix string, limit int64) ([]byte, er
 // fetchRegistry gets u from a registry of the user's, with its token; the
 // token never goes to any other address (a mirror, a redirect elsewhere).
 func fetchRegistry(ctx context.Context, u, token string, limit int64) ([]byte, error) {
+	ctx = netproxy.Downloads(ctx) // plugin downloads' proxy
 	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, err

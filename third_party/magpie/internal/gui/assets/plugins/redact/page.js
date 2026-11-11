@@ -90,7 +90,6 @@ function maskPageOpen() {
 }
 function maskPageLoad(force) {
   maskDrawAll();
-  (prefs ? Promise.resolve() : loadSettings()).then(drawMaskAlert).catch(() => {});
   const sum = maskLoad(force)?.then(() => { drawMaskCard(); drawMaskList(); });
   const recs = maskL.read && force ? maskRefresh() : maskL.read ? null : maskFetch();
   return Promise.all([sum, recs]);
@@ -99,15 +98,6 @@ function maskDrawAll() {
   drawMaskCard();
   drawMaskList();
   if (maskO) drawMaskOne();
-}
-// the Masking alert (Must2333 on X): a notification when a value is
-// masked for the first time, off until turned on. Gateway mode leaves it
-// out, as it does the other alerts its desktop would show
-function drawMaskAlert() {
-  const s = prefs || {};
-  $("#maskPrefs").hidden = gatewayMode;
-  $("#maskAlertSegs").replaceChildren(segs([["off", t("Off")], ["on", t("On")]], s.maskAlert ? "on" : "off",
-    (v) => savePrefs({ ...prefsKeep(s), maskAlert: v === "on" }).then(drawMaskAlert)));
 }
 // while the page is on screen it keeps up with requests as they go
 setInterval(() => {
@@ -143,7 +133,16 @@ function drawMaskCard() {
     b.type = "button";
     b.onclick = maskTurnOn;
     head.append(b);
-  } else head.append(maskOffButton());
+  } else {
+    // back to its settings (netube99 on X), unless Turn off goes there
+    if (!maskSettings().redactWords?.length) {
+      const set = el("button", "link", t("Settings") + " › " + $("#setTab-privacy").textContent);
+      set.type = "button";
+      set.onclick = (e) => openSettingsAt(e, "privacy", "#redactList .row");
+      head.append(set);
+    }
+    head.append(maskOffButton());
+  }
   if (sum?.requests || maskDays === 30) head.append(segs([["7", t("7 days")], ["30", t("30 days")]], String(maskDays), (v) => {
     maskDays = +v;
     try { localStorage.setItem("magpie.maskDays", v); } catch {}
@@ -638,7 +637,7 @@ function maskOneOpen(key, r) {
   if (!key) return;
   maskTipOff();
   const o = maskO = { key, r: r || maskL.records.find((x) => x.key === key) || null, sent: undefined, leaves: null, vals: new Map(), view: "both", pick: "", open: new Set(), whole: new Set() };
-  $("#maskCard").hidden = $("#maskList").hidden = $("#maskDemo").hidden = $("#maskPrefs").hidden = true;
+  $("#maskCard").hidden = $("#maskList").hidden = $("#maskDemo").hidden = true;
   xqd?.wake();
   $("#maskOne").hidden = false;
   drawMaskOne();
@@ -668,7 +667,6 @@ function maskOneClose() {
   $("#maskOne").hidden = true;
   $("#maskOne").replaceChildren();
   $("#maskCard").hidden = $("#maskList").hidden = $("#maskDemo").hidden = false;
-  $("#maskPrefs").hidden = gatewayMode;
   xqd?.wake();
   drawMaskList();
 }
@@ -842,8 +840,10 @@ function maskActsOn(mark, x, o) {
 }
 // maskValueMenu: Copy puts the value itself on the clipboard; Never mask
 // adds it to Settings › Privacy's list of that name (/api/masking/allow,
-// the same list), so the next request sends it as written. A value of
-// the user's own Masked words, or one in the list already, can't be added.
+// the same list), so new messages send it as written while the ones sent
+// before stay masked and the vendor's cache of them still matches
+// (redact's allowkept.go, NicoleS76448271 on X). A value of the user's
+// own Masked words, or one in the list already, can't be added.
 function maskValueMenu(anchor, x, o) {
   const again = agentMenu?.anchor === anchor;
   closeAgentMenu();
@@ -858,7 +858,7 @@ function maskValueMenu(anchor, x, o) {
     { name: "Copy", icon: COPY_ICON, run: () => copy(v, "", null, t("Value copied")) },
     { name: "Never mask", icon: EYE, off: !!why, why, run: () => {
       writingPrefs(api("masking/allow", { p: x.p }))
-        .then((ns) => { prefs = ns; if (state) state.settings = ns; status(t("Sent as written from the next request on"), "ok"); })
+        .then((ns) => { prefs = ns; if (state) state.settings = ns; status(t("Sent as written in new messages; earlier ones stay masked, so the cache still holds"), "ok"); })
         .catch((e) => status(t(e.message), "err"));
     } },
   ]);

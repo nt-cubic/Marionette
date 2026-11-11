@@ -3,6 +3,7 @@
 magpie.strings({
   zh: {
     "Turn on masking": "打开脱敏",
+    "Nothing is masked yet": "还没有要脱敏的内容",
     "Turn off masking": "关闭脱敏",
     "Turn off in Settings": "去设置里关闭",
     "Your own masked words still mask until you take them out, in Settings › Privacy": "你自己加的脱敏词会一直脱敏，要在「设置 › 隐私」里删掉",
@@ -110,10 +111,11 @@ magpie.strings({
     "Value copied": "已复制这个值",
     "One of your Masked words": "这是你的脱敏词",
     "In Never mask already": "已在「从不脱敏」里",
-    "Sent as written from the next request on": "从下一条请求起按原样发送",
+    "Sent as written in new messages; earlier ones stay masked, so the cache still holds": "新消息起按原样发送；之前的消息仍脱敏，缓存不受影响",
   },
   "zh-TW": {
     "Turn on masking": "開啟脫敏",
+    "Nothing is masked yet": "還沒有要脫敏的內容",
     "Turn off masking": "關閉脫敏",
     "Turn off in Settings": "到設定裡關閉",
     "Your own masked words still mask until you take them out, in Settings › Privacy": "你自己加的脫敏詞會一直脫敏，要在「設定 › 隱私」裡刪掉",
@@ -221,10 +223,11 @@ magpie.strings({
     "Value copied": "已複製這個值",
     "One of your Masked words": "這是你的脫敏詞",
     "In Never mask already": "已在「從不脫敏」裡",
-    "Sent as written from the next request on": "從下一則請求起照原樣送出",
+    "Sent as written in new messages; earlier ones stay masked, so the cache still holds": "新訊息起照原樣送出；之前的訊息仍脫敏，快取不受影響",
   },
   ja: {
     "Turn on masking": "マスクをオンにする",
+    "Nothing is masked yet": "まだ何もマスクしていません",
     "Turn off masking": "マスクをオフにする",
     "Turn off in Settings": "設定でオフにする",
     "Your own masked words still mask until you take them out, in Settings › Privacy": "自分で追加したマスクする語は、設定 › プライバシーで削除するまでマスクされ続けます",
@@ -332,10 +335,11 @@ magpie.strings({
     "Value copied": "値をコピーしました",
     "One of your Masked words": "マスクする語に登録済みです",
     "In Never mask already": "「マスクしない」に登録済みです",
-    "Sent as written from the next request on": "次のリクエストからそのまま送信します",
+    "Sent as written in new messages; earlier ones stay masked, so the cache still holds": "新しいメッセージからそのまま送信します。以前のメッセージはマスクしたままなので、キャッシュは保たれます",
   },
   de: {
     "Turn on masking": "Maskierung einschalten",
+    "Nothing is masked yet": "Noch wird nichts maskiert",
     "Turn off masking": "Maskierung ausschalten",
     "Turn off in Settings": "In den Einstellungen ausschalten",
     "Your own masked words still mask until you take them out, in Settings › Privacy": "Ihre eigenen maskierten Wörter werden weiter maskiert, bis Sie sie unter Einstellungen › Datenschutz entfernen",
@@ -443,6 +447,6 @@ magpie.strings({
     "Value copied": "Wert kopiert",
     "One of your Masked words": "Eines deiner maskierten Wörter",
     "In Never mask already": "Steht schon unter Nie maskieren",
-    "Sent as written from the next request on": "Ab der nächsten Anfrage unverändert gesendet",
+    "Sent as written in new messages; earlier ones stay masked, so the cache still holds": "Ab neuen Nachrichten unverändert gesendet; frühere bleiben maskiert, der Cache bleibt gültig",
   },
 });

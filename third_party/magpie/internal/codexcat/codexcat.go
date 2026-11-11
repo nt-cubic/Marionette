@@ -14,14 +14,15 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/filememo"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/settings"
 )
 
@@ -46,7 +47,9 @@ var Prompt string
 //go:embed codex_instructions.json
 var bundledJSON []byte
 
-var bundled = func() map[string]string {
+// It is read the first time a model asks, not at launch: ~0.5 MB a
+// launch that writes no Codex catalog (`magpie statusline`) never uses.
+var bundled = sync.OnceValue(func() map[string]string {
 	var b struct {
 		Instructions map[string]string `json:"instructions"`
 	}
@@ -54,7 +57,7 @@ var bundled = func() map[string]string {
 		panic(err)
 	}
 	return b.Instructions
-}()
+})
 
 // longestPrefix is the slug of slugs Codex takes a model's entry from:
 // the longest one the model's id starts with (codex-rs models-manager
@@ -97,8 +100,8 @@ func officialFor(own map[string]map[string]any, id string) (string, map[string]a
 			return text, msgs
 		}
 	}
-	if s := longestPrefix(slug, maps.Keys(bundled)); s != "" {
-		return bundled[s], nil
+	if s := longestPrefix(slug, maps.Keys(bundled())); s != "" {
+		return bundled()[s], nil
 	}
 	return Prompt, nil
 }
@@ -332,7 +335,7 @@ type model struct {
 // DeepSeek's own deepseek-flash, a found auto/deepseek-flash), named by
 // the model's own id after its provider's. A routing group is not one: it
 // may hand the turn to any model.
-var deepSeekModel = regexp.MustCompile(`(?i)^deepseek-(v[4-9]|v\d\d|flash|pro|chat|reasoner)`)
+var deepSeekModel = lazyre.New(`(?i)^deepseek-(v[4-9]|v\d\d|flash|pro|chat|reasoner)`)
 
 func deepSeek(id string) bool {
 	if strings.HasPrefix(id, "group/") {
@@ -398,8 +401,10 @@ func entriesAt(ms []catalog.Model, after int, effort string) []any {
 			e.Tiers = namedTiers(own, m.Tiers)
 		}
 		// an OpenAI model: a ChatGPT account's (codex/), or a group one is
-		// in (Fast, see provider.codexListed)
-		if v1 && (strings.HasPrefix(m.ID, "codex/") || m.Fast) {
+		// in (Fast, see provider.codexListed), or one a provider that seals
+		// a V2 lead's subagent tasks serves (Seals: a relay of the ChatGPT
+		// backend)
+		if v1 && (strings.HasPrefix(m.ID, "codex/") || m.Fast || m.Seals) {
 			e.MultiAgent = "v1"
 		} else if m.AgentsV2 {
 			e.MultiAgent = "v2"
@@ -566,7 +571,7 @@ func Keep(cur, b []byte) []byte {
 
 // datedSuffix is a snapshot's date after a model's id (-2026-09-14,
 // -20260914).
-var datedSuffix = regexp.MustCompile(`-(\d{4}-\d{2}-\d{2}|\d{8})$`)
+var datedSuffix = lazyre.New(`-(\d{4}-\d{2}-\d{2}|\d{8})$`)
 
 // agentsEffort is the multi_agent_reasoning_effort of Codex's own entry for
 // the model a third-party one serves (s2a/gpt-6-astra, openai/gpt-6-astra on
@@ -591,7 +596,7 @@ func agentsEffort(own map[string]map[string]any, m catalog.Model) string {
 }
 
 // gptModel is an OpenAI model's id, as a relay may serve it: gpt-6-sol, o4.
-var gptModel = regexp.MustCompile(`^(gpt-|o\d)`)
+var gptModel = lazyre.New(`^(gpt-|o\d)`)
 
 // ownTiers are the service tiers Codex's own entry gives the model a
 // provider the user added by its address serves (openai/gpt-6-sol on a
@@ -1160,7 +1165,7 @@ func listedEntry(m catalog.Model, priority int, work settings.Settings, autoRevi
 			e["input_modalities"] = slices.DeleteFunc(slices.Clone(in), func(x any) bool { return x == "image" })
 		}
 	}
-	if v1 && m.Fast {
+	if v1 && (m.Fast || m.Seals) {
 		Stamp(e)
 	} else if _, ok := e["multi_agent_version"]; !ok && m.AgentsV2 {
 		e["multi_agent_version"] = "v2"
@@ -1203,6 +1208,28 @@ func Window(e map[string]any, n, most int) {
 		e["max_context_window"] = n
 	} else if cur, ok := e["max_context_window"].(int); ok && cur < n {
 		e["max_context_window"] = n
+	}
+}
+
+// Cap holds one of Codex's own entries to a window of at most n tokens
+// (settings.ContextCap), where the user set none for it: its window, the
+// most it may be raised to and the threshold it compacts at come down to n
+// when they are above it, and nothing else changes.
+func Cap(e map[string]any, n int) {
+	if n <= 0 {
+		return
+	}
+	for _, k := range []string{"context_window", "max_context_window", "auto_compact_token_limit"} {
+		switch v := e[k].(type) {
+		case float64:
+			if int(v) > n {
+				e[k] = n
+			}
+		case int:
+			if v > n {
+				e[k] = n
+			}
+		}
 	}
 }
 

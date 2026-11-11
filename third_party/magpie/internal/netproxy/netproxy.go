@@ -12,6 +12,7 @@ package netproxy
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -122,12 +123,16 @@ func Held(ctx context.Context) error {
 // "direct", #1522) goes through its own provider's proxy, never the one
 // it was made under. A provider's leave not to check its certificate
 // (WithUncheckedTLS) goes the same way: it is the outer provider's, and
-// dropped here, and so is its ask for HTTP/1.1 (WithHTTP1).
+// dropped here, and so is its ask for HTTP/1.1 (WithHTTP1) and its own
+// TLS identity (WithClientCert).
 func With(ctx context.Context, choice string) context.Context {
-	if choice = strings.TrimSpace(choice); choice == "" && choiceOf(ctx) == "" && uncheckedOf(ctx) == nil && http1Of(ctx) == nil {
+	if choice = strings.TrimSpace(choice); choice == "" && choiceOf(ctx) == "" && uncheckedOf(ctx) == nil && http1Of(ctx) == nil && clientCertOf(ctx) == nil {
 		return ctx
 	}
 	ctx = context.WithValue(ctx, choiceKey{}, choice)
+	if clientCertOf(ctx) != nil {
+		ctx = context.WithValue(ctx, clientCertKey{}, (*clientCert)(nil))
+	}
 	if uncheckedOf(ctx) != nil {
 		ctx = context.WithValue(ctx, uncheckedKey{}, map[string]bool(nil))
 	}
@@ -136,6 +141,24 @@ func With(ctx context.Context, choice string) context.Context {
 	}
 	return ctx
 }
+
+// Downloads is ctx for magpie's downloads of plugins — the plugins list,
+// npm's registry, GitHub, the plugins repo's dist branch, Bun itself —
+// which go through the proxy Settings sets for them (PluginProxy) when it
+// names one (JonahFu on X: GitHub reached only through a proxy, the
+// vendors without). Its "" leaves ctx as it is, so they follow the
+// global proxy as every other request does.
+func Downloads(ctx context.Context) context.Context {
+	if c := strings.TrimSpace(settings.Load().PluginProxy); c != "" {
+		return With(ctx, c)
+	}
+	return ctx
+}
+
+// EnvDownloads is Env for a program magpie starts to download plugins
+// (bun add and update, git): plugin downloads' proxy (Downloads), or,
+// when that names none, Env's.
+func EnvDownloads(env []string) []string { return EnvWith(settings.Load().PluginProxy, env) }
 
 // Choice is the proxy ctx names (With), "" when it names none — for a CLI
 // run on a provider's behalf, whose *_PROXY is set from it (EnvWith).
@@ -147,6 +170,19 @@ func choiceOf(ctx context.Context) string {
 	}
 	c, _ := ctx.Value(choiceKey{}).(string)
 	return c
+}
+
+// Resolve is a proxy choice as the proxy it stands for: a saved proxy
+// (settings.NamedProxy, "@id") as its address with its login, any other
+// choice as it is. A reference to a proxy that isn't there is kept as it
+// is, and Parse refuses it: a request meant for a proxy never goes
+// direct for want of one.
+func Resolve(choice string) string {
+	choice = strings.TrimSpace(choice)
+	if a, ok := settings.ResolveProxy(choice); ok {
+		return a
+	}
+	return choice
 }
 
 // forChoice is the proxy a provider's own choice names; nil for "direct".
@@ -177,7 +213,8 @@ var HTTP1 func(u *url.URL) bool
 // connection carried a TLS record that didn't decrypt (recordError, for h2Broken after) go
 // through a clone kept for HTTP/1.1 (http1Only), and one to a host whose certificate the provider's user
 // said not to check (WithUncheckedTLS) through a clone kept for that
-// host alone (uncheckTLS). A host whose IPv6 is taken but goes nowhere
+// host alone (uncheckTLS), and one made with a provider's own TLS
+// identity (WithClientCert) through a clone kept for it (clientTLS). A host whose IPv6 is taken but goes nowhere
 // is dialed over IPv4 (v4Fallback).
 func Dispatch(base *http.Transport) http.RoundTripper {
 	v4Fallback(base)
@@ -201,13 +238,14 @@ type route struct {
 	choice    string
 	h1        bool
 	unchecked string
+	client    string // clientRoute
 }
 
 func (d *dispatch) RoundTrip(req *http.Request) (*http.Response, error) {
 	if d.moved() {
 		d.CloseIdleConnections()
 	}
-	r := route{choice: choiceOf(req.Context()), h1: HTTP1 != nil && HTTP1(req.URL) || http1Asked(req) || overHTTP1(req.Context()) || h2BrokenFor(req), unchecked: uncheckedHost(req)}
+	r := route{choice: Resolve(choiceOf(req.Context())), h1: HTTP1 != nil && HTTP1(req.URL) || http1Asked(req) || overHTTP1(req.Context()) || h2BrokenFor(req), unchecked: uncheckedHost(req), client: clientRoute(req)}
 	t := d.base
 	if r != (route{}) {
 		t = d.transport(r)
@@ -246,7 +284,7 @@ func Watch() func() bool {
 	var seen bool
 	return func() bool {
 		// Shared, not Load: this runs on every request
-		now := strings.TrimSpace(settings.Shared().Proxy)
+		now := Resolve(settings.Shared().Proxy)
 		mu.Lock()
 		defer mu.Unlock()
 		moved := seen && proxy != now
@@ -284,6 +322,9 @@ func (d *dispatch) transport(r route) *http.Transport {
 	}
 	if r.unchecked != "" {
 		uncheckTLS(t)
+	}
+	if r.client != "" {
+		clientTLS(t, r.client)
 	}
 	if isCalm(d.base) {
 		// a clone shares base's HTTP/2 connections, dialled through
@@ -361,6 +402,12 @@ func EnvWith(choice string, env []string) []string {
 	if s == "" {
 		s = strings.TrimSpace(settings.Load().Proxy)
 	}
+	if settings.IsProxyRef(s) {
+		// a saved proxy that is gone: the CLI goes nowhere, not direct
+		if _, ok := settings.ResolveProxy(s); !ok {
+			return withProxy(env, DeadProxy, nil)
+		}
+	}
 	switch s {
 	case "direct":
 		return withProxy(env, "", nil)
@@ -419,9 +466,23 @@ func withProxy(env []string, p string, bypass []string) []string {
 		"ALL_PROXY="+p, "all_proxy="+p, "NO_PROXY="+nos, "no_proxy="+nos)
 }
 
-// Parse reads a proxy address; a bare host:port is an HTTP proxy.
+// DeadProxy is where a CLI is sent for a saved proxy that is gone: a port
+// nothing listens on, so its requests fail where a missing proxy would
+// have sent them straight out.
+const DeadProxy = "http://127.0.0.1:9"
+
+// Parse reads a proxy address; a bare host:port is an HTTP proxy. A saved
+// proxy ("@id") is read as the address it stands for, its login in it;
+// one that is gone is an error.
 func Parse(s string) (*url.URL, error) {
 	s = strings.TrimSpace(s)
+	if settings.IsProxyRef(s) {
+		a, ok := settings.ResolveProxy(s)
+		if !ok {
+			return nil, fmt.Errorf("the saved proxy %q isn't on this computer (deleted, or never synced here); pick another in Settings", settings.ProxyLabel(settings.ProxyID(s)))
+		}
+		s = a
+	}
 	if !strings.Contains(s, "://") {
 		s = "http://" + s
 	}
@@ -458,6 +519,11 @@ func Redact(raw string) string {
 	u, err := Parse(raw)
 	if err != nil {
 		return ""
+	}
+	if settings.IsProxyRef(raw) {
+		// a saved proxy shown as its address, with no login
+		u.User = nil
+		return u.String()
 	}
 	if u.User == nil {
 		return raw

@@ -187,7 +187,7 @@ func buildVia(agent, prefix string) []Option {
 // setting, where an Option's Label is the name alone for magpie's picker.
 func listLabels(agent string) map[string]string {
 	shown, _ := provider.CatalogFor(agent)
-	labels := provider.Labels(shown)
+	labels := provider.LabelsFor(agent, shown)
 	out := make(map[string]string, len(shown))
 	for i, e := range shown {
 		out[e.ID] = labels[i]
@@ -291,6 +291,31 @@ var builtModels stampedLists[catalog.Model]
 type stampedLists[T any] struct {
 	sync.Mutex
 	m map[string]stampedList[T]
+	// sweeping says a sweep is armed. A list past magpieModelsFor is
+	// built again on the next ask, so it is let go then: Pi's alone was
+	// ~11 MB of an idle heap with real accounts, kept for the life of the
+	// process after one window poll.
+	sweeping bool
+}
+
+// sweep lets go of the lists past magpieModelsFor, and looks again when
+// the next of the rest will be.
+func (s *stampedLists[T]) sweep() {
+	s.Lock()
+	defer s.Unlock()
+	next := magpieModelsFor
+	for k, b := range s.m {
+		if left := magpieModelsFor - time.Since(b.at); left <= 0 {
+			delete(s.m, k)
+		} else if left < next {
+			next = left
+		}
+	}
+	if len(s.m) == 0 {
+		s.m, s.sweeping = nil, false
+		return
+	}
+	time.AfterFunc(next, s.sweep)
 }
 
 type stampedList[T any] struct {
@@ -318,6 +343,10 @@ func (s *stampedLists[T]) shared(key string, build func() []T) []T {
 			s.m = map[string]stampedList[T]{}
 		}
 		s.m[key] = b
+		if !s.sweeping {
+			s.sweeping = true
+			time.AfterFunc(magpieModelsFor, s.sweep)
+		}
 		s.Unlock()
 	}
 	return slices.Clip(b.list)
@@ -338,7 +367,7 @@ func buildModels(agent string) []catalog.Model {
 	defer provider.Hold()()
 	var out []catalog.Model
 	shown, _ := provider.CatalogFor(agent)
-	labels := provider.Labels(shown)
+	labels := provider.LabelsFor(agent, shown)
 	// a model magpie describes images to takes them (provider.Described)
 	seen := describedNow()
 	// the agent's own Long conversations, if it has one (ForAgent)
@@ -398,6 +427,9 @@ func buildModels(agent string) []catalog.Model {
 		// lists offer them: Fast in the Codex CLI magpie writes
 		// magpie-models.json for (#1530)
 		provider.CodexTiers(&m, e, members)
+		if agent == "codex" {
+			provider.CodexSeals(&m, e, members)
+		}
 		if agent == "codex" {
 			// the entry its vendor lists the model under in Codex's own
 			// shape, handed on as it is (codexcat)

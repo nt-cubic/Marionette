@@ -16,13 +16,13 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/usage"
@@ -260,14 +260,58 @@ func markedKey(p provider.Provider, by string) (provider.Provider, bool) {
 }
 
 // videomaker is the model a request that names none makes its video with:
-// AutoVideomaker's, unless the Settings turned image generation off, which
-// turns video off with it. None when it is off or no provider makes videos.
+// the Settings' VideoGen while it resolves, else AutoVideomaker's, unless
+// the Settings turned image generation off, which turns video off with
+// it. None when it is off or no provider makes videos.
 func videomaker() (string, bool) {
-	if settings.Load().ImageGen == "off" {
+	st := settings.Load()
+	if st.ImageGen == "off" {
 		return "", false
+	}
+	if v := st.VideoGen; v != "" && VideomakerMissingOf(v) == "" {
+		return v, true
 	}
 	m := AutoVideomaker()
 	return m, m != ""
+}
+
+// Videomaker is the model a request that names none makes its video with
+// (videomaker), as provider/model: "" when it is off or none can.
+func Videomaker() string {
+	m, _ := videomaker()
+	return m
+}
+
+// VideomakerMissing is the model Settings › Models › Images › Video generation
+// names when magpie can't make videos with it any more, so that
+// AutoVideomaker's makes them in its place, as DrawerMissing is Image
+// generation's. "" when none is named or it resolves.
+func VideomakerMissing() string { return VideomakerMissingOf(settings.Load().VideoGen) }
+
+// VideomakerMissingOf is v, a Video generation pick, when magpie can't
+// make videos with it: its provider is gone, off or decide-only, or no
+// longer has it among its Videomakers (a custom provider's model the user
+// no longer marks a video model, #1399). A routing group resolves while
+// one of its members makes videos.
+func VideomakerMissingOf(v string) string {
+	if v == "" {
+		return ""
+	}
+	if provider.IsGroupRef(v) {
+		if _, _, ok := mediaGroupFirst(v, provider.KindVideo); ok {
+			return ""
+		}
+		return v
+	}
+	id, model, _ := strings.Cut(v, "/")
+	p, err := provider.Find(id)
+	if err != nil || !p.On() || p.DecideOnly() {
+		return v
+	}
+	if slices.ContainsFunc(Videomakers(*p), func(m catalog.Model) bool { return m.ID == model }) {
+		return ""
+	}
+	return v
 }
 
 // AutoVideomaker is the model a request that names none makes its video
@@ -511,7 +555,7 @@ func ptrs(pics []picture) []*picture {
 
 // decimalNumber is a number as JSON writes it, not as Go's ParseFloat also
 // takes it (hex, inf, nan, underscores).
-var decimalNumber = regexp.MustCompile(`^[0-9]+(\.[0-9]*)?([eE][+-]?[0-9]+)?$`)
+var decimalNumber = lazyre.New(`^[0-9]+(\.[0-9]*)?([eE][+-]?[0-9]+)?$`)
 
 // parseSeconds is a duration in whole seconds, however it was written: 6,
 // "6", 6.0, 6e0. What the vendor's limit makes of a length it says itself.
@@ -749,7 +793,7 @@ func signer(p provider.Provider) string {
 
 // idPart is what a provider id or a vendor's request id is made of; an id
 // is put in a URL, so nothing that would change its path gets through.
-var idPart = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+var idPart = lazyre.New(`^[A-Za-z0-9_-]+$`)
 
 // parseVideoID is the provider, vendor id, start and signer of a video's id.
 func parseVideoID(id string) (providerID, vendorID string, started time.Time, by string, ok bool) {
@@ -1019,7 +1063,7 @@ func (s *Server) videosCreate(w http.ResponseWriter, r *http.Request) {
 	if f.Model == "" {
 		m, ok := videomaker()
 		if !ok {
-			fail(400, "no model to make videos with: sign in to a Grok subscription or set up a provider that makes videos (a MiniMax API key makes them with MiniMax-H3), and leave Settings → Images → Image generation on, or name one")
+			fail(400, "no model to make videos with: sign in to a Grok subscription or set up a provider that makes videos (a MiniMax API key makes them with MiniMax-H3), and leave Settings → Models → Images → Image generation on, or name one")
 			return
 		}
 		f.Model, call.Model = m, m
@@ -1049,7 +1093,7 @@ func (s *Server) videosCreate(w http.ResponseWriter, r *http.Request) {
 		r = heldByGroup(r, g) // held to the group's accounts, if it is
 	}
 	keyWho, keyHeld := keyHolds(r)
-	if keyHeld && named && (isGroup && !groupAllowed(keyWho, g, ms) || !isGroup && !modelAllowed(keyWho, p, model)) {
+	if named && (isGroup && !groupGiven(r, keyWho, keyHeld, g, ms) || keyHeld && !isGroup && !modelAllowed(keyWho, p, model)) {
 		fail(keyModelRefusal(w, keyWho, f.Model))
 		return
 	}
@@ -1081,20 +1125,23 @@ func (s *Server) videosCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	call.To = provider.Chat
-	var unmask func()
 	prompt := f.Prompt
-	var hits maskHits
-	w, f.Prompt, unmask, hits, err = redactedPromptHits(r.Context(), w, f.Prompt)
-	defer unmask()
-	// the fields passed on as they came are masked as the prompt is: a
-	// negative_prompt is the user's text all the same
-	var extra maskHits
-	if err == nil {
-		err = maskStrings(r.Context(), f.Extra, &extra)
-	}
-	if err != nil { // fails closed
-		fail(maskStatus(err), err.Error())
-		return
+	var hits, extra maskHits
+	// masked unless every model it may start on is a provider the user
+	// set to go unmasked (unmaskedMembers), as a chat's is
+	if !unmaskedMembers(tries) {
+		var unmask func()
+		w, f.Prompt, unmask, hits, err = redactedPromptHits(r.Context(), w, f.Prompt)
+		defer unmask()
+		// the fields passed on as they came are masked as the prompt is: a
+		// negative_prompt is the user's text all the same
+		if err == nil {
+			err = maskStrings(r.Context(), f.Extra, &extra)
+		}
+		if err != nil { // fails closed
+			fail(maskStatus(err), err.Error())
+			return
+		}
 	}
 	n := extra.n
 	hits.add(extra)
@@ -1129,7 +1176,7 @@ func (s *Server) videosCreate(w http.ResponseWriter, r *http.Request) {
 	for i, m := range tries {
 		model = m.Model
 		at := time.Now()
-		v, code, err = s.startVideo(ctx, r, m.Provider, m.Model, f)
+		v, code, err = s.startVideo(ctx, memberOn(r, g, m), m.Provider, m.Model, f)
 		p, call.Provider = v.p, v.p.ID
 		side.tryAt(candidateOf(v.p, m.Model), at)(code, err)
 		// a group's next member is asked as a chat's would be: while this

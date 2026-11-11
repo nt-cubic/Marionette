@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -164,15 +165,73 @@ func usageAliasesNow() map[string]string {
 	return m
 }
 
-// UsageAlias is the name a model's usage is counted under: the alias the
-// user set for it, followed through any alias of that, else the model's
-// own id. It is nil when there are no aliases, so a caller does nothing
-// for each row. Read once for a whole summary, not for each row; it reads
-// settings.json, so it is taken before any lock a reader of the usage
-// waits on.
-func UsageAlias() func(string) string { return usageAliasOf(usageAliasesNow()) }
+// UsageAlias names a model's usage after pricing: a found group's public id,
+// then the user's alias. Both group spellings count together, including in
+// old session files. Read once before any usage lock; the returned function
+// reads no settings or providers. It is nil when no names need mapping.
+func UsageAlias() func(string) string {
+	return usageAliasFrom(usageAliasesNow(), usageGroupNames())
+}
 
-// UsageAliasIn is UsageAlias for the aliases m.
+// UsageAliasKeyed is UsageAlias and the UsageNamesKey of the names it was
+// made from, from one read of them.
+func UsageAliasKeyed() (func(string) string, string) {
+	aliases, groups := usageAliasesNow(), usageGroupNames()
+	return usageAliasFrom(aliases, groups), usageNamesKey(aliases, groups)
+}
+
+func usageAliasFrom(aliases, groups map[string]string) func(string) string {
+	alias := usageAliasOf(aliases)
+	if len(groups) == 0 {
+		return alias
+	}
+	var memo sync.Map
+	return func(model string) string {
+		if v, ok := memo.Load(model); ok {
+			return v.(string)
+		}
+		out := publicRef(model, func(gid string) string { return groups[gid] })
+		if alias != nil {
+			out = alias(out)
+		}
+		memo.Store(model, out)
+		return out
+	}
+}
+
+// usageGroupNames is the spelling of every found group that has a public id.
+// A user's pre-existing provider named auto keeps ownership of auto/<model>.
+// It holds the catalog: usage asks for it on every Sessions poll and summary
+// key, and unheld each ask built every provider's entries and the found
+// groups again (#5978).
+func usageGroupNames() map[string]string {
+	defer Hold()()
+	var names map[string]string
+	if autoRefsOn() {
+		for _, g := range sharedGroups() {
+			if g.Spelled != "" {
+				if names == nil {
+					names = map[string]string{}
+				}
+				names[g.ID] = g.Spelled
+			}
+		}
+	}
+	return names
+}
+
+// UsageNamesKey changes when an alias or a found group's public spelling does,
+// so a cached view never holds the names from before a catalog change.
+func UsageNamesKey() string { return usageNamesKey(usageAliasesNow(), usageGroupNames()) }
+
+func usageNamesKey(aliases, groups map[string]string) string {
+	b, _ := json.Marshal(struct {
+		Aliases, Groups map[string]string
+	}{aliases, groups})
+	return string(b)
+}
+
+// UsageAliasIn maps only the user aliases m, without the current group catalog.
 func UsageAliasIn(m map[string]string) func(string) string { return usageAliasOf(m) }
 
 func usageAliasOf(m map[string]string) func(string) string {

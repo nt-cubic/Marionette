@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp/syntax"
 	"slices"
 	"strings"
 	"time"
@@ -103,6 +104,9 @@ func IssueKey(in Issue) (Issued, error) {
 	if err != nil {
 		return Issued{}, err
 	}
+	if slices.ContainsFunc(models, IsPattern) {
+		return Issued{}, errors.New("An issued key's models are named one by one or with *: a re: pattern is for the keys you make yourself")
+	}
 	var accounts []string
 	if len(in.Accounts) > 0 {
 		if accounts, err = CleanAccounts(in.Accounts); err != nil {
@@ -122,14 +126,26 @@ func IssueKey(in Issue) (Issued, error) {
 		if !p.Expires.IsZero() && expires.After(p.Expires) {
 			expires = p.Expires // never outlives its issuer
 		}
-		held := HeldModels(p.Models, p.Accounts)
+		// the groups either names, as they are now (LeiWang_2000 on X)
+		pAccounts, err := expandGroups(p.Accounts, loadGroups)
+		if err != nil {
+			return Issued{}, err
+		}
+		mine, err := expandGroups(accounts, loadGroups)
+		if err != nil {
+			return Issued{}, err
+		}
+		held := HeldModels(p.Models, pAccounts)
 		for _, m := range models {
 			if !covered(held, m) {
 				return Issued{}, fmt.Errorf("The key issuing may not use %s, so the key it issues can't either", m)
 			}
 		}
-		for _, a := range accounts {
-			if !(Identity{Accounts: p.Accounts}).allowsEntry(a) {
+		for _, a := range mine {
+			if a == heldToNothing {
+				continue // asks for nothing
+			}
+			if !(Identity{Accounts: pAccounts}).allowsEntry(a) {
 				return Issued{}, fmt.Errorf("The key issuing may not use the account %s, so the key it issues can't either", a)
 			}
 		}
@@ -320,7 +336,24 @@ func ScopeBrowser(id string) error {
 
 // identityOf is who k is, folded into its issuer when it has one.
 func identityOf(k Key, keys []Key, now time.Time) (Identity, error) {
-	who := Identity{KeyID: k.ID, KeyName: k.Name, Limit: k.Limit, More: k.More, Models: HeldModels(k.Models, k.Accounts), AccountModels: len(k.Models) == 0 && len(k.Accounts) > 0, Accounts: k.Accounts, MCP: k.MCP, Quotas: k.Quotas, ReadOnly: k.ReadOnly, Browser: k.Browser, Expires: k.Expires, Issues: k.Issues && k.Issuer == "" && !k.Browser, MaxConcurrency: k.MaxConcurrency}
+	// the account groups the key names, as they are now (LeiWang_2000
+	// on X): read once, for the key and its issuer
+	var groups []AccountGroup
+	var groupsErr error
+	groupsRead := false
+	readGroups := func() ([]AccountGroup, error) {
+		if !groupsRead {
+			groups, groupsErr = loadGroups()
+			groupsRead = true
+		}
+		return groups, groupsErr
+	}
+	accounts, err := expandGroups(k.Accounts, readGroups)
+	if err != nil {
+		return Identity{}, &Refused{Why: fmt.Sprintf("the gateway key %q names an account group, and magpie can't read its account groups now: %v", k.Name, err)}
+	}
+	k.Accounts = accounts
+	who := Identity{KeyID: k.ID, KeyName: k.Name, Limit: k.Limit, More: k.More, Models: HeldModels(k.Models, k.Accounts), Aliases: k.Aliases, AccountModels: len(k.Models) == 0 && picksAccounts(k.Accounts), Accounts: k.Accounts, MCP: k.MCP, Quotas: k.Quotas, ReadOnly: k.ReadOnly, Browser: k.Browser, Expires: k.Expires, Issues: k.Issues && k.Issuer == "" && !k.Browser, MaxConcurrency: k.MaxConcurrency}
 	// the default key as Default tells it: marked LAN, or the id the
 	// settings name (settings read only for an unmarked key)
 	who.Default = k.LAN || (k.ID != "" && settings.Load().LANKeyID == k.ID)
@@ -332,8 +365,11 @@ func identityOf(k Key, keys []Key, now time.Time) (Identity, error) {
 		return Identity{}, &Refused{Why: fmt.Sprintf("the gateway key %q was issued under a key that is no longer enabled, so it no longer works", k.Name)}
 	}
 	p := keys[j]
+	if p.Accounts, err = expandGroups(p.Accounts, readGroups); err != nil {
+		return Identity{}, &Refused{Why: fmt.Sprintf("the gateway key %q was issued under a key that names an account group, and magpie can't read its account groups now: %v", k.Name, err)}
+	}
 	pModels := HeldModels(p.Models, p.Accounts)
-	who.AccountModels = len(k.Models) == 0 && len(p.Models) == 0 && (len(k.Accounts) > 0 || len(p.Accounts) > 0)
+	who.AccountModels = len(k.Models) == 0 && len(p.Models) == 0 && (picksAccounts(k.Accounts) || picksAccounts(p.Accounts))
 	if len(pModels) > 0 {
 		if who.Models = foldModels(who.Models, pModels); len(who.Models) == 0 {
 			return Identity{}, &Refused{Why: fmt.Sprintf("the gateway key %q may use none of its models now: the key it was issued under no longer lets it", k.Name)}
@@ -350,11 +386,66 @@ func identityOf(k Key, keys []Key, now time.Time) (Identity, error) {
 	return who, nil
 }
 
-// covered: every model the pattern m names is one of patterns' (none:
-// every model). A '*' in m is taken as written: a pattern that matches
-// it so matches whatever it stands for, as a pattern's '*' takes any run.
+// covered: every model the entry m names is one of patterns' (none:
+// every model). A '*' in m is taken as written by a glob, whose own '*'
+// takes any run. A regular expression is never tried on m's text: its '.'
+// or a class like [^-] takes the '*' too, so "re:^openai/[^-]*$" would
+// cover "openai/*" and hand an issued key openai/gpt-4o. It covers a
+// glob when it matches the glob's text before the first '*' and holds no
+// assertion on what follows ($, \z, \b, \B): a match there is a match in
+// every id that starts so, and the glob can't name a group. A regular
+// expression m is covered only by itself or by "*", as no glob can be
+// shown to take all it names.
 func covered(patterns []string, m string) bool {
-	return ModelAllowed(patterns, m)
+	if len(patterns) == 0 {
+		return true
+	}
+	if IsPattern(m) {
+		return slices.ContainsFunc(patterns, func(p string) bool { return p == "*" || strings.EqualFold(p, m) })
+	}
+	head, _, glob := strings.Cut(m, "*")
+	for _, p := range patterns {
+		if !IsPattern(p) {
+			if ModelAllowed([]string{p}, m) {
+				return true
+			}
+			continue
+		}
+		if !glob {
+			if patternMatches(p, m) {
+				return true
+			}
+			continue
+		}
+		// a pattern never names a group, and a glob that may starts so
+		g := strings.ToLower(head)
+		if strings.HasPrefix(g, "group/") || strings.HasPrefix("group/", g) {
+			continue
+		}
+		if prefixHolds(p) && patternMatches(p, head) {
+			return true
+		}
+	}
+	return false
+}
+
+// prefixHolds says the regular expression entry p has no assertion on the
+// text after a match, so a match in a string is a match in every string
+// that starts with it.
+func prefixHolds(p string) bool {
+	re, err := syntax.Parse("(?i)"+strings.TrimSpace(p[len(PatternPrefix):]), syntax.Perl)
+	if err != nil {
+		return false
+	}
+	var ok func(*syntax.Regexp) bool
+	ok = func(r *syntax.Regexp) bool {
+		switch r.Op {
+		case syntax.OpEndLine, syntax.OpEndText, syntax.OpWordBoundary, syntax.OpNoWordBoundary:
+			return false
+		}
+		return !slices.ContainsFunc(r.Sub, func(s *syntax.Regexp) bool { return !ok(s) })
+	}
+	return ok(re)
 }
 
 // foldModels is what both lists allow, as patterns: a child's pattern the
@@ -386,7 +477,37 @@ func foldModels(child, issuer []string) []string {
 // foldAccounts holds a child to the issuer's accounts too: of each
 // provider the issuer names accounts of, the child's own of them that the
 // issuer has, else the issuer's; the child's of other providers as given.
+// An account either keeps out stays out (LeiWang_2000 on X).
 func foldAccounts(child, issuer []string) []string {
+	if len(issuer) == 0 {
+		return child
+	}
+	split := func(as []string) (use, out []string) {
+		for _, a := range as {
+			if Excluded(a) {
+				out = append(out, a)
+			} else {
+				use = append(use, a)
+			}
+		}
+		return
+	}
+	cu, co := split(child)
+	pu, po := split(issuer)
+	out := foldUsed(cu, pu)
+	if len(po) > 0 {
+		out = slices.DeleteFunc(out, func(a string) bool { return !(Identity{Accounts: po}).allowsEntry(a) })
+	}
+	for _, a := range append(co, po...) {
+		if !slices.ContainsFunc(out, func(o string) bool { return strings.EqualFold(o, a) }) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// foldUsed is foldAccounts over the accounts each names to use.
+func foldUsed(child, issuer []string) []string {
 	if len(issuer) == 0 {
 		return child
 	}
@@ -420,7 +541,11 @@ func foldAccounts(child, issuer []string) []string {
 }
 
 // allowsEntry: the account entry "<provider>/<ref>" is one who may use.
+// An entry keeping an account out asks for nothing, so who allows it.
 func (who Identity) allowsEntry(a string) bool {
+	if Excluded(a) {
+		return true
+	}
 	p, ref, _ := strings.Cut(a, "/")
 	return who.AllowsAccount(p, ref)
 }

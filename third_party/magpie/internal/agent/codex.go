@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -31,6 +30,7 @@ import (
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/lastgood"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/sessions"
 	"github.com/yetone/magpie/internal/settings"
@@ -167,6 +167,7 @@ type codexTop struct {
 	Desktop        any `toml:"desktop"`
 	Profile        any `toml:"profile"`
 	Profiles       any `toml:"profiles"`
+	Analytics      any `toml:"analytics"`
 }
 
 // codexTopOf is the config at path as codexTop, decoded again only once the
@@ -176,7 +177,7 @@ type codexTop struct {
 func codexTopOf(path string) (*codexTop, error) {
 	doc, err := filememo.ReadNow("codex top", path, func(b []byte) (*codexTop, error) {
 		var doc codexTop
-		if err := toml.Unmarshal(edit.TrimBOM(b), &doc); err != nil {
+		if err := toml.Unmarshal(edit.TOMLWithout(edit.TrimBOM(b), "projects"), &doc); err != nil {
 			return nil, err
 		}
 		return &doc, nil
@@ -516,9 +517,10 @@ func codexIn(at place) *Agent {
 		case asProvider():
 			return sharedModels("codex")
 		case viaBase():
-			return append(catalog.Codex(), sharedModels("codex")...)
+			own, more := catalog.CodexShared(), sharedModels("codex")
+			return append(append(make([]catalog.Model, 0, len(own)+len(more)), own...), more...)
 		}
-		return catalog.Codex()
+		return catalog.CodexShared()
 	}
 	// relist hands Codex its models again after the effort new sessions
 	// start at changed, which their default efforts follow: magpie's
@@ -1853,7 +1855,8 @@ func codexIn(at place) *Agent {
 
 	a := atomic(&Agent{
 		ID: "codex", Name: "Codex", Icon: "codex-color", Bin: "codex", Dir: dir, Path: path,
-		UA: []string{"codex", "acp-extension-codex"}, // The ACP adapter's default client name becomes Codex's originator.
+		Telemetry: codexTelemetry(at, path),
+		UA:        []string{"codex", "acp-extension-codex"}, // The ACP adapter's default client name becomes Codex's originator.
 		// Codex as it was before magpie: its default puts it back as
 		// installed, OpenAI and its default model, where this brings back
 		// the provider and model the user had
@@ -1939,8 +1942,9 @@ func codexIn(at place) *Agent {
 		// mark stays for Sync to put it back beside the sign-in: the
 		// Agents row said "its own models stay in /model" while the Codex
 		// app was meant to be in its API state (#2267)
-		Joined: func() bool { return joined() && !asProvider() },
-		AppOut: func() bool { return asProvider() && !api() && chatGPT() && stashShared()[at.key("codex.out")] == "1" },
+		Joined:    func() bool { return joined() && !asProvider() },
+		AppOut:    func() bool { return asProvider() && !api() && chatGPT() && stashShared()[at.key("codex.out")] == "1" },
+		AppOutOff: func() bool { return stashShared()[at.key("codex.login")] == "chatgpt" || !routed() },
 		HoldMatters: func() bool {
 			return stashShared()[at.key("codex.login")] == "" && chatGPT() &&
 				(viaBase() || asProvider() && stashShared()[at.key("codex.out")] == "1")
@@ -2223,7 +2227,7 @@ func codexIn(at place) *Agent {
 			return ""
 		},
 		// every prompt typed into Codex goes into history.jsonl
-		LastUsed: func() time.Time { return lastJSONLTime(filepath.Join(dir, "history.jsonl"), "ts", "text") },
+		LastUsed: func() time.Time { return lastJSONLTime(filepath.Join(dir, "history.jsonl"), "ts", "text", nil) },
 		// the Codex app writes no history.jsonl, but it and the TUI log each
 		// model request they open
 		Reached: func(since time.Time) (time.Time, string, bool) { return codexReached(dir, since) },
@@ -2471,7 +2475,7 @@ var packedBudget int64 = 128 << 20
 // ccSwitchProvider matches the ids of the provider tables CC Switch writes
 // into Codex's config: "custom", and "cc-switch", "cc-switch-2"… from its
 // older versions. Its "cc-switch-official" is its own proxy to OpenAI.
-var ccSwitchProvider = regexp.MustCompile(`^(custom|cc-switch(-[0-9]+)?)$`)
+var ccSwitchProvider = lazyre.New(`^(custom|cc-switch(-[0-9]+)?)$`)
 
 // codexBuiltinProvider is the providers Codex has built in, which a thread
 // can name with no table in config.toml (codex-rs model-provider-info:
@@ -2563,12 +2567,12 @@ func codexEnableEfforts(path string, ms []catalog.Model) error {
 // subscription in magpie when any are — the subscription switched off, its
 // picks narrow nothing, as it serves no agent anything.
 func ownCodex() []catalog.Model {
-	ms := catalog.Codex()
+	ms := catalog.CodexShared() // only read (codexNamed), on every poll
 	picks := codexPicks()
 	if len(picks) == 0 {
 		return ms
 	}
-	var out []catalog.Model
+	out := make([]catalog.Model, 0, min(len(picks), len(ms)))
 	for _, m := range ms {
 		if slices.Contains(picks, m.ID) {
 			out = append(out, m)
@@ -2657,25 +2661,30 @@ func codexServedModels() []string {
 // that reaches it. Those come first, in own's group: a "Codex" section
 // of their own beside it read as a second kind of model (ysm119).
 func codexViaMagpieFor(own []Option) []Option {
-	in := map[string]bool{}
+	in := make(map[string]bool, 2*len(own))
 	for _, o := range own {
 		in[o.Value] = true
 		if m := codexOwnOf(o.Value); m != "" {
 			in[m] = true
 		}
 	}
-	var hidden, out []Option
-	for _, o := range viaMagpieShared("codex", "") {
-		if !strings.HasPrefix(o.Value, "codex/") {
-			out = append(out, o)
-		} else if !in[codexOwnOf(o.Value)] {
+	// one slice, hidden ones first: on every poll of Codex's model field
+	via := viaMagpieShared("codex", "")
+	out := make([]Option, 0, len(via))
+	for _, o := range via {
+		if strings.HasPrefix(o.Value, "codex/") && !in[codexOwnOf(o.Value)] {
 			if len(own) > 0 {
 				o.Group, o.GroupIcon = own[0].Group, own[0].GroupIcon
 			}
-			hidden = append(hidden, o)
+			out = append(out, o)
 		}
 	}
-	return append(hidden, out...)
+	for _, o := range via {
+		if !strings.HasPrefix(o.Value, "codex/") {
+			out = append(out, o)
+		}
+	}
+	return out
 }
 
 // codexOwnViaMagpie is the catalog id magpie serves one of Codex's own
@@ -3049,6 +3058,16 @@ func CodexOwnOnly() bool {
 	return true
 }
 
+// CodexModelNow is the model this machine's Codex is set to, whoever's it
+// is (gateway.CodexModelNow); "" when it can't be read.
+func CodexModelNow() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return codex(home).Values()["model"]
+}
+
 // CodexSideModel is the model this machine's Codex is set to when it is
 // one of magpie's, picked beside its ChatGPT sign-in (SideModel), for the
 // gateway to answer the Codex app's side turns on (gateway.CodexSideModel).
@@ -3241,4 +3260,28 @@ func codexReachedRead(path string, since time.Time) (at time.Time, to string, re
 		}
 	}
 	return
+}
+
+// codexRetagOpenThreads is run as the Codex app's app-server is about to be
+// ended for a change of provider: the chats the app has open hold their
+// lock, so no move of threads could take them, and the app-server that
+// starts in place resumes each on its row's provider, which Codex refuses
+// when it isn't the one it is on ("This chat uses openai, but your current
+// provider is magpie"). They go onto the provider Codex is on now, from
+// OpenAI and magpie, the two ids magpie moves threads between
+// (sessions.RetagLoadedCodexThreads).
+func codexRetagOpenThreads(home string) {
+	now := sessions.CodexProviderIn(home)
+	for _, from := range []string{"openai", magpieID} {
+		if from == now {
+			continue
+		}
+		ids, err := sessions.RetagLoadedCodexThreads(home, from, now)
+		if len(ids) > 0 {
+			log.Printf("codex: %d chat(s) the Codex app has open moved from %s to %s before its app-server restarts, so it goes on with them", len(ids), from, now)
+		}
+		if err != nil {
+			log.Printf("codex: moving the chats the Codex app has open from %s: %v", from, err)
+		}
+	}
 }

@@ -175,6 +175,9 @@ func revealable(v *library.View) []string {
 
 func libraryRoutes(mux *http.ServeMux, w Windows) {
 	browserRoutes(mux, w)
+	memoryRoutes(mux)
+	memoryDistillRoutes(mux)
+	memorySemanticRoutes(mux)
 	mux.HandleFunc("GET /api/library", func(rw http.ResponseWriter, r *http.Request) {
 		v, err := libraryRead(nil, r.URL.Query().Get("glance") == "1")
 		if err != nil {
@@ -205,6 +208,10 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 	})
 	mux.HandleFunc("GET /api/library/market/skills", func(rw http.ResponseWriter, r *http.Request) {
 		list, err := library.MarketSkills(r.URL.Query().Get("q"))
+		writeJSON(rw, marketOf(list, err))
+	})
+	mux.HandleFunc("GET /api/library/market/pi", func(rw http.ResponseWriter, r *http.Request) {
+		list, err := library.MarketPiPackages(r.URL.Query().Get("q"))
 		writeJSON(rw, marketOf(list, err))
 	})
 	mux.HandleFunc("POST /api/library/market/about", func(rw http.ResponseWriter, r *http.Request) {
@@ -242,6 +249,21 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 		}
 		writeJSON(rw, p)
 	})
+	// the Claude Code plugins at an address: a folder, a repository, a
+	// marketplace.json (plugin.go); nothing is written
+	mux.HandleFunc("POST /api/library/plugins/probe", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Source string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		p, err := library.ProbePlugins(in.Source)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, p)
+	})
 	// which skills GitHub has changed: the page as it is, each skill from
 	// there carrying what the check found of it
 	mux.HandleFunc("POST /api/library/skills/check", func(rw http.ResponseWriter, r *http.Request) {
@@ -273,6 +295,78 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			libraryJSON
 			Regrouped int `json:"regrouped"`
 		}{v, n})
+	})
+	// Pi's extensions and packages, for each Pi here (this computer's and
+	// each WSL distro's): switched on or off as Pi itself does it, and
+	// copied from one Pi to another
+	mux.HandleFunc("GET /api/library/pi", func(rw http.ResponseWriter, r *http.Request) {
+		writeJSON(rw, library.ReadPiExtensions())
+	})
+	mux.HandleFunc("POST /api/library/pi", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Pi, Ext, Pkg string
+			On           bool
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		var v *library.PiExtensions
+		var err error
+		switch {
+		case in.Ext != "" && in.Pkg == "":
+			v, err = library.SetPiExtension(in.Pi, in.Ext, in.On)
+		case in.Pkg != "" && in.Ext == "":
+			v, err = library.SetPiPackage(in.Pi, in.Pkg, in.On)
+		default:
+			err = errors.New("name one extension or one package")
+		}
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, v)
+	})
+	mux.HandleFunc("POST /api/library/pi/copy", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ From, To, Ext, Pkg string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		v, err := library.CopyPi(in.From, in.To, in.Ext, in.Pkg)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, v)
+	})
+	// a package from Pi's market installed into a Pi, or one of a Pi's
+	// packages removed, by Pi's own install and remove
+	mux.HandleFunc("POST /api/library/pi/install", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Pi, Source string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		v, err := library.InstallPiPackage(in.Pi, in.Source)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, v)
+	})
+	mux.HandleFunc("POST /api/library/pi/remove", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Pi, Source string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		v, err := library.RemovePiPackage(in.Pi, in.Source)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, v)
 	})
 	// RTK:which agents have its hook, switching one on or off, and
 	// installing rtk when the page is asked to
@@ -345,6 +439,35 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 		} else {
 			v, err = library.InstallRTK()
 		}
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, v)
+	})
+	// billion-context: which agents have its plugin, switching one on or
+	// off, and installing bili when the page is asked to
+	mux.HandleFunc("GET /api/library/bili", func(rw http.ResponseWriter, r *http.Request) {
+		writeJSON(rw, library.ReadBili())
+	})
+	mux.HandleFunc("POST /api/library/bili", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Agent string
+			On    bool
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		v, err := library.SetBili(in.Agent, in.On)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, v)
+	})
+	mux.HandleFunc("POST /api/library/bili/install", func(rw http.ResponseWriter, r *http.Request) {
+		v, err := library.InstallBili()
 		if err != nil {
 			fail(rw, err)
 			return
@@ -547,6 +670,11 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			// a plugin's tools off for every agent, or on again, from its
 			// row on the Plugins page (Name is the plugin's)
 			res, err = library.PluginServerOn(in.Name, in.On)
+		case "servers/on":
+			// off for every agent, project and app at the router's
+			// address, kept with its settings, or on again as it was
+			// (swang20201 on X)
+			res, err = library.ServerOn(in.Name, in.On)
 		case "servers/agents-all":
 			res, err = library.EveryServerAgents(in.Agents, in.On)
 		case "servers/agents-some":
@@ -569,6 +697,16 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			res, err = library.RemoveHooks([]string{in.Name})
 		case "hooks/remove-all":
 			res, err = library.RemoveHooks(in.Names)
+		case "plugins/install":
+			res, err = library.InstallPlugins(in.Source, in.Names, in.Agents)
+		case "plugins/agents":
+			res, err = library.PluginAgents(in.Name, in.Agents)
+		case "plugins/on":
+			res, err = library.PluginOn(in.Name, in.On)
+		case "plugins/update":
+			res, err = library.UpdatePlugin(in.Name)
+		case "plugins/remove":
+			res, err = library.RemovePlugin(in.Name)
 		case "subagents/save":
 			res, err = library.SaveSubagent(in.Old, in.Subagent)
 		case "subagents/agents":
@@ -652,8 +790,15 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			res, err = library.RemoveProject(in.Dir, in.Keep)
 		case "projects/skill":
 			res, err = library.ProjectSkill(in.Dir, in.Name, in.Agents)
+		case "projects/skills":
+			res, err = library.ProjectSkills(in.Dir, in.Names, in.Agents)
 		case "projects/server":
 			res, err = library.ProjectServer(in.Dir, in.Name, in.Agents)
+		case "projects/server-off":
+			// a Library server turned off in this project only
+			res, err = library.ProjectServerOff(in.Dir, in.Name, in.Agents)
+		case "projects/skill-off":
+			res, err = library.ProjectSkillsOff(in.Dir, oneOrMore(in.Name, in.Names), in.Agents)
 		case "projects/copy":
 			res, err = library.ProjectCopy(in.Dir, in.Copy)
 		case "all/sync":

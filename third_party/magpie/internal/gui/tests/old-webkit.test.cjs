@@ -151,7 +151,7 @@ test("compat.js is the first of the page's own scripts", async () => {
   // open, claudemode.js when a Claude provider's editor opens, ctxtext.js
   // when a context window part is opened, resetask.js when a Codex reset's
   // Use is pressed, quotaall.js when a provider has two accounts,
-  // quitask.js when a Quit asks first, checkinnow.js when Settings' Check
+  // quitask.js when a Quit asks first, proxies.js when Settings draws its saved proxies, checkinnow.js when Settings' Check
   // in now for one account is pressed, autobackup.js when Settings draws
   // Sync, scrollends.js on the window's first scroll, profilerename.js
   // when a saved profile's Rename is pressed, keyspend.js when the
@@ -161,9 +161,23 @@ test("compat.js is the first of the page's own scripts", async () => {
   // with no Balance URL, passerrors.js when it draws a key provider's
   // Errors, keybalance.js when it draws a key whose vendor tells no
   // balance, modellimits.js when it draws a model's row, notices.js when
-  // About's Open-source licenses opens; the checks above
+  // About's Open-source licenses opens, videogen.js when Settings draws
+  // Image generation, provlinks.js when Settings' search first wants its
+  // provider links, pageshare.js when a plugin's page shares a picture,
+  // panelfirst.js when the panel's Usage tab's account count is pressed,
+  // panelarrange.js when its Allowances tab's Arrange is, modelfind.js
+  // when Model settings draws many models, agentsmanager.js when the
+  // Agents page's Manage is pressed, agentsuffix.js when an agent's Details
+  // open, phonetabs.js when magpie web is laid out for a phone,
+  // pluginmd.js (a README's renderer) once plugins.js has run;
+  // plugincounts.js (Discover's counts) when the Plugins page loads;
+  // navicons.js (the sidebar lists' marks) with the first list drawn;
+  // autoswitchtip.js when a provider's accounts draw their switch;
+  // codexprojects.js when the open Codex app shows fewer projects;
+  // pipecheck.js when Settings draws Models;
+  // the checks above
   // still read them
-  for (const f of await scripts()) if (!["webfonts.js", "cfgblocked.js", "signsheets.js", "ruleedit.js", "ratewindows.js", "traywindows.js", "autoresetown.js", "registry.js", "navlamp.js", "whatsnew.js", "claudemode.js", "ctxtext.js", "resetask.js", "quotaall.js", "quitask.js", "checkinnow.js", "autobackup.js", "scrollends.js", "profilerename.js", "settingshints.js", "keyspend.js", "syncfiles.js", "agentcompact.js", "balfound.js", "passerrors.js", "keybalance.js", "modellimits.js", "notices.js"].includes(f)) assert(all.includes(f), f + " is not loaded by index.html");
+  for (const f of await scripts()) if (!["webfonts.js", "cfgblocked.js", "signsheets.js", "ruleedit.js", "ratewindows.js", "traywindows.js", "autoresetown.js", "registry.js", "navlamp.js", "whatsnew.js", "claudemode.js", "ctxtext.js", "resetask.js", "quotaall.js", "quitask.js", "checkinnow.js", "proxies.js", "autobackup.js", "scrollends.js", "profilerename.js", "settingshints.js", "keyspend.js", "syncfiles.js", "agentcompact.js", "balfound.js", "passerrors.js", "keybalance.js", "modellimits.js", "notices.js", "videogen.js", "provlinks.js", "setfeats.js", "pageshare.js", "panelfirst.js", "panelarrange.js", "modelfind.js", "agentsmanager.js", "agentsuffix.js", "phonetabs.js", "pluginmd.js", "bark.js", "acctexport.js", "plugincounts.js", "navicons.js", "autoswitchtip.js", "codexprojects.js", "pipecheck.js"].includes(f)) assert(all.includes(f), f + " is not loaded by index.html");
 });
 
 test("the styles hold up in Safari 15.0", async () => {

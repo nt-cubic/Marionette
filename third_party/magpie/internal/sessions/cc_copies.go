@@ -73,14 +73,14 @@ func ccFamily(files []file) (copies, branches map[string]string) {
 			continue
 		}
 		st := cache[f.path]
-		if st == nil || st.Root == "" || st.Leaf == "" {
+		if st == nil || st.more().Root == "" || st.more().Leaf == "" {
 			continue
 		}
 		i := len(all)
 		all = append(all, ccOne{f, st})
 		up = append(up, i)
 		in := f.agent + "\x00" + f.m().wsl + "\x00"
-		for _, u := range append([]string{st.Root}, st.Compacts...) {
+		for _, u := range append([]string{st.more().Root}, st.more().Compacts...) {
 			if j, ok := at[in+u]; ok {
 				up[find(i)] = find(j)
 			} else {
@@ -109,7 +109,7 @@ func ccFamily(files []file) (copies, branches map[string]string) {
 		}
 		holds := func(b ccOne, uuid string) bool {
 			used[b.f.path] = true
-			return b.st.Leaf == uuid || ccUUIDsOf(*b.f)[uuid]
+			return b.st.more().Leaf == uuid || ccUUIDsOf(*b.f).has(uuid)
 		}
 		// before reports whether b is kept over a: the one that holds
 		// the other's first message too (a copy made after a compaction
@@ -117,7 +117,7 @@ func ccFamily(files []file) (copies, branches map[string]string) {
 		// before), then the newer file, then the later key, so of two
 		// files that hold each other one stays
 		before := func(b, a ccOne) bool {
-			if ab, ba := holds(a, b.st.Root), holds(b, a.st.Root); ab != ba {
+			if ab, ba := holds(a, b.st.more().Root), holds(b, a.st.more().Root); ab != ba {
 				return ba
 			}
 			if c := b.f.mod.Compare(a.f.mod); c != 0 {
@@ -131,10 +131,10 @@ func ccFamily(files []file) (copies, branches map[string]string) {
 				// a file that holds what came before the other's start (a
 				// compaction the fork started after) is not that one's
 				// copy: the conversation's file a fork went on from
-				if i == j || a.f.key == b.f.key || !holds(b, a.st.Leaf) || !holds(b, a.st.Root) {
+				if i == j || a.f.key == b.f.key || !holds(b, a.st.more().Leaf) || !holds(b, a.st.more().Root) {
 					continue
 				}
-				if !holds(a, b.st.Leaf) || before(b, a) {
+				if !holds(a, b.st.more().Leaf) || before(b, a) {
 					hidden[i] = true
 					break
 				}
@@ -147,7 +147,7 @@ func ccFamily(files []file) (copies, branches map[string]string) {
 			// the file it is kept in: one that is not a copy itself and
 			// holds its last message, as the longest of them does
 			for j, b := range g {
-				if !hidden[j] && i != j && holds(b, a.st.Leaf) {
+				if !hidden[j] && i != j && holds(b, a.st.more().Leaf) {
 					if out == nil {
 						out = map[string]string{}
 					}
@@ -196,7 +196,7 @@ type ccOne struct {
 // headFirst reports whether a, not b, is the conversation two files that
 // went on apart are of (ccFamily).
 func headFirst(a, b ccOne, holds func(ccOne, string) bool) bool {
-	if ab, ba := holds(a, b.st.Root), holds(b, a.st.Root); ab != ba {
+	if ab, ba := holds(a, b.st.more().Root), holds(b, a.st.more().Root); ab != ba {
 		return ab
 	}
 	ida, idb := strings.TrimPrefix(a.f.key, a.f.agent+":"), strings.TrimPrefix(b.f.key, b.f.agent+":")
@@ -215,7 +215,7 @@ var ccUUIDMemo = map[string]*ccUUIDs{}
 
 type ccUUIDs struct {
 	size, mod, off int64
-	set            map[string]bool
+	set            uuidSet
 	// forked is the session its messages say they were copied from
 	// (forkedFrom, which /branch writes on each), "" for none
 	forked string
@@ -235,10 +235,10 @@ var ccForked = []byte(`"forkedFrom":{`)
 
 // ccUUIDsOf is the uuids of the messages in f, read on from where the last
 // read stopped while the file only grew.
-func ccUUIDsOf(f file) map[string]bool {
+func ccUUIDsOf(f file) uuidSet {
 	m := ccUUIDMemo[f.path]
 	if m == nil || f.size < m.size || f.size == m.size && f.mod.UnixNano() != m.mod {
-		m = &ccUUIDs{set: map[string]bool{}}
+		m = &ccUUIDs{set: uuidSet{}}
 		ccUUIDMemo[f.path] = m
 	}
 	if m.size == f.size && m.mod == f.mod.UnixNano() {
@@ -250,7 +250,7 @@ func ccUUIDsOf(f file) map[string]bool {
 		}
 		r := gjson.GetManyBytes(b, "type", "uuid")
 		if t := r[0].String(); (t == "user" || t == "assistant") && r[1].Type == gjson.String {
-			m.set[r[1].String()] = true
+			m.set.add(r[1].Str)
 			if m.forked == "" && bytes.Contains(b, ccForked) {
 				m.forked = gjson.GetBytes(b, "forkedFrom.sessionId").String()
 			}
@@ -324,7 +324,7 @@ func ccRest(copyFile, keeper file) *state {
 			return true
 		}
 		r := gjson.GetManyBytes(b, "type", "uuid")
-		if t := r[0].String(); t != "user" && t != "assistant" || r[1].Type != gjson.String || held[r[1].String()] {
+		if t := r[0].String(); t != "user" && t != "assistant" || r[1].Type != gjson.String || held.has(r[1].Str) {
 			return true
 		}
 		line(s, b, copyFile.main)

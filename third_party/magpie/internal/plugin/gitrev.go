@@ -23,9 +23,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yetone/magpie/internal/lazyre"
 )
 
-var hexSHA = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
+var hexSHA = lazyre.New(`^[0-9a-f]{7,40}$`)
 
 // refFixed is whether a git spec names the exact commit to install
 // (#<commit>): nothing is resolved for one, so no cache is fetched for it
@@ -140,7 +142,7 @@ func refreshGitCache(ctx context.Context, spec string) error {
 		}
 		fctx, cancel := context.WithTimeout(ctx, fetchEach)
 		cmd := command(fctx, "git", "-C", dir, "fetch", "--quiet", "origin", "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*")
-		cmd.Env = append(env(), "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
+		cmd.Env = append(dlEnv(), "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
 		out, err := cmd.CombinedOutput()
 		cancel()
 		if err != nil {
@@ -279,7 +281,7 @@ func lsRemote(ctx context.Context, remote, ref string) (string, error) {
 		args = append(args, "refs/heads/"+ref, "refs/tags/"+ref, "refs/tags/"+ref+"^{}")
 	}
 	cmd := command(ctx, "git", args...)
-	cmd.Env = append(env(), "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
+	cmd.Env = append(dlEnv(), "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git ls-remote %s: %w", remote, err)

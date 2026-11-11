@@ -26,7 +26,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -37,6 +36,7 @@ import (
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/lastgood"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/settings"
@@ -325,15 +325,15 @@ func IsPath(spec string) bool {
 	return strings.HasPrefix(spec, "file://") || strings.HasPrefix(spec, ".") || strings.HasPrefix(spec, "/") || strings.HasPrefix(spec, `\`) || filepath.IsAbs(spec) || driveRooted.MatchString(spec)
 }
 
-var driveRooted = regexp.MustCompile(`^[A-Za-z]:[\\/]`)
+var driveRooted = lazyre.New(`^[A-Za-z]:[\\/]`)
 
-var pkgName = regexp.MustCompile(`^(@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*$`)
+var pkgName = lazyre.New(`^(@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*$`)
 
 // gitSpec is a package bun fetches from a git repository, not npm:
 // github:owner/repo[#ref] (gitlab: and bitbucket: alike), a git+https://,
 // git+ssh://, git+file:// or git:// URL, a GitHub, GitLab or Bitbucket
 // page's URL, or owner/repo, GitHub's shorthand.
-var gitSpec = regexp.MustCompile(`^(?:(?:github|gitlab|bitbucket):|git\+[a-z]+://|git://)\S+$|^https?://(?:www\.)?(?:github\.com|gitlab\.com|bitbucket\.org)/\S+$|^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9_.-]+(?:#\S+)?$`)
+var gitSpec = lazyre.New(`^(?:(?:github|gitlab|bitbucket):|git\+[a-z]+://|git://)\S+$|^https?://(?:www\.)?(?:github\.com|gitlab\.com|bitbucket\.org)/\S+$|^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9_.-]+(?:#\S+)?$`)
 
 // IsGit is whether spec names a git repository rather than an npm package
 // or a path. The package bun installs from it is named by its own
@@ -839,7 +839,7 @@ func installAt(ctx context.Context, pkg, version string) error {
 }
 
 // minAge is bun's word for a version its minimumReleaseAge holds back.
-var minAge = regexp.MustCompile(`minimum-release-age: (\d+) seconds`)
+var minAge = lazyre.New(`minimum-release-age: (\d+) seconds`)
 
 // ageText is a number of seconds as a reader says it: 2 days, 12 hours.
 func ageText(secs string) string {
@@ -1014,6 +1014,11 @@ func command(ctx context.Context, name string, args ...string) *exec.Cmd {
 
 // env is the plugins' environment: magpie's, with its proxy.
 func env() []string { return netproxy.Env(os.Environ()) }
+
+// dlEnv is env for a program that downloads plugins (bun add, update and
+// remove, git): plugin downloads' proxy where Settings sets one
+// (netproxy.EnvDownloads), never the one a plugin's requests take.
+func dlEnv() []string { return netproxy.EnvDownloads(os.Environ()) }
 
 // Version is the version of the package spec installed (or checked out
 // at its path), "" when there is none.

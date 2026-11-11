@@ -65,6 +65,10 @@ type Login struct {
 	// Token is a Claude account added by a setup-token: magpie's
 	// requests use it, Claude Code itself can't be signed in to it.
 	Token bool `json:"token,omitempty"`
+	// AccessOnly is a ChatGPT account kept access token only
+	// (codex_access_only.go): magpie never renews its sign-in, nor signs
+	// Codex in to it.
+	AccessOnly bool `json:"accessOnly,omitempty"`
 
 	// first is the saved Claude account served in the place of Claude
 	// Code's own while it is signed out (claudeStandIn).
@@ -112,6 +116,10 @@ type savedLogin struct {
 	// keepalive.go).
 	Renewed time.Time `json:"renewed,omitzero"`
 	Lapsed  string    `json:"lapsed,omitempty"`
+	// AccessOnly keeps a ChatGPT account access token only: its sign-in
+	// is never refreshed, which would sign out the place it came from
+	// (codex_access_only.go).
+	AccessOnly bool `json:"accessOnly,omitempty"`
 	// Refused is the Claude credential Anthropic refused (its version, in
 	// claude_auth.go): Lapsed holds while the account has that one, and
 	// says nothing of the one it is refreshed or signed in to next.
@@ -447,18 +455,55 @@ func sameLogin(a, b savedLogin) bool {
 	return strings.EqualFold(a.User, b.User)
 }
 
-// codexWho reads the email and workspace of a Codex auth.json.
+// codexWho reads the email and workspace of a Codex auth.json. What it
+// reads is the bytes' alone, so it is kept by them (authMemo): codexName
+// asks it of every saved account for each one it compares, and every look
+// at the signed-in account (liveLogin, from four loops at rest) asks it
+// again, each a JSON parse and a JWT decode of the same few accounts.
 func codexWho(auth json.RawMessage) (email, workspace string) {
-	var a codexAuth
-	if json.Unmarshal(auth, &a) != nil {
-		return "", ""
+	w := codexWhos.of(auth, func() [2]string {
+		var a codexAuth
+		if json.Unmarshal(auth, &a) != nil {
+			return [2]string{}
+		}
+		id := jwtClaims(a.Tokens.IDToken)
+		ws := a.Tokens.AccountID
+		if ws == "" {
+			ws = claimString(id, "https://api.openai.com/auth", "chatgpt_account_id")
+		}
+		return [2]string{claimString(id, "email"), ws}
+	})
+	return w[0], w[1]
+}
+
+var codexWhos authMemo[[2]string]
+
+// authMemo keeps what is read from a credential's bytes, by those bytes:
+// a few accounts' worth, emptied when it reaches authMemoMax, so a token
+// renewed every hour leaves nothing behind for long. The lookup by the
+// bytes makes no string, so a hit allocates nothing.
+type authMemo[T any] struct {
+	sync.Mutex
+	m map[string]T
+}
+
+const authMemoMax = 64
+
+func (c *authMemo[T]) of(b []byte, read func() T) T {
+	c.Lock()
+	v, ok := c.m[string(b)]
+	c.Unlock()
+	if ok {
+		return v
 	}
-	id := jwtClaims(a.Tokens.IDToken)
-	workspace = a.Tokens.AccountID
-	if workspace == "" {
-		workspace = claimString(id, "https://api.openai.com/auth", "chatgpt_account_id")
+	v = read()
+	c.Lock()
+	if c.m == nil || len(c.m) >= authMemoMax {
+		c.m = make(map[string]T)
 	}
-	return claimString(id, "email"), workspace
+	c.m[string(b)] = v
+	c.Unlock()
+	return v
 }
 
 // codexName is the name a Codex account goes by among the saved ones ls:
@@ -808,23 +853,30 @@ func codexLoginIn(home string) (savedLogin, bool) {
 	if err != nil {
 		return savedLogin{}, false
 	}
-	var a codexAuth
-	if json.Unmarshal(b, &a) != nil || a.Tokens.AccessToken == "" || a.AuthMode == "apikey" {
+	// read once for the bytes, as codexWho is: liveLogin is asked from
+	// four loops at rest, each a parse and a JWT decode of one auth.json
+	w := codexLogins.of(b, func() [2]string {
+		var a codexAuth
+		if json.Unmarshal(b, &a) != nil || a.Tokens.AccessToken == "" || a.AuthMode == "apikey" {
+			return [2]string{}
+		}
+		id := jwtClaims(a.Tokens.IDToken)
+		user := codexUser(id)
+		if user == "" {
+			user = a.Tokens.AccountID
+		}
+		return [2]string{user, claimString(id, "https://api.openai.com/auth", "chatgpt_plan_type")}
+	})
+	user := w[0]
+	if user == "" {
 		return savedLogin{}, false
 	}
-	id := jwtClaims(a.Tokens.IDToken)
-	user := codexUser(id)
-	if user == "" {
-		user = a.Tokens.AccountID
-	}
-	if user == "" {
-		return savedLogin{}, false
-	}
-	l := savedLogin{Agent: "codex", User: user, Plan: claimString(id, "https://api.openai.com/auth", "chatgpt_plan_type"),
-		Auth: json.RawMessage(bytes.TrimSpace(b))}
+	l := savedLogin{Agent: "codex", User: user, Plan: w[1], Auth: json.RawMessage(bytes.TrimSpace(b))}
 	l.User = codexLiveName(user, l.Auth)
 	return l, true
 }
+
+var codexLogins authMemo[[2]string]
 
 // codexOtherHomes are the user's Codex folders but the one magpie and
 // Codex run with (appdir.CodexHomes): one ChatGPT account each, Codex run
@@ -873,6 +925,15 @@ func codexHeldIn(l savedLogin) string {
 		return l.Home
 	}
 	return ""
+}
+
+// codexWorkspacesApart says two Codex auth.json are for two workspaces,
+// each known: one sign-in, its refresh token the same, can be routed to
+// either (the Codex app's workspace switch), and is two accounts then.
+func codexWorkspacesApart(x, y json.RawMessage) bool {
+	_, a := codexWho(x)
+	_, b := codexWho(y)
+	return a != "" && b != "" && a != b
 }
 
 // sameRefresh says two Codex auth.json hold one refresh token.
@@ -1143,6 +1204,13 @@ func loginsNow(agent string) []Login {
 			if l.Agent != "claude" {
 				lg.Lapsed = l.Lapsed
 			}
+			if l.Agent == "codex" && l.AccessOnly {
+				lg.AccessOnly = true
+				// run out with no request to say so yet: passed over now
+				if lg.Lapsed == "" && accessOnlyExpired(l.Auth, time.Now()) {
+					lg.Lapsed = accessOnlyLapse(l.User)
+				}
+			}
 			lg.Returns = l.On && strings.EqualFold(back[l.Agent], l.User)
 		}
 		out = append(out, lg)
@@ -1356,6 +1424,9 @@ func switchSavedLogin(agent, user string) (from string, _ error) {
 	if agent == "claude" && claudeSetupToken(target.Auth) != "" {
 		return "", fmt.Errorf(errClaudeTokenSwitch, target.User)
 	}
+	if agent == "codex" && target.AccessOnly {
+		return "", fmt.Errorf(errCodexAccessOnlySwitch, target.User)
+	}
 	if agent == "claude" {
 		// as Claude Code keeps it, if it has run on the account beside the
 		// one it is signed in to; never one that can't be used, which
@@ -1559,7 +1630,7 @@ func nextOnForget(agent, user string) string {
 // switchable is an account an agent can be signed in to: not a Claude
 // setup-token one (errClaudeTokenSwitch), nor a ChatGPT account Codex
 // keeps in another folder (codexHeldIn).
-func switchable(l Login) bool { return !l.Token && l.home == "" }
+func switchable(l Login) bool { return !l.Token && !l.AccessOnly && l.home == "" }
 
 func forgetLogin(agent, user string) (signedOut bool, err error) {
 	loginsMu.Lock()

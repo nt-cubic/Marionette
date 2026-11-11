@@ -117,6 +117,15 @@ func notProbed(host string) bool {
 	if contains(noProbeHosts, host) {
 		return true
 	}
+	return presetHosts()[host]
+}
+
+// presetHosts are the hostnames, lowered, that a vendor's or a local
+// server's preset names. The presets never change, and gathering their
+// bases again for every provider of every Providers poll was 3.5 MB of
+// what forty polls allocated with real accounts.
+var presetHosts = sync.OnceValue(func() map[string]bool {
+	out := map[string]bool{}
 	for _, d := range presets {
 		if d.Kind != KindVendor && d.Kind != KindLocal {
 			continue
@@ -126,20 +135,47 @@ func notProbed(host string) bool {
 			bases = append(bases, r.Chat, r.Responses, r.Anthropic)
 		}
 		for _, b := range bases {
-			if b != "" && strings.EqualFold(hostnameOf(b), host) {
-				return true
+			if b != "" {
+				if h := strings.ToLower(hostnameOf(b)); h != "" {
+					out[h] = true
+				}
 			}
 		}
 	}
-	return false
+	return out
+})
+
+func hostnameOf(raw string) string { return hostParts(raw).name }
+
+// hostParts are raw's host (port kept, lowered: hostOf) and hostname,
+// parsed once per URL.
+func hostParts(raw string) parsedHost {
+	hostnames.Lock()
+	h, ok := hostnames.m[raw]
+	hostnames.Unlock()
+	if ok {
+		return h
+	}
+	if u, err := url.Parse(raw); err == nil {
+		h = parsedHost{strings.ToLower(u.Host), u.Hostname()}
+	}
+	hostnames.Lock()
+	if hostnames.m == nil || len(hostnames.m) >= 512 {
+		hostnames.m = map[string]parsedHost{}
+	}
+	hostnames.m[raw] = h
+	hostnames.Unlock()
+	return h
 }
 
-func hostnameOf(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return ""
-	}
-	return u.Hostname()
+type parsedHost struct{ host, name string }
+
+// hostnames are the base URLs hostParts has parsed: the provider list
+// asks every provider's on each poll (hostnameOf, hostOf), and parsing them again was ~0.4 MB
+// of its garbage an ask. A URL's hostname is the same every time.
+var hostnames struct {
+	sync.Mutex
+	m map[string]parsedHost
 }
 
 // probedBalanceURL is the query found for p, without asking: "" when none

@@ -14,10 +14,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/lazyre"
 )
 
 // Name is what the shortcut is called, and what Windows search finds.
@@ -108,7 +108,7 @@ func remember(state, exe string) error {
 
 // aside is what an update moves the exe it replaces to, or stages the new
 // one as: magpie.exe.old, magpie.exe.old-2…, magpie.exe.new
-var aside = regexp.MustCompile(`(?i)(\.exe)\.(old(-\d+)?|new)$`)
+var aside = lazyre.New(`(?i)(\.exe)\.(old(-\d+)?|new)$`)
 
 // Target is what the shortcut opens for exe: exe itself, but for a magpie
 // left running from where an update moved it aside, the exe in its place,
@@ -128,11 +128,23 @@ func Stale(target, dir, exe string) bool {
 	return !same(target, exe) || !same(dir, filepath.Dir(exe))
 }
 
+// UninstallArgs are what Windows' Installed apps runs magpie with for its
+// Uninstall: the app's window on Settings › Uninstall magpie, which asks
+// first and puts every agent back before magpie's files go. It is started
+// with no console, so the terminal's `magpie uninstall` couldn't ask.
+var UninstallArgs = []string{"uninstall", "--window"}
+
+// UninstallCommand is the command line Installed apps runs for exe.
+func UninstallCommand(exe string) string {
+	return `"` + exe + `" ` + strings.Join(UninstallArgs, " ")
+}
+
 // what Remove asks of the system besides startMenu; the tests put fakes in
 var unregister = unregisterAppPath
 
 // Remove takes out what Ensure made, for magpie uninstall: the Start menu
-// shortcut, the App Paths entry while it names exe (or an exe gone), and
+// shortcut, the App Paths and Installed apps entries while they name exe
+// (or an exe gone), and
 // the record of having made them. A portable magpie made none, and an
 // entry another copy of magpie registered stays that copy's.
 func Remove(exe string) error {

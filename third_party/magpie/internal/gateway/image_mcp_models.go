@@ -14,7 +14,7 @@ import (
 
 // generate_image and generate_video take the model to use (XYenon on
 // Discord): one of those set up for it, as provider/model, else the one
-// Settings › Images picks. The tool's schema lists those the caller may use
+// Settings › Models › Images picks. The tool's schema lists those the caller may use
 // (mediaModelsFor), and a model none of them is, is a tool error naming
 // them, never a drawing with another. The model chosen is named to the
 // images and videos APIs, so a gateway key's models hold it there as they
@@ -74,7 +74,7 @@ type ImageModel struct {
 }
 
 // ImageModels are the models generate_image may be asked for
-// (mediaModels), the Settings › Images default first, each with its label;
+// (mediaModels), the Settings › Models › Images default first, each with its label;
 // none when image generation is off.
 func ImageModels() []ImageModel {
 	all, _ := mediaModels(false)
@@ -108,7 +108,15 @@ func mediaModelsFor(r *http.Request, video bool) (all, shown []string, def strin
 	all, def = mediaModels(video)
 	who, held := keyListHolds(r)
 	if !held {
-		return all, all, def
+		if !withGatewayKey(r) || !provider.GroupsBound() {
+			return all, all, def
+		}
+		for _, ref := range all { // less a group bound to other keys
+			if g, _, ok := provider.FindGroup(ref); !ok || !groupBarred(who, g) {
+				shown = append(shown, ref)
+			}
+		}
+		return all, shown, def
 	}
 	for _, ref := range all {
 		if refAllowed(who, ref) {
@@ -141,7 +149,7 @@ func mediaModelProp(video bool, shown []string, def string) map[string]any {
 	case video:
 		d += " Leave it out to use the video model set up in Magpie (now " + def + ")."
 	default:
-		d += " Leave it out to use the one set in Magpie (Settings → Images → Image generation; now " + def + ")."
+		d += " Leave it out to use the one set in Magpie (Settings → Models → Images → Image generation; now " + def + ")."
 	}
 	prop := map[string]any{"type": "string"}
 	switch n := len(shown); {

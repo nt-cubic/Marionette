@@ -56,6 +56,13 @@ func emptyRetries(w http.ResponseWriter, ctx context.Context) int {
 	return streamRetries
 }
 
+// emptyAccounts is how many accounts of one model may answer a request
+// with a reply that said nothing before the rest of its accounts aren't
+// asked: the same conversation ends empty on whichever account it is sent
+// to, and each ask took minutes on a long one (vhjjkkhg on X: 8 to 9 tries
+// over 10+ minutes). The others of its group, and other providers, are.
+const emptyAccounts = 2
+
 // loopReasks is how many times a reply whose reasoning was stuck in a
 // loop (loopGuard) before it said anything is asked again in place, rather
 // than ended with the loop's error.
@@ -183,7 +190,7 @@ func saysItsEnd(p provider.Provider, proto provider.Protocol, model string) bool
 	case proto == provider.Anthropic, proto == provider.Responses, geminiKin(proto):
 		return true
 	case proto == provider.Chat:
-		return geminiCompat(p.Host(), model) || p.Host() == commandCodeHost
+		return geminiCompat(p.VendorHost(), model) || p.VendorHost() == commandCodeHost
 	}
 	return false
 }
@@ -286,7 +293,7 @@ func prefillHow(p provider.Provider, to provider.Protocol, model string) string 
 	case provider.Anthropic:
 		return "anthropic"
 	case provider.Chat:
-		return chatPrefill(p.Host(), model)
+		return chatPrefill(p.VendorHost(), model)
 	}
 	return ""
 }
@@ -604,7 +611,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 				if turnedAway {
 					markAntigravityTurnsAway(w, request.System)
 				}
-				if p.Preset == "openrouter" && openRouterSharedPool(b) {
+				if p.VendorPreset() == "openrouter" && openRouterSharedPool(b) {
 					markOpenRouterSharedPool(w)
 				}
 				keepRetry(w.Header(), res.Header, b)
@@ -641,7 +648,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 				// upstream's 200 is in, and a holdWriter holds what is
 				// written for another candidate to answer still
 				var wmu sync.Mutex
-				heard, stopKeep := keepThroughSilence(&wmu, func() {
+				heard, stopKeep := keepThroughSilence(keepaliveEvery, &wmu, func() {
 					if failed == "" && !cut && !relooped && sw.quiet() >= keepaliveEvery/2 {
 						enc.keepalive()
 					}

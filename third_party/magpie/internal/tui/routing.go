@@ -338,6 +338,7 @@ func (m *model) openClassifier(g provider.Group) {
 const ruleHint = `use=<model>, and any of: tokens=200k · images · effort=on|low|medium|high|xhigh|max · agents=codex,claude
 intent="a quick question" (the group's classifier=<model> tells it) · compact
 time=09:00-18:00 (22:00-08:00 runs past midnight) · days=mon-fri · tz=Asia/Shanghai (this computer's zone if none) · folders=~/work/acme,~/oss · except-folders=~/old · at=<n> for its place
+when="effort is not off" · when="tokens < 20k" · when="agent is not codex" · when=subagent · when="message contains …" · when="system matches ^You are a title"
 use-effort=low|medium|high|xhigh|max: the reasoning the model is asked for, whatever the agent asked
 or pause=<model> time=… days=… agents=… folders=… except-folders=…: the model is left out of the group then, not even a fallback`
 
@@ -475,7 +476,8 @@ func (m model) updateGroup(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}, id+said)
 		}
 		model, effort := provider.MemberEffort(id)
-		to := provider.WithMemberEffort(model, nextMemberEffort(effort))
+		_, acct := provider.MemberAccount(id) // on its own account still
+		to := provider.WithMemberAccount(provider.WithMemberEffort(model, nextMemberEffort(effort)), acct)
 		return m, saveGroup(g.ID, func(g *provider.Group) error {
 			g.RenameMember(id, to)
 			return nil
@@ -491,6 +493,15 @@ func (m model) updateGroup(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			hint: "agents can be shown only some families: magpie visible <agent> <family>",
 			onEnter: func(v string) tea.Cmd {
 				return saveGroup(g.ID, func(g *provider.Group) error { g.Family = v; return nil }, g.Name+" family "+dash(v))
+			}})
+		m.back = modeGroup
+	case "N":
+		in := newInput("your own word on it, e.g. office key only")
+		in.SetValue(g.Note)
+		m.openAsk(ask{crumbs: []string{"routing", g.Name, "note"}, input: in, empty: true,
+			hint: "shown under its name; empty clears it",
+			onEnter: func(v string) tea.Cmd {
+				return saveGroup(g.ID, func(g *provider.Group) error { g.Note = v; return nil }, g.Name+" note "+dash(provider.CleanNote(v)))
 			}})
 		m.back = modeGroup
 	case "x":
@@ -681,7 +692,11 @@ func (m model) viewGroup() string {
 	if g.Auto {
 		head = append(head, "found by magpie: a change makes it yours")
 	}
-	b.WriteString(pad + "  " + sMuted.Render(strings.Join(head, " · ")) + "\n\n")
+	b.WriteString(pad + "  " + sMuted.Render(strings.Join(head, " · ")) + "\n")
+	if g.Note != "" {
+		b.WriteString(pad + "  " + sText.Render(trunc(g.Note, max(m.w-8, 10))) + "\n")
+	}
+	b.WriteString("\n")
 	b.WriteString(pad + "  " + sFaint.Render("models · the first that can take a request gets it") + "\n")
 	hits := provider.PatternHits(g)
 	memFrom, memTo, ruleFrom, ruleTo := groupWindow(len(g.Members), len(g.Rules), m.gsel, m.groupRows(g, len(hits)))
@@ -755,6 +770,9 @@ func (m model) groupRows(g provider.Group, hits int) int {
 	}
 	if len(g.Rules) == 0 {
 		fixed++
+	}
+	if g.Note != "" {
+		fixed++ // its line under the head
 	}
 	if slices.ContainsFunc(g.Rules, func(r provider.Rule) bool { return r.Intent != "" }) {
 		fixed += 2

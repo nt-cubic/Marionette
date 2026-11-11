@@ -14,9 +14,10 @@ package provider
 
 import (
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/yetone/magpie/internal/lazyre"
 )
 
 // FastWord is the last part of a member typed to be sent fast.
@@ -30,6 +31,11 @@ func MemberFast(id string) (member string, fast bool) {
 }
 
 func memberFastIn(entries []Entry, id string) (string, bool) {
+	if base, acct := MemberAccount(id); acct != "" {
+		// "a/m:high:fast#x": fast is said before the account, which is last
+		m, fast := memberFastIn(entries, base)
+		return WithMemberAccount(m, acct), fast
+	}
 	i := strings.LastIndex(id, ":")
 	if i <= 0 || !strings.EqualFold(id[i+1:], FastWord) {
 		return id, false
@@ -167,14 +173,16 @@ func modelSlug(model string) string {
 }
 
 var (
-	openAIFast = regexp.MustCompile(`^(gpt-|o\d)`)
+	openAIFast = lazyre.New(`^(gpt-|o\d)`)
 	// a dated id is its model's: claude-opus-4-8-20260501
-	claudeDated = regexp.MustCompile(`-\d{8}$`)
+	claudeDated = lazyre.New(`-\d{8}$`)
 )
 
 // claudeFastModels are the Claude models with fast mode (speed "fast",
-// beta fast-mode-2026-02-01).
-var claudeFastModels = []string{"claude-opus-4-8", "claude-opus-5", "claude-opus-5-5"}
+// beta fast-mode-2026-02-01). Fable 5.2 has it from its launch
+// (2026-11-09, $16/$80 per Mtok; Claude Code 2.1.321 offers it on Fable
+// 5.2 and Mythos 5.2); Fable 5.1 and before never had it.
+var claudeFastModels = []string{"claude-opus-4-8", "claude-opus-5", "claude-opus-5-5", "claude-fable-5-2"}
 
 // ClaudeFast reports whether a Claude model has fast mode.
 func ClaudeFast(model string) bool {

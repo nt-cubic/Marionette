@@ -6,6 +6,9 @@ let gatewayOwnDraft = "";
 // gatewayAccountNames maps a key's stored account entry ("<provider>/<id>",
 // #905) to how it is shown; what no provider has now is shown as it is kept
 let gatewayAccountNames = {};
+// the account groups a key's accounts may name, "@<id>" or "!@<id>"
+// (LeiWang_2000 on X), for the badges' words
+let gatewayAccountGroups = [];
 let gatewayKeysRead = 0;
 // gatewayKeysErr is why the list couldn't be read, said in its place until
 // a read works: a redraw of the page (the providers' poll) keeps it
@@ -62,6 +65,7 @@ async function loadGatewayKeys() {
     // A fresh list also refreshes a selected credential, which may have rotated.
     connectSecret = null;
     gatewayKeys = out.keys || [];
+    gatewayAccountGroups = out.accountGroups || gatewayAccountGroups;
     gatewayKeysErr = "";
     renderGatewayKeys();
     if (view === "gateway" && providers) selectConnectKey(connectKeyID);
@@ -91,6 +95,7 @@ async function refreshGatewayKeys() {
   if (JSON.stringify(keys) === JSON.stringify(gatewayKeys)) return;
   gatewayKeys = keys;
   gatewayAccountNames = out.accountNames || gatewayAccountNames;
+  gatewayAccountGroups = out.accountGroups || gatewayAccountGroups;
   if (gatewayKeyDraft === null && gatewayLimit === null && !$("#gatewayKeys .rename-in")) renderGatewayKeys();
 }
 // the timer: only while the Gateway page is in sight, as a look with
@@ -115,6 +120,7 @@ async function gatewayKeyAction(action, body) {
     connectSecret = null;
     gatewayKeys = out.keys || [];
     gatewayAccountNames = out.accountNames || gatewayAccountNames;
+    gatewayAccountGroups = out.accountGroups || gatewayAccountGroups;
     gatewayKeyDraft = null;
     if (action === "limit-key" || !gatewayKeys.some((k) => k.id === gatewayLimit?.id)) gatewayLimit = null;
     renderGatewayKeys();
@@ -204,9 +210,11 @@ function renderGatewayKeys() {
   // a drag in progress keeps its rows: the list is drawn when it ends
   if (gatewayKeysArranging) { gatewayKeysRenderPending = true; return; }
   const box = $("#gatewayKeys");
-  $("#gatewayKeysBlock").hidden = !providers?.gateway.lan;
+  $("#gatewayKeysBlock").hidden = !gwKeysShown();
+  $("#gatewayKeysOff").hidden = gwKeysShown();
   box.replaceChildren();
   $("#addGatewayKey").onclick = () => { gatewayKeyDraft = ""; renderGatewayKeys(); };
+  $("#accountGroups").onclick = () => gatewayAccountGroupsEditor();
   // keys: a badge left unset folds away until the row is pointed at, as
   // on a provider's keys, so nothing invisible holds a place in the row
   const list = el("div", "accts gw-keys");
@@ -226,7 +234,7 @@ function renderGatewayKeys() {
     tick.onclick = () => gatewayKeyAction(k.off ? "on-key" : "off-key", { key: k.id });
     // the copy sits by the key it copies (the owner: stranded among the
     // badges it read as nobody's); Rotate and Remove wait in the row's menu
-    row.append(tick, gatewayRename(k), el("span", "plan mono", k.masked), copyCallerKeyBtn(k), el("span", "grow"), ...(k.browser ? [gatewayBrowserTag()] : k.readOnly ? [gatewayReadOnlyTag()] : []), gatewayModelsBadge(k), ...gatewayMCPBadge(k), gatewayQuotasBadge(k), ...(k.browser || k.readOnly ? [] : [gatewayConcurrencyBadge(k)]), gatewayLimitBadge(k), gatewayKeyMore(k));
+    row.append(tick, gatewayRename(k), el("span", "plan mono", k.masked), copyCallerKeyBtn(k), el("span", "grow"), ...(k.browser ? [gatewayBrowserTag()] : k.readOnly ? [gatewayReadOnlyTag()] : []), gatewayModelsBadge(k), ...gatewayKeptOutBadge(k), ...gatewayMCPBadge(k), gatewayQuotasBadge(k), ...(k.browser || k.readOnly ? [] : [gatewayConcurrencyBadge(k)]), gatewayLimitBadge(k), gatewayKeyMore(k));
     const under = gatewayLimit?.id === k.id ? [gatewayLimitEditor(k)] : keyUsed(k).map((u) => gatewayLimitLine(k, u));
     if (under.length) row.classList.add("with-limit"), row.append(...under);
     list.append(row);
@@ -308,6 +316,7 @@ function gatewayKeyPage() {
 
 const ROTATE_GLYPH = "M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3.25h-3.25";
 const REMOVE_GLYPH = "M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5M7 7v4M9 7v4";
+const KEEP_OUT_GLYPH = "M8 1.8a6.2 6.2 0 1 0 0 12.4A6.2 6.2 0 0 0 8 1.8zM3.6 3.6l8.8 8.8";
 const MCP_GLYPH = "M6 2.5v3M10 2.5v3M4.5 5.5h7V8a3.5 3.5 0 0 1-7 0zM8 11.5v2";
 const POWER_GLYPH = "M8 2.5v5M4.8 4.6a4.75 4.75 0 1 0 6.4 0";
 function gatewayKeyMore(k) {
@@ -335,6 +344,11 @@ function gatewayKeyMore(k) {
       // the MCP servers and tools it may use (wakaka on Discord); the
       // Browser key connects the extension alone
       ...(k.browser ? [] : [{ name: "MCP servers", icon: MCP_GLYPH, run: () => gatewayMCPPick(k, more) }]),
+      // every account but some, those signed in later too (LeiWang_2000
+      // on X); the Browser key uses no account
+      // a name of the key's own for a model it may use (tsingchao on X)
+      ...(k.browser || k.readOnly ? [] : [{ name: "Model names", icon: MCP_GLYPH, run: () => gatewayAliasesAsk(k) }]),
+      ...(k.browser ? [] : [{ name: "Keep accounts out", icon: KEEP_OUT_GLYPH, run: () => gatewayKeptOutPick(k, more) }]),
       { name: "Rotate key", icon: ROTATE_GLYPH, run: () => askGatewayKey(k, true) },
       { name: "Remove", icon: REMOVE_GLYPH, sep: true, run: () => askGatewayKey(k, false) },
     ]);
@@ -361,6 +375,90 @@ function gatewayBrowserTag() {
   const tag = el("span", "amodels key-readonly key-browser set", t("Browser only"));
   tag.title = t("This key connects the Magpie Browser extension and nothing else. It can't use models, MCP servers or stats.");
   return tag;
+}
+
+// gatewayAliasesAsk edits the names a key gives its models: a row each, the
+// name typed and the model picked in the app's menu. /v1/models lists the
+// name in the model's place and a request by it goes to the model.
+function gatewayAliasesAsk(k) {
+  const ed = el("div", "editor alias-ask");
+  const head = el("div", "ehead");
+  head.append(el("b", "", t("Model names")));
+  const rows = Object.entries(k.aliases || {});
+  let models = null;  // the models a row may pick, read when a row is first opened
+  const box = el("div", "headers aliases");
+  const bar = el("div", "bar");
+  const cancel = el("button", "text", t("Cancel"));
+  cancel.onclick = (e) => { e.stopPropagation(); closeConfirmAsk(); };
+  const go = el("button", "text primary", t("Save"));
+  // a row with a name and no model, or a model and no name, isn't one yet;
+  // a row with neither is left out
+  const half = () => rows.some(([n, m]) => !!n.trim() !== !!m);
+  const check = () => { go.disabled = half(); };
+  const pick = async (b, row) => {
+    if (b.classList.contains("open")) return closeProtoMenu();
+    if (!models) {
+      try { ({ models } = await api("caller-keys/models")); } catch (err) { status(t(err.message), "err"); return; }
+    }
+    if (!b.isConnected) return;
+    const opts = (models || []).map((m) => ({ v: m.id, find: m.id, name: m.name, note: m.id, literalName: true }));
+    if (row[1] && !opts.some((o) => o.v === row[1])) opts.push({ v: row[1], name: row[1], note: "Not served now", literalName: true });
+    openProtoMenu(b, opts, row[1], (v) => { row[1] = v; draw(rows.indexOf(row)); check(); }, "Pick a model", "sess-menu", "left", false, "Search models");
+  };
+  const draw = (at = -1) => {
+    box.replaceChildren();
+    rows.forEach((row, i) => {
+      const line = el("div", "pair");
+      const name = input(row[0], "gpt-4");
+      name.spellcheck = false;
+      name.setAttribute("aria-label", t("Model names"));
+      name.oninput = () => { row[0] = name.value; check(); };
+      name.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Escape") closeConfirmAsk(); };
+      const b = el("button", "sess-pick alias-pick" + (row[1] ? " set" : ""));
+      b.type = "button";
+      b.setAttribute("aria-label", t("Pick a model"));
+      b.setAttribute("aria-haspopup", "menu");
+      b.setAttribute("aria-expanded", "false");
+      b.title = row[1];
+      b.replaceChildren(el("span", "", row[1] || t("Pick a model")), svg(CHEV, 11, 1.6));
+      b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); pick(b, row); };
+      const del = el("button", "text danger", "\u00d7");
+      del.type = "button";
+      del.title = t("Remove");
+      del.setAttribute("aria-label", t("Remove"));
+      del.onclick = (e) => { e.stopPropagation(); rows.splice(i, 1); draw(); check(); };
+      const side = el("div", "side");
+      side.append(del);
+      line.append(name, b, side);
+      box.append(line);
+    });
+    const add = el("button", "text", t("Add a name"));
+    add.type = "button";
+    add.onclick = (e) => { e.stopPropagation(); rows.push(["", ""]); draw(); check(); [...box.querySelectorAll(".pair input")].at(-1)?.focus({ preventScroll: true }); };
+    const adds = el("div", "hadds");
+    adds.append(add);
+    box.append(adds);
+    if (at >= 0) box.querySelectorAll(".pair")[at]?.querySelector(".alias-pick")?.focus({ preventScroll: true });
+  };
+  go.onclick = async (e) => {
+    e.stopPropagation();
+    if (go.disabled) return;
+    const aliases = {};
+    for (const [n, m] of rows) if (n.trim() && m) aliases[n.trim()] = m;
+    go.disabled = true;
+    const out = await gatewayKeyAction("aliases-key", { key: k.id, aliases });
+    if (!out) { check(); return; }
+    closeConfirmAsk();
+    status(t("Model names saved"), "ok");
+  };
+  bar.append(el("span", "grow"), cancel, go);
+  ed.append(head, box, bar);
+  if (!rows.length) rows.push(["", ""]);
+  draw();
+  confirmAsk = ed;
+  openModal(ed);
+  $("#modal").classList.add("lib");
+  box.querySelector("input")?.focus({ preventScroll: true });
 }
 
 function askGatewayKey(k, rotate) {
@@ -402,11 +500,127 @@ function askGatewayKey(k, rotate) {
   cancel.focus({ preventScroll: true });
 }
 
+// ---- account groups (LeiWang_2000 on X) ----
+
+// gatewayAccountGroupsEditor lists the account groups, named sets of
+// accounts of any providers that a key's accounts may name (to use, in
+// the models badge's menu; to keep out, in "Keep accounts out"): each
+// renamed in place, its accounts picked in the app's menu, removed unless
+// a key names it. A change reaches every key naming the group at once.
+async function gatewayAccountGroupsEditor() {
+  let accounts = [], groups = [];
+  try { ({ accounts, groups } = await api("caller-keys/models")); } catch (err) { status(t(err.message), "err"); return; }
+  groups ||= [];
+  const ed = el("div", "editor acct-groups");
+  const head = el("div", "ehead");
+  head.append(el("b", "", t("Account groups")));
+  const list = el("div", "accts agp-list");
+  // one change at a time, in the order made: a rename typed while a pick
+  // is still being saved waits for it, and is made to the group as that
+  // save left it (body is a function of the groups then)
+  let queue = Promise.resolve();
+  const send = (action, body) => (queue = queue.then(async () => {
+    try {
+      const out = await api("account-groups/" + action, typeof body === "function" ? body(groups) : body);
+      groups = out.groups || [];
+      gatewayAccountGroups = groups;
+      draw();
+      renderGatewayKeys();
+      return true;
+    } catch (err) {
+      status(t(err.message), "err");
+      draw();
+      return false;
+    }
+  }));
+  // a group's change, made to it as it is when the change is sent
+  const change = (id, patch) => (gs) => ({ ...gs.find((g) => g.id === id), ...patch });
+  const draw = () => {
+    // a name being typed when a save comes back keeps its words and focus
+    const typing = list.contains(document.activeElement) && document.activeElement.classList.contains("agp-name")
+      ? { id: document.activeElement.closest(".agp-row").dataset.group, value: document.activeElement.value } : null;
+    list.replaceChildren();
+    for (const g of groups) {
+      const row = el("div", "acc agp-row");
+      row.dataset.group = g.id;
+      const name = input(g.name, t("Name"));
+      name.className = "agp-name";
+      name.setAttribute("aria-label", t("Account group name"));
+      const rename = () => { const v = name.value.trim(); if (v && v !== g.name) send("save", change(g.id, { name: v })); else name.value = g.name; };
+      // a redraw takes the input away: no rename from that
+      name.onblur = () => { if (name.isConnected) rename(); };
+      name.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") name.blur(); else if (e.key === "Escape") { name.value = g.name; name.blur(); } };
+      const pick = el("button", "amodels agp-accounts" + (g.accounts.length ? " set" : ""));
+      pick.type = "button";
+      pick.textContent = !g.accounts.length ? t("No accounts") : g.accounts.length === 1 ? accountShown(g.accounts[0]) : t("{n} accounts", { n: g.accounts.length });
+      pick.title = g.accounts.map(accountShown).join(", ");
+      pick.setAttribute("aria-label", t("Accounts in this group"));
+      pick.setAttribute("aria-haspopup", "menu");
+      pick.setAttribute("aria-expanded", "false");
+      pick.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (pick.classList.contains("open")) return closeProtoMenu();
+        const opts = (accounts || []).map((a) => ({ v: a.id, name: a.name, note: a.plan ? a.providerName + " · " + planName(a.plan) : a.providerName, literalName: true }));
+        // one signed out since stays, matching nothing, until it is unticked
+        for (const v of g.accounts) if (!opts.some((o) => o.v.toLowerCase() === v.toLowerCase())) opts.push({ v, name: v, note: "Not signed in now", literalName: true });
+        openProtoMenu(pick, opts, [...g.accounts], (picked) => {
+          if (picked.length === g.accounts.length && picked.every((v) => g.accounts.includes(v))) return;
+          send("save", change(g.id, { accounts: picked }));
+        }, "Accounts in this group", "sess-menu", "right");
+      };
+      const rm = el("button", "copy agp-remove");
+      rm.type = "button";
+      rm.title = t("Remove group");
+      rm.setAttribute("aria-label", rm.title);
+      rm.append(svg(REMOVE_GLYPH, 14, 1.6));
+      rm.onclick = (e) => { e.stopPropagation(); send("remove", { id: g.id }); };
+      row.append(name, el("span", "grow"), pick, rm);
+      list.append(row);
+      if (typing?.id === g.id) {
+        name.value = typing.value;
+        name.focus({ preventScroll: true });
+      }
+    }
+    if (!groups.length) list.append(el("div", "none", t("No account groups yet")));
+  };
+  draw();
+  const add = el("div", "agp-add");
+  const fresh = input("", t("New account group name"));
+  fresh.setAttribute("aria-label", t("New account group name"));
+  const addBtn = el("button", "text", t("Add group"));
+  addBtn.type = "button";
+  addBtn.onclick = async (e) => {
+    e.stopPropagation();
+    const v = fresh.value.trim();
+    if (!v) return fresh.focus({ preventScroll: true });
+    if (await send("save", { name: v, accounts: [] })) fresh.value = "";
+  };
+  fresh.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") addBtn.click(); else if (e.key === "Escape") closeConfirmAsk(); };
+  add.append(fresh, addBtn);
+  const bar = el("div", "bar");
+  const done = el("button", "text primary", t("Done"));
+  done.type = "button";
+  done.onclick = (e) => { e.stopPropagation(); closeConfirmAsk(); };
+  bar.append(el("span", "grow"), done);
+  ed.append(head, list, add, bar);
+  confirmAsk = ed;
+  openModal(ed);
+  $("#modal").classList.add("lib");
+  (groups.length ? done : fresh).focus({ preventScroll: true });
+}
+
 // ---- the models a gateway key may use (#882), and the accounts (#905) ----
 
 // accountShown is a stored account entry ("<provider>/<id>", #905) as the
 // badge says it: by who is signed in, the id itself when no provider has it.
-const accountShown = (a) => gatewayAccountNames[a] || a;
+// A group the list names, "@<id>", is said by its name.
+const accountShown = (a) => a.startsWith("@") ? groupShown(a) : gatewayAccountNames[a] || a;
+const groupShown = (a) => gatewayAccountGroups.find((g) => "@" + g.id === a)?.name || a;
+// groupOptions are the account groups as a menu's options: "@<id>" to use
+// one's accounts, or "!@<id>" (out) to keep them out
+const groupOptions = (groups, out) => (groups || []).map((g) => ({ v: (out ? "!@" : "@") + g.id, name: g.name, literalName: true,
+  note: t("Account group") + " · " + (g.accounts.length === 1 ? accountShown(g.accounts[0]) : t("{n} accounts", { n: g.accounts.length })) }));
 
 // the key whose models menu waits on its list: the badge drawn last opens
 // it, so a redraw of the keys while it loads (a rename's reply, the
@@ -418,7 +632,9 @@ let keyModelsLoading = null;
 // it may, always shown. A pick is sent when the menu closes.
 function gatewayModelsBadge(k) {
   const ms = k.models || [];
-  const as = k.accounts || [];
+  // the accounts kept out are gatewayKeptOutPick's, sent back as they are
+  const keptOut = (k.accounts || []).filter(isKeptOut);
+  const as = (k.accounts || []).filter((a) => !isKeptOut(a));
   const b = el("button", "amodels key-models" + (ms.length || as.length ? " set" : ""));
   b.type = "button";
   b.textContent = !ms.length && !as.length ? t("All models")
@@ -434,7 +650,7 @@ function gatewayModelsBadge(k) {
   b.setAttribute("aria-label", t("Models this key may use"));
   b.setAttribute("aria-haspopup", "menu");
   b.setAttribute("aria-expanded", "false");
-  const open = (models, accounts) => {
+  const open = (models, accounts, groups, bare) => {
     if (!b.isConnected) return;
     const opts = [{ v: "", name: "All models", note: "Any model and any account, now and later" }];
     const seen = new Set();
@@ -447,7 +663,7 @@ function gatewayModelsBadge(k) {
     // names (#905): a provider none of whose accounts is picked is used on
     // every one, and its unticked accounts say so (#2077: unticking all of
     // Codex's left Codex's models served)
-    const named = new Set(as.map((v) => v.split("/")[0].toLowerCase()));
+    const named = new Set(as.flatMap((v) => v.startsWith("@") ? (groups || []).find((g) => "@" + g.id === v)?.accounts || [] : [v]).map((v) => v.split("/")[0].toLowerCase()));
     // a provider the key's models leave out is used on none of its
     // accounts: with no model picked, every provider no account is
     // picked of (access.HeldModels)
@@ -462,7 +678,7 @@ function gatewayModelsBadge(k) {
         ? (ms.length && modelsReach(pid)
           ? t("Used: no {provider} account is picked", { provider: a.providerName })
           : t("Not used: no {provider} model or account is picked", { provider: a.providerName }))
-        : a.plan ? a.providerName + " · " + a.plan : a.providerName;
+        : a.plan ? a.providerName + " · " + planName(a.plan) : a.providerName;
       const o = { v: a.id, name: a.name, note, literalName: true };
       ofProvider.set(a.provider, [...(ofProvider.get(a.provider) || []), o]);
     }
@@ -496,17 +712,29 @@ function gatewayModelsBadge(k) {
       // asks it whatever the key may use, and the key may ask it itself
       // (/v1/systemone, another magpie's list) only when it is picked
       // (Kautism on Discord)
-      opts.push({ v: m.id, name: m.name, note: m.decides ? m.id + " · " + t("Decision model: a routing group asks it whatever this key may use; pick it so the key may ask it itself") : m.id, literalName: true });
+      opts.push({ v: m.id, find: m.id, name: m.name, note: m.decides ? m.id + " · " + t("Decision model: a routing group asks it whatever this key may use; pick it so the key may ask it itself") : m.id, literalName: true });
     }
     endBlock();
+    // a provider serving no model now can still be allowed whole, for the
+    // models it serves later, its accounts after it
+    for (const m of bare || []) {
+      if (seen.has(m.provider)) continue;
+      seen.add(m.provider);
+      opts.push({ v: m.provider + "/*", name: t("Every {provider} model", { provider: m.providerName }), note: m.provider + "/*", literalName: true });
+      for (const o of ofProvider.get(m.provider) || []) opts.push(o);
+      ofProvider.delete(m.provider);
+    }
     // a provider with accounts and no model in the list (one kept
     // unlisted, or serving none now) keeps its accounts after the models
     for (const os of ofProvider.values()) opts.push(...os);
+    // the account groups, each its accounts as they are now (LeiWang_2000
+    // on X): after every account
+    for (const o of groupOptions(groups)) accountsSet.add(o.v), opts.push(o);
     // what the CLI kept that the list hasn't, a pattern, a model gone or
     // an account signed out: behind every live entry, a model gone
     // before an account signed out
-    for (const v of ms) if (!opts.some((o) => o.v === v)) opts.push({ v, name: v, note: "Not served now", literalName: true });
-    for (const v of as) if (!accountsSet.has(v)) { accountsSet.add(v); opts.push({ v, name: v, note: "Not signed in now", literalName: true }); }
+    for (const v of ms) if (!opts.some((o) => o.v === v)) opts.push({ v, name: v, note: /^re:/i.test(v) ? "Pattern: models whose name it matches" : "Not served now", literalName: true });
+    for (const v of as) if (!accountsSet.has(v)) { accountsSet.add(v); opts.push({ v, name: v, note: v.startsWith("@") ? "Account group removed" : "Not signed in now", literalName: true }); }
     openProtoMenu(b, opts, [...ms, ...as], (picked) => {
       // one action at a time: gatewayKeyAction is busy while one is sent.
       // The accounts are sent only when they changed: a model picked says
@@ -520,28 +748,98 @@ function gatewayModelsBadge(k) {
             : pickedAccounts.length ? "{name} may use only the picked accounts' models" : "{name} may use every model", { name: k.name }), "ok");
         }
         if (pickedAccounts.length !== as.length || pickedAccounts.some((v) => !as.includes(v))) {
-          await gatewayKeyAction("accounts-key", { key: k.id, accounts: pickedAccounts });
+          // an account picked is kept out no longer
+          const out = keptOut.filter((v) => !pickedAccounts.some((a) => a.toLowerCase() === keptIn(v).toLowerCase()));
+          await gatewayKeyAction("accounts-key", { key: k.id, accounts: [...pickedAccounts, ...out] });
         }
       })();
-    }, "Models this key may use", "sess-menu", "right");
+    }, "Models this key may use", "sess-menu", "right", false, "Search models, or type re: and a pattern");
+    // "re:^gpt-" and Enter adds the pattern (a regular expression the
+    // gateway checks every model id against); the server refuses a bad one
+    const q = document.querySelector(".proto-menu .sc-q");
+    if (q) q.addEventListener("keydown", (e) => {
+      const v = q.value.trim();
+      if (e.key !== "Enter" || !/^re:./i.test(v)) return;
+      e.preventDefault(); e.stopPropagation();
+      closeProtoMenu();
+      if (!ms.includes(v)) gatewayKeyAction("models-key", { key: k.id, models: [...ms, v] });
+    }, true);
   };
   b.onclick = async (e) => {
     e.preventDefault();
     e.stopPropagation();
     if (b.classList.contains("open")) return closeProtoMenu();
     const loading = keyModelsLoading = { id: k.id, open };
-    let models = [], accounts = [];
-    try { ({ models, accounts } = await api("caller-keys/models")); } catch (err) {
+    let models = [], accounts = [], groups = [], bare = [];
+    try { ({ models, accounts, groups, providers: bare } = await api("caller-keys/models")); } catch (err) {
       if (keyModelsLoading === loading) keyModelsLoading = null;
       status(t(err.message), "err");
       return;
     }
     if (keyModelsLoading !== loading) return;
     keyModelsLoading = null;
-    loading.open(models, accounts);
+    loading.open(models, accounts, groups, bare);
   };
   if (keyModelsLoading?.id === k.id) keyModelsLoading.open = open;
   return b;
+}
+
+// ---- the accounts a gateway key keeps out (LeiWang_2000 on X) ----
+
+// isKeptOut: an account entry "<provider>/!<id>" keeps that account out
+// (access.ExcludeMark): the key uses every other, those signed in later too
+const isKeptOut = (a) => /^[^/]+\/!./.test(a) || a.startsWith("!@");
+// keptIn is the account a kept-out entry names, "<provider>/<id>"
+const keptIn = (a) => a.startsWith("!@") ? a.slice(1) : a.replace("/!", "/");
+
+// gatewayKeptOutPick picks the accounts a key keeps out, in the app's
+// menu, from the row's menu and from the key's badge once it keeps some
+// out. An account picked to use (gatewayModelsBadge) and kept out here is
+// kept out: it is taken off the picked ones.
+async function gatewayKeptOutPick(k, anchor) {
+  const as = k.accounts || [];
+  const out = as.filter(isKeptOut);
+  let accounts = [], groups = [];
+  try { ({ accounts, groups } = await api("caller-keys/models")); } catch (err) { status(t(err.message), "err"); return; }
+  if (!anchor.isConnected) return;
+  const opts = [{ v: "", name: "No account kept out", note: "" }];
+  for (const a of accounts || []) {
+    const slash = a.id.indexOf("/");
+    opts.push({ v: a.id.slice(0, slash) + "/!" + a.id.slice(slash + 1), name: a.name, note: a.plan ? a.providerName + " · " + planName(a.plan) : a.providerName, literalName: true });
+  }
+  // a group kept out, each of its accounts as they are now (LeiWang_2000 on X)
+  opts.push(...groupOptions(groups, true));
+  // one kept out and signed out since stays kept out, as the CLI kept it
+  for (const v of out) if (!opts.some((o) => o.v === v)) opts.push({ v, name: keptIn(v), note: v.startsWith("!@") ? "Account group removed" : "Not signed in now", literalName: true });
+  openProtoMenu(anchor, opts, [...out], (picked) => {
+    if (picked.length === out.length && picked.every((v) => out.includes(v))) return;
+    const used = as.filter((a) => !isKeptOut(a) && !picked.some((v) => keptIn(v).toLowerCase() === a.toLowerCase()));
+    (async () => {
+      const done = await gatewayKeyAction("accounts-key", { key: k.id, accounts: [...used, ...picked] });
+      if (done) status(t(picked.length ? "{name} may use every account but those kept out" : "{name} keeps no account out", { name: k.name }), "ok");
+    })();
+  }, "Accounts this key keeps out", "sess-menu", "right");
+}
+
+// gatewayKeptOutBadge says which accounts a key keeps out; a key that
+// keeps none out has none (the row's menu sets it)
+function gatewayKeptOutBadge(k) {
+  const out = (k.accounts || []).filter(isKeptOut);
+  if (!out.length) return [];
+  const b = el("button", "amodels key-out set");
+  b.type = "button";
+  b.textContent = out.length === 1 ? t("Not {name}", { name: accountShown(keptIn(out[0])) }) : t("{n} accounts kept out", { n: out.length });
+  b.title = t("Every account but: {list}", { list: out.map((v) => accountShown(keptIn(v))).join(", ") });
+  b.setAttribute("aria-label", t("Accounts this key keeps out"));
+  b.setAttribute("aria-haspopup", "menu");
+  b.setAttribute("aria-expanded", "false");
+  b.onclick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (b.classList.contains("open")) return closeProtoMenu();
+    gatewayKeptOutPick(k, b);
+  };
+  return [b];
 }
 
 // gatewayMCPPick picks the MCP servers and tools a key may use (wakaka
@@ -560,7 +858,7 @@ async function gatewayMCPPick(k, anchor) {
   }
   // what the CLI kept that the list hasn't: a server gone, or a tool it
   // no longer lists
-  for (const v of ms) if (!opts.some((o) => o.v === v)) opts.push({ v, name: v, note: "Not served now", literalName: true });
+  for (const v of ms) if (!opts.some((o) => o.v === v)) opts.push({ v, name: v, note: /^re:/i.test(v) ? "Pattern: models whose name it matches" : "Not served now", literalName: true });
   openProtoMenu(anchor, opts, [...ms], (picked) => {
     // "No MCP server" just ticked is none; left ticked beside a server
     // ticked since, the server
@@ -975,7 +1273,27 @@ function gatewayLimitEditor(k) {
   }
   foot.append(cancel, save);
   if (which) box.append(which);
-  box.append(fields, hint, err);
+  // the limits are the Key limits built-in's: off, Save was refused with
+  // "turn the plugin on" and nothing here said where (the scattered
+  // settings audit after netube99 on X); the line shows only while it is
+  // off (data-feature-off) and turns it on in place
+  const off = el("div", "klf-off");
+  off.dataset.featureOff = "budget";
+  const on = el("button", "text", t("Turn on"));
+  on.type = "button";
+  on.onclick = async (e) => {
+    e.stopPropagation();
+    on.disabled = true;
+    try {
+      applyFeatures(prefs.builtins = await api("plugins/builtin", { id: "budget", on: true }));
+      status(t("Saved"), "ok", 1500);
+    } catch (err) {
+      status(t(err.message), "err");
+    }
+    on.disabled = false;
+  };
+  off.append(el("span", "", t("Off in Plugins › Built-in")), on);
+  box.append(off, fields, hint, err);
   if (used) {
     // count from 0 again, tokens and cost together (#1509)
     const zero = el("button", "text klf-reset", t("Reset usage"));

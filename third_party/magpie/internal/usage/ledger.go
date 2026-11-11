@@ -183,6 +183,15 @@ func (f Filter) keeps(r Record) bool {
 	return f.keepsRecord(&r, false, "", "")
 }
 
+// sameGroupModel is whether a record's model is the found routing group
+// a filter names by its kept id (group/auto-…, FilterOf), written by an
+// agent's own session file as auto/<model>. Only such pairs read the
+// providers, not every record a filter passes over.
+func sameGroupModel(recorded, filtered string) bool {
+	return strings.HasPrefix(filtered, provider.GroupPrefix) && strings.HasPrefix(recorded, provider.AutoPrefix) &&
+		provider.CanonicalRef(recorded) == filtered
+}
+
 func (f Filter) keepsRecord(r *Record, codexIdentity bool, subagent, parentAgent string) bool {
 	if f.Day != "" {
 		var day [len(time.DateOnly)]byte
@@ -196,7 +205,7 @@ func (f Filter) keepsRecord(r *Record, codexIdentity bool, subagent, parentAgent
 	if f.RouteID != 0 && r.RouteID != f.RouteID {
 		return false
 	}
-	if f.Model != "" && r.Model != f.Model {
+	if f.Model != "" && r.Model != f.Model && !sameGroupModel(r.Model, f.Model) {
 		return false
 	}
 	if f.Agent != "" && ReportedAs(r.Agent) != f.Agent {
@@ -233,8 +242,8 @@ func (f Filter) keepsRecord(r *Record, codexIdentity bool, subagent, parentAgent
 
 // Since is when the period began, as of now; zero for all.
 func (p Period) Since(now time.Time) time.Time {
-	if first, _, ok := p.days(now.Location()); ok {
-		return first
+	if since, _, ok := p.bounds(now.Location()); ok {
+		return since
 	}
 	// a rolling window ends now, so it began that long ago (#2075)
 	if d := p.Last(); d > 0 {
@@ -752,7 +761,7 @@ func WriteCSV(w io.Writer, rows []Row) error {
 func timeline(p Period, now, first time.Time) (since time.Time, bucket string, pts []Point) {
 	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	bucket, pts = "day", []Point{}
-	var n int
+	var n, hours int
 	// a rolling window ends now: an hour each of two days or less, else a
 	// day each from when it began (#2075)
 	if d := p.Last(); d > 0 {
@@ -772,11 +781,22 @@ func timeline(p Period, now, first time.Time) (since time.Time, bucket string, p
 		}
 		return since, bucket, pts
 	}
-	if first, last, ok := p.days(now.Location()); ok {
+	if first, until, ok := p.bounds(now.Location()); ok {
 		// a picked range: an hour each of a single day, else a day each,
-		// a week each (from a Monday) past 60 days as All has
+		// a week each (from a Monday) past 60 days as All has. One that
+		// names its minutes is an hour each from the hour it begins in,
+		// up to two days of them, else a day each from its first day.
+		last := until.Add(-time.Nanosecond)
 		since, n = first, calendarDays(first, last)+1
-		if n == 1 {
+		if p.timed() {
+			hour := time.Date(first.Year(), first.Month(), first.Day(), first.Hour(), 0, 0, 0, first.Location())
+			if h := int((until.Sub(hour) + time.Hour - 1) / time.Hour); h <= 48 {
+				since, bucket, hours = hour, "hour", h
+			} else {
+				since = time.Date(first.Year(), first.Month(), first.Day(), 0, 0, 0, 0, first.Location())
+			}
+		}
+		if n == 1 && !p.timed() {
 			bucket = "hour"
 		} else if n > 60 {
 			bucket = "week"
@@ -810,7 +830,11 @@ func timeline(p Period, now, first time.Time) (since time.Time, bucket string, p
 	}
 	switch bucket {
 	case "hour":
-		for h := 0; since.Add(time.Duration(h) * time.Hour).Before(since.AddDate(0, 0, 1)); h++ {
+		end := since.AddDate(0, 0, 1)
+		if hours > 0 {
+			end = since.Add(time.Duration(hours) * time.Hour)
+		}
+		for h := 0; since.Add(time.Duration(h) * time.Hour).Before(end); h++ {
 			t := since.Add(time.Duration(h) * time.Hour)
 			pts = append(pts, Point{Label: t.Format("15"), Time: t})
 		}
@@ -1062,16 +1086,36 @@ func (r *Row) key(by string) string {
 // keyer is Row.key for many rows, made once for each provider and model:
 // a "modelAt" is a string built of two, which a page of thousands of rows
 // would otherwise build again for each.
-type keyer map[[2]string]string
+type keyer struct {
+	public func(string) string
+	models map[string]string
+	at     map[[2]string]string
+}
+
+func newKeyer() keyer {
+	return keyer{public: provider.PublicRefs(), models: map[string]string{}, at: map[[2]string]string{}}
+}
 
 func (m keyer) key(r *Row, by string) string {
-	if by != "modelAt" {
+	if by != "modelAt" && by != "model" {
 		return r.key(by)
 	}
-	k, ok := m[[2]string{r.Provider, r.Model}]
+	model := r.Model
+	if m.public != nil {
+		var ok bool
+		model, ok = m.models[r.Model]
+		if !ok {
+			model = m.public(r.Model)
+			m.models[r.Model] = model
+		}
+	}
+	if by == "model" {
+		return model
+	}
+	k, ok := m.at[[2]string{r.Provider, r.Model}]
 	if !ok {
-		k = r.key(by)
-		m[[2]string{r.Provider, r.Model}] = k
+		k = ModelAtKey(r.Provider, model)
+		m.at[[2]string{r.Provider, r.Model}] = k
 	}
 	return k
 }
@@ -1090,7 +1134,7 @@ type Share struct {
 func Breakdown(rows []Row, by string) []Share {
 	at := map[string]*Share{}
 	var out []*Share
-	keys := keyer{}
+	keys := newKeyer()
 	for _, r := range rows {
 		if r.IsRejected() {
 			continue
@@ -1130,6 +1174,10 @@ type Part struct {
 	TTFT      int64 `json:"ttft_ms,omitempty"`
 	DecodeMs  int64 `json:"decode_ms,omitempty"`
 	DecodeOut int   `json:"decode_out,omitempty"`
+	// the bytes its requests sent up and read back (Totals.UpBytes), for
+	// a chart of the traffic over time
+	UpBytes   int64 `json:"up_bytes,omitempty"`
+	DownBytes int64 `json:"down_bytes,omitempty"`
 }
 
 // add counts a row in the part.
@@ -1141,6 +1189,8 @@ func (p *Part) add(r Row) {
 	if r.Priced {
 		p.Cost += r.Cost
 	}
+	p.UpBytes += int64(r.UpBytes)
+	p.DownBytes += int64(r.DownBytes)
 	if r.TTFT > 0 && r.Answered() {
 		p.Timed++
 		p.TTFT += r.TTFT
@@ -1161,6 +1211,8 @@ func (p *Part) plus(d *Totals) {
 	p.TTFT += d.TTFT
 	p.DecodeMs += d.DecodeMs
 	p.DecodeOut += d.DecodeOut
+	p.UpBytes += d.UpBytes
+	p.DownBytes += d.DownBytes
 }
 
 // SeriesPoint is a point of the timeline with its calls told apart, by each
@@ -1203,7 +1255,7 @@ func ledgerSeriesAt(p Period, rows []Row, now time.Time) (bucket string, pts []S
 		}
 	}
 	kept := map[string]map[string]bool{}
-	keys := keyer{}
+	keys := newKeyer()
 	for _, d := range Dimensions {
 		kept[d] = map[string]bool{}
 		for i, s := range Breakdown(rows, d) {

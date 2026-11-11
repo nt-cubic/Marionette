@@ -10,10 +10,10 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/plugin"
 )
 
@@ -78,7 +78,7 @@ func pluginUsageLogins(pp plugin.Provider) []Login {
 }
 
 // signInGone is a plugin's usage saying the account's sign-in is gone.
-var signInGone = regexp.MustCompile(`(?i)sign-in has (expired|lapsed)|sign in again`)
+var signInGone = lazyre.New(`(?i)sign-in has (expired|lapsed)|sign in again`)
 
 // pluginLoginQuota is the allowance of one of a plugin provider's
 // accounts, l.Agent being "plugin:" and its id.
@@ -124,7 +124,8 @@ func pluginLoginQuota(ctx context.Context, l Login) SubscriptionQuota {
 		notePluginLapseSince(pp, key, http.StatusOK, began)
 	}
 	keepPluginPlan(pp, key, u.Plan)
-	return quotaOfPlugin(q, u)
+	// a wallet's spend counted, for a cap to hold it (#5770)
+	return withWalletSpend(quotaOfPlugin(q, u), l.User, time.Now())
 }
 
 // quotaOfPlugin fills q with what the plugin told.
@@ -157,7 +158,8 @@ func quotaOfPlugin(q SubscriptionQuota, u plugin.Usage) SubscriptionQuota {
 	for _, x := range u.Windows {
 		w := QuotaWindow{Name: x.Name, ResetSecs: x.ResetSecs, Display: x.Display,
 			Amount: x.Amount, Limit: x.Limit, Unit: x.Unit,
-			Span: time.Duration(x.Span * float64(time.Second)), Model: strings.ToLower(x.Model), Aside: x.Aside}
+			Span: time.Duration(x.Span * float64(time.Second)), Model: strings.ToLower(x.Model), Aside: x.Aside,
+			Pool: x.Pool, Family: x.Family}
 		if x.Balance != nil {
 			// a wallet's balance: a reading, though it tells no share (#3950)
 			b := *x.Balance

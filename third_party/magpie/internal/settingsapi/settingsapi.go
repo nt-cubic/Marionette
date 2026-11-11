@@ -37,16 +37,16 @@ var Keys = []string{
 	// usage and alerts
 	"currency", "chineseUnits", "usageAlert", "balanceAlert", "resetReminder", "turnDoneAlert", "maskAlert",
 	// network
-	"proxy",
+	"proxy", "pluginProxy",
 	// privacy
 	"redact", "redactPersonal", "redactKinds", "redactWords", "redactWordsAnyCase", "redactWordsWhole", "redactShape",
 	"noStats", "noUsageStats", "otel",
 	// warm-ups and check-ins
 	"codexWarmup", "claudeWarmup", "codexWarmAt", "claudeWarmAt", "codexWarmAts", "claudeWarmAts",
-	"workbuddyCheckin", "traeCheckin", "minimaxCheckin", "qoderCheckin",
+	"workbuddyCheckin", "traeCheckin", "minimaxCheckin", "qoderCheckin", "checkinAt",
 	// models: replies, vision, images, search
 	"replyModel", "noLoopGuard", "claudeLeanPrompt", "claudePrintMode", "refusalRetries", "retryAfterCap",
-	"vision", "visionEffort", "imageGen", "imageTimeout", "classifyTimeout",
+	"vision", "visionEffort", "imageGen", "videoGen", "imageTimeout", "classifyTimeout",
 	// what every routing group does that says nothing of its own
 	"groupSink", "groupFirstToken", "groupPatience",
 	"searcher", "searcherThen", "searcherEffort", "searchFirst",
@@ -206,6 +206,10 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 		in.RedactShape = cur.RedactShape
 	}
 	// nor how long an image is given to be drawn
+	// nor the video model, picked in its own row
+	if _, sent := fields["videoGen"]; !sent {
+		in.VideoGen = cur.VideoGen
+	}
 	if _, sent := fields["imageTimeout"]; !sent {
 		in.ImageTimeout = cur.ImageTimeout
 	}
@@ -279,14 +283,22 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	settings.CarryPerModel(&in, &cur)
 	in.LAN, in.LANKey = cur.LAN, cur.LANKey
 	in.LANKeyID = cur.LANKeyID
-	in.Port = cur.Port                                 // set on its own (port), which moves the gateway
-	in.CORSOrigins = cur.CORSOrigins                   // set on its own (cors)
-	in.AllowIPs = cur.AllowIPs                         // set on its own (allowips)
-	in.FetchPrivate = cur.FetchPrivate                 // in settings.json only
-	in.RouterNote = cur.RouterNote                     // set on its own (the Library's servers/hub-note)
-	in.RouterAllTools = cur.RouterAllTools             // set on its own (the Library's servers/hub-tools)
-	in.GitHubToken = cur.GitHubToken                   // set on its own (github-token), never sent to the page
-	in.ProxyCustom = cur.ProxyCustom                   // set by settings.Save from the proxy, never by the page
+	// Bark has its own route (bark); the page never sees its key
+	in.BarkServer, in.BarkKey, in.BarkDaily = cur.BarkServer, cur.BarkKey, cur.BarkDaily
+
+	in.Port = cur.Port                           // set on its own (port), which moves the gateway
+	in.CORSOrigins = cur.CORSOrigins             // set on its own (cors)
+	in.AllowIPs = cur.AllowIPs                   // set on its own (allowips)
+	in.MTLS = cur.MTLS                           // set on its own (mtls)
+	in.HTTPS = cur.HTTPS                         // set on its own (https)
+	in.FetchPrivate = cur.FetchPrivate           // in settings.json only
+	in.RouterNote = cur.RouterNote               // set on its own (the Library's servers/hub-note)
+	in.RouterAllTools = cur.RouterAllTools       // set on its own (the Library's servers/hub-tools)
+	in.GitHubToken = cur.GitHubToken             // set on its own (github-token), never sent to the page
+	in.ProxyCustom = cur.ProxyCustom             // set by settings.Save from the proxy, never by the page
+	in.PluginProxyCustom = cur.PluginProxyCustom // and plugin downloads' from theirs
+	in.ProxyNames = cur.ProxyNames
+	in.Proxies = cur.Proxies                           // set on its own (proxies), the password never sent to the page
 	in.RequestArchive = cur.RequestArchive             // the Gateway page's, set on its own
 	in.RequestArchiveMaxMB = cur.RequestArchiveMaxMB   // in settings.json only
 	in.ClaudeRunsMost = cur.ClaudeRunsMost             // magpie claude-code runs, or settings.json (#2956)
@@ -300,6 +312,7 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	in.RedactActions = cur.RedactActions               // set on their own (redact-actions)
 	in.RedactAllow = cur.RedactAllow                   // set on its own (redact-allow)
 	in.DisabledModels = cur.DisabledModels             // set on their own (disabled-models, #1867)
+	in.AgentTelemetryOff = cur.AgentTelemetryOff       // set on its own (agent-telemetry), which writes the agents' files
 	// the request archive on this computer: the archive's switch while no
 	// S3 bucket, and its size in settings.json only
 	in.RequestArchiveLocal, in.RequestArchiveLocalMB = cur.RequestArchiveLocal, cur.RequestArchiveLocalMB
@@ -323,16 +336,21 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	in.ClientAgents = cur.ClientAgents
 	// how agents' lists name models, set on its own for the agents to be told
 	in.PlainNames, in.PlainOwnNames = cur.PlainNames, cur.PlainOwnNames
+	in.AgentSuffix = cur.AgentSuffix   // and each agent's own (agent-suffix)
 	in.BareModelIDs = cur.BareModelIDs // set on its own (bare-ids)
 	in.BusyLoad = cur.BusyLoad         // and so is this (busy-load)
 	in.CodexAgentsV1 = cur.CodexAgentsV1
 	in.FullContext = cur.FullContext     // set on its own (full-context)
 	in.CompactAt = cur.CompactAt         // and so is the threshold
 	in.AgentCompacts = cur.AgentCompacts // and each agent's own (agent-compact)
+	in.ContextCap = cur.ContextCap       // and the longest window of every model (context-cap)
+	in.ContextCapAll = cur.ContextCapAll // and whether it holds the user's own windows
 	// Codex's background compaction, set on its own (codex-async-compact)
 	in.CodexAsyncCompact, in.CodexAsyncCompactPercent = cur.CodexAsyncCompact, cur.CodexAsyncCompactPercent
 	// Claude Desktop's list, set in its row on the Agents page
 	in.DesktopLongest = cur.DesktopLongest
+	// and whether it runs in a folder of its own, set there too (#5671)
+	in.DesktopIsolated = cur.DesktopIsolated
 	// and the Get started card put away, from the card itself
 	in.GuideHidden = cur.GuideHidden
 
@@ -345,6 +363,9 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	// in their Agents rows
 	in.CodexSubagentModel = cur.CodexSubagentModel
 	in.DesktopSubagentModel = cur.DesktopSubagentModel
+	in.CodexServiceTier = cur.CodexServiceTier // codex-service-tier
+	// and the model DeepSeek Harness compacts on, set in its row
+	in.DshCompactModel = cur.DshCompactModel
 	// and the model for requests masking would change (redact-route)
 	in.RedactRouteTo = cur.RedactRouteTo
 	in.DesktopSubagentEffort = cur.DesktopSubagentEffort
@@ -384,6 +405,9 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 		if _, _, ok := provider.Resolve(v); !ok {
 			return in, fmt.Errorf("no model %s to generate images", v)
 		}
+	}
+	if v := strings.TrimSpace(in.VideoGen); v != "" && v != cur.VideoGen && gateway.VideomakerMissingOf(v) != "" {
+		return in, fmt.Errorf("no model %s to make videos", v)
 	}
 	// the searchers after the one named, set in their own row: a save
 	// that doesn't send them (prefsKeep has none) keeps them, and an

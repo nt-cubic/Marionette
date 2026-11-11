@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
@@ -93,6 +94,7 @@ const modelUsage = `usage:
   magpie model enable <model> [<model>...]       take them off the disabled list, as written there
   magpie model disabled                          the disabled list, and the models each one turns off now
   magpie model suffix [on|own|off]               whether the agents' lists name each model with its provider
+  magpie model suffix <agent> [on|own|off|every] one agent's own, or every agent's again
                                                  (or "routing group") after it: on, as by default, "Sol · OpenAI";
                                                  own, a name you gave a model just as you wrote it, "Opus 5.5",
                                                  the others as on; off, "Sol" alone — but two a list would name
@@ -106,6 +108,12 @@ const modelUsage = `usage:
                                                  settings on the Agents page,
                                                  is the same switch; a provider's own Compact at (its
                                                  editor) comes before it
+  magpie model context-cap [<size>|off|all|own]  the longest context window any model is told, such as 200k:
+                                                 agents' lists and /v1/models say no more for every model
+                                                 that has no window of its own (magpie model context); a
+                                                 shorter or unknown window stays as it is. off takes it away;
+                                                 all also holds a window you set for a model or its
+                                                 provider (the shorter is told), own leaves those alone
   magpie model compact <agent> [every|off|<size>] codex, claude or grok's own Long conversations: every
                                                  follows the one above; off runs to the whole window; a
                                                  size compacts there
@@ -147,6 +155,8 @@ func modelCmd(args []string) error {
 		return modelSuffix(args[1:])
 	case "compact", "full-context":
 		return modelCompact(args[1:])
+	case "context-cap", "ctx-cap":
+		return modelContextCap(args[1:])
 	case "context", "ctx":
 		return modelContext(args[1:])
 	case "output", "max-output":
@@ -673,6 +683,11 @@ func modelPrices() error {
 // providers' after them, all but the names the user gave (#92), or none
 // (#335), or sets it.
 func modelSuffix(args []string) error {
+	if len(args) > 0 && !slices.Contains([]string{"on", "yes", "true", "own", "mine", "off", "no", "false"}, strings.ToLower(args[0])) {
+		if a, err := agent.Find(args[0]); err == nil {
+			return agentSuffix(a, args[1:])
+		}
+	}
 	if len(args) == 0 {
 		switch provider.SuffixMode() {
 		case provider.SuffixOff:
@@ -705,6 +720,38 @@ func modelSuffix(args []string) error {
 	default:
 		fmt.Println(green.Render("✓"), "agents' lists name each model with its provider again")
 	}
+	return nil
+}
+
+// agentSuffix says or sets an agent's own Provider in model names
+// (settings.AgentSuffix): every follows the one for every agent.
+func agentSuffix(a *agent.Agent, args []string) error {
+	id := a.ListsFor()
+	if len(args) == 0 {
+		mode := provider.SuffixModeFor(id)
+		if provider.AgentSuffix(id) == "" {
+			fmt.Println("every", muted.Render(fmt.Sprintf("· %s follows every agent's (%s) · magpie model suffix %s on|own|off", id, mode, id)))
+		} else {
+			fmt.Println(mode, muted.Render(fmt.Sprintf("· %s's own · magpie model suffix %s every", id, id)))
+		}
+		return nil
+	}
+	mode := ""
+	switch strings.ToLower(args[0]) {
+	case "every", "all", "default":
+	case "on", "yes", "true":
+		mode = provider.SuffixOn
+	case "own", "mine":
+		mode = provider.SuffixOwn
+	case "off", "no", "false":
+		mode = provider.SuffixOff
+	default:
+		return fmt.Errorf("magpie model suffix %s on|own|off|every, not %q", id, args[0])
+	}
+	if err := provider.SetAgentSuffix(id, mode); err != nil {
+		return err
+	}
+	fmt.Println(green.Render("✓"), id+":", provider.SuffixModeFor(id), muted.Render(map[bool]string{true: "· as every agent's", false: "· its own"}[mode == ""]))
 	return nil
 }
 
@@ -747,6 +794,51 @@ func modelCompact(args []string) error {
 		fmt.Println(green.Render("✓"), "Codex, Claude Code and Grok Build run a conversation to the model's whole window", muted.Render("· every turn sends all of it"))
 	} else {
 		fmt.Println(green.Render("✓"), fmt.Sprintf("Codex, Claude Code and Grok Build compact at %dK again", settings.Load().Compact()/1000))
+	}
+	return nil
+}
+
+// modelContextCap says or sets the longest context window any model is told
+// (settings.ContextCap).
+func modelContextCap(args []string) error {
+	if len(args) == 0 {
+		if n := settings.Load().ContextCap; n > 0 {
+			fmt.Println(bold.Render(tokenCount(n)), muted.Render(map[bool]string{true: "· no model is told a longer window, one you set for it or its provider included · magpie model context-cap own", false: "· no model is told a longer window, unless you set one for it or its provider · magpie model context-cap all"}[settings.Load().ContextCapAll]), muted.Render("· magpie model context-cap off"))
+		} else {
+			fmt.Println("off", muted.Render("· every model takes its own window · magpie model context-cap <size>"))
+		}
+		return nil
+	}
+	switch strings.ToLower(args[0]) {
+	case "all", "every":
+		if err := provider.SetContextCapAll(true); err != nil {
+			return err
+		}
+		fmt.Println(green.Render("✓"), "the longest context also holds a window you set for a model or a provider (the shorter is told)")
+		return nil
+	case "own", "unset":
+		if err := provider.SetContextCapAll(false); err != nil {
+			return err
+		}
+		fmt.Println(green.Render("✓"), "the longest context holds only models with no window of your own")
+		return nil
+	}
+	var n int
+	switch v := strings.ToLower(args[0]); v {
+	case "off", "no", "none", "0":
+	default:
+		var err error
+		if n, err = provider.ParseTokens(v); err != nil || n <= 0 {
+			return fmt.Errorf("magpie model context-cap <size such as 200k>|off, not %q", args[0])
+		}
+	}
+	if err := provider.SetContextCap(n); err != nil {
+		return err
+	}
+	if n == 0 {
+		fmt.Println(green.Render("✓"), "every model takes its own window again")
+	} else {
+		fmt.Println(green.Render("✓"), "no model is told a window longer than", tokenCount(n), muted.Render("· one you set for a model or a provider stays"))
 	}
 	return nil
 }

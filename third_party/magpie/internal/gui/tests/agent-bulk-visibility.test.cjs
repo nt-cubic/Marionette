@@ -29,7 +29,8 @@ for (const engine of process.env.BROWSER ? [process.env.BROWSER] : ['chromium', 
       await page.route('**/*', async (route) => {
         const req = route.request(), url = new URL(req.url());
         const json = (data) => route.fulfill({ json: data });
-        if (req.method() === 'POST') posts.push([url.pathname, req.postDataJSON()]);
+        // the window saying it is in use (update/using) is not the page's doing
+        if (req.method() === 'POST' && url.pathname !== '/api/update/using') posts.push([url.pathname, req.postDataJSON()]);
         if (url.pathname === '/boot.js') return route.fulfill({ contentType: 'text/javascript', body: `window.bootPrefs = ${JSON.stringify({lang, theme, web:true})};` });
         if (url.pathname === '/wails/runtime.js') return route.fulfill({ contentType: 'text/javascript', body: 'export const Window = {};' });
         if (url.pathname === '/api/state') return json(state);
@@ -75,6 +76,8 @@ for (const engine of process.env.BROWSER ? [process.env.BROWSER] : ['chromium', 
       await page.getByRole('button', { name: manage, exact: true }).click();
       const dialog = page.getByRole('dialog'), search = dialog.locator('input[type=search]');
       const button = (name) => dialog.getByRole('button', { name, exact: true });
+      // the dialog is in agentsmanager.js, loaded when Manage is pressed
+      await dialog.getByRole('checkbox').first().waitFor();
       assert.equal(await dialog.getByRole('checkbox').count(), 4, 'hidden and folded agents are manageable');
       // a name's text sits beside its icon, not at the row's far end (the
       // owner's screenshot: .editor label's right alignment reached the

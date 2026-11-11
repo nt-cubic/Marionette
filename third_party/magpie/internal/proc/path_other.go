@@ -5,7 +5,6 @@ package proc
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -152,6 +151,9 @@ func UserBinDirs() []string { return userDirs(true) }
 func userDirs(everyNode bool) []string {
 	home, _ := os.UserHomeDir()
 	var known []string
+	if d := bunBin(); d != "" {
+		known = append(known, d)
+	}
 	for _, d := range []string{".local/bin", ".npm-global/bin", ".npm/bin", ".bun/bin", ".volta/bin", ".asdf/shims", ".local/share/mise/shims", ".cargo/bin", ".deno/bin", "Library/pnpm"} {
 		known = append(known, filepath.Join(home, d))
 	}
@@ -315,7 +317,7 @@ func FindShell(name string) string {
 			}
 		}
 	}
-	p, _ := exec.LookPath(name)
+	p, _ := Look(name)
 	return p
 }
 

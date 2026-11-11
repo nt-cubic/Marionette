@@ -14,7 +14,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -23,6 +22,7 @@ import (
 
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/iconproxy"
+	"github.com/yetone/magpie/internal/lazyre"
 )
 
 // The market is where the page finds MCP servers and skills to add in one
@@ -99,6 +99,9 @@ var featured = []MarketServer{
 	browserServer(),
 	searchServer(),
 	visionServer(),
+	memoryServer(),
+	evermeServer(),
+	nowledgeServer(),
 	remoteServer("context7", "Context7", "Upstash", gh("upstash"), "https://mcp.context7.com/mcp",
 		"Up-to-date documentation and code examples for any library, straight into the prompt.", false,
 		Input{Key: "CONTEXT7_API_KEY", Where: "header", Label: "API key", Description: "Optional — raises the rate limit. From context7.com/dashboard", Secret: true, format: "{}"}),
@@ -172,12 +175,12 @@ const magpieCommand = "magpie"
 const selfServerName = "magpie-image"
 
 // selfServer is magpie's own image generation server: generate_image makes
-// an image with the model Settings → Images → Image generation names, saved
+// an image with the model Settings → Models → Images → Image generation names, saved
 // in the project. It costs what the model does, so it is given only to the
 // agents picked for it.
 func selfServer() MarketServer {
 	m := localServer(selfServerName, "Magpie Image", "Magpie", "https://usemagpie.ai/favicon.png", "https://usemagpie.ai",
-		"Generate and edit images with the image model set in Magpie (Settings → Images), and make short videos with a video model set up in Magpie (Grok Imagine, Seedance), saved in the project.", magpieCommand, []string{"mcp", "image"})
+		"Generate and edit images with the image model set in Magpie (Settings → Models → Images), and make short videos with a video model set up in Magpie (Grok Imagine, Seedance), saved in the project.", magpieCommand, []string{"mcp", "image"})
 	m.OptIn = true
 	return m
 }
@@ -234,6 +237,48 @@ func visionServer() MarketServer {
 	return m
 }
 
+// memoryServerName is the name Magpie Memory's server is written under,
+// the name the gateway's own memory server goes by (ownMCP).
+const memoryServerName = "magpie-memory"
+
+// memoryServer is Magpie Memory: what is known about the user, kept by
+// magpie for every agent, as memory_search, memory_save and memory_forget,
+// through `magpie mcp memory`, which passes each call to the gateway's
+// MemoryMCPPath with the folder the agent started it in. It is there to be
+// shared and costs nothing, so, unlike magpie's other servers, it is given
+// to every agent that can take it.
+func memoryServer() MarketServer {
+	return localServer(memoryServerName, "Magpie Memory", "Magpie", "https://usemagpie.ai/favicon.png", "https://usemagpie.ai",
+		"Memory shared by every agent: your preferences, rules and what each project needs, kept in Magpie. Agents search it before asking again, and save what you ask them to remember.", magpieCommand, []string{"mcp", "memory"})
+}
+
+// evermeServer is EverMe's memory (EverMind-AI/EverMe, @everme/memory-mcp,
+// the generic stdio server its README gives for any MCP host): mem_search,
+// mem_context, mem_save_fact and mem_save_turn against the EverMe backend.
+// The agent id and token are what `evercli auth login` and the EverMe
+// console issue (evt_...); the managed backend's address is the README's
+// own and EVERME_API_BASE can be edited for a self-hosted one (OipsAnthony
+// on X).
+func evermeServer() MarketServer {
+	m := localServer("everme-memory", "EverMe Memory", "EverMind", gh("EverMind-AI"), "https://github.com/EverMind-AI/EverMe",
+		"Cross-device, cross-agent memory from EverMe, as a second memory beside Magpie Memory: agents search it and save facts to it.", "npx", []string{"-y", "@everme/memory-mcp"},
+		Input{Key: "EVERME_AGENT_ID", Where: "env", Label: "Agent ID", Description: "agt_… , from EverMe (evercli auth login)", Placeholder: "agt_…", Required: true},
+		Input{Key: "EVERME_AGENT_TOKEN", Where: "env", Label: "Agent token", Description: "evt_… , never an emk_ account key", Placeholder: "evt_…", Secret: true, Required: true})
+	m.server.Env = map[string]string{"EVERME_API_BASE": "https://api.everme.evermind.ai"}
+	return m
+}
+
+// nowledgeServer is Nowledge Mem's own MCP endpoint, the Streamable HTTP
+// one Mem serves at 127.0.0.1:14242/mcp on the computer it runs on
+// (mem.nowledge.co/docs/integrations). A Mem reached through Access
+// Anywhere takes its API key in the Authorization header and its tunnel's
+// address, both edited after adding (OipsAnthony on X).
+func nowledgeServer() MarketServer {
+	return remoteServer("nowledge-mem", "Nowledge Mem", "Nowledge", gh("nowledge-co"), "http://127.0.0.1:14242/mcp",
+		"Nowledge Mem's graph memory, as a second memory beside Magpie Memory. Mem must be running on this computer; for a remote Mem, edit the address and add its API key.", false,
+		Input{Key: "Authorization", Where: "header", Label: "API key", Description: "Optional — only for a Mem reached over Access Anywhere", Placeholder: "nmem_…", Secret: true, format: "Bearer {}"})
+}
+
 // selfCommand is the server's command and env for this magpie: its binary
 // by full path, and the gateway's address when it isn't the default one.
 func selfCommand(s *Server) {
@@ -269,6 +314,7 @@ var homepages = map[string]string{
 	"cloudflare-docs": "https://github.com/cloudflare/mcp-server-cloudflare",
 	"microsoft-learn": "https://github.com/MicrosoftDocs/mcp",
 	"huggingface":     "https://huggingface.co/settings/mcp",
+	"nowledge-mem":    "https://mem.nowledge.co/docs/integrations",
 }
 
 func init() {
@@ -394,15 +440,21 @@ func serverKey(s *Server) string {
 	if s.Remote() {
 		return strings.TrimSuffix(strings.ToLower(s.URL), "/")
 	}
-	if len(s.Args) == 2 && s.Args[0] == "mcp" && (s.Args[1] == "image" || s.Args[1] == "browser" || s.Args[1] == "search" || s.Args[1] == "vision") {
+	if len(s.Args) == 2 && s.Args[0] == "mcp" && (s.Args[1] == "image" || s.Args[1] == "browser" || s.Args[1] == "search" || s.Args[1] == "vision" || s.Args[1] == "memory") {
 		return "magpie mcp " + s.Args[1] // magpie's own, wherever its binary is
 	}
-	for _, a := range s.Args {
+	uv := progName(s.Command) == "uvx"
+	for i := 0; i < len(s.Args); i++ {
+		a := s.Args[i]
+		if uv && a != "--from" && uvOpts[a] { // uvx -p 3.13: the value is not the package
+			i++
+			continue
+		}
 		if a == "" || strings.HasPrefix(a, "-") || a == "run" {
 			continue
 		}
-		if i := strings.LastIndex(a, "@"); i > 0 { // @scope/pkg@latest → @scope/pkg
-			a = a[:i]
+		if j := strings.LastIndex(a, "@"); j > 0 { // @scope/pkg@latest → @scope/pkg
+			a = a[:j]
 		}
 		return s.Command + " " + a
 	}
@@ -435,21 +487,7 @@ type registryServer struct {
 		URL     string        `json:"url"`
 		Headers []registryVar `json:"headers"`
 	} `json:"remotes"`
-	Packages []struct {
-		RegistryType string                `json:"registryType"`
-		Identifier   string                `json:"identifier"`
-		Transport    struct{ Type string } `json:"transport"`
-		Env          []registryVar         `json:"environmentVariables"`
-		Arguments    []struct {
-			Type        string `json:"type"`
-			Name        string `json:"name"`
-			Value       string `json:"value"`
-			Default     string `json:"default"`
-			ValueHint   string `json:"valueHint"`
-			Description string `json:"description"`
-			IsRequired  bool   `json:"isRequired"`
-		} `json:"packageArguments"`
-	} `json:"packages"`
+	Packages []registryPackage `json:"packages"`
 }
 
 type registryVar struct {
@@ -460,7 +498,7 @@ type registryVar struct {
 	IsSecret    bool   `json:"isSecret"`
 }
 
-var placeholderRe = regexp.MustCompile(`\{[^{}]*\}`)
+var placeholderRe = lazyre.New(`\{[^{}]*\}`)
 
 // listed is an active server the registry lists, as the market
 // offers it.
@@ -673,55 +711,23 @@ func fromRegistry(r *registryServer) (MarketServer, bool) {
 		}
 	}
 	for _, want := range []string{"npm", "pypi", "oci"} {
-		for _, p := range r.Packages {
+		for i, p := range r.Packages {
 			if p.RegistryType != want || p.Identifier == "" || (p.Transport.Type != "" && p.Transport.Type != "stdio") {
 				continue
 			}
-			s.Transport, m.Transport = "stdio", "stdio"
-			switch want {
-			case "npm":
-				s.Command, s.Args = "npx", []string{"-y", p.Identifier}
-			case "pypi":
-				s.Command, s.Args = "uvx", []string{p.Identifier}
-			case "oci":
-				s.Command, s.Args = "docker", []string{"run", "-i", "--rm"}
+			cmd, args, inputs, ok := launchLine(&r.Packages[i])
+			if !ok { // not a line magpie can start; another package may be
+				continue
 			}
-			m.Runs = s.Command
+			s.Transport, m.Transport = "stdio", "stdio"
+			s.Command, s.Args, m.Runs = cmd, args, cmd
 			for _, e := range p.Env {
 				if !e.IsRequired && !e.IsSecret {
 					continue
 				}
 				m.Inputs = append(m.Inputs, Input{Key: e.Name, Where: "env", Label: e.Name, Description: e.Description, Secret: e.IsSecret, Required: e.IsRequired})
-				if want == "oci" {
-					s.Args = append(s.Args, "-e", e.Name)
-				}
 			}
-			if want == "oci" {
-				s.Args = append(s.Args, p.Identifier)
-			}
-			for i, a := range p.Arguments {
-				v := a.Value
-				if v == "" {
-					v = a.Default
-				}
-				if placeholderRe.MatchString(v) {
-					v = ""
-				}
-				switch {
-				case v != "" && a.Type == "named":
-					s.Args = append(s.Args, a.Name, v)
-				case v != "":
-					s.Args = append(s.Args, v)
-				case a.IsRequired && a.Type != "named":
-					label := a.ValueHint
-					if label == "" {
-						label = fmt.Sprintf("Argument %d", i+1)
-					}
-					m.Inputs = append(m.Inputs, Input{Key: fmt.Sprintf("arg%d", i), Where: "arg", Label: label, Description: a.Description, Required: true})
-				case a.IsRequired:
-					return MarketServer{}, false // a named argument magpie can't fill
-				}
-			}
+			m.Inputs = append(m.Inputs, inputs...)
 			return m, true
 		}
 	}
@@ -959,7 +965,7 @@ var skillsShURL = "https://www.skills.sh"
 //go:embed market_skills.json
 var skillsSnapshot []byte
 
-var repoRe = regexp.MustCompile(`^[\w.-]+/[\w.-]+$`)
+var repoRe = lazyre.New(`^[\w.-]+/[\w.-]+$`)
 
 var popular = struct {
 	sync.Mutex
@@ -1353,7 +1359,7 @@ func (e *SearchError) Unwrap() error { return e.Err }
 // variable for tests.
 var retryPause = time.Second
 
-var metaDescRe = regexp.MustCompile(`<meta\s+name="description"\s+content="([^"]*)"`)
+var metaDescRe = lazyre.New(`<meta\s+name="description"\s+content="([^"]*)"`)
 
 // metaDescription is what a page's <meta name="description"> says.
 func metaDescription(page []byte) string {

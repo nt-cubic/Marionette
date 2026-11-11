@@ -63,6 +63,8 @@
     <span>magpie</span>
   </div>
   <h1 class="sr-only" id="pageTitle" data-t>Agents</h1>
+  <!-- back to the page a link into a setting came from (app.js jumpFrom) -->
+  <button type="button" class="icon nav-back" id="navBack" hidden data-tt style="--wails-draggable:no-drag"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M10 3.25 5.25 8 10 12.75" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
   <div class="crumb" id="crumb" aria-hidden="true" hidden></div>
   <nav class="seg" id="nav" aria-label="Main navigation" data-ta style="--wails-draggable:no-drag">
     <span class="nav-gl" data-t>Work</span>
@@ -72,7 +74,7 @@
     <span class="nav-gl" data-t>Models</span>
     <button data-view="providers"><svg class="nav-ic" viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="10" r="3"/><path d="M10 10h7M14 10v3M16.5 10v2"/></g></svg><span data-t>Providers</span></button>
     <button data-view="routing" data-feature="routing"><svg class="nav-ic" viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10h5l4-5h5M8 10l4 5h5M14.5 3l2.5 2-2.5 2M14.5 13l2.5 2-2.5 2"/></g></svg><span data-t>Routing</span></button>
-    <button data-view="groups" data-feature="routing"><svg class="nav-ic" viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="5" height="5" rx="1.2"/><rect x="11.5" y="3.5" width="5" height="5" rx="1.2"/><rect x="3.5" y="11.5" width="5" height="5" rx="1.2"/><path d="M14 11.5v5M11.5 14h5"/></g></svg><span data-t>Routing groups</span></button>
+    <button data-view="groups" data-feature="routing groups"><svg class="nav-ic" viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="5" height="5" rx="1.2"/><rect x="11.5" y="3.5" width="5" height="5" rx="1.2"/><rect x="3.5" y="11.5" width="5" height="5" rx="1.2"/><path d="M14 11.5v5M11.5 14h5"/></g></svg><span data-t>Routing groups</span></button>
     <button data-view="gateway" data-feature="gateway"><svg class="nav-ic" viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="14" height="5" rx="1.5"/><rect x="3" y="11" width="14" height="5" rx="1.5"/><path d="M6 6.5h.01M6 13.5h.01"/></g></svg><span data-t>Gateway</span></button>
     <span class="nav-gl" data-t>Insights</span>
     <button data-view="usage" data-feature="usage"><svg class="nav-ic" viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 16V9M8 16V5M12 16v-5M16 16V7"/></g></svg><span data-t>Usage</span></button>
@@ -233,6 +235,10 @@
         <div class="who"><div class="name" data-t>Open at login</div></div>
         <div id="loginSegs"></div>
       </div>
+      <div class="row pref app-only" id="gatewayPauseRow">
+        <div class="who"><div class="name" data-t>Gateway</div><div class="sub" data-t>Paused, agents are disconnected and use their own settings</div></div>
+        <div id="gatewayPauseSegs"></div>
+      </div>
       <div class="row pref app-only" id="quitAskRow">
         <div class="who"><div class="name" data-t>Ask before quitting</div><div class="sub" data-t>While agents go through magpie, Quit names them and asks first</div></div>
         <div id="quitAskSegs"></div>
@@ -285,7 +291,7 @@
         <div class="who"><div class="name" data-t>Menu bar pace</div><div class="sub" data-t>Each window's Pace number beside its figure, as on the Usage page: +12% is 12% more of the window used than an even pace would have used by now, −8% that much less</div></div>
         <div id="trayPaceSegs"></div>
       </div>
-      <div class="row pref" id="trayCostRow">
+      <div class="row pref app-only" id="trayCostRow">
         <div class="who"><div class="name" data-t>Menu bar cost</div><div class="sub" data-t>What magpie's requests cost, beside their tokens in the menu bar and its tooltip; off, the tokens alone</div></div>
         <div id="trayCostSegs"></div>
       </div>
@@ -293,7 +299,7 @@
         <div class="who"><div class="name" data-t>Tray icon number</div><div class="sub" data-t>The first allowance's figure as magpie's tray icon, used or left as Allowance display has it, every one when pointing at it; off, magpie's icon</div></div>
         <div id="trayNumberSegs"></div>
       </div>
-      <div class="row pref">
+      <div class="row pref" id="quotaLeftRow">
         <div class="who"><div class="name" data-t>Allowance display</div><div class="sub" data-t>How much of each window is used, or how much is left, on the Usage page, the panel and the menu bar</div></div>
         <div id="quotaLeftSegs"></div>
       </div>
@@ -309,6 +315,10 @@
         <div class="who"><div class="name" data-t>Number units</div><div class="sub" data-t>How a large count of tokens or requests is shortened on the Usage page and the panel</div></div>
         <div id="unitsSegs"></div>
       </div>
+      <div id="provPrefLinks"></div>
+    </div>
+    <div class="row-head" id="alertHead"><span class="label" data-t>Alerts</span></div>
+    <div class="list prefs" id="alertList">
       <div class="row pref" id="usageAlertRow">
         <div class="who"><div class="name" data-t>Allowance alert</div><div class="sub" id="usageAlertSub"></div></div>
         <div id="usageAlertSegs" class="warm-at"></div>
@@ -325,7 +335,14 @@
         <div class="who"><div class="name" data-t>Task done alert</div><div class="sub" id="turnDoneSub"></div></div>
         <div id="turnDoneSegs"></div>
       </div>
-      <div id="provPrefLinks"></div>
+      <div class="row pref" id="barkRow">
+        <div class="who"><div class="name" data-t>Bark</div></div>
+        <div id="barkBox" class="bark-box"></div>
+      </div>
+      <div class="row pref" id="barkDailyRow" hidden>
+        <div class="who"><div class="name" data-t>Bark daily summary</div></div>
+        <div id="barkDailySegs" class="warm-at"></div>
+      </div>
     </div>
   </section>
   <section class="set-page" id="setPage-network" role="tabpanel" aria-labelledby="setTab-network">
@@ -334,7 +351,13 @@
         <div class="who"><div class="name" data-t>Proxy</div><div class="sub" id="proxySub"></div></div>
         <div id="proxySegs" class="proxy-segs"></div>
       </div>
+      <div class="row pref" id="pluginProxyRow">
+        <div class="who"><div class="name" data-t>Plugin downloads</div><div class="sub" id="pluginProxySub"></div></div>
+        <div id="pluginProxySegs" class="proxy-segs"></div>
+      </div>
     </div>
+    <div class="row-head"><span class="label" data-t>Proxies</span></div>
+    <div class="list prefs" id="proxiesList"></div>
     <div class="row-head"><span class="label">GitHub</span></div>
     <div class="list prefs" id="githubList"></div>
     <div class="row-head"><span class="label" data-t>Gateway</span></div>
@@ -344,26 +367,39 @@
         <div class="who"><div class="name" data-t>Model ids without the provider</div><div class="sub" data-t>The gateway’s model list also names each model by its own id, as gpt-5.6-sol beside codex/gpt-5.6-sol, for apps moved from another proxy. One that several providers serve goes to them in the Providers order</div></div>
         <div id="bareIdsSegs"></div>
       </div>
-      <div class="row pref" id="busyLoadRow">
-        <div class="who"><div class="name" data-t>Busy models last</div><div class="sub" data-t>A model its plugin says is busier than this goes after the others a request could go to, as its vendor makes it wait. One with no load reported in the last 5 minutes keeps its place</div></div>
-        <div id="busyLoadSegs"></div>
-      </div>
     </div>
     <div class="row-head"><span class="label" data-t>Local network</span></div>
     <div class="list prefs" id="lanList"></div>
     <div class="list prefs" id="allowList"></div>
+    <div class="list prefs" id="mtlsList"></div>
+    <div class="list prefs" id="httpsList"></div>
     <div class="row-head"><span class="label" data-t>Web pages</span></div>
     <div class="list prefs" id="corsList"></div>
     <div class="row-head" id="webPageHead"><span class="label" data-t>Browser access</span></div>
     <div class="list prefs" id="webPageList"></div>
+    <div class="row-head" id="remoteHead"><span class="label" data-t>Another magpie</span></div>
+    <div class="list prefs" id="remoteList"></div>
   </section>
   <section class="set-page" id="setPage-models" role="tabpanel" aria-labelledby="setTab-models">
     <div class="row-head"><span class="label" data-t>Images</span></div>
     <div class="list prefs" id="imagesList"></div>
     <div class="row-head"><span class="label" data-t>Web search</span></div>
     <div class="list prefs" id="searchList"></div>
+    <div class="row-head"><span class="label" data-t>Quick check</span><span class="grow"></span><button type="button" class="text" id="pipeCheckAll" title="One real call each, at the provider's price" data-t data-tt>Test all</button></div>
+    <div class="list prefs" id="pipeCheckList"></div>
     <div class="row-head"><span class="label" data-t>Replies</span></div>
     <div class="list prefs" id="replyList"></div>
+    <div class="row-head"><span class="label" data-t>Routing</span></div>
+    <div class="list prefs" id="routeList">
+      <div class="row pref" id="busyLoadRow">
+        <div class="who"><div class="name" data-t>Busy models last</div><div class="sub" data-t>A model its plugin says is busier than this goes after the others a request could go to, as its vendor makes it wait. One with no load reported in the last 5 minutes keeps its place</div></div>
+        <div id="busyLoadSegs"></div>
+      </div>
+      <div class="row pref" id="contextCapRow">
+        <div class="who"><div class="name" data-t>Longest context</div></div>
+        <div class="val" id="contextCapVal"></div>
+      </div>
+    </div>
     <div class="row-head"><span class="label" data-t>Disabled models</span></div>
     <div class="list prefs" id="disabledModelsList"></div>
   </section>
@@ -408,7 +444,7 @@
   <button class="text" id="quit" data-t>Quit</button>
 </footer>
 
-<div class="modal" id="modal" hidden><div class="dialog"></div></div>
+<div class="modal" id="modal" hidden><div class="dialog"></div><div class="modal-grip" style="--wails-draggable:drag"></div></div>
 
 <div id="pop" class="pop" hidden>
   <div class="search">
@@ -454,6 +490,7 @@
       <div id="warmNowBox"></div>
     </div>
   </div>
+  <div class="list prefs" id="claudeRunList"></div>
   <div class="list prefs" id="claudeWarmList" data-feature="warmups">
     <div class="row pref">
       <div class="who"><div class="name" data-t>Warm up on reset</div><div class="sub" id="claudeWarmSub" title="Nothing is sent while the computer sleeps: a window that resets then starts when it wakes, and counts from then." data-tt></div></div>
@@ -512,6 +549,10 @@
     <div class="who"><div class="name" data-t>Codex background compaction</div><div class="sub" data-t>Codex 0.163 and later summarise while a turn goes on, past the share of the window typed (65% when empty); a value set in its own config stays</div></div>
     <div id="codexAsyncSegs"></div>
   </div>
+  <div class="row pref" id="codexServiceTierRow">
+    <div class="who"><div class="name" data-t>Codex service tier</div></div>
+    <div class="val" id="codexServiceTierPick"></div>
+  </div>
   <div class="row pref" id="codexTitlesRow">
     <div class="who"><div class="name" data-t>Codex thread titles</div></div>
     <div class="val" id="codexTitlesPick"></div>
@@ -560,6 +601,7 @@
 <script src="plugins/otel/page.js"></script>
 <script src="plugins/gateway/settings.js"></script>
 <script src="plugins/search/settings.js"></script>
+<script src="plugins/routing/settings.js"></script>
 <script src="plugins/sessions/settings.js"></script>
 <script src="plugins/redact/settings.js"></script>
 <script src="start.js"></script>

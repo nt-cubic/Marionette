@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -46,11 +47,28 @@ func dshListed(web, model string) bool {
 func TestDshRoundWithNothingChangedBuildsNothing(t *testing.T) {
 	r, web := dshSettled(t)
 	before, _ := os.ReadFile(web)
-	if n := testing.AllocsPerRun(10, func() { r.once() }); n > 300 {
-		t.Fatalf("a round with nothing changed made %.0f allocations", n)
-	}
+	few := testing.AllocsPerRun(10, func() { r.once() })
 	if after, _ := os.ReadFile(web); string(after) != string(before) {
 		t.Fatalf("a round with nothing changed wrote:\n%s", after)
+	}
+	// the bar is the same round over a few models, not a count: reading the
+	// files allocates differently on each system (421 on Windows CI against
+	// a fixed 300), while building the catalog grows with the models
+	models := []string{"pro", "flash"}
+	for i := range 400 {
+		models = append(models, fmt.Sprintf("m%d", i))
+	}
+	if err := provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com/v1", Key: "k", Models: models}); err != nil {
+		t.Fatal(err)
+	}
+	r.once()
+	r.once()
+	if !r.done {
+		t.Fatal("a round with nothing to write over 400 models is not kept")
+	}
+	many := testing.AllocsPerRun(10, func() { r.once() })
+	if many > few*1.5+50 {
+		t.Fatalf("a round with nothing changed made %.0f allocations over 402 models, %.0f over 2", many, few)
 	}
 }
 
@@ -126,4 +144,30 @@ func TestDshRoundAfterAChangeWritesAgain(t *testing.T) {
 			t.Fatal("models dshModelsFor old are not built again")
 		}
 	})
+}
+
+// A round that writes builds the catalog once, though it asks for public
+// and renamed refs of an auto start and for every route: outside a Hold
+// each of them built every provider's models again (158 MB in a real
+// account's first minute).
+func TestDshRoundBuildsTheCatalogOnce(t *testing.T) {
+	r, web := dshSettled(t)
+	b, _ := os.ReadFile(web)
+	start := strings.NewReplacer("model: deepseek/flash\n", "model: auto/nothing-listed\n", `model: "deepseek/flash"`, "model: auto/nothing-listed").Replace(string(b))
+	if !strings.Contains(start, "auto/nothing-listed") {
+		t.Fatalf("no start in the patch list:\n%s", b)
+	}
+	os.WriteFile(web, []byte(start), 0o644)
+	if err := provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com/v1", Key: "k", Models: []string{"pro", "flash", "max"}}); err != nil {
+		t.Fatal(err)
+	}
+	before := provider.EntriesBuilt()
+	r.once()
+	if !dshListed(web, "deepseek/max") {
+		t.Fatal("the round wrote no route")
+	}
+	t.Logf("%d catalog builds", provider.EntriesBuilt()-before)
+	if n := provider.EntriesBuilt() - before; n > 1 {
+		t.Fatalf("a round built the catalog %d times", n)
+	}
 }

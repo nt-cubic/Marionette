@@ -1062,6 +1062,7 @@ func startOn(ctx context.Context, bun string) (*host, bool, error) {
 	if err := os.MkdirAll(settings.Dir(), 0o700); err != nil {
 		return nil, false, err
 	}
+	catalog.Seed() // the shipped copy, read until models.dev answers
 	if catalog.Source() == "" {
 		// a plugin's provider has the models models.dev lists for it, as in
 		// OpenCode; sync in the background so starting the host never stalls
@@ -1916,6 +1917,10 @@ func forHost(choice string) string {
 	default:
 		if u, err := netproxy.Parse(c); err == nil {
 			return netproxy.ForBun(u.String())
+		}
+		if settings.IsProxyRef(c) {
+			// a saved proxy that is gone: the request goes nowhere, not direct
+			return netproxy.DeadProxy
 		}
 		return c
 	}

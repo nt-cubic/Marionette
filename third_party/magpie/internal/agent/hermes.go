@@ -33,9 +33,9 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -43,6 +43,7 @@ import (
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/dirent"
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/provider"
 	"gopkg.in/yaml.v3"
 )
@@ -245,7 +246,75 @@ func hermesIn(at place) *Agent {
 		}},
 	}
 	a.Fields = append(a.Fields, hermesProfileFields(at, dir)...)
+	a.through = func(prefix string) error { return hermesThrough(at, dir, path, prefix) }
 	return a
+}
+
+// HermesThrough points magpie's providers in Hermes's configs (a, Hermes)
+// at the gateway through prefix, an address a local proxy takes the
+// gateway's after (billion-context's http://127.0.0.1:8787/bili/), "" for
+// the gateway itself. Hermes must be on magpie already. bili's own plugin
+// for Hermes (bili plugin install hermes) sets HTTPS_PROXY in Hermes's
+// process and nothing else, so a provider at http://127.0.0.1 (magpie's)
+// never passes it; its docs' /bili/ prefix, which bili start answers,
+// takes any client whose address can be edited.
+func HermesThrough(a *Agent, prefix string) error {
+	if a == nil || a.ID != "hermes" || a.through == nil {
+		return fmt.Errorf("not Hermes")
+	}
+	return a.through(prefix)
+}
+
+// HermesURL is the base_url of magpie's provider in Hermes's connected
+// config (a, Hermes), "" without one.
+func HermesURL(a *Agent) string {
+	u, _ := edit.GetYAML(a.Path, "providers."+magpieID+".base_url")
+	return u
+}
+
+// hermesPrefix is the prefix magpie's entries in the config at path reach
+// the gateway behind: a local proxy's route on loopback before the
+// gateway's address (billion-context's http://127.0.0.1:8787/bili/,
+// HermesThrough), which a sync and a pick keep; "" when they go to the
+// gateway itself or anywhere else.
+func hermesPrefix(at place, path string) string {
+	gw := at.gw()
+	for _, name := range []string{magpieID, hermesAnthropicID} {
+		v, ok := edit.GetYAML(path, "providers."+name+".base_url")
+		if !ok {
+			continue
+		}
+		mode, _ := hermesModeIn(path, name)
+		p, ok := strings.CutSuffix(strings.TrimSuffix(strings.TrimSpace(v), "/"), hermesBase(gw, mode))
+		if ok && p != "" && loopbackWithPath(strings.TrimSuffix(p, "/")) {
+			return p
+		}
+	}
+	return ""
+}
+
+// hermesThrough is HermesThrough for Hermes at a place, connected in the
+// config at path (in dir): magpie's entries there and in every other
+// profile's config that has them go to the gateway through prefix.
+func hermesThrough(at place, dir, path, prefix string) error {
+	if edit.GetYAMLMap(path, "providers."+magpieID) == nil {
+		return fmt.Errorf("connect Hermes to magpie first: pick one of magpie's models for it on the Agents page")
+	}
+	var errs []error
+	for _, p := range append([]string{path}, hermesOthers(at, dir)...) {
+		var kvs []edit.KV
+		for _, name := range []string{magpieID, hermesAnthropicID} {
+			if edit.GetYAMLMap(p, "providers."+name) == nil {
+				continue
+			}
+			mode, _ := hermesModeIn(p, name)
+			kvs = append(kvs, edit.KV{Path: "providers." + name + ".base_url", Value: prefix + hermesBase(at.gw(), mode)})
+		}
+		if len(kvs) > 0 {
+			errs = append(errs, edit.SetYAML(p, kvs...))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // hermesProfileKey begins the key of a profile's model field
@@ -263,74 +332,124 @@ const hermesProfileKey = "profile:"
 // (hermesFollow). Unset puts back the model it had before magpie, and a
 // profile nobody picks for here keeps what it has.
 func hermesProfileFields(at place, dir string) []Field {
-	root := filepath.Clean(hermesRoot(at))
 	var out []Field
 	for _, p := range hermesOthers(at, dir) {
-		name := "default"
-		if d := filepath.Clean(filepath.Dir(p)); d != root {
-			name = filepath.Base(d)
-		}
-		k := "hermes:" + p + ":"
-		out = append(out, Field{
-			Key: hermesProfileKey + name, Label: name, Quiet: true,
-			Get: func() string {
-				m := hermesModelOf(p)
-				if m.Default != "" && hermesOurs(m.Provider) {
-					return magpieID + "/" + m.Default
+		name := hermesProfileName(at, p)
+		out = append(out, hermesProfileField(at, p, hermesProfileKey+name, name))
+	}
+	return out
+}
+
+// hermesProfileName is the name `hermes -p <name>` gives the profile whose
+// config is at p: "default" for the root's own.
+func hermesProfileName(at place, p string) string {
+	if d := filepath.Clean(filepath.Dir(p)); d != filepath.Clean(hermesRoot(at)) {
+		return filepath.Base(d)
+	}
+	return "default"
+}
+
+// hermesProfileField is the model field of the profile whose config is at
+// p, under key.
+func hermesProfileField(at place, p, key, label string) Field {
+	k := "hermes:" + p + ":"
+	return Field{
+		Key: key, Label: label, Quiet: true,
+		Get: func() string {
+			m := hermesModelOf(p)
+			if m.Default != "" && hermesOurs(m.Provider) {
+				return magpieID + "/" + m.Default
+			}
+			return m.Default
+		},
+		Set: func(v string) error {
+			cur := hermesModelOf(p)
+			if ref, ok := strings.CutPrefix(v, magpieID+"/"); ok && isMagpie(ref) {
+				if !hermesOurs(cur.Provider) {
+					stash(map[string]string{k + "model.provider": cur.Provider, k + "model.default": cur.Default})
 				}
-				return m.Default
-			},
-			Set: func(v string) error {
-				cur := hermesModelOf(p)
-				if ref, ok := strings.CutPrefix(v, magpieID+"/"); ok && isMagpie(ref) {
-					if !hermesOurs(cur.Provider) {
-						stash(map[string]string{k + "model.provider": cur.Provider, k + "model.default": cur.Default})
+				if err := hermesPut(at, p, true); err != nil {
+					return err
+				}
+				if err := edit.SetYAML(p,
+					edit.KV{Path: "model.provider", Value: hermesRoute(p, ref)},
+					edit.KV{Path: "model.default", Value: ref},
+				); err != nil {
+					return err
+				}
+				stash(map[string]string{k + "picked": ref})
+				return nil
+			}
+			forget(k + "picked")
+			if hermesOurs(cur.Provider) {
+				// back to the provider and model it had before magpie
+				var del []string
+				var kvs []edit.KV
+				for _, f := range []string{"model.provider", "model.default"} {
+					if was := unstash(k + f); was != "" {
+						kvs = append(kvs, edit.KV{Path: f, Value: was})
+					} else {
+						del = append(del, f)
 					}
-					if err := hermesPut(at, p, true); err != nil {
+				}
+				if len(del) > 0 {
+					if err := edit.DelYAML(p, del...); err != nil {
 						return err
 					}
-					if err := edit.SetYAML(p,
-						edit.KV{Path: "model.provider", Value: hermesRoute(p, ref)},
-						edit.KV{Path: "model.default", Value: ref},
-					); err != nil {
+				}
+				if len(kvs) > 0 {
+					if err := edit.SetYAML(p, kvs...); err != nil {
 						return err
 					}
-					stash(map[string]string{k + "picked": ref})
-					return nil
 				}
-				forget(k + "picked")
-				if hermesOurs(cur.Provider) {
-					// back to the provider and model it had before magpie
-					var del []string
-					var kvs []edit.KV
-					for _, f := range []string{"model.provider", "model.default"} {
-						if was := unstash(k + f); was != "" {
-							kvs = append(kvs, edit.KV{Path: f, Value: was})
-						} else {
-							del = append(del, f)
-						}
-					}
-					if len(del) > 0 {
-						if err := edit.DelYAML(p, del...); err != nil {
-							return err
-						}
-					}
-					if len(kvs) > 0 {
-						if err := edit.SetYAML(p, kvs...); err != nil {
-							return err
-						}
-					}
+			}
+			// unset: the profile keeps its own model, which Hermes
+			// needs to start there
+			if v == "" {
+				return nil
+			}
+			return edit.SetYAML(p, edit.KV{Path: "model.default", Value: v})
+		},
+		Options: func(cur map[string]string) []Option {
+			return withVia(ownOptions("", cur[key]), "hermes", magpieID+"/")
+		},
+	}
+}
+
+// hermesProfileAgents are Hermes's other profiles as agents of their own,
+// hermes#<name> (the way omp's are omp#<name>): each has its own
+// config.yaml with its model and its mcp_servers and its own skills folder,
+// none of which the connected profile's reach, so the Library gives its
+// skills and servers to each profile apart (Norethcy on X: only model
+// picks reached the other profiles). The row is the profile's model
+// picker; the connected profile keeps the default row. None while Hermes
+// itself isn't here: a leftover folder is no agent.
+func hermesProfileAgents(home string) []*Agent {
+	at := here(home)
+	main := hermesIn(at)
+	if !main.Detected() || main.CLIMissing() {
+		return nil
+	}
+	var out []*Agent
+	for _, p := range hermesOthers(at, main.Dir) {
+		name := hermesProfileName(at, p)
+		dir := filepath.Dir(p)
+		out = append(out, &Agent{
+			ID: "hermes#" + name, Name: "Hermes · " + name, Icon: "hermes",
+			Spelled: prefixed, NoNames: true,
+			Dir: dir, Path: p,
+			Fields: []Field{func() Field {
+				f := hermesProfileField(at, p, "model", "model")
+				f.Quiet = false
+				return f
+			}()},
+			Notice: func() string {
+				if Running(`(^|/)hermes( |$)`) {
+					return noticeHermes.String()
 				}
-				// unset: the profile keeps its own model, which Hermes
-				// needs to start there
-				if v == "" {
-					return nil
-				}
-				return edit.SetYAML(p, edit.KV{Path: "model.default", Value: v})
+				return ""
 			},
-			Options: func(cur map[string]string) []Option {
-				return withVia(ownOptions("", cur[hermesProfileKey+name]), "hermes", magpieID+"/")
-			},
+			detect: func() bool { return isDir(dir) },
 		})
 	}
 	return out
@@ -338,7 +457,7 @@ func hermesProfileFields(at place, dir string) []Field {
 
 // hermesProfileID is the name a Hermes profile may have
 // (hermes_constants.PROFILE_ID_RE).
-var hermesProfileID = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+var hermesProfileID = lazyre.New(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
 // hermesProfiles is the config.yaml of each of Hermes's own profiles (its
 // bots), as Hermes lists them (hermes_cli/profiles.py): the root's own, and
@@ -735,10 +854,12 @@ func hermesRoute(path, ref string) string {
 // entry's api_mode the user set stays, and its address follows it.
 func hermesEntries(at place, path string) [][2]any {
 	gw := at.gw()
+	// a local proxy's prefix the entries go through stays (HermesThrough)
+	pre := hermesPrefix(at, path)
 	anth, split := hermesSplit(path)
 	chat := hermesProviderAt(gw)
 	mode, _ := hermesModeIn(path, magpieID)
-	chat.APIMode, chat.BaseURL = mode, hermesBase(gw, mode)
+	chat.APIMode, chat.BaseURL = mode, pre+hermesBase(gw, mode)
 	if split {
 		chat.Models = slices.DeleteFunc(chat.Models, func(id string) bool { return slices.Contains(anth, id) })
 	}
@@ -748,7 +869,7 @@ func hermesEntries(at place, path string) [][2]any {
 	}
 	mode, _ = hermesModeIn(path, hermesAnthropicID)
 	e := hermesProviderAt(gw)
-	e.Name, e.APIMode, e.BaseURL, e.Models = hermesAnthropicID, mode, hermesBase(gw, mode), anth
+	e.Name, e.APIMode, e.BaseURL, e.Models = hermesAnthropicID, mode, pre+hermesBase(gw, mode), anth
 	// the key as "magpie" has it: a reference to a variable the user
 	// keeps there goes into this one too
 	e.APIKey = hermesKeptKey(at, path, magpieID, e.APIKey)
@@ -842,12 +963,12 @@ func hermesKept(at place, path, name string, e hermesProviderEntry) any {
 // hermesEnvRef is a reference in a value of Hermes's config.yaml, which
 // Hermes expands as it loads it: ${VAR}, or ${env:VAR}
 // (hermes_cli/config.py _ENV_REF_RE, _env_expand_match).
-var hermesEnvRef = regexp.MustCompile(`\$\{([^}]+)\}`)
+var hermesEnvRef = lazyre.New(`\$\{([^}]+)\}`)
 
 // hermesSecretSource starts a reference to a secret source other than the
 // environment (${vault:...}, ${bitwarden:...}), which Hermes leaves as it
 // is in config.yaml (_is_non_env_secret_ref).
-var hermesSecretSource = regexp.MustCompile(`^[a-z][a-z0-9_-]*:`)
+var hermesSecretSource = lazyre.New(`^[a-z][a-z0-9_-]*:`)
 
 // hermesRefVar is the variable the body of a reference reads, "" for
 // another source or an empty ${env:} (_env_ref_var_name).

@@ -37,6 +37,18 @@ func lineWith(out, s string) string {
 	return ""
 }
 
+// labelled is the line of a provider's show that label heads, "" when none
+// does: "as" is the impersonated account's label, where " as " is in
+// "billing  pay as you go" too.
+func labelled(out, label string) string {
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), label+" ") {
+			return l
+		}
+	}
+	return ""
+}
+
 // magpie provider add google-vertex takes the project, location, credentials
 // file and service account as pairs, set changes them (an empty one goes
 // back to the default), and none of them is taken by a provider that isn't
@@ -93,10 +105,10 @@ func TestProviderAddVertexPairs(t *testing.T) {
 		t.Fatalf("emptied %+v, want %+v", v, want)
 	}
 
-	// its address is its project's: one given is refused, not dropped, and
+	// a base URL is for an API key: without one it is refused, not dropped, and
 	// a region, as Google Cloud calls one, is its location
-	if err := providerCmd([]string{"provider", "set", "google-vertex", "url=https://relay.example.com/v1"}); err == nil || !strings.Contains(err.Error(), "project= and location=") {
-		t.Fatalf("url= on Vertex AI: %v", err)
+	if err := providerCmd([]string{"provider", "set", "google-vertex", "url=https://relay.example.com/v1"}); err == nil || !strings.Contains(err.Error(), "base URL is for an API key") {
+		t.Fatalf("url= on Vertex AI without a key: %v", err)
 	}
 	if err := providerCmd([]string{"provider", "set", "google-vertex", "region=us-central1"}); err == nil || !strings.Contains(err.Error(), "location=") {
 		t.Fatalf("region= on Vertex AI: %v", err)
@@ -139,21 +151,22 @@ func TestProviderAddVertexPairs(t *testing.T) {
 		t.Fatal("DeepSeek was added with a project")
 	}
 
-	// a key: neither as add's second word nor through provider key
-	err = providerCmd([]string{"provider", "add", "google-vertex", "my-project"})
-	if err == nil || !strings.Contains(err.Error(), "not an API key") || !strings.Contains(err.Error(), "project=") {
+	// a key is express mode: Gemini models, no project
+	if err := providerCmd([]string{"provider", "add", "google-vertex", "AQ.Ab8RN6-express"}); err != nil {
 		t.Fatalf("add with a key: %v", err)
 	}
-	if _, err := provider.Find("google-vertex-2"); err == nil {
-		t.Fatal("added a second Vertex AI with a key")
+	if p := mustFind(t, "google-vertex-2"); p.Key != "AQ.Ab8RN6-express" || !p.VertexExpress() {
+		t.Fatalf("express: key %q, %+v", p.Key, p.Vertex)
 	}
-	out, err = printed(t, func() error { return providerCmd([]string{"provider", "key", "google-vertex", "AIzaSy-test"}) })
-	if err == nil || !strings.Contains(err.Error(), "Google credentials") ||
-		!strings.Contains(err.Error(), "magpie provider set google-vertex credentials=") {
-		t.Fatalf("provider key: %v", err)
+	if err := providerCmd([]string{"provider", "set", "google-vertex-2", "url=proxy.example.com"}); err != nil {
+		t.Fatalf("url: %v", err)
 	}
-	if strings.Contains(out, "✓") || mustFind(t, "google-vertex").Key != "" {
-		t.Fatalf("provider key said %q and kept %q", out, mustFind(t, "google-vertex").Key)
+	if p := mustFind(t, "google-vertex-2"); p.Vertex == nil || p.Vertex.BaseURL != "https://proxy.example.com" {
+		t.Fatalf("url kept %+v", p.Vertex)
+	}
+	out, err = printed(t, func() error { return providerCmd([]string{"provider", "key", "google-vertex", "AQ.Ab8RN6-second"}) })
+	if err != nil || mustFind(t, "google-vertex").Key != "AQ.Ab8RN6-second" {
+		t.Fatalf("provider key: %v %q", err, out)
 	}
 }
 
@@ -201,19 +214,19 @@ func TestProvidersShowVertexCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	for label, want := range map[string]string{"project": "my-project", "location": "global", "signs with": "gcloud's Application Default Credentials"} {
-		if !strings.Contains(lineWith(out, label), want) {
+		if !strings.Contains(labelled(out, label), want) {
 			t.Errorf("show, ADC: no %s %s in\n%s", label, want, out)
 		}
 	}
-	if strings.Contains(out, "none needed") || strings.Contains(out, "not set") || lineWith(out, " as ") != "" {
+	if strings.Contains(out, "none needed") || strings.Contains(out, "not set") || labelled(out, "as") != "" {
 		t.Errorf("show, ADC:\n%s", out)
 	}
 	out, err = printed(t, func() error { return providerCmd([]string{"provider", "vertex-sa"}) })
 	if err != nil {
 		t.Fatal(err)
 	}
-	for label, want := range map[string]string{"location": "us-central1", "signs with": key, " as ": "vertex@my-project.iam.gserviceaccount.com"} {
-		if !strings.Contains(lineWith(out, label), want) {
+	for label, want := range map[string]string{"location": "us-central1", "signs with": key, "as": "vertex@my-project.iam.gserviceaccount.com"} {
+		if !strings.Contains(labelled(out, label), want) {
 			t.Errorf("show, impersonating: no %s %s in\n%s", label, want, out)
 		}
 	}

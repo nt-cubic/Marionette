@@ -26,7 +26,6 @@ import (
 	"log"
 	"math"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -37,6 +36,7 @@ import (
 
 	"github.com/yetone/magpie/internal/beat"
 	"github.com/yetone/magpie/internal/filememo"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/routes"
 	"github.com/yetone/magpie/internal/usage"
@@ -52,7 +52,7 @@ var (
 	usageQueue = 1024
 )
 
-var strategyName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+var strategyName = lazyre.New(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // strat is one strategy a module exports.
 type strat struct {
@@ -195,7 +195,7 @@ func (m *mw) routing(n string) string {
 	return short + "/" + n
 }
 
-var badPrefix = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
+var badPrefix = lazyre.New(`[^A-Za-z0-9._-]+`)
 
 // seatJSON is a routes.Seat as a strategy is given it.
 type seatJSON struct {
@@ -362,8 +362,8 @@ func Points() usage.Observer { return &observer{} }
 
 type observer struct {
 	mu      sync.Mutex
-	queue   chan usage.Record
-	using   atomic.Bool // the set served has an onUsage
+	queue   chan *usage.Record // a pointer each: a 1024-row queue of Records held ~1 MB from the start, for every user, with or without an onUsage
+	using   atomic.Bool        // the set served has an onUsage
 	serving *set
 	removes []func()
 }
@@ -384,7 +384,7 @@ func (o *observer) Ledger(r usage.Record) {
 		return
 	}
 	select {
-	case q <- r:
+	case q <- &r:
 	default:
 		for _, m := range s.list {
 			if m.hasUse {
@@ -400,7 +400,7 @@ func (o *observer) Ledger(r usage.Record) {
 // Serve registers the strategies of the modules loaded and keeps them as
 // the modules load again, and gives onUsage its rows, until stop.
 func (o *observer) Serve() (stop func()) {
-	q := make(chan usage.Record, usageQueue)
+	q := make(chan *usage.Record, usageQueue)
 	done := make(chan struct{})
 	var wg sync.WaitGroup
 	o.mu.Lock()
@@ -443,7 +443,7 @@ func (o *observer) Serve() (stop func()) {
 				if time.Since(priced) > 5*time.Minute {
 					cost, priced = usage.NewCoster(), time.Now()
 				}
-				b, err := json.Marshal(rowOf(r, cost))
+				b, err := json.Marshal(rowOf(*r, cost))
 				if err != nil {
 					continue
 				}

@@ -58,6 +58,15 @@ magpie.plugin("sessions", (ctx) => {
   const MAX_DEPTH = 8;
   let loading = 0;
   let fitObserver = null;
+  // Each session's output speed as the gateway counts it (/api/speeds,
+  // gateway/session_speed.go), by "agent|session", read once a second
+  // while the page is in sight and drawn on its rows: a curve of the last
+  // two minutes, tokens a second now, and the round's numbers in a
+  // popover. A session the gateway hasn't served lately has none.
+  let speeds = new Map();
+  let speedT = 0;
+  let speedBusy = false;
+  let speedPop = null;    // { anchor, draw } of the popover open
   let focus = null;           // { agent, id, until }: a session to bring into sight once drawn
   let recordingBusy = false;
   // the agents picked in the consent (RustCats on X), by id, and whether
@@ -86,15 +95,36 @@ magpie.plugin("sessions", (ctx) => {
   // another config folder): such sessions are grouped by that, not under
   // "No folder" with the agent's own (lc on Discord).
   const GW = "\x00gateway";
-  const groupOf = (s) => s.cwd || (s.gateway ? GW : "");
-  const groupName = (k) => k === GW ? t("Seen through the gateway") : k ? baseName(k) : t("No folder");
+  // A session its agent ran with no project of its own, in a folder the
+  // agent made for that one session: ZCode keeps ~/.zcode/workspace/
+  // draft-<id> or <ms>-<uuid> (its host, 3.17.2), one for each session
+  // started without a project.
+  // One "folder" each was 40 folders of one session, and they are no
+  // projects of the reader's (flandern1211_58540 on Discord): one group of
+  // their own, not "No folder", keeps them apart from sessions whose agent
+  // recorded no folder.
+  const DRAFTS = "\x00drafts";
+  const zcodeDraft = (s) => {
+    const home = (data?.home || "").replace(/\\/g, "/").replace(/\/+$/, "");
+    if (!s.cwd) return false;
+    const c = s.cwd.replace(/\\/g, "/");
+    // Codex Desktop makes ~/Documents/Codex/<date>/<name> for every chat
+    // started without a project (its outputs/ and work/), and Codex also
+    // runs in temp folders and worktrees
+    if (s.agent === "codex") return /\/Documents\/Codex\/\d{4}-\d{2}-\d{2}\//i.test(c) || scratch(s.cwd);
+    if (!home || s.agent !== "zcode") return false;
+    return c === home + "/.zcode/workspace" || c.startsWith(home + "/.zcode/workspace/");
+  };
+  const groupOf = (s) => zcodeDraft(s) ? DRAFTS : s.cwd || (s.gateway ? GW : "");
+  const groupName = (k) => k === GW ? t("Seen through the gateway")
+    : k === DRAFTS ? t("Draft sessions") : k ? baseName(k) : t("No folder");
 
   // A folder an app or the system made, not a project of the reader's: the
   // disk's root, a temp folder, or one under a hidden folder of a home
   // (~/.some-agent/…). They go under a fold of their own after the
   // projects (yetone: "/", "T" and folders named by UUIDs led the list).
   const scratch = (k) => {
-    if (!k || k === GW) return false;
+    if (!k || k === GW || k === DRAFTS) return false;
     const p = k.replace(/\\/g, "/").replace(/\/+$/, "");
     return p === "" || /^[a-z]:$/i.test(p)
       || /^\/(private\/)?(tmp|var\/tmp|var\/folders)(\/|$)/.test(p)
@@ -155,7 +185,7 @@ magpie.plugin("sessions", (ctx) => {
       if (n !== loading) return;
       failed = e.message;
     }
-    if (view === "sessions") draw();
+    if (view === "sessions") { draw(); speedsOn(); }
     if (n === loading) fillSoon();
   }
 
@@ -268,22 +298,31 @@ magpie.plugin("sessions", (ctx) => {
     const wrap = page.querySelector(".sm-switch");
     const tabs = wrap.querySelector(".sm-agents");
     const pick = wrap.querySelector(".sm-agent-pick");
+    const filter = page.querySelector(".sm-filter");
     const fit = () => {
+      filter.style.flexBasis = "";
       const room = parseFloat(getComputedStyle(wrap).width);
       if (!room) return;
       const focused = document.activeElement;
       // Measure the actual labels, including language, font and text zoom,
       // rather than guessing a breakpoint or a number of agents.
       tabs.hidden = false;
-      const compact = tabs.scrollWidth > Math.floor(room);
+      // the search gives way to the tabs, down to its least, before the menu
+      // takes them (Settings › came into the head beside them)
+      // (a narrow window's head is a grid, where it can't)
+      const over = tabs.scrollWidth - Math.floor(room);
+      const fw = getComputedStyle(filter.parentElement).display === "flex" ? filter.offsetWidth : 0;
+      const compact = over > 0 && (!fw || fw - over < 110);
+      if (over > 0 && !compact) filter.style.flexBasis = Math.ceil(fw - over) + "px";
       tabs.hidden = compact || !data?.agents.length;
       pick.hidden = !compact || !current();
       if (!compact && pick.classList.contains("open")) closeProtoMenu();
       if (compact && tabs.contains(focused)) pick.focus({ preventScroll: true });
       else if (!compact && focused === pick) tabs.querySelector(".on")?.focus({ preventScroll: true });
     };
+    // the head, not the tabs' box, which the search's width changes
     fitObserver = new ResizeObserver(fit);
-    fitObserver.observe(wrap);
+    fitObserver.observe(page.querySelector(".sm-head"));
     fit();
     if (keepFocus) (pick.hidden ? tabs.querySelector(".on") : pick)?.focus({ preventScroll: true });
   }
@@ -496,8 +535,15 @@ magpie.plugin("sessions", (ctx) => {
     tr.setAttribute("aria-pressed", String(trashOn));
     tr.append(svg(TRASH, 13, 1.4), el("span", "", t("Trash")));
     if (data?.trash.length) tr.append(el("em", "", String(data.trash.length)));
-    tr.onclick = () => { trashOn = !trashOn; selecting = false; picked.clear(); draw(); };
-    h.append(q, sel, tr);
+    tr.onclick = () => { trashOn = !trashOn; selecting = false; picked.clear(); draw(); speedsOn(); };
+    // which agents' history is read is Settings › Privacy's (the scattered
+    // settings audit after netube99 on X); gateway mode reads none there
+    const go = el("button", "text sm-toset");
+    go.type = "button";
+    go.append(el("span", "", t("Settings")), " ›");
+    go.hidden = !!data?.reads?.gateway;
+    go.onclick = (e) => openSettingsAt(e, "privacy", "#sessionReadsList .row");
+    h.append(q, sel, tr, go);
     return h;
   }
 
@@ -559,7 +605,10 @@ magpie.plugin("sessions", (ctx) => {
 
   function providerBar() {
     if (data.agent !== "codex") return null;
-    const hidden = data.sessions.filter(otherProvider);
+    // Codex's own threads only: its review and title threads (role
+    // subagent) never show in its history, so they are no conversations
+    // to move
+    const hidden = data.sessions.filter((s) => otherProvider(s) && s.role !== "subagent");
     const undo = lastMove?.agent === data.agent && lastMove.moved.length ? lastMove : null;
     if (!hidden.length && !undo) return null;
     const bar = el("div", "row sm-provider");
@@ -728,7 +777,7 @@ magpie.plugin("sessions", (ctx) => {
       openedFor = data.agent;
       opened.clear();
       drawnIn.clear();
-      const first = list.find((s) => !scratch(groupOf(s))) || list[0];
+      const first = list.find((s) => !scratch(groupOf(s)) && groupOf(s) !== DRAFTS) || list[0];
       if (first) opened.add(groupOf(first));
     }
     nest(list);
@@ -755,11 +804,19 @@ magpie.plugin("sessions", (ctx) => {
       return;
     }
     const q = query.trim();
-    // the projects in one list, and the folders apps and the system made
-    // folded under them
-    const all = [...groups].filter(([k]) => !scratch(k));
+    // the projects in one list, the folders apps and the system made
+    // folded under them, and the folders agents made one session each
+    // (DRAFTS) after the projects: they are no projects, but the reader
+    // looks for the sessions in them, so not folded away either
+    const all = [...groups].filter(([k]) => !scratch(k) && k !== DRAFTS);
     const rest = [...groups].filter(([k]) => scratch(k));
-    if (all.length) tree.append(folderList(el("div", "list sm-folders"), all, FOLDERS, q));
+    const temp = groups.get(DRAFTS);
+    if (all.length || temp) {
+      const box = el("div", "list sm-folders");
+      if (all.length) folderList(box, all, FOLDERS, q);
+      if (temp) box.append(folder(DRAFTS, temp, q));
+      tree.append(box);
+    }
     if (rest.length) tree.append(othersBox(rest, q));
     toFocus();
   }
@@ -877,7 +934,7 @@ magpie.plugin("sessions", (ctx) => {
     const fold = el("button", "fold");
     fold.type = "button";
     fold.setAttribute("aria-expanded", String(open));
-    const path = cwd === GW ? "" : cwd;
+    const path = cwd === GW || cwd === DRAFTS ? "" : cwd;
     const line = el("span", "sm-fline");
     line.append(el("span", "name", groupName(cwd)));
     const where = path ? whereOf(path) : "";
@@ -896,7 +953,7 @@ magpie.plugin("sessions", (ctx) => {
     when.append(el("span", "note", t(members.length === 1 ? "{n} session" : "{n} sessions", { n: members.length })));
     r.append(fold, when);
     const acts = [];
-    const allInFolder = (data.sessions || []).filter((s) => s.cwd === cwd);
+    const allInFolder = (data.sessions || []).filter((s) => groupOf(s) === cwd);
     if (data.agent === "claude" && path && allInFolder.every((s) => !s.read_only && !s.gateway)
       && new Set(allInFolder.map((s) => s.wsl || "")).size === 1) {
       acts.push({ name: "Relocate project", icon: MOVE, run: () => askRelocate(cwd, allInFolder[0].wsl || "") });
@@ -917,7 +974,7 @@ magpie.plugin("sessions", (ctx) => {
         openRowMenu(more, acts);
       };
       r.append(more);
-      r.oncontextmenu = (e) => { e.preventDefault(); openRowMenu(more, acts); };
+      r.oncontextmenu = (e) => { e.preventDefault(); openRowMenu(more, acts, { x: e.clientX, y: e.clientY }); };
     } else r.append(folderSlot());
 
     r.title = path;
@@ -1013,10 +1070,14 @@ magpie.plugin("sessions", (ctx) => {
       sub.prepend(p, " ");
     }
     who.append(sub);
+    // a draft session's folder is a name its agent made: the row says
+    // nothing of it otherwise (the group of them is one)
+    if (zcodeDraft(s)) r.title = s.cwd;
     const hit = hitOf(s);
     if (hit) who.append(hitLine(hit));
     // what it spent, as the Usage page's list shows it
     r.append(who, ...sessSpent(s));
+    r.append(speedCell(s));
     const lane = lanes();
     if (s.resume) {
       const res = el("button", "sess-resume", t("Resume"));
@@ -1454,7 +1515,7 @@ magpie.plugin("sessions", (ctx) => {
       : folders ? t("Delete all {n} sessions in {k} folders?", { n: list.length, k: folders })
       : t("Delete {n} sessions?", { n: list.length })));
     ed.append(h);
-    if (folder && folder !== GW) ed.append(el("p", "sub sm-ask-path", folder));
+    if (folder && folder !== GW && folder !== DRAFTS) ed.append(el("p", "sub sm-ask-path", folder));
     const names = el("ul", "sm-ask-list");
     for (const s of list.slice(0, 5)) names.append(el("li", "", s.title || s.id));
     if (list.length > 5) names.append(el("li", "more", t("+{n} more", { n: list.length - 5 })));
@@ -1610,6 +1671,154 @@ magpie.plugin("sessions", (ctx) => {
     if (items.some((x) => x.gateway)) out.push(el("p", "usage-note sm-gw-trash-note", t("Conversations magpie recorded through the gateway still expire after 7 days here, and Delete saved conversations… erases them too.")));
     return out;
   }
+
+  // speedOf is the speed of a row's session: of any of the keys the
+  // gateway may know it by (s.keys, sessions.GatewayKeys), the one in
+  // flight, else the one heard from last
+  function speedOf(s) {
+    let best = null;
+    for (const k of [s.agent + "|" + s.id, ...(s.keys || [])]) {
+      const sp = speeds.get(k);
+      if (sp && (!best || sp.live && !best.live || sp.live === best.live && sp.idle < best.idle)) best = sp;
+    }
+    return best;
+  }
+  const rateText = (v) => String(Math.round(v));
+  // rateParts is "{n} tok/s" in the reader's language, in the parts around n
+  const rateParts = () => t("{n} tok/s", { n: "\u0000" }).split("\u0000");
+  const NS = "http://www.w3.org/2000/svg";
+  function sv(tag, attrs) {
+    const n = document.createElementNS(NS, tag);
+    for (const k in attrs) n.setAttribute(k, attrs[k]);
+    return n;
+  }
+  // curveShape lays a curve (a value a second, null where nothing of the
+  // session's was in flight) on a 300-wide box h high: the runs of seconds
+  // with a value, the gaps between two runs, and where the last value is
+  function curveShape(curve, h) {
+    const vals = curve || [], n = vals.length;
+    const max = Math.max(1, ...vals.filter((v) => v != null));
+    const x = (i) => n > 1 ? i * 300 / (n - 1) : 300;
+    const y = (v) => +(h - 2 - v / max * (h - 8)).toFixed(1);
+    const runs = [], gaps = [];
+    let run = null, last = -1;
+    vals.forEach((v, i) => {
+      if (v == null) { if (run) runs.push(run); run = null; return; }
+      if (!run && last >= 0 && i - last > 1) gaps.push({ from: x(last), to: x(i), secs: i - last - 1 });
+      (run ||= []).push([+x(i).toFixed(1), y(v)]);
+      last = i;
+    });
+    if (run) runs.push(run);
+    // a lone second is a short stroke, not nothing
+    for (const r of runs) if (r.length === 1) r.push([Math.min(300, r[0][0] + 2.5), r[0][1]]);
+    return { runs, gaps, end: last === n - 1 && last >= 0 ? { x: x(last), y: y(vals[last]) } : null };
+  }
+  // curveSvg draws it: the line, a dashed baseline over each gap, and
+  // under the line a light fill in the popover
+  function curveSvg(curve, w, h, fill) {
+    const shape = curveShape(curve, h);
+    const g = sv("svg", { width: w, height: h, viewBox: `0 0 300 ${h}`, preserveAspectRatio: "none", "aria-hidden": "true", class: "sm-curve" });
+    const pts = (r) => r.map((p) => p.join(",")).join(" ");
+    for (const r of shape.runs) {
+      if (fill) g.append(sv("path", { class: "sm-curve-fill", d: `M${r[0][0]},${h} L${pts(r).replaceAll(" ", " L")} L${r[r.length - 1][0]},${h} Z` }));
+      g.append(sv("polyline", { class: "sm-curve-line", points: pts(r), "vector-effect": "non-scaling-stroke" }));
+    }
+    for (const gap of shape.gaps) g.append(sv("line", { class: "sm-curve-gap", x1: gap.from, x2: gap.to, y1: h - 1, y2: h - 1, "vector-effect": "non-scaling-stroke" }));
+    return { svg: g, shape };
+  }
+  // speedCell is a row's speed: its curve and tokens a second now, or the
+  // round's average once nothing is in flight; a button that opens the
+  // round's numbers. Hidden while the session has no speed.
+  function speedCell(s) {
+    const b = el("button", "sm-speed");
+    b.type = "button";
+    b.sess = s;
+    b.setAttribute("aria-haspopup", "dialog");
+    b.setAttribute("aria-expanded", "false");
+    b.onclick = (e) => { e.stopPropagation(); openSpeed(b); };
+    fillSpeed(b);
+    return b;
+  }
+  function fillSpeed(b) {
+    const sp = speedOf(b.sess);
+    const drawn = sp && (sp.live || sp.rated && sp.avg > 0 || sp.curve?.some((v) => v != null));
+    b.hidden = !drawn;
+    if (!drawn) { b.replaceChildren(); return; }
+    const parts = [];
+    if (sp.curve?.some((v) => v != null)) parts.push(curveSvg(sp.curve, 88, 24, false).svg);
+    const v = el("span", "sm-speed-val" + (sp.live ? " live" : ""));
+    if (!sp.rated) v.textContent = "—";
+    else if (sp.live) { const [pre, post] = rateParts(); v.append(pre, el("b", "", rateText(sp.now)), el("small", "", post)); }
+    else v.textContent = t("Avg {n} tok/s", { n: rateText(sp.avg) });
+    parts.push(v);
+    b.replaceChildren(...parts);
+    b.setAttribute("aria-label", t("Output speed") + ": " + v.textContent);
+  }
+  function speedPopBody(sp) {
+    const head = el("div", "sm-sp-head");
+    const [pre, post] = rateParts();
+    head.append(pre, el("span", "sm-sp-big", sp.rated ? rateText(sp.live ? sp.now : sp.avg) : "—"), el("span", "sm-sp-unit", post.trim()));
+    const chart = el("div", "sm-sp-chart");
+    const { svg: g, shape } = curveSvg(sp.curve, 308, 72, true);
+    chart.append(g);
+    // a gap inside the round is the agent at work between two requests
+    for (const gap of shape.gaps) {
+      if (gap.secs < 3 || gap.to - gap.from < 40) continue;
+      const l = el("span", "sm-sp-gap", t("Tool {n}s", { n: gap.secs }));
+      l.style.left = `calc(${gap.from / 3}% + 4px)`;
+      chart.append(l);
+    }
+    if (sp.live && shape.end) {
+      const d = el("span", "sm-sp-dot");
+      d.style.top = (shape.end.y - 3.5) + "px";
+      chart.append(d);
+    }
+    const stats = el("div", "sm-sp-stats");
+    const rate = (n) => sp.rated ? t("{n} tok/s", { n: rateText(n) }) : "—";
+    for (const [k, v] of [["Round average", rate(sp.avg)], ["Fastest second", rate(sp.peak)], ["Out so far", sp.rated ? t("{n} tokens", { n: fmtN(sp.output) }) : "—"]]) {
+      const c = el("div", "");
+      c.append(el("span", "sm-sp-k", t(k)), el("span", "sm-sp-v", v));
+      stats.append(c);
+    }
+    return [head, chart, stats];
+  }
+  function openSpeed(b) {
+    if (speedPop?.anchor === b) return closeProtoMenu();
+    closeProtoMenu();
+    const box = el("div", "pop sm-speed-pop");
+    box.setAttribute("role", "dialog");
+    box.setAttribute("aria-label", t("Output speed"));
+    const draw = () => {
+      const sp = speedOf(b.sess);
+      if (!sp || !b.isConnected) return closeProtoMenu();
+      box.replaceChildren(...speedPopBody(sp));
+    };
+    draw();
+    document.body.append(box);
+    placeMenu(box, b, "right");
+    b.classList.add("open");
+    b.setAttribute("aria-expanded", "true");
+    holdMenu(box, b, () => {}, (e) => { if (scrollCloses(box, e)) closeProtoMenu(); }, () => { speedPop = null; });
+    speedPop = { anchor: b, draw };
+  }
+  const speedsShown = () => view === "sessions" && !document.hidden && !trashOn;
+  async function speedTick() {
+    if (!speedsShown()) { clearInterval(speedT); speedT = 0; return; }
+    if (speedBusy) return;
+    speedBusy = true;
+    try {
+      const list = await api("speeds");
+      speeds = new Map((Array.isArray(list) ? list : []).map((sp) => [sp.agent + "|" + sp.session, sp]));
+    } catch { return; } finally { speedBusy = false; }
+    page?.querySelectorAll(".sm-speed").forEach(fillSpeed);
+    speedPop?.draw();
+  }
+  function speedsOn() {
+    if (speedT || !speedsShown()) return;
+    speedT = setInterval(speedTick, 1000);
+    speedTick();
+  }
+  document.addEventListener("visibilitychange", speedsOn);
 
   ctx.slots.add("page", {
     key: "sessions",

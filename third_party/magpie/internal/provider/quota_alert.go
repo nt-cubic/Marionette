@@ -16,12 +16,12 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/settings"
 )
 
@@ -203,7 +203,7 @@ func sameRun(was, now *time.Time) bool {
 	return d < alertSameRun && d > -alertSameRun
 }
 
-var balanceNum = regexp.MustCompile(`-?\d[\d,]*(?:\.\d+)?`)
+var balanceNum = lazyre.New(`-?\d[\d,]*(?:\.\d+)?`)
 
 // BalanceNumber is the amount a balance as a vendor tells it holds: "$12.34",
 // "¥1,024.50", "CNY 8", "12.3k credits". A share ("45%"), or text with no
@@ -294,4 +294,13 @@ func WatchQuotas(ctx context.Context, wake <-chan struct{}, send func(QuotaAlert
 		}
 		t.Reset(quotaAlertEvery)
 	}
+}
+
+// NearLimits is what the readings qs show now at or past the alert's share
+// of a window (pct, 0 is none) or at or under its balance (bal, 0 is none),
+// said or not: the daily summary's (EV_John_Liu on X), where the alerts
+// themselves go once, by their marks. A reading that failed, or is one kept
+// from before, says nothing.
+func NearLimits(qs []SubscriptionQuota, pct int, bal float64, now time.Time) []QuotaAlert {
+	return dueAlerts(qs, map[string]alertMark{}, pct, bal, now)
 }

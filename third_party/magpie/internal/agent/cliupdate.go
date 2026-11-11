@@ -20,7 +20,6 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -32,6 +31,7 @@ import (
 	"github.com/yetone/magpie/internal/desktopdir"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/provider"
@@ -239,7 +239,7 @@ var cliSpecs = map[string]cliSpec{
 	// none is offered there.
 	"penguin": {npm: []string{"@prismshadow/penguin-cli"},
 		self: func(bin, real string) []string {
-			if runtime.GOOS == "windows" {
+			if runtime.GOOS == "windows" && !strings.HasPrefix(real, "/") { // a distro's path is Linux's
 				return nil
 			}
 			if l := strings.ToLower(real); strings.Contains(l, "/.penguin/bin/") || strings.Contains(l, "/.penguin/lib/") {
@@ -251,6 +251,8 @@ var cliSpecs = map[string]cliSpec{
 	// the engine it pins (senpi) with it
 	"omo": {npm: []string{"omo-ai"}, scripts: true,
 		self: func(bin, real string) []string { return []string{bin, "update"} }},
+	// mu-agent from npm: its own `mu update` updates Pi packages, not mu
+	"mu": {npm: []string{"mu-agent"}},
 }
 
 // updater is how an installed CLI is brought up to date.
@@ -270,6 +272,9 @@ type updater struct {
 	// reshim is run after the update: the version manager whose shim the
 	// CLI was found as making shims for what it installed
 	reshim []string
+	// wsl is the distro the CLI is in and the update runs in, "" for this
+	// machine's (cliupdate_wsl.go)
+	wsl string
 }
 
 // shown is the update as a person would type it.
@@ -283,7 +288,7 @@ func (u *updater) shown() string {
 	return strings.Join(parts, " ")
 }
 
-var brewPath = regexp.MustCompile(`/(Cellar|Caskroom)/([^/]+)/`)
+var brewPath = lazyre.New(`/(Cellar|Caskroom)/([^/]+)/`)
 
 // howInstalled says how the CLI at bin was installed, from where it is;
 // nil when that says nothing sure.
@@ -518,12 +523,12 @@ func exe(name string) string {
 	return name
 }
 
-func isFile(p string) bool { st, err := os.Stat(p); return err == nil && !st.IsDir() }
-func isDir(p string) bool  { st, err := os.Stat(p); return err == nil && st.IsDir() }
+func isFile(p string) bool { dir, ok := statKind(p); return ok && !dir }
+func isDir(p string) bool  { dir, ok := statKind(p); return ok && dir }
 
 // ---- versions --------------------------------------------------------------
 
-var versionRe = regexp.MustCompile(`(?:^|[^\w.])v?(\d+\.\d+(?:\.\d+)*(?:-[0-9A-Za-z][0-9A-Za-z.]*)?)`)
+var versionRe = lazyre.New(`(?:^|[^\w.])v?(\d+\.\d+(?:\.\d+)*(?:-[0-9A-Za-z][0-9A-Za-z.]*)?)`)
 
 // parseVersion is the first version in what a CLI printed.
 func parseVersion(out string) string {
@@ -784,6 +789,9 @@ func channelVersion(url string) (string, error) {
 // brewLatest is the version Homebrew has for u, as it last updated itself:
 // what brew upgrade would install, or newer once it updates first.
 var brewLatest = func(u *updater) (string, error) {
+	if u.wsl != "" {
+		return wslBrewLatest(u)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	args := []string{"info", "--json=v2", u.pkg}
@@ -797,6 +805,11 @@ var brewLatest = func(u *updater) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return brewVersion(out)
+}
+
+// brewVersion is the version brew info --json=v2 says.
+func brewVersion(out []byte) (string, error) {
 	var r struct {
 		Formulae []struct {
 			Versions struct{ Stable string }
@@ -911,6 +924,9 @@ func (a *Agent) BinPath() string {
 // update it, with its desktop app's version. ok is false for an agent with
 // neither a CLI magpie knows nor its app.
 func (a *Agent) CLI() (c CLI, ok bool) {
+	if a.WSL != "" {
+		return a.wslCLIInfo()
+	}
 	c.App = a.AppVersion()
 	bin, spec := a.cliBin()
 	if bin == "" {
@@ -978,7 +994,12 @@ func CLIs(wait time.Duration) (out map[string]CLI, pending bool) {
 	var wg sync.WaitGroup
 	out = map[string]CLI{}
 	for _, a := range Detected() {
-		if _, ok := cliSpecs[a.ID]; !ok || a.WSL != "" {
+		kind := a.ID
+		if a.WSL != "" {
+			kind, _, _ = strings.Cut(kind, "@")
+			kind, _, _ = strings.Cut(kind, "#")
+		}
+		if _, ok := cliSpecs[kind]; !ok {
 			continue
 		}
 		wg.Add(1)
@@ -1116,6 +1137,9 @@ var updateTimeout = 10 * time.Minute
 // UpdateCLI brings the agent's CLI up to date the way it was installed, and
 // says what it is afterwards.
 func (a *Agent) UpdateCLI() (CLI, error) {
+	if a.WSL != "" {
+		return a.updateWSL()
+	}
 	bin, spec := a.cliBin()
 	if bin == "" {
 		return CLI{}, fmt.Errorf("magpie can't find %s's CLI", a.Name)
@@ -1280,7 +1304,7 @@ func mendHint(u *updater, version string) string {
 	return "run " + u.shown() + " again, or reinstall it the way you installed it"
 }
 
-var ansiRe = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+var ansiRe = lazyre.New(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 
 // lastLines is the last n lines of out with something on them, without
 // their colours.
