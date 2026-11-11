@@ -7,6 +7,7 @@ import {
   compactReset,
   formatPct,
   groupBalance,
+  isExhausted,
   pctLevel,
   periodHours,
   periodLabel,
@@ -122,7 +123,7 @@ function otherValue(
 ): { text: string; level: "ok" | "warn" | "hot" } {
   if (group.peak != null) {
     const level = pctLevel(group.peak);
-    return { text: level === "hot" ? t("rail.full") : formatPct(group.peak), level };
+    return { text: isExhausted(group.peak) ? t("rail.full") : formatPct(group.peak), level };
   }
   const balance = groupBalance(group);
   return { text: balance ? t("rail.balanceOf", { balance }) : "", level: "ok" };
@@ -177,7 +178,9 @@ function OtherDials({ groups, agentLabel }: { groups: UsageGroup[]; agentLabel: 
   const current = groups.find((g) => g.key === picked) ?? null;
   // Nearly-used sources float to the front; exhausted ones sink to the back and stay folded
   // (nothing left to spend, so they only show on "Show more"). Stable within a level.
-  const rank = (g: UsageGroup) => (g.peak == null ? 1 : pctLevel(g.peak) === "hot" ? 0 : pctLevel(g.peak) === "warn" ? 2 : 1);
+  // Fold on "exhausted", not on the red band: 92% used still has credit left, and a source
+  // that vanishes the moment it turns red is exactly the warning the user came to see.
+  const rank = (g: UsageGroup) => (g.peak == null ? 1 : isExhausted(g.peak) ? 0 : pctLevel(g.peak) === "warn" ? 2 : 1);
   const ordered = groups.map((g, i) => ({ g, i })).sort((a, b) => rank(b.g) - rank(a.g) || a.i - b.i).map((x) => x.g);
   const usable = ordered.filter((g) => rank(g) > 0);
   const shown = expanded ? ordered : usable.slice(0, DIAL_PREVIEW);
@@ -209,7 +212,7 @@ function OtherDials({ groups, agentLabel }: { groups: UsageGroup[]; agentLabel: 
                     ? "¥"
                     : group.peak == null
                       ? "—"
-                      : group.peak >= 99.5
+                      : isExhausted(group.peak)
                         ? t("rail.full")
                         : `${Math.round(group.peak)}%`}
                 </b>

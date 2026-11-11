@@ -1328,6 +1328,10 @@
   white-space: nowrap;
 }
 
+.context-panel .quota-dial.is-warn .quota-dial__value {
+  color: var(--yellow);
+}
+
 .context-panel .quota-dial.is-hot .quota-dial__value {
   color: var(--red);
 }

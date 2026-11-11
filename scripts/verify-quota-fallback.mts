@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 
 import type { EngineQuotaEntry } from "../src/lib/api";
 import { buildUsageSnapshot, emptySessionUsage } from "../src/lib/usage";
-import { buildQuotaView, quotaSlotKey } from "../src/lib/quotaRail";
+import { buildQuotaView, isExhausted, meterTone, pctLevel, quotaSlotKey } from "../src/lib/quotaRail";
 import type { UsageWindow } from "../src/lib/types";
 
 let passed = 0;
@@ -163,6 +163,48 @@ console.log("primary block promotes own-family engine group");
   );
   const nativeView = buildQuotaView({ windows: nativeSnap.windows, agentLabel: "Codex", agentId: "codex" });
   ok("native agent group wins primary", nativeView.primary?.group.key === "agent");
+}
+
+// ── 7. 颜色档位：唯一来源，表盘/明细行/分组底色同一口径 ──────────────────
+console.log("quota colour bands (used %)");
+{
+  // 这些数字是「已用」百分比：92% used = 只剩 8%，必须是红，不是绿。
+  const bands: Array<[number, string]> = [
+    [0, "ok"],
+    [41, "ok"],
+    [74.9, "ok"],
+    [75, "warn"],
+    [78, "warn"],
+    [89.9, "warn"],
+    [90, "hot"],
+    [92, "hot"],
+    [100, "hot"],
+  ];
+  for (const [pct, level] of bands) {
+    ok(`pctLevel(${pct}) = ${level}`, pctLevel(pct) === level);
+  }
+  ok("pctLevel(null) = ok", pctLevel(null) === "ok");
+
+  // 同一条阈值链上的其它出口必须一致（曾是 95/80 与 90/75 两套并存）。
+  const meter = (pct: number, kind = "rate_limit") =>
+    meterTone({ id: "x", label: "x", percentage: pct, detail: null, kind });
+  ok("meterTone(78) = warn", meter(78) === "warn");
+  ok("meterTone(92) = hot", meter(92) === "hot");
+  ok("meterTone(cost) = none", meter(92, "cost") === "none");
+
+  // 折叠/「Full」只在真耗尽时触发，红色档仍留在盘面上。
+  ok("92% used is not exhausted", !isExhausted(92));
+  ok("99.4% used is not exhausted", !isExhausted(99.4));
+  ok("99.5% used is exhausted", isExhausted(99.5));
+
+  // 分组底色与单项同口径。
+  const snap = snapshotFor("codex", {}, [codexEntry]);
+  const groups = buildQuotaView({ windows: snap.windows, agentLabel: "Codex", agentId: "codex" });
+  const peak = groups.primary?.group.peak ?? null;
+  ok(
+    "group tone follows pctLevel",
+    groups.primary?.group.tone === (peak == null ? "none" : pctLevel(peak)),
+  );
 }
 
 console.log(`\nverify-quota-fallback: ${passed} checks passed`);

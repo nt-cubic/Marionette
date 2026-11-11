@@ -69,9 +69,7 @@ export type UsageGroup = {
 export function meterTone(window: UsageWindow): UsageTone {
   if (window.percentage == null) return "none";
   if (window.kind === "cost") return "none";
-  if (window.percentage >= 90) return "hot";
-  if (window.percentage >= 75) return "warn";
-  return "ok";
+  return pctLevel(window.percentage);
 }
 
 /**
@@ -169,7 +167,7 @@ export function groupUsageBySource(windows: UsageWindow[], agentLabel: string): 
       .filter((w) => w.percentage != null && w.kind !== "cost")
       .map((w) => w.percentage as number);
     group.peak = percents.length > 0 ? Math.max(...percents) : null;
-    group.tone = group.peak == null ? "none" : group.peak >= 90 ? "hot" : group.peak >= 75 ? "warn" : "ok";
+    group.tone = group.peak == null ? "none" : pctLevel(group.peak);
   }
   return groups;
 }
@@ -300,12 +298,31 @@ export function compactReset(hint: string | null, now: Date = new Date(), withTi
   return withTime && m[3] ? `${m[1]}/${m[2]} ${m[3]}` : `${m[1]}/${m[2]}`;
 }
 
-/** Colour class for a percentage: ≥95 red, ≥80 yellow, otherwise neutral / ink. */
+/**
+ * Quota colour bands, shared by every surface that paints a percentage (dials,
+ * meter rows, group tone, rail summary). These are *used* percentages, so high is
+ * bad: ≥90 means a tenth or less is left, ≥75 is the amber warning line.
+ *
+ * One source of truth on purpose — the dial used to keep its own 95/80 copy and
+ * showed "92% used" in the calm accent colour while the row right under it was
+ * already amber.
+ */
+export const QUOTA_WARN_PCT = 75;
+export const QUOTA_HOT_PCT = 90;
+
+/** Credits effectively gone: the dial reads "Full" and the source folds away. */
+export const QUOTA_EXHAUSTED_PCT = 99.5;
+
+/** Colour class for a used percentage: ≥90 red, ≥75 yellow, otherwise neutral / ink. */
 export function pctLevel(pct: number | null | undefined): "hot" | "warn" | "ok" {
   if (pct == null) return "ok";
-  if (pct >= 95) return "hot";
-  if (pct >= 80) return "warn";
+  if (pct >= QUOTA_HOT_PCT) return "hot";
+  if (pct >= QUOTA_WARN_PCT) return "warn";
   return "ok";
+}
+
+export function isExhausted(pct: number | null | undefined): boolean {
+  return pct != null && pct >= QUOTA_EXHAUSTED_PCT;
 }
 
 export function formatPct(pct: number): string {
