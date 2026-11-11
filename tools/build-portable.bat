@@ -9,6 +9,8 @@ if /I "%~1"=="--help" (
   echo  Usage: tools\build-portable.bat
   echo.
   echo  Writes release\^<version^>\Marionette.exe ^(embedded magpie, UPX^).
+  echo  If that exe is running ^(locked^), the build is written as the next free
+  echo  release\^<version^>\Marionette ^(N^).exe and still counts as success.
   echo  Env: SKIP_UPX=1  REQUIRE_UPX=1  INSTALL_UPX=1  NOPAUSE=1
   echo       SKIP_MAGPIE_IMPORT=1  ^(reuse third_party\magpie as-is^)
   echo       MAGPIE_TAG=v0.1.xxxx  ^(pin engine seed; default = GitHub latest stable^)
@@ -149,6 +151,9 @@ del /q "%OUTDIR%\Marionette-Engine-uncompressed.exe" >nul 2>&1
 del /q "%OUTDIR%\Marionette.new.exe" >nul 2>&1
 del /q "%OUTDIR%\Marionette-*-windows-x64.exe" >nul 2>&1
 del /q "%OUTDIR%\Marionette-Engine-*.exe" >nul 2>&1
+rem Drop side-name builds from earlier locked rebuilds (locked ones survive the
+rem delete silently and simply push the next build to the following number).
+del /q "%OUTDIR%\Marionette (*).exe" >nul 2>&1
 
 set "STAGE=%OUTDIR%\_staging.exe"
 set "SHIP=%OUTDIR%\Marionette.exe"
@@ -177,30 +182,59 @@ if errorlevel 1 (
 )
 
 :after_upx_ship
+set "SIDE_SHIP="
 copy /Y "%STAGE%" "%SHIP%" >nul
-if errorlevel 1 (
-  echo  [warn] Marionette.exe is in use - wrote Marionette.new.exe instead
-  echo         close the running app and rename it
-  copy /Y "%STAGE%" "%OUTDIR%\Marionette.new.exe" >nul 2>&1
-  if errorlevel 1 (
-    echo  [error] could not ship the build at all - both targets failed
-    goto fail
-  )
-  set "SHIP=%OUTDIR%\Marionette.new.exe"
-  del /q "%STAGE%" >nul 2>&1
-  echo  [error] Marionette.exe was in use - a Marionette.new.exe was left behind
-  if /I "%REQUIRE_UPX%"=="1" goto fail
-  if /I not "%NOPAUSE%"=="1" pause
-  exit /b 1
-)
+if not errorlevel 1 goto ship_done
+
+rem -- The canonical exe is locked, i.e. that build is the one currently running.
+rem    Ship to the next free "Marionette (N).exe" instead of failing, so the user
+rem    gets a runnable artifact without closing the app first.
+rem    NOTE: never put unquoted parens inside a compound ( ... ) block here - cmd
+rem    treats them as group delimiters and mangles the line. Keep this region
+rem    label-based, with the file name built in a variable first. --
+echo  [warn] Marionette.exe is in use - looking for a free side name
+set "SIDE_N=1"
+:ship_side_probe
+if %SIDE_N% GEQ 100 goto ship_side_full
+set "SIDE_NAME=Marionette (%SIDE_N%).exe"
+if exist "%OUTDIR%\%SIDE_NAME%" goto ship_side_taken
+set "SHIP=%OUTDIR%\%SIDE_NAME%"
+goto ship_side_copy
+
+:ship_side_taken
+set /a "SIDE_N+=1"
+goto ship_side_probe
+
+:ship_side_full
+echo  [error] no free side name left in %OUTDIR% - numbers 1..99 all exist
+goto fail
+
+:ship_side_copy
+copy /Y "%STAGE%" "%SHIP%" >nul
+if not errorlevel 1 goto ship_side_ok
+echo  [error] could not ship the build - side name unwritable: %SHIP%
+goto fail
+
+:ship_side_ok
+set "SIDE_SHIP=1"
+echo  [warn] shipped as: %SHIP%
+echo         Marionette.exe itself was NOT updated - it is both the publish
+echo         target and the shortcut target. Close the running app and re-run.
+
+:ship_done
 del /q "%STAGE%" >nul 2>&1
 
 rem Update the stable shortcut only after the final executable was written.
+rem Side-name builds never touch it: the pointer must stay on the canonical
+rem release\<version>\Marionette.exe that publish-release uploads.
+if defined SIDE_SHIP goto after_current_build
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0set-current-build.ps1" -Target "%SHIP%" -ExpectedVersion "%APP_VER%"
 if errorlevel 1 (
   echo  [error] could not record current build for the shortcut
   goto fail
 )
+
+:after_current_build
 
 for %%A in ("%SHIP%") do set "BYTES=%%~zA"
 set /a "KB=%BYTES%/1024"
@@ -214,6 +248,7 @@ echo  TLS:          ring-less (ureq + native-tls / schannel)
 if defined UPX_NOTE echo  UPX:          %UPX_NOTE%
 echo  Ship:         %SHIP%
 echo                %KB% KB ^(~%MB_W%.%MB_F% MB^)
+if defined SIDE_SHIP echo  Note:         side name - Marionette.exe was locked, re-run after closing it
 echo.
 echo  Copy that exe and run. Needs WebView2 Runtime.
 echo  Engine starts on launch. Publish with tools\publish-release.bat
@@ -224,6 +259,7 @@ exit /b 0
 :fail
 echo.
 echo  Build failed.
+if defined STAGE del /q "%STAGE%" >nul 2>&1
 if /I not "%NOPAUSE%"=="1" pause
 exit /b 1
 

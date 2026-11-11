@@ -6,7 +6,7 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
 ## 常用命令
 
 - 启动开发版：`npm run tauri dev`（或 `start-marionette.bat`）
-- 构建便携版：`tools\build-portable.bat`（内置引擎，产物 `release\<版本号>\Marionette.exe`，按版本分目录，运行中的旧版不会挡住新构建）。默认会先 `import-magpie.ps1` 拉上游 latest 稳定版进 `third_party/magpie`（`SKIP_MAGPIE_IMPORT=1` 跳过；`MAGPIE_TAG=v…` 钉版本）。用户侧也可在「模型共享」里单独更新 magpie。发布：`tools\publish-release.bat`（会把根目录 `install.ps1` 一并作为 Release 资产上传）
+- 构建便携版：`tools\build-portable.bat`（内置引擎，产物 `release\<版本号>\Marionette.exe`，按版本分目录，运行中的旧版不会挡住新构建。**同版本号在跑时** canonical 被锁 → 自动降级写成 `release\<版本号>\Marionette (N).exe` 并算成功，`current-build.txt`/快捷方式不动（发布只认 canonical `Marionette.exe`，别拿 `(N)` 去发））。默认会先 `import-magpie.ps1` 拉上游 latest 稳定版进 `third_party/magpie`（`SKIP_MAGPIE_IMPORT=1` 跳过；`MAGPIE_TAG=v…` 钉版本）。用户侧也可在「模型共享」里单独更新 magpie。发布：`tools\publish-release.bat`（会把根目录 `install.ps1` 一并作为 Release 资产上传）
 - 安装成正式应用：仓库根 `install.ps1` 是最终用户的一行版（`irm https://github.com/nt-cubic/Marionette/releases/latest/download/install.ps1 | iex`：从 Release 下 exe → `%LOCALAPPDATA%\Programs\Marionette` + 开始菜单快捷方式 + 用户 PATH，免管理员，重跑即升级，`-Uninstall` 卸载）；本地开发装法用 `tools\install-app.ps1`（拷 `release\current-build.txt` 指向的产物，两份逻辑保持同步）
 - 前端构建：`npm run build`（`tsc && vite build`）
 - Rust 检查：`cargo check`（在 `src-tauri/` 下）
