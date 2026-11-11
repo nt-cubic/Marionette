@@ -2559,15 +2559,26 @@ export function App() {
             // Arm on assistant/thought text; once armed, any transcript chunk
             // (tool status included) refreshes the quiet timer.
             const reentryArmed = agentReentryRef.current[payload.sessionId];
+            const probeTurn = probeTurnRef.current.has(payload.sessionId);
             if (reentryArmed) {
               if (
-                extracted.role === "assistant" ||
-                extracted.role === "thought" ||
-                extracted.role === "tool"
+                !probeTurn &&
+                (extracted.role === "assistant" ||
+                  extracted.role === "thought" ||
+                  extracted.role === "tool")
               ) {
                 armAgentReentryRef.current(payload.sessionId);
               }
-            } else if (extracted.role === "assistant" || extracted.role === "thought") {
+            } else if (
+              // A hidden usage probe (codex `/status`, claude `/usage`) is not
+              // the agent resuming on its own. The probe never enters the
+              // composer state machine, so the session is still "waiting" and
+              // its chunk would arm re-entry against the *previous* turn's
+              // boundary — the 2026-11-12 "click refresh, the dialog starts
+              // working again" report. Probe turns never arm.
+              !probeTurn &&
+              (extracted.role === "assistant" || extracted.role === "thought")
+            ) {
               const sess = sessionsRef.current.find((s) => s.id === payload.sessionId);
               if (
                 shouldArmAgentReentry(
@@ -2593,12 +2604,16 @@ export function App() {
             }
             if (extracted.text) {
               // Status-only blocks — usage already merged above; keep the chat
-              // rail free of Codex `/status` and Claude `/usage` dumps.
+              // rail free of Codex `/status` and Claude `/usage` dumps. A probe
+              // turn is invisible by contract: adapters change their footer
+              // format freely, and a leak becomes a mystery Reply card the user
+              // never asked for.
               const isRuntimeStatusOnly =
                 isRuntimeMetadataOnly(extracted.text) ||
                 (/^\s*\*{0,2}Model\*{0,2}:/i.test(extracted.text) &&
                   /\n\s*\*{0,2}Directory\*{0,2}:/i.test(extracted.text));
-              if (!isRuntimeStatusOnly) {
+              const probeTurn = probeTurnRef.current.has(payload.sessionId);
+              if (!isRuntimeStatusOnly && !probeTurn) {
                 const sid = payload.sessionId;
                 const kind = chunkKindFromRole(extracted.role);
                 const publish =
@@ -2854,7 +2869,16 @@ export function App() {
         let turnedIdle = false;
         {
           const prev = sessionsRef.current.find((s) => s.id === payload.sessionId);
-          if (prev && (prev.status === "running" || prev.status === "starting")) {
+          const probeTurn = probeTurnRef.current.has(payload.sessionId);
+          if (probeTurn && prev && prev.status !== "exited" && prev.status !== "error") {
+            // A hidden usage probe (/status, /usage) is not a user turn. A late
+            // status chunk can arm re-entry just before this boundary; the
+            // generic running→waiting flip below then misses it because `prev`
+            // still reads "waiting" (arm's setState lands next render) and the
+            // session stays lit as "working". Probe turns always settle idle.
+            setSessionStatusById(payload.sessionId, "waiting");
+            turnedIdle = true;
+          } else if (prev && (prev.status === "running" || prev.status === "starting")) {
             const nextStatus: Session["status"] =
               payload.kind === "error" || stopReason === "error" || stopReason === "refusal"
                 ? "error"
