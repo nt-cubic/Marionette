@@ -25,6 +25,20 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $dest = Join-Path $repoRoot 'third_party\magpie'
 
+# Temp cleanup must never fail the build. A stale clone (a git child still
+# finishing checkout) or the AV scanner holding a 100MB pack/index.lock makes
+# Remove-Item throw; the directory is disposable and every run gets a fresh
+# unique name, so retry a few times and then just walk away.
+function Remove-TempBestEffort {
+    param([string]$Path, [int]$Tries = 5)
+    if (-not (Test-Path $Path)) { return }
+    for ($i = 1; $i -le $Tries; $i++) {
+        try { Remove-Item -Recurse -Force $Path -ErrorAction Stop; return }
+        catch { if ($i -lt $Tries) { Start-Sleep -Milliseconds (200 * $i) } }
+    }
+    Write-Output "[import] warn: could not clean $Path (still locked); leaving it for a later run"
+}
+
 if (-not $Tag) {
     if ($env:MAGPIE_TAG -and $env:MAGPIE_TAG.Trim()) {
         $Tag = $env:MAGPIE_TAG.Trim()
@@ -47,15 +61,45 @@ if (-not $Tag) {
     Write-Output "[import] latest stable: $Tag"
 }
 
-$tmp = Join-Path $env:TEMP "marionette-import-magpie-$Tag"
+# Unique temp workspace per run, deliberately: a previous aborted clone (or the
+# AV scanner on its pack) can hold `index.lock`/`tmp_pack_*` open for minutes,
+# and a shared fixed path turned that into "build fails before it starts"
+# (2026-11-12). Nothing here needs a stable path, so never reuse one.
+# Sweep corpses of earlier runs (best effort, same prefix).
+Get-ChildItem $env:TEMP -Directory -Filter 'marionette-magpie-*' -ErrorAction SilentlyContinue |
+    ForEach-Object { Remove-TempBestEffort $_.FullName }
+Get-ChildItem $env:TEMP -Directory -Filter 'marionette-import-magpie-*' -ErrorAction SilentlyContinue |
+    ForEach-Object { Remove-TempBestEffort $_.FullName }
 
-if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
+# The name must stay SHORT. Upstream ships a 181-char test fixture path
+# (internal/gateway/testdata/qoder-*/…/agent-*.jsonl); TEMP base is ~34 chars,
+# so a verbose per-run suffix pushes the checkout past Windows MAX_PATH and
+# git dies with "Filename too long" (2026-11-12 — the untagged release bump to
+# v0.1.3833 added that fixture). 8 hex chars is plenty to dodge collisions.
+$tmp = Join-Path $env:TEMP ("marionette-magpie-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+
 Write-Output "[import] shallow clone $Tag ..."
 # cmd /c: PS 5.1 turns git's stderr progress into a terminating error under Stop.
-cmd /c "git clone --depth 1 --branch $Tag https://github.com/yetone/magpie.git `"$tmp`" 2>&1" | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "git clone failed for tag $Tag" }
+# Keep git's own output: on failure it is the only thing that says why (unknown
+# tag, path too long, network) — swallowing it turned a 5-second diagnosis into
+# guesswork.
+$cloneOut = cmd /c "git -c core.longpaths=true clone --depth 1 --branch $Tag https://github.com/yetone/magpie.git `"$tmp`" 2>&1"
+if ($LASTEXITCODE -ne 0) {
+    $cloneOut | Where-Object { $_ -and ($_ -notmatch 'Updating files:') } | Select-Object -Last 12 |
+        ForEach-Object { Write-Output "  git: $_" }
+    Remove-TempBestEffort $tmp
+    throw "git clone failed for tag $Tag"
+}
 
-if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+if (Test-Path $dest) {
+    try {
+        Remove-Item -Recurse -Force $dest -ErrorAction Stop
+    } catch {
+        # Unlike the temp dir this one MUST be wiped (stale files would mix with
+        # the new tag), so fail — but say what to do about it.
+        throw "cannot wipe $dest before import (a running build/dev instance or the AV scanner is holding it): $($_.Exception.Message)"
+    }
+}
 New-Item -ItemType Directory -Path $dest | Out-Null
 
 foreach ($item in @('main.go', 'go.mod', 'go.sum', 'internal', 'plugins', 'LICENSE', 'README.md')) {
@@ -164,6 +208,6 @@ Get-ChildItem $providerDir -Filter *.go | ForEach-Object {
     "License: LICENSE (MIT) in this folder."
 ) | Set-Content (Join-Path $dest 'MARIONETTE-VENDOR.md')
 
-Remove-Item -Recurse -Force $tmp
+Remove-TempBestEffort $tmp
 $size = (Get-ChildItem $dest -Recurse -File | Measure-Object Length -Sum).Sum / 1MB
 Write-Output ("[import] done: {0}  ({1:N1} MB)  tag={2}" -f $dest, $size, $Tag)
