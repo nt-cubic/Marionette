@@ -186,6 +186,9 @@ type fieldJSON struct {
 	Label   string         `json:"label"`
 	Value   string         `json:"value"`
 	Options []agent.Option `json:"options"`
+	// List is, in place of Options, which of the state's OptionLists the
+	// field offers, from 1 (shareOptions); 0 when Options is its own
+	List int `json:"list,omitempty"`
 }
 
 type agentJSON struct {
@@ -336,6 +339,13 @@ type stateJSON struct {
 	// GatewayHeld: the program that has the gateway's port when this magpie
 	// couldn't listen on it, as far as it could be read (gateway.PortHeld)
 	GatewayHeld *gateway.PortHeld `json:"gatewayHeld,omitempty"`
+	// OptionLists are the fields' option lists, each once, that a field's
+	// List names (shareOptions), as indexes into Options, where each option
+	// is once: with real accounts 13 agents' model pickers offered the same
+	// 51KB catalog, 650KB of a 690KB state, beside a few models of their
+	// own. Last of the fields: writeStateJSON writes them after the rest.
+	OptionLists [][]int32       `json:"optionLists,omitempty"`
+	Options     []*agent.Option `json:"options,omitempty"`
 }
 
 // unlistedJSON is a model of a provider kept for routing groups, and the
