@@ -513,7 +513,7 @@ fn push_engine_models(models: &mut Vec<BridgeModel>) -> bool {
 /// JSON object 就整体替换。纯函数，测试直接喂夹具。
 pub fn opencode_engine_config_content(
     port: u16,
-    models: &[String],
+    models: &[CatalogModelRow],
     existing: Option<&str>,
 ) -> String {
     use serde_json::Value;
@@ -538,9 +538,9 @@ pub fn opencode_engine_config_content(
         }),
     );
     let mut catalog = serde_json::Map::new();
-    for id in models {
-        let name = id.rsplit('/').next().unwrap_or(id);
-        catalog.insert(id.clone(), serde_json::json!({ "name": name }));
+    for row in models {
+        let name = row.id.rsplit('/').next().unwrap_or(row.id.as_str());
+        catalog.insert(row.id.clone(), opencode_model_entry(name, row));
     }
     provider.insert("models".to_string(), Value::Object(catalog));
     // provider 层合并：已有 provider 深对象保留，只覆盖 marionette。
@@ -553,10 +553,31 @@ pub fn opencode_engine_config_content(
     serde_json::to_string(&Value::Object(root)).unwrap_or_default()
 }
 
+/// opencode 里一个模型条目：名字之外必须写 `limit.context`/`limit.output`
+/// ——不写它就用 opencode 自己的默认窗口（实测 200K），引擎明明知道
+/// ollama 那条是 1M 也只能干看着（2026-11-12 用户实锤：DSH/zcode 都写过
+/// 窗口，只有 opencode 这条漏了）。引擎报 0 = 不知道，此时不写，让
+/// opencode 用它自己的默认值，别编一个数。
+fn opencode_model_entry(name: &str, row: &CatalogModelRow) -> serde_json::Value {
+    let mut entry = serde_json::Map::new();
+    entry.insert("name".to_string(), serde_json::Value::String(name.to_string()));
+    let mut limit = serde_json::Map::new();
+    if row.context_window > 0 {
+        limit.insert("context".to_string(), serde_json::json!(row.context_window));
+    }
+    if row.max_output > 0 {
+        limit.insert("output".to_string(), serde_json::json!(row.max_output));
+    }
+    if !limit.is_empty() {
+        entry.insert("limit".to_string(), serde_json::Value::Object(limit));
+    }
+    serde_json::Value::Object(entry)
+}
+
 /// spawn 时刻的真实参数版（引擎没跑或目录为空 → None，不注入）。
 pub fn opencode_engine_config(existing: Option<&str>) -> Option<String> {
     let (port, _) = crate::engine::running_base()?;
-    let models = crate::engine::catalog_direct();
+    let models = crate::engine::catalog_direct_entries();
     if models.is_empty() {
         return None;
     }
@@ -583,15 +604,27 @@ pub fn pi_models_path() -> Option<std::path::PathBuf> {
 /// providers.marionette 的内容（pi docs/models.md「Configure a compatible
 /// endpoint」形态）。`apiKey` 用官方 `$NAME` env 插值 —— 令牌不落盘，spawn
 /// 注入 `MARIONETTE_API_KEY`（与 dsh 桥同一个 env 名）。
-fn pi_marionette_provider(port: u16, models: &[String]) -> serde_json::Value {
+/// pi models.json 的一个模型条目。窗口/输出上限不写，pi 就按它自己的默认
+/// 窗口办事（与 opencode 的 200K 同一个坑，2026-11-12 一起补）。引擎报 0
+/// = 不知道，此时不写，别编数。
+fn pi_model_entry(row: &CatalogModelRow) -> serde_json::Value {
+    let mut entry = serde_json::Map::new();
+    entry.insert("id".to_string(), serde_json::Value::String(row.id.clone()));
+    if row.context_window > 0 {
+        entry.insert("contextWindow".to_string(), serde_json::json!(row.context_window));
+    }
+    if row.max_output > 0 {
+        entry.insert("maxTokens".to_string(), serde_json::json!(row.max_output));
+    }
+    serde_json::Value::Object(entry)
+}
+
+fn pi_marionette_provider(port: u16, models: &[CatalogModelRow]) -> serde_json::Value {
     serde_json::json!({
         "baseUrl": format!("http://127.0.0.1:{port}/v1"),
         "api": "openai-completions",
         "apiKey": format!("${}", crate::dsh_bridge::MARIONETTE_TOKEN_ENV),
-        "models": models
-            .iter()
-            .map(|id| serde_json::json!({ "id": id }))
-            .collect::<Vec<_>>(),
+        "models": models.iter().map(pi_model_entry).collect::<Vec<_>>(),
     })
 }
 
@@ -601,7 +634,7 @@ fn pi_marionette_provider(port: u16, models: &[String]) -> serde_json::Value {
 fn pi_merge_models_json(
     existing: Option<&str>,
     port: u16,
-    models: &[String],
+    models: &[CatalogModelRow],
 ) -> (String, bool) {
     use serde_json::Value;
     let parsed = existing.and_then(|text| serde_json::from_str::<Value>(text).ok());
@@ -675,7 +708,7 @@ pub fn refresh_pi_marionette_route() -> Result<bool, String> {
     let path = pi_models_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     match crate::engine::status() {
         crate::engine::EngineStatus::Running { port, .. } => {
-            let models = crate::engine::catalog_direct();
+            let models = crate::engine::catalog_direct_entries();
             if models.is_empty() {
                 return Ok(false);
             }
@@ -4198,6 +4231,15 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
         home
     }
 
+    fn row(id: &str, context_window: u64, max_output: u64) -> CatalogModelRow {
+        CatalogModelRow {
+            id: id.to_string(),
+            context_window,
+            max_output,
+            images: false,
+        }
+    }
+
     /// 映射表覆盖规格清单的全部键名（含别名），大小写不敏感；未映射 → None。
     /// opencode 原生跨用配置：provider「marionette」指引擎 /v1、api_key 是
     /// 字面量令牌、模型 id 原样（多斜杠）；已有内联配置深合并（别人的
@@ -4207,9 +4249,9 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
         let content = opencode_engine_config_content(
             3425,
             &[
-                "grok/grok-4.7".to_string(),
-                "codex/gpt-5.6-luna".to_string(),
-                "opencode-go/glm-5.3".to_string(),
+                row("grok/grok-4.7", 2_000_000, 64_000),
+                row("codex/gpt-5.6-luna", 0, 0),
+                row("opencode-go/glm-5.3", 200_000, 32_000),
             ],
             Some(r#"{"autoupdate":false,"provider":{"mine":{"name":"Keep Me"}}}"#),
         );
@@ -4226,10 +4268,15 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
         assert_eq!(provider["models"]["grok/grok-4.7"]["name"], "grok-4.7");
         assert_eq!(provider["models"]["codex/gpt-5.6-luna"]["name"], "gpt-5.6-luna");
         assert_eq!(provider["models"]["opencode-go/glm-5.3"]["name"], "glm-5.3");
+        // 窗口/输出上限写进 limit —— 不写 opencode 就退回它自己的 200K 默认。
+        assert_eq!(provider["models"]["grok/grok-4.7"]["limit"]["context"], 2_000_000);
+        assert_eq!(provider["models"]["grok/grok-4.7"]["limit"]["output"], 64_000);
+        assert_eq!(provider["models"]["opencode-go/glm-5.3"]["limit"]["context"], 200_000);
+        // 引擎报 0（不知道）→ 不写 limit，别编数。
+        assert!(provider["models"]["codex/gpt-5.6-luna"].get("limit").is_none());
 
         // 坏 JSON existing → 整体替换（只剩 marionette）。
-        let replaced =
-            opencode_engine_config_content(3425, &["grok/grok-4.7".to_string()], Some("not json"));
+        let replaced = opencode_engine_config_content(3425, &[row("grok/grok-4.7", 0, 0)], Some("not json"));
         let parsed: serde_json::Value = serde_json::from_str(&replaced).unwrap();
         assert!(parsed.get("autoupdate").is_none());
         assert!(parsed["provider"]["marionette"]["models"]["grok/grok-4.7"].is_object());
@@ -4251,7 +4298,7 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
     }
   }
 }"#;
-        let models = vec!["group/auto-grok-4-7".to_string()];
+        let models = vec![row("grok/grok-4.7", 2_000_000, 64_000)];
         let (merged, changed) = pi_merge_models_json(Some(existing), 3425, &models);
         assert!(changed);
         let parsed: serde_json::Value = serde_json::from_str(&merged).unwrap();
@@ -4273,7 +4320,16 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
         );
         assert_eq!(
             parsed["providers"]["marionette"]["models"][0]["id"],
-            "group/auto-grok-4-7"
+            "grok/grok-4.7"
+        );
+        // 窗口/输出上限跟着写进去 —— 不写 pi 就按自己的默认窗口办事。
+        assert_eq!(
+            parsed["providers"]["marionette"]["models"][0]["contextWindow"],
+            2_000_000
+        );
+        assert_eq!(
+            parsed["providers"]["marionette"]["models"][0]["maxTokens"],
+            64_000
         );
         // 语义幂等：同参数再合 → 不再标记变更（不 churn 用户格式）。
         let (_, again) = pi_merge_models_json(Some(&merged), 3425, &models);

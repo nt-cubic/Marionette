@@ -878,6 +878,14 @@ provider 层，只服务 catalog 描述得出的模型（本机 catalog 在
 catalog 路由横跨 `openai-completions` / `openai-responses` / `anthropic-messages`：补一个 `api` 会把同路由
 里别的模型的协议一起改掉。**上游处方是拆路由**（README「Known Limitations」）：新开一个 catalog 不收录的
 route key，自己声明 `api` + `baseURL` + `apiKeyEnv` + 只列这一个模型——实测有效，且不动原路由上其它模型的协议。
+
+## 跨用窗口宣告与路由组开关（2026-11-12，两类静默降级）
+
+两个「配置写进去 ≠ 对方认」的坑，都会让界面显示 A 而实际用 B：
+
+- **用户自建路由组只由 `plugins/groups` 服务**（`provider/group_serve.go` 的 `GateGroups`/`ServeGroups`）。种子引擎（`tools/magpie-seed/main_seed.go`）**必须**导入 `plugins/groups`，否则网关的 `Groups()`/`GroupFor()` 把用户组整个滤掉：`magpie group add` 照样写盘成功、Rust 照样记「alias group updated」，而 codex 的裸内建名会落回内建 `codex` 源头**烧订阅**（2026-11-12 实锤：整场会话 provider 全记成 `codex`，ollama 零流量）。现在写完组会探 `GET /v1/models/group/<id>`（200 认 / 404 不认）并在 dev.log 记 warn。**注意 `auto/*` 组是核心自带的，不受这个开关管**，所以 opencode/DSH/zcode 那条线看起来一直正常，掩盖了 codex 这条。
+- **上下文窗口必须逐模型宣告给每个 agent**，真相只有一处：`engine::catalog_direct_entries()` 的 `context_window`/`max_output`（引擎 `/v1/models` 的 `context_length`/`max_output_tokens`）。各 agent 的写法：opencode `models[id].limit.context/output`、pi `models.json` 的 `contextWindow`/`maxTokens`、DSH `cordis.patch.yml` 的 `contextWindow`、zcode `providerModelRules` 的 `contextWindow`（schema 要求正数，未知兜底 200000）。**漏写任何一家 = 它按自己的默认窗口办事**（opencode 实测 200K，而 ollama 的 deepseek-v4.1-flash:1017 是 1M，自动压缩提前触发）。引擎报 0 = 不知道 → 不写，别编数。
+
 ## 模型共享引擎的凭据源（2026-10-23）
 
 引擎注册（`engine.rs` 的 `register_key_providers`）钥匙来源按优先级：**Marionette 凭据库

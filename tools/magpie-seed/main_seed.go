@@ -55,6 +55,16 @@ import (
 	// plugin itself, the cross-use routing the bridges write into, and the
 	// quota endpoint the usage panel polls. Adding one here costs what its
 	// dependency tree costs — measure before growing this list.
+	//
+	// groups is NOT optional (2026-11-12): the user's own routing groups —
+	// the ones engine::codex_alias_sync writes to point a codex built-in
+	// name at a shared model — are served only while this plugin holds
+	// provider.ServeGroups (provider/group_serve.go). Without it the gateway
+	// lists and routes none of them, silently: `magpie group add` still
+	// writes providers.json and reports success, codex's bare model id then
+	// falls through to the built-in codex provider, and the user's ChatGPT
+	// plan is billed while the model they picked is never called.
+	_ "github.com/yetone/magpie/plugins/groups"
 	_ "github.com/yetone/magpie/plugins/gateway"
 	_ "github.com/yetone/magpie/plugins/routing"
 	_ "github.com/yetone/magpie/plugins/usage"

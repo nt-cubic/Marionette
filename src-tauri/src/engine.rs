@@ -2505,6 +2505,22 @@ pub fn codex_alias_sync(session_id: &str, builtin: &str, engine_model: &str) {
                 "codex alias group updated",
                 Some(&format!("group={group_id} model={engine_model}")),
             );
+            // 写进 providers.json ≠ 网关认这个组：用户自建组只由
+            // `plugins/groups` 服务，精简引擎漏编它时 CLI 照样写盘成功、
+            // 网关却当它不存在，codex 的裸内建名于是落回它自己的源头烧订阅
+            // （2026-11-12 实锤：整场会话的 provider 都是 codex）。探针是
+            // 零成本的 `GET /v1/models/group/<id>`：200 = 认，404 = 不认。
+            if let Some(v1) = engine_v1_url() {
+                if !codex_alias_served(&v1, &group_id) {
+                    crate::debug_log::append(
+                        "engine",
+                        "warn",
+                        session_id,
+                        "codex alias group is written but NOT served by the gateway; this session's requests fall back to the built-in provider (engine build without plugins/groups?)",
+                        Some(&format!("group={group_id}")),
+                    );
+                }
+            }
         }
         Err(error) => crate::debug_log::append(
             "engine",
@@ -2548,6 +2564,24 @@ fn write_codex_alias_group(
 fn group_already_exists(error: &str) -> bool {
     let e = error.to_ascii_lowercase();
     e.contains("already") || e.contains("there is a group")
+}
+
+/// 组写进去了 ≠ 网关承认它（见调用点的长注释）。200 = 认，404 = 不认；
+/// 探不动（连不上/别的错）不算失败，别把网络抖动报成产品故障。
+fn codex_alias_served(v1: &str, group_id: &str) -> bool {
+    let Ok(agent) = loopback_agent() else {
+        return true;
+    };
+    let url = format!("{v1}/models/group/{group_id}");
+    match agent
+        .get(&url)
+        .set("Authorization", &format!("Bearer {ENGINE_TOKEN}"))
+        .call()
+    {
+        Ok(_) => true,
+        Err(ureq::Error::Status(404, _)) => false,
+        Err(_) => true,
+    }
 }
 
 /// 会话解绑 / 会话侧清理入口：移除该会话登记的别名，组在无人引用时删掉。
@@ -3011,6 +3045,10 @@ pub fn catalog() -> Vec<String> {
 /// 672 次调用把官方按量余额从 ¥60 烧到 ¥29.6（auto 组在套餐渠道月配额
 /// 用尽后落到按量 key）。沉底不是禁用：手动仍可选，只是不再是任何
 /// 「第一位」默认（dsh 默认模型兜底 `models[0]` 同享此保护）。
+/// 引擎目录的模型 id 清单（不含 `group/` `auto/`）。跨用注入现在一律走
+/// `catalog_direct_entries`（窗口/输出上限要一起宣告），这个 id 投影留着
+/// 给只认名字的调用点，暂无人用。
+#[allow(dead_code)]
 pub fn catalog_direct() -> Vec<String> {
     pay_per_use_last(
         catalog()
