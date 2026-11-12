@@ -24,6 +24,9 @@ type Result struct {
 	// fetched again and the ones that couldn't be (What is skill:<name>)
 	Updated   []string  `json:"updated,omitempty"`
 	Unupdated []Problem `json:"unupdated,omitempty"`
+	// Current is, for an update of one skill, that skill when what was
+	// fetched is the files it already had
+	Current []string `json:"current,omitempty"`
 	// Gone are, for an update of skills, the ones their sources no longer
 	// have: removed there, not failed (skill_gone.go)
 	Gone []string `json:"gone,omitempty"`
@@ -108,6 +111,7 @@ func syncSteps(all, gone []*Target, b *backups, res *Result) []func(*Library) {
 			l.syncInstructions(t, b, res, true)
 			l.syncMCP(t, b, res)
 			l.syncHooks(t, b, res)
+			l.syncEnv(t, b, res)
 			l.syncSubagents(t, b, res)
 		})
 	}
@@ -119,6 +123,7 @@ func syncSteps(all, gone []*Target, b *backups, res *Result) []func(*Library) {
 		steps = append(steps, func(l *Library) {
 			l.syncMCP(t, b, res)
 			l.syncHooks(t, b, res)
+			l.syncEnv(t, b, res)
 			l.syncSkills(t, res, all)
 		})
 	}
@@ -507,6 +512,10 @@ type View struct {
 	// this computer can take of them (hooks.go)
 	Hooks      []HookView      `json:"hooks"`
 	HookAgents []HookAgentView `json:"hookAgents"`
+	// Env are the library's variables, and EnvAgents what each agent on
+	// this computer can take of them (env.go)
+	Env       []EnvView      `json:"env"`
+	EnvAgents []EnvAgentView `json:"envAgents"`
 	// Subagents are the library's subagents, and SubagentAgents what
 	// each agent on this computer makes of them (subagents.go)
 	Subagents      []SubagentView      `json:"subagents"`
@@ -706,6 +715,7 @@ func readView(problems []Problem, glance bool) (*View, error) {
 		v.Servers = append(v.Servers, sv)
 	}
 	v.Hooks, v.HookAgents = l.hooksView(append(slices.Clone(targets), gone...), asleep, of)
+	v.Env, v.EnvAgents = l.envView(append(slices.Clone(targets), gone...), of)
 	v.Subagents, v.SubagentAgents = l.subagentsView(targets, asleep, of)
 	v.Plugins = l.pluginsView()
 	tr := &tracer{}
@@ -808,6 +818,11 @@ func SaveServer(old string, s Server) (*Result, error) {
 			// the tools turned off stay, the editor not sending them
 			if s.DisabledTools == nil {
 				s.DisabledTools = l.MCP[i].DisabledTools
+			}
+			// so do the accounts, which have calls of their own
+			if s.Accounts == nil && s.Account == "" {
+				s.Accounts, s.Account = l.MCP[i].Accounts, l.MCP[i].Account
+				_ = s.checkAccounts()
 			}
 			// a plugin's server stays the plugin's, and on this computer
 			if p := l.MCP[i].Plugin; p != "" && s.Plugin == "" {

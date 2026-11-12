@@ -63,14 +63,48 @@ type cRequest struct {
 	Stop                json.RawMessage `json:"stop,omitempty"`
 	Stream              bool            `json:"stream,omitempty"`
 	ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
-	ParallelToolCalls   *bool           `json:"parallel_tool_calls,omitempty"`
-	ServiceTier         string          `json:"service_tier,omitempty"`
-	PromptCacheKey      string          `json:"prompt_cache_key,omitempty"`
-	ResponseFormat      json.RawMessage `json:"response_format,omitempty"`
+	// the level in the other places a relay or a client puts it: new-api
+	// and OpenRouter's reasoning object, a Claude client's output_config
+	// and thinking budget (chatEffort)
+	Reasoning         json.RawMessage `json:"reasoning,omitempty"`
+	OutputConfig      json.RawMessage `json:"output_config,omitempty"`
+	Thinking          json.RawMessage `json:"thinking,omitempty"`
+	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"`
+	ServiceTier       string          `json:"service_tier,omitempty"`
+	PromptCacheKey    string          `json:"prompt_cache_key,omitempty"`
+	ResponseFormat    json.RawMessage `json:"response_format,omitempty"`
 	// not a Chat field: OpenCode merges a model's options into its body
 	// whichever API it speaks, and a Codex model it asks on Chat is asked
 	// on Responses (Request.AccessPrograms)
 	AccessPrograms json.RawMessage `json:"access_programs,omitempty"`
+}
+
+// chatEffort is the level a Chat request asks: reasoning_effort, and when
+// it names none, the places a relay puts the level of a Claude client's
+// request it turned into Chat (reasoning.effort, output_config.effort, a
+// thinking budget). reasoning_effort, when there, is the client's word.
+func chatEffort(c *cRequest) string {
+	if e := effortOf(c.ReasoningEffort); e != "" || strings.TrimSpace(c.ReasoningEffort) != "" {
+		return e
+	}
+	var o struct {
+		Effort string `json:"effort"`
+	}
+	for _, raw := range []json.RawMessage{c.Reasoning, c.OutputConfig} {
+		if len(raw) > 0 && decodeJSON(raw, &o) == nil {
+			if e := effortOf(o.Effort); e != "" {
+				return e
+			}
+		}
+	}
+	var th struct {
+		Type   string `json:"type"`
+		Budget int    `json:"budget_tokens"`
+	}
+	if len(c.Thinking) > 0 && decodeJSON(c.Thinking, &th) == nil && th.Type == "enabled" {
+		return effortOfBudget(th.Budget)
+	}
+	return ""
 }
 
 func parseChat(body []byte) (*Request, error) { return readChat(body, false) }
@@ -92,7 +126,7 @@ func readChat(body []byte, facts bool) (*Request, error) {
 		return nil, fmt.Errorf("invalid request: %v", err)
 	}
 	r := &Request{Model: c.Model, MaxTokens: c.MaxCompletionTokens, Temp: c.Temperature, TopP: c.TopP,
-		Stream: c.Stream, Effort: effortOf(c.ReasoningEffort), Parallel: c.ParallelToolCalls, Fast: c.ServiceTier == "priority" || c.ServiceTier == "ultrafast", Ultrafast: c.ServiceTier == "ultrafast", Tier: c.ServiceTier,
+		Stream: c.Stream, Effort: chatEffort(&c), Parallel: c.ParallelToolCalls, Fast: c.ServiceTier == "priority" || c.ServiceTier == "ultrafast", Ultrafast: c.ServiceTier == "ultrafast", Tier: c.ServiceTier,
 		CacheKey: c.PromptCacheKey, Format: openAIFormat(c.ResponseFormat), AccessPrograms: c.AccessPrograms}
 	if r.MaxTokens == 0 {
 		r.MaxTokens = c.MaxTokens
@@ -195,6 +229,14 @@ func chatParts(raw json.RawMessage) []Part {
 			FileID   string `json:"file_id"`
 			Filename string `json:"filename"`
 		} `json:"file"`
+		VideoURL struct {
+			URL string `json:"url"`
+		} `json:"video_url"`
+		// the AI SDK's file part, flat (#4101: ZCode's), whose video
+		// alone is read here
+		Data      string `json:"data"`
+		MediaType string `json:"mediaType"`
+		Filename  string `json:"filename"`
 	}
 	decodeJSON(raw, &items)
 	var out []Part
@@ -209,6 +251,17 @@ func chatParts(raw json.RawMessage) []Part {
 		case "file":
 			if p, ok := chatFile(it.File.FileData, it.File.FileID, it.File.Filename); ok {
 				out = append(out, p)
+			} else if strings.HasPrefix(strings.ToLower(it.MediaType), "video/") {
+				if v, ok := videoPart(it.Data, it.MediaType, it.Filename); ok {
+					out = append(out, v)
+				}
+			}
+		case "video_url":
+			// a video, as DashScope's, Kimi's and OpenRouter's Chat take
+			// one (#4101, #6135): left out before, and the model answered
+			// for the words alone
+			if v, ok := videoPart(it.VideoURL.URL, "", ""); ok {
+				out = append(out, v)
 			}
 		}
 	}
@@ -490,6 +543,11 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 			case Text:
 				content = append(content, map[string]any{"type": "text", "text": p.Text})
 			case File:
+				if isVideo(p) && !r.videoOff {
+					plain = false
+					content = append(content, chatVideo(p))
+					break
+				}
 				content = append(content, map[string]any{"type": "text", "text": attachmentText(p)})
 			case Image:
 				plain = false

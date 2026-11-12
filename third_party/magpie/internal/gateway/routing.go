@@ -694,7 +694,29 @@ func failureOf(c candidate, status int, body []byte) string {
 	if dashScopeRate(c.p, status, body) {
 		return failRate
 	}
+	if grokBalanceOut(c.p, status, body) {
+		return failQuota
+	}
 	return failure(status, body)
+}
+
+// Grok Build's 402 for a plan's allowance spent says "Grok Build usage
+// balance exhausted". Its "balance" reads as money (creditWords), but the
+// allowance is a window that renews, and the usage card knows when.
+
+// grokBalanceOut says p, a Grok account (the plugin's, either id), was
+// refused with a 402 because its allowance is used up. That rests as out of
+// quota, until the window it filled renews (restAfter), not as out of
+// credit for half an hour (@justacati on X). Another vendor's 402 is its own.
+func grokBalanceOut(p provider.Provider, status int, body []byte) bool {
+	if status != http.StatusPaymentRequired || p.Account == nil {
+		return false
+	}
+	switch p.Account.UsageAgent() {
+	case "plugin:grok", "plugin:grok-plugin":
+		return bytes.Contains(bytes.ToLower(wordsOf(body)), []byte("usage balance exhausted"))
+	}
+	return false
 }
 
 // restrictedSaid says an error is one magpie already put in words as an
@@ -1451,6 +1473,14 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	pooled := why == failQuota && c.pooled(now)
 	// and none to tell from: the account rests, narrowed once read (#2036)
 	unread := why == failQuota && c.p.Account != nil && len(allowances(c.p.Account.UsageAgent())[c.p.Account.User]) == 0
+	// or read before the model's own window filled: its pool is among them,
+	// no window known full, and the refusal (Claude Code's "You've hit
+	// your limit" names no window) may be that pool's. The reading asked
+	// for below tells (Fable's week used up, the other weekly quota left:
+	// kaitokiku on X)
+	if !unread && why == failQuota && !pooled && c.p.Account != nil && c.model != "" && c.full(now).IsZero() {
+		unread = allowances(c.p.Account.UsageAgent())[c.p.Account.User].Scoped(c.model)
+	}
 	// a model the key's plan doesn't serve rests alone, counted by itself
 	// (#1235): the key's other models are still served. So does a ZCode
 	// trial entry zcode.z.ai's firewall blocked (zcodeTrialBlocked): the

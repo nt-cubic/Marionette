@@ -461,6 +461,12 @@ body.side-nav #prefs svg { flex: none; width: 15px; height: 15px; margin: 0 .5px
    text's own ink; the accent is kept for what acts */
 body.side-nav :is(#nav button.on .nav-ic, #prefs.on svg) { color: var(--fg); }
 body.side-nav .side-l { display: inline; }
+body.side-nav #nav > button[data-plugin-page] { position: relative; }
+body.side-nav #nav > button[data-plugin-page]::before { content: ""; position: absolute; left: 2px; top: 50%; width: 6px; height: 11px; margin-top: -5.5px; background: radial-gradient(circle, var(--muted) .9px, transparent 1.2px) 0 0 / 3px 3.75px; opacity: 0; transition: opacity .15s; }
+body.side-nav #nav > button[data-plugin-page]:is(:hover, .dragging)::before { opacity: 1; }
+#nav.sorting { user-select: none; -webkit-user-select: none; }
+#nav.sorting > button[data-plugin-page] { transition: transform .22s cubic-bezier(.22, 1, .36, 1); }
+#nav > button[data-plugin-page].dragging { position: relative; z-index: 2; background: var(--card); box-shadow: 0 6px 18px rgba(20, 22, 30, .12), 0 0 0 1px var(--line); transition: none; }
 body.side-nav #nav button.has-dot::after { top: 50%; right: 10px; margin-top: -3px; width: 6px; height: 6px; }
 /* the open page's tabs, under it on a thin line */
 .nav-sub { position: relative; display: flex; flex-direction: column; gap: 1px; margin: 2px 0 6px 16px; padding-left: 8px; }
@@ -589,8 +595,10 @@ body:not(.side-nav) .side-toggle .st-pane { opacity: 0; }
 .nav-morph #nav button[data-view="library"] { view-transition-name: nav-library; }
 .nav-morph #nav button[data-view="providers"] { view-transition-name: nav-providers; }
 .nav-morph #nav button[data-view="routing"] { view-transition-name: nav-routing; }
+.nav-morph #nav button[data-view="groups"] { view-transition-name: nav-groups; }
 .nav-morph #nav button[data-view="gateway"] { view-transition-name: nav-gateway; }
 .nav-morph #nav button[data-view="usage"] { view-transition-name: nav-usage; }
+.nav-morph #nav button[data-view="masking"] { view-transition-name: nav-masking; }
 .nav-morph #nav button[data-view="plugins"] { view-transition-name: nav-plugins; }
 ::view-transition-group(*) { z-index: 1; animation-duration: var(--morph-t); animation-timing-function: var(--morph-ease); }
 ::view-transition-old(*), ::view-transition-new(*) { inline-size: auto; block-size: auto; }
@@ -990,14 +998,41 @@ body.panel .row.pref.flash { border-radius: 10px; }
 /* packed into columns (packUsage): each card as tall as itself, placed on
    rows a pixel high, the gap between cards in its place on them (#860) */
 .subscription-usage.packed { grid-auto-rows: 1px; row-gap: 0; }
+/* the allowances as a table: a row an account (quotatable.js); wider than the
+   page, it scrolls in its own box with the subscription held at the left */
+.subscription-usage.tabled { display: block; }
+.qt-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+.qt { width: 100%; min-width: 560px; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+.qt th, .qt td { padding: 8px 10px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+.qt tbody tr:last-child td { border-bottom: 0; }
+.qt th { padding-block: 4px; font-size: 10.5px; font-weight: 500; color: var(--muted); white-space: nowrap; }
+.qt .qt-sub { position: sticky; left: 0; z-index: 1; min-width: 118px; background: var(--card); }
+.qt .qt-w { min-width: 84px; width: 15%; }
+.qt-sort { display: inline-flex; align-items: center; gap: 3px; padding: 2px 0; font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+.qt-sort.on { color: var(--fg); }
+.qt-arrow { display: inline-block; min-width: 1ch; }
+@media (hover: hover) and (pointer: fine) { .qt-sort:hover { color: var(--fg); } }
+.qt-id { display: flex; align-items: center; gap: 6px; }
+.qt-id .ic { width: 15px; height: 15px; flex: none; }
+.qt-id b { font-weight: 600; white-space: nowrap; }
+.qt .plan { display: block; margin: 2px 0 0 21px; font-size: 10.5px; color: var(--muted); text-transform: capitalize; white-space: nowrap; }
+.qt .qt-acct { min-width: 120px; max-width: 220px; color: var(--fg-2); }
+.qt .subscription-account { margin: 0; font-size: 12px; }
+.qt .qt-acct .quota-of, .qt .qt-acct .quota-seat { color: var(--muted); }
+.qt-win { display: grid; gap: 4px; }
+.qt-win + .qt-win { margin-top: 8px; }
+.qt-fig { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.qt-name { font-weight: 400; color: var(--muted); }
+.qt-reset { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.qt .qt-msg { color: var(--muted); }
 .subscription-card { padding: 10px 12px 11px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); min-width: 0; }
 /* a card's captions (resets, the period, a curve's dates) read at 4.5:1 or
    better on the card, below its figures (Jiabubu on Discord): light's
    --muted is 3.7:1 on white, so a card takes the controls' quiet text;
    dark's --muted is 4.6:1 already */
-.subscription-card, .pq-card, .quota-all { --muted: var(--ctl-fg); }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) :is(.subscription-card, .pq-card) { --muted: inherit; } }
-:root[data-theme="dark"] :is(.subscription-card, .pq-card) { --muted: inherit; }
+.subscription-card, .pq-card, .quota-all, .qt-wrap { --muted: var(--ctl-fg); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) :is(.subscription-card, .pq-card, .qt-wrap) { --muted: inherit; } }
+:root[data-theme="dark"] :is(.subscription-card, .pq-card, .qt-wrap) { --muted: inherit; }
 .subscription-head { display: flex; align-items: center; gap: 7px; margin-bottom: 9px; }
 .subscription-head:last-child { margin-bottom: 0; }
 .subscription-head .ic { width: 17px; height: 17px; }
@@ -1126,9 +1161,9 @@ body.panel .row.pref.flash { border-radius: 10px; }
 .balance-curve .bc-pace { color: var(--muted); }
 .qc-grid { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .qc-line { fill: none; stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
-/* a window far shorter than the span drawn (a 5-hour one over a week) is a
-   comb of drops: faint, and without its upright even burn */
-.qc-line.qc-short { stroke-width: 1; opacity: .45; }
+/* a window far shorter than the span drawn (a 5-hour one over a week) draws
+   its current cycle only, lighter, and without its upright even burn */
+.qc-line.qc-short { stroke-width: 1.25; opacity: .7; }
 .qc-even { stroke-width: 1; stroke-dasharray: 3 3; opacity: .45; vector-effect: non-scaling-stroke; }
 .qc-now { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 1 2; vector-effect: non-scaling-stroke; }
 .quota-curve .qc-axis { display: flex; justify-content: space-between; gap: 8px; margin-top: 3px; font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -1623,6 +1658,8 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
 .led-hscroll::-webkit-scrollbar-thumb { background: var(--faint); border: 2px solid transparent; border-radius: 10px; background-clip: padding-box; }
 .led-hscroll::-webkit-scrollbar-thumb:hover { background-color: var(--muted); }
 .led-hscroll::-webkit-scrollbar-button, .led-hscroll::-webkit-scrollbar-corner { display: none; }
+.reads-note { margin-top: 12px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.reads-note p { margin: 0; }
 .led-none { padding: 18px 16px; color: var(--muted); text-align: center; line-height: 1.5; }
 .led-sk { padding: 11px 14px; }
 .led-sk + .led-sk { border-top: 1px solid var(--line-2); }
@@ -1759,7 +1796,7 @@ details.cx-part[open] > summary .cx-h { margin-bottom: 2px; }
 .sess-pick svg { flex: none; opacity: .7; transition: transform .15s var(--ease); }
 .sess-pick:hover { background: var(--pill); }
 .sess-pick.set { color: var(--fg); border-color: var(--line-2); background: var(--pill); }
-.sess-pick.open svg { transform: rotate(180deg); }
+.sess-pick.open > svg { transform: rotate(180deg); }
 .pop.proto-menu.sess-menu { width: 300px; max-height: min(360px, 70vh); overflow-y: auto; overscroll-behavior: contain; }
 .sess-menu .pm-name, .sess-menu .pm-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pop.proto-menu.sess-menu { width: 340px; padding-top: 0; display: block; background: var(--card); }
@@ -3151,12 +3188,12 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 #gatewayKeys .amodels.key-models { display: inline-block; flex: 0 1 auto; min-width: 24px; max-width: 180px; line-height: 20px; overflow: hidden; text-overflow: ellipsis; }
 /* a key's quotas and concurrency badges (#2216) take no room until the
    row is hovered, and give way before the row runs past a narrow window */
-#gatewayKeys .amodels:is(.key-quotas, .key-conc) { display: inline-block; flex: 0 1 auto; min-width: 0; line-height: 20px; overflow: hidden; text-overflow: ellipsis; }
+#gatewayKeys .amodels:is(.key-quotas, .key-conc, .key-tier, .key-redact) { display: inline-block; flex: 0 1 auto; min-width: 0; line-height: 20px; overflow: hidden; text-overflow: ellipsis; }
 /* unset, shown by a hover, they give way before the masked key does: the
    key squeezed by them on a narrow window slid its copy button under the
    pointer that came to drag the row */
-#gatewayKeys .acc > :is(.key-quotas, .key-conc):not(.set) { flex-shrink: 8; }
-#gatewayKeys .acc:not(:hover) > :is(.key-quotas, .key-conc):not(.set, .open, :focus) { max-width: 0; padding: 0; margin-left: -9px; box-shadow: none; }
+#gatewayKeys .acc > :is(.key-quotas, .key-conc, .key-tier, .key-redact):not(.set) { flex-shrink: 8; }
+#gatewayKeys .acc:not(:hover) > :is(.key-quotas, .key-conc, .key-tier, .key-redact):not(.set, .open, :focus) { max-width: 0; padding: 0; margin-left: -9px; box-shadow: none; }
 /* the MCP servers a key held to some may use: cut, and gives way first */
 #gatewayKeys .amodels.key-mcp { display: inline-block; flex: 0 1 auto; min-width: 24px; max-width: 180px; line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* a read-only key's tag, always shown, never a button */
@@ -3519,6 +3556,7 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .editor .pair.bal-ask { flex-wrap: wrap; }
 .editor .pair.bal-ask input { flex: 1 1 160px; min-width: 0; }
 .editor .pair.bal-ask .segs { flex: none; align-self: center; }
+.editor .pair.bal-ask > .tick { flex-basis: 100%; }
 .editor .bal-found { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-size: 12px; line-height: 1.45; color: var(--muted); }
 .editor .bal-found span { overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
 .editor .side { display: flex; gap: 4px; align-items: center; flex: none; min-width: 52px; justify-content: flex-end; }
@@ -3832,6 +3870,7 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
    but for unsaved and Restore default; drawn with the limits, at once, so
    the row's height is whole when its editor holds the scroll */
 .mname > .munsaved, .mname > .action { order: 2; }
+.mname .mspeed { display: flex; align-items: center; flex: none; }
 .mname .msys { order: 1; display: flex; align-items: flex-start; gap: 6px; flex: 1 1 100%; min-width: 0; font-size: 11.5px; color: var(--muted); }
 .mname .msys span { flex: none; padding-top: 5px; }
 .editor .mname .msys textarea { flex: 1; min-width: 0; min-height: 25px; box-sizing: border-box; padding: 4px 8px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--fg); font: inherit; font-size: 11.5px; line-height: 1.45; resize: vertical; outline: none; transition: border-color .12s ease, box-shadow .12s ease; }
@@ -4564,8 +4603,8 @@ body.panel .modal { padding: 16px 12px; }
   body.web .accts.keys .acc > :is(.amodels, .proto, .alane, .aspend, .abal):not(.set) { margin-left: 0 !important; }
   body.web .accts.keys .acc > .abal.abal-many { flex-shrink: 1 !important; padding-block: 2px !important; }
   body.web .accts.keys .key-acts > .text.quiet { margin-right: 0 !important; }
-  body.web #gatewayKeys .acc > :is(.key-quotas, .key-conc) { max-width: none !important; padding: 0 7px !important; margin-left: 0 !important; flex-shrink: 0; }
-  body.web #gatewayKeys .acc > :is(.key-quotas, .key-conc):not(.set) { box-shadow: inset 0 0 0 1px var(--line) !important; }
+  body.web #gatewayKeys .acc > :is(.key-quotas, .key-conc, .key-tier, .key-redact) { max-width: none !important; padding: 0 7px !important; margin-left: 0 !important; flex-shrink: 0; }
+  body.web #gatewayKeys .acc > :is(.key-quotas, .key-conc, .key-tier, .key-redact):not(.set) { box-shadow: inset 0 0 0 1px var(--line) !important; }
 }
 
 /* Import from other apps: a checklist per app */
@@ -5211,7 +5250,6 @@ body .row.agent .ag-prefs .row.pref .who { display: block; }
 .editor .prov-prefs .warm-at:not(.times) { flex-wrap: wrap-reverse; }
 /* the editor's Claude Code runs as row switches it; magpie web as a
    gateway has that row's switch off, so this one shows there */
-.prov-prefs #claudeRunList:not(.gw) #claudeTuiRow { display: none; }
 /* Settings' search finds them; not searching, the links stay out */
 #view-settings:not(.set-searching) :is(#agentPrefLinks, #provPrefLinks) { display: none; }
 
@@ -5236,3 +5274,11 @@ body .row.agent .ag-prefs .row.pref .who { display: block; }
 .notices-text { grid-column: 1 / -1; min-width: 0; margin: 0; font: 11px/1.5 var(--code); white-space: pre-wrap; overflow-wrap: anywhere; }
 .client-cert { display: grid; gap: 6px; min-width: 0; }
 .client-cert input { width: 100%; min-width: 0; }
+.server-pin { display: grid; gap: 6px; min-width: 0; justify-items: start; }
+.server-pin .pin-fp { font: 11px/1.5 var(--code); overflow-wrap: anywhere; word-break: break-all; }
+.server-pin .pin-off { display: flex; align-items: center; gap: 6px; color: var(--red); font-weight: 600; }
+.server-pin .pin-off::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--red); flex: none; }
+.server-pin .pin-seen { display: grid; gap: 4px; min-width: 0; }
+.server-pin .hint.err { color: var(--red); overflow-wrap: anywhere; }
+.server-pin .pin-acts { display: flex; flex-wrap: wrap; gap: 12px; }
+.server-pin .pin-peek.busy { pointer-events: none; opacity: .6; }

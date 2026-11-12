@@ -141,6 +141,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		ModelKinds:           map[string]string{"p/m": "video"},
 		ModelHeaders:         map[string]map[string]string{"p/m": {"X-Endpoint": "ep-1"}},
 		ModelSystemPrompts:   map[string]string{"p/m": "Answer in Chinese."},
+		ModelTiers:           map[string]string{"p/m": "ultrafast"},
 		RedactRules:          []redact.Rule{{Kind: "prefix", Prefix: "oc_sk_"}},
 		RedactActions:        map[string]string{"API_KEY": "block", "EMAIL": "warn"},
 		RedactAllow:          []string{"team@kelvarn.io"},
@@ -157,6 +158,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		GatewayConversations: true,
 		QuotaLeft:            true,
 		UsageOrder:           []string{"kimi", "codex"},
+		PluginPageOrder:      []string{"plugin-b", "plugin-a"},
 		PanelUsageHidden:     []string{"deepseek"},
 		UsageAgentsHidden:    []string{"curl"},
 		UsageCardsHidden:     []string{"stepfun|balance"},
@@ -173,7 +175,9 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		CodexSubagentModel:   "codex/gpt-6-astra",
 		CodexServiceTier:     "priority",
 		DesktopSubagentModel: "fake/m2",
+		DesktopGateway:       "https://192.168.1.20:3425",
 		DshCompactModel:      "fake/m1",
+		CodexCompactModel:    "fake/m1",
 		ChinaMirror:          true,
 		NPMRegistry:          "https://npm.corp.example",
 		CodexAutoReset:       []string{"me@example.com"},
@@ -212,6 +216,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 	was.RequestArchiveLocal, was.RequestArchiveLocalMB = true, 256
 	was.ProxyCustom = "http://me:secret@proxy.example:8080"
 	was.PluginProxyCustom = "http://me:secret@plugins.example:8080"
+	was.UpdateProxyCustom = "http://me:secret@updates.example:8080"
 	was.PanelShortcut = "Ctrl+Alt+K"
 	was.Proxies = []settings.NamedProxy{{ID: "p1", Name: "Office", URL: "http://proxy.example:8080"}} // their own routes, /api/proxies/*
 	was.ProxyNames = map[string]string{"p1": "Office"}

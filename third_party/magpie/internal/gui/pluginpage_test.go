@@ -2,11 +2,15 @@ package gui
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -371,5 +375,106 @@ func TestPluginPageActions(t *testing.T) {
 	}
 	if a[1].ID != "logs" || a[1].Menu != "agent" || a[1].Title != "Usage glance" || a[1].Titles["zh"] != "用量速览" {
 		t.Errorf("an action with no title: %+v, want the page's", a[1])
+	}
+}
+
+// Behind a reverse proxy that doesn't pass the browser's Host on (nginx's
+// default proxy_pass), the Host magpie sees is its own address. The page's
+// policy then named an address the browser never used, so every script and
+// style was refused and the page drew as bare HTML (xuanwo on X, Day card).
+// The window names the address the browser used in the frame's address.
+func TestPluginPagePolicyBehindProxyHost(t *testing.T) {
+	pagePlugins(t)
+	h := pageMux()
+	var pages []pluginPage
+	w := do(h, httptest.NewRequest("GET", "/api/plugin-pages", nil))
+	if err := json.Unmarshal(w.Body.Bytes(), &pages); err != nil || len(pages) != 1 {
+		t.Fatalf("pages: %s %v", w.Body, err)
+	}
+	tok := strings.Split(strings.TrimPrefix(pages[0].URL, pluginPagePrefix), "/")[0]
+	csp := func(origin string) string {
+		r := httptest.NewRequest("GET", pages[0].URL+"?"+pageOriginParam+"="+url.QueryEscape(origin), nil)
+		r.Host = "127.0.0.1:3437"
+		return do(h, r).Header().Get("Content-Security-Policy")
+	}
+	named := "https://proxy.example.com/_magpie/plugin/" + tok + "/"
+	if p := csp("https://proxy.example.com"); !strings.Contains(p, "script-src https://127.0.0.1:3437/_magpie/plugin/"+tok+"/ http://127.0.0.1:3437/_magpie/plugin/"+tok+"/ "+named+";") ||
+		!strings.Contains(p, "style-src https://127.0.0.1:3437/_magpie/plugin/"+tok+"/ http://127.0.0.1:3437/_magpie/plugin/"+tok+"/ "+named+" 'unsafe-inline'") {
+		t.Fatalf("the proxy's address isn't named: %s", p)
+	}
+	// nothing but a plain http(s) host is carried into a policy
+	for _, bad := range []string{"", "https://x.example; script-src */", "https://u:p@x.example/", "ftp://x.example/", "https://x.example,y.example/", "javascript:alert(1)"} {
+		p := csp(bad)
+		if strings.Contains(p, "x.example") || strings.Contains(p, "*") || strings.Contains(p, "alert") {
+			t.Fatalf("origin %q reached the policy: %s", bad, p)
+		}
+	}
+	// the Host's own address is named once
+	if p := csp("http://127.0.0.1:3437"); strings.Count(p, "127.0.0.1:3437/_magpie/plugin/"+tok+"/") != 10 {
+		t.Fatalf("the Host's address twice: %s", p)
+	}
+}
+
+// Behind a proxy that signs readers in by cookie (Cloudflare Access), a
+// page's sandboxed frame sends no cookie for its stylesheet and scripts,
+// and the proxy turns them away. In magpie web the page comes as one
+// document, its scripts allowed by hash (xuanwo on X, Day card).
+func TestPluginPageWebComesAsOneDocument(t *testing.T) {
+	on, _ := pagePlugins(t)
+	dir := filepath.Join(on, "page")
+	html := `<!doctype html><link rel="stylesheet" href="s.css"><script src="_magpie/bridge.js"></script><script src="a.js"></script><script src="b.js" defer></script><script src="https://x.example/c.js"></script><body><p id=p></p></body>`
+	for name, body := range map[string]string{"index.html": html, "s.css": "p{color:red}", "a.js": "window.A=1", "b.js": "window.B=document.getElementById('p')"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// the proxy: no cookie, no file
+	proxy := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+			c, _ := r.Cookie("CF_Authorization")
+			sub := r.URL.Path != "" && !strings.HasSuffix(r.URL.Path, "/index.html")
+			if sub && c == nil {
+				http.Redirect(rw, r, "https://team.cloudflareaccess.com/cdn-cgi/access/login", http.StatusFound)
+				return
+			}
+			next.ServeHTTP(rw, r)
+		})
+	}
+	mux := http.NewServeMux()
+	pluginPageRoutes(mux, true)
+	var pages []pluginPage
+	_ = json.Unmarshal(do(mux, httptest.NewRequest("GET", "/api/plugin-pages", nil)).Body.Bytes(), &pages)
+	w := do(proxy(mux), httptest.NewRequest("GET", pages[0].URL, nil))
+	body := w.Body.String()
+	if w.Code != 200 || strings.Contains(body, `src="a.js"`) || strings.Contains(body, `href="s.css"`) {
+		t.Fatalf("the files aren't in the page: %d %s", w.Code, body)
+	}
+	if !strings.Contains(body, "window.A=1") || !strings.Contains(body, "p{color:red}") || !strings.Contains(body, "__magpieInlined") || !strings.Contains(body, `src="https://x.example/c.js"`) {
+		t.Errorf("the page: %s", body)
+	}
+	if strings.Index(body, "window.B=") < strings.Index(body, "<p id=p>") {
+		t.Errorf("a deferred script runs before the page is read: %s", body)
+	}
+	csp := w.Header().Get("Content-Security-Policy")
+	if n := strings.Count(csp, "'sha256-"); n != 3 || !strings.Contains(csp, "data:") {
+		t.Errorf("hashes of the three scripts: %s", csp)
+	}
+	// each hash is the sha256 of the exact bytes between the tags, as served
+	inl := regexp.MustCompile(`(?s)<script>(.*?)</script>`)
+	got := inl.FindAllStringSubmatch(body, -1)
+	if len(got) != 3 {
+		t.Fatalf("inline scripts: %d in %s", len(got), body)
+	}
+	for _, m := range got {
+		sum := sha256.Sum256([]byte(m[1]))
+		if h := "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"; !strings.Contains(csp, h) {
+			t.Errorf("served script %q has hash %s, not in the policy: %s", m[1], h, csp)
+		}
+	}
+	// not in a browser (the desktop window): files as they are
+	mux = http.NewServeMux()
+	pluginPageRoutes(mux, false)
+	if b := do(mux, httptest.NewRequest("GET", pages[0].URL, nil)).Body.String(); !strings.Contains(b, `src="a.js"`) {
+		t.Errorf("the window's page was rewritten: %s", b)
 	}
 }

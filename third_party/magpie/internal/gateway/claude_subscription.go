@@ -1100,21 +1100,31 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 		log.Printf("claude: a branch of a claude -p run's session goes to a new interactive Claude Code, told the whole conversation")
 		from, req.branch = nil, nil
 	}
-	if from != nil && from.cut != "" {
+	if from != nil && (from.cut != "" || len(from.cutCalls) > 0) {
 		// a branch is a copy of the run's session as far as the reply
 		// that made the calls, a session of its own: Claude Code's
 		// interactive mode doesn't take --resume-session-at, and resumes
 		// the whole session (Claude Code 2.1.316), so the branch was -p,
 		// and its prompt not the one the run's interactive mode had
 		// cached (bbfatx on X)
-		sid, err := cutSession(from.sessions, from.session, from.cut)
+		cutter, how := cutSession, "tool results another request answered first go on in a branch of their run's session, told from the results"
+		if from.cutBefore {
+			cutter, how = cutSessionBefore, "a side request that sends the conversation whole, without the calls its run still waits on, goes on in a branch of that run's session, cut before them"
+		}
+		var sid string
+		var err error
+		if from.cut == "" {
+			sid, err = cutSessionBeforeCalls(from.sessions, from.session, from.cutCalls)
+		} else {
+			sid, err = cutter(from.sessions, from.session, from.cut)
+		}
 		if err != nil {
 			log.Printf("claude: a branch of a run's session couldn't be cut (%v); a new Claude Code is told the whole conversation", err)
 			from, req.branch = nil, nil
 		} else {
-			log.Printf("claude: tool results another request answered first go on in a branch of their run's session, told from the results (%d messages)", len(from.since))
+			log.Printf("claude: %s (%d messages)", how, len(from.since))
 			from.mu.Lock()
-			from.session, from.cut, from.gone = sid, "", false
+			from.session, from.cut, from.cutCalls, from.cutBefore, from.gone = sid, "", nil, false, false
 			from.mu.Unlock()
 		}
 	}
@@ -1205,6 +1215,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	}
 	defer turn()
 	noteClaudeRun(code)
+	noteEntry(ctx, tui, code)
 	var cmd *exec.Cmd
 	if tui {
 		if cmd, err = binary.tuiCommand(context.Background(), args...); err != nil {
@@ -2522,6 +2533,12 @@ type savedSession struct {
 	// is cut after: the run that takes it resumes a copy of the session
 	// as far as that line (cutSession), and the file stays the run's
 	cut string
+	// cutBefore: cut before that line, not after it: the reply's words
+	// stay and its calls go (a side request that dropped them, #6128)
+	cutBefore bool
+	// cutCalls: the cut is before the line of these tool calls, found by
+	// their ids, when the line's uuid isn't known yet (#6128).
+	cutCalls []string
 	// tui: the session was made by Claude Code's interactive mode; a
 	// branch of it is too, where it can be (claudePrint)
 	tui bool
@@ -2716,9 +2733,9 @@ func (r *subscriptionRun) noteLines(uuid, model, msg string, ids []string) {
 // own cache marks, Claude Code in WSL (no session on disk), a session
 // taken back since (rewound), or, with the interactive mode on, a -p
 // run's session, as its branch is -p too.
-func (b *subscriptionBridge) branch(req *Request, owner string) *savedSession {
+func (b *subscriptionBridge) branch(req *Request, owner string) (*savedSession, string) {
 	if req.clientCache != nil {
-		return nil
+		return nil, "the client marks its own cache"
 	}
 	msgs := req.Messages
 	i := len(msgs)
@@ -2726,7 +2743,7 @@ func (b *subscriptionBridge) branch(req *Request, owner string) *savedSession {
 		i--
 	}
 	if i == 0 || i == len(msgs) {
-		return nil
+		return nil, "" // no reply to go on from: not a turn that branches
 	}
 	k := i
 	for k > 0 && msgs[k-1].Role == "assistant" {
@@ -2740,42 +2757,89 @@ func (b *subscriptionBridge) branch(req *Request, owner string) *savedSession {
 			}
 		}
 	}
-	if len(calls) == 0 {
-		return nil
-	}
+	// A side request that sends the conversation whole (Claude Code's
+	// AgentSummary) drops the assistant messages whose calls have no
+	// result yet, and keeps the words before them: the last reply has no
+	// call to find a line by (#6128). It is the reply of a run that waits
+	// on its calls, found by the conversation before it, and the branch
+	// is cut before the reply's first call, after the words.
+	pending := len(calls) == 0
+	told := historyKey(msgs[:k])
 	b.mu.Lock()
 	runs := make([]*subscriptionRun, 0, len(b.runs))
 	for _, run := range b.runs {
 		runs = append(runs, run)
 	}
 	b.mu.Unlock()
-	told := ""
+	why := "no run of the account made the calls"
+	if pending {
+		why = "the reply has no call, and no run waits on a reply to this conversation"
+	}
+	var found *savedSession
+	foundSeq := 0
 	for _, run := range runs {
 		if run.owned() != owner {
 			continue
 		}
 		run.mu.Lock()
 		at, seq, said := "", 0, ""
-		for _, id := range calls {
-			if l, ok := run.lines[id]; ok && l.uuid != "" && l.seq > seq {
-				at, seq, said = l.uuid, l.seq, l.told
+		var unread []string // pending calls whose line isn't read yet
+		if pending {
+			for id, l := range run.lines {
+				switch {
+				case l.told != told:
+				case l.uuid == "":
+					unread = append(unread, id)
+					if seq == 0 || l.seq < seq {
+						seq, said = l.seq, l.told
+					}
+				}
+			}
+			// A reply is parked on once its calls were streamed; its
+			// session line may not be read yet, nor on disk (#6128): the
+			// calls are found in the session by their ids, and a line
+			// already read is a surer place.
+			slices.Sort(unread)
+			for _, l := range run.lines {
+				if l.uuid != "" && l.told == told && (at == "" || l.seq < seq) {
+					at, seq, said = l.uuid, l.seq, l.told
+					unread = nil
+				}
+			}
+		} else {
+			for _, id := range calls {
+				if l, ok := run.lines[id]; ok && l.uuid != "" && l.seq > seq {
+					at, seq, said = l.uuid, l.seq, l.told
+				}
 			}
 		}
 		sid, sessions, prefix := run.sessionID, slices.Clone(run.sessions), run.cachePrefix
 		usable := !run.closed && !run.rewound && run.lean == req.leanPrompt && !run.clientMarks && (run.tui || !wantTUI(req))
 		run.mu.Unlock()
-		if at == "" {
+		if at == "" && len(unread) == 0 {
 			continue
 		}
-		if told == "" {
-			told = historyKey(msgs[:k])
+		switch {
+		case !usable:
+			why = "the run is closed, taken back, or of another mode"
+		case sid == "" || len(sessions) == 0:
+			why = "the run has no session on disk"
+		case said != told:
+			why = "the conversation before the reply isn't the one the run answered"
+		default:
+			if pending && found != nil && seq <= foundSeq {
+				continue
+			}
+			found, foundSeq = &savedSession{session: sid, sessions: sessions, owner: owner, at: time.Now(), since: msgs[i:], cut: at, cutCalls: unread, cutBefore: pending, tui: run.tui, appended: run.appended, cachePrefix: prefix, gone: true}, seq
 		}
-		if !usable || sid == "" || len(sessions) == 0 || said != told {
-			return nil
+		if !pending {
+			break
 		}
-		return &savedSession{session: sid, sessions: sessions, owner: owner, at: time.Now(), since: msgs[i:], cut: at, tui: run.tui, appended: run.appended, cachePrefix: prefix, gone: true}
 	}
-	return nil
+	if found == nil {
+		return nil, why
+	}
+	return found, ""
 }
 
 // retryBranch is where a turn sent again while its run is busy answering
@@ -2967,6 +3031,47 @@ func cutAfterReply(b []byte, msg string) int {
 // session as it stood before that message was told.
 func cutSessionBefore(dirs []string, sid, uuid string) (string, error) {
 	return cutSessionAt(dirs, sid, uuid, cutBefore)
+}
+
+// cutSessionBeforeCalls is cutSession as far as the line before the first
+// assistant line that calls one of ids, the calls a run's reply made that
+// its line uuid isn't known for (#6128). Claude Code writes that line late,
+// after its tool ran: asked again until cutWait is over, then, with the
+// line not there, the session as it stands is what came before the calls.
+func cutSessionBeforeCalls(dirs []string, sid string, ids []string) (string, error) {
+	if len(ids) == 0 {
+		return "", errors.New("no session to cut")
+	}
+	return cutSessionWhere(dirs, sid, "calls "+strings.Join(ids, ","), func(b []byte, last bool) int {
+		if end := cutBeforeCalls(b, ids); end >= 0 {
+			return end
+		}
+		if last {
+			return len(b)
+		}
+		return -1
+	})
+}
+
+// cutBeforeCalls is where in a session's lines b the first whole assistant
+// line calling one of ids begins, -1 when none is there; a line with no
+// newline yet is not whole.
+func cutBeforeCalls(b []byte, ids []string) int {
+	for at := 0; at < len(b); {
+		nl := bytes.IndexByte(b[at:], '\n')
+		if nl < 0 {
+			break
+		}
+		line := b[at : at+nl]
+		start := at
+		at += nl + 1
+		for _, id := range ids {
+			if bytes.Contains(line, []byte(`"id":"`+id+`"`)) {
+				return start
+			}
+		}
+	}
+	return -1
 }
 
 // cutSessionWhere copies session sid as far as the place at finds in its
@@ -3850,6 +3955,20 @@ func (r *subscriptionRun) emit(ev Event) {
 			r.unended = false
 		case KToolStart:
 			r.shown = append(r.shown, shownCall{id: ev.ID, name: ev.Name})
+			// The call answers the conversation the run last heard from
+			// the moment it is shown, not from park: a side request that
+			// arrives while the reply still streams (Claude Code's
+			// AgentSummary, #6128) finds the call by it (branch).
+			if r.lines == nil {
+				r.lines = map[string]callLine{}
+			}
+			if l := r.lines[ev.ID]; l.told == "" && r.told != "" {
+				if l.uuid == "" {
+					l.seq = r.lineSeq
+				}
+				l.told = r.told
+				r.lines[ev.ID] = l
+			}
 		case KToolArgs:
 			if n := len(r.shown); n > 0 {
 				r.shown[n-1].args += ev.Text
@@ -7035,7 +7154,11 @@ func (s *Server) serveSubscriptionAs(w http.ResponseWriter, r *http.Request, fro
 		log.Printf("%s on %s: tool results %s", name, model, how)
 	}
 	if run == nil && name == "Claude Code" {
-		req.branch = s.subscription.branch(req, owner)
+		var why string
+		if req.branch, why = s.subscription.branch(req, owner); req.branch == nil && why != "" {
+			// what the match was, never what was said
+			log.Printf("claude: no branch of a run's session for this request: %s", why)
+		}
 	}
 	if run == nil {
 		run, events, err = start(r.Context(), req)
@@ -7114,7 +7237,7 @@ func (s *Server) serveSubscriptionAs(w http.ResponseWriter, r *http.Request, fro
 		}
 		run.ended(req, said, stop, ok)
 	})
-	if req.interactive && strings.Contains(msg, thirdPartyWords) {
+	if req.interactive && thirdPartyIn(msg) {
 		s.subscription.refusedTUI(req)
 	}
 	if code == redoAsPrint {
@@ -7170,6 +7293,17 @@ func bridgeFailed(name, msg string, status int) (int, string) {
 // (sdk-cli) was served the same prompt.
 const thirdPartyWords = "Third-party apps now draw from your extra usage"
 
+// thirdPartyTeamWords is the same refusal on a Claude Team or Enterprise
+// workspace, which has no "your": "API Error: 400 Third-party apps now
+// draw from extra usage, not plan limits. Ask your workspace admin to
+// add more and keep going." (#5645, pidal20 on X).
+const thirdPartyTeamWords = "Third-party apps now draw from extra usage"
+
+// thirdPartyIn is whether msg holds either wording of the refusal.
+func thirdPartyIn(msg string) bool {
+	return strings.Contains(msg, thirdPartyWords) || strings.Contains(msg, thirdPartyTeamWords)
+}
+
 // thirdPartyRefused is msg, the words a Claude Code run's failure is
 // answered with, with what happened and what to do said after it when
 // Anthropic refused the turn as a third-party app's (#4503). The bare
@@ -7200,7 +7334,7 @@ func thirdPartyRefused(name string, req *Request, code int, msg string) string {
 // thirdPartySaid is whether a Claude Code run's failure is Anthropic's
 // refusal of its turn as a third-party app's.
 func thirdPartySaid(name string, code int, msg string) bool {
-	return name == "Claude Code" && code == http.StatusBadRequest && strings.Contains(msg, thirdPartyWords)
+	return name == "Claude Code" && code == http.StatusBadRequest && thirdPartyIn(msg)
 }
 
 // thirdPartyCode is claudePrint's code for a run that is claude -p

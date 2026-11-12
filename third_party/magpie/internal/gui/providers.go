@@ -74,6 +74,12 @@ type modelJSON struct {
 	// System is the system prompt the user gave the model, added after the
 	// agent's own (provider.SetModelSystemPrompt)
 	System string `json:"system,omitempty"`
+	// Tier is the speed the user gave the model, "priority" or "ultrafast"
+	// (provider.SetModelTier); CanFast says it has a fast mode to give,
+	// CanUltra that an account offers the faster one (kdajenks on X)
+	Tier     string `json:"tier,omitempty"`
+	CanFast  bool   `json:"canFast,omitempty"`
+	CanUltra bool   `json:"canUltra,omitempty"`
 	// Vendor is the provider's own id of a model the user lists by
 	// another (provider.SetModelID), "" for one listed by its own; IDs
 	// says the provider's models can be given ids at all (a key's)
@@ -155,6 +161,12 @@ type providerJSON struct {
 	ClientKey       string `json:"clientKey,omitempty"`
 	ServerCA        string `json:"serverCA,omitempty"`
 	TakesClientCert bool   `json:"takesClientCert,omitempty"`
+	// the server certificate its own hosts are taken with alone, their
+	// certificate otherwise unchecked (provider.ServerPin)
+	ServerPin string `json:"serverPin,omitempty"`
+	// TakesServerPin: an https:// address of the user's own to pin
+	// (provider.PinHosts), a preset's pointed at their own server too
+	TakesServerPin bool `json:"takesServerPin,omitempty"`
 	// its Responses turns over the Responses WebSocket (provider.Socket,
 	// #5781): auto, on or ""; TakesSocket: a provider of a key with a
 	// Responses URL
@@ -226,10 +238,16 @@ type providerJSON struct {
 	BalanceURL    string `json:"balanceURL,omitempty"`
 	BalancePath   string `json:"balancePath,omitempty"`
 	BalanceMethod string `json:"balanceMethod,omitempty"`
+	// NoBalanceProbe: the look for a balance query is turned off
+	NoBalanceProbe bool `json:"noBalanceProbe,omitempty"`
 	// the query magpie found by itself for a relay added by hand with no
 	// Balance URL, and its field (provider.BalanceFound)
 	BalanceFound      string `json:"balanceFound,omitempty"`
 	BalanceFoundField string `json:"balanceFoundField,omitempty"`
+	// whether magpie looks for a balance query for it at all (the switch
+	// aside), and whether it looked and found none
+	BalanceProbe      bool `json:"balanceProbe,omitempty"`
+	BalanceUndetected bool `json:"balanceUndetected,omitempty"`
 	// its keys may have a balance typed by hand, their vendor telling
 	// none (provider.TakesOwnBalance)
 	TakesOwnBalance bool   `json:"takesOwnBalance,omitempty"`
@@ -850,7 +868,7 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 		ID: p.ID, Name: p.Name, Icon: p.Icon, IconFrom: p.IconFrom, Preset: p.Preset, Host: p.Host(),
 		Chat: p.Chat, Responses: p.Responses, Anthropic: p.Anthropic, Gemini: p.Gemini, Decide: p.Decide, BaseAPI: p.BaseAPI, ModelTest: p.ModelTest(), TestsAs: p.TestClients(), DecideTest: p.AsksDecideModels(), MarksKinds: p.MarksKinds(),
 		Catalog: p.Catalog, Website: p.Website, KeysURL: p.KeysURL,
-		Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountWindowAmounts: p.AccountWindowAmounts, AccountNames: p.AccountNames, Headers: p.Headers, ExtraBody: p.ExtraBody, ReplyHeaders: p.ReplyHeaders, PassHeaders: p.PassHeaders, Searches: p.Searches, Cline: p.ClinePinnable(), PinUpstream: p.PinUpstream, Unredacted: p.Unredacted, CountFree: p.CountFree, Billing: p.Billing, BillingKind: p.BillingKind(), InsecureTLS: p.InsecureTLS, TakesInsecureTLS: p.TakesInsecureTLS(), HTTP1: p.HTTP1, ClientCert: tilde(p.ClientCert), ClientKey: tilde(p.ClientKey), ServerCA: tilde(p.ServerCA), TakesClientCert: p.TakesClientCert(), Socket: p.Socket, TakesSocket: p.TakesSocket(), LimitRestOff: p.LimitRestOff, UpstreamProviders: p.UpstreamProviders, ImageFilesOff: p.ImageFilesOff, TakesImageFiles: p.TakesImageFiles(), NativeCompaction: p.NativeCompaction, CarriesCompaction: p.CarriesCompaction(), PassUserAgent: !p.MagpieUserAgent, OwnClient: p.OwnClient(), PassErrors: p.PassErrors, TakesPassErrors: p.TakesPassErrors(), AuthHeader: p.AuthHeader, BothAuth: p.BothAuth(), BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, BalanceMethod: p.BalanceMethod, ModelsURL: p.ModelsURL, ListOff: p.ListsOff(), TakesListOff: p.Account == nil && !p.IsPlugin() && !p.DecideOnly(), TakesModelHeaders: p.Account == nil, DecideAPIKind: p.DecideAPIKind(),
+		Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountWindowAmounts: p.AccountWindowAmounts, AccountNames: p.AccountNames, Headers: p.Headers, ExtraBody: p.ExtraBody, ReplyHeaders: p.ReplyHeaders, PassHeaders: p.PassHeaders, Searches: p.Searches, Cline: p.ClinePinnable(), PinUpstream: p.PinUpstream, Unredacted: p.Unredacted, CountFree: p.CountFree, Billing: p.Billing, BillingKind: p.BillingKind(), InsecureTLS: p.InsecureTLS, TakesInsecureTLS: p.TakesInsecureTLS(), HTTP1: p.HTTP1, ClientCert: tilde(p.ClientCert), ClientKey: tilde(p.ClientKey), ServerCA: tilde(p.ServerCA), TakesClientCert: p.TakesClientCert(), ServerPin: p.ServerPin, TakesServerPin: p.TakesServerPin(), Socket: p.Socket, TakesSocket: p.TakesSocket(), LimitRestOff: p.LimitRestOff, UpstreamProviders: p.UpstreamProviders, ImageFilesOff: p.ImageFilesOff, TakesImageFiles: p.TakesImageFiles(), NativeCompaction: p.NativeCompaction, CarriesCompaction: p.CarriesCompaction(), PassUserAgent: !p.MagpieUserAgent, OwnClient: p.OwnClient(), PassErrors: p.PassErrors, TakesPassErrors: p.TakesPassErrors(), AuthHeader: p.AuthHeader, BothAuth: p.BothAuth(), BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, BalanceMethod: p.BalanceMethod, NoBalanceProbe: p.NoBalanceProbe, ModelsURL: p.ModelsURL, ListOff: p.ListsOff(), TakesListOff: p.Account == nil && !p.IsPlugin() && !p.DecideOnly(), TakesModelHeaders: p.Account == nil, DecideAPIKind: p.DecideAPIKind(),
 		Ready: p.Ready(), Chosen: p.PicksOf(avail), Agents: make([]providerAgent, 0, len(agents)),
 		Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, UseFirst: p.UseFirst, NoStandIn: p.NoStandIn, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, RestartApp: p.RestartApp, Self: p.SelfAnswered(), KeepSelf: p.KeepSelf, CapStop: p.CapStop, CapCareful: p.CapCareful, Unlisted: p.Unlisted, NoModels: p.ServesNone(), BestInFamily: p.BestInFamily && len(p.Models) == 0 && !p.NoModels, Off: p.Off, Contexts: p.Contexts,
 		MaxConcurrency: p.MaxConcurrency, PluginConcurrency: p.PluginConcurrency(), MaxAccounts: p.MaxAccounts, PluginAccounts: p.PluginAtOnce(), PriceRate: p.PriceRate,
@@ -879,6 +897,7 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 	}
 	if p.BalanceURL == "" {
 		out.BalanceFound, out.BalanceFoundField, _ = provider.BalanceFound(p)
+		out.BalanceProbe, out.BalanceUndetected = provider.BalanceProbeState(p)
 	}
 	if out.Fallback == nil {
 		out.Fallback = []string{}
@@ -1055,6 +1074,7 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 	// Discord, Windows)
 	set := held
 	noAPI := p.NoAPI()
+	ultraModels := sync.OnceValue(provider.UltraModels)
 	// the provider's catalogs worked out once, and each model priced once
 	// for its list price and whether it is free
 	pricer := p.Pricer()
@@ -1114,6 +1134,10 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 			j.Headers = held.ModelHeaders[ref]
 		}
 		j.System = held.ModelSystemPrompts[ref]
+		if j.CanFast = provider.CanFast(p, m.ID); j.CanFast {
+			j.Tier = held.ModelTiers[ref]
+			j.CanUltra = provider.UltraOn(p, m.ID, ultraModels())
+		}
 		j.Merge = provider.MergeName(m.ID)
 		j.Desktop = desktop[ref]
 		if mp, ok := held.ModelPrices[ref]; ok {
@@ -1665,6 +1689,10 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			ClientCert *string `json:"clientCert"`
 			ClientKey  *string `json:"clientKey"`
 			ServerCA   *string `json:"serverCA"`
+			// ServerPin is the SHA-256 of the server certificate its own
+			// hosts are taken with alone (provider.ServerPin), "" to check
+			// them as usual; a save that leaves it out keeps it
+			ServerPin *string `json:"serverPin"`
 			// HTTP1 is whether its own hosts are spoken HTTP/1.1 to; a
 			// save that leaves it out keeps it
 			HTTP1 *bool `json:"http1"`
@@ -1675,6 +1703,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// LimitRestOff is whether a quota refusal or a 429 leaves it
 			// asked as usual; a save that leaves it out keeps it
 			LimitRestOff *bool `json:"limitRestOff"`
+			// NoBalanceProbe turns off the look for a relay's balance query;
+			// a save that leaves it out keeps it
+			NoBalanceProbe *bool `json:"noBalanceProbe"`
 			// UpstreamProviders, on a Remote magpie, names its models by the
 			// provider serving each there; a save that leaves it out keeps it
 			UpstreamProviders *bool `json:"upstreamProviders"`
@@ -2110,7 +2141,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				if req.InsecureTLS != nil {
 					in.InsecureTLS = *req.InsecureTLS
 				}
-				in = withCerts(in, nil, req.ClientCert, req.ClientKey, req.ServerCA)
+				in = withCerts(in, nil, req.ClientCert, req.ClientKey, req.ServerCA, req.ServerPin)
 				if req.HTTP1 != nil {
 					in.HTTP1 = *req.HTTP1
 				}
@@ -2119,6 +2150,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				}
 				if req.LimitRestOff != nil {
 					in.LimitRestOff = *req.LimitRestOff
+				}
+				if req.NoBalanceProbe != nil {
+					in.NoBalanceProbe = *req.NoBalanceProbe
 				}
 				if req.UpstreamProviders != nil {
 					in.UpstreamProviders = *req.UpstreamProviders && in.IsRemoteMagpie()
@@ -2161,7 +2195,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				} else if old != nil {
 					in.InsecureTLS = old.InsecureTLS
 				}
-				in = withCerts(in, old, req.ClientCert, req.ClientKey, req.ServerCA)
+				in = withCerts(in, old, req.ClientCert, req.ClientKey, req.ServerCA, req.ServerPin)
 				if req.HTTP1 != nil {
 					in.HTTP1 = *req.HTTP1
 				} else if old != nil {
@@ -2176,6 +2210,11 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 					in.LimitRestOff = *req.LimitRestOff
 				} else if old != nil {
 					in.LimitRestOff = old.LimitRestOff
+				}
+				if req.NoBalanceProbe != nil {
+					in.NoBalanceProbe = *req.NoBalanceProbe
+				} else if old != nil {
+					in.NoBalanceProbe = old.NoBalanceProbe
 				}
 				if req.UpstreamProviders != nil {
 					in.UpstreamProviders = *req.UpstreamProviders && in.IsRemoteMagpie()
@@ -2756,7 +2795,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			}
 			saved := *p
 			if req.Typed {
-				q := withCerts(typed(*p, in, req.Proxy, req.InsecureTLS, req.HTTP1), p, req.ClientCert, req.ClientKey, req.ServerCA)
+				q := withCerts(typed(*p, in, req.Proxy, req.InsecureTLS, req.HTTP1), p, req.ClientCert, req.ClientKey, req.ServerCA, req.ServerPin)
 				p = &q
 			}
 			if len(req.Test) > 0 {
@@ -2793,7 +2832,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				}
 				p = *saved
 			}
-			p = withCerts(typed(p, in, req.Proxy, req.InsecureTLS, req.HTTP1), &p, req.ClientCert, req.ClientKey, req.ServerCA)
+			p = withCerts(typed(p, in, req.Proxy, req.InsecureTLS, req.HTTP1), &p, req.ClientCert, req.ClientKey, req.ServerCA, req.ServerPin)
 			if strings.TrimSpace(in.Decide) != "" {
 				// a decision API is asked its smallest question, at
 				// POST …/systemone (#647)
@@ -2836,6 +2875,14 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			q := *p
 			q.BalanceURL, q.BalancePath = strings.TrimSpace(in.BalanceURL), strings.TrimSpace(in.BalancePath)
 			q.BalanceMethod = in.BalanceMethod
+			if req.NoBalanceProbe != nil {
+				q.NoBalanceProbe = *req.NoBalanceProbe
+			}
+			if q.BalanceURL == "" {
+				// no URL named: the check looks for one again, whatever was
+				// found before (provider.ForgetBalanceProbe)
+				provider.ForgetBalanceProbe(q)
+			}
 			if in.Headers != nil {
 				q.Headers = in.Headers
 			}
@@ -2855,6 +2902,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				// asked where relays tell a key its balance: where, or that
 				// neither told it
 				out["looked"], out["found"], out["foundField"] = true, u, field
+				out["undetected"] = u == ""
 			}
 			writeJSON(rw, out)
 			return
@@ -2864,6 +2912,27 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				fail(rw, err)
 				return
 			}
+		case "peekcert":
+			// the certificate the form's HTTPS address shows, taken
+			// unchecked, for its editor to offer it to be trusted
+			// (provider.ServerPin, Zhangzhangi on X)
+			var p provider.Provider
+			if pr, err := provider.FromPreset(in.Preset); err == nil {
+				p = pr
+			}
+			if old, err := provider.Find(in.ID); err == nil && in.ID != "" {
+				p = *old
+			}
+			p = withCerts(typed(p, in, req.Proxy, req.InsecureTLS, req.HTTP1), &p, req.ClientCert, req.ClientKey, req.ServerCA, req.ServerPin)
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			defer cancel()
+			seen, err := p.PeekServerCert(ctx)
+			if err != nil {
+				fail(rw, err)
+				return
+			}
+			writeJSON(rw, seen)
+			return
 		case "list":
 			// the vendor's list for the form as it stands, nothing saved:
 			// the add form's Fetch models, picked from before the provider
@@ -2875,7 +2944,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			if p.Name == "" {
 				p.Name = cmp.Or(strings.TrimSpace(in.Name), "the vendor")
 			}
-			p = withCerts(typed(p, in, req.Proxy, req.InsecureTLS, req.HTTP1), &p, req.ClientCert, req.ClientKey, req.ServerCA)
+			p = withCerts(typed(p, in, req.Proxy, req.InsecureTLS, req.HTTP1), &p, req.ClientCert, req.ClientKey, req.ServerCA, req.ServerPin)
 			ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 			defer cancel()
 			all, err := p.ListAll(ctx)
@@ -2919,7 +2988,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			defer cancel()
 			ask := *p
 			if req.Typed {
-				ask = withCerts(typed(*p, in, req.Proxy, req.InsecureTLS, req.HTTP1), p, req.ClientCert, req.ClientKey, req.ServerCA)
+				ask = withCerts(typed(*p, in, req.Proxy, req.InsecureTLS, req.HTTP1), p, req.ClientCert, req.ClientKey, req.ServerCA, req.ServerPin)
 			}
 			ms, dropped, err := ask.Refetch(ctx)
 			if err != nil {
@@ -2968,7 +3037,13 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		var change func() error
 		switch r.PathValue("action") {
 		case "switch":
-			change = func() error { return provider.SwitchLogin(in.Agent, in.User) }
+			change = func() error {
+				err := provider.SwitchLogin(in.Agent, in.User)
+				if err == nil {
+					provider.NoteReordered()
+				}
+				return err
+			}
 		case "forget":
 			change = func() error { return provider.ForgetLogin(in.Agent, in.User) }
 		case "on", "off":
@@ -3453,7 +3528,7 @@ func typed(p, in provider.Provider, proxy *string, insecureTLS, http1 *bool) pro
 // or an unsaved test typed (#5596), each one left out kept from old (nil:
 // none); a ~ is taken as home, as a save keeps it, so an unsaved test
 // reads the same files.
-func withCerts(p provider.Provider, old *provider.Provider, cert, key, ca *string) provider.Provider {
+func withCerts(p provider.Provider, old *provider.Provider, cert, key, ca, pin *string) provider.Provider {
 	var kept provider.Provider
 	if old != nil {
 		kept = *old
@@ -3471,6 +3546,10 @@ func withCerts(p provider.Provider, old *provider.Provider, cert, key, ca *strin
 	p.ClientCert = pick(cert, kept.ClientCert)
 	p.ClientKey = pick(key, kept.ClientKey)
 	p.ServerCA = pick(ca, kept.ServerCA)
+	p.ServerPin = kept.ServerPin
+	if pin != nil {
+		p.ServerPin = strings.TrimSpace(*pin) // Save keeps it as netproxy.NormalPin has it, or says why
+	}
 	return p
 }
 

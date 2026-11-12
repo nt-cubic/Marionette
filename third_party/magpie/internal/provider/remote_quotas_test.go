@@ -288,7 +288,9 @@ func TestKeptQuotaReportAsksNobody(t *testing.T) {
 		c.Unlock()
 	})
 	qs := KeptQuotaReport(time.Now())
-	if len(qs) != 1 || qs[0].Provider != "codex" || qs[0].Kind != "subscription" || len(qs[0].Windows) != 1 || qs[0].Windows[0].Used != 62 || qs[0].Windows[0].ResetsAt == nil {
+	// a ChatGPT card's image row (#6160, WithImageLane) is made from what
+	// the gateway remembers, not read
+	if len(qs) != 1 || qs[0].Provider != "codex" || qs[0].Kind != "subscription" || len(qs[0].Windows) != 2 || qs[0].Windows[0].Used != 62 || qs[0].Windows[0].ResetsAt == nil || qs[0].Windows[1].Lane != "images" {
 		t.Fatalf("report: %+v", qs)
 	}
 	if SubscriptionUsageReading() {
@@ -665,6 +667,39 @@ func TestRemoteCardsFollowEnabledModelsAndDedupe(t *testing.T) {
 	for _, q := range CachedCards(time.Now()) {
 		if strings.Contains(q.Provider, "kiro") {
 			t.Errorf("a card of a provider the Remote isn't enabled for is passed on: %+v", q)
+		}
+	}
+}
+
+// @748975219 on X (0.1.3771): with only relay/strata/model enabled, the
+// cards of relay/kiro and relay/codex still passed, as only the first part
+// of the card's id was compared.
+func TestRemoteCardWantedByWholePath(t *testing.T) {
+	cases := []struct {
+		name string
+		ids  []string
+		yes  []string
+		no   []string
+	}{
+		{"two levels", []string{"relay/strata/m"}, []string{"relay/strata", "relay"}, []string{"relay/kiro", "relay/codex", "kiro", "relay/strata/x"}},
+		{"three levels", []string{"a/b/c/m"}, []string{"a/b/c", "a/b", "a"}, []string{"a/b/d", "a/x", "a/b/c/d", "b"}},
+		{"not at a boundary", []string{"relay/kiro/m"}, []string{"relay/kiro"}, []string{"relay/kir", "relay/kiro2", "relay/kiroo", "rel"}},
+		{"prefix of the other way", []string{"relay/kir/m"}, []string{"relay/kir"}, []string{"relay/kiro"}},
+		{"several", []string{"relay/strata/m", "relay/kiro/n"}, []string{"relay/strata", "relay/kiro"}, []string{"relay/codex"}},
+		{"one level", []string{"kiro/m"}, []string{"kiro"}, []string{"codex", "kiro/x"}},
+		{"unknown provider", []string{"m"}, []string{"anything", "a/b"}, nil},
+	}
+	for _, c := range cases {
+		w := cardWantedFor(c.ids)
+		for _, id := range c.yes {
+			if !w(id) {
+				t.Errorf("%s: %v should tell %q", c.name, c.ids, id)
+			}
+		}
+		for _, id := range c.no {
+			if w(id) {
+				t.Errorf("%s: %v should not tell %q", c.name, c.ids, id)
+			}
 		}
 	}
 }

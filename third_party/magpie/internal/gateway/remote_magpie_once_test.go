@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -105,7 +106,7 @@ func TestRemoteMagpieMasksWhatItIsNotToldWasMasked(t *testing.T) {
 		body, _ := seen()
 		return body
 	}
-	own := ownMaskedAs()
+	own := ownMaskedAs(context.Background())
 	if own == "" {
 		t.Fatal("no fingerprint with masking on")
 	}
@@ -124,6 +125,13 @@ func TestRemoteMagpieMasksWhatItIsNotToldWasMasked(t *testing.T) {
 	send(magpieUA(), own)
 	if n := masked.Load(); n != 0 {
 		t.Errorf("masked again %d times, told it was masked by the same settings", n)
+	}
+	// another build's header, the same settings: not masked again either
+	_, fp, _ := strings.Cut(own, "/")
+	masked.Store(0)
+	send(magpieUA(), "v0.1.3638/"+fp)
+	if n := masked.Load(); n != 0 {
+		t.Errorf("masked again %d times, told so by another build with the same settings", n)
 	}
 }
 
@@ -152,5 +160,35 @@ func TestRemoteMagpieRoutedFailureNotAskedAgain(t *testing.T) {
 	}
 	if n := asked.Load(); n != 1 {
 		t.Errorf("the remote magpie was asked %d times for one request, its own retries and patience spent each time; want once", n)
+	}
+}
+
+// A request masked by another build of magpie with the same settings is
+// not masked again, whichever build is newer (Luxzinw on X); one from a
+// build before the masker last changed, or a header that isn't a build's,
+// is.
+func TestMaskedBeforeAcrossBuilds(t *testing.T) {
+	fresh(t)
+	own := "v0.1.3800/" + strings.Repeat("a", 32)
+	other := strings.Repeat("b", 32)
+	for _, c := range []struct {
+		told string
+		want bool
+	}{
+		{own, true},
+		{"v0.1.3771/" + strings.Repeat("a", 32), true},       // older build, as new a masker
+		{"0.1.3638/" + strings.Repeat("a", 32), true},        // no v
+		{"v0.1.3900-dirty/" + strings.Repeat("a", 32), true}, // newer build
+		{"v0.1.3583/" + strings.Repeat("a", 32), false},      // masker found less
+		{"v0.1.100/" + strings.Repeat("a", 32), false},
+		{"dev/" + strings.Repeat("a", 32), false},
+		{"v0.1.3771/" + other, false}, // other settings
+		{"v0.1.3771/", false},
+		{"nonsense", false},
+		{"", false},
+	} {
+		if got := sameMasking(own, c.told); got != c.want {
+			t.Errorf("told %q: %v, want %v", c.told, got, c.want)
+		}
 	}
 }

@@ -519,12 +519,22 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 	})
 	// magpie signs in to a remote server once, for every agent given it (#615)
 	mux.HandleFunc("POST /api/library/mcp-signin", func(rw http.ResponseWriter, r *http.Request) {
-		var in struct{ Name string }
+		var in struct {
+			Name  string
+			Add   bool // as another account of the server, called Label
+			Label string
+		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Name == "" {
 			http.Error(rw, "no server", http.StatusBadRequest)
 			return
 		}
-		st, err := library.SignInServer(r.Context(), in.Name)
+		var st mcpauth.State
+		var err error
+		if in.Add {
+			st, err = library.SignInServerAccount(r.Context(), in.Name, in.Label)
+		} else {
+			st, err = library.SignInServer(r.Context(), in.Name)
+		}
 		if err != nil {
 			fail(rw, err)
 			return
@@ -542,6 +552,45 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 	mux.HandleFunc("POST /api/library/mcp-signin/{id}/cancel", func(rw http.ResponseWriter, r *http.Request) {
 		mcpauth.Cancel(r.PathValue("id"))
 		rw.WriteHeader(http.StatusNoContent)
+	})
+	// a server's accounts (Elorynth on X): Kind "signin" is magpie's OAuth
+	// sign-ins to it, "header" the sets of headers it is asked with; ID "" in
+	// a use is the server's own headers
+	mux.HandleFunc("POST /api/library/mcp-account", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Name, Kind, Op, ID, Label string
+			Headers                   map[string]string
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Name == "" {
+			http.Error(rw, "no server", http.StatusBadRequest)
+			return
+		}
+		var err error
+		switch in.Kind + "/" + in.Op {
+		case "signin/use":
+			err = library.UseSignIn(in.Name, in.ID)
+		case "signin/remove":
+			err = library.RemoveSignIn(in.Name, in.ID)
+		case "header/add":
+			_, err = library.AddServerAccount(in.Name, in.Label, in.Headers)
+		case "header/use":
+			_, err = library.UseServerAccount(in.Name, in.ID)
+		case "header/remove":
+			_, err = library.RemoveServerAccount(in.Name, in.ID)
+		default:
+			http.Error(rw, "not an account call", http.StatusBadRequest)
+			return
+		}
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		v, err := libraryView(nil)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, v)
 	})
 	mux.HandleFunc("POST /api/library/mcp-signout", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct{ Name string }
@@ -604,11 +653,14 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			// Agents is named as the page sends it, so that it is this
 			// and not the instructions' own Agents that "agents" fills
 			Agents []string `json:"agents"`
-			Source string
-			Paths  []string
-			Names  []string // the skills to update, of those a check found changed; to bring in, of those found in the agents
-			Server library.Server
-			Hook   library.Hook // a hook saved (#1790)
+			// Description is a new skill's (skills/create)
+			Description string `json:"description"`
+			Source      string
+			Paths       []string
+			Names       []string // the skills to update, of those a check found changed; to bring in, of those found in the agents
+			Server      library.Server
+			Hook        library.Hook   // a hook saved (#1790)
+			Env         library.EnvVar // a variable saved
 			// a subagent saved (#2283)
 			Subagent library.Subagent
 			Agent    string            // the agent whose own skill is in the library's way
@@ -689,6 +741,12 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			res, err = library.RemoveFoundServer(in.Name)
 		case "hooks/save":
 			res, err = library.SaveHook(in.Old, in.Hook)
+		case "env/save":
+			res, err = library.SaveEnv(in.Old, in.Env)
+		case "env/agents":
+			res, err = library.EnvAgents(in.Name, in.Agents)
+		case "env/remove":
+			res, err = library.RemoveEnv(in.Name)
 		case "hooks/agents":
 			res, err = library.HookAgents(in.Name, in.Agents)
 		case "hooks/agents-some":
@@ -715,6 +773,8 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			res, err = library.RemoveSubagents([]string{in.Name})
 		case "skills/install":
 			res, err = library.InstallSkills(in.Source, in.Paths, in.Agents)
+		case "skills/create":
+			res, err = library.CreateSkill(in.Name, in.Description, in.Agents)
 		case "skills/update":
 			res, err = library.UpdateSkill(in.Name, in.Replace)
 			var gone *library.GoneError

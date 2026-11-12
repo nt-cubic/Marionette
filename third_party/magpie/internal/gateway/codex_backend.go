@@ -120,6 +120,7 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 		noteAsked(r.Context(), model)
 		// the service tier set for Codex, in place of the one it asked
 		body = codexTiered(r, body, model)
+		body = keyTiered(r, body, model)
 		// a turn of the conversation's own: the model its side calls may
 		// follow (codexFollowTo)
 		meta := requestSessionMetadata(r.Header, body)
@@ -145,6 +146,10 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 			}
 			if to := codexSummariesTo(r.Header, body, false, session); to != "" {
 				s.codexSummary(w, r, body, to)
+				return
+			}
+			if to := codexCommitsTo(r.Header, body, false, session); to != "" {
+				s.codexCommit(w, r, body, to)
 				return
 			}
 			if to := codexPredictionsTo(r.Header, body, false, session); to != "" {
@@ -205,8 +210,13 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 			// or group has, or is turned away (serve, sealedReader)
 			// a provider set to compact natively is asked Codex's own
 			// compaction, and its sealed item goes back as it came (#1099)
-			body, compact := codexInputAs(body, true, s.nativeCompactionFor(model))
+			native := s.nativeCompactionFor(model)
+			body, compact := codexInputAs(body, true, native)
 			if compact {
+				// a compaction magpie makes goes on the model set for it
+				if to := codexCompactTo(r, model, native, s.nativeCompactionFor); to != "" {
+					body = withModel(body, to)
+				}
 				s.codexCompact(w, r, body)
 				return
 			}
@@ -1022,7 +1032,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 		if on != nil {
 			to = *on
 		}
-		w, body, unmask, maskedHits, err = redactedHits(maskedFor(r.Context(), to, false, nil), w, body)
+		w, body, unmask, maskedHits, err = redactedHits(maskedFor(r.Context(), to, "", false, nil), w, body)
 		defer unmask()
 		if err != nil {
 			writeError(w, provider.Responses, maskStatus(err), err.Error())
@@ -1673,13 +1683,13 @@ func codexBusy(status int, msg []byte) bool {
 // unmasked, and every fallback of it too (unredactedRoute).
 func codexRouteUnmasked(on *provider.Provider) bool {
 	if on != nil {
-		return unredactedRoute(*on, false, nil)
+		return unredactedRoute(*on, "", false, nil)
 	}
 	p, err := provider.Find("codex")
 	if err != nil || p.Account == nil || p.Account.Agent != "codex" {
 		return false
 	}
-	return unredactedRoute(*p, false, nil)
+	return unredactedRoute(*p, "", false, nil)
 }
 
 // codexAccountOut says the ChatGPT backend turned away a turn on Codex's

@@ -66,7 +66,9 @@ const callCacheVersion = "calls-v15"
 // (zcode 1 left out every call of a session holding one copy).
 // antigravity 1: a Gemini deployment's name with any one letter after it
 // (gemini-4-argon-d) is its model's (GeminiDeployment).
-var callParseVersions = map[string]int{"antigravity": 1, "cindy": 1, "codex": 3, "zcode": 2}
+// zcode 3: a call names its session as a request does, without the sess_
+// prefix (zcodeBareID), so the gateway's record of it pairs with it.
+var callParseVersions = map[string]int{"antigravity": 1, "cindy": 1, "codex": 3, "zcode": 3}
 
 // CallCacheVersion is callCacheVersion and callParseVersions, for a cache
 // of what is made of the calls (usage's requests-v1.bin and heatmap): a
@@ -594,7 +596,7 @@ type callDiskState struct {
 }
 
 func diskCallState(s *callFile) callDiskState {
-	d := callDiskState{ContentHash: s.ContentHash, Size: s.Size, Mod: s.Mod, Off: s.Off, Head: s.Head, HeadSize: s.HeadSize,
+	d := callDiskState{ContentHash: s.ContentHash.String(), Size: s.Size, Mod: s.Mod, Off: s.Off, Head: s.Head.String(), HeadSize: s.HeadSize,
 		Path: s.Path, Agent: s.Agent, Parser: callParseVersions[s.Agent], At: s.At, End: s.End, AsstEnd: s.AsstEnd, Session: s.Session, Requested: s.Requested,
 		LastUser: s.LastUser, LastAsst: s.LastAsst}
 	if s.Dsh != nil {
@@ -609,8 +611,8 @@ func diskCallState(s *callFile) callDiskState {
 	return d
 }
 func (s callDiskState) restore() *callFile {
-	st := &callFile{ContentHash: s.ContentHash, Size: s.Size, Mod: s.Mod, Off: s.Off,
-		Head: s.Head, HeadSize: s.HeadSize, Path: s.Path, Agent: s.Agent, At: s.At, End: s.End,
+	st := &callFile{ContentHash: parseDigest(s.ContentHash), Size: s.Size, Mod: s.Mod, Off: s.Off,
+		Head: parseDigest(s.Head), HeadSize: s.HeadSize, Path: s.Path, Agent: s.Agent, At: s.At, End: s.End,
 		AsstEnd: s.AsstEnd, Session: s.Session, Requested: s.Requested, LastUser: s.LastUser, LastAsst: s.LastAsst}
 	if len(s.Dsh) > 0 {
 		var c dshCarry

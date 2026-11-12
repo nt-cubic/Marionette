@@ -95,12 +95,19 @@ type candidate struct {
 	// what a member listed after it stands in for (standsInFor)
 	member string
 	place  int
+	// redact is what the groups the member is in say of masking
+	// (Member.Masking): "" for one that is in none, or none says
+	redact string
 	// reserve is set, to the provider's AtOnce, on an account or key held
 	// back past the first that many (keepAtOnce): tried after them, never
 	// given a request for want of a slot (laneMate) nor kept on by a
 	// conversation (affine)
 	reserve int
 }
+
+// unmasked says a request to the try goes as written: its groups say so,
+// or none says otherwise and its provider is set to (provider.UnmaskedBy).
+func (c candidate) unmasked() bool { return provider.UnmaskedBy(c.redact, c.p) }
 
 // capHold is how an account is held at its usage cap: the cap of the
 // fullest window at or past its own cap, that window's share used, and when the last such window
@@ -779,8 +786,9 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 		// the same model at another effort is another member's
 		for _, l := range [][]candidate{cs, aside, left, barred} {
 			for i := range l {
-				l[i].effort, l[i].levels, l[i].effortMap, l[i].fast = m.Effort, m.Levels, m.EffortMap, m.Fast
+				l[i].effort, l[i].levels, l[i].effortMap, l[i].fast, l[i].ultra = m.Effort, m.Levels, m.EffortMap, m.Fast, m.Ultra
 				l[i].firstToken = innerFirstToken(m)
+				l[i].redact = m.Masking()
 				l[i].patience = innerPatience(m)
 				if len(m.Path) > 0 {
 					l[i].member = m.Path[0]

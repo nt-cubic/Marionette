@@ -2,6 +2,7 @@
 // kernel adds them to i18n.js's (magpie.strings).
 magpie.strings({
   zh: {
+    "Live output speed is measured on requests that go through magpie's gateway. For agents that don't, each call's tokens and time are in Usage › Requests, read from their session files.": "实时输出速度是在请求经过 magpie 网关时测得的。没有经过网关的 Agent，每次调用的 token 数和耗时可在「用量 › 请求」查看，数据读自它们的会话文件。",
     "Avg {n} tok/s": "平均 {n} token/秒",
     "Tool {n}s": "工具 {n} 秒",
     "Round average": "本轮平均",
@@ -83,6 +84,8 @@ magpie.strings({
     "{n} sessions are still being written to; close them in {agent} and try again in a minute": "{n} 个会话仍在写入；请在 {agent} 中关闭它们，一分钟后再试",
     "{title} restored": "已恢复「{title}」",
     "Trash is empty": "回收站是空的",
+    "{agent} isn't installed here. These sessions leave this list; its own files are not touched, and Trash puts them back.": "这台电脑上没有安装 {agent}。这些会话会从列表移除，{agent} 自己的文件不动，可在「回收站」恢复。",
+    "Taken off the list": "已从列表移除",
     "Sessions deleted here wait in magpie's trash, to be restored.": "在此删除的会话进入 magpie 回收站，可随时恢复。",
     "Deleted sessions are kept in {dir} until you erase them here; magpie never erases them by itself.": "已删除的会话保存在 {dir}，在此彻底删除前不会自动清除。",
     "Empty magpie's trash?": "清空 magpie 的回收站？",
@@ -97,6 +100,7 @@ magpie.strings({
     "Searched what was said in the latest {n} of {total} sessions.": "已搜索最近 {n} 个会话的对话内容（共 {total} 个）。",
   },
   "zh-TW": {
+    "Live output speed is measured on requests that go through magpie's gateway. For agents that don't, each call's tokens and time are in Usage › Requests, read from their session files.": "即時輸出速度是在請求經過 magpie 閘道時量測的。沒有經過閘道的 Agent，每次呼叫的 token 數和耗時可在「用量 › 請求」查看，資料讀自它們的會話檔案。",
     "Avg {n} tok/s": "平均 {n} token/秒",
     "Tool {n}s": "工具 {n} 秒",
     "Round average": "本輪平均",
@@ -178,6 +182,8 @@ magpie.strings({
     "{n} sessions are still being written to; close them in {agent} and try again in a minute": "{n} 個會話仍在寫入；請在 {agent} 中關閉它們，一分鐘後再試",
     "{title} restored": "已恢復「{title}」",
     "Trash is empty": "回收站是空的",
+    "{agent} isn't installed here. These sessions leave this list; its own files are not touched, and Trash puts them back.": "這台電腦上沒有安裝 {agent}。這些會話會從清單移除，{agent} 自己的檔案不動，可在「回收桶」還原。",
+    "Taken off the list": "已從清單移除",
     "Sessions deleted here wait in magpie's trash, to be restored.": "在此刪除的會話進入 magpie 回收站，可隨時恢復。",
     "Deleted sessions are kept in {dir} until you erase them here; magpie never erases them by itself.": "已刪除的會話儲存在 {dir}，在此徹底刪除前不會自動清除。",
     "Empty magpie's trash?": "清空 magpie 的回收站？",
@@ -192,6 +198,7 @@ magpie.strings({
     "Searched what was said in the latest {n} of {total} sessions.": "已搜尋最近 {n} 個會話的對話內容（共 {total} 個）。",
   },
   ja: {
+    "Live output speed is measured on requests that go through magpie's gateway. For agents that don't, each call's tokens and time are in Usage › Requests, read from their session files.": "リアルタイムの出力速度は、リクエストが magpie のゲートウェイを通るときに計測されます。通らないエージェントについては、各呼び出しのトークン数と所要時間をセッションファイルから読み取り、「使用量 › リクエスト」で確認できます。",
     "Avg {n} tok/s": "平均 {n} トークン/秒",
     "Tool {n}s": "ツール {n} 秒",
     "Round average": "このターンの平均",
@@ -273,6 +280,8 @@ magpie.strings({
     "{n} sessions are still being written to; close them in {agent} and try again in a minute": "{n} 件のセッションはまだ書き込み中です。{agent} で閉じてから、1 分後にもう一度お試しください",
     "{title} restored": "「{title}」を元に戻しました",
     "Trash is empty": "ゴミ箱は空です",
+    "{agent} isn't installed here. These sessions leave this list; its own files are not touched, and Trash puts them back.": "このコンピュータに {agent} はインストールされていません。これらのセッションは一覧から外れ、{agent} 自身のファイルには触れません。ゴミ箱から戻せます。",
+    "Taken off the list": "一覧から外しました",
     "Sessions deleted here wait in magpie's trash, to be restored.": "ここで削除したセッションは magpie のゴミ箱に残り、元に戻せます。",
     "Deleted sessions are kept in {dir} until you erase them here; magpie never erases them by itself.": "削除したセッションは、ここで消去するまで {dir} に保存されます。magpie が自動で消去することはありません。",
     "Empty magpie's trash?": "magpie のゴミ箱を空にしますか？",
@@ -287,6 +296,7 @@ magpie.strings({
     "Searched what was said in the latest {n} of {total} sessions.": "最新 {n} 件の会話の内容を検索しました（全 {total} 件）。",
   },
   de: {
+    "Live output speed is measured on requests that go through magpie's gateway. For agents that don't, each call's tokens and time are in Usage › Requests, read from their session files.": "Die Live-Ausgabegeschwindigkeit wird bei Anfragen gemessen, die über das magpie-Gateway laufen. Bei Agenten, die das nicht tun, stehen Tokens und Dauer jedes Aufrufs unter Nutzung › Anfragen, gelesen aus ihren Sitzungsdateien.",
     "Avg {n} tok/s": "Ø {n} Token/s",
     "Tool {n}s": "Tool {n} s",
     "Round average": "Ø dieser Runde",
@@ -368,6 +378,8 @@ magpie.strings({
     "{n} sessions are still being written to; close them in {agent} and try again in a minute": "In {n} Sitzungen wird noch geschrieben; schließen Sie sie in {agent} und versuchen Sie es in einer Minute erneut",
     "{title} restored": "„{title}“ wiederhergestellt",
     "Trash is empty": "Der Papierkorb ist leer",
+    "{agent} isn't installed here. These sessions leave this list; its own files are not touched, and Trash puts them back.": "{agent} ist hier nicht installiert. Diese Sitzungen verschwinden aus der Liste; die eigenen Dateien von {agent} bleiben unberührt, der Papierkorb bringt sie zurück.",
+    "Taken off the list": "Aus der Liste genommen",
     "Sessions deleted here wait in magpie's trash, to be restored.": "Hier gelöschte Sitzungen bleiben zur Wiederherstellung im Papierkorb von magpie.",
     "Deleted sessions are kept in {dir} until you erase them here; magpie never erases them by itself.": "Gelöschte Sitzungen bleiben in {dir}, bis Sie sie hier endgültig löschen; magpie löscht sie nie von selbst.",
     "Empty magpie's trash?": "Papierkorb von magpie leeren?",

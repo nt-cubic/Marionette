@@ -2,7 +2,9 @@ package sessions
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -211,5 +213,119 @@ func TestZCodeTitlesKeepTheListingsStamp(t *testing.T) {
 	}
 	if !checked {
 		t.Fatal("ses_zcA not listed")
+	}
+}
+
+// ZCode's app names a session in its task index (v2/tasks-index.sqlite), not
+// in the CLI's database, where a session it never titled is "default" and the
+// model's guess is not what the app shows. The app's name is the session's,
+// and a rename in the app (the CLI's rows unchanged) is read at the next ask
+// (Flandern1211 on X).
+func TestZCodeTitleIsTheAppsTaskName(t *testing.T) {
+	home := setupAgents(t)
+	cli, err := sql.Open("sqlite", filepath.Join(home, ".zcode", "cli", "db", "db.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cli.Close() })
+	for _, s := range []struct{ id, title, source string }{
+		{"sess_aaaa", "New session", "default"},
+		{"sess_bbbb", "A model's guess", "ai"},
+		{"sess_cccc", "Only the CLI knows", "ai"},
+	} {
+		if _, err := cli.Exec(`INSERT INTO session (id, project_id, parent_id, slug, directory, title, title_source, version, time_created, time_updated) VALUES (?, 'p', NULL, 's', '/work/zc', ?, ?, '0.16.9', 1790496000000, 1790496000000)`, s.id, s.title, s.source); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idx, err := sql.Open("sqlite", filepath.Join(home, ".zcode", "v2", "tasks-index.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { idx.Close() })
+	if err := os.MkdirAll(filepath.Join(home, ".zcode", "v2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.Exec(`CREATE TABLE tasks (workspace_key TEXT NOT NULL, task_id TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL, deleted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (workspace_key, task_id))`); err != nil {
+		t.Fatal(err)
+	}
+	put := func(id, title string, updated int64) {
+		if _, err := idx.Exec(`INSERT OR REPLACE INTO tasks (workspace_key, task_id, title, updated_at) VALUES ('w', ?, ?, ?)`, id, title, updated); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("sess_aaaa", "整理发票", 1790496000000)
+	put("sess_bbbb", "My own name", 1790496000000)
+	keys := []string{"zcode:sess_aaaa", "zcode:sess_bbbb", "zcode:sess_cccc"}
+	got := Titles(keys)
+	for k, want := range map[string]string{"zcode:sess_aaaa": "整理发票", "zcode:sess_bbbb": "My own name", "zcode:sess_cccc": "Only the CLI knows"} {
+		if got[k] != want {
+			t.Fatalf("%s: %q, want %q (all %v)", k, got[k], want, got)
+		}
+	}
+	put("sess_aaaa", "Renamed", 1790496100000)
+	if got := Titles(keys); got["zcode:sess_aaaa"] != "Renamed" {
+		t.Fatalf("after a rename: %q, want Renamed", got["zcode:sess_aaaa"])
+	}
+}
+
+// A name poll stamps a ZCode session with its messages' count and time,
+// but the list it reads is allFilesForTitles' kept one, shared with every
+// poll meanwhile: the stamps go in a copy, and the kept list stays as the
+// rows gave it.
+func TestZCodeTitleStampsLeaveKeptListAlone(t *testing.T) {
+	home := setupAgents(t)
+	const id = "sess_9d0b1c8e-2f3a-4b5c-8d7e-6f5a4b3c2d1e"
+	db, err := sql.Open("sqlite", filepath.Join(home, ".zcode", "cli", "db", "db.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if _, err := db.Exec(`INSERT INTO session (id, project_id, parent_id, slug, directory, title, title_source, version, time_created, time_updated) VALUES (?, 'p', NULL, 's', '/work/zc', 'Stamped', 'generated', '0.16.9', 1790496000000, 1790496000000)`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES ('m1', ?, 1790496500000, 1790496500000, '{}')`, id); err != nil {
+		t.Fatal(err)
+	}
+	if got := Titles([]string{"zcode:" + id}); got["zcode:"+id] != "Stamped" {
+		t.Fatalf("title %v", got)
+	}
+	kept := allKept[1].last()
+	i := slices.IndexFunc(kept, func(f file) bool { return f.agent == "zcode" && f.m().sid == id })
+	if i < 0 {
+		t.Fatalf("no kept ZCode file for %s in %d files", id, len(kept))
+	}
+	if f := kept[i]; f.size != 0 || f.mod.UnixMilli() != 1790496000000 {
+		t.Fatalf("the kept list was stamped in place: size %d, mod %d", f.size, f.mod.UnixMilli())
+	}
+}
+
+// The app's task index names a session the CLI database has no row for, and
+// a request names it without the sess_ prefix (Flandern1211 on X: the
+// Context page showed the id's first eight characters).
+func TestZCodeTitleOfSessionOnlyTheAppKnows(t *testing.T) {
+	home := setupAgents(t)
+	if err := os.MkdirAll(filepath.Join(home, ".zcode", "v2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := sql.Open("sqlite", filepath.Join(home, ".zcode", "v2", "tasks-index.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { idx.Close() })
+	if _, err := idx.Exec(`CREATE TABLE tasks (workspace_key TEXT NOT NULL, task_id TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL, deleted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (workspace_key, task_id))`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.Exec(`INSERT INTO tasks (workspace_key, task_id, title, updated_at) VALUES ('w', 'sess_49fd5314-1a7a-44f7-857c-c3266cd78aed', '整理发票', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	keys := []string{"zcode:49fd5314-1a7a-44f7-857c-c3266cd78aed", "zcode:sess_49fd5314-1a7a-44f7-857c-c3266cd78aed", "zcode:deadbeef"}
+	got := Titles(keys)
+	for _, k := range keys[:2] {
+		if got[k] != "整理发票" {
+			t.Fatalf("%s: %q, want 整理发票 (all %v)", k, got[k], got)
+		}
+	}
+	if got[keys[2]] != "" {
+		t.Fatalf("unknown session named %q", got[keys[2]])
 	}
 }

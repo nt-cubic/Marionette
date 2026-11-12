@@ -83,7 +83,7 @@
     f.setAttribute("referrerpolicy", "no-referrer");
     f.setAttribute("allow", "");
     f.title = titled(p.entry);
-    f.src = p.entry.url;
+    f.src = framed(p.entry.url);
     p.frame = f;
     p.hello = false;
     p.shown = true;
@@ -141,6 +141,8 @@
         if (!e.reads.includes(name)) throw new Error(t("{name} doesn't ask to read {what}", { name: titled(e), what: name }));
         return api("plugin-pages/read", { spec: e.spec, read: name, params: m.params?.params || {} });
       }
+      case "asset":
+        return import("./pageshare.js").then(() => pageAsset(e.url, m.params?.url));
       case "image.copy":
       case "image.save":
         return import("./pageshare.js").then(() => pageShare(e.spec, m.method === "image.save", m.params));
@@ -201,8 +203,39 @@
       b.append(s);
     }
     b.append(el("span", "", titled(e)));
-    b.onclick = () => { show(e.key); b.blur(); };
+    b.onclick = () => { if (b.dataset.dragged) return; show(e.key); b.blur(); };
+    b.addEventListener("pointerdown", (ev) => hold(b, ev));
     return b;
+  }
+
+  // a press held 400ms on a tab picks it up; it is dragged to its place
+  // and the order kept (settings PluginPageOrder)
+  function hold(b, ev) {
+    if (ev.button !== 0 || !document.body.classList.contains("side-nav")) return;
+    let last = ev;
+    const mv = (m) => { last = m; if (Math.hypot(m.clientX - ev.clientX, m.clientY - ev.clientY) > 6) stop(); };
+    const stop = () => {
+      clearTimeout(timer);
+      document.removeEventListener("pointermove", mv);
+      document.removeEventListener("pointerup", stop);
+      document.removeEventListener("pointercancel", stop);
+    };
+    const timer = setTimeout(() => {
+      stop();
+      const nav = $("#nav");
+      const rows = [...nav.querySelectorAll("button[data-plugin-page]")].filter((x) => !pages.get(x.dataset.view)?.entry.replaces);
+      b.dataset.dragged = "1";
+      const at = { button: 0, isPrimary: true, pointerId: ev.pointerId, clientX: last.clientX, clientY: last.clientY };
+      if (!dragRows(at, b, b, nav, rows, (to) => {
+        const rest = rows.filter((x) => x !== b);
+        rest.splice(to, 0, b);
+        rows[to][to > rows.indexOf(b) ? "after" : "before"](b);
+        api("plugin-pages/arrange", { order: rest.map((x) => x.dataset.view) }).catch((err) => { statusErr(err); load(); });
+      })) delete b.dataset.dragged;
+    }, 400);
+    document.addEventListener("pointermove", mv);
+    document.addEventListener("pointerup", stop);
+    document.addEventListener("pointercancel", stop);
   }
 
   async function load() {
@@ -326,6 +359,14 @@
     console.error(`[magpie] ${p.entry.name}: panel ${p.entry.key}: ${why}`);
   }
 
+  // The address a frame loads: a browser's page names its own origin in
+  // it (the frame sends no Referer), as the server's policy for the frame
+  // can't know the address a reverse proxy that keeps no Host serves it
+  // at. The desktop window's scheme is the server's own to name.
+  function framed(url) {
+    return /^https?:$/.test(location.protocol) ? url + (url.includes("?") ? "&" : "?") + "_o=" + encodeURIComponent(location.origin) : url;
+  }
+
   // a panel's frame in body, told context once it says hello
   function panelFrame(e, context, body) {
     const f = document.createElement("iframe");
@@ -334,7 +375,7 @@
     f.setAttribute("referrerpolicy", "no-referrer");
     f.setAttribute("allow", "");
     f.title = titled(e);
-    f.src = e.url;
+    f.src = framed(e.url);
     const p = { entry: e, frame: f, context, body, hello: false, broken: false };
     p.timer = setTimeout(() => { if (!p.hello) panelBroke(p, t("{name}'s page didn't answer", { name: titled(e) })); }, HELLO_MS);
     panels.set(f, p);

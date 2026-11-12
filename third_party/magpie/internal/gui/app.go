@@ -411,6 +411,7 @@ func Run(version string, showMain bool, link string) error {
 	var gw *gateway.Server
 	if ownPage {
 		gw = startBackend()
+		go rewireAgentsOnStart()
 		handler = Handler(h, gw)
 	}
 	// Linux: the magpie before holds the app's D-Bus name until it quits,
@@ -422,6 +423,7 @@ func Run(version string, showMain bool, link string) error {
 	// a quiet start joins the Dock once started (below): Wails activates
 	// an app that starts in it
 	policy := dockPolicy(settings.Load().Dock && !quiet)
+	webView2Prepare()
 	h.app = application.New(application.Options{
 		// Windows and Linux start a new process for a magpie:// link (or a
 		// second launch); it hands its arguments to the running one and quits.
@@ -469,10 +471,11 @@ func Run(version string, showMain bool, link string) error {
 			// Codex's own, for the threads no Codex has open: with magpie
 			// gone they still go on (LukeMa on X)
 			agent.PortCodexRollouts(3 * time.Second)
+			restoreAgentsOnQuit()
 			updates.install(false)
 		},
 		// Wails exits on some webview errors; say why before it does.
-		ErrorHandler: func(err error) { log.Println("magpie:", err) },
+		ErrorHandler: func(err error) { webView2Failed(h.app, err) },
 	})
 	// Windows without the WebView2 runtime can make no window: Wails would
 	// exit on the first, with nothing on screen to say why (#1806). The

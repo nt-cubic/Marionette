@@ -1454,7 +1454,44 @@ func contextIn(b string, spellings, user bool) int {
 	if t, ok := untagged(b); spellings && ok {
 		return contextIn(t, true, user)
 	}
+	if spellings {
+		return geminiKinWindow(b)
+	}
 	return 0
+}
+
+// geminiKinWindow is the window a Gemini model models.dev doesn't list
+// yet takes: the one every Gemini of its generation it does list agrees
+// on, or 0. models.dev lags a new Gemini by a day or more, while Google's
+// lists name it at once; Gemini 4 Carbon came after Argon and read no
+// window (stockAAAAA on X), where Google's model page gives both 1M.
+// Siblings that differ give no guess.
+func geminiKinWindow(b string) int {
+	rest, ok := strings.CutPrefix(b, "gemini-")
+	if !ok {
+		return 0
+	}
+	i := 0
+	for i < len(rest) && rest[i] >= '0' && rest[i] <= '9' {
+		i++
+	}
+	// a whole generation then a name (gemini-4-carbon); gemini-3.8-flash,
+	// a point release, is not guessed from the 3.x before it
+	if i == 0 || i+1 >= len(rest) || rest[i] != '-' {
+		return 0
+	}
+	prefix := "gemini-" + rest[:i+1]
+	w := 0
+	for id, n := range windows {
+		if !strings.HasPrefix(id, prefix) || n <= 0 {
+			continue
+		}
+		if w != 0 && w != n {
+			return 0
+		}
+		w = n
+	}
+	return w
 }
 
 // OutputOf is the most tokens a reply from a model of this id may hold, as
@@ -2166,7 +2203,34 @@ func NoChannel(status int, body []byte) bool {
 		return false
 	}
 	msg := strings.ToLower(string(Words(body)))
-	return strings.Contains(msg, "no available channel") || strings.Contains(msg, "无可用渠道")
+	for _, phrase := range []string{"no available channel", "无可用渠道", "没有可用渠道"} {
+		if strings.Contains(msg, phrase) {
+			return true
+		}
+	}
+	// a relay that answers 404 for the same case (equinox0253 on X: WandAPI,
+	// 503 on New API): New API gives that refusal the code model_not_found,
+	// and a fork keeps the code when it changes the status. The code alone
+	// is not enough: it is also what a model that does not exist is told,
+	// so the message must name a channel or a group, the relay's own
+	// routing, as a 404 for a wrong base URL or a missing model never does.
+	if status == 404 {
+		var e struct {
+			Error struct {
+				Code    any    `json:"code"`
+				Type    string `json:"type"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(body, &e) == nil {
+			code, _ := e.Error.Code.(string)
+			if code == "model_not_found" || e.Error.Type == "model_not_found" {
+				m := strings.ToLower(e.Error.Message)
+				return strings.Contains(m, "channel") || strings.Contains(m, "渠道") || strings.Contains(m, "分组") || strings.Contains(m, "under group")
+			}
+		}
+	}
+	return false
 }
 
 // Words is an error body as its words are matched: a JSON body that

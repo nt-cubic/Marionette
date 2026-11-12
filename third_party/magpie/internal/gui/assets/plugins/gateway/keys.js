@@ -234,7 +234,7 @@ function renderGatewayKeys() {
     tick.onclick = () => gatewayKeyAction(k.off ? "on-key" : "off-key", { key: k.id });
     // the copy sits by the key it copies (the owner: stranded among the
     // badges it read as nobody's); Rotate and Remove wait in the row's menu
-    row.append(tick, gatewayRename(k), el("span", "plan mono", k.masked), copyCallerKeyBtn(k), el("span", "grow"), ...(k.browser ? [gatewayBrowserTag()] : k.readOnly ? [gatewayReadOnlyTag()] : []), gatewayModelsBadge(k), ...gatewayKeptOutBadge(k), ...gatewayMCPBadge(k), gatewayQuotasBadge(k), ...(k.browser || k.readOnly ? [] : [gatewayConcurrencyBadge(k)]), gatewayLimitBadge(k), gatewayKeyMore(k));
+    row.append(tick, gatewayRename(k), el("span", "plan mono", k.masked), copyCallerKeyBtn(k), el("span", "grow"), ...(k.browser ? [gatewayBrowserTag()] : k.readOnly ? [gatewayReadOnlyTag()] : []), gatewayModelsBadge(k), ...gatewayKeptOutBadge(k), ...gatewayMCPBadge(k), gatewayQuotasBadge(k), ...(k.browser || k.readOnly ? [] : [gatewayConcurrencyBadge(k), gatewayTierBadge(k), gatewayRedactBadge(k)]), gatewayLimitBadge(k), gatewayKeyMore(k));
     const under = gatewayLimit?.id === k.id ? [gatewayLimitEditor(k)] : keyUsed(k).map((u) => gatewayLimitLine(k, u));
     if (under.length) row.classList.add("with-limit"), row.append(...under);
     list.append(row);
@@ -968,12 +968,74 @@ function gatewayConcurrencyBadge(k) {
   return b;
 }
 
+// the service tier a key's requests go at (JackyFill on X): as they ask, or
+// standard, Fast or Ultrafast whatever they ask; a provider with no service
+// tiers is sent none
+const KEY_TIERS = [
+  { v: "", name: "As the request asks", note: "" },
+  { v: "default", name: "Standard", note: "" },
+  { v: "priority", name: "Fast", note: "priority" },
+  { v: "ultrafast", name: "Ultrafast", note: "ultrafast" },
+];
+function gatewayTierBadge(k) {
+  const own = k.serviceTier || "";
+  const cur = KEY_TIERS.find((o) => o.v === own) || KEY_TIERS[0];
+  const b = el("button", "amodels key-tier" + (own ? " set" : ""));
+  b.type = "button";
+  b.textContent = t(own ? cur.name : "Service tier");
+  b.title = t(own ? "This key's requests go at this service tier, whatever they ask" : "This key's requests keep the service tier they ask for");
+  b.setAttribute("aria-label", t("Service tier"));
+  b.setAttribute("aria-haspopup", "menu");
+  b.setAttribute("aria-expanded", "false");
+  b.onclick = (e) => {
+    e.stopPropagation();
+    if (b.classList.contains("open")) return closeProtoMenu();
+    openProtoMenu(b, KEY_TIERS, cur.v, async (v) => {
+      if (v === cur.v) return;
+      const out = await gatewayKeyAction("tier-key", { key: k.id, serviceTier: v });
+      if (out) status(t("{who}: service tier {tier}", { who: k.name, tier: t(KEY_TIERS.find((o) => o.v === v).name) }), "ok");
+    }, "Service tier", "sess-menu");
+  };
+  return b;
+}
+
+// A key's masking (y0ngb1n on X): as Settings › Privacy says, always on, or
+// off for a device the user trusts. A request with no key (this
+// computer's own) follows the settings.
+const KEY_REDACT = [
+  { v: "", name: "Follow Settings", note: "" },
+  { v: "on", name: "On", note: "" },
+  { v: "off", name: "Off", note: "" },
+];
+function gatewayRedactBadge(k) {
+  const own = k.redact || "";
+  const cur = KEY_REDACT.find((o) => o.v === own) || KEY_REDACT[0];
+  const b = el("button", "amodels key-redact" + (own ? " set" : ""));
+  b.type = "button";
+  b.textContent = t(own === "on" ? "Masking on" : own === "off" ? "Masking off" : "Masking");
+  b.title = t(own === "on" ? "This key's requests are always masked" : own === "off" ? "This key's requests are never masked" : "This key's requests are masked as Settings › Privacy says");
+  b.setAttribute("aria-label", t("Masking"));
+  b.setAttribute("aria-haspopup", "menu");
+  b.setAttribute("aria-expanded", "false");
+  b.onclick = (e) => {
+    e.stopPropagation();
+    if (b.classList.contains("open")) return closeProtoMenu();
+    openProtoMenu(b, KEY_REDACT, cur.v, async (v) => {
+      if (v === cur.v) return;
+      const out = await gatewayKeyAction("redact-key", { key: k.id, redact: v });
+      if (out) status(t("{who}: masking {mode}", { who: k.name, mode: t(KEY_REDACT.find((o) => o.v === v).name) }), "ok");
+    }, "Masking", "sess-menu");
+  };
+  return b;
+}
+
 // ---- a gateway key's own limit (#585) ----
 
 // "days" is every N days from when the limit is set or reset (#1509),
-// "hours" every N hours (#2102), a subscription's 5-hour window's pace
-const limitPeriods = ["day", "week", "month", "days", "hours"];
-const limitPer = { day: "per day", week: "per week", month: "per month", days: "Every N days", hours: "Every N hours" };
+// "hours" every N hours (#2102), a subscription's 5-hour window's pace,
+// "total" never resets by itself, only by Reset (@Cyrus_4433 on X)
+const limitPeriods = ["day", "week", "month", "days", "hours", "total"];
+const limitPer = { day: "per day", week: "per week", month: "per month", days: "Every N days", hours: "Every N hours", total: "in total" };
 const cyclic = (period) => period === "days" || period === "hours";
 // perWords is a limit's window as the badge says it: "per week", "every
 // 10 days", "every 5 hours"
@@ -1072,11 +1134,14 @@ function gatewayLimitLine(k, u) {
   if (u.tokenLimit) parts.push(t("{used} of {limit} tokens · {left} left", { used: fmtN(u.tokens), limit: fmtN(u.tokenLimit), left: fmtN(u.tokensLeft) }));
   if (u.costLimit) parts.push(t("{used} of {limit} estimated · {left} left", { used: usd(u.cost), limit: usd(u.costLimit), left: usd(u.costLeft) }));
   const at = new Date(u.reset);
-  parts.push(t(u.spent ? "refused until {when}" : "resets {when}", { when: resetClock(at) }));
+  if (u.period !== "total") parts.push(t(u.spent ? "refused until {when}" : "resets {when}", { when: resetClock(at) }));
+  else if (u.spent) parts.push(t("refused until reset"));
   if (u.inFlight) parts.push(t(u.inFlight === 1 ? "1 in flight" : "{n} in flight", { n: u.inFlight }));
   line.textContent = parts.join(" · ");
   line.title = (u.models?.length ? u.models.join(", ") + "\n" : "")
-    + t("Counted from {start}; resets {when}", { start: new Date(u.start).toLocaleString(intlLang()), when: at.toLocaleString(intlLang()) })
+    + (u.period === "total"
+      ? t("Counted from {start}", { start: new Date(u.start).toLocaleString(intlLang()) })
+      : t("Counted from {start}; resets {when}", { start: new Date(u.start).toLocaleString(intlLang()), when: at.toLocaleString(intlLang()) }))
     + (u.unpriced ? "\n" + t("{n} calls without a known price aren't in the cost", { n: u.unpriced }) : "");
   return line;
 }
@@ -1319,6 +1384,7 @@ function askResetLimit(k, n) {
   ed.append(head, el("p", "lib-confirm", u.period === "days"
     ? t("The tokens and cost {name} has used go back to 0 together, and a new {n}-day cycle starts now.", { name: k.name, n: u.days })
     : u.period === "hours" ? t("The tokens and cost {name} has used go back to 0 together, and a new {n}-hour cycle starts now.", { name: k.name, n: u.hours })
+    : u.period === "total" ? t("The tokens and cost {name} has used go back to 0 together, and counting starts again from now.", { name: k.name })
     : t("The tokens and cost {name} has used go back to 0 together. Calls so far in this window stop counting; it still resets {when}.", { name: k.name, when: resetClock(new Date(u.reset)) })));
   const bar = el("div", "bar");
   const cancel = el("button", "text", t("Cancel"));

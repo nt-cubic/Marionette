@@ -337,6 +337,7 @@ func onMachineAll(home, cfg string) []*Agent {
 		workbuddyAI(home),
 		codebuddy(home),
 		pencil(home),
+		paseo(home),
 		openPencil(home, cfg),
 		openBot(home, cfg),
 		craftAgents(home),
@@ -359,7 +360,7 @@ func onMachineAll(home, cfg string) []*Agent {
 		aionui(),
 		cherryStudio(home),
 		lody(home),
-	}, append(append(ompProfiles(home), qwenpawAgents(home)...), hermesProfileAgents(home)...)...)
+	}, append(append(append(ompProfiles(home), qwenpawAgents(home)...), hermesProfileAgents(home)...), claudeDirAgents(home)...)...)
 }
 
 // ---- accessors -------------------------------------------------------------
@@ -926,13 +927,8 @@ func piModelJSON(m catalog.Model, gw string, native bool) map[string]any {
 		// (addedMark). That short lifetime the group declares; long stays
 		// out, the gateway marks an hour only where a session's turns are
 		// often far apart, so it isn't always true.
-		if _, ms, ok := provider.GroupFinder()(m.ID); ok {
-			for _, g := range ms {
-				if g.Provider.Native(g.Model) == provider.Anthropic {
-					e["promptCache"] = map[string]any{"short": 300}
-					break
-				}
-			}
+		if provider.GroupHasNative(m.ID, provider.Anthropic) {
+			e["promptCache"] = map[string]any{"short": 300}
 		}
 	}
 	return e

@@ -55,6 +55,7 @@ func ShareGroup(id string) (string, error) {
 	g.Accounts = nil          // this magpie's accounts: another has its own
 	withoutMemberAccounts(&g) // a member's own account too
 	g.Keys = nil              // this magpie's gateway keys, the same
+	g.Redact = ""             // and whether it masks: the receiver's call
 	g.Seen = nil              // what this magpie found: another finds its own
 	g.Rules = slices.DeleteFunc(g.Rules, Rule.ByFolder)
 	out, err := json.Marshal(SharedGroup{Magpie: ShareMark, Version: ShareVersion, Group: g})
@@ -163,6 +164,7 @@ func importGroup(text string, over bool) (Imported, error) {
 	g := s.Group
 	g.Accounts = nil          // another magpie's accounts, never this one's
 	g.Keys = []string{}       // its gateway keys too; over, the user's are kept below
+	g.Redact = ""             // whether it masks is the receiver's call, never a text's
 	withoutMemberAccounts(&g) // and a member's own account (a text made before ShareGroup dropped them)
 	entries := providerEntries()
 	all := Groups()
@@ -211,6 +213,7 @@ func importGroup(text string, over bool) (Imported, error) {
 		p, id, ok := resolveIn(entries, model)
 		return ok && !CanFast(p, id)
 	})
+	g.Ultra = slices.DeleteFunc(kept(g.Ultra), func(f string) bool { return !slices.Contains(g.Fast, f) })
 	g.Weights = renamedWeights(g.Weights, func(m string) string { return here[strings.TrimSpace(m)] })
 	g.EffortMaps = renamedEffortMaps(g.EffortMaps, func(m string) string { return here[strings.TrimSpace(m)] })
 	if g.Routing != Manual && len(g.Off) == len(g.Members) {
@@ -265,6 +268,7 @@ func importGroup(text string, over bool) (Imported, error) {
 		g.ID = old.ID
 		g.Accounts = old.Accounts
 		g.Keys = slices.Clone(old.Keys)
+		g.Redact = old.Redact
 		for _, r := range old.Rules {
 			if !r.ByFolder() {
 				continue

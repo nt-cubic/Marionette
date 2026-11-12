@@ -333,6 +333,9 @@ type stateJSON struct {
 	// GatewayOther is a magpie of another version serving the gateway in
 	// this one's place, which the Agents page says (gateway_older.go)
 	GatewayOther *gatewaySkew `json:"gatewayOther,omitempty"`
+	// GatewayHeld: the program that has the gateway's port when this magpie
+	// couldn't listen on it, as far as it could be read (gateway.PortHeld)
+	GatewayHeld *gateway.PortHeld `json:"gatewayHeld,omitempty"`
 }
 
 // unlistedJSON is a model of a provider kept for routing groups, and the
@@ -587,6 +590,9 @@ type settingsJSON struct {
 	// Claude Code's two prompt-cache lifetimes as it reads them
 	// (agent.TuneRead): the rows beside its compaction in its settings
 	ClaudeCache []claudeCacheJSON `json:"claudeCache,omitempty"`
+	// ClaudeAttribution: whether Claude Code adds its Co-Authored-By trailer
+	// ("on", "off", or "custom" for the user's own text)
+	ClaudeAttribution string `json:"claudeAttribution,omitempty"`
 	// the magpie model Codex's config runs, when its own window is no
 	// larger than Long conversations' threshold: Codex compacts it at 90%
 	// of that window (codexWindowUnder)
@@ -886,6 +892,7 @@ func settingsState() settingsJSON {
 	s.CodexAsyncHeld = agent.CodexAsyncHeld()
 	s.CodexCompactKeys = codexKeysText(agent.CodexCompactHeld(""))
 	s.ClaudeCache = claudeCacheState()
+	s.ClaudeAttribution = agent.ClaudeAttribution("")
 	s.CodexWindow = codexWindowUnder(s.Settings.ForAgent("codex"), agent.CodexModel(""))
 	s.WorkBuddy, s.WorkBuddyCheckins = provider.HasWorkBuddy(), provider.WorkBuddyCheckins()
 	s.Trae, s.TraeCheckins = provider.HasTrae(), provider.TraeCheckins()
@@ -910,8 +917,9 @@ func settingsState() settingsJSON {
 		}
 	}
 	s.TitleModels, s.MaskRouteModels = []modelRef{}, []modelRef{}
-	// only a provider set to go unmasked can take one (most have none)
-	unmaskedAny := slices.ContainsFunc(provider.All(), provider.Provider.SkipsRedaction)
+	// only a provider or a group set to go unmasked can take one (most have none)
+	unmaskedAny := slices.ContainsFunc(provider.All(), provider.Provider.SkipsRedaction) ||
+		slices.ContainsFunc(provider.Groups(), func(g provider.Group) bool { return g.Redact == provider.RedactOff })
 	s.UnmaskedProviders = []modelRef{}
 	for _, p := range provider.All() {
 		if p.SkipsRedaction() {
@@ -1128,6 +1136,13 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		// once another answers in its place (visamzh on X), as after its
 		// own restart to update (backAsNew)
 		boot["version"] = Version
+		// and the clock the system shows, 12 or 24 hours, which no webview
+		// tells the page (iXerol on X); a browser tab keeps its own
+		if !isWeb(w) {
+			if hc := systemHourCycle(); hc != "" {
+				boot["hourCycle"] = hc
+			}
+		}
 		if s.Colorblind {
 			boot["colorblind"] = true
 		}
@@ -3099,6 +3114,7 @@ func state() stateJSON {
 	s.ConfigBlocked = configBlocked()
 	if served.Load() == nil {
 		s.GatewayOther = gatewayOther.Load()
+		s.GatewayHeld = gateway.LastHeld()
 	}
 	for _, e := range provider.Served() {
 		if e.Group == "" {

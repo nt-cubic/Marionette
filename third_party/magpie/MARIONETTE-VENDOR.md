@@ -1,4 +1,4 @@
-Vendored from https://github.com/yetone/magpie (MIT) at tag v0.1.3732 on 2026-11-11.
+Vendored from https://github.com/yetone/magpie (MIT) at tag v0.1.3833 on 2026-11-12.
 Imported by tools\import-magpie.ps1  Edefault Tag is GitHub latest stable; pass -Tag or MAGPIE_TAG to pin.
 Subset only: build inputs for the nogui CLI, plus upstream third_party/ when the tag ships local go.mod replacements. Upstream site/, build/, .github/, docs/ are intentionally absent.
 Marionette patch: main_seed.go (build tag marionette_seed) is the slim gateway-only main; import re-applies it. See tools\magpie-seed\main_seed.go.
