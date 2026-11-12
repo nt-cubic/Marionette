@@ -194,7 +194,7 @@ func (s *Server) refitOverCap(ctx context.Context, p provider.Provider, to provi
 		b := peekError(res)
 		// body as it came is never smaller than what was sent: a page
 		// to a small one is ruled out before body is fitted
-		page := !byteCapRefusal(res.StatusCode, b)
+		page := !(byteCapRefusal(res.StatusCode, b) || marionetteUnreadBodyOverCap(res.StatusCode, b, len(body)))
 		if page && !pageOverSize(res.StatusCode, b, len(body)) {
 			return res, nil
 		}
@@ -229,7 +229,7 @@ func (s *Server) refitOverCap(ctx context.Context, p provider.Provider, to provi
 	}
 	if res.StatusCode >= 400 {
 		b := peekError(res)
-		page := !byteCapRefusal(res.StatusCode, b)
+		page := !(byteCapRefusal(res.StatusCode, b) || marionetteUnreadBodyOverCap(res.StatusCode, b, len(body)))
 		if !page || pageOverSize(res.StatusCode, b, len(body)) && s.capSent(p, to, path, body) >= pageCapLeast {
 			// refused as often as it was asked smaller: said as a 413, so
 			// Codex's compaction asks as text (summaryTooLarge)

@@ -886,6 +886,22 @@ route key，自己声明 `api` + `baseURL` + `apiKeyEnv` + 只列这一个模型
 - **用户自建路由组只由 `plugins/groups` 服务**（`provider/group_serve.go` 的 `GateGroups`/`ServeGroups`）。种子引擎（`tools/magpie-seed/main_seed.go`）**必须**导入 `plugins/groups`，否则网关的 `Groups()`/`GroupFor()` 把用户组整个滤掉：`magpie group add` 照样写盘成功、Rust 照样记「alias group updated」，而 codex 的裸内建名会落回内建 `codex` 源头**烧订阅**（2026-11-12 实锤：整场会话 provider 全记成 `codex`，ollama 零流量）。现在写完组会探 `GET /v1/models/group/<id>`（200 认 / 404 不认）并在 dev.log 记 warn。**注意 `auto/*` 组是核心自带的，不受这个开关管**，所以 opencode/DSH/zcode 那条线看起来一直正常，掩盖了 codex 这条。
 - **上下文窗口必须逐模型宣告给每个 agent**，真相只有一处：`engine::catalog_direct_entries()` 的 `context_window`/`max_output`（引擎 `/v1/models` 的 `context_length`/`max_output_tokens`）。各 agent 的写法：opencode `models[id].limit.context/output`、pi `models.json` 的 `contextWindow`/`maxTokens`、DSH `cordis.patch.yml` 的 `contextWindow`、zcode `providerModelRules` 的 `contextWindow`（schema 要求正数，未知兜底 200000）。**漏写任何一家 = 它按自己的默认窗口办事**（opencode 实测 200K，而 ollama 的 deepseek-v4.1-flash:1017 是 1M，自动压缩提前触发）。引擎报 0 = 不知道 → 不写，别编数。
 
+## 请求体字节上限（2026-11-12，第三条静默降级：会话死锁）
+
+codex 把截图整段 base64 内联、**每轮全量重发**；ollama.com 单请求体上限约 **32 MB**，超了以后它回一个 400 `ollama: failed to read request body (ref: …)` —— **它根本没读体**，所以这句话里既没有「太大」也没有上限数字。实测（2026-11-12，同模型同一分钟）：30 MB 还能读到内容（回的是 `prompt too long`），34 MB / 40 MB 就是这个 400，每次约 15 秒。
+
+后果：codex 当它是传输错误，原样重发同一具 34 MB 的体，5 次后放弃；而 magpie 的 `byteCapRefusal`（`body_cap.go`）认不出这句话，那套「超限就丢最老的图重发」的机制（`refitOverCap`）一次都没触发，于是**既走不下去也压缩不了**。
+
+修法是 Marionette 自有补丁（`import-magpie.ps1` 每次导入后重放，上游改不掉）：
+- `tools/magpie-seed/marionette_body_cap.go` —— 把这句话算作字节上限拒绝；
+- `body_cap.go` 里决定「是不是字节上限拒绝」的那一行换成 `!(byteCapRefusal(...) || marionetteUnreadBodyOverCap(..., len(body)))`，**两处都换**（重试循环 + 说 413 的兜底）。兜底那处决定 codex 收到的是能读懂方向的 413 还是含糊的 400。
+
+门限 **8 MiB**：同样的字在**小**请求上更可能是连接被掐断，拿它当上限会让以后每个请求都丢图。上限取「本次发出的 3/4」（这是 body_cap 的既有规则），实测 38 MB → 学到 28.5 MB → 丢掉最老 2 张图 → 19 MB 重发成功。
+
+回归：`go test ./internal/gateway/ -run TestMarionetteUnreadBodyOverCap`；真机口径是引擎 stderr 出现 `the request is X MB, over the Y it takes in one request; the N oldest images left out (Z MB)`。上游哪天重写那一行 → `import-magpie.ps1` **报错停机**，不静默。
+
+注意：翻译会把**连续同角色**的消息合并成一条，合并后图全落在「最新一条用户消息」上，按规则不能丢 → 那种形状仍会得到 413。真实 codex 对话是 user/assistant 交替的，不受影响。
+
 ## 模型共享引擎的凭据源（2026-10-23）
 
 引擎注册（`engine.rs` 的 `register_key_providers`）钥匙来源按优先级：**Marionette 凭据库

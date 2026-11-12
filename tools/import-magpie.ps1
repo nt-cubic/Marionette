@@ -199,12 +199,43 @@ Get-ChildItem $providerDir -Filter *.go | ForEach-Object {
     }
 }
 
+# ollama.com answers a request body over its cap with a 400 that says it never
+# read the body ("ollama: failed to read request body (ref: ...)") — words
+# byteCapRefusal (body_cap.go) doesn't know, so a Codex session whose inline
+# screenshots passed ~32 MB got the same 400 every turn and could neither go
+# on nor compact (2026-11-12). The helper is ours; the stock line that decides
+# "is this a byte-cap refusal" is swapped here, in both places it decides it
+# (the fit loop, and the fallback that says the 413). A refactor that moves
+# that line makes this throw — loud, never silent.
+$capDir = Join-Path $dest 'internal\gateway'
+$capSrc = Join-Path $PSScriptRoot 'magpie-seed\marionette_body_cap.go'
+$capTest = Join-Path $PSScriptRoot 'magpie-seed\marionette_body_cap_test.go'
+if (-not (Test-Path $capSrc)) { throw 'tools\magpie-seed\marionette_body_cap.go missing - the ollama byte-cap patch cannot be applied' }
+Copy-Item -Force $capSrc (Join-Path $capDir 'marionette_body_cap.go')
+if (Test-Path $capTest) {
+    Copy-Item -Force $capTest (Join-Path $capDir 'marionette_body_cap_test.go')
+}
+$capGo = Join-Path $capDir 'body_cap.go'
+if (-not (Test-Path $capGo)) { throw 'internal\gateway\body_cap.go missing - upstream moved the byte-cap fit; recheck the Marionette patch' }
+$capText = [IO.File]::ReadAllText($capGo)
+$capAnchor = 'page := !byteCapRefusal(res.StatusCode, b)'
+$capSwapped = 'page := !(byteCapRefusal(res.StatusCode, b) || marionetteUnreadBodyOverCap(res.StatusCode, b, len(body)))'
+if ($capText.Contains($capSwapped)) {
+    Write-Output '[import] seed patch: ollama unread-body refusal already counted as a byte cap'
+} elseif ($capText.Contains($capAnchor)) {
+    [IO.File]::WriteAllText($capGo, $capText.Replace($capAnchor, $capSwapped))
+    Write-Output '[import] seed patch: ollama unread-body refusal counted as a byte cap (body_cap.go)'
+} else {
+    throw 'internal\gateway\body_cap.go: the byte-cap anchor "page := !byteCapRefusal(res.StatusCode, b)" is gone - upstream rewrote the fit; fix tools\magpie-seed\marionette_body_cap.go'
+}
+
 @(
     "Vendored from https://github.com/yetone/magpie (MIT) at tag $Tag on $(Get-Date -Format yyyy-MM-dd).",
     "Imported by tools\import-magpie.ps1 — default Tag is GitHub latest stable; pass -Tag or MAGPIE_TAG to pin.",
     "Subset only: build inputs for the nogui CLI, plus upstream third_party/ when the tag ships local go.mod replacements. Upstream site/, build/, .github/, docs/ are intentionally absent.",
     "Marionette patch: main_seed.go (build tag marionette_seed) is the slim gateway-only main; import re-applies it. See tools\magpie-seed\main_seed.go.",
     "Marionette patch: marionette_peel.go peels Codex [effort] (and Claude [1m]) in GroupFor so share aliases match. See tools\magpie-seed\marionette_peel.go.",
+    "Marionette patch: marionette_body_cap.go counts ollama.com's 'failed to read request body' 400 as a byte-cap refusal, so a Codex turn over the cap drops its oldest images instead of stalling. See tools\magpie-seed\marionette_body_cap.go.",
     "License: LICENSE (MIT) in this folder."
 ) | Set-Content (Join-Path $dest 'MARIONETTE-VENDOR.md')
 
