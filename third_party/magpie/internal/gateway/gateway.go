@@ -1045,6 +1045,8 @@ func (s *Server) routes() *routeMux {
 	mux.HandleFunc("GET "+routeEventsPath, s.routeEvents)
 	mux.HandleFunc("GET /v1/magpie/concurrency", s.concurrency)
 	mux.HandleFunc("GET /v1/magpie/limit", s.keyLimit)
+	// the management API, for a key that may manage magpie (admin.go)
+	mux.HandleFunc(AdminPath, s.admin)
 	mux.HandleFunc("GET "+OwnMCPPath, s.ownMCPList)
 	// short-lived keys, issued by a key let issue them or from loopback
 	// (issue_keys.go)
@@ -3604,7 +3606,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			failTo(w, kept, from, call.Status, cmp.Or(msg, call.Error))
 			break
 		}
-		if used, near := nearCapOf(c, time.Now()); near && aff.Why != "strict" && capHeld(c.p, c.p, c.model, time.Now()) == nil {
+		if used, near := nearCapOf(c, time.Now()); near && aff.Why != "strict" && (len(cands) > 1 || userCapped(c)) && capHeld(c.p, c.p, c.model, time.Now()) == nil {
 			// within nearCapPoints of its usage cap, the account takes one
 			// turn at a time (dyzdyz010 on Discord): busy, the turn goes to
 			// the next one first, this one kept behind them, else waits for
@@ -3634,7 +3636,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				continue
 			}
 			if !ok {
-				if done, err = s.nearCap.take(r.Context(), c.who()); err != nil {
+				// the wait is a known one (noteWait), and the Routing page
+				// says the turn is queued, not that routing goes on
+				// (tmr11235 on X: "路由中" until the turn before it ended)
+				stopQueue := s.showQueued(r.Context(), tr)
+				done, err = s.nearCap.take(r.Context(), c.who())
+				stopQueue()
+				if err != nil {
 					// the agent went away while it waited: nothing was sent
 					call.Status, call.Error = canceled(r.Context())
 					break
@@ -3859,6 +3867,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		// short (DeepSeek's 8K), asks for the model's own, relayed or
 		// translated (withOwnOutput)
 		attemptBody = withOwnOutput(c.p, c.model, from, attemptBody)
+		attemptBody = withThinkingRoom(c.p, c.model, from, attemptBody)
 		if roomFor == c.who()+"|"+c.model {
 			if b, ok := withReplyCap(from, attemptBody, roomCap); ok {
 				attemptBody = b
@@ -3884,7 +3893,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				fixed = ""
 			}
 		}
-		if fixed == "" && ruled == "" && effort == "" && agentPick != "" && c.p.Thinks(c.model) {
+		if fixed == "" && ruled == "" && effort == "" && agentPick != "" && !agyLevelAsked(agent, from, attemptBody) && c.p.Thinks(c.model) {
 			// the effort picked in magpie for an agent whose config can't
 			// carry one (Cursor Private Inference, #1003), in place of the
 			// level it sent, on a model that reasons; a member fixed at
@@ -5972,6 +5981,7 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 	body = toolOneOfAsAnyOf(p, to, body)
 	body = copilotGeminiToolsFit(p, to, body)
 	body = copilotGeminiToolUnions(p, to, body)
+	body = copilotGeminiToolShapes(p, to, body)
 	body = copilotGrokFlat(p, to, body)
 	body = kimiToolEnumTypes(p, to, body)
 	body = kimiToolRefTypes(p, to, body)
@@ -6599,6 +6609,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			// an earlier turn's reasoning_content, which Mistral turns
 			// away, as the thinking part it takes (#494)
 			body = mistralThinking(body)
+			body = mistralImageLimit(body)
 		}
 		if isKimi(p, proto) {
 			// another vendor's reasoning_details (MiMo's, with a stream's
@@ -7722,7 +7733,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			// it: the held end is dropped, the error said in its place,
 			// [DONE] after — no reply that ended as it should with nothing
 			// in it, and no ask again for the budget to burn twice (#2972)
-			msg := cutVoidFailed(p.Name)
+			msg := cutVoidFailed(p.Name, capped)
 			dropHalf()
 			w.Write(append(apart(), streamFailure(provider.Chat, msg)...))
 			w.Write([]byte("data: [DONE]\n\n"))
@@ -7753,7 +7764,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		}
 		if cutVoid(upstreamStop(heldBody), !sniff.tail.said(), spent, capped) &&
 			replyCheck(r.Context()) == nil {
-			msg := cutVoidFailed(p.Name)
+			msg := cutVoidFailed(p.Name, capped)
 			return writeError(w, proto, 502, msg), msg, true
 		}
 		w.WriteHeader(res.StatusCode)
@@ -8158,6 +8169,7 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 			// it; every follow-up of a Codex tool loop was refused, 422
 			// extra_forbidden (#4906)
 			body = mistralThinking(body)
+			body = mistralImageLimit(body)
 		}
 		if to == provider.Responses && !keepsLoneNone(p) {
 			// the "none" buildResponses keeps for a request that turned
@@ -8713,6 +8725,11 @@ func refusedOptional(status int, msg, body []byte) []string {
 
 var unknownOptionalField = lazyre.New("(?i)\\b(?:unknown (?:name|field|parameter)|unsupported (?:parameter|field|property|argument)|unrecognized (?:request )?(?:argument|parameter)(?: supplied)?):?\\s*['\"\\x60]([a-z_]+)['\"\\x60]")
 var unquotedUnsupportedOptionalField = lazyre.New("(?i)\\bunsupported (?:parameter|field|property|argument):\\s*([a-z_]+)\\b")
+
+// chineseRefusedOptionalField is a relay refusing a field in Chinese:
+// 基元律动's "未知请求字段：prompt_cache_retention" (ldl123292 on X).
+var chineseRefusedOptionalField = lazyre.New("(?:未知|未识别|不支持|不允许|无效)(?:的)?(?:请求)?(?:字段|参数|属性)\\s*[:：]?\\s*['\"\\x60「“]?([a-z_]+)")
+
 var rejectedOptionalField = lazyre.New("(?i)(?:^|\\b(?:parameter|field|property|argument)\\s+)['\"\\x60]([a-z_]+)['\"\\x60]\\s+(?:is\\s+)?(?:unsupported|not supported)\\b")
 
 // leadingRejectedOptionalField is a message that starts with the field's
@@ -8767,6 +8784,11 @@ func unsupportedOptionalField(fault any, field string) bool {
 			return true
 		}
 		for _, match := range unquotedUnsupportedOptionalField.FindAllStringSubmatch(v, -1) {
+			if match[1] == field {
+				return true
+			}
+		}
+		for _, match := range chineseRefusedOptionalField.FindAllStringSubmatch(v, -1) {
 			if match[1] == field {
 				return true
 			}
@@ -9213,7 +9235,7 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		// at once, asked again nowhere: a void's budget is spent, and a
 		// second ask at the same max_tokens would mostly spend it twice
 		// over before the error (#2972, its review)
-		msg := cutVoidFailed(p.Name)
+		msg := cutVoidFailed(p.Name, request.MaxTokens)
 		return writeError(w, from, 502, msg), msg
 	}
 	if zen != nil {
@@ -9303,8 +9325,13 @@ const cutVoidWords = "cut at its length, the whole output spent on reasoning"
 // with: the empty reply's error — a group asks its next member for one
 // and rests nobody (#1221) — said with why, for the agent to try again or
 // ask for less reasoning rather than go on (#2972).
-func cutVoidFailed(name string) string {
-	return name + ": " + emptyReply + " — " + cutVoidWords
+func cutVoidFailed(name string, cappedAt int) string {
+	msg := name + ": " + emptyReply + " — " + cutVoidWords
+	if cappedAt > 0 {
+		// the limit the request itself named, and what to do about it
+		msg += fmt.Sprintf(" (the request's limit was %d tokens: raise max_tokens in the agent, or ask for less reasoning)", cappedAt)
+	}
+	return msg
 }
 
 // saysSomething tells whether an event is any of a reply an agent shows or

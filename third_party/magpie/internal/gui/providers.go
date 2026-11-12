@@ -53,7 +53,7 @@ type modelJSON struct {
 	Best       bool    `json:"best,omitempty"`      // the newest of its family in the list: what Best in family serves (provider.NewestInFamily)
 	Context    int     `json:"context,omitempty"`   // the window agents are told: the user's, else Listed
 	Output     int     `json:"output,omitempty"`    // the reply limit agents are told: provider.ReplyLimit within Context (provider.OutputWithin)
-	Listed     int     `json:"listed,omitempty"`    // its window before the user's: its vendor's list's, else models.dev's
+	Listed     int     `json:"listed,omitempty"`    // its window before the user's: its vendor's list's, else models.dev's; absent when Context
 	Max        int     `json:"max,omitempty"`       // the most its context may be set to, above Listed
 	Free       bool    `json:"free,omitempty"`      // costs the subscription nothing
 	Zero       bool    `json:"zero,omitempty"`      // listed at $0 on this provider (provider.PricedFree), where Free is the vendor's word
@@ -66,7 +66,7 @@ type modelJSON struct {
 	Auto  []string `json:"auto,omitempty"`  // the APIs its vendor's list says it is served on, what Auto asks it on
 	NoAPI bool     `json:"noAPI,omitempty"` // the provider has a URL for none of them: agents aren't offered it (provider.NoAPIFor, #2094)
 	Same  string   `json:"same,omitempty"`  // the model the user said it is the same as, for the groups magpie finds (#583)
-	Merge string   `json:"merge,omitempty"` // what those groups merge it by when the user says nothing
+	Merge string   `json:"merge,omitempty"` // what those groups merge it by when the user says nothing; absent when ID
 	Kind  string   `json:"kind,omitempty"`  // what the user said it makes: image or video (#1399)
 	// Headers are the request headers the user gave the model, sent after
 	// the provider's (provider.SetModelHeaders)
@@ -101,7 +101,7 @@ type modelJSON struct {
 	// ListedOutput is its reply limit before the user's Max output: its
 	// vendor's list's, else models.dev's, within Listed; Model settings'
 	// Max output shows it when none is set (sayagoodbyeplz on Discord)
-	ListedOutput int `json:"listedOutput,omitempty"`
+	ListedOutput int `json:"listedOutput,omitempty"` // absent when Output
 }
 
 type providerJSON struct {
@@ -294,6 +294,10 @@ type providerJSON struct {
 	// (provider.TestAs), for a relay that serves only them: the chip's
 	// right-click offers each, and says why one can't be when it can't
 	TestsAs map[string]string `json:"testsAs,omitempty"`
+	// TestPicks is the accounts or keys that are on when there are two
+	// or more (provider.TestPicks): the chip's right-click offers a
+	// test on one of them
+	TestPicks []provider.TestPick `json:"testPicks,omitempty"`
 	// DecideTest is set when its decision models can each be sent a
 	// System One question (provider.AsksDecideModels): a mixed
 	// provider's Jev too, beside its conversation models
@@ -355,6 +359,8 @@ type providerJSON struct {
 	// routing unless KeepSelf (provider.Provider.SelfAnswered)
 	Self     bool `json:"self,omitempty"`
 	KeepSelf bool `json:"keepSelf,omitempty"`
+	// ThisDevice: kept on this computer, out of sync (provider.Provider.ThisDevice)
+	ThisDevice bool `json:"thisDevice,omitempty"`
 	// LibraryMCP: a Remote magpie whose router is a Library server, or
 	// is to be one (library.RemoteMCPOn)
 	LibraryMCP bool `json:"libraryMCP,omitempty"`
@@ -866,11 +872,11 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 	avail := ls.Available
 	out := providerJSON{
 		ID: p.ID, Name: p.Name, Icon: p.Icon, IconFrom: p.IconFrom, Preset: p.Preset, Host: p.Host(),
-		Chat: p.Chat, Responses: p.Responses, Anthropic: p.Anthropic, Gemini: p.Gemini, Decide: p.Decide, BaseAPI: p.BaseAPI, ModelTest: p.ModelTest(), TestsAs: p.TestClients(), DecideTest: p.AsksDecideModels(), MarksKinds: p.MarksKinds(),
+		Chat: p.Chat, Responses: p.Responses, Anthropic: p.Anthropic, Gemini: p.Gemini, Decide: p.Decide, BaseAPI: p.BaseAPI, ModelTest: p.ModelTest(), TestsAs: p.TestClients(), TestPicks: p.TestPicks(), DecideTest: p.AsksDecideModels(), MarksKinds: p.MarksKinds(),
 		Catalog: p.Catalog, Website: p.Website, KeysURL: p.KeysURL,
 		Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountWindowAmounts: p.AccountWindowAmounts, AccountNames: p.AccountNames, Headers: p.Headers, ExtraBody: p.ExtraBody, ReplyHeaders: p.ReplyHeaders, PassHeaders: p.PassHeaders, Searches: p.Searches, Cline: p.ClinePinnable(), PinUpstream: p.PinUpstream, Unredacted: p.Unredacted, CountFree: p.CountFree, Billing: p.Billing, BillingKind: p.BillingKind(), InsecureTLS: p.InsecureTLS, TakesInsecureTLS: p.TakesInsecureTLS(), HTTP1: p.HTTP1, ClientCert: tilde(p.ClientCert), ClientKey: tilde(p.ClientKey), ServerCA: tilde(p.ServerCA), TakesClientCert: p.TakesClientCert(), ServerPin: p.ServerPin, TakesServerPin: p.TakesServerPin(), Socket: p.Socket, TakesSocket: p.TakesSocket(), LimitRestOff: p.LimitRestOff, UpstreamProviders: p.UpstreamProviders, ImageFilesOff: p.ImageFilesOff, TakesImageFiles: p.TakesImageFiles(), NativeCompaction: p.NativeCompaction, CarriesCompaction: p.CarriesCompaction(), PassUserAgent: !p.MagpieUserAgent, OwnClient: p.OwnClient(), PassErrors: p.PassErrors, TakesPassErrors: p.TakesPassErrors(), AuthHeader: p.AuthHeader, BothAuth: p.BothAuth(), BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, BalanceMethod: p.BalanceMethod, NoBalanceProbe: p.NoBalanceProbe, ModelsURL: p.ModelsURL, ListOff: p.ListsOff(), TakesListOff: p.Account == nil && !p.IsPlugin() && !p.DecideOnly(), TakesModelHeaders: p.Account == nil, DecideAPIKind: p.DecideAPIKind(),
 		Ready: p.Ready(), Chosen: p.PicksOf(avail), Agents: make([]providerAgent, 0, len(agents)),
-		Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, UseFirst: p.UseFirst, NoStandIn: p.NoStandIn, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, RestartApp: p.RestartApp, Self: p.SelfAnswered(), KeepSelf: p.KeepSelf, CapStop: p.CapStop, CapCareful: p.CapCareful, Unlisted: p.Unlisted, NoModels: p.ServesNone(), BestInFamily: p.BestInFamily && len(p.Models) == 0 && !p.NoModels, Off: p.Off, Contexts: p.Contexts,
+		Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, UseFirst: p.UseFirst, NoStandIn: p.NoStandIn, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, RestartApp: p.RestartApp, Self: p.SelfAnswered(), KeepSelf: p.KeepSelf, ThisDevice: p.ThisDevice, CapStop: p.CapStop, CapCareful: p.CapCareful, Unlisted: p.Unlisted, NoModels: p.ServesNone(), BestInFamily: p.BestInFamily && len(p.Models) == 0 && !p.NoModels, Off: p.Off, Contexts: p.Contexts,
 		MaxConcurrency: p.MaxConcurrency, PluginConcurrency: p.PluginConcurrency(), MaxAccounts: p.MaxAccounts, PluginAccounts: p.PluginAtOnce(), PriceRate: p.PriceRate,
 		RateWindows: p.RateWindows, RateNow: rateNowOf(p, time.Now()),
 		AccountConcurrency: p.AccountConcurrency, AccountWeights: p.AccountWeights, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM,
@@ -1138,7 +1144,18 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 			j.Tier = held.ModelTiers[ref]
 			j.CanUltra = provider.UltraOn(p, m.ID, ultraModels())
 		}
-		j.Merge = provider.MergeName(m.ID)
+		// a value the page reads as its default isn't sent: the window and
+		// reply limit the vendor listed are the ones in use unless the user
+		// set their own, and most models merge by their own id
+		if j.Merge = provider.MergeName(m.ID); j.Merge == m.ID {
+			j.Merge = ""
+		}
+		if j.Listed == j.Context {
+			j.Listed = 0
+		}
+		if j.ListedOutput == j.Output {
+			j.ListedOutput = 0
+		}
 		j.Desktop = desktop[ref]
 		if mp, ok := held.ModelPrices[ref]; ok {
 			if pr, bad := mp.Price(); bad == "" {
@@ -2402,6 +2419,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 					in.KeepLoginAs = old.KeepLoginAs
 					in.SwitchOnly, in.RestartApp = old.SwitchOnly, old.RestartApp // switchonly, restartapp
 					in.KeepSelf = old.KeepSelf                                    // keepself
+					in.ThisDevice = old.ThisDevice                                // thisdevice
 					in.CapStop, in.CapCareful = old.CapStop, old.CapCareful       // capstop, capcareful
 					in.UseFirst = old.UseFirst                                    // usefirst
 					in.NoStandIn = old.NoStandIn                                  // standin
@@ -2725,6 +2743,13 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// a Remote magpie that is this magpie, used anyway or left out
 			// (hanslin1666 on Discord)
 			if err := provider.SetKeepSelf(in.ID, in.KeepSelf); err != nil {
+				fail(rw, err)
+				return
+			}
+		case "thisdevice":
+			// kept on this computer: sync neither sends the provider out nor
+			// lets another computer's copy replace or remove it (treydtw on X)
+			if err := provider.SetThisDevice(in.ID, in.ThisDevice); err != nil {
 				fail(rw, err)
 				return
 			}

@@ -318,6 +318,10 @@
         <div class="who"><div class="name" data-t>Currency</div><div class="sub" id="currencySub"></div></div>
         <div id="currencySegs"></div>
       </div>
+      <div class="row pref">
+        <div class="who"><div class="name" data-t>Day starts at</div></div>
+        <div id="dayStartSegs"></div>
+      </div>
       <div class="row pref" id="unitsRow" hidden>
         <div class="who"><div class="name" data-t>Number units</div><div class="sub" data-t>How a large count of tokens or requests is shortened on the Usage page and the panel</div></div>
         <div id="unitsSegs"></div>
@@ -365,6 +369,10 @@
       <div class="row pref" id="updateProxyRow">
         <div class="who"><div class="name" data-t>App updates</div><div class="sub" id="updateProxySub"></div></div>
         <div id="updateProxySegs" class="proxy-segs"></div>
+      </div>
+      <div class="row pref" id="updateSourceRow">
+        <div class="who"><div class="name" data-t>Update source</div></div>
+        <button type="button" id="updateSourcePick" class="sess-pick pref-pick" aria-label="Update source" aria-haspopup="menu" aria-expanded="false"></button>
       </div>
     </div>
     <div class="row-head"><span class="label" data-t>Proxies</span></div>
@@ -545,7 +553,7 @@
 <!-- an agent's own settings, drawn here and shown in its sheet or opened row (AGENT_PREFS) -->
 <div id="agentPrefRows" hidden>
   <div class="row pref" id="codexAgentsV1Row">
-    <div class="who"><div class="name" data-t>Codex subagents on any model</div><div class="sub" data-t>A GPT lead spawns subagents on magpie’s other models. New threads only; Codex’s own multi_agent_v2 still wins</div><div class="sub err" id="codexAgentsV1Warn" hidden></div></div>
+    <div class="who"><div class="name" data-t>Codex subagents on any model</div><div class="sub" data-t>A GPT lead can start subagents on magpie’s other models. New threads only.</div><div class="sub err" id="codexAgentsV1Warn" hidden></div></div>
     <div id="codexAgentsV1Segs"></div>
   </div>
   <div class="row pref" id="codexSubagentModelRow" hidden>
@@ -553,7 +561,7 @@
     <div class="val" id="codexSubagentModelPick"></div>
   </div>
   <div class="row pref" id="fullContextRow">
-    <div class="who"><div class="name" data-t>Long conversations</div><div class="sub" data-t>Codex, Claude Code and Grok Build compact at 272K (non-Claude [1m] too) or the size typed, on magpie's models only; a subscription's own models keep their own window and compaction; full window: slower, costlier</div></div>
+    <div class="who"><div class="name" data-t>Long conversations</div><div class="sub" data-t>Codex, Claude Code and Grok Build compact at 272K or the size typed; the full window is slower and costlier. magpie's models only: a subscription's own models keep their own.</div></div>
     <div id="fullContextSegs"></div>
   </div>
   <div class="row pref" id="codexAsyncRow">

@@ -333,3 +333,64 @@ func TestNearCapClaudeAccountsTakeOneTurnEach(t *testing.T) {
 		t.Fatalf("tried %v; want one turn on the account near its cap, one on the spare", got)
 	}
 }
+
+// A turn that waits for the one before it on an account near its cap has
+// no try yet, and its row said "routing" till that one ended (tmr11235 on
+// X, v0.1.3852): its route says queued, and the wait is one magpie knows
+// of, so the watch on a request with no route doesn't end it as unknown.
+func TestNearCapWaitSaysQueued(t *testing.T) {
+	codexSignedIn(t)
+	b := newNearCapBackend(t, map[string]float64{"acct-1": 89}, map[string]float64{"acct-1": 89}, nil)
+	nearCapAccounts(t, 90, 89)
+	srv := New()
+	replies := postAtOnce(t, srv, 2)
+	waitFor(t, "one turn sent, one waiting", func() bool { return len(b.sent()) == 1 && srv.nearCap.waiting() == 1 })
+	queued := func() (n int) {
+		for _, r := range srv.Trace(context.Background(), 0, 0).Routes {
+			if r.Phase == phaseQueue && len(r.Tries) == 0 {
+				n++
+			}
+		}
+		return
+	}
+	waitFor(t, "the waiting turn's route says queued", func() bool { return queued() == 1 })
+	if !slices.ContainsFunc(srv.Active(), func(a Active) bool { return a.Phase == phaseQueue }) {
+		t.Fatalf("active %v; want one queued", srv.Active())
+	}
+	close(b.open)
+	for range 2 {
+		<-replies
+	}
+	waitFor(t, "no route says queued once it ended", func() bool { return queued() == 0 })
+	for _, r := range srv.Trace(context.Background(), 0, 0).Routes {
+		if r.Phase != "" {
+			t.Fatalf("route %d still says %q", r.ID, r.Phase)
+		}
+	}
+}
+
+// tmr11235 on X: one Codex account at 95% of its window, no cap and no
+// concurrency set, and its requests queued. Only credits turned off held it
+// (at 100%), a limit the user never set on usage, and with no other account
+// to go to the turns wait for nothing but each other: they go out together.
+func TestNearCapOnlyCreditsOffOneAccountSendsAtOnce(t *testing.T) {
+	codexSignedIn(t)
+	b := newNearCapBackend(t, map[string]float64{"acct-1": 95}, map[string]float64{"acct-1": 95}, nil)
+	nearCapAccounts(t, 0, 95)
+	if err := provider.SetCodexCredits("me@example.com", false); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { provider.SetCodexCredits("me@example.com", true) })
+	srv := New()
+	replies := postAtOnce(t, srv, 2)
+	waitFor(t, "both turns out at the vendor at once", func() bool { return len(b.sent()) == 2 })
+	if n := srv.nearCap.waiting(); n != 0 {
+		t.Fatalf("%d turns waiting for a turn; want none", n)
+	}
+	close(b.open)
+	for range 2 {
+		if r := <-replies; r.code != 200 {
+			t.Fatalf("status %d: %s", r.code, r.body)
+		}
+	}
+}

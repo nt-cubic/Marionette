@@ -1135,6 +1135,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	mux.Handle("/", devPage(revalidated(http.FileServer(http.FS(staticFS())))))
 	devRoutes(mux)
 	pluginPageRoutes(mux, isWeb(w))
+	feedbackRoutes(mux)
 	// boot.js hands the page the saved language and theme before it paints:
 	// they came only with the settings, so the tabs showed English first
 	mux.HandleFunc("GET /boot.js", func(rw http.ResponseWriter, r *http.Request) {
@@ -1151,6 +1152,9 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		if !isWeb(w) {
 			if hc := systemHourCycle(); hc != "" {
 				boot["hourCycle"] = hc
+			}
+			if loc := systemLocale(); loc != "" {
+				boot["locale"] = loc
 			}
 		}
 		if s.Colorblind {
@@ -1617,7 +1621,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		// is in (yi_time)
 		if (!slices.Equal(settings.Load().TrayUsages, cur.TrayUsages) || in.TrayUsageEvery != cur.TrayUsageEvery ||
 			in.TrayNoLogos != cur.TrayNoLogos || in.TrayNoBird != cur.TrayNoBird || in.TrayNoNumber != cur.TrayNoNumber || in.TrayPace != cur.TrayPace ||
-			in.TrayNoCost != cur.TrayNoCost || !maps.EqualFunc(in.TrayWindows, cur.TrayWindows, slices.Equal) || in.Lang != cur.Lang) && onTrayUsage != nil {
+			in.TrayNoCost != cur.TrayNoCost || !maps.EqualFunc(in.TrayWindows, cur.TrayWindows, slices.Equal) || in.Lang != cur.Lang || in.ChineseUnits != cur.ChineseUnits) && onTrayUsage != nil {
 			onTrayUsage()
 		}
 		// an alert turned on or moved is looked at now, the Mac asked for its
@@ -1776,6 +1780,9 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		s := settings.Load()
 		s.UpdateSkip = strings.TrimSpace(in.Version)
+		if s.UpdateSkip != "" {
+			updates.quietAgain() // a dismissal holds for the quiet, not only the next release
+		}
 		if err := settings.Save(s); err != nil {
 			fail(rw, err)
 			return

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yetone/magpie/internal/memory"
 	"github.com/yetone/magpie/internal/settings"
@@ -248,5 +249,30 @@ func TestRootDirs(t *testing.T) {
 	got := rootDirs([]string{"file:///Users/a/p", "https://x/y", "file:///C:/w/p"})
 	if len(got) != 2 || got[0] != filepath.FromSlash("/Users/a/p") {
 		t.Fatalf("dirs %q", got)
+	}
+}
+
+// A memory is dated in the reader's own zone, with the time and its
+// offset: at 04:30 in Shanghai on the 11th, UTC is still the 10th
+// (Norethcy on X). One saved before, stored as "…Z", reads the same way.
+// That a new one is stored in the local zone is memory's
+// TestSaveKeepsTheLocalZone.
+func TestMemorySearchDatesInLocalTime(t *testing.T) {
+	fresh(t)
+	oldZone := memoryZone
+	memoryZone = func() *time.Location { return time.FixedZone("CST", 8*3600) }
+	t.Cleanup(func() { memoryZone = oldZone })
+
+	old := `{"memories":[{"id":"m1","text":"Heavy tests run on mote","kind":"fact","scope":"global","origin":"agent","status":"active","created":"2026-11-10T20:30:00Z","updated":"2026-11-10T20:30:00Z"}]}`
+	if err := os.MkdirAll(filepath.Dir(memory.Path()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(memory.Path(), []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := lanGuard(New().Handler())
+	said, bad := memPost(t, h, memorySearchTool, `{"query":"mote"}`)
+	if bad || !strings.Contains(said, ", 2026-11-11T04:30+08:00: Heavy tests run on mote") {
+		t.Fatalf("an old UTC memory: %s", said)
 	}
 }
