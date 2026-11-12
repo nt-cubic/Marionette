@@ -309,6 +309,9 @@ struct AcpProcess {
     /// 红线：只许 RAII 持有 / terminate()，禁止手动 CloseHandle。
     #[cfg(target_os = "windows")]
     job: Option<crate::process_util::KillJobGuard>,
+    /// 最近几行 stderr（已剥 ANSI）。initialize 在进程秒退时把它们拼进
+    /// 失败原因，避免 UI 只看到「stdout closed」、真因留在 dev.log。
+    stderr_tail: Arc<Mutex<Vec<String>>>,
 }
 
 struct PendingPermission {
@@ -997,6 +1000,7 @@ impl AcpService {
             .ok_or_else(|| "ACP agent stderr is unavailable".to_string())?;
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let in_flight_prompt_id = Arc::new(AtomicU64::new(0));
+        let stderr_tail = Arc::new(Mutex::new(Vec::new()));
         // Assign inside the lock is fine: a microsecond-level kernel call, no
         // waiting on the child (「锁内不等子进程」红线针对的是 git/管道那种
         // 秒级阻塞)。失败（沙箱收编）= None，stop()/EOF 退回旧行为。
@@ -1060,6 +1064,7 @@ impl AcpService {
             local_file_upload: AtomicBool::new(false),
             #[cfg(target_os = "windows")]
             job,
+            stderr_tail: Arc::clone(&stderr_tail),
         });
         sessions.insert(session_id.clone(), Arc::clone(&process));
         drop(sessions);
@@ -1105,7 +1110,8 @@ impl AcpService {
         });
         let stderr_app = app.clone();
         let stderr_session = session_id.clone();
-        thread::spawn(move || read_stderr(stderr_app, stderr_session, stderr));
+        let stderr_tail_reader = Arc::clone(&stderr_tail);
+        thread::spawn(move || read_stderr(stderr_app, stderr_session, stderr, stderr_tail_reader));
 
         emit_acp_event(
             &app,
@@ -1135,8 +1141,16 @@ impl AcpService {
         let initialized = match initialized {
             Ok(value) => value,
             Err(error) => {
+                // 进程秒退时 stderr 往往比 stdout EOF 晚几毫秒写完
+                // （OpenCode 拒配置就是这种）：稍等再拼进失败原因。
+                thread::sleep(Duration::from_millis(150));
+                let detail = stderr_tail_text(&process.stderr_tail);
                 let _ = self.stop(&session_id);
-                return Err(format!("ACP initialize failed: {error}"));
+                return Err(if detail.is_empty() {
+                    format!("ACP initialize failed: {error}")
+                } else {
+                    format!("ACP initialize failed: {error}\n{detail}")
+                });
             }
         };
 
@@ -4216,8 +4230,54 @@ fn write_text_file_for_agent(params: &Value) -> Result<(), String> {
     fs::write(&path, content).map_err(|error| format!("Write {path:?} failed: {error}"))
 }
 
-fn read_stderr(app: AppHandle, session_id: String, stderr: impl std::io::Read) {
+const STDERR_TAIL_MAX: usize = 8;
+
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for c in chars.by_ref() {
+                if ('@'..='~').contains(&c) {
+                    break;
+                }
+            }
+            continue;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn push_stderr_tail(tail: &Arc<Mutex<Vec<String>>>, line: &str) {
+    let cleaned = strip_ansi(line);
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if let Ok(mut lines) = tail.lock() {
+        if lines.len() >= STDERR_TAIL_MAX {
+            lines.remove(0);
+        }
+        lines.push(trimmed.to_string());
+    }
+}
+
+fn stderr_tail_text(tail: &Arc<Mutex<Vec<String>>>) -> String {
+    tail.lock()
+        .map(|lines| lines.join("\n"))
+        .unwrap_or_default()
+}
+
+fn read_stderr(
+    app: AppHandle,
+    session_id: String,
+    stderr: impl std::io::Read,
+    tail: Arc<Mutex<Vec<String>>>,
+) {
     for line in BufReader::new(stderr).lines().flatten() {
+        push_stderr_tail(&tail, &line);
         emit_event(&app, &session_id, "stderr", None, json!({ "text": line }));
     }
 }
@@ -4226,6 +4286,27 @@ fn read_stderr(app: AppHandle, session_id: String, stderr: impl std::io::Read) {
 mod tests {
     use super::*;
     use std::sync::mpsc::Receiver;
+
+    #[test]
+    fn strip_ansi_drops_csi_and_keeps_text() {
+        assert_eq!(
+            strip_ansi("\u{1b}[91m\u{1b}[1mError: \u{1b}[0mConfiguration is invalid"),
+            "Error: Configuration is invalid"
+        );
+        assert_eq!(strip_ansi("plain"), "plain");
+    }
+
+    #[test]
+    fn stderr_tail_keeps_last_lines_without_ansi() {
+        let tail = Arc::new(Mutex::new(Vec::new()));
+        push_stderr_tail(&tail, "\u{1b}[91mError: \u{1b}[0mConfiguration is invalid at OPENCODE_CONFIG_CONTENT");
+        push_stderr_tail(&tail, "↳ Missing key provider.marionette.models.grok/grok-4.7@500k.limit.output");
+        push_stderr_tail(&tail, "   ");
+        let text = stderr_tail_text(&tail);
+        assert!(text.contains("Error: Configuration is invalid at OPENCODE_CONFIG_CONTENT"));
+        assert!(text.contains("Missing key"));
+        assert!(!text.contains('\u{1b}'));
+    }
 
     #[test]
     fn dsh_package_found_from_unwrapped_npm_launcher() {

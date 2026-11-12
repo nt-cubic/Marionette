@@ -553,23 +553,35 @@ pub fn opencode_engine_config_content(
     serde_json::to_string(&Value::Object(root)).unwrap_or_default()
 }
 
-/// opencode 里一个模型条目：名字之外必须写 `limit.context`/`limit.output`
+/// OpenCode schema (`https://opencode.ai/config.json`) 的 `limit` 一旦出现，
+/// `context` 与 `output` **必须成对**。引擎目录里 grok/@500k、openrouter/stealth
+/// 这类行经常只报窗口、`max_output_tokens=0`——旧实现只写 `limit.context`，
+/// 整份 `OPENCODE_CONFIG_CONTENT` 被拒，进程在 initialize 前退出
+/// （2026-11-12：第一个 opencode 还能跑，第二个直接「Agent process ended」）。
+/// 窗口已知时补一个保守的 output，保住 1M/500K 宣告；两边都是 0 才整段不写。
+const OPENCODE_LIMIT_OUTPUT_FALLBACK: u64 = 32_000;
+
+/// opencode 里一个模型条目：名字之外必须写完整的 `limit.context`/`limit.output`
 /// ——不写它就用 opencode 自己的默认窗口（实测 200K），引擎明明知道
 /// ollama 那条是 1M 也只能干看着（2026-11-12 用户实锤：DSH/zcode 都写过
-/// 窗口，只有 opencode 这条漏了）。引擎报 0 = 不知道，此时不写，让
-/// opencode 用它自己的默认值，别编一个数。
+/// 窗口，只有 opencode 这条漏了）。引擎窗口也是 0 = 真不知道，整段 limit
+/// 都不写，让 opencode 用它自己的默认值。
 fn opencode_model_entry(name: &str, row: &CatalogModelRow) -> serde_json::Value {
     let mut entry = serde_json::Map::new();
     entry.insert("name".to_string(), serde_json::Value::String(name.to_string()));
-    let mut limit = serde_json::Map::new();
     if row.context_window > 0 {
-        limit.insert("context".to_string(), serde_json::json!(row.context_window));
-    }
-    if row.max_output > 0 {
-        limit.insert("output".to_string(), serde_json::json!(row.max_output));
-    }
-    if !limit.is_empty() {
-        entry.insert("limit".to_string(), serde_json::Value::Object(limit));
+        let output = if row.max_output > 0 {
+            row.max_output
+        } else {
+            OPENCODE_LIMIT_OUTPUT_FALLBACK
+        };
+        entry.insert(
+            "limit".to_string(),
+            serde_json::json!({
+                "context": row.context_window,
+                "output": output,
+            }),
+        );
     }
     serde_json::Value::Object(entry)
 }
@@ -4252,6 +4264,7 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
                 row("grok/grok-4.7", 2_000_000, 64_000),
                 row("codex/gpt-5.6-luna", 0, 0),
                 row("opencode-go/glm-5.3", 200_000, 32_000),
+                row("grok/grok-4.7@500k", 500_000, 0),
             ],
             Some(r#"{"autoupdate":false,"provider":{"mine":{"name":"Keep Me"}}}"#),
         );
@@ -4272,7 +4285,17 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
         assert_eq!(provider["models"]["grok/grok-4.7"]["limit"]["context"], 2_000_000);
         assert_eq!(provider["models"]["grok/grok-4.7"]["limit"]["output"], 64_000);
         assert_eq!(provider["models"]["opencode-go/glm-5.3"]["limit"]["context"], 200_000);
-        // 引擎报 0（不知道）→ 不写 limit，别编数。
+        assert_eq!(provider["models"]["opencode-go/glm-5.3"]["limit"]["output"], 32_000);
+        // 窗口已知、输出未知：成对补 fallback，不能只写 context（schema 会拒整份配置）。
+        assert_eq!(
+            provider["models"]["grok/grok-4.7@500k"]["limit"]["context"],
+            500_000
+        );
+        assert_eq!(
+            provider["models"]["grok/grok-4.7@500k"]["limit"]["output"],
+            OPENCODE_LIMIT_OUTPUT_FALLBACK
+        );
+        // 窗口输出都是 0（不知道）→ 不写 limit，别编窗口。
         assert!(provider["models"]["codex/gpt-5.6-luna"].get("limit").is_none());
 
         // 坏 JSON existing → 整体替换（只剩 marionette）。
