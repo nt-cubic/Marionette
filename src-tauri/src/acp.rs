@@ -1637,6 +1637,19 @@ impl AcpService {
             {
                 continue;
             }
+            // Bridged models (marionette prefix): the agent never advertised an
+            // effort menu for them and grok answers any value with
+            // -32602 "unknown reasoning_effort value". Swallow locally — the UI
+            // keeps the level as a session preference, and every prompt would
+            // otherwise fire one doomed RPC first (2026-11-12 dev.log).
+            if update.target == ConfigTarget::Effort
+                && self
+                    .get_capabilities(session_id)
+                    .and_then(|caps| caps.current_model.clone())
+                    .is_some_and(|model| is_bridge_native_model_id(&model))
+            {
+                continue;
+            }
             // Bridged Codex: providers/set empties availableModels, so any
             // session/set_model (gpt-5.6-luna[xhigh] or codex/gpt-6.1-terra[xhigh])
             // 404s. Keep Codex on its builtin name; the magpie group pick is
@@ -2003,7 +2016,12 @@ impl AcpService {
                     "sessionId": agent_session_id,
                     "modelId": wire_id,
                 });
-                if caps.as_ref().map_or(true, |c| !c.effort_in_model_id) {
+                // 桥接模型（marionette 前缀）不带 effort：agent 没给它广告
+                // 菜单，grok 对任何值回 -32602 "unknown reasoning_effort value"
+                // （2026-11-12 实锤）。bare set_model，模型切换照常生效。
+                if caps.as_ref().map_or(true, |c| {
+                    !c.effort_in_model_id && !is_bridge_native_model_id(&model_id)
+                }) {
                     params["_meta"] = json!({ "reasoningEffort": effort });
                 }
                 request(process, "session/set_model", params)
@@ -2690,13 +2708,32 @@ fn reassertable_effort(caps: &CapabilitySnapshot) -> Option<String> {
     })
 }
 
+/// 跨用桥原生模型 id（引擎目录经各 agent 的托管 provider 广告的形态）：
+/// grok / opencode `marionette/<id>`、dsh `marionette::<provider/model>`、
+/// zcode `marionette\<engineId>`。与前端 `errors.ts::isBridgeNativeModelId`
+/// 同口径——改动两边要一起。
+fn is_bridge_native_model_id(model_id: &str) -> bool {
+    let id = model_id.trim();
+    id.starts_with("marionette/")
+        || id.starts_with("marionette::")
+        || id.starts_with("marionette\\")
+}
+
 /// Effort to send when switching onto `model_id`.
 ///
 /// Keep the session's current level when the target model advertises it;
 /// otherwise the model's default. No per-model catalog (older harness, or a
 /// session-wide effort select like DeepSeek Harness) falls back to
 /// `reassertable_effort`.
+///
+/// 桥接模型（marionette 前缀）返回 None：agent 没给它广告 effort 菜单，
+/// grok 1.0.46 对这类模型拒收任何档位（-32602 "unknown reasoning_effort
+/// value"，2026-11-12 实锤：会话停在 marionette/grok/grok-4.6 上时每次
+/// set_config 都被静默拒绝一次）。bare 切换，档位留在 UI 会话层。
 fn effort_for_model(caps: &CapabilitySnapshot, model_id: &str) -> Option<String> {
+    if is_bridge_native_model_id(model_id) {
+        return None;
+    }
     if let Some(menu) = caps.model_effort_menus.get(model_id) {
         if !menu.is_empty() {
             if let Some(id) = caps.current_effort_id.as_deref() {
@@ -4591,6 +4628,31 @@ mod tests {
         assert_eq!(
             effort_for_model(&on_high, "grok-4.6").as_deref(),
             Some("high")
+        );
+    }
+
+    /// Bridged models (marionette prefix): the agent never advertised an
+    /// effort menu for the engine-routed id, and grok 1.0.46 answers any
+    /// value with -32602 "unknown reasoning_effort value" (2026-11-12
+    /// dev.log: every set_config on marionette/grok/grok-4.6 died first).
+    /// No effort rides the switch, and menu-less non-bridged ids keep the
+    /// transparent pass-through (config.toml custom entries).
+    #[test]
+    fn bridged_models_carry_no_effort() {
+        let caps = parse_session_capabilities(&grok_mixed_catalog());
+        assert!(is_bridge_native_model_id("marionette/grok/grok-4.6"));
+        assert!(is_bridge_native_model_id("marionette::provider/model"));
+        assert!(is_bridge_native_model_id("marionette\\engine\\model"));
+        assert!(!is_bridge_native_model_id("grok-4.6"));
+        assert!(!is_bridge_native_model_id("deepseek-flash"));
+
+        assert_eq!(effort_for_model(&caps, "marionette/grok/grok-4.6"), None);
+        assert_eq!(effort_for_model(&caps, "marionette::provider/model"), None);
+        assert_eq!(effort_for_model(&caps, "marionette\\engine\\model"), None);
+        // 2026-10-30 批次的透传设计不动：无前缀的无菜单模型带当前档位。
+        assert_eq!(
+            effort_for_model(&caps, "deepseek-flash").as_deref(),
+            Some("max")
         );
     }
 
