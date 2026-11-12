@@ -6,6 +6,7 @@ import { cachedCapabilitiesFor } from "../lib/capabilityCache";
 import { invalidateBridgeModels } from "../lib/bridge";
 import { configureSourceEnvironment, expandHiddenProviders, DEFAULT_MODEL_PREFERENCES, libraryGroups, ordered, refreshModelSources, rowHidden, rowKeys, saveModelPreferences, toggleRow, useModelLibrary, type LibraryGroup, type LibraryRow, type ModelLibraryPreferences, type ModelSource } from "../lib/modelLibrary";
 import { splitModelMeta } from "../lib/modelMenu";
+import { pctLevel } from "../lib/quotaRail";
 import { useT } from "../lib/i18n";
 import type { AgentConfig } from "../lib/types";
 
@@ -233,9 +234,11 @@ function usedOf(w: EngineQuotaWindow): number | null {
   return null;
 }
 
-/** Yellow from 80 used, red from 95 (docs/ui-language.md, QuotaRule). */
+/** Same bands as the rail quota dials (pctLevel): yellow from 75 used, red from 90. */
 function quotaTone(used: number | null): string {
-  return used == null ? "" : used >= 95 ? "is-hot" : used >= 80 ? "is-warm" : "";
+  if (used == null) return "";
+  const level = pctLevel(used);
+  return level === "hot" ? "is-hot" : level === "warn" ? "is-warm" : "";
 }
 
 type SourceQuota = { windows: { w: EngineQuotaWindow; used: number }[]; balance: string | null };

@@ -31,6 +31,11 @@
   --yellow: #e7c86a;
   --green: #73d391;
   --blue: #72a7ff;
+  /* Quota warning tones. Separate from --yellow/--red because text needs contrast while a
+     4px bar / 2.5px ring needs saturation: on the white theme #9a7410 reads as olive brown
+     ("屎色") on a ring, so the graphic tone gets a saturated amber. */
+  --tone-warn: #e7c86a;
+  --tone-hot: #ef6c73;
   --shadow: rgba(0, 0, 0, 0.22);
   --radius: 3px;
   --radius-sm: 2px;
@@ -79,6 +84,8 @@
   --yellow: #9a7410;
   --green: #2d7d42;
   --blue: #3b6fbe;
+  --tone-warn: #c8860b;
+  --tone-hot: #c03d45;
   --shadow: rgba(0, 0, 0, 0.08);
   --workspace-bg: #ffffff;
   --editor-bg: #ffffff;

@@ -850,19 +850,19 @@ html.dock-resizing * {
 }
 
 .dock-meter.is-warm .dock-meter__pct {
-  color: var(--yellow);
+  color: var(--tone-warn);
 }
 
 .dock-meter.is-warm .dock-meter__bar i {
-  background: var(--yellow);
+  background: var(--tone-warn);
 }
 
 .dock-meter.is-hot .dock-meter__pct {
-  color: var(--red);
+  color: var(--tone-hot);
 }
 
 .dock-meter.is-hot .dock-meter__bar i {
-  background: var(--red);
+  background: var(--tone-hot);
 }
 
 .dock-meter.is-none .dock-meter__pct {

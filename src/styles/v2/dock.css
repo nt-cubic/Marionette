@@ -236,19 +236,19 @@
 }
 
 .dock-chrome .dock-quota__main.is-warm .dock-quota__wr.is-main i b {
-  background: var(--yellow);
+  background: var(--tone-warn);
 }
 
 .dock-chrome .dock-quota__main.is-warm .dock-quota__wr.is-main em {
-  color: var(--yellow);
+  color: var(--tone-warn);
 }
 
 .dock-chrome .dock-quota__main.is-hot .dock-quota__wr.is-main i b {
-  background: var(--red);
+  background: var(--tone-hot);
 }
 
 .dock-chrome .dock-quota__main.is-hot .dock-quota__wr.is-main em {
-  color: var(--red);
+  color: var(--tone-hot);
 }
 
 /* The rest on one line: `Codex 26%  GLM 87%(yellow)  opencode 已满(red)`. */
@@ -283,11 +283,11 @@
 }
 
 .dock-chrome .dock-quota__line button.is-warm {
-  color: var(--yellow);
+  color: var(--tone-warn);
 }
 
 .dock-chrome .dock-quota__line button.is-full {
-  color: var(--red);
+  color: var(--tone-hot);
 }
 
 .dock-chrome .dock-quota__bal b {

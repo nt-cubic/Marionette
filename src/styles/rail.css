@@ -413,24 +413,24 @@
 }
 /* tones: on meter rows, summary values and primary fills */
 .quota-wr.is-warn em {
-  color: var(--yellow);
+  color: var(--tone-warn);
 }
 .quota-wr.is-hot em {
-  color: var(--red);
+  color: var(--tone-hot);
 }
 .quota-wr.is-primary.is-warn i > span,
 .quota-wr.is-tight.is-warn i > span {
-  background: var(--yellow);
+  background: var(--tone-warn);
 }
 .quota-wr.is-primary.is-hot i > span,
 .quota-wr.is-tight.is-hot i > span {
-  background: var(--red);
+  background: var(--tone-hot);
 }
 .rail-ln__r.is-warn {
-  color: var(--yellow);
+  color: var(--tone-warn);
 }
 .rail-ln__r.is-hot {
-  color: var(--red);
+  color: var(--tone-hot);
 }
 
 /* ----- shared group toggle ----- */
@@ -1137,7 +1137,10 @@
   background: var(--text-faint);
 }
 
-.context-panel .quota-wr.is-tight i > span {
+/* Ink only while the window is healthy: the warn/hot bands must repaint the fill, and this
+   rule sits after the tone block above at equal specificity — without the :not() guard it
+   silently wins and a 78%-used bar stays agent-teal (2026-11-11 实锤). */
+.context-panel .quota-wr.is-tight:not(.is-warn):not(.is-hot) i > span {
   background: var(--agent-ink, var(--accent));
 }
 
@@ -1309,11 +1312,11 @@
 }
 
 .context-panel .quota-dial__arc.is-warn {
-  stroke: var(--yellow);
+  stroke: var(--tone-warn);
 }
 
 .context-panel .quota-dial__arc.is-hot {
-  stroke: var(--red);
+  stroke: var(--tone-hot);
 }
 
 .context-panel .quota-dial__value {
@@ -1329,11 +1332,11 @@
 }
 
 .context-panel .quota-dial.is-warn .quota-dial__value {
-  color: var(--yellow);
+  color: var(--tone-warn);
 }
 
 .context-panel .quota-dial.is-hot .quota-dial__value {
-  color: var(--red);
+  color: var(--tone-hot);
 }
 
 .context-panel .quota-dial__name {

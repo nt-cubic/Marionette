@@ -9,6 +9,7 @@
  * Run: npx tsx scripts/verify-quota-fallback.mts
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import type { EngineQuotaEntry } from "../src/lib/api";
 import { buildUsageSnapshot, emptySessionUsage } from "../src/lib/usage";
@@ -205,6 +206,26 @@ console.log("quota colour bands (used %)");
     "group tone follows pctLevel",
     groups.primary?.group.tone === (peak == null ? "none" : pctLevel(peak)),
   );
+}
+
+// ── 8. 配色口径：语义色 token 两主题齐备、进度条覆盖规则不得吞掉警示档 ────────
+console.log("quota colour tokens (css guard)");
+{
+  const tokens = readFileSync(new URL("../src/styles/tokens.css", import.meta.url), "utf8");
+  ok("--tone-warn defined for both themes", (tokens.match(/--tone-warn:/g) ?? []).length >= 2);
+  ok("--tone-hot defined for both themes", (tokens.match(/--tone-hot:/g) ?? []).length >= 2);
+
+  const rail = readFileSync(new URL("../src/styles/rail.css", import.meta.url), "utf8");
+  // 右侧栏那条 ink 填充规则排在配色块之后、权重相同——不带 :not() 就会静默胜出，
+  // 78% 已用的粗条仍是 agent 墨色（2026-11-11 实锤：表盘变黄、下面的条不变）。
+  ok(
+    "context-panel ink fill is guarded by :not(.is-warn)",
+    rail.includes("is-tight:not(.is-warn):not(.is-hot)"),
+  );
+  const dialWarn = rail.slice(rail.indexOf(".quota-dial__arc.is-warn"));
+  ok("dial warn ring uses the tone token", dialWarn.slice(0, 160).includes("var(--tone-warn)"));
+  const barWarn = rail.slice(rail.indexOf(".quota-wr.is-primary.is-warn"));
+  ok("tight bar warn fill uses the tone token", barWarn.slice(0, 200).includes("var(--tone-warn)"));
 }
 
 console.log(`\nverify-quota-fallback: ${passed} checks passed`);

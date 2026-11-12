@@ -22,6 +22,7 @@ import { ChevronDown, ChevronLeft, MoreHorizontal, Pause, Search } from "lucide-
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { agentInkStyle } from "../lib/agentInk";
 import type { EngineQuotaEntry, EngineQuotaWindow } from "../lib/api";
+import { isExhausted, pctLevel } from "../lib/quotaRail";
 import { lastActiveMs } from "../lib/sessionSuspend";
 import {
   applyDockWidth,
@@ -107,9 +108,11 @@ function usedOf(window: EngineQuotaWindow): number | null {
   return null;
 }
 
+/** Same bands as the rail (pctLevel): one threshold source, two class vocabularies. */
 function tone(used: number | null): string {
   if (used == null) return "is-none";
-  return used >= 90 ? "is-hot" : used >= 75 ? "is-warm" : "is-ok";
+  const level = pctLevel(used);
+  return level === "hot" ? "is-hot" : level === "warn" ? "is-warm" : "is-ok";
 }
 
 function resetLabel(iso?: string | null): string {
@@ -190,12 +193,12 @@ function QuotaLineItems({ rows, onOpen }: { rows: EngineQuotaEntry[]; onOpen: ()
     <div className="dock-quota__line">
       {rows.map((row) => {
         const peak = windowsOf(row)[0]?.used ?? null;
-        const full = peak != null && peak >= 100;
+        const full = isExhausted(peak);
         return (
           <button
             key={`${row.provider}:${row.name}`}
             type="button"
-            className={full ? "is-full" : peak != null && peak >= 75 ? "is-warm" : undefined}
+            className={full ? "is-full" : pctLevel(peak) === "warn" ? "is-warm" : undefined}
             title={quotaTitle(row)}
             aria-label={`${shortName(row.name)} ${peak == null ? t("dock.noQuotaData") : `${Math.round(peak)}%`} · ${t("dock.openDetails")}`}
             onClick={onOpen}

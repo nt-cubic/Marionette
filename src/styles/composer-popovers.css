@@ -1191,8 +1191,8 @@
 .model-library-dialog__source-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font-size: 11px; }
 .model-library-dialog__source-sub.is-warn { color: var(--yellow); }
 .model-library-dialog__source-quota { flex: none; font-size: 12.5px; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--text); }
-.model-library-dialog__source-quota.is-warm { color: var(--yellow); }
-.model-library-dialog__source-quota.is-hot { color: var(--red); }
+.model-library-dialog__source-quota.is-warm { color: var(--tone-warn); }
+.model-library-dialog__source-quota.is-hot { color: var(--tone-hot); }
 .model-library-dialog__source-quota.is-none { color: var(--text-faint); font-weight: 400; }
 .model-library-dialog__manage { display: flex; align-items: center; gap: 2px; flex: none; padding: 10px 14px; border: 0; border-top: 1px solid var(--hairline); background: transparent; color: var(--accent); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; }
 .model-library-dialog__manage:hover:not(:disabled) { background: var(--panel-soft); }
@@ -1226,10 +1226,10 @@
 .model-library-dialog__win.is-main i, .model-library-dialog__win.is-warm i, .model-library-dialog__win.is-hot i { height: 4px; }
 .model-library-dialog__win.is-main i span { background: var(--text-muted); }
 .model-library-dialog__win.is-main em { color: var(--text-strong); font-weight: 600; }
-.model-library-dialog__win.is-warm i span { background: var(--yellow); }
-.model-library-dialog__win.is-warm em { color: var(--yellow); font-weight: 600; }
-.model-library-dialog__win.is-hot i span { background: var(--red); }
-.model-library-dialog__win.is-hot em { color: var(--red); font-weight: 600; }
+.model-library-dialog__win.is-warm i span { background: var(--tone-warn); }
+.model-library-dialog__win.is-warm em { color: var(--tone-warn); font-weight: 600; }
+.model-library-dialog__win.is-hot i span { background: var(--tone-hot); }
+.model-library-dialog__win.is-hot em { color: var(--tone-hot); font-weight: 600; }
 
 /* 问题写成黄字，就地给出一行一行的输入表 */
 .model-library-dialog__issue { display: flex; flex-direction: column; gap: 4px; padding-top: 10px; border-top: 1px solid var(--hairline); }
