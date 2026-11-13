@@ -68,6 +68,7 @@ export const en = {
   "rail.sharedTo": "Checked items are lent to {agent} on the next connection",
   "rail.pluginsEmpty": "No plugins installed",
   "rail.quotaEngineOffline": "Engine offline · quota snapshot from {when}",
+  "rail.quotaEngineStale": "Quota fetch failed · snapshot from {when}",
   "rail.memoryRefresh": "Refresh memory",
   "rail.memoryEmpty": "No agent memory files found yet",
   "rail.memoryDistillTitle": "Distill lasting notes from this session",

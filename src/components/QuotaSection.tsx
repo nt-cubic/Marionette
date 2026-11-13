@@ -272,13 +272,20 @@ export const QuotaSection = memo(function QuotaSection({
   const view = buildQuotaView({ windows: usage.windows, agentLabel: usage.agentLabel, agentId, modelId });
   const empty = !view.primary && view.others.length === 0;
   // 懒启动配套（2026-11-06）：引擎停着时配额行来自上次快照——标注出来，
-  // 别让静止的数字冒充实时额度。
+  // 别让静止的数字冒充实时额度。两种标注共用落点：引擎停着（快照）与
+  // 取数失败回退旧快照（2026-11-13 全量审计批——断网/引擎崩时 fetchedAt
+  // 不再被刷新，按旧时间戳如实标注）。
   const hasEngineRows = usage.windows.some((w) => w.id.startsWith("engine:"));
+  const engineNoteWhen = usage.engineQuotaFetchedAt
+    ? new Date(usage.engineQuotaFetchedAt).toLocaleString()
+    : null;
   const engineOfflineNote =
-    !usage.engineOnline && hasEngineRows && usage.engineQuotaFetchedAt
-      ? t("rail.quotaEngineOffline", {
-          when: new Date(usage.engineQuotaFetchedAt).toLocaleString(),
-        })
+    hasEngineRows && engineNoteWhen
+      ? !usage.engineOnline
+        ? t("rail.quotaEngineOffline", { when: engineNoteWhen })
+        : usage.engineQuotaStale
+          ? t("rail.quotaEngineStale", { when: engineNoteWhen })
+          : null
       : null;
   const refreshTitle = [
     t("rail.quotaRefresh"),

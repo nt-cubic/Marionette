@@ -12,6 +12,7 @@ export const zh = {
   "app.noEvents600s": "600s 无事件",
   "app.interruptedOnClose": "应用关闭时中断或进程退出",
   "app.agentExited": "Agent 已退出",
+  "app.agentIdleExited": "会话空闲，Agent 进程已收起",
   "app.agentExitedDesc": "{detail}。点输入框或发一条消息会重新拉起，也可以开新会话。",
   "app.timedOut": "已超时",
   "app.answeredElsewhere": "已在其他窗口回复",

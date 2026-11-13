@@ -1354,6 +1354,8 @@ export function buildUsageSnapshot(args: {
   engineQuotaFetchedAt?: number | null;
   /** 引擎当前是否 Running。 */
   engineOnline?: boolean;
+  /** 上一次 engine_quota 是退回的旧快照（两侧取数都失败）。 */
+  engineQuotaStale?: boolean;
 }): UsageSnapshot {
   const { agentId, agentLabel, state, connected } = args;
   const windows: UsageWindow[] = [];
@@ -1517,5 +1519,6 @@ export function buildUsageSnapshot(args: {
         : null,
     engineQuotaFetchedAt: args.engineQuotaFetchedAt ?? null,
     engineOnline: args.engineOnline ?? true,
+    engineQuotaStale: args.engineQuotaStale ?? false,
   };
 }

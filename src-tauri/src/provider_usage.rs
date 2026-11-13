@@ -286,10 +286,36 @@ fn find_meta(provider: &str) -> Option<ProviderMeta> {
 }
 
 /// Extract API key for a provider id without ever returning the secret.
-/// Best-effort API key from OpenCode `auth.json`. Never logs the secret.
+/// Best-effort API key from OpenCode credentials — **opencode.db 优先**
+/// （credential 表 active=1 的活钥匙），auth.json 只兜底（2026-10-23 实锤：
+/// 迁移后 auth.json 里躺的是被替换的死钥匙；2026-11-13 全量审计批把注册链
+/// 的合并视图接到这里，此前这处漏网——DSH 的 DEEPSEEK_API_KEY 兜底注入和
+/// 认证面板存在性判定拿的都是死钥匙）。Never logs the secret.
 pub fn peek_provider_key(provider: &str) -> Option<String> {
-    let auth = load_auth_json().ok()?;
-    auth_key_for(&auth, provider).ok().filter(|k| !k.trim().is_empty())
+    let from_db = crate::credentials::peek_opencode_api_keys()
+        .into_iter()
+        .find(|(id, _)| auth_provider_matches(id, provider))
+        .map(|(_, key)| key)
+        .filter(|k| !k.trim().is_empty());
+    from_db.or_else(|| {
+        let auth = load_auth_json().ok()?;
+        auth_key_for(&auth, provider).ok().filter(|k| !k.trim().is_empty())
+    })
+}
+
+/// Provider id match for the merged credential view: exact, or one of the
+/// catalog's aliases for it (e.g. "deepseek" ↔ the auth.json entry name).
+fn auth_provider_matches(entry_id: &str, provider: &str) -> bool {
+    if entry_id.eq_ignore_ascii_case(provider) {
+        return true;
+    }
+    find_meta(provider).is_some_and(|meta| {
+        entry_id.eq_ignore_ascii_case(&meta.id)
+            || meta
+                .key_aliases
+                .iter()
+                .any(|alias| alias.eq_ignore_ascii_case(entry_id))
+    })
 }
 
 fn auth_key_for(auth: &Value, provider: &str) -> Result<String, String> {

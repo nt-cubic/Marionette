@@ -14,6 +14,7 @@ export const en = {
   "app.noEvents600s": "no events for 600s",
   "app.interruptedOnClose": "Interrupted on app close or process exit",
   "app.agentExited": "Agent has exited",
+  "app.agentIdleExited": "Session idle — agent process retired",
   "app.agentExitedDesc": "{detail}. Click the composer or send a message to bring it back, or start a new session.",
   "app.timedOut": "Timed out",
   "app.answeredElsewhere": "Answered in another window",

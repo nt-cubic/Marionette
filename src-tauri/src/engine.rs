@@ -1467,6 +1467,16 @@ fn maybe_refresh_source_live(exe: &Path, id: &str, force: bool, changed: &mut bo
         && run_magpie_cli(exe, &["provider", "models", id, "all"]).is_ok();
     if ok {
         *changed = true;
+    } else {
+        // 此前失败完全无痕——「已注册但目录为空」的静默态没法归因
+        // （2026-11-13 全量审计批）。10 分钟退避照旧。
+        crate::debug_log::append(
+            "engine",
+            "warn",
+            "",
+            "source live refresh failed; provider stays on its last model list",
+            Some(id),
+        );
     }
     if let Ok(mut due_map) = NEXT_DUE
         .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
@@ -1758,15 +1768,18 @@ fn fetch_quota_cli() -> Result<String, String> {
 /// 拉订阅配额。自拉 / 复用实例都走正在跑的网关
 /// `GET /v1/magpie/quotas`（`force` 时现场问供应商，否则 `?kept=1` 读缓存）。
 /// HTTP 失败才退回 `magpie quota --json`。点刷新传 `force=true` 跳过 30s 缓存。
-pub fn quota(force: bool) -> Vec<EngineQuotaEntry> {
+/// 返回 `(行, stale)`：stale=true = 两侧都失败、返回的是上一次成功快照
+/// （2026-11-13 全量审计批——此前旧缓存原样冒充实时值，前端还把
+/// fetchedAt 刷成 now）。
+pub fn quota(force: bool) -> (Vec<EngineQuotaEntry>, bool) {
     let EngineStatus::Running { port, .. } = status() else {
-        return Vec::new();
+        return (Vec::new(), false);
     };
     if !force {
         if let Ok(guard) = quota_cache().lock() {
             if let Some((at, cached)) = guard.as_ref() {
                 if at.elapsed() < QUOTA_CACHE_TTL {
-                    return cached.clone();
+                    return (cached.clone(), false);
                 }
             }
         }
@@ -1785,10 +1798,10 @@ pub fn quota(force: bool) -> Vec<EngineQuotaEntry> {
                 );
                 if let Ok(guard) = quota_cache().lock() {
                     if let Some((_, cached)) = guard.as_ref() {
-                        return cached.clone();
+                        return (cached.clone(), true);
                     }
                 }
-                return Vec::new();
+                return (Vec::new(), false);
             }
         },
     };
@@ -1809,7 +1822,7 @@ pub fn quota(force: bool) -> Vec<EngineQuotaEntry> {
     if let Ok(mut guard) = quota_cache().lock() {
         *guard = Some((Instant::now(), entries.clone()));
     }
-    entries
+    (entries, false)
 }
 
 // ─── 空闲回收（长时间无需求且无引擎绑定 → 停 serve；任何跨用入口自动唤醒）──
@@ -2403,6 +2416,23 @@ pub(crate) fn with_member_effort(engine_model: &str, effort: Option<&str>) -> St
     }
 }
 
+/// [`with_member_effort`] 的目录感知版（2026-11-13 全量审计批）：模型 id
+/// 自身以档位词结尾（ollama tag 如 `deepseek-v4.1-flash:high`）会被
+/// `split_member_effort` 误剥、codex 带档位时成员 id 被替换成错误模型
+/// （组 served 探针只探组 id，发现不了成员错）。完整 id 在引擎目录里
+/// → 后缀是 id 本体，原样返回（放弃 effort 钉缀——两害取轻）；目录
+/// 查不到（引擎睡眠/确实没有）→ 维持旧语义。
+pub(crate) fn with_member_effort_catalogued(engine_model: &str, effort: Option<&str>) -> String {
+    let trimmed = engine_model.trim();
+    if trimmed.rfind(':').is_some_and(|i| i > 0) {
+        let catalogued = catalog_direct().iter().any(|id| id == trimmed);
+        if catalogued {
+            return trimmed.to_string();
+        }
+    }
+    with_member_effort(engine_model, effort)
+}
+
 /// 组 id 规则对齐 magpie CLI 的校验（小写字母 / 数字 / 点 / 横线）；codex
 /// 内建名本身全小写，这里只做防御性归一，不合法的名字直接拒（留痕）。
 fn codex_group_id(builtin: &str) -> Option<String> {
@@ -2439,7 +2469,7 @@ pub fn codex_alias_sync(session_id: &str, builtin: &str, engine_model: &str) {
     // Codex encodes effort as `gpt-5.6-luna[xhigh]`; magpie group ids reject `[`.
     let effort = peel_combined_effort(builtin);
     let builtin = peel_combined_model_id(builtin);
-    let engine_model = with_member_effort(engine_model, effort);
+    let engine_model = with_member_effort_catalogued(engine_model, effort.as_deref());
     let Some(group_id) = codex_group_id(builtin) else {
         crate::debug_log::append(
             "engine",
@@ -4446,6 +4476,24 @@ mod tests {
         assert_eq!(
             with_member_effort("openrouter/deepseek-r1:free", Some("high")),
             "openrouter/deepseek-r1:free:high"
+        );
+    }
+
+    /// 模型 id 自身以档位词结尾（ollama tag `xxx:high`）：目录里有这个
+    /// 完整 id → 后缀是 id 本体，不被误剥误换（2026-11-13 全量审计批）；
+    /// 目录没有 → 维持旧语义（剥换钉缀）。
+    #[test]
+    fn with_member_effort_catalogued_protects_tag_suffix() {
+        let _engine = test_running(vec!["source-x/deepseek-v4.1-flash:high".to_string()]);
+        assert_eq!(
+            with_member_effort_catalogued("source-x/deepseek-v4.1-flash:high", Some("max")),
+            "source-x/deepseek-v4.1-flash:high",
+            "目录里的完整 tag id 原样保留，档位钉缀放弃"
+        );
+        assert_eq!(
+            with_member_effort_catalogued("codex/gpt-6.1-terra", Some("xhigh")),
+            "codex/gpt-6.1-terra:xhigh",
+            "无撞车 id 照常钉缀"
         );
     }
 

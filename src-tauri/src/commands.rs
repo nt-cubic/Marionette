@@ -3329,10 +3329,19 @@ pub fn engine_enable() -> Result<crate::engine::EngineStatus, String> {
 
 /// 订阅配额（网关 `/v1/magpie/quotas`，失败再 `magpie quota --json`）。
 /// `force=true` 跳过短缓存、现场问供应商；引擎没跑返回空表。
+/// `stale=true`：两侧都失败，entries 是上一次成功取回的快照（UI 必须标注，
+/// 别让静止的数字冒充实时额度——2026-11-13 全量审计批）。
+#[derive(serde::Serialize)]
+pub struct EngineQuotaResponse {
+    pub entries: Vec<crate::engine::EngineQuotaEntry>,
+    pub stale: bool,
+}
+
 #[tauri::command(async)]
-pub fn engine_quota(force: Option<bool>) -> Vec<crate::engine::EngineQuotaEntry> {
+pub fn engine_quota(force: Option<bool>) -> EngineQuotaResponse {
     let _trace = crate::debug_log::CmdTrace::new("engine_quota");
-    crate::engine::quota(force.unwrap_or(false))
+    let (entries, stale) = crate::engine::quota(force.unwrap_or(false));
+    EngineQuotaResponse { entries, stale }
 }
 
 /// 手动停止网关（浮层「停止网关」）：仅自拉实例；复用实例跳过并留痕。

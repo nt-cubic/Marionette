@@ -569,6 +569,10 @@ const OPENCODE_LIMIT_OUTPUT_FALLBACK: u64 = 32_000;
 fn opencode_model_entry(name: &str, row: &CatalogModelRow) -> serde_json::Value {
     let mut entry = serde_json::Map::new();
     entry.insert("name".to_string(), serde_json::Value::String(name.to_string()));
+    // 图片能力（2026-11-13 全量审计批）：opencode 的 per-model schema 有
+    // `attachment: boolean`（config.json $defs.ProviderConfig.models 实锤），
+    // 不写按默认（text）办——附图被当文本模型处理，DSH 同款坑。真值直写。
+    entry.insert("attachment".to_string(), serde_json::Value::Bool(row.images));
     if row.context_window > 0 {
         let output = if row.max_output > 0 {
             row.max_output
@@ -622,6 +626,17 @@ pub fn pi_models_path() -> Option<std::path::PathBuf> {
 fn pi_model_entry(row: &CatalogModelRow) -> serde_json::Value {
     let mut entry = serde_json::Map::new();
     entry.insert("id".to_string(), serde_json::Value::String(row.id.clone()));
+    // 图片能力（2026-11-13 全量审计批）：pi 的模型 schema 有 `input` 数组，
+    // 加载默认 `?? ["text","image"]`（pi-coding-agent bundle 实锤）——
+    // 偏乐观，text-only 模型带图会一路发到引擎吃 400。写真值。
+    entry.insert(
+        "input".to_string(),
+        if row.images {
+            serde_json::json!(["text", "image"])
+        } else {
+            serde_json::json!(["text"])
+        },
+    );
     if row.context_window > 0 {
         entry.insert("contextWindow".to_string(), serde_json::json!(row.context_window));
     }
@@ -2269,7 +2284,7 @@ pub(crate) const GROK_BRIDGE_EFFORT_MENU: &[(&str, &str, bool)] = &[
     ("max", "Maximum reasoning for the hardest tasks", false),
 ];
 
-fn grok_engine_owned_block(model_id: &str, base_url: &str) -> String {
+fn grok_engine_owned_block(model_id: &str, base_url: &str, row: Option<&CatalogModelRow>) -> String {
     let menu: String = GROK_BRIDGE_EFFORT_MENU
         .iter()
         .map(|(id, desc, default)| {
@@ -2281,6 +2296,24 @@ fn grok_engine_owned_block(model_id: &str, base_url: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
+    // 能力宣告（2026-11-13 全量审计批）：grok 对自定义模型省略
+    // `context_window` 时**默认 200,000**（文档 11-custom-models.md:121 明文），
+    // 1M 的引擎模型会被按 200k 记账、~170k（85% 阈值）就触发自动压缩——
+    // opencode/pi 的同款坑（2026-11-12 修）当时漏了 grok。
+    // `vision`：echo 探针实测（grok 1.0.77）config 表路径上 true/false/unset
+    // **都不拦发图**（引擎侧对 text-only 模型的 400 才是真兜底）——写它只为
+    // 声明意图（daemon 路由/UI 分组可能消费），无害。目录查不到行
+    // （row=None）保持不写，维持 grok 默认。
+    let mut caps = String::new();
+    if let Some(row) = row {
+        if row.context_window > 0 {
+            caps.push_str(&format!("context_window = {}\n", row.context_window));
+        }
+        if row.max_output > 0 {
+            caps.push_str(&format!("max_completion_tokens = {}\n", row.max_output));
+        }
+        caps.push_str(&format!("vision = {}\n", row.images));
+    }
     format!(
         concat!(
             "{marker}\n",
@@ -2290,6 +2323,7 @@ fn grok_engine_owned_block(model_id: &str, base_url: &str) -> String {
             "base_url = \"{base}\"\n",
             "api_backend = \"chat_completions\"\n",
             "api_key = \"{key}\"\n",
+            "{caps}",
             "reasoning_efforts = [\n{menu}\n]",
         ),
         marker = GROK_OWNED_MARKER,
@@ -2298,6 +2332,7 @@ fn grok_engine_owned_block(model_id: &str, base_url: &str) -> String {
         name = toml_escape(&crate::ts!("翻译引擎", "Translation engine")),
         base = toml_escape(base_url),
         key = toml_escape(crate::engine::ENGINE_TOKEN),
+        caps = caps,
         menu = menu,
     )
 }
@@ -2440,16 +2475,18 @@ pub fn ensure_grok_model_table_at(
 }
 
 /// 引擎版 ensure 的路径注入体：引擎不在 Running → Err（残留绑定降级路径）。
+/// `row` = 引擎目录行（窗口/输出/图片宣告）；None = 目录没这行，不写能力字段。
 pub fn ensure_grok_engine_table_at(
     config_path: &Path,
     model_id: &str,
     base_url: &str,
+    row: Option<&CatalogModelRow>,
 ) -> Result<bool, String> {
     let model_id = model_id.trim();
     if model_id.is_empty() {
         return Err(crate::ts!("model_id 不能为空", "model_id cannot be empty"));
     }
-    let desired = grok_engine_owned_block(model_id, base_url);
+    let desired = grok_engine_owned_block(model_id, base_url, row);
     ensure_grok_block_at(config_path, &grok_table_name(model_id), &desired)
 }
 
@@ -2513,7 +2550,10 @@ pub fn ensure_grok_model_table(model_id: &str, preset_id: &str) -> Result<bool, 
         let base_url = crate::engine::engine_v1_url().ok_or_else(|| {
             crate::ts!("翻译引擎未在运行，无法写 grok 引擎表（绑定已降级）", "The translation engine is not running; cannot write the grok engine table (binding downgraded)")
         })?;
-        return ensure_grok_engine_table_at(&path, model_id, &base_url);
+        let row = crate::engine::catalog_direct_entries()
+            .into_iter()
+            .find(|row| row.id == model_id);
+        return ensure_grok_engine_table_at(&path, model_id, &base_url, row.as_ref());
     }
     let preset = find_preset(preset_id).ok_or_else(|| crate::ts!("未知 preset `{preset_id}`", "Unknown preset `{preset_id}`"))?;
     ensure_grok_model_table_at(&path, model_id, preset, GROK_KEY_ENV)
@@ -4266,7 +4306,7 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
         fs::write(&config, USER_CONFIG).unwrap();
         let _engine = crate::engine::test_running(Vec::new());
 
-        assert!(ensure_grok_engine_table_at(&config, "grok/grok-4.7", "http://127.0.0.1:39999/v1").unwrap());
+        assert!(ensure_grok_engine_table_at(&config, "grok/grok-4.7", "http://127.0.0.1:39999/v1", None).unwrap());
         let text = fs::read_to_string(&config).unwrap();
         assert!(text.contains("[model.\"marionette/grok/grok-4.7\"]"));
         assert!(text.contains("model = \"grok/grok-4.7\""));
@@ -4278,6 +4318,9 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
         assert!(text.contains("reasoning_efforts = ["));
         assert!(text.contains("value = \"max\""));
         assert!(text.contains("value = \"high\", label = \"High\", description = \"Thorough reasoning and quality (recommended)\", default = true"));
+        // 目录行缺席（None）→ 能力字段一个不写（grok 落自家默认）。
+        assert!(!text.contains("context_window"));
+        assert!(!text.contains("vision"));
         // 绝不新增 [models] default：行首的 default 键仍然只有夹具里用户
         // 自己那条（菜单里的 default=true 在内联行上，不是行首键）。
         let top_defaults: Vec<&str> = text
@@ -4293,8 +4336,8 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
         assert_eq!(ids, ["low", "medium", "high", "max"]);
 
         // 幂等；端口漂移 → 原位替换（引擎换了端口，表跟着走）。
-        assert!(!ensure_grok_engine_table_at(&config, "grok/grok-4.7", "http://127.0.0.1:39999/v1").unwrap());
-        assert!(ensure_grok_engine_table_at(&config, "grok/grok-4.7", "http://127.0.0.1:40001/v1").unwrap());
+        assert!(!ensure_grok_engine_table_at(&config, "grok/grok-4.7", "http://127.0.0.1:39999/v1", None).unwrap());
+        assert!(ensure_grok_engine_table_at(&config, "grok/grok-4.7", "http://127.0.0.1:40001/v1", None).unwrap());
         let text = fs::read_to_string(&config).unwrap();
         assert!(text.contains("40001"));
         assert!(!text.contains("39999"));
@@ -4308,7 +4351,7 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
             ),
         )
         .unwrap();
-        assert!(ensure_grok_engine_table_at(&config, "legacy/m1", "http://127.0.0.1:39999/v1").unwrap());
+        assert!(ensure_grok_engine_table_at(&config, "legacy/m1", "http://127.0.0.1:39999/v1", None).unwrap());
         assert!(
             grok_bridge_effort_menu_at(&config, "marionette/legacy/m1").is_some(),
             "旧表升级后带菜单"
@@ -4319,6 +4362,51 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
         let text = fs::read_to_string(&config).unwrap();
         assert!(!text.contains("marionette/"));
         assert!(text.contains("user-own-key"));
+        toml::from_str::<toml::Value>(&text).unwrap();
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 引擎桥带目录行 → 窗口/输出/图片三宣告写出（2026-11-13 全量审计批）：
+    /// grok 省略 context_window 默认 200k（文档明文），1M 模型被按 200k 记账
+    /// 85% 就压缩——与 opencode/pi 窗口坑（2026-11-12 修）同构，当时漏了 grok。
+    /// 0 值（引擎不知道）不写，不编数；vision 真值直写，不赌 grok 解析引擎
+    /// /v1/models 的 modality 字段名。
+    #[test]
+    fn grok_engine_table_declares_window_and_vision() {
+        let dir = temp_dir("engcaps");
+        let config = dir.join("config.toml");
+        fs::write(&config, USER_CONFIG).unwrap();
+
+        let row = CatalogModelRow {
+            id: "deepseek/deepseek-v4-pro".into(),
+            context_window: 1_000_000,
+            max_output: 384_000,
+            images: true,
+        };
+        assert!(ensure_grok_engine_table_at(
+            &config,
+            "deepseek/deepseek-v4-pro",
+            "http://127.0.0.1:39999/v1",
+            Some(&row),
+        )
+        .unwrap());
+        let text = fs::read_to_string(&config).unwrap();
+        assert!(text.contains("context_window = 1000000"));
+        assert!(text.contains("max_completion_tokens = 384000"));
+        assert!(text.contains("vision = true"));
+        assert!(text.contains("reasoning_efforts = ["));
+        toml::from_str::<toml::Value>(&text).unwrap();
+
+        // 0 值不写；纯文本模型 vision=false 也直写（grok 文档：false 会让它
+        // 不把附图发给模型——正好）。
+        let blind = CatalogModelRow { id: "x/m".into(), context_window: 0, max_output: 0, images: false };
+        assert!(ensure_grok_engine_table_at(&config, "x/m", "http://127.0.0.1:39999/v1", Some(&blind)).unwrap());
+        let text = fs::read_to_string(&config).unwrap();
+        let block = text.split("[model.\"marionette/x/m\"]").nth(1).unwrap();
+        assert!(!block.contains("context_window"), "0 不写");
+        assert!(!block.contains("max_completion_tokens"), "0 不写");
+        assert!(block.contains("vision = false"));
         toml::from_str::<toml::Value>(&text).unwrap();
 
         fs::remove_dir_all(&dir).ok();
@@ -4426,6 +4514,9 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
         );
         // 窗口输出都是 0（不知道）→ 不写 limit，别编窗口。
         assert!(provider["models"]["codex/gpt-5.6-luna"].get("limit").is_none());
+        // 图片能力（2026-11-13 审计批）：schema 的 attachment 真值直写，
+        // 不写按默认（text）办——附图会被当文本模型处理。
+        assert_eq!(provider["models"]["grok/grok-4.7"]["attachment"], false);
 
         // 坏 JSON existing → 整体替换（只剩 marionette）。
         let replaced = opencode_engine_config_content(3425, &[row("grok/grok-4.7", 0, 0)], Some("not json"));
@@ -4482,6 +4573,13 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
         assert_eq!(
             parsed["providers"]["marionette"]["models"][0]["maxTokens"],
             64_000
+        );
+        // 图片能力（2026-11-13 审计批）：pi 的 input 数组真值直写——它的
+        // 加载默认是乐观的 ["text","image"]，text-only 模型带图会一路发到
+        // 引擎吃 400。
+        assert_eq!(
+            parsed["providers"]["marionette"]["models"][0]["input"],
+            serde_json::json!(["text"])
         );
         // 语义幂等：同参数再合 → 不再标记变更（不 churn 用户格式）。
         let (_, again) = pi_merge_models_json(Some(&merged), 3425, &models);

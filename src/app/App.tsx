@@ -1577,14 +1577,25 @@ export function App() {
   );
   const [engineOnline, setEngineOnline] = useState(false);
   const engineOnlineRef = useRef(false);
+  // 上一次 engine_quota 应答是「两侧失败退回的旧快照」（2026-11-13 全量
+  // 审计批：断网/引擎崩时旧数字冒充实时值；stale 时 fetchedAt 不刷新，
+  // 面板按旧时间戳标注快照）。
+  const [engineQuotaStale, setEngineQuotaStale] = useState(false);
   const setEngineOnlineTracked = (online: boolean) => {
     engineOnlineRef.current = online;
     setEngineOnline(online);
   };
   const refreshEngineQuota = useCallback((force = false) => {
-    const apply = (rows: EngineQuotaEntry[] | null | undefined, replaceEmpty: boolean) => {
+    const apply = (rows: EngineQuotaEntry[] | null | undefined, replaceEmpty: boolean, stale = false) => {
       if (rows && rows.length > 0) {
         setEngineQuotaRows(rows);
+        if (stale) {
+          // 旧快照：行照显示，但时间戳/在线状态/本地缓存都不动——
+          // 它们只描述「上一次真正取到的时刻」。
+          setEngineQuotaStale(true);
+          return;
+        }
+        setEngineQuotaStale(false);
         setEngineQuotaFetchedAt(Date.now());
         // 非空行只能来自运行中的引擎（engine_quota 非 Running 恒空）。
         setEngineOnlineTracked(true);
@@ -1597,11 +1608,11 @@ export function App() {
     };
     // kept=1 几乎立刻从网关缓存刷出 Grok / Codex / Go 等行；点刷新再跟一发现场查询。
     void fetchEngineQuota(false)
-      .then((rows) => apply(rows, !force))
+      .then((res) => apply(res.entries, !force, res.stale))
       .catch(() => undefined)
       .then(() => {
         if (!force) return;
-        return fetchEngineQuota(true).then((rows) => apply(rows, true));
+        return fetchEngineQuota(true).then((res) => apply(res.entries, true, res.stale));
       })
       .catch(() => undefined);
   }, []);
@@ -1661,8 +1672,9 @@ export function App() {
       engineQuota: engineQuotaRows,
       engineQuotaFetchedAt,
       engineOnline,
+      engineQuotaStale,
     });
-  }, [availableAgents, availableSessions, currentSessionId, sessionUsageById, engineQuotaRows, engineQuotaFetchedAt, engineOnline]);
+  }, [availableAgents, availableSessions, currentSessionId, sessionUsageById, engineQuotaRows, engineQuotaFetchedAt, engineOnline, engineQuotaStale]);
 
   // Portable app update check — delayed so it never stalls first paint.
   useEffect(() => {
@@ -3000,20 +3012,32 @@ export function App() {
           (current) => expirePendingPrompts(current, payload.sessionId, "timeout"),
           { publish: true },
         );
+        // 空闲退出（上一轮已正常收尾，进程自己收摊——codex 空闲数分钟自退
+        // 实锤 2026-11-13）不是错误：对话流里落一张中性系统卡就够，红色
+        // 错误 + 悬浮条 + 桌面通知三连吓人（用户反馈：正常结束了的对话
+        // 「莫名其妙自己报错」）。跑一半死掉（running/starting）才按错误。
+        const benignIdleExit =
+          payload.method === "process/ended" &&
+          sessionsRef.current.find((s) => s.id === payload.sessionId)?.status === "waiting";
         if (endedHard) {
           const sid = payload.sessionId;
           updateSessionEvents(sid, (current) => markOpenTools(current, sid, "failed"), {
             publish: true,
           });
-          setSessionNotices((current) => ({
-            ...current,
-            [sid]: {
-              sessionId: sid,
-              severity: "error",
-              title: t("app.agentExited"),
-              description: t("app.agentExitedDesc", { detail }),
-            },
-          }));
+          const exitTitle = benignIdleExit ? t("app.agentIdleExited") : t("app.agentExited");
+          updateSessionEvents(
+            sid,
+            (current) => [
+              ...current,
+              {
+                type: "assistant_message" as const,
+                sessionId: sid,
+                text: `**${exitTitle}**\n\n${t("app.agentExitedDesc", { detail })}`,
+                createdAt: new Date().toISOString(),
+              },
+            ],
+            { publish: true },
+          );
         }
         // Always leave running/starting — intentional stop (agent switch) or crash.
         // turn/complete usually arrived first; this is the belt for races.
@@ -3035,17 +3059,20 @@ export function App() {
         if (endedHard) {
           // A hard process exit is an error even when it raced the turn-end
           // event. Reuse the error channel so the 1s debounce coalesces the
-          // two signals instead of chiming twice for one crash.
-          cancelScheduledDesktopNotify(payload.sessionId);
-          const sess = sessionsRef.current.find((s) => s.id === payload.sessionId);
-          const label = sess?.label?.trim() || "Session";
-          const processDetail = compactNotifyDetail(detail);
-          void raiseDesktopNotify(
-            "error",
-            processDetail
-              ? `${label} · Agent process ended: ${processDetail}`
-              : `${label} · Agent process ended`,
-          );
+          // two signals instead of chiming twice for one crash. 空闲自退
+          // （benignIdleExit）不打扰：对话流里的系统卡已经交代过了。
+          if (!benignIdleExit) {
+            cancelScheduledDesktopNotify(payload.sessionId);
+            const sess = sessionsRef.current.find((s) => s.id === payload.sessionId);
+            const label = sess?.label?.trim() || "Session";
+            const processDetail = compactNotifyDetail(detail);
+            void raiseDesktopNotify(
+              "error",
+              processDetail
+                ? `${label} · Agent process ended: ${processDetail}`
+                : `${label} · Agent process ended`,
+            );
+          }
         }
         // Drop dead process bookkeeping so the next warm can respawn cleanly.
         void stopAcpSession(payload.sessionId).catch(() => undefined);

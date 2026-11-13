@@ -954,6 +954,80 @@ grok 会话绑引擎模型后档位芯片选 max 不再报错，引擎侧请求�
 `reasoning_effort`；echo 探针脚本已验证 exact 字节块（标记行+表头+菜单）被
 grok 1.0.77 接受。
 
+## 全量静默降级审计批（2026-11-13 批二：九修三记）
+
+三路并行扫全部「Marionette 写/注入给外部 ≠ 对方真的认」的链路（桥注入 ×
+凭据 × 引擎 × 额度 × MCP）。**共性模式三连**：写入即成功无读侧验证；
+`Ok(None)`/空 Vec/被丢弃的 SyncReport 把「为什么没有」压成同一种「没有」；
+存在性判定冒充活性判定。修复：
+
+1. **grok owned 表补 `context_window`/`max_completion_tokens`/`vision`**
+   （`ensure_grok_engine_table_at` 加 `row` 参数，`ensure_grok_model_table`
+   引擎分支查 `catalog_direct_entries`）。grok 文档明文：省略 context_window
+   **默认 200,000**——1M 模型按 200k 记账、~170k（85% 阈值）就自动压缩，
+   opencode/pi 窗口坑（2026-11-12 修）当时漏了 grok。0 值不写不编数；
+   旧表字节比较不等 → 下次 spawn 自动升级。**vision 探针实测（1.0.77）：
+   config 表路径上 true/false/unset 都不拦发图**——真兜底是引擎对
+   text-only 模型的 400；写字段只为声明意图（daemon 路由/UI 分组）。
+2. **opencode 模型条目补 `attachment`、pi 补 `input` 数组**（真值直写）。
+   opencode 的 schema（config.json $defs.ProviderConfig.models）有
+   `attachment: boolean`，不写按默认 text 办——附图被当文本模型；pi 的
+   加载默认是乐观的 `?? ["text","image"]`，text-only 模型带图发到引擎吃
+   400。两条都是 DSH「image omitted」坑的同族。
+3. **claude/grok/codex 引擎绑定 spawn 补 `wake_if_installed`**：dsh/pi/
+   zcode/opencode 四条链本来就有，这三条漏了——引擎睡着的窗口里绑定会话
+   静默降级 native = 悄悄烧自家订阅（2026-11-12 codex 事故同族）。
+   claude 桥另补 `ANTHROPIC_DEFAULT_HAIKU_MODEL`/`ANTHROPIC_SMALL_FAST_MODEL`
+   钉到桥模型（后台小模型默认打内置 haiku id → 引擎 404；**本机未装
+   claude，live 未实测**）。
+4. **额度卡新鲜度**：`engine_quota` 协议改 `{entries, stale}`（两条取数路
+   都失败时 stale=true 返回旧快照）；前端 stale 时**不刷新 fetchedAt/在线
+   状态/本地缓存**，面板标「额度获取失败 · 显示 {when} 的快照」
+   （`rail.quotaEngineStale`）。此前断网时旧数字冒充实时值、fetchedAt 还被
+   刷成 now。
+5. **死钥匙漏网**：`peek_provider_key` 接上注册链的合并视图
+   （`credentials::peek_opencode_api_keys`：opencode.db active=1 优先，
+   auth.json 兜底）——DSH 的 `DEEPSEEK_API_KEY` 兜底注入和认证面板此前拿
+   的是 auth.json 死钥匙（2026-10-23 opencode.db 迁移漏了这处）。
+6. **`with_member_effort_catalogued`**：引擎模型 id 自带档位词尾（ollama
+   tag `xxx:high`）时 `split_member_effort` 误剥、codex 带档位把成员 id 换
+   成错误模型（组 served 探针只探组 id 测不出）。完整 id 在目录里 → 原样
+   保留（放弃钉缀，两害取轻）。
+7. **四处静默分支补痕**：dsh/pi/zcode/opencode 引擎睡眠时 `Ok(None)/
+   Ok(false)` 的「不注入」各记一条 info（此前零日志，marionette 组消失无
+   从归因）；zcode MCP 同名跳过（SyncReport.skipped 不再被丢）；
+   marionette-tools 对 http/stdio 都不收的 agent 记痕；
+   `maybe_refresh_source_live` 失败记 warn（「已注册但目录空」不再无痕）。
+
+**记录在案、本批不修**（各有其成本/需先核实）：zcode credentials 探活是
+存在性判定（token 过期照显已登录）；zcode 个人层 zod 拒载 Marionette 无感
+知（写侧无加载探针）；dsh 路由未宣告 `reasoningEfforts`（DSH 里 marionette
+模型无档位控制——pi-ai 字段名未核实前不盲写）；usage_backfill 行级解析失
+败静默清零 + 契约无 serde 守卫测试；magpie 网关吞 temperature（目录驱动）
+与 anthropic 面 server-side tools 丢弃（上游设计）；AGENTS.md 旧表述与
+pitfalls 勘误矛盾（pi-ai catalog 条目）。回归：`cargo test --bin marionette`
+（529）+ `npx tsc --noEmit`。
+
+## Agent 进程空闲自退的 UX（2026-11-13 批三）
+
+**事实**（dev.log 实锤，session-1794539788312）：codex 最后一轮 12:35 正常
+`turn/complete`，12:43 进程自己退出（stdout EOF）——中间 8 分钟 Marionette
+**什么都没做**（无挂起/无 stop/无 trim 杀），watchdog 心跳全程健康。codex
+空闲数分钟自退是**上游行为**，Marionette 不拦（点输入框/发消息自动重拉）。
+
+**修的是 UX**：此前这个良性退出会三连轰炸——红色 `SessionNoticeStrip`
+（composer 上方悬浮半透明条，用户反馈「明明正常结束了的，莫名其妙自己
+报错」）+ 桌面通知 + 会话标 exited。现在（App.tsx process/ended 处理器）：
+
+- **判定 `benignIdleExit`**：退出时会话状态是 `waiting`（上一轮已收尾）=
+  空闲自退；`running`/`starting`（跑一半死）才算硬崩。
+- 良性：对话流里落一张**中性系统卡**（`**会话空闲，Agent 进程已收起**` +
+  重拉说明，`app.agentIdleExited`；转录系统卡的既有模式 = assistant_message
+  粗体标题，同压缩通知），**不打桌面通知、不出悬浮条**。
+- 硬崩：同卡但错误文案（`app.agentExited`）+ 桌面通知照旧。
+- `SessionNoticeStrip`/`sessionNotices` 机制保留给其它生产者（重试/模型
+  回退）；session/ready 清 notice 的旧逻辑不动。
+
 ## 模型共享引擎的凭据源（2026-10-23）
 
 引擎注册（`engine.rs` 的 `register_key_providers`）钥匙来源按优先级：**Marionette 凭据库

@@ -738,7 +738,13 @@ impl AcpService {
                             )),
                         );
                     }
-                    Ok(None) => {}
+                    Ok(None) => crate::debug_log::append(
+                        "bridge",
+                        "info",
+                        &session_id,
+                        "dsh marionette route skipped (engine starting or catalog empty); session runs without marionette models",
+                        None,
+                    ),
                     Err(error) => crate::debug_log::append(
                         "bridge",
                         "warn",
@@ -769,7 +775,13 @@ impl AcpService {
                             Some("provider=marionette"),
                         );
                     }
-                    Ok(false) => {}
+                    Ok(false) => crate::debug_log::append(
+                        "bridge",
+                        "info",
+                        &session_id,
+                        "pi marionette route skipped (engine starting or catalog empty); session runs without marionette models",
+                        None,
+                    ),
                     Err(error) => crate::debug_log::append(
                         "bridge",
                         "warn",
@@ -798,7 +810,13 @@ impl AcpService {
                             Some("provider=marionette"),
                         );
                     }
-                    Ok(false) => {}
+                    Ok(false) => crate::debug_log::append(
+                        "bridge",
+                        "info",
+                        &session_id,
+                        "zcode marionette route skipped (engine starting or catalog empty); session runs without marionette models",
+                        None,
+                    ),
                     Err(error) => crate::debug_log::append(
                         "bridge",
                         "warn",
@@ -825,14 +843,28 @@ impl AcpService {
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
-                if let Err(error) = crate::zcode_mcp_bridge::sync(&project_roots) {
-                    crate::debug_log::append(
-                        "bridge",
-                        "warn",
-                        &session_id,
-                        "zcode stdio mcp bridge sync failed",
-                        Some(&error),
-                    );
+                match crate::zcode_mcp_bridge::sync(&project_roots) {
+                    // skipped（同名冲突）此前被整个丢弃——勾了借贷工具却不出
+                    // 现时无从归因（2026-11-13 全量审计批）。
+                    Ok(report) if !report.skipped.is_empty() => {
+                        crate::debug_log::append(
+                            "bridge",
+                            "info",
+                            &session_id,
+                            "zcode stdio mcp bridge skipped same-name servers",
+                            Some(&report.skipped.join(", ")),
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        crate::debug_log::append(
+                            "bridge",
+                            "warn",
+                            &session_id,
+                            "zcode stdio mcp bridge sync failed",
+                            Some(&error),
+                        );
+                    }
                 }
             }
         }
@@ -856,6 +888,16 @@ impl AcpService {
                     "opencode session bridged via OPENCODE_CONFIG_CONTENT",
                     Some("provider=marionette"),
                 );
+            } else {
+                // 引擎睡眠/目录空：静默不注入会让「模型菜单里 marionette 组消失」
+                // 无从归因（2026-11-13 全量审计批）。
+                crate::debug_log::append(
+                    "bridge",
+                    "info",
+                    &session_id,
+                    "opencode marionette injection skipped (engine starting or catalog empty); session runs without marionette models",
+                    None,
+                );
             }
         }
         // ── Cross-agent model bridge (docs/cross-agent-bridge.md §4.4): a
@@ -866,6 +908,14 @@ impl AcpService {
         //    unified: key-plan = DPAPI store, reference (opencode auth.json) =
         //    read live from the original file at spawn time.
         if let Some(selection) = crate::model_bridge::binding_for(&session_id) {
+            // 引擎绑定 + 引擎睡着（崩溃后的窗口）：先唤醒再算注入。dsh/pi/
+            // zcode/opencode 的 spawn 分支各有同款 wake，claude/grok 这条
+            // 通用注入链没有——引擎不在时 Err「绑定已失效」只落 dev.log，
+            // 会话静默降级 native = 悄悄烧自家订阅（2026-11-12 codex 事故
+            // 同族，2026-11-13 全量审计批补）。
+            if selection.entry_id == crate::engine::ENGINE_ENTRY_ID {
+                crate::engine::wake_if_installed();
+            }
             let key = crate::model_bridge::peek_spawn_key(&selection.entry_id)
                 .filter(|key| !key.is_empty());
             match (
@@ -883,7 +933,17 @@ impl AcpService {
                         child_command
                             .env("ANTHROPIC_BASE_URL", &base_url)
                             .env("ANTHROPIC_AUTH_TOKEN", &key)
-                            .env("ANTHROPIC_MODEL", &model);
+                            .env("ANTHROPIC_MODEL", &model)
+                            // 后台小模型调用（标题生成等）默认打 claude 内置
+                            // 的 haiku id——base_url 已指向引擎/规整器时那是
+                            // 目录外 id，引擎回 404 unknown model，功能静默
+                            // 失效（2026-11-13 全量审计批）。把小模型也钉到
+                            // 桥模型：多花一点主模型调用，换功能可用。两个
+                            // 历史变量名都设（新版认 DEFAULT_HAIKU，旧版认
+                            // SMALL_FAST，未认的忽略未知 env，无害）。本机未
+                            // 装 claude，live 未实测——升级 claude 后留意。
+                            .env("ANTHROPIC_DEFAULT_HAIKU_MODEL", &model)
+                            .env("ANTHROPIC_SMALL_FAST_MODEL", &model);
                         crate::debug_log::append(
                             "bridge",
                             "info",
@@ -1173,6 +1233,12 @@ impl AcpService {
             == crate::model_bridge::BridgeAgent::Codex
         {
             if let Some(selection) = crate::model_bridge::binding_for(&session_id) {
+                // 与 spawn 链同款 wake：引擎睡着的窗口里不唤醒，路由解析
+                // None → 会话静默 native = 烧自家 codex 订阅（2026-11-12
+                // 事故同族）。
+                if selection.entry_id == crate::engine::ENGINE_ENTRY_ID {
+                    crate::engine::wake_if_installed();
+                }
                 if let Some((base_url, api_key)) =
                     crate::model_bridge::codex_bridge_route(&selection)
                 {
@@ -1364,6 +1430,18 @@ impl AcpService {
                 // Agent without http MCP: hand stdio plugins over natively.
                 crate::plugins::stdio_fallback_entries()
             } else {
+                // http/stdio 都不收的 agent：marionette 自有工具面（权限卡、
+                // 浏览器等）在此整组消失——留一条痕，别让「工具没了」无从
+                // 归因（2026-11-13 全量审计批）。
+                if !plugin_ids.is_empty() {
+                    crate::debug_log::append(
+                        "bridge",
+                        "info",
+                        &session_id,
+                        "mcp injection skipped: agent accepts neither http nor stdio; marionette tools unavailable this session",
+                        None,
+                    );
+                }
                 (Vec::new(), Vec::new())
             };
             if !plugin_entries.is_empty() || !plugin_notes.is_empty() {

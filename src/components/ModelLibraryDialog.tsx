@@ -30,7 +30,7 @@ export function ModelLibraryDialog({ agents, onClose, onManageSources }: { agent
     setBusy(true); setError("");
     // Quotas are advisory and never gate the scan: the gateway answers from
     // its cache (`kept=1`) quickly, or not at all.
-    void engineQuota(false).then(rows => { if (rows.length > 0) setQuotas(rows); }).catch(() => undefined);
+    void engineQuota(false).then(res => { if (res.entries.length > 0) setQuotas(res.entries); }).catch(() => undefined);
     try {
       await refreshModelSources();
       invalidateBridgeModels();

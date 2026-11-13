@@ -483,6 +483,8 @@ export type UsageSnapshot = {
   engineQuotaFetchedAt?: number | null;
   /** 引擎当前是否 Running（false + 有引擎行 = 显示离线快照标注）。 */
   engineOnline?: boolean;
+  /** 上一次 engine_quota 应答是旧快照（取数失败回退，数字非实时）。 */
+  engineQuotaStale?: boolean;
 };
 
 // ─── ACP Capability Types ───────────────────────────────────────────────────

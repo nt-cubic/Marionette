@@ -1396,13 +1396,21 @@ export type EngineQuotaEntry = {
   balance?: string | null;
 };
 
-/** Subscription quotas from the engine; empty when the engine is not running. */
-export async function engineQuota(force = false): Promise<EngineQuotaEntry[]> {
-  if (!isTauriRuntime()) return [];
+/** Subscription quotas from the engine; empty when the engine is not running.
+ * `stale = true`：两条取数路都失败，entries 是上一次成功的快照——UI 必须
+ * 标注（2026-11-13 全量审计批，别让静止数字冒充实时额度）。 */
+export type EngineQuotaResult = { entries: EngineQuotaEntry[]; stale: boolean };
+
+export async function engineQuota(force = false): Promise<EngineQuotaResult> {
+  if (!isTauriRuntime()) return { entries: [], stale: false };
   try {
-    return await invoke<EngineQuotaEntry[]>("engine_quota", { force });
+    const res = await invoke<Partial<EngineQuotaResult>>("engine_quota", { force });
+    return {
+      entries: Array.isArray(res?.entries) ? res.entries : [],
+      stale: res?.stale === true,
+    };
   } catch {
-    return [];
+    return { entries: [], stale: false };
   }
 }
 
