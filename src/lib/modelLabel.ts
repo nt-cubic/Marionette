@@ -155,6 +155,10 @@ const REDUNDANT_TAG_PARTS = /^(teamo|local|official|marionette)\b/i;
 const FAMILY_GROUPS: Array<{ match: RegExp; group: string }> = [
   { match: /^teamo\b/i, group: "Team Router" },
   { match: /^marionette\b/i, group: "Marionette" },
+  // Engine catalog rows reached the agent through the cross-use bridge and
+  // carry the registered source's internal id (`source-73800e…/model`) —
+  // group them under Marionette instead of printing the hash (2026-11-13).
+  { match: /^source-[0-9a-f]{6,}$/i, group: "Marionette" },
   { match: /^opencode\b/i, group: "OpenCode" },
   { match: /^openrouter\b/i, group: "OpenRouter" },
   { match: /^deepseek\b/i, group: "DeepSeek" },

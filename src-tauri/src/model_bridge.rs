@@ -491,14 +491,33 @@ fn push_engine_models(models: &mut Vec<BridgeModel>) -> bool {
     for model_id in &engine_ids {
         // Visibility belongs to the model library; do not silently cut off
         // models before the user can choose which ones should be shown.
+        // label 剥掉注册来源的内部 id 前缀（`source-73800e…/`）——它随后会
+        // 进 Composer 芯片与 You/Reply 卡的盖戳（modelLabel），原始哈希对
+        // 用户是噪音（2026-11-13 用户反馈：Reply 页脚整条 source id）。
+        // model_id 保持原样（路由/prefs 的 wire id）。
         models.push(BridgeModel {
             entry_id: crate::engine::ENGINE_ENTRY_ID.to_string(),
             preset: crate::engine::ENGINE_PRESET_ID.to_string(),
-            label: model_id.clone(),
+            label: engine_model_label(model_id),
             model_id: model_id.clone(),
         });
     }
     from_cache
+}
+
+/// 引擎目录行的显示名：剥注册来源内部 id 前缀（`source-<hex>/`， possibly
+/// 多段 `source-<hex>/vendor/model` 只剥第一段）。无该前缀的原样返回。
+pub(crate) fn engine_model_label(model_id: &str) -> String {
+    let trimmed = model_id.trim();
+    if let Some(rest) = trimmed.strip_prefix("source-") {
+        if let Some(slash) = rest.find('/') {
+            let hash = &rest[..slash];
+            if !hash.is_empty() && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                return rest[slash + 1..].to_string();
+            }
+        }
+    }
+    trimmed.to_string()
 }
 
 
@@ -2992,6 +3011,30 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
+
+    /// 引擎目录行的显示名剥掉注册来源内部 id 前缀（2026-11-13 用户反馈：
+    /// Reply 页脚整条 `source-73800e…/deepseek-v4.1-flash:1017`）。wire id
+    /// 不动——剥前缀只走 label。
+    #[test]
+    fn engine_model_label_strips_source_prefix() {
+        assert_eq!(
+            engine_model_label("source-73800e7663517058/deepseek-v4.1-flash:1017"),
+            "deepseek-v4.1-flash:1017"
+        );
+        // 多段 vendor 路径只剥 source 前缀这一层。
+        assert_eq!(
+            engine_model_label("source-c3f358329cebd120/vendor/m1"),
+            "vendor/m1"
+        );
+        // 哈希段后没有斜杠（不该发生）→ 原样。
+        assert_eq!(engine_model_label("source-73800e7663517058"), "source-73800e7663517058");
+        // 非 source 前缀（官方源 / openrouter）原样。
+        assert_eq!(engine_model_label("deepseek/deepseek-v4-pro"), "deepseek/deepseek-v4-pro");
+        assert_eq!(
+            engine_model_label("openrouter/google/gemini-4-carbon"),
+            "openrouter/google/gemini-4-carbon"
+        );
+    }
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

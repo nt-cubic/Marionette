@@ -186,7 +186,7 @@ import {
   isSessionNotRunningError,
   isTurnInFlightError,
 } from "../lib/errors";
-import { prettyEffortLabel } from "../lib/modelLabel";
+import { prettyEffortLabel, prettyModelLabel } from "../lib/modelLabel";
 import { classifyToolCall } from "../lib/turnActivity";
 import { selectTurnWorkspaceChanges, type TurnWorkspaceChange } from "../lib/turnDelivery";
 import { getLastUsedDefaults } from "../lib/recentModels";
@@ -7945,9 +7945,16 @@ export function App() {
         sendRow?.preferredModel?.trim() ||
         caps?.currentModel ||
         null;
+      const capsModel = modelId ? caps?.models.find((m) => m.id === modelId) : undefined;
       const modelLabel =
         composerSnap?.modelLabel?.trim() ||
-        (modelId ? caps?.models.find((m) => m.id === modelId)?.label ?? modelId : undefined);
+        (capsModel || modelId
+          ? prettyModelLabel({
+              id: modelId ?? "",
+              label: capsModel?.label ?? modelId ?? "",
+              description: capsModel?.description,
+            })
+          : undefined);
       // The chip's effort, not just the disk pref: a dialog that inherited its
       // effort never had a pref written, and the send would silently go out on
       // the agent default while the chip showed something else.
