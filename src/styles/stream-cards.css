@@ -1479,6 +1479,10 @@ body.is-composer-resizing .composer {
   --mode-chip: var(--mode-tone-default);
 }
 
+.composer[data-mode-tone="loose"] {
+  --mode-chip: var(--mode-tone-loose);
+}
+
 .composer__mode-rail {
   position: absolute;
   left: 0;
@@ -1621,8 +1625,12 @@ body.is-composer-resizing .composer {
   background: var(--mode-tone-minimal);
 }
 
-.composer-menu button[data-mode-tone="loose"] .composer-menu__mode-dot {
+.composer-menu button[data-mode-tone="default"] .composer-menu__mode-dot {
   background: var(--mode-tone-default);
+}
+
+.composer-menu button[data-mode-tone="loose"] .composer-menu__mode-dot {
+  background: var(--mode-tone-loose);
 }
 
 .composer textarea {
