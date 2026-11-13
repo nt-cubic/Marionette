@@ -15,6 +15,14 @@ export function modeTone(modeId: string | null | undefined): string {
   if (id === "minimal") return "minimal";
   if (id === "cordis" || id === "creator" || id === "creation") return "debug";
 
+  // Codex's Auto review: configOption value `agent`, live label "Auto review".
+  // The label path lands on debug ("auto-review" includes "review") while the
+  // bare id fell through to build — You border / composer rail (id) rendered
+  // green against the reply footer's orange (2026-11-13 user report). Pin the
+  // id to the label's tone so the whole family (You bar, composer rail, chip,
+  // menu swatch, reply footer) agrees on one color per mode.
+  if (id === "agent") return "debug";
+
   if (id.includes("plan")) return "plan";
   if (id.includes("ask") || id.includes("chat") || id.includes("talk")) return "ask";
   if (id.includes("debug") || id.includes("review")) return "debug";
