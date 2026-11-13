@@ -2162,6 +2162,7 @@
 .event-card--user_message[data-mode-tone="build"]::before   { background: var(--mode-tone-build); }
 .event-card--user_message[data-mode-tone="minimal"]::before { background: var(--mode-tone-minimal); }
 .event-card--user_message[data-mode-tone="default"]::before { background: var(--mode-tone-default); }
+.event-card--user_message[data-mode-tone="loose"]::before   { background: var(--mode-tone-loose); }
 
 /* Timestamp — top-right of the type row */
 .event-card__timestamp {
@@ -2405,6 +2406,8 @@
 .meta-tag__symbol[data-mode-tone="minimal"] { --mode-chip: var(--mode-tone-minimal); }
 .meta-tag--mode[data-mode-tone="default"],
 .meta-tag__symbol[data-mode-tone="default"] { --mode-chip: var(--mode-tone-default); }
+.meta-tag--mode[data-mode-tone="loose"],
+.meta-tag__symbol[data-mode-tone="loose"]   { --mode-chip: var(--mode-tone-loose); }
 
 /* Duration — monospace numbers */
 .meta-tag--duration {

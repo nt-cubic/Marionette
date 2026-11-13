@@ -3386,9 +3386,9 @@ export function Composer({
                         role="menuitem"
                         data-mode-tone={
                           permissionIsLoose(option.id)
-                            ? "debug"
+                            ? "loose"
                             : permissionIsReadOnly(option.id)
-                              ? "default"
+                              ? "ask"
                               : "build"
                         }
                         title={option.description ?? undefined}

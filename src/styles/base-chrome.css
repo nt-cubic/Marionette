@@ -15,6 +15,10 @@
   --mode-tone-build: var(--accent);
   --mode-tone-minimal: #2dd4bf;
   --mode-tone-default: var(--text-faint);
+  /* Seventh family (2026-11-13): wide-open modes (bypass / full access /
+     yolo) — danger red, so they stop sharing the build green with every
+     agent's working mode and the within-agent no-repeat rule holds. */
+  --mode-tone-loose: #e0566a;
 }
 
 /* ── z-index layering scale (documentation only — no values changed) ────────

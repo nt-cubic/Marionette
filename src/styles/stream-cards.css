@@ -1621,7 +1621,7 @@ body.is-composer-resizing .composer {
   background: var(--mode-tone-minimal);
 }
 
-.composer-menu button[data-mode-tone="default"] .composer-menu__mode-dot {
+.composer-menu button[data-mode-tone="loose"] .composer-menu__mode-dot {
   background: var(--mode-tone-default);
 }
 
