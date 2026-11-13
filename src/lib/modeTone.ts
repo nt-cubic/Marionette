@@ -23,6 +23,14 @@ export function modeTone(modeId: string | null | undefined): string {
   // menu swatch, reply footer) agrees on one color per mode.
   if (id === "agent") return "debug";
 
+  // Claude's Don't Ask = stop asking for permissions (autonomous, like
+  // Auto/Bypass) — the generic includes("ask") would land it on the ASK
+  // family's blue, the exact opposite of what it does.
+  if (id === "dontask") return "build";
+  // ZCode's tightest sandbox — give the restrictive end a voice (ASK blue)
+  // instead of toneless gray, mirroring read-only's role on other agents.
+  if (id === "guarded") return "ask";
+
   if (id.includes("plan")) return "plan";
   if (id.includes("ask") || id.includes("chat") || id.includes("talk")) return "ask";
   if (id.includes("debug") || id.includes("review")) return "debug";
