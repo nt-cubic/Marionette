@@ -537,6 +537,13 @@ fn main() {
                                     let _ = main.as_ref().hide();
                                 } else {
                                     let _ = main.as_ref().show();
+                                    // WebView2 焦点错位兜底（2026-11-13 实锤）：
+                                    // set_visible(true) 只做 Resume 不做 MoveFocus——
+                                    // 最小化时 webview 恰好持有焦点的场合，还原后
+                                    // 键盘事件不再进页面（渲染/点击正常、别的程序
+                                    // 正常），直到焦点被别的窗口洗一遍。focus() =
+                                    // 可见 + Resume + MoveFocus（vendor/wry 补丁 #4）。
+                                    let _ = main.as_ref().set_focus();
                                 }
                             }
                             MINIMIZE_SUSPENDED.store(minimized, Ordering::Release);
@@ -568,6 +575,9 @@ fn main() {
                         MINIMIZE_SUSPENDED.store(false, Ordering::Release);
                         if let Some(main) = window.app_handle().get_webview_window("main") {
                             let _ = main.as_ref().show();
+                            // 同 Resized 还原分支：MoveFocus 修 WebView2 键盘焦点
+                            // 错位（2026-11-13 实锤的「点得着打不了字」）。
+                            let _ = main.as_ref().set_focus();
                         }
                         crate::debug_log::append(
                             "window",

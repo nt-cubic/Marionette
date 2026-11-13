@@ -1028,6 +1028,25 @@ pitfalls 勘误矛盾（pi-ai catalog 条目）。回归：`cargo test --bin mar
 - `SessionNoticeStrip`/`sessionNotices` 机制保留给其它生产者（重试/模型
   回退）；session/ready 清 notice 的旧逻辑不动。
 
+## 还原后键盘失灵（2026-11-13 批四：WebView2 焦点错位）
+
+**症状**（用户实锤）：窗口一段时间没点（经历过后台隐藏/最小化→还原），
+点回对话框**完全打不了字**——渲染正常、点击正常、浏览器/记事本全都正常。
+dev.log 时间线：后台隐藏 6s 后实例退出（用户关 dev 服）→ 新实例接管 →
+窗口 minimize→TrySuspend→restore→resume 一组 → 之后 16 分钟键盘不进页面
+（ui-heartbeat 全程在跳 = renderer 活着，15:04 才成功发出第一条）。
+
+**根因**：wry 补丁 #3 的 `set_visible(true)` 只做 `Resume()` + 可见，
+**不做 MoveFocus**——最小化时 WebView2 恰好持有焦点的场合，还原后
+WebView2 的键盘焦点状态错位，WM_KEYDOWN 不再进页面（WebView2 已知
+bug 族），直到焦点被别的窗口洗一遍。旧代码的 `Focused(true)` 兜底只在
+`MINIMIZE_SUSPENDED` 标志卡住时才动作，正常配对完成时它什么都不做。
+
+**修法**（main.rs 两处）：`Resized` 还原分支与 `Focused(true)` 兜底分支
+在 `show()` 之后追加 `main.as_ref().set_focus()`——tauri 的 Webview
+`set_focus` → wry 补丁 #4 的 `focus()`（可见 + Resume + MoveFocus 三
+合一）。还原即把键盘焦点交回 WebView2，无需用户点别的窗口再回来。
+
 ## 模型共享引擎的凭据源（2026-10-23）
 
 引擎注册（`engine.rs` 的 `register_key_providers`）钥匙来源按优先级：**Marionette 凭据库
