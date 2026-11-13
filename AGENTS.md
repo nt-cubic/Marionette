@@ -606,6 +606,9 @@ magpie 120–160MB——前两个是「运行时入场费」，调不掉，能�
    config.toml [model.*] 条目没有 `_meta.reasoningEfforts` live 菜单，全走 fallback——
    旧 fallback 只有 3 档。Rust 侧 `clamp_effort_id` 对无菜单模型**透传**（acp.rs），
    所以加 max 只需扩 fallback 列表；live 菜单仍然优先，不影响 grok 自家模型。
+   **2026-11-13 起引擎桥真发档位**（见下「grok 桥 effort 打通」节）：fallback 四档
+   与写入引擎表的菜单同域，选中即真生效；preset 直连表仍不写菜单（grok 默认不发
+   该参数），fallback 档位对它仍只是 UI 会话层偏好。
 3. **Grok `api_backend="messages"` 接入共享**（`model_sources.rs`）：grok 把 Anthropic
    线协议叫 "messages"，旧映射只认 "anthropic" → 整族模型被跳过。`"anthropic" | "messages"`
    都归 anthropic 协议，`anthropic=<url>` 的注册形态已实测可用。
@@ -901,6 +904,55 @@ codex 把截图整段 base64 内联、**每轮全量重发**；ollama.com 单请
 回归：`go test ./internal/gateway/ -run TestMarionetteUnreadBodyOverCap`；真机口径是引擎 stderr 出现 `the request is X MB, over the Y it takes in one request; the N oldest images left out (Z MB)`。上游哪天重写那一行 → `import-magpie.ps1` **报错停机**，不静默。
 
 注意：翻译会把**连续同角色**的消息合并成一条，合并后图全落在「最新一条用户消息」上，按规则不能丢 → 那种形状仍会得到 413。真实 codex 对话是 user/assistant 交替的，不受影响。
+
+## grok 桥 effort 打通（2026-11-13）
+
+5f796506 把桥接模型的 effort 一刀切不发（grok 对无菜单模型任何值回 -32602
+"unknown reasoning_effort value"，2026-11-12 实锤）。本批让**引擎桥**真发档位——
+起因：用户要给 DeepSeek 选思考强度。改前先记实测事实（grok 1.0.46/1.0.70/1.0.77
+三代同行为，echo 探针 + 真机探针定性）：
+
+- **grok 的档位校验来自 config 表本身**：`[model.<id>]` 带 `reasoning_efforts`
+  （`[[…]]` 数组块或**内联数组等价**）→ `set_config_option` 按表校验放行（表外值
+  warp9 拒 -32602），chat 请求体真带 `reasoning_effort`；表不带 → 档位旋钮整个
+  消失、任何值都拒。`supports_reasoning_effort` 已 deprecated 且**不必要**。
+  **别信「菜单从端点 /v1/models 取」**——文档这么写，但 grok 对 config
+  `[model.*]` 表**从不 GET /models**（echo 服务器只收到 chat 请求），且引擎
+  `/v1/models` 行的键名是 `reasoning_levels`/`supported_reasoning_levels`，与
+  grok 认的 `reasoning_efforts`/`capabilities.reasoning_effort` 对不上。
+- **`_meta.reasoningEfforts` 只给 grok 自家订阅模型**：config 表模型（含
+  marionette/*）在 availableModels `_meta` 里**永远没有菜单**——acp.rs 不能等
+  agent 广告，唯一真相是「我们写进表里的菜单」。
+
+实现三件：
+
+1. **model_bridge**：`grok_engine_owned_block` 写 `reasoning_efforts` **内联数组**
+   （`GROK_BRIDGE_EFFORT_MENU` 四档 low/medium/high/max、default high，与前端
+   acpSupplements grok fallback 同域）——内联形态与 `[[…]]` TOML 等价，单块
+   手术/幂等/删除零改动（`model_table_name` 不认 `[[` 表头，**别写成数组块**，
+   会留孤儿 + 每次重写）。preset 直连表（key-plan 引用端点）**不写菜单**：
+   grok 对无菜单模型默认不发该参数，别替任意第三方端点打开它。旧表无菜单 →
+   ensure 字节比较不相等 → 下次 spawn 原位升级，无需迁移。
+   `grok_bridge_effort_menu(_at)` 读回菜单（入参是**完整桥接 id**＝表名）。
+2. **acp.rs `BridgeEffortGate` 三态门**（`bridge_effort_gate`：查会话 agent 是
+   grok 才看表，**grok 专属**）：
+   - `Menu`（引擎桥，表带菜单）→ 三处全发：`effort_for_model` 按菜单选档
+     （当前档在菜单就带，否则落菜单 default）、update_session Effort 分支照发
+     并**夹进菜单**（表外值会被 grok 拒）、legacy Effort 分支带
+     `_meta.reasoningEffort` 且夹值；`clamp_effort_to_model` 把菜单灌进
+     `caps.effort_options`。
+   - `NoMenu`（preset 直连 / 旧表）→ 维持 5f796506：不发、本地吞、bare set_model。
+   - `NotBridge`（**非 grok 的桥**：dsh `marionette::`、zcode `marionette\`、
+     opencode `marionette/`）→ 走原广告逻辑——5f796506 按前缀一刀切把它们的
+     桥接档位也吞了（它们的旋钮是会话级的、从不因模型拒收），这里顺手还原。
+3. **前端不动**：acpSupplements 的四档 fallback 早就带 max，live 菜单优先的
+   语义照旧。
+
+回归：`cargo test --bin marionette grok_engine_table grok_preset_table
+bridged_effort`（菜单写入/读回/旧表升级/preset 不写/门控三态）。真机口径：
+grok 会话绑引擎模型后档位芯片选 max 不再报错，引擎侧请求体带
+`reasoning_effort`；echo 探针脚本已验证 exact 字节块（标记行+表头+菜单）被
+grok 1.0.77 接受。
 
 ## 模型共享引擎的凭据源（2026-10-23）
 

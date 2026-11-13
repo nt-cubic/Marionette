@@ -1584,6 +1584,30 @@ impl AcpService {
             && crate::model_bridge::session_has_engine_binding(session_id)
     }
 
+    /// 桥接模型在该会话的 effort 门控（见 [`BridgeEffortGate`]）。读 grok
+    /// config 是低频路径（档位点击 / 切模型 / 每会话首块补发），不缓存——
+    /// 表本身是 ensure_grok_model_table 每次现读现写的真相源。
+    fn bridge_effort_gate(&self, session_id: &str, model_id: &str) -> BridgeEffortGate {
+        if !is_bridge_native_model_id(model_id) {
+            return BridgeEffortGate::NotBridge;
+        }
+        let agent = self
+            .session_agents
+            .lock()
+            .ok()
+            .and_then(|map| map.get(session_id).cloned())
+            .unwrap_or_default();
+        if crate::model_bridge::classify_agent(&agent)
+            != crate::model_bridge::BridgeAgent::GrokBuild
+        {
+            return BridgeEffortGate::NotBridge;
+        }
+        match crate::model_bridge::grok_bridge_effort_menu(model_id) {
+            Some(menu) => BridgeEffortGate::Menu(menu),
+            None => BridgeEffortGate::NoMenu,
+        }
+    }
+
     /// Caps of a process that is still alive. Stale caps after a crash or park
     /// must not look like a live session — the UI's `ensureAcpReady` would skip
     /// spawn and the next prompt would fail with "ACP session is not running".
@@ -1626,7 +1650,7 @@ impl AcpService {
         }
 
         let mut last_result = Value::Null;
-        for update in updates {
+        for mut update in updates {
             // A model the agent already rejected effort writes for (grok's
             // per-model gate latched below): answer locally instead of firing
             // another doomed RPC on every prompt / restore.
@@ -1637,18 +1661,31 @@ impl AcpService {
             {
                 continue;
             }
-            // Bridged models (marionette prefix): the agent never advertised an
-            // effort menu for them and grok answers any value with
-            // -32602 "unknown reasoning_effort value". Swallow locally — the UI
-            // keeps the level as a session preference, and every prompt would
-            // otherwise fire one doomed RPC first (2026-11-12 dev.log).
-            if update.target == ConfigTarget::Effort
-                && self
+            // Bridged grok models without a written menu: the agent never
+            // advertised an effort menu for them and grok answers any value
+            // with -32602 "unknown reasoning_effort value". Swallow locally —
+            // the UI keeps the level as a session preference, and every prompt
+            // would otherwise fire one doomed RPC first (2026-11-12 dev.log).
+            // With a written menu (engine bridge, 2026-11-13) the write goes
+            // through, snapped onto the menu so grok's per-value gate passes.
+            let effort_gate = if update.target == ConfigTarget::Effort {
+                let model = self
                     .get_capabilities(session_id)
-                    .and_then(|caps| caps.current_model.clone())
-                    .is_some_and(|model| is_bridge_native_model_id(&model))
-            {
+                    .and_then(|caps| caps.current_model.clone());
+                match model {
+                    Some(model) => Some(self.bridge_effort_gate(session_id, &model)),
+                    None => None,
+                }
+            } else {
+                None
+            };
+            if let Some(BridgeEffortGate::NoMenu) = effort_gate {
                 continue;
+            }
+            if let Some(gate @ BridgeEffortGate::Menu(_)) = &effort_gate {
+                if let Some(level) = update.value.as_str() {
+                    update.value = Value::String(gate.clamp(level));
+                }
             }
             // Bridged Codex: providers/set empties availableModels, so any
             // session/set_model (gpt-5.6-luna[xhigh] or codex/gpt-6.1-terra[xhigh])
@@ -1873,7 +1910,22 @@ impl AcpService {
             }
         }
 
-        let desired = effort_for_model(&caps, &model_id);
+        let gate = self.bridge_effort_gate(session_id, &model_id);
+        // grok 桥 + 表菜单：菜单就是该模型的档位域，reassert/夹值都按它来
+        // （grok 对 config 表模型不广告 `_meta` 菜单，effort_options 不会
+        // 自己长出来）。
+        if let BridgeEffortGate::Menu(menu) = &gate {
+            caps.effort_options = menu
+                .iter()
+                .map(|id| ModeDef {
+                    id: id.clone(),
+                    label: id.clone(),
+                    description: None,
+                })
+                .collect();
+        }
+
+        let desired = effort_for_model(&caps, &model_id, &gate);
         if self.session_codex_engine_bound(session_id) {
             // Shared Codex cannot session/set_model; pin the level on the alias.
             if let Some(effort) = desired.as_deref() {
@@ -1964,7 +2016,10 @@ impl AcpService {
                     .as_str()
                     .ok_or_else(|| "Model id must be a string".to_string())?;
                 let caps = self.get_capabilities(session_id);
-                let effort = caps.as_ref().and_then(|c| effort_for_model(c, model_id));
+                let gate = self.bridge_effort_gate(session_id, model_id);
+                let effort = caps
+                    .as_ref()
+                    .and_then(|c| effort_for_model(c, model_id, &gate));
                 let wire_id = caps
                     .as_ref()
                     .map(|c| wire_model_id(c, model_id, effort.as_deref()))
@@ -2008,6 +2063,13 @@ impl AcpService {
                 if let Some(caps) = self.get_capabilities(session_id) {
                     effort = clamp_effort_id(&caps, &model_id, &effort);
                 }
+                // 桥接模型按门控：grok 无菜单表不带 effort（bare set_model，
+                // 模型切换照常生效——grok 对这类模型任何值都拒）；写了菜单的
+                // 引擎桥带，且值先夹进菜单（grok 按表校验）。
+                let gate = self.bridge_effort_gate(session_id, &model_id);
+                if let BridgeEffortGate::Menu(_) = gate {
+                    effort = gate.clamp(&effort);
+                }
                 let wire_id = caps
                     .as_ref()
                     .map(|c| wire_model_id(c, &model_id, Some(&effort)))
@@ -2016,11 +2078,14 @@ impl AcpService {
                     "sessionId": agent_session_id,
                     "modelId": wire_id,
                 });
-                // 桥接模型（marionette 前缀）不带 effort：agent 没给它广告
-                // 菜单，grok 对任何值回 -32602 "unknown reasoning_effort value"
-                // （2026-11-12 实锤）。bare set_model，模型切换照常生效。
+                // A bare set_model snaps effort back to the model default, which
+                // would leave the Effort chip claiming a level the agent dropped.
+                // Re-assert whatever the session is on — gated on what it advertised.
+                // Codex encodes that level in `model[effort]` already (`wire_model_id`);
+                // Grok still needs `_meta.reasoningEffort` on the bare id.
+                let gate_allows_effort = !matches!(gate, BridgeEffortGate::NoMenu);
                 if caps.as_ref().map_or(true, |c| {
-                    !c.effort_in_model_id && !is_bridge_native_model_id(&model_id)
+                    !c.effort_in_model_id && gate_allows_effort
                 }) {
                     params["_meta"] = json!({ "reasoningEffort": effort });
                 }
@@ -2719,6 +2784,53 @@ fn is_bridge_native_model_id(model_id: &str) -> bool {
         || id.starts_with("marionette\\")
 }
 
+/// 桥接模型的 effort 门控（2026-11-13，grok 桥打通批）：
+/// - [`BridgeEffortGate::NotBridge`]——非桥接 id，或桥接但**不是 grok** 会话
+///   （dsh/zcode/opencode 的档位旋钮是会话级的，从不因模型拒收，走原逻辑；
+///   5f796506 按前缀一刀切把它们的桥接档位也吞了，这里顺手还原）。
+/// - [`BridgeEffortGate::NoMenu`]——grok 桥接但 owned 表没写菜单（preset
+///   直连、旧版表）：维持 5f796506 的不发（grok 对无菜单模型任何值都回
+///   -32602 "unknown reasoning_effort value"）。
+/// - [`BridgeEffortGate::Menu`]——grok 引擎桥，owned 表带我们写的
+///   `reasoning_efforts`（model_bridge 的 `GROK_BRIDGE_EFFORT_MENU`）：
+///   grok 按表菜单校验放行，chat 请求体真带 `reasoning_effort`
+///   （2026-11-13 echo 探针实测，grok 1.0.77）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum BridgeEffortGate {
+    NotBridge,
+    NoMenu,
+    Menu(Vec<String>),
+}
+
+impl BridgeEffortGate {
+    /// The written menu's default level ("high"), or its first entry.
+    fn default_effort(&self) -> Option<&str> {
+        match self {
+            BridgeEffortGate::Menu(menu) => menu
+                .iter()
+                .find(|id| id.as_str() == "high")
+                .or_else(|| menu.first())
+                .map(String::as_str),
+            _ => None,
+        }
+    }
+
+    /// Snap `effort` onto the written menu: a level outside it would draw
+    /// grok's -32602 ("unknown reasoning_effort value").
+    fn clamp(&self, effort: &str) -> String {
+        match self {
+            BridgeEffortGate::Menu(menu) if !menu.is_empty() => {
+                if menu.iter().any(|id| id == effort) {
+                    effort.to_string()
+                } else {
+                    self.default_effort().unwrap_or(effort).to_string()
+                }
+            }
+            _ => effort.to_string(),
+        }
+    }
+}
+
 /// Effort to send when switching onto `model_id`.
 ///
 /// Keep the session's current level when the target model advertises it;
@@ -2726,13 +2838,45 @@ fn is_bridge_native_model_id(model_id: &str) -> bool {
 /// session-wide effort select like DeepSeek Harness) falls back to
 /// `reassertable_effort`.
 ///
-/// 桥接模型（marionette 前缀）返回 None：agent 没给它广告 effort 菜单，
-/// grok 1.0.46 对这类模型拒收任何档位（-32602 "unknown reasoning_effort
-/// value"，2026-11-12 实锤：会话停在 marionette/grok/grok-4.6 上时每次
-/// set_config 都被静默拒绝一次）。bare 切换，档位留在 UI 会话层。
-fn effort_for_model(caps: &CapabilitySnapshot, model_id: &str) -> Option<String> {
+/// 桥接模型按 [`BridgeEffortGate`] 分流（2026-11-13 起）：grok 桥 + owned
+/// 表菜单 → 按菜单选档（grok 对 config 表模型不广告 `_meta` 菜单，我们写
+/// 进表里的就是唯一真相）；grok 桥无菜单 → None（5f796506 行为：grok 对
+/// 这类模型任何值都回 -32602）；非 grok 桥 / 非桥 → 原逻辑。
+fn effort_for_model(
+    caps: &CapabilitySnapshot,
+    model_id: &str,
+    gate: &BridgeEffortGate,
+) -> Option<String> {
     if is_bridge_native_model_id(model_id) {
-        return None;
+        return match gate {
+            BridgeEffortGate::Menu(menu) if !menu.is_empty() => {
+                if let Some(id) = caps.current_effort_id.as_deref() {
+                    if menu.iter().any(|m| m == id) {
+                        return Some(id.to_string());
+                    }
+                }
+                gate.default_effort().map(str::to_string)
+            }
+            BridgeEffortGate::NoMenu => None,
+            BridgeEffortGate::NotBridge | BridgeEffortGate::Menu(_) => {
+                // 非 grok 桥（dsh/zcode/opencode）：会话级旋钮按广告走。
+                if let Some(menu) = caps.model_effort_menus.get(model_id) {
+                    if !menu.is_empty() {
+                        if let Some(id) = caps.current_effort_id.as_deref() {
+                            if menu.iter().any(|o| o.id == id) {
+                                return Some(id.to_string());
+                            }
+                        }
+                        return caps
+                            .model_default_efforts
+                            .get(model_id)
+                            .cloned()
+                            .or_else(|| menu.first().map(|o| o.id.clone()));
+                    }
+                }
+                reassertable_effort(caps)
+            }
+        };
     }
     if let Some(menu) = caps.model_effort_menus.get(model_id) {
         if !menu.is_empty() {
@@ -4612,11 +4756,11 @@ mod tests {
         );
 
         assert_eq!(
-            effort_for_model(&caps, "grok-4.6").as_deref(),
+            effort_for_model(&caps, "grok-4.6", &BridgeEffortGate::NotBridge).as_deref(),
             Some("high")
         );
         assert_eq!(
-            effort_for_model(&caps, "deepseek-flash").as_deref(),
+            effort_for_model(&caps, "deepseek-flash", &BridgeEffortGate::NotBridge).as_deref(),
             Some("max")
         );
         assert_eq!(clamp_effort_id(&caps, "grok-4.6", "max"), "high");
@@ -4626,19 +4770,23 @@ mod tests {
         let mut on_high = caps.clone();
         on_high.current_effort_id = Some("high".to_string());
         assert_eq!(
-            effort_for_model(&on_high, "grok-4.6").as_deref(),
+            effort_for_model(&on_high, "grok-4.6", &BridgeEffortGate::NotBridge).as_deref(),
             Some("high")
         );
     }
 
-    /// Bridged models (marionette prefix): the agent never advertised an
-    /// effort menu for the engine-routed id, and grok 1.0.46 answers any
-    /// value with -32602 "unknown reasoning_effort value" (2026-11-12
-    /// dev.log: every set_config on marionette/grok/grok-4.6 died first).
-    /// No effort rides the switch, and menu-less non-bridged ids keep the
-    /// transparent pass-through (config.toml custom entries).
+    /// Bridged models (marionette prefix) split three ways on
+    /// [`BridgeEffortGate`] (2026-11-13):
+    /// - grok bridge without a written menu — 5f796506 stands: no effort
+    ///   (grok answers any value with -32602 "unknown reasoning_effort
+    ///   value", 2026-11-12 dev.log);
+    /// - grok bridge with the menu we write into the owned table — pick from
+    ///   that menu (current level when it fits, else its default);
+    /// - non-grok bridges (dsh/zcode/opencode) — session-level knobs, the
+    ///   advertised catalog/reassert path as before 5f796506.
+    /// Menu-less non-bridged ids keep the transparent pass-through.
     #[test]
-    fn bridged_models_carry_no_effort() {
+    fn bridged_effort_gates_by_menu() {
         let caps = parse_session_capabilities(&grok_mixed_catalog());
         assert!(is_bridge_native_model_id("marionette/grok/grok-4.6"));
         assert!(is_bridge_native_model_id("marionette::provider/model"));
@@ -4646,12 +4794,60 @@ mod tests {
         assert!(!is_bridge_native_model_id("grok-4.6"));
         assert!(!is_bridge_native_model_id("deepseek-flash"));
 
-        assert_eq!(effort_for_model(&caps, "marionette/grok/grok-4.6"), None);
-        assert_eq!(effort_for_model(&caps, "marionette::provider/model"), None);
-        assert_eq!(effort_for_model(&caps, "marionette\\engine\\model"), None);
+        // grok bridge, no written menu → None (5f796506 behavior).
+        assert_eq!(
+            effort_for_model(
+                &caps,
+                "marionette/grok/grok-4.6",
+                &BridgeEffortGate::NoMenu
+            ),
+            None
+        );
+
+        // grok bridge with the written menu: current "max" rides (it is in the
+        // menu), an off-menu current falls to the menu's default "high".
+        let menu = BridgeEffortGate::Menu(vec![
+            "low".into(),
+            "medium".into(),
+            "high".into(),
+            "max".into(),
+        ]);
+        assert_eq!(
+            effort_for_model(&caps, "marionette/grok/grok-4.6", &menu).as_deref(),
+            Some("max")
+        );
+        let mut off_menu = caps.clone();
+        off_menu.current_effort_id = Some("xhigh".to_string());
+        assert_eq!(
+            effort_for_model(&off_menu, "marionette/grok/grok-4.6", &menu).as_deref(),
+            Some("high")
+        );
+        // Menu gate snaps off-menu values onto the default.
+        assert_eq!(menu.clamp("warp9"), "high");
+        assert_eq!(menu.clamp("low"), "low");
+
+        // Non-grok bridges: session-level knob path (reassertable "max").
+        assert_eq!(
+            effort_for_model(
+                &caps,
+                "marionette::provider/model",
+                &BridgeEffortGate::NotBridge
+            )
+            .as_deref(),
+            Some("max")
+        );
+        assert_eq!(
+            effort_for_model(
+                &caps,
+                "marionette\\engine\\model",
+                &BridgeEffortGate::NotBridge
+            )
+            .as_deref(),
+            Some("max")
+        );
         // 2026-10-30 批次的透传设计不动：无前缀的无菜单模型带当前档位。
         assert_eq!(
-            effort_for_model(&caps, "deepseek-flash").as_deref(),
+            effort_for_model(&caps, "deepseek-flash", &BridgeEffortGate::NotBridge).as_deref(),
             Some("max")
         );
     }
@@ -4681,7 +4877,7 @@ mod tests {
         );
         assert_eq!(echo.current_effort_id.as_deref(), Some("max"));
         assert_eq!(
-            effort_for_model(&echo, "grok-4.6").as_deref(),
+            effort_for_model(&echo, "grok-4.6", &BridgeEffortGate::NotBridge).as_deref(),
             Some("high")
         );
     }
@@ -4733,7 +4929,7 @@ mod tests {
             &["none", "minimal", "low", "medium", "high", "xhigh", "max"],
         );
         assert_eq!(
-            effort_for_model(&deepseek, "whatever").as_deref(),
+            effort_for_model(&deepseek, "whatever", &BridgeEffortGate::NotBridge).as_deref(),
             reassertable_effort(&deepseek).as_deref()
         );
         assert_eq!(clamp_effort_id(&deepseek, "whatever", "max"), "max");

@@ -2058,6 +2058,15 @@ fn toml_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// 首字母大写，只服务 effort 菜单标签（ASCII 档位名）。
+fn capitalize(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
 fn grok_table_name(model_id: &str) -> String {
     format!("{GROK_MODEL_PREFIX}{model_id}")
 }
@@ -2245,7 +2254,33 @@ fn blocks_to_text(blocks: &[TomlBlock]) -> String {
 /// 引擎版 owned 块：base_url 指引擎的 `/v1`（grok 的 chat_completions 后端
 /// 向 base_url 拼 `/chat/completions`），api_key 用字面量令牌（S1：引擎回环
 /// 任意 token 放行——真实订阅凭证在引擎自己的 data 里，永不进 agent 配置）。
+/// 引擎桥写给 grok owned 表的 effort 菜单（`reasoning_efforts`，内联数组形态
+/// ——与 `[[…]]` 数组块 TOML 等价，且单块手术/幂等/删除零改动）。值域对齐
+/// 前端 acpSupplements 的 grok fallback 四档（max/high/medium/low，live 菜单
+/// 恒优先）；default 落 high（grok 会话默认 `default_reasoning_effort` 同值）。
+/// 2026-11-13 实测（grok 1.0.77 + echo 探针）：表里写了菜单后
+/// `session/set_config_option` 按菜单校验放行（表外值 warp9 拒 -32602），
+/// chat 请求体真带 `reasoning_effort`。preset 直连路径**不写**——grok 对
+/// 无菜单模型默认不发该参数，别替任意第三方端点打开它。
+pub(crate) const GROK_BRIDGE_EFFORT_MENU: &[(&str, &str, bool)] = &[
+    ("low", "Fast responses with lighter reasoning", false),
+    ("medium", "Balanced speed and reasoning depth", false),
+    ("high", "Thorough reasoning and quality (recommended)", true),
+    ("max", "Maximum reasoning for the hardest tasks", false),
+];
+
 fn grok_engine_owned_block(model_id: &str, base_url: &str) -> String {
+    let menu: String = GROK_BRIDGE_EFFORT_MENU
+        .iter()
+        .map(|(id, desc, default)| {
+            format!(
+                "  {{ id = \"{id}\", value = \"{id}\", label = \"{}\", description = \"{desc}\"{} }},",
+                capitalize(id),
+                if *default { ", default = true" } else { "" },
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     format!(
         concat!(
             "{marker}\n",
@@ -2255,6 +2290,7 @@ fn grok_engine_owned_block(model_id: &str, base_url: &str) -> String {
             "base_url = \"{base}\"\n",
             "api_backend = \"chat_completions\"\n",
             "api_key = \"{key}\"\n",
+            "reasoning_efforts = [\n{menu}\n]",
         ),
         marker = GROK_OWNED_MARKER,
         header = grok_table_header(&grok_table_name(model_id)),
@@ -2262,7 +2298,42 @@ fn grok_engine_owned_block(model_id: &str, base_url: &str) -> String {
         name = toml_escape(&crate::ts!("翻译引擎", "Translation engine")),
         base = toml_escape(base_url),
         key = toml_escape(crate::engine::ENGINE_TOKEN),
+        menu = menu,
     )
+}
+
+/// grok owned 表里我们写的 effort 菜单。入参是**完整桥接 id**（表名本身，
+/// 如 `marionette/grok/grok-4.6`）。None = 表不存在 / 没写菜单 / config
+/// 读不了（preset 直连、旧版写的表、非 grok agent 都落这里）。acp.rs 用它
+/// 区分「桥接模型可发档位」与「5f796506 的不发」，见 acp.rs::BridgeEffortGate。
+pub fn grok_bridge_effort_menu(bridge_model_id: &str) -> Option<Vec<String>> {
+    let path = grok_config_path()?;
+    grok_bridge_effort_menu_at(&path, bridge_model_id)
+}
+
+/// [`grok_bridge_effort_menu`] 的路径注入体（测试用）。
+pub fn grok_bridge_effort_menu_at(
+    config_path: &Path,
+    bridge_model_id: &str,
+) -> Option<Vec<String>> {
+    let text = fs::read_to_string(config_path).ok()?;
+    let value: toml::Value = toml::from_str(&text).ok()?;
+    let menu = value
+        .get("model")?
+        .get(bridge_model_id.trim())?
+        .get("reasoning_efforts")?
+        .as_array()?;
+    let ids: Vec<String> = menu
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .get("value")
+                .or_else(|| entry.get("id"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+        .collect();
+    (!ids.is_empty()).then_some(ids)
 }
 
 /// ensure 的核心（块级替换 + 幂等 + 原文搬运；`desired` 是完整 owned 块全文，
@@ -4184,6 +4255,10 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
     /// 引擎版 grok owned 表：base 指引擎 `/v1`、api_key 是字面量令牌（不走
     /// $VAR）；用户内容保留、绝不设 `[models] default`、幂等、端口漂移原位
     /// 替换；remove 把 `marionette/` 前缀的引擎表一并清掉。
+    /// 2026-11-13 起：引擎表带 `reasoning_efforts` 菜单（grok 按表校验放行
+    /// 档位写入，echo 探针实测），旧版无菜单表 ensure 时原位升级；preset
+    /// 直连表（key-plan 引用端点）**不写**菜单——grok 对无菜单模型默认不发
+    /// 该参数，别替任意第三方端点打开它。
     #[test]
     fn grok_engine_table_uses_engine_base_and_literal_token() {
         let dir = temp_dir("engtable");
@@ -4199,8 +4274,23 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
         assert!(text.contains(&format!("api_key = \"{}\"", crate::engine::ENGINE_TOKEN)));
         assert!(!text.contains("$MARIONETTE_PROVIDER_KEY"), "引擎表不用 env 引用");
         assert!(text.contains("user-own-key"), "用户内容原样保留");
-        assert_eq!(text.matches("default =").count(), 1, "绝不新增 [models] default");
+        // 菜单四档 + default 落 high（内联数组，单块手术不变）。
+        assert!(text.contains("reasoning_efforts = ["));
+        assert!(text.contains("value = \"max\""));
+        assert!(text.contains("value = \"high\", label = \"High\", description = \"Thorough reasoning and quality (recommended)\", default = true"));
+        // 绝不新增 [models] default：行首的 default 键仍然只有夹具里用户
+        // 自己那条（菜单里的 default=true 在内联行上，不是行首键）。
+        let top_defaults: Vec<&str> = text
+            .lines()
+            .filter(|line| line.starts_with("default ="))
+            .collect();
+        assert_eq!(top_defaults, ["default = \"grok-4.6\""], "绝不新增 [models] default");
         toml::from_str::<toml::Value>(&text).unwrap();
+
+        // 菜单读回：grok_bridge_effort_menu 拿到四档（acp.rs 的门控数据源）。
+        let menu = grok_bridge_effort_menu_at(&config, "marionette/grok/grok-4.7").unwrap();
+        let ids: Vec<&str> = menu.iter().map(String::as_str).collect();
+        assert_eq!(ids, ["low", "medium", "high", "max"]);
 
         // 幂等；端口漂移 → 原位替换（引擎换了端口，表跟着走）。
         assert!(!ensure_grok_engine_table_at(&config, "grok/grok-4.7", "http://127.0.0.1:39999/v1").unwrap());
@@ -4209,12 +4299,51 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
         assert!(text.contains("40001"));
         assert!(!text.contains("39999"));
 
-        // remove 清掉引擎表（marionette/ 前缀），用户表保留。
+        // 旧版（无菜单）引擎表：ensure 原位升级成带菜单的块。
+        fs::write(
+            &config,
+            format!(
+                "{USER_CONFIG}\n[model.\"marionette/legacy/m1\"]\nmodel = \"legacy/m1\"\nname = \"翻译引擎 (via Marionette)\"\nbase_url = \"http://127.0.0.1:39999/v1\"\napi_backend = \"chat_completions\"\napi_key = \"{}\"\n",
+                crate::engine::ENGINE_TOKEN
+            ),
+        )
+        .unwrap();
+        assert!(ensure_grok_engine_table_at(&config, "legacy/m1", "http://127.0.0.1:39999/v1").unwrap());
+        assert!(
+            grok_bridge_effort_menu_at(&config, "marionette/legacy/m1").is_some(),
+            "旧表升级后带菜单"
+        );
+
+        // remove 清掉引擎表（marionette/ 前缀），用户表保留；菜单随表走。
         assert!(remove_grok_model_tables_at(&config).unwrap());
         let text = fs::read_to_string(&config).unwrap();
         assert!(!text.contains("marionette/"));
         assert!(text.contains("user-own-key"));
         toml::from_str::<toml::Value>(&text).unwrap();
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// preset 直连表（key-plan 引用端点）不写 reasoning_efforts：grok 对
+    /// 无菜单模型默认不发 effort 参数，任意第三方端点不被替做决定。
+    #[test]
+    fn grok_preset_table_carries_no_effort_menu() {
+        let dir = temp_dir("presettable");
+        let config = dir.join("config.toml");
+        fs::write(&config, USER_CONFIG).unwrap();
+
+        let preset = ProviderPreset {
+            id: "probe",
+            label: "Probe",
+            anthropic_base: None,
+            chat_base: Some("https://probe.example/v1"),
+            models: &[],
+            last_verified: "2026-11-13",
+        };
+        assert!(ensure_grok_model_table_at(&config, "probe/model", &preset, "MARIONETTE_PROVIDER_KEY").unwrap());
+        let text = fs::read_to_string(&config).unwrap();
+        assert!(!text.contains("reasoning_efforts"), "preset 直连不写菜单");
+        assert!(grok_bridge_effort_menu_at(&config, "marionette/probe/model").is_none());
 
         fs::remove_dir_all(&dir).ok();
     }
