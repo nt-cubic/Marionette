@@ -10,6 +10,7 @@ import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type WheelEvent as ReactWheelEvent,
 } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -2252,6 +2253,18 @@ function CleanPlaceholder({
     rememberScrollSnap();
   }, [rememberScrollSnap]);
 
+  // 滚轮朝上的第一格就脱离贴底（2026-11-13 用户反馈「往上滚总卡两下」）：
+  // 滚轮每格常只挪 ~50px,仍在 80px 贴底区内 → scroll 处理器判定 nearBottom
+  // → stick 保持 true;而滚动引发的虚拟列表重渲染让 totalSize 变化,贴底
+  // 布局效应把 scrollTop 拽回底部,这一格被吃掉。像素阈值承担「滚回来重
+  // 新贴底」,「想往上」的意图由 wheel 方向即刻断开。
+  const onListWheelUp = useCallback((e: ReactWheelEvent) => {
+    if (e.deltaY < 0 && stickToBottomRef.current) {
+      stickToBottomRef.current = false;
+      setAtBottom(false);
+    }
+  }, []);
+
   const jumpToBottom = useCallback(() => {
     const el = listRef.current;
     if (!el) return;
@@ -2436,6 +2449,7 @@ function CleanPlaceholder({
         ref={listRef}
         className={`event-list${isLongTranscript ? " is-long" : ""} scrollbar-hidden`}
         onScroll={onListScroll}
+        onWheel={onListWheelUp}
       >
         {/* Quote UI is isolated so its setState does not re-render cards (keeps selection).
             key=session.id remounts overlay state (评论 button / draft) per dialog. */}
