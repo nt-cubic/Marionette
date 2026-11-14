@@ -86,9 +86,10 @@ import { isDeepSeekPeak } from "../lib/tokenPrices";
 import { digestTurn } from "../lib/usageDigest";
 import { useSeenImages } from "../lib/useSeenImages";
 import { bridgeCatalogId, resolveImageSupport } from "../lib/imageSupport";
-import type { SeenImage } from "../lib/seenImages";
+import { findSeenEventIndex, type SeenImage } from "../lib/seenImages";
 import { prettyModelTrigger } from "../lib/modelLabel";
 import { SeenImageViewer } from "../components/seen/SeenImageViewer";
+import { ImageAnnotator } from "../components/ImageAnnotator";
 import { UsageAnalysisDialog } from "../components/UsageAnalysisDialog";
 import { UsagePage } from "../components/UsagePage";
 import { DiffPage } from "../components/DiffPage";
@@ -157,7 +158,9 @@ import {
   normalizeAgentModeId,
 } from "../lib/acpSupplements";
 import {
+  attachmentFromPath,
   formatImageMarksForSend,
+  imagePathKey,
   type ImageAttachment,
 } from "../lib/imageAttachments";
 import { foldSessionStats, measureTurnDecodeMs } from "../lib/sessionStats";
@@ -976,6 +979,26 @@ export function App() {
     text: string;
     token: number;
   } | null>(null);
+  /** One-shot image pills from viewer annotation, routed to the matching Composer. */
+  const [composerImageInjection, setComposerImageInjection] = useState<{
+    sessionId: string;
+    token: number;
+    attachments: ImageAttachment[];
+  } | null>(null);
+  /** Unsent pills in each Composer; viewer annotation must start from these marks. */
+  const [composerImageAttachmentsBySession, setComposerImageAttachmentsBySession] = useState<
+    Record<string, ImageAttachment[]>
+  >({});
+  const imageInjectionTokenRef = useRef(0);
+  const handleComposerImageAttachmentsChange = useCallback(
+    (sessionId: string, attachments: ImageAttachment[]) => {
+      setComposerImageAttachmentsBySession((current) => ({
+        ...current,
+        [sessionId]: attachments,
+      }));
+    },
+    [],
+  );
   /** Inline Clean quote-comments (numbered pins) per dialog. */
   const [quotePinsById, setQuotePinsById] = useState<Record<string, QuotePin[]>>({});
   const [lastHandoff, setLastHandoff] = useState<HandoffResult | null>(null);
@@ -4939,8 +4962,16 @@ export function App() {
     [sessionCapabilities?.agentPromptImage, sessionCapabilities?.modelImages, seenModelId, engineImages],
   );
   const [seenViewerIndex, setSeenViewerIndex] = useState<number | null>(null);
+  const [annotatingSeenImage, setAnnotatingSeenImage] = useState<{
+    sessionId: string;
+    viewerIndex: number;
+    attachment: ImageAttachment;
+  } | null>(null);
+  const annotatingSeenSavedRef = useRef(false);
   useEffect(() => {
     setSeenViewerIndex(null);
+    setAnnotatingSeenImage(null);
+    annotatingSeenSavedRef.current = false;
   }, [displaySession.id]);
   const locateSeenImage = useCallback(
     (image: SeenImage) => {
@@ -4951,6 +4982,39 @@ export function App() {
       );
     },
     [displaySession.id],
+  );
+  const annotateSeenImage = useCallback(
+    (image: SeenImage) => {
+      let attachment: ImageAttachment | null = null;
+      const key = imagePathKey(image.src);
+      const pending = (composerImageAttachmentsBySession[displaySession.id] ?? []).find(
+        (item) => imagePathKey(item.path) === key,
+      );
+      if (pending) attachment = { ...pending, marks: pending.marks ?? [] };
+      // A user attachment already carries its marks in the transcript. Re-open
+      // them instead of starting a blank mark set for the same picture.
+      if (!attachment && image.ref.type === "user_message") {
+        const eventIndex = findSeenEventIndex(currentEvents, image.ref);
+        const event = eventIndex >= 0 ? currentEvents[eventIndex] : undefined;
+        if (event?.type === "user_message") {
+          const existing = event.attachments?.find((item) => imagePathKey(item.path) === key);
+          if (existing) attachment = { ...existing, marks: existing.marks ?? [] };
+        }
+      }
+      if (!attachment) {
+        // read_image_data_url and the ACP Image block both need a local file.
+        if (/^(?:https?|data|blob):/i.test(image.src)) return;
+        attachment = attachmentFromPath(image.src);
+      }
+      annotatingSeenSavedRef.current = false;
+      setAnnotatingSeenImage({
+        sessionId: displaySession.id,
+        viewerIndex: Math.max(0, seenImages.findIndex((item) => item.key === image.key)),
+        attachment,
+      });
+      setSeenViewerIndex(null);
+    },
+    [composerImageAttachmentsBySession, currentEvents, displaySession.id, seenImages],
   );
 
   const sessionRunning =
@@ -9195,6 +9259,20 @@ export function App() {
           capabilities={caps}
           prefillText={prefill?.text ?? null}
           prefillToken={prefill?.token ?? 0}
+          imageAttachmentInjection={
+            composerImageInjection?.sessionId === session.id
+              ? {
+                  token: composerImageInjection.token,
+                  attachments: composerImageInjection.attachments,
+                }
+              : null
+          }
+          onImageAttachmentInjectionApplied={(token) => {
+            setComposerImageInjection((current) =>
+              current?.token === token ? null : current,
+            );
+          }}
+          onImageAttachmentsChange={handleComposerImageAttachmentsChange}
           sessionPrefs={{
             preferredModel: session.preferredModel,
             preferredMode: session.preferredMode,
@@ -10047,6 +10125,40 @@ export function App() {
             agentId={currentAgent.id}
             onClose={() => setSeenViewerIndex(null)}
             onLocate={locateSeenImage}
+            onAnnotate={annotateSeenImage}
+          />
+        )}
+
+        {annotatingSeenImage && (
+          <ImageAnnotator
+            attachment={annotatingSeenImage.attachment}
+            saveLabel={t("seenImages.viewer.attachDone")}
+            onClose={() => {
+              const wasSaved = annotatingSeenSavedRef.current;
+              const pending = annotatingSeenImage;
+              annotatingSeenSavedRef.current = false;
+              setAnnotatingSeenImage(null);
+              if (
+                !wasSaved &&
+                pending.sessionId === displaySession.id &&
+                seenImages.length > 0
+              ) {
+                setSeenViewerIndex(Math.min(pending.viewerIndex, seenImages.length - 1));
+              }
+            }}
+            onSave={(marks) => {
+              const pending = annotatingSeenImage;
+              if (!pending) return;
+              annotatingSeenSavedRef.current = true;
+              const token = Math.max(Date.now(), imageInjectionTokenRef.current + 1);
+              imageInjectionTokenRef.current = token;
+              setComposerImageInjection({
+                sessionId: pending.sessionId,
+                token,
+                attachments: [{ ...pending.attachment, marks }],
+              });
+              setComposerAutoFocus(true);
+            }}
           />
         )}
 

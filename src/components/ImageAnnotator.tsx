@@ -14,6 +14,8 @@ type Props = {
   attachment: ImageAttachment;
   onClose: () => void;
   onSave: (marks: ImageMark[]) => void;
+  /** Replaces the footer action label when the result goes somewhere specific. */
+  saveLabel?: string;
 };
 
 type DragState = {
@@ -26,11 +28,11 @@ type DragState = {
 /**
  * Full-screen image annotator: click = point, drag = rect, then write a comment.
  */
-export function ImageAnnotator({ attachment, onClose, onSave }: Props) {
+export function ImageAnnotator({ attachment, onClose, onSave, saveLabel }: Props) {
   const t = useT();
   const [dataUrl, setDataUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [marks, setMarks] = useState<ImageMark[]>(attachment.marks);
+  const [marks, setMarks] = useState<ImageMark[]>(() => attachment.marks ?? []);
   const [pending, setPending] = useState<
     | { kind: "point"; nx: number; ny: number }
     | { kind: "rect"; nx: number; ny: number; nw: number; nh: number }
@@ -347,7 +349,7 @@ export function ImageAnnotator({ attachment, onClose, onSave }: Props) {
               onClose();
             }}
           >
-            {t("annotator.done")}
+            {saveLabel ?? t("annotator.done")}
           </button>
         </div>
     </DialogShell>

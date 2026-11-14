@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronLeft, ChevronRight, Copy, Crosshair, Folder, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Copy, Crosshair, Folder, PenLine, X } from "lucide-react";
 import { useT } from "../../lib/i18n";
 import { formatSeenTime, type SeenImage } from "../../lib/seenImages";
 import { usePanZoom } from "../../lib/usePanZoom";
@@ -25,8 +25,10 @@ export function SeenImageViewer(props: {
   agentId?: string;
   onClose: () => void;
   onLocate: (image: SeenImage) => void;
+  /** Local files only; opens the existing annotator and then attaches to Composer. */
+  onAnnotate?: (image: SeenImage) => void;
 }): JSX.Element | null {
-  const { images, startIndex, agentId, onClose, onLocate } = props;
+  const { images, startIndex, agentId, onClose, onLocate, onAnnotate } = props;
   const t = useT();
   const [index, setIndex] = useState(startIndex);
   const [copied, setCopied] = useState(false);
@@ -110,6 +112,7 @@ export function SeenImageViewer(props: {
   };
 
   const stop = (event: React.MouseEvent) => event.stopPropagation();
+  const canAnnotate = Boolean(onAnnotate) && !REMOTE.test(image.src);
 
   return createPortal(
     <div
@@ -194,7 +197,17 @@ export function SeenImageViewer(props: {
           })}
         </div>
         <div className="seen-viewer__acts">
-          <button type="button" className="seen-viewer__btn is-main" onClick={locate}>
+          {canAnnotate && (
+            <button
+              type="button"
+              className="seen-viewer__btn is-main"
+              onClick={() => onAnnotate?.(image)}
+            >
+              <PenLine size={13} strokeWidth={1.5} aria-hidden="true" />
+              {t("seenImages.viewer.annotate")}
+            </button>
+          )}
+          <button type="button" className={canAnnotate ? "seen-viewer__btn" : "seen-viewer__btn is-main"} onClick={locate}>
             <Crosshair size={13} strokeWidth={1.5} aria-hidden="true" />
             {t("seenImages.viewer.locate")}
             <kbd>L</kbd>

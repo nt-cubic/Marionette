@@ -81,6 +81,11 @@ export function stripFileUri(value: string): string {
   }
 }
 
+/** Stable comparison key for paths that may arrive as `file:///`, `D:/`, or `D:\\`. */
+export function imagePathKey(path: string): string {
+  return stripFileUri(path).replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
 function pathFromToolInputJson(input: string): string | undefined {
   const trimmed = input.trim();
   if (!trimmed) return undefined;
@@ -163,6 +168,36 @@ export function attachmentFromPath(path: string): ImageAttachment {
     mimeType: mimeFromImagePath(path),
     marks: [],
   };
+}
+
+/**
+ * Composer attachment merge used by both file drops and “annotate from viewer”.
+ * One path stays one pill; a newer annotation updates that pill instead of
+ * producing a duplicate image block or a second numbered mark set.
+ */
+export function mergeImageAttachments(
+  current: readonly ImageAttachment[],
+  incoming: readonly ImageAttachment[],
+): ImageAttachment[] {
+  const next = [...current];
+  const byPath = new Map(next.map((attachment, index) => [imagePathKey(attachment.path), index]));
+  for (const attachment of incoming) {
+    const key = imagePathKey(attachment.path);
+    const existingIndex = byPath.get(key);
+    if (existingIndex === undefined) {
+      byPath.set(key, next.length);
+      next.push({ ...attachment, marks: attachment.marks ?? [] });
+      continue;
+    }
+    const existing = next[existingIndex]!;
+    next[existingIndex] = {
+      ...existing,
+      ...attachment,
+      id: existing.id,
+      marks: attachment.marks ?? [],
+    };
+  }
+  return next;
 }
 
 /** Text block for session/prompt describing marks on one or more images. */

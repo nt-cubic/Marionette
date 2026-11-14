@@ -13,6 +13,7 @@ import {
   type SeenImage,
 } from "../src/lib/seenImages";
 import { bridgeCatalogId, resolveImageSupport } from "../src/lib/imageSupport";
+import { imagePathKey, mergeImageAttachments } from "../src/lib/imageAttachments";
 import type { SessionEvent } from "../src/lib/types";
 
 let failed = 0;
@@ -81,6 +82,34 @@ check("locate tool card by toolCallId", findSeenEventIndex(events, { type: "tool
 check("locate user card by messageId", findSeenEventIndex(events, { type: "user_message", messageId: "u1", createdAt: "" }) === 0);
 check("locate falls back to createdAt", findSeenEventIndex(events, { type: "tool_call", createdAt: events[2]!.createdAt }) === 2);
 check("locate misses cleanly", findSeenEventIndex(events, { type: "tool_call", toolCallId: "nope", createdAt: "x" }) === -1);
+
+// viewer → annotate → Composer attachment injection
+check(
+  "attachment path key normalises file URI / slash / case",
+  imagePathKey("file:///D:/Shots/UI.png") === imagePathKey("d:\\shots\\ui.png"),
+);
+const originalAttachment = {
+  id: "keep-this-id",
+  path: "D:\\shots\\ui.png",
+  name: "ui.png",
+  mimeType: "image/png",
+  marks: [],
+};
+const revisedAttachment = {
+  id: "new-id",
+  path: "d:/shots/ui.png",
+  name: "ui.png",
+  mimeType: "image/png",
+  marks: [{ id: "m1", kind: "point" as const, nx: 0.25, ny: 0.5, comment: "这里" }],
+};
+const mergedAttachments = mergeImageAttachments([originalAttachment], [revisedAttachment]);
+check(
+  "re-annotating one image updates its pill without duplicating the image block",
+  mergedAttachments.length === 1 &&
+    mergedAttachments[0]?.id === "keep-this-id" &&
+    mergedAttachments[0]?.marks.length === 1,
+  mergedAttachments,
+);
 
 // capability: three-state, reported not guessed
 check("bridge id forms", bridgeCatalogId("marionette/opencode-go/deepseek-v4.1-flash") === "opencode-go/deepseek-v4.1-flash" && bridgeCatalogId("marionette::p/m") === "p/m" && bridgeCatalogId("marionette\\p/m") === "p/m" && bridgeCatalogId("gpt-6") === null);

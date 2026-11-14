@@ -6,6 +6,8 @@ export const en = {
   "seenImages.viewer.prev": "Previous image",
   "seenImages.viewer.next": "Next image",
   "seenImages.viewer.locate": "Locate in conversation",
+  "seenImages.viewer.annotate": "Annotate & attach",
+  "seenImages.viewer.attachDone": "Attach to conversation",
   "seenImages.viewer.reveal": "Reveal in folder",
   "seenImages.viewer.copyPath": "Copy path",
   "seenImages.viewer.copied": "Copied",

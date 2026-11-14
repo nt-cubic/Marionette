@@ -102,6 +102,7 @@ import { recordModelUsage, getRecentModels, recordLastUsedDefaults } from "../li
 import {
   attachmentFromPath,
   isImagePath,
+  mergeImageAttachments,
   type ImageAttachment,
   type ImageMark,
 } from "../lib/imageAttachments";
@@ -144,6 +145,15 @@ type ComposerProps = {
   /** Prefill draft (handoff). Applied once per token; does not auto-send. */
   prefillText?: string | null;
   prefillToken?: number;
+  /** Image pills produced outside Composer (for example viewer → annotate). */
+  imageAttachmentInjection?: {
+    token: number;
+    attachments: ImageAttachment[];
+  } | null;
+  /** Parent may discard the one-shot injection after it has been merged. */
+  onImageAttachmentInjectionApplied?: (token: number) => void;
+  /** Mirrors unsent image pills so an external annotator can reopen their marks. */
+  onImageAttachmentsChange?: (sessionId: string, attachments: ImageAttachment[]) => void;
   /** Disk prefs for this dialog — restored when caps advertise the option. */
   sessionPrefs?: SessionComposerPrefs | null;
   /** Persist model/mode/effort after a successful local change. */
@@ -597,6 +607,9 @@ export function Composer({
   sessionEvents = [],
   prefillText = null,
   prefillToken = 0,
+  imageAttachmentInjection = null,
+  onImageAttachmentInjectionApplied,
+  onImageAttachmentsChange,
   sessionPrefs = null,
   onSessionPrefsChange,
   onAgentChange,
@@ -843,6 +856,27 @@ export function Composer({
     appliedPrefillToken.current = prefillToken;
     setDraft(prefillText);
   }, [prefillText, prefillToken]);
+
+  const appliedImageInjectionToken = useRef(0);
+  // Viewer → annotate → same attachment pill path as an OS image drop. The
+  // image itself still goes over ACP as an Image block; marks only add text.
+  useEffect(() => {
+    const injection = imageAttachmentInjection;
+    if (!injection || injection.attachments.length === 0) return;
+    if (appliedImageInjectionToken.current === injection.token) return;
+    appliedImageInjectionToken.current = injection.token;
+    setImageAttachments((current) => mergeImageAttachments(current, injection.attachments));
+    setSuggestDroppedPaths((current) => [
+      ...new Set([...current, ...injection.attachments.map((attachment) => attachment.path)]),
+    ]);
+    setDraftAfterDrop((current) => current ?? draft);
+    onImageAttachmentInjectionApplied?.(injection.token);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }, [draft, imageAttachmentInjection, onImageAttachmentInjectionApplied]);
+
+  useEffect(() => {
+    onImageAttachmentsChange?.(sessionId, imageAttachments);
+  }, [imageAttachments, onImageAttachmentsChange, sessionId]);
 
   const capSetters = {
     setCaps,

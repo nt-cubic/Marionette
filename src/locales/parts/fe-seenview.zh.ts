@@ -4,6 +4,8 @@ export const zh = {
   "seenImages.viewer.prev": "上一张",
   "seenImages.viewer.next": "下一张",
   "seenImages.viewer.locate": "在对话中定位",
+  "seenImages.viewer.annotate": "批注并添加",
+  "seenImages.viewer.attachDone": "添加到对话",
   "seenImages.viewer.reveal": "在文件夹中显示",
   "seenImages.viewer.copyPath": "复制路径",
   "seenImages.viewer.copied": "已复制",
