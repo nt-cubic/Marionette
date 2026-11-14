@@ -23,6 +23,16 @@ if ([string]::IsNullOrWhiteSpace($version)) { Write-Error 'package.json has no v
 if ($version.StartsWith('v') -or $version.StartsWith('V')) { $version = $version.Substring(1) }
 $tag = "v$version"
 
+# Prefer a checked-in, user-facing release note for this exact version. The
+# generated fallback below is only an asset/install footer; releases should not
+# ship with that as their entire description.
+if ([string]::IsNullOrWhiteSpace($NotesFile)) {
+    $versionNotes = Join-Path $root ('docs\releases\' + $tag + '.md')
+    if (Test-Path -LiteralPath $versionNotes) {
+        $NotesFile = $versionNotes
+    }
+}
+
 $dist = Join-Path $root ('release\' + $version)
 $asset = Join-Path $dist 'Marionette.exe'
 $installer = Join-Path $root 'install.ps1'
