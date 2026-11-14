@@ -1,4 +1,109 @@
-/* rail.css — context rail: tasks / quota / changes sections + shared group */
+/* rail.css — context rail: fixed view tabs + scrollable current / shared / images panes */
+
+/* ----- view tabs ----- */
+.context-panel.context-panel--tabbed {
+  overflow: hidden;
+}
+
+.context-panel__tabs {
+  display: flex;
+  flex: none;
+  align-items: stretch;
+  height: 34px;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.context-panel__tab {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  box-shadow: inset 0 -2px 0 transparent;
+  cursor: pointer;
+}
+
+.context-panel__tab:hover {
+  color: var(--text);
+}
+
+.context-panel__tab.is-on {
+  color: var(--text-strong);
+  font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.context-panel__tab:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -3px;
+}
+
+.context-panel__tab-count {
+  min-width: 14px;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.context-panel__tab.is-on .context-panel__tab-count {
+  color: var(--text-muted);
+}
+
+.context-panel__view {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.context-panel__view[hidden] {
+  display: none;
+}
+
+.context-panel__pane-note {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 30px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.context-panel__pane-note > span:first-child {
+  flex: none;
+  color: var(--text-strong);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.context-panel__pane-note > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-panel.context-panel--tabbed .context-panel__footer {
+  position: relative;
+  bottom: auto;
+  flex: none;
+}
 
 /* ----- section shell + header ----- */
 .rail-sec {

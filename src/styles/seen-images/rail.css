@@ -1,6 +1,40 @@
 /* seen-images · right-rail 「图片」 section (SeenImagesSection).
    Flush bands + 1px lines; the thumbnail look itself lives in base.css (.seen-th). */
 
+/* The Images view tab owns the full rail body: no expansion control, and the grid
+   fills whatever width the user has dragged the rail to. */
+.seen-rail--tab {
+  padding-bottom: 14px;
+  border-bottom: 0;
+}
+
+.seen-rail__tabmeta {
+  min-height: 30px;
+  padding: 8px 12px 4px;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.seen-rail--tab .seen-rail__seg {
+  height: 30px;
+  padding-top: 2px;
+}
+
+.seen-rail--tab .seen-rail__seg button {
+  height: 28px;
+}
+
+.seen-rail--tab .seen-rail__grid {
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+}
+
+.seen-rail--tab .seen-rail__grid .seen-th {
+  width: 100% !important;
+  height: auto !important;
+  aspect-ratio: 4 / 3;
+}
+
 /* closed: one band of four 56x42 thumbs + the "+N" tile */
 .seen-rail__row {
   display: flex;

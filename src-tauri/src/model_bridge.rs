@@ -592,6 +592,20 @@ fn opencode_model_entry(name: &str, row: &CatalogModelRow) -> serde_json::Value 
     // `attachment: boolean`（config.json $defs.ProviderConfig.models 实锤），
     // 不写按默认（text）办——附图被当文本模型处理，DSH 同款坑。真值直写。
     entry.insert("attachment".to_string(), serde_json::Value::Bool(row.images));
+    // 但 `attachment` 只表示“能挂文件”，opencode 的 `read` 工具真正看的是
+    // `capabilities.input.image`（由本条的 `modalities.input` 派生）：
+    // 只写 attachment 不写 modalities 时，界面显示能挂图，读图仍报
+    // “this model does not support image input”（2026-11-14 实锤：ollama.com
+    // 的 DeepSeek V4.1 Flash `/api/show` 报 vision，opencode `/provider`
+    // 仍给 input.image=false）。真值写进 modalities。
+    entry.insert(
+        "modalities".to_string(),
+        if row.images {
+            serde_json::json!({ "input": ["text", "image"], "output": ["text"] })
+        } else {
+            serde_json::json!({ "input": ["text"], "output": ["text"] })
+        },
+    );
     if row.context_window > 0 {
         let output = if row.max_output > 0 {
             row.max_output
@@ -4538,6 +4552,12 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
                 row("codex/gpt-5.6-luna", 0, 0),
                 row("opencode-go/glm-5.3", 200_000, 32_000),
                 row("grok/grok-4.7@500k", 500_000, 0),
+                CatalogModelRow {
+                    id: "source-eb6e68d5c47ab23e/deepseek-v4.1-flash:1017".to_string(),
+                    context_window: 1_048_576,
+                    max_output: 384_000,
+                    images: true,
+                },
             ],
             Some(r#"{"autoupdate":false,"provider":{"mine":{"name":"Keep Me"}}}"#),
         );
@@ -4573,6 +4593,20 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
         // 图片能力（2026-11-13 审计批）：schema 的 attachment 真值直写，
         // 不写按默认（text）办——附图会被当文本模型处理。
         assert_eq!(provider["models"]["grok/grok-4.7"]["attachment"], false);
+        // 2026-11-14：opencode 的 read 工具还看 modalities.input 派生的
+        // capabilities.input.image；只写 attachment 不够（读图仍拒绝）。
+        assert_eq!(
+            provider["models"]["grok/grok-4.7"]["modalities"]["input"],
+            serde_json::json!(["text"])
+        );
+        assert_eq!(
+            provider["models"]["source-eb6e68d5c47ab23e/deepseek-v4.1-flash:1017"]["attachment"],
+            true
+        );
+        assert_eq!(
+            provider["models"]["source-eb6e68d5c47ab23e/deepseek-v4.1-flash:1017"]["modalities"]["input"],
+            serde_json::json!(["text", "image"])
+        );
 
         // 坏 JSON existing → 整体替换（只剩 marionette）。
         let replaced = opencode_engine_config_content(3425, &[row("grok/grok-4.7", 0, 0)], Some("not json"));

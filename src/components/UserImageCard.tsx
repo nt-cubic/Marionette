@@ -22,8 +22,9 @@ export function UserImageCard({ attachments }: UserImageCardProps) {
   );
 }
 
-function AttachmentMarks({ marks }: { marks: ImageMark[] }) {
-  if (marks.length === 0) return null;
+function AttachmentMarks({ marks }: { marks?: ImageMark[] }) {
+  // Older transcripts can carry path/name attachments without the marks field.
+  if (!marks?.length) return null;
   return (
     <span className="user-image-card__overlay" aria-hidden>
       {marks.map((m, i) =>

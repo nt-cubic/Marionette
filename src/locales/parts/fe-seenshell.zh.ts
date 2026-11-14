@@ -1,6 +1,7 @@
 /** 对话里读到的图（右栏「图片」小节 + 大图查看器）· 共用文案。 */
 export const zh = {
   "seenImages.title": "图片",
+  "seenImages.empty": "这个对话还没有图片",
   "seenImages.open": "查看 {name}",
   "seenImages.via.you": "你附的",
   "seenImages.via.browser": "浏览器截图",

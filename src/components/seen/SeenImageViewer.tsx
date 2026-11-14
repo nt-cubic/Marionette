@@ -144,7 +144,7 @@ export function SeenImageViewer(props: {
         >
           <ChevronLeft size={16} strokeWidth={1.5} aria-hidden="true" />
         </button>
-        <div className="seen-viewer__center" onClick={stop}>
+        <div className="seen-viewer__center" onClick={onClose}>
           <div
             className={dragging ? "seen-viewer__stage is-dragging" : "seen-viewer__stage"}
             style={stageStyle}

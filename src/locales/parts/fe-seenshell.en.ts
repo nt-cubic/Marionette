@@ -3,6 +3,7 @@ import type { zh } from "./fe-seenshell.zh";
 /** English mirror of the fe-seenshell fragment. */
 export const en = {
   "seenImages.title": "Images",
+  "seenImages.empty": "No images in this conversation yet",
   "seenImages.open": "View {name}",
   "seenImages.via.you": "Attached by you",
   "seenImages.via.browser": "Browser screenshot",

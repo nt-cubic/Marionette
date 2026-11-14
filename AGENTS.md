@@ -979,9 +979,15 @@ grok 1.0.77 接受。
    旧表字节比较不等 → 下次 spawn 自动升级。**vision 探针实测（1.0.77）：
    config 表路径上 true/false/unset 都不拦发图**——真兜底是引擎对
    text-only 模型的 400；写字段只为声明意图（daemon 路由/UI 分组）。
-2. **opencode 模型条目补 `attachment`、pi 补 `input` 数组**（真值直写）。
-   opencode 的 schema（config.json $defs.ProviderConfig.models）有
-   `attachment: boolean`，不写按默认 text 办——附图被当文本模型；pi 的
+2. **opencode 模型条目补 `attachment` + `modalities`、pi 补 `input` 数组**
+   （真值直写）。opencode 的 schema（config.json
+   $defs.ProviderConfig.models）里 `attachment: boolean` 只是“能挂文件”；
+   `read` 工具真正看的是 `capabilities.input.image`，它由条目
+   `modalities.input` 派生——**只写 `attachment` 时界面显示能挂图，读图仍报
+   “this model does not support image input”**（2026-11-14 实锤：
+   ollama.com 的 DeepSeek V4.1 Flash `/api/show` 报 vision，`/v1/models`
+   也是 image，opencode `/provider` 仍给 `input.image=false`）。vision 模型
+   写 `modalities.input=["text","image"]`，text-only 写 `["text"]`。pi 的
    加载默认是乐观的 `?? ["text","image"]`，text-only 模型带图发到引擎吃
    400。两条都是 DSH「image omitted」坑的同族。
 3. **claude/grok/codex 引擎绑定 spawn 补 `wake_if_installed`**：dsh/pi/

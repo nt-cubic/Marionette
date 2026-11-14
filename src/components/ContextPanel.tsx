@@ -1,5 +1,5 @@
-import { ArrowUpCircle, ChevronRight, RefreshCw } from "lucide-react";
-import { memo, useEffect, useState } from "react";
+import { ArrowUpCircle, RefreshCw } from "lucide-react";
+import { memo, useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { t, useT } from "../lib/i18n";
 import { ChangesSection } from "./ChangesSection";
@@ -26,6 +26,19 @@ import type {
 
 /** memo 默认值要保持同一引用，否则每次渲染都击穿子组件 memo。 */
 const EMPTY_BG_TASKS: BackgroundTaskRow[] = [];
+
+type ContextTab = "current" | "shared" | "images";
+
+const CONTEXT_TAB_STORAGE_KEY = "marionette-context-tab";
+
+function readStoredContextTab(): ContextTab {
+  try {
+    const value = window.localStorage.getItem(CONTEXT_TAB_STORAGE_KEY);
+    return value === "shared" || value === "images" ? value : "current";
+  } catch {
+    return "current";
+  }
+}
 
 
 
@@ -240,7 +253,7 @@ export const ContextPanel = memo(function ContextPanel({
   const t = useT();
   /** Docked: the update control joins the strip's footer bar below the composer. */
   const docked = useDocked();
-  const [sharedOpen, setSharedOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<ContextTab>(readStoredContextTab);
   const [mcpExpanded, setMcpExpanded] = useState(false);
   const [skillsExpanded, setSkillsExpanded] = useState(false);
   // Plugin / memory counts are only known once their sections mounted (memory syncs on
@@ -255,15 +268,19 @@ export const ContextPanel = memo(function ContextPanel({
   const pluginsLoaded = universalPluginCount != null && skillCount != null;
   const pluginsEmpty = pluginCount === 0;
 
-  /**
-   * Ctrl K「插件」的落点（P3，2026-11-06）：插件卡在「共享」折叠区内，
-   * 未展开时 #context-plugins 根本不在 DOM——App 侧只 scrollTo 会落空。
-   * App 派发 marionette:reveal-plugins，这里展开共享卡并滚到位（贴边
-   * context 整页是同一组件实例，一并修好）。
-   */
+  const selectTab = useCallback((tab: ContextTab) => {
+    setActiveTab(tab);
+    try {
+      window.localStorage.setItem(CONTEXT_TAB_STORAGE_KEY, tab);
+    } catch {
+      // Storage refused: keep the in-memory selection.
+    }
+  }, []);
+
+  /** Ctrl K's Plugins jump switches to the Shared tab before scrolling its anchor. */
   useEffect(() => {
     const reveal = () => {
-      setSharedOpen(true);
+      selectTab("shared");
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           document
@@ -274,7 +291,7 @@ export const ContextPanel = memo(function ContextPanel({
     };
     window.addEventListener("marionette:reveal-plugins", reveal);
     return () => window.removeEventListener("marionette:reveal-plugins", reveal);
-  }, []);
+  }, [selectTab]);
   const mcpServers = projectContext?.inventory.mcpServers ?? [];
   const mcpSlice = previewSlice(mcpServers, mcpExpanded);
   const skillItems = projectContext?.inventory.skills ?? [];
@@ -295,6 +312,26 @@ export const ContextPanel = memo(function ContextPanel({
   ]
     .filter(Boolean)
     .join(" · ");
+  const sharedItemCount = sharedMcpCount + sharedSkillCount + (pluginCount ?? 0) + (memoryCount ?? 0);
+  const contextTabs: Array<{
+    key: ContextTab;
+    label: string;
+    count?: number;
+    title?: string;
+  }> = [
+    { key: "current", label: t("rail.tab.current") },
+    {
+      key: "shared",
+      label: t("rail.tab.shared"),
+      count: sharedItemCount > 0 ? sharedItemCount : undefined,
+      title: sharedSummary || undefined,
+    },
+    {
+      key: "images",
+      label: t("rail.tab.images"),
+      count: seenImages && seenImages.length > 0 ? seenImages.length : undefined,
+    },
+  ];
 
   /** Right rail's only footer control besides collapse; docked it moves below. */
   const updateButton = onCheckAppUpdate ? (
@@ -311,7 +348,10 @@ export const ContextPanel = memo(function ContextPanel({
   ) : null;
 
   return (
-    <aside className={`context-panel custom-scrollbar scrollbar-autohide${collapsed ? " is-collapsed" : ""}`} aria-label="Context panel">
+    <aside
+      className={`context-panel context-panel--tabbed custom-scrollbar scrollbar-autohide${collapsed ? " is-collapsed" : ""}`}
+      aria-label="Context panel"
+    >
       {onResizeStart && (
         <button
           type="button"
@@ -324,64 +364,87 @@ export const ContextPanel = memo(function ContextPanel({
           }}
         />
       )}
-      <TasksSection
-        activeAgentId={activeAgentId}
-        activeAgentLabel={activeAgentLabel}
-        planEntries={planEntries}
-        planModeActive={planModeActive}
-        todoItems={todoItems}
-        onTodosChange={onTodosChange}
-        onAbsorbPlan={onAbsorbPlan}
-        onSendTodosToAi={onSendTodosToAi}
-        onRequestAiTodoUpdate={onRequestAiTodoUpdate}
-        onPrepareAiTodoMerge={onPrepareAiTodoMerge}
-        backgroundTasks={backgroundTasks}
-        sessionLabels={sessionLabels}
-        onOpenBackgroundTask={onOpenBackgroundTask}
-        onKillBackgroundTerminal={onKillBackgroundTerminal}
-      />
-
-      <QuotaSection usage={usage} agentId={activeAgentId} modelId={activeModelId} onRefresh={onUsageRefresh} refreshing={usageProbing} />
-
-      <ChangesSection
-        changedFiles={changedFiles}
-        changedFilesNote={changedFilesNote}
-        onRefresh={onRefreshChangedFiles}
-        gitBranch={gitBranch}
-        onCommitAndPush={onCommitAndPush}
-        onOpenDiff={onOpenDiff}
-        projectRoot={projectRoot}
-      />
-
-      {seenImages && seenImages.length > 0 && onOpenSeenImage && (
-        <SeenImagesSection
-          images={seenImages}
-          support={seenImagesSupport}
-          notSentText={seenImagesNotSentText}
-          agentId={activeAgentId}
-          truncated={seenImagesTruncated}
-          onOpen={onOpenSeenImage}
-        />
-      )}
-
-      <section className="rail-sec rail-shared">
-        <button
-          type="button"
-          className={"rail-shared__toggle" + (sharedOpen ? " is-open" : "")}
-          aria-expanded={sharedOpen}
-          onClick={() => setSharedOpen(!sharedOpen)}
-        >
-          <ChevronRight size={12} className={"rail-shared__chevron" + (sharedOpen ? " is-open" : "")} aria-hidden />
-          <span className="rail-shared__title">{t("rail.shared")}</span>
-          <span
-            className="rail-shared__summary"
-            title={activeAgentLabel ? t("rail.sharedTo", { agent: activeAgentLabel }) : undefined}
+      <div className="context-panel__tabs" role="tablist" aria-label={t("rail.tabsAria")}>
+        {contextTabs.map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            role="tab"
+            id={`context-tab-${tab.key}`}
+            aria-controls={`context-view-${tab.key}`}
+            aria-selected={activeTab === tab.key}
+            tabIndex={activeTab === tab.key ? 0 : -1}
+            className={`context-panel__tab${activeTab === tab.key ? " is-on" : ""}`}
+            title={tab.title}
+            onClick={() => selectTab(tab.key)}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+              event.preventDefault();
+              const current = contextTabs.findIndex((item) => item.key === tab.key);
+              const offset = event.key === "ArrowRight" ? 1 : -1;
+              const next = contextTabs[(current + offset + contextTabs.length) % contextTabs.length];
+              if (!next) return;
+              selectTab(next.key);
+              document.getElementById(`context-tab-${next.key}`)?.focus();
+            }}
           >
-            {sharedSummary}
-          </span>
-        </button>
-        {sharedOpen && (
-          <>
+            <span>{tab.label}</span>
+            {tab.count != null && <span className="context-panel__tab-count">{tab.count}</span>}
+          </button>
+        ))}
+      </div>
+      <div
+        className="context-panel__view custom-scrollbar scrollbar-autohide"
+        id="context-view-current"
+        role="tabpanel"
+        aria-labelledby="context-tab-current"
+        hidden={activeTab !== "current"}
+      >
+        <TasksSection
+          activeAgentId={activeAgentId}
+          activeAgentLabel={activeAgentLabel}
+          planEntries={planEntries}
+          planModeActive={planModeActive}
+          todoItems={todoItems}
+          onTodosChange={onTodosChange}
+          onAbsorbPlan={onAbsorbPlan}
+          onSendTodosToAi={onSendTodosToAi}
+          onRequestAiTodoUpdate={onRequestAiTodoUpdate}
+          onPrepareAiTodoMerge={onPrepareAiTodoMerge}
+          backgroundTasks={backgroundTasks}
+          sessionLabels={sessionLabels}
+          onOpenBackgroundTask={onOpenBackgroundTask}
+          onKillBackgroundTerminal={onKillBackgroundTerminal}
+        />
+
+        <QuotaSection usage={usage} agentId={activeAgentId} modelId={activeModelId} onRefresh={onUsageRefresh} refreshing={usageProbing} />
+
+        <ChangesSection
+          changedFiles={changedFiles}
+          changedFilesNote={changedFilesNote}
+          onRefresh={onRefreshChangedFiles}
+          gitBranch={gitBranch}
+          onCommitAndPush={onCommitAndPush}
+          onOpenDiff={onOpenDiff}
+          projectRoot={projectRoot}
+        />
+      </div>
+
+      <div
+        className="context-panel__view custom-scrollbar scrollbar-autohide"
+        id="context-view-shared"
+        role="tabpanel"
+        aria-labelledby="context-tab-shared"
+        hidden={activeTab !== "shared"}
+      >
+        <div
+          className="context-panel__pane-note"
+          title={activeAgentLabel ? t("rail.sharedTo", { agent: activeAgentLabel }) : undefined}
+        >
+          <span>{t("rail.shared")}</span>
+          <span>{sharedSummary}</span>
+        </div>
+        <section className="rail-sec rail-shared">
       <section className="context-card" id="context-project">
         <div className="context-card__heading">
           <span>{t("context.projectContext")}</span>
@@ -555,9 +618,28 @@ export const ContextPanel = memo(function ContextPanel({
           <p className="context-card__empty">{t("rail.handoffEmpty")}</p>
         )}
       </section>
-          </>
+        </section>
+      </div>
+      <div
+        className="context-panel__view custom-scrollbar scrollbar-autohide"
+        id="context-view-images"
+        role="tabpanel"
+        aria-labelledby="context-tab-images"
+        hidden={activeTab !== "images"}
+      >
+        {onOpenSeenImage ? (
+          <SeenImagesSection
+            images={seenImages ?? []}
+            support={seenImagesSupport}
+            notSentText={seenImagesNotSentText}
+            agentId={activeAgentId}
+            truncated={seenImagesTruncated}
+            onOpen={onOpenSeenImage}
+          />
+        ) : (
+          <div className="seen-rail__empty">{t("seenImages.empty")}</div>
         )}
-      </section>
+      </div>
 
       <div className="context-panel__footer">
         {docked && updateButton ? createPortal(updateButton, dockFooterHost()) : updateButton}

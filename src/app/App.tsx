@@ -9428,9 +9428,8 @@ export function App() {
               { id: "new-chat", label: t("palette.newChat"), run: () => void handleCreateChatSession() },
               {
                 // 插件：装一次全 agent 生效（docs/plan-plugin-layer.md）。
-                // 派发事件让 ContextPanel 自己展开「共享」卡并滚动——插件卡
-                // 在折叠区内，未展开时 #context-plugins 不在 DOM，直接
-                // scrollTo 会落空（2026-11-06 修）；贴边态先切 context 整页。
+                // 派发事件让 ContextPanel 切到「共享」标签并滚到插件卡；
+                // 贴边态先切 context 整页，普通态再展开右栏。
                 id: "open-universal-plugins",
                 label: t("allPlugins.paletteOpen"),
                 hint: t("allPlugins.paletteOpenHint"),
