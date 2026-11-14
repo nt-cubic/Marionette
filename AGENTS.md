@@ -897,7 +897,7 @@ route key，自己声明 `api` + `baseURL` + `apiKeyEnv` + 只列这一个模型
 两个「配置写进去 ≠ 对方认」的坑，都会让界面显示 A 而实际用 B：
 
 - **用户自建路由组只由 `plugins/groups` 服务**（`provider/group_serve.go` 的 `GateGroups`/`ServeGroups`）。种子引擎（`tools/magpie-seed/main_seed.go`）**必须**导入 `plugins/groups`，否则网关的 `Groups()`/`GroupFor()` 把用户组整个滤掉：`magpie group add` 照样写盘成功、Rust 照样记「alias group updated」，而 codex 的裸内建名会落回内建 `codex` 源头**烧订阅**（2026-11-12 实锤：整场会话 provider 全记成 `codex`，ollama 零流量）。现在写完组会探 `GET /v1/models/group/<id>`（200 认 / 404 不认）并在 dev.log 记 warn。**注意 `auto/*` 组是核心自带的，不受这个开关管**，所以 opencode/DSH/zcode 那条线看起来一直正常，掩盖了 codex 这条。
-- **上下文窗口必须逐模型宣告给每个 agent**，真相只有一处：`engine::catalog_direct_entries()` 的 `context_window`/`max_output`（引擎 `/v1/models` 的 `context_length`/`max_output_tokens`）。各 agent 的写法：opencode `models[id].limit.context/output`、pi `models.json` 的 `contextWindow`/`maxTokens`、DSH `cordis.patch.yml` 的 `contextWindow`、zcode `providerModelRules` 的 `contextWindow`（schema 要求正数，未知兜底 200000）。**漏写任何一家 = 它按自己的默认窗口办事**（opencode 实测 200K，而 ollama 的 deepseek-v4.1-flash:1017 是 1M，自动压缩提前触发）。引擎窗口也是 0 = 不知道 → 不写，别编窗口。**opencode 的 `limit` 必须成对**：schema 要求 `context` 与 `output` 同在，只写窗口会让整份 `OPENCODE_CONFIG_CONTENT` 被拒、进程在 initialize 前退出（2026-11-12 第二个 opencode 拉不起来）；输出未知时补 `OPENCODE_LIMIT_OUTPUT_FALLBACK`（32000），别只写 `limit.context`。
+- **上下文窗口必须逐模型宣告给每个 agent**，真相只有一处：`engine::catalog_direct_entries()` 的 `context_window`/`max_output`（引擎 `/v1/models` 的 `context_length`/`max_output_tokens`）。各 agent 的写法：opencode `models[id].limit.context/output`、pi `models.json` 的 `contextWindow`/`maxTokens`、DSH `cordis.patch.yml` 的 `contextWindow`、zcode `providerModelRules` 的 `contextWindow`（schema 要求正数，未知兜底 200000）、codex spawn env `CODEX_CONFIG.model_context_window`。**漏写任何一家 = 它按自己的默认窗口办事**（opencode 实测 200K，而 ollama 的 deepseek-v4.1-flash:1017 是 1M，自动压缩提前触发）。引擎窗口也是 0 = 不知道 → 不写，别编窗口。**opencode 的 `limit` 必须成对**：schema 要求 `context` 与 `output` 同在，只写窗口会让整份 `OPENCODE_CONFIG_CONTENT` 被拒、进程在 initialize 前退出（2026-11-12 第二个 opencode 拉不起来）；输出未知时补 `OPENCODE_LIMIT_OUTPUT_FALLBACK`（32000），别只写 `limit.context`。
 
 ## 请求体字节上限（2026-11-12，第三条静默降级：会话死锁）
 
@@ -1023,6 +1023,19 @@ grok 1.0.77 接受。
 与 anthropic 面 server-side tools 丢弃（上游设计）；AGENTS.md 旧表述与
 pitfalls 勘误矛盾（pi-ai catalog 条目）。回归：`cargo test --bin marionette`
 （529）+ `npx tsc --noEmit`。
+
+## codex 引擎绑定上下文窗口（2026-11-15）
+
+Codex 的 `providers/set` / 路由组只换上游 provider，**不换内建模型元数据**：
+DeepSeek 1M 绑定仍在 Codex 侧按 272K × 95% = 258400 记账，接近 246K 就自动压缩。
+codex-acp 的 `CODEX_CONFIG` 是 spawn 时读一次、合并进 session config 的 JSON
+object；`acp.rs` 仅对 **Codex × `entry_id=engine` 绑定**读取引擎 live/离线目录，
+把正数 `context_window` 写入 `model_context_window`。用户原有 JSON 其它字段保留；
+空值建 object，坏 JSON / 非 object 原样保留并记 warn；非 Codex、非引擎绑定、
+目录窗口为 0 都不注入。Codex UI 的 `usage_update.size` 是扣除输出预留后的可用量，
+不是原始窗口；实测 1,048,576 覆盖后为 828400（远高于旧的 258400）。回归：
+`cargo test --bin marionette codex_context`。已运行中的会话必须重启 agent 进程，
+因为环境变量只在 spawn 时读取。
 
 ## Agent 进程空闲自退的 UX（2026-11-13 批三）
 

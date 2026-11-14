@@ -908,6 +908,66 @@ impl AcpService {
                 );
             }
         }
+        // codex-acp 只从 spawn env 的 CODEX_CONFIG 读一次 session config。
+        // Codex 会把引擎路由组仍当内建模型算窗口（1M DeepSeek 被按 258400
+        // 触发压缩，2026-11-15 实锤）；引擎绑定时用目录真值覆盖，且保留用户
+        // 原有 JSON 字段。离线目录也走缓存，避免懒启动窗口丢掉窗口声明。
+        if crate::model_bridge::classify_agent(agent_id.as_deref().unwrap_or(""))
+            == crate::model_bridge::BridgeAgent::Codex
+        {
+            if let Some(selection) = crate::model_bridge::binding_for(&session_id) {
+                if selection.entry_id == crate::engine::ENGINE_ENTRY_ID {
+                    crate::engine::wake_if_installed();
+                    let (rows, offline) = crate::engine::catalog_direct_or_cached_entries();
+                    if let Some(context_window) = crate::model_bridge::codex_engine_context_window(
+                        agent_id.as_deref().unwrap_or(""),
+                        &selection,
+                        &rows,
+                    ) {
+                        let existing = std::env::var("CODEX_CONFIG").ok();
+                        match crate::model_bridge::merge_codex_context_window(
+                            existing.as_deref(),
+                            context_window,
+                        ) {
+                            Ok(config) => {
+                                child_command.env("CODEX_CONFIG", &config);
+                                crate::debug_log::append(
+                                    "bridge",
+                                    "info",
+                                    &session_id,
+                                    "codex context window injected via CODEX_CONFIG",
+                                    Some(&format!(
+                                        "model={} context_window={} catalog={}",
+                                        selection.model_id,
+                                        context_window,
+                                        if offline { "offline" } else { "live" }
+                                    )),
+                                );
+                            }
+                            Err(error) => crate::debug_log::append(
+                                "bridge",
+                                "warn",
+                                &session_id,
+                                "codex context window injection skipped; existing CODEX_CONFIG left unchanged",
+                                Some(&error),
+                            ),
+                        }
+                    } else {
+                        crate::debug_log::append(
+                            "bridge",
+                            "info",
+                            &session_id,
+                            "codex context window injection skipped (bound model has no positive window in live/offline catalog)",
+                            Some(&format!(
+                                "model={} catalog={}",
+                                selection.model_id,
+                                if offline { "offline" } else { "live" }
+                            )),
+                        );
+                    }
+                }
+            }
+        }
         // ── Cross-agent model bridge (docs/cross-agent-bridge.md §4.4): a
         //    binding exists only after the user picked a cross-use model for
         //    this dialog; nothing is lent otherwise. The key goes straight into

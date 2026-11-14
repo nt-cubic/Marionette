@@ -2972,6 +2972,56 @@ pub(crate) fn codex_bridge_route(selection: &BridgeSelection) -> Option<(String,
     crate::engine::engine_v1_url().map(|base| (base, crate::engine::ENGINE_TOKEN.to_string()))
 }
 
+/// codex-acp 的 `CODEX_CONFIG` 是合并进 session config 的 JSON object。Codex
+/// 对路由组模型仍沿用内建模型的窗口元数据（DeepSeek 1M 被按 272K × 95% = 258400
+/// 记账，2026-11-15 实锤），因此引擎绑定必须把目录里的真实窗口显式覆盖进去。
+/// 只替换 `model_context_window`，用户其它 CODEX_CONFIG 字段保持原样。
+pub(crate) fn merge_codex_context_window(
+    existing: Option<&str>,
+    context_window: u64,
+) -> Result<String, String> {
+    if context_window == 0 {
+        return Err("codex context window is unknown (0)".to_string());
+    }
+    let mut config = match existing.map(str::trim).filter(|text| !text.is_empty()) {
+        None => serde_json::Map::new(),
+        Some(text) => match serde_json::from_str::<serde_json::Value>(text) {
+            Ok(serde_json::Value::Object(config)) => config,
+            Ok(_) => {
+                return Err("CODEX_CONFIG is JSON but not an object; left unchanged".to_string())
+            }
+            Err(error) => {
+                return Err(format!(
+                    "CODEX_CONFIG is invalid JSON; left unchanged: {error}"
+                ))
+            }
+        },
+    };
+    config.insert(
+        "model_context_window".to_string(),
+        serde_json::Value::from(context_window),
+    );
+    serde_json::to_string(&serde_json::Value::Object(config))
+        .map_err(|error| format!("failed to serialize CODEX_CONFIG: {error}"))
+}
+
+/// Codex 的窗口覆盖只属于「Codex × 引擎伪来源」：原生/其它 agent、非引擎
+/// binding、目录未知（0）都不注入。rows 由 engine live 目录或离线快照提供。
+pub(crate) fn codex_engine_context_window(
+    agent_id: &str,
+    selection: &BridgeSelection,
+    rows: &[CatalogModelRow],
+) -> Option<u64> {
+    if classify_agent(agent_id) != BridgeAgent::Codex
+        || selection.entry_id != crate::engine::ENGINE_ENTRY_ID
+    {
+        return None;
+    }
+    rows.iter()
+        .find(|row| row.id == selection.model_id && row.context_window > 0)
+        .map(|row| row.context_window)
+}
+
 /// codex × 引擎绑定：把会话当前内建名同步成引擎路由组别名。调用点 = acp.rs
 /// 的 session/new 之后、codex 原生切模型之后；解绑清理走 `bind_session_at`。
 /// 非 codex / 未绑引擎 / caps 没报当前模型 → 静默 no-op（codex 的 model
@@ -4219,6 +4269,65 @@ official_marketplace_auto_installed = true\n";
         .expect("engine 绑定必须解析出路由");
         assert_eq!(base_url, "http://127.0.0.1:39999/v1");
         assert_eq!(token, crate::engine::ENGINE_TOKEN);
+    }
+
+    #[test]
+    fn codex_context_config_merges_existing_json_and_rejects_non_objects() {
+        let merged = merge_codex_context_window(
+            Some(r#"{"model_auto_compact_token_limit":200000,"projects":{}}"#),
+            1_048_576,
+        )
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(parsed["model_context_window"], 1_048_576);
+        assert_eq!(parsed["model_auto_compact_token_limit"], 200_000);
+        assert_eq!(parsed["projects"], serde_json::json!({}));
+
+        let empty = merge_codex_context_window(Some("  "), 1_048_576).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&empty).unwrap()["model_context_window"],
+            1_048_576
+        );
+        assert!(merge_codex_context_window(Some(r#"["not-an-object"]"#), 1_048_576).is_err());
+        assert!(merge_codex_context_window(Some("not-json"), 1_048_576).is_err());
+        assert!(merge_codex_context_window(None, 0).is_err());
+    }
+
+    #[test]
+    fn codex_context_window_gates_on_agent_binding_and_catalog_truth() {
+        let rows = vec![
+            row("grok/grok-4.7", 2_000_000, 64_000),
+            CatalogModelRow {
+                id: "source-demo/deepseek-v4.1-flash:1017".into(),
+                context_window: 1_048_576,
+                max_output: 384_000,
+                images: true,
+            },
+            row("unknown/model", 0, 0),
+        ];
+        let engine = BridgeSelection {
+            entry_id: crate::engine::ENGINE_ENTRY_ID.into(),
+            model_id: "source-demo/deepseek-v4.1-flash:1017".into(),
+        };
+        assert_eq!(codex_engine_context_window("codex", &engine, &rows), Some(1_048_576));
+        assert_eq!(codex_engine_context_window("codex-acp", &engine, &rows), Some(1_048_576));
+        assert_eq!(codex_engine_context_window("claude-code", &engine, &rows), None);
+        assert_eq!(
+            codex_engine_context_window(
+                "codex",
+                &BridgeSelection { entry_id: "deepseek".into(), ..engine.clone() },
+                &rows
+            ),
+            None
+        );
+        assert_eq!(
+            codex_engine_context_window(
+                "codex",
+                &BridgeSelection { model_id: "unknown/model".into(), ..engine },
+                &rows
+            ),
+            None
+        );
     }
 
     /// codex × 引擎别名同步的门控：非 codex / 无绑定 / caps 没报当前模型 →

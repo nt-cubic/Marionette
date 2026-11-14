@@ -3182,22 +3182,24 @@ pub fn cached_catalog_entries() -> Vec<crate::model_bridge::CatalogModelRow> {
         .collect()
 }
 
-/// 菜单装配用：live 目录优先（非空时顺手回写缓存文件）；引擎不在 Running
-/// 或 live 尚为空（刚拉起、订阅发现未跟上）时回放缓存。返回 (ids, offline)。
+/// live 目录优先（非空时顺手回写缓存文件）；引擎不在 Running 或 live 尚为空
+/// （刚拉起、订阅发现未跟上）时回放缓存。返回 (rows, offline)。
 /// 判定走 `bridge_ready()`（生产 = Running；测试 = seam 的 bridge_visible）。
-pub fn catalog_direct_or_cached() -> (Vec<String>, bool) {
+pub fn catalog_direct_or_cached_entries() -> (Vec<crate::model_bridge::CatalogModelRow>, bool) {
     if bridge_ready() {
         let rows = catalog_direct_entries();
         if !rows.is_empty() {
             save_catalog_cache(&rows);
-            return (rows.into_iter().map(|row| row.id).collect(), false);
+            return (rows, false);
         }
     }
-    let offline = cached_catalog_entries();
-    (
-        offline.into_iter().map(|row| row.id).collect(),
-        true,
-    )
+    (cached_catalog_entries(), true)
+}
+
+/// 菜单装配用：只投影模型 id。返回 (ids, offline)。
+pub fn catalog_direct_or_cached() -> (Vec<String>, bool) {
+    let (rows, offline) = catalog_direct_or_cached_entries();
+    (rows.into_iter().map(|row| row.id).collect(), offline)
 }
 
 /// 引擎目录里每个模型「收不收图」（见 `model_bridge::image_flags_from_rows`）。同
