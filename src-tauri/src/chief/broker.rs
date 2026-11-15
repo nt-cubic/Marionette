@@ -332,6 +332,11 @@ fn ensure_chief_started(app: &AppHandle, chief_session_id: &str) -> Result<(), S
         Ok::<_, String>((session.agent_id, session.cwd))
     })?;
     runner::ensure_session(app, chief_session_id, &agent_id, &cwd)?;
+    // 配置里钉了 Chief 模型（chief_model）就推一次；失败只记日志，
+    // 会话用 agent 默认模型照常工作。
+    if let Some(model) = store::load_config().chief_model.as_deref() {
+        runner::apply_model(app, chief_session_id, model);
+    }
     with_storage(app, |storage| {
         storage.update_session_status(chief_session_id, "running")
     })
