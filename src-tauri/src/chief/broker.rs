@@ -1086,6 +1086,44 @@ fn resume_and_watch(
 
 // ── Telegram 入站（chief 模式唯一文本入口） ──────────────────────────────
 
+/// 该会话是否是某任务的 worker（Telegram 聚合判定用：worker 的逐条回合
+/// 推送被任务卡取代——调用频率是「每回合结束一次」，读 tasks.json 可接受）。
+pub fn is_chief_worker(session_id: &str) -> bool {
+    store::load_tasks()
+        .iter()
+        .any(|task| task.worker_session_id.as_deref() == Some(session_id))
+}
+
+/// 全局急停（03-security-permissions.md §13 第一层）：取消 Chief 全部
+/// 进行中任务。幂等；不清转录与审计。返回停止数。
+pub fn chief_stop_all(app: &AppHandle) -> usize {
+    let config = store::load_config();
+    let Some(chief_sid) = config.chief_session_id.clone() else {
+        return 0;
+    };
+    let active: Vec<Task> = store::load_tasks()
+        .into_iter()
+        .filter(|task| task.chief_session_id == chief_sid)
+        .filter(|task| {
+            matches!(
+                task.status,
+                TaskStatus::Starting | TaskStatus::Running | TaskStatus::WaitingUser
+            )
+        })
+        .collect();
+    let mut stopped = 0usize;
+    for task in active {
+        if let Some(worker_sid) = task.worker_session_id.as_deref() {
+            runner::cancel_turn(app, worker_sid);
+            let _ = runner::wait_turn_idle_checked(app, worker_sid, 8_000, || true);
+        }
+        finalize_task(app, &chief_sid, &task.task_id, TaskStatus::Cancelled,
+            Some("panic_stop"), Some("全局急停。"));
+        stopped += 1;
+    }
+    stopped
+}
+
 pub enum InboundOutcome {
     /// 已作为新回合发给 Chief。
     Sent,

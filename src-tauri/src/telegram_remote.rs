@@ -161,6 +161,34 @@ fn settings_path() -> Result<PathBuf, String> {
     Ok(crate::app_paths::global_dir()?.join("telegram.json"))
 }
 
+/// update_id 游标持久化（2026-11-15，chief M0 探针 5）。poller 线程是
+/// 唯一写者、独立文件——避免与 telegram.json 的 UI 保存互相踩（设置
+/// 整档覆盖会回滚游标，游标回写会冲掉并发保存的 token）。重启后不再
+/// 重复处理旧消息；Telegram 24h update 保留不能代替本地 offset。
+fn cursor_path() -> Result<PathBuf, String> {
+    Ok(crate::app_paths::global_dir()?.join("telegram-cursor.json"))
+}
+
+fn load_cursor() -> i64 {
+    let path = match cursor_path() {
+        Ok(path) => path,
+        Err(_) => return 0,
+    };
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|value| value.get("updateOffset").and_then(Value::as_i64))
+        .unwrap_or(0)
+}
+
+fn save_cursor(offset: i64) {
+    let Ok(path) = cursor_path() else { return };
+    let body = format!("{{\"updateOffset\":{offset}}}\n");
+    if let Err(error) = crate::storage::write_atomic(&path, &body) {
+        log("warn", "persist update cursor failed", Some(&error));
+    }
+}
+
 fn load_settings_at(path: &Path) -> TelegramSettings {
     let Ok(text) = std::fs::read_to_string(path) else {
         return TelegramSettings::default();
@@ -768,8 +796,9 @@ fn ensure_threads(slot: &'static Telegram) {
 /// `observe_turn_complete` 据此跳过推送——否则每次刷新额度都会给
 /// Telegram 发一条「✅ 跑完 · 0秒」+ 整张状态卡。
 /// Chief 任务卡（broker 推送的唯一出口；relay 模式的逐会话推送不走这里）。
-/// M1 分两步：PR4 只落日志占位（链路可达性），PR5 接 chief 模式发送队列
-/// 与任务卡路由——不会双推。
+/// 只有 chief 模式才推——relay 模式下 worker 通知走 observe_turn_complete
+/// 老路，两条路互斥，不会双推。路由：任务卡登记 chief 会话路由，
+/// 回复任务卡 = 对 Chief 说话。
 pub fn chief_task_notify(task: &crate::chief::types::Task, kind: &str, summary: Option<&str>) {
     crate::debug_log::append(
         "chief",
@@ -778,6 +807,30 @@ pub fn chief_task_notify(task: &crate::chief::types::Task, kind: &str, summary: 
         &format!("telegram notify {kind}"),
         summary,
     );
+    let Some(slot) = TELEGRAM.get() else { return };
+    let live = slot.live.lock().ok().map(|l| l.clone());
+    let Some(live) = live else { return };
+    if !live.active() {
+        return;
+    }
+    if crate::chief::store::mode_cached() != crate::chief::types::RemoteWorkMode::Chief {
+        return;
+    }
+    let (icon, head) = match kind {
+        "task.created" => ("🫡", "已接单"),
+        "task.started" => ("▶️", "任务开始"),
+        "task.completed" => ("✅", "任务完成"),
+        "task.failed" => ("❌", "任务失败"),
+        "task.cancelled" => ("🛑", "任务已停止"),
+        "task.interrupted" => ("⏸", "任务中断（可恢复）"),
+        _ => ("•", kind),
+    };
+    let mut text = format!("{icon} {} — {head}", task.title);
+    if let Some(body) = summary.filter(|s| !s.trim().is_empty()) {
+        text.push('\n');
+        text.push_str(&clip(body.trim(), 800));
+    }
+    enqueue_send(&live, text, Vec::new(), Some(task.chief_session_id.clone()), None);
 }
 
 pub fn mark_probe_turn(session_id: &str) {
@@ -1020,6 +1073,15 @@ fn observe_turn_complete(
 
     // 探针回合（额度刷新的 /status、/usage）：面板照刷，推送全免。
     if probe {
+        return;
+    }
+
+    // Chief 模式聚合（02-architecture.md §8.1）：worker 的逐条回合推送被
+    // 任务卡取代（chief_task_notify 负责），Chief 自身的回复照推——那是
+    // 给用户的交付面。worker 权限卡不受影响（走 permission prompt 路）。
+    if crate::chief::store::mode_cached() == crate::chief::types::RemoteWorkMode::Chief
+        && crate::chief::broker::is_chief_worker(session_id)
+    {
         return;
     }
 
@@ -2211,7 +2273,8 @@ fn reply_markup(keyboard: &[Vec<TgButton>]) -> Value {
 // ─── 轮询线程 ──────────────────────────────────────────────────────────────
 
 fn poller_loop(slot: &'static Telegram) {
-    let mut offset: i64 = 0;
+    // 重启恢复：从游标文件续读（首次运行为 0 = 全量）。
+    let mut offset: i64 = load_cursor();
     let mut backoff = BACKOFF_MIN;
     // 连续 not-ok 应答计数：跟 Err 分支同款指数退避，别固定 15s 敲到天荒地老。
     let mut not_ok_streak: u32 = 0;
@@ -2288,6 +2351,10 @@ fn poller_loop(slot: &'static Telegram) {
                     }
                     handle_update(slot, &live, update);
                 }
+                // 游标落盘（每批一次；poller 是唯一写者）。收到即推进：
+                // 崩溃窗口内丢的是「处理中」的那一批，不产生重复任务
+                // （broker requestId / callback 只接受一次兜底）。
+                save_cursor(offset);
             }
             Err(error) => {
                 let is_conflict = error.contains("409") || error.contains("Conflict");
@@ -2488,6 +2555,65 @@ fn handle_incoming_message(slot: &'static Telegram, live: &LiveConfig, message: 
             }
         }
         return;
+    }
+
+    // ── Chief 模式（2026-11-15，docs/research-telegram-chief/）────────────
+    // 裸文本固定进 Chief 会话（后端直送，主窗隐藏也活着）；回复 Chief 路由
+    // 的消息同样后端直送。旧 relay 的「最近会话」不再抢裸文本；引用 worker
+    // 的旧通知仍走下方前端管线（M1 允许，主窗活着才工作）。
+    if crate::chief::store::mode_cached() == crate::chief::types::RemoteWorkMode::Chief {
+        let chief_sid = crate::chief::store::load_config().chief_session_id.clone();
+        let reply_route_id = message
+            .pointer("/reply_to_message/message_id")
+            .and_then(Value::as_i64);
+        let reply_target = reply_route_id.and_then(|id| {
+            slot.inner
+                .lock()
+                .ok()
+                .and_then(|inner| inner.routes.get(&id).cloned())
+        });
+        let goes_chief = match reply_target {
+            Some(target) => chief_sid.as_deref() == Some(target.as_str()),
+            None => true,
+        };
+        if goes_chief {
+            let trimmed = text.trim();
+            // 急停逃生口（03-security-permissions.md §13）：固定短命令，
+            // 不依赖 Chief 模型自己服从「停止」。
+            if trimmed == "急停" || trimmed.eq_ignore_ascii_case("/stop") {
+                let stopped = crate::chief::broker::chief_stop_all(&slot.app);
+                enqueue_send(
+                    live,
+                    format!("🛑 Chief 急停：已停止 {stopped} 个进行中任务。"),
+                    Vec::new(),
+                    None,
+                    message_id,
+                );
+                return;
+            }
+            match crate::chief::broker::chief_inbound_text(&slot.app, text.as_str()) {
+                Ok(outcome) => {
+                    let note = match outcome {
+                        crate::chief::broker::InboundOutcome::Sent => "🫡 已交给 Chief。",
+                        crate::chief::broker::InboundOutcome::Queued => {
+                            "⏳ Chief 正在处理上一条，你的消息已排队。"
+                        }
+                    };
+                    enqueue_send(live, note.to_string(), Vec::new(), chief_sid, message_id);
+                }
+                Err(error) => {
+                    enqueue_send(
+                        live,
+                        format!("⚠️ Chief 处理失败：{error}"),
+                        Vec::new(),
+                        None,
+                        message_id,
+                    );
+                }
+            }
+            return;
+        }
+        // 引用 worker 旧通知 → 落到下方 relay 管线。
     }
 
     // 引用回复 → 被引消息所属会话；裸文本 → 最近用户会话。

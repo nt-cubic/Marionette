@@ -15,6 +15,7 @@
 //! 全在独立 writer 线程；队列满丢事件计数，不反压 ACP 流。
 
 pub mod broker;
+pub mod commands;
 pub mod policy;
 pub mod probe;
 pub mod runner;

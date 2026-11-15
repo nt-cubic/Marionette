@@ -218,6 +218,75 @@ fn count_lines(path: &std::path::Path) -> u64 {
     }
 }
 
+// ── 回填消费游标 ──────────────────────────────────────────────────────────
+//
+// 前端把 tee 事件回填进会话流后推进游标；下次回放只给 seq 更大的事件。
+// 纪律（App 侧回填）：先回填成功（rail + 落盘挂起）再 consume——崩溃窗口
+// 最坏是「回放过但没 consume」= 重复一次回放，宁可重复不可丢。
+
+static CONSUMED: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+
+fn consumed_map() -> &'static Mutex<HashMap<String, u64>> {
+    CONSUMED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn consumed_path() -> Result<PathBuf, String> {
+    sessions_root().map(|dir| dir.join(".consumed.json"))
+}
+
+fn consumed_cache(session_id: &str) -> u64 {
+    if let Ok(map) = consumed_map().lock() {
+        if let Some(seq) = map.get(session_id) {
+            return *seq;
+        }
+    }
+    // 内存 miss：读盘（fail-open 成 0）。
+    let from_disk = consumed_path()
+        .ok()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|raw| serde_json::from_str::<HashMap<String, u64>>(&raw).ok())
+        .and_then(|map| map.get(session_id).copied())
+        .unwrap_or(0);
+    if let Ok(mut map) = consumed_map().lock() {
+        map.insert(session_id.to_string(), from_disk);
+    }
+    from_disk
+}
+
+/// 已消费到的 seq（回放侧用它过滤）。
+pub fn consumed_seq(session_id: &str) -> u64 {
+    validate_session_id(session_id).ok();
+    consumed_cache(session_id)
+}
+
+/// 推进消费游标（幂等：只前进不后退）。
+pub fn set_consumed_seq(session_id: &str, upto_seq: u64) -> Result<(), String> {
+    validate_session_id(session_id)?;
+    let mut persist = HashMap::new();
+    {
+        let mut map = consumed_map()
+            .lock()
+            .map_err(|_| "chief tee cursor map poisoned")?;
+        let current = map.entry(session_id.to_string()).or_insert(0);
+        if upto_seq > *current {
+            *current = upto_seq;
+            // 把整表带到磁盘（表小；单写者 = 前端 consume 命令）。
+            for (key, value) in map.iter() {
+                persist.insert(key.clone(), *value);
+            }
+        }
+    }
+    if persist.is_empty() {
+        return Ok(());
+    }
+    let path = consumed_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("chief tee: mkdir failed: {e}"))?;
+    }
+    let body = serde_json::to_string(&persist).map_err(|e| e.to_string())?;
+    crate::storage::write_atomic(&path, &body)
+}
+
 fn spawn_writer(session_id: String, path: PathBuf, rx: Receiver<Value>, seed_seq: u64) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name(format!("chief-tee-{session_id}"))

@@ -313,6 +313,9 @@ fn main() {
         .setup(|app| {
             use tauri::Manager;
             spawn_main_thread_watchdog(app.handle().clone());
+            // Chief（远程首席助理）：启动恢复（失联任务标 interrupted）+
+            // 心跳线程。mode=off 时心跳第一行即返回，零开销。
+            chief::commands::bootstrap_chief(app.handle());
             // Computer Use 的全局停止键：Ctrl+Alt+Shift+S 撤销全部共享并杀
             // driver。注册失败（被占用）只警告——共享仍可从面板停止。
             {
@@ -751,6 +754,13 @@ fn main() {
             chief::probe::chief_probe_drive,
             chief::probe::chief_probe_stop,
             chief::probe::chief_probe_replay,
+            chief::commands::chief_config_load,
+            chief::commands::chief_config_save,
+            chief::commands::chief_tasks_list_all,
+            chief::commands::chief_stop_all,
+            chief::commands::chief_tee_replay,
+            chief::commands::chief_tee_consume,
+            chief::commands::chief_tee_cursor,
             open_target::resolve_link_target,
             open_target::open_external,
             open_target::reveal_in_file_manager,
