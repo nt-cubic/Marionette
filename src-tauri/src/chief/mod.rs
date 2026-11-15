@@ -14,5 +14,8 @@
 //! 红线：tee 的 observe 在事件派发线程上执行，**绝不允许阻塞**——慢 IO
 //! 全在独立 writer 线程；队列满丢事件计数，不反压 ACP 流。
 
+pub mod policy;
 pub mod probe;
+pub mod store;
 pub mod tee;
+pub mod types;
