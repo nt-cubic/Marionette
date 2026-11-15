@@ -7229,6 +7229,14 @@ fn emit_now(app: &AppHandle, session_id: &str, event: UiEvent) -> Duration {
         event.method.as_deref(),
         &event.data,
     );
+    // Chief durable event tee（M0）：被 Chief 驱动的会话在这里整流落盘。
+    // 未注册的会话一次 map miss 即返回；文件 IO 在 tee 自己的 writer 线程。
+    crate::chief::tee::observe(
+        session_id,
+        &event.kind,
+        event.method.as_deref(),
+        &event.data,
+    );
     // Developer diary on disk — not a product UI surface.
     let summary = event
         .method

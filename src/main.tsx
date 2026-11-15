@@ -1,6 +1,12 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./app/App";
+import {
+  chiefProbeDrive,
+  chiefProbeReplay,
+  chiefProbeStop,
+  isTauriRuntime,
+} from "./lib/api";
 import "./styles/tokens.css";
 import "./styles/app.css";
 import "./styles/motion.css";
@@ -99,3 +105,15 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     </RootErrorBoundary>
   </React.StrictMode>
 );
+
+// Chief 探针入口（M0 诊断面，非产品 UI）：devtools 里
+// `await window.__chiefProbe.drive({ agentId: "codex", cwd: "...", prompt: "..." })`。
+// 主窗隐藏/最小化时回合照跑，事件 tee 落 `~/.marionette/chief/sessions/`；
+// 重启后 `replay(sessionId)` 回放。ChiefBroker 落地后由真正的驱动路径替换。
+if (isTauriRuntime()) {
+  (window as unknown as Record<string, unknown>).__chiefProbe = {
+    drive: chiefProbeDrive,
+    stop: chiefProbeStop,
+    replay: chiefProbeReplay,
+  };
+}

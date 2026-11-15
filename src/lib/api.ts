@@ -1746,3 +1746,36 @@ export async function skillRemove(id: string): Promise<void> {
 export async function skillSetEnabled(id: string, enabled: boolean): Promise<void> {
   await invoke("skill_set_enabled", { id, enabled });
 }
+
+// ── Chief 探针（M0 诊断面，非产品 UI；docs/research-telegram-chief/） ──
+//
+// 从 Rust 直接驱动一个完整 ACP 回合（start → prompt → wait_turn_idle → stop），
+// 验证无人值守路径与 durable event tee。ChiefBroker 落地后由真正的驱动路径替换。
+
+export interface ChiefProbeDriveArgs {
+  agentId: string;
+  cwd: string;
+  prompt: string;
+  /** 回合等待上限秒数；缺省 900，上限 3600。 */
+  timeoutSecs?: number;
+}
+
+export async function chiefProbeDrive(args: ChiefProbeDriveArgs): Promise<unknown> {
+  if (!isTauriRuntime()) return null;
+  return await invoke("chief_probe_drive", {
+    agentId: args.agentId,
+    cwd: args.cwd,
+    prompt: args.prompt,
+    timeoutSecs: args.timeoutSecs ?? null,
+  });
+}
+
+export async function chiefProbeStop(sessionId: string): Promise<unknown> {
+  if (!isTauriRuntime()) return null;
+  return await invoke("chief_probe_stop", { sessionId });
+}
+
+export async function chiefProbeReplay(sessionId: string): Promise<unknown> {
+  if (!isTauriRuntime()) return null;
+  return await invoke("chief_probe_replay", { sessionId });
+}

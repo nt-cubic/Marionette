@@ -73,6 +73,7 @@ Chief 模式是在此之上的产品层：
 | [03-security-permissions.md](./03-security-permissions.md) | 威胁模型、信任边界、远程能力分级、审批矩阵、审计、急停和隐私 |
 | [04-reference-products.md](./04-reference-products.md) | Grok Bot、Tobs、DS Bot、ccteam、Lucarne、opencode-telegram、Angelia、Xiryn 对比与取舍 |
 | [05-mvp-plan.md](./05-mvp-plan.md) | M0–M3 分期、工具 schema、施工清单、测试矩阵、风险与开放问题 |
+| [06-m0-progress.md](./06-m0-progress.md) | **施工台账（进行中）**：M0 逐 PR 落地状态、tee 纪律、探针用法与剩余清单 |
 
 ## 成功标准
 

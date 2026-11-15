@@ -6,6 +6,7 @@ mod agent_registry;
 mod agent_update;
 mod app_paths;
 mod browser;
+mod chief;
 mod elicitation;
 mod app_update;
 mod commands;
@@ -747,6 +748,9 @@ fn main() {
             commands::telegram_remote_reset_pairing,
             commands::telegram_remote_ack,
             commands::telegram_remote_result,
+            chief::probe::chief_probe_drive,
+            chief::probe::chief_probe_stop,
+            chief::probe::chief_probe_replay,
             open_target::resolve_link_target,
             open_target::open_external,
             open_target::reveal_in_file_manager,
