@@ -1094,6 +1094,96 @@ pub fn is_chief_worker(session_id: &str) -> bool {
         .any(|task| task.worker_session_id.as_deref() == Some(session_id))
 }
 
+/// Worker 权限/提问/计划卡的等待与解除 → 任务状态机（02-architecture.md
+/// §7.1：task.waiting_user 直接发批准卡，不经 Chief 决定）。挂在 emit_now
+/// 的事件收口上；非 worker 会话 / 非等待类事件一次查表即返回。
+pub fn observe_chief_event(
+    app: &AppHandle,
+    session_id: &str,
+    method: Option<&str>,
+    data: &Value,
+) {
+    use TaskStatus::*;
+    let Some(method) = method else { return };
+    let entered = matches!(method, "permission/prompt" | "question/prompt" | "plan/approval");
+    let cleared = matches!(
+        method,
+        "permission/resolved"
+            | "permission/timeout"
+            | "question/resolved"
+            | "question/timeout"
+            | "plan/resolved"
+            | "plan/timeout"
+    );
+    if !entered && !cleared {
+        return;
+    }
+    let Some(task) = store::load_tasks().into_iter().find(|task| {
+        task.worker_session_id.as_deref() == Some(session_id)
+    }) else {
+        return;
+    };
+    if entered {
+        // permission/prompt 的 payload 顶层就是 {requestId, title, detail, …}
+        // （acp.rs emit_event 形状）。
+        let summary = data
+            .get("title")
+            .and_then(Value::as_str)
+            .map(|title| format!("任务在等你确认：{title}"));
+        let updated = store::with_tasks(|tasks| {
+            let Some(task) = tasks.iter_mut().find(|t| t.task_id == task.task_id) else {
+                return Ok(None);
+            };
+            if !task.status.can_transition(WaitingUser) {
+                return Ok(None);
+            }
+            task.status = WaitingUser;
+            task.updated_at = now_ms();
+            task.last_event_at = now_ms();
+            if summary.is_some() {
+                task.last_summary = summary.clone();
+            }
+            Ok(Some(task.clone()))
+        });
+        let Some(task) = updated.ok().flatten() else { return };
+        let event = emit_event(&task, "task.waiting_user", WaitingUser, task.last_summary.clone());
+        let _ = store::append_events(&[event]);
+        notify(&task, "task.waiting_user", task.last_summary.as_deref());
+        // worker 会话行状态同步（UI 侧栏显示「等你」）。
+        if let Some(worker_sid) = task.worker_session_id.as_deref() {
+            app.state::<crate::AppState>()
+                .storage
+                .lock()
+                .ok()
+                .map(|storage| storage.update_session_status(worker_sid, "waiting"));
+        }
+    } else {
+        // 解除（answered 本地或手机先答先得 / 超时拒绝）：回到 running。
+        let updated = store::with_tasks(|tasks| {
+            let Some(task) = tasks.iter_mut().find(|t| t.task_id == task.task_id) else {
+                return Ok(None);
+            };
+            if task.status != WaitingUser {
+                return Ok(None);
+            }
+            task.status = Running;
+            task.updated_at = now_ms();
+            task.last_event_at = now_ms();
+            Ok(Some(task.clone()))
+        });
+        let Some(task) = updated.ok().flatten() else { return };
+        let event = emit_event(&task, "task.progress", Running, None);
+        let _ = store::append_events(&[event]);
+        if let Some(worker_sid) = task.worker_session_id.as_deref() {
+            app.state::<crate::AppState>()
+                .storage
+                .lock()
+                .ok()
+                .map(|storage| storage.update_session_status(worker_sid, "running"));
+        }
+    }
+}
+
 /// 全局急停（03-security-permissions.md §13 第一层）：取消 Chief 全部
 /// 进行中任务。幂等；不清转录与审计。返回停止数。
 pub fn chief_stop_all(app: &AppHandle) -> usize {

@@ -215,6 +215,35 @@ agent 可以看/操作**其它 Windows 应用**的窗口（浏览器之外的原
   `dsh plugin` 面板已随统一入口移除（已装进 profile 的 DSH 插件对 dsh 自家
   照常生效，跨用桥与 spawn 链不动）。
 
+## 远程助理 / Chief（2026-11-15，M1 垂直切片）
+
+Grok Bot 式的 Telegram 远程首席助理（设计：[`research-telegram-chief/`](./research-telegram-chief/README.md)，
+施工台账 [`06-m0-progress.md`](./research-telegram-chief/06-m0-progress.md)）。**默认关闭**
+（Chief 配置 `mode=off`）；入口 = 右栏「远程助理」卡（模式 / Chief Agent / 允许项目 / 任务区）。
+
+- **Chief 是普通 ACP 会话**（`origin="chief"`，聊天组），worker 也是普通可见会话
+  （`origin="chief-worker"`，所属项目组，顶层不加 parent）；关系只进任务账本
+  `~/.marionette/chief/`（config.json / tasks.json 原子写 / events.jsonl 追加）。
+- **Chief 驱动全在后端**（`chief/runner.rs` 直接调 `AcpService`），不借前端
+  `performSend`——主窗隐藏 / 最小化时任务照跑。事件经 `emit_now` 旁的 durable
+  event tee 落 `chief/sessions/<id>.events.jsonl`；本地打开会话时前端按消费游标把
+  离线跨度回放进会话流（与活路同一转换管线，rail 被抢先则弃回放不推游标）。
+- **控制面**：恰好 10 个 `marionette_*` 工具，只在 Chief 会话的 `tools/list` 出现；
+  dispatch 入口双保险（普通 worker 猜到名字也拒）。`task_start` 立即返回 taskId，
+  后台 spawn；requestId / commandId 幂等；并发上限全局 1–3 + 项目级；schema 永远
+  没有cwd / permissionMode / key / shell 等提权字段；没有 approve 工具——写走
+  权限卡（手机 / 本地先答先得），worker 等权限时任务标 `waiting_user`。
+- **唤醒**：completed / failed / interrupted / waiting 进 Chief 收件箱，2s 心跳在
+  Chief 空闲时合并 flush（worker 逐条 token 不唤醒）；重启后非终态任务标
+  `interrupted`（绝不标 completed），可 `task_resume`。
+- **Telegram chief 模式**：裸文本固定进 Chief（后端直送），回复 Chief 路由的消息
+  同路；worker 的逐条回合推送被任务卡聚合（任务卡登记 chief 路由）；急停逃生口
+  「急停」/`/stop`（Telegram）与右栏任务区「全部停止」同路 `chief_stop_all`。
+  update_id 游标持久化（`telegram-cursor.json`，poller 唯一写者），重启不重放旧消息。
+- **红线**：能力由 Host 配置决定（右栏授权表），模型不能靠工具参数扩权；发布 /
+  push / 凭据 / 系统设置远程不可达；自我修改仓库只产出 worktree/diff/tests。
+  真机 M0 验证项（隐藏窗口 soak、多 agent 矩阵）见施工台账。
+
 ## 明确不做 / 暂缓
 
 - 内嵌 llama.cpp / 本地推理 runtime

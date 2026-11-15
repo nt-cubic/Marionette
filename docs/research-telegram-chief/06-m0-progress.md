@@ -1,71 +1,68 @@
-# M0 施工记录（进行中）
+# 施工台账（M0 + M1 垂直切片）
 
 > 逐 PR 记录落地状态与偏差。设计契约见 [02-architecture.md](./02-architecture.md) 与
 > [05-mvp-plan.md](./05-mvp-plan.md)；本文不是契约，是施工台账。
+>
+> 状态：**代码已落地，回归全绿；真机 M0 验证项未跑**（见文末清单）。
 
-## PR-A：durable event tee + 后端 ACP 驱动探针（2026-11-15）
+## 分支与提交（chief-m0）
 
-### 已落地
-
-| 件 | 位置 | 说明 |
+| PR | 提交 | 内容 |
 |---|---|---|
-| `chief` 模块 | `src-tauri/src/chief/` | `mod.rs`（模块文档）+ `tee.rs` + `probe.rs` |
-| durable event tee | `chief/tee.rs` | 挂在 `acp.rs::emit_now`（与 telegram 远程桥同一收口，`observe` 只做 map miss 检查 + sender clone，锁内零 IO） |
-| 事件落盘 | `~/.marionette/chief/sessions/<sessionId>.events.jsonl` | 每行 `{seq, ts, sessionId, kind, method, data}`；重新注册时 seq 从现有行数续数（断点续记） |
-| 回放 | `chief::tee::replay` | 读回全部行，坏行跳过并计数 |
-| 后端驱动探针 | `chief/probe.rs` | `AcpService::start → send_prompt → wait_turn_idle → stop` 全链在 Rust，不经前端 `performSend` |
-| 前端入口 | `main.tsx` 的 `window.__chiefProbe` + `lib/api.ts` 三个 wrapper | 诊断面，非产品 UI |
+| M0-A | `a3a12bb1` | durable event tee（`chief/tee.rs`，挂 `emit_now`）+ 后端 ACP 驱动探针（`chief/probe.rs`，`window.__chiefProbe`） |
+| M0 基线 | `301d5484` | 调研文档六篇入库 |
+| M1-PR2 | `000b0284` | types / store（config·tasks·events 账本）/ policy（白名单裁决） |
+| M1-PR3+4 | `b3972cc4` | 10 个控制工具 + session-aware MCP + broker/runner（任务生命周期·幂等·并发·心跳） |
+| M1-PR5 | `216104a8` | Telegram chief 模式（固定路由·聚合·急停）+ update_id 游标持久化 + 启动恢复接线 |
+| M1-PR6 | `acefc0f1` | 前端：tee 回填、右栏「远程助理」卡、任务区、侧栏徽标、i18n |
+| M1-PR7 | （本提交） | waiting_user 状态机补全 + 文档四件套 |
 
-### tee 的纪律（写代码时定下的，改之前先读）
+## 与设计稿的偏差记录
 
-1. **锁内零 IO、零等待**：`register` 的 mkdir/数行/开文件、`unregister` 的
-   drain 等待（最长 5s）都在 registry 锁外——`observe` 是**每个** UI 事件
-   都要过的一道闸（所有会话共享一把 registry 锁），锁内卡 1ms 全体事件
-   线程陪卡。
-2. **有界队列 + 丢事件计数**：容量 2048，满则丢并计数、unregister 时记
-   `dev.log`。绝不反压 ACP 读线程（acp.rs 背压死锁事故的教训）。
-3. **fail-closed 会话 id**：集合外字符（含 `..`、空格）拒绝注册，不做
-   静默替换——静默替换会让两个 id 折叠到同一文件串台。
-4. **writer 线程每会话一个**，逐行 flush；写失败记一次 error 后继续收干
-   队列（不再逐条刷屏）。
+1. **`task_started` 事件口径**：设计稿事件表把 `task.started` 定义为「worker ACP
+   ready」——实现只在 Starting→Running 时发一次 `task.started`（Starting 中间态
+   不发独立事件）。
+2. **resume 语义**：`task_resume` 只接受 `interrupted`（failed 按设计稿建议
+   明确拒绝并提示重新发起），复用同一 spawn-and-watch 观测循环。
+3. **read_only 项目的执行边界**：M1 用「提示词明示边界 + 写走权限卡」实现，
+   **没有**按 agent 改各自的权限旋钮（那是 per-agent 配置矩阵，M2）。权限卡
+   fail-closed 兜底，符合 R2/R3 的「每次审批」语义，但不等价于强只读。
+4. **任务卡路由**：任务卡登记的是 chief 会话路由（引用任务卡 → 后端直送
+   Chief），没有实现设计稿的 `messageId → taskId` 精确映射；引用 worker 的
+   旧通知仍走 relay 前端管线（M1 允许）。
+5. **tee 是 Chief/worker 的事件真相**：这类会话的转录由前端打开时从 tee
+   回填（与活路同一转换管线），storage transcript 的写入仍走 rails 的常规
+   持久化；游标（`.consumed.json`）保证不重放。崩溃窗口最坏是「回放过但没
+   consume」= 重放一次（重复卡），宁可重复不可丢。
+6. **waiting_user**：挂在 `emit_now` 的事件收口上（`observe_chief_event`），
+   permission/question/plan 的请求与解除直接驱动任务状态机——没有让 Chief
+   参与批准决策（设计红线）。
 
-### 探针用法（真机 M0 验证）
+## 回归状态（2026-11-15）
 
-1. `npm run tauri dev` 启动，devtools 控制台：
-   ````js
-   await window.__chiefProbe.drive({
-     agentId: "codex",            // 或 opencode / claude-code / deepseek…
-     cwd: "D:\\Some\\Real\\Project",
-     prompt: "列出你工作目录下的文件名，然后说 done。",
-     timeoutSecs: 600,
-   });
-   ````
-2. 回合进行中把主窗**最小化/隐藏**——回合照跑（这正是 M0 探针 1 的验证点）。
-3. 返回报告含 `caps / promptAccepted / turnIdle / elapsedMs / tee{kinds,events}`。
-4. 重启 Marionette 后 `await window.__chiefProbe.replay("<sessionId>")`——
-   能读回完整事件流即 M0「事件可在重启后恢复」的证据。
-5. 卡死逃生口：`await window.__chiefProbe.stop(sessionId)`（与产品停止键同路 `AcpService::stop`）。
+- `cargo test --bin marionette`：**573 passed / 0 failed**（含 chief 32 项：
+  tee 往返/续 seq/坏 id/幂等/队列满不阻塞、store 恢复、policy 裁决、broker
+  纯逻辑、工具 schema 红线）。council orchestrator 在并行全量下偶发 flaky
+  （stash 基线对照确认与本专题无关，单独跑必过）。
+- `npm run build`（tsc + vite）：干净。
+- `npx tsx scripts/verify-chief-tee.mts`：游标过滤 / maxSeq / 来源判定 /
+  user echo 合并与 flush 全绿。
+- dev.log 零污染、tee/store 沙箱不写真实 `~/.marionette/chief/`。
 
-### 探针会话的边界
+## 真机验证清单（M0 闸门，待跑）
 
-- 不进 storage（无 Session 行，UI 永远看不到）；跑完即 `stop()` 收尸。
-- `send_prompt` 是**发射后即返回**（`accepted`），不是等回合结束——等待
-  靠现成的 `wait_turn_idle`（200ms 轮询 in-flight 计数）。
-- **前端 start 后会做的「历史重注入」（`acpNeedsHistoryRef`）探针没有复刻**
-  ——探针是全新会话没有历史；backend runner（PR-B 之后）必须补这一课，
-  这是「Chief 挂起重连」的关键差异点。
+以下需要真机 + 已登录 agent，代码已备好入口：
 
-### 回归
+- [ ] **探针 1**：`npm run tauri dev` → devtools `await window.__chiefProbe.drive({ agentId: "codex", cwd: "...", prompt: "..." })`，回合进行中把主窗**最小化/隐藏**，确认回合照跑、报告 `turnIdle: true`；重启后 `replay(sessionId)` 能读回完整事件流。
+- [ ] **探针 2（多 agent 矩阵）**：对 opencode / claude-code / deepseek 各跑一轮探针，确认 localhost MCP 注入、cancel、历史恢复；不通过的标 experimental。
+- [ ] **M1 端到端**：右栏「远程助理」切 Chief 模式 → 选允许项目 → Telegram 发一句自然语言 → Chief 启 worker → 手机上批权限卡 → 收任务卡 → 右栏任务区看状态 → 本地打开 worker 会话验证 tee 回填。
+- [ ] **8h soak**（M2 验收口径）：主窗隐藏，混合任务并发/取消/重启/断网。
+- [ ] **安全路径**：未授权项目 task_start 被拒（单测已盖）、worker 输出诱导扩权、重复 callback 不二次执行。
 
-- `cargo test --bin marionette chief`：7 项全绿（tee 往返/续 seq/坏 id/幂等/
-  队列满不阻塞 + 探针 id 校验/harness 元数据形状）。
-- tee 测试用 `set_root_override_for_tests` 沙箱（对齐 council store 模式），
-  **绝不写真实 `~/.marionette/chief/`**。
+## M2 待办（按设计稿）
 
-## M0 剩余清单（照 05-mvp-plan.md §2.1）
-
-- [ ] 探针 1：主窗隐藏/最小化下 30 分钟持续工作（真机）
-- [ ] 探针 2：多 Agent 认证矩阵（OpenCode / Codex / Claude Code 起码各一轮探针）
-- [ ] 探针 4：session-aware MCP（`tools/list` 按 session 过滤 + 假控制工具拒绝路径）
-- [ ] 探针 5：Telegram update_id 持久化（现版 offset 在轮询循环局部变量里，重启即丢——telegram_remote.rs:2201）
-- [ ] 探针 6：最小权限探针（未授权 fail-closed）
+- 成本 / token / 墙钟预算（软上限）；审计页（`chief/audits/` 月度文件设计了未落）
+- Telegram 图片 / 文件附件进 worker（设计稿建议 M2）
+- worker 通知聚合的「内容预览」偏好接入（chief 模式下 task 卡摘要当前不受该偏好门控）
+- 空闲 worker 自动挂起（复用前端 trim 巡逻需要识别 chief-worker）
+- `messageId → taskId` 精确路由、Telegram topics / 任务 thread

@@ -1217,3 +1217,48 @@ ZCode 官方**没有** ACP（CLI 0.16.x 无 `--acp`，ACP registry 未收录）�
   的 locale，可能与当前 UI 不一致，新探测点照此办理。
 - 回归：`npx tsx scripts/inventory-zh.mts --check`（前端白名单外中文清零；正则密集
   文件有已知误报）、`npx tsc --noEmit`、`cargo test`（默认 zh，旧断言原样过）。
+
+## 远程助理 / Chief（2026-11-15，M1 垂直切片，分支 chief-m0）
+
+Telegram 远程首席助理：裸文本固定进一个 Chief 会话（普通 ACP 会话，
+`origin="chief"`），Chief 通过恰好 10 个 `marionette_*` 控制 MCP 工具让 Host 创建
+普通 worker 会话（`origin="chief-worker"`）执行任务。设计 [`docs/research-telegram-chief/`](docs/research-telegram-chief/README.md)，
+施工台账 [`06-m0-progress.md`](docs/research-telegram-chief/06-m0-progress.md)（含真机验证清单——**M0 探针 1/2 与 8h soak 还没在真机跑**）。默认 `mode=off`，入口右栏「远程助理」卡。改前先记七条红线：
+
+- **Chief/worker 的驱动全在后端**（`chief/runner.rs` 直接调 `AcpService` 的
+  pub 方法），**绝不借用前端 `performSend`**——主窗隐藏/最小化（WebView2
+  TrySuspend）时任务必须照跑。前端只在会话打开时做 tee 回填
+  （`chiefTee.ts` 游标 → `extractAcpUpdateText` + `rails.applyStreamPart`，
+  与活路同一管线；rail 被抢先写入就弃回放且**不推游标**——宁可重放不丢不重）。
+- **tee 纪律**（`chief/tee.rs`）：observe 挂 `emit_now`（全体 UI 事件共闸），
+  **锁内零 IO 零等待**（register 的文件 IO、unregister 的 drain 等待全在
+  registry 锁外）；有界队列满丢事件计数不反压 ACP 读线程（背压死锁红线）；
+  会话 id fail-closed 不静默替换（两 id 折叠同文件 = 串台）。
+- **控制工具门禁只有一处事实**：`broker::is_chief_session`（运行时注册表 ∪
+  config）；`tools_mcp.rs` 的 `tools/list` 按它分流，dispatch 入口再挡一次
+  （普通 worker 猜到名字也拒）。**schema 永远不得出现** cwd / permissionMode /
+  mcpServers / providerApiKey / env / shellCommand / release / addProjectRoot；
+  **没有 `task_approve` 工具**——写走权限卡（waiter 先答先得），
+  waiting_user 由 `observe_chief_event` 挂在 emit_now 上驱动任务状态机。
+- **任务账本是关系真相**：`chief/store.rs` 的 tasks.json / events.jsonl /
+  config.json；worker 关系只进账本，**绝不写 `parent_session_id`**（那是
+  `@` delegate 的隐藏语义）。启动恢复把非终态任务标 `interrupted`
+  （绝不标 completed）；STORE_LOCK 非重入——`append_events` 不能在
+  `with_tasks` 闭包里调（自锁实锤过一次）。
+- **心跳（`broker::ensure_heartbeat`，2s tick）**：唤醒收件箱合并 flush
+  （completed/failed/interrupted 才唤醒 Chief；worker 逐条 token 不唤醒）、
+  用户消息 FIFO、超时取消、失联标 interrupted。`task_start` 必须立即返回
+  taskId（spawn 在后台线程）；requestId / commandId 幂等；并发上限全局
+  clamp 1–3 + 项目级，超限明确拒绝。
+- **Telegram chief 模式**：裸文本后端直送（不走 inbound→前端管线）；
+  worker 回合推送被 `is_chief_worker` 聚合掉（任务卡替代）；权限/ask/plan
+  按钮不受影响；急停 = 裸文本「急停」/`/stop` 或右栏「全部停止」→
+  `chief_stop_all`。update_id 游标在 `telegram-cursor.json`（poller 唯一
+  写者，独立文件避免与 telegram.json 的 UI 整档覆盖互踩）。
+- **mode 快照**（`store::mode_cached`，AtomicU8）给 telegram 事件热路径
+  零读盘判定；load_config/save_config 顺手刷新，fail-open 默认 Off。
+  测试沙箱：`store::set_root_override_for_tests` + `store::SANDBOX_LOCK`
+  （broker/store 测试共用一把锁）；tee 测试有自己的锁。
+
+回归：`cargo test --bin marionette chief`（32 项）+ `npx tsx scripts/verify-chief-tee.mts`
++ `npm run build`（tsc）。真机清单见台账。

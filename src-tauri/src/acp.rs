@@ -7237,6 +7237,9 @@ fn emit_now(app: &AppHandle, session_id: &str, event: UiEvent) -> Duration {
         event.method.as_deref(),
         &event.data,
     );
+    // Chief 任务状态机（waiting_user / 解除）：只看 worker 会话的等待类
+    // 事件；其它会话与事件一次方法名比较即返回。
+    crate::chief::broker::observe_chief_event(app, session_id, event.method.as_deref(), &event.data);
     // Developer diary on disk — not a product UI surface.
     let summary = event
         .method

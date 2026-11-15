@@ -342,3 +342,24 @@ grinev / artickc / RemoClaw 三个同类项目后收敛为共识形态，全部�
 - 验证：模块单测 25 → 30（末段语义三则、rich 请求体形状与 UTF-16 裁剪、
   详情渲染与隐私门控），全套 310 过；真实 token 的 sendRichMessage 端到端
   留待下次配对时确认（失败会退老路并记 `[telegram]` warn，投递不受影响）。
+
+## Chief 模式（2026-11-15，remoteWorkMode）
+
+本文描述的 relay 行为（通知 + 引用回复 + 批准 + 总控面板）是**默认模式**。
+右栏「远程助理」卡把模式切到 **Chief** 后，本桥多出三条路由规则，其余全部不变：
+
+- **裸文本固定进 Chief 会话**：后端直送（`chief::broker::chief_inbound_text` →
+  `AcpService::send_prompt`），不走 `telegram-remote-inbound` → 前端管线——
+  主窗隐藏 / 最小化也照常工作。Chief 忙时消息进 FIFO，心跳在空闲时补发。
+- **worker 通知聚合**：Chief 创建的 worker 会话不再逐条推「跑完」消息
+  （`observe_turn_complete` 里按 `is_chief_worker` 拦下）；改由
+  `chief_task_notify` 推任务卡（已接单 / 开始 / 等你 / 完成 / 失败 / 中断），
+  卡片登记 chief 会话路由——回复任务卡 = 对 Chief 说话。worker 的
+  权限 / ask / plan 内联按钮**不受影响**（同一 waiter，先答先得）。
+- **急停逃生口**：裸文本 `急停` 或 `/stop` = `chief_stop_all`（取消全部进行中
+  任务；不依赖 Chief 模型服从）。
+
+模式是 Host 级开关（`~/.marionette/chief/config.json` 的 `mode`，经 store 的
+mode 快照给热路径零读盘判定）；两种模式不抢同一条裸文本。update_id 游标
+（`telegram-cursor.json`，poller 唯一写者）两种模式共用，重启不重放旧消息。
+设计、任务账本与安全边界见 [`research-telegram-chief/`](./research-telegram-chief/README.md)。
