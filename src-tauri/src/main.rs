@@ -759,6 +759,8 @@ fn main() {
             browser::browser_set_tab_visible,
             browser::browser_list_tabs,
             browser::browser_debug_state,
+            browser::browser_debug_snapshot,
+            browser::browser_debug_probe,
             browser::browser_share_tab,
             browser::browser_permission_respond,
             browser::set_browser_tools_enabled,

@@ -55,6 +55,11 @@ const HELPER_JS: &str = concat!(
     include_str!("js/helper.js")
 );
 
+/// Read-only page questions (`state` / `ready` / `setValue`), answered without
+/// walking the tree. Kept out of the vendored aria bundle on purpose — see the
+/// file's own header and js/VENDOR.md.
+const PROBE_JS: &str = include_str!("js/probe.js");
+
 /// Console ring: lines per tab, per document (cleared on navigation).
 const CONSOLE_RING_CAPACITY: usize = 200;
 const CONSOLE_MAX_TEXT_CHARS: usize = 4096;
@@ -467,6 +472,13 @@ fn install_world(webview2: &ICoreWebView2, key: usize) -> Result<(), String> {
         "Page.addScriptToEvaluateOnNewDocument",
         &json!({ "source": HELPER_JS, "worldName": WORLD_NAME }).to_string(),
     )?;
+    // The page probes ride along with the helper: same world, same document
+    // start, so a tab that can be snapped can also be asked cheap questions.
+    call_and_wait(
+        webview2,
+        "Page.addScriptToEvaluateOnNewDocument",
+        &json!({ "source": PROBE_JS, "worldName": WORLD_NAME }).to_string(),
+    )?;
     // A document already here (about:blank at creation) gets its world now.
     let world = call_and_wait(
         webview2,
@@ -499,14 +511,60 @@ fn main_frame_id(webview2: &ICoreWebView2) -> Result<String, String> {
         .ok_or_else(|| "no main frame".to_string())
 }
 
-/// Evaluate an expression in the agent world, returning its JSON string
-/// value. Callers must not hold the surfaces borrow (the wait pumps).
-fn evaluate_in_world(surface: &Surface, expression: &str) -> Result<Value, String> {
+/// The world's execution context for the current document, created on demand.
+///
+/// A navigation destroys the world; `addScriptToEvaluateOnNewDocument`
+/// rebuilds it on the next document and the context event reports it. An
+/// evaluation that arrives in between would find no context, so the missing
+/// case re-creates the world here instead of failing — the steady state is
+/// still the cached id.
+fn world_context(surface: &Surface, webview2: &ICoreWebView2) -> Result<i64, String> {
+    if let Some(context) = surface.world_ctx.get() {
+        return Ok(context);
+    }
+    let world = call_and_wait(
+        webview2,
+        "Page.createIsolatedWorld",
+        &json!({
+            "frameId": main_frame_id(webview2)?,
+            "worldName": WORLD_NAME,
+            "grantUniverlalAccess": false
+        })
+        .to_string(),
+    )?;
+    let parsed: Value = serde_json::from_str(&world).map_err(|e| format!("cdp answer: {e}"))?;
+    let id = parsed["executionContextId"]
+        .as_i64()
+        .ok_or_else(|| "the agent world did not report a context".to_string())?;
+    surface.world_ctx.set(Some(id));
+    Ok(id)
+}
+
+/// One world answer, before it is read as either shape the world produces:
+/// the bare-string absent sentinel, or the JSON the engine stringified.
+#[derive(Debug, PartialEq)]
+enum WorldAnswer {
+    Absent,
+    Json(Value),
+}
+
+/// The absent sentinel is a bare string, so parsing it as JSON fails at
+/// column 1. Both callers must recognise it before parsing, or the install
+/// branch never runs and every snapshot fails the same way.
+fn parse_world_answer(raw: &str) -> Result<WorldAnswer, String> {
+    if raw == agent::ENGINE_ABSENT {
+        return Ok(WorldAnswer::Absent);
+    }
+    serde_json::from_str(raw)
+        .map(WorldAnswer::Json)
+        .map_err(|e| format!("engine answer is not json: {e}"))
+}
+
+/// Evaluate an expression in the agent world and return its value verbatim.
+/// Callers must not hold the surfaces borrow (the wait pumps).
+fn evaluate_in_world_raw(surface: &Surface, expression: &str) -> Result<String, String> {
     let webview2 = surface.webview.webview();
-    let context = surface
-        .world_ctx
-        .get()
-        .ok_or_else(|| "agent world is not in this document".to_string())?;
+    let context = world_context(surface, &webview2)?;
     let answer = call_and_wait(
         &webview2,
         "Runtime.evaluate",
@@ -528,14 +586,12 @@ fn evaluate_in_world(surface: &Surface, expression: &str) -> Result<Value, Strin
     let raw = parsed["result"]["value"]
         .as_str()
         .ok_or_else(|| "engine did not answer".to_string())?;
-    serde_json::from_str(raw).map_err(|e| format!("engine answer is not json: {e}"))
+    Ok(raw.to_string())
 }
 
 // ---------------------------------------------------------------------------
 // Agent operations (probe → install → call, codeg agent.rs)
 // ---------------------------------------------------------------------------
-
-pub const ENGINE_ABSENT: &str = "absent";
 
 fn epoch_of(surface: &Surface) -> String {
     agent::epoch(surface.generation.get(), surface.nav_epoch.get())
@@ -552,33 +608,126 @@ fn ensure_world(surface: &Surface) -> Result<(), String> {
     Ok(())
 }
 
+// One CDP conversation at a time across the whole process.
+//
+// `call_and_wait` pumps the message loop while it waits, so a second CDP
+// call arriving mid-wait re-enters the WebView2 dispatch. Measured
+// 2026-11-15: two tabs called at the same instant (debug_state + snapshot)
+// froze the main thread for good. It is one main thread and one dispatch,
+// so the guard is process-wide rather than per tab — a per-tab flag left
+// cross-tab pairs unguarded, which is exactly the pair that wedged it.
+thread_local! {
+    static CDP_BUSY: Cell<bool> = const { Cell::new(false) };
+}
+
+struct CdpLease;
+
+impl CdpLease {
+    fn take() -> Result<CdpLease, String> {
+        CDP_BUSY.with(|busy| {
+            if busy.replace(true) {
+                return Err(
+                    "another browser call is still running; retry in a moment".to_string(),
+                );
+            }
+            Ok(CdpLease)
+        })
+    }
+}
+
+impl Drop for CdpLease {
+    fn drop(&mut self) {
+        CDP_BUSY.with(|busy| busy.set(false));
+    }
+}
+
+/// Lease access for the diagnostic commands in `mod.rs`, which issue their own
+/// CDP calls and would otherwise overlap with a snapshot.
+pub fn cdp_lease() -> Result<impl Drop, String> {
+    CdpLease::take()
+}
+
 /// Take an aria snapshot; installs the engine into the document on first use.
 pub fn snapshot(surface: &Surface, request: &SnapshotRequest) -> Result<Value, String> {
+    let _lease = CdpLease::take()?;
     ensure_world(surface)?;
     let epoch = epoch_of(surface);
-    let probe = agent::probe_and_snapshot(request, &epoch);
-    let first = evaluate_in_world(surface, &probe)?;
-    if first.as_str() == Some(ENGINE_ABSENT) {
-        let install = agent::install_and_snapshot(request, &epoch);
-        return evaluate_in_world(surface, &install);
+    match parse_world_answer(&evaluate_in_world_raw(
+        surface,
+        &agent::probe_and_snapshot(request, &epoch),
+    )?)? {
+        WorldAnswer::Json(value) => {
+            surface.generation.set(surface.generation.get() + 1);
+            Ok(value)
+        }
+        WorldAnswer::Absent => {
+            let install = agent::install_and_snapshot(request, &epoch);
+            match parse_world_answer(&evaluate_in_world_raw(surface, &install)?)? {
+                WorldAnswer::Json(value) => {
+                    surface.generation.set(surface.generation.get() + 1);
+                    Ok(value)
+                }
+                // The bundle publishes itself through `globalThis` inside the
+                // same evaluation that calls it, so absent-again means the
+                // bundle no longer installs — say so instead of failing on
+                // the next call with an unrelated parse error.
+                WorldAnswer::Absent => {
+                    Err("the aria engine did not install itself in this document".to_string())
+                }
+            }
+        }
     }
-    surface.generation.set(surface.generation.get() + 1);
-    Ok(first)
 }
 
 /// Perform one action (click/hover/type/press/select) by element ref.
 pub fn act(surface: &Surface, request: &agent::ActionRequest) -> Result<Value, String> {
+    let _lease = CdpLease::take()?;
     ensure_world(surface)?;
     let expression = agent::act_call(request);
-    let answer = evaluate_in_world(surface, &expression)?;
-    surface.generation.set(surface.generation.get() + 1);
-    Ok(answer)
+    match parse_world_answer(&evaluate_in_world_raw(surface, &expression)?)? {
+        WorldAnswer::Json(value) => {
+            surface.generation.set(surface.generation.get() + 1);
+            Ok(value)
+        }
+        WorldAnswer::Absent => Err(
+            "the aria engine is not in this document; take a snapshot first".to_string(),
+        ),
+    }
+}
+
+/// Answer one cheap question about the page (`state` / `ready`) without
+/// walking the tree. One eval, a few hundred bytes back.
+pub fn probe(surface: &Surface, expression: &str) -> Result<Value, String> {
+    let _lease = CdpLease::take()?;
+    ensure_world(surface)?;
+    match parse_world_answer(&evaluate_in_world_raw(surface, expression)?)? {
+        WorldAnswer::Json(value) => Ok(value),
+        WorldAnswer::Absent => Err(
+            "the page probe did not install itself in this document".to_string(),
+        ),
+    }
+}
+
+/// Write one control by ref, through the page probe (Control level; the
+/// caller does the grant check). Goes through `probe`'s lease, so it cannot
+/// overlap a snapshot.
+pub fn set_control_value(
+    surface: &Surface,
+    generation: &str,
+    target: &str,
+    value: &Value,
+) -> Result<Value, String> {
+    probe(surface, &crate::browser::probe::set_value_call(generation, target, value))
 }
 
 /// Console tail, newest last. A `missing` count tells the caller the ring
 /// dropped lines — "nothing more printed" and "more existed" differ.
 pub fn console_lines(surface: &Surface, limit: usize) -> Value {
-    let _ = ensure_world(surface);
+    // Installing the world is CDP work; if another call holds the lease this
+    // call skips it (the ring is already buffered) and still answers.
+    if let Ok(_lease) = CdpLease::take() {
+        let _ = ensure_world(surface);
+    }
     let ring = surface.console.borrow();
     let total = ring.len();
     let skip = total.saturating_sub(limit);
@@ -592,6 +741,7 @@ pub fn console_lines(surface: &Surface, limit: usize) -> Value {
 /// Screenshot: CDP JPEG capture, narrowed until it fits the byte budget
 /// (codeg capture.rs loop).
 pub fn screenshot(surface: &Surface, max_width: Option<u32>) -> Result<Value, String> {
+    let _lease = CdpLease::take()?;
     ensure_world(surface)?;
     let webview2 = surface.webview.webview();
     let answer = call_and_wait(
@@ -940,7 +1090,8 @@ pub fn find_surface(tab_id: &str) -> Option<Rc<Surface>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_url, url_origin, GrantLevel};
+    use super::{normalize_url, parse_world_answer, url_origin, CdpLease, GrantLevel, WorldAnswer};
+    use serde_json::json;
 
     #[test]
     fn grant_levels_rank() {
@@ -966,5 +1117,40 @@ mod tests {
         assert!(normalize_url("how to fly").is_err());
         assert!(normalize_url("ftp://x").is_err());
         assert!(normalize_url("").is_err());
+    }
+
+    // The absent sentinel is a bare string: parsing it as JSON is exactly the
+    // bug this split exists to prevent. It has to read as Absent, and every
+    // real answer — always JSON.stringify output — as Json.
+    #[test]
+    fn absent_sentinel_is_not_parsed_as_json() {
+        assert_eq!(parse_world_answer("absent").unwrap(), WorldAnswer::Absent);
+        assert_eq!(
+            parse_world_answer(r#"{"generation":"0.0.1.0","tree":"- button"}"#).unwrap(),
+            WorldAnswer::Json(json!({ "generation": "0.0.1.0", "tree": "- button" }))
+        );
+    }
+
+    #[test]
+    fn non_json_answers_still_report_what_arrived() {
+        // A page that answers something else entirely is a real failure, and
+        // the message must name the parse problem rather than blame the engine.
+        let error = parse_world_answer("<html>").unwrap_err();
+        assert!(error.starts_with("engine answer is not json:"), "{error}");
+        assert!(error.contains("column 1"), "{error}");
+    }
+
+    // One CDP conversation at a time: `call_and_wait` pumps the message loop,
+    // so a second call taken while the first waits re-enters the WebView2
+    // dispatch and freezes the main thread. The lease is process-wide because
+    // the freeze reproduced across two different tabs.
+    #[test]
+    fn one_cdp_call_runs_at_a_time() {
+        let first = CdpLease::take().expect("first call is free to run");
+        let second = CdpLease::take();
+        assert!(second.is_err(), "a concurrent call must be refused, not queued");
+        drop(first);
+        let third = CdpLease::take();
+        assert!(third.is_ok(), "the lease must free when the call ends");
     }
 }

@@ -8,6 +8,7 @@
 |---|---|---|
 | `agent.bundle.js` | `src-tauri/src/browser/js/agent.bundle.js` | esbuild 产物（提交进仓，上游同款）；入口 `browser-agent/src/index.ts`，内含 vendored Playwright v1.63.0 ariaSnapshot 九文件（byte-for-byte）。暴露 `globalThis.__codegAgent = { snapshot, elementForRef, act, locate, rectOf }`，只在 isolated world 里可见。 |
 | `helper.js` | `src/browser-injected/helper.js` | 页面→宿主消息通道（SPA 导航、标题、手势），通过 `__codegSend` binding 上报。 |
+| `probe.js` | 无上游，Marionette 自有 | 廉价页面向导（`state` 变更计数 / `ready` 是否settle / `setValue` 按 ref 写控件），暴露 `globalThis.__marionetteProbe`。**刻意不并进 `agent.bundle.js`**：那份是 esbuild 产物，为加功能重出产物不划算。思路取自 Cloudflare kitesurf 的 `Kitesurf.getPageState` / `setControlValue`（Apache-2.0，实现自制）。 |
 
 **名字保留 `__codegAgent` / `__codegSend` / world 名 `codeg`**：bundle 是压缩产物，运行时全局名与
 binding 名在内部多处出现，改名的收益（品牌）远小于改错的风险。它们只存在于 isolated world，

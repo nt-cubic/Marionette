@@ -280,6 +280,18 @@ fn tool_schemas() -> Value {
             })
         ),
         tool(
+            "browser_page_state",
+            "Cheap page identity + change counter: url, title, readyState, scroll, viewport, and `seq` (a DOM mutation counter). Compare two `seq` reads to learn whether anything moved — far cheaper than a fresh snapshot.",
+            &["tabId"],
+            json!({ "tabId": tab_id() })
+        ),
+        tool(
+            "browser_page_ready",
+            "Whether the page looks settled: readyState complete, no images still loading, fonts not loading. `settled: false` means wait rather than read a skeleton.",
+            &["tabId"],
+            json!({ "tabId": tab_id() })
+        ),
+        tool(
             "browser_console_messages",
             "Read the page's console tail (newest last). `missing` counts lines the ring dropped — it is a fact, not silence.",
             &["tabId"],
@@ -326,6 +338,17 @@ fn tool_schemas() -> Value {
             "Choose options of a <select> by value or label (Control level).",
             &["tabId", "generation", "ref", "values"],
             json!({ "tabId": tab_id(), "generation": generation(), "ref": element_ref(), "values": { "type": "array", "items": { "type": "string" } } })
+        ),
+        tool(
+            "browser_set_value",
+            "Write a control's value by ref without synthesizing keystrokes (Control level): a string for a text field, a boolean for a checkbox/radio, a string or array for a <select>. Fires input+change the way the page's framework expects.",
+            &["tabId", "generation", "ref", "value"],
+            json!({
+                "tabId": tab_id(),
+                "generation": generation(),
+                "ref": element_ref(),
+                "value": { "description": "String for a text field, boolean for a checkbox/radio, string or array of strings for a <select>." },
+            })
         ),
         tool(
             "computer_list_windows",
@@ -428,6 +451,41 @@ fn arg_str(args: &Value, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("missing argument: {key}"))
 }
 
+/// The one place a Control-level browser action asks permission. A grant
+/// already at Control, or a session in always-approve, skips the card; the
+/// card's timeout is a refusal like any other. `Ok(Some(value))` is the
+/// refusal to hand back verbatim — a value the agent can relay, not an error.
+fn control_gate(
+    app: &AppHandle,
+    session_id: &str,
+    tab_id: &str,
+    summary: &str,
+) -> Result<Option<Value>, String> {
+    use crate::browser::{self, surface::GrantLevel};
+    if browser::grant_level(app, tab_id)?.allows(GrantLevel::Control)
+        || browser::session_auto_approves(session_id)
+    {
+        return Ok(None);
+    }
+    let allowed = browser::request_permission(
+        app,
+        session_id,
+        tab_id,
+        &browser::tab_url(app, tab_id).unwrap_or_default(),
+        &browser::tab_origin(app, tab_id).unwrap_or_default(),
+        summary,
+    );
+    if allowed {
+        return Ok(None);
+    }
+    refusal(
+        tab_id,
+        "browser_control_required",
+        "The user declined (or did not answer) this action. Say what you wanted to do and why, then wait for them to allow actions on this tab.",
+    )
+    .map(Some)
+}
+
 fn refusal(tab_id: &str, error: &str, note: &str) -> Result<Value, String> {
     Ok(json!({ "tabId": tab_id, "error": error, "note": note }))
 }
@@ -471,6 +529,26 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
                 }
                 value
             })
+        }
+        "browser_page_state" => {
+            let tab_id = arg_str(args, "tabId")?;
+            browser::tool_read(app, &tab_id, move |s| surface::probe(s, &browser::probe::state_call()))
+                .map(|mut value| {
+                    if let Some(object) = value.as_object_mut() {
+                        object.insert("tabId".to_string(), json!(tab_id));
+                    }
+                    value
+                })
+        }
+        "browser_page_ready" => {
+            let tab_id = arg_str(args, "tabId")?;
+            browser::tool_read(app, &tab_id, move |s| surface::probe(s, &browser::probe::ready_call()))
+                .map(|mut value| {
+                    if let Some(object) = value.as_object_mut() {
+                        object.insert("tabId".to_string(), json!(tab_id));
+                    }
+                    value
+                })
         }
         "browser_console_messages" => {
             let tab_id = arg_str(args, "tabId")?;
@@ -539,22 +617,8 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
                 ActionKind::Press { key } => format!("press {key}"),
                 ActionKind::Select { values } => format!("select {}", values.join(", ")),
             };
-            if !browser::grant_level(app, &tab_id)?.allows(surface::GrantLevel::Control)
-                && !browser::session_auto_approves(session_id)
-                && !browser::request_permission(
-                    app,
-                    session_id,
-                    &tab_id,
-                    &browser::tab_url(app, &tab_id).unwrap_or_default(),
-                    &browser::tab_origin(app, &tab_id).unwrap_or_default(),
-                    &summary,
-                )
-            {
-                return refusal(
-                    &tab_id,
-                    "browser_control_required",
-                    "The user declined (or did not answer) this action. Say what you wanted to do and why, then wait for them to allow actions on this tab.",
-                );
+            if let Some(refusal) = control_gate(app, session_id, &tab_id, &summary)? {
+                return Ok(refusal);
             }
             let request = ActionRequest { generation, target, action };
             surface::with_surface(app, &tab_id, move |s| surface::act(s, &request))
@@ -569,6 +633,29 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
                     value
                 })
                 .map_err(|e| format!("action failed: {e}"))
+        }
+        "browser_set_value" => {
+            let tab_id = arg_str(args, "tabId")?;
+            let generation = arg_str(args, "generation")?;
+            let target = arg_str(args, "ref")?;
+            let value = args
+                .get("value")
+                .cloned()
+                .ok_or_else(|| "missing argument: value".to_string())?;
+            if let Some(refusal) = control_gate(app, session_id, &tab_id, "set a control's value")? {
+                return Ok(refusal);
+            }
+            surface::with_surface(app, &tab_id, move |s| {
+                surface::set_control_value(s, &generation, &target, &value)
+            })
+            .and_then(|inner| inner)
+            .map(|mut value| {
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("tabId".to_string(), json!(tab_id));
+                }
+                value
+            })
+            .map_err(|e| format!("set value failed: {e}"))
         }
         // -- Computer Use ---------------------------------------------------
         "computer_list_windows" => computer::tool_list_windows(app),

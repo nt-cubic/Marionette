@@ -750,6 +750,30 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
   标签生命周期事件都要能进 registry——所有入口先 clone `Rc<Surface>` 出借用再干慢活
   （`with_surface` 的形状）。wry WebView 非 Send：surface 只活在主线程，
   外部一律 `run_on_main_thread` + oneshot。
+- **一次只允许一个 CDP 会话（`surface.rs` 的 `CdpLease` / `CDP_BUSY`）**：
+  `call_and_wait` 等待时在泵消息循环，**第二个 CDP 调用挤进来会重入 WebView2 派发并
+  永久冻住主线程**（2026-11-15 实测：两个标签同时 `debug_state` + `snapshot`，
+  watchdog 报 `MAIN THREAD STALLED`，原始代码同样复现）。守卫是**进程级**的——
+  按标签的版本挡不住跨标签那一对，而正是跨标签那一对冻的。新加发 CDP 的命令必须
+  `CdpLease::take()`（`mod.rs` 里的诊断命令用 `surface::cdp_lease()`）；忙时返回
+  「retry in a moment」这种可转述的值，别排队。
+- **快照的 absent 哨兵不能当 JSON 解析**：引擎不在文档里时 world 回的是裸字符串
+  `"absent"`（`agent::ENGINE_ABSENT`），`serde_json` 会在第 1 列就失败。`snapshot`
+  先把答案读成 `WorldAnswer::{Absent,Json}` 再分支——旧实现直接 `from_str`，于是
+  `absent` 永远走不到安装分支，`browser_snapshot` **每次必失败**（2026-11-15 修）。
+  `act` 同理：没有快照时给出「先取快照」的答复。回归
+  `cargo test --bin marionette browser`（`absent_sentinel_is_not_parsed_as_json` /
+  `one_cdp_call_runs_at_a_time`）。
+- **廉价页面向导在 `js/probe.js`，别往 `agent.bundle.js` 里加**（2026-11-15 借鉴
+  Cloudflare kitesurf）：`browser_page_state`（url/title/readyState/滚动/视口 + DOM
+  变更计数 `seq`，两次读数比较即知有没有变）、`browser_page_ready`（complete + 无待载
+  图片 + 字体非 loading；骨架屏判据）、`browser_set_value`（按 ref 写控件：复选框走
+  `click()` 让它自己的激活行为跑，input/textarea 走原生 value setter + input/change，
+  `<select>` 按 value 或文本选中）。**写控件必须真触发页面监听器**——2026-11-15 用
+  fixture 页实测 `listenerRan=true`（页面的 change 处理器把 `#out` 改写了）；只赋
+  `checked` 不派发事件的写法会过值检查却静默失效。aria bundle 是 vendored esbuild
+  产物（`js/VENDOR.md`），为加功能重出产物不划算，所以这部分留在自有脚本里、与
+  helper 同 world 同文档起点注入。三个工具都走同一套 grant 与 `CdpLease`。
 - **预热面已删（2026-11-06 懒建）**：曾用 `surface::prewarm`（存 `PREWARM_SURFACE`，
   首标签 `take_prewarmed` 认领——曾因泄进注册表出过幽灵「浏览器 1」，2026-11-01
   实锤）；后因常驻第二套 WebView2 进程组（估 70–130MB，没开过标签也在）整体移除，

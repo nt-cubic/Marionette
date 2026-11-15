@@ -8,6 +8,7 @@
 //! **same** grant checks as the toolbar, never a second set.
 
 pub mod agent;
+pub mod probe;
 #[cfg(target_os = "windows")]
 pub mod surface;
 
@@ -22,7 +23,7 @@ mod imp {
     use serde_json::{json, Value};
     use tauri::{AppHandle, Emitter};
 
-    use super::surface;
+    use super::{agent, surface};
     use surface::{AgentGrant, GrantLevel, Surface, TabInfo};
 
     /// Global switch for the agent tool surface (the frontend settings page).
@@ -310,6 +311,7 @@ mod imp {
     pub fn browser_debug_state(app: AppHandle, tab_id: String) -> Result<Value, String> {
         crate::debug_log::append("browser", "info", "", "debug state invoked", Some(&tab_id));
         surface::with_surface(&app, &tab_id, move |s| {
+            let _lease = surface::cdp_lease()?;
             let webview2 = surface::webview2_of(s);
             let url = s.webview.url().unwrap_or_default();
             let frame_tree = surface::debug_cdp(&webview2, "Page.getFrameTree", "{}");
@@ -337,6 +339,102 @@ mod imp {
                 "info",
                 "",
                 "debug state",
+                Some(&summary.to_string()),
+            );
+            Ok(summary)
+        })?
+    }
+
+    /// Diagnostic (E2E harness): run the real snapshot path over CDP so the
+    /// aria engine's install-then-call sequence can be exercised without an
+    /// agent in the loop. Not for the product UI.
+    #[tauri::command(async)]
+    pub fn browser_debug_snapshot(app: AppHandle, tab_id: String) -> Result<Value, String> {
+        surface::with_surface(&app, &tab_id, move |s| {
+            let request = agent::SnapshotRequest { max_chars: 4000 };
+            let started = std::time::Instant::now();
+            let outcome = surface::snapshot(s, &request);
+            let elapsed_ms = started.elapsed().as_millis() as u64;
+            match outcome {
+                Ok(value) => {
+                    crate::debug_log::append(
+                        "browser",
+                        "info",
+                        "",
+                        "debug snapshot ok",
+                        Some(&format!("{elapsed_ms}ms")),
+                    );
+                    Ok(value)
+                }
+                Err(error) => {
+                    crate::debug_log::append(
+                        "browser",
+                        "warn",
+                        "",
+                        "debug snapshot failed",
+                        Some(&format!("{elapsed_ms}ms: {error}")),
+                    );
+                    Err(error)
+                }
+            }
+        })?
+    }
+
+    /// Diagnostic (E2E harness): the whole probe flow against a real page —
+    /// snapshot for a ref, read state, write the control, read state again —
+    /// so the change counter can be shown to move. Not for the product UI.
+    #[tauri::command(async)]
+    pub fn browser_debug_probe(app: AppHandle, tab_id: String) -> Result<Value, String> {
+        surface::with_surface(&app, &tab_id, move |s| {
+            let before = surface::probe(s, &super::probe::state_call())?;
+            let snapshot = surface::snapshot(s, &agent::SnapshotRequest { max_chars: 20000 })?;
+            let tree = snapshot["tree"].as_str().unwrap_or("").to_string();
+            let generation = snapshot["generation"].as_str().unwrap_or("").to_string();
+            // The first checkbox the tree names is the one to write.
+            let target = tree
+                .lines()
+                .find(|line| line.contains("checkbox"))
+                .and_then(|line| {
+                    let start = line.find("[ref=")? + 5;
+                    let rest = &line[start..];
+                    let end = rest.find(']')?;
+                    Some(rest[..end].to_string())
+                });
+            let write = match &target {
+                Some(target) => Some(surface::set_control_value(
+                    s,
+                    &generation,
+                    target,
+                    &serde_json::json!(true),
+                )?),
+                None => None,
+            };
+            let after = surface::probe(s, &super::probe::state_call())?;
+            // A second snapshot is the honest check on the write: if the page's
+            // own change listener ran, it rewrote #out, and the tree says so.
+            // A write that only assigned `checked` leaves #out stale.
+            let echo = surface::snapshot(s, &agent::SnapshotRequest { max_chars: 20000 })?;
+            let echo_tree = echo["tree"].as_str().unwrap_or("").to_string();
+            let summary = serde_json::json!({
+                "tab": s.id,
+                "seqBefore": before["seq"],
+                "seqAfter": after["seq"],
+                "title": before["title"],
+                "url": before["url"],
+                "target": target,
+                "write": write,
+                "checkboxLines": tree.lines().filter(|l| l.contains("checkbox")).count(),
+                "listenerRan": echo_tree.contains("agree=true"),
+                "echoLine": echo_tree
+                    .lines()
+                    .find(|line| line.contains("agree=") || line.contains("idle") || line.contains("tick"))
+                    .map(str::to_string),
+            });
+            crate::debug_log::append(
+                "browser",
+                "info",
+                "",
+                "debug probe flow",
                 Some(&summary.to_string()),
             );
             Ok(summary)
