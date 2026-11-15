@@ -48,6 +48,7 @@ import { en as enFeSeenshell } from "./parts/fe-seenshell.en";
 import { en as enFeSeenrail } from "./parts/fe-seenrail.en";
 import { en as enFeSeenview } from "./parts/fe-seenview.en";
 import { en as enFeUv2F } from "./parts/fe-uv2f.en";
+import { en as enFeChief } from "./parts/fe-chief.en";
 
 export const en = {
   ...enCommon,
@@ -94,4 +95,5 @@ export const en = {
   ...enFeSeenrail,
   ...enFeSeenview,
   ...enFeUv2F,
+  ...enFeChief,
 } satisfies Record<keyof typeof zh, string>;

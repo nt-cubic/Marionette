@@ -14,6 +14,14 @@ import {
   turnEndedSilently,
   userMessageEvent,
 } from "../lib/acpTranscript";
+import {
+  isChiefOrigin,
+  maxSeqOf,
+  mergeUserEcho,
+  shouldFlushUserEcho,
+  teeEventsAfterCursor,
+  type ChiefTeeEvent,
+} from "../lib/chiefTee";
 import { useSessionRails } from "./useSessionRails";
 import {
   REENTRY_IDLE_MS,
@@ -32,7 +40,7 @@ import { cacheEngineQuota, cachedEngineQuota } from "../lib/quotaCache";
 import { TELEGRAM_COMMAND_EVENT, telegramRemoteResult, type TelegramCommand } from "../lib/api";
 import { invalidateBridgeModels } from "../lib/bridge";
 import { useLatestCallback } from "../lib/useLatestCallback";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, engineModelImages, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, killAcpTerminal, listAcpTerminals, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, loadTranscriptPage, loadTranscriptWindow, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, quitApp, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, setUiLocale, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, trimSessionWorkingSet, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID } from "../lib/api";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, engineModelImages, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, killAcpTerminal, listAcpTerminals, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, loadTranscriptPage, loadTranscriptWindow, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, quitApp, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, setUiLocale, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, trimSessionWorkingSet, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, chiefTeeConsume, chiefTeeCursor, chiefTeeReplay, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID } from "../lib/api";
 import {
   bindDetachedWindowReaper,
   DETACHED_HIDDEN_EVENT,
@@ -760,6 +768,10 @@ export function App() {
   const cancelWatchdogsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const transcriptSaveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const transcriptLoadedRef = useRef<Set<string>>(new Set());
+  /** Chief tee 回填（后端驱动的 chief/worker 会话打开时重建离线跨度）。 */
+  const chiefBackfillRef = useRef<(sessionId: string, baselineLen: number) => Promise<void>>(
+    async () => {},
+  );
   /** Session ids currently shown in a visible detached OS window (main only). */
   const detachedOwnedIdsRef = useRef<Set<string>>(new Set());
   /** Main is reloading disk transcript after a detached hide — skip live events. */
@@ -3976,11 +3988,13 @@ export function App() {
     let parsed = parseTranscriptEvents(page.events);
     const truncated = page.firstLine > 0;
     writeOlderHead(sessionId, truncated ? { firstLine: page.firstLine, loading: false } : null);
-    if (parsed.length === 0) return;
     // If the agent process is gone, close orphan pending/in_progress tools so
     // Clean View does not treat a multi-hundred-tool history as still working
     // (that path used to force-open shell cards and freeze the WebView).
     const sess = sessionsRef.current.find((s) => s.id === sessionId);
+    // Chief tee 回填：chief/worker 的离线跨度在 tee 里，空转录也要走回填。
+    const chiefOrigin = isChiefOrigin(sess?.origin);
+    if (parsed.length === 0 && !chiefOrigin) return;
     const live =
       sess != null &&
       (sess.status === "running" ||
@@ -4047,8 +4061,104 @@ export function App() {
         };
       });
     }
+    // Chief tee 回填：chief/worker 由后端驱动，离线期间的事件在 tee 文件里；
+    // 打开时把游标之后的跨度回放进会话流（与活路同一转换管线）。
+    if (chiefOrigin) {
+      const baseline = shadowBySessionRef.current.get(sessionId)?.length ?? 0;
+      void chiefBackfillRef.current?.(sessionId, baseline);
+    }
   }, []);
   loadSessionTranscriptRef.current = loadSessionTranscript;
+
+  /**
+   * Chief tee 回填（docs/research-telegram-chief/ 02 §6）。
+   *
+   * 只在 rail 处于基线时回放：一旦活路（live listener）抢先写入，说明
+   * 离线跨度已被覆盖或有并发流——放弃本轮回放且不推进游标，下次打开重试。
+   * user echo（user_message_chunk）在第一条 agent 活动前整段 flush 成
+   * You 卡；其余事件走与活路完全相同的 extractAcpUpdateText +
+   * applyStreamPart，渲染零分歧。
+   */
+  const backfillChiefTee = useCallback(
+    async (sessionId: string, baselineLen: number) => {
+      try {
+        const cursor = await chiefTeeCursor(sessionId);
+        const replay = await chiefTeeReplay(sessionId);
+        const all = (replay?.events ?? []) as ChiefTeeEvent[];
+        const events = teeEventsAfterCursor(all, cursor);
+        if (events.length === 0) return;
+        let userEcho = "";
+        let maxSeq = cursor;
+        let aborted = false;
+        const railGrewPastBaseline = () =>
+          (shadowBySessionRef.current.get(sessionId)?.length ?? 0) > baselineLen;
+        if (railGrewPastBaseline()) return;
+        for (const event of events) {
+          maxSeq = maxSeqOf([event], maxSeq);
+          const method = typeof event.method === "string" ? event.method : "";
+          const updateObj = (event.data as { params?: { update?: unknown } } | null)?.params?.update;
+          const kind =
+            updateObj && typeof updateObj === "object"
+              ? getSessionUpdateKind(updateObj as Parameters<typeof getSessionUpdateKind>[0])
+              : "";
+          if (method === "session/update" && kind === "user_message_chunk") {
+            const extracted = extractAcpUpdateText(event.data);
+            if (extracted && extracted.text) {
+              userEcho = mergeUserEcho(userEcho, {
+                text: extracted.text,
+                isDelta: extracted.isDelta,
+              });
+            }
+            continue;
+          }
+          if (userEcho && shouldFlushUserEcho(method, kind)) {
+            const echo = userEcho;
+            userEcho = "";
+            if (railGrewPastBaseline()) {
+              aborted = true;
+              break;
+            }
+            updateSessionEvents(
+              sessionId,
+              (current) => [...current, userMessageEvent(sessionId, echo)],
+              { publish: true },
+            );
+          }
+          const extracted = extractAcpUpdateText(event.data);
+          if (
+            extracted &&
+            (extracted.role === "assistant" ||
+              extracted.role === "thought" ||
+              extracted.role === "tool" ||
+              extracted.role === "system")
+          ) {
+            if (railGrewPastBaseline()) {
+              aborted = true;
+              break;
+            }
+            updateSessionEvents(sessionId, (rail) => applyStreamPart(rail, sessionId, extracted), {
+              publish: true,
+            });
+          }
+        }
+        if (!aborted) {
+          if (userEcho) {
+            updateSessionEvents(
+              sessionId,
+              (current) => [...current, userMessageEvent(sessionId, userEcho)],
+              { publish: true },
+            );
+          }
+          // 落盘走 rails 的自动持久化管线（与活事件同路）；游标此刻推进。
+          await chiefTeeConsume(sessionId, maxSeq);
+        }
+      } catch {
+        // 回填失败不阻塞会话打开；游标未推进，下次打开重放同一跨度。
+      }
+    },
+    [updateSessionEvents, applyStreamPart],
+  );
+  chiefBackfillRef.current = backfillChiefTee;
 
   /** 向上翻页：SessionView 顶部「加载更早」→ 前插一段历史到 rail。 */
   const loadOlderTranscript = useCallback(

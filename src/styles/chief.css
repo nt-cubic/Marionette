@@ -1,0 +1,221 @@
+/* 远程助理（Chief）——配置面 + 任务区 + 侧栏来源徽标。
+   视觉走 ui-language：3px 角、1px 边、无阴影，控件贴表面长。 */
+
+.chief-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.chief-section__modes {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.chief-section__modes .chip {
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--panel-raised);
+  color: var(--text-muted);
+}
+
+.chief-section__modes .chip.is-active {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.chief-section__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.chief-section__label {
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
+.chief-section__select {
+  max-width: 180px;
+  min-width: 120px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 3px 6px;
+}
+
+.chief-section__select--tight {
+  max-width: 120px;
+  min-width: 0;
+}
+
+.chief-section__subhead {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chief-section__projects {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--hairline);
+}
+
+.chief-project-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 26px;
+}
+
+.chief-project-row__name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.chief-project-row__name input {
+  accent-color: var(--accent);
+  margin: 0;
+}
+
+.chief-section__footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.chief-section__error {
+  color: var(--red, #b3423a);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chief-section__save {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.chief-section__save:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.chief-section__save .is-spinning {
+  animation: chief-spin 1s linear infinite;
+}
+
+@keyframes chief-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.chief-section__tasks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--hairline);
+}
+
+.chief-section__stop {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.chief-task {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  padding: 6px 8px;
+}
+
+.chief-task__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+}
+
+.chief-task__title {
+  color: var(--text);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.chief-task__status {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.chief-task.is-running .chief-task__status,
+.chief-task.is-starting .chief-task__status {
+  color: var(--text);
+}
+
+.chief-task.is-completed .chief-task__status {
+  color: var(--green, #2f7d55);
+}
+
+.chief-task.is-failed .chief-task__status {
+  color: var(--red, #b3423a);
+}
+
+.chief-task__summary {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 侧栏来源徽标（Chief / 远程）：中性色小芯片，不加圆点。 */
+.shelf-origin-chip {
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 2px 5px;
+  white-space: nowrap;
+  flex: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chief-section__save .is-spinning {
+    animation: none;
+  }
+}

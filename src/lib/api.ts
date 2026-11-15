@@ -1779,3 +1779,83 @@ export async function chiefProbeReplay(sessionId: string): Promise<unknown> {
   if (!isTauriRuntime()) return null;
   return await invoke("chief_probe_replay", { sessionId });
 }
+
+// ── Chief 远程助理（docs/research-telegram-chief/，M1） ──
+
+export interface ChiefProjectPolicy {
+  projectId: string;
+  enabled: boolean;
+  remoteMode: "read_only" | "approve_writes" | "write_preauthorized" | "blocked";
+  allowedAgents: string[];
+  defaultAgentId?: string | null;
+  defaultModel?: string | null;
+  maxConcurrentWorkers: number;
+  maxTaskMinutes: number;
+  allowComputerUse: boolean;
+  selfModification: boolean;
+}
+
+export interface ChiefConfig {
+  version: number;
+  mode: "off" | "relay" | "chief";
+  chiefSessionId?: string | null;
+  chiefAgentId?: string | null;
+  chiefModel?: string | null;
+  allowedProjects: ChiefProjectPolicy[];
+  maxConcurrentWorkers: number;
+}
+
+export interface ChiefTask {
+  taskId: string;
+  requestId: string;
+  chiefSessionId: string;
+  title: string;
+  goal: string;
+  projectId: string;
+  workerSessionId?: string | null;
+  agentId: string;
+  model?: string | null;
+  status: "proposed" | "starting" | "running" | "waiting_user" | "completed" | "failed" | "cancelled" | "interrupted";
+  createdAt: number;
+  updatedAt: number;
+  lastEventAt: number;
+  lastSummary?: string | null;
+  stopReason?: string | null;
+  error?: string | null;
+}
+
+export async function chiefConfigLoad(): Promise<ChiefConfig | null> {
+  if (!isTauriRuntime()) return null;
+  return await invoke<ChiefConfig>("chief_config_load");
+}
+
+export async function chiefConfigSave(config: ChiefConfig): Promise<ChiefConfig | null> {
+  if (!isTauriRuntime()) return null;
+  return await invoke<ChiefConfig>("chief_config_save", { config });
+}
+
+export async function chiefTasksListAll(): Promise<ChiefTask[]> {
+  if (!isTauriRuntime()) return [];
+  const value = await invoke<{ tasks?: ChiefTask[] }>("chief_tasks_list_all");
+  return Array.isArray(value?.tasks) ? value.tasks : [];
+}
+
+export async function chiefStopAll(): Promise<number> {
+  if (!isTauriRuntime()) return 0;
+  return await invoke<number>("chief_stop_all");
+}
+
+export async function chiefTeeReplay(sessionId: string): Promise<{ events?: unknown[]; badLines?: number } | null> {
+  if (!isTauriRuntime()) return null;
+  return await invoke<{ events?: unknown[]; badLines?: number }>("chief_tee_replay", { sessionId });
+}
+
+export async function chiefTeeConsume(sessionId: string, uptoSeq: number): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("chief_tee_consume", { sessionId, uptoSeq });
+}
+
+export async function chiefTeeCursor(sessionId: string): Promise<number> {
+  if (!isTauriRuntime()) return 0;
+  return await invoke<number>("chief_tee_cursor", { sessionId });
+}

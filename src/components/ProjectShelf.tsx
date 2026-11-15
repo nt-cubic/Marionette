@@ -1450,6 +1450,12 @@ export function ProjectShelf({
               {pinned && <PinnedMark className="chat-row__pin" />}
               <strong>{session.label}</strong>
             </span>
+            {session.origin === "chief" && (
+              <span className="shelf-origin-chip">{t("shelf.chiefOrigin")}</span>
+            )}
+            {session.origin === "chief-worker" && (
+              <span className="shelf-origin-chip">{t("shelf.chiefWorkerOrigin")}</span>
+            )}
             {chatStatus && (
               <span className={`chat-row__status is-${chatStatus.tone}`}>{chatStatus.text}</span>
             )}
@@ -1825,6 +1831,12 @@ export function ProjectShelf({
                               <strong>{session.label}</strong>
                             </span>
                             <span className="session-row__time">
+                              {session.origin === "chief" && (
+                                <span className="shelf-origin-chip">{t("shelf.chiefOrigin")}</span>
+                              )}
+                              {session.origin === "chief-worker" && (
+                                <span className="shelf-origin-chip">{t("shelf.chiefWorkerOrigin")}</span>
+                              )}
                               {statusWord && (
                                 <span className={`session-row__status is-${statusWord.tone}`}>
                                   {statusWord.text}

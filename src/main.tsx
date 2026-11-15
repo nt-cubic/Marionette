@@ -32,6 +32,7 @@ import "./styles/seen-images/base.css";
 import "./styles/seen-images/rail.css";
 import "./styles/seen-images/viewer.css";
 import "./styles/v2/pages.css";
+import "./styles/chief.css";
 
 /** Prevent a single component crash from turning the whole window pure black. */
 class RootErrorBoundary extends React.Component<
