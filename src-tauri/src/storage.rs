@@ -358,6 +358,18 @@ impl StorageService {
         agent_id: String,
         label: String,
     ) -> Result<Session, String> {
+        self.create_session_with_origin(project_id, agent_id, label, None)
+    }
+
+    /// Chief worker 入口：`origin="chief-worker"` 让侧栏能按来源分组
+    /// （关系本身放 chief 任务账本，不写 parent_session_id——顶层可见）。
+    pub fn create_session_with_origin(
+        &self,
+        project_id: &str,
+        agent_id: String,
+        label: String,
+        origin: Option<&str>,
+    ) -> Result<Session, String> {
         if project_id == crate::app_paths::CHAT_PROJECT_ID {
             let cwd = crate::app_paths::current_dir()?;
             return self.create_chat_session(agent_id, label, &cwd, None);
@@ -405,7 +417,7 @@ impl StorageService {
             preferred_effort_id: None,
             preferred_always_approve: None,
             parent_session_id: None,
-            origin: Some("user".to_string()),
+            origin: Some(origin.unwrap_or("user").to_string()),
             native_session_ids: Vec::new(),
             pinned_at: None,
         };

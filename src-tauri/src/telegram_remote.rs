@@ -767,6 +767,19 @@ fn ensure_threads(slot: &'static Telegram) {
 /// `/usage`，发送方在 `send_prompt` 成功后调用）。回合完成时
 /// `observe_turn_complete` 据此跳过推送——否则每次刷新额度都会给
 /// Telegram 发一条「✅ 跑完 · 0秒」+ 整张状态卡。
+/// Chief 任务卡（broker 推送的唯一出口；relay 模式的逐会话推送不走这里）。
+/// M1 分两步：PR4 只落日志占位（链路可达性），PR5 接 chief 模式发送队列
+/// 与任务卡路由——不会双推。
+pub fn chief_task_notify(task: &crate::chief::types::Task, kind: &str, summary: Option<&str>) {
+    crate::debug_log::append(
+        "chief",
+        "info",
+        &task.task_id,
+        &format!("telegram notify {kind}"),
+        summary,
+    );
+}
+
 pub fn mark_probe_turn(session_id: &str) {
     let Some(slot) = TELEGRAM.get() else { return };
     // 未生效时不留标记：残留标记会误吞启用后第一条真实回合的推送。

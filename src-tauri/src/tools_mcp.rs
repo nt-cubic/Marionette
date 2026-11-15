@@ -206,7 +206,15 @@ fn route(method: &str, params: &Value, session_id: &str) -> Result<Value, Value>
             "serverInfo": { "name": "marionette-tools", "version": "1.0.0" },
         })),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({ "tools": tool_schemas() })),
+        "tools/list" => Ok(json!({
+            "tools": if crate::chief::broker::is_chief_session(session_id) {
+                // Chief 会话只看到控制工具（02-architecture.md §5.1：控制
+                // 工具只注入这一会话；普通会话的工具列表不出现它们）。
+                crate::chief::tools::chief_tool_schemas()
+            } else {
+                tool_schemas()
+            }
+        })),
         "tools/call" => {
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
             let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
@@ -492,6 +500,17 @@ fn refusal(tab_id: &str, error: &str, note: &str) -> Result<Value, String> {
 
 #[cfg(target_os = "windows")]
 fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Result<Value, String> {
+    // Chief 双保险（02-architecture.md §5.1 第 3 条）：schema 已按会话身份
+    // 分列，dispatch 入口再按会话身份挡一次——Chief 只走控制工具，普通
+    // worker 猜到控制工具名一样被拒。
+    if crate::chief::broker::is_chief_session(session_id) {
+        return crate::chief::tools::dispatch(app, session_id, name, args);
+    }
+    if crate::chief::tools::is_chief_tool(name) {
+        return Err(format!(
+            "tool `{name}` is a Chief control tool and is only available to the Chief session"
+        ));
+    }
     use crate::browser::agent::{ActionKind, ActionRequest, SnapshotRequest};
     use crate::browser::surface;
     use crate::browser::{self};
