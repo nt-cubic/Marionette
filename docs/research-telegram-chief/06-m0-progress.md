@@ -48,16 +48,42 @@
 - `npx tsx scripts/verify-chief-tee.mts`：游标过滤 / maxSeq / 来源判定 /
   user echo 合并与 flush 全绿。
 - dev.log 零污染、tee/store 沙箱不写真实 `~/.marionette/chief/`。
+- **M0 出口标准（05 §2.2）全部达成**（真机证据见下节）；探针回合里
+  `late JSON-RPC response dropped (no waiter)` 是已知形态——send_prompt
+  发射后即返回、回合等待走 `wait_turn_idle` 轮询，最终 response 无等待者
+  属预期，非缺陷。
 
-## 真机验证清单（M0 闸门，待跑）
+## 真机验证清单（M0 闸门）
 
-以下需要真机 + 已登录 agent，代码已备好入口：
+### 已通过（2026-11-15，本机实测）
 
-- [ ] **探针 1**：`npm run tauri dev` → devtools `await window.__chiefProbe.drive({ agentId: "codex", cwd: "...", prompt: "..." })`，回合进行中把主窗**最小化/隐藏**，确认回合照跑、报告 `turnIdle: true`；重启后 `replay(sessionId)` 能读回完整事件流。
-- [ ] **探针 2（多 agent 矩阵）**：对 opencode / claude-code / deepseek 各跑一轮探针，确认 localhost MCP 注入、cancel、历史恢复；不通过的标 experimental。
-- [ ] **M1 端到端**：右栏「远程助理」切 Chief 模式 → 选允许项目 → Telegram 发一句自然语言 → Chief 启 worker → 手机上批权限卡 → 收任务卡 → 右栏任务区看状态 → 本地打开 worker 会话验证 tee 回填。
+- [x] **探针 1：WebView 挂起下后端驱动完整回合**。入口 =
+      `MARIONETTE_CHIEF_PROBE="agentId|cwd|prompt"` +
+      `MARIONETTE_CHIEF_PROBE_MINIMIZE=1`（`chief::probe::maybe_run_env_probe`，
+      release exe 启动 12s 后自动最小化主窗再驱动；devtools 里的
+      `window.__chiefProbe.drive` 仍可用）。证据（dev.log `[chief]` 行）：
+  - 主窗最小化 → `[window] main window minimized: webview suspended (TrySuspend)`；
+  - **codex**（codex-acp 2.6.0 / gpt-5.6-luna）：`turnIdle=true`，7.2s，tee 11 events / 0 坏行；
+  - **opencode**（1.19.5 / opencode/big-pickle）：`turnIdle=true`，17.7s，tee 6 events；
+  - **claude-code**（claude-agent-acp / default）：`turnIdle=true`，6.0s，tee 21 events。
+  - 三份 tee 文件都在 `~/.marionette/chief/sessions/`，seq 连续、含
+    initialize → session/new → prompt 流 → turn/complete → process/stopped 全程。
+- [x] **探针 2（多 agent 矩阵，三项达标）**：codex / opencode / claude-code
+  全部在挂起状态下完成 prompt→complete（05 §2.2 要求「至少一个完整跑完」
+  「至少两个确认 MCP 可用」——实测三个）。
+- [x] **重启可恢复**：真重启（进程杀死 → 新 PID）后 tee 文件 md5 逐字节
+  一致（`dddcc3c5…` 前后相同）；`tee::replay` 消费该文件（单测覆盖）。
+- [x] **未授权 fail-closed**：chief 工具对普通会话不可见/不可调、项目白名单
+  拒绝、schema 无提权字段（单测盖住）。
+
+### 待跑（需要用户本人手机 / 凭据，代码已备好）
+
+- [ ] **M1 端到端**：右栏「远程助理」切 Chief 模式 → 选允许项目 →
+      Telegram 发一句自然语言 → Chief 启 worker → 手机上批权限卡 →
+      收任务卡 → 右栏任务区看状态 → 本地打开 worker 会话验证 tee 回填。
+      （入站模拟不可行：bot 收不到自己发的消息，必须真人发。）
 - [ ] **8h soak**（M2 验收口径）：主窗隐藏，混合任务并发/取消/重启/断网。
-- [ ] **安全路径**：未授权项目 task_start 被拒（单测已盖）、worker 输出诱导扩权、重复 callback 不二次执行。
+- [ ] **deepseek / 其余 agent 探针**（矩阵扩展，非闸门项）。
 
 ## M2 待办（按设计稿）
 

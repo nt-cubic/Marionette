@@ -316,6 +316,9 @@ fn main() {
             // Chief（远程首席助理）：启动恢复（失联任务标 interrupted）+
             // 心跳线程。mode=off 时心跳第一行即返回，零开销。
             chief::commands::bootstrap_chief(app.handle());
+            // M0 真机探针：MARIONETTE_CHIEF_PROBE="agentId|cwd|prompt" 时
+            // 自动跑一轮后端驱动探针（报告写 dev.log）；未设 = 零行为。
+            chief::probe::maybe_run_env_probe(app.handle().clone());
             // Computer Use 的全局停止键：Ctrl+Alt+Shift+S 撤销全部共享并杀
             // driver。注册失败（被占用）只警告——共享仍可从面板停止。
             {

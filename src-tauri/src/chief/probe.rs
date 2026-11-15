@@ -9,7 +9,7 @@
 
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::agent_registry;
 use crate::AppState;
@@ -77,6 +77,91 @@ pub fn chief_probe_replay(session_id: String) -> Result<Value, String> {
         "kinds": kinds,
         "last": events.last().cloned(),
     }))
+}
+
+/// M0 真机探针入口（不依赖 devtools）：
+///
+/// `MARIONETTE_CHIEF_PROBE="agentId|cwd|prompt"` → 启动 12s 后在后台线程
+/// 跑一轮完整后端驱动探针（start → prompt → wait_turn_idle → stop），
+/// 报告整份写 dev.log（`[chief] env probe report`）。可选
+/// `MARIONETTE_CHIEF_PROBE_MINIMIZE=1`：先最小化主窗再驱动——主窗最小化
+/// 会触发 WebView2 TrySuspend（main.rs MINIMIZE_SUSPENDED），这正是
+/// 「WebView 挂起时后端照常工作」的 M0 闸门条件。
+///
+/// env 未设 = 零行为。探针超时固定 300s（探针只证明"能完整跑完"，
+/// 长 soak 手工用窗口做）。
+pub fn maybe_run_env_probe(app: AppHandle) {
+    let Ok(spec) = std::env::var("MARIONETTE_CHIEF_PROBE") else {
+        return;
+    };
+    let spec = spec.trim().to_string();
+    if spec.is_empty() {
+        return;
+    }
+    let parts: Vec<&str> = spec.splitn(3, '|').collect();
+    if parts.len() != 3 {
+        crate::debug_log::append(
+            "chief",
+            "error",
+            "",
+            "env probe: bad MARIONETTE_CHIEF_PROBE spec (want agentId|cwd|prompt)",
+            Some(&spec),
+        );
+        return;
+    }
+    let agent_id = parts[0].to_string();
+    let cwd = parts[1].to_string();
+    let prompt = parts[2].to_string();
+    let minimize = std::env::var("MARIONETTE_CHIEF_PROBE_MINIMIZE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let spawned = std::thread::Builder::new()
+        .name("chief-env-probe".to_string())
+        .spawn(move || {
+            // 等 UI / 托盘 / 引擎初始化稳定，再动主窗。
+            std::thread::sleep(Duration::from_secs(12));
+            if minimize {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.minimize();
+                    crate::debug_log::append(
+                        "chief",
+                        "info",
+                        "",
+                        "env probe: main window minimized (webview suspend expected)",
+                        None,
+                    );
+                    std::thread::sleep(Duration::from_secs(3));
+                }
+            }
+            crate::debug_log::append(
+                "chief",
+                "info",
+                "",
+                "env probe: begin",
+                Some(&format!("agent={agent_id} cwd={cwd} minimize={minimize}")),
+            );
+            let state = app.state::<crate::AppState>();
+            let report = drive_sync(app.clone(), &state.acp, &agent_id, &cwd, &prompt, Some(300));
+            match report {
+                Ok(value) => crate::debug_log::append(
+                    "chief",
+                    "info",
+                    "",
+                    "env probe report",
+                    Some(&serde_json::to_string(&value).unwrap_or_default()),
+                ),
+                Err(error) => crate::debug_log::append(
+                    "chief",
+                    "error",
+                    "",
+                    "env probe failed",
+                    Some(&error),
+                ),
+            }
+        });
+    if spawned.is_err() {
+        crate::debug_log::append("chief", "error", "", "env probe thread spawn failed", None);
+    }
 }
 
 fn drive_sync(
