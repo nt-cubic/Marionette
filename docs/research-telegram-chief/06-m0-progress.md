@@ -78,11 +78,20 @@
 
 ### 待跑（需要用户本人手机 / 凭据，代码已备好）
 
-- [ ] **Telegram 线路段 E2E**（管线端到端已在本机跑通，见下节；唯一缺的
-      是「手机 → Telegram 云」这一跳——bot 收不到自己发的消息，入站必须
-      真人发。本机此前从未配对 Telegram，先走一遍配对：右栏 Telegram
-      图标 → @BotFather 建 bot → 粘 token → 手机给 bot 发条消息 → 本地
-      确认配对。之后切 Chief 模式发一句自然语言即可看到全链）。
+- [x] **Telegram 线路段 E2E（本机侧，2026-11-15）**：`MARIONETTE_TELEGRAM_API_BASE`
+      诊断钩子（只放行 loopback，未设=官方云）+ 本地假 Bot API fixture +
+      DPAPI 密文的临时凭据，把「云端中继」以外**全部真代码**跑了一遍：
+  - 入站：poller 长轮询取 update → 配对门（chat 42）→ chief 路由 →
+    `chief_inbound_text` → Chief 决策派工（真 MCP dispatch）→ worker 完成；
+  - 出站（发送队列逐一捕获）：`🛑 Chief 急停：已停止 0 个进行中任务。`、
+    `🫡 已交给 Chief。`、`▶️ 任务开始`、`✅ 任务完成 + worker 摘要`、
+    Chief 回复走 `sendRichMessage`，总控面板 `pinChatMessage`/
+    `editMessageText` 全程实时重画；
+  - 游标：`telegram-cursor.json` 重启后首个 getUpdates 请求即带
+    `offset=101`（不重放旧消息），处理 update 200 后推进为 201。
+  - fixture 未覆盖的只有「物理手机 → Telegram 云」那一跳——用户配对
+    真 bot 后（右栏 Telegram 图标 → token → 手机发一条消息确认配对），
+    切 Chief 模式发一句自然语言即为全真链路。
 - [ ] **8h soak**（M2 验收口径）：主窗隐藏，混合任务并发/取消/重启/断网。
 - [ ] **deepseek / 其余 agent 探针**（矩阵扩展，非闸门项）。
 

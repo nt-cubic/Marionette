@@ -50,6 +50,20 @@ use tauri::{AppHandle, Emitter, Manager};
 
 /// Telegram Bot API base。用户在日本直连可达（调研 2026-10-17）。
 const API_BASE: &str = "https://api.telegram.org";
+
+/// Bot API base（诊断钩子，2026-11-15）：`MARIONETTE_TELEGRAM_API_BASE`
+/// 可把整条线路指到**本地**假 Bot API 服务器，做线路段端到端 fixture
+/// （poller → 配对门 → 路由 → 管线 → 出站队列全部走真代码，只有云端
+/// 中继是 fixture）。只放行 loopback，未设 = 官方云、行为与历史一致。
+fn api_base() -> String {
+    std::env::var("MARIONETTE_TELEGRAM_API_BASE")
+        .ok()
+        .filter(|v| {
+            let v = v.trim_end_matches('/');
+            v.starts_with("http://127.0.0.1") || v.starts_with("http://localhost")
+        })
+        .unwrap_or_else(|| API_BASE.to_string())
+}
 /// 长轮询挂起秒数；HTTP 超时留 15s 余量。
 const POLL_TIMEOUT_SECS: u64 = 50;
 const POLL_HTTP_TIMEOUT_SECS: u64 = 65;
@@ -2297,8 +2311,9 @@ fn poller_loop(slot: &'static Telegram) {
             log("info", "telegram token replaced — resuming polling", None);
         }
 
+        let base = api_base();
         let url = format!(
-            "{API_BASE}/bot{token}/getUpdates?timeout={POLL_TIMEOUT_SECS}&offset={offset}&allowed_updates=%5B%22message%22%2C%22callback_query%22%5D"
+            "{base}/bot{token}/getUpdates?timeout={POLL_TIMEOUT_SECS}&offset={offset}&allowed_updates=%5B%22message%22%2C%22callback_query%22%5D"
         );
         let response = crate::http_client::agent_with_proxy()
             .and_then(|agent| {
@@ -3518,7 +3533,7 @@ fn tg_call(token: &str, method: &str, body: &Value, timeout: Duration) -> Result
     if token.is_empty() {
         return Err("no token".to_string());
     }
-    let url = format!("{API_BASE}/bot{token}/{method}");
+    let url = format!("{}/bot{token}/{method}", api_base());
     let agent = crate::http_client::agent_with_proxy()?;
     let response = agent
         .post(&url)
