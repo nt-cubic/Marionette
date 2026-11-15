@@ -12,6 +12,8 @@ import {
   isChiefOrigin,
   mergeUserEcho,
   shouldFlushUserEcho,
+  uncoveredTeeEvents,
+  transcriptMaxCreatedAtMs,
 } from "../src/lib/chiefTee.ts";
 
 function teeEvent(seq: number, kind: string, method: string | null, data: unknown) {
@@ -67,6 +69,28 @@ function teeEvent(seq: number, kind: string, method: string | null, data: unknow
   assert.equal(shouldFlushUserEcho("turn/complete", undefined), true);
   assert.equal(shouldFlushUserEcho("process/ended", undefined), true);
   assert.equal(shouldFlushUserEcho(null, undefined), false);
+}
+
+// 6. 未覆盖跨度过滤：ts 晚于转录最新 createdAt 的才回填；缺 ts 保守保留
+{
+  const transcriptMax = transcriptMaxCreatedAtMs([
+    { createdAt: "2026-11-15T10:00:00.000Z" },
+    { createdAt: "2026-11-15T10:00:05.000Z" },
+  ]);
+  assert.equal(transcriptMax, Date.parse("2026-11-15T10:00:05.000Z"));
+  const events = [
+    { seq: 1, ts: Date.parse("2026-11-15T10:00:04.000Z") }, // 转录已覆盖
+    { seq: 2, ts: Date.parse("2026-11-15T10:00:05.000Z") }, // 恰等于最新 → 视为覆盖
+    { seq: 3, ts: Date.parse("2026-11-15T10:00:09.000Z") }, // 未覆盖 → 回填
+    { seq: 4 }, // 缺 ts → 保守保留
+  ];
+  const uncovered = uncoveredTeeEvents(events, transcriptMax);
+  assert.deepEqual(
+    uncovered.map((e) => e.seq),
+    [3, 4],
+  );
+  // 全覆盖 → 空批次（不重放 UI 自己写过的时间段）
+  assert.deepEqual(uncoveredTeeEvents(events.slice(0, 2), transcriptMax), []);
 }
 
 console.log("verify-chief-tee: all assertions passed");

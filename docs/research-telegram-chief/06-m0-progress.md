@@ -78,12 +78,39 @@
 
 ### 待跑（需要用户本人手机 / 凭据，代码已备好）
 
-- [ ] **M1 端到端**：右栏「远程助理」切 Chief 模式 → 选允许项目 →
-      Telegram 发一句自然语言 → Chief 启 worker → 手机上批权限卡 →
-      收任务卡 → 右栏任务区看状态 → 本地打开 worker 会话验证 tee 回填。
-      （入站模拟不可行：bot 收不到自己发的消息，必须真人发。）
+- [ ] **Telegram 线路段 E2E**（管线端到端已在本机跑通，见下节；唯一缺的
+      是「手机 → Telegram 云」这一跳——bot 收不到自己发的消息，入站必须
+      真人发。本机此前从未配对 Telegram，先走一遍配对：右栏 Telegram
+      图标 → @BotFather 建 bot → 粘 token → 手机给 bot 发条消息 → 本地
+      确认配对。之后切 Chief 模式发一句自然语言即可看到全链）。
 - [ ] **8h soak**（M2 验收口径）：主窗隐藏，混合任务并发/取消/重启/断网。
 - [ ] **deepseek / 其余 agent 探针**（矩阵扩展，非闸门项）。
+
+### M1 管线端到端（本机实测通过，2026-11-15）
+
+Telegram 线路之外的全部环节，用 `MARIONETTE_CHIEF_E2E_TASK` / `E2E_INBOUND`
+（release exe，真实 agent、真实任务账本）驱动：
+
+- **Stage A（确定性派工）**：`chief_task_start` → worker 会话（origin=
+  chief-worker）spawn → codex 读文件完成 → `proposed→starting→running→
+  completed` 全程落 tasks.json / events.jsonl → 唤醒收件箱 → 心跳 flush
+  （`delivered: true`）→ Chief 收 HOST EVENT 并回复（turn/complete 实锤）。
+- **Stage B（Chief 决策腿）**：`chief_inbound_text` → Chief（codex）经
+  **真实 localhost MCP dispatch** 依次调用 `marionette_projects_list →
+  marionette_task_start → marionette_task_status×4 → marionette_task_collect`
+  （chief tee 192 行完整记录）→ 最终交付与 worker 读到的内容逐字一致。
+- **实测修回的 3 个 bug**：
+  1. 心跳 flush 前没有懒启动 Chief——`turn_idle` 对缺席进程返回 true，
+     send_prompt 报 not running 并每 2s 无限重试。修：有待办才懒启动
+     （空转不养进程），失败 warn 一次退避重试。
+  2. Chief 会话本身没挂 tee（worker 有账本、Chief 没有）——修复前创建的
+     会话复用时也补挂（幂等）。
+  3. tee 回填的 baseline 守卫会让「UI 正常用过的 Chief 会话」卡死在永远
+     abort——改为按「未覆盖跨度」过滤（`tee.ts > 转录最新 createdAt`，
+     `uncoveredTeeEvents` + verify 用例）。
+- 修复后全量回归 573/573 + tsc + verify-chief-tee 全绿；测试配置已回退
+  `mode=off`，E2E 产生的 worker 会话留在 Marionette 项目组（带「远程」
+  徽标，可删）。
 
 ## M2 待办（按设计稿）
 

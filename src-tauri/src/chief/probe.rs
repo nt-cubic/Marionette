@@ -164,6 +164,73 @@ pub fn maybe_run_env_probe(app: AppHandle) {
     }
 }
 
+/// M1 管线端到端真机入口（Telegram 入站腿之外的整条链路）：
+///
+/// - `MARIONETTE_CHIEF_E2E_TASK="projectId|goal"`：12s 后直接走
+///   `chief_task_start`（确定性覆盖：worker spawn → tee → 任务卡/权限卡
+///   状态机 → 完成 → 唤醒收件箱 → 心跳 flush → Chief 回复出站）。
+/// - `MARIONETTE_CHIEF_E2E_INBOUND="<text>"`：12s 后走
+///   `chief_inbound_text`（覆盖：Chief 会话引导 + 模型经 MCP 真调
+///   `marionette_projects_list` / `marionette_task_start` 的决策腿；
+///   模型不派工则如实记录，不算缺陷——chief 可以自己答琐碎问题）。
+///
+/// 前者要求 projectId 已在允许列表；后者要求 `mode=chief`。报告写
+/// dev.log（`[chief] e2e report`）。env 未设 = 零行为。
+pub fn maybe_run_env_e2e(app: AppHandle) {
+    let task_spec = std::env::var("MARIONETTE_CHIEF_E2E_TASK").ok();
+    let inbound_text = std::env::var("MARIONETTE_CHIEF_E2E_INBOUND").ok();
+    let (task_spec, inbound_text) = match (task_spec.filter(|s| !s.trim().is_empty()), inbound_text.filter(|s| !s.trim().is_empty())) {
+        (None, None) => return,
+        pair => pair,
+    };
+    let spawned = std::thread::Builder::new()
+        .name("chief-env-e2e".to_string())
+        .spawn(move || {
+            std::thread::sleep(Duration::from_secs(12));
+            if let Some(spec) = task_spec {
+                let parts: Vec<&str> = spec.splitn(2, '|').collect();
+                if parts.len() != 2 {
+                    crate::debug_log::append("chief", "error", "", "e2e: bad E2E_TASK spec (want projectId|goal)", Some(&spec));
+                    return;
+                }
+                let (project_id, goal) = (parts[0].to_string(), parts[1].to_string());
+                let chief_sid = match super::broker::chief_session_ensure(&app) {
+                    Ok(sid) => sid,
+                    Err(error) => {
+                        crate::debug_log::append("chief", "error", "", "e2e: chief session bootstrap failed", Some(&error));
+                        return;
+                    }
+                };
+                let args = json!({
+                    "requestId": format!("e2e_{}", now_ms()),
+                    "title": "E2E 管线验证",
+                    "goal": goal,
+                    "projectId": project_id,
+                });
+                let outcome = super::broker::chief_task_start(&app, &chief_sid, &args);
+                crate::debug_log::append(
+                    "chief",
+                    "info",
+                    "",
+                    "e2e report (task_start)",
+                    Some(&serde_json::to_string(&outcome).unwrap_or_default()),
+                );
+            }
+            if let Some(text) = inbound_text {
+                let outcome = super::broker::chief_inbound_text(&app, &text);
+                let line = match outcome {
+                    Ok(super::broker::InboundOutcome::Sent) => "inbound sent to chief".to_string(),
+                    Ok(super::broker::InboundOutcome::Queued) => "inbound queued (chief busy)".to_string(),
+                    Err(error) => format!("inbound failed: {error}"),
+                };
+                crate::debug_log::append("chief", "info", "", "e2e report (inbound)", Some(&line));
+            }
+        });
+    if spawned.is_err() {
+        crate::debug_log::append("chief", "error", "", "e2e thread spawn failed", None);
+    }
+}
+
 fn drive_sync(
     app: AppHandle,
     acp: &crate::acp::AcpService,

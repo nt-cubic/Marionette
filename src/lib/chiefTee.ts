@@ -39,6 +39,35 @@ export function maxSeqOf(events: ReadonlyArray<ChiefTeeEvent>, floor: number): n
   return max;
 }
 
+/**
+ * 未覆盖跨度过滤：tee 事件里 ts（发生时刻毫秒）**晚于**转录最新事件
+ * createdAt 的部分才需要回填。转录是追加式、卡片的 createdAt 在转换时
+ * 打点（≥ 事件发生时刻），所以「ts ≤ 转录最新 createdAt」的事件必然已经
+ * 在转录里（活路或上一轮回放写入过）——按 ts 过滤让「UI 正常用过的
+ * Chief 会话」不会把已有历史重放一遍（游标只覆盖后端回填自己消费过的
+ * 跨度，盖不住 UI 自己写的部分）。缺 ts 的事件保守保留（宁重放不丢）。
+ */
+export function uncoveredTeeEvents(
+  events: ReadonlyArray<ChiefTeeEvent>,
+  transcriptMaxMs: number,
+): ChiefTeeEvent[] {
+  return events.filter(
+    (event) => typeof event?.ts !== "number" || !Number.isFinite(event.ts) || event.ts > transcriptMaxMs,
+  );
+}
+
+/** 转录事件里最新的 createdAt（毫秒；解析不出 = 0）。 */
+export function transcriptMaxCreatedAtMs(
+  events: ReadonlyArray<{ createdAt?: string }>,
+): number {
+  let max = 0;
+  for (const event of events) {
+    const ms = event?.createdAt ? Date.parse(event.createdAt) : Number.NaN;
+    if (Number.isFinite(ms) && ms > max) max = ms;
+  }
+  return max;
+}
+
 /** 是否 Chief 家族来源（chief 会话本体 / worker）。 */
 export function isChiefOrigin(origin?: string | null): boolean {
   return origin === "chief" || origin === "chief-worker";

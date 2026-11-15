@@ -12,7 +12,7 @@
 
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Manager};
 
@@ -285,6 +285,9 @@ fn ensure_chief_session(app: &AppHandle) -> Result<(String, bool), String> {
         });
         if exists {
             register_chief_session(&sid);
+            // 复用的旧 Chief 会话也要补挂 tee（幂等）——修复前创建的会话
+            // 没有账本，本地打开时回填不到 Chief 自己的回复。
+            let _ = tee::register(&sid);
             return Ok((sid, false));
         }
         // 会话被删了：清掉引用走新建。显式重建，绝不静默把旧聊天接到新会话。
@@ -315,6 +318,10 @@ fn ensure_chief_session(app: &AppHandle) -> Result<(String, bool), String> {
         Some(&format!("agent={agent_id}")),
     );
     register_chief_session(&session.id);
+    // Chief 自己也是后端驱动会话：它的回复/工具轨迹同样进事件账本，
+    // 否则本地打开 Chief 会话时回填不到这段（worker 有账本、Chief 没有
+    // 的不对称是实测抓到的）。
+    let _ = tee::register(&session.id);
     Ok((session.id, true))
 }
 
@@ -1089,6 +1096,12 @@ fn resume_and_watch(
     watch_worker_loop(app, chief_session_id, task_id, worker_session_id, max_minutes);
 }
 
+/// 确保 Chief 会话存在并返回其 id（供 E2E 入口用；产品路径走
+/// chief_inbound_text 内部同款引导）。
+pub fn chief_session_ensure(app: &AppHandle) -> Result<String, String> {
+    ensure_chief_session(app).map(|(sid, _created)| sid)
+}
+
 // ── Telegram 入站（chief 模式唯一文本入口） ──────────────────────────────
 
 /// 该会话是否是某任务的 worker（Telegram 聚合判定用：worker 的逐条回合
@@ -1253,6 +1266,8 @@ pub fn chief_inbound_text(app: &AppHandle, text: &str) -> Result<InboundOutcome,
 
 static HEARTBEAT: OnceLock<()> = OnceLock::new();
 static HEARTBEAT_TICKS: AtomicU64 = AtomicU64::new(0);
+/// 懒启动失败只记一次 warn（成功后复位），避免未登录 agent 每 2s 刷屏。
+static CHIEF_LAZYSTART_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// 启动心跳线程（幂等）。tick 2s。
 pub fn ensure_heartbeat(app: AppHandle) {
@@ -1275,21 +1290,44 @@ fn heartbeat_tick(app: &AppHandle) {
     let Some(chief_sid) = config.chief_session_id.clone() else {
         return;
     };
-    // Chief 进程死了但账面 running：状态回 exited（下次消息懒启动重连）。
+    // Chief 进程不在时的两种处理：
+    // - 有待办（用户队列 / 唤醒收件箱）→ 懒启动重连（「下一条 Chief 消息」
+    //   语义；实测抓到的坑：turn_idle 对缺席进程返回 true，不先启动的话
+    //   flush 直接 send_prompt 会报 not running 并每 2s 无限重试）；
+    // - 没有待办 → 只把账面 running 放回 exited（空转不养 agent 进程），
+    //   照常做 worker 超时/失联检测。
+    let pending_work =
+        pending_user_count(&chief_sid) > 0 || pending_wake_count(&chief_sid) > 0;
     if !runner::session_alive(app, &chief_sid) {
-        let running = with_storage(app, |storage| {
-            storage
-                .find_session(&chief_sid)
-                .ok()
-                .flatten()
-                .map(|session| session.status == "running")
-                .unwrap_or(false)
-        });
-        if running {
-            with_storage(app, |storage| {
-                storage.update_session_status(&chief_sid, "exited")
-            })
-            .ok();
+        if pending_work {
+            if let Err(error) = ensure_chief_started(app, &chief_sid) {
+                if !CHIEF_LAZYSTART_WARNED.swap(true, Ordering::Relaxed) {
+                    crate::debug_log::append(
+                        "chief",
+                        "warn",
+                        &chief_sid,
+                        "heartbeat chief lazy-start failed; will retry",
+                        Some(&error),
+                    );
+                }
+                return;
+            }
+            CHIEF_LAZYSTART_WARNED.store(false, Ordering::Relaxed);
+        } else {
+            let running = with_storage(app, |storage| {
+                storage
+                    .find_session(&chief_sid)
+                    .ok()
+                    .flatten()
+                    .map(|session| session.status == "running")
+                    .unwrap_or(false)
+            });
+            if running {
+                with_storage(app, |storage| {
+                    storage.update_session_status(&chief_sid, "exited")
+                })
+                .ok();
+            }
         }
     }
 

@@ -20,6 +20,8 @@ import {
   mergeUserEcho,
   shouldFlushUserEcho,
   teeEventsAfterCursor,
+  transcriptMaxCreatedAtMs,
+  uncoveredTeeEvents,
   type ChiefTeeEvent,
 } from "../lib/chiefTee";
 import { useSessionRails } from "./useSessionRails";
@@ -769,9 +771,9 @@ export function App() {
   const transcriptSaveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const transcriptLoadedRef = useRef<Set<string>>(new Set());
   /** Chief tee 回填（后端驱动的 chief/worker 会话打开时重建离线跨度）。 */
-  const chiefBackfillRef = useRef<(sessionId: string, baselineLen: number) => Promise<void>>(
-    async () => {},
-  );
+  const chiefBackfillRef = useRef<
+    (sessionId: string, baselineLen: number, transcriptMaxMs: number) => Promise<void>
+  >(async () => {});
   /** Session ids currently shown in a visible detached OS window (main only). */
   const detachedOwnedIdsRef = useRef<Set<string>>(new Set());
   /** Main is reloading disk transcript after a detached hide — skip live events. */
@@ -4062,10 +4064,13 @@ export function App() {
       });
     }
     // Chief tee 回填：chief/worker 由后端驱动，离线期间的事件在 tee 文件里；
-    // 打开时把游标之后的跨度回放进会话流（与活路同一转换管线）。
+    // 打开时把「游标之后 ∩ 转录未覆盖的 ts 跨度」回放进会话流（与活路
+    // 同一转换管线）。转录最新 createdAt 之后的才算离线跨度——UI 自己
+    // 用过的会话不重放已有历史。
     if (chiefOrigin) {
       const baseline = shadowBySessionRef.current.get(sessionId)?.length ?? 0;
-      void chiefBackfillRef.current?.(sessionId, baseline);
+      const baselineMaxMs = transcriptMaxCreatedAtMs(parsed);
+      void chiefBackfillRef.current?.(sessionId, baseline, baselineMaxMs);
     }
   }, []);
   loadSessionTranscriptRef.current = loadSessionTranscript;
@@ -4073,19 +4078,20 @@ export function App() {
   /**
    * Chief tee 回填（docs/research-telegram-chief/ 02 §6）。
    *
-   * 只在 rail 处于基线时回放：一旦活路（live listener）抢先写入，说明
-   * 离线跨度已被覆盖或有并发流——放弃本轮回放且不推进游标，下次打开重试。
-   * user echo（user_message_chunk）在第一条 agent 活动前整段 flush 成
-   * You 卡；其余事件走与活路完全相同的 extractAcpUpdateText +
-   * applyStreamPart，渲染零分歧。
+   * 回放范围 = 游标之后 ∩ 转录未覆盖（tee.ts > 转录最新 createdAt）——
+   * UI 正常用过的会话不会重放已有历史。只在 rail 处于基线时应用：一旦
+   * 活路（live listener）抢先写入，说明有并发流——放弃本轮回放且不推进
+   * 游标，下次打开重试。user echo（user_message_chunk）在第一条 agent
+   * 活动前整段 flush 成 You 卡；其余事件走与活路完全相同的
+   * extractAcpUpdateText + applyStreamPart，渲染零分歧。
    */
   const backfillChiefTee = useCallback(
-    async (sessionId: string, baselineLen: number) => {
+    async (sessionId: string, baselineLen: number, transcriptMaxMs: number) => {
       try {
         const cursor = await chiefTeeCursor(sessionId);
         const replay = await chiefTeeReplay(sessionId);
         const all = (replay?.events ?? []) as ChiefTeeEvent[];
-        const events = teeEventsAfterCursor(all, cursor);
+        const events = uncoveredTeeEvents(teeEventsAfterCursor(all, cursor), transcriptMaxMs);
         if (events.length === 0) return;
         let userEcho = "";
         let maxSeq = cursor;

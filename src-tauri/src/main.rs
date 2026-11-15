@@ -319,6 +319,9 @@ fn main() {
             // M0 真机探针：MARIONETTE_CHIEF_PROBE="agentId|cwd|prompt" 时
             // 自动跑一轮后端驱动探针（报告写 dev.log）；未设 = 零行为。
             chief::probe::maybe_run_env_probe(app.handle().clone());
+            // M1 管线端到端：MARIONETTE_CHIEF_E2E_TASK / E2E_INBOUND（同上，
+            // 未设 = 零行为）。
+            chief::probe::maybe_run_env_e2e(app.handle().clone());
             // Computer Use 的全局停止键：Ctrl+Alt+Shift+S 撤销全部共享并杀
             // driver。注册失败（被占用）只警告——共享仍可从面板停止。
             {
