@@ -173,6 +173,7 @@ import {
   imagePathKey,
   type ImageAttachment,
 } from "../lib/imageAttachments";
+import { savePastedImage } from "../lib/api";
 import { foldSessionStats, measureTurnDecodeMs } from "../lib/sessionStats";
 import { sessionChangeLines } from "../lib/sessionInfo";
 import { isRuntimeMetadataOnly } from "../lib/markdownText";
@@ -5683,6 +5684,40 @@ export function App() {
     }
   }, [availableAgents, defaultFolderPath, pushDebug]);
 
+  // 批注抽屉的「发给对话」：截图 dataUrl 落盘转附件药丸 + prompt 预填当前
+  // 会话（没有真实会话时先建一个，memo「开新对话」同路）。预填不自动发送，
+  // 用户在输入框里过目后再发。
+  const sendBrowserPicksToChat = useCallback(
+    (prompt: string, images: string[]) => {
+      const deliver = async () => {
+        let sessionId = currentSession?.id ?? "";
+        if (!sessionId) {
+          const created = await handleCreateChatSession();
+          if (!created) return;
+          sessionId = created.id;
+        }
+        const attachments: ImageAttachment[] = [];
+        for (const dataUrl of images) {
+          try {
+            const saved = await savePastedImage(dataUrl);
+            attachments.push(attachmentFromPath(saved.path));
+          } catch {
+            /* a failed crop attachment drops; the prompt still carries the note */
+          }
+        }
+        const token = Math.max(Date.now(), imageInjectionTokenRef.current + 1);
+        imageInjectionTokenRef.current = token;
+        if (attachments.length > 0) {
+          setComposerImageInjection({ sessionId, token, attachments });
+        }
+        setComposerPrefill({ sessionId, text: prompt, token });
+        setComposerAutoFocus(true);
+      };
+      void deliver();
+    },
+    [currentSession?.id, handleCreateChatSession],
+  );
+
   const setSessionStatusById = useCallback((sessionId: string, status: Session["status"]) => {
     setAvailableSessions((current) =>
       current.map((session) => {
@@ -10173,6 +10208,7 @@ export function App() {
                 onSelectTab={setActiveBrowserTabId}
                 visible
                 onExit={() => setBrowserActive(false)}
+                onSendToChat={sendBrowserPicksToChat}
               />
             </div>
           ) : activeDocPath && !dockActive && !IS_DETACHED_WINDOW ? (
@@ -10402,6 +10438,7 @@ export function App() {
                 onSelectTab={setActiveBrowserTabId}
                 visible
                 onExit={() => setDockPage(null)}
+                onSendToChat={sendBrowserPicksToChat}
               />
             </div>
           )}

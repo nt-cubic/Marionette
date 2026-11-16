@@ -152,12 +152,20 @@ app 内置一个浏览器页（伪标签，与收纳盒/文档同款形状），
   工具；拒绝是返回值不是报错（`browser_grant_required` 附转述话术）。
 - **aria 引擎** vendor 自 Codeg（Apache-2.0，`src-tauri/src/browser/js/`）：
   快照按元素 ref 操作（非像素坐标），只在第一次有授权读取时注入 isolated world。
+- **元素批注（2026-11-17）**：地址栏旁的十字准星开启 DevTools 式拾取——悬停高亮 +
+  角标（tag/id/尺寸），点击拾取元素；切「框选区域」拖拽圈选（列内含元素）。拾取期间
+  页面自身的点击被吞掉，Esc 退出。批注抽屉在工具栏与页面之间（页面向上让位），每条
+  一行：截图缩略（拾取时自动裁剪，高亮不入镜）+ 元素摘要 + 批注输入框。「发给对话」
+  把批注清单（选择器、aria ref——发送时重新快照解析、失效则回落选择器、框选内含
+  元素）与截图**预填进当前对话输入框**，检查后自己发送；没有真实会话先建一个。
+  拾取是用户自己的 UI 操作，不走授权（授权只挡 agent）；agent 拿到批注后用现有
+  browser_snapshot / browser_click / browser_set_value 操作。
 - **体积/内存**：不捆绑浏览器引擎（复用 WebView2 运行时，独立 profile
   `~/.marionette/browser-profiles/`）；**标签懒建**（2026-11-06：启动不再预热
   about:blank 子 webview——那会常驻一整套 WebView2 进程组；首标签走
   `create_surface` 直建，关掉标签 renderer 回收）。
-- 已知边界与偏差见 `docs/plan-browser-computer-use.md` §6（人→agent 手递、listener
-  pin、eval、下载接管、前进后退为后续批次）。
+- 已知边界与偏差见 `docs/plan-browser-computer-use.md` §6（listener pin、eval、下载
+  接管、前进后退为后续批次；§1.5 的人→agent 手递已由 2026-11-17 元素批注落地）。
 
 ## Computer Use（2026-10-31，批次 3）
 

@@ -49,6 +49,7 @@ import { en as enFeSeenrail } from "./parts/fe-seenrail.en";
 import { en as enFeSeenview } from "./parts/fe-seenview.en";
 import { en as enFeUv2F } from "./parts/fe-uv2f.en";
 import { en as enFeChief } from "./parts/fe-chief.en";
+import { en as enFePicker } from "./parts/fe-picker.en";
 
 export const en = {
   ...enCommon,
@@ -64,6 +65,7 @@ export const en = {
   ...enFeDoctab,
   ...enFeBrowser,
   ...enFeComputer,
+  ...enFePicker,
   ...enFeLibA,
   ...enFeWorkspace,
   ...enFeLibB,

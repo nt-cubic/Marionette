@@ -86,6 +86,88 @@ export function onBrowserPermission(
   );
 }
 
+// ── Element picker (annotate mode) ──────────────────────────────────────────
+// The toolbar's crosshair turns the page into a DevTools-style picker; the
+// page reports picks over the `marionette-browser-pick` event and everything
+// else (crop the screenshot, resolve the aria refs) is frontend-driven
+// commands — the Rust event path never issues CDP calls.
+
+export type BrowserPickRect = { x: number; y: number; width: number; height: number };
+
+/** What the page says about one picked element (js/picker.js, capped there). */
+export type BrowserPickInfo = {
+  tag: string;
+  id: string;
+  classes: string[];
+  text: string;
+  rect: BrowserPickRect;
+  dpr: number;
+  selector: string;
+  href?: string;
+  placeholder?: string;
+};
+
+export type BrowserPickMessage =
+  | { kind: "pick"; pickId: string; info: BrowserPickInfo }
+  | {
+      kind: "region";
+      pickId: string;
+      rect: BrowserPickRect;
+      dpr: number;
+      elements: BrowserPickInfo[];
+      scanCapped?: true;
+    }
+  | { kind: "cancel" };
+
+export type BrowserPickEvent = { tabId: string; message: BrowserPickMessage };
+
+export type BrowserPickMode = "element" | "region";
+
+/** One resolved aria ref (`null` = the pick has none usable right now). */
+export type BrowserPickRef = { ref: string; role: string; name: string } | null;
+
+export async function browserPickSet(
+  tabId: string,
+  active: boolean,
+  mode: BrowserPickMode,
+): Promise<{ ok: boolean; mode?: BrowserPickMode; error?: string } | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await invoke("browser_pick_set", { tabId, active, mode });
+  } catch {
+    return null;
+  }
+}
+
+export async function browserPickFinalize(
+  tabId: string,
+  pickId: string,
+): Promise<{ pickId: string; dataUrl: string; width: number; height: number } | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await invoke("browser_pick_finalize", { tabId, pickId });
+  } catch {
+    return null;
+  }
+}
+
+export async function browserPickResolve(
+  tabId: string,
+): Promise<{ generation: string; refs: Record<string, BrowserPickRef> } | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await invoke("browser_pick_resolve", { tabId });
+  } catch {
+    return null;
+  }
+}
+
+export function onBrowserPick(
+  handler: (event: BrowserPickEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<BrowserPickEvent>("marionette-browser-pick", (event) => handler(event.payload));
+}
+
 // ── Session approval mirror ────────────────────────────────────────────────
 // "Always approve" lives in the Composer's per-session state; the Rust tool
 // channel needs it to decide between a permission card and an auto-grant.

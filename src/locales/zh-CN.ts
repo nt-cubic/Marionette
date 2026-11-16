@@ -49,6 +49,7 @@ import { zh as zhFeSeenrail } from "./parts/fe-seenrail.zh";
 import { zh as zhFeSeenview } from "./parts/fe-seenview.zh";
 import { zh as zhFeUv2F } from "./parts/fe-uv2f.zh";
 import { zh as zhFeChief } from "./parts/fe-chief.zh";
+import { zh as zhFePicker } from "./parts/fe-picker.zh";
 
 export const zh = {
   ...zhCommon,
@@ -64,6 +65,7 @@ export const zh = {
   ...zhFeDoctab,
   ...zhFeBrowser,
   ...zhFeComputer,
+  ...zhFePicker,
   ...zhFeLibA,
   ...zhFeWorkspace,
   ...zhFeLibB,

@@ -144,6 +144,13 @@
   flex: 0 0 auto;
 }
 
+/* Annotate-mode crosshair: glows while the page picker runs. */
+.browser-page__pick.is-active {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
 .browser-page__share-btn {
   display: inline-flex;
   align-items: center;
@@ -259,6 +266,193 @@
   justify-content: flex-end;
   gap: 8px;
   margin-top: 4px;
+}
+
+/* ── Element picker drawer (annotate mode) ──────────────────────────────
+   Sits between the toolbar and the native host: opening it shrinks the host
+   and the ResizeObserver re-syncs the webview bounds. Visual language: 3px
+   corners, 1px borders, no shadow; identity accent only on the active chip
+   and the send button. */
+
+.browser-page__picker {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  max-height: 46%;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.browser-page__picker-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  min-height: 32px;
+}
+
+.browser-page__picker-modes {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.browser-page__picker-mode {
+  height: 22px;
+  padding: 0 7px;
+  border-radius: var(--radius-sm, 3px);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.browser-page__picker-mode.is-active {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
+.browser-page__picker-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+
+.browser-page__picker-exit {
+  flex: 0 0 auto;
+}
+
+.browser-page__picker-rows {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 8px;
+}
+
+.browser-page__picker-empty {
+  padding: 10px 2px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.browser-pick-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 3px);
+  background: var(--workspace-bg);
+}
+
+.browser-pick-row__thumb {
+  flex: 0 0 auto;
+  width: 72px;
+  height: 54px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 3px);
+  display: block;
+}
+
+.browser-pick-row__thumb.is-pending {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  text-align: center;
+  padding: 2px;
+  word-break: break-all;
+}
+
+.browser-pick-row__body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.browser-pick-row__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-pick-row__text {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.browser-pick-row__capped {
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-faint);
+}
+
+.browser-pick-row__elements {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-pick-row__note {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm, 3px);
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.browser-pick-row__note:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+}
+
+.browser-pick-row__remove {
+  flex: 0 0 auto;
+  align-self: flex-start;
+}
+
+.browser-page__picker-foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+}
+
+.browser-page__picker-send {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  color: var(--accent);
+}
+
+.browser-page__picker-send:disabled {
+  opacity: 0.5;
 }
 
 /* ── Pseudo-tab chip in the session strip (mirrors .is-memo / .is-doc) ── */
