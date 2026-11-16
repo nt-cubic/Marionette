@@ -785,6 +785,41 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
   zcode 只收 url 型所以这是唯一通道；新工具加 schema + dispatch 两处，别开新端口。
   always-approve 镜像只覆盖挂载过 Composer 的会话（后台会话出权限卡，安全方向）。
 
+## 浏览器元素批注（2026-11-17，DevTools 式拾取 + 框选）
+
+浏览器工具栏十字准星 → 页内拾取（悬停高亮/点击拾取、框选拖拽）→ 批注抽屉
+（`.browser-page__picker`，截图缩略 + 逐条批注）→「发给对话」**预填 composer**（不自动
+发送）+ 元素/区域截图走附件管线。改前先记六条：
+
+- **模块**：`browser/pick.rs`（表达式构建器，probe.rs 同款：全 serde_json 禁拼接）+
+  `browser/js/picker.js`（自有脚本，probe.js 同款自装 IIFE，**每个 eval 内联整份脚本 +
+  三元守卫**，因为 addScriptToEvaluateOnNewDocument 只管未来文档）。覆盖层全部在
+  **closed Shadow DOM**（页面 CSS 伤不到）；拾取期间 capture 相吞页面的
+  pointer/click/contextmenu——「指着」绝不能「点了」。
+- **node→ref 反向映射只有一条路**：读元素上的 `_ariaRef` expando（bundle 在同 world
+  里缓存的）+ 公开 `elementForRef(gen, ref) === el` 校验。bundle 不暴露反向 API，
+  **别给 bundle 加函数**（vendored 产物，改 = 重放上游构建）。
+- **generation 必须用快照返回的四段串**（`GENERATION.seq.hostGen.navEpoch`）原样传给
+  `resolveRefs`/`elementForRef`——host 的 epoch 是两段，混用全拒。`pick_resolve` 每次
+  发送**只拍一张快照**（120K chars，树丢弃只为 ref 表重建），不按 pick 逐个拍。
+- **`on_cdp_event` 的 `__marionettePick` 分支零 CDP**（事件可能在别的调用的 pump 里
+  触发）：只 parse + 存 payload（VecDeque，64 上限）+ emit
+  `marionette-browser-pick`。裁剪（`browser_pick_finalize`：captureHide →
+  captureScreenshot → captureRestore 三步一个租约，rect×dpr 本地裁剪）与 ref 解析
+  （`browser_pick_resolve`）全是前端驱动的命令，租约照取。
+- **pick 三命令是 UI 路径，不加 grant**——grant 只挡 agent 工具调用
+  （`tool_read`/`control_gate` 一处原则不动）；本批**没有**新增任何 agent 工具，
+  批注 prompt 让 agent 用现有 browser_snapshot/click/set_value。
+- **前端**：抽屉在 bar 与 host 之间（压矮 host，ResizeObserver 自动重同步 bounds）；
+  拾取状态按 tabId 记 Map，导航双侧清空（Rust `apply_main_frame_navigation` 清
+  payload + 前端 effect 监听 url 变化清模式）；`sendBrowserPicksToChat`：
+  `savePastedImage(dataUrl)` → `attachmentFromPath` → `composerImageInjection` +
+  `prefillComposer`（无真实会话先建，memo「开新对话」同路）。截图 finalize 对
+  CDP-busy 有 6×400ms 重试，失败亮「截图失败」chip，行照常可批注。
+- 回归：`cargo test --bin marionette pick`（表达式构建器 6 项）+
+  `npx tsx scripts/verify-browser-pick.mts`（prompt 组装/净化/词典 25 项）+
+  `npx tsc --noEmit`；真机手册见 docs/CURRENT.md 浏览器节。
+
 ## Computer Use（2026-10-31，批次 3）
 
 `docs/plan-browser-computer-use.md` §2 设计 + §7 落地偏差；行为在 `docs/CURRENT.md`。红线：

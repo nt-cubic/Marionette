@@ -42,6 +42,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 };
 
 use super::agent::{self, SnapshotRequest};
+use super::pick;
 
 /// Isolated world name + binding — must match the vendored bundle (js/VENDOR.md).
 pub const WORLD_NAME: &str = "codeg";
@@ -60,6 +61,11 @@ const HELPER_JS: &str = concat!(
 /// file's own header and js/VENDOR.md.
 const PROBE_JS: &str = include_str!("js/probe.js");
 
+/// The annotate-mode element picker (`js/picker.js`): the user-side DevTools
+/// overlay. Same reasoning as the probe — own script, own binding, the
+/// vendored bundle stays untouched.
+const PICKER_JS: &str = include_str!("js/picker.js");
+
 /// Console ring: lines per tab, per document (cleared on navigation).
 const CONSOLE_RING_CAPACITY: usize = 200;
 const CONSOLE_MAX_TEXT_CHARS: usize = 4096;
@@ -68,6 +74,11 @@ pub const CAPTURE_MAX_ENCODED_BYTES: usize = 3_500_000;
 const CAPTURE_JPEG_QUALITY: u8 = 85;
 const CAPTURE_DEFAULT_MAX_WIDTH: u32 = 1568;
 const CAPTURE_MIN_WIDTH: u32 = 64;
+/// Retained pick payloads (`pickId → message`) for the screenshot crop, and
+/// the tree budget of the snapshot taken just to resolve refs — the tree
+/// itself is discarded, but the refs it prunes are the ones validation needs.
+const PICK_RETAIN_CAP: usize = 64;
+const PICK_RESOLVE_MAX_CHARS: u64 = 120_000;
 
 /// Agent access level on one tab. None < Read < Control, hand-ranked so a new
 /// level forces a look at every comparison (codeg `agent.rs`).
@@ -142,6 +153,10 @@ pub struct Surface {
     pub id: String,
     pub opened_by_agent: bool,
     pub webview: WebView,
+    /// App handle, so the CDP event fan-out can push picker reports to the
+    /// frontend without a CDP call (events can arrive inside another call's
+    /// pump — that path must stay pump-free). Emit only.
+    pub app: AppHandle,
     /// World execution context id (CDP), when the world exists for the
     /// current document. Cleared when that context is destroyed.
     world_ctx: Cell<Option<i64>>,
@@ -153,6 +168,13 @@ pub struct Surface {
     pub nav_epoch: Cell<u64>,
     /// Bumped on every snapshot taken; the generation half of the epoch.
     pub generation: Cell<u64>,
+    /// The annotate-mode picker (js/picker.js) is running on this document.
+    picker_active: Cell<bool>,
+    /// Pick payloads (pickId → message) retained for `pick_finalize`'s
+    /// screenshot crop — the rect was measured at pick time and a crop needs
+    /// it after the event. Cleared on navigation: the rects describe a dead
+    /// page then.
+    picks: RefCell<VecDeque<(String, Value)>>,
     console: RefCell<VecDeque<ConsoleLine>>,
     pub(crate) url: RefCell<String>,
     title: RefCell<String>,
@@ -352,19 +374,21 @@ fn on_cdp_event(key: usize, event: &str, parameter_json: &str) {
             push_console(&surface, "error".to_string(), text);
         }
         "Runtime.bindingCalled" => {
-            if value["name"].as_str() != Some(BINDING_NAME) {
-                return;
-            }
-            // Helper envelopes: {kind, payload} — page-controlled input, sizes
-            // already capped by the helper itself. We consume nav-state only.
-            let payload = value["payload"].as_str().unwrap_or("");
-            if let Ok(message) = serde_json::from_str::<Value>(payload) {
-                if message["kind"].as_str() == Some("nav-state") {
-                    let url = message["payload"]["url"].as_str().unwrap_or("").to_string();
-                    if !url.is_empty() {
-                        apply_main_frame_navigation(&surface, url);
+            let name = value["name"].as_str().unwrap_or("");
+            if name == BINDING_NAME {
+                // Helper envelopes: {kind, payload} — page-controlled input, sizes
+                // already capped by the helper itself. We consume nav-state only.
+                let payload = value["payload"].as_str().unwrap_or("");
+                if let Ok(message) = serde_json::from_str::<Value>(payload) {
+                    if message["kind"].as_str() == Some("nav-state") {
+                        let url = message["payload"]["url"].as_str().unwrap_or("").to_string();
+                        if !url.is_empty() {
+                            apply_main_frame_navigation(&surface, url);
+                        }
                     }
                 }
+            } else if name == pick::PICK_BINDING {
+                on_pick_event(&surface, value["payload"].as_str().unwrap_or(""));
             }
         }
         _ => {}
@@ -383,6 +407,47 @@ fn push_console(surface: &Surface, level: String, text: String) {
     }
 }
 
+/// One picker report from the page (`js/picker.js` over `__marionettePick`).
+/// This runs inside the CDP event fan-out — possibly during another call's
+/// pump — so it does NO CDP work: retain the payload for `pick_finalize`'s
+/// crop and push the event to the frontend, which drives everything else.
+fn on_pick_event(surface: &Surface, payload: &str) {
+    let Ok(message) = serde_json::from_str::<Value>(payload) else {
+        return;
+    };
+    match message["kind"].as_str().unwrap_or("") {
+        "cancel" => {
+            surface.picker_active.set(false);
+            let _ = surface.app.emit(
+                "marionette-browser-pick",
+                json!({ "tabId": surface.id, "message": { "kind": "cancel" } }),
+            );
+        }
+        "pick" | "region" => {
+            let pick_id = message["pickId"].as_str().unwrap_or("").to_string();
+            if pick_id.is_empty() || pick_id.len() > 64 {
+                return;
+            }
+            {
+                let mut picks = surface.picks.borrow_mut();
+                if let Some(slot) = picks.iter_mut().find(|(id, _)| *id == pick_id) {
+                    slot.1 = message.clone();
+                } else {
+                    picks.push_back((pick_id, message.clone()));
+                    while picks.len() > PICK_RETAIN_CAP {
+                        picks.pop_front();
+                    }
+                }
+            }
+            let _ = surface.app.emit(
+                "marionette-browser-pick",
+                json!({ "tabId": surface.id, "message": message }),
+            );
+        }
+        _ => {}
+    }
+}
+
 /// A main-frame navigation (or SPA route change reported by the helper):
 /// update url/origin/title, reset the console ring, re-evaluate the grant.
 pub fn apply_main_frame_navigation(surface: &Surface, url: String) {
@@ -396,6 +461,11 @@ pub fn apply_main_frame_navigation(surface: &Surface, url: String) {
     surface.console.borrow_mut().clear();
     surface.nav_epoch.set(surface.nav_epoch.get() + 1);
     surface.world_ctx.set(None); // new document, new contexts
+    // The overlay and its state died with the old document (the doc-start
+    // script re-registers passively; it does not start itself). Retained pick
+    // rects describe that page too — they crop nothing useful now.
+    surface.picker_active.set(false);
+    surface.picks.borrow_mut().clear();
     if origin_changed {
         // The grant is bound to the origin it was given on. Agent-opened tabs
         // re-take Read on the new origin: the agent chose to follow the link
@@ -467,6 +537,13 @@ fn install_world(webview2: &ICoreWebView2, key: usize) -> Result<(), String> {
         "Runtime.addBinding",
         &json!({ "name": BINDING_NAME, "executionContextName": WORLD_NAME }).to_string(),
     )?;
+    // The picker reports over its own binding (js/picker.js): separate name,
+    // same world — the vendored helper's `__codegSend` stays upstream's.
+    call_and_wait(
+        webview2,
+        "Runtime.addBinding",
+        &json!({ "name": pick::PICK_BINDING, "executionContextName": WORLD_NAME }).to_string(),
+    )?;
     call_and_wait(
         webview2,
         "Page.addScriptToEvaluateOnNewDocument",
@@ -478,6 +555,13 @@ fn install_world(webview2: &ICoreWebView2, key: usize) -> Result<(), String> {
         webview2,
         "Page.addScriptToEvaluateOnNewDocument",
         &json!({ "source": PROBE_JS, "worldName": WORLD_NAME }).to_string(),
+    )?;
+    // The picker as well — passive until a `start` call turns it on, so an
+    // install done for a snapshot gains nothing user-visible.
+    call_and_wait(
+        webview2,
+        "Page.addScriptToEvaluateOnNewDocument",
+        &json!({ "source": PICKER_JS, "worldName": WORLD_NAME }).to_string(),
     )?;
     // A document already here (about:blank at creation) gets its world now.
     let world = call_and_wait(
@@ -650,23 +734,26 @@ pub fn cdp_lease() -> Result<impl Drop, String> {
 /// Take an aria snapshot; installs the engine into the document on first use.
 pub fn snapshot(surface: &Surface, request: &SnapshotRequest) -> Result<Value, String> {
     let _lease = CdpLease::take()?;
+    let value = snapshot_inner(surface, request)?;
+    surface.generation.set(surface.generation.get() + 1);
+    Ok(value)
+}
+
+/// Lease-free core of `snapshot` — the caller holds the lease. The returned
+/// JSON carries the world's full generation string; `pick_resolve` needs it
+/// verbatim for the bundle's ref validation.
+fn snapshot_inner(surface: &Surface, request: &SnapshotRequest) -> Result<Value, String> {
     ensure_world(surface)?;
     let epoch = epoch_of(surface);
     match parse_world_answer(&evaluate_in_world_raw(
         surface,
         &agent::probe_and_snapshot(request, &epoch),
     )?)? {
-        WorldAnswer::Json(value) => {
-            surface.generation.set(surface.generation.get() + 1);
-            Ok(value)
-        }
+        WorldAnswer::Json(value) => Ok(value),
         WorldAnswer::Absent => {
             let install = agent::install_and_snapshot(request, &epoch);
             match parse_world_answer(&evaluate_in_world_raw(surface, &install)?)? {
-                WorldAnswer::Json(value) => {
-                    surface.generation.set(surface.generation.get() + 1);
-                    Ok(value)
-                }
+                WorldAnswer::Json(value) => Ok(value),
                 // The bundle publishes itself through `globalThis` inside the
                 // same evaluation that calls it, so absent-again means the
                 // bundle no longer installs — say so instead of failing on
@@ -754,8 +841,13 @@ pub fn screenshot(surface: &Surface, max_width: Option<u32>) -> Result<Value, St
     let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data)
         .map_err(|e| format!("capture decode: {e}"))?;
     let max_width = max_width.unwrap_or(CAPTURE_DEFAULT_MAX_WIDTH).max(1);
-    let mut image = image::load_from_memory(&bytes).map_err(|e| format!("capture decode: {e}"))?;
-    image = narrow_to(image, max_width);
+    let image = image::load_from_memory(&bytes).map_err(|e| format!("capture decode: {e}"))?;
+    encode_capture(narrow_to(image, max_width))
+}
+
+/// Encode to the `{dataUrl,width,height}` shape, re-encoding narrower until
+/// the bytes fit the budget. Shared by the full-page screenshot and pick crops.
+fn encode_capture(mut image: image::DynamicImage) -> Result<Value, String> {
     loop {
         let mut jpeg = Vec::new();
         let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, CAPTURE_JPEG_QUALITY);
@@ -775,6 +867,136 @@ pub fn screenshot(surface: &Surface, max_width: Option<u32>) -> Result<Value, St
             .clamp(CAPTURE_MIN_WIDTH, image.width().saturating_sub(1).max(CAPTURE_MIN_WIDTH));
         image = narrow_to(image, narrower);
     }
+}
+
+/// Crop the captured frame down to a viewport rect (CSS px × dpr). `None`
+/// when the rect misses the frame entirely (page scrolled between pick and
+/// crop, or a zero-size rect).
+fn crop_capture(
+    image: image::DynamicImage,
+    rect: (f64, f64, f64, f64),
+    dpr: f64,
+) -> Option<image::DynamicImage> {
+    let (x, y, width, height) = rect;
+    if width <= 0.0 || height <= 0.0 || dpr <= 0.0 {
+        return None;
+    }
+    let left = ((x * dpr).floor() as i64).clamp(0, i64::from(image.width()));
+    let top = ((y * dpr).floor() as i64).clamp(0, i64::from(image.height()));
+    let right = (((x + width) * dpr).ceil() as i64).clamp(0, i64::from(image.width()));
+    let bottom = (((y + height) * dpr).ceil() as i64).clamp(0, i64::from(image.height()));
+    if right <= left || bottom <= top {
+        return None;
+    }
+    Some(image.crop_imm(
+        left as u32,
+        top as u32,
+        (right - left) as u32,
+        (bottom - top) as u32,
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// Element picker (the browser toolbar's annotate mode — UI path, no grants:
+// grants gate agent tool calls, `tool_read`/`control_gate` stay the one place)
+// ---------------------------------------------------------------------------
+
+/// Start / stop / switch the mode of the element picker on this document.
+/// `start` on a running picker is the mode switch (the script keeps its
+/// retained picks across it).
+pub fn pick_set(surface: &Surface, active: bool, mode: &str) -> Result<Value, String> {
+    let _lease = CdpLease::take()?;
+    ensure_world(surface)?;
+    let expression = if active {
+        pick::start_call(mode)
+    } else {
+        pick::stop_call()
+    };
+    match parse_world_answer(&evaluate_in_world_raw(surface, &expression)?)? {
+        WorldAnswer::Json(value) => {
+            surface.picker_active.set(active);
+            Ok(value)
+        }
+        WorldAnswer::Absent => {
+            Err("the page picker did not install itself in this document".to_string())
+        }
+    }
+}
+
+/// Crop the viewport screenshot down to one pick's rectangle. The page hid
+/// its highlight first — the crop shows the page, not the picker. The rect
+/// comes from the retained pick payload (measured at pick time).
+pub fn pick_finalize(surface: &Surface, pick_id: &str) -> Result<Value, String> {
+    let _lease = CdpLease::take()?;
+    let (rect, dpr) = {
+        let picks = surface.picks.borrow();
+        let entry = picks
+            .iter()
+            .find(|(id, _)| id == pick_id)
+            .map(|(_, message)| message)
+            .ok_or_else(|| format!("no pending pick {pick_id}"))?;
+        let is_region = entry["kind"].as_str() == Some("region");
+        let rect_node = if is_region { &entry["rect"] } else { &entry["info"]["rect"] };
+        let dpr = entry["info"]["dpr"]
+            .as_f64()
+            .or_else(|| entry["dpr"].as_f64())
+            .unwrap_or(1.0);
+        (
+            (
+                rect_node["x"].as_f64().unwrap_or(0.0),
+                rect_node["y"].as_f64().unwrap_or(0.0),
+                rect_node["width"].as_f64().unwrap_or(0.0),
+                rect_node["height"].as_f64().unwrap_or(0.0),
+            ),
+            dpr,
+        )
+    };
+    ensure_world(surface)?;
+    // Best-effort pair: a world that cannot answer the hide call has bigger
+    // problems, and the restore must be attempted either way.
+    let _ = evaluate_in_world_raw(surface, &pick::capture_hide_call());
+    let webview2 = surface.webview.webview();
+    let captured = call_and_wait(
+        &webview2,
+        "Page.captureScreenshot",
+        &json!({ "format": "jpeg", "quality": CAPTURE_JPEG_QUALITY }).to_string(),
+    );
+    let _ = evaluate_in_world_raw(surface, &pick::capture_restore_call());
+    let answer = captured?;
+    let parsed: Value = serde_json::from_str(&answer).map_err(|e| format!("capture: {e}"))?;
+    let data = parsed["data"].as_str().ok_or("capture returned no image")?;
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data)
+        .map_err(|e| format!("capture decode: {e}"))?;
+    let image = image::load_from_memory(&bytes).map_err(|e| format!("capture decode: {e}"))?;
+    let Some(cropped) = crop_capture(image, rect, dpr) else {
+        return Err("the picked rectangle is outside the captured viewport".to_string());
+    };
+    let mut value = encode_capture(cropped)?;
+    value["pickId"] = json!(pick_id);
+    Ok(value)
+}
+
+/// Resolve the retained picks to aria refs as of a fresh snapshot — one
+/// snapshot per send, not per pick. The tree itself is discarded: only its
+/// `generation` feeds the world's ref validation.
+pub fn pick_resolve(surface: &Surface) -> Result<Value, String> {
+    let _lease = CdpLease::take()?;
+    let snapshot = snapshot_inner(surface, &SnapshotRequest {
+        max_chars: PICK_RESOLVE_MAX_CHARS,
+    })?;
+    surface.generation.set(surface.generation.get() + 1);
+    let generation = pick::generation_from_snapshot(&snapshot)
+        .ok_or("the snapshot did not name a usable generation")?;
+    let refs = match parse_world_answer(&evaluate_in_world_raw(
+        surface,
+        &pick::resolve_refs_call(&generation),
+    )?)? {
+        WorldAnswer::Json(value) => value,
+        // The picker never ran on this document (e.g. picks from the previous
+        // page being sent after a navigation): no refs is the honest answer.
+        WorldAnswer::Absent => json!({}),
+    };
+    Ok(json!({ "generation": generation, "refs": refs }))
 }
 
 fn narrow_to(image: image::DynamicImage, width: u32) -> image::DynamicImage {
@@ -975,10 +1197,13 @@ fn build_surface(app: &AppHandle, url: &str, opened_by_agent: bool) -> Result<Rc
         id,
         opened_by_agent,
         webview,
+        app: app.clone(),
         world_ctx: Cell::new(None),
         world_installed: Cell::new(false),
         nav_epoch: Cell::new(0),
         generation: Cell::new(0),
+        picker_active: Cell::new(false),
+        picks: RefCell::new(VecDeque::new()),
         console: RefCell::new(VecDeque::new()),
         url: RefCell::new(url.clone()),
         title: RefCell::new(String::new()),

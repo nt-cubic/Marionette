@@ -8,6 +8,7 @@
 //! **same** grant checks as the toolbar, never a second set.
 
 pub mod agent;
+pub mod pick;
 pub mod probe;
 #[cfg(target_os = "windows")]
 pub mod surface;
@@ -304,6 +305,40 @@ mod imp {
         set_grant(&app, &tab_id, GrantLevel::parse(&level))
     }
 
+    // ── element picker (annotate mode) ─────────────────────────────────────
+    // UI commands for the user driving their own browser — deliberately no
+    // grant checks here: grants gate agent tool calls, and `tool_read` /
+    // `control_gate` stay the one place that does it. Nothing in this batch
+    // adds an agent tool; the annotation prompt tells the agent to use the
+    // existing browser_snapshot / browser_click / browser_set_value.
+
+    /// Toggle the picker, or switch its mode while running.
+    #[tauri::command(async)]
+    pub fn browser_pick_set(
+        app: AppHandle,
+        tab_id: String,
+        active: bool,
+        mode: String,
+    ) -> Result<Value, String> {
+        surface::with_surface(&app, &tab_id, move |s| {
+            surface::pick_set(s, active, &mode)
+        })?
+    }
+
+    /// Crop the viewport screenshot down to one pick, highlight excluded.
+    #[tauri::command(async)]
+    pub fn browser_pick_finalize(app: AppHandle, tab_id: String, pick_id: String) -> Result<Value, String> {
+        surface::with_surface(&app, &tab_id, move |s| {
+            surface::pick_finalize(s, &pick_id)
+        })?
+    }
+
+    /// Map the retained picks to aria refs as of a fresh snapshot.
+    #[tauri::command(async)]
+    pub fn browser_pick_resolve(app: AppHandle, tab_id: String) -> Result<Value, String> {
+        surface::with_surface(&app, &tab_id, move |s| surface::pick_resolve(s))?
+    }
+
 
     /// Diagnostic (E2E harness): the CDP-level truth about one tab — what the
     /// renderer loaded vs what the window composited. Not for the product UI.
@@ -530,6 +565,27 @@ mod imp {
     }
     #[tauri::command(async)]
     pub fn browser_share_tab(_app: AppHandle, _tab_id: String, _level: String) -> Result<(), String> {
+        unavailable()
+    }
+    #[tauri::command(async)]
+    pub fn browser_pick_set(
+        _app: AppHandle,
+        _tab_id: String,
+        _active: bool,
+        _mode: String,
+    ) -> Result<Value, String> {
+        unavailable()
+    }
+    #[tauri::command(async)]
+    pub fn browser_pick_finalize(
+        _app: AppHandle,
+        _tab_id: String,
+        _pick_id: String,
+    ) -> Result<Value, String> {
+        unavailable()
+    }
+    #[tauri::command(async)]
+    pub fn browser_pick_resolve(_app: AppHandle, _tab_id: String) -> Result<Value, String> {
         unavailable()
     }
     #[tauri::command(async)]
