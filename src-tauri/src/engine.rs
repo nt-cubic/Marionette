@@ -2963,7 +2963,11 @@ fn place_and_prep(dir: &Path, allow_download: bool) -> Result<PrepOutcome, Strin
     #[cfg(feature = "engine-rust")]
     {
         // 两个参数都是 magpie 形态（落位/下载）才用的；进程内形态无副作用。
-        let _ = (dir, allow_download);
+        // 引擎目录仍然要建：engine.rs 自己的两本账本
+        // （registered-providers.json / discovered-providers.json）写在这里，
+        // 没有目录它们每次落盘都 warn（2026-11-17 T13 实测）。
+        let _ = allow_download;
+        std::fs::create_dir_all(dir).ok();
         return Ok(PrepOutcome::Ready);
     }
     #[cfg(not(feature = "engine-rust"))]
