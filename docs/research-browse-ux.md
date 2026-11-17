@@ -434,8 +434,8 @@ browse 不只有 handoff，还能让用户示范一次流程：
 2. 稳定命名标签，例如 work-mail；
 3. 将 session 与 content surface 进一步统一成任意异类标签树；
 4. 标签独立窗口；
-5. 可选连接真实 Chrome，但仅用于 staging、内部后台和登录态开发联调；嵌入式 WebView2
-   继续作为默认安全环境，不做个人生活助手或社交、邮箱、银行批量管理。
+- 不连接真实 Chrome。用户需要 Agent 使用自己的日常浏览器时，自行在 Codex、Claude、
+   OpenCode 等客户端安装 browse；Marionette 继续只做内置 WebView2 开发工作区。
 
 ## 二轮结论：还值得借什么（2026-11-17，最新 dev c3ad2ada）
 
