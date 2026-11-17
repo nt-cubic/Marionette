@@ -27,15 +27,21 @@ ureq 出站），ring-less TLS 约束不变。
 - [x] 合同文档与套件随分支携带（docs/plan-engine-contract.md +
   scripts/verify-engine-contract.mts + upstream-watch.mts）。
 
-## 进行中（子代理）
+## 进行中（子代理并行，2026-11-17 连续施工模式——用户定案「全部跑完为止，不分昼夜」）
 
 - [ ] **T1 translate.rs**：chat ↔ responses ↔ anthropic 请求互转 + SSE 事件
   映射 + peel（[1m]/[effort] 剥离）。验收：`cmd /c "check.bat test --bin
   marionette-engine translate"` 绿。
 - [ ] **T2 quotas.rs**：真实额度拉取（首类：DeepSeek key 余额），60s 缓存，
   force 跳过；routes 接线。验收：`... test quotas` 绿。
+- [ ] **T5 groups.rs**：组路由（peel / pick / 嵌套 / 防环），接线由主线做。
+- [ ] **T6 进程内接线**：feature `engine-rust`——engine.rs serve 改线程、
+  CLI 直调、kill 停止机制。
+- [ ] **T8 presets.rs**：models.dev 目录兜底（窗口/图片能力/显示名）。
+- [ ] **T10+T11**：bodycap 词表对齐 Go 版（tooLong 排除）+ httpd 加固
+  （chunked 请求体/超时/连接上限）。
 
-## 待做（每晚自动化按序领取）
+## 待做（按依赖排队，前者落地即开工）
 
 - [ ] **T3 /v1/messages 端点**：anthropic 入站 → translate 到厂商协议；
   Claude 系 agent（dsh 的 anthropic 后端）可用。验收：套件加 anthropic

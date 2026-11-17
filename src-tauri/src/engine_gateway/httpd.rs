@@ -6,11 +6,18 @@
 //! 请求体（账本任务：codex 若发 chunked 再补）。
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use super::Gateway;
 
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
+/// 停止轮询间隔（进程内形态）：accept 非阻塞轮询的节拍，也是 `shutdown`
+/// 置位后监听关闭的最大延迟——engine.rs 的 kill 路径要在下一次端口探测
+/// （update → place_and_prep → find_free_port_from）前把端口还回去。
+const SHUTDOWN_POLL: Duration = Duration::from_millis(50);
 
 pub struct Request {
     pub method: String,
@@ -57,18 +64,54 @@ impl Reply {
     }
 }
 
-/// 在 `addr` 上监听并逐连接开线程（loopback、连接数有限，线程模型足够；
-/// 引擎退出由进程生命周期带走——进程内形态则由 engine.rs 停监听）。
+/// 在 `addr` 上监听并逐连接开线程（argv/合同套件形态：进程由外部杀，
+/// 没有停止钮——`serve_on` 的 shutdown 传一个永不置位的标志）。
 pub fn serve(addr: &str, gateway: std::sync::Arc<Gateway>) -> Result<(), String> {
     let listener = TcpListener::bind(addr).map_err(|e| format!("bind {addr}: {e}"))?;
     let bound = listener.local_addr().map_err(|e| e.to_string())?;
     println!("magpie gateway on http://{}", bound);
-    for stream in listener.incoming() {
-        let Ok(stream) = stream else { continue };
-        let gw = gateway.clone();
-        std::thread::spawn(move || {
-            let _ = handle(stream, &gw);
-        });
+    serve_on(listener, gateway, Arc::new(AtomicBool::new(false)))
+}
+
+/// 进程内形态（engine.rs T6 接线）：接管一个**已绑定**的 listener——
+/// engine.rs 先 bind 定死端口再交给后台线程，消灭「挑端口→释放→重绑」
+/// 的竞态；accept 走非阻塞轮询，`shutdown` 置位后 ≤`SHUTDOWN_POLL` 内
+/// 干净退出（kill_engine / 空闲回收 / 引擎更新都要把端口还回去）。
+/// **这里绝不 println!**——GUI 进程是 windows 子系统、没有控制台，
+/// 写 stdout 会 panic；诊断信息由调用方（engine.rs）记自己的日志。
+pub fn serve_on(
+    listener: TcpListener,
+    gateway: std::sync::Arc<Gateway>,
+    shutdown: Arc<AtomicBool>,
+) -> Result<(), String> {
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("set listener nonblocking: {e}"))?;
+    loop {
+        if shutdown.load(Ordering::Acquire) {
+            break;
+        }
+        match listener.accept() {
+            Ok((stream, _)) => {
+                // Linux 上 accept 出的流会继承 O_NONBLOCK（Windows 不会）——
+                // 统一拨回阻塞，handler 的读写语义与 argv 形态完全一致。
+                let _ = stream.set_nonblocking(false);
+                let gw = gateway.clone();
+                std::thread::spawn(move || {
+                    let _ = handle(stream, &gw);
+                });
+            }
+            // 空闲：睡一个轮询间隔再试（连接在内核 backlog 里排队，不丢）。
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::Interrupted =>
+            {
+                std::thread::sleep(SHUTDOWN_POLL);
+            }
+            // 监听套接字坏了（被外部关闭等）——退出，存活语义交调用方
+            // （engine.rs 用 exited 标志把死线程翻成 Failed）。
+            Err(_) => break,
+        }
     }
     Ok(())
 }

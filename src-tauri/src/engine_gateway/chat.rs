@@ -18,13 +18,11 @@ pub(crate) struct Outbound {
 }
 
 fn resolve(gw: &super::Gateway, model: &str) -> Result<Outbound, String> {
-    // 组别名与 model[effort] 剥离在 translate.rs 成熟前先支持 provider/model
-    // 直通形态（跨用桥写入引擎表的就是这个形态）。
-    let (provider_id, bare) = match model.split_once('/') {
-        Some((p, m)) if !p.is_empty() && !m.is_empty() => (p.to_string(), m.to_string()),
-        _ => return Err(format!("unknown model: {model}")),
-    };
     let store = gw.store.lock().map_err(|_| "store poisoned".to_string())?;
+    // 组路由（T5）：peel 标记 → 组/别名/直通三形态解析；解析不到再报错。
+    let (provider_id, bare) =
+        super::groups::resolve(store.groups(), store.providers(), model)
+            .ok_or_else(|| format!("no provider for model: {model}"))?;
     let provider = store
         .find(&provider_id)
         .ok_or_else(|| format!("no provider for model: {model}"))?;

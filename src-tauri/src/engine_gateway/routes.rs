@@ -60,8 +60,19 @@ pub fn route(request: &Request, gateway: &super::Gateway) -> Reply {
             Reply::json(200, &serde_json::json!({ "object": "list", "data": rows }))
         }
         ("GET", "/v1/magpie/quotas") => {
-            // C3 形状先行（空表）；真实额度拉取在 quotas.rs（账本任务）。
-            Reply::json(200, &serde_json::json!({ "object": "list", "data": [] }))
+            // C3：无参 = force（现场问供应商）；?kept=1 = 读 60s 缓存。
+            let kept = request
+                .path
+                .split_once('?')
+                .map(|(_, query)| query.split('&').any(|pair| pair == "kept=1"))
+                .unwrap_or(false);
+            Reply::json(
+                200,
+                &serde_json::json!({
+                    "object": "list",
+                    "data": super::quotas::quota_entries(gateway, !kept),
+                }),
+            )
         }
         ("POST", "/v1/chat/completions") | ("POST", "/chat/completions") => {
             super::chat::forward(gateway, &request.body)
