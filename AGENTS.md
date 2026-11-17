@@ -804,9 +804,10 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
   现有 tab。`pinned` / `chosenId` / claimed 用户 tab 不参加 idle cleanup；pinned 和 user-owned
   也不能被 Agent close 或会话删除。用户切 tab、导航、分享必须 touch `lastUsedAtMs`。自动清理只
   接受普通 Agent tab，busy / waiting_user / handoff / 当前可见一律跳过。
-- **两种产品模式分开**：内置 WebView2 只负责免登录的 Web 开发/原型预览；个人 Chrome/Edge
-  连接器是独立扩展 + relay，先只读 loan，再做受控和批量 dry-run。不要把日常 Cookie 导入内置
-  profile，也不要开一个没有真实连接的个人浏览器假入口。边界见 `docs/plan-browser-modes.md`。
+- **产品定位仍是开发工具**：内置 WebView2 是默认主路径。连接现有 Chrome/Edge 只是可选的
+  登录态联调能力，用于 staging、内部后台、OAuth/支付沙箱等开发页面；不做个人生活助手、社交/
+  邮箱/银行批量管理。连接器是独立扩展 + relay，先只读 loan，再考虑开发操作。不要把日常 Cookie
+  导入内置 profile，也不要开没有真实连接的假入口。边界见 plan-browser-modes.md。
 - **共同标签必须在原生 host 外**：顶部 Browser / Document / Memo 标签条是 DOM，
   BrowserPage 的 child WebView2 host 在它下方；不要把标签塞进 host 或让 native webview
   覆盖标签。Browser 内部标签仍按后台 Rust 创建顺序稳定排序。

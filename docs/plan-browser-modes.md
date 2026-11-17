@@ -1,168 +1,147 @@
-# 浏览器双模式：Web 工作区与个人浏览器
+# 浏览器产品边界：开发工具优先
 
-- 状态：产品边界已定；Web 工作区标签生命周期 Phase A 已实现
+- 状态：方向已定；Web 工作区标签生命周期 Phase A 已实现
 - 目标分支：feat/browser-annotation
 - 关联：research-browse-ux.md、plan-browser-workspace.md
 
-## 为什么拆成两模式
+## 结论
 
-它们看起来都是“网页 + Agent 对话”，但用户心理模型、登录状态、风险和市场都不同：
+Marionette 的产品定位是开发工具，不转向“个人生活浏览器 Agent”。
 
-| 模式 | 页面来源 | 登录/状态 | 主要任务 | 默认姿态 |
-|---|---|---|---|---|
-| Web 工作区 | Marionette 内置 WebView2 独立 profile | 不依赖用户日常登录 | 原型、网站、localhost、视觉批注 | 预览优先，可读、可控制 |
-| 个人浏览器 | 用户自己的 Chrome/Edge | 用户已有账号、Cookie、扩展 | 社交、视频、邮件、银行、批量整理 | 用户领地，Agent 是获准进入的客人 |
+- 内置 WebView2 是主路径：Web 开发、原型、localhost、视觉批注和验收。
+- 连接用户现有 Chrome/Edge 只作为可选的开发能力：处理需要已有登录态的 staging、内部后台、
+  第三方开发者门户和登录后联调。
+- 不做 Twitter/X、Reddit、YouTube、Bilibili、Discord、邮箱或银行的日常账号管理和批量操作。
+- browse 是“Agent 进入个人浏览器”的成熟参考，但它的用户定位不是 Marionette 的定位；我们借
+  tab loan、WAIT、命名、清理和收回机制，不借生活助手市场。
 
-普通聊天用户不需要看到这两套概念。只有进入 Browser 或连接个人浏览器时才出现明确来源。
+## 两种开发页面来源
 
-## Web 工作区
+| 来源 | 用途 | 登录态 | 默认 |
+|---|---|---|---|
+| 内置 Web 工作区 | localhost、原型、网站、静态预览、元素批注 | 独立 profile，不依赖日常账号 | 主路径、零安装 |
+| 连接开发 tab | staging、内部后台、登录后联调、第三方开发者门户 | 用户已有 Chrome/Edge profile | 可选、显式 loan |
 
-这是当前已经实现并继续优化的路径：
+普通聊天和普通 Web 开发不需要连接器。只有页面确实无法在内置 profile 中复现时，才出现“借一个
+现有浏览器 tab 来调试”的入口。
 
-- 内置独立 profile，不承诺接管日常账号；
-- Agent 明确要制作或修改 Web 产物时用 display=workspace；
-- 浏览器与当前对话同屏，元素批注、截图、dev server probe 直接可用；
-- 标签默认后台打开，空闲 Agent 标签可清理；
-- 命名、保留、收回标签属于同一条生命周期；
-- 不读取用户私人站点，也不把登录当默认需求。
+## 内置 Web 工作区
 
-它的优势是零安装、无账号导入、批注闭环和本地开发预览。它不应为了“看起来更像日常浏览器”而引入 Cookie 同步或账号代理。
+- 独立 profile，不导入用户日常 Cookie；
+- Agent 明确制作或修改 Web 产物时通过 display=workspace 进入；
+- Browser + 当前会话同屏，元素批注、截图、dev server probe 直接可用；
+- 标签默认后台打开；Agent 可命名、pin、claim、清理；
+- 页面 WAIT、challenge、错误 nextStep 等状态最终服务于开发和验收；
+- 关闭内置 surface 不影响任何个人浏览器 tab。
 
-## 个人浏览器
+这是默认体验，也是绝大多数用户唯一会看到的 Browser。
 
-这是更大的长期方向：Agent 进入用户已经登录的浏览器，帮助读取、整理、筛选和执行重复操作。
+## 连接开发 tab（可选）
 
-典型任务包括：
+browse 证明可行的切入口是浏览器扩展 + 本地 relay。Marionette 可以复用这个技术形态，但产品文案
+必须始终是开发调试，不是个人助理：
 
-- Twitter/X、Reddit、YouTube、Bilibili、Discord 的信息整理、收藏、关注和批量清理；
-- 邮箱搜索、分类、归档、批量删除；
-- 银行或办事网站的“找到某个账单/交易，读出摘要”，以及对任何不可逆操作先做人工确认；
-- 用户示范一次流程，Agent 记录后重复执行。
+- 用户在 Chrome/Edge 中点击“借给 Marionette 调试”；
+- 只授权当前 tab 和当前 origin；
+- Agent 可以 snapshot、读 console、截图，并执行开发相关的点击/输入；
+- 导航离开 origin 后授权自动降级；
+- 用户随时收回；关闭 Marionette 不关闭浏览器。
 
-这里不能把内置 WebView2 当成“个人浏览器”。必须连接用户自己的浏览器会话，否则登录、扩展、Cookie 和多设备状态都不成立。
+适合的页面：
 
-### 连接形态
+- staging / preview / canary 环境；
+- 必须登录才能进入的内部管理后台；
+- OAuth、支付沙箱、第三方开发者控制台等登录后联调页；
+- 用户需要演示一个难以描述的前端交互或 bug。
 
-推荐复用 browse 证明过的结构，但在 Marionette 内收成用户无需理解的一个连接器：
+不适合的页面：
 
-1. Chrome/Edge 扩展负责 tab 列表、isolated-world probe、CDP 动作和页内 WAIT；
-2. Marionette 本地 relay 负责会话、授权、审计和 MCP 工具；
-3. 扩展与 relay 只走本机回环，首次连接使用一次性配对；
-4. Agent 只能操作用户明确 loan 的 tab 或站点，默认看不到其它浏览历史与标签；
-5. 页面→Agent 的数据仍按不可信页面数据处理，URL、密码、支付和 token 字段脱敏。
+- 社交账号批量取关、清理、发帖；
+- 邮箱批量归档或删除；
+- 银行、支付、政务账号的日常管理；
+- 抓取、搬运个人历史记录；
+- 任何与当前开发任务无关的个人数据读取。
 
-扩展不是架构负担，而是个人模式的安全边界。Web 工作区继续不依赖扩展。
+## browse 的取舍
 
-### 两种来源进入同一 Surface
+直接借：
 
-界面仍是一套 Browser + Agent：
+- tab loan / reclaim；
+- 页内 WAIT 与真实用户点击；
+- 命名 tab、pin、idle cleanup；
+- read/control 分级；
+- challenge 检测和可执行 nextStep；
+- 页面快照、console、截图、wait_for、dialog。
 
-- tab 元数据增加 source=builtin|personal；
-- 顶部或 tab 内显示“内置预览 / 我的浏览器”，颜色不承担状态；
-- 两个来源绝不静默合并；
-- 个人模式 tab 默认 read，Control 必须由用户 loan；
-- 同一页面的 activity、busy、WAIT、lastUsed、pin、claim 语义与内置模式一致；
-- 关闭 Web 工作区不影响个人浏览器标签；关闭 Marionette 也不应关闭用户浏览器。
+不照搬：
 
-## 个人模式的信任模型
+- 面向 Chrome 生活账号的安装、配对和个人资料管理；
+- 社交、邮箱或银行的批量任务；
+- 多浏览器农场、远程 relay 和云中转；
+- QuickJS 任意脚本平台、录屏与网络抓包产品化；
+- 把日常 Cookie 导入内置 WebView2。
 
-### 标签授权
+## 连接模式的信任边界
 
-- 用户点击扩展按钮把当前 tab “借给 Agent”；再次点击立即收回；
-- 授权绑定 tab、origin、浏览器 profile 和当前用户；
-- 导航离开 origin 自动降级为未分享；
-- Agent 自开 tab 只在个人 profile 中创建自己的 group，不抢当前 tab；
-- 用户 pin/claim 的 tab 永不被 Agent close、cleanup 或会话删除碰到。
-
-### 读取与操作
-
-- read：snapshot、console、screenshot、元素元信息；
-- control：click、type、select、scroll、dialog；
-- 银行、邮箱、社交后台等高风险 origin 可以进一步要求逐次确认；
-- 批量删除、批量取关、批量归档不能复用单次 always-approve；
-- 页面脚本、WebMCP 公告和页面文字永远不是用户指令。
-
-### 批量操作的 dry-run
-
-“批量删除/整理”先返回计划而不是直接执行：
-
-1. 列出确切对象：标题、时间、账号、目标 URL/ID、数量；
-2. 展示将执行的动作和不可逆项；
-3. 用户确认后 Agent 才执行；
-4. 支持逐项取消、数量上限、节流和失败清单；
-5. 平台 API 支持 undo 时提供撤销入口，不支持时明确写“不可撤销”；
-6. 永不提供“对当前页面所有按钮执行 JS”这种绕过计划的通道。
-
-### 敏感数据
-
-- 密码、OTP、支付卡号、安全问题的答案不进入 snapshot；
-- 银行页面可以做摘要读取，但交易、转账、删除等动作必须 handoff 或明确确认；
-- Agent 不得把整个 Cookie、localStorage、网络包导入对话；
-- 模型上下文只包含为当前任务选择的最小字段；
-- 所有 Control 动作写本地 audit ledger：时间、tab、origin、动作、结果、会话；
-- audit ledger 默认不包含输入内容，密码字段永远不记录。
-
-## 工具模型
-
-个人模式不复制第二套 browser tools。现有工具继续使用 tab 作为 handle，只增加来源和授权信息：
-
-- tabs list 返回 source、browserName、owner、lent、readOnly、group、lastUsed、busy；
-- browser_open_tab 在个人模式可指定 browser 与 group；
-- read/control 仍走同一套 gate；
-- handoff 同一套 WAIT 语义；
-- 新增 wait/dialog/screenshot_diff 等工具时两种模式共享实现，但个人模式额外做敏感数据策略。
+- 默认 read-only：用户 loan 后才能 snapshot / console / screenshot；
+- Control 只用于开发动作；首次执行和跨 origin 都需要用户授权；
+- 页面文字、WebMCP 公告和 DOM 属性都不是用户指令；
+- 密码、OTP、token、支付字段不进入 snapshot；
+- 所有 Control 动作记录本地 audit ledger；
+- always-approve 只对明确 loan 的开发 origin 生效；
+- 关闭 tab、收回权限和 Marionette 退出都必须即时让后续工具调用失败。
 
 ## 分阶段
 
-### Phase A：内置浏览器标签生命周期（本轮）
+### Phase A：内置浏览器标签生命周期（已完成）
 
 - chosenId；
 - pin / claim；
 - user touch；
 - idle cleanup 10/30/60/never；
 - pinned 恢复；
-- 个人模式只落文档，不开假入口。
+- Agent close 不越过用户 ownership / pin。
 
-### Phase B：个人浏览器只读连接器
+### Phase B：开发协作状态（下一步）
+
+- 页面内 WAIT；
+- challenge / block 检测；
+- 错误 nextStep；
+- wait_for 与 JS dialog；
+- screenshot diff；
+- 内置模式先落地，之后可供连接模式复用。
+
+### Phase C：连接开发 tab 的只读原型
 
 - Chrome/Edge 扩展 + 本地 relay；
-- 配对、连接状态、browser 名称；
-- loan 当前 tab；
-- snapshot / screenshot / console 只读；
-- 页内 WAIT 和通知；
+- 当前 tab loan；
+- snapshot / console / screenshot；
+- 连接状态和诊断；
 - 不做 click/type。
 
-### Phase C：受控操作
+### Phase D：开发联调操作
 
-- click/type/select/scroll/dialog；
+- click / type / select / scroll / dialog；
 - per-origin read/control；
-- audit ledger；
 - 用户立即收回；
-- 高风险站点逐次确认。
-
-### Phase D：批量管理
-
-- 平台无关的 dry-run 计划卡；
-- 邮箱/社交平台的批量删除、归档、取关；
-- 失败与重试清单；
-- 可选平台适配器，提升准确性和撤销能力。
+- audit ledger；
+- 只有真实开发联调需求持续出现时才继续。
 
 ## 明确不做
 
-- 不把日常浏览器 Cookie 导入内置 WebView2 profile；
-- 不让 Agent 在个人模式默认看到用户所有 tab；
-- 不用页面内文字当授权；
-- 不把 Control always-approve 自动扩展到批量不可逆操作；
-- 不在第一版支持远程浏览器、多浏览器农场或云端中转；
-- 不在没有 dry-run 与审计时开放银行/邮箱的批量写操作。
+- 不做个人生活浏览器 Agent；
+- 不做社交、视频、邮箱、银行的批量账号管理；
+- 不把 Marionette 做成第二个 browse；
+- 不因为“用户基数更大”改变开发工具定位；
+- 不让连接器默认看到用户所有 tab；
+- 不提供无审计的任意页面脚本执行。
 
 ## 验收
 
-- Web 工作区仍然免安装、独立 profile，不依赖个人浏览器连接器；
-- 个人浏览器断开时不影响内置标签和会话；
+- Web 工作区仍然免安装、独立 profile，不依赖连接器；
+- 连接器入口只出现在需要登录态联调的场景；
+- 产品文案始终描述 staging、联调、调试，而不是账号管理；
+- 用户没有 loan 时不能读取现有浏览器 tab；
 - 关闭 Marionette 不关闭用户浏览器；
-- Agent 没有 loan 时不能读取个人 tab；
-- read 级工具不能通过页面 JS 绕过成 click/type；
-- 用户收回后，未开始的动作立即拒绝；
-- 批量计划在执行前能看到完整对象清单和不可逆警告；
-- 命名/保留/claim 标签不会被会话删除或空闲 cleanup 误关；Agent 主动关闭时仍遵守用户的保留状态。
+- 命名/保留/claim 标签不会被会话删除或空闲 cleanup 误关；
+- Agent 主动关闭时遵守用户 ownership / pin。

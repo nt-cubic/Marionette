@@ -169,9 +169,10 @@ app 内置浏览器，agent 通过工具通道读写它。普通窗口里 Browse
   owner 与 grant，会话删除和空闲 cleanup 都不能关它。用户切换 tab、手动导航和分享动作都会
   刷新 lastUsed；10 / 30 / 60 / never 空闲清理只关普通 Agent tab，跳过 pinned、named、busy、
   waiting_user、handoff 和当前可见 tab。
-- **两种 Browser 产品方向**：内置 WebView2 继续服务免登录的 Web 开发/原型预览；连接用户
-  日常 Chrome/Edge 的个人浏览器模式走独立扩展 + relay，先只读 loan，再做受控操作和批量
-  dry-run。边界见 `docs/plan-browser-modes.md`，没有用内置 profile 冒充个人登录态。
+- **Browser 产品边界**：Marionette 仍是开发工具。内置 WebView2 是默认主路径；连接用户
+  现有 Chrome/Edge 只作为可选开发能力，用于 staging、内部后台、OAuth/支付沙箱和登录态
+  联调。个人生活助手、社交/邮箱/银行批量管理明确不做。边界见
+  `docs/plan-browser-modes.md`。
 - **授权**：agent 自开标签自动**可读**（快照/console/截图）；**点击/输入（Control）
   逐次弹权限卡**（允许一次 / 允许并记住此站点 / 拒绝，2 分钟超时自动拒绝），该会话
   开着 always-approve 则自动放行；用户自开标签读写都要手动分享。grant 绑 origin，
