@@ -12,11 +12,16 @@
 //!   prefit / maybe_refit），非流式应答转回 anthropic message，流式应答把
 //!   chat SSE 逐事件映射成 anthropic 帧。
 //!
-//! SSE 编排是**调用方**的职责（translate.rs 模块注释钉的分工）：`message_start`
-//! 必须是第一帧——anthropic SDK 的 MessageStream 对它之前的事件直接抛错
-//! （Go anthropicEncoder.keepalive 注释实锤）；无状态映射会把 finish 帧与
-//! `[DONE]` 各收口一次 `message_stop`，这里在**首个** message_stop 后丢弃
-//! 全部尾巴（include_usage 末帧、`[DONE]`），一条流只收口一次。
+//! SSE 编排在端点的帧编排器（`AnthropicFrames`，translate.rs 模块注释钉的
+//! 分工）：`message_start` 必须是第一帧——anthropic SDK 的 MessageStream 对
+//! 它之前的事件直接抛错（Go anthropicEncoder.keepalive 注释实锤）；
+//! `content_block` 的 index 按块开闭递增（同轮 text 块与 tool_use 块共享
+//! 一条 index 序列，anthropic 规矩）；无状态映射会把 finish 帧与
+//! `[DONE]` 各收口一次 `message_stop`，编排器在**首个** message_stop 后丢弃
+//! 全部尾巴（include_usage 末帧、`[DONE]`），一条流只收口一次。chat 流的
+//! `tool_calls` 分片经 `translate::ChatToolAccum` 拼装，每次调用出
+//! `content_block_start`（tool_use）→ `content_block_delta`
+//! （input_json_delta，拼装结果整段一帧）→ `content_block_stop` 三段式。
 //!
 //! 错误面：厂商错误一律转 anthropic 形状
 //! `{"type":"error","error":{"type":"...","message":"..."}}`，状态码透传；
@@ -271,21 +276,218 @@ fn refit_reply_to_anthropic(reply: Reply, streaming: bool, asked_model: &str) ->
 // SSE 翻译器：chat 事件流 → anthropic 事件流
 // =====================================================================
 
-/// 包在厂商 SSE reader 外的 Read 适配器：逐行取 `data: …`，经
-/// translate::sse_chat_to_anthropic 映射，端点侧负责拼完整帧
-/// （`event: <type>\ndata: {...}\n\n`——映射函数给的就是帧体，这里补
-/// 帧分隔）与 message_start 编排。无法映射的行（role 首帧、tool_calls
-/// 分片、注释、event 行）原样跳过，绝不中断流。
+/// chat → anthropic 的帧编排器（无 IO：吃一条 chat data 行，吐 anthropic
+/// 帧文本）。职责：message_start 首帧编排、content_block index 递增
+/// （text 块与 tool_use 块共享一条序列，anthropic 规矩）、tool_calls
+/// 分片拼装（translate::ChatToolAccum，惰性冲刷）、单次 message_stop
+/// 收口。流式 Read 适配器与 refit 整读路径共用这一个状态机。
+struct AnthropicFrames {
+    /// message_start 已发（第一帧必须是它，anthropic SDK 的硬要求）。
+    started: bool,
+    /// 已收口（message_stop 之后的一切尾巴全部丢弃，一条流只收口一次）。
+    stopped: bool,
+    /// 下一个 content_block 的 index（块开一次递增一次）。
+    next_index: usize,
+    /// 开着的 text 块 index（Some = 文本块开着；文本块与 pending 工具
+    /// 互斥——工具分片到达即封文本块，正文到达即冲刷工具族）。
+    text_open: Option<usize>,
+    /// chat tool_calls 分片拼装（Go chatDecoder 子集，两侧端点共享）。
+    tools: translate::ChatToolAccum,
+    /// finish_reason 已到（**只记账不收口**：chat 流的 usage 帧在 finish
+    /// 之后——include_usage 时是独立末帧，responses.rs 的同款口径——
+    /// message_delta/message_stop 推迟到 [DONE]/EOF 才发，usage 才真）。
+    finish: Option<String>,
+    /// 见过的最后一份 usage（finish 帧 或 include_usage 末帧）。
+    usage: Option<Value>,
+}
+
+impl AnthropicFrames {
+    fn new() -> AnthropicFrames {
+        AnthropicFrames {
+            started: false,
+            stopped: false,
+            next_index: 0,
+            text_open: None,
+            tools: translate::ChatToolAccum::new(),
+            finish: None,
+            usage: None,
+        }
+    }
+
+    /// 一条 chat data 行（JSON chunk 或 `[DONE]`）→ anthropic 帧文本
+    /// （多帧以 `\n\n` 连接；空串 = 本行无输出）。首条有输出的行自带
+    /// message_start 前缀（model 参数给 message_start 回显用）。
+    fn feed(&mut self, data: &str, model: &str) -> String {
+        if self.stopped {
+            return String::new();
+        }
+        let mut out = String::new();
+        if data == "[DONE]" {
+            out.push_str(&self.close_text());
+            out.push_str(&self.flush_tools());
+            match self.finish.take() {
+                // finish 来过：补收尾两帧（带上等到的 usage）。
+                Some(stop) => out.push_str(&self.message_end(&stop, self.usage.as_ref())),
+                // finish 没来过的怪流：只有 message_stop，不编 stop_reason。
+                None => out.push_str(&sse_frame("message_stop", &json!({"type": "message_stop"}))),
+            }
+            self.stopped = true;
+            return self.with_start(out, model);
+        }
+        let Ok(v) = serde_json::from_str::<Value>(data) else {
+            return String::new(); // 杂行安静跳过，绝不中断流
+        };
+        if let Some(u) = v.get("usage").filter(|u| u.is_object()) {
+            self.usage = Some(u.clone());
+        }
+        let choice = v.pointer("/choices/0");
+        // 同一条 chunk 里 content 与 tool_calls 并存时正文在前（Go
+        // chatDecoder 同款顺序：先 text 后 toolCall）。
+        let text = choice
+            .and_then(|c| c.pointer("/delta/content"))
+            .and_then(|d| d.as_str())
+            .unwrap_or("");
+        if !text.is_empty() {
+            out.push_str(&self.text_delta(text));
+        }
+        if let Some(calls) = choice
+            .and_then(|c| c.pointer("/delta/tool_calls"))
+            .and_then(|t| t.as_array())
+        {
+            if !calls.is_empty() {
+                // 工具分片到达：文本块到此为止，分片进拼装器（事件族惰性）。
+                out.push_str(&self.close_text());
+                self.tools.feed(calls);
+            }
+        }
+        if let Some(stop) = choice
+            .and_then(|c| c.get("finish_reason"))
+            .and_then(|f| f.as_str())
+            .filter(|f| !f.is_empty())
+        {
+            // 封块现在发（anthropic 规矩：所有 content_block_stop 在
+            // message_delta 前），收尾两帧等流尾。
+            out.push_str(&self.close_text());
+            out.push_str(&self.flush_tools());
+            self.finish = Some(stop.to_string());
+        }
+        self.with_start(out, model)
+    }
+
+    /// EOF 兜底（没等到 [DONE]）：冲刷 pending 的工具与开着的文本块；
+    /// finish 来过就补收尾两帧（回合是真完了，缺的只是 [DONE]），
+    /// 没来过就到此为止——流是被截断的，不编收口。
+    fn flush_truncated(&mut self, model: &str) -> String {
+        let mut out = self.close_text();
+        out.push_str(&self.flush_tools());
+        if !self.stopped {
+            if let Some(stop) = self.finish.take() {
+                out.push_str(&self.message_end(&stop, self.usage.as_ref()));
+                self.stopped = true;
+            }
+        }
+        self.with_start(out, model)
+    }
+
+    /// 首条输出前插 message_start（started 只翻一次）。
+    fn with_start(&mut self, mut out: String, model: &str) -> String {
+        if !self.started && !out.is_empty() {
+            self.started = true;
+            out.insert_str(0, &message_start_frame(model));
+        }
+        out
+    }
+
+    /// 一条正文 delta：必要时先冲刷 pending 工具族（到达序），文本块
+    /// 没开就开（content_block_start type=text）。
+    fn text_delta(&mut self, text: &str) -> String {
+        let mut out = self.flush_tools();
+        let index = match self.text_open {
+            Some(i) => i,
+            None => {
+                let i = self.next_index;
+                self.next_index += 1;
+                self.text_open = Some(i);
+                out.push_str(&sse_frame(
+                    "content_block_start",
+                    &json!({"type": "content_block_start", "index": i,
+                        "content_block": {"type": "text", "text": ""}}),
+                ));
+                i
+            }
+        };
+        out.push_str(&sse_frame(
+            "content_block_delta",
+            &json!({"type": "content_block_delta", "index": index,
+                "delta": {"type": "text_delta", "text": text}}),
+        ));
+        out
+    }
+
+    /// 封口开着的文本块（幂等）。
+    fn close_text(&mut self) -> String {
+        match self.text_open.take() {
+            Some(i) => sse_frame("content_block_stop", &json!({"type": "content_block_stop", "index": i})),
+            None => String::new(),
+        }
+    }
+
+    /// 冲刷拼装完成的工具调用：三段式（start：tool_use 空 input →
+    /// delta：input_json_delta（拼装结果整段一帧）→ stop）。空参数合成
+    /// `"{}"`（Go anthropicEncoder.close 同款）——客户端把 partial_json
+    /// 串起来解析，串不出对象整个调用就废了。
+    fn flush_tools(&mut self) -> String {
+        let mut out = String::new();
+        for call in self.tools.take() {
+            let index = self.next_index;
+            self.next_index += 1;
+            // 空 id 兜底合成（Go anthropicEncoder 同款）：客户端要拿 id
+            // 回传 tool_result，空串接不上。chat 的 call_* id 原样透传——
+            // 往返只要求同一根串，不要求 anthropic 的 toolu_ 前缀。
+            let id = if call.id.is_empty() { fresh_toolu_id() } else { call.id.clone() };
+            out.push_str(&sse_frame(
+                "content_block_start",
+                &json!({"type": "content_block_start", "index": index,
+                    "content_block": {"type": "tool_use", "id": id, "name": call.name, "input": {}}}),
+            ));
+            let partial = if call.arguments.is_empty() { "{}".to_string() } else { call.arguments };
+            out.push_str(&sse_frame(
+                "content_block_delta",
+                &json!({"type": "content_block_delta", "index": index,
+                    "delta": {"type": "input_json_delta", "partial_json": partial}}),
+            ));
+            out.push_str(&sse_frame(
+                "content_block_stop",
+                &json!({"type": "content_block_stop", "index": index}),
+            ));
+        }
+        out
+    }
+
+    /// 回合收尾两帧：message_delta（stop + usage 同帧）+ message_stop。
+    /// 与 translate::sse_chat_to_anthropic 的 finish 分支同形状（那边对
+    /// 带正文的帧会被 text 分支抢先，这里按帧面自建；stop/usage 的映射
+    /// 用本模块非流式路径已有的镜像函数，改语义两处一起看）。
+    fn message_end(&self, stop: &str, usage: Option<&Value>) -> String {
+        let mut out = sse_frame(
+            "message_delta",
+            &json!({"type": "message_delta",
+                "delta": {"stop_reason": chat_stop_to_anthropic(stop), "stop_sequence": null},
+                "usage": anthropic_usage_of(usage)}),
+        );
+        out.push_str(&sse_frame("message_stop", &json!({"type": "message_stop"})));
+        out
+    }
+}
+
+/// 包在厂商 SSE reader 外的 Read 适配器：逐行取 `data: …` 喂
+/// [`AnthropicFrames`]，帧文本进缓冲再按 read 的粒度吐出。
 struct AnthropicSseTranslator {
     inner: BufReader<Box<dyn Read + Send>>,
     /// 待写出的 anthropic 字节（pos 之前已消费）。
     out: Vec<u8>,
     pos: usize,
-    /// message_start 已发（第一帧必须是它，anthropic SDK 的硬要求）。
-    started: bool,
-    /// 已见过 message_stop：之后的尾巴（usage 末帧、[DONE]）全部丢弃——
-    /// 无状态映射对 finish 与 [DONE] 各收口一次，一条流只能收口一次。
-    stopped: bool,
+    frames: AnthropicFrames,
     done: bool,
     model: String,
 }
@@ -296,8 +498,7 @@ impl AnthropicSseTranslator {
             inner: BufReader::new(reader),
             out: Vec::new(),
             pos: 0,
-            started: false,
-            stopped: false,
+            frames: AnthropicFrames::new(),
             done: false,
             model: model.to_string(),
         }
@@ -318,12 +519,20 @@ impl Read for AnthropicSseTranslator {
                 return Ok(n);
             }
             // 收口之后不再读上游：尾巴全丢，也免厂商挂着连接不关。
-            if self.done || self.stopped {
+            if self.done || self.frames.stopped {
+                self.done = true;
                 return Ok(0);
             }
             let mut line = String::new();
             match self.inner.read_line(&mut line) {
                 Ok(0) => {
+                    // 上游 EOF：截断流兜底——pending 工具与开着的文本块
+                    // 冲出去；finish 来过才补收尾两帧（缺的只是 [DONE]）。
+                    let tail = self.frames.flush_truncated(&self.model);
+                    if !tail.is_empty() {
+                        self.out.extend_from_slice(tail.as_bytes());
+                        continue;
+                    }
                     self.done = true;
                     return Ok(0);
                 }
@@ -336,18 +545,22 @@ impl Read for AnthropicSseTranslator {
             }
             let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
             let Some(data) = trimmed.strip_prefix("data:") else { continue };
-            let Some(frames) = translate::sse_chat_to_anthropic(data.trim()) else { continue };
-            if !self.started {
-                self.out.extend_from_slice(message_start_frame(&self.model).as_bytes());
-                self.started = true;
+            let frames = self.frames.feed(data.trim(), &self.model);
+            if !frames.is_empty() {
+                self.out.extend_from_slice(frames.as_bytes());
             }
-            if frames.contains("event: message_stop") {
-                self.stopped = true;
-            }
-            self.out.extend_from_slice(frames.as_bytes());
-            self.out.extend_from_slice(b"\n\n");
         }
     }
+}
+
+/// 一条 anthropic SSE 事件的完整帧（`event: <type>\ndata: {…}\n\n`，
+/// translate.rs sse_block 的端点侧镜像——那边是私有的）。
+fn sse_frame(event: &str, data: &Value) -> String {
+    format!(
+        "event: {}\ndata: {}\n\n",
+        event,
+        serde_json::to_string(data).unwrap_or_default()
+    )
 }
 
 /// message_start 帧（Go anthropicEncoder.start 同形状：空 content、null
@@ -369,37 +582,39 @@ fn message_start_frame(model: &str) -> String {
             "usage": { "input_tokens": 0, "output_tokens": 0 },
         }
     });
-    format!(
-        "event: message_start\ndata: {}\n\n",
-        serde_json::to_string(&data).unwrap_or_default()
-    )
+    sse_frame("message_start", &data)
+}
+
+/// 流式 tool_use 的空 id 兜底（进程内计数 + 纳秒时钟，同 message_start
+/// 的 id 口径——只要不重复，不是安全敏感值）。
+fn fresh_toolu_id() -> String {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("toolu_{:x}-{:x}", nanos, n)
 }
 
 /// 一整段 chat SSE 文本 → 完整 anthropic SSE 文本（refit 回路的整读形态）。
-/// 一条 data 行都映射不上（不是 SSE）返回 None。
+/// 一条 data 行都映射不上（不是 SSE）返回 None。与流式路径共用
+/// [`AnthropicFrames`]，工具分片在此同样拼装。
 fn sse_text_to_anthropic(body: &[u8], model: &str) -> Option<String> {
     let text = std::str::from_utf8(body).ok()?;
+    let mut frames = AnthropicFrames::new();
     let mut out = String::new();
-    let mut mapped = false;
-    let mut stopped = false;
     for line in text.lines() {
-        if stopped {
+        if frames.stopped {
             break;
         }
         let Some(data) = line.trim_end().strip_prefix("data:") else { continue };
-        if let Some(frames) = translate::sse_chat_to_anthropic(data.trim()) {
-            mapped = true;
-            if frames.contains("event: message_stop") {
-                stopped = true;
-            }
-            out.push_str(&frames);
-            out.push_str("\n\n");
-        }
+        out.push_str(&frames.feed(data.trim(), model));
     }
-    if !mapped {
+    if out.is_empty() {
         return None;
     }
-    Some(message_start_frame(model) + &out)
+    Some(out)
 }
 
 // =====================================================================
@@ -876,6 +1091,207 @@ mod tests {
         // 出站的 chat 体带了 stream_options.include_usage（Go buildChat 同款）。
         let sent: Value = serde_json::from_str(&vendor.last().body).expect("sent chat json");
         assert_eq!(sent["stream_options"], json!({"include_usage": true}));
+    }
+
+    /// 解析产出的 anthropic SSE：每帧 (event 名, data JSON)。
+    fn parse_frames(sse: &str) -> Vec<(String, Value)> {
+        let mut out = Vec::new();
+        for frame in sse.split("\n\n") {
+            let mut name = String::new();
+            let mut data = String::new();
+            for line in frame.lines() {
+                if let Some(v) = line.strip_prefix("event: ") {
+                    name = v.to_string();
+                }
+                if let Some(v) = line.strip_prefix("data: ") {
+                    data = v.to_string();
+                }
+            }
+            if !name.is_empty() && !data.is_empty() {
+                out.push((name, serde_json::from_str(&data).expect("frame data json")));
+            }
+        }
+        out
+    }
+
+    // -----------------------------------------------------------------
+    // 流式工具调用（T15）
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn stream_translation_maps_tool_calls_to_tool_use_blocks() {
+        // text delta + tool_calls 三分片（arguments 跨帧）+ finish(tool_calls)
+        // + usage + [DONE] —— T15 的验收形状。
+        let sse = concat!(
+            r#"data: {"id":"c2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"id":"c2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"looking up"},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"id":"c2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_5","type":"function","function":{"name":"get_weather","arguments":"{\"ci"}}]},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"id":"c2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ty\":\"Tokyo\""}}]},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"id":"c2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"}"}}]},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"id":"c2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":9,"completion_tokens":5}}"#,
+            "\n\n",
+            "data: [DONE]\n\n",
+        );
+        let vendor = fake_vendor(200, "text/event-stream", sse);
+        let providers = format!(
+            r#"{{"providers":[{{"id":"fake","name":"Fake","key":"sk-test","chat":"{}/v1"}}]}}"#,
+            vendor.base
+        );
+        let (gateway, _sandbox) = sandbox(&providers);
+        let request = json!({
+            "model": "fake/m", "max_tokens": 64, "stream": true,
+            "messages": [{ "role": "user", "content": "weather?" }],
+            "tools": [{ "name": "get_weather", "description": "weather",
+                "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}} }],
+        });
+        let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
+        // 流式请求同样带 tools 定义（翻译是体级的，与 stream 无关）。
+        let sent: Value = serde_json::from_str(&vendor.last().body).expect("sent chat json");
+        assert_eq!(sent["tools"][0]["function"]["name"], "get_weather");
+        assert_eq!(sent["stream_options"], json!({"include_usage": true}));
+
+        let Reply::Stream { status, content_type, mut reader } = reply else {
+            panic!("expected stream reply, got json");
+        };
+        assert_eq!(status, 200);
+        assert!(content_type.contains("text/event-stream"));
+        let mut out = String::new();
+        reader.read_to_string(&mut out).expect("read translated stream");
+        let events = parse_frames(&out);
+        let names: Vec<&str> = events.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "message_start",
+                "content_block_start",  // text 块 index 0
+                "content_block_delta",  // text_delta
+                "content_block_stop",   // 工具分片到达，文本块封口
+                "content_block_start",  // tool_use 块 index 1（三段式起）
+                "content_block_delta",  // input_json_delta（拼装结果整段）
+                "content_block_stop",
+                "message_delta",
+                "message_stop",
+            ],
+            "tool_use 三段式与 text 块按到达序、index 递增"
+        );
+        // text 块 index 0。
+        assert_eq!(events[1].1["index"], json!(0));
+        assert_eq!(events[1].1["content_block"]["type"], "text");
+        assert_eq!(events[2].1["delta"]["text"], "looking up");
+        assert_eq!(events[3].1["index"], json!(0));
+        // tool_use 块 index 1：id / name / 空 input。
+        assert_eq!(events[4].1["index"], json!(1));
+        let block = &events[4].1["content_block"];
+        assert_eq!(block["type"], "tool_use");
+        assert_eq!(block["id"], "call_5");
+        assert_eq!(block["name"], "get_weather");
+        assert_eq!(block["input"], json!({}));
+        // input_json_delta：拼装结果整段一帧。
+        assert_eq!(events[5].1["index"], json!(1));
+        assert_eq!(events[5].1["delta"]["type"], "input_json_delta");
+        assert_eq!(events[5].1["delta"]["partial_json"], r#"{"city":"Tokyo"}"#);
+        assert_eq!(events[6].1["index"], json!(1));
+        // 收尾：chat 的 tool_calls → anthropic 的 tool_use。
+        assert_eq!(events[7].1["delta"]["stop_reason"], "tool_use");
+        assert_eq!(events[7].1["usage"]["input_tokens"], 9);
+        // 一条流只收口一次。
+        assert_eq!(out.matches("event: message_stop").count(), 1);
+    }
+
+    #[test]
+    fn stream_translation_interleaves_text_and_tools_with_indices() {
+        // 正文 → 工具分片 → 又一段正文：三块 index 0/1/2 递增，工具族在
+        // 第二段正文之前冲刷（到达序）。
+        let sse = concat!(
+            r#"data: {"choices":[{"index":0,"delta":{"content":"one"},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"t","arguments":"{}"}}]},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"choices":[{"index":0,"delta":{"content":"two"},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+            "\n\n",
+            "data: [DONE]\n\n",
+        );
+        let vendor = fake_vendor(200, "text/event-stream", sse);
+        let providers = format!(
+            r#"{{"providers":[{{"id":"fake","name":"Fake","key":"sk-test","chat":"{}/v1"}}]}}"#,
+            vendor.base
+        );
+        let (gateway, _sandbox) = sandbox(&providers);
+        let request = json!({
+            "model": "fake/m", "max_tokens": 64, "stream": true,
+            "messages": [{ "role": "user", "content": "hi" }],
+        });
+        let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
+        let Reply::Stream { mut reader, .. } = reply else { panic!("stream reply") };
+        let mut out = String::new();
+        reader.read_to_string(&mut out).expect("read translated stream");
+        let events = parse_frames(&out);
+        let shape: Vec<(String, usize)> = events
+            .iter()
+            .filter(|(n, _)| n.starts_with("content_block"))
+            .map(|(n, d)| (n.clone(), d["index"].as_u64().unwrap_or(999) as usize))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                ("content_block_start".into(), 0),
+                ("content_block_delta".into(), 0),
+                ("content_block_stop".into(), 0),
+                ("content_block_start".into(), 1), // tool_use
+                ("content_block_delta".into(), 1),
+                ("content_block_stop".into(), 1),
+                ("content_block_start".into(), 2), // 第二段正文新开文本块
+                ("content_block_delta".into(), 2),
+                ("content_block_stop".into(), 2),
+            ],
+            "同轮多块 index 递增，工具族穿插在两段正文之间"
+        );
+        assert_eq!(events[0].0, "message_start");
+    }
+
+    #[test]
+    fn stream_translation_truncated_flushes_tool_without_stop() {
+        // 厂商半途断流（无 finish 无 [DONE]）：tool_use 三段式照发（工具
+        // 调用是真的），但没有 message_stop——流是被截断的，不编收口。
+        let sse = concat!(
+            r#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"read","arguments":"{\"p\":1}"}}]},"finish_reason":null}]}"#,
+            "\n\n"
+        );
+        let vendor = fake_vendor(200, "text/event-stream", sse);
+        let providers = format!(
+            r#"{{"providers":[{{"id":"fake","name":"Fake","key":"sk-test","chat":"{}/v1"}}]}}"#,
+            vendor.base
+        );
+        let (gateway, _sandbox) = sandbox(&providers);
+        let request = json!({
+            "model": "fake/m", "max_tokens": 64, "stream": true,
+            "messages": [{ "role": "user", "content": "go" }],
+        });
+        let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
+        let Reply::Stream { mut reader, .. } = reply else { panic!("stream reply") };
+        let mut out = String::new();
+        reader.read_to_string(&mut out).expect("read translated stream");
+        let events = parse_frames(&out);
+        let names: Vec<&str> = events.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "message_start",
+                "content_block_start",
+                "content_block_delta",
+                "content_block_stop",
+            ]
+        );
+        assert_eq!(events[1].1["content_block"]["type"], "tool_use");
+        assert_eq!(events[2].1["delta"]["partial_json"], r#"{"p":1}"#);
+        assert!(!out.contains("event: message_stop"), "截断流不编收口");
     }
 
     // -----------------------------------------------------------------

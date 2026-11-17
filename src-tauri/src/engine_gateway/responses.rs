@@ -28,10 +28,12 @@
 //! 末帧），先封口 usage 就丢了——等 usage 或 [DONE]。
 //!
 //! 未覆盖（列给账本）：reasoning item（chat 流没有对应物，不编造）、
-//! function call 的流式事件（chat 的 tool_calls 分片需要参数拼装状态机，
-//! 非流式路径有完整映射）、直通路径的 bodycap refit（丢图逻辑只认 chat
-//! 形状的 messages/image_url，对 responses 形状的 input/input_image 找
-//! 不到可丢的图——挂上反而把「可救」说成「救过了」）。
+//! 直通路径的 bodycap refit（丢图逻辑只认 chat 形状的 messages/image_url，
+//! 对 responses 形状的 input/input_image 找不到可丢的图——挂上反而把
+//! 「可救」说成「救过了」）。流式 function_call 自 T15 起有完整映射
+//! （chat 的 tool_calls 分片经 translate::ChatToolAccum 拼装，一次调用
+//! 出一族 `output_item.added → arguments.delta → arguments.done →
+//! output_item.done`，与文本 item 按到达序交错）。
 //!
 //! 参照（只读研究克隆）：magpie internal/gateway/responses.go 的
 //! responsesEncoder（事件序列与帧形状）/ renderResponses（非流式应答）。
@@ -394,12 +396,18 @@ fn chat_completion_to_response(v: &Value, asked: &str) -> Value {
 /// → 每条 chat text delta 一帧 `response.output_text.delta`
 /// → `response.output_text.done`（全文）
 /// → `response.output_item.done`（完整 item）
+/// → 每次拼装完成的工具调用一族：`output_item.added`（function_call）→
+///   `function_call_arguments.delta`（拼装结果整段一帧）→
+///   `function_call_arguments.done` → `output_item.done`（完整 item：
+///   name / arguments / call_id）——与文本 item 按到达序交错（正文先到
+///   正文 item 先封口，工具先到事件族先发）
 /// → `response.completed` / `response.incomplete`（usage + 完整 output）。
 ///
 /// finish_reason 帧到了**不**立即收尾：chat 流的 usage 帧在 finish 之后
 /// （include_usage 时是独立末帧），先封口 usage 就丢了——等 usage 或
 /// [DONE]。上游 EOF 也没等到的（厂商半途断流），按已知的收尾（Go
-/// readSSE 结束后 finish() 同款）：完成序列照发，usage 没有就 0。
+/// readSSE 结束后 finish() 同款）：完成序列照发，usage 没有就 0；拼装到
+/// 一半的工具调用按已收到的分片诚实发出（arguments 可能不完整）。
 struct ResponsesSse {
     inner: BufReader<Box<dyn Read + Send>>,
     /// 待写出的字节（帧队列的物理形态），pos 是已消费位置。
@@ -409,6 +417,12 @@ struct ResponsesSse {
     item_open: bool,
     text: String,
     item_id: String,
+    /// 打开中的 message item 的 output_index（开 item 时 = items.len()）。
+    item_index: usize,
+    /// 已封口的 items（completed 事件的 output 数组，按封口序）。
+    items: Vec<Value>,
+    /// chat tool_calls 分片拼装（惰性：收尾或正文交错时冲刷）。
+    tools: super::translate::ChatToolAccum,
     resp_id: String,
     seq: u64,
     model: String,
@@ -427,6 +441,9 @@ impl ResponsesSse {
             item_open: false,
             text: String::new(),
             item_id: String::new(),
+            item_index: 0,
+            items: Vec::new(),
+            tools: super::translate::ChatToolAccum::new(),
             resp_id: format!("resp_{}", fresh_suffix()),
             seq: 0,
             model: model.to_string(),
@@ -483,12 +500,14 @@ impl ResponsesSse {
             return;
         }
         self.item_open = true;
+        self.item_index = self.items.len();
         self.item_id = format!("msg_{}", fresh_suffix());
         let item_id = self.item_id.clone();
+        let output_index = self.item_index;
         self.frame(
             "response.output_item.added",
             json!({
-                "output_index": 0,
+                "output_index": output_index,
                 "item": {
                     "id": item_id,
                     "type": "message", "role": "assistant", "status": "in_progress",
@@ -498,7 +517,86 @@ impl ResponsesSse {
         );
     }
 
-    /// 终结序列：text.done → item.done → completed/incomplete。
+    /// 封口打开中的 message item（text.done + item.done，进 items 账）。
+    /// 工具分片到达或收尾时调用——正文 item 在工具 item 前面，先封口。
+    fn close_item(&mut self) {
+        if !self.item_open {
+            return;
+        }
+        self.item_open = false;
+        let output_index = self.item_index;
+        self.frame(
+            "response.output_text.done",
+            json!({
+                "item_id": &self.item_id, "output_index": output_index, "content_index": 0,
+                "text": &self.text,
+            }),
+        );
+        let item = json!({
+            "id": &self.item_id,
+            "type": "message", "role": "assistant", "status": "completed",
+            "content": [{ "type": "output_text", "text": &self.text, "annotations": [] }],
+        });
+        self.frame("response.output_item.done", json!({ "output_index": output_index, "item": item.clone() }));
+        self.items.push(item);
+    }
+
+    /// 冲刷拼装完成的工具调用：每次调用一族
+    /// `output_item.added → arguments.delta → arguments.done → output_item.done`
+    /// （responsesEncoder 的 KToolStart/KToolArgs/closeItem 同形状；arguments
+    /// 拼装结果整段一帧 delta——分片是 chat 线协议的事，responses 客户端
+    /// 只要增量语义，不欠它厂商的切片粒度）。空 arguments 的 delta 不发
+    /// （Go KToolArgs 同款跳空），done/item 的 arguments 空时记 "{}"。
+    fn flush_tools(&mut self) {
+        self.ensure_started();
+        for call in self.tools.take() {
+            let output_index = self.items.len();
+            let item_id = format!("fc_{}", fresh_suffix());
+            let call_id = if call.id.is_empty() {
+                format!("call_{}", fresh_suffix())
+            } else {
+                call.id.clone()
+            };
+            let args = call.arguments.trim();
+            let args = if args.is_empty() { "{}" } else { args };
+            self.frame(
+                "response.output_item.added",
+                json!({
+                    "output_index": output_index,
+                    "item": {
+                        "id": &item_id,
+                        "type": "function_call", "status": "in_progress",
+                        "call_id": &call_id, "name": &call.name, "arguments": "",
+                    },
+                }),
+            );
+            if !call.arguments.is_empty() {
+                self.frame(
+                    "response.function_call_arguments.delta",
+                    json!({
+                        "item_id": &item_id, "output_index": output_index,
+                        "delta": &call.arguments,
+                    }),
+                );
+            }
+            self.frame(
+                "response.function_call_arguments.done",
+                json!({
+                    "item_id": &item_id, "output_index": output_index,
+                    "call_id": &call_id, "arguments": args,
+                }),
+            );
+            let item = json!({
+                "id": &item_id,
+                "type": "function_call", "status": "completed",
+                "call_id": &call_id, "name": &call.name, "arguments": args,
+            });
+            self.frame("response.output_item.done", json!({ "output_index": output_index, "item": item.clone() }));
+            self.items.push(item);
+        }
+    }
+
+    /// 终结序列：text.done → item.done →（工具事件族）→ completed/incomplete。
     fn finish_stream(&mut self) {
         if self.ended {
             return;
@@ -514,30 +612,12 @@ impl ResponsesSse {
             _ => ("completed", "response.completed", Value::Null),
         };
         let usage = usage_to_responses(self.usage.as_ref());
-        let item = json!({
-            "id": self.item_id,
-            "type": "message", "role": "assistant", "status": "completed",
-            "content": [{ "type": "output_text", "text": self.text, "annotations": [] }],
-        });
-        if self.item_open {
-            let item_id = self.item_id.clone();
-            self.frame(
-                "response.output_text.done",
-                json!({
-                    "item_id": item_id, "output_index": 0, "content_index": 0,
-                    "text": self.text,
-                }),
-            );
-            self.frame("response.output_item.done", json!({ "output_index": 0, "item": item.clone() }));
-            let response = self.response_object(status, json!([item]), usage, incomplete);
-            self.frame(event, json!({ "response": response }));
-            self.item_open = false;
-        } else {
-            // 没有任何正文（空回合 / 纯工具轮的流式路径——本映射不带工具
-            // 事件）：output 空数组，诚实汇报。
-            let response = self.response_object(status, json!([]), usage, incomplete);
-            self.frame(event, json!({ "response": response }));
-        }
+        self.close_item();
+        self.flush_tools();
+        // 空回合（无正文无工具）的 output 就是空数组——诚实汇报。
+        let output = Value::Array(std::mem::take(&mut self.items));
+        let response = self.response_object(status, output, usage, incomplete);
+        self.frame(event, json!({ "response": response }));
         self.ended = true;
     }
 
@@ -559,17 +639,31 @@ impl ResponsesSse {
             .and_then(|d| d.as_str())
             .unwrap_or("");
         if !text.is_empty() {
+            // 正文在工具分片之后到达：先按到达序冲刷工具事件族，再开新 item。
+            self.flush_tools();
             self.ensure_started();
             self.ensure_item();
             self.text.push_str(text);
             let item_id = self.item_id.clone();
+            let output_index = self.item_index;
             self.frame(
                 "response.output_text.delta",
                 json!({
-                    "item_id": item_id, "output_index": 0, "content_index": 0,
+                    "item_id": item_id, "output_index": output_index, "content_index": 0,
                     "delta": text,
                 }),
             );
+        }
+        if let Some(calls) = choice
+            .and_then(|c| c.pointer("/delta/tool_calls"))
+            .and_then(|t| t.as_array())
+        {
+            if !calls.is_empty() {
+                // 工具分片到达：正文 item 到此为止（先封口），分片进拼装器，
+                // 事件族等收尾或下次正文交错再发（chat 流没有「调用完了」信号）。
+                self.close_item();
+                self.tools.feed(calls);
+            }
         }
         if let Some(finish) = choice
             .and_then(|c| c.get("finish_reason"))
@@ -880,6 +974,128 @@ mod tests {
         assert_eq!(completed["usage"]["input_tokens"], 5);
         assert_eq!(completed["usage"]["output_tokens"], 2);
         assert_eq!(completed["usage"]["total_tokens"], 7);
+    }
+
+    #[test]
+    fn translated_streaming_tool_call_event_family() {
+        // T15 的验收形状：text delta + tool_calls 三分片（arguments 跨帧）+
+        // finish(tool_calls) + usage + [DONE]。
+        let sse = concat!(
+            r#"data: {"id":"c2","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}"#, "\n\n",
+            r#"data: {"id":"c2","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"checking…"},"finish_reason":null}]}"#, "\n\n",
+            r#"data: {"id":"c2","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_77","type":"function","function":{"name":"get_weather","arguments":"{\"ci"}}]},"finish_reason":null}]}"#, "\n\n",
+            r#"data: {"id":"c2","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ty\":\"Berlin\""}}]},"finish_reason":null}]}"#, "\n\n",
+            r#"data: {"id":"c2","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"}"}}]},"finish_reason":null}]}"#, "\n\n",
+            r#"data: {"id":"c2","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":11,"completion_tokens":6,"total_tokens":17}}"#, "\n\n",
+            "data: [DONE]\n\n"
+        );
+        let vendor = fake_vendor(200, "text/event-stream", sse);
+        let (gateway, _sandbox) = sandbox(&format!(
+            r#"{{"providers":[{{"id":"p","name":"P","key":"sk-test","chat":"{}/v1"}}]}}"#,
+            vendor.base
+        ));
+        let reply = handle(
+            &gateway,
+            br#"{"model":"p/m","input":"weather?","stream":true,
+                "tools":[{"type":"function","name":"get_weather","description":"weather",
+                    "parameters":{"type":"object","properties":{"city":{"type":"string"}}}}]}"#,
+        );
+
+        // 流式请求同样带 tools 定义（翻译是体级的，与 stream 无关）。
+        let seen = vendor.seen.lock().unwrap_or_else(|p| p.into_inner());
+        let sent: Value = serde_json::from_slice(&seen[0].body).unwrap();
+        assert_eq!(sent["tools"][0]["function"]["name"], "get_weather");
+        drop(seen);
+
+        let Reply::Stream { status, content_type, mut reader } = reply else { panic!("stream reply") };
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "text/event-stream");
+        let mut out = String::new();
+        reader.read_to_string(&mut out).expect("read sse");
+        let events = parse_frames(&out);
+        let names: Vec<&str> = events.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "response.created",
+                "response.output_item.added",        // message item
+                "response.output_text.delta",
+                "response.output_text.done",         // 工具分片到达，正文先封口
+                "response.output_item.done",
+                "response.output_item.added",        // function_call item
+                "response.function_call_arguments.delta",
+                "response.function_call_arguments.done",
+                "response.output_item.done",
+                "response.completed",
+            ],
+            "文本 item 先封口，再是完整 function_call 事件族"
+        );
+        // added：function_call 占位（arguments 空、status in_progress）。
+        let added = &events[5].1["item"];
+        assert_eq!(added["type"], "function_call");
+        assert_eq!(added["status"], "in_progress");
+        assert_eq!(added["call_id"], "call_77");
+        assert_eq!(added["name"], "get_weather");
+        assert_eq!(added["arguments"], "");
+        // delta：拼装结果整段一帧。
+        assert_eq!(events[6].1["delta"], r#"{"city":"Berlin"}"#);
+        // done：完整 arguments。
+        assert_eq!(events[7].1["arguments"], r#"{"city":"Berlin"}"#);
+        assert_eq!(events[7].1["call_id"], "call_77");
+        // item.done：完整 function_call item。
+        let item = &events[8].1["item"];
+        assert_eq!(item["type"], "function_call");
+        assert_eq!(item["status"], "completed");
+        assert_eq!(item["call_id"], "call_77");
+        assert_eq!(item["name"], "get_weather");
+        assert_eq!(item["arguments"], r#"{"city":"Berlin"}"#);
+        // completed：output = [message, function_call]，usage 真数。
+        let completed = &events[9].1["response"];
+        assert_eq!(completed["status"], "completed");
+        assert_eq!(completed["output"].as_array().unwrap().len(), 2);
+        assert_eq!(completed["output"][0]["type"], "message");
+        assert_eq!(completed["output"][1]["type"], "function_call");
+        assert_eq!(completed["output"][1]["call_id"], "call_77");
+        assert_eq!(completed["usage"]["input_tokens"], 11);
+        assert_eq!(completed["usage"]["total_tokens"], 17);
+    }
+
+    #[test]
+    fn translated_streaming_truncated_flushes_partial_call() {
+        // 厂商半途断流：工具分片到了一半连接就没了（无 finish 无 [DONE]）。
+        // 按已知的收尾（Go readSSE 结束后 finish() 同款）：created + 已拼到
+        // 的 arguments（可能不完整）+ completed，usage 0。
+        let sse = concat!(
+            r#"data: {"id":"c3","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read","arguments":"{\"pa"}}]},"finish_reason":null}]}"#, "\n\n"
+            // 没有 finish、没有 [DONE]——EOF 即收尾
+        );
+        let vendor = fake_vendor(200, "text/event-stream", sse);
+        let (gateway, _sandbox) = sandbox(&format!(
+            r#"{{"providers":[{{"id":"p","name":"P","key":"sk-test","chat":"{}/v1"}}]}}"#,
+            vendor.base
+        ));
+        let reply = handle(&gateway, br#"{"model":"p/m","input":"go","stream":true}"#);
+        let Reply::Stream { mut reader, .. } = reply else { panic!("stream reply") };
+        let mut out = String::new();
+        reader.read_to_string(&mut out).expect("read sse");
+        let events = parse_frames(&out);
+        let names: Vec<&str> = events.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "response.created",
+                "response.output_item.added",
+                "response.function_call_arguments.delta",
+                "response.function_call_arguments.done",
+                "response.output_item.done",
+                "response.completed",
+            ]
+        );
+        // arguments 按已收到的分片诚实发出（截断的 JSON 不修饰）。
+        assert_eq!(events[2].1["delta"], r#"{"pa"#);
+        assert_eq!(events[3].1["arguments"], r#"{"pa"#);
+        assert_eq!(events[5].1["response"]["usage"]["input_tokens"], 0);
+        assert_eq!(events[5].1["response"]["output"][0]["type"], "function_call");
     }
 
     #[test]

@@ -8,7 +8,9 @@
 //! thinking 块与视频/文件附件不进本矩阵：跨协议没有诚实对应（签名的思考
 //! 只回原协议，文件各协议拼写差异大），透传层另有通路。
 //! SSE 映射是无状态的单事件翻译（text delta / finish / usage / [DONE]），
-//! content_block 序号编排与 message_start 编排由调用方负责。
+//! content_block 序号编排与 message_start 编排由调用方负责；chat 流的
+//! tool_calls 分片拼装走 [`ChatToolAccum`]（有状态，两侧端点共享），
+//! 无状态映射对 tool_calls 分片恒返回 None——分片不是完整事件。
 //! 语义参照：D:\Project\magpie-upstream\internal\gateway\（研究克隆，只读）。
 
 use serde_json::{json, Value};
@@ -1172,6 +1174,84 @@ pub fn sse_anthropic_to_chat(event_data: &str) -> Option<String> {
 }
 
 // =====================================================================
+// chat SSE 的 tool_calls 分片拼装（Go chatDecoder.toolCall 的子集）
+// =====================================================================
+
+/// 拼装完成的一次工具调用（chat 流侧的最终形态）。
+#[derive(Clone, PartialEq, Debug)]
+pub struct ChatToolCall {
+    /// chat 的 call id（可空：个别厂商不给——端点侧兜底合成）
+    pub id: String,
+    pub name: String,
+    /// arguments 的跨帧拼接结果（JSON 文本，原样不修饰）
+    pub arguments: String,
+}
+
+/// chat SSE `delta.tool_calls[]` 分片拼装器（responses.rs / messages.rs
+/// 两个流式翻译端点共享）。识别「同一次调用」的口径照 Go chatDecoder：
+/// 分片的 index 相同且 id 相容（缺 id = 续片——有些中转厂每片都带 id，
+/// 规范只在第一片带）→ arguments 追加；否则开下一条调用。
+/// 拼装是**惰性**的：分片只进账，事件族由端点在收尾（finish/[DONE]/EOF）
+/// 或交错（工具分片之后又来正文）时按首片到达序冲刷——chat 协议没有
+/// 「这一次调用完了」的显式信号，完成点只能由流的边界推。
+/// 未覆盖：乱序 parallel 分片的**事件序**（0/1 交替来时拼装正确、
+/// 按首片序发族，但不再反映厂商自己的交错讲述序）。
+pub struct ChatToolAccum {
+    /// 拼装中的调用（首片到达序）；index 同时记账用于续片匹配。
+    calls: Vec<(u64, ChatToolCall)>,
+}
+
+impl ChatToolAccum {
+    pub fn new() -> ChatToolAccum {
+        ChatToolAccum { calls: Vec::new() }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.calls.is_empty()
+    }
+
+    /// 一条 chunk 的 `delta.tool_calls` 数组喂进来。分片没带 index 时按
+    /// 数组位次当 index（Go chatDecoder 同款兜底）。
+    pub fn feed(&mut self, tool_calls: &[Value]) {
+        for (pos, tc) in tool_calls.iter().enumerate() {
+            let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(pos as u64);
+            let id = tc.get("id").and_then(|i| i.as_str()).unwrap_or("");
+            let name = tc.pointer("/function/name").and_then(|n| n.as_str()).unwrap_or("");
+            let args = tc
+                .pointer("/function/arguments")
+                .and_then(|a| a.as_str())
+                .unwrap_or("");
+            // 倒着找同 index 的调用（最新的优先）：id 相容即续片。
+            if let Some((_, call)) = self
+                .calls
+                .iter_mut()
+                .rev()
+                .find(|(i, c)| *i == index && (id.is_empty() || id == c.id))
+            {
+                call.arguments.push_str(args);
+                if call.name.is_empty() && !name.is_empty() {
+                    call.name = name.to_string();
+                }
+            } else {
+                self.calls.push((
+                    index,
+                    ChatToolCall {
+                        id: id.to_string(),
+                        name: name.to_string(),
+                        arguments: args.to_string(),
+                    },
+                ));
+            }
+        }
+    }
+
+    /// 全部取走（首片到达序），拼装器清空。端点在收尾/交错冲刷时调用。
+    pub fn take(&mut self) -> Vec<ChatToolCall> {
+        self.calls.drain(..).map(|(_, c)| c).collect()
+    }
+}
+
+// =====================================================================
 // 模型 id 剥离（marionette_peel.go 的对应）
 // =====================================================================
 
@@ -1534,5 +1614,102 @@ mod tests {
             r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"x"}}"#
         )
         .is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // tool_calls 分片拼装（ChatToolAccum）
+    // -----------------------------------------------------------------
+
+    fn frag(index: u64, id: &str, name: &str, args: &str) -> Value {
+        json!({"index": index, "id": id, "type": "function",
+            "function": {"name": name, "arguments": args}})
+    }
+
+    #[test]
+    fn tool_accum_three_fragments_one_call() {
+        // 规范形态：首片带 id+name，arguments 跨三帧拼接；后续片可省 id。
+        let mut acc = ChatToolAccum::new();
+        acc.feed(&[frag(0, "call_1", "get_weather", r#"{"ci"#)]);
+        acc.feed(&[frag(0, "", "", r#"ty":"Berlin""#)]);
+        acc.feed(&[frag(0, "", "", r#"}"#)]);
+        let calls = acc.take();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call_1");
+        assert_eq!(calls[0].name, "get_weather");
+        assert_eq!(calls[0].arguments, r#"{"city":"Berlin"}"#);
+        assert!(acc.is_empty());
+        // take 清空：再 take 不重复
+        assert!(acc.take().is_empty());
+    }
+
+    #[test]
+    fn tool_accum_repeated_id_and_index_fallback() {
+        // 中转厂每片都重复 id（Go 注释实锤的形态）＋ 分片没带 index 时
+        // 按数组位次兜底。
+        let mut acc = ChatToolAccum::new();
+        acc.feed(&[json!({"id":"call_9","type":"function",
+            "function":{"name":"exec","arguments":"{\"a\""}})]);
+        acc.feed(&[json!({"id":"call_9","type":"function",
+            "function":{"arguments":":1}"}})]);
+        let calls = acc.take();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].arguments, r#"{"a":1}"#);
+        assert_eq!(calls[0].name, "exec");
+    }
+
+    #[test]
+    fn tool_accum_two_sequential_calls() {
+        // 两次调用顺序到（index 0 → 1）：各自拼装、首片序输出。
+        let mut acc = ChatToolAccum::new();
+        acc.feed(&[frag(0, "call_a", "read", "{}")]);
+        acc.feed(&[frag(1, "call_b", "write", r#"{"p":"x"#)]);
+        acc.feed(&[frag(1, "", "", r#""}"#)]);
+        let calls = acc.take();
+        assert_eq!(calls.len(), 2);
+        assert_eq!((calls[0].id.as_str(), calls[0].name.as_str()), ("call_a", "read"));
+        assert_eq!((calls[1].id.as_str(), calls[1].name.as_str()), ("call_b", "write"));
+        assert_eq!(calls[1].arguments, r#"{"p":"x"}"#);
+    }
+
+    #[test]
+    fn tool_accum_new_id_same_index_starts_new_call() {
+        // 同 index 换 id：新的一次调用（Go newID 同款判定）。
+        let mut acc = ChatToolAccum::new();
+        acc.feed(&[frag(0, "call_1", "a", "1")]);
+        acc.feed(&[frag(0, "call_2", "b", "2")]);
+        let calls = acc.take();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].arguments, "1");
+        assert_eq!(calls[1].arguments, "2");
+    }
+
+    #[test]
+    fn tool_accum_interleaved_parallel_assembles_by_index() {
+        // 乱序 parallel 分片：按 index 拼装正确（0/1 交替来各归各）；
+        // 输出按首片到达序——事件序不再反映厂商的交错讲述（已知边界）。
+        let mut acc = ChatToolAccum::new();
+        acc.feed(&[frag(0, "call_a", "read", "A1")]);
+        acc.feed(&[frag(1, "call_b", "write", "B1")]);
+        acc.feed(&[frag(0, "", "", "A2")]);
+        acc.feed(&[frag(1, "", "", "B2")]);
+        let calls = acc.take();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].arguments, "A1A2");
+        assert_eq!(calls[1].arguments, "B1B2");
+    }
+
+    #[test]
+    fn tool_accum_single_frame_call() {
+        // 单帧完整调用（无分片）：一次进一次出。
+        let mut acc = ChatToolAccum::new();
+        acc.feed(&[frag(0, "call_x", "ping", r#"{"ok":true}"#)]);
+        assert_eq!(
+            acc.take(),
+            vec![ChatToolCall {
+                id: "call_x".into(),
+                name: "ping".into(),
+                arguments: r#"{"ok":true}"#.into(),
+            }]
+        );
     }
 }
