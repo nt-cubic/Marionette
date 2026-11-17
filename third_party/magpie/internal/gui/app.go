@@ -233,10 +233,11 @@ func (h *host) fitPanel(height int, g Glide) {
 		return
 	}
 	h.glides.Add(1)
-	h.panel.SetSize(h.panelW(), height)
 	if windowOpen(h.panel) {
-		_ = h.tray.PositionWindow(h.panel, 6)
+		h.sizeOpenPanel(h.panel, h.panelW(), height)
+		return
 	}
+	h.panel.SetSize(h.panelW(), height)
 }
 
 // zoom is the text size the pages are drawn at, as a factor.
@@ -302,10 +303,11 @@ func (h *host) zoomWindows() {
 		return
 	}
 	setPageZoom(h.panel, z)
-	h.panel.SetSize(w, ht)
 	if windowOpen(h.panel) {
-		_ = h.tray.PositionWindow(h.panel, 6)
+		h.sizeOpenPanel(h.panel, w, ht)
+		return
 	}
+	h.panel.SetSize(w, ht)
 }
 
 // windowsOptions are the app's Windows options. Portable, WebView2 keeps
@@ -313,17 +315,21 @@ func (h *host) zoomWindows() {
 // a folder a portable magpie must not leave behind (#508). Installed, it
 // stays there, so what the pages kept isn't lost. The browser arguments
 // the user set in WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, which Wails' loader
-// blanks before WebView2 can read them, are merged into Wails' own (#2753).
+// blanks before WebView2 can read them, are merged into Wails' own (#2753),
+// after magpie's own (sharedFrameProcess).
 // Display changes are read with a callback made once (screens_windows.go).
+// Chromium's occlusion tracking is off (occlusionOff).
 func windowsOptions() application.WindowsOptions {
 	disabled, enabled, other := webView2Args(webview2env.Args)
+	disabled = sharedFrameProcess(disabled, enabled)
+	disabled = occlusionOff(disabled, enabled)
 	return application.WindowsOptions{
 		DisableQuitOnLastWindowClosed: true,
 		WebviewUserDataPath:           appdir.WebView(),
 		DisabledFeatures:              disabled,
 		EnabledFeatures:               enabled,
 		AdditionalBrowserArgs:         other,
-		WndProcInterceptor:            screensWndProc,
+		WndProcInterceptor:            appWndProc,
 	}
 }
 
@@ -403,7 +409,7 @@ func Run(version string, showMain bool, link string) error {
 	// the pages open at the saved text size: Windows' and Linux's webviews
 	// take it as they are made (the Zoom options below), the Mac's once
 	// the app has started (applyZoom)
-	h.textSize.Store(int64(settings.Load().TextSize))
+	h.textSize.Store(int64(settings.Shared().TextSize))
 	zoom := h.zoom()
 	go stats.Run(version, "app")
 	handler := devShell(h)
@@ -422,7 +428,7 @@ func Run(version string, showMain bool, link string) error {
 	}
 	// a quiet start joins the Dock once started (below): Wails activates
 	// an app that starts in it
-	policy := dockPolicy(settings.Load().Dock && !quiet)
+	policy := dockPolicy(settings.Shared().Dock && !quiet)
 	webView2Prepare()
 	h.app = application.New(application.Options{
 		// Windows and Linux start a new process for a magpie:// link (or a
@@ -496,7 +502,7 @@ func Run(version string, showMain bool, link string) error {
 		// Command-Q asks first while agents are connected (quitask.go). The
 		// role's item sends terminate:, which logging out and shutting down
 		// send too, so it is replaced rather than the app's ShouldQuit set
-		appQuit = askingQuit(appMenu, trayText(trayLang(settings.Load().Lang, systemLang), "Quit magpie"), func() { go h.AskQuit() })
+		appQuit = askingQuit(appMenu, trayText(trayLang(settings.Shared().Lang, systemLang), "Quit magpie"), func() { go h.AskQuit() })
 		h.app.Menu.Set(appMenu)
 	}
 	if Started != nil {
@@ -515,12 +521,24 @@ func Run(version string, showMain bool, link string) error {
 		e.Cancel()
 	})
 
-	h.panel = h.makePanel()
-	h.main = h.makeMain("/?" + theme)
+	// The Mac's panel is made the first time it is opened (panelWin): made
+	// here, its page and WebContent process (~67 MB) sat hidden for as long
+	// as magpie ran, for a user who never opens it too. Elsewhere it is made
+	// now, as the made-again path hasn't been run in a real window there.
+	if !panelOnFirstOpen(runtime.GOOS) {
+		h.panel = h.makePanel()
+	}
+	// So is its main window, when magpie starts without it (at login,
+	// `magpie tray`, or for the panel): it is made by openMain when first
+	// shown, the way lightweight mode makes one again, and its page's
+	// WebContent process (~69 MB) isn't kept until then.
+	if !mainOnFirstOpen(runtime.GOOS, showMain) {
+		h.main = h.makeMain("/?" + theme)
+	}
 	onFonts = h.fontsChanged
 
 	// the menu in the page's language, relabelled when that changes (#301)
-	labels := trayMenuLabels(trayLang(settings.Load().Lang, systemLang), version, "", pausedNow())
+	labels := trayMenuLabels(trayLang(settings.Shared().Lang, systemLang), version, "", pausedNow())
 	menu := h.app.NewMenu()
 	open := menu.Add(labels.open).OnClick(func(*application.Context) { h.ShowMain("") })
 	menu.AddSeparator()
@@ -557,9 +575,9 @@ func Run(version string, showMain bool, link string) error {
 	quit := menu.Add(labels.quit).OnClick(func(*application.Context) { go h.AskQuit() })
 	var ready string // the version waiting for a restart; on the main thread
 	relabel := func() {
-		l := trayMenuLabels(trayLang(settings.Load().Lang, systemLang), version, ready, pausedNow())
+		l := trayMenuLabels(trayLang(settings.Shared().Lang, systemLang), version, ready, pausedNow())
 		if waiting, b := updates.waitingFor(); waiting && ready != "" {
-			l.restart = trayRestartNow(trayLang(settings.Load().Lang, systemLang), b)
+			l.restart = trayRestartNow(trayLang(settings.Shared().Lang, systemLang), b)
 		}
 		open.SetLabel(l.open)
 		pause.SetLabel(l.pause)
@@ -635,7 +653,9 @@ func Run(version string, showMain bool, link string) error {
 		})
 	}
 	h.tray.SetMenu(menu)
-	h.tray.AttachWindow(h.panel).WindowOffset(6)
+	if h.panel != nil { // one made later hangs itself on the icon (makePanel)
+		h.tray.AttachWindow(h.panel).WindowOffset(6)
+	}
 	// before Wails removes the item as the app quits, which would forget
 	// where the user put the icon (trayshown_darwin.go; nothing elsewhere)
 	h.app.OnShutdown(func() { keepTrayPlace() })
@@ -689,7 +709,7 @@ func Run(version string, showMain bool, link string) error {
 		if runtime.GOOS == "darwin" {
 			go h.flap()
 		}
-		if settings.Load().Tray == "window" {
+		if settings.Shared().Tray == "window" {
 			h.ShowMain("")
 			return
 		}
@@ -705,6 +725,7 @@ func Run(version string, showMain bool, link string) error {
 	markReady := func() { h.readyOnce.Do(func() { close(h.ready) }) }
 	if runtime.GOOS == "windows" {
 		h.main.OnWindowEvent(events.Windows.WebViewNavigationCompleted, func(*application.WindowEvent) { markReady() })
+		h.mendOnWake()
 	} else {
 		h.app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 			if runtime.GOOS != "darwin" {
@@ -714,8 +735,10 @@ func Run(version string, showMain bool, link string) error {
 			// makes a window of its own (toolbarRounder), which deadlocks the
 			// main thread while a hidden background launch (an update's
 			// relaunch) is still inside FBSWorkspaceScenesClient on macOS 26.
-			nameWindow(h.panel, panelTitle)
-			ownFrame(h.panel) // KDE: no title bar of KWin's on it (#1283)
+			if h.panel != nil { // one made later is named as it is (madeAgain)
+				nameWindow(h.panel, panelTitle)
+				ownFrame(h.panel) // KDE: no title bar of KWin's on it (#1283)
+			}
 			markReady()
 		})
 	}
@@ -731,7 +754,7 @@ func Run(version string, showMain bool, link string) error {
 			view = uninstallView
 		}
 		h.whenReady(func() { h.ShowMain(view) })
-	} else if quiet && settings.Load().Dock {
+	} else if quiet && settings.Shared().Dock {
 		// kept out of the Dock to start (Mac options above), it joins
 		// now without coming to the front
 		h.whenReady(func() { setDock(true, false) })
@@ -780,9 +803,8 @@ func singleInstance(h *host) *application.SingleInstanceOptions {
 	if runtime.GOOS == "darwin" || !sessionBus() {
 		return nil
 	}
-	sum := sha256.Sum256([]byte(settings.Dir()))
 	return &application.SingleInstanceOptions{
-		UniqueID: "ai.usemagpie.app.i" + hex.EncodeToString(sum[:6]),
+		UniqueID: instanceID(),
 		OnSecondInstanceLaunch: func(d application.SecondInstanceData) {
 			args := d.Args
 			if len(args) > 0 {
@@ -803,6 +825,12 @@ func singleInstance(h *host) *application.SingleInstanceOptions {
 			}
 		},
 	}
+}
+
+// instanceID is the single instance's id, the config dir's.
+func instanceID() string {
+	sum := sha256.Sum256([]byte(settings.Dir()))
+	return "ai.usemagpie.app.i" + hex.EncodeToString(sum[:6])
 }
 
 // flap plays trayFlap on the tray icon, a frame every 30ms as they were

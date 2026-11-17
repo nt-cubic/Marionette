@@ -136,6 +136,13 @@ type Model struct {
 	// itself when asked in plain words (m.searches: Trae's search model),
 	// which magpie may then search with for other models.
 	Searches bool `json:"searches,omitempty"`
+	// Also are the AI SDK packages of the other APIs the plugin says its
+	// vendor serves the model on besides its own (NPM), as the packages
+	// name them (m.also: Open Design's amr-link serves every model on
+	// chat completions, Responses and Anthropic's messages, plugins#888).
+	// A client's request on one of them is relayed there as it was sent,
+	// not translated to the model's own API (gaubeebangeel on X).
+	Also []string `json:"also,omitempty"`
 }
 
 // Provider is a provider a plugin signs in to.
@@ -198,6 +205,12 @@ type Provider struct {
 	Accounts []Account `json:"accounts"`
 	// Single is the auth hook declaring that sign-in replaces one identity.
 	Single bool `json:"single,omitempty"`
+	// Importable says the plugin takes accounts from a file the user picks
+	// (auth.import, magpie's own hook); ImportFrom is which file, as the
+	// plugin says it, and ImportFroms the same in other languages.
+	Importable  bool              `json:"importable,omitempty"`
+	ImportFrom  string            `json:"importFrom,omitempty"`
+	ImportFroms map[string]string `json:"importFroms,omitempty"`
 	// MaxConcurrency is how many requests the plugin says each of its
 	// accounts takes at once (magpie's own field, which OpenCode ignores:
 	// the auth hook's maxConcurrency, else package.json's
@@ -1065,6 +1078,30 @@ func APIKey(ctx context.Context, provider string, method int, inputs map[string]
 		return Saved{}, failure(r.Error)
 	}
 	return r.Saved, nil
+}
+
+// Imported is one account a plugin's import from a file gave: Status
+// "added", "updated" (the account was signed in already) or "failed",
+// with why; Provider and Account are where it is kept.
+type Imported struct {
+	Status   string `json:"status"`
+	User     string `json:"user"`
+	Error    string `json:"error"`
+	Provider string `json:"provider"`
+	Account  string `json:"account"`
+}
+
+// ImportFiles hands the texts of the files the user picked to provider's
+// import hook (auth.import) and keeps each account it took, through the
+// proxy ctx carries.
+func ImportFiles(ctx context.Context, provider string, texts []string) ([]Imported, error) {
+	var r struct {
+		Results []Imported `json:"results"`
+	}
+	if err := Call(ctx, "importFiles", map[string]any{"provider": provider, "texts": texts, "proxy": proxyOf(ctx)}, &r); err != nil {
+		return nil, err
+	}
+	return r.Results, nil
 }
 
 // SignOut forgets one account of the provider's, every one when account

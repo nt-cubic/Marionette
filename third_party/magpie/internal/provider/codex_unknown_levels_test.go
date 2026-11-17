@@ -43,7 +43,7 @@ func TestCodexOffersLevelsForUnknownModels(t *testing.T) {
 		t.Fatal(err)
 	}
 	shown, _ := CatalogFor("codex")
-	shown = append(shown, Entry{ID: "group/mix", Model: "group/mix", Name: "mix", Group: "mix", Provider: Provider{ID: "xjai"}})
+	shown = append(shown, Entry{ID: "group/mix", Model: "group/mix", Name: "mix", Group: "mix", Provider: &Provider{ID: "xjai"}})
 	levels := map[string][]string{}
 	for _, m := range CodexCatalog(shown) {
 		levels[m.ID] = m.Efforts
@@ -87,7 +87,7 @@ func TestCodexOffersLevelsForUnknownModels(t *testing.T) {
 		if e.Slug != "xjai/model-test" {
 			continue
 		}
-		if len(e.Levels) != 3 || e.Default == nil || *e.Default != "medium" || !e.Summaries {
+		if len(e.Levels) != 4 || e.Levels[3].Effort != "ultra" || e.Default == nil || *e.Default != "medium" || !e.Summaries {
 			t.Errorf("model-test's entry: %s", b)
 		}
 		return

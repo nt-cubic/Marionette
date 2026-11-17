@@ -27,6 +27,8 @@ const libraryUsage = `magpie library                     what the library gives 
   magpie library mcp agents <name> <a,b…|none>
   magpie library mcp local <name> on|off   keep it to this computer: a sync or a backup never carries it, and one
                                      coming in neither takes it away nor puts another computer's in its place
+  magpie library mcp here <name> <command args…> | off   start a synced server with this command on this computer alone,
+                                     the others keeping the synced one (its name, agents and note still sync); off goes back to it
   magpie library mcp off|on <name>   take it from every agent, project and app, keeping its settings; on gives it back as it was
   magpie library mcp rm <name>
   magpie library mcp router on|off   give each agent one MCP server, magpie, in place of the library's (magpie runs them, once for every agent)
@@ -48,6 +50,7 @@ const libraryUsage = `magpie library                     what the library gives 
   magpie library skill how link|copy [agent]   give skills as links to the library's or as copies: every agent's way, or one agent's
   magpie library skill how default <agent>     the agent goes the library's way again
   magpie library skill where agents|shared     skills go to the agents ticked, or also into ~/.agents/skills for every agent and tool that reads it
+  magpie library skill auto-update on|off      fetch each skill from GitHub or git again by itself when it changes there (one changed here stays)
   magpie library skill use-library <name> <agent>   an agent's own skill by that name is in the way: set it aside, link the library's
   magpie library skill keep-own <name> <agent>      …or keep the agent's, and take the agent off the library's
   magpie library project …           a project folder's own skills (Library › Projects): magpie library project help
@@ -173,6 +176,25 @@ func libraryCmd(args []string) error {
 				}
 				return nil
 			}
+		case len(rest) >= 3 && rest[0] == "here" && !strings.HasPrefix(rest[1], "-"):
+			// this computer's own command for a synced server (#3836, #6426)
+			cmd := rest[2:]
+			if len(cmd) > 0 && cmd[0] == "--" {
+				cmd = cmd[1:]
+			}
+			if len(rest) == 3 && rest[2] == "off" {
+				cmd = nil
+			} else if len(cmd) == 0 {
+				return fmt.Errorf("usage:\n  %s", libraryUsage)
+			}
+			if res, err = library.ServerHere(rest[1], cmd); err == nil && len(res.Changed) == 0 && len(res.Problems) == 0 {
+				if cmd == nil {
+					fmt.Println(green.Render("✓"), rest[1], "runs the synced command here again")
+				} else {
+					fmt.Println(green.Render("✓"), rest[1], "runs", strings.Join(cmd, " "), "on this computer; your other computers keep the synced command")
+				}
+				return nil
+			}
 		case len(rest) == 2 && (rest[0] == "on" || rest[0] == "off") && !strings.HasPrefix(rest[1], "-"):
 			// off for everyone, kept with its settings; on again as it was
 			res, err = library.ServerOn(rest[1], rest[0] == "on")
@@ -252,6 +274,8 @@ func libraryCmd(args []string) error {
 			res, err = library.SetSkillHow(agent, how)
 		case len(rest) == 2 && rest[0] == "where" && (rest[1] == library.SkillsInAgents || rest[1] == library.SkillsInShared):
 			res, err = library.SetSkillsWhere(rest[1])
+		case len(rest) == 2 && rest[0] == "auto-update" && (rest[1] == "on" || rest[1] == "off"):
+			res, err = library.SetAutoUpdateSkills(rest[1] == "on")
 		default:
 			return fmt.Errorf("usage:\n  %s", libraryUsage)
 		}
@@ -494,6 +518,9 @@ func libraryStatus() error {
 		fmt.Printf("  %s %s → %s\n", bold.Render(s.Name), muted.Render(what), on(s.Agents))
 		if s.Local {
 			fmt.Println("   ", muted.Render("not synced: a sync never carries it to your other computers · magpie library mcp local "+s.Name+" off"))
+		}
+		if sh := s.Shared; sh != nil {
+			fmt.Println("   ", muted.Render("this computer's own command; the others run "+strings.TrimSpace(sh.Command+" "+strings.Join(sh.Args, " "))+" · magpie library mcp here "+s.Name+" off"))
 		}
 		if s.Hub == library.HubDirect {
 			fmt.Println("   ", muted.Render("direct: each agent's own entry, never through the hub · magpie library mcp hub "+s.Name+" shared"))

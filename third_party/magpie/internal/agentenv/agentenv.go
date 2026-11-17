@@ -61,6 +61,8 @@ var Vars = []string{
 	// PenguinHarness's data root and the Project its CLI works in
 	// ($PENGUIN_HOME/$PENGUIN_PROJECT_ID/.project_config.toml)
 	"PENGUIN_HOME", "PENGUIN_PROJECT_ID",
+	// Devin CLI's sessions folder ($DEVIN_SESSIONS_DIR/cli)
+	"DEVIN_SESSIONS_DIR",
 	// omp
 	"OMP_PROFILE",
 	// Qoder's two builds, the global site's and China's
@@ -131,6 +133,9 @@ var Vars = []string{
 	// QwenPaw's working folder (~/.qwenpaw, or a legacy ~/.copaw, without
 	// it) and its secret folder, <working folder>.secret without it
 	"QWENPAW_WORKING_DIR", "QWENPAW_SECRET_DIR",
+	// billion-context's config file, the Library's billion-context tab
+	// changes; $XDG_CONFIG_HOME/billion-context/billion-context.json without it
+	"BILI_CONFIG_FILE",
 	// Cursor's CLI: its config folder (its chats) and its data folder
 	"CURSOR_CONFIG_DIR", "CURSOR_DATA_DIR",
 	// OpenCode and OpenChamber

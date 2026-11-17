@@ -60,6 +60,7 @@ func antigravityFile(t *testing.T, path string) map[string]json.RawMessage {
 // model list come back when it is turned off, and what else the file holds
 // is never touched.
 func TestAntigravityGateway(t *testing.T) {
+	t.Cleanup(provider.AntigravityBuiltinForTest()) // the retired built-in route
 	home := antigravityHome(t)
 	path := filepath.Join(home, ".antigravity", "settings.json")
 	if !slices.ContainsFunc(All(), func(x *Agent) bool { return x.ID == "antigravity" && x.Name == "Antigravity" }) {
@@ -103,6 +104,22 @@ func TestAntigravityGateway(t *testing.T) {
 	}
 	if a.Notice() == "" {
 		t.Error("no notice to restart the app")
+	}
+	// the models the app's own sign-in gave it leave its picker: with no
+	// account under magpie's Antigravity subscription the notice says how
+	// to have them back (T_t__biu on X); with one, they are in the list
+	if !strings.Contains(a.Notice(), noticeAntigravityOwn.String()) {
+		t.Errorf("no word of the app's own models with no Antigravity account: %q", a.Notice())
+	}
+	b, _ := json.Marshal([]map[string]any{{"agent": "antigravity", "user": "me@example.com", "on": true,
+		"auth": map[string]any{"access_token": "a", "refresh_token": "r"}}})
+	os.MkdirAll(filepath.Dir(provider.Path()), 0o755)
+	os.WriteFile(filepath.Join(filepath.Dir(provider.Path()), "logins.json"), b, 0o600)
+	if n := len(provider.Logins("antigravity")); n != 1 {
+		t.Fatalf("the Antigravity account isn't read: %d", n)
+	}
+	if got := a.Notice(); got != noticeAntigravity.String() {
+		t.Errorf("notice with an Antigravity account in magpie: %q", got)
 	}
 	opts := f.Options(map[string]string{"model": f.Get()})
 	if !slices.ContainsFunc(opts, func(o Option) bool { return o.Value == "magpie/anth/claude-sonnet-5" }) {

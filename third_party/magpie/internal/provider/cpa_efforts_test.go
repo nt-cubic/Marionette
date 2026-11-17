@@ -24,6 +24,7 @@ import (
 // every list Codex and the ChatGPT app are handed; one whose base magpie
 // doesn't know still takes none, and a vendor's own word stays its own.
 func TestCPAVariantModelsBorrowLevels(t *testing.T) {
+	t.Cleanup(AntigravityBuiltinForTest()) // the retired built-in route
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -125,9 +126,10 @@ func TestCPAVariantModelsBorrowLevels(t *testing.T) {
 		}
 		listed[e.Slug] = strings.Join(ls, ",")
 	}
+	// Codex's list ends a reasoning model of another vendor with ultra
 	for _, id := range []string{"cpa/gemini-3.8-flash-high", "cpa/claude-opus-5-5-high", "cpa/grok-3-mini-fast"} {
-		if listed[id] != want[id] {
-			t.Errorf("Codex list: %s offers %q, want %q (list %v)", id, listed[id], want[id], listed)
+		if w := want[id] + ",ultra"; listed[id] != w {
+			t.Errorf("Codex list: %s offers %q, want %q (list %v)", id, listed[id], w, listed)
 		}
 	}
 }

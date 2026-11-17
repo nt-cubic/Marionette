@@ -12,9 +12,11 @@ import (
 	"path"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/tidwall/gjson"
 	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/provider"
 )
@@ -176,15 +178,28 @@ func readChat(body []byte, facts bool) (*Request, error) {
 				r.Messages = append(r.Messages, Message{Role: "user", Parts: []Part{{Kind: ToolResult, CallID: m.ToolCallID}}})
 				continue
 			}
-			out, images := toolOutput(m.Content)
-			r.Messages = append(r.Messages, Message{Role: "user", Parts: []Part{{Kind: ToolResult, CallID: m.ToolCallID, Text: out, Images: images}}})
+			out, images, audio := toolOutput(m.Content)
+			r.Messages = append(r.Messages, Message{Role: "user", Parts: []Part{{Kind: ToolResult, CallID: m.ToolCallID, Text: out, Images: images, Audio: audio}}})
 		}
 	}
 	r.System = strings.Join(sys, "\n\n")
 	r.WebSearch = len(c.WebSearchOptions) > 0 && string(c.WebSearchOptions) != "null"
-	for _, t := range c.Tools {
+	for i, t := range c.Tools {
 		if strings.HasPrefix(t.Type, "web_search") {
 			r.WebSearch = true
+		}
+		if t.Function.Name == "" {
+			// Google's own tools as Gemini spells them, which LiteLLM's
+			// and Gemini's other OpenAI-shaped clients send among the
+			// tools — {"googleSearch":{}}, {"url_context":{}} — or by
+			// type, {"type":"url_context"}: googleSearch is the web
+			// search, the rest go on to a Gemini upstream (GoogleTools).
+			// Read as functions, they went out as tools with no name.
+			if search, kept, ok := chatGoogleTool(gjson.GetBytes(body, "tools."+strconv.Itoa(i))); ok {
+				r.WebSearch = r.WebSearch || search
+				r.GoogleTools = append(r.GoogleTools, kept...)
+				continue
+			}
 		}
 		if t.Type != "" && t.Type != "function" {
 			continue
@@ -232,6 +247,10 @@ func chatParts(raw json.RawMessage) []Part {
 		VideoURL struct {
 			URL string `json:"url"`
 		} `json:"video_url"`
+		InputAudio struct {
+			Data   string `json:"data"`
+			Format string `json:"format"`
+		} `json:"input_audio"`
 		// the AI SDK's file part, flat (#4101: ZCode's), whose video
 		// alone is read here
 		Data      string `json:"data"`
@@ -263,9 +282,32 @@ func chatParts(raw json.RawMessage) []Part {
 			if v, ok := videoPart(it.VideoURL.URL, "", ""); ok {
 				out = append(out, v)
 			}
+		case "input_audio":
+			// a recording, as OpenAI's Chat takes one ({data, format}):
+			// left out before, so Gemini answered for the words alone
+			// (Parlevent_ on X); a Gemini upstream is given it inline
+			if it.InputAudio.Data != "" {
+				out = append(out, Part{Kind: File, MediaType: audioType(it.InputAudio.Format), Data: it.InputAudio.Data})
+			}
 		}
 	}
 	return out
+}
+
+// audioType is the media type of a Chat input_audio's format: wav and mp3
+// are OpenAI's, a type given whole is kept, and the others are taken as
+// audio/<format>, as Gemini names them (audio/aac, audio/flac, audio/ogg).
+func audioType(format string) string {
+	f := strings.ToLower(strings.TrimSpace(format))
+	switch {
+	case f == "":
+		return "audio/wav"
+	case strings.Contains(f, "/"):
+		return f
+	case f == "mpeg":
+		return "audio/mp3"
+	}
+	return "audio/" + f
 }
 
 // chatFile is a Chat Completions file part (a PDF, say) as a file of the
@@ -463,14 +505,13 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 					names[id] = p.Name
 					call := map[string]any{"id": id, "type": "function",
 						"function": map[string]any{"name": p.Name, "arguments": argsString(p)}}
-					if gemini {
-						// a later call of a signed step goes without: Gemini
-						// signs the first
-						if sig := p.Signature; sig != "" {
-							call["extra_content"] = googleExtra(sig)
-						} else if !signed {
-							call["extra_content"] = googleExtra(skipSignature)
-						}
+					if sig := p.Signature; sig != "" && (gemini || r.signer != "" && signerOf(sig) == r.signer) {
+						// Gemini's, or a relay's that gave it there
+						call["extra_content"] = googleExtra(sig)
+					} else if gemini && !signed {
+						// a later call of a signed step goes without:
+						// Gemini signs the first
+						call["extra_content"] = googleExtra(skipSignature)
 					}
 					calls = append(calls, call)
 				case Thinking:
@@ -548,6 +589,9 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 					content = append(content, chatVideo(p))
 					break
 				}
+				// told of, not carried: Chat upstreams' file support is
+				// uneven, and a 400 here loses the whole turn (#934) — the
+				// Responses and Messages tongues carry it whole (#5452)
 				content = append(content, map[string]any{"type": "text", "text": attachmentText(p)})
 			case Image:
 				plain = false
@@ -980,7 +1024,7 @@ func geminiCompat(host, model string) bool {
 // thinking's type, and where the gateway and every other Chat API read it.
 // A request that says reasoning_effort itself is left as it is.
 func thinkingEffort(body []byte) []byte {
-	if !bytes.Contains(body, []byte(`"effort"`)) {
+	if !bodyHas(body, `"effort"`) {
 		return body
 	}
 	var v struct {
@@ -1004,7 +1048,7 @@ func thinkingEffort(body []byte) []byte {
 // for every route, and no field an upstream doesn't know. A
 // prompt_cache_key the body has already is the one kept.
 func cacheKeyCamel(body []byte) []byte {
-	if !bytes.Contains(body, []byte(`"promptCacheKey"`)) {
+	if !bodyHas(body, `"promptCacheKey"`) {
 		return body
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))
@@ -1067,7 +1111,7 @@ func refusesThinkingConfig(status int, body []byte) bool {
 		return false
 	}
 	b := bytes.ToLower(body)
-	return bytes.Contains(b, []byte("extra_body")) || bytes.Contains(b, []byte("thinking")) || bytes.Contains(b, []byte("include_thoughts"))
+	return bodyHas(b, "extra_body") || bodyHas(b, "thinking") || bodyHas(b, "include_thoughts")
 }
 
 // aiStudioThinking is the thinking_config asking Gemini for its thoughts at
@@ -1107,10 +1151,14 @@ type cUsage struct {
 		ReasoningTokens int `json:"reasoning_tokens"`
 	} `json:"completion_tokens_details,omitempty"`
 	// what others say was read from their cache, when prompt_tokens_details
-	// doesn't: DeepSeek's hits, Moonshot's cached_tokens, and Anthropic's
-	// own names from relays in front of Claude
+	// doesn't: DeepSeek's hits, Moonshot's cached_tokens, Mistral's
+	// num_cached_tokens (its older top-level count, which its API still
+	// sends beside or instead of prompt_tokens_details, counted in
+	// prompt_tokens as OpenAI's is), and Anthropic's own names from relays
+	// in front of Claude
 	PromptCacheHitTokens     int `json:"prompt_cache_hit_tokens"`
 	CachedTokens             int `json:"cached_tokens"`
+	NumCachedTokens          int `json:"num_cached_tokens"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 	// Credit is what WorkBuddy says the request cost in its plan's credits
@@ -1137,7 +1185,7 @@ func (u cUsage) usage() Usage {
 	if d := u.PromptTokensDetails; d != nil {
 		out.CacheRead, out.CacheWrite = d.CachedTokens, d.CacheWriteTokens
 	}
-	for _, n := range []int{u.PromptCacheHitTokens, u.CachedTokens} {
+	for _, n := range []int{u.PromptCacheHitTokens, u.CachedTokens, u.NumCachedTokens} {
 		if out.CacheRead == 0 {
 			out.CacheRead = n
 		}
@@ -1782,4 +1830,29 @@ func renderChat(res Result, model string) []byte {
 		"choices": []map[string]any{{"index": 0, "message": msg, "finish_reason": stopToChat(res.Stop)}},
 		"usage":   res.Usage.chat()})
 	return b
+}
+
+// chatGoogleTool reads a Chat request's tool that is one of Google's own,
+// keyed by its name ({"googleSearch":{}}) or typed with it
+// ({"type":"url_context"}, its settings under the same name if any): ok
+// when it is one.
+func chatGoogleTool(t gjson.Result) (search bool, kept []json.RawMessage, ok bool) {
+	var m map[string]json.RawMessage
+	if !t.IsObject() || json.Unmarshal([]byte(t.Raw), &m) != nil {
+		return false, nil, false
+	}
+	if typ := snakeToCamel(t.Get("type").String()); typ != "" {
+		if !googleSearchTools[typ] && !googleToolNames[typ] {
+			return false, nil, false
+		}
+		v := m[t.Get("type").String()]
+		if len(v) == 0 {
+			v = m[typ]
+		}
+		search, kept = googleTools(map[string]json.RawMessage{typ: v}, true)
+		return search, kept, true
+	}
+	delete(m, "type")
+	search, kept = googleTools(m, true)
+	return search, kept, search || len(kept) > 0
 }

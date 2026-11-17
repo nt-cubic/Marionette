@@ -19,6 +19,7 @@ import (
 
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/daemon"
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/provider"
@@ -48,13 +49,16 @@ const providerUsage = `usage:
                                           over its keys or accounts (fast: the one that answered fastest lately first;
                                           drain: one until it is used up, then the next, never back to an earlier one);
                                           prompt=as-written sends Antigravity the system prompt exactly as written;
-                                          prompt=default, the default, breaks up the lines Google answers with a
-                                          false 429 (Codex's, Claude Code's, Hermes' old persona) with a zero-width space
+                                          prompt=default, the default, rewords the lines Google answers with a
+                                          false 429 (Codex's, Claude Code's, Hermes' old persona, oh-my-pi's)
                                           additional-tools=on sends a tool Claude Code's tool search loads to its
                                           Responses API where it was loaded (an additional_tools item, which
                                           keeps the cache); OpenAI's API and a ChatGPT (Codex) account do so by
                                           default; additional-tools=off puts it with the other tools,
                                           additional-tools=default is magpie's
+                                          resolve.<host>=<IP>[,dns:<name>…] connects a host of its base URLs there
+                                          (curl --resolve: the URL's name stays for TLS and Host); empty takes the
+                                          host's out, resolve= clears them all
                                           image-files=off sends DeepSeek's API an agent's images inline on every
                                           turn; image-files=on, the default, uploads each once (for a day)
                                           and names it by its file id
@@ -72,6 +76,8 @@ const providerUsage = `usage:
                                           asked once, nothing read into them, no other provider tried;
                                           errors=magpie, the default, has magpie handle them
   magpie provider key <id> <key>          change the API key
+  magpie provider keys <id> [add [key…|-]]   print every key, one a line, or add keys (as words,
+                                          or one a line on stdin), to carry them to another magpie
   magpie provider icon <id> <file|name>   give a custom provider a picture (PNG, JPEG, SVG…) or a built-in icon
   magpie provider fallback <id> <provider/model>…   where requests go when it's out of quota or down (none clears)
   magpie provider models <id> [ids…]      fetch the vendor's model list, or choose which models to expose:
@@ -108,7 +114,11 @@ const providerUsage = `usage:
                                           how much an API key may spend, in USD as the Usage page prices its calls,
                                           a day (the default), a month or in all from now: at it, routing takes the
                                           key for used up and goes on to the other keys and the fallbacks
-  magpie provider key-balance <id> [key [usd|¥cny|off] [--refill monthly[:day]|weekly[:mon…sun]|off] [--expiring amount@yyyy-mm-dd|off]… [--expiring-remove [amount@]yyyy-mm-dd]…]
+  magpie provider key-rate <id> [key [rate|default]]
+                                          the price rate one API key bills at against the official price, as a relay
+                                          bills its key groups apart (e.g. 0.5): the Usage page counts that key's calls
+                                          at it; default has it bill at the provider's rate
+  magpie provider key-balance <id> [key [usd|¥cny|off] [--refill monthly[:day]|weekly[:mon…sun]|daily|off] [--expiring amount@yyyy-mm-dd|off]… [--expiring-remove [amount@]yyyy-mm-dd]…]
                                           the balance on an API key whose vendor tells none, typed from its own page
                                           in USD or in yuan (¥100): the Usage page shows it less what magpie prices the
                                           key's calls at since; with --refill it is whole again each month or week;
@@ -174,6 +184,9 @@ const providerUsage = `usage:
        magpie provider set my-relay models.url=https://relay.example.com/api/models catalog=
        magpie provider set volcengine list=off models=ep-20261108-abcde
                                    (its model list is never asked for: only the models given by id are served)
+       magpie provider set my-relay resolve.relay.example.com=10.0.0.5,dns:gw.corp.example
+                                   (Advanced › Connect to: connects to 10.0.0.5, then gw.corp.example's
+                                    address, while TLS and Host still say relay.example.com)
        magpie provider set my-relay search=yes
                                    (the relay answers Claude Code's WebSearch and Codex's web_search itself:
                                     those go to it as sent, not through magpie's own search)
@@ -675,6 +688,10 @@ func providerCmd(args []string) error {
 		return keyBalanceCmd(rest)
 	case "spend-cap", "spend-caps":
 		return spendCapCmd(rest)
+	case "key-rate", "key-rates":
+		return keyRateCmd(rest)
+	case "keys":
+		return keysCmd(rest, os.Stdin, os.Stdout)
 	case "account-weight", "account-weights":
 		return accountWeightCmd(rest)
 	case "queue":
@@ -1036,6 +1053,9 @@ func showProviderAsking(p provider.Provider, ask bool) error {
 	for _, k := range slices.Sorted(maps.Keys(p.Headers)) {
 		kv("header", k+": "+muted.Render(p.Headers[k]))
 	}
+	for _, h := range slices.Sorted(maps.Keys(p.Resolve)) {
+		kv("connect", h+muted.Render(" → ")+strings.Join(p.Resolve[h], ", "))
+	}
 	if d := p.RefreshInterval(); d > 0 {
 		kv("refresh", "every "+p.RefreshSchedule()+muted.Render("  the gateway fetches its list by itself"))
 	}
@@ -1285,8 +1305,8 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 		case "prompt":
 			// as-written: Antigravity's subscription is sent the system
 			// prompt exactly as the agent wrote it, the lines Google turns
-			// away with a 429 included; default breaks those lines up
-			// with a zero-width space (Provider.PromptAsWritten)
+			// away with a 429 included; default rewords those lines
+			// (Provider.PromptAsWritten)
 			switch strings.ToLower(v) {
 			case "as-written", "as-sent", "on", "yes":
 				p.PromptAsWritten = true
@@ -1436,6 +1456,12 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 			if err := setContext(p, "*", v); err != nil {
 				return err
 			}
+		case "resolve":
+			// resolve= takes every connect address out
+			if strings.TrimSpace(v) != "" {
+				return fmt.Errorf("resolve.<host>=<IP or dns:name>[,…] gives a host's connect addresses; resolve= alone clears them all, not %q", v)
+			}
+			p.Resolve = nil
 		case "family", "tag":
 			p.Family = strings.TrimSpace(v)
 		case "routing", "strategy":
@@ -1482,6 +1508,28 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 					p.Headers = map[string]string{}
 				}
 				p.Headers[name] = v
+				continue
+			}
+			if len(k) > len("resolve.") && strings.EqualFold(k[:len("resolve.")], "resolve.") {
+				// resolve.<host>=<IP or dns:name>[,…] connects the host
+				// of its base URLs to those places, as curl --resolve
+				// (quantum_lsfc on X); empty takes the host's out. Save
+				// checks the host and each place (netproxy.CheckResolve)
+				host := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(k[len("resolve."):]), "."))
+				delete(p.Resolve, host)
+				var places []string
+				for pl := range strings.SplitSeq(v, ",") {
+					if pl = strings.TrimSpace(pl); pl != "" {
+						places = append(places, pl)
+					}
+				}
+				if len(places) == 0 {
+					continue
+				}
+				if p.Resolve == nil {
+					p.Resolve = map[string][]string{}
+				}
+				p.Resolve[host] = places
 				continue
 			}
 			if len(k) > len("context.") && strings.EqualFold(k[:len("context.")], "context.") {
@@ -1561,7 +1609,7 @@ func refreshLive(ctx context.Context) {
 // network by MAGPIE_ADDR (a server, a Docker image), it takes others with
 // an enabled gateway key.
 func keyNote() string {
-	if settings.Load().LAN || gateway.OnNetwork() {
+	if settings.Shared().LAN || gateway.OnNetwork() {
 		if gateway.InContainer() {
 			return "(anything works inside the container; from its host and other machines, an enabled gateway key — magpie gateway-key add <name>)"
 		}
@@ -1639,6 +1687,8 @@ func serve() error {
 	// before a change and no codex session is on it
 	go agent.KeepCodexDaemonCurrent(context.Background())
 	go agent.KeepCodexRolloutsPortable(context.Background())
+	// a launch agent an older magpie wrote, brought up to date (#2961)
+	daemon.Mend()
 	public := advertisedURL()
 	fmt.Println(green.Render("●"), "magpie gateway on", bold.Render(gateway.URL()))
 	fmt.Println(muted.Render("  OpenAI  "), public+"/v1/chat/completions", muted.Render("·"), public+"/v1/responses")

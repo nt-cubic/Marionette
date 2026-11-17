@@ -54,6 +54,17 @@ func keyHolds(r *http.Request) (access.Identity, bool) {
 	return who, who.Restricted() || len(who.Spent) > 0
 }
 
+// keyAllows is whether the calling key may use one of p's models, nil when
+// the key isn't held to any (keyHolds): for a model the client names inside
+// a request, beside the one it asks for (Claude Code's advisor).
+func keyAllows(r *http.Request, p provider.Provider) func(model string) bool {
+	who, held := keyHolds(r)
+	if !held {
+		return nil
+	}
+	return func(model string) bool { return modelAllowed(who, p, model) }
+}
+
 // keyListHolds is keyHolds for a list of models shown to the key: a
 // spent limit leaves its models listed, as a spent limit of the whole key
 // does, and a request for one is told why it is refused.
@@ -418,10 +429,10 @@ func (k *keyList) entryAllowed(e provider.Entry) bool {
 		}
 		return false
 	}
-	if !modelAllowed(who, e.Provider, e.Model) {
+	if !modelAllowed(who, *e.Provider, e.Model) {
 		return false
 	}
-	return k.accountServes(e.Provider, e.Model)
+	return k.accountServes(*e.Provider, e.Model)
 }
 
 // accountServes is accountServes with p's accounts and keys read once
@@ -529,7 +540,7 @@ func keyListed(r *http.Request, shown []provider.Entry, off func(string) bool) [
 		shown = slices.Clone(shown)
 		for _, s := range ins {
 			e := s.Entry
-			if in[e.ID] || off != nil && off(e.ID) || held && !modelAllowed(who, e.Provider, e.Model) || slices.ContainsFunc(s.Groups, given) {
+			if in[e.ID] || off != nil && off(e.ID) || held && !modelAllowed(who, *e.Provider, e.Model) || slices.ContainsFunc(s.Groups, given) {
 				continue
 			}
 			// beside its provider's other models, where it would be

@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -228,7 +227,7 @@ func desktopModels(entries []provider.Entry, knowsMythos bool) []map[string]any 
 	// Untagged, Claude Code asks for its own id of the tier, which
 	// desktopTurn keeps on the chat's provider (servedBeside).
 	tierOf := desktopTierOf(DesktopTiers())
-	longest := settings.Load().DesktopLongest
+	longest := settings.Shared().DesktopLongest
 	labels := provider.LabelsFor("claude-desktop", entries)
 	data := make([]map[string]any, 0, len(entries))
 	for i, e := range entries {
@@ -284,7 +283,7 @@ func desktopListed1M(e provider.Entry, longest bool) bool { return longest && e.
 // DesktopListed1M says Claude Desktop is shown e by its "[1m]" id, which
 // its Code tab hands Claude Code, so a session on it has the 1M window.
 func DesktopListed1M(e provider.Entry) bool {
-	return desktopListed1M(e, settings.Load().DesktopLongest)
+	return desktopListed1M(e, settings.Shared().DesktopLongest)
 }
 
 // desktop1MSaid is the description Claude Desktop gives the 1M entry it
@@ -978,7 +977,7 @@ const desktopTitlePrompt = "You write short session titles."
 // desktopTitle: the request's system prompt is Desktop's title prompt, as a
 // string (Desktop's client) or one of its text blocks (Claude Code's).
 func desktopTitle(body []byte) bool {
-	if !bytes.Contains(body, []byte(desktopTitlePrompt)) {
+	if !bodyHas(body, desktopTitlePrompt) {
 		return false
 	}
 	var v struct {
@@ -1017,7 +1016,7 @@ func small(body []byte) bool {
 // hasTools: the request offers the model tools (Anthropic's, Chat's and
 // Responses' "tools" alike).
 func hasTools(body []byte) bool {
-	if !bytes.Contains(body, []byte(`"tools"`)) {
+	if !bodyHas(body, `"tools"`) {
 		return false
 	}
 	var v struct {

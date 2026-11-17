@@ -112,7 +112,7 @@ func gatewaySession(g usage.GatewaySession) sessions.Session {
 }
 
 func sessionRoutes(mux *http.ServeMux, w Windows) {
-	warmSessions()
+	steadyGC()
 	mux.HandleFunc("GET /api/sessions", coldTurn(func(rw http.ResponseWriter, r *http.Request) {
 		// the list and the Codex threads' effort each list every session file
 		defer sessions.OneListing()()
@@ -406,7 +406,7 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, errors.New("no such session"))
 			return
 		}
-		if err := openTerminal(run, s.Title, settings.Load().SessionTerminal); err != nil {
+		if err := openTerminal(run, s.Title, settings.Shared().SessionTerminal); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -416,9 +416,26 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 	// is made here from the agent as detected (agentCommand), and the page
 	// sends only its id.
 	mux.HandleFunc("POST /api/agents/open", func(rw http.ResponseWriter, r *http.Request) {
-		var in struct{ Agent string }
+		var in struct {
+			Agent string
+			// Terminal asks for the terminal even where Codex otherwise
+			// opens the app (the row menu's Open in terminal)
+			Terminal bool
+		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			fail(rw, err)
+			return
+		}
+		if in.Agent == "codex" && !in.Terminal && codexOpensApp() {
+			if isWeb(w) {
+				fail(rw, errors.New("opening an app is only for the desktop app"))
+				return
+			}
+			if err := codexAppOpener(r.Context()); err != nil {
+				fail(rw, err)
+				return
+			}
+			rw.WriteHeader(http.StatusNoContent)
 			return
 		}
 		if !terminalHere() || isWeb(w) {
@@ -435,7 +452,7 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, errors.New("no command starts this agent"))
 			return
 		}
-		if err := agentTerminal(run, name, settings.Load().SessionTerminal); err != nil {
+		if err := agentTerminal(run, name, settings.Shared().SessionTerminal); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -470,7 +487,7 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			return
 		}
 		if in.Open {
-			if err := openTerminal(c.Command, s.Title, settings.Load().SessionTerminal); err != nil {
+			if err := openTerminal(c.Command, s.Title, settings.Shared().SessionTerminal); err != nil {
 				fail(rw, err)
 				return
 			}
@@ -841,12 +858,21 @@ func keepStatsWhileAsked() {
 // hands the pages back to the system at once; a range being read again
 // puts it off.
 func forgetIdleStats() {
+	if !letGoStats() {
+		keepStatsWhileAsked()
+		return
+	}
+	debug.FreeOSMemory()
+}
+
+// letGoStats is forgetIdleStats' letting go, which a range being read
+// puts off: it says whether they went.
+func letGoStats() bool {
 	statsMemo.Lock()
 	for _, k := range statsMemo.m {
 		if k.busy {
 			statsMemo.Unlock()
-			keepStatsWhileAsked()
-			return
+			return false
 		}
 	}
 	statsMemo.m = nil
@@ -858,7 +884,7 @@ func forgetIdleStats() {
 	statsTags.m = nil
 	statsTags.Unlock()
 	sessions.ForgetKeptRanges()
-	debug.FreeOSMemory()
+	return true
 }
 
 func combinedSessionStats(days int) sessions.Stats {
@@ -895,12 +921,18 @@ func withGatewaySessions(st sessions.Stats, days int, nativeKeys map[string]bool
 	return sessions.MergeExternalStats(st, daily, ext)
 }
 
-// warmSessions reads every session file once magpie is up, so the Sessions
-// page opens on the kept index and not on a first read of them all. Usage ›
-// Requests' whole history is read after it, not beside it on the disk: a
-// first All parsing 12k sessions kept that page a skeleton for 40 s.
-// Once a process: the app's page served to a browser (apppage.go) is a
-// second Handler beside the window's.
+// warmSessions reads every session file once the app's page is first
+// served, so the Sessions page opens on the kept index and not on a first
+// read of them all. Usage › Requests' whole history is read after it, not
+// beside it on the disk: a first All parsing 12k sessions kept that page a
+// skeleton for 40 s. Once a process: the app's page served to a browser
+// (apppage.go) is a second Handler beside the window's.
+//
+// Not at start: a magpie started at login, by `magpie tray` or as `magpie
+// web` with no page open read the history for nobody, ~0.6 s of CPU and a
+// rebuilt Requests index after an update, and what the reads kept went
+// two minutes later (statsIdle, requestIdle). The tray panel's page
+// doesn't start it: it shows neither page.
 func warmSessions() {
 	if testing.Testing() {
 		return
@@ -908,10 +940,24 @@ func warmSessions() {
 	warmOnce.Do(warmStart)
 }
 
-var warmOnce sync.Once
+var warmOnce, steadyOnce sync.Once
+
+// steadyGC is steadyGCStart, once a process and never in a test.
+func steadyGC() {
+	if testing.Testing() {
+		return
+	}
+	steadyOnce.Do(steadyGCStart)
+}
+
+// warmsSessions tells the app's page from the panel's and from the files
+// it loads: the page that starts warmSessions.
+func warmsSessions(r *http.Request) bool {
+	return r.Method == http.MethodGet && (r.URL.Path == "/" || r.URL.Path == "/index.html") && r.URL.Query().Get("mode") != "panel"
+}
 
 func warmStart() {
-	steadyGCStart()
+	steadyGC()
 	go func() {
 		// a fresh install reads no agent's sessions until asked; one
 		// that read them before keeps reading them (decided once)
@@ -1041,6 +1087,7 @@ var tightGC struct {
 	was    int  // GOGC before the first
 	hooked bool // a retightenGC is waiting for the next collection
 	steady bool // steadyGCStart has run: retightenGC sets steadyPercent between reads
+	procs  bool // the first read narrowed GOMAXPROCS (narrowProcs); the last widens it
 }
 
 // tightenGC begins a read under a tight GC; undo ends it.
@@ -1053,6 +1100,7 @@ func tightenGC() (undo func()) {
 			debug.SetGCPercent(was)
 		}
 		tightGC.was = was
+		tightGC.procs = narrowProcs()
 		if tightGCRoom > 0 && !tightGC.hooked {
 			tightGC.hooked = true
 			afterNextGC(retightenGC)
@@ -1064,8 +1112,32 @@ func tightenGC() (undo func()) {
 		defer tightGC.Unlock()
 		if tightGC.n--; tightGC.n == 0 {
 			debug.SetGCPercent(tightGC.was)
+			if tightGC.procs {
+				tightGC.procs = false
+				runtime.SetDefaultGOMAXPROCS()
+			}
 		}
 	})
+}
+
+// tightProcs is the GOMAXPROCS a read under a tight GC runs with. A
+// collection every few MB wakes a thread on each idle P to mark (Go's idle
+// mark workers) and, with the reads' own workers, keeps them spinning
+// between: on an 18-core Mac a rebuild of the request index (a new catalog
+// price) spent ~2 s in pthread_cond_signal, ~1 s in usleep and ~0.5 s in
+// pthread_kill of its ~16 s. The reads use four workers each
+// (prefetchEach) or up to eight (decodeCache), and gain nothing from more.
+const tightProcs = 4
+
+// narrowProcs sets GOMAXPROCS to tightProcs, when it is more and the user
+// set none (GOMAXPROCS in the environment is theirs), and reports whether
+// it did: the last read under a tight GC then puts back Go's default.
+func narrowProcs() bool {
+	if os.Getenv("GOMAXPROCS") != "" || runtime.GOMAXPROCS(0) <= tightProcs {
+		return false
+	}
+	runtime.GOMAXPROCS(tightProcs)
+	return true
 }
 
 // tightGCPercent is a tenth. Under a quarter, a first start's footprint
@@ -1189,6 +1261,20 @@ func agentCommand(a *agent.Agent) string {
 	}
 	return agentLine(a, launch, runtime.GOOS)
 }
+
+// codexOpensApp says whether Codex opens in the desktop app:
+// the app where one is installed, unless the setting codexOpen asks for the
+// terminal (Yink88564391 on X).
+func codexOpensApp() bool {
+	return settings.Shared().CodexOpen != "terminal" && codexAppInstalled()
+}
+
+// codexAppInstalled and codexAppOpener are the agent package's, vars so a
+// test doesn't open a real app.
+var (
+	codexAppInstalled = agent.CodexAppInstalled
+	codexAppOpener    = agent.OpenCodexApp
+)
 
 // agentLine is agentCommand with a's Launch already asked, for goos.
 func agentLine(a *agent.Agent, launch, goos string) string {

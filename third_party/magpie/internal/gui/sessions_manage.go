@@ -127,7 +127,7 @@ func sessionManageRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, err)
 			return
 		}
-		writeJSON(rw, map[string]bool{"recording": settings.Load().GatewayConversations})
+		writeJSON(rw, map[string]bool{"recording": settings.Shared().GatewayConversations})
 	})
 	// speeds: each session's output speed now (gateway.Speeds), for the
 	// page's curves while it is open. Not under /api/sessions, which
@@ -164,7 +164,7 @@ func sessionManageRoutes(mux *http.ServeMux, w Windows) {
 			// asks first when nothing is decided (asked false)
 			Reads readsJSON `json:"reads"`
 		}{Reads: readsNow(), Agents: []manageAgentJSON{}, Sessions: []managedJSON{}, Terminal: runtime.GOOS == "darwin" && !isWeb(w),
-			Trash: trashJSON(looks), TrashDir: tilde(sessions.TrashDir()), Recording: settings.Load().GatewayConversations,
+			Trash: trashJSON(looks), TrashDir: tilde(sessions.TrashDir()), Recording: settings.Shared().GatewayConversations,
 			Recorded: sessions.HasGatewayConversations()}
 		out.Home, _ = os.UserHomeDir()
 		want := r.URL.Query().Get("agent")
@@ -351,10 +351,14 @@ func sessionManageRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, err)
 			return
 		}
+		// stuck: a session that can't move at all (sessions.StuckError),
+		// from the provider it stays on
 		type refused struct {
 			ID     string `json:"id"`
 			Error  string `json:"error"`
 			Active bool   `json:"active"`
+			Stuck  bool   `json:"stuck,omitempty"`
+			From   string `json:"from,omitempty"`
 		}
 		out := struct {
 			Moved   []sessions.CodexMove `json:"moved"`
@@ -363,7 +367,12 @@ func sessionManageRoutes(mux *http.ServeMux, w Windows) {
 		for _, m := range in.Moves {
 			mv, err := sessions.MoveCodexProvider(m.ID, m.To)
 			if err != nil {
-				out.Refused = append(out.Refused, refused{ID: m.ID, Error: err.Error(), Active: errors.Is(err, sessions.ErrActive)})
+				r := refused{ID: m.ID, Error: err.Error(), Active: errors.Is(err, sessions.ErrActive)}
+				var stuck *sessions.StuckError
+				if errors.As(err, &stuck) {
+					r.Stuck, r.From = true, stuck.From
+				}
+				out.Refused = append(out.Refused, r)
 				continue
 			}
 			mv.Backup = tilde(mv.Backup)

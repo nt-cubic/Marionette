@@ -30,10 +30,25 @@ import (
 // caller, so read only (an append makes a copy): a Codex config.toml with a
 // table for each of 11,000 projects had it made again for each look, 46 MB
 // of what twenty window polls allocated.
+//
+// The list is kept beside the file's other answers, so a poll that only
+// lists tables doesn't hold the whole parse: the Codex agent's drift
+// listed its config's tables on every look, and over a Codex config.toml
+// of ~11k projects that kept its 3 to 5 MB parse for as long as a page
+// was open.
 func TOMLTables(path string) ([]string, error) {
+	a := tomlAnswersOf(path)
+	if a != nil {
+		if names, ok := a.getNames(); ok {
+			return names, nil
+		}
+	}
 	doc, err := tomlFileOf(path)
 	if err != nil {
 		return nil, err
+	}
+	if a != nil {
+		a.setNames(doc.names)
 	}
 	return doc.names, nil
 }
@@ -535,7 +550,11 @@ func tomlTablesOf(path string) ([]tomlTableSpan, error) {
 func tomlFileOf(path string) (tomlFile, error) {
 	doc, err := filememo.Read("toml file", path, func(b []byte) (tomlFile, error) {
 		tomlParses.Add(1)
-		doc, err := parseTOMLFile(splitLines(string(TrimBOM(b))))
+		// the parser reads the file's own bytes: joining the lines back
+		// together and converting that to bytes copied the whole file
+		// twice more on every parse
+		src := TrimBOM(b)
+		doc, err := parseTOMLSource(src, splitLines(string(src)))
 		if err != nil {
 			return tomlFile{}, fmt.Errorf("%s: %w", path, err)
 		}
@@ -610,8 +629,14 @@ type tomlFile struct {
 // parseTOMLFile is parseTOMLTables with the top-level keys too, located the
 // same way: a key's range covers its whole value, however many lines it takes.
 func parseTOMLFile(lines []string) (tomlFile, error) {
+	return parseTOMLSource([]byte(strings.Join(lines, "\n")), lines)
+}
+
+// parseTOMLSource is parseTOMLFile of src, whose lines (split at "\n") are
+// lines: the caller that already holds the text passes it, not a copy.
+func parseTOMLSource(src []byte, lines []string) (tomlFile, error) {
 	p := unstable.Parser{KeepComments: true}
-	p.Reset([]byte(strings.Join(lines, "\n")))
+	p.Reset(src)
 	shapeOf := tomlShaper(lines)
 	root := tomlTableSpan{to: len(lines)}
 	var tables []tomlTableSpan
@@ -652,21 +677,29 @@ func parseTOMLFile(lines []string) (tomlFile, error) {
 		kv.text = text[len(kv.prefix) : len(text)-len(kv.suffix)]
 		return nil
 	}
+	// a key's dotted name, and a table's, built in one buffer each that
+	// every expression reuses: a part each, joined after, was three
+	// allocations a key over Codex's ~11k projects
+	var name, rawName []byte
 	for p.NextExpression() {
 		expr := p.Expression()
 		keyRange := expr.Raw
-		var parts, rawParts []string
+		name, rawName = name[:0], rawName[:0]
 		if expr.Kind != unstable.Comment {
+			first := true
 			for keys := expr.Key(); keys.Next(); {
 				key := keys.Node()
-				if len(parts) == 0 {
+				if first {
 					keyRange = key.Raw
+				} else {
+					name, rawName = append(name, '.'), append(rawName, '.')
 				}
-				parts = append(parts, string(key.Data))
+				first = false
+				name = append(name, key.Data...)
 				// A table's name is the parser's own key text, so a quoted part keeps
 				// its quotes, while the whitespace a header may put around its dots,
 				// as in `[ a . b ]`, is not part of the name.
-				rawParts = append(rawParts, string(p.Raw(key.Raw)))
+				rawName = append(rawName, p.Raw(key.Raw)...)
 				keyRange.Length = key.Raw.Offset + key.Raw.Length - keyRange.Offset
 			}
 		}
@@ -679,7 +712,7 @@ func parseTOMLFile(lines []string) (tomlFile, error) {
 		case unstable.Table, unstable.ArrayTable:
 			current().to = i
 			tables = append(tables, tomlTableSpan{
-				from: i, to: len(lines), name: strings.Join(rawParts, "."),
+				from: i, to: len(lines), name: string(rawName),
 				column: shape.Start.Column,
 				array:  expr.Kind == unstable.ArrayTable,
 			})
@@ -690,7 +723,7 @@ func parseTOMLFile(lines []string) (tomlFile, error) {
 			_, valueText, _ := strings.Cut(lines[i][shape.End.Column-1:], "=")
 			start := len(lines[i]) - len(strings.TrimLeft(valueText, " \t"))
 			kv := tomlKeySpan{
-				from: i, to: -1, name: strings.Join(parts, "."),
+				from: i, to: -1, name: string(name),
 				column: shape.Start.Column,
 				prefix: lines[i][:start], comment: -1,
 				value: string(value.Data), scalar: value.Kind != unstable.Array && value.Kind != unstable.InlineTable,

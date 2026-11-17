@@ -120,15 +120,12 @@ func desktopUsualSets(goos, home string, getenv func(string) string) []desktopPa
 // DesktopConfigs3p are the claude_desktop_config.json files Claude Desktop
 // reads in its 3p mode: there its whole userData is Claude-3p, its MCP
 // servers too (%LOCALAPPDATA%\Claude-3p on Windows, and the MSIX package's;
-// Claude-3p beside Claude elsewhere), and the isolated Desktop's
-// Claude-Magpie-3p on a Mac, whose only file it is (the library gives it
-// the servers where that folder is).
+// Claude-3p beside Claude elsewhere). The isolated Desktop's
+// Claude-Magpie-3p is not one of them: the library gives it servers of
+// its own (DesktopTwinApp).
 func DesktopConfigs3p(home string) []string {
 	var out []string
 	for _, p := range desktopUsualSets(desktopdir.OS, home, os.Getenv) {
-		out = append(out, p.config3p)
-	}
-	if p, ok := desktopIsolatedSet(desktopdir.OS, home, os.Getenv); ok {
 		out = append(out, p.config3p)
 	}
 	return out
@@ -427,7 +424,7 @@ func desktopApply(home string, ps []desktopPaths, v string) error {
 	}
 	// its Code tab is Claude Code, told what Desktop's ids for
 	// magpie's models can do while that one runs on magpie
-	_ = claude(home).Sync()
+	desktopClaudeSync(home)
 	// and a running distro's, which a Code tab session with
 	// WSL as its host runs on (a stopped one is written on
 	// the round after it starts)
@@ -471,7 +468,7 @@ func desktopTierFields(home string, ps []desktopPaths) []Field {
 					}
 				}
 				if desktopWiredAny(ps) {
-					_ = claude(home).Sync()
+					desktopClaudeSync(home)
 				}
 				return joinErrs(errs)
 			},
@@ -627,7 +624,7 @@ const (
 	desktopMCPSeen = "claude-desktop.mcp-seen"
 )
 
-var desktopStashKeys = []string{desktopStashed, desktopMode, desktopMode3p, desktopApplied, desktopMade, desktopProfile, desktopLocale, desktopImport, desktopSearch, desktopSSH, desktopMCP, desktopMCPSeen, desktopModelsMark}
+var desktopStashKeys = []string{desktopStashed, desktopMode, desktopMode3p, desktopApplied, desktopMade, desktopProfile, desktopLocale, desktopImport, desktopSearch, desktopSSH, desktopMCP, desktopMCPSeen, desktopModelsMark, desktopDiscoveryMark}
 
 // desktopAdoptStash moves the stash a packaged Desktop's folders got
 // before they had keys of their own (when magpie wrote only one set) onto

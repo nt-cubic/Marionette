@@ -181,7 +181,7 @@ func PriceKey(pid, model string) (string, bool) {
 		return AnyPriceKey(model), false
 	}
 	key := pid + "/" + model
-	if _, under := settings.Load().ModelPrices[key]; under {
+	if _, under := settings.Shared().ModelPrices[key]; under {
 		_, there := byIDOrWas(pid)
 		return key, there
 	}
@@ -239,7 +239,17 @@ var Levels = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"
 // levels aren't known, any of Levels, which it is given; none takes them
 // away.
 func SetModelEfforts(ref string, efforts []string) error {
-	return touchedIf(setModelEfforts(ref, efforts))
+	_, err := ChangeModelEfforts(ref, efforts)
+	return err
+}
+
+// ChangeModelEfforts is SetModelEfforts, saying whether anything changed:
+// levels already kept, or every level a model offers already, change
+// nothing, which the caller says rather than a tick over nothing saved
+// (@czhhcz on X).
+func ChangeModelEfforts(ref string, efforts []string) (bool, error) {
+	changed, err := setModelEfforts(ref, efforts)
+	return changed, touchedIf(changed, err)
 }
 
 func setModelEfforts(ref string, efforts []string) (bool, error) {
@@ -948,6 +958,26 @@ func LabelsFor(agent string, es []Entry) []string {
 	return out
 }
 
+// AgentNamed is the catalog id of the one model the agent of that id's
+// list names name (LabelsFor), for an agent that asks for a model by the
+// name its list shows: WorkBuddy shows a model's id after its name
+// ("GLM-5.3:workbuddy/glm-5.3", elis_pina on X), so with the provider left
+// out of the names it is given the name as the id too. false when no model
+// shown, or more than one, is named so.
+func AgentNamed(agent, name string) (string, bool) {
+	if name == "" {
+		return "", false
+	}
+	shown := catalogKept(agent).shown
+	id, n := "", 0
+	for i, l := range LabelsFor(agent, shown) {
+		if l == name {
+			id, n = shown[i].ID, n+1
+		}
+	}
+	return id, n == 1
+}
+
 // PlainName is the entry's name alone: a remote magpie's model's without
 // the provider its list put after it by that magpie's own setting, which
 // this one's Provider in model names Off leaves out as well (ARNO on
@@ -981,7 +1011,7 @@ func SuffixModeFor(agent string) string { return suffixModeOf(settings.Load(), a
 
 // AgentSuffix is the agent's own mode, "" when it follows every agent's.
 func AgentSuffix(agent string) string {
-	return settings.Load().AgentSuffix[suffixKey(agent)]
+	return settings.Shared().AgentSuffix[suffixKey(agent)]
 }
 
 // suffixKey is the id an agent's own mode is kept by: a WSL copy and a
@@ -1487,7 +1517,7 @@ func DropUpstreamName(key string) (bool, error) {
 // already (splitModelRef), so nothing depends on it yet.
 func HasUpstreamName(key string) bool {
 	key = strings.TrimPrefix(strings.TrimSpace(key), "magpie/")
-	_, ok := settings.Load().ModelWires[key]
+	_, ok := settings.Shared().ModelWires[key]
 	return ok
 }
 

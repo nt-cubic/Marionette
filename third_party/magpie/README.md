@@ -18,7 +18,8 @@ Thanks to [Kimi](https://usemagpie.ai/go/kimi/readme) for supporting magpie and 
 <sub>Sponsors</sub>
 
 <a href="https://usemagpie.ai/go/zerotoken/readme"><picture><source media="(prefers-color-scheme: dark)" srcset="site/public/img/sponsor-zerotoken-dark.svg"><img src="site/public/img/sponsor-zerotoken.svg" width="200" height="50" alt="零词元"></picture></a>&emsp;&emsp;<a href="https://usemagpie.ai/go/apikeyfan/readme"><picture><source media="(prefers-color-scheme: dark)" srcset="site/public/img/sponsor-apikeyfan-dark.svg"><img src="site/public/img/sponsor-apikeyfan.svg" width="200" height="50" alt="APIKEY.FAN"></picture></a><br>
-<a href="https://usemagpie.ai/go/wandapi/readme"><picture><source media="(prefers-color-scheme: dark)" srcset="site/public/img/sponsor-wandapi-dark.svg"><img src="site/public/img/sponsor-wandapi.svg" width="200" height="50" alt="WandAPI"></picture></a>&emsp;&emsp;<a href="https://usemagpie.ai/go/aigocode/readme"><picture><source media="(prefers-color-scheme: dark)" srcset="site/public/img/sponsor-aigocode-readme-dark.png"><img src="site/public/img/sponsor-aigocode-readme.png" width="200" height="50" alt="AIGoCode"></picture></a>
+<a href="https://usemagpie.ai/go/wandapi/readme"><picture><source media="(prefers-color-scheme: dark)" srcset="site/public/img/sponsor-wandapi-dark.svg"><img src="site/public/img/sponsor-wandapi.svg" width="200" height="50" alt="WandAPI"></picture></a>&emsp;&emsp;<a href="https://usemagpie.ai/go/aigocode/readme"><picture><source media="(prefers-color-scheme: dark)" srcset="site/public/img/sponsor-aigocode-readme-dark.png"><img src="site/public/img/sponsor-aigocode-readme.png" width="200" height="50" alt="AIGoCode"></picture></a><br>
+<a href="https://usemagpie.ai/go/modelgo/readme"><picture><source media="(prefers-color-scheme: dark)" srcset="site/public/img/sponsor-modelgo-dark.svg"><img src="site/public/img/sponsor-modelgo.svg" width="200" height="50" alt="ModelGo"></picture></a>
 
 **[Download](https://usemagpie.ai)** &nbsp;·&nbsp; **[Docs](https://usemagpie.ai/docs/start)** &nbsp;·&nbsp; **[Reference](docs/reference.md)** &nbsp;·&nbsp; **[Plugins](https://github.com/magpie-community/plugins)** &nbsp;·&nbsp; **[Discord](https://discord.gg/vGSnD3ZKQF)** &nbsp;·&nbsp; **English** · [简体中文](README.zh-CN.md)
 
@@ -167,7 +168,7 @@ An agent you're signed in to is a subscription with models behind it, so magpie 
 
 - **Claude**: drives the real local `claude` binary and bridges your agent's tools over MCP
 - **Codex / ChatGPT**: your ChatGPT plan's models, in every other agent
-- **GitHub Copilot**, **Gemini (Code Assist)**, **Antigravity**, **Grok (SuperGrok)** and more
+- **GitHub Copilot**, **Gemini (Code Assist)**, **Antigravity** (through your own agy CLI), **Grok (SuperGrok)** and more
 - **Any OpenCode auth plugin or pi package** from npm
 
 **Daily warm-up** starts each Claude and ChatGPT account's 5-hour window at the times you choose, or the moment the last one resets.
@@ -212,7 +213,6 @@ A conversation **stays with the account that answered it** while the vendor's pr
 
 ```sh
 magpie plugin add opencode-gemini-auth   # an OpenCode plugin from npm
-magpie plugin add pi-antigravity         # a pi package, the same way
 magpie plugin login google-plugin        # its own sign-in flow, in magpie
 ```
 

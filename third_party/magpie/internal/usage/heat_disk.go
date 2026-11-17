@@ -34,7 +34,7 @@ import (
 // history again on its first start, the cold start's peak (#2278). Raise
 // it with any change to what a row counts as; TestSettledCountedAsVersioned
 // fails until it is raised.
-const settledCountVersion = "3"
+const settledCountVersion = "5"
 
 func heatDiskPath() string {
 	return filepath.Join(filepath.Dir(sessions.CachePath()), "heat-v1.json")
@@ -73,6 +73,7 @@ func heatDiskRead(key string) ([]Day, bool) {
 // heatDiskWrite keeps days before cut from since under key, through a
 // file renamed over the last.
 func heatDiskWrite(key string, cut, since time.Time, days []Day) error {
+	saveAsks() // the asks its rows were made of first (catalogBase)
 	b, err := json.Marshal(heatDiskEntry{Key: key, Cut: cut, Since: since, Days: days})
 	if err != nil {
 		return err
@@ -143,6 +144,7 @@ func heatSettledKey(d heatDiskRef, cut, since time.Time, f Filter, identities ma
 			hashRows(h, rows.of(c))
 		}
 	}
+	sourceDigestsSave()
 	return fmt.Sprintf("%x", h.Sum(nil)), true
 }
 
@@ -150,7 +152,13 @@ func heatSettledKey(d heatDiskRef, cut, since time.Time, f Filter, identities ma
 // serial: those of the keys made since the last turn, and before it.
 var sourceDigests struct {
 	sync.Mutex
-	by, last map[uint64][sha256.Size]byte
+	// by and last are the serials used since the last turn, and before it,
+	// which the kept file holds first. Their digests are in made, or in
+	// what was kept on disk: not a map of 17k digests beside the list read
+	// (#2278).
+	by, last map[uint64]struct{}
+	// made are the digests hashed that aren't kept on disk yet
+	made map[uint64][sha256.Size]byte
 }
 
 // sourceDigestsKept is how many digests a turn holds, more than the
@@ -168,23 +176,34 @@ const sourceDigestsKept = 1 << 16
 func sourceDigest(c *rowChunk, rows *chunkRows) [sha256.Size]byte {
 	d := &sourceDigests
 	d.Lock()
-	sum, ok := d.by[c.serial]
+	sum, ok := d.made[c.serial]
 	if !ok {
-		sum, ok = d.last[c.serial]
+		sourceDigestsLoad()
+		sum, ok = sourceDigestsDisk.kept.get(c.serial)
 	}
 	d.Unlock()
-	if !ok {
+	made := !ok
+	if made {
 		h := sha256.New()
 		io.WriteString(h, c.Source.Agent+"\x00"+c.Source.Key+"\x00")
 		hashRows(h, rows.of(c))
 		copy(sum[:], h.Sum(nil))
 	}
 	d.Lock()
-	if d.by == nil || len(d.by) >= sourceDigestsKept {
-		d.last, d.by = d.by, map[uint64][sha256.Size]byte{}
+	if made {
+		sourceDigestsHashed++
+		sourceDigestsDisk.dirty = true
+		if d.made == nil {
+			d.made = map[uint64][sha256.Size]byte{}
+		}
+		d.made[c.serial] = sum
 	}
-	d.by[c.serial] = sum
+	if d.by == nil || len(d.by) >= sourceDigestsKept {
+		d.last, d.by = d.by, map[uint64]struct{}{}
+	}
+	d.by[c.serial] = struct{}{}
 	d.Unlock()
+	derivedUsed() // by and last go when idle (dropDigestTurns)
 	return sum
 }
 
@@ -230,10 +249,14 @@ func hashRows(h hash.Hash, c *rowChunk) {
 		b = binary.AppendVarint(b, p.RouteID)
 		b = binary.AppendUvarint(b, math.Float64bits(p.Cost))
 		b = binary.AppendUvarint(b, math.Float64bits(p.Credits))
-		for _, v := range [...]int32{p.Millis, p.TTFT, p.FirstText, p.Sent, p.Flow, p.FirstReasoning, p.Own, p.Retried, p.Queued, p.Masking, p.Status, int32(p.Tries), p.UpBytes, p.DownBytes, p.FilesSaved} {
+		for _, v := range [...]int32{p.Millis, p.TTFT, p.FirstText, p.Sent, p.Flow, p.FirstReasoning, p.Own, p.Retried, p.Queued, p.Masking, int32(p.Status), int32(p.Tries), p.UpBytes, p.DownBytes, p.FilesSaved} {
 			b = binary.AppendVarint(b, int64(v))
 		}
 		b = binary.AppendUvarint(b, uint64(p.Flags))
+		if p.Flags&rowUpParts != 0 {
+			// only where kept, so a row from before hashes as it did
+			b = append(b, p.upMix[:]...)
+		}
 		if len(b) > 30<<10 {
 			h.Write(b)
 			b = b[:0]

@@ -131,6 +131,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		ModelCompacts:        map[string]int{"p/*": 500000},
 		CompactAt:            400000,
 		AgentCompacts:        map[string]settings.AgentCompact{"claude": {At: 600000}},
+		AgentContexts:        map[string]map[string]int{"dsh": {"p/m": 400000}},
 		ModelPrices:          map[string]settings.ModelPrice{"p/m": {Input: &one, Output: &two}},
 		ModelWires:           map[string]string{"p/m": "vendor-c/m"},
 		ModelAPIs:            map[string]string{"p/m": "anthropic"},
@@ -162,6 +163,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		PanelUsageHidden:     []string{"deepseek"},
 		UsageAgentsHidden:    []string{"curl"},
 		UsageCardsHidden:     []string{"stepfun|balance"},
+		UsageWindowsHidden:   []string{"antigravity|Claude & GPT"},
 		ClientAgents:         map[string]string{"hermes-codex-thread-bridge": "codex"},
 		PlainNames:           true,
 		PlainOwnNames:        true,
@@ -174,6 +176,8 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		CodexAutoReview:      "fake/m1",
 		CodexSubagentModel:   "codex/gpt-6-astra",
 		CodexServiceTier:     "priority",
+		CodexClient:          "desktop",
+		CodexOpen:            "terminal",
 		DesktopSubagentModel: "fake/m2",
 		DesktopGateway:       "https://192.168.1.20:3425",
 		DshCompactModel:      "fake/m1",
@@ -210,6 +214,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 	}
 	was.RedactModelOff, was.RedactModelAuto = true, true
 	was.DesktopSubagentEffort = "high"
+	was.DesktopIsolatedClaude, was.DesktopIsolatedClaudeChosen = true, true
 	was.ReplyModel = settings.ReplyMember // memberModel, its mirror, is kept with it
 	was.CodexAsyncCompact, was.CodexAsyncCompactPercent = true, 70
 	was.ClaudeRunsMost = 3
@@ -222,11 +227,13 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 	was.ProxyNames = map[string]string{"p1": "Office"}
 	was.ContextCap = 200000                           // its own route, POST /api/settings/context-cap
 	was.ContextCapAll = true                          // its own route, POST /api/settings/context-cap-mode
+	was.BareModelIDsOnly = true                       // its own route, POST /api/settings/bare-ids
 	was.SearcherThen = []string{"fake/m1", "fake/m2"} // set in its own row
 	was.RouterNote = "Los Angeles"                    // the Library's servers/hub-note
 	was.RouterAllTools = true                         // the Library's servers/hub-tools
 	was.BusyLoad = 150                                // the Routing page's busy-load
 	was.MTLS = true                                   // Network and sharing's settings/mtls
+	was.Wallpaper = 1700000000000                     // Settings > General's Background image, appearance/wallpaper
 	was.HTTPS = true                                  // Network and sharing's settings/https
 	// Settings > Usage's Bark row has its own route (settings/bark)
 	was.BarkServer, was.BarkKey, was.BarkDaily = "https://bark.example.com", "kept", "21:30"

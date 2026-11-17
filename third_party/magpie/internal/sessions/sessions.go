@@ -2,7 +2,7 @@
 // files — Claude Code's projects/*/<id>.jsonl (and Qoder's, the same kind),
 // Codex's rollout files, OpenCode's database (or its older JSON files) and
 // ZCode's, Pi's session files and omp's, DeepSeek Harness's, Cline's, Grok
-// Build's, WorkBuddy's and CodeBuddy Code's, Droid's, Cursor CLI's and Alma's chat stores — with the tokens each spent, what that cost at the
+// Build's, WorkBuddy's and CodeBuddy Code's, Droid's, Cursor CLI's, Alma's and OpenMausBot's chat stores — with the tokens each spent, what that cost at the
 // effective price, and the command that resumes it. It only ever reads the
 // agents' folders.
 //
@@ -35,6 +35,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/bridgesid"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/dirent"
 	"github.com/yetone/magpie/internal/lazyre"
@@ -121,7 +122,7 @@ type Session struct {
 	// Gateway: seen only through magpie's gateway, with no file of the
 	// agent's on this computer (external.go)
 	Gateway       bool          `json:"gateway,omitempty"`
-	Agent         string        `json:"agent"` // magpie agent id: claude, codex, opencode, pi, omp, zcode, dsh, cline, qoder, qoder-cn, grok, workbuddy, workbuddy-ai, codebuddy, droid, cursor, hermes, alma, kimi, agy
+	Agent         string        `json:"agent"` // magpie agent id: claude, codex, opencode, pi, omp, zcode, dsh, cline, qoder, qoder-cn, grok, workbuddy, workbuddy-ai, codebuddy, droid, cursor, hermes, alma, openmausbot, kimi, agy
 	ID            string        `json:"id"`
 	Cwd           string        `json:"cwd"`
 	Title         string        `json:"title"` // the name it was given, else the agent's own title, else the first prompt
@@ -216,7 +217,7 @@ type state struct {
 	// the agent whose file it is, for its parseVersions
 	Agent     string            `json:"agent,omitempty"`
 	Codex     *codexUsageState  `json:"-"`
-	codexPath string            // the rollout read, for its fork's parent
+	parsePath string            // the file read: a Codex fork's parent, a Pi subagent's lead (piLeadID)
 	Claude    *claudeUsageState `json:"claude,omitempty"`
 	Head      digest            `json:"head,omitzero"`
 	// int32 beside CdRead: the head is headLen bytes at most, and the 8 bytes
@@ -578,7 +579,9 @@ type fileMore struct {
 	hermes   *hermesDB
 	// Alma: its database, and what tells the chat's rows changed
 	alma *almaStore
-	rev  string
+	// OpenMausBot: its database, bots and usage rows
+	omb *ombStore
+	rev string
 	// agy: what conversation_summaries.db says of the conversation
 	agy    *agySummary
 	editor *cursorEditorMeta
@@ -902,6 +905,14 @@ func joinedIs(s, a, b string, sep ...byte) bool {
 	return len(s) == len(a)+1+len(b) && s[len(a)] == c && s[:len(a)] == a && s[len(a)+1:] == b
 }
 
+// bridged says id is the session of a Claude Code run the Claude
+// subscription bridge started (bridgesid.Is), not one of the user's: the
+// gateway counts every call of it already, under the agent that asked, and
+// read here too it was counted again as a local session's (iwinux on X).
+// It is the id alone that tells, so it holds wherever the run saved it: an
+// account's folder or the user's own, a caller's project or magpie's, WSL.
+func bridged(agent, id string) bool { return agent == "claude" && bridgesid.Is(id) }
+
 func listCCFiles(agent, dir string) []file {
 	projects := filepath.Join(dir, "projects")
 	watch(dir) // statFiles reads only the projects that changed
@@ -929,10 +940,13 @@ func listCCFiles(agent, dir string) []file {
 		root := filepath.Join(projects, project.Name())
 		for _, e := range readDirectory(root) {
 			if !e.IsDir() && strings.HasSuffix(e.Name(), ".jsonl") {
+				if bridged(agent, strings.TrimSuffix(e.Name(), ".jsonl")) {
+					continue
+				}
 				path, key := names.of(root, e.Name(), agent, strings.TrimSuffix(e.Name(), ".jsonl"))
 				f := file{agent: agent, key: key, path: path, main: true}
 				out = append(out, f)
-			} else if dirent.IsFolder(root, e) {
+			} else if dirent.IsFolder(root, e) && !bridged(agent, e.Name()) {
 				path := filepath.Join(root, e.Name())
 				subs := filepath.Join(path, "subagents")
 				for _, sub := range readDirectory(subs) {
@@ -989,9 +1003,9 @@ func allFilesWith(kept *filesKept, zcode func() []file) []file {
 		filesHook()
 	}
 	lists := callFileLists(codexFiles())
-	lists = append(lists, openCodeFiles(), piFiles(), raftFiles(), cindyFiles(), wslFiles("pi", "raft", "omp", "kimi"), zcode())
+	lists = append(lists, openCodeFiles(), piFiles(), raftFiles(), cindyFiles(), wslFiles("pi", "raft", "omp", "kimi", "antigravity", "agy"), zcode())
 	lists = append(lists, dshFiles(), clineFiles(), ccFiles("qoder", QoderDir("qoder")), ccFiles("qoder-cn", QoderDir("qoder-cn")),
-		grokFiles(), workbuddyFiles(), workbuddyAIFiles(), codebuddyFiles(), droidFiles(), ompFiles(), cursorFiles(), hermesFiles(), almaFiles(), kimiFiles(), agyFiles(),
+		grokFiles(), workbuddyFiles(), workbuddyAIFiles(), codebuddyFiles(), droidFiles(), ompFiles(), cursorFiles(), hermesFiles(), almaFiles(), openmausbotFiles(), kimiFiles(), agyFiles(),
 		antigravityFiles()) // #2190
 	// each lister asked Reads already; a file listed under another
 	// agent's name is held to that agent too
@@ -1105,6 +1119,7 @@ func Dirs() []string {
 		{cursorDataDir(), filepath.Join(cursorDataDir(), "projects")},
 		{filepath.Dir(cursorEditorDB()), cursorEditorDB()},
 		{AlmaDir(), almaDB()},
+		{OpenMausBotDir(), ombDB()},
 		{MiniMaxDir(), minimaxSessions()},
 		{KimiCodeDir(), kimiSessions()},
 		{AntigravityAppDir(), antigravityConversations()},
@@ -1464,7 +1479,11 @@ const cacheVersion = 29
 // (a parse kept from before has none, under the same row revision).
 // dsh 3: the ids of its newest turn's messages (TurnConvs), which a
 // request still answering carried and has no reply id for yet.
-var parseVersions = map[string]int{"codex": 3, "zcode": 1, "dsh": 3, "antigravity": 2}
+// agy 1: a step's tokens are counted under the model its conversation's
+// database names (agyStepModels), not "agy".
+// pi 1, raft 1, cindy 1: a pi-subagents tool result's model work is its
+// subagents', counted from their own files (piSubagentsRead).
+var parseVersions = map[string]int{"codex": 3, "zcode": 1, "dsh": 3, "antigravity": 2, "agy": 1, "pi": 1, "raft": 1, "cindy": 1}
 
 type cacheFile struct {
 	Version int    `json:"version"`
@@ -1628,6 +1647,8 @@ func saved() {
 		saving.Wait()
 	}
 	saving.Unlock()
+	ccFamilyWrites.Wait()
+	ccRestWrites.Wait()
 }
 
 // saveHook, when a test sets it, runs before each save is written.
@@ -1663,6 +1684,7 @@ func writeCache(c *save) {
 		return
 	}
 	ok = true
+	writeCodexWindows(c.Files)
 }
 
 // refresh parses those of want that changed since their parse was kept, a
@@ -1677,7 +1699,7 @@ func refresh(want, all []file) {
 		if f.cold {
 			continue // in a stopped WSL distro: what was read of it stands
 		}
-		if s := parsed(f.path); s == nil || s.Size != f.size || s.Mod != f.mod.UnixNano() || ccStale(f, s) || (f.agent == "hermes" && (f.m().hermes == nil || f.m().rev == "" || s.more().DBRevision != f.m().rev)) || ((f.agent == "alma" || f.agent == "cursor" || f.agent == "agy" || f.agent == "antigravity") && s.more().DBRevision != f.m().rev) {
+		if s := parsed(f.path); s == nil || s.Size != f.size || s.Mod != f.mod.UnixNano() || ccStale(f, s) || (f.agent == "hermes" && (f.m().hermes == nil || f.m().rev == "" || s.more().DBRevision != f.m().rev)) || ((f.agent == "alma" || f.agent == "openmausbot" || f.agent == "cursor" || f.agent == "agy" || f.agent == "antigravity") && s.more().DBRevision != f.m().rev) {
 			if parsing[f.path] != nil {
 				// a refresh is reading it, another or this one (a path
 				// listed twice): its last parse stands until that one is
@@ -1762,13 +1784,16 @@ func refresh(want, all []file) {
 				j := &jobs[i]
 				// its file's calls lock is taken before a read slot, as
 				// readCalls takes them
-				calls := callsAlong(j.f, j.old)
+				// a rollout's window kept on disk: its calls are read on
+				// too, by readCalls, rather than ride a read from the start
+				old := codexWindowed(j.f, j.old)
+				calls := callsAlong(j.f, old)
 				release := readSlot()
 				end := readBegin()
 				if parseHook != nil {
 					parseHook()
 				}
-				j.parsed = parseWith(j.f, j.old, calls)
+				j.parsed = parseWith(j.f, old, calls)
 				end()
 				release()
 				if j.parsed.Agent != j.f.agent {
@@ -1983,6 +2008,7 @@ func Reset() {
 	mu.Lock()
 	defer mu.Unlock()
 	saved()
+	ccFamiliesForget()
 	cache, loaded = nil, false
 	cacheGeneration++
 	forgetKeptStats()
@@ -2276,6 +2302,8 @@ func parserFor(agent string) sessionParser {
 		return sessionParser{whole: parseHermes}
 	case "alma":
 		return sessionParser{whole: parseAlma}
+	case "openmausbot":
+		return sessionParser{whole: parseOpenMausBot}
 	case "opencode", "zcode":
 		return sessionParser{whole: parseOpenCode}
 	case "dsh":
@@ -2324,8 +2352,10 @@ func parseRead(f file, old *state, calls *callsRide) *state {
 			calls.release()
 		}
 	}()
-	// Summary caches contain aggregates only. After a restart, a changed
-	// Codex file rebuilds its transient response index from the source.
+	// sessions.json keeps aggregates only, and a rollout's window beside it
+	// (codex_window.go). A changed rollout with no window of its read kept
+	// rebuilds it from the source.
+	old = codexWindowed(f, old)
 	if f.agent == "codex" && old != nil && old.Codex == nil {
 		old = nil
 	}
@@ -2356,8 +2386,8 @@ func parseRead(f file, old *state, calls *callsRide) *state {
 	s.CdRead = parser.claude
 	s.ContentHash = prefixHash(f.path, f.size)
 	var head func([]byte) bool
+	s.Agent, s.parsePath = f.agent, f.path
 	if f.agent == "codex" {
-		s.codexPath = f.path
 		head = func(b []byte) bool { return codexHead(s, b, f.main) }
 	}
 	line := func(b []byte, _, _ int64) bool {

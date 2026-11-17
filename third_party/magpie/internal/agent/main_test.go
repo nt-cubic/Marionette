@@ -28,6 +28,7 @@ func TestMain(m *testing.M) {
 	// whether Codex's ChatGPT account is out of its allowance is asked of
 	// OpenAI; never from here
 	codexUsedUp = func() bool { return false }
+	codexSignInKept = func() bool { return false }
 	// a thread a Codex holds open is looked at again later, on its own
 	// goroutine, which would outlive its test; the tests about it set
 	// their own wait
@@ -41,6 +42,10 @@ func TestMain(m *testing.M) {
 	// Microsoft Store apps are read from the current user's AppX registry;
 	// never this machine's (a Windows box with the Codex app installed)
 	windowsStorePackages = func() []string { return nil }
+	// a distro found off the gateway tries Windows' other addresses as a
+	// WSL via (wslFindVia); never this machine's, which on a Windows box
+	// would each be waited on for 15s
+	wslViaCandidates = func() []string { return nil }
 	// nor what an installer registered there (DeepSeek Harness Desktop's
 	// folder, #2279)
 	windowsRegisteredApp = func(string) (string, string) { return "", "" }

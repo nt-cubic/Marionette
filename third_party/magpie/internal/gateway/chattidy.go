@@ -63,8 +63,8 @@ import (
 //
 // And a usage that tells the cache only in another vendor's names
 // (Anthropic's cache_read_input_tokens from a relay in front of a model,
-// DeepSeek's prompt_cache_hit_tokens or Moonshot's cached_tokens beside a
-// 0 in prompt_tokens_details) is told in OpenAI's too (openAIUsage): the
+// DeepSeek's prompt_cache_hit_tokens, Mistral's num_cached_tokens or
+// Moonshot's cached_tokens beside a 0 in prompt_tokens_details) is told in OpenAI's too (openAIUsage): the
 // gateway counted the hit, but an agent on pi-ai (DeepSeek Harness), which
 // reads prompt_tokens_details.cached_tokens first, showed none.
 //
@@ -155,41 +155,41 @@ func (t *chatTidy) lines(b []byte) []byte {
 // needsTidy reports whether a line carries any of the shapes chatTidy
 // mends.
 func needsTidy(line []byte) bool {
-	return bytes.Contains(line, emptyReasoning) ||
-		bytes.Contains(line, emptyFinishReason) ||
-		bytes.Contains(line, emptyToolName) ||
-		bytes.Contains(line, emptyToolCalls) ||
-		bytes.Contains(line, contentParts) ||
-		bytes.Contains(line, contentPartsSpace) ||
-		bytes.Contains(line, toolCallsField) ||
-		bytes.Contains(line, functionCallField)
+	return bodyHasBytes(line, emptyReasoning) ||
+		bodyHasBytes(line, emptyFinishReason) ||
+		bodyHasBytes(line, emptyToolName) ||
+		bodyHasBytes(line, emptyToolCalls) ||
+		bodyHasBytes(line, contentParts) ||
+		bodyHasBytes(line, contentPartsSpace) ||
+		bodyHasBytes(line, toolCallsField) ||
+		bodyHasBytes(line, functionCallField)
 }
 
 // needs is needsTidy, a finish_reason once a choice made a call, and a
 // usage that may tell its cache in names OpenAI's clients don't read.
 func (t *chatTidy) needs(b []byte) bool {
-	return needsTidy(b) || len(t.called) > 0 && bytes.Contains(b, finishReasonField) || mayMendUsage(b)
+	return needsTidy(b) || len(t.called) > 0 && bodyHasBytes(b, finishReasonField) || mayMendUsage(b)
 }
 
 var (
 	usageField        = []byte(`"usage"`)
 	cachedTokensField = []byte(`"cached_tokens"`)
 	// the names other than OpenAI's that cUsage reads a cache in
-	otherCacheFields = [][]byte{[]byte(`"prompt_cache_hit_tokens"`),
+	otherCacheFields = [][]byte{[]byte(`"prompt_cache_hit_tokens"`), []byte(`"num_cached_tokens"`),
 		[]byte(`"cache_read_input_tokens"`), []byte(`"cache_creation_input_tokens"`)}
 )
 
 // mayMendUsage reports whether b has a usage that may tell its cache in
 // names other than OpenAI's, which openAIUsage may have to tell again:
-// DeepSeek's or Anthropic's, or Moonshot's top-level cached_tokens beside
+// DeepSeek's, Mistral's or Anthropic's, or Moonshot's top-level cached_tokens beside
 // prompt_tokens_details' own. A usage in OpenAI's names alone, every
 // OpenAI reply, is left unread.
 func mayMendUsage(b []byte) bool {
-	if !bytes.Contains(b, usageField) {
+	if !bodyHasBytes(b, usageField) {
 		return false
 	}
 	for _, f := range otherCacheFields {
-		if bytes.Contains(b, f) {
+		if bodyHasBytes(b, f) {
 			return true
 		}
 	}
@@ -198,7 +198,7 @@ func mayMendUsage(b []byte) bool {
 
 // openAIUsage is a Chat usage whose cache cUsage reads in names other than
 // OpenAI's (Anthropic's from a relay, DeepSeek's prompt_cache_hit_tokens,
-// Moonshot's cached_tokens), told in OpenAI's as well: what was read in
+// Mistral's num_cached_tokens, Moonshot's cached_tokens), told in OpenAI's as well: what was read in
 // prompt_tokens_details.cached_tokens, what was written in its
 // cache_write_tokens (OpenRouter's), and prompt_tokens counting both, as
 // OpenAI's does. An agent reads prompt_tokens_details first, pi-ai (DeepSeek
@@ -471,17 +471,23 @@ type openCall struct {
 // goes by the next free one; the calls after it, by one of their own.
 // Only a fragment that names its function starts a call: one that
 // carries only arguments goes on with its index's call, whatever id it
-// has. A stream whose calls each have their own index goes as it came.
+// has. The calls are numbered 0, 1, 2 in the order they start, whatever
+// the upstream numbered them by: one that passes Responses' output_index
+// on starts its first call at 1 when a text item took 0 (1,1,2,3,
+// hixonchan on X), and a client that keeps calls in an array by index
+// broke on it. A stream already numbered from 0 in order goes as it came.
 func (o *openCall) renumber(n int, id string, starts bool) int {
 	if o.up == nil {
 		o.up, o.upID, o.used = map[int]int{}, map[int]string{}, map[int]bool{}
 	}
 	out, known := o.up[n]
 	if !known || starts && id != "" && o.upID[n] != "" && id != o.upID[n] {
-		out = n
-		if known || o.used[n] {
-			out = o.next
-		}
+		// the calls count from 0 in the order they start, whatever
+		// index the upstream numbered them by: a Responses
+		// output_index has the reply's text at 0, and the first call
+		// at 1 (#4900)
+		out = o.next
+		o.next++
 		o.up[n], o.used[out] = out, true
 	}
 	if id != "" {
@@ -517,7 +523,7 @@ func (s streamCallIndexes) give(choice int, raw json.RawMessage) (json.RawMessag
 			if decodeJSON(v, &n) == nil {
 				out := o.renumber(n, id, namesFunction(c["function"]))
 				o.open, o.id, o.index = true, cmp.Or(id, o.id), out
-				o.next = max(o.next, n+1, out+1)
+				o.next = max(o.next, out+1)
 				if out != n {
 					c["index"], _ = marshalPlain(out)
 					changed = true
@@ -715,8 +721,8 @@ func (t *chatWhole) write(b []byte) []byte {
 func (t *chatWhole) flush() []byte {
 	b := t.buf
 	t.buf = nil
-	parts := bytes.Contains(b, contentParts) || bytes.Contains(b, contentPartsSpace)
-	if !parts && !mayWriteCalls(b, t.names) && !bytes.Contains(b, toolCallsField) && !mayMendUsage(b) {
+	parts := bodyHasBytes(b, contentParts) || bodyHasBytes(b, contentPartsSpace)
+	if !parts && !mayWriteCalls(b, t.names) && !bodyHasBytes(b, toolCallsField) && !mayMendUsage(b) {
 		return b
 	}
 	var reply map[string]json.RawMessage
@@ -887,11 +893,11 @@ func asReasoningContent(m map[string]json.RawMessage, think string) {
 // reasoning_content alone) and sends it again on every later turn. A body
 // without such a turn comes back byte for byte.
 func silentAssistantsOut(body []byte) []byte {
-	if !bytes.Contains(body, []byte(`"assistant"`)) {
+	if !bodyHas(body, `"assistant"`) {
 		return body
 	}
 	var q map[string]json.RawMessage
-	if decodeJSON(body, &q) != nil || !anySilentAssistant(q["messages"]) {
+	if decodeJSONView(body, &q) != nil || !anySilentAssistant(q["messages"]) {
 		return body
 	}
 	dec := json.NewDecoder(bytes.NewReader(q["messages"]))
@@ -1022,27 +1028,30 @@ func withoutMessageReasoning(body []byte, fields []string) []byte {
 // editMessages hands each message of a Chat request whose JSON names any
 // of fields to edit, and puts back those edit reports it changed; every
 // other message keeps its bytes. The body comes back as it was if nothing
-// changed.
+// changed. What it decodes shares body's bytes (decodeJSONView): an edit
+// replaces a member, never writes into one, and keeps none past its
+// return, and a changed body is marshalled anew. A copy of each level
+// was ~3.8 MB a request for a 2 MB Chat conversation.
 func editMessages(body []byte, fields []string, edit func(m map[string]json.RawMessage) bool) []byte {
 	has := false
 	for _, f := range fields {
-		has = has || bytes.Contains(body, []byte(`"`+f+`"`))
+		has = has || bodyHas(body, `"`+f+`"`)
 	}
 	if !has {
 		return body
 	}
 	var q map[string]json.RawMessage
-	if decodeJSON(body, &q) != nil {
+	if decodeJSONView(body, &q) != nil {
 		return body
 	}
 	var msgs []json.RawMessage
-	if decodeJSON(q["messages"], &msgs) != nil {
+	if decodeJSONView(q["messages"], &msgs) != nil {
 		return body
 	}
 	changed := false
 	for i, raw := range msgs {
 		var m map[string]json.RawMessage
-		if decodeJSON(raw, &m) != nil || !edit(m) {
+		if decodeJSONView(raw, &m) != nil || !edit(m) {
 			continue
 		}
 		if nb, err := marshalPlain(m); err == nil {
@@ -1137,7 +1146,10 @@ func mistralThinking(body []byte) []byte {
 // join into one first, as joinSplitCalls does for the translations. A
 // body whose exchange pairs comes back byte for byte.
 func toolPairsOut(body []byte) []byte {
-	if !bytes.Contains(body, []byte(`"tool`)) {
+	if !bodyHas(body, `"tool`) {
+		return body
+	}
+	if paired, ok := rawToolsPaired(body); ok && paired {
 		return body
 	}
 	var q map[string]json.RawMessage
@@ -1230,6 +1242,111 @@ func toolsPaired(msgs []map[string]any) bool {
 		}
 	}
 	return closed()
+}
+
+// rawToolsPaired is toolsPaired read from the body as it came, without
+// decoding the conversation into maps: what nearly every request with
+// tools needs, since its calls are paired already. ok is false for any
+// shape the decoding path would read differently or turn away (a message
+// that isn't an object, tool_calls that aren't a list of objects), which
+// leaves the answer to that path. A key named twice counts as its last,
+// as decoding into a map does.
+func rawToolsPaired(body []byte) (paired, ok bool) {
+	msgs, found, valid := topMember(body, "messages")
+	if !valid || !found || len(msgs) == 0 || msgs[0] != '[' {
+		return false, false
+	}
+	type msg struct {
+		role, toolID string
+		ids          []string
+	}
+	str := func(v []byte) string {
+		if len(v) == 0 || v[0] != '"' {
+			return ""
+		}
+		s, _ := unquoteJSON(v)
+		return s
+	}
+	var list []msg
+	ok = true
+	eachElement(msgs, func(el []byte) bool {
+		if el[0] != '{' {
+			ok = false
+			return false
+		}
+		var m msg
+		var calls []byte
+		eachMember(el, func(k, v []byte) bool {
+			switch {
+			case keyIs(k, "role"):
+				m.role = str(v)
+			case keyIs(k, "tool_call_id"):
+				m.toolID = str(v)
+			case keyIs(k, "tool_calls"):
+				calls = v
+			}
+			return true
+		})
+		if len(calls) > 0 && string(calls) != "null" {
+			if calls[0] != '[' {
+				ok = false
+				return false
+			}
+			m.ids = []string{}
+			eachElement(calls, func(c []byte) bool {
+				if c[0] != '{' {
+					ok = false
+					return false
+				}
+				id := ""
+				eachMember(c, func(k, v []byte) bool {
+					if keyIs(k, "id") {
+						id = str(v)
+					}
+					return true
+				})
+				m.ids = append(m.ids, id)
+				return true
+			})
+		}
+		list = append(list, m)
+		return ok
+	})
+	if !ok {
+		return false, false
+	}
+	var pending map[string]bool
+	closed := func() bool {
+		for _, open := range pending {
+			if open {
+				return false
+			}
+		}
+		pending = nil
+		return true
+	}
+	for _, m := range list {
+		if m.role == "tool" {
+			if !pending[m.toolID] {
+				return false, true
+			}
+			pending[m.toolID] = false
+			continue
+		}
+		if !closed() {
+			return false, true
+		}
+		if m.role == "assistant" && len(m.ids) > 0 {
+			pending = map[string]bool{}
+			for _, id := range m.ids {
+				if _, twice := pending[id]; twice {
+					return false, true
+				}
+				pending[id] = true
+			}
+		}
+	}
+	return closed(), true
 }
 
 // joinSplitChatCalls joins a turn's calls split over consecutive

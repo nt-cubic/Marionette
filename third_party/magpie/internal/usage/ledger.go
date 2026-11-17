@@ -101,10 +101,12 @@ type Filter struct {
 	// Account narrows to the calls a subscription account answered, by its
 	// name as Record.Account gives it (#557)
 	Account string
-	// Failed keeps the rows of the requests the agent got an error for
-	// (Record.LostRequest), Retried those of the requests answered after a
-	// try that failed first (Record.RetriedRequest): what the Requests
-	// card's two counts are of
+	// Failed keeps the rows of every request a try failed on
+	// (Record.FailedTry): those the agent got an error for, the tries
+	// handed on, and the requests a later try answered, as Routing shows
+	// them failed (maohy915 on X). Retried keeps only the requests answered
+	// after a try that failed first (Record.RetriedRequest). The Requests
+	// card still counts each request once, by how it ended.
 	Failed  bool
 	Retried bool
 	Query   string
@@ -224,7 +226,7 @@ func (f Filter) keepsRecord(r *Record, codexIdentity bool, subagent, parentAgent
 	if !f.computer(r) {
 		return false
 	}
-	if f.Failed && !r.LostRequest() {
+	if f.Failed && !r.FailedTry() {
 		return false
 	}
 	if f.Retried && !r.RetriedRequest() {
@@ -399,7 +401,7 @@ const UnknownProvider = "session-unknown"
 func logRecord(c sessions.Call) Record {
 	r := Record{Time: c.Time, Agent: c.Agent, Provider: UnknownProvider, Model: c.Model, Served: c.Model, Requested: c.Requested,
 		Input: c.Input, Output: c.Output, CacheRead: c.CacheRead, CacheWrite: c.CacheWrite, CacheWrite1h: c.CacheWrite1h, Reasoning: c.Reasoning, Effort: c.Effort,
-		Millis: c.Millis, TTFT: c.TTFT, Session: c.Session, RequestID: c.RequestID, Error: c.ErrorText, ErrType: c.Error, Subagent: sessions.SubagentOf(c.File), ParentAgent: sessions.SubagentParent(c.File)}
+		Millis: c.Millis, TTFT: c.TTFT, Session: c.Session, RequestID: c.RequestID, MessageID: c.Msg, Error: c.ErrorText, ErrType: c.Error, Subagent: sessions.SubagentOf(c.File), ParentAgent: sessions.SubagentParent(c.File)}
 	if c.Agent == "codex" {
 		r.ResponseID = c.ResponseID
 		r.Compaction = codexCompactionOf(c)
@@ -583,7 +585,7 @@ var ownPrice catalog.Price
 // one whose other models alone would stand for this call's, prices
 // nothing (#4278).
 func Pricer() func(Record) *catalog.Price {
-	prices := map[[5]string]*catalog.Price{}
+	prices := map[[6]string]*catalog.Price{}
 	// each provider's rate windows as the same read of the prices saw
 	// them: the windows are held once (BasePriceIn), each record's rate
 	// read at its own time (provider.RateAt), so a window that opens
@@ -600,52 +602,18 @@ func Pricer() func(Record) *catalog.Price {
 			served = ""
 		}
 		id := r.priceID()
-		k := [5]string{id, r.Model, served, r.SessionProvider, r.Effort}
+		// a key that bills at its own rate (provider.KeyPriceRates) prices
+		// its calls apart from the provider's other keys
+		key := r.ProviderKeyID
+		k := [6]string{id, r.Model, served, r.SessionProvider, r.Effort, key}
 		if pr, ok := prices[k]; ok {
 			return atWindow(pr, windows[id], r.Time)
 		}
-		var pr *catalog.Price
-		var v catalog.Price
-		var ws []provider.RateWindow
-		var ok bool
-		// the swap the ledger marks: the reply named another model than
-		// asked, no rename of it (#5340)
-		if servedInstead(wires, id, r.Model, r.Effort, served) {
-			// a price the user set for the model asked for still says what
-			// that model costs them, a zero included
-			if v, ok, ws = provider.UserBasePriceIn(s, id, r.Model); !ok {
-				// the model that ran is priced as itself, what the vendor
-				// billed; with none, the asked-for one's price stands
-				if v, ok, ws = provider.BasePriceIn(s, id, served); !ok {
-					v, ok, ws = provider.BasePriceIn(s, id, r.Model)
-				}
-			}
-		} else {
-			v, ok, ws = provider.BasePriceIn(s, id, r.Model)
-		}
-		if !ok && served != "" {
-			v, ok, ws = provider.BasePriceIn(s, id, served)
-		}
-		if ok {
-			pr = &v
+		a := priceAsk{ID: id, Model: r.Model, Served: served, SessionProvider: r.SessionProvider, Effort: r.Effort, Key: key, Unknown: r.Provider == UnknownProvider}
+		pr, ws := basePriceIn(s, wires, a)
+		noteAsk(a.ask(), priceAnswer(pr, ws))
+		if pr != nil {
 			windows[id] = ws
-		} else if r.Provider == UnknownProvider && r.SessionProvider != "" {
-			// A session file's usage entry names the provider the call went
-			// through (omp's model_usage: provider openrouter, model
-			// typesafe/jev-1.14, #4278), which its billing provider, the
-			// unknown one, never says. The name is the file's word for the
-			// route, not an account of ours, so it prices only what the
-			// catalog itself lists under it: this very model id, at that
-			// provider, at a price. A provider models.dev doesn't know, a
-			// model it lists that provider without, and a listing with no
-			// price are none: the row stays unpriced, its CSV cost empty,
-			// rather than priced at another entry's guess.
-			if v, ok := catalog.PriceOf(r.SessionProvider, r.Model); ok {
-				pr = &v
-				// the failed lookup's windows are the billing provider's,
-				// not the session provider's: none holds for this price
-				ws = nil
-			}
 		}
 		if pr == nil {
 			catalog.Missing() // models.dev may list it by now
@@ -653,6 +621,62 @@ func Pricer() func(Record) *catalog.Price {
 		prices[k] = pr
 		return atWindow(pr, ws, r.Time)
 	}
+}
+
+// priceAsk is what Pricer prices a record by, less its time: the base
+// price and rate windows answer it, and every record that asks the same
+// is priced the same.
+type priceAsk struct {
+	ID, Model, Served, SessionProvider, Effort, Key string
+	Unknown                                         bool
+}
+
+// basePriceIn is a's price before its time's rate window, and the
+// provider's windows, as Pricer finds it: nil when none is known.
+func basePriceIn(s settings.Settings, wires map[string]string, a priceAsk) (*catalog.Price, []provider.RateWindow) {
+	var pr *catalog.Price
+	var v catalog.Price
+	var ws []provider.RateWindow
+	var ok bool
+	// the swap the ledger marks: the reply named another model than
+	// asked, no rename of it (#5340)
+	if servedInstead(wires, a.ID, a.Model, a.Effort, a.Served) {
+		// a price the user set for the model asked for still says what
+		// that model costs them, a zero included
+		if v, ok, ws = provider.UserBasePriceIn(s, a.ID, a.Model); !ok {
+			// the model that ran is priced as itself, what the vendor
+			// billed; with none, the asked-for one's price stands
+			if v, ok, ws = provider.BaseKeyPriceIn(s, a.ID, a.Key, a.Served); !ok {
+				v, ok, ws = provider.BaseKeyPriceIn(s, a.ID, a.Key, a.Model)
+			}
+		}
+	} else {
+		v, ok, ws = provider.BaseKeyPriceIn(s, a.ID, a.Key, a.Model)
+	}
+	if !ok && a.Served != "" {
+		v, ok, ws = provider.BaseKeyPriceIn(s, a.ID, a.Key, a.Served)
+	}
+	if ok {
+		pr = &v
+	} else if a.Unknown && a.SessionProvider != "" {
+		// A session file's usage entry names the provider the call went
+		// through (omp's model_usage: provider openrouter, model
+		// typesafe/jev-1.14, #4278), which its billing provider, the
+		// unknown one, never says. The name is the file's word for the
+		// route, not an account of ours, so it prices only what the
+		// catalog itself lists under it: this very model id, at that
+		// provider, at a price. A provider models.dev doesn't know, a
+		// model it lists that provider without, and a listing with no
+		// price are none: the row stays unpriced, its CSV cost empty,
+		// rather than priced at another entry's guess.
+		if v, ok := catalog.PriceOf(a.SessionProvider, a.Model); ok {
+			pr = &v
+			// the failed lookup's windows are the billing provider's,
+			// not the session provider's: none holds for this price
+			ws = nil
+		}
+	}
+	return pr, ws
 }
 
 // servedInstead reports whether the vendor answered a call on model with
@@ -932,9 +956,7 @@ func (t *Totals) plus(d *Totals) {
 	t.FloorOut += d.FloorOut
 	t.FloorMs += d.FloorMs
 	t.FloorN += d.FloorN
-	t.UpBytes += d.UpBytes
-	t.DownBytes += d.DownBytes
-	t.ImageFilesSaved += d.ImageFilesSaved
+	t.plusBytes(d)
 }
 
 // FloorAgents are the agents whose session files time a call from what

@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"bytes"
 	"cmp"
 	"encoding/json"
 	"fmt"
@@ -33,6 +32,12 @@ type rItem struct {
 	// tool_search_output: the tools Codex's search found, which the model
 	// may call from then on
 	Tools []rTool `json:"tools,omitempty"`
+	// input_file as a standalone item: its file_data and filename sit on
+	// the item itself, flat (a PDF the client drops straight into the
+	// input array, #5452)
+	FileData string `json:"file_data,omitempty"`
+	FileID   string `json:"file_id,omitempty"`
+	Filename string `json:"filename,omitempty"`
 	// configuration_update's: an effort changed mid-thread
 	Reasoning *struct {
 		Effort string `json:"effort"`
@@ -173,7 +178,7 @@ func searchFound(tools []rTool) string {
 // Codex as unsealed (callTo's encrypted_function_args), so an upstream that
 // honours the mark must not seal them (#613).
 func unsealed(schema json.RawMessage) json.RawMessage {
-	if !bytes.Contains(schema, []byte(`"encrypted"`)) {
+	if !bodyHas(schema, `"encrypted"`) {
 		return schema
 	}
 	var v any
@@ -208,7 +213,7 @@ func unsealed(schema json.RawMessage) json.RawMessage {
 // "encrypted" (MultiAgentV2's spawn_agent message): an upstream that
 // honours the mark answers the call with that argument sealed.
 func asksSealing(body []byte) bool {
-	if !bytes.Contains(body, []byte(`"encrypted"`)) {
+	if !bodyHas(body, `"encrypted"`) {
 		return false
 	}
 	var q struct {
@@ -245,7 +250,7 @@ func asksSealing(body []byte) bool {
 	}
 	marked := func(schema json.RawMessage) bool {
 		var v any
-		return bytes.Contains(schema, []byte(`"encrypted"`)) && decodeJSON(schema, &v) == nil && mark(v)
+		return bodyHas(schema, `"encrypted"`) && decodeJSON(schema, &v) == nil && mark(v)
 	}
 	for _, t := range q.Tools {
 		if marked(t.Parameters) {
@@ -382,6 +387,17 @@ func readResponsesFor(body []byte, facts, keepInstructions bool) (*Request, erro
 				replied = true
 			}
 			switch {
+			case it.Type == "input_file":
+				// a file part as its own item: dropped whole before, it
+				// reached the model only when the request was relayed as
+				// sent (#5452). A video rides the video machinery (#6135)
+				if mt := videoFileType(it.FileData, it.Filename); mt != "" {
+					if v, ok := videoPart(it.FileData, mt, it.Filename); ok {
+						r.Messages = append(r.Messages, Message{Role: "user", Parts: []Part{v}})
+					}
+				} else if p, ok := chatFile(it.FileData, it.FileID, it.Filename); ok {
+					r.Messages = append(r.Messages, Message{Role: "user", Parts: []Part{p}})
+				}
 			case it.Type == "message" || (it.Type == "" && it.Role != ""):
 				role := "user"
 				if it.Role == "assistant" {
@@ -454,8 +470,8 @@ func readResponsesFor(body []byte, facts, keepInstructions bool) (*Request, erro
 			case (it.Type == "function_call_output" || it.Type == "custom_tool_call_output") && facts:
 				r.Messages = append(r.Messages, Message{Role: "user", Parts: []Part{{Kind: ToolResult, CallID: it.CallID}}})
 			case it.Type == "function_call_output" || it.Type == "custom_tool_call_output":
-				out, images := toolOutput(it.Output)
-				part := Part{Kind: ToolResult, CallID: it.CallID, Text: out, Images: images}
+				out, images, audio := toolOutput(it.Output)
+				part := Part{Kind: ToolResult, CallID: it.CallID, Text: out, Images: images, Audio: audio}
 				if it.CallID == "" {
 					// Native account requests may still need translation to
 					// collect a streamed response for a non-streaming client.
@@ -740,7 +756,7 @@ func toolResultItem(t string) bool {
 // whole exchanges stays where it is, and a request with nothing inside a
 // run comes back byte for byte.
 func joinToolRuns(body []byte) []byte {
-	if !bytes.Contains(body, []byte(`_call"`)) {
+	if !bodyHas(body, `_call"`) {
 		return body
 	}
 	var q map[string]json.RawMessage
@@ -891,7 +907,9 @@ func orphanedToolOutputs(body []byte) []byte {
 			out = append(out, raw)
 			continue
 		}
-		text, images := toolOutput(item.Output)
+		// a recording is told of in the text: a Chat upstream's user
+		// message takes no audio from magpie (chat.go's File)
+		text, images, _ := toolOutput(item.Output)
 		content := []map[string]any{}
 		if text != "" {
 			content = append(content, map[string]any{"type": "input_text", "text": text})
@@ -936,7 +954,7 @@ func orphanedToolOutputs(body []byte) []byte {
 // orphanedToolOutputs, and one naming a call another request carried
 // (previous_response_id) stays as it is.
 func pairToolItems(body []byte) []byte {
-	if !bytes.Contains(body, []byte(`_call"`)) {
+	if !bodyHas(body, `_call"`) {
 		return body
 	}
 	var q map[string]json.RawMessage
@@ -1012,7 +1030,7 @@ func pairToolItems(body []byte) []byte {
 // pages, never what they said, and the reply after it says what was
 // found, so nothing the model read is lost.
 func withoutSearchCalls(body []byte) []byte {
-	if !bytes.Contains(body, []byte(`"web_search_call"`)) {
+	if !bodyHas(body, `"web_search_call"`) {
 		return body
 	}
 	var q map[string]json.RawMessage
@@ -1107,7 +1125,13 @@ func responsesParts(raw json.RawMessage) []Part {
 		Detail   string `json:"detail"`
 		FileData string `json:"file_data"`
 		FileURL  string `json:"file_url"`
+		FileID   string `json:"file_id"`
 		Filename string `json:"filename"`
+		File     struct {
+			FileData string `json:"file_data"`
+			FileID   string `json:"file_id"`
+			Filename string `json:"filename"`
+		} `json:"file"`
 	}
 	decodeJSON(raw, &items)
 	var out []Part
@@ -1122,12 +1146,17 @@ func responsesParts(raw json.RawMessage) []Part {
 				out = append(out, im)
 			}
 		case "input_file":
-			// a video alone (#6135); another file is still left out (#5452)
-			src := cmp.Or(it.FileData, it.FileURL)
+			// a video rides the video machinery (#6135); every other file,
+			// a PDF say, is a file part, which the encoders write in their
+			// own tongue (#5452) — dropped whole before, it reached the
+			// model only when the request was relayed as sent
+			src := cmp.Or(it.FileData, it.FileURL, it.File.FileData)
 			if mt := videoFileType(src, it.Filename); mt != "" {
 				if v, ok := videoPart(src, mt, it.Filename); ok {
 					out = append(out, v)
 				}
+			} else if p, ok := chatFile(src, cmp.Or(it.FileID, it.File.FileID), cmp.Or(it.Filename, it.File.Filename)); ok {
+				out = append(out, p)
 			}
 		}
 	}
@@ -1156,8 +1185,8 @@ func replaysReasoning(model, host string) bool {
 // be passed back to the API" (#1104, #1592, #1822). A body with nothing to
 // give comes back byte for byte.
 func withReasoningText(body []byte) []byte {
-	if !bytes.Contains(body, []byte(`"reasoning"`)) && !bytes.Contains(body, []byte(`_call"`)) &&
-		!bytes.Contains(body, []byte(`_output"`)) {
+	if !bodyHas(body, `"reasoning"`) && !bodyHas(body, `_call"`) &&
+		!bodyHas(body, `_output"`) {
 		return body
 	}
 	var q map[string]json.RawMessage
@@ -1396,11 +1425,21 @@ func buildResponses(r *Request, model, host string, rejectTemp bool) []byte {
 				}
 				content = append(content, map[string]any{"type": t, "text": p.Text})
 			case File:
-				t := "input_text"
-				if m.Role == "assistant" {
-					t = "output_text"
+				if m.Role != "assistant" && p.MediaType == "application/pdf" && p.Data != "" {
+					// the file itself, in Responses' own tongue (#5452):
+					// file_data goes with a filename, and a PDF is the
+					// file every Responses model reads
+					content = append(content, map[string]any{"type": "input_file", "filename": "document.pdf", "file_data": "data:" + p.MediaType + ";base64," + p.Data})
+				} else {
+					// a file only referenced (a Gemini fileUri, another
+					// host's file id) is told of: Responses' file_id is
+					// OpenAI's own, not that reference (#5452)
+					t := "input_text"
+					if m.Role == "assistant" {
+						t = "output_text"
+					}
+					content = append(content, map[string]any{"type": t, "text": attachmentText(p)})
 				}
-				content = append(content, map[string]any{"type": t, "text": attachmentText(p)})
 			case Image:
 				if m.Role != "assistant" {
 					content = append(content, map[string]any{"type": "input_image", "detail": responsesDetail(p.Detail), "image_url": dataURL(p)})

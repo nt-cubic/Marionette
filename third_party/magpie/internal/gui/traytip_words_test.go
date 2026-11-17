@@ -65,7 +65,7 @@ func TestPluginWindowWordsSaidInEveryLanguage(t *testing.T) {
 	}
 	for _, lang := range []string{"zh", "zh-TW", "ja", "de"} {
 		for _, w := range words {
-			if _, ok := pageWords()[lang][w]; !ok {
+			if _, ok := pageWords(lang)[w]; !ok {
 				t.Errorf("i18n.js's %s doesn't say %q", lang, w)
 			}
 		}
@@ -82,5 +82,65 @@ func TestParsePageWords(t *testing.T) {
 	}
 	if _, ok := got["zh"]["not"]; ok || len(got) != 2 {
 		t.Errorf("parsed a comment or past the table: %v", got)
+	}
+}
+
+// parsePageWordsIn reads only the language asked for: the tray holds one
+// language's words, not the page's four.
+func TestParsePageWordsInOneLanguage(t *testing.T) {
+	src := "const I18N = {\n  zh: {\n    \"Credits\": \"积分\",\n  },\n  \"zh-TW\": {\n    \"Credits\": \"積分\",\n  },\n};\n"
+	got := parsePageWordsIn(src, "zh-TW")
+	if len(got) != 1 || got["zh-TW"]["Credits"] != "積分" {
+		t.Errorf("parsed %v", got)
+	}
+	if pageWords("ja")["Credits"] == "" || pageWords("zh")["Credits"] == pageWords("ja")["Credits"] {
+		t.Errorf("ja then zh: %q %q", pageWords("ja")["Credits"], pageWords("zh")["Credits"])
+	}
+}
+
+// The tray keeps the words it asked for, not the language's whole table:
+// a word asked again is not looked up again, and the table a lookup
+// parsed is let go a minute later.
+func TestPageWordKeepsOnlyAskedWords(t *testing.T) {
+	wordsMu.Lock()
+	wordsLang, wordsAsked, wordsTable = "", nil, nil
+	wordsMu.Unlock()
+	t.Cleanup(func() {
+		wordsMu.Lock()
+		wordsLang, wordsAsked, wordsTable = "", nil, nil
+		wordsMu.Unlock()
+	})
+	parsed := func() int {
+		wordsMu.Lock()
+		defer wordsMu.Unlock()
+		return wordsParsed
+	}
+	now := time.Now()
+	start := parsed()
+	if askWord("zh", "Credits", now) == "" || askWord("zh", "5 hours", now) == "" {
+		t.Fatal("zh has Credits and 5 hours")
+	}
+	if askWord("zh", "no such words", now) != "" {
+		t.Fatal("a word the page doesn't have")
+	}
+	if n := parsed() - start; n != 1 {
+		t.Fatalf("one card's words parsed the table %d times, want 1", n)
+	}
+	later := now.Add(wordsTableFor)
+	for range 3 {
+		askWord("zh", "Credits", later)
+		askWord("zh", "no such words", later)
+	}
+	wordsMu.Lock()
+	held := wordsTable != nil
+	wordsMu.Unlock()
+	if held {
+		t.Fatal("the table is still held a minute after the lookup")
+	}
+	if n := parsed() - start; n != 1 {
+		t.Fatalf("words asked before were looked up again: %d parses", n)
+	}
+	if askWord("ja", "Credits", later) == askWord("zh", "Credits", later) {
+		t.Fatal("ja answered with zh's word")
 	}
 }

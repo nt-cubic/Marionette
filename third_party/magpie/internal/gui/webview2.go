@@ -68,6 +68,13 @@ var webView2Words = map[string][2]string{
 			"Die Download-Seite jetzt öffnen?"},
 }
 
+// webViewOcclusion is Chromium's tracking of whether a window is covered,
+// turned off for magpie's windows (windowsOptions): when it is wrong, as
+// for a window shown while the screen is locked or the display off, the
+// page stays white (screenback_windows.go). A hidden or minimised window is
+// told so by Wails (put_IsVisible) without it.
+const webViewOcclusion = "CalculateNativeWinOcclusion"
+
 // webView2Args sorts what the user put in WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
 // (webview2env.Args) into Wails' three options, which it passes as the
 // app's own arguments: the features to disable, the ones to enable, and
@@ -93,6 +100,41 @@ func webView2Args(env string) (disabled, enabled, other []string) {
 		}
 	}
 	return disabled, enabled, other
+}
+
+// isolateSandboxedFrames is the Chromium feature that runs a sandboxed
+// frame in a process of its own. WebView2 157 has it on, and Wails
+// (v3.0.0-beta.24) registers its WebResourceRequested filter with
+// AddWebResourceRequestedFilter, which isn't raised for the requests
+// such a frame makes: a plugin's page or panel (pluginpages.js, sandbox
+// allow-scripts) got its index.html, but its bridge.js, scripts and
+// stylesheet went out to the network as http://wails.localhost/... and
+// failed with ERR_CONNECTION_REFUSED, so the page never said hello and
+// showed "This page stopped working" (Mute06162 on X, 0.1.4066). Wails'
+// request cancellation took the frame for a worker too, and logged
+// "Worker request cancellation setup: The parameter is incorrect."
+const isolateSandboxedFrames = "IsolateSandboxedIframes"
+
+// sharedFrameProcess is disabled with isolateSandboxedFrames first, so a
+// sandboxed frame stays in its window's process, where Wails serves its
+// requests. The frame keeps its sandbox: an opaque origin, its own policy
+// (pagePolicy), no way to the window but messages. A user who enables
+// the feature in WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS keeps it on.
+func sharedFrameProcess(disabled, enabled []string) []string {
+	if slices.Contains(enabled, isolateSandboxedFrames) {
+		return disabled
+	}
+	return addFeatures([]string{isolateSandboxedFrames}, strings.Join(disabled, ","))
+}
+
+// occlusionOff adds webViewOcclusion to the disabled features, after the
+// user's own; a user who enables it in WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
+// keeps it on.
+func occlusionOff(disabled, enabled []string) []string {
+	if slices.Contains(enabled, webViewOcclusion) {
+		return disabled
+	}
+	return addFeatures(disabled, webViewOcclusion)
 }
 
 // addFeatures adds a comma list's features to have, each once.

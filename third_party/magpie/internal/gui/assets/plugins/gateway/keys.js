@@ -234,7 +234,7 @@ function renderGatewayKeys() {
     tick.onclick = () => gatewayKeyAction(k.off ? "on-key" : "off-key", { key: k.id });
     // the copy sits by the key it copies (the owner: stranded among the
     // badges it read as nobody's); Rotate and Remove wait in the row's menu
-    row.append(tick, gatewayRename(k), el("span", "plan mono", k.masked), copyCallerKeyBtn(k), el("span", "grow"), ...(k.browser ? [gatewayBrowserTag()] : k.readOnly ? [gatewayReadOnlyTag()] : []), gatewayModelsBadge(k), ...gatewayKeptOutBadge(k), ...gatewayMCPBadge(k), gatewayQuotasBadge(k), ...(k.browser || k.readOnly ? [] : [gatewayConcurrencyBadge(k), gatewayTierBadge(k), gatewayRedactBadge(k)]), gatewayLimitBadge(k), gatewayKeyMore(k));
+    row.append(tick, gatewayRename(k), el("span", "plan mono", k.masked), copyCallerKeyBtn(k), el("span", "grow"), ...(k.browser ? [gatewayBrowserTag()] : k.readOnly ? [gatewayReadOnlyTag()] : k.admin && gatewayKeyCanAdmin(k) ? [gatewayAdminTag(k)] : []), gatewayModelsBadge(k), ...gatewayKeptOutBadge(k), ...gatewayMCPBadge(k), gatewayQuotasBadge(k), ...(k.browser || k.readOnly ? [] : [gatewayConcurrencyBadge(k), gatewayTierBadge(k), gatewayRedactBadge(k)]), gatewayLimitBadge(k), gatewayKeyMore(k));
     const under = gatewayLimit?.id === k.id ? [gatewayLimitEditor(k)] : keyUsed(k).map((u) => gatewayLimitLine(k, u));
     if (under.length) row.classList.add("with-limit"), row.append(...under);
     list.append(row);
@@ -350,10 +350,41 @@ function gatewayKeyMore(k) {
       ...(k.browser || k.readOnly ? [] : [{ name: "Model names", icon: MCP_GLYPH, run: () => gatewayAliasesAsk(k) }]),
       ...(k.browser ? [] : [{ name: "Keep accounts out", icon: KEEP_OUT_GLYPH, run: () => gatewayKeptOutPick(k, more) }]),
       { name: "Rotate key", icon: ROTATE_GLYPH, run: () => askGatewayKey(k, true) },
+      // the management API (#6307, ljayic on X), seldom set, so under
+      // Advanced; only a key the user made can hold it (access's adminOf)
+      ...(gatewayKeyCanAdmin(k) ? [{ name: "Advanced", icon: ADVANCED_GLYPH, run: () => gatewayAdminPick(k, more) }] : []),
       { name: "Remove", icon: REMOVE_GLYPH, sep: true, run: () => askGatewayKey(k, false) },
     ]);
   };
   return more;
+}
+
+const ADVANCED_GLYPH = "M2.5 4.5h6M11.5 4.5h2M2.5 11.5h2M7.5 11.5h6M10 3v3M6 10v3";
+// gatewayKeyCanAdmin: a key the management API may be given, as access's
+// adminOf holds it: not the sharing key, a read-only or Browser key, nor
+// an issued or expiring one
+function gatewayKeyCanAdmin(k) {
+  return !k.lan && !k.browser && !k.readOnly && !k.issuer && !k.expires;
+}
+// gatewayAdminPick sets how the key may use the management API
+// (/v1/magpie/admin/): not at all, from this computer, or from any
+async function gatewayAdminPick(k, anchor) {
+  const opts = [
+    { v: "", name: "Off" },
+    { v: "local", name: "From this computer" },
+    { v: "any", name: "From any computer" },
+  ];
+  openProtoMenu(anchor, opts, k.admin || "", async (v) => {
+    if (v === (k.admin || "")) return;
+    const out = await gatewayKeyAction("admin-key", { key: k.id, admin: v });
+    if (out) status(t(v === "any" ? "{name} can manage magpie from any computer" : v ? "{name} can manage magpie from this computer" : "{name} can't manage magpie", { name: k.name }), "ok");
+  }, "Management API", "sess-menu");
+}
+// a key that can manage magpie says so in its row, always
+function gatewayAdminTag(k) {
+  const tag = el("span", "amodels key-readonly key-admin set", t("Manages magpie"));
+  tag.title = t(k.admin === "any" ? "This key can change magpie's providers, keys and routing groups, from any computer" : "This key can change magpie's providers, keys and routing groups, from this computer");
+  return tag;
 }
 
 const EYE_GLYPH = "M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8zM8 9.9a1.9 1.9 0 1 0 0-3.8 1.9 1.9 0 0 0 0 3.8z";
@@ -1033,16 +1064,22 @@ function gatewayRedactBadge(k) {
 
 // "days" is every N days from when the limit is set or reset (#1509),
 // "hours" every N hours (#2102), a subscription's 5-hour window's pace,
-// "total" never resets by itself, only by Reset (@Cyrus_4433 on X)
-const limitPeriods = ["day", "week", "month", "days", "hours", "total"];
-const limitPer = { day: "per day", week: "per week", month: "per month", days: "Every N days", hours: "Every N hours", total: "in total" };
+// "account" follows one subscription account's window, its 5 hours or its
+// week, and resets when that does (ljayic on X); "total" never resets by
+// itself, only by Reset (@Cyrus_4433 on X)
+const limitPeriods = ["day", "week", "month", "days", "hours", "account", "total"];
+const limitPer = { day: "per day", week: "per week", month: "per month", days: "Every N days", hours: "Every N hours", account: "An account's window", total: "in total" };
 const cyclic = (period) => period === "days" || period === "hours";
 // perWords is a limit's window as the badge says it: "per week", "every
-// 10 days", "every 5 hours"
-const perWords = (period, days, hours) => period === "days"
+// 10 days", "every 5 hours", "5h of codex/Work"
+const perWords = (period, days, hours, l) => period === "days"
   ? (days === 1 ? t("every 1 day") : t("every {n} days", { n: days }))
   : period === "hours" ? (hours === 1 ? t("every 1 hour") : t("every {n} hours", { n: hours }))
-    : t(limitPer[period] || period);
+    : period === "account" ? acctWindowWords(l?.account, l?.accountWindow)
+      : t(limitPer[period] || period);
+// acctWindowWords names an account's window: "5h of codex/Work"
+const acctWindowWords = (account, window) => account && window
+  ? t("{window} of {account}", { window, account: accountShown(account) }) : t(limitPer.account);
 // limitDays reads a cycle's days: a whole number from 1 to 3650, else NaN
 function limitDays(v) {
   const s = String(v ?? "").trim();
@@ -1086,13 +1123,15 @@ function limitDraft(k, n) {
   const taken = keyLimits(k).map((x) => x.period);
   // a new one in a window the key has no limit in yet: a week beside 5 hours
   const period = l.period || (n ? ["week", "hours", "day", "month"].find((p) => !taken.includes(p)) || "days" : "day");
-  return { id: k.id, n, period, days: l.days ? String(l.days) : "", hours: l.hours ? String(l.hours) : (n && period === "hours" ? "5" : ""), tokens: l.tokens ? String(l.tokens) : "", cost: l.cost ? String(l.cost) : "", cacheReads: !!l.cacheReads, models: [...(l.models || [])] };
+  return { id: k.id, n, period, days: l.days ? String(l.days) : "", hours: l.hours ? String(l.hours) : (n && period === "hours" ? "5" : ""), tokens: l.tokens ? String(l.tokens) : "", cost: l.cost ? String(l.cost) : "", cacheReads: !!l.cacheReads, models: [...(l.models || [])], account: l.account || "", accountWindow: l.accountWindow || "" };
 }
 // bindingUsed is the limit holding a key most: of those spent, the one
-// that resets last, as it is refused until then; else the first
+// that resets last, as it is refused until then (one whose reset isn't
+// known now after every other); else the first
 function bindingUsed(k) {
   const all = keyUsed(k), spent = all.filter((u) => u.spent);
-  return spent.length ? spent.reduce((a, b) => (new Date(b.reset) > new Date(a.reset) ? b : a)) : all[0];
+  const later = (a, b) => a.resetUnknown || b.resetUnknown ? !!b.resetUnknown && !a.resetUnknown : new Date(b.reset) > new Date(a.reset);
+  return spent.length ? spent.reduce((a, b) => (later(a, b) ? b : a)) : all[0];
 }
 
 // gatewayLimitBadge opens a key's limit editor: "Limit" on hover when it
@@ -1107,7 +1146,7 @@ function gatewayLimitBadge(k) {
     const parts = [];
     if (u.tokenLimit) parts.push(fmtN(u.tokens) + " / " + fmtN(u.tokenLimit));
     if (u.costLimit) parts.push(usd(u.cost) + " / " + usd(u.costLimit));
-    b.textContent = (u.spent ? t("Spent") + " · " : "") + parts.join(" · ") + " · " + perWords(u.period, u.days, u.hours)
+    b.textContent = (u.spent ? t("Spent") + " · " : "") + parts.join(" · ") + " · " + perWords(u.period, u.days, u.hours, u)
       + (u.models?.length ? " · " + limitModels(u.models) : "")
       + (more > 0 ? " · " + t(more === 1 ? "+1 limit" : "+{n} limits", { n: more }) : "");
   }
@@ -1129,17 +1168,22 @@ function gatewayLimitBadge(k) {
 function gatewayLimitLine(k, u) {
   const line = el("div", "key-limit" + (u.spent ? " spent" : ""));
   const parts = [];
-  if (keyUsed(k).length > 1) parts.push(perWords(u.period, u.days, u.hours));
+  if (keyUsed(k).length > 1) parts.push(perWords(u.period, u.days, u.hours, u));
   if (u.models?.length) parts.push(limitModels(u.models));
   if (u.tokenLimit) parts.push(t("{used} of {limit} tokens · {left} left", { used: fmtN(u.tokens), limit: fmtN(u.tokenLimit), left: fmtN(u.tokensLeft) }));
   if (u.costLimit) parts.push(t("{used} of {limit} estimated · {left} left", { used: usd(u.cost), limit: usd(u.costLimit), left: usd(u.costLeft) }));
   const at = new Date(u.reset);
-  if (u.period !== "total") parts.push(t(u.spent ? "refused until {when}" : "resets {when}", { when: resetClock(at) }));
+  // an account's window whose reset can't be read now: the key is held
+  // to what it spent since the earliest the window can have begun
+  if (u.resetUnknown) parts.push(t(u.spent ? "refused until the account's window resets" : "resets with the account's window"));
+  else if (u.period !== "total") parts.push(t(u.spent ? "refused until {when}" : "resets {when}", { when: resetClock(at) }));
   else if (u.spent) parts.push(t("refused until reset"));
   if (u.inFlight) parts.push(t(u.inFlight === 1 ? "1 in flight" : "{n} in flight", { n: u.inFlight }));
   line.textContent = parts.join(" · ");
   line.title = (u.models?.length ? u.models.join(", ") + "\n" : "")
-    + (u.period === "total"
+    + (u.resetUnknown
+      ? t("Counted from {start}; the account's window can't be read now, so when it resets isn't known", { start: new Date(u.start).toLocaleString(intlLang()) })
+      : u.period === "total"
       ? t("Counted from {start}", { start: new Date(u.start).toLocaleString(intlLang()) })
       : t("Counted from {start}; resets {when}", { start: new Date(u.start).toLocaleString(intlLang()), when: at.toLocaleString(intlLang()) }))
     + (u.unpriced ? "\n" + t("{n} calls without a known price aren't in the cost", { n: u.unpriced }) : "");
@@ -1157,6 +1201,7 @@ function gatewayLimitEditor(k) {
     || limitCost(d.cost) !== (kept.cost || 0) || d.cacheReads !== !!kept.cacheReads
     || (d.period === "days" && limitDays(d.days) !== kept.days)
     || (d.period === "hours" && limitHours(d.hours) !== kept.hours)
+    || (d.period === "account" && (d.account !== (kept.account || "") || d.accountWindow !== (kept.accountWindow || "")))
     || !sameModels(d.models, kept.models);
   const fields = el("div", "klf");
   // the app's own menu, not a native select
@@ -1171,6 +1216,7 @@ function gatewayLimitEditor(k) {
     fields.classList.toggle("with-days", cyclic(d.period));
     dl.hidden = d.period !== "days";
     hl.hidden = d.period !== "hours";
+    al.hidden = d.period !== "account";
   };
   // the days of a cycle, shown for "every N days"
   const days = input(d.days, "10");
@@ -1184,6 +1230,19 @@ function gatewayLimitEditor(k) {
   hours.inputMode = "numeric";
   const hl = el("label", "klf-field klf-days klf-hours");
   hl.append(el("span", "klf-name", t("Hours")), hours);
+  // the account's window an "account" limit follows (ljayic on X)
+  const acct = el("button", "sess-pick klf-pick klf-acct-pick");
+  acct.type = "button";
+  acct.setAttribute("aria-label", t("Account window"));
+  acct.setAttribute("aria-haspopup", "menu");
+  acct.setAttribute("aria-expanded", "false");
+  const paintAcct = () => {
+    acct.title = d.account ? d.account + " · " + d.accountWindow : "";
+    acct.replaceChildren(el("span", "", d.account ? acctWindowWords(d.account, d.accountWindow) : t("Pick a window")), svg(CHEV, 11, 1.6));
+  };
+  paintAcct();
+  const al = el("label", "klf-field klf-acct");
+  al.append(el("span", "klf-name", t("Account window")), acct);
   paintPeriod();
   const tokens = input(d.tokens, t("No token cap"));
   tokens.setAttribute("aria-label", t("Token limit"));
@@ -1211,7 +1270,7 @@ function gatewayLimitEditor(k) {
   paintModels();
   const ml = el("label", "klf-field klf-models");
   ml.append(el("span", "klf-name", t("Models")), models);
-  fields.append(pl, dl, hl, tl, cl, ml);
+  fields.append(pl, dl, hl, al, tl, cl, ml);
   // a key's limits (#2227), each a tab, when it has more than one or one
   // is being added: the editor is of one at a time
   let which = null;
@@ -1219,7 +1278,7 @@ function gatewayLimitEditor(k) {
     which = el("div", "klf-which");
     which.setAttribute("role", "tablist");
     which.setAttribute("aria-label", t("This key's limits"));
-    const tabs = limits.map((l, i) => ({ i, name: perWords(l.period, l.days, l.hours) + (l.models?.length ? " · " + limitModels(l.models) : "") }));
+    const tabs = limits.map((l, i) => ({ i, name: perWords(l.period, l.days, l.hours, l) + (l.models?.length ? " · " + limitModels(l.models) : "") }));
     if (n >= limits.length) tabs.push({ i: n, name: t("New limit") });
     for (const x of tabs) {
       const tab = el("button", "klf-tab" + (x.i === n ? " on" : ""), x.name);
@@ -1248,6 +1307,7 @@ function gatewayLimitEditor(k) {
   const update = () => {
     const bad = d.period === "days" && Number.isNaN(limitDays(d.days)) ? t("Days is a whole number from 1 to 3650")
       : d.period === "hours" && Number.isNaN(limitHours(d.hours)) ? t("Hours is a whole number from 1 to 8760")
+      : d.period === "account" && !d.account ? t("Pick an account's window")
       : Number.isNaN(limitTokens(d.tokens)) ? t("Tokens is a count, like 2000000 or 2M")
         : Number.isNaN(limitCost(d.cost)) ? t("The cost is US dollars, like 5 or 2.50") : "";
     err.textContent = bad;
@@ -1267,6 +1327,25 @@ function gatewayLimitEditor(k) {
       if (v === "days") days.focus({ preventScroll: true });
       if (v === "hours") hours.focus({ preventScroll: true });
     }, "Limit window", "sess-menu");
+  };
+  acct.onclick = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (acct.classList.contains("open")) return closeProtoMenu();
+    let list = [];
+    try { ({ windows: list } = await api("caller-keys/account-windows")); } catch (err) { status(t(err.message), "err"); return; }
+    if (!acct.isConnected || gatewayLimit !== d) return;
+    const key = (a, w) => a + "\n" + w;
+    const opts = (list || []).map((w) => ({ v: key(w.account, w.window), name: acctWindowWords(w.account, w.window), note: t("resets {when}", { when: resetClock(new Date(w.reset)) }), literalName: true }));
+    if (d.account && !opts.some((o) => o.v === key(d.account, d.accountWindow))) {
+      opts.push({ v: key(d.account, d.accountWindow), name: acctWindowWords(d.account, d.accountWindow), note: "Not read now", literalName: true });
+    }
+    if (!opts.length) { status(t("No account's window can be read now"), "err"); return; }
+    openProtoMenu(acct, opts, d.account ? key(d.account, d.accountWindow) : "", (v) => {
+      [d.account, d.accountWindow] = v.split("\n");
+      paintAcct();
+      update();
+    }, "Account window", "sess-menu");
   };
   models.onclick = async (e) => {
     e.preventDefault();
@@ -1315,6 +1394,7 @@ function gatewayLimitEditor(k) {
     if (limit && d.models.length) limit.models = d.models;
     if (limit && d.period === "days") limit.days = limitDays(d.days);
     if (limit && d.period === "hours") limit.hours = limitHours(d.hours);
+    if (limit && d.period === "account") Object.assign(limit, { account: d.account, accountWindow: d.accountWindow });
     // which one only when there are several: one is the key's only limit
     const out = await gatewayKeyAction("limit-key", which ? { key: k.id, limit, index: n } : { key: k.id, limit });
     if (!out) { update(); return; }
@@ -1385,6 +1465,7 @@ function askResetLimit(k, n) {
     ? t("The tokens and cost {name} has used go back to 0 together, and a new {n}-day cycle starts now.", { name: k.name, n: u.days })
     : u.period === "hours" ? t("The tokens and cost {name} has used go back to 0 together, and a new {n}-hour cycle starts now.", { name: k.name, n: u.hours })
     : u.period === "total" ? t("The tokens and cost {name} has used go back to 0 together, and counting starts again from now.", { name: k.name })
+    : u.resetUnknown ? t("The tokens and cost {name} has used go back to 0 together. Calls so far in this window stop counting; it still resets when the account's window does.", { name: k.name })
     : t("The tokens and cost {name} has used go back to 0 together. Calls so far in this window stop counting; it still resets {when}.", { name: k.name, when: resetClock(new Date(u.reset)) })));
   const bar = el("div", "bar");
   const cancel = el("button", "text", t("Cancel"));

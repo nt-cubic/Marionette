@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"hash"
@@ -96,7 +95,7 @@ func wantsClientCache(r *http.Request, from provider.Protocol) bool {
 // for its marks.
 func classifierClientCache(from provider.Protocol, body []byte) bool {
 	return from == provider.Anthropic &&
-		bytes.Contains(body, []byte("cache_control")) &&
+		bodyHas(body, "cache_control") &&
 		autoModeClassifierAsk(body)
 }
 
@@ -177,7 +176,7 @@ func askedCacheTTL(a *aRequest) string {
 	for _, t := range a.Tools {
 		take(t.CacheControl)
 	}
-	if bytes.Contains(a.System, cacheControlField) {
+	if bodyHasBytes(a.System, cacheControlField) {
 		var system []struct {
 			CacheControl json.RawMessage `json:"cache_control"`
 		}
@@ -191,7 +190,7 @@ func askedCacheTTL(a *aRequest) string {
 		if ttl == "1h" {
 			break
 		}
-		if !bytes.Contains(m.Content, cacheControlField) {
+		if !bodyHasBytes(m.Content, cacheControlField) {
 			continue
 		}
 		var blocks []struct {

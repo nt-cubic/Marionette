@@ -100,10 +100,14 @@ func setup(t *testing.T, proto provider.Protocol, f *fake) *httptest.Server {
 }
 
 // noRests lifts every rest the package's tests have recorded.
+// noRests clears the package's rests: what rests, why, and what was
+// lifted. They are package-global, so a rest one test records holds the
+// next test's account of the same key in the same process (#6717).
 func noRests() {
 	restingUntil.Lock()
 	restingUntil.m = map[string]time.Time{}
 	restingUntil.note = map[string]Rest{}
+	restingUntil.lifted = map[string]time.Time{}
 	restingUntil.Unlock()
 	codexHolds.Lock()
 	codexHolds.m = nil
@@ -444,6 +448,12 @@ func TestWrongEndpoint(t *testing.T) {
 		{400, agentRouterEscaped, true}, // escaped (#1669)
 		{400, `{"error":{"message":"模型 gpt-5.6-sol 不支持 /v1/chat/completions 接口"}}`, true}, // its first clause alone
 		{400, `{"error":{"message":"请改用 /v1/responses（OpenAI Responses API）。"}}`, true},   // its second alone
+		// WandAPI's 404 (equinox0253 on X), and a missing model's
+		{404, `{"error":{"message":"模型 gpt-6.1-sol 不支持当前入口协议","type":"new_api_error"}}`, true},
+		{404, `{"error":{"message":"模型 gpt-6.1-sol 不存在","type":"new_api_error"}}`, false},
+		// WandAPI's 404 for gpt-6.1-terra, its 181 bytes as sent (equinox0253
+		// on X, 11-13): the entry protocol named in other words
+		{404, wandAPINoSource, true},
 		// new-api's words for a model no channel serves (written from
 		// memory, not from the report): the model, not the API
 		{400, `{"error":{"message":"当前分组 default 下对于模型 gone 无可用渠道"}}`, false},

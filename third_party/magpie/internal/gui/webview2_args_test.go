@@ -43,14 +43,14 @@ func TestWebView2ArgsMergeTheUsers(t *testing.T) {
 		name, env string
 		want      []string
 	}{
-		{"none set", "", []string{"--disable-features=msSmartScreenProtection"}},
+		{"none set", "", []string{"--disable-features=msSmartScreenProtection,IsolateSandboxedIframes,CalculateNativeWinOcclusion"}},
 		{"the reporter's", "--disable-features=RendererCodeIntegrity",
-			[]string{"--disable-features=msSmartScreenProtection,RendererCodeIntegrity"}},
+			[]string{"--disable-features=msSmartScreenProtection,IsolateSandboxedIframes,RendererCodeIntegrity,CalculateNativeWinOcclusion"}},
 		{"twice, with magpie's own and a repeat", `--disable-features=A,msSmartScreenProtection --disable-features="B, A"`,
-			[]string{"--disable-features=msSmartScreenProtection,A,B"}},
+			[]string{"--disable-features=msSmartScreenProtection,IsolateSandboxedIframes,A,B,CalculateNativeWinOcclusion"}},
 		{"enable and others kept", "  --enable-features=X,Y\t--remote-debugging-port=9333 --proxy-server=\"http://h:1 x\" --enable-features=Y,Z --lang=de ",
-			[]string{"--disable-features=msSmartScreenProtection", "--enable-features=X,Y,Z", "--remote-debugging-port=9333", `--proxy-server="http://h:1 x"`, "--lang=de"}},
-		{"a bare switch", "--disable-features", []string{"--disable-features=msSmartScreenProtection"}},
+			[]string{"--disable-features=msSmartScreenProtection,IsolateSandboxedIframes,CalculateNativeWinOcclusion", "--enable-features=X,Y,Z", "--remote-debugging-port=9333", `--proxy-server="http://h:1 x"`, "--lang=de"}},
+		{"a bare switch", "--disable-features", []string{"--disable-features=msSmartScreenProtection,IsolateSandboxedIframes,CalculateNativeWinOcclusion"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			was := webview2env.Args
@@ -70,6 +70,94 @@ func TestWebView2ArgsMergeTheUsers(t *testing.T) {
 				t.Fatalf("%d --disable-features in %q, Chromium keeps only the last", n, got)
 			}
 		})
+	}
+}
+
+// Mute06162 on X (0.1.4066, Windows): every plugin page said "This page
+// stopped working". WebView2 157 runs a sandboxed frame in a process of
+// its own, and Wails' WebResourceRequested isn't raised for that
+// process's requests, so the page's bridge.js and scripts were refused
+// (ERR_CONNECTION_REFUSED) and it never said hello. magpie's WebView2
+// starts with the frame isolation off, beside the user's own features
+// and once only; a user who turns it on keeps it.
+func TestWebView2KeepsPluginFramesInTheWindowProcess(t *testing.T) {
+	was := webview2env.Args
+	t.Cleanup(func() { webview2env.Args = was })
+	for _, c := range []struct {
+		name, env, keep string // keep: the user's own, still in the arguments
+		off, enabled    bool
+	}{
+		{"default", "", "", true, false},
+		{"the user's own features", "--disable-features=RendererCodeIntegrity --lang=de", "RendererCodeIntegrity", true, false},
+		{"the user disables it too", "--disable-features=IsolateSandboxedIframes,A", ",A", true, false},
+		{"the user turns it on", "--enable-features=IsolateSandboxedIframes", "", false, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			webview2env.Args = c.env
+			args := wailsBrowserArgs(windowsOptions())
+			var off, on int
+			for _, a := range args {
+				k, v, _ := strings.Cut(a, "=")
+				for _, f := range strings.Split(v, ",") {
+					if f != "IsolateSandboxedIframes" {
+						continue
+					}
+					switch k {
+					case "--disable-features":
+						off++
+					case "--enable-features":
+						on++
+					}
+				}
+			}
+			if c.off && off != 1 {
+				t.Fatalf("IsolateSandboxedIframes disabled %d times in %q, want once: a plugin's sandboxed frame gets a process whose requests Wails doesn't serve", off, args)
+			}
+			if !c.off && off != 0 {
+				t.Fatalf("the user's IsolateSandboxedIframes is disabled: %q", args)
+			}
+			if c.enabled != (on == 1) {
+				t.Fatalf("enabled %d times in %q", on, args)
+			}
+			if !strings.Contains(strings.Join(args, " "), c.keep) {
+				t.Fatalf("the user's %s is lost: %q", c.keep, args)
+			}
+		})
+	}
+}
+
+// aquaarboraurum on X: a window shown while the screen is locked can stay
+// white once Chromium's occlusion tracking has taken it as covered.
+// magpie's WebView2 starts with the tracking off, once only; a user who
+// turns it on keeps it.
+func TestWebView2OcclusionTrackingOff(t *testing.T) {
+	was := webview2env.Args
+	t.Cleanup(func() { webview2env.Args = was })
+	for _, c := range []struct {
+		env     string
+		off, on int
+	}{
+		{"", 1, 0},
+		{"--disable-features=CalculateNativeWinOcclusion,A", 1, 0},
+		{"--enable-features=CalculateNativeWinOcclusion", 0, 1},
+	} {
+		webview2env.Args = c.env
+		args := wailsBrowserArgs(windowsOptions())
+		var off, on int
+		for _, a := range args {
+			k, v, _ := strings.Cut(a, "=")
+			for _, f := range strings.Split(v, ",") {
+				if f == "CalculateNativeWinOcclusion" && k == "--disable-features" {
+					off++
+				}
+				if f == "CalculateNativeWinOcclusion" && k == "--enable-features" {
+					on++
+				}
+			}
+		}
+		if off != c.off || on != c.on {
+			t.Errorf("%q: WebView2 starts with %q: occlusion tracking disabled %d times, enabled %d, want %d and %d", c.env, args, off, on, c.off, c.on)
+		}
 	}
 }
 
@@ -104,7 +192,7 @@ func TestWebView2ArgsSurviveWailsInit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("child: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), `disabled=["RendererCodeIntegrity"]`) {
+	if !strings.Contains(string(out), `disabled=["IsolateSandboxedIframes" "RendererCodeIntegrity" "CalculateNativeWinOcclusion"]`) {
 		t.Fatalf("the started value didn't reach the options:\n%s", out)
 	}
 	t.Logf("%s", strings.SplitN(string(out), "\n", 2)[0])

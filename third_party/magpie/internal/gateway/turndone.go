@@ -51,7 +51,7 @@ var turnAfter = func() time.Duration {
 	if TurnDone == nil {
 		return 0
 	}
-	return time.Duration(settings.Load().TurnDoneAlert) * time.Second
+	return time.Duration(settings.Shared().TurnDoneAlert) * time.Second
 }
 
 // turnStale: a session with nothing for this long starts its next turn
@@ -237,8 +237,8 @@ func (s *toolScan) add(p []byte) {
 				break
 			}
 		}
-		s.ended = s.ended || bytes.Contains(b, []byte("data: [DONE]")) || bytes.Contains(b, []byte("data:[DONE]")) ||
-			bytes.Contains(b, []byte("event: message_stop")) || bytes.Contains(b, []byte("event:message_stop"))
+		s.ended = s.ended || bodyHas(b, "data: [DONE]") || bodyHas(b, "data:[DONE]") ||
+			bodyHas(b, "event: message_stop") || bodyHas(b, "event:message_stop")
 	}
 	keep := min(len(b), 64) // longer than any value with its colon and spaces
 	s.tail = append(s.tail[:0:0], b[len(b)-keep:]...)
@@ -248,7 +248,7 @@ func (s *toolScan) add(p []byte) {
 // m's does, with any spaces between.
 func marked(b []byte, m replyMark) bool {
 	for i := 0; ; {
-		j := bytes.Index(b[i:], m.key)
+		j := bodyIndexBytes(b[i:], m.key)
 		if j < 0 {
 			return false
 		}
@@ -266,7 +266,7 @@ func marked(b []byte, m replyMark) bool {
 func toolIn(b []byte) bool {
 	for _, v := range toolValues {
 		for i := 0; ; {
-			j := bytes.Index(b[i:], v)
+			j := bodyIndexBytes(b[i:], v)
 			if j < 0 {
 				break
 			}
@@ -278,7 +278,7 @@ func toolIn(b []byte) bool {
 		}
 	}
 	for i := 0; ; {
-		j := bytes.Index(b[i:], geminiCall)
+		j := bodyIndexBytes(b[i:], geminiCall)
 		if j < 0 {
 			return false
 		}

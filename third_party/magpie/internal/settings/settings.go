@@ -50,6 +50,13 @@ const CodexSubagentLead = "lead"
 // sentinel codex-rs itself uses for that (SERVICE_TIER_DEFAULT_REQUEST_VALUE).
 const CodexTierStandard = "default"
 
+// CodexOpens are the values CodexOpen may take, "" for the default.
+var CodexOpens = []string{"", "app", "terminal"}
+
+// CodexClients are the values CodexClient may take, "" for Codex CLI, the
+// default. Each is a client OpenAI makes, and only those.
+var CodexClients = []string{"", "desktop"}
+
 // CodexServiceTiers are the values CodexServiceTier may take, "" (as
 // Codex asks) first.
 var CodexServiceTiers = []string{"", CodexTierStandard, "priority", "ultrafast"}
@@ -68,9 +75,17 @@ type Settings struct {
 	// NoBird keeps magpie's bird off the loading skeletons and the
 	// Plugins page's README, for a small server where its watch for them
 	// is work enough to matter (Yayoi_no_yume on X). Off means shown.
-	NoBird bool   `json:"noBird,omitempty"`
-	Lang   string `json:"lang,omitempty"` // system | en | zh
-	Tray   string `json:"tray,omitempty"` // what clicking the tray icon opens: panel | window
+	NoBird bool `json:"noBird,omitempty"`
+	// Accent is the colour picked for magpie's buttons, links and
+	// selection, as #rrggbb; "" keeps magpie's own (CHENGJIAHEGOXIS on
+	// X). Each theme draws it as dark or light as its text needs.
+	Accent string `json:"accent,omitempty"`
+	// Wallpaper is when the picture behind the window's pages was saved,
+	// in Unix milliseconds, 0 for none. The picture itself is the file
+	// WallpaperPath, set and removed on its own route.
+	Wallpaper int64  `json:"wallpaper,omitempty"`
+	Lang      string `json:"lang,omitempty"` // system | en | zh
+	Tray      string `json:"tray,omitempty"` // what clicking the tray icon opens: panel | window
 	// PanelShortcut is the key combination that opens the tray's quick
 	// panel from any app (ben hanks on Discord), as Wails names it
 	// ("Cmd+Shift+M"); "" is none, the default, so nothing clashes until
@@ -87,8 +102,21 @@ type Settings struct {
 	// TUI's and the CLI's — is shown converted to: usd (its native
 	// currency, list prices being in dollars) or cny, at a live exchange
 	// rate (see internal/fx). A vendor's own balance, already in its own
-	// currency (a Chinese relay's ¥), is never touched by this.
+	// currency (a Chinese relay's ¥), is never touched by this. "provider"
+	// shows each provider's costs in the currency it prices in (yuan for
+	// one that sells in China's, provider.PricesInYuan; dollars for the
+	// rest), and a sum of several providers' in TotalCurrency (CostIn,
+	// TotalCostIn; onkashiko on X).
 	Currency string `json:"currency,omitempty"`
+	// TotalCurrency is what a sum of several providers' costs — a total, an
+	// agent's, a chart's — is shown in when Currency is "provider": usd or
+	// cny, "" being usd. It means nothing with another Currency.
+	TotalCurrency string `json:"totalCurrency,omitempty"`
+	// TrayCurrency is what the menu bar's and the tray tooltip's cost of
+	// magpie's totals is in: usd or cny, "" following the totals'
+	// (TrayCostIn; onkashiko on X, who wanted the bar and the totals set
+	// apart). Every sum is still made in dollars and changed once.
+	TrayCurrency string `json:"trayCurrency,omitempty"`
 	// ChineseUnits shortens a large count in 万 and 亿 when magpie speaks
 	// Chinese (8000 万 rather than 80M); otherwise it is in K, M and B, as
 	// prices per million tokens and context windows (200K, 1M) are, in
@@ -466,6 +494,15 @@ type Settings struct {
 	// real Claude Code, its billing line and identity line kept; off, as by
 	// default, the run is the shape every Claude Code run has.
 	ClaudeLeanPrompt bool `json:"claudeLeanPrompt,omitempty"`
+	// ClaudeNoExtraUsage keeps magpie from sending a Claude subscription
+	// account a request once a plan window that stops it is used up,
+	// where Anthropic would go on on the account's extra usage (usage
+	// credits bought beyond the plan, baksili_ on X): routing holds it at
+	// 100% of that window, as a Codex account set not to spend its
+	// credits (CodexNoCredits), and the user's other accounts, groups and
+	// fallbacks take the request. Off, as by default, such an account is
+	// sent requests and Anthropic decides whether extra usage pays.
+	ClaudeNoExtraUsage bool `json:"claudeNoExtraUsage,omitempty"`
 	// ClaudePrintMode runs a Claude subscription's Claude Code as `claude
 	// -p` always. Off, as by default, a model request runs in Claude
 	// Code's interactive mode, as a person runs it, and never as -p: the
@@ -508,7 +545,9 @@ type Settings struct {
 	// SignInLinkOnly keeps an account's sign-in page out of the default
 	// browser: the window (and the command line) shows its link to copy
 	// into a browser the user picks, a separate or fingerprint browser
-	// (max2020 on Discord). Off, as by default, the page opens as ever. A
+	// (max2020 on Discord). An MCP server's OAuth sign-in from the Library
+	// is kept to its link too (hkxhkxhkx on X). Off, as by default, the
+	// page opens as ever. A
 	// plugin whose own CLI opens its page (Grok Build on macOS and
 	// Windows) still does: magpie can't stop that.
 	SignInLinkOnly bool `json:"signInLinkOnly,omitempty"`
@@ -787,6 +826,12 @@ type Settings struct {
 	// "codex/gpt-5.6-sol"), for clients moved from another proxy that ask
 	// for bare ids (love1sbug on X; provider.BareEntries). Off by default.
 	BareModelIDs bool `json:"bareModelIDs,omitempty"`
+	// BareModelIDsOnly, with BareModelIDs, has the list give a model its
+	// bare id in place of the provider/model ids it stands for, not beside
+	// them (qQianye on X: a client of a Docker magpie listed every model
+	// twice, and a gateway has no Agents page to pick models on). A
+	// provider/model id the bare one doesn't reach stays (provider.BareOnly).
+	BareModelIDsOnly bool `json:"bareModelIDsOnly,omitempty"`
 	// CodexAgentsV1 has the OpenAI models magpie hands Codex — the ChatGPT
 	// account's own, their codex/ ids, the groups one is in, and those a
 	// provider that seals as that backend does serves (catalog.Model.Seals:
@@ -846,6 +891,16 @@ type Settings struct {
 	// Ultra Fast). Codex's words, as codex-rs ServiceTier::request_value
 	// sends them; its Flex is not offered, the ChatGPT backend takes none.
 	CodexServiceTier string `json:"codexServiceTier,omitempty"`
+	// CodexClient is the Codex client magpie presents to the ChatGPT
+	// backend on a signed-in account's requests (ouhthuo on X): "" is Codex
+	// CLI (originator codex_cli_rs), "desktop" the Codex app (originator
+	// "Codex Desktop"), each with the User-Agent that client sends.
+	CodexClient string `json:"codexClient,omitempty"`
+	// CodexOpen is what Codex opens in from its Agents row menu
+	// (Yink88564391 on X): "app" the Codex desktop app, "terminal" the CLI
+	// in a terminal. "" is the app where one is installed, else the
+	// terminal. It belongs to this computer.
+	CodexOpen string `json:"codexOpen,omitempty"`
 	// DesktopSubagentModel is the model the gateway puts Claude Desktop's
 	// subagent tool turns on. "" leaves them on the model their lead asks
 	// for; tool-less helpers and the lead's own turns are never moved.
@@ -892,6 +947,20 @@ type Settings struct {
 	// --user-data-dir set to it, beside the user's own signed-in Desktop,
 	// which is left as it is. macOS only (desktopdir.Isolated).
 	DesktopIsolated bool `json:"desktopIsolated,omitempty"`
+	// DesktopIsolatedClaude gives that Desktop's Code tab a Claude Code
+	// config folder of its own (#6459, xMopf7RF on X): Claude Magpie.app
+	// starts Desktop with CLAUDE_CONFIG_DIR set to ~/.claude-magpie-desktop,
+	// and magpie writes the windows and capabilities of Desktop's models
+	// there instead of ~/.claude/settings.json. The folder starts with none
+	// of ~/.claude's CLAUDE.md, skills, plugins or history. Turned on when
+	// a Claude Magpie is made new (no Claude-Magpie-3p yet) and the user
+	// never chose (xMopf7RF on X: a twin like a phone's app clone); one
+	// made before keeps what it had.
+	DesktopIsolatedClaude bool `json:"desktopIsolatedClaude,omitempty"`
+	// DesktopIsolatedClaudeChosen: the user set DesktopIsolatedClaude
+	// themselves (the Advanced fold, `launcher claude-dir`), so a new
+	// Claude Magpie never turns it on over their off.
+	DesktopIsolatedClaudeChosen bool `json:"desktopIsolatedClaudeChosen,omitempty"`
 	// GuideHidden: the user put away the Agents page's Get started card
 	// (wangye1644294 on X) before finishing it. Kept here, not in the
 	// page's storage, so the panel, the window and a reload agree.
@@ -915,6 +984,16 @@ type Settings struct {
 	// (molianyin4227 on Discord: models differ, so one size for every
 	// agent fits none). An agent with none follows those two (ForAgent).
 	AgentCompacts map[string]AgentCompact `json:"agentCompacts,omitempty"`
+	// AgentContexts is the context window an agent is told for a model, when
+	// it is not the one every agent is told (ul3140773077392 on X: dsh
+	// compacts earlier than Codex does at the same window, so its window
+	// wants setting apart). By the agent's list id (Agent.ListsFor), then
+	// the model as the catalog has it ("provider/model", or "group/<id>"),
+	// "provider/*" for every model of a provider, a bare model id for that
+	// model at any provider, and "*" for all of them (which only shortens a
+	// window, as a provider's "*" does). An agent with none is told the
+	// model's own, or a group's.
+	AgentContexts map[string]map[string]int `json:"agentContexts,omitempty"`
 	// CodexAsyncCompact has Codex (0.163 on) compact a long conversation
 	// in the background, while its turn goes on, once it is past
 	// CodexAsyncCompactPercent of the model's window (#2490, lantern2077
@@ -969,7 +1048,8 @@ type Settings struct {
 	// PanelUsageHidden are the subscriptions, by provider id, that the tray
 	// panel's Allowances tab leaves out (H20 on Discord). It is what the
 	// panel shows, nothing more: routing, caps, the Usage page and the menu
-	// bar's cells still have them. The panel's order is UsageOrder.
+	// bar's cells still have them. The panel's order is UsageOrder, and it
+	// leaves out what UsageCardsHidden and UsageWindowsHidden do too.
 	PanelUsageHidden []string `json:"panelUsageHidden,omitempty"`
 	// UsageAgentsHidden are the clients, by the id the ledger records them
 	// under ("curl", "Go-http-client", an agent's id), that the Usage page's
@@ -980,9 +1060,20 @@ type Settings struct {
 	// leaves out (whqtian_07012 on Discord), each as its tray card id (the
 	// provider id, then "|" and the account when there is one) and "|plan"
 	// or "|balance", so StepFun's balance card goes while its plan card
-	// stays. Only what that page shows: routing, caps, counting, the tray
-	// panel (PanelUsageHidden is its own) and the menu bar's cells keep them.
+	// stays. Only what is shown: the tray panel's Allowances tab, the menu
+	// bar's cells, tooltip and Windows' tray figure, and the TUI's Usage
+	// page leave them out too (onkashiko on X; provider.ShownQuotas), while
+	// routing, caps and counting keep them. TrayUsages keeps a hidden
+	// card's cell, which shows again with the card.
 	UsageCardsHidden []string `json:"usageCardsHidden,omitempty"`
+	// UsageWindowsHidden are the quota rows of an allowance card that the
+	// Overview leaves out (wangshaowei39 on X: Antigravity's Claude & GPT
+	// rows unwanted), each as the provider id, "|" and the row's group: a
+	// pool's or a model family's name, else the window's name. Every
+	// account of the provider alike. A card is never left with none: when
+	// every row is named, all show. Only what is shown, there, in the tray
+	// panel, the menu bar and the TUI's Usage page.
+	UsageWindowsHidden []string `json:"usageWindowsHidden,omitempty"`
 	// ClientAgents counts a client magpie doesn't know as one of the agents
 	// it does, on the Usage and Sessions pages (#1958, NorethSea): a bridge
 	// that starts Codex's app-server under a name of its own
@@ -1433,12 +1524,53 @@ func (s Settings) ClassifyWait() time.Duration {
 	return time.Duration(min(n, ClassifyTimeoutMost)) * time.Second
 }
 
+// CurrencyByProvider is Currency's choice of each provider's own currency.
+const CurrencyByProvider = "provider"
+
+// CostIn is the currency, usd or cny, a cost of one provider's calls is
+// shown in: with Currency "provider", the one it prices in (yuan: whether
+// it sells in China's yuan, provider.PricesInYuan), else Currency.
+func (s Settings) CostIn(yuan bool) string {
+	if s.Currency == CurrencyByProvider {
+		if yuan {
+			return "cny"
+		}
+		return "usd"
+	}
+	return s.TotalCostIn()
+}
+
+// TotalCostIn is the currency, usd or cny, a sum of several providers'
+// costs is shown in: TotalCurrency with Currency "provider", else
+// Currency.
+func (s Settings) TotalCostIn() string {
+	c := s.Currency
+	if c == CurrencyByProvider {
+		c = s.TotalCurrency
+	}
+	if c == "cny" {
+		return "cny"
+	}
+	return "usd"
+}
+
+// TrayCostIn is the currency, usd or cny, the menu bar's and the tray
+// tooltip's totals are shown in: TrayCurrency, else TotalCostIn.
+func (s Settings) TrayCostIn() string {
+	if s.TrayCurrency == "usd" || s.TrayCurrency == "cny" {
+		return s.TrayCurrency
+	}
+	return s.TotalCostIn()
+}
+
 // Themes and Langs are the accepted values, in the order the UI offers them.
 var (
 	Themes     = []string{"system", "light", "dark"}
 	Langs      = []string{"system", "en", "zh", "zh-TW", "ja", "de"}
 	Trays      = []string{"panel", "window"}
-	Currencies = []string{"usd", "cny"}
+	Currencies = []string{"usd", "cny", CurrencyByProvider}
+	// TotalCurrencies are TotalCurrency's values, "" being usd.
+	TotalCurrencies = []string{"usd", "cny"}
 	// Warmups are CodexWarmup's and ClaudeWarmup's values, off as "".
 	Warmups = []string{"", "week", "all"}
 	// TrayEvery are TrayUsageEvery's values, in minutes.
@@ -1449,7 +1581,9 @@ var (
 	UpdateEveries = []int{30, 60, 360, 1440}
 	// TextSizes are TextSize's values, in percent. None is under 100: the
 	// webviews' zoom on Windows and Linux (Wails' SetZoom) goes no lower.
-	TextSizes = []int{100, 110, 125, 150}
+	// 115 and 120 are the steps between 110 and 125 (WeltAn_X on X: 110
+	// small, 125 crowded at 4K and 200%).
+	TextSizes = []int{100, 110, 115, 120, 125, 150}
 )
 
 // SearchFirst's values: a provider's search first, saved as "", or the
@@ -1470,6 +1604,13 @@ var DefaultTextSize = func() int {
 	}
 	return 100
 }
+
+// validAccent is an Accent other than magpie's own: a colour as #rrggbb.
+var validAccent = capre.MustCompile(`^#[0-9A-Fa-f]{6}$`, 7)
+
+// WallpaperPath is the picture behind the window's pages, as it was
+// chosen, in magpie's folder.
+func WallpaperPath() string { return appdir.Join(Dir(), "wallpaper") }
 
 var validTerminalBundleID = capre.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]*$`, 255)
 
@@ -1640,7 +1781,7 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.WindowMaximised, s.KeepAwake, s.KeepAwakeDisplay = cur.WindowMaximised, cur.KeepAwake, cur.KeepAwakeDisplay
 	s.WindowAt = cur.WindowAt
 	s.TrayUsages, s.TrayUsage, s.TrayUsageEvery, s.TrayNoLogos, s.TrayNoBird, s.TrayPace, s.TrayNoCost = cur.TrayUsages, cur.TrayUsage, cur.TrayUsageEvery, cur.TrayNoLogos, cur.TrayNoBird, cur.TrayPace, cur.TrayNoCost
-	s.TrayWindows, s.TrayNoNumber = cur.TrayWindows, cur.TrayNoNumber
+	s.TrayWindows, s.TrayNoNumber, s.TrayCurrency = cur.TrayWindows, cur.TrayNoNumber, cur.TrayCurrency
 	s.GatewayMode = cur.GatewayMode
 	s.NoWSLAgents = cur.NoWSLAgents
 	s.QuotaReads = cur.QuotaReads
@@ -1650,6 +1791,7 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.RouterNote, s.RouterAllTools = cur.RouterNote, cur.RouterAllTools
 	s.FetchPrivate = cur.FetchPrivate
 	s.SessionTerminal = cur.SessionTerminal
+	s.CodexOpen = cur.CodexOpen
 	s.PanelShortcut = cur.PanelShortcut
 	s.RedactModel, s.RedactModelName, s.RedactModelScore = cur.RedactModel, cur.RedactModelName, cur.RedactModelScore
 	s.RedactModelOff, s.RedactModelAuto = cur.RedactModelOff, cur.RedactModelAuto
@@ -2231,6 +2373,24 @@ func SetRouterAllTools(on bool) error {
 	return save(s, true)
 }
 
+// TakeStable puts UpdateChannel on Stable when no channel is set, from
+// what the file holds now: a fresh install of the Stable version (the
+// site's Stable download) stays on Stable. A channel already set is the
+// user's, and is kept. It says whether it changed the channel. A settings
+// file that can't be read is left as it is, with the error.
+func TakeStable() (bool, error) {
+	defer lockFile()()
+	s, err := loadChecked()
+	if err != nil {
+		return false, err
+	}
+	if s.UpdateChannel != "" {
+		return false, nil
+	}
+	s.UpdateChannel = UpdateStable
+	return true, save(s, false)
+}
+
 // EditCheckinOff changes CheckinOff alone, as edit returns it from what the
 // file holds now, so a save elsewhere from an older snapshot isn't undone.
 // A settings file that can't be read is left as it is, with the error.
@@ -2391,6 +2551,9 @@ func saveOwn(s Settings, recording, reads bool) error {
 	if !slices.Contains(Themes, s.Theme) {
 		return fmt.Errorf("theme must be one of %v, not %q", Themes, s.Theme)
 	}
+	if s.Accent != "" && !validAccent.MatchString(s.Accent) {
+		return fmt.Errorf("accent must be a colour as #rrggbb, not %q", s.Accent)
+	}
 	if !slices.Contains(Langs, s.Lang) {
 		return fmt.Errorf("language must be one of %v, not %q", Langs, s.Lang)
 	}
@@ -2407,6 +2570,12 @@ func saveOwn(s Settings, recording, reads bool) error {
 	}
 	if !slices.Contains(Currencies, s.Currency) {
 		return fmt.Errorf("currency must be one of %v, not %q", Currencies, s.Currency)
+	}
+	if s.TotalCurrency != "" && !slices.Contains(TotalCurrencies, s.TotalCurrency) {
+		return fmt.Errorf("total currency must be usd or cny, not %q", s.TotalCurrency)
+	}
+	if s.TrayCurrency != "" && !slices.Contains(TotalCurrencies, s.TrayCurrency) {
+		return fmt.Errorf("menu bar currency must be usd or cny, not %q", s.TrayCurrency)
 	}
 	if !slices.Contains(Warmups, s.CodexWarmup) {
 		return fmt.Errorf("codex warm-up must be off, week or all, not %q", s.CodexWarmup)
@@ -2553,6 +2722,14 @@ func saveOwn(s Settings, recording, reads bool) error {
 	if !slices.Contains(CodexServiceTiers, s.CodexServiceTier) {
 		return fmt.Errorf("Codex's service tier must be one of %q, not %q", CodexServiceTiers[1:], s.CodexServiceTier)
 	}
+	s.CodexClient = strings.TrimSpace(s.CodexClient)
+	if !slices.Contains(CodexClients, s.CodexClient) {
+		return fmt.Errorf("the Codex client must be one of %q, not %q", CodexClients[1:], s.CodexClient)
+	}
+	s.CodexOpen = strings.TrimSpace(s.CodexOpen)
+	if !slices.Contains(CodexOpens, s.CodexOpen) {
+		return fmt.Errorf("Open Codex with must be one of %q, not %q", CodexOpens[1:], s.CodexOpen)
+	}
 	s.RedactRouteTo = strings.TrimSpace(s.RedactRouteTo)
 	if s.RedactRouteTo != "" && !strings.Contains(s.RedactRouteTo, "/") {
 		return fmt.Errorf("the model for requests masking would change must be a model's id such as ollama/qwen3, not %q", s.RedactRouteTo)
@@ -2618,6 +2795,7 @@ func saveOwn(s Settings, recording, reads bool) error {
 	s.PanelUsageHidden = ids(s.PanelUsageHidden)
 	s.UsageAgentsHidden = ids(s.UsageAgentsHidden)
 	s.UsageCardsHidden = ids(s.UsageCardsHidden)
+	s.UsageWindowsHidden = ids(s.UsageWindowsHidden)
 	s.ClientAgents = clientAgents(s.ClientAgents)
 	s.UsageCleared = usageCleared(s.UsageCleared)
 	s.TrayUsages = ids(s.TrayUsages)

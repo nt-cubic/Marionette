@@ -294,7 +294,15 @@ func codexIn(at place) *Agent {
 		if c == catalogRef || c == at.native(catalogPath) {
 			return true
 		}
-		return at.spell == nil && !filepath.IsAbs(c) && filepath.Clean(filepath.Join(dir, c)) == filepath.Clean(catalogPath)
+		if at.spell != nil {
+			return false
+		}
+		// an absolute c spelled with / on Windows: Clean turns its slashes
+		// into \, so it still names the catalog there (#4785)
+		if !filepath.IsAbs(c) {
+			c = filepath.Join(dir, c)
+		}
+		return filepath.Clean(c) == filepath.Clean(catalogPath)
 	}
 	// ownList is magpie's model list for Codex as written to catalogPath:
 	// what the user added by hand to the list there (a key magpie doesn't
@@ -442,7 +450,14 @@ func codexIn(at place) *Agent {
 		if c == deskRef || c == at.native(deskPath) {
 			return true
 		}
-		return at.spell == nil && !filepath.IsAbs(c) && filepath.Clean(filepath.Join(dir, c)) == filepath.Clean(deskPath)
+		if at.spell != nil {
+			return false
+		}
+		// an absolute c spelled with / on Windows, as ownCatalog (#4785)
+		if !filepath.IsAbs(c) {
+			c = filepath.Join(dir, c)
+		}
+		return filepath.Clean(c) == filepath.Clean(deskPath)
 	}
 	deskGone := func() bool {
 		_, err := os.Stat(deskPath)
@@ -474,6 +489,10 @@ func codexIn(at place) *Agent {
 	deskList := func() error {
 		named := deskCatalog(get("model_catalog_json"))
 		if !deskWanted() {
+			// the list not wanted: the next one named is named anew
+			if stashShared()[at.key("codex.desk_at")] != "" {
+				stash(map[string]string{at.key("codex.desk_at"): ""})
+			}
 			if named {
 				if err := edit.DelTOMLTop(path, "model_catalog_json"); err != nil {
 					return err
@@ -507,7 +526,17 @@ func codexIn(at place) *Agent {
 			}
 		}
 		if !named {
-			return edit.SetTOMLTop(path, edit.KV{Path: "model_catalog_json", Value: deskRef})
+			if err := edit.SetTOMLTop(path, edit.KV{Path: "model_catalog_json", Value: deskRef}); err != nil {
+				return err
+			}
+			// when, for the Codex app's app-servers started before it,
+			// which list Codex's models alone till they restart (DeskAt).
+			// Taken out and named again in one change (a model picked in
+			// magpie, a reset to Codex's default) it was named all along,
+			// and keeps its time: a new one would restart the app for it
+			if stashShared()[at.key("codex.desk_at")] == "" {
+				stash(map[string]string{at.key("codex.desk_at"): strconv.FormatInt(time.Now().UnixNano(), 10)})
+			}
 		}
 		return nil
 	}
@@ -1123,6 +1152,80 @@ func codexIn(at place) *Agent {
 		}
 		return out
 	}
+	// filedTables is the provider ids config.toml has had a table of
+	// that magpie didn't write (noteTables), kept in the stash
+	filedTables := func() []string {
+		var ids []string
+		json.Unmarshal([]byte(stashShared()[at.key("codex.filed_tables")]), &ids)
+		return ids
+	}
+	// noteTables records the provider tables config.toml has now that
+	// aren't putThreadTables', for putThreadTables to tell a table that
+	// was in the file and is gone from one that never was
+	noteTables := func(providers map[string]any) {
+		ids := filedTables()
+		n := len(ids)
+		for id, v := range providers {
+			if id == magpieID || codexBuiltinProvider[id] || codexThreadTableOurs(id, v) || slices.Contains(ids, id) {
+				continue
+			}
+			ids = append(ids, id)
+		}
+		if len(ids) == n {
+			return
+		}
+		slices.Sort(ids)
+		b, _ := json.Marshal(ids)
+		stash(map[string]string{at.key("codex.filed_tables"): string(b)})
+	}
+	// threadTableFor says whether putThreadTables may write a table for
+	// the provider id a thread names: CC Switch's own ids, and one
+	// config.toml had a table of. Another app can start Codex with a
+	// provider of its own on the command line (T3 Code's
+	// openai_token_sharing, `-c model_providers.openai_token_sharing=
+	// {…, auth = {command = …}}`), and its threads name that id while
+	// config.toml never had it. A table magpie wrote for it was merged
+	// with the app's -c one, and Codex refused the config: "provider auth
+	// cannot be combined with experimental_bearer_token" (JsonParser on
+	// X). Such an id is the app's, never magpie's to write.
+	threadTableFor := func(id string) bool {
+		return ccSwitchProvider.MatchString(id) || slices.Contains(filedTables(), id)
+	}
+	// dropStrayTables takes out a table putThreadTables wrote, by an
+	// older magpie, for an id threadTableFor no longer gives one: as
+	// written, with magpie's key, nothing of the user's in it
+	dropStrayTables := func(providers map[string]any) error {
+		names, _ := edit.TOMLTables(path)
+		named := profileNamed(names)
+		for id, v := range providers {
+			// one Codex or a profile is on is the user's, however made
+			if threadTableFor(id) || !codexThreadTableOurs(id, v) || !slices.Contains(names, "model_providers."+id) || named[id] || get("model_provider") == id {
+				continue
+			}
+			if slices.ContainsFunc(names, func(n string) bool { return strings.HasPrefix(n, "model_providers."+id+".") }) {
+				continue
+			}
+			if err := edit.DelTOMLTable(path, "model_providers."+id); err != nil {
+				return err
+			}
+			log.Printf("codex: took out [model_providers.%s], written by an older magpie for threads another app starts on its own provider", id)
+		}
+		return nil
+	}
+	// tidyTables notes config.toml's provider tables and drops the stray
+	// ones; a config that doesn't parse is left alone
+	tidyTables := func() error {
+		doc, err := codexTopOf(path)
+		if err != nil {
+			return nil
+		}
+		providers, _ := doc.ModelProviders.(map[string]any)
+		if len(providers) == 0 {
+			return nil
+		}
+		noteTables(providers)
+		return dropStrayTables(providers)
+	}
 	// putThreadTables writes a table for each provider a Codex thread was
 	// started on that config.toml has none of, pointed at magpie. The
 	// Codex app resumes a thread on its own provider, and without that
@@ -1130,8 +1233,13 @@ func codexIn(at place) *Agent {
 	// a thread started through CC Switch reopened after CC Switch rewrote
 	// config.toml without its table (#1372). Codex's built-in providers
 	// need none, and magpie's own is putProvider's. A table written so
-	// stays, as magpie's own does, for the threads that name it.
+	// stays, as magpie's own does, for the threads that name it. Only for
+	// a table config.toml lost (threadTableFor): an id another app gives
+	// Codex on its command line is that app's.
 	putThreadTables := func() error {
+		if err := tidyTables(); err != nil {
+			return err
+		}
 		// the providers config.toml has, however spelled (a table, inline,
 		// dotted keys); one that doesn't parse is left alone
 		doc, err := codexTopOf(path)
@@ -1143,7 +1251,7 @@ func codexIn(at place) *Agent {
 			return nil
 		}
 		for _, id := range sessions.CodexThreadProviders(dir) {
-			if _, ok := providers[id]; ok || id == magpieID || codexBuiltinProvider[id] {
+			if _, ok := providers[id]; ok || id == magpieID || codexBuiltinProvider[id] || !threadTableFor(id) {
 				continue
 			}
 			if err := edit.SetTOMLTable(path, "model_providers."+id,
@@ -1277,8 +1385,14 @@ func codexIn(at place) *Agent {
 	// signed in to (codexUsedUp), for magpie to become Codex's provider
 	// while it does (#540): never with the sign-in kept on ChatGPT
 	// (chatgpt), where the user would rather the Codex app wait for the
-	// account than leave its ChatGPT state
-	out := func() bool { return stashShared()[at.key("codex.login")] != "chatgpt" && codexUsedUp() }
+	// account than leave its ChatGPT state, and never for the account the
+	// user keeps Codex signed in to (codexSignInKept): the takeover has the
+	// app read no account and show "magpie" for the one they picked
+	// (davezfr on X: account 1 out of its allowance and its credits,
+	// picked in Codex's sign-in, showed "magpie"; account 2 showed itself)
+	out := func() bool {
+		return stashShared()[at.key("codex.login")] != "chatgpt" && codexUsedUp() && !codexSignInKept()
+	}
 	dropBase := func() error {
 		forget(at.key("codex.failover"))
 		if !viaBase() {
@@ -1452,69 +1566,28 @@ func codexIn(at place) *Agent {
 		}
 		forget(at.key("codex.lent"))
 	}
-	// Codex on one of its own models goes through magpie too while more of
-	// its ChatGPT accounts are on there, so one out of its allowance hands
-	// the turn to the next; with none, or once the user disconnected Codex,
-	// it goes straight to OpenAI again
+	// A Codex that isn't connected goes straight to OpenAI on its own
+	// sign-in, however many of its ChatGPT accounts are on in magpie.
+	// magpie once pointed it at the gateway by itself for account failover
+	// (#1385) while another of its accounts was on, so an unconnected
+	// Codex's every request went through magpie, the row saying not
+	// connected, until a Disconnect the user had no reason to look for
+	// (TylerBai_loveai on X). Failover between the accounts comes with
+	// connecting Codex. What failover wrote goes as Sync next runs: the
+	// base URL it marked (codex.failover), or CC Switch's OpenAI mirror it
+	// pointed at magpie (codex.mirror_failover). A base URL the user wrote
+	// by hand, unmarked, is theirs and stays (#856).
 	failover := func() error {
 		if wired() || asProvider() {
 			return nil
 		}
-		p := get("model_provider")
-		mirror := isCCSwitchMirror(p)
-		if !mirror {
-			_ = dropMirrorFailover()
+		if err := dropMirrorFailover(); err != nil {
+			return err
 		}
-		if p != "" && p != "openai" && !mirror {
+		if stashShared()[at.key("codex.failover")] != "1" {
 			return nil
 		}
-		// a Codex that reaches the gateway from another machine is never
-		// pointed at the Codex path: the gateway takes a named key there,
-		// so the turn failover handed it came back a 401 (#2145)
-		on := !disconnected() && codexFailover() && !onAnotherMachine(at.gw())
-		// failover is magpie's own idea, not the user's: never handed
-		// Codex's requests while a proxy they'd go through doesn't pass
-		// them on to magpie, which would have every turn fail with 502
-		// (codex_proxy.go); one written before goes again
-		if on && at.spell == nil && !codexProxyOK(path, at.gw()) {
-			on = false
-		}
-		if mirror {
-			t, _ := edit.GetTOMLTable(path, "model_providers."+p)
-			hasGateway := t["base_url"] == at.codexURL()
-			switch {
-			case on && !hasGateway:
-				if err := edit.SetTOMLKey(path, "model_providers."+p, "base_url", at.codexURL()); err != nil {
-					return err
-				}
-				stash(map[string]string{at.key("codex.mirror_failover"): p})
-			case !on && hasGateway:
-				if err := edit.DelTOMLKey(path, "model_providers."+p, "base_url"); err != nil {
-					return err
-				}
-				forget(at.key("codex.mirror_failover"))
-			}
-			return nil
-		}
-		// the base URL failover wrote is marked (codex.failover), and only
-		// that one goes again: one the user wrote in config.toml by hand,
-		// to have Codex's own models go through magpie, stays (#856: it was
-		// gone again each time magpie started). One already there while
-		// failover is on is taken as failover's, as a magpie from before
-		// the mark wrote it.
-		owned := stashShared()[at.key("codex.failover")] == "1"
-		switch {
-		case on && !viaBase():
-			if err := edit.SetTOMLTop(path, edit.KV{Path: "openai_base_url", Value: at.codexURL()}); err != nil {
-				return err
-			}
-			stash(map[string]string{at.key("codex.failover"): "1"})
-		case on && !owned:
-			stash(map[string]string{at.key("codex.failover"): "1"})
-		case !on && viaBase() && owned:
-			return dropBase()
-		}
-		return nil
+		return dropBase()
 	}
 	// failingOver: Codex reaches magpie for account failover alone, by the
 	// base URL failover wrote (codex.failover) or by CC Switch's OpenAI
@@ -1547,12 +1620,12 @@ func codexIn(at place) *Agent {
 			to, through = p, t["base_url"] == at.codexURL() || t["base_url"] == at.v1()
 		}
 		// beside its sign-in on one of magpie's models, not joined, one of
-		// its own picked here takes magpie out (set, #940) unless failover
-		// puts the base URL back: it said via magpie, and the pick went
-		// straight to OpenAI with nothing asked (NancyTom18 on X)
+		// its own picked here takes magpie out (set, #940): it said via
+		// magpie, and the pick went straight to OpenAI with nothing asked
+		// (NancyTom18 on X)
 		ownThrough := through
 		if through && (p == "" || p == "openai") && beside() && !asProvider() && !api() &&
-			!(joined() && chatGPT()) && !(codexFailover() && !disconnected()) {
+			!(joined() && chatGPT()) {
 			ownThrough = false
 		}
 		say := func(own []Option) []Option {
@@ -1622,17 +1695,22 @@ func codexIn(at place) *Agent {
 		if err := dropProvider(); err != nil {
 			return "", err
 		}
-		was := unstash(at.key("codex.model"))
+		// the originals are read and stay stashed until the write that puts
+		// them back has gone through: one that fails leaves them stashed
+		// for the next try (#4258). The model is the caller's to take out:
+		// its write, where there is one, comes after unroute.
+		peeked := peek(at.key("codex.model"), at.key("codex.provider"), at.key("codex.catalog"), at.key("codex.effort_set"), at.key("codex.effort"))
+		was := peeked[at.key("codex.model")]
 		// what was there before magpie is put back only where magpie's
 		// change still stands: a key the user set by hand since keeps
 		// theirs (yhwangl on X)
 		var back []edit.KV
-		if p := unstash(at.key("codex.provider")); p != "" && p != magpieID && get("model_provider") == "" {
+		if p := peeked[at.key("codex.provider")]; p != "" && p != magpieID && get("model_provider") == "" {
 			back = append(back, edit.KV{Path: "model_provider", Value: p})
 		}
 		// the catalog of the user's own put back while its file is there:
 		// one removed since would keep Codex from loading its config
-		if c := unstash(at.key("codex.catalog")); c != "" && !ownCatalog(c) && !deskCatalog(c) && !theirListGone(c) && (get("model_catalog_json") == "" || deskCatalog(get("model_catalog_json"))) {
+		if c := peeked[at.key("codex.catalog")]; c != "" && !ownCatalog(c) && !deskCatalog(c) && !theirListGone(c) && (get("model_catalog_json") == "" || deskCatalog(get("model_catalog_json"))) {
 			back = append(back, edit.KV{Path: "model_catalog_json", Value: c})
 		}
 		// the effort, where it is still one magpie set: picked on the
@@ -1643,13 +1721,13 @@ func codexIn(at place) *Agent {
 			id = "codex"
 		}
 		ours := map[string]bool{"": true}
-		if set := unstash(at.key("codex.effort_set")); set != "" {
+		if set := peeked[at.key("codex.effort_set")]; set != "" {
 			ours[set] = true
 		}
 		if r := appliedOf(id).Fields["effort"]; r != "" {
 			ours[r] = true
 		}
-		if e := unstash(at.key("codex.effort")); e != "" && ours[get("model_reasoning_effort")] {
+		if e := peeked[at.key("codex.effort")]; e != "" && ours[get("model_reasoning_effort")] {
 			back = append(back, edit.KV{Path: "model_reasoning_effort", Value: e})
 		}
 		if len(back) > 0 {
@@ -1657,10 +1735,24 @@ func codexIn(at place) *Agent {
 				return "", err
 			}
 		}
+		// what was put back is taken out of the stash; the model stays for
+		// the caller's write
+		taken := make(map[string]string, len(peeked))
+		for k, v := range peeked {
+			if k != at.key("codex.model") {
+				taken[k] = v
+			}
+		}
+		forgetValues(taken)
 		return was, nil
 	}
 	set := func(v string) error {
 		if v == "" {
+			// a stray table of an older magpie's goes with a Disconnect
+			// too, an uninstall's or a quit's: no Sync may come after
+			if err := tidyTables(); err != nil {
+				return err
+			}
 			if err := dropSubagent(); err != nil {
 				return err
 			}
@@ -1823,6 +1915,9 @@ func codexIn(at place) *Agent {
 		if err := edit.SetTOMLTop(path, edit.KV{Path: "model", Value: v}); err != nil {
 			return err
 		}
+		// the user's pick replaces the model the stash kept: given up once
+		// the write has gone through (#4258)
+		forget(at.key("codex.model"))
 		if err := failover(); err != nil {
 			return err
 		}
@@ -1830,7 +1925,7 @@ func codexIn(at place) *Agent {
 	}
 
 	a := atomic(&Agent{
-		ID: "codex", Name: "Codex", Icon: "codex-color", Bin: "codex", Dir: dir, Path: path,
+		ID: "codex", Name: "Codex", Icon: "codex-color", Bin: "codex", Dir: dir, Path: path, signIn: "auth.json",
 		Telemetry: codexTelemetry(at, path),
 		UA:        []string{"codex", "acp-extension-codex"}, // The ACP adapter's default client name becomes Codex's originator.
 		// Codex as it was before magpie: its default puts it back as
@@ -1921,6 +2016,16 @@ func codexIn(at place) *Agent {
 		Joined:    func() bool { return joined() && !asProvider() },
 		AppOut:    func() bool { return asProvider() && !api() && chatGPT() && stashShared()[at.key("codex.out")] == "1" },
 		AppOutOff: func() bool { return stashShared()[at.key("codex.login")] == "chatgpt" || !routed() },
+		DeskAt: func() time.Time {
+			if !deskCatalog(get("model_catalog_json")) {
+				return time.Time{}
+			}
+			n, err := strconv.ParseInt(stashShared()[at.key("codex.desk_at")], 10, 64)
+			if err != nil || n <= 0 {
+				return time.Time{}
+			}
+			return time.Unix(0, n)
+		},
 		HoldMatters: func() bool {
 			return stashShared()[at.key("codex.login")] == "" && chatGPT() &&
 				(viaBase() || asProvider() && stashShared()[at.key("codex.out")] == "1")
@@ -1938,6 +2043,10 @@ func codexIn(at place) *Agent {
 		// itself goes, by the same gates a Disconnect takes them by
 		TakeLeftovers: func() (bool, error) {
 			took := false
+			// a table an older magpie wrote for another app's provider
+			if err := tidyTables(); err != nil {
+				return false, err
+			}
 			if viaBase() {
 				if err := dropBase(); err != nil {
 					return false, err
@@ -1960,6 +2069,11 @@ func codexIn(at place) *Agent {
 			return ""
 		},
 		Sync: func() error {
+			// a table an older magpie wrote for another app's provider
+			// goes, wired or not: Codex refuses its config with it
+			if err := tidyTables(); err != nil {
+				return err
+			}
 			// after the sync, which may have put Codex back beside its
 			// sign-in or made magpie its provider, and whatever it failed at
 			defer lendOwn()
@@ -2011,6 +2125,14 @@ func codexIn(at place) *Agent {
 			}
 			if err := failover(); err != nil {
 				return err
+			}
+			// a magpie model the user has since unchecked in its
+			// provider's list: Codex, the app and the CLI, goes on to the
+			// provider's first pick, as picking it here does (pickedInstead)
+			if m := get("model"); isMagpie(m) {
+				if to := pickedInstead("codex", m); to != "" {
+					return set(to)
+				}
 			}
 			// magpie API on one of Codex's own models, as an older magpie
 			// left it unwired: wired again, as picking it does now (#701);
@@ -2464,8 +2586,9 @@ func codexIn(at place) *Agent {
 	if at.spell == nil {
 		a.reach = at.base
 		a.viaProxy = func() (bool, bool, string, string) { return codexThroughProxy(path, at.gw()) }
-		a.move = func(from, to string) error { return codexMoveGateway(path, from, to) }
 	}
+	// in a distro too: its way to Windows moves (wslFindVia)
+	a.move = func(from, to string) error { return codexMoveGateway(path, from, to) }
 	return a
 }
 
@@ -2480,6 +2603,21 @@ const ccSwitchOfficial = "cc-switch-official"
 const packedSince = 30 * 24 * time.Hour
 
 var packedBudget int64 = 128 << 20
+
+// codexThreadTableOurs says whether config.toml's provider id, decoded as
+// v, is the table putThreadTables writes: name, base_url, wire_api
+// "responses" and magpie's key, and nothing else.
+func codexThreadTableOurs(id string, v any) bool {
+	t, ok := v.(map[string]any)
+	if !ok || len(t) != 4 {
+		return false
+	}
+	name, _ := t["name"].(string)
+	wire, _ := t["wire_api"].(string)
+	key, _ := t["experimental_bearer_token"].(string)
+	_, url := t["base_url"].(string)
+	return name == id && wire == "responses" && url && ourKey(key)
+}
 
 // ccSwitchProvider matches the ids of the provider tables CC Switch writes
 // into Codex's config: "custom", and "cc-switch", "cc-switch-2"… from its
@@ -2950,6 +3088,10 @@ func codexThreadsLater(dir, p string) {
 var codexUsedUp = func() bool {
 	return provider.CodexUsedUpKnown()
 }
+
+// codexSignInKept reports whether Codex is signed in to the account the
+// user keeps it on (provider.CodexSignInKept). A var so tests can say.
+var codexSignInKept = provider.CodexSignInKept
 
 // codexFailover reports whether Codex is signed in to a ChatGPT account
 // with more of its accounts on in magpie, behind it, and the user hasn't
