@@ -86,29 +86,36 @@ pub fn outbound_agent() -> ureq::Agent {
     if let Ok(connector) = ureq::native_tls::TlsConnector::new() {
         builder = builder.tls_connector(std::sync::Arc::new(connector));
     }
-    #[cfg(feature = "engine-rust")]
-    {
-        let config = crate::proxy::load_proxy_config();
-        if config.enabled && !config.url.trim().is_empty() {
-            if let Ok(proxy) = ureq::Proxy::new(config.url.trim()) {
-                builder = builder.proxy(proxy);
-            }
-        }
-    }
-    #[cfg(not(feature = "engine-rust"))]
-    {
-        for key in ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"] {
-            if let Ok(url) = std::env::var(key) {
-                if !url.trim().is_empty() {
-                    if let Ok(proxy) = ureq::Proxy::new(url.trim()) {
-                        builder = builder.proxy(proxy);
-                    }
-                    break;
-                }
-            }
+    if let Some(url) = outbound_proxy().filter(|u| !u.trim().is_empty()) {
+        if let Ok(proxy) = ureq::Proxy::new(url.trim()) {
+            builder = builder.proxy(proxy);
         }
     }
     builder.build()
+}
+
+/// 出站代理（engine_gateway 不 import 主程序模块——dev bin 的 crate 根
+/// 不是 marionette，crate::proxy 在那边不存在）：主进程在拉起网关线程
+/// 前用 set_outbound_proxy 注入 Marionette 的代理设置；没注入时退环境
+/// 变量（ureq 不自动读代理 env）。
+static OUTBOUND_PROXY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+pub fn set_outbound_proxy(url: Option<String>) {
+    let _ = OUTBOUND_PROXY.set(url);
+}
+
+fn outbound_proxy() -> Option<String> {
+    if let Some(set) = OUTBOUND_PROXY.get() {
+        return set.clone();
+    }
+    for key in ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"] {
+        if let Ok(url) = std::env::var(key) {
+            if !url.trim().is_empty() {
+                return Some(url);
+            }
+        }
+    }
+    None
 }
 
 /// 测试沙箱共享串行锁：quotas/presets（以及后续沙箱模块）的测试都靠

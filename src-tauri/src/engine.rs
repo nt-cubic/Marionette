@@ -981,6 +981,12 @@ fn spawn_serve(exe: &Path, port: u16) -> Result<ChildHandle, String> {
 /// 线程翻成 Failed（与子进程 try_wait 同语义）。
 #[cfg(feature = "engine-rust")]
 fn spawn_serve_in_process(port: u16) -> Result<ChildHandle, String> {
+    // 出站代理注入：engine_gateway 不 import 主程序模块（dev bin 的 crate
+    // 根不是 marionette），Marionette 的代理设置在这里喂给它。
+    let proxy_config = crate::proxy::load_proxy_config();
+    crate::engine_gateway::set_outbound_proxy(
+        if proxy_config.enabled { Some(proxy_config.url) } else { None },
+    );
     let gateway = crate::engine_gateway::Gateway::open()
         .map_err(|e| crate::ts!("打开进程内引擎网关失败: {e}", "Failed to open the in-process engine gateway: {e}"))?;
     let listener = std::net::TcpListener::bind(("127.0.0.1", port))
