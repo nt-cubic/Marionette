@@ -9,6 +9,7 @@
 
 第一版不要改造成通用异类标签分屏。先做专用 Browser Workspace：
 
+- Browser Workspace 不是默认布局；
 - 浏览器位于主画布；
 - Agent 对话位于可拖宽、可收起的右侧栏；
 - 复用现有 renderConversation，不复制 SessionView、Composer 或 ACP 状态；
@@ -22,6 +23,67 @@
 3. 批注立即进入右侧 Composer；
 4. Agent 请求权限或等待用户时，页面和对话同时可见；
 5. 用户不需要在浏览器伪标签和会话之间来回切换。
+
+Browser Workspace 只服务“正在看一个 Web 产物”的任务态。普通聊天、代码修改、文档整理和一般网页研究仍保持现有以对话为主的界面。
+
+## 任务入口与自动切换
+
+不是所有用户都是 Web 开发者。让浏览器成为主画面，只有在它确实是被制作的产物时才有意义。
+
+### 默认行为
+
+- 普通 Chat / 代码 / 文档 / 收纳盒：不显示 Browser Workspace；
+- Agent 为了查资料、搜索或阅读网页而打开标签：浏览器标签留在后台；
+- Agent 新开普通网页：不改变当前会话、文档或 Composer；
+- 用户主动点浏览器伪标签：进入现有浏览器页，并可打开 Agent 侧栏；
+- 用户主动点“在浏览器预览”：进入 Browser Workspace。
+
+### 自动进入 Browser Workspace 的条件
+
+优先级从高到低：
+
+1. Agent 明确把页面标记为 Web 产物预览；
+2. 用户要求创建/修改网页、站点或 Web 原型，Agent 完成启动后在预置浏览器中打开 localhost/dev URL；
+3. 用户在批注、截图或预览操作中明确选择“在浏览器中查看”；
+4. 后续可选：项目里检测到 dev server 和 Web framework，且 Agent 启动的命令产生本地预览地址。
+
+第一版建议给 browser_open_tab 增加：
+
+    display?: "background" | "workspace"
+
+默认 background。MCP instructions 明确：
+
+- 当用户要求做网页、站点或 Web 原型，需要持续展示预览时，用 display = workspace；
+- 单纯查资料、打开链接、登录或读取网页时用 background；
+- 不确定时保持 background，由用户主动打开。
+
+不要仅凭 URL 包含 localhost 就强制切界面。localhost 也可能只是 API、文档服务或用户当前不想看的后台服务。
+
+### 不自动进入的情况
+
+- 搜索、研究、读文档、看报错页；
+- Agent 自己打开参考站点；
+- 登录、2FA、支付等只处理一次的外部页面；
+- 用户正在 Composer 输入，且当前任务没有 Web 预览意图；
+- 后台长任务只是偶尔访问网站。
+
+### 切换体验
+
+进入 Browser Workspace：
+
+- 当前会话原样成为右侧 Agent 会话；
+- 浏览器加载正在制作的页面；
+- 右侧保留转写和 Composer，不自动抢 Composer 焦点；
+- 顶部出现短暂的“已在浏览器预览”状态和“返回对话”入口；
+- 用户从浏览器关闭或点返回时，恢复进入前的单会话、文档或分屏状态。
+
+用户提供三种偏好：
+
+- 自动进入：Web 产物预览默认切到 Browser Workspace；
+- 询问：显示一条“打开预览”操作，不自动切；
+- 留在对话：浏览器标签在后台，用户手动打开。
+
+默认先选择“Web 产物预览时自动进入”，普通网页保持后台。该偏好只影响明确产物预览，不影响所有 browser_open_tab。
 
 ## 当前代码约束
 
@@ -65,6 +127,7 @@
 交互规则：
 
 - 浏览器为主画布，右侧对话默认 380px，可在 320–520px 拖动；
+- 只有 Web 产物预览进入该布局，普通聊天不出现浏览器主画布；
 - 右侧栏可通过浏览器工具栏按钮收起；
 - 用户拖动分隔条时只改布局宽度，松手后才持久化；
 - 右侧栏聚焦 Composer 时，浏览器 child WebView2 保持显示但失去焦点；
@@ -253,6 +316,9 @@ BrowserPage 当前 window Esc 会退出浏览器伪标签。Browser Workspace �
 
 - 抽出 AgentSidecarSplit；
 - BrowserWorkspace 专用布局；
+- browser_open_tab 增加 background/workspace 显示模式，默认 background；
+- 普通 Agent 标签不再自动抢当前界面；
+- MCP instructions 加入“Web 产物预览才使用 workspace”；
 - 右侧显示当前会话的 renderConversation；
 - 侧栏开关、宽度拖动、持久化；
 - 浏览器 host bounds 验证；
@@ -275,7 +341,6 @@ BrowserPage 当前 window Esc 会退出浏览器伪标签。Browser Workspace �
 ### Phase 3：标签归属和后台行为
 
 - TabInfo 增加 ownerSessionId、busy、lastUsedAt；
-- Agent 新标签默认后台；
 - 按 session/task 分组；
 - Agent 自开标签自动清理；
 - Browser Workspace 侧栏可在同 Agent 的多个会话间切换。
@@ -331,6 +396,7 @@ BrowserPage 当前 window Esc 会退出浏览器伪标签。Browser Workspace �
 
 如果只做一版验证价值，必须包含：
 
+- browser_open_tab 的 background/workspace 两种显示模式，普通网页默认后台；
 - 浏览器主画布；
 - 右侧当前 Agent 对话；
 - 可拖动宽度和收起；
