@@ -707,10 +707,11 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
    不是定时器）。`document.hidden` 时暂停 3s 终端轮询 / 1s live tick / 1s stats /
    12s git 扫描，可见即续（定时发送、挂起巡检等安全类 tick 不受影响）。
 
-## 文档标签页（2026-10-31）
+## 文档标签页（2026-11-17 并入 Surface）
 
-`.md/.markdown/.mdx/.txt` 点击改开 **app 内文档伪标签页**（收纳盒同款形状：中栏切换、
-不进分屏树、detached 窗与右键菜单保留 OS 路线）。改前记四条：
+.md/.markdown/.mdx/.txt 点击改开 **app 内 Document surface**：文档左、当前 Agent
+对话右，与 Browser / Memo 共用标签和恢复；不进 session split tree，detached 窗与
+右键菜单保留 OS 路线。改前记四条：
 
 - **路由层是唯一的分流点**：`src/lib/openFile.ts`（`isDocPath` + `setDocTabOpener` /
   `openInDocTabIfEligible`）。四个调用点（LinkedText primaryAction、TurnDeliveryCard、
@@ -726,10 +727,13 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
   `MarkdownBody` 的 `DocNavContext`（默认 null = 转录里的行为不变）；DocPage 拿
   文档所在目录做 cwd 去 resolve。给别的挂载点加页内导航时照这个 context 模式，
   不要在 MdLink 里写死调用方。
-- **对照模式是自绘行不是分屏树**：`DocCompareLayout`（对话左/文档右/可拖分隔条，
-  宽度存 `marionette-doc-compare-width`，没实际移动的 pointerup 不落值）。文档页
-  永远不进 SplitWorkspace——伪标签不是 session，拖拽/撕窗/merge 那套全不适用。
-  贴边态开文档 = `DockPage "doc"` 整页，Esc/返回归 dock chrome（`escToClose=false`）。
+- **统一 surface、仍不进 SplitWorkspace**：Document 走 SurfaceWorkspace 的
+  surface + chat 行，右栏可切换绑定会话。DocCompareLayout 不再是正常入口，
+  也不要把它重新塞回 Document 页；拖拽/撕窗/merge 仍只属于 session。贴边态开文档 =
+  DockPage "doc" 整页，Esc/返回归 dock chrome。
+- **草稿跟随文档路径，不跟随组件实例**：切标签或暂时回对话会卸载 DocPage，内存草稿
+  由 DocPage.tsx 的 path cache 恢复；保存成功/明确放弃/关闭标签才删。关闭有未保存
+  内容的标签必须走 App 级确认，不能从公共 tab X 绕过。
 
 ## 内置浏览器标签（2026-10-31，批次 2）
 
@@ -783,7 +787,95 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
 - **工具通道 = localhost HTTP MCP**（`tools_mcp.rs`，tiny_http + 每会话 Bearer
   token，注入点在 `acp.rs` session/new 前、仅 supports_http 且 wire policy 放行）。
   zcode 只收 url 型所以这是唯一通道；新工具加 schema + dispatch 两处，别开新端口。
-  always-approve 镜像只覆盖挂载过 Composer 的会话（后台会话出权限卡，安全方向）。
+  always-approve 镜像只覆盖挂载过 Composer 的会话（后台会话出权限卡，安全方向），
+  且只跳过 **agent 自开标签**的 Control 卡；用户自开标签必须由用户显式允许。
+
+## 浏览器 Workspace Surface（2026-11-17，P1–P4）
+
+普通窗口的 `workspaceSurfaceRequested` 统一承载 Browser / Document / Memo；右侧始终
+是 `renderConversation(displaySession)`。Dock 仍用整页浏览器，detached 不进入。
+改这块先记红线：
+
+- **状态模型**：`browserActive`、`activeDocPath`、`memoActive` 只表示当前选中的
+  surface 类型；打开过的标签继续保留。普通窗口由单一 `SurfaceWorkspace` 渲染，
+  退出只回会话，不删标签。session-only `SplitWorkspace` reducer 不改，surface 退出后
+  原树恢复。
+- **标签生命周期**：Agent 可给 `browser_open_tab` 传稳定 `id`（小写 slug）；同名再次打开返回
+  现有 tab。`pinned` / `chosenId` / claimed 用户 tab 不参加 idle cleanup；pinned 和 user-owned
+  也不能被 Agent close 或会话删除。用户切 tab、导航、分享必须 touch `lastUsedAtMs`。自动清理只
+  接受普通 Agent tab，busy / waiting_user / handoff / 当前可见一律跳过。
+- **只做内置开发浏览器**：Chrome/Edge 扩展、relay、配对、外部 MCP 浏览器连接和个人生活助手
+  都不是 Marionette 范围。用户需要 Agent 使用自己的日常浏览器时自行安装 browse。产品里不加入
+  “连接我的浏览器”假入口，也不探测或导入用户已安装的 browse relay/tab。底层 Agent 自己加载
+  全局 MCP 属于外部能力，不进入 SurfaceWorkspace，也不作为产品支持承诺。边界见
+  plan-browser-scope.md。
+- **共同标签必须在原生 host 外**：顶部 Browser / Document / Memo 标签条是 DOM，
+  BrowserPage 的 child WebView2 host 在它下方；不要把标签塞进 host 或让 native webview
+  覆盖标签。Browser 内部标签仍按后台 Rust 创建顺序稳定排序。
+- **打开不是抢工作区授权**：`browser_open_tab` 默认 `background`，fresh tab 只有
+  `display:"workspace"` 才激活 surface。Dev server 只能扫运行中 ACP terminal 的
+  bounded tail（64KB），去 ANSI、限 loopback、TCP probe 后按 `off/notify/open` 偏好处理；
+  禁止仅按 localhost 字符串切界面。
+- **状态与清理**：Agent tab 带 `ownerSessionId`、并发 `busy` 计数、
+  `idle/running/waiting_user/failed` 和 `lastUsedAtMs`。删除会话/项目关闭其 owned tabs；
+  用户自开 tab 不按 owner 清理。状态文字遵守极简 HUD，不用状态圆点。
+- **handoff**：`browser_handoff` 在 Rust 阻塞等待 Continue / Deny / timeout；事件必须
+  切到来源会话和来源 tab、打开 Browser surface、发通知，并在页面与 host 之间显示提示。
+  Continue 才放行；Deny/timeout 是工具返回值，不伪造成功。
+- **恢复与快捷键**：`uiRestore` 保存文档列表、Memo 标签、Browser URL 顺序、活动 tab 和
+  绑定会话；Browser URL 只接受 http(s)，保存前去掉凭据/敏感 query/hash，按原顺序后台重开。Ctrl+W / Ctrl+Tab /
+  Ctrl+1..9 在 surface 内先操作 content tabs，surface 关闭后才是 session tab 语义。
+- **ContextPanel 与焦点**：surface 进入时自动收起 ContextPanel，退出恢复；BrowserPage
+  embedded Esc 只在 target 属于浏览器根节点时生效。Composer / 权限 / 文档 / Memo 的 Esc
+  不得被抢。
+
+回归：`npm run build`、`verify-workspace-surface.mts`、`verify-dev-server.mts`、
+`verify-ui-restore.mts`、`cargo check`、`cargo test --bin marionette browser`。
+
+## 浏览器元素批注（2026-11-17，DevTools 式拾取 + 框选）
+
+浏览器工具栏十字准星 → 页内拾取（悬停高亮/点击拾取、框选拖拽）→ 批注抽屉
+（`.browser-page__picker`，截图缩略 + 逐条批注）→「发给对话」**预填 composer**（不自动
+发送）+ 元素/区域截图走附件管线。普通窗口右侧 Composer 已同屏；Dock 发送成功后回窄条。
+改前先记六条：
+
+- **模块**：`browser/pick.rs`（表达式构建器，probe.rs 同款：全 serde_json 禁拼接）+
+  `browser/js/picker.js`（自有脚本，probe.js 同款自装 IIFE，**每个 eval 内联整份脚本 +
+  三元守卫**，因为 addScriptToEvaluateOnNewDocument 只管未来文档）。覆盖层全部在
+  **closed Shadow DOM**（页面 CSS 伤不到）。拾取期间 host 是 `pointer-events:auto!important`
+  的全屏命中层，底层元素只做同步 `elementFromPoint`，页面控件永远不会收到 activation；
+  所有指针/键盘入口都拒收 `isTrusted=false`，页面不能用合成事件伪造批注。
+- **node→ref 反向映射只有一条路**：读元素上的 `_ariaRef` expando（bundle 在同 world
+  里缓存的）+ 公开 `elementForRef(gen, ref) === el` 校验。bundle 不暴露反向 API，
+  **别给 bundle 加函数**（vendored 产物，改 = 重放上游构建）。
+- **generation 必须用快照返回的四段串**（`GENERATION.seq.hostGen.navEpoch`）原样传给
+  `resolveRefs`/`elementForRef`——host 的 epoch 是两段，混用全拒。`pick_resolve` 每次
+  发送**只拍一张快照**（120K chars，树丢弃只为 ref 表重建），不按 pick 逐个拍。
+- **`on_cdp_event` 永远零 CDP**（事件可能在别的调用的 pump 里触发）：pick、标题、
+  SPA route 都只更新内存 + emit。真实 document 变化走 `Page.frameNavigated`；helper
+  `nav-state` 只分类 title/route，禁止在事件里 `call_and_wait`（曾会绕过 CdpLease
+  重新引入 WebView2 嵌套 pump）。pick 只 parse + 存 payload（VecDeque，24 上限）+ emit
+  `marionette-browser-pick`。裁剪（`browser_pick_finalize`：captureHide →
+  captureScreenshot → captureRestore 三步一个租约，rect×dpr 本地裁剪）与 ref 解析
+  （`browser_pick_resolve`）全是前端驱动的命令，租约照取。
+- **pick 四命令是 UI 路径，不加 grant**——grant 只挡 agent 工具调用
+  （`tool_read`/`control_gate` 一处原则不动）；本批**没有**新增任何 agent 工具，
+  批注 prompt 让 agent 用现有 browser_snapshot/click/set_value。
+- **前端**：抽屉在 bar 与 host 之间（压矮 host，ResizeObserver 自动重同步 bounds）；
+  拾取状态提升到 App，BrowserPage 卸载只停 picker、不丢草稿。document nav 清 payload；
+  SPA URL 变化只移 epoch + 停 picker，title 变化只更新标题。`browser_pick_clear` 在
+  发送/清空后同时清 Rust 和页面元素表。截图由 Rust 落到 clipboard 目录，前端只留
+  小缩略图 + path；`sendBrowserPicksToChat` 成功后才清草稿，失败保留。普通窗口不关
+  `browserActive`（右栏直接看草稿）；只有 dock 的 `dockPage:"browser"` 回 null。
+- **提示词安全**：页面文字、selector、区域元素全部标为不可信数据；URL 先剥离
+  user/password、secret query/hash、JWT/高熵 path segment。混批按页面分组；单批上限
+  24，前端、页面脚本、Rust ring 三处一致。
+- **命中深度**：open Shadow DOM 与同源 iframe 递归命中，坐标经 `viewportRect`
+  折回首层；跨域 frame 只能选顶层 iframe，区域扫描把它标成不完整。
+- 回归：`cargo test --bin marionette browser` +
+  `npx tsx scripts/verify-browser-pick.mts`（prompt 安全/URL 脱敏/多页分组/输入屏障）+
+  `npx tsc --noEmit` + `npx tsx scripts/verify-workspace-surface.mts`；真机手册见
+  docs/CURRENT.md 浏览器节。
 
 ## 浏览器元素批注（2026-11-17，DevTools 式拾取 + 框选）
 

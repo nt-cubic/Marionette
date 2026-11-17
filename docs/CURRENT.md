@@ -19,7 +19,7 @@ Windows 本地 **多 Agent CLI 图形壳**（Tauri + React）。不替代 OpenCo
 | 项目 / 会话 | 项目 CRUD、搜索 threads（按标题过滤，不读正文）、项目拖拽排序、会话按发送 recency 排序；空闲 2 小时的会话自动「挂起」（结束 agent 进程，下次发消息自动接上历史；子代理/后台命令/定时发送仍算在运作，不挂起）；悬停会话行三个按钮：⏸ 挂起（只在进程还活着时画：starting / running / waiting / error，按下去就是停——正在跑的直接中断并结束进程，说出口的半截回复留着并标「已挂起」；已挂起的会话不画按钮）、删除、⋯（置顶 / 重命名 / 导出为 Markdown）；冷启动恢复上次焦点和分屏（无存档则不打开对话，点底部输入框会在 Chat 新建）；Ctrl+K 命令面板（侧栏底栏齿轮打开同一面板）：跳任意对话/项目、新建对话/聊天、打开收纳盒/圆桌/Telegram 远程/模型共享、导出当前对话为 Markdown、重开刚关的标签、切主题。导出走系统「另存为」，准备中有 toast，失败不写空文件；成功 toast 可复制全文。**Ctrl+F 在当前对话中查找**（面板同入口「在当前对话中查找」）：右上角浮条（Esc 关、Enter/Shift+Enter 上下处、`i/n` 计数），大小写不敏感子串匹配，搜的是**已加载范围**内始终可见的主干卡（你 / 回复 / 计划 / 提问 / 交接 / 子代理 / 改动交付卡；thought/tool 在折叠簇内不参与），命中跳到所在卡并描边高亮（虚拟列表走 `offsetOf` 定位、短对话走 DOM 定位，流式期间不劫持滚动位置）。侧栏原有入口（收纳盒、圆桌、Telegram、模型共享）都还在 |
 | Chat 对话 | 侧栏项目列表下的独立对话列表；使用进程默认工作目录，不创建项目或工作区 `.marionette`；资源管理器「在此处打开」遇到已有 `.marionette` 才按项目打开 |
 | 多 Agent | 内置 + custom ACP agents；懒启动、能力协商、model/mode/effort/文件权限（agent 自己 advertise 的旋钮才出现，按 option id 判定，category 只当提示） |
-| Clean 对话 | transcript JSONL、edit&resend（重发会带上原来的 agent/模型标记，后面的回复仍是 Reply 而不是 Notification）、普通权限弹窗、Ask/Plan 进对话流（卡片上回复，输入框收起，写入 handoff.md）、@ 派任务、从任意一条回复分叉出新会话（复制到该条为止，首次发送自动带上这段历史）、回复里的图片按会话工作目录解析（文件名差一个字符时找同目录里唯一近似的那张）；**Reply/You 里的图片链接（`[说明](D:/x.png)`）会在链接上方直接出图，远程 http(s) 图片同样显示**；Agent 读到的图片在工具卡里直接出预览，**收起的工具行/运行段行也带小缩略图（点击开灯箱）**；输入框贴图带缩略图；点图片开四周发黑的灯箱（拖动平移、滚轮缩放）；并行子代理按厂商走私方式认成独立卡（Claude Agent/Task + parentToolUseId、OpenCode Task、Grok `spawn_subagent`、Codex collab `spawnAgent` / 无 spawn 工具的 `_meta.codex.subagent`、ZCode Agent 标题是任务描述、通用 spawn 动词（`delegate_task` 等）；ACP 没转发内层转录就不编造）收进专用格子而不是刷进 tally / 主消息流；Markdown 走主流 GFM（react-markdown + remark-gfm，编号列表 10/1000、重复字不再被流合并吃掉）；富文本按内容懒加载：公式（KaTeX，单 `$` 恒字面）、代码高亮（Shiki 双主题）、流程图（```mermaid）、生成式卡片（```spec，见下节）；按「运行段」折叠 tool/thinking（**没有全局眼睛开关**，永远折叠；单卡仍可点开）：**当前轨迹从第一步就作为一张组卡出现**（标题是 `1 thought, 1 read, 1 search` 这类 tally），live 时上方显示**实时泳道时间图**，下方 tally 详情保持折叠（**不自动展开 thought 或工具正文**）；**整轮结束后自动折回 tally 摘要**（时间图一起收起；点开摘要看到同一套占位条 + 60s 标尺，不是短轴断点），运行时可手动查看详情，完成时统一折叠（细则见下节） |
+| Clean 对话 | transcript JSONL、edit&resend（重发会带上原来的 agent/模型标记，后面的回复仍是 Reply 而不是 Notification）、普通权限弹窗、Ask/Plan 进对话流（卡片上回复，输入框收起，写入 handoff.md）、ACP notice / Codex 重试 / Claude 会话失败 / 发送后 60 秒无输出以独立「通知」卡进入对话流（不在输入框上方弹条）、@ 派任务、从任意一条回复分叉出新会话（复制到该条为止，首次发送自动带上这段历史）、回复里的图片按会话工作目录解析（文件名差一个字符时找同目录里唯一近似的那张）；**Reply/You 里的图片链接（`[说明](D:/x.png)`）会在链接上方直接出图，远程 http(s) 图片同样显示**；Agent 读到的图片在工具卡里直接出预览，**收起的工具行/运行段行也带小缩略图（点击开灯箱）**；输入框贴图带缩略图；点图片开四周发黑的灯箱（拖动平移、滚轮缩放）；并行子代理按厂商走私方式认成独立卡（Claude Agent/Task + parentToolUseId、OpenCode Task、Grok `spawn_subagent`、Codex collab `spawnAgent` / 无 spawn 工具的 `_meta.codex.subagent`、ZCode Agent 标题是任务描述、通用 spawn 动词（`delegate_task` 等）；ACP 没转发内层转录就不编造）收进专用格子而不是刷进 tally / 主消息流；Markdown 走主流 GFM（react-markdown + remark-gfm，编号列表 10/1000、重复字不再被流合并吃掉）；富文本按内容懒加载：公式（KaTeX，单 `$` 恒字面）、代码高亮（Shiki 双主题）、流程图（```mermaid）、生成式卡片（```spec，见下节）；按「运行段」折叠 tool/thinking（**没有全局眼睛开关**，永远折叠；单卡仍可点开）：**当前轨迹从第一步就作为一张组卡出现**（标题是 `1 thought, 1 read, 1 search` 这类 tally），live 时上方显示**实时泳道时间图**，下方 tally 详情保持折叠（**不自动展开 thought 或工具正文**）；**整轮结束后自动折回 tally 摘要**（时间图一起收起；点开摘要看到同一套占位条 + 60s 标尺，不是短轴断点），运行时可手动查看详情，完成时统一折叠（细则见下节） |
 | Handoff / Git | handoff.md、changed files、只读 diff；**每轮交付卡走私有 index 的内容树快照（本轮窗口口径，见下节）** |
 | 右侧栏 | 固定三标签：**当前**保留 Tasks / 额度 / 改动文件与后台任务行；**共享**收纳 MCP、技能、插件、记忆、交接；**图片**按当前对话列出用户附图和工具图片（总数、来源筛选、日期分组、随栏宽自适应的两列以上网格，长列表分页加载）。标签选择持久化，并支持左右方向键切换；图片不再原地展开挤压其它右栏内容。点图开全屏查看器，点图片外空白 / 遮罩、Esc 或关闭键均可退出；本地图片可点「批注并添加」进入现有打点/框选批注器，确认后作为带批注的 Composer 附件回到当前对话（同路径复用同一附件，再次批注会更新标记而不是重复插图）。后台任务聚合层已为后续独立「任务」标签预留扩展点 |
 | 多窗口 | Tab 幽灵撕出 → 松手开 detached 窗；关窗 hide 防 tao 闪退；隐藏壳 LRU 回收。主窗对话区最多 4 格分屏（拖标签到中区/格的左、右、上、下约 1/4；可 1\|1\|1、1\|2 或 2×2；同一方向再拆会均分整行/整列）；每格自己的标签、转写、输入框；标签 Columns2 / 右键「在右侧打开」「在下方打开」；重启恢复分屏。撕出去的窗口拖回主窗：边缘拆格、中间并入、坐标失败进焦点格；关撕窗也插回焦点格。侧栏点已撕开的对话只聚焦那个窗口。权限/提问/计划卡片会把焦点切到当事格；权限框一到就画。**输入框过窄时底栏芯片收成贴边同款 hub**（量的是这一格 composer 自己的宽度，不是整窗）：≤580px 收成滑杆+当前模型名一个入口（＋ 附文件与发送留在外），≥640px 再摊开芯片，中间一段不来回闪 |
@@ -113,10 +113,10 @@ Agent 在回合结束后自己续跑（它起的后台指令回来了，触发�
   目录下）在下次启动时回收，不再占着默认端口漂几个小时。
 - **可诊断性**：前端每 60 秒记一条 ui-heartbeat；测试运行不再污染真实 dev.log。
 
-## 文档标签页（2026-10-31）
+## 文档标签页（2026-11-17 并入通用 Surface）
 
-`.md` / `.markdown` / `.mdx` / `.txt` 点击后**不再弹系统默认应用**，改在 app 内开
-「文档伪标签页」（与收纳盒同款形状：中栏对话列切换、左右侧栏不动、不进分屏树）。
+`.md` / `.markdown` / `.mdx` / `.txt` 点击后在 app 内打开，使用与 Browser、Memo 相同的
+`SurfaceWorkspace`：左侧是内容，右侧复用当前会话的 SessionView + Composer。
 
 - **入口**：转录链接、交付卡、ContextPanel 改动文件行、收纳盒文件卡——四处都经
   `src/lib/openFile.ts::openInDocTabIfEligible` 分流（先照旧 resolve，命中 doc 扩展名
@@ -125,47 +125,85 @@ Agent 在回合结束后自己续跑（它起的后台指令回来了，触发�
 - **页面**（`src/components/DocPage.tsx`）：预览态复用转录 markdown 管线（math/
   mermaid/shiki/spec 卡全有，图片相对路径按文档所在目录解析）；编辑态等宽源码
   textarea；Ctrl+S 保存。保存带 **mtime 乐观锁**（`save_doc_file` 的 stale 拒绝是
-  返回值不是错误 → 确认后 force 覆盖）。文档内相对 `.md` 链接页内跳转
-  （`MarkdownBody` 的 `DocNavContext`，仅文档页提供）。
+  返回值不是错误 → 确认后 force 覆盖）。文档内相对 `.md` 链接页内跳转。
 - **引用给 agent**：选中文字（预览或编辑态）→ 引用块预填输入框（`prefillComposer`
   通道，只预填不自动发）。锚点式批注评论明确不做。
-- **对照模式**：页头「对照」按钮 → 对话左 / 文档右 + 可拖分隔条
-  （`DocCompareLayout`，自绘行不动 SplitWorkspace；宽度存 localStorage）。分屏态下
-  文档页与收纳盒一样整栏覆盖，对照按钮隐藏。
+- **并排**：打开文档即进入 Document surface，不再需要先点「与对话对照」；顶部的
+  Browser / Document / Memo 标签可切换，对话栏的下拉框可换绑另一个会话，而不关闭
+  文档。未保存草稿在切换标签/暂时回对话后仍保留；从标签关闭有未保存内容的文档会先
+  弹确认。旧的 DocCompareLayout 不再是正常入口。
 - **贴边态**：开文档 = dock 整页（`DockPage "doc"`，返回/Esc 由 dock chrome 管）。
-- Ctrl+W 优先关活跃伪标签（收纳盒 → 文档 → 会话）；命令后端在
-  `open_target.rs::read_doc_file / save_doc_file`（纯 fs，不碰 storage 锁）。
+- Ctrl+W / Ctrl+Tab / Ctrl+1..9 在 surface 内按 Browser、Document、Memo 标签工作；
+  离开 surface 后才回到会话标签的键盘语义。
 
-## 内置浏览器标签 + agent 工具通道（2026-10-31，批次 2）
+## 内置浏览器 Workspace Surface + agent 工具通道（2026-11-17，P1–P4 收口）
 
-app 内置一个浏览器页（伪标签，与收纳盒/文档同款形状），agent 通过工具通道读写它：
+app 内置浏览器，agent 通过工具通道读写它。普通窗口里 Browser、Document、Memo 共用
+一套 `SurfaceWorkspace`：内容在左、当前 Agent 会话在右；Dock 仍用整页浏览器。
 
-- **入口**：标签条「浏览器」chip（有标签才出现）+ Ctrl K「新建浏览器标签」+ 贴边态
-  整页；agent 的 `browser_open_tab` 也会把页面顶到前台。页内有自己的迷你标签条、
-  地址栏、reload、**分享菜单**（不分享 / 可读 / 可读+可操作）。
+- **入口**：标签条「浏览器」chip、Ctrl K「新建浏览器标签」、贴边态整页。agent 的
+  `browser_open_tab(display:"background"|"workspace")` 默认把 tab 留在后台；只有
+  `workspace` 才进入双栏。开发服务器发现默认只通知，用户可切「通知 / 自动打开 / 忽略」。
+- **共同 surface（2026-11-17 P3/P4）**：顶部的 Browser / Document / Memo 标签条在
+  child WebView2 host 之外；Browser、文档、收纳盒都复用同一套 SessionView + Composer。
+  对话栏标题旁的下拉框可换绑另一会话而不关闭内容。surface 标签支持关闭、
+  Ctrl+W、Ctrl+Tab、Ctrl+1..9；`marionette-ui-restore` 保存打开的文档、Memo 标签、
+  Browser URL 和当前绑定，冷启动按原顺序后台恢复 Browser tab（URL 只存 http(s)，凭据、敏感 query 和 hash 不落恢复快照）。
+- **运行状态（P2）**：Agent 打开的 tab 记录 `ownerSessionId`、`busy`、
+  `status: idle|running|waiting_user|failed` 与最近使用时间；并发调用用计数，避免一个
+  调用结束时把仍在工作的 tab 误报为空闲。删除会话/项目会关闭该会话拥有的 tabs，
+  用户自开的 tabs 不受影响。
+- **dev server 发现（P2）**：4 秒轮询运行中 ACP terminal 的 64KB 输出尾，去除 ANSI，
+  只接受 loopback/通配地址，并先做 TCP probe。通过后才按偏好通知或创建 workspace tab；
+  同一 origin 十分钟内不重复打扰。实现见 `src/lib/devServer.ts` 与
+  `src-tauri/src/browser/service.rs`。
+- **handoff（P4）**：`browser_handoff` 让 Agent 暂停在登录、2FA、CAPTCHA、支付确认等
+  必须由人完成的步骤。tab 进入 WAIT，应用切到来源会话并打开 Browser surface，页面与
+  对话之间显示标题、指令、origin、Continue / Deny；后台窗口同时发通知。Continue 放行，
+  Deny 作为可转述的拒绝返回工具，超时不会默认继续。
+- **Workspace 布局**：浏览器默认约 62%，对话最小 320px；seam 可拖且宽度持久化，
+  内容区 <760px 自动上下堆叠。进入时 ContextPanel 收起，关闭后恢复；原 session-only
+  `SplitWorkspace` 树不重写，surface 退出后原样恢复。
+- **标签生命周期（2026-11-17）**：Agent 打开 tab 可传稳定 `id`（如 `work-mail`），同名调用
+  返回已有标签而不重复导航。标签菜单可「保留 / 取消保留」或「转为我的标签」；claim 后清空
+  owner 与 grant，会话删除和空闲 cleanup 都不能关它。用户切换 tab、手动导航和分享动作都会
+  刷新 lastUsed；10 / 30 / 60 / never 空闲清理只关普通 Agent tab，跳过 pinned、named、busy、
+  waiting_user、handoff 和当前可见 tab。
+- **Browser 产品边界**：Marionette 只把内置 WebView2 开发工作区作为一等 Browser。产品不安装或
+  配置 Chrome/Edge 扩展、relay 和配对，也不提供个人浏览器助手。用户需要日常登录态浏览器能力时
+  可自行安装 browse；它本质上是外部 MCP server，底层 Agent 可以使用，Marionette 会把调用展示成
+  普通 MCP 工具。项目上下文也可按通用规则扫描并借出该 MCP（默认关闭）。browse 的页面、tab group、
+  WAIT 和配对状态留在用户浏览器与 browse 中，不导入 surface。边界见
+  `docs/plan-browser-scope.md`。
 - **授权**：agent 自开标签自动**可读**（快照/console/截图）；**点击/输入（Control）
   逐次弹权限卡**（允许一次 / 允许并记住此站点 / 拒绝，2 分钟超时自动拒绝），该会话
   开着 always-approve 则自动放行；用户自开标签读写都要手动分享。grant 绑 origin，
   跨域导航用户标签撤销、agent 标签重授读。
 - **工具通道**：主进程内嵌 localhost HTTP MCP（`tools_mcp.rs`，每会话独立 Bearer
-  token），session/new 注入 url 型条目——全 agent 通吃含 zcode。11 个 `browser_*`
+  token），session/new 注入 url 型条目——全 agent 通吃含 zcode。15 个 `browser_*`
   工具；拒绝是返回值不是报错（`browser_grant_required` 附转述话术）。
 - **aria 引擎** vendor 自 Codeg（Apache-2.0，`src-tauri/src/browser/js/`）：
   快照按元素 ref 操作（非像素坐标），只在第一次有授权读取时注入 isolated world。
 - **元素批注（2026-11-17）**：地址栏旁的十字准星开启 DevTools 式拾取——悬停高亮 +
   角标（tag/id/尺寸），点击拾取元素；切「框选区域」拖拽圈选（列内含元素）。拾取期间
-  页面自身的点击被吞掉，Esc 退出。批注抽屉在工具栏与页面之间（页面向上让位），每条
-  一行：截图缩略（拾取时自动裁剪，高亮不入镜）+ 元素摘要 + 批注输入框。「发给对话」
-  把批注清单（选择器、aria ref——发送时重新快照解析、失效则回落选择器、框选内含
-  元素）与截图**预填进当前对话输入框**，检查后自己发送；没有真实会话先建一个。
+  全屏命中层接住真实指针，底层控件不收到 activation，`isTrusted=false` 的合成事件
+  直接拒绝，Esc 退出。批注抽屉在工具栏与页面之间（页面向上让位），每条一行：文件
+  落盘后的截图小缩略图（失败可重试）+ 元素摘要 + 批注输入框。状态由 App 持有，切换
+  页面不会丢草稿；组件卸载会先停止页内 picker。单批上限 24 条。
+  同源 iframe 与 open Shadow DOM 可继续向下命中；跨域 frame 只能选中它的顶层
+  iframe，区域扫描会把内容不完整标出来。
+  「发给对话」把批注清单（选择器、aria ref——发送时重新快照解析、失效则回落选择器、
+  框选内含元素）与截图路径**预填进当前对话输入框**；普通窗口直接在同屏右栏检查，
+  Dock 则回到窄条让 Composer 可见。成功后才清草稿；没有真实会话先建一个。页面字段
+  明确标为不可信数据，URL 会脱敏；导航后混有多个页面时按页面分组。
   拾取是用户自己的 UI 操作，不走授权（授权只挡 agent）；agent 拿到批注后用现有
   browser_snapshot / browser_click / browser_set_value 操作。
 - **体积/内存**：不捆绑浏览器引擎（复用 WebView2 运行时，独立 profile
   `~/.marionette/browser-profiles/`）；**标签懒建**（2026-11-06：启动不再预热
   about:blank 子 webview——那会常驻一整套 WebView2 进程组；首标签走
   `create_surface` 直建，关掉标签 renderer 回收）。
-- 已知边界与偏差见 `docs/plan-browser-computer-use.md` §6（listener pin、eval、下载
-  接管、前进后退为后续批次；§1.5 的人→agent 手递已由 2026-11-17 元素批注落地）。
+- 设计定稿见 `docs/plan-browser-workspace.md`；用户体验对标见
+  `docs/research-browse-ux.md`。
 
 ## Computer Use（2026-10-31，批次 3）
 

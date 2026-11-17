@@ -20,7 +20,132 @@ export type UiRestoreSnapshot = {
   updatedAt: number;
   /** Optional pane tree. Missing = pre-split snapshot; restore via migrateFromFlat. */
   splitLayout?: SplitLayoutV1;
+  /** Browser / document / memo tabs in the conversation-adjacent surface. */
+  surface?: WorkspaceSurfaceSnapshot;
 };
+
+export type WorkspaceSurfaceActive =
+  | { kind: "browser" }
+  | { kind: "document"; path: string }
+  | { kind: "memo" };
+
+export type WorkspaceSurfaceSnapshot = {
+  documents: { path: string; title: string }[];
+  memoOpen: boolean;
+  active: WorkspaceSurfaceActive | null;
+  browserTabs: { url: string; title: string; pinned?: boolean }[];
+  activeBrowserIndex: number | null;
+};
+
+function safeHttpUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    // Do not persist embedded credentials or token-shaped query keys in the
+    // UI snapshot. The browser profile keeps the live session; restore only
+    // needs a safe navigable address.
+    if (url.username || url.password) return null;
+    const sensitive =
+      /(?:auth|credential|csrf|otp|pass(?:code|word|wd)?|secret|session|sig(?:nature)?|token|xsrf|api[-_.]?key|access[-_.]?key|(?:^|[-_.])code(?:$|[-_.]))/i;
+    for (const key of [...url.searchParams.keys()]) {
+      const values = url.searchParams.getAll(key);
+      if (
+        sensitive.test(key) ||
+        values.some(
+          (item) =>
+            item.length >= 24 &&
+            /^[A-Za-z0-9_-]+$/.test(item) &&
+            /[A-Za-z]/.test(item) &&
+            /\d/.test(item),
+        )
+      ) {
+        url.searchParams.delete(key);
+      }
+    }
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function safeDocumentPath(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const path = value.trim();
+  if (!path) return null;
+  return /^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(path) ? path : null;
+}
+
+function sanitizeSurface(value: unknown): WorkspaceSurfaceSnapshot | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const rec = value as Record<string, unknown>;
+  const rawDocs = Array.isArray(rec.documents) ? rec.documents : [];
+  const documents: WorkspaceSurfaceSnapshot["documents"] = [];
+  const seenPaths = new Set<string>();
+  for (const raw of rawDocs.slice(0, 20)) {
+    if (!raw || typeof raw !== "object") continue;
+    const row = raw as Record<string, unknown>;
+    const path = safeDocumentPath(row.path);
+    if (!path || seenPaths.has(path)) continue;
+    seenPaths.add(path);
+    const title =
+      typeof row.title === "string" && row.title.trim()
+        ? row.title.trim().slice(0, 240)
+        : (path.split(/[\\/]/).filter(Boolean).pop() ?? path);
+    documents.push({ path, title });
+  }
+
+  const rawBrowserTabs = Array.isArray(rec.browserTabs) ? rec.browserTabs : [];
+  const browserTabs: WorkspaceSurfaceSnapshot["browserTabs"] = [];
+  for (const raw of rawBrowserTabs.slice(0, 20)) {
+    if (!raw || typeof raw !== "object") continue;
+    const row = raw as Record<string, unknown>;
+    const url = safeHttpUrl(row.url);
+    if (!url || browserTabs.some((tab) => tab.url === url)) continue;
+    const title =
+      typeof row.title === "string" && row.title.trim()
+        ? row.title.trim().slice(0, 240)
+        : url;
+    browserTabs.push({
+      url,
+      title,
+      ...(row.pinned === true ? { pinned: true } : {}),
+    });
+  }
+
+  const rawActive = rec.active;
+  let active: WorkspaceSurfaceActive | null = null;
+  if (rawActive && typeof rawActive === "object") {
+    const row = rawActive as Record<string, unknown>;
+    if (row.kind === "browser") active = { kind: "browser" };
+    if (row.kind === "memo") active = { kind: "memo" };
+    if (row.kind === "document") {
+      const path = safeDocumentPath(row.path);
+      if (path && seenPaths.has(path)) active = { kind: "document", path };
+    }
+  }
+
+  const requestedBrowserIndex =
+    typeof rec.activeBrowserIndex === "number" &&
+    Number.isInteger(rec.activeBrowserIndex)
+      ? rec.activeBrowserIndex
+      : null;
+  const activeBrowserIndex =
+    requestedBrowserIndex != null &&
+    requestedBrowserIndex >= 0 &&
+    requestedBrowserIndex < browserTabs.length
+      ? requestedBrowserIndex
+      : null;
+
+  return {
+    documents,
+    memoOpen: rec.memoOpen === true,
+    active,
+    browserTabs,
+    activeBrowserIndex,
+  };
+}
 
 export type RestoredWorkspace = {
   session: Session;
@@ -65,6 +190,7 @@ export function saveUiRestore(snap: {
   projectId: string;
   openSessionIds: string[];
   splitLayout?: SplitLayoutV1;
+  surface?: WorkspaceSurfaceSnapshot;
 }): void {
   const sessionId = snap.sessionId?.trim() ?? "";
   if (!sessionId || sessionId.startsWith("session-empty-")) return;
@@ -81,6 +207,8 @@ export function saveUiRestore(snap: {
       updatedAt: Date.now(),
     };
     if (snap.splitLayout?.version === 1) payload.splitLayout = snap.splitLayout;
+    const surface = sanitizeSurface(snap.surface);
+    if (surface) payload.surface = surface;
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
   } catch {
     // localStorage might be disabled or full
@@ -218,6 +346,8 @@ export function parseUiRestore(raw: unknown): UiRestoreSnapshot | null {
     const layout = rec.splitLayout as Record<string, unknown>;
     if (layout.version === 1) snap.splitLayout = rec.splitLayout as SplitLayoutV1;
   }
+  const surface = sanitizeSurface(rec.surface);
+  if (surface) snap.surface = surface;
   return snap;
 }
 

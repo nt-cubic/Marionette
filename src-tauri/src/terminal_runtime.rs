@@ -498,6 +498,42 @@ impl TerminalRuntime {
         rows
     }
 
+    /// Bounded output tails for the dev-server watcher. This is a separate
+    /// read from the background-task panel so that UI does not carry terminal
+    /// bytes it never shows.
+    pub fn output_snapshots(&self) -> Vec<Value> {
+        const TAIL_BYTES: usize = 64 * 1024;
+        let Ok(map) = self.terminals.lock() else {
+            return Vec::new();
+        };
+        map.iter()
+            .map(|(id, term)| {
+                let _ = term.refresh_exit_status();
+                let snap = term.snapshot.lock().ok();
+                let running = snap
+                    .as_ref()
+                    .map(|s| s.exit_code.is_none() && s.signal.is_none())
+                    .unwrap_or(false);
+                let output = snap
+                    .as_ref()
+                    .map(|s| {
+                        let mut start = s.output.len().saturating_sub(TAIL_BYTES);
+                        while start < s.output.len() && !s.output.is_char_boundary(start) {
+                            start += 1;
+                        }
+                        s.output[start..].to_string()
+                    })
+                    .unwrap_or_default();
+                json!({
+                    "terminalId": id,
+                    "sessionId": term.marionette_session_id,
+                    "running": running,
+                    "output": output,
+                })
+            })
+            .collect()
+    }
+
     /// 后台任务面板的终止入口：只 kill，不清理条目（退出码留给面板展示，
     /// 条目随会话 stop 的 clear_session 一起回收）。
     pub fn kill_by_id(&self, terminal_id: &str) -> Result<(), TerminalError> {

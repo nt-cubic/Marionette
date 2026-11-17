@@ -13,6 +13,13 @@ export type BrowserTab = {
   origin: string;
   grant: "none" | "read" | "control";
   openedByAgent: boolean;
+  display: "background" | "workspace";
+  ownerSessionId: string | null;
+  chosenId: string | null;
+  pinned: boolean;
+  busy: boolean;
+  status: "idle" | "running" | "waiting_user" | "failed";
+  lastUsedAtMs: number;
 };
 
 export type BrowserPermissionRequest = {
@@ -24,14 +31,73 @@ export type BrowserPermissionRequest = {
   summary: string;
 };
 
-export async function browserOpenTab(url: string): Promise<{ tabId: string } | null> {
+export type BrowserHandoffRequest = {
+  requestId: string;
+  sessionId: string;
+  tabId: string;
+  title: string;
+  message: string;
+  url: string;
+  origin: string;
+  expiresAtMs: number;
+};
+
+export async function browserOpenTab(
+  url: string,
+  display: "background" | "workspace" = "background",
+  chosenId?: string,
+): Promise<{ tabId: string; existed?: boolean } | null> {
   if (!isTauriRuntime()) return null;
-  return invoke<{ tabId: string }>("browser_open_tab", { url });
+  return invoke<{ tabId: string; existed?: boolean }>("browser_open_tab", {
+    url,
+    display,
+    chosenId: chosenId ?? null,
+  });
 }
 
 export async function browserCloseTab(tabId: string): Promise<void> {
   if (!isTauriRuntime()) return;
   await invoke("browser_close_tab", { tabId });
+}
+
+export async function browserCloseTabsForSession(sessionId: string): Promise<number> {
+  if (!isTauriRuntime()) return 0;
+  return invoke<number>("browser_close_tabs_for_session", { sessionId });
+}
+
+export async function browserSetTabPinned(tabId: string, pinned: boolean): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("browser_set_tab_pinned", { tabId, pinned });
+}
+
+export async function browserClaimTab(tabId: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("browser_claim_tab", { tabId });
+}
+
+export async function browserTouchTab(tabId: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("browser_touch_tab", { tabId });
+}
+
+export async function browserCleanupIdleTabs(
+  minutes: number,
+  keepTabIds: readonly string[],
+): Promise<string[]> {
+  if (!isTauriRuntime() || minutes <= 0) return [];
+  return invoke<string[]>("browser_cleanup_idle_tabs", {
+    minutes,
+    keepTabIds,
+  });
+}
+
+export async function browserProbeLoopbackUrl(url: string): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try {
+    return await invoke<boolean>("browser_probe_loopback_url", { url });
+  } catch {
+    return false;
+  }
 }
 
 export async function browserNavigateTab(tabId: string, url: string): Promise<void> {
@@ -74,6 +140,14 @@ export async function browserPermissionRespond(requestId: string, allow: boolean
   await invoke("browser_permission_respond", { requestId, allow });
 }
 
+export async function browserHandoffRespond(
+  requestId: string,
+  outcome: "continue" | "denied",
+): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  return invoke<boolean>("browser_handoff_respond", { requestId, outcome });
+}
+
 export function onBrowserTabs(handler: (tabs: BrowserTab[]) => void): Promise<UnlistenFn> {
   return listen<BrowserTab[]>("marionette-browser-tabs", (event) => handler(event.payload));
 }
@@ -82,6 +156,14 @@ export function onBrowserPermission(
   handler: (request: BrowserPermissionRequest) => void,
 ): Promise<UnlistenFn> {
   return listen<BrowserPermissionRequest>("marionette-browser-permission", (event) =>
+    handler(event.payload),
+  );
+}
+
+export function onBrowserHandoff(
+  handler: (request: BrowserHandoffRequest) => void,
+): Promise<UnlistenFn> {
+  return listen<BrowserHandoffRequest>("marionette-browser-handoff", (event) =>
     handler(event.payload),
   );
 }
@@ -108,7 +190,7 @@ export type BrowserPickInfo = {
 };
 
 export type BrowserPickMessage =
-  | { kind: "pick"; pickId: string; info: BrowserPickInfo }
+  | { kind: "pick"; pickId: string; info: BrowserPickInfo; url?: string }
   | {
       kind: "region";
       pickId: string;
@@ -116,8 +198,10 @@ export type BrowserPickMessage =
       dpr: number;
       elements: BrowserPickInfo[];
       scanCapped?: true;
+      url?: string;
     }
-  | { kind: "cancel" };
+  | { kind: "cancel" }
+  | { kind: "limit"; limit: number };
 
 export type BrowserPickEvent = { tabId: string; message: BrowserPickMessage };
 
@@ -130,19 +214,37 @@ export async function browserPickSet(
   tabId: string,
   active: boolean,
   mode: BrowserPickMode,
-): Promise<{ ok: boolean; mode?: BrowserPickMode; error?: string } | null> {
-  if (!isTauriRuntime()) return null;
+): Promise<{ ok: boolean; mode?: BrowserPickMode; error?: string }> {
+  if (!isTauriRuntime()) return { ok: false, error: "desktop runtime required" };
   try {
     return await invoke("browser_pick_set", { tabId, active, mode });
+  } catch (error) {
+    return { ok: false, error: String(error) };
+  }
+}
+
+export async function browserPickClear(tabId: string): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try {
+    await invoke("browser_pick_clear", { tabId });
+    return true;
   } catch {
-    return null;
+    return false;
   }
 }
 
 export async function browserPickFinalize(
   tabId: string,
   pickId: string,
-): Promise<{ pickId: string; dataUrl: string; width: number; height: number } | null> {
+): Promise<{
+  pickId: string;
+  /** Small drawer preview. The full JPEG is already written to `path`. */
+  dataUrl: string;
+  path: string;
+  mimeType: string;
+  width: number;
+  height: number;
+} | null> {
   if (!isTauriRuntime()) return null;
   try {
     return await invoke("browser_pick_finalize", { tabId, pickId });

@@ -13,11 +13,11 @@
 //
 // Everything the user sees is painted inside a shadow root: the page's CSS
 // cannot reach in, and the page's scripts see one aria-hidden host div.
-// While picking, the picker swallows the page's pointer events in the
-// capture phase on `window` — the first listeners there, before the page's
-// own capture handlers — so pointing never clicks. Picks travel back through
-// the `__marionettePick` binding (our own name; the vendored `__codegSend`
-// is helper.js's and stays theirs).
+// While picking, a full-screen host turns the page beneath into a read-only
+// hit-test surface: real pointer events target the overlay, synthetic events
+// are ignored, and the underlying control never receives activation. Picks
+// travel back through the `__marionettePick` binding (our own name; the
+// vendored `__codegSend` is helper.js's and stays theirs).
 (() => {
   if (globalThis.__marionettePicker) return;
 
@@ -28,6 +28,12 @@
   const REGION_SCAN_CAP = 20000;
   const REGION_MAX_ELEMENTS = 20;
   const REGION_MIN_DRAG = 6;
+  // Kept in sync with the frontend drawer and the Rust payload ring. A batch
+  // this small is still generous for a design review and bounds the screenshot
+  // data URLs that otherwise live in React state.
+  const PICK_LIMIT = 24;
+  const REGION_SELECTOR =
+    "a,button,input,textarea,select,img,svg,iframe,frame,[role],[tabindex],h1,h2,h3,h4,h5,h6,p,li,label";
 
   // ── state ────────────────────────────────────────────────────────────────
   let active = false;
@@ -53,6 +59,7 @@
   let dragBox = null;
   let dragLabel = null;
   let captureHidden = false;
+  let previousFocus = null;
 
   function ensureOverlay() {
     if (host && host.isConnected) return true;
@@ -60,13 +67,16 @@
       host = document.createElement("div");
       host.setAttribute("aria-hidden", "true");
       host.setAttribute("data-marionette-picker", "");
+      host.tabIndex = -1;
       host.style.cssText =
-        "position:fixed;inset:0;width:0;height:0;margin:0;padding:0;border:0;" +
-        "background:none;z-index:" + HOST_Z + ";pointer-events:none;display:none;";
+        "position:fixed!important;inset:0!important;width:auto!important;" +
+        "height:auto!important;margin:0!important;padding:0!important;border:0!important;" +
+        "background:none!important;z-index:" + HOST_Z + "!important;" +
+        "pointer-events:auto!important;display:none!important;cursor:crosshair!important;";
       const shadow = host.attachShadow({ mode: "closed" });
       const style = document.createElement("style");
       style.textContent =
-        ":host{all:initial}" +
+        ":host{all:initial;cursor:crosshair}" +
         ".mp-outline{position:fixed;pointer-events:none;border:2px solid #4a9eff;" +
         "background:rgba(74,158,255,.14);box-sizing:border-box;border-radius:2px;display:none}" +
         ".mp-drag{position:fixed;pointer-events:none;border:1.5px dashed #4a9eff;" +
@@ -137,6 +147,25 @@
     return String(text || "").replace(/\s+/g, " ").trim();
   }
 
+  function isElement(node) {
+    return !!node && node.nodeType === 1 && typeof node.getBoundingClientRect === "function";
+  }
+
+  function viewportRect(el) {
+    const rect = el.getBoundingClientRect();
+    let x = rect.x;
+    let y = rect.y;
+    let win = el.ownerDocument && el.ownerDocument.defaultView;
+    for (let depth = 0; win && win.frameElement && depth < 12; depth++) {
+      const frame = win.frameElement;
+      const outer = frame.getBoundingClientRect();
+      x += outer.x + (frame.clientLeft || 0);
+      y += outer.y + (frame.clientTop || 0);
+      win = frame.ownerDocument && frame.ownerDocument.defaultView;
+    }
+    return { x, y, width: rect.width, height: rect.height };
+  }
+
   function textOf(el, limit) {
     const tag = String(el.tagName || "").toLowerCase();
     if (tag === "input" || tag === "textarea") {
@@ -152,7 +181,7 @@
   }
 
   function describe(el, textLimit) {
-    const box = el.getBoundingClientRect();
+    const box = viewportRect(el);
     const tag = String(el.tagName || "").toLowerCase();
     const info = {
       tag: tag,
@@ -172,51 +201,127 @@
     };
     if (el.getAttribute) {
       const href = el.getAttribute("href");
-      if (tag === "a" && href) info.href = String(new URL(href, location.href)).slice(0, 300);
+      if (tag === "a" && href) {
+        try {
+          info.href = String(new URL(href, location.href)).slice(0, 300);
+        } catch {
+          info.href = collapse(href).slice(0, 300);
+        }
+      }
       const placeholder = el.getAttribute("placeholder");
       if (placeholder) info.placeholder = collapse(placeholder).slice(0, 80);
     }
     return info;
   }
 
-  function selectorOf(el) {
-    try {
-      if (el.id) {
-        const id = "#" + CSS.escape(String(el.id));
-        if (document.querySelectorAll(id).length === 1) return id;
-      }
-      if (el.getAttribute) {
-        for (const attr of ["data-testid", "data-test", "data-cy"]) {
-          const value = el.getAttribute(attr);
-          if (value) {
-            const sel =
-              "[" + attr + '="' + String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"]';
-            if (document.querySelectorAll(sel).length === 1) return sel;
-          }
-        }
-      }
-      const parts = [];
-      let node = el;
-      for (let depth = 0; node && node.nodeType === 1 && depth < 8; depth++) {
-        const tag = String(node.tagName).toLowerCase();
-        if (tag === "html") break;
-        if (node.id) {
-          parts.unshift("#" + CSS.escape(String(node.id)));
+  function deepElementFromPoint(x, y) {
+    let doc = document;
+    let localX = x;
+    let localY = y;
+    for (let depth = 0; doc && depth < 12; depth++) {
+      let el = doc.elementFromPoint(localX, localY);
+      for (let shadowDepth = 0; el && el.shadowRoot && shadowDepth < 12; shadowDepth++) {
+        let inner = null;
+        try {
+          inner = el.shadowRoot.elementFromPoint(localX, localY);
+        } catch {
           break;
         }
-        let segment = tag;
-        const parent = node.parentElement;
-        if (parent) {
-          const same = Array.from(parent.children).filter(
-            (child) => String(child.tagName).toLowerCase() === tag,
-          );
-          if (same.length > 1) segment += ":nth-of-type(" + (same.indexOf(node) + 1) + ")";
-        }
-        parts.unshift(segment);
-        if (tag === "body") break;
-        node = parent;
+        if (!inner || inner === el) break;
+        el = inner;
       }
-      return parts.join(" > ") || String(el.tagName || "").toLowerCase();
+      if (el && (el.tagName === "IFRAME" || el.tagName === "FRAME")) {
+        try {
+          const frameDoc = el.contentDocument;
+          if (frameDoc) {
+            const box = el.getBoundingClientRect();
+            localX -= box.x + (el.clientLeft || 0);
+            localY -= box.y + (el.clientTop || 0);
+            doc = frameDoc;
+            continue;
+          }
+        } catch {
+          /* cross-origin frame: the iframe element remains the target */
+        }
+      }
+      return isElement(el) ? el : null;
+    }
+    return null;
+  }
+
+  // The full-screen host is the input barrier. Hide it for one synchronous hit
+  // test, then restore it before returning to the browser event loop.
+  function elementAtEvent(event) {
+    if (!host) return null;
+    const previous = host.style.getPropertyValue("pointer-events");
+    const priority = host.style.getPropertyPriority("pointer-events");
+    host.style.setProperty("pointer-events", "none", "important");
+    let el = null;
+    try {
+      el = deepElementFromPoint(event.clientX, event.clientY);
+    } finally {
+      host.style.setProperty("pointer-events", previous || "auto", priority || "important");
+    }
+    return el && el !== host ? el : null;
+  }
+
+  function localSelector(el, root) {
+    if (el.id) {
+      const id = "#" + CSS.escape(String(el.id));
+      if (root.querySelectorAll(id).length === 1) return id;
+    }
+    if (el.getAttribute) {
+      for (const attr of ["data-testid", "data-test", "data-cy"]) {
+        const value = el.getAttribute(attr);
+        if (value) {
+          const sel =
+            "[" + attr + '="' + String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"]';
+          if (root.querySelectorAll(sel).length === 1) return sel;
+        }
+      }
+    }
+    const parts = [];
+    let node = el;
+    for (let depth = 0; node && node.nodeType === 1 && depth < 12; depth++) {
+      const tag = String(node.tagName).toLowerCase();
+      if (tag === "html") break;
+      if (node.id) {
+        parts.unshift("#" + CSS.escape(String(node.id)));
+        break;
+      }
+      let segment = tag;
+      const parent = node.parentElement;
+      if (parent) {
+        const same = Array.from(parent.children).filter(
+          (child) => String(child.tagName).toLowerCase() === tag,
+        );
+        if (same.length > 1) segment += ":nth-of-type(" + (same.indexOf(node) + 1) + ")";
+      }
+      parts.unshift(segment);
+      if (tag === "body" || parent === root || !parent) break;
+      node = parent;
+    }
+    return parts.join(" > ") || String(el.tagName || "").toLowerCase();
+  }
+
+  function selectorOf(el) {
+    try {
+      const parts = [];
+      let node = el;
+      for (let depth = 0; node && depth < 12; depth++) {
+        const root = node.getRootNode();
+        parts.unshift(localSelector(node, root));
+        // Open shadow roots and same-origin frames both need their owner as a
+        // prefix. Closed roots and cross-origin documents remain opaque; their
+        // top-level host/frame is the stable target in those cases.
+        if (root && root.nodeType === 11 && root.host) {
+          node = root.host;
+          continue;
+        }
+        const win = node.ownerDocument && node.ownerDocument.defaultView;
+        node = win && win.frameElement ? win.frameElement : null;
+      }
+      return parts.join(" >> ");
     } catch {
       return String(el.tagName || "").toLowerCase();
     }
@@ -253,6 +358,13 @@
     const info = describe(el, 120);
     place(info.rect, outline, hoverLabel(el).label, outlineLabel);
     send({ kind: "pick", pickId: pickId, info: info });
+    stopAtLimit();
+  }
+
+  function stopAtLimit() {
+    if (pickCounter < PICK_LIMIT) return;
+    send({ kind: "limit", limit: PICK_LIMIT });
+    stop();
   }
 
   // ── region mode ──────────────────────────────────────────────────────────
@@ -260,24 +372,59 @@
     const found = [];
     let scanned = 0;
     scanCapped = false;
-    let all;
-    try {
-      all = document.querySelectorAll("*");
-    } catch {
-      return found;
+    const all = [];
+    function collect(root, depth) {
+      if (!root || depth > 12 || scanned >= REGION_SCAN_CAP) return;
+      let list;
+      try {
+        list = root.querySelectorAll(REGION_SELECTOR);
+      } catch {
+        return;
+      }
+      for (const el of list) {
+        if (scanned >= REGION_SCAN_CAP) {
+          scanCapped = true;
+          return;
+        }
+        scanned++;
+        all.push(el);
+        if (el.shadowRoot) collect(el.shadowRoot, depth + 1);
+      }
+      for (const frame of root.querySelectorAll("iframe,frame")) {
+        let frameBox;
+        try {
+          frameBox = viewportRect(frame);
+        } catch {
+          continue;
+        }
+        const right = rect.x + rect.width;
+        const bottom = rect.y + rect.height;
+        if (
+          frameBox.width < 1 ||
+          frameBox.height < 1 ||
+          frameBox.x + frameBox.width <= rect.x ||
+          frameBox.x >= right ||
+          frameBox.y + frameBox.height <= rect.y ||
+          frameBox.y >= bottom
+        ) {
+          continue;
+        }
+        try {
+          if (frame.contentDocument) collect(frame.contentDocument, depth + 1);
+          else scanCapped = true;
+        } catch {
+          scanCapped = true;
+        }
+      }
     }
+    collect(document, 0);
     const right = rect.x + rect.width;
     const bottom = rect.y + rect.height;
     for (const el of all) {
-      if (scanned >= REGION_SCAN_CAP) {
-        scanCapped = true;
-        break;
-      }
-      scanned++;
       if (el === host) continue;
       let box;
       try {
-        box = el.getBoundingClientRect();
+        box = viewportRect(el);
       } catch {
         continue;
       }
@@ -293,9 +440,22 @@
     return found.slice(0, REGION_MAX_ELEMENTS).map((item) => describe(item.el, 60));
   }
 
-  // ── listeners (capture phase; the page never sees a picking pointer) ─────
+  // ── listeners (the full-screen host is the input barrier) ─────────────────
+  function stopEvent(event) {
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    event.preventDefault();
+  }
+
+  function canPick() {
+    if (pickCounter < PICK_LIMIT) return true;
+    stopAtLimit();
+    return false;
+  }
+
   function onPointerMove(event) {
-    if (!active) return;
+    if (!active || !event.isTrusted) return;
+    event.stopImmediatePropagation();
     if (dragging && mode === "region" && dragStart) {
       const rect = {
         x: Math.min(dragStart.x, event.clientX),
@@ -307,30 +467,33 @@
       return;
     }
     if (mode !== "element") return;
-    const el = event.target instanceof Element ? event.target : null;
+    const el = elementAtEvent(event);
     if (!el || el === hoverEl) return;
     hoverEl = el;
-    const box = el.getBoundingClientRect();
+    const named = hoverLabel(el);
+    const box = named.info.rect;
     if (box.width <= 0 || box.height <= 0) {
       hideHover();
       return;
     }
-    const named = hoverLabel(el);
     place(box, outline, named.label, outlineLabel);
   }
 
   function onPointerDown(event) {
-    if (!active || event.button !== 0) return;
+    if (!active || !event.isTrusted || event.button !== 0) return;
+    stopEvent(event);
+    if (!canPick()) return;
+    try {
+      host.setPointerCapture(event.pointerId);
+    } catch {
+      /* pointer capture is best-effort; host still covers the viewport */
+    }
     if (mode === "element") {
-      const el = event.target instanceof Element ? event.target : null;
-      event.stopPropagation();
-      event.preventDefault();
+      const el = elementAtEvent(event);
       if (el) pickElement(el);
       return;
     }
     if (mode === "region") {
-      event.stopPropagation();
-      event.preventDefault();
       dragging = true;
       dragStart = { x: event.clientX, y: event.clientY };
       hideHover();
@@ -338,10 +501,14 @@
   }
 
   function onPointerUp(event) {
-    if (!active) return;
+    if (!active || !event.isTrusted) return;
+    stopEvent(event);
+    try {
+      host.releasePointerCapture(event.pointerId);
+    } catch {
+      /* not captured */
+    }
     if (dragging && mode === "region" && dragStart) {
-      event.stopPropagation();
-      event.preventDefault();
       dragging = false;
       const rect = {
         x: Math.min(dragStart.x, event.clientX),
@@ -362,7 +529,21 @@
         elements: elements,
         scanCapped: scanCapped || undefined,
       });
+      stopAtLimit();
     }
+  }
+
+  function onPointerCancel(event) {
+    if (!event.isTrusted) return;
+    stopEvent(event);
+    try {
+      host.releasePointerCapture(event.pointerId);
+    } catch {
+      /* not captured */
+    }
+    dragging = false;
+    dragStart = null;
+    hideDrag();
   }
 
   function onScroll() {
@@ -372,12 +553,15 @@
   }
 
   function onKeyDown(event) {
-    if (!active) return;
+    if (!active || !event.isTrusted) return;
     if (event.key === "Escape") {
-      event.stopPropagation();
-      event.preventDefault();
+      stopEvent(event);
       send({ kind: "cancel" });
       stop();
+    } else {
+      // No page shortcut or form submission runs while picking. The toolbar's
+      // Stop button and Esc are the two explicit ways out.
+      stopEvent(event);
     }
   }
 
@@ -385,35 +569,36 @@
   // swallowed while picking — pointing must never click.
   function swallow(event) {
     if (!active) return;
-    if (dragging && event.type === "pointermove") return; // handled above
-    event.stopPropagation();
-    event.preventDefault();
+    stopEvent(event);
   }
 
-  const LISTENERS = [
+  const HOST_LISTENERS = [
     ["pointermove", onPointerMove, true],
     ["pointerdown", onPointerDown, true],
     ["pointerup", onPointerUp, true],
+    ["pointercancel", onPointerCancel, true],
     ["mousedown", swallow, true],
     ["mouseup", swallow, true],
     ["click", swallow, true],
     ["dblclick", swallow, true],
     ["auxclick", swallow, true],
     ["contextmenu", swallow, true],
-    ["keydown", onKeyDown, true],
-    ["scroll", onScroll, true],
   ];
 
   function attach() {
-    for (const [type, handler, capture] of LISTENERS) {
-      window.addEventListener(type, handler, capture);
+    for (const [type, handler, capture] of HOST_LISTENERS) {
+      host.addEventListener(type, handler, capture);
     }
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("scroll", onScroll, true);
   }
 
   function detach() {
-    for (const [type, handler, capture] of LISTENERS) {
-      window.removeEventListener(type, handler, capture);
+    for (const [type, handler, capture] of HOST_LISTENERS) {
+      host.removeEventListener(type, handler, capture);
     }
+    window.removeEventListener("keydown", onKeyDown, true);
+    window.removeEventListener("scroll", onScroll, true);
   }
 
   // ── public surface ───────────────────────────────────────────────────────
@@ -424,8 +609,14 @@
     }
     showOverlay();
     if (!active) {
+      previousFocus = document.activeElement;
       attach();
       active = true;
+    }
+    try {
+      host.focus({ preventScroll: true });
+    } catch {
+      /* older engines do not take focus options */
     }
     hideHover();
     hideDrag();
@@ -441,6 +632,26 @@
     hideHover();
     hideDrag();
     if (host) host.style.display = "none";
+    if (
+      previousFocus &&
+      previousFocus !== host &&
+      previousFocus.isConnected &&
+      typeof previousFocus.focus === "function"
+    ) {
+      try {
+        previousFocus.focus({ preventScroll: true });
+      } catch {
+        /* focus restoration is convenience only */
+      }
+    }
+    previousFocus = null;
+    return { ok: true };
+  }
+
+  function clear() {
+    stop();
+    picked.clear();
+    pickCounter = 0;
     return { ok: true };
   }
 
@@ -495,6 +706,7 @@
   globalThis.__marionettePicker = {
     start: start,
     stop: stop,
+    clear: clear,
     setMode: setMode,
     resolveRefs: resolveRefs,
     captureHide: captureHide,

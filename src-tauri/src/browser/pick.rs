@@ -49,10 +49,10 @@ pub fn stop_call() -> String {
     stringify(&call(&format!("globalThis.{PICKER_GLOBAL}.stop()")))
 }
 
-/// Switch between `"element"` and `"region"` without rebuilding the overlay.
-pub fn set_mode_call(mode: &str) -> String {
-    let mode = serde_json::to_string(mode).unwrap_or_else(|_| "\"element\"".to_string());
-    stringify(&call(&format!("globalThis.{PICKER_GLOBAL}.setMode({mode})")))
+/// Stop and forget every retained element. Used after a batch is sent,
+/// cleared, or abandoned so a fresh annotation starts from zero.
+pub fn clear_call() -> String {
+    stringify(&call(&format!("globalThis.{PICKER_GLOBAL}.clear()")))
 }
 
 /// Take the overlay off-screen for the duration of a capture — the highlight
@@ -99,7 +99,7 @@ mod tests {
         for expression in [
             start_call("element"),
             stop_call(),
-            set_mode_call("region"),
+            clear_call(),
             capture_hide_call(),
             capture_restore_call(),
             resolve_refs_call("3.7.1.2"),

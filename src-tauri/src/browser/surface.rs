@@ -77,7 +77,7 @@ const CAPTURE_MIN_WIDTH: u32 = 64;
 /// Retained pick payloads (`pickId → message`) for the screenshot crop, and
 /// the tree budget of the snapshot taken just to resolve refs — the tree
 /// itself is discarded, but the refs it prunes are the ones validation needs.
-const PICK_RETAIN_CAP: usize = 64;
+const PICK_RETAIN_CAP: usize = 24;
 const PICK_RESOLVE_MAX_CHARS: u64 = 120_000;
 
 /// Agent access level on one tab. None < Read < Control, hand-ranked so a new
@@ -147,11 +147,33 @@ pub struct TabInfo {
     pub origin: String,
     pub grant: String,
     pub opened_by_agent: bool,
+    /// `background` or `workspace`; the frontend consumes this only for fresh
+    /// tabs, then the tab behaves like every other tab.
+    pub display: String,
+    pub owner_session_id: Option<String>,
+    /// Stable agent-facing name chosen at open time (for example work-mail).
+    /// Duplicate opens return the existing tab instead of creating another.
+    pub chosen_id: Option<String>,
+    /// User-controlled keep flag; idle cleanup never closes a pinned tab.
+    pub pinned: bool,
+    pub busy: bool,
+    pub status: String,
+    pub last_used_at_ms: u64,
 }
 
 pub struct Surface {
     pub id: String,
-    pub opened_by_agent: bool,
+    pub opened_by_agent: Cell<bool>,
+    pub display: String,
+    pub owner_session_id: RefCell<Option<String>>,
+    pub chosen_id: Option<String>,
+    pub pinned: Cell<bool>,
+    /// Concurrent agent calls can overlap while waiting on a lease or CDP.
+    /// The public tab snapshot stays boolean, but the counter prevents one
+    /// completion from claiming the tab is idle while another call is live.
+    pub busy_count: Cell<u32>,
+    pub status: RefCell<String>,
+    pub last_used_at_ms: Cell<u64>,
     pub webview: WebView,
     /// App handle, so the CDP event fan-out can push picker reports to the
     /// frontend without a CDP call (events can arrive inside another call's
@@ -195,7 +217,14 @@ impl Surface {
                 .as_ref()
                 .map(|g| g.level.as_str().to_string())
                 .unwrap_or_else(|| "none".to_string()),
-            opened_by_agent: self.opened_by_agent,
+            opened_by_agent: self.opened_by_agent.get(),
+            display: self.display.clone(),
+            owner_session_id: self.owner_session_id.borrow().clone(),
+            chosen_id: self.chosen_id.clone(),
+            pinned: self.pinned.get(),
+            busy: self.busy_count.get() > 0,
+            status: self.status.borrow().clone(),
+            last_used_at_ms: self.last_used_at_ms.get(),
         }
     }
 }
@@ -221,7 +250,17 @@ fn pwstr_out(read: impl FnOnce(*mut PWSTR) -> windows::core::Result<()>) -> Opti
 
 /// All tabs as the frontend sees them. Main thread.
 pub fn tabs_snapshot() -> Vec<TabInfo> {
-    SURFACES.with(|surfaces| surfaces.borrow().values().map(|s| s.info()).collect())
+    let mut tabs: Vec<TabInfo> =
+        SURFACES.with(|surfaces| surfaces.borrow().values().map(|s| s.info()).collect());
+    // Registry storage is a HashMap for O(1) lookup. The frontend tab strip
+    // must still be stable across status events, so expose creation order.
+    tabs.sort_by_key(|tab| {
+        tab.id
+            .strip_prefix('b')
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(u64::MAX)
+    });
+    tabs
 }
 
 /// Push the tab list to the frontend. Call on the main thread after any
@@ -342,7 +381,8 @@ fn on_cdp_event(key: usize, event: &str, parameter_json: &str) {
                 return;
             }
             let url = frame["url"].as_str().unwrap_or("").to_string();
-            apply_main_frame_navigation(&surface, url);
+            apply_document_navigation(&surface, url, None);
+            emit_tabs(&surface.app);
         }
         "Runtime.consoleAPICalled" => {
             let level = value["type"].as_str().unwrap_or("log").to_string();
@@ -381,9 +421,18 @@ fn on_cdp_event(key: usize, event: &str, parameter_json: &str) {
                 let payload = value["payload"].as_str().unwrap_or("");
                 if let Ok(message) = serde_json::from_str::<Value>(payload) {
                     if message["kind"].as_str() == Some("nav-state") {
-                        let url = message["payload"]["url"].as_str().unwrap_or("").to_string();
+                        let (url, title) = nav_state_fields(&message);
                         if !url.is_empty() {
-                            apply_main_frame_navigation(&surface, url);
+                            let old_url = surface.url.borrow().clone();
+                            let old_title = surface.title.borrow().clone();
+                            match classify_nav_state(&old_url, &url, &old_title, &title) {
+                                NavStateChange::None => {}
+                                NavStateChange::Title => apply_title_change(&surface, title),
+                                NavStateChange::Route => {
+                                    apply_route_navigation(&surface, url, Some(title))
+                                }
+                            }
+                            emit_tabs(&surface.app);
                         }
                     }
                 }
@@ -407,23 +456,44 @@ fn push_console(surface: &Surface, level: String, text: String) {
     }
 }
 
+fn nav_state_fields(message: &Value) -> (String, String) {
+    let payload = &message["payload"];
+    let url = payload["url"]
+        .as_str()
+        .or_else(|| payload["href"].as_str())
+        .unwrap_or("")
+        .to_string();
+    let title = payload["title"].as_str().unwrap_or("").to_string();
+    (url, title)
+}
+
 /// One picker report from the page (`js/picker.js` over `__marionettePick`).
 /// This runs inside the CDP event fan-out — possibly during another call's
 /// pump — so it does NO CDP work: retain the payload for `pick_finalize`'s
 /// crop and push the event to the frontend, which drives everything else.
 fn on_pick_event(surface: &Surface, payload: &str) {
-    let Ok(message) = serde_json::from_str::<Value>(payload) else {
+    let Ok(mut message) = serde_json::from_str::<Value>(payload) else {
         return;
     };
     match message["kind"].as_str().unwrap_or("") {
-        "cancel" => {
+        "cancel" | "limit" => {
             surface.picker_active.set(false);
             let _ = surface.app.emit(
                 "marionette-browser-pick",
-                json!({ "tabId": surface.id, "message": { "kind": "cancel" } }),
+                json!({
+                    "tabId": surface.id,
+                    "message": if message["kind"].as_str() == Some("limit") {
+                        json!({ "kind": "limit", "limit": message["limit"].clone() })
+                    } else {
+                        json!({ "kind": "cancel" })
+                    }
+                }),
             );
         }
         "pick" | "region" => {
+            if message.get("url").is_none() {
+                message["url"] = json!(surface.url.borrow().clone());
+            }
             let pick_id = message["pickId"].as_str().unwrap_or("").to_string();
             if pick_id.is_empty() || pick_id.len() > 64 {
                 return;
@@ -448,34 +518,47 @@ fn on_pick_event(surface: &Surface, payload: &str) {
     }
 }
 
-/// A main-frame navigation (or SPA route change reported by the helper):
-/// update url/origin/title, reset the console ring, re-evaluate the grant.
-pub fn apply_main_frame_navigation(surface: &Surface, url: String) {
-    if url.is_empty() || url.starts_with("data:") {
-        return;
+/// Whether a same-document `nav-state` changed only metadata or the route.
+/// A real document replacement comes from `Page.frameNavigated` instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NavStateChange {
+    None,
+    Title,
+    Route,
+}
+
+fn classify_nav_state(
+    old_url: &str,
+    new_url: &str,
+    old_title: &str,
+    new_title: &str,
+) -> NavStateChange {
+    if old_url != new_url {
+        NavStateChange::Route
+    } else if old_title != new_title {
+        NavStateChange::Title
+    } else {
+        NavStateChange::None
     }
-    let origin = url_origin(&url);
+}
+
+fn apply_origin_and_title(surface: &Surface, url: &str, origin: String, title: Option<String>) {
     let origin_changed = *surface.origin.borrow() != origin;
-    *surface.url.borrow_mut() = url;
+    *surface.url.borrow_mut() = url.to_string();
     *surface.origin.borrow_mut() = origin.clone();
-    surface.console.borrow_mut().clear();
-    surface.nav_epoch.set(surface.nav_epoch.get() + 1);
-    surface.world_ctx.set(None); // new document, new contexts
-    // The overlay and its state died with the old document (the doc-start
-    // script re-registers passively; it does not start itself). Retained pick
-    // rects describe that page too — they crop nothing useful now.
-    surface.picker_active.set(false);
-    surface.picks.borrow_mut().clear();
+    if let Some(title) = title {
+        *surface.title.borrow_mut() = title;
+    }
     if origin_changed {
-        // The grant is bound to the origin it was given on. Agent-opened tabs
+        // A grant is bound to the origin it was given on. Agent-opened tabs
         // re-take Read on the new origin: the agent chose to follow the link
         // (research flow would die otherwise). User-opened tabs drop to None.
         let mut grant = surface.grant.borrow_mut();
-        match (&*grant, surface.opened_by_agent) {
+        match (&*grant, surface.opened_by_agent.get()) {
             (Some(_), true) => {
                 grant.replace(AgentGrant {
                     level: GrantLevel::Read,
-                    origin: origin.clone(),
+                    origin,
                     granted_at_ms: now_ms(),
                 });
             }
@@ -484,19 +567,45 @@ pub fn apply_main_frame_navigation(surface: &Surface, url: String) {
             }
         }
     }
-    // Title follows the new document (best effort, fire and forget).
-    let webview2 = surface.webview.webview();
-    if let Ok(answer) = call_and_wait(
-        &webview2,
-        "Runtime.evaluate",
-        &json!({"expression": "document.title || \"\"", "returnByValue": true}).to_string(),
-    ) {
-        if let Ok(parsed) = serde_json::from_str::<Value>(&answer) {
-            if let Some(title) = parsed["result"]["value"].as_str() {
-                *surface.title.borrow_mut() = title.to_string();
-            }
-        }
+}
+
+/// A real main-frame document replacement. This function is deliberately
+/// CDP-free: it runs inside the event fan-out, which can already be pumping a
+/// WebView2 dispatch. The helper's later `nav-state` fills in the title.
+pub fn apply_document_navigation(surface: &Surface, url: String, title: Option<String>) {
+    if url.is_empty() || url.starts_with("data:") {
+        return;
     }
+    let origin = url_origin(&url);
+    surface.console.borrow_mut().clear();
+    surface.nav_epoch.set(surface.nav_epoch.get() + 1);
+    surface.world_ctx.set(None); // new document, new contexts
+    // The overlay and its state died with the old document (the doc-start
+    // script re-registers passively; it does not start itself). Retained pick
+    // rects describe that page too — they crop nothing useful now.
+    surface.picker_active.set(false);
+    surface.picks.borrow_mut().clear();
+    // Clear the old title immediately; the helper's nav-state supplies the
+    // new one without another CDP round-trip.
+    *surface.title.borrow_mut() = title.unwrap_or_default();
+    apply_origin_and_title(surface, &url, origin, None);
+}
+
+/// A same-document route change (`pushState`, hash, history navigation). The
+/// world survives, but refs from the previous route are invalidated. Picker
+/// payloads stay available so an unfinished annotation batch can still be
+/// sent; the frontend stops the in-page overlay when it sees the new URL.
+fn apply_route_navigation(surface: &Surface, url: String, title: Option<String>) {
+    if url.is_empty() || url.starts_with("data:") {
+        return;
+    }
+    let origin = url_origin(&url);
+    surface.nav_epoch.set(surface.nav_epoch.get() + 1);
+    apply_origin_and_title(surface, &url, origin, title);
+}
+
+fn apply_title_change(surface: &Surface, title: String) {
+    *surface.title.borrow_mut() = title;
 }
 
 fn url_origin(url: &str) -> String {
@@ -914,6 +1023,12 @@ pub fn pick_set(surface: &Surface, active: bool, mode: &str) -> Result<Value, St
     };
     match parse_world_answer(&evaluate_in_world_raw(surface, &expression)?)? {
         WorldAnswer::Json(value) => {
+            if active && value["ok"].as_bool() == Some(false) {
+                let error = value["error"]
+                    .as_str()
+                    .unwrap_or("the page picker could not start");
+                return Err(error.to_string());
+            }
             surface.picker_active.set(active);
             Ok(value)
         }
@@ -921,6 +1036,19 @@ pub fn pick_set(surface: &Surface, active: bool, mode: &str) -> Result<Value, St
             Err("the page picker did not install itself in this document".to_string())
         }
     }
+}
+
+/// Forget retained picks and stop the page-side picker. Local state is cleared
+/// even when the document context disappeared between the click and this
+/// command; the best-effort page clear is only to reset its element map.
+pub fn pick_clear(surface: &Surface) -> Result<Value, String> {
+    let _lease = CdpLease::take()?;
+    surface.picker_active.set(false);
+    surface.picks.borrow_mut().clear();
+    if surface.world_ctx.get().is_some() {
+        let _ = evaluate_in_world_raw(surface, &pick::clear_call());
+    }
+    Ok(json!({ "ok": true }))
 }
 
 /// Crop the viewport screenshot down to one pick's rectangle. The page hid
@@ -971,8 +1099,32 @@ pub fn pick_finalize(surface: &Surface, pick_id: &str) -> Result<Value, String> 
     let Some(cropped) = crop_capture(image, rect, dpr) else {
         return Err("the picked rectangle is outside the captured viewport".to_string());
     };
-    let mut value = encode_capture(cropped)?;
+    let full = narrow_to(cropped, CAPTURE_DEFAULT_MAX_WIDTH);
+    let width = full.width();
+    let height = full.height();
+    let mut jpeg = Vec::new();
+    let encoder =
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, CAPTURE_JPEG_QUALITY);
+    full.write_with_encoder(encoder)
+        .map_err(|e| format!("capture encode: {e}"))?;
+    let dir = crate::app_paths::global_dir()?.join("clipboard");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create clipboard dir failed: {e}"))?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let hash = pick_id.bytes().fold(0u32, |acc, byte| {
+        acc.wrapping_mul(31).wrapping_add(u32::from(byte))
+    });
+    let path = dir.join(format!("browser-pick-{stamp}-{hash:08x}.jpg"));
+    std::fs::write(&path, &jpeg).map_err(|e| format!("write pick capture failed: {e}"))?;
+    let thumb = full.thumbnail(160, 120);
+    let mut value = encode_capture(thumb)?;
     value["pickId"] = json!(pick_id);
+    value["path"] = json!(path.to_string_lossy());
+    value["mimeType"] = json!("image/jpeg");
+    value["width"] = json!(width);
+    value["height"] = json!(height);
     Ok(value)
 }
 
@@ -1126,8 +1278,22 @@ fn profile_dir() -> Result<std::path::PathBuf, String> {
 /// WebView2 process group resident for the process lifetime even when no tab
 /// was ever opened); every tab — including the first — builds here through
 /// `build_surface`, the path 2nd+ tabs always took.
-pub fn create_surface(app: &AppHandle, url: &str, opened_by_agent: bool) -> Result<String, String> {
-    let surface = build_surface(app, url, opened_by_agent)?;
+pub fn create_surface(
+    app: &AppHandle,
+    url: &str,
+    opened_by_agent: bool,
+    display: &str,
+    owner_session_id: Option<&str>,
+    chosen_id: Option<&str>,
+) -> Result<String, String> {
+    let surface = build_surface(
+        app,
+        url,
+        opened_by_agent,
+        display,
+        owner_session_id,
+        chosen_id,
+    )?;
     let id = surface.id.clone();
     register_surface(app, &surface);
     Ok(id)
@@ -1135,7 +1301,14 @@ pub fn create_surface(app: &AppHandle, url: &str, opened_by_agent: bool) -> Resu
 
 /// Build the webview and its Surface WITHOUT touching the registry;
 /// `create_surface` registers immediately after.
-fn build_surface(app: &AppHandle, url: &str, opened_by_agent: bool) -> Result<Rc<Surface>, String> {
+fn build_surface(
+    app: &AppHandle,
+    url: &str,
+    opened_by_agent: bool,
+    display: &str,
+    owner_session_id: Option<&str>,
+    chosen_id: Option<&str>,
+) -> Result<Rc<Surface>, String> {
     let window = app
         .get_webview_window("main")
         .ok_or("main window is gone")?;
@@ -1160,6 +1333,8 @@ fn build_surface(app: &AppHandle, url: &str, opened_by_agent: bool) -> Result<Rc
     // loop (creating a webview inside the new-window callback would re-enter
     // the WebView2 dispatch that is calling us).
     let popup_app = app.clone();
+    let popup_display = display.to_string();
+    let popup_owner_session_id = owner_session_id.map(str::to_string);
     let popup_by_agent = opened_by_agent;
 
     let profile = profile_dir()?;
@@ -1182,8 +1357,19 @@ fn build_surface(app: &AppHandle, url: &str, opened_by_agent: bool) -> Result<Rc
             .with_user_agent(USER_AGENT)
             .with_new_window_req_handler(move |url, _features| {
                 let app_for_job = popup_app.clone();
+                let display_for_job = popup_display.clone();
+                let owner_for_job = popup_owner_session_id.clone();
                 let _ = popup_app.run_on_main_thread(move || {
-                    if let Err(error) = create_surface(&app_for_job, &url, popup_by_agent) {
+                    if let Err(error) =
+                        create_surface(
+                            &app_for_job,
+                            &url,
+                            popup_by_agent,
+                            &display_for_job,
+                            owner_for_job.as_deref(),
+                            None,
+                        )
+                    {
                         crate::debug_log::append("browser", "warn", "", "popup open failed", Some(&error));
                     }
                 });
@@ -1195,7 +1381,14 @@ fn build_surface(app: &AppHandle, url: &str, opened_by_agent: bool) -> Result<Rc
 
     let surface = Rc::new(Surface {
         id,
-        opened_by_agent,
+        opened_by_agent: Cell::new(opened_by_agent),
+        display: display.to_string(),
+        owner_session_id: RefCell::new(owner_session_id.map(str::to_string)),
+        chosen_id: chosen_id.map(str::to_string),
+        pinned: Cell::new(false),
+        busy_count: Cell::new(0),
+        status: RefCell::new("idle".to_string()),
+        last_used_at_ms: Cell::new(now_ms()),
         webview,
         app: app.clone(),
         world_ctx: Cell::new(None),
@@ -1315,7 +1508,10 @@ pub fn find_surface(tab_id: &str) -> Option<Rc<Surface>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_url, parse_world_answer, url_origin, CdpLease, GrantLevel, WorldAnswer};
+    use super::{
+        classify_nav_state, nav_state_fields, normalize_url, parse_world_answer, url_origin,
+        CdpLease, GrantLevel, NavStateChange, WorldAnswer,
+    };
     use serde_json::json;
 
     #[test]
@@ -1342,6 +1538,43 @@ mod tests {
         assert!(normalize_url("how to fly").is_err());
         assert!(normalize_url("ftp://x").is_err());
         assert!(normalize_url("").is_err());
+    }
+
+    #[test]
+    fn helper_nav_state_separates_title_routes_and_documents() {
+        // A title mutation must not clear the world, console, or annotation
+        // payloads; a pushState route keeps the document but moves the epoch.
+        assert_eq!(
+            classify_nav_state(
+                "https://example.com/a",
+                "https://example.com/a",
+                "Loading",
+                "Ready",
+            ),
+            NavStateChange::Title
+        );
+        assert_eq!(
+            classify_nav_state(
+                "https://example.com/a",
+                "https://example.com/b",
+                "Loading",
+                "Ready",
+            ),
+            NavStateChange::Route
+        );
+        assert_eq!(
+            classify_nav_state("https://example.com/a", "https://example.com/a", "A", "A"),
+            NavStateChange::None
+        );
+    }
+
+    #[test]
+    fn helper_nav_state_accepts_the_bundles_href_field() {
+        let (url, title) = nav_state_fields(&json!({
+            "payload": { "href": "https://example.com/next", "title": "Next" }
+        }));
+        assert_eq!(url, "https://example.com/next");
+        assert_eq!(title, "Next");
     }
 
     // The absent sentinel is a bare string: parsing it as JSON is exactly the

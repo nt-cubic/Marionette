@@ -76,6 +76,61 @@ check("parseUiRestore drops non-v1 splitLayout", () => {
   assert.equal(parsed?.splitLayout, undefined);
 });
 
+check("parseUiRestore keeps validated browser/document/memo surface tabs", () => {
+  const parsed = parseUiRestore({
+    sessionId: "A",
+    projectId: "p",
+    openSessionIds: ["A"],
+    surface: {
+      documents: [
+        { path: "D:\\work\\README.md", title: "README.md" },
+        { path: "D:\\work\\README.md", title: "duplicate" },
+        { path: "relative/unsafe.md", title: "relative" },
+      ],
+      memoOpen: true,
+      active: { kind: "document", path: "D:\\work\\README.md" },
+      browserTabs: [
+        { url: "http://localhost:5173/app", title: "App", pinned: true },
+        { url: "javascript:alert(1)", title: "blocked" },
+        { url: "https://example.com/app?token=secret&tab=1#oauth", title: "Safe" },
+      ],
+      activeBrowserIndex: 0,
+    },
+  });
+  assert.ok(parsed?.surface);
+  assert.equal(parsed?.surface.documents.length, 1);
+  assert.equal(parsed?.surface.memoOpen, true);
+  assert.equal(parsed?.surface.browserTabs.length, 2);
+  assert.equal(parsed?.surface.browserTabs[0]?.url, "http://localhost:5173/app");
+  assert.equal(parsed?.surface.browserTabs[0]?.pinned, true);
+  assert.equal(
+    parsed?.surface.browserTabs[1]?.url,
+    "https://example.com/app?tab=1",
+  );
+  assert.equal(parsed?.surface.activeBrowserIndex, 0);
+  assert.deepEqual(parsed?.surface.active, {
+    kind: "document",
+    path: "D:\\work\\README.md",
+  });
+});
+
+check("parseUiRestore drops an active document absent from the tab list", () => {
+  const parsed = parseUiRestore({
+    sessionId: "A",
+    projectId: "p",
+    openSessionIds: ["A"],
+    surface: {
+      documents: [],
+      memoOpen: false,
+      active: { kind: "document", path: "D:\\missing.md" },
+      browserTabs: [],
+      activeBrowserIndex: 3,
+    },
+  });
+  assert.equal(parsed?.surface?.active, null);
+  assert.equal(parsed?.surface?.activeBrowserIndex, null);
+});
+
 check("old snapshot without splitLayout migrates to a single leaf", () => {
   const saved: UiRestoreSnapshot = {
     sessionId: "B",

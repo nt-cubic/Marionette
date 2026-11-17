@@ -2592,6 +2592,10 @@ impl AcpService {
         self.terminals.list_running()
     }
 
+    pub fn terminal_outputs(&self) -> Vec<serde_json::Value> {
+        self.terminals.output_snapshots()
+    }
+
     /// 后台任务面板：按 UI 侧 terminalId 终止（保留条目与退出码，等同 terminal/kill）。
     pub fn kill_terminal(
         &self,
