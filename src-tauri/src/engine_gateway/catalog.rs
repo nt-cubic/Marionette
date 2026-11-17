@@ -80,6 +80,32 @@ fn parse_rows(body: &str) -> Vec<VendorRow> {
 }
 
 impl Catalog {
+    /// 厂商行的 presets 兜底（C2 红线）：厂商没说窗口/输出/图片能力的，
+    /// 用 models.dev 目录补（lookup 纯内存，无缓存时 None——不编数）。
+    /// 返回可能被补全过的行。
+    fn with_preset_fallback(row: VendorRow) -> VendorRow {
+        let preset = match super::presets::lookup(&row.id) {
+            Some(p) => p,
+            None => return row,
+        };
+        let mut raw = row.raw;
+        if let Some(map) = raw.as_object_mut() {
+            if row.context_window == 0 {
+                map.insert("context_window".into(), serde_json::json!(preset.context_window));
+            }
+            if row.max_output == 0 {
+                map.insert("max_output_tokens".into(), serde_json::json!(preset.max_output));
+            }
+        }
+        VendorRow {
+            context_window: if row.context_window == 0 { preset.context_window } else { row.context_window },
+            max_output: if row.max_output == 0 { preset.max_output } else { row.max_output },
+            images: row.images || preset.images,
+            raw,
+            ..row
+        }
+    }
+
     /// 抓（或读缓存）某来源的厂商行。force = CLI refresh 语义。
     pub fn vendor_rows(&self, provider: &Provider, force: bool) -> Result<Vec<VendorRow>, String> {
         let base = provider.chat_base().ok_or_else(|| format!("{} has no endpoint configured", provider.id))?;
@@ -106,7 +132,7 @@ impl Catalog {
             .call()
             .map_err(|e| format!("{}: {}", provider.id, e))?;
         let body = response.into_string().map_err(|e| e.to_string())?;
-        let rows = parse_rows(&body);
+        let rows: Vec<VendorRow> = parse_rows(&body).into_iter().map(Self::with_preset_fallback).collect();
         if let Ok(mut cache) = self.cache.lock() {
             cache.insert(provider.id.clone(), (Instant::now(), rows.clone()));
         }
@@ -114,7 +140,8 @@ impl Catalog {
     }
 
     /// C2 的 `/v1/models` 行：厂商行按钉死清单过滤（`models: None` = live
-    /// 全量）；厂商抓不到时对钉死模型合成 ctx=0 行（不编数，如实「不知道」）。
+    /// 全量）；厂商抓不到时对钉死模型合成行（窗口来自 presets 兜底，
+    /// 仍不知道就是 0——不编数）。
     pub fn listed(&self, provider: &Provider) -> Vec<VendorRow> {
         let fetched = self.vendor_rows(provider, false).unwrap_or_default();
         match &provider.models {
@@ -126,13 +153,21 @@ impl Catalog {
                         .iter()
                         .find(|r| &r.id == want)
                         .cloned()
-                        .or_else(|| Some(VendorRow {
-                            id: want.clone(),
-                            context_window: 0,
-                            max_output: 0,
-                            images: false,
-                            raw: serde_json::json!({ "id": want }),
-                        }))
+                        .or_else(|| {
+                            let mut row = VendorRow {
+                                id: want.clone(),
+                                context_window: 0,
+                                max_output: 0,
+                                images: false,
+                                raw: serde_json::json!({ "id": want }),
+                            };
+                            if let Some(p) = super::presets::lookup(want) {
+                                row.context_window = p.context_window;
+                                row.max_output = p.max_output;
+                                row.images = p.images;
+                            }
+                            Some(row)
+                        })
                 })
                 .collect(),
         }
