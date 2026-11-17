@@ -6,6 +6,7 @@ import { t } from "./i18n";
 const PERSISTABLE = new Set([
   "user_message",
   "assistant_message",
+  "notice",
   "thought",
   "tool_call",
   "handoff_prepared",
@@ -132,6 +133,27 @@ export function parseTranscriptEvents(raw: unknown[]): SessionEvent[] {
           ? { forceWebSearch: true }
           : {}),
       } as SessionEvent);
+      continue;
+    }
+    if (type === "notice") {
+      const severity =
+        e.severity === "error" || e.severity === "warning" ? e.severity : "info";
+      const title = typeof e.title === "string" ? e.title.trim() : "";
+      const description =
+        typeof e.description === "string" ? e.description.trim() : "";
+      const text =
+        (typeof e.text === "string" && e.text.trim()) ||
+        [title ? `**${title}**` : "", description].filter(Boolean).join("\n\n");
+      if (!text.trim()) continue;
+      out.push({
+        type: "notice",
+        sessionId,
+        text,
+        severity,
+        title,
+        description,
+        createdAt,
+      });
       continue;
     }
     if (type === "tool_call") {

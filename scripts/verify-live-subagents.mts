@@ -12,6 +12,7 @@ import {
   sessionHasLiveSubagents,
   sessionProcessAlive,
 } from "../src/lib/liveSubagents.ts";
+import { applyAcpPartToEvents, extractAcpUpdateText } from "../src/lib/acpTranscript.ts";
 
 let passed = 0;
 function check(name: string, fn: () => void) {
@@ -107,6 +108,78 @@ check("Codex collab spawnAgent in_progress is live; wait is not", () => {
     isLiveSubagentEvent(tool({ toolName: "wait", title: "wait", status: "in_progress", input })),
     false,
   );
+});
+check("an active Codex collab wait surfaces every running child", () => {
+  const ids = ["child-a", "child-b", "child-c"];
+  const longPrompt = "You are implementing a bounded backend slice for Marionette.\n".repeat(12);
+  let events: SessionEvent[] = [];
+  const apply = (sessionUpdate: string, update: Record<string, unknown>) => {
+    const part = extractAcpUpdateText({
+      params: { update: { sessionUpdate, ...update } },
+    });
+    assert.ok(part);
+    events = applyAcpPartToEvents(events, "s", part!);
+  };
+
+  for (let i = 0; i < ids.length; i += 1) {
+    const id = ids[i]!;
+    const toolCallId = `spawn-${id}`;
+    apply("tool_call", {
+      toolCallId,
+      title: "spawnAgent",
+      status: "in_progress",
+      rawInput: {
+        prompt: `${longPrompt}slice ${id}`,
+        senderThreadId: "parent",
+        receiverThreadIds: [],
+        agentsStates: {},
+        status: "inProgress",
+      },
+    });
+    apply("tool_call_update", {
+      toolCallId,
+      status: "completed",
+      rawInput: {
+        prompt: `${longPrompt}slice ${id}`,
+        senderThreadId: "parent",
+        receiverThreadIds: [id],
+        agentsStates: { [id]: { status: "running" } },
+        status: "completed",
+      },
+    });
+  }
+  apply("tool_call", {
+    toolCallId: "wait-all",
+    title: "wait",
+    status: "in_progress",
+    rawInput: {
+      prompt: null,
+      senderThreadId: "parent",
+      receiverThreadIds: ids,
+      agentsStates: {},
+      status: "inProgress",
+    },
+  });
+
+  assert.match(events.find((event) => event.type === "tool_call" && event.toolCallId === "spawn-child-a")?.input ?? "", /child-a/);
+  const rows = listLiveSubagents(events, "s");
+  assert.equal(rows.length, 3);
+  assert.deepEqual(rows.map((row) => row.key).sort(), ids.map((id) => `codex:${id}`).sort());
+  assert.equal(sessionHasLiveSubagents(events, "s"), true);
+  assert.equal(sessionHasLiveSubagents(events, "s", { processAlive: false }), false);
+
+  apply("tool_call_update", {
+    toolCallId: "wait-all",
+    status: "completed",
+    rawInput: {
+      prompt: null,
+      senderThreadId: "parent",
+      receiverThreadIds: [],
+      agentsStates: {},
+      status: "completed",
+    },
+  });
+  assert.equal(listLiveSubagents(events, "s").length, 0);
 });
 check("delegate_task (generic spawn verb) in_progress is live", () => {
   assert.equal(

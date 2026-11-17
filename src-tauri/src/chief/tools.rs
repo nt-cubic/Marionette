@@ -25,6 +25,12 @@ pub const TASK_STATUS: &str = "marionette_task_status";
 pub const TASK_CANCEL: &str = "marionette_task_cancel";
 pub const TASK_COLLECT: &str = "marionette_task_collect";
 pub const TASK_RESUME: &str = "marionette_task_resume";
+pub const MEMORY_RECALL: &str = "marionette_memory_recall";
+pub const MEMORY_PROPOSE: &str = "marionette_memory_propose";
+pub const COMMITMENT_ADD: &str = "marionette_commitment_add";
+pub const COMMITMENT_LIST: &str = "marionette_commitment_list";
+pub const COMMITMENT_COMPLETE: &str = "marionette_commitment_complete";
+pub const STAFF_STATUS: &str = "marionette_staff_status";
 
 const ALL: &[&str] = &[
     PROJECTS_LIST,
@@ -37,6 +43,12 @@ const ALL: &[&str] = &[
     TASK_CANCEL,
     TASK_COLLECT,
     TASK_RESUME,
+    MEMORY_RECALL,
+    MEMORY_PROPOSE,
+    COMMITMENT_ADD,
+    COMMITMENT_LIST,
+    COMMITMENT_COMPLETE,
+    STAFF_STATUS,
 ];
 
 /// 工具名是否属于 Chief 控制面（普通会话的 dispatch 用它 fail-closed）。
@@ -127,8 +139,6 @@ pub fn chief_tool_schemas() -> Value {
             &["taskId"],
             json!({
                 "taskId": { "type": "string" },
-                "includeDiff": { "type": "boolean" },
-                "includeTestOutput": { "type": "boolean" },
                 "artifactLimit": { "type": "integer", "minimum": 0, "maximum": 20 },
             }),
         ),
@@ -140,6 +150,58 @@ pub fn chief_tool_schemas() -> Value {
                 "taskId": { "type": "string" },
                 "note": { "type": "string", "description": "Optional user note appended to the resume prompt." },
             }),
+        ),
+        tool(
+            MEMORY_RECALL,
+            "Read YOUR layered staff memory: pinned facts, current state, recent journals and pending proposals. Current user instructions outrank old memory.",
+            &["recentDays"],
+            json!({
+                "recentDays": { "type": "integer", "minimum": 0, "maximum": 30 },
+            }),
+        ),
+        tool(
+            MEMORY_PROPOSE,
+            "Propose a durable memory candidate from a real user statement or task fact. This only appends to YOUR proposal area; it never edits pinned/state directly.",
+            &["kind", "text"],
+            json!({
+                "kind": { "type": "string", "enum": ["preference", "decision", "commitment", "lesson"] },
+                "text": { "type": "string", "maxLength": 16000 },
+                "taskId": { "type": "string" },
+                "eventSeq": { "type": "integer", "minimum": 1 },
+            }),
+        ),
+        tool(
+            COMMITMENT_ADD,
+            "Record a future follow-up, reminder, promise or condition for yourself. Task completion does not automatically complete a commitment.",
+            &["text", "kind"],
+            json!({
+                "text": { "type": "string", "maxLength": 4000 },
+                "kind": { "type": "string", "enum": ["follow_up", "reminder", "promise", "condition"] },
+                "dueAt": { "type": "integer", "description": "Unix milliseconds; 0/omitted = no timed deadline." },
+                "condition": { "type": "string" },
+                "sourceRef": { "type": "string" },
+            }),
+        ),
+        tool(
+            COMMITMENT_LIST,
+            "List YOUR open/due commitments and recent terminal ones.",
+            &[],
+            json!({ "includeTerminal": { "type": "boolean" } }),
+        ),
+        tool(
+            COMMITMENT_COMPLETE,
+            "Mark one of YOUR commitments done or cancelled.",
+            &["commitmentId"],
+            json!({
+                "commitmentId": { "type": "string" },
+                "cancelled": { "type": "boolean" },
+            }),
+        ),
+        tool(
+            STAFF_STATUS,
+            "Get YOUR derived status, task counts, waiting reason, paused/budget policy and due commitments. Status is a projection of Host facts, not a model-authored state.",
+            &[],
+            json!({}),
         ),
     ])
 }
@@ -189,6 +251,128 @@ pub fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> 
         TASK_CANCEL => Ok(broker::chief_task_cancel(app, session_id, args)),
         TASK_COLLECT => Ok(broker::chief_task_collect(session_id, args)),
         TASK_RESUME => Ok(broker::chief_task_resume(app, session_id, args)),
+        MEMORY_RECALL => {
+            let Some(profile) = super::staff_commands::profile_for_session(session_id) else {
+                return Ok(json!({ "ok": false, "error": "staff_missing", "note": "当前会话没有员工档案。" }));
+            };
+            let days = args.get("recentDays").and_then(Value::as_u64).unwrap_or(7) as usize;
+            match super::memory::recall(&profile.staff_id, days) {
+                Ok(snapshot) => Ok(json!({ "ok": true, "memory": snapshot })),
+                Err(error) => Ok(json!({ "ok": false, "error": "memory_read_failed", "note": error })),
+            }
+        }
+        MEMORY_PROPOSE => {
+            let Some(profile) = super::staff_commands::profile_for_session(session_id) else {
+                return Ok(json!({ "ok": false, "error": "staff_missing", "note": "当前会话没有员工档案。" }));
+            };
+            let kind = args.get("kind").and_then(Value::as_str).unwrap_or("lesson");
+            let text = args.get("text").and_then(Value::as_str).unwrap_or("");
+            let mut refs = Vec::new();
+            if let Some(task_id) = args.get("taskId").and_then(Value::as_str) {
+                refs.push(super::memory::MemorySourceRef::task(task_id));
+            }
+            if let Some(seq) = args.get("eventSeq").and_then(Value::as_u64) {
+                if let Some(source) = refs.first_mut() {
+                    source.event_seq = Some(seq);
+                }
+            }
+            match super::memory::append_proposal(&profile.staff_id, kind, text, refs) {
+                Ok(proposal) => Ok(json!({ "ok": true, "proposal": proposal })),
+                Err(error) => Ok(json!({ "ok": false, "error": "memory_propose_failed", "note": error })),
+            }
+        }
+        COMMITMENT_ADD => {
+            let Some(profile) = super::staff_commands::profile_for_session(session_id) else {
+                return Ok(json!({ "ok": false, "error": "staff_missing", "note": "当前会话没有员工档案。" }));
+            };
+            let text = args.get("text").and_then(Value::as_str).unwrap_or("").trim();
+            if text.is_empty() {
+                return Ok(json!({ "ok": false, "error": "bad_request", "note": "text 必填。" }));
+            }
+            let kind = match args.get("kind").and_then(Value::as_str).unwrap_or("follow_up") {
+                "reminder" => super::commitments::CommitmentKind::Reminder,
+                "promise" => super::commitments::CommitmentKind::Promise,
+                "condition" => super::commitments::CommitmentKind::Condition,
+                _ => super::commitments::CommitmentKind::FollowUp,
+            };
+            let row = super::commitments::Commitment {
+                staff_id: profile.staff_id,
+                text: text.to_string(),
+                kind,
+                due_at: args.get("dueAt").and_then(Value::as_u64).unwrap_or(0),
+                condition: args.get("condition").and_then(Value::as_str).map(str::to_string),
+                source_ref: args.get("sourceRef").and_then(Value::as_str).map(str::to_string),
+                ..Default::default()
+            };
+            match super::commitments::with_ledger(|ledger| {
+                ledger.add(row.clone())?;
+                Ok(row)
+            }) {
+                Ok(commitment) => Ok(json!({ "ok": true, "commitment": commitment })),
+                Err(error) => Ok(json!({ "ok": false, "error": "commitment_add_failed", "note": error })),
+            }
+        }
+        COMMITMENT_LIST => {
+            let Some(profile) = super::staff_commands::profile_for_session(session_id) else {
+                return Ok(json!({ "ok": false, "error": "staff_missing", "note": "当前会话没有员工档案。" }));
+            };
+            let include_terminal = args.get("includeTerminal").and_then(Value::as_bool).unwrap_or(false);
+            let rows = super::commitments::load()
+                .commitments
+                .into_iter()
+                .filter(|item| item.staff_id == profile.staff_id)
+                .filter(|item| include_terminal || item.status.is_open())
+                .collect::<Vec<_>>();
+            Ok(json!({ "ok": true, "commitments": rows }))
+        }
+        COMMITMENT_COMPLETE => {
+            let Some(profile) = super::staff_commands::profile_for_session(session_id) else {
+                return Ok(json!({ "ok": false, "error": "staff_missing", "note": "当前会话没有员工档案。" }));
+            };
+            let commitment_id = args.get("commitmentId").and_then(Value::as_str).unwrap_or("");
+            if commitment_id.is_empty() {
+                return Ok(json!({ "ok": false, "error": "bad_request", "note": "commitmentId 必填。" }));
+            }
+            let cancelled = args.get("cancelled").and_then(Value::as_bool).unwrap_or(false);
+            match super::commitments::with_ledger(|ledger| {
+                let current = ledger
+                    .get(commitment_id)
+                    .ok_or_else(|| "承诺不存在".to_string())?;
+                if current.staff_id != profile.staff_id {
+                    return Err("承诺不属于这个员工".to_string());
+                }
+                if cancelled {
+                    ledger.cancel(commitment_id, super::types::now_ms())
+                } else {
+                    ledger.complete(commitment_id, super::types::now_ms())
+                }
+            }) {
+                Ok(commitment) => Ok(json!({ "ok": true, "commitment": commitment })),
+                Err(error) => Ok(json!({ "ok": false, "error": "commitment_complete_failed", "note": error })),
+            }
+        }
+        STAFF_STATUS => {
+            let Some(profile) = super::staff_commands::profile_for_session(session_id) else {
+                return Ok(json!({ "ok": false, "error": "staff_missing", "note": "当前会话没有员工档案。" }));
+            };
+            let tasks = super::store::load_tasks()
+                .into_iter()
+                .filter(|task| {
+                    task.chief_session_id == session_id
+                        || task.staff_id.as_deref() == Some(profile.staff_id.as_str())
+                })
+                .collect::<Vec<_>>();
+            let status = super::staff_status::project_status(
+                &profile.staff_id,
+                &tasks,
+                super::types::now_ms(),
+            );
+            Ok(json!({
+                "ok": true,
+                "status": status,
+                "policy": profile.policy,
+            }))
+        }
         _ => Err(format!("unknown chief tool: {name}")),
     }
 }
@@ -198,10 +382,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn schemas_cover_exactly_the_documented_ten() {
+    fn schemas_cover_the_documented_control_surface() {
         let schemas = chief_tool_schemas();
         let list = schemas.as_array().expect("array");
-        assert_eq!(list.len(), 10);
+        assert_eq!(list.len(), ALL.len());
         for name in ALL {
             let found = list.iter().any(|t| t.get("name").and_then(Value::as_str) == Some(*name));
             assert!(found, "missing schema for {name}");

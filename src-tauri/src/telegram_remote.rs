@@ -279,6 +279,13 @@ fn load_settings() -> TelegramSettings {
     }
 }
 
+/// The one chat id currently paired with this installation. Staff binding is
+/// intentionally limited to it in E1 so a typo cannot send employee traffic to
+/// an unrelated Telegram chat.
+pub fn paired_chat_id() -> Option<i64> {
+    load_settings().chat_id
+}
+
 fn save_settings(settings: &TelegramSettings) -> Result<(), String> {
     save_settings_at(&settings_path()?, settings)
 }
@@ -813,6 +820,10 @@ fn ensure_threads(slot: &'static Telegram) {
 /// 只有 chief 模式才推——relay 模式下 worker 通知走 observe_turn_complete
 /// 老路，两条路互斥，不会双推。路由：任务卡登记 chief 会话路由，
 /// 回复任务卡 = 对 Chief 说话。
+fn staff_task_notification_allowed(task: &crate::chief::types::Task, kind: &str) -> bool {
+    crate::chief::staff_commands::telegram_task_notification_allowed(task, kind)
+}
+
 pub fn chief_task_notify(task: &crate::chief::types::Task, kind: &str, summary: Option<&str>) {
     crate::debug_log::append(
         "chief",
@@ -827,7 +838,14 @@ pub fn chief_task_notify(task: &crate::chief::types::Task, kind: &str, summary: 
     if !live.active() {
         return;
     }
-    if crate::chief::store::mode_cached() != crate::chief::types::RemoteWorkMode::Chief {
+    if !staff_task_notification_allowed(task, kind) {
+        crate::debug_log::append(
+            "chief",
+            "info",
+            &task.task_id,
+            "telegram notify suppressed by staff policy",
+            Some(kind),
+        );
         return;
     }
     let (icon, head) = match kind {
@@ -844,7 +862,13 @@ pub fn chief_task_notify(task: &crate::chief::types::Task, kind: &str, summary: 
         text.push('\n');
         text.push_str(&clip(body.trim(), 800));
     }
-    enqueue_send(&live, text, Vec::new(), Some(task.chief_session_id.clone()), None);
+    let route_session = task
+        .staff_id
+        .as_deref()
+        .and_then(crate::chief::staff_commands::profile_for_staff_id)
+        .map(|profile| profile.session_id)
+        .unwrap_or_else(|| task.chief_session_id.clone());
+    enqueue_send(&live, text, Vec::new(), Some(route_session), None);
 }
 
 pub fn mark_probe_turn(session_id: &str) {
@@ -1084,18 +1108,20 @@ fn observe_turn_complete(
         .unwrap_or((None, String::new(), false));
     // 回合结束 = 总控面板的可见状态变化（含 cancelled：推送降噪，面板照刷）。
     schedule_dashboard(slot);
-
     // 探针回合（额度刷新的 /status、/usage）：面板照刷，推送全免。
     if probe {
+        return;
+    }
+    // Probe turns must not consume a staff cooldown/hourly slot.
+    let gate_kind = if kind == "error" { "task.failed" } else { "completed" };
+    if !crate::chief::staff_commands::telegram_notification_allowed(session_id, gate_kind) {
         return;
     }
 
     // Chief 模式聚合（02-architecture.md §8.1）：worker 的逐条回合推送被
     // 任务卡取代（chief_task_notify 负责），Chief 自身的回复照推——那是
     // 给用户的交付面。worker 权限卡不受影响（走 permission prompt 路）。
-    if crate::chief::store::mode_cached() == crate::chief::types::RemoteWorkMode::Chief
-        && crate::chief::broker::is_chief_worker(session_id)
-    {
+    if crate::chief::broker::is_chief_worker(session_id) {
         return;
     }
 
@@ -1183,6 +1209,9 @@ fn observe_permission_prompt(
         );
     }
     schedule_dashboard(slot);
+    if !crate::chief::staff_commands::telegram_notification_allowed(session_id, "permission") {
+        return;
+    }
     if !live.prefs.notify_wait {
         return;
     }
@@ -1249,6 +1278,12 @@ fn observe_permission_prompt(
             .ok()
             .and_then(|inner| inner.pending_permissions.get(&req).cloned());
         if let Some(pending) = pending {
+            if !crate::chief::staff_commands::telegram_notification_allowed(
+                &pending.session_id,
+                "permission",
+            ) {
+                return;
+            }
             let label = session_label(&pending.session_id);
             enqueue_send(
                 &live,
@@ -1278,6 +1313,9 @@ fn observe_question_prompt(
             .insert(request_id.to_string(), session_id.to_string());
     }
     schedule_dashboard(slot);
+    if !crate::chief::staff_commands::telegram_notification_allowed(session_id, "question") {
+        return;
+    }
     if !live.prefs.notify_wait {
         return;
     }
@@ -1340,6 +1378,9 @@ fn observe_plan_prompt(slot: &'static Telegram, session_id: &str, data: &Value, 
             .insert(request_id.to_string(), session_id.to_string());
     }
     schedule_dashboard(slot);
+    if !crate::chief::staff_commands::telegram_notification_allowed(session_id, "plan") {
+        return;
+    }
     if !live.prefs.notify_wait {
         return;
     }
@@ -2508,6 +2549,39 @@ fn handle_incoming_message(slot: &'static Telegram, live: &LiveConfig, message: 
             .to_ascii_lowercase();
         // BotFather 注册的命令可能带 @botname 后缀。
         let command = command.split('@').next().unwrap_or("").to_string();
+        if crate::chief::staff_commands::telegram_chat_routes_to_staff(chat_id) {
+            if command == "/stop" {
+                let text = match crate::chief::broker::chief_stop_all(&slot.app) {
+                    Ok(stopped) => format!("🛑 已持久暂停员工：停止 {stopped} 个进行中任务。发送 /resume 才恢复新任务。"),
+                    Err(error) => format!("⚠️ 急停状态未能持久化，未执行任务取消：{error}"),
+                };
+                enqueue_send(live, text, Vec::new(), None, message_id);
+                return;
+            }
+            if command == "/resume" {
+                match crate::chief::staff_commands::chief_staff_set_paused(slot.app.clone(), false) {
+                    Ok(count) => {
+                        enqueue_send(
+                            live,
+                            format!("▶️ 已恢复 {count} 位员工的新任务能力。"),
+                            Vec::new(),
+                            None,
+                            message_id,
+                        );
+                    }
+                    Err(error) => {
+                        enqueue_send(
+                            live,
+                            format!("⚠️ 恢复失败：{error}"),
+                            Vec::new(),
+                            None,
+                            message_id,
+                        );
+                    }
+                }
+                return;
+            }
+        }
         match command.as_str() {
             "/status" | "/sessions" => {
                 let (rows, _) = dashboard_snapshot(slot, STATUS_MAX_ROWS, true);
@@ -2576,8 +2650,12 @@ fn handle_incoming_message(slot: &'static Telegram, live: &LiveConfig, message: 
     // 裸文本固定进 Chief 会话（后端直送，主窗隐藏也活着）；回复 Chief 路由
     // 的消息同样后端直送。旧 relay 的「最近会话」不再抢裸文本；引用 worker
     // 的旧通知仍走下方前端管线（M1 允许，主窗活着才工作）。
-    if crate::chief::store::mode_cached() == crate::chief::types::RemoteWorkMode::Chief {
-        let chief_sid = crate::chief::store::load_config().chief_session_id.clone();
+    if crate::chief::staff_commands::telegram_chat_routes_to_staff(chat_id) {
+        let bound_staff = crate::chief::staff_commands::profile_for_chat(chat_id);
+        let chief_sid = bound_staff
+            .as_ref()
+            .map(|profile| profile.session_id.clone())
+            .or_else(|| crate::chief::store::load_config().chief_session_id.clone());
         let reply_route_id = message
             .pointer("/reply_to_message/message_id")
             .and_then(Value::as_i64);
@@ -2596,17 +2674,19 @@ fn handle_incoming_message(slot: &'static Telegram, live: &LiveConfig, message: 
             // 急停逃生口（03-security-permissions.md §13）：固定短命令，
             // 不依赖 Chief 模型自己服从「停止」。
             if trimmed == "急停" || trimmed.eq_ignore_ascii_case("/stop") {
-                let stopped = crate::chief::broker::chief_stop_all(&slot.app);
-                enqueue_send(
-                    live,
-                    format!("🛑 Chief 急停：已停止 {stopped} 个进行中任务。"),
-                    Vec::new(),
-                    None,
-                    message_id,
-                );
+                let text = match crate::chief::broker::chief_stop_all(&slot.app) {
+                    Ok(stopped) => format!("🛑 Chief 急停：已停止 {stopped} 个进行中任务。"),
+                    Err(error) => format!("⚠️ 急停状态未能持久化，未执行任务取消：{error}"),
+                };
+                enqueue_send(live, text, Vec::new(), None, message_id);
                 return;
             }
-            match crate::chief::broker::chief_inbound_text(&slot.app, text.as_str()) {
+            let target_staff_session = chief_sid.clone();
+            match crate::chief::broker::chief_inbound_text_for_chat(
+                &slot.app,
+                chat_id,
+                text.as_str(),
+            ) {
                 Ok(outcome) => {
                     let note = match outcome {
                         crate::chief::broker::InboundOutcome::Sent => "🫡 已交给 Chief。",
@@ -2614,7 +2694,7 @@ fn handle_incoming_message(slot: &'static Telegram, live: &LiveConfig, message: 
                             "⏳ Chief 正在处理上一条，你的消息已排队。"
                         }
                     };
-                    enqueue_send(live, note.to_string(), Vec::new(), chief_sid, message_id);
+                    enqueue_send(live, note.to_string(), Vec::new(), target_staff_session, message_id);
                 }
                 Err(error) => {
                     enqueue_send(

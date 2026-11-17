@@ -88,6 +88,43 @@ pub fn apply_model(app: &AppHandle, session_id: &str, model: &str) {
     }
 }
 
+fn find_read_only_option(options: &[crate::acp::ModeDef]) -> Option<String> {
+    options.iter().find_map(|option| {
+        let haystack = format!("{} {}", option.id, option.label).to_ascii_lowercase();
+        (haystack.contains("read-only")
+            || haystack.contains("readonly")
+            || haystack.contains("read only")
+            || haystack.contains("只读")
+            || option.id.eq_ignore_ascii_case("plan"))
+        .then_some(option.id.clone())
+    })
+}
+
+/// Enforce a read-only project ceiling through the Agent's advertised
+/// permission select or read-only/plan mode. If the Agent exposes no such
+/// control, fail closed rather than pretending a prompt is a sandbox.
+pub fn enforce_read_only(app: &AppHandle, session_id: &str) -> Result<(), String> {
+    let acp = acp_of(app);
+    let caps = acp
+        .get_capabilities(session_id)
+        .ok_or_else(|| "Agent capabilities unavailable for read-only enforcement".to_string())?;
+    if let Some(option) = find_read_only_option(&caps.permission_options) {
+        if caps.current_permission.as_deref() == Some(option.as_str()) {
+            return Ok(());
+        }
+        acp.update_session(session_id, json!({ "permission": option }))?;
+        return Ok(());
+    }
+    if let Some(option) = find_read_only_option(&caps.modes) {
+        if caps.current_mode.as_deref() == Some(option.as_str()) {
+            return Ok(());
+        }
+        acp.update_session(session_id, json!({ "mode": option }))?;
+        return Ok(());
+    }
+    Err("Agent does not advertise a read-only permission or mode".to_string())
+}
+
 /// 发一条 prompt（发射后即返回 accepted；等待回合用 [`wait_turn_idle`]）。
 pub fn send_prompt(
     app: &AppHandle,

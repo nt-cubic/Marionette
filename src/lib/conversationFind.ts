@@ -18,6 +18,8 @@ export function searchableText(event: SessionEvent): string | null {
     case "user_message":
     case "assistant_message":
       return event.text;
+    case "notice":
+      return event.text;
     case "plan_prompt":
       return [event.title, event.planMarkdown, event.decisionLabel].filter(Boolean).join("\n");
     case "ask_prompt":

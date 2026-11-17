@@ -11,17 +11,20 @@
 import { CHAT_PROJECT_ID } from "./api";
 import type { Project, Session } from "./types";
 
-export type ShelfChatSplit = { chat: Session[]; memo: Session[] };
+export type ShelfChatSplit = { staff: Session[]; chat: Session[]; memo: Session[] };
 
 /** Split the virtual Chat project's sessions into the two shelf groups. */
 export function splitShelfChatSessions(sessions: ReadonlyArray<Session>): ShelfChatSplit {
+  const staff: Session[] = [];
   const chat: Session[] = [];
   const memo: Session[] = [];
   for (const session of sessions) {
     if (session.projectId !== CHAT_PROJECT_ID) continue;
-    (session.origin === "memo" ? memo : chat).push(session);
+    if (session.origin === "chief") staff.push(session);
+    else if (session.origin === "memo") memo.push(session);
+    else chat.push(session);
   }
-  return { chat, memo };
+  return { staff, chat, memo };
 }
 
 /**

@@ -30,6 +30,10 @@ Windows 本地 **多 Agent CLI 图形壳**（Tauri + React）。不替代 OpenCo
 | **跨用（模型/key/订阅互通）** | 见下节 |
 | **圆桌会议（Council）** | 侧栏「圆桌」/ Ctrl+K「打开圆桌会议」进入（标签行出「圆桌」伪标签，与收纳盒同语义）：多个模型独立提案 → 交叉质询 → 修订 → 主席综合，产出经评审的结构化实施计划（Plan Gate 等待用户裁决）。召集页可套阵容模板（标准圆桌 / 身份局 / 垂帘听政 / 科研研讨）或 AI 组队（画像 → 可选探针 → 审阅后填席位）；人卡分主导/协办，协办产出须主导背书才进综合。模型来自共享引擎目录（同模型可配多个成员，角色独立）；独立提案阶段互相不可见（编排器构造输入时强制隔离，非提示词约定）；分歧不靠投票，裁决不了进「遗留不确定性」并附消解实验。run 可暂停/取消/崩溃恢复（已完成的阶段不重调模型）；请求数/token/墙钟三层预算，触顶即停；全部消息与状态转移 append-only 落盘（`~/.marionette/council/runs/`），可审计。M1 为「仅审议」全流程：计划批准即交付完成，自动执行（agent 落码）在后续版本接入——不伪造 Executing 状态。设计文档见 [`council/`](./council/)，架构定稿 [`council/architecture.md`](./council/architecture.md) |
 
+## 桌面提醒（2026-11-17）
+
+ACP 的回复完成、回合错误、权限、提问和计划审批由 Rust 事件调度器直接播放原生 WAV 并点亮任务栏，**不依赖前端定时器或 WebView2 是否已恢复**；最小化、后台常驻和普通失焦都立即提醒。前端仍负责通知开关与纯前端信号（卡顿、发送失败、浏览器 handoff 等）；探测回合、静默回合、Council 执行和 Chief 探针会显式抑制后端提醒，避免内部回合误响。实现见 `src-tauri/src/desktop_notify.rs`。
+
 ## 对话流轨迹（clean view 折叠，2026-10-24）
 
 - **折叠粒度 = 运行段**：连续 thought / tool_call 合成一段（`turnActivity.ts::clusterActivityRuns`），**第一步就是一组**，后续流入沿用起点 key，单步历史也保留统一分组。
@@ -261,34 +265,45 @@ agent 可以看/操作**其它 Windows 应用**的窗口（浏览器之外的原
   `dsh plugin` 面板已随统一入口移除（已装进 profile 的 DSH 插件对 dsh 自家
   照常生效，跨用桥与 spawn 链不动）。
 
-## 远程助理 / Chief（2026-11-15，M1 垂直切片）
+## 员工模式 / Chief（2026-11-17，E1 主体 + E2/E3 部分）
 
-Grok Bot 式的 Telegram 远程首席助理（设计：[`research-telegram-chief/`](./research-telegram-chief/README.md)，
-施工台账 [`06-m0-progress.md`](./research-telegram-chief/06-m0-progress.md)）。**默认关闭**
-（Chief 配置 `mode=off`）；入口 = 右栏「远程助理」卡（模式 / Chief Agent / 允许项目 / 任务区）。
+Chief 已从「Telegram 远程助理配置」升级为 people-first 员工模式：侧栏顶部是员工，右栏是
+员工档案/任务/记忆/承诺；worker 仍是普通项目会话。设计、实际偏差和待办见
+[`plan-employee-mode.md`](./plan-employee-mode.md)，前置 Telegram chief 研究见
+[`research-telegram-chief/`](./research-telegram-chief/README.md)。
 
-- **Chief 是普通 ACP 会话**（`origin="chief"`，聊天组），worker 也是普通可见会话
-  （`origin="chief-worker"`，所属项目组，顶层不加 parent）；关系只进任务账本
-  `~/.marionette/chief/`（config.json / tasks.json 原子写 / events.jsonl 追加）。
-- **Chief 驱动全在后端**（`chief/runner.rs` 直接调 `AcpService`），不借前端
-  `performSend`——主窗隐藏 / 最小化时任务照跑。事件经 `emit_now` 旁的 durable
-  event tee 落 `chief/sessions/<id>.events.jsonl`；本地打开会话时前端按消费游标把
-  离线跨度回放进会话流（与活路同一转换管线，rail 被抢先则弃回放不推游标）。
-- **控制面**：恰好 10 个 `marionette_*` 工具，只在 Chief 会话的 `tools/list` 出现；
-  dispatch 入口双保险（普通 worker 猜到名字也拒）。`task_start` 立即返回 taskId，
-  后台 spawn；requestId / commandId 幂等；并发上限全局 1–3 + 项目级；schema 永远
-  没有cwd / permissionMode / key / shell 等提权字段；没有 approve 工具——写走
-  权限卡（手机 / 本地先答先得），worker 等权限时任务标 `waiting_user`。
-- **唤醒**：completed / failed / interrupted / waiting 进 Chief 收件箱，2s 心跳在
-  Chief 空闲时合并 flush（worker 逐条 token 不唤醒）；重启后非终态任务标
-  `interrupted`（绝不标 completed），可 `task_resume`。
-- **Telegram chief 模式**：裸文本固定进 Chief（后端直送），回复 Chief 路由的消息
-  同路；worker 的逐条回合推送被任务卡聚合（任务卡登记 chief 路由）；急停逃生口
-  「急停」/`/stop`（Telegram）与右栏任务区「全部停止」同路 `chief_stop_all`。
-  update_id 游标持久化（`telegram-cursor.json`，poller 唯一写者），重启不重放旧消息。
-- **红线**：能力由 Host 配置决定（右栏授权表），模型不能靠工具参数扩权；发布 /
-  push / 凭据 / 系统设置远程不可达；自我修改仓库只产出 worktree/diff/tests。
-  真机 M0 验证项（隐藏窗口 soak、多 agent 矩阵）见施工台账。
+- **注册表与身份**：`~/.marionette/chief/staff.json` 保存员工、逐项目权限、预算、通知策略和
+  注册表级持久暂停；旧 `config.chiefSessionId` 只做一次迁移。迁移屏障完成后删掉最后一名员工，
+  旧 config session 不再获得控制工具。坏档保留原文件并 fail-closed，不会被 legacy 配置覆盖。
+- **会话关系**：员工是普通 Chat 会话（`origin="chief"`），worker 是普通项目会话
+  （`origin="chief-worker"`，不写 parent）；关系只进 task/event 账本和 tee。员工会话强制使用
+  Agent 自报的只读/plan 权限；需要改项目时只能派 worker，不支持只读档的 Agent 拒绝启动员工会话。
+- **控制面**：16 个 `marionette_*` 工具只在员工会话的 `tools/list` 出现，dispatch 双保险；没有
+  hire / approve 工具。`task_start` 的 requestId、并发预留和 Proposed 插入在同一任务账本锁内；
+  Proposed 也计入并发和急停/辞退。`task_send` 成功后才提交 commandId，resume 只接受
+  `Interrupted → Starting` 的精确 CAS。
+- **任务与权限**：逐项目可配置只读 / 审批写 / 预授权写、Computer Use、自我修改，并被全局策略
+  二次裁剪。read_only 通过 permission/mode 硬落地；worker session id 在 ACP 启动前写进 task，
+  策略映射失败就不启动；Computer Use schema 与 dispatch 都按项目 `allowComputerUse` 拒绝。
+- **急停**：`/stop`、Telegram「急停」、右栏暂停全部走注册表级 `pausedUntilUserResumes`；新员工
+  自动继承。急停取消 Proposed/Starting/Running/WaitingUser、关闭 worker 浏览器 tabs、撤销
+  Computer Use 共享窗口；恢复必须用户显式 `/resume` 或 UI 操作。
+- **记忆与承诺**：每位员工有 pinned/state/history/journal/index/proposals，tombstone 防复活；
+  task 终态自动追加真实 journal，proposal 可在右栏 accept 到 pinned/state 或 reject。
+  commitments 与 task 分离，到期/`task:<id>:completed|failed` 条件可唤醒；暂停、manual、禁后台
+  时不消费 due，恢复后补唤醒。员工行显示 due 数量但不改 running/waiting 状态。
+- **通知**：普通通知的冷却和每小时额度持久写员工档案，写盘失败不发；waiting_user、失败、中断、
+  权限/提问/plan、承诺到期可绕过勿扰和普通频率预算，但永久暂停永远优先。`allowTelegram` 只控制
+  Telegram 渠道，不误伤桌面通知；task.started 不占完成汇报额度。
+- **Telegram**：显式绑定员工私聊即可路由，不再要求全局 `mode=chief`；旧单员工 chief 回落保留。
+  任务卡和回复按稳定 `staffId` 找当前会话，员工 session 重建后不丢唤醒/引用。底层 transport 仍是
+  单已配对 chat，多员工同时绑定多个私聊是待办。
+- **唤醒**：completed / failed / interrupted / waiting 进员工收件箱，2s 心跳在空闲时合并 flush；
+  worker 的普通流式 chunk 以 5s 节流刷新 task lastEventAt，避免长时间思考被误标 stale；重启后
+  非终态 task 标 `interrupted`，可 `task_resume`。
+- **红线**：能力来自 Host 注册表和现有权限卡，模型不能靠参数扩权；发布/push/凭据/系统设置远程
+  不可达；自我修改仍要求 worktree/diff/tests，不做自动发布。精确 provider 调用计数、成本请求前
+  预占、多 chat transport、健康审计页和 E4 长期 soak 尚未完成。
 
 ## 明确不做 / 暂缓
 

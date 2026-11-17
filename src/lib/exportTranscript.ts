@@ -123,6 +123,11 @@ export function transcriptToMarkdown(events: readonly SessionEvent[], sessionLab
         if (meta) out.push(meta, "");
         break;
       }
+      case "notice": {
+        flushFiles();
+        if (e.text.trim()) out.push(e.text.trim(), "");
+        break;
+      }
       case "thought": {
         flushFiles();
         const block = details(t("export.thinking"), e.text);

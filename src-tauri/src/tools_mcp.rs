@@ -213,7 +213,7 @@ fn route(method: &str, params: &Value, session_id: &str) -> Result<Value, Value>
                 // 工具只注入这一会话；普通会话的工具列表不出现它们）。
                 crate::chief::tools::chief_tool_schemas()
             } else {
-                tool_schemas()
+                tool_schemas_for_session(session_id)
             }
         })),
         "tools/call" => {
@@ -484,6 +484,28 @@ fn tool_schemas() -> Value {
     ])
 }
 
+fn tool_schemas_for_session(session_id: &str) -> Value {
+    let schemas = tool_schemas();
+    if crate::chief::staff_commands::worker_computer_use_allowed(session_id) {
+        return schemas;
+    }
+    let Some(items) = schemas.as_array() else {
+        return schemas;
+    };
+    Value::Array(
+        items
+            .iter()
+            .filter(|tool| {
+                tool.get("name")
+                    .and_then(Value::as_str)
+                    .map(|name| !name.starts_with("computer_"))
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect(),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
@@ -556,6 +578,14 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
         return Err(format!(
             "tool `{name}` is a Chief control tool and is only available to the Chief session"
         ));
+    }
+    if name.starts_with("computer_")
+        && !crate::chief::staff_commands::worker_computer_use_allowed(session_id)
+    {
+        return Ok(json!({
+            "error": "computer_use_not_allowed",
+            "note": "This staff worker's project policy does not allow Computer Use."
+        }));
     }
     use crate::browser::agent::{ActionKind, ActionRequest, SnapshotRequest};
     use crate::browser::surface;

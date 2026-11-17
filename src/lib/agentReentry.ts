@@ -18,7 +18,7 @@
  */
 
 import type { SessionEvent } from "./types";
-import { findLastIndexForSession } from "./acpTranscript";
+import { findLastTurnContentIndexForSession } from "./acpTranscript";
 
 /**
  * A chunk landing this soon after `turn/complete` is a late echo of the turn
@@ -61,7 +61,7 @@ export function sealAgentSegmentForIdle(
   sessionId: string,
   endedAtMs: number = Date.now(),
 ): SessionEvent[] {
-  const idx = findLastIndexForSession(events, sessionId);
+  const idx = findLastTurnContentIndexForSession(events, sessionId);
   if (idx < 0) return events;
   const last = events[idx]!;
   if (last.type === "assistant_message" && last.durationMs == null) {

@@ -6532,6 +6532,19 @@ fn acp_ui_target(session_id: &str) -> String {
 
 fn emit_acp_event(app: &AppHandle, payload: AcpEvent) {
     let target = acp_ui_target(&payload.session_id);
+    let delegate_child = parent_of()
+        .lock()
+        .map(|parents| parents.contains_key(&payload.session_id))
+        .unwrap_or(false);
+    crate::desktop_notify::observe_acp_event(
+        app,
+        &payload.session_id,
+        &target,
+        &payload.kind,
+        payload.method.as_deref(),
+        &payload.data,
+        delegate_child,
+    );
     if app.emit_to(&target, ACP_EVENT, &payload).is_err() && target != "main" {
         let _ = app.emit_to("main", ACP_EVENT, &payload);
     }

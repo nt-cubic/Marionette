@@ -9,6 +9,7 @@ import {
   parseCompactionUpdate,
   parseGrokSubagentUpdate,
   parseLiveNotice,
+  type SessionNotice,
 } from "./acpMeta";
 import { ansiToPlainText } from "./ansi";
 import { isSubagentTool, isToolInProgress } from "./activityHealth";
@@ -19,6 +20,7 @@ import { inferToolNameFromMeta } from "./toolCallNormalize";
 import { parseWebReply, type WebReply } from "./webReply";
 import {
   parseCodeBuddyTeamMembers,
+  parseCodexCollabSnapshot,
   parseCodexSubagentActivity,
   recoverSubagentToolName,
 } from "./subagentAdapters";
@@ -57,6 +59,8 @@ export type AcpTextPart = {
   toolDetailReplace?: boolean;
   /** Split wait-tool MultiResult onto the matching spawn cards. */
   subagentResults?: SubagentResultPatch[];
+  /** ACP/local advisory rendered as a conversation notice card. */
+  notice?: SessionNotice;
 };
 
 export type SubagentResultPatch = {
@@ -664,9 +668,20 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
     };
   }
 
-  // Notices (retry / sessionFailure / sessionUpdate:"notice") stay off the
-  // transcript — App shows them above the composer.
-  if (parseLiveNotice(update)) return null;
+  // Notices (retry / sessionFailure / sessionUpdate:"notice") are conversation
+  // rows, never composer overlays. `applyAcpPartToEvents` turns this marker
+  // into a dedicated `notice` event, keeping it out of Reply/tool streams.
+  const notice = parseLiveNotice(update);
+  if (notice) {
+    return {
+      role: "system",
+      text: sessionNoticeText(notice),
+      isDelta: false,
+      sessionUpdate,
+      messageId,
+      notice,
+    };
+  }
 
   // Grok `_x.ai/session/update` subagent envelopes. Child tokens never share
   // this channel; map spawn/finish onto the parent spawn_subagent card.
@@ -920,6 +935,7 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
       (typeof update.status === "string" && update.status) ||
       (sessionUpdate === "tool_call" ? "pending" : undefined);
     const rawInput = update.rawInput ?? update.raw_input ?? update.input;
+    const codexCollab = parseCodexCollabSnapshot(rawInput);
     const inputPreview =
       rawInput == null
         ? ""
@@ -929,6 +945,25 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
             ? ""
             : JSON.stringify(rawInput);
     const clippedInput = inputPreview.length > 200 ? `${inputPreview.slice(0, 200)}…` : inputPreview;
+    // Codex collab updates need the complete thread roster after the prompt.
+    // The ordinary 200-char raw-input clip cuts receiverThreadIds/agentsStates
+    // out of real spawnAgent/wait payloads, leaving the live-task panel blind.
+    // Keep a compact, parseable snapshot and cap only the prompt preview.
+    const codexCollabInput = codexCollab
+      ? JSON.stringify({
+          prompt: codexCollab.prompt
+            ? codexCollab.prompt.length > 640
+              ? `${codexCollab.prompt.slice(0, 640)}…`
+              : codexCollab.prompt
+            : null,
+          senderThreadId: codexCollab.senderThreadId,
+          receiverThreadIds: codexCollab.receiverThreadIds,
+          agentsStates: codexCollab.agentsStates,
+          ...(codexCollab.status ? { status: codexCollab.status } : {}),
+          ...(codexCollab.model ? { model: codexCollab.model } : {}),
+          ...(codexCollab.reasoningEffort ? { reasoningEffort: codexCollab.reasoningEffort } : {}),
+        })
+      : "";
     // What the tool is actually doing / produced — agents stream this and the
     // card used to throw it away, which is why long tools looked frozen.
     const imageSrcs = extractToolImageSrcs(update.content);
@@ -966,7 +1001,7 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
     // `{"filePath":"…"}` under a line that already shows that path is noise.
     // After a synthesized diff the raw JSON is the file body — hide it.
     const toolInput =
-      synthesized || inputIsOnlyPath(rawInput, toolPath) ? "" : clippedInput;
+      codexCollabInput || (synthesized || inputIsOnlyPath(rawInput, toolPath) ? "" : clippedInput);
 
     const bgStart =
       parseBackgroundSubagentStart(toolDetail) || parseBackgroundSubagentStart(displayTitle);
@@ -1353,6 +1388,28 @@ export function assistantMessageEvent(
   };
 }
 
+/** Stable Markdown body for an advisory card (also used by search/export). */
+export function sessionNoticeText(notice: SessionNotice): string {
+  return [`**${notice.title.trim()}**`, notice.description.trim()]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+export function sessionNoticeEvent(
+  sessionId: string,
+  notice: SessionNotice,
+): SessionEvent {
+  return {
+    type: "notice",
+    sessionId,
+    text: sessionNoticeText(notice),
+    severity: notice.severity,
+    title: notice.title,
+    description: notice.description,
+    createdAt: new Date().toISOString(),
+  };
+}
+
 /** Scan events backward for the last user_message with metadata. */
 export function metaFromLastUser(events: SessionEvent[], sessionId: string):
   | { agentId?: string; agentLabel?: string; modelId?: string; modelLabel?: string; modeLabel?: string; effortLabel?: string }
@@ -1525,6 +1582,19 @@ export function findLastIndexForSession(
   return -1;
 }
 
+/** Tail event that can be sealed as a turn step; notice cards are advisory. */
+export function findLastTurnContentIndexForSession(
+  events: SessionEvent[],
+  sessionId: string,
+): number {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i]!;
+    if (event.sessionId !== sessionId || event.type === "notice") continue;
+    return i;
+  }
+  return -1;
+}
+
 /**
  * A finished turn left no Reply card at the tail of its own stream: the agent
  * stopped on its own with nothing to read (empty turn, or tool calls and then
@@ -1534,7 +1604,7 @@ export function turnEndedSilently(
   events: SessionEvent[],
   sessionId: string,
 ): boolean {
-  const index = findLastIndexForSession(events, sessionId);
+  const index = findLastTurnContentIndexForSession(events, sessionId);
   return index < 0 || events[index]!.type !== "assistant_message";
 }
 
@@ -1781,6 +1851,30 @@ export function applyAcpPartToEvents(
   }
 
   if (part.role === "system") {
+    if (part.notice) {
+      const lastIdx = findLastIndexForSession(current, sessionId);
+      const last = lastIdx >= 0 ? current[lastIdx] : undefined;
+      // Codex retry meta can update while the notice stays in place. Replace
+      // only the adjacent same notice; a later turn gets a fresh card.
+      if (
+        last?.type === "notice" &&
+        last.severity === part.notice.severity &&
+        last.title === part.notice.title
+      ) {
+        const text = sessionNoticeText(part.notice);
+        if (last.text === text && last.description === part.notice.description) {
+          return current;
+        }
+        const next = [...current];
+        next[lastIdx] = {
+          ...last,
+          text,
+          description: part.notice.description,
+        };
+        return next;
+      }
+      return [...current, sessionNoticeEvent(sessionId, part.notice)];
+    }
     // Transient banners (Codex retry) — surface as assistant system note, not thought.
     const lastIdx = findLastIndexForSession(current, sessionId);
     const last = lastIdx >= 0 ? current[lastIdx] : undefined;

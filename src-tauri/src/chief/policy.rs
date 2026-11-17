@@ -118,7 +118,20 @@ pub fn validate_task_access(
     chief_session_id: &str,
     action: &str,
 ) -> Result<(), (&'static str, String)> {
-    if task.chief_session_id != chief_session_id {
+    validate_task_access_for_staff(task, chief_session_id, None, action)
+}
+
+/// Same ownership check, with the stable staff id as a fallback when an
+/// employee session had to be recreated.
+pub fn validate_task_access_for_staff(
+    task: &super::types::Task,
+    chief_session_id: &str,
+    staff_id: Option<&str>,
+    action: &str,
+) -> Result<(), (&'static str, String)> {
+    let owns = task.chief_session_id == chief_session_id
+        || staff_id.is_some_and(|staff_id| task.staff_id.as_deref() == Some(staff_id));
+    if !owns {
         return Err((
             "task_not_owned",
             format!("任务 {} 不属于这个 Chief。", task.task_id),

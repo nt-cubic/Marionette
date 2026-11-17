@@ -16,9 +16,14 @@
 
 pub mod broker;
 pub mod commands;
+pub mod commitments;
+pub mod memory;
 pub mod policy;
 pub mod probe;
 pub mod runner;
+pub mod staff;
+pub mod staff_commands;
+pub mod staff_status;
 pub mod store;
 pub mod tee;
 pub mod tools;

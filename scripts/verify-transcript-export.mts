@@ -49,6 +49,18 @@ function thought(text: string): Extract<SessionEvent, { type: "thought" }> {
   };
 }
 
+function notice(title: string, description: string): Extract<SessionEvent, { type: "notice" }> {
+  return {
+    type: "notice",
+    sessionId: "s",
+    text: `**${title}**\n\n${description}`,
+    severity: "warning",
+    title,
+    description,
+    createdAt: "2026-10-31T08:30:04.000Z",
+  };
+}
+
 function tool(partial: Partial<Extract<SessionEvent, { type: "tool_call" }>>): Extract<SessionEvent, { type: "tool_call" }> {
   return {
     type: "tool_call",
@@ -98,6 +110,7 @@ const events: SessionEvent[] = [
   thought("先读文件"),
   thought(""),
   tool({ toolName: "read", title: "Read a.ts", text: "contents of a.ts" }),
+  notice("MCP server unavailable", "Continuing without it."),
   assistant({ text: "改好了", agentLabel: "Grok", durationMs: 4200 }),
   fileChange({ path: "src/a.ts", add: 4, del: 2 }),
   fileChange({ path: "src/b.ts", changeType: "added", add: 10, del: 0 }),
@@ -109,7 +122,7 @@ const md = transcriptToMarkdown(events, "修复导出");
 
 check("title and counts land in the header", () => {
   assert.match(md, /^# 修复导出\n/);
-  assert.match(md, /9 条事件/);
+  assert.match(md, /10 条事件/);
   assert.match(md, /4 条发言/);
 });
 
@@ -126,6 +139,11 @@ check("user and assistant stay on the main rail", () => {
 check("thought and tool go into details folds", () => {
   assert.match(md, /<details>\n<summary>思考<\/summary>\n\n先读文件/);
   assert.match(md, /<details>\n<summary>read \(completed\)<\/summary>\n\ncontents of a\.ts/);
+});
+
+check("notice stays on the main rail as a conversation row", () => {
+  assert.match(md, /\*\*MCP server unavailable\*\*/);
+  assert.match(md, /Continuing without it\./);
 });
 
 check("empty thought does not emit an empty details block", () => {

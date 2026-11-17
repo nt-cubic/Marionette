@@ -3,6 +3,7 @@ import type { zh } from "./fe-v2transcript.zh";
 export const en = {
   "v2transcript.planApprovalRegion": "Plan approval",
   "v2transcript.previewUnavailable": "Preview unavailable",
+  "v2transcript.notice": "Notice",
   "v2transcript.emptyTitle": "Message {agent}",
   "v2transcript.emptyHint": "Type below to warm the agent in the background, then send when ready.",
   "v2transcript.emptyUpdate": "Update to continue",

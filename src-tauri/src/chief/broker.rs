@@ -18,9 +18,11 @@ use tauri::{AppHandle, Manager};
 
 use super::policy::{self, Decision};
 use super::runner;
+use super::staff;
+use super::staff_commands;
 use super::store;
 use super::tee;
-use super::types::{now_ms, short_id, ChiefConfig, RemoteMode, RemoteWorkMode, Task, TaskEvent, TaskStatus};
+use super::types::{now_ms, short_id, RemoteMode, RemoteWorkMode, Task, TaskEvent, TaskStatus};
 
 // ── Chief 会话注册表（MCP 门禁的唯一事实） ────────────────────────────────
 
@@ -44,6 +46,22 @@ pub fn unregister_chief_session(session_id: &str) {
     }
 }
 
+pub fn forget_session_runtime(session_id: &str) {
+    unregister_chief_session(session_id);
+    if let Ok(mut inbox) = wake_inbox().lock() {
+        inbox.remove(session_id);
+    }
+    if let Ok(mut queues) = user_queues().lock() {
+        queues.remove(session_id);
+    }
+    if let Ok(mut queues) = host_queues().lock() {
+        queues.remove(session_id);
+    }
+    if let Ok(mut queues) = bootstrap_queues().lock() {
+        queues.remove(session_id);
+    }
+}
+
 /// 该会话是否是 Chief：运行时注册表 ∪ config.chief_session_id。
 /// 这是控制工具可见性的**唯一**判据；普通 worker 永远不在这里。
 pub fn is_chief_session(session_id: &str) -> bool {
@@ -51,6 +69,16 @@ pub fn is_chief_session(session_id: &str) -> bool {
         if set.contains(session_id) {
             return true;
         }
+    }
+    let staff_registry = staff::load();
+    if staff_registry.is_staff_session(session_id) {
+        return true;
+    }
+    // Once the staff registry has completed its one-time migration, the old
+    // singular config field is historical data. A dismissed final employee
+    // must not keep control-tool access alive on the old chat row.
+    if staff_registry.legacy_migration_completed_at > 0 {
+        return false;
     }
     store::load_config()
         .chief_session_id
@@ -63,6 +91,10 @@ pub fn is_chief_session(session_id: &str) -> bool {
 
 static WAKE_INBOX: OnceLock<Mutex<HashMap<String, Vec<TaskEvent>>>> = OnceLock::new();
 static USER_QUEUE: OnceLock<Mutex<HashMap<String, VecDeque<String>>>> = OnceLock::new();
+static HOST_QUEUE: OnceLock<Mutex<HashMap<String, VecDeque<String>>>> = OnceLock::new();
+static BOOTSTRAP_QUEUE: OnceLock<Mutex<HashMap<String, VecDeque<String>>>> = OnceLock::new();
+static QUEUED_COMMITMENTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static WORKER_PROGRESS_WRITES: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
 
 fn wake_inbox() -> &'static Mutex<HashMap<String, Vec<TaskEvent>>> {
     WAKE_INBOX.get_or_init(|| Mutex::new(HashMap::new()))
@@ -70,6 +102,54 @@ fn wake_inbox() -> &'static Mutex<HashMap<String, Vec<TaskEvent>>> {
 
 fn user_queues() -> &'static Mutex<HashMap<String, VecDeque<String>>> {
     USER_QUEUE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn host_queues() -> &'static Mutex<HashMap<String, VecDeque<String>>> {
+    HOST_QUEUE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn bootstrap_queues() -> &'static Mutex<HashMap<String, VecDeque<String>>> {
+    BOOTSTRAP_QUEUE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn claim_due_commitment(commitment_id: &str) -> bool {
+    let claims = QUEUED_COMMITMENTS.get_or_init(|| Mutex::new(HashSet::new()));
+    claims
+        .lock()
+        .map(|mut ids| ids.insert(commitment_id.to_string()))
+        .unwrap_or(false)
+}
+
+fn touch_worker_progress(session_id: &str) {
+    const THROTTLE_MS: u64 = 5_000;
+    let now = now_ms();
+    let writes = WORKER_PROGRESS_WRITES.get_or_init(|| Mutex::new(HashMap::new()));
+    let should_write = writes
+        .lock()
+        .map(|mut last| {
+            if last
+                .get(session_id)
+                .is_some_and(|previous| now.saturating_sub(*previous) < THROTTLE_MS)
+            {
+                return false;
+            }
+            last.insert(session_id.to_string(), now);
+            true
+        })
+        .unwrap_or(false);
+    if !should_write {
+        return;
+    }
+    let _ = store::with_tasks(|tasks| {
+        if let Some(task) = tasks.iter_mut().find(|task| {
+            task.worker_session_id.as_deref() == Some(session_id)
+                && matches!(task.status, TaskStatus::Starting | TaskStatus::Running)
+        }) {
+            task.last_event_at = now;
+            task.updated_at = now;
+        }
+        Ok(())
+    });
 }
 
 /// 把一个 Host 事件放进 Chief 的收件箱（等空闲统一 flush）。
@@ -100,12 +180,43 @@ pub fn queue_user_text(chief_session_id: &str, text: &str) {
     }
 }
 
+/// Host-originated prompt (bootstrap, commitment due, scheduler). Persistent
+/// pause suppresses these while real user messages may still reach the agent.
+pub fn queue_host_text(chief_session_id: &str, text: &str) {
+    if let Ok(mut queues) = host_queues().lock() {
+        queues
+            .entry(chief_session_id.to_string())
+            .or_default()
+            .push_back(text.to_string());
+    }
+}
+
+/// Bootstrap must be the first prompt in a newly-created staff session.
+pub fn queue_bootstrap_text(chief_session_id: &str, text: &str) {
+    if let Ok(mut queues) = bootstrap_queues().lock() {
+        queues
+            .entry(chief_session_id.to_string())
+            .or_default()
+            .push_back(text.to_string());
+    }
+}
+
 pub(crate) fn pending_user_count(chief_session_id: &str) -> usize {
     user_queues()
         .lock()
         .ok()
         .and_then(|queues| queues.get(chief_session_id).map(|q| q.len()))
         .unwrap_or(0)
+        + host_queues()
+            .lock()
+            .ok()
+            .and_then(|queues| queues.get(chief_session_id).map(|q| q.len()))
+            .unwrap_or(0)
+        + bootstrap_queues()
+            .lock()
+            .ok()
+            .and_then(|queues| queues.get(chief_session_id).map(|q| q.len()))
+            .unwrap_or(0)
 }
 
 /// `task_send` 的 (taskId, commandId) 去重（内存 LRU；传输可重复，业务幂等）。
@@ -130,8 +241,37 @@ pub(crate) fn mark_sent_command(task_id: &str, command_id: &str) -> bool {
     true
 }
 
+fn sent_command_seen(task_id: &str, command_id: &str) -> bool {
+    let key = format!("{task_id}:{command_id}");
+    sent_commands()
+        .lock()
+        .map(|guard| guard.iter().any(|seen| seen == &key))
+        .unwrap_or(false)
+}
+
+fn unmark_sent_command(task_id: &str, command_id: &str) {
+    let key = format!("{task_id}:{command_id}");
+    if let Ok(mut guard) = sent_commands().lock() {
+        guard.retain(|seen| seen != &key);
+    }
+}
+
 fn pop_user_text(chief_session_id: &str) -> Option<String> {
     let mut queues = user_queues().lock().ok()?;
+    queues
+        .get_mut(chief_session_id)
+        .and_then(|queue| queue.pop_front())
+}
+
+fn pop_host_text(chief_session_id: &str) -> Option<String> {
+    let mut queues = host_queues().lock().ok()?;
+    queues
+        .get_mut(chief_session_id)
+        .and_then(|queue| queue.pop_front())
+}
+
+fn pop_bootstrap_text(chief_session_id: &str) -> Option<String> {
+    let mut queues = bootstrap_queues().lock().ok()?;
     queues
         .get_mut(chief_session_id)
         .and_then(|queue| queue.pop_front())
@@ -230,6 +370,29 @@ pub(crate) fn summarize_worker_events(events: &[Value]) -> (Option<String>, u64,
     (summary, tool_calls, files, tool_failures)
 }
 
+fn worker_reported_cost_usd(worker_session_id: &str) -> f64 {
+    crate::usage_store::read_session(worker_session_id)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+        .filter_map(|row| {
+            row.get("usd")
+                .and_then(Value::as_f64)
+                .or_else(|| row.get("reportedUsd").and_then(Value::as_f64))
+        })
+        .filter(|cost| cost.is_finite() && *cost > 0.0)
+        .sum()
+}
+
+fn worker_reported_model_calls(worker_session_id: &str) -> u32 {
+    crate::usage_store::read_session(worker_session_id)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|line| serde_json::from_str::<Value>(line).is_ok())
+        .count()
+        .min(u32::MAX as usize) as u32
+}
+
 fn host_event_text(event: &TaskEvent, task: Option<&Task>) -> String {
     let mut text = format!(
         "[HOST EVENT: {}]\ntaskId: {}\nstatus: {}\n",
@@ -278,6 +441,16 @@ static BOOTSTRAP: Mutex<()> = Mutex::new(());
 /// 双重检查在 BOOTSTRAP 锁内完成，两个入口并发不会建出两个 Chief。
 fn ensure_chief_session(app: &AppHandle) -> Result<(String, bool), String> {
     let _guard = BOOTSTRAP.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(profile) = staff_commands::default_staff() {
+        let sid = staff_commands::chief_staff_ensure_session(app.clone(), profile.staff_id)?;
+        register_chief_session(&sid);
+        let _ = tee::register(&sid);
+        return Ok((sid, false));
+    }
+    let migrated_registry = staff::load();
+    if migrated_registry.legacy_migration_completed_at > 0 {
+        return Err("还没有员工。请先在本地员工组雇一位员工。".to_string());
+    }
     let mut config = store::load_config();
     if let Some(sid) = config.chief_session_id.clone() {
         let exists = with_storage(app, |storage| {
@@ -310,6 +483,10 @@ fn ensure_chief_session(app: &AppHandle) -> Result<(String, bool), String> {
     config.chief_session_id = Some(session.id.clone());
     config.chief_agent_id = Some(agent_id.clone());
     store::save_config(&config)?;
+    let migrated = staff::StaffRegistry::from_legacy_config(&config);
+    if !migrated.staff.is_empty() {
+        let _ = staff::save(&migrated);
+    }
     crate::debug_log::append(
         "chief",
         "info",
@@ -339,9 +516,18 @@ fn ensure_chief_started(app: &AppHandle, chief_session_id: &str) -> Result<(), S
         Ok::<_, String>((session.agent_id, session.cwd))
     })?;
     runner::ensure_session(app, chief_session_id, &agent_id, &cwd)?;
+    if staff_commands::profile_for_session(chief_session_id).is_some() {
+        runner::enforce_read_only(app, chief_session_id).map_err(|error| {
+            runner::stop_session(app, chief_session_id);
+            format!("员工会话无法强制只读/plan 权限：{error}")
+        })?;
+    }
     // 配置里钉了 Chief 模型（chief_model）就推一次；失败只记日志，
     // 会话用 agent 默认模型照常工作。
-    if let Some(model) = store::load_config().chief_model.as_deref() {
+    let pinned_model = staff_commands::profile_for_session(chief_session_id)
+        .and_then(|profile| profile.model)
+        .or_else(|| store::load_config().chief_model);
+    if let Some(model) = pinned_model.as_deref() {
         runner::apply_model(app, chief_session_id, model);
     }
     with_storage(app, |storage| {
@@ -356,12 +542,16 @@ fn ensure_chief_started(app: &AppHandle, chief_session_id: &str) -> Result<(), S
 fn task_card(task: &Task) -> Value {
     json!({
         "taskId": task.task_id,
+        "staffId": task.staff_id,
         "title": task.title,
         "projectId": task.project_id,
         "workerSessionId": task.worker_session_id,
         "agentId": task.agent_id,
         "model": task.model,
         "status": task.status,
+        "waitingReason": task.waiting_reason,
+        "turnCount": task.turn_count,
+        "costUsd": task.cost_usd,
         "lastSummary": task.last_summary,
         "error": task.error,
         "createdAt": task.created_at,
@@ -369,15 +559,29 @@ fn task_card(task: &Task) -> Value {
     })
 }
 
+fn task_belongs_to_session(task: &Task, chief_session_id: &str) -> bool {
+    if task.chief_session_id == chief_session_id {
+        return true;
+    }
+    let Some(profile) = staff_commands::profile_for_session(chief_session_id) else {
+        return false;
+    };
+    task.staff_id.as_deref() == Some(profile.staff_id.as_str())
+}
+
 /// active = Starting / Running / WaitingUser（Chief 自身不算 worker 并发）。
+#[cfg(test)]
 fn count_active(tasks: &[Task], chief_session_id: &str, project_id: Option<&str>) -> usize {
     tasks
         .iter()
-        .filter(|task| task.chief_session_id == chief_session_id)
+        .filter(|task| task_belongs_to_session(task, chief_session_id))
         .filter(|task| {
             matches!(
                 task.status,
-                TaskStatus::Starting | TaskStatus::Running | TaskStatus::WaitingUser
+                TaskStatus::Proposed
+                    | TaskStatus::Starting
+                    | TaskStatus::Running
+                    | TaskStatus::WaitingUser
             )
         })
         .filter(|task| match project_id {
@@ -390,7 +594,9 @@ fn count_active(tasks: &[Task], chief_session_id: &str, project_id: Option<&str>
 // ── 控制工具实现（envelope 返回值） ──────────────────────────────────────
 
 pub fn chief_projects_list(_chief_session_id: &str) -> Value {
-    let config = store::load_config();
+    let config = staff_commands::profile_for_session(_chief_session_id)
+        .map(|profile| staff_commands::config_for_staff(&profile))
+        .unwrap_or_else(store::load_config);
     let projects: Vec<Value> = config
         .allowed_projects
         .iter()
@@ -414,7 +620,9 @@ pub fn chief_projects_list(_chief_session_id: &str) -> Value {
 }
 
 pub fn chief_agents_list(_chief_session_id: &str, project_id: Option<&str>) -> Value {
-    let config = store::load_config();
+    let config = staff_commands::profile_for_session(_chief_session_id)
+        .map(|profile| staff_commands::config_for_staff(&profile))
+        .unwrap_or_else(store::load_config);
     let agents: Vec<Value> = crate::custom_agents::all_agents_merged()
         .into_iter()
         .map(|agent| {
@@ -463,7 +671,7 @@ pub fn chief_models_list(agent_id: &str) -> Value {
 pub fn chief_tasks_list(chief_session_id: &str, status_filter: Option<&str>, limit: usize) -> Value {
     let tasks: Vec<Value> = store::load_tasks()
         .into_iter()
-        .filter(|task| task.chief_session_id == chief_session_id)
+        .filter(|task| task_belongs_to_session(task, chief_session_id))
         .filter(|task| {
             match status_filter {
                 Some(status) => format!("{:?}", task.status).to_lowercase() == status.to_lowercase(),
@@ -505,18 +713,40 @@ pub fn chief_task_start(app: &AppHandle, chief_session_id: &str, args: &Value) -
         .and_then(Value::as_u64)
         .map(|value| value.clamp(1, 480) as u32);
 
-    // 幂等：同一 requestId 返回同一任务。
-    if let Some(existing) = store::find_by_request_id(request_id) {
-        if existing.chief_session_id == chief_session_id {
+    let Some(profile) = staff_commands::profile_for_session(chief_session_id) else {
+        return envelope_reject("staff_missing", "当前会话没有绑定员工档案。");
+    };
+    // Fast path for a normal retry. The authoritative check is repeated inside
+    // the task-ledger lock immediately before insertion.
+    let loaded_tasks = store::load_tasks();
+    if let Some(existing) = loaded_tasks.iter().find(|task| task.request_id == request_id) {
+        let same_owner = existing.chief_session_id == chief_session_id
+            || existing.staff_id.as_deref() == Some(profile.staff_id.as_str());
+        if same_owner {
             return envelope_ok(json!({
-                "task": task_card(&existing),
+                "task": task_card(existing),
                 "existing": true,
                 "note": "同一 requestId 的任务已存在，返回原任务（幂等）。",
             }));
         }
+        return envelope_reject(
+            "request_id_conflict",
+            "requestId 已属于另一位员工；幂等键必须在员工范围内唯一。",
+        );
     }
-
-    let config = store::load_config();
+    if profile.policy.paused_until_user_resumes {
+        return envelope_reject(
+            "staff_paused",
+            "员工已持久暂停。请在本地员工面板恢复后才能启动新任务。",
+        );
+    }
+    if !profile.policy.allow_background_work {
+        return envelope_reject(
+            "background_work_disabled",
+            "该员工已关闭后台工作；请先在员工档案中允许后台工作。",
+        );
+    }
+    let config = staff_commands::config_for_staff(&profile);
     let agents = known_enabled_agents();
     let (project_id, agent_id, model, remote_mode, policy_minutes, self_modification) =
         match policy::validate_task_start(&config, project_id, requested_agent, requested_model, &agents)
@@ -531,34 +761,21 @@ pub fn chief_task_start(app: &AppHandle, chief_session_id: &str, args: &Value) -
             } => (project_id, agent_id, model, remote_mode, max_task_minutes, self_modification),
             Decision::Reject { error, note } => return envelope_reject(error, &note),
         };
-    let max_minutes = runtime_minutes.unwrap_or(policy_minutes);
+    let max_minutes = runtime_minutes
+        .unwrap_or(policy_minutes)
+        .min(profile.policy.max_wall_minutes_per_task);
 
-    // 并发上限（全局 + 项目级）：超限明确拒绝，不悄悄丢弃。
-    let tasks_now = store::load_tasks();
     let global_cap = config.clamped_max_workers() as usize;
-    let global_now = count_active(&tasks_now, chief_session_id, None);
     let project_cap = config
         .policy_for(&project_id)
         .map(|policy| policy.max_concurrent_workers as usize)
         .unwrap_or(1);
-    let project_now = count_active(&tasks_now, chief_session_id, Some(&project_id));
-    if global_now >= global_cap {
-        return envelope_reject(
-            "concurrency_limit",
-            &format!("并发上限 {global_cap} 已满（当前 {global_now} 个进行中）。等任务完成或用 task_cancel 腾位。"),
-        );
-    }
-    if project_now >= project_cap {
-        return envelope_reject(
-            "concurrency_limit",
-            &format!("项目并发上限 {project_cap} 已满（该项目当前 {project_now} 个进行中）。"),
-        );
-    }
 
     let now = now_ms();
     let task = Task {
         task_id: short_id("task"),
         request_id: request_id.to_string(),
+        staff_id: Some(profile.staff_id.clone()),
         chief_session_id: chief_session_id.to_string(),
         title,
         goal,
@@ -567,6 +784,9 @@ pub fn chief_task_start(app: &AppHandle, chief_session_id: &str, args: &Value) -
         agent_id: agent_id.clone(),
         model: model.clone(),
         status: TaskStatus::Proposed,
+        waiting_reason: None,
+        turn_count: 0,
+        cost_usd: 0.0,
         created_at: now,
         updated_at: now,
         last_event_at: now,
@@ -576,16 +796,125 @@ pub fn chief_task_start(app: &AppHandle, chief_session_id: &str, args: &Value) -
         telegram_message_id: None,
         artifacts: Vec::new(),
     };
-    let created_event = emit_event(&task, "task.created", TaskStatus::Proposed, None);
-    if let Err(error) = store::append_events(&[created_event]) {
-        return envelope_reject("internal", &format!("任务事件落盘失败：{error}"));
+    enum ReserveOutcome {
+        Existing(Task),
+        Inserted,
+        Rejected(Value),
     }
     let task_id = task.task_id.clone();
-    if let Err(error) = store::with_tasks(|tasks| {
+    let owner_staff_id = profile.staff_id.clone();
+    let reservation = store::with_tasks(|tasks| {
+        if let Some(existing) = tasks.iter().find(|task| task.request_id == request_id) {
+            let same_owner = existing.chief_session_id == chief_session_id
+                || existing.staff_id.as_deref() == Some(owner_staff_id.as_str());
+            if same_owner {
+                return Ok(ReserveOutcome::Existing(existing.clone()));
+            }
+            return Ok(ReserveOutcome::Rejected(envelope_reject(
+                "request_id_conflict",
+                "requestId 已属于另一位员工；幂等键必须在员工范围内唯一。",
+            )));
+        }
+        let global_now = tasks
+            .iter()
+            .filter(|task| {
+                (task.chief_session_id == chief_session_id
+                    || task.staff_id.as_deref() == Some(owner_staff_id.as_str()))
+                    && matches!(
+                        task.status,
+                        TaskStatus::Proposed
+                            | TaskStatus::Starting
+                            | TaskStatus::Running
+                            | TaskStatus::WaitingUser
+                    )
+            })
+            .count();
+        if global_now >= global_cap {
+            return Ok(ReserveOutcome::Rejected(envelope_reject(
+                "concurrency_limit",
+                &format!("并发上限 {global_cap} 已满（当前 {global_now} 个进行中）。等任务完成或用 task_cancel 腾位。"),
+            )));
+        }
+        let project_now = tasks
+            .iter()
+            .filter(|task| {
+                (task.chief_session_id == chief_session_id
+                    || task.staff_id.as_deref() == Some(owner_staff_id.as_str()))
+                    && matches!(
+                        task.status,
+                        TaskStatus::Proposed
+                            | TaskStatus::Starting
+                            | TaskStatus::Running
+                            | TaskStatus::WaitingUser
+                    )
+                    && task.project_id == project_id
+            })
+            .count();
+        if project_now >= project_cap {
+            return Ok(ReserveOutcome::Rejected(envelope_reject(
+                "concurrency_limit",
+                &format!("项目并发上限 {project_cap} 已满（该项目当前 {project_now} 个进行中）。"),
+            )));
+        }
         tasks.insert(0, task.clone());
-        Ok(())
-    }) {
-        return envelope_reject("internal", &format!("任务快照写入失败：{error}"));
+        Ok(ReserveOutcome::Inserted)
+    });
+    match reservation {
+        Ok(ReserveOutcome::Existing(existing)) => {
+            return envelope_ok(json!({
+                "task": task_card(&existing),
+                "existing": true,
+                "note": "同一 requestId 的任务已存在，返回原任务（幂等）。",
+            }));
+        }
+        Ok(ReserveOutcome::Rejected(value)) => return value,
+        Ok(ReserveOutcome::Inserted) => {}
+        Err(error) => return envelope_reject("internal", &format!("任务预留失败：{error}")),
+    }
+    let created_event = emit_event(&task, "task.created", TaskStatus::Proposed, None);
+    if let Err(error) = store::append_events(&[created_event]) {
+        let _ = store::with_tasks(|tasks| {
+            tasks.retain(|candidate| candidate.task_id != task_id);
+            Ok(())
+        });
+        return envelope_reject("internal", &format!("任务事件落盘失败：{error}"));
+    }
+    // Close the pause-with-new-task race: stop_all may have scanned the ledger
+    // just before this Proposed row became visible.
+    let policy_block = match staff_commands::profile_for_staff_id(&profile.staff_id) {
+        Some(current) if current.policy.paused_until_user_resumes => {
+            Some(("staff_paused", "员工在任务预留期间被暂停，任务已取消。".to_string()))
+        }
+        Some(current) if !current.policy.allow_background_work => Some((
+            "background_work_disabled",
+            "员工在任务预留期间关闭了后台工作，任务已取消。".to_string(),
+        )),
+        Some(current) => match current.policy.policy_for(&task.project_id) {
+            Some(policy) if policy.enabled && policy.remote_mode != RemoteMode::Blocked => None,
+            Some(_) => Some((
+                "project_blocked",
+                "项目在任务预留期间被禁用，任务已取消。".to_string(),
+            )),
+            None => Some((
+                "project_not_allowed",
+                "项目在任务预留期间被移除授权，任务已取消。".to_string(),
+            )),
+        },
+        None => Some((
+            "staff_missing",
+            "员工在任务预留期间被辞退，任务已取消。".to_string(),
+        )),
+    };
+    if let Some((error, note)) = policy_block {
+        let _ = finalize_task(
+            app,
+            chief_session_id,
+            &task_id,
+            TaskStatus::Cancelled,
+            Some(error),
+            Some(&note),
+        );
+        return envelope_reject(error, &note);
     }
 
     // 后台 spawn：task_start 立即返回（02-architecture.md §5.3）。
@@ -634,12 +963,45 @@ fn spawn_and_watch_worker(
     max_minutes: u32,
     self_modification: bool,
 ) {
+    let Some(preview) = store::find_task(task_id) else {
+        return;
+    };
+    let spawn_profile = preview
+        .staff_id
+        .as_deref()
+        .and_then(staff_commands::profile_for_staff_id)
+        .or_else(|| staff_commands::profile_for_session(chief_session_id));
+    let blocked = match spawn_profile {
+        Some(profile) if profile.policy.paused_until_user_resumes => {
+            Some(("staff_paused", "员工已暂停，任务未启动。"))
+        }
+        Some(profile) if !profile.policy.allow_background_work => {
+            Some(("background_work_disabled", "员工已关闭后台工作，任务未启动。"))
+        }
+        Some(profile) => match profile.policy.policy_for(&preview.project_id) {
+            Some(policy) if policy.enabled && policy.remote_mode != RemoteMode::Blocked => None,
+            Some(_) => Some(("project_blocked", "项目授权已禁用，任务未启动。")),
+            None => Some(("project_not_allowed", "项目授权已移除，任务未启动。")),
+        },
+        None => Some(("staff_missing", "员工档案不存在，任务未启动。")),
+    };
+    if let Some((reason, note)) = blocked {
+        let _ = finalize_task(
+            app,
+            chief_session_id,
+            task_id,
+            TaskStatus::Cancelled,
+            Some(reason),
+            Some(note),
+        );
+        return;
+    }
     // 1) Proposed → Starting
     let task = match store::with_tasks(|tasks| {
         let Some(task) = tasks.iter_mut().find(|t| t.task_id == task_id) else {
             return Err("task vanished".to_string());
         };
-        if !task.status.can_transition(TaskStatus::Starting) {
+        if task.status != TaskStatus::Proposed {
             return Err(format!(
                 "task status {} cannot start",
                 format!("{:?}", task.status).to_lowercase()
@@ -664,20 +1026,59 @@ fn spawn_and_watch_worker(
     }) {
         Ok(session) => session,
         Err(error) => {
-            finalize_task(app, chief_session_id, task_id, TaskStatus::Failed, None,
+            let _ = finalize_task(app, chief_session_id, task_id, TaskStatus::Failed, None,
                 Some(&format!("创建 worker 会话失败：{error}")));
             return;
         }
     };
     let _ = tee::register(&worker.id);
+    // Link the task before ACP starts: tools/list can arrive during agent
+    // initialization, and staff policy (notably Computer Use) must already be
+    // resolvable from the worker session id at that point.
+    if let Err(error) = store::with_tasks(|tasks| {
+        if let Some(task) = tasks.iter_mut().find(|task| task.task_id == task_id) {
+            task.worker_session_id = Some(worker.id.clone());
+            task.updated_at = now_ms();
+        } else {
+            return Err("task vanished before worker policy mapping".to_string());
+        }
+        Ok(())
+    }) {
+        runner::stop_session(app, &worker.id);
+        tee::unregister(&worker.id);
+        let _ = finalize_task(
+            app,
+            chief_session_id,
+            task_id,
+            TaskStatus::Failed,
+            Some("policy_mapping_failed"),
+            Some(&format!("worker 策略映射写入失败，拒绝启动 ACP：{error}")),
+        );
+        return;
+    }
 
     // 3) 启动 ACP + 应用模型
     if let Err(error) = runner::ensure_session(app, &worker.id, &task.agent_id, &worker.cwd) {
         runner::stop_session(app, &worker.id);
         tee::unregister(&worker.id);
-        finalize_task(app, chief_session_id, task_id, TaskStatus::Failed, None,
+        let _ = finalize_task(app, chief_session_id, task_id, TaskStatus::Failed, None,
             Some(&format!("Agent 启动失败：{error}")));
         return;
+    }
+    if remote_mode == RemoteMode::ReadOnly {
+        if let Err(error) = runner::enforce_read_only(app, &worker.id) {
+            runner::stop_session(app, &worker.id);
+            tee::unregister(&worker.id);
+            let _ = finalize_task(
+                app,
+                chief_session_id,
+                task_id,
+                TaskStatus::Failed,
+                Some("read_only_not_enforceable"),
+                Some(&format!("Agent 无法强制只读权限，已拒绝启动任务：{error}")),
+            );
+            return;
+        }
     }
     with_storage(app, |storage| {
         storage.update_session_status(&worker.id, "running")
@@ -702,7 +1103,7 @@ fn spawn_and_watch_worker(
     match runner::send_prompt(app, &worker.id, &prompt) {
         Ok(_) => {}
         Err(error) => {
-            finalize_task(app, chief_session_id, task_id, TaskStatus::Failed, None,
+            let _ = finalize_task(app, chief_session_id, task_id, TaskStatus::Failed, None,
                 Some(&format!("目标下发失败：{error}")));
             return;
         }
@@ -721,6 +1122,7 @@ fn spawn_and_watch_worker(
             ));
         }
         task.status = TaskStatus::Running;
+        task.turn_count = task.turn_count.saturating_add(1);
         task.updated_at = now_ms();
         task.last_event_at = now_ms();
         Ok(task.clone())
@@ -735,7 +1137,6 @@ fn spawn_and_watch_worker(
         Some(format!("worker 已启动（{} · {}）", task.agent_id, worker.id)),
     );
     let _ = store::append_events(&[running_event]);
-    notify(&task, "task.started", None);
 
     // 6) 观测直到空闲 / 超时 / 被取消
     watch_worker_loop(app, chief_session_id, task_id, &worker.id, max_minutes);
@@ -762,7 +1163,7 @@ fn watch_worker_loop(
         if std::time::Instant::now() >= deadline {
             runner::cancel_turn(app, worker_session_id);
             let _ = runner::wait_turn_idle_checked(app, worker_session_id, 10_000, || true);
-            finalize_task(app, chief_session_id, task_id, TaskStatus::Failed,
+            let _ = finalize_task(app, chief_session_id, task_id, TaskStatus::Failed,
                 Some("timeout"), Some(&format!("任务超过 {max_minutes} 分钟上限，已停止。")));
             return;
         }
@@ -778,6 +1179,28 @@ fn watch_worker_loop(
 }
 
 fn finish_completed(app: &AppHandle, chief_session_id: &str, task_id: &str, worker_session_id: &str) {
+    let cost_cap = store::find_task(task_id)
+        .and_then(|task| {
+            let staff_id = task.staff_id?;
+            let profile = staff_commands::profile_for_staff_id(&staff_id)?;
+            Some((profile.policy.max_cost_per_task_usd, task.project_id))
+        });
+    let reported_cost = worker_reported_cost_usd(worker_session_id);
+    if let Some((cap, project_id)) = cost_cap {
+        if cap > 0.0 && reported_cost >= cap {
+            let _ = finalize_task(
+                app,
+                chief_session_id,
+                task_id,
+                TaskStatus::Failed,
+                Some("cost_budget_exhausted"),
+                Some(&format!(
+                    "任务 {project_id} 已报告 {reported_cost:.4} USD，达到 {cap:.4} USD 成本上限，已停止。"
+                )),
+            );
+            return;
+        }
+    }
     let events = tee::replay(worker_session_id)
         .map(|(events, _)| events)
         .unwrap_or_default();
@@ -802,7 +1225,14 @@ fn finish_completed(app: &AppHandle, chief_session_id: &str, task_id: &str, work
         }
         Ok(())
     });
-    finalize_task(app, chief_session_id, task_id, TaskStatus::Completed, None, Some(&combined));
+    let _ = finalize_task(
+        app,
+        chief_session_id,
+        task_id,
+        TaskStatus::Completed,
+        None,
+        Some(&combined),
+    );
 }
 
 /// 任务收尾：状态转移 + 事件 + Telegram 卡 + 唤醒收件箱。幂等（终态跳过）。
@@ -813,7 +1243,11 @@ fn finalize_task(
     status: TaskStatus,
     stop_reason: Option<&str>,
     summary: Option<&str>,
-) {
+) -> Result<bool, String> {
+    let cost_usd = store::find_task(task_id)
+        .and_then(|task| task.worker_session_id)
+        .map(|worker_sid| worker_reported_cost_usd(&worker_sid))
+        .unwrap_or(0.0);
     let finalized = store::with_tasks(|tasks| {
         let Some(task) = tasks.iter_mut().find(|t| t.task_id == task_id) else {
             return Ok::<Option<Task>, String>(None);
@@ -825,13 +1259,17 @@ fn finalize_task(
             return Ok(None);
         }
         task.status = status;
+        task.cost_usd = cost_usd;
+        task.waiting_reason = None;
         task.updated_at = now_ms();
         task.last_event_at = now_ms();
         task.stop_reason = stop_reason.map(str::to_string);
         task.last_summary = summary.map(str::to_string);
         Ok(Some(task.clone()))
     });
-    let Some(task) = finalized.ok().flatten() else { return };
+    let Some(task) = finalized? else {
+        return Ok(false);
+    };
     let kind = match status {
         TaskStatus::Completed => "task.completed",
         TaskStatus::Failed => "task.failed",
@@ -840,9 +1278,19 @@ fn finalize_task(
         _ => "task.progress",
     };
     let event = emit_event(&task, kind, status, task.last_summary.clone());
-    let _ = store::append_events(&[event.clone()]);
+    store::append_events(&[event.clone()])?;
+    record_task_journal(&task, status);
     notify(&task, kind, task.last_summary.as_deref());
-    queue_wake(chief_session_id, event);
+    let wake_session_id = task
+        .staff_id
+        .as_deref()
+        .and_then(staff_commands::profile_for_staff_id)
+        .map(|profile| profile.session_id)
+        .unwrap_or_else(|| chief_session_id.to_string());
+    queue_wake(&wake_session_id, event);
+    if matches!(status, TaskStatus::Completed | TaskStatus::Failed) {
+        activate_task_condition(&task, status);
+    }
     // 终态任务把 worker 会话状态放回 exited（UI 列表不再显示运行中）。
     if status.is_terminal() {
         if let Some(worker_sid) = task.worker_session_id.as_deref() {
@@ -850,6 +1298,77 @@ fn finalize_task(
                 storage.update_session_status(worker_sid, "exited")
             })
             .ok();
+        }
+    }
+    Ok(true)
+}
+
+fn record_task_journal(task: &Task, status: TaskStatus) {
+    let Some(staff_id) = task.staff_id.as_deref() else {
+        return;
+    };
+    let date = super::memory::journal_date_for_ms(task.updated_at);
+    let entry = format!(
+        "### {} · {}\n- taskId: `{}`\n- project: `{}`\n- status: `{}`\n- summary: {}",
+        task.title,
+        super::memory::journal_date_for_ms(task.updated_at),
+        task.task_id,
+        task.project_id,
+        format!("{status:?}").to_lowercase(),
+        task.last_summary.as_deref().unwrap_or("（无摘要）"),
+    );
+    if let Err(error) = super::memory::append_journal_with_source_refs(
+        staff_id,
+        &date,
+        &entry,
+        vec![super::memory::MemorySourceRef::task(&task.task_id)],
+    ) {
+        crate::debug_log::append(
+            "chief",
+            "warn",
+            &task.task_id,
+            "task journal append failed",
+            Some(&error),
+        );
+    }
+}
+
+fn activate_task_condition(task: &Task, status: TaskStatus) {
+    let outcome = if status == TaskStatus::Completed {
+        "completed"
+    } else {
+        "failed"
+    };
+    let condition = format!("task:{}:{outcome}", task.task_id);
+    let changed = super::commitments::with_ledger(|ledger| {
+        let now = now_ms();
+        let mut changed = Vec::new();
+        for commitment in &mut ledger.commitments {
+            if commitment.status == super::commitments::CommitmentStatus::Open
+                && commitment.condition.as_deref() == Some(condition.as_str())
+            {
+                commitment.status = super::commitments::CommitmentStatus::Due;
+                commitment.updated_at = now;
+                changed.push(commitment.clone());
+            }
+        }
+        Ok(changed)
+    })
+    .unwrap_or_default();
+    for commitment in changed {
+        if let Some(profile) = staff_commands::profile_for_staff_id(&commitment.staff_id) {
+            if !profile.policy.paused_until_user_resumes
+                && profile.policy.allow_background_work
+                && profile.policy.autonomy != staff::StaffAutonomy::Manual
+            {
+                queue_host_text(
+                    &profile.session_id,
+                    &format!(
+                        "[HOST COMMITMENT DUE: condition]\ncommitmentId: {}\ncondition: {}\n{}",
+                        commitment.commitment_id, condition, commitment.text
+                    ),
+                );
+            }
         }
     }
 }
@@ -866,7 +1385,7 @@ pub fn chief_task_send(app: &AppHandle, chief_session_id: &str, args: &Value) ->
     }
     let urgency = args.get("urgency").and_then(Value::as_str).unwrap_or("normal");
     let command_id = args.get("commandId").and_then(Value::as_str).unwrap_or("");
-    if !command_id.is_empty() && !mark_sent_command(task_id, command_id) {
+    if !command_id.is_empty() && sent_command_seen(task_id, command_id) {
         return envelope_ok(json!({
             "delivered": true,
             "existing": true,
@@ -876,31 +1395,121 @@ pub fn chief_task_send(app: &AppHandle, chief_session_id: &str, args: &Value) ->
     let Some(task) = store::find_task(task_id) else {
         return envelope_reject("task_not_found", "任务不存在（或不属于这个 Chief）。");
     };
-    if let Err((error, note)) = policy::validate_task_access(&task, chief_session_id, "send") {
+    let Some(profile) = staff_commands::profile_for_session(chief_session_id) else {
+        return envelope_reject("staff_missing", "当前会话没有绑定员工档案。");
+    };
+    if profile.policy.paused_until_user_resumes {
+        return envelope_reject(
+            "staff_paused",
+            "员工已持久暂停；恢复后才能继续向 worker 追加指令。",
+        );
+    }
+    if !profile.policy.allow_background_work {
+        return envelope_reject(
+            "background_work_disabled",
+            "员工已关闭后台工作，不能再向 worker 追加指令。",
+        );
+    }
+    if let Err((error, note)) = policy::validate_task_access_for_staff(
+        &task,
+        chief_session_id,
+        Some(&profile.staff_id),
+        "send",
+    ) {
         return envelope_reject(error, &note);
+    }
+    let Some(project_policy) = profile.policy.policy_for(&task.project_id) else {
+        return envelope_reject(
+            "project_not_allowed",
+            "项目已从员工白名单移除，不能继续向该任务发送指令。",
+        );
+    };
+    if !project_policy.enabled || project_policy.remote_mode == RemoteMode::Blocked {
+        return envelope_reject("project_blocked", "项目授权已禁用，不能继续该任务。");
+    }
+    if task.turn_count >= profile.policy.max_turns_per_task {
+        return envelope_reject(
+            "turn_budget_exhausted",
+            &format!(
+                "任务已达到 {} 个 worker turn 上限。请新建任务或由用户提高预算。",
+                profile.policy.max_turns_per_task
+            ),
+        );
     }
     let Some(worker_sid) = task.worker_session_id.clone() else {
         return envelope_reject("task_not_running", "worker 还没启动。");
     };
+    let model_calls = worker_reported_model_calls(&worker_sid).max(task.turn_count);
+    if profile.policy.max_model_calls_per_task > 0
+        && model_calls >= profile.policy.max_model_calls_per_task
+    {
+        return envelope_reject(
+            "model_call_budget_exhausted",
+            &format!(
+                "任务已记录 {model_calls} 个模型回合，达到 {} 次上限。",
+                profile.policy.max_model_calls_per_task
+            ),
+        );
+    }
+    let spent_usd = worker_reported_cost_usd(&worker_sid);
+    if profile.policy.max_cost_per_task_usd > 0.0
+        && spent_usd >= profile.policy.max_cost_per_task_usd
+    {
+        return envelope_reject(
+            "cost_budget_exhausted",
+            &format!(
+                "任务已报告 {:.4} USD，达到 {:.4} USD 成本上限。",
+                spent_usd, profile.policy.max_cost_per_task_usd
+            ),
+        );
+    }
     if urgency == "interrupt" {
         runner::cancel_turn(app, &worker_sid);
         let _ = runner::wait_turn_idle_checked(app, &worker_sid, 8_000, || true);
     }
-    match runner::send_prompt(app, &worker_sid, message) {
+    if !command_id.is_empty() && !mark_sent_command(task_id, command_id) {
+        return envelope_ok(json!({
+            "delivered": true,
+            "existing": true,
+            "note": "同一 commandId 已送达过（幂等跳过）。",
+        }));
+    }
+    let mut effective_message = message.to_string();
+    if project_policy.remote_mode == RemoteMode::ReadOnly {
+        effective_message.push_str("\n\n[HOST 约束] 本任务为只读模式：不要修改任何文件。");
+    }
+    if project_policy.self_modification {
+        effective_message.push_str(
+            "\n\n[HOST 约束] 自我修改仓库：只产出 worktree/diff/tests，不 push、不合并、不发布。",
+        );
+    }
+    match runner::send_prompt(app, &worker_sid, &effective_message) {
         Ok(_) => {
             let _ = store::with_tasks(|tasks| {
                 if let Some(task) = tasks.iter_mut().find(|t| t.task_id == task_id) {
                     task.last_event_at = now_ms();
+                    task.turn_count = task.turn_count.saturating_add(1);
+                    task.updated_at = now_ms();
                 }
                 Ok(())
             });
             envelope_ok(json!({ "delivered": true }))
         }
-        Err(error) if error.contains("already in flight") => envelope_reject(
-            "worker_busy",
-            "worker 正在回合中。可用 urgency=interrupt 打断，或稍后再发。",
-        ),
-        Err(error) => envelope_reject("deliver_failed", &error),
+        Err(error) if error.contains("already in flight") => {
+            if !command_id.is_empty() {
+                unmark_sent_command(task_id, command_id);
+            }
+            envelope_reject(
+                "worker_busy",
+                "worker 正在回合中。可用 urgency=interrupt 打断，或稍后再发。",
+            )
+        }
+        Err(error) => {
+            if !command_id.is_empty() {
+                unmark_sent_command(task_id, command_id);
+            }
+            envelope_reject("deliver_failed", &error)
+        }
     }
 }
 
@@ -908,7 +1517,7 @@ pub fn chief_task_status(chief_session_id: &str, task_id: &str) -> Value {
     let Some(task) = store::find_task(task_id) else {
         return envelope_reject("task_not_found", "任务不存在。");
     };
-    if task.chief_session_id != chief_session_id {
+    if !task_belongs_to_session(&task, chief_session_id) {
         return envelope_reject("task_not_owned", "任务不属于这个 Chief。");
     }
     envelope_ok(json!({
@@ -925,7 +1534,14 @@ pub fn chief_task_cancel(app: &AppHandle, chief_session_id: &str, args: &Value) 
     let Some(task) = store::find_task(task_id) else {
         return envelope_reject("task_not_found", "任务不存在。");
     };
-    if let Err((error, note)) = policy::validate_task_access(&task, chief_session_id, "cancel") {
+    let staff_id = staff_commands::profile_for_session(chief_session_id)
+        .map(|profile| profile.staff_id);
+    if let Err((error, note)) = policy::validate_task_access_for_staff(
+        &task,
+        chief_session_id,
+        staff_id.as_deref(),
+        "cancel",
+    ) {
         return envelope_reject(error, &note);
     }
     if task.status == TaskStatus::Cancelled {
@@ -934,8 +1550,24 @@ pub fn chief_task_cancel(app: &AppHandle, chief_session_id: &str, args: &Value) 
     if let Some(worker_sid) = task.worker_session_id.as_deref() {
         runner::cancel_turn(app, worker_sid);
         let _ = runner::wait_turn_idle_checked(app, worker_sid, 8_000, || true);
+        let _ = crate::browser::close_tabs_for_session(app, worker_sid);
     }
-    finalize_task(app, chief_session_id, task_id, TaskStatus::Cancelled, Some("cancelled"), Some(reason));
+    match finalize_task(
+        app,
+        chief_session_id,
+        task_id,
+        TaskStatus::Cancelled,
+        Some("cancelled"),
+        Some(reason),
+    ) {
+        Ok(_) => {}
+        Err(error) => {
+            return envelope_reject(
+                "cancel_persist_failed",
+                &format!("取消失败：任务账本未确认写入（{error}）。"),
+            )
+        }
+    }
     envelope_ok(json!({ "task": store::find_task(task_id).map(|t| task_card(&t)) }))
 }
 
@@ -946,7 +1578,7 @@ pub fn chief_task_collect(chief_session_id: &str, args: &Value) -> Value {
     let Some(task) = store::find_task(task_id) else {
         return envelope_reject("task_not_found", "任务不存在。");
     };
-    if task.chief_session_id != chief_session_id {
+    if !task_belongs_to_session(&task, chief_session_id) {
         return envelope_reject("task_not_owned", "任务不属于这个 Chief。");
     }
     let Some(worker_sid) = task.worker_session_id.clone() else {
@@ -961,6 +1593,12 @@ pub fn chief_task_collect(chief_session_id: &str, args: &Value) -> Value {
         .map(|(events, _)| events)
         .unwrap_or_default();
     let (summary, tool_calls, files, tool_failures) = summarize_worker_events(&events);
+    let artifact_limit = args
+        .get("artifactLimit")
+        .and_then(Value::as_u64)
+        .unwrap_or(20)
+        .min(20) as usize;
+    let files = files.into_iter().take(artifact_limit).collect::<Vec<_>>();
     envelope_ok(json!({
         "task": task_card(&task),
         "interim": !task.status.is_terminal(),
@@ -979,10 +1617,31 @@ pub fn chief_task_resume(app: &AppHandle, chief_session_id: &str, args: &Value) 
     let Some(task) = store::find_task(task_id) else {
         return envelope_reject("task_not_found", "任务不存在。");
     };
-    if task.chief_session_id != chief_session_id {
+    if !task_belongs_to_session(&task, chief_session_id) {
         return envelope_reject("task_not_owned", "任务不属于这个 Chief。");
     }
-    if !task.status.can_transition(TaskStatus::Starting) {
+    let Some(profile) = staff_commands::profile_for_session(chief_session_id) else {
+        return envelope_reject("staff_missing", "当前会话没有绑定员工档案。");
+    };
+    if profile.policy.paused_until_user_resumes {
+        return envelope_reject("staff_paused", "员工已持久暂停；恢复后才能 resume。");
+    }
+    if !profile.policy.allow_background_work {
+        return envelope_reject(
+            "background_work_disabled",
+            "员工已关闭后台工作，不能 resume。",
+        );
+    }
+    if task.turn_count >= profile.policy.max_turns_per_task {
+        return envelope_reject(
+            "turn_budget_exhausted",
+            &format!(
+                "任务已达到 {} 个 worker turn 上限，不能 resume。",
+                profile.policy.max_turns_per_task
+            ),
+        );
+    }
+    if task.status != TaskStatus::Interrupted {
         return envelope_reject(
             "not_resumable",
             &format!(
@@ -994,31 +1653,80 @@ pub fn chief_task_resume(app: &AppHandle, chief_session_id: &str, args: &Value) 
     let Some(worker_sid) = task.worker_session_id.clone() else {
         return envelope_reject("not_resumable", "worker 从未启动，没有可恢复的会话。请重新发起任务。");
     };
+    let model_calls = worker_reported_model_calls(&worker_sid).max(task.turn_count);
+    if profile.policy.max_model_calls_per_task > 0
+        && model_calls >= profile.policy.max_model_calls_per_task
+    {
+        return envelope_reject(
+            "model_call_budget_exhausted",
+            &format!(
+                "任务已记录 {model_calls} 个模型回合，达到 {} 次上限，不能 resume。",
+                profile.policy.max_model_calls_per_task
+            ),
+        );
+    }
+    let spent_usd = worker_reported_cost_usd(&worker_sid);
+    if profile.policy.max_cost_per_task_usd > 0.0
+        && spent_usd >= profile.policy.max_cost_per_task_usd
+    {
+        return envelope_reject(
+            "cost_budget_exhausted",
+            &format!(
+                "任务已报告 {:.4} USD，达到 {:.4} USD 成本上限，不能 resume。",
+                spent_usd, profile.policy.max_cost_per_task_usd
+            ),
+        );
+    }
+    let Some(project_policy) = profile.policy.policy_for(&task.project_id) else {
+        return envelope_reject(
+            "project_not_allowed",
+            "项目已从该员工的白名单移除，不能 resume。",
+        );
+    };
+    if !project_policy.enabled || project_policy.remote_mode == RemoteMode::Blocked {
+        return envelope_reject("project_blocked", "项目授权已禁用，不能 resume。");
+    }
+    let remote_mode = project_policy.remote_mode;
+    let max_minutes = project_policy
+        .max_task_minutes
+        .min(profile.policy.max_wall_minutes_per_task);
+    let self_modification = project_policy.self_modification;
     // 标 Starting（resume 转移），后台重启进程并重发指令。
     if let Err(error) = store::with_tasks(|tasks| {
         let Some(t) = tasks.iter_mut().find(|t| t.task_id == task_id) else {
             return Err("task vanished".to_string());
         };
-        if !t.status.can_transition(TaskStatus::Starting) {
+        if t.status == TaskStatus::Starting {
+            return Err("__resume_in_progress__".to_string());
+        }
+        if t.status != TaskStatus::Interrupted {
             return Err(format!("状态 {} 不能恢复", format!("{:?}", t.status).to_lowercase()));
         }
         t.status = TaskStatus::Starting;
+        t.chief_session_id = chief_session_id.to_string();
+        if t.staff_id.is_none() {
+            t.staff_id = Some(profile.staff_id.clone());
+        }
+        t.turn_count = t.turn_count.saturating_add(1);
         t.updated_at = now_ms();
         t.last_event_at = now_ms();
         Ok(())
     }) {
+        if error == "__resume_in_progress__" {
+            return envelope_ok(json!({
+                "resuming": true,
+                "existing": true,
+                "taskId": task_id,
+                "note": "该任务已经在恢复中（幂等）。"
+            }));
+        }
         return envelope_reject("internal", &error);
     }
-    let config = store::load_config();
-    let (remote_mode, max_minutes, self_modification) = config
-        .policy_for(&task.project_id)
-        .map(|policy| (policy.remote_mode, policy.max_task_minutes, policy.self_modification))
-        .unwrap_or((RemoteMode::ApproveWrites, 120, false));
     let app_handle = app.clone();
     let chief_sid = chief_session_id.to_string();
     let resume_task_id = task_id.to_string();
     let resume_worker = worker_sid.clone();
-    let _ = std::thread::Builder::new()
+    if std::thread::Builder::new()
         .name(format!("chief-resume-{task_id}"))
         .spawn(move || {
             resume_and_watch(
@@ -1031,7 +1739,21 @@ pub fn chief_task_resume(app: &AppHandle, chief_session_id: &str, args: &Value) 
                 self_modification,
                 &note,
             );
+        })
+        .is_err()
+    {
+        let _ = store::with_tasks(|tasks| {
+            if let Some(task) = tasks.iter_mut().find(|task| task.task_id == task_id) {
+                if task.status == TaskStatus::Starting {
+                    task.status = TaskStatus::Interrupted;
+                    task.turn_count = task.turn_count.saturating_sub(1);
+                    task.error = Some("resume thread spawn failed".to_string());
+                }
+            }
+            Ok(())
         });
+        return envelope_reject("internal", "恢复线程创建失败，任务已回到 interrupted。");
+    }
     envelope_ok(json!({ "resuming": true, "taskId": task_id }))
 }
 
@@ -1047,17 +1769,48 @@ fn resume_and_watch(
     note: &str,
 ) {
     let Some(task) = store::find_task(task_id) else { return };
-    let cwd = with_storage(app, |storage| {
+    if task.status != TaskStatus::Starting {
+        return;
+    }
+    let Some(cwd) = with_storage(app, |storage| {
         storage
             .find_session(worker_session_id)
             .ok()
             .flatten()
             .map(|session| session.cwd)
-    })
-    .unwrap_or_else(|| task.goal.clone());
+    }) else {
+        let _ = store::with_tasks(|tasks| {
+            if let Some(task) = tasks.iter_mut().find(|task| task.task_id == task_id) {
+                if task.status == TaskStatus::Starting {
+                    task.status = TaskStatus::Interrupted;
+                    task.error = Some("worker session disappeared before resume".to_string());
+                }
+            }
+            Ok(())
+        });
+        return;
+    };
     if let Err(error) = runner::ensure_session(app, worker_session_id, &task.agent_id, &cwd) {
-        finalize_task(app, chief_session_id, task_id, TaskStatus::Failed, None,
+        let _ = finalize_task(app, chief_session_id, task_id, TaskStatus::Failed, None,
             Some(&format!("恢复失败：{error}")));
+        return;
+    }
+    if remote_mode == RemoteMode::ReadOnly {
+        if let Err(error) = runner::enforce_read_only(app, worker_session_id) {
+            runner::stop_session(app, worker_session_id);
+            let _ = finalize_task(
+                app,
+                chief_session_id,
+                task_id,
+                TaskStatus::Failed,
+                Some("read_only_not_enforceable"),
+                Some(&format!("Agent 无法强制只读权限，已拒绝恢复：{error}")),
+            );
+            return;
+        }
+    }
+    if !store::find_task(task_id).is_some_and(|task| task.status == TaskStatus::Starting) {
+        runner::stop_session(app, worker_session_id);
         return;
     }
     with_storage(app, |storage| {
@@ -1080,19 +1833,28 @@ fn resume_and_watch(
     match runner::send_prompt(app, worker_session_id, &prompt) {
         Ok(_) => {}
         Err(error) => {
-            finalize_task(app, chief_session_id, task_id, TaskStatus::Failed, None,
+            let _ = finalize_task(app, chief_session_id, task_id, TaskStatus::Failed, None,
                 Some(&format!("恢复下发失败：{error}")));
             return;
         }
     }
-    let _ = store::with_tasks(|tasks| {
+    let transitioned = store::with_tasks(|tasks| {
         if let Some(t) = tasks.iter_mut().find(|t| t.task_id == task_id) {
+            if t.status != TaskStatus::Starting {
+                return Ok(false);
+            }
             t.status = TaskStatus::Running;
             t.updated_at = now_ms();
             t.last_event_at = now_ms();
+            return Ok(true);
         }
-        Ok(())
-    });
+        Ok(false)
+    })
+    .unwrap_or(false);
+    if !transitioned {
+        runner::cancel_turn(app, worker_session_id);
+        return;
+    }
     watch_worker_loop(app, chief_session_id, task_id, worker_session_id, max_minutes);
 }
 
@@ -1134,6 +1896,7 @@ pub fn observe_chief_event(
             | "plan/timeout"
     );
     if !entered && !cleared {
+        touch_worker_progress(session_id);
         return;
     }
     let Some(task) = store::load_tasks().into_iter().find(|task| {
@@ -1156,6 +1919,13 @@ pub fn observe_chief_event(
                 return Ok(None);
             }
             task.status = WaitingUser;
+            task.waiting_reason = Some(match method {
+                "permission/prompt" => "permission",
+                "question/prompt" => "question",
+                "plan/approval" => "plan_approval",
+                _ => "user_input",
+            }
+            .to_string());
             task.updated_at = now_ms();
             task.last_event_at = now_ms();
             if summary.is_some() {
@@ -1185,6 +1955,7 @@ pub fn observe_chief_event(
                 return Ok(None);
             }
             task.status = Running;
+            task.waiting_reason = None;
             task.updated_at = now_ms();
             task.last_event_at = now_ms();
             Ok(Some(task.clone()))
@@ -1204,32 +1975,146 @@ pub fn observe_chief_event(
 
 /// 全局急停（03-security-permissions.md §13 第一层）：取消 Chief 全部
 /// 进行中任务。幂等；不清转录与审计。返回停止数。
-pub fn chief_stop_all(app: &AppHandle) -> usize {
+pub fn chief_stop_all(app: &AppHandle) -> Result<usize, String> {
+    let registry = staff::load();
+    let mut staff_sessions: HashSet<String> = registry
+        .staff
+        .iter()
+        .map(|profile| profile.session_id.clone())
+        .filter(|session| !session.is_empty())
+        .collect();
+    let staff_ids: HashSet<String> = registry
+        .staff
+        .iter()
+        .map(|profile| profile.staff_id.clone())
+        .collect();
+    if !registry.staff.is_empty() {
+        staff::with_registry(|registry| {
+            registry.paused_until_user_resumes = true;
+            for profile in &mut registry.staff {
+                profile.policy.paused_until_user_resumes = true;
+                profile.updated_at = now_ms();
+            }
+            Ok(())
+        })?;
+    }
+    // Persistent pause is an emergency boundary, not only a task-queue flag.
+    // Revoke every shared Computer Use window so an already-authorized action
+    // cannot continue after `/stop`.
+    crate::computer::revoke_all();
     let config = store::load_config();
-    let Some(chief_sid) = config.chief_session_id.clone() else {
-        return 0;
-    };
+    if staff_sessions.is_empty() {
+        if registry.legacy_migration_completed_at > 0 {
+            return Ok(0);
+        }
+        let Some(chief_sid) = config.chief_session_id.clone() else {
+            return Ok(0);
+        };
+        staff_sessions.insert(chief_sid);
+    }
     let active: Vec<Task> = store::load_tasks()
         .into_iter()
-        .filter(|task| task.chief_session_id == chief_sid)
+        .filter(|task| {
+            staff_sessions.contains(&task.chief_session_id)
+                || task
+                    .staff_id
+                    .as_ref()
+                    .is_some_and(|staff_id| staff_ids.contains(staff_id))
+        })
         .filter(|task| {
             matches!(
                 task.status,
-                TaskStatus::Starting | TaskStatus::Running | TaskStatus::WaitingUser
+                TaskStatus::Proposed
+                    | TaskStatus::Starting
+                    | TaskStatus::Running
+                    | TaskStatus::WaitingUser
             )
         })
         .collect();
     let mut stopped = 0usize;
+    let mut persist_error: Option<String> = None;
     for task in active {
         if let Some(worker_sid) = task.worker_session_id.as_deref() {
             runner::cancel_turn(app, worker_sid);
             let _ = runner::wait_turn_idle_checked(app, worker_sid, 8_000, || true);
+            let _ = crate::browser::close_tabs_for_session(app, worker_sid);
         }
-        finalize_task(app, &chief_sid, &task.task_id, TaskStatus::Cancelled,
-            Some("panic_stop"), Some("全局急停。"));
-        stopped += 1;
+        match finalize_task(
+            app,
+            &task.chief_session_id,
+            &task.task_id,
+            TaskStatus::Cancelled,
+            Some("panic_stop"),
+            Some("全局急停。"),
+        ) {
+            Ok(true) => stopped += 1,
+            Ok(false) => {}
+            Err(error) => {
+                if persist_error.is_none() {
+                    persist_error = Some(format!("任务 {} 取消失败：{error}", task.task_id));
+                }
+            }
+        }
     }
-    stopped
+    match persist_error {
+        Some(error) => Err(format!("已停止 {stopped} 个，但仍有任务账本写入失败：{error}")),
+        None => Ok(stopped),
+    }
+}
+
+/// Stop only one dismissed employee's active tasks. The task ledger remains as
+/// audit history, but no worker is left running after its owner is removed.
+pub fn chief_cancel_staff_tasks(
+    app: &AppHandle,
+    staff_id: &str,
+    chief_session_id: &str,
+    reason: &str,
+) -> Result<usize, String> {
+    let active: Vec<Task> = store::load_tasks()
+        .into_iter()
+        .filter(|task| {
+            task.staff_id.as_deref() == Some(staff_id)
+                || task.chief_session_id == chief_session_id
+        })
+        .filter(|task| {
+            matches!(
+                task.status,
+                TaskStatus::Proposed
+                    | TaskStatus::Starting
+                    | TaskStatus::Running
+                    | TaskStatus::WaitingUser
+            )
+        })
+        .collect();
+    let mut stopped = 0usize;
+    let mut pending_error: Option<String> = None;
+    for task in active {
+        if let Some(worker_sid) = task.worker_session_id.as_deref() {
+            runner::cancel_turn(app, worker_sid);
+            let _ = runner::wait_turn_idle_checked(app, worker_sid, 8_000, || true);
+            let _ = crate::browser::close_tabs_for_session(app, worker_sid);
+        }
+        match finalize_task(
+            app,
+            &task.chief_session_id,
+            &task.task_id,
+            TaskStatus::Cancelled,
+            Some("staff_dismissed"),
+            Some(reason),
+        ) {
+            Ok(true) => stopped += 1,
+            Ok(false) => {}
+            Err(error) => {
+                if pending_error.is_none() {
+                    pending_error = Some(format!("任务 {} 取消失败：{error}", task.task_id));
+                }
+            }
+        }
+    }
+    match pending_error {
+        Some(error) => Err(format!("员工仍有活动任务未确认取消：{error}")),
+        None => Ok(stopped),
+    }
 }
 
 pub enum InboundOutcome {
@@ -1247,15 +2132,46 @@ pub fn chief_inbound_text(app: &AppHandle, text: &str) -> Result<InboundOutcome,
         return Err("chief mode off".to_string());
     }
     let (chief_session_id, _created) = ensure_chief_session(app)?;
+    inbound_to_session(app, &chief_session_id, text)
+}
+
+/// Telegram 私聊 → 绑定员工（档案 telegramChatId）；未绑定则使用第一位员工。
+pub fn chief_inbound_text_for_chat(
+    app: &AppHandle,
+    chat_id: i64,
+    text: &str,
+) -> Result<InboundOutcome, String> {
+    let config = store::load_config();
+    if config.mode != RemoteWorkMode::Chief
+        && !staff_commands::telegram_chat_routes_to_staff(chat_id)
+    {
+        return Err("chief mode off".to_string());
+    }
+    let Some(profile) = staff_commands::profile_for_chat(chat_id) else {
+        return Err("这个 Telegram 私聊还没有绑定员工；请先在本地员工档案里绑定。".to_string());
+    };
+    let session_id =
+        staff_commands::chief_staff_ensure_session(app.clone(), profile.staff_id.clone())?;
+    register_chief_session(&session_id);
+    let _ = tee::register(&session_id);
+    ensure_chief_started(app, &session_id)?;
+    inbound_to_session(app, &session_id, text)
+}
+
+fn inbound_to_session(
+    app: &AppHandle,
+    chief_session_id: &str,
+    text: &str,
+) -> Result<InboundOutcome, String> {
     ensure_chief_started(app, &chief_session_id)?;
-    if !runner::turn_idle_now(app, &chief_session_id) {
-        queue_user_text(&chief_session_id, text);
+    if !runner::turn_idle_now(app, chief_session_id) {
+        queue_user_text(chief_session_id, text);
         return Ok(InboundOutcome::Queued);
     }
-    match runner::send_prompt(app, &chief_session_id, text) {
+    match runner::send_prompt(app, chief_session_id, text) {
         Ok(_) => Ok(InboundOutcome::Sent),
         Err(error) if error.contains("already in flight") => {
-            queue_user_text(&chief_session_id, text);
+            queue_user_text(chief_session_id, text);
             Ok(InboundOutcome::Queued)
         }
         Err(error) => Err(error),
@@ -1268,6 +2184,166 @@ static HEARTBEAT: OnceLock<()> = OnceLock::new();
 static HEARTBEAT_TICKS: AtomicU64 = AtomicU64::new(0);
 /// 懒启动失败只记一次 warn（成功后复位），避免未登录 agent 每 2s 刷屏。
 static CHIEF_LAZYSTART_WARNED: AtomicBool = AtomicBool::new(false);
+
+fn heartbeat_staff(app: &AppHandle, profile: &staff::StaffProfile) {
+    let chief_sid = profile.session_id.as_str();
+    if chief_sid.is_empty() {
+        return;
+    }
+    if profile.bootstrap_version < staff_commands::CURRENT_BOOTSTRAP_VERSION
+        && pending_user_count(chief_sid) == 0
+        && runner::turn_idle_now(app, chief_sid)
+    {
+        staff_commands::maybe_queue_bootstrap(profile);
+    }
+    let pending_work =
+        pending_user_count(chief_sid) > 0 || pending_wake_count(chief_sid) > 0;
+    if !runner::session_alive(app, chief_sid) {
+        if pending_work {
+            if let Err(error) = ensure_chief_started(app, chief_sid) {
+                if !CHIEF_LAZYSTART_WARNED.swap(true, Ordering::Relaxed) {
+                    crate::debug_log::append(
+                        "chief",
+                        "warn",
+                        chief_sid,
+                        "staff heartbeat lazy-start failed; will retry",
+                        Some(&error),
+                    );
+                }
+                return;
+            }
+            CHIEF_LAZYSTART_WARNED.store(false, Ordering::Relaxed);
+        } else {
+            let running = with_storage(app, |storage| {
+                storage
+                    .find_session(chief_sid)
+                    .ok()
+                    .flatten()
+                    .map(|session| session.status == "running")
+                    .unwrap_or(false)
+            });
+            if running {
+                with_storage(app, |storage| storage.update_session_status(chief_sid, "exited")).ok();
+            }
+        }
+    }
+
+    if !profile.policy.paused_until_user_resumes && runner::turn_idle_now(app, chief_sid) {
+        if let Some(text) = pop_bootstrap_text(chief_sid) {
+            if runner::send_prompt(app, chief_sid, &text).is_ok() {
+                staff_commands::mark_bootstrap_sent(chief_sid);
+            } else {
+                queue_bootstrap_text(chief_sid, &text);
+            }
+            return;
+        }
+    }
+
+    if runner::turn_idle_now(app, chief_sid) {
+        if let Some(text) = pop_user_text(chief_sid) {
+            if runner::send_prompt(app, chief_sid, &text).is_err() {
+                queue_user_text(chief_sid, &text);
+            }
+            return;
+        }
+    }
+
+    if !profile.policy.paused_until_user_resumes && runner::turn_idle_now(app, chief_sid) {
+        if let Some(text) = pop_host_text(chief_sid) {
+            if runner::send_prompt(app, chief_sid, &text).is_err() {
+                queue_host_text(chief_sid, &text);
+            }
+            return;
+        }
+    }
+
+    if !profile.policy.paused_until_user_resumes && runner::turn_idle_now(app, chief_sid) {
+        let batch = wake_inbox().lock().ok().and_then(|mut inbox| {
+            let entry = inbox.get_mut(chief_sid)?;
+            if entry.is_empty() {
+                return None;
+            }
+            Some(entry.drain(..5.min(entry.len())).collect::<Vec<_>>())
+        });
+        if let Some(events) = batch {
+            let text = events
+                .iter()
+                .map(|event| host_event_text(event, store::find_task(&event.task_id).as_ref()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            match runner::send_prompt(app, chief_sid, &text) {
+                Ok(_) => {
+                    let ids = events.iter().map(|event| event.event_id.clone()).collect::<Vec<_>>();
+                    let _ = store::mark_events_delivered(&ids, now_ms());
+                }
+                Err(error) => {
+                    if let Ok(mut inbox) = wake_inbox().lock() {
+                        let entry = inbox.entry(chief_sid.to_string()).or_default();
+                        for event in events.into_iter().rev() {
+                            entry.insert(0, event);
+                        }
+                    }
+                    crate::debug_log::append(
+                        "chief",
+                        "warn",
+                        chief_sid,
+                        "staff wake flush failed; events re-queued",
+                        Some(&error),
+                    );
+                }
+            }
+        }
+    }
+
+    let tasks = store::load_tasks();
+    for task in tasks {
+        if !task_belongs_to_session(&task, chief_sid) {
+            continue;
+        }
+        if !matches!(
+            task.status,
+            TaskStatus::Starting | TaskStatus::Running | TaskStatus::WaitingUser
+        ) {
+            continue;
+        }
+        let Some(project_policy) = profile.policy.policy_for(&task.project_id) else {
+            continue;
+        };
+        let max_minutes = profile
+            .policy
+            .max_wall_minutes_per_task
+            .min(project_policy.max_task_minutes);
+        let stale = now_ms().saturating_sub(task.last_event_at) > (max_minutes as u64) * 60_000;
+        let worker_gone = task
+            .worker_session_id
+            .as_deref()
+            .map(|sid| runner::process_gone(app, sid))
+            .unwrap_or(false);
+        if worker_gone && task.status == TaskStatus::Running {
+            let _ = finalize_task(
+                app,
+                chief_sid,
+                &task.task_id,
+                TaskStatus::Interrupted,
+                Some("worker_gone"),
+                Some("worker 进程失联，任务标为中断——可用 task_resume 继续。"),
+            );
+        } else if stale {
+            if let Some(worker_sid) = task.worker_session_id.as_deref() {
+                runner::cancel_turn(app, worker_sid);
+                let _ = runner::wait_turn_idle_checked(app, worker_sid, 8_000, || true);
+            }
+            let _ = finalize_task(
+                app,
+                chief_sid,
+                &task.task_id,
+                TaskStatus::Failed,
+                Some("timeout"),
+                Some(&format!("任务超过 {max_minutes} 分钟无进展，已停止。")),
+            );
+        }
+    }
+}
 
 /// 启动心跳线程（幂等）。tick 2s。
 pub fn ensure_heartbeat(app: AppHandle) {
@@ -1283,6 +2359,38 @@ pub fn ensure_heartbeat(app: AppHandle) {
 }
 
 fn heartbeat_tick(app: &AppHandle) {
+    let staff_registry = staff::load();
+    if !staff_registry.staff.is_empty() {
+        let now = now_ms();
+        let _ = super::commitments::mark_due(now);
+        let due = super::commitments::due(now);
+        for profile in &staff_registry.staff {
+            if !profile.policy.paused_until_user_resumes
+                && profile.policy.allow_background_work
+                && profile.policy.autonomy != staff::StaffAutonomy::Manual
+            {
+                for commitment in due
+                    .iter()
+                    .filter(|commitment| commitment.staff_id == profile.staff_id)
+                {
+                    if claim_due_commitment(&commitment.commitment_id) {
+                        queue_host_text(
+                            &profile.session_id,
+                            &format!(
+                                "[HOST COMMITMENT DUE]\ncommitmentId: {}\nkind: {:?}\ndueAt: {}\n{}",
+                                commitment.commitment_id,
+                                commitment.kind,
+                                commitment.due_at,
+                                commitment.text
+                            ),
+                        );
+                    }
+                }
+            }
+            heartbeat_staff(app, profile);
+        }
+        return;
+    }
     let config = store::load_config();
     if config.mode != RemoteWorkMode::Chief {
         return;
@@ -1402,7 +2510,7 @@ fn heartbeat_tick(app: &AppHandle) {
             .map(|sid| runner::process_gone(app, sid))
             .unwrap_or(false);
         if worker_gone && task.status == TaskStatus::Running {
-            finalize_task(app, &chief_sid, &task.task_id, TaskStatus::Interrupted,
+            let _ = finalize_task(app, &chief_sid, &task.task_id, TaskStatus::Interrupted,
                 Some("worker_gone"),
                 Some("worker 进程失联，任务标为中断——可用 task_resume 继续。"));
         } else if stale {
@@ -1410,7 +2518,7 @@ fn heartbeat_tick(app: &AppHandle) {
                 runner::cancel_turn(app, worker_sid);
                 let _ = runner::wait_turn_idle_checked(app, worker_sid, 8_000, || true);
             }
-            finalize_task(app, &chief_sid, &task.task_id, TaskStatus::Failed,
+            let _ = finalize_task(app, &chief_sid, &task.task_id, TaskStatus::Failed,
                 Some("timeout"),
                 Some(&format!("任务超过 {} 分钟无进展，已停止。", policy.max_task_minutes)));
         }

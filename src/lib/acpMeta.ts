@@ -322,7 +322,7 @@ function noticeSeverity(raw: unknown): SessionNotice["severity"] {
 
 /**
  * ACP `sessionUpdate: "notice"` (v1 clientCapabilities.session.notices).
- * Advisory only — must not become conversation history.
+ * Advisory only — rendered as a notice card, never as an agent Reply.
  */
 export function parseSessionNoticeUpdate(update: Record<string, unknown>): SessionNotice | null {
   const kind = String(update.sessionUpdate ?? update.type ?? "").toLowerCase();
@@ -353,7 +353,7 @@ export function parseSessionNoticeUpdate(update: Record<string, unknown>): Sessi
 }
 
 /**
- * Live advisory that belongs above the composer, not in the chat:
+ * Live advisory that becomes a conversation notice row:
  * protocol notices, Codex retry, Claude AIR sessionFailure.
  */
 export function parseLiveNotice(update: Record<string, unknown>): SessionNotice | null {

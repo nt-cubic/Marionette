@@ -443,7 +443,7 @@ after:   pane-1 [A,C] active=C / pane-2 [B]  focused=pane-1
 | `liveEvents` / `liveEventsRef` / `setLiveEvents` | **PR2 删除，禁止第二根轨** | 唯一存储：`eventsBySession` Map + 每会话 shadow（paintSet 内两者同一引用）。唯一写口：`updateSessionEvents(sessionId, fn)`。今日 ~70 处 `setLiveEvents` / `liveEventsRef.current.filter(e => e.sessionId === sid)` 全改走 helper。`SessionView`/`Composer` 拿 `map.get(sid) ?? EMPTY_EVENTS`，**禁止**再 concat 整图 |
 | `sessionUsageById` / `slashCommandsById` / `planBySessionId` | 每会话 | 不变 |
 | `lastActivityById` / `touchActivity` | 每会话（已节流） | 廉价路径会话也 1/s touch（心跳），但不为 thought 打转写 setState |
-| `sessionNotices` / `composerFailure` | 每会话 | 画在拥有该会话的格子 |
+| Agent notice / runtime error | 每会话 | 统一进 `eventsBySession` 的通知卡；输入框上方不再画消息浮条 |
 | `pendingSendsRef` | 每会话 | 插话条画在当事格 |
 | `quotePins` | **`quotePinsById`**（与分屏 UI 同船，PR3） | 删掉 `:2816` 清 pins 的 effect。`handleSend(sid)` 读 `quotePinsById[sid]` |
 | `composerPrefill` | `{ sessionId, text, token }` | 只喂匹配的 Composer |

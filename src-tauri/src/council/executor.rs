@@ -65,9 +65,11 @@ impl TaskHarness for AcpHarness {
             ctx.cwd.clone(),
             Some(self.agent_id.clone()),
         )?;
+        crate::desktop_notify::mark_silent_turn(&ctx.session_id);
         let prompt_result =
             self.acp.send_prompt(&ctx.session_id, ctx.prompt.clone(), Vec::new(), Vec::new());
         if let Err(e) = prompt_result {
+            crate::desktop_notify::clear_turn_marks(&ctx.session_id);
             let _ = self.acp.stop(&ctx.session_id);
             return Err(format!("发送任务失败:{e}"));
         }

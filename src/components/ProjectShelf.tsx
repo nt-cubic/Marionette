@@ -33,6 +33,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { CredentialsDialog } from "./CredentialsDialog";
 import { ModelLibraryDialog } from "./ModelLibraryDialog";
 import { SplitBesideMenu, type OpenBesideEdge } from "./SplitBesideMenu";
+import { StaffRoster, type StaffRosterItem } from "./StaffRoster";
 import type { DropEdge } from "../lib/splitWorkspace";
 import { dockFooterHost, useDocked } from "../lib/dockFooter";
 import { OPEN_ENGINE_EVENT, OPEN_PROXY_EVENT, OPEN_TELEGRAM_EVENT } from "../lib/shellActions";
@@ -261,6 +262,12 @@ type ProjectShelfProps = {
   /** Scan this project's agent CLI stores into the normal session list. */
   externalScanning?: boolean;
   onRefreshExternal?: (projectId: string) => void;
+  /** People-first staff rows above projects; never mixed into session counts. */
+  staffRoster?: StaffRosterItem[];
+  staffPaused?: boolean;
+  onStaffSelect?: (staff: StaffRosterItem) => void;
+  onHireStaff?: () => void;
+  onToggleStaffPause?: () => void;
 };
 
 type DropHint = { targetId: string; place: "before" | "after" };
@@ -399,6 +406,11 @@ export function ProjectShelf({
   onExportSession,
   externalScanning = false,
   onRefreshExternal,
+  staffRoster,
+  staffPaused,
+  onStaffSelect,
+  onHireStaff,
+  onToggleStaffPause,
 }: ProjectShelfProps) {
   const unreadDone = doneUnreadIds ?? EMPTY_DONE_UNREAD;
   const t = useT();
@@ -1297,6 +1309,22 @@ export function ProjectShelf({
         (!activeStatusFilter || sessionMatchesStatus(session, activeStatusFilter, unreadDone)),
     );
   }, [memoSessions, query, searching, activeStatusFilter, unreadDone]);
+  const staffQuery = query.trim().toLowerCase();
+  const visibleStaff = useMemo(() => {
+    const staff = staffRoster ?? [];
+    if (!staffQuery) return staff;
+    return staff.filter((member) =>
+      [member.name, member.title, member.primaryTaskTitle ?? ""].some((value) =>
+        value.toLowerCase().includes(staffQuery),
+      ),
+    );
+  }, [staffRoster, staffQuery]);
+  const hasStaffPath = Boolean(onStaffSelect || onHireStaff || onToggleStaffPause);
+  // StaffRoster owns its empty state. Only expose it while hiring is possible,
+  // and never turn "no search hit" into the misleading "hire your first".
+  const showStaffRoster =
+    hasStaffPath &&
+    (visibleStaff.length > 0 || (!staffQuery && (staffRoster?.length ?? 0) === 0 && Boolean(onHireStaff)));
 
   const openRowMore = (session: Session, button: HTMLElement) => {
     const rect = button.getBoundingClientRect();
@@ -1482,7 +1510,11 @@ export function ProjectShelf({
    * Chat list below is showing its own hits.
    */
   const noShelfMatch =
-    searching && allVisibleProjects.length === 0 && visibleChatSessions.length === 0 && visibleMemoSessions.length === 0;
+    searching &&
+    allVisibleProjects.length === 0 &&
+    visibleChatSessions.length === 0 &&
+    visibleMemoSessions.length === 0 &&
+    !(staffQuery && showStaffRoster && visibleStaff.length > 0);
 
   return (
     <>
@@ -1505,6 +1537,16 @@ export function ProjectShelf({
       </div>
 
       <div className="project-tree__body">
+      {showStaffRoster && (
+        <StaffRoster
+          staff={visibleStaff}
+          activeSessionId={currentSessionId}
+          paused={staffPaused}
+          onSelect={(member) => onStaffSelect?.(member)}
+          onHire={() => onHireStaff?.()}
+          onTogglePause={onToggleStaffPause}
+        />
+      )}
       {hasStatusCounts && (
         <div className="shelf-status" role="toolbar" aria-label={t("shelf.filterByStatus")}>
           {SHELF_STATUS_ORDER.filter(({ id }) => statusCounts[id] > 0).map(({ id, label }) => (

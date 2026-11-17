@@ -26,7 +26,7 @@ pub enum RemoteWorkMode {
 
 /// 项目级远程策略。能力由 Host 配置决定，Chief 不能靠工具参数扩展
 /// （05-mvp-plan.md §6.2：schema 里永远没有 cwd / permissionMode / key）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ProjectPolicy {
     pub project_id: String,
@@ -159,6 +159,8 @@ pub struct Task {
     pub task_id: String,
     /// Chief 生成的幂等键：重试同一 `requestId` 返回同一 `taskId`。
     pub request_id: String,
+    /// Stable employee ownership, independent from the current ACP session id.
+    pub staff_id: Option<String>,
     pub chief_session_id: String,
     pub title: String,
     pub goal: String,
@@ -167,6 +169,12 @@ pub struct Task {
     pub agent_id: String,
     pub model: Option<String>,
     pub status: TaskStatus,
+    /// permission / question / plan_approval while waiting_user.
+    pub waiting_reason: Option<String>,
+    /// Worker prompts issued for this task (initial prompt + follow-ups/resumes).
+    pub turn_count: u32,
+    /// Agent-reported USD cost across this task's worker turns.
+    pub cost_usd: f64,
     /// Unix 毫秒。
     pub created_at: u64,
     pub updated_at: u64,
@@ -186,6 +194,7 @@ impl Default for Task {
         Self {
             task_id: String::new(),
             request_id: String::new(),
+            staff_id: None,
             chief_session_id: String::new(),
             title: String::new(),
             goal: String::new(),
@@ -194,6 +203,9 @@ impl Default for Task {
             agent_id: String::new(),
             model: None,
             status: TaskStatus::Proposed,
+            waiting_reason: None,
+            turn_count: 0,
+            cost_usd: 0.0,
             created_at: now,
             updated_at: now,
             last_event_at: now,

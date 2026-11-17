@@ -114,11 +114,67 @@ function looksLikeSpawnTitle(title: string): boolean {
   return false;
 }
 
+export type CodexCollabAgentState = {
+  status: string;
+  message?: string;
+};
+
 /** Codex collab rawInput: senderThreadId + receiverThreadIds + agentsStates. */
+export type CodexCollabSnapshot = {
+  senderThreadId: string;
+  receiverThreadIds: string[];
+  agentsStates: Record<string, CodexCollabAgentState>;
+  prompt: string | null;
+  status?: string;
+  model?: string;
+  reasoningEffort?: string;
+};
+
+export function parseCodexCollabSnapshot(value: unknown): CodexCollabSnapshot | null {
+  const rec = typeof value === "string" ? parseObject(value) : asRecord(value);
+  if (!rec) return null;
+  if (!("senderThreadId" in rec) || !("receiverThreadIds" in rec) || !("agentsStates" in rec)) {
+    return null;
+  }
+  const senderThreadId = typeof rec.senderThreadId === "string" ? rec.senderThreadId.trim() : "";
+  const receiverThreadIds = Array.isArray(rec.receiverThreadIds)
+    ? rec.receiverThreadIds
+        .filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+        .map((id) => id.trim())
+    : [];
+  const rawStates = asRecord(rec.agentsStates);
+  const agentsStates: Record<string, CodexCollabAgentState> = {};
+  if (rawStates) {
+    for (const [threadId, rawState] of Object.entries(rawStates)) {
+      const state = asRecord(rawState);
+      if (!state) continue;
+      const status = typeof state.status === "string" ? state.status.trim() : "";
+      const message = typeof state.message === "string" ? state.message.trim() : "";
+      if (!status && !message) continue;
+      agentsStates[threadId] = {
+        status: status || "unknown",
+        ...(message ? { message } : {}),
+      };
+    }
+  }
+  const text = (v: unknown): string | undefined =>
+    typeof v === "string" && v.trim() ? v.trim() : undefined;
+  const status = text(rec.status);
+  const model = text(rec.model);
+  const reasoningEffort = text(rec.reasoningEffort);
+  return {
+    senderThreadId,
+    receiverThreadIds,
+    agentsStates,
+    prompt: text(rec.prompt) ?? null,
+    ...(status ? { status } : {}),
+    ...(model ? { model } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+  };
+}
+
 export function isCodexCollabInput(input: string | null | undefined): boolean {
-  const rec = parseObject(input);
-  if (!rec) return false;
-  return "senderThreadId" in rec && "receiverThreadIds" in rec && "agentsStates" in rec;
+  return parseCodexCollabSnapshot(input) !== null;
 }
 
 function parseObject(input: string | null | undefined): Record<string, unknown> | null {

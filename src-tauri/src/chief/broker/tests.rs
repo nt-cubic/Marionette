@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::chief::store::{self, SANDBOX_LOCK};
-use crate::chief::types::{RemoteWorkMode, Task, TaskStatus};
+use crate::chief::types::{ChiefConfig, RemoteWorkMode, Task, TaskStatus};
 
 fn lock_sandbox() -> std::sync::MutexGuard<'static, ()> {
     SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner())
@@ -27,6 +27,7 @@ fn chief_registry_gates_sessions() {
     let guard = lock_sandbox();
     let root = sandbox_root("registry");
     store::set_root_override_for_tests(Some(root.clone()));
+    staff::set_root_override_for_tests(Some(root.clone()));
     reset_for_tests();
     assert!(!is_chief_session("session_x"));
     register_chief_session("session_x");
@@ -43,7 +44,172 @@ fn chief_registry_gates_sessions() {
     assert!(is_chief_session("session_cfg"));
     assert!(!is_chief_session("session_worker"));
     reset_for_tests();
+    staff::set_root_override_for_tests(None);
     store::set_root_override_for_tests(None);
+    drop(guard);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn dismissed_last_staff_does_not_revive_stale_config_session() {
+    let guard = lock_sandbox();
+    let root = sandbox_root("dismissed-staff");
+    store::set_root_override_for_tests(Some(root.clone()));
+    staff::set_root_override_for_tests(Some(root.clone()));
+    reset_for_tests();
+    store::save_config(&ChiefConfig {
+        mode: RemoteWorkMode::Chief,
+        chief_session_id: Some("session_stale_chief".into()),
+        ..Default::default()
+    })
+    .unwrap();
+    assert!(is_chief_session("session_stale_chief"));
+    staff::save(&staff::StaffRegistry {
+        legacy_migration_completed_at: now_ms(),
+        ..Default::default()
+    })
+    .unwrap();
+    assert!(!is_chief_session("session_stale_chief"));
+    reset_for_tests();
+    staff::set_root_override_for_tests(None);
+    store::set_root_override_for_tests(None);
+    drop(guard);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn staff_worker_computer_use_follows_project_policy_and_fails_closed() {
+    let guard = lock_sandbox();
+    let root = sandbox_root("staff-computer-use");
+    store::set_root_override_for_tests(Some(root.clone()));
+    staff::set_root_override_for_tests(Some(root.clone()));
+    reset_for_tests();
+    let profile = staff::StaffProfile {
+        staff_id: "staff_computer".into(),
+        session_id: "session_staff_computer".into(),
+        policy: staff::StaffPolicy {
+            allowed_projects: vec![crate::chief::types::ProjectPolicy {
+                project_id: "project_computer".into(),
+                allow_computer_use: false,
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut registry = staff::StaffRegistry::new();
+    registry.add(profile.clone()).unwrap();
+    staff::save(&registry).unwrap();
+    store::with_tasks(|tasks| {
+        tasks.push(Task {
+            staff_id: Some(profile.staff_id.clone()),
+            chief_session_id: profile.session_id.clone(),
+            worker_session_id: Some("session_worker_computer".into()),
+            project_id: "project_computer".into(),
+            ..Default::default()
+        });
+        Ok(())
+    })
+    .unwrap();
+    assert!(!staff_commands::worker_computer_use_allowed(
+        "session_worker_computer"
+    ));
+    let mut enabled = profile;
+    enabled.policy.allowed_projects[0].allow_computer_use = true;
+    let mut registry = staff::load();
+    registry.update(enabled).unwrap();
+    staff::save(&registry).unwrap();
+    assert!(staff_commands::worker_computer_use_allowed(
+        "session_worker_computer"
+    ));
+    staff::save(&staff::StaffRegistry {
+        legacy_migration_completed_at: now_ms(),
+        ..Default::default()
+    })
+    .unwrap();
+    assert!(!staff_commands::worker_computer_use_allowed(
+        "session_worker_computer"
+    ));
+    reset_for_tests();
+    staff::set_root_override_for_tests(None);
+    store::set_root_override_for_tests(None);
+    drop(guard);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn explicit_staff_chat_routes_without_legacy_chief_mode() {
+    let guard = lock_sandbox();
+    let root = sandbox_root("staff-telegram-route");
+    store::set_root_override_for_tests(Some(root.clone()));
+    staff::set_root_override_for_tests(Some(root.clone()));
+    reset_for_tests();
+    store::save_config(&ChiefConfig::default()).unwrap();
+    let mut registry = staff::StaffRegistry::new();
+    registry
+        .add(staff::StaffProfile {
+            staff_id: "staff_chat".into(),
+            session_id: "session_staff_chat".into(),
+            telegram_chat_id: Some(12345),
+            ..Default::default()
+        })
+        .unwrap();
+    staff::save(&registry).unwrap();
+    assert!(staff_commands::telegram_chat_routes_to_staff(12345));
+    assert!(!staff_commands::telegram_chat_routes_to_staff(99999));
+    store::save_config(&ChiefConfig {
+        mode: RemoteWorkMode::Chief,
+        ..Default::default()
+    })
+    .unwrap();
+    assert!(staff_commands::telegram_chat_routes_to_staff(99999));
+    reset_for_tests();
+    staff::set_root_override_for_tests(None);
+    store::set_root_override_for_tests(None);
+    drop(guard);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn ordinary_notification_budget_survives_by_being_written_to_staff_profile() {
+    let guard = lock_sandbox();
+    let root = sandbox_root("staff-notify-budget");
+    staff::set_root_override_for_tests(Some(root.clone()));
+    reset_for_tests();
+    let mut registry = staff::StaffRegistry::new();
+    registry
+        .add(staff::StaffProfile {
+            staff_id: "staff_notify".into(),
+            session_id: "session_staff_notify".into(),
+            policy: staff::StaffPolicy {
+                quiet_hours: String::new(),
+                notification_cooldown_minutes: 30,
+                max_reports_per_hour: 4,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .unwrap();
+    staff::save(&registry).unwrap();
+    assert!(staff_commands::notification_allowed(
+        "session_staff_notify",
+        "completed"
+    ));
+    let saved = staff::load();
+    let profile = saved.get("staff_notify").unwrap();
+    assert!(profile.notification_window_started_at > 0);
+    assert_eq!(profile.notifications_in_window, 1);
+    assert!(profile.last_notification_at > 0);
+    assert!(!staff_commands::notification_allowed(
+        "session_staff_notify",
+        "completed"
+    ));
+    assert!(staff_commands::notification_allowed(
+        "session_staff_notify",
+        "task.failed"
+    ));
+    reset_for_tests();
+    staff::set_root_override_for_tests(None);
     drop(guard);
     std::fs::remove_dir_all(&root).ok();
 }
@@ -186,6 +352,11 @@ fn host_event_text_is_structured_and_tagged() {
 #[test]
 fn active_task_counting_matches_concurrency_rules() {
     use crate::chief::types::TaskStatus::*;
+    let guard = lock_sandbox();
+    let root = sandbox_root("active_count");
+    store::set_root_override_for_tests(Some(root.clone()));
+    staff::set_root_override_for_tests(Some(root.clone()));
+    reset_for_tests();
     let chief = "session_c";
     let mk = |project: &str, status: TaskStatus| Task {
         chief_session_id: chief.into(),
@@ -194,6 +365,7 @@ fn active_task_counting_matches_concurrency_rules() {
         ..Default::default()
     };
     let tasks = vec![
+        mk("project_b", Proposed),
         mk("project_a", Running),
         mk("project_a", WaitingUser),
         mk("project_a", Completed),
@@ -201,9 +373,14 @@ fn active_task_counting_matches_concurrency_rules() {
         // 别的 chief 的任务不算
         Task { chief_session_id: "session_other".into(), status: Running, ..Default::default() },
     ];
-    assert_eq!(count_active(&tasks, chief, None), 3);
+    assert_eq!(count_active(&tasks, chief, None), 4);
     assert_eq!(count_active(&tasks, chief, Some("project_a")), 2);
-    assert_eq!(count_active(&tasks, chief, Some("project_b")), 1);
+    assert_eq!(count_active(&tasks, chief, Some("project_b")), 2);
+    reset_for_tests();
+    staff::set_root_override_for_tests(None);
+    store::set_root_override_for_tests(None);
+    drop(guard);
+    std::fs::remove_dir_all(&root).ok();
 }
 
 /// tasks_list envelope：只列本 Chief 的任务，status 过滤生效。

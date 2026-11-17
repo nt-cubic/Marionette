@@ -2,6 +2,7 @@
 export const zh = {
   "v2transcript.planApprovalRegion": "计划审批",
   "v2transcript.previewUnavailable": "无法预览",
+  "v2transcript.notice": "通知",
   "v2transcript.emptyTitle": "给 {agent} 发消息",
   "v2transcript.emptyHint": "在下面输入，agent 会在后台先预热，准备好再发送。",
   "v2transcript.emptyUpdate": "更新后继续",

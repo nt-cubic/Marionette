@@ -2817,6 +2817,8 @@ function CleanPlaceholder({
               "You"
             ) : event.type === "assistant_message" ? (
               isAssistantNotice(event.text) ? "Notification" : "Reply"
+            ) : event.type === "notice" ? (
+              t("v2transcript.notice")
             ) : event.type === "handoff_prepared" ? (
               "Handoff"
             ) : (
@@ -2936,6 +2938,7 @@ function CleanPlaceholder({
 
           const useMarkdown =
             event.type === "assistant_message" ||
+            event.type === "notice" ||
             event.type === "user_message" ||
             event.type === "thought";
 
@@ -3164,7 +3167,7 @@ function CleanPlaceholder({
 
           return (
             <article
-              className={`event-card event-card--${event.type}${event.type === "assistant_message" && event.webReply ? " is-web-reply" : ""}${isEditing ? " is-editing" : ""}`}
+              className={`event-card event-card--${event.type}${event.type === "assistant_message" && event.webReply ? " is-web-reply" : ""}${event.type === "notice" ? ` is-notice is-notice--${event.severity}` : ""}${isEditing ? " is-editing" : ""}`}
               style={
                 event.type === "assistant_message"
                   ? {

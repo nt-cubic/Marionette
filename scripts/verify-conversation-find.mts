@@ -44,6 +44,15 @@ const events: SessionEvent[] = [
     answers: [{ question: "要加回归脚本吗?", selected: ["加 verify 脚本"] }],
     createdAt: AT,
   },
+  {
+    type: "notice",
+    sessionId: "s",
+    text: "**MCP server unavailable**\n\nContinuing without it.",
+    severity: "warning",
+    title: "MCP server unavailable",
+    description: "Continuing without it.",
+    createdAt: AT,
+  },
 ];
 
 // ── 1. searchableText 类型范围 ─────────────────────────────────────────
@@ -51,6 +60,7 @@ check("你/回复可搜", searchableText(events[0]!) != null && searchableText(e
 check("thought/tool 不搜(折叠簇内)", searchableText(events[1]!) === null && searchableText(events[2]!) === null);
 check("改动卡含重命名旧路径", searchableText(events[4]!)!.includes("terminal.rs"));
 check("提问卡含问题与选项与选中项", searchableText(events[5]!)!.includes("回归脚本"));
+check("通知卡可搜", searchableText(events[6]!)!.includes("MCP server"));
 
 // ── 2. findConversationMatches ─────────────────────────────────────────
 check("空查询返回空", findConversationMatches(events, "  ").length === 0);
@@ -61,6 +71,7 @@ check("子串即命中(与浏览器查找同语义)", findConversationMatches(ev
 check("无命中返回空", findConversationMatches(events, "不存在的词").length === 0);
 check("旧路径可搜", findConversationMatches(events, "src/terminal.rs").includes(4));
 check("选项文本可搜", findConversationMatches(events, "verify 脚本").includes(5));
+check("通知正文可搜", findConversationMatches(events, "continuing").includes(6));
 check("空白查询只按 trim 后判断", findConversationMatches(events, "   修复   ").includes(0));
 
 console.log(failures === 0 ? "\n全部通过" : `\n${failures} 项失败`);

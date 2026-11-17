@@ -8,6 +8,7 @@ import {
   extractAcpSessionTitle,
   extractAcpUpdateText,
   findLastIndexForSession,
+  findLastTurnContentIndexForSession,
   getSessionUpdate,
   getSessionUpdateKind,
   sealOpenAssistantReplies,
@@ -128,6 +129,12 @@ import { setDocTabOpener } from "../lib/openFile";
 import { BrowserPage, BrowserPermissionDialog } from "../components/BrowserPage";
 import { ComputerShareDialog } from "../components/ComputerShareDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { StaffHireDialog } from "../components/StaffHireDialog";
+import {
+  staffDraftFromProfile,
+  staffForSession,
+} from "../lib/staffUi";
+import { useStaffController } from "./useStaffController";
 
 /** E2E bisect flag: the dev hook opened a tab without activating the page. */
 let browserAutoOpenSuppressActivate = false;
@@ -574,6 +581,44 @@ export function App() {
   const [availableSessions, setAvailableSessions] = useState<Session[]>(sessions);
   const [currentProjectId, setCurrentProjectId] = useState(projects[0]?.id ?? "");
   const [currentSessionId, setCurrentSessionId] = useState("");
+  const staffSessionReadyRef = useRef<(sessionId: string) => void>(() => undefined);
+  const staffController = useStaffController({
+    onSessionReady: (sessionId) => staffSessionReadyRef.current(sessionId),
+  });
+  useEffect(() => {
+    if (!staffController.error) return;
+    showToast({ text: staffController.error, tone: "error", duration: 8000 });
+  }, [staffController.error]);
+  useEffect(() => {
+    const missingProjectIds = [
+      ...new Set(
+        staffController.tasks
+          .filter(
+            (task) =>
+              Boolean(task.workerSessionId) &&
+              !availableSessions.some((session) => session.id === task.workerSessionId),
+          )
+          .map((task) => task.projectId),
+      ),
+    ];
+    if (missingProjectIds.length === 0) return;
+    let cancelled = false;
+    void Promise.all(missingProjectIds.map((projectId) => listSessions(projectId)))
+      .then((groups) => {
+        if (cancelled) return;
+        const loaded = groups.flat().map(asIdleOnLoad);
+        if (loaded.length === 0) return;
+        setAvailableSessions((current) => {
+          const known = new Set(current.map((session) => session.id));
+          const additions = loaded.filter((session) => !known.has(session.id));
+          return additions.length > 0 ? [...additions, ...current] : current;
+        });
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [availableSessions, staffController.tasks]);
   const [externalScanning, setExternalScanning] = useState(false);
   const [openSessionIds, setOpenSessionIds] = useState<string[]>([]);
   const [splitState, setSplitState] = useState<SplitWorkspaceState>(() => emptyWorkspace());
@@ -3027,7 +3072,7 @@ export function App() {
             if (toolClose) next = markOpenTools(next, sid, toolClose, endedAt);
             // Stamp this session's open Reply — not the absolute rail tail
             // (another window's stream may be last in the shared array).
-            const lastIdx = findLastIndexForSession(next, sid);
+            const lastIdx = findLastTurnContentIndexForSession(next, sid);
             const last = lastIdx >= 0 ? next[lastIdx] : undefined;
             // The turn's last card is where its final step ends, so it carries
             // the absolute end. `durationMs` keeps its own meaning (it seals a
@@ -3120,61 +3165,25 @@ export function App() {
 
         // Usage panel: refresh once after each completed Reply turn.
         refreshUsageAfterTurnRef.current(payload.sessionId);
-        // Desktop notify only for a real completed turn (was running, not cancel).
-        // Clean completion follows OpenCode's 350ms idle-settle window so a
-        // queued follow-up can cancel the intermediate completion alert.
-        // A silent turn (hidden `/always-approve` replay) completes with nothing
-        // on screen — chiming for it would be noise the user cannot explain.
-        // Same for a usage probe (`/status` card): refresh ≠ a reply.
+        // ACP dispatcher owns the native background chime (it must run while
+        // WebView2 is suspended). Here we only maintain frontend-only state:
+        // consume silent/probe bookkeeping and mark a genuinely unseen reply.
+        cancelScheduledDesktopNotify(payload.sessionId);
         const silentTurnEnded = silentTurnRef.current.delete(payload.sessionId);
         const probeTurnEnded = probeTurnRef.current.delete(payload.sessionId);
         if (wasRunning && stopReason !== "cancelled" && !silentTurnEnded && !probeTurnEnded) {
-          const sess = sessionsRef.current.find((s) => s.id === payload.sessionId);
-          const label = sess?.label?.trim() || "Session";
           const isDelegateChild = delegateMetaRef.current.has(payload.sessionId);
           const turnFailed =
             payload.kind === "error" ||
             stopReason === "error" ||
             stopReason === "refusal";
-          // No Reply card at the tail means the agent stopped on its own without
-          // anything to read (empty turn, or tools and then silence). That stop is
-          // invisible on screen, so its chime also plays while the window is focused.
-          const stoppedSilently = turnEndedSilently(
-            shadowBySessionRef.current.get(payload.sessionId) ?? EMPTY_EVENTS,
-            payload.sessionId,
-          );
-          if (!isDelegateChild) {
-            if (turnFailed) {
-              const errorDetail = compactNotifyDetail(formatAcpRpcError(payload.data));
-              void raiseDesktopNotify(
-                "error",
-                errorDetail ? `${label} · ${errorDetail}` : `${label} · Agent error`,
-              );
-            } else if (stoppedSilently) {
-              scheduleDesktopNotify(
-                payload.sessionId,
-                "idle",
-                `${label} · agent stopped`,
-                DESKTOP_NOTIFY_SETTLE_MS,
-                { audibleWhenFocused: true },
-              );
-            } else {
-              scheduleDesktopNotify(
-                payload.sessionId,
-                "reply",
-                label,
-                DESKTOP_NOTIFY_SETTLE_MS,
-                { audibleWhenFocused: true },
-              );
-            }
-            if (!turnFailed && payload.sessionId !== currentSessionIdRef.current) {
-              setDoneUnreadIds((current) => {
-                if (current.has(payload.sessionId)) return current;
-                const next = new Set(current);
-                next.add(payload.sessionId);
-                return next;
-              });
-            }
+          if (!isDelegateChild && !turnFailed && payload.sessionId !== currentSessionIdRef.current) {
+            setDoneUnreadIds((current) => {
+              if (current.has(payload.sessionId)) return current;
+              const next = new Set(current);
+              next.add(payload.sessionId);
+              return next;
+            });
           }
         }
         pushDebug({
@@ -3260,22 +3269,9 @@ export function App() {
           setSessionCapabilities(null);
         }
         if (endedHard) {
-          // A hard process exit is an error even when it raced the turn-end
-          // event. Reuse the error channel so the 1s debounce coalesces the
-          // two signals instead of chiming twice for one crash. 空闲自退
-          // （benignIdleExit）不打扰：对话流里的系统卡已经交代过了。
-          if (!benignIdleExit) {
-            cancelScheduledDesktopNotify(payload.sessionId);
-            const sess = sessionsRef.current.find((s) => s.id === payload.sessionId);
-            const label = sess?.label?.trim() || "Session";
-            const processDetail = compactNotifyDetail(detail);
-            void raiseDesktopNotify(
-              "error",
-              processDetail
-                ? `${label} · Agent process ended: ${processDetail}`
-                : `${label} · Agent process ended`,
-            );
-          }
+          // Mid-turn crashes are announced by the native `turn/complete(error)`
+          // path. An idle CLI self-exit deliberately stays quiet.
+          cancelScheduledDesktopNotify(payload.sessionId);
         }
         // Drop dead process bookkeeping so the next warm can respawn cleanly.
         void stopAcpSession(payload.sessionId).catch(() => undefined);
@@ -3421,12 +3417,6 @@ export function App() {
           }
           stealFocusForPrompt(payload.sessionId);
           cancelScheduledDesktopNotify(payload.sessionId);
-          void raiseDesktopNotify(
-            planMarkdown ? "plan" : "permission",
-            planMarkdown
-              ? "Plan ready for review"
-              : compactNotifyDetail(detail ? `${title}: ${detail}` : title),
-          );
         }
       }
       // resolved = 另一个面（Telegram 按钮）已解答；与本窗口的点击、超时一样收卡片。
@@ -3478,11 +3468,6 @@ export function App() {
             detail: parsed.requestId,
           });
           cancelScheduledDesktopNotify(payload.sessionId);
-          const question = compactNotifyDetail(parsed.questions[0]?.question);
-          void raiseDesktopNotify(
-            "question",
-            question ? `Agent question: ${question}` : "Agent has a question",
-          );
         } else {
           pushDebug({
             sessionId: payload.sessionId,
@@ -3553,7 +3538,6 @@ export function App() {
           );
           stealFocusForPrompt(payload.sessionId);
           cancelScheduledDesktopNotify(payload.sessionId);
-          void raiseDesktopNotify("plan", "Plan ready for review");
         }
       }
       if (payload.method === "plan/timeout" || payload.method === "plan/resolved") {
@@ -4979,6 +4963,10 @@ export function App() {
   const chatSessions = shelfChatSplit.chat;
   /** 收纳盒-grown dialogs (origin "memo") — their own shelf group. */
   const memoSessions = shelfChatSplit.memo;
+  const projectOnlySessions = useMemo(
+    () => availableSessions.filter((session) => session.projectId !== CHAT_PROJECT_ID),
+    [availableSessions],
+  );
 
   /**
    * Edge dock strip (instead of tabs): every dialog still holding a process,
@@ -5199,6 +5187,11 @@ export function App() {
       }
     );
   }, [availableAgents, currentProject, currentProjectId, currentSession, defaultFolderPath]);
+
+  const activeStaff = useMemo(
+    () => staffForSession(staffController.profiles, displaySession.id),
+    [staffController.profiles, displaySession.id],
+  );
 
   const currentAgent = useMemo(
     () => availableAgents.find((agent) => agent.id === displaySession.agentId) ?? availableAgents[0] ?? agents[0]!,
@@ -6038,6 +6031,23 @@ export function App() {
   const openChatSession = useCallback((session: Session) => {
     openSessionRef.current(session);
   }, []);
+  staffSessionReadyRef.current = (sessionId) => {
+    const known = availableSessions.find((session) => session.id === sessionId);
+    if (known) {
+      openChatSession(known);
+      return;
+    }
+    void listChatSessions().then((chats) => {
+      const loaded = chats.find((session) => session.id === sessionId);
+      if (!loaded) return;
+      const next = asIdleOnLoad(loaded);
+      setAvailableSessions((current) => [
+        next,
+        ...current.filter((session) => session.id !== next.id),
+      ]);
+      openChatSession(next);
+    });
+  };
 
   /** Tab / shelf 「在右侧打开」/「在下方打开」. Only-tab of the target pane is a no-op. */
   const handleOpenBeside = (session: Session, edge: DropEdge) => {
@@ -6489,7 +6499,7 @@ export function App() {
       });
       try {
         silentTurnRef.current.add(sessionId);
-        return await sendAcpPrompt(sessionId, text);
+        return await sendAcpPrompt(sessionId, text, [], false, [], true);
       } catch (error) {
         // Hand the slot back — nothing is running, so "Working" would lie.
         silentTurnRef.current.delete(sessionId);
@@ -9710,8 +9720,32 @@ export function App() {
         : session.id === currentSessionId)
         ? composerPrefill
         : null;
+    const ownerTask = staffController.tasks.find(
+      (task) => task.workerSessionId === session.id,
+    );
+    const ownerStaff = ownerTask?.staffId
+      ? staffController.profiles.find((profile) => profile.staffId === ownerTask.staffId)
+      : null;
     return (
       <>
+        {ownerStaff ? (
+          <div className="staff-worker-breadcrumb">
+            <span>
+              {t("staff.workerFrom", { name: ownerStaff.name })}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                const member = staffController.roster.find(
+                  (profile) => profile.staffId === ownerStaff.staffId,
+                );
+                if (member) void staffController.select(member);
+              }}
+            >
+              {t("staff.backToStaff")}
+            </button>
+          </div>
+        ) : null}
         <SessionView
           agent={agent}
           events={events}
@@ -10111,7 +10145,7 @@ export function App() {
           <MemoProjectShelf
             agents={availableAgents}
             projects={shelfProjects}
-            sessions={availableSessions}
+            sessions={projectOnlySessions}
             currentProjectId={currentProjectId}
             currentSessionId={displaySession.id}
             doneUnreadIds={doneUnreadIds}
@@ -10154,6 +10188,14 @@ export function App() {
               setCouncilOpen(true);
               setCouncilActive(true);
             }}
+            staffRoster={staffController.roster}
+            staffPaused={staffController.paused}
+            onStaffSelect={(member) => {
+              setDockPage(null);
+              void staffController.select(member);
+            }}
+            onHireStaff={staffController.openHire}
+            onToggleStaffPause={() => void staffController.togglePause()}
           />
           )}
           {!leftCollapsed && !IS_DETACHED_WINDOW && (
@@ -10189,6 +10231,12 @@ export function App() {
             }}
             onClose={() => setPaletteOpen(false)}
             actions={[
+              ...staffController.roster.map((member) => ({
+                id: "staff-" + member.staffId,
+                label: member.name + " · " + member.title,
+                hint: t("staff.group"),
+                run: () => void staffController.select(member),
+              })),
               ...(currentProjectId && currentProjectId !== CHAT_PROJECT_ID
                 ? [
                     {
@@ -10953,6 +11001,68 @@ export function App() {
           checkAppUpdateBusy={appUpdateBusy}
           appUpdateAvailable={Boolean(appUpdate?.updateAvailable)}
           activeSessionId={currentSessionId}
+          activeStaff={activeStaff}
+          staffTasks={staffController.tasks}
+          onEditStaff={staffController.openEdit}
+          onRemoveStaff={async (profile) => {
+            const removed = await staffController.remove(profile.staffId, {
+              deleteSession: true,
+              clearMemory: false,
+            });
+            const sessionId = profile.sessionId;
+            if (!removed || !sessionId) return;
+            void browserCloseTabsForSession(sessionId).catch(() => 0);
+            startupCreatedChatsRef.current = startupCreatedChatsRef.current.filter(
+              (session) => session.id !== sessionId,
+            );
+            manuallyRenamedSessionIdsRef.current.delete(sessionId);
+            setAvailableSessions((current) => current.filter((session) => session.id !== sessionId));
+            setOpenSessionIds((current) => current.filter((id) => id !== sessionId));
+            dropSessionRails([sessionId]);
+            transcriptLoadedRef.current.delete(sessionId);
+            acpNeedsHistoryRef.current.delete(sessionId);
+            pendingSendsRef.current.delete(sessionId);
+            scheduledSendsRef.current.delete(sessionId);
+            flushingSendRef.current.delete(sessionId);
+            const saveTimer = transcriptSaveTimers.current.get(sessionId);
+            if (saveTimer) {
+              clearTimeout(saveTimer);
+              transcriptSaveTimers.current.delete(sessionId);
+            }
+            if (sessionId === currentSessionId) {
+              setCurrentProjectId(CHAT_PROJECT_ID);
+              setCurrentSessionId("");
+              setOpenSessionIds([]);
+              setViewMode("clean");
+              setSessionCapabilities(null);
+            }
+          }}
+          onOpenStaffTask={(task) => {
+            void (async () => {
+              let worker = task.workerSessionId
+              ? availableSessions.find((session) => session.id === task.workerSessionId)
+              : null;
+              if (!worker && task.workerSessionId) {
+                const loaded = (await listSessions(task.projectId)).map(asIdleOnLoad);
+                const additions = loaded.filter(
+                  (session) =>
+                    session.id === task.workerSessionId &&
+                    !availableSessions.some((current) => current.id === session.id),
+                );
+                if (additions.length > 0) {
+                  setAvailableSessions((current) => {
+                    const known = new Set(current.map((session) => session.id));
+                    return [
+                      ...additions.filter((session) => !known.has(session.id)),
+                      ...current,
+                    ];
+                  });
+                }
+                worker = loaded.find((session) => session.id === task.workerSessionId) ?? null;
+              }
+              if (worker) openSession(worker);
+            })().catch(() => undefined);
+          }}
           resizeDragging={resizingSide === "right"}
           onResizeStart={() => setResizingSide("right")}
           backgroundTasks={backgroundTasks}
@@ -10972,6 +11082,8 @@ export function App() {
             onNewChatIn={(projectId) => void createSessionForProject(projectId)}
             projects={shelfProjects}
             memoCount={memoCount}
+            staffCount={staffController.profiles.length}
+            staffPaused={staffController.paused}
             quotaRows={engineQuotaRows}
             active={dockActiveSessions}
             totalSessions={availableSessions.length}
@@ -10980,6 +11092,7 @@ export function App() {
             onOpenSession={openSession}
             onSuspendSession={handleSuspendSession}
             onOpenPalette={() => setPaletteOpen(true)}
+            onToggleStaffPause={() => void staffController.togglePause()}
             onUndock={() => void undock()}
             onQuit={() => void quitApp()}
             updateAvailable={Boolean(appUpdate?.updateAvailable)}
@@ -11204,6 +11317,21 @@ export function App() {
           </div>
         </div>
       )}
+      {staffController.editor ? (
+        <StaffHireDialog
+          agents={availableAgents}
+          projects={shelfProjects}
+          initial={
+            staffController.editor.profile
+              ? staffDraftFromProfile(staffController.editor.profile)
+              : undefined
+          }
+          busy={staffController.saving}
+          error={staffController.error}
+          onClose={staffController.closeEditor}
+          onSave={staffController.save}
+        />
+      ) : null}
       {projectDialogOpen && (
         <div className="project-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !projectAdding) setProjectDialogOpen(false); }}>
           <form className="project-dialog" role="dialog" aria-modal="true" aria-labelledby="project-dialog-title" onSubmit={(event) => { event.preventDefault(); void handleAddProject(); }}>

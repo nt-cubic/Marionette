@@ -61,6 +61,7 @@ function session(partial: Partial<Session> & { id: string }): Session {
     session({ id: "chat-legacy", origin: undefined }),
     session({ id: "memo-1", origin: "memo" }),
     session({ id: "memo-2", origin: "memo", label: "整理 · 攻略" }),
+    session({ id: "staff-1", origin: "chief" }),
     session({ id: "proj-1", projectId: "project-xyz" }),
     session({ id: "imported", origin: "import" }),
   ]);
@@ -70,11 +71,16 @@ function session(partial: Partial<Session> & { id: string }): Session {
     JSON.stringify(split.memo.map((s) => s.id)),
   );
   check(
+    "origin chief → 员工组，不进聊天",
+    split.staff.map((s) => s.id).join(",") === "staff-1",
+    JSON.stringify(split.staff.map((s) => s.id)),
+  );
+  check(
     "无 origin / user / import 的 Chat 行都留在聊天组",
     split.chat.map((s) => s.id).join(",") === "chat-plain,chat-legacy,imported",
     JSON.stringify(split.chat.map((s) => s.id)),
   );
-  check("非 Chat 项目的会话不进任何组", split.chat.length + split.memo.length === 5);
+  check("非 Chat 项目的会话不进任何组", split.staff.length + split.chat.length + split.memo.length === 6);
 }
 
 // ── 2. 幽灵 inbox 项目过滤 ────────────────────────────────────────────

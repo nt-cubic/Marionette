@@ -229,6 +229,16 @@ export type SessionEvent =
       turnStats?: TurnStats | null;
     }
   | {
+      /** Agent/protocol advisory shown as a first-class conversation card. */
+      type: "notice";
+      sessionId: string;
+      text: string;
+      severity: "info" | "warning" | "error";
+      title: string;
+      description: string;
+      createdAt: string;
+    }
+  | {
       type: "thought";
       sessionId: string;
       text: string;

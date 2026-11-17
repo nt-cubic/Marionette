@@ -7,6 +7,11 @@
  * failures/stalls raise the error cue at once, and completion / silent-stop
  * chimes also play while the window is focused.
  *
+ * ACP reply/permission/question/plan alerts are owned by Rust
+ * (`src-tauri/src/desktop_notify.rs`) so they still fire while WebView2 is
+ * suspended. This module handles frontend-only signals and the shared toggle;
+ * do not add a second ACP dispatch here.
+ *
  * Windows: taskbar flash + yellow/red progress overlay (QQ/WeChat-ish).
  * Cleared when the window is focused again.
  */
@@ -16,6 +21,7 @@ import {
   ProgressBarStatus,
   UserAttentionType,
 } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime } from "./api";
 import completeSoundUrl from "../assets/notifications/complete.wav";
 import errorSoundUrl from "../assets/notifications/error.wav";
@@ -133,6 +139,7 @@ export function isDesktopNotifyEnabled(): boolean {
 export function setDesktopNotifyEnabled(value: boolean): void {
   enabled = value;
   writeEnabled(value);
+  syncDesktopNotifyBackend(value);
   if (!value) {
     cancelAllScheduledDesktopNotifies();
     for (const audio of activeAudio) {
@@ -147,6 +154,16 @@ export function setDesktopNotifyEnabled(value: boolean): void {
     void clearDesktopNotify({ silent: true });
   }
   emit();
+}
+
+/**
+ * The ACP dispatcher owns background alerts because WebView2 is suspended
+ * while minimized/hidden. Keep its in-memory switch in lockstep with the UI
+ * preference; older dev frontends without the command safely no-op.
+ */
+export function syncDesktopNotifyBackend(value = enabled): void {
+  if (!isTauriRuntime()) return;
+  void invoke("desktop_notify_set_enabled", { enabled: value }).catch(() => undefined);
 }
 
 export function subscribeDesktopNotify(fn: Listener): () => void {
@@ -396,6 +413,7 @@ export async function clearDesktopNotify(opts?: { silent?: boolean }): Promise<v
  * Call once from App: clear attention on focus; optional visibility fallback.
  */
 export function bindDesktopNotifyFocusHandlers(): () => void {
+  syncDesktopNotifyBackend();
   let unlistenFocus: (() => void) | undefined;
   let disposed = false;
   /** Coalesce focus + visibility + onFocusChanged into one clear. */

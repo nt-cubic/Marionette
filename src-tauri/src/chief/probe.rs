@@ -269,7 +269,11 @@ fn drive_sync(
         }
     };
 
+    crate::desktop_notify::mark_silent_turn(&sid);
     let accepted = acp.send_prompt(&sid, prompt.to_string(), Vec::new(), Vec::new());
+    if accepted.is_err() {
+        crate::desktop_notify::clear_turn_marks(&sid);
+    }
     let mut prompt_accepted = false;
     let mut turn_idle = false;
     let mut prompt_error = None;

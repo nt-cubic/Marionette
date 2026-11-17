@@ -89,6 +89,8 @@ function eventSnapshot(event: SessionEvent): string {
       return `${event.type}|${event.sessionId}|${event.messageId ?? ""}|${event.createdAt}|${event.text}`;
     case "assistant_message":
       return `${event.type}|${event.sessionId}|${event.messageId ?? ""}|${event.createdAt}|${event.text}|${event.durationMs ?? ""}`;
+    case "notice":
+      return `${event.type}|${event.sessionId}|${event.createdAt}|${event.severity}|${event.title}|${event.description}`;
     case "thought":
       return `${event.type}|${event.sessionId}|${event.messageId ?? ""}|${event.createdAt}|${event.text}`;
     case "tool_call":

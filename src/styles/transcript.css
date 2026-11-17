@@ -2152,17 +2152,18 @@
   bottom: 0;
   width: 3px;
   border-radius: 0;
+  background: var(--you-card-tone, transparent);
   pointer-events: none;
   z-index: 1;
 }
 
-.event-card--user_message[data-mode-tone="plan"]::before    { background: var(--mode-tone-plan); }
-.event-card--user_message[data-mode-tone="ask"]::before     { background: var(--mode-tone-ask); }
-.event-card--user_message[data-mode-tone="debug"]::before   { background: var(--mode-tone-debug); }
-.event-card--user_message[data-mode-tone="build"]::before   { background: var(--mode-tone-build); }
-.event-card--user_message[data-mode-tone="minimal"]::before { background: var(--mode-tone-minimal); }
-.event-card--user_message[data-mode-tone="default"]::before { background: var(--mode-tone-default); }
-.event-card--user_message[data-mode-tone="loose"]::before   { background: var(--mode-tone-loose); }
+.event-card--user_message[data-mode-tone="plan"]    { --you-card-tone: var(--mode-tone-plan); }
+.event-card--user_message[data-mode-tone="ask"]     { --you-card-tone: var(--mode-tone-ask); }
+.event-card--user_message[data-mode-tone="debug"]   { --you-card-tone: var(--mode-tone-debug); }
+.event-card--user_message[data-mode-tone="build"]   { --you-card-tone: var(--mode-tone-build); }
+.event-card--user_message[data-mode-tone="minimal"] { --you-card-tone: var(--mode-tone-minimal); }
+.event-card--user_message[data-mode-tone="default"] { --you-card-tone: var(--mode-tone-default); }
+.event-card--user_message[data-mode-tone="loose"]   { --you-card-tone: var(--mode-tone-loose); }
 
 /* Timestamp — top-right of the type row */
 .event-card__timestamp {

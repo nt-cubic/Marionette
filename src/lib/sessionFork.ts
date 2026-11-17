@@ -36,6 +36,7 @@ function rekeyForkedEvent(event: SessionEvent, sessionId: string): SessionEvent 
   switch (event.type) {
     case "user_message":
     case "assistant_message":
+    case "notice":
     case "thought":
     case "tool_call":
     case "file_change":

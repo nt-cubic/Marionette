@@ -630,6 +630,7 @@ export async function startAcpSession(
 /**
  * @param probe true = 本地探针回合（额度刷新发的 /status、/usage）：
  * Telegram 桥、桌面提醒与 orb 通知在该回合完成时全部静默。
+ * @param silent true = 隐藏 replay 等不可见回合；后端桌面提醒在该回合完成时静默。
  */
 export async function sendAcpPrompt(
   sessionId: string,
@@ -637,6 +638,7 @@ export async function sendAcpPrompt(
   imagePaths: string[] = [],
   probe = false,
   filePaths: string[] = [],
+  silent = false,
 ): Promise<unknown> {
   if (!isTauriRuntime()) return null;
   return invoke("send_acp_prompt", {
@@ -645,6 +647,7 @@ export async function sendAcpPrompt(
     imagePaths: imagePaths.length > 0 ? imagePaths : null,
     filePaths: filePaths.length > 0 ? filePaths : null,
     probe: probe || null,
+    silent: silent || null,
   });
 }
 
@@ -1824,6 +1827,7 @@ export interface ChiefConfig {
 export interface ChiefTask {
   taskId: string;
   requestId: string;
+  staffId?: string | null;
   chiefSessionId: string;
   title: string;
   goal: string;
@@ -1832,12 +1836,100 @@ export interface ChiefTask {
   agentId: string;
   model?: string | null;
   status: "proposed" | "starting" | "running" | "waiting_user" | "completed" | "failed" | "cancelled" | "interrupted";
+  waitingReason?: "permission" | "question" | "plan_approval" | "user_input" | null;
+  turnCount?: number;
+  costUsd?: number;
   createdAt: number;
   updatedAt: number;
   lastEventAt: number;
   lastSummary?: string | null;
   stopReason?: string | null;
   error?: string | null;
+}
+
+export type StaffAutonomy = "manual" | "assisted" | "autonomous";
+
+/**
+ * Employee profile stored in ~/.marionette/chief/staff.json.
+ *
+ * Project access and work budgets live here, not in prompt text. A staff
+ * session is an ordinary Chat session; this object is the people-first layer
+ * above it.
+ */
+export interface StaffProfile {
+  staffId: string;
+  name: string;
+  title: string;
+  persona: string;
+  agentId: string;
+  model?: string | null;
+  allowedProjects: ChiefProjectPolicy[];
+  sessionId?: string | null;
+  telegramChatId?: number | null;
+  autonomy: StaffAutonomy;
+  maxActiveTasks: number;
+  maxTurnsPerTask: number;
+  maxWallMinutesPerTask: number;
+  maxModelCallsPerTask: number;
+  maxCostPerTaskUsd: number;
+  maxReportsPerHour: number;
+  notificationCooldownMinutes: number;
+  quietHours?: string | null;
+  allowBackgroundWork: boolean;
+  allowTelegram: boolean;
+  pausedUntilUserResumes: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface StaffMemoryJournal {
+  date: string;
+  body: string;
+  meta?: {
+    bytes?: number;
+    updatedAt?: number;
+    sourceRefs?: Array<Record<string, unknown>>;
+  };
+}
+
+export interface StaffMemorySnapshot {
+  staffId: string;
+  pinned: string;
+  state: string;
+  recentJournals: StaffMemoryJournal[];
+  proposals?: Array<{
+    proposalId: string;
+    staffId: string;
+    kind: string;
+    text: string;
+    status: string;
+    createdAt: number;
+  }>;
+}
+
+export type StaffCommitmentStatus =
+  | "open"
+  | "due"
+  | "done"
+  | "cancelled"
+  | "expired";
+
+export interface StaffCommitment {
+  commitmentId: string;
+  staffId: string;
+  text: string;
+  kind: "follow_up" | "reminder" | "promise" | "condition";
+  dueAt?: number | null;
+  condition?: string | null;
+  sourceRef?: string | null;
+  status: StaffCommitmentStatus;
+  createdAt: number;
+  completedAt?: number | null;
+}
+
+export interface StaffRegistrySnapshot {
+  paused: boolean;
+  staff: StaffProfile[];
 }
 
 export async function chiefConfigLoad(): Promise<ChiefConfig | null> {
@@ -1854,6 +1946,109 @@ export async function chiefTasksListAll(): Promise<ChiefTask[]> {
   if (!isTauriRuntime()) return [];
   const value = await invoke<{ tasks?: ChiefTask[] }>("chief_tasks_list_all");
   return Array.isArray(value?.tasks) ? value.tasks : [];
+}
+
+export async function chiefStaffList(): Promise<StaffRegistrySnapshot> {
+  if (!isTauriRuntime()) return { paused: false, staff: [] };
+  const value = await invoke<StaffRegistrySnapshot>("chief_staff_list");
+  return {
+    paused: Boolean(value?.paused),
+    staff: Array.isArray(value?.staff) ? value.staff : [],
+  };
+}
+
+export async function chiefStaffSave(profile: StaffProfile): Promise<StaffProfile | null> {
+  if (!isTauriRuntime()) return null;
+  return await invoke<StaffProfile>("chief_staff_save", { profile });
+}
+
+export async function chiefStaffDelete(
+  staffId: string,
+  opts: { deleteSession?: boolean; clearMemory?: boolean } = {},
+): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("chief_staff_delete", {
+    staffId,
+    deleteSession: opts.deleteSession ?? false,
+    clearMemory: opts.clearMemory ?? false,
+  });
+}
+
+export async function chiefStaffEnsureSession(staffId: string): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  return await invoke<string>("chief_staff_ensure_session", { staffId });
+}
+
+export async function chiefStaffSetPaused(paused: boolean): Promise<number> {
+  if (!isTauriRuntime()) return 0;
+  return await invoke<number>("chief_staff_set_paused", { paused });
+}
+
+export async function chiefStaffMemory(staffId: string): Promise<StaffMemorySnapshot | null> {
+  if (!isTauriRuntime()) return null;
+  return await invoke<StaffMemorySnapshot>("chief_staff_memory", { staffId });
+}
+
+export async function chiefStaffMemoryWrite(
+  staffId: string,
+  layer: "pinned" | "state",
+  text: string,
+): Promise<StaffMemorySnapshot | null> {
+  if (!isTauriRuntime()) return null;
+  return await invoke<StaffMemorySnapshot>("chief_staff_memory_write", {
+    staffId,
+    layer,
+    text,
+  });
+}
+
+export async function chiefStaffMemoryResolveProposal(
+  staffId: string,
+  proposalId: string,
+  accept: boolean,
+  layer: "pinned" | "state" = "state",
+): Promise<StaffMemorySnapshot | null> {
+  if (!isTauriRuntime()) return null;
+  return await invoke<StaffMemorySnapshot>("chief_staff_memory_resolve_proposal", {
+    staffId,
+    proposalId,
+    accept,
+    layer,
+  });
+}
+
+export async function chiefStaffMemoryForget(staffId: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("chief_staff_memory_forget", { staffId });
+}
+
+export async function chiefCommitmentsList(staffId: string): Promise<StaffCommitment[]> {
+  if (!isTauriRuntime()) return [];
+  const value = await invoke<{ commitments?: StaffCommitment[] }>("chief_commitments_list", {
+    staffId,
+  });
+  return Array.isArray(value?.commitments) ? value.commitments : [];
+}
+
+export async function chiefCommitmentAdd(
+  staffId: string,
+  commitment: Pick<StaffCommitment, "text" | "kind" | "dueAt" | "condition" | "sourceRef">,
+): Promise<StaffCommitment | null> {
+  if (!isTauriRuntime()) return null;
+  return await invoke<StaffCommitment>("chief_commitment_add", { staffId, commitment });
+}
+
+export async function chiefCommitmentComplete(
+  staffId: string,
+  commitmentId: string,
+  cancelled = false,
+): Promise<StaffCommitment | null> {
+  if (!isTauriRuntime()) return null;
+  return await invoke<StaffCommitment>("chief_commitment_complete", {
+    staffId,
+    commitmentId,
+    cancelled,
+  });
 }
 
 export async function chiefStopAll(): Promise<number> {

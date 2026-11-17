@@ -2161,6 +2161,7 @@ pub async fn start_acp_session(
     };
 
     let acp = state.acp.clone();
+    let staff_session = crate::chief::staff_commands::profile_for_session(&session_id).is_some();
     let app_for_start = app.clone();
     let sid = session_id.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
@@ -2171,6 +2172,14 @@ pub async fn start_acp_session(
 
     match result {
         Ok(caps) => {
+            if staff_session {
+                if let Err(error) = crate::chief::runner::enforce_read_only(&app, &session_id) {
+                    let _ = state.acp.stop(&session_id);
+                    return Err(format!(
+                        "员工会话必须使用 Agent 的只读/plan 权限；当前 Agent 无法强制只读：{error}"
+                    ));
+                }
+            }
             {
                 let storage = state
                     .storage
@@ -2221,17 +2230,31 @@ pub fn send_acp_prompt(
     image_paths: Option<Vec<String>>,
     file_paths: Option<Vec<String>>,
     probe: Option<bool>,
+    silent: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
+    let probe_turn = probe.unwrap_or(false);
+    let silent_turn = silent.unwrap_or(false);
+    // Mark before writing the prompt: a very fast adapter may answer before
+    // the command thread runs the post-send bookkeeping.
+    if probe_turn {
+        crate::desktop_notify::mark_probe_turn(&session_id);
+    }
+    if silent_turn {
+        crate::desktop_notify::mark_silent_turn(&session_id);
+    }
     let result = state.acp.send_prompt(
         &session_id,
         text,
         image_paths.unwrap_or_default(),
         file_paths.unwrap_or_default(),
     );
+    if result.is_err() {
+        crate::desktop_notify::clear_turn_marks(&session_id);
+    }
     // 本地探针（额度刷新发的 /status、/usage）：发送成功才标记，Telegram 桥
     // 在回合完成时不推送。失败不标——残留标记会误吞下一个真实回合的推送。
-    if result.is_ok() && probe.unwrap_or(false) {
+    if result.is_ok() && probe_turn {
         crate::telegram_remote::mark_probe_turn(&session_id);
     }
     result

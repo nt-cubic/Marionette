@@ -17,12 +17,11 @@
 //! - 测试沙箱：[`set_root_override_for_tests`] + [`SANDBOX_LOCK`]（对齐
 //!   council store 模式——broker 测试与 store 测试共用一把锁）。
 
-use super::types::{now_ms, ChiefConfig, RemoteWorkMode, Task, TaskEvent, TaskStatus};
+use super::types::{now_ms, ChiefConfig, Task, TaskEvent, TaskStatus};
 use serde_json::{json, Value};
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Mutex;
 
 static ROOT_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -30,24 +29,6 @@ static ROOT_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
 static STORE_LOCK: Mutex<()> = Mutex::new(());
 /// 测试串行锁：store 与 broker 的测试共用（进程级静态，override 互踩）。
 pub(crate) static SANDBOX_LOCK: Mutex<()> = Mutex::new(());
-
-/// mode 快照：telegram 的事件热路径（每秒几十个事件）绝不允许读盘查模式，
-/// 读写 config 时顺手刷新；fail-safe 默认 Off（relay）。
-static MODE_CACHE: AtomicU8 = AtomicU8::new(0);
-
-fn cache_mode(mode: RemoteWorkMode) {
-    MODE_CACHE.store(mode as u8, Ordering::Relaxed);
-}
-
-/// 当前模式快照（热路径专用；准确性以 config.json 为准，本值最迟在
-/// 下一次 config 读写后跟上）。
-pub fn mode_cached() -> RemoteWorkMode {
-    match MODE_CACHE.load(Ordering::Relaxed) {
-        1 => RemoteWorkMode::Relay,
-        2 => RemoteWorkMode::Chief,
-        _ => RemoteWorkMode::Off,
-    }
-}
 
 pub fn set_root_override_for_tests(path: Option<PathBuf>) {
     if let Ok(mut slot) = ROOT_OVERRIDE.lock() {
@@ -101,12 +82,10 @@ pub fn load_config() -> ChiefConfig {
             ChiefConfig::default()
         }
     };
-    cache_mode(config.mode);
     config
 }
 
 pub fn save_config(config: &ChiefConfig) -> Result<(), String> {
-    cache_mode(config.mode);
     let _guard = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let path = config_path()?;
     if let Some(parent) = path.parent() {

@@ -5,7 +5,7 @@
 //! 的工具 dispatch 才是 Chief（模型）的门禁入口。
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager};
 
 use super::store;
 use super::tee;
@@ -45,7 +45,7 @@ pub fn chief_tasks_list_all() -> Value {
 
 /// 本地急停（与 Telegram 急停同路）。
 #[tauri::command(async)]
-pub fn chief_stop_all(app: AppHandle) -> usize {
+pub fn chief_stop_all(app: AppHandle) -> Result<usize, String> {
     super::broker::chief_stop_all(&app)
 }
 
@@ -69,6 +69,7 @@ pub fn chief_tee_cursor(session_id: String) -> u64 {
 
 /// 唤醒心跳线程 + 启动恢复：main.rs setup 调用。
 pub fn bootstrap_chief(app: &AppHandle) {
+    let _ = super::staff_commands::chief_staff_list();
     // 启动恢复（02-architecture.md §10.1）：失联任务标 interrupted，
     // 绝不标 completed；事件账本留痕。
     match store::mark_interrupted_on_startup() {

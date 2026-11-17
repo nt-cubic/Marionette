@@ -3,6 +3,7 @@
  * - Grok Reply: one token per agent_message_chunk with rotating messageId
  * - Codex Thought: whitespace/punctuation tokens must not be dropped
  * - Multi-session interleave: concurrent windows must not split Reply/Thought
+ * - Protocol notices / Codex retries become standalone conversation rows
  * Run: npx tsx scripts/smoke-stream-merge.mts
  */
 import assert from "node:assert/strict";
@@ -11,12 +12,15 @@ import {
   coalesceAdjacentAssistantFragments,
   coalesceAdjacentThoughts,
   extractAcpUpdateText,
+  findLastTurnContentIndexForSession,
   isAssistantNotice,
   mergeStreamText,
+  turnEndedSilently,
   userMessageEvent,
   type SessionEvent,
 } from "../src/lib/acpTranscript.ts";
 import { isAcpTranscriptMethod } from "../src/lib/acpMeta.ts";
+import { parseTranscriptEvents } from "../src/lib/transcript.ts";
 import { isWorkspaceDiffPath, looksLikeUnifiedDiff } from "../src/lib/toolBody.ts";
 import { clusterActivityRuns, extractDiffStats } from "../src/lib/turnActivity.ts";
 
@@ -380,7 +384,7 @@ assert.equal(
   "tool between same-session Replies must keep two cards",
 );
 
-console.log("notices stay off the transcript");
+console.log("notices become conversation rows");
 {
   const noticePart = extractAcpUpdateText({
     params: {
@@ -392,7 +396,46 @@ console.log("notices stay off the transcript");
       },
     },
   });
-  assert.equal(noticePart, null, "protocol notice must not become a chat card");
+  assert.equal(noticePart?.role, "system");
+  assert.equal(noticePart?.notice?.severity, "warning");
+  assert.equal(noticePart?.notice?.title, "MCP server unavailable");
+
+  let noticeRail: SessionEvent[] = [userMessageEvent("s-notice", "go")];
+  noticeRail = applyAcpPartToEvents(noticeRail, "s-notice", noticePart!);
+  const notice = noticeRail.find((e) => e.type === "notice");
+  assert.ok(notice && notice.type === "notice");
+  assert.equal(notice.severity, "warning");
+  assert.match(notice.text, /MCP server unavailable/);
+  const restoredNotice = parseTranscriptEvents(noticeRail).find(
+    (e) => e.type === "notice",
+  );
+  assert.ok(restoredNotice && restoredNotice.type === "notice");
+  assert.equal(restoredNotice.description, "Continuing without it.");
+
+  // A notice is a hard boundary: the next real Reply must not append to it.
+  noticeRail = applyAcpPartToEvents(noticeRail, "s-notice", {
+    role: "assistant",
+    text: "recovered",
+    isDelta: true,
+    sessionUpdate: "agent_message_chunk",
+  });
+  assert.equal(noticeRail.filter((e) => e.type === "notice").length, 1);
+  assert.equal(
+    noticeRail.filter((e) => e.type === "assistant_message").length,
+    1,
+  );
+  const recovered = noticeRail.find((e) => e.type === "assistant_message");
+  assert.equal(
+    recovered?.type === "assistant_message" ? recovered.text : "",
+    "recovered",
+  );
+
+  // A trailing notice must not hide the Reply from turn-end sealing / chime
+  // decisions.
+  const tailNoticeRail = applyAcpPartToEvents(noticeRail, "s-notice", noticePart!);
+  assert.equal(turnEndedSilently(tailNoticeRail, "s-notice"), false);
+  const tailIdx = findLastTurnContentIndexForSession(tailNoticeRail, "s-notice");
+  assert.equal(tailNoticeRail[tailIdx]?.type, "assistant_message");
 
   const retryPart = extractAcpUpdateText({
     params: {
@@ -402,7 +445,9 @@ console.log("notices stay off the transcript");
       },
     },
   });
-  assert.equal(retryPart, null, "Codex retry must not become a Reply");
+  assert.equal(retryPart?.role, "system");
+  assert.equal(retryPart?.notice?.severity, "warning");
+  assert.match(retryPart!.notice!.description, /rate limited/);
 
   const compactPart = extractAcpUpdateText({
     params: {

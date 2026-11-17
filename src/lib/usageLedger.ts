@@ -979,6 +979,7 @@ export function turnSessionRow(entry: TurnUsageEntry): string {
     cachw: s.cacheCreation ?? null,
     ctx,
     outcome: entry.outcome ?? "ended",
+    usd: entry.reportedUsd ?? null,
     comp: entry.compactions ?? 0,
     tools: entry.digest?.tools ?? null,
     cmds: entry.digest?.cmds ?? null,

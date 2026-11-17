@@ -11,6 +11,7 @@ import { QuotaSection } from "./QuotaSection";
 import { TasksSection } from "./TasksSection";
 import { UniversalPluginsSection } from "./UniversalPluginsSection";
 import { ChiefSection } from "./ChiefSection";
+import { StaffSection } from "./StaffSection";
 import { UniversalSkillsSection } from "./UniversalSkillsSection";
 import { dockFooterHost, useDocked } from "../lib/dockFooter";
 import type { PlanEntry } from "../lib/acpPlan";
@@ -24,6 +25,7 @@ import type {
   ProjectContext,
   UsageSnapshot,
 } from "../lib/types";
+import type { ChiefTask, StaffProfile } from "../lib/api";
 
 /** memo 默认值要保持同一引用，否则每次渲染都击穿子组件 memo。 */
 const EMPTY_BG_TASKS: BackgroundTaskRow[] = [];
@@ -118,6 +120,12 @@ type ContextPanelProps = {
   onOpenBackgroundTask?: (row: BackgroundTaskRow) => void;
   /** 终止一个 ACP terminal/* 后台命令。 */
   onKillBackgroundTerminal?: (terminalId: string) => void;
+  /** Active staff profile when this conversation belongs to the employee roster. */
+  activeStaff?: StaffProfile | null;
+  staffTasks?: ChiefTask[];
+  onEditStaff?: (profile: StaffProfile) => void;
+  onRemoveStaff?: (profile: StaffProfile) => Promise<void>;
+  onOpenStaffTask?: (task: ChiefTask) => void;
 };
 
 /**
@@ -250,6 +258,11 @@ export const ContextPanel = memo(function ContextPanel({
   sessionLabels,
   onOpenBackgroundTask,
   onKillBackgroundTerminal,
+  activeStaff = null,
+  staffTasks = [],
+  onEditStaff,
+  onRemoveStaff,
+  onOpenStaffTask,
 }: ContextPanelProps) {
   const t = useT();
   /** Docked: the update control joins the strip's footer bar below the composer. */
@@ -401,6 +414,24 @@ export const ContextPanel = memo(function ContextPanel({
         aria-labelledby="context-tab-current"
         hidden={activeTab !== "current"}
       >
+        {activeStaff ? (
+          <section className="context-card" id="context-staff">
+            <div className="context-card__heading">
+              <span>{t("staff.profileTitle")}</span>
+            </div>
+            <StaffSection
+              key={activeStaff.staffId}
+              profile={activeStaff}
+              tasks={staffTasks}
+              onEdit={(profile) => onEditStaff?.(profile)}
+              onRemove={async (profile) => {
+                await onRemoveStaff?.(profile);
+              }}
+              onOpenTask={onOpenStaffTask}
+            />
+          </section>
+        ) : null}
+
         <TasksSection
           activeAgentId={activeAgentId}
           activeAgentLabel={activeAgentLabel}

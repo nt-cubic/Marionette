@@ -21,6 +21,52 @@
   text-transform: none;
 }
 
+/* Protocol / process advisories are conversation rows with the same card
+   geometry as You and Reply. Status lives in the label ink; no fill, dot or
+   floating composer banner. */
+.event-card--notice {
+  grid-template-columns: minmax(0, 1fr);
+  padding-left: 12px;
+  border-left: 3px solid var(--border-strong);
+}
+
+.event-card--notice .event-card__icon {
+  display: none;
+}
+
+.event-card--notice .event-card__type {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.event-card--notice.is-notice--warning .event-card__type {
+  color: var(--yellow);
+}
+
+.event-card--notice.is-notice--error .event-card__type {
+  color: var(--red);
+}
+
+.event-card--notice .md-body {
+  margin-top: 4px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.event-card--notice .md-body > p:first-child > strong {
+  color: var(--text-strong);
+}
+
+.event-card--notice.is-notice--warning .md-body > p:first-child > strong {
+  color: var(--yellow);
+}
+
+.event-card--notice.is-notice--error .md-body > p:first-child > strong {
+  color: var(--red);
+}
+
 /* Prompt wrappers keep the same card padding (legacy 12/14). */
 .event-card--plan_prompt,
 .event-card--ask_prompt {
@@ -712,10 +758,12 @@
   box-shadow: 0 0 0 1px var(--accent);
 }
 
-/* ---- You card: thin accent outline (2026-11-08) ---------------------------------------
-   What tells "You" from a reply at a glance is a 1px theme-green outline all round
-   (its left bar stays), not a fill or a texture: Reply and process cards keep the
-   neutral edge. */
+/* ---- You card: mode-tuned outline (2026-11-17) ----------------------------------------
+   The 1px outer edge and 3px left rail read the same --you-card-tone variable. That
+   variable is mapped once from data-mode-tone, so switching Full access / Build /
+   Plan / ... recolors the whole boundary instead of leaving a fixed accent-green
+   outline around a different-colored rail. Without a mode tone the edge stays
+   neutral; Reply and process cards keep their own edges. */
 .event-list .event-card--user_message {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-color: var(--you-card-tone, var(--border));
 }

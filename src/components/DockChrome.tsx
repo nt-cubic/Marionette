@@ -57,6 +57,8 @@ type Props = {
   /** Projects offered as new-chat destinations (name + id only). */
   projects: Array<{ id: string; name: string }>;
   memoCount: number;
+  staffCount: number;
+  staffPaused: boolean;
   /** Subscription families from `magpie quota`; every one gets a ring. */
   quotaRows: EngineQuotaEntry[];
   /** Dialogs still holding a process, plus the one in view; newest first. */
@@ -67,6 +69,7 @@ type Props = {
   onOpenSession: (session: Session) => void;
   onSuspendSession: (sessionId: string) => void;
   onOpenPalette: () => void;
+  onToggleStaffPause: () => void;
   onUndock: () => void;
   onQuit: () => void;
   updateAvailable: boolean;
@@ -317,6 +320,8 @@ export const DockChrome = memo(function DockChrome({
   onNewChatIn,
   projects,
   memoCount,
+  staffCount,
+  staffPaused,
   quotaRows,
   active,
   totalSessions,
@@ -325,6 +330,7 @@ export const DockChrome = memo(function DockChrome({
   onOpenSession,
   onSuspendSession,
   onOpenPalette,
+  onToggleStaffPause,
   onUndock,
   onQuit,
   updateAvailable,
@@ -479,6 +485,32 @@ export const DockChrome = memo(function DockChrome({
                   : updateBusy
                     ? t("dock.checking")
                     : t("dock.checkUpdate")}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setOpenMenu(null);
+                  onPage("shelf");
+                }}
+              >
+                {t("staff.group")}
+                <small>
+                  {staffCount}
+                  {staffPaused ? " · " + t("staff.paused") : ""}
+                </small>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                disabled={staffCount === 0}
+                className={staffPaused ? "is-accent" : undefined}
+                onClick={() => {
+                  setOpenMenu(null);
+                  onToggleStaffPause();
+                }}
+              >
+                {staffPaused ? t("staff.resumeAll") : t("staff.pauseAll")}
               </button>
               <button
                 type="button"

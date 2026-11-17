@@ -18,6 +18,7 @@ mod custom_agents;
 mod web_chat_bridge;
 mod data_dir_gate;
 mod debug_log;
+mod desktop_notify;
 mod dock_support;
 mod drag_text;
 mod dsh_bridge;
@@ -577,6 +578,9 @@ fn main() {
                 #[cfg(target_os = "windows")]
                 tauri::WindowEvent::Focused(focused) => {
                     use std::sync::atomic::Ordering;
+                    if *focused {
+                        desktop_notify::schedule_clear_on_focus(window.app_handle());
+                    }
                     if *focused
                         && window.label() == "main"
                         && MINIMIZE_SUSPENDED.load(Ordering::Acquire)
@@ -628,6 +632,7 @@ fn main() {
             usage_store::usage_ledger_save,
             usage_store::usage_session_append,
             usage_store::usage_session_read,
+            desktop_notify::desktop_notify_set_enabled,
             usage_backfill::usage_backfill_scan,
             usage_backfill::usage_grok_composition,
             commands::list_projects,
@@ -768,6 +773,18 @@ fn main() {
             chief::commands::chief_tee_replay,
             chief::commands::chief_tee_consume,
             chief::commands::chief_tee_cursor,
+            chief::staff_commands::chief_staff_list,
+            chief::staff_commands::chief_staff_save,
+            chief::staff_commands::chief_staff_delete,
+            chief::staff_commands::chief_staff_ensure_session,
+            chief::staff_commands::chief_staff_set_paused,
+            chief::staff_commands::chief_staff_memory,
+            chief::staff_commands::chief_staff_memory_write,
+            chief::staff_commands::chief_staff_memory_resolve_proposal,
+            chief::staff_commands::chief_staff_memory_forget,
+            chief::staff_commands::chief_commitments_list,
+            chief::staff_commands::chief_commitment_add,
+            chief::staff_commands::chief_commitment_complete,
             open_target::resolve_link_target,
             open_target::open_external,
             open_target::reveal_in_file_manager,
