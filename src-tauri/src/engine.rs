@@ -46,6 +46,14 @@
 //! 逐函数挂 cfg_attr 把两个形态的diff搅浑。
 #![cfg_attr(feature = "engine-rust", allow(dead_code))]
 
+// T12 互斥红线：`engine-rust`（引擎编进 exe）与 `embedded-engine`（内嵌
+// ~12MB magpie 载荷）同开只会白烧体积，且「恢复出厂」会把进程内引擎盖回
+// 子进程形态——Cargo 的 features 语法表达不了互斥，这里编译期断死。发布
+// SKU 二选一：默认 magpie（embedded-engine）或 MARIONETTE_ENGINE=rust
+// （tools/build-portable.bat，仅 engine-rust）。
+#[cfg(all(feature = "engine-rust", feature = "embedded-engine"))]
+compile_error!("features `engine-rust` 与 `embedded-engine` 互斥：进程内引擎不内嵌 magpie 载荷（发布 SKU 见 tools/build-portable.bat）");
+
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
@@ -669,29 +677,31 @@ fn now_epoch_millis() -> String {
 // 稳定 tag）+ 重编，并把 `third_party/magpie` 一起提交（见 tools/README.md）。
 
 /// 内嵌引擎版本（下载路径存的是去 v 形态，这里同规矩归一后比较）。
-#[cfg(feature = "embedded-engine")]
+/// T12：engine-rust 形态额外排除——include_bytes/include_str 的载荷绝不能
+/// 进进程内 SKU（即便上面的互斥断言失效，这里也保证不参与编译）。
+#[cfg(all(feature = "embedded-engine", not(feature = "engine-rust")))]
 const EMBEDDED_ENGINE_VERSION: &str = include_str!("../engine-embedded/VERSION");
 /// UPX 压缩后的 magpie exe 字节（自解压，无需解码层）。
-#[cfg(feature = "embedded-engine")]
+#[cfg(all(feature = "embedded-engine", not(feature = "engine-rust")))]
 const EMBEDDED_MAGPIE: &[u8] = include_bytes!("../engine-embedded/magpie-windows-amd64.exe");
 
 fn embedded_version() -> Option<&'static str> {
-    #[cfg(feature = "embedded-engine")]
+    #[cfg(all(feature = "embedded-engine", not(feature = "engine-rust")))]
     {
         Some(strip_v(EMBEDDED_ENGINE_VERSION))
     }
-    #[cfg(not(feature = "embedded-engine"))]
+    #[cfg(not(all(feature = "embedded-engine", not(feature = "engine-rust"))))]
     {
         None
     }
 }
 
 fn embedded_artifact() -> (&'static [u8], &'static str) {
-    #[cfg(feature = "embedded-engine")]
+    #[cfg(all(feature = "embedded-engine", not(feature = "engine-rust")))]
     {
         (EMBEDDED_MAGPIE, strip_v(EMBEDDED_ENGINE_VERSION))
     }
-    #[cfg(not(feature = "embedded-engine"))]
+    #[cfg(not(all(feature = "embedded-engine", not(feature = "engine-rust"))))]
     {
         (&[], "")
     }
@@ -2147,73 +2157,116 @@ fn stop_owned_for_replace() -> Result<(), String> {
 }
 
 /// 查 GitHub latest（稳定版）与本机 / 出厂版本对比。网络失败时仍返回本机信息，`note` 带原因。
+/// engine-rust 形态（T12）：引擎编在 exe 里，版本随应用走——不打 GitHub、
+/// 不比 magpie latest（比了必然「有更新」，诱导 UI 走 48MB 子进程下载）。
+/// 返回形状按前端消费口径定：currentVersion 显示编译进来的网关版本、
+/// latest/embedded 置空、两个可用位全 false——更新/恢复按钮不出现，
+/// note 置 None（note 会渲染成错误横幅）。
 pub fn check_update() -> EngineUpdateInfo {
-    let dir = engine_dir().ok();
-    let current_version = dir.as_ref().and_then(|d| installed_version_at(d));
-    let embedded = embedded_version().map(|v| v.to_string());
-    let can_restore_factory = match (&embedded, &current_version) {
-        (Some(seed), Some(cur)) => seed != cur,
-        (Some(_), None) => true,
-        (None, _) => false,
-    };
-    match resolve_latest_release() {
-        Ok(plan) => {
-            let latest_version = plan.version;
-            let update_available = match &current_version {
-                Some(cur) => crate::agent_update::is_newer(&latest_version, cur),
-                None => true,
-            };
-            EngineUpdateInfo {
-                current_version,
-                embedded_version: embedded,
-                latest_version: Some(latest_version),
-                update_available,
-                can_restore_factory,
-                note: None,
-            }
-        }
-        Err(error) => EngineUpdateInfo {
-            current_version,
-            embedded_version: embedded,
+    #[cfg(feature = "engine-rust")]
+    {
+        crate::debug_log::append(
+            "engine",
+            "info",
+            "",
+            "engine is in-process (rust); magpie update path skipped (check_update)",
+            None,
+        );
+        return EngineUpdateInfo {
+            current_version: Some(crate::engine_gateway::ENGINE_VERSION.to_string()),
+            embedded_version: None,
             latest_version: None,
             update_available: false,
-            can_restore_factory,
-            note: Some(error),
-        },
+            can_restore_factory: false,
+            note: None,
+        };
+    }
+    #[cfg(not(feature = "engine-rust"))]
+    {
+        let dir = engine_dir().ok();
+        let current_version = dir.as_ref().and_then(|d| installed_version_at(d));
+        let embedded = embedded_version().map(|v| v.to_string());
+        let can_restore_factory = match (&embedded, &current_version) {
+            (Some(seed), Some(cur)) => seed != cur,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        match resolve_latest_release() {
+            Ok(plan) => {
+                let latest_version = plan.version;
+                let update_available = match &current_version {
+                    Some(cur) => crate::agent_update::is_newer(&latest_version, cur),
+                    None => true,
+                };
+                EngineUpdateInfo {
+                    current_version,
+                    embedded_version: embedded,
+                    latest_version: Some(latest_version),
+                    update_available,
+                    can_restore_factory,
+                    note: None,
+                }
+            }
+            Err(error) => EngineUpdateInfo {
+                current_version,
+                embedded_version: embedded,
+                latest_version: None,
+                update_available: false,
+                can_restore_factory,
+                note: Some(error),
+            },
+        }
     }
 }
 
 /// 显式更新：停自拉实例 → 下 latest 稳定 CLI → 落位为新的本机权威 → 再拉起。
 /// 后台线程执行；返回 kick-off 快照，UI 跟 `engine-download-progress` / `engine-state-changed`。
+/// engine-rust 形态（T12）：没有可下载的子进程引擎——短路径返回当前状态
+/// 快照（即最终态，不置 Downloading、不起线程），前端 setEngineState +
+/// refreshEngine 收到的是一致的现状，不卡进度也不报错。
 pub fn update() -> Result<EngineStatus, String> {
-    stop_owned_for_replace()?;
-    let dir = engine_dir()?;
-    let initial = {
-        let mut state = lock_state();
-        match state.status {
-            EngineStatus::Downloading { .. } | EngineStatus::Starting => {
-                return Err(crate::ts!("引擎正在安装或启动，请稍后再试", "Engine is installing or starting; try again shortly"));
+    #[cfg(feature = "engine-rust")]
+    {
+        crate::debug_log::append(
+            "engine",
+            "info",
+            "",
+            "engine is in-process (rust); magpie update path skipped (update)",
+            None,
+        );
+        return Ok(status());
+    }
+    #[cfg(not(feature = "engine-rust"))]
+    {
+        stop_owned_for_replace()?;
+        let dir = engine_dir()?;
+        let initial = {
+            let mut state = lock_state();
+            match state.status {
+                EngineStatus::Downloading { .. } | EngineStatus::Starting => {
+                    return Err(crate::ts!("引擎正在安装或启动，请稍后再试", "Engine is installing or starting; try again shortly"));
+                }
+                _ => {
+                    let initial = EngineStatus::Downloading {
+                        downloaded: 0,
+                        total: 0,
+                    };
+                    state.status = initial.clone();
+                    initial
+                }
             }
-            _ => {
-                let initial = EngineStatus::Downloading {
-                    downloaded: 0,
-                    total: 0,
-                };
-                state.status = initial.clone();
-                initial
-            }
-        }
-    };
-    emit_event("engine-state-changed", &initial);
-    std::thread::Builder::new()
-        .name("engine-update".into())
-        .spawn(move || {
-            if let Err(error) = update_pipeline(&dir) {
-                set_status(EngineStatus::Failed { error });
-            }
-        })
-        .map_err(|e| crate::ts!("启动引擎更新线程失败: {e}", "Failed to spawn engine update thread: {e}"))?;
-    Ok(initial)
+        };
+        emit_event("engine-state-changed", &initial);
+        std::thread::Builder::new()
+            .name("engine-update".into())
+            .spawn(move || {
+                if let Err(error) = update_pipeline(&dir) {
+                    set_status(EngineStatus::Failed { error });
+                }
+            })
+            .map_err(|e| crate::ts!("启动引擎更新线程失败: {e}", "Failed to spawn engine update thread: {e}"))?;
+        Ok(initial)
+    }
 }
 
 fn update_pipeline(dir: &Path) -> Result<(), String> {
@@ -2230,37 +2283,55 @@ fn update_pipeline(dir: &Path) -> Result<(), String> {
 }
 
 /// 恢复出厂：用 exe 内嵌种子覆盖本机引擎，再拉起。无内嵌构建不可用。
+/// engine-rust 形态（T12）：没有内嵌种子也没有可覆盖的本机安装——出厂态
+/// 就是当前 exe。短路径同 update()：记 dev.log、返回当前状态快照（UI 的
+/// 恢复按钮本就被 check_update 的 canRestoreFactory=false 藏掉，这里是
+/// 兜底，防止任何路径把「恢复」变成报错）。
 pub fn restore_factory() -> Result<EngineStatus, String> {
-    let (bytes, version) = embedded_artifact();
-    if bytes.is_empty() || version.is_empty() {
-        return Err(crate::ts!("当前构建没有内嵌引擎，无法恢复出厂", "This build has no embedded engine; factory restore is unavailable"));
+    #[cfg(feature = "engine-rust")]
+    {
+        crate::debug_log::append(
+            "engine",
+            "info",
+            "",
+            "engine is in-process (rust); magpie update path skipped (restore_factory)",
+            None,
+        );
+        return Ok(status());
     }
-    let version = version.to_string();
-    stop_owned_for_replace()?;
-    let dir = engine_dir()?;
-    let initial = {
-        let mut state = lock_state();
-        match state.status {
-            EngineStatus::Downloading { .. } | EngineStatus::Starting => {
-                return Err(crate::ts!("引擎正在安装或启动，请稍后再试", "Engine is installing or starting; try again shortly"));
-            }
-            _ => {
-                let initial = EngineStatus::Starting;
-                state.status = initial.clone();
-                initial
-            }
+    #[cfg(not(feature = "engine-rust"))]
+    {
+        let (bytes, version) = embedded_artifact();
+        if bytes.is_empty() || version.is_empty() {
+            return Err(crate::ts!("当前构建没有内嵌引擎，无法恢复出厂", "This build has no embedded engine; factory restore is unavailable"));
         }
-    };
-    emit_event("engine-state-changed", &initial);
-    std::thread::Builder::new()
-        .name("engine-restore".into())
-        .spawn(move || {
-            if let Err(error) = restore_factory_pipeline(bytes, &version, &dir) {
-                set_status(EngineStatus::Failed { error });
+        let version = version.to_string();
+        stop_owned_for_replace()?;
+        let dir = engine_dir()?;
+        let initial = {
+            let mut state = lock_state();
+            match state.status {
+                EngineStatus::Downloading { .. } | EngineStatus::Starting => {
+                    return Err(crate::ts!("引擎正在安装或启动，请稍后再试", "Engine is installing or starting; try again shortly"));
+                }
+                _ => {
+                    let initial = EngineStatus::Starting;
+                    state.status = initial.clone();
+                    initial
+                }
             }
-        })
-        .map_err(|e| crate::ts!("启动引擎恢复线程失败: {e}", "Failed to spawn engine restore thread: {e}"))?;
-    Ok(initial)
+        };
+        emit_event("engine-state-changed", &initial);
+        std::thread::Builder::new()
+            .name("engine-restore".into())
+            .spawn(move || {
+                if let Err(error) = restore_factory_pipeline(bytes, &version, &dir) {
+                    set_status(EngineStatus::Failed { error });
+                }
+            })
+            .map_err(|e| crate::ts!("启动引擎恢复线程失败: {e}", "Failed to spawn engine restore thread: {e}"))?;
+        Ok(initial)
+    }
 }
 
 fn restore_factory_pipeline(bytes: &[u8], version: &str, dir: &Path) -> Result<(), String> {

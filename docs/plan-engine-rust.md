@@ -42,16 +42,47 @@ ureq 出站），ring-less TLS 约束不变。
   + httpd 加固（chunked/头 30s 写 60s/并发 64 上限）；串行 56/56 +
   套件全绿。
 
-## 进行中（子代理并行，2026-11-17 连续施工模式——用户定案「全部跑完为止，不分昼夜」）
+## 已完成（补记三）
 
-- [ ] **T6 进程内接线**：feature `engine-rust`——engine.rs/main.rs/
-  Cargo.toml/cli.rs/httpd 停止机制施工中（httpd 侧 serve_on+AtomicBool
-  已随 T11 提交）。
-- [ ] **T9 quotas 扩源**：Moonshot/OpenRouter/SiliconFlow/StepFun/Zhipu 按
-  key 余额（端点与字段以 Go balance.go 为准）。
-- [ ] **T15 流式工具调用**：chat tool_calls 分片拼装 → responses
-  function_call 事件族 / anthropic tool_use 三段式（T3/T4 点名的关键缺口，
-  codex/Claude 流式工具轮依赖它）。
+- [x] **T12 发布切换**（2026-11-17）：engine.rs 更新路径门控收口——feature
+  `engine-rust` 下 check_update()/update()/restore_factory() 走短路径
+  （dev.log 记 "engine is in-process (rust); magpie update path skipped"；
+  check_update 返回 currentVersion=编译进来的网关版本 + updateAvailable/
+  canRestoreFactory 双 false + note=None，update/restore 返回当前状态快照
+  ——前端更新面板不卡进度、不弹错误，更新/恢复按钮自然隐藏）；
+  EMBEDDED_MAGPIE/EMBEDDED_ENGINE_VERSION 的 include_bytes/include_str
+  前置 `not(feature="engine-rust")`；`engine-rust` 与 `embedded-engine`
+  互斥由 engine.rs 顶部 compile_error! 断言（Cargo 语法表达不了互斥；
+  同开编译期报错，实测生效）。build-portable.bat 新开关
+  `MARIONETTE_ENGINE=rust`：跳过整段 magpie 导入/种子 go build/载荷 UPX
+  （等价整段 :prepare_embed），cargo features 换 engine-rust，产物照旧
+  canonical `release\<版本>\Marionette.exe`（(N) 降级机制共用，未发明
+  新路径），尾部打 SKU 标注 + 体积；默认（不设变量）行为一字不变
+  （magpie SKU 仍是默认）。体积实测（0.8.1，UPX --best --lzma 后）：
+  **rust SKU 5,622,784 字节 ≈ 5.36 MB**（raw 20,005,888 ≈ 19.1 MB），
+  对比同版本 magpie SKU 26,156,544 ≈ 24.95 MB——**目标 ≤10MB 达成**
+  （约为 magpie SKU 的 21%，省 ~19.6MB）。回归：check.bat 默认 /
+  `--features engine-rust` / 默认 bin 三态编译绿 + 双 feature 同开
+  compile_error 实测 + engine 模块 50 测试绿 + rust SKU 实跑全程绿
+  （前端 tsc/vite + cargo LTO release 12m08s + UPX）。
+- [x] **T15 流式工具调用**（`a65aa41e`）：ChatToolAccum 分片拼装 +
+  responses function_call 事件族 + messages tool_use 三段式（content_block
+  index 编排、usage 尾帧收口顺带修复）；82/82（+20）。边角：乱序 parallel
+  事件序取首片序子集、参数整段一帧、call id 未消毒。
+- [x] **T9 余额扩源**（`d023a8a8`）：六家来源（Moonshot/OpenRouter/
+  SiliconFlow/StepFun/Zhipu/DeepSeek 修正），端点字段逐条对齐 Go
+  balance.go；13/13 模块测试。未覆盖清单在 quotas.rs 尾注。
+
+## 已完成（补记二）
+
+- [x] **T6 进程内接线**（`7f31e5cf`）：feature `engine-rust` 全链——
+  spawn_serve_in_process（同步 bind 占端口）、InProcessServe 停止机制
+  （AtomicBool + 有界等退出）、run_magpie_cli 直调（GUI 零 println）、
+  place_and_prep 直达 Ready（不下载/不复用外部 magpie）；default 构建零
+  变化；62/62 + 双 feature 编译 + 套件 ×3 全绿。**数据面按设计即兼容**：
+  rust 引擎与 magpie 同用 `~/.config/magpie/providers.json`，旧配置无需
+  迁移。未做（→T12）：update()/restore_factory() 门控；嵌入载荷在
+  feature 态的编译剔除。
 
 ## 已完成（补记）
 

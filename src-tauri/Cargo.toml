@@ -104,6 +104,9 @@ embedded-engine = []
 # 不再 spawn magpie.exe，改在本进程后台线程跑 engine_gateway::httpd；
 # run_magpie_cli 家族直调 engine_gateway::cli（无子进程、无 10s 超时）。
 # 默认关闭——default 构建行为零变化；双 SKU 灰度（magpie 默认）转正后才翻转。
+# **与 embedded-engine 互斥**（T12）：进程内引擎不内嵌 magpie 载荷，同开只白烧
+# ~12MB 且「恢复出厂」会盖回子进程形态——engine.rs 顶部有 compile_error! 断言，
+# Cargo 的 features 语法表达不了互斥，别试图用 implies 绕。
 engine-rust = []
 
 # tao 0.35.3 asserts that WM_PAINT on the thread-event-target is never re-entrant.
