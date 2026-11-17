@@ -14,7 +14,7 @@ import { hourRampStep } from "../lib/usageLedger";
 /**
  * Token 用量页的手绘图表。骨架学 codeg `token-usage/charts.tsx`:
  * 零依赖、柱宽封顶、两色语言(强调色=缓存,墨色=新算)、身份靠文字。
- * 表面走 docs/ui-language.md(3px 角、1px 边、无阴影、只动 transform/opacity)。
+ * 表面走 docs/guides/ui-language.md(3px 角、1px 边、无阴影、只动 transform/opacity)。
  */
 
 export const U_ACCENT = "var(--u-accent)";

@@ -1,4 +1,4 @@
-/* UI v2 overrides: shelf. Loaded after every legacy sheet (src/main.tsx); see docs/ui-language.md. */
+/* UI v2 overrides: shelf. Loaded after every legacy sheet (src/main.tsx); see docs/guides/ui-language.md. */
 
 /* ── 0 · Ground: sidebar on --panel, 1px right border. ── */
 .project-tree.project-tree {

@@ -1,7 +1,7 @@
 //! 模型目录（合同 C2）：厂商 `/v1/models` 抓取 + 元数据转述 + 钉死/live
 //! 语义 + 30s 缓存。`context_window / max_output_tokens / modalities.input`
 //! 是 Marionette 跨用宣告的唯一事实源——漏转述等于各家 agent 按自己的
-//! 默认窗口办事（docs/plan-engine-contract.md C2 红线）。
+//! 默认窗口办事（docs/plans/plan-engine-contract.md C2 红线）。
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};

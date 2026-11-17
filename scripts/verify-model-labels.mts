@@ -2,7 +2,7 @@
  * Model label / menu grouping for ACP option names.
  *
  * Locks in the zcode shapes: `provider\model` ids and the adapter's
- * `Provider › Model` display names (2026-10-23, docs/pitfalls-zcode-acp.md
+ * `Provider › Model` display names (2026-10-23, docs/pitfalls/pitfalls-zcode-acp.md
  * 雷 12). A provider that arrives as a bare `bigmodel-api` group header, or a
  * row that repeats the provider the header already prints, is the regression
  * this guards against.

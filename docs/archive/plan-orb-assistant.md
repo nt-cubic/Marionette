@@ -1,7 +1,7 @@
 # 悬浮球后台常驻助手 — 设计稿（已废弃）
 
 > 2026-10-22 定稿；**2026-10-23 废弃**：「后台常驻」方向改由**贴边停靠长条**承接，
-> 现行设计稿见 [`../plan-edge-dock.md`](../plan-edge-dock.md)。
+> 现行设计稿见 [`../plan-edge-dock.md`](../plans/plan-edge-dock.md)。
 > 可复用部分已并入该计划：后台常驻地基（`quit_app` / `set_background_mode` / capabilities 增补，原档①）、
 > `capture_save_blob`（原档③）、余额数据层（原档⑤）、「收集箱会话」AI 整理方案（原 §2，作收纳盒增值层）、
 > 隐藏态 WebView2 节流风险条目。球体窗、跨窗事件桥、场景按钮（原档④）、球体角标（原档②）随球废弃。

@@ -2816,7 +2816,7 @@ fn emit_resolved(app: &tauri::AppHandle, request_id: &str, method: &str) {
     );
 }
 
-// ── Telegram 远程桥（docs/telegram-bridge.md）──────────────────────────────
+// ── Telegram 远程桥（docs/plans/telegram-bridge.md）──────────────────────────────
 
 #[tauri::command(async)]
 pub fn telegram_remote_status() -> Result<crate::telegram_remote::TelegramStatus, String> {

@@ -1504,7 +1504,7 @@ export async function testProxy(url: string): Promise<ProxyTestResult> {
   return await invoke<ProxyTestResult>("test_proxy", { url });
 }
 
-// ── Telegram 远程桥（docs/telegram-bridge.md）──────────────────────────────
+// ── Telegram 远程桥（docs/plans/telegram-bridge.md）──────────────────────────────
 
 /** 通知偏好（落 ~/.marionette/telegram.json）。 */
 export type TelegramPrefs = {
@@ -1766,7 +1766,7 @@ export async function skillSetEnabled(id: string, enabled: boolean): Promise<voi
   await invoke("skill_set_enabled", { id, enabled });
 }
 
-// ── Chief 探针（M0 诊断面，非产品 UI；docs/research-telegram-chief/） ──
+// ── Chief 探针（M0 诊断面，非产品 UI；docs/research/telegram-chief/） ──
 //
 // 从 Rust 直接驱动一个完整 ACP 回合（start → prompt → wait_turn_idle → stop），
 // 验证无人值守路径与 durable event tee。ChiefBroker 落地后由真正的驱动路径替换。
@@ -1799,7 +1799,7 @@ export async function chiefProbeReplay(sessionId: string): Promise<unknown> {
   return await invoke("chief_probe_replay", { sessionId });
 }
 
-// ── Chief 远程助理（docs/research-telegram-chief/，M1） ──
+// ── Chief 远程助理（docs/research/telegram-chief/，M1） ──
 
 export interface ChiefProjectPolicy {
   projectId: string;

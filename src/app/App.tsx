@@ -4220,7 +4220,7 @@ export function App() {
   loadSessionTranscriptRef.current = loadSessionTranscript;
 
   /**
-   * Chief tee 回填（docs/research-telegram-chief/ 02 §6）。
+   * Chief tee 回填（docs/research/telegram-chief/ 02 §6）。
    *
    * 回放范围 = 游标之后 ∩ 转录未覆盖（tee.ts > 转录最新 createdAt）——
    * UI 正常用过的会话不会重放已有历史。只在 rail 处于基线时应用：一旦
@@ -10249,7 +10249,7 @@ export function App() {
                 : []),
               { id: "new-chat", label: t("palette.newChat"), run: () => void handleCreateChatSession() },
               {
-                // 插件：装一次全 agent 生效（docs/plan-plugin-layer.md）。
+                // 插件：装一次全 agent 生效（docs/plans/plan-plugin-layer.md）。
                 // 派发事件让 ContextPanel 切到「共享」标签并滚到插件卡；
                 // 贴边态先切 context 整页，普通态再展开右栏。
                 id: "open-universal-plugins",

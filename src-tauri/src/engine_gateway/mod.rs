@@ -1,8 +1,8 @@
-//! 进程内引擎网关——magpie 种子的 Rust 替身（docs/plan-engine-rust.md）。
+//! 进程内引擎网关——magpie 种子的 Rust 替身（docs/plans/plan-engine-rust.md）。
 //!
 //! 目标形态：编译进 marionette.exe 的一个模块，`engine.rs` 直接拉起监听线程，
 //! **不再有内嵌子 exe（20.6MB UPX 载荷）和独立 magpie 进程（100–160MB 内存）**。
-//! 合同面只有一张（docs/plan-engine-contract.md）：/v1/models、组宣告、
+//! 合同面只有一张（docs/plans/plan-engine-contract.md）：/v1/models、组宣告、
 //! quotas、chat/responses/messages 三组协议、provider/group CLI 动词。
 //! 验收 = scripts/verify-engine-contract.mts 全绿 + 真机对账。
 //!

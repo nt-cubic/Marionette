@@ -11,7 +11,7 @@ import { useT } from "../lib/i18n";
 import type { UniversalPlugin, UniversalPluginSpec } from "../lib/types";
 
 /**
- * 共通插件面板（docs/plan-plugin-layer.md）。与 PluginsSection（DSH 专属）
+ * 共通插件面板（docs/plans/plan-plugin-layer.md）。与 PluginsSection（DSH 专属）
  * 不同：这里登记的插件对所有 agent 生效——stdio 插件由 Marionette 托管
  * 子进程、经 localhost HTTP MCP 以 url 型条目注入 session/new（zcode 也
  * 吃），远程插件纯中继、真实凭据不进 agent 进程。

@@ -1,4 +1,4 @@
-/* UI v2 overrides: usage. Loaded after every legacy sheet (src/main.tsx); see docs/ui-language.md.
+/* UI v2 overrides: usage. Loaded after every legacy sheet (src/main.tsx); see docs/guides/ui-language.md.
  * Scope: everything under .usage-analysis (page / dock page / detached dialog share it)
  * plus the .usage-heat daily grid (no legacy sheet exists for it). Tokens only. */
 

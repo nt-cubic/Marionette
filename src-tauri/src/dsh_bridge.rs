@@ -1,6 +1,6 @@
 //! DSH 跨用桥 —— 用「本次 spawn 的 bundle 层」把 llm-pi-ai 路由 `marionette`
 //! 交给 `dsh-acp`（2026-10-22 改版，旧 home patch 方案见
-//! `docs/research-dsh-cross-use.md` §8.7）。
+//! `docs/research/research-dsh-cross-use.md` §8.7）。
 //!
 //! 为什么不再写 `~/.dsh/cordis.patch.yml`：
 //!

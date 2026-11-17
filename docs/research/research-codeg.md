@@ -311,5 +311,5 @@ Codeg 的 `docs/agents/zcode.md`（他们唯一的 per-agent 文档）确认了�
 8. **「挡不住有 shell 的 agent」原文**在 `computer/mod.rs:36-40`：gate 只约束
    「工具面允许模型做什么」，Windows/X11 上不是安全边界。
 
-Marionette 侧的落地批次与全量实施案：`docs/plan-browser-computer-use.md`；
+Marionette 侧的落地批次与全量实施案：`docs/plans/plan-browser-computer-use.md`；
 文档标签页（本批已落地）见 `docs/CURRENT.md`「文档标签页」。

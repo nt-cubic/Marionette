@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 
 /**
- * Agent ink: each agent's one identity colour (docs/ui-language.md v2).
+ * Agent ink: each agent's one identity colour (docs/guides/ui-language.md v2).
  * Components never branch on agent id for colour — they set `--agent-ink` on
  * the element with agentInkStyle() and CSS reads `var(--agent-ink, var(--accent))`.
  */

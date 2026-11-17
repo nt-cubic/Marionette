@@ -1,5 +1,5 @@
 /**
- * Figures behind the composer's session-info ring (docs/ui-language.md v2,
+ * Figures behind the composer's session-info ring (docs/guides/ui-language.md v2,
  * "输入框 → 信息圆圈"). Pure helpers: the popover and the copy-as-text button
  * share them so the two never disagree.
  */

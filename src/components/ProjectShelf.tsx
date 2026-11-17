@@ -318,7 +318,7 @@ function shelfDayHeaders(list: Session[], nowMs: number, minRows: number): Map<s
 }
 
 /**
- * Row status as right-hand text (docs/ui-language.md v2: state lives in words,
+ * Row status as right-hand text (docs/guides/ui-language.md v2: state lives in words,
  * the dot is the agent's ink). Running stays neutral, waiting yellow, error red.
  */
 function sessionStatusWord(
@@ -534,7 +534,7 @@ export function ProjectShelf({
   const enginePopRef = useRef<HTMLDivElement | null>(null);
 
   /**
-   * Telegram 远程桥（docs/telegram-bridge.md）。按钮常显状态，浮层承担：
+   * Telegram 远程桥（docs/plans/telegram-bridge.md）。按钮常显状态，浮层承担：
    * token 粘贴（getMe 校验）→ 配对确认（bot 收到第一条私聊消息后挂起，
    * 1Hz 轮询把它带进浮层）→ 通知偏好开关。所有动作直连 api，不经 App。
    */

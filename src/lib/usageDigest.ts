@@ -7,7 +7,7 @@
  * can show where time went, which tools / commands / skills ran, how many lines
  * changed, and an estimate of the turn's visible input.
  *
- * Honesty rules (docs/ui-language.md「Token 用量」):
+ * Honesty rules (docs/guides/ui-language.md「Token 用量」):
  * - Times are wall-clock spans between our own event stamps; a span with no end
  *   is closed by the next event or the turn end, never extended past it.
  * - `est.*` are estimates (text ÷ 4, flat per image) and are labelled as such in

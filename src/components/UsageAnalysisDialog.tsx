@@ -47,7 +47,7 @@ import {
  *
  * 版式学 codeg token-usage-page:大数字英雄卡 + 缓存环、连通统计条、
  * 两色趋势柱、构成条 + 小时×星期作息、模型/助手排名。表面仍走
- * docs/ui-language.md(3px 角、1px 边、无阴影、芯片 22px)。
+ * docs/guides/ui-language.md(3px 角、1px 边、无阴影、芯片 22px)。
  */
 
 const RANGES = [7, 30, 90] as const;

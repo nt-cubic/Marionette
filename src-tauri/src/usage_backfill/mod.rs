@@ -1,6 +1,6 @@
 //! usage_backfill — read each agent CLI's own on-disk session store and fold it
 //! into per-session, per-hour usage facts for the Token usage page ("history
-//! backfill"; research: docs/research-context-transparency.md §3).
+//! backfill"; research: docs/research/research-context-transparency.md §3).
 //!
 //! Contract with the frontend (`src/lib/usageBackfill.ts` mirrors these types,
 //! serde camelCase):

@@ -1,5 +1,5 @@
 //! Universal plugin registry — install once, every agent gets it
-//! (docs/plan-plugin-layer.md).
+//! (docs/plans/plan-plugin-layer.md).
 //!
 //! The registry is Marionette-owned (`~/.marionette/plugins/index.json`);
 //! agent configs are never written — the fan-out writer road is codeg's

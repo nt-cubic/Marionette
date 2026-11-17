@@ -806,7 +806,7 @@ pub fn refresh_pi_marionette_route() -> Result<bool, String> {
 /// 引擎目录没报窗口时写进 zcode 的兜底值。**不能写 0**：个人层 zod 对
 /// `properties.contextWindow` 是 `number().positive()`，一条 0 会让整层
 /// `providerModelRules` 校验失败、zcode 以内存空配置降级——用户自己所有
-/// provider/模型设置一起消失（2026-10-23 实测，见 docs/pitfalls-zcode-acp.md 雷 7）。
+/// provider/模型设置一起消失（2026-10-23 实测，见 docs/pitfalls/pitfalls-zcode-acp.md 雷 7）。
 /// 取 200000 与 zcode 内置 `.*` 兜底规则同值，显示口径一致。
 const ZCODE_UNKNOWN_CONTEXT_WINDOW: u64 = 200_000;
 

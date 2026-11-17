@@ -196,7 +196,7 @@ impl AgentConfig {
                 ),
             ),
             // ── Expanded harness (PATH cold start + npm install/auto-update) ──
-            // 2026-10-20 roster cut (docs/research-acp-cross-use-matrix.md):
+            // 2026-10-20 roster cut (docs/research/research-acp-cross-use-matrix.md):
             // cline / gemini / kimi-code / codebuddy / openclaw / cursor / omp
             // 退出内置名单 —— 无跨用面或用户面小，装不上的条目比没有更伤。
             // 要用随时可经「自定义 agent」加回（custom_agents.rs）；历史会话

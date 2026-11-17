@@ -24,7 +24,7 @@ ureq 出站），ring-less TLS 约束不变。
   同形动词）、开发 bin `marionette-engine`（2.3MB debug）。
   **合同套件 C1–C6 对 Rust 引擎全绿（2026-11-17 21:20 首次达成）。**
 - [x] 隔离 worktree + 分支（主树合并现场零污染）。
-- [x] 合同文档与套件随分支携带（docs/plan-engine-contract.md +
+- [x] 合同文档与套件随分支携带（docs/plans/plan-engine-contract.md +
   scripts/verify-engine-contract.mts + upstream-watch.mts）。
 
 ## 已完成（子代理 + 主线集成，全部验证后提交）
@@ -178,4 +178,4 @@ ureq 出站），ring-less TLS 约束不变。
    并在账本标记 blocked。
 3. 一次只领一个任务；做不完就拆小，别留半成品在主分支状态。
 4. 不加新依赖（尤其 tokio/hyper/reqwest）；TLS 保持 ureq+native-tls。
-5. 合同面变更必须同步 docs/plan-engine-contract.md。
+5. 合同面变更必须同步 docs/plans/plan-engine-contract.md。

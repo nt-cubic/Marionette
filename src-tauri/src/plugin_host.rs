@@ -1,5 +1,5 @@
 //! Universal plugin host: relays MCP between ACP agents and installed plugins
-//! (docs/plan-plugin-layer.md).
+//! (docs/plans/plan-plugin-layer.md).
 //!
 //! Every enabled plugin is mounted on the tools-mcp localhost server under
 //! `/mcp/p/<id>` (tools_mcp::handle_request hands the message over). stdio

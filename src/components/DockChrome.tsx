@@ -1,5 +1,5 @@
 /**
- * The docked strip's chrome (edge dock, docs/plan-edge-dock.md §3; layout per
+ * The docked strip's chrome (edge dock, docs/plans/plan-edge-dock.md §3; layout per
  * docs/design/edge-dock.html ②).
  *
  * One fixed band above the conversation, top to bottom:

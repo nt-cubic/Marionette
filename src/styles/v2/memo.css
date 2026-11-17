@@ -1,4 +1,4 @@
-/* UI v2 overrides: memo. Loaded after every legacy sheet (src/main.tsx); see docs/ui-language.md. */
+/* UI v2 overrides: memo. Loaded after every legacy sheet (src/main.tsx); see docs/guides/ui-language.md. */
 
 /* --- page ground ------------------------------------------------------- */
 .memo-box {

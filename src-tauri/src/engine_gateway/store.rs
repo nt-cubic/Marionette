@@ -1,4 +1,4 @@
-//! providers.json 存储——与 magpie 逐字段互通（docs/plan-engine-contract.md
+//! providers.json 存储——与 magpie 逐字段互通（docs/plans/plan-engine-contract.md
 //! C6）。未知字段用 `serde(flatten)` 原样保留：我们重写文件时不丢 magpie
 //! 认的任何东西。原子写（tmp + rename），读失败 fail-open 成空表。
 use std::collections::HashMap;

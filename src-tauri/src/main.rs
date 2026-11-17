@@ -356,7 +356,7 @@ fn main() {
             // process group (browser-profiles) resident for the entire process
             // lifetime even if no tab is ever opened (2026-11-06). First-tab
             // creation is "fresh WebContext + in-event-loop build" — a shape §9
-            // of docs/plan-browser-computer-use.md flagged as slightly riskier
+            // of docs/plans/plan-browser-computer-use.md flagged as slightly riskier
             // than reusing one; if that ever freezes, the documented fallback
             // is restoring a startup prewarm pool.
             // Test hook (no UI): MARIONETTE_AUTO_BROWSER_TAB=1 opens a browser

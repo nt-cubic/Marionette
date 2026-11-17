@@ -1,6 +1,6 @@
 //! Chief 编排核心：任务生命周期、Chief 会话注册表、唤醒收件箱、心跳。
 //!
-//! 红线（docs/research-telegram-chief/）：
+//! 红线（docs/research/telegram-chief/）：
 //! - `task_start` **立即返回 taskId**，spawn 在后台线程（MCP call 不挂几十分钟）；
 //! - 唤醒按事件合并（completed/failed/interrupted 才唤醒 Chief，逐条
 //!   token 不唤醒），Chief 忙时进收件箱，心跳在空闲时统一 flush；

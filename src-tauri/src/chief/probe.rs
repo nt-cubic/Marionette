@@ -1,4 +1,4 @@
-//! 后端 ACP 驱动探针（M0 可行性闸门，docs/research-telegram-chief/05-mvp-plan.md §2）。
+//! 后端 ACP 驱动探针（M0 可行性闸门，docs/research/telegram-chief/05-mvp-plan.md §2）。
 //!
 //! 从 Rust 直接驱动一次完整 ACP 回合：start → prompt → wait_turn_idle →
 //! stop，全程不经过前端 `performSend` 管线。事件经 [`crate::chief::tee`]

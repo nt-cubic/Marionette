@@ -865,7 +865,7 @@
 .credentials-dialog > .project-dialog__body { min-height: 0; overflow-y: auto; }
 .credentials-dialog > .project-dialog__header, .credentials-dialog > .project-dialog__actions { flex-shrink: 0; }
 
-/* ── Session info ring + popover (docs/ui-language.md v2 "输入框", LightC.html) ──
+/* ── Session info ring + popover (docs/guides/ui-language.md v2 "输入框", LightC.html) ──
    Ring: 16px, fill = context occupancy, agent ink; yellow from 80%, red from 95%.
    Popover is a .composer-menu so the Composer clamp pass keeps it in the window. */
 .composer-menu-anchor--info {
@@ -1147,7 +1147,7 @@
   }
 }
 
-/* ---- 模型共享 · 来源 | 模型 两栏（docs/ui-language.md、design/ui-v2/ModelShareV2.html）---- */
+/* ---- 模型共享 · 来源 | 模型 两栏（docs/guides/ui-language.md、design/ui-v2/ModelShareV2.html）---- */
 .project-dialog.model-library-dialog { width: min(880px, calc(100vw - 48px)); height: min(700px, calc(100vh - 64px)); max-height: none; display: flex; flex-direction: column; gap: 0; padding: 0; overflow: hidden; border-radius: var(--radius); box-shadow: 0 12px 32px rgba(17, 17, 19, .10); font-size: 13px; }
 .model-library-dialog button:disabled { opacity: .4; cursor: default; }
 .model-library-dialog__spacer { flex: 1; }

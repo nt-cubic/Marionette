@@ -2,7 +2,7 @@
 
 - 状态：Phase 1–4 已实现，2026-11-17
 - 目标分支：`feat/browser-annotation`
-- 前置调研：[`research-browse-ux.md`](./research-browse-ux.md)
+- 前置调研：[`research-browse-ux.md`](../research/research-browse-ux.md)
 - 目标：Web 产物预览时，让浏览器和当前 Agent 对话同屏；普通聊天、研究和后台网页不抢工作区
 
 ## 结论

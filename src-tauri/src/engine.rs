@@ -38,7 +38,7 @@
 //! 日志只记 provider 名与事件。引擎令牌是字面量 `magpie`（S1：网关回环任意
 //! token 放行），所以它也 不是机密。
 //!
-//! engine-rust 构建下（feature `engine-rust`，docs/plan-engine-rust.md T6）：
+//! engine-rust 构建下（feature `engine-rust`，docs/plans/plan-engine-rust.md T6）：
 //! serve 路径改跑进程内 `engine_gateway::httpd` 线程、CLI 家族直调
 //! `engine_gateway::cli`；magpie 子进程形态的整条路径（下载/落位/复用探测/
 //! CLI 子进程/日志线程）**休眠但保留**——它是双 SKU 灰度的回退形态，T12/T14

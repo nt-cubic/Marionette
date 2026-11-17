@@ -1,4 +1,4 @@
-//! Edge-dock support (docs/plan-edge-dock.md).
+//! Edge-dock support (docs/plans/plan-edge-dock.md).
 //!
 //! 2026-10-31 定稿：贴边与关闭解耦——贴边走标题栏专属按钮 + 拖拽吸附，
 //! × 的行为由用户在 Ctrl K 面板选择（默认直接退出；「后台常驻」= × 隐藏

@@ -1,4 +1,4 @@
-/* Token usage page v2 — shared base (docs/ui-language.md; canvas board「v2 · Token 用量」).
+/* Token usage page v2 — shared base (docs/guides/ui-language.md; canvas board「v2 · Token 用量」).
    Sections are flush bands separated by 1px lines; no boxed cards, no shadows except the
    trend callout. Colours come from theme tokens only, so light and dark both work.
    Section stylesheets live next to this file, one per component. */

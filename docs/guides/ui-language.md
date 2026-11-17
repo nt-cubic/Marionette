@@ -154,7 +154,7 @@
 - [ ] 控件没有独立的框；表单是表
 - [ ] 每块先给结论
 - [ ] 动效用 token，进出成对，有 reduced-motion
-- [ ] 文案走 i18n（`docs/i18n-guide.md`）
+- [ ] 文案走 i18n（`docs/guides/i18n-guide.md`）
 - [ ] 对照 `docs/design/ui-v2/` 对应稿子看边角和对齐
 
 ## 回归

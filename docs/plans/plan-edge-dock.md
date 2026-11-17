@@ -1,6 +1,6 @@
 # 贴边停靠长条（edge dock）— 设计稿（未实现）
 
-> 2026-10-23 定稿，依据 [`research-edge-dock.md`](./research-edge-dock.md) 的调研结论。
+> 2026-10-23 定稿，依据 [`research-edge-dock.md`](../research/research-edge-dock.md) 的调研结论。
 > 五阶段实施，每阶段做完可验收再做下一阶段。
 > 状态：**阶段 0–3 已落地**（2026-10-24，commits cef3afd / 5b9978e / 3212135 / 0d16a5b + 打磨批）；
 > 阶段 4 剩：上边缘横向变体、拖标题吸附、收回曲线微调、sliver 轮询兜底（本节内原样保留）。
@@ -25,7 +25,7 @@
 > capability 实名是 `core:window:allow-set-skip-taskbar`（计划里的 `allow-skip-taskbar` 不存在）。
 > 行为描述已并入 `CURRENT.md`「贴边停靠」行；全部阶段完成后本文件挪入 `archive/`。
 >
-> **与悬浮球计划的关系**：悬浮球计划（[`archive/plan-orb-assistant.md`](./archive/plan-orb-assistant.md)）
+> **与悬浮球计划的关系**：悬浮球计划（[`archive/plan-orb-assistant.md`](../archive/plan-orb-assistant.md)）
 > 已于 2026-10-23 废弃，本计划是其「后台常驻」方向的继任者，可复用部分已全部并入（见 §0 末清单）；
 > 球体窗、跨窗事件桥、场景按钮（原档④）、球体角标（原档②）随球废弃。
 
@@ -243,6 +243,6 @@ AI 打标签与摘要，全文搜索，列表，批量操作），但只取「�
 
 ## 参考
 
-- [`research-edge-dock.md`](./research-edge-dock.md) — 本计划的技术选型依据（路线对比、代码盘点、外部链接全集）
-- [`archive/plan-orb-assistant.md`](./archive/plan-orb-assistant.md) — 已废弃的悬浮球计划（本计划吸收其档①地基、`capture_save_blob`、余额数据层与收集箱方案）
+- [`research-edge-dock.md`](../research/research-edge-dock.md) — 本计划的技术选型依据（路线对比、代码盘点、外部链接全集）
+- [`archive/plan-orb-assistant.md`](../archive/plan-orb-assistant.md) — 已废弃的悬浮球计划（本计划吸收其档①地基、`capture_save_blob`、余额数据层与收集箱方案）
 - QQ 贴边参考实现见调研 §2/§10

@@ -1,4 +1,4 @@
-//! Telegram 远程桥（docs/telegram-bridge.md · MVP）。
+//! Telegram 远程桥（docs/plans/telegram-bridge.md · MVP）。
 //!
 //! 一个纯出站的 Telegram 通知/回复通道：
 //!
@@ -2646,7 +2646,7 @@ fn handle_incoming_message(slot: &'static Telegram, live: &LiveConfig, message: 
         return;
     }
 
-    // ── Chief 模式（2026-11-15，docs/research-telegram-chief/）────────────
+    // ── Chief 模式（2026-11-15，docs/research/telegram-chief/）────────────
     // 裸文本固定进 Chief 会话（后端直送，主窗隐藏也活着）；回复 Chief 路由
     // 的消息同样后端直送。旧 relay 的「最近会话」不再抢裸文本；引用 worker
     // 的旧通知仍走下方前端管线（M1 允许，主窗活着才工作）。
