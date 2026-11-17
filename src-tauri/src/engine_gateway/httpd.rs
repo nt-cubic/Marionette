@@ -1,12 +1,15 @@
 //! 最小 HTTP/1.1 服务器（loopback-only，std 实现，零新依赖）。
 //!
-//! 只服务引擎合同面：请求体走 Content-Length（上限 64MB——codex 整轮截图
-//! 内联时 30MB+），响应两种形态——完整 JSON（带 Content-Length）和流式
-//! SSE 中继（边读边 flush，Connection: close）。不实现 keep-alive/chunked
-//! 请求体（账本任务：codex 若发 chunked 再补）。
+//! 只服务引擎合同面：请求体支持 Content-Length 与 Transfer-Encoding:
+//! chunked（codex 可能发 chunked；解码成完整 body 再路由，上限同 64MB
+//! ——codex 整轮截图内联时 30MB+），响应两种形态——完整 JSON（带
+//! Content-Length）和流式 SSE 中继（边读边 flush，Connection: close）。
+//!
+//! 加固（账本 T11）：请求行/头读 30s、头读完**体不限**、写 60s；并发连接
+//! 上限 64（超过直接 503 关闭）；不做 keep-alive（维持 close 语义）。
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,6 +21,14 @@ const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 /// 置位后监听关闭的最大延迟——engine.rs 的 kill 路径要在下一次端口探测
 /// （update → place_and_prep → find_free_port_from）前把端口还回去。
 const SHUTDOWN_POLL: Duration = Duration::from_millis(50);
+/// 请求行/头读超时（慢连接兜底；头读完体不限——大体 + 慢客户端合法）。
+const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// 写超时（应答头/体/SSE 每次写各算一次；客户端断开靠写错误退出流循环）。
+const WRITE_TIMEOUT: Duration = Duration::from_secs(60);
+/// 并发连接上限：超过的直接 503 关闭（thread-per-connection 的兜底）。
+const MAX_CONNECTIONS: usize = 64;
+/// chunked 尺寸行/尾随头的单行长度护栏（尺寸行按 RFC 只需几位 hex）。
+const MAX_CHUNK_LINE_BYTES: usize = 8 * 1024;
 
 pub struct Request {
     pub method: String,
@@ -87,6 +98,8 @@ pub fn serve_on(
     listener
         .set_nonblocking(true)
         .map_err(|e| format!("set listener nonblocking: {e}"))?;
+    // 并发连接计数：超过上限的直接 503 关闭（不进 handle、不占线程）。
+    let live = Arc::new(AtomicUsize::new(0));
     loop {
         if shutdown.load(Ordering::Acquire) {
             break;
@@ -96,9 +109,22 @@ pub fn serve_on(
                 // Linux 上 accept 出的流会继承 O_NONBLOCK（Windows 不会）——
                 // 统一拨回阻塞，handler 的读写语义与 argv 形态完全一致。
                 let _ = stream.set_nonblocking(false);
+                // 先占位再判（fetch_add 返回旧值）；超限的退位 + 503 关闭。
+                if live.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
+                    live.fetch_sub(1, Ordering::AcqRel);
+                    let mut stream = stream;
+                    let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
+                    let _ = write_reply(
+                        &mut stream,
+                        Reply::error(503, "engine busy: too many connections"),
+                    );
+                    continue;
+                }
                 let gw = gateway.clone();
+                let live = live.clone();
                 std::thread::spawn(move || {
                     let _ = handle(stream, &gw);
+                    live.fetch_sub(1, Ordering::AcqRel);
                 });
             }
             // 空闲：睡一个轮询间隔再试（连接在内核 backlog 里排队，不丢）。
@@ -117,6 +143,9 @@ pub fn serve_on(
 }
 
 fn handle(stream: TcpStream, gateway: &Gateway) -> std::io::Result<()> {
+    // 读超时只罩请求行与头（parse 在头读完后自行解除）；写超时罩整个应答。
+    let _ = stream.set_read_timeout(Some(HEADER_READ_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
     let request = match parse(stream.try_clone()?) {
         Some(r) => r,
         None => {
@@ -157,20 +186,77 @@ fn parse(stream: TcpStream) -> Option<Request> {
             headers.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
         }
     }
+    // 头读完：体不限（大体 + 慢客户端合法），解除读超时。
+    let _ = reader.get_ref().set_read_timeout(None);
 
-    let length = headers
+    // Transfer-Encoding: chunked 优先于 Content-Length（RFC 7230 §3.3.3；
+    // codex 可能发 chunked）。解码成完整 body 再路由，上限同 64MB。
+    let chunked = headers
         .iter()
-        .find(|(k, _)| k == "content-length")
-        .and_then(|(_, v)| v.parse::<usize>().ok())
-        .unwrap_or(0);
-    if length > MAX_BODY_BYTES {
-        return None;
-    }
-    let mut body = vec![0u8; length];
-    if length > 0 {
-        reader.read_exact(&mut body).ok()?;
-    }
+        .any(|(k, v)| k == "transfer-encoding" && v.to_ascii_lowercase().contains("chunked"));
+    let body = if chunked {
+        decode_chunked(&mut reader, MAX_BODY_BYTES)?
+    } else {
+        let length = headers
+            .iter()
+            .find(|(k, _)| k == "content-length")
+            .and_then(|(_, v)| v.parse::<usize>().ok())
+            .unwrap_or(0);
+        if length > MAX_BODY_BYTES {
+            return None;
+        }
+        let mut body = vec![0u8; length];
+        if length > 0 {
+            reader.read_exact(&mut body).ok()?;
+        }
+        body
+    };
     Some(Request { method, path, headers, body })
+}
+
+/// 解码 chunked 传输体（RFC 7230 §4.1）：尺寸行（hex，可带 `;扩展`）→ 数据
+/// → CRLF，0 尺寸块之后读尾随头直到空行（读完即弃）。累计超过 `max`、尺寸
+/// 行非法/溢出、数据后缺 CRLF → None（调用方按坏请求处理）。
+/// 做成纯函数（BufRead 进 BufRead 出）便于直接单测。
+fn decode_chunked<R: BufRead>(reader: &mut R, max: usize) -> Option<Vec<u8>> {
+    let mut body = Vec::new();
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).ok()?;
+        if line.len() > MAX_CHUNK_LINE_BYTES {
+            return None;
+        }
+        // chunk-size [ chunk-ext ]：扩展从 `;` 起丢弃
+        let size_part = line.split(';').next()?.trim();
+        let size = usize::from_str_radix(size_part, 16).ok()?;
+        if size == 0 {
+            // 尾随头段：头行直到空行（不进 Request，读完即弃）
+            let mut trailer_bytes = 0usize;
+            loop {
+                let mut t = String::new();
+                reader.read_line(&mut t).ok()?;
+                trailer_bytes += t.len();
+                if trailer_bytes > MAX_CHUNK_LINE_BYTES {
+                    return None;
+                }
+                if t.trim_end().is_empty() {
+                    return Some(body);
+                }
+            }
+        }
+        let new_len = body.len().checked_add(size)?;
+        if new_len > max {
+            return None;
+        }
+        let start = body.len();
+        body.resize(new_len, 0);
+        reader.read_exact(&mut body[start..]).ok()?;
+        let mut crlf = [0u8; 2];
+        reader.read_exact(&mut crlf).ok()?;
+        if &crlf != b"\r\n" {
+            return None;
+        }
+    }
 }
 
 fn status_text(status: u16) -> &'static str {
@@ -219,10 +305,115 @@ fn write_reply(stream: &mut TcpStream, reply: Reply) -> std::io::Result<()> {
                     Ok(n) => n,
                     Err(_) => break,
                 };
+                // 客户端断开 → 写错误 → `?` 带 Err 出函数、连接关闭，SSE
+                // 循环随之退出（不做 keep-alive，维持 Connection: close 语义）。
                 stream.write_all(&buf[..n])?;
                 stream.flush()?;
             }
         }
     }
     stream.flush()
+}
+
+// ---------------------------------------------------------------------------
+// 测试（任务 T11 验收：chunked 解码为主，纯函数直测 + 两例真 TCP 走 parse）
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn chunked_decodes_basic() {
+        let mut r = BufReader::new(Cursor::new(b"4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n".to_vec()));
+        assert_eq!(decode_chunked(&mut r, 1024).as_deref(), Some(b"Wikipedia".as_slice()));
+    }
+
+    #[test]
+    fn chunked_empty_body_and_single() {
+        let mut r = BufReader::new(Cursor::new(b"0\r\n\r\n".to_vec()));
+        assert_eq!(decode_chunked(&mut r, 1024), Some(Vec::new()));
+        let mut r = BufReader::new(Cursor::new(b"5\r\nhello\r\n0\r\n\r\n".to_vec()));
+        assert_eq!(decode_chunked(&mut r, 1024).as_deref(), Some(b"hello".as_slice()));
+    }
+
+    #[test]
+    fn chunked_accepts_hex_uppercase_extensions_and_trailers() {
+        // 1A = 26；分号扩展丢弃；0 块后带尾随头
+        let raw =
+            b"1A;name=value\r\n0123456789abcdefghijklmnop\r\n0\r\nX-Trailer: v\r\n\r\n".to_vec();
+        let mut r = BufReader::new(Cursor::new(raw));
+        assert_eq!(
+            decode_chunked(&mut r, 1024).as_deref(),
+            Some(b"0123456789abcdefghijklmnop".as_slice())
+        );
+    }
+
+    #[test]
+    fn chunked_rejects_bad_size_line() {
+        let mut r = BufReader::new(Cursor::new(b"zz\r\nhello\r\n0\r\n\r\n".to_vec()));
+        assert_eq!(decode_chunked(&mut r, 1024), None);
+        // 流提前断掉（连尺寸行都没有）
+        let mut r = BufReader::new(Cursor::new(Vec::new()));
+        assert_eq!(decode_chunked(&mut r, 1024), None);
+    }
+
+    #[test]
+    fn chunked_rejects_missing_crlf_after_data() {
+        let mut r = BufReader::new(Cursor::new(b"5\r\nhelloXX0\r\n\r\n".to_vec()));
+        assert_eq!(decode_chunked(&mut r, 1024), None);
+    }
+
+    #[test]
+    fn chunked_enforces_cap() {
+        // 两块各 10 字节，cap 15 → 超限拒绝
+        let raw = b"a\r\n0123456789\r\na\r\n0123456789\r\n0\r\n\r\n".to_vec();
+        let mut r = BufReader::new(Cursor::new(raw));
+        assert_eq!(decode_chunked(&mut r, 15), None);
+        // 尺寸行数值溢出 usize 也不许 panic（from_str_radix 拒掉）
+        let mut r =
+            BufReader::new(Cursor::new(b"FFFFFFFFFFFFFFFFFFFF\r\nx\r\n0\r\n\r\n".to_vec()));
+        assert_eq!(decode_chunked(&mut r, 1024), None);
+    }
+
+    #[test]
+    fn parse_reads_chunked_request_over_tcp() {
+        // 真 TCP：临时监听 + 手写客户端，覆盖 parse 的头 → chunked 分流
+        // （Content-Length 与 Transfer-Encoding 并存时 chunked 赢，RFC 同款）。
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().unwrap();
+        let client = std::thread::spawn(move || {
+            let mut c = TcpStream::connect(addr).unwrap();
+            c.write_all(
+                b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\n\
+                  Content-Length: 999\r\nTransfer-Encoding: chunked\r\n\r\n\
+                  5\r\nhello\r\n3\r\nabc\r\n0\r\n\r\n",
+            )
+            .unwrap();
+        });
+        let (server, _) = listener.accept().unwrap();
+        let req = parse(server).expect("parse chunked request");
+        assert_eq!(req.method, "POST");
+        assert_eq!(req.path, "/v1/chat/completions");
+        assert_eq!(req.body, b"helloabc".to_vec());
+        client.join().unwrap();
+    }
+
+    #[test]
+    fn parse_reads_content_length_request_over_tcp() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().unwrap();
+        let client = std::thread::spawn(move || {
+            let mut c = TcpStream::connect(addr).unwrap();
+            c.write_all(b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\nhi")
+                .unwrap();
+        });
+        let (server, _) = listener.accept().unwrap();
+        let req = parse(server).expect("parse content-length request");
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.path, "/v1/models");
+        assert_eq!(req.body, b"hi".to_vec());
+        client.join().unwrap();
+    }
 }
