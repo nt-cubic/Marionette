@@ -1,7 +1,7 @@
 # 调研：anomalyco/browse 的用户体验对标（2026-11-17）
 
 - 参考仓库：<https://github.com/anomalyco/browse>
-- 分析快照：dev 分支 a7181bf，2026-11-17 拉取；仓库版本仍是 0.1.0，接口和行为仍会变化
+- 分析快照：首轮 dev a7181bf；二轮最新 dev c3ad2ada（2026-11-17）；仓库版本仍是 0.1.0，接口和行为仍会变化
 - Marionette 基线：feat/browser-annotation 分支 200e4bf5，包含元素批注及其安全、生命周期修复
 - 研究重点：用户实际感受到的浏览器体验，不以“工具数量”排名
 - 架构差异：browse 驱动用户现有的 Chrome 系浏览器；Marionette 驱动内置 WebView2 小浏览器
@@ -436,6 +436,79 @@ browse 不只有 handoff，还能让用户示范一次流程：
 4. 标签独立窗口；
 5. 可选连接真实 Chrome；嵌入式 WebView2 继续作为默认安全环境。
 
+## 二轮结论：还值得借什么（2026-11-17，最新 dev c3ad2ada）
+
+最新 dev 相比首轮快照没有重做交互模型，主要新增是 read-only tab 的输入防绕过、重连后仍保持
+read-only，以及 GET/body 处理。因此上一轮的 P1–P4 判断仍然成立；下面只列还没借、但对真实使用有
+明显收益的部分。
+
+### P0：先借“用户随时能接管，Agent 也不会留下垃圾”
+
+1. **页面内 WAIT 卡，而不是只在 Browser 顶部横条提示。** browse 把卡片注入页面的 closed
+   Shadow DOM 和 top layer，只有真实点击可 Continue；页面不能伪造，密码管理器弹层仍可盖在
+   卡片上使用。Marionette 已经有 picker 的 isolated world / trusted-event 机制，可以复用这套
+   安全边界。视觉上只做 WAIT 时右下角一张小卡：title、origin、一句指令、Continue；RUN 仍由
+   右侧对话和标签状态表达，不额外盖常驻浮层。
+2. **Agent 可命名 tab，并允许用户 pin / claim。** browse 用 work-mail 这类 stable id 解决
+   “同一页面被 Agent 反复重复打开”和“它到底在操作哪个标签”。Marionette 可给
+   browser_open_tab 增加可选 slug；同名调用返回现有 tab。标签菜单增加「保留」和「转为我的
+   标签」：pin 不自动清理，claim 后 owner 清空，删除会话也不能关它。
+3. **空闲 Agent tab 自动清理，但要有一串硬豁免。** 默认 10 分钟，设置 10 / 30 / 60 /
+   never。只清 Agent-owned；busy、waiting_user、handoff、当前可见、用户刚看过的 tab、
+   pinned / named 永远跳过。用户切换 tab 和手动导航也要 touch lastUsedAt，不能只算工具调用。
+4. **每个标签都有“现在由谁控制，以及怎么收回”。** Agent 工作时提供「收回本页」：立即撤销
+   分享、取消未决 permission / handoff、阻止后续动作，并保留页面给用户继续用。browse 的
+   toolbar 始终是 kill switch；Marionette 现在只有修改分享级别，用户不够有安全感。
+
+### P1：把失败变成可理解、可行动的状态
+
+5. **challenge detector + nextStep。** 复用 browse 的保守分类：Cloudflare、DataDome、
+   PerimeterX、Akamai、reCAPTCHA/hCaptcha、generic block。非交互 challenge 先等 15 秒；
+   交互 challenge 自动提示 WAIT/handoff；block 明确让 Agent 停止重试。工具返回值同时带
+   machine-readable kind/vendor/signal/recommendation，用户界面只展示一句人话和唯一动作。
+6. **紧凑 Browser 健康条，而不是完整诊断台。** 有异常时才出现：WebView crash、子页面无响应、
+   profile 写入失败、最近工具错误、等待人数、Agent tab 数。动作只有「重新载入」「关掉空闲
+   Agent tabs」「复制诊断」。正常时完全不占高度。
+7. **handoff 结果细分，并把等待时间放宽。** browse 默认 10 分钟且区分 continued / timeout /
+   closed / cancelled；Marionette 当前 2 分钟且关闭标签也归为 denied。建议默认 10 分钟、
+   最大 30 分钟，并把 closed、cancelled 如实返回 Agent，避免它误判用户拒绝。
+8. **Agent tabs 按会话 / 任务折叠。** 用户 tab 永远直接可见；同一会话的 Agent tabs 收成
+   Codex · 4，当前 tab 和 WAIT 组自动展开。browse 的 Chrome tab-group 细节不用照抄，借用
+   “隐藏后台、需要时展开、整组关闭”的信息层级即可。
+
+### P1.5：补 Agent 稳定性，间接改善用户看到的体验
+
+9. **browser_wait_for。** 等待 text/textGone、URL、元素可见/隐藏、页面 load，而不是让 Agent
+   自己反复 snapshot + sleep。右侧状态可显示「等待页面稳定」，减少假卡死和无效点击。
+10. **JS dialog 处理。** 网页 alert/confirm/prompt 或 beforeunload 会把页面暂停；提供
+    status/accept/dismiss 和每 tab 的 auto policy。先弹出应用内小提示，比页面冻结后靠 Agent 猜
+    更可靠。
+11. **Web 原型的 screenshot diff。** 修改前存 baseline，agent 每轮操作后返回是否有像素变化、
+    变化区域和截图。它不是永久 UI 控件，只在 Web 原型任务的交付卡里显示「页面已改变 / 未改变」。
+
+### P2：能力更强，但只适合按需加
+
+12. **demonstrate。** 用户在页面里示范点击、输入、选择、导航，Agent 得到结构化 steps；密码值
+    永不记录。这很适合非开发者，也最符合 Marionette 让普通用户“做给我看”的方向，但需要
+    isolated-world 多 frame 录制、导航续装和敏感值脱敏，工作量明显高于 idle cleanup。
+13. **upload / drag / scroll / emulate。** 对上传统计、拖拽排序、响应式预览有用，属于 Agent
+    操作能力，不需要新增主界面。
+14. **network / recording。** 仅作为 Web 开发排障工具按需开放。它们会显著增加存储、脱敏和导出
+    界面，不适合进入默认 Browser HUD。
+
+### 建议的第一刀
+
+先做一个“tab 生命周期包”，因为它同时解决用户最常遇到的三件事：标签越开越多、同名页面重复
+打开、删会话时误关用户正在看的页。顺序是：
+
+1. chosenId + pinned + claim + touch lastUsed；
+2. idle cleanup 与 Ctrl K 的 10 / 30 / 60 / never；
+3. Browser tab 按 ownerSession 折叠、WAIT 自动展开；
+4. 再做页面内 WAIT 卡和 challenge 检测。
+
+这样先稳住标签生命周期，再改页面内的接管体验；否则 WAIT/自动清理同时上线时，用户很难判断是
+Agent、页面 challenge 还是 cleanup 把标签状态改了。
+
 ## 不建议照搬
 
 - 不照搬 browse 的扩展安装、配对码和 relay 设置流程。Marionette 内嵌浏览器没有这层用户成本。
@@ -457,14 +530,16 @@ browse 不只有 handoff，还能让用户示范一次流程：
 
 ## 证据索引
 
-- browse 使用说明与工具表：<https://github.com/anomalyco/browse/blob/a7181bf/README.md>
-- 标签组交互：<https://github.com/anomalyco/browse/blob/a7181bf/src/background/agent-relay/groups.ts>
-- 空闲标签清理：<https://github.com/anomalyco/browse/blob/a7181bf/src/background/tab-cleanup.ts>
-- 页内 handoff 卡片：<https://github.com/anomalyco/browse/blob/a7181bf/src/content/page-status.ts>
-- 通知兜底：<https://github.com/anomalyco/browse/blob/a7181bf/src/background/handoff-notice.ts>
-- 设置页：<https://github.com/anomalyco/browse/blob/a7181bf/src/status/settings.tsx>
-- Agent instructions：<https://github.com/anomalyco/browse/blob/a7181bf/rust/crates/browse-relay/src/instructions.md>
-- browse 状态与 nextStep：<https://github.com/anomalyco/browse/blob/a7181bf/rust/crates/browse-relay/src/tools.rs>
+- browse 使用说明与工具表：<https://github.com/anomalyco/browse/blob/c3ad2ada/README.md>
+- 标签组交互：<https://github.com/anomalyco/browse/blob/c3ad2ada/src/background/agent-relay/groups.ts>
+- 空闲标签清理：<https://github.com/anomalyco/browse/blob/c3ad2ada/src/background/tab-cleanup.ts>
+- 页内 handoff 卡片：<https://github.com/anomalyco/browse/blob/c3ad2ada/src/content/page-status.ts>
+- 通知兜底：<https://github.com/anomalyco/browse/blob/c3ad2ada/src/background/handoff-notice.ts>
+- 设置页：<https://github.com/anomalyco/browse/blob/c3ad2ada/src/status/settings.tsx>
+- Agent instructions：<https://github.com/anomalyco/browse/blob/c3ad2ada/rust/crates/browse-relay/src/instructions.md>
+- browse 状态与 nextStep：<https://github.com/anomalyco/browse/blob/c3ad2ada/rust/crates/browse-relay/src/tools.rs>
+- read-only 输入防绕过：<https://github.com/anomalyco/browse/commit/1ef9276>
+- read-only 跨重连保持：<https://github.com/anomalyco/browse/commit/45850a0>
 - Codeg 工作区双栏与最大化：<https://github.com/spacering-net/codeg/blob/4991406e6045b7903ae2c5bc78db0d3b7dfd1f77/src/app/workspace/layout.tsx>
 - Codeg Browser 作为 file workspace tab：<https://github.com/spacering-net/codeg/blob/4991406e6045b7903ae2c5bc78db0d3b7dfd1f77/src/contexts/workspace-context.tsx>
 - Codeg 文件栏渲染 browser tab：<https://github.com/spacering-net/codeg/blob/4991406e6045b7903ae2c5bc78db0d3b7dfd1f77/src/components/files/file-workspace-panel.tsx>
