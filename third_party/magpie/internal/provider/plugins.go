@@ -145,6 +145,15 @@ func PluginForTest(id, pluginID string) Provider {
 	return Provider{ID: id, Account: &Account{Agent: "plugin", User: id, plugin: &pp}}
 }
 
+// PluginAtForTest is PluginForTest for a plugin whose provider says its
+// requests go to api and whose models speak Code Assist.
+func PluginAtForTest(id, pluginID, api string) Provider {
+	p := PluginForTest(id, pluginID)
+	p.Account.plugin.API = api
+	p.Account.codeAssist = pluginBase + pluginID
+	return p
+}
+
 // PluginProvider is the id OpenCode knows the plugin's provider p is by
 // (grok, kiro), whatever magpie names it; "" for one no plugin gives.
 func (p Provider) PluginProvider() string {
@@ -261,6 +270,25 @@ func pluginProtocol(provider string, m plugin.Model) Protocol {
 	return Chat
 }
 
+// pluginProtocols are the APIs model is served on: its own
+// (pluginProtocol) first, then each other one the plugin says its vendor
+// serves it on (m.Also: Open Design's amr-link serves every model on chat
+// completions, Responses and Anthropic's messages). A client's request on
+// one of them is relayed as it was sent; an OpenDesign's Anthropic request
+// to a model declared on chat completions was translated to it
+// (gaubeebangeel on X).
+func pluginProtocols(provider string, m plugin.Model) []Protocol {
+	out := []Protocol{pluginProtocol(provider, m)}
+	for _, npm := range m.Also {
+		other := m
+		other.NPM, other.Also = npm, nil
+		if proto := pluginProtocol(provider, other); !slices.Contains(out, proto) {
+			out = append(out, proto)
+		}
+	}
+	return out
+}
+
 var gptN = lazyre.New(`^gpt-(\d+)`)
 
 // copilotAPI is OpenCode's shouldUseCopilotResponsesApi: GPT-5 and after,
@@ -340,7 +368,7 @@ func pluginCatalog(pp plugin.Provider) []catalog.Model {
 		}
 		c := catalog.Model{
 			ID: m.ID, Name: m.Name, Provider: pp.ID, Released: m.Released,
-			APIs: []string{string(pluginProtocol(pp.ID, m))}, Images: m.Image,
+			APIs: protocolNames(pluginProtocols(pp.ID, m)), Images: m.Image,
 			Context: catalog.Window(m.Input), Output: m.Output, Free: m.Free,
 			Rate: m.Rate, RateWas: m.RateWas,
 			// the model's own sampling, as its plugin said it (#2492)
@@ -589,15 +617,17 @@ func pluginProviderServing(pp plugin.Provider, l pluginLogin, keys []string) Pro
 		}
 	}
 	for _, m := range pp.Models {
-		switch pluginProtocol(pp.ID, m) {
-		case Chat:
-			p.Chat = pluginBase + pp.ID + "/v1"
-		case Responses:
-			p.Responses = pluginBase + pp.ID + "/v1"
-		case Anthropic:
-			p.Anthropic = pluginBase + pp.ID
-		case CodeAssist:
-			a.codeAssist = pluginBase + pp.ID
+		for _, proto := range pluginProtocols(pp.ID, m) {
+			switch proto {
+			case Chat:
+				p.Chat = pluginBase + pp.ID + "/v1"
+			case Responses:
+				p.Responses = pluginBase + pp.ID + "/v1"
+			case Anthropic:
+				p.Anthropic = pluginBase + pp.ID
+			case CodeAssist:
+				a.codeAssist = pluginBase + pp.ID
+			}
 		}
 	}
 	if pp.Decide {
@@ -614,16 +644,25 @@ func pluginProviderServing(pp plugin.Provider, l pluginLogin, keys []string) Pro
 	return p
 }
 
-// pluginAPIs is the one API a plugin provider's model is spoken to on.
+// pluginAPIs are the APIs a plugin provider's model is spoken to on, its
+// own first (pluginProtocols).
 func (p Provider) pluginAPIs(model string) []Protocol {
 	pp := p.Account.plugin
 	if cur, ok := PluginOf(p.ID); ok {
 		pp = &cur
 	}
 	if m, ok := pluginModel(*pp, model); ok {
-		return []Protocol{pluginProtocol(pp.ID, m)}
+		return pluginProtocols(pp.ID, m)
 	}
 	return nil
+}
+
+func protocolNames(ps []Protocol) []string {
+	out := make([]string, len(ps))
+	for i, p := range ps {
+		out[i] = string(p)
+	}
+	return out
 }
 
 // Origin is the scheme and host p's requests go to, for a URL of the

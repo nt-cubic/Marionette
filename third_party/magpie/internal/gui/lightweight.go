@@ -35,12 +35,12 @@ func (h *host) makeMain(url string) *application.WebviewWindow {
 	minW, minH := windowMin(z, 0, 0)
 	width, height := openSize(settings.Load().Window, minW, minH)
 	state := application.WindowStateNormal
-	if runtime.GOOS == "linux" && settings.Load().WindowMaximised {
+	if runtime.GOOS == "linux" && settings.Shared().WindowMaximised {
 		state = application.WindowStateMaximised
 	}
 	// Windows' title bar in the page's colour from the first frame; the
 	// page keeps it so as its theme changes (TintTitleBar)
-	winOpts, winBg := windowChrome(cmp.Or(os.Getenv("MAGPIE_THEME"), settings.Load().Theme))
+	winOpts, winBg := windowChrome(cmp.Or(os.Getenv("MAGPIE_THEME"), settings.Shared().Theme))
 	w := h.app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "main",
 		Title:            "magpie",
@@ -58,6 +58,7 @@ func (h *host) makeMain(url string) *application.WebviewWindow {
 	})
 	h.zoomWhenLoaded(w)
 	lowWhileHidden(w)
+	h.mendWebView(w)
 	if runtime.GOOS == "windows" {
 		w.OnWindowEvent(events.Common.WindowRuntimeReady, func(*application.WindowEvent) { w.ExecJS(frameOnlyResizeJS) })
 	}
@@ -130,6 +131,7 @@ func (h *host) makePanel() *application.WebviewWindow {
 	w := h.app.Window.NewWithOptions(po)
 	h.zoomWhenLoaded(w)
 	lowWhileHidden(w)
+	h.mendWebView(w)
 	if h.tray != nil {
 		h.tray.AttachWindow(w).WindowOffset(6)
 	}
@@ -345,12 +347,15 @@ const spaceSettle = 500 * time.Millisecond
 // was last; on the main thread. It moves only while being shown: left on,
 // activating magpie in any way (the Dock, Command-Tab) would pull the open
 // window off its own Space onto the user's (#1252). Without focus, it is
-// shown and left behind the app the user is in (a restart by itself).
+// shown and left behind the app the user is in (a restart by itself),
+// asking nothing of the user (showQuietly).
 func showHere(w *application.WebviewWindow, focus bool) {
 	setMovesToActiveSpace(w, true)
-	showWebview(w)
 	if focus {
+		showWebview(w)
 		w.Focus()
+	} else {
+		showQuietly(w)
 	}
 	time.AfterFunc(spaceSettle, func() {
 		application.InvokeAsync(func() { setMovesToActiveSpace(w, false) })
@@ -408,7 +413,7 @@ func (h *host) placeAt(w *application.WebviewWindow) (maximise bool) {
 		}
 		fitted = false
 	}
-	return settings.Load().WindowMaximised && !fitted
+	return settings.Shared().WindowMaximised && !fitted
 }
 
 // putBack moves the main window, not shown yet, to where it was last left

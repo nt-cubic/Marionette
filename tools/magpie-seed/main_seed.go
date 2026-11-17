@@ -27,6 +27,12 @@
 //   - `magpie quota --json` CLI — Marionette reads quotas over HTTP
 //     (engine.rs: /v1/magpie/quotas first, CLI only as a fallback when the
 //     gateway is down, in which case the seed isn't running either).
+//   - stats.Run (2026-11-17) — upstream telemetry (plugin/likes reporting
+//     to usemagpie.ai), nothing Marionette consumes; quotas stay on the
+//     HTTP /v1/magpie/quotas endpoint served by plugins/usage. In the
+//     current vendor it is also the sole importer of internal/agent, so
+//     dropping it unlinks the whole agent manager — measured -1.4MB raw /
+//     -0.45MB UPX at v0.1.4232.
 //
 // Maintenance: this file is applied by tools\import-magpie.ps1 after every
 // upstream import (the vendor tree is wiped and re-copied). Upstream
@@ -49,7 +55,6 @@ import (
 	"github.com/yetone/magpie/internal/pluginrt"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
-	"github.com/yetone/magpie/internal/stats"
 
 	// Only the plugins Marionette's model-share consumes. The gateway
 	// plugin itself, the cross-use routing the bridges write into, and the
@@ -145,7 +150,6 @@ func main() {
 		fmt.Fprintln(os.Stderr, "magpie: plugins.yml:", err)
 	}
 	server := gateway.New()
-	go stats.Run(version, "serve")
 	go catalog.KeepFresh()
 	// A signed-in account's list only exists at its vendor; stock serve()
 	// keeps asking while one is outstanding. Same loop here.

@@ -29,7 +29,7 @@ func webView2Check(app *application.App) bool {
 		return true
 	}
 	log.Printf("magpie: no Microsoft Edge WebView2 Runtime, which magpie's windows need; install it from %s, or use magpie web / magpie tui", webView2Page)
-	title, body := webView2Notice(trayLang(settings.Load().Lang, systemLang))
+	title, body := webView2Notice(trayLang(settings.Shared().Lang, systemLang))
 	if webView2Box(title, body) == idYes {
 		if err := windows.ShellExecute(0, windows.StringToUTF16Ptr("open"), windows.StringToUTF16Ptr(webView2Page), nil, nil, windows.SW_SHOWNORMAL); err != nil {
 			log.Println("magpie: opening the WebView2 page:", err)
@@ -89,14 +89,41 @@ func webView2Prepare() {
 		log.Printf("magpie: WebView2 start %d of %d, after a failure", try+1, webView2Tries)
 		time.Sleep(webView2Backoff(try))
 	}
-	dir := webView2Dir()
+	webView2Ready(webView2Dir(), instanceID(), 30*time.Second)
+}
+
+// webView2Ready waits, up to max, for no other process to hold the
+// profile folder dir. A second launch waits for nothing: the magpie
+// running on this config (instance id) holds the folder for as long as it
+// runs, and Wails hands the launch over to it as the app is made
+// (singleInstance). Waiting there kept the Start menu's magpie from
+// showing the window for 30s (shangyuan0818 on X).
+func webView2Ready(dir, id string, max time.Duration) {
+	if instanceHeld(id) {
+		return
+	}
 	start := time.Now()
-	if !awaitWebView2Folder(func() bool { return webView2Free(dir) }, 30*time.Second, 250*time.Millisecond, time.Sleep) {
-		log.Printf("magpie: WebView2 folder %s is still held by another process after 30s; going on", dir)
+	if !awaitWebView2Folder(func() bool { return webView2Free(dir) }, max, 250*time.Millisecond, time.Sleep) {
+		log.Printf("magpie: WebView2 folder %s is still held by another process after %s; going on", dir, max)
 	} else if d := time.Since(start); d > time.Second {
 		log.Printf("magpie: waited %s for WebView2 folder %s to be free", d.Round(100*time.Millisecond), dir)
 	}
 }
+
+// instanceHeld says whether a magpie with the single instance id runs:
+// Wails holds a mutex named for it from the app's making until the
+// process ends (its single_instance_windows.go).
+func instanceHeld(id string) bool {
+	h, err := windows.OpenMutex(windows.SYNCHRONIZE, false, windows.StringToUTF16Ptr(instanceMutex(id)))
+	if err != nil {
+		return false
+	}
+	windows.CloseHandle(h)
+	return true
+}
+
+// instanceMutex is the name Wails gives the single instance's mutex.
+func instanceMutex(id string) string { return "wails-app-" + id + "-sim" }
 
 // webView2Failed is Wails' ErrorHandler; Wails exits as soon as it
 // returns. It logs the error with what is needed to read it, and for a
@@ -121,7 +148,7 @@ func webView2Failed(app *application.App, err error) {
 			return
 		}
 	}
-	title, body := webView2FailedNotice(trayLang(settings.Load().Lang, systemLang), err.Error(), ver)
+	title, body := webView2FailedNotice(trayLang(settings.Shared().Lang, systemLang), err.Error(), ver)
 	procMessageBoxW.Call(0,
 		uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(body))),
 		uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(title))),

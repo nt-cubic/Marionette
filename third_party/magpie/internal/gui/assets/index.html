@@ -3,6 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- magpie draws a light and a dark theme of its own: a browser that
+     repaints light pages dark (Chrome's Auto Dark Theme, Safari's Adaptive
+     Dark Mode) leaves it alone (xjp on X); app.css says the same -->
+<meta name="color-scheme" content="light dark">
 <title>magpie</title>
 <link rel="icon" href="icons/favicon.svg" type="image/svg+xml">
 <!-- added to a phone's home screen, magpie web opens as an app of its own,
@@ -88,7 +92,7 @@
         <svg viewBox="0 0 16 16" width="11" height="11"><path d="M8 13V3.5M3.75 7.5 8 3.25l4.25 4.25" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span>Update</span>
       </button>
-      <button class="update-hide" id="updateHide" title="Hide until the next version" data-tt>
+      <button class="update-hide" id="updateHide" title="Hide for 3 days" data-tt>
         <svg viewBox="0 0 10 10" width="8" height="8"><path d="M2.5 2.5l5 5M7.5 2.5l-5 5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
       </button>
     </span>
@@ -134,7 +138,8 @@
     <div class="who" role="status" aria-live="polite"><b id="providerDiscoveryCount"></b><span id="providerDiscoverySources"></span></div>
     <div class="actions"><button class="text primary" id="reviewProviderDiscovery">Review and import…</button><button class="text" id="dismissProviderDiscovery" data-t data-tt="Hide these configurations until they change">Ignore</button></div>
   </aside>
-  <div class="pv-head" id="pvHead" hidden><input class="sess-filter pv-q" id="pvQ" type="search" spellcheck="false" autocomplete="off" placeholder="Find a provider" aria-label="Find a provider" data-tp><button class="text rt-mask" id="pvMask" aria-pressed="false" data-tt="Mask the accounts on every page — email addresses and account names — for a screenshot to share"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.9 4.2A10.4 10.4 0 0 1 12 4c6.5 0 10 8 10 8a17.6 17.6 0 0 1-2.2 3.2M6.6 6.6C3.9 8.4 2 12 2 12s3.5 8 10 8a9.7 9.7 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20"/></svg><span data-t>Hide accounts</span></button></div>
+  <div class="pv-head" id="pvHead" hidden><input class="sess-filter pv-q" id="pvQ" type="search" spellcheck="false" autocomplete="off" placeholder="Find a provider" aria-label="Find a provider" data-tp><button class="text pv-select" id="pvSelect" type="button" hidden data-tt="Pick several providers to remove together" data-t>Select</button><button class="text rt-mask" id="pvMask" aria-pressed="false" data-tt="Mask the accounts on every page — email addresses and account names — for a screenshot to share"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.9 4.2A10.4 10.4 0 0 1 12 4c6.5 0 10 8 10 8a17.6 17.6 0 0 1-2.2 3.2M6.6 6.6C3.9 8.4 2 12 2 12s3.5 8 10 8a9.7 9.7 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20"/></svg><span data-t>Hide accounts</span></button></div>
+  <div class="pv-sel" id="pvSel" hidden></div>
   <p class="set-none pv-none" id="pvNone" role="status" hidden></p>
   <div class="list" id="providers"></div>
   <div class="row-head off-head" id="offHead" hidden><button class="fold" id="foldOff" aria-expanded="false" aria-controls="offProviders"><span class="label" data-t>Turned off</span><span class="note" id="offCount"></span></button></div>
@@ -172,6 +177,14 @@
       <div class="row pref">
         <div class="who"><div class="name" data-t>Appearance</div><div class="sub om-only" data-t>Follows the Omarchy theme, as picked in Omarchy's menu</div></div>
         <div id="themeSegs" class="om-hide"></div><span class="om-only om-theme-name"></span>
+      </div>
+      <div class="row pref om-hide" id="accentRow">
+        <div class="who"><div class="name" data-t>Accent color</div></div>
+        <div id="accentPick" class="accent-pick" role="radiogroup"></div>
+      </div>
+      <div class="row pref om-hide" id="wallpaperRow">
+        <div class="who"><div class="name" data-t>Background image</div></div>
+        <div id="wallpaperPick" class="wall-pick"></div>
       </div>
       <div class="row pref" id="colorblindRow">
         <div class="who"><div class="name" data-t>Colorblind mode</div></div>
@@ -318,6 +331,10 @@
         <div class="who"><div class="name" data-t>Currency</div><div class="sub" id="currencySub"></div></div>
         <div id="currencySegs"></div>
       </div>
+      <div class="row pref" id="totalCurrencyRow" hidden>
+        <div class="who"><div class="name" data-t>Totals in</div></div>
+        <div id="totalCurrencySegs"></div>
+      </div>
       <div class="row pref">
         <div class="who"><div class="name" data-t>Day starts at</div></div>
         <div id="dayStartSegs"></div>
@@ -328,6 +345,15 @@
       </div>
       <div id="provPrefLinks"></div>
     </div>
+    <details class="prefs-more app-only" id="usageMore">
+      <summary data-t>Advanced</summary>
+      <div class="list prefs">
+        <div class="row pref" id="trayCurrencyRow">
+          <div class="who"><div class="name" data-t>Menu bar currency</div></div>
+          <div id="trayCurrencySegs"></div>
+        </div>
+      </div>
+    </details>
     <div class="row-head" id="alertHead"><span class="label" data-t>Alerts</span></div>
     <div class="list prefs" id="alertList">
       <div class="row pref" id="usageAlertRow">
@@ -383,7 +409,7 @@
     <div class="list prefs" id="portList"></div>
     <div class="list prefs">
       <div class="row pref" id="bareIdsRow">
-        <div class="who"><div class="name" data-t>Model ids without the provider</div><div class="sub" data-t>The gateway’s model list also names each model by its own id, as gpt-5.6-sol beside codex/gpt-5.6-sol, for apps moved from another proxy. One that several providers serve goes to them in the Providers order</div></div>
+        <div class="who"><div class="name" data-t>Model ids without the provider</div><div class="sub" data-t>The gateway’s model list also names each model by its own id, as gpt-5.6-sol beside codex/gpt-5.6-sol, for apps moved from another proxy. One that several providers serve goes to them in the Providers order. Only lists it in place of the provider/model id</div></div>
         <div id="bareIdsSegs"></div>
       </div>
     </div>
@@ -568,9 +594,17 @@
     <div class="who"><div class="name" data-t>Codex background compaction</div><div class="sub" data-t>Codex 0.163 and later summarise while a turn goes on, past the share of the window typed (65% when empty); a value set in its own config stays</div></div>
     <div id="codexAsyncSegs"></div>
   </div>
+  <div class="row pref" id="codexOpenRow">
+    <div class="who"><div class="name" data-t>Open Codex with</div></div>
+    <div class="val" id="codexOpenPick"></div>
+  </div>
   <div class="row pref" id="codexServiceTierRow">
     <div class="who"><div class="name" data-t>Codex service tier</div></div>
     <div class="val" id="codexServiceTierPick"></div>
+  </div>
+  <div class="row pref" id="codexClientRow">
+    <div class="who"><div class="name" data-t>Codex client</div></div>
+    <div class="val" id="codexClientPick"></div>
   </div>
   <div class="row pref" id="codexTitlesRow">
     <div class="who"><div class="name" data-t>Codex thread titles</div></div>

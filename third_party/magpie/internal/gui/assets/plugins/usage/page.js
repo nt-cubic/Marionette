@@ -156,7 +156,18 @@ function archivePanel(name, id, redraw) {
 // is kept for the next time the page opens; picked days are not, as they
 // go stale.
 const PERIODS = [["today", "Today"], ["last:24h", "24 hours"], ["7d", "7 days"], ["30d", "30 days"], ["all", "All"]];
-try { const v = localStorage.getItem("magpie.usagePeriod"); if (PERIODS.some(([id]) => id === v)) period = v; } catch {}
+// Hours of the reader's own (eachg0 on X): the last N hours, up to now, so
+// yesterday needn't be dug out of the calendar each time the date rolls
+// over. The range menu sets N; the pick and N are kept on this device.
+const HOURS_MAX = 720;
+function periodHours(p) {
+  const m = /^last:(\d+)h$/.exec(p || "");
+  const n = m ? +m[1] : 0;
+  return n >= 1 && n <= HOURS_MAX ? n : 0;
+}
+const keptPeriod = (id) => PERIODS.some(([p]) => p === id) || periodHours(id) > 0;
+const hoursName = (n) => (n === 1 ? t("Last hour") : t("Last {n} hours", { n }));
+try { const v = localStorage.getItem("magpie.usagePeriod"); if (keptPeriod(v)) period = v; } catch {}
 
 // The reader's time zone, which magpie reads the period's days, the chart's
 // hours and a picked day in: magpie web may be read from another zone than
@@ -233,18 +244,20 @@ function renderPeriod(loading) {
   // days of the reader's own (#1492): the last opt names them once picked,
   // and opens the range menu to pick them, or others
   const range = periodDays(period);
-  const b = el("button", "opt range-opt" + (range ? " on" : ""));
+  // hours other than the 24 the preset has name the same chip
+  const hours = PERIODS.some(([id]) => id === period) ? 0 : periodHours(period);
+  const b = el("button", "opt range-opt" + (range || hours ? " on" : ""));
   b.type = "button";
   b.disabled = !!loading;
   b.setAttribute("aria-haspopup", "dialog");
   b.setAttribute("aria-expanded", "false");
-  b.setAttribute("aria-label", range ? t("Days picked: {days}", { days: rangeName(range) }) : t("Pick days"));
-  b.append(svg("M3 4.5h10v8.5H3zM3 7h10M5.5 3v3M10.5 3v3", 12, 1.4), el("span", "", range ? rangeName(range) : t("Custom")));
+  b.setAttribute("aria-label", hours ? t("Hours picked: {hours}", { hours: hoursName(hours) }) : range ? t("Days picked: {days}", { days: rangeName(range) }) : t("Pick days"));
+  b.append(svg("M3 4.5h10v8.5H3zM3 7h10M5.5 3v3M10.5 3v3", 12, 1.4), el("span", "", hours ? hoursName(hours) : range ? rangeName(range) : t("Custom")));
   if (range) b.title = t("Days picked: {days}", { days: rangeName(range) });
   b.onclick = () => {
     if (b.classList.contains("open")) return closeProtoMenu();
     // on a phone the strip is hidden behind the head's menu, which opens it
-    openRangeMenu(b.offsetParent ? b : $("#usageRangeMenu"), range, (from, to) => {
+    openRangeMenu(b.offsetParent ? b : $("#usageRangeMenu"), range, hours, (from, to) => {
       const picked = periodDays(from + ".." + to);
       for (const x of seg.querySelectorAll(".opt")) x.classList.toggle("on", x === b);
       b.lastChild.textContent = rangeName(picked);
@@ -252,6 +265,11 @@ function renderPeriod(loading) {
       b.setAttribute("aria-label", b.title);
       slide(seg, "period");
       pickPeriod(from + ".." + to);
+    }, (n) => {
+      for (const x of seg.querySelectorAll(".opt")) x.classList.toggle("on", x === b);
+      b.lastChild.textContent = hoursName(n);
+      slide(seg, "period");
+      pickPeriod("last:" + n + "h");
     });
   };
   seg.append(b);
@@ -293,7 +311,7 @@ function renderPeriod(loading) {
 
 function pickPeriod(id) {
   period = id; ledDay = ""; ledOffset = 0;
-  if (PERIODS.some(([p]) => p === id)) try { localStorage.setItem("magpie.usagePeriod", id); } catch {}
+  if (keptPeriod(id)) try { localStorage.setItem("magpie.usagePeriod", id); } catch {}
   loadUsage().catch((e) => status(e.message, "err"));
 }
 
@@ -347,13 +365,16 @@ async function readsNote(host) {
 // noCallsIn is what an empty page says of the period it is on
 function noCallsIn(p) {
   if (periodDays(p)) return "No calls on the days picked.";
+  if (periodHours(p) && p !== "last:24h") return periodHours(p) === 1 ? "No calls in the last hour." : "No calls in the last {n} hours.";
   return { today: "No calls today.", "last:24h": "No calls in the last 24 hours.", "7d": "No calls in the last 7 days.", "30d": "No calls in the last 30 days.", all: "No calls yet." }[p] || "No calls yet.";
 }
 
 // openRangeMenu is the app's own menu for picking days (#1492): a few
 // spans a click away, and a month to pick the first day on, then the last.
 // Days after today can't be picked. choose gets the two days, in order.
-function openRangeMenu(anchor, current, choose) {
+// hours is the last N hours the page is on, 0 when it is not; chooseHours
+// gets N from the row at the menu's top.
+function openRangeMenu(anchor, current, hours, choose, chooseHours) {
   closeProtoMenu();
   const today = dayKeyOf(new Date());
   let start = null; // the first day clicked, waiting for the last
@@ -381,6 +402,25 @@ function openRangeMenu(anchor, current, choose) {
     b.onclick = (e) => { e.stopPropagation(); closeProtoMenu(); choose(r.from, r.to); };
     quick.append(b);
   }
+  // the last N hours, up to now: N is kept on this device
+  const lastH = el("label", "rm-times rm-hours");
+  const hin = el("input", "rm-time");
+  let keptH = 0;
+  try { keptH = periodHours("last:" + localStorage.getItem("magpie.usageHours") + "h"); } catch {}
+  Object.assign(hin, { type: "text", inputMode: "numeric", maxLength: 3, placeholder: "24", value: String(hours || keptH || ""), spellcheck: false, autocomplete: "off" });
+  hin.setAttribute("aria-label", t("hours back"));
+  hin.oninput = () => hin.removeAttribute("aria-invalid");
+  hin.onkeydown = (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    e.stopPropagation();
+    const n = periodHours("last:" + hin.value.trim() + "h");
+    if (!n) return hin.setAttribute("aria-invalid", "true");
+    try { localStorage.setItem("magpie.usageHours", String(n)); } catch {}
+    closeProtoMenu();
+    chooseHours(n);
+  };
+  lastH.append(svg("M8 2.5a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11zM8 5v3.2l2 1.3", 12, 1.4), hin, el("span", "rm-dash", t("hours back")));
   const nav = el("div", "rm-nav");
   const prev = el("button", "rm-step"), next = el("button", "rm-step"), month = el("span", "rm-month");
   prev.type = next.type = "button";
@@ -422,6 +462,7 @@ function openRangeMenu(anchor, current, choose) {
     return true;
   };
   box.append(head, quick, nav, grid, times);
+  if (chooseHours) head.after(lastH);
   const draw = (focusDay) => {
     head.textContent = start ? t("Now the last day") : t("Pick the first day, then the last");
     month.textContent = shown.toLocaleDateString(intlLang(), { year: "numeric", month: "long" });
@@ -690,6 +731,7 @@ function mountUsageFolds() {
   if (toSet) toSet.onclick = (e) => openSettingsAt(e, "usage", "#quotaLeftRow");
   for (const b of $$("#usagePane .row-head .fold[data-fold]")) {
     b.prepend(svg(CHEV_R, 11, 1.6));
+    b.after(el("span", "grow us-sort-gap"), usageSortPick(b.dataset.fold));
     b.onclick = () => {
       const id = b.dataset.fold;
       if (usageFolded.has(id)) usageFolded.delete(id); else usageFolded.add(id);
@@ -707,8 +749,57 @@ function showUsageFolds() {
     const id = b.dataset.fold, folded = usageFolded.has(id);
     b.setAttribute("aria-expanded", String(!folded));
     b.title = t(USAGE_FOLD_TITLES[id][folded ? 0 : 1]);
+    // a folded list has nothing to order
+    const pick = b.parentElement.querySelector(".us-sort");
+    if (pick) pick.hidden = folded;
     for (const box of USAGE_FOLDS[id]) $("#" + box)?.classList.toggle("folded", folded);
   }
+}
+
+// The Overview's lists are a ranking (onducoder on X: 能为 agent、模型、
+// 网关密钥、账号的消耗量增加一个排序): most tokens first, as the server
+// sends them, or by cost, by calls or by name, a pick at the right of each
+// list's heading, kept across a reload (magpie.usageSort, a list's name to
+// its order). Tokens count as the tokens tile counts them, the cache in or
+// out; an unpriced row's cost is unknown and goes last by cost.
+const USAGE_SORTS = [["tokens", "Tokens"], ["cost", "Cost"], ["calls", "Calls"], ["name", "Name"]];
+let usageSort = {};
+try { usageSort = JSON.parse(localStorage.getItem("magpie.usageSort") || "{}") || {}; } catch {}
+const usageSortOf = (id) => USAGE_SORTS.some(([v]) => v === usageSort[id]) ? usageSort[id] : "tokens";
+function usageSorted(groups, id) {
+  const by = usageSortOf(id);
+  // the server sends each list most tokens first (cache left out)
+  if (by === "tokens" && !usageWithCache) return groups;
+  const name =(g) => g.name || g.id || "";
+  const cost = (g) => typeof g.cost === "number" && !(g.unpriced && !g.cost) ? g.cost : -1;
+  const key = { tokens: (g) => usageTokens(g), cost, calls: (g) => g.calls || 0 }[by];
+  return [...groups].sort((a, b) => {
+    if (by === "name") return !a.name - !b.name || name(a).localeCompare(name(b), intlLang(), { numeric: true, sensitivity: "base" });
+    return key(b) - key(a) || usageTokens(b) - usageTokens(a) || (b.calls || 0) - (a.calls || 0);
+  });
+}
+function usageSortPick(id) {
+  const b = el("button", "us-sort");
+  b.type = "button";
+  b.dataset.sort = id;
+  b.setAttribute("aria-haspopup", "menu");
+  const paint = () => {
+    const by = usageSortOf(id);
+    b.replaceChildren(el("span", "", t(USAGE_SORTS.find(([v]) => v === by)[1])), svg(CHEV, 10, 1.6));
+  };
+  paint();
+  b.title = t("Order this list");
+  b.onclick = (e) => {
+    e.stopPropagation();
+    if (b.classList.contains("open")) return closeProtoMenu();
+    openProtoMenu(b, USAGE_SORTS.map(([v, name]) => ({ v, name, note: "" })), usageSortOf(id), (v) => {
+      if (v === "tokens") delete usageSort[id]; else usageSort[id] = v;
+      try { localStorage.setItem("magpie.usageSort", JSON.stringify(usageSort)); } catch {}
+      paint();
+      if (usage) renderUsage();
+    }, "Order by", "sess-menu", "right");
+  };
+  return b;
 }
 
 // usageParts: a line of counts, each kept whole in a span of its own and
@@ -747,9 +838,111 @@ function usageTokensPick() {
       // the tab it was picked on follows; the pick lives on the Overview's
       // and the Sessions tab's tokens tiles (#2591)
       (usageTab === "sessions" ? renderSessions : renderUsage)();
+      // and the account cards' whole-window estimates (holdsLine)
+      if (usageTab !== "sessions" && quotas) renderQuotas();
     }, "Token totals", "sess-menu");
   };
   return b;
+}
+
+// holdsLine: a window's whole (WindowHolds), how in its tooltip. With a
+// baseCost (#5861, no long-context premium) its figure switches every card.
+let holdsBase = kept("holdsBase", false);
+function holdsCostText(h, prov) {
+  const c = fmtCost({ cost: holdsBase ? h.baseCost : h.cost }, prov);
+  return holdsBase ? t("≈ {cost} base", { cost: c }) : t("≈ {cost} API", { cost: c });
+}
+function holdsLine(h, prov) {
+  const cost = (c) => fmtCost({ cost: c }, prov);
+  const line = el("span", "quota-holds");
+  const r = h.routed || {};
+  // with the tokens tiles' "with cache" pick, the cache's tokens, read and
+  // written, scaled by the same share used (Anotiaww on X)
+  const cache = usageWithCache && h.used > 0 ? Math.round(((r.cacheRead || 0) + (r.cacheWrite || 0)) * 100 / h.used) : 0;
+  const tokens = fmtN(h.tokens + cache);
+  line.append(el("span", "", t(usageWithCache ? "Whole ≈ {n} tokens with cache" : "Whole ≈ {n} tokens", { n: tokens }) + (h.priced ? " ·" : "")));
+  const two = h.priced && h.baseCost > 0;
+  if (two) {
+    const b = el("button", "quota-holds-cost", holdsCostText(h, prov));
+    b.type = "button";
+    b._holds = h;
+    b._prov = prov;
+    b.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      holdsBase = !holdsBase;
+      keep("holdsBase", holdsBase);
+      for (const o of document.querySelectorAll(".quota-holds-cost")) if (o._holds) o.textContent = holdsCostText(o._holds, o._prov);
+    };
+    line.append(" ", b);
+  } else if (h.priced) line.append(" ", el("span", "", "≈ " + cost(h.cost)));
+  line.title = [
+    usageWithCache ? (h.priced ? t("The whole window ≈ {tokens} tokens, cache read and written included, ≈ {cost} at API list prices", { tokens, cost: cost(h.cost) })
+      : t("The whole window ≈ {tokens} tokens, cache read and written included; some of its models have no API price", { tokens }))
+      : h.priced ? t("The whole window ≈ {tokens} tokens of input and output, ≈ {cost} at API list prices", { tokens, cost: cost(h.cost) })
+      : t("The whole window ≈ {tokens} tokens of input and output; some of its models have no API price", { tokens }),
+    ...(two ? [
+      t("≈ {cost} at base rates, without long-context premiums: for comparing cycles", { cost: cost(h.baseCost) }),
+      t("Neither is an official dollar allowance or a fixed quota; click the figure to switch"),
+    ] : []),
+    t("Reckoned from what magpie routed through this account in this window: {tokens} tokens in {calls} calls, {cache} cache reads, over the {used} the vendor says is used", { tokens: fmtN(r.tokens || 0), calls: r.calls || 0, cache: fmtN(r.cacheRead || 0), used: Math.round(h.used) + "%" }),
+    t("Only magpie's calls are counted: if this account is also used elsewhere, this reads low"),
+    t("A heavier model fills a window sooner: this holds for the models used so far"),
+  ].join("\n");
+  return line;
+}
+
+// holdsWhy: why a whole isn't told (provider.Holds*); one not listed says nothing.
+const holdsWhy = {
+  low: () => t("Under {n}% of it is used: a rounded share that small is too coarse to scale up", { n: 5 }),
+  clock: () => t("Its reset time isn't known, so neither is when it began"),
+  log: () => t("It began before magpie's request log, so some of its calls weren't seen"),
+  none: () => t("magpie hasn't routed a call through this account in it yet"),
+  credits: () => t("A call in it may have been paid from credits or extra usage, not from the window"),
+};
+// holdsUnknownLine: a window whose whole the server couldn't reckon
+// (#2045): "not enough data", muted, and why in its tooltip, where it said
+// nothing before and a reader couldn't tell a gap from a fault.
+function holdsUnknownLine(why) {
+  const line = el("span", "quota-holds-why", t("Whole: not enough data"));
+  line.title = t("The whole window can't be estimated from magpie's calls yet") + "\n" + holdsWhy[why]();
+  return line;
+}
+
+// The Agents list folds the clients that are small and idle into one
+// Other row (WJaunita45604 on X: dozens of randomly named test clients of
+// ~10K tokens each, every one a row laid out again at each refresh, slowed
+// the page down). A client folds when it is past the 5 with the most
+// tokens, under 1% of the period's tokens, and either has made no call in
+// the last 3 days or is past the top 20; two or more fold, or none do.
+// Their sum is the Other row's, so every total stays exact.
+const USAGE_FOLD_TOP = 5, USAGE_FOLD_LONG = 20, USAGE_FOLD_SHARE = 0.01, USAGE_FOLD_IDLE = 3 * 864e5;
+const USAGE_OTHER_PAGE = 100;
+let usageOtherOpen = false, usageOtherShown = USAGE_OTHER_PAGE;
+function usageFoldAgents(groups, total, now = Date.now()) {
+  const rank = new Map([...groups].sort((a, b) => usageTokens(b) - usageTokens(a)).map((g, i) => [g, i]));
+  const idle = (g) => {
+    const at = Date.parse(g.last || "");
+    return at > 0 && now - at >= USAGE_FOLD_IDLE;
+  };
+  const folds = (g) => {
+    const i = rank.get(g);
+    return i >= USAGE_FOLD_TOP && usageTokens(g) < USAGE_FOLD_SHARE * total && (i >= USAGE_FOLD_LONG || idle(g));
+  };
+  const folded = groups.filter(folds);
+  if (folded.length < 2) return { kept: groups, folded: [] };
+  return { kept: groups.filter((g) => !folds(g)), folded };
+}
+// usageSum adds groups' counts up, as one group
+function usageSum(groups) {
+  const add = (s, g) => {
+    for (const [k, v] of Object.entries(g)) {
+      if (typeof v === "number") s[k] = (s[k] || 0) + v;
+      else if (k === "own" && v) s.own = add(s.own || {}, v);
+    }
+    return s;
+  };
+  return groups.reduce(add, {});
 }
 
 function renderUsage() {
@@ -774,7 +967,7 @@ function renderUsage() {
   if (empty) {
     stats.classList.add("empty");
     const none = noCallsIn(period);
-    stats.append(el("div", "none", t(none) + " " + t("Calls through the gateway and the calls Claude Code's and Codex's own session files record are counted here, with no provider set up.")));
+    stats.append(el("div", "none", t(none, { n: periodHours(period) }) + " " + t("Calls through the gateway and the calls Claude Code's and Codex's own session files record are counted here, with no provider set up.")));
     readsNote(stats);
     $("#usageNote").textContent = "";
     $("#usageClear").hidden = true;
@@ -835,69 +1028,75 @@ function renderUsage() {
   fitChartLabels();
 
   const total = Math.max(1, usageTokens(u));
-  const list = (id, groups, act) => {
+  // list draws a list's rows anew; more adds what follows them while the
+  // logos drawn before are still kept
+  const list = (id, groups, act, more) => {
     const box = typeof id === "string" ? $("#" + id) : id;
     keepIcons(box); // a logo made again blinks (keepIcons)
     box.replaceChildren();
-    for (const g of groups) {
-      const r = el("div", "row stat");
-      r.dataset.id = g.id || "";
-      r.append(icon(g.icon || "generic"));
-      const who = el("div", "who");
-      who.append(el("div", "name" + (g.name ? "" : " faint"), g.name || t("account not recorded")));
-      const sub = [];
-      if (g.sub) sub.push(g.sub);
-      sub.push(t(g.calls === 1 ? "{n} call" : "{n} calls", { n: g.calls }));
-      // what the calls cost in their plan's credits, as the replies said
-      // (WorkBuddy's 积分): an account's, a model's, an agent's (lcyksp
-      // on Discord), not only their tokens
-      if (g.credited) sub.push(ledCredits(g).textContent);
-      // magpie's own calls apart from the agents' (#1839): magpie's row
-      // says it is, and a model's, a key's or an account's how many of
-      // its calls were
-      if (id === "usageAgents" && g.id === "magpie") who.firstChild.append(ownBadge());
-      else if (g.own?.calls) sub.push(ownCalls(g.own.calls));
-      if (g.errors) sub.push(t("{n} failed", { n: g.errors }));
-      // of those, the replies magpie ended stuck in a loop (#1858)
-      if (g.loops) sub.push(t("{n} looped", { n: g.loops }));
-      if (g.retried) sub.push(t("{n} answered on a retry", { n: g.retried }));
-      // how long the streamed replies took to begin, and how fast they
-      // wrote after (#196)
-      if (g.timed) {
-        sub.push(t("TTFT {ms}", { ms: ledTook(Math.round(g.ttft_ms / g.timed)) }));
-      }
-      const gs = ledGroupSpeed(g);
-      if (gs) sub.push(gs.text);
-      const subLine = el("div", "sub", sub.join(" · "));
-      if (g.own?.calls) subLine.title = ownWhy();
-      who.append(subLine);
-      r.append(who);
-      const share = el("div", "share");
-      const fill = el("i");
-      fill.style.width = Math.max(1.5, 100 * usageTokens(g) / total).toFixed(1) + "%";
-      share.append(fill);
-      share.title = t("{n}% of tokens", { n: Math.round(100 * usageTokens(g) / total) });
-      r.append(share);
-      const num = el("div", "num");
-      // how much of its prompt came from the cache, counted as the cache
-      // read tile counts it (#925)
-      const hitRate = cacheHitOf(g);
-      const hit = g.cache_read && hitRate !== null ? " · " + t("hit rate {p}", { p: hitPct(hitRate) }) : "";
-      num.append(el("b", "", fmtN(usageTokens(g))), el("small", "", t("{a} in · {b} out", { a: fmtN(g.input), b: fmtN(g.output) }) + (g.cache_read ? " · " + t("{n} cached", { n: fmtN(g.cache_read) }) : "") + hit));
-      r.append(num);
-      r.append(el("div", "cost", fmtCost(g) ? "≈" + fmtCost(g) : ""));
-      if (act) act(r, g);
-      box.append(r);
-    }
+    for (const g of groups) box.append(row(id, g, act));
+    if (more) more(box);
     keptIcons = null;
+    return box;
+  };
+  const row = (id, g, act) => {
+    const r = el("div", "row stat");
+    r.dataset.id = g.id || "";
+    r.append(icon(g.icon || "generic"));
+    const who = el("div", "who");
+    who.append(el("div", "name" + (g.name ? "" : " faint"), g.name || t("account not recorded")));
+    const sub = [];
+    if (g.sub) sub.push(g.sub);
+    sub.push(t(g.calls === 1 ? "{n} call" : "{n} calls", { n: g.calls }));
+    // what the calls cost in their plan's credits, as the replies said
+    // (WorkBuddy's 积分): an account's, a model's, an agent's (lcyksp
+    // on Discord), not only their tokens
+    if (g.credited) sub.push(ledCredits(g).textContent);
+    // magpie's own calls apart from the agents' (#1839): magpie's row
+    // says it is, and a model's, a key's or an account's how many of
+    // its calls were
+    if (id === "usageAgents" && g.id === "magpie") who.firstChild.append(ownBadge());
+    else if (g.own?.calls) sub.push(ownCalls(g.own.calls));
+    if (g.errors) sub.push(t("{n} failed", { n: g.errors }));
+    // of those, the replies magpie ended stuck in a loop (#1858)
+    if (g.loops) sub.push(t("{n} looped", { n: g.loops }));
+    if (g.retried) sub.push(t("{n} answered on a retry", { n: g.retried }));
+    // how long the streamed replies took to begin, and how fast they
+    // wrote after (#196)
+    if (g.timed) {
+      sub.push(t("TTFT {ms}", { ms: ledTook(Math.round(g.ttft_ms / g.timed)) }));
+    }
+    const gs = ledGroupSpeed(g);
+    if (gs) sub.push(gs.text);
+    const subLine = el("div", "sub", sub.join(" · "));
+    if (g.own?.calls) subLine.title = ownWhy();
+    who.append(subLine);
+    r.append(who);
+    const share = el("div", "share");
+    const fill = el("i");
+    fill.style.width = Math.max(1.5, 100 * usageTokens(g) / total).toFixed(1) + "%";
+    share.append(fill);
+    share.title = t("{n}% of tokens", { n: Math.round(100 * usageTokens(g) / total) });
+    r.append(share);
+    const num = el("div", "num");
+    // how much of its prompt came from the cache, counted as the cache
+    // read tile counts it (#925)
+    const hitRate = cacheHitOf(g);
+    const hit = g.cache_read && hitRate !== null ? " · " + t("hit rate {p}", { p: hitPct(hitRate) }) : "";
+    num.append(el("b", "", fmtN(usageTokens(g))), el("small", "", t("{a} in · {b} out", { a: fmtN(g.input), b: fmtN(g.output) }) + (g.cache_read ? " · " + t("{n} cached", { n: fmtN(g.cache_read) }) : "") + hit));
+    r.append(num);
+    r.append(el("div", "cost", fmtCost(g, g.provider) ? "≈" + fmtCost(g, g.provider) : ""));
+    if (act) act(r, g);
+    return r;
   };
   // a client hidden from the Agents list (ikunbots on X: curl,
   // Go-http-client, python-httpx beside the agents in use) is left out of
   // it, and only of it: the totals, the chart and every share above still
   // count its calls. One line under the list says how many, and opens them.
   const hid = new Set(state.settings?.usageAgentsHidden || []);
-  const hidden = u.agents.filter((g) => hid.has(g.id));
-  list("usageAgents", u.agents.filter((g) => !hid.has(g.id)), (r, g) => {
+  const agents = usageSorted(u.agents, "agents");
+  const hidden = agents.filter((g) => hid.has(g.id));
+  const agentAct = (r, g) => {
     r.classList.add("acts");
     const b = el("button", "icon us-more");
     b.type = "button";
@@ -926,6 +1125,47 @@ function renderUsage() {
     b.onclick = (e) => { e.stopPropagation(); menu(); };
     r.oncontextmenu = (e) => { e.preventDefault(); menu(); };
     r.querySelector(".share").after(b);
+  };
+  // the small clients idle for days fold into one Other row at the
+  // list's foot (usageFoldAgents), drawn only while it is open
+  const { kept, folded } = usageFoldAgents(agents.filter((g) => !hid.has(g.id)), total);
+  if (!folded.length) usageOtherOpen = false;
+  list("usageAgents", kept, agentAct, (box) => {
+    if (!folded.length) return;
+    // a page at a time: every row drawn is laid out again at each refresh.
+    // The folded rows are made before the Other row, so their logos are
+    // the ones kept from the last draw
+    let inner = null;
+    if (usageOtherOpen) {
+      const shown = folded.slice(0, usageOtherShown);
+      inner = el("div", "us-folded");
+      for (const g of shown) inner.append(row("usageAgents", g, agentAct));
+      if (folded.length > shown.length) {
+        const more = el("button", "text us-folded-more", t("Show {n} more", { n: folded.length - shown.length }));
+        more.type = "button";
+        more.onclick = (e) => { e.stopPropagation(); usageOtherShown += USAGE_OTHER_PAGE; renderUsage(); };
+        inner.append(more);
+      }
+    }
+    const other = row("usageAgents", { ...usageSum(folded), id: "", name: t("Other"), sub: t(folded.length === 1 ? "{n} client" : "{n} clients", { n: folded.length }), icon: "generic" });
+    other.classList.add("us-other");
+    const chev = el("span", "us-other-chev");
+    chev.append(svg(CHEV_R, 11, 1.6));
+    other.firstChild.replaceWith(chev);
+    other.tabIndex = 0;
+    other.setAttribute("role", "button");
+    other.setAttribute("aria-expanded", String(usageOtherOpen));
+    other.title = t("Clients under 1% of the tokens, idle for 3 days or past the top 20. Their calls still count in every total.");
+    const flip = () => {
+      usageOtherOpen = !usageOtherOpen;
+      usageOtherShown = USAGE_OTHER_PAGE;
+      renderUsage();
+      $("#usageAgents .us-other")?.focus({ preventScroll: true });
+    };
+    other.onclick = flip;
+    other.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); flip(); } };
+    box.append(other);
+    if (inner) box.append(inner);
   });
   const hb = $("#usageAgentsHid");
   hb.hidden = !hidden.length;
@@ -945,7 +1185,7 @@ function renderUsage() {
   });
   // a model's usage cleared (CrazyMouse_TT on X: a local model deployed
   // again, its requests, speed and cache wanted from nothing)
-  list("usageModels", u.models, (r, g) => {
+  list("usageModels", usageSorted(u.models, "models"), (r, g) => {
     if (!g.model) return;
     r.classList.add("acts");
     const b = el("button", "icon us-more");
@@ -963,8 +1203,8 @@ function renderUsage() {
     r.oncontextmenu = (e) => { e.preventDefault(); menu(); };
     r.querySelector(".share").after(b);
   });
-  list("usageAccounts", u.accounts || []);
-  list("usageKeys", u.callerKeys || []);
+  list("usageAccounts", usageSorted(u.accounts || [], "accounts"));
+  list("usageKeys", usageSorted(u.callerKeys || [], "keys"));
   $("#usageNote").textContent = t("Counted from the providers' own usage reports on every call through the gateway · {path}", { path: u.path });
   const clear = $("#usageClear");
   clear.hidden = false;
@@ -1141,10 +1381,10 @@ async function hideUsageAgent(id, hide) {
 //
 // An allowance card can be hidden from the Overview (whqtian_07012 on
 // Discord: StepFun's plan card wanted, its balance card not), from the
-// card's own menu (quotaCardMenus). Only from this page: routing, caps and
-// the counting never hear of it, the tray panel's Allowances tab has its
-// own (Arrange), and a menu bar cell asking for a hidden card shows it
-// until the page is left. Each is kept by its tray card id and its kind
+// card's own menu (quotaCardMenus). Only from what is shown: routing, caps
+// and the counting never hear of it; the tray panel's Allowances tab
+// (panelPageCut) and the menu bar (trayShown, onkashiko on X) leave it out
+// too. Each is kept by its tray card id and its kind
 // (cardHideKey), in magpie's settings (usageCardsHidden), so every window
 // and magpie web agree; one line at the section's end says how many, and
 // has them back.
@@ -1163,7 +1403,52 @@ const cardPeeked = (q) => !!usagePeek && (trayCardID(q) === usagePeek || q.provi
 function overviewCards(list) {
   const hid = hiddenCards();
   list = sharedBalances(list);
-  return hid.size ? list.filter((q) => !hid.has(cardHideKey(q)) || cardPeeked(q)) : list;
+  list = hid.size ? list.filter((q) => !hid.has(cardHideKey(q)) || cardPeeked(q)) : list;
+  return list.map(withoutHiddenRows);
+}
+// A card's quota rows can be hidden one by one (wangshaowei39 on X:
+// Antigravity's Claude & GPT rows unwanted), by provider and row group, a
+// pool's or family's name else the window's (windowGroup), in
+// settings.usageWindowsHidden, every account of the provider alike. Only
+// the Overview's copy loses them; a card is never left with none.
+const windowGroup = (w) => w.pool || w.family || w.name;
+const windowHideKey = (q, g) => q.provider + "|" + g;
+const hiddenRows = () => new Set(state.settings?.usageWindowsHidden || []);
+function withoutHiddenRows(q) {
+  const hid = hiddenRows();
+  if (!hid.size || q.error || !q.windows?.length) return q;
+  const ws = q.windows.filter((w) => !hid.has(windowHideKey(q, windowGroup(w))));
+  return ws.length && ws.length < q.windows.length ? { ...q, windows: ws } : q;
+}
+// hiddenRowList: the rows the Overview leaves out, one a provider and group,
+// those of a card with every row named showing again excepted
+function hiddenRowList() {
+  const hid = hiddenRows(), out = [], seen = new Set();
+  if (!hid.size) return out;
+  for (const q of quotas || []) {
+    if (q.error || !q.windows?.length) continue;
+    const gone = q.windows.filter((w) => hid.has(windowHideKey(q, windowGroup(w))));
+    if (gone.length === q.windows.length) continue;
+    for (const w of gone) {
+      const key = windowHideKey(q, windowGroup(w));
+      if (!seen.has(key)) { seen.add(key); out.push({ key, q, group: windowGroup(w) }); }
+    }
+  }
+  return out;
+}
+// quotaRowMenuItems: Hide for the row under the pointer, else for each row
+// of the card, when it has more than one
+function quotaRowMenuItems(card, target, of) {
+  const q = of[0];
+  const groups = [...new Set((q.windows || []).map(windowGroup))];
+  if (q.error || groups.length < 2) return [];
+  // the row under the pointer, told by its name: a pool's window is named
+  // "Pool · 5 hours", a family's and a model's by their own
+  const row = target?.closest?.(".quota");
+  const name = row && card.contains(row) && row.querySelector(".quota-name")?.textContent;
+  const own = name && [...familyWindows(q.windows), ...q.windows].find((w) => t(w.name) === name);
+  const pick = own ? [windowGroup(own)] : groups;
+  return pick.map((g, i) => ({ name: t("Hide {name} from Overview", { name: t(g) }), literal: true, icon: EYE_OFF, sep: i === 0, run: () => hideQuotaRows([windowHideKey(q, g)], true) }));
 }
 // quotaCardMenus gives a card its menu: a right-click, the keyboard's menu
 // key on its handle, or on a touch screen a long press (iOS Safari sends
@@ -1211,6 +1496,8 @@ function quotaCardMore(card, subs) {
 }
 function quotaCardMenu(target, card, subs, from) {
   let part = [...card.children].find((c) => c.contains(target));
+  // an account's own card in the provider's: its first row names it
+  if (part?.classList.contains("subscription-acct")) part = part.firstElementChild;
   while (part && !part.classList.contains("subscription-account") && !part.classList.contains("subscription-head")) part = part.previousElementSibling;
   const who = part?.classList.contains("subscription-account") && subs.find((q) => trayCardID(q) === part.dataset.card);
   const of = who ? [who] : subs;
@@ -1222,12 +1509,14 @@ function quotaCardMenu(target, card, subs, from) {
   // a card shown though hidden, a menu bar cell having asked for it
   // (usagePeek): its way back, not Hide again
   const hid = hiddenCards(), peeked = of.flatMap(cardHideKeys).filter((k) => hid.has(k));
-  const others = hiddenQuotas().length;
+  const others = hiddenQuotas().length + hiddenRowList().length;
+  const rows = peeked.length ? [] : quotaRowMenuItems(card, target, of);
   openRowMenu(anchor, [
     ...(peeked.length ? [{ name: "Show in Overview", icon: EYE, run: () => hideQuotaCards(peeked, false) }]
       : [{ name: who && subs.length > 1 ? "Hide this account from Overview" : "Hide from Overview", icon: EYE_OFF, run: () => hideQuotaCards(of.flatMap(cardHideKeys), true) }]),
     // a plan's card showing its key's balance: the balance alone
     ...(one?.balanceCard && !peeked.length ? [{ name: "Hide its balance from Overview", icon: EYE_OFF, run: () => hideQuotaCards([one.balanceCard + "|balance"], true) }] : []),
+    ...rows,
     // the ones hidden already, from the menu that hid them
     ...(others ? [{ name: t("Show {n} Hidden", { n: others }), literal: true, icon: EYE, sep: true, run: (e) => openHidden(e, "quotaHid", () => { quotaHidOpen = true; renderQuotaHid(); }) }] : []),
   ]);
@@ -1240,8 +1529,10 @@ function hiddenQuotas() {
 // renderQuotaHid: the line under the cards saying how many are hidden,
 // opening them, each with Unhide, and Show all
 function renderQuotaHid() {
+  renderQuotaOff();
   const hb = $("#quotaHid");
-  const hidden = hiddenQuotas();
+  const cards = hiddenQuotas(), rowList = hiddenRowList();
+  const hidden = [...cards, ...rowList];
   hb.hidden = !hidden.length;
   if (!hidden.length) { quotaHidOpen = false; return; }
   const line = hb.querySelector(".us-hidline"), hl = hb.querySelector(".list");
@@ -1253,7 +1544,7 @@ function renderQuotaHid() {
   }
   all.textContent = t("Show all");
   all.hidden = !quotaHidOpen || hidden.length < 2;
-  all.onclick = () => hideQuotaCards(hidden.map(cardHideKey), false);
+  all.onclick = () => { if (cards.length) hideQuotaCards(cards.map(cardHideKey), false); if (rowList.length) hideQuotaRows(rowList.map((r) => r.key), false); };
   line.replaceChildren(el("span", "", t("{n} hidden", { n: hidden.length })), svg(CHEV, 11, 1.6));
   line.title = t("Hidden from the Overview only: they are still used and counted. Click to see them.");
   line.setAttribute("aria-expanded", String(quotaHidOpen));
@@ -1261,7 +1552,7 @@ function renderQuotaHid() {
   hl.hidden = !quotaHidOpen;
   hl.replaceChildren();
   if (!quotaHidOpen) return;
-  for (const q of hidden) {
+  for (const q of cards) {
     const r = el("div", "row stat hid acts");
     r.dataset.id = cardHideKey(q);
     r.append(icon(q.icon));
@@ -1272,6 +1563,142 @@ function renderQuotaHid() {
     b.onclick = (e) => { e.stopPropagation(); hideQuotaCards([cardHideKey(q)], false); };
     r.append(who, b);
     hl.append(r);
+  }
+  for (const { key, q, group } of rowList) {
+    const r = el("div", "row stat hid acts");
+    r.dataset.id = key;
+    r.append(icon(q.icon));
+    const who = el("div", "who");
+    who.append(el("div", "name", quotaName(q)), el("div", "sub", t(group)));
+    const b = el("button", "text us-unhide", t("Unhide"));
+    b.type = "button";
+    b.onclick = (e) => { e.stopPropagation(); hideQuotaRows([key], false); };
+    r.append(who, b);
+    hl.append(r);
+  }
+}
+// The switched-off providers' accounts a daily check-in reaches, in a
+// folded line at the cards' end (wxkwxk666 on X: 禁用的供应商也要能签到):
+// the page leaves their cards out and the daily check-in leaves them
+// alone, so each is checked in here by hand, which switches nothing on.
+// Asked again whenever the cards come in.
+let offCards = [], offFor = null, offOpen = false, ciAllAt = "";
+function loadOffCards() {
+  return api("usage/checkins/off").then((qs) => { offCards = Array.isArray(qs) ? qs : []; renderQuotaOff(); }, () => {});
+}
+// offSay: an off account's check-in, never saying the daily check-in
+// will ask again, which it doesn't for a switched-off provider
+function offSay(q) {
+  if (!checkinDue({ ...q, checkinOff: false })) return checkinRow(q, false, offCards);
+  const r = q.checkin, bad = r?.day === wbToday() && r.outcome === "failed";
+  const row = el("div", "wb-checkin"), say = el("span", "ci-say");
+  say.append(el("i", "ci-dot" + (bad ? " bad" : "")), el("span", "", t(bad ? "Check-in failed" : "Not checked in yet today") + (bad && r.msg ? " · " + r.msg : "")));
+  row.append(say);
+  return row;
+}
+function renderQuotaOff() {
+  if (quotas && quotas !== offFor) { offFor = quotas; loadOffCards(); }
+  const hb = $("#quotaOff");
+  hb.hidden = !offCards.length;
+  if (offCards.length) $("#quotaHead").hidden = false;
+  renderCheckinAll();
+  if (!offCards.length) return;
+  const line = hb.querySelector(".us-hidline"), hl = hb.querySelector(".list");
+  line.replaceChildren(el("span", "", t("Switched off · {n}", { n: offCards.length })), svg(CHEV, 11, 1.6));
+  line.title = t("Providers you switched off: magpie doesn't check them in by itself. Checking in here leaves them off.");
+  line.setAttribute("aria-expanded", String(offOpen));
+  line.onclick = () => { offOpen = !offOpen; renderQuotaOff(); };
+  hl.hidden = !offOpen;
+  hl.replaceChildren();
+  if (!offOpen) return;
+  for (const q of offCards) {
+    const r = el("div", "row stat acts us-offrow");
+    r.dataset.key = q.checkinKey;
+    r.append(icon(q.icon));
+    const who = el("div", "who");
+    who.append(el("div", "name", quotaName(q)), el("div", "sub", q.alias || q.user || ""), offSay(q));
+    r.append(who);
+    if (checkinDue({ ...q, checkinOff: false })) {
+      const b = el("button", "text ci-acct", t("Check in"));
+      b.type = "button";
+      b.onclick = async (e) => {
+        e.stopPropagation();
+        try { window.ciNowSend || await import(new URL("checkinnow.js", document.baseURI).href); } catch (err) { return statusErr(err); }
+        ciNowSend({ key: q.checkinKey, user: q.user }, q.checkinBy || "", (o) => {
+          b.disabled = !!o.busy;
+          b.classList.toggle("busy", !!o.busy);
+          if (!o.busy) loadOffCards();
+        });
+      };
+      r.append(b);
+    }
+    hl.append(r);
+  }
+}
+// renderCheckinAll: Check in all at the allowances' head, for every
+// account any check-in reaches, a switched-off provider's too; it shows
+// how far a press has got
+function renderCheckinAll() {
+  const b = $("#usageCheckinAll");
+  b.hidden = ![...(quotas || []), ...offCards].some((q) => q.checkins && !q.from);
+  b.textContent = ciAllAt || t("Check in all");
+  b.disabled = !!ciAllAt;
+  b.classList.toggle("busy", !!ciAllAt);
+  b.title = t("Check in every account not checked in today, those of switched-off providers too; no provider is switched on");
+  b.onclick = (e) => { e.stopPropagation(); checkinAll(); };
+}
+// checkinAll checks in, three at a time, each account not checked in
+// today, once each, leaving every switch as it is; what came of it is
+// said once all have answered
+async function checkinAll() {
+  if (ciAllAt) return;
+  const seen = new Set(), due = [];
+  for (const q of [...(quotas || []), ...offCards]) {
+    const k = (q.checkinBy || "") + "\0" + q.checkinKey;
+    if (q.from || !q.checkinKey || seen.has(k) || !checkinDue({ ...q, checkinOff: false })) continue;
+    seen.add(k);
+    due.push(q);
+  }
+  if (!due.length) return status(t("Every account is checked in today"), "ok");
+  const rs = [];
+  let n = 0;
+  const step = () => { ciAllAt = t("Checking in {i}/{n}…", { i: rs.length, n: due.length }); renderCheckinAll(); };
+  step();
+  const next = async () => {
+    while (n < due.length) {
+      const q = due[n++];
+      try { rs.push(await api("usage/checkin-account", { by: q.checkinBy || "", key: q.checkinKey })); } catch { rs.push({ outcome: "failed" }); }
+      step();
+    }
+  };
+  await Promise.all([next(), next(), next()]);
+  ciAllAt = "";
+  const said = checkinPressSaid(rs);
+  status(said.text, said.bad ? "err" : "ok");
+  renderCheckinAll();
+  loadQuotas();
+  loadOffCards();
+}
+// hideQuotaRows hides a card's rows from the Overview, or has them back:
+// drawn at once, put back if the save fails
+async function hideQuotaRows(keys, hide) {
+  const prev = state.settings || {};
+  const cur = (prev.usageWindowsHidden || []).filter((k) => !keys.includes(k));
+  const windowsHidden = hide ? [...cur, ...keys] : cur;
+  state.settings = { ...prev, usageWindowsHidden: windowsHidden };
+  const again = () => {
+    renderQuotas();
+    const to = $("#quotaHid .us-hidline");
+    (hide && to && !to.closest("[hidden]") ? to : null)?.focus({ preventScroll: true });
+  };
+  again();
+  try {
+    const s = await api("usage/arrange", { windowsHidden });
+    state.settings = { ...state.settings, usageWindowsHidden: s.usageWindowsHidden || [] };
+  } catch (e) {
+    state.settings = prev;
+    again();
+    status(e.message, "err");
   }
 }
 // hideQuotaCards hides cards from the Overview, or has them back: drawn at
@@ -1716,7 +2143,7 @@ function ledDetail(r) {
   if (r.in || r.out || r.cache_read || r.cache_write || !ledFailed_(r)) {
     add("Tokens", t("{i} in · {o} out · {r} cache read · {w} cache creation", { i: ledNum(r.in || 0), o: ledNum(r.out || 0), r: ledNum(r.cache_read || 0), w: ledNum(r.cache_write || 0) }) + cacheTTLs(r, ledNum) + (r.cache_unknown ? " · " + t("The vendor doesn't count the cache") : ""), "led-tokens");
   }
-  if (r.priced) add("Cost", "≈" + fmtCost({ cost: r.cost, unpriced: 0 }));
+  if (r.priced) add("Cost", "≈" + fmtCost({ cost: r.cost, unpriced: 0 }, r.provider));
   if (r.credits != null) add("Credits", ledCredits({ credits: r.credits, credited: 1 }).textContent);
   if (ledRowSpeed(r)) add("Speed", t("{n} tok/s", { n: ledNum(Math.round(ledRowSpeed(r))) }));
   else if (ledFloorSpeed(r)) add("Speed", "≥" + t("{n} tok/s", { n: ledNum(Math.round(ledFloorSpeed(r))) }));
@@ -1724,6 +2151,11 @@ function ledDetail(r) {
   // DeepSeek's image files kept out of it (#5407); a row from before has
   // none of them, and says nothing
   if (r.up_bytes > 0) add("Sent upstream", fmtBytes(r.up_bytes));
+  // and what it was made of, for a row whose body magpie read
+  if (r.up_bytes > 0 && r.up_parts) {
+    const p = ledUpParts({ up_bytes: r.up_bytes, up_measured: r.up_bytes, up_system: r.up_parts.system, up_tools: r.up_parts.tools, up_images: r.up_parts.images });
+    add("Made of", LED_UP_PARTS.filter(([k]) => p[k] > 0).map(([k, label]) => t(label) + " " + fmtBytes(p[k])).join(" · "));
+  }
   if (r.down_bytes > 0) add("Received", fmtBytes(r.down_bytes));
   // and how many images they were, for a row that kept it (matrix0487)
   if (r.image_files_saved > 0) add("Saved by image files", r.image_files > 0 ? t(r.image_files === 1 ? "{size} ({n} image)" : "{size} ({n} images)", { size: fmtBytes(r.image_files_saved), n: ledNum(r.image_files) }) : fmtBytes(r.image_files_saved));
@@ -1986,11 +2418,114 @@ function drawLedSpeed(l) {
   box.append(head, scroll);
 }
 
+// ---- what the bytes sent upstream were made of (theforeveriris on X:
+// "8.6 GB up from plain-text projects?"). Every request sends the whole
+// conversation again, so a request's bytes are about its context; the
+// card says so, splits the bytes of the requests whose body magpie read
+// into the system prompt, the tools' definitions, images and the
+// conversation, and lists them by agent and by model, each with its bytes
+// a request. Opened from the ↑ on the Requests card, kept open as left.
+let ledUpOpen = false;
+try { ledUpOpen = localStorage.getItem("magpie.ledUp") === "1"; } catch {}
+const LED_UP_PARTS = [
+  ["conv", "Conversation", "c1"],
+  ["tools", "Tool definitions", "c2"],
+  ["system", "System prompt", "c3"],
+  ["images", "Images", "c4"],
+  ["rest", "Not measured", ""],
+];
+function ledUpParts(x) {
+  const sys = x.up_system || 0, tools = x.up_tools || 0, images = x.up_images || 0;
+  const measured = Math.min(x.up_measured || 0, x.up_bytes || 0);
+  return { conv: Math.max(0, measured - sys - tools - images), tools, system: sys, images, rest: Math.max(0, (x.up_bytes || 0) - measured) };
+}
+const ledUpEach = (x) => (x.up_calls > 0 ? (x.up_bytes || 0) / x.up_calls : 0);
+function drawLedUp(l, entering) {
+  const box = $("#ledUp");
+  box.hidden = !ledUpOpen || !(l.up_bytes > 0);
+  box.replaceChildren();
+  if (box.hidden) return;
+  const head = el("div", "led-bar");
+  head.append(el("b", "led-spd-t", t("Sent upstream")), el("span", "grow"));
+  const each = ledUpEach(l);
+  if (each) head.append(el("span", "led-up-each", t("≈ {size} a request", { size: fmtBytes(each) })));
+  const close = el("button", "text led-up-x", "×");
+  close.type = "button";
+  close.setAttribute("aria-label", t("Close"));
+  close.onclick = () => ledUpToggle(false);
+  head.append(close);
+  const note = el("p", "led-up-note", t("Each request sends the whole conversation again, with the system prompt and the tools' definitions, so a request's bytes grow with its context."));
+  const parts = ledUpParts(l);
+  const bar = el("div", "led-up-bar");
+  bar.setAttribute("role", "img");
+  const legend = el("div", "led-up-legend");
+  const said = [];
+  for (const [key, label, c] of LED_UP_PARTS) {
+    const n = parts[key];
+    if (!(n > 0)) continue;
+    const share = n / l.up_bytes;
+    const seg = el("i", "led-up-seg " + key);
+    if (c) seg.style.background = "var(--" + c + ")";
+    seg.style.flexGrow = String(share);
+    seg.title = t(label) + ": " + fmtBytes(n) + " (" + (100 * share).toFixed(1) + "%)";
+    bar.append(seg);
+    const item = el("span", "led-up-key " + key);
+    const dot = el("i", "dot");
+    if (c) dot.style.background = "var(--" + c + ")";
+    item.append(dot, el("span", "", t(label)), el("b", "", fmtBytes(n)), el("span", "pc", (100 * share < 1 ? "<1" : Math.round(100 * share)) + "%"));
+    if (key === "rest") item.title = t("Requests whose body magpie didn't read: a Responses WebSocket's turns, and bodies it couldn't take apart");
+    legend.append(item);
+    said.push(t(label) + " " + fmtBytes(n));
+  }
+  bar.setAttribute("aria-label", said.join(", "));
+  const lists = el("div", "led-up-lists");
+  for (const [dim, title] of [["agent", "Agent"], ["model", "Model"]]) {
+    const rows = (l.by?.[dim] || []).filter((s) => s.up_bytes > 0).sort((a, b) => b.up_bytes - a.up_bytes);
+    if (!rows.length) continue;
+    const table = el("table", "led-spd led-up-by");
+    const hr = el("tr");
+    hr.append(el("th", "nm", t(title)), el("th", "n", t("Bytes sent")), el("th", "n", t("Per request")));
+    const thead = el("thead");
+    thead.append(hr);
+    const body = el("tbody");
+    const top = rows[0].up_bytes;
+    for (const s of rows.slice(0, 8)) {
+      const tr = el("tr");
+      const nm = el("td", "nm");
+      const name = s.name || s.id || "—";
+      nm.append(el("span", "", dim === "agent" ? t(name) : name));
+      nm.title = name;
+      const meter = el("i", "led-up-meter");
+      meter.style.width = (100 * s.up_bytes / top).toFixed(1) + "%";
+      nm.append(meter);
+      tr.append(nm, el("td", "", fmtBytes(s.up_bytes)), el("td", ledUpEach(s) ? "" : "faint", ledUpEach(s) ? fmtBytes(ledUpEach(s)) : "—"));
+      body.append(tr);
+    }
+    table.append(thead, body);
+    lists.append(table);
+  }
+  box.append(head, note, bar, legend, lists);
+  if (entering && box.animate) {
+    const still = calm();
+    box.animate([{ opacity: 0, transform: still ? "none" : "translateY(-4px)" }, { opacity: 1, transform: "none" }], { duration: 200, easing: "cubic-bezier(.23, 1, .32, 1)" });
+  }
+}
+let ledUpLast = null;
+function ledUpToggle(open) {
+  ledUpOpen = open;
+  try { localStorage.setItem("magpie.ledUp", open ? "1" : "0"); } catch {}
+  for (const b of document.querySelectorAll("#ledKpi .led-up-open")) b.setAttribute("aria-expanded", String(open));
+  if (ledUpLast) drawLedUp(ledUpLast, open);
+  if (!open) $("#ledKpi .led-up-open")?.focus({ preventScroll: true });
+}
+
 function renderLedgerDash(l) {
   const dash = $("#ledDash");
   dash.hidden = !l.total && !l.day;
   if (dash.hidden) return;
   drawLedSpeed(l);
+  ledUpLast = l;
+  drawLedUp(l);
   const total = allTokens(l);
   // of the calls whose vendor counted the cache: none when no call's was (#3464)
   const rate = cacheHitOf(l);
@@ -2032,7 +2567,7 @@ function renderLedgerDash(l) {
   // an error: not those their agent canceled, which are counted apart
   const settled = l.calls - (l.canceled || 0);
   block("Requests", fmtN(l.calls), l.errors
-    ? jumps(jump(t("{n} failed", { n: fmtN(l.errors) }), "failed", t("Show only the failed requests")), " · " + t("{p} succeeded", { p: (100 * (1 - l.errors / settled)).toFixed(1) + "%" }))
+    ? jumps(jump(t("{n} failed", { n: fmtN(l.errors) }), "failed", t("Show the requests a try failed on, with those a later try answered")), " · " + t("{p} succeeded", { p: (100 * (1 - l.errors / settled)).toFixed(1) + "%" }))
     : line(t("none failed")), "", exactN(l.calls));
   if (l.retried) strip.lastChild.append(jumps(jump(t("{n} answered on a retry", { n: fmtN(l.retried) }), "retried", t("Show only the requests answered on a retry"))));
   if (l.canceled) {
@@ -2048,11 +2583,22 @@ function renderLedgerDash(l) {
     const io = line(...usageParts(["↑ " + fmtBytes(l.up_bytes || 0), "↓ " + fmtBytes(l.down_bytes || 0), ...(l.image_files_saved > 0 ? [t("{n} saved by image files", { n: fmtBytes(l.image_files_saved) })] : [])]));
     io.classList.add("parts", "led-io");
     io.title = t("Sent upstream") + ": " + ledNum(l.up_bytes || 0) + " B\n" + t("Received") + ": " + ledNum(l.down_bytes || 0) + " B";
+    // the ↑ opens what those bytes were made of (drawLedUp)
+    if (l.up_bytes > 0) {
+      const up = io.firstElementChild;
+      const b = el("button", "led-jump led-up-open", up.textContent);
+      b.type = "button";
+      b.title = t("What the bytes sent upstream were made of");
+      b.setAttribute("aria-controls", "ledUp");
+      b.setAttribute("aria-expanded", String(ledUpOpen));
+      b.onclick = () => ledUpToggle(!ledUpOpen);
+      up.replaceChildren(b);
+    }
     strip.lastChild.append(io);
   }
   // and how fast it flows now, while requests are in flight (ledFlow)
   strip.lastChild.append(ledFlowLine());
-  const c = fmtCost(l);
+  const c = fmtCost(l, l.provider);
   // the count in the words the quick panel uses too, the whole sentence on
   // hover (tenacious_eagle on Discord)
   block("Cost", c ? "≈" + c : "—", line(l.unpriced ? unpricedCalls(l.unpriced) : t("effective prices")), c ? "cost" : "", l.unpriced ? unpricedCallsWhy(l.unpriced) : "");
@@ -2332,7 +2878,8 @@ function ledHeatTip(x) {
     return tip;
   }
   const parts = [t("{n} tokens", { n: fmtN(x.tokens) }), t(x.calls === 1 ? "{n} request" : "{n} requests", { n: ledNum(x.calls) })];
-  const c = fmtCost(x);
+  // of one provider's calls, while the filters keep only its
+  const c = fmtCost(x, new URLSearchParams(ledHeat?.want).get("provider") || "");
   if (c) parts.push("≈" + c);
   const order = { tokens: 0, calls: 1, cost: 2 }[ledHeatMetric];
   if (order && parts[order]) parts.unshift(...parts.splice(order, 1)); // the metric shown first
@@ -2797,7 +3344,7 @@ function renderLedger() {
   renderPeriod();
   renderArchive();
 
-  costHead(fmtCost(l), l.unpriced ? unpricedCalls(l.unpriced) : "", unpricedCallsWhy(l.unpriced));
+  costHead(fmtCost(l, l.provider), l.unpriced ? unpricedCalls(l.unpriced) : "", unpricedCallsWhy(l.unpriced));
 
   // the filters: choices seen in the period, and failures alone
   sessPick($("#ledPurpose"), "All purposes", ledPurpose, purposeOptions(l.purposes || [], ledPurpose), "Purpose", (v) => { ledPurpose = v; ledOwn("purpose"); ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
@@ -2821,6 +3368,9 @@ function renderLedger() {
   for (const [on, name] of [["", "All"], ["failed", "Failed"], ["retried", "Retried"]]) {
     const b = el("button", "opt" + (on === shown ? " on" : ""), t(name));
     if (on === "retried") b.title = t("Show only the requests answered on a retry");
+    // a request a later try answered is still one a try failed on, as
+    // Routing shows it (maohy915 on X)
+    if (on === "failed") b.title = t("Show the requests a try failed on, with those a later try answered");
     b.onclick = () => {
       if (on === ledStatusOf()) return;
       for (const x of seg.querySelectorAll(".opt")) x.classList.toggle("on", x === b);
@@ -2928,7 +3478,7 @@ function renderLedger() {
     wrap.classList.add("none");
     const filtered = ledPurpose || ledDay || ledRoute || ledAgent || ledProvider || ledAccount || ledComputer || ledCallerKey || ledModel || ledVia || ledFailed || ledRetried || ledQuery.trim();
     const none = noCallsIn(period);
-    wrap.replaceChildren(el("div", "led-none", filtered ? t("No requests match these filters.") : t(none)));
+    wrap.replaceChildren(el("div", "led-none", filtered ? t("No requests match these filters.") : t(none, { n: periodHours(period) })));
     if (!filtered) readsNote(wrap.firstChild);
     ledFit();
     ledHScroll();
@@ -3071,7 +3621,7 @@ function renderLedger() {
     // (jiabubu on Discord): in place of the dash a plan's model has for a
     // price, or under the price; a reply that said none says nothing
     const credits = r.credits != null ? ledCredits({ credits: r.credits, credited: 1 }).textContent : "";
-    const cost = td(r.priced ? "≈" + fmtCost({ cost: r.cost, unpriced: 0 }) : credits || "—", "n cost" + (r.priced || credits ? "" : " faint"), r.priced ? (r.pricing_model ? t("API price reference") + ": " + r.pricing_model : "") : credits ? t("What it cost in its plan's credits, as the reply said") : t("No known price for this model"));
+    const cost = td(r.priced ? "≈" + fmtCost({ cost: r.cost, unpriced: 0 }, r.provider) : credits || "—", "n cost" + (r.priced || credits ? "" : " faint"), r.priced ? (r.pricing_model ? t("API price reference") + ": " + r.pricing_model : "") : credits ? t("What it cost in its plan's credits, as the reply said") : t("No known price for this model"));
     if (r.priced && r.pricing_model) {
       const reference = el("div", "price-reference", t("Price reference: {model}", { model: r.pricing_model }));
       reference.title = t("Model used for the API price estimate; this is not an observed model forwarding event.");
@@ -4785,7 +5335,7 @@ if (mode === "window" && params.get("view") === "usage") {
   if (tab === "requests" || tab === "usage") usageTab = tab;
   // a total in the menu bar opens the Overview at its period
   const per = params.get("period");
-  if (PERIODS.some(([id]) => id === per)) period = per;
+  if (keptPeriod(per)) period = per;
   quotaFocus = usageTab === "usage" ? (params.get("card") || params.get("provider") || "") : "";
   usagePeek = quotaFocus;
   quotaFocusUntil = performance.now() + 5000;
@@ -4800,4 +5350,32 @@ if (mode === "window" && params.get("view") === "usage") {
   const u = new URL(location.href);
   for (const k of ["tab", "provider", "agent", "computer", "card", "purpose", "via", "period"]) u.searchParams.delete(k);
   history.replaceState(null, "", u);
+}
+
+// The tray panel's Allowances tab leaves out what this page hides
+// (onkashiko on X): cards are the ones it draws from list (the quotas as
+// read), in this page's order, the cards hidden left out before a key's
+// balance is put on its plan's card (keyCards), as the Overview has it, so
+// a plan hidden leaves its balance and a balance hidden leaves its plan's
+// card without it, and their hidden rows gone, but for what peek asks for;
+// gone says whether this page hides a vendor's every card, which the
+// panel's Arrange calls hidden, for list as read or as keyCards puts it;
+// away is the vendors the panel leaves out, those and the ones its own
+// Arrange hid (hidden). Here, not in the core, as page.js is in every
+// window.
+function panelPageCut(list, peek = () => false, hidden = new Set()) {
+  const hid = hiddenCards();
+  list = sharedBalances(list || []).filter((q) => q.balance || q.error || q.windows?.length);
+  const gone = (p) => list.every((q) => q.provider !== p || cardHideKeys(q).every((k) => hid.has(k)));
+  const kept = list.filter((q) => !hid.has(cardHideKey(q)) || peek(q));
+  const cards = byUsageOrder(keyCards(kept)).map(withoutHiddenRows);
+  const peeked = (p) => list.some((q) => q.provider === p && peek(q));
+  const away = new Set(list.map((q) => q.provider).filter((p) => (hidden.has(p) || gone(p)) && !peeked(p)));
+  return { gone, away, cards };
+}
+
+// usageCardsHidden with a vendor's every card shown again, for the panel's
+// Arrange showing one this page hid
+function cardsShownFor(p) {
+  return (state.settings.usageCardsHidden || []).filter((k) => k.split("|")[0] !== p);
 }

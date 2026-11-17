@@ -78,6 +78,24 @@ func dropDerived() int {
 	heatBefores.by = nil
 	heatBefores.Unlock()
 	n += dropEffortPeriods()
+	n += dropDigestTurns()
+	return n
+}
+
+// dropDigestTurns lets go of the serials sourceDigest met this turn and
+// the one before (577 KB of a real history's idle heap). They only order
+// which digests heat-digests.bin keeps first when there are more than it
+// holds; what was made is written out before they go.
+func dropDigestTurns() int {
+	sourceDigestsSave()
+	d := &sourceDigests
+	d.Lock()
+	defer d.Unlock()
+	if len(d.made) != 0 { // made meanwhile: written with them next time
+		return 0
+	}
+	n := len(d.by) + len(d.last)
+	d.by, d.last = nil, nil
 	return n
 }
 
@@ -103,4 +121,28 @@ func dropEffortPeriods() int {
 		}
 	}
 	return n
+}
+
+// ForgetPages lets go at once of what the Requests page and its heatmap
+// keep for their next ask: the chunks (as requestForget does) and what is
+// kept of each by its serial (as derivedIdle does). The app calls it once
+// its page has gone away, closed or hidden, so that what a visit read
+// goes in seconds, not the 7 minutes the idle timers take; the next visit
+// reads the chunks back from the file of them. Says whether anything went.
+func ForgetPages() bool {
+	idx := &requestCache
+	idx.Lock()
+	n := len(idx.chunks)
+	if idx.idle != nil {
+		idx.idle.Stop()
+		idx.idle = nil
+	}
+	if idx.forget != nil {
+		idx.forget.Stop()
+		idx.forget = nil
+	}
+	idx.trim(0)
+	idx.Unlock()
+	n += dropDerived()
+	return n > 0
 }

@@ -17,8 +17,8 @@ import (
 	"io"
 	"io/fs"
 	"maps"
-	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -35,6 +35,8 @@ import (
 	"github.com/yetone/magpie/internal/autostart"
 	"github.com/yetone/magpie/internal/bark"
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/codexcat"
+	"github.com/yetone/magpie/internal/desktopiso"
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/fonts"
 	"github.com/yetone/magpie/internal/fx"
@@ -197,6 +199,10 @@ type agentJSON struct {
 	Icon   string      `json:"icon"`
 	Path   string      `json:"path"`
 	Fields []fieldJSON `json:"fields"`
+	// Own: the user's own settings of the agent's (agent.Field.Own,
+	// Claude Code's permission mode), apart from Fields so no picker on
+	// its row draws them: agentcompact.js folds them under Advanced
+	Own []fieldJSON `json:"own,omitempty"`
 	// Drift: its config no longer does what magpie set, and how to set it again
 	Drift *agent.Drift `json:"drift,omitempty"`
 	// Wired: magpie is in its config, which its menu's Disconnect takes out
@@ -235,6 +241,9 @@ type agentJSON struct {
 	// Isolated: Claude Desktop's Claude Magpie app (#5671), only where it
 	// can be (macOS): whether it is on, and the app
 	Isolated *agent.DesktopIsolated `json:"isolated,omitempty"`
+	// TwinCode: this Claude Code folder is Claude Magpie's Code tab's,
+	// which is on magpie through Claude Magpie (agent.DesktopTwinCode)
+	TwinCode bool `json:"twinCode,omitempty"`
 	// Telemetry: the agent's own telemetry to its vendor, where magpie
 	// knows the switch for it (agent/telemetry.go)
 	Telemetry *agent.TelemetryState `json:"telemetry,omitempty"`
@@ -265,6 +274,9 @@ type agentJSON struct {
 	// copies; Terminal: and opens in a terminal, this system having one
 	Command  string `json:"command,omitempty"`
 	Terminal bool   `json:"terminal,omitempty"`
+	// OpenApp: its row menu opens the desktop app, not only a terminal
+	// (Codex, by the setting codexOpen, Yink88564391 on X)
+	OpenApp bool `json:"openApp,omitempty"`
 }
 
 // clientJSON is an agent, or another client the gateway knows, as a
@@ -384,6 +396,19 @@ type fxJSON struct {
 	Rate  float64    `json:"rate"`
 	At    *time.Time `json:"at,omitempty"`
 	Stale bool       `json:"stale"`
+	// Yuan, with the currency "provider", are the providers whose costs
+	// are shown in yuan, as they sell in it (provider.PricesInYuan)
+	Yuan []string `json:"yuan,omitempty"`
+}
+
+// costFX is currentFX with, for the currency "provider", which providers'
+// costs are in yuan.
+func costFX(s settings.Settings) fxJSON {
+	out := currentFX()
+	if s.Currency == settings.CurrencyByProvider {
+		out.Yuan = provider.YuanPriced()
+	}
+	return out
 }
 
 // currentFX is the rate known now, never waited for: a stale one is asked
@@ -829,7 +854,7 @@ func codexWindowUnder(st settings.Settings, model string) *codexRunWindow {
 	if !ok && strings.HasPrefix(model, provider.GroupPrefix) {
 		e, ok = provider.EntryOf(model)
 	}
-	if !ok || e.Context <= 0 || provider.CompactFor(st, e, provider.GroupFinder()) > 0 || st.Working(e.Context) < e.Context {
+	if !ok || e.Context <= 0 || provider.CompactFor(st, e, provider.GroupFinder()) > 0 || codexcat.Working(st, e.ID, e.Context) < e.Context {
 		return nil
 	}
 	return &codexRunWindow{Model: model, Window: e.Context, Size: tokensSize(e.Context)}
@@ -877,7 +902,7 @@ func settingsState() settingsJSON {
 		}
 		s.TerminalDefault = found.Default
 	}
-	s.FX = currentFX()
+	s.FX = costFX(s.Settings)
 	if (s.UsageAlert > 0 || s.BalanceAlert > 0 || s.ResetReminder > 0 || s.TurnDoneAlert > 0 || s.MaskAlert) && notifyProblem != nil {
 		s.NotifyProblem = notifyProblem()
 	}
@@ -1034,19 +1059,29 @@ var onDock func(settings.Settings)
 // assetTypes are the page's own files' types. The file server takes them
 // from Windows' registry, which another program may have changed — an SVG
 // served as something else draws no icon.
-var assetTypes = map[string]string{".svg": "image/svg+xml", ".png": "image/png", ".css": "text/css; charset=utf-8",
-	".js": "text/javascript; charset=utf-8", ".html": "text/html; charset=utf-8"}
+var assetTypes = map[string]string{
+	".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+	".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+	".json": "application/json", ".svg": "image/svg+xml", ".png": "image/png",
+	".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
+	".ico": "image/x-icon", ".webm": "video/webm", ".mp4": "video/mp4",
+	".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf",
+	".txt": "text/plain; charset=utf-8", ".map": "application/json", ".wasm": "application/wasm",
+}
 
-// addAssetTypes is called by Handler, not init: the mime package reads
-// and parses the system's whole type table (/etc/apache2/mime.types,
-// ~18,000 allocations) the first time a type is added, and a launch that
-// serves no page (`magpie statusline` on every Claude Code message) never
-// needs it.
-var addAssetTypes = sync.OnceFunc(registerAssetTypes)
+// assetType is the type a file of magpie's own (or a plugin page's) is
+// served as, from assetTypes: "" for one it doesn't name.
+func assetType(name string) string { return assetTypes[strings.ToLower(path.Ext(name))] }
 
-func registerAssetTypes() {
-	for ext, t := range assetTypes {
-		mime.AddExtensionType(ext, t)
+// servedAs sets name's type on rw before http.ServeContent looks at the name.
+// Asked for a type, the mime package reads and parses the system's whole
+// table (/etc/apache2/mime.types, ~18,000 allocations) and keeps it for
+// good: ~2 MB of an idle tray magpie's live heap, from its first page.
+// And the system's table (Windows' registry, which another program may
+// have changed) never decides how the page's own files are read.
+func servedAs(rw http.ResponseWriter, name string) {
+	if t := assetType(name); t != "" && rw.Header().Get("Content-Type") == "" {
+		rw.Header().Set("Content-Type", t)
 	}
 }
 
@@ -1071,15 +1106,12 @@ func revalidated(next http.Handler) http.Handler {
 		if name == "" {
 			name = "index.html"
 		}
-		b, err := fs.ReadFile(staticFS(), name)
-		if err != nil {
+		servedAs(rw, name)
+		sum, page, ok := staticSum(name, r.URL.Path == "/")
+		if !ok {
 			next.ServeHTTP(rw, r)
 			return
 		}
-		if r.URL.Path == "/" {
-			b = versionedPage(b)
-		}
-		sum := sha256.Sum256(b)
 		rw.Header().Set("ETag", `"`+hex.EncodeToString(sum[:12])+`"`)
 		rw.Header().Set("Cache-Control", "no-cache")
 		// a file asked for by the address the page names it by, its
@@ -1092,7 +1124,7 @@ func revalidated(next http.Handler) http.Handler {
 		}
 		if r.URL.Path == "/" {
 			rw.Header().Set("Content-Type", "text/html; charset=utf-8")
-			http.ServeContent(rw, r, "index.html", time.Time{}, bytes.NewReader(b))
+			http.ServeContent(rw, r, "index.html", time.Time{}, bytes.NewReader(page))
 			return
 		}
 		next.ServeHTTP(rw, r)
@@ -1106,14 +1138,53 @@ var pageFile = lazyre.New(`(src|href)="([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\.(?
 // versionedPage is the page with each of its own scripts and stylesheets
 // named with its content's hash; one not among the page's files (boot.js,
 // which the API writes) keeps its name.
+// staticSum is the sha256 of a static file, or with root of the page as
+// versionedPage names its files, and that page: made once in a build,
+// whose files never change (staticFixed). Each load read every file
+// whole and hashed it again, the page's scripts twice, ~17 MB of a page
+// load with app.js alone over a megabyte (#2278). ok is false for a file
+// that can't be read, which isn't kept.
+func staticSum(name string, root bool) (sum [32]byte, page []byte, ok bool) {
+	key := name
+	if root {
+		key = "/"
+	}
+	if staticFixed {
+		if v, hit := staticSums.Load(key); hit {
+			a := v.(staticFile)
+			return a.sum, a.page, true
+		}
+	}
+	b, err := fs.ReadFile(staticFS(), name)
+	if err != nil {
+		return sum, nil, false
+	}
+	if root {
+		b = versionedPage(b)
+		page = b
+	}
+	sum = sha256.Sum256(b)
+	if staticFixed {
+		staticSums.Store(key, staticFile{sum, page})
+	}
+	return sum, page, true
+}
+
+// staticSums are staticSum's answers by name ("/" for the page).
+var staticSums sync.Map
+
+type staticFile struct {
+	sum  [32]byte
+	page []byte
+}
+
 func versionedPage(page []byte) []byte {
 	return pageFile.ReplaceAllFunc(page, func(m []byte) []byte {
 		g := pageFile.FindSubmatch(m)
-		b, err := fs.ReadFile(staticFS(), string(g[2]))
-		if err != nil {
+		sum, _, ok := staticSum(string(g[2]), false)
+		if !ok {
 			return m
 		}
-		sum := sha256.Sum256(b)
 		return []byte(fmt.Sprintf(`%s="%s?v=%s"`, g[1], g[2], hex.EncodeToString(sum[:6])))
 	})
 }
@@ -1122,7 +1193,6 @@ func versionedPage(page []byte) []byte {
 // gw is the gateway this process serves, or nil when another magpie has it
 // (for now: see startBackend).
 func Handler(w Windows, gw *gateway.Server) http.Handler {
-	addAssetTypes()
 	if gw != nil {
 		served.Store(gw)
 	}
@@ -1132,10 +1202,23 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		webPage.Store(true)
 	}
 	mux := http.NewServeMux()
-	mux.Handle("/", devPage(revalidated(http.FileServer(http.FS(staticFS())))))
+	page := devPage(revalidated(http.FileServer(http.FS(staticFS()))))
+	mux.Handle("/", http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if warmsSessions(r) {
+			warmSessions()
+		}
+		page.ServeHTTP(rw, r)
+	}))
 	devRoutes(mux)
 	pluginPageRoutes(mux, isWeb(w))
 	feedbackRoutes(mux)
+	appearanceRoutes(mux)
+	// the app's page closed or hidden: what its pages keep goes soon
+	// (awayPage); a write of nothing, so held's Changed passes it by
+	mux.HandleFunc("POST /api/page-away", func(rw http.ResponseWriter, r *http.Request) {
+		awayPage()
+		rw.WriteHeader(http.StatusNoContent)
+	})
 	// boot.js hands the page the saved language and theme before it paints:
 	// they came only with the settings, so the tabs showed English first
 	mux.HandleFunc("GET /boot.js", func(rw http.ResponseWriter, r *http.Request) {
@@ -1222,10 +1305,19 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		if th, ok := omarchyTheme(); ok {
 			boot["omarchy"] = th
 		}
+		// and the accent and wallpaper of the user's own (appearance.go),
+		// drawn before the first paint
+		boot["look"] = lookKey(s)
 		b, _ := json.Marshal(boot)
 		rw.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		rw.Header().Set("Cache-Control", "no-store")
-		rw.Write(append(append([]byte("window.bootPrefs = "), b...), ";\n"...))
+		out := append(append([]byte("window.bootPrefs = "), b...), ";\n"...)
+		if css := lookCSS(s); css != "" {
+			c, _ := json.Marshal(css)
+			out = append(out, `(function(){var e=document.createElement("style");e.id="lookCSS";e.textContent=`...)
+			out = append(append(out, c...), ";document.head.appendChild(e)})();\n"...)
+		}
+		rw.Write(out)
 	})
 	// the Omarchy theme as it is now, asked again every few seconds so a
 	// theme picked in Omarchy's menu reaches the page at once; null off Omarchy
@@ -1295,7 +1387,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	mux.HandleFunc("GET /api/drift", func(rw http.ResponseWriter, r *http.Request) {
 		out := map[string]*agent.Drift{}
 		for _, a := range agent.DetectedIn(heldAgents()) {
-			if d := a.Drift(); d != nil {
+			if d := a.DriftShown(); d != nil {
 				out[a.ID] = d
 			}
 		}
@@ -1373,6 +1465,21 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		home, _ := os.UserHomeDir()
 		if _, err := agent.SetDesktopIsolated(home, in.On); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, state())
+	})
+	// its Code tab's Claude Code on a folder of its own, or back on
+	// ~/.claude (#6459): the app made again with the folder or without
+	mux.HandleFunc("POST /api/settings/desktop-isolated-claude", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ On bool }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		home, _ := os.UserHomeDir()
+		if err := agent.SetDesktopIsolatedClaude(home, in.On); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -1618,10 +1725,11 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		// Windows' icon or not, and
 		// with their Pace numbers or not, with magpie's totals' cost or not,
 		// which of each subscription's windows, and the language the tooltip
-		// is in (yi_time)
+		// is in (yi_time), and the currency its totals' cost is in
 		if (!slices.Equal(settings.Load().TrayUsages, cur.TrayUsages) || in.TrayUsageEvery != cur.TrayUsageEvery ||
 			in.TrayNoLogos != cur.TrayNoLogos || in.TrayNoBird != cur.TrayNoBird || in.TrayNoNumber != cur.TrayNoNumber || in.TrayPace != cur.TrayPace ||
-			in.TrayNoCost != cur.TrayNoCost || !maps.EqualFunc(in.TrayWindows, cur.TrayWindows, slices.Equal) || in.Lang != cur.Lang || in.ChineseUnits != cur.ChineseUnits) && onTrayUsage != nil {
+			in.TrayNoCost != cur.TrayNoCost || !maps.EqualFunc(in.TrayWindows, cur.TrayWindows, slices.Equal) || in.Lang != cur.Lang || in.ChineseUnits != cur.ChineseUnits ||
+			in.TrayCostIn() != cur.TrayCostIn()) && onTrayUsage != nil {
 			onTrayUsage()
 		}
 		// an alert turned on or moved is looked at now, the Mac asked for its
@@ -1740,7 +1848,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			Refused string `json:"refused,omitempty"`
 		}
 		if err := agent.SetTelemetryAll(in.Off); err != nil {
-			if settings.Load().AgentTelemetryOff != in.Off {
+			if settings.Shared().AgentTelemetryOff != in.Off {
 				fail(rw, err)
 				return
 			}
@@ -1782,6 +1890,8 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		s.UpdateSkip = strings.TrimSpace(in.Version)
 		if s.UpdateSkip != "" {
 			updates.quietAgain() // a dismissal holds for the quiet, not only the next release
+		} else {
+			updates.unhush() // Show again
 		}
 		if err := settings.Save(s); err != nil {
 			fail(rw, err)
@@ -1813,14 +1923,15 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		writeJSON(rw, settingsState())
 	})
 	// whether the gateway's /v1/models lists each model by its id without
-	// the provider as well (settings.BareModelIDs, love1sbug on X)
+	// the provider as well (settings.BareModelIDs, love1sbug on X), or
+	// with only, by that id alone (BareModelIDsOnly, qQianye on X)
 	mux.HandleFunc("POST /api/settings/bare-ids", func(rw http.ResponseWriter, r *http.Request) {
-		var in struct{ On bool }
+		var in struct{ On, Only bool }
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			fail(rw, err)
 			return
 		}
-		if err := provider.SetBareModelIDs(in.On); err != nil {
+		if err := provider.SetBareIDs(in.On, in.Only); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -1969,6 +2080,28 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		writeJSON(rw, settingsState())
 	})
+	// the windows one agent is told, apart from every other's
+	// (settings.AgentContexts): Contexts replaces them, none takes them away
+	mux.HandleFunc("POST /api/settings/agent-contexts", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Agent    string
+			Contexts map[string]int
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		a, err := agent.Find(in.Agent)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		if err := provider.SetAgentContexts(a.ListsFor(), in.Contexts); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, settingsState())
+	})
 	// an agent's own Provider in model names (settings.AgentSuffix): Mode
 	// "" follows the one for every agent again
 	mux.HandleFunc("POST /api/settings/agent-suffix", func(rw http.ResponseWriter, r *http.Request) {
@@ -2009,7 +2142,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
-		pct := settings.Load().CodexAsyncCompactPercent
+		pct := settings.Shared().CodexAsyncCompactPercent
 		if in.Percent != nil {
 			pct = *in.Percent
 		}
@@ -2168,6 +2301,34 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		writeJSON(rw, settingsState())
 	})
+	// the Codex client magpie presents to the ChatGPT backend: "" (Codex
+	// CLI) or "desktop" (ouhthuo on X)
+	mux.HandleFunc("POST /api/settings/codex-client", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Client string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		if err := provider.SetCodexClient(in.Client); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, settingsState())
+	})
+	// what Codex opens in from its Agents row menu: "", "app" or
+	// "terminal" (Yink88564391 on X)
+	mux.HandleFunc("POST /api/settings/codex-open", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Open string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		if err := provider.SetCodexOpen(in.Open); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, settingsState())
+	})
 	// Warm up now: one Codex or Claude account's warm-up sent at once, and
 	// why it failed
 	mux.HandleFunc("POST /api/warm-now", func(rw http.ResponseWriter, r *http.Request) {
@@ -2181,6 +2342,21 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			return
 		}
 		writeJSON(rw, map[string]bool{"ok": true})
+	})
+	// Warm up all: each of a Codex or Claude agent's accounts in use and not
+	// in a window already warmed at once, and what each came to
+	mux.HandleFunc("POST /api/warm-all", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Agent string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		rs, err := provider.WarmAll(r.Context(), in.Agent)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, map[string]any{"results": rs})
 	})
 	// whether a Codex account spends one of its resets by itself once its
 	// week is used up, the Usage card's toggle, set on its own
@@ -2538,11 +2714,12 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	// not sent stays as it is
 	mux.HandleFunc("POST /api/usage/arrange", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct {
-			Order        *[]string
-			PanelHidden  *[]string
-			AgentsHidden *[]string
-			CardsHidden  *[]string
-			Count        *struct{ Client, As string }
+			Order         *[]string
+			PanelHidden   *[]string
+			AgentsHidden  *[]string
+			CardsHidden   *[]string
+			WindowsHidden *[]string
+			Count         *struct{ Client, As string }
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			fail(rw, err)
@@ -2569,9 +2746,17 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		if in.CardsHidden != nil {
 			s.UsageCardsHidden = *in.CardsHidden
 		}
+		if in.WindowsHidden != nil {
+			s.UsageWindowsHidden = *in.WindowsHidden
+		}
 		if err := settings.Save(s); err != nil {
 			fail(rw, err)
 			return
+		}
+		// the menu bar leaves out what the Overview hides (trayShown): it
+		// follows a card hidden or shown again at once
+		if (in.CardsHidden != nil || in.WindowsHidden != nil) && onTrayUsage != nil {
+			onTrayUsage()
 		}
 		writeJSON(rw, settingsState())
 	})
@@ -3109,7 +3294,7 @@ func held(h http.Handler) http.Handler {
 			// 5x the CPU.
 			defer tightenGC()()
 		}
-		if !(api && r.Method == http.MethodGet) && r.URL.Path != "/api/update/using" {
+		if !(api && r.Method == http.MethodGet) && r.URL.Path != "/api/update/using" && r.URL.Path != "/api/page-away" {
 			// anything that may have written drops what was held, once it
 			// has answered with it (a page's word of input writes nothing)
 			defer provider.Changed()
@@ -3123,8 +3308,8 @@ func state() stateJSON {
 	// state() is asked for after nearly every click, so the rate — a
 	// network fetch once every TTL — is only worth its rare latency when
 	// cny is actually chosen; usd never looks at it
-	if s.Settings.Currency == "cny" {
-		s.FX = currentFX()
+	if s.Settings.Currency != "usd" {
+		s.FX = costFX(s.Settings)
 	}
 	s.Unlisted = unlistedModels()
 	s.CLIBehind = cliBehind()
@@ -3150,7 +3335,7 @@ func state() stateJSON {
 		}
 		vals := a.Values()
 		now[a.ID] = vals
-		aj := agentJSON{ID: a.ID, Name: a.Name, Icon: a.Icon, Path: tilde(a.Path), Fields: agentFields(a, vals)}
+		aj := agentJSON{ID: a.ID, Name: a.Name, Icon: a.Icon, Path: tilde(a.Path), Fields: agentFields(a, vals), Own: ownFields(a, vals)}
 		aj.Models = agentModelCount(a, aj.Fields)
 		aj.Menu = a.ListsModels
 		aj.NoNames = a.NoNames
@@ -3176,7 +3361,18 @@ func state() stateJSON {
 		if a.ID == "claude-desktop" && a.WSL == "" {
 			if iso, ok := agent.DesktopIsolatedHere(); ok {
 				aj.Isolated = &iso
+				// while Claude Magpie is on, the row's switch wires it
+				// alone (desktopSets) and the user's own Desktop stays
+				// signed in with Anthropic: the row is Claude Magpie's.
+				// Named Claude Desktop, it read as if their own Desktop
+				// had been connected (xMopf7RF on X, 0.1.4111)
+				if iso.On {
+					aj.Name = desktopiso.Name
+				}
 			}
+		}
+		if !aj.Wired && agent.DesktopTwinCode(a) {
+			aj.TwinCode = true
 		}
 		if a.Telemetry != nil {
 			// Settings › Privacy's switch for every agent reaches one
@@ -3214,6 +3410,7 @@ func state() stateJSON {
 		// as agentCommand makes it, Launch asked once
 		aj.Command = agentLine(a, aj.Launch, runtime.GOOS)
 		aj.Terminal = terminalHere() && aj.Command != ""
+		aj.OpenApp = a.ID == "codex" && codexOpensApp()
 		if a.Native != nil {
 			native := a.Native.Read()
 			aj.Native = &native
@@ -3247,9 +3444,10 @@ type signInOpened struct {
 
 // openSignIn opens an account sign-in's page, unless the user keeps those
 // pages to a browser of their own (settings.SignInLinkOnly), and says how
-// it went for signInOpened.
-func openSignIn(w Windows, st provider.SignInState) signInOpened {
-	if settings.Load().SignInLinkOnly {
+// it went for signInOpened. linkOnly is this sign-in alone kept to its link
+// (the window's "Sign in on another computer"), whatever the setting.
+func openSignIn(w Windows, st provider.SignInState, linkOnly bool) signInOpened {
+	if linkOnly || settings.Shared().SignInLinkOnly {
 		return signInOpened{SignInState: st, LinkOnly: true}
 	}
 	var failed string
@@ -3263,6 +3461,22 @@ func openSignIn(w Windows, st provider.SignInState) signInOpened {
 type mcpSignInOpened struct {
 	mcpauth.State
 	OpenError string `json:"openError,omitempty"`
+	LinkOnly  bool   `json:"linkOnly,omitempty"`
+}
+
+// openMCPSignIn is openSignIn for a sign-in to an MCP server: kept to its
+// link when the user keeps sign-in pages to a browser of their own
+// (settings.SignInLinkOnly), as an account's is. It opened the page in the
+// default browser whatever the setting (hkxhkxhkx on X).
+func openMCPSignIn(w Windows, st mcpauth.State) mcpSignInOpened {
+	if settings.Shared().SignInLinkOnly {
+		return mcpSignInOpened{State: st, LinkOnly: true}
+	}
+	if u, err := url.Parse(st.URL); st.URL != "" && (err != nil || !mcpauth.WebURL(u)) {
+		// the server named it: only a web page is handed to the system
+		return mcpSignInOpened{State: st, OpenError: "not a web page"}
+	}
+	return mcpSignInOpened{State: st, OpenError: openError(w, st.URL)}
 }
 
 // openError opens url in the browser, and says why it didn't open: "" when

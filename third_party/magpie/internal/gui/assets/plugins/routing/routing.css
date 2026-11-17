@@ -135,13 +135,15 @@
 /* the session an account answers (connor_yang on Discord): one line cut
    short, also where a narrow stage lets the status wrap */
 .rt-accts em .ses { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
-.rt-accts .bar { grid-column: 2 / 4; height: 3px; border-radius: 2px; background: var(--card-2); overflow: hidden; }
-.rt-accts .bar i { display: block; height: 100%; width: 0; border-radius: 2px; background: var(--muted); transition: width .4s; }
+/* an account's bar is Usage's .quota-track (app.css), its colours the
+   same in either theme (normalcoder_ on X: grey and black here, blue
+   there); only its size and place are the stage's */
+.rt-accts .bar { grid-column: 2 / 4; height: 3px; }
+.rt-accts .bar i { width: 0; transition: width .4s; }
 .rt-accts li.nobar .bar { display: none; }
 .rt-accts .dot { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--muted); }
 .rt-accts li.on { border-color: var(--fg); }
 .rt-accts li.on em { color: var(--fg); }
-.rt-accts li.on .bar i { background: var(--fg); }
 .rt-accts li.on .dot { background: var(--fg); border-color: var(--fg); }
 /* A live dot's pulse: a disk 6px wider all round grows from the dot and
    fades. It moves by transform and opacity, on the compositor: as a
@@ -186,8 +188,26 @@
 .rt-accts li.rt-fold:focus { outline: none; }
 .rt-accts li.rt-fold:focus-visible { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent); }
 .rt-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px 20px; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--line); }
-.rt-cap { flex: 1 1 20em; margin: 0; min-height: 3em; display: flex; align-items: center; font-size: 13px; line-height: 1.45; color: var(--fg); }
+.rt-cap { flex: 1 1 20em; margin: 0; min-height: 54px; display: flex; align-items: center; font-size: 13px; line-height: 1.45; color: var(--fg); }
 .rt-cap.in { animation: rtin .4s ease-out; }
+/* a try's answer in the caption (answered): who, model and effort over
+   its figures, each in a column of its own whatever the others say, as
+   the counts beside it are (Puremilk_chun on X) */
+.rt-done { flex: 1; min-width: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 3px 14px; }
+.rt-done > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rt-done > .who { grid-column: span 2; font-size: 12px; line-height: 17px; font-weight: 560; }
+.rt-done > .mdl { grid-column: span 2; font-size: 12px; line-height: 17px; color: var(--fg-2); }
+.rt-done > .effort-of { font-size: 12px; line-height: 17px; color: var(--muted); }
+.rt-done > .fig { display: flex; flex-direction: column; font-size: 11px; line-height: 14px; color: var(--muted); }
+.rt-done > .fig > * { overflow: hidden; text-overflow: ellipsis; }
+.rt-done > .fig b { font-size: 15px; line-height: 19px; font-weight: 650; letter-spacing: -.01em; color: var(--fg); font-variant-numeric: tabular-nums; }
+.rt-done > .fig b small { line-height: 0; font-size: 11px; font-weight: 500; letter-spacing: 0; color: var(--fg-2); }
+/* a narrow stage (max720, set by client.js): three to a line, in the
+   same places on every answer */
+:where(.rt.max720) .rt-done { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+:where(.rt.max720) .rt-done > .who { grid-column: span 2; }
+:where(.rt.max720) .rt-done > .mdl { grid-column: 1 / -1; grid-row: 2; }
+.rt-done > .fig.none b { color: var(--faint); font-weight: 400; }
 @keyframes rtin { from { opacity: 0; transform: translateY(4px); } }
 .rt-stats { display: flex; gap: 18px; font-size: 11px; color: var(--muted); }
 .rt-stats > span { display: flex; flex-direction: column; }
@@ -280,6 +300,8 @@
 :is(#view-routing, #view-groups) .row-head .note { font-size: 11px; color: var(--faint); margin-left: 8px; }
 #view-routing .row-head .rt-livedot + .note { margin-left: 8px; }
 .rt-gnew { display: inline-flex; align-items: center; gap: 4px; }
+/* the toolbar's Hide plans: every group's quota lines folded */
+.rt-groups.rt-noplans .rt-gquota { display: none; }
 /* the groups page's toolbar: the filter first, then how many */
 .rt-gsec > .row-head:first-child .rt-gfilter { flex: 0 1 300px; width: auto; margin: 0; }
 .rt-gsec > .row-head:first-child .rt-gcount { margin-left: 10px; white-space: nowrap; }
@@ -308,7 +330,10 @@ body.side-nav #view-groups:not(.rt-gfrom) .rt-gback { display: none; }
    few accounts'. Only where the requests' column still keeps each request
    on one line (wider than 760px, see below): narrower, one column of
    one-line requests reads better than two with each request on three
-   (#860, huoranxuanyuan). Where the page is 1150px wide or more. Kept to
+   (#860, huoranxuanyuan). Where the page is 1150px wide or more and the
+   requests, tried beside, keep their numbers on one line (sideFit in
+   client.js: normalcoder_ on X saw a wider window put each request on two
+   lines where a narrower one kept it on one). Kept to
    28%, no more than 360px: in a page kept to 1200px the accounts had room
    to spare while the requests' models were cut (#1926, hibaliqya-yonma) */
 :where(.rt-more.min1150) .rt-cols { grid-template-columns: minmax(0, 1fr) clamp(260px, 28%, 360px); }
@@ -540,6 +565,21 @@ button.rt-session { cursor: pointer; }
    figure of its own, the rest of it on hover */
 .rt-act .wins { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-2); font-size: 11px; font-variant-numeric: tabular-nums; }
 .rt-act .wins span + span { margin-left: 12px; }
+/* every window of a subscription account, a line each, alike on every
+   row (zwm_vincent on X): short name, bar, used or left, reset, in
+   columns that start at one place down the list */
+.rt-act .wq { display: grid; font-size: 11px; line-height: 17px; color: var(--fg-2); font-variant-numeric: tabular-nums; }
+.rt-act .wq > div { display: flex; flex-wrap: wrap; align-items: center; column-gap: 8px; }
+.rt-act .wq span { min-width: 0; white-space: nowrap; }
+.rt-act .wq .k { flex: 0 0 var(--wk, 3ch); overflow: hidden; }
+.rt-act .wq .b { flex: 0 0 28px; }
+.rt-act .wq .v { flex: 0 0 auto; min-width: var(--wv, 0); }
+.rt-act .wq .r { flex: 1 0 auto; min-width: var(--wr, 0); max-width: 100%; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+.rt-act .wq .k, .rt-act .wq .r { color: var(--muted); }
+.rt-act .wq .quota-track { height: 3px; }
+/* rows too narrow for a bar beside what is used (slim, set by
+   client.js): the figures alone */
+.rt-acts:where(.slim) .wq .b { display: none; }
 .rt-act .tally { display: flex; gap: 0 10px; overflow: hidden; white-space: nowrap; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .rt-act .tally > span { flex: none; }
 .rt-act .tally > span:last-child { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -554,9 +594,8 @@ button.rt-session { cursor: pointer; }
 /* under the cell, in its bottom padding: every cell keeps its height. In
    the flow, not absolute: Chromium put an absolute bar of a row in a
    column's unbroken block (.rt-lead) over the row above it */
-.rt-act .bar { height: 2px; margin: 2px 0 -4px; border-radius: 2px; background: var(--card-2); overflow: hidden; }
+.rt-act .bar { height: 2px; margin: 2px 0 -4px; }
 .rt-act:has(> .bar) { padding-bottom: 8px; }
-.rt-act .bar i { display: block; height: 100%; border-radius: 2px; background: var(--muted); }
 /* a provider's keys summed up in one row (#1319), opened to each */
 .rt-act.rt-keys { cursor: pointer; user-select: none; }
 .rt-act.rt-keys .chev { display: inline-flex; align-self: center; margin-left: auto; color: var(--muted); transition: transform .2s; }
@@ -718,6 +757,7 @@ body.window .rt-gedit > .bar { --vfoot: 8px; }
 .rt-gedit .gsuffix { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
 .rt-gedit .gsuffix .hint { overflow-wrap: anywhere; }
 .rt-gedit .ctx-wrap input.ctx-in { width: 96px; flex: none; }
+.rt-gedit input.cmp-in { width: 96px; flex: none; }
 .rt-gedit .ctx-wrap input.first-in { width: 64px; }
 .rt-gedit .ctx-wrap .first-unit { margin-left: -2px; color: var(--muted); font-size: 12px; }
 .rt-gedit .ctx-wrap .first-unit[hidden] { display: none; }

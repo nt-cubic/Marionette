@@ -35,6 +35,9 @@ type Library struct {
 	// Subagents are agents of their own the agents ticked for each can
 	// hand a task to (subagents.go, #2283)
 	Subagents []*Subagent `json:"subagents,omitempty"`
+	// Commands are slash commands the agents ticked for each are given
+	// (commands.go)
+	Commands []*Command `json:"commands,omitempty"`
 	// Plugins are the Claude Code plugins kept as one item each: its
 	// skills, servers, hooks and subagents are the items above marked
 	// with its name (plugin.go)
@@ -63,6 +66,10 @@ type Library struct {
 	// that reads it (usrname1833, skills_shared.go). This computer's
 	// own: Collect doesn't carry it
 	SharedSkills bool `json:"sharedSkills,omitempty"`
+	// AutoUpdateSkills fetches again by itself each skill its GitHub or
+	// git repository has changed (0xYaCo on X, skill_autoupdate.go). This
+	// computer's own: Collect doesn't carry it
+	AutoUpdateSkills bool `json:"autoUpdateSkills,omitempty"`
 	// MCPHub gives each agent that can reach it magpie's one MCP server,
 	// which hands each call on to the library's servers ticked for it, in
 	// place of their own entries (#2679, mcp_hub.go)
@@ -156,6 +163,9 @@ type Applied struct {
 	// Subagents are the files magpie wrote for the subagents, each with
 	// the hash of what it wrote: one changed since is the user's
 	Subagents []SubagentFile `json:"subagents,omitempty"`
+	// Commands are the files magpie wrote for the slash commands, kept as
+	// Subagents are
+	Commands []SubagentFile `json:"commands,omitempty"`
 	// Startup is, for each server, the startup timeout magpie wrote in its
 	// entry (Codex's startup_timeout_sec): one there other than this is
 	// the user's
@@ -179,7 +189,7 @@ type Applied struct {
 func (a *Applied) empty() bool {
 	return !a.Instructions && a.InstrHash == "" && len(a.MCP) == 0 && len(a.Skills) == 0 &&
 		len(a.ToolsOff) == 0 && len(a.ToolRules) == 0 && len(a.Hooks) == 0 && len(a.Env) == 0 &&
-		len(a.Subagents) == 0 && len(a.Startup) == 0 && len(a.Picked) == 0 && !a.Router && len(a.RouterRules) == 0
+		len(a.Subagents) == 0 && len(a.Commands) == 0 && len(a.Startup) == 0 && len(a.Picked) == 0 && !a.Router && len(a.RouterRules) == 0
 }
 
 var mu lock // one change at a time, from the page or the CLI's process
@@ -215,7 +225,9 @@ func load() (*Library, error) {
 	if l.Applied == nil {
 		l.Applied = map[string]*Applied{}
 	}
-	l.heal() // magpie's own servers run this computer's magpie (self_here.go)
+	l.heal()           // magpie's own servers run this computer's magpie (self_here.go)
+	l.carryTwin()      // Claude Magpie keeps what it was given as Claude Desktop (desktop_twin.go)
+	l.healPluginRefs() // a plugin's parts that still name its variables (plugin_env.go)
 	return l, nil
 }
 
@@ -240,6 +252,10 @@ func (l *Library) save() error {
 	sort.Slice(l.Subagents, func(i, j int) bool { return l.Subagents[i].Name < l.Subagents[j].Name })
 	for _, s := range l.Subagents {
 		s.Agents = orNone(s.Agents)
+	}
+	sort.Slice(l.Commands, func(i, j int) bool { return l.Commands[i].Name < l.Commands[j].Name })
+	for _, c := range l.Commands {
+		c.Agents = orNone(c.Agents)
 	}
 	// an entry with nothing in it is no record of what magpie wrote, and
 	// is not kept: a sync that only looked at an agent used to leave one
@@ -309,12 +325,19 @@ func checkName(kind, name string) error {
 }
 
 // An agent's id is a name, or one in a WSL distro's
-// (codex@wsl:Ubuntu-24.04): distroRe is the distro's name.
+// (codex@wsl:Ubuntu-24.04): distroRe is the distro's name. Either can be
+// one of the agent's profiles, agent#profile (claude#magpie-desktop, a
+// Claude Code config folder; hermes#work, omp#work): the Library's pages
+// show those as agents of their own, so every route that takes an agent
+// takes them (@AXmake110 on X: a plugin couldn't be turned off for
+// claude#magpie-desktop). distroRe is the profile's name too: a plain
+// file name, as the id names files of the agent's (fileName).
 var distroRe = capre.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`, 64)
 
 func checkAgent(id string) error {
 	name, distro, wsl := strings.Cut(id, "@wsl:")
-	if !nameRe.MatchString(name) || wsl && !distroRe.MatchString(distro) {
+	name, profile, prof := strings.Cut(name, "#")
+	if !nameRe.MatchString(name) || prof && !distroRe.MatchString(profile) || wsl && !distroRe.MatchString(distro) {
 		return fmt.Errorf("agent %q: not an agent's id", id)
 	}
 	return nil
@@ -361,6 +384,7 @@ func changeLocked(f func(l *Library) error) (*Result, error) {
 	if err := f(l); err != nil {
 		return nil, err
 	}
+	l.foldBeside() // a skill that went in beside itself (skill_beside.go)
 	l.settleAway()
 	l.heal() // a server f brought in, from another computer too
 	if err := l.save(); err != nil {

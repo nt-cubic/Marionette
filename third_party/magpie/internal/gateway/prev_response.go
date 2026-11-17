@@ -39,8 +39,9 @@ import (
 
 const (
 	prevTTL = 6 * time.Hour
-	// prevCap bounds the bytes kept, counted as each turn adds them: a
-	// turn's history is the earlier turn's items, shared, not copied
+	// prevCap bounds the bytes kept: a turn's history is an earlier
+	// turn's items, shared, not copied, and bytes several turns share are
+	// counted once, for as long as any of them is kept (prevChunk)
 	prevCap = 256 << 20
 	// prevReplyMax is the most of one reply read for its output
 	prevReplyMax = 64 << 20
@@ -53,7 +54,12 @@ type prevTurn struct {
 	key   prevKey
 	items []json.RawMessage // input, then the response's output
 	own   int               // bytes this turn added to what it follows
-	at    time.Time
+	// the buffers items' bytes lie in, in order: chunks[j] holds
+	// items[ends[j-1]:ends[j]]. None (a turn made whole) is one of own
+	// bytes.
+	chunks []*prevChunk
+	ends   []int
+	at     time.Time
 	// the provider that keeps it too, if one does: the id it gave it
 	// and which provider and key (prevRoute)
 	upstreamID, route string
@@ -61,6 +67,10 @@ type prevTurn struct {
 	// (prevRoute), kept or not; empty for a translated reply
 	made string
 }
+
+// prevChunk is one buffer kept turns' items lie in, counted in the
+// store's size while a kept turn holds it.
+type prevChunk struct{ size, refs int }
 
 type prevStore struct {
 	mu    sync.Mutex
@@ -105,7 +115,14 @@ func (s *prevStore) put(t *prevTurn) {
 	}
 	t.at = s.now()
 	s.m[t.key] = s.order.PushFront(t)
-	s.size += t.own
+	if t.chunks == nil {
+		t.chunks, t.ends = []*prevChunk{{size: t.own}}, []int{len(t.items)}
+	}
+	for _, c := range t.chunks {
+		if c.refs++; c.refs == 1 {
+			s.size += c.size
+		}
+	}
 	for s.size > s.cap {
 		s.drop(s.order.Back())
 	}
@@ -119,7 +136,80 @@ func (s *prevStore) drop(e *list.Element) {
 	t := e.Value.(*prevTurn)
 	s.order.Remove(e)
 	delete(s.m, t.key)
-	s.size -= t.own
+	for _, c := range t.chunks {
+		if c.refs--; c.refs == 0 {
+			s.size -= c.size
+		}
+	}
+}
+
+// prevShareLook is how many of the newest kept turns of a scope a turn's
+// input is held against for bytes to share.
+const prevShareLook = 4
+
+// kept is the turn fresh is kept as, after prior's items when the
+// request named that earlier turn. Otherwise the leading items one of the
+// newest kept turns of scope holds the same bytes of share that turn's,
+// and the rest are copied out of the body into one new chunk. A client that sends
+// its whole conversation each turn and names no earlier response (one
+// not saying store false, as AI SDK clients) had each turn kept as a
+// whole copy: a 2 MB conversation filled the 256 MB cap in ~128 turns and
+// held it for prevTTL, and copied 2 MB a request to do it.
+func (s *prevStore) kept(scope string, prior *prevTurn, fresh []json.RawMessage) *prevTurn {
+	t := &prevTurn{}
+	var share *prevTurn
+	n := 0
+	if prior != nil {
+		share, n = prior, len(prior.items)
+	} else if len(fresh) > 0 {
+		var near []*prevTurn
+		s.mu.Lock()
+		for e, seen := s.order.Front(), 0; e != nil && len(near) < prevShareLook && seen < 64; e, seen = e.Next(), seen+1 {
+			if k := e.Value.(*prevTurn); k.key.scope == scope && len(k.items) > 0 {
+				near = append(near, k)
+			}
+		}
+		s.mu.Unlock()
+		// what a kept turn holds is never written, so it is read
+		// unlocked; one dropped meanwhile is counted again by put
+		for _, k := range near {
+			m := 0
+			for m < len(k.items) && m < len(fresh) && bytes.Equal(k.items[m], fresh[m]) {
+				m++
+			}
+			if m > n {
+				share, n = k, m
+			}
+		}
+	}
+	if share != nil {
+		t.items = share.items[:n:n]
+		for j, c := range share.chunks {
+			if j > 0 && share.ends[j-1] >= n {
+				break
+			}
+			t.chunks, t.ends = append(t.chunks, c), append(t.ends, min(share.ends[j], n))
+		}
+		if prior == nil {
+			fresh = fresh[n:]
+		}
+	}
+	t.add(ownItems(fresh))
+	return t
+}
+
+// add puts items, held by none yet, after t's own as one new chunk.
+func (t *prevTurn) add(items []json.RawMessage) {
+	size := 0
+	for _, it := range items {
+		size += len(it)
+	}
+	t.items = append(t.items[:len(t.items):len(t.items)], items...)
+	t.own += size
+	if size > 0 {
+		t.chunks = append(t.chunks[:len(t.chunks):len(t.chunks)], &prevChunk{size: size})
+		t.ends = append(t.ends[:len(t.ends):len(t.ends)], len(t.items))
+	}
 }
 
 // prevScope is whose responses a request may name: its gateway key, the
@@ -177,6 +267,10 @@ type prevAsk struct {
 	upstreamID   string // the id the provider that answered it keeps it under
 	route        string
 	made         string // the route whose reply the named response was
+	// the client replayed the conversation whole itself (store false, no
+	// previous_response_id), so nothing of it is magpie's to take back;
+	// a cross-resource refusal of an id it echoes is still recoverable
+	clientWhole bool
 	// which try answered: its route if it was relayed to a provider
 	// that keeps what it is sent, empty otherwise; and by, its route
 	// for any relayed try
@@ -196,6 +290,14 @@ func prevAskOf(ctx context.Context) *prevAsk {
 func prevHeld(r *http.Request) bool {
 	a := prevAskOf(r.Context())
 	return a != nil && a.known
+}
+
+// prevClientWhole is whether the client replayed the conversation whole
+// itself (store false, no previous_response_id), nothing of it magpie's
+// to take back.
+func prevClientWhole(r *http.Request) bool {
+	a := prevAskOf(r.Context())
+	return a != nil && a.clientWhole
 }
 
 // prevLost is the id a request named that magpie doesn't hold, which a
@@ -239,12 +341,13 @@ func previousResponse(w http.ResponseWriter, r *http.Request, from provider.Prot
 	scope := prevScope(r)
 	ask := &prevAsk{}
 	var prior []json.RawMessage
+	var priorTurn *prevTurn
 	if raw := q["previous_response_id"]; len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
 		var id string
 		if json.Unmarshal(raw, &id) == nil && id != "" {
 			ask.id = id
 			if t, ok := prevResponses.get(prevKey{scope, id}); ok {
-				prior = t.items
+				prior, priorTurn = t.items, t
 				ask.known, ask.upstreamID, ask.route, ask.made = true, t.upstreamID, t.route, t.made
 			}
 		}
@@ -270,6 +373,15 @@ func previousResponse(w http.ResponseWriter, r *http.Request, from provider.Prot
 	}
 	var store bool
 	if json.Unmarshal(q["store"], &store) == nil && !store && !keepsTurnFor(r) {
+		// a client replaying its whole conversation itself (Codex's
+		// store-off history) echoes ids the upstream handed out for
+		// earlier turns: a cross-resource refusal of one is still
+		// recoverable without a store (#6320), so the ask goes along
+		// marked, never recorded
+		if !ask.known && clientWholeHistory(fresh) {
+			ask.clientWhole = true
+			r = r.WithContext(context.WithValue(r.Context(), prevAskKey{}, ask))
+		}
 		return w, r, body, nothing // the client asked that nothing be kept
 	}
 	if keepsTurnFor(r) {
@@ -277,18 +389,12 @@ func previousResponse(w http.ResponseWriter, r *http.Request, from provider.Prot
 		// it is (remote_delta.go)
 		w.Header().Set(KeptTurnHeader, "1")
 	}
-	// what this turn adds: its input, copied out of the body. A view held
-	// the whole body, tools and instructions with it, on every turn kept,
+	// what this turn adds: its input, copied out of the body but for
+	// what a kept turn holds the same bytes of (kept). A view held the
+	// whole body, tools and instructions with it, on every turn kept,
 	// while own counted only the items, so the cap bounded far less than
 	// was held.
-	kept := ownItems(fresh)
-	if ask.known {
-		kept = append(prior[:len(prior):len(prior)], kept...)
-	}
-	own := 0
-	for _, it := range fresh {
-		own += len(it)
-	}
+	kept := prevResponses.kept(scope, priorTurn, fresh)
 	if ask.id == "" {
 		// the answer note is wanted for a request naming none too
 		r = r.WithContext(context.WithValue(r.Context(), prevAskKey{}, ask))
@@ -309,10 +415,8 @@ func previousResponse(w http.ResponseWriter, r *http.Request, from provider.Prot
 		if !ok {
 			return
 		}
-		for _, it := range output {
-			own += len(it)
-		}
-		t := &prevTurn{key: prevKey{scope, id}, items: append(kept, output...), own: own}
+		t := &prevTurn{key: prevKey{scope, id}, items: kept.items, own: kept.own, chunks: kept.chunks, ends: kept.ends}
+		t.add(output)
 		ask.mu.Lock()
 		if ask.answered != "" {
 			t.upstreamID, t.route = id, ask.answered
@@ -348,6 +452,33 @@ func prevInput(raw json.RawMessage) (all, fresh []json.RawMessage) {
 		items = []json.RawMessage{}
 	}
 	return items, items
+}
+
+// clientWholeHistory is whether an input reads as a conversation the
+// client brought back whole: more than one item, and one before the last
+// naming an id that may go without one, or a reasoning's — ids the
+// upstream handed out for earlier turns, echoed back with the history.
+// One item with an id alone is the client's own new input, and goes as it
+// came (#6320, TestPreviousResponseOtherResourceWholeSentWithoutIDs).
+func clientWholeHistory(fresh []json.RawMessage) bool {
+	if len(fresh) < 2 {
+		return false
+	}
+	for _, raw := range fresh[:len(fresh)-1] {
+		var it map[string]json.RawMessage
+		if json.Unmarshal(raw, &it) != nil {
+			continue
+		}
+		if _, has := it["id"]; !has {
+			continue
+		}
+		var typ string
+		json.Unmarshal(it["type"], &typ)
+		if typ == "reasoning" || idOptional[typ] {
+			return true
+		}
+	}
+	return false
 }
 
 // prevReply is a Responses reply's id and output items, a stream's or a
@@ -466,20 +597,21 @@ func prevForeign(status int, b []byte) bool {
 // whole, with the items it brought back no longer naming what the
 // upstream that made them keeps them under, when they go to another
 // provider or key than the one whose reply they were (or always, when
-// force: one upstream said they are another resource's). An item that
-// can go without its id (idOptional) goes without it, its text and
-// call_id kept; reasoning keeps its place only with its encrypted_content,
-// as Codex sends it, since what it held lives only where it was made. Any
-// other kind, and the client's own new input, stay as they were. A body
-// whose items the tries changed in number is left as it is, as prevDelta
-// leaves it.
+// force: one upstream said they are another resource's — a conversation
+// the client replayed whole itself goes the same way, its echoed ids
+// taken out, #6320). An item that can go without its id (idOptional) goes
+// without it, its text and call_id kept; reasoning keeps its place only
+// with its encrypted_content, as Codex sends it, since what it held lives
+// only where it was made. Any other kind, and the client's own new input
+// of a conversation magpie gave, stay as they were. A body whose items
+// the tries changed in number is left as it is, as prevDelta leaves it.
 func prevElsewhere(r *http.Request, p provider.Provider, body []byte, force bool) []byte {
 	a := prevAskOf(r.Context())
-	if a == nil || !a.known || !force && a.made == prevRoute(p) {
+	if a == nil || !a.known && !force || !force && a.made == prevRoute(p) {
 		return body
 	}
 	n := a.total - a.fresh
-	if n <= 0 || !bytes.Contains(body, []byte(`"id"`)) {
+	if !a.clientWhole && n <= 0 || !bodyHas(body, `"id"`) {
 		return body
 	}
 	var q map[string]json.RawMessage
@@ -487,8 +619,13 @@ func prevElsewhere(r *http.Request, p provider.Provider, body []byte, force bool
 		return body
 	}
 	items, ok := inputList(q["input"])
-	if !ok || len(items) != a.total {
+	if !ok || !a.clientWhole && len(items) != a.total {
 		return body
+	}
+	if a.clientWhole {
+		// the whole conversation is the client's own replay: every item
+		// is history, none of it is the turn being asked now (#6320)
+		n = len(items)
 	}
 	out := make([]json.RawMessage, 0, len(items))
 	changed := false

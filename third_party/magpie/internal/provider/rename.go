@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -21,8 +22,8 @@ import (
 // Rename gives a provider another id, the one its models are picked by
 // (<id>/<model>). What magpie keeps that names it by id follows: the
 // routing groups it is in and their rules and classifiers, the other
-// providers' fallbacks, which agents are shown it, and its StepFun sign-in. The old id stays
-// with it (Was), so an agent still running on a config that names it the
+// providers' fallbacks, which agents are shown it, and its StepFun and
+// Qwen AI platform sign-ins. The old id stays with it (Was), so an agent still running on a config that names it the
 // old way reaches it, and its usage so far is counted with it; the agents'
 // own files are the agent package's to rewrite (agent.RenameProvider).
 // A signed-in account keeps the id of its agent.
@@ -100,8 +101,11 @@ func Rename(from, to string) error {
 	if err := store(f); err != nil {
 		return err
 	}
-	// so is its StepFun sign-in, kept by provider id
+	// so are its StepFun and Qwen AI platform sign-ins, kept by provider id
 	if err := renameStepFun(from, to); err != nil {
+		return err
+	}
+	if err := renameQianwen(from, to); err != nil {
 		return err
 	}
 	s := settings.Load()
@@ -267,6 +271,16 @@ type Renames struct {
 	// the other way, each provider's merged ones
 	into   map[string]string
 	merged map[string][]string
+}
+
+// Same is whether o is r itself, the one read UsageRenames hands back
+// while providers.json is unchanged: the same maps, not equal ones. A
+// reader that keeps what it made from r asks it to know r is unchanged.
+func (r Renames) Same(o Renames) bool {
+	at := func(m any) uintptr { return reflect.ValueOf(m).Pointer() }
+	return at(r.now) == at(o.now) && at(r.gave) == at(o.gave) && at(r.hosts) == at(o.hosts) &&
+		at(r.sites) == at(o.sites) && at(r.gone) == at(o.gone) && at(r.into) == at(o.into) &&
+		at(r.merged) == at(o.merged)
 }
 
 type gaveTo struct {

@@ -116,6 +116,12 @@ type Field struct {
 	// ("model" for Claude Code's tiers and subagents): a profile's details
 	// say so, and Drift reads the field as on that one's model (#1050).
 	Follows string
+	// Own fields are the user's own settings of the agent's, never
+	// magpie's wiring (Claude Code's permission mode): magpie writes one
+	// only when the user picks it, so Disconnect, Reapply and a restore
+	// leave it as it is, and a profile neither keeps nor writes it. A
+	// value the user then sets in the agent itself stays theirs.
+	Own bool
 }
 
 // Agent is one supported coding agent.
@@ -153,6 +159,11 @@ type Agent struct {
 	// the name alone (Empryo, Cursor Private Inference). The setting says
 	// so for each one connected, rather than seeming to do nothing.
 	NoNames bool
+	// Nested: the agent is a part of another one (a Hermes profile,
+	// hermes#<name>) that the Library gives its own skills and servers. No
+	// list of agents or model picker shows it (DetectedIn leaves it out); its
+	// model is a line of the parent's row, and All and Find still reach it.
+	Nested bool
 	// Sync, for an agent that reads magpie's models from a file of its own
 	// rather than asking the gateway, rewrites that list as the catalog is
 	// now — where magpie wrote one; nothing else changes (see SyncCatalog).
@@ -206,6 +217,12 @@ type Agent struct {
 	// takeover ending so is the user's change, not the reset's, and the
 	// Codex app's app-server is restarted for it (CodexTakeoverOff).
 	AppOutOff func() bool
+	// DeskAt is when magpie named its model list for the Codex app in
+	// Codex's config (deskList's model_catalog_json), zero while it
+	// names none or the time isn't known (named by a magpie before it
+	// was kept). The app-server reads the list only as it starts, so one
+	// running from before shows Codex's own models alone (CodexAppDesk).
+	DeskAt func() time.Time
 	// HoldMatters reports Codex takes magpie's models beside a ChatGPT
 	// sign-in, so that magpie is its provider while the Codex app holds
 	// the account (out), or is that already: what the app holds is read
@@ -224,15 +241,15 @@ type Agent struct {
 	// is that group's (#750).
 	Routed func() bool
 	// FailingOver reports an agent that isn't connected whose requests
-	// still go through magpie's gateway, for account failover alone (Codex
-	// signed in to ChatGPT with more of its accounts on in magpie, #1385):
-	// the Agents page says so and what turns it off, and the gateway lists
-	// it only its own models.
+	// still go through magpie's gateway, for account failover alone: what
+	// a magpie from before wrote in Codex's config by itself (#1385), till
+	// Sync takes it out (TylerBai_loveai on X). The Agents page says so,
+	// and the gateway lists it only its own models.
 	FailingOver func() bool
 	// EndFailover takes out what account failover wrote, for magpie
 	// quitting: left there, the agent would be pointed at a gateway that
 	// no longer answers, and retry till magpie is open again (Leon920717
-	// on X). The next start's Sync writes it again.
+	// on X).
 	EndFailover func() error
 	// TakeLeftovers takes out what magpie wrote that no Disconnect could
 	// name: an address at magpie's gateway whose marks are gone (magpie's
@@ -362,10 +379,21 @@ type Agent struct {
 	// ~/.cursor (MCP servers, skills, hooks, chats) is the Cursor editor's
 	// too, so the Library and Sessions call it Cursor (SharedName).
 	shared string
+	// sharedApp, when set, reports whether an app of the vendor's that
+	// reads the shared folder is here, the folder or not: VS Code and
+	// GitHub Copilot's JetBrains plugin read ~/.copilot's
+	// copilot-instructions.md before anything has made the folder.
+	sharedApp func() bool
 	// pathOwn, when set, says whether the file at Path is this agent's,
 	// not one another tool wrote there first: a JetBrains plugin's
 	// settings.json in Qoder CN's folder (#1495).
 	pathOwn func() bool
+	// signIn is the file a sign-in added in magpie writes in Dir for the
+	// agent when it has none of its own (Codex's auth.json, Claude Code's
+	// .credentials.json off the Mac): a folder holding only that is
+	// magpie's, no sign the agent is here (jiangshangmuyun on X: Codex,
+	// never installed, listed after a ChatGPT account was added).
+	signIn string
 	// sign, when set, is one more sign the agent is here, for a folder
 	// that is dirShared: a file only the agent (or its own app) writes
 	// there (the Qoder app's status file, #2138).
@@ -423,7 +451,15 @@ func (a *Agent) SharedName() string {
 // but what the other app reads there too, the Library's MCP servers and
 // skills, is still given.
 func (a *Agent) SharedHere() bool {
-	return a.shared != "" && a.WSL == "" && a.Dir != "" && !Taken(a.Dir) && agentDir(a.Dir)
+	return a.shared != "" && a.WSL == "" && a.Dir != "" && !Taken(a.Dir) && (agentDir(a.Dir) || a.SharedRead())
+}
+
+// SharedRead reports whether an app of the agent's vendor that reads its
+// shared folder is here (sharedApp): VS Code, or GitHub Copilot's JetBrains
+// plugin, for Copilot CLI's ~/.copilot. A folder left by the CLI's
+// uninstall is then no leftover: that app still reads it.
+func (a *Agent) SharedRead() bool {
+	return a.shared != "" && a.WSL == "" && a.Dir != "" && a.sharedApp != nil && !Taken(a.Dir) && a.sharedApp()
 }
 
 // Detected reports whether the agent seems to be installed or configured.
@@ -439,7 +475,7 @@ func (a *Agent) Detected() bool {
 	if _, ok := statKind(a.Path); ok && (a.pathOwn == nil || a.pathOwn()) {
 		return true
 	}
-	if a.Dir != "" && !a.dirShared && agentDir(a.Dir) {
+	if a.Dir != "" && !a.dirShared && agentDir(a.Dir, a.signIn) {
 		return true
 	}
 	if a.sign != nil && a.sign() {
@@ -479,7 +515,9 @@ func binAt(name string) string {
 // agentDir reports whether p is a folder an agent itself made. Skill
 // installers (npx skills and the like) make <folder>/skills for every agent
 // they know, installed or not; a folder holding nothing else is theirs.
-func agentDir(p string) bool {
+// own names a file magpie may have written there itself (Agent.signIn),
+// no sign either.
+func agentDir(p string, own ...string) bool {
 	es, err := os.ReadDir(p)
 	if err != nil {
 		return isDir(p)
@@ -488,7 +526,7 @@ func agentDir(p string) bool {
 		return true
 	}
 	for _, e := range es {
-		if n := e.Name(); n != "skills" && n != ".DS_Store" && !(e.IsDir() && leftover[strings.ToLower(n)]) {
+		if n := e.Name(); n != "skills" && n != ".DS_Store" && !(e.IsDir() && leftover[strings.ToLower(n)]) && !(!e.IsDir() && slices.Contains(own, n)) {
 			return true
 		}
 	}
@@ -652,7 +690,7 @@ func Detected() []*Agent { return DetectedIn(All()) }
 func DetectedIn(all []*Agent) []*Agent {
 	var out []*Agent
 	for _, a := range all {
-		if a.Detected() {
+		if a.Detected() && !a.Nested {
 			out = append(out, a)
 		}
 	}

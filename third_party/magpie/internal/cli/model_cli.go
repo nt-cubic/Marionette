@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"slices"
@@ -117,6 +118,12 @@ const modelUsage = `usage:
                                                  shorter or unknown window stays as it is. off takes it away;
                                                  all also holds a window you set for a model or its
                                                  provider (the shorter is told), own leaves those alone
+  magpie model window <agent> [<model>=<size>…|off]
+                                                 the context window one agent is told for a model, apart from
+                                                 every other agent's (dsh compacts earlier than Codex at the
+                                                 same window): <model> is provider/model, group/<id>,
+                                                 provider/*, a bare model id or * (which only shortens);
+                                                 off takes them away. No pairs shows them
   magpie model compact <agent> [every|off|<size>] codex, claude or grok's own Long conversations: every
                                                  follows the one above; off runs to the whole window; a
                                                  size compacts there
@@ -158,6 +165,8 @@ func modelCmd(args []string) error {
 		return modelSuffix(args[1:])
 	case "compact", "full-context":
 		return modelCompact(args[1:])
+	case "window", "agent-context":
+		return modelAgentWindow(args[1:])
 	case "context-cap", "ctx-cap":
 		return modelContextCap(args[1:])
 	case "context", "ctx":
@@ -317,6 +326,9 @@ func modelEfforts(args []string) error {
 		} else {
 			fmt.Println(muted.Render("· all offered"))
 		}
+		if p.KnownBorrowed(model) {
+			fmt.Println(faint.Render(borrowedLine(p, model)))
+		}
 		return nil
 	}
 	var levels []string
@@ -327,8 +339,27 @@ func modelEfforts(args []string) error {
 			}
 		}
 	}
-	if err := provider.SetModelEfforts(id, levels); err != nil {
+	changed, err := provider.ChangeModelEfforts(id, levels)
+	if err != nil {
 		return err
+	}
+	if !changed {
+		// nothing saved: say so, and why, rather than a tick (@czhhcz on
+		// X took "✓ offers every level it has" for a set that took)
+		switch kept, narrowed := p.ModelEfforts()[model]; {
+		case given && len(all) > 0:
+			fmt.Println(muted.Render(id+" already offers "+strings.Join(all, ", ")), faint.Render("· nothing changed"))
+		case given:
+			fmt.Println(muted.Render(id+" has no reasoning levels given"), faint.Render("· nothing changed"))
+		case narrowed:
+			fmt.Println(muted.Render(id+" already offers only "+strings.Join(kept, ", ")), faint.Render("· nothing changed"))
+		default:
+			fmt.Println(muted.Render(id+" already offers every level it has, "+strings.Join(all, ", ")), faint.Render("· nothing changed"))
+			if p.KnownBorrowed(model) {
+				fmt.Println(faint.Render(borrowedLine(p, model)))
+			}
+		}
+		return nil
 	}
 	if given {
 		if all = p.Efforts(model); len(all) > 0 {
@@ -344,6 +375,15 @@ func modelEfforts(args []string) error {
 		fmt.Println(green.Render("✓"), id, muted.Render("offers every level it has"), faint.Render(strings.Join(all, ", ")))
 	}
 	return nil
+}
+
+// borrowedLine says where a model's levels come from when its provider's
+// list names none for it (Provider.KnownBorrowed): a relay's /v1/models
+// with reasoning_levels: [] listed five for a Claude model, and the user
+// had no way to tell magpie sends them all the same (@czhhcz on X).
+func borrowedLine(p *provider.Provider, model string) string {
+	return "  · " + cmp.Or(p.Name, p.ID) + "'s list names no reasoning levels for " + model +
+		": these are the model's own from models.dev, which magpie fits requests to · off sends it no reasoning field"
 }
 
 // modelPrice shows what a provider's model is counted at, or sets what the
@@ -807,8 +847,8 @@ func modelCompact(args []string) error {
 // (settings.ContextCap).
 func modelContextCap(args []string) error {
 	if len(args) == 0 {
-		if n := settings.Load().ContextCap; n > 0 {
-			fmt.Println(bold.Render(tokenCount(n)), muted.Render(map[bool]string{true: "· no model is told a longer window, one you set for it or its provider included · magpie model context-cap own", false: "· no model is told a longer window, unless you set one for it or its provider · magpie model context-cap all"}[settings.Load().ContextCapAll]), muted.Render("· magpie model context-cap off"))
+		if n := settings.Shared().ContextCap; n > 0 {
+			fmt.Println(bold.Render(tokenCount(n)), muted.Render(map[bool]string{true: "· no model is told a longer window, one you set for it or its provider included · magpie model context-cap own", false: "· no model is told a longer window, unless you set one for it or its provider · magpie model context-cap all"}[settings.Shared().ContextCapAll]), muted.Render("· magpie model context-cap off"))
 		} else {
 			fmt.Println("off", muted.Render("· every model takes its own window · magpie model context-cap <size>"))
 		}
@@ -881,6 +921,53 @@ func agentCompact(agent string, args []string) error {
 		return err
 	}
 	fmt.Println(green.Render("✓"), agent+":", compactWords(settings.Load().ForAgent(agent)))
+	return nil
+}
+
+// modelAgentWindow says or sets the windows one agent is told
+// (settings.AgentContexts): model=size pairs replace those it had, off
+// takes them away.
+func modelAgentWindow(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("magpie model window <agent> [<model>=<size>…|off]")
+	}
+	a, err := agent.Find(args[0])
+	if err != nil {
+		return err
+	}
+	id := a.ListsFor()
+	if len(args) == 1 {
+		cur := provider.AgentContexts(id)
+		if len(cur) == 0 {
+			fmt.Println(muted.Render(fmt.Sprintf("%s is told each model's own window · magpie model window %s <model>=<size>", a.ID, a.ID)))
+			return nil
+		}
+		for _, k := range slices.Sorted(maps.Keys(cur)) {
+			fmt.Println(k, tokenCount(cur[k]))
+		}
+		return nil
+	}
+	cs := map[string]int{}
+	if v := strings.ToLower(args[1]); len(args) == 2 && (v == "off" || v == "every" || v == "default") {
+		cs = nil
+	} else {
+		for _, w := range args[1:] {
+			k, v, ok := strings.Cut(w, "=")
+			n, perr := provider.ParseTokens(v)
+			if !ok || perr != nil || n <= 0 {
+				return fmt.Errorf("magpie model window %s <model>=<size such as 500k>|off, not %q", a.ID, w)
+			}
+			cs[k] = n
+		}
+	}
+	if err := provider.SetAgentContexts(id, cs); err != nil {
+		return err
+	}
+	if len(cs) == 0 {
+		fmt.Println(green.Render("✓"), a.ID, "is told each model's own window again")
+		return nil
+	}
+	fmt.Println(green.Render("✓"), a.ID, "is told", len(cs), "window(s) of its own", muted.Render("· takes effect when it next starts"))
 	return nil
 }
 
@@ -1152,7 +1239,7 @@ func modelOutput(args []string) error {
 		// the command the user is after
 		if !dropped {
 			wid, _, _ := strings.Cut(key, "/")
-			if settings.Load().ModelOutputs[wid+"/*"] > 0 {
+			if settings.Shared().ModelOutputs[wid+"/*"] > 0 {
 				return fmt.Errorf("%s has no reply limit of its own; what every model of this provider answers with is what you set for %s, which %s takes away",
 					key, wid+"/*", resetCommand("output", wid+"/*"))
 			}

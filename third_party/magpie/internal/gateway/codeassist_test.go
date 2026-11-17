@@ -166,7 +166,8 @@ func TestCodeAssistAntigravityLevels(t *testing.T) {
 	var raw []catalog.Model
 	for _, l := range []string{"gemini-3-flash - Gemini 3 Flash", "gemini-3.1-pro-high - Gemini 3.1 Pro (High)", "gemini-3.1-pro-low - Gemini 3.1 Pro (Low)",
 		"gemini-3.7-flash-high - Gemini 3.7 Flash (High)", "gemini-3.7-flash-low - Gemini 3.7 Flash (Low)",
-		"gemini-3.7-flash-medium - Gemini 3.7 Flash (Medium)", "gemini-pro-agent - Gemini 3.1 Pro (High)"} {
+		"gemini-3.7-flash-medium - Gemini 3.7 Flash (Medium)", "gemini-pro-agent - Gemini 3.1 Pro (High)",
+		"gemini-4-hydrogen-high - Gemini 4 Hydrogen (High)", "gemini-4-hydrogen-xhigh - Gemini 4 Hydrogen (XHigh)"} {
 		id, name, _ := strings.Cut(l, " - ")
 		raw = append(raw, catalog.Model{ID: id, Name: name})
 	}
@@ -186,6 +187,9 @@ func TestCodeAssistAntigravityLevels(t *testing.T) {
 		{"gemini-pro-agent", "medium", "antigravity", "gemini-pro-agent", "high"},
 		{"gemini-pro-agent", "low", "antigravity", "gemini-pro-agent", "low"},
 		{"gemini-3.7-flash", "low", "gemini", "gemini-3.7-flash", "low"},
+		{"gemini-4-hydrogen", "xhigh", "antigravity", "gemini-4-hydrogen-xhigh", "xhigh"},
+		{"gemini-4-hydrogen-xhigh", "xhigh", "antigravity", "gemini-4-hydrogen-xhigh", "xhigh"},
+		{"gemini-4-hydrogen", "high", "antigravity", "gemini-4-hydrogen-high", "high"},
 	} {
 		r := codeAssistRequest(t)
 		r.Thinking, r.Effort = false, c.effort
@@ -297,6 +301,8 @@ func TestCodeAssistTextCalls(t *testing.T) {
 			"", []call{{"bash", `{"command":"ls"}`}}, "tool"},
 		{"unfinished", []string{chunk(text("look call:default_api:bash{command:ls"), "MAX_TOKENS")},
 			"look call:default_api:bash{command:ls", nil, "length"},
+		{"malformed", []string{`{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"x","thought":true}]},"finishReason":"MALFORMED_FUNCTION_CALL","finishMessage":"Malformed function call: call:default_api:bash{command:ls -la}"}]}}`},
+			"", []call{{"bash", `{"command":"ls -la"}`}}, "tool"},
 		{"not a call", []string{chunk(text("say call:default_api: or recall"), ""), chunk(text(" ca"), "STOP")},
 			"say call:default_api: or recall ca", nil, "stop"},
 	} {

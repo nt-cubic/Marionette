@@ -92,7 +92,7 @@
 
   // the cache a route's vendor read: its last answer's usage
   function cacheOf(r) {
-    const u = r.usage?.[r.usage.length - 1];
+    const u = r?.usage?.[r.usage.length - 1];
     // a vendor that counts no cache has none to show, not 0% (#3464)
     if (!u || u.cache_unknown) return null;
     const total = (u.in || 0) + (u.cache_read || 0) + (u.cache_write || 0);
@@ -394,7 +394,9 @@
 
   // ctxCard draws a route's prompt. opts: series (the session's prompts,
   // [{id, tokens, time}]), onPoint (a point of it clicked), cache ({read,
-  // total}, when the route carries no usage), crumbs (the footer's path),
+  // total}, when the route carries no usage), session (the key of the
+  // session it is of), prev (that session's last answered request, whose
+  // cache a request under way shows), crumbs (the footer's path),
   // place (for its width: see cardWidth). The card's ctxUpdate(r, opts)
   // draws another route in it, keeping the nodes that are the same (grid
   // cells too), so nothing flashes and the grid keeps its height.
@@ -803,12 +805,10 @@
       k.append(el("span", "", t("Context used")));
       if (window) {
         const [tone, word] = health(full);
-        const h = el("span", "ctx-health " + tone, t(word));
-        k.append(h);
+        k.append(el("span", "ctx-health " + tone, t(word)));
       }
       const big = el("div", "ctx-big");
-      big.append(num("b", "", p.tokens));
-      big.append(el("span", "", window ? "/ " + fmtK(window) + " " + t("tokens") : t("tokens")));
+      big.append(num("b", "", p.tokens), el("span", "", window ? "/ " + fmtK(window) + " " + t("tokens") : t("tokens")));
       const sub = el("div", "ctx-sub");
       if (window) {
         const bits = [t("{pct} full", { pct: pct(full) })];
@@ -822,12 +822,19 @@
 
       const cache = cacheOf(r) || opts.cache;
       // another agent or session drawn in the card has no last request's
-      // cache to show: its place stays, with a dash till it is read
-      const whose = r.agent + " " + (opts.series?.[0]?.id ?? "");
+      // cache to show: its place stays, with a dash till it is read. The
+      // session is the caller's key for it (opts.session), not its line's
+      // first request: Routing keeps the latest 60 requests, so in a long
+      // session that first one moved on with each new request, and every
+      // request under way showed "—" (shenggxhz on X, Codex in T3 Code)
+      const whose = r.agent + " " + opts.session;
       if (whose !== cacheWhose) lastCache = null;
       cacheWhose = whose;
+      // opened while a request is under way, the session's last answered
+      // request is the cache to show till this one's is read
+      lastCache ||= cacheOf(opts.prev);
       const known = cache && p.counted !== false ? cache : null;
-      if (known || cacheShown) {
+      if (known || cacheShown || lastCache) {
         // once shown, the cache keeps its place, so nothing under it moves
         // up and back down. A request under way has read no cache yet:
         // the last request's stays, dimmed and named as the last one's,
@@ -835,7 +842,7 @@
         // request flashed it to "—" and an empty bar, the dash against
         // 命中). Nothing to show is said in words, with no bar
         const shown = known || (live ? lastCache : null);
-        const c = el("div", "ctx-stat ctx-cache" + (!known && shown ? " was" : shown ? "" : " none"));
+        const c = el("div", "ctx-stat ctx-cache" + (known ? "" : shown ? " was" : " none"));
         c.append(el("div", "ctx-k", t("Prompt cache")));
         const cb = el("div", "ctx-big");
         cb.append(el("b", "", shown ? hitPct(shown.read / shown.total) : "—"), el("span", "", t("hit")));
@@ -1361,7 +1368,7 @@
     title.after(note);
     if (set.locked) note.textContent = t("{name} is set and comes first", { name: set.locked });
     else if (own) note.textContent = t("{model} compacts at its own {value}, which comes first", { model: own.model, value: fmtK(own.value) });
-    else if (set.source == "long") note.textContent = t("Long conversations, shared by Codex, Claude Code and Grok Build");
+    else if (set.source == "long") note.textContent = ((prefs || {}).agentCompacts || {})[agent] ? t("Long conversations in {agent}", { agent: agentLabel(agent) }) : t("Long conversations, shared by Codex, Claude Code and Grok Build");
     else if (set.ours) note.textContent = t("Set by magpie");
     else if (set.value && a.compact && +set.value > a.compact.window && a.compact.window) note.textContent = t("You set {value}; the model's {window} comes first", { value: show(set.value), window: fmtK(a.compact.window) });
     else if (set.value) note.textContent = t("You set {value}", { value: show(set.value) });

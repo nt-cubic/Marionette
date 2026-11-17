@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -51,15 +52,15 @@ func accountAgent(p provider.Provider) string {
 // antigravityTurnsAway: a system prompt Antigravity answers with a 429
 // "Resource has been exhausted (e.g. check quota)" whatever the quota left:
 // one that carries a line of agTurnedAway anywhere in the system
-// instruction, in any case, is turned away on every model, while the same
-// words in a message go through (#666). magpie breaks those lines up before
-// they go (antigravityCloak); this still tells the refusal for what it is
-// when the user has the prompt sent as written, or Google turns away one
-// that was broken up, so no one chases a quota that isn't spent.
+// instruction, in any case, is turned away on every model (#666), and since
+// 11-14 Codex's GPT-5 line in a user's turn too. magpie rewords those lines
+// before they go (antigravityCloak, antigravityCloakMessages); this still tells the refusal for what it is
+// when the user has the prompt sent as written, or Google turns away a copy
+// someone broke up with invisible characters, so no one chases a quota that
+// isn't spent.
 func antigravityTurnsAway(system string) bool {
-	low := strings.ToLower(system)
-	for _, line := range agTurnedAway {
-		if strings.Contains(low, line) {
+	for _, re := range agTurnedAwayRes {
+		if re.MatchString(system) {
 			return true
 		}
 	}
@@ -85,38 +86,165 @@ func antigravityTurnsAway(system string) bool {
 //   - Hermes Agent's earlier default persona (its SOUL.md until Hermes
 //     replaced it: "You are Hermes Agent, an intelligent AI assistant
 //     created by Nous Research. …"), which a SOUL.md the user edited keeps
-//     (zgoodz on X, 10-27). The line without "Research", "AI" or "Hermes"
-//     goes through, and so does today's "You are Hermes Agent, built by
-//     Nous Research."
+//     (zgoodz on X, 10-27). Since 11-14 it is turned away with "built by"
+//     too, and as "You're Hermes Agent, …" with "created by", 3 of 3 each;
+//   - since the evening of 11-14 (Lmohn39 and ZhouYimingsjtu on X), 3 of 3
+//     or 5 of 5 each on a real account, on gemini-3-flash and
+//     claude-sonnet-4-6 alike: "You are Hermes Agent" (today's persona,
+//     "You are Hermes Agent, built by Nous Research.", and the earlier
+//     one), "You are OpenCode" (each of OpenCode 2.0.25's prompts), "You
+//     are a coding agent running in the Codex CLI" (Codex 0.165's prompt for
+//     a model it has none of its own for) and "a coding assistant running
+//     inside pi" (pi 1.5.0's default prompt). Codex's prompt for GPT-6,
+//     Claude Code's, Gemini CLI's, Qwen Code's, Cline's, Kilo's, goose's,
+//     Amp's, Droid's, Kimi CLI's, Aider's and Cursor's went through as
+//     written.
 //
-// Each is broken up before it goes by zero-width spaces (antigravityCloak),
-// which Google lets through. A break after only a line's first letter was
-// turned away again on 11-11 for Claude Code's two lines, so each word has
-// two. Codex's and Hermes' lines went through as written on 11-11 too, and
-// are still broken up: that costs nothing and a Codex thread that is
-// refused again says why. A mention of the Claude Agent SDK elsewhere
-// ("running within the Claude Agent SDK") goes through as written, and is
-// sent so.
+// Each goes reworded with the same meaning (agSaidAs). Until 11-14 they
+// went broken up by zero-width spaces, which Google let through; since then
+// its check reads past invisible characters: two U+200B in each word, one
+// after every character, or U+2060 instead, every line here was turned away
+// 5 of 5 on a real account, and Claude Desktop's Code tab, which sends the
+// billing line and whose subagents send the Agent SDK's line, got nothing
+// but the refusal (hc295971796 on X, 11-14). Each rewording went through 5
+// of 5. A mention of the Claude Agent SDK elsewhere ("running within the
+// Claude Agent SDK") goes through as written, and is sent so.
 var agTurnedAway = []string{
-	"x-anthropic-billing-header:",
+	agBillingLine,
 	"built on anthropic's claude agent sdk",
 	"you are codex, an agent based on gpt-5",
 	"you are codex, a coding agent based on gpt-5",
-	"hermes agent, an intelligent ai assistant created by nous research",
+	"an intelligent ai assistant created by nous research",
+	agRFCLine,
+	"you are hermes agent",
+	"you are opencode",
+	"you are a coding agent running in the codex cli",
+	"a coding assistant running inside pi",
+}
+
+// agRFCLine is the line oh-my-pi (omp) starts its system prompt with, and
+// its advisor's and live mode's (omp 18.20.0), which Antigravity turns away
+// as it does the others (eric_li8983 on X, 11-14).
+const agRFCLine = "rfc 2119 keywords: must, required, should, recommended, may, optional."
+
+// agSaidAs is how each line of agTurnedAway goes, in the same order, given
+// the line as it was matched with its invisible characters taken out and
+// its white space as it was:
+//   - Claude Code's billing line not at all, to the end of its line: it is
+//     Anthropic's, and no Antigravity model reads anything in it;
+//   - the Agent SDK's "built on Anthropic's Claude Agent SDK" as "built on
+//     the Claude Agent SDK by Anthropic";
+//   - Codex's "based on GPT-5" as "built on GPT-5";
+//   - Hermes' "created by Nous Research" as "built by Nous Research", as
+//     Hermes' current persona says it;
+//   - omp's "keywords" as "key words", RFC 2119's own term (10 of 10 on
+//     11-14, eric_li8983 on X, while a broken-up copy was turned away 1 to
+//     3 times in 10);
+//   - "You are Hermes Agent", "You are OpenCode" and Codex CLI's line as
+//     "You're …" (5 of 5 each; Hermes' earlier persona with "built by" as
+//     well, 5 of 5);
+//   - pi's "running inside pi" as "running within pi" (5 of 5 on both
+//     models).
+var agSaidAs = []func(string) string{
+	func(string) string { return "" },
+	func(m string) string { return agSDKSaidAs.ReplaceAllString(m, "${1}the${2}${3} by Anthropic") },
+	func(m string) string { return agBasedOn.ReplaceAllString(m, "built${1}on") },
+	func(m string) string { return agBasedOn.ReplaceAllString(m, "built${1}on") },
+	func(m string) string { return agCreatedBy.ReplaceAllString(m, "built${1}by") },
+	func(m string) string { return agRFCSaidAs.ReplaceAllString(m, "$1 $2") },
+	agYoure,
+	agYoure,
+	agYoure,
+	func(m string) string { return agInside.ReplaceAllString(m, "within") },
+}
+
+// agYoure is m, which starts "You are", starting "You're" instead.
+func agYoure(m string) string { return agYouAre.ReplaceAllString(m, "${1}'re") }
+
+// each white space as agSpace has it, which Go's \s is not
+var (
+	agSDKSaidAs = lazyre.New(`(?i)^(built` + agSpace + `on` + agSpace + `)anthropic's(` + agSpace + `)(claude` + agSpace + `agent` + agSpace + `sdk)$`)
+	agBasedOn   = lazyre.New(`(?i)based(` + agSpace + `)on`)
+	agCreatedBy = lazyre.New(`(?i)created(` + agSpace + `)by`)
+	agRFCSaidAs = lazyre.New(`(?i)(key)(words)`)
+	agYouAre    = lazyre.New(`(?i)^(you)` + agSpace + `are`)
+	agInside    = lazyre.New(`(?i)inside`)
+)
+
+// agSpace is a run of white space as Google's check reads it: on a real
+// account on 11-14 omp's line was turned away just as well wrapped after
+// any comma, with CRLF, a tab, two spaces or a no-break space between two
+// of its words, so only a match that allows these finds every copy. Go's
+// \s is ASCII only; this is JavaScript's \s, which the antigravity plugin
+// matches with.
+const agSpace = `[\s\v\p{Zs}\x{2028}\x{2029}\x{feff}]+`
+
+// agInvisible are the characters Google's check reads past since 11-14:
+// a line broken up by them is turned away as the line itself.
+const agInvisible = `[\x{00ad}\x{180e}\x{200b}-\x{200f}\x{2060}-\x{2064}\x{feff}]`
+
+var agInvisibleRe = lazyre.New(agInvisible)
+
+// agLineRe matches line in any case, with any run of white space between
+// its words and any invisible characters inside them, so a copy someone
+// broke up (an older magpie, the antigravity-cloak middleware before 0.1.7)
+// is found as the line. Claude Code's billing line is matched to the end of
+// its line, since it goes whole.
+func agLineRe(line string) *lazyre.RE {
+	words := strings.Split(line, " ")
+	for i, w := range words {
+		var cs []string
+		for _, c := range w {
+			cs = append(cs, regexp.QuoteMeta(string(c)))
+		}
+		words[i] = strings.Join(cs, agInvisible+"*")
+	}
+	src := "(?i)" + strings.Join(words, agInvisible+"*"+agSpace+agInvisible+"*")
+	if line == agBillingLine {
+		src += `[^\n]*\n?`
+	}
+	return lazyre.New(src)
+}
+
+// agBillingLine is Claude Code's billing line, as agTurnedAway has it.
+const agBillingLine = "x-anthropic-billing-header:"
+
+// agTurnedAwayRes are agTurnedAway's lines as agLineRe matches them, in
+// the same order.
+var agTurnedAwayRes = func() []*lazyre.RE {
+	res := make([]*lazyre.RE, len(agTurnedAway))
+	for i, line := range agTurnedAway {
+		res[i] = agLineRe(line)
+	}
+	return res
+}()
+
+// agSays says whether system carries line, one of agTurnedAway's.
+func agSays(system, line string) bool {
+	return agSaysRe(line).MatchString(system)
+}
+
+// agSaysRe is line's agTurnedAwayRes; line is one of agTurnedAway's.
+func agSaysRe(line string) *lazyre.RE {
+	return agTurnedAwayRes[slices.Index(agTurnedAway, line)]
 }
 
 // antigravityTurnsCodexAway says whether system carries Codex's GPT-5
 // identity line that Antigravity turns away.
 func antigravityTurnsCodexAway(system string) bool {
-	low := strings.ToLower(system)
-	return strings.Contains(low, "you are codex, an agent based on gpt-5") ||
-		strings.Contains(low, "you are codex, a coding agent based on gpt-5")
+	return agSays(system, "you are codex, an agent based on gpt-5") ||
+		agSays(system, "you are codex, a coding agent based on gpt-5")
 }
 
 // antigravityTurnsHermesAway says whether system carries Hermes Agent's
-// earlier default persona that Antigravity turns away.
+// persona, today's or the earlier one, that Antigravity turns away.
 func antigravityTurnsHermesAway(system string) bool {
-	return strings.Contains(strings.ToLower(system), "hermes agent, an intelligent ai assistant created by nous research")
+	return agSays(system, "you are hermes agent") || agSays(system, "an intelligent ai assistant created by nous research")
+}
+
+// antigravityTurnsRFCAway says whether system carries omp's RFC 2119 line.
+func antigravityTurnsRFCAway(system string) bool {
+	return agSays(system, agRFCLine)
 }
 
 // agReworded are paragraphs Antigravity takes but answers badly, each with
@@ -140,93 +268,98 @@ func antigravityReword(system string) string {
 	return system
 }
 
-// zeroWidth is what antigravityCloak puts inside a line Antigravity turns
-// away: U+200B, which the model reads past and Google's check doesn't.
-const zeroWidth = "\u200b"
-
-// antigravityCloak is system with each line of agTurnedAway in it broken up
-// by zero-width spaces, wherever and in whatever case it is, and every other
-// word as the agent wrote it: what an Antigravity account's system
-// instruction is sent as, unless the user has it sent as written
-// (Provider.PromptAsWritten). Inside a line, every run of three or more
-// letters or digits gets one after its first and one after its second
-// character. One after the first letter only (what this did until 11-11)
-// stopped working: Google's check then turned "x\u200b-anthropic-billing-
-// header:" and "b\u200built on Anthropic's Claude Agent SDK" away again
-// (a real account, Claude Code 2.1.316's prompt, @shzutbi1 on X), while the
-// same lines with two breaks in every word were answered.
-// A line already broken up (the antigravity-cloak plugin's) isn't one any
-// more and is left alone.
+// antigravityCloak is system with each line of agTurnedAway in it said as
+// agSaidAs says, wherever and in whatever case it is, broken up by
+// invisible characters or not, and every other word as the agent wrote it:
+// what an Antigravity account's system instruction is sent as, unless the
+// user has it sent as written (Provider.PromptAsWritten).
 func antigravityCloak(system string) string {
 	if !antigravityTurnsAway(system) {
 		return system
 	}
-	// lower-casing keeps every byte offset here: each line is ASCII, and
-	// a match is found in low at the offset it has in system only while
-	// the two are the same length, which ToLower can change outside ASCII
-	low := strings.ToLower(system)
-	if len(low) != len(system) {
-		low = asciiLower(system)
+	return agCloakLines(system, nil)
+}
+
+// agUserTurnedAway are the lines of agTurnedAway Antigravity also turns
+// away in a user's turn: since 11-14 Codex's GPT-5 lines there got a bare
+// 429 "Resource has been exhausted" 3 of 3 on a real account, where a
+// pasted AGENTS.md or a developer message told after a reply
+// (<system-reminder>) puts them, and went through reworded. The others went
+// through as written there, 3 of 3 each, and so did all of them in the
+// model's turns and in tool results.
+var agUserTurnedAway = func() []bool {
+	only := make([]bool, len(agTurnedAway))
+	for i, line := range agTurnedAway {
+		only[i] = strings.HasPrefix(line, "you are codex, ")
 	}
-	var at []int
-	for _, line := range agTurnedAway {
-		for i := 0; ; {
-			j := strings.Index(low[i:], line)
-			if j < 0 {
-				break
-			}
-			at = append(at, agBreaks(low, i+j, i+j+len(line))...)
-			i += j + len(line)
+	return only
+}()
+
+// agCloakLines is antigravityCloak over the lines of agTurnedAway only says
+// to reword, or over all of them when only is nil.
+func agCloakLines(system string, only []bool) string {
+	type match struct {
+		from, to int
+		as       func(string) string
+	}
+	var at []match
+	for i, re := range agTurnedAwayRes {
+		if only != nil && !only[i] {
+			continue
+		}
+		for _, m := range re.Regexp().FindAllStringIndex(system, -1) {
+			at = append(at, match{m[0], m[1], agSaidAs[i]})
 		}
 	}
-	slices.Sort(at)
-	at = slices.Compact(at)
+	slices.SortFunc(at, func(a, b match) int { return a.from - b.from })
 	var b strings.Builder
-	b.Grow(len(system) + len(at)*len(zeroWidth))
+	b.Grow(len(system))
 	prev := 0
-	for _, i := range at {
-		b.WriteString(system[prev:i])
-		b.WriteString(zeroWidth)
-		prev = i
+	for _, m := range at {
+		if m.from < prev {
+			continue
+		}
+		b.WriteString(system[prev:m.from])
+		b.WriteString(m.as(agInvisibleRe.Regexp().ReplaceAllString(system[m.from:m.to], "")))
+		prev = m.to
 	}
 	b.WriteString(system[prev:])
 	return b.String()
 }
 
-// agBreaks are the offsets in s[from:to] a zero-width space goes at: after
-// the first and after the second character of every run of three or more
-// ASCII letters or digits.
-func agBreaks(s string, from, to int) []int {
-	var at []int
-	for i := from; i < to; {
-		j := i
-		for j < to && agAlnum(s[j]) {
-			j++
+// antigravityCloakMessages is msgs with each line of agUserTurnedAway in
+// the text of a user's turn said as agSaidAs says, and whether any was. The
+// model's own turns, tool results and every other line are left as they
+// are, and msgs itself is never changed.
+func antigravityCloakMessages(msgs []Message) ([]Message, bool) {
+	var out []Message
+	for i, m := range msgs {
+		if m.Role == "assistant" {
+			continue
 		}
-		if j-i >= 3 {
-			at = append(at, i+1, i+2)
+		var parts []Part
+		for j, pt := range m.Parts {
+			if pt.Kind != Text {
+				continue
+			}
+			t := agCloakLines(pt.Text, agUserTurnedAway)
+			if t == pt.Text {
+				continue
+			}
+			if parts == nil {
+				parts = slices.Clone(m.Parts)
+			}
+			parts[j].Text = t
 		}
-		if j == i {
-			j++
+		if parts == nil {
+			continue
 		}
-		i = j
+		if out == nil {
+			out = slices.Clone(msgs)
+		}
+		out[i].Parts = parts
 	}
-	return at
-}
-
-func agAlnum(c byte) bool {
-	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9'
-}
-
-// asciiLower lower-cases only ASCII letters, keeping every byte where it is.
-func asciiLower(s string) string {
-	b := []byte(s)
-	for i, c := range b {
-		if 'A' <= c && c <= 'Z' {
-			b[i] = c + 'a' - 'A'
-		}
-	}
-	return string(b)
+	return out, out != nil
 }
 
 // antigravityRefuses is what Antigravity says when it turns such a request
@@ -285,9 +418,26 @@ const antigravityTurnedAwayHint = "Antigravity answers this 429 to the system pr
 // and a new one on the Antigravity model is sent magpie's own.
 const antigravityCodexHint = "Antigravity answers this 429 to Codex's own system prompt for GPT-5 models whatever quota is left, so it is not a quota and waiting won't help; a Codex chat begun on a GPT model keeps that prompt after a model switch or a fork, so start a new chat on this model"
 
-// antigravityHermesHint is the hint for Hermes Agent's earlier default
-// persona (routing/client.js AG_HERMES).
-const antigravityHermesHint = "Antigravity answers this 429 to Hermes Agent's earlier default persona (its SOUL.md) whatever quota is left, so it is not a quota and waiting won't help; Hermes' current default persona goes through, so put it in SOUL.md, or use another provider for these chats"
+// antigravityHermesHint is the hint for Hermes Agent's persona, today's or
+// the earlier one, word for word what the antigravity plugin says
+// (HERMES_HINT; routing/client.js AG_HERMES).
+const antigravityHermesHint = "Antigravity answers this 429 to Hermes Agent's default persona (\"You are Hermes Agent, …\" in its SOUL.md), the current one and the earlier one alike, whatever quota is left, so it is not a quota and waiting won't help; magpie sends it as \"You're Hermes Agent, …\", which goes through, so start SOUL.md another way, or use another provider for these chats"
+
+// antigravityOpenCodeHint is the hint for OpenCode's prompts (OPENCODE_HINT;
+// routing/client.js AG_OPENCODE).
+const antigravityOpenCodeHint = "Antigravity answers this 429 to OpenCode's system prompt (\"You are OpenCode, …\") whatever quota is left, so it is not a quota and waiting won't help; magpie sends that line as \"You're OpenCode, …\", which goes through, so use another provider for these chats, or put one after Antigravity in a routing group"
+
+// antigravityCodexCLIHint is the hint for Codex's prompt for a model it has
+// none of its own for (CODEX_CLI_HINT; routing/client.js AG_CODEX_CLI).
+const antigravityCodexCLIHint = "Antigravity answers this 429 to Codex's prompt for a model it has none of its own for (\"You are a coding agent running in the Codex CLI\") whatever quota is left, so it is not a quota and waiting won't help; magpie sends that line as \"You're …\", which goes through, so use another provider for these chats, or put one after Antigravity in a routing group"
+
+// antigravityPiHint is the hint for pi's default prompt (PI_HINT;
+// routing/client.js AG_PI).
+const antigravityPiHint = "Antigravity answers this 429 to pi's default system prompt (\"You are a coding assistant running inside pi\") whatever quota is left, so it is not a quota and waiting won't help; magpie sends that line as \"running within pi\", which goes through, so give pi a system prompt of your own (--system-prompt) or use another provider for these chats"
+
+// antigravityRFCHint is the hint for omp's RFC 2119 line, word for word
+// what the antigravity plugin says (RFC_HINT; routing/client.js AG_RFC).
+const antigravityRFCHint = "Antigravity answers this 429 to the line \"RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.\" that starts oh-my-pi (omp)'s system prompt, and to any prompt that has it, whatever quota is left, so it is not a quota and waiting won't help; magpie sends that line as \"RFC 2119 key words: …\", which goes through, so this one came from a copy of it that was worded another way"
 
 // antigravityHint is the hint for what Antigravity turned away with system
 // as its system instruction.
@@ -295,8 +445,20 @@ func antigravityHint(system string) string {
 	if antigravityTurnsCodexAway(system) {
 		return antigravityCodexHint
 	}
+	if agSays(system, "you are a coding agent running in the codex cli") {
+		return antigravityCodexCLIHint
+	}
 	if antigravityTurnsHermesAway(system) {
 		return antigravityHermesHint
+	}
+	if agSays(system, "you are opencode") {
+		return antigravityOpenCodeHint
+	}
+	if agSays(system, "a coding assistant running inside pi") {
+		return antigravityPiHint
+	}
+	if antigravityTurnsRFCAway(system) {
+		return antigravityRFCHint
 	}
 	return antigravityTurnedAwayHint
 }
@@ -346,13 +508,18 @@ func codeAssistBody(p provider.Provider, r *Request, model string, wires map[str
 	model = p.OwnModelID(model)
 	sent := codeAssistID(model, r.Effort, p.Account.Agent)
 	if p.Account.Agent == "antigravity" && !p.PromptAsWritten {
-		// the lines Google turns away, broken up, and the paragraphs
+		// the lines Google turns away, and the paragraphs
 		// it answers badly, reworded; the request the
 		// caller holds keeps the system prompt as written, which the
 		// refusal is told against (antigravityTurnedAway)
 		if cloaked := antigravityReword(antigravityCloak(r.System)); cloaked != r.System {
 			rc := *r
 			rc.System = cloaked
+			r = &rc
+		}
+		if msgs, ok := antigravityCloakMessages(r.Messages); ok {
+			rc := *r
+			rc.Messages = msgs
 			r = &rc
 		}
 	}
@@ -436,7 +603,7 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 				}
 			case ToolCall:
 				names[p.ID] = p.Name
-				call := map[string]any{"name": p.Name, "args": json.RawMessage(argsOf(p))}
+				call := map[string]any{"name": geminiFuncName(p.Name), "args": json.RawMessage(argsOf(p))}
 				if id := toolID(p.ID); id != "" {
 					call["id"] = id
 				}
@@ -452,7 +619,7 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 				}
 				parts = append(parts, part)
 			case ToolResult:
-				name := names[p.CallID]
+				name := geminiFuncName(names[p.CallID])
 				if name == "" {
 					name = "tool"
 				}
@@ -494,6 +661,17 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 					for _, im := range ims {
 						toolImage[len(parts)] = true
 						parts = append(parts, im)
+					}
+				}
+				// the recordings it returned follow as its images do; a
+				// Claude model on Antigravity hears none, and has the
+				// note toolOutput ended the text with
+				if !(ag && claude) {
+					for _, a := range p.Audio {
+						if a.Data != "" {
+							toolImage[len(parts)] = true
+							parts = append(parts, geminiInline(a.MediaType, a.Data))
+						}
 					}
 				}
 			}
@@ -575,7 +753,7 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 	if len(r.Tools) > 0 && r.ToolChoice != "none" {
 		var decls []map[string]any
 		for _, t := range r.Tools {
-			d := map[string]any{"name": t.Name}
+			d := map[string]any{"name": geminiFuncName(t.Name)}
 			if t.Description != "" {
 				d["description"] = t.Description
 			}
@@ -598,17 +776,25 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 			mode = "ANY"
 		case strings.HasPrefix(r.ToolChoice, "name:"):
 			mode = "ANY"
-			fc["allowedFunctionNames"] = []string{strings.TrimPrefix(r.ToolChoice, "name:")}
+			fc["allowedFunctionNames"] = []string{geminiFuncName(strings.TrimPrefix(r.ToolChoice, "name:"))}
 		case ag && claude:
 			// Antigravity's Claude wants its calls checked against the schema
 			mode = "VALIDATED"
 		}
 		fc["mode"] = mode
 		req["toolConfig"] = map[string]any{"functionCallingConfig": fc}
-	} else if r.WebSearch {
+	} else if google := googleToolsFor(r, sent); r.WebSearch || len(google) > 0 {
 		// Google's own search, which Code Assist runs on Gemini as long as
-		// no function is declared beside it (codeAssistSearches)
-		req["tools"] = []map[string]any{{"googleSearch": map[string]any{}}}
+		// no function is declared beside it (codeAssistSearches), and the
+		// client's other Google tools (URL context, code execution)
+		var tools []any
+		if r.WebSearch {
+			tools = append(tools, map[string]any{"googleSearch": map[string]any{}})
+		}
+		for _, t := range google {
+			tools = append(tools, t)
+		}
+		req["tools"] = tools
 	}
 
 	gen := map[string]any{}
@@ -658,6 +844,16 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 	}
 	b, _ := json.Marshal(map[string]any{"model": sent, "request": req})
 	return b
+}
+
+// googleToolsFor are the client's Google tools (GoogleTools) the model
+// sent is given: Gemini's, not Claude's or GPT-OSS's on Antigravity nor an
+// image model's, which turn Google's tools away (searchModel).
+func googleToolsFor(r *Request, sent string) []json.RawMessage {
+	if len(r.GoogleTools) == 0 || !searchModel(sent) {
+		return nil
+	}
+	return r.GoogleTools
 }
 
 // dropSecondAnswers leaves out a tool result whose call an earlier result
@@ -835,6 +1031,11 @@ func thinkingConfig(r *Request, model string, claude bool, at string) map[string
 				level = "low"
 			case effort == "medium" && (strings.Contains(m, "flash") || gen > 3):
 				level = "medium"
+			}
+			// a variant at xhigh (Gemini 4 Hydrogen) is asked at xhigh, which
+			// Google lists for it; a model with no such variant stays at high
+			if at == "xhigh" {
+				level = "xhigh"
 			}
 			tc["thinkingLevel"] = level
 		}
@@ -1165,6 +1366,12 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 					props := map[string]any{}
 					if m, ok := v.(map[string]any); ok {
 						for pk, pv := range m {
+							if pk == "" {
+								// Google turns a request away over a property
+								// with no name ("Request contains an invalid
+								// argument", fwxkogaia on X)
+								continue
+							}
 							// a property whose schema is false is one the
 							// call may not have: it is left out, and so is
 							// its name in required
@@ -1504,6 +1711,11 @@ func (d *codeAssistDecoder) decode(data string, emit func(Event)) error {
 				// reasoning above (#620)
 				d.flush(emit)
 				emit(Event{Kind: KImage, Name: p.InlineData.MimeType, Text: p.InlineData.Data})
+			case p.ExecutableCode != nil || p.CodeExecutionResult != nil:
+				// what Google's codeExecution ran and gave back, as text
+				// in the answer: no other API has a part for code Google
+				// ran, and left out the answer read as if it had none
+				d.text(ranCode(p), emit)
 			case p.Text != "" || p.Signature != "":
 				d.text(p.Text, emit)
 				if p.Signature != "" {
@@ -1530,6 +1742,20 @@ func (d *codeAssistDecoder) decode(data string, emit func(Event)) error {
 		}
 		if cand.FinishReason != "" && !d.stopped {
 			d.flush(emit)
+			if !d.tools && (cand.FinishReason == "MALFORMED_FUNCTION_CALL" || cand.FinishReason == "UNEXPECTED_TOOL_CALL") {
+				// the model made a call and Google would not take it as one
+				// ("Malformed function call: call:default_api:Name{…}"): the
+				// call is in the message, whole, and the client can run it.
+				// Left alone the reply read as empty, though it had cost
+				// tokens, and was asked again for nothing (fwxkogaia on X)
+				if i := strings.Index(cand.FinishMessage, callMarker); i >= 0 {
+					if name, args, n := textCall(cand.FinishMessage[i:]); n > 0 {
+						d.tools = true
+						emit(Event{Kind: KToolStart, ID: "call_" + newID(), Name: toolOfCall(name)})
+						emit(Event{Kind: KToolArgs, Text: string(args)})
+					}
+				}
+			}
 			d.stopped = true
 			stop := stopFromGemini(cand.FinishReason)
 			if d.tools && stop == "stop" {
@@ -1545,6 +1771,24 @@ func (d *codeAssistDecoder) decode(data string, emit func(Event)) error {
 	return nil
 }
 
+// ranCode is a part of Google's codeExecution as text: the code in a
+// fence named for its language, what it printed in a plain one, and an
+// outcome other than OUTCOME_OK said beside it.
+func ranCode(p gPart) string {
+	if c := p.ExecutableCode; c != nil {
+		return "\n```" + strings.ToLower(c.Language) + "\n" + strings.TrimRight(c.Code, "\n") + "\n```\n"
+	}
+	r := p.CodeExecutionResult
+	var b strings.Builder
+	if r.Outcome != "" && r.Outcome != "OUTCOME_OK" {
+		b.WriteString("\n" + r.Outcome + ":")
+	}
+	if out := strings.TrimRight(r.Output, "\n"); out != "" {
+		b.WriteString("\n```\n" + out + "\n```\n")
+	}
+	return b.String()
+}
+
 // Gemini's own tools live in a namespace, default_api, and a model now and
 // then names one of the client's with it: as a call's name
 // (default_api:bash), or, on Antigravity, as a whole call written out in
@@ -1557,14 +1801,30 @@ const callMarker = "call:" + geminiNamespace + ":"
 
 const geminiNamespace = "default_api"
 
+// nameLead stands before a tool name Google would turn away.
+const nameLead = "_x_"
+
+// geminiFuncName is a tool's name as Google takes it: a function name
+// starts with a letter or an underscore, so one that starts with a digit or
+// a dash (MCP tools named for their server's id) turned the whole request
+// away as "Request contains an invalid argument" (fwxkogaia on X). The
+// decoder takes nameLead off again.
+func geminiFuncName(n string) string {
+	if n != "" && (n[0] >= '0' && n[0] <= '9' || n[0] == '-' || n[0] == '.' || n[0] == ':') {
+		return nameLead + n
+	}
+	return n
+}
+
 // toolOfCall is a call's tool name without Gemini's namespace.
 func toolOfCall(name string) string {
 	for _, sep := range []string{":", "."} {
 		if t, ok := strings.CutPrefix(name, geminiNamespace+sep); ok && t != "" {
-			return t
+			name = t
+			break
 		}
 	}
-	return name
+	return strings.TrimPrefix(name, nameLead)
 }
 
 // maxHeld bounds a call written out as text: one that goes on longer is
@@ -1777,6 +2037,7 @@ type geminiChunk struct {
 			Parts []gPart `json:"parts"`
 		} `json:"content"`
 		FinishReason      string `json:"finishReason"`
+		FinishMessage     string `json:"finishMessage"`
 		GroundingMetadata *struct {
 			WebSearchQueries []string `json:"webSearchQueries"`
 			GroundingChunks  []struct {

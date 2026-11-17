@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -186,7 +187,7 @@ func chainsToGateway(v, want string) bool {
 }
 
 // magpieAsked is magpieAt waited for, for a write: base, not asked yet, is
-// asked now (probedNow, as codexProxyOK asks a proxy), so what the write
+// asked now (probedNow), so what the write
 // reads after is magpie's answer there. Unasked, surelyMagpie is no, and
 // the first write in a magpie just started, the CLI's, took a proxy to
 // magpie for the user's own endpoint (#1985). One answered before, at any
@@ -314,6 +315,11 @@ func (a *Agent) unreachable(on Field, now string) *Drift {
 		d.Detail = a.Name + " is pointed at magpie at " + addr + ", where magpie listens for WSL, but nothing answers there from WSL " + a.WSL + ": Windows' firewall keeps WSL out. " +
 			"Allow magpie in when Windows asks, or, in PowerShell as administrator: " + wslFirewallCommand() + ". " +
 			"On Windows 11, networkingMode=mirrored under [wsl2] in %UserProfile%\\.wslconfig lets WSL reach magpie at 127.0.0.1 instead."
+		if to, distro := wslMovedFrom(addr); to != "" {
+			// another of Windows' addresses answers from WSL (wslFindVia)
+			d.Move = to
+			d.Detail = a.Name + " is pointed at magpie at " + addr + ", where nothing answers from WSL " + distro + ", but magpie answers it at " + to + ": Use " + to + " points " + a.Name + " there."
+		}
 		return d
 	}
 	d.Detail = a.Name + " is pointed at magpie at " + addr + ", where nothing answers from this computer, though magpie answers at " + gateway.URL() + ". "
@@ -362,21 +368,22 @@ func wslMovedFrom(base string) (to, name string) {
 			continue
 		}
 		loopback := wslrun.HostLoopback(d.Net)
-		if !loopback && (d.Gateway == "" || d.Gateway == h) {
+		host := d.host()
+		if !loopback && (host == "" || host == h) {
 			continue
 		}
-		for _, w := range d.Was {
-			if w != h {
-				continue
-			}
-			if loopback {
-				return gateway.URL(), n
-			}
-			if port == "" {
-				port = gateway.Port()
-			}
-			return "http://" + net.JoinHostPort(d.Gateway, port), n
+		// the WSL network's address, passed over for a via (wslFindVia),
+		// is one it reached Windows at before too
+		if !slices.Contains(d.Was, h) && (loopback || h != d.Gateway) {
+			continue
 		}
+		if loopback {
+			return gateway.URL(), n
+		}
+		if port == "" {
+			port = gateway.Port()
+		}
+		return "http://" + net.JoinHostPort(host, port), n
 	}
 	return "", ""
 }

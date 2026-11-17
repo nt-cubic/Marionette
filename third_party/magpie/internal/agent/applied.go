@@ -129,7 +129,10 @@ func (a *Agent) Apply(key, v string) error {
 			record(a.ID, k, now[k])
 		}
 	}
-	record(a.ID, f.Key, f.Get())
+	// the user's own setting isn't magpie's to put back or take out
+	if !f.Own {
+		record(a.ID, f.Key, f.Get())
+	}
 	// magpie picked in by the user's own hand (magpie model, a pick in
 	// the CLI) connects it again
 	if a.Wired() {
@@ -173,6 +176,22 @@ var started = time.Now()
 // A field moved from one magpie model to another (the agent's own picker)
 // isn't drift; one moved off magpie is.
 func (a *Agent) Drift() *Drift {
+	return a.drift(nil)
+}
+
+// DriftShown is Drift for the window's poll, which only shows it: whether
+// a value is one of magpie's models is remembered per value while
+// provider.StampNow stays the same, shownValuesFor at most. Each poll
+// asked every field's whole option list for it, built again once a
+// minute: 27 MB of the 50 MB a magpie with real accounts allocated in
+// three minutes with the window up. What the stamp can't see (a provider
+// resting, a model retired by its date) shows within shownValuesFor;
+// Reapply, rewiring and a launch ask Drift, which reads them now.
+func (a *Agent) DriftShown() *Drift {
+	return a.drift(&shownValues)
+}
+
+func (a *Agent) drift(memo *valueMemo) *Drift {
 	if a.Native != nil {
 		s := a.Native.Read()
 		if s.Provider == "invalid" {
@@ -185,11 +204,17 @@ func (a *Agent) Drift() *Drift {
 	}
 	vals := a.Values()
 	opts := fieldOptions{}
+	valueIn := func(a *Agent, f Field, v string, vals map[string]string, opts fieldOptions) bool {
+		if memo == nil {
+			return magpieValueIn(a, f, v, vals, opts)
+		}
+		return memo.in(a, f, v, vals, opts)
+	}
 	// the field on one of magpie's models: where drift shows, and what
 	// setting it again sets
 	on, onMagpie := a.Fields[0], false
 	for _, f := range a.Fields {
-		if magpieValueIn(a, f, vals[f.Key], vals, opts) {
+		if valueIn(a, f, vals[f.Key], vals, opts) {
 			on, onMagpie = f, true
 			break
 		}
@@ -223,7 +248,7 @@ func (a *Agent) Drift() *Drift {
 		if now == "" && f.Follows != "" {
 			now = vals[f.Follows]
 		}
-		if !ok || picked || now == want || !magpieValueIn(a, f, want, vals, opts) || magpieValueIn(a, f, now, vals, opts) || sameGroup(want, now) {
+		if !ok || picked || now == want || !valueIn(a, f, want, vals, opts) || valueIn(a, f, now, vals, opts) || sameGroup(want, now) {
 			continue
 		}
 		return &Drift{Kind: "replaced", Field: f.Key, Now: vals[f.Key], Want: want,
@@ -327,10 +352,64 @@ func (o fieldOptions) of(f Field, vals map[string]string) []Option {
 	return opts
 }
 
+// valueMemo remembers magpieValueIn's answers (DriftShown).
+type valueMemo struct {
+	sync.Mutex
+	stamp provider.Stamp
+	at    time.Time
+	m     map[string]bool
+}
+
+var shownValues valueMemo
+
+// shownValuesFor is how long DriftShown keeps an answer while
+// provider.StampNow says nothing changed.
+const shownValuesFor = 5 * time.Minute
+
+func (m *valueMemo) in(a *Agent, f Field, v string, vals map[string]string, opts fieldOptions) bool {
+	if v == "" {
+		return false
+	}
+	var k strings.Builder
+	k.WriteString(a.ID + "\x00" + f.Key + "\x00" + v)
+	keys := make([]string, 0, len(vals))
+	for kk := range vals {
+		keys = append(keys, kk)
+	}
+	slices.Sort(keys)
+	for _, kk := range keys {
+		k.WriteString("\x00" + kk + "=" + vals[kk])
+	}
+	key := k.String()
+	stamp := provider.StampNow()
+	m.Lock()
+	if m.stamp != stamp || time.Since(m.at) >= shownValuesFor || len(m.m) > 512 {
+		m.stamp, m.at, m.m = stamp, time.Now(), nil
+	}
+	yes, ok := m.m[key]
+	m.Unlock()
+	if ok {
+		return yes
+	}
+	// the stamp is read before the answer: a change while it is moves it
+	// past the one kept, and the next call asks again
+	yes = magpieValueIn(a, f, v, vals, opts)
+	m.Lock()
+	if m.stamp == stamp {
+		if m.m == nil {
+			m.m = map[string]bool{}
+		}
+		m.m[key] = yes
+	}
+	m.Unlock()
+	return yes
+}
+
 // magpieValueIn is magpieValue reading a field's options from opts, made
 // for the same vals; nil reads them anew.
 func magpieValueIn(a *Agent, f Field, v string, vals map[string]string, opts fieldOptions) bool {
-	if v == "" {
+	// the user's own setting (a permission mode) is never one of magpie's
+	if v == "" || f.Own {
 		return false
 	}
 	v, _, one := a.split(v)
@@ -543,7 +622,8 @@ func (a *Agent) Pick(key, v string) error {
 		}
 		return a.Apply(key, value)
 	}
-	if f := a.Field(key); f != nil && !a.Wired() {
+	// the user's own setting never connects the agent to magpie
+	if f := a.Field(key); f != nil && !f.Own && !a.Wired() {
 		vals := a.Values()
 		vals[key] = v
 		if v == magpieID || magpieValue(a, *f, v, vals) {
@@ -859,6 +939,9 @@ func (a *Agent) Disconnect() (err error) {
 		}
 	}
 	for _, f := range a.Fields {
+		if f.Own {
+			continue
+		}
 		vals := a.Values()
 		v := vals[f.Key]
 		// set by magpie: as it set it, or its group by the model's name
@@ -885,6 +968,10 @@ func (a *Agent) Disconnect() (err error) {
 		}
 	}
 	for _, f := range a.Fields {
+		// the user's own setting is as they left it, not as it was at connect
+		if f.Own {
+			continue
+		}
 		if w := was[f.Key]; w != "" && after[f.Key] == "" && w != magpieID && !magpieValue(a, f, w, was) {
 			if err := f.Set(w); err != nil {
 				return fmt.Errorf("%s: %w", f.Label, err)

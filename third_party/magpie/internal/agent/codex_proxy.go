@@ -43,10 +43,9 @@ import (
 // magpie opened from the Dock has neither, so the login shell's are asked
 // (proc.LoginEnv), over magpie's own.
 //
-// So before magpie hands Codex's requests to the gateway uninvited (account
-// failover), and while it has them, it asks the way Codex would go: through
-// which proxy, and whether a request sent through it reaches magpie (Drift
-// kind "proxied").
+// So while magpie has Codex's requests, it asks the way Codex would go:
+// through which proxy, and whether a request sent through it reaches
+// magpie (Drift kind "proxied").
 
 // codexProxyEnv, codexSystemProxy and codexProxyOS are what codexProxyFor
 // reads, and loginEnv what codexEnv does; vars so tests can say.
@@ -56,6 +55,16 @@ var (
 	codexProxyOS     = runtime.GOOS
 	loginEnv         = proc.LoginEnv
 )
+
+// codexSystem is the system proxy as Codex reads one: macOS' and
+// Windows' only. On Linux reqwest has no system proxy but *_PROXY, while
+// magpie reads the desktop's (GNOME's gsettings, KDE's kioslaverc, #4147).
+func codexSystem() netproxy.Proxy {
+	if codexProxyOS != "darwin" && codexProxyOS != "windows" {
+		return netproxy.Proxy{}
+	}
+	return codexSystemProxy()
+}
 
 // codexEnv is k as Codex has it: the login shell's, else magpie's own.
 func codexEnv(k string) string {
@@ -94,7 +103,7 @@ func codexProxyFor(cfg, base string) (proxy, from string) {
 		// set there Codex goes direct, HTTP_PROXY or not (the environment's
 		// count only when the system can't be read; tried with codex-cli
 		// 0.162.1)
-		sys := codexSystemProxy()
+		sys := codexSystem()
 		if sys.URL == "" || systemBypassed(host, sys.Bypass) {
 			return "", ""
 		}
@@ -125,7 +134,7 @@ func codexProxyFor(cfg, base string) (proxy, from string) {
 	// bypass list without it, goes around them
 	p, k := env(httpKeys...)
 	no, _ := env("NO_PROXY", "no_proxy")
-	sys := codexSystemProxy()
+	sys := codexSystem()
 	if p == "" && sys.HTTP != "" {
 		p, k = sys.HTTP, systemProxyName()
 	}
@@ -243,13 +252,6 @@ func codexThroughProxy(cfg, base string) (ok, known bool, proxy, from string) {
 	}
 	ok, known = probed("proxy "+proxy+" "+base, func() bool { return proxyProbe(base, proxy) })
 	return ok, known, proxy, from
-}
-
-// codexProxyOK is codexThroughProxy waited for: whether Codex gets to the
-// gateway at base, a proxy in its way tried now when it hasn't been.
-func codexProxyOK(cfg, base string) bool {
-	proxy, _ := codexProxyFor(cfg, base)
-	return proxy == "" || probedNow("proxy "+proxy+" "+base, func() bool { return proxyProbe(base, proxy) })
 }
 
 // codexProxiedDetail says what keeps Codex off magpie through proxy, and

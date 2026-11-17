@@ -77,11 +77,23 @@ func codexAnsweredLately(agent, user string, now time.Time) bool {
 
 // codexHeaderLimits are the windows the x-codex-primary-* and
 // x-codex-secondary-* headers tell; one that doesn't say how long it runs
-// is left out, as no window read can be told to be it.
+// is left out, as no window read can be told to be it. None when
+// x-codex-active-limit names the image allowance, whose window they then
+// are (codexImageHeaderLimit).
 func codexHeaderLimits(h http.Header, now time.Time) []provider.CodexLimit {
+	if imageLimitName(h.Get("x-codex-active-limit")) {
+		// the x-codex-* windows are the image allowance's (#6412)
+		return nil
+	}
+	return headerLimitsOf(h, "x-codex-", now)
+}
+
+// headerLimitsOf are the windows of the header family fam (x-codex-,
+// x-imagegen-premium-) tells: its primary- and secondary- ones.
+func headerLimitsOf(h http.Header, fam string, now time.Time) []provider.CodexLimit {
 	var out []provider.CodexLimit
 	for _, which := range []string{"primary", "secondary"} {
-		pre := "x-codex-" + which + "-"
+		pre := fam + which + "-"
 		used, err := strconv.ParseFloat(strings.TrimSpace(h.Get(pre+"used-percent")), 64)
 		if err != nil {
 			continue
@@ -94,7 +106,7 @@ func codexHeaderLimits(h http.Header, now time.Time) []provider.CodexLimit {
 		if at, err := strconv.ParseInt(strings.TrimSpace(h.Get(pre+"reset-at")), 10, 64); err == nil && at > 0 {
 			l.Resets = time.Unix(at, 0)
 		} else if after, err := strconv.ParseInt(strings.TrimSpace(h.Get(pre+"reset-after-seconds")), 10, 64); err == nil && after > 0 {
-			l.Resets = now.Add(time.Duration(after) * time.Second)
+			l.Resets = onWall(now.Add(time.Duration(after) * time.Second))
 		}
 		out = append(out, l)
 	}
@@ -134,7 +146,7 @@ func codexEventLimits(data []byte, now time.Time) []provider.CodexLimit {
 		if w.ResetAt > 0 {
 			l.Resets = time.Unix(w.ResetAt, 0)
 		} else if w.ResetAfter > 0 {
-			l.Resets = now.Add(time.Duration(w.ResetAfter) * time.Second)
+			l.Resets = onWall(now.Add(time.Duration(w.ResetAfter) * time.Second))
 		}
 		out = append(out, l)
 	}
@@ -169,7 +181,7 @@ func (t *codexLimitsTap) look() {
 		line := bytes.TrimSpace(t.buf[:i])
 		t.buf = t.buf[i+1:]
 		data, ok := bytes.CutPrefix(line, []byte("data:"))
-		if !ok || !bytes.Contains(data, []byte(`"codex.rate_limits"`)) {
+		if !ok || !bodyHas(data, `"codex.rate_limits"`) {
 			continue
 		}
 		if ls := codexEventLimits(bytes.TrimSpace(data), time.Now()); len(ls) > 0 {

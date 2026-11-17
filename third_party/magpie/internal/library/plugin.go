@@ -38,9 +38,12 @@ import (
 // agent here can take (slash commands, LSP servers, hooks that aren't a
 // command) are listed in Left, never silently dropped.
 //
-// ${CLAUDE_PLUGIN_ROOT} in a command, argument, header or value is the
-// bundle's folder; ${CLAUDE_PLUGIN_DATA} a folder of its own that stays
-// across updates.
+// ${CLAUDE_PLUGIN_ROOT} in a command, argument, header or value, a skill's
+// SKILL.md or a subagent's prompt is the bundle's folder;
+// ${CLAUDE_PLUGIN_DATA} a folder of its own that stays across updates. A
+// hook's program that reads either from its environment is given the
+// folder as a literal, and a command server both in its env
+// (plugin_env.go).
 
 // Plugin is a plugin the library keeps.
 type Plugin struct {
@@ -208,11 +211,7 @@ func readPlugin(dir, hint string, over map[string]any) (*plLoaded, error) {
 		return nil, errors.New("the plugin has no name")
 	}
 	p := &plLoaded{name: name, description: strings.Join(strings.Fields(plStr(man["description"])), " "), version: plStr(man["version"])}
-	root, data := pluginDir(name), pluginData(name)
-	sub := func(s string) string {
-		return strings.NewReplacer("${CLAUDE_PLUGIN_ROOT}", root, "$CLAUDE_PLUGIN_ROOT", root,
-			"${CLAUDE_PLUGIN_DATA}", data, "$CLAUDE_PLUGIN_DATA", data).Replace(s)
-	}
+	root, sub := pluginDir(name), pluginSub(name)
 	leave := func(what, why string) { p.left = append(p.left, PluginLeft{What: what, Why: why}) }
 
 	// skills
@@ -277,6 +276,7 @@ func readPlugin(dir, hint string, over map[string]any) (*plLoaded, error) {
 			leave("agent "+strings.TrimSuffix(filepath.Base(f), filepath.Ext(f)), err.Error())
 			continue
 		}
+		s.Prompt = sub(s.Prompt)
 		p.agents = append(p.agents, s)
 	}
 
@@ -303,6 +303,9 @@ func readPlugin(dir, hint string, over map[string]any) (*plLoaded, error) {
 	}
 	for _, doc := range mcpDocs {
 		servers, left := serversOf(doc, sub)
+		for _, s := range servers {
+			pluginServerEnv(s, name)
+		}
 		p.servers = append(p.servers, servers...)
 		p.left = append(p.left, left...)
 	}
@@ -557,7 +560,7 @@ func plHooksOf(doc map[string]any, bundle, root string, sub func(string) string,
 					left = append(left, PluginLeft{What: ev + " hook", Why: "a hook of type " + t + " isn't a command: agents take commands only"})
 					continue
 				}
-				cmd := sub(quoteRoot(plStr(hm["command"]), root))
+				cmd := sub(quoteRoot(pluginEnvRefs(plStr(hm["command"]), bundle), root))
 				if cmd == "" {
 					continue
 				}
@@ -675,31 +678,46 @@ func resolvePluginRoot(input string) (root, tmp string, err error) {
 		}
 		return dir, "", nil
 	}
+	root, tmp, _, err = fetchSourceRoot(input)
+	if err != nil {
+		return "", "", err
+	}
+	if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
+		os.RemoveAll(tmp)
+		return "", "", fmt.Errorf("%s isn't a folder", input)
+	}
+	return root, tmp, nil
+}
+
+// fetchSourceRoot downloads the GitHub or git repository input names, whole,
+// and gives back the folder or file in it the link points to, the download
+// to remove after, and the repository with the path in it.
+func fetchSourceRoot(input string) (root, tmp string, src Source, err error) {
 	sweepStaleDownloads()
 	src, ok := githubSource(input)
 	if !ok {
-		var err error
 		if src, ok, err = gitSource(input); err != nil {
-			return "", "", err
+			return "", "", Source{}, err
 		} else if !ok {
-			return "", "", errors.New("that's neither a git repository's link (GitHub, GitLab or another host) nor a folder's full path")
+			return "", "", Source{}, errors.New("that's neither a git repository's link (GitHub, GitLab or another host) nor a folder's full path")
 		}
 	}
 	path := src.Path
 	src.Path = ""
 	tmp, err = fetch(src)
 	if err != nil {
-		return "", "", err
+		return "", "", Source{}, err
 	}
+	src.Path = path
 	if path == "" {
-		return tmp, tmp, nil
+		return tmp, tmp, src, nil
 	}
 	sub, ok := inside(tmp, path)
-	if fi, err := os.Stat(sub); !ok || err != nil || !fi.IsDir() {
+	if _, err := os.Stat(sub); !ok || err != nil {
 		os.RemoveAll(tmp)
-		return "", "", fmt.Errorf("%s has no folder %s", src.Repo, path)
+		return "", "", Source{}, fmt.Errorf("%s has no folder %s", src.Repo, path)
 	}
-	return sub, tmp, nil
+	return sub, tmp, src, nil
 }
 
 // findPlugins reads the plugins at root: a marketplace's entries, or the
@@ -1038,6 +1056,11 @@ func installPlugin(l *Library, pl *plLoaded, dir, input, pick string, agents []s
 			return nil, err
 		}
 		if err := copyDir(rel(s.dir), skillDir(n)); err != nil {
+			os.RemoveAll(skillDir(n))
+			skip("skill "+s.name, err.Error())
+			continue
+		}
+		if err := pluginSkillText(skillDir(n), pl.name); err != nil {
 			os.RemoveAll(skillDir(n))
 			skip("skill "+s.name, err.Error())
 			continue

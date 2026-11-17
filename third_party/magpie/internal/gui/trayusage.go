@@ -23,7 +23,8 @@ import (
 // Settings → Allowances in the menu bar: the windows of the subscriptions and
 // plans ticked there, beside the tray icon, for keeping an eye on them
 // without opening magpie. The Mac's menu bar draws each as its logo with
-// its two windows stacked, "42%" over "18%", side by side (trayimage), or
+// its two windows stacked, "42%" over "18%", side by side (trayimage), and
+// every window of a card with more in columns of two, or
 // as the windows alone, a thin line between cards, when Settings turns the
 // logos off; a tray elsewhere gets them as text ("42% · 18% | 10% · 5%"), Windows' in
 // the icon's tooltip only, having no room for any.
@@ -33,7 +34,7 @@ import (
 // more than the Usage page asks them: their answers are cached for a
 // minute, and this reads the cache.
 func trayUsageEvery() time.Duration {
-	return time.Duration(settings.Load().TrayUsageEvery) * time.Minute
+	return time.Duration(settings.Shared().TrayUsageEvery) * time.Minute
 }
 
 // trayCardID names a card for settings.TrayUsage: its provider, and the
@@ -328,8 +329,17 @@ func trayCardText(lang string, q provider.SubscriptionQuota, now time.Time, left
 		}
 		long = append(long, line)
 	}
-	if len(short) > 2 {
-		short = short[:2]
+	// a wallet beside the windows (Kimi Code's booster, "Extra usage"):
+	// what is left on it, as the card's line under its rings says it
+	for _, w := range q.Windows {
+		if w.Balance == nil {
+			continue
+		}
+		amt := strconv.FormatFloat(math.Round(*w.Balance*100)/100, 'f', -1, 64)
+		if u := pageWord(lang, w.Unit); u != "" {
+			amt += " " + u
+		}
+		long = append(long, trayWindowName(lang, w.Name)+" "+trayText(lang, "%s left", amt))
 	}
 	return strings.Join(short, " · "), q.Name + "\n" + strings.Join(long, "\n") + trayAsOf(lang, q)
 }
@@ -388,8 +398,9 @@ func until(lang string, d time.Duration) string {
 
 // trayUsageCards are the cards settings.TrayUsages names, in its order,
 // among the Usage page's (cached as there), and magpie's own totals it
-// names (trayTotal); one gone is left out. The vendors aren't asked when
-// only totals are named.
+// names (trayTotal); one gone is left out, and so is one the Usage page's
+// Overview hides, as are the rows it hides (trayShown). The vendors aren't
+// asked when only totals are named.
 func trayUsageCards(ctx context.Context, lang string, ids []string) []provider.SubscriptionQuota {
 	if len(ids) == 0 {
 		return nil
@@ -408,11 +419,40 @@ func trayUsageCards(ctx context.Context, lang string, ids []string) []provider.S
 		}
 		if currency == "" {
 			currency, rate = trayCurrency()
-			noCost = settings.Load().TrayNoCost
+			noCost = settings.Shared().TrayNoCost
 		}
 		cards = append(cards, trayTotalCard(lang, id, trayMoney(trayTotalSum(p), noCost), currency, rate))
 	}
-	return trayPick(cards, ids, time.Now())
+	return trayShown(cards, ids, time.Now(), settings.Shared())
+}
+
+// trayShown is trayPick less what the Usage page's Overview hides
+// (settings.UsageCardsHidden, UsageWindowsHidden): a card hidden there
+// showed on in the menu bar, its tooltip and Windows' tray figure, though
+// the Overview and the tray panel left it out (onkashiko on X). The cells
+// ticked are kept, so a card shown again comes back to its cell. A named
+// cell takes the account's card the Overview still shows (its balance,
+// say, with its plan hidden); a cell following the account in use picks
+// that account among them all, as before, and is left empty when its card
+// is hidden, rather than moving to another account.
+func trayShown(cards []provider.SubscriptionQuota, ids []string, now time.Time, s settings.Settings) []provider.SubscriptionQuota {
+	if len(s.UsageCardsHidden)+len(s.UsageWindowsHidden) == 0 {
+		return trayPick(cards, ids, now)
+	}
+	shown := provider.ShownQuotas(cards, s)
+	var out []provider.SubscriptionQuota
+	for _, id := range ids {
+		if !strings.HasSuffix(id, trayInUse) {
+			out = append(out, trayPick(shown, []string{id}, now)...)
+			continue
+		}
+		for _, q := range trayPick(cards, []string{id}, now) {
+			if !provider.QuotaCardHidden(q, s) {
+				out = append(out, provider.QuotaRowsShown(q, s))
+			}
+		}
+	}
+	return out
 }
 
 // trayTotal starts the id of a card of magpie's own count instead of a
@@ -522,10 +562,21 @@ func trayMoney(t usage.Totals, noCost bool) usage.Totals {
 	return t
 }
 
-// trayCurrency is the currency Settings shows costs in, and the yuan's
-// rate when that is CNY.
+// trayCurrency is the currency the menu bar and its tooltip show magpie's
+// totals' cost in (Settings' Menu bar currency, else the totals'), and the
+// yuan's rate when that is CNY.
 func trayCurrency() (currency string, rate float64) {
-	currency = settings.Load().Currency
+	return currencyRate(settings.Load().TrayCostIn())
+}
+
+// totalsCurrency is the currency Settings shows a sum of costs in (a
+// total's, of every provider), and the yuan's rate when that is CNY.
+func totalsCurrency() (currency string, rate float64) {
+	return currencyRate(settings.Load().TotalCostIn())
+}
+
+func currencyRate(currency string) (string, float64) {
+	var rate float64
 	if currency == "cny" {
 		rate = fx.Soon().CNYPerUSD // never waited for, as the Settings page's
 	}
@@ -569,7 +620,7 @@ func trayIdleTip(lang string, t usage.Totals, currency string, rate float64) str
 }
 
 // trayChineseUnits is Settings' 万/亿 choice, read when a count is said.
-var trayChineseUnits = func() bool { return settings.Load().ChineseUnits }
+var trayChineseUnits = func() bool { return settings.Shared().ChineseUnits }
 
 // trayCount is a count as the Usage page says it (fmtN in app.js): 133M,
 // 1.2M, 456K, 8.2K, 950; with Settings' 万/亿 units and magpie in Chinese,
@@ -693,7 +744,7 @@ func trayName(q provider.SubscriptionQuota) string {
 
 // trayCell is a card as the Mac's menu bar draws it: its logo, and its
 // label's parts stacked, the shortest window over the longer ("42%" over
-// "18%"), or its balance alone.
+// "18%"), in columns of two when it has more, or its balance alone.
 type trayCell struct {
 	ID     string // stable provider/account identity, captured with the drawn cell
 	Icon   []byte // the logo as the Usage page has it (SVG or PNG); nil for none

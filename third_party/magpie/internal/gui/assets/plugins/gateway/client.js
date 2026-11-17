@@ -303,8 +303,19 @@ function renderGateway() {
     : t("start it with magpie serve, or open magpie at login")));
   if (gatewayFix.err && gatewayFix.when === gatewayFixWhen(g)) who.append(el("div", "sub old err", gatewayFix.err));
   box.append(mark, who);
+  // DeepSeek's chat page, served by the gateway with its models, search
+  // and link reading (chatpage.go)
   const fix = gatewayFixButton(g, older);
-  if (fix) box.append(fix);
+  if (g.running && !older && !g.paused) {
+    const chat = el("button", "text action gw-chat", t("Chat page"));
+    const url = (web && g.publicURL || g.url) + "/deepseek-chat/";
+    chat.onclick = () => api("open", { url }).catch(statusErr);
+    // the two together, so a narrow card wraps them as one
+    const acts = el("span", "gw-acts");
+    acts.append(chat);
+    if (fix) acts.append(fix);
+    box.append(acts);
+  } else if (fix) box.append(fix);
 }
 
 // Share on local network, set on the page that hands out its keys (the
@@ -534,6 +545,27 @@ function envSnippet(vars) {
   return vars.map(([k, v]) => (snipWin() ? `$env:${k}=${psHeader(v)}` : `export ${k}=${shQuote(v)}`)).join("\n");
 }
 
+// The row's chips (modelInfo) with video and audio after the image one,
+// when its source listed them (pingqipai3 on X); a group's are any one of
+// its models', as its images are. Their tooltip lines follow the images'
+// one, the second of modelInfo's.
+const MEDIA_GLYPH = { video: "M2 4.5h8.5v7H2zM10.5 7l3.5-2v6l-3.5-2", audio: "M3 6.5v3M5.5 4.5v7M8 2.5v11M10.5 4.5v7M13 6.5v3" };
+function mediaInfo(m) {
+  const box = modelInfo(m);
+  const kinds = ["video", "audio"].filter((k) => m.inputs?.includes(k));
+  if (!kinds.length) return box;
+  const ctx = box.querySelector(".mi-ctx");
+  const lines = box.title.split("\n");
+  for (const k of kinds) {
+    const c = el("span", "badge mi-media mi-" + k);
+    c.append(svg(MEDIA_GLYPH[k], 11, 1.4));
+    box.insertBefore(c, ctx);
+  }
+  lines.splice(2, 0, ...kinds.map((k) => t(k === "video" ? (m.group ? "Accepts video (one of its models does)" : "Accepts video") : m.group ? "Accepts audio (one of its models does)" : "Accepts audio")));
+  box.title = lines.join("\n");
+  return box;
+}
+
 // every exposed model, as the ids agents use
 function gatewayModels() {
   // the routing groups first, as the agents' pickers list them
@@ -541,7 +573,7 @@ function gatewayModels() {
   // every model off the list
   const out = (providers.gateway.groups || []).filter((g) => g && typeof g.id === "string").map((g) => ({ id: g.id, name: g.name || g.id, icons: g.icons || [], group: true,
     provider: { name: [t("routing group"), (g.providers || []).join(", ")].filter(Boolean).join(" · ") },
-    efforts: g.efforts || [], images: !!g.images, context: g.context, output: g.output, members: g.members || [] }));
+    efforts: g.efforts || [], images: !!g.images, inputs: g.inputs || [], context: g.context, output: g.output, members: g.members || [] }));
   // a provider switched off is skipped: the gateway refuses its models, so
   // they are not ids an agent can use, and listing them here would show a
   // model the picker's own list, the Gateway count and the Connect example
@@ -551,7 +583,7 @@ function gatewayModels() {
   // levels aren't known (given) offers only those it was given; one sent
   // no reasoning field (reasonless) offers none
   const offered = (m) => m.reasonless ? [] : m.kept?.length || m.given ? m.kept || [] : m.efforts || [];
-  for (const p of providers.providers) { if (p.off) continue; for (const m of p.models) if (m.on) out.push({ id: `${p.id}/${m.id}`, name: m.name, provider: p, context: m.context, output: m.output, efforts: offered(m), images: !!m.images }); }
+  for (const p of providers.providers) { if (p.off) continue; for (const m of p.models) if (m.on) out.push({ id: `${p.id}/${m.id}`, name: m.name, provider: p, context: m.context, output: m.output, efforts: offered(m), images: !!m.images, inputs: m.inputs || [] }); }
   return out;
 }
 
@@ -727,7 +759,7 @@ function renderGatewayModels() {
     const name = el("div", "name", m.id);
     if (namedFree(m.id, m.name)) name.append(freeBadge(false));
     who.append(name, el("div", "sub", m.name && m.name !== m.id.split("/")[1] ? `${m.name} · ${m.provider.name}` : m.provider.name));
-    row.append(m.group ? stackIcon(m.icons) : icon(m.provider.icon || "generic"), who, modelInfo(m), copyBtn(m.id, t("Model id")));
+    row.append(m.group ? stackIcon(m.icons) : icon(m.provider.icon || "generic"), who, mediaInfo(m), copyBtn(m.id, t("Model id")));
     row.title = t("Use this model in the snippets");
     // a decision model is put in System One's snippets, any other in the
     // other APIs'; the API follows the model clicked

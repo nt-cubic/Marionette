@@ -68,7 +68,12 @@ const callCacheVersion = "calls-v15"
 // (gemini-4-argon-d) is its model's (GeminiDeployment).
 // zcode 3: a call names its session as a request does, without the sess_
 // prefix (zcodeBareID), so the gateway's record of it pairs with it.
-var callParseVersions = map[string]int{"antigravity": 1, "cindy": 1, "codex": 3, "zcode": 3}
+// agy 1: a call names the model its conversation's database names for its
+// step (agyStepModels).
+// pi 1, raft 1, cindy 2: a pi-subagents subagent's calls are its own
+// file's, on the model and provider it ran, not its tool result's on the
+// lead's (piSubagentsRead).
+var callParseVersions = map[string]int{"agy": 1, "antigravity": 1, "cindy": 2, "codex": 3, "pi": 1, "raft": 1, "zcode": 3}
 
 // CallCacheVersion is callCacheVersion and callParseVersions, for a cache
 // of what is made of the calls (usage's requests-v1.bin and heatmap): a
@@ -211,7 +216,6 @@ func pruneCalls(files []file) {
 }
 
 func keepCalls(path string, st *callFile) {
-	defer trimCallRevisions(time.Now())
 	if callRoot == "" {
 		// what is kept is of this root: a Sessions parse that read a
 		// rollout's calls along (callsRide) keeps them before any Requests
@@ -245,6 +249,13 @@ func keepCalls(path string, st *callFile) {
 	}
 	callCache[path] = st
 	callOrder = append(callOrder, path)
+	// A file kept with no revision window adds nothing to trim, and a
+	// usage build keeps one for each of the ~11k files a long history
+	// holds: trimming after each, a sort and a map under callsMu, had its
+	// readers waiting on each other for seconds of a build.
+	if st.revisionWeight() > 0 {
+		trimCallRevisions(time.Now())
+	}
 }
 
 // wholeCallReaders read an agent's calls from one session file at a time,
@@ -262,6 +273,7 @@ var wholeCallReaders = map[string]func(file) (*callFile, bool){
 	"minimax-code": readMiniMaxCalls,
 	"agy":          readAgyCalls,         // #2097
 	"antigravity":  readAntigravityCalls, // #2190
+	"devin":        readDevinCalls,       // aohan0905 on X
 }
 
 // resumeCallReaders read an agent's calls from a file only appended to that
@@ -415,7 +427,7 @@ func readCalls(f file) *callFile {
 	if st.Claude != nil && (old == nil || old.Claude == nil) && !workingRevision(f.mod.UnixNano(), time.Now()) {
 		st = st.withoutRevisions()
 	}
-	if err == nil && (f.agent == "claude" || f.agent == "claude-desktop") {
+	if err == nil && (f.agent == "claude" || f.agent == "claude-desktop" || f.agent == "codex") {
 		writeCallRevisions(st)
 	}
 
@@ -526,8 +538,8 @@ func (r *callsRide) finish(off int64, err error) {
 		if st.Claude != nil && !workingRevision(f.mod.UnixNano(), time.Now()) {
 			st = st.withoutRevisions()
 		}
-		writeCallRevisions(st)
 	}
+	writeCallRevisions(st)
 	st.dirty = nil
 	if r.claude {
 		// on disk only: a Sessions read keeps no calls (readCalls loads them)

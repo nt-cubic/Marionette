@@ -58,7 +58,9 @@ func TestReasoningSpeedThroughGateway(t *testing.T) {
 	for _, path := range []string{"/v1/chat/completions", "/v1/responses", "/v1/messages"} {
 		t.Run(path, func(t *testing.T) {
 			fresh(t)
-			up := httptest.NewServer(&paced{events: events, gap: 150 * time.Millisecond})
+			// each thought a gap after the agent had the one before (#5948)
+			rec := newHearing(0, "first thought", "second thought", "third thought")
+			up := httptest.NewServer(&paced{events: events, gap: 150 * time.Millisecond, heard: rec.heard})
 			t.Cleanup(up.Close)
 			if err := provider.Save(provider.Provider{ID: "fake", Name: "Fake", Chat: up.URL + "/v1", Key: "k", Models: []string{"m1"}}); err != nil {
 				t.Fatal(err)
@@ -68,7 +70,6 @@ func TestReasoningSpeedThroughGateway(t *testing.T) {
 				body = `{"model":"fake/m1","stream":true,"input":"hi"}`
 			}
 			s := New()
-			rec := httptest.NewRecorder()
 			s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", path, strings.NewReader(body)))
 			u := lastUsage(t)
 			r := lastRoute(s)
@@ -94,7 +95,7 @@ func TestReasoningSpeedThroughGateway(t *testing.T) {
 // stood in for by holding the sticks' save.
 func TestSpeedEndsWithTheReply(t *testing.T) {
 	events := []string{
-		`data: {"choices":[{"delta":{"reasoning_content":"first thought"}}]}`,
+		`~data: {"choices":[{"delta":{"reasoning_content":"first thought"}}]}`,
 		`~data: {"choices":[{"delta":{"reasoning_content":"second thought"}}]}`,
 		`~data: {"choices":[{"delta":{"reasoning_content":"third thought"}}]}`,
 		`~data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"check","arguments":"{}"}}]}}]}`,
@@ -103,13 +104,14 @@ func TestSpeedEndsWithTheReply(t *testing.T) {
 	}
 	const held = 2 * time.Second
 	fresh(t)
-	up := httptest.NewServer(&paced{events: events, gap: 150 * time.Millisecond})
+	// each thought a gap after the agent had the one before (#5948)
+	rec := newHearing(0, "first thought", "second thought", "third thought")
+	up := httptest.NewServer(&paced{events: events, gap: 150 * time.Millisecond, heard: rec.heard})
 	t.Cleanup(up.Close)
 	if err := provider.Save(provider.Provider{ID: "fake", Name: "Fake", Chat: up.URL + "/v1", Key: "k", Models: []string{"m1"}}); err != nil {
 		t.Fatal(err)
 	}
 	s := New()
-	rec := httptest.NewRecorder()
 	sticksSaving.Lock()
 	let := time.AfterFunc(held, sticksSaving.Unlock)
 	t.Cleanup(func() {
@@ -364,14 +366,22 @@ func TestLiveVisibleReasoningFixture(t *testing.T) {
 	if err = json.Unmarshal(b, &sample); err != nil {
 		t.Fatal(err)
 	}
+	// see reads the wall clock after start is set, so the first event lands
+	// at its at_ms plus however long that took: a millisecond more on a busy
+	// machine (6790/6789 on macOS CI), so the bound is what really passed.
 	f := firstToken{}
-	for _, e := range sample.Events {
+	var slack int64
+	for i, e := range sample.Events {
 		delta, _ := json.Marshal(e.Delta)
-		f.start = time.Now().Add(-time.Duration(e.At) * time.Millisecond)
+		set := time.Now()
+		f.start = set.Add(-time.Duration(e.At) * time.Millisecond)
 		f.see([]byte(`data: {"choices":[{"delta":{"reasoning_content":` + string(delta) + `}}]}` + "\n\n"))
+		if i == 0 {
+			slack = time.Since(set).Milliseconds() + 1
+		}
 	}
-	if f.reasoningMs(provider.Chat) != sample.Events[0].At {
-		t.Fatalf("live reasoning fixture lost its start: %d/%d", f.reasoningMs(provider.Chat), sample.Events[0].At)
+	if got, at := f.reasoningMs(provider.Chat), sample.Events[0].At; got < at || got > at+slack {
+		t.Fatalf("live reasoning fixture lost its start: %d/%d (+%d ms passing)", got, at, slack)
 	}
 	// its 731 ms came after a 6.8 s wait, which tells no speed: under a
 	// second after a wait over four times longer reads as a reply let go

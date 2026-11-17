@@ -62,6 +62,10 @@ type Subagent struct {
 	Skills []string `json:"skills,omitempty"`
 	MCP    []string `json:"mcp,omitempty"`
 	Agents []string `json:"agents"`
+	// From is the file it was imported from, its Path the file's in the
+	// repository, and FromHash what it said then (subagent_import.go)
+	From     *Source `json:"from,omitempty"`
+	FromHash string  `json:"fromHash,omitempty"`
 }
 
 // SubagentFile is a file magpie wrote for a subagent, and the hash of what
@@ -301,29 +305,52 @@ func (l *Library) syncSubagents(t *Target, b *backups, res *Result) {
 		}
 		return
 	}
-	wanted := map[string]*Subagent{} // path → the subagent written there
-	for _, s := range want {
-		wanted[sp.path(s.Name)] = s
+	files := make([]ownFile, len(want))
+	for i, s := range want {
+		files[i] = ownFile{name: s.Name, path: sp.path(s.Name), body: func() []byte { return l.renderSubagent(sp, s) }}
+	}
+	a.Subagents = syncOwnFiles(t, "subagent", a.Subagents, files, b, res)
+}
+
+// ownFile is a file of its own magpie wants an agent to have, for the
+// library's item called name: at path, with what body renders.
+type ownFile struct {
+	name, path string
+	body       func() []byte
+}
+
+// syncOwnFiles writes each file wanted, and takes out every one magpie
+// wrote before (had) that is wanted no more, for subagents and slash
+// commands alike. A file still as magpie wrote it (its hash) is magpie's
+// to rewrite or remove; one the user changed is theirs from then on; one
+// by that name magpie didn't write is never touched, and is a problem
+// under noun:name, unless it says what magpie would write, when it is
+// taken as magpie's. It returns what magpie wrote, sorted by path.
+func syncOwnFiles(t *Target, noun string, had []SubagentFile, want []ownFile, b *backups, res *Result) []SubagentFile {
+	id := t.Agent.ID
+	wanted := map[string]*ownFile{} // path → the file wanted there
+	for i := range want {
+		wanted[want[i].path] = &want[i]
 	}
 	done := map[string]bool{}
 	var kept []SubagentFile
-	write := func(s *Subagent, path string, body []byte) bool {
+	write := func(name, path string, body []byte) bool {
 		if err := b.keep(id, path); err != nil {
-			res.fail(id, "subagent:"+s.Name, err)
+			res.fail(id, noun+":"+name, err)
 			return false
 		}
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			res.fail(id, "subagent:"+s.Name, err)
+			res.fail(id, noun+":"+name, err)
 			return false
 		}
 		if err := edit.WriteAtomic(path, body); err != nil {
-			res.fail(id, "subagent:"+s.Name, err)
+			res.fail(id, noun+":"+name, err)
 			return false
 		}
 		res.changed(id)
 		return true
 	}
-	for _, f := range a.Subagents {
+	for _, f := range had {
 		cur, err := os.ReadFile(f.Path)
 		switch {
 		case os.IsNotExist(err):
@@ -332,7 +359,7 @@ func (l *Library) syncSubagents(t *Target, b *backups, res *Result) {
 		case err != nil:
 			// can't tell whether it is still magpie's: left, and kept on
 			// record, untouched
-			res.fail(id, "subagent:"+f.Name, err)
+			res.fail(id, noun+":"+f.Name, err)
 			kept = append(kept, f)
 			done[f.Path] = true
 			continue
@@ -341,15 +368,15 @@ func (l *Library) syncSubagents(t *Target, b *backups, res *Result) {
 			// the loop below says if the library still wants that name
 			continue
 		}
-		s := wanted[f.Path]
-		if s == nil {
+		w := wanted[f.Path]
+		if w == nil {
 			if err := b.keep(id, f.Path); err != nil {
-				res.fail(id, "subagent:"+f.Name, err)
+				res.fail(id, noun+":"+f.Name, err)
 				kept = append(kept, f)
 				continue
 			}
 			if err := os.Remove(f.Path); err != nil && !os.IsNotExist(err) {
-				res.fail(id, "subagent:"+f.Name, err)
+				res.fail(id, noun+":"+f.Name, err)
 				kept = append(kept, f)
 				continue
 			}
@@ -357,39 +384,41 @@ func (l *Library) syncSubagents(t *Target, b *backups, res *Result) {
 			continue
 		}
 		done[f.Path] = true
-		body := l.renderSubagent(sp, s)
-		if !bytes.Equal(cur, body) && !write(s, f.Path, body) {
+		body := w.body()
+		if !bytes.Equal(cur, body) && !write(w.name, f.Path, body) {
 			kept = append(kept, f)
 			continue
 		}
-		kept = append(kept, SubagentFile{Name: s.Name, Path: f.Path, Hash: subagentHash(body)})
+		kept = append(kept, SubagentFile{Name: w.name, Path: f.Path, Hash: subagentHash(body)})
 	}
-	for _, s := range want {
-		path := sp.path(s.Name)
-		if done[path] {
+	for _, w := range want {
+		if done[w.path] {
 			continue
 		}
-		body := l.renderSubagent(sp, s)
-		cur, err := os.ReadFile(path)
+		body := w.body()
+		cur, err := os.ReadFile(w.path)
 		switch {
 		case err == nil && bytes.Equal(cur, body):
 			// the same as magpie would write: taken as magpie's
 		case err == nil:
-			res.fail(id, "subagent:"+s.Name, fmt.Errorf("%s has a subagent of its own at %s, which magpie leaves as it is", t.Agent.Name, path))
+			res.fail(id, noun+":"+w.name, fmt.Errorf("%s has a %s of its own at %s, which magpie leaves as it is", t.Agent.Name, ownNoun[noun], w.path))
 			continue
 		case !os.IsNotExist(err):
-			res.fail(id, "subagent:"+s.Name, err)
+			res.fail(id, noun+":"+w.name, err)
 			continue
 		default:
-			if !write(s, path, body) {
+			if !write(w.name, w.path, body) {
 				continue
 			}
 		}
-		kept = append(kept, SubagentFile{Name: s.Name, Path: path, Hash: subagentHash(body)})
+		kept = append(kept, SubagentFile{Name: w.name, Path: w.path, Hash: subagentHash(body)})
 	}
 	slices.SortFunc(kept, func(x, y SubagentFile) int { return strings.Compare(x.Path, y.Path) })
-	a.Subagents = kept
+	return kept
 }
+
+// ownNoun is how a problem names what is in the agent's way.
+var ownNoun = map[string]string{"subagent": "subagent", "command": "slash command"}
 
 // ---- changes ---------------------------------------------------------------
 
@@ -407,12 +436,19 @@ func SaveSubagent(old string, s Subagent) (*Result, error) {
 		if s.Name != old && l.subagent(s.Name) != nil {
 			return fmt.Errorf("the library already has a subagent called %s", s.Name)
 		}
+		s.From, s.FromHash = nil, ""
 		if old != "" {
 			i := slices.IndexFunc(l.Subagents, func(x *Subagent) bool { return x.Name == old })
 			if i < 0 {
 				return fmt.Errorf("no subagent called %s", old)
 			}
+			// where it was imported from stays, its edits telling an
+			// import again to leave it alone
+			s.From, s.FromHash = l.Subagents[i].From.clone(), l.Subagents[i].FromHash
 			l.Subagents = slices.Delete(l.Subagents, i, i+1)
+			if old != s.Name {
+				l.renameProjectSubagents(old, s.Name)
+			}
 		}
 		s.Skills = slices.Compact(slices.Sorted(slices.Values(s.Skills)))
 		s.MCP = slices.Compact(slices.Sorted(slices.Values(s.MCP)))

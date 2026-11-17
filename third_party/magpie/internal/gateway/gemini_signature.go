@@ -23,8 +23,9 @@ import (
 // it, as the AI SDK does), but every client sends a call's id back as it
 // was given. So the signature rides in the id the client is given,
 // <id>__ts<n>__<signature, base64url>, and comes off it on the way back:
-// into extra_content for Gemini, and left out for any other upstream,
-// which gets the id the call had.
+// into extra_content for Gemini, and for any other upstream that gave it
+// there (a relay serving Gemini on a host of its own), and left out
+// otherwise, the upstream getting the id the call had.
 //
 // n is how many characters the signature has in the id. Some clients
 // shorten an id they were given (one caps them at 40 characters, #1536),
@@ -186,12 +187,13 @@ func googleExtra(sig string) map[string]any {
 // chatCallSignatures is a Chat request relayed as it is to provider by
 // with the signatures off its call ids: for Gemini (gemini) each call has
 // its own in extra_content, or skip_thought_signature_validator in a turn
-// with none; for another upstream the ids are only the calls' own again.
+// with none; for another upstream the ids are only the calls' own again,
+// a call it signed itself (signerOf) with its signature in extra_content.
 // A signature another provider gave (foreignSignature) goes to none, nor
 // does any when keep is false (signatureRefused: asked again without).
 func chatCallSignatures(body []byte, gemini bool, by string, keep bool) []byte {
-	signed := bytes.Contains(body, []byte(sigMark))
-	if !signed && !(gemini && bytes.Contains(body, []byte(`"tool_calls"`))) {
+	signed := bodyHas(body, sigMark)
+	if !signed && !(gemini && bodyHas(body, `"tool_calls"`)) {
 		return body
 	}
 	return editMessages(body, []string{"tool_calls", "tool_call_id"}, func(m map[string]json.RawMessage) bool {
@@ -234,7 +236,19 @@ func chatCallSignatures(body []byte, gemini bool, by string, keep bool) []byte {
 			sigs[i] = sig
 			signedStep = signedStep || sig != ""
 		}
-		if gemini {
+		if !gemini {
+			// another upstream: a signature it gave itself, in
+			// extra_content, as a relay serving Gemini on a host of its
+			// own does (Mamba_asr on X), goes back to it there
+			for i, c := range calls {
+				sig := sigs[i]
+				if sig == "" || googleSignature(c["extra_content"]) == sig || signerOf(sig) != by {
+					continue
+				}
+				c["extra_content"], _ = marshalPlain(googleExtra(sig))
+				changed = true
+			}
+		} else {
 			for i, c := range calls {
 				sig := sigs[i]
 				if sig == "" && signedStep {
@@ -327,7 +341,7 @@ func (t *sigTidy) flush() []byte {
 }
 
 func (t *sigTidy) lines(b []byte) []byte {
-	if !bytes.Contains(b, thoughtSignatureField) {
+	if !bodyHasBytes(b, thoughtSignatureField) {
 		return append([]byte(nil), b...)
 	}
 	var out []byte
@@ -340,7 +354,7 @@ func (t *sigTidy) lines(b []byte) []byte {
 		}
 		body := bytes.TrimRight(line, "\r\n")
 		data, ok := bytes.CutPrefix(body, []byte("data:"))
-		if !ok || !bytes.Contains(data, thoughtSignatureField) {
+		if !ok || !bodyHasBytes(data, thoughtSignatureField) {
 			out = append(out, line...)
 			continue
 		}
@@ -358,7 +372,7 @@ func (t *sigTidy) lines(b []byte) []byte {
 // carrying their signatures, noted as provider by's, and whether there
 // was one.
 func signReply(data []byte, by string) ([]byte, bool) {
-	if !bytes.Contains(data, thoughtSignatureField) {
+	if !bodyHasBytes(data, thoughtSignatureField) {
 		return nil, false
 	}
 	var reply map[string]json.RawMessage
@@ -493,13 +507,28 @@ func signaturesReach(p provider.Provider, to provider.Protocol, model string) bo
 	return to == provider.Gemini || to == provider.CodeAssist || p.IsVertex() || to == provider.Chat && geminiCompat(p.VendorHost(), model)
 }
 
+// signsOwn says req, built for chat completions to provider by, carries
+// a signature by gave: a relay serving Gemini under a host of its own,
+// which takes back the signatures it gave (buildChat) and may turn one
+// away as Google does.
+func signsOwn(req *Request, by string) bool {
+	for _, m := range req.Messages {
+		for _, p := range m.Parts {
+			if p.Kind == ToolCall && p.Signature != "" && signerOf(p.Signature) == by {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 var geminiSignatureField = []byte(`"thoughtSignature"`)
 
 // noteGeminiSigners notes each thoughtSignature in a Gemini reply, a chunk
 // or a whole one (an object, or streamGenerateContent's array of them),
 // as provider by's.
 func noteGeminiSigners(b []byte, by string) {
-	if !bytes.Contains(b, geminiSignatureField) {
+	if !bodyHasBytes(b, geminiSignatureField) {
 		return
 	}
 	note := func(r gjson.Result) {
@@ -537,7 +566,7 @@ func noteGeminiSigners(b []byte, by string) {
 		if d, ok := bytes.CutPrefix(line, []byte("data:")); ok {
 			line = bytes.TrimSpace(d)
 		}
-		if !bytes.Contains(line, geminiSignatureField) {
+		if !bodyHasBytes(line, geminiSignatureField) {
 			continue
 		}
 		all(gjson.ParseBytes(line))
@@ -549,7 +578,7 @@ func noteGeminiSigners(b []byte, by string) {
 // nor any when keep is false: a function call that had one goes waved
 // through (skipSignature), a text without.
 func geminiBodySignatures(body []byte, by string, keep bool) []byte {
-	if !bytes.Contains(body, geminiSignatureField) {
+	if !bodyHasBytes(body, geminiSignatureField) {
 		return body
 	}
 	var q map[string]json.RawMessage

@@ -22,7 +22,6 @@ package gateway
 // thread's state costs one cache miss, as before.
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"os"
@@ -119,7 +118,7 @@ func withEffortUpdates(conv, who, model, effort string, body []byte) ([]byte, bo
 	_, prev := q["previous_response_id"]
 	_, managed := q["context_management"]
 	if prev || managed || string(q["truncation"]) == `"auto"` || effort == "" || effort == "none" ||
-		bytes.Contains(q["input"], []byte(`"configuration_update"`)) {
+		bodyHas(q["input"], `"configuration_update"`) {
 		delete(effortThreads.m, k)
 		return nil, false
 	}
@@ -245,7 +244,7 @@ func isUserItem(raw json.RawMessage) bool {
 // effortUpdated is the effort the last configuration_update in a Responses
 // request's input asks for: "" with none.
 func effortUpdated(body []byte) string {
-	if !bytes.Contains(body, []byte(`"configuration_update"`)) {
+	if !bodyHas(body, `"configuration_update"`) {
 		return ""
 	}
 	e := ""
@@ -279,7 +278,7 @@ func updateEffort(it []byte) string {
 // that reads the items isn't asked another by them, and the thread's
 // prefix stays as it was. The body as it is when it has none.
 func withEffortUpdated(body []byte, effort string) []byte {
-	if !bytes.Contains(body, []byte(`"configuration_update"`)) {
+	if !bodyHas(body, `"configuration_update"`) {
 		return body
 	}
 	q, err := rawObject(body)

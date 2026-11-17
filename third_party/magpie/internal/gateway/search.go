@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -101,7 +100,7 @@ func searchFor(ctx context.Context) *CallFor {
 // can search for it. Never for magpie's own searcher request, which is
 // the provider's search.
 func magpieSearches(ctx context.Context, p provider.Provider) bool {
-	return !searching(ctx) && settings.Load().SearchAll && canSearchFor(p)
+	return !searching(ctx) && settings.Shared().SearchAll && canSearchFor(p)
 }
 
 // searchesItself says whether the provider searches the web by itself when
@@ -144,7 +143,23 @@ func googleAccount(p provider.Provider) bool {
 // only a request that declares none (searchesFor). One that does is given
 // magpie's search, which the account answers itself (ownSearcher, #757).
 func codeAssistSearches(p provider.Provider, proto provider.Protocol, model string) bool {
-	return proto == provider.CodeAssist && googleAccount(p) && searchModel(model)
+	return proto == provider.CodeAssist && (googleAccount(p) || googlePlugin(p)) && searchModel(model)
+}
+
+// googlePlugin is a plugin whose models are spoken to on Code Assist
+// (its npm @ai-sdk/google) at Google's own host: the Antigravity plugin's
+// account asks daily-cloudcode-pa.googleapis.com, which runs googleSearch
+// for Gemini as a built-in Google sign-in's Code Assist does. Left to
+// magpie's search, a Gemini client's googleSearch never reached it, and
+// the web_search function magpie offered in its place kept the client's
+// URL context out too (daoche_wuzui on X). A plugin at another host is
+// not known to.
+func googlePlugin(p provider.Provider) bool {
+	if !p.IsPlugin() || p.Base(provider.CodeAssist) == "" {
+		return false
+	}
+	h := strings.ToLower(provider.HostOf(p.PluginAPI()))
+	return h == "googleapis.com" || strings.HasSuffix(h, ".googleapis.com")
 }
 
 // geminiKeySearches is a provider asked with a key at Google AI Studio's
@@ -285,7 +300,7 @@ var searchHosts = map[provider.Protocol][]string{
 func searchAsked(proto provider.Protocol, body []byte) bool {
 	// bytes, not string(body): each conversion copied the whole body, three
 	// times a request (a 200KB body: 640KB and 3ms)
-	if !bytes.Contains(body, []byte("web_search")) && !bytes.Contains(body, []byte("oogle_search")) && !bytes.Contains(body, []byte("googleSearch")) {
+	if !bodyHas(body, "web_search") && !bodyHas(body, "oogle_search") && !bodyHas(body, "googleSearch") {
 		return false
 	}
 	req, err := parse(proto, body)
@@ -306,7 +321,7 @@ func searchedForIt(ctx context.Context, p provider.Provider, from provider.Proto
 // themselves, with a small model of theirs, as searching needs no more.
 // An explicit "off" leaves only the search APIs.
 func searcher() (provider.Provider, string, bool) {
-	if settings.Load().Searcher == "off" {
+	if settings.Shared().Searcher == "off" {
 		return provider.Provider{}, "", false
 	}
 	if p, m, why := chosenSearcher(); why == "" && p != nil {
@@ -418,7 +433,7 @@ const (
 // its small model, as when none is named. Nil when none is named or
 // provider search is explicitly off.
 func chosenSearcher() (*provider.Provider, string, string) {
-	return namedSearcher(settings.Load().Searcher)
+	return namedSearcher(settings.Shared().Searcher)
 }
 
 // namedSearcher is chosenSearcher of v, a searcher as Settings writes it.
@@ -554,7 +569,8 @@ func smallModel(p provider.Provider, keep func(catalog.Model) bool) string {
 // ready true; else smallModel of them all, and ready false. A model out
 // of its allowance is only picked when every other is (#1801: Image
 // recognition kept describing with an account out of its allowance, each
-// image refused 429).
+// image refused 429), and so is one whose every account has to be signed
+// in again (provider.SignInNeeded).
 func smallReady(p provider.Provider, keep func(catalog.Model) bool, from provider.Protocol) (string, bool) {
 	c, ready := smallReadyOf(p, smallCands(p, keep), from)
 	return c.id, ready
@@ -572,7 +588,10 @@ func smallReadyOf(p provider.Provider, cs []smallCand, from provider.Protocol) (
 	now := time.Now()
 	for _, c := range cs {
 		if _, spent := spentModel(p, c.id, from, now); !spent {
-			return c, true
+			// every account of p signed out, none is asked: a Claude
+			// sign-in Anthropic refused stayed Image recognition's first
+			// pick, and each image failed on it (@freefcw on X)
+			return c, !p.SignInNeeded()
 		}
 	}
 	return cs[0], false
@@ -754,17 +773,18 @@ func (s *Server) webSearch(ctx context.Context, query string) (string, []Hit, er
 	// is set to (#1522: Codex asked while a "direct" provider served the
 	// turn dialed chatgpt.com directly)
 	ctx = netproxy.With(ctx, "")
+	ctx, query = searchScoped(ctx, query)
 	if !searchServed() {
 		return "", nil, errSearchOff
 	}
-	if settings.Load().Searcher == "off" {
+	if settings.Shared().Searcher == "off" {
 		if len(provider.SearchAPIs()) == 0 {
 			return "", nil, errNoSearcher
 		}
 		return s.apiSearch(ctx, query)
 	}
 	var errs []error
-	apiFirst := settings.Load().SearchFirst == settings.SearchFirstAPI && len(provider.SearchAPIs()) > 0
+	apiFirst := settings.Shared().SearchFirst == settings.SearchFirstAPI && len(provider.SearchAPIs()) > 0
 	if apiFirst {
 		said, hits, err := s.apiSearch(ctx, query)
 		if err == nil {
@@ -1281,16 +1301,24 @@ func textCallRound(tools []Tool, ask round) round {
 }
 
 // searchReply answers req through ask, running the searches its model
-// asks for and asking it again with what they found; the client sees one
-// reply. The first round's failure is a status, as another provider may
-// take over.
-func (s *Server) searchReply(w http.ResponseWriter, r *http.Request, from provider.Protocol, name string, req *Request, usage *Usage, ask round) (int, string) {
+// asks for (when search) and the advisor calls (req.Advisor,
+// advisor_serve.go), and asking it again with what they gave; the client
+// sees one reply. The first round's failure is a status, as another
+// provider may take over.
+func (s *Server) searchReply(w http.ResponseWriter, r *http.Request, from provider.Protocol, name string, req *Request, usage *Usage, ask round, search bool) (int, string) {
 	ctx, cancel := context.WithCancel(withWebAccess(context.WithValue(r.Context(), searchForKey{}, &CallFor{Agent: callerOf(r).agent, Model: unprefixed(req.Model)}), req.WebAccess))
 	defer cancel()
 	q := *req
-	q.WebSearch = false
-	tool := searchTool(q.Tools)
-	q.Tools = append(slices.Clone(q.Tools), tool)
+	q.Tools = slices.Clone(q.Tools)
+	var tool Tool
+	if search {
+		q.WebSearch = false
+		tool = searchTool(q.Tools)
+		q.Tools = append(q.Tools, tool)
+	}
+	if q.Advisor != "" {
+		q.Tools = append(q.Tools, advisorToolDef())
+	}
 	q.Messages = slices.Clone(q.Messages)
 	ask = textCallRound(q.Tools, ask)
 	first, status, msg := ask(ctx, &q)
@@ -1316,6 +1344,10 @@ func (s *Server) searchRounds(ctx context.Context, q *Request, tool string, in <
 	}
 	var before, this Usage
 	started, said := false, false
+	ours := func(name string) bool {
+		return name != "" && name == tool || q.Advisor != "" && name == advisorTool
+	}
+	advised := 0 // the advisor's calls so far
 	for n := 1; ; n++ {
 		var col collector
 		mine, theirs, gap := false, false, said
@@ -1352,7 +1384,7 @@ func (s *Server) searchRounds(ctx context.Context, q *Request, tool string, in <
 				}
 				said = said || ev.Text != ""
 			case KToolStart:
-				mine = ev.Name == tool
+				mine = ours(ev.Name)
 				theirs = theirs || !mine
 				if mine {
 					continue
@@ -1374,12 +1406,18 @@ func (s *Server) searchRounds(ctx context.Context, q *Request, tool string, in <
 		}
 		res := col.finish()
 		var calls []Part
+		var at []int // where in the reply each call is
 		for i, p := range res.Parts {
-			if p.Kind == ToolCall && p.Name == tool {
+			if p.Kind == ToolCall && ours(p.Name) {
 				if p.ID == "" {
-					res.Parts[i].ID = fmt.Sprintf("call_search_%d_%d", n, i)
+					kind := "search"
+					if p.Name == advisorTool && p.Name != tool {
+						kind = advisorTool
+					}
+					res.Parts[i].ID = fmt.Sprintf("call_%s_%d_%d", kind, n, i)
 				}
 				calls = append(calls, res.Parts[i])
+				at = append(at, i)
 			}
 		}
 		// a reply that calls the client's tools goes to the client: it
@@ -1395,6 +1433,13 @@ func (s *Server) searchRounds(ctx context.Context, q *Request, tool string, in <
 		searches := make([]Event, len(calls))
 		var wg sync.WaitGroup
 		for i, c := range calls {
+			if c.Name == advisorTool && c.Name != tool {
+				// the advisor, in order, each seeing what the model
+				// said before it
+				advised++
+				results[i], searches[i] = s.adviceRound(ctx, q, res.Parts[:at[i]], c, advised)
+				continue
+			}
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -1426,7 +1471,7 @@ func (s *Server) searchRounds(ctx context.Context, q *Request, tool string, in <
 		}
 		// the client hears of the searches as its provider's own
 		for _, ev := range searches {
-			if ev.Kind == KSearch && !send(ev) {
+			if (ev.Kind == KSearch || ev.Kind == KAdvice) && !send(ev) {
 				return
 			}
 		}

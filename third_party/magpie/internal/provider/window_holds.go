@@ -14,7 +14,8 @@ import (
 
 // WindowHolds is a window's whole allowance reckoned from magpie's own
 // calls: Tokens of input and output (cache traffic aside, as the Usage
-// page counts tokens) and, when every call's model has an API list price,
+// page counts tokens unless its pick is With cache, when the card adds
+// Routed's cache over Used itself) and, when every call's model has an API list price,
 // Cost at those prices (cache reads and writes at the vendor's own rates).
 // Routed is what magpie routed through the account in the window so far,
 // up to when the share was read, and Used that share. A call made with the
@@ -41,6 +42,10 @@ type WindowHolds struct {
 		BaseCost   float64 `json:"baseCost,omitempty"`
 	} `json:"routed"`
 	Since time.Time `json:"since"`
+	// PrevAt is set when this is the last window's whole, carried over a
+	// reset until the new window has enough data (Musikrv77852 on X): the
+	// time that figure was last reckoned. Since is then that window's start.
+	PrevAt *time.Time `json:"prevAt,omitempty"`
 }
 
 // HoldsFloor is the least share used a window's whole is reckoned from:

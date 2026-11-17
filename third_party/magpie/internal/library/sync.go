@@ -52,6 +52,9 @@ type Result struct {
 	// weren't GitHub's, kept with the backups
 	Linked     []string `json:"linked,omitempty"`
 	LinkedKept []string `json:"linkedKept,omitempty"`
+	// Subagents is, for subagents imported from a repository, what was
+	// added, updated, had already, and left as changed here
+	Subagents *SubagentsImported `json:"subagents,omitempty"`
 	// dropped are the servers taken out of an agent's config, as it had
 	// them, whose processes go once no agent runs them (mcp_reap.go)
 	dropped []*Server
@@ -113,6 +116,7 @@ func syncSteps(all, gone []*Target, b *backups, res *Result) []func(*Library) {
 			l.syncHooks(t, b, res)
 			l.syncEnv(t, b, res)
 			l.syncSubagents(t, b, res)
+			l.syncCommands(t, b, res)
 		})
 	}
 	// an edit made in an agent's copy of a skill goes to the library first,
@@ -401,6 +405,8 @@ type AgentView struct {
 	ProjectSkills string `json:"projectSkills,omitempty"`
 	// ProjectMCP is the file, in a project, it reads MCP servers from
 	ProjectMCP string `json:"projectMCP,omitempty"`
+	// ProjectSubagents is the folder in a project it reads subagents from
+	ProjectSubagents string `json:"projectSubagents,omitempty"`
 	// ProjectNoSSE: its project file can't take a server over SSE
 	ProjectNoSSE bool `json:"projectNoSSE,omitempty"`
 	// ProjectOff and ProjectSkillOff: a server, or a skill, it has from
@@ -429,7 +435,8 @@ type AgentView struct {
 	Hub string `json:"hub,omitempty"`
 	// SkillRouter, with the skill router on, is "on" for an agent whose
 	// skills folder is given magpie-skills, or why it keeps each skill's
-	// own link (routerWhy): copies, liveagent, shared, taken or own
+	// own link (routerWhy): copies, liveagent, shared, taken or own; or
+	// "none" for an agent whose folder takes it and has no skill to list
 	SkillRouter string `json:"skillRouter,omitempty"`
 	// How is the way it is given its skills, link or copy, and HowOwn its
 	// own over the library's; MustCopy is one that can only take copies
@@ -520,7 +527,11 @@ type View struct {
 	// each agent on this computer makes of them (subagents.go)
 	Subagents      []SubagentView      `json:"subagents"`
 	SubagentAgents []SubagentAgentView `json:"subagentAgents"`
-	FoundServers   []Found             `json:"foundServers"`
+	// Commands are the library's slash commands, and CommandAgents what
+	// the agents that can take them do with them
+	Commands      []CommandView      `json:"commands"`
+	CommandAgents []CommandAgentView `json:"commandAgents"`
+	FoundServers  []Found            `json:"foundServers"`
 	// Plugins are the plugins kept as one item each (plugin.go)
 	Plugins     []PluginView `json:"plugins"`
 	Skills      []SkillView  `json:"skills"`
@@ -542,6 +553,9 @@ type View struct {
 	// (skills_shared.go), at SharedDir
 	SharedSkills bool   `json:"sharedSkills"`
 	SharedDir    string `json:"sharedDir"`
+	// AutoUpdateSkills: the skills from GitHub and git repositories are
+	// updated by themselves (skill_autoupdate.go)
+	AutoUpdateSkills bool `json:"autoUpdateSkills"`
 	// MCPHub: the agents are given magpie's one MCP server in place of
 	// the library's (#2679), at HubPath<agent> on the gateway
 	MCPHub  bool   `json:"mcpHub"`
@@ -604,6 +618,26 @@ func readView(problems []Problem, glance bool) (*View, error) {
 			return nil, err
 		}
 	}
+	// a skill that went in beside itself before magpie told the two
+	// apart (skill_beside.go) is folded back on the next read, not only on
+	// the next change: upgrading alone left blog-team beside blog (Refeccd
+	// on X). The agents' links follow at once, as after a change: a
+	// folded copy's folder is gone, and theirs would point at nothing.
+	if slices.ContainsFunc(l.Skills, func(s *Skill) bool { return s.Called != "" && s.Source.remote() }) {
+		if folded := l.foldBeside(); len(folded) > 0 {
+			forget()
+			forget = func() {}
+			if err := l.save(); err != nil {
+				return nil, err
+			}
+			res := l.sync()
+			if err := l.save(); err != nil {
+				return nil, err
+			}
+			problems = append(slices.Clone(problems), res.Problems...)
+			forget = readParts()
+		}
+	}
 	// a plugin's tools, a server of their own (plugin_tools.go), and a
 	// Remote magpie's router (bridge_mcp.go): saved, and given to the
 	// agents by a sync of their own
@@ -620,10 +654,10 @@ func readView(problems []Problem, glance bool) (*View, error) {
 	// the agents are found once for the whole read: finding them looks
 	// through every agent's folders, in WSL too (#1624)
 	targets, asleep := targetsAsleep(false)
-	v := &View{Agents: []AgentView{}, Servers: []ServerView{}, Skills: []SkillView{}, FoundSkills: []FoundSkill{}, Instructions: l.instructionsView(targets, asleep), Dir: Dir(), Backups: BackupDir(), CopySkills: l.CopySkills, SharedSkills: l.SharedSkills, SharedDir: sharedSkillsDir(), MCPHub: l.MCPHub, SkillRouter: l.SkillRouter, HubPath: gateway.HubMCPPath, HubNote: settings.Shared().RouterNote, HubName: gateway.HostName(), HubAllTools: settings.Shared().RouterAllTools, Partial: glance}
+	v := &View{Agents: []AgentView{}, Servers: []ServerView{}, Skills: []SkillView{}, FoundSkills: []FoundSkill{}, Instructions: l.instructionsView(targets, asleep), Dir: Dir(), Backups: BackupDir(), CopySkills: l.CopySkills, SharedSkills: l.SharedSkills, SharedDir: sharedSkillsDir(), AutoUpdateSkills: l.AutoUpdateSkills, MCPHub: l.MCPHub, SkillRouter: l.SkillRouter, HubPath: gateway.HubMCPPath, HubNote: settings.Shared().RouterNote, HubName: gateway.HostName(), HubAllTools: settings.Shared().RouterAllTools, Partial: glance}
 	for _, t := range targets {
 		av := AgentView{ID: t.Agent.ID, Name: t.Agent.Name, Icon: t.Agent.Icon, Instructions: t.Instructions, Skills: t.Skills,
-			SkillsAlso: t.SkillsAlso, Note: t.Note, MCPVia: t.MCPVia, ProjectSkills: ProjectSkillsDir(t.Agent.ID), ProjectMCP: ProjectMCPFile(t.Agent.ID),
+			SkillsAlso: t.SkillsAlso, Note: t.Note, MCPVia: t.MCPVia, ProjectSkills: ProjectSkillsDir(t.Agent.ID), ProjectMCP: ProjectMCPFile(t.Agent.ID), ProjectSubagents: ProjectSubagentsDir(t.Agent.ID),
 			ProjectOff: slices.Contains(projectOffAgents, t.Agent.ID), ProjectSkillOff: slices.Contains(projectSkillOffAgents, t.Agent.ID),
 			ProjectNoSSE: ProjectNoSSE(t.Agent.ID)}
 		if t.Skills != "" {
@@ -636,6 +670,10 @@ func readView(problems []Problem, glance bool) (*View, error) {
 				av.SkillRouter = "on"
 				if why := l.routerWhy(t, av.How == HowCopy); why != "" {
 					av.SkillRouter = why
+				} else if a := l.Applied[t.Agent.ID]; !t.Gone && (a == nil || !a.Router) {
+					// the folder takes it, yet no skill is listed there:
+					// none is ticked for the agent, or each is kept direct
+					av.SkillRouter = routerNone
 				}
 			}
 		}
@@ -717,6 +755,7 @@ func readView(problems []Problem, glance bool) (*View, error) {
 	v.Hooks, v.HookAgents = l.hooksView(append(slices.Clone(targets), gone...), asleep, of)
 	v.Env, v.EnvAgents = l.envView(append(slices.Clone(targets), gone...), of)
 	v.Subagents, v.SubagentAgents = l.subagentsView(targets, asleep, of)
+	v.Commands, v.CommandAgents = l.commandsView(targets, asleep, of)
 	v.Plugins = l.pluginsView()
 	tr := &tracer{}
 	for _, s := range l.Skills {

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net/http"
 	"net/url"
@@ -71,9 +72,13 @@ func readLive(provider string) (liveFile, error) {
 			return f, err
 		}
 		f.key = liveKey(b, f.Since != nil)
-		mendKinds(f.Models)
-		for _, side := range f.Sides {
-			mendKinds(side)
+		// a list saved before Unique was: each model once from its first
+		// read, not from its next fetch
+		f.Models = Unique(f.Models)
+		mendKinds(f.Models, f.Base)
+		for b, side := range f.Sides {
+			f.Sides[b] = Unique(side)
+			mendKinds(f.Sides[b], f.Base)
 		}
 		f.byID = map[string][]Model{}
 		for _, m := range Chat(f.Models) {
@@ -87,9 +92,17 @@ func readLive(provider string) (liveFile, error) {
 // OpenCode Go list kept with media types ("image/jpeg") said its models
 // took no image until it was fetched again, so a model that sees is told
 // so from the first read after the update, not the next fetch.
-func mendKinds(ms []Model) {
+//
+// A list saved while DrawsID read grok-imagine-video as an image model
+// (it says "imagine") is read as namesVideo reads it now, from the first
+// read, not the next fetch (iceloon on X): a video model where the list
+// is xAI's own, else one to talk to that the user can mark.
+func mendKinds(ms []Model, base string) {
 	for i := range ms {
 		m := &ms[i]
+		if m.Draws && namesVideo(m.ID) && !slices.Contains(m.OutputModalities, "image") && !slices.Contains(m.OutputModalities, "text") {
+			m.Draws, m.Films = false, xaiFilms(base, m.ID)
+		}
 		if m.InputModalities == nil {
 			continue
 		}
@@ -99,6 +112,16 @@ func mendKinds(ms []Model) {
 			m.ImageInput, m.Images = &yes, true
 		}
 	}
+}
+
+// xaiFilms is whether id, on the list fetched at base, is one of xAI's
+// own video models: a grok-imagine-video listed by api.x.ai, which makes
+// it at its videos API (POST /v1/videos/generations) as the gateway asks
+// it there (gateway filmsXAI). A relay's is no video model until its list
+// or the user says so (#1399), since it may not serve one.
+func xaiFilms(base, id string) bool {
+	u, err := url.Parse(strings.TrimSpace(base))
+	return err == nil && strings.EqualFold(u.Hostname(), "api.x.ai") && strings.HasPrefix(strings.ToLower(id), "grok-imagine-video")
 }
 
 // LiveKey names the list saved for provider by what it holds, not by
@@ -136,7 +159,7 @@ func liveKey(b []byte, dropFetched bool) string {
 }
 
 // LiveByID are the models of Live with this id, in the list's order
-// (a list may name one twice): what a look through Live finds, without
+// (one since Unique; a slice for the callers that read it so): what a look through Live finds, without
 // the list copied for each model asked about.
 func LiveByID(provider, model string) []Model {
 	f, err := readLive(provider)
@@ -272,6 +295,76 @@ func Chat(ms []Model) []Model {
 	return out
 }
 
+// Unique is ms with each model id once (#6582: some APIs list a model
+// more than once, and every copy was a row of its own in the pickers, the
+// gateway's /v1/models and the agents' lists). The first keeps its place,
+// and what it leaves unsaid is taken from the copies after it, as the
+// lookups by id (LiveByID's callers) already took the first copy that
+// said it: a name other than the id, a window, an output cap, levels, a
+// price, the APIs, tiers, the magpies on its way and the keys that list
+// it. ms comes back as it is when no id is in it twice.
+func Unique(ms []Model) []Model {
+	if len(ms) < 2 {
+		return ms
+	}
+	at := make(map[string]int, len(ms))
+	dup := false
+	for _, m := range ms {
+		if _, ok := at[m.ID]; ok {
+			dup = true
+			break
+		}
+		at[m.ID] = 0
+	}
+	if !dup {
+		return ms
+	}
+	clear(at)
+	out := make([]Model, 0, len(ms))
+	for _, m := range ms {
+		i, ok := at[m.ID]
+		if !ok {
+			at[m.ID] = len(out)
+			out = append(out, m)
+			continue
+		}
+		k := &out[i]
+		if (k.Name == "" || k.Name == k.ID) && m.Name != "" {
+			k.Name = m.Name
+		}
+		if k.Context == 0 {
+			k.Context = m.Context
+		}
+		if k.Output == 0 {
+			k.Output = m.Output
+		}
+		if len(k.Efforts) == 0 {
+			k.Efforts = m.Efforts
+		}
+		if k.Price == nil {
+			k.Price = m.Price
+		}
+		if len(k.APIs) == 0 {
+			k.APIs = m.APIs
+		}
+		if len(k.Tiers) == 0 {
+			k.Tiers = m.Tiers
+		}
+		if len(k.Via) == 0 {
+			k.Via = m.Via
+		}
+		if k.ImageInput == nil && m.ImageInput != nil {
+			k.ImageInput, k.Images = m.ImageInput, m.Images
+		}
+		for _, key := range m.Keys {
+			if !slices.Contains(k.Keys, key) {
+				k.Keys = append(slices.Clip(k.Keys), key)
+			}
+		}
+	}
+	return out
+}
+
 // SaveLive stores a fetched list; an empty list forgets it.
 func SaveLive(provider, base string, models []Model) error {
 	return saveLive(provider, base, "", models, nil)
@@ -351,6 +444,15 @@ func saveLive(provider, base, asked string, models []Model, sides map[string][]M
 	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
+	}
+	// each model once, in the list and in each endpoint's part (Unique),
+	// whichever way the list was fetched
+	models = Unique(models)
+	if sides != nil {
+		sides = maps.Clone(sides)
+		for b, ms := range sides {
+			sides[b] = Unique(ms)
+		}
 	}
 	now := time.Now()
 	f := liveFile{Fetched: now, Base: base, Models: models, Sides: sides, Kinded: true,
@@ -685,7 +787,8 @@ func fetchOne(ctx context.Context, url, key string, anthropic bool, headers map[
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	// a model the list (or its pages) names more than once is one model
+	return Unique(out), nil
 }
 
 // Paged asks a model list that pages for every page of itself: page asks
@@ -865,7 +968,9 @@ func fetchPage(ctx context.Context, url, key string, anthropic bool, headers map
 		// Seedance sat among its chat models, not under Video models);
 		// OpenAI's sora ids, whose bare list marks no kind and says no
 		// modalities at all (#4954)
-		films := r.Kind == "video" || r.Kind == "" && (r.Domain == "VideoGeneration" || slices.Contains(outs, "video") && !slices.Contains(outs, "text")) || FilmsID(id)
+		// and xAI's own grok-imagine-video, which its list marks as
+		// nothing (xaiFilms)
+		films := r.Kind == "video" || r.Kind == "" && (r.Domain == "VideoGeneration" || slices.Contains(outs, "video") && !slices.Contains(outs, "text")) || FilmsID(id) || r.Kind == "" && xaiFilms(url, id)
 		drawer := !films && !decision && (DrawsID(id) && !strings.Contains(strings.ToLower(id), "deep-research") || r.Kind == "image" ||
 			r.Kind == "" && (r.Domain == "ImageGeneration" || slices.Contains(outs, "image") && !slices.Contains(outs, "text")))
 		// and none the list says answers without text (Ark's 3D models)

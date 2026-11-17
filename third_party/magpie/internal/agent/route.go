@@ -158,7 +158,7 @@ func buildVia(agent, prefix string) []Option {
 		}
 		note := e.Provider.Name + " · via magpie"
 		if a := e.Provider.Account; a != nil {
-			note = firstUser(e.Provider) + " · via magpie"
+			note = firstUser(*e.Provider) + " · via magpie"
 		}
 		o := Option{Value: prefix + e.ID, Label: e.Name, Note: note,
 			Icon: e.Provider.Icon, Group: e.Provider.Name, Ref: e.ID, Free: e.Free, Rate: e.Rate, RateWas: e.RateWas, Context: e.Context, own: own[e.Provider.ID],
@@ -167,13 +167,13 @@ func buildVia(agent, prefix string) []Option {
 			o.Zero = e.Provider.PricedFree(set, e.Model)
 		}
 		// a model with a fast mode is switched fast in the picker (#954)
-		if provider.CanFast(e.Provider, e.Model) {
+		if provider.CanFast(*e.Provider, e.Model) {
 			o.FastFor, o.Fast = agent, slices.Contains(fast, e.ID)
-			o.OwnFast = provider.OwnFast(e.Provider, e.Model)
+			o.OwnFast = provider.OwnFast(*e.Provider, e.Model)
 			if tiered == nil {
 				tiered = provider.UltraModels()
 			}
-			if provider.UltraOn(e.Provider, e.Model, tiered) {
+			if provider.UltraOn(*e.Provider, e.Model, tiered) {
 				o.UltraOK, o.Ultra = true, o.Fast && slices.Contains(ultra, e.ID)
 			}
 		}
@@ -384,7 +384,10 @@ func buildModels(agent string) []catalog.Model {
 			// word on included (provider.CodexEfforts)
 			efforts = provider.CodexEfforts(e)
 		}
-		m := catalog.Model{ID: e.ID, Name: labels[i], Provider: firstOf(e.Provider.Catalogs()), Efforts: efforts, Images: e.Images || seen, ImageInput: e.ImageInput, Context: e.Context, Output: e.Output, OutputSet: e.OutputSet, AgentsV2: e.AgentsV2, Reasoning: e.Thinks(),
+		// the kinds the model's source listed (a video, say), which an
+		// agent that can send them is told of (zcodeInputs, #5098)
+		inputs, outputs := e.Modalities()
+		m := catalog.Model{ID: e.ID, Name: labels[i], Provider: firstOf(e.Provider.Catalogs()), Efforts: efforts, Images: e.Images || seen, ImageInput: e.ImageInput, InputModalities: inputs, OutputModalities: outputs, Context: e.Context, Output: e.Output, OutputSet: e.OutputSet, AgentsV2: e.AgentsV2, Reasoning: e.Thinks(),
 			AlwaysThinks: e.AlwaysThinks, DynamicTools: e.DynamicTools, DefaultEffort: e.DefaultEffort}
 		// where Codex and Claude Code compact it (#876): a threshold the
 		// user set on the model or on its provider, else a window they
@@ -449,7 +452,7 @@ func buildModels(agent string) []catalog.Model {
 		// OpenCode has no command for and takes as variants (#2379); a
 		// group is sent fast as the group says, as a fast pick is
 		if a := e.Provider.Account; e.Group == "" && a != nil && a.Agent == "codex" {
-			m.CodexFast = provider.CanFast(e.Provider, e.Model)
+			m.CodexFast = provider.CanFast(*e.Provider, e.Model)
 		}
 		m.Efforts, m.Keys, m.APIs, m.Endpoints = slices.Clip(m.Efforts), slices.Clip(m.Keys), slices.Clip(m.APIs), slices.Clip(m.Endpoints)
 		m.InputModalities, m.OutputModalities, m.Tiers, m.Codex = slices.Clip(m.InputModalities), slices.Clip(m.OutputModalities), slices.Clip(m.Tiers), slices.Clip(m.Codex)
