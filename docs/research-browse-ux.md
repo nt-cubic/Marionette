@@ -444,6 +444,9 @@ read-only，以及 GET/body 处理。因此上一轮的 P1–P4 判断仍然成�
 
 ### P0：先借“用户随时能接管，Agent 也不会留下垃圾”
 
+2026-11-17 已落地第 2–4 项的基础版：stable tab id、pin/claim、用户 touch、空闲清理和
+Agent-close 边界。页面内 WAIT 卡仍未实现，留给下一批。
+
 1. **页面内 WAIT 卡，而不是只在 Browser 顶部横条提示。** browse 把卡片注入页面的 closed
    Shadow DOM 和 top layer，只有真实点击可 Continue；页面不能伪造，密码管理器弹层仍可盖在
    卡片上使用。Marionette 已经有 picker 的 isolated world / trusted-event 机制，可以复用这套

@@ -32,6 +32,7 @@
 | `verify-browser-pick.mts` | `npx tsx scripts/verify-browser-pick.mts` | 浏览器元素批注的数据层：不可信页面声明、URL/query/hash/path 脱敏、多页面分组、元素/框选块、ref 与截图顺序、页面文本单行净化、标签拼装、页面输入屏障/可信事件/24 条上限的静态契约、双语词典对齐 |
 | `verify-workspace-surface.mts` | `npx tsx scripts/verify-workspace-surface.mts` | 浏览器 Workspace Surface：浏览器/对话宽度上下限、左右指针换算、<760px 上下堆叠、fresh tab 只有 `display:"workspace"` 才抢工作区 |
 | `verify-dev-server.mts` | `npx tsx scripts/verify-dev-server.mts` | 开发服务器发现：ANSI 去除、loopback/通配地址归一化、公网与 LAN 拒绝、尾标点清理、同 origin 去重、多服务识别 |
+| `verify-browser-prefs.mts` | `npx tsx scripts/verify-browser-prefs.mts` | Agent tab 空闲清理偏好：默认 10 分钟、允许值、非法值回落，以及 10 → 30 → 60 → never 循环 |
 | `verify-activity-cluster.mts` | `npx tsx scripts/verify-activity-cluster.mts` | 活动折叠：thought+tool 同一集群、同类连续分组、结束后摘要为 `1 think, 2 read, 3 edit`、live 时跟当前工具 |
 | `verify-transcript-export.mts` | `npx tsx scripts/verify-transcript-export.mts` | 对话 Markdown 导出：主干发言、thought/tool 进 `<details>`、连续 `file_change` 合成交付表、Windows 文件名净化、空 thought 不产出空折叠块 |
 | `verify-conversation-find.mts` | `npx tsx scripts/verify-conversation-find.mts` | 对话内查找：主干卡可搜（你/回复/计划/提问/交接/子代理/改动，重命名旧路径与选项/选中项参与）、thought/tool 返回 null（折叠簇内 v1 不搜）、大小写不敏感子串、查询 trim、命中下标升序、空查询/无命中 |

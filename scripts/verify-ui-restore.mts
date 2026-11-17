@@ -90,7 +90,7 @@ check("parseUiRestore keeps validated browser/document/memo surface tabs", () =>
       memoOpen: true,
       active: { kind: "document", path: "D:\\work\\README.md" },
       browserTabs: [
-        { url: "http://localhost:5173/app", title: "App" },
+        { url: "http://localhost:5173/app", title: "App", pinned: true },
         { url: "javascript:alert(1)", title: "blocked" },
         { url: "https://example.com/app?token=secret&tab=1#oauth", title: "Safe" },
       ],
@@ -102,6 +102,7 @@ check("parseUiRestore keeps validated browser/document/memo surface tabs", () =>
   assert.equal(parsed?.surface.memoOpen, true);
   assert.equal(parsed?.surface.browserTabs.length, 2);
   assert.equal(parsed?.surface.browserTabs[0]?.url, "http://localhost:5173/app");
+  assert.equal(parsed?.surface.browserTabs[0]?.pinned, true);
   assert.equal(
     parsed?.surface.browserTabs[1]?.url,
     "https://example.com/app?tab=1",

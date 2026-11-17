@@ -33,7 +33,7 @@ export type WorkspaceSurfaceSnapshot = {
   documents: { path: string; title: string }[];
   memoOpen: boolean;
   active: WorkspaceSurfaceActive | null;
-  browserTabs: { url: string; title: string }[];
+  browserTabs: { url: string; title: string; pinned?: boolean }[];
   activeBrowserIndex: number | null;
 };
 
@@ -107,7 +107,11 @@ function sanitizeSurface(value: unknown): WorkspaceSurfaceSnapshot | undefined {
       typeof row.title === "string" && row.title.trim()
         ? row.title.trim().slice(0, 240)
         : url;
-    browserTabs.push({ url, title });
+    browserTabs.push({
+      url,
+      title,
+      ...(row.pinned === true ? { pinned: true } : {}),
+    });
   }
 
   const rawActive = rec.active;

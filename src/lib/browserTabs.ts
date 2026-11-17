@@ -15,6 +15,8 @@ export type BrowserTab = {
   openedByAgent: boolean;
   display: "background" | "workspace";
   ownerSessionId: string | null;
+  chosenId: string | null;
+  pinned: boolean;
   busy: boolean;
   status: "idle" | "running" | "waiting_user" | "failed";
   lastUsedAtMs: number;
@@ -43,9 +45,14 @@ export type BrowserHandoffRequest = {
 export async function browserOpenTab(
   url: string,
   display: "background" | "workspace" = "background",
-): Promise<{ tabId: string } | null> {
+  chosenId?: string,
+): Promise<{ tabId: string; existed?: boolean } | null> {
   if (!isTauriRuntime()) return null;
-  return invoke<{ tabId: string }>("browser_open_tab", { url, display });
+  return invoke<{ tabId: string; existed?: boolean }>("browser_open_tab", {
+    url,
+    display,
+    chosenId: chosenId ?? null,
+  });
 }
 
 export async function browserCloseTab(tabId: string): Promise<void> {
@@ -56,6 +63,32 @@ export async function browserCloseTab(tabId: string): Promise<void> {
 export async function browserCloseTabsForSession(sessionId: string): Promise<number> {
   if (!isTauriRuntime()) return 0;
   return invoke<number>("browser_close_tabs_for_session", { sessionId });
+}
+
+export async function browserSetTabPinned(tabId: string, pinned: boolean): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("browser_set_tab_pinned", { tabId, pinned });
+}
+
+export async function browserClaimTab(tabId: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("browser_claim_tab", { tabId });
+}
+
+export async function browserTouchTab(tabId: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("browser_touch_tab", { tabId });
+}
+
+export async function browserCleanupIdleTabs(
+  minutes: number,
+  keepTabIds: readonly string[],
+): Promise<string[]> {
+  if (!isTauriRuntime() || minutes <= 0) return [];
+  return invoke<string[]>("browser_cleanup_idle_tabs", {
+    minutes,
+    keepTabIds,
+  });
 }
 
 export async function browserProbeLoopbackUrl(url: string): Promise<boolean> {

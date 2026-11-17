@@ -204,7 +204,7 @@ fn route(method: &str, params: &Value, session_id: &str) -> Result<Value, Value>
             "protocolVersion": params.get("protocolVersion").and_then(Value::as_str).unwrap_or("2024-11-05"),
             "capabilities": { "tools": {} },
             "serverInfo": { "name": "marionette-tools", "version": "1.0.0" },
-            "instructions": "Use browser_open_tab with display=\"workspace\" only when the user asked you to build or revise a web app and wants its rendered preview visible beside this conversation. Keep ordinary research, reference pages, sign-in, and one-off reads in the background. Never infer workspace display from a localhost URL alone.",
+            "instructions": "Use browser_open_tab with display=\"workspace\" only when the user asked you to build or revise a web app and wants its rendered preview visible beside this conversation. Keep ordinary research, reference pages, sign-in, and one-off reads in the background. Never infer workspace display from a localhost URL alone. For a page you will revisit, pass a short stable id such as work-mail; opening an existing id returns that tab without navigating it.",
         })),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": tool_schemas() })),
@@ -255,7 +255,7 @@ fn tool_schemas() -> Value {
     json!([
         tool(
             "browser_list_tabs",
-            "List the browser tabs open in Marionette's built-in browser, with each tab's sharing state (none / read / control).",
+            "List the browser tabs open in Marionette's built-in browser, including stable id, owner session, pinned, busy, status, last use and sharing state (none / read / control).",
             &[],
             json!({})
         ),
@@ -270,6 +270,10 @@ fn tool_schemas() -> Value {
                     "enum": ["background", "workspace"],
                     "default": "background",
                     "description": "workspace only for a web app preview the user asked to build or revise; otherwise background."
+                },
+                "id": {
+                    "type": "string",
+                    "description": "Optional stable handle (lowercase letters, digits, dashes; max 48). Opening the same id again returns the existing tab without navigating it. Named tabs are never closed by idle cleanup."
                 }
             })
         ),
@@ -299,7 +303,7 @@ fn tool_schemas() -> Value {
         ),
         tool(
             "browser_close_tab",
-            "Close a browser tab.",
+            "Close a browser tab you opened. User-owned, claimed, or pinned tabs are left open and reported back instead.",
             &["tabId"],
             json!({ "tabId": tab_id() })
         ),
@@ -549,11 +553,23 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
             let display = browser::normalize_open_display(
                 args.get("display").and_then(Value::as_str),
             )?;
-            let tab_id = browser::open_tab(app, &url, true, display, Some(session_id))?;
+            let chosen_id = args.get("id").and_then(Value::as_str);
+            let (tab_id, existed) = browser::open_tab(
+                app,
+                &url,
+                true,
+                display,
+                Some(session_id),
+                chosen_id,
+            )?;
             Ok(json!({
                 "tabId": tab_id,
+                "id": chosen_id,
+                "existed": existed,
                 "display": display,
-                "note": if display == "workspace" {
+                "note": if existed {
+                    "that named tab already existed; it was returned without navigating"
+                } else if display == "workspace" {
                     "opened beside the current Agent conversation; reads are allowed, actions ask the user"
                 } else {
                     "opened in the background; reads are allowed, actions ask the user"
@@ -580,8 +596,16 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
         }
         "browser_close_tab" => {
             let tab_id = arg_str(args, "tabId")?;
-            browser::close_tab(app, &tab_id)?;
-            Ok(json!({ "tabId": tab_id, "closed": true }))
+            let closed = browser::agent_close_tab(app, &tab_id)?;
+            Ok(json!({
+                "tabId": tab_id,
+                "closed": closed,
+                "note": if closed {
+                    "tab closed"
+                } else {
+                    "the tab is user-owned, claimed, or pinned; it was left open for the user"
+                }
+            }))
         }
         "browser_snapshot" => {
             let tab_id = arg_str(args, "tabId")?;
@@ -880,5 +904,6 @@ mod tests {
             open["inputSchema"]["properties"]["display"]["enum"],
             json!(["background", "workspace"])
         );
+        assert!(open["inputSchema"]["properties"]["id"].is_object());
     }
 }

@@ -1,9 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import { Bot, Check, Crosshair, Globe, Plus, RefreshCw, Share2, X } from "lucide-react";
+import {
+  Bot,
+  Check,
+  Crosshair,
+  Globe,
+  MoreHorizontal,
+  Pin,
+  Plus,
+  RefreshCw,
+  Share2,
+  UserRound,
+  X,
+} from "lucide-react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   browserCloseTab,
+  browserClaimTab,
   browserNavigateTab,
   browserOpenTab,
   browserPickClear,
@@ -13,6 +26,7 @@ import {
   browserSetTabBounds,
   browserSetTabVisible,
   browserShareTab,
+  browserSetTabPinned,
   onBrowserPick,
   type BrowserPickEvent,
   type BrowserPickMode,
@@ -108,7 +122,9 @@ export function BrowserPage({
   const hostRef = useRef<HTMLDivElement>(null);
   const [address, setAddress] = useState("");
   const [shareMenuFor, setShareMenuFor] = useState<string | null>(null);
+  const [tabMenuFor, setTabMenuFor] = useState<string | null>(null);
   const active = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0] ?? null;
+  const menuTab = tabs.find((tab) => tab.id === tabMenuFor) ?? null;
   const [resolving, setResolving] = useState(false);
   const [pickerNotice, setPickerNotice] = useState<string | null>(null);
   const [handoffBusy, setHandoffBusy] = useState(false);
@@ -131,6 +147,12 @@ export function BrowserPage({
   useEffect(() => {
     setPickerNotice(null);
   }, [active?.id]);
+
+  useEffect(() => {
+    if (tabMenuFor && !tabs.some((tab) => tab.id === tabMenuFor)) {
+      setTabMenuFor(null);
+    }
+  }, [tabMenuFor, tabs]);
 
   useEffect(() => {
     setHandoffBusy(false);
@@ -235,6 +257,7 @@ export function BrowserPage({
   };
 
   const closeTab = (tabId: string) => {
+    if (tabMenuFor === tabId) setTabMenuFor(null);
     const remaining = tabs.filter((tab) => tab.id !== tabId);
     if (remaining[0]) onSelectTab(remaining[0].id);
     setPickModes((prev) => {
@@ -544,11 +567,25 @@ export function BrowserPage({
               <button
                 type="button"
                 className="browser-tab__select"
-                title={tab.url}
-                onClick={() => onSelectTab(tab.id)}
+                title={[
+                  tab.chosenId ? t("browser.chosenTab", { id: tab.chosenId }) : null,
+                  tab.title || tab.url,
+                  tab.url,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+                onClick={() => {
+                  setTabMenuFor(null);
+                  onSelectTab(tab.id);
+                }}
               >
                 <Globe size={11} />
-                <span>{tab.title || tab.origin || tab.url}</span>
+                <span>{tab.chosenId || tab.title || tab.origin || tab.url}</span>
+                {tab.pinned && (
+                  <i className="browser-tab__pinned" title={t("browser.pinned")}>
+                    <Pin size={10} />
+                  </i>
+                )}
                 {tab.openedByAgent && (
                   <i
                     className="browser-tab__agent"
@@ -582,6 +619,18 @@ export function BrowserPage({
               </button>
               <button
                 type="button"
+                className="pill-action pill-action--icon pill-action--sm browser-tab__more"
+                title={t("browser.tabActions")}
+                aria-label={t("browser.tabActions")}
+                aria-expanded={tabMenuFor === tab.id}
+                onClick={() =>
+                  setTabMenuFor((current) => (current === tab.id ? null : tab.id))
+                }
+              >
+                <MoreHorizontal size={11} />
+              </button>
+              <button
+                type="button"
                 className="pill-action pill-action--icon pill-action--sm browser-tab__close"
                 title={t("browser.closeTab")}
                 onClick={() => closeTab(tab.id)}
@@ -599,6 +648,60 @@ export function BrowserPage({
             <Plus size={12} />
           </button>
         </div>
+        {menuTab && (
+          <div className="browser-tab-actions" role="menu">
+            <div className="browser-tab-actions__identity">
+              <b>{menuTab.chosenId || menuTab.title || menuTab.url}</b>
+              <span>
+                {menuTab.ownerSessionId
+                  ? t("browser.ownerSession", {
+                      id:
+                        ownerSessionLabel?.(menuTab.ownerSessionId) ??
+                        menuTab.ownerSessionId,
+                    })
+                  : t("browser.userOwned")}
+              </span>
+            </div>
+            <button
+              type="button"
+              role="menuitem"
+              className={menuTab.pinned ? "is-active" : ""}
+              onClick={() => {
+                void browserSetTabPinned(menuTab.id, !menuTab.pinned).catch(
+                  () => undefined,
+                );
+                setTabMenuFor(null);
+              }}
+            >
+              <Pin size={12} />
+              {menuTab.pinned ? t("browser.unpin") : t("browser.pin")}
+            </button>
+            {menuTab.openedByAgent && (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  void browserClaimTab(menuTab.id).catch(() => undefined);
+                  setTabMenuFor(null);
+                }}
+              >
+                <UserRound size={12} />
+                {t("browser.claim")}
+              </button>
+            )}
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setTabMenuFor(null);
+                closeTab(menuTab.id);
+              }}
+            >
+              <X size={12} />
+              {t("browser.closeTab")}
+            </button>
+          </div>
+        )}
         {active && (
           <div className="browser-page__nav">
             <input

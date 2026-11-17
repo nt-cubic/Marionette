@@ -151,6 +151,11 @@ pub struct TabInfo {
     /// tabs, then the tab behaves like every other tab.
     pub display: String,
     pub owner_session_id: Option<String>,
+    /// Stable agent-facing name chosen at open time (for example work-mail).
+    /// Duplicate opens return the existing tab instead of creating another.
+    pub chosen_id: Option<String>,
+    /// User-controlled keep flag; idle cleanup never closes a pinned tab.
+    pub pinned: bool,
     pub busy: bool,
     pub status: String,
     pub last_used_at_ms: u64,
@@ -158,9 +163,11 @@ pub struct TabInfo {
 
 pub struct Surface {
     pub id: String,
-    pub opened_by_agent: bool,
+    pub opened_by_agent: Cell<bool>,
     pub display: String,
-    pub owner_session_id: Option<String>,
+    pub owner_session_id: RefCell<Option<String>>,
+    pub chosen_id: Option<String>,
+    pub pinned: Cell<bool>,
     /// Concurrent agent calls can overlap while waiting on a lease or CDP.
     /// The public tab snapshot stays boolean, but the counter prevents one
     /// completion from claiming the tab is idle while another call is live.
@@ -210,9 +217,11 @@ impl Surface {
                 .as_ref()
                 .map(|g| g.level.as_str().to_string())
                 .unwrap_or_else(|| "none".to_string()),
-            opened_by_agent: self.opened_by_agent,
+            opened_by_agent: self.opened_by_agent.get(),
             display: self.display.clone(),
-            owner_session_id: self.owner_session_id.clone(),
+            owner_session_id: self.owner_session_id.borrow().clone(),
+            chosen_id: self.chosen_id.clone(),
+            pinned: self.pinned.get(),
             busy: self.busy_count.get() > 0,
             status: self.status.borrow().clone(),
             last_used_at_ms: self.last_used_at_ms.get(),
@@ -545,7 +554,7 @@ fn apply_origin_and_title(surface: &Surface, url: &str, origin: String, title: O
         // re-take Read on the new origin: the agent chose to follow the link
         // (research flow would die otherwise). User-opened tabs drop to None.
         let mut grant = surface.grant.borrow_mut();
-        match (&*grant, surface.opened_by_agent) {
+        match (&*grant, surface.opened_by_agent.get()) {
             (Some(_), true) => {
                 grant.replace(AgentGrant {
                     level: GrantLevel::Read,
@@ -1275,8 +1284,16 @@ pub fn create_surface(
     opened_by_agent: bool,
     display: &str,
     owner_session_id: Option<&str>,
+    chosen_id: Option<&str>,
 ) -> Result<String, String> {
-    let surface = build_surface(app, url, opened_by_agent, display, owner_session_id)?;
+    let surface = build_surface(
+        app,
+        url,
+        opened_by_agent,
+        display,
+        owner_session_id,
+        chosen_id,
+    )?;
     let id = surface.id.clone();
     register_surface(app, &surface);
     Ok(id)
@@ -1290,6 +1307,7 @@ fn build_surface(
     opened_by_agent: bool,
     display: &str,
     owner_session_id: Option<&str>,
+    chosen_id: Option<&str>,
 ) -> Result<Rc<Surface>, String> {
     let window = app
         .get_webview_window("main")
@@ -1349,6 +1367,7 @@ fn build_surface(
                             popup_by_agent,
                             &display_for_job,
                             owner_for_job.as_deref(),
+                            None,
                         )
                     {
                         crate::debug_log::append("browser", "warn", "", "popup open failed", Some(&error));
@@ -1362,12 +1381,14 @@ fn build_surface(
 
     let surface = Rc::new(Surface {
         id,
-        opened_by_agent,
+        opened_by_agent: Cell::new(opened_by_agent),
         display: display.to_string(),
-        owner_session_id: owner_session_id.map(str::to_string),
+        owner_session_id: RefCell::new(owner_session_id.map(str::to_string)),
+        chosen_id: chosen_id.map(str::to_string),
+        pinned: Cell::new(false),
         busy_count: Cell::new(0),
         status: RefCell::new("idle".to_string()),
-        last_used_at_ms: Cell::new(0),
+        last_used_at_ms: Cell::new(now_ms()),
         webview,
         app: app.clone(),
         world_ctx: Cell::new(None),

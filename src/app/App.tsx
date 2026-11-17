@@ -123,11 +123,14 @@ let browserAutoOpenSuppressActivate = false;
 import {
   browserCloseTab,
   browserCloseTabsForSession,
+  browserCleanupIdleTabs,
   browserHandoffRespond,
   browserOpenTab,
   browserProbeLoopbackUrl,
   browserPermissionRespond,
   browserShareTab,
+  browserSetTabPinned,
+  browserTouchTab,
   browserListTabs,
   onBrowserHandoff,
   onBrowserPermission,
@@ -142,6 +145,11 @@ import {
   scanDevServerUrls,
   type DevServerCandidate,
 } from "../lib/devServer";
+import {
+  nextBrowserIdleMinutes,
+  readBrowserIdleMinutes,
+  saveBrowserIdleMinutes,
+} from "../lib/browserPrefs";
 import type {
   BrowserPickModes,
   BrowserPickRowsByTab,
@@ -693,6 +701,10 @@ export function App() {
     Record<string, BrowserHandoffRequest>
   >({});
   const browserHandoffTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const activeBrowserTabIdRef = useRef(activeBrowserTabId);
+  activeBrowserTabIdRef.current = activeBrowserTabId;
+  const browserHandoffsRef = useRef(browserHandoffs);
+  browserHandoffsRef.current = browserHandoffs;
   /** The Computer Use share panel (Ctrl K entry). */
   const [computerShareOpen, setComputerShareOpen] = useState(false);
   /** Sessions that finished a turn while this window was looking at another dialog. */
@@ -1147,6 +1159,8 @@ export function App() {
       : "browser";
   const browserSurfaceRequested =
     workspaceSurfaceRequested && activeSurfaceKind === "browser";
+  const browserSurfaceRequestedRef = useRef(browserSurfaceRequested);
+  browserSurfaceRequestedRef.current = browserSurfaceRequested;
   const activeBrowserHandoff =
     Object.values(browserHandoffs).find((request) => request.tabId === activeBrowserTabId) ?? null;
   const centerUsesSingleSurface =
@@ -1191,6 +1205,10 @@ export function App() {
     setUsageActive(false);
     setDiffTabActive(false);
     setActiveDocPath(null);
+  }, []);
+  const selectBrowserTab = useCallback((tabId: string) => {
+    setActiveBrowserTabId(tabId);
+    void browserTouchTab(tabId).catch(() => undefined);
   }, []);
   /** Return to the chat flow without discarding any surface tab. */
   const leaveWorkspaceSurface = useCallback(() => {
@@ -2312,6 +2330,7 @@ export function App() {
         browserTabs: browserTabs.map((tab) => ({
           url: tab.url,
           title: tab.title,
+          pinned: tab.pinned,
         })),
         activeBrowserIndex: (() => {
           const index = browserTabs.findIndex(
@@ -5738,7 +5757,14 @@ export function App() {
       let tabs = await browserListTabs();
       if (tabs.length === 0 && startupSurface.browserTabs.length > 0) {
         for (const saved of startupSurface.browserTabs) {
-          await browserOpenTab(saved.url, "background").catch(() => null);
+          const restored = await browserOpenTab(saved.url, "background").catch(
+            () => null,
+          );
+          if (restored && saved.pinned) {
+            await browserSetTabPinned(restored.tabId, true).catch(
+              () => undefined,
+            );
+          }
         }
         tabs = await browserListTabs();
       }
@@ -5858,6 +5884,35 @@ export function App() {
       if (timer) clearTimeout(timer);
     };
   }, [activateBrowserSurface, t]);
+
+  // Idle cleanup is a frontend timer over backend-owned timestamps. Backend
+  // eligibility also checks busy/waiting/ownership, so a stale render can
+  // never close a tab that is currently in use.
+  useEffect(() => {
+    if (!isTauriRuntime() || IS_DETACHED_WINDOW) return;
+    const tick = () => {
+      const minutes = readBrowserIdleMinutes();
+      if (minutes === 0) return;
+      const keep = [
+        browserSurfaceRequestedRef.current
+          ? activeBrowserTabIdRef.current
+          : null,
+        ...Object.values(browserHandoffsRef.current).map(
+          (request) => request.tabId,
+        ),
+      ].filter((id): id is string => Boolean(id));
+      void browserCleanupIdleTabs(minutes, keep).catch((error) => {
+        pushDebugRef.current({
+          level: "warn",
+          source: "browser",
+          summary: "idle tab cleanup failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      });
+    };
+    const timer = window.setInterval(tick, 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   // Control-level browser actions ask here (2 minutes of silence denies on
   // the Rust side; this is the answering end).
@@ -10264,6 +10319,57 @@ export function App() {
                 },
               },
               {
+                id: "agent-tab-idle-mode",
+                label: t("browser.idleTabsPreference", {
+                  mode:
+                    readBrowserIdleMinutes() === 0
+                      ? t("browser.idleTabsNever")
+                      : t("browser.idleTabsMinutes", {
+                          minutes: readBrowserIdleMinutes(),
+                        }),
+                }),
+                hint: t("browser.idleTabsPreferenceHint"),
+                run: () => {
+                  const next = nextBrowserIdleMinutes(readBrowserIdleMinutes());
+                  saveBrowserIdleMinutes(next);
+                  showToast({
+                    text: t("browser.idleTabsChanged", {
+                      mode:
+                        next === 0
+                          ? t("browser.idleTabsNever")
+                          : t("browser.idleTabsMinutes", { minutes: next }),
+                    }),
+                  });
+                },
+              },
+              {
+                id: "cleanup-agent-tabs",
+                label: t("browser.cleanupIdleNow"),
+                hint: t("browser.cleanupIdleNowHint"),
+                run: () => {
+                  const configured = readBrowserIdleMinutes();
+                  const minutes = configured === 0 ? 10 : configured;
+                  const keep = [
+                    browserSurfaceRequestedRef.current
+                      ? activeBrowserTabIdRef.current
+                      : null,
+                    ...Object.values(browserHandoffsRef.current).map(
+                      (request) => request.tabId,
+                    ),
+                  ].filter((id): id is string => Boolean(id));
+                  void browserCleanupIdleTabs(minutes, keep).then((closed) => {
+                    showToast({
+                      text:
+                        closed.length === 0
+                          ? t("browser.cleanupIdleNone")
+                          : t("browser.cleanupIdleClosed", {
+                              count: closed.length,
+                            }),
+                    });
+                  });
+                },
+              },
+              {
                 id: "computer-share",
                 label: t("palette.computerShare"),
                 run: () => setComputerShareOpen(true),
@@ -10660,7 +10766,7 @@ export function App() {
                   <BrowserPage
                     tabs={browserTabs}
                     activeTabId={activeBrowserTabId}
-                    onSelectTab={setActiveBrowserTabId}
+                    onSelectTab={selectBrowserTab}
                     visible
                     embedded
                     onExit={leaveWorkspaceSurface}
@@ -10902,7 +11008,7 @@ export function App() {
               <BrowserPage
                 tabs={browserTabs}
                 activeTabId={activeBrowserTabId}
-                onSelectTab={setActiveBrowserTabId}
+                onSelectTab={selectBrowserTab}
                 visible
                 onExit={() => setDockPage(null)}
                 onSendToChat={sendBrowserPicksToChat}
