@@ -43,6 +43,7 @@ type DocPageProps = {
   onToggleCompare?: () => void;
   /** Esc closes the page — false in the dock full-page mount (chrome owns Esc). */
   escToClose?: boolean;
+  onDirtyChange?: (dirty: boolean) => void;
 };
 
 function fileNameOf(path: string): string {
@@ -57,6 +58,17 @@ function parentDirOf(path: string): string {
 const DOC_COMPARE_WIDTH_KEY = "marionette-doc-compare-width";
 const DOC_COMPARE_MIN_DOC = 280;
 const DOC_COMPARE_MIN_CHAT = 320;
+
+type CachedDocDraft = {
+  draft: string;
+  mtimeMs: number;
+};
+
+const docDraftCache = new Map<string, CachedDocDraft>();
+
+export function discardDocDraft(path: string): void {
+  docDraftCache.delete(path);
+}
 
 /**
  * Side-by-side compare layout: conversation on the left, the active document
@@ -124,6 +136,7 @@ export function DocPage({
   compareActive = false,
   onToggleCompare,
   escToClose = true,
+  onDirtyChange,
 }: DocPageProps) {
   const t = useT();
   const [loaded, setLoaded] = useState<{ content: string; mtimeMs: number } | null>(null);
@@ -146,8 +159,17 @@ export function DocPage({
     readDocFile(path, null)
       .then((file) => {
         if (cancelled) return;
-        setLoaded({ content: file.content, mtimeMs: file.mtimeMs });
-        setDraft(file.content);
+        const cached = docDraftCache.get(path);
+        if (cached && cached.draft !== file.content) {
+          // Keep the unsaved text and its old base mtime. A later save against
+          // an externally changed file still hits the stale-confirm path.
+          setLoaded({ content: file.content, mtimeMs: cached.mtimeMs });
+          setDraft(cached.draft);
+        } else {
+          docDraftCache.delete(path);
+          setLoaded({ content: file.content, mtimeMs: file.mtimeMs });
+          setDraft(file.content);
+        }
       })
       .catch((error) => {
         if (!cancelled) setLoadError(error instanceof Error ? error.message : String(error));
@@ -159,6 +181,21 @@ export function DocPage({
 
   const dir = parentDirOf(path);
   const dirty = loaded != null && draft !== loaded.content;
+
+  useEffect(() => {
+    if (loaded) onDirtyChange?.(dirty);
+  }, [dirty, loaded, onDirtyChange]);
+
+  useEffect(() => {
+    if (!loaded || !dirty) {
+      docDraftCache.delete(path);
+      return;
+    }
+    docDraftCache.set(path, {
+      draft,
+      mtimeMs: loaded.mtimeMs,
+    });
+  }, [dirty, draft, loaded, path]);
 
   // Preview-mode selection tracking, scoped to this page's rendered body.
   useEffect(() => {
@@ -181,6 +218,7 @@ export function DocPage({
       try {
         const result = await saveDocFile(path, null, draft, loaded.mtimeMs, force);
         if (result.saved) {
+          docDraftCache.delete(path);
           setLoaded({ content: draft, mtimeMs: result.mtimeMs });
           showToast({ text: t("doc.saved"), tone: "ok" });
         } else if (result.reason === "stale") {
@@ -428,6 +466,7 @@ export function DocPage({
           confirmLabel={t("doc.discard")}
           onConfirm={() => {
             setDiscardConfirm(false);
+            docDraftCache.delete(path);
             onClose();
           }}
           onCancel={() => setDiscardConfirm(false)}

@@ -32,7 +32,7 @@ import { cacheEngineQuota, cachedEngineQuota } from "../lib/quotaCache";
 import { TELEGRAM_COMMAND_EVENT, telegramRemoteResult, type TelegramCommand } from "../lib/api";
 import { invalidateBridgeModels } from "../lib/bridge";
 import { useLatestCallback } from "../lib/useLatestCallback";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, engineModelImages, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, killAcpTerminal, listAcpTerminals, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, loadTranscriptPage, loadTranscriptWindow, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, quitApp, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, setUiLocale, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, trimSessionWorkingSet, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID } from "../lib/api";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, engineModelImages, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, killAcpTerminal, listAcpTerminals, listAcpTerminalOutputs, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, loadTranscriptPage, loadTranscriptWindow, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, quitApp, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, setUiLocale, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, trimSessionWorkingSet, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID } from "../lib/api";
 import {
   bindDetachedWindowReaper,
   DETACHED_HIDDEN_EVENT,
@@ -107,30 +107,52 @@ import { DockChrome, DockResizeGrip, type DockPage } from "../components/DockChr
 import { DockDropRouter } from "../components/DockDropRouter";
 import { MemoBox } from "../components/MemoBox";
 import { CouncilPage } from "../components/CouncilPage";
-import { DocCompareLayout, DocPage } from "../components/DocPage";
-import { SurfaceWorkspace } from "../components/SurfaceWorkspace";
+import { discardDocDraft, DocPage } from "../components/DocPage";
+import {
+  SurfaceWorkspace,
+  type SurfaceChatOption,
+  type SurfaceTabDescriptor,
+} from "../components/SurfaceWorkspace";
 import { setDocTabOpener } from "../lib/openFile";
 import { BrowserPage, BrowserPermissionDialog } from "../components/BrowserPage";
 import { ComputerShareDialog } from "../components/ComputerShareDialog";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 
 /** E2E bisect flag: the dev hook opened a tab without activating the page. */
 let browserAutoOpenSuppressActivate = false;
 import {
   browserCloseTab,
+  browserCloseTabsForSession,
+  browserHandoffRespond,
   browserOpenTab,
+  browserProbeLoopbackUrl,
   browserPermissionRespond,
   browserShareTab,
   browserListTabs,
+  onBrowserHandoff,
   onBrowserPermission,
   onBrowserTabs,
   type BrowserPermissionRequest,
+  type BrowserHandoffRequest,
   type BrowserTab,
 } from "../lib/browserTabs";
+import {
+  readDevServerPreference,
+  saveDevServerPreference,
+  scanDevServerUrls,
+  type DevServerCandidate,
+} from "../lib/devServer";
 import type {
   BrowserPickModes,
   BrowserPickRowsByTab,
 } from "../lib/browserPick";
-import { browserTabToOpenInWorkspace } from "../lib/workspaceSurface";
+import {
+  browserTabToOpenInWorkspace,
+  documentPathFromSurfaceTabId,
+  documentSurfaceTabId,
+  workspaceSurfaceTabIds,
+  type WorkspaceSurfaceKind,
+} from "../lib/workspaceSurface";
 import { memoList, memoPrompt } from "../lib/memos";
 import { installPageDragSourceTracker } from "../lib/dragText";
 import { splitShelfChatSessions, withoutGhostProjects } from "../lib/sessionGroups";
@@ -204,7 +226,18 @@ import { prettyEffortLabel, prettyModelLabel } from "../lib/modelLabel";
 import { classifyToolCall } from "../lib/turnActivity";
 import { selectTurnWorkspaceChanges, type TurnWorkspaceChange } from "../lib/turnDelivery";
 import { getLastUsedDefaults } from "../lib/recentModels";
-import { pickRestoredSession, saveUiRestore, saveQueuedSends, loadQueuedSends, saveScheduledSends, loadScheduledSends, saveClosedTabs, loadClosedTabs } from "../lib/uiRestore";
+import {
+  loadUiRestore,
+  pickRestoredSession,
+  saveUiRestore,
+  saveQueuedSends,
+  loadQueuedSends,
+  saveScheduledSends,
+  loadScheduledSends,
+  saveClosedTabs,
+  loadClosedTabs,
+  type UiRestoreSnapshot,
+} from "../lib/uiRestore";
 import {
   MAX_PANES,
   activateTab,
@@ -514,6 +547,10 @@ function isChatgptUsageModel(modelId: string | null | undefined): boolean {
 export function App() {
   // UI language: the i18n store owns the truth; `t` re-renders on switch.
   const t = useT();
+  // One cold-start decode feeds both session restore and the adjacent surface.
+  const [startupUiRestore] = useState<UiRestoreSnapshot | null>(() => loadUiRestore());
+  const startupSurface = startupUiRestore?.surface;
+  const surfaceRestoreAppliedRef = useRef(false);
   const [availableProjects, setAvailableProjects] = useState<Project[]>(projects);
   const [availableAgents, setAvailableAgents] = useState(agents);
   const [availableSessions, setAvailableSessions] = useState<Session[]>(sessions);
@@ -603,7 +640,7 @@ export function App() {
   /** Edge dock stage 3: memo inbox overlay + its count badge. */
   const [memoCount, setMemoCount] = useState(0);
   /** Floating-window 收纳盒 page (docked mode uses dockPage === "memo"). */
-  const [memoOpen, setMemoOpen] = useState(false);
+  const [memoOpen, setMemoOpen] = useState(() => startupSurface?.memoOpen ?? false);
   /**
    * 收纳盒 lives in the tab strip beside conversations: `memoOpen` = the tab
    * exists, `memoActive` = it is the selected page (switching to a
@@ -631,13 +668,18 @@ export function App() {
   /** Detached window has no tab strip — analysis opens as a dialog. */
   const [usageDialogOpen, setUsageDialogOpen] = useState(false);
   /** In-app document tabs (markdown/text): entries exist while open. */
-  const [docTabs, setDocTabs] = useState<{ path: string; title: string }[]>([]);
+  const [docTabs, setDocTabs] = useState<{ path: string; title: string }[]>(
+    () => startupSurface?.documents ?? [],
+  );
+  const [docDirtyPaths, setDocDirtyPaths] = useState<Set<string>>(() => new Set());
+  const [docCloseConfirmPath, setDocCloseConfirmPath] = useState<string | null>(null);
   /** The selected document page; null = a conversation page is showing. */
   const [activeDocPath, setActiveDocPath] = useState<string | null>(null);
-  /** Compare layout: conversation left, the active document right (main window only). */
-  const [docCompare, setDocCompare] = useState(false);
   /** Built-in browser tabs (backend owns the list; this mirrors its event). */
   const [browserTabs, setBrowserTabs] = useState<BrowserTab[]>([]);
+  const browserTabsRef = useRef<BrowserTab[]>(browserTabs);
+  browserTabsRef.current = browserTabs;
+  const devServerSeenRef = useRef<Map<string, number>>(new Map());
   const [activeBrowserTabId, setActiveBrowserTabId] = useState<string | null>(null);
   /** Annotation drafts live above BrowserPage so switching pages cannot drop
    * them and a remount cannot strand an active in-page picker. */
@@ -647,6 +689,10 @@ export function App() {
   const [browserActive, setBrowserActive] = useState(false);
   /** A Control-level action is waiting for the user's answer. */
   const [browserPermission, setBrowserPermission] = useState<BrowserPermissionRequest | null>(null);
+  const [browserHandoffs, setBrowserHandoffs] = useState<
+    Record<string, BrowserHandoffRequest>
+  >({});
+  const browserHandoffTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   /** The Computer Use share panel (Ctrl K entry). */
   const [computerShareOpen, setComputerShareOpen] = useState(false);
   /** Sessions that finished a turn while this window was looking at another dialog. */
@@ -1076,18 +1122,37 @@ export function App() {
   openSessionIdsRef.current = openSessionIds;
 
   const workspaceSplit = !IS_DETACHED_WINDOW && !dockActive && leafCount(splitState) > 1;
-  /** Browser + the existing Agent chat share the center area; session-only
-   * split trees stay untouched underneath and return when this surface closes. */
-  const browserSurfaceBlocked =
-    memoActive || councilActive || activeDocPath !== null || diffTabActive || usageActive;
+  /**
+   * Browser, documents and the memo box are peer types inside one
+   * conversation-adjacent surface. The session split tree remains untouched
+   * underneath and returns as soon as the user goes back to chat.
+   */
+  const surfaceTakeoverBlocked = councilActive || diffTabActive || usageActive;
+  const activeSurfaceTabId = activeDocPath
+    ? documentSurfaceTabId(activeDocPath)
+    : memoActive
+      ? "memo"
+      : browserActive
+        ? "browser"
+        : null;
+  const workspaceSurfaceRequested =
+    activeSurfaceTabId !== null &&
+    !dockActive &&
+    !IS_DETACHED_WINDOW &&
+    !surfaceTakeoverBlocked;
+  const activeSurfaceKind: WorkspaceSurfaceKind = activeDocPath
+    ? "document"
+    : memoActive
+      ? "memo"
+      : "browser";
   const browserSurfaceRequested =
-    browserActive && !dockActive && !IS_DETACHED_WINDOW && !browserSurfaceBlocked;
-  const browserSurfaceActive =
-    browserSurfaceRequested && browserTabs.length > 0;
+    workspaceSurfaceRequested && activeSurfaceKind === "browser";
+  const activeBrowserHandoff =
+    Object.values(browserHandoffs).find((request) => request.tabId === activeBrowserTabId) ?? null;
   const centerUsesSingleSurface =
-    workspaceSplit || browserSurfaceRequested;
+    workspaceSplit || workspaceSurfaceRequested;
   useEffect(() => {
-    if (browserSurfaceActive) {
+    if (workspaceSurfaceRequested) {
       if (rightCollapsedBeforeSurfaceRef.current == null) {
         rightCollapsedBeforeSurfaceRef.current = rightCollapsedRef.current;
         setRightCollapsed(true);
@@ -1098,7 +1163,7 @@ export function App() {
       setRightCollapsed(rightCollapsedBeforeSurfaceRef.current);
       rightCollapsedBeforeSurfaceRef.current = null;
     }
-  }, [browserSurfaceActive]);
+  }, [workspaceSurfaceRequested]);
   /** Split panes would be unreadable at strip width — paused while docked. */
   const dockSplitPaused = dockActive && leafCount(splitState) > 1;
 
@@ -1127,6 +1192,55 @@ export function App() {
     setDiffTabActive(false);
     setActiveDocPath(null);
   }, []);
+  /** Return to the chat flow without discarding any surface tab. */
+  const leaveWorkspaceSurface = useCallback(() => {
+    setBrowserActive(false);
+    setMemoActive(false);
+    setActiveDocPath(null);
+  }, []);
+  /** Select the memo tab inside the shared surface (normal window only). */
+  const activateMemoSurface = useCallback(() => {
+    setMemoOpen(true);
+    setMemoActive(true);
+    setBrowserActive(false);
+    setActiveDocPath(null);
+    setCouncilActive(false);
+    setUsageActive(false);
+    setDiffTabActive(false);
+  }, []);
+  /** Change only the chat half of a surface; keep Browser/Doc/Memo open. */
+  const focusSurfaceChatSession = useCallback((session: Session) => {
+    currentSessionIdRef.current = session.id;
+    currentProjectIdRef.current = session.projectId;
+    setCurrentSessionId(session.id);
+    setCurrentProjectId(session.projectId);
+    setOpenSessionIds((current) => {
+      if (current.includes(session.id)) return current;
+      const next = [...current, session.id];
+      openSessionIdsRef.current = next;
+      return next;
+    });
+    setSessionCapabilities(capsByIdRef.current[session.id] ?? null);
+    setActiveModelId(null);
+    void loadSessionTranscriptRef.current(session.id);
+  }, []);
+  const respondBrowserHandoff = useCallback(
+    async (requestId: string, outcome: "continue" | "denied") => {
+      const accepted = await browserHandoffRespond(requestId, outcome).catch(() => false);
+      if (!accepted) return false;
+      const timer = browserHandoffTimersRef.current.get(requestId);
+      if (timer) clearTimeout(timer);
+      browserHandoffTimersRef.current.delete(requestId);
+      setBrowserHandoffs((current) => {
+        if (!(requestId in current)) return current;
+        const next = { ...current };
+        delete next[requestId];
+        return next;
+      });
+      return true;
+    },
+    [],
+  );
 
   /** Permission / ask / plan steal pane focus; never wait for that to paint the dialog. */
   const stealFocusForPrompt = (sessionId: string) => {
@@ -2179,13 +2293,48 @@ export function App() {
   useEffect(() => {
     if (IS_DETACHED_WINDOW) return;
     if (!currentSessionId || currentSessionId.startsWith("session-empty-")) return;
+    if (startupSurface && !surfaceRestoreAppliedRef.current) return;
     saveUiRestore({
       sessionId: currentSessionId,
       projectId: currentProjectId,
       openSessionIds,
       splitLayout: serialize(splitState),
+      surface: {
+        documents: docTabs,
+        memoOpen,
+        active: browserActive
+          ? { kind: "browser" }
+          : activeDocPath
+            ? { kind: "document", path: activeDocPath }
+            : memoActive
+              ? { kind: "memo" }
+              : null,
+        browserTabs: browserTabs.map((tab) => ({
+          url: tab.url,
+          title: tab.title,
+        })),
+        activeBrowserIndex: (() => {
+          const index = browserTabs.findIndex(
+            (tab) => tab.id === activeBrowserTabId,
+          );
+          return index >= 0 ? index : null;
+        })(),
+      },
     });
-  }, [currentSessionId, currentProjectId, openSessionIds, splitState]);
+  }, [
+    activeBrowserTabId,
+    activeDocPath,
+    browserActive,
+    browserTabs,
+    currentProjectId,
+    currentSessionId,
+    docTabs,
+    memoActive,
+    memoOpen,
+    openSessionIds,
+    splitState,
+    startupSurface,
+  ]);
 
   useEffect(() => {
     if (!composerAutoFocus) return;
@@ -5364,6 +5513,9 @@ export function App() {
       setActiveDocPath(absolutePath);
       setMemoActive(false);
       setBrowserActive(false);
+      setCouncilActive(false);
+      setUsageActive(false);
+      setDiffTabActive(false);
       // While docked the strip has no tab row — the document takes the full page.
       setDockPage((page) => (dockActive && page !== "doc" ? "doc" : page));
     },
@@ -5371,15 +5523,109 @@ export function App() {
   );
 
   const closeDocTab = useCallback(
-    (path: string) => {
-      setDocTabs((tabs) => tabs.filter((tab) => tab.path !== path));
+    (path: string, force = false) => {
+      if (!force && docDirtyPaths.has(path)) {
+        setDocCloseConfirmPath(path);
+        return false;
+      }
+      discardDocDraft(path);
+      setDocCloseConfirmPath((current) => (current === path ? null : current));
+      const index = docTabs.findIndex((tab) => tab.path === path);
+      const remaining = docTabs.filter((tab) => tab.path !== path);
+      setDocTabs(remaining);
+      setDocDirtyPaths((current) => {
+        if (!current.has(path)) return current;
+        const next = new Set(current);
+        next.delete(path);
+        return next;
+      });
       if (path === activeDocPath) {
-        setActiveDocPath(null);
-        setDocCompare(false);
+        const next = remaining[Math.min(Math.max(index, 0), remaining.length - 1)];
+        setActiveDocPath(next?.path ?? null);
         setDockPage((page) => (page === "doc" ? null : page));
       }
+      return true;
     },
-    [activeDocPath],
+    [activeDocPath, docDirtyPaths, docTabs],
+  );
+
+  const closeMemoSurface = useCallback(() => {
+    setMemoOpen(false);
+    setMemoActive(false);
+  }, []);
+
+  const selectSurfaceTab = useCallback(
+    (tabId: string) => {
+      if (tabId === "browser") {
+        activateBrowserSurface();
+        return;
+      }
+      if (tabId === "memo") {
+        activateMemoSurface();
+        return;
+      }
+      const path = documentPathFromSurfaceTabId(tabId);
+      if (path) {
+        if (!docTabs.some((tab) => tab.path === path)) return;
+        setActiveDocPath(path);
+        setBrowserActive(false);
+        setMemoActive(false);
+        setCouncilActive(false);
+        setUsageActive(false);
+        setDiffTabActive(false);
+      }
+    },
+    [activateBrowserSurface, activateMemoSurface, docTabs],
+  );
+
+  const closeSurfaceTab = useCallback(
+    (tabId: string) => {
+      const surfaceIds = workspaceSurfaceTabIds(
+        browserActive || browserTabs.length > 0,
+        docTabs.map((tab) => tab.path),
+        memoOpen,
+      );
+      const index = surfaceIds.indexOf(tabId);
+      const fallback =
+        index >= 0
+          ? surfaceIds[
+              (index - 1 + surfaceIds.length) % Math.max(1, surfaceIds.length)
+            ]
+          : undefined;
+      const chooseFallback = () => {
+        if (fallback && fallback !== tabId) selectSurfaceTab(fallback);
+      };
+      if (tabId === "browser") {
+        const target = activeBrowserTabId ?? browserTabs[0]?.id ?? null;
+        if (target) {
+          void browserCloseTab(target).then(() => {
+            if (browserTabs.length <= 1) chooseFallback();
+          });
+        }
+        else setBrowserActive(false);
+        return;
+      }
+      if (tabId === "memo") {
+        closeMemoSurface();
+        chooseFallback();
+        return;
+      }
+      const documentPath = documentPathFromSurfaceTabId(tabId);
+      if (documentPath) {
+        const closed = closeDocTab(documentPath);
+        if (closed && docTabs.length <= 1) chooseFallback();
+      }
+    },
+    [
+      activeBrowserTabId,
+      browserActive,
+      browserTabs,
+      closeDocTab,
+      closeMemoSurface,
+      docTabs,
+      memoOpen,
+      selectSurfaceTab,
+    ],
   );
 
   // The doc-tab opener serves deep components (transcript links, delivery
@@ -5420,6 +5666,21 @@ export function App() {
         ) as BrowserPickRowsByTab;
         return next;
       });
+      setBrowserPermission((current) =>
+        current && !live.has(current.tabId) ? null : current,
+      );
+      setBrowserHandoffs((prev) => {
+        const stale = Object.values(prev).filter((request) => !live.has(request.tabId));
+        if (stale.length === 0) return prev;
+        const next = { ...prev };
+        for (const request of stale) {
+          delete next[request.requestId];
+          const timer = browserHandoffTimersRef.current.get(request.requestId);
+          if (timer) clearTimeout(timer);
+          browserHandoffTimersRef.current.delete(request.requestId);
+        }
+        return next;
+      });
       if (tabs.length > 0) {
         setActiveBrowserTabId((current) =>
           current && live.has(current) ? current : tabs[0]!.id,
@@ -5446,6 +5707,157 @@ export function App() {
       void stop.then((unlisten) => unlisten());
     };
   }, [activateBrowserSurface]);
+
+  // Restore the content tabs only after the focused chat has been restored.
+  // Browser tabs are reopened in the background; only an active Browser tab
+  // may reopen the split surface. A failed URL simply leaves that tab out.
+  useEffect(() => {
+    if (
+      IS_DETACHED_WINDOW ||
+      !startupSurface ||
+      surfaceRestoreAppliedRef.current ||
+      !currentSessionId ||
+      currentSessionId.startsWith("session-empty-")
+    ) {
+      return;
+    }
+    surfaceRestoreAppliedRef.current = true;
+    const active = startupSurface.active;
+    if (active?.kind === "document") {
+      setActiveDocPath(active.path);
+      setMemoActive(false);
+      setBrowserActive(false);
+    } else if (active?.kind === "memo") {
+      setMemoOpen(true);
+      setMemoActive(true);
+      setActiveDocPath(null);
+      setBrowserActive(false);
+    }
+
+    void (async () => {
+      let tabs = await browserListTabs();
+      if (tabs.length === 0 && startupSurface.browserTabs.length > 0) {
+        for (const saved of startupSurface.browserTabs) {
+          await browserOpenTab(saved.url, "background").catch(() => null);
+        }
+        tabs = await browserListTabs();
+      }
+      if (tabs.length === 0) {
+        if (active?.kind === "browser") activateBrowserSurface();
+        return;
+      }
+      const requested = startupSurface.activeBrowserIndex ?? 0;
+      const activeTab =
+        tabs[Math.min(Math.max(requested, 0), tabs.length - 1)] ?? tabs[0]!;
+      setActiveBrowserTabId(activeTab.id);
+      if (active?.kind === "browser") activateBrowserSurface();
+    })();
+  }, [activateBrowserSurface, currentSessionId, startupSurface]);
+
+  useEffect(() => {
+    if (IS_DETACHED_WINDOW) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void onBrowserHandoff((request) => {
+      const source = sessionsRef.current.find((session) => session.id === request.sessionId);
+      if (source) focusSurfaceChatSession(source);
+      setActiveBrowserTabId(request.tabId);
+      activateBrowserSurface();
+      setBrowserHandoffs((current) => ({ ...current, [request.requestId]: request }));
+      const oldTimer = browserHandoffTimersRef.current.get(request.requestId);
+      if (oldTimer) clearTimeout(oldTimer);
+      const delay = Math.max(500, request.expiresAtMs - Date.now() + 1_000);
+      const timer = setTimeout(() => {
+        browserHandoffTimersRef.current.delete(request.requestId);
+        setBrowserHandoffs((current) => {
+          if (!(request.requestId in current)) return current;
+          const next = { ...current };
+          delete next[request.requestId];
+          return next;
+        });
+      }, delay);
+      browserHandoffTimersRef.current.set(request.requestId, timer);
+      void raiseDesktopNotify("question", `${request.title} · ${request.origin}`);
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+      for (const timer of browserHandoffTimersRef.current.values()) clearTimeout(timer);
+      browserHandoffTimersRef.current.clear();
+    };
+  }, [activateBrowserSurface, focusSurfaceChatSession]);
+
+  // Dev-server discovery: terminal output is only a claim. Probe the
+  // loopback socket before offering anything, then honor the explicit
+  // `open / notify / off` preference. The same origin is not re-offered for
+  // ten minutes unless the user opens it.
+  useEffect(() => {
+    if (!isTauriRuntime() || IS_DETACHED_WINDOW) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const openService = (service: DevServerCandidate) => {
+      const existing = browserTabsRef.current.find(
+        (tab) => tab.url === service.url || tab.origin === service.origin,
+      );
+      if (existing) {
+        setActiveBrowserTabId(existing.id);
+        activateBrowserSurface();
+        return;
+      }
+      activateBrowserSurface();
+      void browserOpenTab(service.url, "workspace").then((result) => {
+        if (result) setActiveBrowserTabId(result.tabId);
+      });
+    };
+
+    const tick = async () => {
+      const outputs = await listAcpTerminalOutputs();
+      if (cancelled) return;
+      const now = Date.now();
+      for (const row of outputs) {
+        if (!row.running) continue;
+        for (const service of scanDevServerUrls(row.output, row.terminalId, row.sessionId)) {
+          const preference = readDevServerPreference();
+          if (preference === "off") continue;
+          const previous = devServerSeenRef.current.get(service.origin) ?? 0;
+          if (now - previous < 10 * 60_000) continue;
+          if (!(await browserProbeLoopbackUrl(service.url))) continue;
+          if (cancelled) return;
+          devServerSeenRef.current.set(service.origin, now);
+          if (preference === "open") {
+            openService(service);
+            continue;
+          }
+          showToast({
+            text: t("browser.serviceDetected", { url: service.origin }),
+            tone: "info",
+            duration: 10_000,
+            action: {
+              label: t("browser.serviceOpen"),
+              run: () => openService(service),
+            },
+          });
+        }
+      }
+      if (devServerSeenRef.current.size > 200) {
+        const cutoff = now - 10 * 60_000;
+        for (const [origin, at] of devServerSeenRef.current) {
+          if (at < cutoff) devServerSeenRef.current.delete(origin);
+        }
+      }
+      if (!cancelled) timer = setTimeout(() => void tick(), 4_000);
+    };
+
+    void tick();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [activateBrowserSurface, t]);
 
   // Control-level browser actions ask here (2 minutes of silence denies on
   // the Rust side; this is the answering end).
@@ -6152,6 +6564,7 @@ export function App() {
         detail: error instanceof Error ? error.message : String(error),
       });
     });
+    void browserCloseTabsForSession(sessionId).catch(() => 0);
     startupCreatedChatsRef.current = startupCreatedChatsRef.current.filter(
       (session) => session.id !== sessionId,
     );
@@ -7362,6 +7775,11 @@ export function App() {
       }
       // Ctrl+W：关当前标签。圆桌/收纳盒/文档/用量伪标签激活时优先关它们。
       if (!event.shiftKey && (event.key === "w" || event.key === "W") && !IS_DETACHED_WINDOW) {
+        if (workspaceSurfaceRequested && activeSurfaceTabId) {
+          event.preventDefault();
+          closeSurfaceTab(activeSurfaceTabId);
+          return;
+        }
         if (usageActive) {
           event.preventDefault();
           setUsageOpen(false);
@@ -7410,6 +7828,23 @@ export function App() {
       }
       // Ctrl(+Shift)+Tab：循环切换标签。
       if (event.key === "Tab" && !IS_DETACHED_WINDOW) {
+        if (workspaceSurfaceRequested) {
+          const surfaceIds = workspaceSurfaceTabIds(
+            browserActive || browserTabs.length > 0,
+            docTabs.map((tab) => tab.path),
+            memoOpen,
+          );
+          if (surfaceIds.length < 2) return;
+          const index = Math.max(0, surfaceIds.indexOf(activeSurfaceTabId ?? ""));
+          const direction = event.shiftKey ? -1 : 1;
+          const nextId =
+            surfaceIds[
+              (index + direction + surfaceIds.length * 2) % surfaceIds.length
+            ]!;
+          event.preventDefault();
+          selectSurfaceTab(nextId);
+          return;
+        }
         const tree = splitStateRef.current;
         const paneTabs = findPane(tree, tree.focusedPaneId)?.tabIds ?? [];
         const tabIds = paneTabs.length > 0 ? paneTabs : openSessionIds;
@@ -7425,6 +7860,18 @@ export function App() {
       }
       if (event.key >= "1" && event.key <= "9" && !event.shiftKey) {
         const idx = Number(event.key) - 1;
+        if (workspaceSurfaceRequested) {
+          const surfaceIds = workspaceSurfaceTabIds(
+            browserActive || browserTabs.length > 0,
+            docTabs.map((tab) => tab.path),
+            memoOpen,
+          );
+          const nextId = surfaceIds[idx];
+          if (!nextId) return;
+          event.preventDefault();
+          selectSurfaceTab(nextId);
+          return;
+        }
         const tree = splitStateRef.current;
         const paneTabs = findPane(tree, tree.focusedPaneId)?.tabIds ?? [];
         const tabIds = paneTabs.length > 0 ? paneTabs : openSessionIds;
@@ -7459,10 +7906,20 @@ export function App() {
     councilActive,
     activeDocPath,
     browserSurfaceRequested,
+    workspaceSurfaceRequested,
+    activeSurfaceTabId,
     activeBrowserTabId,
+    browserActive,
+    browserTabs,
     closeDocTab,
+    closeMemoSurface,
+    closeSurfaceTab,
     closeSessionTab,
+    docTabs,
     handleCreateChatSession,
+    diffTabActive,
+    usageActive,
+    selectSurfaceTab,
   ]);
 
   /** P2-UX-4: edit You → truncate following events for this session + resend. */
@@ -8902,6 +9359,7 @@ export function App() {
         void stopAcpSession(session.id).catch(() => undefined);
       }
       void deleteSessionApi(projectId, session.id).catch(() => undefined);
+      void browserCloseTabsForSession(session.id).catch(() => 0);
     }
 
     void deleteProjectApi(projectId).catch(() => undefined);
@@ -9475,7 +9933,6 @@ export function App() {
   const renderDocPage = (
     path: string,
     close: () => void,
-    compareAvailable: boolean,
     escToClose: boolean,
   ) => (
     <DocPage
@@ -9484,16 +9941,25 @@ export function App() {
       onClose={close}
       onQuote={(block) => prefillComposer(block)}
       onNavigate={openDocTab}
-      compareAvailable={compareAvailable}
-      compareActive={docCompare}
-      onToggleCompare={() => setDocCompare((value) => !value)}
+      onDirtyChange={(dirty) =>
+        setDocDirtyPaths((current) => {
+          if (dirty === current.has(path)) return current;
+          const next = new Set(current);
+          if (dirty) next.add(path);
+          else next.delete(path);
+          return next;
+        })
+      }
+      compareAvailable={false}
+      compareActive={false}
       escToClose={escToClose}
     />
   );
 
-  const renderMemoBox = (close: () => void) => (
+  const renderMemoBox = (close: () => void, embedded = false) => (
     <MemoBox
       onClose={close}
+      embedded={embedded}
       onChanged={setMemoCount}
       onUse={(picked, intent) => {
         // 开新对话 always lands in the shelf's 收纳盒 group; 整理成文档 keeps
@@ -9510,6 +9976,53 @@ export function App() {
       }}
     />
   );
+
+  const workspaceSurfaceTabs: SurfaceTabDescriptor[] = [
+    ...(browserActive || browserTabs.length > 0
+      ? [
+          {
+            id: "browser",
+            kind: "browser" as const,
+            title: t("browser.tabTitle"),
+            count: browserTabs.length,
+          },
+        ]
+      : []),
+    ...docTabs.map((tab) => ({
+      id: documentSurfaceTabId(tab.path),
+      kind: "document" as const,
+      title: tab.title + (docDirtyPaths.has(tab.path) ? " *" : ""),
+    })),
+    ...(memoOpen
+      ? [
+          {
+            id: "memo",
+            kind: "memo" as const,
+            title: t("app.memoBox"),
+            count: memoCount,
+          },
+        ]
+      : []),
+  ];
+  const workspaceChatSessions: SurfaceChatOption[] = availableSessions
+    .filter((session) => !session.id.startsWith("session-empty-"))
+    .map((session) => {
+      const agent = availableAgents.find((item) => item.id === session.agentId);
+      const label = session.label?.trim() || session.id;
+      return {
+        id: session.id,
+        label: agent ? label + " · " + agent.label : label,
+      };
+    });
+  if (
+    displaySession.id &&
+    !workspaceChatSessions.some((session) => session.id === displaySession.id)
+  ) {
+    workspaceChatSessions.unshift({
+      id: displaySession.id,
+      label: displaySession.label?.trim() || displaySession.id,
+    });
+  }
 
   return (
     <main className="app-shell">
@@ -9566,15 +10079,11 @@ export function App() {
             onOpenPalette={shelfStable.onOpenPalette}
             onExportSession={shelfStable.onExportSession}
             memoCount={memoCount}
-            onOpenMemo={dockActive ? undefined : () => {
-              setMemoOpen(true);
-              setMemoActive(true);
-              setCouncilActive(false);
-            }}
+            onOpenMemo={dockActive ? undefined : activateMemoSurface}
             onOpenCouncil={dockActive || IS_DETACHED_WINDOW ? undefined : () => {
+              leaveWorkspaceSurface();
               setCouncilOpen(true);
               setCouncilActive(true);
-              setMemoActive(false);
             }}
           />
           )}
@@ -9645,9 +10154,9 @@ export function App() {
                 label: t("council.paletteOpen"),
                 hint: t("council.paletteOpenHint"),
                 run: () => {
+                  leaveWorkspaceSurface();
                   setCouncilOpen(true);
                   setCouncilActive(true);
-                  setMemoActive(false);
                 },
               },
               {
@@ -9659,9 +10168,7 @@ export function App() {
                     setDockPage("memo");
                     return;
                   }
-                  setMemoOpen(true);
-                  setMemoActive(true);
-                  setCouncilActive(false);
+                  activateMemoSurface();
                 },
               },
               {
@@ -9736,6 +10243,23 @@ export function App() {
                   activateBrowserSurface();
                   void browserOpenTab("https://www.bing.com").then((result) => {
                     if (result) setActiveBrowserTabId(result.tabId);
+                  });
+                },
+              },
+              {
+                id: "dev-server-preview-mode",
+                label: t("browser.devServerPreference", {
+                  mode: t(`browser.devServerMode.${readDevServerPreference()}` as never),
+                }),
+                hint: t("browser.devServerPreferenceHint"),
+                run: () => {
+                  const current = readDevServerPreference();
+                  const next = current === "notify" ? "open" : current === "open" ? "off" : "notify";
+                  saveDevServerPreference(next);
+                  showToast({
+                    text: t("browser.devServerChanged", {
+                      mode: t(`browser.devServerMode.${next}` as never),
+                    }),
                   });
                 },
               },
@@ -9847,19 +10371,13 @@ export function App() {
             onOpenBeside={IS_DETACHED_WINDOW ? undefined : shelfStable.onOpenBeside}
             titlebarDragRegion
             memoTab={
-              IS_DETACHED_WINDOW || !memoOpen
+              IS_DETACHED_WINDOW || workspaceSurfaceRequested || !memoOpen
                 ? undefined
                 : {
                     active: memoActive,
                     count: memoCount,
-                    onSelect: () => {
-                      setMemoActive(true);
-                      setCouncilActive(false);
-                    },
-                    onClose: () => {
-                      setMemoOpen(false);
-                      setMemoActive(false);
-                    },
+                    onSelect: activateMemoSurface,
+                    onClose: closeMemoSurface,
                   }
             }
             councilTab={
@@ -9904,42 +10422,31 @@ export function App() {
                   }
             }
             docTabs={
-              IS_DETACHED_WINDOW || docTabs.length === 0
+              IS_DETACHED_WINDOW || workspaceSurfaceRequested || docTabs.length === 0
                 ? undefined
                 : docTabs.map((tab) => ({
                     path: tab.path,
-                    title: tab.title,
+                    title: tab.title + (docDirtyPaths.has(tab.path) ? " *" : ""),
                     titleHint: tab.path,
                     active: activeDocPath === tab.path,
-                    onSelect: () => {
-                      setActiveDocPath(tab.path);
-                      setMemoActive(false);
-                    },
+                    onSelect: () => selectSurfaceTab(documentSurfaceTabId(tab.path)),
                     onClose: () => closeDocTab(tab.path),
                   }))
             }
             browserTab={
-              IS_DETACHED_WINDOW || browserTabs.length === 0
+              IS_DETACHED_WINDOW || workspaceSurfaceRequested || browserTabs.length === 0
                 ? undefined
                 : {
                     active: browserSurfaceRequested,
                     count: browserTabs.length,
                     onSelect: activateBrowserSurface,
-                    onClose: () => {
-                      // × closes the active tab — or the first one when none
-                      // is active (the page itself falls back to tabs[0] the
-                      // same way); closing the last retires the chip via the
-                      // tabs event.
-                      const target = activeBrowserTabId ?? browserTabs[0]?.id ?? null;
-                      if (target) void browserCloseTab(target);
-                      else setBrowserActive(false);
-                    },
+                    onClose: () => closeSurfaceTab("browser"),
                   }
             }
           />
           ) : (
             <>
-              {memoOpen && !IS_DETACHED_WINDOW && (
+              {memoOpen && !workspaceSurfaceRequested && !IS_DETACHED_WINDOW && (
                 <div
                   className={`editor-tab is-memo${memoActive ? " is-active" : ""}`}
                   role="tab"
@@ -9950,10 +10457,7 @@ export function App() {
                     className="editor-tab__select"
                     type="button"
                     title={t("app.memoBox")}
-                    onClick={() => {
-                      setMemoActive(true);
-                      setCouncilActive(false);
-                    }}
+                    onClick={activateMemoSurface}
                   >
                     <Inbox size={12} />
                     <span>{t("app.memoBox")}</span>
@@ -9964,10 +10468,7 @@ export function App() {
                     type="button"
                     title={t("app.closeMemoBox")}
                     aria-label={t("app.closeMemoBox")}
-                    onClick={() => {
-                      setMemoOpen(false);
-                      setMemoActive(false);
-                    }}
+                    onClick={closeMemoSurface}
                   >
                     <X size={12} />
                   </button>
@@ -10006,7 +10507,8 @@ export function App() {
                   </button>
                 </div>
               )}
-              {!IS_DETACHED_WINDOW &&
+              {!workspaceSurfaceRequested &&
+                !IS_DETACHED_WINDOW &&
                 docTabs.map((tab) => (
                   <div
                     key={tab.path}
@@ -10019,13 +10521,10 @@ export function App() {
                       className="editor-tab__select"
                       type="button"
                       title={tab.path}
-                      onClick={() => {
-                        setActiveDocPath(tab.path);
-                        setMemoActive(false);
-                      }}
+                      onClick={() => selectSurfaceTab(documentSurfaceTabId(tab.path))}
                     >
                       <FileText size={12} />
-                      <span>{tab.title}</span>
+                      <span>{tab.title + (docDirtyPaths.has(tab.path) ? " *" : "")}</span>
                     </button>
                     <button
                       className="pill-action pill-action--icon pill-action--sm editor-tab__close"
@@ -10038,7 +10537,9 @@ export function App() {
                     </button>
                   </div>
                 ))}
-              {!IS_DETACHED_WINDOW && browserTabs.length > 0 && (
+              {!workspaceSurfaceRequested &&
+                !IS_DETACHED_WINDOW &&
+                browserTabs.length > 0 && (
                 <div
                   className={`editor-tab is-browser${browserSurfaceRequested ? " is-active" : ""}`}
                   role="tab"
@@ -10060,11 +10561,7 @@ export function App() {
                     type="button"
                     title={t("browser.closeTab")}
                     aria-label={t("browser.closeTab")}
-                    onClick={() => {
-                      const target = activeBrowserTabId ?? browserTabs[0]?.id ?? null;
-                      if (target) void browserCloseTab(target);
-                      else setBrowserActive(false);
-                    }}
+                    onClick={() => closeSurfaceTab("browser")}
                   >
                     <X size={12} />
                   </button>
@@ -10155,50 +10652,54 @@ export function App() {
                 }}
               />
             </div>
-          ) : browserSurfaceRequested ? (
+          ) : workspaceSurfaceRequested ? (
             <SurfaceWorkspace
-              kind="browser"
+              kind={activeSurfaceKind}
               surface={
-                <BrowserPage
-                  tabs={browserTabs}
-                  activeTabId={activeBrowserTabId}
-                  onSelectTab={setActiveBrowserTabId}
-                  visible
-                  embedded
-                  onExit={() => setBrowserActive(false)}
-                  onSendToChat={sendBrowserPicksToChat}
-                  pickModes={browserPickModes}
-                  picksByTab={browserPicksByTab}
-                  setPickModes={setBrowserPickModes}
-                  setPicksByTab={setBrowserPicksByTab}
-                />
+                activeSurfaceKind === "browser" ? (
+                  <BrowserPage
+                    tabs={browserTabs}
+                    activeTabId={activeBrowserTabId}
+                    onSelectTab={setActiveBrowserTabId}
+                    visible
+                    embedded
+                    onExit={leaveWorkspaceSurface}
+                    onSendToChat={sendBrowserPicksToChat}
+                    handoff={activeBrowserHandoff}
+                    onHandoffRespond={respondBrowserHandoff}
+                    ownerSessionLabel={(sessionId) =>
+                      availableSessions.find((session) => session.id === sessionId)?.label ??
+                      sessionId
+                    }
+                    pickModes={browserPickModes}
+                    picksByTab={browserPicksByTab}
+                    setPickModes={setBrowserPickModes}
+                    setPicksByTab={setBrowserPicksByTab}
+                  />
+                ) : activeSurfaceKind === "document" && activeDocPath ? (
+                  renderDocPage(
+                    activeDocPath,
+                    () => closeDocTab(activeDocPath, true),
+                    false,
+                  )
+                ) : (
+                  renderMemoBox(leaveWorkspaceSurface, true)
+                )
               }
               chat={renderConversation(displaySession)}
               chatTitle={displaySession.label?.trim() || displaySession.id}
-              onCloseSurface={() => setBrowserActive(false)}
+              chatSessionId={displaySession.id}
+              chatSessions={workspaceChatSessions}
+              onChatSessionChange={(sessionId) => {
+                const next = availableSessions.find((session) => session.id === sessionId);
+                if (next) focusSurfaceChatSession(next);
+              }}
+              tabs={workspaceSurfaceTabs}
+              activeTabId={activeSurfaceTabId ?? ""}
+              onSelectTab={selectSurfaceTab}
+              onCloseTab={closeSurfaceTab}
+              onCloseSurface={leaveWorkspaceSurface}
             />
-          ) : activeDocPath && !dockActive && !IS_DETACHED_WINDOW ? (
-            // Document pseudo-tab: the conversation column switches to the doc
-            // page (shelf/context stay). Compare mode keeps the chat beside it
-            // — a dedicated row, not the split tree (doc pages are not sessions).
-            docCompare && !workspaceSplit ? (
-              <DocCompareLayout doc={renderDocPage(activeDocPath, () => closeDocTab(activeDocPath), true, true)}>
-                {renderConversation(displaySession)}
-              </DocCompareLayout>
-            ) : (
-              <div className="doc-tab-page" aria-label={t("doc.tabTitle")}>
-                {renderDocPage(activeDocPath, () => closeDocTab(activeDocPath), !workspaceSplit, true)}
-              </div>
-            )
-          ) : memoActive && !dockActive && !IS_DETACHED_WINDOW ? (
-            // 收纳盒 as a tab page: only the conversation-flow column switches
-            // (shelf and context panel stay); no composer for this page.
-            <div className="memo-tab-page" aria-label={t("app.memoBox")}>
-              {renderMemoBox(() => {
-                setMemoOpen(false);
-                setMemoActive(false);
-              })}
-            </div>
           ) : workspaceSplit ? (
             <SplitWorkspace
               state={splitState}
@@ -10393,7 +10894,7 @@ export function App() {
           )}
           {dockPage === "doc" && activeDocPath && (
             <div className="doc-dock-page">
-              {renderDocPage(activeDocPath, () => setDockPage(null), false, false)}
+              {renderDocPage(activeDocPath, () => setDockPage(null), false)}
             </div>
           )}
           {dockPage === "browser" && (
@@ -10405,6 +10906,12 @@ export function App() {
                 visible
                 onExit={() => setDockPage(null)}
                 onSendToChat={sendBrowserPicksToChat}
+                handoff={activeBrowserHandoff}
+                onHandoffRespond={respondBrowserHandoff}
+                ownerSessionLabel={(sessionId) =>
+                  availableSessions.find((session) => session.id === sessionId)?.label ??
+                  sessionId
+                }
                 pickModes={browserPickModes}
                 picksByTab={browserPicksByTab}
                 setPickModes={setBrowserPickModes}
@@ -10436,6 +10943,23 @@ export function App() {
               void browserShareTab(request.tabId, "control");
             }
             void browserPermissionRespond(request.requestId, decision !== "deny");
+          }}
+        />
+      )}
+      {docCloseConfirmPath && (
+        <ConfirmDialog
+          title={t("doc.discardTitle")}
+          itemName={
+            docCloseConfirmPath.split(/[\\/]/).filter(Boolean).pop() ??
+            docCloseConfirmPath
+          }
+          description={t("doc.discardBody")}
+          confirmLabel={t("doc.discard")}
+          onCancel={() => setDocCloseConfirmPath(null)}
+          onConfirm={() => {
+            const path = docCloseConfirmPath;
+            setDocCloseConfirmPath(null);
+            if (path) closeDocTab(path, true);
           }}
         />
       )}

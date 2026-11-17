@@ -2437,6 +2437,13 @@ pub fn list_acp_terminals(state: State<'_, AppState>) -> Result<Vec<serde_json::
     Ok(state.acp.list_terminals())
 }
 
+#[tauri::command(async)]
+pub fn list_acp_terminal_outputs(
+    state: State<'_, AppState>,
+) -> Result<Vec<serde_json::Value>, String> {
+    Ok(state.acp.terminal_outputs())
+}
+
 /// 后台任务面板：终止一个 agent 起的后台命令（同 terminal/kill，不清理条目，
 /// 保留退出码供面板展示）。
 #[tauri::command(async)]

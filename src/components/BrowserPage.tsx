@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import { Bot, Crosshair, Globe, Plus, RefreshCw, Share2, X } from "lucide-react";
+import { Bot, Check, Crosshair, Globe, Plus, RefreshCw, Share2, X } from "lucide-react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   browserCloseTab,
@@ -16,6 +16,7 @@ import {
   onBrowserPick,
   type BrowserPickEvent,
   type BrowserPickMode,
+  type BrowserHandoffRequest,
   type BrowserPermissionRequest,
   type BrowserTab,
 } from "../lib/browserTabs";
@@ -55,6 +56,13 @@ type BrowserPageProps = {
   picksByTab: BrowserPickRowsByTab;
   setPickModes: Dispatch<SetStateAction<BrowserPickModes>>;
   setPicksByTab: Dispatch<SetStateAction<BrowserPickRowsByTab>>;
+  /** A human-only step the current Agent is paused on. */
+  handoff?: BrowserHandoffRequest | null;
+  onHandoffRespond?: (
+    requestId: string,
+    outcome: "continue" | "denied",
+  ) => Promise<boolean>;
+  ownerSessionLabel?: (sessionId: string) => string;
 };
 
 const FINALIZE_RETRIES = 6;
@@ -91,6 +99,9 @@ export function BrowserPage({
   picksByTab,
   setPickModes,
   setPicksByTab,
+  handoff = null,
+  onHandoffRespond,
+  ownerSessionLabel,
 }: BrowserPageProps) {
   const t = useT();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -100,6 +111,7 @@ export function BrowserPage({
   const active = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0] ?? null;
   const [resolving, setResolving] = useState(false);
   const [pickerNotice, setPickerNotice] = useState<string | null>(null);
+  const [handoffBusy, setHandoffBusy] = useState(false);
   const pickerMode = active ? (pickModes[active.id] ?? null) : null;
   const pickRows = active ? (picksByTab[active.id] ?? []) : [];
   const pendingScreenshots = pickRows.some((row) => row.screenshotPending);
@@ -119,6 +131,10 @@ export function BrowserPage({
   useEffect(() => {
     setPickerNotice(null);
   }, [active?.id]);
+
+  useEffect(() => {
+    setHandoffBusy(false);
+  }, [handoff?.requestId]);
 
   const syncBounds = async (tabId: string): Promise<boolean> => {
     const host = hostRef.current;
@@ -471,6 +487,16 @@ export function BrowserPage({
     }
   };
 
+  const respondToHandoff = async (outcome: "continue" | "denied") => {
+    if (!handoff || !onHandoffRespond || handoffBusy) return;
+    setHandoffBusy(true);
+    try {
+      await onHandoffRespond(handoff.requestId, outcome);
+    } finally {
+      setHandoffBusy(false);
+    }
+  };
+
   // Esc leaves the page (a share menu consumes it first, then the picker).
   // The page picker has its own Esc path — the in-page script sends a cancel
   // event that resets `pickModes` — so this only fires when the main window
@@ -524,9 +550,28 @@ export function BrowserPage({
                 <Globe size={11} />
                 <span>{tab.title || tab.origin || tab.url}</span>
                 {tab.openedByAgent && (
-                  <i className="browser-tab__agent" title={t("browser.openedByAgent")}>
+                  <i
+                    className="browser-tab__agent"
+                    title={
+                      tab.ownerSessionId
+                        ? t("browser.ownerSession", {
+                            id:
+                              ownerSessionLabel?.(tab.ownerSessionId) ??
+                              tab.ownerSessionId,
+                          })
+                        : t("browser.openedByAgent")
+                    }
+                  >
                     <Bot size={10} />
                   </i>
+                )}
+                {tab.status !== "idle" && (
+                  <small
+                    className={`browser-tab__status is-${tab.status}`}
+                    title={t(`browser.status.${tab.status}` as never)}
+                  >
+                    {t(("browser.statusShort." + tab.status) as never)}
+                  </small>
                 )}
                 {tab.grant !== "none" && (
                   <i
@@ -785,6 +830,34 @@ export function BrowserPage({
               {resolving
                 ? t("picker.resolving")
                 : t("picker.send", { total: pickRows.length })}
+            </button>
+          </div>
+        </div>
+      )}
+      {handoff && active?.id === handoff.tabId && (
+        <div className="browser-page__handoff" role="status" aria-live="polite">
+          <div className="browser-page__handoff-copy">
+            <b>{handoff.title}</b>
+            <span>{handoff.message}</span>
+            <small>{handoff.origin}</small>
+          </div>
+          <div className="browser-page__handoff-actions">
+            <button
+              type="button"
+              className="pill-action pill-action--sm"
+              disabled={handoffBusy}
+              onClick={() => void respondToHandoff("denied")}
+            >
+              {t("browser.handoffDeny")}
+            </button>
+            <button
+              type="button"
+              className="pill-action pill-action--sm browser-page__handoff-continue"
+              disabled={handoffBusy}
+              onClick={() => void respondToHandoff("continue")}
+            >
+              <Check size={12} />
+              {t("browser.handoffContinue")}
             </button>
           </div>
         </div>

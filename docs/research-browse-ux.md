@@ -11,16 +11,16 @@
 browse 和 Marionette 最大的体验差异不是工具多少，而是对浏览器的定义不同：
 
 - browse 把浏览器视为**用户自己的领地**，Agent 只是被允许进入的客人。客人有自己的标签组，工作时不抢当前标签，需要人时会明确亮起 WAIT，做完后应自己收拾。
-- Marionette 目前更像**在应用里给 Agent 开了一块浏览器面板**。用户授权粒度更清楚，元素批注也更适合“指着页面告诉 Agent”，但 Agent 的标签、运行状态和“轮到你了”仍不够可见。
+- 调研基线时的 Marionette 更像**在应用里给 Agent 开了一块浏览器面板**。P1–P4 后已经补齐后台标签、标签归属、运行状态、handoff，以及 Browser / Document / Memo 与对话同屏。
 
-Marionette 最明显的五个 UX 缺口：
+调研基线时，Marionette 最明显的六个 UX 缺口（P1–P4 后大部分已解决，正文保留基线判断）：
 
-1. **Agent 打开页面会打断用户当前操作。** browse 默认在后台开标签；Marionette 收到新标签事件会把浏览器页顶到前台。
-2. **缺少“Agent 暂停，等用户完成登录/2FA/支付”的正式流程。** browse 用页内卡片、标签 WAIT、通知和 Continue 形成闭环；Marionette 目前只有 Control 权限确认，没有 handoff。
-3. **多 Agent 的标签归属不清楚。** browse 记录标签属于哪个会话、组名、最后使用时间和 busy 状态；Marionette 只有全局浏览器标签和 openedByAgent 布尔值。
-4. **用户很难一眼判断 Agent 正在跑、等人、已完成还是出错。** browse 的 ON/RUN/WAIT、组展开、页面 pill 都是持续状态；Marionette 主要靠当前页、分享级别和工具结果推断。
+1. **Agent 打开页面会打断用户当前操作。** 已解决：默认后台打开，只有显式 workspace 才进入 surface。
+2. **缺少“Agent 暂停，等用户完成登录/2FA/支付”的正式流程。** 已解决：browser_handoff、WAIT、Continue / Deny 和通知闭环已落地。
+3. **多 Agent 的标签归属不清楚。** 已解决：标签记录 owner session、busy、status、lastUsedAt，会话删除会清理其标签。
+4. **用户很难一眼判断 Agent 正在跑、等人、已完成还是出错。** 已改善：标签显示简短状态文字，等待和失败有显式状态。
 5. **失败后缺少“下一步做什么”。** browse 会识别 challenge、给 warning/nextStep、解释无法分享的页面；Marionette 多数错误只回到 Agent 的工具结果，用户界面不一定接得住。
-6. **浏览器和对话还不能同时工作。** 当前分屏树只接受会话；浏览器、文档、收纳盒都是互斥的中栏覆盖页。用户批注后想一边看页面一边和 Agent 对话，只能来回切。
+6. **浏览器和对话还不能同时工作。** 已解决：Browser、Document、Memo 共用 SurfaceWorkspace，右侧复用同一会话和 Composer。
 
 Marionette 已有而 browse 没有同样完整体验的部分：
 
@@ -42,7 +42,7 @@ Marionette 已有而 browse 没有同样完整体验的部分：
 | Codex / ChatGPT desktop | ChatGPT desktop 的聊天或任务区 | 内置浏览器（独立 profile），或通过扩展接入用户现有 Chrome 系浏览器 | 是；内置浏览器有 `Enter split view` 和 `Enter full view` | 最接近 Marionette 想做的产品形态，而且已有元素/区域批注、样式调整和 CDP 开发者模式 |
 | ZCode | ZCode 自己的 Agent 会话 / 工作区 | Electron 内嵌 BrowserView，位于右侧 side pane，可切完整视图 | 是 | 本机安装包里有 `toggleSidePane`、`toggleSidePaneFullView`、`browser.show/hide`、浏览器标签与全屏预览 |
 | Claude Desktop | Chat / Cowork 任务 | Cowork 内置浏览器，开在任务旁的 side panel；也可改用 Claude in Chrome 扩展 | 是 | 目前明显是“任务为主、网页在旁边”；内置浏览器有独立 profile，可选导入站点登录状态 |
-| Marionette（当前） | 会话主画布 | 内置 WebView2，但 BrowserPage 是互斥伪标签 | 否 | 已有元素批注、分享级别和多 Agent 会话，但缺专用的浏览器 + Agent 对话工作区 |
+| Marionette（P1–P4 后） | 共享 surface 右栏，可切换绑定会话 | 内置 WebView2，与 Document/Memo 共用 surface 标签 | 是 | 已有元素批注、分享级别、多 Agent 会话、handoff 和恢复 |
 
 ### Codex
 
@@ -137,46 +137,44 @@ Marionette 的相对优势要说得准确：**一体化浏览器 + 对话本身�
 
 | 问题 | browse 的回答 | Marionette 当前的回答 | 体验差距 |
 |---|---|---|---|
-| 这是谁的浏览器？ | 你的浏览器，Agent 是 guest | 应用里的 Agent 浏览器页 | browse 更容易建立“我能随时收回”的安全感 |
-| Agent 在哪工作？ | 独立标签组、可选独立窗口 | 同一套应用内浏览器标签 | browse 更能隔离多任务，不打断用户 |
-| 它现在在干什么？ | RUN 标签、页面 pill、组状态 | 当前页、工具轨迹、权限弹窗 | browse 的浏览器状态独立于聊天可见 |
-| 是否轮到我？ | WAIT + 页内卡片 + 系统通知 | 通常是 Control 权限弹窗 | browse 把“安全确认”和“人要做一步”分成两种明确交互 |
-| 我能否立刻接管？ | 工具栏按钮永远可收回标签 | 可在应用内切回、改分享级别 | Marionette 能做，但状态和入口不够显眼 |
+| 这是谁的浏览器？ | 你的浏览器，Agent 是 guest | 内置独立 profile；用户标签默认不共享 | 两者都明确，Marionette 的授权粒度更细 |
+| Agent 在哪工作？ | 独立标签组、可选独立窗口 | 后台 tab 带 owner session；workspace tab 与对话同屏 | 方向已对齐，会话分组 UI 仍可继续细化 |
+| 它现在在干什么？ | RUN 标签、页面 pill、组状态 | tab 显示使用中 / 等你 / 失败，对话同时显示轨迹 | 核心状态已经同屏可见 |
+| 是否轮到我？ | WAIT + 页内卡片 + 系统通知 | waiting_user + surface 内 handoff + 系统通知 | 两种人工步骤已经与安全授权分开 |
+| 我能否立刻接管？ | 工具栏按钮永远可收回标签 | tab、handoff 提示和分享菜单都在应用内 | 入口已显式，仍可补健康面板 |
 | 失败后怎么办？ | status/nextStep、challenge、warning | 工具错误或 Agent 自己转述 | browse 更容易让用户知道该登录、关 DevTools 或换页面 |
-| 做完后谁清理？ | Agent 自己关标签；空闲标签自动关 | 用户手动关或 Agent 记得关 | browse 更接近“客人离开会收拾” |
+| 做完后谁清理？ | Agent 自己关标签；空闲标签自动关 | 删除会话/项目会清 owned tabs；空闲自动清理仍待做 | 生命周期已接上，自动回收还需补偏好 |
 
-## 当前 Marionette 的分屏限制
+## 调研基线的分屏限制（2026-11-17 已迁移）
 
-这里要先纠正一个容易误判的点：**WebView2 不是限制**。
+这里要先纠正一个容易误判的点：**WebView2 从来不是限制**。
 
-内置浏览器已经是一个 child WebView2，BrowserPage 会实时把宿主 DOM 的矩形同步给原生 surface。因此从窗口和渲染层看，把浏览器、文档或收纳盒放进一个分屏叶并不是天然做不到。
+内置浏览器一直是 child WebView2，BrowserPage 会实时把宿主 DOM 的矩形同步给原生
+surface。调研时真正卡住的是旧伪标签状态：
 
-真正的限制在当前交互模型：
+- splitWorkspace 的叶节点只有 session id；
+- BrowserPage、DocPage、MemoBox 激活时覆盖中栏且彼此互斥；
+- 文档与收纳盒的关闭、恢复、拖拽和焦点语义绑在伪标签上。
 
-- splitWorkspace 的叶节点只有 session id 列表，SplitWorkspace 也只渲染 SessionPane；
-- BrowserPage、DocPage、MemoBox 是 App 根上的伪标签状态，激活时覆盖中栏；
-- 分屏渲染和 browserActive / activeDocPath / memoActive 是互斥分支；
-- 文档与收纳盒的关闭、恢复、拖拽和焦点语义还绑在伪标签上，不在统一工作区标签模型里。
+P1–P4 没有重写 session-only 分屏树，而是新增一个独立的 `SurfaceWorkspace`：
 
-所以调研基线时的产品准确描述应是：
+- Browser、Document、Memo 都是 surface 的一种；
+- 右侧只保留一套 SessionView + Composer；
+- surface 打开时不渲染 session split tree，退出后原树原样恢复；
+- 三种 surface 共用标签、会话切换、关闭快捷键和冷启动恢复。
 
-> Marionette 已经支持“多对话分屏”，还没有支持“浏览器与对话分屏”，也还没有通用异类标签分屏。
+因此当前产品准确描述是：**Marionette 同时支持多会话分屏，以及 Browser / Document /
+Memo 与 Agent 对话同屏；两种布局各管自己的状态，互不吞掉。**
 
-### 推荐形态：最小通用 SurfaceWorkspace，而不是一步重写分屏树
+### 采用形态：最小通用 SurfaceWorkspace
 
-如果目标是接近 browse 的用户体验，第一版不需要把会话、浏览器、文档、收纳盒一次性统一成任意可拆的工作区，也不该把 Browser 硬塞进 session-only 分屏树。最终采用的折中是：
+实现按以下边界落地：
 
-1. 建立 `surface + chat` 的最小通用边界，当前只注册 Browser；
+1. `surface + chat` 是独立于 session split tree 的布局边界；
 2. Agent 只在 Web 产物预览时用 `display:"workspace"` 进入，普通网页保持后台；
-3. 右侧出现一条 Agent 对话栏，包含当前会话、转写尾部、Composer 和等待状态；
-4. 中间可拖宽，浏览器与对话各自保持状态；
-5. 关闭 surface 后回到原工作区，原会话和文档标签不丢。
-
-它比重写 session-only 分屏树更容易先做对三件事：
-
-- child WebView2 只需要跟随一个明确的 browser host 矩形；
-- 批注“发给对话”可以直接落到右侧 Composer，不需要切页；
-- WAIT、权限和失败 nextStep 可以同时出现在页面边和对话边。
+3. 右侧复用当前会话转写、Composer、权限卡和等待状态；
+4. 中间可拖宽，窄窗自动上下堆叠；
+5. 关闭 surface 后回到原工作区，原会话和 content 标签不丢。
 
 ### 四个用户状态
 
@@ -191,9 +189,9 @@ Marionette 的相对优势要说得准确：**一体化浏览器 + 对话本身�
 
 因此，“主要看到浏览器画面”是对的，但只适用于用户主动查看、协作和 handoff 阶段。Agent 单纯在后台跑时，仍应以对话为主，不能让浏览器持续抢画面。
 
-### 后续把更多伪标签迁进 worksurface
+### 更多的内容页已经迁进 worksurface
 
-如果 Browser surface 验证成立，先把 document 与 memo 迁进同一 `SurfaceWorkspace` kind；只有这些语义都稳定后，才考虑把 `splitWorkspace` 从 session-only 升级成任意异类标签树：
+Document 与 Memo 已经迁进同一 `SurfaceWorkspace`，并共用 Browser / Document / Memo 标签条。后续只有在拖拽、恢复、关闭、焦点和 detached 语义都稳定后，才考虑把 session 也并入同一棵任意异类标签树：
 
 - session；
 - browser；
@@ -231,10 +229,10 @@ browse 的 handoff 流程完整覆盖登录、2FA、passkey、CAPTCHA 和支付�
 5. 用户完成后点 Continue，Agent 才继续；
 6. 结果明确区分 continued、timeout、closed、cancelled。
 
-Marionette 当前的 BrowserPermissionDialog 解决的是“是否允许 Agent 执行这个动作”，不是“请用户本人完成一个步骤”。两者不能混用：
+Marionette 现在明确区分两件事：BrowserPermissionDialog 解决“是否允许 Agent 执行这个动作”，browser_handoff 解决“请用户本人完成一个步骤”。两者不能混用：
 
-- **安全授权**应该继续留在应用级弹窗，防止页面伪造或遮挡确认按钮；
-- **人工步骤**更适合页内卡片，因为用户要边看页面边完成登录和验证码。
+- **安全授权**留在应用级弹窗，防止页面伪造或遮挡确认按钮；
+- **人工步骤**显示在 Browser surface 的页面与 host 之间，用户能边看页面边完成登录和验证码。
 
 建议新增 browser_handoff：
 
@@ -412,32 +410,31 @@ browse 不只有 handoff，还能让用户示范一次流程：
 
 它比增加 eval 或任意脚本执行更贴近普通用户，也更符合 Marionette 的“人可读、可接管”方向。
 
-## 推荐优先级
+## 推荐优先级与落地状态
 
-### P0：先补“用户在场感”
+### 已完成（2026-11-17，P1–P4）
 
-1. 增加最小通用 `SurfaceWorkspace`，先注册 Browser：浏览器 + Agent 对话；
-2. Agent 新标签默认后台打开，不改变当前会话或文档；
-3. 标签增加 ownerSessionId、busy、lastUsedAt；
-4. 每个标签显示 running/waiting_user/error 三类浏览器状态；
-5. 增加 browser_handoff、WAIT 状态、页内说明卡和通知；
-6. MCP instructions 加入 inspect-act-verify、handoff 和标签清理规则。
+1. 通用 `SurfaceWorkspace`：Browser / Document / Memo 与 Agent 对话同屏；
+2. Agent 新标签默认后台打开，只有显式 workspace 才进入 surface；
+3. 标签记录 ownerSessionId、busy、lastUsedAt 与运行状态，删除会话时清理归属标签；
+4. `browser_handoff` 的 WAIT、Continue / Deny、通知和来源会话切换；
+5. dev server 的 loopback 扫描、TCP probe、通知 / 自动打开 / 忽略偏好；
+6. 共同标签、绑定会话切换、关闭快捷键与冷启动恢复。
 
-### P1：让用户能管理和恢复
+### 仍需做
 
-7. 浏览器健康面板：工具、MCP、profile、最近错误、清理标签；
-8. Agent 标签按会话分组，关闭会话时可选择关闭其标签；
-9. Agent 自开且空闲的标签自动关闭，用户标签永不自动关；
-10. 失败结果统一提供 nextStep；
-11. challenge/blocked 页面停止重试并转 handoff。
+1. 失败统一给出可执行 nextStep，并区分 challenge、login、permission 与页面脚本错误；
+2. 浏览器健康面板：MCP/profile/最近错误/一键清理；
+3. Agent 标签按会话分组；空闲 Agent 标签可按偏好自动清理，用户标签永不自动关；
+4. challenge/blocked 页面停止重试并转 handoff，而不是让 Agent 反复点同一元素。
 
-### P2：补齐高阶人机协作
+### 按需探索
 
-12. demonstrate：记录用户示范的点击、输入和导航；
-13. 稳定命名标签，例如 work-mail；
-14. 将 document/memo 迁入 SurfaceWorkspace，再评估通用异类标签树；
-15. 标签独立窗口选项；
-16. 可选连接真实 Chrome；嵌入式浏览器继续作为默认安全环境。
+1. demonstrate：记录用户示范的点击、输入和导航；
+2. 稳定命名标签，例如 work-mail；
+3. 将 session 与 content surface 进一步统一成任意异类标签树；
+4. 标签独立窗口；
+5. 可选连接真实 Chrome；嵌入式 WebView2 继续作为默认安全环境。
 
 ## 不建议照搬
 

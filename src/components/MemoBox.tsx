@@ -72,9 +72,11 @@ type Props = {
   onChanged: (count: number) => void;
   /** Hand the picked entries to a new dialog (prefilled, not sent). */
   onUse: (entries: MemoEntry[], intent: "dialog" | "doc") => void;
+  /** Adjacent-to-chat mount: drags and Esc belong to this pane only. */
+  embedded?: boolean;
 };
 
-export function MemoBox({ onClose, onChanged, onUse }: Props) {
+export function MemoBox({ onClose, onChanged, onUse, embedded = false }: Props) {
   const t = useT();
   const [entries, setEntries] = useState<MemoEntry[]>([]);
   const [query, setQuery] = useState("");
@@ -117,6 +119,14 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
     composeRef.current?.focus();
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      if (
+        embedded &&
+        event.target instanceof Node &&
+        rootRef.current &&
+        !rootRef.current.contains(event.target)
+      ) {
+        return;
+      }
       if (selectingRef.current) {
         setSelecting(false);
         setPicked(new Set());
@@ -124,21 +134,26 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [embedded, onClose]);
 
-  // Explorer drag-in. The memo page owns the WHOLE window while it is the
-  // active view: no conversation is in sight, so nothing else competes for
-  // files, and a rect-precise hit test made drops that landed on the shelf /
-  // context panel / tab strip die silently (2026-10-26 — 收纳盒 had never
-  // accepted a single drop in practice). Armed only by an `enter` that
-  // carries OS paths: tao also pings for in-page memo row drags, which carry
-  // none and must stay pure HTML5. While docked, App's DockDropRouter stands
-  // down entirely for this page.
+  // Explorer drag-in. Standalone / dock memo pages own the whole window; the
+  // embedded workspace mount is rect-scoped so a drop over the Agent chat
+  // still belongs to Composer. Armed only by enter with OS paths: tao also
+  // pings for in-page row drags, which must stay on the pure HTML5 channel.
   useEffect(() => {
     if (!isTauriRuntime()) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
     let armed = false;
+    const insideMemo = (position: { x: number; y: number } | null): boolean => {
+      if (!position || !embedded) return !embedded;
+      const rect = rootRef.current?.getBoundingClientRect();
+      if (!rect) return false;
+      const scale = window.devicePixelRatio || 1;
+      const x = position.x / scale;
+      const y = position.y / scale;
+      return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+    };
     void getCurrentWebview()
       .onDragDropEvent((event) => {
         if (disposed) return;
@@ -149,8 +164,12 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
           return;
         }
         if (payload.type === "enter") {
-          armed = Boolean(payload.paths?.length);
+          armed = insideMemo(payload.position) && Boolean(payload.paths?.length);
           setDropActive(armed);
+          return;
+        }
+        if (payload.type === "over") {
+          setDropActive(armed && insideMemo(payload.position));
           return;
         }
         if (!armed) return;
@@ -158,7 +177,7 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
           armed = false;
           setDropActive(false);
           const paths = payload.paths ?? [];
-          if (!paths.length) return;
+          if (!paths.length || !insideMemo(payload.position)) return;
           setBusy(true);
           void memoSavePaths(paths, t("memo.sourceDrop"))
             .then(publish)
@@ -175,23 +194,32 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
       disposed = true;
       unlisten?.();
     };
-  }, [publish]);
+  }, [embedded, publish]);
 
   // Text/link drag-in (browser selections, URLs) — the wry-patch channel.
-  // Same whole-window ownership as files above; Rust derives the title and
-  // turns bare URLs into link entries.
+  // Standalone owns the window; embedded is scoped to the memo rectangle.
   useEffect(() => {
     if (!isTauriRuntime()) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    const insideMemo = (position: { x: number; y: number }): boolean => {
+      if (!embedded) return true;
+      const rect = rootRef.current?.getBoundingClientRect();
+      if (!rect) return false;
+      const scale = window.devicePixelRatio || 1;
+      const x = position.x / scale;
+      const y = position.y / scale;
+      return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+    };
     void onDragText((event) => {
       if (disposed || isPageDragSource()) return;
+      const over = insideMemo({ x: event.x, y: event.y });
       if (event.kind === "enter" || event.kind === "over") {
-        setDropActive(true);
+        setDropActive(over);
         return;
       }
       setDropActive(false);
-      if (event.kind !== "drop") return;
+      if (event.kind !== "drop" || !over) return;
       const text = event.text.trim();
       if (!text) return;
       setBusy(true);
@@ -214,7 +242,7 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
       disposed = true;
       unlisten?.();
     };
-  }, [publish]);
+  }, [embedded, publish]);
 
   const saveText = useCallback(
     (text: string, source: string) => {
@@ -352,7 +380,7 @@ export function MemoBox({ onClose, onChanged, onUse }: Props) {
   return (
     <div
       ref={rootRef}
-      className={`memo-box${dropActive ? " is-drop-active" : ""}${selecting ? " is-selecting" : ""}`}
+      className={"memo-box" + (embedded ? " is-embedded" : "") + (dropActive ? " is-drop-active" : "") + (selecting ? " is-selecting" : "")}
       role="dialog"
       aria-label={t("dock.pageMemo")}
       tabIndex={-1}

@@ -10,6 +10,7 @@
 pub mod agent;
 pub mod pick;
 pub mod probe;
+pub mod service;
 #[cfg(target_os = "windows")]
 pub mod surface;
 
@@ -31,7 +32,7 @@ pub fn normalize_open_display(raw: Option<&str>) -> Result<&'static str, String>
 #[cfg(target_os = "windows")]
 mod imp {
     use std::collections::HashMap;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::mpsc;
     use std::sync::Mutex;
     use std::time::Duration;
@@ -39,7 +40,7 @@ mod imp {
     use serde_json::{json, Value};
     use tauri::{AppHandle, Emitter};
 
-    use super::{agent, surface};
+    use super::{agent, service, surface};
     use surface::{AgentGrant, GrantLevel, Surface, TabInfo};
 
     /// Global switch for the agent tool surface (the frontend settings page).
@@ -54,6 +55,13 @@ mod imp {
     /// means for tool permissions. Pushed by the frontend when the toggle
     /// moves and when a session is spawned.
     static SESSION_ALWAYS_APPROVE: Mutex<Option<HashMap<String, bool>>> = Mutex::new(None);
+    struct PendingHandoff {
+        tab_id: String,
+        tx: mpsc::Sender<String>,
+    }
+
+    static PENDING_HANDOFFS: Mutex<Option<HashMap<String, PendingHandoff>>> = Mutex::new(None);
+    static HANDOFF_SEQ: AtomicU64 = AtomicU64::new(1);
 
     pub fn session_auto_approves(session_id: &str) -> bool {
         SESSION_ALWAYS_APPROVE
@@ -71,7 +79,13 @@ mod imp {
     /// confirm semantics — never wait forever, never default to yes).
     const PERMISSION_TIMEOUT: Duration = Duration::from_secs(120);
 
-    static PENDING_PERMISSIONS: Mutex<Option<HashMap<String, mpsc::Sender<bool>>>> = Mutex::new(None);
+    struct PendingPermission {
+        tab_id: String,
+        tx: mpsc::Sender<bool>,
+    }
+
+    static PENDING_PERMISSIONS: Mutex<Option<HashMap<String, PendingPermission>>> =
+        Mutex::new(None);
 
     #[derive(Clone, serde::Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -103,7 +117,13 @@ mod imp {
         );
         let (tx, rx) = mpsc::channel();
         if let Ok(mut guard) = PENDING_PERMISSIONS.lock() {
-            guard.get_or_insert_with(HashMap::new).insert(request_id.clone(), tx);
+            guard.get_or_insert_with(HashMap::new).insert(
+                request_id.clone(),
+                PendingPermission {
+                    tab_id: tab_id.to_string(),
+                    tx,
+                },
+            );
         } else {
             return false;
         }
@@ -115,6 +135,7 @@ mod imp {
             origin: origin.to_string(),
             summary: summary.to_string(),
         };
+        let _ = set_tab_status(app, tab_id, "waiting_user");
         let _ = app.emit("marionette-browser-permission", &request);
         let answer = rx.recv_timeout(PERMISSION_TIMEOUT).unwrap_or(false);
         if let Ok(mut guard) = PENDING_PERMISSIONS.lock() {
@@ -122,6 +143,7 @@ mod imp {
                 map.remove(&request_id);
             }
         }
+        let _ = set_tab_status(app, tab_id, "idle");
         answer
     }
 
@@ -133,9 +155,150 @@ mod imp {
             .ok()
             .and_then(|mut guard| guard.as_mut().and_then(|map| map.remove(request_id)));
         match sender {
-            Some(tx) => tx.send(allow).is_ok(),
+            Some(pending) => pending.tx.send(allow).is_ok(),
             None => false,
         }
+    }
+
+    pub fn cancel_permissions_for_tab(tab_id: &str) -> usize {
+        let pending = PENDING_PERMISSIONS
+            .lock()
+            .ok()
+            .and_then(|mut guard| {
+                let map = guard.as_mut()?;
+                let ids: Vec<String> = map
+                    .iter()
+                    .filter(|(_, request)| request.tab_id == tab_id)
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                Some(
+                    ids.into_iter()
+                        .filter_map(|id| map.remove(&id))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .unwrap_or_default();
+        pending
+            .into_iter()
+            .filter(|request| request.tx.send(false).is_ok())
+            .count()
+    }
+
+    pub fn set_tab_status(app: &AppHandle, tab_id: &str, status: &str) -> Result<(), String> {
+        let status = status.to_string();
+        surface::with_surface(app, tab_id, move |s| {
+            s.status.replace(status);
+            s.last_used_at_ms.set(surface::now_ms_pub());
+            surface::emit_tabs(&s.app);
+        })
+    }
+
+    pub fn request_handoff(
+        app: &AppHandle,
+        session_id: &str,
+        tab_id: &str,
+        title: &str,
+        message: &str,
+        timeout_secs: u64,
+    ) -> Result<Value, String> {
+        let url = tab_url(app, tab_id)?;
+        let origin = tab_origin(app, tab_id)?;
+        let seq = HANDOFF_SEQ.fetch_add(1, Ordering::Relaxed);
+        let request_id = format!("handoff-{seq}");
+        let (tx, rx) = mpsc::channel();
+        if let Ok(mut guard) = PENDING_HANDOFFS.lock() {
+            guard
+                .get_or_insert_with(HashMap::new)
+                .insert(
+                    request_id.clone(),
+                    PendingHandoff {
+                        tab_id: tab_id.to_string(),
+                        tx,
+                    },
+                );
+        }
+        set_tab_status(app, tab_id, "waiting_user")?;
+        let timeout_secs = timeout_secs.clamp(15, 300);
+        let expires_at_ms = surface::now_ms_pub() + timeout_secs * 1000;
+        let title = if title.trim().is_empty() {
+            "Complete this step".to_string()
+        } else {
+            title.trim().chars().take(120).collect()
+        };
+        let message = message.trim().chars().take(2_000).collect::<String>();
+        let _ = app.emit(
+            "marionette-browser-handoff",
+            json!({
+                "requestId": request_id,
+                "sessionId": session_id,
+                "tabId": tab_id,
+                "title": title,
+                "message": message,
+                "url": url,
+                "origin": origin,
+                "expiresAtMs": expires_at_ms,
+            }),
+        );
+        let outcome = rx
+            .recv_timeout(Duration::from_secs(timeout_secs))
+            .unwrap_or_else(|_| "timeout".to_string());
+        if let Ok(mut guard) = PENDING_HANDOFFS.lock() {
+            if let Some(map) = guard.as_mut() {
+                map.remove(&request_id);
+            }
+        }
+        // The user may close the tab while the handoff is pending; the
+        // cancellation still returns a denial, so a vanished tab is fine.
+        let _ = set_tab_status(app, tab_id, "idle");
+        Ok(json!({
+            "requestId": request_id,
+            "tabId": tab_id,
+            "outcome": outcome,
+            "url": url,
+            "origin": origin,
+        }))
+    }
+
+    pub fn resolve_handoff(request_id: &str, outcome: &str) -> bool {
+        let outcome = if outcome == "continue" { "continue" } else { "denied" };
+        let sender = PENDING_HANDOFFS
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.as_mut().and_then(|map| map.remove(request_id)));
+        match sender {
+            Some(pending) => pending.tx.send(outcome.to_string()).is_ok(),
+            None => false,
+        }
+    }
+
+    /// A closed tab cannot receive the human's next click. Release every
+    /// blocked handoff on it now, as a denial, instead of leaving the Agent
+    /// waiting for the full timeout.
+    pub fn cancel_handoffs_for_tab(tab_id: &str) -> usize {
+        let pending = PENDING_HANDOFFS
+            .lock()
+            .ok()
+            .and_then(|mut guard| {
+                let map = guard.as_mut()?;
+                let ids: Vec<String> = map
+                    .iter()
+                    .filter(|(_, request)| request.tab_id == tab_id)
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                Some(
+                    ids.into_iter()
+                        .filter_map(|id| map.remove(&id))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .unwrap_or_default();
+        let mut delivered = 0;
+        for request in pending {
+            if request.tx.send("denied".to_string()).is_ok() {
+                delivered += 1;
+            }
+        }
+        delivered
     }
 
     // -----------------------------------------------------------------------
@@ -150,13 +313,21 @@ mod imp {
         url: &str,
         opened_by_agent: bool,
         display: &str,
+        owner_session_id: Option<&str>,
     ) -> Result<String, String> {
         let (tx, rx) = mpsc::channel();
         let url = url.to_string();
         let display = display.to_string();
+        let owner_session_id = owner_session_id.map(str::to_string);
         let app_for_job = app.clone();
         app.run_on_main_thread(move || {
-            let result = surface::create_surface(&app_for_job, &url, opened_by_agent, &display);
+            let result = surface::create_surface(
+                &app_for_job,
+                &url,
+                opened_by_agent,
+                &display,
+                owner_session_id.as_deref(),
+            );
             let _ = tx.send(result);
         })
         .map_err(|e| format!("main thread hop: {e}"))?;
@@ -164,6 +335,8 @@ mod imp {
     }
 
     pub fn close_tab(app: &AppHandle, tab_id: &str) -> Result<(), String> {
+        cancel_permissions_for_tab(tab_id);
+        cancel_handoffs_for_tab(tab_id);
         let (tx, rx) = mpsc::channel();
         let tab_id = tab_id.to_string();
         let app_for_job = app.clone();
@@ -203,6 +376,61 @@ mod imp {
     /// card for tabs the agent opened, but never for a user tab.
     pub fn tab_opened_by_agent(app: &AppHandle, tab_id: &str) -> Result<bool, String> {
         surface::with_surface(app, tab_id, |s| s.opened_by_agent)
+    }
+
+    /// Run one agent-side tool call and publish the tab's live activity state.
+    /// The closure itself may take a CDP lease or wait on a permission card;
+    /// the surrounding status is what the browser UI reflects.
+    pub fn tool_call(
+        app: &AppHandle,
+        tab_id: &str,
+        run: impl FnOnce(&Surface) -> Result<Value, String> + Send + 'static,
+    ) -> Result<Value, String> {
+        surface::with_surface(app, tab_id, move |s| {
+            let running = s.busy_count.get().saturating_add(1);
+            s.busy_count.set(running);
+            s.status.replace("running".to_string());
+            s.last_used_at_ms.set(surface::now_ms_pub());
+            surface::emit_tabs(&s.app);
+            let result = run(s);
+            let remaining = s.busy_count.get().saturating_sub(1);
+            s.busy_count.set(remaining);
+            if remaining == 0 {
+                s.status.replace(
+                    if result.is_ok() {
+                        "idle".to_string()
+                    } else {
+                        "failed".to_string()
+                    },
+                );
+            }
+            surface::emit_tabs(&s.app);
+            result
+        })?
+    }
+
+    /// Close every tab an agent session owns. User-opened tabs have no owner
+    /// and are never touched by session deletion.
+    pub fn close_tabs_for_session(app: &AppHandle, session_id: &str) -> Result<usize, String> {
+        let (tx, rx) = mpsc::channel();
+        let session_id = session_id.to_string();
+        let app_for_job = app.clone();
+        app.run_on_main_thread(move || {
+            let ids: Vec<String> = surface::tabs_snapshot()
+                .into_iter()
+                .filter(|tab| tab.owner_session_id.as_deref() == Some(session_id.as_str()))
+                .map(|tab| tab.id)
+                .collect();
+            let mut closed = 0usize;
+            for id in ids {
+                if surface::close_surface(&app_for_job, &id).is_ok() {
+                    closed += 1;
+                }
+            }
+            let _ = tx.send(closed);
+        })
+        .map_err(|e| format!("main thread hop: {e}"))?;
+        rx.recv().map_err(|_| "main thread did not answer".to_string())
     }
 
     /// Toolbar share: set the grant for the tab's CURRENT origin by hand.
@@ -251,7 +479,7 @@ mod imp {
                 "note": grant_required_note(tab_id),
             }));
         }
-        surface::with_surface(app, tab_id, run).and_then(|inner| inner)
+        tool_call(app, tab_id, run)
     }
 
     pub fn grant_required_note(tab_id: &str) -> String {
@@ -271,12 +499,25 @@ mod imp {
         display: Option<String>,
     ) -> Result<Value, String> {
         let display = super::normalize_open_display(display.as_deref())?;
-        open_tab(&app, &url, false, display).map(|id| json!({ "tabId": id }))
+        open_tab(&app, &url, false, display, None).map(|id| json!({ "tabId": id }))
     }
 
     #[tauri::command(async)]
     pub fn browser_close_tab(app: AppHandle, tab_id: String) -> Result<(), String> {
         close_tab(&app, &tab_id)
+    }
+
+    #[tauri::command(async)]
+    pub fn browser_close_tabs_for_session(
+        app: AppHandle,
+        session_id: String,
+    ) -> Result<usize, String> {
+        close_tabs_for_session(&app, &session_id)
+    }
+
+    #[tauri::command(async)]
+    pub fn browser_probe_loopback_url(url: String) -> Result<bool, String> {
+        service::probe_loopback_url(&url)
     }
 
     #[tauri::command(async)]
@@ -520,6 +761,11 @@ mod imp {
     }
 
     #[tauri::command(async)]
+    pub fn browser_handoff_respond(request_id: String, outcome: String) -> Result<bool, String> {
+        Ok(resolve_handoff(&request_id, &outcome))
+    }
+
+    #[tauri::command(async)]
     pub fn set_browser_tools_enabled(enabled: bool) -> Result<(), String> {
         TOOLS_ENABLED.store(enabled, Ordering::Relaxed);
         Ok(())
@@ -587,6 +833,9 @@ mod imp {
     pub fn tab_opened_by_agent(_app: &AppHandle, _tab_id: &str) -> Result<bool, String> {
         unavailable()
     }
+    pub fn close_tabs_for_session(_app: &AppHandle, _session_id: &str) -> Result<usize, String> {
+        Ok(0)
+    }
 
     #[tauri::command(async)]
     pub fn browser_open_tab(
@@ -599,6 +848,17 @@ mod imp {
     #[tauri::command(async)]
     pub fn browser_close_tab(_app: AppHandle, _tab_id: String) -> Result<(), String> {
         unavailable()
+    }
+    #[tauri::command(async)]
+    pub fn browser_close_tabs_for_session(
+        _app: AppHandle,
+        _session_id: String,
+    ) -> Result<usize, String> {
+        Ok(0)
+    }
+    #[tauri::command(async)]
+    pub fn browser_probe_loopback_url(url: String) -> Result<bool, String> {
+        super::service::probe_loopback_url(&url)
     }
     #[tauri::command(async)]
     pub fn browser_navigate_tab(_app: AppHandle, _tab_id: String, _url: String) -> Result<(), String> {
@@ -654,6 +914,13 @@ mod imp {
     }
     #[tauri::command(async)]
     pub fn browser_permission_respond(_request_id: String, _allow: bool) -> Result<bool, String> {
+        Ok(false)
+    }
+    #[tauri::command(async)]
+    pub fn browser_handoff_respond(
+        _request_id: String,
+        _outcome: String,
+    ) -> Result<bool, String> {
         Ok(false)
     }
     #[tauri::command(async)]

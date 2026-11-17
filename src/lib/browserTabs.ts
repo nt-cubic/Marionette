@@ -14,6 +14,10 @@ export type BrowserTab = {
   grant: "none" | "read" | "control";
   openedByAgent: boolean;
   display: "background" | "workspace";
+  ownerSessionId: string | null;
+  busy: boolean;
+  status: "idle" | "running" | "waiting_user" | "failed";
+  lastUsedAtMs: number;
 };
 
 export type BrowserPermissionRequest = {
@@ -23,6 +27,17 @@ export type BrowserPermissionRequest = {
   url: string;
   origin: string;
   summary: string;
+};
+
+export type BrowserHandoffRequest = {
+  requestId: string;
+  sessionId: string;
+  tabId: string;
+  title: string;
+  message: string;
+  url: string;
+  origin: string;
+  expiresAtMs: number;
 };
 
 export async function browserOpenTab(
@@ -36,6 +51,20 @@ export async function browserOpenTab(
 export async function browserCloseTab(tabId: string): Promise<void> {
   if (!isTauriRuntime()) return;
   await invoke("browser_close_tab", { tabId });
+}
+
+export async function browserCloseTabsForSession(sessionId: string): Promise<number> {
+  if (!isTauriRuntime()) return 0;
+  return invoke<number>("browser_close_tabs_for_session", { sessionId });
+}
+
+export async function browserProbeLoopbackUrl(url: string): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try {
+    return await invoke<boolean>("browser_probe_loopback_url", { url });
+  } catch {
+    return false;
+  }
 }
 
 export async function browserNavigateTab(tabId: string, url: string): Promise<void> {
@@ -78,6 +107,14 @@ export async function browserPermissionRespond(requestId: string, allow: boolean
   await invoke("browser_permission_respond", { requestId, allow });
 }
 
+export async function browserHandoffRespond(
+  requestId: string,
+  outcome: "continue" | "denied",
+): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  return invoke<boolean>("browser_handoff_respond", { requestId, outcome });
+}
+
 export function onBrowserTabs(handler: (tabs: BrowserTab[]) => void): Promise<UnlistenFn> {
   return listen<BrowserTab[]>("marionette-browser-tabs", (event) => handler(event.payload));
 }
@@ -86,6 +123,14 @@ export function onBrowserPermission(
   handler: (request: BrowserPermissionRequest) => void,
 ): Promise<UnlistenFn> {
   return listen<BrowserPermissionRequest>("marionette-browser-permission", (event) =>
+    handler(event.payload),
+  );
+}
+
+export function onBrowserHandoff(
+  handler: (request: BrowserHandoffRequest) => void,
+): Promise<UnlistenFn> {
+  return listen<BrowserHandoffRequest>("marionette-browser-handoff", (event) =>
     handler(event.payload),
   );
 }

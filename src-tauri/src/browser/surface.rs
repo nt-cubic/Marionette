@@ -150,12 +150,23 @@ pub struct TabInfo {
     /// `background` or `workspace`; the frontend consumes this only for fresh
     /// tabs, then the tab behaves like every other tab.
     pub display: String,
+    pub owner_session_id: Option<String>,
+    pub busy: bool,
+    pub status: String,
+    pub last_used_at_ms: u64,
 }
 
 pub struct Surface {
     pub id: String,
     pub opened_by_agent: bool,
     pub display: String,
+    pub owner_session_id: Option<String>,
+    /// Concurrent agent calls can overlap while waiting on a lease or CDP.
+    /// The public tab snapshot stays boolean, but the counter prevents one
+    /// completion from claiming the tab is idle while another call is live.
+    pub busy_count: Cell<u32>,
+    pub status: RefCell<String>,
+    pub last_used_at_ms: Cell<u64>,
     pub webview: WebView,
     /// App handle, so the CDP event fan-out can push picker reports to the
     /// frontend without a CDP call (events can arrive inside another call's
@@ -201,6 +212,10 @@ impl Surface {
                 .unwrap_or_else(|| "none".to_string()),
             opened_by_agent: self.opened_by_agent,
             display: self.display.clone(),
+            owner_session_id: self.owner_session_id.clone(),
+            busy: self.busy_count.get() > 0,
+            status: self.status.borrow().clone(),
+            last_used_at_ms: self.last_used_at_ms.get(),
         }
     }
 }
@@ -226,7 +241,17 @@ fn pwstr_out(read: impl FnOnce(*mut PWSTR) -> windows::core::Result<()>) -> Opti
 
 /// All tabs as the frontend sees them. Main thread.
 pub fn tabs_snapshot() -> Vec<TabInfo> {
-    SURFACES.with(|surfaces| surfaces.borrow().values().map(|s| s.info()).collect())
+    let mut tabs: Vec<TabInfo> =
+        SURFACES.with(|surfaces| surfaces.borrow().values().map(|s| s.info()).collect());
+    // Registry storage is a HashMap for O(1) lookup. The frontend tab strip
+    // must still be stable across status events, so expose creation order.
+    tabs.sort_by_key(|tab| {
+        tab.id
+            .strip_prefix('b')
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(u64::MAX)
+    });
+    tabs
 }
 
 /// Push the tab list to the frontend. Call on the main thread after any
@@ -1249,8 +1274,9 @@ pub fn create_surface(
     url: &str,
     opened_by_agent: bool,
     display: &str,
+    owner_session_id: Option<&str>,
 ) -> Result<String, String> {
-    let surface = build_surface(app, url, opened_by_agent, display)?;
+    let surface = build_surface(app, url, opened_by_agent, display, owner_session_id)?;
     let id = surface.id.clone();
     register_surface(app, &surface);
     Ok(id)
@@ -1263,6 +1289,7 @@ fn build_surface(
     url: &str,
     opened_by_agent: bool,
     display: &str,
+    owner_session_id: Option<&str>,
 ) -> Result<Rc<Surface>, String> {
     let window = app
         .get_webview_window("main")
@@ -1289,6 +1316,7 @@ fn build_surface(
     // the WebView2 dispatch that is calling us).
     let popup_app = app.clone();
     let popup_display = display.to_string();
+    let popup_owner_session_id = owner_session_id.map(str::to_string);
     let popup_by_agent = opened_by_agent;
 
     let profile = profile_dir()?;
@@ -1312,9 +1340,16 @@ fn build_surface(
             .with_new_window_req_handler(move |url, _features| {
                 let app_for_job = popup_app.clone();
                 let display_for_job = popup_display.clone();
+                let owner_for_job = popup_owner_session_id.clone();
                 let _ = popup_app.run_on_main_thread(move || {
                     if let Err(error) =
-                        create_surface(&app_for_job, &url, popup_by_agent, &display_for_job)
+                        create_surface(
+                            &app_for_job,
+                            &url,
+                            popup_by_agent,
+                            &display_for_job,
+                            owner_for_job.as_deref(),
+                        )
                     {
                         crate::debug_log::append("browser", "warn", "", "popup open failed", Some(&error));
                     }
@@ -1329,6 +1364,10 @@ fn build_surface(
         id,
         opened_by_agent,
         display: display.to_string(),
+        owner_session_id: owner_session_id.map(str::to_string),
+        busy_count: Cell::new(0),
+        status: RefCell::new("idle".to_string()),
+        last_used_at_ms: Cell::new(0),
         webview,
         app: app.clone(),
         world_ctx: Cell::new(None),

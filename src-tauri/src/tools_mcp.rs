@@ -274,6 +274,30 @@ fn tool_schemas() -> Value {
             })
         ),
         tool(
+            "browser_handoff",
+            "Pause and ask the person to complete a step in the shared browser, such as signing in, completing 2FA or a CAPTCHA, confirming a choice, or checking a result that only they can access. This tool blocks until the person clicks Continue, declines, or the timeout expires. Use browser approval/permission flows for your own actions; use handoff only when the human must act.",
+            &["tabId", "message"],
+            json!({
+                "tabId": tab_id(),
+                "title": {
+                    "type": "string",
+                    "maxLength": 120,
+                    "description": "Short user-facing title; default 'Complete this step'."
+                },
+                "message": {
+                    "type": "string",
+                    "maxLength": 2000,
+                    "description": "One concrete instruction telling the person what to do in the page."
+                },
+                "timeoutSec": {
+                    "type": "integer",
+                    "minimum": 15,
+                    "maximum": 300,
+                    "default": 120
+                }
+            })
+        ),
+        tool(
             "browser_close_tab",
             "Close a browser tab.",
             &["tabId"],
@@ -525,7 +549,7 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
             let display = browser::normalize_open_display(
                 args.get("display").and_then(Value::as_str),
             )?;
-            let tab_id = browser::open_tab(app, &url, true, display)?;
+            let tab_id = browser::open_tab(app, &url, true, display, Some(session_id))?;
             Ok(json!({
                 "tabId": tab_id,
                 "display": display,
@@ -535,6 +559,24 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
                     "opened in the background; reads are allowed, actions ask the user"
                 }
             }))
+        }
+        "browser_handoff" => {
+            let tab_id = arg_str(args, "tabId")?;
+            let message = arg_str(args, "message")?;
+            let title = args.get("title").and_then(Value::as_str).unwrap_or("");
+            let timeout_secs = args
+                .get("timeoutSec")
+                .and_then(Value::as_u64)
+                .unwrap_or(120)
+                .clamp(15, 300);
+            browser::request_handoff(
+                app,
+                session_id,
+                &tab_id,
+                title,
+                &message,
+                timeout_secs,
+            )
         }
         "browser_close_tab" => {
             let tab_id = arg_str(args, "tabId")?;
@@ -650,8 +692,7 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
                 return Ok(refusal);
             }
             let request = ActionRequest { generation, target, action };
-            surface::with_surface(app, &tab_id, move |s| surface::act(s, &request))
-                .and_then(|inner| inner)
+            browser::tool_call(app, &tab_id, move |s| surface::act(s, &request))
                 .map(|mut value| {
                     if let Some(object) = value.as_object_mut() {
                         object.insert("tabId".to_string(), json!(tab_id));
@@ -674,10 +715,9 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
             if let Some(refusal) = control_gate(app, session_id, &tab_id, "set a control's value")? {
                 return Ok(refusal);
             }
-            surface::with_surface(app, &tab_id, move |s| {
+            browser::tool_call(app, &tab_id, move |s| {
                 surface::set_control_value(s, &generation, &target, &value)
             })
-            .and_then(|inner| inner)
             .map(|mut value| {
                 if let Some(object) = value.as_object_mut() {
                     object.insert("tabId".to_string(), json!(tab_id));
@@ -805,6 +845,7 @@ mod tests {
         for expected in [
             "browser_list_tabs",
             "browser_open_tab",
+            "browser_handoff",
             "browser_close_tab",
             "browser_snapshot",
             "browser_console_messages",

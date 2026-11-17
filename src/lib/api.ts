@@ -717,6 +717,22 @@ export async function listAcpTerminals(): Promise<AcpTerminalRow[]> {
   }
 }
 
+export type AcpTerminalOutput = {
+  terminalId: string;
+  sessionId: string;
+  running: boolean;
+  output: string;
+};
+
+export async function listAcpTerminalOutputs(): Promise<AcpTerminalOutput[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    return await invoke<AcpTerminalOutput[]>("list_acp_terminal_outputs");
+  } catch {
+    return [];
+  }
+}
+
 export async function killAcpTerminal(terminalId: string): Promise<void> {
   if (!isTauriRuntime()) return;
   await invoke("kill_acp_terminal", { terminalId });

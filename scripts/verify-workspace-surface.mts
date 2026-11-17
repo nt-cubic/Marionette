@@ -4,7 +4,10 @@ import {
   WORKSPACE_SURFACE_STACK_PX,
   browserTabToOpenInWorkspace,
   clampWorkspaceSurfaceWidth,
+  documentPathFromSurfaceTabId,
+  documentSurfaceTabId,
   shouldStackWorkspace,
+  workspaceSurfaceTabIds,
   workspaceSurfaceWidthFromPointer,
 } from "../src/lib/workspaceSurface";
 
@@ -69,6 +72,29 @@ ok(
   browserTabToOpenInWorkspace([{ id: "b1", display: "workspace" }], true) ===
     null,
   "test suppression blocks workspace activation",
+);
+ok(
+  documentPathFromSurfaceTabId(documentSurfaceTabId("D:\\项目\\README.md")) ===
+    "D:\\项目\\README.md",
+  "document surface id round-trips Windows paths",
+);
+ok(
+  documentPathFromSurfaceTabId("memo") === null,
+  "non-document surface ids do not parse as document paths",
+);
+ok(
+  workspaceSurfaceTabIds(
+    true,
+    ["D:\\项目\\README.md", "D:\\项目\\PLAN.md"],
+    true,
+  ).join("|") ===
+    [
+      "browser",
+      documentSurfaceTabId("D:\\项目\\README.md"),
+      documentSurfaceTabId("D:\\项目\\PLAN.md"),
+      "memo",
+    ].join("|"),
+  "surface tabs keep one shared browser/document/memo order",
 );
 
 console.log("\nall checks passed");

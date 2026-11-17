@@ -107,6 +107,22 @@
   background: var(--accent);
 }
 
+.browser-tab__status {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 500;
+}
+.browser-tab__status.is-running {
+  color: var(--accent);
+}
+.browser-tab__status.is-waiting_user {
+  color: var(--yellow);
+}
+.browser-tab__status.is-failed {
+  color: var(--red);
+}
+
 .browser-tab__close {
   flex: 0 0 auto;
   margin-right: 3px;
@@ -202,6 +218,78 @@
   min-height: 0;
   /* The native webviews sit above the host background but below the bar. */
   background: var(--workspace-bg);
+}
+
+.browser-page__handoff {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--yellow) 7%, var(--panel));
+}
+
+.browser-page__handoff-copy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.browser-page__handoff-copy b {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.browser-page__handoff-copy span,
+.browser-page__handoff-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-page__handoff-copy span {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.browser-page__handoff-copy small {
+  color: var(--text-faint);
+  font-size: 10.5px;
+}
+
+.browser-page__handoff-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+}
+
+.browser-page__handoff-continue {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+@media (max-width: 520px) {
+  .browser-page__handoff {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .browser-page__handoff-actions {
+    justify-content: flex-end;
+  }
 }
 
 .browser-page__empty {

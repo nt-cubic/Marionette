@@ -1,7 +1,8 @@
 /**
  * Small, DOM-free rules for the conversation + surface workspace.
- * Browser is the first registered surface; session/document/memo names stay
- * in the union so later migrations do not need a second layout vocabulary.
+ * Browser, documents and the memo box share the content-side model; session
+ * remains in the union for a possible later tree without weakening the
+ * existing session-only split implementation.
  */
 
 export type WorkspaceSurfaceKind = "browser" | "session" | "document" | "memo";
@@ -16,6 +17,30 @@ export const WORKSPACE_SURFACE_MIN_PX = 360;
 export const WORKSPACE_CHAT_MIN_PX = 320;
 export const WORKSPACE_SURFACE_STACK_PX = 760;
 export const WORKSPACE_SURFACE_DEFAULT_RATIO = 0.62;
+export const DOCUMENT_SURFACE_PREFIX = "document:";
+
+export function documentSurfaceTabId(path: string): string {
+  return DOCUMENT_SURFACE_PREFIX + path;
+}
+
+export function documentPathFromSurfaceTabId(tabId: string): string | null {
+  return tabId.startsWith(DOCUMENT_SURFACE_PREFIX)
+    ? tabId.slice(DOCUMENT_SURFACE_PREFIX.length)
+    : null;
+}
+
+/** Shared tab order for the strip, close fallback, and keyboard cycling. */
+export function workspaceSurfaceTabIds(
+  browserAvailable: boolean,
+  documentPaths: readonly string[],
+  memoOpen: boolean,
+): string[] {
+  return [
+    ...(browserAvailable ? ["browser"] : []),
+    ...documentPaths.map(documentSurfaceTabId),
+    ...(memoOpen ? ["memo"] : []),
+  ];
+}
 
 export function browserTabToOpenInWorkspace(
   fresh: readonly { id: string; display: "background" | "workspace" }[],

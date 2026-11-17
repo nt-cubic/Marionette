@@ -5,7 +5,7 @@ import {
   type PointerEvent,
   type ReactNode,
 } from "react";
-import { PanelRightClose } from "lucide-react";
+import { FileText, Globe, Inbox, PanelRightClose, X } from "lucide-react";
 import { useT } from "../lib/i18n";
 import {
   WORKSPACE_SURFACE_DEFAULT_RATIO,
@@ -17,16 +17,35 @@ import {
 
 const SURFACE_STORAGE_KEY = "marionette-workspace-surface-width";
 
+export type SurfaceTabDescriptor = {
+  id: string;
+  kind: WorkspaceSurfaceKind;
+  title: string;
+  count?: number;
+};
+
+export type SurfaceChatOption = {
+  id: string;
+  label: string;
+};
+
 /**
  * Conversation + content surface, deliberately independent of the session
- * split tree. Browser is its first surface. The chat node is the existing
- * SessionView + Composer; this component owns layout only.
+ * split tree. Browser, documents and the memo box share it. The chat node is
+ * the existing SessionView + Composer; this component owns layout only.
  */
 export function SurfaceWorkspace({
   kind,
   surface,
   chat,
   chatTitle,
+  chatSessionId,
+  chatSessions,
+  onChatSessionChange,
+  tabs,
+  activeTabId,
+  onSelectTab,
+  onCloseTab,
   surfaceSide = "left",
   onCloseSurface,
 }: {
@@ -34,11 +53,19 @@ export function SurfaceWorkspace({
   surface: ReactNode;
   chat: ReactNode;
   chatTitle: string;
+  chatSessionId: string;
+  chatSessions: readonly SurfaceChatOption[];
+  onChatSessionChange: (sessionId: string) => void;
+  tabs: readonly SurfaceTabDescriptor[];
+  activeTabId: string;
+  onSelectTab: (tabId: string) => void;
+  onCloseTab?: (tabId: string) => void;
   surfaceSide?: "left" | "right";
   onCloseSurface: () => void;
 }) {
   const t = useT();
   const rowRef = useRef<HTMLDivElement>(null);
+  const tabsRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
   const movedRef = useRef(false);
   const widthRef = useRef<number | null>(null);
@@ -74,6 +101,13 @@ export function SurfaceWorkspace({
     () => () => document.body.classList.remove("is-surface-resizing"),
     [],
   );
+
+  useEffect(() => {
+    const active = tabsRef.current?.querySelector<HTMLElement>(
+      '[role="tab"][aria-selected="true"]',
+    );
+    active?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeTabId, tabs.length]);
 
   useEffect(() => {
     if (!stacked) return;
@@ -139,7 +173,24 @@ export function SurfaceWorkspace({
       <div className="workspace-surface__chat-head">
         <div className="workspace-surface__chat-title">
           <span>{t("browser.surfaceAgentPane")}</span>
-          <b>{chatTitle}</b>
+          <select
+            className="workspace-surface__chat-select"
+            value={chatSessionId}
+            title={chatTitle}
+            aria-label={t("browser.surfaceAgentPane")}
+            disabled={chatSessions.length === 0}
+            onChange={(event) => onChatSessionChange(event.target.value)}
+          >
+            {chatSessions.length === 0 ? (
+              <option value="">{chatTitle}</option>
+            ) : (
+              chatSessions.map((session) => (
+                <option key={session.id} value={session.id}>
+                  {session.label}
+                </option>
+              ))
+            )}
+          </select>
         </div>
         <button
           type="button"
@@ -153,6 +204,46 @@ export function SurfaceWorkspace({
         </button>
       </div>
       <div className="workspace-surface__chat-body">{chat}</div>
+    </div>
+  );
+  const tabIcon = (tabKind: WorkspaceSurfaceKind) => {
+    if (tabKind === "browser") return <Globe size={11} />;
+    if (tabKind === "memo") return <Inbox size={11} />;
+    return <FileText size={11} />;
+  };
+  const tabStrip = (
+    <div ref={tabsRef} className="workspace-surface-tabs" role="tablist">
+      {tabs.map((tab) => (
+        <div
+          key={tab.id}
+          className="workspace-surface-tab"
+          data-tab-kind={tab.kind}
+          role="tab"
+          aria-selected={tab.id === activeTabId}
+        >
+          <button
+            type="button"
+            className="workspace-surface-tab__select"
+            title={tab.title}
+            onClick={() => onSelectTab(tab.id)}
+          >
+            {tabIcon(tab.kind)}
+            <span>{tab.title}</span>
+            {tab.count != null && tab.count > 0 && <b>{tab.count}</b>}
+          </button>
+          {onCloseTab && (
+            <button
+              type="button"
+              className="workspace-surface-tab__close"
+              title={t("browser.surfaceCloseTab")}
+              aria-label={t("browser.surfaceCloseTab")}
+              onClick={() => onCloseTab(tab.id)}
+            >
+              <X size={10} />
+            </button>
+          )}
+        </div>
+      ))}
     </div>
   );
   const seam = (
@@ -169,24 +260,26 @@ export function SurfaceWorkspace({
   );
 
   return (
-    <div
-      ref={rowRef}
-      className={`workspace-surface-layout is-${surfaceSide}${stacked ? " is-stacked" : ""}${effectiveWidth != null ? " is-measured" : ""}`}
-      data-surface-kind={kind}
-    >
-      {surfaceSide === "left" ? (
-        <>
-          {surfaceNode}
-          {seam}
-          {chatNode}
-        </>
-      ) : (
-        <>
-          {chatNode}
-          {seam}
-          {surfaceNode}
-        </>
-      )}
+    <div className="workspace-surface-shell" data-surface-kind={kind}>
+      {tabStrip}
+      <div
+        ref={rowRef}
+        className={`workspace-surface-layout is-${surfaceSide}${stacked ? " is-stacked" : ""}${effectiveWidth != null ? " is-measured" : ""}`}
+      >
+        {surfaceSide === "left" ? (
+          <>
+            {surfaceNode}
+            {seam}
+            {chatNode}
+          </>
+        ) : (
+          <>
+            {chatNode}
+            {seam}
+            {surfaceNode}
+          </>
+        )}
+      </div>
     </div>
   );
 }

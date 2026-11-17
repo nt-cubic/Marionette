@@ -113,10 +113,10 @@ Agent 在回合结束后自己续跑（它起的后台指令回来了，触发�
   目录下）在下次启动时回收，不再占着默认端口漂几个小时。
 - **可诊断性**：前端每 60 秒记一条 ui-heartbeat；测试运行不再污染真实 dev.log。
 
-## 文档标签页（2026-10-31）
+## 文档标签页（2026-11-17 并入通用 Surface）
 
-`.md` / `.markdown` / `.mdx` / `.txt` 点击后**不再弹系统默认应用**，改在 app 内开
-「文档伪标签页」（与收纳盒同款形状：中栏对话列切换、左右侧栏不动、不进分屏树）。
+`.md` / `.markdown` / `.mdx` / `.txt` 点击后在 app 内打开，使用与 Browser、Memo 相同的
+`SurfaceWorkspace`：左侧是内容，右侧复用当前会话的 SessionView + Composer。
 
 - **入口**：转录链接、交付卡、ContextPanel 改动文件行、收纳盒文件卡——四处都经
   `src/lib/openFile.ts::openInDocTabIfEligible` 分流（先照旧 resolve，命中 doc 扩展名
@@ -125,37 +125,51 @@ Agent 在回合结束后自己续跑（它起的后台指令回来了，触发�
 - **页面**（`src/components/DocPage.tsx`）：预览态复用转录 markdown 管线（math/
   mermaid/shiki/spec 卡全有，图片相对路径按文档所在目录解析）；编辑态等宽源码
   textarea；Ctrl+S 保存。保存带 **mtime 乐观锁**（`save_doc_file` 的 stale 拒绝是
-  返回值不是错误 → 确认后 force 覆盖）。文档内相对 `.md` 链接页内跳转
-  （`MarkdownBody` 的 `DocNavContext`，仅文档页提供）。
+  返回值不是错误 → 确认后 force 覆盖）。文档内相对 `.md` 链接页内跳转。
 - **引用给 agent**：选中文字（预览或编辑态）→ 引用块预填输入框（`prefillComposer`
   通道，只预填不自动发）。锚点式批注评论明确不做。
-- **对照模式**：页头「对照」按钮 → 对话左 / 文档右 + 可拖分隔条
-  （`DocCompareLayout`，自绘行不动 SplitWorkspace；宽度存 localStorage）。分屏态下
-  文档页与收纳盒一样整栏覆盖，对照按钮隐藏。
+- **并排**：打开文档即进入 Document surface，不再需要先点「与对话对照」；顶部的
+  Browser / Document / Memo 标签可切换，对话栏的下拉框可换绑另一个会话，而不关闭
+  文档。未保存草稿在切换标签/暂时回对话后仍保留；从标签关闭有未保存内容的文档会先
+  弹确认。旧的 DocCompareLayout 不再是正常入口。
 - **贴边态**：开文档 = dock 整页（`DockPage "doc"`，返回/Esc 由 dock chrome 管）。
-- Ctrl+W 优先关活跃伪标签（收纳盒 → 文档 → 会话）；命令后端在
-  `open_target.rs::read_doc_file / save_doc_file`（纯 fs，不碰 storage 锁）。
+- Ctrl+W / Ctrl+Tab / Ctrl+1..9 在 surface 内按 Browser、Document、Memo 标签工作；
+  离开 surface 后才回到会话标签的键盘语义。
 
-## 内置浏览器 Workspace Surface + agent 工具通道（2026-10-31，批次 2）
+## 内置浏览器 Workspace Surface + agent 工具通道（2026-11-17，P1–P4 收口）
 
-app 内置浏览器，agent 通过工具通道读写它。普通窗口打开浏览器后，内容区切成
-**浏览器左 + 当前 Agent 对话右**；Dock 仍用整页浏览器：
+app 内置浏览器，agent 通过工具通道读写它。普通窗口里 Browser、Document、Memo 共用
+一套 `SurfaceWorkspace`：内容在左、当前 Agent 会话在右；Dock 仍用整页浏览器。
 
-- **入口**：标签条「浏览器」chip（有标签才出现）+ Ctrl K「新建浏览器标签」+ 贴边态
-  整页。agent 的 `browser_open_tab(display:"background"|"workspace")` 默认把 tab
-  留在后台；只有 `workspace` 才进入双栏。页内有自己的迷你标签条、地址栏、reload、
-  **分享菜单**（不分享 / 可读 / 可读+可操作）。
-- **Workspace surface（2026-11-17 Codeg 对齐）**：`SurfaceWorkspace` 只负责
-  `surface + chat` 布局，Browser 是第一种 surface；浏览器默认约 62%，对话栏复用同一套
-  SessionView + Composer。分隔条可拖（浏览器 360px / 对话 320px 下限，宽度持久化），
-  内容区 <760px 自动上下堆叠。进入时 ContextPanel 收起，关闭后恢复；`browserActive`
-  不再覆盖整个中栏，原 session-only `SplitWorkspace` 树保持原样并在退出后恢复。
+- **入口**：标签条「浏览器」chip、Ctrl K「新建浏览器标签」、贴边态整页。agent 的
+  `browser_open_tab(display:"background"|"workspace")` 默认把 tab 留在后台；只有
+  `workspace` 才进入双栏。开发服务器发现默认只通知，用户可切「通知 / 自动打开 / 忽略」。
+- **共同 surface（2026-11-17 P3/P4）**：顶部的 Browser / Document / Memo 标签条在
+  child WebView2 host 之外；Browser、文档、收纳盒都复用同一套 SessionView + Composer。
+  对话栏标题旁的下拉框可换绑另一会话而不关闭内容。surface 标签支持关闭、
+  Ctrl+W、Ctrl+Tab、Ctrl+1..9；`marionette-ui-restore` 保存打开的文档、Memo 标签、
+  Browser URL 和当前绑定，冷启动按原顺序后台恢复 Browser tab（URL 只存 http(s)，凭据、敏感 query 和 hash 不落恢复快照）。
+- **运行状态（P2）**：Agent 打开的 tab 记录 `ownerSessionId`、`busy`、
+  `status: idle|running|waiting_user|failed` 与最近使用时间；并发调用用计数，避免一个
+  调用结束时把仍在工作的 tab 误报为空闲。删除会话/项目会关闭该会话拥有的 tabs，
+  用户自开的 tabs 不受影响。
+- **dev server 发现（P2）**：4 秒轮询运行中 ACP terminal 的 64KB 输出尾，去除 ANSI，
+  只接受 loopback/通配地址，并先做 TCP probe。通过后才按偏好通知或创建 workspace tab；
+  同一 origin 十分钟内不重复打扰。实现见 `src/lib/devServer.ts` 与
+  `src-tauri/src/browser/service.rs`。
+- **handoff（P4）**：`browser_handoff` 让 Agent 暂停在登录、2FA、CAPTCHA、支付确认等
+  必须由人完成的步骤。tab 进入 WAIT，应用切到来源会话并打开 Browser surface，页面与
+  对话之间显示标题、指令、origin、Continue / Deny；后台窗口同时发通知。Continue 放行，
+  Deny 作为可转述的拒绝返回工具，超时不会默认继续。
+- **Workspace 布局**：浏览器默认约 62%，对话最小 320px；seam 可拖且宽度持久化，
+  内容区 <760px 自动上下堆叠。进入时 ContextPanel 收起，关闭后恢复；原 session-only
+  `SplitWorkspace` 树不重写，surface 退出后原样恢复。
 - **授权**：agent 自开标签自动**可读**（快照/console/截图）；**点击/输入（Control）
   逐次弹权限卡**（允许一次 / 允许并记住此站点 / 拒绝，2 分钟超时自动拒绝），该会话
   开着 always-approve 则自动放行；用户自开标签读写都要手动分享。grant 绑 origin，
   跨域导航用户标签撤销、agent 标签重授读。
 - **工具通道**：主进程内嵌 localhost HTTP MCP（`tools_mcp.rs`，每会话独立 Bearer
-  token），session/new 注入 url 型条目——全 agent 通吃含 zcode。11 个 `browser_*`
+  token），session/new 注入 url 型条目——全 agent 通吃含 zcode。15 个 `browser_*`
   工具；拒绝是返回值不是报错（`browser_grant_required` 附转述话术）。
 - **aria 引擎** vendor 自 Codeg（Apache-2.0，`src-tauri/src/browser/js/`）：
   快照按元素 ref 操作（非像素坐标），只在第一次有授权读取时注入 isolated world。
@@ -169,18 +183,16 @@ app 内置浏览器，agent 通过工具通道读写它。普通窗口打开浏�
   iframe，区域扫描会把内容不完整标出来。
   「发给对话」把批注清单（选择器、aria ref——发送时重新快照解析、失效则回落选择器、
   框选内含元素）与截图路径**预填进当前对话输入框**；普通窗口直接在同屏右栏检查，
-  Dock 则回到窄条让 Composer 可见。成功后才清草稿；
-  没有真实会话先建一个。页面字段明确标为不可信数据，URL 会脱敏；导航后混有多个页面
-  时按页面分组。
+  Dock 则回到窄条让 Composer 可见。成功后才清草稿；没有真实会话先建一个。页面字段
+  明确标为不可信数据，URL 会脱敏；导航后混有多个页面时按页面分组。
   拾取是用户自己的 UI 操作，不走授权（授权只挡 agent）；agent 拿到批注后用现有
   browser_snapshot / browser_click / browser_set_value 操作。
 - **体积/内存**：不捆绑浏览器引擎（复用 WebView2 运行时，独立 profile
   `~/.marionette/browser-profiles/`）；**标签懒建**（2026-11-06：启动不再预热
   about:blank 子 webview——那会常驻一整套 WebView2 进程组；首标签走
   `create_surface` 直建，关掉标签 renderer 回收）。
-- 设计定稿见 `docs/plan-browser-workspace.md`；工具与 surface 批次边界见
-  `docs/plan-browser-computer-use.md` §6（listener pin、eval、下载接管、前进后退、
-  dev server 自动预览与 handoff 为后续批次）。
+- 设计定稿见 `docs/plan-browser-workspace.md`；用户体验对标见
+  `docs/research-browse-ux.md`。
 
 ## Computer Use（2026-10-31，批次 3）
 
