@@ -74,12 +74,41 @@ impl Gateway {
     }
 }
 
-/// 出站 HTTP agent（ureq，ring-less）：目录抓取 10s、聊天转发不设整体
-/// 超时（SSE 长流），连接 5s。
+/// 出站 HTTP agent（ureq，ring-less）：连接 5s。**TLS 必须手工接
+/// native-tls 连接器**——ureq 在 default-features=false 下 native-tls
+/// feature 不点亮 tls 总闸，裸 AgentBuilder 的 https 全部
+/// 'Unknown Scheme: no TLS backend'（2026-11-18 真机实锤，engine.rs
+/// download_agent 同款做法）。主程序构建（feature engine-rust）带
+/// Marionette 的代理设置；独立 dev bin 走环境变量兜底。
 pub fn outbound_agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(std::time::Duration::from_secs(5))
-        .build()
+    let mut builder = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(5));
+    if let Ok(connector) = ureq::native_tls::TlsConnector::new() {
+        builder = builder.tls_connector(std::sync::Arc::new(connector));
+    }
+    #[cfg(feature = "engine-rust")]
+    {
+        let config = crate::proxy::load_proxy_config();
+        if config.enabled && !config.url.trim().is_empty() {
+            if let Ok(proxy) = ureq::Proxy::new(config.url.trim()) {
+                builder = builder.proxy(proxy);
+            }
+        }
+    }
+    #[cfg(not(feature = "engine-rust"))]
+    {
+        for key in ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"] {
+            if let Ok(url) = std::env::var(key) {
+                if !url.trim().is_empty() {
+                    if let Ok(proxy) = ureq::Proxy::new(url.trim()) {
+                        builder = builder.proxy(proxy);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    builder.build()
 }
 
 /// 测试沙箱共享串行锁：quotas/presets（以及后续沙箱模块）的测试都靠
