@@ -9,6 +9,12 @@ repository = "https://github.com/nt-cubic/Marionette"
 default-run = "marionette"
 build = "build.rs"
 
+# 开发/测试二进制：进程内引擎网关的 exe 形态（合同套件驱动它验收）。
+# 不进发布产物——正式形态由 engine.rs 在主进程内拉起网关。
+[[bin]]
+name = "marionette-engine"
+path = "src/engine_gateway_bin.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
