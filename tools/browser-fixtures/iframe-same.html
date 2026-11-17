@@ -1,0 +1,14 @@
+<!doctype html>
+<!-- ego-lite manual pass fixture 7/10: same-origin iframe. Known state:
+     the aria snapshot covers the main frame only (the vendored engine does
+     not traverse frames) — this page documents what the agent sees. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Fixture · Same-origin iframe</title></head>
+<body>
+  <h1>Same-origin iframe</h1>
+  <iframe id="frame" src="basic-form.html" width="420" height="220" title="embedded form"></iframe>
+  <p>The snapshot shows this page's heading and the iframe element itself;
+     the form inside is out of snapshot reach until the engine grows frame
+     traversal.</p>
+</body>
+</html>

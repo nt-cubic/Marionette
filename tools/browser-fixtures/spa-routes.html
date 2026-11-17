@@ -1,0 +1,22 @@
+<!doctype html>
+<!-- ego-lite manual pass fixture 4/10: same-document routing — pushState,
+     hash change and history.back must stale the snapshot's generation. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Fixture · SPA routes</title></head>
+<body>
+  <h1>SPA routes</h1>
+  <button id="push" type="button">pushState /two</button>
+  <button id="hash" type="button">hash #section</button>
+  <button id="back" type="button">history.back</button>
+  <p id="route">/</p>
+  <script>
+    const show = () => { document.getElementById("route").textContent = location.pathname + location.hash; };
+    document.getElementById("push").addEventListener("click", () => { history.pushState({}, "", "/two"); show(); });
+    document.getElementById("hash").addEventListener("click", () => { location.hash = "section"; });
+    document.getElementById("back").addEventListener("click", () => history.back());
+    addEventListener("popstate", show);
+    addEventListener("hashchange", show);
+    show();
+  </script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+<!doctype html>
+<!-- ego-lite manual pass fixture 8/10: cross-origin (OOPIF) iframe. Out of
+     scope by design — the picker can only select the top-level iframe box. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Fixture · Cross-origin iframe</title></head>
+<body>
+  <h1>Cross-origin iframe</h1>
+  <!-- example.test never resolves; the frame shows a net error, which is
+       fine — the point is that it is a separate origin. -->
+  <iframe id="cross" src="https://example.test/embedded" width="420" height="220" title="cross origin"></iframe>
+  <p>The picker selects only the iframe box; its contents are never named
+     by a ref.</p>
+</body>
+</html>

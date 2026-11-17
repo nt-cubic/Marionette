@@ -1,0 +1,18 @@
+<!doctype html>
+<!-- ego-lite manual pass fixture 9/10: popups and a same-page download.
+     Marionette denies window.open by default and routes it to a new tab. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Fixture · Popup and download</title></head>
+<body>
+  <h1>Popup and download</h1>
+  <button id="popup" type="button">window.open</button>
+  <a id="download" href="data:text/plain,fixture%20download%20body" download="fixture.txt">download a text file</a>
+  <p id="log"></p>
+  <script>
+    document.getElementById("popup").addEventListener("click", () => {
+      const win = window.open("about:blank", "_blank");
+      document.getElementById("log").textContent = win ? "popup opened" : "popup blocked";
+    });
+  </script>
+</body>
+</html>

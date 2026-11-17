@@ -1,0 +1,25 @@
+<!doctype html>
+<!-- ego-lite manual pass fixture 3/10: pointer interception — the overlay
+     covers the button, so a blind coordinate click hits the overlay. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Fixture · Overlay</title>
+<style>
+  #cover { position: fixed; inset: 0; background: rgba(20,20,20,.35); z-index: 9; }
+  #target { position: fixed; top: 40vh; left: 40vw; padding: 12px 24px; }
+</style></head>
+<body>
+  <h1>Overlay</h1>
+  <button id="target" type="button">Under the overlay</button>
+  <button id="uncover" type="button" style="position:fixed;top:8px;left:8px;z-index:10">Remove overlay</button>
+  <div id="cover"></div>
+  <script>
+    document.getElementById("target").addEventListener("click", () => {
+      document.getElementById("cover").remove();
+      document.getElementById("target").textContent = "clicked!";
+    });
+    document.getElementById("uncover").addEventListener("click", () => {
+      document.getElementById("cover").remove();
+    });
+  </script>
+</body>
+</html>

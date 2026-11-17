@@ -1,0 +1,24 @@
+<!doctype html>
+<!-- ego-lite manual pass fixture 2/10: late rendering — wait_for must beat
+     a 500ms reveal, a never-appearing element must time out honestly. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Fixture · Late render</title></head>
+<body>
+  <h1>Late render</h1>
+  <button id="reveal" type="button">Reveal</button>
+  <button id="late" type="button" hidden style="display:none">Late button</button>
+  <button id="ghost" type="button" hidden style="display:none">Never shows</button>
+  <p id="status"></p>
+  <script>
+    document.getElementById("reveal").addEventListener("click", () => {
+      document.getElementById("status").textContent = "loading…";
+      setTimeout(() => {
+        const late = document.getElementById("late");
+        late.hidden = false;
+        late.style.display = "";
+        document.getElementById("status").textContent = "ready";
+      }, 500);
+    });
+  </script>
+</body>
+</html>

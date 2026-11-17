@@ -8,8 +8,10 @@
 //! **same** grant checks as the toolbar, never a second set.
 
 pub mod agent;
+pub mod batch;
 pub mod pick;
 pub mod probe;
+pub mod ref_lease;
 pub mod service;
 #[cfg(target_os = "windows")]
 pub mod surface;

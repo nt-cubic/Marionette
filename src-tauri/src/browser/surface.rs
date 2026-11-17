@@ -43,6 +43,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 
 use super::agent::{self, SnapshotRequest};
 use super::pick;
+use super::ref_lease::{self, LeaseDeath, RefLease};
 
 /// Isolated world name + binding — must match the vendored bundle (js/VENDOR.md).
 pub const WORLD_NAME: &str = "codeg";
@@ -161,6 +162,51 @@ pub struct TabInfo {
     pub last_used_at_ms: u64,
 }
 
+/// A page script dialog awaiting an answer. `message` is page-controlled
+/// text and stays capped — it feeds error notes and tool answers, never a
+/// UI layout.
+#[derive(Debug, PartialEq, Clone)]
+pub struct PendingDialog {
+    pub kind: String,
+    pub message: String,
+    pub at_ms: u64,
+}
+
+const DIALOG_MESSAGE_MAX_CHARS: usize = 200;
+
+/// Pure form of the event parse — the CDP payload for
+/// `Page.javascriptDialogOpening` is `{message, type}`.
+fn dialog_from_event(value: &Value, at_ms: u64) -> Option<PendingDialog> {
+    let kind = value["type"].as_str()?;
+    if kind.is_empty() {
+        return None;
+    }
+    let message: String = value["message"]
+        .as_str()
+        .unwrap_or("")
+        .chars()
+        .take(DIALOG_MESSAGE_MAX_CHARS)
+        .collect();
+    Some(PendingDialog {
+        kind: kind.to_string(),
+        message,
+        at_ms,
+    })
+}
+
+/// Why a renderer-bound eval must not run while a dialog blocks the page.
+/// `None` = free to eval. The note tells the model both exits: the
+/// `browser_dialog` tool, or the user clicking the default dialog.
+fn dialog_block_note_for(dialog: Option<&PendingDialog>) -> Option<String> {
+    let dialog = dialog?;
+    Some(format!(
+        "dialog_blocked: the page has an open {} dialog ({:?}) — an eval would hang until it is \
+         answered. Resolve it with browser_dialog (accept/dismiss), or the user can answer the \
+         visible dialog; if they already did, browser_dialog reports it and clears this state.",
+        dialog.kind, dialog.message
+    ))
+}
+
 pub struct Surface {
     pub id: String,
     pub opened_by_agent: Cell<bool>,
@@ -197,6 +243,18 @@ pub struct Surface {
     /// it after the event. Cleared on navigation: the rects describe a dead
     /// page then.
     picks: RefCell<VecDeque<(String, Value)>>,
+    /// Host-side ref lease (`ref_lease.rs`): the generation the last snapshot
+    /// answered with, and what killed the ones before it. The page stays the
+    /// only judge of ref freshness; this only short-answers deaths the host
+    /// witnessed and annotates action responses.
+    ref_lease: RefCell<Option<RefLease>>,
+    /// A script dialog (alert/confirm/prompt/beforeunload) the page opened
+    /// and nobody has answered yet. The WebView2 default dialog is still
+    /// shown to the user; this mirror exists so renderer-bound evals can
+    /// fail fast instead of hanging until someone clicks (a blocked renderer
+    /// hangs `Runtime.evaluate`, and the caller holds the process-wide CDP
+    /// lease while it pumps). See `dialog_block_note_for`.
+    dialog: RefCell<Option<PendingDialog>>,
     console: RefCell<VecDeque<ConsoleLine>>,
     pub(crate) url: RefCell<String>,
     title: RefCell<String>,
@@ -383,6 +441,14 @@ fn on_cdp_event(key: usize, event: &str, parameter_json: &str) {
             let url = frame["url"].as_str().unwrap_or("").to_string();
             apply_document_navigation(&surface, url, None);
             emit_tabs(&surface.app);
+        }
+        "Page.javascriptDialogOpening" => {
+            // Zero CDP: events can arrive inside another call's pump. State
+            // only — the agent sees it through the fast-fail notes and
+            // resolves via browser_dialog; the user sees the default dialog.
+            if let Some(dialog) = dialog_from_event(&value, now_ms()) {
+                *surface.dialog.borrow_mut() = Some(dialog);
+            }
         }
         "Runtime.consoleAPICalled" => {
             let level = value["type"].as_str().unwrap_or("log").to_string();
@@ -579,6 +645,10 @@ pub fn apply_document_navigation(surface: &Surface, url: String, title: Option<S
     let origin = url_origin(&url);
     surface.console.borrow_mut().clear();
     surface.nav_epoch.set(surface.nav_epoch.get() + 1);
+    lease_invalidate(surface, LeaseDeath::DocumentNavigation);
+    // A dialog blocks the old document's renderer; whatever happens to it,
+    // the new document opens with a clean gate.
+    *surface.dialog.borrow_mut() = None;
     surface.world_ctx.set(None); // new document, new contexts
     // The overlay and its state died with the old document (the doc-start
     // script re-registers passively; it does not start itself). Retained pick
@@ -601,6 +671,7 @@ fn apply_route_navigation(surface: &Surface, url: String, title: Option<String>)
     }
     let origin = url_origin(&url);
     surface.nav_epoch.set(surface.nav_epoch.get() + 1);
+    lease_invalidate(surface, LeaseDeath::RouteNavigation);
     apply_origin_and_title(surface, &url, origin, title);
 }
 
@@ -636,6 +707,9 @@ fn install_world(webview2: &ICoreWebView2, key: usize) -> Result<(), String> {
         "Page.frameNavigated",
         "Runtime.consoleAPICalled",
         "Runtime.exceptionThrown",
+        // Script-dialog mirror for the fast-fail gate; resolution rides
+        // Page.handleJavaScriptDialog inside `resolve_dialog`, never here.
+        "Page.javascriptDialogOpening",
     ] {
         subscribe(webview2, key, event)?;
     }
@@ -756,6 +830,9 @@ fn parse_world_answer(raw: &str) -> Result<WorldAnswer, String> {
 /// Evaluate an expression in the agent world and return its value verbatim.
 /// Callers must not hold the surfaces borrow (the wait pumps).
 fn evaluate_in_world_raw(surface: &Surface, expression: &str) -> Result<String, String> {
+    if let Some(note) = dialog_block_note_for(surface.dialog.borrow().as_ref()) {
+        return Err(note);
+    }
     let webview2 = surface.webview.webview();
     let context = world_context(surface, &webview2)?;
     let answer = call_and_wait(
@@ -845,7 +922,51 @@ pub fn snapshot(surface: &Surface, request: &SnapshotRequest) -> Result<Value, S
     let _lease = CdpLease::take()?;
     let value = snapshot_inner(surface, request)?;
     surface.generation.set(surface.generation.get() + 1);
+    lease_adopt(surface, &value, LeaseDeath::SupersededBySnapshot);
     Ok(value)
+}
+
+// ---------------------------------------------------------------------------
+// Ref lease glue (see ref_lease.rs for the contract: the page engine is the
+// only judge of freshness; the host only answers deaths it witnessed).
+// ---------------------------------------------------------------------------
+
+/// Fold a fresh snapshot answer into the lease. The answer carries the
+/// world's four-segment generation (`pick::generation_from_snapshot`
+/// validates the shape); an answer without one leaves the lease untouched —
+/// the page stays the only judge, which is the fail-open direction.
+fn lease_adopt(surface: &Surface, snapshot: &Value, replaced: LeaseDeath) {
+    if !ref_lease::enabled() {
+        return;
+    }
+    let Some(token) = pick::generation_from_snapshot(snapshot) else {
+        return;
+    };
+    let at = now_ms();
+    let mut lease = surface.ref_lease.borrow_mut();
+    *lease = Some(RefLease::adopt(token, surface.nav_epoch.get(), at, replaced, lease.as_ref()));
+}
+
+/// Mark the lease dead for a cause the host witnessed (both navigation
+/// paths call this). First cause wins; a lease already dead keeps its
+/// earlier, truer reason.
+fn lease_invalidate(surface: &Surface, death: LeaseDeath) {
+    if !ref_lease::enabled() {
+        return;
+    }
+    if let Some(lease) = surface.ref_lease.borrow_mut().as_mut() {
+        lease.invalidate(death);
+    }
+}
+
+/// Pre-lease host behavior bumped the generation half of the epoch after
+/// every action. The world never read that bump as invalidation — its
+/// refsToken only moves on a new snapshot, and the host never compared the
+/// model's token against its counter — so with the lease on the epoch stays
+/// stable and one snapshot serves any number of consecutive actions.
+/// `MARIONETTE_BROWSER_REF_LEASE=0` restores the old bump exactly.
+fn bump_generation_after_act() -> bool {
+    !ref_lease::enabled()
 }
 
 /// Lease-free core of `snapshot` — the caller holds the lease. The returned
@@ -877,12 +998,24 @@ fn snapshot_inner(surface: &Surface, request: &SnapshotRequest) -> Result<Value,
 
 /// Perform one action (click/hover/type/press/select) by element ref.
 pub fn act(surface: &Surface, request: &agent::ActionRequest) -> Result<Value, String> {
+    // A generation the host knows is dead answers here — no world install,
+    // no CDP round trip, and the reason says what actually killed it.
+    if let Some(answer) = ref_lease::fast_refusal(
+        &surface.ref_lease,
+        &surface.url.borrow(),
+        &request.generation,
+    ) {
+        return Ok(answer);
+    }
     let _lease = CdpLease::take()?;
     ensure_world(surface)?;
     let expression = agent::act_call(request);
     match parse_world_answer(&evaluate_in_world_raw(surface, &expression)?)? {
-        WorldAnswer::Json(value) => {
-            surface.generation.set(surface.generation.get() + 1);
+        WorldAnswer::Json(mut value) => {
+            if bump_generation_after_act() {
+                surface.generation.set(surface.generation.get() + 1);
+            }
+            ref_lease::note_action(&surface.ref_lease, &request.generation, &mut value, now_ms());
             Ok(value)
         }
         WorldAnswer::Absent => Err(
@@ -906,14 +1039,72 @@ pub fn probe(surface: &Surface, expression: &str) -> Result<Value, String> {
 
 /// Write one control by ref, through the page probe (Control level; the
 /// caller does the grant check). Goes through `probe`'s lease, so it cannot
-/// overlap a snapshot.
+/// overlap a snapshot. Same ref-lease treatment as `act`: known-dead
+/// generations answer from the lease, successes say the generation is
+/// still good.
 pub fn set_control_value(
     surface: &Surface,
     generation: &str,
     target: &str,
     value: &Value,
 ) -> Result<Value, String> {
-    probe(surface, &crate::browser::probe::set_value_call(generation, target, value))
+    if let Some(answer) =
+        ref_lease::fast_refusal(&surface.ref_lease, &surface.url.borrow(), generation)
+    {
+        return Ok(answer);
+    }
+    let mut answer =
+        probe(surface, &crate::browser::probe::set_value_call(generation, target, value))?;
+    ref_lease::note_action(&surface.ref_lease, generation, &mut answer, now_ms());
+    Ok(answer)
+}
+
+/// Answer a page script dialog (browser_dialog tool; Control level — the
+/// caller does the grant check). This is the one CDP call allowed while the
+/// gate is up: `Page.handleJavaScriptDialog` is browser-process level and
+/// needs no renderer cooperation.
+///
+/// An absent dialog answers `present:false` honestly AND clears any stale
+/// mirror — that is the recovery path when the user already answered the
+/// default dialog themselves. Never auto-accepts anything: `accept` is the
+/// agent's explicit choice (or the user's, via the native dialog).
+pub fn resolve_dialog(surface: &Surface, accept: bool, prompt_text: Option<&str>) -> Result<Value, String> {
+    let pending = surface.dialog.borrow().as_ref().map(|d| (d.kind.clone(), d.message.clone()));
+    let Some((kind, message)) = pending else {
+        *surface.dialog.borrow_mut() = None;
+        return Ok(json!({
+            "present": false,
+            "note": "no script dialog is open on this page (or the user already answered it)",
+        }));
+    };
+    let _lease = CdpLease::take()?;
+    let webview2 = surface.webview.webview();
+    let mut params = json!({ "accept": accept });
+    if let Some(text) = prompt_text {
+        params["promptText"] = json!(text);
+    }
+    let answer = call_and_wait(&webview2, "Page.handleJavaScriptDialog", &params.to_string());
+    match answer {
+        Ok(raw) => {
+            let parsed: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
+            if parsed.get("error").is_some() {
+                // "No dialog is showing" and friends: the mirror lied (the
+                // user clicked first). Clear it and say so.
+                *surface.dialog.borrow_mut() = None;
+                return Ok(json!({
+                    "present": false,
+                    "note": "the dialog is already gone — the user likely answered the visible dialog",
+                    "detail": parsed,
+                }));
+            }
+            *surface.dialog.borrow_mut() = None;
+            Ok(json!({ "present": true, "kind": kind, "message": message, "accepted": accept }))
+        }
+        // Transport-level failure: leave the mirror up (the dialog may
+        // genuinely still block the page); the agent can retry or the user
+        // can answer the native dialog.
+        Err(error) => Err(format!("dialog resolve failed: {error}")),
+    }
 }
 
 /// Console tail, newest last. A `missing` count tells the caller the ring
@@ -1137,6 +1328,11 @@ pub fn pick_resolve(surface: &Surface) -> Result<Value, String> {
         max_chars: PICK_RESOLVE_MAX_CHARS,
     })?;
     surface.generation.set(surface.generation.get() + 1);
+    // The hidden full snapshot above replaced the world's refs — the agent's
+    // token for the previous snapshot dies of it. Adopt this snapshot's
+    // token with that cause, so the next action against the old one answers
+    // "user_annotation" instead of the page's misleading truncation prose.
+    lease_adopt(surface, &snapshot, LeaseDeath::UserAnnotation);
     let generation = pick::generation_from_snapshot(&snapshot)
         .ok_or("the snapshot did not name a usable generation")?;
     let refs = match parse_world_answer(&evaluate_in_world_raw(
@@ -1397,6 +1593,8 @@ fn build_surface(
         generation: Cell::new(0),
         picker_active: Cell::new(false),
         picks: RefCell::new(VecDeque::new()),
+        ref_lease: RefCell::new(None),
+        dialog: RefCell::new(None),
         console: RefCell::new(VecDeque::new()),
         url: RefCell::new(url.clone()),
         title: RefCell::new(String::new()),
@@ -1509,8 +1707,9 @@ pub fn find_surface(tab_id: &str) -> Option<Rc<Surface>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_nav_state, nav_state_fields, normalize_url, parse_world_answer, url_origin,
-        CdpLease, GrantLevel, NavStateChange, WorldAnswer,
+        classify_nav_state, dialog_block_note_for, dialog_from_event, nav_state_fields,
+        normalize_url, parse_world_answer, url_origin, CdpLease, GrantLevel, NavStateChange,
+        PendingDialog, WorldAnswer, DIALOG_MESSAGE_MAX_CHARS,
     };
     use serde_json::json;
 
@@ -1610,5 +1809,47 @@ mod tests {
         drop(first);
         let third = CdpLease::take();
         assert!(third.is_ok(), "the lease must free when the call ends");
+    }
+
+    // The default (flag unset) is lease-on: actions keep the epoch stable so
+    // one snapshot serves consecutive actions. MARIONETTE_BROWSER_REF_LEASE=0
+    // is the documented rollback to the per-action bump.
+    #[test]
+    fn actions_do_not_bump_the_generation_by_default() {
+        assert!(!super::bump_generation_after_act());
+        assert!(super::ref_lease::enabled());
+    }
+
+    // The dialog event payload is page-controlled: parsed defensively, the
+    // message capped, an empty type refused.
+    #[test]
+    fn dialog_event_parses_defensively() {
+        let dialog = dialog_from_event(
+            &json!({ "type": "confirm", "message": "Delete all files?" }),
+            1234,
+        )
+        .unwrap();
+        assert_eq!(dialog.kind, "confirm");
+        assert_eq!(dialog.message, "Delete all files?");
+        assert_eq!(dialog.at_ms, 1234);
+        assert_eq!(dialog_from_event(&json!({ "message": "no type" }), 0), None);
+        let flood = dialog_from_event(&json!({ "type": "alert", "message": "x".repeat(500) }), 0).unwrap();
+        assert!(flood.message.chars().count() <= DIALOG_MESSAGE_MAX_CHARS);
+    }
+
+    // While a dialog blocks the renderer, evals must fast-fail with the two
+    // recovery paths named — never hang inside the CDP lease.
+    #[test]
+    fn dialog_gate_names_the_exits_and_stays_silent_when_clear() {
+        let dialog = PendingDialog {
+            kind: "prompt".to_string(),
+            message: "Your token".to_string(),
+            at_ms: 0,
+        };
+        let note = dialog_block_note_for(Some(&dialog)).unwrap();
+        assert!(note.starts_with("dialog_blocked:"), "{note}");
+        assert!(note.contains("browser_dialog"), "{note}");
+        assert!(note.contains("user"), "{note}");
+        assert!(dialog_block_note_for(None).is_none());
     }
 }

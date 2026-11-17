@@ -1,0 +1,20 @@
+<!doctype html>
+<!-- ego-lite manual pass fixture 6/10: script dialogs — nothing may be
+     answered automatically; browser_dialog and the visible default dialog
+     are the only two answers. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Fixture · Dialogs</title></head>
+<body>
+  <h1>Dialogs</h1>
+  <button id="alert" type="button">alert()</button>
+  <button id="confirm" type="button">confirm()</button>
+  <button id="prompt" type="button">prompt()</button>
+  <p id="log"></p>
+  <script>
+    const log = (text) => { document.getElementById("log").textContent = text; };
+    document.getElementById("alert").addEventListener("click", () => { alert("An alert"); log("alert closed"); });
+    document.getElementById("confirm").addEventListener("click", () => { log(`confirm → ${confirm("Go ahead?")}`); });
+    document.getElementById("prompt").addEventListener("click", () => { log(`prompt → ${prompt("Your name?", "Ada")}`); });
+  </script>
+</body>
+</html>

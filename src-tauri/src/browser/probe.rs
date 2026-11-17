@@ -61,6 +61,17 @@ pub fn set_value_call(generation: &str, target: &str, value: &Value) -> String {
     )))
 }
 
+/// One poll of `refState` — the wait condition for `browser_wait_for` and
+/// batch waitForSelector steps. `{found, connected, visible}`: the bundle's
+/// `elementForRef` is the freshness judge; this classifies its answer.
+pub fn wait_ref_state_call(generation: &str, target: &str) -> String {
+    let generation = serde_json::to_string(generation).unwrap_or_else(|_| "\"\"".to_string());
+    let target = serde_json::to_string(target).unwrap_or_else(|_| "\"\"".to_string());
+    stringify(&call(&format!(
+        "globalThis.{PROBE_GLOBAL}.refState({generation}, {target})"
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,5 +112,16 @@ mod tests {
         // A blank include_str would compile; this keeps the wiring honest.
         assert!(PROBE_JS.contains("__marionetteProbe"));
         assert!(PROBE_JS.contains("MutationObserver"));
+        // The wait condition ships with the script it polls.
+        assert!(PROBE_JS.contains("function refState"));
+    }
+
+    #[test]
+    fn wait_ref_state_quotes_generation_and_ref() {
+        let expression = wait_ref_state_call("G.7.3.2", "e12");
+        assert!(expression.contains("refState(\"G.7.3.2\", \"e12\")"), "{expression}");
+        // A quote in the ref cannot escape into the expression.
+        let sneaky = wait_ref_state_call("G.1.1.1.1", "e12\"); globalThis.evil();//");
+        assert!(sneaky.contains("refState(\"G.1.1.1.1\", \"e12\\\"); globalThis.evil();//\")"));
     }
 }

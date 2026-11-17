@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{OnceLock, RwLock};
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -258,9 +259,21 @@ fn tool_schemas() -> Value {
         })
     }
     let tab_id = || json!({ "type": "string", "description": "Browser tab id from browser_list_tabs / browser_open_tab." });
-    let generation = || json!({ "type": "string", "description": "The `generation` value from the snapshot this ref came from; a stale one is refused." });
+    let generation = || json!({ "type": "string", "description": "The `generation` value from the snapshot these refs came from. One generation covers any number of consecutive actions — reuse it until an action answers stale or the page navigates, then take a new snapshot." });
     let element_ref = || json!({ "type": "string", "description": "Element ref from the snapshot tree (e.g. \"e12\"). Click by ref, not by pixel." });
     json!([
+        tool(
+            "browser_help",
+            "How the browser tools fit together: observation economy (cheap probes before snapshots), reusing one snapshot's generation across many actions, grants, handoff, tab ownership. Optional `topic` deep-dives; default overview.",
+            &[],
+            json!({
+                "topic": {
+                    "type": "string",
+                    "enum": ["overview", "refs", "snapshot", "actions", "tabs", "handoff"],
+                    "description": "Optional deep dive; default overview."
+                }
+            })
+        ),
         tool(
             "browser_list_tabs",
             "List the browser tabs open in Marionette's built-in browser, including stable id, owner session, pinned, busy, status, last use and sharing state (none / read / control).",
@@ -317,7 +330,7 @@ fn tool_schemas() -> Value {
         ),
         tool(
             "browser_snapshot",
-            "Read a page as an accessibility tree (roles, names, refs). Click/type act on the refs, not pixels. Truncated trees invite a narrower `maxChars` follow-up.",
+            "Read a page as an accessibility tree (roles, names, refs). Click/type act on the refs, not pixels. Truncated trees invite a narrower `maxChars` follow-up. Cheap first: browser_page_state's `seq` tells you whether anything moved since your last look — snapshot when you need to find elements, not to detect change.",
             &["tabId"],
             json!({
                 "tabId": tab_id(),
@@ -352,6 +365,43 @@ fn tool_schemas() -> Value {
             json!({
                 "tabId": tab_id(),
                 "maxWidth": { "type": "integer", "description": "Long-edge cap in px; default 1568." },
+            })
+        ),
+        tool(
+            "browser_wait_for",
+            "Wait until a snapshot ref reaches a state (attached/visible/hidden/detached) or the timeout expires — never sleep-and-retry with snapshots. Returns the observed state; on timeout names what was actually seen (not_found means the ref no longer matches the page — take a new snapshot).",
+            &["tabId", "generation", "ref"],
+            json!({
+                "tabId": tab_id(),
+                "generation": generation(),
+                "ref": element_ref(),
+                "state": {
+                    "type": "string",
+                    "enum": ["attached", "visible", "hidden", "detached"],
+                    "default": "visible",
+                    "description": "hidden = present in the DOM but not visible; detached = removed from it."
+                },
+                "timeoutMs": { "type": "integer", "description": "Hard deadline; default 3000, max 15000." }
+            })
+        ),
+        tool(
+            "browser_wait_for_load_state",
+            "Wait for the document to reach domcontentloaded or load. Use after a navigation you caused instead of guessing a fixed sleep.",
+            &["tabId"],
+            json!({
+                "tabId": tab_id(),
+                "state": { "type": "string", "enum": ["domcontentloaded", "load"], "default": "load" },
+                "timeoutMs": { "type": "integer", "description": "Hard deadline; default 5000, max 30000." }
+            })
+        ),
+        tool(
+            "browser_dialog",
+            "Answer a page script dialog (alert/confirm/prompt/beforeunload). The default dialog is also visible to the user — they may answer it first, in which case this reports that honestly. While a dialog is open, other page calls fail fast with dialog_blocked instead of hanging. Control level.",
+            &["tabId", "accept"],
+            json!({
+                "tabId": tab_id(),
+                "accept": { "type": "boolean", "description": "true accepts (with promptText for a prompt), false dismisses. Nothing is answered automatically." },
+                "promptText": { "type": "string", "description": "Text for an accepted prompt()." }
             })
         ),
         tool(
@@ -393,6 +443,23 @@ fn tool_schemas() -> Value {
                 "generation": generation(),
                 "ref": element_ref(),
                 "value": { "description": "String for a text field, boolean for a checkbox/radio, string or array of strings for a <select>." },
+            })
+        ),
+        tool(
+            "browser_batch",
+            "Run a short chain of typed steps against one snapshot's generation in a single call — a form fill, a menu walk, click-then-wait. Closed op set (click/hover/type/setValue/pressKey/selectOption/waitForSelector/waitForLoadState/pageState/pageReady/snapshot); no scripting, no navigation. Each Control step still asks its own permission; a refusal stops the batch. Steps run in order and stop at the first failure unless stopOnError=false. A snapshot step is only allowed as the final step (it replaces the refs).",
+            &["tabId", "generation", "steps"],
+            json!({
+                "tabId": tab_id(),
+                "generation": generation(),
+                "steps": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 32,
+                    "description": "Steps in order, e.g. {\"op\":\"waitForSelector\",\"ref\":\"e12\",\"state\":\"visible\"}, {\"op\":\"click\",\"ref\":\"e12\"}, {\"op\":\"setValue\",\"ref\":\"e18\",\"value\":\"a@b.c\"}, {\"op\":\"pressKey\",\"key\":\"Enter\"}, {\"op\":\"waitForLoadState\",\"state\":\"domcontentloaded\"}.",
+                    "items": { "type": "object", "properties": { "op": { "type": "string" } }, "required": ["op"] }
+                },
+                "stopOnError": { "type": "boolean", "default": true, "description": "false keeps going after a failed step (a permission refusal always stops)." }
             })
         ),
         tool(
@@ -507,8 +574,349 @@ fn tool_schemas_for_session(session_id: &str) -> Value {
 }
 
 // ---------------------------------------------------------------------------
+// browser_help — the runtime guide, generated from the schema table so the
+// agent reads what this build actually ships, never a second hand-written
+// manual that can drift. Topics for unshipped capabilities (waits, batch)
+// are deliberately absent; the tests pin coverage both ways.
+// ---------------------------------------------------------------------------
+
+pub const HELP_TOPICS: &[&str] = &[
+    "overview", "refs", "snapshot", "actions", "tabs", "handoff", "waits", "batch",
+];
+
+const HELP_OVERVIEW: &str = "Marionette's browser tools in one breath. Open tabs with browser_open_tab (background by default; display \"workspace\" only for a web app preview the user asked you to build or revise). Observe cheaply first: browser_page_state's `seq` counter answers \"did anything change\" for a few hundred bytes, and browser_page_ready answers \"is it settled\"; browser_snapshot only when you need to find elements to act on; browser_screenshot only for visual or layout questions. Reach the goal and stop — do not re-observe a result a tool already reported. When an action fails, read the page state before retrying, and never open a new tab to escape a stuck one. Reads need the tab shared at read level; actions ask the user unless already allowed. browser_handoff pauses for steps only the human can do (sign-in, 2FA, CAPTCHA, payment confirmation).";
+
+const HELP_REFS: &str = "Refs and generations. A snapshot returns a `generation` string and a tree of refs (e12-style). One generation covers any number of consecutive actions — click, type, select, press in any order, reusing the same generation; successful actions echo it with generationStillValid: true. Every action re-validates the page and answers {\"ok\":false,\"error\":\"stale\"} the moment the document, the route or the target element moved; take a new snapshot only then, or after a navigation you caused. A stale answer may carry a `reason`: document_navigation, route_navigation, user_annotation (the user's annotate flow re-snapshotted the tab — expected, just re-snapshot), stale_answer, superseded_by_snapshot. Truncation cuts refs too: a tree trimmed by maxChars does not name elements beyond the cut — re-snapshot with a larger maxChars when the element you need was cut.";
+
+const HELP_SNAPSHOT: &str = "When and how to snapshot. Snapshot to find elements to act on — not to detect change (browser_page_state's `seq` does that for far less) and not to judge appearance (browser_screenshot). Reuse the returned `generation` for every action that follows; re-snapshot only after a stale answer or a navigation. `maxChars` caps the rendered tree (default 40000); truncated: true means the tree was cut and refs beyond the cut are not usable — narrow to the region you need or raise maxChars. The snapshot reads; it never clicks anything.";
+
+const HELP_ACTIONS: &str = "Acting on the page. Actions are Control level: the user approves per tab (a permission card) unless they shared control or put your session in always-approve; a refusal is a value, not an error — say what you wanted and wait. Act by ref from a snapshot, never by pixel. browser_type replaces a field's text (submit: true presses Enter after); browser_set_value writes a control's value directly — a boolean for a checkbox or radio, a string or array for a select — and fires the events the page's framework expects; browser_press_key works on whatever has focus when no ref is given. ok: true is a receipt that the input was delivered, not that the business goal succeeded — confirm outcomes with browser_page_state, the URL, or a fresh look at the page.";
+
+const HELP_TABS: &str = "Tabs and ownership. browser_open_tab returns a tab id; passing a stable `id` (a lowercase slug) makes reopening return the same tab without navigating, and named tabs are never closed by idle cleanup. Tabs you opened can be closed with browser_close_tab; user-owned, claimed or pinned tabs are left open and reported back. Plain agent tabs idle long enough are cleaned up automatically — name or pin a tab that must survive. List everything (owner, busy, status, sharing level) with browser_list_tabs. Don't open a new tab to work around a stuck page — diagnose the tab you have.";
+
+const HELP_HANDOFF: &str = "Handing a step to the human. browser_handoff pauses your turn and shows the user one concrete instruction in the page — signing in, completing 2FA or a CAPTCHA, confirming a payment, or checking something only they can see. It blocks until they click Continue, decline, or the timeout (default 120s). Use it only when the human must act; for your own actions go through the normal approval flow. After a Continue the page may have changed completely — take a fresh snapshot before acting further.";
+
+const HELP_WAITS: &str = "Waiting instead of guessing. browser_wait_for polls a snapshot ref until it is attached, visible, hidden or detached — use it after a click that reveals something (a menu, a spinner, a row), never sleep-and-retry with fresh snapshots. browser_wait_for_load_state waits for domcontentloaded or load after a navigation. Every wait has a hard deadline (defaults 3000/5000ms; raise timeoutMs for genuinely slow pages, cap 15000/30000). A timeout is an observation, not a failure to retry blindly: the answer names what was actually seen — not_found means the ref no longer matches the page (take a new snapshot), a still-hidden state means look at why. When a page opens alert/confirm/prompt, other page calls fail fast with dialog_blocked instead of hanging; answer with browser_dialog (accept/dismiss, promptText for prompts — nothing is ever answered automatically) or let the user click the visible dialog; browser_dialog reports honestly when they already did.";
+
+const HELP_BATCH: &str = "browser_batch chains typed steps against one snapshot's generation in a single call: a form fill is waitForSelector, click, setValue, pressKey, waitForLoadState instead of five round trips. The op set is closed (click, hover, type, setValue, pressKey, selectOption, waitForSelector, waitForLoadState, pageState, pageReady, snapshot) — no scripting, no evaluate, no navigation. Rules that keep it safe: at most 32 steps; steps run strictly in order; every Control step still asks its own permission and a refusal stops the batch; a failed step stops it too unless stopOnError=false; a snapshot step may only be last (it replaces the refs every later ref-based step relies on); if the page navigates mid-batch, later ref steps fail stale and stop. Each step's audit record lands in the result (index, op, ok, error) plus a final page state and the still-valid generation.";
+
+/// Answer `browser_help`. The tool list is generated from `tool_schemas()`
+/// (single source of truth); each topic narrows it to the tools its prose is
+/// about. Unknown topics are errors — help must not guess.
+fn help_payload(topic: &str) -> Result<Value, String> {
+    let (text, related): (&str, &[&str]) = match topic {
+        "overview" => (HELP_OVERVIEW, &[]), // empty = every browser tool
+        "refs" => (
+            HELP_REFS,
+            &[
+                "browser_snapshot",
+                "browser_click",
+                "browser_hover",
+                "browser_type",
+                "browser_press_key",
+                "browser_select_option",
+                "browser_set_value",
+            ],
+        ),
+        "snapshot" => (
+            HELP_SNAPSHOT,
+            &[
+                "browser_snapshot",
+                "browser_page_state",
+                "browser_page_ready",
+                "browser_screenshot",
+            ],
+        ),
+        "actions" => (
+            HELP_ACTIONS,
+            &[
+                "browser_click",
+                "browser_hover",
+                "browser_type",
+                "browser_press_key",
+                "browser_select_option",
+                "browser_set_value",
+                "browser_handoff",
+            ],
+        ),
+        "tabs" => (
+            HELP_TABS,
+            &["browser_list_tabs", "browser_open_tab", "browser_close_tab"],
+        ),
+        "handoff" => (HELP_HANDOFF, &["browser_handoff"]),
+        "waits" => (
+            HELP_WAITS,
+            &[
+                "browser_wait_for",
+                "browser_wait_for_load_state",
+                "browser_dialog",
+                "browser_page_state",
+                "browser_page_ready",
+            ],
+        ),
+        "batch" => (
+            HELP_BATCH,
+            &[
+                "browser_batch",
+                "browser_snapshot",
+                "browser_click",
+                "browser_type",
+                "browser_set_value",
+                "browser_select_option",
+                "browser_press_key",
+                "browser_wait_for",
+                "browser_wait_for_load_state",
+                "browser_page_state",
+            ],
+        ),
+        other => return Err(format!("unknown help topic: {other}")),
+    };
+    let tools: Vec<Value> = tool_schemas()
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|tool| {
+            tool["name"].as_str().is_some_and(|name| name.starts_with("browser_"))
+        })
+        .filter(|tool| {
+            related.is_empty()
+                || related.contains(&tool["name"].as_str().unwrap_or(""))
+        })
+        .map(|tool| {
+            json!({
+                "name": tool["name"],
+                "description": tool["description"],
+                "params": tool["inputSchema"]["properties"],
+            })
+        })
+        .collect();
+    Ok(json!({
+        "topic": topic,
+        "text": text,
+        "tools": tools,
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
+
+#[cfg(target_os = "windows")]
+use crate::browser::agent::SnapshotRequest;
+#[cfg(target_os = "windows")]
+use crate::browser::{self, batch};
+#[cfg(target_os = "windows")]
+use crate::browser::surface;
+
+/// Interval between two polls of a wait condition. Each poll is one short
+/// eval through the process-wide CDP lease, so other tabs interleave freely.
+#[cfg(target_os = "windows")]
+const POLL_EVERY_MS: u64 = 150;
+
+/// Poll one cheap page-side check until `done` says so or the deadline
+/// passes. Runs on the MCP worker thread: sleeps happen HERE, never on the
+/// main thread (a main-thread sleep is the watchdog's MAIN THREAD STALLED),
+/// and never while holding the CDP lease.
+#[cfg(target_os = "windows")]
+fn poll_until(
+    app: &AppHandle,
+    tab_id: &str,
+    call: String,
+    deadline: Instant,
+    done: impl Fn(&Value) -> bool,
+) -> Result<Value, String> {
+    let mut last = json!({});
+    loop {
+        let value = browser::tool_read(app, tab_id, {
+            let call = call.clone();
+            move |s| surface::probe(s, &call)
+        });
+        match value {
+            Ok(value) => {
+                // A grant refusal cannot be fixed by polling — terminal.
+                if value.get("error").and_then(Value::as_str) == Some("browser_grant_required") {
+                    return Ok(value);
+                }
+                last = value;
+            }
+            // Page-side failures (dialog_blocked, world gone) are terminal too.
+            Err(error) => return Err(error),
+        }
+        if done(&last) || Instant::now() >= deadline {
+            return Ok(last);
+        }
+        std::thread::sleep(Duration::from_millis(POLL_EVERY_MS));
+    }
+}
+
+/// Classify a finished refState poll. Success keeps the observed state; a
+/// timeout names what was actually seen — never a bare "try again".
+fn wait_ref_record(target: &str, state: &str, waited_ms: u64, last: &Value) -> Value {
+    let found = last.get("found").and_then(Value::as_bool).unwrap_or(false);
+    let connected = last.get("connected").and_then(Value::as_bool).unwrap_or(false);
+    let visible = last.get("visible").and_then(Value::as_bool).unwrap_or(false);
+    let reached = match state {
+        "attached" => found && connected,
+        "visible" => found && connected && visible,
+        "hidden" => found && connected && !visible,
+        // Gone is gone: a stale generation also means the element is no
+        // longer on this page in any sense that matters.
+        "detached" => !connected,
+        _ => false,
+    };
+    let mut record = json!({ "ok": reached, "ref": target, "state": state, "waitedMs": waited_ms });
+    if reached {
+        record["observed"] = json!({ "found": found, "connected": connected, "visible": visible });
+    } else if !found {
+        record["error"] = json!("not_found");
+        record["detail"] = json!(
+            "the ref no longer matches the page — the element moved or the page changed; take a new snapshot"
+        );
+        record["observed"] = json!({ "found": false });
+    } else {
+        record["error"] = json!("timeout");
+        record["detail"] = json!(match state {
+            "visible" => "present in the DOM but not visible",
+            "hidden" => "still visible",
+            "attached" => "not connected",
+            "detached" => "still connected",
+            _ => "state not reached",
+        });
+        record["observed"] = json!({ "found": found, "connected": connected, "visible": visible });
+    }
+    record
+}
+
+fn load_state_reached(state: &str, ready_state: &str) -> bool {
+    match state {
+        "domcontentloaded" => ready_state == "interactive" || ready_state == "complete",
+        "load" => ready_state == "complete",
+        _ => false,
+    }
+}
+
+/// Classify a finished load-state poll the same way.
+fn load_state_record(state: &str, waited_ms: u64, last: &Value) -> Value {
+    let ready = last.get("readyState").and_then(Value::as_str).unwrap_or("unknown");
+    let reached = load_state_reached(state, ready);
+    let mut record = json!({ "ok": reached, "state": state, "readyState": ready, "waitedMs": waited_ms });
+    if !reached {
+        record["error"] = json!("timeout");
+        record["detail"] = json!(format!("the document was still in readyState '{ready}' when the deadline passed"));
+    }
+    record
+}
+
+/// Execute one validated batch step. Each hop goes through the normal
+/// tool wrappers, so grants, busy status and the ref lease apply per step.
+#[cfg(target_os = "windows")]
+fn execute_batch_step(
+    app: &AppHandle,
+    tab_id: &str,
+    index: usize,
+    step: &batch::BatchStep,
+    generation: &str,
+    batch_deadline: Instant,
+    final_generation: &mut String,
+) -> Result<Value, String> {
+    match step {
+        batch::BatchStep::Click { .. }
+        | batch::BatchStep::Hover { .. }
+        | batch::BatchStep::Type { .. }
+        | batch::BatchStep::PressKey { .. }
+        | batch::BatchStep::SelectOption { .. } => {
+            let request = batch::action_request(step, generation)
+                .ok_or("batch control step lost its action during execution")?;
+            browser::tool_call(app, tab_id, move |s| surface::act(s, &request))
+                .map(|mut value| {
+                    batch::condense(index, step, &mut value);
+                    value
+                })
+        }
+        batch::BatchStep::SetValue { target, value } => {
+            let generation = generation.to_string();
+            let target = target.clone();
+            let value = value.clone();
+            browser::tool_call(app, tab_id, move |s| {
+                surface::set_control_value(s, &generation, &target, &value)
+            })
+            .map(|mut answer| {
+                batch::condense(index, step, &mut answer);
+                answer
+            })
+        }
+        batch::BatchStep::WaitForSelector { target, state, timeout_ms } => {
+            let step_deadline = Instant::now() + Duration::from_millis(*timeout_ms);
+            let deadline = batch_deadline.min(step_deadline);
+            let call = browser::probe::wait_ref_state_call(generation, target);
+            let started = Instant::now();
+            let target = target.clone();
+            let state = *state;
+            let last = poll_until(app, tab_id, call, deadline, move |value| {
+                let connected = value.get("connected").and_then(Value::as_bool);
+                let visible = value.get("visible").and_then(Value::as_bool);
+                match state {
+                    "attached" => connected == Some(true),
+                    "visible" => visible == Some(true),
+                    "hidden" => connected == Some(true) && visible == Some(false),
+                    "detached" => connected == Some(false),
+                    _ => false,
+                }
+            })?;
+            let mut record = wait_ref_record(&target, state, started.elapsed().as_millis() as u64, &last);
+            record["index"] = json!(index);
+            record["op"] = json!("waitForSelector");
+            Ok(record)
+        }
+        batch::BatchStep::WaitForLoadState { state, timeout_ms } => {
+            let step_deadline = Instant::now() + Duration::from_millis(*timeout_ms);
+            let deadline = batch_deadline.min(step_deadline);
+            let call = browser::probe::state_call();
+            let started = Instant::now();
+            let state = *state;
+            let last = poll_until(app, tab_id, call, deadline, move |value| {
+                let ready = value.get("readyState").and_then(Value::as_str).unwrap_or("");
+                load_state_reached(state, ready)
+            })?;
+            let mut record = load_state_record(state, started.elapsed().as_millis() as u64, &last);
+            record["index"] = json!(index);
+            record["op"] = json!("waitForLoadState");
+            Ok(record)
+        }
+        batch::BatchStep::PageState => {
+            browser::tool_read(app, tab_id, |s| surface::probe(s, &browser::probe::state_call()))
+                .map(|state| json!({ "index": index, "op": "pageState", "ok": true, "state": state }))
+        }
+        batch::BatchStep::PageReady => {
+            browser::tool_read(app, tab_id, |s| surface::probe(s, &browser::probe::ready_call()))
+                .map(|ready| json!({ "index": index, "op": "pageReady", "ok": true, "ready": ready }))
+        }
+        batch::BatchStep::Snapshot { max_chars } => {
+            let request = SnapshotRequest { max_chars: *max_chars };
+            browser::tool_read(app, tab_id, move |s| surface::snapshot(s, &request))
+                .map(|value| {
+                    // A successful snapshot step re-seats the batch's
+                    // generation: later steps would use the new refs table
+                    // (and since snapshot is terminal-only, nothing here
+                    // still holds the old one).
+                    if let Some(token) = value.get("generation").and_then(Value::as_str) {
+                        *final_generation = token.to_string();
+                    }
+                    json!({
+                        "index": index,
+                        "op": "snapshot",
+                        "ok": true,
+                        "generation": value.get("generation"),
+                        "title": value.get("title"),
+                        "url": value.get("url"),
+                        "refsCount": value.get("refsCount"),
+                        "truncated": value.get("truncated"),
+                        "tree": value.get("tree"),
+                    })
+                })
+        }
+    }
+}
 
 fn arg_str(args: &Value, key: &str) -> Result<String, String> {
     args.get(key)
@@ -589,10 +997,17 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
     }
     use crate::browser::agent::{ActionKind, ActionRequest, SnapshotRequest};
     use crate::browser::surface;
-    use crate::browser::{self};
+    use crate::browser::{self, batch};
     use crate::computer;
 
     match name {
+        "browser_help" => {
+            let topic = args
+                .get("topic")
+                .and_then(Value::as_str)
+                .unwrap_or("overview");
+            help_payload(topic)
+        }
         "browser_list_tabs" => {
             let tabs = browser::list_tabs(app)?;
             Ok(json!({ "tabs": tabs }))
@@ -720,6 +1135,99 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
                     value
                 })
         }
+        // ── Waits (read level): poll a cheap page-side check, never sleep
+        // on the main thread, every wait has a hard deadline ──────────────
+        "browser_wait_for" => {
+            let tab_id = arg_str(args, "tabId")?;
+            let generation = arg_str(args, "generation")?;
+            let target = arg_str(args, "ref")?;
+            let state = args.get("state").and_then(Value::as_str).unwrap_or("visible");
+            if !batch::WAIT_STATES.contains(&state) {
+                return Err(format!("state must be one of {}", batch::WAIT_STATES.join("|")));
+            }
+            let timeout = args
+                .get("timeoutMs")
+                .and_then(Value::as_u64)
+                .unwrap_or(batch::DEFAULT_WAIT_MS)
+                .clamp(100, batch::MAX_WAIT_MS);
+            let call = browser::probe::wait_ref_state_call(&generation, &target);
+            let started = Instant::now();
+            let state_owned = state.to_string();
+            let last = poll_until(app, &tab_id, call, Instant::now() + Duration::from_millis(timeout), {
+                let state_owned = state_owned.clone();
+                move |value| {
+                    let connected = value.get("connected").and_then(Value::as_bool);
+                    let visible = value.get("visible").and_then(Value::as_bool);
+                    match state_owned.as_str() {
+                        "attached" => connected == Some(true),
+                        "visible" => visible == Some(true),
+                        "hidden" => connected == Some(true) && visible == Some(false),
+                        "detached" => connected == Some(false),
+                        _ => false,
+                    }
+                }
+            })?;
+            let mut record =
+                wait_ref_record(&target, state, started.elapsed().as_millis() as u64, &last);
+            if let Some(object) = record.as_object_mut() {
+                object.insert("tabId".to_string(), json!(tab_id));
+            }
+            Ok(record)
+        }
+        "browser_wait_for_load_state" => {
+            let tab_id = arg_str(args, "tabId")?;
+            let state = args.get("state").and_then(Value::as_str).unwrap_or("load");
+            if !batch::LOAD_STATES.contains(&state) {
+                return Err(format!("state must be one of {}", batch::LOAD_STATES.join("|")));
+            }
+            let timeout = args
+                .get("timeoutMs")
+                .and_then(Value::as_u64)
+                .unwrap_or(batch::DEFAULT_LOAD_WAIT_MS)
+                .clamp(100, batch::MAX_LOAD_WAIT_MS);
+            let call = browser::probe::state_call();
+            let started = Instant::now();
+            let state_owned = state.to_string();
+            let last = poll_until(app, &tab_id, call, Instant::now() + Duration::from_millis(timeout), {
+                let state_owned = state_owned.clone();
+                move |value| {
+                    let ready = value.get("readyState").and_then(Value::as_str).unwrap_or("");
+                    load_state_reached(state_owned.as_str(), ready)
+                }
+            })?;
+            let mut record =
+                load_state_record(state, started.elapsed().as_millis() as u64, &last);
+            if let Some(object) = record.as_object_mut() {
+                object.insert("tabId".to_string(), json!(tab_id));
+            }
+            Ok(record)
+        }
+        "browser_dialog" => {
+            let tab_id = arg_str(args, "tabId")?;
+            let accept = args
+                .get("accept")
+                .and_then(Value::as_bool)
+                .ok_or("missing argument: accept (true to accept, false to dismiss)")?;
+            let prompt_text = args.get("promptText").and_then(Value::as_str).map(str::to_string);
+            let summary = if accept {
+                "accept the page dialog"
+            } else {
+                "dismiss the page dialog"
+            };
+            if let Some(refusal) = control_gate(app, session_id, &tab_id, summary)? {
+                return Ok(refusal);
+            }
+            browser::tool_call(app, &tab_id, move |s| {
+                surface::resolve_dialog(s, accept, prompt_text.as_deref())
+            })
+            .map(|mut value| {
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("tabId".to_string(), json!(tab_id));
+                }
+                value
+            })
+            .map_err(|e| format!("dialog failed: {e}"))
+        }
         // ── Control level ──────────────────────────────────────────────
         "browser_click" | "browser_hover" | "browser_type" | "browser_press_key" | "browser_select_option" => {
             let tab_id = arg_str(args, "tabId")?;
@@ -798,6 +1306,105 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
                 value
             })
             .map_err(|e| format!("set value failed: {e}"))
+        }
+        // ── Typed batch (M2): one call, several steps, same permissions ────
+        "browser_batch" => {
+            let tab_id = arg_str(args, "tabId")?;
+            let generation = arg_str(args, "generation")?;
+            let stop_on_error = args.get("stopOnError").and_then(Value::as_bool).unwrap_or(true);
+            let steps = batch::validate(args.get("steps").unwrap_or(&Value::Null))?;
+            let started = Instant::now();
+            let mut records: Vec<Value> = Vec::new();
+            let mut deadline = Instant::now() + Duration::from_millis(batch::BATCH_DEADLINE_MS);
+            let mut stop: Option<(&'static str, usize)> = None;
+            let mut final_generation = generation.clone();
+            let mut generation_valid = true;
+            for (index, step) in steps.iter().enumerate() {
+                if batch::is_control(step) {
+                    let summary = batch::step_summary(step);
+                    // The permission wait must not burn the batch budget:
+                    // freeze what is left and restore it after the card.
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if let Some(refusal) = control_gate(app, session_id, &tab_id, &summary)? {
+                        let mut record = refusal;
+                        record["index"] = json!(index);
+                        record["op"] = json!(step.op());
+                        record["ok"] = json!(false);
+                        records.push(record);
+                        stop = Some(("refused", index));
+                        break;
+                    }
+                    deadline = Instant::now() + remaining;
+                }
+                if Instant::now() >= deadline {
+                    stop = Some(("timeout", index));
+                    break;
+                }
+                let record = execute_batch_step(
+                    app,
+                    &tab_id,
+                    index,
+                    step,
+                    &generation,
+                    deadline,
+                    &mut final_generation,
+                );
+                match record {
+                    Ok(mut record) => {
+                        if record.get("error").and_then(Value::as_str) == Some("stale") {
+                            generation_valid = false;
+                        }
+                        let ok = record.get("ok").and_then(Value::as_bool).unwrap_or(false);
+                        // Audit trail: one line per executed Control step.
+                        if batch::is_control(step) {
+                            crate::debug_log::append(
+                                "browser-batch",
+                                "info",
+                                session_id,
+                                &format!("step {index} {}", step.op()),
+                                Some(if ok { "ok" } else { "failed" }),
+                            );
+                        }
+                        records.push(record);
+                        if !ok && stop_on_error {
+                            stop = Some(("error", index));
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        records.push(json!({
+                            "index": index,
+                            "op": step.op(),
+                            "ok": false,
+                            "error": "step_failed",
+                            "detail": error,
+                        }));
+                        stop = Some(("error", index));
+                        break;
+                    }
+                }
+            }
+            // Final observation, best effort: the state the tab is in after
+            // the chain (a refusal stop skips it — nothing was touched).
+            let final_state = if stop.map(|(reason, _)| reason) == Some("refused") {
+                None
+            } else {
+                browser::tool_read(app, &tab_id, |s| {
+                    surface::probe(s, &browser::probe::state_call())
+                })
+                .ok()
+            };
+            Ok(json!({
+                "tabId": tab_id,
+                "ok": stop.is_none(),
+                "stopReason": stop.map(|(reason, _)| reason),
+                "stoppedAt": stop.map(|(_, index)| index),
+                "steps": records,
+                "generation": final_generation,
+                "generationStillValid": generation_valid,
+                "elapsedMs": started.elapsed().as_millis() as u64,
+                "finalState": final_state,
+            }))
         }
         // -- Computer Use ---------------------------------------------------
         "computer_list_windows" => computer::tool_list_windows(app),
@@ -916,11 +1523,17 @@ mod tests {
             .map(|t| t["name"].as_str().unwrap())
             .collect();
         for expected in [
+            "browser_help",
             "browser_list_tabs",
             "browser_open_tab",
             "browser_handoff",
             "browser_close_tab",
             "browser_snapshot",
+            "browser_page_state",
+            "browser_page_ready",
+            "browser_wait_for",
+            "browser_wait_for_load_state",
+            "browser_dialog",
             "browser_console_messages",
             "browser_screenshot",
             "browser_click",
@@ -928,6 +1541,8 @@ mod tests {
             "browser_type",
             "browser_press_key",
             "browser_select_option",
+            "browser_set_value",
+            "browser_batch",
             "computer_list_windows",
             "computer_screenshot",
             "computer_snapshot",
@@ -954,5 +1569,64 @@ mod tests {
             json!(["background", "workspace"])
         );
         assert!(open["inputSchema"]["properties"]["id"].is_object());
+    }
+
+    // browser_help is generated from the schema table, so the two can never
+    // drift apart: the overview lists every shipped browser tool, and no
+    // topic's prose may mention a browser_* tool that does not exist.
+    #[test]
+    fn help_covers_every_browser_tool_and_names_no_ghosts() {
+        let names: Vec<String> = tool_schemas()
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .filter(|n| n.starts_with("browser_"))
+            .map(str::to_string)
+            .collect();
+
+        let overview = help_payload("overview").unwrap();
+        let listed: Vec<&str> = overview["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        for name in &names {
+            assert!(
+                listed.contains(&name.as_str()),
+                "help overview does not list {name}"
+            );
+        }
+        assert_eq!(
+            listed.len(),
+            names.len(),
+            "help lists a tool the schema table does not have"
+        );
+
+        for topic in HELP_TOPICS {
+            let payload = help_payload(topic)
+                .unwrap_or_else(|e| panic!("topic {topic} must exist: {e}"));
+            let text = payload["text"].as_str().unwrap_or("");
+            for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+                if word.starts_with("browser_") {
+                    assert!(
+                        names.contains(&word.to_string()),
+                        "topic {topic} mentions unknown tool {word}"
+                    );
+                }
+            }
+            // A narrowed topic must not filter down to nothing — that would
+            // mean its related-tool list rotted while the schema table moved.
+            assert!(
+                !payload["tools"].as_array().unwrap().is_empty(),
+                "topic {topic} lists no tools"
+            );
+        }
+
+        // Shipped capabilities ARE advertised: waits and batch landed with
+        // their tools (2026-11-18), so their topics must resolve.
+        assert!(help_payload("batch").is_ok());
+        assert!(help_payload("waits").is_ok());
     }
 }
