@@ -20,6 +20,7 @@ Marionette 最明显的五个 UX 缺口：
 3. **多 Agent 的标签归属不清楚。** browse 记录标签属于哪个会话、组名、最后使用时间和 busy 状态；Marionette 只有全局浏览器标签和 openedByAgent 布尔值。
 4. **用户很难一眼判断 Agent 正在跑、等人、已完成还是出错。** browse 的 ON/RUN/WAIT、组展开、页面 pill 都是持续状态；Marionette 主要靠当前页、分享级别和工具结果推断。
 5. **失败后缺少“下一步做什么”。** browse 会识别 challenge、给 warning/nextStep、解释无法分享的页面；Marionette 多数错误只回到 Agent 的工具结果，用户界面不一定接得住。
+6. **浏览器和对话还不能同时工作。** 当前分屏树只接受会话；浏览器、文档、收纳盒都是互斥的中栏覆盖页。用户批注后想一边看页面一边和 Agent 对话，只能来回切。
 
 Marionette 已有而 browse 没有同样完整体验的部分：
 
@@ -41,6 +42,63 @@ Marionette 已有而 browse 没有同样完整体验的部分：
 | 我能否立刻接管？ | 工具栏按钮永远可收回标签 | 可在应用内切回、改分享级别 | Marionette 能做，但状态和入口不够显眼 |
 | 失败后怎么办？ | status/nextStep、challenge、warning | 工具错误或 Agent 自己转述 | browse 更容易让用户知道该登录、关 DevTools 或换页面 |
 | 做完后谁清理？ | Agent 自己关标签；空闲标签自动关 | 用户手动关或 Agent 记得关 | browse 更接近“客人离开会收拾” |
+
+## 当前 Marionette 的分屏限制
+
+这里要先纠正一个容易误判的点：**WebView2 不是限制**。
+
+内置浏览器已经是一个 child WebView2，BrowserPage 会实时把宿主 DOM 的矩形同步给原生 surface。因此从窗口和渲染层看，把浏览器、文档或收纳盒放进一个分屏叶并不是天然做不到。
+
+真正的限制在当前交互模型：
+
+- splitWorkspace 的叶节点只有 session id 列表，SplitWorkspace 也只渲染 SessionPane；
+- BrowserPage、DocPage、MemoBox 是 App 根上的伪标签状态，激活时覆盖中栏；
+- 分屏渲染和 browserActive / activeDocPath / memoActive 是互斥分支；
+- 文档与收纳盒的关闭、恢复、拖拽和焦点语义还绑在伪标签上，不在统一工作区标签模型里。
+
+所以当前产品准确描述应是：
+
+> Marionette 已经支持“多对话分屏”，还没有支持“浏览器与对话分屏”，也还没有通用异类标签分屏。
+
+### 推荐形态：Browser Workspace，而不是一步做通用分屏
+
+如果目标是接近 browse 的用户体验，第一版不需要把会话、浏览器、文档、收纳盒一次性统一成任意可拆的工作区。更稳妥的是增加一个专用浏览器工作模式：
+
+1. 用户主动打开浏览器，或 Agent 发起 handoff / 用户发送批注时进入；
+2. 浏览器占据主画布，保留自己的标签栏、地址栏和页面；
+3. 右侧出现一条 Agent 对话栏，包含当前会话、转写尾部、Composer 和等待状态；
+4. 中间可拖宽，浏览器与对话各自保持状态；
+5. 关闭 Browser Workspace 后回到原工作区，原会话和文档标签不丢。
+
+它比通用分屏更容易做对三件事：
+
+- child WebView2 只需要跟随一个明确的 browser host 矩形；
+- 批注“发给对话”可以直接落到右侧 Composer，不需要切页；
+- WAIT、权限和失败 nextStep 可以同时出现在页面边和对话边。
+
+### 四个用户状态
+
+浏览器不应该永远占据主画面，而应按任务阶段切换：
+
+| 用户状态 | 主画面 | Agent 位置 | 触发 |
+|---|---|---|---|
+| 背景执行 | 对话/文档 | 对话流中显示运行状态 | Agent 自己开后台页 |
+| 主动查看 | 浏览器 | 右栏折叠为状态条 | 用户打开浏览器 |
+| 协作 | 浏览器 + 对话侧栏 | 当前 Agent 会话 | 用户批注、Agent 请求确认或持续多步任务 |
+| Handoff | 浏览器 + 对话侧栏 + 页内卡片 | WAIT 状态 | 登录、2FA、CAPTCHA、支付 |
+
+因此，“主要看到浏览器画面”是对的，但只适用于用户主动查看、协作和 handoff 阶段。Agent 单纯在后台跑时，仍应以对话为主，不能让浏览器持续抢画面。
+
+### 后续再考虑通用分屏
+
+如果 Browser Workspace 验证成立，再把 splitWorkspace 从 session-only 升级为异类标签模型：
+
+- session；
+- browser；
+- document；
+- memo。
+
+这会涉及拖拽、关闭、恢复、快捷键、焦点、原生 WebView bounds、标签去重和 detached 窗口语义，工作量明显大于专用浏览器模式。不要把它设成第一版浏览器 UX 的前置条件。
 
 ## 核心体验差距
 
@@ -256,26 +314,28 @@ browse 不只有 handoff，还能让用户示范一次流程：
 
 ### P0：先补“用户在场感”
 
-1. Agent 新标签默认后台打开，不改变当前会话或文档；
-2. 标签增加 ownerSessionId、busy、lastUsedAt；
-3. 每个标签显示 running/waiting_user/error 三类浏览器状态；
-4. 增加 browser_handoff、WAIT 状态、页内说明卡和通知；
-5. MCP instructions 加入 inspect-act-verify、handoff 和标签清理规则。
+1. 增加专用 Browser Workspace：浏览器主画布 + Agent 对话侧栏；
+2. Agent 新标签默认后台打开，不改变当前会话或文档；
+3. 标签增加 ownerSessionId、busy、lastUsedAt；
+4. 每个标签显示 running/waiting_user/error 三类浏览器状态；
+5. 增加 browser_handoff、WAIT 状态、页内说明卡和通知；
+6. MCP instructions 加入 inspect-act-verify、handoff 和标签清理规则。
 
 ### P1：让用户能管理和恢复
 
-6. 浏览器健康面板：工具、MCP、profile、最近错误、清理标签；
-7. Agent 标签按会话分组，关闭会话时可选择关闭其标签；
-8. Agent 自开且空闲的标签自动关闭，用户标签永不自动关；
-9. 失败结果统一提供 nextStep；
-10. challenge/blocked 页面停止重试并转 handoff。
+7. 浏览器健康面板：工具、MCP、profile、最近错误、清理标签；
+8. Agent 标签按会话分组，关闭会话时可选择关闭其标签；
+9. Agent 自开且空闲的标签自动关闭，用户标签永不自动关；
+10. 失败结果统一提供 nextStep；
+11. challenge/blocked 页面停止重试并转 handoff。
 
 ### P2：补齐高阶人机协作
 
-11. demonstrate：记录用户示范的点击、输入和导航；
-12. 稳定命名标签，例如 work-mail；
-13. 标签独立窗口选项；
-14. 可选连接真实 Chrome；嵌入式浏览器继续作为默认安全环境。
+12. demonstrate：记录用户示范的点击、输入和导航；
+13. 稳定命名标签，例如 work-mail；
+14. session/browser/document/memo 通用异类分屏；
+15. 标签独立窗口选项；
+16. 可选连接真实 Chrome；嵌入式浏览器继续作为默认安全环境。
 
 ## 不建议照搬
 
