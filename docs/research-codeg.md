@@ -1,6 +1,7 @@
 # 调研：Codeg（同类多 Agent 工作台）全量分析（2026-10-25）
 
 - 参考仓库：<https://github.com/spacering-net/codeg>（Apache-2.0，分析时 v0.40.0，3752 个提交）
+- 2026-11-17 工作区/浏览器 UX 复核：`main` = `4991406e`；双栏 surface、页面→对话、Agent 分享和 dev server 预览链路见 [`research-browse-ux.md`](./research-browse-ux.md#codeg)。
 - 本地克隆：`D:\Projects\codeg`（Marionette 旁边；`git fetch --unshallow` 已补全历史）。更新：`cd D:\Projects\codeg && git pull`
 - 方法：8 个只读探索代理分区深挖（agent 接入与生命周期 / 对话流 UX / 多 agent 协作 / 会话聚合 / git 历史坑矿 / 富内容渲染 / 外部连接 / 技能与杂项），主代理核对 per-agent 文档与 ZCode 对接细节
 - 定位对比：Codeg 与 Marionette 同赛道（Tauri 2 + ACP 多 agent 壳），但走**全功能工作台**路线（编辑器/画布/merge editor/服务器/手机端/IM 通道）；Marionette 走**轻壳 + 贴边停靠 + 模型共享引擎**路线。本文只挑对 Marionette 有用的部分，不做整体搬运。

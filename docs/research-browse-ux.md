@@ -31,13 +31,14 @@ Marionette 已有而 browse 没有同样完整体验的部分：
 
 建议保留这些优势，把 browse 的“用户在场感”补进来，而不是把 browse 的扩展安装、配对和 relay 架构整套搬过来。
 
-## 同类产品：Codex、ZCode、Claude Desktop 是不是也一样
+## 同类产品：Codeg、Codex、ZCode、Claude Desktop 是不是也一样
 
-结论：**是，Codex desktop、ZCode、Claude Desktop 都已经在同一个桌面工作区里让 Agent 对话和网页并存。** 差异主要不是“有没有浏览器”，而是谁是主画面、浏览器是内置还是接入用户 Chrome、以及是否需要侧聊天扩展。
+结论：**是，Codeg、Codex desktop、ZCode、Claude Desktop 都已经在同一个桌面工作区里让 Agent 对话和网页并存。** 差异主要不是“有没有浏览器”，而是谁是主画面、浏览器是内置还是接入用户 Chrome、以及是否需要侧聊天扩展。
 
 | 产品 | 对话位置 | 浏览器位置 | 是否同屏 | 关键差别 |
 |---|---|---|---|---|
 | browse | 外部 Agent 客户端；browse 本身没有完整聊天框 | 用户自己的 Chrome；扩展 + relay / MCP | 否，浏览器和 Agent 对话分在两个界面 | 它解决“让外部 Agent 进入我的浏览器”，不是做一体化 Agent 客户端 |
+| Codeg | 工作区左栏的 Agent 对话 | 工作区右栏的 file workspace；browser 与文件、diff 是同一种 tab | 是；对话/文件可调分栏，任一栏都能最大化 | 最通用的形态：浏览器不是专用页，而是工作区 surface 的一种 tab；Agent 访问仍要求用户逐 origin 分享 |
 | Codex / ChatGPT desktop | ChatGPT desktop 的聊天或任务区 | 内置浏览器（独立 profile），或通过扩展接入用户现有 Chrome 系浏览器 | 是；内置浏览器有 `Enter split view` 和 `Enter full view` | 最接近 Marionette 想做的产品形态，而且已有元素/区域批注、样式调整和 CDP 开发者模式 |
 | ZCode | ZCode 自己的 Agent 会话 / 工作区 | Electron 内嵌 BrowserView，位于右侧 side pane，可切完整视图 | 是 | 本机安装包里有 `toggleSidePane`、`toggleSidePaneFullView`、`browser.show/hide`、浏览器标签与全屏预览 |
 | Claude Desktop | Chat / Cowork 任务 | Cowork 内置浏览器，开在任务旁的 side panel；也可改用 Claude in Chrome 扩展 | 是 | 目前明显是“任务为主、网页在旁边”；内置浏览器有独立 profile，可选导入站点登录状态 |
@@ -66,6 +67,38 @@ ZCode 也是完整桌面 Agent 客户端，不是纯浏览器扩展。本机安�
 
 这说明 ZCode 的交互与 Codex 接近：主工作区承担任务和会话，右侧面板承载浏览器及运行结果，需要时再把右侧面板放大。Marionette 可以借鉴“浏览器只是工作区中的一种 surface”，但仍应保留自己更清楚的分享级别和批注入口。
 
+### Codeg
+
+Codeg 当前 `main`（2026-11-17，`4991406e`）不是给浏览器单独做一种页面，而是先把工作区抽象成 **conversation + files** 两栏：
+
+- `WorkspaceMode` 只有 `conversation` 和 `fusion`；只要文件栏有可见 tab，就进入 `fusion`；
+- 左栏是 Agent 对话，右栏是文件工作区，默认约 56/44，可拖分隔条；
+- 对话栏或文件栏都可以“最大化”覆盖另一栏，另一栏保持挂载和状态，不会因切换而重建；
+- `BrowserWorkspaceTab` 是 `FileWorkspaceTab` 的一个 discriminated-union 分支，和 file / diff / rich-diff 共用 tab strip、持久化、切换、预览、suspend 和 surface 生命周期；
+- 最右侧的 aux panel 是文件树、会话详情、Git、任务等，不是浏览器；浏览器仍在中间的 file workspace 里。
+
+所以 Codeg 的默认形态更准确地说是 **对话左、浏览器右**；把 file 栏最大化后，就是用户设想的“浏览器主画面，对话在旁边且随时可恢复”。它没有为浏览器复制一套 Composer，也没有把 browser 做成和会话分屏互斥的伪标签。
+
+浏览器 tab 的工具栏把两个方向放在同一个地址栏里：
+
+- 左边是 Agent 分享：用户把当前 origin 以 `read` 或 `control` 分享给 Agent；
+- 右边是 Agent 活动记录：读过、点过、输入过、被拒、失败都按动作与结果列出；被拒记录不会因为后续操作成功而消失；
+- 中间还有“发给对话”菜单：拾取元素、截取页面、截图框选/箭头批注、递送 console error；结果进入当前活跃对话的 Composer，作为可编辑、可删除的胶囊和附件，不自动发送。
+
+这和 Marionette 的批注抽屉有一个关键差异：Codeg 的元素拾取是单次立即交接，截图画布则提供框和箭头；Marionette 当前允许同一批收集多条元素/区域、逐条写 note，再统一发送。两者可以并存，Marionette 的批量批注仍是更强的设计评审体验。
+
+Codeg 的 Agent→页面授权也更严格：即使 tab 是 Agent 自己打开的，也不会自动获得读取权；用户必须主动分享当前 origin。localhost 的 grant 还会固定监听程序和 working directory，避免端口被另一个项目复用后继续沿旧授权读取。Marionette 当前“Agent 自开 tab 默认可读”的便利性更高，但权限语义比 Codeg 宽松，这是需要在 Browser Workspace 阶段明确的产品选择。
+
+Codeg 的 dev server 发现值得直接借鉴：终端输出出现 loopback URL 后，先做 TCP probe，再按偏好选择“自动打开 / 通知 / 关闭”。自动打开时只选中 browser tab，不把用户从正在读的对话里强行带走；浏览器 tab 也可从 `+` 菜单的“Local services”重新打开。这个机制比仅凭 URL 字符串切界面可靠得多。
+
+对 Marionette 的直接启示：
+
+- 长期最优架构不是永远维护一个特殊的 `BrowserPage`，而是把 session / browser / document / memo 收敛成统一 worksurface；
+- 第一阶段仍可用专用 Browser Workspace 控制风险，但组件边界应照着“surface + chat”设计，避免以后拆第二套 Composer；
+- 页面→对话继续保留 Marionette 的批量批注；页面工具栏可补单次 pick、整页截图、console error 等快捷入口；
+- Agent→页面继续用 `none/read/control`，并考虑让 Agent 自开 tab 也经过一次用户分享；
+- dev server 自动预览应采用“显式事件 + probe + 用户偏好”，不要用 localhost 正则抢界面。
+
 ### Claude Desktop
 
 Claude Desktop 现在也不是“只有普通聊天”。Claude Cowork 在桌面应用内自带浏览器，官方描述是：当任务涉及网站时，浏览器在任务旁边的 side panel 打开；Claude 打开站点、读取页面、点击、输入和填写表单时，用户可以直接看着。链接也会在同一个面板中打开。
@@ -91,14 +124,14 @@ Claude 同时保留两种浏览器路径：
 
 这里不能仅凭 `localhost` 自动切界面：API、文档服务、后台任务和一次性登录页也会命中 localhost。第一版应由 `browser_open_tab` 的显式 `display: "workspace"` 控制，默认 `background`；以后再加项目类型识别作为提示，而不是强制切换。
 
-Marionette 的相对优势要说得准确：**一体化浏览器 + 对话本身已经不是独家优势。** Codex、ZCode、Claude Desktop 都已有同类能力。Marionette 真正有机会领先的是：
+Marionette 的相对优势要说得准确：**一体化浏览器 + 对话本身已经不是独家优势。** Codeg、Codex、ZCode、Claude Desktop 都已有同类能力。Marionette 真正有机会领先的是：
 
 - 同一应用里切换多个 Agent 和多个会话；
 - 元素/区域批注直接形成带截图的 Composer 草稿；
 - 更细的 `none/read/control` 分享语义与 Agent 自开标签边界；
 - 后续把浏览器、会话、文档、收纳盒和 handoff 统一到一套本地工作区状态。
 
-如果只做“页面在左、聊天在右”，只能补齐与 Codex / Claude 的产品差距；把多 Agent、批注和安全边界做成统一体验，才是 Marionette 的差异化。
+如果只做“页面在左、聊天在右”，只能补齐与 Codeg / Codex / Claude 的产品差距；把多 Agent、批注和安全边界做成统一体验，才是 Marionette 的差异化。
 
 ## 用户心理模型
 
@@ -435,6 +468,13 @@ browse 不只有 handoff，还能让用户示范一次流程：
 - 设置页：<https://github.com/anomalyco/browse/blob/a7181bf/src/status/settings.tsx>
 - Agent instructions：<https://github.com/anomalyco/browse/blob/a7181bf/rust/crates/browse-relay/src/instructions.md>
 - browse 状态与 nextStep：<https://github.com/anomalyco/browse/blob/a7181bf/rust/crates/browse-relay/src/tools.rs>
+- Codeg 工作区双栏与最大化：<https://github.com/spacering-net/codeg/blob/4991406e6045b7903ae2c5bc78db0d3b7dfd1f77/src/app/workspace/layout.tsx>
+- Codeg Browser 作为 file workspace tab：<https://github.com/spacering-net/codeg/blob/4991406e6045b7903ae2c5bc78db0d3b7dfd1f77/src/contexts/workspace-context.tsx>
+- Codeg 文件栏渲染 browser tab：<https://github.com/spacering-net/codeg/blob/4991406e6045b7903ae2c5bc78db0d3b7dfd1f77/src/components/files/file-workspace-panel.tsx>
+- Codeg 页面→对话：<https://github.com/spacering-net/codeg/blob/4991406e6045b7903ae2c5bc78db0d3b7dfd1f77/src/components/browser/browser-page-handoff.tsx>
+- Codeg Agent 分享与活动记录：<https://github.com/spacering-net/codeg/blob/4991406e6045b7903ae2c5bc78db0d3b7dfd1f77/src/components/browser/browser-agent-access.tsx>
+- Codeg 浏览器授权与 loopback 身份：<https://github.com/spacering-net/codeg/blob/4991406e6045b7903ae2c5bc78db0d3b7dfd1f77/src-tauri/src/browser/agent.rs>
+- Codeg dev server 发现后打开/通知：<https://github.com/spacering-net/codeg/blob/4991406e6045b7903ae2c5bc78db0d3b7dfd1f77/src/components/browser/browser-service-bridge.tsx>
 - Codex / ChatGPT desktop 内置浏览器、split view 与批注：<https://learn.chatgpt.com/docs/browser>
 - Codex / ChatGPT desktop 浏览器扩展与 side chat：<https://learn.chatgpt.com/docs/chrome-extension>
 - Claude Cowork 内置浏览器：<https://support.claude.com/en/articles/16607400-use-the-built-in-browser-in-claude-cowork>
