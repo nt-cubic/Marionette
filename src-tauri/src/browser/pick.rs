@@ -49,6 +49,12 @@ pub fn stop_call() -> String {
     stringify(&call(&format!("globalThis.{PICKER_GLOBAL}.stop()")))
 }
 
+/// Stop and forget every retained element. Used after a batch is sent,
+/// cleared, or abandoned so a fresh annotation starts from zero.
+pub fn clear_call() -> String {
+    stringify(&call(&format!("globalThis.{PICKER_GLOBAL}.clear()")))
+}
+
 /// Switch between `"element"` and `"region"` without rebuilding the overlay.
 pub fn set_mode_call(mode: &str) -> String {
     let mode = serde_json::to_string(mode).unwrap_or_else(|_| "\"element\"".to_string());
@@ -99,6 +105,7 @@ mod tests {
         for expression in [
             start_call("element"),
             stop_call(),
+            clear_call(),
             set_mode_call("region"),
             capture_hide_call(),
             capture_restore_call(),

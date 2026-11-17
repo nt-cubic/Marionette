@@ -326,6 +326,10 @@
   font-size: 11.5px;
 }
 
+.browser-page__picker-hint.is-error {
+  color: var(--red);
+}
+
 .browser-page__picker-exit {
   flex: 0 0 auto;
 }
@@ -376,6 +380,19 @@
   text-align: center;
   padding: 2px;
   word-break: break-all;
+}
+
+.browser-pick-row__thumb.is-failed {
+  appearance: none;
+  background: color-mix(in srgb, var(--red) 7%, var(--workspace-bg));
+  color: var(--red);
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.browser-pick-row__thumb.is-failed:hover {
+  border-color: color-mix(in srgb, var(--red) 45%, var(--border));
 }
 
 .browser-pick-row__body {

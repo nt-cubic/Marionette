@@ -763,6 +763,7 @@ fn main() {
             browser::browser_debug_probe,
             browser::browser_share_tab,
             browser::browser_pick_set,
+            browser::browser_pick_clear,
             browser::browser_pick_finalize,
             browser::browser_pick_resolve,
             browser::browser_permission_respond,

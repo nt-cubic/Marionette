@@ -461,10 +461,10 @@ fn control_gate(
     tab_id: &str,
     summary: &str,
 ) -> Result<Option<Value>, String> {
-    use crate::browser::{self, surface::GrantLevel};
-    if browser::grant_level(app, tab_id)?.allows(GrantLevel::Control)
-        || browser::session_auto_approves(session_id)
-    {
+    use crate::browser;
+    let level = browser::grant_level(app, tab_id)?;
+    let opened_by_agent = browser::tab_opened_by_agent(app, tab_id)?;
+    if control_auto_allowed(level, opened_by_agent, browser::session_auto_approves(session_id)) {
         return Ok(None);
     }
     let allowed = browser::request_permission(
@@ -484,6 +484,15 @@ fn control_gate(
         "The user declined (or did not answer) this action. Say what you wanted to do and why, then wait for them to allow actions on this tab.",
     )
     .map(Some)
+}
+
+fn control_auto_allowed(
+    level: crate::browser::surface::GrantLevel,
+    opened_by_agent: bool,
+    session_always_approve: bool,
+) -> bool {
+    level.allows(crate::browser::surface::GrantLevel::Control)
+        || (opened_by_agent && session_always_approve)
 }
 
 fn refusal(tab_id: &str, error: &str, note: &str) -> Result<Value, String> {
@@ -749,6 +758,15 @@ mod tests {
     fn tokens_are_long_and_unique() {
         assert_ne!(mint_token("a"), mint_token("a"));
         assert_eq!(mint_token("a").len(), 48);
+    }
+
+    #[test]
+    fn always_approve_never_bypasses_user_tab_sharing() {
+        use crate::browser::surface::GrantLevel;
+        assert!(!control_auto_allowed(GrantLevel::None, false, true));
+        assert!(!control_auto_allowed(GrantLevel::Read, false, true));
+        assert!(control_auto_allowed(GrantLevel::Read, true, true));
+        assert!(control_auto_allowed(GrantLevel::Control, false, false));
     }
 
     #[test]

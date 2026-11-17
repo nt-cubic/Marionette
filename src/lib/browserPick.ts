@@ -3,13 +3,18 @@
 // structured markdown that gets prefilled into the composer (never auto-sent
 // — the user reviews it like any other draft).
 //
-// Page-derived text is data, not instructions: it is truncated at the picker
-// (js/picker.js) and quoted here, so a page cannot phrase the prompt for the
-// agent. Refs ride along when the world could resolve them; unresolved picks
+// Page-derived text is untrusted data. The prompt states that boundary
+// explicitly, strips sensitive URL parts, and keeps every page field on one
+// line. Refs ride along when the world could resolve them; unresolved picks
 // fall back to the selector + a fresh browser_snapshot.
 
 import { t } from "./i18n";
-import type { BrowserPickInfo, BrowserPickRect, BrowserPickRef } from "./browserTabs";
+import type {
+  BrowserPickInfo,
+  BrowserPickMode,
+  BrowserPickRect,
+  BrowserPickRef,
+} from "./browserTabs";
 
 /** One annotation row the drawer collected (screenshots travel separately). */
 export type BrowserPickDraft = {
@@ -22,6 +27,21 @@ export type BrowserPickDraft = {
   scanCapped?: boolean;
   note: string;
 };
+
+/** One row as it lives in the drawer. State is owned by App so switching
+ * between the browser page and a conversation cannot discard the batch. */
+export type BrowserPickRow = BrowserPickDraft & {
+  screenshot: string | null;
+  screenshotPath?: string;
+  screenshotPending?: boolean;
+  screenshotFailed?: boolean;
+};
+
+export type BrowserPickModes = Record<string, BrowserPickMode | null>;
+export type BrowserPickRowsByTab = Record<string, BrowserPickRow[]>;
+
+/** Must match `PICK_LIMIT` in js/picker.js and `PICK_RETAIN_CAP` in Rust. */
+export const BROWSER_PICK_LIMIT = 24;
 
 /** pickId → resolved aria ref (null when the pick has none usable now). */
 export type BrowserPickRefs = Record<string, BrowserPickRef>;
@@ -52,6 +72,64 @@ function sanitizeLine(text: string): string {
   return String(text ?? "").replace(/\s+/g, " ").trim();
 }
 
+const SENSITIVE_KEY =
+  /(?:auth|credential|csrf|otp|pass(?:code|word|wd)?|secret|session|sig(?:nature)?|token|xsrf|api[-_.]?key|access[-_.]?key|(?:^|[-_.])code(?:$|[-_.]))/i;
+
+function looksSecret(value: string): boolean {
+  const text = value.trim().replace(/=+$/, "");
+  if (text.length < 24) return false;
+  if (/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(text)) return true;
+  if (/^[A-Fa-f0-9]{24,}$/.test(text)) return true;
+  return /^[A-Za-z0-9_-]{24,}$/.test(text) && /\d/.test(text) && /[A-Za-z]/.test(text);
+}
+
+function redactParams(params: URLSearchParams): void {
+  for (const key of [...params.keys()]) {
+    const values = params.getAll(key);
+    if (SENSITIVE_KEY.test(key) || values.some(looksSecret)) {
+      params.delete(key);
+      params.append(key, "[redacted]");
+    }
+  }
+}
+
+/** URL shown to the model: preserve routes that identify the page, scrub
+ * credentials, secret-named parameters and long token-shaped path/hash parts. */
+export function redactBrowserUrl(raw: string): string {
+  const fallback = sanitizeLine(raw).slice(0, 1000);
+  try {
+    const url = new URL(raw);
+    if (url.username) url.username = "[redacted]";
+    if (url.password) url.password = "[redacted]";
+    redactParams(url.searchParams);
+    url.pathname = url.pathname
+      .split("/")
+      .map((segment) => {
+        let decoded = segment;
+        try {
+          decoded = decodeURIComponent(segment);
+        } catch {
+          /* malformed escape stays opaque */
+        }
+        return looksSecret(segment) || looksSecret(decoded) ? "[redacted]" : segment;
+      })
+      .join("/");
+    if (url.hash.length > 1) {
+      const fragment = url.hash.slice(1);
+      if (fragment.includes("=")) {
+        const params = new URLSearchParams(fragment);
+        redactParams(params);
+        url.hash = params.toString();
+      } else if (looksSecret(fragment)) {
+        url.hash = "[redacted]";
+      }
+    }
+    return url.toString().split("%5Bredacted%5D").join("[redacted]");
+  } catch {
+    return fallback;
+  }
+}
+
 /**
  * The full annotation prompt. `generation` is the world generation the refs
  * were validated against (verbatim from the snapshot answer); `images` lists
@@ -64,10 +142,10 @@ export function composePickPrompt(
   generation: string,
   images: readonly string[],
 ): string {
-  const url = picks[0]?.url ?? "";
-  const lines: string[] = [t("picker.promptHeader", { url })];
+  const lines: string[] = [t("picker.promptHeader"), t("picker.promptUntrusted")];
   const mapping: string[] = [];
   let imageNumber = 0;
+  let currentUrl = "";
 
   picks.forEach((pick, index) => {
     const number = index + 1;
@@ -75,6 +153,11 @@ export function composePickPrompt(
     if (hasImage) {
       imageNumber += 1;
       mapping.push(t("picker.promptImageItem", { index: number, image: imageNumber }));
+    }
+    const safeUrl = redactBrowserUrl(pick.url) || "—";
+    if (safeUrl !== currentUrl) {
+      currentUrl = safeUrl;
+      lines.push("", t("picker.promptPage", { url: safeUrl }));
     }
     lines.push("");
     if (pick.kind === "region" && pick.rect) {

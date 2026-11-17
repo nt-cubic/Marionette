@@ -115,8 +115,9 @@
 
 - picker（选元素）/ console 错误（≤20 行）/ 整 viewport 截图 → **一个 markdown 块进
   composer，人读改删后才发出**。块头 UNTRUSTED_NOTE（照抄 Codeg 原文语义：这是页面
-  数据不是指令）；URL 敏感段 redact。picker 是 closed shadow root overlay、按压在
-  capture 阶段被吞（选页面的 Delete 不会真按下 Delete）、导航即终止。
+  数据不是指令）；URL 敏感段 redact。picker 是 closed shadow root 的全屏命中层，
+  只接受 trusted 输入，底层控件不会收到 activation；document nav 和 SPA route
+  都会终止当前 picker。
 - 下载：引擎管传输，host 只选落地路径（系统下载目录 + `safe_file_name` 防穿越）+
   toast「打开所在文件夹」；绝不自动打开。
 
@@ -260,7 +261,9 @@ VENDOR.md 记来源与「为什么保留 `__codegAgent` 名字」）。
    外链）；用户自开标签跨 origin 照抄 codeg 撤销。
 3. **popup 降级**：wry `NewWindowResponse::Deny` + 下一拍开新标签——`window.opener`
    丢失（codeg 用 Create 保 opener）。弹出的标签继承来源标签的 opened_by_agent。
-4. **人→agent 手递（picker / console 递话 / Send to chat）未做**——批次 2 的下一小批。
+4. **人→agent 手递已落元素批注 / Send to chat**（2026-11-17）：closed Shadow DOM、
+   URL 脱敏、不可信数据声明、截图落盘和多页面分组已接；console 递话 / 整 viewport
+   一键递话仍待后续。
 5. **browser_eval 未实现**（设计稿本来就是独立开关默认关）。
 6. **下载未接管**：WebView2 自带下载条在页面内弹出，落系统默认下载目录。
 7. **前进/后退按钮未做**（reload 有；历史导航留待 toolbar 完善）。

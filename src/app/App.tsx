@@ -125,6 +125,7 @@ import {
   type BrowserPermissionRequest,
   type BrowserTab,
 } from "../lib/browserTabs";
+import type { BrowserPickModes, BrowserPickRowsByTab } from "../lib/browserPick";
 import { memoList, memoPrompt } from "../lib/memos";
 import { installPageDragSourceTracker } from "../lib/dragText";
 import { splitShelfChatSessions, withoutGhostProjects } from "../lib/sessionGroups";
@@ -163,7 +164,6 @@ import {
   imagePathKey,
   type ImageAttachment,
 } from "../lib/imageAttachments";
-import { savePastedImage } from "../lib/api";
 import { foldSessionStats, measureTurnDecodeMs } from "../lib/sessionStats";
 import { sessionChangeLines } from "../lib/sessionInfo";
 import { isRuntimeMetadataOnly } from "../lib/markdownText";
@@ -631,6 +631,10 @@ export function App() {
   /** Built-in browser tabs (backend owns the list; this mirrors its event). */
   const [browserTabs, setBrowserTabs] = useState<BrowserTab[]>([]);
   const [activeBrowserTabId, setActiveBrowserTabId] = useState<string | null>(null);
+  /** Annotation drafts live above BrowserPage so switching pages cannot drop
+   * them and a remount cannot strand an active in-page picker. */
+  const [browserPickModes, setBrowserPickModes] = useState<BrowserPickModes>({});
+  const [browserPicksByTab, setBrowserPicksByTab] = useState<BrowserPickRowsByTab>({});
   /** The browser pseudo-tab is the selected center page. */
   const [browserActive, setBrowserActive] = useState(false);
   /** A Control-level action is waiting for the user's answer. */
@@ -5347,6 +5351,26 @@ export function App() {
     });
     const stop = onBrowserTabs((tabs) => {
       setBrowserTabs(tabs);
+      const live = new Set(tabs.map((tab) => tab.id));
+      setBrowserPickModes((prev) => {
+        if (!Object.keys(prev).some((tabId) => !live.has(tabId))) return prev;
+        const next = Object.fromEntries(
+          Object.entries(prev).filter(([tabId]) => live.has(tabId)),
+        ) as BrowserPickModes;
+        return next;
+      });
+      setBrowserPicksByTab((prev) => {
+        if (!Object.keys(prev).some((tabId) => !live.has(tabId))) return prev;
+        const next = Object.fromEntries(
+          Object.entries(prev).filter(([tabId]) => live.has(tabId)),
+        ) as BrowserPickRowsByTab;
+        return next;
+      });
+      if (tabs.length > 0) {
+        setActiveBrowserTabId((current) =>
+          current && live.has(current) ? current : tabs[0]!.id,
+        );
+      }
       const fresh = tabs.filter((tab) => !known.has(tab.id));
       known = new Set(tabs.map((tab) => tab.id));
       if (fresh.length > 0 && !browserAutoOpenSuppressActivate) {
@@ -5568,26 +5592,21 @@ export function App() {
     }
   }, [availableAgents, defaultFolderPath, pushDebug]);
 
-  // 批注抽屉的「发给对话」：截图 dataUrl 落盘转附件药丸 + prompt 预填当前
+  // 批注抽屉的「发给对话」：Rust 已落盘的截图转附件药丸 + prompt 预填当前
   // 会话（没有真实会话时先建一个，memo「开新对话」同路）。预填不自动发送，
   // 用户在输入框里过目后再发。
   const sendBrowserPicksToChat = useCallback(
-    (prompt: string, images: string[]) => {
-      const deliver = async () => {
-        let sessionId = currentSession?.id ?? "";
+    async (prompt: string, imagePaths: string[]): Promise<boolean> => {
+      let sessionId = currentSession?.id ?? "";
+      try {
         if (!sessionId) {
           const created = await handleCreateChatSession();
-          if (!created) return;
+          if (!created) return false;
           sessionId = created.id;
         }
         const attachments: ImageAttachment[] = [];
-        for (const dataUrl of images) {
-          try {
-            const saved = await savePastedImage(dataUrl);
-            attachments.push(attachmentFromPath(saved.path));
-          } catch {
-            /* a failed crop attachment drops; the prompt still carries the note */
-          }
+        for (const path of imagePaths) {
+          attachments.push(attachmentFromPath(path));
         }
         const token = Math.max(Date.now(), imageInjectionTokenRef.current + 1);
         imageInjectionTokenRef.current = token;
@@ -5596,10 +5615,18 @@ export function App() {
         }
         setComposerPrefill({ sessionId, text: prompt, token });
         setComposerAutoFocus(true);
-      };
-      void deliver();
+        return true;
+      } catch (error) {
+        pushDebug({
+          level: "error",
+          source: "browser",
+          summary: "send browser annotations failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
     },
-    [currentSession?.id, handleCreateChatSession],
+    [currentSession?.id, handleCreateChatSession, pushDebug],
   );
 
   const setSessionStatusById = useCallback((sessionId: string, status: Session["status"]) => {
@@ -10093,6 +10120,10 @@ export function App() {
                 visible
                 onExit={() => setBrowserActive(false)}
                 onSendToChat={sendBrowserPicksToChat}
+                pickModes={browserPickModes}
+                picksByTab={browserPicksByTab}
+                setPickModes={setBrowserPickModes}
+                setPicksByTab={setBrowserPicksByTab}
               />
             </div>
           ) : activeDocPath && !dockActive && !IS_DETACHED_WINDOW ? (
@@ -10323,6 +10354,10 @@ export function App() {
                 visible
                 onExit={() => setDockPage(null)}
                 onSendToChat={sendBrowserPicksToChat}
+                pickModes={browserPickModes}
+                picksByTab={browserPicksByTab}
+                setPickModes={setBrowserPickModes}
+                setPicksByTab={setBrowserPicksByTab}
               />
             </div>
           )}

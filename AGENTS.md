@@ -783,7 +783,8 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
 - **工具通道 = localhost HTTP MCP**（`tools_mcp.rs`，tiny_http + 每会话 Bearer
   token，注入点在 `acp.rs` session/new 前、仅 supports_http 且 wire policy 放行）。
   zcode 只收 url 型所以这是唯一通道；新工具加 schema + dispatch 两处，别开新端口。
-  always-approve 镜像只覆盖挂载过 Composer 的会话（后台会话出权限卡，安全方向）。
+  always-approve 镜像只覆盖挂载过 Composer 的会话（后台会话出权限卡，安全方向），
+  且只跳过 **agent 自开标签**的 Control 卡；用户自开标签必须由用户显式允许。
 
 ## 浏览器元素批注（2026-11-17，DevTools 式拾取 + 框选）
 
@@ -794,30 +795,37 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
 - **模块**：`browser/pick.rs`（表达式构建器，probe.rs 同款：全 serde_json 禁拼接）+
   `browser/js/picker.js`（自有脚本，probe.js 同款自装 IIFE，**每个 eval 内联整份脚本 +
   三元守卫**，因为 addScriptToEvaluateOnNewDocument 只管未来文档）。覆盖层全部在
-  **closed Shadow DOM**（页面 CSS 伤不到）；拾取期间 capture 相吞页面的
-  pointer/click/contextmenu——「指着」绝不能「点了」。
+  **closed Shadow DOM**（页面 CSS 伤不到）。拾取期间 host 是 `pointer-events:auto!important`
+  的全屏命中层，底层元素只做同步 `elementFromPoint`，页面控件永远不会收到 activation；
+  所有指针/键盘入口都拒收 `isTrusted=false`，页面不能用合成事件伪造批注。
 - **node→ref 反向映射只有一条路**：读元素上的 `_ariaRef` expando（bundle 在同 world
   里缓存的）+ 公开 `elementForRef(gen, ref) === el` 校验。bundle 不暴露反向 API，
   **别给 bundle 加函数**（vendored 产物，改 = 重放上游构建）。
 - **generation 必须用快照返回的四段串**（`GENERATION.seq.hostGen.navEpoch`）原样传给
   `resolveRefs`/`elementForRef`——host 的 epoch 是两段，混用全拒。`pick_resolve` 每次
   发送**只拍一张快照**（120K chars，树丢弃只为 ref 表重建），不按 pick 逐个拍。
-- **`on_cdp_event` 的 `__marionettePick` 分支零 CDP**（事件可能在别的调用的 pump 里
-  触发）：只 parse + 存 payload（VecDeque，64 上限）+ emit
+- **`on_cdp_event` 永远零 CDP**（事件可能在别的调用的 pump 里触发）：pick、标题、
+  SPA route 都只更新内存 + emit。真实 document 变化走 `Page.frameNavigated`；helper
+  `nav-state` 只分类 title/route，禁止在事件里 `call_and_wait`（曾会绕过 CdpLease
+  重新引入 WebView2 嵌套 pump）。pick 只 parse + 存 payload（VecDeque，24 上限）+ emit
   `marionette-browser-pick`。裁剪（`browser_pick_finalize`：captureHide →
   captureScreenshot → captureRestore 三步一个租约，rect×dpr 本地裁剪）与 ref 解析
   （`browser_pick_resolve`）全是前端驱动的命令，租约照取。
-- **pick 三命令是 UI 路径，不加 grant**——grant 只挡 agent 工具调用
+- **pick 四命令是 UI 路径，不加 grant**——grant 只挡 agent 工具调用
   （`tool_read`/`control_gate` 一处原则不动）；本批**没有**新增任何 agent 工具，
   批注 prompt 让 agent 用现有 browser_snapshot/click/set_value。
 - **前端**：抽屉在 bar 与 host 之间（压矮 host，ResizeObserver 自动重同步 bounds）；
-  拾取状态按 tabId 记 Map，导航双侧清空（Rust `apply_main_frame_navigation` 清
-  payload + 前端 effect 监听 url 变化清模式）；`sendBrowserPicksToChat`：
-  `savePastedImage(dataUrl)` → `attachmentFromPath` → `composerImageInjection` +
-  `prefillComposer`（无真实会话先建，memo「开新对话」同路）。截图 finalize 对
-  CDP-busy 有 6×400ms 重试，失败亮「截图失败」chip，行照常可批注。
-- 回归：`cargo test --bin marionette pick`（表达式构建器 6 项）+
-  `npx tsx scripts/verify-browser-pick.mts`（prompt 组装/净化/词典 25 项）+
+  拾取状态提升到 App，BrowserPage 卸载只停 picker、不丢草稿。document nav 清 payload；
+  SPA URL 变化只移 epoch + 停 picker，title 变化只更新标题。`browser_pick_clear` 在
+  发送/清空后同时清 Rust 和页面元素表。截图由 Rust 落到 clipboard 目录，前端只留
+  小缩略图 + path；`sendBrowserPicksToChat` 成功后才清草稿，失败保留。
+- **提示词安全**：页面文字、selector、区域元素全部标为不可信数据；URL 先剥离
+  user/password、secret query/hash、JWT/高熵 path segment。混批按页面分组；单批上限
+  24，前端、页面脚本、Rust ring 三处一致。
+- **命中深度**：open Shadow DOM 与同源 iframe 递归命中，坐标经 `viewportRect`
+  折回首层；跨域 frame 只能选顶层 iframe，区域扫描把它标成不完整。
+- 回归：`cargo test --bin marionette browser` +
+  `npx tsx scripts/verify-browser-pick.mts`（prompt 安全/URL 脱敏/多页分组/输入屏障）+
   `npx tsc --noEmit`；真机手册见 docs/CURRENT.md 浏览器节。
 
 ## Computer Use（2026-10-31，批次 3）

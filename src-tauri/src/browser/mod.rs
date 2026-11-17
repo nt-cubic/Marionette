@@ -178,6 +178,12 @@ mod imp {
         surface::with_surface(app, tab_id, |s| s.origin.borrow().clone())
     }
 
+    /// Ownership is a privacy boundary: always-approve may skip the Control
+    /// card for tabs the agent opened, but never for a user tab.
+    pub fn tab_opened_by_agent(app: &AppHandle, tab_id: &str) -> Result<bool, String> {
+        surface::with_surface(app, tab_id, |s| s.opened_by_agent)
+    }
+
     /// Toolbar share: set the grant for the tab's CURRENT origin by hand.
     /// `None` revokes. Emits the tab list so every open UI updates.
     pub fn set_grant(app: &AppHandle, tab_id: &str, level: GrantLevel) -> Result<(), String> {
@@ -252,7 +258,7 @@ mod imp {
         let url = surface::normalize_url(&url)?;
         surface::with_surface(&app, &tab_id, move |s| {
             s.webview.load_url(&url).map_err(|e| format!("navigate: {e}"))?;
-            surface::apply_main_frame_navigation(s, url.clone());
+            surface::apply_document_navigation(s, url.clone(), None);
             Ok::<(), String>(())
         })??;
         let (tx, rx) = mpsc::channel();
@@ -323,6 +329,12 @@ mod imp {
         surface::with_surface(&app, &tab_id, move |s| {
             surface::pick_set(s, active, &mode)
         })?
+    }
+
+    /// Forget the current annotation batch after send/clear/abandon.
+    #[tauri::command(async)]
+    pub fn browser_pick_clear(app: AppHandle, tab_id: String) -> Result<Value, String> {
+        surface::with_surface(&app, &tab_id, move |s| surface::pick_clear(s))?
     }
 
     /// Crop the viewport screenshot down to one pick, highlight excluded.
@@ -531,6 +543,9 @@ mod imp {
     pub fn grant_required_note(_tab_id: &str) -> String {
         "browser tabs are unavailable on this platform".to_string()
     }
+    pub fn tab_opened_by_agent(_app: &AppHandle, _tab_id: &str) -> Result<bool, String> {
+        unavailable()
+    }
 
     #[tauri::command(async)]
     pub fn browser_open_tab(_app: AppHandle, _url: String) -> Result<Value, String> {
@@ -574,6 +589,10 @@ mod imp {
         _active: bool,
         _mode: String,
     ) -> Result<Value, String> {
+        unavailable()
+    }
+    #[tauri::command(async)]
+    pub fn browser_pick_clear(_app: AppHandle, _tab_id: String) -> Result<Value, String> {
         unavailable()
     }
     #[tauri::command(async)]

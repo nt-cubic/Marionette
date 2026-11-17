@@ -108,7 +108,7 @@ export type BrowserPickInfo = {
 };
 
 export type BrowserPickMessage =
-  | { kind: "pick"; pickId: string; info: BrowserPickInfo }
+  | { kind: "pick"; pickId: string; info: BrowserPickInfo; url?: string }
   | {
       kind: "region";
       pickId: string;
@@ -116,8 +116,10 @@ export type BrowserPickMessage =
       dpr: number;
       elements: BrowserPickInfo[];
       scanCapped?: true;
+      url?: string;
     }
-  | { kind: "cancel" };
+  | { kind: "cancel" }
+  | { kind: "limit"; limit: number };
 
 export type BrowserPickEvent = { tabId: string; message: BrowserPickMessage };
 
@@ -130,19 +132,37 @@ export async function browserPickSet(
   tabId: string,
   active: boolean,
   mode: BrowserPickMode,
-): Promise<{ ok: boolean; mode?: BrowserPickMode; error?: string } | null> {
-  if (!isTauriRuntime()) return null;
+): Promise<{ ok: boolean; mode?: BrowserPickMode; error?: string }> {
+  if (!isTauriRuntime()) return { ok: false, error: "desktop runtime required" };
   try {
     return await invoke("browser_pick_set", { tabId, active, mode });
+  } catch (error) {
+    return { ok: false, error: String(error) };
+  }
+}
+
+export async function browserPickClear(tabId: string): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try {
+    await invoke("browser_pick_clear", { tabId });
+    return true;
   } catch {
-    return null;
+    return false;
   }
 }
 
 export async function browserPickFinalize(
   tabId: string,
   pickId: string,
-): Promise<{ pickId: string; dataUrl: string; width: number; height: number } | null> {
+): Promise<{
+  pickId: string;
+  /** Small drawer preview. The full JPEG is already written to `path`. */
+  dataUrl: string;
+  path: string;
+  mimeType: string;
+  width: number;
+  height: number;
+} | null> {
   if (!isTauriRuntime()) return null;
   try {
     return await invoke("browser_pick_finalize", { tabId, pickId });
