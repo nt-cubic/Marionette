@@ -172,6 +172,8 @@ app 内置浏览器，agent 通过工具通道读写它。普通窗口里 Browse
 - **Browser 产品边界**：Marionette 只做内置 WebView2 开发工作区。不做 Chrome/Edge 扩展、
   relay、配对或可配置的外部 MCP 浏览器连接，也不做个人浏览器助手与社交/邮箱/银行自动
   化。用户需要这类能力时自行使用 browse。边界见 `docs/plan-browser-scope.md`。
+  用户即使已安装 browse，Marionette 也不探测、不导入其 relay/tab，也不把外部浏览器显示到
+  SurfaceWorkspace；底层 Agent 是否自行加载全局 MCP 属于外部 Agent 配置，不是本产品支持面。
 - **授权**：agent 自开标签自动**可读**（快照/console/截图）；**点击/输入（Control）
   逐次弹权限卡**（允许一次 / 允许并记住此站点 / 拒绝，2 分钟超时自动拒绝），该会话
   开着 always-approve 则自动放行；用户自开标签读写都要手动分享。grant 绑 origin，

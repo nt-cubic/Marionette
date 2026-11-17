@@ -20,6 +20,19 @@ Marionette 只做内置 WebView2 浏览器，定位是开发工具。
 如果用户需要 Agent 进入自己日常使用的浏览器，应自行在 Codex、Claude、OpenCode 等 Agent 中安装
 browse。browse 负责那套能力，Marionette 不提供桥接入口。
 
+### 用户已经安装 browse 时
+
+打开 Marionette 不会自动出现 browse 的 Browser，也不会把用户浏览器接到 SurfaceWorkspace。
+
+- Marionette 不探测 browse；
+- 不读取 browse relay / pairing；
+- 不把 browse tab 导入内置 Browser；
+- 不提供 browse 的批准、WAIT、批注或清理界面；
+- 不保证所有 ACP 适配器都加载用户 Agent 自己的全局 MCP 配置。
+
+如果底层 Agent 因为自己的全局配置而调用了 browse，那属于该 Agent 的外部能力。Marionette 最多在
+对话流里展示普通工具调用，不把用户浏览器变成我们的 Browser surface，也不把这种组合纳入产品支持。
+
 ## 我们唯一的 Browser
 
 - 内置 WebView2，独立 profile；

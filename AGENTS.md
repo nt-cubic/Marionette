@@ -806,7 +806,9 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
   接受普通 Agent tab，busy / waiting_user / handoff / 当前可见一律跳过。
 - **只做内置开发浏览器**：Chrome/Edge 扩展、relay、配对、外部 MCP 浏览器连接和个人生活助手
   都不是 Marionette 范围。用户需要 Agent 使用自己的日常浏览器时自行安装 browse。产品里不加入
-  “连接我的浏览器”假入口。边界见 plan-browser-scope.md。
+  “连接我的浏览器”假入口，也不探测或导入用户已安装的 browse relay/tab。底层 Agent 自己加载
+  全局 MCP 属于外部能力，不进入 SurfaceWorkspace，也不作为产品支持承诺。边界见
+  plan-browser-scope.md。
 - **共同标签必须在原生 host 外**：顶部 Browser / Document / Memo 标签条是 DOM，
   BrowserPage 的 child WebView2 host 在它下方；不要把标签塞进 host 或让 native webview
   覆盖标签。Browser 内部标签仍按后台 Rust 创建顺序稳定排序。
