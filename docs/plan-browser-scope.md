@@ -18,20 +18,29 @@ Marionette 只做内置 WebView2 浏览器，定位是开发工具。
 - 社交、视频、邮箱、银行等账号管理或批量操作。
 
 如果用户需要 Agent 进入自己日常使用的浏览器，应自行在 Codex、Claude、OpenCode 等 Agent 中安装
-browse。browse 负责那套能力，Marionette 不提供桥接入口。
+browse。browse 本身就是“浏览器扩展 + 本地 relay + MCP server”的组合；Marionette 不另做桥接入口，
+但不会禁止底层 Agent 通过通用 MCP 使用它。
 
 ### 用户已经安装 browse 时
 
-打开 Marionette 不会自动出现 browse 的 Browser，也不会把用户浏览器接到 SurfaceWorkspace。
+只给浏览器装 browse 扩展还不等于任何 Agent 都能控制浏览器。完整执行 `browse install` 后，它会把
+`browse mcp` 写进所选 Agent 自己的 MCP 配置；用户也可以选择安装到所有支持的 Agent。此后，在
+Marionette 中启动的对应 Agent 可以按自己的 MCP 配置调用 browse，工具调用作为普通 MCP 工具出现在
+对话流里。Marionette 的项目上下文清单也会按通用 MCP 规则扫描并允许用户把该条目借给其它 Agent；
+MCP 默认不自动借出，需要用户在该项目中显式启用。
+
+这不会创建 Marionette 的 Browser surface，也不会把用户浏览器接到 SurfaceWorkspace。
 
 - Marionette 不探测 browse；
 - 不读取 browse relay / pairing；
 - 不把 browse tab 导入内置 Browser；
 - 不提供 browse 的批准、WAIT、批注或清理界面；
-- 不保证所有 ACP 适配器都加载用户 Agent 自己的全局 MCP 配置。
+- 不替底层 Agent 判断它是否加载了自己的全局 MCP 配置；Agent 不支持 MCP、没有写入对应配置，
+  或适配器无法传递该 transport 时，browse 仍不可用。
 
-如果底层 Agent 因为自己的全局配置而调用了 browse，那属于该 Agent 的外部能力。Marionette 最多在
-对话流里展示普通工具调用，不把用户浏览器变成我们的 Browser surface，也不把这种组合纳入产品支持。
+如果底层 Agent 因为自己的全局配置或 Marionette 的通用 MCP 借贷而调用了 browse，调用仍在用户自己的
+浏览器中执行。Marionette 最多在对话流里展示普通工具调用；browse 的 tab group、WAIT、批注和配对状态
+都留在 browse 自己的扩展与 Agent 中，不会变成我们的 Browser surface。
 
 ## 我们唯一的 Browser
 
