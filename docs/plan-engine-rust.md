@@ -73,7 +73,40 @@ ureq 出站），ring-less TLS 约束不变。
   SiliconFlow/StepFun/Zhipu/DeepSeek 修正），端点字段逐条对齐 Go
   balance.go；13/13 模块测试。未覆盖清单在 quotas.rs 尾注。
 
-## 已完成（补记二）
+## 已完成（终局补记）
+
+- [x] **T7 目录缓存**（**done-by-design**，随 T6/T12）：`engine-catalog.json`
+  的读写（engine.rs `save_catalog_cache`/`cached_catalog_entries`）在 SKU
+  无关代码路径上——目录数据走对运行引擎的 HTTP（`/v1/models`），rust 进程
+  内引擎同面应答，缓存落盘/回放/`auto/` 剥离对两种 SKU 等价。真实配置
+  兼容性：本机无 `~/.config/magpie/providers.json`（引擎从未配置过），
+  首次配置即 T13 实机练习；Store 结构按 Go 源逐字段建模。
+- [x] **T12 发布切换**（`1965c34a`）：门控 + `MARIONETTE_ENGINE=rust` SKU
+  + 实测 **5.36MB**（见上）；magpie SKU 默认路径不变。
+
+## 剩余（需要人参与的收尾）
+
+- [ ] **T13 真机对账**（需要用户在场，不能用无人值守代理替代）：
+  1. 关掉正在跑的 Marionette（单实例锁会交接，别双开）；
+  2. 跑 rust SKU：worktree 的 `release\0.8.1\Marionette.exe`
+     （5.36MB 那个），或 `set MARIONETTE_ENGINE=rust && tools\build-portable.bat`；
+  3. 模型共享里配一个真实来源（DeepSeek/ollama 之一即可）；
+  4. 逐项对账：目录行窗口/图片能力（C2）、额度卡（六家来源）、
+     codex 一轮真实对话（/v1/responses 流式+工具）、grok/dsh 跨用桥
+     （chat 直通）、Claude 系一轮（/v1/messages）、usage 台账四桶
+     （recordTurnUsage 与 magpie 基线对比）、贴边窄条引擎行
+     （「引擎未运行·快照」标注行为一致）；
+  5. 每项与 magpie SKU 对照（同来源同模型）。
+- [ ] **T14 退役收尾**（T13 绿后）：
+  1. 前端 locale「检查 magpie 稳定版更新（约 48 MB）」hint 在 rust SKU
+     下不渲染（T12 遗留，改 fe-locale 片段按 SKU 条件）；
+  2. 默认 SKU 翻转决策（build-portable 默认 rust、magpie 降为
+     `MARIONETTE_ENGINE=magpie` 回退）——**产品决定，留给用户**；
+  3. third_party/magpie 与 tools/magpie-seed 退出默认构建路径后留档
+     一个发布周期再删；
+  4. AGENTS.md「上游移植管线」小节改写（upstream-watch 从「移植门禁」
+     转为「行为哨塔」——digest 命中合同区时登记移植任务）。
+
 
 - [x] **T6 进程内接线**（`7f31e5cf`）：feature `engine-rust` 全链——
   spawn_serve_in_process（同步 bind 占端口）、InProcessServe 停止机制
