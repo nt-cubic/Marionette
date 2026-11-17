@@ -9,7 +9,7 @@
 //! 收成可勾选条目：全局指令文件（`~/.claude/CLAUDE.md`、`~/.zcode/AGENTS.md`
 //! 等）+ agent 自攒的自动记忆（Claude `~/.claude/projects/*/memory/`、
 //! Grok `~/.grok/memory-v2/`、Codex `~/.codex/memories/`）。路径考证见
-//! `docs/research-agent-memory-locations.md`；阵容对齐 agent_registry（gemini
+//! `docs/research/research-agent-memory-locations.md`；阵容对齐 agent_registry（gemini
 //! 已下架；dsh/pi 无全局记忆文件；hermes 2026-11-09 全量移除）。项目级 AGENTS.md/CLAUDE.md 不收：
 //! 各引擎在会话里原生就读项目文件。
 //!

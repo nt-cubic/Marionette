@@ -9,7 +9,7 @@ description: >
 
 # Marionette UI
 
-先读仓库里的 `docs/ui-language.md`，再改任何用户可见界面。那是唯一真相。
+先读仓库里的 `docs/guides/ui-language.md`，再改任何用户可见界面。那是唯一真相。
 
 对话流（`.event-card` / `.composer-mode-chip` / `.composer-select`）就是设计系统。
 token 从 `src/styles/tokens.css` 和 `motion.css` 取。范例是圆桌：
@@ -19,4 +19,4 @@ token 从 `src/styles/tokens.css` 和 `motion.css` 取。范例是圆桌：
 收纳盒 8px 卡只属于收纳盒页。
 
 动手前打开一屏真对话流，对照边角、3px 左边条、22px 芯片、6px 卡距。
-改完走 `docs/ui-language.md` 的检查单。
+改完走 `docs/guides/ui-language.md` 的检查单。

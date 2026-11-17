@@ -1,4 +1,4 @@
-/* UI v2 overrides: dock. Loaded after every legacy sheet (src/main.tsx); see docs/ui-language.md. */
+/* UI v2 overrides: dock. Loaded after every legacy sheet (src/main.tsx); see docs/guides/ui-language.md. */
 
 /* ── 0 · Band: flush sections separated by 1px borders, no card chrome. ── */
 .dock-chrome.dock-chrome {

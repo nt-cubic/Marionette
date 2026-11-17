@@ -1,6 +1,6 @@
 # 路线图：从 Codeg 借什么、什么不借（2026-10-25）
 
-依据：[`research-codeg.md`](./research-codeg.md) 的全量调研，对照 Marionette 现状（2026-10-25，dock 阶段 0–4 落地后）逐项核实写成。
+依据：[`research-codeg.md`](../research/research-codeg.md) 的全量调研，对照 Marionette 现状（2026-10-25，dock 阶段 0–4 落地后）逐项核实写成。
 工作量标记：S ≈ 半天内，M ≈ 1–2 天，L ≈ 一个迭代以上。条目后括号是 Codeg 实现指针（相对 `D:\Projects\codeg`）。
 
 ## 2026-10-26 复核（用户逐条过 P0/P1，含代码实证）

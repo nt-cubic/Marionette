@@ -1,4 +1,4 @@
-//! Marionette Chief（Telegram 远程首席助理）——M0 阶段（docs/research-telegram-chief/）。
+//! Marionette Chief（Telegram 远程首席助理）——M0 阶段（docs/research/telegram-chief/）。
 //!
 //! M0 只做两件事，都不写产品 UI：
 //!

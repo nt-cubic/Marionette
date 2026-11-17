@@ -1,5 +1,5 @@
 /* UI v2 overrides: transcript (conversation stream cards).
-   Loads after every legacy sheet (src/main.tsx); see docs/ui-language.md.
+   Loads after every legacy sheet (src/main.tsx); see docs/guides/ui-language.md.
    Tokens only, never hex, so light and dark both keep working. */
 
 /* ── 1 · Ground + card chrome ──────────────────────────────────────────── */

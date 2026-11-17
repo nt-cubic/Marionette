@@ -716,7 +716,7 @@ impl AcpService {
                     ),
                 }
             }
-            // ── DSH 原生跨用（2026-10-22 改版，docs/research-dsh-cross-use.md §8.7）：
+            // ── DSH 原生跨用（2026-10-22 改版，docs/research/research-dsh-cross-use.md §8.7）：
             //    与 opencode 的 OPENCODE_CONFIG_CONTENT 同款姿势——不看绑定，
             //    引擎在跑就把 provider「marionette」（openai-completions → 引擎
             //    /v1）写进一个**本次进程专用**的 bundle（~/.marionette/dsh-acp-bundle），
@@ -1473,7 +1473,7 @@ impl AcpService {
         // nothing else. Gated by the same wire policy as lent MCP servers.
         let mut mcp_servers = mcp_servers;
         let mut mcp_skipped = mcp_skipped;
-        // Universal plugins (docs/plan-plugin-layer.md) ride the same loopback
+        // Universal plugins (docs/plans/plan-plugin-layer.md) ride the same loopback
         // server. A lent server colliding with an installed plugin name would
         // register twice inside the agent — the plugin wins, the lent twin is
         // dropped (Zed's dual-source confusion is the cautionary tale).

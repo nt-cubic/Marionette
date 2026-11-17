@@ -1,5 +1,5 @@
 /*
- * Edge dock (docs/plan-edge-dock.md §3; design docs/design/edge-dock.html):
+ * Edge dock (docs/plans/plan-edge-dock.md §3; design docs/design/edge-dock.html):
  * the main window's docked mode.
  * Class variants (never @media — repo convention):
  *   .dock-mode             window is docked (hidden or expanded)

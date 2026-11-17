@@ -2,7 +2,7 @@
 //
 // Watches yetone/magpie from a LOCAL research clone (never a GitHub fork, per
 // the 2026-11-17 product decision), digests what changed against the engine
-// contract (docs/plan-engine-contract.md), and — with --verify — actually
+// contract (docs/plans/plan-engine-contract.md), and — with --verify — actually
 // ports a tag: imports it into an ISOLATED git worktree of this repo, builds
 // the seed, and runs the contract suite against it. The main working tree is
 // never mutated by this script; a green verify only means "ready to import".
@@ -31,7 +31,7 @@ const stateFile = join(watchDir, "state.json");
 const git = async (args: string[], cwd = cloneDir) =>
   (await execFile("git", args, { cwd, windowsHide: true, timeout: 300_000, maxBuffer: 64 * 1024 * 1024 })).stdout;
 
-// ── contract areas: path prefix → {area, level} (docs/plan-engine-contract.md) ──
+// ── contract areas: path prefix → {area, level} (docs/plans/plan-engine-contract.md) ──
 const AREAS: [string, string, "high" | "medium" | "low"][] = [
   ["internal/gateway/", "C2/C3/C5 gateway（body_cap 锚点风险）", "high"],
   ["internal/provider/", "C6/C4 provider（peel 调用点锚点风险）", "high"],
@@ -125,7 +125,7 @@ async function digest(from: string, to: string): Promise<string> {
 
 - 新版本数：${commits.length}（tag 数按 semver 计）
 - 变更文件：${files.length} 个（其中 ${lowCount} 个不在合同映射内，种子不链接或未映射）
-- 结论入口：合同清单 docs/plan-engine-contract.md；验证套件 scripts/verify-engine-contract.mts
+- 结论入口：合同清单 docs/plans/plan-engine-contract.md；验证套件 scripts/verify-engine-contract.mts
 
 ## 按合同区分级
 

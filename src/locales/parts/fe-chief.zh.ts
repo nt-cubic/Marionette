@@ -1,6 +1,6 @@
 /**
  * fe-chief：远程助理（Marionette Chief）配置面与任务区文案。
- * docs/research-telegram-chief/。
+ * docs/research/telegram-chief/。
  */
 export const zh = {
   "chief.sectionTitle": "远程助理",

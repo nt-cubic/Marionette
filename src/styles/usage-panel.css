@@ -1,5 +1,5 @@
 /* usage-panel — Token 用量分析伪标签页 / 贴边整页 / detached 弹窗。
- * 视觉语言走 docs/ui-language.md:--radius 3px、1px 边、无阴影、
+ * 视觉语言走 docs/guides/ui-language.md:--radius 3px、1px 边、无阴影、
  * 22px 芯片。图表两色语言学 codeg .tu-viz:强调色=缓存,墨色=新算。 */
 
 /* ── 伪标签页(usage-tab-page 挂载,council 同模式) ──────────────────── */

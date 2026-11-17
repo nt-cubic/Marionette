@@ -54,7 +54,7 @@ Marionette 已经有闭环所需的大部分本地能力：ACP 多 Agent、项�
 
 ## 与现有 Telegram 桥的关系
 
-现有 `docs/telegram-bridge.md` 解决的是“多会话远程通知 / 回复 / 批准”：裸文本去最近活跃会话，
+现有 `docs/plans/telegram-bridge.md` 解决的是“多会话远程通知 / 回复 / 批准”：裸文本去最近活跃会话，
 引用消息定向到某条通知所属会话，用户仍然自己充当会话路由器。
 
 Chief 模式是在此之上的产品层：

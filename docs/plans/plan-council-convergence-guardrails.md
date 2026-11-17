@@ -1,6 +1,6 @@
 # 圆桌：收敛终止与幻觉治理 — 实施方案（草案）
 
-> 依据 [`research-council-convergence-hallucination.md`](./research-council-convergence-hallucination.md)
+> 依据 [`research-council-convergence-hallucination.md`](../research/research-council-convergence-hallucination.md)
 > 的现状审计与文献调研。**本文档是方案，不是已实现行为的描述**；落地时按 P0→P1 分批，
 > 每批带回归（`cargo test --bin marionette council` + `npx tsx scripts/verify-council.mts`）。
 

@@ -4,7 +4,7 @@
 //! 校验由 Host 负责。注册表持久化到 `~/.marionette/chief/staff.json`，
 //! 坏档按空表 fail-open；写入沿用 chief store 的原子替换纪律。
 //!
-//! `StaffPolicy` 在档案 JSON 中扁平存放（与 docs/plan-employee-mode.md
+//! `StaffPolicy` 在档案 JSON 中扁平存放（与 docs/plans/plan-employee-mode.md
 //! §5.1 的示例一致），Rust 代码里仍保留独立类型，避免策略字段散落到
 //! UI、broker 和工具实现。
 

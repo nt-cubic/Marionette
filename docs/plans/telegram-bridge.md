@@ -362,4 +362,4 @@ grinev / artickc / RemoClaw 三个同类项目后收敛为共识形态，全部�
 模式是 Host 级开关（`~/.marionette/chief/config.json` 的 `mode`，经 store 的
 mode 快照给热路径零读盘判定）；两种模式不抢同一条裸文本。update_id 游标
 （`telegram-cursor.json`，poller 唯一写者）两种模式共用，重启不重放旧消息。
-设计、任务账本与安全边界见 [`research-telegram-chief/`](./research-telegram-chief/README.md)。
+设计、任务账本与安全边界见 [`research-telegram-chief/`](../research/telegram-chief/README.md)。

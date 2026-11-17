@@ -12,7 +12,7 @@ import {
 
 /**
  * Session-info ring: the 16px context-occupancy ring left of the send button
- * and the popover it opens (docs/ui-language.md v2 "输入框", LightC.html).
+ * and the popover it opens (docs/guides/ui-language.md v2 "输入框", LightC.html).
  *
  * The popover is a `.composer-menu` driven by the Composer's own `menu` state
  * (id "info"), so the Composer's viewport-clamp pass positions it. It stays

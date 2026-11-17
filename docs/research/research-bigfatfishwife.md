@@ -150,7 +150,7 @@ Marionette 不应该复制它的陪伴玩法,也不应该做 2.5D 办公室。�
 硬门禁;普通通知冷却已持久化;task 终态自动写 journal,proposal 可 accept/reject。
 但以下仍不能写成已完成:完整的持久通知审计与跨渠道矩阵、通用条件承诺、健康页、空闲候选规划、
 精确 provider 模型调用计数与成本请求前预占、多员工多 Telegram chat,以及 E4 的长期常驻验收。
-详细状态、偏差和待办见 [plan-employee-mode.md](./plan-employee-mode.md) §0.1、§6 和 §9。
+详细状态、偏差和待办见 [plan-employee-mode.md](../plans/plan-employee-mode.md) §0.1、§6 和 §9。
 
 ## 2. 分层记忆
 

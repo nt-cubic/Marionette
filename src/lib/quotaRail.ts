@@ -3,7 +3,7 @@ import { isBridgeNativeModelId } from "./errors";
 import type { UsageWindow } from "./types";
 
 /**
- * Right-rail quota model (docs/ui-language.md v2「右栏 · 额度」).
+ * Right-rail quota model (docs/guides/ui-language.md v2「右栏 · 额度」).
  *
  * The highlighted block is "who is paying for THIS turn": the agent's own
  * subscription for its own models, the matching source for a model that comes

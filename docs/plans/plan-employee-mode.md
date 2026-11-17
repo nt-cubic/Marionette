@@ -2,12 +2,12 @@
 
 日期:2026-11-17。状态:**已施工 + 设计中**。当前工作树已完成员工骨架(E1 的主要部分),
 记忆/承诺/预算/通知处于部分实现,E4 仍待办。前置 chief-m0(M1 已落地、三 agent 真机 E2E
-通过,设计见 `docs/research-telegram-chief/`)保持不变。
+通过,设计见 `docs/research/telegram-chief/`)保持不变。
 
 代码模块、路径、工具名沿用 `chief`(与「圆桌 = council」同款约定:UI 名与代码名分离)。
 
 本稿 2026-11-17 追加吸收了 BigFatFishWife / dsh-room 的可迁移机制。完整源码观察、证据索引、
-细碎行为和明确不借项见 [research-bigfatfishwife.md](./research-bigfatfishwife.md)。
+细碎行为和明确不借项见 [research-bigfatfishwife.md](../research/research-bigfatfishwife.md)。
 
 本稿现在同时承担三件事:**记录当前实际行为**、保留仍未施工的目标契约、并明确两者之间的偏差。
 未标注“已施工”的内容默认仍是待办或设计目标。代码与本文冲突时先以代码为准,再回来修文档。

@@ -1,4 +1,4 @@
-// Engine contract suite (docs/plan-engine-contract.md) — drives a magpie SEED
+// Engine contract suite (docs/plans/plan-engine-contract.md) — drives a magpie SEED
 // binary over its whole observable surface with a local fixture vendor, in a
 // .portable scratch home. Never touches the real ~/.config/magpie or
 // ~/.marionette; no network beyond 127.0.0.1 (MAGPIE_NO_ACCOUNTS/NO_STATS +

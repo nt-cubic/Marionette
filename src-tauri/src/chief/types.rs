@@ -1,6 +1,6 @@
 //! Chief 数据类型：任务、配置、项目策略、事件。
 //!
-//! 状态机（docs/research-telegram-chief/02-architecture.md §4.3）：
+//! 状态机（docs/research/telegram-chief/02-architecture.md §4.3）：
 //!
 //! ```text
 //! proposed ─▶ starting ─▶ running ─┬─▶ waiting_user ─▶ running

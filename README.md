@@ -177,7 +177,7 @@ npm install && npm run tauri dev
 |---|---|
 | 产品现状与每项能力的细节 | [docs/CURRENT.md](docs/CURRENT.md) |
 | 全部文档索引 | [docs/README.md](docs/README.md) |
-| i18n（中英双语）怎么改文案 | [docs/i18n-guide.md](docs/i18n-guide.md) |
+| i18n（中英双语）怎么改文案 | [docs/guides/i18n-guide.md](docs/guides/i18n-guide.md) |
 
 </details>
 

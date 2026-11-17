@@ -16,7 +16,7 @@ import { useT } from "../lib/i18n";
 import type { AgentConfig, Project } from "../lib/types";
 
 /**
- * 远程助理（Marionette Chief）配置面与任务区（docs/research-telegram-chief/）。
+ * 远程助理（Marionette Chief）配置面与任务区（docs/research/telegram-chief/）。
  *
  * M1 只给三个概念（01-product.md §5）：Chief 是谁（agent）、它能碰哪些项目
  * （允许列表 + 项目策略）、遇到危险谁说了算（写走权限卡，急停在这里）。

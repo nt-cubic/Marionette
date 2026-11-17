@@ -1,7 +1,7 @@
 # 对话区内分屏 / 停靠（设计稿）
 
 > 状态：**PR1–PR6 已进树**（模型 + 渲染预算 + 分屏 UI + 冷启动恢复 + 撕窗拖回落点 + 上下拆 / 最多 4 格 / 「在右侧打开」，2026-10-18）。
-> 现行行为已写入 [`CURRENT.md`](./CURRENT.md)；本文件仍是设计合同，全部稳定后再挪进 `archive/`。
+> 现行行为已写入 [`CURRENT.md`](../CURRENT.md)；本文件仍是设计合同，全部稳定后再挪进 `archive/`。
 
 ## 一句话
 
@@ -922,7 +922,7 @@ PR3 checklist / 脚本：焦点在 A，从 B 的 Composer send / warm / ■ / �
 ## 参考
 
 - `docs/CURRENT.md` — 轻壳；撕窗已存在
-- `docs/telegram-bridge.md` — 体例
+- `docs/plans/telegram-bridge.md` — 体例
 - `Agents.md` — `panic = "abort"`
 - `src/lib/acpTranscript.ts` `applyAcpPartToEvents`
 - `src/lib/detachedWindow.ts` — 窗口所有权、hide 不 destroy、`acpUiRootSessionId`

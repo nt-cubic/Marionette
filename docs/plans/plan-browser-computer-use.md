@@ -1,6 +1,6 @@
 # 浏览器共享 + Computer Use 实施案（设计稿，2026-10-31 定稿；批次 2 已落地，见文末偏差记录）
 
-- 来源调研：`docs/research-codeg.md`（D5/D6 + 2026-10-31 复核节，全部 file:line 已对
+- 来源调研：`docs/research/research-codeg.md`（D5/D6 + 2026-10-31 复核节，全部 file:line 已对
   v0.41.3 核实）；参考实现在 `D:\Projects\codeg`（Apache-2.0）。
 - 用户定调：**分批交付、每批完整实现**（不是 MVP 裁剪）；体积/内存零默认开销
   （浏览器 tab 才起 WebView2 renderer，CU 首次使用才下载 driver）。

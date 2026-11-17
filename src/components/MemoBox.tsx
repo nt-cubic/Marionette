@@ -1,5 +1,5 @@
 /**
- * Memo inbox page (edge dock stage 3, docs/plan-edge-dock.md §4 / §4.1).
+ * Memo inbox page (edge dock stage 3, docs/plans/plan-edge-dock.md §4 / §4.1).
  *
  * Mounted either as the dock strip's full page or as the floating window's
  * titlebar tab page — the mount's chrome owns title and close, Esc still

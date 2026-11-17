@@ -177,7 +177,7 @@ npm install && npm run tauri dev
 |---|---|
 | Product status and per-capability details | [docs/CURRENT.md](docs/CURRENT.md) (Chinese) |
 | Full docs index | [docs/README.md](docs/README.md) (Chinese) |
-| How to edit UI strings (i18n) | [docs/i18n-guide.md](docs/i18n-guide.md) (Chinese) |
+| How to edit UI strings (i18n) | [docs/guides/i18n-guide.md](docs/guides/i18n-guide.md) (Chinese) |
 
 </details>
 

@@ -1,4 +1,4 @@
-//! Memo inbox (edge dock stage 3, docs/plan-edge-dock.md §4).
+//! Memo inbox (edge dock stage 3, docs/plans/plan-edge-dock.md §4).
 //!
 //! Deterministic local storage under `~/.marionette/memos/`:
 //!   index.json  — the entry list (atomic tmp+rename, same discipline as the

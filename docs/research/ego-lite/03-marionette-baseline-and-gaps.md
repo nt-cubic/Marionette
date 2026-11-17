@@ -13,7 +13,7 @@ Marionette master 上的浏览器工作已经覆盖完整产品闭环：
 - `browser_page_state` / `browser_page_ready` / console / screenshot 已是低成本观察面；
 - tab 懒建，减少常驻 WebView2 进程组。
 
-现行契约见 [`docs/CURRENT.md`](../CURRENT.md) 的「内置浏览器 Workspace Surface」，工具面见 [`tools_mcp.rs`](../../src-tauri/src/tools_mcp.rs:260)。
+现行契约见 [`docs/CURRENT.md`](../../CURRENT.md) 的「内置浏览器 Workspace Surface」，工具面见 [`tools_mcp.rs`](../../src-tauri/src/tools_mcp.rs:260)。
 
 ## 2. 当前 15 个 `browser_*` 工具
 

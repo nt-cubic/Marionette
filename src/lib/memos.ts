@@ -1,5 +1,5 @@
 /**
- * Memo inbox client (edge dock stage 3, docs/plan-edge-dock.md §4).
+ * Memo inbox client (edge dock stage 3, docs/plans/plan-edge-dock.md §4).
  *
  * Deterministic local storage behind four Rust commands — files are COPIED
  * into ~/.marionette/memos (content-hash dedup), text/links land in the

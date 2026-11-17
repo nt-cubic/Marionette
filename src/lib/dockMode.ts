@@ -1,5 +1,5 @@
 /**
- * Edge dock (docs/plan-edge-dock.md): the main window's "docked mode", not a
+ * Edge dock (docs/plans/plan-edge-dock.md): the main window's "docked mode", not a
  * second window — docking is the same SPA narrowing into a vertical strip.
  *
  * 2026-10-31 定稿：贴边与关闭解耦——贴边只走标题栏专属按钮（WindowControls

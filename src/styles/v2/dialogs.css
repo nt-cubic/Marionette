@@ -1,4 +1,4 @@
-/* UI v2 overrides: dialogs. Loaded after every legacy sheet (src/main.tsx); see docs/ui-language.md. */
+/* UI v2 overrides: dialogs. Loaded after every legacy sheet (src/main.tsx); see docs/guides/ui-language.md. */
 
 /* ── shared: unboxed text buttons (Browse…, links, refresh/check actions) ── */
 .project-dialog .project-dialog__browse,

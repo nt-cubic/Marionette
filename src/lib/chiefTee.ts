@@ -1,5 +1,5 @@
 /**
- * Chief durable event tee 的回放辅助（docs/research-telegram-chief/）。
+ * Chief durable event tee 的回放辅助（docs/research/telegram-chief/）。
  *
  * 被 Chief/worker 后端驱动的会话不经过前端 rails 落盘，事件由 Rust 侧
  * tee 原样记录（`~/.marionette/chief/sessions/<id>.events.jsonl`）。会话
