@@ -162,9 +162,23 @@ fn provider_add(
     let Some(name) = rest.first() else {
         return Err("provider add <name> [key] k=v…".into());
     };
-    let mut provider = Provider {
-        name: name.clone(),
-        ..Default::default()
+    // preset 家族（deepseek/zhipu/…）端点来自内置表（Go FromPreset 同款）：
+    // 注册链的 `provider add deepseek <key>` 不带 url，没有这步 add 出来的
+    // 行没有端点，目录/对话全线 404（2026-11-18 真机实锤）。
+    let mut provider = match super::vendor_presets::find(name) {
+        Some(preset) => Provider {
+            id: preset.id.to_string(),
+            name: preset.name.to_string(),
+            chat: preset.chat.to_string(),
+            responses: preset.responses.to_string(),
+            anthropic: preset.anthropic.to_string(),
+            preset: preset.id.to_string(),
+            ..Default::default()
+        },
+        None => Provider {
+            name: name.clone(),
+            ..Default::default()
+        },
     };
     let mut pairs: Vec<String> = rest[1..].to_vec();
     // 裸 key 形态（provider add <name> <key>）。
@@ -182,7 +196,10 @@ fn provider_add(
     let shown = provider.name.clone();
     store.upsert(provider);
     out(&format!("added {shown} ({id})"));
-    refresh(store, &[id], out)
+    // 抓厂商清单是尽力而为（Go seed 同款 `_ = seedProviderFetch`）：离线
+    // /厂商抖动时行已落盘，别把 add 判成失败——清单稍后由目录路径补抓。
+    let _ = refresh(store, &[id], out);
+    Ok(())
 }
 
 fn refresh(
@@ -227,6 +244,30 @@ fn apply_pairs(provider: &mut Provider, pairs: &[String]) -> Result<(), String> 
                 );
             }
             "catalog" => provider.catalog = value.to_string(),
+            // region/plan（Go seedApplyRegion 同款）：在 preset 的 Regions 里
+            // 挑一组，整组覆盖端点——zhipu 的 `region=coding` 就是这么把
+            // 按量端点换成 Coding Plan 端点的。
+            "region" | "plan" => {
+                let preset_id = if provider.preset.is_empty() {
+                    provider.id.as_str()
+                } else {
+                    provider.preset.as_str()
+                };
+                let preset = super::vendor_presets::find(preset_id)
+                    .filter(|p| !p.regions.is_empty())
+                    .ok_or_else(|| format!("{} has no regions or plans to pick", provider.name))?;
+                let region = preset
+                    .regions
+                    .iter()
+                    .find(|r| r.id.eq_ignore_ascii_case(value))
+                    .ok_or_else(|| {
+                        let ids: Vec<&str> = preset.regions.iter().map(|r| r.id).collect();
+                        format!("region={value}: {}'s are {}", preset.name, ids.join(", "))
+                    })?;
+                provider.chat = region.chat.to_string();
+                provider.responses = region.responses.to_string();
+                provider.anthropic = region.anthropic.to_string();
+            }
             other => {
                 if let Some(header) = other.strip_prefix("header.") {
                     if value.trim().is_empty() {
@@ -305,5 +346,89 @@ fn group_cli(store: &mut super::store::Store, args: &[String]) -> Result<(), Str
             }
         }
         other => Err(format!("{other} is not in the Marionette engine (rust)")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// XDG 沙箱（共享锁）：cli 的 Store 落在 config_dir()＝XDG/magpie。
+    struct Sandbox {
+        prior: Option<String>,
+        dir: std::path::PathBuf,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+    impl Drop for Sandbox {
+        fn drop(&mut self) {
+            match &self.prior {
+                Some(p) => std::env::set_var("XDG_CONFIG_HOME", p),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+    fn sandbox() -> Sandbox {
+        let lock = crate::engine_gateway::TEST_SANDBOX_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!("marionette-cli-test-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("magpie")).expect("temp dir");
+        let prior = std::env::var("XDG_CONFIG_HOME").ok();
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        Sandbox { prior, dir, _lock: lock }
+    }
+
+    /// preset 注册链的形状（2026-11-18 真机事故回归）：`provider add
+    /// deepseek <key>` 无 url 也要带上内置端点；离线时 add 不失败（刷新
+    /// 尽力而为），行已落盘。
+    #[test]
+    fn preset_add_fills_endpoints_and_survives_offline() {
+        let _sb = sandbox();
+        run(&[
+            "provider".into(),
+            "add".into(),
+            "deepseek".into(),
+            "key-offline".into(),
+        ])
+        .expect("offline add must succeed");
+        let store = super::super::store::Store::load().expect("store");
+        let p = store.find("deepseek").expect("preset row persisted");
+        assert_eq!(p.chat, "https://api.deepseek.com/v1");
+        assert_eq!(p.key, "key-offline");
+        assert_eq!(p.preset, "deepseek");
+    }
+
+    /// zhipu 的 `region=coding`：端点整组切到 Coding Plan。
+    #[test]
+    fn zhipu_region_coding_switches_endpoints() {
+        let _sb = sandbox();
+        run(&[
+            "provider".into(),
+            "add".into(),
+            "zhipu".into(),
+            "k".into(),
+            "region=coding".into(),
+        ])
+        .expect("add with region");
+        let store = super::super::store::Store::load().expect("store");
+        let p = store.find("zhipu").expect("row");
+        assert_eq!(p.chat, "https://open.bigmodel.cn/api/coding/paas/v4");
+        assert_eq!(p.responses, "https://open.bigmodel.cn/api/v1");
+    }
+
+    /// 无 region 的 preset 给 region= 要响亮报错（Go 同款）。
+    #[test]
+    fn region_on_regionless_preset_errors() {
+        let _sb = sandbox();
+        let err = run(&[
+            "provider".into(),
+            "add".into(),
+            "deepseek".into(),
+            "k".into(),
+            "region=coding".into(),
+        ])
+        .expect_err("must fail");
+        assert!(err.contains("no regions"), "got: {err}");
     }
 }

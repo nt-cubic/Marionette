@@ -25,6 +25,7 @@ pub mod responses;
 pub mod routes;
 pub mod store;
 pub mod translate;
+pub mod vendor_presets;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
