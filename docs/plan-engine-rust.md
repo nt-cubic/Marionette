@@ -86,17 +86,21 @@ ureq 出站），ring-less TLS 约束不变。
 
 ## 剩余（需要人参与的收尾）
 
-- [ ] **T13 真机对账**（需要用户在场，不能用无人值守代理替代）：
-  1. 关掉正在跑的 Marionette（单实例锁会交接，别双开）；
-  2. 跑 rust SKU：worktree 的 `release\0.8.1\Marionette.exe`
-     （5.36MB 那个），或 `set MARIONETTE_ENGINE=rust && tools\build-portable.bat`；
-  3. 模型共享里配一个真实来源（DeepSeek/ollama 之一即可）；
-  4. 逐项对账：目录行窗口/图片能力（C2）、额度卡（六家来源）、
-     codex 一轮真实对话（/v1/responses 流式+工具）、grok/dsh 跨用桥
-     （chat 直通）、Claude 系一轮（/v1/messages）、usage 台账四桶
-     （recordTurnUsage 与 magpie 基线对比）、贴边窄条引擎行
-     （「引擎未运行·快照」标注行为一致）；
-  5. 每项与 magpie SKU 对照（同来源同模型）。
+- [x] **T13 真机对账——自动化部分**（`2b5c70d7`，2026-11-17 深夜）：
+  隔离 profile 起 rust SKU 实例（demo-instance 机制，与用户实例共存）+
+  CDP 9223 驱动，**15/15 全过**：引擎进程内起线程（running/rust-0.8.1/
+  动态端口）、自定义来源经**真实注册链**落地（providers.json 以 magpie
+  兼容形状写盘）、C2 窗口/输出/模态转述、C5 非流式+SSE、C3 形状、
+  engine_quota 命令。回归脚本：`scripts/verify-rust-sku-e2e.mjs`（启动
+  方法：demo-instance + `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9223`，
+  **别混 --lang**——组合参数下调试口不监听，T13 实测）。顺手修：rust 态
+  place_and_prep 补建引擎目录（注册账本 warn 根因）。
+- [ ] **T13 真机对账——真实 key 部分**（自动化做不了，需要用户）：
+  1. 真实来源一轮对话（DeepSeek/ollama 任一）：目录窗口对得上厂商规格；
+  2. codex 真实会话一轮（/v1/responses 流式+工具轮——T15 的真机首验）；
+  3. grok/dsh 跨用桥指向 rust 引擎各一轮（chat 直通 + cordis.patch 表）；
+  4. usage 台账四桶与 magpie 基线对比（同来源同模型各一轮）；
+  5. 额度卡六家来源对账（有哪家配哪家）。
 - [ ] **T14 退役收尾**（T13 绿后）：
   1. 前端 locale「检查 magpie 稳定版更新（约 48 MB）」hint 在 rust SKU
      下不渲染（T12 遗留，改 fe-locale 片段按 SKU 条件）；
