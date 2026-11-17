@@ -37,6 +37,14 @@
 //! 安全底线（§5）：key 只进子进程命令行（短命、不落日志、不落 Marionette 磁盘）；
 //! 日志只记 provider 名与事件。引擎令牌是字面量 `magpie`（S1：网关回环任意
 //! token 放行），所以它也 不是机密。
+//!
+//! engine-rust 构建下（feature `engine-rust`，docs/plan-engine-rust.md T6）：
+//! serve 路径改跑进程内 `engine_gateway::httpd` 线程、CLI 家族直调
+//! `engine_gateway::cli`；magpie 子进程形态的整条路径（下载/落位/复用探测/
+//! CLI 子进程/日志线程）**休眠但保留**——它是双 SKU 灰度的回退形态，T12/T14
+//! 才退役。下面这条集中压掉休眠代码在该 feature 下的 dead_code 噪音，避免
+//! 逐函数挂 cfg_attr 把两个形态的diff搅浑。
+#![cfg_attr(feature = "engine-rust", allow(dead_code))]
 
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, Read, Write};
@@ -102,14 +110,65 @@ pub enum EngineStatus {
 /// serve 子进程句柄。测试用 Fake 变体（不起真进程）。
 enum ChildHandle {
     Real(std::process::Child),
+    /// engine-rust 形态：没有子进程——网关是本进程里的后台线程，停止 =
+    /// 置 shutdown 标志（httpd 的 accept 非阻塞轮询 ≤50ms 退出）。
+    #[cfg(feature = "engine-rust")]
+    InProcess(InProcessServe),
     #[allow(dead_code)]
     Fake,
+}
+
+/// 进程内网关的「句柄」：serve 线程退出时把 `exited` 翻真，`try_wait` 靠它
+/// 把死线程翻成 Failed——与子进程形态的存活检查同语义（status() 的
+/// dead-check / serve_and_run 的健康等待共用）。
+#[cfg(feature = "engine-rust")]
+struct InProcessServe {
+    shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    exited: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(feature = "engine-rust")]
+impl InProcessServe {
+    fn stop(&self) {
+        self.shutdown.store(true, std::sync::atomic::Ordering::Release);
+        // 有界等退出：kill 之后立刻有端口探测的路径（update → place_and_prep
+        // → find_free_port_from / 复用探测），必须确认监听真关了再放行；
+        // 但绝不能无限等——线程卡死时把关窗挂死比留个残监听更糟。50ms 轮询
+        // 节拍下 1s 足够，超时就放行（下一轮 enable 会挑别的端口）。
+        let deadline = Instant::now() + Duration::from_millis(1000);
+        while !self.exited.load(std::sync::atomic::Ordering::Acquire) {
+            if Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+}
+
+/// InProcess 的「退出状态」：ExitStatus 没有跨平台公共构造器，按平台 cfg
+/// from_raw（仅用于把死线程翻成 Failed 的展示，退出码数值无语义）。
+#[cfg(feature = "engine-rust")]
+fn in_process_exit_status(serve: &InProcessServe) -> Option<std::process::ExitStatus> {
+    if !serve.exited.load(std::sync::atomic::Ordering::Acquire) {
+        return None;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::ExitStatusExt;
+        return Some(std::process::ExitStatus::from_raw(1));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
 }
 
 impl ChildHandle {
     fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
         match self {
             ChildHandle::Real(child) => child.try_wait(),
+            #[cfg(feature = "engine-rust")]
+            ChildHandle::InProcess(serve) => Ok(in_process_exit_status(serve)),
             ChildHandle::Fake => Ok(None),
         }
     }
@@ -117,6 +176,10 @@ impl ChildHandle {
         if let ChildHandle::Real(child) = self {
             let _ = child.kill();
             let _ = child.wait();
+        }
+        #[cfg(feature = "engine-rust")]
+        if let ChildHandle::InProcess(serve) = self {
+            serve.stop();
         }
     }
 }
@@ -844,51 +907,101 @@ fn find_free_port_from(start: u16) -> Option<u16> {
 }
 
 /// `magpie serve` 拉起（S1 处方的 env 全集）。stdout/stderr 逐行进 debug_log
-/// （截断防刷屏）。
+/// （截断防刷屏）。engine-rust 形态下没有子进程——`exe` 只是调用链签名占位，
+/// 实际由 [`spawn_serve_in_process`] 在本进程起网关线程。
 fn spawn_serve(exe: &Path, port: u16) -> Result<ChildHandle, String> {
     #[cfg(test)]
     if let Some(hook) = test_launch_hook() {
         return hook(port).map(|()| ChildHandle::Fake);
     }
-    let mut command = std::process::Command::new(exe);
-    command
-        .arg("serve")
-        // S1：显式钉住监听地址；关每日遥测。
-        .env("MAGPIE_ADDR", format!("127.0.0.1:{port}"))
-        .env("MAGPIE_NO_STATS", "1")
-        // 刻意不设 MAGPIE_NO_ACCOUNTS（订阅 discovery 要开）、保留
-        // USERPROFILE/APPDATA（discovery 读 ~/.grok 等真实凭证）——
-        // std Command 默认继承父 env，正是我们要的。
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .current_dir(exe.parent().unwrap_or(Path::new(".")));
-    // Go 软内存上限：实测引擎空转常驻 ~120-160MB private，128MiB 让 GC 在
-    // 长尾增长前先收。软限制——逼近时只是更勤 GC（STW 微秒级，不碍流式代理），
-    // 不会 OOM。用户自设时不覆盖（与 acp.rs 的 env 注入同规矩）。
-    if std::env::var_os("GOMEMLIMIT").is_none() {
-        command.env("GOMEMLIMIT", "128MiB");
-    }
-    #[cfg(target_os = "windows")]
+    #[cfg(feature = "engine-rust")]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
+        let _ = exe;
+        return spawn_serve_in_process(port);
     }
-    let mut child = command
-        .spawn()
-        .map_err(|e| crate::ts!("拉起 magpie serve 失败（{exe}）: {e}", "Failed to launch magpie serve ({exe}): {e}", exe = exe.display()))?;
-    // 崩溃/强杀兜底：Job Object kill-on-close 带走引擎，防孤儿 magpie 常驻
-    // （实测每个 ~100-160MB private，出过后要几分钟才自退）。正常退出路径
-    // 本来就显式 kill，这里只补意外路径。
-    #[cfg(target_os = "windows")]
-    assign_child_to_kill_job(&child);
-    if let Some(stdout) = child.stdout.take() {
-        spawn_log_thread(stdout);
+    #[cfg(not(feature = "engine-rust"))]
+    {
+        let mut command = std::process::Command::new(exe);
+        command
+            .arg("serve")
+            // S1：显式钉住监听地址；关每日遥测。
+            .env("MAGPIE_ADDR", format!("127.0.0.1:{port}"))
+            .env("MAGPIE_NO_STATS", "1")
+            // 刻意不设 MAGPIE_NO_ACCOUNTS（订阅 discovery 要开）、保留
+            // USERPROFILE/APPDATA（discovery 读 ~/.grok 等真实凭证）——
+            // std Command 默认继承父 env，正是我们要的。
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .current_dir(exe.parent().unwrap_or(Path::new(".")));
+        // Go 软内存上限：实测引擎空转常驻 ~120-160MB private，128MiB 让 GC 在
+        // 长尾增长前先收。软限制——逼近时只是更勤 GC（STW 微秒级，不碍流式代理），
+        // 不会 OOM。用户自设时不覆盖（与 acp.rs 的 env 注入同规矩）。
+        if std::env::var_os("GOMEMLIMIT").is_none() {
+            command.env("GOMEMLIMIT", "128MiB");
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+        let mut child = command
+            .spawn()
+            .map_err(|e| crate::ts!("拉起 magpie serve 失败（{exe}）: {e}", "Failed to launch magpie serve ({exe}): {e}", exe = exe.display()))?;
+        // 崩溃/强杀兜底：Job Object kill-on-close 带走引擎，防孤儿 magpie 常驻
+        // （实测每个 ~100-160MB private，出过后要几分钟才自退）。正常退出路径
+        // 本来就显式 kill，这里只补意外路径。
+        #[cfg(target_os = "windows")]
+        assign_child_to_kill_job(&child);
+        if let Some(stdout) = child.stdout.take() {
+            spawn_log_thread(stdout);
+        }
+        if let Some(stderr) = child.stderr.take() {
+            spawn_log_thread(stderr);
+        }
+        Ok(ChildHandle::Real(child))
     }
-    if let Some(stderr) = child.stderr.take() {
-        spawn_log_thread(stderr);
+}
+
+/// engine-rust 形态的「拉起」：本进程后台线程跑 engine_gateway::httpd——
+/// 端口由调用方按既有逻辑（find_free_port_from）挑好，这里**同步 bind 后把
+/// listener 交给线程**（挑完就占上，消灭「释放→重绑」竞态；bind 失败走与
+/// spawn 失败相同的错误路径）。Gateway::open 失败同样 Err（引擎状态机照旧
+/// 转 Failed）。线程退出时翻 `exited` 标志——status() 的存活检查据此把死
+/// 线程翻成 Failed（与子进程 try_wait 同语义）。
+#[cfg(feature = "engine-rust")]
+fn spawn_serve_in_process(port: u16) -> Result<ChildHandle, String> {
+    let gateway = crate::engine_gateway::Gateway::open()
+        .map_err(|e| crate::ts!("打开进程内引擎网关失败: {e}", "Failed to open the in-process engine gateway: {e}"))?;
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port))
+        .map_err(|e| crate::ts!("绑定进程内引擎端口 {port} 失败: {e}", "Failed to bind the in-process engine port {port}: {e}"))?;
+    let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let exited = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let thread_shutdown = shutdown.clone();
+    let thread_exited = exited.clone();
+    let gateway = std::sync::Arc::new(gateway);
+    let spawned = std::thread::Builder::new()
+        .name("engine-gateway-httpd".to_string())
+        .spawn(move || {
+            // httpd 静默（GUI 进程无控制台）；失败与退出都只留 dev.log。
+            if let Err(error) =
+                crate::engine_gateway::httpd::serve_on(listener, gateway, thread_shutdown)
+            {
+                crate::debug_log::append(
+                    "engine",
+                    "warn",
+                    "",
+                    "in-process gateway serve failed",
+                    Some(&error),
+                );
+            }
+            thread_exited.store(true, std::sync::atomic::Ordering::Release);
+        })
+        .is_ok();
+    if !spawned {
+        return Err(crate::ts!("启动进程内引擎线程失败", "Failed to spawn the in-process engine thread"));
     }
-    Ok(ChildHandle::Real(child))
+    Ok(ChildHandle::InProcess(InProcessServe { shutdown, exited }))
 }
 
 fn spawn_log_thread<R: Read + Send + 'static>(reader: R) {
@@ -1895,11 +2008,20 @@ pub fn wake_if_installed() {
         if !matches!(status(), EngineStatus::Absent) {
             return;
         }
-        let Ok(dir) = engine_dir() else { return };
-        if !is_installed_at(&dir) {
-            return;
+        // engine-rust：引擎编在 exe 里，「已安装」恒成立——没有 manifest /
+        // magpie.exe 可查（查也只会查到旧形态的残件，语义不对）。
+        #[cfg(feature = "engine-rust")]
+        {
+            let _ = enable();
         }
-        let _ = enable();
+        #[cfg(not(feature = "engine-rust"))]
+        {
+            let Ok(dir) = engine_dir() else { return };
+            if !is_installed_at(&dir) {
+                return;
+            }
+            let _ = enable();
+        }
     }
 }
 
@@ -1915,8 +2037,16 @@ pub fn ensure_bridge_ready_if_installed(timeout: Duration) -> bool {
     }
     #[cfg(not(test))]
     {
-        let installed = engine_dir().map(|dir| is_installed_at(&dir)).unwrap_or(false);
-        installed && ensure_bridge_ready(timeout)
+        // engine-rust：同 wake_if_installed——「已安装」恒成立（编在 exe 里）。
+        #[cfg(feature = "engine-rust")]
+        {
+            ensure_bridge_ready(timeout)
+        }
+        #[cfg(not(feature = "engine-rust"))]
+        {
+            let installed = engine_dir().map(|dir| is_installed_at(&dir)).unwrap_or(false);
+            installed && ensure_bridge_ready(timeout)
+        }
     }
 }
 
@@ -2236,37 +2366,49 @@ fn run_magpie_cli_capture(exe: &Path, args: &[&str]) -> Result<String, String> {
     if let Some(hook) = test_cli_capture_hook() {
         return hook(args);
     }
-    let mut command = std::process::Command::new(exe);
-    command
-        .args(args)
-        .env("MAGPIE_NO_STATS", "1")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .current_dir(exe.parent().unwrap_or(Path::new(".")));
-    #[cfg(target_os = "windows")]
+    // engine-rust：同 run_magpie_cli——进程内直调。quota 等完整 CLI 动词
+    // 本就不在引擎里（合同 C3/C6：种子态 HTTP-only），Err 语义与旧 CLI 的
+    // 拒收一致，调用方（fetch_quota_cli 的兜底路径）按失败处理。
+    #[cfg(feature = "engine-rust")]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
+        let _ = exe;
+        let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        return crate::engine_gateway::cli::run(&owned).map(|_| String::new());
     }
-    let output = crate::process_util::output_with_kill_timeout(command, MAGPIE_CLI_TIMEOUT)
-        .map_err(|e| crate::ts!("启动 magpie CLI 失败: {e}", "Failed to launch magpie CLI: {e}"))?;
-    if !output.status.success() {
-        // stderr 一起带上——"no provider x" 这类可判别错误靠它（回收对账
-        // 视"不存在"为已回收），也是注册失败时唯一有诊断价值的输出。
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        remember_seed_rejection(exe, &stderr);
-        return Err(format!(
-            "{}{}",
-            crate::ts!("magpie {subcommand} 退出码 {code:?}", "magpie {subcommand} exited with code {code:?}", subcommand = args.first().unwrap_or(&""), code = output.status.code()),
-            if stderr.is_empty() {
-                String::new()
-            } else {
-                format!(": {stderr}")
-            },
-        ));
+    #[cfg(not(feature = "engine-rust"))]
+    {
+        let mut command = std::process::Command::new(exe);
+        command
+            .args(args)
+            .env("MAGPIE_NO_STATS", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .current_dir(exe.parent().unwrap_or(Path::new(".")));
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+        let output = crate::process_util::output_with_kill_timeout(command, MAGPIE_CLI_TIMEOUT)
+            .map_err(|e| crate::ts!("启动 magpie CLI 失败: {e}", "Failed to launch magpie CLI: {e}"))?;
+        if !output.status.success() {
+            // stderr 一起带上——"no provider x" 这类可判别错误靠它（回收对账
+            // 视"不存在"为已回收），也是注册失败时唯一有诊断价值的输出。
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            remember_seed_rejection(exe, &stderr);
+            return Err(format!(
+                "{}{}",
+                crate::ts!("magpie {subcommand} 退出码 {code:?}", "magpie {subcommand} exited with code {code:?}", subcommand = args.first().unwrap_or(&""), code = output.status.code()),
+                if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {stderr}")
+                },
+            ));
+        }
+        String::from_utf8(output.stdout).map_err(|e| crate::ts!("magpie 输出不是 UTF-8: {e}", "magpie output is not UTF-8: {e}"))
     }
-    String::from_utf8(output.stdout).map_err(|e| crate::ts!("magpie 输出不是 UTF-8: {e}", "magpie output is not UTF-8: {e}"))
 }
 
 /// 种子二进制自带的精简命令。其余 CLI（TUI / quota / agent 安装器）仍短路。
@@ -2279,43 +2421,56 @@ fn seed_cli_passthrough(args: &[&str]) -> bool {
 
 /// 跑一个短命 magpie CLI 命令（.portable 围栏由 exe 位置决定，无需 env）。
 /// 测试构建下先查 CLI 缝（别名组测试记录参数用），有缝就不真的拉子进程。
+/// engine-rust 形态：没有子进程——直调 engine_gateway::cli::run（同一
+/// config_dir 下的 providers.json，与 serve 线程的网关共享数据），
+/// 无 10s 超时（纯函数调用）；错误串与旧 CLI 的 stderr 同文（含
+/// "no provider" 等对账判据），注册链其余逻辑不动。
 fn run_magpie_cli(exe: &Path, args: &[&str]) -> Result<(), String> {
     #[cfg(test)]
     if let Some(hook) = test_cli_hook() {
         return hook(args);
     }
-    // 种子短路：标记在就跳过 TUI/quota 等完整 CLI。`provider` / `group` /
-    // `models` 是种子自己的精简命令，必须放行——自定义来源登记靠它们。
-    if let Some(dir) = exe.parent() {
-        if cli_absent_seed(dir) && !seed_cli_passthrough(args) {
-            return Err(crate::ts!(
-                "magpie: this command is not in the Marionette engine seed",
-                "magpie: this command is not in the Marionette engine seed"
-            ));
-        }
-    }
-    let mut command = std::process::Command::new(exe);
-    command
-        .args(args)
-        .env("MAGPIE_NO_STATS", "1")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .current_dir(exe.parent().unwrap_or(Path::new(".")));
-    #[cfg(target_os = "windows")]
+    #[cfg(feature = "engine-rust")]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
+        let _ = exe;
+        let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        return crate::engine_gateway::cli::run(&owned);
     }
-    let output = crate::process_util::output_with_kill_timeout(command, MAGPIE_CLI_TIMEOUT)
-        .map_err(|e| crate::ts!("拉起 magpie CLI 失败: {e}", "Failed to spawn magpie CLI: {e}"))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let trimmed = stderr.trim();
-        remember_seed_rejection(exe, trimmed);
-        Err(cap_at_char_boundary(trimmed, MAX_LOG_LINE).to_string())
+    #[cfg(not(feature = "engine-rust"))]
+    {
+        // 种子短路：标记在就跳过 TUI/quota 等完整 CLI。`provider` / `group` /
+        // `models` 是种子自己的精简命令，必须放行——自定义来源登记靠它们。
+        if let Some(dir) = exe.parent() {
+            if cli_absent_seed(dir) && !seed_cli_passthrough(args) {
+                return Err(crate::ts!(
+                    "magpie: this command is not in the Marionette engine seed",
+                    "magpie: this command is not in the Marionette engine seed"
+                ));
+            }
+        }
+        let mut command = std::process::Command::new(exe);
+        command
+            .args(args)
+            .env("MAGPIE_NO_STATS", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .current_dir(exe.parent().unwrap_or(Path::new(".")));
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+        let output = crate::process_util::output_with_kill_timeout(command, MAGPIE_CLI_TIMEOUT)
+            .map_err(|e| crate::ts!("拉起 magpie CLI 失败: {e}", "Failed to spawn magpie CLI: {e}"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let trimmed = stderr.trim();
+            remember_seed_rejection(exe, trimmed);
+            Err(cap_at_char_boundary(trimmed, MAX_LOG_LINE).to_string())
+        }
     }
 }
 
@@ -2673,6 +2828,10 @@ pub fn enable() -> Result<EngineStatus, String> {
             | EngineStatus::Downloading { .. }
             | EngineStatus::Starting => None,
             EngineStatus::Absent | EngineStatus::Failed { .. } => {
+                // engine-rust：引擎编在 exe 里，没有下载态——直接 Starting。
+                #[cfg(feature = "engine-rust")]
+                let initial = EngineStatus::Starting;
+                #[cfg(not(feature = "engine-rust"))]
                 let initial = if embedded_version().is_some() {
                     EngineStatus::Starting
                 } else {
@@ -2724,56 +2883,71 @@ fn place_and_prep(dir: &Path, allow_download: bool) -> Result<PrepOutcome, Strin
     //    一直占着默认端口，把新实例挤到下一个端口还换不了 exe（2026-10-31
     //    实锤：孤儿跑了近 5 小时）。规则 fail-open，扫失败只记 warn。
     reap_orphan_engines(dir);
-    // 2. 用户自装实例在默认端口上跑着 → 直接复用（不是我们的进程，不杀）。
-    //    但旧实例不能把新构建的版本拖回去：比内嵌还旧就忽略它，自己在下一个
-    //    空闲端口起最新引擎（典型场景：上一个实例的 magpie 还占着端口）。
-    if let Some(version) = probe_reuse_at(DEFAULT_PORT) {
-        if reuse_foreign_engine(version.as_deref(), embedded_version()) {
+    // engine-rust 形态到此为止：引擎编译在 exe 里——没有 magpie.exe 可落位、
+    // 不该再从 GitHub 下载 48MB 的子进程形态，也不复用默认端口上的外部
+    // magpie（CLI 直调写的是我们自己的 store；复用会造成「网关读别人的
+    // 数据、CLI 写自己的」两头分家——默认形态两口径同源于我们 exe 的
+    // data 目录，没有这个问题）。孤儿收割照跑：老版本留下的 magpie 进程
+    // 占着 3425 会让新端口让位。
+    #[cfg(feature = "engine-rust")]
+    {
+        // 两个参数都是 magpie 形态（落位/下载）才用的；进程内形态无副作用。
+        let _ = (dir, allow_download);
+        return Ok(PrepOutcome::Ready);
+    }
+    #[cfg(not(feature = "engine-rust"))]
+    {
+        // 2. 用户自装实例在默认端口上跑着 → 直接复用（不是我们的进程，不杀）。
+        //    但旧实例不能把新构建的版本拖回去：比内嵌还旧就忽略它，自己在下一个
+        //    空闲端口起最新引擎（典型场景：上一个实例的 magpie 还占着端口）。
+        if let Some(version) = probe_reuse_at(DEFAULT_PORT) {
+            if reuse_foreign_engine(version.as_deref(), embedded_version()) {
+                crate::debug_log::append(
+                    "engine",
+                    "info",
+                    "",
+                    "reusing a user-installed magpie on the default port",
+                    Some(&format!("port={DEFAULT_PORT}")),
+                );
+                set_status(EngineStatus::Running {
+                    port: DEFAULT_PORT,
+                    version,
+                    reused: true,
+                });
+                return Ok(PrepOutcome::Reused);
+            }
             crate::debug_log::append(
                 "engine",
                 "info",
                 "",
-                "reusing a user-installed magpie on the default port",
-                Some(&format!("port={DEFAULT_PORT}")),
+                "ignoring an older magpie on the default port; starting our own engine",
+                Some(&format!(
+                    "port={DEFAULT_PORT} running={} embedded={}",
+                    version.as_deref().unwrap_or("?"),
+                    embedded_version().unwrap_or("?")
+                )),
             );
-            set_status(EngineStatus::Running {
-                port: DEFAULT_PORT,
-                version,
-                reused: true,
-            });
-            return Ok(PrepOutcome::Reused);
         }
-        crate::debug_log::append(
-            "engine",
-            "info",
-            "",
-            "ignoring an older magpie on the default port; starting our own engine",
-            Some(&format!(
-                "port={DEFAULT_PORT} running={} embedded={}",
-                version.as_deref().unwrap_or("?"),
-                embedded_version().unwrap_or("?")
-            )),
-        );
-    }
-    // 3. 安装：本机权威在 `engine/`。尚未完整安装、或本机版本比内嵌旧时用
-    //    内嵌种子离线落位（升级只前移，不覆盖用户已更新的更新版本）。
-    //    便携版种子落位失败即停（不偷偷上网）。无内嵌的开发构建才走 GitHub 下载。
-    if needs_embedded_seed(dir) {
-        let (bytes, version) = embedded_artifact();
-        install_embedded_engine_at(bytes, version, dir)?;
-    }
-    if !is_installed_at(dir) {
-        if embedded_version().is_some() {
-            return Err(crate::ts!("内嵌引擎落位后仍不完整", "Embedded engine still incomplete after placement"));
+        // 3. 安装：本机权威在 `engine/`。尚未完整安装、或本机版本比内嵌旧时用
+        //    内嵌种子离线落位（升级只前移，不覆盖用户已更新的更新版本）。
+        //    便携版种子落位失败即停（不偷偷上网）。无内嵌的开发构建才走 GitHub 下载。
+        if needs_embedded_seed(dir) {
+            let (bytes, version) = embedded_artifact();
+            install_embedded_engine_at(bytes, version, dir)?;
         }
-        if !allow_download {
-            // 懒启动（startup_lazy）：没装过就没装过，绝不惊喜下载。
-            return Ok(PrepOutcome::NotInstalled);
+        if !is_installed_at(dir) {
+            if embedded_version().is_some() {
+                return Err(crate::ts!("内嵌引擎落位后仍不完整", "Embedded engine still incomplete after placement"));
+            }
+            if !allow_download {
+                // 懒启动（startup_lazy）：没装过就没装过，绝不惊喜下载。
+                return Ok(PrepOutcome::NotInstalled);
+            }
+            let plan = resolve_latest_release()?;
+            download_and_install(&plan, dir)?;
         }
-        let plan = resolve_latest_release()?;
-        download_and_install(&plan, dir)?;
+        Ok(PrepOutcome::Ready)
     }
-    Ok(PrepOutcome::Ready)
 }
 
 /// enable_pipeline 的 4–6 步：serve + 健康 + Running + provider 注册 + 桥
@@ -2809,6 +2983,11 @@ fn serve_and_run(dir: &Path) -> Result<(), String> {
         }
         std::thread::sleep(HEALTH_POLL);
     }
+    // engine-rust：版本就是编译进来的网关自身（manifest 是 magpie 形态的
+    // 产物，进程内形态不存在）。
+    #[cfg(feature = "engine-rust")]
+    let version = Some(crate::engine_gateway::ENGINE_VERSION.to_string());
+    #[cfg(not(feature = "engine-rust"))]
     let version = load_manifest_at(dir).map(|manifest| manifest.version);
     {
         let mut state = lock_state();

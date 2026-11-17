@@ -100,6 +100,11 @@ devtools = ["tauri/devtools"]
 # src-tauri/engine-embedded/magpie-windows-amd64.exe（UPX 后）与 VERSION
 # （gitignored 产物，见 tools/README.md）。
 embedded-engine = []
+# 引擎 Rust 化（docs/plan-engine-rust.md T6）：开启后 engine.rs 的 serve 路径
+# 不再 spawn magpie.exe，改在本进程后台线程跑 engine_gateway::httpd；
+# run_magpie_cli 家族直调 engine_gateway::cli（无子进程、无 10s 超时）。
+# 默认关闭——default 构建行为零变化；双 SKU 灰度（magpie 默认）转正后才翻转。
+engine-rust = []
 
 # tao 0.35.3 asserts that WM_PAINT on the thread-event-target is never re-entrant.
 # CJK IME (especially Chinese IME on a Japanese OS) pumps nested messages on

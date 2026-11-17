@@ -44,14 +44,29 @@ ureq 出站），ring-less TLS 约束不变。
 
 ## 进行中（子代理并行，2026-11-17 连续施工模式——用户定案「全部跑完为止，不分昼夜」）
 
-- [ ] **T2 quotas.rs**：真实额度拉取（首类：DeepSeek key 余额），60s 缓存，
-  force 跳过；routes 接线。验收：`... test quotas` 绿。
-- [ ] **T3 messages.rs**：anthropic /v1/messages 端点（直通+翻译双路径）。
-- [ ] **T4 responses.rs**：codex /v1/responses 端点（直通+翻译+事件流），
-  已在写（946 行）。
 - [ ] **T6 进程内接线**：feature `engine-rust`——engine.rs/main.rs/
   Cargo.toml/cli.rs/httpd 停止机制施工中（httpd 侧 serve_on+AtomicBool
   已随 T11 提交）。
+- [ ] **T9 quotas 扩源**：Moonshot/OpenRouter/SiliconFlow/StepFun/Zhipu 按
+  key 余额（端点与字段以 Go balance.go 为准）。
+- [ ] **T15 流式工具调用**：chat tool_calls 分片拼装 → responses
+  function_call 事件族 / anthropic tool_use 三段式（T3/T4 点名的关键缺口，
+  codex/Claude 流式工具轮依赖它）。
+
+## 已完成（补记）
+
+- [x] **T2 quotas.rs**（`cc1ce333`）：DeepSeek key 余额（多币种稳定排序）+
+  60s 缓存 + kept=1 语义；4/4 测试。
+- [x] **T3 messages.rs**（`cc1ce333`）：/v1/messages 直通（双认证头）+
+  chat 翻译（message_start 首帧/单次收口/include_usage）；5/5 测试。
+  未做：流式 tool_use（→T15）、直通路径 bodycap（anthropic 体形状）。
+- [x] **T4 responses.rs**（`cc1ce333`）：/v1/responses 直通 + 翻译
+  （created/delta/completed 序列、usage 口径含 cached/reasoning 拆桶）；
+  8/8 测试。未做：流式 function_call（→T15）、直通路径 bodycap
+  （responses 体形状）、reasoning item。
+- [x] **测试沙箱锁统一**（`cc1ce333`）：presets/quotas/responses 私锁
+  互踩 XDG_CONFIG_HOME（并行 1/5 概率红）→ mod.rs 共享
+  TEST_SANDBOX_LOCK；57/57 × 3 并行连跑全绿。
 
 ## 待做（按依赖排队，前者落地即开工）
 
