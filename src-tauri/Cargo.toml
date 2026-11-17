@@ -9,6 +9,12 @@ repository = "https://github.com/nt-cubic/Marionette"
 default-run = "marionette"
 build = "build.rs"
 
+# 开发/测试二进制：进程内引擎网关的 exe 形态（合同套件驱动它验收）。
+# 不进发布产物——正式形态由 engine.rs 在主进程内拉起网关。
+[[bin]]
+name = "marionette-engine"
+path = "src/engine_gateway_bin.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -96,6 +102,14 @@ devtools = ["tauri/devtools"]
 # src-tauri/engine-embedded/magpie-windows-amd64.exe（UPX 后）与 VERSION
 # （gitignored 产物，见 tools/README.md）。
 embedded-engine = []
+# 引擎 Rust 化（docs/plan-engine-rust.md T6）：开启后 engine.rs 的 serve 路径
+# 不再 spawn magpie.exe，改在本进程后台线程跑 engine_gateway::httpd；
+# run_magpie_cli 家族直调 engine_gateway::cli（无子进程、无 10s 超时）。
+# 默认关闭——default 构建行为零变化；双 SKU 灰度（magpie 默认）转正后才翻转。
+# **与 embedded-engine 互斥**（T12）：进程内引擎不内嵌 magpie 载荷，同开只白烧
+# ~12MB 且「恢复出厂」会盖回子进程形态——engine.rs 顶部有 compile_error! 断言，
+# Cargo 的 features 语法表达不了互斥，别试图用 implies 绕。
+engine-rust = []
 
 # tao 0.35.3 asserts that WM_PAINT on the thread-event-target is never re-entrant.
 # CJK IME (especially Chinese IME on a Japanese OS) pumps nested messages on

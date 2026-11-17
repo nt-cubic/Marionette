@@ -1427,3 +1427,27 @@ SHA256SUMS 校验，engine.rs default 构建本来就不含载荷）。用户定
 
 回归：`npx tsx scripts/verify-engine-contract.mts`（对 vendored 种子）+
 `npx tsx scripts/upstream-watch.mts`（digest 模式，联网）。
+## 引擎 Rust 化：进程内引擎网关（2026-11-17，engine-rust 分支）
+
+magpie 子进程与 20.6MB 内嵌载荷的 Rust 替身：`src-tauri/src/engine_gateway/`
+编译进 marionette.exe（feature `engine-rust`），serve = 起一个线程。
+实测 rust SKU **5.36MB**（magpie SKU 24.95MB）。账本与全部红线：
+`docs/plan-engine-rust.md`；合同面：`docs/plan-engine-contract.md`。记死：
+
+- **体积红线**：不引入 tokio/hyper/axiom 系（std 线程 HTTP + crate 既有
+  ureq，ring-less TLS 约束不变）；engine-rust 与 embedded-engine 互斥
+  （compile_error 守门）。
+- **providers.json 与 magpie 逐字段互通**（`~/.config/magpie/`，未知字段
+  flatten 保留）——别改存储格式；每请求 reload = CLI 写盘即时可见。
+- **合同套件是唯一验收尺**：`node scripts/verify-engine-contract.mts
+  <marionette-engine.exe>`（开发 bin，`cargo build --bin marionette-engine`）。
+  改任何端点行为先过它；假厂商 fixture **必须显式设 statusCode**（Node
+  默认 200 会把 400 变 200）。
+- **沙箱测试锁只有一把**：`mod.rs::TEST_SANDBOX_LOCK`——任何新测试要动
+  `XDG_CONFIG_HOME` 都得拿它（进程级 env，私锁互踩实锤过）。
+- **GUI 进程零 println**：cli 动词走 `run()`（Err 返回），argv 版 main
+  才打印——windows 子系统写 stdout 会 panic。
+- 构建：worktree 根 `cmd /c check.bat`（自动带 MSVC 环境）；rust SKU 发布
+  `set MARIONETTE_ENGINE=rust && tools\build-portable.bat`。
+- 上游跟进 = 研究克隆（`../magpie-upstream`）+ `scripts/upstream-watch.mts`
+  digest，**不是合并代码**——命中合同区的行为按账本任务移植。

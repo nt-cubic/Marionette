@@ -23,6 +23,12 @@ mod dock_support;
 mod drag_text;
 mod dsh_bridge;
 mod engine;
+// 引擎 Rust 化（T6，feature `engine-rust`）：进程内网关模块——engine.rs 在
+// feature 开启时起 httpd 线程 + 直调 cli 动词。默认构建不编译（magpie 子进程
+// 形态零变化）；开发/合同套件二进制 marionette-engine 经 #[path] 独立挂载，
+// 不受这行影响。
+#[cfg(feature = "engine-rust")]
+mod engine_gateway;
 mod git_service;
 mod grok_dialect;
 mod handoff;

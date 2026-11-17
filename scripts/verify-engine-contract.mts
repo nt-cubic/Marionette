@@ -226,6 +226,40 @@ try {
   const groupGone = await fetch(`${gw}/v1/models/group/alias-1`);
   assert.equal(groupGone.status, 404, `removed group still announced: ${groupGone.status}`);
 
+  // C5: /v1/responses (codex native) translation path — chat vendor outbound,
+  // responses-shaped reply (T4).
+  const responsesRes = await fetch(`${gw}/v1/responses`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: `${id}/alpha-model`, stream: false, instructions: "be brief",
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }],
+    }),
+  });
+  const responsesBody = await responsesRes.text();
+  assert.equal(responsesRes.status, 200, `/v1/responses translation failed: ${responsesRes.status} ${responsesBody.slice(0, 300)}`);
+  const responsesJson = JSON.parse(responsesBody);
+  const outText = (responsesJson.output ?? [])
+    .flatMap((item: { content?: { text?: string }[] }) => item.content ?? [])
+    .map((part: { text?: string }) => part.text ?? "")
+    .join("");
+  assert.ok(outText.includes("fixture-ok"), `/v1/responses lost the fixture text: ${responsesBody.slice(0, 300)}`);
+
+  // C5: /v1/messages (anthropic) translation path (T3) — content block shape.
+  const messagesRes = await fetch(`${gw}/v1/messages`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: `${id}/alpha-model`, max_tokens: 100,
+      messages: [{ role: "user", content: "hi" }],
+    }),
+  });
+  const messagesBody = await messagesRes.text();
+  assert.equal(messagesRes.status, 200, `/v1/messages translation failed: ${messagesRes.status} ${messagesBody.slice(0, 300)}`);
+  const messagesJson = JSON.parse(messagesBody);
+  const contentText = (messagesJson.content ?? [])
+    .map((part: { text?: string }) => part.text ?? "")
+    .join("");
+  assert.ok(contentText.includes("fixture-ok"), `/v1/messages lost the fixture text: ${messagesBody.slice(0, 300)}`);
+
   // C6: rm of an unknown provider reports "no provider" (the shell reads that
   // as "already recycled"); rm of the real one drops its models.
   await assert.rejects(
