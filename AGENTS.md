@@ -1389,3 +1389,41 @@ Telegram 远程首席助理：裸文本固定进一个 Chief 会话（普通 ACP
 
 回归：`cargo test --bin marionette chief`（32 项）+ `npx tsx scripts/verify-chief-tee.mts`
 + `npm run build`（tsc）。真机清单见台账。
+
+## 上游移植管线（2026-11-17，M1+M4 落地）
+
+magpie 种子随上游膨胀（seed raw 38→66MB；v0.1.2597→4232 两周 +7.6MB packed；上游
+~140 tags/天）。体积调查定案：**Go fork 数学上到不了 15MB**（种子已剪净不可达代码，
+60.8MB raw 是 gateway 真实依赖的地板——pclntab 16MB/69k 函数随上游代码量线性走），
+单 exe 嵌入形态压不回 15MB；**唯一达标路是引擎不嵌 exe**（非嵌入下载路径现成且带
+SHA256SUMS 校验，engine.rs default 构建本来就不含载荷）。用户定案先不动分发形态，
+落「合同 + 自动移植管线」：
+
+- **不建任何 GitHub fork/仓库，零推送**——上游研究用本地克隆
+  `<repo>/../magpie-upstream`（`MARIONETTE_UPSTREAM_DIR` 可覆写），状态/简报落
+  `<clone>/.marionette-watch/`，一律不进仓库。
+- **管线绝不改主工作树**——移植验证在 Marionette 仓库的独立 git worktree 里跑
+  （import-magpie 的 `$dest` 从 `$PSScriptRoot` 推导，worktree 内跑即落在 worktree 的
+  `third_party/magpie`）；绿灯只是「ready to import」，真正换 vendor 由人跑
+  `tools\build-portable.bat`，失败即丢弃 worktree。**worktree 必须
+  `-c core.longpaths=true` + 短基名**（上游 qoder testdata ~181 字符 fixture 路径，
+  与 import-magpie 同一个 MAX_PATH 坑）。
+- **合同只有一份**：`docs/plan-engine-contract.md`（C1 生命周期 / C2 /v1/models
+  窗口·输出·模态宣告 / C3 quotas / C4 组宣告探针 / C5 代理+body-cap / C6 CLI 动词 /
+  C7 种子补丁锚点）。改引擎消费点或补丁锚点先同步它。
+- **合同套件 `scripts/verify-engine-contract.mts`**：真种子 exe（默认从 vendor 现编，
+  可传 exe 参数）+ 本地 fixture 厂商 + `.portable` 沙箱（同
+  verify-model-source-engine.mjs 模式），绝不碰真实 `~/.config/magpie`。已覆盖
+  2026-11-12 会话死锁回归（32MB 体 → ollama 拒答词 → 丢最老图重发 200）。
+  **fixture 假厂商必须显式设 `res.statusCode`**——Node 默认 200，曾把 400 变 200 让
+  refit 看似失效，排查半天；发现「该重试没重试」先查测试的假厂商再怀疑引擎。
+- **`scripts/upstream-watch.mts`**：digest（按合同区 🔴🟡 分级 + go.mod 新增 + 补丁
+  锚点风险）+ `--verify [tag]`（worktree 隔离移植 + 种子构建 + 合同套件，报告落
+  `<clone>/.marionette-watch/digests/`，退出码 0=PASS/2=FAIL）。每日由定时自动化跑
+  digest。
+- 顺带（同日）：**种子裁掉 `stats.Run`**（上游遥测，`internal/agent` 唯一入口）——
+  -5.5MB raw / -1.45MB packed（24.9→~23.4MB）；Marionette 本来就设
+  `MAGPIE_NO_STATS=1`，行为零变化。`MAGPIE_TAG` 钉旧版只是止血不是方案。
+
+回归：`npx tsx scripts/verify-engine-contract.mts`（对 vendored 种子）+
+`npx tsx scripts/upstream-watch.mts`（digest 模式，联网）。
