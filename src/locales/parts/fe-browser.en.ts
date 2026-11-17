@@ -1,6 +1,9 @@
 /** Built-in browser tabs + agent tool channel (fe-browser batch). */
 export const en = {
   "browser.tabTitle": "Browser",
+  "browser.surfaceAgentPane": "Agent chat",
+  "browser.surfaceClose": "Back to chat",
+  "browser.surfaceResize": "Resize browser and chat",
   "browser.newTab": "New tab",
   "browser.addressHint": "Type a URL and press Enter",
   "browser.reload": "Reload",

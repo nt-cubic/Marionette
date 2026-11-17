@@ -13,6 +13,21 @@ pub mod probe;
 #[cfg(target_os = "windows")]
 pub mod surface;
 
+/// How a newly opened tab should enter the workspace. This is an OPEN-time
+/// instruction, not a persistent visibility state: `workspace` asks the UI to
+/// show the browser beside the current Agent conversation once; later tab
+/// switches behave normally.
+pub fn normalize_open_display(raw: Option<&str>) -> Result<&'static str, String> {
+    let display = raw.unwrap_or("background").trim().to_ascii_lowercase();
+    match display.as_str() {
+        "background" => Ok("background"),
+        "workspace" => Ok("workspace"),
+        other => Err(format!(
+            "browser display must be background or workspace, got {other:?}"
+        )),
+    }
+}
+
 #[cfg(target_os = "windows")]
 mod imp {
     use std::collections::HashMap;
@@ -130,12 +145,18 @@ mod imp {
     /// Open a tab. `opened_by_agent` decides the starting grant: agent tabs
     /// read on arrival (the agent chose the page); user tabs share nothing
     /// until the toolbar says so.
-    pub fn open_tab(app: &AppHandle, url: &str, opened_by_agent: bool) -> Result<String, String> {
+    pub fn open_tab(
+        app: &AppHandle,
+        url: &str,
+        opened_by_agent: bool,
+        display: &str,
+    ) -> Result<String, String> {
         let (tx, rx) = mpsc::channel();
         let url = url.to_string();
+        let display = display.to_string();
         let app_for_job = app.clone();
         app.run_on_main_thread(move || {
-            let result = surface::create_surface(&app_for_job, &url, opened_by_agent);
+            let result = surface::create_surface(&app_for_job, &url, opened_by_agent, &display);
             let _ = tx.send(result);
         })
         .map_err(|e| format!("main thread hop: {e}"))?;
@@ -244,8 +265,13 @@ mod imp {
     // ── tauri commands (frontend surface) ─────────────────────────────────
 
     #[tauri::command(async)]
-    pub fn browser_open_tab(app: AppHandle, url: String) -> Result<Value, String> {
-        open_tab(&app, &url, false).map(|id| json!({ "tabId": id }))
+    pub fn browser_open_tab(
+        app: AppHandle,
+        url: String,
+        display: Option<String>,
+    ) -> Result<Value, String> {
+        let display = super::normalize_open_display(display.as_deref())?;
+        open_tab(&app, &url, false, display).map(|id| json!({ "tabId": id }))
     }
 
     #[tauri::command(async)]
@@ -513,6 +539,21 @@ mod imp {
 #[cfg(target_os = "windows")]
 pub use imp::*;
 
+#[cfg(test)]
+mod display_tests {
+    use super::normalize_open_display;
+
+    #[test]
+    fn browser_open_display_is_strict_and_defaults_to_background() {
+        assert_eq!(normalize_open_display(None).unwrap(), "background");
+        assert_eq!(
+            normalize_open_display(Some("WORKSPACE")).unwrap(),
+            "workspace"
+        );
+        assert!(normalize_open_display(Some("foreground")).is_err());
+    }
+}
+
 /// Non-Windows: the commands exist (the frontend imports them unconditionally)
 /// and answer "not here".
 #[cfg(not(target_os = "windows"))]
@@ -548,7 +589,11 @@ mod imp {
     }
 
     #[tauri::command(async)]
-    pub fn browser_open_tab(_app: AppHandle, _url: String) -> Result<Value, String> {
+    pub fn browser_open_tab(
+        _app: AppHandle,
+        _url: String,
+        _display: Option<String>,
+    ) -> Result<Value, String> {
         unavailable()
     }
     #[tauri::command(async)]

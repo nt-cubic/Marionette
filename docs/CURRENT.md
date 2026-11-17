@@ -136,13 +136,20 @@ Agent 在回合结束后自己续跑（它起的后台指令回来了，触发�
 - Ctrl+W 优先关活跃伪标签（收纳盒 → 文档 → 会话）；命令后端在
   `open_target.rs::read_doc_file / save_doc_file`（纯 fs，不碰 storage 锁）。
 
-## 内置浏览器标签 + agent 工具通道（2026-10-31，批次 2）
+## 内置浏览器 Workspace Surface + agent 工具通道（2026-10-31，批次 2）
 
-app 内置一个浏览器页（伪标签，与收纳盒/文档同款形状），agent 通过工具通道读写它：
+app 内置浏览器，agent 通过工具通道读写它。普通窗口打开浏览器后，内容区切成
+**浏览器左 + 当前 Agent 对话右**；Dock 仍用整页浏览器：
 
 - **入口**：标签条「浏览器」chip（有标签才出现）+ Ctrl K「新建浏览器标签」+ 贴边态
-  整页；agent 的 `browser_open_tab` 也会把页面顶到前台。页内有自己的迷你标签条、
-  地址栏、reload、**分享菜单**（不分享 / 可读 / 可读+可操作）。
+  整页。agent 的 `browser_open_tab(display:"background"|"workspace")` 默认把 tab
+  留在后台；只有 `workspace` 才进入双栏。页内有自己的迷你标签条、地址栏、reload、
+  **分享菜单**（不分享 / 可读 / 可读+可操作）。
+- **Workspace surface（2026-11-17 Codeg 对齐）**：`SurfaceWorkspace` 只负责
+  `surface + chat` 布局，Browser 是第一种 surface；浏览器默认约 62%，对话栏复用同一套
+  SessionView + Composer。分隔条可拖（浏览器 360px / 对话 320px 下限，宽度持久化），
+  内容区 <760px 自动上下堆叠。进入时 ContextPanel 收起，关闭后恢复；`browserActive`
+  不再覆盖整个中栏，原 session-only `SplitWorkspace` 树保持原样并在退出后恢复。
 - **授权**：agent 自开标签自动**可读**（快照/console/截图）；**点击/输入（Control）
   逐次弹权限卡**（允许一次 / 允许并记住此站点 / 拒绝，2 分钟超时自动拒绝），该会话
   开着 always-approve 则自动放行；用户自开标签读写都要手动分享。grant 绑 origin，
@@ -161,8 +168,8 @@ app 内置一个浏览器页（伪标签，与收纳盒/文档同款形状），
   同源 iframe 与 open Shadow DOM 可继续向下命中；跨域 frame 只能选中它的顶层
   iframe，区域扫描会把内容不完整标出来。
   「发给对话」把批注清单（选择器、aria ref——发送时重新快照解析、失效则回落选择器、
-  框选内含元素）与截图路径**预填进当前对话输入框**，并切回对话让用户检查后自己发送；
-  成功后才清草稿；
+  框选内含元素）与截图路径**预填进当前对话输入框**；普通窗口直接在同屏右栏检查，
+  Dock 则回到窄条让 Composer 可见。成功后才清草稿；
   没有真实会话先建一个。页面字段明确标为不可信数据，URL 会脱敏；导航后混有多个页面
   时按页面分组。
   拾取是用户自己的 UI 操作，不走授权（授权只挡 agent）；agent 拿到批注后用现有
@@ -171,8 +178,9 @@ app 内置一个浏览器页（伪标签，与收纳盒/文档同款形状），
   `~/.marionette/browser-profiles/`）；**标签懒建**（2026-11-06：启动不再预热
   about:blank 子 webview——那会常驻一整套 WebView2 进程组；首标签走
   `create_surface` 直建，关掉标签 renderer 回收）。
-- 已知边界与偏差见 `docs/plan-browser-computer-use.md` §6（listener pin、eval、下载
-  接管、前进后退为后续批次；§1.5 的人→agent 手递已由 2026-11-17 元素批注落地）。
+- 设计定稿见 `docs/plan-browser-workspace.md`；工具与 surface 批次边界见
+  `docs/plan-browser-computer-use.md` §6（listener pin、eval、下载接管、前进后退、
+  dev server 自动预览与 handoff 为后续批次）。
 
 ## Computer Use（2026-10-31，批次 3）
 

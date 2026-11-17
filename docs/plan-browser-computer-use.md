@@ -102,6 +102,9 @@
   （aria 树默认 40K 字符截断，超限返回 `truncated:true` 邀请分段）/ 
   `browser_console_messages`（每 tab 200 行环形 + missing 计数必须明示）/
   `browser_screenshot`（base64 上限 3.5MB，超预算逐次缩宽重编码 JPEG q85）。
+  `browser_open_tab.display` 默认 `background`；只有 Web 产物预览用
+  `workspace`。后者进入 Browser + 当前 Agent 对话的同屏 SurfaceWorkspace，普通研究、
+  登录与参考页不抢中栏。
 - Control 级：`browser_click / browser_hover / browser_type / browser_press_key /
   browser_select_option`（aria ref 寻元素，非像素坐标——弱模型也稳）。
 - `browser_eval`：独立开关**默认关** + Control 级 + **逐段确认**（120s 静默=拒绝、
@@ -224,6 +227,7 @@ computer_stopped / computer_paused …`）。走 §0.1 同一个 localhost MCP�
 ## 4. 验证
 
 - 批次 2：手动 E2E——开 tab 走正常网页；agent `browser_open_tab` + snapshot 出 aria 树；
+  background tab 不抢当前页、`display:"workspace"` 才进入双栏且 Composer 保持可输入；
   未授权 tab 调用返回 `browser_grant_required`（不是报错）；权限卡出现/应答/超时拒绝
   三态；always-approve 会话自动放行 Control；picker 选元素进 composer 带 UNTRUSTED_NOTE；
   关闭所有浏览器 tab 后任务管理器确认 renderer 进程回收、主窗 resize 正常。

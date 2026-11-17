@@ -204,6 +204,7 @@ fn route(method: &str, params: &Value, session_id: &str) -> Result<Value, Value>
             "protocolVersion": params.get("protocolVersion").and_then(Value::as_str).unwrap_or("2024-11-05"),
             "capabilities": { "tools": {} },
             "serverInfo": { "name": "marionette-tools", "version": "1.0.0" },
+            "instructions": "Use browser_open_tab with display=\"workspace\" only when the user asked you to build or revise a web app and wants its rendered preview visible beside this conversation. Keep ordinary research, reference pages, sign-in, and one-off reads in the background. Never infer workspace display from a localhost URL alone.",
         })),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": tool_schemas() })),
@@ -260,9 +261,17 @@ fn tool_schemas() -> Value {
         ),
         tool(
             "browser_open_tab",
-            "Open a new browser tab and navigate to an http(s) URL. Tabs you open are readable by you immediately (snapshot/console/screenshot); actions still need the user's approval. Returns the new tab id.",
+            "Open a new browser tab and navigate to an http(s) URL. Tabs you open are readable by you immediately (snapshot/console/screenshot); actions still need the user's approval. display=workspace shows the page beside the current Agent conversation for a web app the user asked you to build or revise; the default background never steals the workspace. Use background for research, reference pages, sign-in, and one-off reads. Returns the new tab id.",
             &["url"],
-            json!({ "url": { "type": "string", "description": "Full http(s) URL (a bare domain gets https:// prepended)." } })
+            json!({
+                "url": { "type": "string", "description": "Full http(s) URL (a bare domain gets https:// prepended)." },
+                "display": {
+                    "type": "string",
+                    "enum": ["background", "workspace"],
+                    "default": "background",
+                    "description": "workspace only for a web app preview the user asked to build or revise; otherwise background."
+                }
+            })
         ),
         tool(
             "browser_close_tab",
@@ -513,8 +522,19 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
         }
         "browser_open_tab" => {
             let url = arg_str(args, "url")?;
-            let tab_id = browser::open_tab(app, &url, true)?;
-            Ok(json!({ "tabId": tab_id, "note": "opened; reads are allowed, actions ask the user" }))
+            let display = browser::normalize_open_display(
+                args.get("display").and_then(Value::as_str),
+            )?;
+            let tab_id = browser::open_tab(app, &url, true, display)?;
+            Ok(json!({
+                "tabId": tab_id,
+                "display": display,
+                "note": if display == "workspace" {
+                    "opened beside the current Agent conversation; reads are allowed, actions ask the user"
+                } else {
+                    "opened in the background; reads are allowed, actions ask the user"
+                }
+            }))
         }
         "browser_close_tab" => {
             let tab_id = arg_str(args, "tabId")?;
@@ -745,6 +765,10 @@ mod tests {
         let params = json!({"protocolVersion": "2025-03-26"});
         let result = route("initialize", &params, "s1").unwrap();
         assert_eq!(result["protocolVersion"], "2025-03-26");
+        assert!(result["instructions"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Never infer workspace display from a localhost URL alone"));
         let result = route("initialize", &json!({}), "s1").unwrap();
         assert_eq!(result["protocolVersion"], "2024-11-05");
     }
@@ -805,5 +829,15 @@ mod tests {
         ] {
             assert!(names.contains(&expected), "missing tool {expected}");
         }
+        let open = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "browser_open_tab")
+            .unwrap();
+        assert_eq!(
+            open["inputSchema"]["properties"]["display"]["enum"],
+            json!(["background", "workspace"])
+        );
     }
 }

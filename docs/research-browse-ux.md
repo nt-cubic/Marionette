@@ -158,21 +158,21 @@ Marionette 的相对优势要说得准确：**一体化浏览器 + 对话本身�
 - 分屏渲染和 browserActive / activeDocPath / memoActive 是互斥分支；
 - 文档与收纳盒的关闭、恢复、拖拽和焦点语义还绑在伪标签上，不在统一工作区标签模型里。
 
-所以当前产品准确描述应是：
+所以调研基线时的产品准确描述应是：
 
 > Marionette 已经支持“多对话分屏”，还没有支持“浏览器与对话分屏”，也还没有通用异类标签分屏。
 
-### 推荐形态：Browser Workspace，而不是一步做通用分屏
+### 推荐形态：最小通用 SurfaceWorkspace，而不是一步重写分屏树
 
-如果目标是接近 browse 的用户体验，第一版不需要把会话、浏览器、文档、收纳盒一次性统一成任意可拆的工作区。更稳妥的是增加一个专用浏览器工作模式：
+如果目标是接近 browse 的用户体验，第一版不需要把会话、浏览器、文档、收纳盒一次性统一成任意可拆的工作区，也不该把 Browser 硬塞进 session-only 分屏树。最终采用的折中是：
 
-1. 用户主动打开浏览器，或 Agent 发起 handoff / 用户发送批注时进入；
-2. 浏览器占据主画布，保留自己的标签栏、地址栏和页面；
+1. 建立 `surface + chat` 的最小通用边界，当前只注册 Browser；
+2. Agent 只在 Web 产物预览时用 `display:"workspace"` 进入，普通网页保持后台；
 3. 右侧出现一条 Agent 对话栏，包含当前会话、转写尾部、Composer 和等待状态；
 4. 中间可拖宽，浏览器与对话各自保持状态；
-5. 关闭 Browser Workspace 后回到原工作区，原会话和文档标签不丢。
+5. 关闭 surface 后回到原工作区，原会话和文档标签不丢。
 
-它比通用分屏更容易做对三件事：
+它比重写 session-only 分屏树更容易先做对三件事：
 
 - child WebView2 只需要跟随一个明确的 browser host 矩形；
 - 批注“发给对话”可以直接落到右侧 Composer，不需要切页；
@@ -191,16 +191,16 @@ Marionette 的相对优势要说得准确：**一体化浏览器 + 对话本身�
 
 因此，“主要看到浏览器画面”是对的，但只适用于用户主动查看、协作和 handoff 阶段。Agent 单纯在后台跑时，仍应以对话为主，不能让浏览器持续抢画面。
 
-### 后续再考虑通用分屏
+### 后续把更多伪标签迁进 worksurface
 
-如果 Browser Workspace 验证成立，再把 splitWorkspace 从 session-only 升级为异类标签模型：
+如果 Browser surface 验证成立，先把 document 与 memo 迁进同一 `SurfaceWorkspace` kind；只有这些语义都稳定后，才考虑把 `splitWorkspace` 从 session-only 升级成任意异类标签树：
 
 - session；
 - browser；
 - document；
 - memo。
 
-这会涉及拖拽、关闭、恢复、快捷键、焦点、原生 WebView bounds、标签去重和 detached 窗口语义，工作量明显大于专用浏览器模式。不要把它设成第一版浏览器 UX 的前置条件。
+通用标签树会涉及拖拽、关闭、恢复、快捷键、焦点、原生 WebView bounds、标签去重和 detached 窗口语义，工作量和风险都远大于 Browser surface。不要把它设成第一版浏览器 UX 的前置条件。
 
 ## 核心体验差距
 
@@ -208,7 +208,7 @@ Marionette 的相对优势要说得准确：**一体化浏览器 + 对话本身�
 
 browse 的 Agent 新标签默认开在后台，并在标签栏开头形成折叠组。用户不主动点进去就看不到页面变化；只有 Agent handoff 等人时，组才会展开。
 
-Marionette 当前收到 fresh browser tab 事件会激活浏览器伪标签，并把浏览器页切到前台。这适合“展示 Agent 刚发现的东西”，但在多 Agent 长时间工作中会频繁打断用户。
+调研基线时，Marionette 收到 fresh browser tab 会激活浏览器伪标签，并把浏览器页切到前台。这适合“展示 Agent 刚发现的东西”，但在多 Agent 长时间工作中会频繁打断用户；Phase 1 已改为默认后台，只有 `display:"workspace"` 才进入 surface。
 
 建议：
 
@@ -416,7 +416,7 @@ browse 不只有 handoff，还能让用户示范一次流程：
 
 ### P0：先补“用户在场感”
 
-1. 增加专用 Browser Workspace：浏览器主画布 + Agent 对话侧栏；
+1. 增加最小通用 `SurfaceWorkspace`，先注册 Browser：浏览器 + Agent 对话；
 2. Agent 新标签默认后台打开，不改变当前会话或文档；
 3. 标签增加 ownerSessionId、busy、lastUsedAt；
 4. 每个标签显示 running/waiting_user/error 三类浏览器状态；
@@ -435,7 +435,7 @@ browse 不只有 handoff，还能让用户示范一次流程：
 
 12. demonstrate：记录用户示范的点击、输入和导航；
 13. 稳定命名标签，例如 work-mail；
-14. session/browser/document/memo 通用异类分屏；
+14. 将 document/memo 迁入 SurfaceWorkspace，再评估通用异类标签树；
 15. 标签独立窗口选项；
 16. 可选连接真实 Chrome；嵌入式浏览器继续作为默认安全环境。
 
@@ -483,7 +483,8 @@ browse 不只有 handoff，还能让用户示范一次流程：
 
 Marionette 对照代码：
 
-- src/app/App.tsx：新浏览器标签自动激活、浏览器伪标签接线；
+- src/app/App.tsx：background/workspace fresh-tab 分流、Browser surface 接线；
+- src/components/SurfaceWorkspace.tsx + src/lib/workspaceSurface.ts：通用 surface + chat 双栏与宽度规则；
 - src/components/BrowserPage.tsx：地址栏、标签、分享菜单、批注抽屉；
 - src/lib/browserPick.ts：不可信声明、URL 脱敏、多页面 prompt；
 - src-tauri/src/browser/mod.rs：grant、权限请求、标签命令；

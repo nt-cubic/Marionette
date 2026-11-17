@@ -30,6 +30,7 @@
 | `verify-text-pipeline.mjs` | `npm run verify:text` | 文本 / 展示管线的冒烟检查（只依赖 `markdownText.ts`，不需要整棵 import 图） |
 | `verify-rich-markdown.mts` | `npx tsx scripts/verify-rich-markdown.mts` | 富文本管线：纯字符串扫描决定 katex/shiki/mermaid/spec 是否加载（bash `$$` 不当公式、单 `$` 永远字面、首 token 路由、```` 围栏状态机）、LaTeX `\[..\]`→`$$..$$` 改写不动围栏内、```spec 卡片 schema 三道防护（JSON 容错/原型污染/深度+尺寸上限）与各 type 形状校验 |
 | `verify-browser-pick.mts` | `npx tsx scripts/verify-browser-pick.mts` | 浏览器元素批注的数据层：不可信页面声明、URL/query/hash/path 脱敏、多页面分组、元素/框选块、ref 与截图顺序、页面文本单行净化、标签拼装、页面输入屏障/可信事件/24 条上限的静态契约、双语词典对齐 |
+| `verify-workspace-surface.mts` | `npx tsx scripts/verify-workspace-surface.mts` | 浏览器 Workspace Surface：浏览器/对话宽度上下限、左右指针换算、<760px 上下堆叠、fresh tab 只有 `display:"workspace"` 才抢工作区 |
 | `verify-activity-cluster.mts` | `npx tsx scripts/verify-activity-cluster.mts` | 活动折叠：thought+tool 同一集群、同类连续分组、结束后摘要为 `1 think, 2 read, 3 edit`、live 时跟当前工具 |
 | `verify-transcript-export.mts` | `npx tsx scripts/verify-transcript-export.mts` | 对话 Markdown 导出：主干发言、thought/tool 进 `<details>`、连续 `file_change` 合成交付表、Windows 文件名净化、空 thought 不产出空折叠块 |
 | `verify-conversation-find.mts` | `npx tsx scripts/verify-conversation-find.mts` | 对话内查找：主干卡可搜（你/回复/计划/提问/交接/子代理/改动，重命名旧路径与选项/选中项参与）、thought/tool 返回 null（折叠簇内 v1 不搜）、大小写不敏感子串、查询 trim、命中下标升序、空查询/无命中 |

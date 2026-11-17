@@ -108,6 +108,7 @@ import { DockDropRouter } from "../components/DockDropRouter";
 import { MemoBox } from "../components/MemoBox";
 import { CouncilPage } from "../components/CouncilPage";
 import { DocCompareLayout, DocPage } from "../components/DocPage";
+import { SurfaceWorkspace } from "../components/SurfaceWorkspace";
 import { setDocTabOpener } from "../lib/openFile";
 import { BrowserPage, BrowserPermissionDialog } from "../components/BrowserPage";
 import { ComputerShareDialog } from "../components/ComputerShareDialog";
@@ -125,7 +126,11 @@ import {
   type BrowserPermissionRequest,
   type BrowserTab,
 } from "../lib/browserTabs";
-import type { BrowserPickModes, BrowserPickRowsByTab } from "../lib/browserPick";
+import type {
+  BrowserPickModes,
+  BrowserPickRowsByTab,
+} from "../lib/browserPick";
+import { browserTabToOpenInWorkspace } from "../lib/workspaceSurface";
 import { memoList, memoPrompt } from "../lib/memos";
 import { installPageDragSourceTracker } from "../lib/dragText";
 import { splitShelfChatSessions, withoutGhostProjects } from "../lib/sessionGroups";
@@ -545,6 +550,9 @@ export function App() {
   /** Ctrl+K palette: jump to any dialog / project, or run a shell action. */
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
+  const rightCollapsedRef = useRef(rightCollapsed);
+  rightCollapsedRef.current = rightCollapsed;
+  const rightCollapsedBeforeSurfaceRef = useRef<boolean | null>(null);
   /** Whether the mouse is hovering near the collapsed sidebar edge — shows the floating trigger */
   const [leftEdgeHover, setLeftEdgeHover] = useState(false);
   const [rightEdgeHover, setRightEdgeHover] = useState(false);
@@ -1068,6 +1076,29 @@ export function App() {
   openSessionIdsRef.current = openSessionIds;
 
   const workspaceSplit = !IS_DETACHED_WINDOW && !dockActive && leafCount(splitState) > 1;
+  /** Browser + the existing Agent chat share the center area; session-only
+   * split trees stay untouched underneath and return when this surface closes. */
+  const browserSurfaceBlocked =
+    memoActive || councilActive || activeDocPath !== null || diffTabActive || usageActive;
+  const browserSurfaceRequested =
+    browserActive && !dockActive && !IS_DETACHED_WINDOW && !browserSurfaceBlocked;
+  const browserSurfaceActive =
+    browserSurfaceRequested && browserTabs.length > 0;
+  const centerUsesSingleSurface =
+    workspaceSplit || browserSurfaceRequested;
+  useEffect(() => {
+    if (browserSurfaceActive) {
+      if (rightCollapsedBeforeSurfaceRef.current == null) {
+        rightCollapsedBeforeSurfaceRef.current = rightCollapsedRef.current;
+        setRightCollapsed(true);
+      }
+      return;
+    }
+    if (rightCollapsedBeforeSurfaceRef.current != null) {
+      setRightCollapsed(rightCollapsedBeforeSurfaceRef.current);
+      rightCollapsedBeforeSurfaceRef.current = null;
+    }
+  }, [browserSurfaceActive]);
   /** Split panes would be unreadable at strip width — paused while docked. */
   const dockSplitPaused = dockActive && leafCount(splitState) > 1;
 
@@ -1086,6 +1117,16 @@ export function App() {
       setSessionCapabilities(capsByIdRef.current[focused] ?? null);
     }
   };
+
+  /** Browser surface wins the center explicitly; the caller's gesture decides. */
+  const activateBrowserSurface = useCallback(() => {
+    setBrowserActive(true);
+    setMemoActive(false);
+    setCouncilActive(false);
+    setUsageActive(false);
+    setDiffTabActive(false);
+    setActiveDocPath(null);
+  }, []);
 
   /** Permission / ask / plan steal pane focus; never wait for that to paint the dialog. */
   const stealFocusForPrompt = (sessionId: string) => {
@@ -5284,6 +5325,16 @@ export function App() {
       setUsageActive(false);
     }
   }, [usageActive, memoActive, councilActive, activeDocPath, browserActive]);
+  // Selecting any other center takeover yields the Browser surface first, so
+  // that the page the user just chose is not hidden behind the branch above.
+  useEffect(() => {
+    if (
+      browserActive &&
+      (memoActive || councilActive || activeDocPath || diffTabActive || usageActive)
+    ) {
+      setBrowserActive(false);
+    }
+  }, [browserActive, memoActive, councilActive, activeDocPath, diffTabActive, usageActive]);
 
   const applyFocusedSession = (nextSession: Session) => {
     setCurrentProjectId(nextSession.projectId);
@@ -5312,6 +5363,7 @@ export function App() {
       );
       setActiveDocPath(absolutePath);
       setMemoActive(false);
+      setBrowserActive(false);
       // While docked the strip has no tab row — the document takes the full page.
       setDockPage((page) => (dockActive && page !== "doc" ? "doc" : page));
     },
@@ -5339,9 +5391,11 @@ export function App() {
     return () => setDocTabOpener(null);
   }, [openDocTab]);
 
-  // Built-in browser tabs: the backend owns the list and emits it whole;
-  // this mirrors it and surfaces NEW tabs on screen — whoever opened them
-  // (the user's + or the agent's browser_open_tab), the result should show.
+  // Built-in browser tabs: the backend owns the list and emits it whole.
+  // Opening a tab is not permission to steal the current workspace. A fresh
+  // `display=workspace` tab is the one explicit exception (Web app preview);
+  // every other tab lands in the background and its caller selects it after
+  // the open command returns.
   useEffect(() => {
     if (IS_DETACHED_WINDOW) return;
     let known = new Set<string>();
@@ -5373,12 +5427,13 @@ export function App() {
       }
       const fresh = tabs.filter((tab) => !known.has(tab.id));
       known = new Set(tabs.map((tab) => tab.id));
-      if (fresh.length > 0 && !browserAutoOpenSuppressActivate) {
-        const newest = fresh[fresh.length - 1]!;
-        setActiveBrowserTabId((current) => current ?? newest.id);
-        setBrowserActive(true);
-        setMemoActive(false);
-        setActiveDocPath(null);
+      const workspaceTabId = browserTabToOpenInWorkspace(
+        fresh,
+        browserAutoOpenSuppressActivate,
+      );
+      if (workspaceTabId) {
+        setActiveBrowserTabId(workspaceTabId);
+        activateBrowserSurface();
         // While docked the strip has no chip — the page itself takes over.
         setDockPage((page) => (page === "browser" ? page : "browser"));
       }
@@ -5390,7 +5445,7 @@ export function App() {
     return () => {
       void stop.then((unlisten) => unlisten());
     };
-  }, []);
+  }, [activateBrowserSurface]);
 
   // Control-level browser actions ask here (2 minutes of silence denies on
   // the Rust side; this is the answering end).
@@ -5416,9 +5471,7 @@ export function App() {
     void listen<{ noActivate: boolean }>("marionette-dev-open-browser", (event) => {
       browserAutoOpenSuppressActivate = event.payload?.noActivate === true;
       if (!browserAutoOpenSuppressActivate) {
-        setBrowserActive(true);
-        setMemoActive(false);
-        setActiveDocPath(null);
+        activateBrowserSurface();
       }
       void browserOpenTab("https://example.com").then((result) => {
         if (result) {
@@ -5434,7 +5487,7 @@ export function App() {
     return () => {
       void stop.then((unlisten) => unlisten());
     };
-  }, []);
+  }, [activateBrowserSurface]);
 
   const openSession = (nextSession: Session) => {
     if (!IS_DETACHED_WINDOW && detachedOwnedIdsRef.current.has(nextSession.id)) {
@@ -5615,13 +5668,9 @@ export function App() {
         }
         setComposerPrefill({ sessionId, text: prompt, token });
         setComposerAutoFocus(true);
-        // The current build has no browser/chat split yet. Leaving the native
-        // browser surface on top would hide the composer the user was just
-        // told to review, so hand the whole window back to the conversation.
-        // The dedicated Browser Workspace will keep its sidecar visible and
-        // remove this branch instead of replacing it with a second composer.
-        setBrowserActive(false);
-        setDockPage((page) => (page === "browser" ? null : page));
+        // The normal window already shows the live Composer beside the page.
+        // The narrow dock cannot, so only that mount steps back to its strip.
+        if (dockActive) setDockPage((page) => (page === "browser" ? null : page));
         return true;
       } catch (error) {
         pushDebug({
@@ -5633,7 +5682,7 @@ export function App() {
         return false;
       }
     },
-    [currentSession?.id, handleCreateChatSession, pushDebug],
+    [currentSession?.id, dockActive, handleCreateChatSession, pushDebug],
   );
 
   const setSessionStatusById = useCallback((sessionId: string, status: Session["status"]) => {
@@ -7342,7 +7391,7 @@ export function App() {
           closeDocTab(activeDocPath);
           return;
         }
-        if (browserActive && activeBrowserTabId) {
+        if (browserSurfaceRequested && activeBrowserTabId) {
           event.preventDefault();
           void browserCloseTab(activeBrowserTabId);
           return;
@@ -7409,7 +7458,7 @@ export function App() {
     memoActive,
     councilActive,
     activeDocPath,
-    browserActive,
+    browserSurfaceRequested,
     activeBrowserTabId,
     closeDocTab,
     closeSessionTab,
@@ -9684,9 +9733,7 @@ export function App() {
                 id: "new-browser-tab",
                 label: t("palette.newBrowserTab"),
                 run: () => {
-                  setBrowserActive(true);
-                  setMemoActive(false);
-                  setActiveDocPath(null);
+                  activateBrowserSurface();
                   void browserOpenTab("https://www.bing.com").then((result) => {
                     if (result) setActiveBrowserTabId(result.tabId);
                   });
@@ -9875,13 +9922,9 @@ export function App() {
               IS_DETACHED_WINDOW || browserTabs.length === 0
                 ? undefined
                 : {
-                    active: browserActive,
+                    active: browserSurfaceRequested,
                     count: browserTabs.length,
-                    onSelect: () => {
-                      setBrowserActive(true);
-                      setMemoActive(false);
-                      setActiveDocPath(null);
-                    },
+                    onSelect: activateBrowserSurface,
                     onClose: () => {
                       // × closes the active tab — or the first one when none
                       // is active (the page itself falls back to tabs[0] the
@@ -9997,20 +10040,16 @@ export function App() {
                 ))}
               {!IS_DETACHED_WINDOW && browserTabs.length > 0 && (
                 <div
-                  className={`editor-tab is-browser${browserActive ? " is-active" : ""}`}
+                  className={`editor-tab is-browser${browserSurfaceRequested ? " is-active" : ""}`}
                   role="tab"
-                  aria-selected={browserActive}
+                  aria-selected={browserSurfaceRequested}
                   data-tauri-drag-region="false"
                 >
                   <button
                     className="editor-tab__select"
                     type="button"
                     title={t("browser.tabTitle")}
-                    onClick={() => {
-                      setBrowserActive(true);
-                      setMemoActive(false);
-                      setActiveDocPath(null);
-                    }}
+                    onClick={activateBrowserSurface}
                   >
                     <Globe size={12} />
                     <span>{t("browser.tabTitle")}</span>
@@ -10040,7 +10079,7 @@ export function App() {
 
         {/* Center workspace — hover edges to reveal sidebar toggle buttons */}
         <section
-          className={`center-workspace${workspaceSplit ? " is-split" : ""}${mergeTargetActive ? " is-merge-target" : ""}`}
+          className={`center-workspace${centerUsesSingleSurface ? " is-split" : ""}${mergeTargetActive ? " is-merge-target" : ""}`}
           aria-label="Active workspace"
           onMouseMove={handleCenterMove}
           onMouseLeave={handleCenterLeave}
@@ -10116,23 +10155,28 @@ export function App() {
                 }}
               />
             </div>
-          ) : browserActive && !dockActive && !IS_DETACHED_WINDOW ? (
-            // Browser pseudo-tab: covers the conversation column; the native
-            // webviews are positioned to the host rectangle inside BrowserPage.
-            <div className="browser-tab-page" aria-label={t("browser.tabTitle")}>
-              <BrowserPage
-                tabs={browserTabs}
-                activeTabId={activeBrowserTabId}
-                onSelectTab={setActiveBrowserTabId}
-                visible
-                onExit={() => setBrowserActive(false)}
-                onSendToChat={sendBrowserPicksToChat}
-                pickModes={browserPickModes}
-                picksByTab={browserPicksByTab}
-                setPickModes={setBrowserPickModes}
-                setPicksByTab={setBrowserPicksByTab}
-              />
-            </div>
+          ) : browserSurfaceRequested ? (
+            <SurfaceWorkspace
+              kind="browser"
+              surface={
+                <BrowserPage
+                  tabs={browserTabs}
+                  activeTabId={activeBrowserTabId}
+                  onSelectTab={setActiveBrowserTabId}
+                  visible
+                  embedded
+                  onExit={() => setBrowserActive(false)}
+                  onSendToChat={sendBrowserPicksToChat}
+                  pickModes={browserPickModes}
+                  picksByTab={browserPicksByTab}
+                  setPickModes={setBrowserPickModes}
+                  setPicksByTab={setBrowserPicksByTab}
+                />
+              }
+              chat={renderConversation(displaySession)}
+              chatTitle={displaySession.label?.trim() || displaySession.id}
+              onCloseSurface={() => setBrowserActive(false)}
+            />
           ) : activeDocPath && !dockActive && !IS_DETACHED_WINDOW ? (
             // Document pseudo-tab: the conversation column switches to the doc
             // page (shelf/context stay). Compare mode keeps the chat beside it

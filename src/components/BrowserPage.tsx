@@ -45,6 +45,8 @@ type BrowserPageProps = {
   onSelectTab: (tabId: string) => void;
   /** The page is the visible center page — surfaces show only when true. */
   visible: boolean;
+  /** Esc only belongs to browser chrome when embedded beside a chat pane. */
+  embedded?: boolean;
   /** Esc: leave the page (tabs stay open; the dock mount maps it to 返回). */
   onExit?: () => void;
   /** 批注抽屉的「发给对话」：成功后才允许 drawer 丢弃草稿。 */
@@ -82,6 +84,7 @@ export function BrowserPage({
   activeTabId,
   onSelectTab,
   visible,
+  embedded = false,
   onExit,
   onSendToChat,
   pickModes,
@@ -90,6 +93,7 @@ export function BrowserPage({
   setPicksByTab,
 }: BrowserPageProps) {
   const t = useT();
+  const rootRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const [address, setAddress] = useState("");
   const [shareMenuFor, setShareMenuFor] = useState<string | null>(null);
@@ -474,6 +478,14 @@ export function BrowserPage({
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        if (
+          embedded &&
+          event.target instanceof Node &&
+          rootRef.current &&
+          !rootRef.current.contains(event.target)
+        ) {
+          return;
+        }
         if (shareMenuFor) {
           setShareMenuFor(null);
           return;
@@ -487,13 +499,13 @@ export function BrowserPage({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [active, pickModes, setPickerMode, onExit, shareMenuFor]);
+  }, [active, embedded, pickModes, setPickerMode, onExit, shareMenuFor]);
 
   const drawerOpen =
     Boolean(active) && (pickerMode !== null || pickRows.length > 0 || pickerNotice !== null);
 
   return (
-    <div className="browser-page">
+    <div ref={rootRef} className="browser-page">
       <div className="browser-page__bar">
         <div className="browser-page__tabs" role="tablist">
           {tabs.map((tab) => (

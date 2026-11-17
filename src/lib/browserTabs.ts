@@ -13,6 +13,7 @@ export type BrowserTab = {
   origin: string;
   grant: "none" | "read" | "control";
   openedByAgent: boolean;
+  display: "background" | "workspace";
 };
 
 export type BrowserPermissionRequest = {
@@ -24,9 +25,12 @@ export type BrowserPermissionRequest = {
   summary: string;
 };
 
-export async function browserOpenTab(url: string): Promise<{ tabId: string } | null> {
+export async function browserOpenTab(
+  url: string,
+  display: "background" | "workspace" = "background",
+): Promise<{ tabId: string } | null> {
   if (!isTauriRuntime()) return null;
-  return invoke<{ tabId: string }>("browser_open_tab", { url });
+  return invoke<{ tabId: string }>("browser_open_tab", { url, display });
 }
 
 export async function browserCloseTab(tabId: string): Promise<void> {

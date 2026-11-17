@@ -786,12 +786,35 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
   always-approve 镜像只覆盖挂载过 Composer 的会话（后台会话出权限卡，安全方向），
   且只跳过 **agent 自开标签**的 Control 卡；用户自开标签必须由用户显式允许。
 
+## 浏览器 Workspace Surface（2026-11-17，Codeg 对齐）
+
+普通窗口的 `browserActive` 不再覆盖整个中栏：`SurfaceWorkspace` 把当前 Browser 与
+`renderConversation(displaySession)` 并排。它是通用 `surface + chat` 边界的第一个
+实现，当前只注册 browser；document/memo 仍走原伪标签。Dock 仍是整页浏览器。四条红线：
+
+- **不改 session-only `SplitWorkspace` reducer**：已有 `splitState` / `openSessionIds`
+  原样保留，Browser surface 打开时暂不渲染树，关闭后恢复。布局规则在
+  `lib/workspaceSurface.ts`（纯函数）+ `components/SurfaceWorkspace.tsx`（只排 DOM），
+  不接 ACP、不订阅会话事件、不复制 Composer。
+- **打开 tab 不是抢工作区授权**：`browser_open_tab` 的 `display` 默认 `background`；
+  fresh tab 只有 `display:"workspace"` 才激活 surface。用户自己的新建入口在命令返回后
+  主动选中 tab。MCP initialize instructions 和工具 description 都禁止按 localhost
+  字符串猜 workspace。
+- **原生 surface 只跟随自己的 host**：浏览器默认 62%、对话最小 320px；拖动 seam 改变
+  DOM 后由 BrowserPage 的 ResizeObserver 调 `browser_set_tab_bounds`。embedded 模式
+  的 BrowserPage Esc 只在 `event.target` 属于浏览器根节点时生效，Composer/权限卡 Esc
+  不得被抢。
+- **进入时 ContextPanel 自动收起、退出恢复**；普通窗口批注发送成功后 surface 保持
+  打开，Dock 才回窄条。真机重点看 IME、child WebView2 bounds、最大化恢复和切会话。
+
+回归：`npx tsx scripts/verify-workspace-surface.mts`（宽度/窄栏/workspace-fresh 选择）。
+
 ## 浏览器元素批注（2026-11-17，DevTools 式拾取 + 框选）
 
 浏览器工具栏十字准星 → 页内拾取（悬停高亮/点击拾取、框选拖拽）→ 批注抽屉
 （`.browser-page__picker`，截图缩略 + 逐条批注）→「发给对话」**预填 composer**（不自动
-发送）+ 元素/区域截图走附件管线；当前还没有浏览器/对话分屏，所以发送成功后必须退出
-浏览器伪标签（dock 里回到窄条），让用户直接看见待检查的 Composer。改前先记六条：
+发送）+ 元素/区域截图走附件管线。普通窗口右侧 Composer 已同屏；Dock 发送成功后回窄条。
+改前先记六条：
 
 - **模块**：`browser/pick.rs`（表达式构建器，probe.rs 同款：全 serde_json 禁拼接）+
   `browser/js/picker.js`（自有脚本，probe.js 同款自装 IIFE，**每个 eval 内联整份脚本 +
@@ -819,9 +842,8 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
   拾取状态提升到 App，BrowserPage 卸载只停 picker、不丢草稿。document nav 清 payload；
   SPA URL 变化只移 epoch + 停 picker，title 变化只更新标题。`browser_pick_clear` 在
   发送/清空后同时清 Rust 和页面元素表。截图由 Rust 落到 clipboard 目录，前端只留
-  小缩略图 + path；`sendBrowserPicksToChat` 成功后才清草稿，失败保留。预填后关普通
-  窗口的 `browserActive` 和 dock 的 `dockPage:"browser"`；以后 Browser Workspace 的
-  右栏可见时再撤掉这个交接动作，别另造第二份 Composer。
+  小缩略图 + path；`sendBrowserPicksToChat` 成功后才清草稿，失败保留。普通窗口不关
+  `browserActive`（右栏直接看草稿）；只有 dock 的 `dockPage:"browser"` 回 null。
 - **提示词安全**：页面文字、selector、区域元素全部标为不可信数据；URL 先剥离
   user/password、secret query/hash、JWT/高熵 path segment。混批按页面分组；单批上限
   24，前端、页面脚本、Rust ring 三处一致。
@@ -829,7 +851,8 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
   折回首层；跨域 frame 只能选顶层 iframe，区域扫描把它标成不完整。
 - 回归：`cargo test --bin marionette browser` +
   `npx tsx scripts/verify-browser-pick.mts`（prompt 安全/URL 脱敏/多页分组/输入屏障）+
-  `npx tsc --noEmit`；真机手册见 docs/CURRENT.md 浏览器节。
+  `npx tsc --noEmit` + `npx tsx scripts/verify-workspace-surface.mts`；真机手册见
+  docs/CURRENT.md 浏览器节。
 
 ## Computer Use（2026-10-31，批次 3）
 

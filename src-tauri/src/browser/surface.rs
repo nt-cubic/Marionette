@@ -147,11 +147,15 @@ pub struct TabInfo {
     pub origin: String,
     pub grant: String,
     pub opened_by_agent: bool,
+    /// `background` or `workspace`; the frontend consumes this only for fresh
+    /// tabs, then the tab behaves like every other tab.
+    pub display: String,
 }
 
 pub struct Surface {
     pub id: String,
     pub opened_by_agent: bool,
+    pub display: String,
     pub webview: WebView,
     /// App handle, so the CDP event fan-out can push picker reports to the
     /// frontend without a CDP call (events can arrive inside another call's
@@ -196,6 +200,7 @@ impl Surface {
                 .map(|g| g.level.as_str().to_string())
                 .unwrap_or_else(|| "none".to_string()),
             opened_by_agent: self.opened_by_agent,
+            display: self.display.clone(),
         }
     }
 }
@@ -1239,8 +1244,13 @@ fn profile_dir() -> Result<std::path::PathBuf, String> {
 /// WebView2 process group resident for the process lifetime even when no tab
 /// was ever opened); every tab — including the first — builds here through
 /// `build_surface`, the path 2nd+ tabs always took.
-pub fn create_surface(app: &AppHandle, url: &str, opened_by_agent: bool) -> Result<String, String> {
-    let surface = build_surface(app, url, opened_by_agent)?;
+pub fn create_surface(
+    app: &AppHandle,
+    url: &str,
+    opened_by_agent: bool,
+    display: &str,
+) -> Result<String, String> {
+    let surface = build_surface(app, url, opened_by_agent, display)?;
     let id = surface.id.clone();
     register_surface(app, &surface);
     Ok(id)
@@ -1248,7 +1258,12 @@ pub fn create_surface(app: &AppHandle, url: &str, opened_by_agent: bool) -> Resu
 
 /// Build the webview and its Surface WITHOUT touching the registry;
 /// `create_surface` registers immediately after.
-fn build_surface(app: &AppHandle, url: &str, opened_by_agent: bool) -> Result<Rc<Surface>, String> {
+fn build_surface(
+    app: &AppHandle,
+    url: &str,
+    opened_by_agent: bool,
+    display: &str,
+) -> Result<Rc<Surface>, String> {
     let window = app
         .get_webview_window("main")
         .ok_or("main window is gone")?;
@@ -1273,6 +1288,7 @@ fn build_surface(app: &AppHandle, url: &str, opened_by_agent: bool) -> Result<Rc
     // loop (creating a webview inside the new-window callback would re-enter
     // the WebView2 dispatch that is calling us).
     let popup_app = app.clone();
+    let popup_display = display.to_string();
     let popup_by_agent = opened_by_agent;
 
     let profile = profile_dir()?;
@@ -1295,8 +1311,11 @@ fn build_surface(app: &AppHandle, url: &str, opened_by_agent: bool) -> Result<Rc
             .with_user_agent(USER_AGENT)
             .with_new_window_req_handler(move |url, _features| {
                 let app_for_job = popup_app.clone();
+                let display_for_job = popup_display.clone();
                 let _ = popup_app.run_on_main_thread(move || {
-                    if let Err(error) = create_surface(&app_for_job, &url, popup_by_agent) {
+                    if let Err(error) =
+                        create_surface(&app_for_job, &url, popup_by_agent, &display_for_job)
+                    {
                         crate::debug_log::append("browser", "warn", "", "popup open failed", Some(&error));
                     }
                 });
@@ -1309,6 +1328,7 @@ fn build_surface(app: &AppHandle, url: &str, opened_by_agent: bool) -> Result<Rc
     let surface = Rc::new(Surface {
         id,
         opened_by_agent,
+        display: display.to_string(),
         webview,
         app: app.clone(),
         world_ctx: Cell::new(None),
