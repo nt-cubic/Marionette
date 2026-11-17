@@ -18,8 +18,10 @@ pub mod chat;
 pub mod cli;
 pub mod groups;
 pub mod httpd;
+pub mod messages;
 pub mod presets;
 pub mod quotas;
+pub mod responses;
 pub mod routes;
 pub mod store;
 pub mod translate;
@@ -78,3 +80,9 @@ pub fn outbound_agent() -> ureq::Agent {
         .timeout_connect(std::time::Duration::from_secs(5))
         .build()
 }
+
+/// 测试沙箱共享串行锁：quotas/presets（以及后续沙箱模块）的测试都靠
+/// 进程级 `XDG_CONFIG_HOME` 重定向 config_dir，各持私锁时并行测试仍互踩
+/// env——所有沙箱模块的测试统一取这一把（council store 沙箱同款做法）。
+#[cfg(test)]
+pub(crate) static TEST_SANDBOX_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

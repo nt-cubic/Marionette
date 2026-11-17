@@ -205,32 +205,26 @@ mod tests {
 
     /// 测试串行锁：配置目录靠 XDG_CONFIG_HOME（进程级 env），并行测试会
     /// 互踩——全局锁串行（council store 沙箱同款做法）。
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    // 统一走 mod.rs 的跨模块共享锁（XDG_CONFIG_HOME 是进程级 env）。
     static DIR_SEQ: AtomicUsize = AtomicUsize::new(0);
 
-    /// 一次测试的世界：%TEMP% 下唯一配置目录 + env 恢复 + 串行锁，Drop
-    /// 收尾（含 panic 展开的路径）。绝不碰真实 `~/.config/magpie`
-    /// （config_dir 只认绝对路径的 XDG_CONFIG_HOME）。
+    /// 一次测试的世界：%TEMP% 下唯一配置目录 + 串行锁，Drop 清目录。
+    /// 绝不碰真实 `~/.config/magpie`（config_dir 只认绝对路径的
+    /// XDG_CONFIG_HOME）。env 只在 Store::load 的一瞬持有——见 sandbox()。
     struct Sandbox {
         dir: std::path::PathBuf,
-        prior_xdg: Option<String>,
         lock: std::sync::MutexGuard<'static, ()>,
     }
 
     impl Drop for Sandbox {
         fn drop(&mut self) {
-            if let Some(prior) = &self.prior_xdg {
-                std::env::set_var("XDG_CONFIG_HOME", prior);
-            } else {
-                std::env::remove_var("XDG_CONFIG_HOME");
-            }
             let _ = std::fs::remove_dir_all(&self.dir);
         }
     }
 
     fn sandbox(providers_json: &str) -> (Gateway, Sandbox) {
         // 先拿串行锁再动共享状态（缓存/端点覆盖/env），测试间零耦合。
-        let lock = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let lock = crate::engine_gateway::TEST_SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         if let Ok(mut guard) = cache().lock() {
             *guard = None;
         }
@@ -246,10 +240,17 @@ mod tests {
         std::fs::create_dir_all(dir.join("magpie")).expect("temp config dir");
         std::fs::write(dir.join("magpie").join("providers.json"), providers_json)
             .expect("providers.json");
+        // XDG_CONFIG_HOME 是进程级 env，本测试箱里还有别的沙箱模块
+        // （presets）在抢：quotas 打开 Gateway 后全走内存 store，不再读
+        // config_dir——所以设完立刻恢复，把互相踩的窗口压到一次文件读。
         let prior_xdg = std::env::var("XDG_CONFIG_HOME").ok();
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         let gateway = Gateway::open().expect("gateway");
-        (gateway, Sandbox { dir, prior_xdg, lock })
+        match &prior_xdg {
+            Some(prior) => std::env::set_var("XDG_CONFIG_HOME", prior),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        (gateway, Sandbox { dir, lock })
     }
 
     /// 本地假厂商服务（std TcpListener 手写 HTTP，零新依赖）：每个连接

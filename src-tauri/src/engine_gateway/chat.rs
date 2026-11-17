@@ -17,6 +17,22 @@ pub(crate) struct Outbound {
     url: String,
 }
 
+impl Outbound {
+    /// 姊妹模块（messages.rs 的 anthropic 入站翻译路径）构造出站目标用：
+    /// 字段是模块私有的、resolve 又只服务 chat 端点自己——开一个
+    /// pub(crate) 构造口，让翻译路径与 chat.rs 共用同一套出站与
+    /// bodycap 重发（maybe_refit 的签名收 &Outbound）。
+    pub(crate) fn new(
+        provider_id: String,
+        key: String,
+        headers: Vec<(String, String)>,
+        bare_model: String,
+        url: String,
+    ) -> Outbound {
+        Outbound { provider_id, key, headers, bare_model, url }
+    }
+}
+
 fn resolve(gw: &super::Gateway, model: &str) -> Result<Outbound, String> {
     let store = gw.store.lock().map_err(|_| "store poisoned".to_string())?;
     // 组路由（T5）：peel 标记 → 组/别名/直通三形态解析；解析不到再报错。

@@ -416,4 +416,55 @@ mod tests {
         assert_eq!(req.body, b"hi".to_vec());
         client.join().unwrap();
     }
+
+    /// T6 停止机制验收：`serve_on` 收到 shutdown 后干净返回、监听端口释放
+    /// （kill_engine / 空闲回收 / 引擎更新都要把端口还回去），且停止前的
+    /// 请求在轮询循环下正常应答（accept 不吞连接）。网关的 Store 走
+    /// XDG 沙箱（quotas/messages 同款共享锁 + env 包裹，绝不碰真实
+    /// ~/.config/magpie）。
+    #[test]
+    fn serve_on_stops_on_flag_and_frees_port() {
+        let _lock = crate::engine_gateway::TEST_SANDBOX_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "marionette_test_httpd_stop_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let prior_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        // panic 也不能漏掉 env 恢复与沙箱清理（quotas.rs 同款包裹）。
+        let result = std::panic::catch_unwind(|| {
+            let gateway = std::sync::Arc::new(Gateway::open().expect("gateway"));
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+            let addr = listener.local_addr().unwrap();
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let flag = shutdown.clone();
+            let gw = gateway.clone();
+            let server = std::thread::spawn(move || serve_on(listener, gw, flag));
+            // 停止前应答一次 /v1/models（空 store → {"object":"list","data":[]}）。
+            let mut c = TcpStream::connect(addr).unwrap();
+            c.write_all(b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            let mut body = String::new();
+            c.read_to_string(&mut body).unwrap();
+            assert!(body.contains("\"data\""), "models reply missing: {body}");
+            // 置位 → serve_on 必须干净返回（轮询节拍 50ms，给 5s 余量）。
+            shutdown.store(true, Ordering::Release);
+            server.join().expect("serve_on panicked").expect("serve_on error");
+            // 端口已释放：同一地址能重新 bind（没有残监听挂着端口）。
+            assert!(TcpListener::bind(addr).is_ok(), "port {addr} still held after stop");
+        });
+        match prior_xdg {
+            Some(p) => std::env::set_var("XDG_CONFIG_HOME", p),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        result.unwrap();
+    }
 }

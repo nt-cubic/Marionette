@@ -324,7 +324,7 @@ mod tests {
 
     /// 测试串行锁：配置目录靠 XDG_CONFIG_HOME（进程级 env），并行测试会
     /// 互踩——全局锁串行（quotas.rs 沙箱同款做法）。
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    // 统一走 mod.rs 的跨模块共享锁（XDG_CONFIG_HOME 是进程级 env）。
     static DIR_SEQ: AtomicUsize = AtomicUsize::new(0);
 
     /// 一次测试的世界：%TEMP% 下唯一配置目录 + 模块状态复位 + env 恢复 +
@@ -354,7 +354,7 @@ mod tests {
     }
 
     fn sandbox() -> Sandbox {
-        let lock = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let lock = crate::engine_gateway::TEST_SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         if let Ok(mut guard) = index_cell().lock() {
             *guard = None;
         }

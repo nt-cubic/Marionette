@@ -27,19 +27,31 @@ ureq 出站），ring-less TLS 约束不变。
 - [x] 合同文档与套件随分支携带（docs/plan-engine-contract.md +
   scripts/verify-engine-contract.mts + upstream-watch.mts）。
 
+## 已完成（子代理 + 主线集成，全部验证后提交）
+
+- [x] **T1 translate.rs**（`23e231f5`）：三协议统一 IR 全六向互转 + SSE
+  双向映射 + peel 七档全表；13/13 测试。
+- [x] **T5 groups.rs**（`23e231f5`）：peel/组by id/组by name/pick/嵌套
+  一层/防环；9/9 测试；已接进 chat.rs resolve；effort 词表与 translate
+  统一七档。未做：Match globs、Former 谱系、auto 组、多成员失败转移、
+  嵌套>1 层、成员 `:effort`、重名歧义让位（见 T5 交付报告）。
+- [x] **T8 presets.rs**（`335175b0`）：models.dev 目录抓取/原子缓存/裸 id+
+  前缀剥离匹配；6/6 测试；已接进 catalog 转述链（缺窗口兜底，不编数）。
+- [x] **T10+T11**（`e00a7c44`）：bodycap 词表全对齐（tooLong 排除/
+  pageOverSize/statedCap 最小扫描/learn 只收更小/prefit capNear 90% 线）
+  + httpd 加固（chunked/头 30s 写 60s/并发 64 上限）；串行 56/56 +
+  套件全绿。
+
 ## 进行中（子代理并行，2026-11-17 连续施工模式——用户定案「全部跑完为止，不分昼夜」）
 
-- [ ] **T1 translate.rs**：chat ↔ responses ↔ anthropic 请求互转 + SSE 事件
-  映射 + peel（[1m]/[effort] 剥离）。验收：`cmd /c "check.bat test --bin
-  marionette-engine translate"` 绿。
 - [ ] **T2 quotas.rs**：真实额度拉取（首类：DeepSeek key 余额），60s 缓存，
   force 跳过；routes 接线。验收：`... test quotas` 绿。
-- [ ] **T5 groups.rs**：组路由（peel / pick / 嵌套 / 防环），接线由主线做。
-- [ ] **T6 进程内接线**：feature `engine-rust`——engine.rs serve 改线程、
-  CLI 直调、kill 停止机制。
-- [ ] **T8 presets.rs**：models.dev 目录兜底（窗口/图片能力/显示名）。
-- [ ] **T10+T11**：bodycap 词表对齐 Go 版（tooLong 排除）+ httpd 加固
-  （chunked 请求体/超时/连接上限）。
+- [ ] **T3 messages.rs**：anthropic /v1/messages 端点（直通+翻译双路径）。
+- [ ] **T4 responses.rs**：codex /v1/responses 端点（直通+翻译+事件流），
+  已在写（946 行）。
+- [ ] **T6 进程内接线**：feature `engine-rust`——engine.rs/main.rs/
+  Cargo.toml/cli.rs/httpd 停止机制施工中（httpd 侧 serve_on+AtomicBool
+  已随 T11 提交）。
 
 ## 待做（按依赖排队，前者落地即开工）
 

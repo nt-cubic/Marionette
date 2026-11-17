@@ -77,6 +77,14 @@ pub fn route(request: &Request, gateway: &super::Gateway) -> Reply {
         ("POST", "/v1/chat/completions") | ("POST", "/chat/completions") => {
             super::chat::forward(gateway, &request.body)
         }
+        ("POST", "/v1/responses") | ("POST", "/responses") => {
+            // codex 的母语端点（T4）：直通优先，翻译路径复用 chat 全链。
+            super::responses::handle(gateway, &request.body)
+        }
+        ("POST", "/v1/messages") | ("POST", "/messages") => {
+            // anthropic Messages 端点（T3）：直通优先 + chat 翻译路径。
+            super::messages::handle(gateway, &request.body)
+        }
         (method, path) if method == "GET" && path.starts_with("/v1/models/group/") => {
             // C4 组宣告探针：组在 → 200（列成员行），不在 → 404。
             let id = path.trim_start_matches("/v1/models/group/");
