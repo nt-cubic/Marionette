@@ -790,7 +790,8 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
 
 浏览器工具栏十字准星 → 页内拾取（悬停高亮/点击拾取、框选拖拽）→ 批注抽屉
 （`.browser-page__picker`，截图缩略 + 逐条批注）→「发给对话」**预填 composer**（不自动
-发送）+ 元素/区域截图走附件管线。改前先记六条：
+发送）+ 元素/区域截图走附件管线；当前还没有浏览器/对话分屏，所以发送成功后必须退出
+浏览器伪标签（dock 里回到窄条），让用户直接看见待检查的 Composer。改前先记六条：
 
 - **模块**：`browser/pick.rs`（表达式构建器，probe.rs 同款：全 serde_json 禁拼接）+
   `browser/js/picker.js`（自有脚本，probe.js 同款自装 IIFE，**每个 eval 内联整份脚本 +
@@ -818,7 +819,9 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
   拾取状态提升到 App，BrowserPage 卸载只停 picker、不丢草稿。document nav 清 payload；
   SPA URL 变化只移 epoch + 停 picker，title 变化只更新标题。`browser_pick_clear` 在
   发送/清空后同时清 Rust 和页面元素表。截图由 Rust 落到 clipboard 目录，前端只留
-  小缩略图 + path；`sendBrowserPicksToChat` 成功后才清草稿，失败保留。
+  小缩略图 + path；`sendBrowserPicksToChat` 成功后才清草稿，失败保留。预填后关普通
+  窗口的 `browserActive` 和 dock 的 `dockPage:"browser"`；以后 Browser Workspace 的
+  右栏可见时再撤掉这个交接动作，别另造第二份 Composer。
 - **提示词安全**：页面文字、selector、区域元素全部标为不可信数据；URL 先剥离
   user/password、secret query/hash、JWT/高熵 path segment。混批按页面分组；单批上限
   24，前端、页面脚本、Rust ring 三处一致。

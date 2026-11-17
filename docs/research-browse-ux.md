@@ -31,6 +31,75 @@ Marionette 已有而 browse 没有同样完整体验的部分：
 
 建议保留这些优势，把 browse 的“用户在场感”补进来，而不是把 browse 的扩展安装、配对和 relay 架构整套搬过来。
 
+## 同类产品：Codex、ZCode、Claude Desktop 是不是也一样
+
+结论：**是，Codex desktop、ZCode、Claude Desktop 都已经在同一个桌面工作区里让 Agent 对话和网页并存。** 差异主要不是“有没有浏览器”，而是谁是主画面、浏览器是内置还是接入用户 Chrome、以及是否需要侧聊天扩展。
+
+| 产品 | 对话位置 | 浏览器位置 | 是否同屏 | 关键差别 |
+|---|---|---|---|---|
+| browse | 外部 Agent 客户端；browse 本身没有完整聊天框 | 用户自己的 Chrome；扩展 + relay / MCP | 否，浏览器和 Agent 对话分在两个界面 | 它解决“让外部 Agent 进入我的浏览器”，不是做一体化 Agent 客户端 |
+| Codex / ChatGPT desktop | ChatGPT desktop 的聊天或任务区 | 内置浏览器（独立 profile），或通过扩展接入用户现有 Chrome 系浏览器 | 是；内置浏览器有 `Enter split view` 和 `Enter full view` | 最接近 Marionette 想做的产品形态，而且已有元素/区域批注、样式调整和 CDP 开发者模式 |
+| ZCode | ZCode 自己的 Agent 会话 / 工作区 | Electron 内嵌 BrowserView，位于右侧 side pane，可切完整视图 | 是 | 本机安装包里有 `toggleSidePane`、`toggleSidePaneFullView`、`browser.show/hide`、浏览器标签与全屏预览 |
+| Claude Desktop | Chat / Cowork 任务 | Cowork 内置浏览器，开在任务旁的 side panel；也可改用 Claude in Chrome 扩展 | 是 | 目前明显是“任务为主、网页在旁边”；内置浏览器有独立 profile，可选导入站点登录状态 |
+| Marionette（当前） | 会话主画布 | 内置 WebView2，但 BrowserPage 是互斥伪标签 | 否 | 已有元素批注、分享级别和多 Agent 会话，但缺专用的浏览器 + Agent 对话工作区 |
+
+### Codex
+
+Codex CLI 和 Codex IDE extension 本身没有内置浏览器；这里说的 Codex 使用场景是 **ChatGPT desktop app 里的 Codex**。官方文档明确给出两套方式：
+
+- 内置浏览器：ChatGPT 和用户共享同一页面。页面可以切到 `Enter full view`，也可以切到 `Enter split view` 让 tab 与 chat 并排。内置浏览器使用独立 profile，不自动共享日常 Chrome 的标签和登录状态。
+- Chrome 系扩展：接入已有 Chrome、Edge、Brave、Opera、Vivaldi，使用用户当前 profile；前四种浏览器还支持浏览器内的 side chat，Opera 不支持 side chat。
+
+Codex 的批注模型和 Marionette 当前方向高度重合：工具栏进入 Annotation mode，点元素或拖选区域，写评论，再让 Agent 按评论修改。它还提供字体、间距、颜色等 `Adjust` 预览，以及用于 DOM、console、network、性能检查的 CDP 开发者模式。
+
+因此，Codex 已经验证了用户设想的核心闭环，而且做得比“浏览器主画面 + 聊天侧栏”更灵活：聊天与浏览器可以并排，也可以让当前 tab 全屏；浏览器内的页面批注直接服务于 Agent 任务。
+
+### ZCode
+
+ZCode 也是完整桌面 Agent 客户端，不是纯浏览器扩展。本机安装包 `D:\Program Files\ZCode\resources\app.asar` 的 renderer 和 Electron main 代码表明：
+
+- 有完整的 embedded browser / guest webContents、标签恢复、viewport 更新、截图、录制、下载和 CDP 通路；
+- 浏览器是右侧 side pane 中的一种内容，另有 review、terminal、文件、Sites 和插件；
+- `CmdOrCtrl+Alt+B` 切换 side pane，`CmdOrCtrl+Shift+F` 进入/退出完整视图；
+- 文件树里的 HTML 可以直接“用内置浏览器打开”，聊天里的预览卡也能“预览”到 side pane；
+- 设置里有内置浏览器控制、Chrome 登录状态导入和 Computer Use。
+
+这说明 ZCode 的交互与 Codex 接近：主工作区承担任务和会话，右侧面板承载浏览器及运行结果，需要时再把右侧面板放大。Marionette 可以借鉴“浏览器只是工作区中的一种 surface”，但仍应保留自己更清楚的分享级别和批注入口。
+
+### Claude Desktop
+
+Claude Desktop 现在也不是“只有普通聊天”。Claude Cowork 在桌面应用内自带浏览器，官方描述是：当任务涉及网站时，浏览器在任务旁边的 side panel 打开；Claude 打开站点、读取页面、点击、输入和填写表单时，用户可以直接看着。链接也会在同一个面板中打开。
+
+Claude 同时保留两种浏览器路径：
+
+- 内置浏览器：独立于用户自己的浏览器，不碰现有标签和登录；可逐站导入 cookies，适合把网页部分交给 Agent。
+- Claude in Chrome：在用户现有 Chrome side panel 里运行，能直接读取当前页面、已登录账号和控制浏览器。
+
+因此 Claude Desktop 的交互更偏“任务为主、浏览器在旁边”，而不是固定的“浏览器主画面、聊天右栏”。但这已经证明页面和对话同处一个桌面工作区是主流方向。
+
+### 对 Marionette 产品的含义
+
+“浏览器主画面 + 右侧 Agent 对话”这个理解是对的，但要加一个限定：它是 **Web 产物任务态**，不应成为所有任务的默认壳。普通聊天、研究、文档整理仍然以对话为主；Agent 在后台查资料时，浏览器也应在后台。
+
+真正值得 Marionette 做的是专用 Browser Workspace：
+
+- 浏览器为主画布，右侧复用当前 Agent 会话和 Composer；
+- 只在 Agent 明确预览 Web 原型 / 网站，或用户主动“在浏览器中查看”时进入；
+- Agent 普通打开网页默认后台，不改写当前文档、会话和输入草稿；
+- 批注、权限卡、WAIT 和后续 handoff 在浏览器与对话两侧同时可见；
+- 退出后恢复原来的会话分屏或文档标签。
+
+这里不能仅凭 `localhost` 自动切界面：API、文档服务、后台任务和一次性登录页也会命中 localhost。第一版应由 `browser_open_tab` 的显式 `display: "workspace"` 控制，默认 `background`；以后再加项目类型识别作为提示，而不是强制切换。
+
+Marionette 的相对优势要说得准确：**一体化浏览器 + 对话本身已经不是独家优势。** Codex、ZCode、Claude Desktop 都已有同类能力。Marionette 真正有机会领先的是：
+
+- 同一应用里切换多个 Agent 和多个会话；
+- 元素/区域批注直接形成带截图的 Composer 草稿；
+- 更细的 `none/read/control` 分享语义与 Agent 自开标签边界；
+- 后续把浏览器、会话、文档、收纳盒和 handoff 统一到一套本地工作区状态。
+
+如果只做“页面在左、聊天在右”，只能补齐与 Codex / Claude 的产品差距；把多 Agent、批注和安全边界做成统一体验，才是 Marionette 的差异化。
+
 ## 用户心理模型
 
 | 问题 | browse 的回答 | Marionette 当前的回答 | 体验差距 |
@@ -366,6 +435,11 @@ browse 不只有 handoff，还能让用户示范一次流程：
 - 设置页：<https://github.com/anomalyco/browse/blob/a7181bf/src/status/settings.tsx>
 - Agent instructions：<https://github.com/anomalyco/browse/blob/a7181bf/rust/crates/browse-relay/src/instructions.md>
 - browse 状态与 nextStep：<https://github.com/anomalyco/browse/blob/a7181bf/rust/crates/browse-relay/src/tools.rs>
+- Codex / ChatGPT desktop 内置浏览器、split view 与批注：<https://learn.chatgpt.com/docs/browser>
+- Codex / ChatGPT desktop 浏览器扩展与 side chat：<https://learn.chatgpt.com/docs/chrome-extension>
+- Claude Cowork 内置浏览器：<https://support.claude.com/en/articles/16607400-use-the-built-in-browser-in-claude-cowork>
+- Claude in Chrome 与桌面端集成：<https://support.claude.com/en/articles/12012173-get-started-with-claude-in-chrome>
+- ZCode：本机安装包 `D:\Program Files\ZCode\resources\app.asar`，对照 renderer 文案 `toggleSidePane`、`toggleSidePaneFullView`、`browser.show`、`browser.hide` 与 Electron embedded-browser 实现（2026-11-17 检查）。
 
 Marionette 对照代码：
 

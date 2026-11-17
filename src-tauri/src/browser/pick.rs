@@ -55,12 +55,6 @@ pub fn clear_call() -> String {
     stringify(&call(&format!("globalThis.{PICKER_GLOBAL}.clear()")))
 }
 
-/// Switch between `"element"` and `"region"` without rebuilding the overlay.
-pub fn set_mode_call(mode: &str) -> String {
-    let mode = serde_json::to_string(mode).unwrap_or_else(|_| "\"element\"".to_string());
-    stringify(&call(&format!("globalThis.{PICKER_GLOBAL}.setMode({mode})")))
-}
-
 /// Take the overlay off-screen for the duration of a capture — the highlight
 /// must not photobomb the screenshot the user is about to attach.
 pub fn capture_hide_call() -> String {
@@ -106,7 +100,6 @@ mod tests {
             start_call("element"),
             stop_call(),
             clear_call(),
-            set_mode_call("region"),
             capture_hide_call(),
             capture_restore_call(),
             resolve_refs_call("3.7.1.2"),

@@ -5615,6 +5615,13 @@ export function App() {
         }
         setComposerPrefill({ sessionId, text: prompt, token });
         setComposerAutoFocus(true);
+        // The current build has no browser/chat split yet. Leaving the native
+        // browser surface on top would hide the composer the user was just
+        // told to review, so hand the whole window back to the conversation.
+        // The dedicated Browser Workspace will keep its sidecar visible and
+        // remove this branch instead of replacing it with a second composer.
+        setBrowserActive(false);
+        setDockPage((page) => (page === "browser" ? null : page));
         return true;
       } catch (error) {
         pushDebug({
