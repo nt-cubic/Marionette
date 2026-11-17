@@ -1,0 +1,31 @@
+<!doctype html>
+<!-- ego-lite manual pass fixture 1/10: a plain form — text, checkbox,
+     select, button. The "one snapshot, many actions" case lives here. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Fixture · Basic form</title></head>
+<body>
+  <h1>Basic form</h1>
+  <form id="form">
+    <label>Email <input id="email" type="text" name="email" placeholder="you@example.test"></label>
+    <label><input id="terms" type="checkbox" name="terms"> I agree</label>
+    <label>Plan
+      <select id="plan" name="plan">
+        <option value="free">Free</option>
+        <option value="team">Team</option>
+        <option value="pro">Pro</option>
+      </select>
+    </label>
+    <button id="submit" type="button">Submit</button>
+  </form>
+  <output id="result"></output>
+  <script>
+    document.getElementById("submit").addEventListener("click", () => {
+      const email = document.getElementById("email").value;
+      const terms = document.getElementById("terms").checked;
+      const plan = document.getElementById("plan").value;
+      document.getElementById("result").textContent =
+        `submitted ${email} terms=${terms} plan=${plan}`;
+    });
+  </script>
+</body>
+</html>

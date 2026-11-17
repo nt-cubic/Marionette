@@ -1,0 +1,17 @@
+<!doctype html>
+<!-- ego-lite manual pass fixture 10/10: shadow DOM. Open roots are reachable
+     (the picker recurses); the closed root is not — that is by design. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Fixture · Shadow DOM</title></head>
+<body>
+  <h1>Shadow DOM</h1>
+  <div id="open-host"></div>
+  <div id="closed-host"></div>
+  <script>
+    const openRoot = document.getElementById("open-host").attachShadow({ mode: "open" });
+    openRoot.innerHTML = `<button id="open-btn" type="button">Inside open shadow</button>`;
+    const closedRoot = document.getElementById("closed-host").attachShadow({ mode: "closed" });
+    closedRoot.innerHTML = `<button type="button">Inside closed shadow</button>`;
+  </script>
+</body>
+</html>

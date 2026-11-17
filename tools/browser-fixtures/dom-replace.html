@@ -1,0 +1,26 @@
+<!doctype html>
+<!-- ego-lite manual pass fixture 5/10: DOM replacement — acting on a ref
+     whose node was swapped out must answer stale, not click the ghost. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Fixture · DOM replace</title></head>
+<body>
+  <h1>DOM replace</h1>
+  <button id="swap" type="button">Swap the target</button>
+  <button id="victim" type="button">Victim</button>
+  <p id="log"></p>
+  <script>
+    let gen = 0;
+    document.getElementById("swap").addEventListener("click", () => {
+      const victim = document.getElementById("victim");
+      const next = victim.cloneNode(true);
+      next.id = "victim";
+      next.textContent = `Victim v${++gen}`;
+      victim.replaceWith(next);
+      document.getElementById("log").textContent = `swapped to v${gen}`;
+    });
+    document.getElementById("victim").addEventListener("click", (e) => {
+      document.getElementById("log").textContent = `clicked ${e.target.textContent}`;
+    });
+  </script>
+</body>
+</html>

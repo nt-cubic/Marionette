@@ -23,12 +23,12 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
 
 ## 视觉语言（2026-10-31）
 
-规范：`docs/ui-language.md` —— **改任何用户可见界面前先读它**。技能 `.grok/skills/marionette-ui`（`/marionette-ui`）。
+规范：`docs/guides/ui-language.md` —— **改任何用户可见界面前先读它**。技能 `.grok/skills/marionette-ui`（`/marionette-ui`）。
 对话流（You / Reply / composer）就是设计系统：`--radius` 3px、1px 边、无阴影、You 卡 3px 通高左边条、芯片 22px `--radius-sm`、卡距 6px。收纳盒 8px 卡只属于收纳盒页。不要用通用设计库另起一套。
 
 ## 贴边停靠 edge dock（2026-10-24 落地，阶段 0–3）
 
-设计稿 `docs/plan-edge-dock.md`（含与实现的偏差记录），行为描述在 `docs/CURRENT.md`。改这块前先记四条红线：
+设计稿 `docs/plans/plan-edge-dock.md`（含与实现的偏差记录），行为描述在 `docs/CURRENT.md`。改这块前先记四条红线：
 
 - **停靠期间绝不 `hide()` / `destroy()` / `setFocus()`**（tao 0.35 paint assert 红线的延伸）。
   窗口只是**停在屏外留 6 逻辑 px**（真实客户区，画成淡轨 + 中间一根把手；DOM mouseenter 即弹出信号）；弹出/收回全是
@@ -264,7 +264,7 @@ tool 完成 + 新的 agent message，**没有 turnState、没有 turn/complete**
 ## Council 多模型协作(2026-10-31,M1–M5)
 
 UI 名「圆桌 / 圆桌会议」(en Roundtable);代码模块、路径、事件仍叫 council。
-前端版式按「会议室」而不是设置表单，表面走 `docs/ui-language.md`。
+前端版式按「会议室」而不是设置表单，表面走 `docs/guides/ui-language.md`。
 空态是椭圆桌+绕席示意；召集页宽时左简报/右席位（容器 780 以下改单列），
 议题是一张 You 卡（标题+任务+底栏模式芯片和步进器），席位栏顶上阵容芯片 + AI 组队，人卡元信息含主导/协办，底栏钉住开始审议。
 内容铺满中栏。普通窗口点「圆桌」在标签行出 `is-council` 伪标签
@@ -309,7 +309,7 @@ UI 名「圆桌 / 圆桌会议」(en Roundtable);代码模块、路径、事件�
 
 ## Token 用量台账与分析面板（2026-11-01，PR #6 接收 + 补齐）
 
-跨会话 token 统计（`docs/research-codeg.md` C11 的 Marionette 落地；基础是社区
+跨会话 token 统计（`docs/research/research-codeg.md` C11 的 Marionette 落地；基础是社区
 PR #6 的 localStorage 台账,验收后 squash 合入并按产品定案补齐）。改前记红线：
 
 - **记账只有一处**：App.tsx turn/complete 处理器里 `recordTurnUsage`,与
@@ -737,7 +737,7 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
 
 ## 内置浏览器标签（2026-10-31，批次 2）
 
-`docs/plan-browser-computer-use.md` §1 设计稿 + §6 落地偏差记录；行为描述在 `docs/CURRENT.md`。改前先记五条红线：
+`docs/plans/plan-browser-computer-use.md` §1 设计稿 + §6 落地偏差记录；行为描述在 `docs/CURRENT.md`。改前先记五条红线：
 
 - **grant 检查只有一处**：读级全走 `browser::tool_read`、Control 级在
   `tools_mcp.rs` dispatch 的 action 分支——MCP 与工具栏共用 `set_grant`，
@@ -912,9 +912,63 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
   `npx tsx scripts/verify-browser-pick.mts`（prompt 组装/净化/词典 25 项）+
   `npx tsc --noEmit`；真机手册见 docs/CURRENT.md 浏览器节。
 
+## 浏览器 ref lease 与 browser_help（2026-11-18，ego-lite M0/M1）
+
+调研文档集 `docs/research/ego-lite/`（ego-lite v2.2.1）的第一批落地。改浏览器工具前先记五条：
+
+- **act 不再推进 generation**（`surface.rs`）：页内 engine 的 `refsToken` 只被
+  新 snapshot 改写，host 的旧 per-action bump 从不产生真实失效（host 也不校验
+  模型传入的串）——一张 snapshot 的 generation 覆盖任意多个连续动作。每次
+  snapshot（含 `pick_resolve` 的隐藏重拍）照旧 bump。回退开关
+  `MARIONETTE_BROWSER_REF_LEASE=0` 精确恢复旧行为（bump、无短路、无注记）。
+- **lease 只判死不判活**（`browser/ref_lease.rs`，纯逻辑）：host 只对**亲眼所见的
+  死亡**短路应答（`document_navigation` / `route_navigation` /
+  `user_annotation` / `stale_answer` / `superseded_by_snapshot`，不打 CDP、带真
+  reason）；除此之外——包括「lease 看着是活的」——一律交页内 `refsAreCurrent`
+  六重校验裁决（token/URL/history/popstate·hash 计数/navigation entry/connected）。
+  **别给 lease 加 is_valid 判定**：那会在 lease 与页内状态失同步时产生假阳性。
+  死因记忆只有一代深（superseded 单条），更早的 token 是页内的事。
+- **成功响应回显 `generation` + `generationStillValid: true`**（`ref_lease::note_action`
+  同时维护 lease）；stale 应答会把 lease 标死（stale_answer）。`browser_set_value`
+  与 act 走同一套短路 + 注记。
+- **pick_resolve 会顶掉 agent 的 refs**：用户批注流的隐藏全量 snapshot 换掉整个
+  refs 表——lease 以 `user_annotation` 收养新 token，agent 旧 token 的下一次动作
+  短路回真原因（否则页内会给误导性的 "cut by truncation" 文案）。
+- **browser_help 是 meta 工具（无 grant），内容从 `tool_schemas()` 生成**——单一
+  真源，工具清单/description/参数表全来自 schema 表；topic 八个
+  （overview/refs/snapshot/actions/tabs/handoff/waits/batch），新增工具必须带
+  topic（或明确缓办），`help_covers_every_browser_tool_and_names_no_ghosts`
+  双向钉死（help 不列不存在的工具、不提不存在的工具名）。
+- **batch 红线（`browser/batch.rs`，2026-11-18 M2）**：封闭 op 集 + 每字段白名单
+  （未知 op/字段 = schema 错误，没有任何 shell/evaluate 出口）；≤32 步；
+  **snapshot 只能做最后一步**（换 ref 表，后继 ref 步必死）；每个 Control 步照走
+  `control_gate`（一处原则不动），**权限拒绝永远停批**——不受 stopOnError 影响；
+  权限等待**冻结批预算**（saturating_duration_since + 恢复）；审计一行一步落
+  `browser-batch`。
+- **waits 红线（2026-11-18 M3）**：轮询睡在 MCP worker 线程（`poll_until`），
+  **绝不睡主线程**、绝不持 CdpLease 睡——每拍一次短 eval，进程级 lease 在两次
+  轮询之间放行其它 tab；等待必有硬 deadline（15s/30s 上限）；超时返回观察结果
+  （`not_found`/`timeout` + lastState），不是盲目重试信号。
+- **dialog 红线（2026-11-18 M3）**：`Page.javascriptDialogOpening` 事件分支零 CDP
+  （只镜像进 `Surface.dialog`）；dialog 打开时**所有 renderer-bound eval 在
+  `evaluate_in_world_raw` 入口快速失败 `dialog_blocked`**（被阻塞 renderer 上的
+  eval 会挂死在进程级 lease 里——这是唯一允许挂着 lease 等页面的事件，绝不允许
+  它发生）；`browser_dialog` 走 `Page.handleJavaScriptDialog`（浏览器进程级），
+  **永不自动应答**，`present:false` 诚实回报并自愈清镜像；navigation 清镜像。
+- **快照只覆盖主 frame**（2026-11-18 静态实锤：bundle 无 `contentDocument`/
+  `contentWindow`）；same-origin frame 快照补齐与 OOPIF/download/popup 被
+  vendored engine 与真机实验门槛阻塞，见 docs/research/ego-lite/README.md 偏差
+  记录——**别在 host 侧造跨 frame 的 ref 魔法**。fixture 集
+  `tools/browser-fixtures/`（10 页）+ `tools/serve-browser-fixtures.mjs`。
+- 回归：`npx tsx scripts/verify-browser-refs.mts`（源码钉死：bump 只在守卫内、
+  两个 navigation 钩子、描述指引、**bundle 五重校验仍在**——升级 agent.bundle.js
+  前必跑；M2/M3 加钉 batch 上限/terminal snapshot、轮询线程归属、dialog 门控与
+  自愈、fixtures 存在）+ `cargo test --bin marionette browser tools_mcp`；真机
+  手工清单在 docs/CURRENT.md 浏览器节（fixture server 一条命令拉起）。
+
 ## Computer Use（2026-10-31，批次 3）
 
-`docs/plan-browser-computer-use.md` §2 设计 + §7 落地偏差；行为在 `docs/CURRENT.md`。红线：
+`docs/plans/plan-browser-computer-use.md` §2 设计 + §7 落地偏差；行为在 `docs/CURRENT.md`。红线：
 
 - **封闭 Op 集**：主进程→helper 只有 `computer/protocol.rs` 那 8 个 op；helper→driver
   的工具名硬编码在 `helper.rs::driver_call` 与各 op 里——**任何地方不得把 agent 给的
@@ -944,7 +998,7 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
 
 ## 共通插件层（2026-11-05 落地；2026-11-06 收口）
 
-安装一次、**所有 agent 生效**的插件层（设计稿 `docs/plan-plugin-layer.md`，行为在
+安装一次、**所有 agent 生效**的插件层（设计稿 `docs/plans/plan-plugin-layer.md`，行为在
 `docs/CURRENT.md`）。改前先记五条红线：
 
 - **不写任何 agent 自有配置**：扇出写回（codeg 路线，`commands/mcp.rs` 1 万行
@@ -1020,7 +1074,7 @@ Marionette 的 DSH agent 走 `@openma/deepseek-harness-acp`（bin `dsh-acp`）�
   **不写就是 pi-ai 默认 `[text]`，DSH 会把附图换成「image omitted because this model accepts
   text only」占位文本**，图根本不出适配器（2026-10-21 实弹复验，见 §8.6）。
   模型 id 广告为 `marionette::provider/model`（首个 `::` 切分，斜杠安全）。定稿与探针记录：
-  `docs/research-dsh-cross-use.md` §8。
+  `docs/research/research-dsh-cross-use.md` §8。
 
 **NDJSON 探针**（不起 GUI 直接问适配器）：`spawn dsh-acp`（记得设 `DSH_ACP_HOST` 或会踩上面的
 符号链接坑），stdin 依次发 `initialize`（`protocolVersion: 1`）和 `session/new`（`cwd` 必须是
@@ -1033,7 +1087,7 @@ bridge skipped` warn，界面表现是「DSH 没有共享模型」）。现在�
 （只有注释/空行/`[]` 即当空文件重写）、移除时连带收走说明行，回归测试
 `rewrites_comment_only_empty_patch` / `remove_then_readd_round_trip`。
 前端同轮补课：跨用目录缓存现在会随 `invalidateBridgeModels()` 通知订阅者（Composer 当场重拉），
-引擎在菜单打开期间醒来不再需要切会话才刷新。踩坑定稿：`docs/research-dsh-cross-use.md` §8.7。
+引擎在菜单打开期间醒来不再需要切会话才刷新。踩坑定稿：`docs/research/research-dsh-cross-use.md` §8.7。
 
 **仍成立的上游限制：pi-ai catalog 没有的 model id 会被 DSH 丢掉。** `dsh-llm-pi-ai` 是 DSH 官方唯一的多
 provider 层，只服务 catalog 描述得出的模型（本机 catalog 在
@@ -1236,11 +1290,11 @@ key-plan → ZCode 个人 provider 层（`~/.zcode/v2/provider_config.json` 的
 后不再更新，只读它会拿到死钥匙；合并逻辑在 `credentials.rs` 的
 `peek_opencode_db_keys_at` / `merge_opencode_key_sources`，active=1 优先）；**ZCode 设置页
 配的 Coding Plan key 不落 v2/config.json**（那里 `options.apiKey` 恒空，本体在个人层）。
-完整踩坑链、额度端点规矩与排查速查：`docs/pitfalls-model-share-quota.md`。
+完整踩坑链、额度端点规矩与排查速查：`docs/pitfalls/pitfalls-model-share-quota.md`。
 
 ## ZCode 接入（社区适配器 `zcode-acp-server`，2026-10-23 起）
 
-> 完整踩坑集（十一雷 + 快速确诊表，含日志证据链）：`docs/pitfalls-zcode-acp.md`。改 zcode 相关代码前先过一遍。
+> 完整踩坑集（十一雷 + 快速确诊表，含日志证据链）：`docs/pitfalls/pitfalls-zcode-acp.md`。改 zcode 相关代码前先过一遍。
 
 ZCode 官方**没有** ACP（CLI 0.16.x 无 `--acp`，ACP registry 未收录）；走的是社区桥
 `zcode-acp-server`（npm，Apache-2.0，bin `zcode-acp-server`）：ACP ↔ `zcode app-server`
@@ -1252,12 +1306,12 @@ ZCode 官方**没有** ACP（CLI 0.16.x 无 `--acp`，ACP registry 未收录）�
 - **spawn 注入三件事**（`acp.rs` zcode 分支，用户自设对应 env 时不覆盖）：
   1. `ZCODE_BIN` = 桌面版内置 `resources\glm\zcode.cjs`。桌面版可装任意目录、**注册表卸载键不登记**
      （本机 D:\Program Files\ZCode），探测链：`%LOCALAPPDATA%\Programs\ZCode` → `%ProgramFiles%\ZCode`
-     → 开始菜单/桌面 `ZCode.lnk` 里抽 ANSI LocalBasePath 与 UTF-16 路径（`zcode_bin_path()`；只扫 UTF-16 会命中假路径，见 `docs/pitfalls-zcode-acp.md` 雷 10）。
+     → 开始菜单/桌面 `ZCode.lnk` 里抽 ANSI LocalBasePath 与 UTF-16 路径（`zcode_bin_path()`；只扫 UTF-16 会命中假路径，见 `docs/pitfalls/pitfalls-zcode-acp.md` 雷 10）。
   2. `ZCODE_NODE` = 起适配器的那台 node。适配器对 .cjs 型 ZCODE_BIN 自己找 sqlite-capable node，
      候选链（ZCODE_NODE → unix 路径 → which node → Zed bundle）在 Windows GUI PATH 下全空，
      最后裸 exec .cjs → **`spawn EFTYPE`**（实测 2026-10-23，0.76.2）。
   3. `ZCODE_ACP_RUNTIME=node`：桥发现机器装了 Bun ≥1.4 会把自己迁移到 Bun 跑（从未实测的
-     runtime），无条件钉 node（2026-10-26 落，详见 `docs/pitfalls-zcode-acp.md` 雷 15）。
+     runtime），无条件钉 node（2026-10-26 落，详见 `docs/pitfalls/pitfalls-zcode-acp.md` 雷 15）。
 - **MCP 借贷只借远程**：适配器 `session/new` 的 zod schema 只收 url 型（http/sse/acp）条目，
   **stdio 条目让整个 session/new -32602**——所以 `agent_registry::accepts_stdio_mcp("zcode") = false`，
   stdio 在 `mcp_payload_for_agent` 里跳过并记 note。远程条目 per-load 合并，ZCode 自己 `~/.zcode`
@@ -1310,7 +1364,7 @@ ZCode 官方**没有** ACP（CLI 0.16.x 无 `--acp`，ACP registry 未收录）�
   Coding Plan」）一条都没有 → 桌面能选、ACP 菜单里整家消失。已用
   `scripts/patch-zcode-acp-personal-models.mjs` 给适配器补回退链（→ `personalModelIds`
   → 模板 `builtinModelIds`，上下文窗口同源兜底）。**`npm i -g zcode-acp-server`
-  会覆盖 `dist/`，升级后重跑该脚本**；细节见 `docs/pitfalls-zcode-acp.md` 雷 12。
+  会覆盖 `dist/`，升级后重跑该脚本**；细节见 `docs/pitfalls/pitfalls-zcode-acp.md` 雷 12。
   **且 Windows 上必须带 `--ignore-scripts`**：包的 postinstall 是 Unix-only
   （`2>/dev/null || true`），裸装恒败并被 npm 回滚成 0 文件空壳（`npm ls -g` 版本号
   空、agent 起不来；2026-10-24 实锤）。安装/升级通道已按包名自动加该参数
@@ -1323,7 +1377,7 @@ ZCode 官方**没有** ACP（CLI 0.16.x 无 `--acp`，ACP registry 未收录）�
 
 ## i18n（中英双语，2026-10-30 落地）
 
-规范与术语表：`docs/i18n-guide.md` —— **改任何用户可见文案前先读它**。要点与红线：
+规范与术语表：`docs/guides/i18n-guide.md` —— **改任何用户可见文案前先读它**。要点与红线：
 
 - **前端**：`src/lib/i18n.ts`（模块级 locale store + `t(key, params)` + `useT()`/
   `useLocale()`，`useSyncExternalStore` 订阅）。词典在 `src/locales/`：`zh-CN.ts`/`en.ts`
@@ -1349,8 +1403,8 @@ ZCode 官方**没有** ACP（CLI 0.16.x 无 `--acp`，ACP registry 未收录）�
 
 Telegram 远程首席助理：裸文本固定进一个 Chief 会话（普通 ACP 会话，
 `origin="chief"`），Chief 通过恰好 10 个 `marionette_*` 控制 MCP 工具让 Host 创建
-普通 worker 会话（`origin="chief-worker"`）执行任务。设计 [`docs/research-telegram-chief/`](docs/research-telegram-chief/README.md)，
-施工台账 [`06-m0-progress.md`](docs/research-telegram-chief/06-m0-progress.md)（含真机验证清单——**M0 探针 1/2 与 8h soak 还没在真机跑**）。默认 `mode=off`，入口右栏「远程助理」卡。改前先记七条红线：
+普通 worker 会话（`origin="chief-worker"`）执行任务。设计 [`docs/research/telegram-chief/`](docs/research/telegram-chief/README.md)，
+施工台账 [`06-m0-progress.md`](docs/research/telegram-chief/06-m0-progress.md)（含真机验证清单——**M0 探针 1/2 与 8h soak 还没在真机跑**）。默认 `mode=off`，入口右栏「远程助理」卡。改前先记七条红线：
 
 - **Chief/worker 的驱动全在后端**（`chief/runner.rs` 直接调 `AcpService` 的
   pub 方法），**绝不借用前端 `performSend`**——主窗隐藏/最小化（WebView2
@@ -1408,7 +1462,7 @@ SHA256SUMS 校验，engine.rs default 构建本来就不含载荷）。用户定
   `tools\build-portable.bat`，失败即丢弃 worktree。**worktree 必须
   `-c core.longpaths=true` + 短基名**（上游 qoder testdata ~181 字符 fixture 路径，
   与 import-magpie 同一个 MAX_PATH 坑）。
-- **合同只有一份**：`docs/plan-engine-contract.md`（C1 生命周期 / C2 /v1/models
+- **合同只有一份**：`docs/plans/plan-engine-contract.md`（C1 生命周期 / C2 /v1/models
   窗口·输出·模态宣告 / C3 quotas / C4 组宣告探针 / C5 代理+body-cap / C6 CLI 动词 /
   C7 种子补丁锚点）。改引擎消费点或补丁锚点先同步它。
 - **合同套件 `scripts/verify-engine-contract.mts`**：真种子 exe（默认从 vendor 现编，

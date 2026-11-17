@@ -182,5 +182,33 @@
     return { ok: true, seq: seq, changed: true, value: String(el.value) };
   }
 
-  globalThis.__marionetteProbe = { state, ready, setValue };
+  // "Is the snapshot's element there yet" — one cheap eval per poll for
+  // browser_wait_for and batch waitForSelector steps. The aria bundle stays
+  // the judge of ref freshness (elementForRef re-checks generation, URL,
+  // history and connectivity); this only classifies what it answers with.
+  // `found: false` means either stale refs or a removed element — the host
+  // reports that as not_found and suggests a new snapshot, never as a
+  // silent success.
+  function refState(generation, ref) {
+    const el = elementForRef(generation, ref);
+    if (!el) return { found: false, connected: false, visible: false };
+    const connected = el.isConnected === true;
+    let visible = false;
+    if (connected) {
+      try {
+        const rects = el.getClientRects();
+        const style = getComputedStyle(el);
+        visible =
+          rects.length > 0 &&
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          parseFloat(style.opacity || "1") !== 0;
+      } catch {
+        visible = false;
+      }
+    }
+    return { found: true, connected: connected, visible: visible };
+  }
+
+  globalThis.__marionetteProbe = { state, ready, setValue, refState };
 })();
