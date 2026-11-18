@@ -2,13 +2,23 @@
 //! `context_length` 时，按模型 id 从 models.dev 目录补上下文窗口 / 输出
 //! 上限 / 图片能力 / 显示名。Go 版对应 internal/catalog（catalog.go 的
 //! ContextOf / SeesImages / OutputOf，随 catalog.KeepFresh 刷新）；这里
-//! 简化为两件事：
+//! 简化为三件事：
 //!
 //! - [`lookup`]：纯内存 + 磁盘缓存读，**绝不联网、绝不落盘**——厂商行
-//!   没漏字段时调用方（catalog.rs 接线，主线完成）根本不会问到它。
-//! - [`refresh`]：唯一联网路径（显式调用，出站 agent 由调用方传
-//!   `super::outbound_agent()`），抓 `https://models.dev/api.json` 原文
-//!   原子落盘；**缓存永不过期**（拉取失败保持旧缓存继续服务）。
+//!   没漏字段时调用方根本不会问到它。
+//! - [`refresh`]：联网路径（出站 agent 由调用方传 `super::outbound_agent()`），
+//!   抓 `https://models.dev/api.json` 原文原子落盘；**缓存永不过期**
+//!   （拉取失败保持旧缓存继续服务）。
+//! - [`ensure_fresh`]：目录保鲜（Go catalog.KeepFresh 的最小版，T13 真机
+//!   对账补的接线：Go 的 `magpie serve` 起一处 `go catalog.KeepFresh()`
+//!   ——providers_cli.go:1734——没有它兜底索引永远空着，zhipu 这类
+//!   `/v1/models` 不报窗口的厂商整族 ctx=0）。缓存缺失或过期（Go Stale
+//!   同语义：mtime 超 24h）时后台补抓一次，重试节奏同 Go nextRetry
+//!   （首试 2 分钟、逐次翻倍、封顶 1 小时）；**绝不阻塞调用线程**，
+//!   补抓在后台落地后，目录随 catalog.rs 的 30s 缓存 TTL 自然拿到补全的行。
+//!   与 Go 的偏差：Go 随 serve 起常驻巡检线程并内置 bundled 快照（首次
+//!   读取就有数），Rust 没有快照——进程启动后的第一轮目录仍可能是 0，
+//!   第一轮补抓落地（秒级）后恢复。
 //!
 //! 口径红线（C2）：窗口/上限 0 = 不知道——目录数据照实给 0，不编数；
 //! 消费侧只在厂商行缺字段时用这里的兜底值。Go 的投票取多数 / 重命名
@@ -23,7 +33,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -144,6 +154,88 @@ fn refresh_from(url: &str, agent: &ureq::Agent) -> Result<(), String> {
     let mut guard = index_cell().lock().unwrap_or_else(|p| p.into_inner());
     *guard = Some(index);
     Ok(())
+}
+
+// ─── 保鲜（Go internal/catalog/fresh.go KeepFresh 的最小版）───────────────
+
+/// Go fresh.go `staleAfter` 同值：缓存文件多旧算过期（过了就该补抓）。
+const STALE_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
+/// Go fresh.go `retryFirst` 同值：补抓失败后第一次重试的等待。
+const RETRY_FIRST: Duration = Duration::from_secs(2 * 60);
+/// Go fresh.go `freshEvery` 同值：重试退避的上限（Go 的每小时巡检也用它封顶）。
+const RETRY_MAX: Duration = Duration::from_secs(60 * 60);
+
+/// 保鲜节奏状态（进程级）：上次补抓尝试时刻 + 当前退避间隔 + 单飞标志。
+/// 缓存新不新不在这里记——看缓存文件 mtime（Go Stale 同款），进程重启后
+/// 照样成立。
+#[derive(Default)]
+struct Fresh {
+    last_attempt: Option<Instant>,
+    backoff: Duration,
+    in_flight: bool,
+}
+
+fn fresh_cell() -> &'static Mutex<Fresh> {
+    static FRESH: OnceLock<Mutex<Fresh>> = OnceLock::new();
+    FRESH.get_or_init(|| Mutex::new(Fresh::default()))
+}
+
+/// Go fresh.go `nextRetry` 同语义：首试 [`RETRY_FIRST`]，逐次翻倍，
+/// 封顶 [`RETRY_MAX`]。
+fn next_retry(was: Duration) -> Duration {
+    if was.is_zero() {
+        RETRY_FIRST
+    } else {
+        (was * 2).min(RETRY_MAX)
+    }
+}
+
+/// 缓存是否过期（Go catalog.go `Stale` 同语义）：没有缓存文件，或 mtime
+/// 距今超过 [`STALE_AFTER`]。时钟异常（mtime 在未来）按过期处理。
+fn cache_stale() -> bool {
+    let Some(path) = cache_path() else { return true };
+    let Ok(meta) = std::fs::metadata(&path) else { return true };
+    meta.modified().ok().and_then(|mtime| mtime.elapsed().ok()).map(|age| age >= STALE_AFTER).unwrap_or(true)
+}
+
+/// 目录保鲜：缓存缺失/过期时后台补抓一次（单飞），**绝不阻塞调用线程**
+/// ——catalog.rs 的目录抓取口（`vendor_rows`）每轮调它，代替 Go KeepFresh
+/// 的常驻每小时巡检线程。失败按 Go nextRetry 退避（2 分钟起步、逐次翻倍、
+/// 封顶 1 小时），退避期间与本轮已补抓过就什么都不做；失败/补抓期间旧缓存
+/// 与内存索引原样继续服务（[`refresh`] 的合同）。补抓在后台落地后，目录
+/// 随下一轮抓取自然拿到补全的行。
+pub fn ensure_fresh() {
+    let spawn = {
+        let mut fresh = fresh_cell().lock().unwrap_or_else(|p| p.into_inner());
+        if fresh.in_flight {
+            false
+        } else {
+            let due = cache_stale()
+                && fresh
+                    .last_attempt
+                    .map(|at| at.elapsed() >= fresh.backoff)
+                    .unwrap_or(true);
+            if due {
+                fresh.in_flight = true;
+                fresh.last_attempt = Some(Instant::now());
+            }
+            due
+        }
+    };
+    if !spawn {
+        return;
+    }
+    // 起不了线程就等下一轮目录读取再试：目录照旧服务，绝不致命。
+    let _ = std::thread::Builder::new().name("modelsdev-fresh".into()).spawn(|| {
+        let ok = refresh(&super::outbound_agent()).is_ok();
+        let mut fresh = fresh_cell().lock().unwrap_or_else(|p| p.into_inner());
+        fresh.in_flight = false;
+        if ok {
+            fresh.backoff = Duration::ZERO;
+        } else {
+            fresh.backoff = next_retry(fresh.backoff);
+        }
+    });
 }
 
 /// 只读访问索引；第一次访问时从磁盘缓存懒加载（没有/读失败 → 空索引，
@@ -315,6 +407,29 @@ fn takes_images(model: &Value) -> bool {
         .unwrap_or(false)
 }
 
+/// 测试缝：目录状态全复位（内存索引 + 保鲜节奏）。presets 与 catalog 的
+/// 测试沙箱（sandbox 建立与 Drop 收尾）都走它，防止进程级状态跨测试渗漏。
+#[cfg(test)]
+pub(crate) fn reset_for_tests() {
+    if let Ok(mut guard) = index_cell().lock() {
+        *guard = None;
+    }
+    if let Ok(mut fresh) = fresh_cell().lock() {
+        *fresh = Fresh::default();
+    }
+}
+
+/// 测试缝：装一段目录（写缓存文件 + 替换内存索引），catalog.rs 的兜底单测
+/// 用——不走网络。生产路径不会调用。
+#[cfg(test)]
+pub(crate) fn install_test_catalog(body: &str) -> Result<(), String> {
+    let index = parse_catalog(body).ok_or("test catalog: unexpected payload")?;
+    write_cache(body)?;
+    let mut guard = index_cell().lock().unwrap_or_else(|p| p.into_inner());
+    *guard = Some(index);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,9 +453,7 @@ mod tests {
 
     impl Drop for Sandbox {
         fn drop(&mut self) {
-            if let Ok(mut guard) = index_cell().lock() {
-                *guard = None;
-            }
+            reset_for_tests();
             if let Ok(mut guard) = TEST_MODELS_DEV_URL.lock() {
                 *guard = None;
             }
@@ -355,9 +468,7 @@ mod tests {
 
     fn sandbox() -> Sandbox {
         let lock = crate::engine_gateway::TEST_SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        if let Ok(mut guard) = index_cell().lock() {
-            *guard = None;
-        }
+        reset_for_tests();
         if let Ok(mut guard) = TEST_MODELS_DEV_URL.lock() {
             *guard = None;
         }
@@ -373,13 +484,17 @@ mod tests {
     }
 
     /// 本地假目录服务（std TcpListener 手写 HTTP，零新依赖）：`/ok` 路径
-    /// 回固定 api.json，`/fail` 路径回 500。返回两个地址。
-    fn fake_catalog(body: &'static str) -> (String, String) {
+    /// 回固定 api.json，`/fail` 路径回 500。返回两个地址 + 请求计数
+    /// （保鲜节奏测试用它断言「该抓的时候抓了、不该抓的时候没抓」）。
+    fn fake_catalog(body: &'static str) -> (String, String, std::sync::Arc<AtomicUsize>) {
+        let hits = std::sync::Arc::new(AtomicUsize::new(0));
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake models.dev");
         let port = listener.local_addr().expect("port").port();
+        let hits_in_thread = hits.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
+                hits_in_thread.fetch_add(1, Ordering::Relaxed);
                 let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
                 // 读掉请求头（GET 无请求体；不读就写，Windows 上可能 RST）。
                 let mut line = String::new();
@@ -417,6 +532,7 @@ mod tests {
         (
             format!("http://127.0.0.1:{port}/ok.json"),
             format!("http://127.0.0.1:{port}/fail.json"),
+            hits,
         )
     }
 
@@ -477,7 +593,7 @@ mod tests {
     #[test]
     fn refresh_then_lookup_hits() {
         let _sandbox = sandbox();
-        let (ok_url, _fail_url) = fake_catalog(API);
+        let (ok_url, _fail_url, _hits) = fake_catalog(API);
         if let Ok(mut guard) = TEST_MODELS_DEV_URL.lock() {
             *guard = Some(ok_url);
         }
@@ -511,7 +627,7 @@ mod tests {
     #[test]
     fn window_semantics_match_go() {
         let _sandbox = sandbox();
-        let (ok_url, _) = fake_catalog(API);
+        let (ok_url, _fail_url, _hits) = fake_catalog(API);
         if let Ok(mut guard) = TEST_MODELS_DEV_URL.lock() {
             *guard = Some(ok_url);
         }
@@ -531,7 +647,7 @@ mod tests {
     #[test]
     fn refresh_failure_keeps_cache_serving() {
         let _sandbox = sandbox();
-        let (ok_url, fail_url) = fake_catalog(API);
+        let (ok_url, fail_url, _hits) = fake_catalog(API);
         if let Ok(mut guard) = TEST_MODELS_DEV_URL.lock() {
             *guard = Some(ok_url);
         }
@@ -550,7 +666,7 @@ mod tests {
     #[test]
     fn cache_reload_serves_after_index_reset() {
         let _sandbox = sandbox();
-        let (ok_url, _) = fake_catalog(API);
+        let (ok_url, _fail_url, _hits) = fake_catalog(API);
         if let Ok(mut guard) = TEST_MODELS_DEV_URL.lock() {
             *guard = Some(ok_url);
         }
@@ -569,7 +685,7 @@ mod tests {
     #[test]
     fn bad_payload_is_rejected() {
         let _sandbox = sandbox();
-        let (ok_url, _) = fake_catalog(r#"{"not":"a catalog"}"#);
+        let (ok_url, _fail_url, _hits) = fake_catalog(r#"{"not":"a catalog"}"#);
         if let Ok(mut guard) = TEST_MODELS_DEV_URL.lock() {
             *guard = Some(ok_url);
         }
@@ -577,5 +693,177 @@ mod tests {
         assert!(lookup("anything").is_none());
         let cache = cache_path().expect("sandbox cache path");
         assert!(!cache.exists(), "坏载荷不得落盘");
+    }
+
+    /// zhipu 家族（T13 真机对账缺口）：models.dev 的真实形状——`zai` 与
+    /// `zhipuai-coding-plan` 两个 provider，裸 id（`glm-4.5`）、coding plan
+    /// 专属 id（`glm-5.3-highspeed`）、provider/model 形态都要按裸 id 命中。
+    /// 数值照 2026-11-19 api.json 实抓：glm-4.5 ctx=131072 out=98304。
+    const ZHIPU: &str = r#"{
+        "zai": {
+            "name": "Z.AI",
+            "models": {
+                "glm-4.5": {
+                    "id": "glm-4.5",
+                    "name": "GLM-4.5",
+                    "limit": { "context": 131072, "output": 98304 },
+                    "modalities": { "input": ["text"] }
+                },
+                "glm-4.5v": {
+                    "id": "glm-4.5v",
+                    "name": "GLM-4.5V",
+                    "limit": { "context": 64000, "output": 16384 },
+                    "modalities": { "input": ["text", "image", "video"] }
+                },
+                "glm-5.3": {
+                    "id": "glm-5.3",
+                    "name": "GLM-5.3",
+                    "limit": { "context": 1000000, "output": 131072 },
+                    "modalities": { "input": ["text"] }
+                }
+            }
+        },
+        "zhipuai-coding-plan": {
+            "name": "Zhipu AI Coding Plan",
+            "models": {
+                "glm-5.3-highspeed": {
+                    "id": "glm-5.3-highspeed",
+                    "name": "GLM-5.3 (highspeed)",
+                    "limit": { "context": 1000000, "output": 131072 },
+                    "modalities": { "input": ["text"] }
+                }
+            }
+        }
+    }"#;
+
+    /// zhipu coding 端点（open.bigmodel.cn/api/coding/paas/v4）的 /v1/models
+    /// 只回 `id/object/created/owned_by`（T13 实锤），目录行是裸 id。兜底要
+    /// 把整族填上：裸 id 直查、provider/model 形态、coding plan 专属 id。
+    #[test]
+    fn zhipu_family_lookup_hits_bare_ids() {
+        let _sandbox = sandbox();
+        let (ok_url, _fail_url, _hits) = fake_catalog(ZHIPU);
+        if let Ok(mut guard) = TEST_MODELS_DEV_URL.lock() {
+            *guard = Some(ok_url);
+        }
+        refresh(&super::super::outbound_agent()).expect("refresh ok");
+        // 裸 id（zhipu 目录行的真实形态）。
+        let glm = lookup("glm-4.5").expect("bare zhipu hit");
+        assert_eq!(glm.context_window, 131072);
+        assert_eq!(glm.max_output, 98304);
+        assert!(!glm.images, "glm-4.5 是纯文本模型");
+        assert_eq!(glm.display_name, "GLM-4.5");
+        // 视觉变体：modalities 带 image。
+        let vision = lookup("glm-4.5v").expect("vision hit");
+        assert_eq!(vision.context_window, 64000);
+        assert!(vision.images);
+        // provider/model 形态（引擎目录行拼上来源前缀后剥回去）。
+        let via_provider = lookup("zhipu/glm-4.5").expect("provider/model hit");
+        assert_eq!(via_provider.context_window, 131072);
+        // coding plan 专属 id（zhipuai-coding-plan 的 provider id 带连字符，
+        // 不影响裸 id 命中）。
+        let highspeed = lookup("glm-5.3-highspeed").expect("coding-plan exclusive hit");
+        assert_eq!(highspeed.context_window, 1000000);
+        assert_eq!(highspeed.max_output, 131072);
+    }
+
+    /// Go fresh.go nextRetry 同语义：首试 2 分钟、逐次翻倍、封顶 1 小时。
+    #[test]
+    fn next_retry_doubles_then_caps() {
+        assert_eq!(next_retry(Duration::ZERO), RETRY_FIRST);
+        assert_eq!(next_retry(RETRY_FIRST), Duration::from_secs(4 * 60));
+        assert_eq!(next_retry(Duration::from_secs(8 * 60)), Duration::from_secs(16 * 60));
+        // 2min→4→8→16→32→64 封顶到 60min。
+        assert_eq!(next_retry(Duration::from_secs(32 * 60)), RETRY_MAX);
+    }
+
+    /// Go catalog.go Stale 同语义：没有缓存文件 = 过期；刚落盘的不过期。
+    #[test]
+    fn cache_stale_matches_go_stale() {
+        let _sandbox = sandbox();
+        assert!(cache_stale(), "没有缓存文件 = 过期");
+        install_test_catalog(API).expect("install test catalog");
+        assert!(!cache_stale(), "刚落盘的缓存不过期");
+    }
+
+    /// 有界轮询（保鲜是后台线程，轮询等它落地；超时 false）。
+    fn wait_for(pred: impl Fn() -> bool, millis: u64) -> bool {
+        for _ in 0..(millis / 10).max(1) {
+            if pred() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        pred()
+    }
+
+    fn set_test_url(url: &str) {
+        if let Ok(mut guard) = TEST_MODELS_DEV_URL.lock() {
+            *guard = Some(url.to_string());
+        }
+    }
+
+    /// 缓存缺失：ensure_fresh 应后台补抓一次并落盘，单飞标志随之清掉、
+    /// 退避清零——下一轮目录读取就能拿到补全的行。
+    #[test]
+    fn ensure_fresh_fetches_when_cache_missing() {
+        let _sandbox = sandbox();
+        let (ok_url, _fail_url, hits) = fake_catalog(API);
+        set_test_url(&ok_url);
+        assert!(cache_path().map(|p| !p.exists()).unwrap_or(true), "沙箱里没有缓存文件");
+        ensure_fresh();
+        assert!(wait_for(|| lookup("glm-5.3").is_some(), 5000), "后台补抓应把目录装进索引");
+        assert!(cache_path().expect("sandbox cache path").exists(), "补抓后缓存文件应存在");
+        assert!(wait_for(
+            || fresh_cell().lock().map(|f| !f.in_flight).unwrap_or(false),
+            2000
+        ), "单飞标志应清掉");
+        let fresh = fresh_cell().lock().unwrap();
+        assert_eq!(fresh.backoff, Duration::ZERO, "成功清退避");
+        assert!(fresh.last_attempt.is_some());
+        assert_eq!(hits.load(Ordering::Relaxed), 1, "只补抓一次（单飞）");
+    }
+
+    /// 失败退避：补抓失败进首试退避（2 分钟），退避期内绝不二次补抓；
+    /// 退避到期（测试把 last_attempt 拨回去）后允许再次补抓。
+    #[test]
+    fn ensure_fresh_backs_off_after_failure() {
+        let _sandbox = sandbox();
+        let (_ok_url, fail_url, hits) = fake_catalog(API);
+        set_test_url(&fail_url);
+        ensure_fresh();
+        assert!(wait_for(|| hits.load(Ordering::Relaxed) >= 1, 5000), "缓存缺失时应发起补抓");
+        assert!(wait_for(
+            || fresh_cell().lock().map(|f| !f.in_flight).unwrap_or(false),
+            2000
+        ), "单飞标志应清掉");
+        {
+            let fresh = fresh_cell().lock().unwrap();
+            assert_eq!(fresh.backoff, RETRY_FIRST, "失败后进首试退避");
+            assert!(fresh.last_attempt.is_some());
+        }
+        // 退避期内再调：什么都不做（间隔远小于 RETRY_FIRST）。
+        ensure_fresh();
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(hits.load(Ordering::Relaxed), 1, "退避期内不得再抓");
+        // 退避到期：允许再次补抓。
+        {
+            let mut fresh = fresh_cell().lock().unwrap();
+            fresh.last_attempt = Some(Instant::now() - Duration::from_secs(180));
+        }
+        ensure_fresh();
+        assert!(wait_for(|| hits.load(Ordering::Relaxed) >= 2, 5000), "退避到期后应再次补抓");
+    }
+
+    /// 缓存新鲜：ensure_fresh 是空操作（一次请求都不发，fail 服务零命中）。
+    #[test]
+    fn ensure_fresh_skips_fresh_cache() {
+        let _sandbox = sandbox();
+        install_test_catalog(API).expect("install test catalog");
+        let (_ok_url, fail_url, hits) = fake_catalog(API);
+        set_test_url(&fail_url);
+        ensure_fresh();
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(hits.load(Ordering::Relaxed), 0, "缓存新鲜时不得补抓");
     }
 }
