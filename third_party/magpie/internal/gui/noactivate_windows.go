@@ -45,7 +45,7 @@ var showingQuietly atomic.Uintptr
 var (
 	noActivateOnce   sync.Once
 	noActivateHooked atomic.Bool
-	noActivateHook   w32.HHOOK
+	noActivateHook   atomic.Uintptr // the hook's handle, 0 once unhooked
 )
 
 // hookNoActivate puts the hook on hwnd's thread the first time a window
@@ -59,16 +59,34 @@ func hookNoActivate(hwnd uintptr) {
 		return
 	}
 	noActivateOnce.Do(func() {
-		noActivateHook = w32.SetWindowsHookEx(whCBT, noActivateCBT, 0, w32.DWORD(w32.GetCurrentThreadId()))
+		noActivateHook.Store(uintptr(w32.SetWindowsHookEx(whCBT, noActivateCBT, 0, w32.DWORD(w32.GetCurrentThreadId()))))
 		noActivateHooked.Store(true)
 	})
+}
+
+// unhookNoActivate takes the WH_CBT hook off Wails' main thread before the
+// process exits (#6705): left on while ExitProcess runs LdrShutdownProcess,
+// msctf's FLS cleanup destroys the thread's IME message window, which
+// dispatches HCBT_DESTROYWND into noActivateCBT while g1 is inside
+// runtime.exit(0)'s stdcall. noActivateCBT's CallNextHookEx syscall clears
+// g1.syscallsp, so cgocallbackg's exitsyscall throws "exitsyscall: syscall
+// frame is no longer valid", and fatalthrow's runtime.exit(2) self-deadlocks
+// on runtime.finlock, leaving the process wedged with one thread holding the
+// single-instance mutex and WebView2 profile (#5922, #6678). Once taken
+// off it stays off: hookNoActivate hooks once a run (noActivateOnce). The
+// handle is swapped, so of OnShutdown's, WM_DESTROY's and Run's calls
+// only the first unhooks.
+func unhookNoActivate() {
+	if h := noActivateHook.Swap(0); h != 0 {
+		w32.UnhookWindowsHookEx(w32.HHOOK(h))
+	}
 }
 
 func noActivateCBT(code int, wParam w32.WPARAM, lParam w32.LPARAM) w32.LRESULT {
 	if code == hcbtActivate && quietActivation(wParam) {
 		return 1
 	}
-	return w32.CallNextHookEx(noActivateHook, code, wParam, lParam)
+	return w32.CallNextHookEx(w32.HHOOK(noActivateHook.Load()), code, wParam, lParam)
 }
 
 // quietActivation says hwnd, about to be activated, is a magpie window

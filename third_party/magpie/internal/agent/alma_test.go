@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -73,9 +74,17 @@ func (f *fakeAlma) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/api/providers" && r.Method == "GET":
 		reply(200, f.providers)
 	case r.URL.Path == "/api/providers" && r.Method == "POST":
+		// as Alma: the id given (its presets'), else one made up; an id
+		// taken fails the insert
+		if id, _ := body["id"].(string); id != "" && f.provider(id) != nil {
+			reply(500, map[string]any{"error": "Failed to create provider: UNIQUE constraint failed: providers.id"})
+			return
+		}
 		f.n++
 		f.keys = append(f.keys, fmt.Sprint(body["apiKey"]))
-		body["id"] = fmt.Sprintf("p%d", f.n)
+		if id, _ := body["id"].(string); id == "" {
+			body["id"] = fmt.Sprintf("p%d", f.n)
+		}
 		body["models"], body["availableModels"] = []any{}, []any{}
 		f.providers = append(f.providers, body)
 		reply(201, body)
@@ -745,5 +754,163 @@ func TestInTrash(t *testing.T) {
 		if got := inTrash(p); got != want {
 			t.Errorf("inTrash(%q) = %v, want %v", p, got, want)
 		}
+	}
+}
+
+// almaPreset is Alma's own Magpie provider as its Providers page or quick
+// setup makes it (provPredefBody in Alma's desktop-native), at this
+// gateway, with the one model its quick setup turned on.
+func almaPreset(enabled bool, ref string) map[string]any {
+	return map[string]any{"id": "magpie", "name": "Magpie", "type": "custom", "apiFormat": "openai-chat", "icon": "magpie",
+		"apiKey": "magpie-alma", "baseURL": gatewayV1(), "enabled": enabled, "models": []any{ref},
+		"availableModels": []any{map[string]any{"id": ref, "name": ref}}}
+}
+
+// Alma's own Magpie and magpie's Alma agent are one setup (realLemonawa on
+// X): magpie switched on with the preset set up in Alma first uses it, and
+// adds no second; set up in Alma first, the agent reads as on; switched off,
+// the preset stays as the user had it; and magpie's own provider takes the
+// preset's id, so Alma doesn't offer the preset again beside it.
+func TestAlmaOneMagpie(t *testing.T) {
+	syncHome(t)
+	f := startAlma(t)
+	a := alma()
+	if err := os.MkdirAll(a.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fl := a.Field("model")
+	var ref string
+	for _, o := range fl.Options(a.Values()) {
+		if o.Ref != "" {
+			ref = o.Ref
+			break
+		}
+	}
+	if ref == "" {
+		t.Fatal("no magpie model offered")
+	}
+
+	t.Run("set up in Alma first", func(t *testing.T) {
+		f.mu.Lock()
+		f.providers = append(f.providers, almaPreset(true, ref))
+		f.settings["chat"].(map[string]any)["defaultModel"] = "magpie:" + ref
+		f.mu.Unlock()
+		if !a.Wired() || fl.Get() != "magpie/"+ref || a.Check() != "" {
+			t.Fatalf("Alma on its Magpie reads as off: wired %v, model %q, check %q", a.Wired(), fl.Get(), a.Check())
+		}
+		if err := a.Apply("model", "magpie/"+ref); err != nil {
+			t.Fatal(err)
+		}
+		if len(f.providers) != 2 || f.provider("magpie") == nil {
+			t.Fatalf("a second magpie in Alma: %v", f.providers)
+		}
+		f.takeWrites()
+		if err := a.Disconnect(); err != nil {
+			t.Fatal(err)
+		}
+		if w := f.takeWrites(); slices.Contains(w, "DELETE /api/providers/magpie") {
+			t.Fatalf("the user's own Magpie was removed: %v", w)
+		}
+		p := f.provider("magpie")
+		if p == nil || p["name"] != "Magpie" || p["enabled"] != true {
+			t.Fatalf("preset after off: %v", p)
+		}
+		if d := f.settings["chat"].(map[string]any)["defaultModel"]; d == "magpie:"+ref {
+			t.Fatalf("still on magpie after off: %v", d)
+		}
+		// switched off: magpie keeps out of the user's provider
+		p["models"] = []any{"few"}
+		f.takeWrites()
+		if err := a.Sync(); err != nil {
+			t.Fatal(err)
+		}
+		if w := f.takeWrites(); len(w) != 0 {
+			t.Fatalf("sync after off wrote %v", w)
+		}
+	})
+
+	t.Run("turned off in Alma", func(t *testing.T) {
+		f.mu.Lock()
+		f.provider("magpie")["enabled"] = false
+		f.mu.Unlock()
+		if err := a.Apply("model", "magpie/"+ref); err != nil {
+			t.Fatal(err)
+		}
+		if p := f.provider("magpie"); p["enabled"] != true || len(f.providers) != 2 {
+			t.Fatalf("providers: %v", f.providers)
+		}
+		if err := a.Disconnect(); err != nil {
+			t.Fatal(err)
+		}
+		if p := f.provider("magpie"); p == nil || p["enabled"] != false {
+			t.Fatalf("the user's Magpie, off before, after magpie is off: %v", p)
+		}
+	})
+
+	t.Run("none in Alma", func(t *testing.T) {
+		f.mu.Lock()
+		f.providers = f.providers[:1]
+		f.mu.Unlock()
+		if err := a.Apply("model", "magpie/"+ref); err != nil {
+			t.Fatal(err)
+		}
+		p := f.provider("magpie")
+		if len(f.providers) != 2 || p == nil || p["name"] != "magpie" || p["baseURL"] != gatewayV1() {
+			t.Fatalf("magpie's provider not under the preset's id: %v", f.providers)
+		}
+		if err := a.Disconnect(); err != nil {
+			t.Fatal(err)
+		}
+		if len(f.providers) != 1 || f.providers[0]["id"] != "own" {
+			t.Fatalf("magpie's own provider stays after off: %v", f.providers)
+		}
+	})
+
+	t.Run("preset id taken elsewhere", func(t *testing.T) {
+		other := almaPreset(true, ref)
+		other["baseURL"] = "http://192.168.1.9:3425/v1"
+		f.mu.Lock()
+		f.providers = append(f.providers[:1], other)
+		f.mu.Unlock()
+		if err := a.Apply("model", "magpie/"+ref); err != nil {
+			t.Fatal(err)
+		}
+		if len(f.providers) != 3 || other["baseURL"] != "http://192.168.1.9:3425/v1" {
+			t.Fatalf("providers: %v", f.providers)
+		}
+	})
+}
+
+// A provider the user named magpie in Alma, at a magpie on a server, is
+// theirs (Alex on Discord): this magpie neither takes it for its own nor
+// tells drift when Alma's model is on it.
+func TestAlmaMagpieOnAServer(t *testing.T) {
+	syncHome(t)
+	f := startAlma(t)
+	a := alma()
+	if err := os.MkdirAll(a.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	vps := map[string]any{"id": "vps", "name": magpieID, "type": "openai", "apiKey": "sk-vps",
+		"baseURL": "https://magpie.example.com/v1", "enabled": true, "models": []any{"m"}}
+	f.mu.Lock()
+	f.providers = append(f.providers, vps)
+	f.settings["chat"].(map[string]any)["defaultModel"] = "vps:m"
+	f.mu.Unlock()
+	if p := almaMagpie([]almaProvider{{ID: "vps", Name: magpieID, Type: "openai", BaseURL: "https://magpie.example.com/v1"}}); p != nil {
+		t.Fatalf("a magpie on a server taken for this one: %+v", p)
+	}
+	if c := a.Check(); c != "" {
+		t.Fatalf("Alma on the user's server magpie told as drift: %q", c)
+	}
+	if a.Wired() {
+		t.Fatal("Alma on the user's server magpie reads as on this magpie")
+	}
+	// this magpie's own, named magpie at the gateway, is still found
+	if p := almaMagpie([]almaProvider{{ID: "x", Name: magpieID, Type: "openai", BaseURL: gatewayV1()}}); p == nil {
+		t.Fatal("magpie's own provider not found")
+	}
+	if p := almaMagpie([]almaProvider{{ID: "x", Name: magpieID, Type: "openai", BaseURL: "http://127.0.0.1:1/v1"}}); p == nil {
+		t.Fatal("magpie's own provider at an old local port not found, to be pointed back")
 	}
 }

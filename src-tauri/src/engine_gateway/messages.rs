@@ -586,8 +586,11 @@ impl AnthropicFrames {
             match self.finish.take() {
                 // finish 来过：补收尾两帧（带上等到的 usage）。
                 Some(stop) => out.push_str(&self.message_end(&stop, self.usage.as_ref())),
-                // finish 没来过的怪流：只有 message_stop，不编 stop_reason。
-                None => out.push_str(&sse_frame("message_stop", &json!({"type": "message_stop"}))),
+                // finish 没来过的怪流：Go 网关仍发 message_delta（合成
+                // end_turn + 等到的 usage），Claude Code 靠它结算上下文；
+                // 只发裸 message_stop 会让客户端丢了收尾帧（2026-11-18
+                // 合同 D1c 对齐）。
+                None => out.push_str(&self.message_end("stop", self.usage.as_ref())),
             }
             self.stopped = true;
             return self.with_start(out, model);

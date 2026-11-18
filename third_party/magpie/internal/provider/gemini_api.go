@@ -76,10 +76,33 @@ func geminiKept(u string) bool {
 	return j > 0
 }
 
+// GeminiModelPath is model as every Gemini and Vertex AI path names it
+// after models/: each slash-separated segment escaped and the slashes
+// kept, so a relay's namespaced id (example/model-demo) is asked at
+// /models/example/model-demo, the path the relay routes by, not
+// /models/example%2Fmodel-demo (#6695, LuoRuiyao on X). An id with an
+// empty, . or .. segment, which a server or proxy could clean into a
+// path outside models/, goes as one escaped segment instead. An id with
+// the models/ Google's own lists name a model by (AI Studio's
+// OpenAI-compatible /models lists "models/gemini-…") is asked without
+// it, since the path already has one: drawn at models/models/… the
+// Gemini API answered 404 (Dani Ariyanto on Discord, Nano Banana 2.1).
+func GeminiModelPath(model string) string {
+	model = strings.TrimPrefix(model, "models/")
+	segs := strings.Split(model, "/")
+	for i, s := range segs {
+		if s == "" || s == "." || s == ".." {
+			return url.PathEscape(model)
+		}
+		segs[i] = url.PathEscape(s)
+	}
+	return strings.Join(segs, "/")
+}
+
 // GeminiPath is the path under a Gemini base model is asked at: streamed as
 // server-sent events (alt=sse) when stream, else one JSON reply.
 func GeminiPath(model string, stream bool) string {
-	m := url.PathEscape(strings.TrimPrefix(model, "models/"))
+	m := GeminiModelPath(model)
 	if stream {
 		return "/models/" + m + ":streamGenerateContent?alt=sse"
 	}

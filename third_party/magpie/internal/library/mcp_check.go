@@ -24,6 +24,7 @@ import (
 	"github.com/yetone/magpie/internal/mcpauth"
 	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/proc"
+	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/wslrun"
 )
 
@@ -48,7 +49,9 @@ type ServerHealth struct {
 	// protocol, home (exits in home, works in a project: Project),
 	// novar (a ${NAME} magpie's environment hasn't: Detail names
 	// them), wsldown (a command only agents in WSL start, whose distros,
-	// Detail, aren't running: it wasn't checked)
+	// Detail, aren't running: it wasn't checked), nobrowser (it listed its
+	// Tools, and starts a Chrome the container it runs in hasn't: Detail
+	// is its option for one it can reach, mcp_browser.go)
 	Why    string `json:"why,omitempty"`
 	Code   int    `json:"code,omitempty"`   // the exit code, or the HTTP status
 	Detail string `json:"detail,omitempty"` // the last line it wrote to stderr, or the error's text
@@ -104,7 +107,21 @@ var checkClient = &http.Client{Transport: checkTransport()}
 func checkTransport() http.RoundTripper {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.Proxy = netproxy.Func
-	return netproxy.Dispatch(t)
+	return viaRemoteMagpie{netproxy.Dispatch(t)}
+}
+
+// viaRemoteMagpie sends a request to a Remote magpie's MCP router through
+// that provider's own transport (provider.Via): its proxy, its client
+// certificate and the server certificate it trusts, as its model calls go.
+// Only the router's path is looked up, so no other server's request reads
+// providers.json.
+type viaRemoteMagpie struct{ next http.RoundTripper }
+
+func (t viaRemoteMagpie) RoundTrip(r *http.Request) (*http.Response, error) {
+	if strings.HasSuffix(strings.TrimRight(r.URL.Path, "/"), gateway.HubMCPAll) {
+		r = r.WithContext(provider.ViaRemoteMagpieAt(r.Context(), r.URL))
+	}
+	return t.next.RoundTrip(r)
 }
 
 // checked is the last check of each server, by name, with what the
@@ -232,6 +249,12 @@ func checkServer(ctx context.Context, s *Server, own ownSignIns) ServerHealth {
 		h = checkSSE(ctx, s)
 	default:
 		h = checkHTTP(ctx, s)
+	}
+	if h.State == "ok" && s.Transport == "stdio" {
+		// it lists its tools, and every one fails for want of a Chrome
+		if opt := noBrowser(s); opt != "" {
+			h.State, h.Why, h.Detail = "error", "nobrowser", opt
+		}
 	}
 	h.At = time.Now().UnixMilli()
 	if s.Transport == "http" {

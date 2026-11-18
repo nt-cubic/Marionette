@@ -224,13 +224,15 @@ func spelledIn(g Group, same map[string]string) string {
 			continue
 		}
 		if v := same[pid+"/"+m]; v != "" {
-			if "auto-"+Slug(sameModel(v)) == g.ID {
-				alike = append(alike, lastPart(v))
+			if "auto-"+Slug(mergeName(v)) == g.ID {
+				alike = append(alike, lastPart(windowless(v)))
 			}
 			continue
 		}
-		if "auto-"+Slug(sameModel(m)) == g.ID {
-			own = append(own, lastPart(m))
+		if "auto-"+Slug(mergeName(m)) == g.ID {
+			own = append(own, lastPart(windowless(m)))
+		} else if v := unprefixedOf(pid, m); v != "" && "auto-"+Slug(mergeName(v)) == g.ID {
+			alike = append(alike, v) // Kimi Code's k3.1-pro: kimi-k3.1-pro
 		}
 	}
 	// an id a relay lists as its display name ("GPT-6 Sol") is no id to

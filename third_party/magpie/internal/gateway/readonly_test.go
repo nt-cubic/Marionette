@@ -21,6 +21,8 @@ import (
 var readOnlyRefused = []string{
 	// the Library's skills and prompts: a held key is a display, not a client
 	"GET /v1/magpie/library",
+	// the models this computer's agents are on: a client's picks to follow
+	"GET /v1/magpie/agent-models",
 	// model lists and their Ollama spellings: what the key could use
 	"GET /v1/models", "GET /models", "GET /v1/models/{id...}", "GET /muse-code/models",
 	"GET /api/hello", "GET /api/version", "GET /api/tags",
@@ -54,6 +56,7 @@ var readOnlyRefused = []string{
 	"POST /v1/audio/transcriptions", "POST /audio/transcriptions",
 	"POST /v1/audio/translations", "POST /audio/translations",
 	"POST /v1/audio/speech", "POST /audio/speech",
+	"GET /v1/realtime", "GET /realtime",
 	"POST /v1/videos", "POST /videos", "GET /v1/videos/{id}", "GET /videos/{id}",
 	"GET /v1/videos/{id}/content", "GET /videos/{id}/content",
 	"POST " + NativePath + "{provider}/{path...}", "GET " + NativePath + "{provider}/{path...}", "DELETE " + NativePath + "{provider}/{path...}",
@@ -61,7 +64,7 @@ var readOnlyRefused = []string{
 	// MCP servers, plugins' and Codex's backends, Gemini, everything else
 	"POST " + claudeMCPPath + "{token}", "/mcp/{name}", "/mcp/run/{name}",
 	SearchMCPPath, VisionMCPPath, ImageMCPPath, ImageMCPFiles + "{name}",
-	BrowserMCPPath, MemoryMCPPath, "GET " + BrowserExtensionPath, "GET " + BrowserStatusPath, ToolsMCPPath, ToolsMCPOne + "{plugin}",
+	BrowserMCPPath, MemoryMCPPath, SessionsMCPPath, "GET " + BrowserExtensionPath, "GET " + BrowserStatusPath, ToolsMCPPath, ToolsMCPOne + "{plugin}",
 	HubMCPPath + "{agent}", HubMCPAll, CodexPath + "/", "GET " + CodexCatalogPath,
 	"GET /v1beta/models", "POST /v1beta/models/{call...}", "/",
 }

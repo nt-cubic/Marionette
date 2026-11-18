@@ -324,6 +324,10 @@ func (l *Library) syncCodexOff(p *Project, fail func(what string, err error)) {
 	}
 	want = slices.DeleteFunc(want, func(n string) bool { return have[n] == nil })
 	abs := filepath.Join(p.Dir, filepath.FromSlash(codexOffRel))
+	if err := p.inside(abs); err != nil {
+		fail("mcp", err)
+		return
+	}
 	var mine []string
 	for _, name := range p.CodexOff {
 		if slices.Contains(want, name) {
@@ -367,6 +371,10 @@ func (l *Library) syncSkillsOff(p *Project, fail func(what string, err error)) {
 		return
 	}
 	abs := filepath.Join(p.Dir, filepath.FromSlash(claudeSettingsRel))
+	if err := p.inside(abs); err != nil {
+		fail("skills", err)
+		return
+	}
 	var mine []string
 	for _, name := range p.Overrides {
 		if slices.Contains(want, name) {
@@ -419,6 +427,9 @@ func (p *Project) dropMadeFile(rel string) {
 		return
 	}
 	abs := filepath.Join(p.Dir, filepath.FromSlash(rel))
+	if p.inside(abs) != nil {
+		return
+	}
 	format := fmtClaude
 	if strings.HasSuffix(rel, ".toml") {
 		format = fmtCodex
@@ -449,6 +460,7 @@ func (l *Library) syncTrees(p *Project, res *Result, hubs map[string]*Server) {
 			t = &Project{Dir: d}
 		}
 		t.Copy, t.Skills, t.Servers, t.ServersOff, t.SkillsOff, t.Subagents = p.Copy, p.Skills, p.Servers, p.ServersOff, p.SkillsOff, p.Subagents
+		t.Instr, t.InstrAgents = p.Instr, p.InstrAgents
 		l.syncFolder(t, res, hubs)
 		trees = append(trees, t)
 	}
@@ -462,6 +474,7 @@ func (l *Library) syncTrees(p *Project, res *Result, hubs map[string]*Server) {
 		// no longer one of the repository's worktrees, or no longer the
 		// project's: what magpie put there comes out
 		t.Skills, t.Servers, t.ServersOff, t.SkillsOff, t.Subagents = nil, nil, nil, nil, nil
+		t.Instr, t.InstrAgents = "", nil
 		l.syncFolder(t, res, nil)
 		if t.holds() {
 			trees = append(trees, t)
@@ -484,7 +497,7 @@ func (p *Project) tree(dir string) *Project {
 
 // holds says whether magpie has anything of its own in the folder still.
 func (p *Project) holds() bool {
-	return len(p.Placed) > 0 || len(p.Wrote) > 0 || len(p.CodexOff) > 0 || len(p.Overrides) > 0 || len(p.MadeFiles) > 0 || len(p.AgentFiles) > 0
+	return len(p.Placed) > 0 || len(p.Wrote) > 0 || len(p.CodexOff) > 0 || len(p.Overrides) > 0 || len(p.MadeFiles) > 0 || len(p.AgentFiles) > 0 || len(p.InstrFiles) > 0
 }
 
 // ignored are the files and folders of the project magpie put there, which
@@ -493,6 +506,13 @@ func (p *Project) ignored() []string {
 	out := slices.Concat(p.Placed, p.MadeFiles)
 	for _, f := range p.AgentFiles {
 		out = append(out, f.Path)
+	}
+	// a file magpie made for the project's instructions; one of the
+	// user's, in git or not, stays as git has it
+	for _, f := range p.InstrFiles {
+		if f.Made {
+			out = append(out, f.Path)
+		}
 	}
 	return out
 }
@@ -512,7 +532,7 @@ func (l *Library) treesChanged() bool {
 				}
 			}
 		}
-		if len(p.Skills)+len(p.Servers)+len(p.ServersOff)+len(p.SkillsOff)+len(p.Subagents) == 0 && len(p.Trees) == 0 {
+		if len(p.Skills)+len(p.Servers)+len(p.ServersOff)+len(p.SkillsOff)+len(p.Subagents)+len(p.InstrAgents) == 0 && len(p.Trees) == 0 {
 			continue
 		}
 		dirs := p.treeDirs()

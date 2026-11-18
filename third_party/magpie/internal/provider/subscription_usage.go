@@ -730,12 +730,16 @@ func (e *accountStatusError) Error() string { return http.StatusText(e.status) }
 // a Team seat isn't the email alone `claude auth status` gives.
 func claudeSubscriptionUsage(ctx context.Context, user string) SubscriptionQuota {
 	q := SubscriptionQuota{Provider: "claude", Name: "Claude Code", Icon: "claude-color", Windows: []QuotaWindow{}}
-	if _, _, ok := claudeCredential(); !ok {
+	c, _, ok := claudeCredential()
+	if !ok {
 		q.Error = "Claude Code is signed out; run claude auth login"
 		return q
 	}
-	_, plan, _ := claudeIdentity()
-	q.Plan = plan
+	// named as the account is (claudeAccount): `claude auth status` says
+	// "max" for Max 20x too, which Claude sells as Ultra (shangyuan0818 on X)
+	_, statusPlan, _ := claudeIdentity()
+	acct, _ := claudeProfileAccount()
+	q.Plan = claudeLivePlan(c, statusPlan, acct)
 	var err error
 	q.Windows, err = claudeWindows(ctx, user, true)
 	if err != nil {
@@ -1220,17 +1224,7 @@ func codexWindows(ctx context.Context, token, accountID string) (plan string, ou
 // or less) is none left, whatever has_credits says.
 func codexGoesOnCredits(u codexUsage) bool {
 	c := u.Credits
-	if c == nil {
-		return false
-	}
-	if c.Unlimited {
-		return true
-	}
-	if !c.Has {
-		return false
-	}
-	n, err := strconv.ParseFloat(strings.TrimSpace(c.Balance), 64)
-	return err != nil || n > 0
+	return c != nil && CodexGoesOnCredits(c.Has, c.Unlimited, c.Balance)
 }
 
 // codexUsage is what /wham/usage tells of a ChatGPT account.

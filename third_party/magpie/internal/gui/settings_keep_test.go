@@ -156,6 +156,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		GitHubToken:          "ghp_kept",
 		RequestArchive:       true,
 		RequestArchiveMaxMB:  64,
+		RequestArchiveMB:     2048,
 		GatewayConversations: true,
 		QuotaLeft:            true,
 		UsageOrder:           []string{"kimi", "codex"},
@@ -173,6 +174,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		CodexTitles:          "off",
 		CodexDescriptions:    "fake/m1",
 		CodexPredictions:     "off",
+		CodexSuggestions:     "fake/m1",
 		CodexAutoReview:      "fake/m1",
 		CodexSubagentModel:   "codex/gpt-6-astra",
 		CodexServiceTier:     "priority",
@@ -235,6 +237,8 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 	was.MTLS = true                                   // Network and sharing's settings/mtls
 	was.Wallpaper = 1700000000000                     // Settings > General's Background image, appearance/wallpaper
 	was.HTTPS = true                                  // Network and sharing's settings/https
+	was.OnTop = true                                  // the title bar's pin, window/ontop
+	was.Name = "Tokyo box"                            // Network and sharing's Advanced › Name, sent by its own row alone
 	// Settings > Usage's Bark row has its own route (settings/bark)
 	was.BarkServer, was.BarkKey, was.BarkDaily = "https://bark.example.com", "kept", "21:30"
 	// the Routing groups page's defaults for every group (groups/defaults)

@@ -39,7 +39,7 @@ window.davForm = function (v) {
   keysL.classList.add("sync-sub-tick");
   const [setL, sets] = tick(t("Settings"), v.settings !== false);
   const [agentsL, agents] = tick(t("Agents' models"), v.agents !== false);
-  const [libL, lib] = tick(t("Library: instructions, MCP servers, skills, hooks and subagents"), v.library !== false);
+  const [libL, lib] = tick(t("Library: instructions, MCP servers, skills, hooks, subagents and Claude plugins"), v.library !== false);
   const [memL, mem] = tick(t("Memory: what the agents know, merged memory by memory"), v.memory !== false);
   const keysShow = () => { keysL.hidden = !prov.checked; };
   keysShow();
@@ -52,14 +52,40 @@ window.davForm = function (v) {
   // (qianxunji, curtinp118 on Discord); what it lets in is said beside it
   const [siL, si] = tick(t("Sign-ins: subscription accounts and plugin sign-ins"), !!v.signIns);
   const siSay = el("div", "hint sync-signins-say", t("Another computer that syncs is signed in without signing in again. Anyone with the passphrase and the server's file can use these accounts. An account used on two computers can be signed out on one when the other renews it."));
-  siSay.hidden = !si.checked;
-  si.onchange = () => { siSay.hidden = !si.checked; };
+  // subscriptions whose sign-ins stay on this computer (Ethereal499 on X:
+  // Claude, wary of where it is used): theirs here never go up, the
+  // server's never come in, and none here is taken away
+  let except = [...(v.signInsExcept || [])];
+  const exL = el("div", "sync-sub-tick sync-except");
+  const exPick = el("button", "proto pick");
+  exPick.type = "button";
+  const subName = (id) => providers?.providers?.find((p) => p.id === id)?.name || id;
+  const exPaint = () => {
+    exPick.classList.toggle("set", !!except.length);
+    exPick.replaceChildren(el("span", "", !except.length ? t("None") : except.length > 2 ? t("{n} subscriptions", { n: except.length }) : except.map(subName).join(", ")), svg(CHEV, 11, 1.6));
+  };
+  exPaint();
+  if (except.length && !providers) loadProviders().catch(() => {}).then(exPaint);
+  exPick.onclick = async (e) => {
+    e.stopPropagation();
+    if (exPick.classList.contains("open")) return closeProtoMenu();
+    if (!providers) { exPick.classList.add("busy"); await loadProviders().catch(() => {}); exPick.classList.remove("busy"); if (!exPick.isConnected) return; }
+    const opts = (providers?.providers || []).filter((p) => p.account).map((p) => ({ v: p.id, name: p.name || p.id, note: "", literalName: true }));
+    // one left out that isn't here now stays to be ticked back
+    for (const id of except) if (!opts.some((o) => o.v === id)) opts.push({ v: id, name: id, note: "", literalName: true });
+    if (!opts.length) opts.push({ v: "\x00", name: "No subscriptions yet", note: "" });
+    openProtoMenu(exPick, opts, except, (ids) => { except = ids; exPaint(); }, "Not synced", "", "left", true);
+  };
+  exL.append(el("span", "", t("Not synced")), exPick);
+  const siShow = () => { siSay.hidden = exL.hidden = !si.checked; };
+  siShow();
+  si.onchange = siShow;
   const what = el("div", "stack");
   what.append(provL, keysL, setL, agentsL, libL, memL);
   const adv = el("details", "more advanced sync-advanced");
   adv.open = v.profiles === false || !!v.usage || !!v.signIns;
   const advIn = el("div", "stack");
-  advIn.append(profL, useL, siL, siSay, el("div", "hint", t("Usage goes as a file a day: times, tokens, models and costs, never what was said. Turn it on on each computer that shares its own.")));
+  advIn.append(profL, useL, siL, exL, siSay, el("div", "hint", t("Usage goes as a file a day: times, tokens, models and costs, never what was said. Turn it on on each computer that shares its own.")));
   adv.append(el("summary", "", t("Advanced")), advIn);
   const davFields = [...field(t("Address"), url, t("A folder named magpie is made in it.")),
     ...field(t("User"), user),
@@ -129,7 +155,7 @@ window.davForm = function (v) {
     prov.checked = s.providers !== false; sets.checked = s.settings !== false; prof.checked = s.profiles !== false;
     keysShow();
     if (!prof.checked || use.checked || si.checked) adv.open = true;
-    siSay.hidden = !si.checked;
+    siShow();
     // the kind picked as a click on it would, its thumb moved too
     to[1].querySelector(`.segs [data-seg="${kind}"]`)?.click();
     show();
@@ -177,7 +203,7 @@ window.davForm = function (v) {
     // so a setup from before the choice is saved as it was
     const outs = {};
     for (const [k, c] of [["providers", prov], ["settings", sets], ["profiles", prof]]) if (!c.checked || v[k] === false) outs[k] = c.checked;
-    return { ...where, passphrase: phrase.value, keys: keys.checked, agents: agents.checked, library: lib.checked, memory: mem.checked, ...outs, ...(use.checked || v.usage ? { usage: use.checked } : {}), ...(si.checked || v.signIns ? { signIns: si.checked } : {}) };
+    return { ...where, passphrase: phrase.value, keys: keys.checked, agents: agents.checked, library: lib.checked, memory: mem.checked, ...outs, ...(use.checked || v.usage ? { usage: use.checked } : {}), ...(si.checked || v.signIns ? { signIns: si.checked } : {}), ...(except.length || v.signInsExcept?.length ? { signInsExcept: except } : {}) };
   };
   peek.onclick = async () => {
     if (!(await openPasted())) return;
@@ -211,12 +237,13 @@ window.exportForm = function () {
   const p1 = input("", t("passphrase"), "password");
   const p2 = input("", t("again"), "password");
   const [keysL, keys] = tick(t("With the providers' API keys"), true);
-  const [libL, lib] = tick(t("With the library: instructions, MCP servers, skills, hooks and subagents"), true);
+  const [libL, lib] = tick(t("With the library: instructions, MCP servers, skills, hooks, subagents and Claude plugins"), true);
   const [memL, mem] = tick(t("With memory: what the agents know"), true);
+  const [useL, use] = tick(t("With the usage history"), true);
   // sign-ins: off unless picked (qianxunji, curtinp118 on Discord)
   const [siL, si] = tick(t("With the sign-ins: subscription accounts and plugin sign-ins"), false);
   const what = el("div", "stack");
-  what.append(keysL, libL, memL, siL);
+  what.append(keysL, libL, memL, useL, siL);
   const passF = field(t("Passphrase"), p1, t("Needed to open the file. Subscriptions aren't in it: sign in to them on the other computer."));
   const passSay = passF[1].querySelector(".hint");
   si.onchange = () => {
@@ -233,7 +260,7 @@ window.exportForm = function () {
     if (p1.value !== p2.value) return say(t("The two passphrases differ"));
     go.classList.add("busy");
     try {
-      const r = await api("backup/export", { pass: p1.value, keys: keys.checked, library: lib.checked, memory: mem.checked, signIns: si.checked });
+      const r = await api("backup/export", { pass: p1.value, keys: keys.checked, library: lib.checked, memory: mem.checked, usage: use.checked, signIns: si.checked });
       ed.replaceChildren(el("div", "done", t("Saved to {path}", { path: r.path })));
     } catch (e) {
       go.classList.remove("busy");
@@ -275,11 +302,12 @@ window.importForm = function () {
   pf.append(name, pick, file);
   const pass = input("", t("passphrase"), "password");
   const [agentsL, agents] = tick(t("Set the agents' models too"), true);
-  const [libL, lib] = tick(t("Bring in the library too: instructions, MCP servers, skills, hooks and subagents"), true);
+  const [libL, lib] = tick(t("Bring in the library too: instructions, MCP servers, skills, hooks, subagents and Claude plugins"), true);
   const [memL, mem] = tick(t("Bring in memory too, merged with the memories here"), true);
+  const [useL, use] = tick(t("Bring in the usage history too, merged with the one here"), true);
   const [siL, si] = tick(t("Bring in the sign-ins too, when the file has them"), true);
   const what = el("div", "stack");
-  what.append(agentsL, libL, memL, siL);
+  what.append(agentsL, libL, memL, useL, siL);
   ed.append(...field(t("File"), pf), ...field(t("Passphrase"), pass), ...field("", what, t("Providers with the same id are replaced; one that came without a key keeps the key it has here. The library replaces the one here, which is kept with its backups.")));
   const go = el("button", "text primary", t("Import"));
   const cancel = el("button", "text", t("Cancel"));
@@ -289,7 +317,7 @@ window.importForm = function () {
     if (!data) return say(t("Choose a file first"));
     go.classList.add("busy");
     try {
-      const r = await api("backup/import", { data, pass: pass.value, agents: agents.checked, library: lib.checked, memory: mem.checked, signIns: si.checked });
+      const r = await api("backup/import", { data, pass: pass.value, agents: agents.checked, library: lib.checked, memory: mem.checked, usage: use.checked, signIns: si.checked });
       const lines = [t("Providers: {added} added, {replaced} replaced; {profiles} profiles; {agents} agent settings changed", { added: r.Added, replaced: r.Replaced, profiles: r.Profiles, agents: r.Agents })];
       if (r.NeedKey?.length) lines.push(t("Needs a key: {names}", { names: r.NeedKey.join(", ") }));
       if (r.SignIns) lines.push(...signInsSaid(r.SignIns));
@@ -301,6 +329,7 @@ window.importForm = function () {
       if (r.Plugins?.length) lines.push(t("Plugins added: {names}", { names: r.Plugins.join(", ") }));
       for (const [spec, error] of Object.entries(r.PluginErrors || {})) lines.push(t("Couldn't add the plugin {spec}: {error}", { spec, error }));
       if (r.Library) lines.push(t("Library brought in and written into the agents"));
+      if (r.Usage != null) lines.push(t("Usage history: {n} calls added", { n: r.Usage }));
       for (const p of r.LibraryProblems || []) lines.push(t("{agent} couldn't get {what}: {error}", { agent: p.agent, what: p.what, error: p.error }));
       ed.replaceChildren(...lines.map((l) => el("div", "done", l)));
       refreshAfterSync();
@@ -525,6 +554,14 @@ window.askUndoSync = function (v) {
 window.askPreviewRows = function (at, v, sub) {
   const left = ["providers", "settings", "profiles", "agents", "library", "memory"].filter((p) => v[p] === false);
   if (left.length) sub.after(el("div", "sub wraps sync-left", t("Stays as it is on each computer: {parts}", { parts: syncParts(left) })));
+  // the library's files too big to sync, and skills a sync couldn't fetch
+  // from their source here: said, never a silent success (#5715)
+  const lib = [v.libraryLeft?.length && t("Files too big to sync stay on this computer only, in: {names}", { names: v.libraryLeft.join(t(", ")) }), ...v.libraryProblems || []].filter(Boolean);
+  if (!v.error && lib.length) {
+    const d = el("div", "sub bad wraps sync-lib");
+    for (const l of lib) d.append(el("div", "", l));
+    sub.after(d);
+  }
   const row = (name, sub, b, cls) => {
     const r = el("div", "row pref wraps " + cls), who = el("div", "who"), val = el("div", "val");
     who.append(el("div", "name", name), el("div", "sub", sub));

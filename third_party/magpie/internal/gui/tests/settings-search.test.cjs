@@ -36,7 +36,8 @@ function server(lang, posts, web, { provs = ["codex", "claude"], off = [], built
   return async (route) => {
     const req = route.request(), url = new URL(req.url());
     const json = (data) => route.fulfill({ json: data });
-    if (req.method() !== "GET") posts.push(url.pathname);
+    // the window's in-use signal (any key or click, 10c4dc109) writes no setting (#6133)
+    if (req.method() !== "GET" && url.pathname !== "/api/update/using" && url.pathname !== "/api/page-away") posts.push(url.pathname);
     if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:${web},textSize:100,featuresOff:${JSON.stringify(off)}};` });
     if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
     if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings: { lang, theme: "light", textSize: 100 }, fx: cur.fx });
@@ -135,6 +136,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert(await seen(page, "#currencySegs"), "Currency's row shows");
         assert.equal(await seen(page, "#trayUsagePick"), false);
         assert.equal(await seen(page, "#provPrefLinks .agent-pref-link"), false, "no provider's link for currency");
+
+        // the update check's interval says it is about updates (jen_celeus
+        // on X: "更新" didn't find it)
+        const upd = { en: "update", zh: "更新", "zh-TW": "更新", ja: "アップデート", de: "update" }[lang];
+        await type(page, upd);
+        assert(await seen(page, ".update-every-row"), `"${upd}" finds the update check's interval`);
+        assert((await state(page)).parts.includes("about"), "under About");
 
         // the warm-ups, in their providers' editors now: a link for each
         // provider that has one, named as the Add sheet names the

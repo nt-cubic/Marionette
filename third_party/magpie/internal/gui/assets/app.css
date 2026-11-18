@@ -224,6 +224,7 @@ code { font: var(--code-style, normal) var(--code-weight, 400) 11.5px var(--code
 .row .field .ic-stack .disc > .ic { width: 11px !important; height: 11px !important; }
 .row .field .ic-stack .disc + .disc { margin-left: -4px; }
 .ic.generic svg { width: 100%; height: 100%; }
+.ic.anthropic-mark svg { width: 100%; height: 100%; display: block; }
 
 /* ---- header --------------------------------------------------------------- */
 .top { display: flex; align-items: center; gap: 8px; padding: 0 10px 0 14px; height: 46px; flex: none; position: relative; }
@@ -231,7 +232,20 @@ code { font: var(--code-style, normal) var(--code-weight, 400) 11.5px var(--code
 body.window.mac .top { padding-left: calc(96px / var(--zoom, 1)); height: calc(50px / var(--zoom, 1)); padding-top: calc(2px / var(--zoom, 1)); }
 body.window.mac .seg { top: calc(50% + 1px / var(--zoom, 1)); } /* 50% centres in the padding box; the 2px top padding puts the flex row a pixel lower */
 .brand { display: flex; align-items: center; gap: 6px; font-weight: 600; letter-spacing: .01em; }
-body.window:not(.mac):not(.linux):not(.web) .brand { display: none; } /* Windows' title bar above already shows the icon and the name; a browser tab has no title bar of the app's */
+/* Windows' window (html.win from layout.js; not the panel, not the web):
+   the header is the title bar (mainwindow.go mainFrameless), its caption
+   buttons fixed at its right as Windows places them, the header's own
+   tools left of them; over a dialog's backdrop too, so the window can
+   always be closed or moved aside; at Windows' own size whatever the text
+   size, as the Mac's traffic lights */
+.wincap { display: none; }
+.win body.window:not(.web) .top { padding-right: calc(146px / var(--zoom, 1)); }
+.win body.window:not(.web) .wincap { display: flex; position: fixed; z-index: 40; top: 0; right: 0; height: var(--top-h, 46px); }
+.wincap button { width: calc(46px / var(--zoom, 1)); height: 100%; display: grid; place-items: center; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--fg); font: calc(10px / var(--zoom, 1)) "Segoe Fluent Icons", "Segoe MDL2 Assets", sans-serif; transition: background-color .1s ease, color .1s ease; }
+.wincap button:hover { background: color-mix(in srgb, var(--fg) 9%, transparent); }
+.wincap button:active { background: color-mix(in srgb, var(--fg) 6%, transparent); color: color-mix(in srgb, var(--fg) 70%, transparent); }
+.wincap button[data-cap="close"]:hover { background: #c42b1c; color: #fff; }
+.wincap button[data-cap="close"]:active { background: color-mix(in srgb, #c42b1c 90%, transparent); color: rgba(255, 255, 255, .7); }
 /* app.js removes these controls later; keep them out of the first paint too. */
 body.window :is(#open, #openMain, #quit),
 /* one control opens the main window, on the panel's edge nearest the tray
@@ -507,9 +521,10 @@ body.side-nav #nav button.has-dot.can-fold::after { right: 28px; }
 .nav-sl:first-of-type { padding-top: 2px; }
 /* Settings' tabs, over its button at the sidebar's foot (app.js navSubs),
    close to the button they come from; the foot takes more of a short
-   sidebar while they show */
+   sidebar while they show (.with-sub, set by app.js: Safari before 15.4
+   can't parse :has()) */
 .side-foot > .nav-sub { margin: 6px 0 2px 16px; }
-.side-foot:has(> .nav-sub) { max-height: 80%; }
+.side-foot.with-sub { max-height: 80%; }
 .nav-sub::before { content: ""; position: absolute; left: 0; top: 3px; bottom: 3px; width: 1px; background: var(--line); }
 /* rows keep their size while the list unrolls or folds: squeezed, a strip
    drawn again then (Installed gets its count) marked the selection a third
@@ -545,8 +560,19 @@ body.side-nav #nav button.has-dot.can-fold::after { right: 28px; }
     background: radial-gradient(36px 400px at var(--lx) 50%, var(--hot) 0%, var(--hot) 12%, color-mix(in oklab, var(--hot) 45%, var(--far)) 45%, var(--far) 100%);
     -webkit-background-clip: text; background-clip: text; color: transparent;
   }
+  /* the row's icon takes the light too, from its own ink: as bright as the
+     word would be at its middle (--iw, navlamp.js), and with no lag of its
+     own, since the light already moves */
+  :is(.nav-s, #nav button, #prefs) > :is(svg, .nav-ic, .nav-s-ic).lit {
+    --lo: var(--muted);
+    --hi: var(--fg);
+    --hot: color-mix(in oklab, var(--hi) calc(var(--si) * 100%), var(--lo));
+    --far: color-mix(in oklab, var(--fg) calc(var(--si) * 15%), var(--lo));
+    color: color-mix(in oklab, var(--hot) calc(var(--iw) * 100%), var(--far));
+    transition: none;
+  }
 }
-@supports (color: oklch(from red round(l) c h)) { :is(.nav-s, #nav button, #prefs, .side-gw) > span.lit { --hi: oklch(from var(--fg) round(l) 0 h); } }
+@supports (color: oklch(from red round(l) c h)) { :is(.nav-s, #nav button, #prefs, .side-gw) > span.lit, :is(.nav-s, #nav button, #prefs) > :is(svg, .nav-ic, .nav-s-ic).lit { --hi: oklch(from var(--fg) round(l) 0 h); } }
 /* a row pressed darkens, as a Mac sidebar's does: it never shrinks the way a
    button does (.seg button:active, .icon:active below) */
 body.side-nav #side button:active { transform: none; }
@@ -605,6 +631,9 @@ body.side-nav :is(#usageTab, #view-library .lib-tabs, #view-plugins .lib-tabs, #
 .side-toggle .st-pane { fill: currentColor; opacity: .32; transition: opacity .2s var(--ease); }
 body:not(.side-nav) .side-toggle .st-pane { opacity: 0; }
 @media (prefers-reduced-motion: reduce) { .side-toggle .st-pane { transition: none; } }
+/* the window kept on top (app.js renderOnTop): pressed, its pin filled */
+.icon.pin .pin-body { fill: currentColor; fill-opacity: 0; transition: fill-opacity .16s ease; }
+.icon.pin.on .pin-body { fill-opacity: 1; }
 /* the two layouts trade places as one motion (app.js navMorph): the sidebar
    slides in from the window's edge or back to it, each page's tab flies to
    its place in the other, and the page moves over, together. Each piece is
@@ -720,6 +749,10 @@ body:not(.mac):not(.web) .modal .editor.framed > .ebody { overflow-y: scroll; pa
 body.web .modal .editor.framed > .ebody { overflow-y: scroll; }
 .list { background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; flex: none; }
 body.panel .list { border: 0; border-radius: 10px; box-shadow: var(--card-edge); }
+/* a Settings card with no rows (Allowed addresses, Client certificates and
+   HTTPS while Share on local network is off) is not drawn: its border was a
+   thin line under the card above (fishmagic80 on X) */
+.set-page .list:empty { display: none; }
 .row { display: flex; align-items: center; gap: 9px; min-height: 40px; padding: 5px 9px 5px 11px; }
 body.window .row { min-height: 48px; padding: 7px 12px 7px 14px; gap: 12px; }
 .row + .row, .editor + .row, .row + .editor { border-top: 1px solid var(--line-2); }
@@ -830,6 +863,13 @@ body.window .row.agent .who .ag-cli { flex: 0 1 auto; overflow: hidden; }
    and gone where the pill keeps only its arrow */
 .ag-app { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 @container (max-width: 250px) { body.window .row.agent .ag-app { display: none; } }
+/* beside the app's version the pill says "Update CLI to …", longer, so
+   there it keeps only its arrow, and the app's version goes, sooner */
+@container (max-width: 360px) {
+  body.window .row.agent .ag-cli.with-app .ag-up { padding: 0 6px; }
+  body.window .row.agent .ag-cli.with-app .ag-up > span,
+  body.window .row.agent .ag-cli.with-app .ag-app { display: none; }
+}
 .ag-offpath { flex: 0 1 auto; min-width: 0; }
 @container (max-width: 250px) { body.window .row.agent .ag-offpath { display: none; } }
 .ag-here { flex: 0 1 auto; min-width: 0; }
@@ -1062,6 +1102,16 @@ body.panel .row.pref.flash { border-radius: 10px; }
 .qt-name { font-weight: 400; color: var(--muted); }
 .qt-reset { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .qt .qt-msg { color: var(--muted); }
+/* a provider's accounts under its row, folded until it is clicked (#6740) */
+.qt-group { cursor: pointer; }
+.qt-fold { padding: 0; font: inherit; color: inherit; text-align: left; background: none; border: 0; cursor: pointer; }
+.qt-fold .chev { display: inline-flex; width: 10px; color: var(--muted); }
+.qt-fold[aria-expanded="true"] .chev { transform: rotate(90deg); }
+.qt .qt-count { color: var(--muted); white-space: nowrap; text-transform: none; }
+/* beside a provider's chevron, every row's icon and plan line up */
+.qt.grouped tr:not(.qt-group) .qt-id::before { content: ""; width: 10px; flex: none; }
+.qt.grouped .plan { margin-left: 37px; }
+.qt .qt-kid .qt-sub > .plan:first-child { margin-top: 0; }
 .subscription-card { padding: 10px 12px 11px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); min-width: 0; }
 /* a card's captions (resets, the period, a curve's dates) read at 4.5:1 or
    better on the card, below its figures (Jiabubu on Discord): light's
@@ -1097,8 +1147,11 @@ body.panel .row.pref.flash { border-radius: 10px; }
 .subscription-account.brief { margin-bottom: 4px; }
 .quota-acct-fold { align-self: center; display: inline-grid; place-items: center; flex: none; width: 18px; height: 18px; margin: -2px -5px -2px -3px; padding: 0; border-radius: 4px; color: var(--faint); transition: background .12s, color .12s; }
 .subscription-account :is(.user, .acct-eye) + .quota-acct-fold { margin-left: auto; }
+/* one account's card folds from its head's end, before its ⋯ (PILIHU2023 on X) */
+.subscription-head > .quota-acct-fold { margin-left: auto; }
+.subscription-head > :is(.plan, .quota-every, .quota-sum) ~ .quota-acct-fold { margin-left: 2px; }
 .quota-acct-fold:hover { background: var(--pill); color: var(--fg-2); }
-.quota-acct-fold svg { transform: rotate(180deg); transition: transform .15s ease-out; }
+.quota-acct-fold svg { transform: rotate(180deg); transition: transform .15s var(--ease-out); }
 .quota-acct-fold[aria-expanded="false"] svg { transform: none; }
 @media (prefers-reduced-motion: reduce) { .quota-acct-fold svg { transition: none; } }
 .quota-windows.brief { row-gap: 5px; }
@@ -1207,6 +1260,16 @@ body.panel .row.pref.flash { border-radius: 10px; }
 .qc-line.qc-short { stroke-width: 1.25; opacity: .7; }
 .qc-even { stroke-width: 1; stroke-dasharray: 3 3; opacity: .45; vector-effect: non-scaling-stroke; }
 .qc-now { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 1 2; vector-effect: non-scaling-stroke; }
+.qc-hot { stroke: var(--muted); stroke-width: 1; vector-effect: non-scaling-stroke; pointer-events: none; }
+.quota-curve { position: relative; }
+.quota-curve .qc-tip { position: absolute; z-index: 3; min-width: 140px; max-width: 240px; padding: 7px 9px 6px; background: var(--pop-bg); border-radius: 9px; box-shadow: var(--shadow); font-size: 11px; color: var(--fg); pointer-events: none; }
+.quota-curve .qc-tip b { display: block; margin-bottom: 3px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.quota-curve .qc-tip div { display: flex; align-items: center; gap: 6px; line-height: 1.6; }
+.quota-curve .qc-tip div span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quota-curve .qc-tip i { width: 7px; height: 7px; border-radius: 2px; flex: none; }
+.quota-curve .qc-tip em { margin-left: auto; padding-left: 10px; font-style: normal; font-variant-numeric: tabular-nums; }
+.quota-head .qt-days { width: 64px; height: 24px; padding: 0 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--card); color: var(--fg); font-size: 12px; outline: none; }
+.quota-head .qt-days:focus { border-color: var(--accent); }
 .quota-curve .qc-axis { display: flex; justify-content: space-between; gap: 8px; margin-top: 3px; font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .quota-curve .qc-legend { display: flex; flex-wrap: wrap; gap: 3px 12px; margin-top: 5px; font-size: 10.5px; color: var(--muted); }
 /* a key never breaks inside: a long name ends in … rather than its % on a line of its own */
@@ -1559,6 +1622,16 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
 .led-spd-h:hover, .led-spd-h.on { color: var(--fg); }
 .led-spd th[aria-sort="descending"] .led-spd-h::after { content: " ↓"; }
 .led-spd th[aria-sort="ascending"] .led-spd-h::after { content: " ↑"; }
+.led-spd-by .opt { height: 20px; padding: 0 9px; font-size: 11px; }
+.led-spd .led-spd-prov { overflow: hidden; text-overflow: ellipsis; font-size: 11px; font-weight: 400; color: var(--muted); }
+.led-spd.by-prov tbody td { vertical-align: top; }
+.led-spd.by-prov td.nm { min-width: 112px; }
+.led-spd th.act, .led-spd td.act { width: 1px; padding-left: 8px; }
+.led-spd td.off { color: var(--amber); }
+/* always there, quiet until its row is pointed at (skingstyle48487: a
+   button shown only on hover went unfound) */
+.led-spd-check { height: 20px; padding: 0 2px; font-size: 11px; color: var(--muted); }
+.led-spd tr:hover .led-spd-check, .led-spd-check:focus-visible { color: var(--ctl-fg); }
 .led-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin-bottom: 8px; }
 .led-bar .grow { flex: 1; }
 .led-by { font-size: 11.5px; color: var(--muted); }
@@ -1666,7 +1739,7 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
    rule and draws the system's bar under the weeks, not the app's thin thumb
    every other list has (cybercaius on Discord) */
 .heat-scroll { overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; padding-bottom: 4px; }
-.heat-grid { display: grid; grid-template-columns: auto repeat(53, minmax(10px, 1fr)); grid-template-rows: auto repeat(7, auto); gap: 3px; min-width: min-content; max-width: calc(3em + 53 * 21px); font-size: 10px; color: var(--muted); }
+.heat-grid { display: grid; grid-template-columns: auto repeat(var(--wk, 53), minmax(10px, 1fr)); grid-template-rows: auto repeat(7, auto); gap: 3px; min-width: min-content; max-width: calc(3em + var(--wk, 53) * 21px); font-size: 10px; color: var(--muted); }
 .heat-grid i { aspect-ratio: 1; border-radius: 3px; min-width: 0; }
 .heat-grid i:hover { outline: 1px solid var(--fg-2); outline-offset: -1px; }
 /* the days of the week stay at the card's edge as the weeks scroll under them */
@@ -2783,9 +2856,9 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 #connectNote.brief .copy { width: 20px; height: 20px; }
 
 /* the connect card: label column, then the value with a copy button */
-.connect { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px 14px; align-items: start; padding: 12px 14px 14px; }
+.connect { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px 14px; align-items: first baseline; padding: 12px 14px 14px; }
 .connect > div { min-width: 0; }
-.connect label { font-size: 12px; color: var(--fg-2); text-align: right; padding-top: 4px; }
+.connect label { font-size: 12px; color: var(--fg-2); text-align: right; }
 .connect .hint { font-size: 11px; color: var(--fg-2); margin-top: 4px; line-height: 1.4; }
 .connect .val { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 4px 0 9px; border-radius: 7px; background: var(--pill); box-shadow: inset 0 0 0 1px var(--line-2); max-width: 100%; }
 .connect .val code { font-size: 12px; color: var(--fg); user-select: text; -webkit-user-select: text; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2794,6 +2867,10 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .connect .stack { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 @media (max-width: 520px) {
   .connect { grid-template-columns: 48px minmax(0, 1fr); column-gap: 8px; padding-left: 10px; padding-right: 10px; }
+  /* its options wrap rather than scroll: WebKit gives a baseline row
+     holding a scroller 6px more each time its bar comes and goes, and the
+     page moved under the reader's click (connect-snippet-shell.test.cjs) */
+  .connect .segs { flex-wrap: wrap; }
 }
 /* Change key (#1869) looks like the copy button beside it, but isn't one */
 .copy, .key-edit { width: 22px; height: 22px; border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; color: var(--muted); flex: none; transition: background .12s, color .12s; }
@@ -3290,7 +3367,11 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
    key squeezed by them on a narrow window slid its copy button under the
    pointer that came to drag the row */
 #gatewayKeys .acc > :is(.key-quotas, .key-conc, .key-tier, .key-redact):not(.set) { flex-shrink: 8; }
-#gatewayKeys .acc:not(:hover) > :is(.key-quotas, .key-conc, .key-tier, .key-redact):not(.set, .open, :focus) { max-width: 0; padding: 0; margin-left: -9px; box-shadow: none; }
+/* On a narrow window they keep that room when not hovered, only faded
+   out: four of them (key-redact made four) took ~90px on hover, the key
+   gave it up and its copy button slid under the pointer that came to
+   drag the row, so the drag never started (#6268) */
+@media (min-width: 521px) { #gatewayKeys .acc:not(:hover) > :is(.key-quotas, .key-conc, .key-tier, .key-redact):not(.set, .open, :focus) { max-width: 0; padding: 0; margin-left: -9px; box-shadow: none; } }
 /* the MCP servers a key held to some may use: cut, and gives way first */
 #gatewayKeys .amodels.key-mcp { display: inline-block; flex: 0 1 auto; min-width: 24px; max-width: 180px; line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* a read-only key's tag, always shown, never a button */
@@ -3331,6 +3412,26 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 /* a menu of actions, where nothing is or can be ticked, keeps no room for
    a tick: its items line up with its heading */
 .proto-menu.pm-bare .pm-tick { display: none; }
+/* Settings' Sidebar pages (navpages.js): each page's row is dragged to its
+   place, the grip at its end showing on the row under the pointer, as an
+   iPhone's list being reordered has it; Providers is always shown */
+.nav-pages-list { position: relative; display: grid; gap: 1px; }
+.nav-pages-menu .pm-item { align-items: center; }
+.nav-pages-menu .pm-words { flex: 1; min-width: 0; }
+.nav-pages-menu .grip { flex: none; display: grid; place-items: center; align-self: stretch; width: 26px; margin: -6px -8px -7px 0; touch-action: none; cursor: grab; opacity: 0; transition: opacity .15s ease; }
+.nav-pages-menu .grip::before { content: ""; width: 6px; height: 11px; background: radial-gradient(circle, var(--muted) .9px, transparent 1.2px) 0 0 / 3px 3.75px; }
+.nav-pages-menu .pm-item:is(:hover, .dragging) .grip { opacity: 1; }
+/* apart: Safari before 15.4 drops a whole selector list with :focus-visible in it */
+.nav-pages-menu .pm-item:focus-visible .grip { opacity: 1; }
+@media (hover: none) { .nav-pages-menu .grip { opacity: 1; } }
+/* a finger gets a grip it can find: 40px wide where the pointer is coarse */
+@media (pointer: coarse) { .nav-pages-menu .grip { width: 40px; } }
+.nav-pages-menu .pm-fixed .pm-tick { opacity: .4; }
+.nav-pages-list.sorting { user-select: none; -webkit-user-select: none; }
+.nav-pages-list.sorting > .pm-item { transition: transform .16s cubic-bezier(.23, 1, .32, 1); cursor: grabbing; }
+.nav-pages-list.sorting > .pm-item.dragging { z-index: 2; background: var(--card-2); box-shadow: 0 0 0 1px var(--line); transition: none; will-change: transform; }
+@media (prefers-reduced-motion: reduce) { .nav-pages-list.sorting > .pm-item { transition: none; } }
+.nav-pages-reset { margin-top: 3px; }
 /* a group's heading in a menu of many: it ticks all of its items */
 .proto-menu .pm-group { margin-top: 3px; }
 .proto-menu .pm-group .pm-name { font-size: 11px; font-weight: 600; color: var(--muted); }
@@ -3608,27 +3709,47 @@ body.side-nav #addSheet .add-tools.afloat > * { pointer-events: auto; --wails-dr
 body.side-nav #addSheet .add-tools.afloat > .find { flex: 0 1 var(--hint-w, 180px); min-width: 120px; }
 /* a narrow window has no room in its bar: the sheet's head stays at the
    top while the sheet is under it, as Settings' does */
-body:not(.side-nav) #addSheet > .row-head { position: sticky; top: 0; z-index: 5; --bleed-l: 12px; --bleed-r: 12px; }
-body.window:not(.side-nav) #addSheet > .row-head { top: -2px; --bleed-l: 16px; --bleed-r: 16px; }
+body:not(.side-nav) #addSheet > .row-head { position: sticky; top: 0; z-index: 5; }
+body.window:not(.side-nav) #addSheet > .row-head { top: -2px; }
 body:not(.side-nav) #addSheet > .row-head::before {
   content: ""; position: absolute; z-index: -1; pointer-events: none;
-  top: -6px; bottom: -6px; left: calc(-1 * var(--bleed-l)); right: calc(var(--bar, 0px) - var(--bleed-r));
+  top: -6px; bottom: -6px; left: -6px; right: -6px; border-radius: 0 0 13px 13px;
   background: color-mix(in srgb, var(--bg) 92%, transparent);
   -webkit-backdrop-filter: saturate(1.6) blur(16px); backdrop-filter: saturate(1.6) blur(16px);
-  box-shadow: 0 1px 0 transparent; transition: box-shadow .18s var(--ease);
+  box-shadow: 0 1px 0 transparent; opacity: 0; transition: opacity .18s var(--ease-out), box-shadow .18s var(--ease);
 }
-body:not(.side-nav) #addSheet > .row-head.stuck::before { box-shadow: 0 1px 0 var(--line-2); }
+body:not(.side-nav) #addSheet > .row-head.stuck::before { opacity: 1; box-shadow: 0 1px 0 var(--line-2); }
 @supports not (color: color-mix(in srgb, red 50%, blue)) { body:not(.side-nav) #addSheet > .row-head::before { background: var(--bg); } }
 /* the provider editor, in a dialog */
 /* the label column is as wide as its longest label, so that label starts
    at the padding and the fields end the same way on the right (the
    owner, 10-29: a 72px column left the left edge twice the right) */
-.editor { padding: 16px 18px 14px; display: grid; grid-template-columns: fit-content(132px) minmax(0, 1fr); gap: 10px 14px; align-items: start; }
+.editor { padding: 16px 18px 14px; display: grid; grid-template-columns: fit-content(132px) minmax(0, 1fr); gap: 10px 14px; align-items: first baseline; }
+/* A field's name and its control share a line: each row of an editor's
+   grid sets them on their first baseline, so the name sits level with
+   whatever the control is, a box, a tick, a row of options or a list's
+   first line, with no padding guessed for one kind of control (the
+   owner, 11-12: Free for me and Redaction sat 4px under their ticks, the
+   second time). form-align.test.cjs measures every editor's rows. The
+   grids under it (a dialog's body, Advanced's rows) and Connect do the same.
+   A row that starts with a text field is the exception, set at its top, its name
+   on the field's first line: WebKit lays a baseline row's items out again on
+   every layout, and a focused field laid out again scrolls itself into
+   view, so the page jumped back to a new group's name as the reader
+   scrolled to Add (group-from-model-add.test.cjs). app.js's settleRows
+   marks such rows .at-top: a :has(+ …) rule here held WebKit ~9s on
+   Codex's editor (provider-pass-errors.test.cjs). */
+:where(:is(.editor, .modal .editor.framed > .ebody, .editor .more .inner, .connect) > .at-top) { align-self: start; }
+:where(:is(.editor, .modal .editor.framed > .ebody, .editor .more .inner, .connect) > label.at-top:not(.tick)) { padding-top: calc((var(--field-h, 29px) - 17px) / 2); }
+/* a JSON box's first line is 1px of border and 7px of padding down, 18px tall */
+:where(:is(.editor, .modal .editor.framed > .ebody, .editor .more .inner, .connect) > label.by-json:not(.tick)) { padding-top: 8.5px; }
 .editor .ehead { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; padding-bottom: 8px; margin-bottom: 2px; border-bottom: 1px solid var(--line-2); }
 .editor .ehead .ic { width: 20px; height: 20px; }
 .editor .icon-pick { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.editor .icon-pick .icon-now { width: 32px; height: 32px; border: 1px solid var(--line); border-radius: 8px; display: grid; place-items: center; }
-.editor .icon-pick .icon-now .ic { width: 20px; height: 20px; }
+/* a line of text 30px tall, the icon in its middle: its baseline is a text
+   line's, so the field's name sits level with the box's middle */
+.editor .icon-pick .icon-now { width: 32px; height: 32px; box-sizing: border-box; border: 1px solid var(--line); border-radius: 8px; display: block; text-align: center; font-size: 12px; line-height: 30px; }
+.editor .icon-pick .icon-now .ic { width: 20px; height: 20px; vertical-align: middle; }
 .editor .icon-pick > input { flex-basis: 100%; }
 .editor .icon-pick .icon-grid { flex-basis: 100%; display: grid; grid-template-columns: repeat(auto-fill, 34px); gap: 4px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; max-height: 196px; overflow-y: auto; }
 .editor .icon-pick .icon-grid button { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 7px; }
@@ -3637,8 +3758,7 @@ body:not(.side-nav) #addSheet > .row-head.stuck::before { box-shadow: 0 1px 0 va
 .editor .icon-pick .icon-grid .ic { width: 18px; height: 18px; }
 .editor .ehead b { font-weight: 600; }
 .editor .ehead .note { font-size: 12px; color: var(--muted); }
-.editor label { font-size: 12px; color: var(--fg-2); text-align: right; padding-top: 5px; }
-.editor label.by-list { padding-top: 11px; }
+.editor label { font-size: 12px; color: var(--fg-2); text-align: right; }
 .editor .hint { font-size: 11px; color: var(--fg-2); margin-top: 4px; }
 /* a provider's own proxy (#237): the address beside the options, and no
    room at all while Custom isn't picked (an empty strip under the options
@@ -3649,11 +3769,25 @@ body:not(.side-nav) #addSheet > .row-head.stuck::before { box-shadow: 0 1px 0 va
 .editor .proxy-row input.proxy-url.off { display: none; }
 .editor .proxy-row .gone { display: none; }
 .editor .proxy-row .proxy-saved { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.editor .proxy-row .proxy-test { flex: none; }
+.editor .proxy-row .proxy-saved[hidden] + .proxy-test { display: none; }
+.editor .proxy-pick .hint.err { color: var(--red); }
 .saved-proxy .sub { overflow-wrap: anywhere; }
 .proxy-form { flex-wrap: wrap; }
 .proxy-form .proxy-controls { justify-content: flex-end; flex: 1 1 100%; }
 .proxy-form .proxy-credential { flex: 1 1 10rem; min-width: 0; }
 .proxy-form .sub.err { flex: 1 1 100%; }
+/* an SSH server's form: Proxy | SSH over its fields, and its key and host
+   key folded under Advanced */
+.proxy-form { gap: 8px; }
+.proxy-form .proxy-kind { flex: none; }
+.proxy-form .proxy-advanced { flex: 1 1 100%; min-width: 0; }
+.proxy-advanced summary { margin-left: 0; }
+.proxy-advanced .inner { display: flex; flex-direction: column; gap: 8px; padding-top: 8px; }
+.proxy-advanced textarea.proxy-key { width: 100%; max-width: 100%; box-sizing: border-box; min-height: 64px; padding: 6px 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: inherit; font: 11.5px/1.45 var(--mono, ui-monospace, monospace); resize: vertical; outline: none; }
+.proxy-advanced textarea.proxy-key:focus { border-color: var(--accent); }
+.proxy-hostkey { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.proxy-hostkey .sub { min-width: 0; overflow-wrap: anywhere; font: 11.5px/1.45 var(--mono, ui-monospace, monospace); }
 .editor :is(input.concurrency, input.queue-limit, input.queue-wait)[type] { width: 12em; max-width: 100%; }
 .editor input[type="number"] { -moz-appearance: textfield; }
 .editor input[type="number"]::-webkit-inner-spin-button, .editor input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
@@ -3704,6 +3838,7 @@ body:not(.side-nav) #addSheet > .row-head.stuck::before { box-shadow: 0 1px 0 va
 .stepplan .state { flex: 1; min-width: 0; font-size: 12px; color: var(--muted); line-height: 1.4; }
 .stepplan .steps { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 8px; font-size: 12px; color: var(--muted); line-height: 1.5; }
 .stepplan .steps .pair { margin-top: 2px; }
+.stepplan .ended { display: block; margin-bottom: 8px; color: var(--fg); }
 .stepplan .bookmarklet { display: inline-block; padding: 1px 8px; border: 1px solid var(--line); border-radius: 6px; color: var(--fg); background: var(--pill); text-decoration: none; cursor: grab; white-space: nowrap; }
 .editor input[type="text"], .editor input[type="password"], .editor input[type="url"], .editor input[type="number"], .acc .kf input, .acc input.rename-in {
   height: 27px; padding: 0 9px; border-radius: 7px;
@@ -3780,20 +3915,21 @@ body:not(.side-nav) #addSheet > .row-head.stuck::before { box-shadow: 0 1px 0 va
    Connect's five APIs on a narrow one, and Usage → Sessions' agents,
    which #929 left widening the whole page until its last agent's
    filter was only reachable by dragging the page sideways, and Plugins'
-   kinds on GitHub, wider than a 420px window in Japanese */
-.segs.regions, .connect .segs, .pm-bar .segs { max-width: 100%; overflow-x: auto; }
+   kinds on GitHub, wider than a 420px window in Japanese, and Usage's
+   chart metrics, wider than a 375px phone in German (#5869) */
+.segs.regions, .connect .segs, .pm-bar .segs, .led-bar .segs { max-width: 100%; overflow-x: auto; }
 /* no scrollbar-width here: Chromium (WebView2) then drops every
    ::-webkit-scrollbar rule and draws Windows' classic bar, arrows and all,
    under the strip; the app's thin thumb instead, slimmer still */
-:where(body:not(.mac)) :is(.segs.regions, .connect .segs, .pm-bar .segs)::-webkit-scrollbar { height: 6px; }
-:where(body:not(.mac)) :is(.segs.regions, .connect .segs, .pm-bar .segs)::-webkit-scrollbar-thumb { border-width: 1px; }
+:where(body:not(.mac)) :is(.segs.regions, .connect .segs, .pm-bar .segs, .led-bar .segs)::-webkit-scrollbar { height: 6px; }
+:where(body:not(.mac)) :is(.segs.regions, .connect .segs, .pm-bar .segs, .led-bar .segs)::-webkit-scrollbar-thumb { border-width: 1px; }
 /* on a Mac they scroll with no bar, as a Mac's own tab strips do: the
    system's overlay bar showed over the options' lower half for a moment
    after each scroll, and a click there went to the bar, which paged the
    strip sideways and picked nothing (#1620) */
-:where(body.mac) :is(.segs.regions, .connect .segs, .pm-bar .segs) { scrollbar-width: none; }
-:where(body.mac) :is(.segs.regions, .connect .segs, .pm-bar .segs)::-webkit-scrollbar { display: none; }
-.segs.regions .opt, .connect .segs .opt, .pm-bar .segs .opt { flex: none; }
+:where(body.mac) :is(.segs.regions, .connect .segs, .pm-bar .segs, .led-bar .segs) { scrollbar-width: none; }
+:where(body.mac) :is(.segs.regions, .connect .segs, .pm-bar .segs, .led-bar .segs)::-webkit-scrollbar { display: none; }
+.segs.regions .opt, .connect .segs .opt, .pm-bar .segs .opt, .led-bar .segs .opt { flex: none; }
 /* a custom provider's five Base URL APIs wrap to a second row where the
    editor is too narrow for them (#1346); the thumb follows the row */
 .segs.base-apis { max-width: 100%; flex-wrap: wrap; }
@@ -3825,19 +3961,19 @@ body:not(.side-nav) #addSheet > .row-head.stuck::before { box-shadow: 0 1px 0 va
    reads as a control and not as a disabled hint (sylvenPR on X, a 5px ▸ in
    the muted grey); a pointer and a brighter label under it. The chevron
    starts where the fields do (--ed-at), no padding before it. */
-.editor .more summary { font-size: 12px; line-height: 18px; color: var(--fg-2); list-style: none; display: inline-flex; align-items: center; gap: 5px; padding: 3px 0; margin-left: var(--ed-at, 86px); border-radius: 4px; cursor: pointer; transition: color .12s; }
-.editor .more summary::-webkit-details-marker { display: none; }
-.editor .more summary::before { content: ""; flex: none; width: 10px; height: 10px; background: var(--muted); transition: transform .24s var(--ease-out), background-color .12s;
+.editor .more summary, .proxy-advanced summary { font-size: 12px; line-height: 18px; color: var(--fg-2); list-style: none; display: inline-flex; align-items: center; gap: 5px; padding: 3px 0; margin-left: var(--ed-at, 86px); border-radius: 4px; cursor: pointer; transition: color .12s; }
+.editor .more summary::-webkit-details-marker, .proxy-advanced summary::-webkit-details-marker { display: none; }
+.editor .more summary::before, .proxy-advanced summary::before { content: ""; flex: none; width: 10px; height: 10px; background: var(--muted); transition: transform .24s var(--ease-out), background-color .12s;
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M3.6 1.6 7 5 3.6 8.4' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
           mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M3.6 1.6 7 5 3.6 8.4' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat; }
-.editor .more[open]:not(.closing) summary::before { transform: rotate(90deg); }
-@media (prefers-reduced-motion: reduce) { .editor .more summary, .editor .more summary::before { transition: none; } }
-.editor .more summary:hover { color: var(--fg); }
-.editor .more summary:hover::before { background: var(--fg-2); }
-.editor .more summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.editor .more[open]:not(.closing) summary::before, .proxy-advanced[open] summary::before { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .editor .more summary, .editor .more summary::before, .proxy-advanced summary, .proxy-advanced summary::before { transition: none; } }
+.editor .more summary:hover, .proxy-advanced summary:hover { color: var(--fg); }
+.editor .more summary:hover::before, .proxy-advanced summary:hover::before { background: var(--fg-2); }
+.editor .more summary:focus-visible, .proxy-advanced summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* its labels are longer (Anthropic 地址, Responses-URL): their column takes
    the longest, on one line, rather than wrap a last 址 under it (#875) */
-.editor .more .inner { display: grid; grid-template-columns: minmax(var(--ed-lab, 72px), max-content) minmax(0, 1fr); gap: 10px 14px; align-items: start; padding-top: 8px; }
+.editor .more .inner { display: grid; grid-template-columns: minmax(var(--ed-lab, 72px), max-content) minmax(0, 1fr); gap: 10px 14px; align-items: first baseline; padding-top: 8px; }
 .editor .more .inner label { white-space: nowrap; }
 .editor .warnbox { grid-column: 1 / -1; font-size: 12px; line-height: 1.5; color: var(--fg); background: color-mix(in srgb, var(--amber) 12%, transparent); border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent); border-radius: 8px; padding: 8px 10px; }
 .editor .warnbox.soft { background: none; color: var(--amber); border: 0; padding: 0 0 0 var(--ed-at, 86px); }
@@ -3967,6 +4103,7 @@ body:not(.side-nav) #addSheet > .row-head.stuck::before { box-shadow: 0 1px 0 va
 /* how a model answered Test models: a dot after its name */
 .mchip .tdot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--faint); }
 .mchip .tdot.ok { background: var(--green); }
+.mchip .tdot.queued { background: var(--amber); }
 .mchip .tdot.bad { background: var(--red); -webkit-mask: var(--x-mark) center / contain no-repeat; mask: var(--x-mark) center / contain no-repeat; border-radius: 0; transform: scale(1.5); }
 .mchip .tdot.wait { animation: tdot 1s ease-in-out infinite alternate; }
 @keyframes tdot { to { opacity: .25; } }
@@ -4079,21 +4216,23 @@ body:not(.side-nav) #addSheet > .row-head.stuck::before { box-shadow: 0 1px 0 va
 /* with the tabs across the top (the sidebar has them in the title bar) the
    parts' tabs and the search stay at the top of the page while a long part
    (About) scrolls under them, on the frosted strip the Library's and the
-   Plugins' tabs have (.lib-head), a hairline once something is beneath
-   (#2396). The strip is the head's ::before, reaching over the view's
-   padding and the head's margins so no row shows through above or below
-   it; at the page's top it is the page's own colour, nothing moved. The
+   Plugins' tabs have (.lib-head), shown with a hairline once something is
+   beneath (#2396). The strip is the head's ::before, reaching over the
+   head's margins so no row shows through above or below it, 6px out from
+   the tabs (the first sits 7px out) and the search at the sides as at the
+   foot, rounded by their 7px plus those 6px; at the page's top it is not
+   drawn, nothing moved. The
    window's view is padded 2px at the top: the head stops over it */
-body:not(.side-nav) #view-settings .set-head { position: sticky; top: 0; z-index: 5; --bleed-l: 12px; --bleed-r: 12px; }
-body.window:not(.side-nav) #view-settings .set-head { top: -2px; --bleed-l: 16px; --bleed-r: 16px; }
+body:not(.side-nav) #view-settings .set-head { position: sticky; top: 0; z-index: 5; }
+body.window:not(.side-nav) #view-settings .set-head { top: -2px; }
 body:not(.side-nav) #view-settings .set-head::before {
   content: ""; position: absolute; z-index: -1; pointer-events: none;
-  top: -6px; bottom: -6px; left: calc(-1 * var(--bleed-l)); right: calc(var(--bar, 0px) - var(--bleed-r));
+  top: -6px; bottom: -6px; left: -13px; right: -6px; border-radius: 0 0 13px 13px;
   background: color-mix(in srgb, var(--bg) 92%, transparent);
   -webkit-backdrop-filter: saturate(1.6) blur(16px); backdrop-filter: saturate(1.6) blur(16px);
-  box-shadow: 0 1px 0 transparent; transition: box-shadow .18s var(--ease);
+  box-shadow: 0 1px 0 transparent; opacity: 0; transition: opacity .18s var(--ease-out), box-shadow .18s var(--ease);
 }
-body:not(.side-nav) #view-settings .set-head.stuck::before { box-shadow: 0 1px 0 var(--line-2); }
+body:not(.side-nav) #view-settings .set-head.stuck::before { opacity: 1; box-shadow: 0 1px 0 var(--line-2); }
 @supports not (color: color-mix(in srgb, red 50%, blue)) { body:not(.side-nav) #view-settings .set-head::before { background: var(--bg); } }
 .set-q { flex: 0 1 180px; margin-left: auto; min-width: 120px; }
 .set-searching .set-tabs { display: none; }
@@ -4241,6 +4380,10 @@ img.nav-ic { border-radius: 3px; object-fit: contain; }
 #otelList .otel-env { padding: 12px 14px; border-top: 1px solid var(--line-2); font-size: 11.5px; color: var(--muted); }
 
 .session-terminal-select, .pref-pick { max-width: min(230px, 45%); height: 26px; color: var(--fg); }
+/* inside a row's value box, whose width is its content's, 45% of it would
+   shrink the button to a clipped glyph (jiangshangmuyun on X); the box is
+   held to 60% of the row already */
+.val > .pref-pick { max-width: min(230px, 100%); }
 .session-terminal-select:focus-visible, .pref-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .row.pref .segs { flex: none; margin-left: auto; }
 .proxy-segs { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; margin-left: auto; min-width: 0; max-width: 100%; }
@@ -4275,6 +4418,10 @@ input.words.window-in { width: 96px; font-variant-numeric: tabular-nums; }
 /* the masking rules' add row: its words in full, then on a line of their
    own a name, prefix or regex, the match taking the room left, Add */
 .row.pref.rule-row { flex-wrap: wrap; row-gap: 8px; }
+/* three channels: the switch goes under its name when the row is narrow */
+.row.pref.update-channel-row { flex-wrap: wrap; row-gap: 8px; }
+.row.pref.update-channel-row .who { flex: 1 1 14em; min-width: 0; }
+.prefs .row.pref.update-channel-row .val { max-width: 100%; }
 .row.pref.rule-row .who { flex: 1 1 100%; }
 .row.pref.rule-row .sub { white-space: normal; }
 /* Busy models last: six choices don't fit beside their words in a phone-wide
@@ -4406,6 +4553,7 @@ input.words.remote-key { width: 160px; }
 .prefs .row.rule-editing .val.rule-add { flex-wrap: wrap; row-gap: 6px; }
 .prefs .row.rule-editing .rule-tail { display: flex; align-items: center; gap: 6px; flex: 1 1 240px; min-width: 0; }
 .row.pref .sub.err { color: var(--red); white-space: normal; }
+.row.pref .sub .pipe-part.err { color: var(--red); }
 /* Download source's way to the docs' Mirrors page, quiet in its line */
 .row.pref .sub .sub-more { padding: 0; color: var(--fg-2); text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); text-underline-offset: 2px; cursor: pointer; transition: color .15s ease; }
 .row.pref .sub .sub-more:hover { color: var(--fg); }
@@ -4598,7 +4746,7 @@ body.window.mac .modal-grip { top: calc(-1 * var(--grip-h)); }
 .modal .editor.framed { display: flex; flex-direction: column; align-items: stretch; gap: 0; padding: 0; min-height: 0; overflow: hidden; }
 .modal .editor.framed > .ebody {
   flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
-  display: grid; grid-template-columns: inherit; gap: 10px 14px; align-items: start; padding: 14px 18px;
+  display: grid; grid-template-columns: inherit; gap: 10px 14px; align-items: first baseline; padding: 14px 18px;
 }
 .modal .editor.framed > .ehead, .modal .editor.framed > .bar { flex: none; min-height: 48px; margin: 0; padding: 0 18px; }
 .modal .editor.framed > .ehead { border-bottom: 1px solid var(--line-2); }
@@ -4681,7 +4829,7 @@ body.panel .modal { padding: 16px 12px; }
   body.web .segs .thumb { border-radius: 6px; }
   body.web .segs .opt { height: 28px; padding: 0 11px; font-size: 13px; }
   body.web .segs .opt::after { content: ""; position: absolute; left: 0; right: 0; top: -8px; bottom: -8px; }
-  body.web :is(.segs.regions, .connect .segs, .pm-bar .segs, .ctx-contents-head .segs, .editor.importapps .approw .segs) { overflow-y: hidden; }
+  body.web :is(.segs.regions, .connect .segs, .pm-bar .segs, .led-bar .segs, .ctx-contents-head .segs, .editor.importapps .approw .segs) { overflow-y: hidden; }
   body.web .text { padding: 8px 10px; }
   body.web .copy { min-width: 44px; }
   body.web .fields { width: 100%; grid-template-columns: minmax(0, 1fr) minmax(0, 124px); }
@@ -4750,15 +4898,17 @@ body.panel .modal { padding: 16px 12px; }
   body.web .row.stat.acts { grid-template-columns: 20px minmax(0, 1fr) auto auto; }
   body.web .row.stat.acts .num, body.web .row.stat.acts .share { grid-column: 2 / 5; }
   body.web .row.stat .us-more, body.web .row.stat .us-unhide { grid-column: 4; grid-row: 1; margin: 0; }
-  body.web .connect { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  body.web .connect { grid-template-columns: minmax(0, 1fr); gap: 6px; align-items: start; }
   body.web .connect label { text-align: left; margin-top: 6px; }
   body.web .connect .segs { flex-wrap: wrap; }
   body.web .connect .val { height: auto; min-height: 44px; }
   body.web input:not([type="range"]):not([type="checkbox"]):not([type="radio"]),
   body.web textarea, body.web select { font-size: 16px; min-height: 44px; }
+  body.web { --field-h: 44px; } /* the height above, for the names beside such a field */
   body.web .modal { padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)); }
-  body.web .modal .editor.framed > .ebody, body.web .editor { grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 12px; }
-  body.web .editor label { text-align: left; padding-top: 8px; }
+  body.web .modal .editor.framed > .ebody, body.web .editor { grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 12px; align-items: start; }
+  body.web .editor label { text-align: left; }
+  body.web :is(.editor, .modal .editor.framed > .ebody) > label:where(:not(.tick)) { padding-top: 8px; }
   body.web .editor .segs { max-width: 100%; flex-wrap: wrap; }
   body.web .editor .proxy-row { flex-wrap: wrap; }
   body.web .editor .proxy-row input.proxy-url { flex-basis: 100%; }
@@ -4992,6 +5142,15 @@ body.panel .modal { padding: 16px 12px; }
 .pu-card .led-bar .segs .opt { height: 20px; padding: 0 8px; font-size: 11px; }
 .pu-card .led-chart .plot { height: 124px; }
 .pu-card .led-rank { margin-top: 4px; }
+/* the recent weeks' heatmap under the chart: the weeks fill the card, no
+   sideways scroll, the days' names plain beside them */
+/* the panel's light pills are its cards' white: a quiet day is a shade off it */
+.pu-heat { position: relative; padding: 8px 10px 6px; border-radius: 11px; background: var(--card); box-shadow: var(--card-edge); --pill: color-mix(in srgb, var(--fg) 7%, var(--card)); }
+.pu-heat[hidden] { display: none; }
+.pu-heat-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 1px 0 6px; font-size: 11.5px; }
+.pu-heat-head b { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pu-heat .heat-grid { max-width: none; min-width: 0; padding-bottom: 4px; }
+.pu-heat .heat-grid .wd { position: static; background: none; box-shadow: none; }
 .pu-none { margin: 0; padding: 12px; border-radius: 11px; background: var(--card); box-shadow: var(--card-edge); font-size: 12px; line-height: 1.55; color: var(--muted); }
 .pu-none b { display: block; color: var(--fg); font-weight: 550; }
 .skeleton.pu-sk { height: 52px; border-radius: 11px; }
@@ -5473,7 +5632,7 @@ body .row.agent .ag-prefs .row.pref .who { display: block; }
 
 /* a provider's rate windows (#2463): the editor's rows, a day chip each,
    a span and a rate beside them */
-.rate-windows > .rate-win:last-child + button { align-self: start; }
+.rate-windows > button { align-self: start; }
 .rate-win { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .rate-win .day-chips { display: flex; gap: 2px; }
 .rate-win .day-chip { min-width: 24px; height: 24px; padding: 0 4px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--muted); font: inherit; font-size: 11px; }
@@ -5510,7 +5669,39 @@ body.linux:not(.side-nav) #view-settings .set-head::before,
 body.linux .action-confirm::backdrop { -webkit-backdrop-filter: none; backdrop-filter: none; }
 /* what syncs (#6428): the keys' tick under Providers; a preview's items */
 .editor.sync-form .sync-sub-tick { padding-left: 22px; }
+.editor.sync-form .sync-except { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; }
+.editor.sync-form .sync-except[hidden] { display: none; }
+.sync-except .proto.pick { flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 3px; height: 24px; padding: 0 6px 0 9px; font: inherit; font-size: 12px; color: var(--fg-2); border: 0; border-radius: 7px; background: var(--pill); cursor: default; transition: background .12s, color .12s; }
+.sync-except .proto.pick span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sync-except .proto.pick svg { flex: none; opacity: .7; transition: transform .15s var(--ease); }
+.sync-except .proto.pick.open svg { transform: rotate(180deg); }
+.sync-except .proto.pick:hover, .sync-except .proto.pick.open { color: var(--fg); background: var(--pill-hover); }
+.sync-except .proto.pick.busy { opacity: .6; }
 .sync-preview .sync-items { display: grid; gap: 2px; margin: -2px 0 8px; padding: 6px 10px; border-radius: 8px; background: var(--pill); font-size: 12.5px; max-height: 180px; overflow-y: auto; }
 .sync-preview .sync-item { display: flex; justify-content: space-between; gap: 12px; min-width: 0; }
 .sync-preview .sync-item span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sync-preview .sync-item .sub, .sync-preview .sync-items > .sub, .sync-preview .lib-confirm.sub { color: var(--muted); }
+
+/* Speed beside Model and Effort (Tengs999 on X): the bolt and what decides it */
+.field.ag-speed .v { display: inline-flex; align-items: center; gap: 3px; }
+.field.ag-speed .v svg, .field.ag-speed .v .bolts { flex: none; color: var(--accent); }
+.field.ag-speed .v path { fill: currentColor; }
+.field.ag-speed .v .bolts { display: inline-flex; }
+.field.ag-speed .v .bolts svg + svg { margin-left: -5px; }
+.field.ag-speed .ag-speed-by { color: var(--faint); font-weight: 400; white-space: pre; }
+
+/* the Usage speed card's check dialog (relaycheck.js) */
+.relay-check > p, .relay-parts { grid-column: 1 / -1; }
+.relay-parts { display: flex; flex-direction: column; gap: 10px; min-width: 0; margin: 4px 0 12px; }
+.relay-part { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.relay-top { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.relay-sum { display: flex; flex-wrap: wrap; gap: 4px 16px; font-weight: 500; }
+.relay-mark { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.relay-mark.ok { background: var(--green); }
+.relay-mark.off { background: var(--amber); }
+.relay-mark.err { background: var(--red); }
+.relay-said { font-weight: 400; font-size: 12px; }
+.relay-line { padding-left: 15px; font-size: 12px; overflow-wrap: anywhere; }
+.relay-line.mono { font-family: var(--code); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.relay-line.err, .relay-part.err { color: var(--red); }
+.relay-wait { font-size: 12px; }

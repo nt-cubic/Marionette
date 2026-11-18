@@ -19,10 +19,19 @@ const assets = path.resolve(__dirname, "../assets");
 
 const words = {
   en: { newest: "Up to date on Stable · 0.1.410 is out on Every version", stable: "Up to date on Stable", every: "Up to date", go: "Switch to Every version" },
-  zh: { newest: "稳定版已是最新 · 每个版本已有 0.1.410", stable: "稳定版已是最新", every: "已是最新", go: "改为每个版本" },
-  "zh-TW": { newest: "穩定版已是最新 · 每個版本已有 0.1.410", stable: "穩定版已是最新", every: "已是最新", go: "改為每個版本" },
-  ja: { newest: "安定版では最新です · すべてのバージョンでは 0.1.410 が出ています", stable: "安定版では最新です", every: "最新です", go: "すべてのバージョンに切り替える" },
+  zh: { newest: "稳定版已是最新 · 尝鲜版已有 0.1.410", stable: "稳定版已是最新", every: "已是最新", go: "改用尝鲜版" },
+  "zh-TW": { newest: "穩定版已是最新 · 搶先版已有 0.1.410", stable: "穩定版已是最新", every: "已是最新", go: "改用搶先版" },
+  ja: { newest: "安定版では最新です · 先行版では 0.1.410 が出ています", stable: "安定版では最新です", every: "最新です", go: "先行版に切り替える" },
   de: { newest: "Aktuell auf Stabil · Unter Jede Version ist 0.1.410 erschienen", stable: "Aktuell auf Stabil", every: "Aktuell", go: "Zu Jede Version wechseln" },
+};
+
+// Daily's (fishmagic80 on X): the same, under its own name
+const dailyWords = {
+  en: { newest: "Up to date on Daily · 0.1.410 is out on Every version", daily: "Up to date on Daily" },
+  zh: { newest: "每日版已是最新 · 尝鲜版已有 0.1.410", daily: "每日版已是最新" },
+  "zh-TW": { newest: "每日版已是最新 · 搶先版已有 0.1.410", daily: "每日版已是最新" },
+  ja: { newest: "デイリー版では最新です · 先行版では 0.1.410 が出ています", daily: "デイリー版では最新です" },
+  de: { newest: "Aktuell auf Täglich · Unter Jede Version ist 0.1.410 erschienen", daily: "Aktuell auf Täglich" },
 };
 
 function settingsPayload(lang, ctl) {
@@ -59,8 +68,8 @@ function server(lang, ctl) {
       return json(settingsPayload(lang, ctl));
     }
     if (url.pathname === "/api/update") {
-      if (ctl.channel !== "stable") return json({ state: "latest", current: "0.1.400", latest: "0.1.410" });
-      return json({ state: "latest", current: "0.1.400", latest: "0.1.390", channel: "stable", ...(ctl.newest ? { newest: ctl.newest } : {}) });
+      if (ctl.channel !== "stable" && ctl.channel !== "daily") return json({ state: "latest", current: "0.1.400", latest: "0.1.410" });
+      return json({ state: "latest", current: "0.1.400", latest: "0.1.390", channel: ctl.channel, ...(ctl.newest ? { newest: ctl.newest } : {}) });
     }
     if (url.pathname === "/api/plugins") return json({ plugins: [] });
     if (url.pathname === "/api/usage/quotas") return json([]);
@@ -133,6 +142,22 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await settingsDrawn(page);
           await openPart(page, "about");
           await page.waitForFunction((s) => document.querySelector("#about .row.pref .sub.say")?.textContent === s, w.stable);
+          assert.equal(await row.locator("button", { hasText: w.go }).count(), 0);
+
+          // Daily, the newest out on every version: named, and the switch
+          ctl.channel = "daily";
+          ctl.newest = "0.1.410";
+          await page.reload();
+          await settingsDrawn(page);
+          await openPart(page, "about");
+          await page.waitForFunction((s) => document.querySelector("#about .row.pref .sub.say")?.textContent === s, dailyWords[lang].newest);
+          await row.locator("button", { hasText: w.go }).waitFor();
+          // Daily with nothing newer
+          ctl.newest = "";
+          await page.reload();
+          await settingsDrawn(page);
+          await openPart(page, "about");
+          await page.waitForFunction((s) => document.querySelector("#about .row.pref .sub.say")?.textContent === s, dailyWords[lang].daily);
           assert.equal(await row.locator("button", { hasText: w.go }).count(), 0);
           assert.deepEqual(errors, []);
         });

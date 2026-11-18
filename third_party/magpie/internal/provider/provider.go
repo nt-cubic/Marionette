@@ -250,6 +250,15 @@ type Provider struct {
 	// can't keep to); one more waits for room (see RPMLimit). 0 is no
 	// limit.
 	MaxRPM int `json:"maxRPM,omitempty"`
+	// MaxImages is the most images one request to it may carry, by the
+	// user's word: by model id, "*" for all its models (100milionseek's
+	// and Coarena's APIs take 8 a request and refuse the ninth with 400,
+	// #6849). The count is over the whole conversation, tool results
+	// included. Past it the oldest images are left out, each replaced by
+	// a line of text saying so, the latest user message's kept whole
+	// (gateway.withinImageCap). None set leaves it to what a refusal that
+	// names its cap teaches (gateway.imageCaps). See ImageCapOf.
+	MaxImages map[string]int `json:"maxImages,omitempty"`
 	// QuotaRest is how many minutes one of its keys sits out once the
 	// vendor says it is out of its allowance without saying when it is
 	// back (#1772: Ollama Cloud's weekly limit); 0 is the gateway's own
@@ -1022,6 +1031,7 @@ func (p Provider) clone() Provider {
 	p.AccountConcurrency = maps.Clone(p.AccountConcurrency)
 	p.AccountWeights = maps.Clone(p.AccountWeights)
 	p.Contexts = maps.Clone(p.Contexts)
+	p.MaxImages = maps.Clone(p.MaxImages)
 	p.AccountModelsAll = maps.Clone(p.AccountModelsAll)
 	if p.AccountModels != nil {
 		m := make(map[string][]string, len(p.AccountModels))
@@ -1135,6 +1145,7 @@ func accountSettings(a, pk Provider) Provider {
 	a.AccountConcurrency, a.QueueLimit, a.QueueWait = pk.AccountConcurrency, pk.QueueLimit, pk.QueueWait
 	a.AccountWeights = pk.AccountWeights
 	a.MaxRPM = pk.MaxRPM
+	a.MaxImages = pk.MaxImages
 	// how long a request to it alone is kept while it is busy
 	a.Patience = pk.Patience
 	// how long its accounts rest out of quota, and the most they rest
@@ -1805,12 +1816,15 @@ func Delete(id string) error {
 	if err := store(f); err != nil {
 		return err
 	}
-	// its StepFun and Qwen AI platform sign-ins go with it, not to a
-	// provider added later under the same id
+	// its StepFun, Qwen AI platform and Baidu Cloud console sign-ins go
+	// with it, not to a provider added later under the same id
 	if err := forgetStepFun(id); err != nil {
 		return err
 	}
-	return forgetQianwen(id)
+	if err := forgetQianwen(id); err != nil {
+		return err
+	}
+	return forgetQianfan(id)
 }
 
 // keyOptional is true for a server on this computer or on the user's own
@@ -1987,6 +2001,7 @@ func normalize(p Provider) Provider {
 	p.AccountWeights = normalAccountWeights(p.AccountWeights)
 	p.QueueLimit, p.QueueWait = min(max(p.QueueLimit, 0), MaxQueueLimit), min(max(p.QueueWait, 0), MaxQueueWait)
 	p.MaxRPM = min(max(p.MaxRPM, 0), MaxRPMLimit)
+	p.MaxImages = normalMaxImages(p.MaxImages)
 	p.QuotaRest = min(max(p.QuotaRest, 0), MaxQuotaRest)
 	if p.RestCap != RestCapOff {
 		p.RestCap = min(max(p.RestCap, 0), MaxQuotaRest)

@@ -100,6 +100,7 @@ var featured = []MarketServer{
 	searchServer(),
 	visionServer(),
 	memoryServer(),
+	sessionsServer(),
 	evermeServer(),
 	nowledgeServer(),
 	remoteServer("context7", "Context7", "Upstash", gh("upstash"), "https://mcp.context7.com/mcp",
@@ -251,6 +252,22 @@ const memoryServerName = "magpie-memory"
 func memoryServer() MarketServer {
 	return localServer(memoryServerName, "Magpie Memory", "Magpie", "https://usemagpie.ai/favicon.png", "https://usemagpie.ai",
 		"Memory shared by every agent: your preferences, rules and what each project needs, kept in Magpie. Agents search it before asking again, and save what you ask them to remember.", magpieCommand, []string{"mcp", "memory"})
+}
+
+// sessionsServerName is the name Magpie Sessions' server is written
+// under, the name the gateway's own sessions server goes by (ownMCP).
+const sessionsServerName = "magpie-sessions"
+
+// sessionsServer is Magpie Sessions: what was said in every agent's
+// sessions on this computer, as search_sessions and read_session, through
+// `magpie mcp sessions`, which passes each call to the gateway's
+// SessionsMCPPath (cryingLiu on X). An agent given it reads the user's
+// other conversations, so it is given only to the agents picked for it.
+func sessionsServer() MarketServer {
+	m := localServer(sessionsServerName, "Magpie Sessions", "Magpie", "https://usemagpie.ai/favicon.png", "https://usemagpie.ai",
+		"Search and read what was said in every agent's sessions on this computer: an earlier conversation, decision or fix, from Claude Code, Codex or any agent Magpie reads.", magpieCommand, []string{"mcp", "sessions"})
+	m.OptIn = true
+	return m
 }
 
 // evermeServer is EverMe's memory (EverMind-AI/EverMe, @everme/memory-mcp,
@@ -441,7 +458,7 @@ func serverKey(s *Server) string {
 	if s.Remote() {
 		return strings.TrimSuffix(strings.ToLower(s.URL), "/")
 	}
-	if len(s.Args) == 2 && s.Args[0] == "mcp" && (s.Args[1] == "image" || s.Args[1] == "browser" || s.Args[1] == "search" || s.Args[1] == "vision" || s.Args[1] == "memory") {
+	if len(s.Args) == 2 && s.Args[0] == "mcp" && (s.Args[1] == "image" || s.Args[1] == "browser" || s.Args[1] == "search" || s.Args[1] == "vision" || s.Args[1] == "memory" || s.Args[1] == "sessions") {
 		return "magpie mcp " + s.Args[1] // magpie's own, wherever its binary is
 	}
 	uv := progName(s.Command) == "uvx"
@@ -960,13 +977,18 @@ type MarketSkill struct {
 // magpie-community/plugins, beside its plugins. magpie-setup has an agent
 // set magpie up as the user asks, through its commands (Leyuu_5 on X: so
 // many features that an AI could do the setting up); magpie-quota reads
-// what magpie quota tells (ttmouse on X).
+// what magpie quota tells (ttmouse on X); magpie-sessions searches and
+// reads every agent's sessions through magpie sessions search and show
+// (yansheng1003 on X).
 var featuredSkills = []MarketSkill{{
 	Source: "magpie-community/plugins", SkillID: "magpie-setup", Name: "magpie-setup", Official: true, Featured: true,
 	Description: "Set magpie up as you ask, through its own commands: add keys and subscriptions, point agents at models, build routing groups with fallbacks and time-of-day rules, give devices gateway keys with budgets, and share MCP servers and instructions with every agent.",
 }, {
 	Source: "magpie-community/plugins", SkillID: "magpie-quota", Name: "magpie-quota", Official: true, Featured: true,
 	Description: "Check how much is left of the user's AI subscriptions, coding plans and API key balances through magpie: each usage window's percent used and when it resets, each key's balance, and wait until a subscription has allowance again.",
+}, {
+	Source: "magpie-community/plugins", SkillID: "magpie-sessions", Name: "magpie-sessions", Official: true, Featured: true,
+	Description: "Search what was said in every coding agent's sessions on this computer through magpie, Claude Code's, Codex's and the others', and read the session a hit is in: find an earlier conversation, decision or fix.",
 }}
 
 type skillsShEntry struct {
