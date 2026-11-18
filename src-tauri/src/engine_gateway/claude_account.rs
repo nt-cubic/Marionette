@@ -98,13 +98,51 @@
 //!   不崩；`tool_choice:"none"` 时 mcpCall 直接回「No tool can be
 //!   used…」（Go :6539）；`name:` 选择只宣告那个工具（Go bridgeTools）。
 //!
+//! ## 会话持久化 / --resume 续命（2026-11-19，差距清单第 1 条的最小可用集）
+//!
+//! Go `shelve`（:2753）/ `savedSession`（:2695）/ `unshelve`（:2820）/
+//! `start` 的 from 分支（:933、:1104-1201）的移植。驻留池淘汰（IDLE_MOST
+//! 容量 / IDLE_LONGEST 过期）的 run 不再只是杀进程：**淘汰即入架**——run
+//! 的 Claude Code 会话 id（泵线程从 system/init 收，Go :4714）连同会话键
+//! 落盘；下一回合驻留池不中时按键查架，`--resume <id>` 续跑，只喂增量
+//! （Go renderClaudeTurn 的喂法），缓存前缀原样命中——不再全量重写
+//! （Go 文件头 :15-29 / savedSession :2686-2694 解释的正是这个代价）。
+//!
+//! - **会话文件本体是 Claude Code 自己写的**（Go claudeSessions :3448 的
+//!   形状：`$CLAUDE_CONFIG_DIR/projects/<工作目录编码>/<sid>.jsonl`）。为
+//!   此 `bridge_args` **摘掉 `--no-session-persistence`**（Go :1116 的
+//!   DeleteFunc 同款），并把 `CLAUDE_CONFIG_DIR` 显式传给子进程（与本模块
+//!   的目录判定同源）。孤儿文件由 `sweep_sessions_once`（每进程第一次
+//!   spawn，Go sweepSessions :3523 的口径）按 mtime 收走。
+//! - **落盘位置**：架是引擎数据目录的 `claude-shelf.json`（与
+//!   providers.json / logins.json 同层，不另立目录），形状
+//!   `{ <turn_key>: {session, effort, at} }`，容量 64（Go shelfMost :2684），
+//!   寿命 = IDLE_LONGEST（Go expires :2794）。Go 的架在内存里（进程重启即
+//!   失忆），这里落盘是**有意的加码**：会话文件本来就在磁盘上，键又是
+//!   内容哈希，跨进程重启照样能续。
+//! - **失败回退**（Go start :943-947）：续跑起不来（会话文件不在 / CLI
+//!   加载不了会话直接退 / 报错 result）→ 落回现行全量新起路径。Go 用
+//!   `--resume` 前的 initialize 控制握手探这条线（:1426-1432），我们没有
+//!   control 通道（差距第 2/8 条），改为**首帧偷看**：spawn + tell 之后先
+//!   读一步，Event = 续上了（帧存回 reader 照常供流）；Failed/收口 =
+//!   续不上，落回全量。回退只消费架条目，**不删会话文件**（Go discard
+//!   会删，我们保守一档交给 sweep——偷看比握手探得宽，误删真会话的代价
+//!   是一整段缓存重写，不值得）。
+//! - **淘汰顺序不变**：容量淘汰仍按最久未用先让位（keep_idle_locked 的
+//!   min_by_key 没动），victim 先入架后杀（Go keepIdle :2664-2676 的顺序）。
+//!
 //! ## 差距清单（Go 有、本路径不做，后续批次可领）
 //! 每条注明 Go 文件/函数，接手时按图索骥：
-//! 1. **会话持久化 / replay / --resume**：Go `savedSession` / `unshelve` /
-//!    `branch` / `cutSession*` / `replaySession`（claude_subscription.go
-//!    :2753-3373、:933 `start` 的 from 分支）。驻留池满（IDLE_MOST）或
-//!    超 IDLE_LONGEST 被淘汰的 run **直接杀进程**，没有 shelf 续命——
-//!    下一回合重新全量写缓存（Go 文件头 :15-29 解释的正是这个代价）。
+//! 1. ~~会话持久化 / --resume~~ **最小集已交付**（见上节）；仍未搬：
+//!    `branch` / `retryBranch` / `cutSession*`（:2954/:3099/:3217——
+//!    「另一请求先答了工具结果」与重发回合的**会话切割分叉**，没有它，
+//!    这两类回合仍落全量新起）、`replaySession`（transcript 回放）、
+//!    `rewritten` / `looseTurn`（:3107/:2315 客户端改写历史的续聊）、
+//!    `behindKey` side-question 回退（:2044）、convKey 跨模型续聊与
+//!    `retire` 清架（:2413，我们的键已含 model，同键必同模型）、
+//!    `cachePrefix.accepts` 校验（:2863）、`keepForReset` 的 `until`
+//!    （:2716）、进程退出时的 `letGoIdle` 全量入架（:8198，引擎正常退出
+//!    时架子上的会话随进程失忆——会话文件留给下一次启动的 sweep）。
 //! 2. ~~跨回合驻留进程~~ **已交付**（见上节）；仍未搬：side question 的
 //!    `behindKey` 回退（:2044-2076）、客户端改写历史的 `rewritten` /
 //!    looseTurn（:3107）、conversationKeys 跨模型续聊（conv 键只做
@@ -154,6 +192,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -208,6 +247,8 @@ pub(crate) struct Seam {
     pub home: PathBuf,
     /// 引擎 logins.json 所在目录（None = 测试里不读 logins）。
     pub logins: Option<PathBuf>,
+    /// 会话架 claude-shelf.json 的家目录（None = 不读写架）。
+    pub shelf: Option<PathBuf>,
     /// 假 CLI（None = 模拟「PATH 上没有 claude」）。
     pub cli: Option<Program>,
 }
@@ -240,6 +281,12 @@ pub(crate) struct Account {
 
 fn now_secs() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// 毫秒钟（架条目的 at 用它——秒级分辨率下，测试缝把 idleLongest 压到
+/// 亚秒时会整批秒过期）。
+fn now_millis() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
 /// Go appdir.ClaudeDir（appdir/claude.go:18）：`$CLAUDE_CONFIG_DIR` 优先
@@ -702,7 +749,13 @@ fn bridge_args(model: &str, effort: Option<&str>, mcp_config: Option<&str>) -> V
         args.push("--mcp-config".into());
         args.push(path.to_string());
     }
-    args.extend(["--setting-sources", "", "--dangerously-skip-permissions", "--no-session-persistence"].iter().map(|s| s.to_string()));
+    // --no-session-persistence **不带**（Go :1116 的 DeleteFunc 同款——
+    // claudeCLIArgs 本来带、startRun 在非 WSL 的 run 上摘掉）：会话落盘是
+    // 续命（会话架）的原料——run 被淘汰后，下一回合 `--resume <id>` 从
+    // Claude Code 自己写的会话文件续，不再全量重写缓存。孤儿会话文件由
+    // sweep_sessions_once 按 mtime 收走。usage_args 的那条保留（/usage
+    // 一次性询问，Go claudeUsageArgs :516 也保留）。
+    args.extend(["--setting-sources", "", "--dangerously-skip-permissions"].iter().map(|s| s.to_string()));
     if let Some(e) = effort {
         args.push("--effort".into());
         args.push(e.to_string());
@@ -1191,6 +1244,10 @@ struct RunState {
     msg_stop_reason: Option<String>,
     /// 最近 message_start 报的模型名（whole 合成的兜底）。
     model_echo: String,
+    /// Claude Code 的会话 id（Go run.sessionID :303/:4716）：system/init 上
+    /// 收的；resume 起跑的 run 预填被续的 id（Go :1478）。会话架的原料——
+    /// 淘汰入架时它就是落盘的 session。
+    session_id: String,
     // —— 回合身份（段的活动期有效；keepIdle 消费）——
     identity: Option<RequestIdentity>,
     /// 本 run 起跑档位（resume 一致性检查；Go setEffort 热改的降级替代）。
@@ -1276,8 +1333,9 @@ fn idle_most() -> usize {
 }
 
 /// 池内惰性清扫（Go 的每 run timer 换成碰池即扫）：过期 idle 项出池，
-/// 返回待杀名单——**杀进程在池锁外做**（持锁不做子进程操作）。
-fn sweep_pool(p: &mut Pool) -> Vec<Arc<RunCore>> {
+/// 返回 (会话键, run) 名单——**杀进程在池锁外做**（持锁不做子进程操作），
+/// 出池的键跟着走（入架要用）。
+fn sweep_pool(p: &mut Pool) -> Vec<(String, Arc<RunCore>)> {
     let mut victims = Vec::new();
     let expired: Vec<String> = p
         .idle
@@ -1287,7 +1345,7 @@ fn sweep_pool(p: &mut Pool) -> Vec<Arc<RunCore>> {
         .collect();
     for k in expired {
         if let Some((run, _)) = p.idle.remove(&k) {
-            victims.push(run);
+            victims.push((k, run));
         }
     }
     victims
@@ -1296,8 +1354,9 @@ fn sweep_pool(p: &mut Pool) -> Vec<Arc<RunCore>> {
 /// Go keepIdle（:2615）：回合收口后 run 按会话键进 idle 池。键冲突逐旧、
 /// 同 run 双键去重（:2649 的防膨胀）、容量超限淘汰最久（:2656）。
 /// **在 state 锁内调用**（嵌套池锁是本模块唯一允许的锁向，见 pump_thread
-/// 注释）；返回待杀名单——调用方**出锁后**执行 [`abort_run`]。
-fn keep_idle_locked(run: &Arc<RunCore>, g: &mut RunLock<'_>, key: &str) -> Vec<Arc<RunCore>> {
+/// 注释）；返回 (会话键, run) 待逐名单——调用方**出锁后**交给
+/// [`release_victims`]（入架 + 杀进程）。
+fn keep_idle_locked(run: &Arc<RunCore>, g: &mut RunLock<'_>, key: &str) -> Vec<(String, Arc<RunCore>)> {
     if g.closed {
         return Vec::new(); // 回答途中死了（Go #1667）
     }
@@ -1317,7 +1376,7 @@ fn keep_idle_locked(run: &Arc<RunCore>, g: &mut RunLock<'_>, key: &str) -> Vec<A
     }
     if let Some((old, _)) = p.idle.get(key) {
         if !Arc::ptr_eq(old, run) {
-            victims.push(old.clone());
+            victims.push((key.to_string(), old.clone()));
             p.idle.remove(key);
         }
     }
@@ -1331,7 +1390,7 @@ fn keep_idle_locked(run: &Arc<RunCore>, g: &mut RunLock<'_>, key: &str) -> Vec<A
         match oldest {
             Some(k) => {
                 if let Some((v, _)) = p.idle.remove(&k) {
-                    victims.push(v);
+                    victims.push((k, v));
                 }
             }
             None => break,
@@ -1348,9 +1407,7 @@ fn take_idle_run(key: &str, effort: Option<&str>) -> Option<Arc<RunCore>> {
         let mut p = POOL.lock().unwrap_or_else(|e| e.into_inner());
         let victims = sweep_pool(&mut p);
         drop(p);
-        for v in victims {
-            abort_run(&v);
-        }
+        release_victims(victims);
         let p = POOL.lock().unwrap_or_else(|e| e.into_inner());
         p.idle.get(key).map(|(r, _)| r.clone())
     }?;
@@ -1390,19 +1447,211 @@ fn match_run(messages: &[Value]) -> Option<(Arc<RunCore>, Vec<FreshResult>)> {
             Some(f) if Arc::ptr_eq(f, run) => {}
             Some(_) => {
                 drop(p);
-                for v in victims {
-                    abort_run(&v);
-                }
+                release_victims(victims);
                 return None; // ambiguousCalls（Go :5892）
             }
             None => found = Some(run.clone()),
         }
     }
     drop(p);
-    for v in victims {
-        abort_run(&v);
-    }
+    release_victims(victims);
     found.map(|run| (run, fresh))
+}
+
+// =====================================================================
+// 会话架（Go b.shelf / savedSession 的落盘对应物，:2695-2815）：池淘汰的
+// run 不再只是杀进程——它的 Claude Code 会话 id 连同会话键落盘，下一回合
+// `--resume <id>` 从 Claude Code 自己写的会话文件续（Go claudeSessions
+// :3448 的形状：`$CLAUDE_CONFIG_DIR/projects/<工作目录编码>/<sid>.jsonl`，
+// bridge_args 摘掉 --no-session-persistence 之后由 CLI 自己落盘）。
+// =====================================================================
+
+/// 架容量（Go shelfMost :2684 = 64）：每个条目一条会话文件。
+const SHELF_MOST: usize = 64;
+
+/// 架的一个条目（Go savedSession 的最小集）。
+#[derive(Clone, Serialize, Deserialize)]
+struct ShelfEntry {
+    /// Claude Code session id（泵线程从 system/init 收，Go :4714）。
+    session: String,
+    /// 起跑档位：续命请求的档位必须一致（take_idle_run 同款原则——Go 是
+    /// setEffort 热改后接着用，我们不搬，档位不一致就不复用）。
+    effort: Option<String>,
+    /// 入架时刻（unix 毫秒；Go s.at）。寿命 = IDLE_LONGEST（Go expires
+    /// :2794——一小时后 prompt 缓存反正已失效）。
+    at: i64,
+}
+
+/// 架文件锁：读-改-写全程串行。**绝不持 state/pool 锁拿它**（里面有文件
+/// IO），所有调用点都在锁外。
+static SHELF_LOCK: Mutex<()> = Mutex::new(());
+
+/// 架的家：引擎数据目录（providers.json / logins.json 同层，不另立目录）。
+#[cfg(not(test))]
+fn shelf_dir() -> Option<PathBuf> {
+    super::config_dir()
+}
+/// 测试缝：随 World 的临时目录走（绝不碰真实 ~/.marionette）。
+#[cfg(test)]
+fn shelf_dir() -> Option<PathBuf> {
+    seam().and_then(|s| s.shelf)
+}
+
+fn shelf_path() -> Option<PathBuf> {
+    shelf_dir().map(|d| d.join("claude-shelf.json"))
+}
+
+/// Go claudeProjectName（:482）：Claude Code 给工作目录的会话文件夹名——
+/// 路径里 ASCII 字母数字之外的字符全换 `-`。
+fn claude_project_name(path: &str) -> String {
+    path.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+}
+
+/// Go claudeSessions（:3448）的单目录版：本桥工作目录（work_dir，Go
+/// claudeWorkDir 的共享目录同款）的会话文件夹。Go 还查 evalSymlinks 的
+/// 第二个目录（macOS 的 /var），Windows temp 不 symlink，不搬。
+fn claude_sessions() -> Option<PathBuf> {
+    let dir = claude_config_dir()?;
+    Some(dir.join("projects").join(claude_project_name(&work_dir().to_string_lossy())))
+}
+
+/// Go removeSession（:3465）的 sid 护栏再加一档：只认 `[A-Za-z0-9-]`
+/// （uuid 的字符域），拼路径前挡住穿越。
+fn sid_ok(sid: &str) -> bool {
+    !sid.is_empty() && sid.len() <= 128 && sid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// Go savedSession.saved（:3405）：会话文件还在不在。不在 = resume 必死，
+/// 条目作废。
+fn session_saved(sessions: &std::path::Path, sid: &str) -> bool {
+    sid_ok(sid) && sessions.join(format!("{sid}.jsonl")).is_file()
+}
+
+/// 读架（fail-open：读不了/解析不了 = 空架——memos index.json 同款口径）。
+fn shelf_read() -> HashMap<String, ShelfEntry> {
+    let Some(path) = shelf_path() else { return HashMap::new() };
+    let Ok(bytes) = std::fs::read(&path) else { return HashMap::new() };
+    serde_json::from_slice(&bytes).unwrap_or_default()
+}
+
+/// 写架（调用方持 SHELF_LOCK）。失败安静放过：架只是缓存经济的优化，
+/// 写不进去 = 下一回合全量重写，不致命。
+fn shelf_write(entries: &HashMap<String, ShelfEntry>) {
+    let Some(path) = shelf_path() else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let body = serde_json::to_vec(entries).unwrap_or_default();
+    let _ = std::fs::write(&path, body);
+}
+
+/// 修剪：过期的出架（Go shelfTimer :2780 的惰性对应——at + idleLongest），
+/// 超容量的最久先出（Go trimShelf :2803）。会话文件**不删**：孤儿文件由
+/// sweep_sessions_once 按 mtime 收走（Go discard 即时删，我们保守一档，
+/// 见模块头偏差记录）。
+fn shelf_prune(entries: &mut HashMap<String, ShelfEntry>) {
+    let now = now_millis();
+    let ttl = idle_longest().as_millis() as i64;
+    entries.retain(|_, e| now - e.at < ttl);
+    while entries.len() > SHELF_MOST {
+        let Some(oldest) = entries.iter().min_by_key(|(_, e)| e.at).map(|(k, _)| k.clone()) else {
+            break;
+        };
+        entries.remove(&oldest);
+    }
+}
+
+/// 淘汰名单的处置（Go keepIdle :2664 shelve → :2676 abortFor 的顺序）。
+/// **锁外调用**：shelve_run 只拿 victim 自己的 state 锁（无嵌套），架文件
+/// 在 SHELF_LOCK 下读-改-写。
+fn release_victims(victims: Vec<(String, Arc<RunCore>)>) {
+    for (key, run) in &victims {
+        shelve_run(key, run);
+    }
+    for (_, run) in &victims {
+        abort_run(run);
+    }
+}
+
+/// 条目入架（shelve_run / pump_eof 共用的写侧）：SHELF_LOCK 下读-改-写。
+/// 会话文件不在场的（CLI 没落盘 / 已被清）不收——收了也续不了（Go :2757
+/// 的 sid == "" 臂同款保守）。**锁外调用**（state/pool 锁都不许持）。
+fn shelve_entry(key: &str, session: &str, effort: Option<String>) {
+    if !sid_ok(session) {
+        return;
+    }
+    let Some(sessions) = claude_sessions() else { return };
+    if !session_saved(&sessions, session) {
+        return;
+    }
+    let _guard = SHELF_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let mut entries = shelf_read();
+    shelf_prune(&mut entries);
+    entries.insert(key.to_string(), ShelfEntry { session: session.to_string(), effort, at: now_millis() });
+    shelf_write(&entries);
+}
+
+/// 入架（Go shelve :2753 的落盘侧）：victim 等在 key 上、被淘汰时把
+/// （key → session id）记进架。
+fn shelve_run(key: &str, run: &Arc<RunCore>) {
+    let (sid, effort) = {
+        let g = lock_run(run);
+        (g.session_id.clone(), g.effort.clone())
+    };
+    shelve_entry(key, &sid, effort);
+}
+
+/// 出架（Go unshelve :2820 的主键命中臂 + :2857 delete + startRun :1132 的
+/// saved() 检查）：下一回合的键在架上、会话文件还在、档位一致 → 交出
+/// session id 并出架（Go unshelve :2857 的 delete，认领语义）。条目过期 /
+/// 文件没了 → 顺手清条目（架上的键是内容哈希，死条目永远死）。档位不一致
+/// → 条目留着（同键同档位的后续回合还能用，1 小时内自然过期）。
+fn unshelve(key: &str, effort: Option<&str>) -> Option<String> {
+    let _guard = SHELF_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let mut entries = shelf_read();
+    let hit = entries.get(key).cloned();
+    shelf_prune(&mut entries); // 过期条目顺手清（含刚查到的这个）
+    let hit = hit.filter(|_| entries.contains_key(key));
+    let mut taken = None;
+    if let Some(e) = hit {
+        let resumable = claude_sessions().is_some_and(|d| session_saved(&d, &e.session));
+        match resumable.then(|| e.effort == effort.map(|s| s.to_string())) {
+            Some(true) => {
+                entries.remove(key);
+                taken = Some(e.session);
+            }
+            Some(false) => {} // 档位不一致：条目留着，本回合落全量新起
+            None => {
+                entries.remove(key); // 会话文件没了：死条目（Go :1132 from = nil）
+            }
+        }
+    }
+    shelf_write(&entries);
+    taken
+}
+
+/// Go sweepSessions（:3523，每进程一次）：桥自己项目文件夹里、上一次进程
+/// / 中途死掉的 run 留下的孤儿会话文件——IDLE_LONGEST+1 分钟没动过的收走。
+/// 活会话的文件一直在被追加（mtime 新鲜），不会中。**只收本桥工作目录的
+/// 项目文件夹**，用户自己的会话目录一个字节不碰。
+fn sweep_sessions_once() {
+    static SWEPT: AtomicBool = AtomicBool::new(false);
+    if SWEPT.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let Some(dir) = claude_sessions() else { return };
+    let Ok(rd) = std::fs::read_dir(&dir) else { return };
+    let cutoff = idle_longest() + Duration::from_secs(60);
+    for e in rd.flatten() {
+        let path = e.path();
+        if path.extension().and_then(|x| x.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let stale = e.metadata().ok().and_then(|md| md.modified().ok()).is_some_and(|m| m.elapsed().unwrap_or_default() > cutoff);
+        if stale {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 /// run 终局：标 closed、杀进程、撤出池、删 helper 配置目录。Go abortFor +
@@ -1643,9 +1892,15 @@ fn pump_thread(run: Arc<RunCore>, mut stdout: BufReader<std::process::ChildStdou
                 park_segment(&run, &mut g);
                 run.state.1.notify_all();
             }
-            // system/init：session id 是 savedSession（差距第 1 条）的原料，
-            // 这里纯记账跳过
-            "system" => {}
+            // system/init：Claude Code 的会话 id（Go readOutput :4714-4718），
+            // 会话架（savedSession）的原料
+            "system" => {
+                if v.get("subtype").and_then(|s| s.as_str()) == Some("init") {
+                    if let Some(sid) = v.get("session_id").and_then(|s| s.as_str()).filter(|s| !s.is_empty()) {
+                        lock_run(&run).session_id = sid.to_string();
+                    }
+                }
+            }
             "rate_limit_event" => {
                 let info = v.get("rate_limit_info").cloned().unwrap_or(Value::Null);
                 let windows = claude_limits_of(&info);
@@ -1672,9 +1927,10 @@ fn pump_thread(run: Arc<RunCore>, mut stdout: BufReader<std::process::ChildStdou
                     continue;
                 }
                 // 正常收口（Go ended → keepIdle，:2567-2612）。keepIdle 的池
-                // 操作在放段（segment_done + 唤醒）**之前**完成——读者醒来
-                // 返回时 run 已可被下一回合复用，没有窗口。
-                let mut victims: Vec<Arc<RunCore>> = Vec::new();
+                // 操作在放段（segment_done）**之前**完成、淘汰名单的入架在
+                // 唤醒**之前**完成——读者醒来返回时，run 已可被下一回合复用、
+                // 架上已写好，下一回合的 unshelve 不与入架赛跑。
+                let mut victims: Vec<(String, Arc<RunCore>)> = Vec::new();
                 let mut retire = false;
                 {
                     let mut g = lock_run(&run);
@@ -1704,15 +1960,13 @@ fn pump_thread(run: Arc<RunCore>, mut stdout: BufReader<std::process::ChildStdou
                             }
                         }
                         g.segment_done = true;
-                        run.state.1.notify_all();
                     }
                 }
-                for v in victims {
-                    abort_run(&v);
-                }
+                release_victims(victims);
                 if retire {
                     abort_run(&run);
                 }
+                run.state.1.notify_all();
             }
             _ => {}
         }
@@ -1720,9 +1974,16 @@ fn pump_thread(run: Arc<RunCore>, mut stdout: BufReader<std::process::ChildStdou
 }
 
 /// stdout EOF / 读错：段没收口按 Go replyUnended（:5054）口径收尾（吐过
-/// message_stop 的干净结束、没吐的报 502），随后终局清理。
+/// message_stop 的干净结束、没吐的报 502），随后终局清理。**空闲中的 run
+/// 死亡（看门狗到点 / 进程自己退）先入架再走**——任务口径「1h idle 杀进程
+/// 前保存」：看门狗的 deadline 正是 idle 杀点，比下一次碰池的惰性清扫先到；
+/// 会话文件是完整的（这一轮已经答完），下一回合 `--resume` 续上。Go 的
+/// idle timer 直接 abort 不入架，这是本移植有意的加码。mid-turn 死亡
+/// （idle_key 空）与已被 abort 的（不在池里）不入架——失败回合的会话不能
+/// 当作对话的续点（Go abortFor 同款不出架）。
 fn pump_eof(run: &Arc<RunCore>, err: Option<String>) {
     let tail = run.stderr_tail.lock().unwrap_or_else(|p| p.into_inner()).trim().to_string();
+    let mut idle_key: Option<(String, String, Option<String>)> = None;
     {
         let mut g = lock_run(run);
         if !g.segment_done {
@@ -1738,7 +1999,20 @@ fn pump_eof(run: &Arc<RunCore>, err: Option<String>) {
         }
         g.closed = true;
         g.pending.clear();
+        if let Some(key) = g.idle_key.clone() {
+            idle_key = Some((key, g.session_id.clone(), g.effort.clone()));
+        }
         run.state.1.notify_all();
+    }
+    if let Some((key, sid, effort)) = idle_key {
+        // 池成员资格复核（abort 过的已出池，不重复入架）；锁外做文件 IO
+        let in_pool = {
+            let p = POOL.lock().unwrap_or_else(|e| e.into_inner());
+            p.idle.get(&key).is_some_and(|(r, _)| Arc::ptr_eq(r, run))
+        };
+        if in_pool {
+            shelve_entry(&key, &sid, effort);
+        }
     }
     // 池清理 + 收尸（锁外）
     *run.stdin.lock().unwrap_or_else(|p| p.into_inner()) = None;
@@ -1991,7 +2265,7 @@ fn attach_segment(run: &Arc<RunCore>, identity: RequestIdentity) -> SegmentReade
         g.idle_key = None;
         run.state.1.notify_all();
     }
-    SegmentReader { core: run.clone(), natural: false, out: Vec::new(), pos: 0 }
+    SegmentReader { core: run.clone(), natural: false, pre: VecDeque::new(), out: Vec::new(), pos: 0 }
 }
 
 /// 给驻留进程的 stdin 写一行 user 消息（Go run.tell）。
@@ -2007,7 +2281,8 @@ fn tell_line(run: &Arc<RunCore>, content: &[Value]) -> Result<(), String> {
 }
 
 /// 新起一个驻留 run 并喂首回合（Go startRun :1004）。caller 带 tools 时
-/// 挂 helper（写 mcp-config、进 runs 表）。
+/// 挂 helper（写 mcp-config、进 runs 表）；`resume_sid` 非 None 时以
+/// `--resume <id>` 起跑（Go :1193 的 from 分支，只喂增量的前提）。
 #[allow(clippy::too_many_arguments)]
 fn spawn_run(
     program: &Program,
@@ -2019,7 +2294,9 @@ fn spawn_run(
     allowed_all: bool,
     identity: RequestIdentity,
     extra_env: &[(String, String)],
+    resume_sid: Option<&str>,
 ) -> Result<SegmentReader, (u16, String)> {
+    sweep_sessions_once(); // Go :1119-1121 的起跑清扫（每进程一次）
     let mut mcp_arg: Option<String> = None;
     let mut token: Option<String> = None;
     let mut cfg_dir: Option<PathBuf> = None;
@@ -2037,10 +2314,21 @@ fn spawn_run(
         token = Some(t);
         cfg_dir = Some(dir);
     }
-    let args = bridge_args(model, effort, mcp_arg.as_deref());
+    let mut args = bridge_args(model, effort, mcp_arg.as_deref());
+    if let Some(sid) = resume_sid {
+        // Go :1193：`--resume <sid>`——续命回合从这里起步
+        args.push("--resume".into());
+        args.push(sid.to_string());
+    }
     let mut cmd = build_command(program, &args);
     for (k, v) in extra_env {
         cmd.env(k, v);
+    }
+    // 会话落盘的目录必须与本模块 claude_sessions() 的判定同源：显式传
+    // CLAUDE_CONFIG_DIR（生产 = 用户现状同值；测试缝下假 CLI 因此把会话
+    // 文件写进 seam 的 home，Rust 侧的 saved() 检查才找得到）
+    if let Some(dir) = claude_config_dir() {
+        cmd.env("CLAUDE_CONFIG_DIR", dir);
     }
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| {
@@ -2106,6 +2394,7 @@ fn spawn_run(
                 msg_tool_ids: Vec::new(),
                 msg_stop_reason: None,
                 model_echo: model.to_string(),
+                session_id: resume_sid.unwrap_or_default().to_string(),
                 identity: None,
                 effort: effort.map(|e| e.to_string()),
                 idle_key: None,
@@ -2219,6 +2508,49 @@ fn resume_run(run: &Arc<RunCore>, identity: &RequestIdentity, split: usize) -> O
     Some(reader)
 }
 
+/// 从架上的会话续跑（Go startRun :1192-1194 的 `--resume` + :1232 的只喂
+/// `since`）。**首帧偷看**当 Go :1426-1432 的 initialize 握手用：续不上的
+/// Claude Code（会话加载不了直接退 / 报错 result）在第一帧前就现形——
+/// 失败 = 落回全量新起（Go start :943-947），架条目在 unshelve 里已出；
+/// 不删会话文件（Go discard 会删，我们保守一档交给 sweep——偷看比握手
+/// 探得宽，误删真会话的代价是一整段缓存重写）。Err = 调用方落 ③。
+#[allow(clippy::too_many_arguments)]
+fn resume_spawn(
+    program: &Program,
+    model: &str,
+    effort: Option<&str>,
+    identity: &RequestIdentity,
+    split: usize,
+    tools: &[Value],
+    tool_choice: &str,
+    sid: &str,
+) -> Result<SegmentReader, ()> {
+    let (mut helper_tools, mut names, mut allowed_all) = bridge_tools(tools, tool_choice);
+    if !helper_tools.is_empty() && ensure_helper().is_none() {
+        helper_tools = Vec::new();
+        names = ToolNames::default();
+        allowed_all = true;
+    }
+    let offered = if helper_tools.is_empty() { None } else { Some(&names) };
+    let blocks = render_turn(&identity.msgs[split..], offered);
+    let mut reader =
+        spawn_run(program, model, effort, &blocks, &helper_tools, names, allowed_all, identity.clone(), &[], Some(sid))
+            .map_err(|_| ())?;
+    // 偷看第一步：Event = 会话续上了（帧存回 reader，客户端不丢内容）；
+    // Failed / 段收口 = 续不上（Go :1428-1432：加载不了会话的 Claude Code
+    // 直接退，先喂回合它就一声不吭地结束）
+    match reader.next_step() {
+        Some(Step::Event(v)) => {
+            reader.pre.push_back(v);
+            Ok(reader)
+        }
+        _ => {
+            abort_run(&reader.core);
+            Err(())
+        }
+    }
+}
+
 // =====================================================================
 // 段读者：SSE 流（Read）/ 非流聚合（aggregate）
 // =====================================================================
@@ -2229,6 +2561,8 @@ fn resume_run(run: &Arc<RunCore>, identity: &RequestIdentity, split: usize) -> O
 struct SegmentReader {
     core: Arc<RunCore>,
     natural: bool,
+    /// 偷看步预读出的帧（resume_spawn 的首帧探活）：先于队列供出。
+    pre: VecDeque<Value>,
     /// 待写出的 SSE 字节（pos 之前已消费）——大帧按读方缓冲粒度分多次吐。
     out: Vec<u8>,
     pos: usize,
@@ -2237,6 +2571,9 @@ struct SegmentReader {
 impl SegmentReader {
     /// 取下一条产物；None = 段收口（EOF）。
     fn next_step(&mut self) -> Option<Step> {
+        if let Some(v) = self.pre.pop_front() {
+            return Some(Step::Event(v));
+        }
         let core = self.core.clone();
         let mut g = lock_run(&core);
         loop {
@@ -2959,9 +3296,22 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
         }
     }
     // ② 驻留复用（Go resume :2033）：同会话的下一回合只喂增量消息。
+    let mut cold: Option<(String, usize)> = None;
     if let Some((key, split)) = next_turn(&identity) {
         if let Some(run) = take_idle_run(&key, effort.as_deref()) {
             if let Some(reader) = resume_run(&run, &identity, split) {
+                return Some(reply_of(reader, wants_stream, model));
+            }
+        }
+        cold = Some((key, split));
+    }
+    // ②' 冷启动续命（Go unshelve :2820 + start :933 的 from 分支）：驻留池
+    // 不中，但架上有这段对话的会话（曾被淘汰的 run 落盘的 session id）→
+    // `--resume` 续跑，只喂增量；续不上（会话文件没了 / CLI 拒续）→ 落回
+    // ③ 全量新起（Go start :943-947 同款回退）。
+    if let Some((key, split)) = cold {
+        if let Some(sid) = unshelve(&key, effort.as_deref()) {
+            if let Ok(reader) = resume_spawn(&program, model, effort.as_deref(), &identity, split, &tools, &tool_choice, &sid) {
                 return Some(reply_of(reader, wants_stream, model));
             }
         }
@@ -2977,7 +3327,7 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
     }
     let offered = if helper_tools.is_empty() { None } else { Some(&names) };
     let prompt = render_prompt(&parsed, offered);
-    match spawn_run(&program, model, effort.as_deref(), &prompt, &helper_tools, names, allowed_all, identity, &[]) {
+    match spawn_run(&program, model, effort.as_deref(), &prompt, &helper_tools, names, allowed_all, identity, &[], None) {
         Ok(reader) => Some(reply_of(reader, wants_stream, model)),
         Err((status, msg)) => Some(anthropic_error(status, &msg)),
     }
@@ -3037,10 +3387,12 @@ mod tests {
         std::fs::create_dir_all(dir.join("magpie")).unwrap();
         std::fs::create_dir_all(dir.join("home")).unwrap();
         std::fs::create_dir_all(dir.join("logins")).unwrap();
+        std::fs::create_dir_all(dir.join("shelf")).unwrap();
         std::fs::write(dir.join("magpie").join("providers.json"), r#"{"providers":[]}"#).unwrap();
         *TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) = Some(Seam {
             home: dir.join("home"),
             logins: if with_logins { Some(dir.join("logins")) } else { None },
+            shelf: Some(dir.join("shelf")),
             cli: seam_cli,
         });
         let prior = std::env::var("XDG_CONFIG_HOME").ok();
@@ -3092,13 +3444,27 @@ const spawns = process.env.MARIONETTE_FAKE_SPAWNS;
 const stdinLog = process.env.MARIONETTE_FAKE_STDIN_LOG;
 const mcpLog = process.env.MARIONETTE_FAKE_MCP_LOG;
 const argv = process.argv.slice(2);
+const resumeSid = (() => { const i = argv.indexOf("--resume"); return i >= 0 && i + 1 < argv.length ? argv[i + 1] : null; })();
+const SID = resumeSid || "sess-fake";
 if (spawns) { try { fs.appendFileSync(spawns, JSON.stringify({ pid: process.pid, argv }) + "\n"); } catch {} }
+// 会话落盘（Claude Code 自己写会话文件的对应物，Go claudeSessions :3448 的
+// 形状）：$CLAUDE_CONFIG_DIR/projects/<工作目录编码>/<sid>.jsonl——Rust 侧
+// saved() 检查的就是这个文件
+try {
+  const cc = process.env.CLAUDE_CONFIG_DIR;
+  if (cc) {
+    const path = require("path");
+    const dir = path.join(cc, "projects", process.cwd().replace(/[^A-Za-z0-9]/g, "-"));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, SID + ".jsonl"), JSON.stringify({ type: "session", sessionId: SID }) + "\n");
+  }
+} catch {}
 const w = (o) => process.stdout.write(JSON.stringify(o) + "\n");
 const modelOf = () => argv[argv.indexOf("--model") + 1] || "claude-sonnet-5";
 const effortOn = () => argv.indexOf("--effort") >= 0;
 function chatTurn(n) {
   const model = modelOf();
-  w({ type: "system", subtype: "init", session_id: "sess-fake" });
+  w({ type: "system", subtype: "init", session_id: SID });
   w({ type: "stream_event", event: { type: "message_start", message: { id: "msg_f" + n, type: "message", role: "assistant", model, content: [], usage: { input_tokens: 10, output_tokens: 1 } } } });
   if (effortOn()) w({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } } });
   const textIndex = effortOn() ? 1 : 0;
@@ -3180,9 +3546,15 @@ process.stdin.on("data", (d) => {
       try { fs.writeFileSync(dump, JSON.stringify({ argv, stdin: line + "\n", baseUrl: process.env.ANTHROPIC_BASE_URL || null, cwd: process.cwd() })); } catch {}
     }
     if (stdinLog) { try { fs.appendFileSync(stdinLog, JSON.stringify({ line }) + "\n"); } catch {} }
-    if (mode === "chat" || mode === "toolround") {
+    if (mode === "chat" || mode === "toolround" || mode === "resumeerror") {
       turn += 1;
-      if (mode === "chat") chatTurn(turn); else toolTurn(turn);
+      if (mode === "toolround") toolTurn(turn);
+      else if (mode === "resumeerror" && resumeSid) {
+        // --resume 的会话续不上：一声不吭地退（真实 CLI 对不存在的会话
+        // 就是退出，Go :1428-1432 的口径）——Rust 侧的偷看步当场现形
+        process.exit(3);
+      }
+      else chatTurn(turn);
     }
   }
 });
@@ -3370,10 +3742,13 @@ if (mode === "usage") {
         let dump = dump_of(&w);
         let argv: Vec<String> = dump.get("argv").unwrap().as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
         let joined = argv.join(" ");
-        for flag in ["-p", "--output-format stream-json", "--input-format stream-json", "--include-partial-messages", "--verbose", "--model claude-sonnet-5", "--tools ", "--strict-mcp-config", "--dangerously-skip-permissions", "--no-session-persistence"] {
+        for flag in ["-p", "--output-format stream-json", "--input-format stream-json", "--include-partial-messages", "--verbose", "--model claude-sonnet-5", "--tools ", "--strict-mcp-config", "--dangerously-skip-permissions"] {
             assert!(joined.contains(flag), "argv missing `{flag}`: {joined}");
         }
         assert!(!joined.contains("--mcp-config"), "no MCP helper in the core path");
+        // 会话落盘开着（Go :1116 摘掉 --no-session-persistence）——续命的前提
+        assert!(!joined.contains("--no-session-persistence"), "sessions persist for the shelf: {joined}");
+        assert!(!joined.contains("--resume"), "a fresh run never resumes: {joined}");
         // stdin：一行 user 消息，content 是渲染后的 text 块（system 一块 +
         // 对话一块，Human: 标注）
         let stdin = dump.get("stdin").unwrap().as_str().unwrap();
@@ -3616,7 +3991,7 @@ if (mode === "usage") {
             r#"{"providers":[{"id":"claude","name":"My Claude","anthropic":"https://example.com"}]}"#,
         )
         .unwrap();
-        *TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) = Some(Seam { home: dir.join("home"), logins: None, cli: None });
+        *TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) = Some(Seam { home: dir.join("home"), logins: None, shelf: Some(dir.join("shelf")), cli: None });
         let prior = std::env::var("XDG_CONFIG_HOME").ok();
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         let gateway = Gateway::open().unwrap();
@@ -3796,8 +4171,9 @@ if (mode === "usage") {
 
     #[test]
     fn resident_run_expires_after_idle_longest() {
-        // idle 过期（Go idleLongest，测试缝压到 300ms）：驻留过的 run 过期后，
-        // 下一回合全量新起
+        // idle 过期（Go idleLongest，测试缝压到 300ms）：驻留过的 run 过期
+        // 出池——**入架续命**（差距第 1 条）：下一回合 `--resume` 续跑，只
+        // 喂增量，不再全量重写缓存。
         let (gateway, w) = world(None, false);
         write_credentials(&w, "max");
         let cli = fake_cli(&w.dir);
@@ -3827,12 +4203,19 @@ if (mode === "usage") {
             { "role": "user", "content": "过期之后" }
         ]));
         assert!(matches!(reply, Reply::Json { status: 200, .. }));
-        assert_eq!(spawn_count(&w), spawns_before + 1, "expired idle run must give way to a fresh spawn");
-        // 全量新起：这回合的 stdin 是整段对话（history 包裹 + system）
+        assert_eq!(spawn_count(&w), spawns_before + 1, "expired idle run gives way to one resume spawn");
+        // 过期的 run 入了架：这次起跑带 --resume（架条目已消费）
+        let spawns = jsonl_lines(&w.dir.join("spawns.jsonl"));
+        let argv = spawns.last().unwrap().get("argv").and_then(|a| a.as_array()).unwrap();
+        let joined = argv.iter().map(|v| v.as_str().unwrap_or("")).collect::<Vec<_>>().join(" ");
+        assert!(joined.contains("--resume sess-fake"), "resumed from the shelved session: {joined}");
+        // 只喂增量：没有 system 包裹、没有历史回放，只有新问题
         let stdin = jsonl_lines(&w.dir.join("stdinlog.jsonl"));
         let last = stdin.last().unwrap().get("line").and_then(|l| l.as_str()).unwrap();
-        assert!(last.contains("conversation_history"), "fresh spawn replays history: {last}");
-        assert!(last.contains("external_system_instructions"));
+        assert!(last.contains("过期之后"), "increment fed to the resumed run: {last}");
+        assert!(!last.contains("conversation_history"), "no whole-conversation replay after resume: {last}");
+        assert!(!last.contains("external_system_instructions"));
+        assert!(shelf_read().is_empty(), "shelf entry consumed by the resume");
         std::env::remove_var("MARIONETTE_FAKE_SPAWNS");
         std::env::remove_var("MARIONETTE_FAKE_STDIN_LOG");
     }
@@ -3840,11 +4223,13 @@ if (mode === "usage") {
     #[test]
     fn idle_capacity_evicts_the_oldest() {
         // 容量淘汰（Go idleMost :2656，测试缝压到 1）：第二个驻留会话把第一
-        // 个挤出池，第一个的续回合只能全量新起
+        // 个挤出池——被挤的入架（淘汰即保存），它的续回合 `--resume` 续跑。
+        // 最久先出的顺序不变（Go :2660 的 min_by_key 没动）。
         let (gateway, w) = world(None, false);
         write_credentials(&w, "max");
         let cli = fake_cli(&w.dir);
         std::env::set_var("MARIONETTE_FAKE_SPAWNS", w.dir.join("spawns.jsonl"));
+        std::env::set_var("MARIONETTE_FAKE_STDIN_LOG", w.dir.join("stdinlog.jsonl"));
         TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
         *TEST_IDLE_MOST.lock().unwrap_or_else(|p| p.into_inner()) = Some(1);
         let turn = |msgs: Value| intercept(&gateway, &post(&json!({
@@ -3859,14 +4244,14 @@ if (mode === "usage") {
             { "role": "user", "content": "会话A第二轮" }
         ])), Reply::Json { status: 200, .. }));
         let after_a = spawn_count(&w);
-        // 会话 B 两回合：B 的驻留把 A 挤出池（容量 1）
+        // 会话 B 两回合：B 的驻留把 A 挤出池（容量 1），A 的 run 入架
         assert!(matches!(turn(json!([{ "role": "user", "content": "会话B第一轮" }])), Reply::Json { status: 200, .. }));
         assert!(matches!(turn(json!([
             { "role": "user", "content": "会话B第一轮" },
             { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
             { "role": "user", "content": "会话B第二轮" }
         ])), Reply::Json { status: 200, .. }));
-        // A 的续回合：A 已被挤出 → 全量新起
+        // A 的续回合：A 已被挤出池但架上有它的会话 → --resume 续跑
         let reply = turn(json!([
             { "role": "user", "content": "会话A第一轮" },
             { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
@@ -3875,8 +4260,17 @@ if (mode === "usage") {
             { "role": "user", "content": "会话A第三轮" }
         ]));
         assert!(matches!(reply, Reply::Json { status: 200, .. }));
-        assert_eq!(spawn_count(&w), after_a + 3, "B1(one-off) + B2(kept, evicts A) + A3 fresh");
+        assert_eq!(spawn_count(&w), after_a + 3, "B1(one-off) + B2(kept, evicts A) + A3 resumed");
+        let spawns = jsonl_lines(&w.dir.join("spawns.jsonl"));
+        let argv = spawns.last().unwrap().get("argv").and_then(|a| a.as_array()).unwrap();
+        let joined = argv.iter().map(|v| v.as_str().unwrap_or("")).collect::<Vec<_>>().join(" ");
+        assert!(joined.contains("--resume sess-fake"), "the evicted session resumes: {joined}");
+        let stdin = jsonl_lines(&w.dir.join("stdinlog.jsonl"));
+        let last = stdin.last().unwrap().get("line").and_then(|l| l.as_str()).unwrap();
+        assert!(last.contains("会话A第三轮"), "only the new turn is fed: {last}");
+        assert!(!last.contains("conversation_history"), "no whole-conversation replay: {last}");
         std::env::remove_var("MARIONETTE_FAKE_SPAWNS");
+        std::env::remove_var("MARIONETTE_FAKE_STDIN_LOG");
     }
 
     #[test]
@@ -3895,6 +4289,272 @@ if (mode === "usage") {
         assert!(p.idle.is_empty(), "one-off ask must not be kept idle");
         drop(p);
         std::env::remove_var("MARIONETTE_FAKE_SPAWNS");
+    }
+
+    // ---------------------------------------------------------------
+    // 会话架 / --resume 续命（差距第 1 条：Go shelve :2753 / unshelve :2820 /
+    // start 的 from 分支 :933）
+    // ---------------------------------------------------------------
+
+    /// 架文件路径（测试世界里的）。
+    fn shelf_file(world: &World) -> PathBuf {
+        world.dir.join("shelf").join("claude-shelf.json")
+    }
+
+    fn write_shelf_entry(_world: &World, key: &str, entry: ShelfEntry) {
+        let _g = SHELF_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let mut entries = shelf_read();
+        entries.insert(key.to_string(), entry);
+        shelf_write(&entries);
+    }
+
+    #[test]
+    fn evicted_session_resumes_from_the_shelf_and_stays_resident() {
+        // 完整链（任务验收三条）：B2 的驻留把 A2 挤出池 → A2 入架（淘汰即
+        // 保存）→ A3 池不中、架命中 → `--resume` 续跑、stdin 只含增量 →
+        // A3 收口进池（把 B2 挤出并入架）→ A4 驻留复用，不再起进程。
+        let (gateway, w) = world(None, false);
+        write_credentials(&w, "max");
+        let cli = fake_cli(&w.dir);
+        std::env::set_var("MARIONETTE_FAKE_SPAWNS", w.dir.join("spawns.jsonl"));
+        std::env::set_var("MARIONETTE_FAKE_STDIN_LOG", w.dir.join("stdinlog.jsonl"));
+        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
+        *TEST_IDLE_MOST.lock().unwrap_or_else(|p| p.into_inner()) = Some(1);
+        let turn = |msgs: Value| intercept(&gateway, &post(&json!({
+            "model": "claude/claude-sonnet-5", "max_tokens": 1024, "stream": false,
+            "system": "You are a helpful assistant.", "messages": msgs,
+        })), Proto::Anthropic).expect("intercepted");
+        // A1（one-off）+ A2（起 run 并驻留）
+        assert!(matches!(turn(json!([{ "role": "user", "content": "会话A第一轮" }])), Reply::Json { status: 200, .. }));
+        assert!(matches!(turn(json!([
+            { "role": "user", "content": "会话A第一轮" },
+            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+            { "role": "user", "content": "会话A第二轮" }
+        ])), Reply::Json { status: 200, .. }));
+        // B1 + B2：B2 的驻留把 A2 挤出池，A2 的会话入架（假 CLI 已落盘
+        // sess-fake.jsonl，saved() 才肯收）
+        assert!(matches!(turn(json!([{ "role": "user", "content": "会话B第一轮" }])), Reply::Json { status: 200, .. }));
+        assert!(matches!(turn(json!([
+            { "role": "user", "content": "会话B第一轮" },
+            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+            { "role": "user", "content": "会话B第二轮" }
+        ])), Reply::Json { status: 200, .. }));
+        let shelf: Value = serde_json::from_slice(&std::fs::read(shelf_file(&w)).unwrap()).unwrap();
+        assert_eq!(shelf.as_object().unwrap().len(), 1, "the evicted run's session is shelved");
+        // A3：池不中、架命中 → resume（1 个新进程），stdin 只含增量
+        assert!(matches!(turn(json!([
+            { "role": "user", "content": "会话A第一轮" },
+            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+            { "role": "user", "content": "会话A第二轮" },
+            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+            { "role": "user", "content": "会话A第三轮" }
+        ])), Reply::Json { status: 200, .. }));
+        assert_eq!(spawn_count(&w), 5, "A1 + A2 + B1 + B2 + A3(resume)");
+        let spawns = jsonl_lines(&w.dir.join("spawns.jsonl"));
+        let argv5 = spawns[4].get("argv").and_then(|a| a.as_array()).unwrap();
+        let joined5 = argv5.iter().map(|v| v.as_str().unwrap_or("")).collect::<Vec<_>>().join(" ");
+        assert!(joined5.contains("--resume sess-fake"), "A3 resumes the shelved session: {joined5}");
+        let stdin = jsonl_lines(&w.dir.join("stdinlog.jsonl"));
+        assert_eq!(stdin.len(), 5);
+        let a3 = stdin[4].get("line").and_then(|l| l.as_str()).unwrap();
+        assert!(a3.contains("会话A第三轮"), "only the new turn: {a3}");
+        assert!(!a3.contains("conversation_history"), "no replay: {a3}");
+        assert!(!a3.contains("external_system_instructions"), "no system re-send: {a3}");
+        // A3 收口：它消费掉的架条目不复存在，A3 自己的 run 进池（容量 1
+        // 挤出 B2 的 run → B2 入架）——架上仍是 1 条，但已是 A3 的新键
+        let shelf: Value = serde_json::from_slice(&std::fs::read(shelf_file(&w)).unwrap()).unwrap();
+        assert_eq!(shelf.as_object().unwrap().len(), 1, "B2's evicted run is shelved; A3's own entry was consumed by its resume");
+        // A4：驻留复用，不再起进程
+        assert!(matches!(turn(json!([
+            { "role": "user", "content": "会话A第一轮" },
+            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+            { "role": "user", "content": "会话A第二轮" },
+            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+            { "role": "user", "content": "会话A第三轮" },
+            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+            { "role": "user", "content": "会话A第四轮" }
+        ])), Reply::Json { status: 200, .. }));
+        assert_eq!(spawn_count(&w), 5, "A4 reuses the resident run");
+        let stdin = jsonl_lines(&w.dir.join("stdinlog.jsonl"));
+        assert_eq!(stdin.len(), 6);
+        let a4 = stdin[5].get("line").and_then(|l| l.as_str()).unwrap();
+        assert!(a4.contains("会话A第四轮"), "resident increment: {a4}");
+        assert!(!a4.contains("conversation_history"));
+        for var in ["MARIONETTE_FAKE_SPAWNS", "MARIONETTE_FAKE_STDIN_LOG"] {
+            std::env::remove_var(var);
+        }
+        *TEST_IDLE_MOST.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    }
+
+    #[test]
+    fn stale_shelf_entry_falls_back_to_a_fresh_spawn() {
+        // 架条目指向的会话文件不在了（如被上一次进程的清扫收走）→ 条目清
+        // 掉，落回现行全量新起路径（Go startRun :1132 的 from = nil 臂）
+        let (gateway, w) = world(None, false);
+        write_credentials(&w, "max");
+        let cli = fake_cli(&w.dir);
+        std::env::set_var("MARIONETTE_FAKE_SPAWNS", w.dir.join("spawns.jsonl"));
+        std::env::set_var("MARIONETTE_FAKE_STDIN_LOG", w.dir.join("stdinlog.jsonl"));
+        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
+        // 直接写一条死条目（sess-ghost.jsonl 不存在）
+        let msgs: Vec<Value> = vec![
+            json!({ "role": "user", "content": "你好" }),
+            json!({ "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] }),
+            json!({ "role": "user", "content": "接着说" }),
+        ];
+        let identity = RequestIdentity {
+            owner: "max".into(),
+            model: "claude-sonnet-5".into(),
+            effort: None,
+            tool_choice: String::new(),
+            system: "You are a helpful assistant.".into(),
+            tools_json: "[]".into(),
+            tools_empty: true,
+            msgs: msgs.clone(),
+        };
+        let (key, _) = next_turn(&identity).expect("a next-turn key");
+        write_shelf_entry(&w, &key, ShelfEntry { session: "sess-ghost".into(), effort: None, at: now_secs() });
+        let mut body = messages_body("claude/claude-sonnet-5", false);
+        body["messages"] = Value::Array(msgs);
+        let reply = intercept(&gateway, &post(&body), Proto::Anthropic).expect("intercepted");
+        assert!(matches!(reply, Reply::Json { status: 200, .. }));
+        assert_eq!(spawn_count(&w), 1, "one fresh spawn, no doomed resume attempt");
+        let spawns = jsonl_lines(&w.dir.join("spawns.jsonl"));
+        let argv = spawns[0].get("argv").and_then(|a| a.as_array()).unwrap();
+        let joined = argv.iter().map(|v| v.as_str().unwrap_or("")).collect::<Vec<_>>().join(" ");
+        assert!(!joined.contains("--resume"), "dead entry is never resumed: {joined}");
+        // 全量新起：整段对话（history 包裹 + system）
+        let stdin = jsonl_lines(&w.dir.join("stdinlog.jsonl"));
+        let last = stdin.last().unwrap().get("line").and_then(|l| l.as_str()).unwrap();
+        assert!(last.contains("conversation_history"), "fresh spawn replays history: {last}");
+        assert!(last.contains("external_system_instructions"));
+        assert!(shelf_read().is_empty(), "the dead entry was pruned");
+        for var in ["MARIONETTE_FAKE_SPAWNS", "MARIONETTE_FAKE_STDIN_LOG"] {
+            std::env::remove_var(var);
+        }
+    }
+
+    #[test]
+    fn rejected_resume_falls_back_to_a_fresh_spawn() {
+        // CLI 拒续（会话文件在、加载不了直接退，真实 CLI 对坏会话的形状，
+        // resumeerror 模式模拟）→ 首帧偷看当场现形 → 落回全量新起，客户端
+        // 照常拿到回复（Go start :943-947 的回退）。会话文件**不删**（交给
+        // sweep，见模块头偏差记录）。
+        let (gateway, w) = world(None, false);
+        write_credentials(&w, "max");
+        let cli = fake_cli(&w.dir);
+        std::env::set_var("MARIONETTE_FAKE_CLAUDE_MODE", "resumeerror");
+        std::env::set_var("MARIONETTE_FAKE_SPAWNS", w.dir.join("spawns.jsonl"));
+        std::env::set_var("MARIONETTE_FAKE_STDIN_LOG", w.dir.join("stdinlog.jsonl"));
+        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
+        *TEST_IDLE_MOST.lock().unwrap_or_else(|p| p.into_inner()) = Some(1);
+        let turn = |msgs: Value| intercept(&gateway, &post(&json!({
+            "model": "claude/claude-sonnet-5", "max_tokens": 1024, "stream": false,
+            "system": "You are a helpful assistant.", "messages": msgs,
+        })), Proto::Anthropic).expect("intercepted");
+        assert!(matches!(turn(json!([{ "role": "user", "content": "会话A第一轮" }])), Reply::Json { status: 200, .. }));
+        assert!(matches!(turn(json!([
+            { "role": "user", "content": "会话A第一轮" },
+            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+            { "role": "user", "content": "会话A第二轮" }
+        ])), Reply::Json { status: 200, .. }));
+        assert!(matches!(turn(json!([{ "role": "user", "content": "会话B第一轮" }])), Reply::Json { status: 200, .. }));
+        assert!(matches!(turn(json!([
+            { "role": "user", "content": "会话B第一轮" },
+            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+            { "role": "user", "content": "会话B第二轮" }
+        ])), Reply::Json { status: 200, .. }));
+        // A3：resume 起跑 → CLI 退场 → 回退全量新起 → 200
+        let a3_msgs = json!([
+            { "role": "user", "content": "会话A第一轮" },
+            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+            { "role": "user", "content": "会话A第二轮" },
+            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+            { "role": "user", "content": "会话A第三轮" }
+        ]);
+        // A3 的 next-turn 键 = A2 入架的那个键（断言用）
+        let identity = RequestIdentity {
+            owner: "max".into(),
+            model: "claude-sonnet-5".into(),
+            effort: None,
+            tool_choice: String::new(),
+            system: "You are a helpful assistant.".into(),
+            tools_json: "[]".into(),
+            tools_empty: true,
+            msgs: a3_msgs.as_array().unwrap().clone(),
+        };
+        let (shelved_key, _) = next_turn(&identity).expect("the A3 turn is a next turn");
+        let reply = turn(a3_msgs);
+        match reply {
+            Reply::Json { status, body } => {
+                assert_eq!(status, 200);
+                let v: Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(v.pointer("/content/0/text").and_then(|t| t.as_str()), Some("你好，世界"));
+            }
+            Reply::Stream { status, .. } => panic!("expected json, got stream {status}"),
+        }
+        assert_eq!(spawn_count(&w), 6, "A1 + A2 + B1 + B2 + resume attempt + fresh fallback");
+        let spawns = jsonl_lines(&w.dir.join("spawns.jsonl"));
+        let argv_of = |i: usize| {
+            spawns[i].get("argv").and_then(|a| a.as_array()).unwrap().iter().map(|v| v.as_str().unwrap_or("")).collect::<Vec<_>>().join(" ")
+        };
+        assert!(argv_of(4).contains("--resume sess-fake"), "the resume attempt was made first");
+        assert!(!argv_of(5).contains("--resume"), "the fallback spawns fresh");
+        let stdin = jsonl_lines(&w.dir.join("stdinlog.jsonl"));
+        let last = stdin.last().unwrap().get("line").and_then(|l| l.as_str()).unwrap();
+        assert!(last.contains("conversation_history"), "fallback replays the whole conversation: {last}");
+        // 失败 resume 消费的条目不在了；回退的 run 收口时把 B2 的 run 挤出
+        // 池入架（容量 1）——架上 1 条，但已是别的键
+        let shelf = shelf_read();
+        assert!(!shelf.contains_key(&shelved_key), "the failed resume's entry was consumed");
+        assert_eq!(shelf.len(), 1, "the fallback run's completion shelved B2's evicted run");
+        let sessions = claude_sessions().expect("sessions dir");
+        assert!(sessions.join("sess-fake.jsonl").is_file(), "the session file is left for the sweep, not deleted");
+        for var in ["MARIONETTE_FAKE_CLAUDE_MODE", "MARIONETTE_FAKE_SPAWNS", "MARIONETTE_FAKE_STDIN_LOG"] {
+            std::env::remove_var(var);
+        }
+        *TEST_IDLE_MOST.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    }
+
+    #[test]
+    fn shelf_entries_expire_and_dead_ones_are_pruned() {
+        // 过期条目（Go shelfTimer :2780 的惰性对应）查不到且被清掉；没过期
+        // 但会话文件不在的（死条目）也清掉。条目内容是内容哈希的键——死
+        // 了永远死，留着只占容量。
+        let (_gateway, w) = world(None, false);
+        write_shelf_entry(&w, "k-old", ShelfEntry { session: "sess-old".into(), effort: None, at: now_millis() - 2 * 3600 * 1000 });
+        write_shelf_entry(&w, "k-fresh", ShelfEntry { session: "sess-new".into(), effort: None, at: now_millis() });
+        assert_eq!(unshelve("k-old", None), None, "expired entries are not served");
+        let entries = shelf_read();
+        assert!(!entries.contains_key("k-old"), "expired entry pruned");
+        assert!(entries.contains_key("k-fresh"), "fresh entry survives the prune");
+        assert_eq!(unshelve("k-fresh", None), None, "missing session file = dead entry");
+        assert!(shelf_read().is_empty(), "dead entry pruned");
+        // 档位不一致：条目留着（同键同档位的后续回合还能用，1 小时内自然
+        // 过期）；同档位的下一查认领（出架交 session id）
+        let sessions = claude_sessions().expect("sessions dir");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("sess-eff.jsonl"), "{}\n").unwrap();
+        write_shelf_entry(&w, "k-eff", ShelfEntry { session: "sess-eff".into(), effort: Some("high".into()), at: now_millis() });
+        assert_eq!(unshelve("k-eff", Some("low")), None, "effort mismatch does not resume");
+        assert!(shelf_read().contains_key("k-eff"), "entry kept for a same-effort turn");
+        assert_eq!(unshelve("k-eff", Some("high")).as_deref(), Some("sess-eff"), "matching effort claims the entry");
+        assert!(shelf_read().is_empty(), "claimed entry leaves the shelf");
+        let _ = &w;
+    }
+
+    #[test]
+    fn session_paths_follow_the_go_encoding() {
+        // claudeProjectName（Go :482）：字母数字之外的字符全换 `-`；sid
+        // 护栏（Go removeSession :3465 加一档字符域）
+        assert_eq!(claude_project_name(r"C:\Users\a b\AppData\Local\Temp\marionette-claude-work"), "C--Users-a-b-AppData-Local-Temp-marionette-claude-work");
+        assert_eq!(claude_project_name("/tmp/marionette-claude-work"), "-tmp-marionette-claude-work");
+        assert!(sid_ok("3f9c2b1e-4d5a-4f6b-8c7d-2e1f0a9b8c7d"));
+        assert!(!sid_ok(""));
+        assert!(!sid_ok("../escape"));
+        assert!(!sid_ok(r"a\b"));
+        assert!(!sid_ok("a/b"));
+        assert!(!sid_ok("sess dot"));
     }
 
     // ---------------------------------------------------------------
@@ -4020,6 +4680,7 @@ if (mode === "usage") {
                     msg_tool_ids: Vec::new(),
                     msg_stop_reason: None,
                     model_echo: "claude-sonnet-5".into(),
+                    session_id: String::new(),
                     identity: None,
                     effort: None,
                     idle_key: None,
