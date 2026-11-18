@@ -6,10 +6,10 @@ use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
+use std::sync::mpsc::{channel, sync_channel, Receiver, Sender, SyncSender, TrySendError};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Backlog cap for the async info path. Bounded so a stuck disk cannot grow
 /// the queue without limit; when full, info lines are dropped (best-effort by
@@ -22,11 +22,16 @@ const ROTATE_BYTES: u64 = 4 * 1024 * 1024;
 /// Info lines go to a resident writer thread; nothing on the caller side ever
 /// touches the disk or takes a lock. Format happens here (timestamps stay
 /// caller-side, so cross-level ordering is recoverable from the stamps).
-static ASYNC_TX: OnceLock<SyncSender<String>> = OnceLock::new();
+enum WriterCommand {
+    Line(String),
+    Flush(Sender<()>),
+}
 
-fn async_tx() -> &'static SyncSender<String> {
+static ASYNC_TX: OnceLock<SyncSender<WriterCommand>> = OnceLock::new();
+
+fn async_tx() -> &'static SyncSender<WriterCommand> {
     ASYNC_TX.get_or_init(|| {
-        let (tx, rx) = sync_channel::<String>(CHANNEL_BOUND);
+        let (tx, rx) = sync_channel::<WriterCommand>(CHANNEL_BOUND);
         thread::Builder::new()
             .name("devlog-writer".to_string())
             .spawn(move || writer_loop(rx))
@@ -38,38 +43,48 @@ fn async_tx() -> &'static SyncSender<String> {
 /// Resident writer: keeps one open handle, appends each line, rotates by its
 /// own byte counter, flushes periodically so a crash loses at most a moment
 /// of info chatter (warn/error/panic are written synchronously elsewhere).
-fn writer_loop(rx: Receiver<String>) {
+fn writer_loop(rx: Receiver<WriterCommand>) {
     let mut file: Option<File> = None;
     let mut written: u64 = 0;
-    while let Ok(line) = rx.recv() {
-        if file.is_none() {
-            match open_log() {
-                Ok(f) => file = Some(f),
-                Err(_) => continue, // retry on the next line; drop this one
+    while let Ok(command) = rx.recv() {
+        match command {
+            WriterCommand::Flush(ack) => {
+                if let Some(open) = file.as_mut() {
+                    let _ = open.flush();
+                }
+                let _ = ack.send(());
             }
-        }
-        let Some(f) = file.as_mut() else { continue };
-        let _ = f.write_all(line.as_bytes());
-        let _ = f.flush();
-        written += line.len() as u64;
-        if written > ROTATE_BYTES {
-            drop(file.take());
-            if let Ok(path) = log_path() {
-                // 三代轮转：崩溃现场往往在上一代日志里，只留一代会在连续轮转后
-                // 把事故证据冲掉。最旧的 .log.3 先淘汰，再逐代上移。
-                let _ = std::fs::remove_file(path.with_extension("log.3"));
-                let _ = std::fs::rename(
-                    path.with_extension("log.2"),
-                    path.with_extension("log.3"),
-                );
-                let _ = std::fs::rename(
-                    path.with_extension("log.1"),
-                    path.with_extension("log.2"),
-                );
-                let _ = std::fs::rename(&path, path.with_extension("log.1"));
+            WriterCommand::Line(line) => {
+                if file.is_none() {
+                    match open_log() {
+                        Ok(f) => file = Some(f),
+                        Err(_) => continue, // retry on the next line; drop this one
+                    }
+                }
+                let Some(f) = file.as_mut() else { continue };
+                let _ = f.write_all(line.as_bytes());
+                let _ = f.flush();
+                written += line.len() as u64;
+                if written > ROTATE_BYTES {
+                    drop(file.take());
+                    if let Ok(path) = log_path() {
+                        // 三代轮转：崩溃现场往往在上一代日志里，只留一代会在连续轮转后
+                        // 把事故证据冲掉。最旧的 .log.3 先淘汰，再逐代上移。
+                        let _ = std::fs::remove_file(path.with_extension("log.3"));
+                        let _ = std::fs::rename(
+                            path.with_extension("log.2"),
+                            path.with_extension("log.3"),
+                        );
+                        let _ = std::fs::rename(
+                            path.with_extension("log.1"),
+                            path.with_extension("log.2"),
+                        );
+                        let _ = std::fs::rename(&path, path.with_extension("log.1"));
+                    }
+                    written = 0;
+                    file = open_log().ok();
+                }
             }
-            written = 0;
-            file = open_log().ok();
         }
     }
 }
@@ -107,13 +122,7 @@ fn now_iso() -> String {
 }
 
 /// Append one line to the local dev diary.
-pub fn append(
-    source: &str,
-    level: &str,
-    session_id: &str,
-    summary: &str,
-    detail: Option<&str>,
-) {
+pub fn append(source: &str, level: &str, session_id: &str, summary: &str, detail: Option<&str>) {
     append_inner(source, level, session_id, summary, detail);
 }
 
@@ -128,19 +137,17 @@ pub fn append_from_panic_hook(summary: &str) {
     append_inner("panic", "error", "", summary, None);
 }
 
-fn append_inner(
-    source: &str,
-    level: &str,
-    session_id: &str,
-    summary: &str,
-    detail: Option<&str>,
-) {
+fn append_inner(source: &str, level: &str, session_id: &str, summary: &str, detail: Option<&str>) {
     let mut line = format!(
         "[{ts}] [{level}] [{source}] session={session} {summary}",
         ts = now_iso(),
         level = level,
         source = source,
-        session = if session_id.is_empty() { "-" } else { session_id },
+        session = if session_id.is_empty() {
+            "-"
+        } else {
+            session_id
+        },
         summary = sanitize_one_line(summary),
     );
     if let Some(detail) = detail {
@@ -156,7 +163,7 @@ fn append_inner(
     // touch the disk on the caller's thread. Bounded channel, never blocks:
     // a full queue drops the line instead of stalling dispatch.
     if !matches!(level, "error" | "warn") && source != "panic" {
-        match async_tx().try_send(line) {
+        match async_tx().try_send(WriterCommand::Line(line)) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {} // disk stuck; drop info line
             Err(TrySendError::Disconnected(_)) => {}
@@ -169,6 +176,16 @@ fn append_inner(
     if let Ok(mut file) = open_log() {
         let _ = file.write_all(line.as_bytes());
         let _ = file.flush();
+    }
+}
+
+/// Best-effort barrier for diagnostic export. The queue stays bounded and the
+/// caller never waits indefinitely; when the writer is saturated the report is
+/// still useful because every info line already flushes as it is written.
+pub(crate) fn flush_async(timeout: Duration) {
+    let (ack_tx, ack_rx) = channel();
+    if async_tx().try_send(WriterCommand::Flush(ack_tx)).is_ok() {
+        let _ = ack_rx.recv_timeout(timeout);
     }
 }
 
@@ -281,10 +298,25 @@ mod tests {
     fn clipping_a_long_multibyte_detail_does_not_panic() {
         let detail = "战".repeat(1334); // 4002 bytes; byte 4000 is mid-character
         assert!(detail.len() > 4000);
-        assert!(!detail.is_char_boundary(4000), "test must exercise the bad offset");
+        assert!(
+            !detail.is_char_boundary(4000),
+            "test must exercise the bad offset"
+        );
 
-        append("test", "info", "test-session", "long multibyte detail", Some(&detail));
-        append("test", "warn", "test-session", "long multibyte detail", Some(&detail));
+        append(
+            "test",
+            "info",
+            "test-session",
+            "long multibyte detail",
+            Some(&detail),
+        );
+        append(
+            "test",
+            "warn",
+            "test-session",
+            "long multibyte detail",
+            Some(&detail),
+        );
     }
 
     #[test]
@@ -293,10 +325,17 @@ mod tests {
         let clipped = clip_to_char_boundary(&cjk, 4000);
         assert!(clipped.len() <= 4000);
         assert_eq!(clipped.len() % 3, 0, "must end on a whole character");
-        assert!(cjk.starts_with(clipped), "must be a prefix, not a re-encode");
+        assert!(
+            cjk.starts_with(clipped),
+            "must be a prefix, not a re-encode"
+        );
 
         assert_eq!(clip_to_char_boundary("short", 4000), "short");
-        assert_eq!(clip_to_char_boundary("战战战", 1), "", "no room for one char");
+        assert_eq!(
+            clip_to_char_boundary("战战战", 1),
+            "",
+            "no room for one char"
+        );
     }
 
     // Asserts only on this test's own command name — the registry is global and
@@ -325,4 +364,17 @@ pub fn log_path_display() -> String {
     log_path()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| "%USERPROFILE%\\.marionette\\logs\\dev.log".to_string())
+}
+
+/// Current log first, then rotated generations. Diagnostic export deliberately
+/// reads all four so a crash followed by continued chatter does not rotate the
+/// useful pre-crash tail out of reach.
+pub(crate) fn log_file_paths() -> Result<Vec<PathBuf>, String> {
+    let current = log_path()?;
+    Ok(vec![
+        current.clone(),
+        current.with_extension("log.1"),
+        current.with_extension("log.2"),
+        current.with_extension("log.3"),
+    ])
 }

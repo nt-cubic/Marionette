@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: How to export a diagnostic report
+    url: https://github.com/nt-cubic/Marionette/blob/main/docs/guides/diagnostics.md
+    about: Use Ctrl K in Marionette before opening a bug report.

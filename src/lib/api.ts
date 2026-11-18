@@ -811,6 +811,27 @@ export async function getDebugLogPath(): Promise<string> {
   }
 }
 
+export type DiagnosticSaveResult = {
+  path: string;
+  bytes: number;
+  redactions: number;
+  logFiles: number;
+};
+
+/**
+ * Ask Rust to collect the local diary, environment facts, and the supplied UI
+ * snapshot into one redacted Markdown report. A null result means the native
+ * save dialog was cancelled.
+ */
+export async function saveDiagnosticReport(request: {
+  schemaVersion: 1;
+  summary: string;
+  uiState: unknown;
+}): Promise<DiagnosticSaveResult | null> {
+  if (!isTauriRuntime()) return null;
+  return invoke<DiagnosticSaveResult | null>("save_diagnostic_report", { request });
+}
+
 export async function generateHandoff(params: {
   projectId: string;
   sessionId: string;

@@ -19,6 +19,7 @@ mod web_chat_bridge;
 mod data_dir_gate;
 mod debug_log;
 mod desktop_notify;
+mod diagnostics;
 mod dock_support;
 mod drag_text;
 mod dsh_bridge;
@@ -704,6 +705,7 @@ fn main() {
             commands::update_acp_session,
             commands::append_debug_log,
             commands::debug_log_path,
+            diagnostics::save_diagnostic_report,
             commands::probe_provider_usage,
             commands::probe_acp_billing,
             commands::generate_handoff,

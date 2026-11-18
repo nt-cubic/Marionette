@@ -2,6 +2,10 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./app/App";
 import {
+  installDiagnosticCapture,
+  recordUiError,
+} from "./lib/diagnosticCapture";
+import {
   chiefProbeDrive,
   chiefProbeReplay,
   chiefProbeStop,
@@ -43,6 +47,14 @@ class RootErrorBoundary extends React.Component<
 
   static getDerivedStateFromError(error: Error) {
     return { error };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    recordUiError({
+      source: "ui-react-boundary",
+      message: error.message || "React root boundary caught an error",
+      detail: [error.stack, info.componentStack].filter(Boolean).join("\n\n"),
+    });
   }
 
   render() {
@@ -98,6 +110,8 @@ class RootErrorBoundary extends React.Component<
     return this.props.children;
   }
 }
+
+installDiagnosticCapture();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

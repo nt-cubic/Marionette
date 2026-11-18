@@ -34,4 +34,6 @@ export const zh = {
   "palette.openModelShareHint": "跨 agent 的模型与额度",
   "palette.openProxy": "网络代理",
   "palette.openProxyHint": "HTTP / SOCKS 代理",
+  "palette.exportDiagnostics": "导出诊断报告…",
+  "palette.exportDiagnosticsHint": "日志与环境，自动脱敏",
 } as const;

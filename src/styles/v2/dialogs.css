@@ -1029,3 +1029,100 @@
 .project-dialog {
   border-top: 2px solid var(--accent);
 }
+
+/* Diagnostic export: a short issue-note form followed by the report scope.
+   The surface stays on the shared project-dialog shell and v2 tokens. */
+.diagnostic-dialog {
+  width: min(520px, 100%);
+  gap: 16px;
+}
+
+.diagnostic-dialog__body {
+  display: grid;
+  gap: 14px;
+}
+
+.diagnostic-dialog__lead {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.diagnostic-dialog__field {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  min-height: 96px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.diagnostic-dialog__field:focus-within {
+  border-bottom-color: var(--accent);
+}
+
+.diagnostic-dialog__field > span {
+  padding-top: 5px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
+.diagnostic-dialog__field textarea {
+  width: 100%;
+  min-height: 78px;
+  max-height: 180px;
+  padding: 4px 0;
+  resize: vertical;
+  border: 0;
+  outline: 0;
+  color: var(--text-strong);
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.diagnostic-dialog__field textarea::placeholder {
+  color: var(--text-faint);
+}
+
+.diagnostic-dialog__scope {
+  display: grid;
+  gap: 7px;
+}
+
+.diagnostic-dialog__scope strong {
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.diagnostic-dialog__scope ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.diagnostic-dialog__scope li {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.diagnostic-dialog__scope p {
+  margin: 2px 0 0;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.diagnostic-dialog .project-dialog__submit:disabled,
+.diagnostic-dialog .project-dialog__cancel:disabled,
+.diagnostic-dialog .project-dialog__close:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

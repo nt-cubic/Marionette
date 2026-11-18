@@ -16,6 +16,7 @@
 
 | 位置 | 性质 |
 |---|---|
+| [guides/diagnostics.md](./guides/diagnostics.md) | **诊断报告**：用户如何在 Ctrl K 导出脱敏日志、报告字段与隐私边界、dev.log 轮转，以及自动化可读取的 manifest 契约 |
 | [`guides/ui-language.md`](./guides/ui-language.md) | **视觉语言**：对话流就是设计系统（3px 卡、You 卡左边条、composer 芯片）。改任何用户可见界面前先读。技能 `.grok/skills/marionette-ui` |
 | [`guides/i18n-guide.md`](./guides/i18n-guide.md) | **i18n 规范**：中英双语的词典/`ts!` 用法、术语表、探测串双语并集红线与验收命令（2026-10-30 落地） |
 | [`guides/model-library.md`](./guides/model-library.md) | **模型与来源（现行行为）**：模型共享浮层「模型与来源 · 显示和排序」——按来源/账号区分模型、直连/原生/引擎入口的合并规则（同名不作去重依据） |
@@ -50,6 +51,7 @@
 
 | 位置 | 性质 |
 |---|---|
+| [plans/plan-github-maintenance.md](./plans/plan-github-maintenance.md) | **路线图（草案，2026-11-18）**：GitHub Issue / PR 自动 triage、隔离复现、draft PR 修复和 PR 维护循环；明确只读起步、外部文本数据化、不自动 merge/release。 |
 | [`plans/plan-edge-dock.md`](./plans/plan-edge-dock.md) | 贴边停靠设计稿（阶段 0–3 已落地，现行行为以 `CURRENT.md`「贴边停靠」与 `AGENTS.md` 红线为准；文内记了与实现的偏差）。**悬浮球计划已废弃并入本计划**（原件 [`archive/plan-orb-assistant.md`](./archive/plan-orb-assistant.md)） |
 | [`plans/plan-codeg-borrow.md`](./plans/plan-codeg-borrow.md) | **路线图（2026-10-25）**：从 Codeg 借什么、什么不借——对照现状（代理层/跨 agent handoff/12 parser/registry 安装/Ctrl K 搜索已对齐）分 P0 速赢→P1 对话流骨架→P2 数据与能力分发→P3 协作与远程→P4 按需，含明确不做清单、依赖关系与工程纪律 |
 | [`plans/plan-browser-computer-use.md`](./plans/plan-browser-computer-use.md) | **实施案（2026-10-31 定稿）**：浏览器共享 + Computer Use 两批全量方案——child webview（wry resize-subclass 坑）、vendor aria 引擎、localhost HTTP MCP（每会话 token，zcode 通吃）、授权与对话权限模式吻合（agent 自开页自动读/Control 走权限卡）、CU 的 cua-driver 按需下载 + helper 单二进制 + 按键白名单。批次 1（文档标签页）已落地，行为见 `CURRENT.md` |

@@ -13,6 +13,14 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
 - 发布版本号：`tools\bump-version.ps1`（或 `tools\bump-version.bat`）
 - 演示实例 / 拍图：`tools\demo-instance.bat`（隔离 profile + 预置对话，窗口在 `%TEMP%\marionette-demo`，抓图用 `PrintWindow`；参数与抓图禁忌见 `tools/README.md`）
 
+## 诊断报告（2026-11-18）
+
+- 用户入口在 Ctrl K 命令面板：「导出诊断报告」。保存前填写时间/步骤/预期/实际，得到可附到 GitHub Issue 的 Markdown 文件。
+- 后端实现：src-tauri/src/diagnostics.rs；日志采集与 best-effort flush barrier 在 debug_log.rs。报告带 schema v1 JSON manifest，读取最近四代日志、UI/运行时快照、最近错误索引，不复制完整对话和项目文件；前端 src/lib/diagnosticCapture.ts 把 window error / unhandledrejection / React 根边界落成 ui-* 日志，并暂存到 sessionStorage 以便重载后导出。
+- 脱敏覆盖常见 API key/token、Authorization/Bearer、URL 凭据、JWT、PEM 私钥、用户 home 路径和 UI 敏感字段；新增日志源先加脱敏规则与测试。
+- 日志仍在 %USERPROFILE%\.marionette\logs\dev.log，轮转为 dev.log.1–3。回归：在 src-tauri 下运行 cargo test --bin marionette diagnostics。
+- 用户可见文案在 locales/parts/{palette,fe-dialogs}.{zh,en}.ts；完整字段/隐私边界见 docs/guides/diagnostics.md，GitHub 自动维护路线见 docs/plans/plan-github-maintenance.md。
+
 ## 目录
 
 - 前端：`src/`（React；会话流处理核心在 `src/lib/acpTranscript.ts`）

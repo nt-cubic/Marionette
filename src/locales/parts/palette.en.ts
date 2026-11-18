@@ -36,4 +36,6 @@ export const en = {
   "palette.openModelShareHint": "Models and quota across agents",
   "palette.openProxy": "Network proxy",
   "palette.openProxyHint": "HTTP / SOCKS proxy",
+  "palette.exportDiagnostics": "Export diagnostic report…",
+  "palette.exportDiagnosticsHint": "Logs and environment, redacted",
 } satisfies Record<keyof typeof zh, string>;

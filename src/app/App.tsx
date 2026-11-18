@@ -44,6 +44,9 @@ import { cacheEngineQuota, cachedEngineQuota } from "../lib/quotaCache";
 import { TELEGRAM_COMMAND_EVENT, telegramRemoteResult, type TelegramCommand } from "../lib/api";
 import { invalidateBridgeModels } from "../lib/bridge";
 import { useLatestCallback } from "../lib/useLatestCallback";
+import { getCachedAgentVersions } from "../lib/agentVersionCache";
+import { buildDiagnosticUiState, type DiagnosticUiState } from "../lib/diagnostics";
+import { lastCapturedUiError } from "../lib/diagnosticCapture";
 import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, engineModelImages, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, killAcpTerminal, listAcpTerminals, listAcpTerminalOutputs, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, loadTranscriptPage, loadTranscriptWindow, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, quitApp, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, setUiLocale, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, trimSessionWorkingSet, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, chiefTeeConsume, chiefTeeCursor, chiefTeeReplay, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID } from "../lib/api";
 import {
   bindDetachedWindowReaper,
@@ -307,6 +310,7 @@ import { type PlanApprovalPrompt } from "../components/PlanApprovalCard";
 import { UnifiedDiffView } from "../components/UnifiedDiffView";
 import { ProjectShelf } from "../components/ProjectShelf";
 import { CommandPalette } from "../components/CommandPalette";
+import { DiagnosticDialog } from "../components/DiagnosticDialog";
 import { withViewTransition } from "../lib/viewTransition";
 import { ToastStack } from "../components/ToastStack";
 import { SessionTabs, SessionView, type ForkAnchor, type UserMessageAnchor } from "../components/SessionView";
@@ -649,6 +653,8 @@ export function App() {
   const [leftCollapsed, setLeftCollapsed] = useState(IS_DETACHED_WINDOW);
   /** Ctrl+K palette: jump to any dialog / project, or run a shell action. */
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [diagnosticOpen, setDiagnosticOpen] = useState(false);
+  const [diagnosticSnapshot, setDiagnosticSnapshot] = useState<DiagnosticUiState | null>(null);
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const rightCollapsedRef = useRef(rightCollapsed);
   rightCollapsedRef.current = rightCollapsed;
@@ -5198,6 +5204,73 @@ export function App() {
   const currentEvents = useMemo(() => {
     return eventsBySessionRef.current.get(displaySession.id) ?? EMPTY_EVENTS;
   }, [displaySessionTick, displaySession.id]);
+
+  const openDiagnosticDialog = useLatestCallback(() => {
+    let lastVisibleError: DiagnosticUiState["lastVisibleError"] = null;
+    for (let index = currentEvents.length - 1; index >= 0; index -= 1) {
+      const event = currentEvents[index]!;
+      if (event.type === "notice" && event.severity === "error") {
+        lastVisibleError = {
+          source: "transcript-notice",
+          message: [event.title, event.description].filter(Boolean).join(": "),
+          capturedAt: event.createdAt,
+        };
+        break;
+      }
+    }
+    const activeBanner = agentBanner[currentAgent.id]?.message;
+    if (!lastVisibleError && activeBanner) {
+      lastVisibleError = {
+        source: agentBanner[currentAgent.id]?.kind || "agent-banner",
+        message: activeBanner,
+        capturedAt: new Date().toISOString(),
+      };
+    }
+
+    const page = dockActive
+      ? "dock:" + (dockPage ?? "chat")
+      : councilActive
+        ? "council"
+        : memoActive
+          ? "memo"
+          : usageActive
+            ? "usage"
+            : browserSurfaceRequested
+              ? "browser"
+              : activeDocPath
+                ? "document"
+                : workspaceSurfaceRequested
+                  ? "surface"
+                  : "chat";
+
+    setDiagnosticSnapshot(
+      buildDiagnosticUiState({
+        surfaceKind: IS_DETACHED_WINDOW ? "detached" : "main",
+        page,
+        dockMode: dockActive
+          ? dockExpanded
+            ? "docked-expanded"
+            : "docked-hidden"
+          : "floating",
+        splitPanes: workspaceSplit ? leafCount(splitState) : 1,
+        openTabs: openSessionIds.length,
+        leftCollapsed,
+        rightCollapsed,
+        locale: getLocale(),
+        theme,
+        sessions: availableSessions,
+        activeSession: currentSession ?? null,
+        activeAgentLabel: currentAgent.label,
+        activeModelId,
+        activeModeId: sessionCapabilities?.currentMode ?? null,
+        activeEffortId: sessionCapabilities?.currentEffortId ?? null,
+        agentVersions: getCachedAgentVersions(),
+        lastVisibleError,
+        lastClientError: lastCapturedUiError(),
+      }),
+    );
+    setDiagnosticOpen(true);
+  });
 
   // 「图片」小节：本对话里给 agent 看过的图（工具读图 / 截图 + 你附的），从现有事件
   // 现算（节流，不新增存储）。能不能看图是三态，只信 agent / 模型目录报的，不按名字猜。
@@ -10349,6 +10422,12 @@ export function App() {
                   openUsageTab();
                 },
               },
+              {
+                id: "export-diagnostics",
+                label: t("palette.exportDiagnostics"),
+                hint: t("palette.exportDiagnosticsHint"),
+                run: openDiagnosticDialog,
+              },
               ...(!memoActive && !councilActive && displaySession.id && !displaySession.id.startsWith("session-empty-")
                 ? [
                     {
@@ -10523,6 +10602,16 @@ export function App() {
                 run: shelfStable.onQuitApp,
               },
             ]}
+          />
+        )}
+
+        {diagnosticOpen && diagnosticSnapshot && (
+          <DiagnosticDialog
+            uiState={diagnosticSnapshot}
+            onClose={() => {
+              setDiagnosticOpen(false);
+              setDiagnosticSnapshot(null);
+            }}
           />
         )}
 

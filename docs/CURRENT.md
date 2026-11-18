@@ -116,7 +116,7 @@ Agent 在回合结束后自己续跑（它起的后台指令回来了，触发�
   带超时；种子引擎短路 TUI/quota 等完整 CLI，自定义来源走种子自带的 `provider` 命令；菜单打开不再触发网络刷新排队。
 - **孤儿引擎自动收割**：上一代实例异常死亡留下的引擎进程（父进程已死、镜像在我们
   目录下）在下次启动时回收，不再占着默认端口漂几个小时。
-- **可诊断性**：前端每 60 秒记一条 ui-heartbeat；测试运行不再污染真实 dev.log。
+- **可诊断性**：前端每 60 秒记一条 ui-heartbeat，window error / unhandledrejection / React 根边界写入 ui-* 日志，并把最近一条暂存在 sessionStorage，重载后仍可进报告；测试运行不再污染真实 dev.log。Ctrl K 的「导出诊断报告」会把最近四代日志（总量上限 8 MB）、App/系统/WebView/当前会话与 agent 快照、最近错误索引和机器可读 manifest 写成一个 Markdown 附件；常见密钥、Authorization、token 和用户目录在保存前脱敏，不复制完整对话、项目文件、凭据库或进程环境块。字段与提交流程见 guides/diagnostics.md。
 
 ## 文档标签页（2026-11-17 并入通用 Surface）
 

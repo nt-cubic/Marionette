@@ -1,0 +1,103 @@
+name: Bug report / 问题反馈
+description: Report a reproducible crash, error, rendering issue, or agent failure.
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. A diagnostic report lets us correlate the
+        issue with the ACP, engine, UI, and watchdog logs without asking several
+        rounds of follow-up questions.
+
+        先导出诊断报告，再把生成的 .md 文件拖进这个 Issue。
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened? / 问题是什么
+      description: One or two sentences. Include the visible error text if there is one.
+      placeholder: The app stopped updating after I switched models...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce / 复现步骤
+      description: List the shortest sequence that triggers the problem.
+      placeholder: |
+        1. Open ...
+        2. Select ...
+        3. Send ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result / 预期结果
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result / 实际结果
+      description: Include the approximate time and whether it happens every time.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area / 影响范围
+      multiple: true
+      options:
+        - Agent / ACP connection
+        - Chat / transcript rendering
+        - Edge dock / memo box
+        - Browser / computer use
+        - Model sharing / provider credentials
+        - App update / installation
+        - Performance / freeze / crash
+        - Other
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        ## Attach the diagnostic report
+
+        1. Press Ctrl+K.
+        2. Search for "诊断" or "diagnostic".
+        3. Choose **导出诊断报告 / Export diagnostic report**.
+        4. Add the relevant time, steps, expected result, and actual result.
+        5. Save the .md file, review it, then drag it into this issue.
+
+        The report contains app/runtime metadata and the latest four local log
+        generations. Common keys, tokens, authorization headers, and the user
+        profile path are redacted. It does not include full conversations,
+        project files, credential stores, or the process environment block.
+
+  - type: checkboxes
+    id: diagnostics
+    attributes:
+      label: Diagnostic checklist
+      options:
+        - label: I attached the Marionette diagnostic report.
+          required: true
+        - label: I reviewed the report and did not find credentials or private data that must be removed.
+          required: true
+        - label: I generated this report from the same installed version where the problem occurred.
+          required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context / 其他线索
+      description: Screenshots, related issues, workarounds, or the first known bad release.
+    validations:
+      required: false
