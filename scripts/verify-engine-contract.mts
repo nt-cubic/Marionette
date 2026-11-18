@@ -123,9 +123,21 @@ const fixture = createServer((req, res) => {
       if (key === "fixture-key-2") { reply(500, { error: { message: "fixture member down", type: "server_error" } }); return; }
       if (marker === "script:429") { res.setHeader("Retry-After", "7"); reply(429, { error: { message: "rate limited", type: "rate_limit_error", code: "rate_limit_exceeded" } }); return; }
       if (marker === "script:tool") {
+        // yield_ms 2500.0: models write whole numbers with a zero fraction;
+        // Codex reads them as u64 and serde refuses the whole call — the
+        // gateway must shed the fraction (D9/D10, Go grok_integral.go).
+        // Streamed variant cuts the arguments mid-number so delta assembly
+        // and the fraction rule must agree.
+        if (parsed.stream === true) {
+          chatStream(res, [
+            { role: "assistant", tool_calls: [{ index: 0, id: "call_fx_1", type: "function", function: { name: "get_weather", arguments: "{\"city\":\"Pa" } }] },
+            { tool_calls: [{ index: 0, function: { arguments: "ris\",\"yield_ms\":2500.0}" } }] },
+          ], { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 });
+          return;
+        }
         reply(200, {
           id: "chatcmpl-fx", object: "chat.completion", created: 1,
-          choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [{ id: "call_fx_1", type: "function", function: { name: "get_weather", arguments: "{\"city\":\"Paris\"}" } }] }, finish_reason: "tool_calls" }],
+          choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [{ id: "call_fx_1", type: "function", function: { name: "get_weather", arguments: "{\"city\":\"Paris\",\"yield_ms\":2500.0}" } }] }, finish_reason: "tool_calls" }],
           usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
         });
         return;
@@ -472,6 +484,8 @@ try {
     assert.equal(call.function.name, "get_weather", `tool name changed in transit: ${JSON.stringify(call)}`);
     const args = JSON.parse(call.function.arguments);
     assert.equal(args.city, "Paris", `tool arguments corrupted: ${call.function.arguments}`);
+    // Zero-fraction shedding on the DIRECT chat relay is D10 (pending until
+    // the Rust engine grows intTidy, batch 3); the translate paths are D9.
 
     const beforeFollow = vendorBodies.length;
     const follow = await post("/v1/chat/completions", {
@@ -598,8 +612,7 @@ try {
 
   // D8: failover inside a group — the permanently-broken member (key 2) must
   // not take the turn down; the healthy member answers.
-  {
-    await call(["provider", "add", "acct2", "id=acct2", "name=Broken member", `url=http://127.0.0.1:${fixturePort}/v1`, "key=fixture-key-2", "models=alpha-model"]);
+  {    await call(["provider", "add", "acct2", "id=acct2", "name=Broken member", `url=http://127.0.0.1:${fixturePort}/v1`, "key=fixture-key-2", "models=alpha-model"]);
     await call(["group", "add", "grp2", "models=acct2/alpha-model,acct/alpha-model", "id=alias-2", "pick=acct2/alpha-model"]);
     const res = await post("/v1/chat/completions", { model: "group/alias-2", stream: false, messages: [{ role: "user", content: "failover please" }] });
     const text = await res.text();
@@ -608,6 +621,38 @@ try {
     await call(["group", "rm", "alias-2"]);
     await call(["provider", "rm", "acct2"]);
   }
+
+  // D9: zero-fraction shedding on the TRANSLATE paths — a vendor writing
+  // "yield_ms":2500.0 in a tool call must reach Codex as 2500 (serde refuses
+  // the floating-point form whole-call; Go grok_integral.go #1431/#3152).
+  {
+    const res = await post("/v1/responses", {
+      model: `${id}/alpha-model`, stream: false,
+      tools: [{ type: "function", name: "get_weather", parameters: { type: "object", properties: { city: { type: "string" } } } }],
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "script:tool" }] }],
+    });
+    const text = await res.text();
+    assert.equal(res.status, 200, `D9 responses tool call failed: ${res.status} ${text.slice(0, 300)}`);
+    const j = JSON.parse(text) as { output: { type: string; arguments?: string }[] };
+    const fn = (j.output ?? []).find((o) => o.type === "function_call");
+    assert.ok(fn?.arguments, `no function_call in reply: ${text.slice(0, 300)}`);
+    assert.match(fn!.arguments!, /"yield_ms":2500[,\}]/, `zero fraction must be shed (2500.0 → 2500): ${fn!.arguments}`);
+  }
+
+  // D10: zero-fraction shedding on the DIRECT chat relay (Go intTidy). The
+  // Rust engine is pending this until batch 3's relay rewriter.
+  await pending("D10", async () => {
+    const res = await post("/v1/chat/completions", {
+      model: `${id}/alpha-model`, stream: false,
+      tools: [{ type: "function", function: { name: "get_weather", parameters: { type: "object" } } }],
+      messages: [{ role: "user", content: "script:tool" }],
+    });
+    const text = await res.text();
+    assert.equal(res.status, 200, `D10 direct tool call failed: ${res.status} ${text.slice(0, 300)}`);
+    const j = JSON.parse(text) as { choices: { message: { tool_calls?: { function: { arguments: string } }[] } }[] };
+    const args = j.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments ?? "";
+    assert.match(args, /"yield_ms":2500[,\}]/, `zero fraction must be shed on relay too: ${args}`);
+  });
 
   // C6: rm of an unknown provider reports "no provider" (the shell reads that
   // as "already recycled"); rm of the real one drops its models.

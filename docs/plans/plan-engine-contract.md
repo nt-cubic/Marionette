@@ -84,6 +84,8 @@ Rust 引擎在 `CONTRACT_PENDING` 环境变量列出的编号是已知缺口（�
 | D6 | **错误保真**：厂商 429 的状态码与 `Retry-After` 头透传到 agent；`/v1/messages` 的厂商错误体必须是 anthropic 形状（`{"type":"error",…}`），不透传 chat 原文 |
 | D7 | **断流底线**（Rust 引擎当前 PENDING）：上游 SSE 中途断开，网关欠 agent 一个「可判定的收尾」——续答到 [DONE]，或显式 error 事件；裸 EOF 让 agent 无法区分失败 |
 | D8 | **组内失败转移**：组 pick 的成员 5xx/不可达时，同轮内换下一个成员重发，agent 拿到 200 而不是失败 |
+| D9 | **工具参数零分数（翻译路径）**：厂商在工具调用里写 `"yield_ms":2500.0`，翻译到 responses/messages 方言时必须是 `2500`（Codex serde 拒浮点整单，Go grok_integral.go #1431/#3152） |
+| D10 | **工具参数零分数（chat 直通）**（Rust 引擎当前 PENDING，批 3 intTidy）：同上，但作用于 chat→chat 直通流的 tool_calls 参数改写 |
 
 ### C6 CLI 动词（`run_magpie_cli`，10s 超时，stderr 参与判错）
 
@@ -132,6 +134,8 @@ Rust 引擎在 `CONTRACT_PENDING` 环境变量列出的编号是已知缺口（�
 | D6 错误保真（429 + Retry-After + anthropic 形状错误体） | C5.1 |
 | D7 断流底线（cut 流必须可判定收尾；rust PENDING 至批 3） | C5.1 |
 | D8 组内失败转移（坏成员同轮换好成员） | C5.1 |
+| D9 工具参数零分数——翻译路径（2500.0 → 2500） | C5.1 |
+| D10 工具参数零分数——chat 直通（rust PENDING 至批 3 intTidy） | C5.1 |
 
 沙箱：exe 拷进临时目录 + `.portable` 文件（beside-exe 落盘，同
 `verify-model-source-engine.mjs` 模式），env `MAGPIE_NO_ACCOUNTS=1 MAGPIE_NO_STATS=1
