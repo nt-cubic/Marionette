@@ -21,6 +21,21 @@ fn sandbox_root(name: &str) -> std::path::PathBuf {
     dir
 }
 
+#[test]
+fn bootstrap_queue_keeps_only_the_latest_prompt() {
+    let guard = lock_sandbox();
+    reset_for_tests();
+    queue_bootstrap_text("session_bootstrap", "old");
+    queue_bootstrap_text("session_bootstrap", "new");
+    assert_eq!(pending_user_count("session_bootstrap"), 1);
+    assert_eq!(
+        pop_bootstrap_text("session_bootstrap").as_deref(),
+        Some("new")
+    );
+    reset_for_tests();
+    drop(guard);
+}
+
 ///Chief 注册表：显式注册 → 是；config 引用 → 是；其它 → 否。
 #[test]
 fn chief_registry_gates_sessions() {

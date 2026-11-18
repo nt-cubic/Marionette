@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 const STAFF_REGISTRY_VERSION: u32 = 1;
+pub const DEFERRED_BOOTSTRAP_VERSION: u32 = u32::MAX;
 const MAX_STAFF: usize = 128;
 const MAX_STAFF_FIELD_BYTES: usize = 16 * 1024;
 const MAX_ALLOWED_PROJECTS: usize = 128;
@@ -239,6 +240,36 @@ impl Default for StaffProfile {
 }
 
 impl StaffProfile {
+    /// First-run example assistant. It is a real persistent staff profile, but
+    /// deliberately starts without project access and defers its bootstrap
+    /// prompt until the user first opens the conversation.
+    pub fn starter(agent_id: &str) -> Self {
+        let mut profile = Self::default();
+        profile.name = "Mari".to_string();
+        profile.title = crate::ts!("你的助手", "Your assistant");
+        profile.persona = crate::ts!(
+            "你是 Mari，用户的本地助手。先理解目标，再决定自己处理还是请项目里的 agent 执行。\
+             汇报要短，结论尽量带文件、测试或 diff 证据。只在答案会改变结果时提问。\
+             没有用户任务或已批准的事时保持待机，不制造工作。",
+            "You are Mari, the user's local assistant. Understand the goal first, then decide \
+             whether to handle it yourself or delegate to an agent working in a project. Keep \
+             reports short and ground conclusions in files, tests, or diffs when possible. Ask \
+             only when the answer changes what you should do. Stay idle when there is no user task \
+             or approved follow-up; do not invent work."
+        );
+        profile.agent_id = agent_id.to_string();
+        profile.bootstrap_version = DEFERRED_BOOTSTRAP_VERSION;
+        profile.policy.allowed_projects.clear();
+        profile.policy.autonomy = StaffAutonomy::Assisted;
+        profile.policy.max_active_tasks = 1;
+        profile.policy.allow_background_work = true;
+        profile.policy.allow_telegram = false;
+        profile.policy.paused_until_user_resumes = false;
+        profile.normalized()
+    }
+}
+
+impl StaffProfile {
     pub fn normalized(mut self) -> Self {
         self.staff_id = self.staff_id.trim().to_string();
         self.name = self.name.trim().to_string();
@@ -303,6 +334,9 @@ pub struct StaffRegistry {
     pub version: u32,
     /// 0 = legacy single-Chief migration has not run.
     pub legacy_migration_completed_at: u64,
+    /// Set once after the starter assistant is seeded (or an existing roster
+    /// proves this install needs no starter). Deletion must not reseed it.
+    pub starter_seeded_at: u64,
     /// Host-wide emergency stop; new staff inherit it immediately.
     pub paused_until_user_resumes: bool,
     pub staff: Vec<StaffProfile>,
@@ -313,6 +347,7 @@ impl Default for StaffRegistry {
         Self {
             version: STAFF_REGISTRY_VERSION,
             legacy_migration_completed_at: 0,
+            starter_seeded_at: 0,
             paused_until_user_resumes: false,
             staff: Vec::new(),
         }
@@ -455,6 +490,10 @@ impl StaffRegistry {
         self.staff.iter().map(|profile| profile.staff_id.as_str())
     }
 
+    pub fn is_corrupt(&self) -> bool {
+        self.legacy_migration_completed_at == CORRUPT_REGISTRY_MARKER
+    }
+
     /// 旧版只有单个 `config.chiefSessionId`。只创建一个稳定员工；已有
     /// 注册表时该函数返回注册表本身，调用方不应在启动恢复中重复迁移。
     pub fn from_legacy_chief_session(session_id: Option<&str>) -> Self {
@@ -485,6 +524,7 @@ impl StaffRegistry {
         Self {
             version: STAFF_REGISTRY_VERSION,
             legacy_migration_completed_at: now_ms(),
+            starter_seeded_at: 0,
             paused_until_user_resumes: false,
             staff: vec![profile],
         }
@@ -612,6 +652,7 @@ fn decode_registry(raw: &str) -> Result<StaffRegistry, String> {
         StaffRegistry {
             version: STAFF_REGISTRY_VERSION,
             legacy_migration_completed_at: 0,
+            starter_seeded_at: 0,
             paused_until_user_resumes: false,
             staff,
         }
@@ -626,6 +667,7 @@ fn load_unlocked() -> StaffRegistry {
     let corrupt = || StaffRegistry {
         version: STAFF_REGISTRY_VERSION,
         legacy_migration_completed_at: CORRUPT_REGISTRY_MARKER,
+        starter_seeded_at: CORRUPT_REGISTRY_MARKER,
         paused_until_user_resumes: false,
         staff: Vec::new(),
     };
@@ -774,12 +816,14 @@ mod tests {
         let root = sandbox("roundtrip");
         set_root_override_for_tests(Some(root.clone()));
         let mut registry = StaffRegistry::new();
+        registry.starter_seeded_at = 1234;
         registry.add(profile("staff_a", "session_a")).unwrap();
         assert!(registry.add(profile("staff_a", "session_b")).is_err());
         assert!(registry.add(profile("staff_b", "session_a")).is_err());
         save(&registry).unwrap();
         let loaded = load();
         assert_eq!(loaded.staff.len(), 1);
+        assert_eq!(loaded.starter_seeded_at, 1234);
         assert!(loaded.is_staff_session("session_a"));
         let json = std::fs::read_to_string(staff_path().unwrap()).unwrap();
         assert!(json.contains("\"staffId\""));
@@ -790,8 +834,25 @@ mod tests {
         let corrupt = load();
         assert!(corrupt.staff.is_empty());
         assert_eq!(corrupt.legacy_migration_completed_at, CORRUPT_REGISTRY_MARKER);
+        assert!(corrupt.is_corrupt());
         set_root_override_for_tests(None);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn starter_profile_is_ready_to_chat_without_extra_setup() {
+        let profile = StaffProfile::starter("opencode");
+        assert_eq!(profile.name, "Mari");
+        assert_eq!(profile.agent_id, "opencode");
+        assert!(profile.model.is_none());
+        assert_eq!(profile.bootstrap_version, DEFERRED_BOOTSTRAP_VERSION);
+        assert!(profile.policy.allowed_projects.is_empty());
+        assert_eq!(profile.policy.autonomy, StaffAutonomy::Assisted);
+        assert_eq!(profile.policy.max_active_tasks, 1);
+        assert!(profile.policy.allow_background_work);
+        assert!(!profile.policy.allow_telegram);
+        assert!(!profile.policy.paused_until_user_resumes);
+        assert!(profile.session_id.is_empty());
     }
 
     #[test]

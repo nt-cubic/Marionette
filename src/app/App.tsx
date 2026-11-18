@@ -11426,6 +11426,11 @@ export function App() {
         <StaffHireDialog
           agents={availableAgents}
           projects={shelfProjects}
+          defaultProjectId={
+            currentProjectId && currentProjectId !== CHAT_PROJECT_ID
+              ? currentProjectId
+              : undefined
+          }
           initial={
             staffController.editor.profile
               ? staffDraftFromProfile(staffController.editor.profile)

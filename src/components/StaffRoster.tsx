@@ -51,30 +51,39 @@ export function StaffRoster({
   onTogglePause,
 }: StaffRosterProps) {
   const t = useT();
+  const hasPausableWork = staff.some(
+    (member) =>
+      member.paused ||
+      member.displayState !== "idle" ||
+      (member.taskCount ?? 0) > 0 ||
+      (member.dueCommitmentCount ?? 0) > 0,
+  );
   return (
     <div className="staff-roster" aria-label={t("staff.rosterAria")}>
       <div className="shelf-group staff-roster__head">
         <span className="shelf-group__label">{t("staff.group")}</span>
-        {onTogglePause && (paused || staff.length > 0) ? (
+        <div className="staff-roster__actions">
+          {onTogglePause && (paused || hasPausableWork) ? (
+            <button
+              className={"staff-roster__pause" + (paused ? " is-paused" : "")}
+              type="button"
+              title={paused ? t("staff.resumeAll") : t("staff.pauseAll")}
+              aria-label={paused ? t("staff.resumeAll") : t("staff.pauseAll")}
+              onClick={onTogglePause}
+            >
+              {paused ? <Play size={11} /> : <Pause size={11} />}
+            </button>
+          ) : null}
           <button
-            className={"staff-roster__pause" + (paused ? " is-paused" : "")}
+            className="shelf-group__add"
             type="button"
-            title={paused ? t("staff.resumeAll") : t("staff.pauseAll")}
-            aria-label={paused ? t("staff.resumeAll") : t("staff.pauseAll")}
-            onClick={onTogglePause}
+            title={t("staff.hire")}
+            aria-label={t("staff.hire")}
+            onClick={onHire}
           >
-            {paused ? <Play size={11} /> : <Pause size={11} />}
+            <Plus size={12} />
           </button>
-        ) : null}
-        <button
-          className="shelf-group__add"
-          type="button"
-          title={t("staff.hire")}
-          aria-label={t("staff.hire")}
-          onClick={onHire}
-        >
-          <Plus size={12} />
-        </button>
+        </div>
       </div>
 
       {staff.length === 0 ? (

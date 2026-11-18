@@ -1433,10 +1433,14 @@ ZCode 官方**没有** ACP（CLI 0.16.x 无 `--acp`，ACP registry 未收录）�
 
 ## 远程助理 / Chief（2026-11-15，M1 垂直切片，分支 chief-m0）
 
-Telegram 远程首席助理：裸文本固定进一个 Chief 会话（普通 ACP 会话，
-`origin="chief"`），Chief 通过恰好 10 个 `marionette_*` 控制 MCP 工具让 Host 创建
+Telegram 远程首席助理的底层仍保留：裸文本固定进一个 Chief 会话（普通 ACP 会话，
+`origin="chief"`），员工当前通过 16 个 `marionette_*` 控制 MCP 工具让 Host 创建
 普通 worker 会话（`origin="chief-worker"`）执行任务。设计 [`docs/research/telegram-chief/`](docs/research/telegram-chief/README.md)，
-施工台账 [`06-m0-progress.md`](docs/research/telegram-chief/06-m0-progress.md)（含真机验证清单——**M0 探针 1/2 与 8h soak 还没在真机跑**）。默认 `mode=off`，入口右栏「远程助理」卡。改前先记七条红线：
+施工台账 [`06-m0-progress.md`](docs/research/telegram-chief/06-m0-progress.md)（含真机验证清单——**M0 探针 1/2 与 8h soak 还没在真机跑**）。新员工模式的右栏不再渲染旧「远程助理」配置卡；
+旧 `mode`/单 Chief config 只供迁移与 Telegram 兼容。首次使用必须在后端幂等 seed 一个可直接
+聊的示例助手 `Mari`（第一个已启用 Agent、默认模型、无项目授权），用 `starterSeededAt` 防止
+删除后复活；启动 seed 用 `bootstrapVersion=u32::MAX` 延迟 bootstrap，首次点开才允许发 prompt，
+不能让“准备助手”变成后台模型调用。额外添加员工仍保持名字优先、高级项折叠。改前先记七条红线：
 
 - **Chief/worker 的驱动全在后端**（`chief/runner.rs` 直接调 `AcpService` 的
   pub 方法），**绝不借用前端 `performSend`**——主窗隐藏/最小化（WebView2

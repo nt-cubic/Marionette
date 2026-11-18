@@ -22,7 +22,7 @@
 |---|---|
 | 员工注册表/迁移 | `staff.json`(原子写、坏档 fail-open、上限 128);旧 `config.chiefSessionId` 一次性迁移成一位「总管」,保留旧项目策略、agent/model 与 Telegram 行为。迁移完成标记落盘后,即使最后一位员工被删,旧 config session 也不再获得 Chief/MCP 门禁 |
 | 员工会话 | 每位员工绑定普通 Chat 会话(`origin="chief"`),可修复/重建 sessionId;控制工具只对员工会话开放 |
-| 员工组与档案 UI | `ProjectShelf` 顶部员工组、5 秒轮询、搜索、雇佣/编辑弹窗、暂停全部、右栏档案、删除/清空记忆 |
+| 员工组与档案 UI | `ProjectShelf` 顶部员工组、5 秒轮询、搜索、雇佣/编辑弹窗、暂停全部、右栏档案、删除/清空记忆；首次运行后端 seed `Mari` 示例助手，额外员工才进入名字优先的雇佣流程 |
 | 任务与 worker | 原 chief 任务账本/tee/权限卡继续使用;worker 是 `origin="chief-worker"` 的项目会话,不写 `parent_session_id`,侧栏有来源徽标和「回到员工」面包屑 |
 | 状态投影 | `staff_status.rs` 与 `staffStatus.ts` 把 task 投影成 `waiting_user > failed/interrupted > running > thinking > idle`;failed/interrupted 保留 5 分钟,5 分钟无事件标 stale 但不改 running |
 | Host 急停 | 注册表级 `pausedUntilUserResumes` 是总闸,新员工继承;新 task、task_send、task_resume、条件唤醒和非安全出站受影响;全部停止会连 `Proposed` 任务一起取消、关闭 worker 浏览器 tabs 并撤销 Computer Use 共享窗口 |
@@ -569,7 +569,7 @@ tombstone 已施工;没有逐条删除、单条编辑、来源/更新时间展�
 | 控制工具(session-aware MCP 门禁) | `chief/tools.rs` | 当前 16 个;员工扩展 6 个,门禁查注册表 |
 | waiting_user 状态机(权限/提问/计划卡直连任务状态) | broker + acp.rs 挂点 | 已复用,UI 显示简化为状态 chip |
 | Telegram chief 模式(路由/聚合/急停/游标) | `telegram_remote.rs` | 已降级为渠道并支持员工私聊绑定 |
-| 前端任务区/配置卡 | `ChiefSection.tsx` / `StaffSection.tsx` | 任务区与档案 UI 已接;配置卡仍保留远程助理入口 |
+| 前端任务区/配置卡 | `StaffSection.tsx` / `StaffHireDialog.tsx` | 右栏只保留当前员工档案/任务/记忆/承诺；旧 `ChiefSection` 不再渲染，名字优先的雇佣弹窗把高级项折叠 |
 | staff 状态投影 | `staff_status.rs` + `staffStatus.ts` | 已新增只读投影;部分字段尚未上屏 |
 | StaffPolicy + 通知闸门 | `staff.rs` + `staff_commands.rs` + 出站路径 | 部分:持久暂停、channel-neutral gate、Telegram 独立开关已做;持久通知账本/抑制 UI/完整渠道审计仍待完善 |
 | 分层记忆 | `chief/memory.rs` + `memory/<staffId>/` | 已新增,不改 tee/transcript 语义 |

@@ -204,10 +204,11 @@ pub fn queue_host_text(chief_session_id: &str, text: &str) {
 /// Bootstrap must be the first prompt in a newly-created staff session.
 pub fn queue_bootstrap_text(chief_session_id: &str, text: &str) {
     if let Ok(mut queues) = bootstrap_queues().lock() {
-        queues
+        let queue = queues
             .entry(chief_session_id.to_string())
-            .or_default()
-            .push_back(text.to_string());
+            .or_default();
+        queue.clear();
+        queue.push_back(text.to_string());
     }
 }
 

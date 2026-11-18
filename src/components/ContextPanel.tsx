@@ -10,7 +10,6 @@ import { MemorySection } from "./MemorySection";
 import { QuotaSection } from "./QuotaSection";
 import { TasksSection } from "./TasksSection";
 import { UniversalPluginsSection } from "./UniversalPluginsSection";
-import { ChiefSection } from "./ChiefSection";
 import { StaffSection } from "./StaffSection";
 import { UniversalSkillsSection } from "./UniversalSkillsSection";
 import { dockFooterHost, useDocked } from "../lib/dockFooter";
@@ -629,13 +628,6 @@ export const ContextPanel = memo(function ContextPanel({
         <p className="panel-note panel-note--hint" title={t("allPlugins.applyHint")}>
           {t("allPlugins.applyHint")}
         </p>
-      </section>
-
-      <section className="context-card" id="context-chief">
-        <div className="context-card__heading">
-          <span>{t("chief.sectionTitle")}</span>
-        </div>
-        <ChiefSection embedded />
       </section>
 
       <MemorySection activeSessionId={activeSessionId} onCount={setMemoryCount} />

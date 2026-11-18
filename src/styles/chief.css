@@ -234,8 +234,20 @@
   gap: 4px;
 }
 
-.staff-roster__pause {
+.staff-roster__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
   margin-left: auto;
+  margin-right: -6px;
+}
+
+.staff-roster__actions .shelf-group__add.shelf-group__add {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.staff-roster__pause {
   width: 22px;
   height: 22px;
   padding: 0;
@@ -438,6 +450,87 @@
   padding-right: 4px;
 }
 
+.staff-dialog__quick {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 2px 8px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.staff-dialog__quick label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.staff-dialog__quick input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  color: var(--text);
+  border: 0;
+  border-top: 1px solid var(--hairline);
+  border-radius: 0;
+  background: transparent;
+  padding: 9px 2px 7px;
+  font-size: 15px;
+}
+
+.staff-dialog__quick p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.staff-dialog__quick p + p {
+  color: var(--text-faint);
+}
+
+.staff-dialog__advanced {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.staff-dialog__advanced > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 2px;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.staff-dialog__advanced > summary span:last-child {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.staff-dialog__advanced-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.staff-dialog__advanced-body .staff-dialog__section {
+  border: 0;
+  border-radius: 0;
+  padding: 9px 2px;
+  background: transparent;
+}
+
+.staff-dialog__advanced-body .staff-dialog__section + .staff-dialog__section {
+  border-top: 1px solid var(--hairline);
+}
+
 .staff-dialog__section {
   display: flex;
   flex-direction: column;
@@ -630,6 +723,18 @@
   -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.staff-section__profile-details {
+  border-top: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+  padding: 5px 0;
+}
+
+.staff-section__profile-details > summary {
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
 }
 
 .staff-section__facts {

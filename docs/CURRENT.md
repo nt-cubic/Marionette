@@ -338,6 +338,12 @@ Chief 已从「Telegram 远程助理配置」升级为 people-first 员工模式
 [`plan-employee-mode.md`](./plans/plan-employee-mode.md)，前置 Telegram chief 研究见
 [`research-telegram-chief/`](./research/telegram-chief/README.md)。
 
+- **入口与雇佣**：首次使用自动创建一个固定示例助手 `Mari`，绑定第一个已启用 Agent 和
+  Agent 默认模型，不需要先做配置；点击前不发送 bootstrap、不启动模型回合。seed 只执行一次，
+  用户主动删光员工后不会被重启加回。右栏
+  不再渲染旧的「远程助理」配置卡；旧 `config` 只保留后端迁移与 Telegram 兼容。额外添加员工
+  时首屏只要求名字，模型、persona、项目细权、Telegram 与预算收进「更多设置」；员工档案里的
+  技术资料默认折叠。
 - **注册表与身份**：`~/.marionette/chief/staff.json` 保存员工、逐项目权限、预算、通知策略和
   注册表级持久暂停；旧 `config.chiefSessionId` 只做一次迁移。迁移屏障完成后删掉最后一名员工，
   旧 config session 不再获得控制工具。坏档保留原文件并 fail-closed，不会被 legacy 配置覆盖。

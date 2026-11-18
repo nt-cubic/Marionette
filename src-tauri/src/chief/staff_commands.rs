@@ -8,7 +8,9 @@ use tauri::{AppHandle, Manager};
 
 use super::commitments::{self, Commitment, CommitmentKind};
 use super::memory;
-use super::staff::{self, StaffProfile, StaffRegistry};
+use super::staff::{
+    self, StaffProfile, StaffRegistry, DEFERRED_BOOTSTRAP_VERSION,
+};
 use super::types::{now_ms, short_id, ProjectPolicy, RemoteMode};
 use super::{broker, runner, store, tee};
 
@@ -49,6 +51,50 @@ fn ensure_migrated() -> StaffRegistry {
         );
         staff::load()
     })
+}
+
+fn mark_starter_seeded() -> Result<(), String> {
+    staff::with_registry(|registry| {
+        registry.starter_seeded_at = now_ms();
+        Ok(())
+    })
+}
+
+/// Seed one ready-to-chat example assistant exactly once per installation.
+/// Existing rosters only receive the marker; a user who later removes every
+/// assistant is not overridden by startup. Corrupt registries stay untouched.
+fn ensure_starter_staff(app: &AppHandle) -> Result<(), String> {
+    let registry = ensure_migrated();
+    if registry.starter_seeded_at != 0 {
+        return Ok(());
+    }
+    if registry.is_corrupt() {
+        return Err(crate::ts!(
+            "员工配置损坏；为保护原文件，未自动创建示例助手",
+            "The staff registry is corrupt; the starter assistant was not created so the original file can be preserved"
+        ));
+    }
+    if !registry.staff.is_empty() {
+        mark_starter_seeded()?;
+        return Ok(());
+    }
+    let agent_id = crate::custom_agents::all_agents_merged()
+        .into_iter()
+        .find(|agent| agent.enabled)
+        .map(|agent| agent.id)
+        .ok_or_else(|| {
+            crate::ts!(
+                "至少启用一个 Agent，才能创建示例助手",
+                "Enable at least one agent to create the starter assistant"
+            )
+        })?;
+    let profile = StaffProfile::starter(&agent_id);
+    save_staff_profile(
+        app.clone(),
+        serde_json::to_value(profile).map_err(|error| error.to_string())?,
+        true,
+    )?;
+    mark_starter_seeded()
 }
 
 fn ensure_profile_session(app: &AppHandle, profile: &mut StaffProfile) -> Result<bool, String> {
@@ -270,19 +316,23 @@ pub fn mark_bootstrap_sent(session_id: &str) {
 }
 
 #[tauri::command(async)]
-pub fn chief_staff_list() -> Value {
-    let registry = ensure_migrated();
+pub fn chief_staff_list(app: AppHandle) -> Result<Value, String> {
+    ensure_starter_staff(&app)?;
+    let registry = staff::load();
     let paused = registry.paused_until_user_resumes
         || (registry
             .staff
             .iter()
             .all(|profile| profile.policy.paused_until_user_resumes)
             && !registry.staff.is_empty());
-    json!({ "paused": paused, "staff": registry.staff })
+    Ok(json!({ "paused": paused, "staff": registry.staff }))
 }
 
-#[tauri::command(async)]
-pub fn chief_staff_save(app: AppHandle, profile: Value) -> Result<Value, String> {
+fn save_staff_profile(
+    app: AppHandle,
+    profile: Value,
+    defer_initial_bootstrap: bool,
+) -> Result<Value, String> {
     let telegram_explicit = profile.get("telegramChatId").is_some();
     let mut incoming: StaffProfile =
         serde_json::from_value(profile).map_err(|error| format!("员工配置格式错误：{error}"))?;
@@ -328,10 +378,11 @@ pub fn chief_staff_save(app: AppHandle, profile: Value) -> Result<Value, String>
     let created_session_id = incoming.session_id.clone();
     let result = (|| -> Result<Value, String> {
         let mut normalized = incoming.normalized();
-        if created_session
-            || existing
-                .as_ref()
-                .is_some_and(|old| old.persona != normalized.persona)
+        if !defer_initial_bootstrap
+            && (created_session
+                || existing
+                    .as_ref()
+                    .is_some_and(|old| old.persona != normalized.persona))
         {
             normalized.bootstrap_version = 0;
         }
@@ -343,7 +394,9 @@ pub fn chief_staff_save(app: AppHandle, profile: Value) -> Result<Value, String>
             registry.update(normalized.clone())?;
         }
         staff::save(&registry)?;
-        if normalized.bootstrap_version < CURRENT_BOOTSTRAP_VERSION {
+        if !defer_initial_bootstrap
+            && normalized.bootstrap_version < CURRENT_BOOTSTRAP_VERSION
+        {
             queue_bootstrap(&normalized);
         }
         Ok(serde_json::to_value(normalized).unwrap_or(json!({})))
@@ -357,6 +410,11 @@ pub fn chief_staff_save(app: AppHandle, profile: Value) -> Result<Value, String>
         });
     }
     result
+}
+
+#[tauri::command(async)]
+pub fn chief_staff_save(app: AppHandle, profile: Value) -> Result<Value, String> {
+    save_staff_profile(app, profile, false)
 }
 
 #[tauri::command(async)]
@@ -425,11 +483,17 @@ pub fn chief_staff_ensure_session(app: AppHandle, staff_id: String) -> Result<St
         .get(&staff_id)
         .cloned()
         .ok_or_else(|| format!("员工不存在: {staff_id}"))?;
+    let deferred_bootstrap = profile.bootstrap_version == DEFERRED_BOOTSTRAP_VERSION;
     let created = ensure_profile_session(&app, &mut profile)?;
-    if created {
+    if created || deferred_bootstrap {
+        if deferred_bootstrap {
+            profile.bootstrap_version = 0;
+        }
         registry.update(profile.clone())?;
         staff::save(&registry)?;
-        queue_bootstrap(&profile);
+        if profile.bootstrap_version < CURRENT_BOOTSTRAP_VERSION {
+            queue_bootstrap(&profile);
+        }
         memory::ensure_staff_memory(&staff_id)?;
     }
     Ok(profile.session_id)

@@ -218,15 +218,18 @@ export function StaffSection({
         </div>
       </div>
 
-      <p className="staff-section__persona">{profile.persona}</p>
-      <div className="staff-section__facts">
-        <span>{t("staff.agent")}: {profile.agentId}</span>
-        <span>{t("staff.autonomy")}: {t(("staff.autonomy" + profile.autonomy.charAt(0).toUpperCase() + profile.autonomy.slice(1)) as never)}</span>
-        <span>{t("staff.maxActiveTasks")}: {profile.maxActiveTasks}</span>
-        <span>{t("staff.turnUsage", { turns: taskTurns, cost: taskCost.toFixed(4) })}</span>
-        <span>{t("staff.projectsCount", { n: profile.allowedProjects.filter((item) => item.enabled).length })}</span>
-        {profile.pausedUntilUserResumes ? <span className="is-paused">{t("staff.paused")}</span> : null}
-      </div>
+      <details className="staff-section__profile-details">
+        <summary>{t("staff.profileDetails")}</summary>
+        <p className="staff-section__persona">{profile.persona}</p>
+        <div className="staff-section__facts">
+          <span>{t("staff.agent")}: {profile.agentId}</span>
+          <span>{t("staff.autonomy")}: {t(("staff.autonomy" + profile.autonomy.charAt(0).toUpperCase() + profile.autonomy.slice(1)) as never)}</span>
+          <span>{t("staff.maxActiveTasks")}: {profile.maxActiveTasks}</span>
+          <span>{t("staff.turnUsage", { turns: taskTurns, cost: taskCost.toFixed(4) })}</span>
+          <span>{t("staff.projectsCount", { n: profile.allowedProjects.filter((item) => item.enabled).length })}</span>
+          {profile.pausedUntilUserResumes ? <span className="is-paused">{t("staff.paused")}</span> : null}
+        </div>
+      </details>
 
       <div className="staff-section__subhead">
         <span>{t("staff.tasks")}</span>

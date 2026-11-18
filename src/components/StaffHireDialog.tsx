@@ -40,6 +40,7 @@ const DEFAULT_PERSONA =
 export function StaffHireDialog({
   agents,
   projects,
+  defaultProjectId,
   initial,
   busy = false,
   error,
@@ -48,6 +49,7 @@ export function StaffHireDialog({
 }: {
   agents: AgentConfig[];
   projects: Project[];
+  defaultProjectId?: string;
   initial?: Partial<StaffHireDraft>;
   busy?: boolean;
   error?: string | null;
@@ -56,28 +58,45 @@ export function StaffHireDialog({
 }) {
   const t = useT();
   const enabledAgents = useMemo(() => agents.filter((agent) => agent.enabled), [agents]);
-  const [draft, setDraft] = useState<StaffHireDraft>(() => ({
-    staffId: initial?.staffId,
-    name: initial?.name ?? "",
-    title: initial?.title ?? t("staff.defaultTitle"),
-    persona: initial?.persona ?? DEFAULT_PERSONA,
-    agentId: initial?.agentId ?? enabledAgents[0]?.id ?? "",
-    model: initial?.model ?? "",
-    telegramChatId: initial?.telegramChatId ?? "",
-    autonomy: initial?.autonomy ?? "assisted",
-    maxActiveTasks: initial?.maxActiveTasks ?? 1,
-    maxTurnsPerTask: initial?.maxTurnsPerTask ?? 30,
-    maxWallMinutesPerTask: initial?.maxWallMinutesPerTask ?? 120,
-    maxModelCallsPerTask: initial?.maxModelCallsPerTask ?? 0,
-    maxCostPerTaskUsd: initial?.maxCostPerTaskUsd ?? 0,
-    maxReportsPerHour: initial?.maxReportsPerHour ?? 4,
-    notificationCooldownMinutes: initial?.notificationCooldownMinutes ?? 30,
-    quietHours: initial?.quietHours ?? "23:00-08:00",
-    allowBackgroundWork: initial?.allowBackgroundWork ?? true,
-    allowTelegram: initial?.allowTelegram ?? false,
-    allowedProjectIds: initial?.allowedProjectIds ?? [],
-    projectPolicies: initial?.projectPolicies ?? {},
-  }));
+  const [draft, setDraft] = useState<StaffHireDraft>(() => {
+    const quickProjectId =
+      defaultProjectId && projects.some((project) => project.id === defaultProjectId)
+        ? defaultProjectId
+        : undefined;
+    return {
+      staffId: initial?.staffId,
+      name: initial?.name ?? "",
+      title: initial?.title ?? t("staff.defaultTitle"),
+      persona: initial?.persona ?? DEFAULT_PERSONA,
+      agentId: initial?.agentId ?? enabledAgents[0]?.id ?? "",
+      model: initial?.model ?? "",
+      telegramChatId: initial?.telegramChatId ?? "",
+      autonomy: initial?.autonomy ?? "assisted",
+      maxActiveTasks: initial?.maxActiveTasks ?? 1,
+      maxTurnsPerTask: initial?.maxTurnsPerTask ?? 30,
+      maxWallMinutesPerTask: initial?.maxWallMinutesPerTask ?? 120,
+      maxModelCallsPerTask: initial?.maxModelCallsPerTask ?? 0,
+      maxCostPerTaskUsd: initial?.maxCostPerTaskUsd ?? 0,
+      maxReportsPerHour: initial?.maxReportsPerHour ?? 4,
+      notificationCooldownMinutes: initial?.notificationCooldownMinutes ?? 30,
+      quietHours: initial?.quietHours ?? "23:00-08:00",
+      allowBackgroundWork: initial?.allowBackgroundWork ?? true,
+      allowTelegram: initial?.allowTelegram ?? false,
+      allowedProjectIds:
+        initial?.allowedProjectIds ?? (quickProjectId ? [quickProjectId] : []),
+      projectPolicies:
+        initial?.projectPolicies ??
+        (quickProjectId
+          ? {
+              [quickProjectId]: {
+                remoteMode: "approve_writes",
+                allowComputerUse: false,
+                selfModification: false,
+              },
+            }
+          : {}),
+    };
+  });
   const [formError, setFormError] = useState("");
 
   const toggleProject = (projectId: string) => {
@@ -93,7 +112,7 @@ export function StaffHireDialog({
           : {
               ...current.projectPolicies,
               [projectId]: current.projectPolicies[projectId] ?? {
-                remoteMode: "read_only",
+                remoteMode: "approve_writes",
                 allowComputerUse: false,
                 selfModification: false,
               },
@@ -147,36 +166,50 @@ export function StaffHireDialog({
       </div>
 
       <div className="staff-dialog__body custom-scrollbar scrollbar-autohide">
-        <section className="staff-dialog__section">
-          <h3>{t("staff.identity")}</h3>
-          <div className="staff-dialog__grid">
-            <label>
-              {t("staff.name")}
-              <input
-                value={draft.name}
-                autoFocus
-                placeholder={t("staff.namePlaceholder")}
-                onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}
-              />
-            </label>
-            <label>
-              {t("staff.title")}
-              <input
-                value={draft.title}
-                placeholder={t("staff.defaultTitle")}
-                onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
-              />
-            </label>
-          </div>
+        <section className="staff-dialog__quick">
           <label>
-            {t("staff.persona")}
-            <textarea
-              value={draft.persona}
-              rows={7}
-              onChange={(event) => setDraft((current) => ({ ...current, persona: event.target.value }))}
+            {t("staff.name")}
+            <input
+              value={draft.name}
+              autoFocus
+              placeholder={t("staff.namePlaceholder")}
+              onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}
             />
           </label>
+          <p>{t("staff.quickLead")}</p>
+          <p>{t("staff.quickDefaults")}</p>
+          {enabledAgents.length === 0 ? (
+            <p className="staff-dialog__error">{t("staff.agentRequired")}</p>
+          ) : null}
         </section>
+
+        <details className="staff-dialog__advanced">
+          <summary>
+            <span>{t("staff.advanced")}</span>
+            <span>{t("staff.advancedHint")}</span>
+          </summary>
+          <div className="staff-dialog__advanced-body">
+            <section className="staff-dialog__section">
+              <h3>{t("staff.identity")}</h3>
+              <div className="staff-dialog__grid">
+                <label>
+                  {t("staff.title")}
+                  <input
+                    value={draft.title}
+                    placeholder={t("staff.defaultTitle")}
+                    onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
+                  />
+                </label>
+              </div>
+              <label>
+                {t("staff.persona")}
+                <textarea
+                  value={draft.persona}
+                  rows={7}
+                  onChange={(event) => setDraft((current) => ({ ...current, persona: event.target.value }))}
+                />
+              </label>
+            </section>
 
         <section className="staff-dialog__section">
           <h3>{t("staff.brain")}</h3>
@@ -223,7 +256,7 @@ export function StaffHireDialog({
               {projects.map((project) => {
                 const checked = draft.allowedProjectIds.includes(project.id);
                 const policy = draft.projectPolicies[project.id] ?? {
-                  remoteMode: "read_only",
+                  remoteMode: "approve_writes",
                   allowComputerUse: false,
                   selfModification: false,
                 };
@@ -452,6 +485,8 @@ export function StaffHireDialog({
           </div>
           <p className="panel-note">{t("staff.policyHint")}</p>
         </section>
+          </div>
+        </details>
       </div>
 
       {formError || error ? (
@@ -462,7 +497,7 @@ export function StaffHireDialog({
           {t("common.cancel")}
         </button>
         <button type="button" className="pill-action is-primary" disabled={busy} onClick={() => void submit()}>
-          {busy ? t("staff.saving") : t("staff.save")}
+          {busy ? t("staff.saving") : draft.staffId ? t("staff.save") : t("staff.hireAction")}
         </button>
       </div>
     </DialogShell>

@@ -69,7 +69,7 @@ pub fn chief_tee_cursor(session_id: String) -> u64 {
 
 /// 唤醒心跳线程 + 启动恢复：main.rs setup 调用。
 pub fn bootstrap_chief(app: &AppHandle) {
-    let _ = super::staff_commands::chief_staff_list();
+    let _ = super::staff_commands::chief_staff_list(app.clone());
     // 启动恢复（02-architecture.md §10.1）：失联任务标 interrupted，
     // 绝不标 completed；事件账本留痕。
     match store::mark_interrupted_on_startup() {
