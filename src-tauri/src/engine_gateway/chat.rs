@@ -32,7 +32,7 @@ use std::io::Read;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::bodycap;
 use super::chattidy;
@@ -766,6 +766,82 @@ pub fn forward(gw: &super::Gateway, headers: &[(String, String)], body: &[u8]) -
 // - **chattidy 只做合同面子集**（见 chattidy.rs 文件头）：withReasoning
 //   OnToolTurns、空 reasoning_content 剔除、finish_reason 规整、流式
 //   id/index 补齐、无名调用整链丢弃等未搬。
+
+// ---------------------------------------------------------------------------
+// textcalls 的两个端点共用件（responses.rs / messages.rs 翻译路径的应答侧）
+// ---------------------------------------------------------------------------
+
+/// 正文书写的调用变真调用后的 call id（Go textCallID，textcalls.go:737-739：
+/// `call_text_<进程内序号>`）。端点无关——responses 与 messages 方言共用
+/// 同一序号空间。
+pub(crate) fn text_call_id() -> String {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!("call_text_{}", SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1)
+}
+
+/// 非流式整块应答里的正文书调用（Go wholeTextCalls，textcalls.go:990-1039）：
+/// 把 chat completion JSON 的 `choices[0].message.content` 整块喂给
+/// [`super::textcalls::TextCallScout`]，读出的调用追加进 `message.tool_calls`
+/// （id 用 [`text_call_id`]），content 改写成「标记前正文 + 解析剩余」（空则
+/// null——下游 responses/messages 转换器对 null content 都不出文本块/文本 item）。
+/// **消费 scout**（finish 按值取）——每个应答各带各的 scout，一次性。
+///
+/// 原生 tool_calls 在场时（Go `made`）：note_native_call 先行——持有的
+/// 标签尾巴丢弃、非标签原文照放，不再从正文读调用（语义与 Go 的 tagsOnly
+/// 分支一致，仅尾随空白口径走 scout 的 keepSpace）。
+pub(crate) fn whole_text_calls(chat_reply: &mut Value, mut scout: super::textcalls::TextCallScout) {
+    // 原生 tool_calls 在场：正文里的标签只清不读（Go wholeTextCalls 的 made 分支
+    // ↔ scout 的 note_native_call settle 语义）。
+    let native = chat_reply
+        .pointer("/choices/0/message/tool_calls")
+        .and_then(|t| t.as_array())
+        .is_some_and(|a| !a.is_empty());
+    let text = match chat_reply.pointer("/choices/0/message/content") {
+        Some(Value::String(s)) => s.clone(),
+        // Go wholeTextCalls：content 不是串（null / parts 数组）就不动它。
+        _ => return,
+    };
+    if native {
+        let _ = scout.note_native_call();
+    }
+    let released = scout.feed_text(&text);
+    let fin = scout.finish();
+    let full = format!("{released}{}", fin.text);
+    if fin.calls.is_empty() && full == text {
+        return; // 没有标记 / 读不出调用：原样（Go !ok 分支）
+    }
+    let made_calls = !fin.calls.is_empty();
+    {
+        let Some(msg) = chat_reply
+            .pointer_mut("/choices/0/message")
+            .and_then(|m| m.as_object_mut())
+        else {
+            return;
+        };
+        if full != text {
+            msg.insert("content".into(), if full.is_empty() { Value::Null } else { json!(full) });
+        }
+        if made_calls {
+            let calls = msg.entry("tool_calls".to_string()).or_insert_with(|| json!([]));
+            if let Some(arr) = calls.as_array_mut() {
+                for (name, args) in fin.calls {
+                    arr.push(json!({
+                        "id": text_call_id(), "type": "function",
+                        "function": {"name": name, "arguments": args},
+                    }));
+                }
+            }
+        }
+    }
+    if made_calls {
+        // 回合作为调过工具的回合结束（Go chatWhole.flush：`called` →
+        // finish_reason="tool_calls"；responses 方言 status 不变，anthropic
+        // 方言 stop_reason → tool_use）。
+        if let Some(choice) = chat_reply.pointer_mut("/choices/0").and_then(|c| c.as_object_mut()) {
+            choice.insert("finish_reason".into(), json!("tool_calls"));
+        }
+    }
+}
 
 #[cfg(test)]
 mod fit_tests {

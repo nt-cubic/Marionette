@@ -72,7 +72,7 @@ codex 的裸内建名落回内建 codex 源头**烧订阅**。种子插件集 = 
 #### C5.1 方言细则（2026-11-18 批 1 增补——Go 网关真实行为，套件 D1–D8 锁定）
 
 下表每条都以 Go 种子实测为准（`verify-engine-contract.mts` 的 D 系列 case）；
-Rust 引擎在 `CONTRACT_PENDING` 环境变量列出的编号是已知缺口（当前仅 D7），其余必须与 Go 同形。
+Rust 引擎 2026-11-18 批 1–3 后 D1–D10 零挂起全绿（`CONTRACT_PENDING` 机制保留给后续批次使用）。
 
 | # | 细则 | Go 实测行为 |
 |---|---|---|
@@ -82,10 +82,10 @@ Rust 引擎在 `CONTRACT_PENDING` 环境变量列出的编号是已知缺口（�
 | D4 | **入站压缩解码**：`Content-Encoding: gzip` 与 `zstd` 解码后路由；identity/gzip/zstd 之外的编码拒绝（Go 是 400） |
 | D5 | **Origin 防护**：外站 `Origin: https://…` 与 `Origin: null` 一律 403；agent CLI 无 Origin 放行 |
 | D6 | **错误保真**：厂商 429 的状态码与 `Retry-After` 头透传到 agent；`/v1/messages` 的厂商错误体必须是 anthropic 形状（`{"type":"error",…}`），不透传 chat 原文 |
-| D7 | **断流底线**（Rust 引擎当前 PENDING）：上游 SSE 中途断开，网关欠 agent 一个「可判定的收尾」——续答到 [DONE]，或显式 error 事件；裸 EOF 让 agent 无法区分失败 |
+| D7 | **断流底线**（2026-11-18 批 3 起双引擎绿）：上游 SSE 中途断开，网关欠 agent 一个「可判定的收尾」——续答到 [DONE]、显式 error 事件、或非 200 的可判定失败（ureq chunked 断连不吐已收 chunk，与 Go http 客户端的真实行为差异——502 同样满足底线）；200 裸 EOF 违约 |
 | D8 | **组内失败转移**：组 pick 的成员 5xx/不可达时，同轮内换下一个成员重发，agent 拿到 200 而不是失败 |
 | D9 | **工具参数零分数（翻译路径）**：厂商在工具调用里写 `"yield_ms":2500.0`，翻译到 responses/messages 方言时必须是 `2500`（Codex serde 拒浮点整单，Go grok_integral.go #1431/#3152） |
-| D10 | **工具参数零分数（chat 直通）**（Rust 引擎当前 PENDING，批 3 intTidy）：同上，但作用于 chat→chat 直通流的 tool_calls 参数改写 |
+| D10 | **工具参数零分数（chat 直通）**（2026-11-18 批 3 起双引擎绿）：同上，作用于 chat→chat 直通流的 tool_calls 参数改写（chattidy.rs 的跨行状态机） |
 
 ### C6 CLI 动词（`run_magpie_cli`，10s 超时，stderr 参与判错）
 

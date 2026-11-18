@@ -138,3 +138,31 @@ path**：流式零断言、工具调用零覆盖、thinking 零覆盖、zstd/Ori
    别再攒 45 个文件。
 4. **T13 真实 key 对账**（plan-engine-rust.md 未勾选项）排期——它是
    「Rust 能不能转正」的最终裁判，且依赖 N11（usage 台账）先行。
+
+## 8. 施工图执行进度（2026-11-18 收官记录）
+
+批 0（提交现状）、批 1（C5.1+D1–D10 验收尺）、批 2（integral/stdBase64/
+GBK）、批 3（chattidy/扣流首/可判定收尾/rest）、批 4（affinity）全部落地；
+订阅线（codex gzip+耗尽轮换、grok ns+schema）、usage 台账、prev_response、
+Claude 订阅桥核心路径同日并行交付。缺口 N1–N14 状态：
+
+| # | 状态 | 落点 |
+|---|---|---|
+| N1 holdWriter | **最小版落地**（扣流首+换人重发+可判定收尾；continuation 续答/patience 计时是 chat.rs 尾注差距） | chat.rs |
+| N2 affinity | **落地**（种子×9/排序/落盘 LRU；Go keep 分支未搬——affinity.rs 头注 8 条） | affinity.rs+forward |
+| N3 断流续答 | **底线版落地**（可判定收尾；prefill 续答未做，差距列明） | chat.rs ClosingReader |
+| N4 chattidy | **子集落地**（usage 帧/空名/同 index 合并/整数化；withReasoningOnToolTurns 等未搬） | chattidy.rs |
+| N5 textcalls | **模块落地+接线中**（四种标记 1:1；relay/anthropic 直通变体未接） | textcalls.rs |
+| N6 Claude 桥 | **核心路径落地**（claude -p 桥/env 防递归/额度两路；14 条差距：常驻进程/MCP helper/持久化等） | claude_account.rs |
+| N7 整数化 | **落地**（翻译+直通双路径，合同 D9/D10 锁定） | integral.rs+chattidy.rs |
+| N8 grok ns/schema | **落地**（还原+sealedArgs+ECMA 转写） | grok_account.rs |
+| N9 zcode_trial | 未做（依赖 rest 分级——rest 简化版已进，可领） | — |
+| N10 预处理 | **stdBase64+GBK 落地**；HEIC 定案不做（纯 Rust 无 HEIC 解码器，红线禁 C 绑定——如实差距）；webp→PNG 待接（image crate feature） | bodyprep.rs |
+| N11 usage 台账 | **落地**（JSONL 与 Go 主账同构；token 桶待 capture 层） | usage_ledger.rs |
+| N12 prevLost | **落地**（miss=400 code=previous_response_not_found，Go 实测口径） | prev_response.rs |
+| N13 脱敏 | 未做（Go 默认关、无消费者——低优先，差距保留） | — |
+| N14 codexFallBack | **最小版落地**（耗尽词表 1:1+账号轮换；组级 FallbackModels 未做） | codex_account.rs |
+
+验证基线：cargo 1028/1028 ×2 稳定；合同 D1–D10 双引擎零挂起全绿。
+剩余可领任务集中在各模块头注的差距清单（continuation 续答、Claude 桥
+常驻进程+MCP helper、usage token capture、WS、HEIC/webp、脱敏）。

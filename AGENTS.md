@@ -1481,6 +1481,33 @@ SHA256SUMS 校验，engine.rs default 构建本来就不含载荷）。用户定
 
 回归：`npx tsx scripts/verify-engine-contract.mts`（对 vendored 种子）+
 `npx tsx scripts/upstream-watch.mts`（digest 模式，联网）。
+## 引擎方言与子系统批次（2026-11-18，批 1–4 + 接线）
+
+背景与全量对照：`docs/research/rust-engine-full-survey.md`（五段骨架判定 +
+N1–N14 缺口 + §8 执行进度）；方言层 27 项审计：`rust-engine-dialect-audit.md`。
+改引擎前先过这几条：
+
+- **合同 D 系列是方言验收尺**：`verify-engine-contract.mts` 的 D1–D10
+  （流式三协议收尾/工具往返/thinking/gzip+zstd/Origin/错误保真/断流底线/
+  失败转移/整数化×2）对 **Go 种子和 rust exe 都要零挂起全绿**。fixture 是
+  prompt-marker 驱动的可编程厂商；`CONTRACT_PENDING=Dx` 只在批次进行中用，
+  收批必须清空。**注意 Go 的三个实测行为**：翻译路径恒流式出站再聚合
+  （非流式厂商应答 502 did-not-stream）、chat 直通可折叠 finish 帧、
+  responses SSE 无 [DONE]（response.completed 是终帧）。
+- **批 3 流可靠性**（chat.rs+chattidy.rs）：扣流首（hold_head）→ 首行前
+  失败静默换候选；ClosingReader 兜可判定收尾（无 [DONE] 的 EOF 补 error
+  帧）；rest 休息记忆（60s 简化版）。**continuation 续答/patience 未做**——
+  差距清单在 chat.rs 尾注，别当已实现。
+- **整数化两处**：integral.rs（翻译路径，whole_args）+ chattidy.rs（直通
+  跨行状态机）。改 tool_calls 应答形状时两层都要过合同 D9/D10。
+- **affinity/usage/prev/textcalls/claude 桥**各有独立模块，差距清单在
+  各模块头注（最重的是 claude 桥 14 条——常驻进程、MCP helper、持久化）。
+  **Claude 桥只挂 anthropic 入站**；绝不写凭据、绝不直连 api.anthropic.com。
+- codex 出站压缩是 **gzip 不是 zstd**（无压缩器的有意偏差，注释在
+  codex_account.rs）；401 永不换账号（Codex 自己续登录）。
+- 引擎测试跑法：`cargo test --features engine-rust --bin marionette`
+  （1028 项基线）；`marionette-engine` bin 已带 recursion_limit。
+
 ## 引擎 Rust 化：进程内引擎网关（2026-11-17，engine-rust 分支）
 
 magpie 子进程与 20.6MB 内嵌载荷的 Rust 替身：`src-tauri/src/engine_gateway/`

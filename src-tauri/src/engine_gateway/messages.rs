@@ -26,6 +26,14 @@
 //! 错误面：厂商错误一律转 anthropic 形状
 //! `{"type":"error","error":{"type":"...","message":"..."}}`，状态码透传；
 //! 直通路径上本来就是 anthropic 形状的厂商错误原样透传（厂商的话不改写）。
+//!
+//! textcalls（正文里书写的工具调用，`super::textcalls`，Go textcalls.go /
+//! anthropicTextCalls 的翻译路径形态）：**翻译路径的应答文本**过
+//! TextCallScout——请求提供了工具时，从第一个伪调用标记起的正文被持有，
+//! 回合结束（finish_reason）可解析块变成真 tool_use 块（三段式复用
+//! ChatToolAccum 的拼装与冲刷），截断流只按原文放出。offered 名单取请求
+//! 的 anthropic 工具名（translate 不改名）。anthropic 直通不装（Go 的
+//! anthropicTextCalls 是直通流的独立变体，差距保留）。
 
 use std::io::{BufRead, BufReader, Read};
 
@@ -479,6 +487,9 @@ fn forward_translated(
         }
         v
     };
+    // textcalls：请求提供了工具才装 scout（anthropic 工具名 = 翻译后 chat
+    // 的函数名，translate 不改名；Go 安装点 textCallNames(request.Tools)）。
+    let scout = offered_scout(parsed);
     let chat_bytes = match serde_json::to_vec(&chat_body) {
         Ok(b) => b,
         Err(e) => return Attempt::Done(error_reply(500, &format!("re-serialize failed: {e}"))),
@@ -488,36 +499,80 @@ fn forward_translated(
             Attempt::Retry(vendor_error_reply(status, &body))
         }
         Attempt::Retry(other) => Attempt::Retry(other),
-        Attempt::Done(reply) => Attempt::Done(chat_reply_to_anthropic(reply, streaming, asked_model)),
+        Attempt::Done(reply) => {
+            Attempt::Done(chat_reply_to_anthropic(reply, streaming, asked_model, scout))
+        }
     }
+}
+
+/// 请求提供了 anthropic 工具 → textcalls 的 scout（None = 没提供，惰性
+/// 直通——Go 在安装点整个跳过，gateway.go:9644-9647）。
+fn offered_scout(parsed: &Value) -> Option<super::textcalls::TextCallScout> {
+    let names: Vec<String> = parsed
+        .get("tools")
+        .and_then(|t| t.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|t| t.get("name").and_then(|n| n.as_str()))
+                .filter(|n| !n.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+    (!names.is_empty()).then(|| super::textcalls::TextCallScout::new(&names))
 }
 
 /// chat 世界的终局应答 → anthropic 面：事件流逐事件翻译；整块 JSON 转
 /// anthropic message；错误转 anthropic 错误形状。
-fn chat_reply_to_anthropic(reply: Reply, streaming: bool, asked_model: &str) -> Reply {
+fn chat_reply_to_anthropic(
+    reply: Reply,
+    streaming: bool,
+    asked_model: &str,
+    scout: Option<super::textcalls::TextCallScout>,
+) -> Reply {
     match reply {
         Reply::Stream { status, content_type, reader } => {
             if status < 400 && streaming && content_type.contains("event-stream") {
                 // chat SSE → anthropic SSE 逐事件翻译（message_start 编排、单次收口
-                // 都在翻译器里）。
+                // 都在翻译器里）。textcalls 的 scout 挂在帧编排器上。
+                let mut translator = AnthropicSseTranslator::new(reader, asked_model);
+                translator.frames.scout = scout;
                 return Reply::Stream {
                     status,
                     content_type: "text/event-stream".into(),
-                    reader: Box::new(AnthropicSseTranslator::new(reader, asked_model)),
+                    reader: Box::new(translator),
                 };
             }
             // 厂商没给事件流（无视了 stream）：整读再按非流式转。
             let body = read_all(reader);
-            chat_json_to_anthropic(status, body, asked_model)
+            chat_json_to_anthropic(status, body, asked_model, scout)
         }
-        Reply::Json { status, body } => chat_json_to_anthropic(status, body, asked_model),
+        Reply::Json { status, body } => chat_json_to_anthropic(status, body, asked_model, scout),
     }
 }
 
-fn chat_json_to_anthropic(status: u16, body: Vec<u8>, asked_model: &str) -> Reply {
+fn chat_json_to_anthropic(
+    status: u16,
+    body: Vec<u8>,
+    asked_model: &str,
+    scout: Option<super::textcalls::TextCallScout>,
+) -> Reply {
     if status >= 400 {
         return vendor_error_reply(status, &body);
     }
+    // textcalls：整块正文里的书写调用变 tool_calls（Go wholeTextCalls），
+    // 下面的转换器把它们映射成 tool_use 块。
+    let body = match scout {
+        Some(sc) => match serde_json::from_slice::<Value>(&body) {
+            Ok(mut v) => {
+                chat::whole_text_calls(&mut v, sc);
+                serde_json::to_vec(&v).unwrap_or(body)
+            }
+            // 解析失败的错误面交给下面的原路径统一出。
+            Err(_) => body,
+        },
+        None => body,
+    };
     match chat_response_to_anthropic(&body, asked_model) {
         Ok(v) => Reply::json(status, &v),
         // 厂商 2xx 却给了读不懂的体：网关侧问题，按 502 说。
@@ -549,6 +604,8 @@ struct AnthropicFrames {
     think_open: Option<usize>,
     /// chat tool_calls 分片拼装（Go chatDecoder 子集，两侧端点共享）。
     tools: translate::ChatToolAccum,
+    /// textcalls 持有者（None = 请求没提供工具，正文惰性直通）。
+    scout: Option<super::textcalls::TextCallScout>,
     /// finish_reason 已到（**只记账不收口**：chat 流的 usage 帧在 finish
     /// 之后——include_usage 时是独立末帧，responses.rs 的同款口径——
     /// message_delta/message_stop 推迟到 [DONE]/EOF 才发，usage 才真）。
@@ -566,6 +623,7 @@ impl AnthropicFrames {
             text_open: None,
             think_open: None,
             tools: translate::ChatToolAccum::new(),
+            scout: None,
             finish: None,
             usage: None,
         }
@@ -580,6 +638,9 @@ impl AnthropicFrames {
         }
         let mut out = String::new();
         if data == "[DONE]" {
+            // textcalls：finish 没来过的怪流，持有的按原文放（Go readSSE
+            // 结束后 held() 的 release；finish 来过时 scout 已在 finish 帧交账）。
+            out.push_str(&self.release_scout());
             out.push_str(&self.close_think());
             out.push_str(&self.close_text());
             out.push_str(&self.flush_tools());
@@ -601,7 +662,9 @@ impl AnthropicFrames {
         // 上游中途失败（codex 翻译器等给出的 `{"error":{…}}` 帧）：封开着的块、
         // 发 anthropic 的 error 事件并收口——不静默吞成「正常结束」。
         if let Some(err) = v.get("error").filter(|e| e.is_object()) {
-            let mut out = self.close_think();
+            // textcalls：流错误 → 持有的按原文放（Go KError → release）。
+            let mut out = self.release_scout();
+            out.push_str(&self.close_think());
             out.push_str(&self.close_text());
             out.push_str(&self.flush_tools());
             let message = err.get("message").and_then(|m| m.as_str()).unwrap_or("upstream stream error");
@@ -630,8 +693,16 @@ impl AnthropicFrames {
             .and_then(|d| d.as_str())
             .unwrap_or("");
         if !text.is_empty() {
-            out.push_str(&self.close_think());
-            out.push_str(&self.text_delta(text));
+            // textcalls：正文先过 scout——标记出现后这一段被持有（不发
+            // text_delta），放出的照发（Go textCallSee 的 KText）。
+            let released = match self.scout.as_mut() {
+                Some(sc) => sc.feed_text(text),
+                None => text.to_string(),
+            };
+            if !released.is_empty() {
+                out.push_str(&self.close_think());
+                out.push_str(&self.text_delta(&released));
+            }
         }
         if let Some(calls) = choice
             .and_then(|c| c.pointer("/delta/tool_calls"))
@@ -639,6 +710,14 @@ impl AnthropicFrames {
         {
             if !calls.is_empty() {
                 // 工具分片到达：文本块到此为止，分片进拼装器（事件族惰性）。
+                // textcalls：回复自己发起了调用——settle（首个原生调用前
+                // tagsOnly 仍生效），放出的文本按正文发（Go KToolStart）。
+                if let Some(sc) = self.scout.as_mut() {
+                    let rest = sc.note_native_call();
+                    if !rest.is_empty() {
+                        out.push_str(&self.text_delta(&rest));
+                    }
+                }
                 out.push_str(&self.close_think());
                 out.push_str(&self.close_text());
                 self.tools.feed(calls);
@@ -649,12 +728,15 @@ impl AnthropicFrames {
             .and_then(|f| f.as_str())
             .filter(|f| !f.is_empty())
         {
+            self.finish = Some(stop.to_string());
+            // textcalls：回合结束（Go 的 KStop 在 finish 帧上发）——读出的
+            // 调用进拼装器、正文调用改的收尾按 tool_use；正文剩余按文本块发。
+            out.push_str(&self.finish_scout());
             // 封块现在发（anthropic 规矩：所有 content_block_stop 在
             // message_delta 前），收尾两帧等流尾。
             out.push_str(&self.close_think());
             out.push_str(&self.close_text());
             out.push_str(&self.flush_tools());
-            self.finish = Some(stop.to_string());
         }
         self.with_start(out, model)
     }
@@ -663,7 +745,10 @@ impl AnthropicFrames {
     /// finish 来过就补收尾两帧（回合是真完了，缺的只是 [DONE]），
     /// 没来过就到此为止——流是被截断的，不编收口。
     fn flush_truncated(&mut self, model: &str) -> String {
-        let mut out = self.close_think();
+        // textcalls：finish 来过时 scout 已在 finish 帧交账（take 后为
+        // None）；截断流持有的按原文放（Go held() 的 release）。
+        let mut out = self.release_scout();
+        out.push_str(&self.close_think());
         out.push_str(&self.close_text());
         out.push_str(&self.flush_tools());
         if !self.stopped {
@@ -673,6 +758,46 @@ impl AnthropicFrames {
             }
         }
         self.with_start(out, model)
+    }
+
+    /// textcalls 交账（Go textCallSee 的 KStop，textcalls.go:779）：读出的
+    /// 调用合成 chat 分片进拼装器（flush_tools 的三段式白拿）；正文调用
+    /// 改成回合收尾时把 stop_reason 置 tool_calls（anthropic 的 tool_use，
+    /// Go `ev.Stop = "tool"`）；剩余文本按文本块发。
+    fn finish_scout(&mut self) -> String {
+        let Some(sc) = self.scout.take() else { return String::new() };
+        let fin = sc.finish();
+        let mut out = String::new();
+        if !fin.text.is_empty() {
+            out.push_str(&self.text_delta(&fin.text));
+        }
+        if !fin.calls.is_empty() {
+            let deltas: Vec<Value> = fin
+                .calls
+                .into_iter()
+                .map(|(name, args)| {
+                    json!({
+                        "index": 0, "id": chat::text_call_id(), "type": "function",
+                        "function": {"name": name, "arguments": args},
+                    })
+                })
+                .collect();
+            self.tools.feed(&deltas);
+            self.finish = Some("tool_calls".into());
+        }
+        out
+    }
+
+    /// textcalls 的错误/截断路径（Go KError 与 readSSE 结束后的 held()）：
+    /// 持有的按原文放出，不解析。
+    fn release_scout(&mut self) -> String {
+        let Some(mut sc) = self.scout.take() else { return String::new() };
+        let rest = sc.release_rest();
+        if rest.is_empty() {
+            String::new()
+        } else {
+            self.text_delta(&rest)
+        }
     }
 
     /// 首条输出前插 message_start（started 只翻一次）。
@@ -1665,5 +1790,154 @@ mod tests {
         assert_eq!(v["type"], "error");
         assert_eq!(v["error"]["type"], "authentication_error");
         assert_eq!(v["error"]["message"], "bad key", "厂商的话保留");
+    }
+
+    // -----------------------------------------------------------------
+    // textcalls（正文里书写的工具调用，翻译路径应答侧）
+    // -----------------------------------------------------------------
+
+    /// DeepSeek 自家形：正文里写 `<tool_call>` 包 `<｜DSML｜invoke …>` 参数。
+    const DSML_TEXT: &str = concat!(
+        "看一下。",
+        "<tool_call>\n<｜DSML｜invoke name=\"get_weather\">\n",
+        "<｜DSML｜parameter name=\"city\" string=\"true\">Berlin</｜DSML｜parameter>\n",
+        "</｜DSML｜invoke>\n</tool_call>"
+    );
+
+    fn textcall_tools() -> Value {
+        json!([{ "name": "get_weather", "description": "weather",
+            "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}} }])
+    }
+
+    #[test]
+    fn textcalls_nonstream_written_call_becomes_tool_use_block() {
+        let reply_body = format!(
+            r#"{{"id":"c1","object":"chat.completion","model":"m","choices":[{{"index":0,"message":{{"role":"assistant","content":{}}},"finish_reason":"stop"}}],"usage":{{"prompt_tokens":3,"completion_tokens":2}}}}"#,
+            serde_json::to_string(DSML_TEXT).unwrap()
+        );
+        let reply_body: &'static str = Box::leak(reply_body.into_boxed_str());
+        let vendor = fake_vendor(200, "application/json", reply_body);
+        let providers = format!(
+            r#"{{"providers":[{{"id":"fake","name":"Fake","key":"sk-test","chat":"{}/v1"}}]}}"#,
+            vendor.base
+        );
+        let (gateway, _sandbox) = sandbox(&providers);
+        let request = json!({
+            "model": "fake/m", "max_tokens": 64,
+            "messages": [{ "role": "user", "content": "weather?" }],
+            "tools": textcall_tools(),
+        });
+        let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
+        let Reply::Json { status, body } = reply else {
+            panic!("expected json reply, got stream");
+        };
+        assert_eq!(status, 200);
+        let v: Value = serde_json::from_slice(&body).expect("anthropic json");
+        let blocks = v["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2, "文本块 + tool_use 块：{blocks:?}");
+        // 标记前正文原样，DSML 标记不再出现在文本里。
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[0]["text"], "看一下。");
+        // 书写调用 → 真 tool_use 块。
+        assert_eq!(blocks[1]["type"], "tool_use");
+        assert_eq!(blocks[1]["name"], "get_weather");
+        assert_eq!(blocks[1]["input"], json!({"city": "Berlin"}));
+        assert!(
+            blocks[1]["id"].as_str().unwrap().starts_with("call_text_"),
+            "Go textCallID 形状：{}",
+            blocks[1]["id"]
+        );
+        // 回合作为调过工具的回合结束（Go `ev.Stop = "tool"`）。
+        assert_eq!(v["stop_reason"], "tool_use");
+    }
+
+    #[test]
+    fn textcalls_stream_written_call_becomes_tool_use_block() {
+        // 正文分两片：标记前的说明先放，DSML 块整片被持有；finish 到了才交账。
+        let sse = concat!(
+            "data: {\"id\":\"c2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"看一下。\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"c2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"<tool_call>\\n<｜DSML｜invoke name=\\\"get_weather\\\">\\n<｜DSML｜parameter name=\\\"city\\\" string=\\\"true\\\">Berlin</｜DSML｜parameter>\\n</｜DSML｜invoke>\\n</tool_call>\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"c2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":5}}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let vendor = fake_vendor(200, "text/event-stream", sse);
+        let providers = format!(
+            r#"{{"providers":[{{"id":"fake","name":"Fake","key":"sk-test","chat":"{}/v1"}}]}}"#,
+            vendor.base
+        );
+        let (gateway, _sandbox) = sandbox(&providers);
+        let request = json!({
+            "model": "fake/m", "max_tokens": 64, "stream": true,
+            "messages": [{ "role": "user", "content": "weather?" }],
+            "tools": textcall_tools(),
+        });
+        let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
+        let Reply::Stream { status, content_type, mut reader } = reply else {
+            panic!("expected stream reply, got json");
+        };
+        assert_eq!(status, 200);
+        assert!(content_type.contains("text/event-stream"));
+        let mut out = String::new();
+        reader.read_to_string(&mut out).expect("read translated stream");
+        let events = parse_frames(&out);
+        let names: Vec<&str> = events.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "message_start",
+                "content_block_start",  // text 块 index 0
+                "content_block_delta",  // text_delta "看一下。"
+                "content_block_stop",   // finish 到达，文本块封口
+                "content_block_start",  // tool_use 块 index 1（三段式）
+                "content_block_delta",  // input_json_delta
+                "content_block_stop",
+                "message_delta",
+                "message_stop",
+            ],
+            "书写调用在 finish 帧交账，tool_use 三段式在文本块后"
+        );
+        assert_eq!(events[1].1["index"], json!(0));
+        assert_eq!(events[2].1["delta"]["text"], "看一下。");
+        let block = &events[4].1["content_block"];
+        assert_eq!(events[4].1["index"], json!(1));
+        assert_eq!(block["type"], "tool_use");
+        assert_eq!(block["name"], "get_weather");
+        assert!(block["id"].as_str().unwrap().starts_with("call_text_"));
+        assert_eq!(events[5].1["delta"]["partial_json"], r#"{"city":"Berlin"}"#);
+        // 回合收尾按 tool_use（Go `ev.Stop = "tool"`）。
+        assert_eq!(events[7].1["delta"]["stop_reason"], "tool_use");
+        // 持有的 DSML 标记绝不当 text_delta 发出去。
+        assert!(!out.contains("DSML"), "持有文本不进 text_delta：{out}");
+    }
+
+    #[test]
+    fn textcalls_without_tools_stays_text() {
+        // 请求没提供工具：scout 不装（Go 在安装点整个跳过），正文原样。
+        let reply_body = format!(
+            r#"{{"id":"c1","object":"chat.completion","model":"m","choices":[{{"index":0,"message":{{"role":"assistant","content":{}}},"finish_reason":"stop"}}]}}"#,
+            serde_json::to_string(DSML_TEXT).unwrap()
+        );
+        let reply_body: &'static str = Box::leak(reply_body.into_boxed_str());
+        let vendor = fake_vendor(200, "application/json", reply_body);
+        let providers = format!(
+            r#"{{"providers":[{{"id":"fake","name":"Fake","key":"sk-test","chat":"{}/v1"}}]}}"#,
+            vendor.base
+        );
+        let (gateway, _sandbox) = sandbox(&providers);
+        let request = json!({
+            "model": "fake/m", "max_tokens": 64,
+            "messages": [{ "role": "user", "content": "weather?" }],
+        });
+        let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
+        let Reply::Json { status, body } = reply else {
+            panic!("expected json reply, got stream");
+        };
+        assert_eq!(status, 200);
+        let v: Value = serde_json::from_slice(&body).expect("anthropic json");
+        let blocks = v["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[0]["text"], DSML_TEXT, "正文一个字不动");
+        assert_eq!(v["stop_reason"], "end_turn");
     }
 }

@@ -15,11 +15,14 @@
 //!   `response.created → response.output_item.added → output_text.delta…
 //!   → output_text.done → output_item.done → response.completed`。
 //!
-//! codex 特有字段（`store` / `include` / `previous_response_id`）在翻译
-//! 路径下**安静丢弃**——引擎没有会话存储（无状态转发），这些字段的服务端
-//! 存回合语义没有诚实对应；`instructions` 例外：它就是 system 提示，
-//! translate 已折进 chat 的 system 消息。直通路径下这些字段原样透传
-//! （厂商自己认）。
+//! codex 特有字段（`include`）在翻译路径下安静丢弃；`instructions` 折进
+//! chat 的 system 消息（translate）。`store` / `previous_response_id` 的
+//! 服务端存回合语义由 [`super::prev_response`] 的内存表承担（本文件
+//! `prev_merge` / `seal_prev`）：store:true 的应答存 (input, output) 返回
+//! 网关发的 id；下一轮点名 previous_response_id → 合并整段历史再翻译；
+//! miss → 显式 400（`previous_response_not_found`），绝不静默重放空历史。
+//! **直通路径不接管 store**——透传原样（真 OpenAI 自家管；Go 对 relay 的
+//! 自留回合另有 prevDelta 增量改写，这里不做，差距记录在 prev_response.rs）。
 //!
 //! 流式 usage：给翻译后的 chat 请求补 `stream_options.include_usage`
 //! （Go buildChat 同款，chat.go:636）——否则 chat 厂商不在流尾发 usage 帧，
@@ -37,6 +40,14 @@
 //! （chat 的 tool_calls 分片经 translate::ChatToolAccum 拼装，一次调用
 //! 出一族 `output_item.added → arguments.delta → arguments.done →
 //! output_item.done`，与文本 item 按到达序交错）。
+//!
+//! textcalls（正文里书写的工具调用，`super::textcalls`，Go textcalls.go
+//! textCallSee）：**翻译路径的应答文本**过 TextCallScout——请求提供了工具
+//! 时，从第一个伪调用标记起的正文被持有，回合结束（finish_reason）可解析
+//! 块变成真 function_call（事件族/还原表复用 ChatToolAccum + call_to），
+//! 截断流只按原文放出。offered 名单取翻译后 chat 请求的工具名（flat 名，
+//! Go 安装点 textCallNames(request.Tools)）。chat 直通与 responses 直通
+//! 都不装（Go 的 textCallTidy / textcalls_relay 是独立变体，差距保留）。
 //!
 //! Codex 的非 function 工具（custom / namespace / tool_search）：翻译请求时按
 //! Go readResponses 压平成 chat 函数（flat 名唯一、≤64、`[a-zA-Z0-9_-]`），
@@ -268,6 +279,112 @@ fn passthrough(
 // 翻译路径
 // =====================================================================
 
+/// store:true 回合的落账上下文：应答侧拿它生成 id 并保存（Go
+/// previousResponse 的 conversationWriter sink，prev_response.go:395 附近）。
+struct PrevSave {
+    store: std::sync::Arc<super::prev_response::PrevStore>,
+    /// 存账的 input（合并后的整段 items；无 previous_response_id 时就是
+    /// 本轮自己的 items——Go kept(scope, nil, fresh) 首轮也存）。
+    input: Value,
+}
+
+/// previous_response_id / store 的请求侧处理（Go previousResponse 的翻译
+/// 路径子集，prev_response.go:332）：
+/// - 命中 → 合并历史：**存的 input items 在前、存的 output items 作
+///   assistant 回合、新 input 在后**（Go `input = append(prior, fresh…)`，
+///   prior = 存账的 input+output 连续——prevTurn.items 是一条运行史）；
+/// - miss → [`super::prev_response::prev_not_found`] 的 400（**绝不静默
+///   重放空历史**——不自存回合的上游会以为对话从零开始）；
+/// - input 读不成 items（既非串也非数组，Go prevInput 的 fresh==nil）→
+///   整个让路：不合并、不存。
+/// store==true → 交回 [`PrevSave`] 给应答侧落账。
+fn prev_merge(
+    gateway: &super::Gateway,
+    mut parsed: Value,
+) -> Result<(Value, Option<PrevSave>), Reply> {
+    let prev_id = parsed
+        .get("previous_response_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let store = parsed.get("store").and_then(|v| v.as_bool()).unwrap_or(false);
+    // Go prevInput：串 → 一条 user message item；数组 → items 原样；其它不读。
+    let fresh_items = |v: &Value| -> Option<Vec<Value>> {
+        match v.get("input") {
+            Some(Value::String(s)) => {
+                Some(vec![json!({ "type": "message", "role": "user", "content": s })])
+            }
+            Some(Value::Array(items)) => Some(items.clone()),
+            _ => None,
+        }
+    };
+    if !prev_id.is_empty() {
+        if let Some(fresh) = fresh_items(&parsed) {
+            match gateway.prev.replay(&prev_id) {
+                Some(stored) => {
+                    let mut items = stored.input.as_array().cloned().unwrap_or_default();
+                    items.extend(stored.output.as_array().cloned().unwrap_or_default());
+                    items.extend(fresh);
+                    if let Some(map) = parsed.as_object_mut() {
+                        map.insert("input".into(), Value::Array(items.clone()));
+                        map.remove("previous_response_id");
+                    }
+                    if store {
+                        let save = PrevSave { store: gateway.prev.clone(), input: Value::Array(items) };
+                        return Ok((parsed, Some(save)));
+                    }
+                    return Ok((parsed, None));
+                }
+                None => {
+                    let (status, body) = super::prev_response::prev_not_found(&prev_id);
+                    return Err(Reply::Json { status, body: serde_json::to_vec(&body).unwrap_or_default() });
+                }
+            }
+        }
+    }
+    if store {
+        if let Some(items) = fresh_items(&parsed) {
+            let save = PrevSave { store: gateway.prev.clone(), input: Value::Array(items) };
+            return Ok((parsed, Some(save)));
+        }
+    }
+    Ok((parsed, None))
+}
+
+/// store:true 回合的应答侧落账：生成 fresh_id、存（model=asked、
+/// input=请求侧合并的整段、output=应答 output items）、应答 id 换成存账
+/// id——客户端下一轮点名的就是它（流式路径在 ResponsesSse 收尾做同一件事）。
+fn seal_prev(resp: &mut Value, prev: Option<PrevSave>, model: &str) {
+    let Some(p) = prev else { return };
+    let id = super::prev_response::fresh_id("resp_");
+    p.store.save(
+        &id,
+        model,
+        p.input,
+        resp.get("output").cloned().unwrap_or_else(|| json!([])),
+    );
+    if let Some(map) = resp.as_object_mut() {
+        map.insert("id".into(), json!(id));
+    }
+}
+
+/// 翻译后 chat 请求的工具名（= 厂商/模型看到的 flat 名；Go 安装点
+/// textCallNames(request.Tools) 吃的就是翻译后的 IR 工具）。空表 = 没提供
+/// 工具 → scout 不装（Go 在安装点整个跳过，gateway.go:9644-9647）。
+fn offered_names(chat_body: &Value) -> Vec<String> {
+    chat_body
+        .get("tools")
+        .and_then(|t| t.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|t| t.pointer("/function/name").and_then(|n| n.as_str()))
+                .filter(|n| !n.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// responses → chat 出站（`chat::attempt` 全链：剥前缀 / Bearer / 厂商合身 /
 /// prefit / bodycap 挂 4xx）→ 应答折回 responses 形状。
 fn translate_via_chat(
@@ -285,9 +402,15 @@ fn translate_via_chat(
         .and_then(|m| m.as_str())
         .unwrap_or_default()
         .to_string();
+    // previous_response_id / store 的服务端回合；miss 是显式 400——绝不
+    // 静默重放空历史（Go prevLost → writePrevNotFound）。
+    let (parsed, prev) = match prev_merge(gateway, parsed) {
+        Ok(v) => v,
+        Err(reply) => return Attempt::Done(reply),
+    };
     // table：被压平的 custom / namespace / tool_search 工具的还原表，随这次请求
     // 走到应答编码器（不放全局——并发请求各带各的）。
-    let (chat_body, table) = match super::translate::responses_to_chat_with_tools(&parsed) {
+    let (chat_value, table) = match super::translate::responses_to_chat_with_tools(&parsed) {
         Ok((mut v, table)) => {
             // 流式补 include_usage（Go buildChat 同款）：chat 厂商默认不在
             // 流尾发 usage 帧，completed 事件的 usage 就只能报 0。
@@ -296,12 +419,16 @@ fn translate_via_chat(
                     map.insert("stream_options".into(), json!({ "include_usage": true }));
                 }
             }
-            (serde_json::to_vec(&v).unwrap_or_default(), table)
+            (v, table)
         }
         Err(e) => return Attempt::Done(Reply::error(400, &e)),
     };
+    // textcalls：请求提供了工具才装 scout（offered 名单 = 翻译后的 flat 名）。
+    let names = offered_names(&chat_value);
+    let scout = (!names.is_empty()).then(|| super::textcalls::TextCallScout::new(&names));
+    let chat_body = serde_json::to_vec(&chat_value).unwrap_or_default();
     match super::chat::attempt(gateway, cand, &chat_body) {
-        Attempt::Done(reply) => Attempt::Done(reshape(reply, &asked, &table)),
+        Attempt::Done(reply) => Attempt::Done(reshape(reply, &asked, &table, scout, prev)),
         Attempt::Retry(reply) => Attempt::Retry(reply),
     }
 }
@@ -309,16 +436,26 @@ fn translate_via_chat(
 /// `chat::forward` 的应答 → responses 应答。错误（≥400）原样透传：chat
 /// 家族的错误面本就是 `{"error":{…}}` 同构形状，重写只会丢厂商的原话，
 /// 状态码透传。
-fn reshape(reply: Reply, asked: &str, table: &super::translate::ToolTable) -> Reply {
+fn reshape(
+    reply: Reply,
+    asked: &str,
+    table: &super::translate::ToolTable,
+    scout: Option<super::textcalls::TextCallScout>,
+    prev: Option<PrevSave>,
+) -> Reply {
     match reply {
         Reply::Json { status, body } => {
             if status < 400 {
                 match serde_json::from_slice::<Value>(&body) {
-                    Ok(v) => Reply::Json {
-                        status,
-                        body: serde_json::to_vec(&chat_completion_to_response(&v, asked, table))
-                            .unwrap_or(body),
-                    },
+                    Ok(mut v) => {
+                        // textcalls：整块正文里的书写调用（Go wholeTextCalls）。
+                        if let Some(sc) = scout {
+                            super::chat::whole_text_calls(&mut v, sc);
+                        }
+                        let mut resp = chat_completion_to_response(&v, asked, table);
+                        seal_prev(&mut resp, prev, asked);
+                        Reply::Json { status, body: serde_json::to_vec(&resp).unwrap_or(body) }
+                    }
                     // 2xx 但不是 JSON：翻译路径的客户端说的是 responses 话，
                     // 原样的 chat 噪音没有意义——诚实报 502。
                     Err(_) => Reply::error(502, "chat vendor replied a non-JSON body"),
@@ -343,18 +480,28 @@ fn reshape(reply: Reply, asked: &str, table: &super::translate::ToolTable) -> Re
                 let mut buf = Vec::new();
                 let _ = reader.read_to_end(&mut buf);
                 return match serde_json::from_slice::<Value>(&buf) {
-                    Ok(v) => Reply::Json {
-                        status: 200,
-                        body: serde_json::to_vec(&chat_completion_to_response(&v, asked, table))
-                            .unwrap_or(buf),
-                    },
+                    Ok(mut v) => {
+                        if let Some(sc) = scout {
+                            super::chat::whole_text_calls(&mut v, sc);
+                        }
+                        let mut resp = chat_completion_to_response(&v, asked, table);
+                        seal_prev(&mut resp, prev, asked);
+                        Reply::Json { status: 200, body: serde_json::to_vec(&resp).unwrap_or(buf) }
+                    }
                     Err(_) => Reply::error(502, "chat vendor replied a non-JSON body"),
                 };
+            }
+            let mut sse = ResponsesSse::new(reader, asked).with_tools(table.clone());
+            if let Some(sc) = scout {
+                sse = sse.with_scout(sc);
+            }
+            if let Some(p) = prev {
+                sse = sse.with_prev(p);
             }
             Reply::Stream {
                 status: 200,
                 content_type: "text/event-stream".into(),
-                reader: Box::new(ResponsesSse::new(reader, asked).with_tools(table.clone())),
+                reader: Box::new(sse),
             }
         }
     }
@@ -542,6 +689,10 @@ struct ResponsesSse {
     tools: super::translate::ChatToolAccum,
     /// 请求压平过的工具还原表（custom / 命名空间 / tool_search）。
     named: super::translate::ToolTable,
+    /// textcalls 持有者（None = 请求没提供工具，正文惰性直通）。
+    scout: Option<super::textcalls::TextCallScout>,
+    /// store:true 回合的落账上下文（收尾时存，Go previousResponse 的 sink）。
+    prev: Option<PrevSave>,
     resp_id: String,
     seq: u64,
     model: String,
@@ -568,6 +719,8 @@ impl ResponsesSse {
             items: Vec::new(),
             tools: super::translate::ChatToolAccum::new(),
             named: super::translate::ToolTable::new(),
+            scout: None,
+            prev: None,
             resp_id: format!("resp_{}", fresh_suffix()),
             seq: 0,
             model: model.to_string(),
@@ -580,6 +733,20 @@ impl ResponsesSse {
     /// 带上请求的工具还原表（`translate::responses_to_chat_with_tools`）。
     fn with_tools(mut self, named: super::translate::ToolTable) -> ResponsesSse {
         self.named = named;
+        self
+    }
+
+    /// 带上 textcalls 持有者（请求提供了工具时才装）。
+    fn with_scout(mut self, scout: super::textcalls::TextCallScout) -> ResponsesSse {
+        self.scout = Some(scout);
+        self
+    }
+
+    /// 带上 store:true 的落账上下文：id 直接用存账 id（created 帧与存账
+    /// 同一个 id，客户端点名的就是它）。
+    fn with_prev(mut self, prev: PrevSave) -> ResponsesSse {
+        self.resp_id = super::prev_response::fresh_id("resp_");
+        self.prev = Some(prev);
         self
     }
 
@@ -721,6 +888,58 @@ impl ResponsesSse {
         self.items.push(item);
     }
 
+    /// 一段（已过 scout 的）正文 delta：按到达序冲刷思考/工具、开 message
+    /// item、发 output_text.delta。feed 的正文分支与 textcalls 的交账共用。
+    fn emit_text(&mut self, text: &str) {
+        self.close_think();
+        self.flush_tools();
+        self.ensure_started();
+        self.ensure_item();
+        self.text.push_str(text);
+        let item_id = self.item_id.clone();
+        let output_index = self.item_index;
+        self.frame(
+            "response.output_text.delta",
+            json!({
+                "item_id": item_id, "output_index": output_index, "content_index": 0,
+                "delta": text,
+            }),
+        );
+    }
+
+    /// textcalls 交账（Go textCallSee 的 KStop/KError 后置，textcalls.go:779）。
+    /// 回合正常结束（finish_reason 到过，Go 的 KStop 在 finish 帧上发）→
+    /// finish：读出的调用合成 chat 分片进拼装器（flush_tools 的事件族 +
+    /// call_to 还原表白拿），剩余文本按正文发；截断（没有 finish）→ 只
+    /// release：持有的按原文放出，不解析（Go readSSE 结束后 held() 同款）。
+    fn finish_scout(&mut self) {
+        let Some(mut sc) = self.scout.take() else { return };
+        if self.finish.is_none() {
+            let rest = sc.release_rest();
+            if !rest.is_empty() {
+                self.emit_text(&rest);
+            }
+            return;
+        }
+        let fin = sc.finish();
+        if !fin.text.is_empty() {
+            self.emit_text(&fin.text);
+        }
+        if !fin.calls.is_empty() {
+            let deltas: Vec<Value> = fin
+                .calls
+                .into_iter()
+                .map(|(name, args)| {
+                    json!({
+                        "index": 0, "id": super::chat::text_call_id(), "type": "function",
+                        "function": {"name": name, "arguments": args},
+                    })
+                })
+                .collect();
+            self.tools.feed(&deltas);
+        }
+    }
+
     /// 冲刷拼装完成的工具调用：每次调用一族
     /// `output_item.added → arguments.delta → arguments.done → output_item.done`
     /// （responsesEncoder 的 KToolStart/KToolArgs/closeItem 同形状；arguments
@@ -795,12 +1014,15 @@ impl ResponsesSse {
         }
     }
 
-    /// 终结序列：text.done → item.done →（工具事件族）→ completed/incomplete。
+    /// 终结序列：textcalls 交账 → text.done → item.done →（工具事件族）→
+    /// completed/incomplete。store:true 的回合在收尾时落账（Go prevReply：
+    /// 流里读得到 completed（= finish 到过）才存；截断流不存）。
     fn finish_stream(&mut self) {
         if self.ended {
             return;
         }
         self.ensure_started(); // 空流也要有 created——completed 不能凭空来
+        self.finish_scout();
         let (status, event, incomplete): (&str, &str, Value) = match self.finish.as_deref() {
             Some("length") => {
                 ("incomplete", "response.incomplete", json!({ "reason": "max_output_tokens" }))
@@ -816,6 +1038,11 @@ impl ResponsesSse {
         self.flush_tools();
         // 空回合（无正文无工具）的 output 就是空数组——诚实汇报。
         let output = Value::Array(std::mem::take(&mut self.items));
+        if self.finish.is_some() {
+            if let Some(p) = self.prev.take() {
+                p.store.save(&self.resp_id, &self.model, p.input, output.clone());
+            }
+        }
         let response = self.response_object(status, output, usage, incomplete);
         self.frame(event, json!({ "response": response }));
         self.ended = true;
@@ -846,21 +1073,16 @@ impl ResponsesSse {
             .and_then(|d| d.as_str())
             .unwrap_or("");
         if !text.is_empty() {
-            // 正文在工具分片之后到达：先按到达序冲刷工具事件族，再开新 item。
-            self.close_think();
-            self.flush_tools();
-            self.ensure_started();
-            self.ensure_item();
-            self.text.push_str(text);
-            let item_id = self.item_id.clone();
-            let output_index = self.item_index;
-            self.frame(
-                "response.output_text.delta",
-                json!({
-                    "item_id": item_id, "output_index": output_index, "content_index": 0,
-                    "delta": text,
-                }),
-            );
+            // textcalls：正文先过 scout——书写调用的标记出现后这一段被持有
+            // （不发 delta），放出的照发（Go textCallSee 的 KText）。
+            let released = match self.scout.as_mut() {
+                Some(sc) => sc.feed_text(text),
+                None => text.to_string(),
+            };
+            if !released.is_empty() {
+                // 正文在工具分片之后到达：先按到达序冲刷工具事件族，再开新 item。
+                self.emit_text(&released);
+            }
         }
         if let Some(calls) = choice
             .and_then(|c| c.pointer("/delta/tool_calls"))
@@ -869,6 +1091,14 @@ impl ResponsesSse {
             if !calls.is_empty() {
                 // 工具分片到达：正文 item 到此为止（先封口），分片进拼装器，
                 // 事件族等收尾或下次正文交错再发（chat 流没有「调用完了」信号）。
+                // textcalls：回复自己发起了调用——settle（首个原生调用前
+                // tagsOnly 仍生效），放出的文本按正文发（Go KToolStart）。
+                if let Some(sc) = self.scout.as_mut() {
+                    let out = sc.note_native_call();
+                    if !out.is_empty() {
+                        self.emit_text(&out);
+                    }
+                }
                 self.close_think();
                 self.close_item();
                 self.tools.feed(calls);
@@ -1093,10 +1323,11 @@ mod tests {
             r#"{{"providers":[{{"id":"p","name":"P","key":"sk-test","chat":"{}/v1"}}]}}"#,
             vendor.base
         ));
-        // codex 形态的请求：instructions + 文本 input + 特有字段（store/
-        // include/previous_response_id 翻译路径下安静丢弃）。
+        // codex 形态的请求：instructions + 文本 input + 特有字段（store 现在
+        // 有服务端存回合语义——这里只验证不进 chat 请求；previous_response_id
+        // 的存取/合并/miss 由 prev_response_* 系列测试覆盖）。
         let body = br#"{"model":"p/m","instructions":"be nice","input":"hi",
-            "store":true,"include":["usage"],"previous_response_id":"resp_old"}"#;
+            "store":true,"include":["usage"]}"#;
         let reply = handle(&gateway, body);
 
         // 打到 chat 厂商：Bearer、路径、翻译后的形状。
@@ -1109,6 +1340,10 @@ mod tests {
         assert_eq!(sent["messages"][0], json!({"role": "system", "content": "be nice"}));
         assert_eq!(sent["messages"][1], json!({"role": "user", "content": "hi"}));
         assert!(sent.get("store").is_none(), "codex 特有字段不进 chat 请求");
+        assert!(
+            sent.get("previous_response_id").is_none() && sent.get("include").is_none(),
+            "codex 特有字段不进 chat 请求"
+        );
 
         // 应答折成 responses 形状。
         let Reply::Json { status, body } = reply else { panic!("json reply") };
@@ -1677,5 +1912,303 @@ mod tests {
         // 每个 tool_call 都有对应的 tool 消息
         let msgs = sent["messages"].as_array().unwrap();
         assert_eq!(msgs.iter().filter(|m| m["role"] == "tool").count(), 2);
+    }
+
+    // -----------------------------------------------------------------
+    // previous_response_id（prev_response.rs 的翻译路径接线）
+    // -----------------------------------------------------------------
+
+    const PREV_CHAT_REPLY: &str = r#"{"id":"chatcmpl-1","object":"chat.completion","model":"m",
+        "choices":[{"index":0,"message":{"role":"assistant","content":"hello there"},"finish_reason":"stop"}],
+        "usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}"#;
+
+    #[test]
+    fn prev_response_store_replay_and_miss() {
+        let vendor = fake_vendor(200, "application/json", PREV_CHAT_REPLY);
+        let (gateway, _sandbox) = sandbox(&format!(
+            r#"{{"providers":[{{"id":"p","name":"P","key":"k","chat":"{}/v1"}}]}}"#,
+            vendor.base
+        ));
+
+        // 第一轮：store:true、无 previous_response_id——存（input=本轮、
+        // output=应答 output），应答 id 是网关生成的存账 id。
+        let reply = handle(&gateway, br#"{"model":"p/m","input":"first","store":true}"#);
+        let Reply::Json { status, body } = reply else { panic!("json reply") };
+        assert_eq!(status, 200);
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let id1 = v["id"].as_str().unwrap().to_string();
+        assert!(id1.starts_with("resp_"), "存账 id：{id1}");
+
+        // 第二轮：只发新 input + previous_response_id——厂商必须收到整段
+        // 历史（存的 input 在前、存的 output 作 assistant 回合、新 input 在后）。
+        let body = format!(r#"{{"model":"p/m","input":"second","store":true,"previous_response_id":"{id1}"}}"#);
+        let reply = handle(&gateway, body.as_bytes());
+        let Reply::Json { status, body } = reply else { panic!("json reply") };
+        assert_eq!(status, 200);
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let id2 = v["id"].as_str().unwrap().to_string();
+        assert!(id2.starts_with("resp_"));
+        assert_ne!(id1, id2, "每轮各有各的存账 id");
+        let seen = vendor.seen.lock().unwrap_or_else(|p| p.into_inner());
+        assert_eq!(seen.len(), 2);
+        let sent: Value = serde_json::from_slice(&seen[1].body).unwrap();
+        assert!(
+            sent.get("previous_response_id").is_none(),
+            "合并后的请求不再点名 previous_response_id"
+        );
+        let msgs = sent["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 3, "合并出的整段历史：{msgs:?}");
+        assert_eq!(msgs[0], json!({"role": "user", "content": "first"}));
+        assert_eq!(msgs[1], json!({"role": "assistant", "content": "hello there"}));
+        assert_eq!(msgs[2], json!({"role": "user", "content": "second"}));
+        drop(seen);
+
+        // miss：网关不持有的 id → 显式 400（OpenAI 形状 code=
+        // previous_response_not_found），绝不静默重放空历史——厂商收不到
+        // 第三个请求。
+        let reply = handle(&gateway, br#"{"model":"p/m","input":"third","previous_response_id":"resp_never"}"#);
+        let Reply::Json { status, body } = reply else { panic!("json reply") };
+        assert_eq!(status, 400, "Go prevLost 是 400，不是 404");
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["code"], "previous_response_not_found");
+        assert_eq!(v["error"]["param"], "previous_response_id");
+        assert_eq!(vendor.hits.load(Ordering::SeqCst), 2, "miss 不该打到厂商");
+
+        // store:false 的回合不存（Go previousResponse 的 early return）：
+        // 它照常应答，但不产生可点名的存账。
+        let reply = handle(&gateway, br#"{"model":"p/m","input":"no keep","store":false}"#);
+        let Reply::Json { status, .. } = reply else { panic!("json reply") };
+        assert_eq!(status, 200);
+        // 点名一个网关从没存过的 id（包括 store:false 轮的占位 id）都 miss。
+        let reply = handle(&gateway, br#"{"model":"p/m","input":"again","previous_response_id":"resp_nokeep"}"#);
+        let Reply::Json { status, .. } = reply else { panic!("json reply") };
+        assert_eq!(status, 400);
+    }
+
+    #[test]
+    fn prev_response_stream_store_roundtrip() {
+        // 流式存回合：created/completed 帧里的 id 就是存账 id；下一轮点名它，
+        // 厂商收到整段历史（流式轮的 output 已并进 assistant 回合）。
+        let sse = concat!(
+            r#"data: {"id":"c1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"你好"},"finish_reason":null}]}"#, "\n\n",
+            r#"data: {"id":"c1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}"#, "\n\n",
+            "data: [DONE]\n\n"
+        );
+        let vendor = fake_vendor(200, "text/event-stream", sse);
+        let (gateway, _sandbox) = sandbox(&format!(
+            r#"{{"providers":[{{"id":"p","name":"P","key":"k","chat":"{}/v1"}}]}}"#,
+            vendor.base
+        ));
+        let reply = handle(&gateway, br#"{"model":"p/m","input":"first","store":true,"stream":true}"#);
+        let Reply::Stream { mut reader, .. } = reply else { panic!("stream reply") };
+        let mut out = String::new();
+        reader.read_to_string(&mut out).expect("read sse");
+        let events = parse_frames(&out);
+        let created_id = events
+            .iter()
+            .find(|(n, _)| n == "response.created")
+            .map(|(_, d)| d["response"]["id"].as_str().unwrap().to_string())
+            .expect("created frame");
+        let completed_id = events
+            .iter()
+            .find(|(n, _)| n == "response.completed")
+            .map(|(_, d)| d["response"]["id"].as_str().unwrap().to_string())
+            .expect("completed frame");
+        assert_eq!(created_id, completed_id, "流式存账：帧里的 id 与存账 id 是同一个");
+        assert!(created_id.starts_with("resp_"));
+
+        // 下一轮点名它——存账表在 Gateway 里，同一网关才命中；vendor 回的
+        // 固定 SSE 与请求是否流式无关，第二轮同样走流式。
+        let body = format!(
+            r#"{{"model":"p/m","input":"second","stream":true,"previous_response_id":"{created_id}"}}"#
+        );
+        let reply = handle(&gateway, body.as_bytes());
+        let Reply::Stream { status, mut reader, .. } = reply else { panic!("stream reply") };
+        assert_eq!(status, 200);
+        let mut out2 = String::new();
+        reader.read_to_string(&mut out2).expect("read sse");
+        assert!(out2.contains("event: response.completed"));
+        let seen = vendor.seen.lock().unwrap_or_else(|p| p.into_inner());
+        assert_eq!(seen.len(), 2);
+        let sent: Value = serde_json::from_slice(&seen[1].body).unwrap();
+        let msgs = sent["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 3, "流式轮的历史并进来了：{msgs:?}");
+        assert_eq!(msgs[0], json!({"role": "user", "content": "first"}));
+        assert_eq!(msgs[1], json!({"role": "assistant", "content": "你好"}));
+        assert_eq!(msgs[2], json!({"role": "user", "content": "second"}));
+    }
+
+    #[test]
+    fn prev_response_passthrough_untouched() {
+        // 直通路径不接管 store：请求（含 previous_response_id）原样透传，
+        // 应答原样（id 是厂商的），也不进网关存账表。
+        let vendor = fake_vendor(
+            200,
+            "application/json",
+            r#"{"id":"resp_vendor","object":"response","status":"completed","output":[]}"#,
+        );
+        let (gateway, _sandbox) = sandbox(&format!(
+            r#"{{"providers":[{{"id":"o","name":"O","key":"k","responses":"{}/v1","chat":"{}/v1"}}]}}"#,
+            vendor.base, vendor.base
+        ));
+        let reply = handle(
+            &gateway,
+            br#"{"model":"o/m","input":"hi","store":true,"previous_response_id":"resp_anything"}"#,
+        );
+        let Reply::Json { status, body } = reply else { panic!("json reply") };
+        assert_eq!(status, 200);
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["id"], "resp_vendor", "厂商的 id 原样，不换存账 id");
+        let seen = vendor.seen.lock().unwrap_or_else(|p| p.into_inner());
+        let sent: Value = serde_json::from_slice(&seen[0].body).unwrap();
+        assert_eq!(sent["previous_response_id"], "resp_anything", "直通透传原样");
+        assert_eq!(sent["store"], true);
+        // 网关没存：点名厂商那个 id（网关表里没有）——翻译路径才查表，
+        // 这里没有翻译路径可走，只验证存账表没吞直通应答。
+    }
+
+    // -----------------------------------------------------------------
+    // textcalls（正文里书写的工具调用，翻译路径应答侧）
+    // -----------------------------------------------------------------
+
+    const TEXTCALL_TOOLS: &str = r#"[{"type":"function","name":"get_weather","description":"weather",
+        "parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}]"#;
+
+    /// DeepSeek/Hermes 形：正文里写 `<tool_call>{"name":…,"arguments":…}</tool_call>`。
+    const TEXTCALL_BODY: &str = concat!(
+        "查一下天气。",
+        "<tool_call>{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Berlin\"}}</tool_call>"
+    );
+
+    #[test]
+    fn textcalls_nonstream_written_call_becomes_function_call() {
+        let reply_body = format!(
+            r#"{{"id":"c1","object":"chat.completion","model":"m","choices":[{{"index":0,"message":{{"role":"assistant","content":{}}},"finish_reason":"stop"}}],"usage":{{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}}}"#,
+            serde_json::to_string(&TEXTCALL_BODY).unwrap()
+        );
+        // fake_vendor 要 &'static str——leak 一份（测试进程生命周期）。
+        let reply_body: &'static str = Box::leak(reply_body.into_boxed_str());
+        let vendor = fake_vendor(200, "application/json", reply_body);
+        let (gateway, _sandbox) = sandbox(&one_chat_vendor(&vendor));
+        let reply = route_responses(
+            &gateway,
+            format!(r#"{{"model":"p/m","input":"weather?","tools":{TEXTCALL_TOOLS}}}"#),
+        );
+        let Reply::Json { status, body } = reply else { panic!("json reply") };
+        assert_eq!(status, 200);
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let out = v["output"].as_array().unwrap();
+        assert_eq!(out.len(), 2, "正文 item + function_call item：{out:?}");
+        // 标记前的正文原样放出，标记本身不再出现在文本里。
+        assert_eq!(out[0]["type"], "message");
+        assert_eq!(out[0]["content"][0]["text"], "查一下天气。");
+        // 书写调用 → 真 function_call。
+        assert_eq!(out[1]["type"], "function_call");
+        assert_eq!(out[1]["name"], "get_weather");
+        assert_eq!(out[1]["arguments"], r#"{"city":"Berlin"}"#);
+        assert!(
+            out[1]["call_id"].as_str().unwrap().starts_with("call_text_"),
+            "Go textCallID 形状：{}",
+            out[1]["call_id"]
+        );
+        assert_eq!(v["status"], "completed");
+    }
+
+    #[test]
+    fn textcalls_stream_written_call_becomes_function_call_family() {
+        // 标记跨 chunk：正文分三片到（前半 / 标记开 / 标记闭），持有不发。
+        let sse = concat!(
+            r#"data: {"id":"c9","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"查一下"},"finish_reason":null}]}"#, "\n\n",
+            r#"data: {"id":"c9","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"天气。<tool_call>{\"name\":\"get_weather\",\"argu"},"finish_reason":null}]}"#, "\n\n",
+            r#"data: {"id":"c9","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"ments\":{\"city\":\"Berlin\"}}</tool_call>"},"finish_reason":null}]}"#, "\n\n",
+            r#"data: {"id":"c9","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":4,"total_tokens":9}}"#, "\n\n",
+            "data: [DONE]\n\n"
+        );
+        let vendor = fake_vendor(200, "text/event-stream", sse);
+        let (gateway, _sandbox) = sandbox(&one_chat_vendor(&vendor));
+        let reply = route_responses(
+            &gateway,
+            format!(r#"{{"model":"p/m","input":"weather?","stream":true,"tools":{TEXTCALL_TOOLS}}}"#),
+        );
+        let Reply::Stream { mut reader, .. } = reply else { panic!("stream reply") };
+        let mut out = String::new();
+        reader.read_to_string(&mut out).expect("read sse");
+        let events = parse_frames(&out);
+        let names: Vec<&str> = events.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "response.created",
+                "response.output_item.added",        // message item
+                "response.output_text.delta",        // "查一下"
+                "response.output_text.delta",        // "天气。"
+                "response.output_text.done",         // 全文（不含标记）
+                "response.output_item.done",
+                "response.output_item.added",        // function_call item
+                "response.function_call_arguments.delta",
+                "response.function_call_arguments.done",
+                "response.output_item.done",
+                "response.completed",
+            ],
+            "标记前正文照发、标记起的持有变 function_call 事件族"
+        );
+        assert_eq!(events[2].1["delta"], "查一下");
+        assert_eq!(events[3].1["delta"], "天气。");
+        assert_eq!(events[4].1["text"], "查一下天气。");
+        let added = &events[6].1["item"];
+        assert_eq!(added["type"], "function_call");
+        assert_eq!(added["name"], "get_weather");
+        assert_eq!(events[7].1["delta"], r#"{"city":"Berlin"}"#);
+        let done_item = &events[9].1["item"];
+        assert_eq!(done_item["arguments"], r#"{"city":"Berlin"}"#);
+        assert!(done_item["call_id"].as_str().unwrap().starts_with("call_text_"));
+        // held 的标记正文绝不当 delta 发出去。
+        assert!(!out.contains("tool_call>"), "持有文本不进 delta：{out}");
+        let completed = &events[10].1["response"];
+        assert_eq!(completed["output"].as_array().unwrap().len(), 2);
+        assert_eq!(completed["output"][1]["type"], "function_call");
+    }
+
+    #[test]
+    fn textcalls_without_offered_tools_stays_text() {
+        // 请求没提供工具：scout 不装（Go 在安装点整个跳过），正文原样。
+        let reply_body = format!(
+            r#"{{"id":"c1","object":"chat.completion","model":"m","choices":[{{"index":0,"message":{{"role":"assistant","content":{}}},"finish_reason":"stop"}}]}}"#,
+            serde_json::to_string(&TEXTCALL_BODY).unwrap()
+        );
+        let reply_body: &'static str = Box::leak(reply_body.into_boxed_str());
+        let vendor = fake_vendor(200, "application/json", reply_body);
+        let (gateway, _sandbox) = sandbox(&one_chat_vendor(&vendor));
+        let reply = route_responses(&gateway, r#"{"model":"p/m","input":"weather?"}"#.into());
+        let Reply::Json { status, body } = reply else { panic!("json reply") };
+        assert_eq!(status, 200);
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let out = v["output"].as_array().unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["type"], "message");
+        assert_eq!(out[0]["content"][0]["text"], TEXTCALL_BODY, "正文一个字不动");
+    }
+
+    #[test]
+    fn textcalls_unoffered_name_stays_text() {
+        // 标记点了没提供的工具名：整段按原文放出（不收成截短的调用）。
+        let text = "看这个。<tool_call>{\"name\":\"rm_rf\",\"arguments\":{}}</tool_call>";
+        let reply_body = format!(
+            r#"{{"id":"c1","object":"chat.completion","model":"m","choices":[{{"index":0,"message":{{"role":"assistant","content":{}}},"finish_reason":"stop"}}]}}"#,
+            serde_json::to_string(text).unwrap()
+        );
+        let reply_body: &'static str = Box::leak(reply_body.into_boxed_str());
+        let vendor = fake_vendor(200, "application/json", reply_body);
+        let (gateway, _sandbox) = sandbox(&one_chat_vendor(&vendor));
+        let reply = route_responses(
+            &gateway,
+            format!(r#"{{"model":"p/m","input":"x","tools":{TEXTCALL_TOOLS}}}"#),
+        );
+        let Reply::Json { status, body } = reply else { panic!("json reply") };
+        assert_eq!(status, 200);
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let out = v["output"].as_array().unwrap();
+        assert_eq!(out.len(), 1, "没读出调用：{out:?}");
+        assert_eq!(out[0]["content"][0]["text"], text);
     }
 }

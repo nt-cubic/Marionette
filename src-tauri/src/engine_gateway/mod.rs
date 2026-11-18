@@ -99,6 +99,10 @@ pub struct Gateway {
     pub affinity: affinity::Affinity,
     /// usage 台账（usage_ledger.rs）：每轮一行 JSONL，M2 对账数据源。
     pub usage: usage_ledger::UsageLedger,
+    /// previous_response_id 的服务端保存表（prev_response.rs）：responses
+    /// 翻译路径的存回合状态。Arc 是因为流式应答的编码器（ResponsesSse）
+    /// 要把它带进 Reply::Stream 的 reader 里在收尾时落账。
+    pub prev: std::sync::Arc<prev_response::PrevStore>,
 }
 
 impl Gateway {
@@ -109,6 +113,7 @@ impl Gateway {
             caps: Mutex::new(std::collections::HashMap::new()),
             affinity: affinity::Affinity::load(),
             usage: usage_ledger::UsageLedger::open(),
+            prev: std::sync::Arc::new(prev_response::PrevStore::default()),
         })
     }
 }
