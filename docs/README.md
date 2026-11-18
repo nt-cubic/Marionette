@@ -1,8 +1,17 @@
 # docs — 文档索引
 
 目录分区：**规范**进 `guides/`、**踩坑·案例·审计**进 `pitfalls/`、**调研**进 `research/`、
-**设计·实施方案**进 `plans/`；过时的挪 `archive/`。根目录只留入口（本索引 + `CURRENT.md`
-+ 指针 stub）。
+**设计·实施方案**进 `plans/`、**按域开发手册**进 `manual/`；过时的挪 `archive/`。
+根目录只留入口（本索引 + `CURRENT.md` + 指针 stub）。
+
+## manual/ — 按域开发手册（改模块前先读对应域）
+
+| 位置 | 性质 |
+|---|---|
+| [`manual/README.md`](./manual/README.md) | **手册索引**（18 域）+ 与旧文档的关系 + 批次纪律 |
+| [`manual/howto/`](./manual/howto/) | **任务走查**：加新 ACP agent / 加订阅账号桥 / 加浏览器工具 |
+| [`manual/_TEMPLATE.md`](./manual/_TEMPLATE.md) | 新域手册的固定骨架 |
+
 
 ## 入口（根目录）
 
@@ -73,5 +82,8 @@
 | `archive/` | 历史归档（2026-07 前后的策划、路线图、规格与调研）。**不是**待办清单 |
 
 新增文档时的约定：现行行为写进 `CURRENT.md` 或新的专题文件；规范进 `guides/`、
-踩坑进 `pitfalls/`、调研进 `research/`、设计·实施方案进 `plans/`；一旦过时就挪进
-`archive/`，不要让同一主题同时存在两套互相矛盾的说明。
+踩坑进 `pitfalls/`、调研进 `research/`、设计·实施方案进 `plans/`、**批次落地的
+红线/坑/检查单更新进对应 `manual/<域>.md`（不再往 AGENTS.md 追加日期段）**；
+一旦过时就挪进 `archive/`，不要让同一主题同时存在两套互相矛盾的说明。
+AGENTS.md 自 2026-11-19 起只保留宪法+指针，批次原文归档于
+[`archive/AGENTS-2026-11-18.md`](./archive/AGENTS-2026-11-18.md)。
