@@ -12,6 +12,8 @@ export const zh = {
   "composer.usedRecently": "上次用过",
   "composer.installedMark": "✓ 已安装",
   "composer.notInstalledMark": "⚠ 未安装",
+  "composer.saveToMemo": "存入收纳盒",
+  "composer.saveToMemoTitle": "存入收纳盒 · 存草稿与图片附件的副本，不清空输入框",
   "composer.hubTitle": "模式 · 权限 · 模型 · Agent",
   "composer.modeAndModel": "模式与模型",
   "composer.mode": "模式",

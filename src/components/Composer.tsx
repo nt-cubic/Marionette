@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { ArrowUp, Check, ChevronRight, KeyRound, Maximize2, Minimize2, Plus, Search, SendHorizontal, Settings2, SlidersHorizontal, Square } from "lucide-react";
+import { ArrowUp, Check, ChevronRight, Inbox, KeyRound, Maximize2, Minimize2, Plus, Search, SendHorizontal, Settings2, SlidersHorizontal, Square } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -20,6 +20,8 @@ import {
 } from "../lib/acpSupplements";
 import { formatThrownAcpError } from "../lib/errors";
 import { setSessionApproval } from "../lib/browserTabs";
+import { decodeMemoDrag, MEMO_DRAG_TYPE, memoSavePaths, memoSaveText } from "../lib/memos";
+import { showToast } from "../lib/toast";
 import {
   agentPreflight,
   bridgeBind,
@@ -267,6 +269,11 @@ type ComposerProps = {
    * absent = auto), double-click the handle returns to auto.
    */
   docked?: boolean;
+  /**
+   * Fired after the draft (+ image attachments) was saved into the memo box
+   * so the App can bump the memo count/revision for an open MemoBox.
+   */
+  onMemoSaved?: () => void;
   /**
    * Context-window occupancy (ACP `usage_update`) for the session-info ring.
    * Null/absent draws an empty ring.
@@ -636,6 +643,7 @@ export function Composer({
   isFocused = true,
   onEmptyActivate,
   docked = false,
+  onMemoSaved,
   contextUsed = null,
   contextSize = null,
   getSessionInfo = null,
@@ -2037,6 +2045,36 @@ export function Composer({
     });
   }, []);
 
+  /**
+   * Save a COPY of the draft (+ image attachment paths) into the memo box.
+   * The composer keeps its text — this is stash-for-later, not send.
+   */
+  const saveDraftToMemo = useCallback(() => {
+    const text = draft.trim();
+    const paths = imageAttachments.map((attachment) => attachment.path);
+    if (!text && paths.length === 0) return;
+    void (async () => {
+      let ok = true;
+      if (text) {
+        const saved = await memoSaveText(text, undefined, t("memo.sourceComposer"));
+        if (!saved) ok = false;
+      }
+      if (paths.length > 0) {
+        try {
+          await memoSavePaths(paths, t("memo.sourceComposer"));
+        } catch {
+          ok = false;
+        }
+      }
+      if (ok) {
+        showToast({ text: t("memo.saved") });
+        onMemoSaved?.();
+      } else {
+        showToast({ text: t("memo.saveFailed"), tone: "error" });
+      }
+    })();
+  }, [draft, imageAttachments, onMemoSaved, t]);
+
   /** Encode a File/Blob as base64 (chunked — large screenshots blow the call stack with spread). */
   const fileToBase64 = async (file: Blob): Promise<string> => {
     const bytes = new Uint8Array(await file.arrayBuffer());
@@ -2218,6 +2256,24 @@ export function Composer({
     event.preventDefault();
     dropDepth.current = 0;
     setDropActive(false);
+    // In-page memo drag: route by kind BEFORE any path heuristics — a text
+    // memo's body can contain "/" and would be misread as a path below.
+    const memo = isMemoDrag(event.dataTransfer)
+      ? decodeMemoDrag(event.dataTransfer.getData(MEMO_DRAG_TYPE))
+      : null;
+    if (memo) {
+      const plain = event.dataTransfer.getData("text/plain").trim();
+      if (memo.kind === "text" || memo.kind === "link") {
+        if (plain) insertDroppedText(plain);
+        return;
+      }
+      if (plain) {
+        insertDroppedPaths([plain]);
+        return;
+      }
+      flash("Could not read dropped file path");
+      return;
+    }
     const paths = pathsFromDataTransfer(event.dataTransfer);
     if (paths.length === 0) {
       flash("Could not read dropped file path");
@@ -3284,6 +3340,16 @@ export function Composer({
             >
               <Plus size={14} />
             </button>
+            <button
+              className="pill-action pill-action--icon composer-tool"
+              type="button"
+              title={t("composer.saveToMemoTitle")}
+              aria-label={t("composer.saveToMemo")}
+              disabled={!draft.trim() && imageAttachments.length === 0}
+              onClick={saveDraftToMemo}
+            >
+              <Inbox size={14} />
+            </button>
             {/* Compact toolbar hub. Always in the tree so a container query
                 can reveal it on the first paint of a narrow pane (JS hysteresis
                 lags one frame). Hidden by CSS when the composer is wide. */}
@@ -3365,6 +3431,20 @@ export function Composer({
                       <span className="composer-menu__hub-name">{t("v2composer.agentHub")}</span>
                       <span className="composer-menu__hub-value">{agent.label}</span>
                       <ChevronRight size={13} aria-hidden />
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="composer-menu__hub-row"
+                      disabled={!draft.trim() && imageAttachments.length === 0}
+                      onClick={() => {
+                        setMenu(null);
+                        saveDraftToMemo();
+                      }}
+                    >
+                      <span className="composer-menu__hub-name">{t("composer.saveToMemo")}</span>
+                      <span className="composer-menu__hub-value" />
+                      <Inbox size={13} aria-hidden />
                     </button>
                   </div>
                 )}

@@ -31,6 +31,40 @@ pub struct MemoEntry {
     pub created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// User pin (2026-11-18): display-level float-to-top; never reordered in
+    /// the index itself — upsert ordering stays newest-first.
+    #[serde(default)]
+    pub pinned: bool,
+    /// User tags (2026-11-18); sanitized on write, see `sanitize_tags`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+}
+
+/// Field patch for `memo_update`. `None` = leave unchanged (no nested
+/// Option games — clearing is not a supported operation for any field).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoPatch {
+    pub title: Option<String>,
+    pub content: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub pinned: Option<bool>,
+}
+
+/// Trim, drop empties, char-truncate to 24, exact-dedup, cap at 8.
+fn sanitize_tags(tags: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for tag in tags {
+        let trimmed: String = tag.trim().chars().take(24).collect();
+        if trimmed.is_empty() || out.contains(&trimmed) {
+            continue;
+        }
+        out.push(trimmed);
+        if out.len() == 8 {
+            break;
+        }
+    }
+    out
 }
 
 fn memos_dir() -> Result<PathBuf, String> {
@@ -141,6 +175,8 @@ fn save_one_file(source: &Path, source_label: &str, created_at: &str) -> Result<
         size: Some(bytes.len() as u64),
         created_at: created_at.to_string(),
         source: Some(source_label.to_string()),
+        pinned: false,
+        tags: Vec::new(),
     })
 }
 
@@ -169,6 +205,8 @@ fn save_one_dir(source: &Path, source_label: &str, created_at: &str) -> Result<M
         size: Some(size),
         created_at: created_at.to_string(),
         source: Some(source_label.to_string()),
+        pinned: false,
+        tags: Vec::new(),
     })
 }
 
@@ -329,9 +367,58 @@ pub fn memo_save_text(text: String, title: Option<String>, source: Option<String
         size: None,
         created_at,
         source,
+        pinned: false,
+        tags: Vec::new(),
     };
     upsert(&dir, entry.clone())?;
     Ok(entry)
+}
+
+/// In-place field patch (2026-11-18): editing must NOT reorder the feed, so
+/// this replaces the entry at its index instead of going through `upsert`
+/// (which front-inserts). The id is an identity, not a content hash — it
+/// stays stable across content edits.
+fn update_entry(dir: &Path, id: &str, patch: &MemoPatch) -> Result<Vec<MemoEntry>, String> {
+    let mut entries = read_index(dir);
+    let at = entries
+        .iter()
+        .position(|e| e.id == id)
+        .ok_or_else(|| format!("memo {id} not found"))?;
+    let entry = &mut entries[at];
+    if let Some(title) = patch.title.as_deref() {
+        let trimmed = title.trim();
+        if !trimmed.is_empty() {
+            entry.title = trimmed.chars().take(120).collect();
+        }
+    }
+    if let Some(content) = patch.content.as_deref() {
+        if entry.kind != "text" && entry.kind != "link" {
+            return Err("content can only be edited on text/link memos".to_string());
+        }
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            return Err("memo content cannot be empty".to_string());
+        }
+        // Keep the kind honest with the new content: a link edited away from
+        // a bare URL becomes a text memo and vice versa.
+        entry.kind = if looks_like_url(trimmed) { "link" } else { "text" }.to_string();
+        entry.content = Some(trimmed.to_string());
+    }
+    if let Some(tags) = patch.tags.clone() {
+        entry.tags = sanitize_tags(tags);
+    }
+    if let Some(pinned) = patch.pinned {
+        entry.pinned = pinned;
+    }
+    write_index(dir, &entries)?;
+    Ok(entries)
+}
+
+/// Edit / pin / tag one entry in place; returns the full refreshed list
+/// (same round-trip shape as `memo_delete`).
+#[tauri::command]
+pub fn memo_update(id: String, patch: MemoPatch) -> Result<Vec<MemoEntry>, String> {
+    update_entry(&memos_dir()?, &id, &patch)
 }
 
 /// File or directory — folder memos store a tree path.
@@ -391,21 +478,26 @@ mod tests {
         dir
     }
 
-    #[test]
-    fn index_round_trip_and_fail_open() {
-        let dir = tempdir("roundtrip");
-        assert!(read_index(&dir).is_empty());
-        let entry = MemoEntry {
-            id: "t1".into(),
+    fn text_entry(id: &str) -> MemoEntry {
+        MemoEntry {
+            id: id.into(),
             kind: "text".into(),
-            title: "hello".into(),
+            title: format!("title {id}"),
             path: None,
             content: Some("hello world".into()),
             size: None,
             created_at: "1".into(),
             source: None,
-        };
-        upsert(&dir, entry.clone()).expect("upsert");
+            pinned: false,
+            tags: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn index_round_trip_and_fail_open() {
+        let dir = tempdir("roundtrip");
+        assert!(read_index(&dir).is_empty());
+        upsert(&dir, text_entry("t1")).expect("upsert");
         let read = read_index(&dir);
         assert_eq!(read.len(), 1);
         assert_eq!(read[0].id, "t1");
@@ -428,6 +520,8 @@ mod tests {
                 size: None,
                 created_at: format!("{i}"),
                 source: None,
+                pinned: false,
+                tags: Vec::new(),
             };
             upsert(&dir, entry).expect("upsert");
         }
@@ -444,6 +538,8 @@ mod tests {
             size: None,
             created_at: "999".into(),
             source: None,
+            pinned: false,
+            tags: Vec::new(),
         };
         upsert(&dir, again).expect("upsert again");
         let entries = read_index(&dir);
@@ -458,5 +554,153 @@ mod tests {
         assert!(looks_like_url("http://a.b"));
         assert!(!looks_like_url("看看这个 https://example.com"));
         assert!(!looks_like_url("just some text"));
+    }
+
+    #[test]
+    fn patch_updates_in_place_without_reordering() {
+        let dir = tempdir("patch");
+        for id in ["a", "b", "c"] {
+            let mut entry = text_entry(id);
+            entry.created_at = id.into();
+            upsert(&dir, entry).expect("upsert");
+        }
+        let entries = update_entry(
+            &dir,
+            "b",
+            &MemoPatch {
+                title: Some("renamed".into()),
+                content: Some("edited body".into()),
+                tags: Some(vec!["  work ".into(), "".into(), "work".into()]),
+                pinned: Some(true),
+            },
+        )
+        .expect("patch");
+        // Feed order is untouched — b stays in the middle.
+        let ids: Vec<&str> = entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["c", "b", "a"]);
+        let b = entries.iter().find(|e| e.id == "b").unwrap();
+        assert_eq!(b.title, "renamed");
+        assert_eq!(b.content.as_deref(), Some("edited body"));
+        assert_eq!(b.tags, vec!["work".to_string()]);
+        assert!(b.pinned);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn patch_rejects_content_on_file_kind() {
+        let dir = tempdir("patchfile");
+        let mut file_entry = text_entry("f1");
+        file_entry.kind = "file".into();
+        file_entry.content = None;
+        file_entry.path = Some("C:\\somewhere\\x.txt".into());
+        upsert(&dir, file_entry).expect("upsert");
+        let err = update_entry(
+            &dir,
+            "f1",
+            &MemoPatch {
+                content: Some("nope".into()),
+                ..MemoPatch::default()
+            },
+        )
+        .expect_err("must reject");
+        assert!(err.contains("text/link"));
+        // Title-only patch on a file entry is fine.
+        update_entry(
+            &dir,
+            "f1",
+            &MemoPatch {
+                title: Some("renamed file".into()),
+                ..MemoPatch::default()
+            },
+        )
+        .expect("title patch ok");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn content_edit_flips_link_and_text_kinds() {
+        let dir = tempdir("patchkind");
+        let mut link = text_entry("l1");
+        link.kind = "link".into();
+        link.content = Some("https://example.com".into());
+        upsert(&dir, link).expect("upsert");
+        update_entry(
+            &dir,
+            "l1",
+            &MemoPatch {
+                content: Some("now plain text".into()),
+                ..MemoPatch::default()
+            },
+        )
+        .expect("patch");
+        let entries = read_index(&dir);
+        assert_eq!(entries[0].kind, "text");
+        update_entry(
+            &dir,
+            "l1",
+            &MemoPatch {
+                content: Some("https://other.example.com".into()),
+                ..MemoPatch::default()
+            },
+        )
+        .expect("patch back");
+        let entries = read_index(&dir);
+        assert_eq!(entries[0].kind, "link");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tag_sanitization_caps_and_dedups() {
+        let tags = sanitize_tags(vec![
+            "  a  ".into(),
+            "a".into(),
+            "".into(),
+            "   ".into(),
+            "x".repeat(40),
+            "b".into(),
+            "c".into(),
+            "d".into(),
+            "e".into(),
+            "f".into(),
+            "g".into(),
+            "h".into(),
+            "i".into(),
+        ]);
+        assert_eq!(tags.len(), 8);
+        assert_eq!(tags[0], "a");
+        assert_eq!(tags[1].chars().count(), 24);
+        assert_eq!(tags[7], "g"); // "h"/"i" are cut by the 8-tag cap
+    }
+
+    #[test]
+    fn old_index_without_new_fields_parses_with_defaults() {
+        let dir = tempdir("legacy");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(
+            dir.join("index.json"),
+            r#"[{"id":"t9","kind":"text","title":"old","content":"legacy body","createdAt":"42"}]"#,
+        )
+        .expect("write legacy index");
+        let entries = read_index(&dir);
+        assert_eq!(entries.len(), 1);
+        assert!(!entries[0].pinned);
+        assert!(entries[0].tags.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn patch_unknown_id_is_an_error() {
+        let dir = tempdir("patchmissing");
+        let err = update_entry(
+            &dir,
+            "ghost",
+            &MemoPatch {
+                pinned: Some(true),
+                ..MemoPatch::default()
+            },
+        )
+        .expect_err("must fail");
+        assert!(err.contains("not found"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

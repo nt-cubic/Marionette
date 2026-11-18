@@ -1,9 +1,10 @@
 /**
  * Memo inbox client (edge dock stage 3, docs/plans/plan-edge-dock.md §4).
  *
- * Deterministic local storage behind four Rust commands — files are COPIED
+ * Deterministic local storage behind five Rust commands — files are COPIED
  * into ~/.marionette/memos (content-hash dedup), text/links land in the
- * index. This module is transport only; MemoBox owns the list state.
+ * index. This module is transport + pure display helpers; MemoBox owns the
+ * list state.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -22,6 +23,18 @@ export type MemoEntry = {
   /** Unix ms since epoch, as a string. */
   createdAt: string;
   source?: string;
+  /** 2026-11-18: user pin; float-to-top is display-level only. */
+  pinned?: boolean;
+  /** 2026-11-18: user tags (Rust sanitizes on write). */
+  tags?: string[];
+};
+
+/** Fields `memo_update` may change; omitted = unchanged. */
+export type MemoPatch = {
+  title?: string;
+  content?: string;
+  tags?: string[];
+  pinned?: boolean;
 };
 
 /** dataTransfer type marking an in-page memo drag (Composer accepts these). */
@@ -50,6 +63,15 @@ export async function memoSaveText(text: string, title?: string, source?: string
   }
 }
 
+/** In-place edit/pin/tag. Returns the refreshed list, or null on failure. */
+export async function memoUpdate(id: string, patch: MemoPatch): Promise<MemoEntry[] | null> {
+  try {
+    return await invoke<MemoEntry[]>("memo_update", { id, patch });
+  } catch {
+    return null;
+  }
+}
+
 /** Returns the refreshed list, or null when the delete failed (keep what is shown). */
 export async function memoDelete(id: string): Promise<MemoEntry[] | null> {
   try {
@@ -57,6 +79,34 @@ export async function memoDelete(id: string): Promise<MemoEntry[] | null> {
   } catch {
     return null;
   }
+}
+
+/** dataTransfer payload for a memo card drag: `{id, kind}` JSON. */
+export type MemoDragPayload = { id: string; kind: MemoKind };
+
+export function encodeMemoDrag(entry: MemoEntry): string {
+  return JSON.stringify({ id: entry.id, kind: entry.kind });
+}
+
+export function decodeMemoDrag(raw: string | null): MemoDragPayload | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as { id?: unknown; kind?: unknown };
+    if (typeof parsed.id !== "string" || typeof parsed.kind !== "string") return null;
+    if (!["file", "text", "image", "link"].includes(parsed.kind)) return null;
+    return { id: parsed.id, kind: parsed.kind as MemoKind };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `text/plain` for a memo drag: the stored path for file/image ( Composer
+ * turns it into an attachment / draft path), the body for text/link.
+ */
+export function memoDragText(entry: MemoEntry): string {
+  if ((entry.kind === "file" || entry.kind === "image") && entry.path) return entry.path;
+  return entry.content ?? entry.title;
 }
 
 /** `1200000` → `1.2 MB`; folders pass through dir_size bytes. */
@@ -156,6 +206,58 @@ export function groupMemosByDay(entries: MemoEntry[], now = Date.now()): MemoDay
     });
   }
   return groups;
+}
+
+export type MemoFilterState = {
+  kind: MemoKind | "all";
+  query: string;
+  /** Selected tag chips; multiple = union (any match). */
+  activeTags: readonly string[];
+};
+
+/**
+ * Combined filter for the memo feed (2026-11-18): kind + full-text query
+ * (title / content / path / tags) + tag union. Pure — the verify script
+ * pins this so MemoBox never grows a second opinion.
+ */
+export function filterMemoEntries(entries: MemoEntry[], filter: MemoFilterState): MemoEntry[] {
+  const query = filter.query.trim().toLowerCase();
+  const tags = filter.activeTags.filter(Boolean);
+  return entries.filter((entry) => {
+    if (filter.kind !== "all" && entry.kind !== filter.kind) return false;
+    if (tags.length > 0 && !tags.some((tag) => (entry.tags ?? []).includes(tag))) return false;
+    if (!query) return true;
+    const haystacks = [entry.title, entry.content, entry.path, ...(entry.tags ?? [])];
+    return haystacks.some((text) => (text ?? "").toLowerCase().includes(query));
+  });
+}
+
+export type PinnedMemoSplit = {
+  /** Pinned entries (feed order preserved — usually newest-first). */
+  pinned: MemoEntry[];
+  /** Day groups for the rest. */
+  groups: MemoDayGroup[];
+};
+
+/** Float pinned entries into their own top group; the rest keep day buckets. */
+export function splitPinnedGroup(entries: MemoEntry[], now = Date.now()): PinnedMemoSplit {
+  const pinned = entries.filter((entry) => entry.pinned === true);
+  const rest = entries.filter((entry) => entry.pinned !== true);
+  return { pinned, groups: groupMemosByDay(rest, now) };
+}
+
+/** Tag → count across the whole box, count desc then name (display order). */
+export function memoTagVocabulary(entries: MemoEntry[]): Array<{ tag: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const entry of entries) {
+    for (const tag of entry.tags ?? []) {
+      if (!tag) continue;
+      counts.set(tag, (counts.get(tag) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .map(([tag, count]) => ({ tag, count }))
+    .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
 }
 
 /**

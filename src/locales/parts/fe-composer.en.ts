@@ -13,6 +13,8 @@ export const en = {
   "composer.usedRecently": "Previously used",
   "composer.installedMark": "✓ Installed",
   "composer.notInstalledMark": "⚠ Not installed",
+  "composer.saveToMemo": "Save to Memo Box",
+  "composer.saveToMemoTitle": "Save to Memo Box · copies the draft and image attachments; the composer keeps its text",
   "composer.hubTitle": "Mode · Permission · Model · Agent",
   "composer.modeAndModel": "Mode & Model",
   "composer.mode": "Mode",

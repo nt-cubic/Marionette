@@ -245,6 +245,35 @@
   margin-left: auto;
 }
 
+/* --- pinned group / card actions / tags / edit (2026-11-18) ----------------- */
+.memo-box__group--pinned {
+  margin-top: 0;
+}
+
+.memo-box__cardacts {
+  gap: 0;
+}
+
+.memo-box__cardact {
+  width: 24px;
+  height: 24px;
+}
+
+.memo-box__tag {
+  height: 20px;
+  font-size: 11px;
+}
+
+.memo-box__tag-input {
+  height: 24px;
+  font-size: 12px;
+}
+
+.memo-box__edit-title,
+.memo-box__edit-content {
+  font-size: 13px;
+}
+
 /* --- drop hint ---------------------------------------------------------------- */
 .memo-box__drop {
   margin: 0 8px 8px;

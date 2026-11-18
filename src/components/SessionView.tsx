@@ -153,7 +153,9 @@ const GHOST_OFFSET_X = 28;
 const GHOST_OFFSET_Y = 14;
 
 type TearGhost = {
-  session: Session;
+  /** Tab id (session id or surface tab id) — drives the is-tear-source dim. */
+  sourceId: string;
+  label: string;
   x: number;
   y: number;
 };
@@ -202,6 +204,8 @@ export function SessionTabs({
   diffTab,
   docTabs,
   browserTab,
+  onSurfaceTabDragPreview,
+  onSurfaceTabDragEnd,
 }: {
   openSessions: Session[];
   session: Session;
@@ -307,6 +311,13 @@ export function SessionTabs({
     onSelect: () => void;
     onClose: () => void;
   };
+  /**
+   * Surface tab drag (2026-11-18): memo / document:<path> / browser tabs
+   * live in the split tree and drag exactly like session tabs. Absent = the
+   * pseudo-tabs keep plain click semantics (detached windows never pass it).
+   */
+  onSurfaceTabDragPreview?: (tabId: string, clientX: number, clientY: number) => void;
+  onSurfaceTabDragEnd?: (tabId: string, clientX: number, clientY: number, cancelled: boolean) => void;
 }) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const t = useT();
@@ -430,9 +441,10 @@ export function SessionTabs({
       });
   }, [setMergeHover, setMergeHighlight]);
 
-  const placeGhost = useCallback((s: Session, clientX: number, clientY: number) => {
+  const placeGhost = useCallback((sourceId: string, label: string, clientX: number, clientY: number) => {
     const next: TearGhost = {
-      session: s,
+      sourceId,
+      label,
       x: clientX - GHOST_OFFSET_X,
       y: clientY - GHOST_OFFSET_Y,
     };
@@ -480,14 +492,14 @@ export function SessionTabs({
 
     if (onTabDragPreview && !onTabMergeBack) {
       // Split-workspace: ghost follows the pointer once armed, even inside the window.
-      placeGhost(drag.session, event.clientX, event.clientY);
+      placeGhost(drag.session.id, drag.session.label, event.clientX, event.clientY);
       onTabDragPreview(drag.session, event.clientX, event.clientY);
       return;
     }
 
     if (outside) {
       // Ghost only — real WebView (or merge) waits for mouse-up.
-      placeGhost(drag.session, event.clientX, event.clientY);
+      placeGhost(drag.session.id, drag.session.label, event.clientX, event.clientY);
       if (onTabMergeBack) pollMergeTarget();
     } else if (ghostRef.current) {
       // Brought back over the strip → cancel tear-off preview.
@@ -550,12 +562,108 @@ export function SessionTabs({
     if (wasArmed) onTabDragEnd?.(target, event.clientX, event.clientY, true);
   }, [clearTabDragUi, onTabDragEnd]);
 
+  // Surface tabs (memo / document / browser): same arm/ghost/commit shape as
+  // session tabs, but the payload is a split-tree tab id, never a Session.
+  const surfaceDragRef = useRef<{
+    tabId: string;
+    label: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    armed: boolean;
+    onSelect: () => void;
+  } | null>(null);
+
+  const onSurfaceTabPointerDown = useCallback(
+    (tabId: string, label: string, onSelect: () => void, event: ReactPointerEvent<HTMLButtonElement>) => {
+      if (event.button !== 0 || detachedMode) return;
+      if (!onSurfaceTabDragEnd) return;
+      surfaceDragRef.current = {
+        tabId,
+        label,
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        armed: false,
+        onSelect,
+      };
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        /* optional */
+      }
+    },
+    [detachedMode, onSurfaceTabDragEnd],
+  );
+
+  const onSurfaceTabPointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      const drag = surfaceDragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      const dist = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+      if (!drag.armed) {
+        if (dist < TAB_DRAG_ARM_PX) return;
+        drag.armed = true;
+        setDraggingTabId(drag.tabId);
+        document.body.classList.add("is-tab-detaching");
+      }
+      placeGhost(drag.tabId, drag.label, event.clientX, event.clientY);
+      onSurfaceTabDragPreview?.(drag.tabId, event.clientX, event.clientY);
+    },
+    [onSurfaceTabDragPreview, placeGhost, setDraggingTabId],
+  );
+
+  const onSurfaceTabPointerUp = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      const drag = surfaceDragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      try {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      } catch {
+        /* ignore */
+      }
+      const wasArmed = drag.armed;
+      const { tabId, onSelect } = drag;
+      surfaceDragRef.current = null;
+      clearTabDragUi();
+      if (wasArmed) {
+        onSurfaceTabDragEnd?.(tabId, event.clientX, event.clientY, false);
+        return;
+      }
+      // Pure click → the pseudo-tab's own select.
+      onSelect();
+    },
+    [clearTabDragUi, onSurfaceTabDragEnd],
+  );
+
+  const onSurfaceTabPointerCancel = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      const drag = surfaceDragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      surfaceDragRef.current = null;
+      clearTabDragUi();
+      onSurfaceTabDragEnd?.(drag.tabId, event.clientX, event.clientY, true);
+    },
+    [clearTabDragUi, onSurfaceTabDragEnd],
+  );
+
   useEffect(() => {
     if (!draggingTabId || detachedMode) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       const drag = tabDragRef.current;
-      if (!drag?.armed) return;
+      if (!drag?.armed) {
+        const surface = surfaceDragRef.current;
+        if (surface?.armed) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          const tabId = surface.tabId;
+          surfaceDragRef.current = null;
+          clearTabDragUi();
+          onSurfaceTabDragEnd?.(tabId, 0, 0, true);
+        }
+        return;
+      }
       event.preventDefault();
       event.stopImmediatePropagation();
       const target = drag.session;
@@ -565,7 +673,7 @@ export function SessionTabs({
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [draggingTabId, detachedMode, onTabDragEnd, clearTabDragUi]);
+  }, [draggingTabId, detachedMode, onTabDragEnd, onSurfaceTabDragEnd, clearTabDragUi]);
 
   const releaseCloseFreeze = useCallback(() => {
     if (frozenTabWidthRef.current == null) return;
@@ -593,7 +701,7 @@ export function SessionTabs({
           `is-${openSession.status}`,
           openSession.id === session.id && !extraOwnsStrip ? "is-active" : "",
           draggingTabId === openSession.id ? "is-dragging-out" : "",
-          ghost?.session.id === openSession.id ? "is-tear-source" : "",
+          ghost?.sourceId === openSession.id ? "is-tear-source" : "",
           doneUnreadIds?.has(openSession.id) ? "is-done" : "",
         ]
           .filter(Boolean)
@@ -749,7 +857,7 @@ export function SessionTabs({
       })}
       {memoTab && !detachedMode && (
         <div
-          className={`editor-tab is-memo${memoTab.active ? " is-active" : ""}`}
+          className={`editor-tab is-memo${memoTab.active ? " is-active" : ""}${draggingTabId === "memo" ? " is-dragging-out" : ""}`}
           role="tab"
           aria-selected={memoTab.active}
           data-tauri-drag-region="false"
@@ -758,7 +866,11 @@ export function SessionTabs({
             className="editor-tab__select"
             type="button"
             title={t("session.memoBox")}
-            onClick={memoTab.onSelect}
+            onClick={onSurfaceTabDragEnd ? undefined : memoTab.onSelect}
+            onPointerDown={(e) => onSurfaceTabPointerDown("memo", t("session.memoBox"), memoTab.onSelect, e)}
+            onPointerMove={onSurfaceTabPointerMove}
+            onPointerUp={onSurfaceTabPointerUp}
+            onPointerCancel={onSurfaceTabPointerCancel}
           >
             <Inbox size={12} />
             <span>{t("session.memoBox")}</span>
@@ -876,7 +988,7 @@ export function SessionTabs({
       {(docTabs ?? []).map((tab) => (
         <div
           key={tab.path}
-          className={`editor-tab is-doc${tab.active ? " is-active" : ""}`}
+          className={`editor-tab is-doc${tab.active ? " is-active" : ""}${draggingTabId === `document:${tab.path}` ? " is-dragging-out" : ""}`}
           role="tab"
           aria-selected={tab.active}
           data-tauri-drag-region="false"
@@ -885,7 +997,11 @@ export function SessionTabs({
             className="editor-tab__select"
             type="button"
             title={tab.titleHint ?? tab.title}
-            onClick={tab.onSelect}
+            onClick={onSurfaceTabDragEnd ? undefined : tab.onSelect}
+            onPointerDown={(e) => onSurfaceTabPointerDown(`document:${tab.path}`, tab.title, tab.onSelect, e)}
+            onPointerMove={onSurfaceTabPointerMove}
+            onPointerUp={onSurfaceTabPointerUp}
+            onPointerCancel={onSurfaceTabPointerCancel}
           >
             <FileText size={12} />
             <span>{tab.title}</span>
@@ -907,7 +1023,7 @@ export function SessionTabs({
       ))}
       {browserTab && !detachedMode && (
         <div
-          className={`editor-tab is-browser${browserTab.active ? " is-active" : ""}`}
+          className={`editor-tab is-browser${browserTab.active ? " is-active" : ""}${draggingTabId === "browser" ? " is-dragging-out" : ""}`}
           role="tab"
           aria-selected={browserTab.active}
           data-tauri-drag-region="false"
@@ -916,7 +1032,11 @@ export function SessionTabs({
             className="editor-tab__select"
             type="button"
             title={t("browser.tabTitle")}
-            onClick={browserTab.onSelect}
+            onClick={onSurfaceTabDragEnd ? undefined : browserTab.onSelect}
+            onPointerDown={(e) => onSurfaceTabPointerDown("browser", t("browser.tabTitle"), browserTab.onSelect, e)}
+            onPointerMove={onSurfaceTabPointerMove}
+            onPointerUp={onSurfaceTabPointerUp}
+            onPointerCancel={onSurfaceTabPointerCancel}
           >
             <Globe size={12} />
             <span>{t("browser.tabTitle")}</span>
@@ -950,7 +1070,7 @@ export function SessionTabs({
           style={{ left: ghost.x, top: ghost.y }}
           aria-hidden
         >
-          <span className="tab-tear-ghost__label">{ghost.session.label}</span>
+          <span className="tab-tear-ghost__label">{ghost.label}</span>
           <span className="tab-tear-ghost__hint">
             {onTabMergeBack
               ? mergeHover

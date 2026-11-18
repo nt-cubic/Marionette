@@ -75,6 +75,8 @@ export type MergeBackPayload = {
   origin?: string;
   /** Optional; main prefers to read the cursor itself (DPI-safe). */
   dropClient?: { x: number; y: number };
+  /** Surface merge-back (2026-11-18): memo/document windows carry this instead. */
+  surface?: { kind: "memo" } | { kind: "document"; path: string };
 };
 
 export type MergeHighlightPayload = {
@@ -154,7 +156,162 @@ export function detachedWindowLabel(sessionId: string): string {
 
 export function sessionIdFromDetachedLabel(label: string): string | null {
   if (!label.startsWith("detached-")) return null;
-  return label.slice("detached-".length) || null;
+  const rest = label.slice("detached-".length);
+  // Surface shells are not session owners — never parse them as session ids.
+  if (!rest || rest.startsWith("surface-")) return null;
+  return rest;
+}
+
+// ── Surface shells (memo / document tear-out, 2026-11-18) ────────────────────
+// Pure-data panels in a session-less shell: no transcript restore, no ACP
+// ownership, no composer — the surface fills the window.
+
+export type DetachedSurfaceRef = { kind: "memo" } | { kind: "document"; path: string };
+
+function hashPath(path: string): string {
+  let h = 0;
+  for (let i = 0; i < path.length; i += 1) h = (h * 31 + path.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+
+export function detachedSurfaceLabel(ref: DetachedSurfaceRef): string {
+  return ref.kind === "memo"
+    ? "detached-surface-memo"
+    : `detached-surface-doc-${hashPath(ref.path)}`;
+}
+
+export function detachedSurfacePageUrl(ref: DetachedSurfaceRef): string {
+  return ref.kind === "memo"
+    ? "index.html?detachedSurface=memo"
+    : `index.html?detachedSurfaceDoc=${encodeURIComponent(ref.path)}`;
+}
+
+export function readDetachedSurface(): DetachedSurfaceRef | null {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const memo = params.get("detachedSurface");
+    if (memo === "memo") return { kind: "memo" };
+    const doc = params.get("detachedSurfaceDoc");
+    if (doc) return { kind: "document", path: doc };
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export async function openDetachedSurfaceWindow(
+  ref: DetachedSurfaceRef,
+  title: string,
+  opts: DetachWindowOpts = {}
+): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  const label = detachedSurfaceLabel(ref);
+  const pageUrl = detachedSurfacePageUrl(ref);
+  const width = ref.kind === "memo" ? 520 : 860;
+  const height = ref.kind === "memo" ? 680 : 720;
+
+  try {
+    const existing = await WebviewWindow.getByLabel(label);
+    if (existing) {
+      await withDetachedWebview(label, "show");
+      try {
+        await existing.show();
+      } catch {
+        /* may already be visible */
+      }
+      try {
+        await existing.unminimize();
+      } catch {
+        /* optional */
+      }
+      try {
+        await existing.setTitle(title);
+      } catch {
+        /* best-effort */
+      }
+      await navigateDetached(existing, pageUrl);
+      if (opts.atCursor) await placeWindowAtCursor(existing);
+      try {
+        await existing.setFocus();
+      } catch {
+        /* optional */
+      }
+      touch(label);
+      void reapHiddenDetachedWindows(label);
+      return true;
+    }
+  } catch {
+    /* fall through to create */
+  }
+
+  let x: number | undefined;
+  let y: number | undefined;
+  if (opts.atCursor) {
+    const cur = await cursorLogical();
+    if (cur) {
+      x = Math.round(cur.x - GRAB_OFFSET_X);
+      y = Math.round(cur.y - GRAB_OFFSET_Y);
+    }
+  }
+
+  const webview = new WebviewWindow(label, {
+    url: pageUrl,
+    title,
+    width,
+    height,
+    minWidth: 360,
+    minHeight: 320,
+    resizable: true,
+    decorations: false,
+    focus: true,
+    ...(x != null && y != null ? { x, y } : {}),
+  });
+
+  const created = await new Promise<boolean>((resolve) => {
+    let settled = false;
+    const done = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      resolve(ok);
+    };
+    void webview.once("tauri://created", () => done(true));
+    void webview.once("tauri://error", () => done(false));
+    window.setTimeout(() => done(true), 2500);
+  });
+  if (!created) return false;
+  if (opts.atCursor) await placeWindowAtCursor(webview);
+  try {
+    await webview.setFocus();
+  } catch {
+    /* optional */
+  }
+  touch(label);
+  void reapHiddenDetachedWindows(label);
+  return true;
+}
+
+/** Detached surface shell: ask main to re-adopt this panel tab. */
+export async function requestSurfaceMergeBack(ref: DetachedSurfaceRef): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    const origin = getCurrentWindow().label;
+    await emit(MERGE_BACK_EVENT, { sessionId: "", origin, surface: ref } satisfies MergeBackPayload);
+  } catch {
+    /* optional */
+  }
+}
+
+/** Main window: hide a detached surface shell after its tab merged back. */
+export async function hideDetachedSurfaceWindow(ref: DetachedSurfaceRef): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    const label = detachedSurfaceLabel(ref);
+    const win = await WebviewWindow.getByLabel(label);
+    if (win) await withDetachedWebview(label, "hide");
+    await win?.hide();
+  } catch {
+    /* optional */
+  }
 }
 
 export function readDetachedSessionId(): string | null {
@@ -319,7 +476,7 @@ export async function listenMergeBackRequests(
   }
   return listen<MergeBackPayload>(MERGE_BACK_EVENT, (event) => {
     const payload = event.payload;
-    if (!payload?.sessionId) return;
+    if (!payload?.sessionId && !payload?.surface) return;
     if (payload.origin && origin && payload.origin === origin) return;
     void onMerge(payload);
   });

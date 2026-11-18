@@ -16,6 +16,33 @@ export const TAB_DETACH_SLOP_PX = 28;
 
 export type SplitAxis = "vertical" | "horizontal";
 
+/**
+ * Tab-kind discriminator (2026-11-18): surface tabs (memo / document /
+ * browser) live in the same `tabIds: string[]` as sessions. Encodings match
+ * lib/workspaceSurface.ts; real session ids are always `session-…` /
+ * `session-empty-…`, so there is no collision to guard against.
+ */
+export type SplitTabKind = "session" | "memo" | "browser" | "document";
+
+export const MEMO_TAB_ID = "memo";
+export const BROWSER_TAB_ID = "browser";
+export const DOCUMENT_TAB_PREFIX = "document:";
+
+export function splitTabKind(tabId: string): SplitTabKind {
+  if (tabId === MEMO_TAB_ID) return "memo";
+  if (tabId === BROWSER_TAB_ID) return "browser";
+  if (tabId.startsWith(DOCUMENT_TAB_PREFIX)) return "document";
+  return "session";
+}
+
+export function isSurfaceTabId(tabId: string): boolean {
+  return splitTabKind(tabId) !== "session";
+}
+
+export function documentTabPath(tabId: string): string | null {
+  return tabId.startsWith(DOCUMENT_TAB_PREFIX) ? tabId.slice(DOCUMENT_TAB_PREFIX.length) : null;
+}
+
 export type PaneLeaf = {
   type: "leaf";
   id: string;
@@ -247,20 +274,33 @@ export function findSplit(state: SplitWorkspaceState, splitId: string): SplitBra
 }
 
 /** Pre-order concatenation of every leaf's tab list. */
-export function openSessionIds(state: SplitWorkspaceState): string[] {
+export function openTabIds(state: SplitWorkspaceState): string[] {
   const ids: string[] = [];
   for (const leaf of collectLeaves(state.root)) ids.push(...leaf.tabIds);
   return ids;
+}
+
+/** Session tabs only — surface tabs never take part in session lifecycle. */
+export function openSessionIds(state: SplitWorkspaceState): string[] {
+  return openTabIds(state).filter((id) => splitTabKind(id) === "session");
 }
 
 export function focusedSessionId(state: SplitWorkspaceState): string {
   return findPane(state, state.focusedPaneId)?.activeTabId ?? "";
 }
 
+/** The focused pane's tab when it is a session, "" otherwise (surface focus). */
+export function focusedSessionTabIndex(state: SplitWorkspaceState): string {
+  const active = focusedSessionId(state);
+  return active && splitTabKind(active) === "session" ? active : "";
+}
+
 export function visibleSessionIds(state: SplitWorkspaceState): string[] {
   const ids: string[] = [];
   for (const leaf of collectLeaves(state.root)) {
-    if (leaf.activeTabId) ids.push(leaf.activeTabId);
+    if (leaf.activeTabId && splitTabKind(leaf.activeTabId) === "session") {
+      ids.push(leaf.activeTabId);
+    }
   }
   return ids;
 }
@@ -414,7 +454,9 @@ function repairFocused(state: SplitWorkspaceState): SplitWorkspaceState {
 
 function normalize(state: SplitWorkspaceState, maxLeaves = MAX_PANES): SplitWorkspaceState {
   let root = dropDuplicateSessions(state.root);
-  const total = openSessionIds({ root, focusedPaneId: state.focusedPaneId }).length;
+  // Count EVERY tab (surfaces included): a surface-only tree is a legal tree
+  // and must not be reset to the empty workspace.
+  const total = openTabIds({ root, focusedPaneId: state.focusedPaneId }).length;
   root = collapseNode(root);
   if (total === 0) {
     const id = root.type === "leaf" ? root.id : "pane-1";
@@ -671,7 +713,9 @@ export function closeTab(state: SplitWorkspaceState, sessionId: string): SplitMu
   }
   const stripped = removeSessionFromTree(state.root, sessionId);
   const next = normalize({ root: stripped, focusedPaneId: state.focusedPaneId });
-  const empty = openSessionIds(next).length === 0;
+  // Placeholder chat only when the tree becomes truly empty — closing the
+  // last session while surface tabs remain is fine (2026-11-18).
+  const empty = openTabIds(next).length === 0;
   return { state: next, needPlaceholderChat: empty };
 }
 
@@ -715,17 +759,36 @@ function parseNode(raw: unknown): SplitNode | null {
 export function deserialize(
   raw: unknown,
   knownSessionIds: ReadonlySet<string>,
-  opts?: { maxLeaves?: number; excludeSessionIds?: ReadonlySet<string> },
+  opts?: {
+    maxLeaves?: number;
+    excludeSessionIds?: ReadonlySet<string>;
+    /**
+     * Restore gate for surface tabs (2026-11-18). Absent = surface tabs are
+     * dropped (pre-unification behavior). The App passes a predicate that
+     * accepts memo always, documents by existence, and NEVER browser — a cold
+     * start must not create child WebView2 surfaces.
+     */
+    isKnownTab?: (tabId: string) => boolean;
+  },
 ): SplitWorkspaceState {
   const maxLeaves = opts?.maxLeaves ?? MAX_PANES;
   const exclude = opts?.excludeSessionIds ?? new Set<string>();
+  const isKnownTab = opts?.isKnownTab;
   if (!raw || typeof raw !== "object") return emptyWorkspace();
   const obj = raw as Record<string, unknown>;
   if (obj.version !== 1) return emptyWorkspace();
   const root = parseNode(obj.root);
   if (!root) return emptyWorkspace();
   const filtered = mapLeaves(root, (leaf) => {
-    const tabIds = uniqueTabs(leaf.tabIds.filter((id) => knownSessionIds.has(id) && !exclude.has(id)));
+    const tabIds = uniqueTabs(
+      leaf.tabIds.filter((id) =>
+        splitTabKind(id) === "session"
+          ? knownSessionIds.has(id) && !exclude.has(id)
+          : isKnownTab
+            ? isKnownTab(id)
+            : false,
+      ),
+    );
     const active = tabIds.includes(leaf.activeTabId) ? leaf.activeTabId : (tabIds[0] ?? "");
     return { ...leaf, tabIds, activeTabId: active };
   });

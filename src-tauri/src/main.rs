@@ -830,6 +830,7 @@ fn main() {
             memos::memo_list,
             memos::memo_save_paths,
             memos::memo_save_text,
+            memos::memo_update,
             memos::memo_delete,
             plugins::plugins_list,
             plugins::plugins_add,

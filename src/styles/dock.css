@@ -422,6 +422,10 @@ body::after {
 .memo-box__text-btn,
 .memo-box__chip,
 .memo-box__delete,
+.memo-box__cardact,
+.memo-box__tag,
+.memo-box__tag-label,
+.memo-box__tag-x,
 .memo-box__compose-save,
 .memo-box__check,
 .memo-box__act {
@@ -1672,4 +1676,248 @@ html.dock-resizing * {
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
   background: var(--accent-soft);
+}
+
+/* ── Memo Box: pinned / tags / edit (2026-11-18) ───────────────────────── */
+
+.memo-box__group--pinned {
+  margin-bottom: 2px;
+}
+
+.memo-box__day svg {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.memo-box__card.is-pinned .memo-box__cardact.is-on {
+  color: var(--accent);
+}
+
+/* Tag filter chips reuse .memo-box__chip; the overflow toggle is quieter. */
+.memo-box__tagfilter {
+  padding-top: 0;
+}
+
+.memo-box__chip--more {
+  color: var(--text-faint);
+}
+
+/* Card action cluster (pin / edit / tags / delete) — same shape as delete. */
+.memo-box__cardacts {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.memo-box__cardact {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity var(--dur-fast, 120ms) var(--ease-out, ease-out);
+}
+
+.memo-box__card:hover .memo-box__cardact,
+.memo-box__cardact:focus-visible,
+.memo-box__cardact.is-on {
+  opacity: 1;
+}
+
+.memo-box__cardact:hover {
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+/* Tag chips on a card foot (click = filter). */
+.memo-box__tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.memo-box__tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 18px;
+  max-width: 120px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  color: var(--text-muted);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.memo-box__tag-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: inherit;
+  font-size: inherit;
+}
+
+.memo-box__tag:hover,
+.memo-box__tag.is-on {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.memo-box__tag-more {
+  color: var(--text-faint);
+  font-size: 10.5px;
+}
+
+/* Inline tag editor under the card body. */
+.memo-box__tag-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hairline);
+}
+
+.memo-box__tag-editor .memo-box__tag {
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+
+.memo-box__tag-x {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+}
+
+.memo-box__tag-x:hover {
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+}
+
+.memo-box__tag-input {
+  flex: 1 1 110px;
+  min-width: 90px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 11.5px;
+}
+
+.memo-box__tag-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.memo-box__tag-empty {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+/* Inline edit form replaces the card body. */
+.memo-box__edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.memo-box__edit-title,
+.memo-box__edit-content {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.memo-box__edit-content {
+  min-height: 72px;
+  max-height: 220px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.memo-box__edit-title:focus,
+.memo-box__edit-content:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.memo-box__edit-bar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+/* ── Detached surface shell (2026-11-18): torn-out memo/document window ─── */
+
+.detached-surface-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.detached-surface-shell__bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.detached-surface-shell__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-strong);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detached-surface-shell__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.detached-surface-shell__body > .memo-box,
+.detached-surface-shell__body > .doc-page {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Pane mount (2026-11-18): the memo box is a pane tab body now — drop the
+   fixed dock-page geometry and fill the grid cell (row 1 = 1fr). */
+.session-pane__body > .memo-box,
+.detached-surface-shell__body > .memo-box {
+  position: static;
+  z-index: auto;
+  flex: 1 1 auto;
+  border-top: 0;
+  animation: none;
 }

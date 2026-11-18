@@ -31,6 +31,12 @@ import {
   paneOfSession,
   popOutTab,
   serialize,
+  splitTabKind,
+  isSurfaceTabId,
+  documentTabPath,
+  focusedSessionTabIndex,
+  openTabIds,
+  visibleSessionIds,
   splitPane,
   splitPreviewRect,
   visibleSessionIds,
@@ -43,7 +49,8 @@ let passed = 0;
 function check(name: string, fn: () => void) {
   fn();
   passed += 1;
-  console.log(`  ok  ${name}`);
+  
+console.log(`  ok  ${name}`);
 }
 
 function expectTree(state: SplitWorkspaceState, maxLeaves = MAX_PANES) {
@@ -604,6 +611,70 @@ check("open-beside only-tab of the target pane is a no-op", () => {
   const before = migrateFromFlat(["A"], "A");
   const after = splitPane(before, "pane-1", "right", "A");
   assert.deepEqual(after, before);
+});
+
+// ── Surface tabs in the tree (2026-11-18) ─────────────────────────────────
+check("splitTabKind encodes memo/browser/document/session", () => {
+  assert.equal(splitTabKind("memo"), "memo");
+  assert.equal(splitTabKind("browser"), "browser");
+  assert.equal(splitTabKind("document:D:/notes/a.md"), "document");
+  assert.equal(splitTabKind("session-1792813095629"), "session");
+  assert.equal(splitTabKind("session-empty-1"), "session");
+  assert.ok(isSurfaceTabId("memo") && isSurfaceTabId("browser") && isSurfaceTabId("document:x"));
+  assert.ok(!isSurfaceTabId("session-1"));
+  assert.equal(documentTabPath("document:C:/a/b.md"), "C:/a/b.md");
+  assert.equal(documentTabPath("memo"), null);
+});
+
+check("openSessionIds / visibleSessionIds only count sessions; openTabIds counts all", () => {
+  const tree = splitPane(migrateFromFlat(["A", "B"], "A"), "pane-1", "right", "B");
+  const withMemo = addTabToPane(tree, "pane-1", "memo");
+  const withDoc = addTabToPane(withMemo, "pane-2", "document:C:/d.md");
+  assert.deepEqual(openSessionIds(withDoc).sort(), ["A", "B"]);
+  assert.equal(openTabIds(withDoc).length, 4);
+  // Both panes show a surface now (memo + document) — no visible session.
+  assert.deepEqual(visibleSessionIds(withDoc), []);
+  assert.equal(focusedSessionTabIndex(withDoc), "");
+  const sessionFocus = activateTab(withDoc, "pane-1", "A");
+  assert.equal(focusedSessionTabIndex(sessionFocus), "A");
+});
+
+check("pure-surface tree is legal; placeholder chat only when the tree is truly empty", () => {
+  let tree = emptyWorkspace();
+  tree = addTabToPane(tree, "pane-1", "memo");
+  assertInvariants(tree);
+  const closed = closeTab(tree, "memo");
+  assert.equal(closed.needPlaceholderChat, true);
+  const mixed = addTabToPane(migrateFromFlat(["A"], "A"), "pane-1", "memo");
+  const closedSession = closeTab(mixed, "A");
+  assert.equal(closedSession.needPlaceholderChat, false);
+  assert.deepEqual(openTabIds(closedSession.state), ["memo"]);
+});
+
+check("deserialize: surface gate keeps memo/document, never browser by default", () => {
+  const layout = {
+    version: 1 as const,
+    root: {
+      type: "leaf" as const,
+      id: "pane-1",
+      tabIds: ["session-1", "memo", "document:C:/x.md", "browser"],
+      activeTabId: "memo",
+    },
+    focusedPaneId: "pane-1",
+  };
+  const legacy = deserialize(layout, new Set(["session-1"]));
+  assert.deepEqual(openTabIds(legacy), ["session-1"]);
+  const gated = deserialize(layout, new Set(["session-1"]), {
+    isKnownTab: (id) => id === "memo" || id === "document:C:/x.md",
+  });
+  assert.deepEqual(openTabIds(gated), ["session-1", "memo", "document:C:/x.md"]);
+  assert.equal(findPane(gated, "pane-1")!.activeTabId, "memo");
+  const surfaceOnly = deserialize(
+    { version: 1, root: { type: "leaf", id: "pane-1", tabIds: ["memo"], activeTabId: "memo" }, focusedPaneId: "pane-1" },
+    new Set(["session-1"]),
+    { isKnownTab: () => true },
+  );
+  assert.deepEqual(openTabIds(surfaceOnly), ["memo"]);
 });
 
 console.log(`\n${passed} checks passed`);

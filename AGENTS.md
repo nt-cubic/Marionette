@@ -752,10 +752,10 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
   `MarkdownBody` 的 `DocNavContext`（默认 null = 转录里的行为不变）；DocPage 拿
   文档所在目录做 cwd 去 resolve。给别的挂载点加页内导航时照这个 context 模式，
   不要在 MdLink 里写死调用方。
-- **统一 surface、仍不进 SplitWorkspace**：Document 走 SurfaceWorkspace 的
-  surface + chat 行，右栏可切换绑定会话。DocCompareLayout 不再是正常入口，
-  也不要把它重新塞回 Document 页；拖拽/撕窗/merge 仍只属于 session。贴边态开文档 =
-  DockPage "doc" 整页，Esc/返回归 dock chrome。
+- **Document 是分屏树里的窗格标签（2026-11-18 改）**：`document:<绝对路径>` 进
+  `PaneLeaf.tabIds`，与会话标签同树同拖拽；点开默认落在聚焦窗格内切标签。DocCompareLayout
+  不再是正常入口，也不要把它重新塞回 Document 页。贴边态开文档 = DockPage "doc"
+  整页，Esc/返回归 dock chrome。
 - **草稿跟随文档路径，不跟随组件实例**：切标签或暂时回对话会卸载 DocPage，内存草稿
   由 DocPage.tsx 的 path cache 恢复；保存成功/明确放弃/关闭标签才删。关闭有未保存
   内容的标签必须走 App 级确认，不能从公共 tab X 绕过。
@@ -815,16 +815,50 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
   always-approve 镜像只覆盖挂载过 Composer 的会话（后台会话出权限卡，安全方向），
   且只跳过 **agent 自开标签**的 Control 卡；用户自开标签必须由用户显式允许。
 
-## 浏览器 Workspace Surface（2026-11-17，P1–P4）
+## 收纳盒强化 + Surface 进分屏（2026-11-18）
 
-普通窗口的 `workspaceSurfaceRequested` 统一承载 Browser / Document / Memo；右侧始终
-是 `renderConversation(displaySession)`。Dock 仍用整页浏览器，detached 不进入。
-改这块先记红线：
+两件事一批落地：①收纳盒补齐 置顶/编辑/标签/全卡拖入输入框/输入框存盒；
+②Browser/Document/Memo 并入会话分屏树（详见上一节），收纳盒与文档标签可撕独立小窗。
+改前先记：
 
-- **状态模型**：`browserActive`、`activeDocPath`、`memoActive` 只表示当前选中的
-  surface 类型；打开过的标签继续保留。普通窗口由单一 `SurfaceWorkspace` 渲染，
-  退出只回会话，不删标签。session-only `SplitWorkspace` reducer 不改，surface 退出后
-  原树恢复。
+- **memos 数据层**：`MemoEntry` 加 `pinned: bool` / `tags: Vec<String>`（serde default，
+  旧 index 免迁移）；`memo_update(id, patch)` **原地替换不重排**（编辑不改信息流顺序，
+  别走 upsert 前插）；content 只许 text/link，编辑后 kind 随正文重判 link/text；标签
+  清洗在 Rust（trim/去空/去重/≤24 字符/≤8 个）。置顶是**展示层**分组
+  （`splitPinnedGroup`），index 顺序不动。
+- **拖拽载荷是 JSON**：`MEMO_DRAG_TYPE` 载荷从裸 id 改 `{id, kind}`
+  （`encodeMemoDrag`/`decodeMemoDrag`）；所有卡可拖，`text/plain`：file/image=path、
+  text/link=正文。**Composer drop 必须先看自定义 type 再走路径启发式**——
+  正文含 `/` 会被 `pathsFromDataTransfer` 误判成路径（verify 脚本钉着这个顺序）。
+- **输入框存盒**：`saveDraftToMemo` 存草稿+图片附件的**副本**（不清空输入框），
+  成功后 App bump `memoRevision`，打开中的 MemoBox 靠 `revision` prop 重拉。
+- **surface 树语义**：打开 = `addTabToPane(聚焦窗格)`（用户定案「窗格内切标签」，
+  不自动分屏）；`openSession`/`closeSessionTab`/拖拽的树升级判据是
+  `leafCount>1 || openTabIds.some(isSurfaceTabId)`——单叶+surface 已是真树，
+  `migrateFromFlat` 会抹掉 surface 标签（单叶同步 effect 已加同款守卫）。
+  关掉最后一个会话但还有 surface 标签 ≠ 空树，不建占位对话。
+- **撕窗（memo/doc）**：拖出主窗口 → `openDetachedSurfaceWindow`（label
+  `detached-surface-memo`/`detached-surface-doc-<hash>`，URL `?detachedSurface=…`）；
+  壳走 `App()` 顶层分发（`DetachedSurfaceShell`，无会话加载/无 ACP/无转录）；
+  合并回走 `marionette-merge-back` 的 `surface` 载重分支。**browser 不可撕**
+  （child WebView 钉在主窗）——detach 一律 cancel。`sessionIdFromDetachedLabel`
+  对 `detached-surface-*` 返回 null（surface 壳不持有会话）。
+- **回归**：`cargo test --bin marionette memos` + `npx tsx scripts/verify-memo-box.mts`
+  （标签筛选纯函数/拖拽契约/存盒入口）+ `npx tsx scripts/verify-split-workspace.mts`
+  （tab 编解码/openSessionIds 过滤/纯 surface 树/恢复闸门）。
+
+## 浏览器 Workspace Surface（2026-11-17 P1–P4；2026-11-18 起为分屏树窗格标签）
+
+Browser / Document / Memo 不再有独立布局组件（`SurfaceWorkspace` 已删）：三者是
+分屏树里的窗格标签（`"browser"` / `"document:<路径>"` / `"memo"` 进 `PaneLeaf.tabIds`），
+点开默认在聚焦窗格内切标签，可拖拽分屏/上下分/跨窗格移动，与会话标签同一套管线。
+Dock 仍用整页浏览器，detached 会话窗不进入。改这块先记红线：
+
+- **状态模型**：`memoActive` / `browserActive` / `activeDocPath` 全部**从树派生**
+  （聚焦窗格的 activeTabId 经 `splitTabKind` 判别），**不要重新引入平行的布尔
+  state**。`memoOpen` / `docTabs` / `browserTabs` 只管「标签存在性」（dirty 追踪、
+  徽标、标题）。`commitSplit` 焦点推送只认 session 种类（`focusedSessionTabIndex`），
+  surface 聚焦保持上一会话的 ACP 管道不动。
 - **标签生命周期**：Agent 可给 `browser_open_tab` 传稳定 `id`（小写 slug）；同名再次打开返回
   现有 tab。`pinned` / `chosenId` / claimed 用户 tab 不参加 idle cleanup；pinned 和 user-owned
   也不能被 Agent close 或会话删除。用户切 tab、导航、分享必须 touch `lastUsedAtMs`。自动清理只
@@ -852,14 +886,16 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
 - **handoff**：`browser_handoff` 在 Rust 阻塞等待 Continue / Deny / timeout；事件必须
   切到来源会话和来源 tab、打开 Browser surface、发通知，并在页面与 host 之间显示提示。
   Continue 才放行；Deny/timeout 是工具返回值，不伪造成功。
-- **恢复与快捷键**：`uiRestore` 只保存文档列表、Memo 标签和绑定会话。Browser URL / 活动 tab
-  不再入快照；旧 `surface.browserTabs`、`activeBrowserIndex`、`active.kind="browser"` 只兼容读取为
-  inert，冷启动绝不创建或激活 child WebView2。开发预览自动打开只能在用户显式 opt in 后发生，
-  且必须等 backend tab event 确认创建成功再切 surface。Ctrl+W / Ctrl+Tab / Ctrl+1..9 在 surface
-  内先操作 content tabs，surface 关闭后才是 session tab 语义。
-- **ContextPanel 与焦点**：surface 进入时自动收起 ContextPanel，退出恢复；BrowserPage
-  embedded Esc 只在 target 属于浏览器根节点时生效。Composer / 权限 / 文档 / Memo 的 Esc
-  不得被抢。
+- **恢复与快捷键**：surface 标签位置随 `splitLayout` 序列化恢复，恢复闸门是
+  `deserialize` 的 `isKnownTab` 谓词（memo 看快照、document 看存在、**browser 恒拒**）。
+  Browser URL / 活动 tab 不再入快照；旧 `surface.browserTabs`、`activeBrowserIndex`、
+  `active.kind="browser"` 只兼容读取为 inert，冷启动绝不创建或激活 child WebView2。
+  开发预览自动打开只能在用户显式 opt in 后发生，且必须等 backend tab event 确认创建成功
+  再切 surface。Ctrl+W / Ctrl+Tab / Ctrl+1..9 统一操作聚焦窗格的标签序列（会话与 surface
+  混排，`selectTabById` 分流），整页接管（圆桌/用量/改动）仍优先响应。
+- **ContextPanel 与焦点**：surface 不再自动收起 ContextPanel（2026-11-18 随 SurfaceWorkspace
+  退役移除）；BrowserPage embedded Esc 只在 target 属于浏览器根节点时生效。Composer /
+  权限 / 文档 / Memo 的 Esc 不得被抢。
 
 回归：`npm run build`、`verify-workspace-surface.mts`、`verify-dev-server.mts`、
 `verify-ui-restore.mts`、`cargo check`、`cargo test --bin marionette browser`。

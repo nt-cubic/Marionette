@@ -5,6 +5,7 @@ import {
   focusedSessionId,
   migrateFromFlat,
   openSessionIds as tabIdsFromTree,
+  openTabIds,
   type SplitLayoutV1,
   type SplitWorkspaceState,
 } from "./splitWorkspace";
@@ -310,6 +311,12 @@ export function restoreSplitFromSnapshot(
     maxLeaves?: number;
     excludeSessionIds?: ReadonlySet<string>;
     detachedSessionId?: string | null;
+    /**
+     * Surface-tab restore gate (2026-11-18): memo / document:<path> / browser
+     * tabs ride in the serialized tree; the App decides which kinds survive a
+     * cold start (browser never does — no child WebView at boot).
+     */
+    isKnownTab?: (tabId: string) => boolean;
   },
 ): SplitWorkspaceState {
   const detachedId = opts?.detachedSessionId?.trim();
@@ -323,8 +330,11 @@ export function restoreSplitFromSnapshot(
     const tree = deserialize(saved.splitLayout, knownSessionIds, {
       maxLeaves,
       excludeSessionIds: exclude,
+      isKnownTab: opts?.isKnownTab,
     });
-    if (tabIdsFromTree(tree).length > 0) return tree;
+    // Surface tabs count too: a tree holding a memo tab next to live sessions
+    // must not be discarded just because it has no session of its own.
+    if (tabIdsFromTree(tree).length > 0 || openTabIds(tree).length > 0) return tree;
   }
   const tabs = saved.openSessionIds.filter((id) => knownSessionIds.has(id) && !exclude.has(id));
   const focus =
@@ -346,6 +356,8 @@ export function pickRestoredSession(
     excludeSessionIds?: ReadonlySet<string>;
     maxLeaves?: number;
     snapshot?: UiRestoreSnapshot | null;
+    /** Surface-tab restore gate — forwarded to restoreSplitFromSnapshot. */
+    isKnownTab?: (tabId: string) => boolean;
   },
 ): RestoredWorkspace | null {
   if (loaded.length === 0) return null;

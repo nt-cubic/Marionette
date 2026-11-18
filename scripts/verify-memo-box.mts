@@ -12,6 +12,9 @@
  * 5. 帖子流：groupMemosByDay / memoLinkHost，以及 MemoBox 源码契约
  *    （顶上写一条 + 四种卡，不再渲染 40px 文件行）。
  * 6. 图片卡：横竖比 contain（memoImageOrient），整张图可见，不 object-cover 裁切。
+ * 7. 2026-11-18 批：置顶分组 / 标签筛选（filterMemoEntries·splitPinnedGroup·
+ *    memoTagVocabulary）/ 全卡拖拽（encode/decode 往返、Composer 先分流再走
+ *    路径启发式）/ 输入框存盒入口。
  *
  * 跑法：npx tsx scripts/verify-memo-box.mts
  */
@@ -21,6 +24,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CHAT_PROJECT_ID } from "../src/lib/api";
 import { groupMemosByDay, memoImageOrient, memoLinkHost, memoPrompt } from "../src/lib/memos";
+import {
+  decodeMemoDrag,
+  encodeMemoDrag,
+  filterMemoEntries,
+  memoDragText,
+  memoTagVocabulary,
+  splitPinnedGroup,
+} from "../src/lib/memos";
 import { installPageDragSourceTracker, isPageDragSource } from "../src/lib/dragText";
 import { DOCK_DROP_PATHS_EVENT, DOCK_DROP_TEXT_EVENT, dispatchDockDropText } from "../src/lib/dockDrop";
 import { isLegacyGhostProject, splitShelfChatSessions, withoutGhostProjects } from "../src/lib/sessionGroups";
@@ -269,6 +280,108 @@ function session(partial: Partial<Session> & { id: string }): Session {
     shot?.[0] ?? "missing .memo-box__shot",
   );
   check("竖图有更高的上限", css.includes('data-orient="portrait"') && css.includes("36rem"));
+}
+
+// ── 7. 置顶 / 标签 / 全卡拖拽 / 输入框存盒（2026-11-18 批） ────────
+{
+  const entry = (id: string, partial: Partial<MemoEntry> = {}): MemoEntry => ({
+    id,
+    kind: "text",
+    title: `t-${id}`,
+    createdAt: "1",
+    ...partial,
+  });
+  const rows: MemoEntry[] = [
+    entry("a", { content: "alpha notes", tags: ["work", "idea"], pinned: true }),
+    entry("b", { kind: "link", title: "Docs", content: "https://docs.example.com/x/y" }),
+    entry("c", { kind: "image", path: "C:\\m\\shot.png", tags: ["work"] }),
+    entry("d", { content: "misc/with/slashes", tags: ["idea", "work"] }),
+  ];
+
+  // filterMemoEntries: kind + query + tag union
+  const byTag = filterMemoEntries(rows, { kind: "all", query: "", activeTags: ["work"] });
+  check(
+    "标签筛选 = 并集",
+    byTag.map((e) => e.id).join(",") === "a,c,d",
+    JSON.stringify(byTag.map((e) => e.id)),
+  );
+  const byQuery = filterMemoEntries(rows, { kind: "all", query: "docs.example", activeTags: [] });
+  check("query 命中 content", byQuery.length === 1 && byQuery[0]!.id === "b");
+  const byTagQuery = filterMemoEntries(rows, { kind: "text", query: "alpha", activeTags: ["work"] });
+  check(
+    "kind × query × 标签叠加",
+    byTagQuery.length === 1 && byTagQuery[0]!.id === "a",
+    JSON.stringify(byTagQuery.map((e) => e.id)),
+  );
+  const bySlash = filterMemoEntries(rows, { kind: "all", query: "misc/with", activeTags: [] });
+  check("正文里的斜杠只当文本匹配", bySlash.length === 1 && bySlash[0]!.id === "d");
+
+  // splitPinnedGroup
+  const split = splitPinnedGroup(rows);
+  check("置顶条目浮到独立组", split.pinned.length === 1 && split.pinned[0]!.id === "a");
+  check(
+    "其余照常按日分组",
+    split.groups.flatMap((g) => g.entries).map((e) => e.id).join(",") === "b,c,d",
+    JSON.stringify(split.groups.flatMap((g) => g.entries.map((e) => e.id))),
+  );
+
+  // memoTagVocabulary
+  const vocab = memoTagVocabulary(rows);
+  check(
+    "标签词表按频次排序",
+    vocab.map((v) => `${v.tag}:${v.count}`).join(",") === "work:3,idea:2",
+    JSON.stringify(vocab),
+  );
+  check("无标签时词表为空", memoTagVocabulary([entry("x")]).length === 0);
+
+  // 拖拽载荷契约：所有卡可拖，自定义 type 携带 {id, kind} JSON
+  const here = dirname(fileURLToPath(import.meta.url));
+  const box = readFileSync(join(here, "../src/components/MemoBox.tsx"), "utf8");
+  const composer = readFileSync(join(here, "../src/components/Composer.tsx"), "utf8");
+  check(
+    "MemoBox dragstart 用 encodeMemoDrag + memoDragText，不再只放行 file/image",
+    box.includes("event.dataTransfer.setData(MEMO_DRAG_TYPE, encodeMemoDrag(entry))") &&
+      box.includes('event.dataTransfer.setData("text/plain", memoDragText(entry))') &&
+      !box.includes('entry.kind === "file" || entry.kind === "image") && Boolean(entry.path)'),
+  );
+  const dropGuard = composer.indexOf("decodeMemoDrag(event.dataTransfer.getData(MEMO_DRAG_TYPE))");
+  const dropPaths = composer.indexOf("const paths = pathsFromDataTransfer(event.dataTransfer)");
+  check(
+    "Composer 先按自定义 type 分流 memo 拖拽，再走路径启发式",
+    dropGuard > 0 && dropPaths > dropGuard,
+    `decode at ${dropGuard}, paths at ${dropPaths}`,
+  );
+  check(
+    "text/link memo 落到光标插入，file/image 走附件路径",
+    composer.includes('if (memo.kind === "text" || memo.kind === "link")') &&
+      composer.includes("if (plain) insertDroppedText(plain);") &&
+      composer.includes("insertDroppedPaths([plain])"),
+  );
+  check(
+    "encode/decode 往返",
+    JSON.stringify(decodeMemoDrag(encodeMemoDrag(rows[1]!))) === JSON.stringify({ id: "b", kind: "link" }),
+  );
+  check(
+    "decode 拒绝垃圾载荷",
+    decodeMemoDrag(null) === null && decodeMemoDrag("not json") === null && decodeMemoDrag('{"id":"x","kind":"shell"}') === null,
+  );
+  check("file 卡拖拽文本是路径", memoDragText(rows[2]!) === "C:\\m\\shot.png");
+  check("text 卡拖拽文本是正文", memoDragText(rows[3]!) === "misc/with/slashes");
+
+  // 输入框存盒：按钮 + hub 行 + 副本语义
+  check(
+    "Composer 有存入收纳盒按钮与 hub 行",
+    composer.includes('t("composer.saveToMemoTitle")') &&
+      composer.includes('t("composer.saveToMemo")') &&
+      composer.includes("saveDraftToMemo"),
+  );
+  check(
+    "MemoBox 接 revision 重拉 + 标签/置顶/编辑 UI 存在",
+    box.includes("revision = 0") &&
+      box.includes("memo-box__group--pinned") &&
+      box.includes("memo-box__tag-editor") &&
+      box.includes("memo-box__edit"),
+  );
 }
 
 if (failures > 0) {
