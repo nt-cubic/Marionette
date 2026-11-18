@@ -1593,6 +1593,307 @@ fn gzip_payload(payload: &[u8]) -> Option<Vec<u8>> {
     enc.finish().ok().filter(|z| !z.is_empty())
 }
 
+// =====================================================================
+// 出站 WebSocket（Go codex_socket.go 的最小版；默认关，失败当轮回退 HTTP）
+// =====================================================================
+
+/// WS 出站开关：`MARIONETTE_CODEX_WS=1` 时对话出站改走 ChatGPT 后端的
+/// WebSocket（HTTP 流在 ~120s 被中间层掐断、WS 能跑完整个回合——Go
+/// codex_socket.go 头注释的实测）。**默认关**：稳态发布（HTTP 路径）不受
+/// 任何影响；真机验证 WS 路径后可翻默认（把这里的判空改掉即可）。WS 的
+/// 任何「应答未交付」失败（握手被拒/连接失败/写失败/应答前断线）当轮回退
+/// HTTPS POST（Go errCodexSocketFallBack :213 同款语义），所以开关开着的最
+/// 坏情况也只是多一次白连。
+fn ws_enabled() -> bool {
+    std::env::var("MARIONETTE_CODEX_WS").is_ok_and(|v| v.trim() == "1")
+}
+
+/// Go codexSocketBeta（codex_socket.go :61）：WS 握手的 OpenAI-Beta 值
+/// （HTTP 版是 `responses=experimental`，WS 版是另一个常量）。
+const WS_BETA: &str = "responses_websockets=2026-02-06";
+/// Go codexSocketPrelude（:73）：应答正文交给调用方之前最多读几帧（吸收
+/// codex.rate_limits / codex.response.metadata 这类「头帧」+ 首条正文事件）。
+const WS_PRELUDE: usize = 8;
+/// Go codexSocketDial（:69）：握手 30s 超时。
+const WS_DIAL: Duration = Duration::from_secs(30);
+/// TCP 连接超时（outbound_agent 的 https 连接是 5s，这里略放宽——WS 会在
+/// 回退 HTTP 前多花这一段）。
+const WS_CONNECT: Duration = Duration::from_secs(10);
+/// 帧流的终态事件（Go codexSocketBody.frame :698/:709：这些类型后 socket
+/// 对本回合而言结束，读到它们流收口到 EOF）。
+const WS_TERMINAL: [&str; 5] =
+    ["response.completed", "response.failed", "response.incomplete", "response.done", "error"];
+
+/// 出站字节流（HTTP 应答体或 WS 帧还原的 SSE 行流；`Reply::Stream` 与翻译
+/// 层的 reader 同型）。
+type ByteStream = Box<dyn Read + Send>;
+
+/// base URL（https://…/codex）→ WS URL（wss://…/codex/responses）。
+fn ws_url(base: &str) -> String {
+    let b = base.trim_end_matches('/');
+    let ws = if let Some(rest) = b.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = b.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else {
+        b.to_string()
+    };
+    format!("{ws}/responses")
+}
+
+/// WS 出站计划（Go codexSocketMessage :222 + codexCreate :265 +
+/// codexSocketHeaders :334）：握手 URL / 握手头 / 单帧消息。None = 请求不合
+/// WS 形状（非流式或带 type——shape_body 恒满足，防御再判一次）→ HTTP。
+struct WsPlan {
+    url: String,
+    headers: Vec<(String, String)>,
+    message: Vec<u8>,
+}
+
+fn ws_plan(account: &Account, ver: &str, body: &Value) -> Option<WsPlan> {
+    // Go codexSocketMessage :247：只接 stream:true 且不带 type 的整段回合。
+    if body.get("type").is_some() || body.get("stream").and_then(|s| s.as_bool()) != Some(true) {
+        return None;
+    }
+    let payload = serde_json::to_vec(body).ok()?;
+    // Go :252-259 把 X-Codex-Turn-State / responses-lite 头挪进 client_metadata
+    // ——我们的出站请求从不带这两个头（sign 不设、Codex CLI 也不经过我们），
+    // 无可迁移，跳过。
+    let message = response_create_message(&payload);
+    // 头 = sign() 会设的那些，去掉 Go codexSocketHeaders :338 的剥除名单
+    // （Content-Type/Content-Length/Content-Encoding/Accept/Accept-Encoding/
+    // 幂等键/X-Codex-Turn-State/responses-lite/Host/OpenAI-Beta），再覆写
+    // WS 的 OpenAI-Beta。鉴权头放 Upgrade 请求头里（任务要求：照 HTTP 版
+    // 同款）。
+    let mut headers: Vec<(String, String)> = vec![
+        ("Authorization".into(), format!("Bearer {}", account.token)),
+        ("originator".into(), "codex_cli_rs".into()),
+        ("User-Agent".into(), user_agent(ver)),
+        ("version".into(), ver.to_string()),
+        ("OpenAI-Beta".into(), WS_BETA.into()),
+    ];
+    if !account.account_id.is_empty() {
+        headers.push(("chatgpt-account-id".into(), account.account_id.clone()));
+    }
+    if let Some(key) = body.get("prompt_cache_key").and_then(|k| k.as_str()).filter(|k| !k.is_empty()) {
+        headers.push(("session-id".into(), key.to_string()));
+        headers.push(("thread-id".into(), key.to_string()));
+    }
+    Some(WsPlan { url: ws_url(&base_url()), headers, message })
+}
+
+/// Go codexCreate（:265）：HTTP 体前面接 `{"type":"response.create",`——原
+/// JSON 对象 `{` 之后的字节原样保留（键序不变），非空对象补逗号，`{}` 则
+/// 不补。消息 = 一帧 text 发出（Go :427）。
+fn response_create_message(body: &[u8]) -> Vec<u8> {
+    let body = body.trim_ascii();
+    let rest = if body.first() == Some(&b'{') { &body[1..] } else { body };
+    let mut out = Vec::with_capacity(body.len() + 32);
+    out.extend_from_slice(br#"{"type":"response.create""#);
+    if !rest.is_empty() && rest.first() != Some(&b'}') {
+        out.push(b',');
+    }
+    out.extend_from_slice(rest);
+    out
+}
+
+/// error 帧先于正文时合成的 HTTP 形状（Go codexSocketError :539）：
+/// - `error.code == "websocket_connection_limit_reached"` → `Err(())`：回退
+///   HTTP（再开新 socket 也会被限）；
+/// - `status` / `status_code` 在 400..=599 → `Ok((status, body))`，body =
+///   `{"error":…}`（error 是对象时）或原帧——喂现有的错误路径（账号轮换
+///   的 codex_account_out 照常判定）；
+/// - 其它（无可用 status）→ None：当普通事件传下去（Go :469 两者皆空落空）。
+/// Go 还从帧的 headers/error.headers 拼应答头——我们的管线不透传上游头，
+/// 跳过。
+fn ws_error_reply(frame: &[u8]) -> Option<Result<(u16, Vec<u8>), ()>> {
+    let v: Value = serde_json::from_slice(frame).ok()?;
+    if v.pointer("/error/code").and_then(|c| c.as_str()) == Some("websocket_connection_limit_reached") {
+        return Some(Err(()));
+    }
+    let status = v
+        .get("status")
+        .and_then(|s| s.as_u64())
+        .or_else(|| v.get("status_code").and_then(|s| s.as_u64()))
+        .unwrap_or(0);
+    if !(400..=599).contains(&status) {
+        return None;
+    }
+    let status = status as u16;
+    let body = match v.get("error") {
+        Some(e) if e.is_object() => serde_json::to_vec(&json!({ "error": e })).unwrap_or_else(|_| frame.to_vec()),
+        _ => frame.to_vec(),
+    };
+    Some(Ok((status, body)))
+}
+
+/// 一帧 → SSE 事件行（Go sseEvent :634）：`event: <type>\n\ndata: <帧>\n\n`；
+/// 帧里带 \r/\n 时先压成紧凑 JSON（data 行里不能有裸换行；压不动就原样）。
+/// 每条 WS 消息就是一条 SSE 事件的搬运（Go 同款直拼）。
+fn ws_sse_event(kind: &str, frame: &[u8]) -> Vec<u8> {
+    let frame = if frame.contains(&b'\r') || frame.contains(&b'\n') {
+        match serde_json::from_slice::<Value>(frame) {
+            Ok(v) => serde_json::to_vec(&v).unwrap_or_else(|_| frame.to_vec()),
+            Err(_) => frame.to_vec(),
+        }
+    } else {
+        frame.to_vec()
+    };
+    let mut out = Vec::with_capacity(kind.len() + frame.len() + 18);
+    if !kind.is_empty() {
+        out.extend_from_slice(format!("event: {kind}\n").as_bytes());
+    }
+    out.extend_from_slice(b"data: ");
+    out.extend_from_slice(&frame);
+    out.extend_from_slice(b"\n\n");
+    out
+}
+
+/// 帧载荷的 JSON `type` 字段（gjson 同语义：非对象/没有 = 空串）。
+fn json_type_of(data: &[u8]) -> String {
+    serde_json::from_slice::<Value>(data)
+        .ok()
+        .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(String::from))
+        .unwrap_or_default()
+}
+
+/// WS 帧流 → SSE 行流（Go codexSocketBody :653）：每条 text 帧一条 SSE 事件
+/// 直拼；`responsesapi.websocket_timing` 丢弃（:688）；终态事件后收口
+/// （closeNormally :698）；正文中途断线/被关 = 流被掐（HTTP 半截同款，
+/// io::Error 交给下游按「流提前结束」处理——聚合层据此 502）。
+struct WsSseReader {
+    conn: super::ws::WsConn,
+    pending: Vec<u8>,
+    done: bool,
+    err: Option<std::io::Error>,
+}
+
+impl Read for WsSseReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        while self.pending.is_empty() && !self.done && self.err.is_none() {
+            match self.conn.read_message() {
+                Ok(super::ws::Incoming::Text(data)) => {
+                    let data = data.trim_ascii().to_vec();
+                    let kind = json_type_of(&data);
+                    if kind == "responsesapi.websocket_timing" {
+                        continue;
+                    }
+                    self.pending = ws_sse_event(&kind, &data);
+                    if WS_TERMINAL.contains(&kind.as_str()) {
+                        self.done = true;
+                        self.conn.close_normally();
+                    }
+                }
+                Ok(super::ws::Incoming::Binary(_)) => continue, // Go :683 非 text 帧丢弃
+                Ok(super::ws::Incoming::Close(code)) => {
+                    let why = match code {
+                        Some(c) => format!("closed by peer ({c})"),
+                        None => "closed by peer".to_string(),
+                    };
+                    self.err = Some(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionAborted,
+                        format!("codex websocket: {why} before the turn's end"),
+                    ));
+                }
+                Err(e) => {
+                    self.err = Some(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionAborted,
+                        format!("codex websocket: {e}"),
+                    ));
+                }
+            }
+        }
+        if !self.pending.is_empty() {
+            let n = self.pending.len().min(buf.len());
+            buf[..n].copy_from_slice(&self.pending[..n]);
+            self.pending.drain(..n);
+            return Ok(n);
+        }
+        if let Some(e) = self.err.take() {
+            return Err(e);
+        }
+        Ok(0)
+    }
+}
+
+/// WS 回合的三种收尾（对应 Go turn :415 的路径）。
+enum WsOutcome {
+    /// 200 应答已在手（SSE 行流）。
+    Stream(ByteStream),
+    /// error 帧先来：合成 (status, body) 走现有错误路径（账号轮换照常）。
+    Error(u16, Vec<u8>),
+    /// 应答未交付（握手被拒/连接失败/写失败/应答前断线）→ 当轮回退 HTTP
+    /// （Go errCodexSocketFallBack :213；连接上限错误也在此列，Go :541）。
+    FallBack,
+}
+
+/// 已连接的 socket 上的回合：发消息（一帧 text）→ prelude 读帧（头帧吸收
+/// + 首条正文事件缓冲 + error 帧前置判定）→ 交出 SSE 流。dial 与本函数的
+/// 拆分让 prelude/还原逻辑可以用内存双工测试（真 WS 端到端待真机）。
+fn ws_turn_over(mut conn: super::ws::WsConn, message: &[u8]) -> WsOutcome {
+    if conn.send_text(message).is_err() {
+        return WsOutcome::FallBack;
+    }
+    let mut pending: Vec<u8> = Vec::new();
+    for _ in 0..WS_PRELUDE {
+        let data = match conn.read_message() {
+            Ok(super::ws::Incoming::Text(d)) => d,
+            // 非 text 帧照 Go（:683 frame 返回 nil,nil）丢弃；但 error 帧判定
+            // 只对 text 帧——binary 帧不是回合应答的一部分。
+            Ok(super::ws::Incoming::Binary(_)) => continue,
+            // 应答前断线：什么都没交付（Go codexSocketEnded :529 → 回退）。
+            Ok(super::ws::Incoming::Close(_)) => return WsOutcome::FallBack,
+            Err(_) => return WsOutcome::FallBack,
+        };
+        let data = data.trim_ascii().to_vec();
+        let kind = json_type_of(&data);
+        if kind == "responsesapi.websocket_timing" {
+            continue; // 与时序帧同款丢弃（Go :688；prelude 段同样不转发）
+        }
+        if kind == "error" {
+            match ws_error_reply(&data) {
+                Some(Err(())) => return WsOutcome::FallBack,
+                Some(Ok((status, body))) => return WsOutcome::Error(status, body),
+                None => {}
+            }
+        }
+        pending.extend_from_slice(&ws_sse_event(&kind, &data));
+        if kind != "codex.rate_limits" && kind != "codex.response.metadata" {
+            // 首条正文就是终态（如无 status 的 error 帧）：流到此收口，
+            // reader 不再回头读连接（否则空连接上会报读错而非干净 EOF）。
+            let done = WS_TERMINAL.contains(&kind.as_str());
+            return WsOutcome::Stream(Box::new(WsSseReader { conn, pending, done, err: None }));
+        }
+    }
+    WsOutcome::Stream(Box::new(WsSseReader { conn, pending, done: false, err: None }))
+}
+
+/// WS 出站入口：计划 → dial（直连或代理隧道 + TLS）→ 回合。Go socket :356
+/// 的形状（shun 名单/keep 连接复用没有——见 ws.rs 模块头差距清单）。
+fn open_upstream_ws(account: &Account, ver: &str, body: &Value) -> WsOutcome {
+    let Some(plan) = ws_plan(account, ver, body) else {
+        return WsOutcome::FallBack;
+    };
+    match super::ws::dial(&plan.url, &plan.headers, WS_CONNECT, WS_DIAL) {
+        Ok(conn) => ws_turn_over(conn, &plan.message),
+        // 握手被拒/连不上：当轮回退 HTTP（Go :375-386）。
+        Err(_) => WsOutcome::FallBack,
+    }
+}
+
+/// 打开上游流（HTTP 或 WS）。WS 开（`MARIONETTE_CODEX_WS=1`）时先试 WS，
+/// 未交付即回退 HTTP——HTTP 半边与原路径一字不差。
+fn open_stream(account: &Account, ver: &str, body: &Value) -> Result<ByteStream, (u16, Vec<u8>)> {
+    if ws_enabled() {
+        match open_upstream_ws(account, ver, body) {
+            WsOutcome::Stream(reader) => return Ok(reader),
+            WsOutcome::Error(status, body) => return Err((status, body)),
+            WsOutcome::FallBack => {}
+        }
+    }
+    open_upstream(account, ver, body).map(|r| Box::new(r.into_reader()) as ByteStream)
+}
+
 /// 打开上游流：200 → Response（SSE 待读）；其它 → Err(Reply 由调用方按入站
 /// 协议整形)。大请求体 gzip 出站。
 fn open_upstream(account: &Account, ver: &str, body: &Value) -> Result<ureq::Response, (u16, Vec<u8>)> {
@@ -1637,11 +1938,12 @@ enum UpstreamFailure {
 /// 按账号序试到成功（Go codexFallBack 的账号轮换半边）：额度类错误
 /// （[`codex_account_out`]）换下一账号重发**同一个**整形请求；其它错误
 /// （401/400/5xx 过载……）原样返回——那些不是「这个账号不行」。全部账号
-/// 都耗尽 → [`UpstreamFailure::Exhausted`]。
-fn open_upstream_rotating(accounts: &[Account], ver: &str, body: &Value) -> Result<ureq::Response, UpstreamFailure> {
+/// 都耗尽 → [`UpstreamFailure::Exhausted`]。WS 开关开时每个账号先试 WS、
+/// 未交付回退该账号的 HTTP（[`open_stream`]）。
+fn open_stream_rotating(accounts: &[Account], ver: &str, body: &Value) -> Result<ByteStream, UpstreamFailure> {
     let mut last: Option<(u16, Vec<u8>)> = None;
     for (i, account) in accounts.iter().enumerate() {
-        match open_upstream(account, ver, body) {
+        match open_stream(account, ver, body) {
             Ok(r) => return Ok(r),
             Err((status, err_body)) => {
                 let out = codex_account_out(status, &err_body);
@@ -1667,7 +1969,7 @@ fn open_upstream_rotating(accounts: &[Account], ver: &str, body: &Value) -> Resu
 }
 
 fn forward_responses(accounts: &[Account], ver: &str, body: &Value, client_wants_stream: bool) -> Reply {
-    let response = match open_upstream_rotating(accounts, ver, body) {
+    let response = match open_stream_rotating(accounts, ver, body) {
         Ok(r) => r,
         Err(UpstreamFailure::Raw(status, body)) => return Reply::Json { status, body },
         Err(UpstreamFailure::Exhausted { upstream, body }) => {
@@ -1678,10 +1980,10 @@ fn forward_responses(accounts: &[Account], ver: &str, body: &Value, client_wants
         return Reply::Stream {
             status: 200,
             content_type: "text/event-stream".into(),
-            reader: Box::new(response.into_reader()),
+            reader: response,
         };
     }
-    aggregate_sse(response.into_reader())
+    aggregate_sse(response)
 }
 
 /// chat / anthropic 入站：已翻成 Responses 并整形的请求 → 上游 → 翻回去。
@@ -1695,7 +1997,7 @@ fn forward_translated(
     client_wants_stream: bool,
     include_usage: bool,
 ) -> Reply {
-    let response = match open_upstream_rotating(accounts, ver, shaped) {
+    let response = match open_stream_rotating(accounts, ver, shaped) {
         Ok(r) => r,
         Err(UpstreamFailure::Raw(status, body)) => return upstream_error_reply(proto, status, body),
         Err(UpstreamFailure::Exhausted { upstream, body }) => return exhausted_reply(proto, upstream, &body),
@@ -1709,14 +2011,14 @@ fn forward_translated(
             names_back,
         );
         let chat_reader: Box<dyn Read + Send> =
-            Box::new(super::translate::ResponsesToChatReader::new(Box::new(response.into_reader()), conv));
+            Box::new(super::translate::ResponsesToChatReader::new(response, conv));
         let reader: Box<dyn Read + Send> = match proto {
             Proto::Anthropic => Box::new(super::messages::AnthropicSseTranslator::new(chat_reader, asked_model)),
             _ => chat_reader,
         };
         return Reply::Stream { status: 200, content_type: "text/event-stream".into(), reader };
     }
-    let aggregated = match aggregate_sse_value(response.into_reader()) {
+    let aggregated = match aggregate_sse_value(response) {
         Ok(v) => v,
         Err((status, msg)) => return proto_error(proto, status, &msg),
     };
@@ -3269,6 +3571,306 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         );
         let (headers, _) = mock.last("/backend-api/codex/responses");
         assert!(!headers.contains_key("content-encoding"));
+    }
+
+    // ---- 出站 WebSocket（开关默认关；失败当轮回退 HTTP）----
+
+    /// MARIONETTE_CODEX_WS 的测试态：进程 env 全局——设置期间必须已持有
+    /// 沙箱锁（world() 自带；不再另拿防自锁），所有出站测试都串行在同一把
+    /// 锁上，别的 codex 测试不会读到半截开关态。
+    struct WsEnv;
+    impl WsEnv {
+        fn on() -> WsEnv {
+            std::env::set_var("MARIONETTE_CODEX_WS", "1");
+            WsEnv
+        }
+        fn off() -> WsEnv {
+            std::env::remove_var("MARIONETTE_CODEX_WS");
+            WsEnv
+        }
+    }
+    impl Drop for WsEnv {
+        fn drop(&mut self) {
+            std::env::remove_var("MARIONETTE_CODEX_WS");
+        }
+    }
+
+    /// 内存双工（读侧按序供给预置帧、写侧吞掉）——ws_turn_over / WsSseReader
+    /// 的假对端（真 WS 端到端待真机验证）。
+    struct FrameFeed {
+        data: Vec<u8>,
+        at: usize,
+    }
+    impl FrameFeed {
+        fn frame(&mut self, opcode: u8, payload: &[u8]) {
+            self.data.extend(super::super::ws::encode_server_frame(opcode, payload));
+        }
+    }
+    impl Default for FrameFeed {
+        fn default() -> Self {
+            FrameFeed { data: Vec::new(), at: 0 }
+        }
+    }
+    impl std::io::Read for FrameFeed {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.at >= self.data.len() {
+                return Ok(0);
+            }
+            let n = (self.data.len() - self.at).min(buf.len());
+            buf[..n].copy_from_slice(&self.data[self.at..self.at + n]);
+            self.at += n;
+            Ok(n)
+        }
+    }
+    impl std::io::Write for FrameFeed {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn text_frame(payload: &[u8]) -> Vec<u8> {
+        super::super::ws::encode_server_frame(super::super::ws::OP_TEXT, payload)
+    }
+
+    #[test]
+    fn ws_url_maps_schemes() {
+        assert_eq!(super::ws_url("https://chatgpt.com/backend-api/codex"), "wss://chatgpt.com/backend-api/codex/responses");
+        assert_eq!(super::ws_url("http://127.0.0.1:9/codex/"), "ws://127.0.0.1:9/codex/responses");
+    }
+
+    #[test]
+    fn response_create_message_prefixes_body_bytes() {
+        // Go codexCreate：`{"type":"response.create",` 接在 `{` 后，原字节不动。
+        let msg = super::response_create_message(br#"{ "model": "x", "stream": true }"#);
+        assert_eq!(msg, br#"{"type":"response.create", "model": "x", "stream": true }"#.to_vec());
+        // 空对象不补逗号。
+        assert_eq!(super::response_create_message(b"{}"), br#"{"type":"response.create"}"#.to_vec());
+        // 前后空白剥掉（Go TrimSpace 同款）。
+        let msg = super::response_create_message(b"\r\n{\"stream\":true}\n");
+        assert_eq!(msg, br#"{"type":"response.create","stream":true}"#.to_vec());
+    }
+
+    #[test]
+    fn ws_plan_builds_go_shaped_message_headers_and_url() {
+        // base_url() 读测试缝——world() 串行持有沙箱锁。
+        let (_gateway, _w) = world(r#"{"providers":[]}"#, "http://127.0.0.1:9/codex");
+        let account = Account {
+            id: String::new(),
+            token: "tok".into(),
+            account_id: "acct-1".into(),
+            email: "e@t.test".into(),
+            plan: "pro".into(),
+            exp: Some(now_secs() + 3600),
+        };
+        let body = json!({"model":"gpt-6-luna","stream":true,"input":"hi","prompt_cache_key":"thread-1"});
+        let plan = super::ws_plan(&account, "0.200.0", &body).expect("plan");
+        assert_eq!(plan.url, "ws://127.0.0.1:9/codex/responses");
+        // 消息 = 原体前接 response.create；round-trip 回来字段原样。
+        assert!(plan.message.starts_with(br#"{"type":"response.create","#));
+        let msg: Value = serde_json::from_slice(&plan.message).unwrap();
+        assert_eq!(msg["type"], "response.create");
+        assert_eq!(msg["model"], "gpt-6-luna");
+        assert_eq!(msg["prompt_cache_key"], "thread-1");
+        assert_eq!(msg["stream"], true);
+        // 头集合：鉴权/originator/UA/version/会话对 + WS 的 OpenAI-Beta；
+        // Accept / Content-Type / Content-Encoding 一律不带（Go 剥除名单）。
+        let h = |k: &str| {
+            plan.headers
+                .iter()
+                .find(|(a, _)| a.eq_ignore_ascii_case(k))
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(h("Authorization"), "Bearer tok");
+        assert_eq!(h("originator"), "codex_cli_rs");
+        assert!(h("User-Agent").starts_with("codex_cli_rs/0.200.0"));
+        assert_eq!(h("version"), "0.200.0");
+        assert_eq!(h("chatgpt-account-id"), "acct-1");
+        assert_eq!(h("session-id"), "thread-1");
+        assert_eq!(h("thread-id"), "thread-1");
+        assert_eq!(h("OpenAI-Beta"), super::WS_BETA);
+        assert!(plan.headers.iter().all(|(k, _)| !k.eq_ignore_ascii_case("Accept")
+            && !k.eq_ignore_ascii_case("Content-Type")
+            && !k.eq_ignore_ascii_case("Content-Encoding")));
+    }
+
+    #[test]
+    fn ws_plan_refuses_unshaped_bodies() {
+        let account = Account {
+            id: String::new(),
+            token: "t".into(),
+            account_id: String::new(),
+            email: String::new(),
+            plan: String::new(),
+            exp: None,
+        };
+        // 非流式 / 顶层带 type：不合 WS 形状（Go codexSocketMessage :247）。
+        assert!(super::ws_plan(&account, "v", &json!({"model":"m","stream":false})).is_none());
+        assert!(super::ws_plan(&account, "v", &json!({"model":"m","stream":true,"type":"response.create"})).is_none());
+    }
+
+    #[test]
+    fn ws_sse_event_lines_and_compaction() {
+        let ev = super::ws_sse_event("response.created", br#"{"type":"response.created"}"#);
+        assert_eq!(ev, b"event: response.created\ndata: {\"type\":\"response.created\"}\n\n".to_vec());
+        // 空类型：只有 data 行（Go kind=="" 分支）。
+        let ev = super::ws_sse_event("", br#"{"a":1}"#);
+        assert_eq!(ev, b"data: {\"a\":1}\n\n".to_vec());
+        // 帧里带换行：压成紧凑 JSON 再进 data 行。
+        let ev = super::ws_sse_event("x", b"{\n  \"a\": 1\n}");
+        assert_eq!(ev, b"event: x\ndata: {\"a\":1}\n\n".to_vec());
+    }
+
+    #[test]
+    fn ws_error_reply_classification() {
+        // 连接上限 → 回退 HTTP。
+        let f = br#"{"type":"error","error":{"code":"websocket_connection_limit_reached"}}"#;
+        assert!(matches!(super::ws_error_reply(f), Some(Err(()))));
+        // status 429 + error 对象 → 合成 (429, {"error":…})。
+        let f = br#"{"type":"error","status":429,"error":{"message":"slow down","code":"rate_limited"}}"#;
+        let Some(Ok((status, body))) = super::ws_error_reply(f) else { panic!("429") };
+        assert_eq!(status, 429);
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["message"], "slow down");
+        // status_code 字段同样认。
+        let f = br#"{"type":"error","status_code":500,"error":{"message":"boom"}}"#;
+        assert!(matches!(super::ws_error_reply(f), Some(Ok((500, _)))));
+        // 无可用 status：None（当普通事件传下去）。
+        assert!(super::ws_error_reply(br#"{"type":"error","message":"odd"}"#).is_none());
+        // status 出 400..=599：None。
+        assert!(super::ws_error_reply(br#"{"type":"error","status":302}"#).is_none());
+    }
+
+    #[test]
+    fn ws_turn_over_prelude_and_sse_restore() {
+        let mut feed = FrameFeed::default();
+        // timing 帧（丢弃）→ 头帧 rate_limits → 首条正文 → 终态。
+        feed.data.extend(text_frame(br#"{"type":"responsesapi.websocket_timing","ms":1}"#));
+        feed.data.extend(text_frame(br#"{"type":"codex.rate_limits","rate_limits":{"primary":{"used_percent":1}}}"#));
+        feed.data.extend(text_frame(br#"{"type":"response.created","response":{"id":"r1"}}"#));
+        feed.data
+            .extend(text_frame(br#"{"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":1}}}"#));
+        let conn = super::super::ws::WsConn::over(Box::new(feed));
+        let outcome = super::ws_turn_over(conn, br#"{"type":"response.create"}"#);
+        let super::WsOutcome::Stream(mut reader) = outcome else { panic!("expected Stream") };
+        let mut sse = String::new();
+        reader.read_to_string(&mut sse).expect("read to end");
+        assert_eq!(
+            sse,
+            "event: codex.rate_limits\n\
+             data: {\"type\":\"codex.rate_limits\",\"rate_limits\":{\"primary\":{\"used_percent\":1}}}\n\n\
+             event: response.created\n\
+             data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}\n\n\
+             event: response.completed\n\
+             data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"usage\":{\"input_tokens\":1}}}\n\n"
+        );
+        // timing 不出现在流里；终态后干净 EOF。
+        assert!(!sse.contains("websocket_timing"));
+    }
+
+    #[test]
+    fn ws_turn_over_error_frame_paths() {
+        // 连接上限 error 帧 → 回退 HTTP。
+        let mut feed = FrameFeed::default();
+        feed.data.extend(text_frame(br#"{"type":"error","error":{"code":"websocket_connection_limit_reached"}}"#));
+        let conn = super::super::ws::WsConn::over(Box::new(feed));
+        assert!(matches!(super::ws_turn_over(conn, b"m"), super::WsOutcome::FallBack));
+
+        // 带 status 的 error 帧 → 合成错误走现有路径（账号轮换可判）。
+        let mut feed = FrameFeed::default();
+        feed.data.extend(text_frame(br#"{"type":"error","status":429,"error":{"message":"usage limit"}}"#));
+        let conn = super::super::ws::WsConn::over(Box::new(feed));
+        let super::WsOutcome::Error(429, body) = super::ws_turn_over(conn, b"m") else { panic!("429") };
+        assert!(String::from_utf8_lossy(&body).contains("usage limit"));
+
+        // 无 status 的 error 帧 → 当普通事件传下去（且是终态）。
+        let mut feed = FrameFeed::default();
+        feed.data.extend(text_frame(br#"{"type":"error","message":"odd"}"#));
+        let conn = super::super::ws::WsConn::over(Box::new(feed));
+        let super::WsOutcome::Stream(mut reader) = super::ws_turn_over(conn, b"m") else { panic!("Stream") };
+        let mut sse = String::new();
+        reader.read_to_string(&mut sse).expect("eof after terminal");
+        assert_eq!(sse, "event: error\ndata: {\"type\":\"error\",\"message\":\"odd\"}\n\n");
+
+        // 应答前 close / 连不上（EOF）→ 回退。
+        let mut feed = FrameFeed::default();
+        feed.data.extend(super::super::ws::encode_server_frame(super::super::ws::OP_CLOSE, &1000u16.to_be_bytes()));
+        let conn = super::super::ws::WsConn::over(Box::new(feed));
+        assert!(matches!(super::ws_turn_over(conn, b"m"), super::WsOutcome::FallBack));
+        let conn = super::super::ws::WsConn::over(Box::new(FrameFeed::default()));
+        assert!(matches!(super::ws_turn_over(conn, b"m"), super::WsOutcome::FallBack));
+    }
+
+    #[test]
+    fn ws_cut_midstream_is_an_error_not_clean_eof() {
+        // 正文开始后、终态前断线：事件已交付的部分保留 + io::Error（HTTP 半截
+        // 同款——聚合层据此 502「stream ended before response.completed」）。
+        let mut feed = FrameFeed::default();
+        feed.data.extend(text_frame(br#"{"type":"response.created","response":{"id":"r1"}}"#));
+        let conn = super::super::ws::WsConn::over(Box::new(feed));
+        let super::WsOutcome::Stream(mut reader) = super::ws_turn_over(conn, b"m") else { panic!("Stream") };
+        let mut buf = Vec::new();
+        let res = reader.read_to_end(&mut buf);
+        assert!(res.is_err(), "cut stream must surface an error");
+        assert!(String::from_utf8_lossy(&buf).contains("response.created"));
+    }
+
+    #[test]
+    fn ws_switch_default_off_and_failure_falls_back_to_http() {
+        let mock = Mock::start();
+        mock.route("/backend-api/codex/responses", 200, "text/event-stream", SSE_OK);
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        let token = valid_token();
+        write_logins(&w, &token, "me@example.test");
+
+        // 默认（无 MARIONETTE_CODEX_WS）：纯 HTTP，一次 POST。
+        {
+            let _off = WsEnv::off();
+            let reply = super::super::routes::route(
+                &post("/v1/responses", &json!({"model":"codex/gpt-6-luna","stream":true,"input":"hi"})),
+                &gateway,
+            );
+            assert_eq!(reply_json(reply).0, 200);
+        }
+        {
+            let seen = mock.seen.lock().unwrap();
+            assert_eq!(seen.len(), 1, "default must be plain HTTP");
+            assert_eq!(seen[0].method, "POST");
+        }
+
+        // 开关开：先 WS 升级（Mock 回的是 200 不是 101 → 握手失败）→ 当轮
+        // 回退 HTTP POST。同一回合两次请求，应答不丢。
+        {
+            let _on = WsEnv::on();
+            let reply = super::super::routes::route(
+                &post("/v1/responses", &json!({"model":"codex/gpt-6-luna","stream":true,"input":"hi"})),
+                &gateway,
+            );
+            assert_eq!(reply_json(reply).0, 200);
+        }
+        {
+            let seen = mock.seen.lock().unwrap();
+            assert_eq!(seen.len(), 3, "GET upgrade + fallback POST");
+            let upgrade = &seen[1];
+            assert_eq!(upgrade.method, "GET");
+            assert_eq!(upgrade.path, "/backend-api/codex/responses");
+            assert_eq!(upgrade.headers["upgrade"], "websocket");
+            assert_eq!(upgrade.headers["connection"], "Upgrade");
+            assert_eq!(upgrade.headers["sec-websocket-version"], "13");
+            assert!(upgrade.headers.contains_key("sec-websocket-key"));
+            assert_eq!(upgrade.headers["authorization"], format!("Bearer {token}"));
+            assert_eq!(upgrade.headers["openai-beta"], super::WS_BETA);
+            assert_eq!(upgrade.headers["originator"], "codex_cli_rs");
+            // 回退的 POST 走原路径（明文体、SSE 应答）。
+            let post = &seen[2];
+            assert_eq!(post.method, "POST");
+            let sent: Value = serde_json::from_slice(&post.body).unwrap();
+            assert_eq!(sent["model"], "gpt-6-luna");
+            assert!(sent.get("type").is_none(), "HTTP body must not carry the ws response.create prefix");
+        }
     }
 
     #[test]

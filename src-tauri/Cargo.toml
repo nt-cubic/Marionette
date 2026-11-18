@@ -56,7 +56,9 @@ tauri-plugin-global-shortcut = "2"
 # Only to reach the vendored wry text-drag hook (see [patch.crates-io] note).
 wry = { path = "vendor/wry", default-features = false }
 # Browser-tab screenshot shrink loop (decode → narrow → re-encode, codeg capture.rs shape).
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# webp：解码用（engine_gateway/bodyprep.rs 的 webp→PNG 转码；编码 feature 不加
+# ——同一 crate 的 feature，不算新依赖）。
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 # Token-usage history backfill: DSH session logs are zstd-compressed JSONL
 # (pure-Rust decoder, no C bindings, streams multi-frame archives).
 ruzstd = "0.7"

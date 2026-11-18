@@ -38,11 +38,13 @@ pub mod presets;
 pub mod quota_extra;
 pub mod quota_kit;
 pub mod quotas;
+pub mod redact;
 pub mod responses;
 pub mod routes;
 pub mod store;
 pub mod translate;
 pub mod vendor_presets;
+pub mod ws;
 pub mod zcode_account;
 
 use std::path::PathBuf;

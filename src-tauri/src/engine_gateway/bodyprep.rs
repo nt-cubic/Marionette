@@ -1,6 +1,6 @@
-//! 请求体预处理（`base64_input.go` + `body_text.go` 的 1:1 对应）。
+//! 请求体预处理（`base64_input.go` + `body_text.go` + `webp.go` 的对应）。
 //!
-//! 两件读体之后、任何路由/翻译/bodycap 之前对对话体做的事：
+//! 三件读体之后、任何路由/翻译/bodycap 之前对对话体做的事：
 //!
 //! - **坏文本换成 U+FFFD**（`textBody`，body_text.go:32；laincatx on X 的
 //!   事故）：agent 发来的 JSON 里混进非 UTF-8 字节（GBK 源文件、被截断的
@@ -21,11 +21,24 @@
 //!   base64 写成标准 padded 形态，之后每条路由（直通、翻译、转发）读到的
 //!   都已经是它。Gemini inlineData 分支不做（Rust 引擎无 Gemini 入站）。
 //!
+//! - **webp 内联图重写成 PNG**（`webpBody`，webp.go:47；#4732，
+//!   zhangqingwen204 的报告）：Claude Desktop 的浏览器工具给 webp 截图，
+//!   GLM 读不了——400 [1210]「图片输入格式/解析错误」把它打回，它的
+//!   Anthropic 式端点又把同一张当成自家文件回 400 [1214]「必须传入
+//!   file_id、file_url、file_data 至少之一」，两个交替；图片骑在会话历史
+//!   里，之后每轮都被拒、会话卡死。Go 按厂商学（webpRefused 的 unfit 记
+//!   号，首回合付一次拒答学费；不透明时写 JPEG 省体积，heic.go 的
+//!   pictureWritten）；**Rust 半步**：预处理链无条件转、一律 PNG（GLM 两个
+//!   400 的共同根因是 webp 本身，PNG 谁都收；按厂商学表与 converted 缓存
+//!   ——图骑在历史里每轮重转——是路由层的后续任务）。解码失败原样放行
+//!   （厂商自己说）。排在 stdBase64 之后：字母表归一了，`webp_of` 的标准
+//!   base64 解码才对得上 URL-safe 形态来的图。
+//!
 //! 接线在 routes.rs 的对话臂（含 count_tokens——Go countTokens 同样在计数
 //! 前跑 stdBase64Body，gateway.go:2112）：httpd.rs 读体（含 Content-Encoding
-//! 解码）之后、route() 分发之前正是 Go 的两个位置。字节级预检
-//! [`may_hold_odd_base64`] 是性能闸门（Go 注释：2MB 请求 ~2ms），不过闸的
-//! 体零拷贝原样返回。
+//! 解码）之后、route() 分发之前正是 Go 的位置。字节级预检
+//! [`may_hold_odd_base64`] / [`may_hold_webp`] 是性能闸门（Go 注释：2MB 请求
+//! ~2ms），不过闸的体零拷贝原样返回。
 use std::borrow::Cow;
 
 use base64::engine::general_purpose::{GeneralPurpose, GeneralPurposeConfig, STANDARD};
@@ -376,16 +389,173 @@ fn decode_rune_at(body: &[u8], i: usize) -> (Option<char>, usize) {
 }
 
 // ---------------------------------------------------------------------------
+// webp.go
+// ---------------------------------------------------------------------------
+
+/// Go heicMaxBase64（heic.go:55）：一张内联图的 base64 上限（48MB）。
+const HEIC_MAX_BASE64: usize = 48 << 20;
+/// Go heicMaxPixels（heic.go:57）：解码前的像素上限（50M——48MP 的照片解码
+/// 时驻留数百 MB）。
+const HEIC_MAX_PIXELS: u64 = 50_000_000;
+/// Go heicMaxSide（heic.go:62）：重写后最长边 4096（pictureWritten 的
+/// triangleResize 门槛——超长边重写会把体积放大到失控）。
+const HEIC_MAX_SIDE: u32 = 4096;
+
+/// mayHoldWebP（webp.go:40）：体里可能有 webp 吗——`image/webp` 类型、它的
+/// JSON 转义形态 `image\/webp`（中继可能 \u 转义转发，#1669）、或 RIFF 头的
+/// 标准 base64 前缀 `UklG`（webp 挂在别的 mime 下也是 webp，Go 对 HEIC 同款）。
+fn may_hold_webp(body: &[u8]) -> bool {
+    fn has_sub(hay: &[u8], needle: &[u8]) -> bool {
+        hay.windows(needle.len()).any(|w| w == needle)
+    }
+    has_sub(body, b"image/webp") || has_sub(body, b"image\\/webp") || has_sub(body, b"UklG")
+}
+
+/// isWebP（webp.go:90）：按文件头认 webp（RIFF....WEBP）。
+fn is_webp(b: &[u8]) -> bool {
+    b.len() >= 12 && &b[0..4] == b"RIFF" && &b[8..12] == b"WEBP"
+}
+
+/// webpOf（webp.go:69）：data URI 是 webp 图时给它的字节。Go 对每个内联图
+/// 按头 16 个 base64 字符嗅探——mime 声明什么不算数（挂在 image/jpeg 下的
+/// webp 也转，HEIC 假 mime 同款）。长度门与 Go 一致（<16 不嗅、>48MB 不碰）。
+/// 字母表是标准 padded 形态（prepare 链里 std_base64_body 在前面跑过；Go
+/// 在 serve() 更早处同样归一过），尾随 `=` 剥掉按 Raw 语义解。
+fn webp_of(src: &str) -> Option<Vec<u8>> {
+    let rest = src.strip_prefix("data:")?;
+    let (head, b64) = rest.split_once(',')?;
+    head.strip_suffix(";base64")?;
+    if b64.len() < 16 || b64.len() > HEIC_MAX_BASE64 {
+        return None;
+    }
+    let sniff = STANDARD.decode(&b64[..16]).ok()?;
+    if !is_webp(&sniff) {
+        return None;
+    }
+    base64::engine::general_purpose::STANDARD_NO_PAD.decode(b64.trim_end_matches('=')).ok()
+}
+
+/// encodeWebP（webp.go:106）+ pictureWritten（heic.go:248）的合并：webp 字节
+/// 解码后写成 PNG。None = 解不开 / 超像素限（Go 返回 `("", nil)` → 块原样，
+/// 厂商自己说）。与 Go 的差：Go 无透明通道时写 JPEG（体积），Rust 半步一律
+/// PNG；Go 的 converted 缓存与单并发槽（heicSlots）不搬（模块头）。
+fn webp_to_png(raw: &[u8]) -> Option<Vec<u8>> {
+    // Go 先 DecodeConfig 量尺寸再解码；Rust 用 WebPDecoder::dimensions 同序：
+    // 头过了 50M 像素门，才取像素。
+    use image::ImageDecoder as _;
+    let dec = image::codecs::webp::WebPDecoder::new(std::io::Cursor::new(raw)).ok()?;
+    let (w, h) = dec.dimensions();
+    if w == 0 || h == 0 || u64::from(w) * u64::from(h) > HEIC_MAX_PIXELS {
+        return None;
+    }
+    let img = cap_side(image::DynamicImage::from_decoder(dec).ok()?);
+    let mut out = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).ok()?;
+    Some(out)
+}
+
+/// pictureWritten 的 heicMaxSide 半边：最长边超 4096 时 Triangle 滤镜缩回
+/// （Go triangleResize 同款滤镜；Go 在超大图后还要 debug.FreeOSMemory——Rust
+/// 的解码缓冲由 Drop 回收，不搬）。
+fn cap_side(img: image::DynamicImage) -> image::DynamicImage {
+    let (w, h) = (img.width(), img.height());
+    if w.max(h) <= HEIC_MAX_SIDE {
+        return img;
+    }
+    let (nw, nh) = if w >= h {
+        (HEIC_MAX_SIDE, (((h as u64) * HEIC_MAX_SIDE as u64) / w as u64).max(1) as u32)
+    } else {
+        ((((w as u64) * HEIC_MAX_SIDE as u64) / h as u64).max(1) as u32, HEIC_MAX_SIDE)
+    };
+    image::DynamicImage::ImageRgba8(image::imageops::resize(&img, nw, nh, image::imageops::FilterType::Triangle))
+}
+
+/// webpAsJPEG（webp.go:47）的 Rust 半步：体里每个 webp 内联图写成 PNG（Go：
+/// JPEG，透明时 PNG）；没有可写的原样返回（零拷贝），解码失败原样。走的
+/// 形状同 [`std_base64_body`]：所有 data URI 字符串统一处理（对三种协议一律
+/// 成立），anthropic 的 `source{type:"base64"}` 单独走（Go imageSrc 的
+/// anthropic 分支合成 `data:<media_type>;base64,<data>` 再拆回）。
+pub(crate) fn webp_body(proto: Proto, body: &[u8]) -> Cow<'_, [u8]> {
+    if !may_hold_webp(body) {
+        return Cow::Borrowed(body);
+    }
+    let mut v: Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(_) => return Cow::Borrowed(body),
+    };
+    let mut changed = false;
+    walk_webp(&mut v, proto, &mut changed);
+    if !changed {
+        return Cow::Borrowed(body);
+    }
+    serde_json::to_vec(&v).map(Cow::Owned).unwrap_or(Cow::Borrowed(body))
+}
+
+/// 递归转写：webp 的 data URI 换成 PNG 的；anthropic 的 base64 source 改
+/// `data` 与 `media_type`（Go withImageData 的 anthropic 分支同款——其它
+/// 字段原样带过）。
+fn walk_webp(v: &mut Value, proto: Proto, changed: &mut bool) {
+    match v {
+        Value::String(s) => {
+            if let Some(png) = webp_of(s).as_deref().and_then(webp_to_png) {
+                *s = format!("data:image/png;base64,{}", STANDARD.encode(&png));
+                *changed = true;
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                walk_webp(item, proto, changed);
+            }
+        }
+        Value::Object(map) => {
+            if proto == Proto::Anthropic {
+                if let Some(source) = map.get_mut("source").and_then(|s| s.as_object_mut()) {
+                    let is_b64 = source.get("type").and_then(Value::as_str) == Some("base64");
+                    if is_b64 {
+                        if let Some(data) = source.get("data").and_then(Value::as_str) {
+                            let media = source.get("media_type").and_then(Value::as_str).unwrap_or("");
+                            let uri = format!("data:{media};base64,{data}");
+                            if let Some(png) = webp_of(&uri).as_deref().and_then(webp_to_png) {
+                                source.insert("media_type".into(), Value::String("image/png".into()));
+                                source.insert("data".into(), Value::String(STANDARD.encode(&png)));
+                                *changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+            for (_, val) in map.iter_mut() {
+                walk_webp(val, proto, changed);
+            }
+        }
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 接线入口
 // ---------------------------------------------------------------------------
 
-/// 两步合并（顺序同 Go：textBody 在读体出口、stdBase64Body 在 serve() 最前，
-/// 都先于任何路由/翻译/bodycap）。体没变时零拷贝借回。
+/// 三步合并（顺序同 Go：textBody 在读体出口、stdBase64Body 在 serve() 最前、
+/// webp 转码在 stdBase64 之后——字母表归一了 webp_of 才解得开 URL-safe 形态
+/// 来的图；都先于任何路由/翻译/bodycap）。体没变时零拷贝借回。
 pub fn prepare<'a>(proto: Proto, content_type: Option<&str>, body: &'a [u8]) -> Cow<'a, [u8]> {
     match text_body(content_type, body) {
-        Cow::Borrowed(b) => std_base64_body(proto, b),
-        Cow::Owned(fixed) => match std_base64_body(proto, &fixed) {
+        Cow::Borrowed(b) => std_then_webp(proto, b),
+        Cow::Owned(fixed) => match std_then_webp(proto, &fixed) {
             Cow::Borrowed(_) => Cow::Owned(fixed),
+            Cow::Owned(out) => Cow::Owned(out),
+        },
+    }
+}
+
+/// stdBase64Body 之后再跑 webpBody（`std_then_webp` 的两步形状，见
+/// [`prepare`] 的顺序注释）。
+fn std_then_webp<'a>(proto: Proto, body: &'a [u8]) -> Cow<'a, [u8]> {
+    match std_base64_body(proto, body) {
+        Cow::Borrowed(b) => webp_body(proto, b),
+        Cow::Owned(std) => match webp_body(proto, &std) {
+            Cow::Borrowed(_) => Cow::Owned(std),
             Cow::Owned(out) => Cow::Owned(out),
         },
     }
@@ -717,5 +887,141 @@ mod tests {
         let u = v["u"].as_str().unwrap();
         assert!(u.starts_with("data:image/png;base64,"));
         assert!(!u.contains('-') && !u.contains('_'), "{u}");
+    }
+
+    // ----- webpBody（webp.go:47）-----
+
+    /// 手搓的最小合法 VP8L（无损）webp：1×1 蓝色不透明像素，34 字节。
+    /// 位流：VP8L 头（0x2F + 14bit 宽-1 + 14bit 高-1 + alpha + version 全零）
+    /// 之后三个零位（无 transform / 无色缓存 / 无 meta-huffman），再五个
+    /// 单符号简单前缀码（simple=1、num_symbols-1=0、first8=1、8 位符号）：
+    /// G=0、R=0、B=255、A=255、距离=0——LSB 先行逐位打包。下方的解码断言
+    /// 钉住这串字节：image-webp 行为变了这里会响。
+    const TINY_WEBP: &[u8] = &[
+        0x52, 0x49, 0x46, 0x46, 0x1a, 0x00, 0x00, 0x00, // "RIFF" + 尺寸 26
+        0x57, 0x45, 0x42, 0x50, // "WEBP"
+        0x56, 0x50, 0x38, 0x4c, 0x0d, 0x00, 0x00, 0x00, // "VP8L" + 块长 13
+        0x2f, // VP8L 签名
+        0x00, 0x00, 0x00, 0x00, // 宽/高/alpha/version 头（32 个零位）
+        0x28, 0x40, 0x01, 0xea, 0xdf, 0xff, 0x02, 0x00, // 五个单符号码 + 填充
+        0x00, // 奇数块的 pad 字节
+    ];
+
+    #[test]
+    fn tiny_webp_constant_decodes_as_one_blue_pixel() {
+        let img = image::load_from_memory(TINY_WEBP).expect("hand-built VP8L decodes");
+        assert_eq!((img.width(), img.height()), (1, 1));
+        // 手工构造的 VP8L 常量经解码器色彩空间往返有 ±1 舍入（实测 B=254）；
+        // 断言「近纯蓝」而不是逐位相等——测的是「这是那张图」而不是色彩管理。
+        let [r, g, b, a] = img.to_rgba8().get_pixel(0, 0).0;
+        assert!(r <= 2 && g <= 2 && b >= 250 && a == 255, "got [{r},{g},{b},{a}]");
+    }
+
+    #[test]
+    fn webp_body_rewrites_chat_data_uri_to_png() {
+        let b64 = STANDARD.encode(TINY_WEBP);
+        let body = format!(
+            r#"{{"model":"p/m","messages":[{{"role":"user","content":[{{"type":"image_url","image_url":{{"url":"data:image/webp;base64,{b64}"}}}}]}}]}}"#
+        );
+        let out = webp_body(Proto::Chat, body.as_bytes());
+        let v: Value = serde_json::from_slice(&out).expect("json");
+        let url = v["messages"][0]["content"][0]["image_url"]["url"].as_str().unwrap();
+        assert!(url.starts_with("data:image/png;base64,"), "{url}");
+        let png = STANDARD.decode(url.strip_prefix("data:image/png;base64,").unwrap()).unwrap();
+        let img = image::load_from_memory(&png).expect("rewritten picture decodes");
+        // 与常量单测同口径：解码器色彩往返 ±1 舍入（实测 B=254）。
+        let [r, g, b, a] = img.to_rgba8().get_pixel(0, 0).0;
+        assert!(r <= 2 && g <= 2 && b >= 250 && a == 255, "像素不丢：got [{r},{g},{b},{a}]");
+        assert_eq!(v["model"], "p/m", "其余字段不动");
+    }
+
+    #[test]
+    fn webp_body_sniffs_bytes_under_a_lying_mime() {
+        // mime 声明 image/jpeg、字节是 webp：Go webpOf 只认字节（HEIC 假
+        // mime 同款），一样转。
+        let b64 = STANDARD.encode(TINY_WEBP);
+        let body = format!(r#"{{"u":"data:image/jpeg;base64,{b64}"}}"#);
+        let out = webp_body(Proto::Chat, body.as_bytes());
+        let v: Value = serde_json::from_slice(&out).expect("json");
+        assert!(v["u"].as_str().unwrap().starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn webp_body_rewrites_anthropic_base64_source() {
+        let b64 = STANDARD.encode(TINY_WEBP);
+        let body = format!(
+            r#"{{"model":"p/m","messages":[{{"role":"user","content":[{{"type":"image","source":{{"type":"base64","media_type":"image/webp","data":"{b64}"}}}}]}}]}}"#
+        );
+        let out = webp_body(Proto::Anthropic, body.as_bytes());
+        let v: Value = serde_json::from_slice(&out).expect("json");
+        let src = &v["messages"][0]["content"][0]["source"];
+        assert_eq!(src["type"], "base64");
+        assert_eq!(src["media_type"], "image/png");
+        let png = STANDARD.decode(src["data"].as_str().unwrap()).unwrap();
+        assert!(image::load_from_memory(&png).is_ok(), "写回的是可解码的 PNG");
+    }
+
+    #[test]
+    fn webp_body_reads_the_escaped_mime_form() {
+        // 中继把 JSON 里的 "/" 转义成 "\/"（#1669）：预检认这个形态，解析后
+        // serde 已还原成 data:image/webp;...。
+        let b64 = STANDARD.encode(TINY_WEBP);
+        let body = format!(r#"{{"u":"data:image\/webp;base64,{b64}"}}"#);
+        let out = webp_body(Proto::Chat, body.as_bytes());
+        let v: Value = serde_json::from_slice(&out).expect("json");
+        assert!(v["u"].as_str().unwrap().starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn webp_body_leaves_bad_webp_and_other_bodies_alone() {
+        // 坏 webp（RIFF 头真、载荷截断）：解码失败原样放行——厂商自己说
+        let b64 = STANDARD.encode(&TINY_WEBP[..24]);
+        let body = format!(r#"{{"u":"data:image/webp;base64,{b64}"}}"#);
+        let out = webp_body(Proto::Chat, body.as_bytes());
+        assert_eq!(out.as_ref(), body.as_bytes());
+        // 非 webp 的 data URI（PNG）：字节嗅不过，原样
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 255])))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let body = format!(r#"{{"u":"data:image/png;base64,{}"}}"#, STANDARD.encode(png));
+        let out = webp_body(Proto::Chat, body.as_bytes());
+        assert!(matches!(out, Cow::Borrowed(b) if b.as_ptr() == body.as_bytes().as_ptr()));
+        // 没有任何标记的体：预检零拷贝
+        let plain = br#"{"a":"hello"}"#;
+        assert!(matches!(webp_body(Proto::Chat, plain), Cow::Borrowed(b) if b.as_ptr() == plain.as_ptr()));
+        // 预检过了但不是 JSON：原样
+        let raw = format!("x = image/webp {b64}", b64 = STANDARD.encode(TINY_WEBP));
+        assert_eq!(webp_body(Proto::Chat, raw.as_bytes()).as_ref(), raw.as_bytes());
+    }
+
+    #[test]
+    fn cap_side_resizes_the_long_side_to_4096() {
+        let wide = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(8192, 4, image::Rgba([0, 0, 0, 255])));
+        let out = cap_side(wide);
+        assert_eq!((out.width(), out.height()), (4096, 2));
+        let tall = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(4, 8192, image::Rgba([0, 0, 0, 255])));
+        let out = cap_side(tall);
+        assert_eq!((out.width(), out.height()), (2, 4096));
+        // 门内不碰
+        let small = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(4096, 4096, image::Rgba([0, 0, 0, 255])));
+        let (w, h) = (small.width(), small.height());
+        let out = cap_side(small);
+        assert_eq!((out.width(), out.height()), (w, h));
+    }
+
+    #[test]
+    fn prepare_runs_text_std_then_webp() {
+        // 同一个体：GBK 字节修掉 + webp data URI 转 PNG。
+        let b64 = STANDARD.encode(TINY_WEBP);
+        let mut body = br#"{"model":"p/m","note":""#.to_vec();
+        body.extend_from_slice(&[0xc4, 0xe3]);
+        body.extend_from_slice(br#"","u":"data:image/webp;base64,"#);
+        body.extend_from_slice(b64.as_bytes());
+        body.extend_from_slice(b"\"}");
+        let out = prepare(Proto::Chat, Some("application/json"), &body);
+        let v: Value = serde_json::from_slice(&out).expect("json");
+        assert_eq!(v["note"].as_str().unwrap().as_bytes(), "\u{FFFD}\u{FFFD}".as_bytes());
+        assert!(v["u"].as_str().unwrap().starts_with("data:image/png;base64,"));
     }
 }

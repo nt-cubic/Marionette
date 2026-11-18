@@ -993,6 +993,127 @@ fn gift_card(plan: String, until: Option<chrono::DateTime<chrono::Utc>>, items: 
     }
 }
 
+// =====================================================================
+// trial 条目拒答判定（Go zcode_trial.go，词表 1:1）
+// =====================================================================
+//
+// Go 的两个词表（zcode_trial.go:20，ZCode 插件对自己发不出的 Start Plan
+// trial 条目（`<model>-Trial`）的拒答词，任何 `<provider>: ` 前缀之后）：
+//
+// - `zcodeEndedWords`（HTTP 400，trial 已结束）：
+//   `(?:^|: )ZCode has no active limited quota for (\S+)$`
+// - `zcodeSpentWords`（HTTP 429，trial 的额度桶耗尽）：
+//   `(?:^|: )ZCode's limited quota for (\S+) is exhausted or temporarily unavailable$`
+//
+// 语义（Go zcodeTrialRefused，#3661 / orion-nebula-dev）：两个过期 trial 曾把
+// 整个 `zcode@zcode` 账号 rest 掉，GLM-5.3 / GLM-5.3-Flash 跟着陪葬——trial
+// 是那个模型自己的，账号的 GLM Coding Plan 还能出自己的模型，**只 rest 该
+// trial 条目**。词表点名模型：ended 说 `-Trial` 全名（`EqualFold` 核对候选模
+// 型），spent 说去掉 `-Trial` 的桶模型（核对 `m[1]+"-Trial"`）。zcode 0.1.49
+// 把原因写在词前（`… so it is not asked again for a minute: ZCode's limited
+// quota for …`，`(?:^|: )` 的 `: ` 分支接住）；0.1.48 把括号注记放在词后
+// （`… unavailable (ZCode answered 429 …)`），词表判不中，账号整体 rest——
+// 有意的行为差，别「修」。其余拒答（账号级 429、1113、无效钥匙）照旧 rest
+// 整个账号。同文件另有 `zcodeTrialBlocked`（zcode.z.ai 边缘防火墙 405 拦截
+// 页）/ `zcodeTrialRestricted`（风控 3012）也只 rest trial 条目——它们的词表
+// 在 provider.EdgeBlocked / failRestricted，不进本判定。
+//
+// **Rust 现状**：本模块只有额度只读（失败安静出 None，quota_extra.rs 各路
+// 互不拖累），不接对话出站，不存在「trial 连坐」路径可防；chat.rs 的 rest
+// 表按 provider 粒度（`rest_provider`）。所以这里交付的是**词表与纯判定函数**
+// 半步：rest 分级（只 rest `<model>-Trial` 条目、不动账号其它模型）在路由层
+// 接入这些拒答时启用——status（400/429）与候选模型（`EqualFold` 核对）两道
+// 门那时再挂，本函数只看 body 的词形。
+
+/// Go `vendorMessage`（draw.go:1586）的 JSON 分支：厂商错误体里「说了什么」——
+/// `errors.message`（ModelScope）、无 `error` 字段时的 `msg`(+`code`)（WorkBuddy）、
+/// `error.message` / `error` 字符串。网页标题分支（provider.WebPage）不搬——
+/// trial 拒答都是 JSON 体。都读不到时整串兜底（Go 同款）。
+fn vendor_message(body: &str) -> String {
+    let Ok(v) = serde_json::from_str::<Value>(body) else { return body.to_string() };
+    if let Some(m) = v
+        .get("errors")
+        .and_then(|e| e.get("message"))
+        .and_then(Value::as_str)
+        .filter(|m| !m.is_empty())
+    {
+        return m.to_string();
+    }
+    // Go：len(e.Error)==0 才看 msg（"error" 字段在就不走这里，null 也算在）
+    if v.get("error").is_none() {
+        if let Some(msg) = v.get("msg").and_then(Value::as_str).filter(|m| !m.is_empty()) {
+            let code = match v.get("code") {
+                Some(Value::String(s)) => Some(s.trim_matches('"').to_string()),
+                Some(Value::Number(n)) => Some(n.to_string()),
+                _ => None,
+            };
+            return match code {
+                Some(c) if !c.is_empty() && c != "0" && c != "null" => format!("{msg} ({c})"),
+                _ => msg.to_string(),
+            };
+        }
+    }
+    if let Some(err) = v.get("error") {
+        if let Some(m) = err.get("message").and_then(Value::as_str).filter(|m| !m.is_empty()) {
+            return m.to_string();
+        }
+        if let Some(s) = err.as_str() {
+            return s.to_string();
+        }
+    }
+    body.to_string()
+}
+
+/// trial 拒答的两种词形与它点名的模型。
+#[derive(Debug, PartialEq, Eq)]
+enum TrialForm {
+    /// 400：trial 已结束（点名 `-Trial` 全名）
+    Ended,
+    /// 429：trial 的额度桶耗尽（点名去 `-Trial` 的桶模型）
+    Spent,
+}
+
+/// Go 两个词表的纯字符串对应。`(?:^|: )` = 串首或任何 `": "` 之后；`\S+` =
+/// 非空且不含 ASCII 空白（Go RE2 的 `\s` 是 `[\t\n\f\r ]`，非 Unicode）；
+/// `$` = 串尾（无 `(?m)`，注记跟在词后不算）。大小写敏感（Go lazyre 无
+/// `(?i)`；候选模型的 EqualFold 核对在路由层接入时再挂）。
+fn trial_words(said: &str) -> Option<(TrialForm, String)> {
+    const ENDED: &str = "ZCode has no active limited quota for ";
+    const SPENT_HEAD: &str = "ZCode's limited quota for ";
+    const SPENT_TAIL: &str = " is exhausted or temporarily unavailable";
+    let solid = |w: &str| !w.is_empty() && !w.bytes().any(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\x0c' | b'\r'));
+    let mut starts = vec![0usize];
+    let mut from = 0usize;
+    while let Some(i) = said[from..].find(": ") {
+        from += i + 2;
+        starts.push(from);
+    }
+    for start in starts {
+        let seg = &said[start..];
+        if let Some(word) = seg.strip_prefix(ENDED) {
+            if solid(word) {
+                return Some((TrialForm::Ended, word.to_string()));
+            }
+        }
+        if let Some(mid) = seg.strip_prefix(SPENT_HEAD) {
+            if let Some(word) = mid.strip_suffix(SPENT_TAIL) {
+                if solid(word) {
+                    return Some((TrialForm::Spent, word.to_string()));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 这具 body 是 ZCode 对某个 Start Plan trial 条目（`<model>-Trial`）自己的
+/// 拒答吗（两种词形任一）？**词表 1:1**；status 与候选模型两道门见上——路由
+/// 层接入时启用，本函数不看。
+pub fn trial_refused(body: &str) -> bool {
+    let said = vendor_message(body);
+    trial_words(said.trim()).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::quota_kit::testkit::{redirect, Mock, Redirects};
@@ -1268,6 +1389,95 @@ mod tests {
         assert_eq!(quota.header("bigmodel-project"), "proj-9");
         assert_eq!(quota.header("set-language"), "zh");
         assert_eq!(quota.header("authorization"), "team.key");
+    }
+
+    // ----- trial 拒答词（Go zcode_trial_test.go:18 的体 1:1，zcode 0.1.31 的
+    // fetch JSON.stringify 形态）-----
+
+    const ZCODE_FLASH_TRIAL_ENDED: &str = r#"{"type":"error","error":{"type":"invalid_request_error","message":"ZCode has no active limited quota for GLM-5.3-Flash-Trial"}}"#;
+    const ZCODE_TRIAL_ENDED: &str = r#"{"type":"error","error":{"type":"invalid_request_error","message":"ZCode has no active limited quota for GLM-5.3-Trial"}}"#;
+    const ZCODE_TRIAL_SPENT: &str = r#"{"type":"error","error":{"type":"rate_limit_error","message":"ZCode's limited quota for glm-5.3 is exhausted or temporarily unavailable"}}"#;
+    // zcode 0.1.49 把原因放词前（": " 分支接住）；0.1.48 把注记放词后（判不中，
+    // 账号整体 rest——有意的行为差）
+    const ZCODE_TRIAL_RESTED: &str = r#"{"type":"error","error":{"type":"rate_limit_error","message":"ZCode said the last request for GLM-5.3 was over its quota, so it is not asked again for a minute: ZCode's limited quota for GLM-5.3 is exhausted or temporarily unavailable"}}"#;
+    const ZCODE_TRIAL_RESTED_048: &str = r#"{"type":"error","error":{"type":"rate_limit_error","message":"ZCode's limited quota for GLM-5.3 is exhausted or temporarily unavailable (ZCode answered 429 to the last request for it, so it is not asked again for a minute)"}}"#;
+
+    #[test]
+    fn trial_refused_matches_the_go_word_table() {
+        assert!(trial_refused(ZCODE_FLASH_TRIAL_ENDED));
+        assert!(trial_refused(ZCODE_TRIAL_ENDED));
+        assert!(trial_refused(ZCODE_TRIAL_SPENT));
+        assert!(trial_refused(ZCODE_TRIAL_RESTED), "0.1.49 的话：': ' 前缀分支");
+        // 0.1.48 的话跟在词后：词表到串尾为止，判不中（Go 同侧 rest 整账号）
+        assert!(!trial_refused(ZCODE_TRIAL_RESTED_048));
+    }
+
+    #[test]
+    fn trial_refused_ignores_account_level_refusals() {
+        // 账号级的额度/钥匙拒答不是 trial 词：Go 里它们 rest 整个账号
+        assert!(!trial_refused(r#"{"error":{"type":"rate_limit_error","message":"quota exhausted"}}"#));
+        assert!(!trial_refused(
+            r#"{"error":{"type":"invalid_request_error","message":"quota exhausted for this account"}}"#
+        ));
+        assert!(!trial_refused(r#"{"error":{"message":"invalid api key"}}"#));
+        // 405 拦截页 / 风控 3012 的话不是本词表（Go 走 zcodeTrialBlocked /
+        // zcodeTrialRestricted，词表在 provider.EdgeBlocked / failRestricted）
+        assert!(!trial_refused(
+            r#"{"type":"error","error":{"type":"permission_error","message":"405 Method Not Allowed — the provider's network firewall blocked requests from this IP; wait a while, or switch to another network or proxy"}}"#
+        ));
+        assert!(!trial_refused(r#"{"ok":true}"#));
+        assert!(!trial_refused(""));
+    }
+
+    #[test]
+    fn trial_refused_takes_provider_prefix_and_raw_text() {
+        // 中继加的 "<provider>: " 前缀
+        assert!(trial_refused(
+            r#"{"error":{"message":"zcode: ZCode has no active limited quota for GLM-5.3-Trial"}}"#
+        ));
+        // 非 JSON 体：vendorMessage 整串兜底（Go 同款）
+        assert!(trial_refused("ZCode has no active limited quota for GLM-5.3-Trial"));
+        assert!(trial_refused("ZCode's limited quota for glm-5.3 is exhausted or temporarily unavailable"));
+        // 大小写敏感（Go lazyre 无 (?i)）
+        assert!(!trial_refused("zcode has no active limited quota for GLM-5.3-Trial"));
+        // (\S+) 要非空且无空白：空词、带空格的词都不是
+        assert!(!trial_refused("ZCode has no active limited quota for "));
+        assert!(!trial_refused("ZCode has no active limited quota for GLM 5.3"));
+        assert!(!trial_refused("ZCode's limited quota for glm 5.3 is exhausted or temporarily unavailable"));
+    }
+
+    #[test]
+    fn trial_words_captures_form_and_model() {
+        // ended 点名 -Trial 全名；spent 点名去 -Trial 的桶模型（EqualFold 核对
+        // 候选模型是路由层接入时挂的门）
+        assert_eq!(
+            trial_words("ZCode has no active limited quota for GLM-5.3-Flash-Trial"),
+            Some((TrialForm::Ended, "GLM-5.3-Flash-Trial".to_string()))
+        );
+        assert_eq!(
+            trial_words("ZCode's limited quota for glm-5.3 is exhausted or temporarily unavailable"),
+            Some((TrialForm::Spent, "glm-5.3".to_string()))
+        );
+        assert_eq!(trial_words("quota exhausted"), None);
+    }
+
+    #[test]
+    fn vendor_message_reads_the_json_shapes_go_does() {
+        // errors.message（ModelScope）
+        assert_eq!(
+            vendor_message(r#"{"errors":{"message":"ModelScope says no"}}"#),
+            "ModelScope says no"
+        );
+        // msg + code（WorkBuddy）；code 为 "0"/"null"/缺省时不带后缀
+        assert_eq!(vendor_message(r#"{"code":1113,"msg":"被限流"}"#), "被限流 (1113)");
+        assert_eq!(vendor_message(r#"{"code":"0","msg":"正常"}"#), "正常");
+        assert_eq!(vendor_message(r#"{"msg":"plain"}"#), "plain");
+        // error 是字符串
+        assert_eq!(vendor_message(r#"{"error":"nope"}"#), "nope");
+        // error 字段在时 msg 不看（Go：len(e.Error)==0 才看 msg）
+        assert_eq!(vendor_message(r#"{"error":{"message":"e"},"msg":"m"}"#), "e");
+        // 都读不到：整串兜底
+        assert_eq!(vendor_message(r#"{"code":200}"#), r#"{"code":200}"#);
     }
 
     #[test]
