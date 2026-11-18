@@ -19,8 +19,8 @@
 //! - 桥调用：入站 anthropic `/v1/messages` → 提取 system+messages 渲染成
 //!   文本 prompt（Go `renderClaudePrompt` :5193 / `renderCachedParts`
 //!   :5741 的简化版）→ `claude -p --output-format stream-json
-//!   --input-format stream-json --verbose …`（Go `claudeCLIArgs` :3957
-//!   1:1 抄，去掉 MCP helper 相关）→ stdin 一行
+//!   --input-format stream-json --verbose …`（Go `claudeCLIArgs` :3957，
+//!   caller 带 tools 时加 `--mcp-config`，见下文 MCP helper 节）→ stdin 一行
 //!   `{"type":"user","message":{role,content:[text 块]}}`（Go :1481
 //!   `startRun` 的喂法）→ stdout 逐行 stream-json（`stream_event.event`
 //!   本来就是 anthropic SSE 事件，直接透传成 SSE 帧；`result` 行收口，
@@ -37,19 +37,86 @@
 //! 意义）；不加依赖；子进程走 std::process**。令牌值只读不存（Account
 //! 连 token 字段都没有——对话路径和额度路径都用不到它，CLI 自己认账）。
 //!
-//! ## 差距清单（Go 有、本核心路径不做，后续批次可领）
+//! ## 跨回合驻留（2026-11-18，差距清单第 2 条交付）
+//!
+//! Go `keepIdle`（:2623）/ `resume`（:2033）/ `nextTurn`（:2171）/
+//! `turnKey`（:3790）/ `hashMessages`（:3870，`messageParts` 在
+//! claude_lost_media.go）的移植。回合正常收口（`result` 行）后**进程不杀**：
+//! 按会话键进 idle 池等下一回合；同会话的下一回合（客户端把上一条回复
+//! 原样复述在 messages 里）直接命中，**只把增量消息写给驻留进程的
+//! stdin**（Go renderClaudeTurn :5700），不再每回合重写整段对话缓存。
+//!
+//! - **会话键**：`turn_key` = sha256(owner·model·effort·tool_choice·
+//!   system·tools·消息词哈希)。消息按 Go `messageParts` 的口径归一——
+//!   文本取去空白词、tool_use 按「名字+第 N 个调用」（不是 id）、
+//!   tool_result 按「应答的第 N 个调用」、thinking 跳过、**相邻同角色
+//!   消息合并**——所以客户端怎么切 text 块 / 怎么复述都能对上驻留键。
+//! - **idle 淘汰**：`IDLE_LONGEST` = **1 小时**（Go `idleLongest =
+//!   claudeCacheTTL = time.Hour`，:151-152——任务简报里写的「2h」与
+//!   Go 源不符，按源实现）+ `IDLE_MOST` = 6（:153，最久未用的先让位）。
+//!   Go 用每 run 一个 timer；这里**惰性清扫**（每次碰池先扫过期项），
+//!   无请求时多驻留到引擎空闲回收，语义等价、少一个线程。
+//! - **one-off 询问不驻留**（Go `ended` :2567：无工具且对话里没有任何
+//!   assistant 回复——标题生成、路由分类器这类一问一答）回合结束即杀。
+//! - **降级**：键不中 / 档位变了（Go 用 control_request 热改 effort
+//!   `setEffort`，我们不会改——档位不一致就不复用）/ 进程已死 /
+//!   stdin 写失败 → 全部落回「新起进程 + 全量 prompt」的旧路径。
+//!
+//! ## 调用方工具 MCP helper（2026-11-18，差距清单第 3 条交付）
+//!
+//! Go `bridgeTools`（:8137）/ `mcpCall`（:6479）/ `continueWith`
+//! （:6354）/ claudebridge/mcp.go（隐藏 stdio helper）的移植。caller
+//! 请求里带 tools 时：`--mcp-config` 挂一个 MCP 服务，把 caller 的工具
+//! **原样宣告**给 Claude Code（名字经 `bridge_tool_name` 净化，Go
+//! `bridgeToolName` :5616——`[A-Za-z0-9_-]{1,51}` 之外的名字换成
+//! `_` + sha256 前 6 字节 hex 后缀，出站的 tool_use 块再映射回原名）。
+//! tools/call 是**阻塞-回填**：Claude Code 调 caller 的工具 → 应答流里
+//! 出现 `stop_reason:"tool_use"` 的 tool_use 块（映射回原名后照常发给
+//! caller，SSE 在 message_stop 处收口、进程驻留等结果）→ caller 的下一
+//! 个请求带 tool_result 块 → `match`（:5851 byExactID 口径）按
+//! tool_use_id 找到驻留 run → 结果经 MCP 回填 → 拿续答（一回合内完成，
+//! `BRIDGE_TIMEOUT` 600s 就是这段等待的硬上限，Go `runTimeout`）。
+//!
+//! - **helper 形态的偏差**：Go 的 helper 是「本进程 + 隐藏子命令」被
+//!   Claude Code 当 **stdio** MCP server 拉起，tools/call 经环回 HTTP
+//!   回调网关（claude_subscription.go:1057 的 mcp-config +
+//!   claudebridge/mcp.go）。我们没有可用的隐藏子命令入口（main.rs 不在
+//!   本模块手里），改为**进程内环回 HTTP 的 MCP server**（std::net，
+//!   127.0.0.1 随机端口，mcp-config 里 `{"type":"http","url":…}`），
+//!   JSON-RPC 协议（initialize/tools/list/tools/call/notification）与
+//!   Go helper 逐字段同形。Claude Code 不支持 http 型 mcp-config 的
+//!   旧版本上表现为「没有工具」，不影响对话本身。
+//! - **注册时机偏差**：Go 在 tools/call 回调到达时才登记 `b.calls`
+//!   （match 侧因此有 20×25ms 重试，:5928）；我们在泵线程看到
+//!   tool_use 块的 `content_block_start` 就登记——同一泵步骤里先登记
+//!   后放帧，客户端不可能在登记前应答，**无需重试**。结果先到、
+//!   tools/call 后到的窄竞态用 Go 的 `early` 表（:6377）同样兜住。
+//! - caller 不带 tools 的请求**零变化**：不写 mcp-config、不挂 helper、
+//!   `--tools ""` 照旧（见测试 no-MCP 断言）。
+//! - 安全：工具定义/调用参数是 caller 数据，helper 只做宣告与转发，
+//!   **不执行任何东西**；helper 死了当回合失败（410→rpc error），网关
+//!   不崩；`tool_choice:"none"` 时 mcpCall 直接回「No tool can be
+//!   used…」（Go :6539）；`name:` 选择只宣告那个工具（Go bridgeTools）。
+//!
+//! ## 差距清单（Go 有、本路径不做，后续批次可领）
 //! 每条注明 Go 文件/函数，接手时按图索骥：
 //! 1. **会话持久化 / replay / --resume**：Go `savedSession` / `unshelve` /
 //!    `branch` / `cutSession*` / `replaySession`（claude_subscription.go
-//!    :2753-3373、:933 `start` 的 from 分支）。每回合新建进程 = 每次把
-//!    整段对话重新写缓存（Go 文件头 :15-29 解释的正是这个）；核心路径
-//!    先保证正确，缓存经济性后补。
-//! 2. **跨回合驻留进程**（conversation→run 匹配、idle 队列、2h 淘汰）：
-//!    Go `keepIdle` / `match` / `resume`（:2623、:5851、:2033）。同上。
-//! 3. **调用方工具（MCP helper）**：Go 把 caller 的工具经隐藏 stdio
-//!    helper 挂给 Claude Code（`bridgeTools` :8137、`mcpCall` :6479、
-//!    tools/call 阻塞-回填协议）。本路径 `--tools ""`——Claude Code
-//!    自带工具全关，caller 的工具定义整个丢弃（请求里的 tools 不透传）。
+//!    :2753-3373、:933 `start` 的 from 分支）。驻留池满（IDLE_MOST）或
+//!    超 IDLE_LONGEST 被淘汰的 run **直接杀进程**，没有 shelf 续命——
+//!    下一回合重新全量写缓存（Go 文件头 :15-29 解释的正是这个代价）。
+//! 2. ~~跨回合驻留进程~~ **已交付**（见上节）；仍未搬：side question 的
+//!    `behindKey` 回退（:2044-2076）、客户端改写历史的 `rewritten` /
+//!    looseTurn（:3107）、conversationKeys 跨模型续聊（conv 键只做
+//!    匹配主键的原料，shelf 才消费）、`oversized` 上下文体检（:2595）、
+//!    `setEffort` 热改档位（:2143，档位不一致时我们不复用而是新起）。
+//! 3. ~~调用方工具（MCP helper）~~ **已交付**（见上节）；仍未搬：
+//!    客户端用自家 id 复述调用的 `remap` 匹配（:5909——我们只认
+//!    byExactID，AmpCode 式改写 id 的 caller 会话不走驻留）、结果随行
+//!    用户文字的 queue-ack 排序（`queue` :6413 等 Claude Code 确认排队
+//!    再喂结果，#1878——我们直接写行，不确认）、`follows` 改写检测
+//!    （:3094）、mid-run 增补工具的 retool（`more`/`listChanged`，
+//!    :8113）、websearch/advisor/StructuredOutput 侧工具。
 //! 4. **warmup / 探活**：Go `claude_warmup.go`（askClaude / warmClaude）。
 //! 5. **图片**：入站 image 块渲染成 `[image omitted]` 文本（Go
 //!    `imageBlocks` :5798 真的会传 base64/url 图）；lost media、URL 图
@@ -64,7 +131,8 @@
 //! 9. **精细节流 / 失败语义**：refusal fallback、cut-short 重试
 //!    （`refused`/`cut` 状态机，readOutput :4325-4360）、text-written
 //!    tool calls（`textCalls`，claude_text_calls.go）、StructuredOutput
-//!    schema（`cliSchema` :6829）、safeguards（:1706）。
+//!    schema（`cliSchema` :6829）、safeguards（:1706）、`parkedMost`
+//!    停靠上限（:3764——我们用回合 deadline 一并覆盖）。
 //! 10. **`GET /v1/magpie/claude-runs`** 观测端点、`limitHeaders`
 //!     （:7273 anthropic-ratelimit-unified-* 回写）。
 //! 11. **`claudeRunName` 的 `[1m]` 后缀**（:3939，未知 gen≥5 模型撑 1M
@@ -77,15 +145,17 @@
 //!     additionalModelOptionsCache / modelAccessCache）：模型行用静态表。
 //! 14. **/usage 的 Extra Usage 行**（Go `claudeExtraUsage`
 //!     claude_warmup.go:243，usage_report.rate_limits.extra_usage）。
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use super::catalog::VendorRow;
 use super::effort::Proto;
@@ -95,8 +165,14 @@ use super::store::Provider;
 pub const CLAUDE_ID: &str = "claude";
 const QUOTA_NAME: &str = "Claude (Pro/Max)";
 /// 桥进程整回合硬上限（Go `runTimeout` 同量级：run.timer，一个回合等
-/// caller 工具结果最长 10 分钟）。
+/// caller 工具结果最长 10 分钟；`continueWith` 会重置，Go :6357）。
 const BRIDGE_TIMEOUT: Duration = Duration::from_secs(600);
+/// 驻留 run 的 idle 上限（Go `idleLongest = claudeCacheTTL = time.Hour`，
+/// claude_subscription.go:151-152——一小时后 prompt 缓存反正已失效，
+/// 留着只占进程）。
+const IDLE_LONGEST: Duration = Duration::from_secs(60 * 60);
+/// idle 池容量（Go `idleMost` :153）：最久未用的先让位。
+const IDLE_MOST: usize = 6;
 /// /usage 读的硬上限（Go runClaudeTree 的 ctx 截断同量级）。
 const USAGE_TIMEOUT: Duration = Duration::from_secs(60);
 /// rate_limit_event 额度读数的新鲜期（窗口 5h/7d，半小时前的读数足够新）。
@@ -429,8 +505,11 @@ fn history_end(messages: &[Value]) -> usize {
 /// text 直写；thinking 跳过——「thinking 永远不当话说」（:5760 注释）；
 /// tool_use / tool_result 写成 `[tool call …]` / `[tool result …]` 行；
 /// tool_result 后同消息的 text 是用户的（:5750 的 [user message] 分隔）；
-/// image 只留占位（差距清单第 5 条））。
-fn render_blocks(blocks: &[Value], text: &mut String, open_result: &mut Option<String>) {
+/// image 只留占位（差距清单第 5 条））。`offered` 非 None 时，caller
+/// 宣告过的工具的 `[tool call …]` 行写**桥名**（Go renderParts :5727——
+/// 驻留进程里的模型是用 `mcp__marionette__…` 名字调的，历史复述用同一
+/// 个名字它才认得；caller 没宣告的工具保留原名）。
+fn render_blocks(blocks: &[Value], text: &mut String, open_result: &mut Option<String>, offered: Option<&ToolNames>) {
     let close_result = |text: &mut String, open: &mut Option<String>, as_user: bool| {
         if let Some(id) = open.take() {
             if as_user {
@@ -454,6 +533,7 @@ fn render_blocks(blocks: &[Value], text: &mut String, open_result: &mut Option<S
             "thinking" | "redacted_thinking" => {}
             "tool_use" => {
                 let name = b.get("name").and_then(|x| x.as_str()).unwrap_or("");
+                let name = offered.and_then(|n| n.bridged_of(name)).unwrap_or_else(|| name.to_string());
                 let id = b.get("id").and_then(|x| x.as_str()).unwrap_or("");
                 let args = b.get("input").cloned().unwrap_or(json!({}));
                 close_result(text, open_result, false);
@@ -489,7 +569,7 @@ fn render_blocks(blocks: &[Value], text: &mut String, open_result: &mut Option<S
 }
 
 /// 一条消息（content 可为字符串）→ 文本。
-fn render_message(m: &Value, text: &mut String, open_result: &mut Option<String>) {
+fn render_message(m: &Value, text: &mut String, open_result: &mut Option<String>, offered: Option<&ToolNames>) {
     match m.get("content").unwrap_or(&Value::Null) {
         Value::String(s) => {
             if !s.is_empty() {
@@ -499,14 +579,14 @@ fn render_message(m: &Value, text: &mut String, open_result: &mut Option<String>
                 text.push_str(s);
             }
         }
-        Value::Array(blocks) => render_blocks(blocks, text, open_result),
+        Value::Array(blocks) => render_blocks(blocks, text, open_result, offered),
         _ => {}
     }
 }
 
 /// 入站 anthropic 请求 → CLI stdin 的 content 文本块（Go renderClaudePrompt
 /// 的简化：system 一块 + 对话一块，历史/当前回合用 Go 原样的标记包裹）。
-fn render_prompt(body: &Value) -> Vec<Value> {
+fn render_prompt(body: &Value, offered: Option<&ToolNames>) -> Vec<Value> {
     let messages = body.get("messages").and_then(|m| m.as_array()).cloned().unwrap_or_default();
     let mut blocks: Vec<Value> = Vec::new();
     // caller 的指令自成一块（Go :5208-5240；cache_control 是差距第 6 条）
@@ -537,7 +617,7 @@ fn render_prompt(body: &Value) -> Vec<Value> {
             text.push_str("\n\n");
         }
         text.push_str(&format!("{label}: "));
-        render_message(m, &mut text, &mut open_result);
+        render_message(m, &mut text, &mut open_result, offered);
     }
     // Go :5286 / :5721：对话里**任何**一条消息带工具调用 → pastCallsNote
     // （模型会把 `[tool call …]` 文本当调用方式，得告诉它那只是记录）
@@ -557,13 +637,50 @@ fn render_prompt(body: &Value) -> Vec<Value> {
     blocks
 }
 
+/// 对话里有没有 assistant 回复（Go hasReply；one-off 询问判定与
+/// renderClaudeTurn 的「要不要 Human:/Assistant: 标注」共用口径）。
+fn has_reply(messages: &[Value]) -> bool {
+    messages.iter().any(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"))
+}
+
+/// 驻留 run 下一回合的增量喂法（Go renderClaudeTurn :5700）：只渲染
+/// `since`（上一条无工具回复之后的消息），带 assistant 回复才加
+/// Human:/Assistant: 标注；宣告过的工具的 tool_use 行写桥名（renderParts
+/// 同款）；有调用过工具就附 pastCallsNote；closeBlocks 的空兜底同款。
+fn render_turn(msgs: &[Value], offered: Option<&ToolNames>) -> Vec<Value> {
+    let labeled = has_reply(msgs);
+    let mut text = String::new();
+    let mut open_result: Option<String> = None;
+    for (i, m) in msgs.iter().enumerate() {
+        if i > 0 {
+            text.push_str("\n\n");
+        }
+        if labeled {
+            let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("user");
+            let label = if role == "assistant" { "Assistant" } else { "Human" };
+            text.push_str(&format!("{label}: "));
+        }
+        render_message(m, &mut text, &mut open_result, offered);
+    }
+    if msgs.iter().any(|m| calls_tool(m.get("content").unwrap_or(&Value::Null))) {
+        text.push_str("\n\n");
+        text.push_str(PAST_CALLS_NOTE);
+    }
+    if !text.trim().is_empty() {
+        vec![json!({ "type": "text", "text": text })]
+    } else {
+        vec![json!({ "type": "text", "text": "[continue]" })]
+    }
+}
+
 // =====================================================================
 // 桥子进程
 // =====================================================================
 
-/// Go claudeCLIArgs（:3957）：`--mcp-config`（helper）与 `--settings` 不带
-/// （本路径没有 MCP helper；settings 值带引号，见文件头说明）。
-fn bridge_args(model: &str, effort: Option<&str>) -> Vec<String> {
+/// Go claudeCLIArgs（:3957）：`--settings` 不带（值里带 `"`，见文件头）；
+/// caller 带 tools 时 `--mcp-config` 挂 helper（Go :1057 写 mcp-config 的
+/// 对应物，插在 `--strict-mcp-config` 后，与 Go 参数序一致）。
+fn bridge_args(model: &str, effort: Option<&str>, mcp_config: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = [
         "-p",
         "--output-format",
@@ -577,14 +694,15 @@ fn bridge_args(model: &str, effort: Option<&str>) -> Vec<String> {
         "--tools",
         "",
         "--strict-mcp-config",
-        "--setting-sources",
-        "",
-        "--dangerously-skip-permissions",
-        "--no-session-persistence",
     ]
     .iter()
     .map(|s| s.to_string())
     .collect();
+    if let Some(path) = mcp_config {
+        args.push("--mcp-config".into());
+        args.push(path.to_string());
+    }
+    args.extend(["--setting-sources", "", "--dangerously-skip-permissions", "--no-session-persistence"].iter().map(|s| s.to_string()));
     if let Some(e) = effort {
         args.push("--effort".into());
         args.push(e.to_string());
@@ -669,58 +787,1268 @@ fn build_command(program: &Program, args: &[String]) -> Command {
     cmd
 }
 
-/// 一条 stdout envelope 经翻译后的产物。
-enum Step {
-    /// 一条 anthropic 事件（stream_event 透传，或整消息合成）。
-    Event(Value),
-    /// 终局错误（result.is_error / 桥提前退场 / 超时）。
-    Failed(u16, String),
-    /// rate_limit_event 的额度窗口（喂 quota 缓存后继续）。
-    Limits(Vec<Value>),
+// =====================================================================
+// 工具名映射（Go bridgeToolName / bridgeNames / declaredName，
+// claude_subscription.go:5596-5655）
+// =====================================================================
+
+/// mcp-config 里的 server 名（模型看到的工具名前缀 `mcp__marionette__`；
+/// Go 用 "magpie"，本桥是 Marionette 自己）。
+const MCP_SERVER: &str = "marionette";
+const MCP_TOOL_PREFIX: &str = "mcp__marionette__";
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// 桥进程 + stream-json → anthropic SSE 的流式翻译器。
-/// 流式客户端直接当 Read 用；非流式客户端用 [`BridgeStream::aggregate`]。
-pub(crate) struct BridgeStream {
-    child: Arc<Mutex<Child>>,
-    stdin: Option<std::process::ChildStdin>,
-    done: Arc<AtomicBool>,
-    stdout: BufReader<std::process::ChildStdout>,
-    stderr_tail: Arc<Mutex<String>>,
-    /// 待写出的 SSE 字节（pos 之前已消费）。
-    out: Vec<u8>,
-    pos: usize,
-    finished: bool,
-    /// 整条 assistant 消息合成的帧族，还没吐完（pump 先弹这里再读新行）。
-    pending: Vec<Value>,
-    /// message_start 已见（整消息兜底只在没流起来时启用）。
-    started: bool,
-    /// 已经流式输出过的消息 id（Go streamed 表，重复的 whole 行跳过）。
-    streamed: Vec<String>,
-    /// message_stop 已到。
-    got_stop: bool,
-    /// result 行已到（回合终局）。
-    ended: bool,
-    /// 回显给客户端的模型名（message_start 没给时兜底）。
+/// Go bridgeToolNameOK `^[A-Za-z0-9_-]{1,51}$`（:5632）。
+fn bridge_name_ok(s: &str) -> bool {
+    let n = s.chars().count();
+    (1..=51).contains(&n) && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Go bridgeToolNameHashed `_[0-9a-f]{12}$`（:5634）——已是净化名的不再净化。
+fn bridge_name_hashed(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() >= 13 && b[b.len() - 13] == b'_' && b[b.len() - 12..].iter().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Go bridgeToolName（:5616）：Claude Code 只认 `[A-Za-z0-9_-]` 的 MCP 工具
+/// 名（会自作主张改写 `spawn.agent` 这类名字，:2649 事故）——不合规的名字
+/// 换成 `_` 净化 + sha256 前 6 字节 hex 后缀（原名恒同结果），出站时再
+/// 映射回原名。已带 `mcp__marionette__` 前缀的（caller 本身就是 Claude 系）
+/// 只取余下部分。
+fn bridge_tool_name(name: &str) -> String {
+    if let Some(rest) = name.strip_prefix(MCP_TOOL_PREFIX) {
+        if bridge_name_ok(rest) && !bridge_name_hashed(rest) {
+            return rest.to_string();
+        }
+    }
+    if bridge_name_ok(name) && !bridge_name_hashed(name) {
+        return name.to_string();
+    }
+    let sum = Sha256::digest(name.as_bytes());
+    let short: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .take(38)
+        .collect();
+    format!("{short}_{}", hex(&sum[..6]))
+}
+
+/// 双向名表：Go bridgeNames（:5639，桥名→原名）+ renderParts 用的
+/// 原名→桥全名（`mcp__marionette__<桥名>`，Go bridgeName :5594）。
+#[derive(Clone, Default)]
+struct ToolNames {
+    declared: HashMap<String, String>,
+    bridged_full: HashMap<String, String>,
+}
+
+impl ToolNames {
+    /// 模型见到的名字 → caller 原名（Go declaredName :5651；查不到时带前缀
+    /// 的退余下部分、不带的保持原名——延迟加载工具的口径 :5601-5613）。
+    fn declared_of(&self, model_name: &str) -> Option<String> {
+        match model_name.strip_prefix(MCP_TOOL_PREFIX) {
+            Some(rest) => Some(self.declared.get(rest).cloned().unwrap_or_else(|| rest.to_string())),
+            None => None,
+        }
+    }
+
+    /// caller 原名 → 模型见到的全名；caller 没宣告过的工具 None（原名直传）。
+    fn bridged_of(&self, caller_name: &str) -> Option<String> {
+        self.bridged_full.get(caller_name).cloned()
+    }
+}
+
+/// 入站请求的 tools →（helper 宣告表, 名表, 本回合是否许调工具）。
+/// Go bridgeTools（:8137）：`name:` 选择只宣告那个工具；`none` 保留全部
+/// 宣告（Anthropic 按 tools→system→messages 的前缀缓存，撤了宣告就整段
+/// 重写缓存）但调用时拒绝（`allowed_all=false`，mcpCall :6539 直答）。
+/// schema 缺失/不是对象 → `{"type":"object","properties":{}}`。
+fn bridge_tools(tools: &[Value], tool_choice: &str) -> (Vec<Value>, ToolNames, bool) {
+    let want = tool_choice.strip_prefix("name:");
+    let mut out = Vec::new();
+    let mut names = ToolNames::default();
+    for t in tools {
+        let Some(name) = t.get("name").and_then(|n| n.as_str()) else { continue };
+        if let Some(w) = want {
+            if name != w {
+                continue;
+            }
+        }
+        let schema = match t.get("input_schema").or_else(|| t.get("schema")) {
+            Some(s) if s.is_object() => s.clone(),
+            _ => json!({ "type": "object", "properties": {} }),
+        };
+        let bridged = bridge_tool_name(name);
+        let mut row = json!({ "name": bridged, "inputSchema": schema });
+        if let Some(d) = t.get("description").and_then(|d| d.as_str()) {
+            row["description"] = json!(d);
+        }
+        out.push(row);
+        names.declared.insert(bridged.clone(), name.to_string());
+        names.bridged_full.insert(name.to_string(), format!("{MCP_TOOL_PREFIX}{bridged}"));
+    }
+    let allowed_all = tool_choice != "none";
+    (out, names, allowed_all)
+}
+
+/// 入站 tool_choice（anthropic 的对象/字符串两形态）→ Go 的字符串口径
+/// （""/none/required/name:<n>；`auto` 视同没选）。
+fn tool_choice_of(body: &Value) -> String {
+    match body.get("tool_choice") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Object(o)) => match o.get("type").and_then(|t| t.as_str()) {
+            Some("auto") => String::new(),
+            Some("any") | Some("required") => "required".into(),
+            Some("tool") => o
+                .get("name")
+                .and_then(|n| n.as_str())
+                .map(|n| format!("name:{n}"))
+                .unwrap_or_default(),
+            Some("none") => "none".into(),
+            _ => String::new(),
+        },
+        _ => String::new(),
+    }
+}
+
+// =====================================================================
+// 会话键（Go turnKey :3790 / conversationKeys :3803 / hashMessages :3870 /
+// messageParts·messageWords——claude_lost_media.go）
+// =====================================================================
+
+/// 去空白词（Go messageWords：字段直连、无任何空白——客户端怎么切 text
+/// 块、怎么复述都不影响键）。
+fn strip_words(s: &str) -> String {
+    s.split_whitespace().collect::<String>()
+}
+
+/// tool_result 块的文本体（字符串或块数组里的 text/image 拼接——与
+/// render_blocks 的提取同口径，图片占位）。
+fn result_text_of(b: &Value) -> String {
+    match b.get("content").unwrap_or(&Value::Null) {
+        Value::String(s) => s.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .map(|p| match p.get("type").and_then(|t| t.as_str()) {
+                Some("text") => p.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                Some("image") => "[image omitted]".to_string(),
+                _ => String::new(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// 每条消息的规范词（Go messageParts）：text 取词；tool_use 记
+/// `\x01call <名> #<第 N 个调用>`（**不是 id**——客户端可能用自家 id 复述，
+/// 调用的次序才是身份）；tool_result 记 `\x01result #<应答的第 N 个>`；
+/// thinking 跳过；image 记 `\x01image <长度>`。content 为纯字符串的消息
+/// （anthropic 允许）按一整段 text 计。
+fn message_words(msgs: &[Value]) -> Vec<String> {
+    let mut calls: HashMap<String, usize> = HashMap::new();
+    let mut n = 0usize;
+    msgs.iter()
+        .map(|m| {
+            let mut b = String::new();
+            match m.get("content") {
+                Some(Value::String(s)) => b.push_str(&strip_words(s)),
+                Some(Value::Array(blocks)) => {
+                    for p in blocks {
+                        let ty = p.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                        let words = match ty {
+                            "text" => strip_words(p.get("text").and_then(|x| x.as_str()).unwrap_or("")),
+                            "tool_use" => {
+                                n += 1;
+                                if let Some(id) = p.get("id").and_then(|x| x.as_str()) {
+                                    calls.insert(id.to_string(), n);
+                                }
+                                let name = p.get("name").and_then(|x| x.as_str()).unwrap_or("");
+                                strip_words(&format!("\x01call {name} #{n}"))
+                            }
+                            "tool_result" => {
+                                let k = p
+                                    .get("tool_use_id")
+                                    .and_then(|x| x.as_str())
+                                    .and_then(|id| calls.get(id).map(|v| v.to_string()))
+                                    .unwrap_or_else(|| "?".into());
+                                strip_words(&format!("\x01result #{k} {}", result_text_of(p)))
+                            }
+                            "image" => {
+                                let len = p.pointer("/source/data").and_then(|d| d.as_str()).map(|d| d.len()).unwrap_or(0);
+                                strip_words(&format!("\x01image {len}"))
+                            }
+                            _ => String::new(),
+                        };
+                        b.push_str(&words);
+                    }
+                }
+                _ => {}
+            }
+            b
+        })
+        .collect()
+}
+
+/// Go hashMessages（:3870）：相邻同角色消息合并（角色标记只在角色变化时
+/// 写）——客户端把一条回复拆成 N 条 assistant 消息与 run 自己记的一条
+/// 是同一个键（#5705）。
+fn hash_messages(h: &mut Sha256, msgs: &[Value]) {
+    let mut role = String::new();
+    for (i, words) in message_words(msgs).iter().enumerate() {
+        if !words.is_empty() {
+            let r = msgs[i].get("role").and_then(|x| x.as_str()).unwrap_or("user");
+            if r != role {
+                role = r.to_string();
+                h.update(format!("\x00{r}:").as_bytes());
+            }
+            h.update(words.as_bytes());
+        }
+    }
+}
+
+/// 一个回合请求的身份（Go turnKey 的材料）。msgs 是完整消息表——
+/// keepIdle 计算「请求消息 + 刚给出的回复」的键、nextTurn 计算
+/// 「到上一条无工具回复为止」的键都用它。
+#[derive(Clone)]
+struct RequestIdentity {
+    owner: String,
     model: String,
+    effort: Option<String>,
+    tool_choice: String,
+    system: String,
+    tools_json: String,
+    tools_empty: bool,
+    msgs: Vec<Value>,
 }
 
-/// spawn 桥进程并喂入本回合 prompt（Go startRun :1004 的单回合形态）。
-/// `extra_env`：测试给假 CLI 传模式开关。
-fn spawn_bridge(
+/// Go turnKey（:3790）的子集：owner·model·effort 有无·tool_choice·system·
+/// tools + 消息词哈希（webSearch/format/thinkOff/billing 头不在本桥面里）。
+fn turn_key(id: &RequestIdentity, msgs: &[Value]) -> String {
+    let mut h = Sha256::new();
+    for part in [&id.owner, &id.model, &id.tool_choice, &id.system, &id.tools_json] {
+        h.update(part.as_bytes());
+        h.update(&[0]);
+    }
+    h.update(&[id.effort.is_some() as u8]);
+    hash_messages(&mut h, msgs);
+    hex(&h.finalize())
+}
+
+/// Go nextTurn（:2171）：这是不是「上一条无工具回复之后的新回合」，是则
+/// 给 (会话键, 增量消息的起始下标)。末条是 assistant / 没有这样的回复 /
+/// 增量里有应答**更早**调用的 tool_result（工具循环的续轮，该走 match
+/// 而不是 resume）→ None。
+fn next_turn(id: &RequestIdentity) -> Option<(String, usize)> {
+    let msgs = &id.msgs;
+    if msgs.is_empty() || msgs.last().and_then(|m| m.get("role")).and_then(|r| r.as_str()) == Some("assistant") {
+        return None;
+    }
+    let mut j = msgs.len() as isize - 1;
+    while j >= 0 {
+        let m = &msgs[j as usize];
+        let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("user");
+        if role == "assistant" && !calls_tool(m.get("content").unwrap_or(&Value::Null)) {
+            break;
+        }
+        j -= 1;
+    }
+    if j < 0 {
+        return None;
+    }
+    let split = j as usize + 1;
+    // Go :2188——since 里的 tool_result 必须应答 since 之内的调用
+    let mut calls: Vec<&str> = Vec::new();
+    for m in &msgs[split..] {
+        for b in m.get("content").and_then(|c| c.as_array()).into_iter().flatten() {
+            match b.get("type").and_then(|t| t.as_str()) {
+                Some("tool_use") => {
+                    if let Some(cid) = b.get("id").and_then(|x| x.as_str()) {
+                        calls.push(cid);
+                    }
+                }
+                Some("tool_result") => {
+                    let id = b.get("tool_use_id").and_then(|x| x.as_str()).unwrap_or("");
+                    if !calls.contains(&id) {
+                        return None;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Some((turn_key(id, &msgs[..split]), split))
+}
+
+// =====================================================================
+// 工具结果提取（Go match 的 fresh 提取 :5857 + saidWithResults）
+// =====================================================================
+
+/// 尾部非 assistant 消息里的一个 tool_result（Go match 的 fresh）。
+struct FreshResult {
+    id: String,
+    content: String,
+    is_error: bool,
+}
+
+/// 尾部有没有 tool_result、都是谁（Go match :5857 的提取口径）。None =
+/// 尾部没有 tool_result（普通新回合，match 让位）。
+fn fresh_results(messages: &[Value]) -> Option<Vec<FreshResult>> {
+    let mut i = messages.len();
+    while i > 0 && messages[i - 1].get("role").and_then(|r| r.as_str()) != Some("assistant") {
+        i -= 1;
+    }
+    let mut out = Vec::new();
+    for m in &messages[i..] {
+        for b in m.get("content").and_then(|c| c.as_array()).into_iter().flatten() {
+            if b.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
+                out.push(FreshResult {
+                    id: b.get("tool_use_id").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    content: result_text_of(b),
+                    is_error: b.get("is_error").and_then(|x| x.as_bool()).unwrap_or(false),
+                });
+            }
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// 尾部随工具结果一起来的用户文字（Go saidWithResults；magpie 自家通知的
+/// agentNotice/midTurnHead 甄别不搬——那是它们 harness 的形状）。没有
+/// tool_result 就没有 said。
+fn said_with_results(messages: &[Value]) -> String {
+    let mut i = messages.len();
+    while i > 0 && messages[i - 1].get("role").and_then(|r| r.as_str()) != Some("assistant") {
+        i -= 1;
+    }
+    let mut said: Vec<String> = Vec::new();
+    let mut results = false;
+    for m in &messages[i..] {
+        for b in m.get("content").and_then(|c| c.as_array()).into_iter().flatten() {
+            match b.get("type").and_then(|t| t.as_str()) {
+                Some("tool_result") => results = true,
+                Some("text") => {
+                    let t = b.get("text").and_then(|x| x.as_str()).unwrap_or("");
+                    if results && !t.trim().is_empty() {
+                        said.push(t.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if !results {
+        return String::new();
+    }
+    said.join("\n\n")
+}
+
+// =====================================================================
+// 驻留 run：进程跨回合存活，泵线程独占 stdout 翻译成 anthropic 帧压进
+// 「当前段」；回合 = attach（挂段）→ tell（喂 user 行）→ 段收口
+// （result / tool_use 挂起 / 失败）。
+// =====================================================================
+
+/// 段内待消费的一条产物。
+enum Queued {
+    Frame(Value),
+    Failed(u16, String),
+}
+
+/// 一条 stdout envelope 经翻译后的产物（段读者视角）。
+enum Step {
+    Event(Value),
+    Failed(u16, String),
+}
+
+/// 等待 caller 结果的一次 tools/call（Go run.pending 的 waiter；投递 =
+/// 置 arrived + 唤醒，Go 走 channel，这里走 Condvar）。
+struct PendingCall {
+    arrived: Option<Value>,
+}
+
+struct RunState {
+    /// 进程终局（EOF / 被杀 / 失败回合）。置位后段读者吐完队列即 EOF、
+    /// tools/call 等待者拿 rpc error、池清理完成。
+    closed: bool,
+    /// 看门狗杀点：回合中 = 600s 预算（continueWith 重置，Go endIn(runTimeout)
+    /// :6357）；idle = now+IDLE_LONGEST（Go endIn(idleLongest)）。
+    deadline: Instant,
+    // —— 当前段（attach 起、segment_done 止）——
+    queue: VecDeque<Queued>,
+    segment_done: bool,
+    /// 段在 tool_use 的 message_stop 收口，进程驻留等 caller 结果。
+    parked: bool,
+    started: bool,
+    got_stop: bool,
+    streamed: Vec<String>,
+    /// 本段回复的词（Go ended 的 said——keepIdle 键的回复部分）。
+    said_words: String,
+    /// 当前 assistant 消息里的 tool_use id（park 判定）。
+    msg_tool_ids: Vec<String>,
+    msg_stop_reason: Option<String>,
+    /// 最近 message_start 报的模型名（whole 合成的兜底）。
+    model_echo: String,
+    // —— 回合身份（段的活动期有效；keepIdle 消费）——
+    identity: Option<RequestIdentity>,
+    /// 本 run 起跑档位（resume 一致性检查；Go setEffort 热改的降级替代）。
+    effort: Option<String>,
+    /// idle 池里的键（Go r.idleKey；keepIdle 置、take 清）。
+    idle_key: Option<String>,
+    // —— caller 工具 ——
+    names: ToolNames,
+    helper_tools: Vec<Value>,
+    allowed_all: bool,
+    pending: HashMap<String, PendingCall>,
+    /// 先到的 tool_result（Go early :6377——客户端比 tools/call 快一步）。
+    early: HashMap<String, Value>,
+}
+
+/// 一个驻留的 Claude Code 进程。
+struct RunCore {
+    child: Arc<Mutex<Child>>,
+    stdin: Arc<Mutex<Option<std::process::ChildStdin>>>,
+    stderr_tail: Arc<Mutex<String>>,
+    /// helper 路径 token（没挂 helper 的 run 为 None，不进 runs 表）。
+    token: Option<String>,
+    /// helper 的 mcp.json 家目录（终局时删）。
+    cfg_dir: Option<PathBuf>,
+    state: Arc<(Mutex<RunState>, Condvar)>,
+}
+
+type RunLock<'a> = std::sync::MutexGuard<'a, RunState>;
+
+fn lock_run(core: &RunCore) -> RunLock<'_> {
+    core.state.0.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+fn hex_token() -> String {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let t = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    format!("{t:x}{n:x}")
+}
+
+// =====================================================================
+// 池（Go subscriptionBridge 的 idle / calls / runs 三表，:81-89）
+// =====================================================================
+
+struct Pool {
+    /// 会话键 → (run, 入池时刻)（Go b.idle）。
+    idle: HashMap<String, (Arc<RunCore>, Instant)>,
+    /// tool_use id → 等待结果的 run（Go b.calls）。
+    calls: HashMap<String, Arc<RunCore>>,
+    /// helper token → run（Go b.runs）。
+    runs: HashMap<String, Arc<RunCore>>,
+}
+
+static POOL: std::sync::LazyLock<Mutex<Pool>> =
+    std::sync::LazyLock::new(|| Mutex::new(Pool { idle: HashMap::new(), calls: HashMap::new(), runs: HashMap::new() }));
+
+/// 测试缝：idle 上限/容量的覆盖点（生产恒常量）。
+#[cfg(test)]
+static TEST_IDLE_LONGEST: Mutex<Option<Duration>> = Mutex::new(None);
+#[cfg(test)]
+static TEST_IDLE_MOST: Mutex<Option<usize>> = Mutex::new(None);
+
+fn idle_longest() -> Duration {
+    #[cfg(test)]
+    {
+        TEST_IDLE_LONGEST.lock().unwrap_or_else(|p| p.into_inner()).unwrap_or(IDLE_LONGEST)
+    }
+    #[cfg(not(test))]
+    {
+        IDLE_LONGEST
+    }
+}
+
+fn idle_most() -> usize {
+    #[cfg(test)]
+    {
+        TEST_IDLE_MOST.lock().unwrap_or_else(|p| p.into_inner()).unwrap_or(IDLE_MOST)
+    }
+    #[cfg(not(test))]
+    {
+        IDLE_MOST
+    }
+}
+
+/// 池内惰性清扫（Go 的每 run timer 换成碰池即扫）：过期 idle 项出池，
+/// 返回待杀名单——**杀进程在池锁外做**（持锁不做子进程操作）。
+fn sweep_pool(p: &mut Pool) -> Vec<Arc<RunCore>> {
+    let mut victims = Vec::new();
+    let expired: Vec<String> = p
+        .idle
+        .iter()
+        .filter(|(_, (_, at))| at.elapsed() >= idle_longest())
+        .map(|(k, _)| k.clone())
+        .collect();
+    for k in expired {
+        if let Some((run, _)) = p.idle.remove(&k) {
+            victims.push(run);
+        }
+    }
+    victims
+}
+
+/// Go keepIdle（:2615）：回合收口后 run 按会话键进 idle 池。键冲突逐旧、
+/// 同 run 双键去重（:2649 的防膨胀）、容量超限淘汰最久（:2656）。
+/// **在 state 锁内调用**（嵌套池锁是本模块唯一允许的锁向，见 pump_thread
+/// 注释）；返回待杀名单——调用方**出锁后**执行 [`abort_run`]。
+fn keep_idle_locked(run: &Arc<RunCore>, g: &mut RunLock<'_>, key: &str) -> Vec<Arc<RunCore>> {
+    if g.closed {
+        return Vec::new(); // 回答途中死了（Go #1667）
+    }
+    g.deadline = Instant::now() + idle_longest();
+    g.idle_key = Some(key.to_string());
+    let mut p = POOL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut victims = sweep_pool(&mut p);
+    // 同 run 双键去重：只留新键（Go :2649）
+    let stale: Vec<String> = p
+        .idle
+        .iter()
+        .filter(|(k, (r, _))| *k != key && Arc::ptr_eq(r, run))
+        .map(|(k, _)| k.clone())
+        .collect();
+    for k in stale {
+        p.idle.remove(&k);
+    }
+    if let Some((old, _)) = p.idle.get(key) {
+        if !Arc::ptr_eq(old, run) {
+            victims.push(old.clone());
+            p.idle.remove(key);
+        }
+    }
+    p.idle.insert(key.to_string(), (run.clone(), Instant::now()));
+    while p.idle.len() > idle_most() {
+        let oldest = p
+            .idle
+            .iter()
+            .min_by_key(|(_, (_, at))| *at)
+            .map(|(k, _)| k.clone());
+        match oldest {
+            Some(k) => {
+                if let Some((v, _)) = p.idle.remove(&k) {
+                    victims.push(v);
+                }
+            }
+            None => break,
+        }
+    }
+    victims
+}
+
+/// Go resume 的查找臂（:2034-2063 的主键命中）：按会话键取出 idle run。
+/// 可用性检查在池锁外（closed / 档位不一致的不动它——档位不一致的继续
+/// 等自己的回合，Go 是 setEffort 热改后继续用，我们不会热改就让位）。
+fn take_idle_run(key: &str, effort: Option<&str>) -> Option<Arc<RunCore>> {
+    let run = {
+        let mut p = POOL.lock().unwrap_or_else(|e| e.into_inner());
+        let victims = sweep_pool(&mut p);
+        drop(p);
+        for v in victims {
+            abort_run(&v);
+        }
+        let p = POOL.lock().unwrap_or_else(|e| e.into_inner());
+        p.idle.get(key).map(|(r, _)| r.clone())
+    }?;
+    let usable = {
+        let g = lock_run(&run);
+        !g.closed && g.effort.as_deref() == effort
+    };
+    if !usable {
+        return None;
+    }
+    // 双检：可用才出池（并发同键的另一个请求抢不到就算了，落新起）
+    {
+        let mut p = POOL.lock().unwrap_or_else(|e| e.into_inner());
+        match p.idle.get(key) {
+            Some((r, _)) if Arc::ptr_eq(r, &run) => {
+                p.idle.remove(key);
+            }
+            _ => return None,
+        }
+    }
+    lock_run(&run).idle_key = None;
+    Some(run)
+}
+
+/// Go match（:5851）的 byExactID 口径：尾部 tool_result 的 id 全部指向
+/// **同一个**驻留 run 才命中（两个不同 run = ambiguous，谁也不给）。
+/// remap/20×25ms 重试不搬——我们在 tool_use 块下发前就登记 calls（泵线程
+/// 同一步骤先登记后放帧），不存在 Go :5928 的回调注册竞态。
+fn match_run(messages: &[Value]) -> Option<(Arc<RunCore>, Vec<FreshResult>)> {
+    let fresh = fresh_results(messages)?;
+    let mut p = POOL.lock().unwrap_or_else(|e| e.into_inner());
+    let victims = sweep_pool(&mut p);
+    let mut found: Option<Arc<RunCore>> = None;
+    for r in &fresh {
+        let Some(run) = p.calls.get(&r.id) else { continue };
+        match &found {
+            Some(f) if Arc::ptr_eq(f, run) => {}
+            Some(_) => {
+                drop(p);
+                for v in victims {
+                    abort_run(&v);
+                }
+                return None; // ambiguousCalls（Go :5892）
+            }
+            None => found = Some(run.clone()),
+        }
+    }
+    drop(p);
+    for v in victims {
+        abort_run(&v);
+    }
+    found.map(|run| (run, fresh))
+}
+
+/// run 终局：标 closed、杀进程、撤出池、删 helper 配置目录。Go abortFor +
+/// removeRun 的合并。**绝不持 state/pool 锁调用**（幂等，重复调用无害）。
+fn abort_run(core: &Arc<RunCore>) {
+    {
+        let mut g = lock_run(core);
+        if g.closed && core.token.is_none() {
+            // 已终局且已清池——仍走一遍杀进程兜底（便宜）
+        }
+        g.closed = true;
+        g.pending.clear();
+        core.state.1.notify_all();
+    }
+    *core.stdin.lock().unwrap_or_else(|p| p.into_inner()) = None; // EOF
+    if let Ok(mut c) = core.child.lock() {
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+    {
+        let mut p = POOL.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(t) = &core.token {
+            p.runs.remove(t);
+        }
+        p.calls.retain(|_, r| !Arc::ptr_eq(r, core));
+        p.idle.retain(|_, (r, _)| !Arc::ptr_eq(r, core));
+    }
+    if let Some(d) = &core.cfg_dir {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+/// 泵线程：登记一个 tool_use（calls 表，match 的路标）。**必须在对应帧
+/// 入队之前调用**（客户端见到块才可能应答，见 match_run 注释）。
+fn register_call(run: &Arc<RunCore>, id: &str) {
+    if id.is_empty() {
+        return;
+    }
+    let mut p = POOL.lock().unwrap_or_else(|e| e.into_inner());
+    p.calls.insert(id.to_string(), run.clone());
+}
+
+/// 工具回合挂起（Go readOutput 的 tool_use 收口 + park :3686——段在
+/// message_stop 后 EOF，进程驻留等结果；我们不做 parkLongest 分档，
+/// 回合 deadline（600s）一并覆盖）。
+fn park_segment(run: &RunCore, g: &mut RunLock<'_>) {
+    if g.segment_done || g.msg_tool_ids.is_empty() {
+        return;
+    }
+    if g.msg_stop_reason.as_deref() == Some("tool_use") {
+        g.parked = true;
+        g.segment_done = true;
+        run.state.1.notify_all();
+    }
+}
+
+/// stdout 泵线程（Go readOutput :4310 的移植）：独占 stdout，逐行翻译成
+/// anthropic 帧压进当前段；段外（idle/挂起后）只记账不消费。锁序红线：
+/// **只允许 state 锁内嵌套池锁**（register_call/keep_idle 材料读取），
+/// 反向嵌套全模块不存在。
+fn pump_thread(run: Arc<RunCore>, mut stdout: BufReader<std::process::ChildStdout>) {
+    loop {
+        let mut line = Vec::new();
+        match stdout.read_until(b'\n', &mut line) {
+            Ok(0) => {
+                pump_eof(&run, None);
+                return;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                pump_eof(&run, Some(format!("claude bridge output: {e}")));
+                return;
+            }
+        }
+        let Ok(v) = serde_json::from_slice::<Value>(&line) else { continue };
+        if v.is_null() {
+            continue;
+        }
+        match v.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+            "stream_event" => {
+                let mut event = v.get("event").cloned().unwrap_or(Value::Null);
+                let ty = event.get("type").and_then(|t| t.as_str()).unwrap_or("").to_string();
+                match ty.as_str() {
+                    "message_start" => {
+                        let mut g = lock_run(&run);
+                        g.msg_tool_ids.clear();
+                        g.msg_stop_reason = None;
+                        g.started = true;
+                        if let Some(id) = event.pointer("/message/id").and_then(|i| i.as_str()) {
+                            g.streamed.push(id.to_string());
+                        }
+                        if let Some(m) = event.pointer("/message/model").and_then(|m| m.as_str()) {
+                            g.model_echo = m.to_string();
+                        }
+                        g.queue.push_back(Queued::Frame(event));
+                        run.state.1.notify_all();
+                    }
+                    "message_delta" => {
+                        let mut g = lock_run(&run);
+                        if let Some(sr) = event.pointer("/delta/stop_reason").and_then(|x| x.as_str()) {
+                            g.msg_stop_reason = Some(sr.to_string());
+                        }
+                        g.queue.push_back(Queued::Frame(event));
+                        run.state.1.notify_all();
+                    }
+                    "message_stop" => {
+                        let mut g = lock_run(&run);
+                        g.got_stop = true;
+                        g.queue.push_back(Queued::Frame(event));
+                        park_segment(&run, &mut g);
+                        run.state.1.notify_all();
+                    }
+                    "content_block_start" => {
+                        let is_tool = event.pointer("/content_block/type").and_then(|t| t.as_str()) == Some("tool_use");
+                        if is_tool {
+                            let id = event.pointer("/content_block/id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                            let name = event.pointer("/content_block/name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                            let mut g = lock_run(&run);
+                            let mapped = g.names.declared_of(&name);
+                            if let Some(m) = mapped {
+                                if let Some(cb) = event.get_mut("content_block").and_then(|c| c.as_object_mut()) {
+                                    cb.insert("name".into(), json!(m));
+                                }
+                            }
+                            register_call(&run, &id); // 先登记后放帧（match 竞态Free 的保证）
+                            g.msg_tool_ids.push(id);
+                            g.queue.push_back(Queued::Frame(event));
+                            run.state.1.notify_all();
+                        } else {
+                            let mut g = lock_run(&run);
+                            g.queue.push_back(Queued::Frame(event));
+                            run.state.1.notify_all();
+                        }
+                    }
+                    "content_block_delta" => {
+                        let mut g = lock_run(&run);
+                        if event.pointer("/delta/type").and_then(|t| t.as_str()) == Some("text_delta") {
+                            let t = event.pointer("/delta/text").and_then(|x| x.as_str()).unwrap_or("");
+                            g.said_words.push_str(&strip_words(t));
+                        }
+                        g.queue.push_back(Queued::Frame(event));
+                        run.state.1.notify_all();
+                    }
+                    "content_block_stop" | "ping" => {
+                        let mut g = lock_run(&run);
+                        g.queue.push_back(Queued::Frame(event));
+                        run.state.1.notify_all();
+                    }
+                    _ => {} // 未知事件安静跳过
+                }
+            }
+            // 整条 assistant 消息：流式路径下是已流过内容的重复（Go 的
+            // streamed/unstreamed 语义 :4697）；没流起来（CLI 没给
+            // stream_event）时由它合成帧族——回复内容不能丢。
+            "assistant" => {
+                let msg = v.get("message").cloned().unwrap_or(Value::Null);
+                let id = msg.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
+                let mut g = lock_run(&run);
+                if g.started || g.streamed.iter().any(|s| *s == id) {
+                    continue;
+                }
+                let model = msg.get("model").and_then(|m| m.as_str()).unwrap_or("").to_string();
+                let model = if model.is_empty() { g.model_echo.clone() } else { model };
+                let usage = msg.get("usage").cloned().unwrap_or_else(|| json!({}));
+                let mut frames = vec![json!({
+                    "type": "message_start",
+                    "message": {
+                        "id": if id.is_empty() { "msg_bridge".to_string() } else { id.clone() },
+                        "type": "message", "role": "assistant", "model": model,
+                        "content": [], "usage": usage.clone(),
+                    }
+                })];
+                let blocks = msg.get("content").and_then(|c| c.as_array()).cloned().unwrap_or_default();
+                let mut tool_ids: Vec<String> = Vec::new();
+                for (i, b) in blocks.iter().enumerate() {
+                    // anthropic 流式规矩：content_block_start 的块体不带正文，
+                    // 正文走 delta——直接把整块塞 start 会让拼接正文的客户端
+                    // （含本模块 aggregate）读到两遍
+                    let mut bare = b.clone();
+                    match b.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+                        "text" => {
+                            g.said_words.push_str(&strip_words(b.get("text").and_then(|x| x.as_str()).unwrap_or("")));
+                            bare["text"] = Value::String(String::new());
+                        }
+                        "thinking" => {
+                            bare["thinking"] = Value::String(String::new());
+                        }
+                        "tool_use" => {
+                            let name = b.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                            if let Some(m) = g.names.declared_of(&name) {
+                                bare["name"] = json!(m);
+                            }
+                            if let Some(tid) = b.get("id").and_then(|x| x.as_str()) {
+                                tool_ids.push(tid.to_string());
+                            }
+                        }
+                        _ => {}
+                    }
+                    frames.push(json!({"type": "content_block_start", "index": i, "content_block": bare}));
+                    match b.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+                        "text" => {
+                            let t = b.get("text").and_then(|x| x.as_str()).unwrap_or("");
+                            if !t.is_empty() {
+                                frames.push(json!({"type": "content_block_delta", "index": i,
+                                    "delta": {"type": "text_delta", "text": t}}));
+                            }
+                        }
+                        "thinking" => {
+                            let t = b.get("thinking").and_then(|x| x.as_str()).unwrap_or("");
+                            if !t.is_empty() {
+                                frames.push(json!({"type": "content_block_delta", "index": i,
+                                    "delta": {"type": "thinking_delta", "thinking": t}}));
+                            }
+                        }
+                        _ => {}
+                    }
+                    frames.push(json!({"type": "content_block_stop", "index": i}));
+                }
+                let stop_reason = msg.get("stop_reason").cloned().unwrap_or_else(|| json!("end_turn"));
+                frames.push(json!({"type": "message_delta",
+                    "delta": {"stop_reason": stop_reason, "stop_sequence": null},
+                    "usage": usage}));
+                frames.push(json!({"type": "message_stop"}));
+                // 先登记后放帧（与 stream 路径同一保证）
+                for tid in &tool_ids {
+                    register_call(&run, tid);
+                }
+                g.msg_tool_ids = tool_ids;
+                g.msg_stop_reason = stop_reason.as_str().map(|s| s.to_string());
+                for f in frames {
+                    g.queue.push_back(Queued::Frame(f));
+                }
+                g.started = true;
+                g.got_stop = true;
+                if !id.is_empty() {
+                    g.streamed.push(id);
+                }
+                park_segment(&run, &mut g);
+                run.state.1.notify_all();
+            }
+            // system/init：session id 是 savedSession（差距第 1 条）的原料，
+            // 这里纯记账跳过
+            "system" => {}
+            "rate_limit_event" => {
+                let info = v.get("rate_limit_info").cloned().unwrap_or(Value::Null);
+                let windows = claude_limits_of(&info);
+                if !windows.is_empty() {
+                    note_limits(&windows);
+                }
+            }
+            // user/tool_use_result、control_response、command_lifecycle：不关心
+            "user" | "control_response" | "command_lifecycle" => {}
+            "result" => {
+                let is_error = v.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
+                if is_error {
+                    // Go ended 的 !ok 臂（:2559）：失败回合不留驻留
+                    let text = v.get("result").and_then(|r| r.as_str()).unwrap_or("Claude Code error");
+                    let status = v.get("api_error_status").and_then(|s| s.as_u64()).unwrap_or(0) as u16;
+                    let status = if status == 0 { 502 } else { status };
+                    {
+                        let mut g = lock_run(&run);
+                        g.queue.push_back(Queued::Failed(status, clip(text, 500)));
+                        g.segment_done = true;
+                        run.state.1.notify_all();
+                    }
+                    abort_run(&run);
+                    continue;
+                }
+                // 正常收口（Go ended → keepIdle，:2567-2612）。keepIdle 的池
+                // 操作在放段（segment_done + 唤醒）**之前**完成——读者醒来
+                // 返回时 run 已可被下一回合复用，没有窗口。
+                let mut victims: Vec<Arc<RunCore>> = Vec::new();
+                let mut retire = false;
+                {
+                    let mut g = lock_run(&run);
+                    if !g.segment_done {
+                        // CLI 没发 message_stop 的怪流：补齐收尾帧（result 兜底）
+                        if !g.got_stop {
+                            g.got_stop = true;
+                            g.queue.push_back(Queued::Frame(json!({"type": "message_delta",
+                                "delta": {"stop_reason": "end_turn", "stop_sequence": null},
+                                "usage": {}})));
+                            g.queue.push_back(Queued::Frame(json!({"type": "message_stop"})));
+                        }
+                        let id = g.identity.take();
+                        let said = std::mem::take(&mut g.said_words);
+                        if let Some(id) = id {
+                            if id.tools_empty && !has_reply(&id.msgs) {
+                                // one-off 询问不驻留（Go :2567：无工具且对话没有
+                                // assistant 回复——标题生成/分类器这类一问一答）
+                                retire = true;
+                            } else {
+                                // 键 = 请求消息 + 刚给出的回复（Go :2577-2585——
+                                // 客户端下回原样复述这条回复，词归一后同一个键）
+                                let mut msgs = id.msgs.clone();
+                                msgs.push(json!({ "role": "assistant", "content": [{ "type": "text", "text": said }] }));
+                                let key = turn_key(&id, &msgs);
+                                victims = keep_idle_locked(&run, &mut g, &key);
+                            }
+                        }
+                        g.segment_done = true;
+                        run.state.1.notify_all();
+                    }
+                }
+                for v in victims {
+                    abort_run(&v);
+                }
+                if retire {
+                    abort_run(&run);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// stdout EOF / 读错：段没收口按 Go replyUnended（:5054）口径收尾（吐过
+/// message_stop 的干净结束、没吐的报 502），随后终局清理。
+fn pump_eof(run: &Arc<RunCore>, err: Option<String>) {
+    let tail = run.stderr_tail.lock().unwrap_or_else(|p| p.into_inner()).trim().to_string();
+    {
+        let mut g = lock_run(run);
+        if !g.segment_done {
+            if !g.got_stop {
+                let why = match err {
+                    Some(e) => e,
+                    None if tail.is_empty() => "Claude Code ended before it answered".to_string(),
+                    None => format!("Claude Code ended before it answered: {}", clip(&tail, 300)),
+                };
+                g.queue.push_back(Queued::Failed(502, why));
+            }
+            g.segment_done = true;
+        }
+        g.closed = true;
+        g.pending.clear();
+        run.state.1.notify_all();
+    }
+    // 池清理 + 收尸（锁外）
+    *run.stdin.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    if let Ok(mut c) = run.child.lock() {
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+    {
+        let mut p = POOL.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(t) = &run.token {
+            p.runs.remove(t);
+        }
+        p.calls.retain(|_, r| !Arc::ptr_eq(r, run));
+        p.idle.retain(|_, (r, _)| !Arc::ptr_eq(r, run));
+    }
+    if let Some(d) = &run.cfg_dir {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+/// 看门狗：deadline（回合预算 / idle 上限）到了杀进程（EOF 由泵线程收）。
+fn watchdog_thread(run: Arc<RunCore>) {
+    loop {
+        std::thread::sleep(Duration::from_millis(500));
+        let (closed, deadline) = {
+            let g = lock_run(&run);
+            (g.closed, g.deadline)
+        };
+        if closed {
+            return;
+        }
+        if Instant::now() >= deadline {
+            if let Ok(mut c) = run.child.lock() {
+                let _ = c.kill();
+            }
+            // 泵线程收 EOF 后置 closed；再等一轮确认，杀不透就再杀
+        }
+    }
+}
+
+// =====================================================================
+// MCP helper（Go claudebridge/mcp.go 的进程内对应物）：环回 HTTP 上的
+// JSON-RPC MCP server，Claude Code 经 `--mcp-config` 的 http 型条目连入。
+// =====================================================================
+
+static HELPER_PORT: Mutex<Option<u16>> = Mutex::new(None);
+
+/// 首次需要时拉起 helper 单例（bind 127.0.0.1:0），返回端口。失败 = None
+/// （caller 带 tools 的回合降级为不带 helper 新起——由调用方决定）。
+fn ensure_helper() -> Option<u16> {
+    let mut g = HELPER_PORT.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(p) = *g {
+        return Some(p);
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").ok()?;
+    let port = listener.local_addr().ok()?.port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            match stream {
+                Ok(s) => {
+                    std::thread::spawn(move || helper_connection(s));
+                }
+                Err(_) => continue,
+            }
+        }
+    });
+    *g = Some(port);
+    Some(port)
+}
+
+/// 单连接单请求（Connection: close；MCP streamable HTTP 允许每请求一连接）。
+fn helper_connection(mut stream: TcpStream) {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(120)));
+    // 头 ≤16KB、体 ≤16MB（Go readBoundedRequestBody requestLimits{body:16<<20}）
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        match stream.read(&mut byte) {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {
+                head.push(byte[0]);
+                if head.len() > 16 * 1024 {
+                    return;
+                }
+                if head.len() >= 4 && &head[head.len() - 4..] == b"\r\n\r\n" {
+                    break;
+                }
+            }
+        }
+    }
+    let head_text = String::from_utf8_lossy(&head);
+    let mut lines = head_text.split("\r\n");
+    let request_line = lines.next().unwrap_or("");
+    let mut parts = request_line.split_whitespace();
+    let _method = parts.next().unwrap_or("");
+    let path = parts.next().unwrap_or("");
+    let mut content_length = 0usize;
+    for l in lines {
+        if let Some((k, v)) = l.split_once(':') {
+            if k.trim().eq_ignore_ascii_case("content-length") {
+                content_length = v.trim().parse().unwrap_or(0);
+            }
+        }
+    }
+    if content_length > 16 << 20 {
+        return;
+    }
+    let mut body = vec![0u8; content_length];
+    if content_length > 0 && stream.read_exact(&mut body).is_err() {
+        return;
+    }
+    let token = path.trim_matches('/');
+    let run = {
+        let p = POOL.lock().unwrap_or_else(|e| e.into_inner());
+        p.runs.get(token).cloned()
+    };
+    let Some(run) = run else {
+        let msg = json!({"error": "unknown or expired Claude run"});
+        let _ = helper_write(&mut stream, 404, &msg);
+        return;
+    };
+    let Ok(req) = serde_json::from_slice::<Value>(&body) else {
+        let _ = helper_write(&mut stream, 400, &json!({"error": "invalid JSON"}));
+        return;
+    };
+    let id = req.get("id").cloned();
+    let Some(id) = id else {
+        // 通知（initialized 等）不回体（MCP 规矩：无 id 无响应）
+        let _ = helper_write_status(&mut stream, 202);
+        return;
+    };
+    let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("").to_string();
+    let params = req.get("params").cloned().unwrap_or(Value::Null);
+    let answer: Result<Value, (i64, String)> = match method.as_str() {
+        "initialize" => Ok(json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": { "tools": { "listChanged": false } },
+            "serverInfo": { "name": MCP_SERVER, "version": "1" }
+        })),
+        "ping" => Ok(json!({})),
+        "tools/list" => {
+            let g = lock_run(&run);
+            Ok(json!({ "tools": g.helper_tools }))
+        }
+        "tools/call" => helper_call(&run, &params),
+        _ => Err((-32601, "method not found".into())),
+    };
+    let reply = match answer {
+        Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+        Err((code, msg)) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": msg } }),
+    };
+    let _ = helper_write(&mut stream, 200, &reply);
+}
+
+fn helper_write(stream: &mut TcpStream, status: u16, body: &Value) -> std::io::Result<()> {
+    let payload = serde_json::to_vec(body).unwrap_or_default();
+    let head = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        status,
+        if status == 200 { "OK" } else if status == 202 { "Accepted" } else if status == 404 { "Not Found" } else { "Bad Request" },
+        payload.len()
+    );
+    stream.write_all(head.as_bytes())?;
+    stream.write_all(&payload)?;
+    stream.flush()
+}
+
+fn helper_write_status(stream: &mut TcpStream, status: u16) -> std::io::Result<()> {
+    let head = format!("HTTP/1.1 {status} Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    stream.write_all(head.as_bytes())?;
+    stream.flush()
+}
+
+/// tools/call 的阻塞-回填（Go mcpCall :6479 主路径 + claudebridge/mcp.go
+/// 的 tools/call）：把调用挂进 pending 等 caller 的 tool_result（经
+/// continue_with 投递），直到结果 / run 结束 / 回合 deadline。
+fn helper_call(run: &Arc<RunCore>, params: &Value) -> Result<Value, (i64, String)> {
+    // Claude Code 在 _meta 里用**整键** "claudecode/toolUseId" 报它正在做的
+    // 调用的 id（Go claudebridge/mcp.go 的 p.Meta["claudecode/toolUseId"]）——
+    // 键名自带斜杠，JSON pointer 要转义（~1），别拆成嵌套路径。
+    let id = params
+        .get("_meta")
+        .and_then(|m| m.get("claudecode/toolUseId"))
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    let id = if id.is_empty() { format!("call_{}", hex_token()) } else { id };
+    {
+        let mut g = lock_run(run);
+        if g.closed {
+            return Err((-32000, "the agent's run ended".into()));
+        }
+        // tool_choice none：本回合一个工具都不许调（Go mcpCall :6539——直接
+        // 答错误结果，模型改用文字回答）
+        if !g.allowed_all {
+            return Ok(json!({
+                "content": [{ "type": "text", "text": "No tool can be used for this reply. Answer without tools." }],
+                "isError": true
+            }));
+        }
+        // 先到的结果（Go early :6529）
+        if let Some(early) = g.early.remove(&id) {
+            return Ok(early);
+        }
+        g.pending.entry(id.clone()).or_insert_with(|| PendingCall { arrived: None });
+    }
+    let mut g = lock_run(run);
+    loop {
+        if let Some(w) = g.pending.get(&id) {
+            if let Some(v) = w.arrived.clone() {
+                g.pending.remove(&id);
+                return Ok(v);
+            }
+        } else if g.closed {
+            return Err((-32000, "the agent's run ended".into()));
+        }
+        if g.closed {
+            g.pending.remove(&id);
+            return Err((-32000, "the agent's run ended".into()));
+        }
+        if Instant::now() >= g.deadline {
+            g.pending.remove(&id);
+            return Err((-32000, "claude bridge turn timed out".into()));
+        }
+        let (g2, _) = run.state.1.wait_timeout(g, Duration::from_millis(500)).unwrap_or_else(|p| p.into_inner());
+        g = g2;
+    }
+}
+
+// =====================================================================
+// 回合编排：spawn / resume / continueWith（Go start :933 / resume :2033 /
+// continueWith :6354）
+// =====================================================================
+
+/// 挂新段（Go attach :4222）：重置段状态、装回合身份、开 600s 预算。
+fn attach_segment(run: &Arc<RunCore>, identity: RequestIdentity) -> SegmentReader {
+    {
+        let mut g = lock_run(run);
+        g.queue.clear();
+        g.segment_done = false;
+        g.parked = false;
+        g.started = false;
+        g.got_stop = false;
+        g.streamed.clear();
+        g.said_words.clear();
+        g.msg_tool_ids.clear();
+        g.msg_stop_reason = None;
+        g.identity = Some(identity);
+        g.deadline = Instant::now() + BRIDGE_TIMEOUT;
+        g.idle_key = None;
+        run.state.1.notify_all();
+    }
+    SegmentReader { core: run.clone(), natural: false, out: Vec::new(), pos: 0 }
+}
+
+/// 给驻留进程的 stdin 写一行 user 消息（Go run.tell）。
+fn tell_line(run: &Arc<RunCore>, content: &[Value]) -> Result<(), String> {
+    let line = json!({ "type": "user", "message": { "role": "user", "content": content } });
+    let mut bytes = serde_json::to_vec(&line).unwrap_or_default();
+    bytes.push(b'\n');
+    let mut g = run.stdin.lock().unwrap_or_else(|p| p.into_inner());
+    match g.as_mut() {
+        Some(w) => w.write_all(&bytes).and_then(|_| w.flush()).map_err(|e| e.to_string()),
+        None => Err("claude bridge input is closed".into()),
+    }
+}
+
+/// 新起一个驻留 run 并喂首回合（Go startRun :1004）。caller 带 tools 时
+/// 挂 helper（写 mcp-config、进 runs 表）。
+#[allow(clippy::too_many_arguments)]
+fn spawn_run(
     program: &Program,
     model: &str,
     effort: Option<&str>,
     prompt: &[Value],
+    helper_tools: &[Value],
+    names: ToolNames,
+    allowed_all: bool,
+    identity: RequestIdentity,
     extra_env: &[(String, String)],
-) -> Result<BridgeStream, (u16, String)> {
-    let args = bridge_args(model, effort);
+) -> Result<SegmentReader, (u16, String)> {
+    let mut mcp_arg: Option<String> = None;
+    let mut token: Option<String> = None;
+    let mut cfg_dir: Option<PathBuf> = None;
+    if !helper_tools.is_empty() {
+        // Go :1038-1059：tools.json + callback token 都在 run 自己的临时目录
+        // 里；我们的 helper 在进程内，配置只剩 URL（token 在路径上）。
+        let port = ensure_helper().ok_or_else(|| (502u16, "claude bridge helper unavailable".to_string()))?;
+        let t = hex_token();
+        let dir = std::env::temp_dir().join(format!("marionette-claude-{}-{t}", std::process::id()));
+        std::fs::create_dir_all(&dir).map_err(|e| (502, format!("claude bridge workdir: {e}")))?;
+        let cfg = json!({ "mcpServers": { MCP_SERVER: { "type": "http", "url": format!("http://127.0.0.1:{port}/{t}") } } });
+        std::fs::write(dir.join("mcp.json"), serde_json::to_vec(&cfg).unwrap_or_default())
+            .map_err(|e| (502, format!("claude bridge mcp config: {e}")))?;
+        mcp_arg = Some(dir.join("mcp.json").to_string_lossy().into_owned());
+        token = Some(t);
+        cfg_dir = Some(dir);
+    }
+    let args = bridge_args(model, effort, mcp_arg.as_deref());
     let mut cmd = build_command(program, &args);
     for (k, v) in extra_env {
         cmd.env(k, v);
     }
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| (502, format!("claude bridge spawn failed: {e}")))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        if let Some(d) = &cfg_dir {
+            let _ = std::fs::remove_dir_all(d);
+        }
+        (502, format!("claude bridge spawn failed: {e}"))
+    })?;
     let stdin = child.stdin.take();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -758,233 +2086,184 @@ fn spawn_bridge(
             }
         });
     }
-    let child = Arc::new(Mutex::new(child));
-    let done = Arc::new(AtomicBool::new(false));
-    // 看门狗：回合硬上限到了就杀（Drop 也杀，这里兜「客户端不再读」的挂死）
-    {
-        let (child, done) = (child.clone(), done.clone());
-        std::thread::spawn(move || {
-            let deadline = Instant::now() + BRIDGE_TIMEOUT;
-            while Instant::now() < deadline {
-                if done.load(Ordering::Acquire) {
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(500));
-            }
-            if !done.load(Ordering::Acquire) {
-                if let Ok(mut c) = child.lock() {
-                    let _ = c.kill();
-                }
-            }
-        });
-    }
-    let mut stream = BridgeStream {
-        child,
-        stdin: Some(stdin),
-        done,
-        stdout: BufReader::new(stdout),
+    let core = Arc::new(RunCore {
+        child: Arc::new(Mutex::new(child)),
+        stdin: Arc::new(Mutex::new(Some(stdin))),
         stderr_tail: tail,
-        out: Vec::new(),
-        pos: 0,
-        finished: false,
-        pending: Vec::new(),
-        started: false,
-        streamed: Vec::new(),
-        got_stop: false,
-        ended: false,
-        model: model.to_string(),
-    };
-    // 喂本回合（Go :1481 的 user 行；startRun 先 initialize 控制请求的路径
-    // 只有带 MCP helper / safeguards 才需要，这里不用）
-    let line = json!({ "type": "user", "message": { "role": "user", "content": prompt } });
-    let mut bytes = serde_json::to_vec(&line).unwrap_or_default();
-    bytes.push(b'\n');
-    if let Some(s) = stream.stdin.as_mut() {
-        if s.write_all(&bytes).is_err() {
-            return Err((502, "claude bridge closed its input before the turn".into()));
-        }
-        let _ = s.flush();
+        token: token.clone(),
+        cfg_dir,
+        state: Arc::new((
+            Mutex::new(RunState {
+                closed: false,
+                deadline: Instant::now() + BRIDGE_TIMEOUT,
+                queue: VecDeque::new(),
+                segment_done: false,
+                parked: false,
+                started: false,
+                got_stop: false,
+                streamed: Vec::new(),
+                said_words: String::new(),
+                msg_tool_ids: Vec::new(),
+                msg_stop_reason: None,
+                model_echo: model.to_string(),
+                identity: None,
+                effort: effort.map(|e| e.to_string()),
+                idle_key: None,
+                names,
+                helper_tools: helper_tools.to_vec(),
+                allowed_all,
+                pending: HashMap::new(),
+                early: HashMap::new(),
+            }),
+            Condvar::new(),
+        )),
+    });
+    {
+        let pump_core = core.clone();
+        std::thread::spawn(move || pump_thread(pump_core, BufReader::new(stdout)));
     }
-    Ok(stream)
+    {
+        let watch_core = core.clone();
+        std::thread::spawn(move || watchdog_thread(watch_core));
+    }
+    if let Some(t) = &token {
+        POOL.lock().unwrap_or_else(|e| e.into_inner()).runs.insert(t.clone(), core.clone());
+    }
+    let reader = attach_segment(&core, identity);
+    // 喂本回合（Go :1481 的 user 行）
+    if tell_line(&core, prompt).is_err() {
+        abort_run(&core);
+        return Err((502, "claude bridge closed its input before the turn".into()));
+    }
+    Ok(reader)
 }
 
-impl BridgeStream {
-    fn close_input(&mut self) {
-        self.stdin.take(); // drop = 关管道，CLI 读到 EOF 自行退出
-    }
-
-    fn stderr_line(&self) -> String {
-        self.stderr_tail.lock().unwrap_or_else(|p| p.into_inner()).trim().to_string()
-    }
-
-    /// 读一行 stdout 并翻译。None = 输出结束（EOF 收尾逻辑已发过 Failed 或
-    /// 流已正常收口）。整条 assistant 消息合成的帧族先进 `pending`，本函数
-    /// 先弹 pending 再读新行。
-    fn pump(&mut self) -> Option<Step> {
-        if let Some(first) = self.pending.first().cloned() {
-            self.pending.remove(0);
-            return Some(Step::Event(first));
+/// Go continueWith（:6354）的移植：结果交给等待中的 tools/call（早到的存
+/// early），挂新段等续答。None = 交回 intercept 落「新起」（runExpired /
+/// answeredElsewhere / agent 不在等这些结果，Go :6389-6398）。
+fn continue_with(run: &Arc<RunCore>, fresh: &[FreshResult], said: &str, identity: RequestIdentity) -> Option<SegmentReader> {
+    {
+        let g = lock_run(run);
+        if g.closed {
+            return None; // runExpired
         }
-        if self.ended && self.finished {
+        if g.identity.is_some() && !g.segment_done {
+            return None; // answeredElsewhere（Go claimResume :2006 的对应物）
+        }
+    }
+    let reader = attach_segment(run, identity);
+    // 用户随结果说的话先写（Go queue(said) :6413，#1878——文字不能混进
+    // 工具结果；排队确认不等，见差距清单第 3 条）
+    if !said.trim().is_empty() {
+        if tell_line(run, &[json!({ "type": "text", "text": said })]).is_err() {
+            abort_run(run);
             return None;
         }
-        let mut line = Vec::new();
-        match self.stdout.read_until(b'\n', &mut line) {
-            Ok(0) => {
-                // EOF：result 没来但回复已正常收口（message_stop 到过）→ 干净
-                // 结束；没收口 → 桥死了/被看门狗杀了，如实报错（Go
-                // replyUnended :5054 的口径）
-                self.finished = true;
-                if !self.ended && !self.got_stop {
-                    let why = if self.stderr_line().is_empty() {
-                        "Claude Code ended before it answered".to_string()
-                    } else {
-                        format!("Claude Code ended before it answered: {}", clip(&self.stderr_line(), 300))
-                    };
-                    return Some(Step::Failed(502, why));
+    }
+    let mut delivered = 0;
+    let mut stored_early = 0;
+    {
+        let mut g = lock_run(run);
+        for r in fresh {
+            // Go mcpResult（:6449）：anthropic tool_result → MCP 结果
+            let mcp = json!({
+                "content": [{ "type": "text", "text": r.content }],
+                "isError": r.is_error
+            });
+            if let Some(w) = g.pending.get_mut(&r.id) {
+                if w.arrived.is_none() {
+                    w.arrived = Some(mcp);
+                    delivered += 1;
                 }
+            } else {
+                g.early.insert(r.id.clone(), mcp);
+                stored_early += 1;
+            }
+        }
+        run.state.1.notify_all();
+    }
+    if delivered > 0 {
+        // 已交付的调用撤路标（Go :6390 delete b.calls）
+        let mut p = POOL.lock().unwrap_or_else(|e| e.into_inner());
+        for r in fresh {
+            p.calls.remove(&r.id);
+        }
+    }
+    if delivered == 0 && stored_early == 0 {
+        // Go :6398——agent 没在等这些结果：当回合失败交回新起。
+        // （全 early 时不算失败：我们的 calls 登记早于 tools/call，宽限
+        // 等它来取——Go 靠 b.calls 只在回调时登记所以不会走到这。）
+        abort_run(run);
+        return None;
+    }
+    Some(reader)
+}
+
+/// Go resume（:2033）的主路径：把下一回合的增量消息写给驻留 run。
+/// tell 失败 → 杀 run 交回新起（Go abortFor 后 start 全量新起同款）。
+fn resume_run(run: &Arc<RunCore>, identity: &RequestIdentity, split: usize) -> Option<SegmentReader> {
+    let reader = attach_segment(run, identity.clone());
+    let offered = {
+        let g = lock_run(run);
+        if g.helper_tools.is_empty() {
+            None
+        } else {
+            Some(g.names.clone())
+        }
+    };
+    let blocks = render_turn(&identity.msgs[split..], offered.as_ref());
+    if tell_line(run, &blocks).is_err() {
+        abort_run(run);
+        return None;
+    }
+    Some(reader)
+}
+
+// =====================================================================
+// 段读者：SSE 流（Read）/ 非流聚合（aggregate）
+// =====================================================================
+
+/// 一个回合的客户端读面。流式客户端直接当 Read 用；非流式用
+/// [`SegmentReader::aggregate`]。Drop 时未自然收口 = 客户端断开 →
+/// 停掉 agent（Go #780：回复没送完的 caller 不会带工具结果来）。
+struct SegmentReader {
+    core: Arc<RunCore>,
+    natural: bool,
+    /// 待写出的 SSE 字节（pos 之前已消费）——大帧按读方缓冲粒度分多次吐。
+    out: Vec<u8>,
+    pos: usize,
+}
+
+impl SegmentReader {
+    /// 取下一条产物；None = 段收口（EOF）。
+    fn next_step(&mut self) -> Option<Step> {
+        let core = self.core.clone();
+        let mut g = lock_run(&core);
+        loop {
+            if let Some(q) = g.queue.pop_front() {
+                return match q {
+                    Queued::Frame(v) => Some(Step::Event(v)),
+                    Queued::Failed(s, m) => Some(Step::Failed(s, m)),
+                };
+            }
+            if g.segment_done {
+                self.natural = true;
                 return None;
             }
-            Ok(_) => {}
-            Err(e) => {
-                self.finished = true;
-                return Some(Step::Failed(502, format!("claude bridge output: {e}")));
+            if g.closed {
+                // 泵 EOF 路径总会先补 segment_done；这里兜异常时序
+                self.natural = true;
+                return None;
             }
-        }
-        let Ok(v) = serde_json::from_slice::<Value>(&line) else {
-            return Some(Step::Event(Value::Null)); // 杂行安静跳过（pump 循环里过滤）
-        };
-        if v.is_null() {
-            return Some(Step::Event(Value::Null));
-        }
-        match v.get("type").and_then(|t| t.as_str()).unwrap_or("") {
-            "stream_event" => {
-                let event = v.get("event").cloned().unwrap_or(Value::Null);
-                let ty = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                match ty {
-                    "message_start" => {
-                        self.started = true;
-                        if let Some(id) = event.pointer("/message/id").and_then(|i| i.as_str()) {
-                            self.streamed.push(id.to_string());
-                        }
-                        if let Some(m) = event.pointer("/message/model").and_then(|m| m.as_str()) {
-                            self.model = m.to_string();
-                        }
-                        Some(Step::Event(event))
-                    }
-                    "message_stop" => {
-                        self.got_stop = true;
-                        Some(Step::Event(event))
-                    }
-                    "message_delta" | "content_block_start" | "content_block_delta" | "content_block_stop" | "ping" => {
-                        Some(Step::Event(event))
-                    }
-                    _ => Some(Step::Event(Value::Null)), // 未知事件安静跳过
-                }
+            if Instant::now() >= g.deadline {
+                // 看门狗会杀进程；读者先以超时收口（一次性——段就此关死），
+                // 别让客户端挂满 600s、也别重复吐超时帧
+                g.segment_done = true;
+                self.natural = true;
+                return Some(Step::Failed(504, "claude bridge turn exceeded its budget".into()));
             }
-            // 整条 assistant 消息：流式路径下是已流过内容的重复（Go 的
-            // streamed/unstreamed 语义 :4697）；没流起来（CLI 没给
-            // stream_event）时由它合成帧族——回复内容不能丢
-            "assistant" => {
-                let msg = v.get("message").cloned().unwrap_or(Value::Null);
-                let id = msg.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
-                if self.started || self.streamed.iter().any(|s| *s == id) {
-                    return Some(Step::Event(Value::Null));
-                }
-                let model = msg.get("model").and_then(|m| m.as_str()).unwrap_or("").to_string();
-                let model = if model.is_empty() { self.model.clone() } else { model };
-                let usage = msg.get("usage").cloned().unwrap_or_else(|| json!({}));
-                let mut frames = vec![json!({
-                    "type": "message_start",
-                    "message": {
-                        "id": if id.is_empty() { "msg_bridge".to_string() } else { id.clone() },
-                        "type": "message", "role": "assistant", "model": model,
-                        "content": [], "usage": usage.clone(),
-                    }
-                })];
-                let blocks = msg.get("content").and_then(|c| c.as_array()).cloned().unwrap_or_default();
-                for (i, b) in blocks.iter().enumerate() {
-                    // anthropic 流式规矩：content_block_start 的块体不带正文，
-                    // 正文走 delta——直接把整块塞 start 会让拼接正文的客户端
-                    // （含本模块 aggregate）读到两遍
-                    let mut bare = b.clone();
-                    match b.get("type").and_then(|t| t.as_str()).unwrap_or("") {
-                        "text" => {
-                            bare["text"] = Value::String(String::new());
-                        }
-                        "thinking" => {
-                            bare["thinking"] = Value::String(String::new());
-                        }
-                        _ => {}
-                    }
-                    frames.push(json!({"type": "content_block_start", "index": i, "content_block": bare}));
-                    match b.get("type").and_then(|t| t.as_str()).unwrap_or("") {
-                        "text" => {
-                            let t = b.get("text").and_then(|x| x.as_str()).unwrap_or("");
-                            if !t.is_empty() {
-                                frames.push(json!({"type": "content_block_delta", "index": i,
-                                    "delta": {"type": "text_delta", "text": t}}));
-                            }
-                        }
-                        "thinking" => {
-                            let t = b.get("thinking").and_then(|x| x.as_str()).unwrap_or("");
-                            if !t.is_empty() {
-                                frames.push(json!({"type": "content_block_delta", "index": i,
-                                    "delta": {"type": "thinking_delta", "thinking": t}}));
-                            }
-                        }
-                        _ => {}
-                    }
-                    frames.push(json!({"type": "content_block_stop", "index": i}));
-                }
-                frames.push(json!({"type": "message_delta",
-                    "delta": {"stop_reason": msg.get("stop_reason").cloned().unwrap_or_else(|| json!("end_turn")), "stop_sequence": null},
-                    "usage": usage}));
-                frames.push(json!({"type": "message_stop"}));
-                self.pending = frames;
-                self.started = true;
-                self.got_stop = true;
-                if !id.is_empty() {
-                    self.streamed.push(id);
-                }
-                Some(Step::Event(Value::Null))
-            }
-            // system/init：记 session 的地方（本路径不 --resume，纯记账，跳过）
-            "system" => Some(Step::Event(Value::Null)),
-            "rate_limit_event" => {
-                let info = v.get("rate_limit_info").cloned().unwrap_or(Value::Null);
-                let windows = claude_limits_of(&info);
-                if !windows.is_empty() {
-                    note_limits(&windows);
-                }
-                Some(Step::Limits(windows))
-            }
-            // user/tool_use_result、control_response、command_lifecycle：不关心
-            "user" | "control_response" | "command_lifecycle" => Some(Step::Event(Value::Null)),
-            "result" => {
-                self.ended = true;
-                self.close_input();
-                let is_error = v.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
-                if is_error {
-                    let text = v.get("result").and_then(|r| r.as_str()).unwrap_or("Claude Code error");
-                    let status = v.get("api_error_status").and_then(|s| s.as_u64()).unwrap_or(0) as u16;
-                    let status = if status == 0 { 502 } else { status };
-                    return Some(Step::Failed(status, clip(text, 500)));
-                }
-                // 正常 result 但流没收口（CLI 没发 message_stop 的怪流）：
-                // 补齐收尾帧，客户端不至于挂等（message_stop 由 result 兜底）
-                if !self.got_stop {
-                    self.got_stop = true;
-                    self.pending = vec![
-                        json!({"type": "message_delta",
-                            "delta": {"stop_reason": "end_turn", "stop_sequence": null},
-                            "usage": {}}),
-                        json!({"type": "message_stop"}),
-                    ];
-                }
-                Some(Step::Event(Value::Null))
-            }
-            _ => Some(Step::Event(Value::Null)),
+            let (g2, _) = core.state.1.wait_timeout(g, Duration::from_millis(500)).unwrap_or_else(|p| p.into_inner());
+            g = g2;
         }
     }
 
@@ -997,11 +2276,8 @@ impl BridgeStream {
         let mut blocks: Vec<(usize, Value)> = Vec::new(); // (index, block)
         let mut json_inputs: HashMap<usize, String> = HashMap::new();
         loop {
-            match self.pump() {
+            match self.next_step() {
                 Some(Step::Event(v)) => {
-                    if v.is_null() {
-                        continue;
-                    }
                     match v.get("type").and_then(|t| t.as_str()).unwrap_or("") {
                         "message_start" => {
                             id = v.pointer("/message/id").and_then(|x| x.as_str()).unwrap_or("").to_string();
@@ -1054,7 +2330,6 @@ impl BridgeStream {
                     }
                 }
                 Some(Step::Failed(status, msg)) => return Err((status, msg)),
-                Some(Step::Limits(_)) => continue,
                 None => break,
             }
         }
@@ -1082,7 +2357,7 @@ impl BridgeStream {
     }
 }
 
-impl Read for BridgeStream {
+impl Read for SegmentReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         // 整帧字节按读方缓冲的粒度吐；切点退到 UTF-8 字符边界——帧里有
         // 中文正文，read_to_string 这类消费方对半字符敏感
@@ -1104,24 +2379,15 @@ impl Read for BridgeStream {
             let n = serve(&mut self.out, &mut self.pos, buf);
             return Ok(n);
         }
-        if self.finished {
-            return Ok(0);
-        }
-        // 出缓冲空了再泵
         loop {
-            match self.pump() {
+            match self.next_step() {
                 Some(Step::Event(v)) => {
-                    if v.is_null() {
-                        continue;
-                    }
                     self.out = sse_frame(&v).into_bytes();
                     self.pos = 0;
                     let n = serve(&mut self.out, &mut self.pos, buf);
                     return Ok(n);
                 }
                 Some(Step::Failed(status, msg)) => {
-                    self.finished = true;
-                    self.close_input();
                     self.out = sse_frame(&json!({"type": "error",
                         "error": {"type": error_kind(status), "message": msg}}))
                     .into_bytes();
@@ -1129,23 +2395,18 @@ impl Read for BridgeStream {
                     let n = serve(&mut self.out, &mut self.pos, buf);
                     return Ok(n);
                 }
-                Some(Step::Limits(_)) => continue,
-                None => {
-                    self.finished = true;
-                    return Ok(0);
-                }
+                None => return Ok(0),
             }
         }
     }
 }
 
-impl Drop for BridgeStream {
+impl Drop for SegmentReader {
     fn drop(&mut self) {
-        self.done.store(true, Ordering::Release);
-        self.close_input();
-        if let Ok(mut child) = self.child.lock() {
-            let _ = child.kill();
-            let _ = child.wait();
+        if !self.natural {
+            // 客户端断开 / 回复没送完就被丢弃（httpd 写错误丢 reader、聚合
+            // 失败丢弃）——停掉 agent，别让进程白等不会来的工具结果
+            abort_run(&self.core);
         }
     }
 }
@@ -1279,6 +2540,21 @@ fn cached_limits() -> Option<Vec<Value>> {
 pub(crate) fn reset_for_tests() {
     *LIMITS_CACHE.lock().unwrap_or_else(|p| p.into_inner()) = None;
     *USAGE_STATE.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    // 驻留池清空 + 全部 run 收尸（测试世界结束时别让 node 假 CLI 活过夜）
+    let runs: Vec<Arc<RunCore>> = {
+        let mut p = POOL.lock().unwrap_or_else(|e| e.into_inner());
+        let mut all: Vec<Arc<RunCore>> = p.idle.values().map(|(r, _)| r.clone()).collect();
+        all.extend(p.runs.values().cloned());
+        p.idle.clear();
+        p.calls.clear();
+        p.runs.clear();
+        all
+    };
+    for r in runs {
+        abort_run(&r);
+    }
+    *TEST_IDLE_LONGEST.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    *TEST_IDLE_MOST.lock().unwrap_or_else(|p| p.into_inner()) = None;
 }
 
 /// /usage 兜底的状态：`(at, Option<文本>)`——Some(None) = 刚失败过（退避）。
@@ -1636,8 +2912,9 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
         return None;
     }
     // inactive：没凭据或没 CLI → 让位（模型也不进目录，这里只是兜底）。
-    // 凭据只判存在性——token 本身用不上（见 Account 注释）
-    discover()?;
+    // 凭据只判存在性——token 本身用不上（见 Account 注释）；plan 兼任
+    // 会话键的 owner（Go 的账号身份，单账号世界取订阅类型足矣）。
+    let account = discover()?;
     let program = claude_binary()?;
 
     // 模型映射：`claude/<id>` → `--model <id>` 直传（Go :7262 OwnModelID）
@@ -1658,23 +2935,66 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
         "low" | "medium" | "high" | "xhigh" | "max" => Some(effort),
         _ => None,
     };
-    let prompt = render_prompt(&parsed);
     let wants_stream = parsed.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
-    let stream = spawn_bridge(&program, model, effort.as_deref(), &prompt, &[]).map_err(|(status, msg)| anthropic_error(status, &msg));
-    let stream = match stream {
-        Ok(s) => s,
-        Err(reply) => return Some(reply),
+    let tools: Vec<Value> = parsed.get("tools").and_then(|t| t.as_array()).cloned().unwrap_or_default();
+    let tool_choice = tool_choice_of(&parsed);
+    let identity = RequestIdentity {
+        owner: account.plan.clone(),
+        model: model.to_string(),
+        effort: effort.clone(),
+        tool_choice: tool_choice.clone(),
+        system: system_text(parsed.get("system").unwrap_or(&Value::Null)),
+        tools_json: serde_json::to_string(&tools).unwrap_or_default(),
+        tools_empty: tools.is_empty(),
+        msgs: parsed.get("messages").and_then(|m| m.as_array()).cloned().unwrap_or_default(),
     };
+
+    // ① 工具结果回填（Go serveClaudeSubscription 的 match → continueWith，
+    // :7454-7528）：尾部的 tool_result 命中驻留 run 就喂回去拿续答；
+    // 不命中/不可用 → 落到新起（Go runExpired/answeredElsewhere 同款）。
+    if let Some((run, fresh)) = match_run(&identity.msgs) {
+        let said = said_with_results(&identity.msgs);
+        if let Some(reader) = continue_with(&run, &fresh, &said, identity.clone()) {
+            return Some(reply_of(reader, wants_stream, model));
+        }
+    }
+    // ② 驻留复用（Go resume :2033）：同会话的下一回合只喂增量消息。
+    if let Some((key, split)) = next_turn(&identity) {
+        if let Some(run) = take_idle_run(&key, effort.as_deref()) {
+            if let Some(reader) = resume_run(&run, &identity, split) {
+                return Some(reply_of(reader, wants_stream, model));
+            }
+        }
+    }
+    // ③ 新起（Go start :933 / startRun :1004）：全量 prompt；带 tools 时挂
+    // helper。helper 起不来（环回 bind 失败）→ 不带 helper 硬跑（caller 的
+    // 工具宣告不出去，对话仍可用——Go 没有的降级，见模块头偏差记录）。
+    let (mut helper_tools, mut names, mut allowed_all) = bridge_tools(&tools, &tool_choice);
+    if !helper_tools.is_empty() && ensure_helper().is_none() {
+        helper_tools = Vec::new();
+        names = ToolNames::default();
+        allowed_all = true;
+    }
+    let offered = if helper_tools.is_empty() { None } else { Some(&names) };
+    let prompt = render_prompt(&parsed, offered);
+    match spawn_run(&program, model, effort.as_deref(), &prompt, &helper_tools, names, allowed_all, identity, &[]) {
+        Ok(reader) => Some(reply_of(reader, wants_stream, model)),
+        Err((status, msg)) => Some(anthropic_error(status, &msg)),
+    }
+}
+
+/// 段读者 → Reply（流式透传 / 非流聚合，与旧路径同形）。
+fn reply_of(reader: SegmentReader, wants_stream: bool, model: &str) -> Reply {
     if wants_stream {
-        Some(Reply::Stream {
+        Reply::Stream {
             status: 200,
             content_type: "text/event-stream".into(),
-            reader: Box::new(stream),
-        })
+            reader: Box::new(reader),
+        }
     } else {
-        match stream.aggregate(model) {
-            Ok(v) => Some(Reply::json(200, &v)),
-            Err((status, msg)) => Some(anthropic_error(status, &msg)),
+        match reader.aggregate(model) {
+            Ok(v) => Reply::json(200, &v),
+            Err((status, msg)) => anthropic_error(status, &msg),
         }
     }
 }
@@ -1734,8 +3054,12 @@ mod tests {
     }
 
     /// 假 claude CLI（node 脚本咳 stream-json 行；模式走
-    /// MARIONETTE_FAKE_CLAUDE_MODE 环境变量：chat（默认）/ error / noresult /
-    /// usage）。dump 文件记录 argv/stdin/env 供断言。
+    /// MARIONETTE_FAKE_CLAUDE_MODE 环境变量：chat（默认，**每收到一行
+    /// stdin 答一整轮**——驻留语义）/ error / noresult / usage / whole /
+    /// toolround（走 --mcp-config 里的 URL 真打 MCP：initialize →
+    /// tools/list → tools/call 阻塞等结果后续答））。dump 文件记录首回合
+    /// argv/stdin/env 供断言；MARIONETTE_FAKE_SPAWNS / _STDIN_LOG / _MCP_LOG
+    /// 各是 JSONL 流水。
     fn fake_cli(world_dir: &std::path::Path) -> Program {
         let node = find_node().expect("node on PATH (fake claude CLI needs it)");
         let script = world_dir.join("fake-claude.js");
@@ -1761,25 +3085,110 @@ mod tests {
 
     const FAKE_CLI_JS: &str = r#"
 const fs = require("fs");
+const http = require("http");
 const mode = process.env.MARIONETTE_FAKE_CLAUDE_MODE || "chat";
 const dump = process.env.MARIONETTE_FAKE_CLAUDE_DUMP;
+const spawns = process.env.MARIONETTE_FAKE_SPAWNS;
+const stdinLog = process.env.MARIONETTE_FAKE_STDIN_LOG;
+const mcpLog = process.env.MARIONETTE_FAKE_MCP_LOG;
 const argv = process.argv.slice(2);
-let stdinText = "";
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", (d) => (stdinText += d));
-process.stdin.on("end", () => {
-  try {
-    if (dump) fs.writeFileSync(dump, JSON.stringify({
-      argv,
-      stdin: stdinText,
-      baseUrl: process.env.ANTHROPIC_BASE_URL || null,
-      cwd: process.cwd(),
-    }));
-  } catch {}
-  process.exit(0);
-});
-process.stdin.resume();
+if (spawns) { try { fs.appendFileSync(spawns, JSON.stringify({ pid: process.pid, argv }) + "\n"); } catch {} }
 const w = (o) => process.stdout.write(JSON.stringify(o) + "\n");
+const modelOf = () => argv[argv.indexOf("--model") + 1] || "claude-sonnet-5";
+const effortOn = () => argv.indexOf("--effort") >= 0;
+function chatTurn(n) {
+  const model = modelOf();
+  w({ type: "system", subtype: "init", session_id: "sess-fake" });
+  w({ type: "stream_event", event: { type: "message_start", message: { id: "msg_f" + n, type: "message", role: "assistant", model, content: [], usage: { input_tokens: 10, output_tokens: 1 } } } });
+  if (effortOn()) w({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } } });
+  const textIndex = effortOn() ? 1 : 0;
+  if (effortOn()) w({ type: "stream_event", event: { type: "content_block_stop", index: 0 } });
+  w({ type: "stream_event", event: { type: "content_block_start", index: textIndex, content_block: { type: "text", text: "" } } });
+  w({ type: "stream_event", event: { type: "content_block_delta", index: textIndex, delta: { type: "text_delta", text: "你好，世界" } } });
+  w({ type: "stream_event", event: { type: "content_block_stop", index: textIndex } });
+  w({ type: "stream_event", event: { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { input_tokens: 10, output_tokens: 2 } } });
+  w({ type: "stream_event", event: { type: "message_stop" } });
+  if (n === 1) w({ type: "rate_limit_event", rate_limit_info: { status: "ok", rateLimitType: "five_hour",
+    unifiedWindows: { five_hour: { utilization: 0.42, resetsAt: 4102444800 }, seven_day: { utilization: 0.07, resetsAt: 4102963200 } } } });
+  w({ type: "result", subtype: "success", is_error: false, result: "done" });
+}
+function mcpUrl() {
+  const i = argv.indexOf("--mcp-config");
+  if (i < 0 || i + 1 >= argv.length) return null;
+  try {
+    const cfg = JSON.parse(fs.readFileSync(argv[i + 1], "utf8"));
+    return cfg.mcpServers.marionette.url;
+  } catch { return null; }
+}
+function rpc(url, obj, cb) {
+  if (mcpLog) { try { fs.appendFileSync(mcpLog, JSON.stringify({ tag: "req", method: obj.method, url }) + "\n"); } catch {} }
+  const u = new URL(url);
+  const body = JSON.stringify(obj);
+  const req = http.request({ hostname: u.hostname, port: u.port, path: u.pathname, method: "POST", headers: { "Content-Type": "application/json" } }, (res) => {
+    let b = ""; res.on("data", (d) => (b += d)); res.on("end", () => {
+      if (mcpLog) { try { fs.appendFileSync(mcpLog, JSON.stringify({ method: obj.method, status: res.statusCode, body: b }) + "\n"); } catch {} }
+      cb(res.statusCode, b);
+    });
+  });
+  req.on("error", (e) => {
+    if (mcpLog) { try { fs.appendFileSync(mcpLog, JSON.stringify({ tag: "err", method: obj.method, error: String(e && e.message || e) }) + "\n"); } catch {} }
+    cb(0, "");
+  });
+  req.end(body);
+}
+function toolTurn(n) {
+  if (n !== 1) { chatTurn(n); return; }
+  const model = modelOf();
+  w({ type: "system", subtype: "init", session_id: "sess-tool" });
+  w({ type: "stream_event", event: { type: "message_start", message: { id: "msg_t1", type: "message", role: "assistant", model, content: [], usage: { input_tokens: 8, output_tokens: 1 } } } });
+  w({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_01", name: "mcp__marionette__get_weather", input: {} } } });
+  w({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{\"city\":\"北京\"}" } } });
+  w({ type: "stream_event", event: { type: "content_block_stop", index: 0 } });
+  w({ type: "stream_event", event: { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { input_tokens: 8, output_tokens: 1 } } });
+  w({ type: "stream_event", event: { type: "message_stop" } });
+  const url = mcpUrl();
+  if (mcpLog) { try { fs.appendFileSync(mcpLog, JSON.stringify({ tag: "url", url: url || null, cfg: argv.indexOf("--mcp-config") >= 0 ? argv[argv.indexOf("--mcp-config") + 1] : null }) + "\n"); } catch {} }
+  if (!url) { w({ type: "result", subtype: "success", is_error: false, result: "no mcp config" }); return; }
+  rpc(url, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} }, () => {
+    rpc(url, { jsonrpc: "2.0", id: 2, method: "tools/list" }, () => {
+      rpc(url, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "get_weather", arguments: { city: "北京" }, _meta: { "claudecode/toolUseId": "toolu_01" } } }, (s, b) => {
+        let text = "";
+        try { text = JSON.parse(b).result.content[0].text; } catch {}
+        w({ type: "stream_event", event: { type: "message_start", message: { id: "msg_t2", type: "message", role: "assistant", model: modelOf(), content: [], usage: { input_tokens: 9, output_tokens: 2 } } } });
+        w({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } } });
+        w({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "天气结论：" + text } } });
+        w({ type: "stream_event", event: { type: "content_block_stop", index: 0 } });
+        w({ type: "stream_event", event: { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { input_tokens: 9, output_tokens: 3 } } });
+        w({ type: "stream_event", event: { type: "message_stop" } });
+        w({ type: "result", subtype: "success", is_error: false, result: "done" });
+      });
+    });
+  });
+}
+let stdinText = "";
+let dumped = false;
+let turn = 0;
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (d) => {
+  stdinText += d;
+  let i;
+  while ((i = stdinText.indexOf("\n")) >= 0) {
+    const line = stdinText.slice(0, i);
+    stdinText = stdinText.slice(i + 1);
+    if (!dumped && dump) {
+      dumped = true;
+      try { fs.writeFileSync(dump, JSON.stringify({ argv, stdin: line + "\n", baseUrl: process.env.ANTHROPIC_BASE_URL || null, cwd: process.cwd() })); } catch {}
+    }
+    if (stdinLog) { try { fs.appendFileSync(stdinLog, JSON.stringify({ line }) + "\n"); } catch {} }
+    if (mode === "chat" || mode === "toolround") {
+      turn += 1;
+      if (mode === "chat") chatTurn(turn); else toolTurn(turn);
+    }
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+process.stdin.resume();
+// 即答模式（error / noresult / whole / usage）：启动即写，不等 stdin（老行为）
 if (mode === "usage") {
   process.stdout.write(JSON.stringify([
     { type: "system", subtype: "init", session_id: "s-usage" },
@@ -1789,7 +3198,7 @@ if (mode === "usage") {
 } else if (mode === "error") {
   w({ type: "result", subtype: "error_overloaded", is_error: true, api_error_status: 429, result: "rate limited: too many requests" });
 } else if (mode === "noresult") {
-  const model = argv[argv.indexOf("--model") + 1] || "claude-sonnet-5";
+  const model = modelOf();
   w({ type: "stream_event", event: { type: "message_start", message: { id: "msg_cut", type: "message", role: "assistant", model, content: [], usage: { input_tokens: 5, output_tokens: 1 } } } });
   w({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } } });
   w({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "partial" } } });
@@ -1799,22 +3208,6 @@ if (mode === "usage") {
   w({ type: "assistant", message: { id: "msg_whole", type: "message", role: "assistant", model: "claude-opus-5",
     content: [{ type: "text", text: "whole message reply" }], stop_reason: "end_turn",
     usage: { input_tokens: 7, output_tokens: 3 } } });
-  w({ type: "result", subtype: "success", is_error: false, result: "done" });
-} else {
-  const model = argv[argv.indexOf("--model") + 1] || "claude-sonnet-5";
-  const effort = argv.indexOf("--effort") >= 0 ? argv[argv.indexOf("--effort") + 1] : null;
-  w({ type: "system", subtype: "init", session_id: "sess-fake" });
-  w({ type: "stream_event", event: { type: "message_start", message: { id: "msg_f1", type: "message", role: "assistant", model, content: [], usage: { input_tokens: 10, output_tokens: 1 } } } });
-  if (effort) w({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } } });
-  const textIndex = effort ? 1 : 0;
-  if (effort) w({ type: "stream_event", event: { type: "content_block_stop", index: 0 } });
-  w({ type: "stream_event", event: { type: "content_block_start", index: textIndex, content_block: { type: "text", text: "" } } });
-  w({ type: "stream_event", event: { type: "content_block_delta", index: textIndex, delta: { type: "text_delta", text: "你好，世界" } } });
-  w({ type: "stream_event", event: { type: "content_block_stop", index: textIndex } });
-  w({ type: "stream_event", event: { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { input_tokens: 10, output_tokens: 2 } } });
-  w({ type: "stream_event", event: { type: "message_stop" } });
-  w({ type: "rate_limit_event", rate_limit_info: { status: "ok", rateLimitType: "five_hour",
-    unifiedWindows: { five_hour: { utilization: 0.42, resetsAt: 4102444800 }, seven_day: { utilization: 0.07, resetsAt: 4102963200 } } } });
   w({ type: "result", subtype: "success", is_error: false, result: "done" });
 }
 "#;
@@ -2135,7 +3528,7 @@ if (mode === "usage") {
                 ]}
             ]
         });
-        let blocks = render_prompt(&body);
+        let blocks = render_prompt(&body, None);
         assert_eq!(blocks.len(), 2); // system + 对话
         let text = blocks[1].get("text").and_then(|t| t.as_str()).unwrap();
         assert!(text.starts_with("<conversation_history>"), "history wrapper: {text}");
@@ -2165,7 +3558,7 @@ if (mode === "usage") {
                     { "type": "tool_result", "tool_use_id": "t1", "content": "结果" } ]}
             ]
         });
-        let blocks = render_prompt(&body);
+        let blocks = render_prompt(&body, None);
         let text = blocks[0].get("text").and_then(|t| t.as_str()).unwrap();
         assert!(!text.contains("<conversation_history>"));
         assert!(!text.contains("<current_turn>"));
@@ -2175,7 +3568,7 @@ if (mode === "usage") {
     #[test]
     fn single_turn_is_not_wrapped() {
         let body = json!({ "model": "m", "messages": [ { "role": "user", "content": "hi" } ] });
-        let blocks = render_prompt(&body);
+        let blocks = render_prompt(&body, None);
         let text = blocks[0].get("text").and_then(|t| t.as_str()).unwrap();
         assert!(text.contains("Human: hi"));
         assert!(!text.contains("<conversation_history>"));
@@ -2197,7 +3590,7 @@ if (mode === "usage") {
                 ]}
             ]
         });
-        let blocks = render_prompt(&body);
+        let blocks = render_prompt(&body, None);
         let text = blocks[0].get("text").and_then(|t| t.as_str()).unwrap();
         assert!(!text.contains("secret reasoning"), "thinking is never told as words");
         assert!(!text.contains("sig=="));
@@ -2330,5 +3723,457 @@ if (mode === "usage") {
         assert_eq!(dt3.format("%H:%M").to_string(), "00:05");
         // 空串
         assert!(parse_reset("", 3600, now).is_none());
+    }
+
+    // ---------------------------------------------------------------
+    // 跨回合驻留（差距第 2 条：Go keepIdle :2615 / resume :2033）
+    // ---------------------------------------------------------------
+
+    fn jsonl_lines(path: &std::path::Path) -> Vec<Value> {
+        let b = std::fs::read_to_string(path).unwrap_or_default();
+        b.lines().filter(|l| !l.trim().is_empty()).filter_map(|l| serde_json::from_str(l).ok()).collect()
+    }
+
+    fn spawn_count(world: &World) -> usize {
+        jsonl_lines(&world.dir.join("spawns.jsonl")).len()
+    }
+
+    #[test]
+    fn resident_run_is_reused_for_next_turn() {
+        // 同会话的续回合：不起新进程、stdin 只喂增量（Go resume :2033 /
+        // renderClaudeTurn :5700——客户端复述的回复经词归一后与驻留键相认）。
+        // 注意 Go 的 one-off 臂（ended :2567）：**无工具对话的第一回合**请求里
+        // 没有任何 assistant 消息，不驻留——第二回合才起「会被留下」的 run，
+        // 第三回合验证复用。
+        let (gateway, w) = world(None, false);
+        write_credentials(&w, "max");
+        let cli = fake_cli(&w.dir);
+        std::env::set_var("MARIONETTE_FAKE_SPAWNS", w.dir.join("spawns.jsonl"));
+        std::env::set_var("MARIONETTE_FAKE_STDIN_LOG", w.dir.join("stdinlog.jsonl"));
+        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
+        let turn = |msgs: Value| {
+            let mut body = messages_body("claude/claude-sonnet-5", false);
+            body["messages"] = msgs;
+            intercept(&gateway, &post(&body), Proto::Anthropic).expect("intercepted")
+        };
+        // 第一回合（one-off：不驻留）
+        assert!(matches!(turn(json!([{ "role": "user", "content": "你好" }])), Reply::Json { status: 200, .. }));
+        // 第二回合（起 run，收口后驻留）
+        assert!(matches!(turn(json!([
+            { "role": "user", "content": "你好" },
+            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+            { "role": "user", "content": "第二问" }
+        ])), Reply::Json { status: 200, .. }));
+        // 第三回合：复用驻留 run
+        let reply = turn(json!([
+            { "role": "user", "content": "你好" },
+            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+            { "role": "user", "content": "第二问" },
+            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+            { "role": "user", "content": "继续说点别的" }
+        ]));
+        match reply {
+            Reply::Json { status, body } => {
+                assert_eq!(status, 200);
+                let v: Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(v.pointer("/content/0/text").and_then(|t| t.as_str()), Some("你好，世界"));
+            }
+            Reply::Stream { status, .. } => panic!("expected json, got stream {status}"),
+        }
+        // 第一回合 + 第二回合各起一个进程，第三回合复用第二个（Go keepIdle
+        // 的意义所在）
+        assert_eq!(spawn_count(&w), 2, "resident run must be reused");
+        // 复用回合只喂增量：没有 system 包裹、没有历史回放，只有新问题
+        let stdin = jsonl_lines(&w.dir.join("stdinlog.jsonl"));
+        assert_eq!(stdin.len(), 3);
+        let line3 = stdin[2].get("line").and_then(|l| l.as_str()).unwrap();
+        assert!(line3.contains("继续说点别的"), "turn fed to resident run: {line3}");
+        assert!(!line3.contains("external_system_instructions"), "no system re-send: {line3}");
+        assert!(!line3.contains("conversation_history"), "no whole-conversation replay: {line3}");
+        std::env::remove_var("MARIONETTE_FAKE_SPAWNS");
+        std::env::remove_var("MARIONETTE_FAKE_STDIN_LOG");
+    }
+
+    #[test]
+    fn resident_run_expires_after_idle_longest() {
+        // idle 过期（Go idleLongest，测试缝压到 300ms）：驻留过的 run 过期后，
+        // 下一回合全量新起
+        let (gateway, w) = world(None, false);
+        write_credentials(&w, "max");
+        let cli = fake_cli(&w.dir);
+        std::env::set_var("MARIONETTE_FAKE_SPAWNS", w.dir.join("spawns.jsonl"));
+        std::env::set_var("MARIONETTE_FAKE_STDIN_LOG", w.dir.join("stdinlog.jsonl"));
+        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
+        *TEST_IDLE_LONGEST.lock().unwrap_or_else(|p| p.into_inner()) = Some(Duration::from_millis(300));
+        let turn = |msgs: Value| {
+            let mut body = messages_body("claude/claude-sonnet-5", false);
+            body["messages"] = msgs;
+            intercept(&gateway, &post(&body), Proto::Anthropic).expect("intercepted")
+        };
+        // 两回合把 run 驻留进池（第一回合 one-off 不驻留）
+        assert!(matches!(turn(json!([{ "role": "user", "content": "你好" }])), Reply::Json { status: 200, .. }));
+        assert!(matches!(turn(json!([
+            { "role": "user", "content": "你好" },
+            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+            { "role": "user", "content": "第二问" }
+        ])), Reply::Json { status: 200, .. }));
+        let spawns_before = spawn_count(&w);
+        std::thread::sleep(Duration::from_millis(500)); // 过期 + 看门狗收尸
+        let reply = turn(json!([
+            { "role": "user", "content": "你好" },
+            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+            { "role": "user", "content": "第二问" },
+            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+            { "role": "user", "content": "过期之后" }
+        ]));
+        assert!(matches!(reply, Reply::Json { status: 200, .. }));
+        assert_eq!(spawn_count(&w), spawns_before + 1, "expired idle run must give way to a fresh spawn");
+        // 全量新起：这回合的 stdin 是整段对话（history 包裹 + system）
+        let stdin = jsonl_lines(&w.dir.join("stdinlog.jsonl"));
+        let last = stdin.last().unwrap().get("line").and_then(|l| l.as_str()).unwrap();
+        assert!(last.contains("conversation_history"), "fresh spawn replays history: {last}");
+        assert!(last.contains("external_system_instructions"));
+        std::env::remove_var("MARIONETTE_FAKE_SPAWNS");
+        std::env::remove_var("MARIONETTE_FAKE_STDIN_LOG");
+    }
+
+    #[test]
+    fn idle_capacity_evicts_the_oldest() {
+        // 容量淘汰（Go idleMost :2656，测试缝压到 1）：第二个驻留会话把第一
+        // 个挤出池，第一个的续回合只能全量新起
+        let (gateway, w) = world(None, false);
+        write_credentials(&w, "max");
+        let cli = fake_cli(&w.dir);
+        std::env::set_var("MARIONETTE_FAKE_SPAWNS", w.dir.join("spawns.jsonl"));
+        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
+        *TEST_IDLE_MOST.lock().unwrap_or_else(|p| p.into_inner()) = Some(1);
+        let turn = |msgs: Value| intercept(&gateway, &post(&json!({
+            "model": "claude/claude-sonnet-5", "max_tokens": 1024, "stream": false,
+            "system": "You are a helpful assistant.", "messages": msgs,
+        })), Proto::Anthropic).expect("intercepted");
+        // 会话 A 两回合（第二回合起 run 并驻留）
+        assert!(matches!(turn(json!([{ "role": "user", "content": "会话A第一轮" }])), Reply::Json { status: 200, .. }));
+        assert!(matches!(turn(json!([
+            { "role": "user", "content": "会话A第一轮" },
+            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+            { "role": "user", "content": "会话A第二轮" }
+        ])), Reply::Json { status: 200, .. }));
+        let after_a = spawn_count(&w);
+        // 会话 B 两回合：B 的驻留把 A 挤出池（容量 1）
+        assert!(matches!(turn(json!([{ "role": "user", "content": "会话B第一轮" }])), Reply::Json { status: 200, .. }));
+        assert!(matches!(turn(json!([
+            { "role": "user", "content": "会话B第一轮" },
+            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+            { "role": "user", "content": "会话B第二轮" }
+        ])), Reply::Json { status: 200, .. }));
+        // A 的续回合：A 已被挤出 → 全量新起
+        let reply = turn(json!([
+            { "role": "user", "content": "会话A第一轮" },
+            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+            { "role": "user", "content": "会话A第二轮" },
+            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+            { "role": "user", "content": "会话A第三轮" }
+        ]));
+        assert!(matches!(reply, Reply::Json { status: 200, .. }));
+        assert_eq!(spawn_count(&w), after_a + 3, "B1(one-off) + B2(kept, evicts A) + A3 fresh");
+        std::env::remove_var("MARIONETTE_FAKE_SPAWNS");
+    }
+
+    #[test]
+    fn one_off_ask_is_not_kept_idle() {
+        // Go ended 的 one-off 臂（:2567）：无工具且对话没有任何 assistant
+        // 回复的一问一答（标题/分类器）不留驻留进程
+        let (gateway, w) = world(None, false);
+        write_credentials(&w, "max");
+        let cli = fake_cli(&w.dir);
+        std::env::set_var("MARIONETTE_FAKE_SPAWNS", w.dir.join("spawns.jsonl"));
+        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
+        let reply = intercept(&gateway, &post(&messages_body("claude/claude-sonnet-5", false)), Proto::Anthropic).expect("answered");
+        assert!(matches!(reply, Reply::Json { status: 200, .. }));
+        std::thread::sleep(Duration::from_millis(200));
+        let p = POOL.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(p.idle.is_empty(), "one-off ask must not be kept idle");
+        drop(p);
+        std::env::remove_var("MARIONETTE_FAKE_SPAWNS");
+    }
+
+    // ---------------------------------------------------------------
+    // MCP helper（差距第 3 条：Go bridgeTools :8137 / mcpCall :6479 /
+    // claudebridge/mcp.go 的阻塞-回填协议）
+    // ---------------------------------------------------------------
+
+    fn weather_tools() -> Vec<Value> {
+        vec![json!({
+            "name": "get_weather",
+            "description": "查天气",
+            "input_schema": { "type": "object", "properties": { "city": { "type": "string" } } }
+        })]
+    }
+
+    #[test]
+    fn tool_round_trips_through_the_helper() {
+        // tool_use 下发（名字映射回原名、SSE 在 message_stop 收口）→
+        // tools/call 阻塞 → caller 回 tool_result → helper 回填 → 续答，
+        // 一回合内完成且不起新进程
+        let (gateway, w) = world(None, false);
+        write_credentials(&w, "max");
+        let cli = fake_cli(&w.dir);
+        std::env::set_var("MARIONETTE_FAKE_CLAUDE_MODE", "toolround");
+        std::env::set_var("MARIONETTE_FAKE_SPAWNS", w.dir.join("spawns.jsonl"));
+        std::env::set_var("MARIONETTE_FAKE_STDIN_LOG", w.dir.join("stdinlog.jsonl"));
+        std::env::set_var("MARIONETTE_FAKE_MCP_LOG", w.dir.join("mcplog.jsonl"));
+        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
+        // 第一回合：带 tools 的请求 → 回 tool_use 块
+        let mut body = messages_body("claude/claude-sonnet-5", true);
+        body["tools"] = json!(weather_tools());
+        body["messages"] = json!([{ "role": "user", "content": "北京天气怎么样" }]);
+        let reply = intercept(&gateway, &post(&body), Proto::Anthropic).expect("turn 1");
+        let sse = read_stream(reply);
+        let events = sse_events(&sse);
+        let types: Vec<&str> = events.iter().map(|e| e.get("type").and_then(|t| t.as_str()).unwrap_or("")).collect();
+        assert_eq!(types.first(), Some(&"message_start"));
+        assert_eq!(types.last(), Some(&"message_stop"), "stream closes at the tool_use message (park)");
+        let block = events.iter().find(|e| e.get("type").and_then(|t| t.as_str()) == Some("content_block_start")).expect("tool block");
+        // 名字映射回 caller 原名（Go declaredName）——不是 mcp__marionette__ 前缀名
+        assert_eq!(block.pointer("/content_block/type").and_then(|t| t.as_str()), Some("tool_use"));
+        assert_eq!(block.pointer("/content_block/name").and_then(|t| t.as_str()), Some("get_weather"));
+        assert_eq!(block.pointer("/content_block/id").and_then(|t| t.as_str()), Some("toolu_01"));
+        let md = events.iter().find(|e| e.get("type").and_then(|t| t.as_str()) == Some("message_delta")).unwrap();
+        assert_eq!(md.pointer("/delta/stop_reason").and_then(|s| s.as_str()), Some("tool_use"));
+        // 第二回合：caller 回 tool_result → match 命中 → 回填 → 续答
+        let mut body2 = messages_body("claude/claude-sonnet-5", false);
+        body2["tools"] = json!(weather_tools());
+        body2["messages"] = json!([
+            { "role": "user", "content": "北京天气怎么样" },
+            { "role": "assistant", "content": [
+                { "type": "tool_use", "id": "toolu_01", "name": "get_weather", "input": { "city": "北京" } } ]},
+            { "role": "user", "content": [
+                { "type": "tool_result", "tool_use_id": "toolu_01", "content": "晴 25°C" } ]}
+        ]);
+        let reply = intercept(&gateway, &post(&body2), Proto::Anthropic).expect("turn 2");
+        match reply {
+            Reply::Json { status, body } => {
+                assert_eq!(status, 200);
+                let v: Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(v.pointer("/content/0/text").and_then(|t| t.as_str()), Some("天气结论：晴 25°C"));
+                assert_eq!(v.get("stop_reason").and_then(|s| s.as_str()), Some("end_turn"));
+            }
+            Reply::Stream { status, .. } => panic!("expected json, got stream {status}"),
+        }
+        // 全程一个进程（helper 回填在同一驻留 run 里完成）
+        assert_eq!(spawn_count(&w), 1, "tool round must complete in the resident run");
+        // 带 tools 的请求挂 --mcp-config（Go claudeCLIArgs :3965；无 tools
+        // 的路径没有它——见 bridge_roundtrip 的断言）
+        let spawns = jsonl_lines(&w.dir.join("spawns.jsonl"));
+        let argv = spawns[0].get("argv").and_then(|a| a.as_array()).unwrap();
+        let joined = argv.iter().map(|v| v.as_str().unwrap_or("")).collect::<Vec<_>>().join(" ");
+        assert!(joined.contains("--mcp-config"), "helper attached for a tools-bearing request: {joined}");
+        assert!(joined.contains("--tools "), "Claude Code built-ins stay off: {joined}");
+        // MCP 流水：initialize 应答、tools/list 宣告、tools/call 拿到 tool_result 的文本
+        //（fake 的流水里 "req" 行是请求侧记账，带 body 的是应答行）
+        let mcp = jsonl_lines(&w.dir.join("mcplog.jsonl"));
+        let answered = |m: &str| mcp.iter().find(|l| l.get("body").is_some() && l.get("method").and_then(|x| x.as_str()) == Some(m));
+        let init = answered("initialize").expect("initialize round-trip");
+        assert!(init.get("body").and_then(|b| b.as_str()).unwrap_or("").contains("marionette"), "serverInfo");
+        let list = answered("tools/list").expect("tools/list round-trip");
+        let list_body = list.get("body").and_then(|b| b.as_str()).unwrap_or("");
+        assert!(list_body.contains("get_weather"), "helper offers the caller's tool: {list_body}");
+        assert!(list_body.contains("inputSchema"), "schema announced: {list_body}");
+        let call = answered("tools/call").expect("tools/call round-trip");
+        let call_body = call.get("body").and_then(|b| b.as_str()).unwrap_or("");
+        assert!(call_body.contains("晴 25°C"), "tool_result refilled into the helper: {call_body}");
+        assert!(call_body.contains("\"isError\":false"));
+        // tools/call 之后没有新 spawn，第二回合也没再喂全量对话
+        let stdin = jsonl_lines(&w.dir.join("stdinlog.jsonl"));
+        assert_eq!(stdin.len(), 1, "continuation runs without a new user line (results go through the helper)");
+        for var in ["MARIONETTE_FAKE_CLAUDE_MODE", "MARIONETTE_FAKE_SPAWNS", "MARIONETTE_FAKE_STDIN_LOG", "MARIONETTE_FAKE_MCP_LOG"] {
+            std::env::remove_var(var);
+        }
+    }
+
+    #[test]
+    fn tool_choice_none_refuses_calls_without_dropping_them() {
+        // tool_choice none：宣告保留（缓存前缀稳定，Go bridgeTools :8141 注
+        // 释）、调用时直拒（Go mcpCall :6539）。直测 helper_call 的拒绝臂。
+        let (_, w) = world(None, false);
+        write_credentials(&w, "max");
+        let (_tools, names, allowed_all) = bridge_tools(&weather_tools(), "none");
+        assert!(!allowed_all, "none refuses every call");
+        assert_eq!(names.declared.len(), 1, "announcement keeps all tools");
+        let core = RunCore {
+            child: Arc::new(Mutex::new(dummy_child())),
+            stdin: Arc::new(Mutex::new(None)),
+            stderr_tail: Arc::new(Mutex::new(String::new())),
+            token: None,
+            cfg_dir: None,
+            state: Arc::new((
+                Mutex::new(RunState {
+                    closed: false,
+                    deadline: Instant::now() + BRIDGE_TIMEOUT,
+                    queue: VecDeque::new(),
+                    segment_done: false,
+                    parked: false,
+                    started: false,
+                    got_stop: false,
+                    streamed: Vec::new(),
+                    said_words: String::new(),
+                    msg_tool_ids: Vec::new(),
+                    msg_stop_reason: None,
+                    model_echo: "claude-sonnet-5".into(),
+                    identity: None,
+                    effort: None,
+                    idle_key: None,
+                    names,
+                    helper_tools: Vec::new(),
+                    allowed_all,
+                    pending: HashMap::new(),
+                    early: HashMap::new(),
+                }),
+                Condvar::new(),
+            )),
+        };
+        let core = Arc::new(core);
+        let res = helper_call(&core, &json!({ "name": "get_weather", "arguments": {} }));
+        let v = res.expect("refusal is a result, not an error");
+        assert_eq!(v.pointer("/isError").and_then(|e| e.as_bool()), Some(true));
+        assert!(v.pointer("/content/0/text").and_then(|t| t.as_str()).unwrap_or("").contains("No tool can be used"));
+        let _ = &w;
+    }
+
+    /// 一个不会真跑的哑子进程句柄（helper 直测用；RunCore 只在孩子终局
+    /// 清理时碰它）。立即退出的 cmd。
+    fn dummy_child() -> Child {
+        Command::new("cmd.exe")
+            .arg("/C")
+            .arg("exit 0")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("dummy child")
+    }
+
+    // ---------------------------------------------------------------
+    // 名字净化与会话键单元（Go bridgeToolName :5616 / messageWords）
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn tool_names_are_sanitized_and_mapped_back() {
+        // 合规名原样
+        assert_eq!(bridge_tool_name("read_file"), "read_file");
+        // 非法字符 → 净化 + 12 hex 后缀（原名恒同结果）
+        let a = bridge_tool_name("spawn.agent");
+        let b = bridge_tool_name("spawn.agent");
+        assert_eq!(a, b);
+        assert!(a.starts_with("spawn_agent_"), "{a}");
+        let suffix = &a[a.len() - 12..];
+        assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()), "{a}");
+        assert_ne!(bridge_tool_name("spawn.agent"), bridge_tool_name("spawn-agent"));
+        // 已带 mcp__marionette__ 前缀的（caller 是 Claude 系）只取余下部分
+        assert_eq!(bridge_tool_name("mcp__marionette__read_file"), "read_file");
+        // 双向映射：模型名 → 原名、原名 → 模型全名
+        let (_tools, names, _) = bridge_tools(&weather_tools(), "");
+        assert_eq!(names.declared_of("mcp__marionette__get_weather").as_deref(), Some("get_weather"));
+        assert_eq!(names.bridged_of("get_weather").as_deref(), Some("mcp__marionette__get_weather"));
+        // 没宣告的工具不映射（延迟加载口径）
+        assert_eq!(names.declared_of("WebFetch"), None);
+        assert_eq!(names.bridged_of("WebFetch"), None);
+    }
+
+    #[test]
+    fn turn_keys_merge_block_splits_and_call_positions() {
+        // 相邻同角色合并 + 空白归一：一条回复拆两条消息/拆多个 text 块与
+        // 整条文本是同一个会话键（Go #5705）
+        let id = |msgs: Vec<Value>| RequestIdentity {
+            owner: "max".into(),
+            model: "claude-sonnet-5".into(),
+            effort: None,
+            tool_choice: String::new(),
+            system: String::new(),
+            tools_json: "[]".into(),
+            tools_empty: true,
+            msgs,
+        };
+        let one = id(vec![
+            json!({ "role": "user", "content": "第一问" }),
+            json!({ "role": "assistant", "content": [{ "type": "text", "text": "看这里:\n答案" }] }),
+        ]);
+        let split = id(vec![
+            json!({ "role": "user", "content": [{ "type": "text", "text": "第一问" }] }),
+            json!({ "role": "assistant", "content": [
+                { "type": "thinking", "thinking": "internal reasoning" },
+                { "type": "text", "text": "看这里:" },
+                { "type": "text", "text": "答案" },
+            ]}),
+            json!({ "role": "assistant", "content": [] }), // 空消息不计
+        ]);
+        assert_eq!(turn_key(&one, &one.msgs), turn_key(&split, &split.msgs));
+        // tool_use 按调用次序计身份、不看 id（AmpCode 式改写 id 不影响键）
+        let with_ids = id(vec![
+            json!({ "role": "user", "content": "查" }),
+            json!({ "role": "assistant", "content": [
+                { "type": "tool_use", "id": "toolu_A", "name": "search", "input": { "q": "x" } } ]}),
+            json!({ "role": "user", "content": [
+                { "type": "tool_result", "tool_use_id": "toolu_A", "content": "结果" } ]}),
+        ]);
+        let renamed = id(vec![
+            json!({ "role": "user", "content": "查" }),
+            json!({ "role": "assistant", "content": [
+                { "type": "tool_use", "id": "TU-xyz", "name": "search", "input": { "q": "x" } } ]}),
+            json!({ "role": "user", "content": [
+                { "type": "tool_result", "tool_use_id": "TU-xyz", "content": "结果" } ]}),
+        ]);
+        assert_eq!(turn_key(&with_ids, &with_ids.msgs), turn_key(&renamed, &renamed.msgs));
+        // 身份字段不同 → 不同键（model/system/tools）
+        let mut other = one.clone();
+        other.model = "claude-opus-5".into();
+        assert_ne!(turn_key(&one, &one.msgs), turn_key(&other, &other.msgs));
+        let mut with_system = one.clone();
+        with_system.system = "别的人设".into();
+        assert_ne!(turn_key(&one, &one.msgs), turn_key(&with_system, &with_system.msgs));
+        // nextTurn：新回合给键、纯工具续轮不给（走 match）
+        let fresh = RequestIdentity {
+            msgs: vec![
+                json!({ "role": "user", "content": "hi" }),
+                json!({ "role": "assistant", "content": [{ "type": "text", "text": "答" }] }),
+                json!({ "role": "user", "content": "下一问" }),
+            ],
+            ..one.clone()
+        };
+        assert!(next_turn(&fresh).is_some());
+        let tooling = RequestIdentity {
+            msgs: vec![
+                json!({ "role": "user", "content": "hi" }),
+                json!({ "role": "assistant", "content": [
+                    { "type": "text", "text": "我调工具" },
+                    { "type": "tool_use", "id": "t1", "name": "search", "input": {} } ]}),
+                json!({ "role": "user", "content": [
+                    { "type": "tool_result", "tool_use_id": "t1", "content": "结果" } ]}),
+            ],
+            ..one.clone()
+        };
+        assert!(next_turn(&tooling).is_none(), "tool-result continuation goes through match, not resume");
+    }
+
+    #[test]
+    fn fresh_results_and_said_extraction() {
+        let msgs = vec![
+            json!({ "role": "user", "content": "跑一下" }),
+            json!({ "role": "assistant", "content": [
+                { "type": "tool_use", "id": "t1", "name": "run", "input": {} } ]}),
+            json!({ "role": "user", "content": [
+                { "type": "tool_result", "tool_use_id": "t1", "content": [{ "type": "text", "text": "done" }] },
+                { "type": "text", "text": "顺便再看看" } ]}),
+        ];
+        let fresh = fresh_results(&msgs).expect("fresh tool result");
+        assert_eq!(fresh.len(), 1);
+        assert_eq!(fresh[0].id, "t1");
+        assert_eq!(fresh[0].content, "done");
+        assert!(!fresh[0].is_error);
+        // 随结果的用户文字被单独提出（Go saidWithResults）；没有结果就没有 said
+        assert_eq!(said_with_results(&msgs), "顺便再看看");
+        let plain = vec![json!({ "role": "user", "content": "新问题" })];
+        assert!(fresh_results(&plain).is_none());
+        assert_eq!(said_with_results(&plain), "");
     }
 }
