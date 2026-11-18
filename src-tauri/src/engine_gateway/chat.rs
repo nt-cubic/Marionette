@@ -336,8 +336,13 @@ fn prepare_outbound(
     gw: &super::Gateway,
     cand: &Candidate,
     body: &[u8],
+    oc: &super::opencode_client::OpenCodeCtx,
 ) -> Result<(Outbound, Vec<u8>), String> {
-    let out = outbound_for(gw, cand)?;
+    let mut out = outbound_for(gw, cand)?;
+    // OpenCode 网关（Zen/Go）：URL 在 opencode.ai 系 → 按 OpenCode 2.2.5 自己
+    // 组装出站头（gateway.go:6582 的对应；会话种子在请求入口算好一次，
+    // 候选循环与续答重发共用——同会话每回合同名，Zen/Go 按它路由缓存）。
+    super::opencode_client::apply_outbound(&mut out.headers, &out.url, oc);
     let host = host_of(&out.url);
     let fitted = fit_for_vendor(
         &rewrite_model(body, &out.bare_model),
@@ -353,8 +358,13 @@ fn prepare_outbound(
 /// 打一个候选成员（`body` 是 chat 体，`model` 字段任意——这里换成厂商裸名）。
 /// 流式 2xx 立刻交出 `Stream`（终局）；错误应答读全后先过 bodycap（字节上限
 /// refit）与回复长度字段自适应，最后按 `groups::retryable` 决定是否换成员。
-pub(crate) fn attempt(gw: &super::Gateway, cand: &Candidate, body: &[u8]) -> Attempt {
-    let (out, mut current) = match prepare_outbound(gw, cand, body) {
+pub(crate) fn attempt(
+    gw: &super::Gateway,
+    cand: &Candidate,
+    body: &[u8],
+    oc: &super::opencode_client::OpenCodeCtx,
+) -> Attempt {
+    let (out, mut current) = match prepare_outbound(gw, cand, body, oc) {
         Ok(x) => x,
         Err(e) => return Attempt::Retry(Reply::error(404, &e)),
     };
@@ -1474,10 +1484,14 @@ pub fn forward(gw: &super::Gateway, headers: &[(String, String)], body: &[u8]) -
             None => owned,
         }
     };
+    // OpenCode 网关语境（opencode.ai 系出站）的会话种子与工程转发：请求
+    // 入口算一次（gateway.go openCodeSeed(in, body) 的对应——候选循环与
+    // 续答重发共用，同会话每回合同种子）。
+    let oc = super::opencode_client::gateway_ctx(headers, body);
     let mut last: Option<Reply> = None;
     for cand in &live {
         let body = groups::body_for(gw, super::effort::Proto::Chat, cand, body);
-        match attempt(gw, cand, &body) {
+        match attempt(gw, cand, &body, &oc) {
             Attempt::Done(reply) => match reply {
                 Reply::Stream { status, content_type, reader } => match hold_head(reader) {
                     HeadHold::Live { head, rest } => {
@@ -1495,7 +1509,7 @@ pub fn forward(gw: &super::Gateway, headers: &[(String, String)], body: &[u8]) -
                         );
                         // 续答底稿：attempt 刚用同一套准备段把这份体发了出去
                         //（重算字节相同）；拿不到就按无续答能力纯直通过。
-                        let (out, sent_body) = prepare_outbound(gw, cand, &body).unwrap_or_else(
+                        let (out, sent_body) = prepare_outbound(gw, cand, &body, &oc).unwrap_or_else(
                             |_| {
                                 (
                                     Outbound::new(

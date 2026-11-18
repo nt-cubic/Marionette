@@ -483,7 +483,9 @@ fn translate_via_chat(
     let names = offered_names(&chat_value);
     let scout = (!names.is_empty()).then(|| super::textcalls::TextCallScout::new(&names));
     let chat_body = serde_json::to_vec(&chat_value).unwrap_or_default();
-    match super::chat::attempt(gateway, cand, &chat_body) {
+    // 入站头尚未穿进 responses 翻译路径（差距清单）：体派生种子（同 messages.rs 注）。
+    let oc = super::opencode_client::gateway_ctx(&[], &chat_body);
+    match super::chat::attempt(gateway, cand, &chat_body, &oc) {
         Attempt::Done(reply) => Attempt::Done(reshape(reply, &asked, &table, scout, prev, gateway, &cand.provider, log)),
         Attempt::Retry(reply) => Attempt::Retry(reply),
     }

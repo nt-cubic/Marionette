@@ -541,7 +541,10 @@ fn forward_translated(
         Ok(b) => b,
         Err(e) => return Attempt::Done(error_reply(500, &format!("re-serialize failed: {e}"))),
     };
-    match chat::attempt(gw, cand, &chat_bytes) {
+    // 入站头尚未穿进 messages 翻译路径（差距清单）：体派生种子——codex 的
+    // prompt_cache_key 在体里全保真；agent 头名族在此路不生效，穿线另开小批。
+    let oc = super::opencode_client::gateway_ctx(&[], &chat_bytes);
+    match chat::attempt(gw, cand, &chat_bytes, &oc) {
         Attempt::Retry(Reply::Json { status, body }) => {
             Attempt::Retry(vendor_error_reply(status, &body))
         }

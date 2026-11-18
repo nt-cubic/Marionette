@@ -996,6 +996,112 @@ pub(crate) fn opencode_session_or_new(headers: &mut Vec<(String, String)>, url: 
 }
 
 // ---------------------------------------------------------------------------
+// gateway 侧（gateway.go 的 openCodeSeed / sessionOf / :6582 挂点语义）——
+// 出站头应用的一站式入口，chat.rs / messages.rs 的出站构造共用。
+// ---------------------------------------------------------------------------
+
+/// 一次出站调用的 OpenCode 上下文：会话种子（`opencode_client` 的 session
+/// 实参）与要转发的入站 `x-opencode-project`。在请求入口算一次，候选循环
+/// 与续答重发共用。
+pub(crate) struct OpenCodeCtx {
+    pub(crate) seed: String,
+    pub(crate) project: Option<String>,
+}
+
+/// 大小写不敏感的入站头取值（`Vec<(String, String)>` 上的 http.Header.Get）。
+fn inbound_get(headers: &[(String, String)], name: &str) -> Option<String> {
+    headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Go `sessionOf`（gateway.go:10412）+ `sessionHeaders`（:10379）：agent 自己
+/// 报会话的名字族（X-Magpie-Session 优先）。
+fn session_of(headers: &[(String, String)]) -> Option<String> {
+    const SESSION_HEADERS: [&str; 9] = [
+        "x-magpie-session",
+        "x-opencode-session",
+        "x-session-affinity",
+        "x-session-id",
+        "session_id",
+        "session-id",
+        "x-claude-code-session-id",
+        "x-conversation-id",
+        "x-deepseek-harness-session-id",
+    ];
+    SESSION_HEADERS.iter().find_map(|h| inbound_get(headers, h))
+}
+
+/// Go `openCodeSeed`（opencode_session.go:28）：这一回合是哪个会话的——
+/// 客户端自己的 x-opencode-session → agent 名族（sessionOf）→ 体的
+/// prompt_cache_key（前缀分隔同 Go）→ 兜底会话开头 id。
+pub(crate) fn opencode_seed(headers: &[(String, String)], body: &[u8]) -> String {
+    if let Some(v) = inbound_get(headers, "x-opencode-session") {
+        return v;
+    }
+    if let Some(v) = session_of(headers) {
+        return v;
+    }
+    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(body) {
+        if let Some(k) = v.get("prompt_cache_key").and_then(|k| k.as_str()) {
+            if !k.trim().is_empty() {
+                return format!("prompt_cache_key\x00{}", k);
+            }
+        }
+    }
+    conversation_opening_id(body)
+}
+
+/// Go `conversationID`（gateway.go:10480）的简化兜底：首个 user 消息原文的
+/// sha256。Go 用 conversationOpening 精确切「会话开头」（系统消息变化不换
+/// id）；这里首条 user 消息原文同性质（同会话逐轮稳定、两会话不同），开头
+/// 系统段变化的场景与 Go 可能不同——如实记模块头差距清单。
+fn conversation_opening_id(body: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let first_user = serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| {
+            let msgs = v
+                .get("messages")
+                .or_else(|| v.get("input"))
+                .and_then(|m| m.as_array())?;
+            msgs.iter()
+                .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+                .map(|m| m.to_string())
+        })
+        .unwrap_or_else(|| String::from_utf8_lossy(body).into_owned());
+    let mut h = Sha256::new();
+    h.update(first_user.as_bytes());
+    let d = h.finalize();
+    d.iter().map(|b| format!("{b:02x}")).collect::<String>()
+}
+
+/// Go gateway.go:6582 的出站应用：URL 在 opencode.ai 系 → 按 OpenCode 2.2.5
+/// 自己组装九件头（session=种子；dir="" = home 文件夹——agent 报的 cwd 在
+/// chat 直通没有等价提取，见模块头差距清单），入站的 x-opencode-project
+/// 非空则转发覆盖（OpenCode 自己问经 magpie）。zenFree 的剥头不在此
+/// （差距清单）。
+pub(crate) fn apply_outbound(headers: &mut Vec<(String, String)>, url: &str, ctx: &OpenCodeCtx) {
+    if !opencode_url(url) {
+        return;
+    }
+    opencode_client(headers, &ctx.seed, "");
+    if let Some(p) = &ctx.project {
+        header_set(headers, "x-opencode-project", p);
+    }
+}
+
+/// 请求入口算一次（OpenCode 语境下才花解析成本；否则两个字段全空）。
+pub(crate) fn gateway_ctx(headers: &[(String, String)], body: &[u8]) -> OpenCodeCtx {
+    OpenCodeCtx {
+        seed: opencode_seed(headers, body),
+        project: inbound_get(headers, "x-opencode-project"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 测试（向量对齐 Go opencode_client_test.go；共享态的用例全在 STATE_LOCK 下）
 // ---------------------------------------------------------------------------
 
