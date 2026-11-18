@@ -164,8 +164,11 @@ export function MemoBox({ onClose, onChanged, onUse, embedded = false }: Props) 
           return;
         }
         if (payload.type === "enter") {
-          armed = insideMemo(payload.position) && Boolean(payload.paths?.length);
-          setDropActive(armed);
+          // Arm on the paths alone: a drag from Explorer enters the window at
+          // its edge, usually over the chat half. Position only gates the
+          // highlight and the final drop, never whether the drag is ours.
+          armed = Boolean(payload.paths?.length);
+          setDropActive(armed && insideMemo(payload.position));
           return;
         }
         if (payload.type === "over") {

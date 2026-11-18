@@ -269,7 +269,7 @@ pub fn mark_bootstrap_sent(session_id: &str) {
     });
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn chief_staff_list() -> Value {
     let registry = ensure_migrated();
     let paused = registry.paused_until_user_resumes
@@ -495,7 +495,7 @@ pub fn chief_staff_memory_forget(staff_id: String) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn chief_commitments_list(staff_id: String) -> Value {
     let ledger = commitments::load();
     let rows = ledger
@@ -628,11 +628,64 @@ fn is_orphaned_staff_session(session_id: &str) -> bool {
 
 /// Single backend notification decision used by Telegram and native desktop
 /// attention. Ordinary sessions without a staff mapping keep legacy behavior.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn notification_allowed(session_id: &str, kind: &str) -> bool {
     let Some(profile) = profile_for_notification_session(session_id) else {
         return !is_orphaned_staff_session(session_id);
     };
     notification_allowed_for_profile(&profile, kind)
+}
+
+/// Kinds that are replies to the user's own action or urgent attention. They
+/// obey pause / quiet hours (via `StaffPolicy::notification_allowed`) but never
+/// consume — and are never blocked by — the cooldown / hourly report budget.
+/// `task.created` / `task.started` are acknowledgements: if they ate the slot,
+/// the default 30-minute cooldown would swallow the completion card.
+fn bypasses_report_budget(kind: &str) -> bool {
+    matches!(
+        kind,
+        "task.waiting_user"
+            | "task.failed"
+            | "task.interrupted"
+            | "permission"
+            | "question"
+            | "plan"
+            | "commitment_due"
+            | "task.created"
+            | "task.started"
+    )
+}
+
+/// Non-consuming variant for the native desktop chime. The Telegram path is
+/// the single consumer of the cooldown / hourly slot: if desktop alerts also
+/// consumed it, one reply would be counted twice and the second channel would
+/// be silenced by the first's cooldown.
+pub fn notification_would_allow(session_id: &str, kind: &str) -> bool {
+    let Some(profile) = profile_for_notification_session(session_id) else {
+        return !is_orphaned_staff_session(session_id);
+    };
+    let registry = staff::load();
+    let Some(current) = registry.get(&profile.staff_id) else {
+        return false;
+    };
+    let now = now_ms();
+    if !current.policy.notification_allowed(kind, now) {
+        return false;
+    }
+    if bypasses_report_budget(kind) {
+        return true;
+    }
+    let window_open = now.saturating_sub(current.notification_window_started_at) < 3_600_000;
+    let cooldown_ms = (current.policy.notification_cooldown_minutes as u64) * 60_000;
+    if cooldown_ms > 0
+        && current.last_notification_at > 0
+        && now.saturating_sub(current.last_notification_at) < cooldown_ms
+    {
+        return false;
+    }
+    !(current.policy.max_reports_per_hour > 0
+        && window_open
+        && current.notifications_in_window >= current.policy.max_reports_per_hour)
 }
 
 fn notification_allowed_for_profile(profile: &StaffProfile, kind: &str) -> bool {
@@ -644,16 +697,7 @@ fn notification_allowed_for_profile(profile: &StaffProfile, kind: &str) -> bool 
         if !current.policy.notification_allowed(kind, now) {
             return Ok(false);
         }
-        if matches!(
-            kind,
-            "task.waiting_user"
-                | "task.failed"
-                | "task.interrupted"
-                | "permission"
-                | "question"
-                | "plan"
-                | "commitment_due"
-        ) {
+        if bypasses_report_budget(kind) {
             return Ok(true);
         }
         if now.saturating_sub(current.notification_window_started_at) >= 3_600_000 {

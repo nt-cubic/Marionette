@@ -35,6 +35,8 @@ export function useStaffController({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const refreshSeq = useRef(0);
+  /** 上一次落到 state 的内容指纹：轮询结果没变就不换引用（否则 App 每 5s 整树重渲染）。 */
+  const lastSnapshotRef = useRef("");
   const onSessionReadyRef = useRef(onSessionReady);
   onSessionReadyRef.current = onSessionReady;
 
@@ -56,10 +58,14 @@ export function useStaffController({
         }),
       );
       if (seq !== refreshSeq.current) return;
-      setProfiles(registry.staff);
-      setPaused(registry.paused);
-      setTasks(nextTasks);
-      setCommitmentsByStaff(new Map(commitmentRows));
+      const snapshot = JSON.stringify([registry, nextTasks, commitmentRows]);
+      if (snapshot !== lastSnapshotRef.current) {
+        lastSnapshotRef.current = snapshot;
+        setProfiles(registry.staff);
+        setPaused(registry.paused);
+        setTasks(nextTasks);
+        setCommitmentsByStaff(new Map(commitmentRows));
+      }
       setError(null);
     } catch (cause) {
       if (seq !== refreshSeq.current) return;
@@ -69,15 +75,21 @@ export function useStaffController({
 
   useEffect(() => {
     let disposed = false;
+    // 窗口藏在后台 / 最小化时不轮询（与 git 扫描、终端轮询同口径），
+    // 可见即补一拍。
     const tick = async () => {
       if (disposed) return;
+      if (typeof document !== "undefined" && document.hidden) return;
       await refresh();
     };
     void tick();
     const timer = window.setInterval(() => void tick(), 5000);
+    const onVisible = () => void tick();
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       disposed = true;
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [refresh]);
 

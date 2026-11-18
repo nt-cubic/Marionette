@@ -3917,6 +3917,9 @@ export function App() {
           ? currentSessionIdRef.current
           : null;
       for (const session of sessionsRef.current) {
+        // 员工 / worker 由后端 broker 驱动生命周期（主窗藏后台时前端的
+        // status / lastActiveAt 是陈旧的，会把正在跑的后端任务当成「空闲 2h」杀掉）。
+        if (isChiefOrigin(session.origin)) continue;
         if (
           !shouldAutoSuspend(session, now, {
             currentSessionId: exemptCurrent,
@@ -3936,6 +3939,7 @@ export function App() {
       // 内不重复压，防抖动。多开 100 个会话时这是主要的物理内存压制手段。
       for (const session of sessionsRef.current) {
         if (session.status !== "waiting") continue;
+        if (isChiefOrigin(session.origin)) continue;
         if (busySessionIds.has(session.id)) continue;
         if (pendingSessionIds.has(session.id) || queuedSessionIds.has(session.id)) continue;
         if (now - lastActiveMs(session) < TRIM_QUIET_MS) continue;
@@ -5770,7 +5774,11 @@ export function App() {
         setActiveBrowserTabId(workspaceTabId);
         activateBrowserSurface();
         // While docked the strip has no chip — the page itself takes over.
-        setDockPage((page) => (page === "browser" ? page : "browser"));
+        // Only a live, expanded strip takes the page: set while floating it
+        // would linger and pop the browser open the next time the user docks.
+        if (getDockState() === "docked-expanded") {
+          setDockPage((page) => (page === "browser" ? page : "browser"));
+        }
       }
       if (tabs.length === 0) {
         setBrowserActive(false);
@@ -5844,6 +5852,11 @@ export function App() {
       if (source) focusSurfaceChatSession(source);
       setActiveBrowserTabId(request.tabId);
       activateBrowserSurface();
+      // The docked strip has no surface row — the full browser page is the
+      // only place the human step (and its Continue button) can show.
+      if (getDockState() === "docked-expanded") {
+        setDockPage((page) => (page === "browser" ? page : "browser"));
+      }
       setBrowserHandoffs((current) => ({ ...current, [request.requestId]: request }));
       const oldTimer = browserHandoffTimersRef.current.get(request.requestId);
       if (oldTimer) clearTimeout(oldTimer);
@@ -5896,6 +5909,13 @@ export function App() {
     };
 
     const tick = async () => {
+      // Nothing to offer while the preference is off or the window is hidden:
+      // skip the terminal-tail dump every 4s (other polling ticks pause when
+      // hidden too).
+      if (document.hidden || readDevServerPreference() === "off") {
+        if (!cancelled) timer = setTimeout(() => void tick(), 4_000);
+        return;
+      }
       const outputs = await listAcpTerminalOutputs();
       if (cancelled) return;
       const now = Date.now();

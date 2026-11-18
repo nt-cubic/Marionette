@@ -1128,6 +1128,12 @@ pub fn console_lines(surface: &Surface, limit: usize) -> Value {
 /// Screenshot: CDP JPEG capture, narrowed until it fits the byte budget
 /// (codeg capture.rs loop).
 pub fn screenshot(surface: &Surface, max_width: Option<u32>) -> Result<Value, String> {
+    // Page.captureScreenshot needs a renderer frame, so it stalls behind an
+    // open script dialog just like an eval would — and this call would hold
+    // the process-wide CDP lease while it did. Same gate as the evals.
+    if let Some(note) = dialog_block_note_for(surface.dialog.borrow().as_ref()) {
+        return Err(note);
+    }
     let _lease = CdpLease::take()?;
     ensure_world(surface)?;
     let webview2 = surface.webview.webview();
@@ -1246,6 +1252,10 @@ pub fn pick_clear(surface: &Surface) -> Result<Value, String> {
 /// its highlight first — the crop shows the page, not the picker. The rect
 /// comes from the retained pick payload (measured at pick time).
 pub fn pick_finalize(surface: &Surface, pick_id: &str) -> Result<Value, String> {
+    // The capture below is not an eval, so the eval gate does not cover it.
+    if let Some(note) = dialog_block_note_for(surface.dialog.borrow().as_ref()) {
+        return Err(note);
+    }
     let _lease = CdpLease::take()?;
     let (rect, dpr) = {
         let picks = surface.picks.borrow();

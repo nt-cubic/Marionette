@@ -140,6 +140,16 @@ fn touch_worker_progress(session_id: &str) {
     if !should_write {
         return;
     }
+    // 热路径守卫：emit_now 对**所有**会话的每个事件都会走到这里。普通会话
+    // 不是 worker，不能为它们每 5s 抢 STORE_LOCK 并整档重写 tasks.json
+    // （with_tasks 恒落盘）。先无锁只读判定，确有进行中的 worker 任务才写。
+    let is_active_worker = store::load_tasks().iter().any(|task| {
+        task.worker_session_id.as_deref() == Some(session_id)
+            && matches!(task.status, TaskStatus::Starting | TaskStatus::Running)
+    });
+    if !is_active_worker {
+        return;
+    }
     let _ = store::with_tasks(|tasks| {
         if let Some(task) = tasks.iter_mut().find(|task| {
             task.worker_session_id.as_deref() == Some(session_id)

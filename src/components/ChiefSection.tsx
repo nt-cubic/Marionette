@@ -78,6 +78,7 @@ export function ChiefSection({ embedded = false }: { embedded?: boolean }) {
   useEffect(() => {
     void refresh();
     const timer = window.setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
       void chiefTasksListAll().then((value) => setTasks(value)).catch(() => undefined);
     }, 10000);
     return () => window.clearInterval(timer);

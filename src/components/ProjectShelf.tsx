@@ -84,6 +84,8 @@ function memoPerProject<T>(
 
 function magpieCredit(version?: string | null): string {
   const raw = version?.trim();
+  // 进程内 Rust 引擎不是 magpie 进程，只兼容它的配置格式。
+  if (raw?.startsWith("rust-")) return t("shelf.poweredByBuiltin");
   if (!raw) return t("shelf.poweredBy");
   return t("shelf.poweredByVersion", { version: raw.replace(/^v/i, "") });
 }
@@ -2127,7 +2129,9 @@ export function ProjectShelf({
               <p className="engine-panel__note">
                 {engineState.reused
                   ? t("shelf.engineReused")
-                  : t("shelf.engineSharedModels", { version: engineState.version ?? "" }).replace("  ", " ")}
+                  : engineState.version?.startsWith("rust-")
+                    ? t("shelf.engineSharedModelsBuiltin", { version: engineState.version })
+                    : t("shelf.engineSharedModels", { version: engineState.version ?? "" }).replace("  ", " ")}
               </p>
             )}
             {engineState?.state === "downloading" && (
@@ -2208,7 +2212,8 @@ export function ProjectShelf({
                   </>
                 )}
               </dl>
-            ) : (
+            ) : engineState?.state === "running" && engineState.version?.startsWith("rust-") ? null : (
+              // 进程内 Rust 引擎随应用走，没有「magpie 稳定版更新」可下。
               <p className="engine-panel__note">{t("shelf.engineUpdateHint")}</p>
             )}
             {(engineUpdateInfo?.updateAvailable || engineUpdateInfo?.canRestoreFactory) && (

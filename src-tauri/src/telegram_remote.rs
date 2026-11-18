@@ -183,21 +183,41 @@ fn cursor_path() -> Result<PathBuf, String> {
     Ok(crate::app_paths::global_dir()?.join("telegram-cursor.json"))
 }
 
-fn load_cursor() -> i64 {
+/// Bot 编号 = token 冒号前的数字（公开信息，不含密钥）。游标按 bot 记账：
+/// update_id 是每个 bot 各自的序列，换了 bot（换 token）还沿用旧 offset，
+/// 新 bot 比它小的 update 会被 Telegram 判为「已确认」而永远收不到。
+fn bot_id_of(token: &str) -> String {
+    token.split(':').next().unwrap_or("").to_string()
+}
+
+fn load_cursor(bot_id: &str) -> i64 {
     let path = match cursor_path() {
         Ok(path) => path,
         Err(_) => return 0,
     };
-    std::fs::read_to_string(&path)
+    let Some(value) = std::fs::read_to_string(&path)
         .ok()
         .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-        .and_then(|value| value.get("updateOffset").and_then(Value::as_i64))
+    else {
+        return 0;
+    };
+    // 旧格式（无 botId）或 bot 不符 = 不可信，从 0 起（Telegram 只会重投
+    // 未确认的 update，最坏是重放一小段，不会漏）。
+    if value.get("botId").and_then(Value::as_str) != Some(bot_id) {
+        return 0;
+    }
+    value
+        .get("updateOffset")
+        .and_then(Value::as_i64)
         .unwrap_or(0)
 }
 
-fn save_cursor(offset: i64) {
+fn save_cursor(bot_id: &str, offset: i64) {
     let Ok(path) = cursor_path() else { return };
-    let body = format!("{{\"updateOffset\":{offset}}}\n");
+    let body = format!(
+        "{}\n",
+        serde_json::json!({ "updateOffset": offset, "botId": bot_id })
+    );
     if let Err(error) = crate::storage::write_atomic(&path, &body) {
         log("warn", "persist update cursor failed", Some(&error));
     }
@@ -1112,16 +1132,17 @@ fn observe_turn_complete(
     if probe {
         return;
     }
-    // Probe turns must not consume a staff cooldown/hourly slot.
-    let gate_kind = if kind == "error" { "task.failed" } else { "completed" };
-    if !crate::chief::staff_commands::telegram_notification_allowed(session_id, gate_kind) {
-        return;
-    }
-
     // Chief 模式聚合（02-architecture.md §8.1）：worker 的逐条回合推送被
     // 任务卡取代（chief_task_notify 负责），Chief 自身的回复照推——那是
     // 给用户的交付面。worker 权限卡不受影响（走 permission prompt 路）。
+    // 必须先于下面的员工额度闸：被聚合掉的 worker 回合不能占掉冷却/小时额度，
+    // 否则随后的 task.completed 任务卡会被自己的 worker 回合挡掉。
     if crate::chief::broker::is_chief_worker(session_id) {
+        return;
+    }
+    // Probe turns must not consume a staff cooldown/hourly slot.
+    let gate_kind = if kind == "error" { "task.failed" } else { "completed" };
+    if !crate::chief::staff_commands::telegram_notification_allowed(session_id, gate_kind) {
         return;
     }
 
@@ -2328,8 +2349,10 @@ fn reply_markup(keyboard: &[Vec<TgButton>]) -> Value {
 // ─── 轮询线程 ──────────────────────────────────────────────────────────────
 
 fn poller_loop(slot: &'static Telegram) {
-    // 重启恢复：从游标文件续读（首次运行为 0 = 全量）。
-    let mut offset: i64 = load_cursor();
+    // 重启恢复：从游标文件续读（首次运行为 0 = 全量）。游标按 bot 编号
+    // 绑定，等拿到 token 后在循环里装载 / 换 bot 时清零。
+    let mut offset: i64 = 0;
+    let mut cursor_bot: Option<String> = None;
     let mut backoff = BACKOFF_MIN;
     // 连续 not-ok 应答计数：跟 Err 分支同款指数退避，别固定 15s 敲到天荒地老。
     let mut not_ok_streak: u32 = 0;
@@ -2352,6 +2375,11 @@ fn poller_loop(slot: &'static Telegram) {
             log("info", "telegram token replaced — resuming polling", None);
         }
 
+        let bot_id = bot_id_of(&token);
+        if cursor_bot.as_deref() != Some(bot_id.as_str()) {
+            offset = if cursor_bot.is_none() { load_cursor(&bot_id) } else { 0 };
+            cursor_bot = Some(bot_id.clone());
+        }
         let base = api_base();
         let url = format!(
             "{base}/bot{token}/getUpdates?timeout={POLL_TIMEOUT_SECS}&offset={offset}&allowed_updates=%5B%22message%22%2C%22callback_query%22%5D"
@@ -2401,6 +2429,7 @@ fn poller_loop(slot: &'static Telegram) {
                     .and_then(Value::as_array)
                     .cloned()
                     .unwrap_or_default();
+                let offset_before = offset;
                 for update in updates {
                     if let Some(update_id) = update.get("update_id").and_then(Value::as_i64) {
                         offset = offset.max(update_id + 1);
@@ -2410,7 +2439,10 @@ fn poller_loop(slot: &'static Telegram) {
                 // 游标落盘（每批一次；poller 是唯一写者）。收到即推进：
                 // 崩溃窗口内丢的是「处理中」的那一批，不产生重复任务
                 // （broker requestId / callback 只接受一次兜底）。
-                save_cursor(offset);
+                // 空批（50s 长轮询超时）不重复写盘。
+                if offset != offset_before {
+                    save_cursor(&bot_id, offset);
+                }
             }
             Err(error) => {
                 let is_conflict = error.contains("409") || error.contains("Conflict");

@@ -12,7 +12,7 @@ use super::tee;
 use crate::AppState;
 
 /// 读 Chief 配置（无凭据）。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn chief_config_load() -> Value {
     let config = store::load_config();
     serde_json::to_value(&config).unwrap_or_else(|_| json!({ "mode": "off" }))
@@ -38,7 +38,7 @@ pub fn chief_config_save(config: Value) -> Result<Value, String> {
 }
 
 /// 全量任务清单（本地 UI 用：跨 chief、不过 MCP 门禁）。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn chief_tasks_list_all() -> Value {
     json!({ "tasks": store::load_tasks() })
 }
@@ -62,7 +62,7 @@ pub fn chief_tee_consume(session_id: String, upto_seq: u64) -> Result<(), String
     tee::set_consumed_seq(&session_id, upto_seq)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn chief_tee_cursor(session_id: String) -> u64 {
     tee::consumed_seq(&session_id)
 }

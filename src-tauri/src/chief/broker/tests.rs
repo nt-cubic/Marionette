@@ -214,6 +214,51 @@ fn ordinary_notification_budget_survives_by_being_written_to_staff_profile() {
     std::fs::remove_dir_all(&root).ok();
 }
 
+/// 桌面提醒用只读闸（不占额度）；task.created / task.started 是确认回执，
+/// 不占冷却/小时额度也不被它们挡——否则默认 30 分钟冷却会吞掉完成卡。
+#[test]
+fn desktop_peek_and_task_acks_do_not_consume_report_budget() {
+    let guard = lock_sandbox();
+    let root = sandbox_root("staff-notify-peek");
+    staff::set_root_override_for_tests(Some(root.clone()));
+    reset_for_tests();
+    let mut registry = staff::StaffRegistry::new();
+    registry
+        .add(staff::StaffProfile {
+            staff_id: "staff_peek".into(),
+            session_id: "session_staff_peek".into(),
+            policy: staff::StaffPolicy {
+                quiet_hours: String::new(),
+                notification_cooldown_minutes: 30,
+                max_reports_per_hour: 4,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .unwrap();
+    staff::save(&registry).unwrap();
+    // 桌面侧反复探测不消耗额度。
+    for _ in 0..3 {
+        assert!(staff_commands::notification_would_allow(
+            "session_staff_peek",
+            "completed"
+        ));
+    }
+    assert_eq!(staff::load().get("staff_peek").unwrap().notifications_in_window, 0);
+    // 确认回执既不占额度……
+    assert!(staff_commands::notification_allowed("session_staff_peek", "task.created"));
+    assert!(staff_commands::notification_allowed("session_staff_peek", "task.started"));
+    assert_eq!(staff::load().get("staff_peek").unwrap().notifications_in_window, 0);
+    // ……完成汇报照常拿到第一个名额，之后进入冷却，peek 同步反映。
+    assert!(staff_commands::notification_allowed("session_staff_peek", "completed"));
+    assert!(!staff_commands::notification_would_allow("session_staff_peek", "completed"));
+    assert!(staff_commands::notification_would_allow("session_staff_peek", "task.created"));
+    reset_for_tests();
+    staff::set_root_override_for_tests(None);
+    drop(guard);
+    std::fs::remove_dir_all(&root).ok();
+}
+
 /// 唤醒收件箱与用户队列：FIFO、计数、互不串台。
 #[test]
 fn wake_inbox_and_user_queue_are_fifo() {

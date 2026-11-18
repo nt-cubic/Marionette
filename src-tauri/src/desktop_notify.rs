@@ -53,6 +53,31 @@ fn probe_turns() -> &'static Mutex<HashSet<String>> {
     VALUE.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
+/// 本轮是否出现过助手正文（agent_message_chunk）。没有 = 「agent 静默停了」：
+/// 空回合或只跑工具就收尾，屏幕上没有任何可读内容，所以聚焦时也要响。
+fn replied_turns() -> &'static Mutex<HashSet<String>> {
+    static VALUE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    VALUE.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// 会话标题（通知正文里的会话名，旧前端实现就带）。`try_lock`：本函数跑在
+/// ACP 派发线程上，storage 锁被占就放弃标题，绝不为一个通知等锁。
+fn session_label(app: &AppHandle, session_id: &str) -> Option<String> {
+    let state = app.try_state::<crate::AppState>()?;
+    let storage = state.storage.try_lock().ok()?;
+    let session = storage.find_session(session_id).ok().flatten()?;
+    let label = compact_detail(&session.label);
+    (!label.is_empty()).then_some(label)
+}
+
+fn with_label(label: Option<&str>, detail: &str) -> String {
+    match label {
+        Some(l) if detail.is_empty() => l.to_string(),
+        Some(l) => format!("{l} · {detail}"),
+        None => detail.to_string(),
+    }
+}
+
 fn silent_turns() -> &'static Mutex<HashSet<String>> {
     static VALUE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     VALUE.get_or_init(|| Mutex::new(HashSet::new()))
@@ -82,6 +107,9 @@ pub fn clear_turn_marks(session_id: &str) {
         turns.remove(session_id);
     }
     if let Ok(mut turns) = silent_turns().lock() {
+        turns.remove(session_id);
+    }
+    if let Ok(mut turns) = replied_turns().lock() {
         turns.remove(session_id);
     }
 }
@@ -118,13 +146,37 @@ pub fn observe_acp_event(
         _ => None,
     };
     if gate_kind.is_some_and(|gate| {
-        !crate::chief::staff_commands::notification_allowed(session_id, gate)
+        !crate::chief::staff_commands::notification_would_allow(session_id, gate)
     }) {
         clear_turn_marks(session_id);
         return;
     }
+    let label = if matches!(
+        method,
+        Some("turn/complete") | Some("permission/prompt") | Some("question/prompt") | Some("plan/approval")
+    ) {
+        session_label(app, session_id)
+    } else {
+        None
+    };
+    let label = label.as_deref();
     match method {
+        Some("session/update") => {
+            if data.pointer("/params/update/sessionUpdate").and_then(Value::as_str)
+                == Some("agent_message_chunk")
+            {
+                if let Ok(mut turns) = replied_turns().lock() {
+                    if !turns.contains(session_id) {
+                        turns.insert(session_id.to_string());
+                    }
+                }
+            }
+        }
         Some("turn/complete") => {
+            let replied = replied_turns()
+                .lock()
+                .map(|mut turns| turns.remove(session_id))
+                .unwrap_or(false);
             let suppressed = consume_suppressed_turn(session_id);
             let stop_reason = data
                 .get("stopReason")
@@ -136,9 +188,11 @@ pub fn observe_acp_event(
             let failed = kind == "error" || matches!(stop_reason, "error" | "refusal");
             if failed {
                 let detail = error_detail(data).unwrap_or_else(|| "Agent error".to_string());
-                raise(app, target_window, Kind::Error, &detail, false);
+                raise(app, target_window, Kind::Error, &with_label(label, &detail), false);
+            } else if !replied {
+                raise(app, target_window, Kind::Reply, &with_label(label, "agent stopped"), true);
             } else {
-                raise(app, target_window, Kind::Reply, "Reply ready", true);
+                raise(app, target_window, Kind::Reply, &with_label(label, "Reply ready"), true);
             }
         }
         Some("permission/prompt") => {
@@ -151,14 +205,14 @@ pub fn observe_acp_event(
                     app,
                     target_window,
                     Kind::Plan,
-                    "Plan ready for review",
+                    &with_label(label, "Plan ready for review"),
                     false,
                 );
             } else {
                 let detail = string_field(data, "detail")
                     .or_else(|| string_field(data, "title"))
                     .unwrap_or_else(|| "Permission required".to_string());
-                raise(app, target_window, Kind::Permission, &detail, false);
+                raise(app, target_window, Kind::Permission, &with_label(label, &detail), false);
             }
         }
         Some("question/prompt") => {
@@ -168,14 +222,14 @@ pub fn observe_acp_event(
                 .map(compact_detail)
                 .or_else(|| string_field(data, "title"))
                 .unwrap_or_else(|| "Agent has a question".to_string());
-            raise(app, target_window, Kind::Question, &detail, false);
+            raise(app, target_window, Kind::Question, &with_label(label, &detail), false);
         }
         Some("plan/approval") => {
             raise(
                 app,
                 target_window,
                 Kind::Plan,
-                "Plan ready for review",
+                &with_label(label, "Plan ready for review"),
                 false,
             );
         }
