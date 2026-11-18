@@ -691,6 +691,7 @@ fn main() {
             commands::start_agent_login,
             commands::start_grok_update,
             commands::start_acp_session,
+            commands::acp_replay_events,
             commands::send_acp_prompt,
             commands::set_stream_interests,
             commands::read_image_data_url,

@@ -3649,6 +3649,45 @@ function AppMain() {
     const ACP_FLUSH_CHUNK = 200;
     const acpInbox: AcpEvent[] = [];
     let acpFlushTimer: number | undefined;
+    // ── 投递缺口恢复（2026-11-18：主线程冻结静默吞掉一条完整回复）──
+    // 后端给每条 acp-event 盖了按会话递增的 seq；看到 seq 跳跃 = 有投递被
+    // 丢（emit 卡死 / webview 挂起 / 主线程冻结）。处理方式：扣住该会话的
+    // 后续事件，从后端 ring 补齐缺口后按序回灌 inbox；重复投递（seq ≤ 已见）
+    // 直接丢弃。基线只会在第一次见到某会话事件时建立——窗口重载边界不做
+    // 对账（转录已从磁盘加载，回放会重文）。
+    const lastSeqBySession = new Map<string, number>();
+    const holdBySession = new Map<string, AcpEvent[]>();
+    const replayInflight = new Set<string>();
+    const replayAttempts = new Map<string, number>();
+    const requestAcpReplay = (sessionId: string, sinceSeq: number) => {
+      if (replayInflight.has(sessionId)) return;
+      replayInflight.add(sessionId);
+      const target =
+        IS_DETACHED_WINDOW && DETACHED_SESSION_ID
+          ? `detached-${DETACHED_SESSION_ID}`
+          : "main";
+      void invoke<AcpEvent[]>("acp_replay_events", {
+        sessionId,
+        sinceSeq,
+        target,
+        limit: 2048,
+      })
+        .then((missed) => {
+          const held = holdBySession.get(sessionId) ?? [];
+          holdBySession.delete(sessionId);
+          acpInbox.unshift(...(missed ?? []), ...held);
+        })
+        .catch(() => {
+          // 后端拒绝（旧版本二进制等）：放行扣住的事件——宁可残缺不要卡死。
+          const held = holdBySession.get(sessionId) ?? [];
+          holdBySession.delete(sessionId);
+          acpInbox.unshift(...held);
+        })
+        .finally(() => {
+          replayInflight.delete(sessionId);
+          scheduleAcpFlush();
+        });
+    };
     const flushAcpInbox = () => {
       acpFlushTimer = undefined;
       if (disposed) {
@@ -3668,6 +3707,38 @@ function AppMain() {
           // ownership / reload state may flip while events sit in the inbox.
           if (payload.sessionId && !ownsAcpSession(payload.sessionId)) continue;
           if (payload.sessionId && reloadingSessionsRef.current.has(payload.sessionId)) continue;
+          // Seq gap recovery — see the block comment above acpInbox.
+          const seq =
+            typeof payload.seq === "number" && payload.seq > 0 ? payload.seq : 0;
+          if (payload.sessionId && seq > 0) {
+            const sid = payload.sessionId;
+            if (holdBySession.has(sid)) {
+              // A refill for this session is in flight; keep order intact.
+              holdBySession.get(sid)!.push(payload);
+              continue;
+            }
+            const last = lastSeqBySession.get(sid);
+            if (last === undefined) {
+              lastSeqBySession.set(sid, seq);
+            } else if (seq <= last) {
+              continue; // duplicate delivery
+            } else if (seq === last + 1) {
+              lastSeqBySession.set(sid, seq);
+            } else {
+              const gapKey = `${sid}:${last}`;
+              if ((replayAttempts.get(gapKey) ?? 0) >= 1) {
+                // One refill already tried and missed (ring aged out / backend
+                // restart). Accept the loss rather than wedge the session.
+                replayAttempts.delete(gapKey);
+                lastSeqBySession.set(sid, seq);
+              } else {
+                replayAttempts.set(gapKey, 1);
+                holdBySession.set(sid, [payload]);
+                requestAcpReplay(sid, last);
+                continue;
+              }
+            }
+          }
           handleAcpEvent(payload);
         } catch (err) {
           pushDebug({

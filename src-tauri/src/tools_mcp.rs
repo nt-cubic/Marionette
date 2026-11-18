@@ -223,7 +223,31 @@ fn route(method: &str, params: &Value, session_id: &str) -> Result<Value, Value>
             let Some(state) = SERVER.get() else {
                 return Err(json!({"code": -32000, "message": "server is down"}));
             };
+            // Browser/computer tools hop to the main thread and can CDP-wait
+            // behind a cold renderer; without this line a hung call left zero
+            // trace in dev.log (2026-11-18 freeze was timed by inference only).
+            let dispatch_started = Instant::now();
             let outcome = dispatch(&state.app, session_id, name, &arguments);
+            let took_ms = dispatch_started.elapsed().as_millis();
+            if name.starts_with("browser_") || name.starts_with("computer_") {
+                crate::debug_log::append(
+                    "mcp",
+                    if took_ms > 5_000 { "warn" } else { "info" },
+                    session_id,
+                    "tool call",
+                    Some(&format!(
+                        "{name} {}ms {}",
+                        took_ms,
+                        match &outcome {
+                            Ok(value) => {
+                                let errored = value.get("error").is_some();
+                                if errored { "refused" } else { "ok" }
+                            }
+                            Err(_) => "host-error",
+                        }
+                    )),
+                );
+            }
             match outcome {
                 Ok(value) => Ok(json!({
                     "content": [{ "type": "text", "text": value.to_string() }],

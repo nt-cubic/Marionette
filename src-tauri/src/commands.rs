@@ -2121,6 +2121,25 @@ fn start_cli_login(
     }))
 }
 
+/// Replay ACP events the calling window missed (dropped delivery after a
+/// frozen main thread or a suspended webview). `since_seq` is the last seq
+/// the window processed; `target` is the caller's event target ("main" or
+/// "detached-<id>") so events owned by the other window are never handed out.
+#[tauri::command]
+pub fn acp_replay_events(
+    session_id: String,
+    since_seq: u64,
+    target: Option<String>,
+    limit: Option<usize>,
+) -> Vec<crate::acp::AcpEvent> {
+    crate::acp::replay_events(
+        &session_id,
+        since_seq,
+        target.as_deref().unwrap_or("main"),
+        limit.unwrap_or(512).clamp(1, 2048),
+    )
+}
+
 /// Async so the handshake runs on a blocking pool and does not stall the webview
 /// (IME / typing) while OpenCode/Claude spawn + initialize.
 #[tauri::command]

@@ -1,7 +1,7 @@
 use agent_client_protocol_schema::v1 as acp_schema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -277,6 +277,10 @@ pub struct AcpEvent {
     pub kind: String,
     pub method: Option<String>,
     pub data: Value,
+    /// Per-session monotonic delivery counter, stamped in `emit_acp_event`.
+    /// The UI uses it to detect dropped deliveries (frozen main thread,
+    /// suspended webview) and to ask `acp_replay_events` for the gap.
+    pub seq: u64,
 }
 
 struct AcpProcess {
@@ -511,6 +515,7 @@ impl AcpService {
                         "Starting agent process…"
                     }
                 }),
+                seq: 0,
             },
         );
 
@@ -1251,13 +1256,18 @@ impl AcpService {
                     "phase": "initialize",
                     "hint": "Handshake with agent (initialize)…"
                 }),
+                seq: 0,
             },
         );
 
         // ── Phase 1: initialize (client capabilities we actually implement) ──
         let client_capabilities =
             crate::agent_registry::build_client_capabilities_json(agent_id.as_deref());
-        let initialized = request(
+        // Cold npx/npm spawns can handshake for minutes (the spawn hint says
+        // 1–3 min); the default 60s request timeout killed codex twice on
+        // 2026-11-18 with the answer arriving ~0.1s past the line. The answer
+        // arriving late is indistinguishable from hung — wait the full window.
+        let initialized = request_with_timeout(
             &process,
             "initialize",
             json!({
@@ -1265,6 +1275,8 @@ impl AcpService {
                 "clientCapabilities": client_capabilities,
                 "clientInfo": { "name": "Marionette", "version": "0.1.0" }
             }),
+            Duration::from_secs(180),
+            false,
         );
         let initialized = match initialized {
             Ok(value) => value,
@@ -1444,6 +1456,7 @@ impl AcpService {
                     "phase": "session_new",
                     "hint": "Creating agent session…"
                 }),
+                seq: 0,
             },
         );
 
@@ -1635,6 +1648,7 @@ impl AcpService {
                     // (and is the only size Grok ever reports).
                     "contextSize": advertised_context_size(&new_session),
                 }),
+                seq: 0,
             },
         );
         Ok(caps)
@@ -4733,6 +4747,31 @@ mod tests {
     use std::sync::mpsc::Receiver;
 
     #[test]
+    fn replay_ring_keeps_per_session_order_and_filters_target() {
+        // Unique ids keep this test independent of other tests sharing the
+        // process-global ring/seq maps. `emit_acp_event` stamps the seq then
+        // files; the test reproduces those two steps directly.
+        let sid = format!("session-replay-test-{}", std::process::id());
+        for i in 1..=3u64 {
+            let event = AcpEvent {
+                session_id: sid.clone(),
+                kind: "notification".into(),
+                method: Some("session/update".into()),
+                data: json!({ "i": i }),
+                seq: bump_session_seq(&sid),
+            };
+            file_for_replay(&event);
+        }
+        let replayed = replay_events(&sid, 0, "main", 16);
+        let seqs: Vec<u64> = replayed.iter().map(|event| event.seq).collect();
+        assert_eq!(seqs, vec![1, 2, 3], "replay must be oldest-first, gap-free");
+        // since_seq is exclusive; limit is respected.
+        let replayed = replay_events(&sid, 1, "main", 1);
+        assert_eq!(replayed.len(), 1);
+        assert_eq!(replayed[0].seq, 2);
+    }
+
+    #[test]
     fn strip_ansi_drops_csi_and_keeps_text() {
         assert_eq!(
             strip_ansi("\u{1b}[91m\u{1b}[1mError: \u{1b}[0mConfiguration is invalid"),
@@ -6586,7 +6625,14 @@ fn acp_ui_target(session_id: &str) -> String {
     }
 }
 
-fn emit_acp_event(app: &AppHandle, payload: AcpEvent) {
+fn emit_acp_event(app: &AppHandle, mut payload: AcpEvent) {
+    // Stamp the per-session delivery counter and file the event for replay
+    // BEFORE the emit: an emit that stalls (frozen main thread) or lands in a
+    // suspended webview is dropped silently, and 2026-11-18 that swallowed a
+    // whole finished reply — the UI never saw it and the transcript never got
+    // it. The ring is the UI's crash cart via `acp_replay_events`.
+    payload.seq = bump_session_seq(&payload.session_id);
+    file_for_replay(&payload);
     let target = acp_ui_target(&payload.session_id);
     let delegate_child = parent_of()
         .lock()
@@ -6604,6 +6650,79 @@ fn emit_acp_event(app: &AppHandle, payload: AcpEvent) {
     if app.emit_to(&target, ACP_EVENT, &payload).is_err() && target != "main" {
         let _ = app.emit_to("main", ACP_EVENT, &payload);
     }
+}
+
+// ── Delivery replay (drop recovery) ────────────────────────────────────────
+//
+// Per-session seq + a bounded per-session ring of what was emitted. A window
+// that sees seq jump (dropped delivery) asks for the gap; events routed to a
+// different window (detached) are filtered out so ownership is never
+// double-delivered. Per-session rings, not one global queue: a streaming turn
+// emits thousands of chunks and a global ring would age out in seconds —
+// exactly the window a frozen main thread needs refilled.
+
+/// Events kept per session. Chunk payloads are small; ~2048 covers a long
+/// turn. This is a fallback for recent drops, not a durable log — anything
+/// older is gone for good.
+const REPLAY_RING_CAP_PER_SESSION: usize = 2048;
+/// Sessions whose rings are kept at once. Least-recently-touched session
+/// (first key of the map) is evicted wholesale past this.
+const REPLAY_RING_MAX_SESSIONS: usize = 48;
+
+static REPLAY_RINGS: OnceLock<Mutex<HashMap<String, VecDeque<AcpEvent>>>> = OnceLock::new();
+static SESSION_SEQS: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+
+fn replay_rings() -> &'static Mutex<HashMap<String, VecDeque<AcpEvent>>> {
+    REPLAY_RINGS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn session_seqs() -> &'static Mutex<HashMap<String, u64>> {
+    SESSION_SEQS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn bump_session_seq(session_id: &str) -> u64 {
+    session_seqs()
+        .lock()
+        .map(|mut seqs| {
+            let next = seqs.get(session_id).copied().unwrap_or(0) + 1;
+            seqs.insert(session_id.to_string(), next);
+            next
+        })
+        .unwrap_or(1)
+}
+
+fn file_for_replay(payload: &AcpEvent) {
+    if let Ok(mut rings) = replay_rings().lock() {
+        let ring = rings.entry(payload.session_id.clone()).or_default();
+        ring.push_back(payload.clone());
+        while ring.len() > REPLAY_RING_CAP_PER_SESSION {
+            ring.pop_front();
+        }
+        if rings.len() > REPLAY_RING_MAX_SESSIONS {
+            // HashMap has no recency order; evicting an arbitrary session is
+            // fine at 48 slots — replay is a best-effort crash cart.
+            if let Some(key) = rings.keys().next().cloned() {
+                rings.remove(&key);
+            }
+        }
+    }
+}
+
+/// Events for one session with `seq > since_seq`, oldest first, filtered to
+/// the window that would have received them live (`target`: "main" or
+/// "detached-<id>"). Never includes `since_seq` itself.
+pub fn replay_events(session_id: &str, since_seq: u64, target: &str, limit: usize) -> Vec<AcpEvent> {
+    let Some(rings) = replay_rings().lock().ok() else {
+        return Vec::new();
+    };
+    let Some(ring) = rings.get(session_id) else {
+        return Vec::new();
+    };
+    ring.iter()
+        .filter(|event| event.seq > since_seq && acp_ui_target(session_id) == target)
+        .take(limit)
+        .cloned()
+        .collect()
 }
 
 fn queue_event(session_id: &str, event: UiEvent) -> Result<(), UiEvent> {
@@ -7346,6 +7465,7 @@ fn emit_now(app: &AppHandle, session_id: &str, event: UiEvent) -> Duration {
             kind: event.kind,
             method: event.method,
             data: event.data,
+            seq: 0,
         },
     );
     if let Ok(mut slot) = emit_inflight().lock() {

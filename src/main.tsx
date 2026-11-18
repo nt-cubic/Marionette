@@ -113,6 +113,38 @@ class RootErrorBoundary extends React.Component<
 
 installDiagnosticCapture();
 
+// tauri 2.11.5 注入的 `unregisterListener` 对「条目已不存在」直接读
+// `listeners[eventId].handlerId` 抛 TypeError——任何一次重复 unlisten /
+// once() 竞态都以 unhandled rejection 收场（dev.log 里成串的
+// `Cannot read properties of undefined (reading 'handlerId')`）。
+// 上游 2.12.x 已加 `if (listener)` 守卫；升级 tauri 越过修复版后删除本垫片。
+{
+  const internals = (
+    window as unknown as {
+      __TAURI_EVENT_PLUGIN_INTERNALS__?: {
+        unregisterListener?: (event: string, eventId: number) => void;
+        __marionetteGuarded?: boolean;
+      };
+    }
+  ).__TAURI_EVENT_PLUGIN_INTERNALS__;
+  if (
+    internals &&
+    typeof internals.unregisterListener === "function" &&
+    !internals.__marionetteGuarded
+  ) {
+    internals.__marionetteGuarded = true;
+    const original = internals.unregisterListener;
+    internals.unregisterListener = (event, eventId) => {
+      try {
+        original(event, eventId);
+      } catch {
+        // Entry already removed — the follow-up `plugin:event|unlisten`
+        // invoke in _unlisten is a harmless no-op on the Rust side.
+      }
+    };
+  }
+}
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <RootErrorBoundary>

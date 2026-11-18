@@ -81,6 +81,10 @@ export type AcpEvent = {
   kind: "notification" | "request" | "response" | "stderr" | "system" | "error";
   method: string | null;
   data: unknown;
+  /** Per-session delivery counter (0 = pre-replay backend). A gap means the
+   * UI missed deliveries (frozen main thread / suspended webview); the gap is
+   * refilled via the `acp_replay_events` command. */
+  seq?: number;
 };
 
 export type SessionStatus = "starting" | "running" | "waiting" | "exited" | "error";

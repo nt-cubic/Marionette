@@ -30,12 +30,13 @@ use webview2_com::{
     CallDevToolsProtocolMethodCompletedHandler, DevToolsProtocolEventReceivedEventHandler,
 };
 use windows::core::{HSTRING, Interface, PWSTR};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WAIT_TIMEOUT, WPARAM};
 use windows::Win32::UI::Shell::{DefSubclassProc, GetWindowSubclass, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, SetWindowPos, SIZE_MINIMIZED, SWP_ASYNCWINDOWPOS,
-    SWP_NOACTIVATE, SWP_NOZORDER, WM_ENTERSIZEMOVE, WM_MOVE, WM_MOVING, WM_NCDESTROY,
-    WM_SETFOCUS, WM_SIZE,
+    DispatchMessageA, GetClientRect, MsgWaitForMultipleObjectsEx, MWMO_INPUTAVAILABLE,
+    PeekMessageA, PM_REMOVE, QS_ALLINPUT, SetWindowPos, SIZE_MINIMIZED, SWP_ASYNCWINDOWPOS,
+    SWP_NOACTIVATE, SWP_NOZORDER, TranslateMessage, WM_ENTERSIZEMOVE, WM_MOVE, WM_MOVING,
+    WM_NCDESTROY, WM_SETFOCUS, WM_SIZE, MSG,
 };
 
 use webview2_com::Microsoft::Web::WebView2::Win32::{
@@ -344,30 +345,79 @@ pub fn now_ms_pub() -> u64 {
 // CDP plumbing (codeg shim/windows.rs shape, reduced to what we use)
 // ---------------------------------------------------------------------------
 
-/// Call a CDP method and pump the message loop until its completion arrives.
-/// The caller must NOT hold the surfaces borrow: the pump can dispatch
-/// surface lifecycle (that rule is why every public fn clones its Rc first).
+/// How long any single CDP round-trip may hold the main thread. Cold
+/// renderers (first browser use after startup) can sit on
+/// `Page.captureScreenshot` for minutes; the stock webview2-com pump below
+/// waits forever, which froze the whole app twice on 2026-11-18 (MAIN THREAD
+/// STALLED ~200s+, browser surface white, ACP delivery stuck). Bounded waits
+/// turn that into a tool error the agent can retry.
+const CDP_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Call a CDP method and pump the message loop until its completion arrives
+/// **or the deadline passes**. The caller must NOT hold the surfaces borrow:
+/// the pump can dispatch surface lifecycle (that rule is why every public fn
+/// clones its Rc first).
+///
+/// This is `wait_for_async_operation` with its `GetMessageA` pump replaced by
+/// a deadline-aware one — and with a completion closure that must never panic
+/// on a late answer (the stock one `expect`s the channel send; after a
+/// timeout the receiver is gone and the abort would kill the process).
 fn call_and_wait(webview: &ICoreWebView2, method: &str, params: &str) -> Result<String, String> {
-    let answer = Rc::new(RefCell::new(String::new()));
-    let received = answer.clone();
-    let webview = webview.clone();
-    let name = HSTRING::from(method);
-    let params = HSTRING::from(params);
-    CallDevToolsProtocolMethodCompletedHandler::wait_for_async_operation(
-        Box::new(move |handler| {
-            // SAFETY: main thread, live webview; the handler outlives the call.
-            unsafe { webview.CallDevToolsProtocolMethod(&name, &params, &handler) }
-                .map_err(Into::into)
-        }),
-        Box::new(move |result, json| {
+    let (tx, rx) = mpsc::channel::<String>();
+    // Late completion after a timeout: the send fails and is ignored — no panic.
+    let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
+        move |result, json| {
             result?;
-            *received.borrow_mut() = json;
+            let _ = tx.send(json);
             Ok(())
-        }),
-    )
-    .map_err(|err| format!("{method} failed: {err:?}"))?;
-    let out = answer.borrow().clone();
-    Ok(out)
+        },
+    ));
+    let name = HSTRING::from(method);
+    let params_h = HSTRING::from(params);
+    // SAFETY: main thread, live webview; WebView2 owns the handler from here.
+    unsafe { webview.CallDevToolsProtocolMethod(&name, &params_h, &handler) }
+        .map_err(|err| format!("{method} failed: {err:?}"))?;
+
+    let deadline = std::time::Instant::now() + CDP_WAIT_TIMEOUT;
+    let mut msg = MSG::default();
+    loop {
+        if let Ok(answer) = rx.try_recv() {
+            return Ok(answer);
+        }
+        let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+            return Err(format!(
+                "{method} timed out after {}s (page too cold or busy — retry)",
+                CDP_WAIT_TIMEOUT.as_secs()
+            ));
+        };
+        // Wake on queued input only; MWMO_INPUTAVAILABLE so messages that
+        // arrived before the wait still count. Plain window messages must
+        // keep flowing — that is what keeps the window alive while we wait.
+        // SAFETY: no handles; only the message queue is waited on.
+        let wake = unsafe {
+            MsgWaitForMultipleObjectsEx(
+                None,
+                remaining.as_millis().min(u32::MAX as u128) as u32,
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE,
+            )
+        };
+        if wake == WAIT_TIMEOUT {
+            continue; // re-check the channel, then the deadline
+        }
+        // SAFETY: thread-local message pump, same shape as stock GetMessageA
+        // loop — dispatch everything pending, checking for the answer between
+        // messages so a completion raised mid-drain ends the wait immediately.
+        while unsafe { PeekMessageA(&mut msg, None, 0, 0, PM_REMOVE).as_bool() } {
+            unsafe {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageA(&msg);
+            }
+            if let Ok(answer) = rx.try_recv() {
+                return Ok(answer);
+            }
+        }
+    }
 }
 
 /// Route one CDP event into `on_event`. The receiver stays alive as long as
