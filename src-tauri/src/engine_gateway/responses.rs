@@ -27,13 +27,22 @@
 //! completed：chat 流的 usage 帧在 finish 之后（include_usage 时是独立
 //! 末帧），先封口 usage 就丢了——等 usage 或 [DONE]。
 //!
-//! 未覆盖（列给账本）：reasoning item（chat 流没有对应物，不编造）、
-//! 直通路径的 bodycap refit（丢图逻辑只认 chat 形状的 messages/image_url，
-//! 对 responses 形状的 input/input_image 找不到可丢的图——挂上反而把
-//! 「可救」说成「救过了」）。流式 function_call 自 T15 起有完整映射
+//! 组路由 + 失败转移（groups.rs）：asked 解析成有序候选，每个成员各自直通或
+//! 翻译；只在应答头阶段换成员。直通路径的字节上限 refit 用 responses 形状
+//! （`input[].content[].type=input_image`，bodycap::Shape::Responses）。
+//! reasoning item：翻译到 chat 时文本暂存进 assistant 消息（translate.rs），
+//! 由 chat::fit_for_vendor 按厂商回放/丢弃。
+//! 未覆盖（列给账本）：reasoning item 的**应答方向**（chat 流没有对应物，
+//! 不编造）。流式 function_call 自 T15 起有完整映射
 //! （chat 的 tool_calls 分片经 translate::ChatToolAccum 拼装，一次调用
 //! 出一族 `output_item.added → arguments.delta → arguments.done →
 //! output_item.done`，与文本 item 按到达序交错）。
+//!
+//! Codex 的非 function 工具（custom / namespace / tool_search）：翻译请求时按
+//! Go readResponses 压平成 chat 函数（flat 名唯一、≤64、`[a-zA-Z0-9_-]`），
+//! 还原表 `translate::ToolTable` 随请求走到本文件的应答编码器（流式与非流式），
+//! 调用按 Go callTo 还原成 custom_tool_call / 带 namespace 的 function_call /
+//! tool_search_call。web_search / image_generation / local_shell 与 Go 一样有意丢弃。
 //!
 //! 参照（只读研究克隆）：magpie internal/gateway/responses.go 的
 //! responsesEncoder（事件序列与帧形状）/ renderResponses（非流式应答）。
@@ -43,6 +52,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
+use super::bodycap;
+use super::groups::Attempt;
 use super::httpd::Reply;
 
 // =====================================================================
@@ -95,26 +106,37 @@ fn rewrite_model(body: &[u8], bare: &str) -> Vec<u8> {
 // 入口
 // =====================================================================
 
-/// POST /v1/responses 入口。解析 model → 组路由 → 直通或翻译。
+/// POST /v1/responses 入口。解析 model → 组路由（有序候选，失败转移）→
+/// 每个成员直通或翻译。
 pub fn handle(gateway: &super::Gateway, body: &[u8]) -> Reply {
     let model = asked_model(body);
     if model.is_empty() {
         return Reply::error(400, "invalid request: model");
     }
+    let cands = super::groups::plan_for(gateway, &model);
+    if cands.is_empty() {
+        return Reply::error(404, &format!("no provider for model: {model}"));
+    }
+    super::groups::drive(&cands, |cand| {
+        let body = super::groups::body_for(gateway, super::effort::Proto::Responses, cand, body);
+        attempt(gateway, cand, &body)
+    })
+}
+
+/// 一个成员的一次尝试：直通优先，responses 端点不存在再退翻译。
+fn attempt(gateway: &super::Gateway, cand: &super::groups::Candidate, body: &[u8]) -> Attempt {
     // 锁内只做表查询与字段快照，锁外跑网络（store 锁绝不持着等 HTTP——
     // 2026-10-31 storage 锁事故红线）。
-    let (responses_url, key, headers, bare) = {
+    let (responses_url, key, headers, has_chat) = {
         let store = match gateway.store.lock() {
             Ok(s) => s,
-            Err(_) => return Reply::error(500, "store poisoned"),
+            Err(_) => return Attempt::Done(Reply::error(500, "store poisoned")),
         };
-        let Some((provider_id, bare)) =
-            super::groups::resolve(store.groups(), store.providers(), &model)
-        else {
-            return Reply::error(404, &format!("no provider for model: {model}"));
-        };
-        let Some(provider) = store.find(&provider_id) else {
-            return Reply::error(404, &format!("no provider for model: {model}"));
+        let Some(provider) = store.find(&cand.provider) else {
+            return Attempt::Retry(Reply::error(
+                404,
+                &format!("no provider for model: {}/{}", cand.provider, cand.model),
+            ));
         };
         (
             provider.responses.clone(),
@@ -124,77 +146,138 @@ pub fn handle(gateway: &super::Gateway, body: &[u8]) -> Reply {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect::<Vec<_>>(),
-            bare,
+            !provider.chat.is_empty(),
         )
     };
     if !responses_url.is_empty() {
-        let streaming = serde_json::from_slice::<Value>(body)
-            .ok()
-            .and_then(|v| v.get("stream").and_then(|s| s.as_bool()))
-            .unwrap_or(false);
-        return passthrough(&responses_url, &key, &headers, body, &bare, streaming);
+        let target = DirectTarget { provider_id: &cand.provider, base: &responses_url, key: &key, headers: &headers };
+        match passthrough(gateway, &target, body, &cand.model) {
+            // 预设表给了 responses 端点不等于厂商真有（DeepSeek 一类：用户机上
+            // magpie 学到后把它清空了）：端点不存在（404/405/501）且来源有 chat
+            // 基址 → 退回翻译路径，别把 codex 晾在一个不存在的端点上。
+            Attempt::Retry(Reply::Json { status, .. }) | Attempt::Done(Reply::Json { status, .. })
+                if matches!(status, 404 | 405 | 501) && has_chat => {}
+            other => return other,
+        }
     }
-    translate_via_chat(gateway, body)
+    if !has_chat {
+        return Attempt::Retry(Reply::error(
+            404,
+            &format!("{} has no endpoint for /v1/responses", cand.provider),
+        ));
+    }
+    translate_via_chat(gateway, cand, body)
 }
 
 // =====================================================================
 // 直通路径
 // =====================================================================
 
-/// 原样转发 `{responses}/responses`。SSE（stream:true）字节级透传；
-/// 错误（4xx/5xx）原样透传——错误面是厂商与 codex 之间的事，重写只会
-/// 丢厂商的原话（bodycap 见模块注释：responses 形状不挂）。
-fn passthrough(
-    base: &str,
-    key: &str,
-    headers: &[(String, String)],
-    body: &[u8],
-    bare: &str,
-    streaming: bool,
-) -> Reply {
-    let url = format!("{}/responses", base.trim_end_matches('/'));
-    let out_body = rewrite_model(body, bare);
+struct DirectTarget<'a> {
+    provider_id: &'a str,
+    base: &'a str,
+    key: &'a str,
+    headers: &'a [(String, String)],
+}
+
+fn send_direct(target: &DirectTarget, body: &[u8]) -> Result<ureq::Response, String> {
+    let url = format!("{}/responses", target.base.trim_end_matches('/'));
     let agent = super::outbound_agent();
     let mut request = agent
         .post(&url)
         .set("Content-Type", "application/json")
         .set("Accept", "application/json");
-    if !key.is_empty() {
-        request = request.set("Authorization", &format!("Bearer {}", key));
+    if !target.key.is_empty() {
+        request = request.set("Authorization", &format!("Bearer {}", target.key));
     }
-    for (k, v) in headers {
+    for (k, v) in target.headers {
         request = request.set(k, v);
     }
-    let response = match request.send_bytes(&out_body) {
-        Ok(r) => r,
+    match request.send_bytes(body) {
+        Ok(r) => {
+            super::httpd::note_upstream(&r);
+            Ok(r)
+        }
         // ureq 2 把非 2xx 当 Err(Status(code, resp))——厂商的 4xx/5xx 是
         // 合同面的一部分，原样取回 response（chat.rs 同款）。
-        Err(ureq::Error::Status(_, response)) => response,
-        Err(e) => return Reply::error(502, &format!("responses passthrough: {e}")),
-    };
-    if streaming {
-        return Reply::Stream {
-            status: response.status(),
-            content_type: response.content_type().to_string(),
-            reader: Box::new(response.into_reader()),
-        };
+        Err(ureq::Error::Status(_, response)) => {
+            super::httpd::note_upstream(&response);
+            Ok(response)
+        }
+        Err(e) => Err(e.to_string()),
     }
+}
+
+/// 原样转发 `{responses}/responses`。SSE（stream:true）字节级透传；
+/// 错误（4xx/5xx）原样透传——错误面是厂商与 codex 之间的事，重写只会
+/// 丢厂商的原话。字节上限拒答走 bodycap 的 responses 形状 refit
+/// （`input[].content[].type=input_image` 丢最老的重发——2026-11-12 ollama
+/// 32MB 会话死锁在这条路径上同样会发生）。
+fn passthrough(
+    gateway: &super::Gateway,
+    target: &DirectTarget,
+    body: &[u8],
+    bare: &str,
+) -> Attempt {
+    let out_body = rewrite_model(body, bare);
+    // cap 已知时先合身再发（免吃一次拒答）。
+    let out_body = bodycap::prefit_shape(gateway, target.provider_id, bodycap::Shape::Responses, &out_body)
+        .unwrap_or(out_body);
+    let streaming = serde_json::from_slice::<Value>(&out_body)
+        .ok()
+        .and_then(|v| v.get("stream").and_then(|s| s.as_bool()))
+        .unwrap_or(false);
+    let response = match send_direct(target, &out_body) {
+        Ok(r) => r,
+        Err(e) => {
+            return Attempt::Retry(Reply::error(502, &format!("responses passthrough: {e}")))
+        }
+    };
     let status = response.status();
+    if status < 400 {
+        if streaming {
+            return Attempt::Done(Reply::Stream {
+                status,
+                content_type: response.content_type().to_string(),
+                reader: Box::new(response.into_reader()),
+            });
+        }
+        let mut buf = Vec::new();
+        let _ = response.into_reader().read_to_end(&mut buf);
+        return Attempt::Done(Reply::Json { status, body: buf });
+    }
     let mut buf = Vec::new();
     let _ = response.into_reader().read_to_end(&mut buf);
-    Reply::Json { status, body: buf }
+    if let Some(reply) = bodycap::maybe_refit_with(
+        gateway,
+        target.provider_id,
+        bodycap::Shape::Responses,
+        &out_body,
+        status,
+        &buf,
+        &|b| send_direct(target, b),
+    ) {
+        return Attempt::Done(reply);
+    }
+    let retry = super::groups::retryable(status, &buf);
+    let reply = Reply::Json { status, body: buf };
+    if retry { Attempt::Retry(reply) } else { Attempt::Done(reply) }
 }
 
 // =====================================================================
 // 翻译路径
 // =====================================================================
 
-/// responses → chat 出站（`chat::forward` 全链：resolve / 剥前缀 / Bearer /
+/// responses → chat 出站（`chat::attempt` 全链：剥前缀 / Bearer / 厂商合身 /
 /// prefit / bodycap 挂 4xx）→ 应答折回 responses 形状。
-fn translate_via_chat(gateway: &super::Gateway, body: &[u8]) -> Reply {
+fn translate_via_chat(
+    gateway: &super::Gateway,
+    cand: &super::groups::Candidate,
+    body: &[u8],
+) -> Attempt {
     let parsed: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
-        Err(_) => return Reply::error(400, "invalid request body"),
+        Err(_) => return Attempt::Done(Reply::error(400, "invalid request body")),
     };
     // asked 模型串回显进应答的 model 字段（codex 拿它对账自己在用的模型）。
     let asked = parsed
@@ -202,8 +285,10 @@ fn translate_via_chat(gateway: &super::Gateway, body: &[u8]) -> Reply {
         .and_then(|m| m.as_str())
         .unwrap_or_default()
         .to_string();
-    let chat_body = match super::translate::responses_to_chat(&parsed) {
-        Ok(mut v) => {
+    // table：被压平的 custom / namespace / tool_search 工具的还原表，随这次请求
+    // 走到应答编码器（不放全局——并发请求各带各的）。
+    let (chat_body, table) = match super::translate::responses_to_chat_with_tools(&parsed) {
+        Ok((mut v, table)) => {
             // 流式补 include_usage（Go buildChat 同款）：chat 厂商默认不在
             // 流尾发 usage 帧，completed 事件的 usage 就只能报 0。
             if v.get("stream").and_then(|s| s.as_bool()).unwrap_or(false) {
@@ -211,24 +296,27 @@ fn translate_via_chat(gateway: &super::Gateway, body: &[u8]) -> Reply {
                     map.insert("stream_options".into(), json!({ "include_usage": true }));
                 }
             }
-            serde_json::to_vec(&v).unwrap_or_default()
+            (serde_json::to_vec(&v).unwrap_or_default(), table)
         }
-        Err(e) => return Reply::error(400, &e),
+        Err(e) => return Attempt::Done(Reply::error(400, &e)),
     };
-    reshape(super::chat::forward(gateway, &chat_body), &asked)
+    match super::chat::attempt(gateway, cand, &chat_body) {
+        Attempt::Done(reply) => Attempt::Done(reshape(reply, &asked, &table)),
+        Attempt::Retry(reply) => Attempt::Retry(reply),
+    }
 }
 
 /// `chat::forward` 的应答 → responses 应答。错误（≥400）原样透传：chat
 /// 家族的错误面本就是 `{"error":{…}}` 同构形状，重写只会丢厂商的原话，
 /// 状态码透传。
-fn reshape(reply: Reply, asked: &str) -> Reply {
+fn reshape(reply: Reply, asked: &str, table: &super::translate::ToolTable) -> Reply {
     match reply {
         Reply::Json { status, body } => {
             if status < 400 {
                 match serde_json::from_slice::<Value>(&body) {
                     Ok(v) => Reply::Json {
                         status,
-                        body: serde_json::to_vec(&chat_completion_to_response(&v, asked))
+                        body: serde_json::to_vec(&chat_completion_to_response(&v, asked, table))
                             .unwrap_or(body),
                     },
                     // 2xx 但不是 JSON：翻译路径的客户端说的是 responses 话，
@@ -257,7 +345,7 @@ fn reshape(reply: Reply, asked: &str) -> Reply {
                 return match serde_json::from_slice::<Value>(&buf) {
                     Ok(v) => Reply::Json {
                         status: 200,
-                        body: serde_json::to_vec(&chat_completion_to_response(&v, asked))
+                        body: serde_json::to_vec(&chat_completion_to_response(&v, asked, table))
                             .unwrap_or(buf),
                     },
                     Err(_) => Reply::error(502, "chat vendor replied a non-JSON body"),
@@ -266,7 +354,7 @@ fn reshape(reply: Reply, asked: &str) -> Reply {
             Reply::Stream {
                 status: 200,
                 content_type: "text/event-stream".into(),
-                reader: Box::new(ResponsesSse::new(reader, asked)),
+                reader: Box::new(ResponsesSse::new(reader, asked).with_tools(table.clone())),
             }
         }
     }
@@ -327,9 +415,22 @@ fn content_text(content: Option<&Value>) -> String {
 /// function_call item（codex 工具回路的非流式形态）。finish_reason 的
 /// length / content_filter → status incomplete（OpenAI 的语义），其余
 /// completed。empty 回合的 output 是空数组——不是 null。
-fn chat_completion_to_response(v: &Value, asked: &str) -> Value {
+fn chat_completion_to_response(v: &Value, asked: &str, table: &super::translate::ToolTable) -> Value {
     let mut output: Vec<Value> = Vec::new();
     if let Some(msg) = v.pointer("/choices/0/message") {
+        // 思考（DeepSeek 等的 reasoning_content）→ reasoning item，排在正文前。
+        let think = msg
+            .get("reasoning_content")
+            .or_else(|| msg.get("reasoning"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("");
+        if !think.trim().is_empty() {
+            output.push(json!({
+                "id": format!("rs_{}", fresh_suffix()),
+                "type": "reasoning", "status": "completed",
+                "summary": [{ "type": "summary_text", "text": think }],
+            }));
+        }
         let text = content_text(msg.get("content"));
         if !text.is_empty() {
             output.push(json!({
@@ -340,16 +441,20 @@ fn chat_completion_to_response(v: &Value, asked: &str) -> Value {
         }
         if let Some(calls) = msg.get("tool_calls").and_then(|c| c.as_array()) {
             for tc in calls {
-                output.push(json!({
-                    "id": format!("fc_{}", fresh_suffix()),
+                // flat 名按请求的还原表变回 Codex 认的 item（Go callTo）：
+                // custom -> custom_tool_call(input) / 命名空间 -> function_call + namespace /
+                // tool_search -> tool_search_call；普通工具原样。
+                let flat = tc.pointer("/function/name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+                let mut item = json!({
                     "type": "function_call", "status": "completed",
                     "call_id": tc.get("id").cloned()
                         .unwrap_or_else(|| json!(format!("call_{}", fresh_suffix()))),
-                    "name": tc.pointer("/function/name").cloned()
-                        .unwrap_or_else(|| json!(String::new())),
                     "arguments": tc.pointer("/function/arguments").cloned()
                         .unwrap_or_else(|| json!("{}")),
-                }));
+                });
+                super::translate::call_to(&mut item, &flat, table);
+                item["id"] = json!(format!("{}{}", super::translate::call_item_prefix(&item), fresh_suffix()));
+                output.push(item);
             }
         }
     }
@@ -415,6 +520,13 @@ struct ResponsesSse {
     pos: usize,
     started: bool,
     item_open: bool,
+    /// 思考 item（chat 流的 delta.reasoning_content → responses 的
+    /// reasoning summary 事件族）。没有它 codex 看不到 DeepSeek 等模型的思考，
+    /// 轨迹面板里也不会有 thought（用户 2026-11-18 实锤）。
+    think_open: bool,
+    think: String,
+    think_id: String,
+    think_index: usize,
     text: String,
     item_id: String,
     /// 打开中的 message item 的 output_index（开 item 时 = items.len()）。
@@ -423,6 +535,8 @@ struct ResponsesSse {
     items: Vec<Value>,
     /// chat tool_calls 分片拼装（惰性：收尾或正文交错时冲刷）。
     tools: super::translate::ChatToolAccum,
+    /// 请求压平过的工具还原表（custom / 命名空间 / tool_search）。
+    named: super::translate::ToolTable,
     resp_id: String,
     seq: u64,
     model: String,
@@ -439,11 +553,16 @@ impl ResponsesSse {
             pos: 0,
             started: false,
             item_open: false,
+            think_open: false,
+            think: String::new(),
+            think_id: String::new(),
+            think_index: 0,
             text: String::new(),
             item_id: String::new(),
             item_index: 0,
             items: Vec::new(),
             tools: super::translate::ChatToolAccum::new(),
+            named: super::translate::ToolTable::new(),
             resp_id: format!("resp_{}", fresh_suffix()),
             seq: 0,
             model: model.to_string(),
@@ -451,6 +570,12 @@ impl ResponsesSse {
             usage: None,
             ended: false,
         }
+    }
+
+    /// 带上请求的工具还原表（`translate::responses_to_chat_with_tools`）。
+    fn with_tools(mut self, named: super::translate::ToolTable) -> ResponsesSse {
+        self.named = named;
+        self
     }
 
     /// 一帧：`event: <类型>\ndata: {…}\n\n`（sseWriter.event 同款格式），
@@ -492,6 +617,56 @@ impl ResponsesSse {
         self.started = true;
         let response = self.response_object("in_progress", json!([]), Value::Null, Value::Null);
         self.frame("response.created", json!({ "response": response }));
+    }
+
+    /// 思考增量：首条开 reasoning item + summary part，随后逐条 summary delta。
+    fn think_delta(&mut self, delta: &str) {
+        self.ensure_started();
+        self.close_item(); // 正文 item 不跨着思考开（output_index 要保持单调）
+        self.flush_tools();
+        if !self.think_open {
+            self.think_open = true;
+            self.think_index = self.items.len();
+            self.think_id = format!("rs_{}", fresh_suffix());
+            let (id, idx) = (self.think_id.clone(), self.think_index);
+            self.frame(
+                "response.output_item.added",
+                json!({"output_index": idx, "item": {"id": id, "type": "reasoning", "status": "in_progress", "summary": []}}),
+            );
+            self.frame(
+                "response.reasoning_summary_part.added",
+                json!({"item_id": &self.think_id, "output_index": idx, "summary_index": 0,
+                    "part": {"type": "summary_text", "text": ""}}),
+            );
+        }
+        self.think.push_str(delta);
+        let (id, idx) = (self.think_id.clone(), self.think_index);
+        self.frame(
+            "response.reasoning_summary_text.delta",
+            json!({"item_id": id, "output_index": idx, "summary_index": 0, "delta": delta}),
+        );
+    }
+
+    /// 封口思考 item（正文/工具开始或收尾时调用）。
+    fn close_think(&mut self) {
+        if !self.think_open {
+            return;
+        }
+        self.think_open = false;
+        let (id, idx) = (self.think_id.clone(), self.think_index);
+        let text = std::mem::take(&mut self.think);
+        let part = json!({"type": "summary_text", "text": &text});
+        self.frame(
+            "response.reasoning_summary_text.done",
+            json!({"item_id": &id, "output_index": idx, "summary_index": 0, "text": &text}),
+        );
+        self.frame(
+            "response.reasoning_summary_part.done",
+            json!({"item_id": &id, "output_index": idx, "summary_index": 0, "part": part.clone()}),
+        );
+        let item = json!({"id": id, "type": "reasoning", "status": "completed", "summary": [part]});
+        self.frame("response.output_item.done", json!({"output_index": idx, "item": item.clone()}));
+        self.items.push(item);
     }
 
     /// message item 的 added（懒发：第一条正文 delta 到来才开 item）。
@@ -551,7 +726,6 @@ impl ResponsesSse {
         self.ensure_started();
         for call in self.tools.take() {
             let output_index = self.items.len();
-            let item_id = format!("fc_{}", fresh_suffix());
             let call_id = if call.id.is_empty() {
                 format!("call_{}", fresh_suffix())
             } else {
@@ -559,40 +733,60 @@ impl ResponsesSse {
             };
             let args = call.arguments.trim();
             let args = if args.is_empty() { "{}" } else { args };
-            self.frame(
-                "response.output_item.added",
-                json!({
-                    "output_index": output_index,
-                    "item": {
-                        "id": &item_id,
-                        "type": "function_call", "status": "in_progress",
-                        "call_id": &call_id, "name": &call.name, "arguments": "",
-                    },
-                }),
-            );
-            if !call.arguments.is_empty() {
-                self.frame(
-                    "response.function_call_arguments.delta",
-                    json!({
-                        "item_id": &item_id, "output_index": output_index,
-                        "delta": &call.arguments,
-                    }),
-                );
-            }
-            self.frame(
-                "response.function_call_arguments.done",
-                json!({
-                    "item_id": &item_id, "output_index": output_index,
-                    "call_id": &call_id, "arguments": args,
-                }),
-            );
-            let item = json!({
+            // 厂商给的是 flat 名：按还原表决定这是 function_call / 带 namespace 的
+            // function_call / custom_tool_call / tool_search_call（Go callTo）。
+            let kind = self.named.get(&call.name).cloned().unwrap_or_default();
+            let mut added = json!({
+                "type": "function_call", "status": "in_progress",
+                "call_id": &call_id, "arguments": "",
+            });
+            super::translate::call_to(&mut added, &call.name, &self.named);
+            let item_id = format!("{}{}", super::translate::call_item_prefix(&added), fresh_suffix());
+            added["id"] = json!(&item_id);
+            self.frame("response.output_item.added", json!({ "output_index": output_index, "item": added }));
+            let mut done_item = json!({
                 "id": &item_id,
                 "type": "function_call", "status": "completed",
-                "call_id": &call_id, "name": &call.name, "arguments": args,
+                // custom 的 input 取自原始 arguments：空就是空串，不是 "{}"
+                "call_id": &call_id, "arguments": if kind.custom { call.arguments.trim() } else { args },
             });
-            self.frame("response.output_item.done", json!({ "output_index": output_index, "item": item.clone() }));
-            self.items.push(item);
+            super::translate::call_to(&mut done_item, &call.name, &self.named);
+            if kind.custom {
+                // 自由文本工具：一整段 input（chat 分片已拼完，不欠厂商的切片粒度），
+                // 事件族是 custom_tool_call_input.delta/done（OpenAI 同款）
+                let input = done_item.get("input").and_then(|i| i.as_str()).unwrap_or("").to_string();
+                if !input.is_empty() {
+                    self.frame(
+                        "response.custom_tool_call_input.delta",
+                        json!({ "item_id": &item_id, "output_index": output_index, "delta": &input }),
+                    );
+                }
+                self.frame(
+                    "response.custom_tool_call_input.done",
+                    json!({ "item_id": &item_id, "output_index": output_index, "input": &input }),
+                );
+            } else {
+                if !call.arguments.is_empty() {
+                    self.frame(
+                        "response.function_call_arguments.delta",
+                        json!({
+                            "item_id": &item_id, "output_index": output_index,
+                            "delta": &call.arguments,
+                        }),
+                    );
+                }
+                // tool_search 由 Codex 自己跑，Go 不发 arguments.done
+                if !kind.search {
+                    let mut done = json!({
+                        "item_id": &item_id, "output_index": output_index,
+                        "call_id": &call_id, "arguments": args,
+                    });
+                    super::translate::call_to(&mut done, &call.name, &self.named);
+                    self.frame("response.function_call_arguments.done", done);
+                }
+            }
+            self.frame("response.output_item.done", json!({ "output_index": output_index, "item": done_item.clone() }));
+            self.items.push(done_item);
         }
     }
 
@@ -612,6 +806,7 @@ impl ResponsesSse {
             _ => ("completed", "response.completed", Value::Null),
         };
         let usage = usage_to_responses(self.usage.as_ref());
+        self.close_think();
         self.close_item();
         self.flush_tools();
         // 空回合（无正文无工具）的 output 就是空数组——诚实汇报。
@@ -634,12 +829,20 @@ impl ResponsesSse {
             self.usage = Some(u.clone());
         }
         let choice = v.pointer("/choices/0");
+        let think = choice
+            .and_then(|c| c.pointer("/delta/reasoning_content").or_else(|| c.pointer("/delta/reasoning")))
+            .and_then(|d| d.as_str())
+            .unwrap_or("");
+        if !think.is_empty() {
+            self.think_delta(think);
+        }
         let text = choice
             .and_then(|c| c.pointer("/delta/content"))
             .and_then(|d| d.as_str())
             .unwrap_or("");
         if !text.is_empty() {
             // 正文在工具分片之后到达：先按到达序冲刷工具事件族，再开新 item。
+            self.close_think();
             self.flush_tools();
             self.ensure_started();
             self.ensure_item();
@@ -661,6 +864,7 @@ impl ResponsesSse {
             if !calls.is_empty() {
                 // 工具分片到达：正文 item 到此为止（先封口），分片进拼装器，
                 // 事件族等收尾或下次正文交错再发（chat 流没有「调用完了」信号）。
+                self.close_think();
                 self.close_item();
                 self.tools.feed(calls);
             }
@@ -1158,5 +1362,315 @@ mod tests {
         assert_eq!(status, 404);
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert!(v["error"]["message"].as_str().unwrap().contains("nope/x"));
+    }
+
+    #[test]
+    fn alias_group_member_effort_reaches_vendor_clean() {
+        // 用户机上的真实形态：codex 别名组成员 `…:1017:max`。厂商必须收到裸
+        // 模型 `m:1017`（tag 保留）与 reasoning_effort=max——最初 Rust 引擎把
+        // `m:1017:max` 原样发出去，厂商回 model not found。
+        let chat_vendor = fake_vendor(
+            200,
+            "application/json",
+            r#"{"id":"c1","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+        );
+        let (gateway, _sandbox) = sandbox(&format!(
+            r#"{{"providers":[{{"id":"o","name":"O","key":"k","chat":"{}/v1"}}],
+                "groups":[{{"id":"gpt-6.1-terra","name":"gpt-6.1-terra","routing":"manual",
+                  "members":["o/m:1017:max"],"pick":"o/m:1017:max"}}]}}"#,
+            chat_vendor.base
+        ));
+        let request = super::super::httpd::Request {
+            method: "POST".into(),
+            path: "/v1/responses".into(),
+            headers: vec![],
+            body: br#"{"model":"gpt-6.1-terra","input":"hi","reasoning":{"effort":"low"}}"#.to_vec(),
+        };
+        let reply = super::super::routes::route(&request, &gateway);
+        let Reply::Json { status, .. } = reply else { panic!("json reply") };
+        assert_eq!(status, 200);
+        let seen = chat_vendor.seen.lock().unwrap_or_else(|p| p.into_inner());
+        assert_eq!(seen.len(), 1);
+        let sent: Value = serde_json::from_slice(&seen[0].body).unwrap();
+        assert_eq!(sent["model"], "m:1017", "强度后缀不能进厂商模型名");
+        assert_eq!(sent["reasoning_effort"], "max", "成员固定强度要覆盖 agent 的 low");
+    }
+
+    #[test]
+    fn missing_responses_endpoint_falls_back_to_chat_translation() {
+        // 预设给了 responses 端点、厂商其实没有（404）：codex 不能被晾住，
+        // 退回 chat 翻译路径。
+        let dead_responses = fake_vendor(404, "application/json", r#"{"error":"not found"}"#);
+        let chat_vendor = fake_vendor(
+            200,
+            "application/json",
+            r#"{"id":"c1","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+        );
+        let (gateway, _sandbox) = sandbox(&format!(
+            r#"{{"providers":[{{"id":"o","name":"O","key":"k","chat":"{}/v1","responses":"{}/v1"}}]}}"#,
+            chat_vendor.base, dead_responses.base
+        ));
+        let reply = handle(&gateway, br#"{"model":"o/m","input":"hi"}"#);
+        let Reply::Json { status, body } = reply else { panic!("json reply") };
+        assert_eq!(status, 200);
+        assert_eq!(dead_responses.hits.load(Ordering::SeqCst), 1);
+        assert_eq!(chat_vendor.hits.load(Ordering::SeqCst), 1);
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["object"], "response");
+    }
+
+    #[test]
+    fn chat_reasoning_content_becomes_reasoning_summary_events() {
+        // DeepSeek 的 delta.reasoning_content 必须变成 responses 的 reasoning
+        // summary 事件族，codex 才有思考块/轨迹；之前被整段丢掉。
+        let sse = concat!(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think A\"}}]}
+
+",
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\" B\"}}]}
+
+",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}
+
+",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}
+
+",
+            "data: [DONE]
+
+"
+        );
+        let mut r = ResponsesSse::new(Box::new(std::io::Cursor::new(sse.as_bytes().to_vec())), "m");
+        let mut out = String::new();
+        r.read_to_string(&mut out).unwrap();
+        assert!(out.contains("response.reasoning_summary_text.delta"), "{out}");
+        assert!(out.contains("\"delta\":\"think A\""));
+        let done = out.find("response.reasoning_summary_text.done").expect("done");
+        let text = out.find("response.output_text.delta").expect("text");
+        assert!(done < text, "思考先封口再出正文");
+        assert!(out.contains("\"text\":\"think A B\""));
+        // completed 的 output：reasoning item 在 message item 前
+        let completed = out.find("event: response.completed").unwrap();
+        let tail = &out[completed..];
+        assert!(tail.find("\"type\":\"reasoning\"").unwrap() < tail.find("\"type\":\"message\"").unwrap());
+    }
+
+    #[test]
+    fn nonstream_reasoning_content_becomes_reasoning_item() {
+        let v: Value = serde_json::from_str(r#"{"choices":[{"message":{"role":"assistant","reasoning_content":"why","content":"ok"},"finish_reason":"stop"}]}"#).unwrap();
+        let r = chat_completion_to_response(&v, "m", &super::super::translate::ToolTable::new());
+        assert_eq!(r["output"][0]["type"], "reasoning");
+        assert_eq!(r["output"][0]["summary"][0]["text"], "why");
+        assert_eq!(r["output"][1]["type"], "message");
+    }
+
+    // ---- Codex 非 function 工具的应答还原（端到端：routes::route + 假 chat 厂商）----
+
+    const CODEX_TOOLS: &str = r#"[
+        {"type":"function","name":"shell","parameters":{"type":"object"}},
+        {"type":"custom","name":"apply_patch","description":"edit"},
+        {"type":"namespace","name":"mcp__srv__","tools":[
+            {"type":"function","name":"do_it","parameters":{"type":"object"}}]},
+        {"type":"tool_search","execution":"client","description":"s","parameters":{"type":"object"}}]"#;
+
+    fn route_responses(gateway: &Gateway, body: String) -> Reply {
+        let request = super::super::httpd::Request {
+            method: "POST".into(),
+            path: "/v1/responses".into(),
+            headers: vec![],
+            body: body.into_bytes(),
+        };
+        super::super::routes::route(&request, gateway)
+    }
+
+    fn one_chat_vendor(vendor: &FakeVendor) -> String {
+        format!(r#"{{"providers":[{{"id":"p","name":"P","key":"k","chat":"{}/v1"}}]}}"#, vendor.base)
+    }
+
+    #[test]
+    fn nonstream_tool_calls_are_restored_to_codex_item_kinds() {
+        // 厂商（chat-only）按 flat 名调了：custom / 命名空间 / 普通 / tool_search 各一
+        let vendor = fake_vendor(
+            200,
+            "application/json",
+            r#"{"id":"c1","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[
+                {"id":"call_a","type":"function","function":{"name":"apply_patch","arguments":"{\"input\":\"*** Begin Patch\\n*** End Patch\"}"}},
+                {"id":"call_b","type":"function","function":{"name":"mcp__srv____do_it","arguments":"{\"x\":1}"}},
+                {"id":"call_c","type":"function","function":{"name":"shell","arguments":"{\"cmd\":\"ls\"}"}},
+                {"id":"call_d","type":"function","function":{"name":"tool_search","arguments":"{\"query\":\"cal\"}"}}]},
+                "finish_reason":"tool_calls"}],
+                "usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}"#,
+        );
+        let (gateway, _sandbox) = sandbox(&one_chat_vendor(&vendor));
+        let reply = route_responses(
+            &gateway,
+            format!(r#"{{"model":"p/m","input":"do things","tools":{CODEX_TOOLS}}}"#),
+        );
+
+        // 厂商看到的是压平后的函数集（custom 带 input 串 schema）
+        let seen = vendor.seen.lock().unwrap_or_else(|p| p.into_inner());
+        let sent: Value = serde_json::from_slice(&seen[0].body).unwrap();
+        let names: Vec<&str> =
+            sent["tools"].as_array().unwrap().iter().map(|t| t["function"]["name"].as_str().unwrap()).collect();
+        assert_eq!(names, vec!["shell", "apply_patch", "mcp__srv____do_it", "tool_search"]);
+        assert_eq!(sent["tools"][1]["function"]["parameters"]["required"], json!(["input"]));
+        drop(seen);
+
+        let Reply::Json { status, body } = reply else { panic!("json reply") };
+        assert_eq!(status, 200);
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let out = v["output"].as_array().unwrap();
+        assert_eq!(out.len(), 4);
+        // custom -> custom_tool_call + input（无 arguments），id 前缀 ctc_
+        assert_eq!(out[0]["type"], "custom_tool_call");
+        assert_eq!(out[0]["name"], "apply_patch");
+        assert_eq!(out[0]["input"], "*** Begin Patch\n*** End Patch");
+        assert_eq!(out[0]["call_id"], "call_a");
+        assert!(out[0].get("arguments").is_none());
+        assert!(out[0]["id"].as_str().unwrap().starts_with("ctc_"));
+        // 命名空间 -> function_call + 原名 + namespace
+        assert_eq!(out[1]["type"], "function_call");
+        assert_eq!(out[1]["name"], "do_it");
+        assert_eq!(out[1]["namespace"], "mcp__srv__");
+        assert_eq!(out[1]["arguments"], "{\"x\":1}");
+        // 普通 -> 原样
+        assert_eq!(out[2]["type"], "function_call");
+        assert_eq!(out[2]["name"], "shell");
+        assert!(out[2].get("namespace").is_none());
+        assert!(out[2]["id"].as_str().unwrap().starts_with("fc_"));
+        // tool_search -> tool_search_call（client），arguments 对象，tsc_
+        assert_eq!(out[3]["type"], "tool_search_call");
+        assert_eq!(out[3]["execution"], "client");
+        assert_eq!(out[3]["arguments"], json!({"query": "cal"}));
+        assert!(out[3]["id"].as_str().unwrap().starts_with("tsc_"));
+    }
+
+    #[test]
+    fn streaming_tool_calls_are_restored_to_codex_item_kinds() {
+        // custom 的 arguments 跨帧；随后一个命名空间调用
+        let sse = concat!(
+            r#"data: {"id":"s1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"apply_patch","arguments":"{\"input\":\"*** Be"}}]},"finish_reason":null}]}"#, "\n\n",
+            r#"data: {"id":"s1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"gin\\n\"}"}}]},"finish_reason":null}]}"#, "\n\n",
+            r#"data: {"id":"s1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_b","type":"function","function":{"name":"mcp__srv____do_it","arguments":"{\"x\":1}"}}]},"finish_reason":null}]}"#, "\n\n",
+            r#"data: {"id":"s1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}"#, "\n\n",
+            "data: [DONE]\n\n"
+        );
+        let vendor = fake_vendor(200, "text/event-stream", sse);
+        let (gateway, _sandbox) = sandbox(&one_chat_vendor(&vendor));
+        let reply = route_responses(
+            &gateway,
+            format!(r#"{{"model":"p/m","input":"x","stream":true,"tools":{CODEX_TOOLS}}}"#),
+        );
+        let Reply::Stream { mut reader, .. } = reply else { panic!("stream reply") };
+        let mut out = String::new();
+        reader.read_to_string(&mut out).expect("read sse");
+        let events = parse_frames(&out);
+        let names: Vec<&str> = events.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "response.created",
+                // custom：added -> input.delta -> input.done -> item.done
+                "response.output_item.added",
+                "response.custom_tool_call_input.delta",
+                "response.custom_tool_call_input.done",
+                "response.output_item.done",
+                // 命名空间：普通 function_call 事件族
+                "response.output_item.added",
+                "response.function_call_arguments.delta",
+                "response.function_call_arguments.done",
+                "response.output_item.done",
+                "response.completed",
+            ]
+        );
+        let added = &events[1].1["item"];
+        assert_eq!(added["type"], "custom_tool_call");
+        assert_eq!(added["name"], "apply_patch");
+        assert_eq!(added["input"], "");
+        assert_eq!(added["status"], "in_progress");
+        assert!(added["id"].as_str().unwrap().starts_with("ctc_"));
+        assert_eq!(events[2].1["delta"], "*** Begin\n");
+        assert_eq!(events[3].1["input"], "*** Begin\n");
+        assert_eq!(events[2].1["item_id"], added["id"]);
+        let done = &events[4].1["item"];
+        assert_eq!(done["type"], "custom_tool_call");
+        assert_eq!(done["input"], "*** Begin\n");
+        assert_eq!(done["call_id"], "call_a");
+        assert!(done.get("arguments").is_none());
+        // 命名空间调用
+        let ns_added = &events[5].1["item"];
+        assert_eq!(ns_added["type"], "function_call");
+        assert_eq!(ns_added["name"], "do_it");
+        assert_eq!(ns_added["namespace"], "mcp__srv__");
+        assert_eq!(events[7].1["arguments"], "{\"x\":1}");
+        assert_eq!(events[7].1["name"], "do_it");
+        let ns_done = &events[8].1["item"];
+        assert_eq!((ns_done["name"].as_str().unwrap(), ns_done["namespace"].as_str().unwrap()), ("do_it", "mcp__srv__"));
+        // completed 的 output 与逐项 done 一致
+        let completed = &events[9].1["response"];
+        assert_eq!(completed["output"][0]["type"], "custom_tool_call");
+        assert_eq!(completed["output"][1]["namespace"], "mcp__srv__");
+        assert_eq!(completed["usage"]["input_tokens"], 4);
+    }
+
+    #[test]
+    fn plain_function_tool_roundtrip_is_unchanged() {
+        // 回归：只有普通 function 工具的请求，请求与应答形状与改动前一致
+        let vendor = fake_vendor(
+            200,
+            "application/json",
+            r#"{"id":"c1","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[
+                {"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Berlin\"}"}}]},
+                "finish_reason":"tool_calls"}]}"#,
+        );
+        let (gateway, _sandbox) = sandbox(&one_chat_vendor(&vendor));
+        let reply = route_responses(
+            &gateway,
+            r#"{"model":"p/m","input":"w?","tools":[{"type":"function","name":"get_weather","description":"w","parameters":{"type":"object"}}]}"#.into(),
+        );
+        let seen = vendor.seen.lock().unwrap_or_else(|p| p.into_inner());
+        let sent: Value = serde_json::from_slice(&seen[0].body).unwrap();
+        assert_eq!(sent["tools"][0]["function"]["name"], "get_weather");
+        assert!(sent.get("parallel_tool_calls").is_none());
+        drop(seen);
+        let Reply::Json { body, .. } = reply else { panic!("json reply") };
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let item = &v["output"][0];
+        assert_eq!(item["type"], "function_call");
+        assert_eq!(item["name"], "get_weather");
+        assert_eq!(item["arguments"], "{\"city\":\"Berlin\"}");
+        assert_eq!(item["call_id"], "call_1");
+        assert_eq!(item["status"], "completed");
+        assert!(item.get("namespace").is_none() && item.get("input").is_none());
+        assert!(item["id"].as_str().unwrap().starts_with("fc_"));
+    }
+
+    #[test]
+    fn history_with_namespaced_and_custom_calls_reaches_vendor_with_flat_names() {
+        let vendor = fake_vendor(
+            200,
+            "application/json",
+            r#"{"id":"c1","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}"#,
+        );
+        let (gateway, _sandbox) = sandbox(&one_chat_vendor(&vendor));
+        let body = format!(
+            r#"{{"model":"p/m","tools":{CODEX_TOOLS},"input":[
+                {{"type":"message","role":"user","content":"go"}},
+                {{"type":"function_call","call_id":"c1","namespace":"mcp__srv__","name":"do_it","arguments":"{{}}"}},
+                {{"type":"function_call_output","call_id":"c1","output":"ok"}},
+                {{"type":"custom_tool_call","call_id":"c2","name":"apply_patch","input":"patch"}},
+                {{"type":"custom_tool_call_output","call_id":"c2","output":"applied"}}]}}"#
+        );
+        let reply = route_responses(&gateway, body);
+        let Reply::Json { status, .. } = reply else { panic!("json reply") };
+        assert_eq!(status, 200);
+        let seen = vendor.seen.lock().unwrap_or_else(|p| p.into_inner());
+        let sent: Value = serde_json::from_slice(&seen[0].body).unwrap();
+        let s = sent["messages"].to_string();
+        assert!(s.contains("mcp__srv____do_it"), "{s}");
+        assert!(s.contains(r#"\"input\":\"patch\""#) || s.contains("input"), "{s}");
+        // 每个 tool_call 都有对应的 tool 消息
+        let msgs = sent["messages"].as_array().unwrap();
+        assert_eq!(msgs.iter().filter(|m| m["role"] == "tool").count(), 2);
     }
 }

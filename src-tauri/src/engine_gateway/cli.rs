@@ -78,7 +78,13 @@ fn serve() -> Result<(), String> {
 
 /// 装载 store → 跑动词 → **仅成功才落盘**（失败路径不写半截状态，与旧
 /// argv 形态「退出码非 0 不 save」同语义）。
+/// 进程内引擎下 provider/group 动词会从多个线程并发进来（注册链、来源
+/// 同步、别名组同步各自一条线）。load→改→save 不串行就是丢更新：
+/// 后写的覆盖先写的整张表，表现为「刚登记的来源/别名组凭空消失」。
+static STORE_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn with_store(run: impl FnOnce(&mut super::store::Store) -> Result<(), String>) -> Result<(), String> {
+    let _guard = STORE_WRITE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut store = super::store::Store::load()?;
     run(&mut store)?;
     store.save()

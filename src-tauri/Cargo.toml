@@ -60,6 +60,9 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 # Token-usage history backfill: DSH session logs are zstd-compressed JSONL
 # (pure-Rust decoder, no C bindings, streams multi-frame archives).
 ruzstd = "0.7"
+# Inbound request-body gzip for the in-process engine gateway (Go gateway decodes
+# gzip/zstd). Already linked transitively (png); same pure-Rust miniz_oxide backend.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

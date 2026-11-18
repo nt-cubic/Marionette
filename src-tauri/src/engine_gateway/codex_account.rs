@@ -1,0 +1,2770 @@
+//! Codex 订阅账号（ChatGPT 登录）的只读支持——Go 版 `codexAccount` 的最小移植。
+//!
+//! 范围（Go 参照 internal/provider：account.go codexAccount、codex_request.go
+//! codexSign/codexBody、codex_models.go、subscription_usage.go codexWindows）：
+//! - 凭据发现：`<config_dir>/logins.json` 里 `agent=="codex"` 的条目与 Codex CLI
+//!   自己的 `$CODEX_HOME|~/.codex/auth.json`，取 access_token 到期更晚的那份；
+//! - 合成来源 `codex`（只在内存，**绝不写进 providers.json**；用户自己定义了
+//!   同名来源就让位）；
+//! - `/v1/responses` → `{CodexBase}/responses`：Codex CLI 同款头、上游恒 stream、
+//!   客户端要非流式就把 SSE 聚合回最终 response 对象；
+//! - `/v1/models` 的 `codex/<slug>` 行（来自 `{base}/models?client_version=`）；
+//! - 额度行（`/wham/usage` 的窗口）。
+//!
+//! **安全红线（只读）**：绝不写/轮换/刷新任何凭据文件，绝不碰 auth.openai.com——
+//! access token 过期就如实报「请先运行一次 Codex 刷新登录」，刷新留给 Codex 自己。
+//! 令牌值永不进日志/错误文本/测试输出。
+//!
+//! 入站协议：`/v1/responses` 直通；`/v1/chat/completions` 与 `/v1/messages`
+//! 先把请求翻成 Responses、走同一条 Codex 出站，再把 responses SSE / 聚合对象
+//! 翻回 chat / anthropic（translate.rs 的 ResponsesToChat；anthropic 出站复用
+//! messages.rs 的 chat→anthropic 翻译器）。
+//!
+//! 多账号：`logins.json` 的 codex 条目 + CLI 自己的 auth.json 按
+//! (chatgpt-account-id, email) 去重；默认取「未过期且到期最晚」的一份，
+//! `codex/<model>#<账号>`（账号 = logins 条目 id / 邮箱 / account_id）钉死到
+//! 指定账号（钉了却找不到 = 明确报错，**不**落到别的账号）；额度每账号一行。
+//! 凭据每个请求现读（Codex CLI 在跑时自己保鲜 auth.json）。
+//!
+//! 未移植（见交付报告）：失败轮转/超额回退、resets/credits 明细、账号热备。
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Read};
+use std::path::PathBuf;
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use base64::Engine as _;
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+
+use super::catalog::VendorRow;
+use super::effort::Proto;
+use super::httpd::{Reply, Request};
+use super::store::Provider;
+
+pub const CODEX_ID: &str = "codex";
+const DEFAULT_BASE: &str = "https://chatgpt.com/backend-api/codex";
+/// Go codexClientVersion：没人告诉我们更新的版本时，模型表按这个版本问
+/// （后端只把新模型列给够新的客户端）。
+const CLIENT_VERSION: &str = "0.159.0";
+const CACHE_TTL: Duration = Duration::from_secs(30);
+const FAIL_BACKOFF: Duration = Duration::from_secs(60);
+const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+/// access token 离到期不足这个秒数就当过期（不刷新，只报错）。
+const EXPIRY_MARGIN_SECS: i64 = 30;
+const EXPIRED_MESSAGE: &str = "Codex sign-in expired — run Codex once to refresh";
+/// Go codexInstructions 的最后兜底之前没有任何来源时用的极简指令
+/// （后端要求 instructions 非空）。
+const FALLBACK_INSTRUCTIONS: &str = "You are Codex, a coding agent. Be concise and accurate.";
+
+// =====================================================================
+// 测试缝（cfg(test) 才存在；生产路径恒走真实位置）
+// =====================================================================
+
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct Seam {
+    pub base: String,
+    pub logins_dir: PathBuf,
+    pub codex_home: PathBuf,
+}
+
+/// 测试缝：未设置时 **没有任何凭据来源**（测试默认读不到真实账号）。
+#[cfg(test)]
+pub(crate) static TEST_SEAM: Mutex<Option<Seam>> = Mutex::new(None);
+
+#[cfg(test)]
+fn seam() -> Option<Seam> {
+    TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).clone()
+}
+
+#[cfg(test)]
+fn base_url() -> String {
+    seam().map(|s| s.base).unwrap_or_else(|| "http://127.0.0.1:9/codex".into())
+}
+#[cfg(not(test))]
+fn base_url() -> String {
+    DEFAULT_BASE.to_string()
+}
+
+#[cfg(test)]
+fn logins_dir() -> Option<PathBuf> {
+    seam().map(|s| s.logins_dir)
+}
+#[cfg(not(test))]
+fn logins_dir() -> Option<PathBuf> {
+    super::config_dir()
+}
+
+#[cfg(test)]
+fn codex_home() -> Option<PathBuf> {
+    seam().map(|s| s.codex_home)
+}
+#[cfg(not(test))]
+fn codex_home() -> Option<PathBuf> {
+    if let Some(h) = std::env::var_os("CODEX_HOME").filter(|h| !h.is_empty()) {
+        return Some(PathBuf::from(h));
+    }
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(|h| PathBuf::from(h).join(".codex"))
+}
+
+// =====================================================================
+// 凭据
+// =====================================================================
+
+/// 发现到的一份 ChatGPT 登录（令牌值不 Debug、不进日志）。
+#[derive(Clone)]
+pub(crate) struct Account {
+    /// logins.json 条目的稳定 id（auth.json 来源没有 = 空）。
+    id: String,
+    token: String,
+    account_id: String,
+    email: String,
+    plan: String,
+    /// access token 的 JWT `exp`（unix 秒）；读不出 = None。
+    exp: Option<i64>,
+}
+
+impl Account {
+    fn expired(&self) -> bool {
+        self.exp.is_some_and(|e| e <= now_secs() + EXPIRY_MARGIN_SECS)
+    }
+}
+
+fn now_secs() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// JWT 载荷（不验签——只读展示/到期判断用）。
+fn jwt_claims(token: &str) -> Option<Value> {
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload.trim_end_matches('='))
+        .ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn claim_str(claims: &Value, path: &[&str]) -> String {
+    let mut v = claims;
+    for k in path {
+        match v.get(*k) {
+            Some(next) => v = next,
+            None => return String::new(),
+        }
+    }
+    v.as_str().unwrap_or("").to_string()
+}
+
+/// `{tokens:{access_token,id_token,account_id}, auth_mode?}` → Account。
+fn account_from_auth(auth: &Value, id: &str, fallback_user: &str, fallback_plan: &str) -> Option<Account> {
+    if auth.get("auth_mode").and_then(|m| m.as_str()) == Some("apikey") {
+        return None;
+    }
+    let tokens = auth.get("tokens")?;
+    let token = tokens.get("access_token")?.as_str()?.trim().to_string();
+    if token.is_empty() {
+        return None;
+    }
+    let id_claims = tokens
+        .get("id_token")
+        .and_then(|t| t.as_str())
+        .and_then(jwt_claims)
+        .unwrap_or(Value::Null);
+    let access_claims = jwt_claims(&token).unwrap_or(Value::Null);
+    let mut email = claim_str(&id_claims, &["email"]);
+    if email.is_empty() {
+        email = claim_str(&access_claims, &["https://api.openai.com/profile", "email"]);
+    }
+    if email.is_empty() {
+        email = fallback_user.to_string();
+    }
+    let mut plan = claim_str(&id_claims, &["https://api.openai.com/auth", "chatgpt_plan_type"]);
+    if plan.is_empty() {
+        plan = fallback_plan.to_string();
+    }
+    let mut account_id = tokens.get("account_id").and_then(|a| a.as_str()).unwrap_or("").to_string();
+    if account_id.is_empty() {
+        account_id = claim_str(&id_claims, &["https://api.openai.com/auth", "chatgpt_account_id"]);
+    }
+    Some(Account {
+        id: id.to_string(),
+        exp: access_claims.get("exp").and_then(|e| e.as_i64()),
+        token,
+        account_id,
+        email,
+        plan,
+    })
+}
+
+/// 收集全部候选账号（logins.json 的 codex 条目 + CLI 自己的 auth.json），
+/// 同一账号（chatgpt-account-id + 邮箱相同）只留到期更晚的那份。顺序：先出现
+/// 的在前（logins.json 在前）。每次调用现读文件——不缓存（Codex CLI 会自己
+/// 刷新 auth.json）。
+pub(crate) fn discover_all() -> Vec<Account> {
+    let mut found: Vec<Account> = Vec::new();
+    if let Some(dir) = logins_dir() {
+        if let Some(list) = std::fs::read(dir.join("logins.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        {
+            for entry in list.as_array().into_iter().flatten() {
+                if entry.get("agent").and_then(|a| a.as_str()) != Some("codex") {
+                    continue;
+                }
+                let Some(auth) = entry.get("auth").filter(|a| a.is_object()) else { continue };
+                let id = entry.get("id").and_then(|u| u.as_str()).unwrap_or("");
+                let user = entry.get("user").and_then(|u| u.as_str()).unwrap_or("");
+                let plan = entry.get("plan").and_then(|u| u.as_str()).unwrap_or("");
+                if let Some(a) = account_from_auth(auth, id, user, plan) {
+                    found.push(a);
+                }
+            }
+        }
+    }
+    if let Some(home) = codex_home() {
+        if let Some(auth) = std::fs::read(home.join("auth.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        {
+            if let Some(a) = account_from_auth(&auth, "", "", "") {
+                found.push(a);
+            }
+        }
+    }
+    let mut out: Vec<Account> = Vec::new();
+    for a in found {
+        let key = |x: &Account| (x.account_id.clone(), x.email.to_ascii_lowercase());
+        match out.iter_mut().find(|o| key(o) == key(&a)) {
+            Some(o) => {
+                let keep_id = if o.id.is_empty() { a.id.clone() } else { o.id.clone() };
+                if a.exp.unwrap_or(0) > o.exp.unwrap_or(0) {
+                    *o = a;
+                }
+                o.id = keep_id;
+            }
+            None => out.push(a),
+        }
+    }
+    out
+}
+
+/// 未过期的优先，再取到期最晚的；全过期仍返回一份（让调用方报「登录过期」
+/// 而不是「没登录」）。平局先出现的赢。
+fn pick_best(list: Vec<Account>) -> Option<Account> {
+    let mut best: Option<Account> = None;
+    for a in list {
+        let better = match &best {
+            None => true,
+            Some(b) => match (a.expired(), b.expired()) {
+                (false, true) => true,
+                (true, false) => false,
+                _ => a.exp.unwrap_or(0) > b.exp.unwrap_or(0),
+            },
+        };
+        if better {
+            best = Some(a);
+        }
+    }
+    best
+}
+
+pub(crate) fn discover() -> Option<Account> {
+    pick_best(discover_all())
+}
+
+/// 账号引用（`#` 后的串）命中哪些账号：logins 条目 id（精确）/ 邮箱（不分
+/// 大小写）/ chatgpt-account-id（精确）。
+fn matches_ref(a: &Account, want: &str) -> bool {
+    let want = want.trim();
+    !want.is_empty()
+        && ((!a.id.is_empty() && a.id == want)
+            || a.email.eq_ignore_ascii_case(want)
+            || (!a.account_id.is_empty() && a.account_id == want))
+}
+
+enum Selected {
+    Ok(Account),
+    /// 一个 codex 账号都没有。
+    NoAccount,
+    /// 钉了账号但没有这个账号（不落到别的账号上——Go memberAccountKept 同款）。
+    UnknownPin(String),
+}
+
+fn select_account(pin: Option<&str>) -> Selected {
+    let all = discover_all();
+    match pin.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(want) => {
+            let hits: Vec<Account> = all.into_iter().filter(|a| matches_ref(a, want)).collect();
+            match pick_best(hits) {
+                Some(a) => Selected::Ok(a),
+                None => Selected::UnknownPin(want.to_string()),
+            }
+        }
+        None => match pick_best(all) {
+            Some(a) => Selected::Ok(a),
+            None => Selected::NoAccount,
+        },
+    }
+}
+
+/// 合成来源：有账号才有。`responses` 指向 Codex 后端；不带 key/headers
+/// （签名在出站时现做）。用户在 providers.json 里自己定义了 `codex` 时调用方
+/// 负责让位。
+pub fn synthetic_provider() -> Option<Provider> {
+    discover()?;
+    Some(Provider {
+        id: CODEX_ID.to_string(),
+        name: "Codex".to_string(),
+        responses: base_url(),
+        ..Default::default()
+    })
+}
+
+// =====================================================================
+// 出站签名
+// =====================================================================
+
+fn version_parts(v: &str) -> Option<Vec<u64>> {
+    let parts: Option<Vec<u64>> = v.trim().split('.').map(|p| p.parse().ok()).collect();
+    parts.filter(|p| !p.is_empty())
+}
+
+/// 两个版本里新的那个；b 不是版本就是 a。
+fn newer_version(a: &str, b: &str) -> String {
+    match (version_parts(a), version_parts(b)) {
+        (Some(x), Some(y)) if y > x => b.trim().to_string(),
+        _ => a.trim().to_string(),
+    }
+}
+
+/// Codex CLI 自己问过的版本（models_cache.json 的 client_version）与内置版本
+/// 取新（Go codexVersion）。
+fn client_version() -> String {
+    let mut v = CLIENT_VERSION.to_string();
+    if let Some(home) = codex_home() {
+        if let Some(c) = std::fs::read(home.join("models_cache.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .and_then(|j| j.get("client_version").and_then(|c| c.as_str()).map(String::from))
+        {
+            v = newer_version(&v, &c);
+        }
+    }
+    v
+}
+
+fn user_agent(ver: &str) -> String {
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        other => other,
+    };
+    let (os, term) = if cfg!(windows) {
+        ("Windows 10.0.26100", "WindowsTerminal")
+    } else {
+        ("Linux 6.8.0", "xterm-256color")
+    };
+    format!("codex_cli_rs/{ver} ({os}; {arch}) {term}")
+}
+
+/// 给一个 ureq 请求签上 Codex CLI 同款头。`body` 为 Some = 模型请求（要 SSE、
+/// 带会话头）；None = /models、/wham 一类账号读取。
+fn sign(mut request: ureq::Request, account: &Account, ver: &str, body: Option<&Value>) -> ureq::Request {
+    request = request
+        .set("Authorization", &format!("Bearer {}", account.token))
+        .set("originator", "codex_cli_rs")
+        .set("User-Agent", &user_agent(ver));
+    if !account.account_id.is_empty() {
+        request = request.set("chatgpt-account-id", &account.account_id);
+    }
+    match body {
+        Some(body) => {
+            request = request
+                .set("OpenAI-Beta", "responses=experimental")
+                .set("version", ver)
+                .set("Accept", "text/event-stream");
+            if let Some(key) = body.get("prompt_cache_key").and_then(|k| k.as_str()).filter(|k| !k.is_empty()) {
+                request = request.set("session-id", key).set("thread-id", key);
+            }
+            request
+        }
+        None => request.set("Accept", "application/json"),
+    }
+}
+
+// =====================================================================
+// 模型目录
+// =====================================================================
+
+struct ModelCache {
+    at: Instant,
+    rows: Vec<VendorRow>,
+    prompts: HashMap<String, String>,
+}
+
+struct State {
+    cache: Option<ModelCache>,
+    backoff_until: Option<Instant>,
+}
+
+static STATE: Mutex<State> = Mutex::new(State { cache: None, backoff_until: None });
+
+fn lock_state() -> std::sync::MutexGuard<'static, State> {
+    STATE.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+#[cfg(test)]
+pub(crate) fn reset_for_tests() {
+    let mut s = lock_state();
+    s.cache = None;
+    s.backoff_until = None;
+}
+
+/// 让缓存立刻过期但保留旧行（测 stale-on-error 用）。
+#[cfg(test)]
+pub(crate) fn expire_cache_for_tests() {
+    let mut s = lock_state();
+    if let Some(c) = s.cache.as_mut() {
+        c.at = Instant::now() - CACHE_TTL - Duration::from_secs(1);
+    }
+    s.backoff_until = None;
+}
+
+/// Go parseCodexModels：按 priority 排序，visibility=="hide" 跳过。
+fn parse_models(body: &[u8]) -> (Vec<VendorRow>, HashMap<String, String>) {
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return (Vec::new(), HashMap::new());
+    };
+    let mut items: Vec<&Value> = value
+        .get("models")
+        .and_then(|m| m.as_array())
+        .map(|a| a.iter().collect())
+        .unwrap_or_default();
+    items.sort_by_key(|m| m.get("priority").and_then(|p| p.as_i64()).unwrap_or(0));
+    let mut rows = Vec::new();
+    let mut prompts = HashMap::new();
+    for m in items {
+        let slug = m.get("slug").and_then(|s| s.as_str()).unwrap_or("").trim();
+        if slug.is_empty() {
+            continue;
+        }
+        // 指令表覆盖全部条目（含 hide 的——Go saveCodexPrompts 同款）。
+        let prompt = m
+            .pointer("/model_messages/instructions_template")
+            .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .or_else(|| m.get("base_instructions").and_then(|s| s.as_str()).filter(|s| !s.is_empty()));
+        if let Some(p) = prompt {
+            prompts.insert(slug.to_string(), p.to_string());
+        }
+        if m.get("visibility").and_then(|v| v.as_str()) == Some("hide") {
+            continue;
+        }
+        let context = m.get("context_window").and_then(|v| v.as_u64()).unwrap_or(0);
+        let images = m
+            .get("input_modalities")
+            .and_then(|v| v.as_array())
+            .is_some_and(|l| l.iter().any(|x| x.as_str() == Some("image")));
+        let levels: Vec<String> = m
+            .get("supported_reasoning_levels")
+            .and_then(|v| v.as_array())
+            .map(|l| {
+                l.iter()
+                    .filter_map(|x| x.get("effort").and_then(|e| e.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let display = m
+            .get("display_name")
+            .and_then(|d| d.as_str())
+            .filter(|d| !d.is_empty())
+            .unwrap_or(slug);
+        let mut raw = json!({ "id": slug, "display_name": display });
+        if !levels.is_empty() {
+            raw["reasoning_levels"] = json!(levels);
+        }
+        rows.push(VendorRow { id: slug.to_string(), context_window: context, max_output: 0, images, raw });
+    }
+    (rows, prompts)
+}
+
+fn fetch_models(account: &Account) -> Result<(Vec<VendorRow>, HashMap<String, String>), String> {
+    let ver = client_version();
+    let url = format!("{}/models?client_version={}", base_url(), ver);
+    let response = sign(super::outbound_agent().get(&url), account, &ver, None)
+        .timeout(FETCH_TIMEOUT)
+        .call()
+        .map_err(|e| match e {
+            ureq::Error::Status(code, _) => format!("ChatGPT models: HTTP {code}"),
+            other => format!("ChatGPT models: {other}"),
+        })?;
+    let mut buf = Vec::new();
+    response
+        .into_reader()
+        .take(16 << 20)
+        .read_to_end(&mut buf)
+        .map_err(|e| e.to_string())?;
+    let (rows, prompts) = parse_models(&buf);
+    if rows.is_empty() {
+        return Err("ChatGPT listed no Codex models".into());
+    }
+    Ok((rows, prompts))
+}
+
+/// `/v1/models` 的 codex 行（30s 缓存、失败 60s 退避、失败回旧缓存）。没有
+/// 账号 / 令牌过期 / 用户自有 `codex` 来源 → 空（过期时有旧缓存就继续给旧的）。
+pub fn listed_rows(providers: &[Provider]) -> Vec<VendorRow> {
+    if providers.iter().any(|p| p.id == CODEX_ID) {
+        return Vec::new();
+    }
+    let Some(account) = discover() else { return Vec::new() };
+    {
+        let state = lock_state();
+        if let Some(c) = state.cache.as_ref() {
+            if c.at.elapsed() < CACHE_TTL {
+                return c.rows.clone();
+            }
+        }
+        let stale = state.cache.as_ref().map(|c| c.rows.clone()).unwrap_or_default();
+        if account.expired() || state.backoff_until.is_some_and(|u| Instant::now() < u) {
+            return stale;
+        }
+    }
+    match fetch_models(&account) {
+        Ok((rows, prompts)) => {
+            let mut state = lock_state();
+            state.backoff_until = None;
+            state.cache = Some(ModelCache { at: Instant::now(), rows: rows.clone(), prompts });
+            rows
+        }
+        Err(_) => {
+            let mut state = lock_state();
+            state.backoff_until = Some(Instant::now() + FAIL_BACKOFF);
+            state.cache.as_ref().map(|c| c.rows.clone()).unwrap_or_default()
+        }
+    }
+}
+
+/// 整串 `codex/<slug>` 是不是已知模型（纯内存，组成员后缀拆分用）。
+fn knows(whole: &str) -> bool {
+    let Some(slug) = whole.strip_prefix("codex/") else { return false };
+    lock_state().cache.as_ref().is_some_and(|c| c.rows.iter().any(|r| r.id == slug))
+}
+
+fn levels_of(slug: &str) -> Vec<String> {
+    let state = lock_state();
+    let Some(row) = state.cache.as_ref().and_then(|c| c.rows.iter().find(|r| r.id == slug)) else {
+        return Vec::new();
+    };
+    row.raw
+        .get("reasoning_levels")
+        .and_then(|v| v.as_array())
+        .map(|l| l.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default()
+}
+
+fn prompt_of(slug: &str) -> Option<String> {
+    lock_state().cache.as_ref().and_then(|c| c.prompts.get(slug).cloned())
+}
+
+// =====================================================================
+// 额度
+// =====================================================================
+
+fn duration_name(secs: i64) -> String {
+    if secs > 0 && secs % 86_400 == 0 {
+        return format!("{} days", secs / 86_400);
+    }
+    if secs > 0 && secs % 3_600 == 0 {
+        return format!("{} hours", secs / 3_600);
+    }
+    "Allowance".to_string()
+}
+
+fn window_row(w: &Value) -> Value {
+    let used = w.get("used_percent").and_then(|u| u.as_f64()).unwrap_or(0.0).clamp(0.0, 100.0);
+    let span = w.get("limit_window_seconds").and_then(|s| s.as_i64()).unwrap_or(0);
+    let reset_after = w.get("reset_after_seconds").and_then(|s| s.as_i64()).unwrap_or(0);
+    let reset_at = w.get("reset_at").and_then(|s| s.as_i64()).filter(|t| *t > 0);
+    let mut row = json!({
+        "name": duration_name(span),
+        "used": used,
+        "remaining": 100.0 - used,
+    });
+    if reset_after > 0 {
+        row["resetSecs"] = json!(reset_after);
+    }
+    if let Some(at) = reset_at {
+        if let Some(t) = chrono::DateTime::from_timestamp(at, 0) {
+            row["resetsAt"] = json!(t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+        }
+    }
+    row
+}
+
+/// 订阅额度行（C3），**每个账号一行**（user=邮箱）。没账号 / 过期 / 用户自有
+/// `codex` 来源 / 请求失败 → 该账号不出行（展示面，安静跳过）。多账号并发问。
+pub fn quota_rows(providers: &[Provider]) -> Vec<Value> {
+    if providers.iter().any(|p| p.id == CODEX_ID) {
+        return Vec::new();
+    }
+    let accounts: Vec<Account> = discover_all().into_iter().filter(|a| !a.expired()).collect();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = accounts.iter().map(|a| scope.spawn(move || quota_row_of(a))).collect();
+        handles.into_iter().filter_map(|h| h.join().ok().flatten()).collect()
+    })
+}
+
+/// 单行便捷入口（只取最优账号那一行；多账号用 [`quota_rows`]）。
+pub fn quota_row(providers: &[Provider]) -> Option<Value> {
+    if providers.iter().any(|p| p.id == CODEX_ID) {
+        return None;
+    }
+    let account = discover()?;
+    if account.expired() {
+        return None;
+    }
+    quota_row_of(&account)
+}
+
+fn quota_row_of(account: &Account) -> Option<Value> {
+    let ver = client_version();
+    let url = format!("{}/wham/usage", base_url().trim_end_matches('/').trim_end_matches("/codex"));
+    // /wham 读取：Codex 不发 version/OpenAI-Beta，只有账号头 + 客户端头。
+    let response = sign(super::outbound_agent().get(&url), account, &ver, None)
+        .timeout(FETCH_TIMEOUT)
+        .call()
+        .ok()?;
+    let mut buf = Vec::new();
+    response.into_reader().take(1 << 20).read_to_end(&mut buf).ok()?;
+    let data: Value = serde_json::from_slice(&buf).ok()?;
+    let mut windows = Vec::new();
+    for key in ["primary_window", "secondary_window"] {
+        if let Some(w) = data.pointer(&format!("/rate_limit/{key}")).filter(|w| w.is_object()) {
+            windows.push(window_row(w));
+        }
+    }
+    if windows.is_empty() {
+        return None;
+    }
+    let plan = data
+        .get("plan_type")
+        .and_then(|p| p.as_str())
+        .filter(|p| !p.is_empty())
+        .map(String::from)
+        .unwrap_or_else(|| account.plan.clone());
+    let mut row = json!({
+        "provider": CODEX_ID,
+        "name": "Codex",
+        "icon": "codex-color",
+        "windows": windows,
+    });
+    if !account.email.is_empty() {
+        row["user"] = json!(account.email);
+    }
+    if !plan.is_empty() {
+        row["plan"] = json!(plan);
+    }
+    // 买的/送的 credits（Go：has && !unlimited && balance>0 → "N credits"）。
+    if let Some(c) = data.get("credits") {
+        let has = c.get("has_credits").and_then(|v| v.as_bool()).unwrap_or(false);
+        let unlimited = c.get("unlimited").and_then(|v| v.as_bool()).unwrap_or(false);
+        let balance = c
+            .get("balance")
+            .and_then(|b| b.as_str().map(|s| s.trim().parse::<f64>().ok()).unwrap_or_else(|| b.as_f64()));
+        if let (true, false, Some(n)) = (has, unlimited, balance) {
+            if n > 0.0 {
+                row["balance"] = json!(format!("{} credits", (n * 100.0).round() / 100.0));
+            }
+        }
+    }
+    Some(row)
+}
+
+// =====================================================================
+// 对话路径
+// =====================================================================
+
+fn first_line(s: &str) -> &str {
+    s.trim().lines().next().unwrap_or("")
+}
+
+/// Go BoundCallID：超过 64 字符的 call id 换成 sha256 hex（同 id 同哈希，
+/// 调用与输出仍配对）。
+fn bound_call_id(id: &str) -> String {
+    if id.len() <= 64 {
+        return id.to_string();
+    }
+    hex(&Sha256::digest(id.trim().as_bytes()))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Go conversationKey：从会话开头（instructions + 到第一条 user 为止的 input）
+/// 派生稳定的 prompt_cache_key；没有 user 消息就不造。
+fn conversation_key(instructions: &str, input: &[Value]) -> Option<String> {
+    let mut hasher = Sha256::new();
+    hasher.update(instructions.as_bytes());
+    let mut user = false;
+    for item in input {
+        hasher.update(serde_json::to_vec(item).unwrap_or_default());
+        if item.get("role").and_then(|r| r.as_str()) == Some("user") {
+            user = true;
+            break;
+        }
+    }
+    if !user {
+        return None;
+    }
+    let s = hex(&hasher.finalize());
+    Some(format!("{}-{}-{}-{}-{}", &s[0..8], &s[8..12], &s[12..16], &s[16..20], &s[20..32]))
+}
+
+const CALL_TYPES: [&str; 8] = [
+    "function_call",
+    "function_call_output",
+    "local_shell_call",
+    "local_shell_call_output",
+    "custom_tool_call",
+    "custom_tool_call_output",
+    "tool_search_call",
+    "tool_search_output",
+];
+
+/// Go orphanOutput：调用不在 input 里的工具输出，改说成 assistant 的一句备注
+/// （后端拒收孤儿 output 项）。
+fn orphan_output(it: &Value, id: &str) -> Value {
+    let name = it.get("name").and_then(|n| n.as_str()).filter(|n| !n.is_empty()).unwrap_or("tool");
+    let id = if id.is_empty() { "unknown" } else { id };
+    let mut text = match it.get("output") {
+        Some(Value::String(s)) => s.clone(),
+        Some(other) => serde_json::to_string(other).unwrap_or_default(),
+        None => "null".to_string(),
+    };
+    if text.len() > 16000 {
+        let mut cut = 16000;
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        text.truncate(cut);
+        text.push_str("\n...[truncated]");
+    }
+    json!({ "type": "message", "role": "assistant",
+            "content": format!("[Previous {name} result; call_id={id}]: {text}") })
+}
+
+/// Go codexInput：丢 item_reference、去 id、message/reasoning 去 status、
+/// system→developer、超长 call_id 收成哈希、孤儿工具输出改成备注消息。
+fn shape_input(mut input: Vec<Value>) -> Vec<Value> {
+    // 第一遍：收口 call_id、记「哪个 call 期望哪种 output」。
+    let mut calls: HashMap<String, &'static str> = HashMap::new();
+    for item in input.iter_mut() {
+        let Some(obj) = item.as_object_mut() else { continue };
+        let ty = obj.get("type").and_then(|t| t.as_str()).map(String::from);
+        let Some(ty) = ty else { continue };
+        if !CALL_TYPES.contains(&ty.as_str()) {
+            continue;
+        }
+        let mut id = obj.get("call_id").and_then(|c| c.as_str()).unwrap_or("").to_string();
+        let bound = bound_call_id(&id);
+        if bound != id {
+            id = bound.clone();
+            obj.insert("call_id".into(), Value::String(bound));
+        }
+        let want = match ty.as_str() {
+            "function_call" => "function_call_output",
+            "local_shell_call" => "local_shell_call_output",
+            "custom_tool_call" => "custom_tool_call_output",
+            _ => continue,
+        };
+        calls.insert(id.trim().to_string(), want);
+    }
+    let mut out = Vec::new();
+    for mut item in input {
+        let Some(obj) = item.as_object_mut() else {
+            out.push(item);
+            continue;
+        };
+        let ty = obj.get("type").and_then(|t| t.as_str()).map(String::from);
+        if ty.as_deref() == Some("item_reference") {
+            continue;
+        }
+        // Codex 自己发的无 call id 的独立通知：原样放过。
+        let standalone_output = matches!(ty.as_deref(), Some("function_call_output" | "custom_tool_call_output"))
+            && obj.get("call_id").map(|c| c.is_null() || c.as_str() == Some("")).unwrap_or(true);
+        if standalone_output {
+            out.push(item);
+            continue;
+        }
+        obj.remove("id");
+        if matches!(ty.as_deref(), None | Some("message") | Some("reasoning")) {
+            obj.remove("status");
+        }
+        if let Some(t @ ("function_call_output" | "custom_tool_call_output" | "local_shell_call_output")) =
+            ty.as_deref()
+        {
+            let id = obj.get("call_id").and_then(|c| c.as_str()).unwrap_or("").trim().to_string();
+            let want = calls.get(&id).copied().unwrap_or("");
+            let paired = want == t || (t == "function_call_output" && want == "local_shell_call_output");
+            if !paired {
+                out.push(orphan_output(&item, &id));
+                continue;
+            }
+        }
+        if let Some(obj) = item.as_object_mut() {
+            if obj.get("role").and_then(|r| r.as_str()) == Some("system")
+                && matches!(ty.as_deref(), None | Some("message"))
+            {
+                obj.insert("role".into(), Value::String("developer".into()));
+            }
+        }
+        out.push(item);
+    }
+    out
+}
+
+// ---- Go codexToolNames：后端拒收 ^[a-zA-Z0-9_.-]+$ 之外的工具名 ----
+
+fn tool_name_ok(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(|c| c == b'_' || c == b'.' || c == b'-' || c.is_ascii_alphanumeric())
+}
+
+/// Go CodexToolName：合法原样；否则每个非法**字节**换成 `_`、截 55、
+/// 接 `_` + sha256(原名) 前 4 字节 hex（同名恒同结果、不同名不撞）。
+pub(crate) fn codex_tool_name(name: &str) -> String {
+    if tool_name_ok(name) {
+        return name.to_string();
+    }
+    let mut out: Vec<u8> = name
+        .bytes()
+        .map(|c| if c == b'_' || c == b'.' || c == b'-' || c.is_ascii_alphanumeric() { c } else { b'_' })
+        .collect();
+    out.truncate(55);
+    let sum = Sha256::digest(name.as_bytes());
+    format!("{}_{}", String::from_utf8_lossy(&out), hex(&sum[..4]))
+}
+
+fn fix_tool_name(o: &mut serde_json::Map<String, Value>, changed: &mut bool) {
+    if let Some(n) = o.get("name").and_then(|n| n.as_str()).map(String::from) {
+        let c = codex_tool_name(&n);
+        if c != n {
+            o.insert("name".into(), Value::String(c));
+            *changed = true;
+        }
+    }
+}
+
+fn fix_tools(tools: &mut [Value], changed: &mut bool) {
+    for t in tools.iter_mut() {
+        let Some(tm) = t.as_object_mut() else { continue };
+        match tm.get("type").and_then(|x| x.as_str()) {
+            Some("function" | "custom") => fix_tool_name(tm, changed),
+            Some("namespace") => {
+                if let Some(nested) = tm.get_mut("tools").and_then(|n| n.as_array_mut()) {
+                    fix_tools(nested, changed);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 请求里每个工具名（tools / input 里的调用与 additional_tools /
+/// tool_choice 点名的那个）都改成后端收的形态；返回是否改过。
+fn codex_tool_names(m: &mut serde_json::Map<String, Value>) -> bool {
+    let mut changed = false;
+    if let Some(ts) = m.get_mut("tools").and_then(|t| t.as_array_mut()) {
+        fix_tools(ts, &mut changed);
+    }
+    if let Some(input) = m.get_mut("input").and_then(|t| t.as_array_mut()) {
+        for it in input.iter_mut() {
+            let Some(o) = it.as_object_mut() else { continue };
+            match o.get("type").and_then(|x| x.as_str()) {
+                Some("function_call" | "custom_tool_call") => fix_tool_name(o, &mut changed),
+                Some("additional_tools" | "tool_search_output") => {
+                    if let Some(n) = o.get_mut("tools").and_then(|n| n.as_array_mut()) {
+                        fix_tools(n, &mut changed);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if let Some(tc) = m.get_mut("tool_choice").and_then(|t| t.as_object_mut()) {
+        match tc.get("type").and_then(|x| x.as_str()) {
+            Some("function" | "custom") => fix_tool_name(tc, &mut changed),
+            Some("allowed_tools") => {
+                if let Some(n) = tc.get_mut("tools").and_then(|n| n.as_array_mut()) {
+                    fix_tools(n, &mut changed);
+                }
+            }
+            _ => {}
+        }
+    }
+    changed
+}
+
+/// 改名回程表（改过名的声明工具：后端名 → agent 声明名，Go CodexToolNamesBack）。
+pub(crate) fn names_back_of(request: &Value) -> super::translate::NamesBack {
+    let mut back = super::translate::NamesBack::new();
+    fn walk(ts: &[Value], back: &mut super::translate::NamesBack) {
+        for t in ts {
+            match t.get("type").and_then(|x| x.as_str()) {
+                Some("function" | "custom") => {
+                    if let Some(n) = t.get("name").and_then(|n| n.as_str()) {
+                        let c = codex_tool_name(n);
+                        if c != n {
+                            back.insert(c, n.to_string());
+                        }
+                    }
+                }
+                Some("namespace") => {
+                    if let Some(nested) = t.get("tools").and_then(|n| n.as_array()) {
+                        walk(nested, back);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if let Some(ts) = request.get("tools").and_then(|t| t.as_array()) {
+        walk(ts, &mut back);
+    }
+    for it in request.get("input").and_then(|i| i.as_array()).into_iter().flatten() {
+        if it.get("type").and_then(|t| t.as_str()) == Some("additional_tools") {
+            if let Some(ts) = it.get("tools").and_then(|t| t.as_array()) {
+                walk(ts, &mut back);
+            }
+        }
+    }
+    back
+}
+
+// ---- Go declareSearch：回放了 web_search_call 却没声明 web_search 工具会被拒 ----
+
+fn declares_search(tools: &[Value]) -> bool {
+    tools.iter().any(|t| {
+        let typ = t.get("type").and_then(|x| x.as_str()).unwrap_or("");
+        let name = t.get("name").and_then(|x| x.as_str()).unwrap_or("");
+        if typ.starts_with("web_search") {
+            return true;
+        }
+        if typ == "function" && name == "web.run" {
+            return true;
+        }
+        typ == "namespace"
+            && name == "web"
+            && t.get("tools").and_then(|x| x.as_array()).is_some_and(|inner| {
+                inner.iter().any(|f| {
+                    f.get("type").and_then(|x| x.as_str()) == Some("function")
+                        && f.get("name").and_then(|x| x.as_str()) == Some("run")
+                })
+            })
+    })
+}
+
+fn cached_search() -> Value {
+    json!({ "type": "web_search", "external_web_access": false })
+}
+
+fn declare_search(m: &mut serde_json::Map<String, Value>) -> bool {
+    let Some(input) = m.get("input").and_then(|i| i.as_array()).cloned() else { return false };
+    let (mut searched, mut offered) = (false, false);
+    let mut additional: Option<usize> = None;
+    for (i, it) in input.iter().enumerate() {
+        match it.get("type").and_then(|t| t.as_str()) {
+            Some("web_search_call") => searched = true,
+            Some("additional_tools") => {
+                let tools = it.get("tools").and_then(|t| t.as_array()).cloned().unwrap_or_default();
+                if declares_search(&tools) {
+                    return false;
+                }
+                offered = offered || !tools.is_empty();
+                if additional.is_none() {
+                    additional = Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    if !searched {
+        return false;
+    }
+    let tools: Vec<Value> = match m.get("tools") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(a)) => a.clone(),
+        Some(_) => return false, // 不是列表：留给后端去说
+    };
+    if declares_search(&tools) {
+        return false;
+    }
+    offered = offered || !tools.is_empty();
+    let all_turns = m.get("reasoning").and_then(|r| r.get("context")).and_then(|c| c.as_str()) == Some("all_turns");
+    let lite = additional.is_some() || all_turns;
+    let mut input = input;
+    match additional {
+        Some(i) => {
+            if let Some(o) = input[i].as_object_mut() {
+                let mut have = o.get("tools").and_then(|t| t.as_array()).cloned().unwrap_or_default();
+                have.push(cached_search());
+                o.insert("tools".into(), Value::Array(have));
+            }
+            m.insert("input".into(), Value::Array(input));
+        }
+        None if lite => {
+            input.insert(0, json!({ "type": "additional_tools", "role": "developer", "tools": [cached_search()] }));
+            m.insert("input".into(), Value::Array(input));
+        }
+        None => {
+            let mut tools = tools;
+            tools.push(cached_search());
+            m.insert("tools".into(), Value::Array(tools));
+        }
+    }
+    if !offered {
+        let none = match m.get("tool_choice") {
+            None | Some(Value::Null) => true,
+            Some(Value::String(c)) => c.is_empty() || c == "auto" || c == "none",
+            _ => false,
+        };
+        if none {
+            m.insert("tool_choice".into(), Value::String("none".into()));
+        }
+    }
+    true
+}
+
+/// Go codexBody 的移植：把任意 Responses 请求整形成 ChatGPT 后端收的那种
+/// （恒流式、不存储、带 Codex 指令、去掉它拒收的采样/缓存参数）。
+fn shape_body(mut v: Value, bare: &str, prompt: Option<String>) -> Value {
+    let Some(map) = v.as_object_mut() else { return v };
+    for k in [
+        "max_output_tokens",
+        "max_completion_tokens",
+        "temperature",
+        "top_p",
+        "previous_response_id",
+        "user",
+        "safety_identifier",
+        "prompt_cache_options",
+    ] {
+        map.remove(k);
+    }
+    let tier_ok = matches!(map.get("service_tier").and_then(|t| t.as_str()), Some("priority" | "ultrafast"));
+    if !tier_ok {
+        map.remove("service_tier");
+    }
+    map.insert("model".into(), Value::String(bare.to_string()));
+    if let Some(s) = map.get("input").and_then(|i| i.as_str()).map(String::from) {
+        map.insert(
+            "input".into(),
+            json!([{ "type": "message", "role": "user", "content": [{ "type": "input_text", "text": s }] }]),
+        );
+    }
+    let mut input = match map.remove("input") {
+        Some(Value::Array(a)) => shape_input(a),
+        _ => Vec::new(),
+    };
+    let own = map.get("instructions").and_then(|i| i.as_str()).unwrap_or("").to_string();
+    if map.get("prompt_cache_key").and_then(|k| k.as_str()).unwrap_or("").is_empty() {
+        if let Some(k) = conversation_key(&own, &input) {
+            map.insert("prompt_cache_key".into(), Value::String(k));
+        }
+    }
+    // 客户端自己的指令当 developer 消息打头，Codex 的指令占位——除非它们
+    // 本来就是 Codex 的（Codex 自己发来的）。没拿到 Codex 指令就用客户端的。
+    let mut instructions = prompt.unwrap_or_default();
+    if !own.trim().is_empty() {
+        if instructions.is_empty() || first_line(&own) == first_line(&instructions) {
+            instructions = own;
+        } else {
+            input.insert(
+                0,
+                json!({ "type": "message", "role": "developer",
+                        "content": [{ "type": "input_text", "text": own }] }),
+            );
+        }
+    }
+    if instructions.is_empty() {
+        instructions = FALLBACK_INSTRUCTIONS.to_string();
+    }
+    map.insert("input".into(), Value::Array(input));
+    map.insert("instructions".into(), Value::String(instructions));
+    map.insert("store".into(), Value::Bool(false));
+    map.insert("stream".into(), Value::Bool(true));
+    map.insert("tool_choice".into(), Value::String("auto".into()));
+    declare_search(map);
+    // 历史里别家模型写的非法工具名会让整个请求被拒（回程由 names_back_of 还原）
+    codex_tool_names(map);
+    map.entry("parallel_tool_calls").or_insert(Value::Bool(true));
+    map.entry("text").or_insert(json!({ "verbosity": "medium" }));
+
+    // 推理：除非关了，否则要摘要并带回加密推理内容（跨轮）；"ultra" 是 Codex
+    // CLI 对 "max" 的叫法。
+    let effort = map
+        .get("reasoning")
+        .and_then(|r| r.get("effort"))
+        .and_then(|e| e.as_str())
+        .unwrap_or("")
+        .to_string();
+    if effort == "ultra" {
+        if let Some(r) = map.get_mut("reasoning").and_then(|r| r.as_object_mut()) {
+            r.insert("effort".into(), Value::String("max".into()));
+        }
+    }
+    if effort == "none" {
+        map.remove("include");
+    } else {
+        if let Some(r) = map.get_mut("reasoning").and_then(|r| r.as_object_mut()) {
+            r.entry("summary").or_insert(Value::String("auto".into()));
+        }
+        let mut include = map
+            .get("include")
+            .and_then(|i| i.as_array())
+            .cloned()
+            .unwrap_or_default();
+        if !include.iter().any(|i| i.as_str() == Some("reasoning.encrypted_content")) {
+            include.push(Value::String("reasoning.encrypted_content".into()));
+        }
+        map.insert("include".into(), Value::Array(include));
+    }
+    v
+}
+
+/// 各入站协议自己的错误形状（anthropic 客户端读不懂 openai 形状的错误）。
+fn proto_error(proto: Proto, status: u16, message: &str) -> Reply {
+    match proto {
+        Proto::Anthropic => {
+            let ty = match status {
+                400 => "invalid_request_error",
+                401 => "authentication_error",
+                403 => "permission_error",
+                404 => "not_found_error",
+                413 => "request_too_large",
+                429 => "rate_limit_error",
+                529 => "overloaded_error",
+                _ => "api_error",
+            };
+            Reply::json(status, &json!({ "type": "error", "error": { "type": ty, "message": message } }))
+        }
+        _ => Reply::error(status, message),
+    }
+}
+
+/// 上游非 200 的应答体 → 入站协议的错误：Responses 入站原样（合同面）；
+/// chat / anthropic 入站抠出人话重包成各自的错误形状，状态码透传。
+fn upstream_error_reply(proto: Proto, status: u16, body: Vec<u8>) -> Reply {
+    if proto == Proto::Responses {
+        return Reply::Json { status, body };
+    }
+    let message = serde_json::from_slice::<Value>(&body)
+        .ok()
+        .and_then(|v| {
+            ["/error/message", "/error", "/message", "/detail"]
+                .iter()
+                .find_map(|p| v.pointer(p).and_then(|x| x.as_str()).filter(|s| !s.trim().is_empty()).map(String::from))
+        })
+        .unwrap_or_else(|| {
+            let t = String::from_utf8_lossy(&body);
+            let t = t.trim();
+            if t.is_empty() {
+                format!("Codex answered {status} with an empty body")
+            } else {
+                t.chars().take(400).collect()
+            }
+        });
+    proto_error(proto, status, &message)
+}
+
+/// SSE 聚合成最终 response 对象（客户端要非流式时）。失败 → (状态, 消息)。
+fn aggregate_sse_value(reader: impl Read) -> Result<Value, (u16, String)> {
+    let mut items: Vec<Value> = Vec::new();
+    let mut final_response: Option<Value> = None;
+    for line in BufReader::new(reader).lines() {
+        let Ok(line) = line else { break };
+        let Some(data) = line.strip_prefix("data:") else { continue };
+        let Ok(event) = serde_json::from_str::<Value>(data.trim()) else { continue };
+        match event.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+            "response.output_item.done" => {
+                if let Some(item) = event.get("item") {
+                    items.push(item.clone());
+                }
+            }
+            "response.completed" | "response.incomplete" => {
+                final_response = event.get("response").cloned();
+                break;
+            }
+            "response.failed" => {
+                let msg = event
+                    .pointer("/response/error/message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("Codex response failed");
+                return Err((502, msg.to_string()));
+            }
+            "error" => {
+                let msg = event
+                    .get("message")
+                    .or_else(|| event.pointer("/error/message"))
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("Codex stream error");
+                return Err((502, msg.to_string()));
+            }
+            _ => {}
+        }
+    }
+    let Some(mut response) = final_response else {
+        return Err((502, "Codex stream ended before response.completed".into()));
+    };
+    let empty_output = response
+        .get("output")
+        .and_then(|o| o.as_array())
+        .map(|o| o.is_empty())
+        .unwrap_or(true);
+    if empty_output && !items.is_empty() {
+        response["output"] = Value::Array(items);
+    }
+    Ok(response)
+}
+
+/// 把 SSE 读成一个最终 response 对象（Responses 入站、客户端要非流式时）。
+fn aggregate_sse(reader: impl Read) -> Reply {
+    match aggregate_sse_value(reader) {
+        Ok(v) => Reply::json(200, &v),
+        Err((status, msg)) => Reply::error(status, &msg),
+    }
+}
+
+/// 打开上游流：200 → Response（SSE 待读）；其它 → Err(Reply 由调用方按入站
+/// 协议整形)。
+fn open_upstream(account: &Account, ver: &str, body: &Value) -> Result<ureq::Response, (u16, Vec<u8>)> {
+    let url = format!("{}/responses", base_url().trim_end_matches('/'));
+    let payload = serde_json::to_vec(body).unwrap_or_default();
+    let request = sign(super::outbound_agent().post(&url), account, ver, Some(body))
+        .set("Content-Type", "application/json");
+    let response = match request.send_bytes(&payload) {
+        Ok(r) => r,
+        // 厂商的 4xx/5xx 是合同面的一部分，原样取回（chat.rs 同款）。
+        Err(ureq::Error::Status(_, r)) => r,
+        Err(e) => {
+            let msg = json!({ "error": { "message": format!("codex: {e}"), "type": "engine_error" } });
+            return Err((502, serde_json::to_vec(&msg).unwrap_or_default()));
+        }
+    };
+    let status = response.status();
+    if status != 200 {
+        let mut buf = Vec::new();
+        let _ = response.into_reader().take(1 << 20).read_to_end(&mut buf);
+        return Err((status, buf));
+    }
+    Ok(response)
+}
+
+fn forward_responses(account: &Account, ver: &str, body: &Value, client_wants_stream: bool) -> Reply {
+    let response = match open_upstream(account, ver, body) {
+        Ok(r) => r,
+        Err((status, body)) => return Reply::Json { status, body },
+    };
+    if client_wants_stream {
+        return Reply::Stream {
+            status: 200,
+            content_type: "text/event-stream".into(),
+            reader: Box::new(response.into_reader()),
+        };
+    }
+    aggregate_sse(response.into_reader())
+}
+
+/// chat / anthropic 入站：已翻成 Responses 并整形的请求 → 上游 → 翻回去。
+fn forward_translated(
+    proto: Proto,
+    account: &Account,
+    ver: &str,
+    shaped: &Value,
+    names_back: super::translate::NamesBack,
+    asked_model: &str,
+    client_wants_stream: bool,
+    include_usage: bool,
+) -> Reply {
+    let response = match open_upstream(account, ver, shaped) {
+        Ok(r) => r,
+        Err((status, body)) => return upstream_error_reply(proto, status, body),
+    };
+    if client_wants_stream {
+        // anthropic 出站复用 messages.rs 的 chat→anthropic 翻译器（它要
+        // usage 才能给 message_delta 带真数，所以内层恒带 usage）。
+        let conv = super::translate::ResponsesToChat::new(
+            asked_model,
+            include_usage || proto == Proto::Anthropic,
+            names_back,
+        );
+        let chat_reader: Box<dyn Read + Send> =
+            Box::new(super::translate::ResponsesToChatReader::new(Box::new(response.into_reader()), conv));
+        let reader: Box<dyn Read + Send> = match proto {
+            Proto::Anthropic => Box::new(super::messages::AnthropicSseTranslator::new(chat_reader, asked_model)),
+            _ => chat_reader,
+        };
+        return Reply::Stream { status: 200, content_type: "text/event-stream".into(), reader };
+    }
+    let aggregated = match aggregate_sse_value(response.into_reader()) {
+        Ok(v) => v,
+        Err((status, msg)) => return proto_error(proto, status, &msg),
+    };
+    let chat = super::translate::responses_object_to_chat(&aggregated, asked_model, &names_back);
+    match proto {
+        Proto::Anthropic => {
+            let bytes = serde_json::to_vec(&chat).unwrap_or_default();
+            match super::messages::chat_response_to_anthropic(&bytes, asked_model) {
+                Ok(v) => Reply::json(200, &v),
+                Err(e) => proto_error(proto, 502, &e),
+            }
+        }
+        _ => Reply::json(200, &chat),
+    }
+}
+
+/// `codex/<slug>#<账号>` 直写形态：从裸模型名里剥出账号引用。
+fn split_direct_pin(bare: &str) -> (String, Option<String>) {
+    if let Some(i) = bare.rfind('#') {
+        let acct = bare[i + 1..].trim();
+        if i > 0 && !acct.is_empty() && !acct.contains('/') {
+            return (bare[..i].to_string(), Some(acct.to_string()));
+        }
+    }
+    (bare.to_string(), None)
+}
+
+/// 路由层钩子：请求的模型若只能由合成 `codex` 来源接住，就在这里处理；
+/// 否则 None（走原有路径）。三种入站协议都真转发：Responses 直通，chat /
+/// anthropic 翻成 Responses 出站、应答翻回去。
+pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> Option<Reply> {
+    let parsed: Value = serde_json::from_slice(&request.body).ok()?;
+    let asked = parsed.get("model")?.as_str()?.to_string();
+    let (groups, providers) = {
+        let store = gateway.store.lock().ok()?;
+        (store.groups().to_vec(), store.providers().to_vec())
+    };
+    let known = |id: &str| gateway.catalog.knows(&providers, id);
+    // 真实来源（含用户自建的 codex）能接住的，一律走原路径。
+    if super::groups::resolve_with(&groups, &providers, &asked, &known).is_some() {
+        return None;
+    }
+    if providers.iter().any(|p| p.id == CODEX_ID) {
+        return None;
+    }
+    let synthetic = synthetic_provider()?;
+    let mut with = providers.clone();
+    with.push(synthetic);
+    let known2 = |id: &str| knows(id) || gateway.catalog.knows(&with, id);
+    // 候选表（groups.rs 的成员语法：强度/:fast/#账号都已拆好）；首发不是
+    // codex 的（组里排在前面的是别的来源）交还原路径。
+    let no_ids = || Vec::new();
+    let ctx = super::groups::PlanCtx { has_model: &known2, catalog_ids: &no_ids };
+    let cand = super::groups::plan_with(&groups, &with, &asked, &ctx).into_iter().next()?;
+    if cand.provider != CODEX_ID {
+        return None;
+    }
+    let (bare, levels, member_pin, fast) = (cand.model, cand.levels, cand.account, cand.fast);
+    let (bare, direct_pin) = split_direct_pin(&bare);
+    let pin = member_pin.or(direct_pin);
+    // 账号：钉了就只用它（找不到 = 明确报错，不落到别的账号）；没钉取最优。
+    // 凭据每个请求现读，从不写、从不刷新。
+    let account = match select_account(pin.as_deref()) {
+        Selected::Ok(a) => a,
+        Selected::NoAccount => return None,
+        Selected::UnknownPin(p) => {
+            return Some(proto_error(
+                proto,
+                404,
+                &format!("no Codex account matches \"{p}\" (use the account's email, id or account id)"),
+            ))
+        }
+    };
+    if account.expired() {
+        return Some(proto_error(proto, 401, EXPIRED_MESSAGE));
+    }
+    // 成员强度后缀（`codex/gpt-6-luna:xhigh`）：与其它来源同一套语义，按入站协议的字段改。
+    let body = if levels.is_empty() {
+        request.body.clone()
+    } else {
+        super::effort::apply(proto, &request.body, &levels, &levels_of(&bare))
+            .unwrap_or_else(|| request.body.clone())
+    };
+    let inbound: Value = serde_json::from_slice(&body).unwrap_or(parsed);
+    let client_wants_stream = inbound.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
+    let ver = newer_version(&client_version(), request.header("version").unwrap_or(""));
+    // 入站 → Responses 请求
+    let responses_request = match proto {
+        Proto::Responses => inbound.clone(),
+        Proto::Chat => match super::translate::chat_to_responses(&inbound) {
+            Ok(v) => v,
+            Err(e) => return Some(proto_error(proto, 400, &e)),
+        },
+        Proto::Anthropic => match super::translate::anthropic_to_responses(&inbound) {
+            Ok(v) => v,
+            Err(e) => return Some(proto_error(proto, 400, &e)),
+        },
+    };
+    let names_back = names_back_of(&responses_request);
+    let mut shaped = shape_body(responses_request, &bare, prompt_of(&bare));
+    if fast {
+        // `:fast` 成员 = Codex 的 Fast 模式（service_tier priority，shape_body 放行）。
+        shaped["service_tier"] = Value::String("priority".into());
+    }
+    if proto == Proto::Responses {
+        return Some(forward_responses(&account, &ver, &shaped, client_wants_stream));
+    }
+    let include_usage = inbound
+        .pointer("/stream_options/include_usage")
+        .and_then(|b| b.as_bool())
+        .unwrap_or(false);
+    Some(forward_translated(
+        proto,
+        &account,
+        &ver,
+        &shaped,
+        names_back,
+        &asked,
+        client_wants_stream,
+        include_usage,
+    ))
+}
+
+// =====================================================================
+// 测试
+// =====================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::super::Gateway;
+    use super::*;
+    use std::io::Write;
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    static DIR_SEQ: AtomicUsize = AtomicUsize::new(0);
+
+    fn b64(v: &Value) -> String {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(v).unwrap())
+    }
+
+    /// 假 JWT（只有载荷有意义；全是测试假值）。
+    fn fake_jwt(claims: Value) -> String {
+        format!("{}.{}.sig", b64(&json!({"alg":"none"})), b64(&claims))
+    }
+
+    fn auth_json(access: &str, email: &str) -> Value {
+        json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "access_token": access,
+                "id_token": fake_jwt(json!({
+                    "email": email,
+                    "https://api.openai.com/auth": { "chatgpt_plan_type": "pro" }
+                })),
+                "refresh_token": "never-used-refresh",
+                "account_id": "acct-test",
+            }
+        })
+    }
+
+    struct Recorded {
+        method: String,
+        path: String,
+        headers: HashMap<String, String>,
+        body: Vec<u8>,
+    }
+
+    /// 本地假后端：按路径前缀回固定应答；记录每个请求。
+    struct Mock {
+        base: String,
+        hits: Arc<AtomicUsize>,
+        seen: Arc<Mutex<Vec<Recorded>>>,
+        routes: Arc<Mutex<Vec<(String, u16, String, String)>>>,
+    }
+
+    impl Mock {
+        fn start() -> Mock {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+            let port = listener.local_addr().unwrap().port();
+            let hits = Arc::new(AtomicUsize::new(0));
+            let seen: Arc<Mutex<Vec<Recorded>>> = Arc::new(Mutex::new(Vec::new()));
+            let routes: Arc<Mutex<Vec<(String, u16, String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+            let (h, s, r) = (hits.clone(), seen.clone(), routes.clone());
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(stream) = stream else { continue };
+                    h.fetch_add(1, Ordering::SeqCst);
+                    let (s, r) = (s.clone(), r.clone());
+                    std::thread::spawn(move || {
+                        let mut reader = BufReader::new(stream.try_clone().unwrap());
+                        let mut request_line = String::new();
+                        reader.read_line(&mut request_line).ok();
+                        let mut parts = request_line.split_whitespace();
+                        let method = parts.next().unwrap_or("").to_string();
+                        let path = parts.next().unwrap_or("").to_string();
+                        let mut headers = HashMap::new();
+                        loop {
+                            let mut line = String::new();
+                            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                                break;
+                            }
+                            let t = line.trim_end();
+                            if t.is_empty() {
+                                break;
+                            }
+                            if let Some((k, v)) = t.split_once(':') {
+                                headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
+                            }
+                        }
+                        let len: usize = headers.get("content-length").and_then(|l| l.parse().ok()).unwrap_or(0);
+                        let mut body = vec![0u8; len];
+                        reader.read_exact(&mut body).ok();
+                        let reply = r
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .find(|(prefix, ..)| path.starts_with(prefix.as_str()))
+                            .map(|(_, status, ct, b)| (*status, ct.clone(), b.clone()))
+                            .unwrap_or((404, "text/plain".into(), "no route".into()));
+                        s.lock().unwrap().push(Recorded { method, path, headers, body });
+                        let mut stream = stream;
+                        let out = format!(
+                            "HTTP/1.1 {} X\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            reply.0,
+                            reply.1,
+                            reply.2.len(),
+                            reply.2
+                        );
+                        let _ = stream.write_all(out.as_bytes());
+                    });
+                }
+            });
+            Mock { base: format!("http://127.0.0.1:{port}/backend-api/codex"), hits, seen, routes }
+        }
+
+        fn route(&self, prefix: &str, status: u16, content_type: &str, body: &str) {
+            let mut routes = self.routes.lock().unwrap();
+            routes.retain(|(p, ..)| p != prefix);
+            routes.push((prefix.to_string(), status, content_type.to_string(), body.to_string()));
+        }
+
+        fn hits(&self) -> usize {
+            self.hits.load(Ordering::SeqCst)
+        }
+
+        fn last(&self, path_prefix: &str) -> (HashMap<String, String>, Vec<u8>) {
+            let seen = self.seen.lock().unwrap();
+            let r = seen.iter().rev().find(|r| r.path.starts_with(path_prefix)).expect("request seen");
+            let _ = &r.method;
+            (r.headers.clone(), r.body.clone())
+        }
+    }
+
+    struct World {
+        dir: PathBuf,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for World {
+        fn drop(&mut self) {
+            *TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) = None;
+            reset_for_tests();
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// 沙箱：串行锁 + 临时配置目录（providers.json）+ 种子缝。logins/auth 由
+    /// 各测试自己写。
+    fn world(providers_json: &str, base: &str) -> (Gateway, World) {
+        let lock = crate::engine_gateway::TEST_SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        reset_for_tests();
+        let dir = std::env::temp_dir().join(format!(
+            "marionette-engine-codex-{}-{}",
+            std::process::id(),
+            DIR_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(dir.join("magpie")).unwrap();
+        std::fs::create_dir_all(dir.join("home")).unwrap();
+        std::fs::write(dir.join("magpie").join("providers.json"), providers_json).unwrap();
+        *TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) = Some(Seam {
+            base: base.to_string(),
+            logins_dir: dir.join("magpie"),
+            codex_home: dir.join("home"),
+        });
+        let prior = std::env::var("XDG_CONFIG_HOME").ok();
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        let gateway = Gateway::open().expect("gateway");
+        match &prior {
+            Some(p) => std::env::set_var("XDG_CONFIG_HOME", p),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        (gateway, World { dir, _lock: lock })
+    }
+
+    fn write_logins(world: &World, access: &str, email: &str) {
+        let logins = json!([{ "id": "x", "agent": "codex", "user": email, "plan": "pro",
+                              "auth": auth_json(access, email) }]);
+        std::fs::write(world.dir.join("magpie").join("logins.json"), serde_json::to_vec(&logins).unwrap()).unwrap();
+    }
+
+    fn write_codex_auth(world: &World, access: &str, email: &str) {
+        std::fs::write(
+            world.dir.join("home").join("auth.json"),
+            serde_json::to_vec(&auth_json(access, email)).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn valid_token() -> String {
+        fake_jwt(json!({ "exp": now_secs() + 3600 }))
+    }
+
+    fn expired_token() -> String {
+        fake_jwt(json!({ "exp": now_secs() - 3600 }))
+    }
+
+    const MODELS_BODY: &str = r#"{"models":[
+        {"slug":"gpt-6-sol","display_name":"GPT-6 Sol","priority":2,"visibility":"list",
+         "input_modalities":["text"],"context_window":272000,
+         "supported_reasoning_levels":[{"effort":"low"},{"effort":"high"},{"effort":"xhigh"}],
+         "base_instructions":"You are Codex SOL. Rules follow."},
+        {"slug":"gpt-6-luna","display_name":"GPT-6 Luna","priority":1,"visibility":"list",
+         "input_modalities":["text","image"],"context_window":400000,
+         "supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"xhigh"}]},
+        {"slug":"secret-hidden","priority":0,"visibility":"hide","context_window":1}
+    ]}"#;
+
+    fn post(path: &str, body: &Value) -> Request {
+        Request {
+            method: "POST".into(),
+            path: path.into(),
+            headers: Vec::new(),
+            body: serde_json::to_vec(body).unwrap(),
+        }
+    }
+
+    fn get(path: &str) -> Request {
+        Request { method: "GET".into(), path: path.into(), headers: Vec::new(), body: Vec::new() }
+    }
+
+    fn reply_json(reply: Reply) -> (u16, Value) {
+        match reply {
+            Reply::Json { status, body } => (status, serde_json::from_slice(&body).unwrap_or(Value::Null)),
+            Reply::Stream { status, mut reader, .. } => {
+                let mut buf = Vec::new();
+                reader.read_to_end(&mut buf).unwrap();
+                (status, Value::String(String::from_utf8_lossy(&buf).into_owned()))
+            }
+        }
+    }
+
+    const SSE_OK: &str = "event: response.created\n\
+data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}\n\n\
+event: response.output_item.done\n\
+data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hi\"}]}}\n\n\
+event: response.completed\n\
+data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n";
+
+    #[test]
+    fn no_account_means_no_provider_rows_or_quota() {
+        let mock = Mock::start();
+        let (gateway, _w) = world(r#"{"providers":[]}"#, &mock.base);
+        assert!(discover().is_none());
+        assert!(synthetic_provider().is_none());
+        assert!(listed_rows(&[]).is_empty());
+        assert!(quota_row(&[]).is_none());
+        // 路由：codex 模型 404（没有来源），且没打任何网络
+        let reply = super::super::routes::route(
+            &post("/v1/responses", &json!({"model":"codex/gpt-6-luna","input":"hi"})),
+            &gateway,
+        );
+        assert_eq!(reply_json(reply).0, 404);
+        assert_eq!(mock.hits(), 0);
+        let rows = reply_json(super::super::routes::route(&get("/v1/models"), &gateway)).1;
+        assert!(rows["data"].as_array().unwrap().is_empty());
+        assert_eq!(mock.hits(), 0);
+    }
+
+    #[test]
+    fn models_rows_cache_and_stale_on_error() {
+        let mock = Mock::start();
+        mock.route("/backend-api/codex/models", 200, "application/json", MODELS_BODY);
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        let token = valid_token();
+        write_logins(&w, &token, "me@example.test");
+
+        let body = reply_json(super::super::routes::route(&get("/v1/models"), &gateway)).1;
+        let data = body["data"].as_array().unwrap();
+        let ids: Vec<&str> = data.iter().map(|r| r["id"].as_str().unwrap()).collect();
+        // priority 排序、hide 不出
+        assert_eq!(ids, vec!["codex/gpt-6-luna", "codex/gpt-6-sol"]);
+        assert_eq!(data[0]["context_window"], 400000);
+        assert_eq!(data[0]["modalities"]["input"], json!(["text", "image"]));
+        assert_eq!(data[1]["modalities"]["input"], json!(["text"]));
+        assert_eq!(data[0]["reasoning_levels"], json!(["low", "medium", "xhigh"]));
+        // 请求带了 Codex 同款头 + client_version
+        let (headers, _) = mock.last("/backend-api/codex/models");
+        assert_eq!(headers["authorization"], format!("Bearer {token}"));
+        assert_eq!(headers["chatgpt-account-id"], "acct-test");
+        assert_eq!(headers["originator"], "codex_cli_rs");
+        assert!(headers["user-agent"].starts_with("codex_cli_rs/"));
+        assert!(mock.seen.lock().unwrap()[0].path.contains("client_version=0.159.0"));
+
+        // 30s 缓存：第二次不再打后端
+        let hits = mock.hits();
+        let _ = super::super::routes::route(&get("/v1/models"), &gateway);
+        assert_eq!(mock.hits(), hits);
+
+        // 缓存过期 + 后端 500 → 回旧行；随后退避内不再打
+        expire_cache_for_tests();
+        mock.route("/backend-api/codex/models", 500, "text/plain", "boom");
+        let body = reply_json(super::super::routes::route(&get("/v1/models"), &gateway)).1;
+        assert_eq!(body["data"].as_array().unwrap().len(), 2);
+        let after_fail = mock.hits();
+        let _ = super::super::routes::route(&get("/v1/models"), &gateway);
+        assert_eq!(mock.hits(), after_fail);
+    }
+
+    #[test]
+    fn failing_codex_does_not_hide_other_providers() {
+        let mock = Mock::start(); // 没有任何 route → /models 404
+        let vendor = Mock::start();
+        vendor.route("/v1/models", 200, "application/json", r#"{"data":[{"id":"m1","context_window":1000}]}"#);
+        let providers = format!(
+            r#"{{"providers":[{{"id":"acme","name":"Acme","key":"k","chat":"{}/v1"}}]}}"#,
+            vendor.base.trim_end_matches("/backend-api/codex")
+        );
+        let (gateway, w) = world(&providers, &mock.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let body = reply_json(super::super::routes::route(&get("/v1/models"), &gateway)).1;
+        let ids: Vec<&str> = body["data"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["acme/m1"]);
+    }
+
+    #[test]
+    fn responses_stream_passthrough_headers_and_body() {
+        let mock = Mock::start();
+        mock.route("/backend-api/codex/responses", 200, "text/event-stream", SSE_OK);
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        let token = valid_token();
+        write_logins(&w, &token, "me@example.test");
+        let reply = super::super::routes::route(
+            &post(
+                "/v1/responses",
+                &json!({"model":"codex/gpt-6-luna","stream":true,"input":"hello",
+                        "temperature":0.2,"max_output_tokens":99,"prompt_cache_key":"pck-1",
+                        "instructions":"client rules"}),
+            ),
+            &gateway,
+        );
+        let (status, text) = reply_json(reply);
+        assert_eq!(status, 200);
+        assert!(text.as_str().unwrap().contains("response.completed"));
+        let (headers, body) = mock.last("/backend-api/codex/responses");
+        assert_eq!(headers["authorization"], format!("Bearer {token}"));
+        assert_eq!(headers["chatgpt-account-id"], "acct-test");
+        assert_eq!(headers["openai-beta"], "responses=experimental");
+        assert_eq!(headers["session-id"], "pck-1");
+        assert_eq!(headers["accept"], "text/event-stream");
+        let sent: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(sent["model"], "gpt-6-luna");
+        assert_eq!(sent["stream"], true);
+        assert_eq!(sent["store"], false);
+        assert!(sent.get("temperature").is_none());
+        assert!(sent.get("max_output_tokens").is_none());
+        assert_eq!(sent["instructions"], "client rules");
+        // 字符串 input 被折成 message 项
+        assert_eq!(sent["input"][0]["role"], "user");
+        assert!(sent["include"].as_array().unwrap().iter().any(|i| i == "reasoning.encrypted_content"));
+    }
+
+    #[test]
+    fn responses_nonstream_aggregates_sse() {
+        let mock = Mock::start();
+        mock.route("/backend-api/codex/responses", 200, "text/event-stream", SSE_OK);
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let reply = super::super::routes::route(
+            &post("/v1/responses", &json!({"model":"codex/gpt-6-luna","stream":false,"input":"hello"})),
+            &gateway,
+        );
+        let (status, resp) = reply_json(reply);
+        assert_eq!(status, 200);
+        assert_eq!(resp["id"], "r1");
+        assert_eq!(resp["output"][0]["content"][0]["text"], "hi");
+        assert_eq!(resp["usage"]["input_tokens"], 3);
+        // 上游被强制成流
+        let (_, body) = mock.last("/backend-api/codex/responses");
+        assert_eq!(serde_json::from_slice::<Value>(&body).unwrap()["stream"], true);
+    }
+
+    #[test]
+    fn nonstream_failed_event_is_an_error() {
+        let mock = Mock::start();
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"nope\"}}}\n\n",
+        );
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let (status, body) = reply_json(super::super::routes::route(
+            &post("/v1/responses", &json!({"model":"codex/gpt-6-luna","input":"x"})),
+            &gateway,
+        ));
+        assert_eq!(status, 502);
+        assert_eq!(body["error"]["message"], "nope");
+    }
+
+    #[test]
+    fn upstream_error_status_is_passed_through() {
+        let mock = Mock::start();
+        mock.route("/backend-api/codex/responses", 404, "application/json", r#"{"detail":"Model not found"}"#);
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let (status, body) = reply_json(super::super::routes::route(
+            &post("/v1/responses", &json!({"model":"codex/nope","stream":true,"input":"x"})),
+            &gateway,
+        ));
+        assert_eq!(status, 404);
+        assert_eq!(body["detail"], "Model not found");
+    }
+
+    #[test]
+    fn alias_group_member_effort_applies_to_reasoning() {
+        let mock = Mock::start();
+        mock.route("/backend-api/codex/responses", 200, "text/event-stream", SSE_OK);
+        mock.route("/backend-api/codex/models", 200, "application/json", MODELS_BODY);
+        let providers = r#"{"providers":[],"groups":[
+            {"id":"gpt-6.1-sol","name":"gpt-6.1-sol","members":["codex/gpt-6-luna:xhigh"],"pick":"codex/gpt-6-luna:xhigh"}]}"#;
+        let (gateway, w) = world(providers, &mock.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let (status, _) = reply_json(super::super::routes::route(
+            &post(
+                "/v1/responses",
+                &json!({"model":"gpt-6.1-sol[low]","stream":true,"input":"x","reasoning":{"effort":"low"}}),
+            ),
+            &gateway,
+        ));
+        assert_eq!(status, 200);
+        let (_, body) = mock.last("/backend-api/codex/responses");
+        let sent: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(sent["model"], "gpt-6-luna");
+        assert_eq!(sent["reasoning"]["effort"], "xhigh");
+        assert_eq!(sent["reasoning"]["summary"], "auto");
+    }
+
+    #[test]
+    fn catalog_prompt_becomes_instructions_and_client_goes_developer() {
+        let mock = Mock::start();
+        mock.route("/backend-api/codex/responses", 200, "text/event-stream", SSE_OK);
+        mock.route("/backend-api/codex/models", 200, "application/json", MODELS_BODY);
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        // 先拉模型表（填指令缓存）
+        let _ = super::super::routes::route(&get("/v1/models"), &gateway);
+        let _ = super::super::routes::route(
+            &post(
+                "/v1/responses",
+                &json!({"model":"codex/gpt-6-sol","stream":true,"input":"x","instructions":"Be a pirate."}),
+            ),
+            &gateway,
+        );
+        let (_, body) = mock.last("/backend-api/codex/responses");
+        let sent: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(sent["instructions"], "You are Codex SOL. Rules follow.");
+        assert_eq!(sent["input"][0]["role"], "developer");
+        assert_eq!(sent["input"][0]["content"][0]["text"], "Be a pirate.");
+    }
+
+    #[test]
+    fn expired_token_is_a_clear_error_and_never_hits_network() {
+        let mock = Mock::start();
+        mock.route("/backend-api/codex/models", 200, "application/json", MODELS_BODY);
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_logins(&w, &expired_token(), "me@example.test");
+        // 账号存在（合成来源在）→ 路由给出明确原因，不是 404
+        assert!(synthetic_provider().is_some());
+        let (status, body) = reply_json(super::super::routes::route(
+            &post("/v1/responses", &json!({"model":"codex/gpt-6-luna","input":"x"})),
+            &gateway,
+        ));
+        assert_eq!(status, 401);
+        assert_eq!(body["error"]["message"], EXPIRED_MESSAGE);
+        assert!(listed_rows(&[]).is_empty());
+        assert!(quota_row(&[]).is_none());
+        assert_eq!(mock.hits(), 0);
+    }
+
+    #[test]
+    fn later_expiry_source_wins_and_files_are_never_written() {
+        let mock = Mock::start();
+        mock.route("/backend-api/codex/responses", 200, "text/event-stream", SSE_OK);
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_logins(&w, &expired_token(), "old@example.test");
+        let good = valid_token();
+        write_codex_auth(&w, &good, "new@example.test");
+        let before = std::fs::read(w.dir.join("magpie").join("logins.json")).unwrap();
+        let before_auth = std::fs::read(w.dir.join("home").join("auth.json")).unwrap();
+        let (status, _) = reply_json(super::super::routes::route(
+            &post("/v1/responses", &json!({"model":"codex/gpt-6-luna","stream":true,"input":"x"})),
+            &gateway,
+        ));
+        assert_eq!(status, 200);
+        let (headers, _) = mock.last("/backend-api/codex/responses");
+        assert_eq!(headers["authorization"], format!("Bearer {good}"));
+        assert_eq!(discover().unwrap().email, "new@example.test");
+        // 只读：两份文件逐字节未动
+        assert_eq!(before, std::fs::read(w.dir.join("magpie").join("logins.json")).unwrap());
+        assert_eq!(before_auth, std::fs::read(w.dir.join("home").join("auth.json")).unwrap());
+    }
+
+    #[test]
+    fn apikey_mode_and_other_agents_are_ignored() {
+        let mock = Mock::start();
+        let (_gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        let mut auth = auth_json(&valid_token(), "k@example.test");
+        auth["auth_mode"] = json!("apikey");
+        let logins = json!([
+            { "agent": "codex", "user": "k@example.test", "auth": auth },
+            { "agent": "claude", "user": "c@example.test", "auth": auth_json(&valid_token(), "c@example.test") },
+            { "agent": "codex", "user": "n", "auth": null }
+        ]);
+        std::fs::write(w.dir.join("magpie").join("logins.json"), serde_json::to_vec(&logins).unwrap()).unwrap();
+        assert!(discover().is_none());
+    }
+
+    #[test]
+    fn user_defined_codex_provider_takes_precedence() {
+        let mock = Mock::start();
+        mock.route("/backend-api/codex/models", 200, "application/json", MODELS_BODY);
+        let vendor = Mock::start();
+        vendor.route("/v1/models", 200, "application/json", r#"{"data":[{"id":"real","context_window":5}]}"#);
+        vendor.route("/v1/responses", 200, "application/json", r#"{"id":"from-real"}"#);
+        let root = vendor.base.trim_end_matches("/backend-api/codex");
+        let providers = format!(
+            r#"{{"providers":[{{"id":"codex","name":"Mine","key":"k","chat":"{root}/v1","responses":"{root}/v1"}}]}}"#
+        );
+        let (gateway, w) = world(&providers, &mock.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let body = reply_json(super::super::routes::route(&get("/v1/models"), &gateway)).1;
+        let ids: Vec<&str> = body["data"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["codex/real"]);
+        let (status, resp) = reply_json(super::super::routes::route(
+            &post("/v1/responses", &json!({"model":"codex/real","input":"x"})),
+            &gateway,
+        ));
+        assert_eq!(status, 200);
+        assert_eq!(resp["id"], "from-real");
+        assert_eq!(mock.hits(), 0);
+        assert!(quota_row(&[Provider { id: "codex".into(), ..Default::default() }]).is_none());
+    }
+
+    #[test]
+    fn quota_row_comes_from_wham_usage() {
+        let mock = Mock::start();
+        mock.route(
+            "/backend-api/wham/usage",
+            200,
+            "application/json",
+            r#"{"plan_type":"pro",
+                "credits":{"has_credits":true,"unlimited":false,"balance":"12.345"},
+                "rate_limit":{"allowed":true,
+                  "primary_window":{"used_percent":37.5,"limit_window_seconds":18000,"reset_after_seconds":600,"reset_at":1893456000},
+                  "secondary_window":{"used_percent":10,"limit_window_seconds":604800,"reset_after_seconds":86400,"reset_at":1893542400}}}"#,
+        );
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        let token = valid_token();
+        write_logins(&w, &token, "me@example.test");
+        let rows = super::super::quotas::quota_entries(&gateway, true);
+        let row = rows.iter().find(|r| r["provider"] == "codex").expect("codex row");
+        assert_eq!(row["name"], "Codex");
+        assert_eq!(row["user"], "me@example.test");
+        assert_eq!(row["plan"], "pro");
+        assert_eq!(row["balance"], "12.35 credits");
+        let windows = row["windows"].as_array().unwrap();
+        assert_eq!(windows[0]["name"], "5 hours");
+        assert_eq!(windows[0]["used"], 37.5);
+        assert_eq!(windows[0]["remaining"], 62.5);
+        assert_eq!(windows[0]["resetsAt"], "2030-01-01T00:00:00Z");
+        assert_eq!(windows[1]["name"], "7 days");
+        let (headers, _) = mock.last("/backend-api/wham/usage");
+        assert_eq!(headers["authorization"], format!("Bearer {token}"));
+        assert_eq!(headers["chatgpt-account-id"], "acct-test");
+        // 失败安静跳过
+        mock.route("/backend-api/wham/usage", 500, "text/plain", "x");
+        let rows = super::super::quotas::quota_entries(&gateway, true);
+        assert!(rows.iter().all(|r| r["provider"] != "codex"));
+    }
+
+    #[test]
+    fn jwt_and_version_helpers() {
+        let t = fake_jwt(json!({"exp": 123, "email": "a@b"}));
+        assert_eq!(jwt_claims(&t).unwrap()["exp"], 123);
+        assert!(jwt_claims("not-a-jwt").is_none());
+        assert_eq!(newer_version("0.159.0", "0.160.1"), "0.160.1");
+        assert_eq!(newer_version("0.159.0", "0.158.9"), "0.159.0");
+        assert_eq!(newer_version("0.159.0", "garbage"), "0.159.0");
+        assert_eq!(newer_version("0.159.0", ""), "0.159.0");
+    }
+
+    #[test]
+    fn shape_body_keeps_codex_contract() {
+        let long_id = "x".repeat(80);
+        let v = shape_body(
+            json!({
+                "model": "codex/m", "service_tier": "flex", "tool_choice": "required",
+                "input": [
+                    {"type":"item_reference","id":"r"},
+                    {"type":"message","id":"m1","role":"system","status":"completed","content":"s"},
+                    {"type":"function_call","id":"fc","call_id": long_id, "name":"f","arguments":"{}"},
+                    {"type":"message","role":"user","content":"hi"}
+                ],
+                "reasoning": {"effort":"none"}, "include": ["x"]
+            }),
+            "m",
+            None,
+        );
+        assert!(v.get("service_tier").is_none());
+        assert_eq!(v["tool_choice"], "auto");
+        assert_eq!(v["store"], false);
+        assert_eq!(v["instructions"], FALLBACK_INSTRUCTIONS);
+        let input = v["input"].as_array().unwrap();
+        assert_eq!(input.len(), 3); // item_reference 被丢
+        assert_eq!(input[0]["role"], "developer");
+        assert!(input[0].get("id").is_none() && input[0].get("status").is_none());
+        assert_eq!(input[1]["call_id"].as_str().unwrap().len(), 64);
+        // effort none：不要 include
+        assert!(v.get("include").is_none());
+        assert!(v["prompt_cache_key"].as_str().unwrap().len() == 36);
+    }
+
+    // ---------------------------------------------------------------
+    // chat / anthropic 入站（responses 请求翻译 + 应答翻回）
+    // ---------------------------------------------------------------
+
+    fn sse(events: &[Value]) -> String {
+        events
+            .iter()
+            .map(|e| format!("event: {}\ndata: {}\n\n", e["type"].as_str().unwrap(), e))
+            .collect()
+    }
+
+    fn data_frames(text: &str) -> Vec<String> {
+        text.split("\n\n")
+            .filter_map(|b| b.lines().find_map(|l| l.strip_prefix("data: ")).map(String::from))
+            .collect()
+    }
+
+    fn chat_chunks(text: &str) -> Vec<Value> {
+        data_frames(text).iter().filter_map(|d| serde_json::from_str(d).ok()).collect()
+    }
+
+    fn anthropic_frames(text: &str) -> Vec<(String, Value)> {
+        text.split("\n\n")
+            .filter_map(|b| {
+                let ev = b.lines().find_map(|l| l.strip_prefix("event: "))?.to_string();
+                let data = b.lines().find_map(|l| l.strip_prefix("data: "))?;
+                Some((ev, serde_json::from_str(data).ok()?))
+            })
+            .collect()
+    }
+
+    fn text_events() -> Vec<Value> {
+        vec![
+            json!({"type":"response.created","response":{"id":"r1"}}),
+            json!({"type":"response.output_text.delta","output_index":0,"delta":"Hel"}),
+            json!({"type":"response.output_text.delta","output_index":0,"delta":"lo"}),
+            json!({"type":"response.output_item.done","output_index":0,
+                   "item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello"}]}}),
+            json!({"type":"response.completed","response":{"id":"r1","status":"completed","output":[],
+                   "usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15,
+                            "input_tokens_details":{"cached_tokens":4},
+                            "output_tokens_details":{"reasoning_tokens":2}}}}),
+        ]
+    }
+
+    fn tool_events(name: &str) -> Vec<Value> {
+        vec![
+            json!({"type":"response.created","response":{"id":"r2"}}),
+            json!({"type":"response.output_item.added","output_index":0,
+                   "item":{"type":"function_call","id":"fc_1","call_id":"call_9","name":name,"arguments":""}}),
+            json!({"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_1","delta":"{\"a\":"}),
+            json!({"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_1","delta":"1}"}),
+            json!({"type":"response.output_item.done","output_index":0,
+                   "item":{"type":"function_call","id":"fc_1","call_id":"call_9","name":name,"arguments":"{\"a\":1}"}}),
+            json!({"type":"response.completed","response":{"id":"r2","status":"completed","output":[],
+                   "usage":{"input_tokens":7,"output_tokens":3}}}),
+        ]
+    }
+
+    fn sent_body(mock: &Mock) -> Value {
+        serde_json::from_slice(&mock.last("/backend-api/codex/responses").1).unwrap()
+    }
+
+    #[test]
+    fn chat_stream_translates_responses_sse() {
+        let mock = Mock::start();
+        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&text_events()));
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let (status, text) = reply_json(super::super::routes::route(
+            &post(
+                "/v1/chat/completions",
+                &json!({"model":"codex/gpt-6-luna","stream":true,"stream_options":{"include_usage":true},
+                        "reasoning_effort":"high",
+                        "messages":[{"role":"system","content":"sys rules"},{"role":"user","content":"hi"}]}),
+            ),
+            &gateway,
+        ));
+        assert_eq!(status, 200);
+        let text = text.as_str().unwrap().to_string();
+        let chunks = chat_chunks(&text);
+        assert_eq!(chunks[0]["choices"][0]["delta"]["role"], "assistant");
+        let content: String = chunks
+            .iter()
+            .filter_map(|c| c.pointer("/choices/0/delta/content").and_then(|v| v.as_str()))
+            .collect();
+        assert_eq!(content, "Hello");
+        let finish = chunks.iter().find(|c| c.pointer("/choices/0/finish_reason") == Some(&json!("stop")));
+        assert!(finish.is_some(), "{text}");
+        let usage = chunks.iter().find_map(|c| c.get("usage").filter(|u| u.is_object())).expect("usage chunk");
+        assert_eq!(usage["prompt_tokens"], 10);
+        assert_eq!(usage["completion_tokens"], 5);
+        assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 4);
+        assert_eq!(usage["completion_tokens_details"]["reasoning_tokens"], 2);
+        assert!(text.trim_end().ends_with("data: [DONE]"));
+        // 上游请求：恒流、effort 带过去、system 进 instructions、user 进 input
+        let sent = sent_body(&mock);
+        assert_eq!(sent["stream"], true);
+        assert_eq!(sent["model"], "gpt-6-luna");
+        assert_eq!(sent["reasoning"]["effort"], "high");
+        assert_eq!(sent["instructions"], "sys rules");
+        assert_eq!(sent["input"][0]["role"], "user");
+        assert_eq!(sent["input"][0]["content"][0]["text"], "hi");
+        let (headers, _) = mock.last("/backend-api/codex/responses");
+        assert_eq!(headers["accept"], "text/event-stream");
+    }
+
+    #[test]
+    fn chat_stream_without_include_usage_has_no_usage_chunk() {
+        let mock = Mock::start();
+        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&text_events()));
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let (_, text) = reply_json(super::super::routes::route(
+            &post(
+                "/v1/chat/completions",
+                &json!({"model":"codex/gpt-6-luna","stream":true,"messages":[{"role":"user","content":"hi"}]}),
+            ),
+            &gateway,
+        ));
+        let chunks = chat_chunks(text.as_str().unwrap());
+        assert!(chunks.iter().all(|c| c.get("usage").is_none()));
+    }
+
+    #[test]
+    fn chat_nonstream_aggregates_to_completion_json() {
+        let mock = Mock::start();
+        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&text_events()));
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let (status, v) = reply_json(super::super::routes::route(
+            &post(
+                "/v1/chat/completions",
+                &json!({"model":"codex/gpt-6-luna","messages":[{"role":"user","content":"hi"}]}),
+            ),
+            &gateway,
+        ));
+        assert_eq!(status, 200);
+        assert_eq!(v["object"], "chat.completion");
+        assert_eq!(v["model"], "codex/gpt-6-luna");
+        assert_eq!(v["choices"][0]["message"]["content"], "Hello");
+        assert_eq!(v["choices"][0]["finish_reason"], "stop");
+        assert_eq!(v["usage"]["prompt_tokens"], 10);
+        assert_eq!(v["usage"]["total_tokens"], 15);
+        assert_eq!(v["usage"]["prompt_tokens_details"]["cached_tokens"], 4);
+        // 上游恒流
+        assert_eq!(sent_body(&mock)["stream"], true);
+    }
+
+    fn tool_chat_request(stream: bool) -> Value {
+        json!({
+            "model": "codex/gpt-6-luna", "stream": stream,
+            "tools": [{"type":"function","function":{"name":"my tool","description":"d",
+                       "parameters":{"type":"object","properties":{"a":{"type":"integer"}}}}}],
+            "messages": [
+                {"role":"user","content":"go"},
+                {"role":"assistant","content":null,
+                 "tool_calls":[{"id":"call_1","type":"function","function":{"name":"my tool","arguments":"{}"}}]},
+                {"role":"tool","tool_call_id":"call_1","content":"ok"},
+                {"role":"tool","tool_call_id":"zzz","content":"stray"}
+            ]
+        })
+    }
+
+    #[test]
+    fn chat_tool_turn_stream_renames_and_restores_tool_names() {
+        let mock = Mock::start();
+        let wire = codex_tool_name("my tool");
+        assert_ne!(wire, "my tool");
+        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&tool_events(&wire)));
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let (status, text) = reply_json(super::super::routes::route(
+            &post("/v1/chat/completions", &tool_chat_request(true)),
+            &gateway,
+        ));
+        assert_eq!(status, 200);
+        let text = text.as_str().unwrap().to_string();
+        let chunks = chat_chunks(&text);
+        let calls: Vec<&Value> =
+            chunks.iter().filter_map(|c| c.pointer("/choices/0/delta/tool_calls/0")).collect();
+        assert_eq!(calls[0]["id"], "call_9");
+        assert_eq!(calls[0]["function"]["name"], "my tool"); // 回程还原
+        let args: String =
+            calls.iter().filter_map(|c| c.pointer("/function/arguments").and_then(|a| a.as_str())).collect();
+        assert_eq!(args, "{\"a\":1}");
+        assert!(chunks.iter().any(|c| c.pointer("/choices/0/finish_reason") == Some(&json!("tool_calls"))));
+        // 上游：工具名与历史调用名都改成后端收的；孤儿输出改成 assistant 备注
+        let sent = sent_body(&mock);
+        assert_eq!(sent["tools"][0]["name"], wire.as_str());
+        let input = sent["input"].as_array().unwrap();
+        let fc = input.iter().find(|i| i["type"] == "function_call").unwrap();
+        assert_eq!(fc["name"], wire.as_str());
+        assert_eq!(fc["call_id"], "call_1");
+        assert!(input.iter().any(|i| i["type"] == "function_call_output" && i["call_id"] == "call_1"));
+        let orphan = input
+            .iter()
+            .find(|i| i["role"] == "assistant" && i["content"].as_str().is_some_and(|c| c.contains("call_id=zzz")))
+            .expect("orphan became a note");
+        assert!(orphan["content"].as_str().unwrap().ends_with("stray"));
+        assert!(!input.iter().any(|i| i["type"] == "function_call_output" && i["call_id"] == "zzz"));
+    }
+
+    #[test]
+    fn chat_tool_turn_nonstream_returns_tool_calls_json() {
+        let mock = Mock::start();
+        let wire = codex_tool_name("my tool");
+        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&tool_events(&wire)));
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let (status, v) = reply_json(super::super::routes::route(
+            &post("/v1/chat/completions", &tool_chat_request(false)),
+            &gateway,
+        ));
+        assert_eq!(status, 200);
+        let msg = &v["choices"][0]["message"];
+        assert!(msg["content"].is_null());
+        assert_eq!(msg["tool_calls"][0]["id"], "call_9");
+        assert_eq!(msg["tool_calls"][0]["function"]["name"], "my tool");
+        assert_eq!(msg["tool_calls"][0]["function"]["arguments"], "{\"a\":1}");
+        assert_eq!(v["choices"][0]["finish_reason"], "tool_calls");
+    }
+
+    #[test]
+    fn anthropic_stream_text_and_usage() {
+        let mock = Mock::start();
+        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&text_events()));
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let (status, text) = reply_json(super::super::routes::route(
+            &post(
+                "/v1/messages",
+                &json!({"model":"codex/gpt-6-luna","max_tokens":100,"stream":true,"system":"sys rules",
+                        "thinking":{"type":"enabled","budget_tokens":24000},
+                        "messages":[{"role":"user","content":"hi"}]}),
+            ),
+            &gateway,
+        ));
+        assert_eq!(status, 200);
+        let frames = anthropic_frames(text.as_str().unwrap());
+        assert_eq!(frames[0].0, "message_start");
+        let delta_text: String = frames
+            .iter()
+            .filter(|(e, _)| e == "content_block_delta")
+            .filter_map(|(_, v)| v.pointer("/delta/text").and_then(|t| t.as_str()))
+            .collect();
+        assert_eq!(delta_text, "Hello");
+        let md = frames.iter().find(|(e, _)| e == "message_delta").unwrap();
+        assert_eq!(md.1["delta"]["stop_reason"], "end_turn");
+        assert_eq!(md.1["usage"]["input_tokens"], 10);
+        assert_eq!(md.1["usage"]["output_tokens"], 5);
+        assert_eq!(frames.last().unwrap().0, "message_stop");
+        let sent = sent_body(&mock);
+        assert_eq!(sent["instructions"], "sys rules");
+        assert_eq!(sent["reasoning"]["effort"], "high"); // 24000 预算 → high
+    }
+
+    #[test]
+    fn anthropic_tool_use_stream_and_nonstream() {
+        let mock = Mock::start();
+        let wire = codex_tool_name("my tool");
+        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&tool_events(&wire)));
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let req = |stream: bool| {
+            json!({"model":"codex/gpt-6-luna","max_tokens":100,"stream":stream,
+                   "tools":[{"name":"my tool","description":"d","input_schema":{"type":"object"}}],
+                   "messages":[{"role":"user","content":"go"}]})
+        };
+        let (_, text) = reply_json(super::super::routes::route(&post("/v1/messages", &req(true)), &gateway));
+        let frames = anthropic_frames(text.as_str().unwrap());
+        let start = frames
+            .iter()
+            .find(|(e, v)| e == "content_block_start" && v.pointer("/content_block/type") == Some(&json!("tool_use")))
+            .expect("tool_use block");
+        assert_eq!(start.1["content_block"]["name"], "my tool");
+        assert_eq!(start.1["content_block"]["id"], "call_9");
+        let partial: String = frames
+            .iter()
+            .filter_map(|(_, v)| v.pointer("/delta/partial_json").and_then(|p| p.as_str()))
+            .collect();
+        assert_eq!(partial, "{\"a\":1}");
+        let md = frames.iter().find(|(e, _)| e == "message_delta").unwrap();
+        assert_eq!(md.1["delta"]["stop_reason"], "tool_use");
+
+        let (status, v) = reply_json(super::super::routes::route(&post("/v1/messages", &req(false)), &gateway));
+        assert_eq!(status, 200);
+        assert_eq!(v["type"], "message");
+        assert_eq!(v["stop_reason"], "tool_use");
+        assert_eq!(v["content"][0]["type"], "tool_use");
+        assert_eq!(v["content"][0]["name"], "my tool");
+        assert_eq!(v["content"][0]["input"]["a"], 1);
+        assert_eq!(v["usage"]["input_tokens"], 7);
+    }
+
+    #[test]
+    fn anthropic_nonstream_text() {
+        let mock = Mock::start();
+        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&text_events()));
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let (status, v) = reply_json(super::super::routes::route(
+            &post(
+                "/v1/messages",
+                &json!({"model":"codex/gpt-6-luna","max_tokens":50,"messages":[{"role":"user","content":"hi"}]}),
+            ),
+            &gateway,
+        ));
+        assert_eq!(status, 200);
+        assert_eq!(v["content"][0]["text"], "Hello");
+        assert_eq!(v["stop_reason"], "end_turn");
+        assert_eq!(v["model"], "codex/gpt-6-luna");
+        assert_eq!(v["usage"]["cache_read_input_tokens"], 4);
+    }
+
+    #[test]
+    fn length_finish_reason_maps_from_incomplete() {
+        let mock = Mock::start();
+        let events = vec![
+            json!({"type":"response.output_text.delta","output_index":0,"delta":"cut"}),
+            json!({"type":"response.incomplete","response":{"status":"incomplete",
+                   "incomplete_details":{"reason":"max_output_tokens"},"output":[]}}),
+        ];
+        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&events));
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let (_, v) = reply_json(super::super::routes::route(
+            &post(
+                "/v1/chat/completions",
+                &json!({"model":"codex/gpt-6-luna","messages":[{"role":"user","content":"hi"}]}),
+            ),
+            &gateway,
+        ));
+        assert_eq!(v["choices"][0]["finish_reason"], "length");
+    }
+
+    #[test]
+    fn stream_failure_midway_surfaces_error_on_each_protocol() {
+        let mock = Mock::start();
+        let events = vec![
+            json!({"type":"response.output_text.delta","output_index":0,"delta":"par"}),
+            json!({"type":"response.failed","response":{"error":{"message":"boom","code":"server_error"}}}),
+        ];
+        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&events));
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let (_, text) = reply_json(super::super::routes::route(
+            &post(
+                "/v1/chat/completions",
+                &json!({"model":"codex/gpt-6-luna","stream":true,"messages":[{"role":"user","content":"hi"}]}),
+            ),
+            &gateway,
+        ));
+        let chunks = chat_chunks(text.as_str().unwrap());
+        assert!(chunks.iter().any(|c| c["error"]["message"] == "boom"));
+        assert!(text.as_str().unwrap().trim_end().ends_with("[DONE]"));
+        let (_, text) = reply_json(super::super::routes::route(
+            &post(
+                "/v1/messages",
+                &json!({"model":"codex/gpt-6-luna","max_tokens":9,"stream":true,
+                        "messages":[{"role":"user","content":"hi"}]}),
+            ),
+            &gateway,
+        ));
+        let frames = anthropic_frames(text.as_str().unwrap());
+        let err = frames.iter().find(|(e, _)| e == "error").expect("anthropic error event");
+        assert_eq!(err.1["error"]["message"], "boom");
+        // 非流式：502 + 各自错误形状
+        let (status, body) = reply_json(super::super::routes::route(
+            &post("/v1/chat/completions", &json!({"model":"codex/gpt-6-luna","messages":[{"role":"user","content":"x"}]})),
+            &gateway,
+        ));
+        assert_eq!((status, body["error"]["message"].as_str()), (502, Some("boom")));
+        let (status, body) = reply_json(super::super::routes::route(
+            &post("/v1/messages", &json!({"model":"codex/gpt-6-luna","max_tokens":9,"messages":[{"role":"user","content":"x"}]})),
+            &gateway,
+        ));
+        assert_eq!((status, body["type"].as_str()), (502, Some("error")));
+    }
+
+    #[test]
+    fn truncated_stream_is_an_error_not_a_clean_finish() {
+        let mock = Mock::start();
+        let events = vec![json!({"type":"response.output_text.delta","output_index":0,"delta":"half"})];
+        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&events));
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let (_, text) = reply_json(super::super::routes::route(
+            &post(
+                "/v1/chat/completions",
+                &json!({"model":"codex/gpt-6-luna","stream":true,"messages":[{"role":"user","content":"hi"}]}),
+            ),
+            &gateway,
+        ));
+        let chunks = chat_chunks(text.as_str().unwrap());
+        assert!(chunks.iter().all(|c| c.pointer("/choices/0/finish_reason") != Some(&json!("stop"))));
+        assert!(chunks.iter().any(|c| c.get("error").is_some()));
+    }
+
+    #[test]
+    fn upstream_errors_take_each_protocols_shape() {
+        let mock = Mock::start();
+        mock.route("/backend-api/codex/responses", 401, "application/json", r#"{"detail":"Token expired"}"#);
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let (status, body) = reply_json(super::super::routes::route(
+            &post("/v1/chat/completions", &json!({"model":"codex/gpt-6-luna","messages":[{"role":"user","content":"x"}]})),
+            &gateway,
+        ));
+        assert_eq!(status, 401);
+        assert_eq!(body["error"]["message"], "Token expired");
+        let (status, body) = reply_json(super::super::routes::route(
+            &post("/v1/messages", &json!({"model":"codex/gpt-6-luna","max_tokens":9,"messages":[{"role":"user","content":"x"}]})),
+            &gateway,
+        ));
+        assert_eq!(status, 401);
+        assert_eq!(body["type"], "error");
+        assert_eq!(body["error"]["type"], "authentication_error");
+        assert_eq!(body["error"]["message"], "Token expired");
+    }
+
+    #[test]
+    fn expired_token_is_a_clear_401_on_every_inbound_path() {
+        let mock = Mock::start();
+        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&text_events()));
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_logins(&w, &expired_token(), "me@example.test");
+        for (path, body) in [
+            ("/v1/responses", json!({"model":"codex/gpt-6-luna","input":"x"})),
+            ("/v1/chat/completions", json!({"model":"codex/gpt-6-luna","messages":[{"role":"user","content":"x"}]})),
+            ("/v1/messages", json!({"model":"codex/gpt-6-luna","max_tokens":9,"messages":[{"role":"user","content":"x"}]})),
+        ] {
+            let (status, v) = reply_json(super::super::routes::route(&post(path, &body), &gateway));
+            assert_eq!(status, 401, "{path}");
+            let msg = v.pointer("/error/message").and_then(|m| m.as_str()).unwrap_or("");
+            assert_eq!(msg, EXPIRED_MESSAGE, "{path}");
+        }
+        assert_eq!(mock.hits(), 0);
+        // Codex CLI 刷新了 auth.json（我们没动任何东西）：同一个网关下一个请求就好了
+        let fresh = valid_token();
+        write_codex_auth(&w, &fresh, "me@example.test");
+        let (status, _) = reply_json(super::super::routes::route(
+            &post("/v1/chat/completions", &json!({"model":"codex/gpt-6-luna","messages":[{"role":"user","content":"x"}]})),
+            &gateway,
+        ));
+        assert_eq!(status, 200);
+        let (headers, _) = mock.last("/backend-api/codex/responses");
+        assert_eq!(headers["authorization"], format!("Bearer {fresh}"));
+    }
+
+    #[test]
+    fn credentials_are_reread_on_every_request() {
+        let mock = Mock::start();
+        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&text_events()));
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        let one = fake_jwt(json!({ "exp": now_secs() + 3600, "n": 1 }));
+        let two = fake_jwt(json!({ "exp": now_secs() + 7200, "n": 2 }));
+        write_codex_auth(&w, &one, "me@example.test");
+        let chat = json!({"model":"codex/gpt-6-luna","messages":[{"role":"user","content":"x"}]});
+        let _ = super::super::routes::route(&post("/v1/chat/completions", &chat), &gateway);
+        assert_eq!(mock.last("/backend-api/codex/responses").0["authorization"], format!("Bearer {one}"));
+        write_codex_auth(&w, &two, "me@example.test");
+        let _ = super::super::routes::route(&post("/v1/chat/completions", &chat), &gateway);
+        assert_eq!(mock.last("/backend-api/codex/responses").0["authorization"], format!("Bearer {two}"));
+        // 从不写凭据文件
+        assert!(!w.dir.join("magpie").join("logins.json").exists());
+    }
+
+    fn write_logins_multi(world: &World, rows: &[(&str, &str, &str, &str)]) {
+        let list: Vec<Value> = rows
+            .iter()
+            .map(|(id, email, token, account_id)| {
+                let mut auth = auth_json(token, email);
+                auth["tokens"]["account_id"] = json!(account_id);
+                json!({ "id": id, "agent": "codex", "user": email, "plan": "pro", "auth": auth })
+            })
+            .collect();
+        std::fs::write(world.dir.join("magpie").join("logins.json"), serde_json::to_vec(&list).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn multi_account_pin_and_default_pick() {
+        let mock = Mock::start();
+        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&text_events()));
+        let providers = r#"{"providers":[],"groups":[
+            {"id":"pinned","name":"pinned","members":["codex/gpt-6-luna:xhigh#acc-a"],"pick":"codex/gpt-6-luna:xhigh#acc-a"}]}"#;
+        let (gateway, w) = world(providers, &mock.base);
+        let a = fake_jwt(json!({ "exp": now_secs() + 1000, "who": "a" }));
+        let b = fake_jwt(json!({ "exp": now_secs() + 9000, "who": "b" }));
+        write_logins_multi(
+            &w,
+            &[("acc-a", "a@example.test", &a, "acct-a"), ("acc-b", "b@example.test", &b, "acct-b")],
+        );
+        let chat = |model: &str| json!({"model": model, "messages":[{"role":"user","content":"x"}]});
+        let seen = |mock: &Mock| mock.last("/backend-api/codex/responses").0;
+        // 默认：到期最晚的 b
+        let _ = super::super::routes::route(&post("/v1/chat/completions", &chat("codex/gpt-6-luna")), &gateway);
+        let h = seen(&mock);
+        assert_eq!(h["authorization"], format!("Bearer {b}"));
+        assert_eq!(h["chatgpt-account-id"], "acct-b");
+        // 直写 #邮箱 钉 a
+        let _ = super::super::routes::route(
+            &post("/v1/chat/completions", &chat("codex/gpt-6-luna#a@example.test")),
+            &gateway,
+        );
+        let h = seen(&mock);
+        assert_eq!(h["authorization"], format!("Bearer {a}"));
+        assert_eq!(h["chatgpt-account-id"], "acct-a");
+        assert_eq!(sent_body(&mock)["model"], "gpt-6-luna");
+        // 组成员 #条目id 钉 a，且强度后缀仍生效
+        let _ = super::super::routes::route(
+            &post(
+                "/v1/responses",
+                &json!({"model":"pinned","input":"x","stream":true,"reasoning":{"effort":"low"}}),
+            ),
+            &gateway,
+        );
+        assert_eq!(seen(&mock)["chatgpt-account-id"], "acct-a");
+        assert_eq!(sent_body(&mock)["reasoning"]["effort"], "xhigh");
+        // 钉了不存在的账号：明确报错，不落到别的账号
+        let hits = mock.hits();
+        let (status, body) = reply_json(super::super::routes::route(
+            &post("/v1/chat/completions", &chat("codex/gpt-6-luna#nobody")),
+            &gateway,
+        ));
+        assert_eq!(status, 404);
+        assert!(body["error"]["message"].as_str().unwrap().contains("nobody"));
+        assert_eq!(mock.hits(), hits);
+        let (status, body) = reply_json(super::super::routes::route(
+            &post("/v1/messages", &json!({"model":"codex/gpt-6-luna#nobody","max_tokens":9,
+                                          "messages":[{"role":"user","content":"x"}]})),
+            &gateway,
+        ));
+        assert_eq!((status, body["error"]["type"].as_str()), (404, Some("not_found_error")));
+    }
+
+    #[test]
+    fn multi_account_expired_pin_is_401_and_default_skips_expired() {
+        let mock = Mock::start();
+        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&text_events()));
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        let old = expired_token();
+        let live = fake_jwt(json!({ "exp": now_secs() + 100, "who": "live" }));
+        write_logins_multi(
+            &w,
+            &[("acc-old", "old@example.test", &old, "acct-old"), ("acc-live", "live@example.test", &live, "acct-live")],
+        );
+        let chat = |model: &str| json!({"model": model, "messages":[{"role":"user","content":"x"}]});
+        let (status, _) = reply_json(super::super::routes::route(
+            &post("/v1/chat/completions", &chat("codex/gpt-6-luna#acc-old")),
+            &gateway,
+        ));
+        assert_eq!(status, 401);
+        assert_eq!(mock.hits(), 0);
+        let (status, _) =
+            reply_json(super::super::routes::route(&post("/v1/chat/completions", &chat("codex/gpt-6-luna")), &gateway));
+        assert_eq!(status, 200);
+        assert_eq!(mock.last("/backend-api/codex/responses").0["chatgpt-account-id"], "acct-live");
+    }
+
+    #[test]
+    fn same_account_in_logins_and_auth_json_is_one_account() {
+        let mock = Mock::start();
+        let (_gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        let older = fake_jwt(json!({ "exp": now_secs() + 100, "v": "old" }));
+        let newer = fake_jwt(json!({ "exp": now_secs() + 5000, "v": "new" }));
+        write_logins_multi(&w, &[("acc-x", "x@example.test", &older, "acct-x")]);
+        let mut auth = auth_json(&newer, "x@example.test");
+        auth["tokens"]["account_id"] = json!("acct-x");
+        std::fs::write(w.dir.join("home").join("auth.json"), serde_json::to_vec(&auth).unwrap()).unwrap();
+        let all = discover_all();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].token, newer); // 取更新的令牌
+        assert_eq!(all[0].id, "acc-x"); // 但保留 logins 条目的 id（钉死用）
+    }
+
+    #[test]
+    fn quota_rows_one_per_account() {
+        let mock = Mock::start();
+        mock.route(
+            "/backend-api/wham/usage",
+            200,
+            "application/json",
+            r#"{"plan_type":"pro","rate_limit":{"primary_window":{"used_percent":10,"limit_window_seconds":18000}}}"#,
+        );
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        let a = valid_token();
+        let b = fake_jwt(json!({ "exp": now_secs() + 4000 }));
+        write_logins_multi(
+            &w,
+            &[("acc-a", "a@example.test", &a, "acct-a"), ("acc-b", "b@example.test", &b, "acct-b")],
+        );
+        let rows = super::super::quotas::quota_entries(&gateway, true);
+        let mut users: Vec<&str> =
+            rows.iter().filter(|r| r["provider"] == "codex").map(|r| r["user"].as_str().unwrap()).collect();
+        users.sort();
+        assert_eq!(users, vec!["a@example.test", "b@example.test"]);
+        // 每个账号用自己的令牌问
+        let seen = mock.seen.lock().unwrap();
+        let tokens: Vec<String> = seen
+            .iter()
+            .filter(|r| r.path.starts_with("/backend-api/wham/usage"))
+            .map(|r| r.headers["authorization"].clone())
+            .collect();
+        assert!(tokens.contains(&format!("Bearer {a}")) && tokens.contains(&format!("Bearer {b}")));
+    }
+
+    #[test]
+    fn fast_member_sets_priority_tier() {
+        let mock = Mock::start();
+        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&text_events()));
+        let providers = r#"{"providers":[],"groups":[
+            {"id":"quick","name":"quick","members":["codex/gpt-6-luna:fast"],"pick":"codex/gpt-6-luna:fast"}]}"#;
+        let (gateway, w) = world(providers, &mock.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let _ = super::super::routes::route(
+            &post("/v1/responses", &json!({"model":"quick","input":"x","stream":true})),
+            &gateway,
+        );
+        assert_eq!(sent_body(&mock)["service_tier"], "priority");
+        assert_eq!(sent_body(&mock)["model"], "gpt-6-luna");
+    }
+
+    // ---- 请求整形（Go codexInput / codexToolNames / declareSearch 的移植） ----
+
+    #[test]
+    fn tool_name_sanitising_matches_go() {
+        assert_eq!(codex_tool_name("fine_name-1.x"), "fine_name-1.x");
+        let n = codex_tool_name("get weather: 天气");
+        assert!(n.starts_with("get_weather"));
+        assert!(n.bytes().all(|c| c == b'_' || c == b'.' || c == b'-' || c.is_ascii_alphanumeric()));
+        assert_eq!(n, codex_tool_name("get weather: 天气")); // 恒定
+        assert_ne!(codex_tool_name("a b"), codex_tool_name("a:b")); // 不同名不撞
+        // 超长：55 + _ + 8 hex
+        let long = format!("{} x", "n".repeat(100));
+        assert_eq!(codex_tool_name(&long).len(), 55 + 1 + 8);
+        // 空名也要合法
+        assert!(tool_name_ok(&codex_tool_name("")));
+        // 嵌套 namespace / additional_tools / tool_choice 都改
+        let mut v = json!({
+            "tools": [{"type":"namespace","name":"ns","tools":[{"type":"function","name":"a b"}]}],
+            "input": [{"type":"function_call","call_id":"c","name":"x y","arguments":"{}"},
+                      {"type":"additional_tools","tools":[{"type":"custom","name":"p q"}]}],
+            "tool_choice": {"type":"function","name":"a b"}
+        });
+        assert!(codex_tool_names(v.as_object_mut().unwrap()));
+        assert_eq!(v["tools"][0]["tools"][0]["name"], codex_tool_name("a b").as_str());
+        assert_eq!(v["input"][0]["name"], codex_tool_name("x y").as_str());
+        assert_eq!(v["input"][1]["tools"][0]["name"], codex_tool_name("p q").as_str());
+        assert_eq!(v["tool_choice"]["name"], codex_tool_name("a b").as_str());
+        // 合法名：原样、不报改动
+        let mut ok = json!({"tools":[{"type":"function","name":"fine"}]});
+        assert!(!codex_tool_names(ok.as_object_mut().unwrap()));
+        // 回程表只含改过名的
+        let back = names_back_of(&json!({"tools":[{"type":"function","name":"a b"},{"type":"function","name":"fine"}]}));
+        assert_eq!(back.get(&codex_tool_name("a b")).map(String::as_str), Some("a b"));
+        assert_eq!(back.len(), 1);
+    }
+
+    #[test]
+    fn orphan_outputs_and_pairing() {
+        let out = shape_input(vec![
+            json!({"type":"function_call","call_id":"c1","name":"f","arguments":"{}"}),
+            json!({"type":"function_call_output","call_id":"c1","output":"fine"}),
+            json!({"type":"function_call_output","call_id":"gone","name":"grep","output":{"k":1}}),
+            json!({"type":"custom_tool_call_output","call_id":"c1","output":"wrong kind for c1"}),
+            json!({"type":"function_call_output","output":"standalone notification"}),
+            json!({"type":"local_shell_call","call_id":"sh","action":{}}),
+            json!({"type":"function_call_output","call_id":"sh","output":"shell ok"}),
+        ]);
+        assert_eq!(out[1]["type"], "function_call_output");
+        assert_eq!(out[2]["role"], "assistant");
+        assert_eq!(out[2]["content"], "[Previous grep result; call_id=gone]: {\"k\":1}");
+        assert_eq!(out[3]["role"], "assistant"); // call 种类不配对
+        assert_eq!(out[4]["output"], "standalone notification"); // 无 call_id：原样
+        assert_eq!(out[6]["type"], "function_call_output"); // function_call_output 可配 local_shell_call
+        // 超长输出截断并保持 UTF-8 合法
+        let big = "界".repeat(9000);
+        let o = orphan_output(&json!({"output": big}), "");
+        let c = o["content"].as_str().unwrap();
+        assert!(c.contains("call_id=unknown") && c.ends_with("...[truncated]"));
+    }
+
+    #[test]
+    fn declare_search_follows_go_rules() {
+        // 回放了搜索、没声明工具 → 补 cached web_search；没给任何工具 → tool_choice none
+        let v = shape_body(
+            json!({"model":"m","input":[{"type":"web_search_call","id":"ws","status":"completed"},
+                                        {"type":"message","role":"user","content":"x"}]}),
+            "m",
+            None,
+        );
+        assert_eq!(v["tools"][0]["type"], "web_search");
+        assert_eq!(v["tools"][0]["external_web_access"], false);
+        assert_eq!(v["tool_choice"], "none");
+        // 已有函数工具：补搜索，tool_choice 保持 auto
+        let v = shape_body(
+            json!({"input":[{"type":"web_search_call"}],"tools":[{"type":"function","name":"f"}]}),
+            "m",
+            None,
+        );
+        assert_eq!(v["tools"].as_array().unwrap().len(), 2);
+        assert_eq!(v["tool_choice"], "auto");
+        // 已声明（含 web.run）：不重复
+        let v = shape_body(
+            json!({"input":[{"type":"web_search_call"}],"tools":[{"type":"function","name":"web.run"}]}),
+            "m",
+            None,
+        );
+        assert_eq!(v["tools"].as_array().unwrap().len(), 1);
+        // 没回放搜索：不动
+        let v = shape_body(json!({"input":[{"type":"message","role":"user","content":"x"}]}), "m", None);
+        assert!(v.get("tools").is_none());
+        // additional_tools（Lite）：补进该项而不是 tools
+        let v = shape_body(
+            json!({"input":[{"type":"additional_tools","tools":[{"type":"function","name":"f"}]},
+                            {"type":"web_search_call"}]}),
+            "m",
+            None,
+        );
+        assert!(v.get("tools").is_none());
+        assert_eq!(v["input"][0]["tools"][1]["type"], "web_search");
+    }
+}

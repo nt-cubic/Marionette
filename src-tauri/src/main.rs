@@ -1,4 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// groups.rs 的大 json! 测试字面量需要（engine-rust 测试构建）
+#![recursion_limit = "256"]
 
 mod acp;
 mod acp_catalog;

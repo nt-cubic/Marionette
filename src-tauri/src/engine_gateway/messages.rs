@@ -33,6 +33,7 @@ use serde_json::{json, Value};
 
 use super::bodycap;
 use super::chat;
+use super::groups::{self, Attempt, Candidate};
 use super::httpd::Reply;
 use super::translate;
 
@@ -44,8 +45,8 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 // 路由：asked model → 出站目标
 // =====================================================================
 
-/// 出站目标（chat.rs resolve 的 anthropic 版）：直通基址与翻译基址分开
-/// 存，由 handle 按优先级挑。anthropic/chat 字段是 providers.json 的原语
+/// 出站目标（chat.rs outbound_for 的 anthropic 版）：直通基址与翻译基址分开
+/// 存，由 attempt 按优先级挑。anthropic/chat 字段是 providers.json 的原语
 /// （含 /v1 与否按各家惯例：chat 含 /v1，anthropic 不含——端点路径自拼）。
 struct Target {
     provider_id: String,
@@ -59,19 +60,17 @@ struct Target {
     chat: String,
 }
 
-fn resolve(gw: &super::Gateway, model: &str) -> Result<Target, String> {
+/// 候选成员 → 出站目标（锁内只查表克隆）。
+fn target_for(gw: &super::Gateway, cand: &Candidate) -> Result<Target, String> {
     let store = gw.store.lock().map_err(|_| "store poisoned".to_string())?;
-    // 与 chat.rs 同一条路由：组/别名/直通三形态 + peel 标记。
-    let (provider_id, bare) = super::groups::resolve(store.groups(), store.providers(), model)
-        .ok_or_else(|| format!("no provider for model: {model}"))?;
     let provider = store
-        .find(&provider_id)
-        .ok_or_else(|| format!("no provider for model: {model}"))?;
+        .find(&cand.provider)
+        .ok_or_else(|| format!("no provider for model: {}/{}", cand.provider, cand.model))?;
     Ok(Target {
         provider_id: provider.id.clone(),
         key: provider.key.clone(),
         headers: provider.headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-        bare_model: bare,
+        bare_model: cand.model.clone(),
         anthropic: provider.anthropic.trim_end_matches('/').to_string(),
         chat: provider.chat.trim_end_matches('/').to_string(),
     })
@@ -81,67 +80,238 @@ fn resolve(gw: &super::Gateway, model: &str) -> Result<Target, String> {
 // 入口
 // =====================================================================
 
-/// POST /v1/messages 入口（routes.rs 接线由主线做）。
+/// POST /v1/messages 入口：组路由有序候选，逐成员尝试（只在应答头阶段换）。
 pub fn handle(gateway: &super::Gateway, body: &[u8]) -> Reply {
     let parsed: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(e) => return error_reply(400, &format!("invalid request body: {e}")),
     };
     let model = parsed.get("model").and_then(|m| m.as_str()).unwrap_or("").to_string();
-    let target = match resolve(gateway, &model) {
-        Ok(t) => t,
-        // 与 chat.rs 同口径：解析不到来源就是 404（模型存在性不查，那是
-        // 厂商应答该说的话）。
-        Err(e) => return error_reply(404, &e),
-    };
+    let cands = groups::plan_for(gateway, &model);
+    // 与 chat.rs 同口径：解析不到来源就是 404（模型存在性不查，那是
+    // 厂商应答该说的话）。
+    if cands.is_empty() {
+        return error_reply(404, &format!("no provider for model: {model}"));
+    }
     let streaming = parsed.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
+    groups::drive(&cands, |cand| {
+        // 成员强度按候选各算各的（失败转移到下一个成员时不沿用首发的）。
+        let body = groups::body_for(gateway, super::effort::Proto::Anthropic, cand, body);
+        let parsed = serde_json::from_slice::<Value>(&body).unwrap_or_else(|_| parsed.clone());
+        attempt(gateway, cand, &body, &parsed, &model, streaming)
+    })
+}
+
+// =====================================================================
+// POST /v1/messages/count_tokens（Go gateway.go countTokens）
+// =====================================================================
+
+/// 首选成员有 anthropic 基址 → 转厂商的 count_tokens；厂商不支持计数
+/// （404/405/501 或 400 点名 count_tokens 不支持）、没有 anthropic 基址、
+/// 解析不到来源 → 本地粗估（字节数 / 4，Go `estimate`）。**不数后备成员**
+/// （它可能用另一种分词器，Go 同款）。厂商的其它错误原样转成 anthropic
+/// 形状交给客户端（429 带 Retry-After）。
+pub fn count_tokens(gateway: &super::Gateway, body: &[u8]) -> Reply {
+    let parsed: Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(e) => return error_reply(400, &format!("invalid request body: {e}")),
+    };
+    let model = parsed.get("model").and_then(|m| m.as_str()).unwrap_or("").to_string();
+    let counted = groups::plan_for(gateway, &model)
+        .into_iter()
+        .next()
+        .and_then(|cand| target_for(gateway, &cand).ok())
+        .filter(|t| !t.anthropic.is_empty());
+    if let Some(target) = counted {
+        let out_body = rewrite_model(body, &target.bare_model);
+        match send_anthropic(&target, "/v1/messages/count_tokens", &out_body) {
+            Ok(response) => {
+                let status = response.status();
+                let vendor_body = read_all(response.into_reader());
+                if status < 400 {
+                    return Reply::Json { status, body: vendor_body };
+                }
+                if !unsupported_count(status, &vendor_body) {
+                    return vendor_error_reply(status, &vendor_body);
+                }
+                // 不支持计数：落到下面的本地粗估
+            }
+            Err(e) => {
+                return error_reply(502, &format!("{}: {}", target.provider_id, e));
+            }
+        }
+    }
+    Reply::json(200, &json!({ "input_tokens": estimate_tokens(&parsed) }))
+}
+
+/// Go `unsupportedCount`：厂商说「我不数」。400 只认点名计数操作/端点本身的话，
+/// 不把提到的不支持的图片/模型/工具参数当成「不支持计数」。
+fn unsupported_count(status: u16, body: &[u8]) -> bool {
+    match status {
+        404 | 405 | 501 => true,
+        400 => {
+            let said = vendor_error_message(status, body).to_lowercase();
+            let said = said.trim_matches(|c: char| ": \t\r\n.。".contains(c));
+            if matches!(said, "unsupported" | "unimplemented" | "not supported" | "not implemented") {
+                return true;
+            }
+            const OPS: [&str; 4] = ["count_tokens", "counttokens", "token counting", "counting tokens"];
+            OPS.iter().any(|op| {
+                ["is not supported", "not supported", "is not implemented", "not implemented", "is unsupported", "is unimplemented"]
+                    .iter()
+                    .any(|w| said.contains(&format!("{op} {w}")))
+                    || ["unsupported", "unimplemented", "does not support", "doesn't support"]
+                        .iter()
+                        .any(|w| said.contains(&format!("{w} {op}")))
+            }) || said.contains("不支持") && OPS.iter().any(|op| said.contains(op))
+        }
+        _ => false,
+    }
+}
+
+/// Go `estimate`：系统提示 + 各块文本/工具参数/名字 + 工具定义（名+描述+
+/// schema）的字节数 / 4。图片不计（Go 同款）。给「发之前先问问」的客户端用。
+fn estimate_tokens(req: &Value) -> usize {
+    fn text_of(v: &Value) -> usize {
+        match v {
+            Value::String(s) => s.len(),
+            Value::Array(items) => items
+                .iter()
+                .map(|b| b.get("text").and_then(|t| t.as_str()).map(str::len).unwrap_or(0))
+                .sum(),
+            _ => 0,
+        }
+    }
+    let mut n = req.get("system").map(text_of).unwrap_or(0);
+    if let Some(msgs) = req.get("messages").and_then(|m| m.as_array()) {
+        for m in msgs {
+            match m.get("content") {
+                Some(Value::String(s)) => n += s.len(),
+                Some(Value::Array(blocks)) => {
+                    for b in blocks {
+                        match b.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+                            "text" => n += text_of(&Value::Array(vec![b.clone()])),
+                            "tool_use" => {
+                                n += b.get("name").and_then(|x| x.as_str()).map(str::len).unwrap_or(0);
+                                n += b.get("input").map(|i| i.to_string().len()).unwrap_or(0);
+                            }
+                            "tool_result" => n += b.get("content").map(text_of).unwrap_or(0),
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if let Some(tools) = req.get("tools").and_then(|t| t.as_array()) {
+        for t in tools {
+            n += t.get("name").and_then(|x| x.as_str()).map(str::len).unwrap_or(0);
+            n += t.get("description").and_then(|x| x.as_str()).map(str::len).unwrap_or(0);
+            n += t.get("input_schema").map(|s| s.to_string().len()).unwrap_or(0);
+        }
+    }
+    n / 4
+}
+
+fn attempt(
+    gw: &super::Gateway,
+    cand: &Candidate,
+    body: &[u8],
+    parsed: &Value,
+    asked_model: &str,
+    streaming: bool,
+) -> Attempt {
+    let target = match target_for(gw, cand) {
+        Ok(t) => t,
+        Err(e) => return Attempt::Retry(error_reply(404, &e)),
+    };
     if !target.anthropic.is_empty() {
-        return forward_direct(&target, body, streaming);
+        return forward_direct(gw, &target, body, streaming);
     }
     if !target.chat.is_empty() {
-        return forward_translated(gateway, &target, &parsed, &model, streaming);
+        return forward_translated(gw, cand, parsed, asked_model, streaming);
     }
     // 只配了 responses（或什么都没有）：没有诚实的 chat/anthropic 出站点，
     // 别拿 responses 基址拼 /chat/completions 硬试（URL 形状就是错的）；
     // responses 翻译是 T4 的事。
-    error_reply(404, &format!("{} has no endpoint for /v1/messages", target.provider_id))
+    Attempt::Retry(error_reply(404, &format!("{} has no endpoint for /v1/messages", target.provider_id)))
 }
 
 // =====================================================================
 // 直通路径（anthropic URL 非空）
 // =====================================================================
 
-fn forward_direct(target: &Target, body: &[u8], streaming: bool) -> Reply {
+/// 直通一个成员。字节上限拒答走 bodycap 的 anthropic 形状 refit
+/// （`messages[].content[].type=image` 丢最老的重发）。
+fn forward_direct(gw: &super::Gateway, target: &Target, body: &[u8], streaming: bool) -> Attempt {
+    let asked = body_model(body);
     let out_body = rewrite_model(body, &target.bare_model);
+    // DeepSeek 系 anthropic 端点的 thinking 回放修补（Go gateway.go
+    // `anthropicReplaysThinking(host, model) || (host, upstream)` → withThinkingOnToolTurns）：
+    // 路由组里 Claude 成员掉到 DeepSeek 时 asked 是 claude-*、upstream 才是 deepseek，两个名字都要看。
+    let host = chat::host_of(&target.anthropic);
+    let out_body = if anthropic_replays_thinking(&host, &asked)
+        || anthropic_replays_thinking(&host, &target.bare_model)
+    {
+        with_thinking_on_tool_turns(&out_body)
+    } else {
+        out_body
+    };
+    // cap 已知时先合身再发（免吃一次拒答）。
+    let out_body = bodycap::prefit_shape(gw, &target.provider_id, bodycap::Shape::Anthropic, &out_body)
+        .unwrap_or(out_body);
     let response = match send_messages(target, &out_body) {
         Ok(r) => r,
-        Err(e) => return error_reply(502, &format!("{}: {}", target.provider_id, e)),
+        Err(e) => return Attempt::Retry(error_reply(502, &format!("{}: {}", target.provider_id, e))),
     };
     let status = response.status();
     if streaming && status < 400 {
         let content_type = response.content_type().to_string();
         if content_type.contains("event-stream") {
             // SSE 原样透传：字节一个不动，content-type 用厂商自己的。
-            return Reply::Stream {
+            return Attempt::Done(Reply::Stream {
                 status,
                 content_type,
                 reader: Box::new(response.into_reader()),
-            };
+            });
         }
         // 2xx 但不是事件流（厂商没理会 stream）：整读按普通应答直通。
     }
     let vendor_body = read_all(response.into_reader());
-    if status >= 400 {
-        return vendor_error_reply(status, &vendor_body);
+    if status < 400 {
+        return Attempt::Done(Reply::Json { status, body: vendor_body });
     }
-    Reply::Json { status, body: vendor_body }
+    if let Some(reply) = bodycap::maybe_refit_with(
+        gw,
+        &target.provider_id,
+        bodycap::Shape::Anthropic,
+        &out_body,
+        status,
+        &vendor_body,
+        &|b| send_messages(target, b),
+    ) {
+        // 重发应答本来就是 anthropic 话：成功原样，失败（含 413 语义）转 anthropic 错误形状。
+        return Attempt::Done(match reply {
+            Reply::Json { status, body } if status >= 400 => vendor_error_reply(status, &body),
+            other => other,
+        });
+    }
+    let retry = groups::retryable(status, &vendor_body);
+    let reply = vendor_error_reply(status, &vendor_body);
+    if retry { Attempt::Retry(reply) } else { Attempt::Done(reply) }
 }
 
 /// 直通出站：与 chat::send 同骨架（ureq Status(4xx/5xx) 取回不当错误），
 /// 认证头换 anthropic 三件套。
 fn send_messages(target: &Target, body: &[u8]) -> Result<ureq::Response, String> {
+    send_anthropic(target, "/v1/messages", body)
+}
+
+/// 直通出站（路径可换：/v1/messages 与 /v1/messages/count_tokens 共用）。
+fn send_anthropic(target: &Target, path: &str, body: &[u8]) -> Result<ureq::Response, String> {
     let agent = super::outbound_agent();
-    let url = format!("{}/v1/messages", target.anthropic);
+    let url = format!("{}{}", target.anthropic, path);
     let mut request = agent
         .post(&url)
         .set("Content-Type", "application/json")
@@ -157,8 +327,14 @@ fn send_messages(target: &Target, body: &[u8]) -> Result<ureq::Response, String>
         request = request.set(k, v);
     }
     match request.send_bytes(body) {
-        Ok(response) => Ok(response),
-        Err(ureq::Error::Status(_, response)) => Ok(response),
+        Ok(response) => {
+            super::httpd::note_upstream(&response);
+            Ok(response)
+        }
+        Err(ureq::Error::Status(_, response)) => {
+            super::httpd::note_upstream(&response);
+            Ok(response)
+        }
         Err(e) => Err(e.to_string()),
     }
 }
@@ -176,24 +352,128 @@ fn rewrite_model(body: &[u8], bare: &str) -> Vec<u8> {
     serde_json::to_vec(&value).unwrap_or_else(|_| body.to_vec())
 }
 
+fn body_model(body: &[u8]) -> String {
+    serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|v| v.get("model").and_then(|m| m.as_str()).map(String::from))
+        .unwrap_or_default()
+}
+
+/// Go `anthropicModel`：`(?i)(?:^|[/.:-])claude-`——Anthropic 自家模型（含
+/// 中转写法 `anthropic/claude-…`、`bedrock.claude-…`）。
+fn is_claude_model(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    m.match_indices("claude-").any(|(i, _)| {
+        i == 0 || matches!(m.as_bytes()[i - 1], b'/' | b'.' | b':' | b'-')
+    })
+}
+
+/// Go `anthropicReplaysThinking`：该主机的 Messages API 是否要求每个调用工具
+/// 的 assistant 回合带 thinking 块——DeepSeek 的 Anthropic 端点（thinking 是
+/// 默认，也是被请求时）对没有它的 tool_use 回合 400「The `content[].thinking`
+/// in the thinking mode must be passed back to the API」，并把 redacted_thinking
+/// 当未知块 422（2026-10-11 对 api.deepseek.com/anthropic 实测，Go #1611）。
+/// 它收 Claude 自己的签名 thinking、自己的、以及无签名带空格的那种。
+fn anthropic_replays_thinking(host: &str, model: &str) -> bool {
+    if host == "api.anthropic.com" || is_claude_model(model) {
+        return false;
+    }
+    host.contains("deepseek") || model.to_ascii_lowercase().contains("deepseek")
+}
+
+/// Go `withThinkingOnToolTurns`：请求里每条带 tool_use 的 assistant 消息，或
+/// 只回答 tool_result 的 user 之后的 assistant 消息（DeepSeek 也拒，2026-10-12，
+/// Go #1822），若没有 thinking 块就在最前补一个 `" "` 占位 thinking（Go
+/// `noReasoning`）；redacted_thinking（Claude 的密封块，DeepSeek 读不了）换成
+/// 同一个占位，该消息已有 thinking 时直接丢掉它。其余消息与无需改动的体
+/// 逐字节原样返回。
+fn with_thinking_on_tool_turns(body: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(body);
+    if !text.contains("\"tool_use\"") && !text.contains("\"redacted_thinking\"") {
+        return body.to_vec();
+    }
+    let Ok(mut root) = serde_json::from_slice::<Value>(body) else { return body.to_vec() };
+    let Some(msgs) = root.get_mut("messages").and_then(|m| m.as_array_mut()) else {
+        return body.to_vec();
+    };
+    let space = json!({ "type": "thinking", "thinking": chat::NO_REASONING });
+    let block_type = |b: &Value| b.get("type").and_then(|t| t.as_str()).unwrap_or("").to_string();
+    let mut changed = false;
+    // 前一条是「只有 tool_result」的 user 消息
+    let mut after_tool = false;
+    for msg in msgs.iter_mut() {
+        let Some(role) = msg.get("role").and_then(|r| r.as_str()).map(String::from) else {
+            after_tool = false;
+            continue;
+        };
+        if role != "assistant" {
+            after_tool = msg
+                .get("content")
+                .and_then(|c| c.as_array())
+                .is_some_and(|blocks| !blocks.is_empty() && blocks.iter().all(|b| block_type(b) == "tool_result"));
+            continue;
+        }
+        let after = after_tool;
+        after_tool = false;
+        let Some(blocks) = msg.get("content").and_then(|c| c.as_array()).cloned() else { continue };
+        let mut out: Vec<Value> = Vec::new();
+        let (mut thought, mut called, mut edited) = (false, false, false);
+        for b in blocks {
+            match block_type(&b).as_str() {
+                "thinking" => thought = true,
+                "tool_use" => called = true,
+                "redacted_thinking" => {
+                    edited = true;
+                    if thought {
+                        continue;
+                    }
+                    out.push(space.clone());
+                    thought = true;
+                    continue;
+                }
+                _ => {}
+            }
+            out.push(b);
+        }
+        if (called || after) && !thought {
+            out.insert(0, space.clone());
+            edited = true;
+        }
+        if edited {
+            msg["content"] = Value::Array(out);
+            changed = true;
+        }
+    }
+    if !changed {
+        return body.to_vec();
+    }
+    serde_json::to_vec(&root).unwrap_or_else(|_| body.to_vec())
+}
+
 // =====================================================================
 // 翻译路径（anthropic URL 空、chat URL 有）
 // =====================================================================
 
-fn forward_translated(gw: &super::Gateway, target: &Target, parsed: &Value, asked_model: &str, streaming: bool) -> Reply {
+fn forward_translated(
+    gw: &super::Gateway,
+    cand: &Candidate,
+    parsed: &Value,
+    asked_model: &str,
+    streaming: bool,
+) -> Attempt {
     let chat_body = match translate::anthropic_to_chat(parsed) {
         Ok(v) => v,
-        Err(e) => return error_reply(400, &e),
+        Err(e) => return Attempt::Done(error_reply(400, &e)),
     };
-    // model 换厂商裸名；流式再注入 stream_options.include_usage——Go buildChat
-    // 同款（chat.go：`if r.Stream { out["stream_options"] = … }`），OpenAI 形态
-    // 的厂商只有这个开关才会把最终 usage 帧发出来，anthropic 客户端的
-    // message_delta 才有真数可带。
+    // 流式注入 stream_options.include_usage——Go buildChat 同款（chat.go：
+    // `if r.Stream { out["stream_options"] = … }`），OpenAI 形态的厂商只有
+    // 这个开关才会把最终 usage 帧发出来，anthropic 客户端的 message_delta
+    // 才有真数可带。model 的裸名替换、prefit、字节上限 refit、厂商合身都在
+    // chat::attempt 里。
     let chat_body = {
         let mut v = chat_body;
-        if let Some(map) = v.as_object_mut() {
-            map.insert("model".into(), Value::String(target.bare_model.clone()));
-            if streaming {
+        if streaming {
+            if let Some(map) = v.as_object_mut() {
                 map.insert("stream_options".into(), json!({ "include_usage": true }));
             }
         }
@@ -201,74 +481,47 @@ fn forward_translated(gw: &super::Gateway, target: &Target, parsed: &Value, aske
     };
     let chat_bytes = match serde_json::to_vec(&chat_body) {
         Ok(b) => b,
-        Err(e) => return error_reply(500, &format!("re-serialize failed: {e}")),
+        Err(e) => return Attempt::Done(error_reply(500, &format!("re-serialize failed: {e}"))),
     };
-    // cap 已知时先合身再发（免吃一次拒答）；4xx 的学 cap 丢图重发挂
-    // maybe_refit（见下）。
-    let chat_bytes = bodycap::prefit(gw, &target.provider_id, &chat_bytes).unwrap_or(chat_bytes);
-    let out = chat::Outbound::new(
-        target.provider_id.clone(),
-        target.key.clone(),
-        target.headers.clone(),
-        target.bare_model.clone(),
-        format!("{}/chat/completions", target.chat),
-    );
-    let response = match chat::send(&out, &chat_bytes) {
-        Ok(r) => r,
-        Err(e) => return error_reply(502, &format!("{}: {}", target.provider_id, e)),
-    };
-    if streaming && response.status() < 400 && response.content_type().contains("event-stream") {
-        // chat SSE → anthropic SSE 逐事件翻译（message_start 编排、单次收口
-        // 都在翻译器里）。
-        return Reply::Stream {
-            status: response.status(),
-            content_type: "text/event-stream".into(),
-            reader: Box::new(AnthropicSseTranslator::new(response.into_reader(), asked_model)),
-        };
-    }
-    // 非流式（或厂商没给事件流/给了错误状态）：整读再转。
-    let status = response.status();
-    let vendor_body = read_all(response.into_reader());
-    if status >= 400 {
-        // C5+C7：字节上限拒答 → 学 cap、丢最老图重发；不是 cap 拒答时
-        // maybe_refit 返回 None，落进 anthropic 错误转换。
-        if let Some(reply) = bodycap::maybe_refit(gw, &out, &chat_bytes, status, &vendor_body) {
-            return refit_reply_to_anthropic(reply, streaming, asked_model);
+    match chat::attempt(gw, cand, &chat_bytes) {
+        Attempt::Retry(Reply::Json { status, body }) => {
+            Attempt::Retry(vendor_error_reply(status, &body))
         }
-        return vendor_error_reply(status, &vendor_body);
-    }
-    match chat_response_to_anthropic(&vendor_body, asked_model) {
-        Ok(v) => Reply::json(status, &v),
-        // 厂商 2xx 却给了读不懂的体：网关侧问题，按 502 说。
-        Err(e) => error_reply(502, &e),
+        Attempt::Retry(other) => Attempt::Retry(other),
+        Attempt::Done(reply) => Attempt::Done(chat_reply_to_anthropic(reply, streaming, asked_model)),
     }
 }
 
-/// bodycap 重发回路的应答归一成 anthropic 面：maybe_refit 只认识 chat 世界，
-/// 它的 2xx 应答是 chat 形状（流式请求时甚至是一整段 chat SSE 文本）、
-/// 413/502 是 openai 形状文本——anthropic 客户端两样都读不懂，这里转掉。
-fn refit_reply_to_anthropic(reply: Reply, streaming: bool, asked_model: &str) -> Reply {
-    let (status, body) = match reply {
-        Reply::Json { status, body } => (status, body),
-        other => return other, // maybe_refit 只会回 Json，防御性放行
-    };
+/// chat 世界的终局应答 → anthropic 面：事件流逐事件翻译；整块 JSON 转
+/// anthropic message；错误转 anthropic 错误形状。
+fn chat_reply_to_anthropic(reply: Reply, streaming: bool, asked_model: &str) -> Reply {
+    match reply {
+        Reply::Stream { status, content_type, reader } => {
+            if status < 400 && streaming && content_type.contains("event-stream") {
+                // chat SSE → anthropic SSE 逐事件翻译（message_start 编排、单次收口
+                // 都在翻译器里）。
+                return Reply::Stream {
+                    status,
+                    content_type: "text/event-stream".into(),
+                    reader: Box::new(AnthropicSseTranslator::new(reader, asked_model)),
+                };
+            }
+            // 厂商没给事件流（无视了 stream）：整读再按非流式转。
+            let body = read_all(reader);
+            chat_json_to_anthropic(status, body, asked_model)
+        }
+        Reply::Json { status, body } => chat_json_to_anthropic(status, body, asked_model),
+    }
+}
+
+fn chat_json_to_anthropic(status: u16, body: Vec<u8>, asked_model: &str) -> Reply {
     if status >= 400 {
         return vendor_error_reply(status, &body);
     }
-    if streaming {
-        // 重发体带着 stream:true，厂商回的是一整段 chat SSE 文本：映射成
-        // 完整 anthropic 流一次性交回（内容完整、帧序正确，只是不再增量）。
-        if let Some(text) = sse_text_to_anthropic(&body, asked_model) {
-            return Reply::Stream {
-                status,
-                content_type: "text/event-stream".into(),
-                reader: Box::new(std::io::Cursor::new(text)),
-            };
-        }
-    }
     match chat_response_to_anthropic(&body, asked_model) {
         Ok(v) => Reply::json(status, &v),
-        Err(_) => vendor_error_reply(status, &body),
+        // 厂商 2xx 却给了读不懂的体：网关侧问题，按 502 说。
+        Err(e) => error_reply(502, &e),
     }
 }
 
@@ -291,6 +544,9 @@ struct AnthropicFrames {
     /// 开着的 text 块 index（Some = 文本块开着；文本块与 pending 工具
     /// 互斥——工具分片到达即封文本块，正文到达即冲刷工具族）。
     text_open: Option<usize>,
+    /// 开着的 thinking 块 index（chat 的 delta.reasoning_content → anthropic
+    /// thinking_delta；没有它 Claude Code 看不到共享模型的思考）。
+    think_open: Option<usize>,
     /// chat tool_calls 分片拼装（Go chatDecoder 子集，两侧端点共享）。
     tools: translate::ChatToolAccum,
     /// finish_reason 已到（**只记账不收口**：chat 流的 usage 帧在 finish
@@ -308,6 +564,7 @@ impl AnthropicFrames {
             stopped: false,
             next_index: 0,
             text_open: None,
+            think_open: None,
             tools: translate::ChatToolAccum::new(),
             finish: None,
             usage: None,
@@ -323,6 +580,7 @@ impl AnthropicFrames {
         }
         let mut out = String::new();
         if data == "[DONE]" {
+            out.push_str(&self.close_think());
             out.push_str(&self.close_text());
             out.push_str(&self.flush_tools());
             match self.finish.take() {
@@ -337,17 +595,39 @@ impl AnthropicFrames {
         let Ok(v) = serde_json::from_str::<Value>(data) else {
             return String::new(); // 杂行安静跳过，绝不中断流
         };
+        // 上游中途失败（codex 翻译器等给出的 `{"error":{…}}` 帧）：封开着的块、
+        // 发 anthropic 的 error 事件并收口——不静默吞成「正常结束」。
+        if let Some(err) = v.get("error").filter(|e| e.is_object()) {
+            let mut out = self.close_think();
+            out.push_str(&self.close_text());
+            out.push_str(&self.flush_tools());
+            let message = err.get("message").and_then(|m| m.as_str()).unwrap_or("upstream stream error");
+            out.push_str(&sse_frame(
+                "error",
+                &json!({"type": "error", "error": {"type": "api_error", "message": message}}),
+            ));
+            self.stopped = true;
+            return self.with_start(out, model);
+        }
         if let Some(u) = v.get("usage").filter(|u| u.is_object()) {
             self.usage = Some(u.clone());
         }
         let choice = v.pointer("/choices/0");
         // 同一条 chunk 里 content 与 tool_calls 并存时正文在前（Go
         // chatDecoder 同款顺序：先 text 后 toolCall）。
+        let think = choice
+            .and_then(|c| c.pointer("/delta/reasoning_content").or_else(|| c.pointer("/delta/reasoning")))
+            .and_then(|d| d.as_str())
+            .unwrap_or("");
+        if !think.is_empty() {
+            out.push_str(&self.think_delta(think));
+        }
         let text = choice
             .and_then(|c| c.pointer("/delta/content"))
             .and_then(|d| d.as_str())
             .unwrap_or("");
         if !text.is_empty() {
+            out.push_str(&self.close_think());
             out.push_str(&self.text_delta(text));
         }
         if let Some(calls) = choice
@@ -356,6 +636,7 @@ impl AnthropicFrames {
         {
             if !calls.is_empty() {
                 // 工具分片到达：文本块到此为止，分片进拼装器（事件族惰性）。
+                out.push_str(&self.close_think());
                 out.push_str(&self.close_text());
                 self.tools.feed(calls);
             }
@@ -367,6 +648,7 @@ impl AnthropicFrames {
         {
             // 封块现在发（anthropic 规矩：所有 content_block_stop 在
             // message_delta 前），收尾两帧等流尾。
+            out.push_str(&self.close_think());
             out.push_str(&self.close_text());
             out.push_str(&self.flush_tools());
             self.finish = Some(stop.to_string());
@@ -378,7 +660,8 @@ impl AnthropicFrames {
     /// finish 来过就补收尾两帧（回合是真完了，缺的只是 [DONE]），
     /// 没来过就到此为止——流是被截断的，不编收口。
     fn flush_truncated(&mut self, model: &str) -> String {
-        let mut out = self.close_text();
+        let mut out = self.close_think();
+        out.push_str(&self.close_text());
         out.push_str(&self.flush_tools());
         if !self.stopped {
             if let Some(stop) = self.finish.take() {
@@ -422,6 +705,41 @@ impl AnthropicFrames {
                 "delta": {"type": "text_delta", "text": text}}),
         ));
         out
+    }
+
+    /// 一条思考 delta：thinking 块没开就开（content_block_start type=thinking）。
+    fn think_delta(&mut self, text: &str) -> String {
+        let mut out = String::new();
+        let index = match self.think_open {
+            Some(i) => i,
+            None => {
+                out.push_str(&self.close_text());
+                out.push_str(&self.flush_tools());
+                let i = self.next_index;
+                self.next_index += 1;
+                self.think_open = Some(i);
+                out.push_str(&sse_frame(
+                    "content_block_start",
+                    &json!({"type": "content_block_start", "index": i,
+                        "content_block": {"type": "thinking", "thinking": ""}}),
+                ));
+                i
+            }
+        };
+        out.push_str(&sse_frame(
+            "content_block_delta",
+            &json!({"type": "content_block_delta", "index": index,
+                "delta": {"type": "thinking_delta", "thinking": text}}),
+        ));
+        out
+    }
+
+    /// 封口开着的 thinking 块（幂等）。
+    fn close_think(&mut self) -> String {
+        match self.think_open.take() {
+            Some(i) => sse_frame("content_block_stop", &json!({"type": "content_block_stop", "index": i})),
+            None => String::new(),
+        }
     }
 
     /// 封口开着的文本块（幂等）。
@@ -482,7 +800,7 @@ impl AnthropicFrames {
 
 /// 包在厂商 SSE reader 外的 Read 适配器：逐行取 `data: …` 喂
 /// [`AnthropicFrames`]，帧文本进缓冲再按 read 的粒度吐出。
-struct AnthropicSseTranslator {
+pub(super) struct AnthropicSseTranslator {
     inner: BufReader<Box<dyn Read + Send>>,
     /// 待写出的 anthropic 字节（pos 之前已消费）。
     out: Vec<u8>,
@@ -493,7 +811,7 @@ struct AnthropicSseTranslator {
 }
 
 impl AnthropicSseTranslator {
-    fn new(reader: Box<dyn Read + Send>, model: &str) -> AnthropicSseTranslator {
+    pub(super) fn new(reader: Box<dyn Read + Send>, model: &str) -> AnthropicSseTranslator {
         AnthropicSseTranslator {
             inner: BufReader::new(reader),
             out: Vec::new(),
@@ -625,13 +943,20 @@ fn sse_text_to_anthropic(body: &[u8], model: &str) -> Option<String> {
 /// 应答面的转换（T1 的稳定 API 只有请求互转与 SSE 事件映射），这块留在
 /// 端点里；stop/usage 的映射语义与 translate.rs 的私有函数同款（那边不
 /// 导出，这里镜像，改语义时两处一起看）。
-fn chat_response_to_anthropic(body: &[u8], asked_model: &str) -> Result<Value, String> {
+pub(super) fn chat_response_to_anthropic(body: &[u8], asked_model: &str) -> Result<Value, String> {
     let v: Value = serde_json::from_slice(body).map_err(|e| format!("bad vendor reply: {e}"))?;
     let choice = v
         .pointer("/choices/0")
         .ok_or_else(|| "vendor reply has no choices".to_string())?;
     let message = choice.get("message");
     let mut blocks: Vec<Value> = Vec::new();
+    if let Some(think) = message
+        .and_then(|m| m.get("reasoning_content").or_else(|| m.get("reasoning")))
+        .and_then(|t| t.as_str())
+        .filter(|t| !t.trim().is_empty())
+    {
+        blocks.push(json!({ "type": "thinking", "thinking": think }));
+    }
     match message.and_then(|m| m.get("content")) {
         // content 通常是字符串；parts 数组形态（少数厂商）取 text 块。
         Some(Value::String(s)) => {
@@ -708,18 +1033,10 @@ fn chat_stop_to_anthropic(stop: &str) -> &'static str {
     }
 }
 
-/// chat usage → anthropic usage（translate.rs anthropic_usage 镜像：只搬
-/// 本矩阵保真的桶，agent 不报的就是 0，不编数）。
+/// chat usage → anthropic usage：与翻译矩阵共用 translate::anthropic_usage
+/// （Go 口径：input_tokens 不含缓存，缓存读/写单列）。
 fn anthropic_usage_of(u: Option<&Value>) -> Value {
-    match u {
-        Some(u) => json!({
-            "input_tokens": u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-            "output_tokens": u.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-            "cache_read_input_tokens":
-                u.pointer("/prompt_tokens_details/cached_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-        }),
-        None => json!({ "input_tokens": 0, "output_tokens": 0 }),
-    }
+    translate::anthropic_usage(u)
 }
 
 // =====================================================================

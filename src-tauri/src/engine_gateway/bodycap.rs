@@ -770,60 +770,144 @@ fn size_of(value: &Value) -> usize {
     serde_json::to_vec(value).map(|b| b.len()).unwrap_or(usize::MAX)
 }
 
-/// 把最老的图换成占位文本直到压到 `target` 以下；返回 (新体, 丢了几张)。
-/// 最新一条用户消息的图不动；没有可丢的图/压不进去返回 None。
-fn without_oldest_images(body: &[u8], target: usize) -> Option<(Vec<u8>, usize)> {
-    let mut value = serde_json::from_slice::<Value>(body).ok()?;
-    let count = value
-        .get("messages")?
-        .as_array()
-        .map(|a| a.len())
-        .unwrap_or(0);
-    // 最新一条用户消息的下标（它的图保留——magpie 同款规则）。
-    let last_user = value
-        .get("messages")
-        .and_then(|m| m.as_array())
-        .and_then(|a| a.iter().rposition(|m| m.get("role").and_then(|r| r.as_str()) == Some("user")));
+/// 请求体的形状（决定历史在哪个字段、图块长什么样、占位文本块用什么 type）。
+/// Go `historyOf` / `imageWith` 的 Rust 对应：chat 与两条直通协议同一套
+/// refit 逻辑，只差这张表。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Shape {
+    /// `messages[].content[]`，图块 `image_url` / `input_image`。
+    Chat,
+    /// `input[]`，图块 `input_image`（含 function_call_output.output 数组里的）。
+    Responses,
+    /// `messages[].content[]`，图块 `image`（含 tool_result.content 数组里的）。
+    Anthropic,
+}
 
-    let mut shed = 0usize;
-    loop {
-        if size_of(&value) <= target {
-            break;
+impl Shape {
+    fn history_key(self) -> &'static str {
+        match self {
+            Shape::Responses => "input",
+            _ => "messages",
         }
-        // 每轮从最老的消息重新扫起，丢**一张**图（天然最老优先）。
-        let mut replaced = false;
-        'messages: for index in 0..count {
-            if Some(index) == last_user {
-                continue;
-            }
-            let Some(parts) = value
-                .get_mut("messages")
-                .and_then(|m| m.as_array_mut())
-                .and_then(|a| a.get_mut(index))
-                .and_then(|m| m.get_mut("content"))
-                .and_then(|c| c.as_array_mut())
-            else {
-                continue;
-            };
-            for part in parts.iter_mut() {
-                if part.get("type").and_then(|t| t.as_str()) == Some("image_url") {
-                    *part = Value::String(
-                        "[image left out: the request was over the provider's byte cap]".into(),
-                    );
-                    shed += 1;
-                    replaced = true;
-                    break 'messages;
+    }
+
+    fn is_image(self, part: &Value) -> bool {
+        let ty = part.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        match self {
+            Shape::Chat => ty == "image_url" || ty == "input_image",
+            Shape::Responses => ty == "input_image",
+            Shape::Anthropic => ty == "image",
+        }
+    }
+
+    /// 图被丢后换上的文本块（形状必须是该协议认的内容块——裸字符串塞进
+    /// content 数组会被厂商 400，旧实现就是这个坑）。
+    fn placeholder(self) -> Value {
+        const NOTE: &str = "[image left out: the request was over the provider's byte cap]";
+        let ty = if self == Shape::Responses { "input_text" } else { "text" };
+        serde_json::json!({ "type": ty, "text": NOTE })
+    }
+}
+
+/// 图的下限（Go：1 KB 以下的不是内联图，是链接，丢它省不了字节）。
+const IMAGE_FLOOR: usize = 1 << 10;
+
+/// 历史里最新的「用户自己写的」消息下标（Go latestUser）：工具结果
+/// （anthropic tool_result 块 / responses function_call_output）不算；
+/// None = 没有。它的图永远保留。
+fn latest_user(shape: Shape, items: &[Value]) -> Option<usize> {
+    for (i, it) in items.iter().enumerate().rev() {
+        if it.get("role").and_then(|r| r.as_str()) != Some("user") {
+            continue;
+        }
+        if shape == Shape::Responses {
+            if let Some(ty) = it.get("type").and_then(|t| t.as_str()) {
+                if ty != "message" {
+                    continue;
                 }
             }
         }
-        if !replaced {
-            return None;
+        let own = match it.get("content") {
+            Some(Value::Array(parts)) => parts
+                .iter()
+                .any(|p| p.get("type").and_then(|t| t.as_str()) != Some("tool_result")),
+            Some(_) | None => true,
+        };
+        if own {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// 递归找图（Go historyImages 的 walk，深度 ≤ 6），**按文档序**把图换成
+/// 占位块，直到 `need` 被还清。
+fn shed_in(shape: Shape, v: &mut Value, depth: usize, need: &mut isize, shed: &mut usize) {
+    if *need <= 0 || depth > 6 {
+        return;
+    }
+    if v.is_object() && shape.is_image(v) {
+        let size = size_of(v);
+        if size >= IMAGE_FLOOR {
+            let repl = shape.placeholder();
+            *need -= size as isize - size_of(&repl) as isize;
+            *v = repl;
+            *shed += 1;
+        }
+        return;
+    }
+    match v {
+        Value::Array(a) => {
+            for c in a.iter_mut() {
+                shed_in(shape, c, depth + 1, need, shed);
+                if *need <= 0 {
+                    return;
+                }
+            }
+        }
+        Value::Object(o) => {
+            for (_, c) in o.iter_mut() {
+                shed_in(shape, c, depth + 1, need, shed);
+                if *need <= 0 {
+                    return;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 把最老的图换成占位文本直到压到 `target` 以下；返回 (新体, 丢了几张)。
+/// 最新一条用户消息的图不动；没有可丢的图/压不进去返回 None。
+fn without_oldest_images(shape: Shape, body: &[u8], target: usize) -> Option<(Vec<u8>, usize)> {
+    let mut value = serde_json::from_slice::<Value>(body).ok()?;
+    let total = size_of(&value);
+    if total <= target {
+        return None;
+    }
+    let items = value.get(shape.history_key())?.as_array()?.clone();
+    let keep = latest_user(shape, &items);
+    let mut need = (total - target) as isize;
+    let mut shed = 0usize;
+    let history = value.get_mut(shape.history_key())?.as_array_mut()?;
+    for (index, item) in history.iter_mut().enumerate() {
+        if Some(index) == keep {
+            continue;
+        }
+        shed_in(shape, item, 0, &mut need, &mut shed);
+        if need <= 0 {
+            break;
         }
     }
     if shed == 0 {
         return None;
     }
-    serde_json::to_vec(&value).ok().map(|b| (b, shed))
+    let out = serde_json::to_vec(&value).ok()?;
+    // 逐图估算与整体序列化有出入（转义）；最终以实测为准：压不进去就是 None。
+    if out.len() > target {
+        return None;
+    }
+    Some((out, shed))
 }
 
 fn over_cap_reply(sent: usize, cap: usize, shed_attempted: bool) -> Reply {
@@ -843,6 +927,12 @@ fn over_cap_reply(sent: usize, cap: usize, shed_attempted: bool) -> Reply {
     )
 }
 
+/// 窗口满（tooLong）判定的对外口：failover 分类要用——会话超了模型窗口
+/// 在每个成员上都一样长，换成员没用（Go retryable 的 overflowed 分支）。
+pub(super) fn window_full(status: u16, body: &[u8]) -> bool {
+    too_long(status, &error_words(body))
+}
+
 /// chat.rs 在 4xx 应答后调用：命中 cap 拒答 → 学 cap、丢最老图重发（至多
 /// 3 轮）；不是 cap 拒答返回 None（原样透传）。
 pub fn maybe_refit(
@@ -851,6 +941,23 @@ pub fn maybe_refit(
     sent: &[u8],
     status: u16,
     err_body: &[u8],
+) -> Option<Reply> {
+    maybe_refit_with(gw, &out.provider_id, Shape::Chat, sent, status, err_body, &|b| {
+        super::chat::send(out, b)
+    })
+}
+
+/// 三种体形状共用的 refit 回路：`send` 把（丢图后的）体按**同一目标、同一
+/// 协议**重发。重发的成功应答若是事件流（体里 `stream:true`）原样交回
+/// `Reply::Stream`——旧版把整条流读成一整块 Json，翻译层认不出。
+pub fn maybe_refit_with(
+    gw: &super::Gateway,
+    provider_id: &str,
+    shape: Shape,
+    sent: &[u8],
+    status: u16,
+    err_body: &[u8],
+    send: &dyn Fn(&[u8]) -> Result<ureq::Response, String>,
 ) -> Option<Reply> {
     let sent_len = sent.len();
     let page = page_over_size(status, err_body, sent_len);
@@ -861,23 +968,34 @@ pub fn maybe_refit(
         .unwrap_or_else(|| cap_room(sent_len))
         .max(1);
     if page {
-        cap = page_cap(&gw.caps, &out.provider_id, cap);
+        cap = page_cap(&gw.caps, provider_id, cap);
     } else {
-        cap = learn(&gw.caps, &out.provider_id, cap);
+        cap = learn(&gw.caps, provider_id, cap);
     }
     let mut current = sent.to_vec();
     for _ in 0..3 {
         let target = cap_room(cap);
-        let Some((fitted, shed)) = without_oldest_images(&current, target) else {
+        let Some((fitted, _shed)) = without_oldest_images(shape, &current, target) else {
             return Some(over_cap_reply(sent_len, cap, true));
         };
         if fitted.len() >= current.len() {
             return Some(over_cap_reply(sent_len, cap, true));
         }
-        match super::chat::send(out, &fitted) {
-            Err(e) => return Some(Reply::error(502, &format!("{}: {}", out.provider_id, e))),
+        match send(&fitted) {
+            Err(e) => return Some(Reply::error(502, &format!("{provider_id}: {e}"))),
             Ok(response) => {
                 let restatus = response.status();
+                let wants_stream = serde_json::from_slice::<Value>(&fitted)
+                    .ok()
+                    .and_then(|v| v.get("stream").and_then(|s| s.as_bool()))
+                    .unwrap_or(false);
+                if restatus < 400 && wants_stream && response.content_type().contains("event-stream") {
+                    return Some(Reply::Stream {
+                        status: restatus,
+                        content_type: response.content_type().to_string(),
+                        reader: Box::new(response.into_reader()),
+                    });
+                }
                 let mut reader = response.into_reader();
                 let mut vendor_body = Vec::new();
                 use std::io::Read;
@@ -888,12 +1006,11 @@ pub fn maybe_refit(
                         .unwrap_or_else(|| cap_room(fitted.len()))
                         .max(1);
                     if again_page {
-                        cap = page_cap(&gw.caps, &out.provider_id, cap);
+                        cap = page_cap(&gw.caps, provider_id, cap);
                     } else {
-                        cap = learn(&gw.caps, &out.provider_id, cap);
+                        cap = learn(&gw.caps, provider_id, cap);
                     }
                     current = fitted;
-                    let _ = shed;
                     continue;
                 }
                 return Some(Reply::Json { status: restatus, body: vendor_body });
@@ -903,14 +1020,24 @@ pub fn maybe_refit(
     Some(over_cap_reply(sent_len, cap, true))
 }
 
+/// 出站前的预剪裁（chat 形状）。
+pub fn prefit(gw: &super::Gateway, provider_id: &str, body: &[u8]) -> Option<Vec<u8>> {
+    prefit_shape(gw, provider_id, Shape::Chat, body)
+}
+
 /// 出站前的预剪裁：cap 已知且体逼得够近才剪（Go capNear = 90%——75–90%
 /// 区间的预剪裁是白丢图破缓存），目标压到 cap 的 3/4。返回 None = 不需要剪。
-pub fn prefit(gw: &super::Gateway, provider_id: &str, body: &[u8]) -> Option<Vec<u8>> {
+pub fn prefit_shape(
+    gw: &super::Gateway,
+    provider_id: &str,
+    shape: Shape,
+    body: &[u8],
+) -> Option<Vec<u8>> {
     let cap = *gw.caps.lock().ok()?.get(provider_id)?;
     if body.len() <= cap / 10 * 9 {
         return None;
     }
-    without_oldest_images(body, cap_room(cap)).map(|(fitted, _)| fitted)
+    without_oldest_images(shape, body, cap_room(cap)).map(|(fitted, _)| fitted)
 }
 
 // ---------------------------------------------------------------------------
@@ -1053,5 +1180,75 @@ mod tests {
         assert_eq!(caps.lock().unwrap().get("p"), Some(&500));
         // 代理页的猜测不进表，只借用已知更小的值
         assert_eq!(page_cap(&caps, "p", 900), 500);
+    }
+}
+
+#[cfg(test)]
+mod shape_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn big() -> String {
+        "A".repeat(5000)
+    }
+
+    fn shed(shape: Shape, v: Value, target: usize) -> Option<Value> {
+        let body = serde_json::to_vec(&v).unwrap();
+        without_oldest_images(shape, &body, target).map(|(b, _)| serde_json::from_slice(&b).unwrap())
+    }
+
+    #[test]
+    fn chat_placeholder_is_a_text_part_and_latest_user_is_kept() {
+        let v = json!({"messages": [
+            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": big()}}]},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": big()}}, {"type": "text", "text": "now"}]},
+        ]});
+        let out = shed(Shape::Chat, v, 7000).unwrap();
+        assert_eq!(out["messages"][0]["content"][0]["type"], "text");
+        // 最新用户消息的图保留
+        assert_eq!(out["messages"][2]["content"][0]["type"], "image_url");
+    }
+
+    #[test]
+    fn responses_images_in_function_call_output_are_droppable() {
+        let v = json!({"input": [
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "q"}]},
+            {"type": "function_call", "call_id": "c", "name": "shot", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c", "output": [{"type": "input_image", "image_url": big()}]},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "latest"}]},
+        ]});
+        let out = shed(Shape::Responses, v, 2000).unwrap();
+        assert_eq!(out["input"][2]["output"][0]["type"], "input_text");
+    }
+
+    #[test]
+    fn anthropic_tool_result_user_turn_is_not_the_latest_user() {
+        // 最后一条 user 全是 tool_result：它不算「用户自己写的」，更早那条有文字的才是保留对象；
+        // tool_result 里的图可以丢。
+        let img = |d: String| json!({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": d}});
+        let v = json!({"messages": [
+            {"role": "user", "content": [img(big()), {"type": "text", "text": "mine"}]},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "t", "name": "n", "input": {}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": [img(big())]}]},
+        ]});
+        let items = v["messages"].as_array().unwrap().clone();
+        assert_eq!(latest_user(Shape::Anthropic, &items), Some(0));
+        let out = shed(Shape::Anthropic, v, 7000).unwrap();
+        assert_eq!(out["messages"][2]["content"][0]["content"][0]["type"], "text");
+        assert_eq!(out["messages"][0]["content"][0]["type"], "image");
+    }
+
+    #[test]
+    fn small_images_and_unfittable_bodies_are_not_touched() {
+        // 1KB 以下不是内联图，丢它省不了字节
+        let v = json!({"messages": [
+            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "x"}}]},
+            {"role": "user", "content": "latest"},
+        ]});
+        assert!(shed(Shape::Chat, v, 10).is_none());
+        // 只有最新用户消息有图：无图可丢 → None（调用方出 413）
+        let v = json!({"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": big()}}]}]});
+        assert!(shed(Shape::Chat, v, 100).is_none());
     }
 }

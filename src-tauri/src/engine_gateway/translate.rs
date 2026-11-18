@@ -14,6 +14,8 @@
 //! 语义参照：D:\Project\magpie-upstream\internal\gateway\（研究克隆，只读）。
 
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 
 // =====================================================================
 // 中间形态（ir.go 的 Request/Part/Message 裁剪版）
@@ -26,6 +28,10 @@ enum PartKind {
     Image,
     ToolCall,
     ToolResult,
+    /// 上一回合的思考文本（responses 的 `reasoning` item；text 字段存正文）。
+    /// 只有 build_chat 会用它（暂存给 chat.rs 按厂商回放/丢弃），其余协议
+    /// 不跨协议携带——加密思考只回 responses 自己。
+    Thinking,
 }
 
 #[derive(Clone)]
@@ -86,6 +92,10 @@ impl Part {
         }
     }
 
+    fn thinking(s: impl Into<String>) -> Part {
+        Part { kind: PartKind::Thinking, text: s.into(), ..Part::text("") }
+    }
+
     fn tool_call(id: impl Into<String>, name: impl Into<String>, args: Value) -> Part {
         Part {
             kind: PartKind::ToolCall,
@@ -140,6 +150,21 @@ struct Ir {
     top_p: Option<f64>,
     stop: Vec<String>,
     stream: bool,
+    /// 请求要的思考强度（"" = 没要）。三协议各有各的字段，翻译时必须带过去——
+    /// 不带 = codex/Claude Code 选的强度被静默吞掉，厂商按默认档思考。
+    effort: String,
+    /// responses 的 `parallel_tool_calls`（Go Request.Parallel）；只有 build_chat
+    /// 在带工具时转发。
+    parallel: Option<bool>,
+    /// 结构化输出要求，已归一成 chat 的 `response_format` 形态（Go `Request.Format`：
+    /// responses 的 `text.format`、anthropic 的 `output_config.format` 读进来，
+    /// build_chat 以 `response_format` 写出）。只有 build_chat 带它。
+    format: Option<Value>,
+    /// 请求自己的 `prompt_cache_key`（Go `Request.CacheKey`；codex 的线程 id）。
+    cache_key: String,
+    /// responses 请求里被「压平」交给厂商的工具（flat 名 → 原貌）。只有
+    /// responses→chat 的应答编码器用它把调用还原成 Codex 认的 item。
+    named: ToolTable,
 }
 
 /// anthropic /v1/messages 的 max_tokens 是必填项；请求没带时兜底
@@ -320,6 +345,7 @@ fn parse_chat(body: &Value) -> Result<Ir, String> {
         temperature: body.get("temperature").and_then(|v| v.as_f64()),
         top_p: body.get("top_p").and_then(|v| v.as_f64()),
         stream: body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false),
+        effort: super::effort::requested(super::effort::Proto::Chat, body).unwrap_or_default(),
         ..Default::default()
     };
     match body.get("stop") {
@@ -417,6 +443,39 @@ fn parse_chat(body: &Value) -> Result<Ir, String> {
     Ok(ir)
 }
 
+/// Go `openAIFormat`：OpenAI 两代的结构化输出声明 → chat `response_format` 形态。
+/// responses 的 `text.format`（`{type, name, schema, strict, description}`）与 chat
+/// 自己的 `response_format`（`{type, json_schema:{…}}`）都认；`{type:"text"}`
+/// 与其它一律 None；没带 schema 的 json_schema 当 json_object（Go 同款）。
+pub(crate) fn openai_format(raw: &Value) -> Option<Value> {
+    let ty = raw.get("type").and_then(|t| t.as_str())?;
+    match ty {
+        "json_object" => Some(json!({"type": "json_object"})),
+        "json_schema" => {
+            // chat 形态把字段包在 json_schema 里；responses 形态平铺
+            let inner = raw.get("json_schema").filter(|j| j.is_object()).unwrap_or(raw);
+            let schema = inner.get("schema").filter(|s| !s.is_null());
+            let Some(schema) = schema else {
+                return Some(json!({"type": "json_object"}));
+            };
+            let name = inner
+                .get("name")
+                .and_then(|n| n.as_str())
+                .filter(|n| !n.is_empty())
+                .unwrap_or("response");
+            let mut js = json!({"name": name, "schema": schema});
+            if let Some(d) = inner.get("description").and_then(|d| d.as_str()).filter(|d| !d.is_empty()) {
+                js["description"] = json!(d);
+            }
+            if let Some(strict) = inner.get("strict").and_then(|s| s.as_bool()) {
+                js["strict"] = json!(strict);
+            }
+            Some(json!({"type": "json_schema", "json_schema": js}))
+        }
+        _ => None,
+    }
+}
+
 /// anthropic /v1/messages 请求体 → IR（readAnthropic 同款子集）。
 fn parse_anthropic(body: &Value) -> Result<Ir, String> {
     if !body.is_object() {
@@ -429,6 +488,14 @@ fn parse_anthropic(body: &Value) -> Result<Ir, String> {
         top_p: body.get("top_p").and_then(|v| v.as_f64()),
         stream: body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false),
         system: string_or_text(body.get("system").unwrap_or(&Value::Null)),
+        effort: super::effort::requested(super::effort::Proto::Anthropic, body).unwrap_or_default(),
+        // anthropic 的结构化输出只有 json_schema 一种（Go bodyFormat 同款）
+        format: body.pointer("/output_config/format").and_then(|f| {
+            let schema = f.get("schema").filter(|s| s.is_object())?;
+            (get_str(f, "type").as_deref() == Some("json_schema")).then(|| {
+                json!({"type": "json_schema", "json_schema": {"name": "response", "schema": schema}})
+            })
+        }),
         ..Default::default()
     };
     if let Some(stops) = body.get("stop_sequences").and_then(|s| s.as_array()) {
@@ -482,8 +549,19 @@ fn parse_anthropic(body: &Value) -> Result<Ir, String> {
                             p.is_error = b.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
                             parts.push(p);
                         }
-                        // thinking / redacted_thinking：签名的思考只回 anthropic
-                        // 自己（跨协议无对应），本矩阵丢弃
+                        // thinking 文本留成 Thinking 块（Go readAnthropic 保留
+                        // Thinking+Signature）：翻到 chat 时 build_chat 暂存、
+                        // chat::fit_for_vendor 按厂商回放成 `reasoning_content`
+                        // （DeepSeek 系要求第二轮工具调用带回思考，否则 400）或丢弃；
+                        // 翻到 anthropic/responses 的 build_* 照旧不带它（签名/加密体
+                        // 不跨协议）。空白占位不留。
+                        "thinking" => {
+                            let t = get_str(b, "thinking").unwrap_or_default();
+                            if !t.trim().is_empty() {
+                                parts.push(Part::thinking(t));
+                            }
+                        }
+                        // redacted_thinking：密封块只有 Anthropic 读得懂，丢弃
                         _ => {}
                     }
                 }
@@ -543,6 +621,325 @@ fn responses_parts(content: &Value) -> Vec<Part> {
     }
 }
 
+// ---------------------------------------------------------------------
+// Codex 的非 function 工具：压平给 chat 厂商，应答再还原
+// （Go responses.go 的 nsTool / flatName / customSchema / callTo）
+// ---------------------------------------------------------------------
+
+/// 一个被压平的工具的原貌（Go nsTool）。`search` = Codex 自己的 tool_search
+/// （client 执行）；`custom` = 自由文本工具（apply_patch / exec，调用要还原成
+/// `custom_tool_call`）；`namespace` 非空 = 命名空间里的工具（还原成带
+/// `namespace` 的 `function_call`）。普通 function 工具不进表。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NsTool {
+    pub namespace: String,
+    pub name: String,
+    pub search: bool,
+    pub custom: bool,
+}
+
+/// 单个请求的「厂商看到的 flat 名 → 原貌」表。随请求走到应答编码器，
+/// 不放任何全局（并发请求各带各的）。
+pub type ToolTable = HashMap<String, NsTool>;
+
+const TOOL_SEARCH: &str = "tool_search";
+/// Codex Responses Lite 把自家工具归在这个命名空间里（Go liteNamespace）。
+const LITE_NAMESPACE: &str = "functions";
+const UNAVAILABLE_RESULT: &str = "[The result of this tool call is unavailable: the turn was interrupted.]";
+
+fn tool_char_ok(c: u8) -> bool {
+    c == b'_' || c == b'-' || c.is_ascii_alphanumeric()
+}
+
+fn short_hash(s: &str) -> String {
+    Sha256::digest(s.as_bytes())[..4].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Go provider.FlatName：`namespace__name`，≤64 字符；超长截 55 + `_` + sha256
+/// 前 4 字节。比 Go 多一步：chat 厂商只收 `[a-zA-Z0-9_-]`，非法字节换 `_` 并
+/// 同样补哈希（同名恒同结果、不同名不撞）。
+pub(crate) fn flat_name(namespace: &str, name: &str) -> String {
+    let raw = format!("{namespace}__{name}");
+    if raw.len() <= 64 && raw.bytes().all(tool_char_ok) {
+        return raw;
+    }
+    let clean: String =
+        raw.bytes().take(55).map(|c| if tool_char_ok(c) { c as char } else { '_' }).collect();
+    format!("{clean}_{}", short_hash(&format!("{namespace}\0{name}")))
+}
+
+fn custom_schema() -> Value {
+    json!({"type": "object",
+        "properties": {"input": {"type": "string",
+            "description": "The tool's free-form input, the whole of it, exactly as it is to be run."}},
+        "required": ["input"], "additionalProperties": false})
+}
+
+/// Go customDescription：自带描述 + 输入说明 + 语法（grammar）。
+fn custom_description(t: &Value) -> String {
+    let mut d = get_str(t, "description").unwrap_or_default().trim().to_string();
+    if !d.is_empty() {
+        d.push_str("\n\n");
+    }
+    d.push_str("Put the tool's whole free-form input, as it is to be run, in the `input` string; it is passed on as written, so it is not itself JSON.");
+    if let Some(f) = t.get("format") {
+        let def = get_str(f, "definition").unwrap_or_default();
+        if get_str(f, "type").as_deref() == Some("grammar") && !def.trim().is_empty() {
+            let syntax = get_str(f, "syntax").filter(|s| !s.is_empty()).unwrap_or_else(|| "the".into());
+            d.push_str(&format!("\n\nThe input follows this {syntax} grammar:\n{}", def.trim()));
+        }
+    }
+    d
+}
+
+/// Go customInput：自由文本调用的输入 = arguments 里的 `input` 串，否则
+/// arguments 本身是 JSON 串就取它，否则原文。
+pub(crate) fn custom_input(args: &str) -> String {
+    match serde_json::from_str::<Value>(args) {
+        Ok(Value::Object(m)) => {
+            if let Some(Value::String(s)) = m.get("input") {
+                return s.clone();
+            }
+        }
+        Ok(Value::String(s)) => return s,
+        _ => {}
+    }
+    args.to_string()
+}
+
+/// Go unsealed：去掉 schema 里 Codex 标的 `"encrypted": <bool>`（属性名叫
+/// encrypted 的子 schema 是对象，不动）。
+fn unsealed(schema: &Value) -> Value {
+    fn strip(v: &mut Value) {
+        match v {
+            Value::Object(m) => {
+                if matches!(m.get("encrypted"), Some(Value::Bool(_))) {
+                    m.remove("encrypted");
+                }
+                for c in m.values_mut() {
+                    strip(c);
+                }
+            }
+            Value::Array(a) => a.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    let mut v = schema.clone();
+    strip(&mut v);
+    v
+}
+
+/// Go searchFound：tool_search 的结果在模型眼里是「现在可以调这些名字」。
+fn search_found(tools: &[Value], flat_of: &dyn Fn(&str, &str) -> String) -> String {
+    let mut names: Vec<String> = Vec::new();
+    for t in tools {
+        match get_str(t, "type").as_deref() {
+            Some("function") => names.push(get_str(t, "name").unwrap_or_default()),
+            Some("namespace") => {
+                let ns = get_str(t, "name").unwrap_or_default();
+                for nt in t.get("tools").and_then(|x| x.as_array()).into_iter().flatten() {
+                    if get_str(nt, "type").as_deref() == Some("function") {
+                        names.push(flat_of(&ns, &get_str(nt, "name").unwrap_or_default()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if names.is_empty() {
+        "No tools matched the search.".into()
+    } else {
+        format!("These tools are now available to call: {}", names.join(", "))
+    }
+}
+
+/// 请求的工具清单构建器：唯一名、原貌表、(ns,name)→flat 名（历史 item 回放用）。
+#[derive(Default)]
+struct ToolSet {
+    tools: Vec<ToolDef>,
+    named: ToolTable,
+    flat: HashMap<(String, String), String>,
+    used: HashSet<String>,
+}
+
+impl ToolSet {
+    /// `ns` = None 是普通 function（名字原样、不改名、不进表）。压平/自由文本/
+    /// search 的名字若与已提供的撞了，补哈希后缀保唯一。`found` = 工具搜索
+    /// 找到的（Go：已提供过同名就不再提供）。
+    fn offer(&mut self, mut def: ToolDef, ns: Option<NsTool>, found: bool) {
+        if found && self.used.contains(&def.name) {
+            return;
+        }
+        let key = ns.as_ref().map(|n| (n.namespace.clone(), n.name.clone()));
+        if ns.is_some() && self.used.contains(&def.name) {
+            let seed = key.as_ref().map(|(a, b)| format!("{a}\0{b}")).unwrap_or_default();
+            let base: String = def.name.chars().take(55).collect();
+            let mut cand = format!("{base}_{}", short_hash(&seed));
+            let mut n = 2;
+            while self.used.contains(&cand) {
+                cand = format!("{base}_{}{n}", short_hash(&seed));
+                n += 1;
+            }
+            def.name = cand;
+        }
+        self.used.insert(def.name.clone());
+        if let Some(k) = key {
+            self.flat.entry(k).or_insert_with(|| def.name.clone());
+        }
+        if let Some(n) = ns {
+            self.named.insert(def.name.clone(), n);
+        }
+        self.tools.push(def);
+    }
+
+    /// 历史 item / tool_choice 里的 (namespace, name) → 厂商看到的名字。
+    fn flat_of(&self, ns: &str, name: &str) -> String {
+        if ns.is_empty() {
+            return name.to_string();
+        }
+        self.flat
+            .get(&(ns.to_string(), name.to_string()))
+            .cloned()
+            .unwrap_or_else(|| flat_name(ns, name))
+    }
+
+    /// Go readResponses 的 offer 分派：function / custom / namespace / tool_search
+    /// （client）。web_search / image_generation / local_shell 等服务端或
+    /// 本机内建工具 Go 同样不提供，这里有意丢弃。
+    fn add(&mut self, t: &Value, found: bool) {
+        let name = get_str(t, "name").unwrap_or_default();
+        match get_str(t, "type").as_deref().unwrap_or("") {
+            "function" => {
+                if name.is_empty() {
+                    return;
+                }
+                self.offer(
+                    ToolDef {
+                        name,
+                        description: get_str(t, "description").unwrap_or_default(),
+                        schema: t.get("parameters").map(unsealed).unwrap_or(Value::Null),
+                    },
+                    None,
+                    found,
+                );
+            }
+            "custom" => {
+                if name.is_empty() {
+                    return;
+                }
+                self.offer(
+                    ToolDef { name: name.clone(), description: custom_description(t), schema: custom_schema() },
+                    Some(NsTool { name, custom: true, ..Default::default() }),
+                    found,
+                );
+            }
+            "namespace" => {
+                for nt in t.get("tools").and_then(|x| x.as_array()).into_iter().flatten() {
+                    let nname = get_str(nt, "name").unwrap_or_default();
+                    if nname.is_empty() {
+                        continue;
+                    }
+                    let flat = flat_name(&name, &nname);
+                    match get_str(nt, "type").as_deref() {
+                        Some("function") => self.offer(
+                            ToolDef {
+                                name: flat,
+                                description: get_str(nt, "description").unwrap_or_default(),
+                                schema: nt.get("parameters").map(unsealed).unwrap_or(Value::Null),
+                            },
+                            Some(NsTool { namespace: name.clone(), name: nname, ..Default::default() }),
+                            found,
+                        ),
+                        Some("custom") => self.offer(
+                            ToolDef { name: flat, description: custom_description(nt), schema: custom_schema() },
+                            Some(NsTool { namespace: name.clone(), name: nname, custom: true, ..Default::default() }),
+                            found,
+                        ),
+                        _ => {}
+                    }
+                }
+            }
+            "tool_search" => {
+                if get_str(t, "execution").as_deref() == Some("client") {
+                    self.offer(
+                        ToolDef {
+                            name: TOOL_SEARCH.into(),
+                            description: get_str(t, "description").unwrap_or_default(),
+                            schema: t.get("parameters").cloned().unwrap_or(Value::Null),
+                        },
+                        Some(NsTool { search: true, ..Default::default() }),
+                        found,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Go callTo：把厂商按 flat 名给的 function_call item 还原成 Codex 认的形态
+/// （原地改 `item`，它带字符串 `arguments`）。
+///   search    -> `tool_search_call`（client 执行，arguments 是对象，无 name）
+///   custom    -> `custom_tool_call`（`input` 取代 arguments；有 namespace 带上）
+///   namespace -> `function_call` + 原名 + `namespace`
+///   其余      -> `function_call` + 原名
+pub(crate) fn call_to(item: &mut Value, flat: &str, table: &ToolTable) {
+    let args = item.get("arguments").and_then(|a| a.as_str()).unwrap_or("").to_string();
+    let Some(map) = item.as_object_mut() else { return };
+    match table.get(flat) {
+        Some(q) if q.search => {
+            map.remove("name");
+            map.insert("type".into(), json!("tool_search_call"));
+            map.insert("execution".into(), json!("client"));
+            map.insert("arguments".into(), parse_args(&args));
+        }
+        Some(q) if q.custom => {
+            map.remove("arguments");
+            map.insert("type".into(), json!("custom_tool_call"));
+            map.insert("name".into(), json!(q.name));
+            map.insert("input".into(), json!(if args.is_empty() { String::new() } else { custom_input(&args) }));
+            if !q.namespace.is_empty() {
+                map.insert("namespace".into(), json!(q.namespace));
+            }
+        }
+        Some(q) => {
+            map.insert("name".into(), json!(q.name));
+            map.insert("namespace".into(), json!(q.namespace));
+            // Go：Codex 把没有这个列表的命名空间调用读成「已加密」
+            map.insert("encrypted_function_args".into(), json!([]));
+        }
+        None => {
+            map.insert("name".into(), json!(flat));
+        }
+    }
+}
+
+/// Go itemPrefix：OpenAI 拒收 id 前缀与类型不符的 tool_search_call / custom_tool_call
+/// （Codex 会把 item 原样带回），按类型选前缀。
+pub(crate) fn call_item_prefix(item: &Value) -> &'static str {
+    match item.get("type").and_then(|t| t.as_str()) {
+        Some("tool_search_call") => "tsc_",
+        Some("custom_tool_call") => "ctc_",
+        _ => "fc_",
+    }
+}
+
+fn is_call_item(t: &str) -> bool {
+    matches!(t, "function_call" | "custom_tool_call" | "tool_search_call")
+}
+
+fn is_result_item(t: &str) -> bool {
+    matches!(t, "function_call_output" | "custom_tool_call_output" | "tool_search_output")
+}
+
+fn call_args_of(it: &Value) -> Value {
+    match it.get("arguments") {
+        Some(Value::String(s)) => parse_args(s),
+        Some(v) if v.is_object() => v.clone(),
+        _ => json!({}),
+    }
+}
+
 /// openai responses 请求体 → IR（readResponses 同款子集）。
 fn parse_responses(body: &Value) -> Result<Ir, String> {
     if !body.is_object() {
@@ -555,89 +952,280 @@ fn parse_responses(body: &Value) -> Result<Ir, String> {
         temperature: body.get("temperature").and_then(|v| v.as_f64()),
         top_p: body.get("top_p").and_then(|v| v.as_f64()),
         stream: body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false),
+        effort: super::effort::requested(super::effort::Proto::Responses, body).unwrap_or_default(),
+        parallel: body.get("parallel_tool_calls").and_then(|v| v.as_bool()),
+        format: body.pointer("/text/format").and_then(openai_format),
+        cache_key: get_str(body, "prompt_cache_key").unwrap_or_default(),
         ..Default::default()
     };
+    let items: Option<&Vec<Value>> = body.get("input").and_then(|i| i.as_array());
+
+    // ---- 工具清单（先于历史：历史 item 要用同一张 flat 名表）----
+    // 请求自带的 tools，加 Responses Lite 的 additional_tools（Go
+    // liftAdditionalTools：提到 tools 里，`functions` 命名空间的拆成普通工具），
+    // 再加 tool_search_output 找到的（Codex 不会再发一遍，排在后面）。
+    let mut sent: Vec<Value> = body.get("tools").and_then(|t| t.as_array()).cloned().unwrap_or_default();
+    let mut found: Vec<Value> = Vec::new();
+    let mut lite = false;
+    for it in items.into_iter().flatten() {
+        match get_str(it, "type").as_deref() {
+            Some("additional_tools") => {
+                lite = true;
+                for t in it.get("tools").and_then(|x| x.as_array()).into_iter().flatten() {
+                    let lite_ns = get_str(t, "type").as_deref() == Some("namespace")
+                        && get_str(t, "name").as_deref() == Some(LITE_NAMESPACE);
+                    let more: Vec<Value> = if lite_ns {
+                        t.get("tools").and_then(|x| x.as_array()).cloned().unwrap_or_default()
+                    } else {
+                        vec![t.clone()]
+                    };
+                    for m in more {
+                        let n = get_str(&m, "name").unwrap_or_default();
+                        let dup = !n.is_empty()
+                            && sent.iter().any(|s| get_str(s, "name").as_deref() == Some(n.as_str()));
+                        if !dup {
+                            sent.push(m);
+                        }
+                    }
+                }
+            }
+            Some("tool_search_output") => {
+                found.extend(it.get("tools").and_then(|x| x.as_array()).cloned().unwrap_or_default());
+            }
+            _ => {}
+        }
+    }
+    let mut ts = ToolSet::default();
+    for t in &sent {
+        ts.add(t, false);
+    }
+    for t in &found {
+        ts.add(t, true);
+    }
+
     match body.get("input") {
         Some(Value::String(s)) => {
             ir.messages.push(Message { role: "user".into(), parts: vec![Part::text(s.clone())] });
         }
         Some(Value::Array(items)) => {
             let mut sys: Vec<String> = vec![ir.system.clone()];
-            for it in items {
+            let orphan = |it: &Value| {
+                matches!(get_str(it, "type").as_deref(), Some("function_call_output" | "custom_tool_call_output"))
+                    && get_str(it, "call_id").unwrap_or_default().is_empty()
+            };
+            // 在场的结果：没有结果的调用补一条合成结果（Go pairToolItems）
+            let mut answered: HashSet<String> = items
+                .iter()
+                .filter(|it| {
+                    matches!(get_str(it, "type").as_deref(), Some("function_call_output" | "custom_tool_call_output"))
+                })
+                .filter_map(|it| get_str(it, "call_id"))
+                .filter(|c| !c.is_empty())
+                .collect();
+            let mut synthetic: Vec<Message> = Vec::new();
+            // 没有 call_id 的结果（Go orphanedToolOutputs）：变成 user 文本；
+            // 夹在调用与结果之间的先攒着，等这一串调用/结果结束再放
+            let mut pending: Vec<Message> = Vec::new();
+            let (mut in_calls, mut had_results) = (false, false);
+            for (i, it) in items.iter().enumerate() {
                 let ty = get_str(it, "type").unwrap_or_default();
-                if ty == "message" || (ty.is_empty() && get_str(it, "role").is_some()) {
-                    let role = get_str(it, "role").unwrap_or_default();
-                    let parts = responses_parts(it.get("content").unwrap_or(&Value::Null));
-                    if role == "system" || role == "developer" {
-                        // instructions item / 消息形的 system：一律折叠进顶层
-                        // system（Go 对「回合已开始后」的 developer item 另有
-                        // system-reminder 保位处理，本矩阵简化为全折叠）
-                        let t = string_or_text(it.get("content").unwrap_or(&Value::Null));
-                        if !t.is_empty() {
-                            sys.push(t);
+                let is_orphan = orphan(it);
+                if !is_orphan {
+                    if is_call_item(&ty) {
+                        if had_results {
+                            ir.messages.append(&mut pending);
                         }
-                        continue;
-                    }
-                    let role = if role == "assistant" { "assistant" } else { "user" };
-                    ir.messages.push(Message { role: role.into(), parts });
-                    continue;
-                }
-                if ty == "function_call" || ty == "custom_tool_call" {
-                    let name = get_str(it, "name").unwrap_or_default();
-                    let args = if ty == "custom_tool_call" {
-                        // 自由文本工具：包成 {"input": …}（Go 同款）
-                        json!({"input": get_str(it, "input").unwrap_or_default()})
+                        in_calls = true;
+                        had_results = false;
+                    } else if is_result_item(&ty) {
+                        had_results = true;
                     } else {
-                        match it.get("arguments") {
-                            Some(Value::String(s)) => parse_args(s),
-                            Some(v) if v.is_object() => v.clone(),
-                            _ => json!({}),
+                        ir.messages.append(&mut pending);
+                        in_calls = false;
+                    }
+                }
+                'item: {
+                    if ty == "message" || (ty.is_empty() && get_str(it, "role").is_some()) {
+                        let role = get_str(it, "role").unwrap_or_default();
+                        let parts = responses_parts(it.get("content").unwrap_or(&Value::Null));
+                        if role == "system" || role == "developer" {
+                            // instructions item / 消息形的 system：一律折叠进顶层
+                            // system（Go 对「回合已开始后」的 developer item 另有
+                            // system-reminder 保位处理，本矩阵简化为全折叠）
+                            let t = string_or_text(it.get("content").unwrap_or(&Value::Null));
+                            if !t.is_empty() {
+                                sys.push(t);
+                            }
+                            break 'item;
                         }
-                    };
-                    ir.messages.push(Message {
-                        role: "assistant".into(),
-                        parts: vec![Part::tool_call(get_str(it, "call_id").unwrap_or_default(), name, args)],
-                    });
-                    continue;
+                        let role = if role == "assistant" { "assistant" } else { "user" };
+                        ir.messages.push(Message { role: role.into(), parts });
+                        break 'item;
+                    }
+                    if is_call_item(&ty) {
+                        let call_id = get_str(it, "call_id").unwrap_or_default();
+                        let (name, args) = if ty == "tool_search_call" {
+                            (TOOL_SEARCH.to_string(), call_args_of(it))
+                        } else {
+                            let mut ns = get_str(it, "namespace").unwrap_or_default();
+                            if lite && ns == LITE_NAMESPACE {
+                                ns.clear(); // Lite 的自家工具就是普通调用
+                            }
+                            let name = ts.flat_of(&ns, &get_str(it, "name").unwrap_or_default());
+                            let args = if ty == "custom_tool_call" {
+                                // 自由文本工具：包成 {"input": …}（Go 同款）
+                                json!({"input": get_str(it, "input").unwrap_or_default()})
+                            } else {
+                                call_args_of(it)
+                            };
+                            (name, args)
+                        };
+                        ir.messages.push(Message {
+                            role: "assistant".into(),
+                            parts: vec![Part::tool_call(call_id.clone(), name, args)],
+                        });
+                        if (ty == "function_call" || ty == "custom_tool_call")
+                            && !call_id.is_empty()
+                            && !answered.contains(&call_id)
+                        {
+                            answered.insert(call_id.clone());
+                            synthetic.push(Message {
+                                role: "user".into(),
+                                parts: vec![Part::tool_result(call_id, UNAVAILABLE_RESULT, Vec::new())],
+                            });
+                        }
+                        break 'item;
+                    }
+                    if ty == "tool_search_output" {
+                        let tools: Vec<Value> =
+                            it.get("tools").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+                        let text = search_found(&tools, &|ns, n| ts.flat_of(ns, n));
+                        ir.messages.push(Message {
+                            role: "user".into(),
+                            parts: vec![Part::tool_result(
+                                get_str(it, "call_id").unwrap_or_default(),
+                                text,
+                                Vec::new(),
+                            )],
+                        });
+                        break 'item;
+                    }
+                    if ty == "function_call_output" || ty == "custom_tool_call_output" {
+                        let (text, images) = output_parts(it.get("output").unwrap_or(&Value::Null));
+                        if is_orphan {
+                            // 跨线程通知之类：要的是文字，不是假 call_id
+                            let mut parts: Vec<Part> = Vec::new();
+                            if !text.is_empty() {
+                                parts.push(Part::text(text));
+                            }
+                            parts.extend(images);
+                            if parts.is_empty() {
+                                parts.push(Part::text("Tool result received."));
+                            }
+                            let m = Message { role: "user".into(), parts };
+                            if in_calls {
+                                pending.push(m); // chat 不许 tool_calls 与结果之间夹 user 消息
+                            } else {
+                                ir.messages.push(m);
+                            }
+                        } else {
+                            ir.messages.push(Message {
+                                role: "user".into(),
+                                parts: vec![Part::tool_result(
+                                    get_str(it, "call_id").unwrap_or_default(),
+                                    text,
+                                    images,
+                                )],
+                            });
+                        }
+                        break 'item;
+                    }
+                    if ty == "reasoning" {
+                        // Go parseResponses 同款：item 带原文（content[].reasoning_text）
+                        // 就用原文，否则退它的 summary 文本（magpie 给翻译应答的客户端
+                        // 回的就是 summary）；加密内容读不了，丢。文本进 assistant 的
+                        // Thinking 块，build_chat 暂存、chat.rs 按厂商决定回放与否。
+                        let mut said = String::new();
+                        if let Some(parts) = it.get("content").and_then(|c| c.as_array()) {
+                            for c in parts {
+                                if get_str(c, "type").as_deref() == Some("reasoning_text") {
+                                    said.push_str(&get_str(c, "text").unwrap_or_default());
+                                }
+                            }
+                        }
+                        if said.is_empty() {
+                            if let Some(parts) = it.get("summary").and_then(|c| c.as_array()) {
+                                for c in parts {
+                                    said.push_str(&get_str(c, "text").unwrap_or_default());
+                                }
+                            }
+                        }
+                        if !said.trim().is_empty() {
+                            ir.messages.push(Message {
+                                role: "assistant".into(),
+                                parts: vec![Part::thinking(said)],
+                            });
+                        }
+                        break 'item;
+                    }
+                    // web_search_call / local_shell_call / image_generation_call 等其余
+                    // item：Go 同样不跨协议，丢弃
                 }
-                if ty == "function_call_output" || ty == "custom_tool_call_output" {
-                    let (text, images) = output_parts(it.get("output").unwrap_or(&Value::Null));
-                    ir.messages.push(Message {
-                        role: "user".into(),
-                        parts: vec![Part::tool_result(get_str(it, "call_id").unwrap_or_default(), text, images)],
-                    });
-                    continue;
+                // 一串调用/结果的末尾：补合成结果（orphan 在 Go 里已是消息，不算串内）
+                let exch = |x: &Value| {
+                    let t = get_str(x, "type").unwrap_or_default();
+                    (is_call_item(&t) || is_result_item(&t)) && !orphan(x)
+                };
+                if !synthetic.is_empty()
+                    && exch(it)
+                    && !items[i + 1..].iter().find(|n| !orphan(n)).map_or(false, |n| exch(n))
+                {
+                    ir.messages.append(&mut synthetic);
                 }
-                // reasoning（加密思考只回 responses 自己）、web_search_call
-                // （服务端搜索回放）等其余 item：不跨协议，丢弃
             }
+            ir.messages.append(&mut pending);
+            ir.messages.append(&mut synthetic);
             ir.system = sys.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n");
         }
         _ => return Err("invalid request: input".into()),
     }
     ir.messages = merge_turns(std::mem::take(&mut ir.messages));
-    if let Some(tools) = body.get("tools").and_then(|t| t.as_array()) {
-        for t in tools {
-            if get_str(t, "type").as_deref() != Some("function") {
-                continue;
-            }
-            let name = get_str(t, "name").unwrap_or_default();
-            if name.is_empty() {
-                continue;
-            }
-            ir.tools.push(ToolDef {
-                name,
-                description: get_str(t, "description").unwrap_or_default(),
-                schema: t.get("parameters").cloned().unwrap_or(Value::Null),
-            });
-        }
-    }
+    ir.tools = std::mem::take(&mut ts.tools);
+    ir.named = std::mem::take(&mut ts.named);
     match body.get("tool_choice") {
         Some(Value::String(s)) => ir.tool_choice = s.clone(),
         Some(choice) => {
-            if let Some(name) = get_str(choice, "name") {
-                if !name.is_empty() {
-                    ir.tool_choice = format!("name:{name}");
+            let pick = |c: &Value| {
+                let ns = get_str(c, "namespace").unwrap_or_default();
+                ts.flat_of(&ns, &get_str(c, "name").unwrap_or_default())
+            };
+            match get_str(choice, "type").as_deref() {
+                Some("allowed_tools") => {
+                    // Go：mode 变 tool_choice，工具清单收窄到允许的那几个
+                    let mode = get_str(choice, "mode").unwrap_or_default();
+                    if mode != "auto" && mode != "required" {
+                        return Err(format!("invalid allowed_tools mode {mode:?}"));
+                    }
+                    ir.tool_choice = mode;
+                    let allowed: HashSet<String> = choice
+                        .get("tools")
+                        .and_then(|t| t.as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter(|t| {
+                            matches!(get_str(t, "type").as_deref(), Some("function" | "custom"))
+                                && !get_str(t, "name").unwrap_or_default().is_empty()
+                        })
+                        .map(|t| pick(t))
+                        .collect();
+                    ir.tools.retain(|t| allowed.contains(&t.name));
+                    ir.named.retain(|k, _| allowed.contains(k));
+                }
+                // 带 name 的点名（function / custom；无 type 的旧形态同样）
+                _ => {
+                    if !get_str(choice, "name").unwrap_or_default().is_empty() {
+                        ir.tool_choice = format!("name:{}", pick(choice));
+                    }
                 }
             }
         }
@@ -708,6 +1296,17 @@ fn build_chat(ir: &Ir) -> Value {
                         "function": {"name": p.name, "arguments": args_string(p)}})
                 })
                 .collect();
+            let think: String = m
+                .parts
+                .iter()
+                .filter(|p| p.kind == PartKind::Thinking)
+                .map(|p| p.text.as_str())
+                .collect();
+            // 只有思考、没有正文也没有调用的回合（尾部孤零零的 reasoning item）
+            // 不成一条空 assistant 消息——多家厂商拒收空回合（Go silentAssistantsOut）。
+            if text.is_empty() && calls.is_empty() && !think.is_empty() {
+                continue;
+            }
             let mut am = json!({"role": "assistant"});
             // 有调用且无正文时省掉 content（OpenAI 形态惯用；Go 同款）
             if !text.is_empty() || calls.is_empty() {
@@ -715,6 +1314,11 @@ fn build_chat(ir: &Ir) -> Value {
             }
             if !calls.is_empty() {
                 am["tool_calls"] = Value::Array(calls);
+            }
+            if !think.trim().is_empty() {
+                // 暂存键：chat::fit_for_vendor 出站前一定摘掉（DeepSeek 系回放成
+                // reasoning_content，其余丢弃）。
+                am[super::chat::THINK_KEY] = json!(think);
             }
             messages.push(am);
             continue;
@@ -761,6 +1365,16 @@ fn build_chat(ir: &Ir) -> Value {
         }
     }
     let mut out = json!({"model": ir.model, "messages": messages, "stream": ir.stream});
+    if !ir.cache_key.is_empty() {
+        // Go buildChat 同款：请求自己的 prompt_cache_key 原样带给 chat 厂商
+        // （厂商不认会 400 点名它，chat::attempt 摘掉重发并记住）
+        out["prompt_cache_key"] = json!(ir.cache_key);
+    }
+    if let Some(format) = &ir.format {
+        // 结构化输出（Go buildChat：`out["response_format"] = r.Format.chat()`）；
+        // 厂商不认会 400 点名它，chat::attempt 改成 json_object / 写进 system 重发。
+        out["response_format"] = format.clone();
+    }
     if ir.max_tokens > 0 {
         out["max_tokens"] = json!(ir.max_tokens);
     }
@@ -772,6 +1386,9 @@ fn build_chat(ir: &Ir) -> Value {
     }
     if !ir.stop.is_empty() {
         out["stop"] = json!(ir.stop);
+    }
+    if !ir.effort.is_empty() {
+        out["reasoning_effort"] = json!(ir.effort);
     }
     if !ir.tools.is_empty() {
         let tools: Vec<Value> = ir
@@ -789,6 +1406,10 @@ fn build_chat(ir: &Ir) -> Value {
         let tc = tool_choice_chat(ir);
         if !tc.is_null() {
             out["tool_choice"] = tc;
+        }
+        // Go buildChat 同款：只在带工具时转发 parallel_tool_calls
+        if let Some(p) = ir.parallel {
+            out["parallel_tool_calls"] = json!(p);
         }
     }
     out
@@ -816,6 +1437,8 @@ fn build_anthropic(ir: &Ir) -> Value {
                 PartKind::ToolCall => {
                     rest.push(json!({"type": "tool_use", "id": p.id, "name": p.name, "input": args_of(p)}));
                 }
+                // 思考不跨协议（anthropic 的 thinking 块要签名，伪造会被拒）
+                PartKind::Thinking => {}
                 PartKind::ToolResult => {
                     let content = if p.images.is_empty() {
                         json!(p.text)
@@ -871,6 +1494,14 @@ fn build_anthropic(ir: &Ir) -> Value {
     if !ir.stop.is_empty() {
         out["stop_sequences"] = json!(ir.stop);
     }
+    if !ir.effort.is_empty() {
+        // 思考预算必须给回答留余地（Go withEffort 同款）：放不下就不开。
+        let max = out["max_tokens"].as_u64().unwrap_or(0);
+        let budget = super::effort::budget_of(&ir.effort).min(max.saturating_sub(1));
+        if budget >= 1024 {
+            out["thinking"] = json!({"type": "enabled", "budget_tokens": budget});
+        }
+    }
     if !ir.tools.is_empty() {
         let tools: Vec<Value> = ir
             .tools
@@ -924,6 +1555,8 @@ fn build_responses(ir: &Ir) -> Value {
                     input.push(json!({"type": "function_call", "call_id": p.id, "name": p.name,
                         "arguments": args_string(p)}));
                 }
+                // 其它协议的思考文本不塞进 responses（reasoning item 要它自己的 id/加密体）
+                PartKind::Thinking => {}
                 PartKind::ToolResult => {
                     flush(&mut input, role, &mut content);
                     let output = if p.images.is_empty() {
@@ -956,6 +1589,9 @@ fn build_responses(ir: &Ir) -> Value {
     }
     if let Some(p) = ir.top_p {
         out["top_p"] = json!(p);
+    }
+    if !ir.effort.is_empty() {
+        out["reasoning"] = json!({"effort": ir.effort});
     }
     if !ir.tools.is_empty() {
         let tools: Vec<Value> = ir
@@ -1005,7 +1641,16 @@ pub fn chat_to_responses(body: &Value) -> Result<Value, String> {
 /// input 的 message / function_call / function_call_output 映射回
 /// messages + tool_calls / tool 角色。
 pub fn responses_to_chat(body: &Value) -> Result<Value, String> {
-    parse_responses(body).map(|ir| build_chat(&ir))
+    responses_to_chat_with_tools(body).map(|(chat, _)| chat)
+}
+
+/// [`responses_to_chat`] + 压平工具的还原表：Codex 的 custom / namespace /
+/// tool_search 工具以 flat 函数名交给 chat 厂商，应答编码器拿这张表把
+/// 厂商的调用还原成 Codex 认的 item（`call_to`）。表随请求走，不放全局。
+pub fn responses_to_chat_with_tools(body: &Value) -> Result<(Value, ToolTable), String> {
+    let ir = parse_responses(body)?;
+    let chat = build_chat(&ir);
+    Ok((chat, ir.named))
 }
 
 // =====================================================================
@@ -1037,32 +1682,82 @@ fn anthropic_stop_to_chat(stop: &str) -> &'static str {
     }
 }
 
-/// chat usage → anthropic usage（只搬本矩阵保真的桶：prompt/completion/
-/// cached；四桶拆分的完整口径在 usage 台账侧，别在这里编数）。
-fn anthropic_usage(u: Option<&Value>) -> Value {
-    match u {
-        Some(u) => json!({
-            "input_tokens": u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-            "output_tokens": u.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-            "cache_read_input_tokens":
-                u.pointer("/prompt_tokens_details/cached_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-        }),
-        None => json!({"input_tokens": 0, "output_tokens": 0}),
-    }
+fn num(v: Option<&Value>) -> u64 {
+    v.and_then(|x| x.as_u64()).unwrap_or(0)
 }
 
-/// anthropic usage → chat usage。
+/// chat usage → anthropic usage，口径同 Go（chat.go `cUsage.usage()` →
+/// anthropic.go `Usage.anthropic()`）：
+/// - 缓存读 = `prompt_tokens_details.cached_tokens`，缺了依次退
+///   `prompt_cache_hit_tokens`（DeepSeek）/`cached_tokens`（Moonshot）/
+///   `num_cached_tokens`（Mistral）；缓存写 = `prompt_tokens_details.cache_write_tokens`
+///   （OpenRouter）；两者都没有时认 Anthropic 自己的名字
+///   `cache_read_input_tokens` / `cache_creation_input_tokens`（前面有 Claude 的中转）；
+/// - OpenAI 的 `prompt_tokens` **含**缓存，Anthropic 的 `input_tokens` **不含**——
+///   输出 input = prompt − 读 − 写（下限 0）；缓存数大于 prompt 说明上游本来就按
+///   Anthropic 口径报（prompt 不含缓存），那就原样当 input。Claude Code 的上下文
+///   占用 = input + cache_read + cache_creation，双计会让它高估、过早压缩；
+/// - 思考 token 有就带 `output_tokens_details.thinking_tokens`。
+/// 上游没给 usage 就全 0（不编数）。
+pub(crate) fn anthropic_usage(u: Option<&Value>) -> Value {
+    let Some(u) = u.filter(|u| u.is_object()) else {
+        return json!({
+            "input_tokens": 0, "output_tokens": 0,
+            "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
+        });
+    };
+    let prompt = num(u.get("prompt_tokens"));
+    let mut read = num(u.pointer("/prompt_tokens_details/cached_tokens"));
+    let mut write = num(u.pointer("/prompt_tokens_details/cache_write_tokens"));
+    if read == 0 {
+        for key in ["prompt_cache_hit_tokens", "cached_tokens", "num_cached_tokens"] {
+            if read == 0 {
+                read = num(u.get(key));
+            }
+        }
+    }
+    let mut whole = true; // prompt_tokens 含缓存（OpenAI 口径）
+    if read == 0 && write == 0 {
+        read = num(u.get("cache_read_input_tokens"));
+        write = num(u.get("cache_creation_input_tokens"));
+        whole = prompt >= read + write;
+    }
+    let input = if whole { prompt.saturating_sub(read + write) } else { prompt };
+    let mut out = json!({
+        "input_tokens": input,
+        "output_tokens": num(u.get("completion_tokens")),
+        "cache_read_input_tokens": read,
+        "cache_creation_input_tokens": write,
+    });
+    let thinking = num(u.pointer("/completion_tokens_details/reasoning_tokens"));
+    if thinking > 0 {
+        out["output_tokens_details"] = json!({ "thinking_tokens": thinking });
+    }
+    out
+}
+
+/// anthropic usage → chat usage（Go `aUsage.usage()` → `Usage.chat()`）：
+/// prompt_tokens = input + 缓存读 + 缓存写（OpenAI 口径含缓存）；缓存写取
+/// `cache_creation_input_tokens` 与 `cache_creation` 分档合计的较大者。
 fn chat_usage(u: &Value) -> Value {
-    let input = u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-    let output = u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-    json!({
-        "prompt_tokens": input,
+    let input = num(u.get("input_tokens"));
+    let output = num(u.get("output_tokens"));
+    let read = num(u.get("cache_read_input_tokens"));
+    let split = num(u.pointer("/cache_creation/ephemeral_5m_input_tokens"))
+        + num(u.pointer("/cache_creation/ephemeral_1h_input_tokens"));
+    let write = num(u.get("cache_creation_input_tokens")).max(split);
+    let prompt = input + read + write;
+    let mut out = json!({
+        "prompt_tokens": prompt,
         "completion_tokens": output,
-        "total_tokens": input + output,
-        "prompt_tokens_details": {
-            "cached_tokens": u.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0)
-        },
-    })
+        "total_tokens": prompt + output,
+        "prompt_tokens_details": { "cached_tokens": read, "cache_write_tokens": write },
+    });
+    let thinking = num(u.pointer("/output_tokens_details/thinking_tokens"));
+    if thinking > 0 {
+        out["completion_tokens_details"] = json!({ "reasoning_tokens": thinking });
+    }
+    out
 }
 
 /// 一条 chat.completion.chunk 的 data JSON → 对应的 anthropic 事件帧：
@@ -1279,6 +1974,397 @@ pub fn peel_agent_model_mark(id: &str) -> String {
         }
     }
     id.to_string()
+}
+
+// =====================================================================
+// Codex 订阅入站所需的 responses 应答面翻译（新增，不改上面任何行为）
+//   anthropic 请求 → responses 请求；responses SSE / 聚合对象 → chat
+//   （anthropic 出站再接 messages.rs 既有的 chat → anthropic 翻译器）
+// =====================================================================
+
+/// anthropic /v1/messages 请求体 → openai responses 请求体。
+pub fn anthropic_to_responses(body: &Value) -> Result<Value, String> {
+    parse_anthropic(body).map(|ir| build_responses(&ir))
+}
+
+/// responses 的 usage → chat usage（cached / reasoning 两个明细桶带上；
+/// 上游不报的桶就是缺省，不编数）。
+fn responses_usage_to_chat(u: &Value) -> Value {
+    let input = u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+    let output = u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+    let total = u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(input + output);
+    let mut out = json!({
+        "prompt_tokens": input,
+        "completion_tokens": output,
+        "total_tokens": total,
+        "prompt_tokens_details": {
+            "cached_tokens": u.pointer("/input_tokens_details/cached_tokens").and_then(|v| v.as_u64()).unwrap_or(0)
+        },
+    });
+    if let Some(r) = u.pointer("/output_tokens_details/reasoning_tokens").and_then(|v| v.as_u64()) {
+        out["completion_tokens_details"] = json!({ "reasoning_tokens": r });
+    }
+    out
+}
+
+/// responses 终态 → chat finish_reason。
+fn responses_finish_reason(resp: &Value, saw_tool: bool) -> &'static str {
+    if resp.get("status").and_then(|s| s.as_str()) == Some("incomplete") {
+        match resp.pointer("/incomplete_details/reason").and_then(|r| r.as_str()) {
+            Some("max_output_tokens") => return "length",
+            Some("content_filter") => return "content_filter",
+            _ => {}
+        }
+    }
+    if saw_tool {
+        "tool_calls"
+    } else {
+        "stop"
+    }
+}
+
+/// 厂商（改名后的）工具名 → agent 声明的名（Go codexNamesBack）。
+pub type NamesBack = std::collections::HashMap<String, String>;
+
+fn name_back(back: &NamesBack, name: &str) -> String {
+    back.get(name).cloned().unwrap_or_else(|| name.to_string())
+}
+
+/// responses SSE → chat SSE 的有状态翻译器（无 IO：吃一条 `data:` JSON，
+/// 吐 0..n 条完整的 chat 帧文本 `data: …\n\n`）。流式 Read 适配器与测试共用。
+pub struct ResponsesToChat {
+    model: String,
+    id: String,
+    include_usage: bool,
+    back: NamesBack,
+    started: bool,
+    finished: bool,
+    /// output_index → chat tool_calls 的 index
+    tools: std::collections::HashMap<u64, usize>,
+    /// 已发过 arguments 的 output_index（done 事件只补没发过的）
+    args_sent: std::collections::HashSet<u64>,
+    next_tool: usize,
+    saw_tool: bool,
+    last_tool_out: Option<u64>,
+}
+
+impl ResponsesToChat {
+    pub fn new(model: &str, include_usage: bool, back: NamesBack) -> ResponsesToChat {
+        ResponsesToChat {
+            model: model.to_string(),
+            id: "chatcmpl-codex".to_string(),
+            include_usage,
+            back,
+            started: false,
+            finished: false,
+            tools: Default::default(),
+            args_sent: Default::default(),
+            next_tool: 0,
+            saw_tool: false,
+            last_tool_out: None,
+        }
+    }
+
+    /// 已收口（completed/failed/error 之后的一切尾巴丢弃）。
+    pub fn finished(&self) -> bool {
+        self.finished
+    }
+
+    fn frame(&self, delta: Value, finish: Option<&str>) -> String {
+        let v = json!({
+            "id": self.id,
+            "object": "chat.completion.chunk",
+            "created": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+            "model": self.model,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+        });
+        format!("data: {}\n\n", serde_json::to_string(&v).unwrap_or_default())
+    }
+
+    fn start(&mut self, out: &mut Vec<String>) {
+        if !self.started {
+            self.started = true;
+            out.push(self.frame(json!({"role": "assistant", "content": ""}), None));
+        }
+    }
+
+    fn error_frames(&mut self, message: &str, code: &str) -> Vec<String> {
+        self.finished = true;
+        let v = json!({"error": {"message": message, "type": "upstream_error", "code": code}});
+        vec![format!("data: {}\n\n", serde_json::to_string(&v).unwrap_or_default()), "data: [DONE]\n\n".into()]
+    }
+
+    fn tool_start(&mut self, out_index: u64, item: &Value, out: &mut Vec<String>) {
+        if self.tools.contains_key(&out_index) {
+            return;
+        }
+        let idx = self.next_tool;
+        self.next_tool += 1;
+        self.tools.insert(out_index, idx);
+        self.saw_tool = true;
+        self.last_tool_out = Some(out_index);
+        let id = item
+            .get("call_id")
+            .and_then(|c| c.as_str())
+            .filter(|c| !c.is_empty())
+            .or_else(|| item.get("id").and_then(|c| c.as_str()))
+            .unwrap_or("");
+        let name = name_back(&self.back, item.get("name").and_then(|n| n.as_str()).unwrap_or(""));
+        self.start(out);
+        out.push(self.frame(
+            json!({"tool_calls": [{"index": idx, "id": id, "type": "function",
+                                    "function": {"name": name, "arguments": ""}}]}),
+            None,
+        ));
+    }
+
+    fn tool_args(&mut self, out_index: u64, args: &str, out: &mut Vec<String>) {
+        let Some(&idx) = self.tools.get(&out_index) else { return };
+        if args.is_empty() {
+            return;
+        }
+        self.args_sent.insert(out_index);
+        out.push(self.frame(json!({"tool_calls": [{"index": idx, "function": {"arguments": args}}]}), None));
+    }
+
+    pub fn feed(&mut self, data: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.finished {
+            return out;
+        }
+        let Ok(ev) = serde_json::from_str::<Value>(data.trim()) else { return out };
+        let ty = ev.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        let out_index = ev.get("output_index").and_then(|i| i.as_u64());
+        match ty {
+            "response.created" | "response.in_progress" => {
+                if let Some(id) = ev.pointer("/response/id").and_then(|i| i.as_str()) {
+                    self.id = format!("chatcmpl-{id}");
+                }
+                self.start(&mut out);
+            }
+            "response.output_text.delta" | "response.refusal.delta" => {
+                let d = ev.get("delta").and_then(|d| d.as_str()).unwrap_or("");
+                if !d.is_empty() {
+                    self.start(&mut out);
+                    out.push(self.frame(json!({"content": d}), None));
+                }
+            }
+            "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
+                let d = ev.get("delta").and_then(|d| d.as_str()).unwrap_or("");
+                if !d.is_empty() {
+                    self.start(&mut out);
+                    out.push(self.frame(json!({"reasoning_content": d}), None));
+                }
+            }
+            "response.output_item.added" => {
+                if let Some(item) = ev.get("item").filter(|i| i.get("type").and_then(|t| t.as_str()) == Some("function_call")) {
+                    let oi = out_index.unwrap_or(self.next_tool as u64);
+                    self.tool_start(oi, item, &mut out);
+                }
+            }
+            "response.function_call_arguments.delta" => {
+                let d = ev.get("delta").and_then(|d| d.as_str()).unwrap_or("");
+                if let Some(oi) = out_index.or(self.last_tool_out) {
+                    self.tool_args(oi, d, &mut out);
+                }
+            }
+            "response.output_item.done" => {
+                if let Some(item) = ev.get("item").filter(|i| i.get("type").and_then(|t| t.as_str()) == Some("function_call")) {
+                    let oi = out_index.unwrap_or(self.next_tool as u64);
+                    // 没见过 added（直接给整项）：补开头
+                    self.tool_start(oi, item, &mut out);
+                    if !self.args_sent.contains(&oi) {
+                        let a = item.get("arguments").and_then(|a| a.as_str()).unwrap_or("");
+                        self.tool_args(oi, a, &mut out);
+                    }
+                }
+            }
+            "response.completed" | "response.incomplete" => {
+                let resp = ev.get("response").cloned().unwrap_or(Value::Null);
+                self.start(&mut out);
+                let finish = responses_finish_reason(&resp, self.saw_tool);
+                out.push(self.frame(json!({}), Some(finish)));
+                if self.include_usage {
+                    if let Some(u) = resp.get("usage").filter(|u| u.is_object()) {
+                        let v = json!({
+                            "id": self.id, "object": "chat.completion.chunk", "created": 0,
+                            "model": self.model, "choices": [], "usage": responses_usage_to_chat(u),
+                        });
+                        out.push(format!("data: {}\n\n", serde_json::to_string(&v).unwrap_or_default()));
+                    }
+                }
+                out.push("data: [DONE]\n\n".into());
+                self.finished = true;
+            }
+            "response.failed" => {
+                let msg = ev
+                    .pointer("/response/error/message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("Codex response failed")
+                    .to_string();
+                let code = ev.pointer("/response/error/code").and_then(|m| m.as_str()).unwrap_or("response_failed").to_string();
+                return self.error_frames(&msg, &code);
+            }
+            "error" => {
+                let msg = ev
+                    .get("message")
+                    .or_else(|| ev.pointer("/error/message"))
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("Codex stream error")
+                    .to_string();
+                let code = ev.get("code").or_else(|| ev.pointer("/error/code")).and_then(|m| m.as_str()).unwrap_or("stream_error").to_string();
+                return self.error_frames(&msg, &code);
+            }
+            _ => {}
+        }
+        out
+    }
+
+    /// 上游在 completed 之前就 EOF：如实报错（不编 finish_reason）。
+    pub fn truncated(&mut self) -> Vec<String> {
+        if self.finished {
+            return Vec::new();
+        }
+        self.error_frames("Codex stream ended before response.completed", "stream_truncated")
+    }
+}
+
+/// 包在上游 responses SSE reader 外的 Read 适配器，吐 chat SSE 字节。
+pub struct ResponsesToChatReader {
+    inner: std::io::BufReader<Box<dyn std::io::Read + Send>>,
+    conv: ResponsesToChat,
+    out: Vec<u8>,
+    pos: usize,
+    done: bool,
+}
+
+impl ResponsesToChatReader {
+    pub fn new(reader: Box<dyn std::io::Read + Send>, conv: ResponsesToChat) -> ResponsesToChatReader {
+        ResponsesToChatReader { inner: std::io::BufReader::new(reader), conv, out: Vec::new(), pos: 0, done: false }
+    }
+}
+
+impl std::io::Read for ResponsesToChatReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        use std::io::BufRead;
+        loop {
+            if self.pos < self.out.len() {
+                let n = std::cmp::min(buf.len(), self.out.len() - self.pos);
+                buf[..n].copy_from_slice(&self.out[self.pos..self.pos + n]);
+                self.pos += n;
+                if self.pos == self.out.len() {
+                    self.out.clear();
+                    self.pos = 0;
+                }
+                return Ok(n);
+            }
+            if self.done || self.conv.finished() {
+                self.done = true;
+                return Ok(0);
+            }
+            let mut line = String::new();
+            match self.inner.read_line(&mut line) {
+                Ok(0) => {
+                    for f in self.conv.truncated() {
+                        self.out.extend_from_slice(f.as_bytes());
+                    }
+                    self.done = true;
+                    if self.out.is_empty() {
+                        return Ok(0);
+                    }
+                    continue;
+                }
+                Ok(_) => {}
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => {
+                    // 读断：同截断处理（错误帧让客户端知道不是正常收口）
+                    for f in self.conv.truncated() {
+                        self.out.extend_from_slice(f.as_bytes());
+                    }
+                    self.done = true;
+                    if self.out.is_empty() {
+                        return Ok(0);
+                    }
+                    continue;
+                }
+            }
+            let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
+            let Some(data) = trimmed.strip_prefix("data:") else { continue };
+            for f in self.conv.feed(data.trim()) {
+                self.out.extend_from_slice(f.as_bytes());
+            }
+        }
+    }
+}
+
+/// 聚合后的 responses 对象 → chat.completion 应答（非流式）。
+pub fn responses_object_to_chat(resp: &Value, model: &str, back: &NamesBack) -> Value {
+    let mut text = String::new();
+    let mut reasoning = String::new();
+    let mut calls: Vec<Value> = Vec::new();
+    for item in resp.get("output").and_then(|o| o.as_array()).into_iter().flatten() {
+        match item.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+            "message" => match item.get("content") {
+                Some(Value::String(s)) => text.push_str(s),
+                Some(Value::Array(parts)) => {
+                    for p in parts {
+                        match p.get("type").and_then(|t| t.as_str()) {
+                            Some("output_text") | Some("refusal") | Some("text") => {
+                                if let Some(t) = p.get("text").or_else(|| p.get("refusal")).and_then(|t| t.as_str()) {
+                                    text.push_str(t);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            },
+            "reasoning" => {
+                for p in item.get("summary").and_then(|s| s.as_array()).into_iter().flatten() {
+                    if let Some(t) = p.get("text").and_then(|t| t.as_str()) {
+                        if !reasoning.is_empty() {
+                            reasoning.push_str("\n\n");
+                        }
+                        reasoning.push_str(t);
+                    }
+                }
+            }
+            "function_call" => {
+                let id = item
+                    .get("call_id")
+                    .and_then(|c| c.as_str())
+                    .filter(|c| !c.is_empty())
+                    .or_else(|| item.get("id").and_then(|c| c.as_str()))
+                    .unwrap_or("");
+                let name = name_back(back, item.get("name").and_then(|n| n.as_str()).unwrap_or(""));
+                let args = item.get("arguments").and_then(|a| a.as_str()).unwrap_or("");
+                calls.push(json!({"id": id, "type": "function",
+                                  "function": {"name": name, "arguments": args}}));
+            }
+            _ => {}
+        }
+    }
+    let finish = responses_finish_reason(resp, !calls.is_empty());
+    let mut message = json!({"role": "assistant", "content": if text.is_empty() && !calls.is_empty() { Value::Null } else { json!(text) }});
+    if !reasoning.is_empty() {
+        message["reasoning_content"] = json!(reasoning);
+    }
+    if !calls.is_empty() {
+        message["tool_calls"] = Value::Array(calls);
+    }
+    let mut out = json!({
+        "id": format!("chatcmpl-{}", resp.get("id").and_then(|i| i.as_str()).unwrap_or("codex")),
+        "object": "chat.completion",
+        "created": resp.get("created_at").and_then(|c| c.as_u64()).unwrap_or(0),
+        "model": model,
+        "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+    });
+    if let Some(u) = resp.get("usage").filter(|u| u.is_object()) {
+        out["usage"] = responses_usage_to_chat(u);
+    }
+    out
 }
 
 // =====================================================================
@@ -1605,7 +2691,8 @@ mod tests {
         )
         .unwrap();
         assert!(out.contains("\"finish_reason\":\"tool_calls\""));
-        assert!(out.contains("\"prompt_tokens\":3"));
+        // OpenAI 口径：prompt_tokens 含缓存读（3 + 2）
+        assert!(out.contains("\"prompt_tokens\":5"), "{out}");
         assert!(out.contains("\"cached_tokens\":2"));
 
         assert_eq!(sse_anthropic_to_chat(r#"{"type":"message_stop"}"#).unwrap(), "data: [DONE]");
@@ -1711,5 +2798,268 @@ mod tests {
                 arguments: r#"{"ok":true}"#.into(),
             }]
         );
+    }
+
+    // ---- Codex 的非 function 工具（custom / namespace / tool_search）----
+
+    /// Codex 真实形态的 tools：普通 function、custom（apply_patch，带 grammar）、
+    /// namespace（MCP）、client 的 tool_search，外加服务端的 web_search /
+    /// image_generation / local_shell（应被有意丢弃）。
+    fn codex_tools() -> Value {
+        json!([
+            {"type": "function", "name": "shell", "description": "run", "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}}},
+            {"type": "custom", "name": "apply_patch", "description": "edit files",
+             "format": {"type": "grammar", "syntax": "lark", "definition": "start: /.+/"}},
+            {"type": "namespace", "name": "mcp__marionette__", "description": "ns", "tools": [
+                {"type": "function", "name": "browser_open", "description": "open", "parameters": {"type": "object", "properties": {"url": {"type": "string"}}}},
+                {"type": "custom", "name": "freeform", "description": "ff"}
+            ]},
+            {"type": "tool_search", "execution": "client", "description": "search tools", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}},
+            {"type": "web_search", "external_web_access": true},
+            {"type": "image_generation"},
+            {"type": "local_shell"}
+        ])
+    }
+
+    fn chat_tool_names(chat: &Value) -> Vec<String> {
+        chat["tools"].as_array().unwrap().iter()
+            .map(|t| t["function"]["name"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn flat_name_rules() {
+        assert_eq!(flat_name("mcp__srv__", "do"), "mcp__srv____do");
+        // 超长：截 55 + _ + 8 位哈希，恒 <= 64，同输入同输出
+        let long_ns = "n".repeat(70);
+        let a = flat_name(&long_ns, "x");
+        assert!(a.len() <= 64, "{a}");
+        assert_eq!(a, flat_name(&long_ns, "x"));
+        assert_ne!(a, flat_name(&long_ns, "y"));
+        // 非法字符换 _，仍合法；不同原名不撞
+        let b = flat_name("my.ns", "do it");
+        assert!(b.bytes().all(|c| c == b'_' || c == b'-' || c.is_ascii_alphanumeric()), "{b}");
+        assert_ne!(b, flat_name("my_ns", "do_it"));
+    }
+
+    #[test]
+    fn codex_tool_kinds_flatten_for_chat_vendor() {
+        let body = json!({"model": "m", "input": "hi", "tools": codex_tools(), "parallel_tool_calls": true});
+        let (chat, table) = responses_to_chat_with_tools(&body).unwrap();
+        // web_search / image_generation / local_shell 有意丢弃；其余各一条函数
+        assert_eq!(
+            chat_tool_names(&chat),
+            vec!["shell", "apply_patch", "mcp__marionette____browser_open", "mcp__marionette____freeform", "tool_search"]
+        );
+        for n in chat_tool_names(&chat) {
+            assert!(n.len() <= 64 && n.bytes().all(|c| c == b'_' || c == b'-' || c.is_ascii_alphanumeric()), "{n}");
+        }
+        // custom：一个字符串 input 的函数 + grammar 写进描述
+        let patch = &chat["tools"][1]["function"];
+        assert_eq!(patch["parameters"]["required"], json!(["input"]));
+        let d = patch["description"].as_str().unwrap();
+        assert!(d.starts_with("edit files") && d.contains("lark grammar") && d.contains("start: /.+/"), "{d}");
+        // 普通 function 工具原样
+        assert_eq!(chat["tools"][0]["function"]["name"], "shell");
+        assert_eq!(chat["tools"][0]["function"]["parameters"]["properties"]["cmd"]["type"], "string");
+        // 还原表：普通工具不进表
+        assert!(!table.contains_key("shell"));
+        assert_eq!(table["apply_patch"], NsTool { name: "apply_patch".into(), custom: true, ..Default::default() });
+        assert_eq!(
+            table["mcp__marionette____browser_open"],
+            NsTool { namespace: "mcp__marionette__".into(), name: "browser_open".into(), ..Default::default() }
+        );
+        assert!(table["mcp__marionette____freeform"].custom);
+        assert!(table["tool_search"].search);
+        assert_eq!(chat["parallel_tool_calls"], true);
+    }
+
+    #[test]
+    fn tool_search_is_dropped_unless_client_executed() {
+        let body = json!({"model": "m", "input": "hi", "tools": [
+            {"type": "tool_search", "execution": "server", "description": "x"},
+            {"type": "function", "name": "a", "parameters": {"type": "object"}}]});
+        let (chat, table) = responses_to_chat_with_tools(&body).unwrap();
+        assert_eq!(chat_tool_names(&chat), vec!["a"]);
+        assert!(table.is_empty());
+    }
+
+    #[test]
+    fn plain_function_tools_unchanged_and_not_tabled() {
+        let body = json!({"model": "m", "input": "hi",
+            "tools": [{"type": "function", "name": "get_weather", "description": "w",
+                       "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}],
+            "tool_choice": "auto"});
+        let (chat, table) = responses_to_chat_with_tools(&body).unwrap();
+        assert!(table.is_empty());
+        assert_eq!(chat["tools"][0], json!({"type": "function", "function": {"name": "get_weather",
+            "description": "w", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}));
+        assert_eq!(chat["tool_choice"], "auto");
+        assert!(chat.get("parallel_tool_calls").is_none());
+    }
+
+    #[test]
+    fn colliding_flat_names_are_made_unique() {
+        // 命名空间 a + 工具 b__c 与 命名空间 a__b + 工具 c 压平后同名
+        let body = json!({"model": "m", "input": "hi", "tools": [
+            {"type": "namespace", "name": "a", "tools": [{"type": "function", "name": "b__c", "parameters": {"type": "object"}}]},
+            {"type": "namespace", "name": "a__b", "tools": [{"type": "function", "name": "c", "parameters": {"type": "object"}}]}]});
+        let (chat, table) = responses_to_chat_with_tools(&body).unwrap();
+        let names = chat_tool_names(&chat);
+        assert_eq!(names.len(), 2);
+        assert_ne!(names[0], names[1]);
+        assert_eq!(table[&names[0]].namespace, "a");
+        assert_eq!(table[&names[1]].namespace, "a__b");
+    }
+
+    #[test]
+    fn history_items_use_the_same_flat_names() {
+        let body = json!({"model": "m", "tools": codex_tools(), "input": [
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "go"}]},
+            {"type": "function_call", "call_id": "c1", "namespace": "mcp__marionette__", "name": "browser_open", "arguments": "{\"url\":\"http://x\"}"},
+            {"type": "function_call_output", "call_id": "c1", "output": "opened"},
+            {"type": "custom_tool_call", "call_id": "c2", "name": "apply_patch", "input": "*** Begin Patch"},
+            {"type": "custom_tool_call_output", "call_id": "c2", "output": "Done"},
+            {"type": "tool_search_call", "call_id": "c3", "execution": "client", "arguments": {"query": "calendar"}},
+            {"type": "tool_search_output", "call_id": "c3", "execution": "client", "tools": [
+                {"type": "namespace", "name": "mcp__cal__", "tools": [{"type": "function", "name": "list_events", "parameters": {"type": "object"}}]}]}
+        ]});
+        let (chat, table) = responses_to_chat_with_tools(&body).unwrap();
+        let msgs = chat["messages"].as_array().unwrap();
+        // user, assistant(3 个调用并成一条 tool_calls 的前两条之间有 tool 消息 -> 分开)
+        let calls: Vec<&Value> = msgs.iter().filter_map(|m| m.get("tool_calls")).flat_map(|c| c.as_array().unwrap()).collect();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0]["function"]["name"], "mcp__marionette____browser_open");
+        assert_eq!(calls[0]["function"]["arguments"], "{\"url\":\"http://x\"}");
+        assert_eq!(calls[1]["function"]["name"], "apply_patch");
+        assert_eq!(calls[1]["function"]["arguments"], "{\"input\":\"*** Begin Patch\"}");
+        assert_eq!(calls[2]["function"]["name"], "tool_search");
+        assert_eq!(calls[2]["function"]["arguments"], "{\"query\":\"calendar\"}");
+        // 三个结果都按 call id 配成 tool 消息；tool_search 的结果讲「现在可调的名字」
+        let tool_msgs: Vec<&Value> = msgs.iter().filter(|m| m["role"] == "tool").collect();
+        assert_eq!(tool_msgs.len(), 3);
+        assert_eq!(tool_msgs[2]["tool_call_id"], "c3");
+        assert_eq!(tool_msgs[2]["content"], "These tools are now available to call: mcp__cal____list_events");
+        // 搜到的工具排在请求自带工具之后被提供，并进还原表
+        let names = chat_tool_names(&chat);
+        assert_eq!(names.last().unwrap(), "mcp__cal____list_events");
+        assert_eq!(table["mcp__cal____list_events"].name, "list_events");
+    }
+
+    #[test]
+    fn orphan_output_becomes_user_text_deferred_past_the_run() {
+        let body = json!({"model": "m", "input": [
+            {"type": "message", "role": "user", "content": "go"},
+            {"type": "function_call", "call_id": "a", "name": "f", "arguments": "{}"},
+            {"type": "function_call_output", "output": "notification from another thread"},
+            {"type": "function_call_output", "call_id": "a", "output": "ok"},
+            {"type": "function_call_output", "output": ""}
+        ]});
+        let chat = responses_to_chat(&body).unwrap();
+        let msgs = chat["messages"].as_array().unwrap();
+        let roles: Vec<&str> = msgs.iter().map(|m| m["role"].as_str().unwrap()).collect();
+        // user, assistant(tool_calls), tool(a) 紧跟其后，孤儿文字在串之后
+        assert_eq!(roles[..3], ["user", "assistant", "tool"]);
+        assert_eq!(msgs[2]["tool_call_id"], "a");
+        let tail: String = msgs[3..].iter().map(|m| m["content"].to_string()).collect();
+        assert!(tail.contains("notification from another thread"), "{tail}");
+        assert!(tail.contains("Tool result received."), "{tail}");
+        assert!(msgs.iter().all(|m| m["role"] != "tool" || m["tool_call_id"] == "a"), "孤儿不得带假 call_id");
+    }
+
+    #[test]
+    fn unanswered_calls_get_a_synthetic_result_at_the_end_of_the_run() {
+        let body = json!({"model": "m", "input": [
+            {"type": "message", "role": "user", "content": "go"},
+            {"type": "function_call", "call_id": "a", "name": "f", "arguments": "{}"},
+            {"type": "custom_tool_call", "call_id": "b", "name": "g", "input": "x"},
+            {"type": "message", "role": "user", "content": "continue"}
+        ]});
+        let chat = responses_to_chat(&body).unwrap();
+        let msgs = chat["messages"].as_array().unwrap();
+        let roles: Vec<&str> = msgs.iter().map(|m| m["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, ["user", "assistant", "tool", "tool", "user"]);
+        assert_eq!(msgs[2]["tool_call_id"], "a");
+        assert_eq!(msgs[3]["tool_call_id"], "b");
+        assert!(msgs[2]["content"].as_str().unwrap().contains("unavailable"));
+    }
+
+    #[test]
+    fn tool_choice_forms() {
+        let tools = codex_tools();
+        // 点名命名空间里的函数 -> flat 名
+        let c = responses_to_chat(&json!({"model": "m", "input": "x", "tools": tools,
+            "tool_choice": {"type": "function", "namespace": "mcp__marionette__", "name": "browser_open"}})).unwrap();
+        assert_eq!(c["tool_choice"]["function"]["name"], "mcp__marionette____browser_open");
+        // allowed_tools：mode 成为 tool_choice，清单收窄
+        let c = responses_to_chat(&json!({"model": "m", "input": "x", "tools": tools,
+            "tool_choice": {"type": "allowed_tools", "mode": "required", "tools": [
+                {"type": "function", "name": "shell"}, {"type": "custom", "name": "apply_patch"}]}})).unwrap();
+        assert_eq!(c["tool_choice"], "required");
+        assert_eq!(chat_tool_names(&c), vec!["shell", "apply_patch"]);
+        // 非法 mode 报错
+        assert!(responses_to_chat(&json!({"model": "m", "input": "x", "tools": tools,
+            "tool_choice": {"type": "allowed_tools", "mode": "bogus", "tools": []}})).is_err());
+    }
+
+    #[test]
+    fn lite_additional_tools_are_lifted_and_functions_namespace_stripped() {
+        let body = json!({"model": "m", "input": [
+            {"type": "additional_tools", "tools": [
+                {"type": "namespace", "name": "functions", "tools": [
+                    {"type": "function", "name": "exec_command", "parameters": {"type": "object"}}]}]},
+            {"type": "message", "role": "user", "content": "go"},
+            {"type": "function_call", "call_id": "a", "namespace": "functions", "name": "exec_command", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "a", "output": "ok"}
+        ]});
+        let (chat, table) = responses_to_chat_with_tools(&body).unwrap();
+        assert_eq!(chat_tool_names(&chat), vec!["exec_command"]);
+        assert!(table.is_empty());
+        assert_eq!(chat["messages"][1]["tool_calls"][0]["function"]["name"], "exec_command");
+    }
+
+    #[test]
+    fn call_to_round_trips_each_kind() {
+        let body = json!({"model": "m", "input": "hi", "tools": codex_tools()});
+        let (_, table) = responses_to_chat_with_tools(&body).unwrap();
+        let mk = |args: &str| json!({"type": "function_call", "status": "completed", "call_id": "c", "arguments": args});
+        // custom
+        let mut it = mk("{\"input\":\"*** patch\\n\"}");
+        call_to(&mut it, "apply_patch", &table);
+        assert_eq!(it["type"], "custom_tool_call");
+        assert_eq!(it["name"], "apply_patch");
+        assert_eq!(it["input"], "*** patch\n");
+        assert!(it.get("arguments").is_none() && it.get("namespace").is_none());
+        assert_eq!(call_item_prefix(&it), "ctc_");
+        // custom：arguments 不是 {input} 对象时取原文（Go customInput）
+        let mut it = mk("raw text");
+        call_to(&mut it, "apply_patch", &table);
+        assert_eq!(it["input"], "raw text");
+        // 命名空间 custom
+        let mut it = mk("{\"input\":\"z\"}");
+        call_to(&mut it, "mcp__marionette____freeform", &table);
+        assert_eq!((it["type"].as_str().unwrap(), it["namespace"].as_str().unwrap(), it["name"].as_str().unwrap()),
+            ("custom_tool_call", "mcp__marionette__", "freeform"));
+        // 命名空间 function：原名 + namespace
+        let mut it = mk("{\"url\":\"u\"}");
+        call_to(&mut it, "mcp__marionette____browser_open", &table);
+        assert_eq!(it["type"], "function_call");
+        assert_eq!(it["name"], "browser_open");
+        assert_eq!(it["namespace"], "mcp__marionette__");
+        assert_eq!(it["arguments"], "{\"url\":\"u\"}");
+        assert_eq!(call_item_prefix(&it), "fc_");
+        // tool_search：client 执行，arguments 是对象，没有 name
+        let mut it = mk("{\"query\":\"q\"}");
+        call_to(&mut it, "tool_search", &table);
+        assert_eq!(it["type"], "tool_search_call");
+        assert_eq!(it["execution"], "client");
+        assert_eq!(it["arguments"], json!({"query": "q"}));
+        assert!(it.get("name").is_none());
+        assert_eq!(call_item_prefix(&it), "tsc_");
+        // 普通工具：只补原名
+        let mut it = mk("{}");
+        call_to(&mut it, "shell", &table);
+        assert_eq!((it["type"].as_str().unwrap(), it["name"].as_str().unwrap()), ("function_call", "shell"));
+        assert!(it.get("namespace").is_none());
     }
 }

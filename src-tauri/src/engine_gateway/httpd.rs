@@ -16,7 +16,11 @@ use std::time::Duration;
 use super::Gateway;
 
 const MAX_HEADER_BYTES: usize = 64 * 1024;
-const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
+/// 入站体上限（**解码后**计）：同 Go request_bounds.go 的 defaultBodyLimit
+/// 512MB——codex 整轮截图内联 base64、长会话轻松过 64MB。Content-Length
+/// 超限在读体前就 413；chunked / 压缩体边读边数，越线即停（zstd 炸弹也
+/// 出不了这条线）。读入按实际到达增长，不信声明值预分配。
+const MAX_BODY_BYTES: usize = 512 * 1024 * 1024;
 /// 停止轮询间隔（进程内形态）：accept 非阻塞轮询的节拍，也是 `shutdown`
 /// 置位后监听关闭的最大延迟——engine.rs 的 kill 路径要在下一次端口探测
 /// （update → place_and_prep → find_free_port_from）前把端口还回去。
@@ -117,6 +121,7 @@ pub fn serve_on(
                     let _ = write_reply(
                         &mut stream,
                         Reply::error(503, "engine busy: too many connections"),
+                        &[],
                     );
                     continue;
                 }
@@ -143,26 +148,178 @@ pub fn serve_on(
 }
 
 fn handle(stream: TcpStream, gateway: &Gateway) -> std::io::Result<()> {
-    // 读超时只罩请求行与头（parse 在头读完后自行解除）；写超时罩整个应答。
+    // 读超时只罩请求行与头（头读完后解除）；写超时罩整个应答。
     let _ = stream.set_read_timeout(Some(HEADER_READ_TIMEOUT));
     let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
-    let request = match parse(stream.try_clone()?) {
-        Some(r) => r,
-        None => {
-            let mut s = stream;
-            return write_reply(
-                &mut s,
-                Reply::error(400, "malformed request"),
-            );
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut stream = stream;
+    let Some(head) = read_head(&mut reader) else {
+        return write_reply(&mut stream, Reply::error(400, "malformed request"), &[]);
+    };
+    // 外站网页防护先于读体（Go corsGuard 在最外层）：被拒的请求连体都不读。
+    let mut extra: Vec<(String, String)> = Vec::new();
+    match super::cors::judge(&head.method, &head.headers) {
+        super::cors::Verdict::Pass => {}
+        super::cors::Verdict::PassWith(h) => extra = h,
+        super::cors::Verdict::Preflight(h) => {
+            let reply = Reply::Json { status: 204, body: Vec::new() };
+            return write_reply(&mut stream, reply, &h);
+        }
+        super::cors::Verdict::Refuse(message) => {
+            return write_reply(&mut stream, guard_error(&head.path, 403, &message), &[]);
+        }
+    }
+    // 头读完：体不限时（大体 + 慢客户端合法），解除读超时。
+    let _ = stream.set_read_timeout(None);
+    let body = match read_body(&mut reader, &head.headers) {
+        Ok(b) => b,
+        Err(e) => {
+            let reply = guard_error(&head.path, e.status(), &e.message());
+            return write_reply(&mut stream, reply, &extra);
         }
     };
+    let mut headers = head.headers;
+    // 已解码：Content-Encoding 之后谁都不该再看到/转发它（Go decodedBody 同款）。
+    if body.decoded {
+        headers.retain(|(k, _)| k != "content-encoding");
+    }
+    let request = Request { method: head.method, path: head.path, headers, body: body.bytes };
+    clear_passthrough();
     let reply = super::routes::route(&request, gateway);
-    let mut stream = stream;
-    write_reply(&mut stream, reply)
+    extra.extend(take_passthrough());
+    write_reply(&mut stream, reply, &extra)
 }
 
-fn parse(stream: TcpStream) -> Option<Request> {
-    let mut reader = BufReader::new(stream);
+// ---------------------------------------------------------------------------
+// 上游头透传（审计 #9）：Reply 不带头，上游的 Retry-After / request-id /
+// ratelimit 头经线程局部侧道交给写层——handler 与写层在同一条连接线程上，
+// 每个把上游应答变成 Reply 的点覆盖写一次（最后一次 = 终局应答的头）。
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static PASSTHROUGH: std::cell::RefCell<Vec<(String, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn clear_passthrough() {
+    PASSTHROUGH.with(|p| p.borrow_mut().clear());
+}
+
+fn take_passthrough() -> Vec<(String, String)> {
+    PASSTHROUGH.with(|p| std::mem::take(&mut *p.borrow_mut()))
+}
+
+/// 该透传的上游头：Retry-After（含 -ms 变体）、request id、任何 ratelimit
+/// 头（Go keepRetry 只带 retry-after 与 ratelimit…reset，成功应答带 request
+/// id；这里取并集——客户端退避与排障都吃得到）。
+fn passes_through(name_lower: &str) -> bool {
+    name_lower == "retry-after"
+        || name_lower == "retry-after-ms"
+        || name_lower == "request-id"
+        || name_lower == "x-request-id"
+        || name_lower.contains("ratelimit")
+}
+
+/// 记下 `response` 里该透传的头（覆盖上一次）。每个上游应答被转成 Reply
+/// 的地方调一次。值里带控制字符的丢弃（响应拆分防护）。
+pub fn note_upstream(response: &ureq::Response) {
+    let mut out = Vec::new();
+    for name in response.headers_names() {
+        let lower = name.to_ascii_lowercase();
+        if !passes_through(&lower) {
+            continue;
+        }
+        if let Some(value) = response.header(&name) {
+            if !value.bytes().any(|b| b < 0x20 && b != b'\t') {
+                out.push((name.clone(), value.to_string()));
+            }
+        }
+    }
+    PASSTHROUGH.with(|p| *p.borrow_mut() = out);
+}
+
+/// 路由层自己加一个应答头（如 `X-Magpie-Left-Out`），随本次应答写出。
+pub fn note_header(name: &str, value: &str) {
+    PASSTHROUGH.with(|p| p.borrow_mut().push((name.to_string(), value.to_string())));
+}
+
+/// 网关自己的拒绝应答，按入站方言说话（anthropic 端点给 anthropic 形状，
+/// 其余 OpenAI 形状；Go writeError(w, from, …)）。类型表同 Go errorTypeFor。
+fn guard_error(path: &str, status: u16, message: &str) -> Reply {
+    let typ = match status {
+        400 => "invalid_request_error",
+        401 => "authentication_error",
+        403 => "permission_error",
+        404 => "not_found_error",
+        413 => "request_too_large",
+        429 => "rate_limit_error",
+        529 => "overloaded_error",
+        _ => "api_error",
+    };
+    let path = path.split('?').next().unwrap_or("");
+    if path == "/v1/messages" || path == "/messages" || path == "/v1/messages/count_tokens" {
+        Reply::json(
+            status,
+            &serde_json::json!({ "type": "error", "error": { "type": typ, "message": message } }),
+        )
+    } else {
+        Reply::json(
+            status,
+            &serde_json::json!({ "error": { "message": message, "type": typ, "code": null } }),
+        )
+    }
+}
+
+/// 读体失败的几种死法（各自对应 Go readBoundedRequestBody 的状态码）。
+#[derive(Debug, PartialEq)]
+enum BodyErr {
+    /// 超过网关上限（解码后）→ 413。
+    TooLarge,
+    /// 读不完 / chunked 坏 → 400。
+    Malformed,
+    /// Content-Encoding 不认 → 415。
+    UnsupportedEncoding(String),
+    /// 声明了 gzip/zstd 但内容不是 → 400。
+    BadEncoding(&'static str),
+}
+
+impl BodyErr {
+    fn status(&self) -> u16 {
+        match self {
+            BodyErr::TooLarge => 413,
+            BodyErr::Malformed | BodyErr::BadEncoding(_) => 400,
+            BodyErr::UnsupportedEncoding(_) => 415,
+        }
+    }
+
+    fn message(&self) -> String {
+        match self {
+            BodyErr::TooLarge => format!(
+                "request body is over magpie's gateway limit of {} MB (decoded); the provider was not asked",
+                MAX_BODY_BYTES >> 20
+            ),
+            BodyErr::Malformed => "malformed request".to_string(),
+            BodyErr::UnsupportedEncoding(enc) => format!(
+                "unsupported Content-Encoding: magpie can't read a \"{enc}\" body; send it as identity, gzip or zstd"
+            ),
+            BodyErr::BadEncoding(kind) => format!("request body is not {kind}"),
+        }
+    }
+}
+
+struct Head {
+    method: String,
+    path: String,
+    headers: Vec<(String, String)>,
+}
+
+struct Body {
+    bytes: Vec<u8>,
+    /// 经过了 Content-Encoding 解码。
+    decoded: bool,
+}
+
+fn read_head<R: BufRead>(reader: &mut R) -> Option<Head> {
     let mut start = String::new();
     reader.read_line(&mut start).ok()?;
     let mut parts = start.split_whitespace();
@@ -186,16 +343,35 @@ fn parse(stream: TcpStream) -> Option<Request> {
             headers.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
         }
     }
-    // 头读完：体不限（大体 + 慢客户端合法），解除读超时。
-    let _ = reader.get_ref().set_read_timeout(None);
+    Some(Head { method, path, headers })
+}
 
-    // Transfer-Encoding: chunked 优先于 Content-Length（RFC 7230 §3.3.3；
-    // codex 可能发 chunked）。解码成完整 body 再路由，上限同 64MB。
+enum Codec {
+    Identity,
+    Zstd,
+    Gzip,
+}
+
+/// 读体：Content-Encoding 先判（不认的在读体前就拒，Go 同款 415）→
+/// Content-Length 越线直接 413 → 读（chunked 优先于 Content-Length，
+/// RFC 7230 §3.3.3）→ 按编码解码（解码后同样受上限约束）。
+fn read_body<R: BufRead>(reader: &mut R, headers: &[(String, String)]) -> Result<Body, BodyErr> {
+    let encoding = headers
+        .iter()
+        .find(|(k, _)| k == "content-encoding")
+        .map(|(_, v)| v.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    let codec = match encoding.as_str() {
+        "" | "identity" => Codec::Identity,
+        "zstd" => Codec::Zstd,
+        "gzip" | "x-gzip" => Codec::Gzip,
+        other => return Err(BodyErr::UnsupportedEncoding(other.to_string())),
+    };
     let chunked = headers
         .iter()
         .any(|(k, v)| k == "transfer-encoding" && v.to_ascii_lowercase().contains("chunked"));
-    let body = if chunked {
-        decode_chunked(&mut reader, MAX_BODY_BYTES)?
+    let wire = if chunked {
+        decode_chunked_inner(reader, MAX_BODY_BYTES)?
     } else {
         let length = headers
             .iter()
@@ -203,15 +379,90 @@ fn parse(stream: TcpStream) -> Option<Request> {
             .and_then(|(_, v)| v.parse::<usize>().ok())
             .unwrap_or(0);
         if length > MAX_BODY_BYTES {
-            return None;
+            return Err(BodyErr::TooLarge);
         }
-        let mut body = vec![0u8; length];
-        if length > 0 {
-            reader.read_exact(&mut body).ok()?;
-        }
-        body
+        read_exact_growing(reader, length)?
     };
-    Some(Request { method, path, headers, body })
+    match codec {
+        Codec::Identity => Ok(Body { bytes: wire, decoded: false }),
+        Codec::Zstd => Ok(Body { bytes: unzstd(&wire, MAX_BODY_BYTES)?, decoded: true }),
+        Codec::Gzip => Ok(Body { bytes: ungzip(&wire, MAX_BODY_BYTES)?, decoded: true }),
+    }
+}
+
+/// 读恰好 `length` 字节，缓冲随到达增长（不信声明值预分配：客户端声明
+/// 500MB 却不发，网关只占已到的那点）。少于 length = Malformed。
+fn read_exact_growing<R: Read>(reader: &mut R, length: usize) -> Result<Vec<u8>, BodyErr> {
+    let mut body = Vec::with_capacity(length.min(1 << 20));
+    let got = reader
+        .take(length as u64)
+        .read_to_end(&mut body)
+        .map_err(|_| BodyErr::Malformed)?;
+    if got != length {
+        return Err(BodyErr::Malformed);
+    }
+    Ok(body)
+}
+
+/// zstd 解码（一个或多个串接帧——append 式归档也认），解码后总量 > `cap` →
+/// TooLarge。ruzstd 的 StreamingDecoder 一次只解一帧，按已消耗字节接着找
+/// 下一帧魔数。
+fn unzstd(wire: &[u8], cap: usize) -> Result<Vec<u8>, BodyErr> {
+    const MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
+    let mut out: Vec<u8> = Vec::new();
+    let mut rest = wire;
+    let mut first = true;
+    while !rest.is_empty() {
+        if rest.len() < 4 || rest[..4] != MAGIC {
+            if first {
+                return Err(BodyErr::BadEncoding("zstd"));
+            }
+            break; // 尾随杂物：已解出的算数
+        }
+        first = false;
+        let mut cursor = std::io::Cursor::new(rest);
+        let consumed = {
+            let mut decoder = ruzstd::StreamingDecoder::new(&mut cursor)
+                .map_err(|_| BodyErr::BadEncoding("zstd"))?;
+            let room = cap.saturating_sub(out.len()) as u64 + 1;
+            (&mut decoder)
+                .take(room)
+                .read_to_end(&mut out)
+                .map_err(|_| BodyErr::BadEncoding("zstd"))?;
+            if out.len() > cap {
+                return Err(BodyErr::TooLarge);
+            }
+            cursor.position() as usize
+        };
+        if consumed == 0 {
+            break; // 防御：没有进展
+        }
+        rest = &rest[consumed.min(rest.len())..];
+    }
+    Ok(out)
+}
+
+/// gzip 解码（多 member 也认，Go gzip.NewReader 默认同款），> `cap` → TooLarge。
+fn ungzip(wire: &[u8], cap: usize) -> Result<Vec<u8>, BodyErr> {
+    let decoder = flate2::read::MultiGzDecoder::new(wire);
+    let mut out = Vec::new();
+    decoder
+        .take(cap as u64 + 1)
+        .read_to_end(&mut out)
+        .map_err(|_| BodyErr::BadEncoding("gzip"))?;
+    if out.len() > cap {
+        return Err(BodyErr::TooLarge);
+    }
+    Ok(out)
+}
+
+/// 整体入口（测试用）：头 + 体，失败 None；压缩体照常解码。
+#[cfg(test)]
+fn parse(stream: TcpStream) -> Option<Request> {
+    let mut reader = BufReader::new(stream);
+    let head = read_head(&mut reader)?;
+    let body = read_body(&mut reader, &head.headers).ok()?;
+    Some(Request { method: head.method, path: head.path, headers: head.headers, body: body.bytes })
 }
 
 /// 解码 chunked 传输体（RFC 7230 §4.1）：尺寸行（hex，可带 `;扩展`）→ 数据
@@ -219,42 +470,56 @@ fn parse(stream: TcpStream) -> Option<Request> {
 /// 行非法/溢出、数据后缺 CRLF → None（调用方按坏请求处理）。
 /// 做成纯函数（BufRead 进 BufRead 出）便于直接单测。
 fn decode_chunked<R: BufRead>(reader: &mut R, max: usize) -> Option<Vec<u8>> {
+    decode_chunked_inner(reader, max).ok()
+}
+
+/// [`decode_chunked`] 的带死因版本：越线 = TooLarge（413），其余 Malformed。
+/// 块数据按到达增长读入（不按尺寸行声明值预分配）。
+fn decode_chunked_inner<R: BufRead>(reader: &mut R, max: usize) -> Result<Vec<u8>, BodyErr> {
+    fn bad<E>(_: E) -> BodyErr {
+        BodyErr::Malformed
+    }
     let mut body = Vec::new();
     loop {
         let mut line = String::new();
-        reader.read_line(&mut line).ok()?;
+        reader.read_line(&mut line).map_err(bad)?;
         if line.len() > MAX_CHUNK_LINE_BYTES {
-            return None;
+            return Err(BodyErr::Malformed);
         }
         // chunk-size [ chunk-ext ]：扩展从 `;` 起丢弃
-        let size_part = line.split(';').next()?.trim();
-        let size = usize::from_str_radix(size_part, 16).ok()?;
+        let size_part = line.split(';').next().ok_or(BodyErr::Malformed)?.trim();
+        let size = usize::from_str_radix(size_part, 16).map_err(bad)?;
         if size == 0 {
             // 尾随头段：头行直到空行（不进 Request，读完即弃）
             let mut trailer_bytes = 0usize;
             loop {
                 let mut t = String::new();
-                reader.read_line(&mut t).ok()?;
+                reader.read_line(&mut t).map_err(bad)?;
                 trailer_bytes += t.len();
                 if trailer_bytes > MAX_CHUNK_LINE_BYTES {
-                    return None;
+                    return Err(BodyErr::Malformed);
                 }
                 if t.trim_end().is_empty() {
-                    return Some(body);
+                    return Ok(body);
                 }
             }
         }
-        let new_len = body.len().checked_add(size)?;
+        let new_len = body.len().checked_add(size).ok_or(BodyErr::TooLarge)?;
         if new_len > max {
-            return None;
+            return Err(BodyErr::TooLarge);
         }
-        let start = body.len();
-        body.resize(new_len, 0);
-        reader.read_exact(&mut body[start..]).ok()?;
+        let got = reader
+            .by_ref()
+            .take(size as u64)
+            .read_to_end(&mut body)
+            .map_err(bad)?;
+        if got != size {
+            return Err(BodyErr::Malformed);
+        }
         let mut crlf = [0u8; 2];
-        reader.read_exact(&mut crlf).ok()?;
+        reader.read_exact(&mut crlf).map_err(bad)?;
         if &crlf != b"\r\n" {
-            return None;
+            return Err(BodyErr::Malformed);
         }
     }
 }
@@ -270,6 +535,7 @@ fn status_text(status: u16) -> &'static str {
         404 => "Not Found",
         408 => "Request Timeout",
         413 => "Payload Too Large",
+        415 => "Unsupported Media Type",
         429 => "Too Many Requests",
         500 => "Internal Server Error",
         502 => "Bad Gateway",
@@ -278,24 +544,47 @@ fn status_text(status: u16) -> &'static str {
     }
 }
 
-fn write_reply(stream: &mut TcpStream, reply: Reply) -> std::io::Result<()> {
+/// 额外应答头（CORS / 上游透传）序列化成 `Name: value\r\n` 串；名或值含控制
+/// 字符的丢弃（应答拆分防护）。
+fn extra_header_lines(extra: &[(String, String)]) -> String {
+    let clean = |s: &str| !s.is_empty() && !s.bytes().any(|b| (b < 0x20 && b != b'\t') || b == 0x7f);
+    let mut out = String::new();
+    for (k, v) in extra {
+        if clean(k) && !k.contains(':') && clean(v) {
+            out.push_str(k);
+            out.push_str(": ");
+            out.push_str(v);
+            out.push_str("\r\n");
+        }
+    }
+    out
+}
+
+fn write_reply(
+    stream: &mut TcpStream,
+    reply: Reply,
+    extra: &[(String, String)],
+) -> std::io::Result<()> {
+    let extra = extra_header_lines(extra);
     match reply {
         Reply::Json { status, body } => {
             let head = format!(
-                "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{}Connection: close\r\n\r\n",
                 status,
                 status_text(status),
-                body.len()
+                body.len(),
+                extra
             );
             stream.write_all(head.as_bytes())?;
             stream.write_all(&body)?;
         }
         Reply::Stream { status, content_type, mut reader } => {
             let head = format!(
-                "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nCache-Control: no-cache\r\n{}Connection: close\r\n\r\n",
                 status,
                 status_text(status),
-                content_type
+                content_type,
+                extra
             );
             stream.write_all(head.as_bytes())?;
             let mut buf = [0u8; 16 * 1024];
@@ -466,5 +755,333 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
         result.unwrap();
+    }
+
+    // ----- 入站体：压缩 / 上限 / 编码（审计 #1 #12） -----
+
+    /// 手搓 zstd 帧（Raw block，单段）：魔数 + 帧头 + 一个最后的 raw 块。
+    /// 只够测试用（n < 65792）；不需要引入压缩器。
+    fn zstd_raw_frame(data: &[u8]) -> Vec<u8> {
+        assert!(data.len() < 65_792 && !data.is_empty());
+        let mut out = vec![0x28, 0xb5, 0x2f, 0xfd];
+        if data.len() <= 255 {
+            out.push(0x20); // Single_Segment，FCS 1 字节
+            out.push(data.len() as u8);
+        } else {
+            out.push(0x60); // Single_Segment，FCS 2 字节（值 = n - 256）
+            out.extend_from_slice(&((data.len() - 256) as u16).to_le_bytes());
+        }
+        let header = ((data.len() as u32) << 3) | 1; // Last_Block，Raw
+        out.extend_from_slice(&header.to_le_bytes()[..3]);
+        out.extend_from_slice(data);
+        out
+    }
+
+    fn headers_of(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    fn body_of(headers: &[(&str, &str)], wire: &[u8]) -> Result<Body, BodyErr> {
+        let mut r = BufReader::new(Cursor::new(wire.to_vec()));
+        read_body(&mut r, &headers_of(headers))
+    }
+
+    #[test]
+    fn zstd_body_is_decoded_and_flagged() {
+        let json = br#"{"model":"deepseek/deepseek-v4","input":"hi"}"#;
+        let wire = zstd_raw_frame(json);
+        let len = wire.len().to_string();
+        let body = body_of(&[("content-encoding", "zstd"), ("content-length", &len)], &wire).unwrap();
+        assert_eq!(body.bytes, json.to_vec());
+        assert!(body.decoded);
+        // 大小写 / 空白不敏感
+        let body = body_of(&[("content-encoding", " ZSTD "), ("content-length", &len)], &wire).unwrap();
+        assert_eq!(body.bytes, json.to_vec());
+    }
+
+    #[test]
+    fn zstd_concatenated_frames_are_joined() {
+        let mut wire = zstd_raw_frame(b"hello ");
+        wire.extend(zstd_raw_frame(b"world"));
+        let len = wire.len().to_string();
+        let body = body_of(&[("content-encoding", "zstd"), ("content-length", &len)], &wire).unwrap();
+        assert_eq!(body.bytes, b"hello world".to_vec());
+    }
+
+    #[test]
+    fn zstd_larger_than_255_uses_two_byte_fcs() {
+        let data = vec![b'x'; 1000];
+        let wire = zstd_raw_frame(&data);
+        let len = wire.len().to_string();
+        let body = body_of(&[("content-encoding", "zstd"), ("content-length", &len)], &wire).unwrap();
+        assert_eq!(body.bytes, data);
+    }
+
+    #[test]
+    fn zstd_decoded_size_cap_is_enforced() {
+        let wire = zstd_raw_frame(&vec![b'x'; 1000]);
+        assert_eq!(unzstd(&wire, 999), Err(BodyErr::TooLarge));
+        assert!(unzstd(&wire, 1000).is_ok());
+        // 多帧累计也算
+        let mut two = zstd_raw_frame(&vec![b'a'; 600]);
+        two.extend(zstd_raw_frame(&vec![b'b'; 600]));
+        assert_eq!(unzstd(&two, 1000), Err(BodyErr::TooLarge));
+    }
+
+    #[test]
+    fn zstd_garbage_is_a_400_not_a_panic() {
+        let err = body_of(&[("content-encoding", "zstd"), ("content-length", "5")], b"nope!").unwrap_err();
+        assert_eq!(err.status(), 400);
+        // 魔数对、内容坏
+        let err = unzstd(&[0x28, 0xb5, 0x2f, 0xfd, 0xff, 0xff], 100).unwrap_err();
+        assert_eq!(err.status(), 400);
+    }
+
+    #[test]
+    fn gzip_body_is_decoded_and_cap_enforced() {
+        use flate2::write::GzEncoder;
+        let json = br#"{"model":"m","messages":[]}"#;
+        let mut enc = GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        enc.write_all(json).unwrap();
+        let wire = enc.finish().unwrap();
+        let len = wire.len().to_string();
+        for name in ["gzip", "x-gzip"] {
+            let body = body_of(&[("content-encoding", name), ("content-length", &len)], &wire).unwrap();
+            assert_eq!(body.bytes, json.to_vec());
+            assert!(body.decoded);
+        }
+        // 解压炸弹：1MB 的 0 压成几百字节，cap 比它小就 413
+        let mut enc = GzEncoder::new(Vec::new(), flate2::Compression::best());
+        enc.write_all(&vec![0u8; 1 << 20]).unwrap();
+        let bomb = enc.finish().unwrap();
+        assert!(bomb.len() < 4096);
+        assert_eq!(ungzip(&bomb, 1 << 19), Err(BodyErr::TooLarge));
+        assert_eq!(ungzip(&bomb, 1 << 20).unwrap().len(), 1 << 20);
+        // 不是 gzip
+        assert_eq!(ungzip(b"plain json", 100).unwrap_err().status(), 400);
+    }
+
+    #[test]
+    fn unknown_encodings_are_415_before_the_body_is_read() {
+        for enc in ["deflate", "br", "gzip, zstd"] {
+            // 体根本没给：编码不认在读体前就拒（不会因读不到体变成 400）
+            let err = body_of(&[("content-encoding", enc), ("content-length", "10")], b"").unwrap_err();
+            assert_eq!(err.status(), 415, "{enc}");
+            assert!(err.message().contains("identity, gzip or zstd"));
+        }
+        // identity = 没编码，不标 decoded
+        let body = body_of(&[("content-encoding", "identity"), ("content-length", "2")], b"hi").unwrap();
+        assert_eq!(body.bytes, b"hi".to_vec());
+        assert!(!body.decoded);
+    }
+
+    #[test]
+    fn content_length_over_the_cap_is_413_without_reading() {
+        let over = (MAX_BODY_BYTES + 1).to_string();
+        let err = body_of(&[("content-length", &over)], b"").unwrap_err();
+        assert_eq!(err, BodyErr::TooLarge);
+        assert_eq!(err.status(), 413);
+        assert!(err.message().contains("512 MB"));
+        // 声明满额但体没给：读不满 = 400，且不会为声明值预分配 512MB
+        let at = MAX_BODY_BYTES.to_string();
+        assert_eq!(body_of(&[("content-length", &at)], b"short").unwrap_err(), BodyErr::Malformed);
+    }
+
+    #[test]
+    fn short_body_is_malformed_not_a_hang_or_overallocation() {
+        let err = body_of(&[("content-length", "400000000")], b"abc").unwrap_err();
+        assert_eq!(err, BodyErr::Malformed);
+    }
+
+    #[test]
+    fn chunked_over_cap_is_413_and_does_not_preallocate() {
+        // 尺寸行声明 0x7fffffff，没有数据：越线判定先于任何分配
+        let mut r = BufReader::new(Cursor::new(b"7fffffff\r\nx".to_vec()));
+        assert_eq!(decode_chunked_inner(&mut r, 1024), Err(BodyErr::TooLarge));
+        // 上限内声明大块但数据不足 = Malformed
+        let mut r = BufReader::new(Cursor::new(b"400\r\nxyz".to_vec()));
+        assert_eq!(decode_chunked_inner(&mut r, 1 << 20), Err(BodyErr::Malformed));
+    }
+
+    #[test]
+    fn guard_errors_speak_the_inbound_dialect() {
+        let Reply::Json { status, body } = guard_error("/v1/messages", 413, "too big") else { panic!() };
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, 413);
+        assert_eq!(v["type"], "error");
+        assert_eq!(v["error"]["type"], "request_too_large");
+        let Reply::Json { body, .. } = guard_error("/v1/chat/completions?x=1", 403, "no") else { panic!() };
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["type"], "permission_error");
+        assert_eq!(v["error"]["message"], "no");
+    }
+
+    #[test]
+    fn extra_headers_are_sanitised() {
+        let lines = extra_header_lines(&[
+            ("Retry-After".into(), "7".into()),
+            ("X-Bad".into(), "a\r\nSet-Cookie: x=1".into()),
+            ("Bad Name:".into(), "v".into()),
+        ]);
+        assert_eq!(lines, "Retry-After: 7\r\n");
+    }
+
+    /// 沙箱网关 + 真 serve_on：在回调里对 addr 发原始请求。
+    fn with_live_gateway(f: impl FnOnce(std::net::SocketAddr) + std::panic::UnwindSafe) {
+        let _lock = crate::engine_gateway::TEST_SANDBOX_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "marionette_test_httpd_live_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let prior_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        let result = std::panic::catch_unwind(move || {
+            let gateway = std::sync::Arc::new(Gateway::open().expect("gateway"));
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+            let addr = listener.local_addr().unwrap();
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let flag = shutdown.clone();
+            let server = std::thread::spawn(move || serve_on(listener, gateway, flag));
+            f(addr);
+            shutdown.store(true, Ordering::Release);
+            let _ = server.join();
+        });
+        match prior_xdg {
+            Some(p) => std::env::set_var("XDG_CONFIG_HOME", p),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        result.unwrap();
+    }
+
+    fn raw_exchange(addr: std::net::SocketAddr, request: &[u8]) -> String {
+        let mut c = TcpStream::connect(addr).unwrap();
+        c.write_all(request).unwrap();
+        let mut out = Vec::new();
+        let _ = c.read_to_end(&mut out);
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    #[test]
+    fn live_foreign_origin_is_403_on_every_route_and_local_calls_pass() {
+        with_live_gateway(|addr| {
+            for (method, path) in [
+                ("GET", "/v1/models"),
+                ("GET", "/v1/magpie/quotas"),
+                ("POST", "/v1/chat/completions"),
+                ("POST", "/v1/responses"),
+                ("POST", "/v1/messages"),
+            ] {
+                let req = format!(
+                    "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nOrigin: https://evil.example\r\n\
+                     Content-Type: text/plain\r\nContent-Length: 2\r\n\r\n{{}}",
+                    addr.port()
+                );
+                let reply = raw_exchange(addr, req.as_bytes());
+                assert!(reply.starts_with("HTTP/1.1 403"), "{method} {path}: {reply}");
+                assert!(reply.contains("permission_error"), "{reply}");
+            }
+            // 同一路由：没有 Origin 照常（models 是 200）
+            let reply = raw_exchange(
+                addr,
+                b"GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+            );
+            assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+            // 本机网页（dev server）放行
+            let reply = raw_exchange(
+                addr,
+                b"GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://localhost:5173\r\n\r\n",
+            );
+            assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+            // Origin: null 拒
+            let reply = raw_exchange(
+                addr,
+                b"GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: null\r\n\r\n",
+            );
+            assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
+        });
+    }
+
+    #[test]
+    fn live_preflight_for_obsidian_is_204_and_foreign_is_403() {
+        with_live_gateway(|addr| {
+            let reply = raw_exchange(
+                addr,
+                b"OPTIONS /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\n\
+                  Origin: app://obsidian.md\r\nAccess-Control-Request-Method: POST\r\n\
+                  Access-Control-Request-Headers: content-type\r\n\r\n",
+            );
+            assert!(reply.starts_with("HTTP/1.1 204"), "{reply}");
+            assert!(reply.contains("Access-Control-Allow-Origin: app://obsidian.md"), "{reply}");
+            assert!(reply.contains("Access-Control-Allow-Headers: content-type"), "{reply}");
+            let reply = raw_exchange(
+                addr,
+                b"OPTIONS /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\n\
+                  Origin: https://evil.example\r\nAccess-Control-Request-Method: POST\r\n\r\n",
+            );
+            assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
+        });
+    }
+
+    #[test]
+    fn live_zstd_and_gzip_bodies_reach_the_router_decoded() {
+        with_live_gateway(|addr| {
+            // 没有该来源 -> 404「no provider for model: <解码后的 model>」——
+            // 看得到模型名 = 体已解码（压缩字节解析不出 model，旧行为是空名）。
+            let json = br#"{"model":"zz-nonexistent/model-x","messages":[]}"#;
+            let wire = zstd_raw_frame(json);
+            let mut req = format!(
+                "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Encoding: zstd\r\n\
+                 Content-Length: {}\r\n\r\n",
+                wire.len()
+            )
+            .into_bytes();
+            req.extend_from_slice(&wire);
+            let reply = raw_exchange(addr, &req);
+            assert!(reply.starts_with("HTTP/1.1 404"), "{reply}");
+            assert!(reply.contains("zz-nonexistent/model-x"), "{reply}");
+
+            use flate2::write::GzEncoder;
+            let mut enc = GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            enc.write_all(json).unwrap();
+            let wire = enc.finish().unwrap();
+            let mut req = format!(
+                "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Encoding: gzip\r\n\
+                 Content-Length: {}\r\n\r\n",
+                wire.len()
+            )
+            .into_bytes();
+            req.extend_from_slice(&wire);
+            let reply = raw_exchange(addr, &req);
+            assert!(reply.contains("zz-nonexistent/model-x"), "{reply}");
+
+            // 不认的编码：415，体不读
+            let reply = raw_exchange(
+                addr,
+                b"POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Encoding: br\r\nContent-Length: 3\r\n\r\nabc",
+            );
+            assert!(reply.starts_with("HTTP/1.1 415"), "{reply}");
+            assert!(reply.contains("\"type\":\"error\""), "anthropic shape: {reply}");
+        });
+    }
+
+    #[test]
+    fn live_oversize_content_length_is_413() {
+        with_live_gateway(|addr| {
+            let req = format!(
+                "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n",
+                MAX_BODY_BYTES + 1
+            );
+            let reply = raw_exchange(addr, req.as_bytes());
+            assert!(reply.starts_with("HTTP/1.1 413"), "{reply}");
+            assert!(reply.contains("request_too_large"), "{reply}");
+        });
     }
 }

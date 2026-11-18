@@ -69,7 +69,9 @@ impl Provider {
 /// 一致，其余字段 flatten 保留。
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct Group {
+    #[serde(default)]
     pub id: String,
+    #[serde(default)]
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
@@ -165,8 +167,14 @@ impl Store {
         self.file.groups.len() != before
     }
 
+    /// 按 id / name 找组；都没中再认改名前的旧 id（`former`，magpie
+    /// RenameGroup 谱系：旧名仍路由到它，直到别的组占了这个 id）。
     pub fn group(&self, id: &str) -> Option<&Group> {
-        self.file.groups.iter().find(|g| g.id == id || g.name == id)
+        self.file
+            .groups
+            .iter()
+            .find(|g| g.id == id || g.name == id)
+            .or_else(|| self.file.groups.iter().find(|g| g.former.iter().any(|f| f == id)))
     }
 
     pub fn groups(&self) -> &[Group] {

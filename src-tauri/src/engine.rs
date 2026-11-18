@@ -980,7 +980,21 @@ fn spawn_serve(exe: &Path, port: u16) -> Result<ChildHandle, String> {
 /// 转 Failed）。线程退出时翻 `exited` 标志——status() 的存活检查据此把死
 /// 线程翻成 Failed（与子进程 try_wait 同语义）。
 #[cfg(feature = "engine-rust")]
+fn use_engine_data_dir() {
+    // 与 magpie 子进程同一份数据（见 engine_gateway::set_config_dir）。
+    // 测试里 engine_dir 是临时目录、且 OnceLock 一次性——测试不设，
+    // 沙箱靠 XDG_CONFIG_HOME。
+    #[cfg(not(test))]
+    if let Ok(dir) = engine_dir() {
+        let data = dir.join("data");
+        let _ = std::fs::create_dir_all(&data);
+        crate::engine_gateway::set_config_dir(data);
+    }
+}
+
+#[cfg(feature = "engine-rust")]
 fn spawn_serve_in_process(port: u16) -> Result<ChildHandle, String> {
+    use_engine_data_dir();
     // 出站代理注入：engine_gateway 不 import 主程序模块（dev bin 的 crate
     // 根不是 marionette），Marionette 的代理设置在这里喂给它。
     let proxy_config = crate::proxy::load_proxy_config();
@@ -2449,6 +2463,7 @@ fn run_magpie_cli_capture(exe: &Path, args: &[&str]) -> Result<String, String> {
     #[cfg(feature = "engine-rust")]
     {
         let _ = exe;
+        use_engine_data_dir();
         let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         return crate::engine_gateway::cli::run(&owned).map(|_| String::new());
     }
@@ -2510,6 +2525,7 @@ fn run_magpie_cli(exe: &Path, args: &[&str]) -> Result<(), String> {
     #[cfg(feature = "engine-rust")]
     {
         let _ = exe;
+        use_engine_data_dir();
         let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         return crate::engine_gateway::cli::run(&owned);
     }
@@ -4180,6 +4196,8 @@ mod tests {
 
     /// 已安装（假 exe + 对得上的 sha）+ fake 拉起 + fake 健康 → enable 幂等地
     /// 到达 Running；重复 enable 不再拉起（launch 计数恒 1）。
+    // 子进程形态专属（下载/落位/Downloading 态）：engine-rust 没有这条路径。
+    #[cfg(not(feature = "engine-rust"))]
     #[test]
     fn enable_reaches_running_and_is_idempotent() {
         let dir = temp_dir("idempotent");
@@ -4382,6 +4400,8 @@ mod tests {
 
     /// 无网络（release 解析被 mock 成失败）→ 干净落 Failed 并留档，无残留
     /// 临时文件、状态不再 Downloading。
+    // 子进程形态专属（下载/落位/Downloading 态）：engine-rust 没有这条路径。
+    #[cfg(not(feature = "engine-rust"))]
     #[test]
     fn enable_fails_cleanly_when_release_unreachable() {
         let dir = temp_dir("offline");

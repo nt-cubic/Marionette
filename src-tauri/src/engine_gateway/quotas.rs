@@ -99,6 +99,10 @@ fn collect(gateway: &super::Gateway) -> Vec<Value> {
         if provider.key.is_empty() {
             continue;
         }
+        // 用户自报了 balanceURL 的来源由 key_balances 接管（Go：BalanceURL 优先于 host 表）。
+        if super::key_balances::takes_over(provider) {
+            continue;
+        }
         let Some((url, kind)) = balance_source(provider) else {
             // 订阅/plan 类（Claude/Codex/Gemini 账号 discovery）明确不做；
             // 没实现的来源别猜（猜了就是编数）。
@@ -121,7 +125,24 @@ fn collect(gateway: &super::Gateway) -> Vec<Value> {
             }));
         }
     }
+    // 补全来源（quota_extra）：ZCode 订阅 / 钥匙套餐（智谱 coding、OpenCode Go、
+    // Kimi Code、Ollama…）/ 余额补全（Command Code、ModelScope、Ollama credits、
+    // AiHubMix、自报 balanceURL、中继探测）。并发读，失败安静跳过。
+    rows.extend(super::quota_extra::collect(&providers));
+    // Codex 订阅（ChatGPT 登录）：账号 discovery 的只读窗口行；没账号/令牌
+    // 过期/请求失败安静跳过，用户自建同名来源时让位。
+    // 多账号：每个账号一行（user=邮箱）。
+    rows.extend(super::codex_account::quota_rows(&providers));
+    // Grok 订阅（SuperGrok，Grok CLI 登录）：同款只读行，失败安静跳过。
+    if let Some(row) = super::grok_account::quota_row(&providers) {
+        rows.push(row);
+    }
     rows
+}
+
+/// 这个 provider 是不是 quotas.rs 自己那六家 host 来源（key_balances 据此让位）。
+pub(super) fn has_balance_source(provider: &Provider) -> bool {
+    balance_source(provider).is_some()
 }
 
 /// 一个 key 余额来源的读法。端点固定、不跟 provider 自己配的 base 走

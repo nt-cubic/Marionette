@@ -39,6 +39,41 @@ fn model_row(provider_id: &str, row: &super::catalog::VendorRow) -> Value {
     object
 }
 
+// 成员强度后缀（`…:max`）的请求改写不在这里做：失败转移让一个请求可能依次
+// 打几个成员，每个成员带自己的固定强度——chat/responses/messages 处理器按候选
+// 各调 `groups::body_for`（Go `withEffort` 同语义，模型后缀由 groups 剥掉）。
+
+/// 全部来源的目录行（来源 id, 行）：`/v1/models` 与 `/v1/codex/models` 共用。
+/// 先拍一份来源快照再放锁：目录要联网抓厂商，持 store 锁等网络会让所有 chat
+/// 请求（resolve 要同一把锁）陪着等（2026-10-31 storage 锁事故同款）。
+fn catalog_rows(gateway: &super::Gateway) -> Result<Vec<(String, super::catalog::VendorRow)>, Reply> {
+    let providers: Vec<super::store::Provider> = match gateway.store.lock() {
+        Ok(s) => s.providers().to_vec(),
+        Err(_) => return Err(Reply::error(500, "store poisoned")),
+    };
+    // Codex 订阅账号的 codex/* 行与其它来源并发抓（自带 10s 超时 +
+    // 失败退避，慢/挂都不拖别人）。
+    let (mut rows, codex_rows, grok_rows) = std::thread::scope(|scope| {
+        let codex = scope.spawn(|| super::codex_account::listed_rows(&providers));
+        let grok = scope.spawn(|| super::grok_account::listed_rows(&providers));
+        gateway.catalog.prewarm(&providers);
+        let mut rows = Vec::new();
+        for provider in &providers {
+            for row in gateway.catalog.listed(provider) {
+                rows.push((provider.id.clone(), row));
+            }
+        }
+        (rows, codex.join().unwrap_or_default(), grok.join().unwrap_or_default())
+    });
+    for row in codex_rows {
+        rows.push((super::codex_account::CODEX_ID.to_string(), row));
+    }
+    for row in grok_rows {
+        rows.push((super::grok_account::GROK_ID.to_string(), row));
+    }
+    Ok(rows)
+}
+
 pub fn route(request: &Request, gateway: &super::Gateway) -> Reply {
     // CLI/外部进程写的 providers.json 立即可见（magpie heldFresh 语义）。
     if let Ok(mut store) = gateway.store.lock() {
@@ -47,17 +82,29 @@ pub fn route(request: &Request, gateway: &super::Gateway) -> Reply {
     let path = request.path.split('?').next().unwrap_or("");
     match (request.method.as_str(), path) {
         ("GET", "/v1/models") => {
-            let store = match gateway.store.lock() {
-                Ok(s) => s,
-                Err(_) => return Reply::error(500, "store poisoned"),
+            let rows = match catalog_rows(gateway) {
+                Ok(r) => r,
+                Err(reply) => return reply,
             };
-            let mut rows = Vec::new();
-            for provider in store.providers() {
-                for row in gateway.catalog.listed(provider) {
-                    rows.push(model_row(&provider.id, &row));
-                }
+            let data: Vec<Value> = rows.iter().map(|(pid, row)| model_row(pid, row)).collect();
+            Reply::json(200, &serde_json::json!({ "object": "list", "data": data }))
+        }
+        ("GET", "/v1/codex/models") => {
+            // Codex 自己形状的目录（model_catalog_url 读它；/v1/models 对 Codex 不可读）。
+            let rows = match catalog_rows(gateway) {
+                Ok(r) => r,
+                Err(reply) => return reply,
+            };
+            let version = request
+                .path
+                .split_once('?')
+                .and_then(|(_, q)| q.split('&').find_map(|kv| kv.strip_prefix("client_version=")))
+                .unwrap_or("");
+            let (body, left_out) = super::codex_catalog::build(&rows, version);
+            if left_out > 0 {
+                super::httpd::note_header("X-Magpie-Left-Out", &left_out.to_string());
             }
-            Reply::json(200, &serde_json::json!({ "object": "list", "data": rows }))
+            Reply::Json { status: 200, body }
         }
         ("GET", "/v1/magpie/quotas") => {
             // C3：无参 = force（现场问供应商）；?kept=1 = 读 60s 缓存。
@@ -75,15 +122,41 @@ pub fn route(request: &Request, gateway: &super::Gateway) -> Reply {
             )
         }
         ("POST", "/v1/chat/completions") | ("POST", "/chat/completions") => {
-            super::chat::forward(gateway, &request.body)
+            if let Some(reply) = super::codex_account::intercept(gateway, request, super::effort::Proto::Chat) {
+                return reply;
+            }
+            if let Some(reply) = super::grok_account::intercept(gateway, request, super::effort::Proto::Chat) {
+                return reply;
+            }
+            let body = &request.body;
+            super::chat::forward(gateway, &body)
         }
         ("POST", "/v1/responses") | ("POST", "/responses") => {
             // codex 的母语端点（T4）：直通优先，翻译路径复用 chat 全链。
-            super::responses::handle(gateway, &request.body)
+            // Codex 订阅账号（合成来源 codex）接不住真实来源的请求先在这里处理。
+            if let Some(reply) = super::codex_account::intercept(gateway, request, super::effort::Proto::Responses) {
+                return reply;
+            }
+            if let Some(reply) = super::grok_account::intercept(gateway, request, super::effort::Proto::Responses) {
+                return reply;
+            }
+            let body = &request.body;
+            super::responses::handle(gateway, &body)
+        }
+        ("POST", "/v1/messages/count_tokens") | ("POST", "/messages/count_tokens") => {
+            // Go countTokens：厂商有 anthropic 基址就转它的计数，不支持/没有就本地粗估。
+            super::messages::count_tokens(gateway, &request.body)
         }
         ("POST", "/v1/messages") | ("POST", "/messages") => {
             // anthropic Messages 端点（T3）：直通优先 + chat 翻译路径。
-            super::messages::handle(gateway, &request.body)
+            if let Some(reply) = super::codex_account::intercept(gateway, request, super::effort::Proto::Anthropic) {
+                return reply;
+            }
+            if let Some(reply) = super::grok_account::intercept(gateway, request, super::effort::Proto::Anthropic) {
+                return reply;
+            }
+            let body = &request.body;
+            super::messages::handle(gateway, &body)
         }
         (method, path) if method == "GET" && path.starts_with("/v1/models/group/") => {
             // C4 组宣告探针：组在 → 200（列成员行），不在 → 404。
@@ -106,7 +179,7 @@ pub fn route(request: &Request, gateway: &super::Gateway) -> Reply {
         }
         _ => Reply::error(
             404,
-            "magpie serves /v1/models, /v1/chat/completions, /v1/responses, /v1/messages and /v1/magpie/quotas",
+            "magpie serves /v1/models, /v1/codex/models, /v1/chat/completions, /v1/responses, /v1/messages (+ /count_tokens) and /v1/magpie/quotas",
         ),
     }
 }

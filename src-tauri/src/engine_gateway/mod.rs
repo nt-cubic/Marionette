@@ -16,16 +16,26 @@ pub mod bodycap;
 pub mod catalog;
 pub mod chat;
 pub mod cli;
+pub mod codex_account;
+pub mod codex_catalog;
+pub mod cors;
+pub mod effort;
+pub mod grok_account;
 pub mod groups;
 pub mod httpd;
 pub mod messages;
+pub mod key_balances;
+pub mod plan_quotas;
 pub mod presets;
+pub mod quota_extra;
+pub mod quota_kit;
 pub mod quotas;
 pub mod responses;
 pub mod routes;
 pub mod store;
 pub mod translate;
 pub mod vendor_presets;
+pub mod zcode_account;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -38,6 +48,9 @@ pub const ENGINE_VERSION: &str = concat!("rust-", env!("CARGO_PKG_VERSION"));
 /// `%USERPROFILE%\.config\magpie`。providers.json 与 magpie 完全互通——
 /// 用户已配置的来源原样迁移。
 pub fn config_dir() -> Option<PathBuf> {
+    if let Some(dir) = CONFIG_DIR_OVERRIDE.get() {
+        return Some(dir.clone());
+    }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             if dir.join(".portable").exists() {
@@ -54,6 +67,17 @@ pub fn config_dir() -> Option<PathBuf> {
     std::env::var("USERPROFILE")
         .ok()
         .map(|h| PathBuf::from(h).join(".config").join("magpie"))
+}
+
+/// 主程序在拉起网关前指定数据目录：Marionette 的 magpie 一直跑在
+/// `.portable` 模式（`~/.marionette/engine/` 旁放 `.portable`，数据在
+/// `engine/data/`）——用户已有的来源、钥匙、跨用别名组、登录都在那里。
+/// 进程内引擎若按 `~/.config/magpie` 找，会看到一张空表：别名组全失效、
+/// codex 会话 404。所以 engine-rust 形态必须沿用同一个目录。
+static CONFIG_DIR_OVERRIDE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+pub fn set_config_dir(dir: PathBuf) {
+    let _ = CONFIG_DIR_OVERRIDE.set(dir);
 }
 
 /// 网关共享状态：provider/group 存储 + 模型目录缓存 + 字节上限学习表
