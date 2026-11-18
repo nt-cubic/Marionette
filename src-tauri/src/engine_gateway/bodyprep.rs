@@ -34,11 +34,30 @@
 //!   （厂商自己说）。排在 stdBase64 之后：字母表归一了，`webp_of` 的标准
 //!   base64 解码才对得上 URL-safe 形态来的图。
 //!
+//! - **出站体脱敏（链末位，2026-11-18 接上）**：三步之后、任何路由/翻译
+//!   之前 `redact::scrub_cow`（`super::redact`，Go `internal/redact` 主 rules
+//!   表的纯字符串半步；**默认关**，`MARIONETTE_REDACT=1` 才开）。Err 是
+//!   fails-closed 的拒发错误：`try_prepared_request` 把它交给调用方（routes
+//!   四臂 Err → 503，Go maskStatus 的非拦截分支，internal/gateway/
+//!   redact.go:229）；老形状 `prepare`/`prepared_request` 没有错误通道，Err
+//!   消化成**空体**（各对话臂拨号前就地 4xx，扫不了的体一个字节不出门——
+//!   给不走 try 形状的调用方兜底）。关态 `scrub_cow` 零拷贝借回——接上后
+//!   关态零行为变化。
+//!
 //! 接线在 routes.rs 的对话臂（含 count_tokens——Go countTokens 同样在计数
 //! 前跑 stdBase64Body，gateway.go:2112）：httpd.rs 读体（含 Content-Encoding
 //! 解码）之后、route() 分发之前正是 Go 的位置。字节级预检
 //! [`may_hold_odd_base64`] / [`may_hold_webp`] 是性能闸门（Go 注释：2MB 请求
 //! ~2ms），不过闸的体零拷贝原样返回。
+//!
+//! **HEIC 转码挂起（如实记档，2026-11-18）**：Go webp 之外还有 heic.go
+//! （iPhone 照片直拖，DeepSeek on WorkBuddy 的拒答）——解码器是
+//! gen2brain/h265 的**纯 Go HEIC 实现**（heic.go:23-25，magpie 全系统免
+//! cgo）。Rust 侧没有等价的纯 Rust HEVC 解码器，而引擎的体积/依赖红线
+//! 禁止新增 crate（libheif 系全是 C 绑定）——**不做**，iPhone HEIC 原样
+//! 发给厂商由它自己拒答。红线松动（或社区出现可维护的纯 Rust HEVC 解码
+//! 器）时再按 heic.go 的形状补：字节嗅探 ftyp brand（heic.go:31）→
+//! 透明 PNG / 不透明 JPEG（pictureWritten 同款）。
 use std::borrow::Cow;
 
 use base64::engine::general_purpose::{GeneralPurpose, GeneralPurposeConfig, STANDARD};
@@ -48,6 +67,7 @@ use serde_json::Value;
 
 use super::effort::Proto;
 use super::httpd::Request;
+use super::redact;
 
 // ---------------------------------------------------------------------------
 // base64_input.go
@@ -536,16 +556,63 @@ fn walk_webp(v: &mut Value, proto: Proto, changed: &mut bool) {
 // 接线入口
 // ---------------------------------------------------------------------------
 
-/// 三步合并（顺序同 Go：textBody 在读体出口、stdBase64Body 在 serve() 最前、
-/// webp 转码在 stdBase64 之后——字母表归一了 webp_of 才解得开 URL-safe 形态
-/// 来的图；都先于任何路由/翻译/bodycap）。体没变时零拷贝借回。
-pub fn prepare<'a>(proto: Proto, content_type: Option<&str>, body: &'a [u8]) -> Cow<'a, [u8]> {
-    match text_body(content_type, body) {
+/// 三步合并 + redact 收口（顺序同 Go：textBody 在读体出口、stdBase64Body 在
+/// serve() 最前、webp 转码在 stdBase64 之后——字母表归一了 webp_of 才解得开
+/// URL-safe 形态来的图；都先于任何路由/翻译/bodycap。第四步 redact::scrub 是
+/// 链末位——redact.rs 模块头的既定接线点，2026-11-18 接上）。体没变时零拷贝
+/// 借回；scrub 开态扫不了（体不是合法 UTF-8）= Err——调用方拒发
+/// （fails-closed，Go maskStatus 的非拦截分支 503 同款，
+/// internal/gateway/redact.go:229）。
+pub fn try_prepare<'a>(
+    proto: Proto,
+    content_type: Option<&str>,
+    body: &'a [u8],
+) -> Result<Cow<'a, [u8]>, String> {
+    try_prepare_with(redact::enabled(), proto, content_type, body)
+}
+
+/// [`try_prepare`] 的可注入开关版（测试用，免碰进程环境）。
+fn try_prepare_with<'a>(
+    on: bool,
+    proto: Proto,
+    content_type: Option<&str>,
+    body: &'a [u8],
+) -> Result<Cow<'a, [u8]>, String> {
+    let prepared = match text_body(content_type, body) {
         Cow::Borrowed(b) => std_then_webp(proto, b),
         Cow::Owned(fixed) => match std_then_webp(proto, &fixed) {
             Cow::Borrowed(_) => Cow::Owned(fixed),
             Cow::Owned(out) => Cow::Owned(out),
         },
+    };
+    // scrub_cow 关态/开态零命中都借回——这里只在真打码时才 Owned（别为
+    // 几十 MB 的图体付一次复制）。
+    let masked = match redact::scrub_cow(on, &prepared) {
+        Ok(Cow::Owned(masked)) => Some(masked),
+        Ok(Cow::Borrowed(_)) => None,
+        Err(e) => return Err(e),
+    };
+    Ok(match masked {
+        Some(m) => Cow::Owned(m),
+        None => prepared,
+    })
+}
+
+/// 老形状（routes.rs 的四臂已换 [`try_prepared_request`]，这里留给不走 try
+/// 形状的调用方兜底）：三步 + redact，Err 在内部消化——**空体**。每个对话臂
+/// 都在拨号前就地 4xx（chat 的 model 解析 404 no provider、messages/
+/// responses/count_tokens 的 JSON 解析 400 invalid body），扫不了的体一个
+/// 字节不出门——fails-closed 的语义保住；状态码形不是 Go 的 503。默认关 =
+/// 这里永远 Ok（唯一新增成本 = 一次 env 查询）。
+pub fn prepare<'a>(proto: Proto, content_type: Option<&str>, body: &'a [u8]) -> Cow<'a, [u8]> {
+    prepare_with(redact::enabled(), proto, content_type, body)
+}
+
+/// [`prepare`] 的可注入开关版（测试用，免碰进程环境）。
+fn prepare_with<'a>(on: bool, proto: Proto, content_type: Option<&str>, body: &'a [u8]) -> Cow<'a, [u8]> {
+    match try_prepare_with(on, proto, content_type, body) {
+        Ok(prepared) => prepared,
+        Err(_) => Cow::Owned(Vec::new()),
     }
 }
 
@@ -565,8 +632,35 @@ fn std_then_webp<'a>(proto: Proto, body: &'a [u8]) -> Cow<'a, [u8]> {
 /// 原请求（零拷贝）；变了才重建（method/path/headers 浅克隆——对话体几十
 /// MB，头几百字节，不值当为此改 httpd 的读体链）。
 pub fn prepared_request<'a>(request: &'a Request, proto: Proto) -> Cow<'a, Request> {
-    let prepared = prepare(proto, request.header("content-type"), &request.body);
-    match prepared {
+    match try_prepared_request(request, proto) {
+        Ok(req) => req,
+        // 老形状没有错误通道：消化成空体（见 [`prepare`] 的注释——各对话臂
+        // 拨号前就地 4xx，一个字节不出门）。
+        Err(_) => Cow::Owned(Request {
+            method: request.method.clone(),
+            path: request.path.clone(),
+            headers: request.headers.clone(),
+            body: Vec::new(),
+        }),
+    }
+}
+
+/// routes.rs 四臂的现行形状：[`try_prepare`] 之后带上预处理体的请求。
+/// Err（redact 开态扫不了的体）原样交给调用方——对话臂按 fails-closed
+/// 回 503（Go maskStatus 的非拦截分支，internal/gateway/redact.go:229）。
+/// 体没变时借回原请求（零拷贝）；变了才重建（同 [`prepared_request`]）。
+pub fn try_prepared_request<'a>(request: &'a Request, proto: Proto) -> Result<Cow<'a, Request>, String> {
+    try_prepared_request_with(redact::enabled(), request, proto)
+}
+
+/// [`try_prepared_request`] 的可注入开关版（测试用，免碰进程环境）。
+fn try_prepared_request_with<'a>(
+    on: bool,
+    request: &'a Request,
+    proto: Proto,
+) -> Result<Cow<'a, Request>, String> {
+    let prepared = try_prepare_with(on, proto, request.header("content-type"), &request.body)?;
+    Ok(match prepared {
         Cow::Borrowed(_) => Cow::Borrowed(request),
         Cow::Owned(body) => Cow::Owned(Request {
             method: request.method.clone(),
@@ -574,7 +668,7 @@ pub fn prepared_request<'a>(request: &'a Request, proto: Proto) -> Cow<'a, Reque
             headers: request.headers.clone(),
             body,
         }),
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1023,5 +1117,72 @@ mod tests {
         let v: Value = serde_json::from_slice(&out).expect("json");
         assert_eq!(v["note"].as_str().unwrap().as_bytes(), "\u{FFFD}\u{FFFD}".as_bytes());
         assert!(v["u"].as_str().unwrap().starts_with("data:image/png;base64,"));
+    }
+
+    // ----- redact 收口（链末位，默认关）-----
+
+    #[test]
+    fn redact_off_state_is_byte_identical_zero_copy() {
+        // 关态：体里有钥匙也原样借回（ptr 相等 = 连复制都没有）
+        let body = br#"{"model":"p/m","messages":[{"role":"user","content":"my key sk-Abcdef12345678901234"}]}"#;
+        let out = try_prepare_with(false, Proto::Chat, Some("application/json"), body).unwrap();
+        assert!(matches!(out, Cow::Borrowed(b) if b.as_ptr() == body.as_ptr()));
+    }
+
+    #[test]
+    fn redact_on_masks_keys_and_leaves_images_alone() {
+        // 开态：sk- 钥匙打码后才进路由。同体的标准 padded PNG data URI 与
+        // stdBase64/webp 两步无关（字母表本就标准、字节非 webp），原样带过。
+        let png = STANDARD.encode([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]); // PNG 魔数
+        let body = format!(
+            r#"{{"model":"p/m","u":"data:image/png;base64,{png}","content":"key sk-Abcdef12345678901234"}}"#
+        );
+        let out = try_prepare_with(true, Proto::Chat, Some("application/json"), body.as_bytes()).unwrap();
+        let s = String::from_utf8(out.into_owned()).unwrap();
+        assert!(s.contains("{{API_KEY_"), "{s}");
+        assert!(!s.contains("sk-Abcdef12345678901234"), "{s}");
+        assert!(s.contains(&png), "内联图不被动：{s}");
+    }
+
+    #[test]
+    fn redact_on_bad_utf8_non_json_errs_fails_closed() {
+        // 开态 + 扫不了的体 = Err（fails-closed 拒发）。JSON 体的坏字节在第
+        // 一步 textBody 就修成 U+FFFD，走不到这个 Err——这里用 textBody 不碰
+        // 的字节媒体类型。
+        let bad: &[u8] = b"\xff\xfe\x00not json";
+        assert!(try_prepare_with(true, Proto::Chat, Some("application/octet-stream"), bad).is_err());
+        // 同体关态：原样借回
+        let out = try_prepare_with(false, Proto::Chat, Some("application/octet-stream"), bad).unwrap();
+        assert!(matches!(out, Cow::Borrowed(b) if b.as_ptr() == bad.as_ptr()));
+    }
+
+    #[test]
+    fn legacy_prepare_digests_redact_err_to_empty_body() {
+        // 老形状没有错误通道：Err 消化成空体——chat 臂解析 model 得 ""、
+        // 404 no provider，messages/responses 臂 400 invalid body，全都在
+        // 拨号前就地回话，扫不了的体一个字节不出门。（pub prepare 读进程
+        // 环境，测试走注入版。）
+        let bad: &[u8] = b"\xff\xfe raw";
+        assert!(
+            try_prepare_with(true, Proto::Chat, Some("application/octet-stream"), bad).is_err(),
+            "开态先确认这体真的 Err"
+        );
+        let digested = prepare_with(true, Proto::Chat, Some("application/octet-stream"), bad);
+        assert!(digested.is_empty());
+    }
+
+    #[test]
+    fn try_prepared_request_propagates_err_and_borrows_when_clean() {
+        // routes 四臂的现行形状：开态扫不了的体 Err 交出去（调用方 503）；
+        // 关态/干净体借回原请求（Request 级 ptr 相等 = 零拷贝）。
+        let req = Request {
+            method: "POST".into(),
+            path: "/v1/chat/completions".into(),
+            headers: vec![("content-type".into(), "application/octet-stream".into())],
+            body: b"\xff\xfe raw".to_vec(),
+        };
+        assert!(try_prepared_request_with(true, &req, Proto::Chat).is_err());
+        let out = try_prepared_request_with(false, &req, Proto::Chat).unwrap();
+        assert!(matches!(&out, Cow::Borrowed(r) if std::ptr::eq(*r, &req)));
     }
 }

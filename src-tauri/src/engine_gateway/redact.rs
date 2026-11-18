@@ -19,20 +19,26 @@
 //!   `AKIA`·`ASIA` / GitHub·Google·Slack·Cloudflare 等厂商前缀 / JWT /
 //!   私钥块 / URL 密码 / 密码·密钥·令牌字段赋值 / 邮箱 / 中国身份证 / 手机号 /
 //!   银行卡（各自带 ok 判定：notASlug / secretValue / headerValue / realEmail
-//!   近似 / luhn / 身份证校验位）。**没搬**：crypto.go 与 more.go 的附加规则、
-//!   CJK 命名规则（密码：/密钥为/apikey 为）、本地 pii 模型、用户
-//!   words/rules/allow/block/warn 动作、`at:` 上下文判定的 fieldAt/notCode
-//!   一族（字段赋值规则少了「值其实是下一个字段名/代码调用」的排除）、
+//!   近似 / luhn / 身份证校验位；手机号的 phoneAt 含 fieldName/phoneName/
+//!   nameWords 整族，2026-11-18 收口）。**没搬**：crypto.go 与 more.go 的附加
+//!   规则、CJK 命名规则（密码：/密钥为/apikey 为）、本地 pii 模型、用户
+//!   words/rules/allow/block/warn 动作、SECRET 规则的 `at:` 上下文判定
+//!   fieldAt/notCode 一族（字段赋值规则少了「值其实是下一个字段名/代码调用」
+//!   的排除；PHONE 的 fieldName 已搬、EMAIL 的 emailAt/hiddenInURL 一直有）、
 //!   publicsuffix 的 ICANN 后缀表（邮箱 TLD 用「2–63 个纯字母或 localTLD」
 //!   近似）。字节级扫描 raw body（Go 的 MaskJSON 走解析后的 JSON 值，转义
 //!   形态的密钥两边读法不同）。
 //! - fails closed：开着时体不是合法 UTF-8（没法整体扫描）= [`Err`](scrub)，
 //!   调用方拒发；关着原样（什么都不做）。
 //!
-//! **接线点（留给主会话）**：bodyprep 链末位——`bodyprep::prepare` 三步
-//! （textBody → stdBase64Body → webpBody）之后、任何路由/翻译之前，
-//! `redact::scrub(&prepared)`，Err 按 fails-closed 拒发（503，Go maskStatus
-//! 的非拦截分支同款）。默认关 = 现在接上也零行为变化。
+//! **接线（2026-11-18 已接）**：bodyprep 链末位——`bodyprep::try_prepare`
+//! 在三步（textBody → stdBase64Body → webpBody）之后、任何路由/翻译之前调
+//! [`scrub_cow`]；Err 是 fails-closed 的拒发错误（Go maskStatus 的非拦截分支
+//! 503 同款，internal/gateway/redact.go:229）。老形状 `bodyprep::prepare`
+//! 没有错误通道，Err 在 bodyprep 内部消化成空体（拨号前就地 4xx，一个字节
+//! 不出门）；503 文案要 routes.rs 换用 `try_prepare` 才有（主会话一行收口）。
+//! 默认关 = 零行为变化（`scrub_cow` 关态零拷贝借回）。
+use std::borrow::Cow;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash, Hasher};
 
@@ -54,18 +60,23 @@ pub fn enabled() -> bool {
 /// = Err（调用方拒发，fails closed）。Go 的失败面更宽（masker 不在/panic/被
 /// 拦截都是错），这里唯一的失败面是没法整体扫描的坏字节。
 pub fn scrub(body: &[u8]) -> Result<Vec<u8>, String> {
-    scrub_with(enabled(), body)
+    Ok(scrub_cow(enabled(), body)?.into_owned())
 }
 
-/// [`scrub`] 的可注入开关版（测试用，免碰进程环境）。
-fn scrub_with(on: bool, body: &[u8]) -> Result<Vec<u8>, String> {
+/// [`scrub`] 的 Cow 形态（bodyprep 接线用，2026-11-18）：关 = 零拷贝借回
+/// （几十 MB 的图体别为「看一眼开关」复制一遍）；开 = 打码后 Owned、
+/// 零命中也借回（多数体没有密钥）。
+pub(crate) fn scrub_cow<'a>(on: bool, body: &'a [u8]) -> Result<Cow<'a, [u8]>, String> {
     if !on {
-        return Ok(body.to_vec());
+        return Ok(Cow::Borrowed(body));
     }
     let text = std::str::from_utf8(body)
         .map_err(|e| format!("redact: body is not valid UTF-8 ({e}); fails closed, nothing sent"))?;
     let mut hits = Vec::new();
     scan(text, &mut hits);
+    if hits.is_empty() {
+        return Ok(Cow::Borrowed(body));
+    }
     // 同起点取最长，其后与已换区间重叠的丢弃（「Authorization: Bearer sk-…」
     // 会同时命中头值规则与 sk- 规则——先到的整段赢）
     hits.sort_by_key(|h| (h.start, std::cmp::Reverse(h.end)));
@@ -83,7 +94,12 @@ fn scrub_with(on: bool, body: &[u8]) -> Result<Vec<u8>, String> {
         }
     }
     out.push_str(&text[at..]);
-    Ok(out.into_bytes())
+    Ok(Cow::Owned(out.into_bytes()))
+}
+
+/// [`scrub`] 的可注入开关版（测试用，免碰进程环境）。
+fn scrub_with(on: bool, body: &[u8]) -> Result<Vec<u8>, String> {
+    Ok(scrub_cow(on, body)?.into_owned())
 }
 
 /// Go 的占位符形状（placeholderRe）：`{{KIND_xxxxxxxx}` 的完整形态
@@ -352,67 +368,189 @@ fn in_userinfo(s: &str, a: usize) -> bool {
 // 手机号的 phoneAt 近似（phone.go:41）
 // ---------------------------------------------------------------------------
 
-/// phoneWords / phoneMarks（phone.go:31/34）。
-const PHONE_WORDS: [&str; 13] = [
+/// phoneWords / phoneMarks（phone.go:31/34）——fax 是电话词不是编号词
+/// （Go phoneWords 收尾的 fax，2026-11-18 收口时从 ID_WORDS 挪回原位）。
+const PHONE_WORDS: [&str; 14] = [
     "phone", "phones", "mobile", "mobiles", "tel", "telephone", "cell", "cellphone", "contact", "contacts",
-    "whatsapp", "sms", "msisdn",
+    "whatsapp", "sms", "msisdn", "fax",
 ];
 const PHONE_MARKS: [&str; 6] = ["手机", "电话", "電話", "联系", "聯繫", "联络"];
-/// idWords（phone.go:37）：数字前面贴着这些词 = 编号不是手机号。
-const ID_WORDS: [&str; 24] = [
+/// idWords（phone.go:37）：数字前面贴着这些词 = 编号不是手机号（词面 1:1）。
+const ID_WORDS: [&str; 23] = [
     "order", "id", "uid", "no", "no.", "#", "number", "ticket", "invoice", "订单", "订单号", "单号", "编号", "流水号",
-    "工单", "工单号", "运单号", "快递单号", "订单编号", "交易号", "序号", "账单号", "id号", "fax",
+    "工单", "工单号", "运单号", "快递单号", "订单编号", "交易号", "序号", "账单号", "id号",
 ];
 
-/// phoneAt（phone.go:41）的近似：带 +86/86 前缀（>11 位）直接是；恰 11 位时
-/// 前面贴着 `#` 或 idWords（整词）不是、贴着 phoneWords/phoneMarks 是。
-/// Go 的 fieldName（`name:` 形态整读）没搬全——词表照抄，形态判定简化为
-/// 「前 32 字节窗口（去空白引号）的后缀整词」。
+/// phoneAt（phone.go:41）：>11 位（+86/86 前缀）直接是；恰 11 位先看
+/// **字段形态**（fieldName：`name:`/`name=`/`name：`/`<tag>` 的值位——字段名
+/// 里有电话词才是电话，`id:` 是编号），再看 `#` 前缀，最后散文窗（32 字节）
+/// 里紧贴的 idWords（整词）。2026-11-18 收口：fieldName 从「窗口后缀」近似
+/// 升级成 Go 整读（name/prev/长 CJK 取尾 6 字都搬了）。
 fn phone_at(s: &str, a: usize, b: usize) -> bool {
     if b - a > 11 {
         return true; // +86 / 86
     }
+    if let Some((name, prev)) = field_name(s, a) {
+        return phone_name(name) || (!prev.is_empty() && phone_name(prev)) || name.eq_ignore_ascii_case("number");
+    }
     let bytes = s.as_bytes();
     if a > 0 && bytes[a - 1] == b'#' {
-        return false;
+        return false; // #13912345678（phone.go:49）
     }
-    // 往回开窗时对齐字符边界（窗口里可能是中文）
-    let mut window_start = a.saturating_sub(48);
+    // 32 字节窗（phone.go:51），对齐字符边界（窗口里可能是中文）
+    let mut window_start = a.saturating_sub(32);
     while window_start < a && !s.is_char_boundary(window_start) {
         window_start += 1;
     }
-    let before = s[window_start..a].trim_end_matches([' ', '\t', '(', '"', '\'', '\u{201c}', '\u{300c}']);
-    for m in PHONE_MARKS {
-        if before.contains(m) {
-            return true;
+    let mut before = s[window_start..a]
+        .trim_end_matches([' ', '\t', '(', '"', '\'', '\u{201c}', '\u{300c}'])
+        .to_ascii_lowercase();
+    // 收尾的 是/为/為 剥一次（phone.go:52：「我的手机号是 138…」的系词；
+    // 「订单号是 138…」剥完才是订单号）
+    for c in ["是", "为", "為"] {
+        if let Some(rest) = before.strip_suffix(c) {
+            before = rest.trim_end_matches([' ', '\t']).to_string();
         }
     }
-    let lower = before.to_ascii_lowercase();
     for w in ID_WORDS {
-        let (found, whole) = ends_with_word(&lower, w);
-        if found && whole {
-            // "no."/"number" 前面还是电话词的话仍是电话（phone no. 138…）
-            if w == "no" || w == "no." || w == "number" {
-                let rest = lower[..lower.len() - w.len()].trim_end();
-                if PHONE_WORDS.iter().any(|p| ends_with_word(rest, p).0) {
-                    return true;
+        let Some(rest) = before.strip_suffix(w) else { continue };
+        // 整词：ASCII idWord 前面贴着 [a-z0-9_] 的是更长词的尾巴（recorder
+        // 的 order）；中文 idWord 没有这条（Go 只对 w[0] < 0x80 查，phone.go:62）
+        if !rest.is_empty() && w.as_bytes()[0] < 0x80 {
+            if let Some(c) = rest.chars().next_back() {
+                if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' {
+                    continue;
                 }
             }
-            return false;
         }
+        // 但电话自己的编号词：phone no. 138…（phone.go:66，前一词是电话名）
+        if w == "no" || w == "no." || w == "number" {
+            let rest = rest.trim_end_matches(' ');
+            let from = name_start(rest, rest.len());
+            if phone_name(&rest[from..]) {
+                return true;
+            }
+        }
+        return false;
     }
     true
 }
 
-/// `w` 是 `s` 的后缀吗；whole = 后缀前没有紧贴的字母数字下划线（整词）。
-fn ends_with_word(s: &str, w: &str) -> (bool, bool) {
-    match s.strip_suffix(w) {
-        Some(rest) => {
-            let whole = rest.bytes().last().map(|c| !(c.is_ascii_alphanumeric() || c == b'_')).unwrap_or(true);
-            (true, whole)
-        }
-        None => (false, false),
+/// fieldName（phone.go:100）：s[a] 起的值的字段名——`:`、`=`、`：` 或 XML
+/// 元素的 `>` 前的词（中间可隔引号空白），JSON/k=v/YAML/SQL/XML 的形态；
+/// prev 是再往前隔一个空格的词（「phone no: …」的电话词）。散文（值前没有
+/// 这些分隔符）返回 None。
+fn field_name<'a>(s: &'a str, a: usize) -> Option<(&'a str, &'a str)> {
+    let bytes = s.as_bytes();
+    let mut i = a;
+    while i > 0 && matches!(bytes[i - 1], b' ' | b'\t' | b'"' | b'\'') {
+        i -= 1;
     }
+    if i > 0 && bytes[i - 1] == b'>' {
+        // <tel>13800138000</tel>：元素名（phone.go:107，窗 64 字节找 <）
+        let mut lo = i.saturating_sub(65);
+        while lo < i && !s.is_char_boundary(lo) {
+            lo += 1;
+        }
+        let Some(k) = s[lo..i - 1].rfind('<') else { return None };
+        let mut tag = &s[lo + k + 1..i - 1];
+        if let Some(sp) = tag.find([' ', '\t']) {
+            tag = &tag[..sp];
+        }
+        if tag.is_empty() || !tag.bytes().all(|c| is_alnum(c) || matches!(c, b'_' | b'.' | b':' | b'-')) {
+            return None;
+        }
+        return Some((tag, ""));
+    }
+    if i > 0 && (bytes[i - 1] == b':' || bytes[i - 1] == b'=') {
+        i -= 1;
+    } else if i >= 3 && s.is_char_boundary(i - 3) && &s[i - 3..i] == "：" {
+        i -= 3;
+    } else {
+        return None;
+    }
+    while i > 0 && matches!(bytes[i - 1], b' ' | b'\t' | b'"' | b'\'') {
+        i -= 1;
+    }
+    let j = name_start(s, i);
+    if j == i {
+        return None;
+    }
+    let mut name = &s[j..i];
+    let runes = name.chars().count();
+    if runes > 6 && has_cjk(name) {
+        // 一长串 CJK 后跟分隔符是句子：取最后 6 个字符当值的名字
+        // （「我的手机号是：…」，phone.go:137）
+        let skip = runes - 6;
+        let at = name.char_indices().nth(skip).map(|(b, _)| b).unwrap_or(0);
+        name = &name[at..];
+    }
+    let mut prev = "";
+    if j >= 2 && bytes[j - 1] == b' ' && bytes[j - 2] != b' ' {
+        let pj = name_start(s, j - 1);
+        prev = &s[pj..j - 1];
+    }
+    Some((name, prev))
+}
+
+/// phoneName（phone.go:79）：字段名是电话的——词表里有它的词
+/// （phone_number、mobileNo），或带 phoneMarks（手机号）。
+fn phone_name(name: &str) -> bool {
+    if name_words(name).iter().any(|w| PHONE_WORDS.contains(&w.as_str())) {
+        return true;
+    }
+    PHONE_MARKS.iter().any(|m| name.contains(m))
+}
+
+/// nameWords（ids.go:284）：字段名的词（小写）——next_page_token、
+/// nextPageToken、X-Next-Page-Token → next/page/token。字节级照抄 Go
+/// （分隔符 _-. 断词、小写字母后跟大写断词），中文整段成一个词。
+fn name_words(name: &str) -> Vec<String> {
+    let bytes = name.as_bytes();
+    let mut out = Vec::new();
+    let mut w: Vec<u8> = Vec::new();
+    for i in 0..bytes.len() {
+        let c = bytes[i];
+        if c == b'_' || c == b'-' || c == b'.' {
+            if !w.is_empty() {
+                out.push(String::from_utf8_lossy(&w).into_owned());
+                w.clear();
+            }
+        } else if c.is_ascii_uppercase() {
+            if i > 0 && bytes[i - 1].is_ascii_lowercase() && !w.is_empty() {
+                out.push(String::from_utf8_lossy(&w).into_owned());
+                w.clear();
+            }
+            w.push(c + 32);
+        } else {
+            w.push(c);
+        }
+    }
+    if !w.is_empty() {
+        out.push(String::from_utf8_lossy(&w).into_owned());
+    }
+    out
+}
+
+/// nameStart（phone.go:150）：s[..i] 结尾的名字从哪开始——字母数字、
+/// `_` `.` `-` 或 CJK 字符（U+4E00–U+9FFF）往前。
+fn name_start(s: &str, i: usize) -> usize {
+    let mut j = i;
+    while j > 0 {
+        let Some(c) = s[..j].chars().next_back() else { break };
+        let ok = (c.is_ascii() && (is_alnum(c as u8) || matches!(c as u8, b'_' | b'.' | b'-')))
+            || ('\u{4e00}'..='\u{9fff}').contains(&c);
+        if !ok {
+            break;
+        }
+        j -= c.len_utf8();
+    }
+    j
+}
+
+/// hasCJK（phone.go:162）。
+fn has_cjk(s: &str) -> bool {
+    s.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c))
 }
 
 // ---------------------------------------------------------------------------
@@ -800,15 +938,17 @@ fn scan_jwt(s: &str, out: &mut Vec<Hit>) {
 }
 
 /// `(?i)x-auth-(?:user-service-)?key…[:=]…([A-Za-z0-9._-]{16,})`（ok
-/// notAVariable）——只换值。
+/// notAVariable）——只换值。`(?i)` 贯到 `user-service-` 与 `key`：
+/// `X-Auth-User-Service-Key=…` 与 `"x-auth-key": …` 都命中（2026-11-18 收口，
+/// 旧实现 `user-service-`/`key` 按原文比对，混大小写变体漏掉）。
 fn scan_x_auth_key(s: &str, out: &mut Vec<Hit>) {
     let value_class = |c: u8| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-');
     each_hit_fold(s, "x-auth-", |s, i| {
         let mut at = i + 7;
-        if s[at..].starts_with("user-service-") {
+        if s.get(at..at + 13).is_some_and(|seg| seg.eq_ignore_ascii_case("user-service-")) {
             at += 13;
         }
-        if !s[at..].to_ascii_lowercase().starts_with("key") {
+        if !s.get(at..at + 3).is_some_and(|k| k.eq_ignore_ascii_case("key")) {
             return;
         }
         at += 3;
@@ -1120,25 +1260,25 @@ mod tests {
         std::env::remove_var("MARIONETTE_REDACT");
     }
 
-    // WIP：占位符/ID 词/头部模式的收口未完成（2026-11-18 收尾时如实挂起；
-    // redact 默认关、未接线，不影响发布路径）。续做时删 ignore 跑红转绿。
-    #[ignore = "WIP: redact 模式收口待续（默认关、未接线）"]
     #[test]
     fn sk_keys_are_masked_and_stable() {
         let body = r#"{"a":"sk-ant-api03-Abc123def456ghi789","b":"sk-proj-or4xAbCdEf0123456789"}"#;
         let out = String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap();
         assert!(!out.contains("sk-ant-"), "{out}");
         assert!(out.contains("{{API_KEY_"), "{out}");
-        // 同一值同一占位符（会话历史逐轮可读）；占位符 8 个小写 base32 字符
+        // 同一值同一占位符（会话历史逐轮可读）；占位符 8 个小写 base32 字符。
+        // 取完整形态 {{API_KEY_xxxxxxxx}}（placeholderRe，redact.go:331）——
+        // match_indices 只回命中串本身，占位符正文要按 "}}" 截出来。
         let twice = r#"{"a":"sk-Abcdef12345678901234","b":"sk-Abcdef12345678901234"}"#;
         let out = String::from_utf8(scrub_with(true, twice.as_bytes()).unwrap()).unwrap();
-        let mut it = out.match_indices("{{API_KEY_");
-        let (_, p1) = it.next().unwrap();
-        let (i2, p2) = it.next().unwrap();
-        assert!(i2 > p1.len(), "两处都换到了");
-        assert_eq!(p1, p2, "同一值同一占位符");
-        let code = p1.trim_start_matches("{{API_KEY_").trim_end_matches("}}");
-        assert_eq!(code.len(), 8);
+        let ph: Vec<&str> = out
+            .match_indices("{{API_KEY_")
+            .map(|(i, _)| out[i..].split("}}").next().unwrap_or(""))
+            .collect();
+        assert_eq!(ph.len(), 2, "两处都换到了：{out}");
+        assert_eq!(ph[0], ph[1], "同一值同一占位符：{out}");
+        let code = ph[0].trim_start_matches("{{API_KEY_").trim_end_matches("}}");
+        assert_eq!(code.len(), 8, "{}", ph[0]);
         assert!(code.chars().all(|c| c.is_ascii_lowercase() || ('2'..='7').contains(&c)), "{code}");
     }
 
@@ -1341,9 +1481,6 @@ mod tests {
         assert_eq!(String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap(), body);
     }
 
-    // WIP：占位符/ID 词/头部模式的收口未完成（2026-11-18 收尾时如实挂起；
-    // redact 默认关、未接线，不影响发布路径）。续做时删 ignore 跑红转绿。
-    #[ignore = "WIP: redact 模式收口待续（默认关、未接线）"]
     #[test]
     fn phones_respect_the_id_words() {
         // 裸的 11 位（1[3-9] 开头）是手机号
@@ -1370,6 +1507,34 @@ mod tests {
     }
 
     #[test]
+    fn phone_field_names_decide_by_phoneName() {
+        // 字段形态（fieldName，phone.go:100）：字段名带电话词才是电话
+        let body = r#"{"phone":"13800138000","mobileNo":"13912345678"}"#;
+        let out = String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap();
+        assert!(out.matches("{{PHONE_").count() == 2, "{out}");
+        // 编号字段（id/order_id/uid）不是——agent 查单不能被拦
+        for body in [
+            r#"{"id":"13800138000"}"#,
+            r#"{"order_id": 13800138000}"#,
+            "<uid>13800138000</uid>",
+        ] {
+            assert_eq!(String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap(), body);
+        }
+        // number: 字段（EqualFold 特例，phone.go:46）是电话；长 CJK 句子取
+        // 尾 6 字命名（我的手机号是：…，phone.go:137）
+        let body = r#"{"number":"13800138000"}"#;
+        let out = String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap();
+        assert!(out.contains("{{PHONE_"), "{out}");
+        let body = "我的手机号是：13800138000";
+        let out = String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap();
+        assert!(out.contains("{{PHONE_"), "{out}");
+        // 前一词是电话名（phone no: …，prev 半边）
+        let body = "phone no: 13800138000";
+        let out = String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap();
+        assert!(out.contains("{{PHONE_"), "{out}");
+    }
+
+    #[test]
     fn bank_cards_need_luhn() {
         let body = "card 4111111111111111 ok";
         let out = String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap();
@@ -1385,12 +1550,12 @@ mod tests {
         assert!(!out.contains("6212341234123456780"), "{out}");
     }
 
-    // WIP：占位符/ID 词/头部模式的收口未完成（2026-11-18 收尾时如实挂起；
-    // redact 默认关、未接线，不影响发布路径）。续做时删 ignore 跑红转绿。
-    #[ignore = "WIP: redact 模式收口待续（默认关、未接线）"]
     #[test]
     fn whole_json_body_stays_valid_json() {
-        let body = r#"{"model":"p/m","messages":[{"role":"user","content":"my key sk-Abcdef12345678901234 and mail me@example.org"}]}"#;
+        // 域名得挑 realEmail 放过的：example.org 在假域清单里（redact.go:622，
+        // 见 emails_are_masked_with_the_guards 对 example.com 的不动断言），
+        // 这里要的是「值内命中不打穿 JSON 字符串边界」。
+        let body = r#"{"model":"p/m","messages":[{"role":"user","content":"my key sk-Abcdef12345678901234 and mail me@fastmail.com"}]}"#;
         let out = String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap();
         let v: serde_json::Value = serde_json::from_str(&out).expect("仍是合法 JSON");
         assert!(out.contains("{{API_KEY_"));
@@ -1398,9 +1563,6 @@ mod tests {
         assert_eq!(v["model"], "p/m");
     }
 
-    // WIP：占位符/ID 词/头部模式的收口未完成（2026-11-18 收尾时如实挂起；
-    // redact 默认关、未接线，不影响发布路径）。续做时删 ignore 跑红转绿。
-    #[ignore = "WIP: redact 模式收口待续（默认关、未接线）"]
     #[test]
     fn x_auth_key_header_value_is_masked() {
         let body = r#""x-auth-key": "Abcdef1234567890""#;
