@@ -89,7 +89,14 @@ fn target_for(gw: &super::Gateway, cand: &Candidate) -> Result<Target, String> {
 // =====================================================================
 
 /// POST /v1/messages 入口：组路由有序候选，逐成员尝试（只在应答头阶段换）。
+///
+/// usage 记账（capture 层 2026-11-18 接上）：2xx 回合在收口处落一行
+/// （agent="anthropic"）——message_start 的 input/缓存两桶 + message_delta
+/// 的 output 桶（Go sniff.go:243-269 aUsage 口径；input_tokens 本就只数
+/// 非缓存）。会话种子取 body 侧（路由层不传请求头，`stick_key(&[], …)`
+/// ——Claude Code 的 metadata.user_id 在这条上能拿到）。
 pub fn handle(gateway: &super::Gateway, body: &[u8]) -> Reply {
+    let began = std::time::Instant::now();
     let parsed: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(e) => return error_reply(400, &format!("invalid request body: {e}")),
@@ -102,11 +109,17 @@ pub fn handle(gateway: &super::Gateway, body: &[u8]) -> Reply {
         return error_reply(404, &format!("no provider for model: {model}"));
     }
     let streaming = parsed.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
+    let log = super::usage_ledger::TurnLog::new(
+        "anthropic",
+        &model,
+        super::affinity::stick_key(&[], &parsed),
+        began,
+    );
     groups::drive(&cands, |cand| {
         // 成员强度按候选各算各的（失败转移到下一个成员时不沿用首发的）。
         let body = groups::body_for(gateway, super::effort::Proto::Anthropic, cand, body);
         let parsed = serde_json::from_slice::<Value>(&body).unwrap_or_else(|_| parsed.clone());
-        attempt(gateway, cand, &body, &parsed, &model, streaming)
+        attempt(gateway, cand, &body, &parsed, &model, streaming, &log)
     })
 }
 
@@ -229,16 +242,17 @@ fn attempt(
     parsed: &Value,
     asked_model: &str,
     streaming: bool,
+    log: &super::usage_ledger::TurnLog,
 ) -> Attempt {
     let target = match target_for(gw, cand) {
         Ok(t) => t,
         Err(e) => return Attempt::Retry(error_reply(404, &e)),
     };
     if !target.anthropic.is_empty() {
-        return forward_direct(gw, &target, body, streaming);
+        return forward_direct(gw, &target, body, streaming, log);
     }
     if !target.chat.is_empty() {
-        return forward_translated(gw, cand, parsed, asked_model, streaming);
+        return forward_translated(gw, cand, parsed, asked_model, streaming, log);
     }
     // 只配了 responses（或什么都没有）：没有诚实的 chat/anthropic 出站点，
     // 别拿 responses 基址拼 /chat/completions 硬试（URL 形状就是错的）；
@@ -252,7 +266,13 @@ fn attempt(
 
 /// 直通一个成员。字节上限拒答走 bodycap 的 anthropic 形状 refit
 /// （`messages[].content[].type=image` 丢最老的重发）。
-fn forward_direct(gw: &super::Gateway, target: &Target, body: &[u8], streaming: bool) -> Attempt {
+fn forward_direct(
+    gw: &super::Gateway,
+    target: &Target,
+    body: &[u8],
+    streaming: bool,
+    log: &super::usage_ledger::TurnLog,
+) -> Attempt {
     let asked = body_model(body);
     let out_body = rewrite_model(body, &target.bare_model);
     // DeepSeek 系 anthropic 端点的 thinking 回放修补（Go gateway.go
@@ -277,17 +297,25 @@ fn forward_direct(gw: &super::Gateway, target: &Target, body: &[u8], streaming: 
     if streaming && status < 400 {
         let content_type = response.content_type().to_string();
         if content_type.contains("event-stream") {
-            // SSE 原样透传：字节一个不动，content-type 用厂商自己的。
+            // SSE 原样透传：字节一个不动，content-type 用厂商自己的。usage
+            // 捕获（anthropic 方言）包外层——message_start/message_delta 提桶。
+            let tap = log.tap(
+                gw.usage.clone(),
+                super::usage_ledger::Dialect::Anthropic,
+                &target.provider_id,
+                status,
+            );
             return Attempt::Done(Reply::Stream {
                 status,
                 content_type,
-                reader: Box::new(response.into_reader()),
+                reader: Box::new(super::usage_ledger::TapReader::new(tap, response.into_reader())),
             });
         }
         // 2xx 但不是事件流（厂商没理会 stream）：整读按普通应答直通。
     }
     let vendor_body = read_all(response.into_reader());
     if status < 400 {
+        log.whole(&gw.usage, super::usage_ledger::Dialect::Anthropic, &target.provider_id, status, &vendor_body);
         return Attempt::Done(Reply::Json { status, body: vendor_body });
     }
     if let Some(reply) = bodycap::maybe_refit_with(
@@ -302,7 +330,25 @@ fn forward_direct(gw: &super::Gateway, target: &Target, body: &[u8], streaming: 
         // 重发应答本来就是 anthropic 话：成功原样，失败（含 413 语义）转 anthropic 错误形状。
         return Attempt::Done(match reply {
             Reply::Json { status, body } if status >= 400 => vendor_error_reply(status, &body),
-            other => other,
+            Reply::Json { status, body } => {
+                if status < 400 {
+                    log.whole(&gw.usage, super::usage_ledger::Dialect::Anthropic, &target.provider_id, status, &body);
+                }
+                Reply::Json { status, body }
+            }
+            Reply::Stream { status, content_type, reader } => {
+                let tap = log.tap(
+                    gw.usage.clone(),
+                    super::usage_ledger::Dialect::Anthropic,
+                    &target.provider_id,
+                    status,
+                );
+                Reply::Stream {
+                    status,
+                    content_type,
+                    reader: Box::new(super::usage_ledger::TapReader::new(tap, reader)),
+                }
+            }
         });
     }
     let retry = groups::retryable(status, &vendor_body);
@@ -468,6 +514,7 @@ fn forward_translated(
     parsed: &Value,
     asked_model: &str,
     streaming: bool,
+    log: &super::usage_ledger::TurnLog,
 ) -> Attempt {
     let chat_body = match translate::anthropic_to_chat(parsed) {
         Ok(v) => v,
@@ -500,7 +547,7 @@ fn forward_translated(
         }
         Attempt::Retry(other) => Attempt::Retry(other),
         Attempt::Done(reply) => {
-            Attempt::Done(chat_reply_to_anthropic(reply, streaming, asked_model, scout))
+            Attempt::Done(chat_reply_to_anthropic(reply, streaming, asked_model, scout, gw, &cand.provider, log))
         }
     }
 }
@@ -524,11 +571,19 @@ fn offered_scout(parsed: &Value) -> Option<super::textcalls::TextCallScout> {
 
 /// chat 世界的终局应答 → anthropic 面：事件流逐事件翻译；整块 JSON 转
 /// anthropic message；错误转 anthropic 错误形状。
+///
+/// usage 记账：最终面向客户端的是 anthropic 方言——流式 tap 包在翻译器
+/// 外层（message_start/message_delta 帧），整块在折好的 message 对象上扫
+/// （`anthropic_usage_of` 补的 0 桶被 tap 的 >0 过滤掉，不编数）。
+#[allow(clippy::too_many_arguments)]
 fn chat_reply_to_anthropic(
     reply: Reply,
     streaming: bool,
     asked_model: &str,
     scout: Option<super::textcalls::TextCallScout>,
+    gw: &super::Gateway,
+    provider: &str,
+    log: &super::usage_ledger::TurnLog,
 ) -> Reply {
     match reply {
         Reply::Stream { status, content_type, reader } => {
@@ -537,25 +592,30 @@ fn chat_reply_to_anthropic(
                 // 都在翻译器里）。textcalls 的 scout 挂在帧编排器上。
                 let mut translator = AnthropicSseTranslator::new(reader, asked_model);
                 translator.frames.scout = scout;
+                let tap = log.tap(gw.usage.clone(), super::usage_ledger::Dialect::Anthropic, provider, status);
                 return Reply::Stream {
                     status,
                     content_type: "text/event-stream".into(),
-                    reader: Box::new(translator),
+                    reader: Box::new(super::usage_ledger::TapReader::new(tap, translator)),
                 };
             }
             // 厂商没给事件流（无视了 stream）：整读再按非流式转。
             let body = read_all(reader);
-            chat_json_to_anthropic(status, body, asked_model, scout)
+            chat_json_to_anthropic(status, body, asked_model, scout, gw, provider, log)
         }
-        Reply::Json { status, body } => chat_json_to_anthropic(status, body, asked_model, scout),
+        Reply::Json { status, body } => chat_json_to_anthropic(status, body, asked_model, scout, gw, provider, log),
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn chat_json_to_anthropic(
     status: u16,
     body: Vec<u8>,
     asked_model: &str,
     scout: Option<super::textcalls::TextCallScout>,
+    gw: &super::Gateway,
+    provider: &str,
+    log: &super::usage_ledger::TurnLog,
 ) -> Reply {
     if status >= 400 {
         return vendor_error_reply(status, &body);
@@ -574,7 +634,11 @@ fn chat_json_to_anthropic(
         None => body,
     };
     match chat_response_to_anthropic(&body, asked_model) {
-        Ok(v) => Reply::json(status, &v),
+        Ok(v) => {
+            let out = serde_json::to_vec(&v).unwrap_or(body);
+            log.whole(&gw.usage, super::usage_ledger::Dialect::Anthropic, provider, status, &out);
+            Reply::Json { status, body: out }
+        }
         // 厂商 2xx 却给了读不懂的体：网关侧问题，按 502 说。
         Err(e) => error_reply(502, &e),
     }
@@ -1939,5 +2003,100 @@ mod tests {
         assert_eq!(blocks[0]["type"], "text");
         assert_eq!(blocks[0]["text"], DSML_TEXT, "正文一个字不动");
         assert_eq!(v["stop_reason"], "end_turn");
+    }
+
+    // -----------------------------------------------------------------
+    // usage 记账（capture 层，Go sniff.go 的 anthropic 方言口径）
+    // -----------------------------------------------------------------
+
+    /// 翻译路径流式回合落账：chat usage 折成 anthropic 帧（净额 input +
+    /// 缓存单列）→ tap 从 message_delta 提桶；metadata.user_id 做种子。
+    #[test]
+    fn translated_stream_turn_records_usage_buckets() {
+        let sse = concat!(
+            r#"data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":900,"completion_tokens":30,"total_tokens":930,"prompt_tokens_details":{"cached_tokens":400,"cache_write_tokens":120}}}"#,
+            "\n\n",
+            "data: [DONE]\n\n",
+        );
+        let vendor = fake_vendor(200, "text/event-stream", sse);
+        let providers = format!(
+            r#"{{"providers":[{{"id":"fake","name":"Fake","key":"sk-test","chat":"{}/v1"}}]}}"#,
+            vendor.base
+        );
+        let (gateway, _sandbox) = sandbox(&providers);
+        let request = json!({
+            "model": "fake/m", "max_tokens": 64, "stream": true,
+            "metadata": { "user_id": "user-77" },
+            "messages": [{ "role": "user", "content": "hi" }]
+        });
+        let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
+        let Reply::Stream { mut reader, .. } = reply else {
+            panic!("expected stream reply, got json");
+        };
+        let mut out = String::new();
+        reader.read_to_string(&mut out).expect("read translated stream");
+        assert!(out.contains("event: message_delta"));
+        let rows = gateway.usage.records_since(0);
+        assert_eq!(rows.len(), 1, "一条回合一行");
+        let r = &rows[0];
+        assert_eq!(r.agent, "anthropic");
+        assert_eq!(r.provider, "fake");
+        assert_eq!(r.model, "fake/m");
+        assert_eq!(r.session.as_deref(), Some("user-77"), "body 侧种子（metadata.user_id）");
+        // anthropic 口径：input 只数非缓存（chat 的 900 含缓存 → 900−400−120）。
+        assert_eq!(r.in_tokens, Some(380));
+        assert_eq!(r.out_tokens, Some(30));
+        assert_eq!(r.cache_read, Some(400));
+        assert_eq!(r.cache_write, Some(120));
+        assert!(r.millis > 0);
+    }
+
+    /// 直通透传流也是 anthropic 方言：message_start 的 input+缓存两桶 +
+    /// message_delta 的 output 桶，两处分头到、零桶不编。
+    #[test]
+    fn direct_stream_turn_records_anthropic_usage() {
+        let sse = concat!(
+            "event: message_start\n",
+            r#"data: {"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":650,"output_tokens":1,"cache_read_input_tokens":500,"cache_creation_input_tokens":80}}}"#,
+            "\n\n",
+            "event: content_block_delta\n",
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#,
+            "\n\n",
+            "event: message_delta\n",
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":27}}"#,
+            "\n\n",
+            "event: message_stop\n",
+            r#"data: {"type":"message_stop"}"#,
+            "\n\n",
+        );
+        let vendor = fake_vendor(200, "text/event-stream", sse);
+        let providers = format!(
+            r#"{{"providers":[{{"id":"anth","name":"Anth","key":"sk-ant","anthropic":"{}"}}]}}"#,
+            vendor.base
+        );
+        let (gateway, _sandbox) = sandbox(&providers);
+        let request = json!({
+            "model": "anth/claude-x", "max_tokens": 32, "stream": true,
+            "messages": [{ "role": "user", "content": "hi" }]
+        });
+        let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
+        let Reply::Stream { mut reader, .. } = reply else {
+            panic!("expected stream reply, got json");
+        };
+        let mut out = String::new();
+        reader.read_to_string(&mut out).expect("read passthrough stream");
+        assert!(out.contains("event: message_stop"), "字节照转: {out}");
+        let rows = gateway.usage.records_since(0);
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(r.agent, "anthropic");
+        assert_eq!(r.provider, "anth");
+        // message_start 的 input/缓存 + message_delta 的 output（后到覆盖占位 1）。
+        assert_eq!(r.in_tokens, Some(650), "anthropic 的 input_tokens 本就只数非缓存");
+        assert_eq!(r.out_tokens, Some(27));
+        assert_eq!(r.cache_read, Some(500));
+        assert_eq!(r.cache_write, Some(80));
     }
 }

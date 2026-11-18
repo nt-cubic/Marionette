@@ -1018,12 +1018,15 @@ fn gift_card(plan: String, until: Option<chrono::DateTime<chrono::Utc>>, items: 
 // 页）/ `zcodeTrialRestricted`（风控 3012）也只 rest trial 条目——它们的词表
 // 在 provider.EdgeBlocked / failRestricted，不进本判定。
 //
-// **Rust 现状**：本模块只有额度只读（失败安静出 None，quota_extra.rs 各路
-// 互不拖累），不接对话出站，不存在「trial 连坐」路径可防；chat.rs 的 rest
-// 表按 provider 粒度（`rest_provider`）。所以这里交付的是**词表与纯判定函数**
-// 半步：rest 分级（只 rest `<model>-Trial` 条目、不动账号其它模型）在路由层
-// 接入这些拒答时启用——status（400/429）与候选模型（`EqualFold` 核对）两道
-// 门那时再挂，本函数只看 body 的词形。
+// **Rust 现状（2026-11-18 已联动）**：chat.rs 的候选循环错误路径（vendor
+// 错误体已读到的 `Attempt::Retry` 分支）调 [`trial_refused_for`]，命中时只
+// rest 该 `<model>-Trial` 的模型级条目（chat.rs 的 rest 表加 `<provider_id>
+// ::<model>` 键——Go `candidate.restID()` = restKey()+"/"+model 的对应，
+// fallback.go:211-213），同 provider 的账号其它模型照常候选。判不中回落
+// chat.rs 原有行为（429/5xx 整 provider rest、400 不 rest——Go 的 failQuota
+// 400 会 rest 整账号，那是 Rust 极简 rest 的既有差距，见 chat.rs 尾部清单）。
+// 判不中的情形含：词表没中（0.1.48 词形）、点名模型对不上（EqualFold）、
+// 来源不是 zcode、候选模型不带 `-Trial`、status 不是 400/429。
 
 /// Go `vendorMessage`（draw.go:1586）的 JSON 分支：厂商错误体里「说了什么」——
 /// `errors.message`（ModelScope）、无 `error` 字段时的 `msg`(+`code`)（WorkBuddy）、
@@ -1066,7 +1069,7 @@ fn vendor_message(body: &str) -> String {
 
 /// trial 拒答的两种词形与它点名的模型。
 #[derive(Debug, PartialEq, Eq)]
-enum TrialForm {
+pub(crate) enum TrialForm {
     /// 400：trial 已结束（点名 `-Trial` 全名）
     Ended,
     /// 429：trial 的额度桶耗尽（点名去 `-Trial` 的桶模型）
@@ -1076,7 +1079,7 @@ enum TrialForm {
 /// Go 两个词表的纯字符串对应。`(?:^|: )` = 串首或任何 `": "` 之后；`\S+` =
 /// 非空且不含 ASCII 空白（Go RE2 的 `\s` 是 `[\t\n\f\r ]`，非 Unicode）；
 /// `$` = 串尾（无 `(?m)`，注记跟在词后不算）。大小写敏感（Go lazyre 无
-/// `(?i)`；候选模型的 EqualFold 核对在路由层接入时再挂）。
+/// `(?i)`；候选模型的 EqualFold 核对在 [`trial_refused_for`]）。
 fn trial_words(said: &str) -> Option<(TrialForm, String)> {
     const ENDED: &str = "ZCode has no active limited quota for ";
     const SPENT_HEAD: &str = "ZCode's limited quota for ";
@@ -1107,11 +1110,58 @@ fn trial_words(said: &str) -> Option<(TrialForm, String)> {
 }
 
 /// 这具 body 是 ZCode 对某个 Start Plan trial 条目（`<model>-Trial`）自己的
-/// 拒答吗（两种词形任一）？**词表 1:1**；status 与候选模型两道门见上——路由
-/// 层接入时启用，本函数不看。
+/// 拒答吗（两种词形任一）？**词表 1:1**，只看 body 的词形——status / 来源 /
+/// 候选模型几道门在 [`trial_refused_for`]（chat.rs 的 rest 分级走它），本函数
+/// 保留给词表自身的测试。
 pub fn trial_refused(body: &str) -> bool {
     let said = vendor_message(body);
     trial_words(said.trim()).is_some()
+}
+
+/// Go `zcodeTrialRefused`（zcode_trial.go:33-48）的完整判定：这具错误应答是
+/// ZCode 账号对自己某个 Start Plan trial 条目（`<model>-Trial`）的拒答吗？
+/// 四道门全过才认（返回词形，供 rest 分级记条目）：
+///
+/// 1. **来源门**：provider id 是 zcode（Go 是 `c.p.PluginProvider() == "zcode"`
+///    ——查插件注册表；Rust 网关没有插件层，按 store 的 provider id 近似，
+///    `zcode-plugin` 是 Go `PluginID` 撞名时的变体，plugins.go:102-110）；
+/// 2. **候选门**：本轮候选模型自身以 `-trial` 结尾（大小写不敏感；Go
+///    `strings.HasSuffix(strings.ToLower(c.model), "-trial")`，zcode_trial.go:34
+///    ——plain 模型的拒答不进本判定，照旧整账号）；
+/// 3. **status 门**：400（trial 已结束）或 429（额度桶耗尽），其余不认；
+/// 4. **点名核对**：词表点名的模型与候选模型 EqualFold——ended 说 `-Trial`
+///    全名（`m[1]` 直比，zcode_trial.go:41），spent 说去 `-Trial` 的桶模型
+///    （比 `m[1]+"-Trial"`，zcode_trial.go:45）。对不上 = 不明拒答，返回
+///    None，调用方走原有 rest 行为（Go 里整账号 rest，zcode_trial_test.go:61-62
+///    「another trial named / spent names another」）。
+///
+/// EqualFold 语义：Go `strings.EqualFold` 是 Unicode 简单折叠；这里用
+/// `eq_ignore_ascii_case`（ASCII 折叠，非 ASCII 逐字符精确比对）。trial
+/// 条目名与厂商模型 id 实际都是 ASCII（`GLM-5.3-Trial`），差异只在理论面；
+/// 如实记下，不搬 Unicode 折叠表。
+pub(crate) fn trial_refused_for(provider_id: &str, cand_model: &str, status: u16, body: &[u8]) -> Option<TrialForm> {
+    const ZCODE_IDS: [&str; 2] = ["zcode", "zcode-plugin"];
+    if !ZCODE_IDS.contains(&provider_id) {
+        return None;
+    }
+    if !cand_model.to_ascii_lowercase().ends_with("-trial") {
+        return None;
+    }
+    let said = vendor_message(&String::from_utf8_lossy(body));
+    let said = said.trim();
+    match status {
+        400 => match trial_words(said) {
+            Some((TrialForm::Ended, named)) if named.eq_ignore_ascii_case(cand_model) => Some(TrialForm::Ended),
+            _ => None,
+        },
+        429 => match trial_words(said) {
+            Some((TrialForm::Spent, named)) if format!("{named}-Trial").eq_ignore_ascii_case(cand_model) => {
+                Some(TrialForm::Spent)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -1449,7 +1499,7 @@ mod tests {
     #[test]
     fn trial_words_captures_form_and_model() {
         // ended 点名 -Trial 全名；spent 点名去 -Trial 的桶模型（EqualFold 核对
-        // 候选模型是路由层接入时挂的门）
+        // 在 trial_refused_for）
         assert_eq!(
             trial_words("ZCode has no active limited quota for GLM-5.3-Flash-Trial"),
             Some((TrialForm::Ended, "GLM-5.3-Flash-Trial".to_string()))
@@ -1459,6 +1509,41 @@ mod tests {
             Some((TrialForm::Spent, "glm-5.3".to_string()))
         );
         assert_eq!(trial_words("quota exhausted"), None);
+    }
+
+    /// Go TestZCodeTrialRefusalRestsTheTrialAlone（zcode_trial_test.go:45）的
+    /// 纯函数面：四道门（来源/候选/status/点名核对）全过才认，任一不过 =
+    /// None（调用方走原有 rest 行为）。
+    #[test]
+    fn trial_refused_for_gates_on_provider_model_status_and_naming() {
+        let f = |p: &str, m: &str, s: u16, b: &str| trial_refused_for(p, m, s, b.as_bytes());
+        // 全过：ended（400）点名 -Trial 全名 + 候选同名
+        assert_eq!(f("zcode", "GLM-5.3-Flash-Trial", 400, ZCODE_FLASH_TRIAL_ENDED), Some(TrialForm::Ended));
+        assert_eq!(f("zcode", "GLM-5.3-Trial", 400, ZCODE_TRIAL_ENDED), Some(TrialForm::Ended));
+        // EqualFold：候选与点名两侧的大小写都不敏感
+        assert_eq!(f("zcode", "glm-5.3-trial", 400, ZCODE_TRIAL_ENDED), Some(TrialForm::Ended));
+        // Go PluginID 的撞名变体（plugins.go:102-110）也是 zcode 插件的账号
+        assert_eq!(f("zcode-plugin", "GLM-5.3-Trial", 400, ZCODE_TRIAL_ENDED), Some(TrialForm::Ended));
+        // 全过：spent（429）点名去 -Trial 的桶模型，核对 m[1]+"-Trial"
+        assert_eq!(f("zcode", "GLM-5.3-Trial", 429, ZCODE_TRIAL_SPENT), Some(TrialForm::Spent));
+        assert_eq!(f("zcode", "GLM-5.3-Trial", 429, ZCODE_TRIAL_RESTED), Some(TrialForm::Spent));
+        // 词表门：0.1.48 注记跟词后判不中 → None（Go 同侧 rest 整账号）
+        assert_eq!(f("zcode", "GLM-5.3-Trial", 429, ZCODE_TRIAL_RESTED_048), None);
+        // 点名核对：ended 词名 GLM-5.3-Trial，候选是 Flash-Trial → 不认
+        assert_eq!(f("zcode", "GLM-5.3-Flash-Trial", 400, ZCODE_TRIAL_ENDED), None);
+        // 点名核对：spent 词名 glm-5.3（glm-5.3-Trial ≠ Flash-Trial）→ 不认
+        assert_eq!(f("zcode", "GLM-5.3-Flash-Trial", 429, ZCODE_TRIAL_SPENT), None);
+        // status 门：ended 词配 429 / spent 词配 400 / 405 拦截页都不认
+        assert_eq!(f("zcode", "GLM-5.3-Trial", 429, ZCODE_TRIAL_ENDED), None);
+        assert_eq!(f("zcode", "GLM-5.3-Trial", 400, ZCODE_TRIAL_SPENT), None);
+        assert_eq!(f("zcode", "GLM-5.3-Trial", 405, ZCODE_TRIAL_ENDED), None);
+        // 来源门：别的 provider 同词同状态不认
+        assert_eq!(f("factory", "GLM-5.3-Trial", 400, ZCODE_TRIAL_ENDED), None);
+        // 候选门：plain 模型（不带 -Trial）不进判定——账号级拒答照旧整账号
+        assert_eq!(
+            f("zcode", "GLM-5.3", 429, r#"{"error":{"type":"rate_limit_error","message":"quota exhausted"}}"#),
+            None
+        );
     }
 
     #[test]

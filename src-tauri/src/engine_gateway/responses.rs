@@ -119,7 +119,15 @@ fn rewrite_model(body: &[u8], bare: &str) -> Vec<u8> {
 
 /// POST /v1/responses 入口。解析 model → 组路由（有序候选，失败转移）→
 /// 每个成员直通或翻译。
+///
+/// usage 记账（capture 层 2026-11-18 接上）：2xx 回合在收口处落一行
+/// （agent="responses"）——流式（直通透传与翻译输出）由
+/// `usage_ledger::TapReader` 包在 reader 外层，从 response.completed 的
+/// usage 提桶（input_tokens 含缓存 → 减两桶得净额，Go rUsage 口径）；
+/// 非流式整块扫描。会话种子取 body 侧（路由层不传请求头，
+/// `stick_key(&[], …)`——头携带的会话是记录在案的差距）。
 pub fn handle(gateway: &super::Gateway, body: &[u8]) -> Reply {
+    let began = std::time::Instant::now();
     let model = asked_model(body);
     if model.is_empty() {
         return Reply::error(400, "invalid request: model");
@@ -128,14 +136,26 @@ pub fn handle(gateway: &super::Gateway, body: &[u8]) -> Reply {
     if cands.is_empty() {
         return Reply::error(404, &format!("no provider for model: {model}"));
     }
+    let parsed = serde_json::from_slice::<Value>(body).unwrap_or(Value::Null);
+    let log = super::usage_ledger::TurnLog::new(
+        "responses",
+        &model,
+        super::affinity::stick_key(&[], &parsed),
+        began,
+    );
     super::groups::drive(&cands, |cand| {
         let body = super::groups::body_for(gateway, super::effort::Proto::Responses, cand, body);
-        attempt(gateway, cand, &body)
+        attempt(gateway, cand, &body, &log)
     })
 }
 
 /// 一个成员的一次尝试：直通优先，responses 端点不存在再退翻译。
-fn attempt(gateway: &super::Gateway, cand: &super::groups::Candidate, body: &[u8]) -> Attempt {
+fn attempt(
+    gateway: &super::Gateway,
+    cand: &super::groups::Candidate,
+    body: &[u8],
+    log: &super::usage_ledger::TurnLog,
+) -> Attempt {
     // 锁内只做表查询与字段快照，锁外跑网络（store 锁绝不持着等 HTTP——
     // 2026-10-31 storage 锁事故红线）。
     let (responses_url, key, headers, has_chat) = {
@@ -162,7 +182,7 @@ fn attempt(gateway: &super::Gateway, cand: &super::groups::Candidate, body: &[u8
     };
     if !responses_url.is_empty() {
         let target = DirectTarget { provider_id: &cand.provider, base: &responses_url, key: &key, headers: &headers };
-        match passthrough(gateway, &target, body, &cand.model) {
+        match passthrough(gateway, &target, body, &cand.model, log) {
             // 预设表给了 responses 端点不等于厂商真有（DeepSeek 一类：用户机上
             // magpie 学到后把它清空了）：端点不存在（404/405/501）且来源有 chat
             // 基址 → 退回翻译路径，别把 codex 晾在一个不存在的端点上。
@@ -177,7 +197,7 @@ fn attempt(gateway: &super::Gateway, cand: &super::groups::Candidate, body: &[u8
             &format!("{} has no endpoint for /v1/responses", cand.provider),
         ));
     }
-    translate_via_chat(gateway, cand, body)
+    translate_via_chat(gateway, cand, body, log)
 }
 
 // =====================================================================
@@ -229,6 +249,7 @@ fn passthrough(
     target: &DirectTarget,
     body: &[u8],
     bare: &str,
+    log: &super::usage_ledger::TurnLog,
 ) -> Attempt {
     let out_body = rewrite_model(body, bare);
     // cap 已知时先合身再发（免吃一次拒答）。
@@ -247,14 +268,23 @@ fn passthrough(
     let status = response.status();
     if status < 400 {
         if streaming {
+            // usage 捕获：直通透传流也是 responses 方言（completed 帧带
+            // usage），tap 包外层照提（Go sniff.go 的拷贝路径同款）。
+            let tap = log.tap(
+                gateway.usage.clone(),
+                super::usage_ledger::Dialect::Responses,
+                target.provider_id,
+                status,
+            );
             return Attempt::Done(Reply::Stream {
                 status,
                 content_type: response.content_type().to_string(),
-                reader: Box::new(response.into_reader()),
+                reader: Box::new(super::usage_ledger::TapReader::new(tap, response.into_reader())),
             });
         }
         let mut buf = Vec::new();
         let _ = response.into_reader().read_to_end(&mut buf);
+        log.whole(&gateway.usage, super::usage_ledger::Dialect::Responses, target.provider_id, status, &buf);
         return Attempt::Done(Reply::Json { status, body: buf });
     }
     let mut buf = Vec::new();
@@ -268,11 +298,36 @@ fn passthrough(
         &buf,
         &|b| send_direct(target, b),
     ) {
-        return Attempt::Done(reply);
+        return Attempt::Done(tapped(reply, gateway, log, target.provider_id));
     }
     let retry = super::groups::retryable(status, &buf);
     let reply = Reply::Json { status, body: buf };
     if retry { Attempt::Retry(reply) } else { Attempt::Done(reply) }
+}
+
+/// bodycap refit 重发的终局应答挂 usage 记账（流包 tap、整块扫描）。
+fn tapped(
+    reply: Reply,
+    gateway: &super::Gateway,
+    log: &super::usage_ledger::TurnLog,
+    provider: &str,
+) -> Reply {
+    match reply {
+        Reply::Stream { status, content_type, reader } => {
+            let tap = log.tap(gateway.usage.clone(), super::usage_ledger::Dialect::Responses, provider, status);
+            Reply::Stream {
+                status,
+                content_type,
+                reader: Box::new(super::usage_ledger::TapReader::new(tap, reader)),
+            }
+        }
+        Reply::Json { status, body } => {
+            if status < 400 {
+                log.whole(&gateway.usage, super::usage_ledger::Dialect::Responses, provider, status, &body);
+            }
+            Reply::Json { status, body }
+        }
+    }
 }
 
 // =====================================================================
@@ -391,6 +446,7 @@ fn translate_via_chat(
     gateway: &super::Gateway,
     cand: &super::groups::Candidate,
     body: &[u8],
+    log: &super::usage_ledger::TurnLog,
 ) -> Attempt {
     let parsed: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
@@ -428,7 +484,7 @@ fn translate_via_chat(
     let scout = (!names.is_empty()).then(|| super::textcalls::TextCallScout::new(&names));
     let chat_body = serde_json::to_vec(&chat_value).unwrap_or_default();
     match super::chat::attempt(gateway, cand, &chat_body) {
-        Attempt::Done(reply) => Attempt::Done(reshape(reply, &asked, &table, scout, prev)),
+        Attempt::Done(reply) => Attempt::Done(reshape(reply, &asked, &table, scout, prev, gateway, &cand.provider, log)),
         Attempt::Retry(reply) => Attempt::Retry(reply),
     }
 }
@@ -436,12 +492,20 @@ fn translate_via_chat(
 /// `chat::forward` 的应答 → responses 应答。错误（≥400）原样透传：chat
 /// 家族的错误面本就是 `{"error":{…}}` 同构形状，重写只会丢厂商的原话，
 /// 状态码透传。
+///
+/// usage 记账：最终面向客户端的是 responses 方言——整块在折好的 response
+/// 对象上扫（`usage_to_responses` 补的 0 桶被 tap 的 >0 过滤掉，不编数）；
+/// 流式 tap 包在 ResponsesSse 外层，从 completed 帧提桶。
+#[allow(clippy::too_many_arguments)]
 fn reshape(
     reply: Reply,
     asked: &str,
     table: &super::translate::ToolTable,
     scout: Option<super::textcalls::TextCallScout>,
     prev: Option<PrevSave>,
+    gateway: &super::Gateway,
+    provider: &str,
+    log: &super::usage_ledger::TurnLog,
 ) -> Reply {
     match reply {
         Reply::Json { status, body } => {
@@ -454,7 +518,9 @@ fn reshape(
                         }
                         let mut resp = chat_completion_to_response(&v, asked, table);
                         seal_prev(&mut resp, prev, asked);
-                        Reply::Json { status, body: serde_json::to_vec(&resp).unwrap_or(body) }
+                        let out = serde_json::to_vec(&resp).unwrap_or(body);
+                        log.whole(&gateway.usage, super::usage_ledger::Dialect::Responses, provider, status, &out);
+                        Reply::Json { status, body: out }
                     }
                     // 2xx 但不是 JSON：翻译路径的客户端说的是 responses 话，
                     // 原样的 chat 噪音没有意义——诚实报 502。
@@ -486,7 +552,9 @@ fn reshape(
                         }
                         let mut resp = chat_completion_to_response(&v, asked, table);
                         seal_prev(&mut resp, prev, asked);
-                        Reply::Json { status: 200, body: serde_json::to_vec(&resp).unwrap_or(buf) }
+                        let out = serde_json::to_vec(&resp).unwrap_or(buf);
+                        log.whole(&gateway.usage, super::usage_ledger::Dialect::Responses, provider, 200, &out);
+                        Reply::Json { status: 200, body: out }
                     }
                     Err(_) => Reply::error(502, "chat vendor replied a non-JSON body"),
                 };
@@ -498,10 +566,11 @@ fn reshape(
             if let Some(p) = prev {
                 sse = sse.with_prev(p);
             }
+            let tap = log.tap(gateway.usage.clone(), super::usage_ledger::Dialect::Responses, provider, 200);
             Reply::Stream {
                 status: 200,
                 content_type: "text/event-stream".into(),
-                reader: Box::new(sse),
+                reader: Box::new(super::usage_ledger::TapReader::new(tap, sse)),
             }
         }
     }
@@ -510,7 +579,9 @@ fn reshape(
 /// chat usage → responses usage。口径：OpenAI 两代的 input_tokens 都含
 /// cached（Go `Usage.prompt()` 的注释——"every token the prompt came to,
 /// as OpenAI's counts have it"），chat 的 prompt_tokens 同口径，直搬；
-/// chat 不报的桶记 0，不编数。
+/// chat 不报的桶记 0，不编数。`cache_write_tokens` 进 details 与 Go
+/// `Usage.responses()`（responses.go:1682）同形——Codex 也读它（#589），
+/// usage 捕获层（usage_ledger 的 responses 方言）同字段提桶。
 fn usage_to_responses(u: Option<&Value>) -> Value {
     let num = |v: Option<&Value>, k: &str| {
         v.and_then(|x| x.get(k)).and_then(|x| x.as_u64()).unwrap_or(0)
@@ -528,6 +599,10 @@ fn usage_to_responses(u: Option<&Value>) -> Value {
         "input_tokens_details": {
             "cached_tokens": u
                 .and_then(|x| x.pointer("/prompt_tokens_details/cached_tokens"))
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0),
+            "cache_write_tokens": u
+                .and_then(|x| x.pointer("/prompt_tokens_details/cache_write_tokens"))
                 .and_then(|x| x.as_u64())
                 .unwrap_or(0)
         },
@@ -2210,5 +2285,71 @@ mod tests {
         let out = v["output"].as_array().unwrap();
         assert_eq!(out.len(), 1, "没读出调用：{out:?}");
         assert_eq!(out[0]["content"][0]["text"], text);
+    }
+
+    // -----------------------------------------------------------------
+    // usage 记账（capture 层，Go sniff.go 的 responses 方言口径）
+    // -----------------------------------------------------------------
+
+    /// 翻译路径流式回合落账：completed 帧的 usage 四桶——responses 的
+    /// input_tokens 含缓存 → 减两桶得净额；prompt_cache_key 种子随行。
+    #[test]
+    fn translated_stream_turn_records_usage_buckets() {
+        let sse = concat!(
+            r#"data: {"id":"c1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"你好"},"finish_reason":null}]}"#, "\n\n",
+            r#"data: {"id":"c1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1000,"completion_tokens":40,"total_tokens":1040,"prompt_tokens_details":{"cached_tokens":300,"cache_write_tokens":100}}}"#, "\n\n",
+            "data: [DONE]\n\n"
+        );
+        let vendor = fake_vendor(200, "text/event-stream", sse);
+        let (gateway, _sandbox) = sandbox(&format!(
+            r#"{{"providers":[{{"id":"p","name":"P","key":"k","chat":"{}/v1"}}]}}"#,
+            vendor.base
+        ));
+        let reply = handle(
+            &gateway,
+            br#"{"model":"p/m","input":"hi","stream":true,"prompt_cache_key":"sess-r"}"#,
+        );
+        let Reply::Stream { mut reader, .. } = reply else { panic!("stream reply") };
+        let mut out = String::new();
+        reader.read_to_string(&mut out).expect("read sse");
+        assert!(out.contains("event: response.completed"));
+        let rows = gateway.usage.records_since(0);
+        assert_eq!(rows.len(), 1, "一条回合一行");
+        let r = &rows[0];
+        assert_eq!(r.agent, "responses");
+        assert_eq!(r.provider, "p");
+        assert_eq!(r.model, "p/m");
+        assert_eq!(r.session.as_deref(), Some("sess-r"), "body 侧种子（prompt_cache_key）");
+        assert_eq!(r.in_tokens, Some(600), "completed 的 input_tokens 含缓存：1000 − 300 − 100");
+        assert_eq!(r.out_tokens, Some(40));
+        assert_eq!(r.cache_read, Some(300));
+        assert_eq!(r.cache_write, Some(100));
+        assert!(r.millis > 0);
+    }
+
+    /// 翻译路径非流式：折好的 response 对象整块扫描；chat 厂商没说的桶
+    /// （usage_to_responses 补的 0）不进账。
+    #[test]
+    fn translated_non_stream_turn_records_usage() {
+        let vendor = fake_vendor(
+            200,
+            "application/json",
+            r#"{"id":"c1","object":"chat.completion","model":"m",
+                "choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+                "usage":{"prompt_tokens":700,"completion_tokens":12,"total_tokens":712,
+                    "prompt_tokens_details":{"cached_tokens":250}}}"#,
+        );
+        let (gateway, _sandbox) = sandbox(&one_chat_vendor(&vendor));
+        let reply = handle(&gateway, br#"{"model":"p/m","input":"hi"}"#);
+        assert!(matches!(reply, Reply::Json { status: 200, .. }));
+        let rows = gateway.usage.records_since(0);
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(r.agent, "responses");
+        assert_eq!(r.in_tokens, Some(450), "700 − 250 缓存读");
+        assert_eq!(r.out_tokens, Some(12));
+        assert_eq!(r.cache_read, Some(250));
+        assert!(r.cache_write.is_none(), "厂商没说缓存写：补的 0 不编成实测");
+        assert!(r.session.is_none(), "请求没带种子");
     }
 }

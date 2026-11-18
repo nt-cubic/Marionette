@@ -19,7 +19,9 @@
 //! - **直通改写**（D10）：流输出包 `chattidy::ChattidyReader`，非流式整块
 //!   过 `chattidy::mend_whole_reply`——工具参数零分数（2500.0→2500）、
 //!   usage 口径、空名工具剔除、同帧同 index 合并（详见 chattidy.rs）。
-//! - **休息记忆**：5xx/429/断流的候选 60s 内跳过（全在休息则无视）。
+//! - **休息记忆**：5xx/429/断流的候选 60s 内跳过（全在休息则无视）；zcode
+//!   trial 拒答分级——只 rest 该 `<model>-Trial` 条目（模型级 key
+//!   `provider::model`，判定在 zcode_account.rs），账号其它模型照常候选。
 //!
 //! 出站前的 chat 体「合身」（Go gateway.go `case provider.Chat` 那一段的
 //! 子集，[`fit_for_vendor`]）：`developer`→`system`、纯文本 parts 折成字符串、
@@ -400,10 +402,13 @@ pub(crate) fn attempt(gw: &super::Gateway, cand: &Candidate, body: &[u8]) -> Att
 /// 等换行，按活流放行。
 const HEAD_HOLD_MAX: usize = 256 * 1024;
 
-/// 休息时长：5xx/429/断流的候选 60s 内被候选循环跳过。
+/// 休息时长：5xx/429/断流的候选 60s 内被候选循环跳过（zcode trial 拒答的
+/// 模型级条目同窗，见 [`rest_entry`]）。
 /// 与 Go 的差距（routing.go:69 `served` / restingUntil 家族）：不落盘、不分
 /// 错误等级（Go 按额度耗尽/限流 Retry-After/挂了分窗口长度且逐次失败退避
-/// 递增）、无 per-account/per-model 细分——这里按 provider id 一把抓。
+/// 递增）、无 per-account 细分——provider 级仍按 id 一把抓；模型级条目目前
+/// 只有 zcode trial 拒答一个写入者（Go 还有 modelNamed / PaidBesideFree /
+/// modelLimitedBy 等任意厂商的模型级 rest 口，未搬）。
 const REST_FOR: Duration = Duration::from_secs(60);
 
 fn rests() -> &'static Mutex<HashMap<String, Instant>> {
@@ -411,19 +416,47 @@ fn rests() -> &'static Mutex<HashMap<String, Instant>> {
     RESTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// 标记一个来源休息（5xx / 429 / 断流）。
-fn rest_provider(provider_id: &str) {
+/// 模型级休息条目的 key：`<provider_id>::<model>`。Go 的对应是
+/// `candidate.restID()` = restKey()+"/"+model（fallback.go:211-213）；Rust 的
+/// rest 表本来就按 provider id 键、目录 id 又是 `provider/model` 复合写法，
+/// 用 `::` 分隔与两者都无歧义（engine 的 provider id 生成只出小写字母/
+/// 数字/横线）。目前唯一的写入者是 zcode trial 拒答的 rest 分级。
+fn entry_rest_key(provider_id: &str, model: &str) -> String {
+    format!("{provider_id}::{model}")
+}
+
+fn rest_key_now(key: String) {
     if let Ok(mut map) = rests().lock() {
         map.retain(|_, until| *until > Instant::now());
-        map.insert(provider_id.to_string(), Instant::now() + REST_FOR);
+        map.insert(key, Instant::now() + REST_FOR);
     }
 }
 
-/// 来源答上来了（流首放行 / 整块 JSON 解析成功）：清掉它的休息。
-fn wake(provider_id: &str) {
+/// 标记一个来源休息（5xx / 429 / 断流）：provider 一把抓。
+fn rest_provider(provider_id: &str) {
+    rest_key_now(provider_id.to_string());
+}
+
+/// 只标记一个模型级条目休息（zcode trial 拒答的分级，Go routing.go:1832-1836
+/// `id = c.restID()`）：同 provider 的其它模型照常候选。窗口仍是统一的
+/// [`REST_FOR`]——Go 按错误等级分窗口长度的 restingUntil 家族没搬（见文件尾）。
+fn rest_entry(provider_id: &str, model: &str) {
+    rest_key_now(entry_rest_key(provider_id, model));
+}
+
+/// 来源答上来了（流首放行 / 整块 JSON 解析成功）：清掉它的休息——provider
+/// 级与当前模型的条目级一起清（Go servedCandidate 对 restID 也 clearRest，
+/// routing.go:91-97）。
+fn wake(provider_id: &str, model: &str) {
     if let Ok(mut map) = rests().lock() {
         map.remove(provider_id);
+        map.remove(&entry_rest_key(provider_id, model));
     }
+}
+
+/// 候选是否在休息：provider 级条目或它自己模型的条目任一在休即算。
+fn resting(provider_id: &str, model: &str) -> bool {
+    rest_left(provider_id).is_some() || rest_left(&entry_rest_key(provider_id, model)).is_some()
 }
 
 /// 该来源还剩多久休息（None = 不在休息）。pub(crate)：后续批次（订阅线/
@@ -648,30 +681,28 @@ impl Read for ClosingReader {
 /// 死在流首之前换下一个重发整轮 → 流首放行即终局（断流由 [`ClosingReader`]
 /// 补可判定收尾）→ 2xx 非流式以「整块 JSON 解析成功」为合法收尾。休息中
 /// 的候选跳过（全在休息则无视）。
-/// 成功回合收账：粘性（曾答账号）+ usage 台账（token 桶从流里提留给后续
-/// 批次——capture 层还没建，先记 millis/status/session 骨架）。
-fn note_turn(gw: &super::Gateway, headers: &[(String, String)], body: &[u8], cand: &Candidate, status: u16) {
+/// 成功回合收账（capture 层 2026-11-18 接上，Go sniff.go/gateway.go:5883
+/// 口径）：粘性（曾答账号）在流首放行 / 整块解析成功时就记；usage 台账行
+/// 按路径落——非流式整块在手直接提桶，流式由
+/// `usage_ledger::TapReader` 包在 relay 链外层，流尾收口（EOF / 断流 /
+/// drop 都落，SSE 尾帧 usage 四桶照提，millis = 请求入口→收口）。
+fn note_answered(
+    gw: &super::Gateway,
+    headers: &[(String, String)],
+    body: &[u8],
+    cand: &Candidate,
+) -> (Option<String>, String) {
     let parsed: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
     let sk = super::affinity::stick_key(headers, &parsed);
     if let Some(sk) = &sk {
         gw.affinity.answered(sk, &cand.provider, &cand.model);
     }
     let asked = parsed.get("model").and_then(|m| m.as_str()).unwrap_or_default().to_string();
-    gw.usage.record(super::usage_ledger::UsageRecord {
-        ts: 0,
-        agent: "chat".into(),
-        provider: cand.provider.clone(),
-        model: asked,
-        millis: 0,
-        status,
-        rejected: false,
-        session: sk,
-        kind: "turn".into(),
-        in_tokens: None, out_tokens: None, cache_read: None, cache_write: None,
-    });
+    (sk, asked)
 }
 
 pub fn forward(gw: &super::Gateway, headers: &[(String, String)], body: &[u8]) -> Reply {
+    let began = std::time::Instant::now();
     let model = serde_json::from_slice::<Value>(body)
         .ok()
         .and_then(|v| v.get("model").and_then(|m| m.as_str()).map(String::from))
@@ -681,7 +712,7 @@ pub fn forward(gw: &super::Gateway, headers: &[(String, String)], body: &[u8]) -
         return Reply::error(404, &format!("no provider for model: {model}"));
     }
     let live: Vec<Candidate> = {
-        let awake: Vec<&Candidate> = cands.iter().filter(|c| rest_left(&c.provider).is_none()).collect();
+        let awake: Vec<&Candidate> = cands.iter().filter(|c| !resting(&c.provider, &c.model)).collect();
         let base: Vec<&Candidate> = if awake.is_empty() { cands.iter().collect() } else { awake };
         // 会话粘性（affinity.rs）：有种子时曾答账号浮最前（Go affine 最小版）
         let owned: Vec<Candidate> = base.into_iter().cloned().collect();
@@ -699,11 +730,24 @@ pub fn forward(gw: &super::Gateway, headers: &[(String, String)], body: &[u8]) -
             Attempt::Done(reply) => match reply {
                 Reply::Stream { status, content_type, reader } => match hold_head(reader) {
                     HeadHold::Live { head, rest } => {
-                        wake(&cand.provider);
-                        note_turn(gw, headers, &body, cand, 200);
+                        wake(&cand.provider, &cand.model);
+                        let (session, asked) = note_answered(gw, headers, &body, cand);
+                        // usage 捕获（Go usageSniffer 的 relay 拷贝路径）：包在
+                        // 链最外层，流尾收口落账——SSE 尾帧 usage 四桶、断流
+                        // 照落（已发字节算已服务）。
+                        let log = super::usage_ledger::TurnLog::new("chat", &asked, session, began);
+                        let tap = log.tap(
+                            gw.usage.clone(),
+                            super::usage_ledger::Dialect::Chat,
+                            &cand.provider,
+                            status,
+                        );
                         let relay = ClosingReader::new(
                             cand.provider.clone(),
-                            Box::new(chattidy::ChattidyReader::new(HeadThen { head, at: 0, rest })),
+                            Box::new(super::usage_ledger::TapReader::new(
+                                tap,
+                                chattidy::ChattidyReader::new(HeadThen { head, at: 0, rest }),
+                            )),
                         );
                         return Reply::Stream { status, content_type, reader: Box::new(relay) };
                     }
@@ -716,13 +760,18 @@ pub fn forward(gw: &super::Gateway, headers: &[(String, String)], body: &[u8]) -
                         continue;
                     }
                 },
-                Reply::Json { status, body } if status < 400 => {
+                Reply::Json { status, body: vendor_body } if status < 400 => {
                     // 非流式的合法收尾 = 整块 JSON 解析成功（D7）；顺手过
-                    // chattidy 的整块修补（D10 非流式半边）。
-                    if serde_json::from_slice::<Value>(&body).is_ok() {
-                        wake(&cand.provider);
-                        note_turn(gw, headers, &body, cand, status);
-                        return Reply::Json { status, body: chattidy::mend_whole_reply(&body) };
+                    // chattidy 的整块修补（D10 非流式半边）。usage 整块提桶
+                    // 在修补**前**的原始厂商体上做（别名桶提取序自带）；
+                    // 会话/asked 取**请求**体（旧骨架版在应答体上取，
+                    // session 几乎恒 None、model 记成厂商裸名——顺手纠正）。
+                    if serde_json::from_slice::<Value>(&vendor_body).is_ok() {
+                        wake(&cand.provider, &cand.model);
+                        let (session, asked) = note_answered(gw, headers, &body, cand);
+                        let log = super::usage_ledger::TurnLog::new("chat", &asked, session, began);
+                        log.whole(&gw.usage, super::usage_ledger::Dialect::Chat, &cand.provider, status, &vendor_body);
+                        return Reply::Json { status, body: chattidy::mend_whole_reply(&vendor_body) };
                     }
                     rest_provider(&cand.provider);
                     last = Some(Reply::error(
@@ -734,8 +783,17 @@ pub fn forward(gw: &super::Gateway, headers: &[(String, String)], body: &[u8]) -
                 other => return other,
             },
             Attempt::Retry(reply) => {
-                if let Reply::Json { status, .. } = &reply {
-                    if *status == 429 || *status >= 500 {
+                if let Reply::Json { status, body } = &reply {
+                    // zcode trial 拒答的 rest 分级（Go routing.go:1832-1836：
+                    // `why == failQuota && zcodeTrialRefused(...)` 时 rest key
+                    // 从 restKey 换成 restID——只 rest 该 `<model>-Trial` 条目，
+                    // 账号其它模型不动）。判不中回落原有行为：429/5xx 整
+                    // provider，400 不 rest。
+                    if super::zcode_account::trial_refused_for(&cand.provider, &cand.model, *status, body)
+                        .is_some()
+                    {
+                        rest_entry(&cand.provider, &cand.model);
+                    } else if *status == 429 || *status >= 500 {
                         rest_provider(&cand.provider);
                     }
                 }
@@ -751,6 +809,12 @@ pub fn forward(gw: &super::Gateway, headers: &[(String, String)], body: &[u8]) -
 // 与 Go 的已知差距（批 3 收口清单；survey N1/N3/N4 的 Rust 侧残留）
 // ---------------------------------------------------------------------------
 
+// - **usage 记账的覆盖面**（2026-11-18 capture 层接上后的残留）：成功回合
+//   （流式 tap + 非流式整块）落真数；仍不落——提前拒答行（Go turnedAway
+//   的 `Rejected:true`，gateway.go:2672-2690）、候选循环里失败 try 的中间
+//   账（Go failedRow 的 HandedOn 行）、流断掉时的失败标记（Go sniff.go:26
+//   `failed`——Rust 台账无 Error 侧字段，断流行与正常收尾都是 status 200）。
+//   断流/失败落账语义：已发字节算已服务、桶按已见真数照记（毫秒到流尾）。
 // - **continuation 断流续答不做**（Go continuation.go:364 again / :378
 //   prefillText / :455 streamTranslated）：上游在流中途死亡且字节已发给
 //   客户端时，Go 会用 prefill 续写拼回完整回复；这里只保证可判定收尾
@@ -763,6 +827,15 @@ pub fn forward(gw: &super::Gateway, headers: &[(String, String)], body: &[u8]) -
 //   Retry-After 解析、成功只清本来源（Go served 还记 token 用量做 usage
 //   路由）；且只挂在 chat 直通候选循环上——responses/messages 翻译路径
 //   的 `groups::drive` 不查休息表（后续批次接线）。
+//   **模型级条目已接一半（2026-11-18）**：zcode trial 拒答只 rest
+//   `<provider>::<model>-Trial` 条目（Go routing.go:1834 的 restID），
+//   账号其它模型照常候选——但 rest 窗口不分错误等级，Go 的 restingUntil
+//   家族（额度耗尽/限流 Retry-After/挂了各分窗口长度 + 逐次失败退避递增）
+//   没搬；Go 的 failQuota 400 也 rest 整账号，这里 400 判不中 trial 时仍
+//   不 rest；zcodeTrialBlocked（405 拦截页）/ zcodeTrialRestricted（风控
+//   3012）也只 rest trial 条目（zcode_trial.go:63/79），词表未移植；其它
+//   厂商的模型级 rest 口（modelNamed / PaidBesideFree / modelLimitedBy）
+//   未搬——模型级条目目前只有 zcode trial 拒答一个写入者。
 // - **chattidy 只做合同面子集**（见 chattidy.rs 文件头）：withReasoning
 //   OnToolTurns、空 reasoning_content 剔除、finish_reason 规整、流式
 //   id/index 补齐、无名调用整链丢弃等未搬。
@@ -948,7 +1021,7 @@ mod routing_tests {
     use super::super::Gateway;
     use super::*;
     use serde_json::json;
-    use std::io::{BufRead, BufReader, Read as _, Write};
+    use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, MutexGuard};
@@ -1402,6 +1475,8 @@ mod routing_tests {
         Before,
         /// 给了两条完整事件后断（没有 [DONE]）。
         After,
+        /// 给了 delta + usage 尾帧后断（没有 [DONE]）——usage 已可见。
+        AfterUsage,
     }
 
     /// 掐流假厂商：应答 200 text/event-stream 后在指定点毁掉连接（上游
@@ -1459,6 +1534,14 @@ mod routing_tests {
                         );
                         let _ = stream.write_all(
                             b"data: {\"id\":\"c\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial-\"}}]}\n\n",
+                        );
+                    }
+                    CutAt::AfterUsage => {
+                        let _ = stream.write_all(
+                            b"data: {\"id\":\"c\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial-\"}}]}\n\n",
+                        );
+                        let _ = stream.write_all(
+                            b"data: {\"id\":\"c\",\"choices\":[],\"usage\":{\"prompt_tokens\":500,\"completion_tokens\":20,\"total_tokens\":520,\"prompt_tokens_details\":{\"cached_tokens\":150}}}\n\n",
                         );
                     }
                 }
@@ -1607,6 +1690,144 @@ mod routing_tests {
         assert_eq!(a.hits.load(Ordering::SeqCst), 2, "all-resting must ignore the rest");
     }
 
+    /// zcode trial 拒答的 rest 分级（Go zcode_trial.go:33 + routing.go:1834）：
+    /// 词表点名的 `<model>-Trial` 条目自己休息，同 provider 的 plain 模型下一轮
+    /// 照常由它服务；条目休息期间该模型的请求静默换下一成员。
+    #[test]
+    fn zcode_trial_refusal_rests_only_the_trial_entry() {
+        // zcode 厂商：被问到 GLM-5.3-Trial 回 400 ended 词（点名同一模型），
+        // 其它模型正常作答。词表体 1:1（Go zcode_trial_test.go:19）。
+        let ended = b"{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"ZCode has no active limited quota for GLM-5.3-Trial\"}}".to_vec();
+        let z = fake(Box::new(move |s: &Seen| {
+            let model = serde_json::from_slice::<Value>(&s.body)
+                .ok()
+                .and_then(|v| v.get("model").and_then(|m| m.as_str()).map(String::from))
+                .unwrap_or_default();
+            if model == "GLM-5.3-Trial" {
+                (400, "application/json", ended.clone())
+            } else {
+                (200, "application/json", ok_chat("from zcode"))
+            }
+        }));
+        let b = fake(Box::new(|_| (200, "application/json", ok_chat("from b"))));
+        let world = json!({
+            "providers": [
+                {"id": "zcode", "name": "Z", "key": "kz", "chat": format!("{}/v1", z.base)},
+                {"id": "pb", "name": "B", "key": "kb", "chat": format!("{}/v1", b.base)},
+            ],
+            "groups": [
+                {"id": "t", "name": "t", "members": ["zcode/GLM-5.3-Trial", "pb/mb"], "routing": "order"},
+                {"id": "s", "name": "s", "members": ["zcode/GLM-5.3", "pb/mb"], "routing": "order"},
+            ],
+        })
+        .to_string();
+        let (gw, _sb) = sandbox(&world);
+        // 第 1 发（trial）：zcode 拒 → 转 b。只 trial 条目休息，账号不休息。
+        assert_eq!(status_of(&forward(&gw, &[], &chat_request("t", false))), 200);
+        assert_eq!(z.hits.load(Ordering::SeqCst), 1);
+        assert_eq!(b.hits.load(Ordering::SeqCst), 1);
+        assert!(rest_left("zcode::GLM-5.3-Trial").is_some(), "the trial entry rests");
+        assert_eq!(rest_left("zcode"), None, "the account itself must not rest");
+        // 第 2 发（plain 模型）：zcode 没在休息 → 它自己答（Go：the account's
+        // GLM-5.3 still served by it）。
+        assert_eq!(status_of(&forward(&gw, &[], &chat_request("s", false))), 200);
+        assert_eq!(z.hits.load(Ordering::SeqCst), 2, "the plain model must still ask zcode");
+        assert_eq!(b.hits.load(Ordering::SeqCst), 1);
+        // 第 3 发（trial 再来）：条目在休息 → 跳过 zcode，直接 b。
+        let reply = forward(&gw, &[], &chat_request("t", false));
+        assert_eq!(status_of(&reply), 200);
+        assert!(text_of(reply).contains("from b"));
+        assert_eq!(z.hits.load(Ordering::SeqCst), 2, "the resting entry must be skipped");
+    }
+
+    /// 判不中的组合照旧整 provider rest（Go zcode_trial_test.go:57-62「account
+    /// quota / spent names another」：accountRest=true）：账号级 429 与「词表
+    /// 命名了别的 trial」的 429 都 rest 整个 zcode；400 命中但模型对不上时
+    /// Rust 不 rest（Go failQuota 400 rest 整账号——极简 rest 的既有差距）。
+    #[test]
+    fn zcode_trial_mismatch_and_account_refusals_rest_the_provider() {
+        // spent 词点名 glm-5.3，候选是 Flash-Trial：EqualFold 对不上 → 整
+        // provider rest。
+        let spent = b"{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"ZCode's limited quota for glm-5.3 is exhausted or temporarily unavailable\"}}".to_vec();
+        let z = fake(Box::new(move |_| (429, "application/json", spent.clone())));
+        let b = fake(Box::new(|_| (200, "application/json", ok_chat("from b"))));
+        let world = json!({
+            "providers": [
+                {"id": "zcode", "name": "Z", "key": "kz", "chat": format!("{}/v1", z.base)},
+                {"id": "pb", "name": "B", "key": "kb", "chat": format!("{}/v1", b.base)},
+            ],
+            "groups": [
+                {"id": "t", "name": "t", "members": ["zcode/GLM-5.3-Flash-Trial", "pb/mb"], "routing": "order"},
+                {"id": "s", "name": "s", "members": ["zcode/GLM-5.3", "pb/mb"], "routing": "order"},
+            ],
+        })
+        .to_string();
+        let (gw, _sb) = sandbox(&world);
+        assert_eq!(status_of(&forward(&gw, &[], &chat_request("t", false))), 200);
+        assert!(rest_left("zcode").is_some(), "a spent 429 naming another model rests the account");
+        // plain 模型跟着被跳过（账号在休息）。
+        assert_eq!(status_of(&forward(&gw, &[], &chat_request("s", false))), 200);
+        assert_eq!(z.hits.load(Ordering::SeqCst), 1, "the rested account must be skipped");
+        drop(_sb);
+
+        // 账号级 429（普通 quota 词，不是 trial 词）照旧整 provider rest。
+        let z2 = fake(Box::new(|_| {
+            (429, "application/json", b"{\"error\":{\"type\":\"rate_limit_error\",\"message\":\"quota exhausted\"}}".to_vec())
+        }));
+        let b2 = fake(Box::new(|_| (200, "application/json", ok_chat("from b"))));
+        let world2 = json!({
+            "providers": [
+                {"id": "zcode", "name": "Z", "key": "kz", "chat": format!("{}/v1", z2.base)},
+                {"id": "pb", "name": "B", "key": "kb", "chat": format!("{}/v1", b2.base)},
+            ],
+            "groups": [
+                {"id": "t", "name": "t", "members": ["zcode/GLM-5.3-Trial", "pb/mb"], "routing": "order"},
+                {"id": "s", "name": "s", "members": ["zcode/GLM-5.3", "pb/mb"], "routing": "order"},
+            ],
+        })
+        .to_string();
+        let (gw, _sb) = sandbox(&world2);
+        assert_eq!(status_of(&forward(&gw, &[], &chat_request("t", false))), 200);
+        assert!(rest_left("zcode").is_some(), "an account-level 429 rests the account");
+        assert_eq!(rest_left("zcode::GLM-5.3-Trial"), None, "no model-level entry for account refusals");
+        assert_eq!(status_of(&forward(&gw, &[], &chat_request("s", false))), 200);
+        assert_eq!(z2.hits.load(Ordering::SeqCst), 1, "the rested account must be skipped");
+        drop(_sb);
+
+        // 400 ended 词点名另一个 trial（候选 Flash-Trial）：判不中 → 不 rest
+        //（Rust 现状；Go 会按 failQuota rest 整账号）——下一次仍问 zcode。
+        let ended_other = b"{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"ZCode has no active limited quota for GLM-5.3-Trial\"}}".to_vec();
+        let z3 = fake(Box::new(move |s: &Seen| {
+            let model = serde_json::from_slice::<Value>(&s.body)
+                .ok()
+                .and_then(|v| v.get("model").and_then(|m| m.as_str()).map(String::from))
+                .unwrap_or_default();
+            if model == "GLM-5.3-Flash-Trial" {
+                (400, "application/json", ended_other.clone())
+            } else {
+                (200, "application/json", ok_chat("from zcode"))
+            }
+        }));
+        let b3 = fake(Box::new(|_| (200, "application/json", ok_chat("from b"))));
+        let world3 = json!({
+            "providers": [
+                {"id": "zcode", "name": "Z", "key": "kz", "chat": format!("{}/v1", z3.base)},
+                {"id": "pb", "name": "B", "key": "kb", "chat": format!("{}/v1", b3.base)},
+            ],
+            "groups": [
+                {"id": "t", "name": "t", "members": ["zcode/GLM-5.3-Flash-Trial", "pb/mb"], "routing": "order"},
+                {"id": "s", "name": "s", "members": ["zcode/GLM-5.3", "pb/mb"], "routing": "order"},
+            ],
+        })
+        .to_string();
+        let (gw, _sb) = sandbox(&world3);
+        assert_eq!(status_of(&forward(&gw, &[], &chat_request("t", false))), 200, "400 quota words fail over to b");
+        assert_eq!(rest_left("zcode"), None, "an unmatched 400 does not rest the provider in Rust");
+        assert_eq!(rest_left("zcode::GLM-5.3-Flash-Trial"), None, "nor does it grade to the entry");
+        assert_eq!(status_of(&forward(&gw, &[], &chat_request("s", false))), 200);
+        assert_eq!(z3.hits.load(Ordering::SeqCst), 2, "zcode is still asked for its plain model");
+    }
+
     /// [DONE] 匹配器：行首锚定、容忍空格与 \r、行中/后缀垃圾不算。
     #[test]
     fn done_matcher_is_line_anchored() {
@@ -1638,5 +1859,96 @@ mod routing_tests {
                 }
             }
         }
+    }
+
+    // ----- usage 捕获（capture 层，Go sniff.go 口径）--------------------------
+
+    /// 带 prompt_cache_key 的请求体（session 种子）。
+    fn keyed_request(model: &str, stream: bool) -> Vec<u8> {
+        json_body(json!({
+            "model": model, "stream": stream, "prompt_cache_key": "sess-42",
+            "messages": [{"role": "user", "content": "hi"}]
+        }))
+    }
+
+    /// 流式回合落账：SSE 尾帧 usage 四桶（含缓存拆桶）、真实 millis、
+    /// session 种子随行——流排干即收口（Go serve 尽头一口账）。
+    #[test]
+    fn stream_turn_records_usage_buckets_with_real_millis() {
+        let sse = concat!(
+            "data: {\"id\":\"c\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n",
+            "data: {\"id\":\"c\",\"choices\":[],\"usage\":{\"prompt_tokens\":1000,\"completion_tokens\":40,\"total_tokens\":1040,\"prompt_tokens_details\":{\"cached_tokens\":300,\"cache_write_tokens\":100}}}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let v = fake(Box::new(|_| (200, "text/event-stream", sse.as_bytes().to_vec())));
+        let (gw, _sb) = sandbox(
+            &json!({"providers": [{"id": "pv", "name": "V", "chat": format!("{}/v1", v.base)}]}).to_string(),
+        );
+        let reply = forward(&gw, &[], &keyed_request("pv/m", true));
+        let text = text_of(reply); // 排干流 → tap 在 EOF 收口落账
+        assert!(text.contains("[DONE]"));
+        let rows = gw.usage.records_since(0);
+        assert_eq!(rows.len(), 1, "一条回合一行");
+        let r = &rows[0];
+        assert_eq!(r.agent, "chat");
+        assert_eq!(r.provider, "pv");
+        assert_eq!(r.model, "pv/m", "asked 串（含 provider/ 前缀）");
+        assert_eq!(r.status, 200);
+        assert_eq!(r.kind, "turn");
+        assert_eq!(r.session.as_deref(), Some("sess-42"), "affinity 同源种子随行");
+        assert_eq!(r.in_tokens, Some(600), "OpenAI 口径：prompt 1000 − 300 − 100");
+        assert_eq!(r.out_tokens, Some(40));
+        assert_eq!(r.cache_read, Some(300));
+        assert_eq!(r.cache_write, Some(100));
+        assert!(r.millis > 0, "真实 millis（请求入口→流尾），got {}", r.millis);
+    }
+
+    /// 断流也落账：usage 帧已过、[DONE] 没来（ClosingReader 补显式收尾）——
+    /// 已发字节算已服务，桶按已见真数照记，status 照实（200）。
+    #[test]
+    fn cut_stream_still_records_seen_usage() {
+        let a = cut_fake(CutAt::AfterUsage);
+        let (gw, _sb) = sandbox(
+            &json!({"providers": [{"id": "pa", "name": "A", "chat": format!("{}/v1", a.base)}]}).to_string(),
+        );
+        let reply = forward(&gw, &[], &chat_request("pa/ma", true));
+        let text = text_of(reply);
+        assert!(text.contains("\"error\""), "断流补显式 error 帧: {text}");
+        let rows = gw.usage.records_since(0);
+        assert_eq!(rows.len(), 1, "断流照落一行");
+        let r = &rows[0];
+        assert_eq!(r.in_tokens, Some(350), "500 − 150 缓存读");
+        assert_eq!(r.out_tokens, Some(20));
+        assert_eq!(r.cache_read, Some(150));
+        assert!(r.cache_write.is_none(), "厂商没说缓存写就是 None");
+        assert_eq!(r.status, 200, "客户端看到的 HTTP 状态照实");
+    }
+
+    /// 非流式整块：usage 直接从厂商体提（别家缓存名走同一条提取序），
+    /// 会话/asked 取**请求**体。
+    #[test]
+    fn non_stream_turn_records_whole_usage() {
+        let whole = serde_json::to_vec(&json!({
+            "id": "c", "object": "chat.completion", "model": "mb",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 900, "completion_tokens": 25, "total_tokens": 925,
+                "prompt_cache_hit_tokens": 700}
+        }))
+        .unwrap();
+        let v = fake(Box::new(move |_| (200, "application/json", whole.clone())));
+        let (gw, _sb) = sandbox(
+            &json!({"providers": [{"id": "pv", "name": "V", "chat": format!("{}/v1", v.base)}]}).to_string(),
+        );
+        let reply = forward(&gw, &[], &keyed_request("pv/m", false));
+        assert_eq!(status_of(&reply), 200);
+        let rows = gw.usage.records_since(0);
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(r.model, "pv/m", "asked（不是厂商裸名 mb）");
+        assert_eq!(r.session.as_deref(), Some("sess-42"));
+        assert_eq!(r.in_tokens, Some(200), "DeepSeek 名字：900 含缓存 → 900 − 700");
+        assert_eq!(r.out_tokens, Some(25));
+        assert_eq!(r.cache_read, Some(700), "prompt_cache_hit_tokens 别名桶");
+        assert!(r.millis > 0);
     }
 }
